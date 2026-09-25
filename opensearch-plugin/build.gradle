@@ -90,3 +90,73 @@ def selfTest = tasks.register('selfTest', JavaExec) {
 }
 tasks.named('test') { enabled = false }
 tasks.named('check') { dependsOn selfTest }
+
+// M2 T2.7 with the JVM in the loop: JNI crossing cost and in-process query
+// latency, native vs Lucene. Not part of `check` -- it is a measurement.
+tasks.register('nativeBench', JavaExec) {
+    description = 'JNI crossing cost and per-query latency, native vs Lucene, in one JVM.'
+    dependsOn tasks.named('testClasses'), cargoBuild
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'org.lucenerust.opensearch.NativeBench'
+    systemProperty 'lucene_rust.library.path', nativeLib.absolutePath
+    jvmArgs '-Xms2g', '-Xmx2g', '--add-modules', 'jdk.incubator.vector'
+    args findProperty('docs') ?: '500000'
+}
+
+// OpenSearch's own REST YAML suites against a running node with the plugin
+// installed (scripts/verify-opensearch.sh --yaml). The only part of the build
+// that needs Maven Central: the YAML runner is OpenSearch's test framework.
+repositories {
+    mavenCentral()
+}
+sourceSets {
+    yamlRestTest {
+        java.srcDir 'src/yamlRestTest/java'
+    }
+}
+configurations {
+    yamlRestTestImplementation
+    restSpec
+}
+dependencies {
+    yamlRestTestImplementation "org.opensearch.test:framework:${opensearchVersion}"
+    restSpec "org.opensearch:rest-api-spec:${opensearchVersion}"
+}
+// The YAML loader walks rest-api-spec/ as a directory (a path inside a jar
+// is not one), so the spec jar is unpacked onto the runner's classpath -- as
+// OpenSearch's own build does.
+def extractRestSpec = tasks.register('extractRestSpec', Sync) {
+    from { zipTree(configurations.restSpec.singleFile) }
+    include 'rest-api-spec/**'
+    into layout.buildDirectory.dir('rest-spec')
+}
+sourceSets.yamlRestTest.runtimeClasspath += files(layout.buildDirectory.dir('rest-spec')) { builtBy extractRestSpec }
+tasks.named('compileYamlRestTestJava') {
+    options.compilerArgs -= ['-Werror']
+}
+tasks.register('yamlRestTest', Test) {
+    description = 'OpenSearch REST YAML suites against -Ptests.rest.cluster (default localhost:9200).'
+    testClassesDirs = sourceSets.yamlRestTest.output.classesDirs
+    classpath = sourceSets.yamlRestTest.runtimeClasspath
+    useJUnit()
+    systemProperty 'tests.rest.cluster', findProperty('tests.rest.cluster') ?: 'localhost:9200'
+    systemProperty 'tests.rest.suite', findProperty('tests.rest.suite') ?: 'search'
+    systemProperty 'tests.cluster', findProperty('tests.rest.cluster') ?: 'localhost:9200'
+    systemProperty 'tests.clustername', 'docker-cluster'
+    systemProperty 'lucene_rust.preserve_templates', findProperty('preserveTemplates') ?: 'false'
+    systemProperty 'tests.security.manager', 'false'
+    // Run everything and report, rather than stopping at the first failure.
+    ignoreFailures = findProperty('yamlIgnoreFailures') == 'true'
+    outputs.upToDateWhen { false }
+    testLogging { events 'failed'; exceptionFormat 'full' }
+}
+
+// The YAML runner refuses to run as root (OpenSearch's Bootstrap check). For a
+// root shell -- a container, typically -- this stages the runner's classpath
+// where an unprivileged user can read it; scripts/verify-opensearch.sh runs it.
+tasks.register('yamlRestTestClasspath', Sync) {
+    description = 'Stages the YAML runner classpath under build/yaml-classpath.'
+    dependsOn tasks.named('yamlRestTestClasses'), extractRestSpec
+    from(sourceSets.yamlRestTest.runtimeClasspath)
+    into layout.buildDirectory.dir('yaml-classpath')
+}
