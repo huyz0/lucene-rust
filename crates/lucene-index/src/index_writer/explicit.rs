@@ -673,6 +673,11 @@ impl<'d> IndexWriter<'d> {
             return Err(Error::NoSoftDeletesSupplied);
         }
         self.explicit_documents_check(&docs)?;
+        // `verifyOrCreateDvOnlyField`: an update to a field this writer has
+        // never registered would resolve against nothing and vanish.
+        for update in soft_deletes {
+            self.cfg.verify_doc_values_update_field(update)?;
+        }
         let updates = soft_deletes
             .iter()
             .map(|u| super::retarget_update(u, &term))
@@ -1357,5 +1362,73 @@ mod tests {
                 None => assert_eq!(field.name, "__soft_deletes", "only the soft field is new"),
             }
         }
+    }
+
+    /// A soft delete naming a field the writer never registered is refused,
+    /// rather than resolving against nothing and silently leaving the old
+    /// version live.
+    #[test]
+    fn a_soft_update_of_an_unregistered_field_is_refused() {
+        let tmp = TempDir::new("explicit-unregistered-soft");
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        w.enable_explicit_documents().unwrap();
+        let id = w
+            .register_field(
+                FieldInfo::new("_id", 0)
+                    .with_index_options(IndexOptions::Docs)
+                    .with_omit_norms(true),
+            )
+            .unwrap();
+        let one = |i: &str| ExplicitDocument {
+            stored: Vec::new(),
+            fields: ExplicitFields {
+                inverted: vec![InvertedField {
+                    field_number: id,
+                    terms: vec![term_docs(i)],
+                    norm: None,
+                }],
+                doc_values: Vec::new(),
+                points: Vec::new(),
+            },
+        };
+        w.add_explicit_documents(vec![one("a")]).unwrap();
+        let soft = DocValuesUpdate::Numeric {
+            term: id_term(0),
+            field: "__soft_deletes".to_string(),
+            value: Some(1),
+        };
+        assert!(matches!(
+            w.soft_update_explicit_documents(id_term(0), vec![one("a")], &[soft.clone()]),
+            Err(Error::UnknownDocValuesUpdateField(ref f)) if f == "__soft_deletes"
+        ));
+        // Registered, the same update soft-deletes the buffered document.
+        w.register_field(
+            FieldInfo::new("__soft_deletes", 0)
+                .with_doc_values(DocValuesType::Numeric, DocValuesSkipIndexType::None, -1)
+                .with_soft_deletes_field(true),
+        )
+        .unwrap();
+        let soft = DocValuesUpdate::Numeric {
+            term: Term {
+                field: "_id".to_string(),
+                bytes: b"a".to_vec(),
+            },
+            field: "__soft_deletes".to_string(),
+            value: Some(1),
+        };
+        w.soft_update_explicit_documents(
+            Term {
+                field: "_id".to_string(),
+                bytes: b"a".to_vec(),
+            },
+            vec![one("a")],
+            &[soft],
+        )
+        .unwrap();
+        let infos = w.commit().unwrap().clone();
+        let soft: i32 = infos.segments.iter().map(|s| s.soft_del_count).sum();
+        assert_eq!(soft, 1, "the buffered version is soft-deleted");
+        check(&dir);
     }
 }

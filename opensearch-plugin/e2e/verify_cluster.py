@@ -6,16 +6,17 @@ lucene_rust.engine.node_enabled: false and serves them with OpenSearch's own eng
 the test makes is recorded in a model of what was acknowledged, and every copy of the shard --
 read with preference=_only_nodes -- must hold exactly that, after each of:
 
-  1. segment replication: a Rust primary and a replica on another Rust node;
-  2. peer recovery: a new replica on the Java node (a Java replica of a Rust primary);
+  1. document replication, a Rust primary and a Rust replica;
+  2. peer recovery of a new replica on the Java node: a Rust primary with a Java replica;
   3. failover: the primary's node stops, a replica is promoted, writes continue;
   4. the stopped node rejoins and recovers as a replica;
   5. relocation Rust -> Java: the primary moves to the Java node, whose engine then writes into
-     the Rust-written segments;
+     the Rust-written segments -- a Java primary with Rust replicas once they return;
   6. relocation Java -> Rust: back to a Rust node, whose writer then soft-deletes documents in
      Java-written (compound) segments;
-  7. document replication: every copy indexes, the Rust writer on two nodes and Java's on the
-     third, all from the same operations.
+  7. segment replication: a Java primary whose replicas open its segments and answer the plugin's
+     native queries -- and a segment-replicated index asking for the Rust writer is refused, since
+     OpenSearch 3.8 cannot use a plugin engine as a segment-replication primary.
 
 Standard library only.
 """
@@ -119,10 +120,12 @@ class Model:
 
     def ops(self, count, ids=400):
         lines, expect = [], []
+        present = set(self.docs)  # as the bulk will leave it, operation by operation
         for _ in range(count):
             doc_id = f"d{self.r.randrange(ids)}"
             k = self.r.random()
-            if k < 0.6 or doc_id not in self.docs:
+            if k < 0.6 or doc_id not in present:
+                present.add(doc_id)
                 src = self.source(doc_id)
                 lines += [{"index": {"_id": doc_id}}, src]
                 expect.append((doc_id, "index", src))
@@ -131,6 +134,7 @@ class Model:
                 lines += [{"update": {"_id": doc_id}}, {"doc": patch}]
                 expect.append((doc_id, "update", patch))
             else:
+                present.discard(doc_id)
                 lines += [{"delete": {"_id": doc_id}}]
                 expect.append((doc_id, "delete", None))
         out = must("POST", f"/{self.index}/_bulk", "\n".join(json.dumps(l) for l in lines) + "\n", ndjson=True)
@@ -152,6 +156,11 @@ class Model:
         out = must("POST", f"/{self.index}/_search?preference=_only_nodes:{node}&request_cache=false",
                    {"size": 10000, "query": {"match_all": {}}})
         got = {h["_id"]: h["_source"] for h in out["hits"]["hits"]}
+        self.last_diff = {
+            "missing": sorted(set(self.docs) - set(got))[:10],
+            "extra": sorted(set(got) - set(self.docs))[:10],
+            "different": sorted(k for k in set(got) & set(self.docs) if got[k] != self.docs[k])[:10],
+        }
         return got == self.docs
 
     def verify(self, label):
@@ -159,7 +168,7 @@ class Model:
         nodes = sorted(copies(self.index))
         for node in nodes:
             ok = wait(lambda: self.copy_matches(node), f"{label}: copy on {node} to catch up", 120)
-            check(ok, f"{label}: copy on {node} holds the acknowledged documents")
+            check(ok, f"{label}: copy on {node} holds the acknowledged documents {'' if ok else self.last_diff}")
         query = {"size": 50, "query": {"match": {"title": "alpha gamma"}}, "sort": [{"_id": "asc"}]}
         results = {}
         for node in nodes:
@@ -180,37 +189,36 @@ def settings(index, s):
 
 def main():
     wait(lambda: must("GET", "/_cluster/health")["number_of_nodes"] == 3, "three nodes", 300)
-    for idx in ("segrep", "docrep"):
+    for idx in ("docrep", "segrep", "segrep_rust"):
         req("DELETE", f"/{idx}")
 
-    # 1. Segment replication, Rust primary and Rust replica.
-    must("PUT", "/segrep", {"settings": {
-        "number_of_shards": 1, "number_of_replicas": 1, "index.replication.type": "SEGMENT",
+    # 1. Document replication: a Rust primary and a Rust replica.
+    must("PUT", "/docrep", {"settings": {
+        "number_of_shards": 1, "number_of_replicas": 1, "index.replication.type": "DOCUMENT",
         "index.lucene_rust.engine": True, "index.routing.allocation.include._name": "os1,os2"}})
-    wait(lambda: health("segrep", "green"), "segrep green")
-    m = Model("segrep", 1)
+    wait(lambda: health("docrep", "green"), "docrep green")
+    m = Model("docrep", 1)
     for _ in range(5):
         m.ops(300)
-    m.verify("segment replication (Rust primary, Rust-node replica)")
-    p = primary("segrep")
-    check(p in ("os1", "os2") and engines(p).get("rust", 0) >= 1, f"the primary on {p} runs the Rust engine: {engines(p)}")
+    m.verify("document replication (Rust primary, Rust replica)")
+    for node in ("os1", "os2"):
+        check(engines(node).get("rust", 0) >= 1, f"{node} runs the Rust engine: {engines(node)}")
 
     # 2. Peer recovery onto the Java node.
-    settings("segrep", {"index.number_of_replicas": 2, "index.routing.allocation.include._name": "os1,os2,os3"})
-    wait(lambda: health("segrep", "green"), "segrep green with three copies")
-    m.verify("peer recovery (new replica on the Java node)")
+    settings("docrep", {"index.number_of_replicas": 2, "index.routing.allocation.include._name": "os1,os2,os3"})
+    wait(lambda: health("docrep", "green"), "three copies")
+    check(engines("os3").get("java", 0) >= 1, f"os3 runs Java's engine: {engines('os3')}")
+    m.verify("peer recovery (Rust primary, new Java replica)")
     m.ops(300)
-    m.verify("writes after peer recovery")
+    m.verify("writes to a Rust primary with a Java replica")
 
     # 3. Failover: stop the primary's node.
-    p = primary("segrep")
+    p = primary("docrep")
     docker("stop", p)
     DOWN.add(p)
-    wait(lambda: health("segrep", "yellow") and primary("segrep") != p, "a replica promoted")
-    q = primary("segrep")
-    kind = "rust" if q in ("os1", "os2") else "java"
-    print(f"primary {p} stopped; {q} promoted ({kind} engine)", flush=True)
-    check(engines(q).get(kind, 0) >= 1, f"the promoted primary runs the {kind} engine: {engines(q)}")
+    wait(lambda: health("docrep", "yellow") and primary("docrep") != p, "a replica promoted")
+    q = primary("docrep")
+    print(f"primary {p} stopped; {q} promoted", flush=True)
     m.ops(300)
     m.verify(f"writes after failover to {q}")
 
@@ -218,43 +226,59 @@ def main():
     docker("start", p)
     DOWN.discard(p)
     wait(lambda: must("GET", "/_cluster/health", node=q)["number_of_nodes"] == 3, "the node rejoins", 300)
-    wait(lambda: health("segrep", "green"), "segrep green again", 300)
+    wait(lambda: health("docrep", "green"), "green again", 300)
     m.verify("the stopped node recovered as a replica")
 
-    # 5. Relocation Rust -> Java: one copy, pinned to os3.
-    settings("segrep", {"index.number_of_replicas": 0})
-    wait(lambda: health("segrep", "green"), "one copy")
-    if primary("segrep") == "os3":
-        settings("segrep", {"index.routing.allocation.include._name": "os1"})
-        wait(lambda: health("segrep", "green") and primary("segrep") == "os1", "the primary on os1")
+    # 5. Relocation Rust -> Java: one copy, pinned to os3; then Rust replicas return.
+    settings("docrep", {"index.number_of_replicas": 0})
+    wait(lambda: health("docrep", "green"), "one copy")
+    if primary("docrep") == "os3":
+        settings("docrep", {"index.routing.allocation.include._name": "os1"})
+        wait(lambda: health("docrep", "green") and primary("docrep") == "os1", "the primary on os1")
         m.ops(300)
-    settings("segrep", {"index.routing.allocation.include._name": "os3"})
-    wait(lambda: health("segrep", "green") and primary("segrep") == "os3", "the primary relocated to os3")
-    check(engines("os3").get("java", 0) >= 1, f"os3 runs Java's engine: {engines('os3')}")
+    settings("docrep", {"index.routing.allocation.include._name": "os3"})
+    wait(lambda: health("docrep", "green") and primary("docrep") == "os3", "the primary relocated to os3")
     m.ops(300)
     m.verify("relocated Rust -> Java; Java's engine writes into Rust-written segments")
+    settings("docrep", {"index.number_of_replicas": 2, "index.routing.allocation.include._name": "os1,os2,os3"})
+    wait(lambda: health("docrep", "green"), "Rust replicas of a Java primary", 300)
+    if primary("docrep") == "os3":
+        m.ops(300)
+        m.verify("a Java primary with Rust replicas")
 
     # 6. Relocation Java -> Rust: the Rust writer soft-deletes into Java's compound segments.
-    settings("segrep", {"index.routing.allocation.include._name": "os1"})
-    wait(lambda: health("segrep", "green") and primary("segrep") == "os1", "the primary relocated to os1")
+    settings("docrep", {"index.number_of_replicas": 0, "index.routing.allocation.include._name": "os1"})
+    wait(lambda: health("docrep", "green") and primary("docrep") == "os1", "the primary relocated to os1")
     m.ops(600)
     m.verify("relocated Java -> Rust; the Rust writer updates Java-written segments")
-    settings("segrep", {"index.number_of_replicas": 2, "index.routing.allocation.include._name": "os1,os2,os3"})
-    wait(lambda: health("segrep", "green"), "three copies again", 300)
+    settings("docrep", {"index.number_of_replicas": 2, "index.routing.allocation.include._name": "os1,os2,os3"})
+    wait(lambda: health("docrep", "green"), "three copies again", 300)
     m.verify("replicas recovered from the Rust primary")
-    must("POST", "/segrep/_forcemerge?max_num_segments=1")
-    must("POST", "/segrep/_refresh")
-    m.verify("force-merged, replicated")
+    must("POST", "/docrep/_forcemerge?max_num_segments=1")
+    must("POST", "/docrep/_refresh")
+    m.verify("force-merged")
 
-    # 7. Document replication: every copy indexes.
-    must("PUT", "/docrep", {"settings": {
-        "number_of_shards": 1, "number_of_replicas": 2, "index.replication.type": "DOCUMENT",
-        "index.lucene_rust.engine": True}})
-    wait(lambda: health("docrep", "green"), "docrep green")
-    d = Model("docrep", 2)
+    # 7. Segment replication: a Java primary, replicas opening its segments natively...
+    must("PUT", "/segrep", {"settings": {
+        "number_of_shards": 1, "number_of_replicas": 2, "index.replication.type": "SEGMENT"}})
+    wait(lambda: health("segrep", "green"), "segrep green")
+    sr = Model("segrep", 2)
     for _ in range(4):
-        d.ops(300)
-    d.verify("document replication (Rust, Rust and Java engines)")
+        sr.ops(300)
+    sr.verify("segment replication (Java primary, replicas read natively)")
+    replica = next(n for n, prim in copies("segrep").items() if not prim)
+    before = must("GET", "/_plugins/lucene_rust/stats", node=replica)["native_queries"]
+    must("POST", f"/segrep/_search?preference=_only_nodes:{replica}&request_cache=false",
+         {"query": {"match": {"title": "alpha"}}})
+    after = must("GET", "/_plugins/lucene_rust/stats", node=replica)["native_queries"]
+    check(after > before, f"the replica on {replica} answered a match query natively: {before} -> {after}")
+    # ...and the Rust writer refused as a segment-replication primary.
+    must("PUT", "/segrep_rust", {"settings": {
+        "number_of_shards": 1, "number_of_replicas": 0, "index.replication.type": "SEGMENT",
+        "index.lucene_rust.engine": True}})
+    time.sleep(5)
+    explain = must("GET", "/_cluster/allocation/explain", {"index": "segrep_rust", "shard": 0, "primary": True})
+    check("segment-replication primary" in json.dumps(explain), f"the refusal says why: {json.dumps(explain)[:400]}")
 
     print(f"verify_cluster: {CHECKS[0]} checks, {len(FAILURES)} failures", flush=True)
     sys.exit(1 if FAILURES else 0)

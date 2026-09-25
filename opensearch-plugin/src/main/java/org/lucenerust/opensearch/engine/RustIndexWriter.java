@@ -60,6 +60,7 @@ import java.util.function.LongSupplier;
 final class RustIndexWriter implements DocumentIndexWriter {
     private final Directory directory;
     private final long handle;
+    private final FieldRegistry registry;
     private final DocumentEncoder encoder;
     private final IndexWriterConfig config;
     private final Object lock = new Object();
@@ -87,13 +88,17 @@ final class RustIndexWriter implements DocumentIndexWriter {
         Similarity similarity,
         int indexCreatedVersionMajor,
         String softDeletesField,
-        DocumentEncoder.FormatCheck formats
+        DocumentEncoder.FormatCheck formats,
+        org.apache.lucene.codecs.Codec codec
     ) {
         this.directory = directory;
         this.handle = handle;
-        FieldRegistry registry = new FieldRegistry(this::register);
+        this.registry = new FieldRegistry(this::register);
         this.encoder = new DocumentEncoder(registry, analyzer, similarity, indexCreatedVersionMajor, softDeletesField, formats);
         this.config = new IndexWriterConfig(analyzer).setSimilarity(similarity).setSoftDeletesField(softDeletesField);
+        if (codec != null) {
+            config.setCodec(codec);
+        }
     }
 
     /**
@@ -113,7 +118,8 @@ final class RustIndexWriter implements DocumentIndexWriter {
         DocumentEncoder.FormatCheck formats,
         IndexDeletionPolicy deletionPolicy,
         LongSupplier minRetainedSeqNo,
-        CircuitBreaker breaker
+        CircuitBreaker breaker,
+        org.apache.lucene.codecs.Codec codec
     ) throws IOException {
         long[] out = new long[1];
         int status = NativeBridge.writerOpen(
@@ -132,7 +138,8 @@ final class RustIndexWriter implements DocumentIndexWriter {
             similarity,
             indexCreatedVersionMajor,
             softDeletesField,
-            formats
+            formats,
+            codec
         );
         boolean success = false;
         try {
@@ -140,6 +147,13 @@ final class RustIndexWriter implements DocumentIndexWriter {
             w.minRetainedSeqNo = minRetainedSeqNo;
             w.breaker = breaker;
             w.faultInjection = faultInjection;
+            // IndexWriterConfig.setSoftDeletesField: the writer knows the field before any document
+            // carries it, so the first soft update -- which may be the first use -- has a field to
+            // land on.
+            FieldSchema soft = new FieldSchema(softDeletesField);
+            soft.docValuesType = org.apache.lucene.index.DocValuesType.NUMERIC;
+            soft.softDeletes = true;
+            w.registry.resolve(soft);
             synchronized (w.lock) {
                 w.liveCommitData = SegmentInfos.readLatestCommit(directory).getUserData().entrySet();
                 w.onNewCommits();
