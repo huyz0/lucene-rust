@@ -4946,6 +4946,8 @@ type before concluding this, not assumed.
 
 ## Floor sub-blocks in blocktree writer: audited, no writer exists to add them to
 
+> **Superseded (M3, 2026-09-25).** The writer now exists: `lucene-codecs/src/blocktree_writer.rs` ports `Lucene103BlockTreeTermsWriter`'s block splitting -- floor blocks included -- and `TrieBuilder`, and `VerifyIndex` checks its block structure against Lucene's own writer. The audit below is kept as written.
+
 This task's literal framing ("floor sub-blocks in the blocktree writer")
 doesn't match this codebase's actual state, so before writing anything the
 premise itself was checked rather than assumed. Two greps confirmed it:

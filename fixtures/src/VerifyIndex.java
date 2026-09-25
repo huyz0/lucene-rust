@@ -1,114 +1,123 @@
+import org.apache.lucene.codecs.lucene103.blocktree.Stats;
+import org.apache.lucene.document.Document;
+import org.apache.lucene.document.Field;
+import org.apache.lucene.document.NumericDocValuesField;
+import org.apache.lucene.document.StringField;
+import org.apache.lucene.index.IndexWriter;
+import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.store.ByteBuffersDirectory;
+import org.apache.lucene.index.CheckIndex;
+import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.FieldInfo;
+import org.apache.lucene.index.FieldInfos;
+import org.apache.lucene.index.IndexOptions;
+import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.index.PostingsEnum;
+import org.apache.lucene.index.StoredFields;
+import org.apache.lucene.index.Term;
+import org.apache.lucene.index.Terms;
+import org.apache.lucene.index.TermsEnum;
+import org.apache.lucene.search.BooleanClause.Occur;
+import org.apache.lucene.search.BooleanQuery;
+import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.PhraseQuery;
+import org.apache.lucene.search.Query;
+import org.apache.lucene.search.Sort;
+import org.apache.lucene.search.SortField;
+import org.apache.lucene.search.TermQuery;
+import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.FieldDoc;
+import org.apache.lucene.store.Directory;
+import org.apache.lucene.store.FSDirectory;
+import org.apache.lucene.util.BytesRef;
+
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import org.apache.lucene.document.NumericDocValuesField;
-import org.apache.lucene.index.CheckIndex;
-import org.apache.lucene.index.DirectoryReader;
-import org.apache.lucene.index.DocValuesType;
-import org.apache.lucene.index.FieldInfo;
-import org.apache.lucene.index.FieldInfos;
-import org.apache.lucene.index.IndexOptions;
-import org.apache.lucene.index.MultiTerms;
-import org.apache.lucene.index.PostingsEnum;
-import org.apache.lucene.index.Term;
-import org.apache.lucene.index.Terms;
-import org.apache.lucene.index.TermsEnum;
-import org.apache.lucene.search.BooleanClause;
-import org.apache.lucene.search.BooleanQuery;
-import org.apache.lucene.search.DocIdSetIterator;
-import org.apache.lucene.search.FieldDoc;
-import org.apache.lucene.search.IndexSearcher;
-import org.apache.lucene.search.PhraseQuery;
-import org.apache.lucene.search.Query;
-import org.apache.lucene.search.ScoreDoc;
-import org.apache.lucene.search.Sort;
-import org.apache.lucene.search.SortField;
-import org.apache.lucene.search.TermQuery;
-import org.apache.lucene.search.TopDocs;
-import org.apache.lucene.store.Directory;
-import org.apache.lucene.store.FSDirectory;
-import org.apache.lucene.util.BytesRef;
 
 /**
- * M3's end-to-end write-path proof (T3.4), Java half: real Lucene 10.5.0 opens a whole index this
- * port wrote through its {@code IndexWriter} -- 120 000 documents, several segments, text with
- * positions, offsets, payloads and norms, a keyword field and a numeric doc-values field -- and must
- * find exactly what the generator put there and answer queries exactly as this port's searcher
- * does. The Rust half, which writes the index and the expectations, is {@code
- * crates/lucene-search/examples/write_verify_index.rs}.
+ * M3's end-to-end proof (task T3.4): real Lucene opens a whole index this
+ * port's {@code IndexWriter} wrote, finds it clean, and searches it to the
+ * same results this port's own searcher produced.
+ *
+ * <p>{@code write_verify_index_fixture} (in {@code lucene-search}) writes the
+ * index -- 120 000 Zipfian documents in several segments, with deletes --
+ * then runs a fixed query set over it with this port's searcher and leaves
+ * two files beside it: the query set ({@code verify-queries.tsv}) and its own
+ * top 50 per query ({@code verify-rust-results.tsv}). This program:
  *
  * <ol>
- *   <li>The index opens with {@link DirectoryReader}, has more than one segment, and its field
- *       infos say what the generator asked for.
- *   <li><b>Every term's postings</b> (T3.1): each {@code body}, {@code keyword}, {@code tag} and {@code id} term in the
- *       index, walked through {@link MultiTerms} with global document ids, must match {@code
- *       postings.tsv} -- docFreq, totalTermFreq and an FNV-1a hash over every document, freq,
- *       position, both offsets and payload. The expectations are computed from the generated text,
- *       not from this port's writer or reader, so a misreading of the format the two share cannot
- *       cancel out here. A missing or extra term fails too.
- *   <li><b>The same answers</b>: each query in {@code queries.tsv} runs through {@link
- *       IndexSearcher} with its default BM25, and its top 50 must be the documents {@code
- *       rust-results.tsv} lists, in the same order, each score within 1e-5 (range queries: the same
- *       documents and sort values).
- *   <li>{@link CheckIndex} at {@code MIN_LEVEL_FOR_SLOW_CHECKS} reports the index clean.
+ *   <li>opens the index with {@link DirectoryReader} and asserts its shape --
+ *       document and deletion counts, several segments, the index options and
+ *       payload flag of each field, and at least one term far past
+ *       {@code BLOCK_SIZE} -- so a fixture that silently degenerated would
+ *       fail here rather than pass on an index that tests nothing;
+ *   <li>reads positions, offsets and payloads for a sample of occurrences and
+ *       checks each against the stored text and the payload function the
+ *       fixture used, which is a function of term and position only;
+ *   <li>runs full-level {@link CheckIndex};
+ *   <li>runs every query through {@link IndexSearcher} and requires the top 50
+ *       to be <b>the same documents in the same order</b> as this port's, with
+ *       every score within {@link #SCORE_TOLERANCE} (and every sort value
+ *       equal, for a doc-values sort).
  * </ol>
  *
- * <p>Usage: {@code java VerifyIndex <out-dir>}, where {@code <out-dir>} is what the Rust example
- * wrote. Exits nonzero with a diagnosis on any mismatch.
+ * <p>The tolerance is the milestone's: {@code PLAN.md} requires the same
+ * {@code f32} operations in the same order, not bit-identical results across
+ * compilers. The program also reports how many scores were bit-identical,
+ * because a drift that stays under the tolerance is still worth seeing.
+ *
+ * <p>Usage: {@code java VerifyIndex <index-dir>}. Exits nonzero with a
+ * diagnosis on any mismatch.
  */
 public class VerifyIndex {
-  /** Must match {@code write_verify_index.rs}. */
+  /** Must match `write_verify_index_fixture.rs`. */
   private static final int NUM_DOCS = 120_000;
-
+  private static final int FIRST_COMMIT_AT = 70_000;
+  private static final int DELETE_EVERY = 97;
   private static final int TOP_N = 50;
   private static final double SCORE_TOLERANCE = 1e-5;
+  /** `BLOCK_SIZE` in `Lucene104PostingsFormat`. */
+  private static final int BLOCK_SIZE = 256;
+  /** The milestone asks for at least this many queries. */
+  private static final int MIN_QUERIES = 50;
 
   private static int failures = 0;
-  private static double maxScoreDiff = 0;
 
-  private static void fail(String message) {
+  private static void fail(String msg) {
+    System.out.println("MISMATCH " + msg);
     failures++;
-    if (failures <= 40) {
-      System.out.println("MISMATCH " + message);
-    }
   }
 
   public static void main(String[] args) throws IOException {
-    Path out = Path.of(args[0]);
-    Path indexPath = out.resolve("index");
-
-    try (Directory dir = FSDirectory.open(indexPath);
+    Path path = Path.of(args[0]);
+    try (Directory dir = FSDirectory.open(path);
         DirectoryReader reader = DirectoryReader.open(dir)) {
       checkShape(reader);
-      int terms = checkPostings(reader, out.resolve("postings.tsv"));
-      int queries = checkQueries(reader, out.resolve("queries.tsv"), out.resolve("rust-results.tsv"));
-      System.out.println(
-          "segments="
-              + reader.leaves().size()
-              + " terms checked="
-              + terms
-              + " queries checked="
-              + queries
-              + " max score difference="
-              + maxScoreDiff);
+      checkOccurrences(reader);
+      checkQueries(reader, path);
     }
 
-    try (Directory dir = FSDirectory.open(indexPath);
+    // Full-level CheckIndex last: it is the broadest check but the least
+    // specific about what went wrong, so the targeted assertions run first.
+    try (Directory dir = FSDirectory.open(path);
         CheckIndex checker = new CheckIndex(dir)) {
       ByteArrayOutputStream captured = new ByteArrayOutputStream();
       checker.setInfoStream(new PrintStream(captured, true, StandardCharsets.UTF_8));
       checker.setLevel(CheckIndex.Level.MIN_LEVEL_FOR_SLOW_CHECKS);
       CheckIndex.Status status = checker.checkIndex();
       if (!status.clean) {
-        fail("CheckIndex reported the index unclean:");
-        System.out.println(captured.toString(StandardCharsets.UTF_8));
+        fail("CheckIndex reported the index unclean:\n" + captured.toString(StandardCharsets.UTF_8));
+      } else {
+        System.out.println(
+            "CheckIndex: clean, " + status.numSegments + " segments, " + status.totLoseDocCount
+                + " docs lost");
       }
     }
 
@@ -119,232 +128,419 @@ public class VerifyIndex {
     System.out.println("Rust-written index verified against real Lucene. PASS");
   }
 
-  private static void checkShape(DirectoryReader reader) {
-    if (reader.maxDoc() != NUM_DOCS || reader.numDocs() != NUM_DOCS) {
-      fail("maxDoc=" + reader.maxDoc() + " numDocs=" + reader.numDocs() + ", want " + NUM_DOCS);
-    }
-    if (reader.leaves().size() < 2) {
-      fail("expected several segments, got " + reader.leaves().size());
-    }
-    FieldInfos infos = FieldInfos.getMergedFieldInfos(reader);
-    FieldInfo body = infos.fieldInfo("body");
-    if (body == null
-        || body.getIndexOptions() != IndexOptions.DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS
-        || !body.hasPayloads()
-        || !body.hasNorms()) {
-      fail("body field info: " + describe(body));
-    }
-    FieldInfo keyword = infos.fieldInfo("keyword");
-    if (keyword == null || keyword.getIndexOptions() != IndexOptions.DOCS) {
-      fail("keyword field info: " + describe(keyword));
-    }
-    FieldInfo id = infos.fieldInfo("id");
-    if (id == null || id.getIndexOptions() != IndexOptions.DOCS) {
-      fail("id field info: " + describe(id));
-    }
-    FieldInfo tag = infos.fieldInfo("tag");
-    if (tag == null || tag.getIndexOptions() != IndexOptions.DOCS_AND_FREQS) {
-      fail("tag field info: " + describe(tag));
-    }
-    FieldInfo num = infos.fieldInfo("num");
-    if (num == null || num.getDocValuesType() != DocValuesType.NUMERIC) {
-      fail("num field info: " + describe(num));
-    }
-  }
+  // ---------------------------------------------------------------- shape
 
-  private static String describe(FieldInfo fi) {
-    return fi == null
-        ? "absent"
-        : fi.getIndexOptions()
-            + " payloads="
-            + fi.hasPayloads()
-            + " norms="
-            + fi.hasNorms()
-            + " dv="
-            + fi.getDocValuesType();
-  }
-
-  /** FNV-1a 64 over little-endian ints and raw bytes; the Rust side has the same function. */
-  private static final class Fnv {
-    long h = 0xcbf29ce484222325L;
-
-    void bytes(byte[] b, int off, int len) {
-      for (int i = off; i < off + len; i++) {
-        h ^= (b[i] & 0xFF);
-        h *= 0x100000001b3L;
+  private static void checkShape(DirectoryReader reader) throws IOException {
+    // Docs 0, 97, 194, ... below FIRST_COMMIT_AT are deleted.
+    int deleted = (FIRST_COMMIT_AT - 1) / DELETE_EVERY + 1;
+    if (reader.maxDoc() != NUM_DOCS) {
+      fail("maxDoc=" + reader.maxDoc() + " expected " + NUM_DOCS);
+    }
+    if (reader.numDocs() != NUM_DOCS - deleted) {
+      fail("numDocs=" + reader.numDocs() + " expected " + (NUM_DOCS - deleted));
+    }
+    if (reader.leaves().size() < 3) {
+      fail("only " + reader.leaves().size() + " segment(s); the fixture must be multi-segment");
+    }
+    int withDeletes = 0;
+    for (LeafReaderContext ctx : reader.leaves()) {
+      if (ctx.reader().hasDeletions()) {
+        withDeletes++;
       }
+      FieldInfos infos = ctx.reader().getFieldInfos();
+      expectField(infos, "body", IndexOptions.DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS, true, true);
+      expectField(infos, "title", IndexOptions.DOCS_AND_FREQS_AND_POSITIONS, false, true);
+      expectField(infos, "tag", IndexOptions.DOCS, false, false);
+      expectField(infos, "id", IndexOptions.DOCS, false, false);
+    }
+    if (withDeletes < 2) {
+      fail("deletes reached " + withDeletes + " segment(s); expected several");
     }
 
-    void i32(int v) {
-      bytes(
-          new byte[] {(byte) v, (byte) (v >>> 8), (byte) (v >>> 16), (byte) (v >>> 24)}, 0, 4);
-    }
-  }
-
-  private static int checkPostings(DirectoryReader reader, Path manifest) throws IOException {
-    Map<String, String> expected = new HashMap<>();
-    for (String line : Files.readAllLines(manifest)) {
-      int tab = line.indexOf('\t', line.indexOf('\t') + 1);
-      expected.put(line.substring(0, tab), line.substring(tab + 1));
-    }
-    int checked = 0;
-    for (String field : new String[] {"body", "keyword", "id", "tag"}) {
-      boolean positions = field.equals("body");
-      boolean freqs = positions || field.equals("tag");
-      Terms terms = MultiTerms.getTerms(reader, field);
-      if (terms == null) {
-        fail("field " + field + " has no terms");
-        continue;
-      }
-      long fieldTtf = 0;
+    // The bit-packed block path has to be exercised, in more than one segment.
+    int bigSegments = 0;
+    int maxDf = 0;
+    for (LeafReaderContext ctx : reader.leaves()) {
+      Terms terms = ctx.reader().terms("body");
       TermsEnum te = terms.iterator();
-      PostingsEnum pe = null;
-      BytesRef term;
-      while ((term = te.next()) != null) {
-        String key = field + "\t" + term.utf8ToString();
-        Fnv h = new Fnv();
-        pe = te.postings(pe, positions ? PostingsEnum.ALL : freqs ? PostingsEnum.FREQS : PostingsEnum.NONE);
-        int docFreq = 0;
-        long ttf = 0;
-        for (int doc = pe.nextDoc(); doc != DocIdSetIterator.NO_MORE_DOCS; doc = pe.nextDoc()) {
-          docFreq++;
-          h.i32(doc);
-          if (freqs && !positions) {
-            ttf += pe.freq();
-            h.i32(pe.freq());
-          }
-          if (positions) {
-            int freq = pe.freq();
-            ttf += freq;
-            h.i32(freq);
-            for (int i = 0; i < freq; i++) {
-              h.i32(pe.nextPosition());
-              h.i32(pe.startOffset());
-              h.i32(pe.endOffset());
-              BytesRef payload = pe.getPayload();
-              int len = payload == null ? 0 : payload.length;
-              h.i32(len);
-              if (len > 0) {
-                h.bytes(payload.bytes, payload.offset, payload.length);
-              }
-            }
-          }
+      if (te.seekExact(new BytesRef("w0"))) {
+        maxDf = Math.max(maxDf, te.docFreq());
+        if (te.docFreq() > 8 * BLOCK_SIZE) {
+          bigSegments++;
         }
-        String got =
-            docFreq + "\t" + (freqs ? Long.toString(ttf) : "-1") + "\t" + String.format("%016x", h.h);
-        String want = expected.remove(key);
-        if (want == null) {
-          fail("unexpected term " + key.replace('\t', ':'));
-        } else if (!want.equals(got)) {
-          fail(key.replace('\t', ':') + " postings: got " + got + ", want " + want);
-        } else if (te.docFreq() != docFreq
-            || (freqs && te.totalTermFreq() != ttf)) {
-          fail(key.replace('\t', ':') + " term stats " + te.docFreq() + "/" + te.totalTermFreq()
-              + " disagree with its postings " + docFreq + "/" + ttf);
-        }
-        fieldTtf += ttf;
-        checked++;
-      }
-      if (freqs && terms.getSumTotalTermFreq() != fieldTtf) {
-        fail(field + " sumTotalTermFreq " + terms.getSumTotalTermFreq() + ", postings sum " + fieldTtf);
       }
     }
-    for (String missing : expected.keySet()) {
-      fail("missing term " + missing.replace('\t', ':'));
+    if (bigSegments < 2) {
+      fail("body:w0 exceeds 8*BLOCK_SIZE docs in only " + bigSegments + " segment(s), max " + maxDf);
     }
-    return checked;
+
+    // The term dictionary must have the shapes the blocktree writer claims:
+    // more than one block, floor blocks, inner blocks (a block whose entries
+    // include sub-blocks), and blocks at prefix lengths past the root, which
+    // is what a multi-level `.tip` trie addresses. Lucene's own Stats walks
+    // every block of the Rust-written `.tim` to count these.
+    int floor = 0;
+    int inner = 0;
+    int deepest = 0;
+    for (LeafReaderContext ctx : reader.leaves()) {
+      Stats st = (Stats) ctx.reader().terms("body").getStats();
+      if (st.totalBlockCount < 2) {
+        fail(ctx + " body has " + st.totalBlockCount + " block(s)");
+      }
+      floor += st.floorBlockCount;
+      inner += st.mixedBlockCount + st.subBlocksOnlyBlockCount;
+      for (int len = 0; len < st.blockCountByPrefixLen.length; len++) {
+        if (st.blockCountByPrefixLen[len] > 0) {
+          deepest = Math.max(deepest, len);
+        }
+      }
+    }
+    if (floor == 0 || inner == 0 || deepest < 2) {
+      fail("blocktree shapes missing: floor=" + floor + " inner=" + inner + " deepest prefix=" + deepest);
+    }
+    System.out.println(
+        "blocktree(body): " + floor + " floor blocks, " + inner + " inner blocks, blocks down to prefix length "
+            + deepest);
+
+    // Block splitting is a function of the term sequence alone, so real
+    // Lucene's own writer, handed the same terms, must cut the same blocks:
+    // same count, same floor runs, same leaf/inner mix, same count at every
+    // prefix length. (Byte sizes are left out -- this port writes suffixes
+    // uncompressed where Java may pick LZ4 or LOWERCASE_ASCII.)
+    int comparedDictionaries = 0;
+    for (LeafReaderContext ctx : reader.leaves()) {
+      for (String field : new String[] {"body", "title", "tag", "id"}) {
+        Stats rust = (Stats) ctx.reader().terms(field).getStats();
+        Stats java = javaStatsForSameTerms(ctx.reader().terms(field));
+        String r = blockShape(rust);
+        String j = blockShape(java);
+        if (!r.equals(j)) {
+          fail(ctx + " " + field + " block structure differs from Lucene's own writer:\n  rust "
+              + r + "\n  java " + j);
+        }
+        comparedDictionaries++;
+      }
+    }
+    System.out.println(
+        "blocktree: " + comparedDictionaries + " dictionaries cut exactly as Lucene's writer cuts them");
+
+    // Stored fields line up with the global document order.
+    StoredFields stored = reader.storedFields();
+    for (int doc : new int[] {1, 12_345, FIRST_COMMIT_AT, NUM_DOCS - 1}) {
+      String id = stored.document(doc).get("id");
+      if (!("doc" + doc).equals(id)) {
+        fail("doc " + doc + " has stored id " + id);
+      }
+    }
+    System.out.println(
+        "shape: " + reader.leaves().size() + " segments, " + reader.numDocs() + " live docs, "
+            + withDeletes + " segments with deletes, max docFreq(body:w0) per segment " + maxDf);
   }
 
-  private static Query build(String kind, String field, List<String> args) {
+  private static String blockShape(Stats st) {
+    return "terms=" + st.totalTermCount + " blocks=" + st.totalBlockCount + " nonFloor="
+        + st.nonFloorBlockCount + " floor=" + st.floorBlockCount + " floorSub="
+        + st.floorSubBlockCount + " mixed=" + st.mixedBlockCount + " termsOnly="
+        + st.termsOnlyBlockCount + " subBlocksOnly=" + st.subBlocksOnlyBlockCount
+        + " byPrefixLen=" + java.util.Arrays.toString(st.blockCountByPrefixLen);
+  }
+
+  /** Lucene's own term dictionary over exactly the terms of {@code terms}. */
+  private static Stats javaStatsForSameTerms(Terms terms) throws IOException {
+    try (Directory dir = new ByteBuffersDirectory()) {
+      IndexWriterConfig config = new IndexWriterConfig().setRAMBufferSizeMB(256);
+      try (IndexWriter w = new IndexWriter(dir, config)) {
+        TermsEnum te = terms.iterator();
+        for (BytesRef t = te.next(); t != null; t = te.next()) {
+          Document doc = new Document();
+          doc.add(new StringField("body", BytesRef.deepCopyOf(t), Field.Store.NO));
+          w.addDocument(doc);
+        }
+        w.forceMerge(1);
+      }
+      try (DirectoryReader r = DirectoryReader.open(dir)) {
+        return (Stats) r.leaves().get(0).reader().terms("body").getStats();
+      }
+    }
+  }
+
+  private static void expectField(
+      FieldInfos infos, String name, IndexOptions options, boolean payloads, boolean norms) {
+    FieldInfo fi = infos.fieldInfo(name);
+    if (fi == null) {
+      fail("field " + name + " missing");
+      return;
+    }
+    if (fi.getIndexOptions() != options) {
+      fail(name + " index options " + fi.getIndexOptions() + " expected " + options);
+    }
+    if (fi.hasPayloads() != payloads) {
+      fail(name + " hasPayloads=" + fi.hasPayloads());
+    }
+    if (fi.hasNorms() != norms) {
+      fail(name + " hasNorms=" + fi.hasNorms());
+    }
+  }
+
+  // ---------------------------------------------------------- occurrences
+
+  /** The fixture's `payload_for`, bit for bit. */
+  static byte[] payloadFor(String term, int position) {
+    int len = (position + term.length()) % 4;
+    if (len == 0) {
+      return null;
+    }
+    int seed = position;
+    for (byte b : term.getBytes(StandardCharsets.UTF_8)) {
+      seed = seed * 31 + (b & 0xFF);
+    }
+    byte[] out = new byte[len];
+    for (int i = 0; i < len; i++) {
+      out[i] = (byte) (seed >>> (8 * i));
+    }
+    return out;
+  }
+
+  /**
+   * For three terms at very different frequencies, walk every live posting in
+   * every segment and check each occurrence: its offsets must slice the term
+   * out of the stored text, its position must be the token's index in that
+   * text, and its payload must be the fixture's function of term and position.
+   */
+  private static void checkOccurrences(DirectoryReader reader) throws IOException {
+    long checked = 0;
+    for (String term : new String[] {"w0", "quick", "w900"}) {
+      BytesRef bytes = new BytesRef(term);
+      for (LeafReaderContext ctx : reader.leaves()) {
+        TermsEnum te = ctx.reader().terms("body").iterator();
+        if (!te.seekExact(bytes)) {
+          continue;
+        }
+        StoredFields stored = ctx.reader().storedFields();
+        PostingsEnum pe = te.postings(null, PostingsEnum.ALL);
+        int seen = 0;
+        for (int doc = pe.nextDoc(); doc != PostingsEnum.NO_MORE_DOCS; doc = pe.nextDoc()) {
+          // Every document for the rare terms; a stride for w0, which is in
+          // tens of thousands -- still thousands of occurrences per segment.
+          if (!term.equals("w0") || seen++ % 7 == 0) {
+            checked += checkDoc(stored.document(doc).get("body"), term, pe, ctx.docBase + doc);
+          }
+        }
+      }
+    }
+    if (checked < 10_000) {
+      fail("only " + checked + " occurrences checked");
+    }
+    System.out.println("occurrences: " + checked + " positions/offsets/payloads checked");
+  }
+
+  private static int checkDoc(String text, String term, PostingsEnum pe, int globalDoc)
+      throws IOException {
+    String[] tokens = text.split(" ");
+    int[] starts = new int[tokens.length];
+    for (int i = 0, at = 0; i < tokens.length; i++) {
+      starts[i] = at;
+      at += tokens[i].length() + 1;
+    }
+    int freq = pe.freq();
+    int expectedFreq = 0;
+    for (String t : tokens) {
+      if (t.equals(term)) {
+        expectedFreq++;
+      }
+    }
+    if (freq != expectedFreq) {
+      fail("doc " + globalDoc + " " + term + " freq " + freq + " expected " + expectedFreq);
+      return 0;
+    }
+    for (int i = 0; i < freq; i++) {
+      int pos = pe.nextPosition();
+      if (pos < 0 || pos >= tokens.length || !tokens[pos].equals(term)) {
+        fail("doc " + globalDoc + " " + term + " position " + pos + " is not that term");
+        return i;
+      }
+      if (pe.startOffset() != starts[pos] || pe.endOffset() != starts[pos] + term.length()) {
+        fail("doc " + globalDoc + " " + term + "@" + pos + " offsets " + pe.startOffset() + "-"
+            + pe.endOffset() + " expected " + starts[pos] + "-" + (starts[pos] + term.length()));
+      }
+      byte[] want = payloadFor(term, pos);
+      BytesRef got = pe.getPayload();
+      boolean same =
+          want == null
+              ? got == null || got.length == 0
+              : got != null && new BytesRef(want).bytesEquals(got);
+      if (!same) {
+        fail("doc " + globalDoc + " " + term + "@" + pos + " payload " + got);
+      }
+    }
+    return freq;
+  }
+
+  // -------------------------------------------------------------- queries
+
+  private static Query buildScored(String kind, String field, List<String> a) {
     switch (kind) {
       case "term":
-        return new TermQuery(new Term(field, args.get(0)));
+        return new TermQuery(new Term(field, a.get(0)));
       case "and":
       case "or":
         {
           BooleanQuery.Builder b = new BooleanQuery.Builder();
-          BooleanClause.Occur occur =
-              kind.equals("and") ? BooleanClause.Occur.MUST : BooleanClause.Occur.SHOULD;
-          for (String t : args) {
+          Occur occur = kind.equals("and") ? Occur.MUST : Occur.SHOULD;
+          for (String t : a) {
             b.add(new TermQuery(new Term(field, t)), occur);
           }
           return b.build();
         }
-      case "and_kw":
+      case "not":
+      case "mixed":
+        {
+          BooleanQuery.Builder b = new BooleanQuery.Builder();
+          b.add(new TermQuery(new Term(field, a.get(0))), Occur.MUST);
+          Occur rest = kind.equals("not") ? Occur.MUST_NOT : Occur.SHOULD;
+          for (String t : a.subList(1, a.size())) {
+            b.add(new TermQuery(new Term(field, t)), rest);
+          }
+          return b.build();
+        }
+      case "msm":
+        {
+          BooleanQuery.Builder b = new BooleanQuery.Builder();
+          b.setMinimumNumberShouldMatch(Integer.parseInt(a.get(0)));
+          for (String t : a.subList(1, a.size())) {
+            b.add(new TermQuery(new Term(field, t)), Occur.SHOULD);
+          }
+          return b.build();
+        }
+      case "filter":
         return new BooleanQuery.Builder()
-            .add(new TermQuery(new Term("body", args.get(0))), BooleanClause.Occur.MUST)
-            .add(new TermQuery(new Term("keyword", args.get(1))), BooleanClause.Occur.MUST)
+            .add(new TermQuery(new Term(field, a.get(0))), Occur.MUST)
+            .add(new TermQuery(new Term(a.get(1), a.get(2))), Occur.FILTER)
             .build();
       case "phrase":
-        return new PhraseQuery("body", args.toArray(new String[0]));
-      case "dv_range":
-        return NumericDocValuesField.newSlowRangeQuery(
-            field, Long.parseLong(args.get(0)), Long.parseLong(args.get(1)));
+        return new PhraseQuery(
+            Integer.parseInt(a.get(0)), field, a.subList(1, a.size()).toArray(new String[0]));
       default:
         throw new IllegalArgumentException("unknown query kind " + kind);
     }
   }
 
-  private static int checkQueries(DirectoryReader reader, Path queryFile, Path rustFile)
-      throws IOException {
-    Map<String, String> rust = new HashMap<>();
-    for (String line : Files.readAllLines(rustFile)) {
-      int tab = line.indexOf('\t');
-      rust.put(line.substring(0, tab), line.substring(tab + 1));
+  private static void checkQueries(DirectoryReader reader, Path dir) throws IOException {
+    Map<String, String[]> rust = new HashMap<>();
+    for (String line : Files.readAllLines(dir.resolve("verify-rust-results.tsv"))) {
+      String[] f = line.split("\t", -1);
+      rust.put(f[0], f);
     }
     IndexSearcher searcher = new IndexSearcher(reader);
-    searcher.setQueryCache(null);
-    int checked = 0;
-    for (String line : Files.readAllLines(queryFile)) {
+    int queries = 0;
+    int nonEmpty = 0;
+    long totalMatches = 0;
+    long scores = 0;
+    long bitExact = 0;
+    double maxDiff = 0;
+    Map<String, Integer> byKind = new HashMap<>();
+    for (String line : Files.readAllLines(dir.resolve("verify-queries.tsv"))) {
+      if (line.isBlank() || line.startsWith("#")) {
+        continue;
+      }
       String[] f = line.split("\t");
       String id = f[0];
       String kind = f[1];
-      List<String> args = new ArrayList<>(List.of(f).subList(3, f.length));
-      Query q = build(kind, f[2], args);
-      boolean sorted = kind.equals("dv_range");
-      TopDocs top =
-          sorted
-              ? searcher.search(q, TOP_N, new Sort(new SortField(f[2], SortField.Type.LONG)))
-              : searcher.search(q, TOP_N);
-      String rustLine = rust.getOrDefault(id, "");
-      String[] rustHits = rustLine.isEmpty() ? new String[0] : rustLine.split(",");
-      ScoreDoc[] hits = top.scoreDocs;
-      if (hits.length != rustHits.length) {
-        fail(id + " (" + q + "): Lucene returned " + hits.length + " hits, Rust " + rustHits.length);
-      }
-      for (int i = 0; i < Math.min(hits.length, rustHits.length); i++) {
-        String[] dv = rustHits[i].split(":");
-        int rustDoc = Integer.parseInt(dv[0]);
-        boolean ok;
-        String javaValue;
-        if (sorted) {
-          long value = (Long) ((FieldDoc) hits[i]).fields[0];
-          javaValue = Long.toString(value);
-          ok = hits[i].doc == rustDoc && value == Long.parseLong(dv[1]);
-        } else {
-          javaValue = Float.toString(hits[i].score);
-          double diff = Math.abs(hits[i].score - Double.parseDouble(dv[1]));
-          maxScoreDiff = Math.max(maxScoreDiff, diff);
-          ok = hits[i].doc == rustDoc && diff <= SCORE_TOLERANCE;
+      String field = f[2];
+      List<String> a = List.of(f).subList(3, f.length);
+      queries++;
+      byKind.merge(kind, 1, Integer::sum);
+
+      int[] docs;
+      String[] values;
+      int javaTotal;
+      if (kind.equals("dvrange")) {
+        long min = Long.parseLong(a.get(0));
+        long max = Long.parseLong(a.get(1));
+        boolean reverse = a.get(2).equals("desc");
+        Query q = NumericDocValuesField.newSlowRangeQuery(field, min, max);
+        javaTotal = searcher.count(q);
+        TopDocs td = searcher.search(q, TOP_N, new Sort(new SortField(field, SortField.Type.LONG, reverse)));
+        docs = new int[td.scoreDocs.length];
+        values = new String[td.scoreDocs.length];
+        for (int i = 0; i < docs.length; i++) {
+          docs[i] = td.scoreDocs[i].doc;
+          values[i] = String.valueOf(((FieldDoc) td.scoreDocs[i]).fields[0]);
         }
-        if (!ok) {
-          fail(
-              id
-                  + " ("
-                  + q
-                  + ") rank "
-                  + i
-                  + ": Lucene doc "
-                  + hits[i].doc
-                  + " "
-                  + javaValue
-                  + ", Rust "
-                  + rustHits[i]);
+      } else {
+        Query q = buildScored(kind, field, a);
+        javaTotal = searcher.count(q);
+        TopDocs td = searcher.search(q, TOP_N);
+        docs = new int[td.scoreDocs.length];
+        values = new String[td.scoreDocs.length];
+        for (int i = 0; i < docs.length; i++) {
+          docs[i] = td.scoreDocs[i].doc;
+          values[i] = Float.toString(td.scoreDocs[i].score);
+        }
+      }
+      if (docs.length > 0) {
+        nonEmpty++;
+      }
+
+      String[] r = rust.get(id);
+      if (r == null) {
+        fail(id + " has no Rust result");
+        continue;
+      }
+      int rustHits = Integer.parseInt(r[1]);
+      int rustTotal = Integer.parseInt(r[2]);
+      String[] pairs = rustHits == 0 ? new String[0] : r[3].split(",");
+      if (javaTotal != rustTotal) {
+        fail(id + " (" + line + "): Java matches " + javaTotal + " docs, Rust " + rustTotal);
+      }
+      totalMatches += javaTotal;
+      if (pairs.length != docs.length) {
+        fail(id + " (" + line + "): Java " + docs.length + " hits, Rust " + pairs.length);
+        continue;
+      }
+      for (int i = 0; i < docs.length; i++) {
+        String[] p = pairs[i].split(":");
+        int rustDoc = Integer.parseInt(p[0]);
+        if (rustDoc != docs[i]) {
+          fail(id + " (" + line + ") rank " + i + ": Java doc " + docs[i] + " (" + values[i]
+              + "), Rust doc " + rustDoc + " (" + p[1] + ")");
           break;
         }
+        if (kind.equals("dvrange")) {
+          if (!p[1].equals(values[i])) {
+            fail(id + " rank " + i + " doc " + rustDoc + ": Java value " + values[i]
+                + ", Rust " + p[1]);
+          }
+        } else {
+          float js = Float.parseFloat(values[i]);
+          float rs = Float.parseFloat(p[1]);
+          double diff = Math.abs((double) js - (double) rs);
+          scores++;
+          if (Float.floatToIntBits(js) == Float.floatToIntBits(rs)) {
+            bitExact++;
+          }
+          maxDiff = Math.max(maxDiff, diff);
+          if (diff > SCORE_TOLERANCE) {
+            fail(id + " rank " + i + " doc " + rustDoc + ": Java score " + js + ", Rust " + rs);
+          }
+        }
       }
-      checked++;
     }
-    return checked;
+    if (queries < MIN_QUERIES) {
+      fail("only " + queries + " queries; the milestone requires at least " + MIN_QUERIES);
+    }
+    for (String k :
+        new String[] {"term", "and", "or", "not", "msm", "mixed", "filter", "phrase", "dvrange"}) {
+      if (!byKind.containsKey(k)) {
+        fail("query set has no " + k + " query");
+      }
+    }
+    if (nonEmpty < queries - 5) {
+      fail("only " + nonEmpty + " of " + queries + " queries matched anything");
+    }
+    System.out.printf(
+        "queries: %d run (%s), %d non-empty, %d matches counted; %d scores compared,"
+            + " %d bit-identical, max |diff| %.3g%n",
+        queries, byKind, nonEmpty, totalMatches, scores, bitExact, maxDiff);
   }
 }

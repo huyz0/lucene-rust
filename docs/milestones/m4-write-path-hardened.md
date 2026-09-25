@@ -279,6 +279,10 @@ Three separate pieces, often conflated:
 > | `add_t4` | 2 531 ns/doc | 4 299 ns/doc | 1.70x |
 > | `update_t4` | 6 590 ns/doc | 5 351 ns/doc | **0.81x** |
 >
+> Re-measured after M4 was merged onto `main`'s M3 term-dictionary writer
+> (the one pinned byte for byte against Lucene): `add_t1` 1.25x, `add_t4`
+> 1.60x, `update_t4` 0.82x, noise floor 1.18x -- the same picture.
+>
 > Optimising took `add_t4` from 0.70x and `update_t4` from 0.30x. Four
 > changes did it:
 >
