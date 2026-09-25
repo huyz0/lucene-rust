@@ -46,34 +46,42 @@ frequency when nothing is deleted, without counting.
 
 | Request (DSL) | Rewritten Lucene query | Measured, REST, native vs Lucene |
 |---|---|---|
-| `match` one term | `TermQuery` | 1.51× |
-| `match` a rare term | `TermQuery` | 1.40× |
-| `match` two terms (`or`) | `BooleanQuery` of `SHOULD` terms | 1.15× |
-| `match` four terms | `BooleanQuery` of `SHOULD` terms | 1.21× |
-| `match` with `operator: and` | `BooleanQuery` of `MUST` terms | 1.12× |
-| `match` with `minimum_should_match: 2` | `BooleanQuery` with `minimumNumberShouldMatch` | 0.97× |
-| `term` on a `keyword` field | `ConstantScoreQuery(TermQuery)` | 1.24× |
-| `term` on a missing value | same | 1.22× |
-| `bool` `must` + `should` | mixed `BooleanQuery` | 1.13× |
-| `bool` with `must_not` | `BooleanQuery` with `MUST_NOT` | 1.15× |
-| `bool` `must` + `filter` | `BooleanQuery` `MUST`/`FILTER` | 1.19× |
-| `bool` with only `filter` | `BoostQuery(ConstantScoreQuery(…), 0)` | 1.21× |
-| nested `bool` | `BooleanQuery` in `BooleanQuery` | 1.04× |
-| `query_string` `a OR b` | `BooleanQuery` of `SHOULD` terms | 1.16× |
-| `bool` `must` + `should`, `minimum_should_match: 1` | `BooleanQuery` `MUST` + `SHOULD` with a minimum | 0.99× |
-| any query with `boost` ≠ 1 | `BoostQuery` | 1.13× |
-| `bool` with a boosted clause | `BooleanQuery` of `BoostQuery` | 1.06× |
-| `constant_score` | `BoostQuery(ConstantScoreQuery(…))` | 1.08× |
-| `dis_max` (`tie_breaker: 0.3`) | `DisjunctionMaxQuery` | 1.28× |
+| `match` one term | `TermQuery` | 1.49× |
+| `match` a rare term | `TermQuery` | 1.16× |
+| `match` two terms (`or`) | `BooleanQuery` of `SHOULD` terms | 1.19× |
+| `match` four terms | `BooleanQuery` of `SHOULD` terms | 1.18× |
+| `match` with `operator: and` | `BooleanQuery` of `MUST` terms | 1.01× |
+| `match` with `minimum_should_match: 2` | `BooleanQuery` with `minimumNumberShouldMatch` | 0.95× |
+| `term` on a `keyword` field | `ConstantScoreQuery(TermQuery)` | 1.41× |
+| `term` on a missing value | same | 1.25× |
+| `bool` `must` + `should` | mixed `BooleanQuery` | 1.11× |
+| `bool` with `must_not` | `BooleanQuery` with `MUST_NOT` | 1.31× |
+| `bool` `must` + `filter` | `BooleanQuery` `MUST`/`FILTER` | 1.15× |
+| `bool` with only `filter` | `BoostQuery(ConstantScoreQuery(…), 0)` | 1.29× |
+| nested `bool` | `BooleanQuery` in `BooleanQuery` | 1.01× |
+| `query_string` `a OR b` | `BooleanQuery` of `SHOULD` terms | 1.01× |
+| `bool` `must` + `should`, `minimum_should_match: 1` | `BooleanQuery` `MUST` + `SHOULD` with a minimum | 1.01× |
+| any query with `boost` ≠ 1 | `BoostQuery` | 1.06× |
+| `bool` with a boosted clause | `BooleanQuery` of `BoostQuery` | 1.16× |
+| `constant_score` | `BoostQuery(ConstantScoreQuery(…))` | 1.17× |
+| `dis_max` (`tie_breaker: 0.3`) | `DisjunctionMaxQuery` | 1.35× |
 | `multi_match` (`best_fields`) | `DisjunctionMaxQuery` of terms | 1.00× |
-| `match_all` | `MatchAllDocsQuery` | 1.21× |
-| `bool` `match_all` + `filter` | `BooleanQuery` with `MatchAllDocsQuery` | 1.04× |
-| `constant_score` of `match_all` | `BoostQuery(ConstantScoreQuery(MatchAllDocsQuery))` | 1.04× |
-| `match_phrase` | `PhraseQuery` | 1.17× |
-| `match_phrase` with `slop: 2` | sloppy `PhraseQuery` | 0.72× (open) |
-| `bool` `must` + `should` `match_phrase` | `BooleanQuery` with a `PhraseQuery` clause | 0.93× (open) |
-| `bool` with a `must_not` `match_phrase` | `BooleanQuery` with a `MUST_NOT` `PhraseQuery` | 0.76× (open: Lucene's query cache, R3b) |
-| any of the above with `size: 0`, `from`/`size` paging, or any `track_total_hits` | — | 0.99–1.30× |
+| `match_all` | `MatchAllDocsQuery` | 1.17× |
+| `bool` `match_all` + `filter` | `BooleanQuery` with `MatchAllDocsQuery` | 1.07× |
+| `constant_score` of `match_all` | `BoostQuery(ConstantScoreQuery(MatchAllDocsQuery))` | 1.10× |
+| `match_phrase` | `PhraseQuery` | 1.18× |
+| `match_phrase` with `slop: 2` | sloppy `PhraseQuery` | 0.88× |
+| `bool` `must` + `should` `match_phrase` | `BooleanQuery` with a `PhraseQuery` clause | 1.14× |
+| `bool` with a `must_not` `match_phrase` | `BooleanQuery` with a `MUST_NOT` `PhraseQuery` | 1.12× |
+| `prefix` on a `keyword` | `PrefixQuery` (constant-score rewrite) | 1.08× |
+| `prefix` as a text `filter` | `BooleanQuery` with a `PrefixQuery` `FILTER` | 0.98× |
+| `wildcard` | `WildcardQuery` | 1.12× |
+| `terms` on a `keyword` | `TermInSetQuery` | 1.19× |
+| `bool` with a `must_not` `terms` | `BooleanQuery` with a `MUST_NOT` `TermInSetQuery` | 1.13× |
+| `range` on a `long` | `PointRangeQuery` (via `IndexOrDocValuesQuery`) | 1.21× |
+| `bool` `must` + `range` `filter` | `BooleanQuery` with a `PointRangeQuery` `FILTER` | 1.01× |
+| `bool` with a `must_not` `range` | `BooleanQuery` with a `MUST_NOT` `PointRangeQuery` | 1.07× |
+| any of the above with `size: 0`, `from`/`size` paging, or any `track_total_hits` | — | 0.97–1.24× |
 
 "Measured" is the median REST round trip over 40 requests per engine on one
 node, both engines on the same 100k-document, two-segment index
@@ -83,12 +91,11 @@ most of it OpenSearch's own request handling, so REST ratios compress toward
 1.0 and move by about ±0.05 between runs; the in-process numbers for the same
 shapes on a 1M-document corpus built like this index are in
 [`milestones/m5-6-native-read.md`](milestones/m5-6-native-read.md).
-Three rows are not yet clearly above 1.0 over REST: `minimum_should_match: 2`
-(0.97×), `must` + `should` with a minimum (0.99×) and `multi_match`
-(1.00× in this run, measured before per-clause skipping for a tie-breaker
-of 0 landed, which took it from 0.36× to 1.30× in process). In process they
-run 1.10×, 1.3× and 1.3–3.5× Lucene; the REST margin is inside the spread,
-and they stay open under the milestone's R7 acceptance.
+One row is under 1.0 over REST: sloppy `match_phrase` (0.88×; 1.03–1.24×
+in process for most sloppy shapes, 0.84–0.91× for `(ps 1 t2 t3)`). Rows
+between 0.95× and 1.0× (`minimum_should_match: 2`, a rare term with an exact
+total, a text `prefix` filter) are within the run-to-run spread of about
+±0.05; in process they run 1.1× or better.
 
 `index.lucene_rust.search.native_shapes` (`fast`/`all`) predates read path
 R1, when mixed booleans measured slower and were routed to Lucene
