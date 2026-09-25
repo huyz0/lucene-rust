@@ -258,8 +258,8 @@ everything else, and OpenSearch's own REST suites cannot tell the difference.
 | fuzzing, no crashes | four `cargo-fuzz` targets under AddressSanitizer (`crates/lucene-ffi/fuzz/`), 5 minutes each: `jvm_search` 12.1M runs, `jvm_open_reader` 13.5M runs, plus `jvm_live_docs` and `boolean_clause_arrays`; a caught panic counts as a finding, and none was found. JNI-level misuse (null and short arrays, fabricated and closed handles, negative sizes) is covered by `NativeSelfTest` under `-Xcheck:jni`; every case is a status code |
 | SIGKILL | the e2e kills the node with 200 un-refreshed documents in flight, restarts it, and requires the exact document counts and the full matrix again, native vs Lucene |
 | force merge releases files | two force-merge rounds; afterwards no index file that was deleted from disk may still be mapped in the node's address space (`/proc/<pid>/maps`) and the open-native-reader count may not grow. Planting a leak (never closing native readers) fails both checks |
-| consistent with M1 | [`benchmarks/m2-opensearch-e2e.md`](../benchmarks/m2-opensearch-e2e.md): the shapes M1 measured are 1.0–1.46× over REST and 1.06–11× in process, the same direction as M1.6's 1.03–46× |
-| FFI < 1 µs | one JNI crossing costs 9.4 ns; a search makes one |
+| consistent with M1 | [`benchmarks/m2-opensearch-e2e.md`](../benchmarks/m2-opensearch-e2e.md): the shapes M1 measured are 1.00–1.48× over REST and 1.08–3.3× in process, the same direction as M1.6's 1.03–46× |
+| FFI < 1 µs | one JNI crossing costs 7.4–9.4 ns; a search makes one |
 | published table | [`opensearch-native-queries.md`](../opensearch-native-queries.md) |
 | CI, both architectures | `.github/workflows/ci.yml` jobs `opensearch (x64)`, `opensearch (arm64)` and `fuzz`. Locally, x86_64 ran everything above; the aarch64 library was cross-built (`aarch64-linux-gnu-gcc`) and checked for its JNI entry points and glibc floor, but not executed in this session — its first run is the arm64 CI job |
 
@@ -293,7 +293,7 @@ everything else, and OpenSearch's own REST suites cannot tell the difference.
 - **The supported matrix is routed by measurement.** Every encodable shape is
   answered correctly natively (the e2e runs its matrix with
   `native_shapes: all` too), but mixed booleans, `must_not`,
-  `minimum_should_match` ≥ 2, boosts and `constant_score` measured 3–5× slower
+  `minimum_should_match` ≥ 2, boosts and `constant_score` measured 4–8× slower
   than Lucene through REST, so by default they go to Lucene (`slower_shape`).
   AGENTS.md invariant #3 calls a native path slower than Java a bug; routing
   is how the plugin avoids shipping one.

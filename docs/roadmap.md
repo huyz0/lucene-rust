@@ -163,7 +163,7 @@ instead of the price of a Java plugin. If the answer is no, everything after M1 
 > query phase (`QueryPhaseSearcher`) rather than the engine, over JNI rather
 > than FFM (JDK 21 has FFM only as a preview) -- both reasoned in the milestone
 > file. The shapes the M1 mix never measured (boosts, `must_not`, mixed
-> booleans) are 3–5× slower natively and are routed to Lucene; that is the next
+> booleans) are 4–8× slower natively and are routed to Lucene; that is the next
 > engine performance item.
 
 **Goal:** an OpenSearch node answers `_search` requests out of the Rust engine, over
