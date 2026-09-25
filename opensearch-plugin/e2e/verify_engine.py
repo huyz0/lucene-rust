@@ -117,9 +117,10 @@ def source(r, i):
 
 
 def create(index, rust, extra=None):
-    settings = {"number_of_shards": 2, "number_of_replicas": 0, "refresh_interval": -1}
-    if rust:
-        settings["index.lucene_rust.engine"] = True
+    # Explicit both ways: on a node whose lucene_rust.engine.default is true, an index that says
+    # nothing is a Rust one.
+    settings = {"number_of_shards": 2, "number_of_replicas": 0, "refresh_interval": -1,
+                "index.lucene_rust.engine": bool(rust)}
     settings.update(extra or {})
     must("PUT", f"/{index}", {"settings": settings, "mappings": MAPPING})
 
@@ -476,6 +477,15 @@ def unsupported():
     status, out = req("PUT", "/tv_rust/_doc/2", {"n": 1})
     check(status in (200, 201), "the shard carries on after a refused document")
     must("DELETE", "/tv_rust")
+    nodes = must("GET", "/_nodes/settings?flat_settings=true")["nodes"].values()
+    if any(n["settings"].get("lucene_rust.engine.default") == "true" for n in nodes):
+        # Only asked-for is strict: an index that merely inherits the node default and needs what
+        # the Rust writer cannot produce is served by OpenSearch's engine.
+        must("PUT", "/fallback_codec", {"settings": {"index.codec": "best_compression", "number_of_replicas": 0}})
+        wait_green("fallback_codec")
+        status, _ = req("PUT", "/fallback_codec/_doc/1?refresh=true", {"n": 1})
+        check(status in (200, 201), "an inherited-default index the Rust writer cannot serve falls back")
+        must("DELETE", "/fallback_codec")
 
 
 def main():

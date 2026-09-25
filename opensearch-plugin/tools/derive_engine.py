@@ -154,16 +154,19 @@ def derive_engine(src: str) -> str:
     p.sub("                this.nativeIndexWriterFactory = new NativeLuceneIndexWriterFactory();\n", "")
     p.regex(
         r"    private DocumentIndexWriter getDocumentIndexWriter\(\) throws IOException \{.*?\n    \}\n",
-        "    private DocumentIndexWriter getDocumentIndexWriter() throws IOException {\n"
+        "    private DocumentIndexWriter getDocumentIndexWriter(int maxDocs) throws IOException {\n"
         "        return RustEngineSupport.openWriter(\n"
         "            engineConfig,\n"
         "            store,\n"
         "            combinedDeletionPolicy,\n"
         "            softDeletesPolicy::getMinRetainedSeqNo,\n"
-        "            softDeletesField.name()\n"
+        "            softDeletesField.name(),\n"
+        "            maxDocs\n"
         "        );\n"
         "    }\n",
     )
+    # Lucene's limit is the engine's: a test lowering one lowers the other.
+    p.sub("                writer = getDocumentIndexWriter();\n", "                writer = getDocumentIndexWriter(maxDocs);\n")
     p.regex(r"    /\*\*\n     \* We should only take care of reopening parent writer.*?\n    private IndexWriter createWriter\(\) throws IOException \{.*?\n    \}\n", "")
     p.regex(r"    // pkg-private for testing\n    IndexWriter createWriter\(Directory directory, IndexWriterConfig iwc\) throws IOException \{.*?\n    \}\n", "")
 

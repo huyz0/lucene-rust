@@ -10,7 +10,14 @@
 # the plugin to report no native error: the suites' own pass/fail is
 # OpenSearch's business, a difference between the two nodes is ours.
 #
-#   scripts/verify-opensearch.sh [--docs N] [--bench-out FILE] [--yaml] [--keep]
+# With --engine (M5) the plugin node serves every index -- system indices and
+# every index the YAML suites create included -- with the Rust engine
+# (lucene_rust.engine.default: true), and the e2e stage is
+# opensearch-plugin/e2e/verify_engine.py: the Rust engine against OpenSearch's
+# own, operation for operation, through restarts, SIGKILL, a writer panic and
+# a tripped breaker.
+#
+#   scripts/verify-opensearch.sh [--docs N] [--bench-out FILE] [--yaml] [--engine] [--keep]
 #
 # Needs Docker, a JDK 21, Gradle and cargo. The node listens on
 # localhost:${OS_PORT:-9200}.
@@ -23,12 +30,14 @@ NAME="${OS_CONTAINER:-lucene-rust-verify}"
 PORT="${OS_PORT:-9200}"
 KEEP=0
 YAML=0
+ENGINE=0
 YAML_SUITES="${YAML_SUITES:-search,search.highlight,search.inner_hits,msearch,scroll,count,explain,suggest,get,index,delete,bulk,update,mget,exists}"
 ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --keep) KEEP=1; shift ;;
         --yaml) YAML=1; shift ;;
+        --engine) ENGINE=1; shift ;;
         *) ARGS+=("$1"); shift ;;
     esac
 done
@@ -50,21 +59,30 @@ fi
 docker build -q -t "$IMAGE" opensearch-plugin/docker >/dev/null
 # The disk-watermark block is off: a CI runner's or container's disk can sit
 # past the flood stage, and a node refusing to create indices tests nothing.
-start_node() { # name port image
+NODE_ENV=()
+if [[ $ENGINE == 1 ]]; then
+    NODE_ENV=(-e lucene_rust.engine.default=true)
+fi
+start_node() { # name port image [docker-run args...]
     docker rm -f "$1" >/dev/null 2>&1 || true
-    docker run -d --name "$1" -p "$2:9200" \
+    docker run -d --name "$1" -p "$2:9200" "${@:4}" \
         -e discovery.type=single-node -e DISABLE_SECURITY_PLUGIN=true \
         -e cluster.routing.allocation.disk.threshold_enabled=false \
         -e DISABLE_INSTALL_DEMO_CONFIG=true -e OPENSEARCH_JAVA_OPTS="-Xms1g -Xmx1g" \
         "$3" >/dev/null
 }
-start_node "$NAME" "$PORT" "$IMAGE"
+start_node "$NAME" "$PORT" "$IMAGE" "${NODE_ENV[@]}"
 if [[ $KEEP == 0 ]]; then
     trap 'docker rm -f "$NAME" "$NAME-stock" >/dev/null 2>&1 || true' EXIT
 fi
 
 status=0
-python3 opensearch-plugin/e2e/verify_opensearch.py "http://localhost:${PORT}" "$NAME" "${ARGS[@]}" || status=$?
+if [[ $ENGINE == 1 ]]; then
+    for _ in $(seq 1 90); do curl -sf "localhost:$PORT" >/dev/null && break; sleep 2; done
+    python3 opensearch-plugin/e2e/verify_engine.py "http://localhost:${PORT}" "$NAME" "${ARGS[@]}" || status=$?
+else
+    python3 opensearch-plugin/e2e/verify_opensearch.py "http://localhost:${PORT}" "$NAME" "${ARGS[@]}" || status=$?
+fi
 
 # The YAML runner: OpenSearch's test framework refuses to run as root, so a
 # root shell runs it as `nobody` from a staged classpath.
@@ -93,7 +111,7 @@ if [[ $YAML == 1 && $status == 0 ]]; then
     gradle --no-daemon -q -p opensearch-plugin yamlRestTestClasspath
     work=$(mktemp -d) && chmod 755 "$work"
     # A fresh node: the e2e above killed and restarted this one.
-    start_node "$NAME" "$PORT" "$IMAGE"
+    start_node "$NAME" "$PORT" "$IMAGE" "${NODE_ENV[@]}"
     printf 'FROM opensearchproject/opensearch:%s\nRUN rm -rf /usr/share/opensearch/plugins/*\n' "$VERSION" \
         | docker build -q -t "opensearch-stock-min:${VERSION}" - >/dev/null
     start_node "$NAME-stock" "$((PORT + 2))" "opensearch-stock-min:${VERSION}"

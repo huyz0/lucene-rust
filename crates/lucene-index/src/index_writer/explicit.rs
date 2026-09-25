@@ -690,6 +690,7 @@ impl<'d> IndexWriter<'d> {
         delete: Option<super::DeleteNode>,
         docs: Vec<ExplicitDocument>,
     ) -> Result<super::SeqNo> {
+        self.reserve_docs(docs.len())?;
         let doc_id_upto = self.pending_doc_id_upto();
         let seq_no = match delete {
             Some(node) => self.buffer_delete_node(node, doc_id_upto),
@@ -1191,6 +1192,8 @@ mod tests {
         w.set_soft_deletes_retention(Some(SoftDeletesRetention {
             seq_no_field: "_seq_no".to_string(),
             min_retained_seq_no: 3,
+            prune_postings_field: None,
+            prune_recovery_source_field: None,
         }));
         w.force_merge_deletes().unwrap();
         assert_eq!(counts(&mut w), (13, 3));
@@ -1200,6 +1203,8 @@ mod tests {
         w.set_soft_deletes_retention(Some(SoftDeletesRetention {
             seq_no_field: "_seq_no".to_string(),
             min_retained_seq_no: i64::MAX,
+            prune_postings_field: None,
+            prune_recovery_source_field: None,
         }));
         w.force_merge_deletes().unwrap();
         assert_eq!(counts(&mut w), (10, 0));
@@ -1213,6 +1218,341 @@ mod tests {
             w.force_merge(0),
             Err(Error::InvalidMaxNumSegments(0))
         ));
+    }
+
+    /// The `_id` document frequency of each of `terms` in the index's only
+    /// segment, or `None` when that segment writes no `_id` terms at all.
+    fn id_doc_freqs(
+        dir: &FsDirectory,
+        w: &mut IndexWriter<'_>,
+        terms: &[&str],
+    ) -> Option<Vec<i32>> {
+        let infos = w.commit().unwrap().clone();
+        assert_eq!(infos.segments.len(), 1);
+        let sci = &infos.segments[0];
+        let seg = crate::index_writer::per_field_segment(&sci.segment_name, POSTINGS_FORMAT_NAME);
+        let suffix = crate::index_writer::per_field_codec_suffix(POSTINGS_FORMAT_NAME);
+        let open = |ext: &str| dir.open(&format!("{seg}.{ext}")).unwrap();
+        let (tim, tip, tmd) = (open("tim"), open("tip"), open("tmd"));
+        let field_infos = lucene_codecs::field_infos::FieldInfos {
+            fields: segment_fields(dir, sci),
+        };
+        let tree = lucene_codecs::blocktree::open(
+            &tim,
+            &tip,
+            &tmd,
+            &field_infos,
+            &sci.segment_id,
+            &suffix,
+            i32::try_from(w.committed_doc_count().unwrap()).unwrap(),
+        )
+        .unwrap();
+        let field = tree.field("_id")?;
+        Some(
+            terms
+                .iter()
+                .map(|t| field.seek_exact(t.as_bytes()).map_or(0, |s| s.doc_freq))
+                .collect(),
+        )
+    }
+
+    /// `PrunePostingsMergePolicy`: a retention merge keeps a soft-deleted
+    /// document for its history but drops its `_id` postings, and writes no
+    /// `_id` terms at all once every document is soft-deleted.
+    #[test]
+    fn retention_merges_prune_the_ids_of_soft_deleted_documents() {
+        let tmp = TempDir::new("explicit-prune");
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        let f = register(&mut w);
+        for i in 0..3 {
+            w.add_explicit_documents(vec![doc(&f, i)]).unwrap();
+        }
+        w.commit().unwrap();
+        w.soft_update_explicit_documents(id_term(0), vec![doc_at(&f, 0, 100)], &[soft_delete(0)])
+            .unwrap();
+        let retention = |prune: bool| SoftDeletesRetention {
+            seq_no_field: "_seq_no".to_string(),
+            min_retained_seq_no: 0,
+            prune_postings_field: prune.then(|| "_id".to_string()),
+            prune_recovery_source_field: None,
+        };
+
+        // Without pruning the retained old version still answers `d0`.
+        w.set_soft_deletes_retention(Some(retention(false)));
+        w.commit().unwrap();
+        w.force_merge(1).unwrap();
+        assert_eq!(counts(&mut w), (4, 1));
+        assert_eq!(id_doc_freqs(&dir, &mut w, &["d0", "d1"]), Some(vec![2, 1]));
+
+        // With pruning, the merge keeps both old versions but not their ids.
+        w.soft_update_explicit_documents(id_term(1), vec![doc_at(&f, 1, 101)], &[soft_delete(1)])
+            .unwrap();
+        w.set_soft_deletes_retention(Some(retention(true)));
+        w.commit().unwrap();
+        w.force_merge(1).unwrap();
+        assert_eq!(counts(&mut w), (5, 2), "the history is kept");
+        assert_eq!(
+            id_doc_freqs(&dir, &mut w, &["d0", "d1", "d2"]),
+            Some(vec![1, 1, 1]),
+            "only the live versions keep their ids"
+        );
+        check(&dir);
+
+        // Every document soft-deleted: no `_id` term survives.
+        let tmp = TempDir::new("explicit-prune-all");
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        let f = register(&mut w);
+        w.add_explicit_documents(vec![doc(&f, 0)]).unwrap();
+        w.commit().unwrap();
+        let mut tombstone = doc_at(&f, 0, 1);
+        tombstone.fields.doc_values.push(StoredField {
+            field_number: f.soft,
+            value: FieldValue::Long(1),
+        });
+        w.soft_update_explicit_documents(id_term(0), vec![tombstone], &[soft_delete(0)])
+            .unwrap();
+        w.set_soft_deletes_retention(Some(retention(true)));
+        w.commit().unwrap();
+        w.force_merge(1).unwrap();
+        assert_eq!(counts(&mut w), (2, 2));
+        assert_eq!(id_doc_freqs(&dir, &mut w, &["d0"]), None);
+        check(&dir);
+    }
+
+    /// `MergePolicy.numDeletesToMerge`: `force_merge(1)` leaves a single
+    /// segment whose soft-deleted documents are all still retained alone,
+    /// and rewrites it once retention lets them go.
+    #[test]
+    fn force_merge_rewrites_one_segment_only_for_reclaimable_soft_deletes() {
+        let tmp = TempDir::new("explicit-reclaimable");
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        let f = register(&mut w);
+        for i in 0..3 {
+            w.add_explicit_documents(vec![doc(&f, i)]).unwrap();
+        }
+        w.commit().unwrap();
+        w.soft_update_explicit_documents(id_term(0), vec![doc_at(&f, 0, 100)], &[soft_delete(0)])
+            .unwrap();
+        w.commit().unwrap();
+        w.force_merge(1).unwrap();
+        assert_eq!(counts(&mut w), (4, 1));
+        let retention = |min: i64| SoftDeletesRetention {
+            seq_no_field: "_seq_no".to_string(),
+            min_retained_seq_no: min,
+            prune_postings_field: None,
+            prune_recovery_source_field: None,
+        };
+
+        w.set_soft_deletes_retention(Some(retention(0)));
+        let before = w.commit_generations();
+        w.force_merge(1).unwrap();
+        assert_eq!(w.commit_generations(), before, "all history is retained");
+
+        w.set_soft_deletes_retention(Some(retention(1)));
+        w.force_merge(1).unwrap();
+        assert_eq!(counts(&mut w), (3, 0), "seq_no 0 is reclaimed");
+        check(&dir);
+    }
+
+    /// `RecoverySourcePruneMergePolicy`: a retention merge keeps the stored
+    /// `_recovery_source` and its doc-values flag only on documents whose
+    /// sequence number is still retained.
+    #[test]
+    fn retention_merges_prune_the_recovery_source_of_unretained_documents() {
+        let tmp = TempDir::new("explicit-recovery-source");
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        let f = register(&mut w);
+        let recovery = w
+            .register_field(FieldInfo::new("_recovery_source", 0).with_doc_values(
+                DocValuesType::Numeric,
+                DocValuesSkipIndexType::None,
+                -1,
+            ))
+            .unwrap();
+        let with_recovery = |mut d: ExplicitDocument| {
+            d.stored.push(StoredField {
+                field_number: recovery,
+                value: FieldValue::Binary(b"{}".to_vec()),
+            });
+            d.fields.doc_values.push(StoredField {
+                field_number: recovery,
+                value: FieldValue::Long(1),
+            });
+            d
+        };
+        for i in 0..3 {
+            w.add_explicit_documents(vec![with_recovery(doc(&f, i))])
+                .unwrap();
+        }
+        w.commit().unwrap();
+        w.soft_update_explicit_documents(
+            id_term(0),
+            vec![with_recovery(doc_at(&f, 0, 100))],
+            &[soft_delete(0)],
+        )
+        .unwrap();
+        w.commit().unwrap();
+        w.set_soft_deletes_retention(Some(SoftDeletesRetention {
+            seq_no_field: "_seq_no".to_string(),
+            min_retained_seq_no: 2,
+            prune_postings_field: None,
+            prune_recovery_source_field: Some("_recovery_source".to_string()),
+        }));
+        w.force_merge(1).unwrap();
+        let infos = w.commit().unwrap().clone();
+        check(&dir);
+
+        // d0's old version (seq_no 0) is gone; d1 (1) is live but no longer
+        // retained; d2 (2) and d0's new version (100) are retained.
+        let sci = &infos.segments[0];
+        assert_eq!((infos.segments.len(), sci.soft_del_count), (1, 0));
+        let fdt = dir.open(&format!("{}.fdt", sci.segment_name)).unwrap();
+        let fdx = dir.open(&format!("{}.fdx", sci.segment_name)).unwrap();
+        let fdm = dir.open(&format!("{}.fdm", sci.segment_name)).unwrap();
+        let stored =
+            lucene_codecs::stored_fields::open(&fdt, &fdx, &fdm, &sci.segment_id, "").unwrap();
+        let si_files: Vec<String> = dir
+            .list_all()
+            .unwrap()
+            .into_iter()
+            .filter(|n| {
+                n.starts_with(&format!("{}.", sci.segment_name))
+                    || n.starts_with(&format!("{}_", sci.segment_name))
+            })
+            .collect();
+        let fields = crate::field_updates::read_current_field_infos(&dir, sci, &si_files).unwrap();
+        let number = |name: &str| fields.fields.iter().position(|f| f.name == name).unwrap();
+        let (id_at, recovery_at) = (number("_id"), number("_recovery_source"));
+        let mut kept = Vec::new();
+        for doc in 0..stored.max_doc() {
+            let d = stored.document(doc).unwrap();
+            let id = d
+                .fields
+                .iter()
+                .find_map(|v| match &v.value {
+                    FieldValue::String(s) if v.field_number == fields.fields[id_at].number => {
+                        Some(s.clone())
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            if d.fields
+                .iter()
+                .any(|v| v.field_number == fields.fields[recovery_at].number)
+            {
+                kept.push(id);
+            }
+        }
+        kept.sort();
+        assert_eq!(kept, ["d0", "d2"], "stored");
+
+        let per_field = crate::field_updates::per_field_component(
+            &fields.fields[recovery_at],
+            &crate::index_writer::per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+        );
+        let (meta, data) = crate::field_updates::read_current_column(
+            &dir,
+            sci,
+            &si_files,
+            &fields,
+            recovery_at,
+            &per_field,
+        )
+        .unwrap()
+        .unwrap();
+        let entry = meta
+            .numeric_entry(fields.fields[recovery_at].number)
+            .unwrap();
+        let mut flags = lucene_codecs::doc_values::NumericReader::new(&data, entry);
+        let flagged: Vec<i32> = (0..stored.max_doc())
+            .filter(|&d| flags.value(d).unwrap().is_some())
+            .collect();
+        assert_eq!(flagged.len(), 2, "doc values: {flagged:?}");
+    }
+
+    /// `IndexWriter.reserveDocs`: an add past the limit is refused before
+    /// anything -- its own delete included -- is buffered, deleted documents
+    /// count until a merge drops them, and the limit is clamped to
+    /// `MAX_DOCS`.
+    #[test]
+    fn adds_past_max_docs_are_refused_whole() {
+        let tmp = TempDir::new("explicit-max-docs");
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        let f = register(&mut w);
+        w.set_max_docs(3);
+        w.add_explicit_documents(vec![doc(&f, 0), doc(&f, 1)])
+            .unwrap();
+        w.commit().unwrap();
+        w.add_explicit_documents(vec![doc(&f, 2)]).unwrap();
+        let too_many = |r: Result<super::super::SeqNo>| {
+            assert!(matches!(r, Err(Error::TooManyDocs(3))), "{r:?}");
+        };
+        too_many(w.add_explicit_documents(vec![doc(&f, 3)]));
+        too_many(w.soft_update_explicit_documents(
+            id_term(0),
+            vec![doc_at(&f, 0, 100)],
+            &[soft_delete(0)],
+        ));
+        assert_eq!(counts(&mut w), (3, 0), "the refused update deleted nothing");
+
+        // A hard delete frees its slot only once a merge drops the document.
+        w.update_explicit_documents(id_term(9), Vec::new()).unwrap();
+        w.soft_update_explicit_documents(id_term(0), Vec::new(), &[soft_delete(0)])
+            .unwrap();
+        w.commit().unwrap();
+        too_many(w.add_explicit_documents(vec![doc(&f, 3)]));
+        w.set_soft_deletes_retention(Some(SoftDeletesRetention {
+            seq_no_field: "_seq_no".to_string(),
+            min_retained_seq_no: i64::MAX,
+            prune_postings_field: None,
+            prune_recovery_source_field: None,
+        }));
+        w.force_merge(1).unwrap();
+        w.add_explicit_documents(vec![doc(&f, 3)]).unwrap();
+        assert_eq!(counts(&mut w), (3, 0));
+
+        w.set_max_docs(usize::MAX);
+        assert_eq!(w.max_docs, crate::index_writer::MAX_DOCS);
+        check(&dir);
+    }
+
+    /// `mergeSortedField`/`mergeSortedSetField`: a term only deleted
+    /// documents used leaves the merged dictionary, for SORTED as for
+    /// SORTED_SET -- Java's `CheckIndex` refuses a dictionary with holes.
+    #[test]
+    fn merges_drop_terms_only_deleted_documents_used() {
+        let tmp = TempDir::new("explicit-dead-terms");
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        let f = register(&mut w);
+        let kw = w
+            .register_field(FieldInfo::new("kw", 0).with_doc_values(
+                DocValuesType::Sorted,
+                DocValuesSkipIndexType::None,
+                -1,
+            ))
+            .unwrap();
+        for i in 0..4 {
+            let mut d = doc(&f, i);
+            d.fields.doc_values.push(StoredField {
+                field_number: kw,
+                value: FieldValue::Binary(format!("k{i}").into_bytes()),
+            });
+            w.add_explicit_documents(vec![d]).unwrap();
+        }
+        w.commit().unwrap();
+        // d0 alone carries `k0` and `tag` t0 (d3 has t0 too); d1 alone `k1`.
+        w.update_explicit_documents(id_term(0), Vec::new()).unwrap();
+        w.update_explicit_documents(id_term(1), Vec::new()).unwrap();
+        w.commit().unwrap();
+        w.force_merge(1).unwrap();
+        assert_eq!(counts(&mut w), (2, 0));
+        check(&dir);
     }
 
     /// A soft-deleted document with no sequence number is never retained.
@@ -1239,6 +1579,8 @@ mod tests {
         w.set_soft_deletes_retention(Some(SoftDeletesRetention {
             seq_no_field: "_seq_no".to_string(),
             min_retained_seq_no: 0,
+            prune_postings_field: None,
+            prune_recovery_source_field: None,
         }));
         w.force_merge(1).unwrap();
         assert_eq!(counts(&mut w), (2, 0));

@@ -218,7 +218,7 @@ fn decode_field_value(kind: u8, bytes: &[u8]) -> Result<FieldValue, FfiStatus> {
 /// mistyping the opted-in field's value -- become
 /// [`FfiStatus::InvalidArgument`]; everything else (I/O, decode, or
 /// downstream write-side errors) becomes [`FfiStatus::Io`].
-fn map_writer_error(context: &str, e: index_writer::Error) -> FfiStatus {
+pub(crate) fn map_writer_error(context: &str, e: index_writer::Error) -> FfiStatus {
     let status = match &e {
         index_writer::Error::NoPreparedCommit
         // Caller-misuse, exactly like NoPreparedCommit: a commit is already
@@ -280,6 +280,7 @@ fn map_writer_error(context: &str, e: index_writer::Error) -> FfiStatus {
         | index_writer::Error::InvalidMaxBufferedDocs(_)
         | index_writer::Error::BothAutoFlushTriggersDisabled
         | index_writer::Error::NoSoftDeletesSupplied
+        | index_writer::Error::TooManyDocs(_)
         | index_writer::Error::NoDocValuesUpdatesSupplied
         | index_writer::Error::UnknownDocValuesUpdateField(_)
         | index_writer::Error::WrongDocValuesUpdateType { .. }

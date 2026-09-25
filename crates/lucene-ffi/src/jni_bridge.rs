@@ -303,6 +303,7 @@ pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_writerOpen<'l
     path: JByteArray<'l>,
     ram_buffer_mb: f64,
     fault_injection: jni::sys::jboolean,
+    max_docs: jint,
     out_handle: JLongArray<'l>,
 ) -> jint {
     run(|| {
@@ -315,6 +316,7 @@ pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_writerOpen<'l
                 path.len(),
                 ram_buffer_mb,
                 fault_injection,
+                max_docs,
                 &mut handle,
             )
         };
