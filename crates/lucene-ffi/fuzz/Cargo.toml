@@ -1,0 +1,49 @@
+# cargo-fuzz targets over lucene-ffi's C ABI (M2 T2.5). Outside the workspace:
+# libFuzzer needs a nightly toolchain, and the workspace pins a stable one.
+#
+#   cd crates/lucene-ffi/fuzz && cargo +nightly fuzz run jvm_search -- -max_total_time=300
+#
+# See README.md for what each target drives and what counts as a finding.
+[package]
+name = "lucene-ffi-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+lucene-ffi = { path = ".." }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "jvm_search"
+path = "fuzz_targets/jvm_search.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "jvm_open_reader"
+path = "fuzz_targets/jvm_open_reader.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "jvm_live_docs"
+path = "fuzz_targets/jvm_live_docs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "boolean_clause_arrays"
+path = "fuzz_targets/boolean_clause_arrays.rs"
+test = false
+doc = false
+bench = false

@@ -625,6 +625,17 @@ Rust ≥ Java on p50 and p99 for the ported query types.
 
 ### Phase 4 — FFI layer + read-only OpenSearch integration (est. 6–8 weeks, overlaps P3)
 
+**Delivered as milestone M2 (2026-09-25).** The Java half exists:
+`opensearch-plugin/` is an installable OpenSearch 3.8.0 plugin that runs the
+query phase of supported searches in Rust over JNI and falls back to Lucene
+per query; OpenSearch's own REST YAML suites fail identically with and without
+it. Two decisions differ from this section's plan: the plugin hooks
+`SearchPlugin.getQueryPhaseSearcher` rather than an `EngineFactory` (the engine
+arrives with indexing, in M5), and it binds with JNI rather than Panama/FFM
+(OpenSearch 3.8.0 supports JDK 21, where FFM is a preview API). Both are
+reasoned in `docs/milestones/m2-opensearch-read-path.md`; the progress notes
+below are the Rust half's history.
+
 **Progress (task #20):** the first real FFI surface now exists in `lucene-ffi`,
 wrapping `lucene-search`'s existing `search_term_query`/`search_boolean_query`/
 `search_phrase_query` (unscored matching only, no BM25 scoring yet) behind opaque

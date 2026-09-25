@@ -15,7 +15,9 @@ the OpenSearch checkout at `/home/tuong/work/OpenSearch`.
 
 Phase 1 (foundations: `lucene-util`/`lucene-store`) is in progress. The full
 plan — phases, crate layout, verification strategy, effort estimates — is
-[`PLAN.md`](PLAN.md).
+[`PLAN.md`](PLAN.md). Delivery milestones are [`docs/roadmap.md`](docs/roadmap.md);
+the OpenSearch plugin (M2) lives in [`opensearch-plugin/`](opensearch-plugin/),
+pinned to **OpenSearch 3.8.0**.
 
 ## Invariants (don't break)
 
@@ -102,6 +104,9 @@ the hook, the container and this table cannot drift apart:
 | Crash campaign (all crash models in parallel, varied conditions, optional `--load`) | `scripts/crash-storm.sh --duration SECS` |
 | Differential op-stream fuzzing vs Java `IndexWriter` (1000 seeds) | `scripts/op-stream-fuzz.sh` |
 | Concurrent writer soak (threads + merges, every commit checked exactly; RSS/fds reported) | `cargo run --release -p lucene-search --example concurrent_soak -- --dir DIR --duration SECS` |
+| OpenSearch plugin, whole proof (real 3.8.0 node: native-vs-Lucene matrix, force-merge release, SIGKILL, OpenSearch's YAML suites vs a stock node) | `scripts/verify-opensearch.sh --yaml` (needs Docker; see `opensearch-plugin/README.md`) |
+| OpenSearch plugin, JVM-side self test only (native path vs Lucene `IndexSearcher`, JNI error paths) | `scripts/opensearch-dist.sh && gradle -p opensearch-plugin check` |
+| FFI fuzzing (libFuzzer + ASan; nightly, outside the workspace) | `cd crates/lucene-ffi/fuzz && cargo +nightly fuzz run <target> corpus/<target> seeds/<target>` |
 
 Prefix any of the individual commands with `scripts/docker-test.sh` to run it
 capped. **CI does not use the container** — GitHub Actions runners are already
@@ -146,6 +151,7 @@ Skills are the process source of truth; `PLAN.md`/`docs/` are the deep-dives.
 | New decoder for a Lucene file format | `differential-testing` |
 | Optimising a ported module (stage 3, after its benchmark) | `rust-performance` |
 | Anything in `lucene-ffi`, any `unsafe` block | `ffi-safety` |
+| The OpenSearch plugin (`opensearch-plugin/`), its JNI surface | `ffi-safety` + [`opensearch-plugin/README.md`](opensearch-plugin/README.md) |
 | Finished a format, need to record it | `parity-tracking` |
 | Committing / finishing a unit of work | `git-workflow`, `code-review` |
 | Writing tests for a new/changed module | `test-coverage` |
