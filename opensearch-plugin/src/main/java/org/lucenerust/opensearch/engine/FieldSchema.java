@@ -112,9 +112,6 @@ final class FieldSchema {
         if (vectorDimension != 0) {
             throw new IllegalArgumentException("field [" + name + "]: the Rust engine does not index vectors");
         }
-        if (skipIndex != DocValuesSkipIndexType.NONE) {
-            throw new IllegalArgumentException("field [" + name + "]: the Rust engine does not write a doc-values skip index");
-        }
         if (indexOptions == IndexOptions.DOCS_AND_CUSTOM_FREQS) {
             throw new IllegalArgumentException("field [" + name + "]: the Rust engine does not index DOCS_AND_CUSTOM_FREQS");
         }

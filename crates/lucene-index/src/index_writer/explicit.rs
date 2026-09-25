@@ -445,6 +445,7 @@ impl IndexingConfig {
                 name: f.name.clone(),
                 field_number: f.number,
                 doc_values_type: f.doc_values_type,
+                skip_index: f.doc_values_skip_index_type != DocValuesSkipIndexType::None,
             })
             .collect();
         let doc_values_output = if dv_configs.is_empty() {
@@ -589,13 +590,9 @@ impl<'d> IndexWriter<'d> {
                 "register_field needs explicit documents enabled",
             ));
         }
-        if info.store_term_vectors
-            || info.store_payloads
-            || info.vector_dimension != 0
-            || info.doc_values_skip_index_type != DocValuesSkipIndexType::None
-        {
+        if info.store_term_vectors || info.store_payloads || info.vector_dimension != 0 {
             return Err(explicit_error(format!(
-                "field {:?}: term vectors, payloads, vectors and doc-values skip indexes are not supported",
+                "field {:?}: term vectors, payloads and vectors are not supported",
                 info.name
             )));
         }
@@ -1552,6 +1549,75 @@ mod tests {
         w.commit().unwrap();
         w.force_merge(1).unwrap();
         assert_eq!(counts(&mut w), (2, 0));
+        check(&dir);
+    }
+
+    /// Doc-values skip indexes are written at flush, at merge and in a
+    /// doc-values update's new generation.
+    #[test]
+    fn skip_indexed_fields_are_written_everywhere_a_column_is() {
+        let tmp = TempDir::new("explicit-skip-index");
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        let f = register(&mut w);
+        let rank = w
+            .register_field(FieldInfo::new("rank", 0).with_doc_values(
+                DocValuesType::Numeric,
+                DocValuesSkipIndexType::Range,
+                -1,
+            ))
+            .unwrap();
+        let ranked = |i: i64| {
+            let mut d = doc(&f, i);
+            d.fields.doc_values.push(StoredField {
+                field_number: rank,
+                value: FieldValue::Long(10 + i),
+            });
+            d
+        };
+        let skipper = |w: &mut IndexWriter<'_>| {
+            let infos = w.commit().unwrap().clone();
+            let sci = &infos.segments[0];
+            let files: Vec<String> = dir
+                .list_all()
+                .unwrap()
+                .into_iter()
+                .filter(|n| {
+                    n.starts_with(&format!("{}.", sci.segment_name))
+                        || n.starts_with(&format!("{}_", sci.segment_name))
+                })
+                .collect();
+            let fields = crate::field_updates::read_current_field_infos(&dir, sci, &files).unwrap();
+            let at = fields.fields.iter().position(|f| f.name == "rank").unwrap();
+            let per_field = crate::field_updates::per_field_component(
+                &fields.fields[at],
+                &crate::index_writer::per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+            );
+            let (meta, _) = crate::field_updates::read_current_column(
+                &dir, sci, &files, &fields, at, &per_field,
+            )
+            .unwrap()
+            .unwrap();
+            let s = *meta
+                .skipper_meta(fields.fields[at].number)
+                .expect("a skip index");
+            (s.min_value, s.max_value, s.doc_count)
+        };
+        w.add_explicit_documents(vec![ranked(0), ranked(1)])
+            .unwrap();
+        assert_eq!(skipper(&mut w), (10, 11, 2), "flush");
+        w.add_explicit_documents(vec![ranked(2)]).unwrap();
+        w.commit().unwrap();
+        w.force_merge(1).unwrap();
+        assert_eq!(skipper(&mut w), (10, 12, 3), "merge");
+        let update = DocValuesUpdate::Numeric {
+            term: id_term(1),
+            field: "rank".to_string(),
+            value: Some(99),
+        };
+        w.soft_update_explicit_documents(id_term(1), Vec::new(), &[update])
+            .unwrap();
+        assert_eq!(skipper(&mut w), (10, 99, 3), "update generation");
         check(&dir);
     }
 

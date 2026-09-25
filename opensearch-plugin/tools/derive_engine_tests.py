@@ -76,6 +76,7 @@ SKIPPED: dict[str, str] = {
 def filesystem_stores(text: str) -> str:
     """The Rust writer works on files: every test store is a filesystem directory (still
     LuceneTestCase's checking wrapper), never an in-memory one."""
+    text = text.replace("newMockDirectory()", "newMockFSDirectory(createTempDir())")
     return text.replace("newDirectory()", "newFSDirectory(createTempDir())")
 
 

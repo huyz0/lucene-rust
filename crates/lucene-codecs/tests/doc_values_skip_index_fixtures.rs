@@ -279,3 +279,44 @@ fn skipper_advance_range_lands_on_the_first_intersecting_interval() {
     skipper.advance_range(index.max_value + 1, index.max_value + 100);
     assert_eq!(skipper.min_doc_id(0), doc_values::NO_MORE_DOCS);
 }
+
+/// The write side: given the fixture's values, the Rust writer's `.dvs` is
+/// Java's byte for byte, and so is the field's skip summary in `.dvm`.
+#[test]
+fn writes_the_skip_index_java_writes() {
+    let manifest = Manifest::load();
+    let id = id_from_hex(manifest.get("id_hex"));
+    let suffix = dv_suffix(&manifest);
+    let field_number = manifest.get_i32("field_number");
+    let max_doc = manifest.get_i32("max_doc");
+    let values: Vec<i64> = (0..i64::from(max_doc)).map(|i| i * 7 - 3).collect();
+    let (dvm, _dvd, dvs) = doc_values::write_fields_with_skip_indexes(
+        &[doc_values::DenseField::Numeric(field_number, &values)],
+        &[field_number],
+        max_doc,
+        &id,
+        &suffix,
+    )
+    .unwrap();
+
+    let java_dvs =
+        std::fs::read(format!("{}{}.raw", dir(), manifest.get("dvs_file_name"))).unwrap();
+    assert_eq!(dvs.len(), java_dvs.len());
+    assert!(dvs == java_dvs, ".dvs differs from Java's");
+
+    // The `.dvm` header, the field number, the type byte and the 44-byte
+    // skip summary.
+    let java_dvm =
+        std::fs::read(format!("{}{}.raw", dir(), manifest.get("dvm_file_name"))).unwrap();
+    let header =
+        lucene_store::codec_util::index_header_length("Lucene90DocValuesMetadata", &suffix);
+    let upto = header + 4 + 1 + 44;
+    assert_eq!(&dvm[..upto], &java_dvm[..upto]);
+
+    // And this port's reader reads the whole triple back.
+    let fnm = std::fs::read(format!("{}{}.raw", dir(), manifest.get("fnm_file_name"))).unwrap();
+    let fis = field_infos::parse(&fnm, &id, "").unwrap();
+    let (_, parsed) = doc_values::parse_meta(&dvm, &id, &suffix, &fis).unwrap();
+    let skipper = parsed.skipper_meta(field_number).copied().unwrap();
+    doc_values::parse_skip_index(&dvs, &id, &suffix, &skipper).unwrap();
+}

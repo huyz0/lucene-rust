@@ -16,6 +16,7 @@ import org.opensearch.index.engine.EngineConfig;
 import org.opensearch.index.store.Store;
 
 import java.io.IOException;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.LongSupplier;
 
@@ -103,6 +104,44 @@ public final class RustEngineSupport {
             return "the Rust engine cannot be a segment-replication primary on OpenSearch 3.8 "
                 + "(EngineBackedIndexer.lastRefreshedCheckpoint answers only for InternalEngine); "
                 + "use index.replication.type: DOCUMENT";
+        }
+        return null;
+    }
+
+    /**
+     * The first field of {@code mapping} (a mapping's source, as parsed) whose documents the Rust
+     * writer would refuse -- completion fields (their postings format), term vectors, vector
+     * fields -- or {@code null}. An index that only inherits {@link #ENGINE_DEFAULT} and is created
+     * with such a mapping is served by OpenSearch's engine; one that asked for the Rust engine
+     * refuses those documents one by one.
+     */
+    public static String unsupportedField(Map<String, Object> mapping) {
+        Object properties = mapping.get("properties");
+        if (properties instanceof Map<?, ?> props) {
+            for (Map.Entry<?, ?> e : props.entrySet()) {
+                if (e.getValue() instanceof Map<?, ?> field) {
+                    Object type = field.get("type");
+                    if ("completion".equals(type) || "knn_vector".equals(type)) {
+                        return e.getKey() + " (" + type + ")";
+                    }
+                    Object tv = field.get("term_vector");
+                    if (tv != null && "no".equals(tv) == false) {
+                        return e.getKey() + " (term_vector)";
+                    }
+                    @SuppressWarnings("unchecked")
+                    String nested = unsupportedField((Map<String, Object>) field);
+                    if (nested != null) {
+                        return e.getKey() + "." + nested;
+                    }
+                    if (field.get("fields") instanceof Map<?, ?> multi) {
+                        @SuppressWarnings("unchecked")
+                        String sub = unsupportedField(Map.of("properties", (Map<String, Object>) multi));
+                        if (sub != null) {
+                            return e.getKey() + "." + sub;
+                        }
+                    }
+                }
+            }
         }
         return null;
     }
