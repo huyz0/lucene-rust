@@ -140,6 +140,10 @@ pub enum RegistryTag {
     /// deletions, which a `DirectoryReader` handle must never do. See
     /// `registry.rs`'s `JvmReaderHandle` doc comment.
     JvmReader = 12,
+    /// The OpenSearch engine's per-shard writer (`engine_writer.rs`'s
+    /// `ffi_engine_writer_open`): an explicit-documents `IndexWriter` plus the
+    /// commit holds and tragic state the JVM drives it with.
+    EngineWriter = 13,
 }
 
 /// The largest slot index the 24-bit index field can represent, and so the
