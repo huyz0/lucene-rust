@@ -2242,6 +2242,76 @@ impl IndexingConfig {
 
 /// A single, coherent entry point over this port's write-side primitives.
 /// See the module doc comment for the exact lifecycle and scope.
+/// What a segment's soft-delete count depends on: its deletes and its doc
+/// values, each by generation.
+type SoftDeleteKey = (i64, i64, i64);
+
+fn soft_delete_key(sci: &SegmentCommitInfo) -> SoftDeleteKey {
+    (sci.del_gen, sci.doc_values_gen, sci.field_infos_gen)
+}
+
+/// Live documents of `sci` with a value in the soft-deletes field `soft`, or
+/// `None` for a compound segment (see
+/// [`IndexWriter::stamp_soft_delete_counts`]).
+fn count_soft_deletes(
+    dir: &dyn Directory,
+    sci: &SegmentCommitInfo,
+    soft: &str,
+) -> Result<Option<i32>> {
+    let si = segment_info::parse(
+        &dir.open(&format!("{}.si", sci.segment_name))?,
+        &sci.segment_id,
+    )?;
+    if si.is_compound_file {
+        return Ok(None);
+    }
+    let infos = crate::field_updates::read_current_field_infos(dir, sci, &si.files)?;
+    let Some(index) = infos
+        .fields
+        .iter()
+        .position(|f| f.name == soft && f.doc_values_type == DocValuesType::Numeric)
+    else {
+        return Ok(Some(0));
+    };
+    let per_field = crate::field_updates::per_field_component(
+        &infos.fields[index],
+        &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+    );
+    let Some((meta, data)) =
+        crate::field_updates::read_current_column(dir, sci, &si.files, &infos, index, &per_field)?
+    else {
+        return Ok(Some(0));
+    };
+    let Some(entry) = meta.numeric_entry(infos.fields[index].number) else {
+        return Ok(Some(0));
+    };
+    let max_doc = usize::try_from(si.doc_count).unwrap_or(0);
+    let live = if sci.del_gen >= 0 {
+        Some(lucene_codecs::live_docs::parse(
+            &dir.open(&deletes::liv_file_name(&sci.segment_name, sci.del_gen))?,
+            &sci.segment_id,
+            sci.del_gen,
+            max_doc,
+            usize::try_from(sci.del_count).unwrap_or(0),
+        )?)
+    } else {
+        None
+    };
+    let mut count = 0i32;
+    for doc in 0..si.doc_count {
+        if live.as_ref().is_some_and(|l| !l.get_doc(doc)) {
+            continue;
+        }
+        if doc_values::numeric_value(&data, entry, doc)
+            .map_err(|e| Error::Explicit(format!("reading the soft-deletes column: {e}")))?
+            .is_some()
+        {
+            count = count.saturating_add(1);
+        }
+    }
+    Ok(Some(count))
+}
+
 pub struct IndexWriter<'d> {
     dir: &'d dyn Directory,
     /// What every segment this writer builds is built with -- see
@@ -2351,6 +2421,10 @@ pub struct IndexWriter<'d> {
     /// `pending_docs` like [`Self::pending_vectors`]; empty for a document
     /// added through a native [`Document`] entry point.
     pending_explicit: Vec<ExplicitFields>,
+    /// `SegmentCommitInfo.softDelCount` as last computed, per segment, keyed by
+    /// the `(del_gen, doc_values_gen, field_infos_gen)` it was computed at --
+    /// see [`IndexWriter::stamp_soft_delete_counts`].
+    soft_delete_counts: std::collections::HashMap<String, (SoftDeleteKey, i32)>,
     /// `SegmentInfo.setHasBlocks()` for the segment currently being buffered:
     /// set by any [`IndexWriter::add_documents`]/
     /// [`IndexWriter::update_documents`] call that buffers more than one
@@ -2990,6 +3064,15 @@ impl<'d> IndexWriter<'d> {
         // `IndexWriter`'s constructor: `rollbackSegments =
         // segmentInfos.createBackupSegmentInfos()`.
         let rollback_segments = segment_infos.segments.clone();
+        let soft_delete_counts = rollback_segments
+            .iter()
+            .map(|s| {
+                (
+                    s.segment_name.clone(),
+                    (soft_delete_key(s), s.soft_del_count),
+                )
+            })
+            .collect();
 
         Ok(IndexWriter {
             dir,
@@ -3028,6 +3111,7 @@ impl<'d> IndexWriter<'d> {
             rollback_segments,
             pending_vectors: Vec::new(),
             pending_explicit: Vec::new(),
+            soft_delete_counts,
             pending_has_blocks: false,
             segment_versions: std::collections::HashMap::new(),
         })
@@ -4651,6 +4735,7 @@ impl<'d> IndexWriter<'d> {
         new_segment_infos.id = generate_segment_id(new_segment_infos.generation);
         new_segment_infos.segments = updated_segments;
         self.stamp_min_segment_version(&mut new_segment_infos)?;
+        self.stamp_soft_delete_counts(&mut new_segment_infos)?;
         segment_infos::write(&new_segment_infos, self.dir)?;
 
         self.segment_infos = new_segment_infos;
@@ -4712,6 +4797,54 @@ impl<'d> IndexWriter<'d> {
     /// once another engine's or another version's segments are merged away
     /// (or this writer's join an index real Lucene created), it is simply
     /// wrong, and `CheckIndex` rejects a minimum above any segment's version.
+    /// `SegmentCommitInfo.softDelCount` for every segment of `infos` about to
+    /// be committed: the documents that carry a value in the soft-deletes field
+    /// and are not hard-deleted -- what Lucene maintains through
+    /// `PendingSoftDeletes` (at flush, `DocumentsWriterPerThread` counts the
+    /// documents born soft-deleted; each doc-values update and hard delete
+    /// adjusts it) and what `CheckIndex` verifies.
+    ///
+    /// Recounted from the segment's current soft-deletes column and `.liv`,
+    /// but only for a segment whose deletes or doc values changed since the
+    /// last count (cached by generation). A count loaded from an existing
+    /// commit is trusted until the segment changes. A writer with no
+    /// soft-deletes field writes `0`, as before. A compound segment keeps its
+    /// count: this writer cannot update one (see `field_updates`), so its
+    /// count cannot have moved.
+    fn stamp_soft_delete_counts(&mut self, infos: &mut SegmentInfos) -> Result<()> {
+        let Some(soft) = self.cfg.fields.iter().find(|f| f.soft_deletes_field) else {
+            return Ok(());
+        };
+        let soft_name = soft.name.clone();
+        for sci in &mut infos.segments {
+            let key = soft_delete_key(sci);
+            if let Some(&(k, count)) = self.soft_delete_counts.get(&sci.segment_name) {
+                if k == key {
+                    sci.soft_del_count = count;
+                    continue;
+                }
+            }
+            let count =
+                count_soft_deletes(self.dir, sci, &soft_name)?.unwrap_or(sci.soft_del_count);
+            sci.soft_del_count = count;
+            self.soft_delete_counts
+                .insert(sci.segment_name.clone(), (key, count));
+        }
+        let names: std::collections::HashSet<&str> = infos
+            .segments
+            .iter()
+            .map(|s| s.segment_name.as_str())
+            .collect();
+        self.soft_delete_counts.retain(|name, _| {
+            names.contains(name.as_str())
+                || self
+                    .flushed_segments
+                    .iter()
+                    .any(|s| &s.segment_name == name)
+        });
+        Ok(())
+    }
+
     fn stamp_min_segment_version(&mut self, infos: &mut SegmentInfos) -> Result<()> {
         // A cache (a miss re-reads the `.si`), kept to the segments still in
         // play -- the commit being written and this writer's live view -- so
@@ -4838,6 +4971,7 @@ impl<'d> IndexWriter<'d> {
             .segments
             .extend(self.flushed_segments.iter().cloned());
         self.stamp_min_segment_version(&mut new_segment_infos)?;
+        self.stamp_soft_delete_counts(&mut new_segment_infos)?;
 
         // Phase one of the real two-phase protocol: the commit is fully
         // serialized and fsynced under `pending_segments_N`, a name
@@ -7933,6 +8067,7 @@ impl<'d> IndexWriter<'d> {
         }
 
         self.stamp_min_segment_version(&mut new_segment_infos)?;
+        self.stamp_soft_delete_counts(&mut new_segment_infos)?;
         segment_infos::write(&new_segment_infos, self.dir)?;
         // The merge's source segments are no longer named by any live commit
         // once the superseded commit point dies here, so this is what actually
