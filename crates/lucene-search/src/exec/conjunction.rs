@@ -1,6 +1,8 @@
 //! `ConjunctionScorer` (over `ConjunctionDISI` and its
 //! `ConjunctionTwoPhaseIterator`) and `BlockMaxConjunctionScorer`.
 
+use lucene_util::fixed_bit_set::FixedBitSet;
+
 use super::{BoxScorer, Scorer, NO_MORE_DOCS};
 use crate::bulk_scorer::TermLeg;
 use crate::Result;
@@ -430,6 +432,28 @@ impl Scorer for LegConjunctionScorer<'_> {
                 self.legs[only].set_min_competitive_score(min);
                 self.impacts = true;
             }
+        }
+        Ok(())
+    }
+
+    /// The default, with the leapfrog and the scoring inlined: a nested
+    /// conjunction a disjunction iterates as an essential clause spends its
+    /// time here.
+    fn next_docs_and_scores(
+        &mut self,
+        up_to: i32,
+        live_docs: Option<&FixedBitSet>,
+        out: &mut crate::bulk_scorer::DocScores,
+    ) -> Result<()> {
+        out.docs.clear();
+        out.scores.clear();
+        let mut doc = self.legs[0].doc_id();
+        while doc < up_to && out.docs.len() < super::NEXT_DOCS_BATCH {
+            if live_docs.is_none_or(|l| l.get_doc(doc)) {
+                out.docs.push(doc);
+                out.scores.push(Scorer::score(self)?);
+            }
+            doc = Scorer::next_doc(self)?;
         }
         Ok(())
     }

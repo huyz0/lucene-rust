@@ -8,14 +8,16 @@ import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.BoostQuery;
 import org.apache.lucene.search.ConstantScoreQuery;
+import org.apache.lucene.search.DisjunctionMaxQuery;
+import org.apache.lucene.search.MatchAllDocsQuery;
+import org.apache.lucene.search.MatchNoDocsQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.util.BytesRef;
+import org.opensearch.search.approximate.ApproximateScoreQuery;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.function.Predicate;
 
 /**
@@ -23,24 +25,26 @@ import java.util.function.Predicate;
  * crates/lucene-ffi/src/jvm_reader.rs} reads, or says why it cannot.
  *
  * <p>This is the <em>supported matrix</em> of the native path, and it is deliberately exact rather
- * than generous: a shape is encoded only when the Rust searcher produces the same hits and scores
- * Lucene does for it. Everything else returns an {@link Encoded} with a {@code fallbackReason},
- * and runs on Lucene.
+ * than generous: a query is encoded only when every node of it is one the Rust engine answers with
+ * Lucene's hits and scores. Everything else returns an {@link Encoded} with a {@code
+ * fallbackReason}, and runs on Lucene. Encodable today, recursively in any combination:
  *
  * <ul>
- *   <li>{@link TermQuery};
- *   <li>{@link BooleanQuery} whose clauses are, recursively, {@link TermQuery} or {@link
- *       BooleanQuery}, with any {@link BooleanClause.Occur} and {@code minimumNumberShouldMatch};
- *   <li>{@link ConstantScoreQuery} and {@link BoostQuery} around any of these -- OpenSearch builds
- *       the first for every {@code term} query on a {@code keyword} field, and the second for a
- *       boosted query and for a filter-only {@code bool} (boost 0).
+ *   <li>{@link TermQuery} (the plain class, scoring from the reader's own statistics);
+ *   <li>{@link BooleanQuery}, any {@link BooleanClause.Occur} and {@code minimumNumberShouldMatch};
+ *   <li>{@link ConstantScoreQuery} and {@link BoostQuery} -- OpenSearch builds the first for every
+ *       {@code term} query on a {@code keyword} field, and the second for a boosted query and for
+ *       a filter-only {@code bool} (boost 0);
+ *   <li>{@link DisjunctionMaxQuery} -- {@code multi_match} {@code best_fields} and {@code dis_max};
+ *   <li>{@link MatchAllDocsQuery} and {@link MatchNoDocsQuery};
+ *   <li>{@link ApproximateScoreQuery} -- OpenSearch 3.x's wrapper around {@code match_all} and
+ *       {@code range}, which only substitutes its approximation for sorted searches (never native):
+ *       encoded as the original query it wraps, which scores identically.
  * </ul>
  *
- * <p>A wrapper at the root is sent as a boolean with that one {@code MUST} clause, which scores
- * identically.
- *
- * <p>A boolean with no clauses, or none that can match (only {@code MUST_NOT}), falls back:
- * Lucene rewrites those to match nothing, and that is not worth a native path.
+ * <p>The blob is {@code QUERY_TREE}: one node per query, each a kind byte and its payload (the
+ * layout is {@code decode_node}'s doc). A root {@link TermQuery} is sent as {@code QUERY_TERM}, the
+ * native engine's single-term entry point.
  */
 public final class QueryEncoder {
     /**
@@ -55,37 +59,15 @@ public final class QueryEncoder {
     }
 
     /**
-     * The shapes the native engine runs at least as fast as Lucene, measured through the REST layer
-     * ({@code docs/benchmarks/m2-opensearch-e2e.md}): a term; a constant-score term (a {@code
-     * keyword} {@code term} query); and a boolean of those that is either a pure disjunction (only
-     * {@code SHOULD}, {@code minimumNumberShouldMatch <= 1}) or a pure conjunction (only {@code
-     * MUST}/{@code FILTER}). Every other encodable shape is answered correctly natively but slower,
-     * because the Rust engine prunes only these shapes; those are routed to Lucene unless the index
-     * sets {@code index.lucene_rust.search.native_shapes: all}.
+     * Whether the native engine is measured at least as fast as Lucene on {@code q}'s shape. Since
+     * read path R1 (the scorer tree and bulk scorers, {@code docs/milestones/m5-6-native-read.md})
+     * that is every shape this class encodes: the boosts, {@code must_not}s, mixed booleans and
+     * {@code constant_score} wrappers M2 measured at 0.13-0.28x and routed to Lucene now run
+     * 1.2-6.7x Lucene in process. So an encodable query is a fast one; the {@code native_shapes}
+     * setting no longer has anything to exclude.
      */
     public static boolean isFast(Query q) {
-        q = unwrapUnitBoost(q);
-        if (isTermLeaf(q)) {
-            return true;
-        }
-        if (!(q instanceof BooleanQuery bq) || bq.getMinimumNumberShouldMatch() > 1) {
-            return false;
-        }
-        boolean should = false;
-        boolean required = false;
-        for (BooleanClause c : bq.clauses()) {
-            if (isTermLeaf(unwrapUnitBoost(c.query())) == false || c.occur() == BooleanClause.Occur.MUST_NOT) {
-                return false;
-            }
-            should |= c.occur() == BooleanClause.Occur.SHOULD;
-            required |= c.occur() != BooleanClause.Occur.SHOULD;
-        }
-        return should != required;
-    }
-
-    private static boolean isTermLeaf(Query q) {
-        return (q instanceof TermQuery tq && plainTerm(tq))
-            || (q instanceof ConstantScoreQuery cs && cs.getQuery() instanceof TermQuery inner && plainTerm(inner));
+        return encode(q, field -> true).blob() != null;
     }
 
     private QueryEncoder() {}
@@ -96,10 +78,6 @@ public final class QueryEncoder {
      */
     public static Encoded encode(Query query, Predicate<String> fieldOk) {
         query = unwrapUnitBoost(query);
-        boolean fast = isFast(query);
-        if (query instanceof ConstantScoreQuery || query instanceof BoostQuery) {
-            query = new BooleanQuery.Builder().add(query, BooleanClause.Occur.MUST).build();
-        }
         if (query instanceof TermQuery tq) {
             if (plainTerm(tq) == false) {
                 return Encoded.fallback("term_states");
@@ -112,61 +90,45 @@ public final class QueryEncoder {
             out.write(NativeBridge.QUERY_TERM);
             writeBytes(out, t.field().getBytes(StandardCharsets.UTF_8));
             writeBytes(out, t.bytes());
-            return new Encoded(out.toByteArray(), null, fast);
+            return new Encoded(out.toByteArray(), null, true);
         }
-        if (query instanceof BooleanQuery bq) {
-            List<Clause> clauses = new ArrayList<>();
-            String reason = flatten(bq, -1, clauses, fieldOk);
-            if (reason != null) {
-                return Encoded.fallback(reason);
-            }
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            out.write(NativeBridge.QUERY_BOOLEAN);
-            writeInt(out, bq.getMinimumNumberShouldMatch());
-            writeInt(out, clauses.size());
-            for (Clause c : clauses) {
-                out.write(c.occur);
-                out.write(c.kind);
-                writeInt(out, c.parent);
-                writeInt(out, c.param);
-                writeBytes(out, c.field);
-                writeBytes(out, c.term);
-            }
-            return new Encoded(out.toByteArray(), null, fast);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(NativeBridge.QUERY_TREE);
+        String reason = node(query, out, fieldOk, 0, new int[1]);
+        if (reason != null) {
+            return Encoded.fallback(reason);
         }
-        return Encoded.fallback("query_" + name(query));
+        return new Encoded(out.toByteArray(), null, true);
     }
 
-    private record Clause(byte occur, byte kind, int parent, int param, byte[] field, byte[] term) {}
+    /** The native decoder's depth limit ({@code MAX_CLAUSE_DEPTH} in {@code query.rs}). */
+    private static final int MAX_DEPTH = 32;
 
-    private static final byte[] EMPTY = new byte[0];
+    /**
+     * The native decoder's node limit ({@code MAX_CLAUSE_COUNT} in {@code query.rs}), over every
+     * node, wrappers included. Lucene counts only leaves and OpenSearch's {@code
+     * indices.query.bool.max_clause_count} may raise its limit, so a larger query is legal: it runs
+     * on Lucene, under a named reason rather than as a native error.
+     */
+    private static final int MAX_NODES = 1024;
 
-    /** Appends {@code bq}'s clauses under {@code parent}, depth first; returns a fallback reason or null. */
-    private static String flatten(BooleanQuery bq, int parent, List<Clause> out, Predicate<String> fieldOk) {
-        List<BooleanClause> clauses = bq.clauses();
-        if (clauses.isEmpty()) {
-            return "boolean_empty";
-        }
-        boolean positive = false;
-        for (BooleanClause c : clauses) {
-            positive |= c.occur() != BooleanClause.Occur.MUST_NOT;
-        }
-        if (positive == false) {
-            return "boolean_pure_negative";
-        }
-        for (BooleanClause c : clauses) {
-            String reason = clause(c.query(), (byte) c.occur().ordinal(), parent, out, fieldOk);
-            if (reason != null) {
-                return reason;
-            }
-        }
-        return null;
-    }
+    private static final byte NODE_TERM = 0;
+    private static final byte NODE_BOOLEAN = 1;
+    private static final byte NODE_CONSTANT_SCORE = 2;
+    private static final byte NODE_BOOST = 3;
+    private static final byte NODE_DISMAX = 4;
+    private static final byte NODE_MATCH_ALL = 5;
+    private static final byte NODE_MATCH_NONE = 6;
 
-    /** Appends one clause (and, for a container, its children); returns a fallback reason or null. */
-    private static String clause(Query q, byte occur, int parent, List<Clause> out, Predicate<String> fieldOk) {
+    /** Appends one node (and its children); returns a fallback reason, or null. */
+    private static String node(Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
+        if (depth >= MAX_DEPTH) {
+            return "query_too_deep";
+        }
+        if (++nodes[0] > MAX_NODES) {
+            return "query_too_large";
+        }
         q = unwrapUnitBoost(q);
-        int me = out.size();
         if (q instanceof TermQuery tq) {
             if (plainTerm(tq) == false) {
                 return "term_states";
@@ -175,34 +137,72 @@ public final class QueryEncoder {
             if (fieldOk.test(t.field()) == false) {
                 return "field_similarity";
             }
-            out.add(new Clause(occur, KIND_TERM, parent, 0, t.field().getBytes(StandardCharsets.UTF_8), toArray(t.bytes())));
+            out.write(NODE_TERM);
+            writeBytes(out, t.field().getBytes(StandardCharsets.UTF_8));
+            writeBytes(out, t.bytes());
             return null;
         }
-        if (q instanceof BooleanQuery nested) {
-            out.add(new Clause(occur, KIND_BOOLEAN, parent, nested.getMinimumNumberShouldMatch(), EMPTY, EMPTY));
-            return flatten(nested, me, out, fieldOk);
+        if (q instanceof BooleanQuery bq) {
+            if (bq.getMinimumNumberShouldMatch() < 0) {
+                // BooleanQuery.Builder does not reject it; the native decoder does.
+                return "boolean_msm_negative";
+            }
+            out.write(NODE_BOOLEAN);
+            writeInt(out, bq.getMinimumNumberShouldMatch());
+            writeInt(out, bq.clauses().size());
+            for (BooleanClause c : bq.clauses()) {
+                out.write((byte) c.occur().ordinal());
+                String reason = node(c.query(), out, fieldOk, depth + 1, nodes);
+                if (reason != null) {
+                    return reason;
+                }
+            }
+            return null;
         }
         if (q instanceof ConstantScoreQuery cs) {
             // ConstantScoreQuery scores its boost, which is 1 unless a BoostQuery wraps it.
-            out.add(new Clause(occur, KIND_CONSTANT_SCORE, parent, Float.floatToIntBits(1f), EMPTY, EMPTY));
-            return clause(cs.getQuery(), MUST, me, out, fieldOk);
+            out.write(NODE_CONSTANT_SCORE);
+            writeInt(out, Float.floatToIntBits(1f));
+            return node(cs.getQuery(), out, fieldOk, depth + 1, nodes);
         }
         if (q instanceof BoostQuery b) {
             float boost = b.getBoost();
             if (Float.isFinite(boost) == false || boost < 0) {
                 return "boost_invalid";
             }
-            out.add(new Clause(occur, KIND_BOOST, parent, Float.floatToIntBits(boost), EMPTY, EMPTY));
-            return clause(b.getQuery(), MUST, me, out, fieldOk);
+            out.write(NODE_BOOST);
+            writeInt(out, Float.floatToIntBits(boost));
+            return node(b.getQuery(), out, fieldOk, depth + 1, nodes);
         }
-        return "clause_" + name(q);
+        if (q instanceof DisjunctionMaxQuery dm) {
+            out.write(NODE_DISMAX);
+            writeInt(out, Float.floatToIntBits(dm.getTieBreakerMultiplier()));
+            writeInt(out, dm.getDisjuncts().size());
+            for (Query d : dm.getDisjuncts()) {
+                String reason = node(d, out, fieldOk, depth + 1, nodes);
+                if (reason != null) {
+                    return reason;
+                }
+            }
+            return null;
+        }
+        if (q instanceof ApproximateScoreQuery a) {
+            // A wrapper, not a level (nor a node): the range it approximates is still the root
+            // when it is.
+            nodes[0]--;
+            return node(a.getOriginalQuery(), out, fieldOk, depth, nodes);
+        }
+        if (q.getClass() == MatchAllDocsQuery.class) {
+            out.write(NODE_MATCH_ALL);
+            return null;
+        }
+        if (q.getClass() == MatchNoDocsQuery.class) {
+            out.write(NODE_MATCH_NONE);
+            return null;
+        }
+        // The whole query is unsupported ("query_"), or one clause of an otherwise native tree is.
+        return (depth == 0 ? "query_" : "clause_") + name(q);
     }
-
-    private static final byte MUST = (byte) BooleanClause.Occur.MUST.ordinal();
-    private static final byte KIND_TERM = 0;
-    private static final byte KIND_BOOLEAN = 1;
-    private static final byte KIND_CONSTANT_SCORE = 2;
-    private static final byte KIND_BOOST = 3;
 
     /**
      * A {@link TermQuery} that scores from the reader's own statistics: exactly that class (not a

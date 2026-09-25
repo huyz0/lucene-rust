@@ -697,15 +697,22 @@ pub(crate) fn clause_field_names(query: &BooleanQuery) -> Vec<&str> {
     push_all(query, &mut stack);
     while let Some(clause) = stack.pop() {
         match clause {
-            Clause::Term(t) => {
-                if !out.contains(&t.field.as_str()) {
-                    out.push(t.field.as_str());
-                }
-            }
             Clause::Boolean(nested) => push_all(nested, &mut stack),
             Clause::ConstantScore(c) => stack.push(&c.inner),
             Clause::Boost(b) => stack.push(&b.inner),
-            // `read_boolean_query` builds only the four kinds above.
+            // The query-tree blob (`jvm_reader::decode_node`) also builds
+            // dismax, whose disjuncts score with their fields' norms like any
+            // other clause -- missing it scored them unnormed.
+            Clause::DisjunctionMax(d) => stack.extend(d.disjuncts.iter()),
+            Clause::Term(TermQuery { field, .. })
+            | Clause::Phrase(PhraseQuery { field, .. })
+            | Clause::Fuzzy(lucene_search::query::FuzzyQuery { field, .. })
+                if !out.contains(&field.as_str()) =>
+            {
+                out.push(field.as_str())
+            }
+            // Everything else scores without norms (a constant) or matches
+            // nothing.
             _ => {}
         }
     }

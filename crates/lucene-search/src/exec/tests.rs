@@ -211,7 +211,8 @@ fn random_node(rng: &mut Rng, depth: u32) -> Node {
             Box::new(random_node(rng, depth - 1)),
         ),
         1 => {
-            let n = 2 + rng.below(3) as usize;
+            // Up to seven: `DisiQueue` scans four or fewer and heaps more.
+            let n = 2 + rng.below(6) as usize;
             let tie = if rng.chance(50) { 0.0 } else { 0.5 };
             Node::DisMax(tie, (0..n).map(|_| random_node(rng, depth - 1)).collect())
         }
@@ -419,6 +420,96 @@ fn random_trees_match_brute_force_in_every_mode() {
         pruned_runs > 100,
         "pruning must actually skip documents in a good share of cases, got {pruned_runs}"
     );
+}
+
+/// `MaxScoreBulkScorer` over arbitrary scorers (`Bulk::ScorerDisjunction`),
+/// two-phase ones included, with and without a filter: every surviving hit
+/// and score must be brute force's.
+#[test]
+fn scorer_disjunctions_match_brute_force() {
+    use super::bulk::ScorerLeg;
+    use crate::bulk_scorer::MaxScore;
+    let mut rng = Rng(0xd15c);
+    let mut two_phase_runs = 0;
+    for case in 0..600 {
+        let should: Vec<Node> = (0..2 + rng.below(5))
+            .map(|_| random_node(&mut rng, 2))
+            .collect();
+        let filter: Vec<Node> = if rng.chance(40) {
+            vec![random_node(&mut rng, 1)]
+        } else {
+            Vec::new()
+        };
+        let node = Node::Bool {
+            must: Vec::new(),
+            filter: filter.clone(),
+            should: should.clone(),
+            must_not: Vec::new(),
+            msm: if filter.is_empty() { 0 } else { 1 },
+        };
+        let k = 1 + rng.below(10) as usize;
+        let mut legs: Vec<ScorerLeg<'static>> = Vec::new();
+        for child in &should {
+            if let Some(s) = build(child, Mode::TopScores, false) {
+                if s.two_phase() {
+                    two_phase_runs += 1;
+                }
+                legs.push(ScorerLeg::new(s));
+            }
+        }
+        let filter_scorer = match filter.first() {
+            Some(f) => match build(f, Mode::NoScores, false) {
+                Some(s) => Some(s),
+                None => continue,
+            },
+            None => None,
+        };
+        if legs.is_empty() {
+            continue;
+        }
+        let state = MaxScore::new(&mut legs);
+        let mut bulk = Bulk::ScorerDisjunction(legs, filter_scorer, state);
+        let mut top = TopDocsCollector::with_total_hits_threshold(k, k as u64);
+        score_segment(&mut bulk, Mode::TopScores, None, &mut top).unwrap();
+        assert_eq!(
+            pairs(top.top_docs()),
+            top_k(expected(&node, true), k),
+            "case {case}: top {k}"
+        );
+    }
+    assert!(two_phase_runs > 50, "two-phase clauses: {two_phase_runs}");
+}
+
+/// A match-all without a maxDoc of its own (as the JVM decodes it) on a
+/// segment that supplies none is an error, not a walk to `i32::MAX`.
+#[test]
+fn a_match_all_needs_some_max_doc() {
+    use super::build::LeafContext;
+    use crate::query::{Clause, MatchAllDocsQuery};
+    let fields = lucene_codecs::blocktree::BlockTreeFields::default();
+    let ctx = LeafContext {
+        fields: &fields,
+        doc_in: None,
+        pos_in: None,
+        pay_in: None,
+        live_docs: None,
+        points: None,
+        norms: None,
+        global: None,
+        max_doc: None,
+    };
+    let unknown = Clause::MatchAllDocs(MatchAllDocsQuery::new(i32::MAX));
+    assert!(matches!(
+        super::build::build(&ctx, &unknown, 1.0, Mode::TopScores, true),
+        Err(crate::Error::MatchAllWithoutMaxDoc)
+    ));
+    let known = Clause::MatchAllDocs(MatchAllDocsQuery::new(3));
+    let mut all = All(Vec::new());
+    let s = super::build::build(&ctx, &known, 1.0, Mode::Complete, true)
+        .unwrap()
+        .unwrap();
+    score_segment(&mut Bulk::scorer(s), Mode::Complete, None, &mut all).unwrap();
+    assert_eq!(all.0.len(), 3);
 }
 
 fn node_is_bool(node: &Node) -> bool {
@@ -651,6 +742,7 @@ mod fixture {
                     points: None,
                     norms: norms[s],
                     global: Some(&global),
+                    max_doc: None,
                 };
                 for mode in [Mode::TopScores, Mode::Complete] {
                     if let Some(b) = bulk_boolean(&ctx, &q, 1.0, mode).unwrap() {
@@ -679,8 +771,10 @@ mod fixture {
             "scorer_conjunction",
             "disjunction",
             "filtered_disjunction",
+            "scorer_disjunction",
             "req_opt",
             "req_excl",
+            "dismax",
         ]
         .into_iter()
         .collect();
@@ -715,6 +809,7 @@ mod fixture {
             points: None,
             norms: None,
             global: None,
+            max_doc: None,
         };
         let leg = |t: &str| -> TermLeg<'_> {
             match term_leg(

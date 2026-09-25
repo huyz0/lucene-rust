@@ -25,42 +25,66 @@ A request runs native when **all** of these hold:
   `min_score`, `terminate_after`, `scroll`, `search_after`, `collapse`,
   `rescore`, `timeout` or `profile`, not `search_type=dfs_query_then_fetch`,
   and no other plugin replacing the top-docs collector;
-- the rewritten Lucene query is one of the shapes below, over fields that score
-  with the default BM25 (`k1 = 1.2`, `b = 0.75`), with every `TermQuery` scoring
-  from the reader's own statistics (not blended `TermStates`, as `multi_match`
-  `cross_fields` builds);
+- the rewritten Lucene query is built only from the shapes below --
+  `TermQuery`, `BooleanQuery` (any `Occur`, any `minimum_should_match`,
+  nested), `ConstantScoreQuery`, `BoostQuery`, `DisjunctionMaxQuery`,
+  `MatchAllDocsQuery`, `MatchNoDocsQuery` -- at most 32 deep and 1,024 nodes,
+  over fields that score with the default BM25 (`k1 = 1.2`, `b = 0.75`), with
+  every `TermQuery` scoring from the reader's own statistics (not blended
+  `TermStates`, as `multi_match` `cross_fields` builds);
 - every field in the index uses Lucene 10.5.0's default postings format
   (`Lucene104`). An index with a `completion` field does not.
 
-| Request (DSL) | Rewritten Lucene query | Native by default | Measured, REST, native vs Lucene |
-|---|---|---|---|
-| `match` one term | `TermQuery` | yes | 1.09–1.29× |
-| `match` several terms (`or`) | `BooleanQuery` of `SHOULD` terms | yes | 1.13–1.22× |
-| `match` with `operator: and` | `BooleanQuery` of `MUST` terms | yes | 1.04× |
-| `term` on a `keyword` field | `ConstantScoreQuery(TermQuery)` | yes | 1.12× |
-| `term` on a missing value | same | yes | 1.34× |
-| `bool` of `must` term + `filter` term | `BooleanQuery` `MUST`/`FILTER` | yes | 1.25× |
-| `query_string` `a OR b` | `BooleanQuery` of `SHOULD` terms | yes | 1.11× |
-| any of the above with `size: 0`, `from`/`size` paging, or any `track_total_hits` | — | yes | 1.00–1.48× |
-| `match` with `minimum_should_match` ≥ 2 | `BooleanQuery` with `minimumNumberShouldMatch` | **no** (`slower_shape`) | 0.15× |
-| `bool` mixing `must` and `should` | mixed `BooleanQuery` | **no** (`slower_shape`) | 0.19× |
-| `bool` with `must_not` | `BooleanQuery` with `MUST_NOT` | **no** (`slower_shape`) | 0.28× |
-| nested `bool` | `BooleanQuery` in `BooleanQuery` | **no** (`slower_shape`) | 0.16× |
-| `bool` with only `filter` clauses | `BoostQuery(ConstantScoreQuery(…), 0)` | **no** (`slower_shape`) | 0.80× |
-| any query with `boost` ≠ 1 | `BoostQuery` | **no** (`slower_shape`) | 0.13–0.18× |
-| `constant_score` | `BoostQuery(ConstantScoreQuery(…))` | **no** (`slower_shape`) | 0.22× |
+Totals follow OpenSearch's own shortcut (`shortcutTotalHitCount`): a
+`match_all` reports the reader's `numDocs`, and a `term` its document
+frequency when nothing is deleted, without counting.
 
-"Measured" is the median REST round trip over 80 requests per engine on one node, both
-engines on the same 100k-document index; the source and method are
-[`benchmarks/m2-opensearch-e2e.md`](benchmarks/m2-opensearch-e2e.md). Above 1.0
-means native is faster.
+| Request (DSL) | Rewritten Lucene query | Measured, REST, native vs Lucene |
+|---|---|---|
+| `match` one term | `TermQuery` | 1.51× |
+| `match` a rare term | `TermQuery` | 1.40× |
+| `match` two terms (`or`) | `BooleanQuery` of `SHOULD` terms | 1.15× |
+| `match` four terms | `BooleanQuery` of `SHOULD` terms | 1.21× |
+| `match` with `operator: and` | `BooleanQuery` of `MUST` terms | 1.12× |
+| `match` with `minimum_should_match: 2` | `BooleanQuery` with `minimumNumberShouldMatch` | 0.97× |
+| `term` on a `keyword` field | `ConstantScoreQuery(TermQuery)` | 1.24× |
+| `term` on a missing value | same | 1.22× |
+| `bool` `must` + `should` | mixed `BooleanQuery` | 1.13× |
+| `bool` with `must_not` | `BooleanQuery` with `MUST_NOT` | 1.15× |
+| `bool` `must` + `filter` | `BooleanQuery` `MUST`/`FILTER` | 1.19× |
+| `bool` with only `filter` | `BoostQuery(ConstantScoreQuery(…), 0)` | 1.21× |
+| nested `bool` | `BooleanQuery` in `BooleanQuery` | 1.04× |
+| `query_string` `a OR b` | `BooleanQuery` of `SHOULD` terms | 1.16× |
+| `bool` `must` + `should`, `minimum_should_match: 1` | `BooleanQuery` `MUST` + `SHOULD` with a minimum | 0.99× |
+| any query with `boost` ≠ 1 | `BoostQuery` | 1.13× |
+| `bool` with a boosted clause | `BooleanQuery` of `BoostQuery` | 1.06× |
+| `constant_score` | `BoostQuery(ConstantScoreQuery(…))` | 1.08× |
+| `dis_max` (`tie_breaker: 0.3`) | `DisjunctionMaxQuery` | 1.28× |
+| `multi_match` (`best_fields`) | `DisjunctionMaxQuery` of terms | 1.00× |
+| `match_all` | `MatchAllDocsQuery` | 1.21× |
+| `bool` `match_all` + `filter` | `BooleanQuery` with `MatchAllDocsQuery` | 1.04× |
+| `constant_score` of `match_all` | `BoostQuery(ConstantScoreQuery(MatchAllDocsQuery))` | 1.04× |
+| any of the above with `size: 0`, `from`/`size` paging, or any `track_total_hits` | — | 0.99–1.30× |
 
-**The `no (slower_shape)` rows are correct natively; they are routed to Lucene
-because they measured slower.** The Rust engine prunes (block-max MAXSCORE) only
-for terms and pure disjunctions of terms; every other boolean shape runs its
-exhaustive scorer, which loses to Lucene's WAND on dense terms. Setting
-`index.lucene_rust.search.native_shapes: all` runs them native anyway — the
-verify script does, to prove they stay correct.
+"Measured" is the median REST round trip over 40 requests per engine on one
+node, both engines on the same 100k-document, two-segment index
+(`scripts/verify-opensearch.sh --docs 100000 --bench-out FILE --bench-rounds
+40`); above 1.0 means native is faster. At this size a round trip is 2-9 ms,
+most of it OpenSearch's own request handling, so REST ratios compress toward
+1.0 and move by about ±0.05 between runs; the in-process numbers for the same
+shapes on a 1M-document corpus built like this index are in
+[`milestones/m5-6-native-read.md`](milestones/m5-6-native-read.md).
+Three rows are not yet clearly above 1.0 over REST: `minimum_should_match: 2`
+(0.97×), `must` + `should` with a minimum (0.99×) and `multi_match`
+(1.00× in this run, measured before per-clause skipping for a tie-breaker
+of 0 landed, which took it from 0.36× to 1.30× in process). In process they
+run 1.10×, 1.3× and 1.3–3.5× Lucene; the REST margin is inside the spread,
+and they stay open under the milestone's R7 acceptance.
+
+`index.lucene_rust.search.native_shapes` (`fast`/`all`) predates read path
+R1, when mixed booleans measured slower and were routed to Lucene
+(`slower_shape`); since R1 every encodable shape runs native under both
+values.
 
 ## Falls back to Lucene
 
@@ -71,16 +95,17 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `disabled` | `index.lucene_rust.search.enabled: false` |
 | `aggregations`, `post_filter`, `min_score`, `terminate_after`, `collectors` | the request adds a collector to the query phase |
 | `sort`, `search_after`, `scroll`, `collapse`, `rescore`, `profile`, `timeout` | the request needs something the native top-hits path does not produce |
-| `query_<Class>` | the rewritten query's root is not a supported shape — e.g. `query_PhraseQuery` (`match_phrase`), `query_ApproximateScoreQuery` (`range`, `match_all`), `query_MultiTermQueryConstantScoreBlendedWrapper` (`prefix`, `wildcard`), `query_DisjunctionMaxQuery` (`multi_match`) |
-| `clause_<Class>` | the same, for a clause inside a `bool` |
+| `query_<Class>` | the rewritten query's root is not a supported shape — e.g. `query_PhraseQuery` (`match_phrase`), `query_IndexOrDocValuesQuery` (`range`), `query_MultiTermQueryConstantScoreBlendedWrapper` (`prefix`, `wildcard`) |
+| `clause_<Class>` | the same, for a clause anywhere below the root (inside a `bool`, `constant_score`, `dis_max`, a boost) |
+| `query_too_deep`, `query_too_large` | more than 32 levels, or more than 1,024 nodes counting wrappers (Lucene counts only leaves, and `indices.query.bool.max_clause_count` can raise its limit) |
+| `boolean_msm_negative` | a `BooleanQuery` with a negative `minimumNumberShouldMatch` |
 | `field_similarity` | a field scores with anything but default-parameter BM25 |
 | `term_states` | a term query carries its own statistics (`multi_match` `cross_fields`), or is a `TermQuery` subclass |
 | `dfs` | `search_type=dfs_query_then_fetch`: scoring uses statistics aggregated across shards |
 | `collector_spec` | another plugin registered a replacement top-docs collector |
 | `cancelled` | the task was cancelled before the native call |
 | `boost_invalid` | a negative or non-finite boost |
-| `boolean_empty`, `boolean_pure_negative` | a `bool` Lucene rewrites to match nothing |
-| `slower_shape` | a correct native shape routed to Lucene by measurement (above) |
+| `slower_shape` | a correct native shape routed to Lucene by measurement; none since read path R1 |
 | `postings_format` | some field of the index uses a postings format other than `Lucene104` |
 | `reader_*`, `directory_*` | the searcher's reader or directory is not a local, standard one (remote store, a wrapped reader the plugin cannot see through) |
 | `native_open_failed`, `native_error` | the native side refused the reader or the query; the node log has the message. Never a failed search: the query re-runs on Lucene |

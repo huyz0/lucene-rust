@@ -94,9 +94,10 @@ def create(index, shards):
     })
 
 
-def load(index, docs, seed):
+def load(index, docs, seed, deletes=True):
     """Indexes `docs` documents in batches with a refresh after each (many
-    segments), then deletes and updates some (hard and soft deletes)."""
+    segments), then deletes and updates some (hard and soft deletes) unless
+    `deletes` is false."""
     r = random.Random(seed)
     batch = max(1, docs // 8)
     for start in range(0, docs, batch):
@@ -113,6 +114,8 @@ def load(index, docs, seed):
         res = req("POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
         check(not res["errors"], f"{index}: bulk batch at {start} has no errors")
         req("POST", f"/{index}/_refresh")
+    if not deletes:
+        return
     lines = []
     for i in r.sample(range(docs), docs // 40):
         lines.append(json.dumps({"delete": {"_index": index, "_id": str(i)}}))
@@ -123,10 +126,10 @@ def load(index, docs, seed):
     req("POST", f"/{index}/_refresh")
 
 
-# (name, request body, expected): "native" runs native in both routing modes;
-# "slow" is answered natively only with native_shapes=all, and routed to Lucene
-# ("slower_shape") by default because it measured slower; anything else is the
-# fallback reason expected in both modes ("query_*" matches any query class).
+# (name, request body, expected): "native" runs native in both routing modes
+# (since read path R1 no encodable shape is routed to Lucene as slower, so
+# `native_shapes` fast and all agree); anything else is the fallback reason
+# expected in both modes ("query_*" matches any query class).
 def matrix():
     q = []
     add = lambda name, body, expect: q.append((name, body, expect))
@@ -135,16 +138,16 @@ def matrix():
     add("match two terms", {"query": {"match": {"body": "alpha kappa"}}}, "native")
     add("match four terms", {"query": {"match": {"body": "beta mu sigma omega"}}}, "native")
     add("match operator and", {"query": {"match": {"body": {"query": "alpha beta", "operator": "and"}}}}, "native")
-    add("match minimum_should_match", {"query": {"match": {"body": {"query": "alpha beta gamma delta", "minimum_should_match": 2}}}}, "slow")
+    add("match minimum_should_match", {"query": {"match": {"body": {"query": "alpha beta gamma delta", "minimum_should_match": 2}}}}, "native")
     add("term keyword", {"query": {"term": {"tag": "gamma"}}}, "native")
     add("term missing", {"query": {"term": {"tag": "no-such-tag"}}}, "native")
-    add("bool must+should", {"query": {"bool": {"must": [{"match": {"body": "alpha"}}], "should": [{"match": {"title": "beta"}}]}}}, "slow")
-    add("bool must_not", {"query": {"bool": {"must": [{"match": {"body": "beta"}}], "must_not": [{"term": {"tag": "alpha"}}]}}}, "slow")
+    add("bool must+should", {"query": {"bool": {"must": [{"match": {"body": "alpha"}}], "should": [{"match": {"title": "beta"}}]}}}, "native")
+    add("bool must_not", {"query": {"bool": {"must": [{"match": {"body": "beta"}}], "must_not": [{"term": {"tag": "alpha"}}]}}}, "native")
     add("bool filter", {"query": {"bool": {"must": [{"match": {"body": "gamma"}}], "filter": [{"term": {"tag": "alpha"}}]}}}, "native")
-    add("bool filter only", {"query": {"bool": {"filter": [{"term": {"tag": "beta"}}]}}}, "slow")
+    add("bool filter only", {"query": {"bool": {"filter": [{"term": {"tag": "beta"}}]}}}, "native")
     add("bool nested", {"query": {"bool": {"should": [
         {"bool": {"must": [{"match": {"body": "alpha"}}, {"match": {"title": "gamma"}}]}},
-        {"match": {"body": "omega"}}]}}}, "slow")
+        {"match": {"body": "omega"}}]}}}, "native")
     add("query_string OR", {"query": {"query_string": {"query": "body:(delta OR theta)"}}}, "native")
     add("size 0 count", {"size": 0, "query": {"match": {"body": "alpha"}}}, "native")
     add("track_total_hits false", {"track_total_hits": False, "query": {"match": {"body": "beta"}}}, "native")
@@ -161,11 +164,22 @@ def matrix():
     add("match_phrase", {"query": {"match_phrase": {"body": "alpha beta"}}}, "query_*")
     add("range", {"query": {"range": {"n": {"gte": 10, "lte": 500}}}}, "query_*")
     add("prefix", {"query": {"prefix": {"tag": "al"}}}, "query_*")
-    add("match_all", {"query": {"match_all": {}}}, "query_*")
-    add("boosted match", {"query": {"match": {"body": {"query": "alpha", "boost": 2}}}}, "slow")
-    add("bool with boosted clause", {"query": {"bool": {"should": [{"match": {"body": {"query": "alpha", "boost": 3}}}, {"term": {"tag": "beta"}}]}}}, "slow")
-    add("constant_score", {"query": {"constant_score": {"filter": {"match": {"body": "gamma"}}, "boost": 1.5}}}, "slow")
-    add("multi_match", {"query": {"multi_match": {"query": "alpha", "fields": ["body", "title"]}}}, "query_*")
+    add("match_all", {"query": {"match_all": {}}}, "native")
+    add("boosted match", {"query": {"match": {"body": {"query": "alpha", "boost": 2}}}}, "native")
+    add("bool with boosted clause", {"query": {"bool": {"should": [{"match": {"body": {"query": "alpha", "boost": 3}}}, {"term": {"tag": "beta"}}]}}}, "native")
+    add("constant_score", {"query": {"constant_score": {"filter": {"match": {"body": "gamma"}}, "boost": 1.5}}}, "native")
+    add("multi_match", {"query": {"multi_match": {"query": "alpha", "fields": ["body", "title"]}}}, "native")
+    add("dis_max", {"query": {"dis_max": {"tie_breaker": 0.3, "queries": [{"match": {"body": "alpha"}}, {"match": {"title": "gamma"}}]}}}, "native")
+    # OpenSearch counts these without collecting (shortcutTotalHitCount): a
+    # match-all always, a term when nothing is deleted (the "clean" index).
+    # These rows prove the responses agree; they cannot prove the shortcut is
+    # taken -- a response caps hits.total at track_total_hits either way, and
+    # the matrix passed with the plugin's shortcut disabled.
+    add("match_all size 0", {"size": 0, "query": {"match_all": {}}}, "native")
+    add("term keyword size 0", {"size": 0, "query": {"term": {"tag": "beta"}}}, "native")
+    add("constant_score match_all", {"query": {"constant_score": {"filter": {"match_all": {}}, "boost": 2}}}, "native")
+    add("match_all + filter", {"query": {"bool": {"must": [{"match_all": {}}], "filter": [{"term": {"tag": "beta"}}]}}}, "native")
+    add("bool msm with must", {"query": {"bool": {"must": [{"match": {"body": "alpha"}}], "should": [{"match": {"title": "beta"}}, {"match": {"title": "gamma"}}], "minimum_should_match": 1}}}, "native")
     add("custom similarity", {"query": {"match": {"tuned": "alpha"}}}, "field_similarity")
     add("sort", {"query": {"match": {"body": "alpha"}}, "sort": [{"n": "desc"}]}, "sort")
     add("aggregation", {"query": {"match": {"body": "alpha"}}, "aggs": {"tags": {"terms": {"field": "tag"}}}}, "aggregations")
@@ -400,12 +414,13 @@ def crash(container, indices):
     time.sleep(2)
     subprocess.check_call(["docker", "start", container], stdout=subprocess.DEVNULL)
     wait_up()
+    # Read before the counts below: a _count is a match_all, which runs natively.
+    s = stats()
+    check(s["native_queries"] == 0, f"crash: stats reset with the process ({s['native_queries']})")
     for i in indices:
         req("POST", f"/{i}/_refresh")
         got = req("GET", f"/{i}/_count")["count"]
         check(got == counts[i], f"crash: {i} has {got} docs after SIGKILL + restart, expected {counts[i]}")
-    s = stats()
-    check(s["native_queries"] == 0, f"crash: stats reset with the process ({s['native_queries']})")
 
 
 def bench(index, out, rounds):
@@ -461,10 +476,18 @@ def main():
     create("multi", 3)
     load("single", a.docs, 1)
     load("multi", a.docs, 2)
+    # No deletions, and more than 10,000 documents: every shortcut total applies.
+    try:
+        req("DELETE", "/clean")
+    except RuntimeError:
+        pass
+    create("clean", 1)
+    load("clean", max(a.docs, 12000), 3, deletes=False)
     native = 0
     for shapes in ("fast", "all"):
         native += run_matrix("single", 1, "initial", shapes) + run_matrix("multi", 3, "initial", shapes)
-    print(f"matrix: {len(matrix())} request shapes x 2 indices; {native} shard queries ran native")
+    native += run_matrix("clean", 1, "no deletions")
+    print(f"matrix: {len(matrix())} request shapes x 3 indices; {native} shard queries ran native")
     unsupported_format()
     lifecycle("single", a.container)
     run_matrix("single", 1, "after merge")
