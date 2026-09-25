@@ -32,12 +32,13 @@ Two things differ from the plan below:
   `EngineBackedIndexer.lastRefreshedCheckpoint()`. That call answers only for
   an `InternalEngine`, and `InternalEngine.lastRefreshedCheckpoint()` is
   `final`, so on its own no plugin engine can be a segment-replication
-  primary on 3.8. `RustIndexerFactory` replaces each shard's
-  `indexerFactory` when the shard is created, with one that wraps
-  `RustEngine` in an `EngineBackedIndexer` answering from the engine's own
-  checkpoint listener. This is the plugin's one reflective write, and
-  `docs/opensearch-engine.md` explains why nothing narrower exists. A shard
-  where the write fails refuses to be a segment-replication primary.
+  primary on 3.8. `RustIndexerFactory` replaces the index's indexer
+  factory in `IndexModule` (`onIndexModule`, before any shard exists) with
+  one that wraps `RustEngine` in an `EngineBackedIndexer` answering from the
+  engine's own checkpoint listener. That is the plugin's one reflective
+  write, one per index; `docs/opensearch-engine.md` explains the choice. A
+  `RustEngine` built any other way refuses to be a segment-replication
+  primary, and an engine test has seen that refusal fire.
   Remote-backed storage stays refused. Both replication modes are verified
   in the cluster proof.
 - **Get-by-id and aggregations need no FFI path.** The engine's readers are
@@ -223,8 +224,11 @@ Keep OpenSearch's aggregation framework on the JVM and feed it from Rust:
       - when the primary's node stops, a replica is promoted into the Rust
         engine on the segments it copied;
       - the stopped node rejoins as a replica;
+      - the primary relocates to the other Rust node;
       - a replica on the Java node joins;
-      - a force merge replicates.
+      - a force merge replicates, and every copy then holds the one merged
+        segment;
+      - the stats show every primary was built by `RustIndexerFactory`.
       Every copy is checked against the acknowledged writes.
 - [x] Peer recovery brings a new replica to a consistent state, verified by
       comparing document counts and a query result set against the primary

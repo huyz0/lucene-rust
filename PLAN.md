@@ -3857,7 +3857,7 @@ pinned OpenSearch 3.8.0 sources with only the writer swapped, so items 1, 2 and 
 own code over the Rust writer. Documents are inverted in Java and written in Rust, and refresh is
 a Rust commit. Two things differ from this list. Item 3's segment replication needs one hook,
 because OpenSearch 3.8's `EngineBackedIndexer` answers a primary's refresh checkpoint only for
-`InternalEngine`: the plugin swaps each shard's indexer factory (`RustIndexerFactory`), and both
+`InternalEngine`: the plugin swaps each index's indexer factory in `IndexModule` (`RustIndexerFactory`), and both
 replication modes work. Item 5 needs no FFI cursor, because aggregations read the Rust
 writer's segments through Java readers. Details: `docs/opensearch-engine.md`,
 `docs/milestones/m5-engine-integration.md`.

@@ -61,6 +61,7 @@ public final class RestStatsAction extends BaseRestHandler {
             b.field("rust", RustEngineFactory.RUST.get());
             b.field("java", RustEngineFactory.JAVA.get());
             b.field("nrt_replica", RustEngineFactory.NRT_REPLICA.get());
+            b.field("rust_indexer", org.lucenerust.opensearch.engine.RustIndexerFactory.INDEXERS.get());
             b.endObject();
             b.endObject();
             channel.sendResponse(new BytesRestResponse(RestStatus.OK, b));

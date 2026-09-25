@@ -23,4 +23,5 @@ cd "$stage/tmp"
     -Dtests.security.manager=false -Djava.io.tmpdir="$stage/tmp" \
     -Dlucene_rust.library.path="$stage/cp/liblucene_ffi.so" \
     "$@" -cp "$stage/cp:$stage/cp/*" \
-    org.junit.runner.JUnitCore org.lucenerust.opensearch.engine.RustEngineTests
+    org.junit.runner.JUnitCore org.lucenerust.opensearch.engine.RustEngineTests \
+    org.lucenerust.opensearch.engine.RustIndexerFactoryTests

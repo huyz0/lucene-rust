@@ -79,11 +79,12 @@ public final class RustEngineSupport {
             throw new IllegalArgumentException(reason);
         }
         // A segment-replication primary needs RustIndexerFactory in its shard (see there).
-        if (config.getIndexSettings().isSegRepLocalEnabled() && RustIndexerFactory.installed(config.getShardId()) == false) {
+        if (config.getIndexSettings().isSegRepLocalEnabled() && RustIndexerFactory.building() == false) {
             throw new IllegalArgumentException(
-                "the Rust engine's indexer is not installed on "
+                "the Rust engine for "
                     + config.getShardId()
-                    + ", so it cannot be a segment-replication primary; use index.replication.type: DOCUMENT"
+                    + " was not built through RustIndexerFactory, so it cannot be a segment-replication primary; "
+                    + "use index.replication.type: DOCUMENT"
             );
         }
     }
