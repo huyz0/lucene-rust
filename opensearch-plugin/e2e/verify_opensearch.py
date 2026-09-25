@@ -178,7 +178,7 @@ def matrix():
     # Scored with statistics the native engine does not have: cross-shard (dfs) or blended
     # TermStates (cross_fields; tie_breaker 1 makes Lucene rewrite the dismax to a boolean).
     add("cross_fields", {"query": {"multi_match": {"query": "alpha", "type": "cross_fields", "fields": ["body", "title"], "tie_breaker": 1}}}, "term_states")
-    add("dfs_query_then_fetch", {"_params": "&search_type=dfs_query_then_fetch", "query": {"match": {"body": "alpha"}}}, "dfs")
+    add("dfs_query_then_fetch", {"_params": "&search_type=dfs_query_then_fetch", "query": {"match": {"body": "alpha"}}}, "dfs_multi")
     add("rescore", {"query": {"match": {"body": "alpha"}}, "rescore": {"window_size": 20, "query": {"rescore_query": {"match": {"title": "beta"}}}}}, "rescore")
     return q
 
@@ -245,6 +245,10 @@ def run_matrix(index, shards, label, shapes="fast"):
     for name, body, expect in queries:
         if expect == "slow":
             expect = "native" if shapes == "all" else "slower_shape"
+        if expect == "dfs_multi":
+            # OpenSearch runs a one-shard dfs search as query_then_fetch
+            # (TransportSearchAction), so only a multi-shard index gets the dfs phase.
+            expect = "dfs" if shards > 1 else "native"
         before = stats()
         url, b = search_url(index, body)
         got = shape(req("POST", url, b), b)
