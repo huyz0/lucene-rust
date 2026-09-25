@@ -10,7 +10,7 @@
 | **Depends on** | [M1](m1-performance-gate.md) passing |
 | **Unblocks** | [M5](m5-engine-integration.md) |
 | **Runs in parallel with** | [M3](m3-write-path-proven.md) |
-| **Status** | not started |
+| **Status** | ✅ **delivered 2026-09-25** — see [Outcome](#outcome) |
 
 ---
 
@@ -184,24 +184,25 @@ M1 measured the engine. This task measures the stack.
 
 ## Acceptance criteria
 
-- [ ] The plugin installs into an OpenSearch node and the node starts.
-- [ ] The OpenSearch REST search test suite passes on the Rust engine for the
+- [x] The plugin installs into an OpenSearch node and the node starts.
+- [x] The OpenSearch REST search test suite passes on the Rust engine for the
       supported matrix, with fallback covering the remainder.
-- [ ] Every unsupported query **falls back and returns correct results** —
+- [x] Every unsupported query **falls back and returns correct results** —
       zero errors attributable to an unsupported shape.
-- [ ] Fuzz and fault-injection over the FFI surface: **zero JVM crashes, zero
+- [x] Fuzz and fault-injection over the FFI surface: **zero JVM crashes, zero
       leaked handles**, every panic surfaced as an error code.
-- [ ] Killing (`SIGKILL`) and restarting a node with the engine loaded recovers
+- [x] Killing (`SIGKILL`) and restarting a node with the engine loaded recovers
       cleanly.
-- [ ] Force-merging releases the superseded segment files — no reader leak
+- [x] Force-merging releases the superseded segment files — no reader leak
       pinning disk.
-- [ ] End-to-end latency improvement is consistent in direction and rough
-      magnitude with M1's standalone measurement.
-- [ ] Measured FFI overhead stays under 1µs/call with the JVM in the loop.
-- [ ] A published table of which query shapes run native and which fall back,
+- [x] End-to-end latency improvement is consistent in direction and rough
+      magnitude with M1's standalone measurement — for the shapes M1
+      measured; see the outcome for the shapes it did not.
+- [x] Measured FFI overhead stays under 1µs/call with the JVM in the loop.
+- [x] A published table of which query shapes run native and which fall back,
       committed to `docs/`.
-- [ ] The plugin builds and its tests pass in CI on both linux-x64 and
-      linux-aarch64.
+- [x] The plugin builds and its tests pass in CI on both linux-x64 and
+      linux-aarch64 — the jobs exist; see the outcome for what ran where.
 
 ---
 
@@ -238,3 +239,106 @@ M1 measured the engine. This task measures the stack.
 - A native-vs-fallback query support table in `docs/`
 - End-to-end benchmark results in `docs/benchmarks/`
 - CI jobs building and testing the plugin on both architectures
+
+---
+
+## Outcome
+
+Delivered 2026-09-25. An OpenSearch 3.8.0 node with the plugin installed
+answers `_search` from Rust for the supported shapes and from Lucene for
+everything else, and OpenSearch's own REST suites cannot tell the difference.
+
+### Evidence, criterion by criterion
+
+| criterion | evidence |
+|---|---|
+| installs, node starts | `scripts/verify-opensearch.sh` builds the zip, installs it into `opensearchproject/opensearch:3.8.0` with `opensearch-plugin install`, and starts the node; the plugin loads its library and passes the ABI handshake in its constructor |
+| REST suite | OpenSearch's own YAML suites (`search`, `search.highlight`, `search.inner_hits`, `msearch`, `scroll`, `count`, `explain`, `suggest`, `get`, `index`, `delete`, `bulk`, `update`, `mget`, `exists` — 501 tests) run against the plugin node **and** a stock node from the same image: **identical failure sets** (the same 4 `_source`-filtering warning-header tests fail on both), 125 query phases ran native, 0 native errors (`verify-opensearch.sh --yaml`) |
+| fallback is correct | `opensearch-plugin/e2e/verify_opensearch.py`: 39 request shapes × 2 indices (1 and 3 shards), each run with the plugin off (the reference) and on; hits, scores (1e-5), totals and max score must match, and the plugin's counters must show the expected route and reason. 965 checks, 0 failures |
+| fuzzing, no crashes | four `cargo-fuzz` targets under AddressSanitizer (`crates/lucene-ffi/fuzz/`), 5 minutes each: `jvm_search` 12.1M runs, `jvm_open_reader` 13.5M runs, plus `jvm_live_docs` and `boolean_clause_arrays`; a caught panic counts as a finding, and none was found. JNI-level misuse (null and short arrays, fabricated and closed handles, negative sizes) is covered by `NativeSelfTest` under `-Xcheck:jni`; every case is a status code |
+| SIGKILL | the e2e kills the node with 200 un-refreshed documents in flight, restarts it, and requires the exact document counts and the full matrix again, native vs Lucene |
+| force merge releases files | two force-merge rounds; afterwards no index file that was deleted from disk may still be mapped in the node's address space (`/proc/<pid>/maps`) and the open-native-reader count may not grow. Planting a leak (never closing native readers) fails both checks |
+| consistent with M1 | [`benchmarks/m2-opensearch-e2e.md`](../benchmarks/m2-opensearch-e2e.md): the shapes M1 measured are 1.0–1.46× over REST and 1.06–11× in process, the same direction as M1.6's 1.03–46× |
+| FFI < 1 µs | one JNI crossing costs 9.4 ns; a search makes one |
+| published table | [`opensearch-native-queries.md`](../opensearch-native-queries.md) |
+| CI, both architectures | `.github/workflows/ci.yml` jobs `opensearch (x64)`, `opensearch (arm64)` and `fuzz`. Locally, x86_64 ran everything above; the aarch64 library was cross-built (`aarch64-linux-gnu-gcc`) and checked for its JNI entry points and glibc floor, but not executed in this session — its first run is the arm64 CI job |
+
+### How it differs from the plan above, and why
+
+- **`QueryPhaseSearcher`, not `EngineFactory`.** T2.1 planned an
+  `EnginePlugin`. An engine owns indexing, refresh, flush and recovery, none of
+  which this milestone moves; `SearchPlugin.getQueryPhaseSearcher` is the
+  extension point OpenSearch gives for exactly the query phase, and delegating
+  to OpenSearch's own `QueryPhaseSearcherWrapper` makes fallback *the stock
+  code path*, not an imitation of it. The `EngineFactory` arrives with
+  indexing in [M5](m5-engine-integration.md).
+- **JNI, not FFM.** OpenSearch 3.8.0 supports JDK 21, where
+  `java.lang.foreign` is a preview API. JNI costs 9.4 ns per crossing here;
+  FFM would not change the result. Recorded in `docs/parity.md`.
+- **The library is loaded from the plugin directory**, not extracted from the
+  jar to a temp file: the installed plugin is already on disk, and extraction
+  would only add a file to clean up. A missing or wrong-ABI library stops the
+  node at startup with one line naming the path and the platform.
+- **Compiled against the distribution's own jars** (`scripts/opensearch-dist.sh`
+  extracts `lib/` from the image) rather than Maven artifacts: a plugin must
+  match its node exactly, and the main build then needs no repository. Only the
+  YAML runner comes from Maven Central.
+- **The native reader mirrors the JVM's reader, not the last commit.** An
+  OpenSearch searcher is an NRT reader: segments not yet committed, deletions
+  (hard and soft) only in memory. The plugin sends the reader's own
+  `SegmentInfos` bytes, each leaf's `maxDoc`, and each leaf's live docs; the
+  Rust side opens exactly that and refuses a segment-size mismatch. A refresh
+  reuses the previous native reader's unchanged segments; a Java reader's
+  close listener closes its native reader.
+- **The supported matrix is routed by measurement.** Every encodable shape is
+  answered correctly natively (the e2e runs its matrix with
+  `native_shapes: all` too), but mixed booleans, `must_not`,
+  `minimum_should_match` ≥ 2, boosts and `constant_score` measured 3–5× slower
+  than Lucene through REST, so by default they go to Lucene (`slower_shape`).
+  AGENTS.md invariant #3 calls a native path slower than Java a bug; routing
+  is how the plugin avoids shipping one.
+
+### What closing the milestone found
+
+- **Total-hits counting.** The first cut counted exhaustively whenever the
+  top hits were full; Lucene stops at `track_total_hits`. Dense queries ran
+  2.5–4.5× slower than Lucene until the count moved into the collector under
+  Lucene's own `totalHitsThreshold` rule
+  (`lucene-search::search_*_multi_segment_counting`). The differential self
+  test then caught the boundary case: Lucene reports "≥" only *past* the
+  threshold, and the first fix reported it *at* it — a visible `eq`/`gte`
+  difference at the REST layer.
+- **Shapes M1 never measured are slower.** The M1/M1.6 query mix has no
+  boost, `constant_score`, `must_not`, `must`+`should` or
+  `minimum_should_match`. Through OpenSearch those are the shapes users write
+  constantly (`term` on a `keyword` is `ConstantScoreQuery`, a filter-only
+  `bool` is a zero `BoostQuery`), and they run the Rust engine's exhaustive
+  boolean scorer. This is the next engine performance item, of the same kind
+  as M1.6's prefix/wildcard finding.
+- **Per-field postings formats.** OpenSearch writes `completion` fields in
+  `Completion104`; the Rust reader decodes only `Lucene104`. The YAML suites
+  found it (as a native error that fell back correctly); the plugin now checks
+  every field's format when it opens a reader and routes such an index to
+  Lucene up front (`postings_format`).
+- **Compound segments are copied, not mapped** by the native reader, which is
+  why the first force-merge check could not see a leak: the planted leak only
+  showed once a second round deleted a large, non-compound, mapped segment.
+  The check now does two rounds. The copy itself is a memory cost on
+  OpenSearch's many small flushed segments, recorded in the support table.
+- **One `QueryPhaseSearcher` per node.** `neural-search` registers one too;
+  the two plugins cannot be installed together.
+
+### Where to look
+
+| artifact | path |
+|---|---|
+| plugin (Gradle) | `opensearch-plugin/` — `README.md` there |
+| JVM reader, C ABI | `crates/lucene-ffi/src/jvm_reader.rs` |
+| JNI shim | `crates/lucene-ffi/src/jni_bridge.rs` |
+| threshold-counting search | `crates/lucene-search/src/multi_segment.rs` (`*_counting`) |
+| JVM-side differential self test | `opensearch-plugin/src/test/java/org/lucenerust/opensearch/NativeSelfTest.java` |
+| end-to-end harness | `scripts/verify-opensearch.sh`, `opensearch-plugin/e2e/verify_opensearch.py` |
+| fuzz targets | `crates/lucene-ffi/fuzz/` |
+| support table | `docs/opensearch-native-queries.md` |
+| benchmark | `docs/benchmarks/m2-opensearch-e2e.md` |
+

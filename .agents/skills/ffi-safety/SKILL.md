@@ -49,6 +49,15 @@ test. This boundary gets more scrutiny than anything else in the workspace.
   change.
 - Code review: no exported `lucene-ffi` function without a `catch_unwind`
   wrapper and a handle-validation check.
+- **JNI** (`jni_bridge.rs`, for `opensearch-plugin/`) marshals only: it
+  copies Java arrays into Rust memory and calls the matching C-ABI function,
+  which owns validation and the guard. `NativeSelfTest` drives every JNI error
+  path under `-Xcheck:jni` (`gradle -p opensearch-plugin check`); a Java
+  exception left pending is cleared so the caller sees a status, not a throw.
+- `cargo-fuzz` targets over the C ABI under AddressSanitizer
+  (`crates/lucene-ffi/fuzz/`, CI job `fuzz`): a *caught* panic counts as a
+  finding, since every input must get a status the caller can act on.
+- `scripts/verify-opensearch.sh` fails if the node's JVM crashes.
 
 ## Deep dive
 

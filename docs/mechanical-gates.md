@@ -343,3 +343,17 @@ found three checks that could not fail and one that reported "pass" over a
 segment it had never opened. Every rule above was verified by introducing the
 defect it targets, watching it fire, and reverting; `c41-gates-and-record.md`
 records the exact edit and the exact message for each.
+
+## The OpenSearch plugin's gates (M2)
+
+These are not in `scripts/gate.sh` — they need a JVM, Docker, or a nightly
+toolchain — but they are CI jobs (`opensearch`, `fuzz`) and each has been seen
+to fail by planting the defect it targets.
+
+| gate | where | catches | seen to fail by | blind to |
+|---|---|---|---|---|
+| differential self test | `gradle -p opensearch-plugin check` (`NativeSelfTest`) | a native hit, score (1e-5), count or threshold-count that differs from Lucene's `IndexSearcher` on the same NRT reader; a JNI error path that throws or crashes instead of returning a status; a native reader outliving its Java reader | never sending live docs (1,218 failures); dropping `minimumNumberShouldMatch` from the blob (44); never closing native readers (31); reporting "≥" *at* the count threshold instead of past it | shapes its random generator does not produce (phrases, multi-term queries — which the encoder refuses anyway); a divergence smaller than 1e-5 |
+| node matrix | `scripts/verify-opensearch.sh` (`verify_opensearch.py`) | a REST response (hits, scores, totals, max score, highlights, aggs) that differs with the plugin on; a query that runs native when it should fall back, or the reverse, or for the wrong reason | routing drift in both directions during development: `boosted match` running native while the matrix still expected `query_BoostQuery`, and `size 0` answered by the request cache (neither route counted) until the matrix set `request_cache=false` | request shapes not in its matrix; multi-node clusters |
+| reader release | the same script, `lifecycle` | a native reader still open after its Java reader closed, and a merged-away file still mapped | never closing native readers: the open-reader count at round 1, the deleted-file mapping at round 2 | a leak of **compound** segments by mapping, because the native reader copies `.cfs` segments rather than mapping them — only the reader count sees those, which is why both checks exist |
+| YAML suites vs stock | `verify-opensearch.sh --yaml` | any test of OpenSearch's own REST suites that fails differently with the plugin; any native error; a run where nothing ran native | a `postings_format` gap (completion fields) surfaced as a native error — the check that fired was the native-error count, not a test failure, because fallback kept the answer right | suites not in `YAML_SUITES`; failures that also happen on the stock node (4 `_source`-filtering warning-header tests), which it deliberately does not judge |
+| FFI fuzzing | `crates/lucene-ffi/fuzz/`, CI `fuzz` | a panic (even a caught one), ASan-visible memory error, or implausible result on arbitrary query blobs, `SegmentInfos` bytes, live-docs words and clause arrays | not seen: no finding in 25M+ runs; the targets' asserts were checked by feeding them a status-9 and an out-of-range doc ID by hand | the JNI shim (fuzzed through the C ABI it calls, not through a JVM); inputs past the seeds' reach in a 60-second CI run |
