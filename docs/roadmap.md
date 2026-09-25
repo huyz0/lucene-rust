@@ -14,7 +14,7 @@ breakdown with file paths, risks, and exit artifacts — in
 
 ---
 
-## Where we are (2026-08-28)
+## Where we are (2026-08-28; write-path row updated 2026-09-25)
 
 | Area | State |
 |---|---|
@@ -23,7 +23,7 @@ breakdown with file paths, risks, and exit artifacts — in
 | Search (P3) | Broad: boolean/phrase/dismax/span/wildcard/fuzzy/regexp/points/DV-range, sort, facets, collapse, highlight, explain, concurrent search |
 | FFI (P4, Rust half) | 76 `extern "C"` entry points, handle registry, `catch_unwind` on every boundary |
 | FFI (P4, Java half) | **Does not exist** — `opensearch-plugin/` is a 2-line README |
-| Write path (P5) | Substantial but unevenly proven — see M3 |
+| Write path (P5) | **Proven end to end (M3, 2026-09-25)**: real Lucene opens a 120 000-document, seven-segment index written through `IndexWriter`, `CheckIndex` is clean, and 57 queries return the same top 50 as this port's searcher. Concurrency, crash safety and interchangeability are M4 |
 | Engine integration (P6) | Not started |
 | Performance (P7) | **Measured (M1), then swept (M1.6).** The decode kernels are now *faster* than Lucene's: `ForUtil.decode` 2.30×, posting-list `nextDoc()` 1.69×, both against Lucene's own numbers on identical bytes (`scripts/bench-micro.sh`). `DirectReader.get` 1.82×. End-to-end queries remain 3×–6× slower and the M1 gate is still FAIL at 1/20. **Reader open, however, is 135× slower than Lucene** (560 ms vs 4.2 ms on 15 segments) because the whole term dictionary is materialized at open — an M2/M5 blocker no query benchmark could have found. Recall now matches Java exactly on **both** corpus variants. See `docs/benchmarks/verdict-m1.6.md` and `docs/sweep/findings.md` |
 | CI | **Added in M0** — `.github/workflows/ci.yml`: gate on x64 + arm64, plus fixture and write-path jobs |
@@ -193,7 +193,7 @@ produces user-visible value. The Rust side is already built; the entire gap is J
 
 ---
 
-## M3 — A Rust-written index that real Lucene can read
+## M3 — A Rust-written index that real Lucene can read  ·  delivered 2026-09-25
 
 > Full detail, task breakdown and risks: [`docs/milestones/m3-write-path-proven.md`](milestones/m3-write-path-proven.md)
 

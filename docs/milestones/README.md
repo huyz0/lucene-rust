@@ -15,7 +15,7 @@ and the artifacts that must exist before it can be called done.
 | M1.5 | [Lazy iteration on the hot paths](m1-5-lazy-iteration.md) | Stop materializing posting lists; re-run the gate | M–L | ✅ **delivered — 5.8× median, gate still FAIL** |
 | M1.6 | [Lucene source sweep](m1-6-lucene-sweep.md) | Read the port file by file against Lucene 10.5.0; find parity gaps and un-done optimisations, and measure each component against Lucene's own number | M–L | ✅ **delivered — median 0.15×→0.585×, 19→16 queries slower than Java, recall 13→0 mismatches, reader open 552→33 ms and 1,690→60 MB, phrase 0.04×→0.58×. Decode kernels 1.9×–2.4× *faster* than Lucene. M1 gate still FAIL; one characterised divergence remains (documents scored)** |
 | M2 | [OpenSearch read path](m2-opensearch-read-path.md) | A node answers `_search` from Rust over JNI/FFM | M–L | not started |
-| M3 | [Write path proven](m3-write-path-proven.md) | Real Lucene reads a full Rust-written index | L | not started |
+| M3 | [Write path proven](m3-write-path-proven.md) | Real Lucene reads a full Rust-written index | L | ✅ **delivered 2026-09-25** — real Lucene opens a 120k-doc, 7-segment Rust-written index, `CheckIndex` clean, 57 queries return identical top-50s (scores within 2.4e-7); the term dictionary is now a real block tree whose block structure matches Lucene's own writer |
 | M4 | [Write path hardened](m4-write-path-hardened.md) | Crash-safe, concurrent, interoperable both directions | L | not started |
 | M5 | [Engine integration](m5-engine-integration.md) | A shard fully served by Rust — indexing and search | XL | not started |
 | M6 | [Production candidate](m6-production-candidate.md) | Soak-proven, perf-held, rollback-documented | M | not started |

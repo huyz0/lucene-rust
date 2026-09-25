@@ -138,28 +138,28 @@ pub(crate) const POSTINGS_BLOCK_SIZE: i32 = 256;
 /// `TrieBuilder.SIGN_NO_CHILDREN` — a leaf trie node (no children).
 pub(crate) const SIGN_NO_CHILDREN: u32 = 0x00;
 /// `TrieBuilder.SIGN_SINGLE_CHILD_WITH_OUTPUT`.
-const SIGN_SINGLE_CHILD_WITH_OUTPUT: u32 = 0x01;
+pub(crate) const SIGN_SINGLE_CHILD_WITH_OUTPUT: u32 = 0x01;
 /// `TrieBuilder.SIGN_SINGLE_CHILD_WITHOUT_OUTPUT`.
-const SIGN_SINGLE_CHILD_WITHOUT_OUTPUT: u32 = 0x02;
+pub(crate) const SIGN_SINGLE_CHILD_WITHOUT_OUTPUT: u32 = 0x02;
 /// `TrieBuilder.SIGN_MULTI_CHILDREN`.
 pub(crate) const SIGN_MULTI_CHILDREN: u32 = 0x03;
 /// `TrieBuilder.LEAF_NODE_HAS_TERMS` (`1 << 5`).
 pub(crate) const LEAF_NODE_HAS_TERMS: u32 = 1 << 5;
 /// `TrieBuilder.LEAF_NODE_HAS_FLOOR` (`1 << 6`).
-const LEAF_NODE_HAS_FLOOR: u32 = 1 << 6;
+pub(crate) const LEAF_NODE_HAS_FLOOR: u32 = 1 << 6;
 /// `TrieBuilder.NON_LEAF_NODE_HAS_TERMS` (`1L << 1`) — the equivalent flag
 /// packed into a non-leaf node's *encoded output fp* (`encodeFP`), not its
 /// header byte, since non-leaf nodes' header bits are all spoken for by
 /// child-pointer bookkeeping.
-const NON_LEAF_NODE_HAS_TERMS: u64 = 1 << 1;
+pub(crate) const NON_LEAF_NODE_HAS_TERMS: u64 = 1 << 1;
 /// `TrieBuilder.NON_LEAF_NODE_HAS_FLOOR` (`1L << 0`).
-const NON_LEAF_NODE_HAS_FLOOR: u64 = 1;
+pub(crate) const NON_LEAF_NODE_HAS_FLOOR: u64 = 1;
 /// `TrieBuilder.ChildSaveStrategy.REVERSE_ARRAY.code`.
-const CHILD_STRATEGY_REVERSE_ARRAY: u32 = 0;
+pub(crate) const CHILD_STRATEGY_REVERSE_ARRAY: u32 = 0;
 /// `TrieBuilder.ChildSaveStrategy.ARRAY.code`.
 pub(crate) const CHILD_STRATEGY_ARRAY: u32 = 1;
 /// `TrieBuilder.ChildSaveStrategy.BITS.code`.
-const CHILD_STRATEGY_BITS: u32 = 2;
+pub(crate) const CHILD_STRATEGY_BITS: u32 = 2;
 
 /// The fewest bytes one `.tmd` per-field record can occupy: nine
 /// single-byte-minimum values -- `fieldNumber`, `numTerms`,
