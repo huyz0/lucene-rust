@@ -408,6 +408,31 @@ impl<'d> IndexFileDeleter<'d> {
         self.apply_policy()
     }
 
+    /// `IndexCommit.delete()` from a caller-run deletion policy -- how
+    /// OpenSearch's `CombinedDeletionPolicy` drives a writer whose policy is
+    /// [`DeletionPolicy::KeepAll`]: each named commit point is dropped and its
+    /// files decRef'd, deleting whatever nothing else still names. The newest
+    /// commit is never dropped (Java's `IndexFileDeleter` asserts a policy
+    /// leaves it), and a generation with no live commit point is ignored.
+    pub fn drop_commits(&mut self, generations: &[i64]) -> Result<()> {
+        let newest = self.commits.last().map(|c| c.generation);
+        let (doomed, kept): (Vec<CommitPoint>, Vec<CommitPoint>) =
+            std::mem::take(&mut self.commits)
+                .into_iter()
+                .partition(|c| Some(c.generation) != newest && generations.contains(&c.generation));
+        self.commits = kept;
+        for commit in doomed {
+            self.dec_ref_all(&commit.files)?;
+        }
+        self.forget_dead_segments();
+        Ok(())
+    }
+
+    /// The generations of every live commit point, oldest first.
+    pub fn commit_generations(&self) -> Vec<i64> {
+        self.commits.iter().map(|c| c.generation).collect()
+    }
+
     /// Port of `IndexFileDeleter.refresh()`: re-list the directory and delete
     /// every index-looking file the deleter does not currently hold a reference
     /// to. Java calls this from `rollbackInternal` -- after an abort there may be

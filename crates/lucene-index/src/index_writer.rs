@@ -465,6 +465,10 @@ pub enum Error {
     /// `IllegalArgumentException("at least one soft delete must be present")`.
     #[error("soft_update_document: at least one soft delete must be present")]
     NoSoftDeletesSupplied,
+    /// `IndexWriter.forceMerge`'s `IllegalArgumentException("maxNumSegments
+    /// must be >= 1; got 0")`.
+    #[error("force_merge: max_num_segments must be >= 1; got {0}")]
+    InvalidMaxNumSegments(usize),
     /// `IndexWriter.updateDocValues` with an empty `updates` array buffers a
     /// node that can never match anything; Java's `DocValuesUpdate[0]` is a
     /// silent no-op that still burns a sequence number. Rejected here, because
@@ -791,6 +795,79 @@ pub(crate) struct MergePlan {
     merged_id: [u8; ID_LENGTH],
     /// The sources' files, held by the deleter until the merge ends.
     held: Vec<String>,
+    /// Which soft-deleted documents survive this merge -- see
+    /// [`IndexWriter::set_soft_deletes_retention`]. `None` keeps them all.
+    retention: Option<SoftDeletesRetention>,
+}
+
+/// `SoftDeletesRetentionMergePolicy` with OpenSearch's retention query,
+/// `LongPoint.newRangeQuery("_seq_no", minRetainedSeqNo, Long.MAX_VALUE)`
+/// (`SoftDeletesPolicy.getRetentionQuery`): a soft-deleted document survives a
+/// merge only while its sequence number is at least `min_retained_seq_no`.
+///
+/// The range is read off the field's NUMERIC doc values rather than its
+/// points; OpenSearch's `SeqNoFieldMapper` indexes the same value both ways.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SoftDeletesRetention {
+    /// The NUMERIC doc-values field carrying each document's sequence number.
+    pub seq_no_field: String,
+    /// The lowest sequence number whose soft-deleted documents are kept.
+    pub min_retained_seq_no: i64,
+}
+
+/// The live documents a merge should read from one source under `retention`:
+/// `live` (its hard deletes) minus every soft-deleted document whose sequence
+/// number is absent or below the retained minimum. A segment without the
+/// soft-deletes column comes back unchanged.
+fn apply_soft_deletes_retention(
+    live: Option<FixedBitSet>,
+    max_doc: i32,
+    infos: &lucene_codecs::field_infos::FieldInfos,
+    columns: &SourceDocValueColumns,
+    retention: &SoftDeletesRetention,
+) -> Result<Option<FixedBitSet>> {
+    let numeric = |pred: &dyn Fn(&FieldInfo) -> bool| {
+        let field = infos
+            .fields
+            .iter()
+            .find(|f| pred(f) && f.doc_values_type == DocValuesType::Numeric)?;
+        let &(_, at) = columns.per_field.iter().find(|(n, _)| *n == field.number)?;
+        let (meta, data) = &columns.columns[at];
+        Some((data.as_slice(), meta.numeric_entry(field.number)?))
+    };
+    let Some((soft_data, soft_entry)) = numeric(&|f| f.soft_deletes_field) else {
+        return Ok(live);
+    };
+    let seq = numeric(&|f| f.name == retention.seq_no_field);
+    let len = usize::try_from(max_doc).unwrap_or(0);
+    let mut out = live.unwrap_or_else(|| {
+        let mut all = FixedBitSet::new(len);
+        for doc in 0..len {
+            // FBS: `all` was just built with `len` bits and `doc < len`.
+            all.set(doc);
+        }
+        all
+    });
+    let mut soft = doc_values::NumericReader::new(soft_data, soft_entry);
+    let mut seq = seq.map(|(data, entry)| doc_values::NumericReader::new(data, entry));
+    let explicit_err = |e| Error::Explicit(format!("reading a retention column: {e}"));
+    for doc in 0..out.len() {
+        if !out.get(doc) {
+            continue;
+        }
+        let id = i32::try_from(doc).unwrap_or(i32::MAX);
+        if soft.value(id).map_err(explicit_err)?.is_none() {
+            continue;
+        }
+        let seq_no = match seq.as_mut() {
+            Some(reader) => reader.value(id).map_err(explicit_err)?,
+            None => None,
+        };
+        if seq_no.is_none_or(|s| s < retention.min_retained_seq_no) {
+            out.clear(doc);
+        }
+    }
+    Ok(Some(out))
 }
 
 /// What [`IndexingConfig::run_merge`] produced.
@@ -1177,6 +1254,20 @@ impl IndexingConfig {
                 ))
             } else {
                 None
+            };
+
+            // `SoftDeletesRetentionMergePolicy`: a soft-deleted document
+            // the retention policy no longer needs is dropped like a hard
+            // delete; one it still needs is carried over, soft-deleted.
+            let live_docs = match &plan.retention {
+                Some(retention) => apply_soft_deletes_retention(
+                    live_docs,
+                    si.doc_count,
+                    &current_infos,
+                    &doc_values,
+                    retention,
+                )?,
+                None => live_docs,
             };
 
             // Computed before the push, because the struct literal moves
@@ -2297,12 +2388,14 @@ fn count_soft_deletes(
     } else {
         None
     };
+    let mut values = doc_values::NumericReader::new(&data, entry);
     let mut count = 0i32;
     for doc in 0..si.doc_count {
         if live.as_ref().is_some_and(|l| !l.get_doc(doc)) {
             continue;
         }
-        if doc_values::numeric_value(&data, entry, doc)
+        if values
+            .value(doc)
             .map_err(|e| Error::Explicit(format!("reading the soft-deletes column: {e}")))?
             .is_some()
         {
@@ -2425,6 +2518,8 @@ pub struct IndexWriter<'d> {
     /// the `(del_gen, doc_values_gen, field_infos_gen)` it was computed at --
     /// see [`IndexWriter::stamp_soft_delete_counts`].
     soft_delete_counts: std::collections::HashMap<String, (SoftDeleteKey, i32)>,
+    /// See [`IndexWriter::set_soft_deletes_retention`].
+    soft_deletes_retention: Option<SoftDeletesRetention>,
     /// `SegmentInfo.setHasBlocks()` for the segment currently being buffered:
     /// set by any [`IndexWriter::add_documents`]/
     /// [`IndexWriter::update_documents`] call that buffers more than one
@@ -3112,6 +3207,7 @@ impl<'d> IndexWriter<'d> {
             pending_vectors: Vec::new(),
             pending_explicit: Vec::new(),
             soft_delete_counts,
+            soft_deletes_retention: None,
             pending_has_blocks: false,
             segment_versions: std::collections::HashMap::new(),
         })
@@ -3963,6 +4059,18 @@ impl<'d> IndexWriter<'d> {
         Ok(())
     }
 
+    /// `SoftDeletesRetentionMergePolicy`: from now on, a merge drops a
+    /// soft-deleted document unless `retention` still needs it (see
+    /// [`SoftDeletesRetention`]). `None` -- the default -- keeps every
+    /// soft-deleted document, which never loses history but never reclaims
+    /// it either. Hard deletes are always dropped.
+    ///
+    /// Takes effect for merges that begin after the call, as Java's retention
+    /// query is evaluated when a merge opens its readers.
+    pub fn set_soft_deletes_retention(&mut self, retention: Option<SoftDeletesRetention>) {
+        self.soft_deletes_retention = retention;
+    }
+
     /// Opts this writer into automatic merge triggering (see module doc
     /// comment): `Some(config)` makes every subsequent
     /// [`IndexWriter::commit`] call consult
@@ -4294,6 +4402,47 @@ impl<'d> IndexWriter<'d> {
     /// Java's `deleter.revisitPolicy()`.
     pub fn set_deletion_policy(&mut self, policy: DeletionPolicy) -> Result<()> {
         self.deleter.set_policy(policy)?;
+        Ok(())
+    }
+
+    /// The generations of the commit points this writer's deleter still
+    /// holds, oldest first -- what `IndexWriter`'s deletion policy is handed
+    /// as its `List<IndexCommit>`. Under [`DeletionPolicy::KeepAll`] the
+    /// caller prunes them with [`IndexWriter::delete_commits`].
+    pub fn commit_generations(&self) -> Vec<i64> {
+        self.deleter.commit_generations()
+    }
+
+    /// `IndexCommit.delete()` for each named generation, from a deletion
+    /// policy the caller runs (OpenSearch's `CombinedDeletionPolicy`). The
+    /// newest commit always survives; files still named by a surviving commit,
+    /// by the writer's uncommitted view or by a [`IndexWriter::hold_commit`]
+    /// stay on disk.
+    pub fn delete_commits(&mut self, generations: &[i64]) -> Result<()> {
+        self.deleter.drop_commits(generations)?;
+        Ok(())
+    }
+
+    /// Pins the segment files of commit `generation` -- what an open reader
+    /// on that commit does to Java's `IndexFileDeleter` (`incRefDeleter`), so
+    /// neither a later merge nor [`IndexWriter::delete_commits`] removes a
+    /// file the reader, or a replica copying from it, still needs. The
+    /// `segments_N` itself is not pinned: a reader has already read it.
+    ///
+    /// Returns the pinned files; hand them back to
+    /// [`IndexWriter::release_files`] exactly once.
+    pub fn hold_commit(&mut self, generation: i64) -> Result<Vec<String>> {
+        let name = lucene_store::directory::segments_file_name(generation).ok_or(
+            Error::Explicit(format!("no commit has generation {generation}")),
+        )?;
+        let infos = segment_infos::parse(&self.dir.open(&name)?, generation)?;
+        Ok(self.deleter.hold_segment_files(&infos.segments)?)
+    }
+
+    /// Releases a [`IndexWriter::hold_commit`] pin, deleting whatever nothing
+    /// else still names.
+    pub fn release_files(&mut self, files: &[String]) -> Result<()> {
+        self.deleter.release_files(files)?;
         Ok(())
     }
 
@@ -7209,6 +7358,56 @@ impl<'d> IndexWriter<'d> {
         }
     }
 
+    /// `IndexWriter.forceMerge(maxNumSegments)` over the committed segments,
+    /// `TieredMergePolicy.findForcedMerges`' outcome without its size cap:
+    /// while more than `max_num_segments` remain, the smallest are merged into
+    /// one, and a lone segment left with hard deletes is rewritten when
+    /// `max_num_segments` is 1. Each merge publishes its own commit carrying
+    /// the current commit data. Buffered and flushed-but-uncommitted
+    /// documents are not part of it -- commit first, as OpenSearch's engine
+    /// does before a force merge.
+    pub fn force_merge(&mut self, max_num_segments: usize) -> Result<()> {
+        if max_num_segments == 0 {
+            return Err(Error::InvalidMaxNumSegments(max_num_segments));
+        }
+        loop {
+            let mut stats = self.segment_stats()?;
+            if stats.len() <= max_num_segments {
+                if let [only] = stats.as_slice() {
+                    if max_num_segments == 1 && only.del_count > 0 {
+                        self.execute_merge(std::slice::from_ref(&only.name))?;
+                    }
+                }
+                return Ok(());
+            }
+            stats.sort_by_key(|s| s.size_bytes);
+            // ARITH: `stats.len() > max_num_segments >= 1` here, so the
+            // difference is at least 1 and the `+ 1` at most `stats.len()`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let take = stats.len() - max_num_segments + 1;
+            let names: Vec<String> = stats.into_iter().take(take).map(|s| s.name).collect();
+            self.execute_merge(&names)?;
+        }
+    }
+
+    /// `IndexWriter.forceMergeDeletes()`: every committed segment carrying a
+    /// hard or soft delete is merged, in one merge, so hard deletes and the
+    /// soft-deleted documents [`IndexWriter::set_soft_deletes_retention`] no
+    /// longer retains are reclaimed. A no-op when no segment has either.
+    pub fn force_merge_deletes(&mut self) -> Result<()> {
+        let names: Vec<String> = self
+            .segment_infos
+            .segments
+            .iter()
+            .filter(|s| s.del_count > 0 || s.soft_del_count > 0)
+            .map(|s| s.segment_name.clone())
+            .collect();
+        if names.is_empty() {
+            return Ok(());
+        }
+        self.execute_merge(&names)
+    }
+
     /// The start of a merge, `IndexWriter.mergeInit`: claim the merged
     /// segment's name and id, and snapshot each source's commit info -- its
     /// deletion and doc-values generations as the merge will read them.
@@ -7247,6 +7446,7 @@ impl<'d> IndexWriter<'d> {
             merged_name,
             merged_id,
             held,
+            retention: self.soft_deletes_retention.clone(),
         })
     }
 
