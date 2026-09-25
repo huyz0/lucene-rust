@@ -48,11 +48,12 @@ Acceptance:
 - [x] Every mixed shape the M2 REST benchmark measured slower (boosts,
       `must_not`, `must` + `should`, `constant_score`, nesting) at least as
       fast as Lucene in process, on the merged index — 1.3× to 6.7×.
-- [ ] Every shape in the query file at least 1.0× on both indexes. Open:
-      q40 (`+t0 ?t1`) on the 15-segment index, 0.91×; q43
-      (`minimum_should_match` 2 of 4), 0.96–1.02×; q08/q11 (a pure
-      conjunction and disjunction of mid-frequency terms, unchanged by R1),
-      0.90–0.98× on the merged index; q25 (fuzzy, R3's), 0.76× segmented.
+- [ ] Every shape in the query file at least 1.0× on both indexes. After
+      the follow-up (impacts skipping for a required optional clause; an
+      inline bit-set `advance` that keeps the frequency rank): q40 2.45×
+      merged and 1.23× segmented; q43 1.06×; q07/q08/q11 1.06–1.24×; q14
+      0.93–1.09× (within the Java runs' spread). Open: q25 (fuzzy, R3's),
+      0.76× segmented.
 
 ## Benchmark
 
@@ -68,7 +69,7 @@ matched on every query.
 
 | query | shape | merged | 15 segments |
 |---|---|---|---|
-| q40 | `+t0 ?t1` | 1.42× | 0.91× |
+| q40 | `+t0 ?t1` | 2.45× | 1.23× |
 | q41 | `+t0 -t1` | 2.49× | 2.45× |
 | q42 | `?t1 ?t2 -t0` | 2.16× | 2.33× |
 | q43 | 2 of `t0 t1 t2 t3` | 1.02× | 0.96× |

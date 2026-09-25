@@ -4070,12 +4070,12 @@ impl<'a> LazyDocsCursor<'a> {
     pub fn advance(&mut self, target: i32) -> Result<i32> {
         self.bits_stepped = false;
         let (pos, len) = (self.block_pos, self.block_len);
-        // A docs-only cursor on a kept bit set, with the target inside the
-        // block the header describes: Lucene's `docBitSet.nextSetBit(target -
-        // docBitSetBase)`, inline, with no rank to keep.
+        // A cursor on a kept bit set, with the target inside the block the
+        // header describes: Lucene's `docBitSet.nextSetBit(target -
+        // docBitSetBase)`, inline -- plus, when frequencies are read, the
+        // document's rank among the block's set bits.
         if let Some((base, n)) = self.bits {
-            if !self.needs_freq
-                && target > self.doc_id
+            if target > self.doc_id
                 && target <= self.prev_doc_id
                 && self.pending.is_none()
                 && target > base
@@ -4085,6 +4085,25 @@ impl<'a> LazyDocsCursor<'a> {
                 if let Some(bit) = lucene_util::fixed_bit_set::next_set_bit_in_words(words, rel) {
                     let doc = base.wrapping_add(bit as i32);
                     if doc <= self.prev_doc_id {
+                        if self.needs_freq {
+                            // The rank keeps `block_freqs[block_pos]` this
+                            // document's frequency: `bits_advance`'s
+                            // cumulative popcount, inline.
+                            // ARITH: `bit < 128 * 64`, so `bit >> 6 < 128`
+                            // indexes both arrays; the shift is at most 63;
+                            // the sum is at most 8192.
+                            #[allow(clippy::arithmetic_side_effects)]
+                            let rank = {
+                                let w = bit >> 6;
+                                let below = (1u64 << (bit & 63)) - 1;
+                                usize::from(self.scratch.word_ranks[w])
+                                    + (words[w] & below).count_ones() as usize
+                            };
+                            if rank >= self.block_len {
+                                return self.advance_slow(target);
+                            }
+                            self.block_pos = rank;
+                        }
                         self.doc_id = doc;
                         return Ok(doc);
                     }
