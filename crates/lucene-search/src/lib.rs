@@ -201,6 +201,7 @@ pub mod collector;
 pub mod directory_reader;
 pub mod doc_value_query;
 pub mod docid_set;
+mod exec;
 pub mod explain;
 pub mod facets;
 pub mod field_norms;
@@ -2764,119 +2765,6 @@ fn dismax_scores(
     Ok(result)
 }
 
-/// Scored sibling of [`search_boolean_query`]: computes the same matched-doc set
-/// (`must`'s conjunction, else `should`'s disjunction, minus `must_not`'s
-/// disjunction — identical rules to [`search_boolean_query`], see this module's
-/// doc comment), but reports each matched doc's score as the **sum of its BM25
-/// score across every `must`/`should` clause it satisfies** (mirroring real
-/// Lucene's additive `BooleanScorer`; `must_not` clauses never contribute to the
-/// score, matching `Occur.MUST_NOT`'s filter-only contract). A `Clause::Boolean`
-/// clause contributes its own nested score recursively — see [`clause_scores`]'s
-/// doc comment for the exact recursive rule and how it stays correct to
-/// arbitrary nesting depth.
-///
-/// `norms`: real per-doc/avg field length, keyed by field name, for every
-/// scored (`must`/`should`) clause's field, at every nesting depth — a clause
-/// whose field has no entry in this map (or when `norms` itself is `None`) falls
-/// back to [`similarity::UNNORMED_FIELD_LENGTH`] for that clause, same documented
-/// approximation as [`term_doc_scores`]. A `BooleanQuery`'s clauses can span
-/// multiple fields, unlike a single [`TermQuery`], hence the map instead of one
-/// `FieldNorms`.
-///
-/// `pos_in`/`pay_in`: see [`search_boolean_query`]'s doc comment -- same
-/// contract, needed only when `query` contains a multi-term `Clause::Phrase` at
-/// any nesting depth.
-/// Lazy disjunction: the pure-`should`, all-[`Clause::Term`] shape, executed
-/// without materializing any clause's doc list.
-///
-/// The conjunction sibling of this is [`try_conjunction_lazy`]; the same
-/// argument applies. [`resolve_clause_docs`] builds a `Vec<i32>` per clause and
-/// then unions them, so a disjunction pays for every posting of every clause
-/// plus a `HashMap` of every matching doc, for a query that wants the top 50.
-///
-/// Here every cursor advances in lock-step over the union: the smallest
-/// current doc across the cursors is the next candidate, every cursor sitting
-/// on it contributes its BM25 term, and only those cursors advance. Cursor
-/// selection is a linear scan rather than a heap on purpose -- real
-/// disjunctions have a handful of clauses, and a linear minimum over 2-4
-/// entries beats the heap's bookkeeping.
-///
-/// This does **not** prune: it still visits every doc in the union, so it is a
-/// smaller win than the conjunction's. Removing that visit needs block-max
-/// WAND, which is a larger change and is not in this milestone.
-///
-/// `minimum_should_match` is deliberately excluded from the gate: honouring it
-/// requires counting matching clauses per doc, which is the general path's job.
-/// Returns `Ok(false)` when the query does not have this shape.
-fn try_disjunction_lazy<C: ScoringCollector>(
-    fields: &BlockTreeFields,
-    doc_in: Option<&DocInput<'_>>,
-    live_docs: Option<&FixedBitSet>,
-    query: &BooleanQuery,
-    norms: Option<&HashMap<String, FieldNorms<'_>>>,
-    global: Option<&GlobalStats>,
-    collector: &mut C,
-) -> Result<bool> {
-    if query.should.is_empty()
-        || !query.must.is_empty()
-        || !query.filter.is_empty()
-        || !query.must_not.is_empty()
-        || query.minimum_should_match > 1
-    {
-        return Ok(false);
-    }
-    let mut terms = Vec::with_capacity(query.should.len());
-    for clause in &query.should {
-        match clause {
-            Clause::Term(t) => terms.push(t),
-            _ => return Ok(false),
-        }
-    }
-    let Some(doc_in) = doc_in else {
-        return Ok(false);
-    };
-
-    // `MaxScoreBulkScorer`: per window, the clauses whose summed block maxima
-    // cannot reach the threshold on their own become non-essential and are
-    // never iterated -- they are only `advance`d to the documents the
-    // essential clauses produce, and only after those documents' partial
-    // scores survive the same bound. See `bulk_scorer`.
-    let mut legs: Vec<bulk_scorer::TermLeg<'_>> = Vec::with_capacity(terms.len());
-    for t in &terms {
-        let Some(field_terms) = fields.field(&t.field) else {
-            continue; // absent field contributes nothing to a union
-        };
-        let Some(seeked) = field_terms.seek_term_state(&t.term)? else {
-            continue; // absent term likewise
-        };
-        let stats = seeked.stats;
-        // A pulsed single-document term opens as a one-document cursor
-        // (`lazy_postings_for`), so it joins the union like any other leg.
-        let cursor = field_terms.lazy_postings_for(
-            &seeked,
-            doc_in,
-            lucene_codecs::postings::PostingsFlags::Freqs,
-        )?;
-        let (doc_freq, doc_count) = match global.and_then(|g| g.term(&t.field, &t.term)) {
-            Some(g) => (g.doc_freq, g.doc_count),
-            None => (stats.doc_freq as i64, field_terms.doc_count as i64),
-        };
-        // `idf` is a `ln()`, computed once per clause and carried as the
-        // scorer's weight, as `BM25Similarity.scorer` does.
-        let field_norms = norms.and_then(|m| m.get(&t.field));
-        legs.push(bulk_scorer::TermLeg::scoring(
-            cursor,
-            similarity::idf(doc_freq, doc_count),
-            field_norms.map(|n| n.cursor()),
-            field_norms.map_or(similarity::UNNORMED_FIELD_LENGTH, |n| n.avg_field_length),
-            stats.doc_freq as i64,
-            (stats.total_term_freq - stats.doc_freq as i64 + 1).max(1) as f32,
-        ));
-    }
-    bulk_scorer::score_disjunction(&mut legs, live_docs, collector)?;
-    Ok(true)
-}
-
 /// Reader-wide term and collection statistics, for scoring a multi-segment
 /// search the way Lucene does.
 ///
@@ -2982,157 +2870,6 @@ impl GlobalStats {
     }
 }
 
-/// Lazy leapfrog conjunction: the pure-`must`, all-[`Clause::Term`] shape,
-/// executed without materializing any clause's doc list.
-///
-/// ## Why this exists
-///
-/// [`search_boolean_query_scored`] resolves each clause through
-/// [`resolve_clause_docs`], which returns a `Vec<i32>` of *every* matching doc
-/// before any intersection happens. Its cost therefore tracks the **most
-/// frequent** clause. Real Lucene's `ConjunctionDISI` advances on the
-/// **rarest**, so a conjunction containing a selective term is cheap.
-///
-/// M1 measured the difference: `and t0 t1z4`, whose rarest term matches a
-/// handful of documents, cost more than scanning `t0` alone -- 20x slower than
-/// Java. See `docs/benchmarks/verdict.md`.
-///
-/// ## The algorithm
-///
-/// Standard leapfrog. Cursors are ordered rarest-first by `docFreq` so the
-/// lead cursor is the most selective; every other cursor is `advance()`d to the
-/// lead's doc, and any cursor that overshoots becomes the new candidate. The
-/// per-doc work is then O(clauses), not O(postings).
-///
-/// Scores are summed across clauses, matching
-/// [`search_boolean_query_scored`]'s `must` handling exactly -- the same
-/// `doc_freq`/`doc_count`/`freq`/`field_length` inputs to
-/// [`similarity::score_with_params`], so this is an execution change and not a
-/// scoring change.
-///
-/// Returns `Ok(false)` when the query does not have this shape, leaving the
-/// caller to fall back.
-fn try_conjunction_lazy<C: ScoringCollector>(
-    fields: &BlockTreeFields,
-    doc_in: Option<&DocInput<'_>>,
-    live_docs: Option<&FixedBitSet>,
-    query: &BooleanQuery,
-    norms: Option<&HashMap<String, FieldNorms<'_>>>,
-    global: Option<&GlobalStats>,
-    collector: &mut C,
-) -> Result<bool> {
-    // Shape gate: pure conjunction of leaf terms, nothing else. `filter`
-    // clauses are admitted -- they are legs of the same conjunction, just
-    // non-scoring ones (Java: `BooleanScorerSupplier.req(FILTER, MUST)` puts
-    // both in `required` and only the `MUST` legs in `requiredScoring`).
-    //
-    // A **filter-only** conjunction is admitted too, and must be: without it,
-    // `#body:t0 #body:t1` fell to the general path, which materializes every
-    // clause's whole doc list before intersecting -- 129.5ms against 8.8ms for
-    // the all-`MUST` form of the same query on the benchmark corpus, i.e. the
-    // clause that is supposed to be *cheaper* was 15x dearer
-    // (`benches/filter_vs_must.rs`).
-    if (query.must.is_empty() && query.filter.is_empty())
-        || !query.should.is_empty()
-        || !query.must_not.is_empty()
-    {
-        return Ok(false);
-    }
-    let mut terms = Vec::with_capacity(query.must.len() + query.filter.len());
-    for (clause, scoring) in query
-        .must
-        .iter()
-        .map(|c| (c, true))
-        .chain(query.filter.iter().map(|c| (c, false)))
-    {
-        match clause {
-            Clause::Term(t) => terms.push((t, scoring)),
-            _ => return Ok(false),
-        }
-    }
-    let Some(doc_in) = doc_in else {
-        return Ok(false);
-    };
-
-    // Resolve every term up front: a missing term means the conjunction is
-    // empty, which is itself the answer.
-    //
-    // `BooleanClause.isScoring()`, as a type: a `FILTER` leg's cursor is
-    // opened with `PostingsFlags::DocsOnly`, which fills every frequency with
-    // `1`, so reading one would be silently wrong rather than merely wasteful.
-    // It becomes a `TermLeg::filter`, which has no weight and no norms and
-    // never asks the cursor for a frequency -- exactly how
-    // `BooleanScorerSupplier` hands `BlockMaxConjunctionBulkScorer` its filters,
-    // as zero-score scorers. That is the whole cost difference between
-    // `#body:dog` and `+body:dog`.
-    let mut legs: Vec<bulk_scorer::TermLeg<'_>> = Vec::with_capacity(terms.len());
-    for (t, scoring) in &terms {
-        let scoring = *scoring;
-        let Some(field_terms) = fields.field(&t.field) else {
-            return Ok(true); // field absent: no matches, and we handled it
-        };
-        let Some(seeked) = field_terms.seek_term_state(&t.term)? else {
-            return Ok(true); // term absent: no matches
-        };
-        let stats = seeked.stats;
-        // docFreq <= 1 is pulsed into the term dictionary: the term has no .doc
-        // bytes at all, so lazy_postings cannot open a cursor for it. Hand the
-        // whole query to the general path, which reads it from the term
-        // metadata. Cheap to give up on -- such a conjunction matches at most
-        // one document.
-        if stats.doc_freq <= 1 {
-            return Ok(false);
-        }
-        // `TermsEnum.postings(reuse, flags)`: a filter leg reads doc ids and
-        // nothing else, so the `.doc` file's frequency blocks are skipped
-        // (`PForUtil.skip`) rather than unpacked.
-        let flags = if scoring {
-            lucene_codecs::postings::PostingsFlags::Freqs
-        } else {
-            lucene_codecs::postings::PostingsFlags::DocsOnly
-        };
-        let cursor = field_terms.lazy_postings_for(&seeked, doc_in, flags)?;
-        let cost = stats.doc_freq as i64;
-        if !scoring {
-            legs.push(bulk_scorer::TermLeg::filter(cursor, cost));
-            continue;
-        }
-        // Reader-wide idf where available, matching Lucene's per-leaf scoring.
-        let (doc_freq, doc_count) = match global.and_then(|g| g.term(&t.field, &t.term)) {
-            Some(g) => (g.doc_freq, g.doc_count),
-            None => (stats.doc_freq as i64, field_terms.doc_count as i64),
-        };
-        let field_norms = norms.and_then(|m| m.get(&t.field));
-        legs.push(bulk_scorer::TermLeg::scoring(
-            cursor,
-            similarity::idf(doc_freq, doc_count),
-            field_norms.map(|n| n.cursor()),
-            field_norms.map_or(similarity::UNNORMED_FIELD_LENGTH, |n| n.avg_field_length),
-            cost,
-            (stats.total_term_freq - stats.doc_freq as i64 + 1).max(1) as f32,
-        ));
-    }
-
-    // `BlockMaxConjunctionBulkScorer`: until the collector publishes a
-    // threshold, a plain leapfrog scoring every match; after it, one window
-    // (the cheapest clause's block) at a time -- skipped outright when the
-    // clauses' summed block maxima cannot compete, otherwise scored lead
-    // first, with every document whose partial score plus the remaining
-    // clauses' maxima cannot compete dropped *before* the next clause is
-    // advanced to it. See `bulk_scorer`.
-    //
-    // A **filter-only** conjunction prunes too: every document scores 0, so
-    // the summed bound is 0 and a window is skipped the moment the queue fills
-    // on a bottom score of 0 -- Lucene's `TopScoreDocCollector` publishes
-    // `Math.nextUp(0f)` and skips a block whose max score is below it. Correct
-    // independently of Java: documents arrive ascending, `HitQueue` breaks a
-    // score tie in favour of the lower doc id, and the queue is full, so no
-    // later document scoring 0 can displace a kept one. Verified against real
-    // Lucene by `filter_only_top_n_prunes_and_still_matches_real_lucene`.
-    bulk_scorer::score_conjunction(&mut legs, live_docs, collector)?;
-    Ok(true)
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn search_boolean_query_scored<C: ScoringCollector>(
     fields: &BlockTreeFields,
@@ -3166,14 +2903,6 @@ pub fn search_boolean_query_scored_with_stats<C: ScoringCollector>(
     global: Option<&GlobalStats>,
     collector: &mut C,
 ) -> Result<()> {
-    // Pure conjunctions of leaf terms run lazily, without materializing any
-    // clause's doc list. Everything else falls through to the general path.
-    if try_conjunction_lazy(fields, doc_in, live_docs, query, norms, global, collector)?
-        || try_disjunction_lazy(fields, doc_in, live_docs, query, norms, global, collector)?
-    {
-        return Ok(());
-    }
-
     // One scoring clause and nothing to filter against: the clause's own score
     // map *is* the matched set, so running `matched_boolean_docs` first would
     // execute the clause a second time for an answer already in hand. On a
@@ -3315,25 +3044,22 @@ pub fn search_boolean_query_scored_with_stats<C: ScoringCollector>(
         }
     }
 
-    let Some(matched) =
-        matched_boolean_docs(fields, doc_in, pos_in, pay_in, live_docs, points, query)?
-    else {
-        return Ok(());
+    // Everything else runs as a Lucene scorer tree: iterators composed the way
+    // `BooleanScorerSupplier` composes them, advanced lazily, pruned by block
+    // maxima once the collector publishes a threshold. See `exec`.
+    let ctx = exec::LeafContext {
+        fields,
+        doc_in,
+        pos_in,
+        pay_in,
+        live_docs,
+        points,
+        norms,
+        global,
     };
-
-    // Sum each scoring clause's (doc_id -> score) contributions across `must`
-    // and `should` (never `must_not`, which only filters -- see doc comment).
-    let mut scores: HashMap<i32, f32> = HashMap::new();
-    for clause in query.must.iter().chain(query.should.iter()) {
-        for (doc_id, score) in clause_scores(
-            fields, doc_in, pos_in, pay_in, live_docs, points, clause, norms, global,
-        )? {
-            *scores.entry(doc_id).or_insert(0.0) += score;
-        }
-    }
-
-    for doc_id in matched {
-        collector.collect(doc_id, scores.get(&doc_id).copied().unwrap_or(0.0));
+    let mode = exec::Mode::of(collector);
+    if let Some(mut bulk) = exec::bulk_boolean(&ctx, query, 1.0, mode)? {
+        exec::score_segment(&mut bulk, mode, live_docs, collector)?;
     }
     Ok(())
 }
@@ -3344,47 +3070,18 @@ pub fn search_boolean_query_scored_with_stats<C: ScoringCollector>(
 /// `ffi_search_boolean_query_multi_segment_maxscore`) and
 /// [`multi_segment::search_boolean_query_multi_segment_maxscore`] name it.
 ///
-/// **This is a delegate; the MAXSCORE machinery lives in
-/// [`try_disjunction_lazy`].** Until batch c12 this function carried its own
-/// two-tier essential/non-essential MAXSCORE implementation over
-/// [`lucene_codecs::postings::LazyDocsCursor`]s -- ~180 lines whose body was
-/// provably unreachable. The function's first act is to try
-/// [`try_disjunction_lazy`] and return if it succeeded, and the two are
-/// *exactly complementary*:
+/// **This is a delegate.** The MAXSCORE machinery is
+/// `bulk_scorer::MaxScore` (`MaxScoreBulkScorer`), which the bulk-scorer
+/// dispatch in `exec` picks for a disjunction of term clauses exactly as
+/// `BooleanScorerSupplier.booleanScorer()` does; this entry point runs the
+/// same dispatch as [`search_boolean_query_scored_with_stats`].
 ///
-/// - every shape the old body could handle (pure `should`, all
-///   [`Clause::Term`], `doc_in` present, `minimum_should_match <= 1`, no
-///   pulsed `docFreq <= 1` term) [`try_disjunction_lazy`] handles first;
-/// - every shape [`try_disjunction_lazy`] declines
-///   (`must`/`filter`/`must_not` present, `should` empty,
-///   `minimum_should_match > 1`, a non-`Clause::Term` clause, `doc_in` absent,
-///   a pulsed term) the old body also declined, falling straight back;
-/// - the two cases where the old body was *stricter* -- an absent field and an
-///   absent term, which [`try_disjunction_lazy`] simply drops from the union --
-///   are shapes [`try_disjunction_lazy`] therefore *accepts*, so control never
-///   reached the body for them either;
-/// - the old body's `Err(Unsupported)` fallback arm was unreachable for the
-///   same reason: [`try_disjunction_lazy`] propagates that error with `?`
-///   before the body is entered.
-///
-/// Verified for c12 two ways: by reading both predicates, and by a line
-/// coverage report (`cargo llvm-cov -p lucene-search`) in which every one of
-/// the body's 78 executable lines was uncovered by all 899 tests, including
-/// the six `boolean_maxscore_falls_back_*` tests written to drive its own
-/// fallback arms.
-///
-/// Deleted rather than revived. The old body's own doc comment already
-/// recorded it as 4-5x *slower* than the lazy union on M1's 5M-document
-/// corpus (655 ms vs 163 ms on `t0 OR t1`) and said "prefer the plain scored
-/// entry point"; [`try_disjunction_lazy`] has since grown real block-max
-/// pruning of its own, so reviving the body would mean routing queries to the
-/// slower of two pruning implementations. The entry point keeps its name, its
-/// signature and its behaviour -- unchanged, since the behaviour was already
-/// "[`try_disjunction_lazy`], else the exhaustive path", which is precisely
-/// what [`search_boolean_query_scored_with_stats`] does (its
-/// [`try_conjunction_lazy`] attempt declines every shape
-/// [`try_disjunction_lazy`] accepts and vice versa -- the two gates are
-/// mutually exclusive on `query.should.is_empty()`).
+/// Until batch c12 it carried its own two-tier essential/non-essential
+/// implementation over [`lucene_codecs::postings::LazyDocsCursor`]s, whose
+/// body coverage showed to be unreachable (every shape it took, the lazy
+/// disjunction path took first) and 4-5x slower than that path on M1's
+/// 5M-document corpus (655 ms vs 163 ms on `t0 OR t1`). It was deleted then;
+/// the name and signature are kept for the callers above.
 #[allow(clippy::too_many_arguments)]
 pub fn search_boolean_query_scored_maxscore(
     fields: &BlockTreeFields,
@@ -5365,7 +5062,7 @@ mod tests {
     //
     // Matching-side unit tests. The scoring side is pinned bit-for-bit against
     // real `IndexSearcher` in `tests/bm25_scoring_fixtures.rs`; these cover the
-    // branches of `matched_boolean_docs`/`try_conjunction_lazy` that a filter
+    // branches of `matched_boolean_docs` and the conjunction bulk scorer that a filter
     // clause reaches, using the same fixture segment
     // (cat={0,2}, dog={0,1}, bird={1,4}).
 
@@ -5576,6 +5273,28 @@ mod tests {
         assert!(boolean_scores(&q).is_empty());
     }
 
+    /// Which bulk scorer `exec::bulk_boolean` picks for `q`, for a collector
+    /// that keeps every hit.
+    fn bulk_kind(
+        fields: &BlockTreeFields,
+        doc_in: Option<&DocInput<'_>>,
+        q: &BooleanQuery,
+    ) -> Option<&'static str> {
+        let ctx = exec::LeafContext {
+            fields,
+            doc_in,
+            pos_in: None,
+            pay_in: None,
+            live_docs: None,
+            points: None,
+            norms: None,
+            global: None,
+        };
+        exec::bulk_boolean(&ctx, q, 1.0, exec::Mode::Complete)
+            .unwrap()
+            .map(|b| b.kind())
+    }
+
     #[test]
     fn a_filter_only_conjunction_takes_the_lazy_leapfrog_path_and_scores_zero() {
         // Not taking it cost 129.5ms against 8.8ms for the same conjunction
@@ -5587,12 +5306,11 @@ mod tests {
             .with_filter([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
         let (fields, doc) = open_fixture();
         let doc_in = doc.as_ref().map(|d| d.open());
-        let mut c = ScoreVecCollector::default();
-        assert!(
-            try_conjunction_lazy(&fields, doc_in.as_ref(), None, &q, None, None, &mut c).unwrap(),
-            "the lazy path must take a filter-only conjunction"
+        assert_eq!(
+            bulk_kind(&fields, doc_in.as_ref(), &q),
+            Some("conjunction"),
+            "a filter-only conjunction must run on BlockMaxConjunctionBulkScorer"
         );
-        assert_eq!(c.hits, vec![(0, 0.0)]);
         assert_eq!(boolean_scores(&q), vec![(0, 0.0)]);
     }
 
@@ -5674,28 +5392,18 @@ mod tests {
             .with_filter([TermQuery::new("body", "dog")]);
         let (fields, doc) = open_fixture();
         let doc_in = doc.as_ref().map(|d| d.open());
-        let mut c = ScoreVecCollector::default();
-        assert!(
-            try_conjunction_lazy(&fields, doc_in.as_ref(), None, &q, None, None, &mut c).unwrap(),
-            "the lazy path must take a conjunction with a filter leg"
-        );
-        assert_eq!(c.hits.iter().map(|h| h.0).collect::<Vec<_>>(), vec![0]);
-        // Same score as `+body:cat` alone, through the same lazy path.
-        let mut cat = ScoreVecCollector::default();
-        try_conjunction_lazy(
-            &fields,
-            doc_in.as_ref(),
-            None,
-            &BooleanQuery::new().with_must([TermQuery::new("body", "cat")]),
-            None,
-            None,
-            &mut cat,
-        )
-        .unwrap();
         assert_eq!(
-            c.hits[0].1.to_bits(),
-            cat.hits
-                .iter()
+            bulk_kind(&fields, doc_in.as_ref(), &q),
+            Some("conjunction"),
+            "a conjunction with a filter leg must run on BlockMaxConjunctionBulkScorer"
+        );
+        let hits = boolean_scores(&q);
+        assert_eq!(hits.iter().map(|h| h.0).collect::<Vec<_>>(), vec![0]);
+        // Same score as `+body:cat` alone: the filter leg contributes nothing.
+        let cat = boolean_scores(&BooleanQuery::new().with_must([TermQuery::new("body", "cat")]));
+        assert_eq!(
+            hits[0].1.to_bits(),
+            cat.iter()
                 .find(|h| h.0 == 0)
                 .expect("cat matches doc 0")
                 .1
@@ -5716,11 +5424,9 @@ mod tests {
             ]);
         let (fields, doc) = open_fixture();
         let doc_in = doc.as_ref().map(|d| d.open());
-        let mut c = ScoreVecCollector::default();
-        assert!(
-            !try_disjunction_lazy(&fields, doc_in.as_ref(), None, &q, None, None, &mut c).unwrap()
-        );
-        assert!(c.hits.is_empty());
+        // FILTER + SHOULD with `minimum_should_match` 0 is `ReqOptSumScorer`'s
+        // shape, which runs on its batch bulk scorer here.
+        assert_eq!(bulk_kind(&fields, doc_in.as_ref(), &q), Some("req_opt"));
 
         // The MAXSCORE entry point falls back to the general path, which does
         // honour the filter: `cat` = {0,2}, so doc 1 and doc 4 are excluded
@@ -6097,10 +5803,8 @@ mod tests {
 
     #[test]
     fn a_single_pulsed_term_clause_reaches_the_fast_paths_term_arm() {
-        // `try_conjunction_lazy` handles every other single-`Clause::Term`
-        // conjunction, so the fast path's `Term` arm is only reachable for a
-        // *pulsed* term -- docFreq <= 1, whose postings live in the term
-        // dictionary and have no `.doc` bytes for a lazy cursor to open. The
+        // A pulsed term -- docFreq <= 1, its one posting in the term
+        // dictionary -- through the single-clause fast path's `Term` arm. The
         // `many` field is 400 such terms.
         let (fields, doc) = open_fixture();
         let doc_in = doc.as_ref().map(|d| d.open());
@@ -9482,7 +9186,7 @@ mod tests {
     /// entry point on *every* shape -- not only on the ones the deleted body
     /// used to decline. The two shapes that most directly pinned the deleted
     /// body's unreachability are in the matrix: a clause naming an absent
-    /// field and a clause naming an absent term. `try_disjunction_lazy`
+    /// field and a clause naming an absent term. The disjunction bulk scorer
     /// *accepts* both (it drops the clause from the union and keeps going),
     /// which is exactly why the deleted body -- which declined them -- could
     /// never be reached for them either.
