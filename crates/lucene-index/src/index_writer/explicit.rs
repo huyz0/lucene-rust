@@ -1286,4 +1286,76 @@ mod tests {
         assert_eq!(w.commit_generations(), [newest]);
         assert!(w.hold_commit(999).is_err(), "no such commit");
     }
+
+    /// A merged segment numbers its fields in the order its sources declare
+    /// them, not the writer's: a later soft delete must still land on the
+    /// soft-deletes field, found by name -- not on whichever field of the
+    /// merged segment happens to carry the writer's number for it.
+    #[test]
+    fn a_soft_delete_finds_its_field_by_name_in_a_renumbered_segment() {
+        let tmp = TempDir::new("explicit-renumbered");
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        let f = register(&mut w);
+        // A first segment with only `_id` and `_seq_no`, so the merged
+        // segment numbers those two first.
+        let mut sparse = doc(&f, 0);
+        sparse.stored.retain(|s| s.field_number == f.id);
+        sparse.fields.inverted.retain(|i| i.field_number == f.id);
+        sparse.fields.doc_values.retain(|v| v.field_number == f.seq);
+        sparse.fields.points.clear();
+        w.add_explicit_documents(vec![sparse]).unwrap();
+        w.commit().unwrap();
+        for i in 1..4 {
+            w.add_explicit_documents(vec![doc(&f, i)]).unwrap();
+        }
+        w.commit().unwrap();
+        w.force_merge(1).unwrap();
+        let merged = w.commit().unwrap().segments[0].clone();
+        let renumbered = segment_fields(&dir, &merged);
+        assert_ne!(
+            renumbered
+                .iter()
+                .find(|x| x.name == "_seq_no")
+                .unwrap()
+                .number,
+            f.seq,
+            "the merged segment numbers its fields its own way"
+        );
+
+        w.soft_update_explicit_documents(id_term(2), vec![doc_at(&f, 2, 100)], &[soft_delete(2)])
+            .unwrap();
+        let infos = w.commit().unwrap().clone();
+        check(&dir);
+        let soft: i32 = infos.segments.iter().map(|s| s.soft_del_count).sum();
+        assert_eq!(soft, 1);
+        let seg = infos
+            .segments
+            .iter()
+            .find(|s| s.segment_name == merged.segment_name)
+            .unwrap();
+        let fnm = dir
+            .open(&crate::field_updates::field_infos_gen_file_name(
+                &seg.segment_name,
+                seg.field_infos_gen,
+            ))
+            .unwrap();
+        let current = lucene_codecs::field_infos::parse(
+            &fnm,
+            &seg.segment_id,
+            &lucene_util::base36::to_base36(seg.field_infos_gen),
+        )
+        .unwrap();
+        for field in &current.fields {
+            let expected = renumbered.iter().find(|x| x.name == field.name);
+            match expected {
+                Some(before) => assert_eq!(
+                    field.doc_values_type, before.doc_values_type,
+                    "{} keeps its doc-values type",
+                    field.name
+                ),
+                None => assert_eq!(field.name, "__soft_deletes", "only the soft field is new"),
+            }
+        }
+    }
 }

@@ -2341,9 +2341,9 @@ fn soft_delete_key(sci: &SegmentCommitInfo) -> SoftDeleteKey {
     (sci.del_gen, sci.doc_values_gen, sci.field_infos_gen)
 }
 
-/// Live documents of `sci` with a value in the soft-deletes field `soft`, or
-/// `None` for a compound segment (see
-/// [`IndexWriter::stamp_soft_delete_counts`]).
+/// Live documents of `sci` with a value in the soft-deletes field `soft`. A
+/// compound segment's base files are read through its archive; its `.liv`
+/// and update generations live beside it.
 fn count_soft_deletes(
     dir: &dyn Directory,
     sci: &SegmentCommitInfo,
@@ -2353,10 +2353,28 @@ fn count_soft_deletes(
         &dir.open(&format!("{}.si", sci.segment_name))?,
         &sci.segment_id,
     )?;
-    if si.is_compound_file {
-        return Ok(None);
-    }
-    let infos = crate::field_updates::read_current_field_infos(dir, sci, &si.files)?;
+    let compound = if si.is_compound_file {
+        Some(CompoundReader::open(
+            dir,
+            &sci.segment_name,
+            &sci.segment_id,
+        )?)
+    } else {
+        None
+    };
+    let (dir, files): (&dyn Directory, Vec<String>) = match &compound {
+        Some(c) => (
+            c,
+            si.files
+                .iter()
+                .filter(|f| !f.ends_with(".cfs") && !f.ends_with(".cfe"))
+                .cloned()
+                .chain(c.member_files())
+                .collect(),
+        ),
+        None => (dir, si.files.clone()),
+    };
+    let infos = crate::field_updates::read_current_field_infos(dir, sci, &files)?;
     let Some(index) = infos
         .fields
         .iter()
@@ -2369,7 +2387,7 @@ fn count_soft_deletes(
         &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
     );
     let Some((meta, data)) =
-        crate::field_updates::read_current_column(dir, sci, &si.files, &infos, index, &per_field)?
+        crate::field_updates::read_current_column(dir, sci, &files, &infos, index, &per_field)?
     else {
         return Ok(Some(0));
     };
@@ -4957,9 +4975,7 @@ impl<'d> IndexWriter<'d> {
     /// but only for a segment whose deletes or doc values changed since the
     /// last count (cached by generation). A count loaded from an existing
     /// commit is trusted until the segment changes. A writer with no
-    /// soft-deletes field writes `0`, as before. A compound segment keeps its
-    /// count: this writer cannot update one (see `field_updates`), so its
-    /// count cannot have moved.
+    /// soft-deletes field writes `0`, as before.
     fn stamp_soft_delete_counts(&mut self, infos: &mut SegmentInfos) -> Result<()> {
         let Some(soft) = self.cfg.fields.iter().find(|f| f.soft_deletes_field) else {
             return Ok(());
@@ -19947,6 +19963,92 @@ pub(crate) mod tests {
             .unwrap();
         let sis = writer.commit().unwrap().clone();
         assert_eq!(sis.segments[0].del_count, 1);
+        for result in crate::check_index::check_directory(&dir).unwrap() {
+            assert!(result.all_passed(), "{:?}", result.failures());
+        }
+    }
+
+    /// A doc-values update -- a soft delete, to OpenSearch -- against a
+    /// segment Java flushed compound: the base column is read out of the
+    /// `.cfs`, the generation is written loose beside it, and a merge folds it.
+    #[test]
+    fn doc_values_updates_reach_into_a_lucene_compound_segment() {
+        let tmp = lucene_compound_index("lucene-compound-dv-update");
+        let dir = FsDirectory::open(&tmp);
+        let mut writer =
+            IndexWriter::open(&dir, compound_fixture_fields(), "Lucene104", version()).unwrap();
+        writer.set_postings_field(Some("id")).unwrap();
+        writer.set_doc_values_field(Some("num")).unwrap();
+        writer
+            .update_numeric_doc_value(Term::new("id", b"3".to_vec()), "num", 99)
+            .unwrap();
+        let sis = writer.commit().unwrap().clone();
+        let java = &sis.segments[0];
+        assert_eq!(java.doc_values_gen, 1, "a generation beside the archive");
+        assert!(dir.list_all().unwrap().iter().any(|f| f == "_0_1.fnm"));
+        for result in crate::check_index::check_directory(&dir).unwrap() {
+            assert!(result.all_passed(), "{:?}", result.failures());
+        }
+        // A second round reads the first generation, not the archive's base.
+        writer
+            .update_numeric_doc_value(Term::new("id", b"1".to_vec()), "num", 11)
+            .unwrap();
+        writer.commit().unwrap();
+
+        writer.set_merge_policy(Some(tight_merge_policy()));
+        writer
+            .add_document(Document {
+                fields: vec![
+                    StoredField {
+                        field_number: 1,
+                        value: FieldValue::String("5".to_string()),
+                    },
+                    StoredField {
+                        field_number: 0,
+                        value: FieldValue::Long(50),
+                    },
+                ],
+            })
+            .unwrap();
+        writer.commit().unwrap();
+        writer
+            .add_document(Document {
+                fields: vec![
+                    StoredField {
+                        field_number: 1,
+                        value: FieldValue::String("6".to_string()),
+                    },
+                    StoredField {
+                        field_number: 0,
+                        value: FieldValue::Long(60),
+                    },
+                ],
+            })
+            .unwrap();
+        let sis = writer.commit().unwrap().clone();
+        assert_eq!(sis.segments.len(), 1, "merged");
+        let merged = &sis.segments[0];
+        let fnm = dir.open(&format!("{}.fnm", merged.segment_name)).unwrap();
+        let fis = lucene_codecs::field_infos::parse(&fnm, &merged.segment_id, "").unwrap();
+        let num = fis.fields.iter().find(|f| f.name == "num").unwrap();
+        let seg = per_field_segment(&merged.segment_name, DOC_VALUES_FORMAT_NAME);
+        let (_, meta) = doc_values::parse_meta(
+            &dir.open(&format!("{seg}.dvm")).unwrap(),
+            &merged.segment_id,
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+            &fis,
+        )
+        .unwrap();
+        let dvd = dir.open(&format!("{seg}.dvd")).unwrap();
+        let entry = meta.numeric_entry(num.number).unwrap();
+        let mut reader = doc_values::NumericReader::new(&dvd, entry);
+        let mut values: Vec<i64> = (0..7).map(|d| reader.value(d).unwrap().unwrap()).collect();
+        values.sort_unstable();
+        assert_eq!(
+            values,
+            [0, 11, 20, 40, 50, 60, 99],
+            "both updates survive the merge"
+        );
         for result in crate::check_index::check_directory(&dir).unwrap() {
             assert!(result.all_passed(), "{:?}", result.failures());
         }

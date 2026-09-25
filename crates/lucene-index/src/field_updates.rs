@@ -43,11 +43,10 @@
 //! accepts (`DocValuesUpdate` has exactly those two subclasses, and
 //! `handleDVUpdates` asserts on it).
 //!
-//! No compound-file segments: Java writes generational files outside the CFS,
-//! but it still reads the *base* column and the base `FieldInfos` through the
-//! compound reader. This port's whole buffered-update path already requires
-//! loose files (see `index_writer::open_segment_for_deletes`), so a compound
-//! segment is rejected here by name rather than silently mis-resolved.
+//! Compound-file segments -- what Java flushes by default, so what a shard
+//! written by Java's engine holds -- are updated as Java updates them: the
+//! base column and base `FieldInfos` are read through the compound reader,
+//! and every generation is written loose beside the `.cfs`.
 //!
 //! No doc-values skip index on an updated field: writing a generation means
 //! running the field back through the doc-values consumer, and this port's
@@ -61,6 +60,7 @@ use lucene_codecs::field_infos::{DocValuesSkipIndexType, DocValuesType, FieldInf
 use lucene_store::data_output::DataOutput;
 use lucene_store::directory::Directory;
 
+use crate::compound_reader::CompoundReader;
 use crate::segment_info;
 use crate::segment_infos::SegmentCommitInfo;
 
@@ -99,10 +99,6 @@ pub enum Error {
          rewrite it into an update generation"
     )]
     SkipIndexUnsupported { segment: String, field: String },
-    #[error(
-        "segment {0} is a compound-file segment; doc-values updates against one are not supported"
-    )]
-    CompoundSegment(String),
     #[error(
         "segment {segment} records doc-values generation {gen} for field {field_number} but \
              no {ext} file for it"
@@ -264,14 +260,35 @@ fn write_field_updates_inner(
     let segment = sci.segment_name.clone();
     let si_bytes = dir.open(&format!("{segment}.si"))?;
     let si = segment_info::parse(&si_bytes, &sci.segment_id)?;
-    if si.is_compound_file {
-        return Err(Error::CompoundSegment(segment));
-    }
     let max_doc = si.doc_count;
+
+    // A compound segment keeps its base `.fnm` and base columns inside the
+    // `.cfs`; a generation is always written beside it, loose, as Java does.
+    // `CompoundReader` resolves both: members from the archive, everything
+    // else (earlier generations) from `dir`.
+    let compound = if si.is_compound_file {
+        Some(CompoundReader::open(dir, &segment, &sci.segment_id)?)
+    } else {
+        None
+    };
+    let read_dir: &dyn Directory = match &compound {
+        Some(c) => c,
+        None => dir,
+    };
+    let files: Vec<String> = match &compound {
+        Some(c) => si
+            .files
+            .iter()
+            .filter(|f| !f.ends_with(".cfs") && !f.ends_with(".cfe"))
+            .cloned()
+            .chain(c.member_files())
+            .collect(),
+        None => si.files.clone(),
+    };
 
     // Java clones `reader.getFieldInfos()` -- the segment's *current* infos,
     // which are the generational ones when a previous update round wrote some.
-    let mut infos = read_current_field_infos(dir, sci, &si.files)?;
+    let mut infos = read_current_field_infos(read_dir, sci, &files)?;
 
     // Deterministic order: Java iterates a `HashMap`, so the generation a
     // field lands at is arbitrary there. Field-number order makes this port's
@@ -299,7 +316,7 @@ fn write_field_updates_inner(
         // Lucene wrote may have given this field a different one. Only a field
         // that has never had a column falls back to the caller's.
         let per_field = per_field_component(&infos.fields[index], per_field_suffix);
-        let base = read_base_numeric(dir, sci, &si.files, &infos, index, &per_field)?;
+        let base = read_base_numeric(read_dir, sci, &files, &infos, index, &per_field)?;
         let column = doc_values_updates::merge_numeric_column(
             base.as_ref().map(|(e, d)| (e, d.as_slice())),
             updates,
@@ -307,8 +324,9 @@ fn write_field_updates_inner(
         )?;
         let gen = sci.next_write_doc_values_gen();
         let suffix = generation_segment_suffix(gen, &per_field);
+        // The segment's own number for the field, which its readers look up.
         let (dvm, dvd, dvs) = doc_values_updates::write_numeric_generation(
-            *field_number,
+            infos.fields[index].number,
             &column,
             &sci.segment_id,
             &suffix,
@@ -331,7 +349,7 @@ fn write_field_updates_inner(
         // is where a doc-values-only field first declares its type.
         infos.fields[index].doc_values_type = DocValuesType::Binary;
         let per_field = per_field_component(&infos.fields[index], per_field_suffix);
-        let base = read_base_binary(dir, sci, &si.files, &infos, index, &per_field)?;
+        let base = read_base_binary(read_dir, sci, &files, &infos, index, &per_field)?;
         let column = doc_values_updates::merge_binary_column(
             base.as_ref().map(|(e, d)| (e, d.as_slice())),
             updates,
@@ -340,7 +358,7 @@ fn write_field_updates_inner(
         let gen = sci.next_write_doc_values_gen();
         let suffix = generation_segment_suffix(gen, &per_field);
         let (dvm, dvd, dvs) = doc_values_updates::write_binary_generation(
-            *field_number,
+            infos.fields[index].number,
             &column,
             &sci.segment_id,
             &suffix,
@@ -442,12 +460,20 @@ fn put_attribute(field: &mut FieldInfo, key: &str, value: &str) {
     }
 }
 
-/// [`field_index`], or -- when `schema` knows the field and the segment does
-/// not -- the index of a doc-values-only `FieldInfo` appended for it
+/// The segment's own entry for the updated field, found **by name** as
+/// `ReadersAndUpdates.writeFieldUpdates` does (`fieldInfos.fieldInfo(field)`):
+/// the caller names fields by this writer's global numbers, and a segment
+/// another writer numbered -- Java's, typically -- gives the same field
+/// another number. When `schema` does not know `field_number`, the numbers
+/// are taken to be the segment's own.
+///
+/// A field the segment lacks gets a doc-values-only `FieldInfo`
 /// (`FieldNumbers.constructFieldInfo`: no indexing, no norms, the update's
 /// doc-values type, no skip index, `dvGen == -1`, the schema's
-/// soft-deletes/parent flags). A schema number already used by another field
-/// of this segment is refused: the segment was numbered by someone else.
+/// soft-deletes/parent flags), numbered with the writer's number when the
+/// segment has not used it and with the segment's next free number
+/// otherwise -- the number only has to be unique within this segment's
+/// `FieldInfos`.
 fn field_index_or_construct(
     infos: &mut FieldInfos,
     segment: &str,
@@ -455,18 +481,25 @@ fn field_index_or_construct(
     schema: &[FieldInfo],
     doc_values_type: DocValuesType,
 ) -> Result<usize> {
-    if let Ok(index) = field_index(infos, segment, field_number) {
-        return Ok(index);
-    }
     let Some(known) = schema.iter().find(|f| f.number == field_number) else {
         return field_index(infos, segment, field_number);
     };
-    if infos.fields.iter().any(|f| f.name == known.name) {
-        // Same name under another number: not a field this writer numbered.
-        return field_index(infos, segment, field_number);
+    if let Some(index) = infos.fields.iter().position(|f| f.name == known.name) {
+        return Ok(index);
     }
+    let number = if infos.fields.iter().any(|f| f.number == field_number) {
+        infos
+            .fields
+            .iter()
+            .map(|f| f.number)
+            .max()
+            .unwrap_or(-1)
+            .saturating_add(1)
+    } else {
+        field_number
+    };
     infos.fields.push(
-        FieldInfo::new(known.name.clone(), field_number)
+        FieldInfo::new(known.name.clone(), number)
             .with_doc_values(doc_values_type, DocValuesSkipIndexType::None, -1)
             .with_soft_deletes_field(known.soft_deletes_field)
             .with_parent_field(known.parent_field),
@@ -1109,20 +1142,6 @@ mod tests {
         let err = write_field_updates(&dir, &mut sci, &[(0, vec![(0, Some(1))])], &[], SUFFIX)
             .unwrap_err();
         assert!(matches!(err, Error::SkipIndexUnsupported { .. }), "{err}");
-    }
-
-    #[test]
-    fn a_compound_segment_is_refused_by_name() {
-        let tmp = tempdir("compound");
-        let dir = FsDirectory::open(&tmp);
-        let fields = vec![field("val", 0, DocValuesType::Numeric)];
-        let mut sci = build_segment(&dir, &fields, None, true, 1);
-        let err = write_field_updates(&dir, &mut sci, &[(0, vec![(0, Some(1))])], &[], SUFFIX)
-            .unwrap_err();
-        assert!(
-            matches!(err, Error::CompoundSegment(ref s) if s == "_0"),
-            "{err}"
-        );
     }
 
     #[test]
