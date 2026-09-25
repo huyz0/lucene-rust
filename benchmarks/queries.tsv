@@ -49,3 +49,25 @@ q34	regexp	body	.*1.*2.*
 q35	regexp	body	.*zz.*
 q36	regexp	body	.*9x1.*
 q37	regexp	body	.*a0
+# Mixed booleans in GenMixedBooleanScoring's S-expression grammar (the `sexpr`
+# kind; the field column qualifies every term). These are the shapes the M2
+# REST benchmark measured at 0.13-0.28x and routed to Lucene (`slower_shape`),
+# because the port had no scorer tree: must+should, must_not, msm, boosts,
+# constant_score, nesting. Both runners collect the top 50 with Lucene's
+# default 1000-hit threshold.
+q40	sexpr	body	(b 0 (+ (t t0)) (? (t t1)))
+q41	sexpr	body	(b 0 (+ (t t0)) (- (t t1)))
+q42	sexpr	body	(b 0 (? (t t1)) (? (t t2)) (- (t t0)))
+q43	sexpr	body	(b 2 (? (t t0)) (? (t t1)) (? (t t2)) (? (t t3)))
+q44	sexpr	body	(boost 2 (t t0))
+q45	sexpr	body	(b 0 (? (boost 2 (t t0))) (? (t t1)))
+q46	sexpr	body	(const (t t1))
+q47	sexpr	body	(b 0 (+ (b 0 (? (t t0)) (? (t t2)))) (+ (t t1)) (- (t t3)))
+q48	sexpr	body	(b 0 (# (t t0)) (? (t t1)) (? (t t2)))
+q49	sexpr	body	(b 1 (# (t t0)) (? (t t1)) (? (t t2)))
+q50	sexpr	body	(b 0 (+ (t tz)) (? (t t0)) (? (t t1)))
+q51	sexpr	body	(dismax 0.3 (t t0) (t t1) (t t2))
+q52	sexpr	body	(b 0 (+ (t t0)) (+ (t t1)) (? (t t2)) (- (t t3)))
+q53	sexpr	body	(b 0 (? (const (t t0))) (? (t t1)))
+q54	sexpr	body	(b 0 (# (t t1)) (- (t t0)))
+q55	sexpr	body	(b 0 (+ (t t2s)) (- (t t0)))

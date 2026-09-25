@@ -594,3 +594,97 @@ fn lazy_cursor_advance_on_the_sparse_term_matches_real_lucene() {
         }
     }
 }
+
+/// `docIDRunEnd()` -- how far `ReqExclBulkScorer` may skip past an excluded
+/// document -- against `AppendRunEndManifest`'s record of real Lucene.
+///
+/// Where Lucene reports a long run (a fully dense block: 8192 at the end of
+/// `skipterm`'s dense first level-1 span, 8448 at a dense block's end in its
+/// second) this must report exactly the same. Elsewhere Lucene answers the
+/// conservative `doc + 1` and this reports the true run within the decoded
+/// block, so the check is that it is at least Lucene's answer and that every
+/// document it covers really is in the term: `skipterm` is in every one of
+/// its 8,500 documents, `gapterm` in those with `d % 5 < 2` (the generator's
+/// `hasSparse`).
+#[test]
+fn lazy_cursor_doc_id_run_end_matches_real_lucene() {
+    let fx = Fixture::load();
+    let (fields, doc_in, _, _) = fx.open();
+    let field = fields.field("pskip").expect("pskip field");
+    let in_term = |term: &str, d: i32| match term {
+        "skipterm" => d < 8500,
+        _ => d % 5 < 2,
+    };
+    let mut checked = 0;
+    for term in ["skipterm", "gapterm"] {
+        for (name, flags) in [
+            ("docs", postings::PostingsFlags::DocsOnly),
+            ("freqs", postings::PostingsFlags::Freqs),
+        ] {
+            for target in [0, 1, 255, 256, 300, 4096, 8191, 8192, 8200, 8499] {
+                let want = fx.manifest.get(&format!("runend.{term}.{name}.{target}"));
+                let (landed, run_end) = want.split_once(':').unwrap();
+                let run_end: i32 = run_end.parse().unwrap();
+                let mut c = field
+                    .lazy_postings_with_flags(term.as_bytes(), &doc_in, flags)
+                    .unwrap()
+                    .expect("term");
+                let got = c.advance(target).unwrap();
+                assert_eq!(got.to_string(), landed, "{term} {name} advance({target})");
+                if got == postings::NO_MORE_DOCS {
+                    continue;
+                }
+                let end = c.doc_id_run_end();
+                if run_end > got + 1 {
+                    assert_eq!(end, run_end, "{term} {name} dense run from {got}");
+                } else {
+                    assert!(end >= run_end, "{term} {name}: {end} < Lucene's {run_end}");
+                }
+                assert!(
+                    (got..end).all(|d| in_term(term, d)),
+                    "{term} {name}: run [{got}, {end}) holds a document not in the term"
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert_eq!(checked, 38);
+}
+
+/// The run end after `next_doc` walks, not only after `advance`: through the
+/// sparse term's decoded blocks every reported run must hold only its
+/// documents, and a run must reach the next gap when the block extends that
+/// far.
+#[test]
+fn lazy_cursor_doc_id_run_end_holds_along_a_walk() {
+    let fx = Fixture::load();
+    let (fields, doc_in, _, _) = fx.open();
+    let field = fields.field("pskip").expect("pskip field");
+    for flags in [
+        postings::PostingsFlags::DocsOnly,
+        postings::PostingsFlags::Freqs,
+    ] {
+        let mut c = field
+            .lazy_postings_with_flags(b"gapterm", &doc_in, flags)
+            .unwrap()
+            .expect("gapterm");
+        let mut doc = c.next_doc().unwrap();
+        let mut longer = 0;
+        while doc != postings::NO_MORE_DOCS {
+            let end = c.doc_id_run_end();
+            assert!(end > doc);
+            assert!(
+                (doc..end).all(|d| d % 5 < 2),
+                "{flags:?}: run [{doc}, {end})"
+            );
+            if end > doc + 1 {
+                longer += 1;
+            }
+            doc = c.next_doc().unwrap();
+        }
+        assert!(
+            longer > 100,
+            "{flags:?}: runs of two must be reported, got {longer}"
+        );
+    }
+}

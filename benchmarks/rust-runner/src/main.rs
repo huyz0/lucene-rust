@@ -25,6 +25,8 @@ use lucene_search::{
 };
 use lucene_store::MmapDirectory;
 
+mod sexpr;
+
 const TOP_N: usize = 50;
 
 /// `TopScoreDocCollector`'s default `totalHitsThreshold`: the hit count is
@@ -167,6 +169,21 @@ fn main() {
                         .map(|m| m.as_ref().and_then(|m| m.get(&q.field)))
                         .collect();
                     search_term_query_multi_segment(&segments, &tq, &tn, TOP_N).expect("term")
+                }
+                // A mixed boolean in `GenMixedBooleanScoring`'s S-expression
+                // grammar, run the way the OpenSearch plugin runs it: the
+                // counting multi-segment search, Lucene's default threshold.
+                "sexpr" => {
+                    let bq = sexpr::root(sexpr::parse(&q.field, &q.args[0]));
+                    lucene_search::search_boolean_query_multi_segment_maxscore_counting(
+                        &segments,
+                        &bq,
+                        &bool_norms,
+                        TOP_N,
+                        TOTAL_HITS_THRESHOLD as u64,
+                    )
+                    .expect("sexpr")
+                    .0
                 }
                 "and" | "or" | "or_maxscore" => {
                     let clauses: Vec<Clause> = q

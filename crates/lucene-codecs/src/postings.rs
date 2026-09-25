@@ -898,6 +898,7 @@ impl<'a> DocInput<'a> {
             block_pos: 0,
             doc_id: -1,
             bits: None,
+            bits_stepped: false,
             scratch: BlockScratch::new(),
             pending: None,
             level0_last_doc_id: -1,
@@ -3574,6 +3575,10 @@ pub struct LazyDocsCursor<'a> {
     /// `block_pos` is the current document's rank among them -- which is
     /// what keeps `block_freqs[block_pos]` its frequency.
     bits: Option<(i32, usize)>,
+    /// A docs-only `next_doc` has been answered from `bits` since the last
+    /// `advance`: the next one expands the block instead. See
+    /// [`Self::next_doc`].
+    bits_stepped: bool,
 }
 
 /// A running `.pos`/`.pay` position: the absolute file pointers plus how many
@@ -3770,6 +3775,78 @@ impl<'a> LazyDocsCursor<'a> {
         self.level0_last_doc_id
     }
 
+    /// `PostingsEnum.docIDRunEnd()`: one past the last document of the run
+    /// of consecutive documents the current one starts. Every document in
+    /// `[doc_id(), doc_id_run_end())` is in this term's postings.
+    ///
+    /// A fully dense block (a bit-set block whose four words are all ones:
+    /// 256 consecutive documents) runs to the end of the block, and to the end
+    /// of its level-1 span when that span holds as many documents as it spans
+    /// -- `BlockPostingsEnum`'s override, exactly.
+    ///
+    /// Anywhere else Lucene answers `DocIdSetIterator`'s conservative
+    /// `docID() + 1`. This answers the true run within the decoded block: the
+    /// next clear bit of a bit-set block, or the first gap in the decoded doc
+    /// ids. The contract allows any end whose documents all match, and a
+    /// `ReqExclBulkScorer` over a nearly dense excluded term then jumps each
+    /// run once instead of stepping through it a document at a time.
+    pub fn doc_id_run_end(&self) -> i32 {
+        const DENSE_WORDS: usize = (BLOCK_SIZE as usize) / 64;
+        let doc = self.doc_id;
+        if doc < 0 || doc == NO_MORE_DOCS || self.pending.is_some() {
+            return doc.saturating_add(1);
+        }
+        if let Some((base, words)) = self.bits {
+            if words == DENSE_WORDS
+                && self.scratch.bitset[..DENSE_WORDS]
+                    .iter()
+                    .all(|&w| w == u64::MAX)
+            {
+                // ARITH: `doc_count_left <= doc_freq`, both non-negative;
+                // the doc ids are below `NO_MORE_DOCS`, so the spans and
+                // the `+ 1` cannot overflow except at `NO_MORE_DOCS`,
+                // which a dense block never ends on.
+                let level0_doc_count_upto = self.doc_freq.wrapping_sub(self.doc_count_left);
+                let level1_is_dense = self
+                    .level1_last_doc_id
+                    .wrapping_sub(self.level0_last_doc_id)
+                    == self
+                        .level1_doc_count_upto
+                        .wrapping_sub(level0_doc_count_upto);
+                if level1_is_dense {
+                    return self.level1_last_doc_id.saturating_add(1);
+                }
+                return self.level0_last_doc_id.saturating_add(1);
+            }
+            if doc < base {
+                return doc.saturating_add(1);
+            }
+            // The next clear bit after this document's, capped at the block's
+            // last document.
+            let rel = doc.wrapping_sub(base) as u32 as usize;
+            let clear = lucene_util::fixed_bit_set::next_clear_bit_in_words(
+                &self.scratch.bitset[..words],
+                rel,
+            );
+            let end = base.saturating_add(i32::try_from(clear).unwrap_or(i32::MAX));
+            return end
+                .min(self.prev_doc_id.saturating_add(1))
+                .max(doc.saturating_add(1));
+        }
+        // A decoded block: `block_docs[block_pos] == doc_id`.
+        let (mut j, len) = (self.block_pos, self.block_len);
+        if j >= len || self.block_docs[j] != doc {
+            return doc.saturating_add(1);
+        }
+        // ARITH: `j + 1 < len <= BLOCK_SIZE`; doc ids ascend below
+        // `NO_MORE_DOCS`, so the `+ 1`s cannot overflow.
+        #[allow(clippy::arithmetic_side_effects)]
+        while j + 1 < len && self.block_docs[j + 1] == self.block_docs[j] + 1 {
+            j += 1;
+        }
+        self.block_docs[j].saturating_add(1)
+    }
+
     /// Where the current document's occurrences begin in `.pos`/`.pay`, from
     /// `.doc`'s own skip data -- `Lucene104PostingsReader`'s `seekPosData`
     /// arguments plus `accumulatePendingPositions`' in-block frequency sum,
@@ -3865,8 +3942,35 @@ impl<'a> LazyDocsCursor<'a> {
         // first sixteen calls from the bits still cost sequential walks 5-9%
         // and bought an early-stopping union almost nothing); expanding also
         // settles `block_pos`, which a docs-only `advance` leaves stale.
-        if self.bits.is_some() && self.pending.is_none() {
-            self.materialize_bits();
+        //
+        // The exception is the first `next_doc` after an `advance` on a
+        // docs-only cursor: that is `ReqExclBulkScorer` stepping past one
+        // excluded document, which then advances again -- usually into another
+        // block, so expanding this one would be wasted. It is answered from
+        // the bits, `BlockPostingsEnum.nextDoc`'s `nextSetBit`, and only a
+        // second consecutive call expands.
+        if let Some((base, n)) = self.bits {
+            if self.pending.is_none() {
+                if !self.needs_freq && !self.bits_stepped && self.doc_id >= base {
+                    self.bits_stepped = true;
+                    // ARITH: `doc_id >= base`, and both lie in this block.
+                    let from = (self.doc_id.wrapping_sub(base) as u32 as usize).saturating_add(1);
+                    let words = &self.scratch.bitset[..n];
+                    if let Some(bit) =
+                        lucene_util::fixed_bit_set::next_set_bit_in_words(words, from)
+                    {
+                        let doc = base.wrapping_add(bit as i32);
+                        if doc <= self.prev_doc_id {
+                            self.doc_id = doc;
+                            return Ok(doc);
+                        }
+                    }
+                    // The block has nothing after this document: the next one
+                    // is in a later block, so expanding this one is wasted.
+                    return self.advance(self.doc_id.saturating_add(1));
+                }
+                self.materialize_bits();
+            }
         }
         // Invariant, established by every path in `advance` that sets
         // `doc_id` to a real doc: `block_docs[block_pos] == doc_id` whenever
@@ -3964,6 +4068,7 @@ impl<'a> LazyDocsCursor<'a> {
     /// block, crossing into later blocks, the end) is [`Self::advance_slow`].
     #[inline]
     pub fn advance(&mut self, target: i32) -> Result<i32> {
+        self.bits_stepped = false;
         let (pos, len) = (self.block_pos, self.block_len);
         // A docs-only cursor on a kept bit set, with the target inside the
         // block the header describes: Lucene's `docBitSet.nextSetBit(target -

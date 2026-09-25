@@ -65,6 +65,29 @@ pub fn next_set_bit_in_words(words: &[u64], from: usize) -> Option<usize> {
     }
 }
 
+/// The index of the first clear bit at or after `from` in `words`, or
+/// `words.len() * 64` when every bit from `from` on is set -- the
+/// complement's `nextSetBit`, over a bare word slice.
+pub fn next_clear_bit_in_words(words: &[u64], from: usize) -> usize {
+    let end = words.len().saturating_mul(64);
+    if from >= end {
+        return end;
+    }
+    let mut i = from >> 6;
+    // Set every bit below `from` in its word, so they do not read as clear.
+    let mut word = words[i] | !FROM_BIT[from & 63];
+    loop {
+        if word != u64::MAX {
+            return (i << 6) + (!word).trailing_zeros() as usize;
+        }
+        i += 1;
+        match words.get(i) {
+            Some(&w) => word = w,
+            None => return end,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FixedBitSet {
     words: Vec<u64>,
@@ -343,6 +366,21 @@ impl FixedBitSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn next_clear_bit_in_words_finds_the_first_gap() {
+        let words = [u64::MAX, 0b1011, 0];
+        assert_eq!(next_clear_bit_in_words(&words, 0), 66);
+        assert_eq!(next_clear_bit_in_words(&words, 64), 66);
+        assert_eq!(next_clear_bit_in_words(&words, 67), 68);
+        assert_eq!(next_clear_bit_in_words(&words, 130), 130);
+        // All set from `from` on: the end of the words.
+        assert_eq!(next_clear_bit_in_words(&[u64::MAX, u64::MAX], 5), 128);
+        assert_eq!(next_clear_bit_in_words(&[u64::MAX], 64), 64);
+        assert_eq!(next_clear_bit_in_words(&[], 0), 0);
+        // Bits below `from` in its word do not count as clear.
+        assert_eq!(next_clear_bit_in_words(&[!1u64], 1), 64);
+    }
 
     #[test]
     fn bits2words_matches_java_formula() {

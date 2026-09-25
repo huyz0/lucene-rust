@@ -6,8 +6,8 @@
 //! side; the whole saving is on the scoring side, and only if the executor
 //! actually declines to do that work. In this port the saving is concretely:
 //!
-//! - `ConjunctionScorer.score()` iterates the scoring subset, so
-//!   `try_conjunction_lazy` skips a filter leg's `freq()` -- which is a
+//! - `ConjunctionScorer.score()` iterates the scoring subset, so the
+//!   conjunction bulk scorer skips a filter leg's `freq()` -- which is a
 //!   `PForUtil` frequency-block decode, not a field read;
 //! - a filter leg gets no `FieldNormsCursor`, so its field's norms (and, for a
 //!   sparse field, its `IndexedDISI` walk) are never touched;

@@ -188,6 +188,9 @@ public final class BenchRunner {
                 for (int i = 3; i < f.length; i++) b.add(new Term(field, f[i]));
                 return b.build();
             }
+            // A mixed boolean in GenMixedBooleanScoring's S-expression grammar.
+            case "sexpr":
+                return Sexpr.parse(field, new Sexpr(f[3]));
             default:
                 throw new IllegalArgumentException("unknown query kind: " + kind);
         }
@@ -210,6 +213,67 @@ public final class BenchRunner {
                     + "Lucene and overstates the Rust side. Re-run with "
                     + "--add-modules jdk.incubator.vector.");
             System.exit(3);
+        }
+    }
+
+    /** GenMixedBooleanScoring's grammar, with the field from the query file. */
+    static final class Sexpr {
+        final List<String> toks = new ArrayList<>();
+        int at;
+
+        Sexpr(String s) {
+            for (String t : s.replace("(", " ( ").replace(")", " ) ").trim().split("\\s+")) {
+                toks.add(t);
+            }
+        }
+
+        String next() { return toks.get(at++); }
+
+        String peek() { return toks.get(at); }
+
+        void expect(String t) {
+            String got = next();
+            if (!got.equals(t)) throw new IllegalArgumentException("expected " + t + ", got " + got);
+        }
+
+        static Query parse(String field, Sexpr t) {
+            t.expect("(");
+            String op = t.next();
+            Query q;
+            switch (op) {
+                case "t" -> q = new TermQuery(new Term(field, t.next()));
+                case "boost" -> {
+                    float f = Float.parseFloat(t.next());
+                    q = new org.apache.lucene.search.BoostQuery(parse(field, t), f);
+                }
+                case "const" -> q = new org.apache.lucene.search.ConstantScoreQuery(parse(field, t));
+                case "dismax" -> {
+                    float tie = Float.parseFloat(t.next());
+                    List<Query> ds = new ArrayList<>();
+                    while (t.peek().equals("(")) ds.add(parse(field, t));
+                    q = new org.apache.lucene.search.DisjunctionMaxQuery(ds, tie);
+                }
+                case "b" -> {
+                    BooleanQuery.Builder b = new BooleanQuery.Builder();
+                    b.setMinimumNumberShouldMatch(Integer.parseInt(t.next()));
+                    while (t.peek().equals("(")) {
+                        t.expect("(");
+                        BooleanClause.Occur occur = switch (t.next()) {
+                            case "+" -> BooleanClause.Occur.MUST;
+                            case "#" -> BooleanClause.Occur.FILTER;
+                            case "?" -> BooleanClause.Occur.SHOULD;
+                            case "-" -> BooleanClause.Occur.MUST_NOT;
+                            default -> throw new IllegalArgumentException("bad occur");
+                        };
+                        b.add(parse(field, t), occur);
+                        t.expect(")");
+                    }
+                    q = b.build();
+                }
+                default -> throw new IllegalArgumentException("unknown op " + op);
+            }
+            t.expect(")");
+            return q;
         }
     }
 }
