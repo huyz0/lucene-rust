@@ -124,9 +124,12 @@ implicitly.
 
 Two caveats worth knowing about the coverage gate. `--fail-under-lines`
 enforces the **workspace total** (line coverage, currently 97.98%), not
-invariant #8's per-file bar. As of `c41-gates-and-record` **no file sits below
-that bar** -- `lucene-index/src/checksum_verify.rs`, which this note used to
-name at 93.75%, is at 97.03%. CI reports the per-file view in its job summary
+invariant #8's per-file bar. As of `c41-gates-and-record` no file sat below
+that bar. Since M2 one does, by construction:
+`lucene-ffi/src/jni_bridge.rs` (0%) holds the JNI entry points, which only a
+JVM can call. It is marshalling only -- every decision is in `jvm_reader.rs`
+(98%) -- and it is exercised by the plugin's `NativeSelfTest` under
+`-Xcheck:jni` and by `scripts/verify-opensearch.sh`, not by `cargo llvm-cov`. CI reports the per-file view in its job summary
 without failing on it, so the day one drops below 95% it is visible rather than
 enforced.
 
