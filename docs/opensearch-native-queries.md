@@ -28,7 +28,8 @@ A request runs native when **all** of these hold:
 - the rewritten Lucene query is built only from the shapes below --
   `TermQuery`, `BooleanQuery` (any `Occur`, any `minimum_should_match`,
   nested), `ConstantScoreQuery`, `BoostQuery`, `DisjunctionMaxQuery`,
-  `MatchAllDocsQuery`, `MatchNoDocsQuery` -- at most 32 deep and 1,024 nodes,
+  `MatchAllDocsQuery`, `MatchNoDocsQuery`, `PhraseQuery` (exact or sloppy,
+  terms at consecutive positions) -- at most 32 deep and 1,024 nodes,
   over fields that score with the default BM25 (`k1 = 1.2`, `b = 0.75`), with
   every `TermQuery` scoring from the reader's own statistics (not blended
   `TermStates`, as `multi_match` `cross_fields` builds);
@@ -64,6 +65,10 @@ frequency when nothing is deleted, without counting.
 | `match_all` | `MatchAllDocsQuery` | 1.21× |
 | `bool` `match_all` + `filter` | `BooleanQuery` with `MatchAllDocsQuery` | 1.04× |
 | `constant_score` of `match_all` | `BoostQuery(ConstantScoreQuery(MatchAllDocsQuery))` | 1.04× |
+| `match_phrase` | `PhraseQuery` | 1.17× |
+| `match_phrase` with `slop: 2` | sloppy `PhraseQuery` | 0.72× (open) |
+| `bool` `must` + `should` `match_phrase` | `BooleanQuery` with a `PhraseQuery` clause | 0.93× (open) |
+| `bool` with a `must_not` `match_phrase` | `BooleanQuery` with a `MUST_NOT` `PhraseQuery` | 0.76× (open: Lucene's query cache, R3b) |
 | any of the above with `size: 0`, `from`/`size` paging, or any `track_total_hits` | — | 0.99–1.30× |
 
 "Measured" is the median REST round trip over 40 requests per engine on one
@@ -95,10 +100,11 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `disabled` | `index.lucene_rust.search.enabled: false` |
 | `aggregations`, `post_filter`, `min_score`, `terminate_after`, `collectors` | the request adds a collector to the query phase |
 | `sort`, `search_after`, `scroll`, `collapse`, `rescore`, `profile`, `timeout` | the request needs something the native top-hits path does not produce |
-| `query_<Class>` | the rewritten query's root is not a supported shape — e.g. `query_PhraseQuery` (`match_phrase`), `query_IndexOrDocValuesQuery` (`range`), `query_MultiTermQueryConstantScoreBlendedWrapper` (`prefix`, `wildcard`) |
+| `query_<Class>` | the rewritten query's root is not a supported shape — e.g. `query_IndexOrDocValuesQuery` (`range`), `query_MultiTermQueryConstantScoreBlendedWrapper` (`prefix`, `wildcard`) |
 | `clause_<Class>` | the same, for a clause anywhere below the root (inside a `bool`, `constant_score`, `dis_max`, a boost) |
 | `query_too_deep`, `query_too_large` | more than 32 levels, or more than 1,024 nodes counting wrappers (Lucene counts only leaves, and `indices.query.bool.max_clause_count` can raise its limit) |
 | `boolean_msm_negative` | a `BooleanQuery` with a negative `minimumNumberShouldMatch` |
+| `phrase_positions` | a `PhraseQuery` whose terms are not at consecutive positions (the analyzer removed a stopword, leaving a gap) |
 | `field_similarity` | a field scores with anything but default-parameter BM25 |
 | `term_states` | a term query carries its own statistics (`multi_match` `cross_fields`), or is a `TermQuery` subclass |
 | `dfs` | `search_type=dfs_query_then_fetch`: scoring uses statistics aggregated across shards |

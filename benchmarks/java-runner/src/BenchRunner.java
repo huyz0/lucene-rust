@@ -247,6 +247,12 @@ public final class BenchRunner {
                     int c = w.indexOf(':');
                     q = new TermQuery(c < 0 ? new Term(field, w) : new Term(w.substring(0, c), w.substring(c + 1)));
                 }
+                case "p", "ps" -> {
+                    int slop = op.equals("ps") ? Integer.parseInt(t.next()) : 0;
+                    List<String> words = new ArrayList<>();
+                    while (!t.peek().equals(")")) words.add(t.next());
+                    q = new org.apache.lucene.search.PhraseQuery(slop, field, words.toArray(new String[0]));
+                }
                 case "boost" -> {
                     float f = Float.parseFloat(t.next());
                     q = new org.apache.lucene.search.BoostQuery(parse(field, t), f);

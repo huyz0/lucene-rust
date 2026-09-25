@@ -161,7 +161,10 @@ def matrix():
     add("rare term, exact total", {"track_total_hits": 1000000, "query": {"match": {"body": "omega psi"}}}, "native")
     add("highlight (fetch phase)", {"query": {"match": {"body": "alpha"}}, "highlight": {"fields": {"body": {}}}}, "native")
     # Outside the matrix: each must fall back, for the stated reason.
-    add("match_phrase", {"query": {"match_phrase": {"body": "alpha beta"}}}, "query_*")
+    add("match_phrase", {"query": {"match_phrase": {"body": "alpha beta"}}}, "native")
+    add("match_phrase slop", {"query": {"match_phrase": {"body": {"query": "beta alpha", "slop": 2}}}}, "native")
+    add("bool must + phrase", {"query": {"bool": {"must": [{"match": {"body": "gamma"}}], "should": [{"match_phrase": {"body": "alpha beta"}}]}}}, "native")
+    add("bool must_not phrase", {"query": {"bool": {"must": [{"match": {"body": "beta"}}], "must_not": [{"match_phrase": {"body": "alpha gamma"}}]}}}, "native")
     add("range", {"query": {"range": {"n": {"gte": 10, "lte": 500}}}}, "query_*")
     add("prefix", {"query": {"prefix": {"tag": "al"}}}, "query_*")
     add("match_all", {"query": {"match_all": {}}}, "native")

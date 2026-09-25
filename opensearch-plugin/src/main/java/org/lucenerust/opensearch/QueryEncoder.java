@@ -11,6 +11,7 @@ import org.apache.lucene.search.ConstantScoreQuery;
 import org.apache.lucene.search.DisjunctionMaxQuery;
 import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.MatchNoDocsQuery;
+import org.apache.lucene.search.PhraseQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.util.BytesRef;
@@ -119,6 +120,7 @@ public final class QueryEncoder {
     private static final byte NODE_DISMAX = 4;
     private static final byte NODE_MATCH_ALL = 5;
     private static final byte NODE_MATCH_NONE = 6;
+    private static final byte NODE_PHRASE = 7;
 
     /** Appends one node (and its children); returns a fallback reason, or null. */
     private static String node(Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
@@ -191,6 +193,37 @@ public final class QueryEncoder {
             // when it is.
             nodes[0]--;
             return node(a.getOriginalQuery(), out, fieldOk, depth, nodes);
+        }
+        if (q.getClass() == PhraseQuery.class) {
+            PhraseQuery pq = (PhraseQuery) q;
+            Term[] terms = pq.getTerms();
+            int[] positions = pq.getPositions();
+            if (terms.length == 0) {
+                out.write(NODE_MATCH_NONE);
+                return null;
+            }
+            if (fieldOk.test(pq.getField()) == false) {
+                return "field_similarity";
+            }
+            // The native phrase has no position gaps (a stopword the analyzer removed).
+            for (int i = 0; i < positions.length; i++) {
+                if (positions[i] - positions[0] != i) {
+                    return "phrase_positions";
+                }
+            }
+            nodes[0] += terms.length;
+            if (nodes[0] > MAX_NODES) {
+                return "query_too_large";
+            }
+            out.write(NODE_PHRASE);
+            writeBytes(out, pq.getField().getBytes(StandardCharsets.UTF_8));
+            writeInt(out, pq.getSlop());
+            writeInt(out, terms.length);
+            for (int i = 0; i < terms.length; i++) {
+                writeInt(out, i);
+                writeBytes(out, terms[i].bytes());
+            }
+            return null;
         }
         if (q.getClass() == MatchAllDocsQuery.class) {
             out.write(NODE_MATCH_ALL);

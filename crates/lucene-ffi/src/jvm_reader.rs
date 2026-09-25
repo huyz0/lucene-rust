@@ -78,8 +78,8 @@ use std::sync::Arc;
 /// plugin; 2, `CONSTANT_SCORE` and `BOOST` clause kinds; 3, `count_limit`;
 /// 4, live docs passed to `ffi_open_jvm_reader` (no `set_live_docs`);
 /// 5, the engine writer (`engine_writer.rs`); 6, the writer's `max_docs`;
-/// 7, the [`QUERY_TREE`] blob (read path R2).
-pub const JVM_ABI_VERSION: u32 = 7;
+/// 7, the [`QUERY_TREE`] blob (read path R2); 8, its phrase node (R3).
+pub const JVM_ABI_VERSION: u32 = 8;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -96,6 +96,7 @@ const NODE_BOOST: u8 = 3;
 const NODE_DISMAX: u8 = 4;
 const NODE_MATCH_ALL: u8 = 5;
 const NODE_MATCH_NONE: u8 = 6;
+const NODE_PHRASE: u8 = 7;
 
 /// [`JVM_ABI_VERSION`], for the plugin's load-time handshake.
 #[no_mangle]
@@ -719,6 +720,7 @@ fn decode_node(c: &mut Cursor<'_>, depth: usize, nodes: &mut usize) -> Result<Cl
     use crate::query::MAX_CLAUSE_DEPTH;
     use lucene_search::query::{
         BoostQuery, ConstantScoreQuery, DisjunctionMaxQuery, MatchAllDocsQuery, MatchNoDocsQuery,
+        PhraseQuery,
     };
     if depth >= MAX_CLAUSE_DEPTH {
         set_last_error(format!(
@@ -787,9 +789,37 @@ fn decode_node(c: &mut Cursor<'_>, depth: usize, nodes: &mut usize) -> Result<Cl
         // (`OpenSegment::max_doc`); the query carries none.
         NODE_MATCH_ALL => Clause::MatchAllDocs(MatchAllDocsQuery::new(i32::MAX)),
         NODE_MATCH_NONE => Clause::MatchNoDocs(MatchNoDocsQuery::new()),
+        NODE_PHRASE => {
+            // `field`, `slop`, then each term with its position. Only
+            // consecutive positions from 0: the encoder falls a phrase with
+            // gaps (a removed stopword) back to Lucene.
+            let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
+            let slop = c.len()?;
+            let count = c.len()?;
+            *nodes = nodes.saturating_add(count);
+            check_clause_count(*nodes)?;
+            if count == 0 {
+                set_last_error("query tree: a phrase with no terms".to_string());
+                return Err(FfiStatus::InvalidArgument);
+            }
+            // Grown as read, not sized from `count`: the blob bounds it.
+            let mut terms = Vec::new();
+            for i in 0..count {
+                let position = c.i32()?;
+                if usize::try_from(position).ok() != Some(i) {
+                    set_last_error(format!(
+                        "query tree: phrase term {i} is at position {position}, not {i}"
+                    ));
+                    return Err(FfiStatus::InvalidArgument);
+                }
+                terms.push(c.bytes()?.to_vec());
+            }
+            let slop = u32::try_from(slop).map_err(|_| FfiStatus::InvalidArgument)?;
+            Clause::Phrase(PhraseQuery::new(field, terms).with_slop(slop))
+        }
         other => {
             set_last_error(format!(
-                "query tree: unknown node kind {other} (expected 0..=6)"
+                "query tree: unknown node kind {other} (expected 0..=7)"
             ));
             return Err(FfiStatus::InvalidArgument);
         }
@@ -1562,6 +1592,8 @@ mod tests {
         D(f32, Vec<N<'a>>),
         All,
         None,
+        /// `(field, slop, [(position, term)])`.
+        P(&'a str, i32, Vec<(i32, &'a str)>),
     }
 
     fn enc(n: &N<'_>, b: &mut Vec<u8>) {
@@ -1604,6 +1636,16 @@ mod tests {
             }
             N::All => b.push(NODE_MATCH_ALL),
             N::None => b.push(NODE_MATCH_NONE),
+            N::P(field, slop, terms) => {
+                b.push(NODE_PHRASE);
+                bytes(b, field.as_bytes());
+                b.extend_from_slice(&slop.to_le_bytes());
+                b.extend_from_slice(&(terms.len() as i32).to_le_bytes());
+                for (position, term) in terms {
+                    b.extend_from_slice(&position.to_le_bytes());
+                    bytes(b, term.as_bytes());
+                }
+            }
         }
     }
 
@@ -1677,6 +1719,58 @@ mod tests {
     /// `match_all` covers every live document of every segment -- each
     /// segment's own `maxDoc`, which the blob does not carry -- `match_none`
     /// none, and dismax scores as `max + tie * rest`.
+    #[test]
+    fn phrase_trees_search_and_count() {
+        let h = open();
+        let cat_dog = || N::P("body", 0, vec![(0, "cat"), (1, "dog")]);
+        let (hits, total) = run(h, &tree(cat_dog()), 10, true).unwrap();
+        let mut docs: Vec<i32> = hits.iter().map(|&(d, _)| d).collect();
+        docs.sort_unstable();
+        assert!(docs.starts_with(&[1, 2]), "both short documents: {docs:?}");
+        assert_eq!(total, hits.len() as i64);
+        // The reversed phrase is nowhere in the short documents.
+        let dog_cat = tree(N::P("body", 0, vec![(0, "dog"), (1, "cat")]));
+        let (reversed, _) = run(h, &dog_cat, 10, true).unwrap();
+        assert!(reversed.iter().all(|&(d, _)| d >= 4), "{reversed:?}");
+        // Inside a tree: `cat` except where `cat dog` occurs, and the count
+        // path agrees with the search.
+        let except = tree(N::B(0, vec![(0, N::T("body", "cat")), (3, cat_dog())]));
+        let (hits, total) = run(h, &except, 10, true).unwrap();
+        assert!(hits.iter().all(|&(d, _)| d != 1 && d != 2));
+        assert_eq!(run(h, &except, 0, true).unwrap().1, total);
+        // A sloppy phrase matches the reversed order within slop 2.
+        let sloppy = tree(N::P("body", 2, vec![(0, "dog"), (1, "cat")]));
+        let (hits, _) = run(h, &sloppy, 10, true).unwrap();
+        assert!(hits.iter().any(|&(d, _)| d == 1 || d == 2), "{hits:?}");
+    }
+
+    #[test]
+    fn malformed_phrase_nodes_are_invalid_arguments() {
+        let invalid = Err(FfiStatus::InvalidArgument);
+        let status = |b: &[u8]| decode_query(b).map(|_| ());
+        assert_eq!(status(&tree(N::P("body", 0, vec![]))), invalid, "no terms");
+        assert_eq!(
+            status(&tree(N::P("body", 0, vec![(0, "a"), (2, "b")]))),
+            invalid,
+            "a position gap"
+        );
+        assert_eq!(
+            status(&tree(N::P("body", -1, vec![(0, "a"), (1, "b")]))),
+            invalid,
+            "negative slop"
+        );
+        let long: Vec<(i32, &str)> = (0..1100).map(|i| (i, "t")).collect();
+        assert_eq!(
+            status(&tree(N::P("body", 0, long))),
+            invalid,
+            "over the clause cap"
+        );
+        assert_eq!(
+            status(&tree(N::P("body", 0, vec![(0, "a"), (1, "b")]))),
+            Ok(())
+        );
+    }
+
     #[test]
     fn match_all_counts_the_live_documents_of_each_segment() {
         // Segment 0 has document 2 deleted; the match-all spans each
