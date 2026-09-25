@@ -84,7 +84,8 @@ public final class QueryEncoder {
     }
 
     private static boolean isTermLeaf(Query q) {
-        return q instanceof TermQuery || (q instanceof ConstantScoreQuery cs && cs.getQuery() instanceof TermQuery);
+        return (q instanceof TermQuery tq && plainTerm(tq))
+            || (q instanceof ConstantScoreQuery cs && cs.getQuery() instanceof TermQuery inner && plainTerm(inner));
     }
 
     private QueryEncoder() {}
@@ -100,6 +101,9 @@ public final class QueryEncoder {
             query = new BooleanQuery.Builder().add(query, BooleanClause.Occur.MUST).build();
         }
         if (query instanceof TermQuery tq) {
+            if (plainTerm(tq) == false) {
+                return Encoded.fallback("term_states");
+            }
             Term t = tq.getTerm();
             if (fieldOk.test(t.field()) == false) {
                 return Encoded.fallback("field_similarity");
@@ -164,6 +168,9 @@ public final class QueryEncoder {
         q = unwrapUnitBoost(q);
         int me = out.size();
         if (q instanceof TermQuery tq) {
+            if (plainTerm(tq) == false) {
+                return "term_states";
+            }
             Term t = tq.getTerm();
             if (fieldOk.test(t.field()) == false) {
                 return "field_similarity";
@@ -196,6 +203,16 @@ public final class QueryEncoder {
     private static final byte KIND_BOOLEAN = 1;
     private static final byte KIND_CONSTANT_SCORE = 2;
     private static final byte KIND_BOOST = 3;
+
+    /**
+     * A {@link TermQuery} that scores from the reader's own statistics: exactly that class (not a
+     * subclass that may score differently) and no caller-supplied {@code TermStates}. OpenSearch
+     * builds term queries with blended {@code TermStates} for {@code multi_match} {@code
+     * cross_fields}; the native engine would score those with the unblended ones.
+     */
+    static boolean plainTerm(TermQuery tq) {
+        return tq.getClass() == TermQuery.class && tq.getTermStates() == null;
+    }
 
     /** A query class's name for a fallback reason; an anonymous class reports its enclosing class. */
     private static String name(Query q) {

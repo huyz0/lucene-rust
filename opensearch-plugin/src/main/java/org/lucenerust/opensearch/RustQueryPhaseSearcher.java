@@ -17,7 +17,10 @@ import org.opensearch.common.settings.Setting;
 import org.opensearch.search.aggregations.AggregationProcessor;
 import org.opensearch.search.internal.ContextIndexSearcher;
 import org.opensearch.search.internal.SearchContext;
+import org.opensearch.action.search.SearchType;
+import org.opensearch.search.query.QueryCollectorArguments;
 import org.opensearch.search.query.QueryCollectorContext;
+import org.opensearch.search.query.QueryCollectorContextSpecRegistry;
 import org.opensearch.search.query.QueryPhaseSearcher;
 import org.opensearch.search.query.QueryPhaseSearcherWrapper;
 
@@ -111,11 +114,14 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             acquired = readers.acquire(searcher.getIndexReader());
             reason = acquired.fallbackReason();
         }
-        if (reason == null && searchNative(ctx, acquired.handle(), blob)) {
-            stats.nativeQuery();
-            return false;
+        if (reason == null) {
+            reason = searchNative(ctx, acquired.handle(), blob);
+            if (reason == null) {
+                stats.nativeQuery();
+                return false;
+            }
         }
-        stats.fallback(reason == null ? "native_error" : reason);
+        stats.fallback(reason);
         return fallback.searchWith(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout);
     }
 
@@ -141,6 +147,19 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         if (ctx.rescore() != null && ctx.rescore().isEmpty() == false) return "rescore";
         if (ctx.getProfilers() != null) return "profile";
         if (hasTimeout) return "timeout";
+        // dfs_query_then_fetch scores with statistics aggregated across shards
+        // (ContextIndexSearcher.setAggregatedDfs); the native engine only knows this shard's.
+        if (ctx.searchType() == SearchType.DFS_QUERY_THEN_FETCH) return "dfs";
+        // Another plugin may replace the top-docs collector (QueryPhase's own first question).
+        try {
+            if (QueryCollectorContextSpecRegistry.getQueryCollectorContextSpec(
+                ctx,
+                ctx.query(),
+                new QueryCollectorArguments.Builder().hasFilterCollector(hasFilterCollector).build()
+            ).isPresent()) return "collector_spec";
+        } catch (IOException e) {
+            return "collector_spec";
+        }
         return null;
     }
 
@@ -157,26 +176,32 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             && sim.getDiscountOverlaps();
     }
 
-    /** Runs the blob and stores the result; false (after logging) when the native call failed. */
-    private boolean searchNative(SearchContext ctx, long handle, byte[] blob) {
+    /**
+     * Runs the blob and stores the result; returns null, or the fallback reason when it did not.
+     *
+     * <p>Cancellation is checked before the call, not during it: a native search runs to completion
+     * (see docs/opensearch-native-queries.md, Known limits).
+     */
+    private String searchNative(SearchContext ctx, long handle, byte[] blob) {
         int size = ctx.size();
         int numDocs = size == 0 ? 0 : Math.min(ctx.from() + size, Math.max(1, ctx.searcher().getIndexReader().numDocs()));
         int trackUpTo = ctx.trackTotalHitsUpTo();
         // track_total_hits: false -> count nothing; true -> exact; N -> exact below N.
+        // TopScoreDocCollectorManager stores max(totalHitsThreshold, numHits).
         long countLimit = trackUpTo == SearchContext.TRACK_TOTAL_HITS_DISABLED ? 0
             : trackUpTo == SearchContext.TRACK_TOTAL_HITS_ACCURATE ? Long.MAX_VALUE
-            : trackUpTo;
+            : Math.max(trackUpTo, numDocs);
         int[] docs = new int[numDocs];
         float[] scores = new float[numDocs];
         long[] counts = new long[3];
         if (ctx.isCancelled()) {
-            return false;
+            return "cancelled";
         }
         int rc = NativeBridge.search(handle, blob, numDocs, countLimit, docs, scores, counts);
         if (rc != NativeBridge.OK) {
             stats.nativeError();
             logger.warn("lucene-rust: native search failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
-            return false;
+            return "native_error";
         }
         int n = (int) counts[0];
         ScoreDoc[] hits = new ScoreDoc[n];
@@ -188,6 +213,6 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             : new TotalHits(counts[1], counts[2] != 0 ? TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO : TotalHits.Relation.EQUAL_TO);
         float maxScore = n == 0 ? Float.NaN : scores[0];
         ctx.queryResult().topDocs(new TopDocsAndMaxScore(new TopDocs(total, hits), maxScore), null);
-        return true;
+        return null;
     }
 }

@@ -24,13 +24,9 @@ extern "C" {
         previous: u64,
         expected_max_docs: *const i32,
         segment_count: usize,
+        live_words: *const u64,
+        live_word_counts: *const usize,
         out_handle: *mut u64,
-    ) -> i32;
-    pub fn ffi_jvm_reader_set_live_docs(
-        handle: u64,
-        segment: usize,
-        words: *const u64,
-        words_len: usize,
     ) -> i32;
     pub fn ffi_jvm_reader_search(
         handle: u64,
@@ -75,8 +71,9 @@ pub fn infos() -> &'static [u8] {
     INFOS.get_or_init(|| std::fs::read(format!("{FIXTURE}/segments_2")).expect("segments_2"))
 }
 
-/// A fresh JVM reader over the fixture.
-pub fn open_jvm_reader() -> u64 {
+/// Opens the fixture with the given live-docs words and per-segment counts;
+/// returns the status and the handle.
+pub fn open_jvm_reader_with(words: &[u64], counts: &[usize; 2]) -> (i32, u64) {
     let docs = [4i32, 4];
     let mut h = 0u64;
     let rc = unsafe {
@@ -89,9 +86,17 @@ pub fn open_jvm_reader() -> u64 {
             0,
             docs.as_ptr(),
             docs.len(),
+            words.as_ptr(),
+            counts.as_ptr(),
             &mut h,
         )
     };
+    (rc, h)
+}
+
+/// A fresh JVM reader over the fixture, no deletions.
+pub fn open_jvm_reader() -> u64 {
+    let (rc, h) = open_jvm_reader_with(&[], &[0, 0]);
     assert_eq!(rc, 0, "the fixture must open");
     h
 }

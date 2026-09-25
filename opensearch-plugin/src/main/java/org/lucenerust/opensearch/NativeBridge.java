@@ -13,7 +13,7 @@ package org.lucenerust.opensearch;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 3;
+    public static final int EXPECTED_ABI_VERSION = 4;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -32,8 +32,11 @@ public final class NativeBridge {
     /**
      * Opens a reader over the segments listed in {@code segmentInfos} (bytes written by {@code
      * SegmentInfos.write(IndexOutput)} at {@code generation}), checking that segment {@code i} has
-     * {@code maxDocs[i]} documents. {@code previous} is an open handle whose unchanged segments are
-     * reused, or 0. The new handle is written to {@code outHandle[0]}.
+     * {@code maxDocs[i]} documents and masking it with {@code liveDocs[i]} ({@code
+     * FixedBitSet.getBits()} words, exactly {@code ceil(maxDoc / 64)} of them; null for no
+     * deletions; a null array for none anywhere). {@code previous} is an open handle whose unchanged
+     * segments are reused, or 0. The new handle is written to {@code outHandle[0]}; it is immutable,
+     * so searches on it never wait on each other or on opens and closes.
      */
     public static native int openReader(
         byte[] indexPathUtf8,
@@ -41,11 +44,9 @@ public final class NativeBridge {
         long generation,
         long previous,
         int[] maxDocs,
+        long[][] liveDocs,
         long[] outHandle
     );
-
-    /** Replaces segment {@code segment}'s live docs; {@code words} null means no deletions. */
-    public static native int setLiveDocs(long handle, int segment, long[] words);
 
     /**
      * Runs a query blob. {@code outCounts[0]} receives the number of hits written; {@code

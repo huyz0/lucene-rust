@@ -1,6 +1,6 @@
-//! `ffi_jvm_reader_set_live_docs` with arbitrary words and segment, then a
-//! search: the live-docs validation, and that whatever it accepts is safe to
-//! search and count under.
+//! `ffi_open_jvm_reader` with arbitrary live-docs words and per-segment word
+//! counts, then searches: the live-docs validation, and that whatever it
+//! accepts is safe to search and count under.
 #![no_main]
 mod common;
 
@@ -10,8 +10,8 @@ fuzz_target!(|data: &[u8]| {
     if data.is_empty() {
         return;
     }
-    let h = common::open_jvm_reader();
-    let segment = usize::from(data[0] % 3);
+    // The first byte splits the words between the two segments.
+    let first = usize::from(data[0] % 3);
     let words: Vec<u64> = data[1..]
         .chunks(8)
         .map(|c| {
@@ -20,8 +20,12 @@ fuzz_target!(|data: &[u8]| {
             u64::from_le_bytes(b)
         })
         .collect();
-    let rc = unsafe { common::ffi_jvm_reader_set_live_docs(h, segment, words.as_ptr(), words.len()) };
+    let counts = [first.min(words.len()), words.len().saturating_sub(first)];
+    let (rc, h) = common::open_jvm_reader_with(&words, &counts);
     assert_ne!(rc, common::PANIC, "live docs panicked");
+    if rc != 0 {
+        return;
+    }
     // body:fox OR body:dog, then the same as a conjunction.
     let or = [
         1u8, 0, 0, 0, 0, 2, 0, 0, 0, 2, 0, 255, 255, 255, 255, 0, 0, 0, 0, 4, 0, 0, 0, b'b', b'o', b'd', b'y', 3, 0,

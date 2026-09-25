@@ -152,6 +152,10 @@ def matrix():
     add("track_total_hits 100", {"track_total_hits": 100, "query": {"match": {"body": "alpha"}}}, "native")
     add("from 20 size 15", {"from": 20, "size": 15, "query": {"match": {"body": "delta"}}}, "native")
     add("size 200", {"size": 200, "query": {"match": {"body": "zeta eta"}}}, "native")
+    # Totals below the threshold, where the coordinator's clamp to track_total_hits cannot hide a
+    # shard-level count difference.
+    add("size 0 below threshold", {"size": 0, "track_total_hits": 1000000, "query": {"term": {"tag": "omega"}}}, "native")
+    add("rare term, exact total", {"track_total_hits": 1000000, "query": {"match": {"body": "omega psi"}}}, "native")
     add("highlight (fetch phase)", {"query": {"match": {"body": "alpha"}}, "highlight": {"fields": {"body": {}}}}, "native")
     # Outside the matrix: each must fall back, for the stated reason.
     add("match_phrase", {"query": {"match_phrase": {"body": "alpha beta"}}}, "query_*")
@@ -171,6 +175,10 @@ def matrix():
     add("profile", {"query": {"match": {"body": "alpha"}}, "profile": True}, "profile")
     add("timeout", {"query": {"match": {"body": "alpha"}}, "timeout": "10s"}, "timeout")
     add("collapse", {"query": {"match": {"body": "alpha"}}, "collapse": {"field": "tag"}}, "collapse")
+    # Scored with statistics the native engine does not have: cross-shard (dfs) or blended
+    # TermStates (cross_fields; tie_breaker 1 makes Lucene rewrite the dismax to a boolean).
+    add("cross_fields", {"query": {"multi_match": {"query": "alpha", "type": "cross_fields", "fields": ["body", "title"], "tie_breaker": 1}}}, "term_states")
+    add("dfs_query_then_fetch", {"_params": "&search_type=dfs_query_then_fetch", "query": {"match": {"body": "alpha"}}}, "dfs")
     add("rescore", {"query": {"match": {"body": "alpha"}}, "rescore": {"window_size": 20, "query": {"rescore_query": {"match": {"title": "beta"}}}}}, "rescore")
     return q
 
@@ -216,6 +224,12 @@ def same(a, b):
     return None
 
 
+def search_url(index, body):
+    """`_search`, with a matrix row's `_params` (URL parameters) moved to the query string."""
+    params = body.get("_params", "")
+    return f"/{index}/_search?request_cache=false{params}", {k: v for k, v in body.items() if k != "_params"}
+
+
 def run_matrix(index, shards, label, shapes="fast"):
     """The whole matrix against the Lucene reference, under one routing mode."""
     label = f"{label}/{shapes}"
@@ -224,14 +238,16 @@ def run_matrix(index, shards, label, shapes="fast"):
     set_native(index, False)
     reference = {}
     for name, body, _ in queries:
-        reference[name] = shape(req("POST", f"/{index}/_search?request_cache=false", body), body)
+        url, b = search_url(index, body)
+        reference[name] = shape(req("POST", url, b), b)
     set_native(index, True)
     native_total = 0
     for name, body, expect in queries:
         if expect == "slow":
             expect = "native" if shapes == "all" else "slower_shape"
         before = stats()
-        got = shape(req("POST", f"/{index}/_search?request_cache=false", body), body)
+        url, b = search_url(index, body)
+        got = shape(req("POST", url, b), b)
         after = stats()
         diff = same(got, reference[name])
         check(diff is None, f"{label} {index} [{name}]: native-enabled response differs from Lucene: {diff}")

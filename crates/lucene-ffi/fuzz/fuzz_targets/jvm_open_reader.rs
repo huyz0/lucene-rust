@@ -25,6 +25,8 @@ fuzz_target!(|data: &[u8]| {
             0,
             docs.as_ptr(),
             docs.len(),
+            std::ptr::null(),
+            std::ptr::null(),
             &mut h,
         )
     };
