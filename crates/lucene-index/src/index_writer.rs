@@ -162,6 +162,9 @@ use lucene_store::directory::Directory;
 use lucene_util::fixed_bit_set::FixedBitSet;
 use lucene_util::small_float;
 
+mod explicit;
+pub use explicit::{ExplicitDocument, ExplicitFields, InvertedField, InvertedTerm};
+
 pub use crate::merge_policy::MergePolicyConfig;
 pub use crate::update_document::SegmentDeleteSource as DeleteSource;
 
@@ -169,6 +172,10 @@ pub use crate::update_document::SegmentDeleteSource as DeleteSource;
 pub enum Error {
     #[error(transparent)]
     Store(#[from] lucene_store::Error),
+    /// An [`ExplicitDocument`] or field registration the explicit path cannot
+    /// accept -- see `index_writer/explicit.rs`.
+    #[error("explicit document: {0}")]
+    Explicit(String),
     #[error(transparent)]
     SegmentWriter(#[from] segment_writer::Error),
     #[error(transparent)]
@@ -751,6 +758,10 @@ pub(crate) struct IndexingConfig {
     /// unsorted, which is what `SegmentInfo`'s `numSortFields == 0` says on
     /// disk. See [`IndexWriter::set_index_sort`].
     index_sort: Option<Vec<segment_info::IndexSortField>>,
+    /// Documents arrive as [`ExplicitDocument`]s: flushes write what each
+    /// document states rather than deriving postings, norms, doc values and
+    /// points from stored values. See [`IndexWriter::enable_explicit_documents`].
+    explicit: bool,
     /// Every field this writer is currently opted into indexing **vectors**
     /// for, in insertion order -- real Lucene's per-field
     /// `KnnFieldVectorsWriter`, which `IndexingChain` creates the first time a
@@ -810,6 +821,9 @@ pub(crate) struct DocumentBuffer<'b> {
     pub(crate) docs: &'b [Document],
     pub(crate) custom_freq_terms: &'b [Vec<(String, i32)>],
     pub(crate) vectors: &'b [Vec<DocumentVector>],
+    /// Aligned with `docs` when the writer takes explicit documents; read only
+    /// then.
+    pub(crate) explicit: &'b [ExplicitFields],
     pub(crate) has_blocks: bool,
 }
 
@@ -1996,6 +2010,9 @@ impl IndexingConfig {
         segment_id: [u8; ID_LENGTH],
         flush_deletes: Option<&mut FlushDeletes<'_>>,
     ) -> Result<(SegmentCommitInfo, Vec<String>)> {
+        if self.explicit {
+            return self.build_and_write_explicit_segment(dir, buf, segment_name, segment_id);
+        }
         // `IndexingChain.writeNorms`' loop condition, resolved once: every
         // indexed field that has not opted out gets a norm column, and the
         // shared invert pass has to analyze all of them.
@@ -2330,6 +2347,10 @@ pub struct IndexWriter<'d> {
     /// there would store every embedding in the stored-fields file, which
     /// Lucene does not do.
     pending_vectors: Vec<Vec<DocumentVector>>,
+    /// Each pending document's [`ExplicitFields`], aligned 1:1 with
+    /// `pending_docs` like [`Self::pending_vectors`]; empty for a document
+    /// added through a native [`Document`] entry point.
+    pending_explicit: Vec<ExplicitFields>,
     /// `SegmentInfo.setHasBlocks()` for the segment currently being buffered:
     /// set by any [`IndexWriter::add_documents`]/
     /// [`IndexWriter::update_documents`] call that buffers more than one
@@ -2913,6 +2934,7 @@ impl<'d> IndexWriter<'d> {
             docs: &self.pending_docs,
             custom_freq_terms: &self.pending_custom_freq_terms,
             vectors: &self.pending_vectors,
+            explicit: &self.pending_explicit,
             has_blocks: self.pending_has_blocks,
         }
     }
@@ -2983,6 +3005,7 @@ impl<'d> IndexWriter<'d> {
                 term_vector_fields: Vec::new(),
                 doc_values_fields: Vec::new(),
                 index_sort: None,
+                explicit: false,
                 vector_fields: Vec::new(),
                 points_fields: Vec::new(),
                 hnsw_m: hnsw::DEFAULT_MAX_CONN,
@@ -3004,6 +3027,7 @@ impl<'d> IndexWriter<'d> {
             updates_stream: BufferedUpdatesStream::new(),
             rollback_segments,
             pending_vectors: Vec::new(),
+            pending_explicit: Vec::new(),
             pending_has_blocks: false,
             segment_versions: std::collections::HashMap::new(),
         })
@@ -3931,6 +3955,7 @@ impl<'d> IndexWriter<'d> {
         // any given doc -- see those fields' own doc comments.
         self.pending_custom_freq_terms.push(Vec::new());
         self.pending_vectors.push(Vec::new());
+        self.pending_explicit.push(ExplicitFields::default());
     }
 
     /// Buffers `doc` for the next flush, same as
@@ -4006,6 +4031,7 @@ impl<'d> IndexWriter<'d> {
         self.pending_docs.push(doc);
         self.pending_custom_freq_terms.push(Vec::new());
         self.pending_vectors.push(vectors);
+        self.pending_explicit.push(ExplicitFields::default());
         self.maybe_flush()?;
         Ok(seq_no)
     }
@@ -4326,6 +4352,7 @@ impl<'d> IndexWriter<'d> {
         self.pending_docs.push(doc);
         self.pending_custom_freq_terms.push(terms);
         self.pending_vectors.push(Vec::new());
+        self.pending_explicit.push(ExplicitFields::default());
         self.maybe_flush()?;
         Ok(seq_no)
     }
@@ -4949,6 +4976,7 @@ impl<'d> IndexWriter<'d> {
         self.pending_docs.clear();
         self.pending_custom_freq_terms.clear();
         self.pending_vectors.clear();
+        self.pending_explicit.clear();
         self.ram_bytes_used = 0;
         self.pending_has_blocks = false;
         let private = self.delete_queue.freeze_private_buffer(&segment_name);
@@ -5186,6 +5214,7 @@ impl<'d> IndexWriter<'d> {
         segment_writer::permute_in_place(&mut self.pending_docs, &old_to_new);
         segment_writer::permute_in_place(&mut self.pending_custom_freq_terms, &old_to_new);
         segment_writer::permute_in_place(&mut self.pending_vectors, &old_to_new);
+        segment_writer::permute_in_place(&mut self.pending_explicit, &old_to_new);
     }
 
     /// Tokenizes every pending document's text **once** for the union of the
@@ -7678,6 +7707,7 @@ impl<'d> IndexWriter<'d> {
         self.pending_docs.clear();
         self.pending_custom_freq_terms.clear();
         self.pending_vectors.clear();
+        self.pending_explicit.clear();
         self.ram_bytes_used = 0;
         // Only ever `Some` inside `flush()`, and cleared at its end -- but a
         // `flush()` that fails *after* publishing the segment (in
@@ -7752,6 +7782,7 @@ impl<'d> IndexWriter<'d> {
         self.pending_docs.clear();
         self.pending_custom_freq_terms.clear();
         self.pending_vectors.clear();
+        self.pending_explicit.clear();
         self.ram_bytes_used = 0;
         self.pending_has_blocks = false;
         // Java's `deleteAll`: `docWriter.lockAndAbortAll()` (which clears the
@@ -8160,7 +8191,13 @@ impl IndexingConfig {
         }
 
         if !numeric_updates.is_empty() || !binary_updates.is_empty() {
-            Self::write_doc_values_update_generation(dir, sci, &numeric_updates, &binary_updates)?;
+            Self::write_doc_values_update_generation(
+                dir,
+                sci,
+                &numeric_updates,
+                &binary_updates,
+                &self.fields,
+            )?;
         }
         // `PendingDeletes.isFullyDeleted`: `getDelCount() == info.info.maxDoc()`.
         Ok(i64::from(sci.del_count) == opened.max_doc as i64)
@@ -8181,13 +8218,15 @@ impl IndexingConfig {
         sci: &mut SegmentCommitInfo,
         numeric: &[PerFieldNumericUpdates],
         binary: &[PerFieldBinaryUpdates],
+        schema: &[FieldInfo],
     ) -> Result<()> {
-        crate::field_updates::write_field_updates(
+        crate::field_updates::write_field_updates_with_schema(
             dir,
             sci,
             numeric,
             binary,
             &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+            schema,
         )?;
         Ok(())
     }

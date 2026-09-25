@@ -197,9 +197,36 @@ pub fn write_field_updates(
     binary: &[BinaryFieldUpdates],
     per_field_suffix: &str,
 ) -> Result<()> {
+    write_field_updates_with_schema(dir, sci, numeric, binary, per_field_suffix, &[])
+}
+
+/// [`write_field_updates`] for a writer whose schema can name fields a
+/// segment does not carry: an update to a field absent from the segment's
+/// `FieldInfos` adds it -- as a doc-values-only field of the update's type,
+/// keeping the schema's number and soft-deletes/parent flags -- to the
+/// generation's `.fnm`. That is Java's `FieldInfos.FieldNumbers
+/// .constructFieldInfo`, reached when `softUpdateDocument` marks a document in
+/// a segment none of whose documents had the soft-deletes field. With an
+/// empty `schema` an absent field stays an error ([`Error::UnknownField`]).
+pub fn write_field_updates_with_schema(
+    dir: &dyn Directory,
+    sci: &mut SegmentCommitInfo,
+    numeric: &[NumericFieldUpdates],
+    binary: &[BinaryFieldUpdates],
+    per_field_suffix: &str,
+    schema: &[FieldInfo],
+) -> Result<()> {
     let mut created: Vec<String> = Vec::new();
     let snapshot = sci.clone();
-    match write_field_updates_inner(dir, sci, numeric, binary, per_field_suffix, &mut created) {
+    match write_field_updates_inner(
+        dir,
+        sci,
+        numeric,
+        binary,
+        per_field_suffix,
+        schema,
+        &mut created,
+    ) {
         Ok(()) => Ok(()),
         Err(e) => {
             // Java's `finally { if (success == false) { ... } }`. Java has no
@@ -231,6 +258,7 @@ fn write_field_updates_inner(
     numeric: &[NumericFieldUpdates],
     binary: &[BinaryFieldUpdates],
     per_field_suffix: &str,
+    schema: &[FieldInfo],
     created: &mut Vec<String>,
 ) -> Result<()> {
     let segment = sci.segment_name.clone();
@@ -255,7 +283,13 @@ fn write_field_updates_inner(
     binary.sort_by_key(|(n, _)| *n);
 
     for (field_number, updates) in numeric {
-        let index = field_index(&infos, &segment, *field_number)?;
+        let index = field_index_or_construct(
+            &mut infos,
+            &segment,
+            *field_number,
+            schema,
+            DocValuesType::Numeric,
+        )?;
         check_updatable(&infos.fields[index], &segment, DocValuesType::Numeric)?;
         // `verifyOrCreateDvOnlyField`'s create half: the generational `.fnm`
         // is where a doc-values-only field first declares its type.
@@ -285,7 +319,13 @@ fn write_field_updates_inner(
     }
 
     for (field_number, updates) in binary {
-        let index = field_index(&infos, &segment, *field_number)?;
+        let index = field_index_or_construct(
+            &mut infos,
+            &segment,
+            *field_number,
+            schema,
+            DocValuesType::Binary,
+        )?;
         check_updatable(&infos.fields[index], &segment, DocValuesType::Binary)?;
         // `verifyOrCreateDvOnlyField`'s create half: the generational `.fnm`
         // is where a doc-values-only field first declares its type.
@@ -400,6 +440,38 @@ fn put_attribute(field: &mut FieldInfo, key: &str, value: &str) {
         Some(slot) => slot.1 = value.to_string(),
         None => field.attributes.push((key.to_string(), value.to_string())),
     }
+}
+
+/// [`field_index`], or -- when `schema` knows the field and the segment does
+/// not -- the index of a doc-values-only `FieldInfo` appended for it
+/// (`FieldNumbers.constructFieldInfo`: no indexing, no norms, the update's
+/// doc-values type, no skip index, `dvGen == -1`, the schema's
+/// soft-deletes/parent flags). A schema number already used by another field
+/// of this segment is refused: the segment was numbered by someone else.
+fn field_index_or_construct(
+    infos: &mut FieldInfos,
+    segment: &str,
+    field_number: i32,
+    schema: &[FieldInfo],
+    doc_values_type: DocValuesType,
+) -> Result<usize> {
+    if let Ok(index) = field_index(infos, segment, field_number) {
+        return Ok(index);
+    }
+    let Some(known) = schema.iter().find(|f| f.number == field_number) else {
+        return field_index(infos, segment, field_number);
+    };
+    if infos.fields.iter().any(|f| f.name == known.name) {
+        // Same name under another number: not a field this writer numbered.
+        return field_index(infos, segment, field_number);
+    }
+    infos.fields.push(
+        FieldInfo::new(known.name.clone(), field_number)
+            .with_doc_values(doc_values_type, DocValuesSkipIndexType::None, -1)
+            .with_soft_deletes_field(known.soft_deletes_field)
+            .with_parent_field(known.parent_field),
+    );
+    Ok(infos.fields.len().saturating_sub(1))
 }
 
 fn field_index(infos: &FieldInfos, segment: &str, field_number: i32) -> Result<usize> {
