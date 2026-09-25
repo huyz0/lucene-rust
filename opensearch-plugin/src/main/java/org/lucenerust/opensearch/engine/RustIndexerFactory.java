@@ -3,9 +3,7 @@
  */
 package org.lucenerust.opensearch.engine;
 
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
-import org.opensearch.core.index.shard.ShardId;
+import org.opensearch.index.IndexModule;
 import org.opensearch.index.engine.Engine;
 import org.opensearch.index.engine.EngineBackedIndexer;
 import org.opensearch.index.engine.EngineConfig;
@@ -13,36 +11,45 @@ import org.opensearch.index.engine.EngineFactory;
 import org.opensearch.index.engine.exec.EngineBackedIndexerFactory;
 import org.opensearch.index.engine.exec.Indexer;
 import org.opensearch.index.engine.exec.IndexerFactory;
-import org.opensearch.index.shard.IndexEventListener;
-import org.opensearch.index.shard.IndexShard;
-import org.opensearch.common.settings.Settings;
 
 import java.lang.reflect.Field;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * What lets a {@link RustEngine} be a segment-replication primary on OpenSearch 3.8.
  *
  * <p>A primary's {@code CopyState} asks the shard's {@code Indexer} for its last refreshed
  * checkpoint, and {@code EngineBackedIndexer} answers only for an {@code InternalEngine} (whose
- * {@code lastRefreshedCheckpoint()} is final, so a plugin engine cannot be one). This factory
- * wraps a {@link RustEngine} in an {@code EngineBackedIndexer} that answers from the engine's
- * own checkpoint listener -- the same {@code LastRefreshedCheckpointListener} logic InternalEngine
- * uses -- and builds every other engine exactly as {@link EngineBackedIndexerFactory} does.
+ * {@code lastRefreshedCheckpoint()} is final, and too much of which is final for a plugin engine to
+ * be one). This factory wraps a {@link RustEngine} in an {@code EngineBackedIndexer} that answers
+ * from the engine's own checkpoint listener -- the same {@code LastRefreshedCheckpointListener}
+ * InternalEngine uses -- and builds every other engine as {@link EngineBackedIndexerFactory} does.
  *
- * <p>{@code IndexShard} creates every engine it runs -- the first, an engine reset, a replica's
- * promotion -- through its own {@code indexerFactory} field, which OpenSearch fills from {@code
- * IndicesService} and offers no hook for. {@link #listener()} replaces that field when the shard
- * is created, before any engine exists; it is the plugin's one reflective write into OpenSearch.
- * Shards it could not swap are remembered as absent from {@link #swapped}, and {@link
- * RustEngineSupport#checkSupported} refuses them as segment-replication primaries.
+ * <p>OpenSearch chooses the indexer factory in {@code IndicesService} and offers no hook for it.
+ * The narrowest place to change it is the index's {@code IndexModule}: plugins see it in {@code
+ * onIndexModule} before it builds the {@code IndexService}, which hands its factory to every shard,
+ * and every writable engine a shard runs -- the first, a reset, a replica's promotion -- is built
+ * through it. {@link #install} makes that one reflective write per index. The field is resolved
+ * when this class loads, which the plugin forces at node start, so an OpenSearch version without
+ * it fails the node rather than a shard at failover.
  */
 public final class RustIndexerFactory extends EngineBackedIndexerFactory {
-    private static final Logger logger = LogManager.getLogger(RustIndexerFactory.class);
+    private static final Field INDEX_MODULE_FACTORY;
 
-    /** Shards whose {@code IndexShard} builds its engines through this factory. */
-    private static final Set<ShardId> swapped = ConcurrentHashMap.newKeySet();
+    static {
+        try {
+            INDEX_MODULE_FACTORY = IndexModule.class.getDeclaredField("indexerFactory");
+            INDEX_MODULE_FACTORY.setAccessible(true);
+        } catch (ReflectiveOperationException e) {
+            throw new ExceptionInInitializerError(e);
+        }
+    }
+
+    /** Set while this factory builds an engine: what {@link RustEngineSupport#checkSupported} checks. */
+    private static final ThreadLocal<Boolean> BUILDING = ThreadLocal.withInitial(() -> false);
+
+    /** Rust engines wrapped by this factory, for the plugin's stats. */
+    public static final AtomicLong INDEXERS = new AtomicLong();
 
     RustIndexerFactory(EngineFactory engineFactory) {
         super(engineFactory);
@@ -50,46 +57,39 @@ public final class RustIndexerFactory extends EngineBackedIndexerFactory {
 
     @Override
     public Indexer createIndexer(EngineConfig engineConfig) {
-        Engine engine = getEngineFactory().newReadWriteEngine(engineConfig);
-        return engine instanceof RustEngine rust ? new RustEngineIndexer(rust) : new EngineBackedIndexer(engine);
-    }
-
-    /** Whether {@code shardId}'s shard builds its engines here. */
-    static boolean installed(ShardId shardId) {
-        return swapped.contains(shardId);
-    }
-
-    /** Installs this factory into every shard of an index whose engines are {@link RustEngineFactory}'s. */
-    public static IndexEventListener listener() {
-        return new IndexEventListener() {
-            @Override
-            public void afterIndexShardCreated(IndexShard shard) {
-                install(shard);
-            }
-
-            @Override
-            public void afterIndexShardClosed(ShardId shardId, IndexShard shard, Settings settings) {
-                swapped.remove(shardId);
-            }
-        };
-    }
-
-    static void install(IndexShard shard) {
+        Engine engine;
+        BUILDING.set(true);
         try {
-            Field field = IndexShard.class.getDeclaredField("indexerFactory");
-            field.setAccessible(true);
-            IndexerFactory current = (IndexerFactory) field.get(shard);
-            if (current instanceof EngineBackedIndexerFactory f && f.getEngineFactory() instanceof RustEngineFactory) {
-                if ((current instanceof RustIndexerFactory) == false) {
-                    field.set(shard, new RustIndexerFactory(f.getEngineFactory()));
-                }
-                swapped.add(shard.shardId());
+            engine = getEngineFactory().newReadWriteEngine(engineConfig);
+        } finally {
+            BUILDING.set(false);
+        }
+        if (engine instanceof RustEngine rust) {
+            INDEXERS.incrementAndGet();
+            return new RustEngineIndexer(rust);
+        }
+        return new EngineBackedIndexer(engine);
+    }
+
+    /** Whether the engine being built on this thread is being built by this factory. */
+    static boolean building() {
+        return BUILDING.get();
+    }
+
+    /** Resolves the field; called at node start so a missing one fails there. */
+    public static void verify() {}
+
+    /** Installs this factory into an index whose engines are {@link RustEngineFactory}'s. */
+    public static void install(IndexModule module) {
+        try {
+            IndexerFactory current = (IndexerFactory) INDEX_MODULE_FACTORY.get(module);
+            if (current instanceof EngineBackedIndexerFactory f
+                && f.getEngineFactory() instanceof RustEngineFactory
+                && (current instanceof RustIndexerFactory) == false) {
+                INDEX_MODULE_FACTORY.set(module, new RustIndexerFactory(f.getEngineFactory()));
             }
-        } catch (ReflectiveOperationException | RuntimeException e) {
-            logger.warn(
-                "cannot install the Rust engine's indexer on " + shard.shardId() + "; it cannot be a segment-replication primary",
-                e
-            );
+        } catch (IllegalAccessException e) {
+            throw new IllegalStateException("cannot install the Rust engine's indexer", e);
         }
     }
 
