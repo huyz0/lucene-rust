@@ -224,3 +224,62 @@ jobs:
         run: >-
           cargo run --quiet --release -p lucene-search --example concurrent_soak --
           --dir "$RUNNER_TEMP/concurrent-soak" --duration 120 --threads 4 --report 30
+
+  # ---------------------------------------------------------------------------
+  # M2: the OpenSearch plugin, on the architectures it ships for. Builds the
+  # plugin against the pinned OpenSearch image's own jars, runs the JVM-side
+  # differential self test, installs it into a real 3.8.0 node, and runs the
+  # query matrix (native vs Lucene), force-merge reader release, SIGKILL
+  # recovery, and OpenSearch's own REST YAML suites against a stock node.
+  # ---------------------------------------------------------------------------
+  opensearch:
+    name: opensearch plugin (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14.3'
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ matrix.arch }}-${{ hashFiles('**/Cargo.toml', 'rust-toolchain.toml') }}
+          restore-keys: cargo-${{ matrix.arch }}-
+      - name: Verify the plugin on a real OpenSearch node
+        run: ./scripts/verify-opensearch.sh --docs 20000 --yaml
+
+  # ---------------------------------------------------------------------------
+  # M2's T2.5: the FFI surface under libFuzzer + AddressSanitizer. A short run
+  # per push, seeded from the checked-in corpus; long campaigns are local.
+  # ---------------------------------------------------------------------------
+  fuzz:
+    name: ffi fuzzing (60s per target)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Nightly toolchain and cargo-fuzz
+        run: |
+          rustup toolchain install nightly --profile minimal
+          cargo +nightly install cargo-fuzz --locked
+      - name: Fuzz
+        working-directory: crates/lucene-ffi/fuzz
+        run: |
+          for t in jvm_search jvm_open_reader jvm_live_docs boolean_clause_arrays; do
+            mkdir -p "corpus/$t"
+            cargo +nightly fuzz run "$t" "corpus/$t" "seeds/$t" -- -max_total_time=60 -rss_limit_mb=4096
+          done

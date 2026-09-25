@@ -6,7 +6,7 @@
 | | |
 |---|---|
 | **Effort** | XL — the largest milestone, and the most dependent on OpenSearch internals |
-| **Depends on** | [M2](m2-opensearch-read-path.md) **and** [M4](m4-write-path-hardened.md) |
+| **Depends on** | [M2](m2-opensearch-read-path.md) **and** [M4](m4-write-path-hardened.md) — both delivered 2026-09-25 |
 | **Unblocks** | [M6](m6-production-candidate.md) |
 | **Status** | not started |
 
