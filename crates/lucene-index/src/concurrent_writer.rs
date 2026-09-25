@@ -94,8 +94,8 @@ use crate::buffered_updates::{
 };
 use crate::deletes;
 use crate::index_writer::{
-    buffer_node, document_ram_bytes, DeleteNode, DocumentBuffer, Error, FlushDeletes, IndexWriter,
-    IndexingConfig, Result, SegmentTicket, DISABLE_AUTO_FLUSH,
+    buffer_node, document_ram_bytes, DeleteNode, DocumentBuffer, Error, ExplicitFields,
+    FlushDeletes, IndexWriter, IndexingConfig, Result, SegmentTicket, DISABLE_AUTO_FLUSH,
 };
 use crate::merge_policy::MergePolicyConfig;
 use crate::segment_infos::SegmentCommitInfo;
@@ -532,10 +532,13 @@ impl<'d> ConcurrentIndexWriter<'d> {
         let sort_map =
             self.cfg
                 .sort_buffer(&mut docs, &mut custom_freq_terms, &mut vectors, has_blocks)?;
+        // The concurrent writer takes native documents only.
+        let explicit = vec![ExplicitFields::default(); docs.len()];
         let buffer = DocumentBuffer {
             docs: &docs,
             custom_freq_terms: &custom_freq_terms,
             vectors: &vectors,
+            explicit: &explicit,
             has_blocks,
         };
         // This segment's own deletes are resolved here, with no lock held --
