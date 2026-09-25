@@ -328,6 +328,31 @@ everything else, and OpenSearch's own REST suites cannot tell the difference.
 - **One `QueryPhaseSearcher` per node.** `neural-search` registers one too;
   the two plugins cannot be installed together.
 
+### What the Tier-2 review found
+
+Run after the gates and the e2e were green; everything below was fixed and
+re-verified before the milestone was closed.
+
+- **Two silent score differences, both routed away now.** Under
+  `search_type=dfs_query_then_fetch` OpenSearch scores with cross-shard
+  statistics (`ContextIndexSearcher.setAggregatedDfs`); and `multi_match`
+  `cross_fields` builds `TermQuery`s carrying blended `TermStates`, which a
+  `tie_breaker: 1` dismax rewrites into a plain disjunction the encoder would
+  have accepted. Both now fall back (`dfs`, `term_states`), and both are e2e
+  matrix rows.
+- **One global lock around every native search.** A slow query held the
+  registry's read lock, a refresh's open or close queued for the write lock,
+  and from then on every native search on the node waited. Handles are now
+  immutable `Arc`s with live docs passed at open; nothing holds a lock while
+  searching.
+- **Smaller:** failed opens were cached for good (one entry per refresh on an
+  index with a `completion` field); another plugin's collector override was
+  ignored; `totalHitsThreshold` was not floored at `from + size` as Lucene's
+  collector manager does; the `size: 0` lower bound ignored an unsatisfiable
+  `minimum_should_match`; a JNI failure after open leaked the handle; the
+  self test compared no soft-deletes reader, no dropped leaf and no `size: 0`
+  count, and accepted any tie swap.
+
 ### Where to look
 
 | artifact | path |

@@ -24,7 +24,7 @@
 //! - **each segment's `maxDoc`**, which [`ffi_open_jvm_reader`] checks against
 //!   what it opened. A mismatch is an error, not a best effort: a wrong doc
 //!   base silently returns the wrong documents;
-//! - **each segment's live docs**, via [`ffi_jvm_reader_set_live_docs`],
+//! - **each segment's live docs**, in the same call,
 //!   copied from the Java leaf's `getLiveDocs()`. These replace whatever this
 //!   port read from `.liv` (or derived from a soft-deletes field) *entirely*,
 //!   because the JVM's view is the one OpenSearch answers with.
@@ -67,6 +67,7 @@ use crate::error::{guard, set_last_error, FfiStatus};
 use crate::query::{check_clause_count, map_search_error, read_boolean_query};
 use crate::raw::{bytes_from_raw, str_from_raw, try_with_capacity};
 use crate::registry::{jvm_readers, lock_recovering, read_recovering, JvmReaderHandle};
+use std::sync::Arc;
 
 /// The version of the contract between this library and the Java classes in
 /// `opensearch-plugin/`: the entry points in this module and `jni_bridge.rs`,
@@ -75,8 +76,9 @@ use crate::registry::{jvm_readers, lock_recovering, read_recovering, JvmReaderHa
 /// stale `.so` must not get as far as reading an index.
 ///
 /// Bump it on any change a Java caller could observe. History: 1, the first
-/// plugin; 2, `CONSTANT_SCORE` and `BOOST` clause kinds; 3, `count_limit`.
-pub const JVM_ABI_VERSION: u32 = 3;
+/// plugin; 2, `CONSTANT_SCORE` and `BOOST` clause kinds; 3, `count_limit`;
+/// 4, live docs passed to `ffi_open_jvm_reader` (no `set_live_docs`).
+pub const JVM_ABI_VERSION: u32 = 4;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -229,21 +231,31 @@ pub(crate) fn decode_query(blob: &[u8]) -> Result<JvmQuery, FfiStatus> {
 
 /// Opens a reader over the segments listed in `infos` (a whole `segments_N`
 /// file's bytes, as `SegmentInfos.write(IndexOutput)` writes them, at
-/// generation `generation`) under the directory at `path`, and checks that
-/// segment `i` has exactly `expected_max_docs[i]` documents.
+/// generation `generation`) under the directory at `path`, checks that
+/// segment `i` has exactly `expected_max_docs[i]` documents, and masks each
+/// segment with the JVM's live docs.
+///
+/// **Live docs:** `live_word_counts[i]` is how many words of segment `i`'s
+/// live-docs bitset follow in `live_words` (the segments' words concatenated,
+/// in order) -- `FixedBitSet.getBits()` of the Java leaf's live docs, bit `d`
+/// set when doc `d` is live. `0` means the segment has no deletions; any other
+/// count must be exactly `bits2words(maxDoc)`, with no bit set past `maxDoc`.
+/// A null `live_word_counts` means no segment has deletions. They replace
+/// whatever the segment has on disk: an NRT reader's deletions are in memory.
+///
+/// Everything a search reads is fixed here, so the handle is immutable once
+/// published and a search holds no lock while it runs (see
+/// [`ffi_jvm_reader_search`]).
 ///
 /// `previous` is a handle from an earlier call over the same directory, or
 /// `0`: its unchanged segments are shared instead of re-read. It stays open
 /// -- the caller closes it when its own Java reader closes.
 ///
-/// Every segment starts with no deletions. Call
-/// [`ffi_jvm_reader_set_live_docs`] for each one the Java reader has
-/// deletions in, before the first search.
-///
 /// # Safety
 /// `path` must be valid for `path_len` bytes, `infos` for `infos_len` bytes,
-/// `expected_max_docs` for `segment_count` `i32`s, `out_handle` for one
-/// `u64` write.
+/// `expected_max_docs` and (when non-null) `live_word_counts` for
+/// `segment_count` elements each, `live_words` for the sum of
+/// `live_word_counts` `u64`s, and `out_handle` for one `u64` write.
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn ffi_open_jvm_reader(
@@ -255,6 +267,8 @@ pub unsafe extern "C" fn ffi_open_jvm_reader(
     previous: u64,
     expected_max_docs: *const i32,
     segment_count: usize,
+    live_words: *const u64,
+    live_word_counts: *const usize,
     out_handle: *mut u64,
 ) -> i32 {
     guard(|| {
@@ -268,12 +282,36 @@ pub unsafe extern "C" fn ffi_open_jvm_reader(
                 bytes_from_raw(infos, infos_len)?,
             )
         };
-        let expected: &[i32] = if segment_count == 0 {
+        let (expected, counts): (&[i32], Option<&[usize]>) = if segment_count == 0 {
+            (&[], None)
+        } else {
+            // SAFETY: caller contract, non-null checked above / here.
+            unsafe {
+                (
+                    std::slice::from_raw_parts(expected_max_docs, segment_count),
+                    (!live_word_counts.is_null())
+                        .then(|| std::slice::from_raw_parts(live_word_counts, segment_count)),
+                )
+            }
+        };
+        let total_words = counts
+            .unwrap_or(&[])
+            .iter()
+            .try_fold(0usize, |acc, &c| acc.checked_add(c))
+            .ok_or_else(|| {
+                set_last_error("live-docs word counts overflow");
+                FfiStatus::InvalidArgument
+            })?;
+        if total_words > 0 && live_words.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        let words: &[u64] = if total_words == 0 {
             &[]
         } else {
-            // SAFETY: caller contract, non-null checked above.
-            unsafe { std::slice::from_raw_parts(expected_max_docs, segment_count) }
+            // SAFETY: caller contract: `live_words` holds the sum of the counts.
+            unsafe { std::slice::from_raw_parts(live_words, total_words) }
         };
+
         let segment_infos = lucene_index::segment_infos::parse(infos, generation).map_err(|e| {
             set_last_error(format!("parsing the JVM reader's SegmentInfos: {e}"));
             FfiStatus::Decode
@@ -286,11 +324,12 @@ pub unsafe extern "C" fn ffi_open_jvm_reader(
         let reader = if previous == 0 {
             DirectoryReader::open_at(&dir, segment_infos)
         } else {
-            let readers = read_recovering(jvm_readers());
-            let prev = readers.get(previous).ok_or_else(|| {
-                set_last_error("ffi_open_jvm_reader: unknown or already-closed previous handle");
-                FfiStatus::InvalidHandle
-            })?;
+            // Cloned out under a short read lock: the reopen reads files and
+            // must not hold up every other search and close on the node.
+            let prev = lookup(
+                previous,
+                "ffi_open_jvm_reader: unknown or already-closed previous handle",
+            )?;
             prev.reader.reopen_at(&dir, segment_infos)
         }
         .map_err(|e| {
@@ -305,83 +344,71 @@ pub unsafe extern "C" fn ffi_open_jvm_reader(
             ));
             return Err(FfiStatus::InvalidArgument);
         }
-        let live_docs = (0..opened.len()).map(|_| None).collect();
-        let deleted = vec![0; opened.len()]; // alloc-ok: the reader's own segment count
-        let handle = lock_recovering(jvm_readers()).insert_checked(JvmReaderHandle {
+        let mut live_docs = try_with_capacity(opened.len())?;
+        let mut deleted = try_with_capacity(opened.len())?;
+        let mut at = 0usize;
+        for (segment, &max_doc) in opened.iter().enumerate() {
+            let n = counts.map_or(0, |c| c[segment]);
+            let live = live_from_words(segment, max_doc, &words[at..at + n])?;
+            at += n;
+            deleted.push(live.as_ref().map_or(0, |l| {
+                (usize::try_from(max_doc).unwrap_or(0) - l.cardinality()) as i64
+            }));
+            live_docs.push(live);
+        }
+        let handle = lock_recovering(jvm_readers()).insert_checked(Arc::new(JvmReaderHandle {
             reader,
             live_docs,
             deleted,
-        })?;
+        }))?;
         // SAFETY: caller contract.
         unsafe { *out_handle = handle };
         Ok(())
     })
 }
 
-/// Replaces segment `segment`'s live docs with the `words_len` words at
-/// `words` -- `FixedBitSet.getBits()` of the Java leaf's live docs, bit `d`
-/// set when doc `d` is live. `words_len` must be exactly
-/// `bits2words(maxDoc)`, and bits past `maxDoc` must be clear. A null `words`
-/// (with `words_len == 0`) means "no deletions".
-///
-/// # Safety
-/// `words` must be valid for `words_len` `u64`s.
-#[no_mangle]
-pub unsafe extern "C" fn ffi_jvm_reader_set_live_docs(
-    handle: u64,
-    segment: usize,
-    words: *const u64,
-    words_len: usize,
-) -> i32 {
-    guard(|| {
-        let mut readers = lock_recovering(jvm_readers());
-        let h = readers.get_mut(handle).ok_or_else(|| {
-            set_last_error("ffi_jvm_reader_set_live_docs: unknown or already-closed handle");
+/// A shared reference to an open handle, taken under a read lock held only
+/// for the lookup.
+fn lookup(handle: u64, missing: &str) -> Result<Arc<JvmReaderHandle>, FfiStatus> {
+    read_recovering(jvm_readers())
+        .get(handle)
+        .cloned()
+        .ok_or_else(|| {
+            set_last_error(missing);
             FfiStatus::InvalidHandle
-        })?;
-        let Some(seg) = h.reader.segment_readers().get(segment) else {
-            set_last_error(format!(
-                "segment {segment} out of range: the reader has {}",
-                h.reader.segment_readers().len()
-            ));
-            return Err(FfiStatus::IndexOutOfBounds);
-        };
-        if words.is_null() {
-            if words_len != 0 {
-                return Err(FfiStatus::NullPointer);
-            }
-            h.live_docs[segment] = None;
-            h.deleted[segment] = 0;
-            return Ok(());
-        }
-        let max_doc = usize::try_from(seg.max_doc).unwrap_or(0);
-        if words_len != bits2words(max_doc) {
-            set_last_error(format!(
-                "segment {segment}: {words_len} live-docs words for maxDoc {max_doc}, expected {}",
-                bits2words(max_doc)
-            ));
-            return Err(FfiStatus::InvalidArgument);
-        }
-        // SAFETY: caller contract.
-        let src = unsafe { std::slice::from_raw_parts(words, words_len) };
-        let mut owned = try_with_capacity::<u64>(words_len)?;
-        owned.extend_from_slice(src);
-        let tail_bits = max_doc % 64;
-        if tail_bits != 0 {
-            if let Some(&last) = owned.last() {
-                if last >> tail_bits != 0 {
-                    set_last_error(format!(
-                        "segment {segment}: live-docs bits set past maxDoc {max_doc}"
-                    ));
-                    return Err(FfiStatus::InvalidArgument);
-                }
-            }
-        }
-        let live = FixedBitSet::from_words(owned, max_doc);
-        h.deleted[segment] = (max_doc - live.cardinality()) as i64;
-        h.live_docs[segment] = Some(live);
-        Ok(())
-    })
+        })
+}
+
+/// Segment `segment`'s live docs from its `words` ([`ffi_open_jvm_reader`]'s
+/// contract): `None` for no words, else exactly `bits2words(max_doc)` words
+/// with no bit past `max_doc`.
+fn live_from_words(
+    segment: usize,
+    max_doc: i32,
+    words: &[u64],
+) -> Result<Option<FixedBitSet>, FfiStatus> {
+    if words.is_empty() {
+        return Ok(None);
+    }
+    let max_doc = usize::try_from(max_doc).unwrap_or(0);
+    if words.len() != bits2words(max_doc) {
+        set_last_error(format!(
+            "segment {segment}: {} live-docs words for maxDoc {max_doc}, expected {}",
+            words.len(),
+            bits2words(max_doc)
+        ));
+        return Err(FfiStatus::InvalidArgument);
+    }
+    let tail_bits = max_doc % 64;
+    if tail_bits != 0 && words[words.len() - 1] >> tail_bits != 0 {
+        set_last_error(format!(
+            "segment {segment}: live-docs bits set past maxDoc {max_doc}"
+        ));
+        return Err(FfiStatus::InvalidArgument);
+    }
+    let mut owned = try_with_capacity::<u64>(words.len())?;
+    owned.extend_from_slice(words);
+    Ok(Some(FixedBitSet::from_words(owned, max_doc)))
 }
 
 /// Runs the query in the `query_len`-byte blob `query` ([`decode_query`])
@@ -435,12 +462,13 @@ pub unsafe extern "C" fn ffi_jvm_reader_search(
         // SAFETY: caller contract.
         let blob = unsafe { bytes_from_raw(query, query_len)? };
         let query = decode_query(blob)?;
-        let readers = read_recovering(jvm_readers());
-        let h = readers.get(handle).ok_or_else(|| {
-            set_last_error("ffi_jvm_reader_search: unknown or already-closed handle");
-            FfiStatus::InvalidHandle
-        })?;
-        let (hits, total, lower_bound) = search(h, &query, top_n, count_limit)?;
+        // No lock is held while searching: a slow query must not block a
+        // refresh's open or close, and through it every other search.
+        let h = lookup(
+            handle,
+            "ffi_jvm_reader_search: unknown or already-closed handle",
+        )?;
+        let (hits, total, lower_bound) = search(&h, &query, top_n, count_limit)?;
         // SAFETY: caller contract; `hits.len() <= top_n <= buf_len`.
         unsafe {
             for (i, hit) in hits.iter().enumerate() {
@@ -596,6 +624,10 @@ fn lower_bound_boolean(
     if !b.must_not.is_empty() {
         return Ok(0);
     }
+    if b.minimum_should_match > b.should.len() {
+        // Lucene matches nothing when fewer SHOULD clauses exist than must match.
+        return Ok(0);
+    }
     let required = b.must.len() + b.filter.len();
     if required == 0 && b.minimum_should_match <= 1 {
         let mut best = 0;
@@ -714,7 +746,17 @@ mod tests {
     }
 
     fn open_with(max_docs: &[i32], previous: u64) -> (i32, u64) {
+        open_live(max_docs, previous, &[])
+    }
+
+    /// Opens the fixture with `live[i]` as segment `i`'s live-docs words
+    /// (missing or empty: no deletions).
+    fn open_live(max_docs: &[i32], previous: u64, live: &[&[u64]]) -> (i32, u64) {
         let infos = infos();
+        let counts: Vec<usize> = (0..max_docs.len())
+            .map(|i| live.get(i).map_or(0, |w| w.len()))
+            .collect();
+        let words: Vec<u64> = live.iter().flat_map(|w| w.iter().copied()).collect();
         let mut handle = 0u64;
         let rc = unsafe {
             ffi_open_jvm_reader(
@@ -726,6 +768,8 @@ mod tests {
                 previous,
                 max_docs.as_ptr(),
                 max_docs.len(),
+                words.as_ptr(),
+                counts.as_ptr(),
                 &mut handle,
             )
         };
@@ -794,8 +838,12 @@ mod tests {
         h
     }
 
-    fn set_live(handle: u64, segment: usize, words: &[u64]) -> i32 {
-        unsafe { ffi_jvm_reader_set_live_docs(handle, segment, words.as_ptr(), words.len()) }
+    /// The fixture with global doc 4 (segment 1, local 0, which holds fox)
+    /// deleted.
+    fn open_doc4_deleted() -> u64 {
+        let (rc, h) = open_live(&[4, 4], 0, &[&[], &[0b1110]]);
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        h
     }
 
     #[test]
@@ -918,9 +966,18 @@ mod tests {
 
         // Deletions lower the bound: delete global doc 4 (segment 1, local 0),
         // which holds fox. fox's bound is now 1 + (3 - 1) = 3, its count 3.
-        assert_eq!(set_live(h, 1, &[0b1110]), 0);
+        ffi_close_jvm_reader(h);
+        let h = open_doc4_deleted();
+        let totals = |blob: &[u8], limit: i64| {
+            let (_, total, lower) = run_limit(h, blob, 0, limit).unwrap();
+            (total, lower)
+        };
         assert_eq!(totals(&fox, 2), (3, true));
         assert_eq!(totals(&fox, 3), (3, false));
+        // More SHOULD clauses required than exist: Lucene matches nothing, and
+        // the bound must not claim otherwise.
+        let impossible = bool_blob(1, &[(0, 0, -1, 0, "body", "fox")]);
+        assert_eq!(totals(&impossible, 100), (0, false));
         ffi_close_jvm_reader(h);
     }
 
@@ -979,9 +1036,8 @@ mod tests {
     /// in the count -- and clearing them restores every document.
     #[test]
     fn java_live_docs_mask_hits_and_counts() {
-        let h = open();
-        // Segment 1 holds global docs 4..8; clear local doc 0 (global 4).
-        assert_eq!(set_live(h, 1, &[0b1110]), 0);
+        // Segment 1 holds global docs 4..8; local doc 0 (global 4) is deleted.
+        let h = open_doc4_deleted();
         let (hits, total) = run(h, &term_blob("body", "fox"), 2, true).unwrap();
         assert_eq!(hits.iter().map(|h| h.0).collect::<Vec<_>>(), [5, 6]);
         assert_eq!(total, 3);
@@ -992,31 +1048,65 @@ mod tests {
         let (_, total) = run(h, &should, 1, true).unwrap();
         assert_eq!(total, 7);
 
-        let rc = unsafe { ffi_jvm_reader_set_live_docs(h, 1, std::ptr::null(), 0) };
+        // A refresh that drops the deletion, reusing the segments: every
+        // document is back, and the old handle still sees its own view.
+        let (rc, h2) = open_live(&[4, 4], h, &[]);
         assert_eq!(rc, 0);
-        let (_, total) = run(h, &term_blob("body", "fox"), 2, true).unwrap();
+        let (_, total) = run(h2, &term_blob("body", "fox"), 2, true).unwrap();
         assert_eq!(total, 4);
+        let (_, total) = run(h, &term_blob("body", "fox"), 2, true).unwrap();
+        assert_eq!(total, 3);
         ffi_close_jvm_reader(h);
+        ffi_close_jvm_reader(h2);
     }
 
     #[test]
     fn live_docs_are_validated() {
-        let h = open();
         let invalid = FfiStatus::InvalidArgument.code();
-        assert_eq!(
-            set_live(h, 0, &[0b1111, 0]),
-            invalid,
-            "two words for maxDoc 4"
-        );
-        assert_eq!(set_live(h, 0, &[0b1_0000]), invalid, "a bit past maxDoc");
-        assert_eq!(set_live(h, 2, &[0]), FfiStatus::IndexOutOfBounds.code());
-        let rc = unsafe { ffi_jvm_reader_set_live_docs(h, 0, std::ptr::null(), 1) };
+        let rc = open_live(&[4, 4], 0, &[&[0b1111, 0]]).0;
+        assert_eq!(rc, invalid, "two words for maxDoc 4");
+        let rc = open_live(&[4, 4], 0, &[&[0b1_0000]]).0;
+        assert_eq!(rc, invalid, "a bit past maxDoc");
+        let rc = open_live(&[4, 4], closed_handle(), &[]).0;
+        assert_eq!(rc, FfiStatus::InvalidHandle.code());
+        // Counts claiming words that were not passed.
+        let infos = infos();
+        let docs = [4, 4];
+        let counts = [1usize, 0];
+        let mut h = 0u64;
+        let rc = unsafe {
+            ffi_open_jvm_reader(
+                FIXTURE.as_ptr().cast(),
+                FIXTURE.len(),
+                infos.as_ptr(),
+                infos.len(),
+                2,
+                0,
+                docs.as_ptr(),
+                docs.len(),
+                std::ptr::null(),
+                counts.as_ptr(),
+                &mut h,
+            )
+        };
         assert_eq!(rc, FfiStatus::NullPointer.code());
-        assert_eq!(
-            set_live(closed_handle(), 0, &[0]),
-            FfiStatus::InvalidHandle.code()
-        );
-        ffi_close_jvm_reader(h);
+        let overflow = [usize::MAX, 1];
+        let rc = unsafe {
+            ffi_open_jvm_reader(
+                FIXTURE.as_ptr().cast(),
+                FIXTURE.len(),
+                infos.as_ptr(),
+                infos.len(),
+                2,
+                0,
+                docs.as_ptr(),
+                docs.len(),
+                std::ptr::null(),
+                overflow.as_ptr(),
+                &mut h,
+            )
+        };
+        assert_eq!(rc, invalid, "word counts that overflow");
     }
 
     /// A reader whose segment sizes disagree with the JVM's is refused: its
@@ -1045,6 +1135,8 @@ mod tests {
                 previous,
                 docs.as_ptr(),
                 docs.len(),
+                std::ptr::null(),
+                std::ptr::null(),
                 out,
             )
         };
@@ -1075,6 +1167,8 @@ mod tests {
                 0,
                 std::ptr::null(),
                 2,
+                std::ptr::null(),
+                std::ptr::null(),
                 &mut handle,
             )
         };
@@ -1090,6 +1184,8 @@ mod tests {
                 0,
                 docs.as_ptr(),
                 docs.len(),
+                std::ptr::null(),
+                std::ptr::null(),
                 &mut handle,
             )
         };

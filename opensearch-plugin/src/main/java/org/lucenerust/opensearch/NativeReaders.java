@@ -69,6 +69,11 @@ public final class NativeReaders {
         return open.get();
     }
 
+    /** Readers with a cached outcome, native or fallback: must shrink as Java readers close. */
+    public int cachedCount() {
+        return byReader.size();
+    }
+
     public Acquired acquire(IndexReader reader) {
         IndexReader.CacheHelper helper = reader.getReaderCacheHelper();
         if (helper == null) {
@@ -81,14 +86,16 @@ public final class NativeReaders {
         }
         return byReader.computeIfAbsent(key, k -> {
             Acquired a = openFor(reader);
-            if (a.handle() != 0) {
-                try {
-                    helper.addClosedListener(this::onClosed);
-                } catch (RuntimeException e) {
-                    // The reader closed between our search starting and now: nothing will call us back.
+            // Failures are cached for the reader's life too -- and so must be evicted with it, or an
+            // index that always falls back (a completion field) leaks one entry per refresh.
+            try {
+                helper.addClosedListener(this::onClosed);
+            } catch (RuntimeException e) {
+                // The reader closed between our search starting and now: nothing will call us back.
+                if (a.handle() != 0) {
                     close(a.handle());
-                    return new Acquired(0, "reader_closed");
                 }
+                return new Acquired(0, "reader_closed");
             }
             return a;
         });
@@ -171,12 +178,17 @@ public final class NativeReaders {
             return new Acquired(0, "segment_infos_write");
         }
         byte[] pathBytes = path.toAbsolutePath().toString().getBytes(StandardCharsets.UTF_8);
+        long[][] live = new long[leaves.size()][];
+        for (int i = 0; i < leaves.size(); i++) {
+            Bits bits = leaves.get(i).reader().getLiveDocs();
+            live[i] = bits == null ? null : words(bits, maxDocs[i]);
+        }
         long[] out = new long[1];
         Long previous = latestByDir.get(path);
-        int rc = NativeBridge.openReader(pathBytes, infoBytes, infos.getGeneration(), previous == null ? 0 : previous, maxDocs, out);
+        int rc = NativeBridge.openReader(pathBytes, infoBytes, infos.getGeneration(), previous == null ? 0 : previous, maxDocs, live, out);
         if (rc == NativeBridge.INVALID_HANDLE && previous != null) {
             // The reuse candidate closed under us; open from scratch.
-            rc = NativeBridge.openReader(pathBytes, infoBytes, infos.getGeneration(), 0, maxDocs, out);
+            rc = NativeBridge.openReader(pathBytes, infoBytes, infos.getGeneration(), 0, maxDocs, live, out);
         }
         if (rc != NativeBridge.OK) {
             logger.warn("lucene-rust: native reader open failed for [{}] ({}): {}", path, rc, NativeBridge.lastError());
@@ -184,18 +196,6 @@ public final class NativeReaders {
         }
         long handle = out[0];
         open.incrementAndGet();
-        for (int i = 0; i < leaves.size(); i++) {
-            Bits live = leaves.get(i).reader().getLiveDocs();
-            if (live == null) {
-                continue;
-            }
-            rc = NativeBridge.setLiveDocs(handle, i, words(live, maxDocs[i]));
-            if (rc != NativeBridge.OK) {
-                logger.warn("lucene-rust: setting live docs failed ({}): {}", rc, NativeBridge.lastError());
-                close(handle);
-                return new Acquired(0, "native_live_docs_failed");
-            }
-        }
         latestByDir.put(path, handle);
         return new Acquired(handle, null);
     }

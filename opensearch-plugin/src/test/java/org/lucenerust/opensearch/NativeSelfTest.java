@@ -63,9 +63,13 @@ public final class NativeSelfTest {
         jniErrorPaths();
         encoderMatrix();
         nrtReaders(new Random(42));
+        softDeletes(new Random(7));
+        int compared = 0;
         for (Path fixture : fixtureIndexes(Path.of(args[0]))) {
-            fixture(fixture);
+            compared += fixture(fixture) ? 1 : 0;
         }
+        // A regression that stopped fixtures opening natively would otherwise pass silently.
+        check(compared >= 20, "fixtures compared natively: " + compared);
         System.out.printf(
             "NativeSelfTest: %d checks, %d failures; %d of %d compared scores bit-exact%n",
             checks,
@@ -97,14 +101,16 @@ public final class NativeSelfTest {
         check(rc == NativeBridge.INVALID_HANDLE, "search on a fabricated handle -> INVALID_HANDLE, got " + rc);
         check(NativeBridge.lastError().contains("unknown"), "lastError names the bad handle: " + NativeBridge.lastError());
         check(NativeBridge.closeReader(0) == NativeBridge.INVALID_HANDLE, "closing handle 0");
-        check(NativeBridge.setLiveDocs(99, 0, null) == NativeBridge.INVALID_HANDLE, "live docs on a fabricated handle");
         // Marshalling failures are status codes, never exceptions.
         check(NativeBridge.search(1, null, 4, Long.MAX_VALUE, docs, scores, counts) == 10, "null query blob -> InvalidArgument");
         check(NativeBridge.search(1, blob, -1, Long.MAX_VALUE, docs, scores, counts) == 10, "negative topN -> InvalidArgument");
         check(NativeBridge.search(1, blob, 8, Long.MAX_VALUE, docs, scores, counts) == 8, "short output arrays -> BufferTooSmall");
         check(NativeBridge.search(1, blob, 4, Long.MAX_VALUE, null, scores, counts) == 10, "null output array -> InvalidArgument");
-        check(NativeBridge.openReader(null, new byte[0], 1, 0, new int[0], new long[1]) == 10, "null path -> InvalidArgument");
-        check(NativeBridge.setLiveDocs(1, -1, null) == 7, "negative segment -> IndexOutOfBounds");
+        check(NativeBridge.openReader(null, new byte[0], 1, 0, new int[0], null, new long[1]) == 10, "null path -> InvalidArgument");
+        check(
+            NativeBridge.openReader(new byte[] { '/' }, new byte[0], 1, 0, new int[2], new long[1][], new long[1]) == 10,
+            "liveDocs shorter than maxDocs -> InvalidArgument"
+        );
     }
 
     // --- QueryEncoder --------------------------------------------------------------------
@@ -189,6 +195,14 @@ public final class NativeSelfTest {
             if (enc.blob() == null) {
                 continue;
             }
+            // size: 0 -- no collector, so the count takes its own path (bounds, then counting).
+            long[] zero = new long[3];
+            long exactCount = searcher.count(rewritten);
+            for (long limit : new long[] { Long.MAX_VALUE, 1, Math.max(1, exactCount / 2), Math.max(1, exactCount) }) {
+                check(NativeBridge.search(acquired.handle(), enc.blob(), 0, limit, new int[0], new float[0], zero) == NativeBridge.OK, where + ": size 0");
+                boolean ok0 = zero[2] == 0 ? zero[1] == exactCount : exactCount > limit && zero[1] > limit && zero[1] <= exactCount;
+                check(ok0 && zero[0] == 0, where + ": " + rewritten + " size 0 limit " + limit + " gave " + zero[1] + (zero[2] == 1 ? "+" : "") + ", exact " + exactCount);
+            }
             for (int topN : new int[] { 10, 3 }) {
                 TopDocs want = searcher.search(rewritten, topN);
                 int[] docs = new int[topN];
@@ -217,7 +231,7 @@ public final class NativeSelfTest {
                     boolean sameDoc = docs[i] == want.scoreDocs[i].doc;
                     scored++;
                     bitExact += sameDoc && Float.floatToIntBits(scores[i]) == Float.floatToIntBits(w) ? 1 : 0;
-                    boolean tieSwap = sameDoc == false && close && isTie(want, i);
+                    boolean tieSwap = sameDoc == false && close && isTie(want, i, docs[i]);
                     check(
                         close && (sameDoc || tieSwap),
                         what + ": hit " + i + " native (" + docs[i] + ", " + scores[i] + ") lucene (" + want.scoreDocs[i].doc + ", " + w + ")"
@@ -227,11 +241,15 @@ public final class NativeSelfTest {
         }
     }
 
-    private static boolean isTie(TopDocs td, int i) {
+    /** True when {@code doc} is one of the Lucene hits whose score ties hit {@code i}'s. */
+    private static boolean isTie(TopDocs td, int i, int doc) {
         float s = td.scoreDocs[i].score;
-        boolean prev = i > 0 && Math.abs(td.scoreDocs[i - 1].score - s) <= 1e-5f * Math.max(1f, s);
-        boolean next = i + 1 < td.scoreDocs.length && Math.abs(td.scoreDocs[i + 1].score - s) <= 1e-5f * Math.max(1f, s);
-        return prev || next;
+        for (var hit : td.scoreDocs) {
+            if (hit.doc == doc && Math.abs(hit.score - s) <= 1e-5f * Math.max(1f, s)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -280,6 +298,47 @@ public final class NativeSelfTest {
         }
     }
 
+    /**
+     * OpenSearch's reader shape: soft deletes through {@link SoftDeletesDirectoryReaderWrapper}, with
+     * one middle segment soft-deleted entirely -- the wrapper drops such a leaf, so the native reader
+     * must be built from the leaves the searcher actually sees, not from the writer's segment list.
+     */
+    private static void softDeletes(Random r) throws Exception {
+        Path dir = Files.createTempDirectory("lucene-rust-softdeletes");
+        NativeReaders readers = new NativeReaders();
+        String soft = "__soft_deletes";
+        IndexWriterConfig cfg = new IndexWriterConfig(new StandardAnalyzer()).setSoftDeletesField(soft)
+            .setMergePolicy(org.apache.lucene.index.NoMergePolicy.INSTANCE);
+        try (FSDirectory d = FSDirectory.open(dir); IndexWriter w = new IndexWriter(d, cfg)) {
+            int id = 0;
+            for (int seg = 0; seg < 3; seg++) {
+                for (int i = 0; i < 300; i++, id++) {
+                    Document doc = doc(r, id);
+                    doc.add(new StringField("seg", Integer.toString(seg), Field.Store.NO));
+                    w.addDocument(doc);
+                }
+                w.flush();
+            }
+            // Soft-delete every document of the middle segment, and a scattering elsewhere.
+            w.softUpdateDocuments(new Term("seg", "1"), List.of(), new org.apache.lucene.document.NumericDocValuesField(soft, 1));
+            for (int i = 0; i < 30; i++) {
+                w.softUpdateDocument(new Term("id", Integer.toString(r.nextInt(300))), doc(r, 10_000 + i), new org.apache.lucene.document.NumericDocValuesField(soft, 1));
+            }
+            try (DirectoryReader reader = new org.apache.lucene.index.SoftDeletesDirectoryReaderWrapper(DirectoryReader.open(w), soft)) {
+                check(reader.leaves().size() == 3, "soft deletes: a fully deleted middle segment is dropped (" + reader.leaves().size() + " leaves of 4)");
+                List<Query> queries = new ArrayList<>();
+                for (int q = 0; q < 60; q++) {
+                    queries.add(randomQuery(r, List.of("body", "tag"), 0));
+                }
+                compare("soft deletes (" + reader.leaves().size() + " leaves, " + reader.numDeletedDocs() + " deleted)", reader, readers, queries);
+            }
+            check(readers.openCount() == 0 && readers.cachedCount() == 0, "soft deletes: native reader released");
+        }
+        try (Stream<Path> s = Files.walk(dir)) {
+            s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
+        }
+    }
+
     private static Document doc(Random r, int id) {
         Document d = new Document();
         d.add(new StringField("id", Integer.toString(id), Field.Store.YES));
@@ -310,8 +369,8 @@ public final class NativeSelfTest {
         return out;
     }
 
-    /** A Java-written fixture: term and boolean queries over its own terms. */
-    private static void fixture(Path path) throws Exception {
+    /** A Java-written fixture: term and boolean queries over its own terms; true if it was compared. */
+    private static boolean fixture(Path path) throws Exception {
         NativeReaders readers = new NativeReaders();
         try (FSDirectory d = FSDirectory.open(path); DirectoryReader reader = DirectoryReader.open(d)) {
             NativeReaders.Acquired a = readers.acquire(reader);
@@ -319,7 +378,7 @@ public final class NativeSelfTest {
                 // Not every fixture is a searchable index (some hold only vectors, points, or
                 // deliberately corrupt files); an unopenable one must fail cleanly, which it did.
                 System.out.println("fixture " + path.getFileName() + ": not opened natively (" + a.fallbackReason() + ")");
-                return;
+                return false;
             }
             List<Term> terms = new ArrayList<>();
             for (var leaf : reader.leaves()) {
@@ -338,7 +397,7 @@ public final class NativeSelfTest {
                 }
             }
             if (terms.isEmpty()) {
-                return;
+                return false;
             }
             Random r = new Random(path.getFileName().toString().hashCode());
             List<Query> queries = new ArrayList<>();
@@ -355,5 +414,7 @@ public final class NativeSelfTest {
             compare("fixture " + path.getFileName(), reader, readers, queries);
         }
         check(readers.openCount() == 0, "fixture " + path.getFileName() + ": native reader closed with the Java reader");
+        check(readers.cachedCount() == 0, "fixture " + path.getFileName() + ": cache entry evicted with the Java reader");
+        return true;
     }
 }
