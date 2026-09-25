@@ -545,6 +545,30 @@ pub fn write_numeric_generation(
     }
 }
 
+/// [`write_numeric_generation`] for a field with a doc-values skip index:
+/// the new generation carries the field's skip index too, as
+/// `Lucene90DocValuesConsumer.addNumericField` writes one for every field
+/// whose `FieldInfo` asks for it.
+pub fn write_numeric_generation_with_skip_index(
+    field_number: i32,
+    column: &[Option<i64>],
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+) -> doc_values::WriteResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    let sparse: Vec<(i32, i64)> = column
+        .iter()
+        .enumerate()
+        .filter_map(|(doc, v)| v.map(|v| (doc as i32, v)))
+        .collect();
+    doc_values::write_fields_with_skip_indexes(
+        &[doc_values::DenseField::SparseNumeric(field_number, &sparse)],
+        &[field_number],
+        column.len() as i32,
+        segment_id,
+        segment_suffix,
+    )
+}
+
 /// [`write_numeric_generation`] for BINARY doc values --
 /// `Lucene90DocValuesConsumer.addBinaryField` over the merged column.
 pub fn write_binary_generation(

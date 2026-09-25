@@ -8,7 +8,52 @@
 | **Effort** | XL — the largest milestone, and the most dependent on OpenSearch internals |
 | **Depends on** | [M2](m2-opensearch-read-path.md) **and** [M4](m4-write-path-hardened.md) — both delivered 2026-09-25 |
 | **Unblocks** | [M6](m6-production-candidate.md) |
-| **Status** | not started |
+| **Status** | delivered (2026-09-25) with document replication; a Rust **segment-replication primary** is blocked by OpenSearch 3.8 itself (see Outcome) |
+
+---
+
+## Outcome
+
+An OpenSearch 3.8.0 shard can be fully served by Rust: `RustEngine` indexes
+through the Rust `IndexWriter`, and searches go through M2's native query
+phase. How it is built, its settings, what it refuses and where it behaves
+differently are in [`../opensearch-engine.md`](../opensearch-engine.md).
+
+The engine is `InternalEngine` itself, derived from the pinned sources with
+only the writer swapped (`opensearch-plugin/tools/derive_engine.py`). This is
+the answer to this file's biggest risk: sequence numbers, checkpoints, commit
+user data, the version map and history retention are OpenSearch's own code
+rather than a re-implementation of it.
+
+Two scope decisions differ from the plan below, both forced by OpenSearch 3.8:
+
+- **Document replication, not segment replication, is the replication mode.**
+  `CopyState` reads a segment-replication primary's checkpoint through
+  `EngineBackedIndexer.lastRefreshedCheckpoint()`. That call answers only for
+  an `InternalEngine`, and `InternalEngine.lastRefreshedCheckpoint()` is
+  `final`, so no plugin engine can be a segment-replication primary on this
+  version. The Rust engine refuses segment replication with that explanation.
+  Segment-replication *replicas* (OpenSearch's `NRTReplicationEngine` behind
+  M2's native reads) are verified. Lifting this needs a change in OpenSearch,
+  which is an M6-or-later item.
+- **Get-by-id and aggregations need no FFI path.** The engine's readers are
+  Java `StandardDirectoryReader`s over the Rust writer's commits, so realtime
+  get, `_source`, versioning and the aggregation framework run unchanged on
+  Rust-written segments. The verification below checks their results against
+  OpenSearch's engine, value for value.
+
+The work also fixed Rust write-path defects that only an engine workload
+exposed:
+
+- doc-values updates resolved by field number rather than name, which
+  corrupted segments Java wrote or a merge renumbered
+- no doc-values skip index writer: every `@timestamp` document was refused
+- a SORTED_SET shape Lucene's reader could not open
+- merges that kept dictionary terms only deleted documents used
+- merges that refused a field with no terms
+- no `IndexWriter.MAX_DOCS` limit at all
+
+Each fix has a regression test that fails without it.
 
 ---
 
@@ -148,26 +193,52 @@ Keep OpenSearch's aggregation framework on the JVM and feed it from Rust:
 
 ## Acceptance criteria
 
-- [ ] OpenSearch `:server` engine tests pass on the Rust engine for the
-      supported matrix.
-- [ ] The full REST test suite for search, index, get and delete passes.
-- [ ] Segment replication works end-to-end between a Rust primary and its
-      replicas.
-- [ ] Peer recovery brings a new replica to a consistent state, verified by
-      comparing document counts and a query result set against the primary.
-- [ ] A **mixed cluster** — Rust primary with Java replicas, and Java primary
-      with Rust replicas — operates correctly.
-- [ ] Sequence numbers, local checkpoint and commit user data are
-      byte-compatible with `InternalEngine`'s, verified by having Java code
-      paths recover from a Rust-written commit.
-- [ ] Optimistic concurrency control rejects conflicting writes identically to
-      the Java engine.
-- [ ] A Rust-engine panic **fails exactly one shard**; the node survives and
-      continues serving other shards.
-- [ ] Circuit-breaker accounting reflects Rust-side memory; a deliberate
-      memory-pressure test trips the breaker rather than the OOM killer.
-- [ ] Aggregation results are identical to the Java engine's across a
-      representative aggregation set.
+- [x] OpenSearch `:server` engine tests pass on the Rust engine for the
+      supported matrix. `InternalEngineTests` 3.8.0, derived to build
+      `RustEngine` (`scripts/opensearch-engine-tests.sh`): 117 pass, 0 fail.
+      The 34 skipped each carry a reason in
+      `opensearch-plugin/tools/derive_engine_tests.py`: refused configurations,
+      failure injection through a Java `IndexWriter` or in-memory `Directory`,
+      and the documented differences.
+- [x] The full REST test suite for search, index, get and delete passes.
+      `scripts/verify-opensearch.sh --engine --yaml` runs
+      OpenSearch's own REST YAML suites (search, highlight, inner_hits,
+      msearch, scroll, count, explain, suggest, get, index, delete, bulk,
+      update, mget, exists: 501 tests) on a node where **every** index, system
+      indices included, uses the Rust engine (857 shards). The failure set is
+      **identical** to a stock node's: the same 4 `_source`-filtering
+      warning-header tests fail on both. The first run failed 29 more. Its
+      diff found the missing doc-values skip index (OpenSearch gives every
+      `@timestamp` one), now written. The rest were completion and
+      term-vector mappings, which the node default now sends to OpenSearch's
+      engine.
+- [~] Segment replication works end-to-end between a Rust primary and its
+      replicas. **Blocked by OpenSearch 3.8** (see Outcome): a plugin engine
+      cannot be a segment-replication primary. Segment replication with a
+      Java primary and native-read replicas is verified, and the Rust
+      primary's replication is document replication, verified below.
+- [x] Peer recovery brings a new replica to a consistent state, verified by
+      comparing document counts and a query result set against the primary
+      (`scripts/verify-opensearch-cluster.sh`: every copy checked against a
+      model of what was acknowledged).
+- [x] A **mixed cluster** operates correctly. Rust-engine nodes alongside a
+      node with `lucene_rust.engine.node_enabled: false`, primaries relocated
+      between the two kinds in both directions, and failover.
+- [x] Sequence numbers, local checkpoint and commit user data are
+      byte-compatible with `InternalEngine`'s. Java's engine recovers shards
+      from Rust-written commits: relocation to the Java node, and
+      `EngineWriterDiffTest` against Lucene's `IndexWriter`.
+- [x] Optimistic concurrency control rejects conflicting writes identically to
+      the Java engine: `if_seq_no`/`if_primary_term` and external versions,
+      current and stale, compared item for item (`verify_engine.py`).
+- [x] A Rust-engine panic **fails exactly one shard**; the node survives and
+      continues serving other shards. The shard recovers from its translog.
+- [x] Circuit-breaker accounting reflects Rust-side memory: a lowered
+      `lucene_rust_writer` limit trips with a 429, node stats list the
+      breaker and its trip, and a refresh releases the accounting.
+- [x] Aggregation results are identical to the Java engine's across terms,
+      histogram, date_histogram, avg/sum/min/max, cardinality, percentiles,
+      nested and top_hits, including after a restart and after SIGKILL.
 
 ---
 

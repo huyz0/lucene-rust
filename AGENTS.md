@@ -105,6 +105,9 @@ the hook, the container and this table cannot drift apart:
 | Differential op-stream fuzzing vs Java `IndexWriter` (1000 seeds) | `scripts/op-stream-fuzz.sh` |
 | Concurrent writer soak (threads + merges, every commit checked exactly; RSS/fds reported) | `cargo run --release -p lucene-search --example concurrent_soak -- --dir DIR --duration SECS` |
 | OpenSearch plugin, whole proof (real 3.8.0 node: native-vs-Lucene matrix, force-merge release, SIGKILL, OpenSearch's YAML suites vs a stock node) | `scripts/verify-opensearch.sh --yaml` (needs Docker; see `opensearch-plugin/README.md`) |
+| Rust engine (M5), one node: Rust vs OpenSearch's engine op for op, restart/SIGKILL/panic/breaker, YAML suites with every index on the Rust engine | `scripts/verify-opensearch.sh --engine --yaml` (see `docs/opensearch-engine.md`) |
+| Rust engine (M5), three nodes: document replication, recovery, failover, Rust<->Java relocation | `scripts/verify-opensearch-cluster.sh` |
+| OpenSearch's own `InternalEngineTests` on the Rust engine | `scripts/opensearch-engine-tests.sh` (skips are listed with reasons in `opensearch-plugin/tools/derive_engine_tests.py`) |
 | OpenSearch plugin, JVM-side self test only (native path vs Lucene `IndexSearcher`, JNI error paths) | `scripts/opensearch-dist.sh && gradle -p opensearch-plugin check` |
 | FFI fuzzing (libFuzzer + ASan; nightly, outside the workspace) | `cd crates/lucene-ffi/fuzz && cargo +nightly fuzz run <target> corpus/<target> seeds/<target>` |
 

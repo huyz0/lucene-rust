@@ -235,6 +235,14 @@ public final class EngineWriterDiffTest {
             d.add(new SortedNumericDocValuesField("price", b));
             d.add(new StoredField("price", a));
         }
+        // Doc-values skip indexes, one field per eligible type; OpenSearch gives every @timestamp one.
+        d.add(SortedNumericDocValuesField.indexedField("@timestamp", 1_700_000_000_000L + seqNo * 1000));
+        if (shape != 4) {
+            d.add(NumericDocValuesField.indexedField("level", shape < 7 ? 3 : r.nextInt(5)));
+            d.add(SortedDocValuesField.indexedField("host", new BytesRef("h" + r.nextInt(4))));
+            d.add(SortedSetDocValuesField.indexedField("zone", new BytesRef("z" + r.nextInt(3))));
+            d.add(SortedSetDocValuesField.indexedField("zone", new BytesRef("z" + (3 + r.nextInt(3)))));
+        }
         if (shape > 5) {
             d.add(new Field("freqs", words(r, 5 + r.nextInt(10)), FREQS_ONLY));
             d.add(new FeatureField("feature", "f" + r.nextInt(4), 1 + r.nextFloat() * 50));
@@ -342,6 +350,7 @@ public final class EngineWriterDiffTest {
             rust.close();
             compare("seed " + seed, javaDir, rustDir);
             checkIndex("seed " + seed, rustDir);
+            checkSkippers("seed " + seed, rustDir);
         } finally {
             try (Stream<Path> s = Files.walk(root)) {
                 s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
@@ -356,6 +365,70 @@ public final class EngineWriterDiffTest {
             ci.setInfoStream(new PrintStream(out, true, StandardCharsets.UTF_8));
             CheckIndex.Status status = ci.checkIndex();
             check(status.clean, where + ": CheckIndex on the Rust index\n" + out.toString(StandardCharsets.UTF_8));
+        }
+    }
+
+    /**
+     * Every doc-values skip interval of the Rust index, at every level, against the values it
+     * summarizes: its doc range's true min, max and number of documents with a value. CheckIndex
+     * checks only the skipper's shape, so a wrong range would pass it.
+     */
+    private static void checkSkippers(String where, FSDirectory dir) throws IOException {
+        try (DirectoryReader reader = DirectoryReader.open(dir)) {
+            for (LeafReaderContext ctx : reader.leaves()) {
+                LeafReader leaf = ctx.reader();
+                for (FieldInfo fi : leaf.getFieldInfos()) {
+                    if (fi.docValuesSkipIndexType() == org.apache.lucene.index.DocValuesSkipIndexType.NONE) {
+                        continue;
+                    }
+                    long[][] values = new long[leaf.maxDoc()][];
+                    boolean ords = fi.getDocValuesType() == DocValuesType.SORTED || fi.getDocValuesType() == DocValuesType.SORTED_SET;
+                    if (ords) {
+                        SortedSetDocValues dv = org.apache.lucene.index.DocValues.getSortedSet(leaf, fi.name);
+                        for (int d = dv.nextDoc(); d != DocIdSetIterator.NO_MORE_DOCS; d = dv.nextDoc()) {
+                            values[d] = new long[dv.docValueCount()];
+                            for (int i = 0; i < values[d].length; i++) {
+                                values[d][i] = dv.nextOrd();
+                            }
+                        }
+                    } else {
+                        SortedNumericDocValues dv = org.apache.lucene.index.DocValues.getSortedNumeric(leaf, fi.name);
+                        for (int d = dv.nextDoc(); d != DocIdSetIterator.NO_MORE_DOCS; d = dv.nextDoc()) {
+                            values[d] = new long[dv.docValueCount()];
+                            for (int i = 0; i < values[d].length; i++) {
+                                values[d][i] = dv.nextValue();
+                            }
+                        }
+                    }
+                    org.apache.lucene.index.DocValuesSkipper skipper = leaf.getDocValuesSkipper(fi.name);
+                    check(skipper != null, where + ": " + fi.name + " has a skipper");
+                    int intervals = 0;
+                    for (int doc = 0;; doc = skipper.maxDocID(0) + 1) {
+                        skipper.advance(doc);
+                        if (skipper.minDocID(0) == DocIdSetIterator.NO_MORE_DOCS) {
+                            break;
+                        }
+                        intervals++;
+                        for (int level = 0; level < skipper.numLevels(); level++) {
+                            long min = Long.MAX_VALUE, max = Long.MIN_VALUE;
+                            int count = 0;
+                            for (int d = skipper.minDocID(level); d <= skipper.maxDocID(level); d++) {
+                                if (values[d] != null) {
+                                    count++;
+                                    for (long v : values[d]) {
+                                        min = Math.min(min, v);
+                                        max = Math.max(max, v);
+                                    }
+                                }
+                            }
+                            String at = where + ": " + fi.name + " level " + level + " docs " + skipper.minDocID(level) + ".." + skipper.maxDocID(level);
+                            check(skipper.minValue(level) == min && skipper.maxValue(level) == max, at + ": value range");
+                            check(skipper.docCount(level) == count, at + ": doc count");
+                        }
+                    }
+                    check(intervals > 0 || skipper.docCount() == 0, where + ": " + fi.name + " has intervals");
+                }
+            }
         }
     }
 

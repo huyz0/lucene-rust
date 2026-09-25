@@ -2174,8 +2174,19 @@ pub fn merge_segments_mapped(
             .iter()
             .map(|f| f.as_dense_field())
             .collect();
-        let (dvm, dvd, dvs) = doc_values::write_dense_fields(
+        // `addNumericField` & co. write a skip index for every field whose
+        // merged `FieldInfo` asks for one.
+        let skip_indexes: Vec<i32> = merged_fields
+            .iter()
+            .filter(|f| {
+                f.doc_values_skip_index_type
+                    != lucene_codecs::field_infos::DocValuesSkipIndexType::None
+            })
+            .map(|f| f.number)
+            .collect();
+        let (dvm, dvd, dvs) = doc_values::write_fields_with_skip_indexes(
             &dense_fields,
+            &skip_indexes,
             doc_count,
             &merged_segment_id,
             &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),

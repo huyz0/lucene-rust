@@ -95,11 +95,6 @@ pub enum Error {
         ty: DocValuesType,
     },
     #[error(
-        "field {field} in segment {segment} declares a doc-values skip index; this port cannot \
-         rewrite it into an update generation"
-    )]
-    SkipIndexUnsupported { segment: String, field: String },
-    #[error(
         "segment {segment} records doc-values generation {gen} for field {field_number} but \
              no {ext} file for it"
     )]
@@ -325,7 +320,14 @@ fn write_field_updates_inner(
         let gen = sci.next_write_doc_values_gen();
         let suffix = generation_segment_suffix(gen, &per_field);
         // The segment's own number for the field, which its readers look up.
-        let (dvm, dvd, dvs) = doc_values_updates::write_numeric_generation(
+        let write = if infos.fields[index].doc_values_skip_index_type
+            == lucene_codecs::field_infos::DocValuesSkipIndexType::None
+        {
+            doc_values_updates::write_numeric_generation
+        } else {
+            doc_values_updates::write_numeric_generation_with_skip_index
+        };
+        let (dvm, dvd, dvs) = write(
             infos.fields[index].number,
             &column,
             &sci.segment_id,
@@ -532,12 +534,6 @@ fn check_updatable(field: &FieldInfo, segment: &str, expected: DocValuesType) ->
             segment: segment.to_string(),
             field: field.name.clone(),
             ty: field.doc_values_type,
-        });
-    }
-    if field.doc_values_skip_index_type != DocValuesSkipIndexType::None {
-        return Err(Error::SkipIndexUnsupported {
-            segment: segment.to_string(),
-            field: field.name.clone(),
         });
     }
     Ok(())
@@ -1132,16 +1128,28 @@ mod tests {
     }
 
     #[test]
-    fn a_field_with_a_doc_values_skip_index_is_refused_rather_than_silently_dropped() {
+    fn a_field_with_a_doc_values_skip_index_gets_one_in_its_update_generation() {
         let tmp = tempdir("skipper");
         let dir = FsDirectory::open(&tmp);
         let mut f = field("val", 0, DocValuesType::Numeric);
         f.doc_values_skip_index_type = DocValuesSkipIndexType::Range;
         let fields = vec![f];
         let mut sci = build_segment(&dir, &fields, None, false, 1);
-        let err = write_field_updates(&dir, &mut sci, &[(0, vec![(0, Some(1))])], &[], SUFFIX)
-            .unwrap_err();
-        assert!(matches!(err, Error::SkipIndexUnsupported { .. }), "{err}");
+        write_field_updates(&dir, &mut sci, &[(0, vec![(0, Some(1))])], &[], SUFFIX).unwrap();
+        let dvm = dir
+            .open(&format!("_0_1_{SUFFIX}.dvm"))
+            .expect("the update generation's .dvm");
+        let (_, meta) = doc_values::parse_meta(
+            &dvm,
+            &SEG_ID,
+            &format!("1_{SUFFIX}"),
+            &FieldInfos { fields },
+        )
+        .unwrap();
+        let skipper = meta
+            .skipper_meta(0)
+            .expect("the generation carries the skip index");
+        assert_eq!((skipper.min_value, skipper.max_value), (1, 1));
     }
 
     #[test]
