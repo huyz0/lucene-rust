@@ -8,7 +8,7 @@
 //! ```
 
 use lucene_search::query::{BoostQuery, ConstantScoreQuery, DisjunctionMaxQuery};
-use lucene_search::{BooleanQuery, Clause, TermQuery};
+use lucene_search::{BooleanQuery, Clause, PhraseQuery, TermQuery};
 
 struct Tokens {
     toks: Vec<String>,
@@ -51,6 +51,14 @@ fn clause(field: &str, t: &mut Tokens) -> Clause {
             let w = t.next();
             let (f, w) = w.split_once(':').unwrap_or((field, &w));
             Clause::Term(TermQuery::new(f, w.as_bytes().to_vec()))
+        }
+        "p" | "ps" => {
+            let slop: u32 = if op == "ps" { t.next().parse().expect("slop") } else { 0 };
+            let mut words = Vec::new();
+            while t.peek() != ")" {
+                words.push(t.next());
+            }
+            Clause::Phrase(PhraseQuery::new(field, words).with_slop(slop))
         }
         "boost" => {
             let f: f32 = t.next().parse().expect("boost");

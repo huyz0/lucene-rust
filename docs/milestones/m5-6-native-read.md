@@ -11,7 +11,7 @@ mixed booleans) 4–8× *slower*, because the port had fast paths for three
 shapes and a materializing path for everything else. M5 moved indexing. This
 milestone finishes the read side.
 
-**Status.** In progress. R1 and R2 delivered (below); every shape the plugin sends native measures at least 1.0× Lucene in process on both indexes. R3–R7 open.
+**Status.** In progress. R1 and R2 delivered, R3 in progress (below). R4–R7 open.
 
 ## Tasks
 
@@ -19,7 +19,7 @@ milestone finishes the read side.
 |---|---|---|
 | R1 | Query execution engine: Lucene's scorer tree and bulk scorers, every boolean shape at least as fast as Lucene | ✅ delivered |
 | R2 | General query wire format and Java encoder for every Lucene query OpenSearch builds | ✅ delivered for the shapes R1 runs (term, boolean, constant score, boost, dismax, match-all, match-none); leaf queries arrive with R3 |
-| R3 | Leaf queries as streaming scorers: phrase, the multi-term family, points and doc-values ranges, exists, terms-in-set, dismax, synonym | open |
+| R3 | Leaf queries as streaming scorers: phrase, the multi-term family, points and doc-values ranges, exists, terms-in-set, dismax, synonym | in progress: phrase delivered (below); a native query cache (R3b) found necessary |
 | R4 | Sort and `search_after` natively (`TopFieldCollector`) | open |
 | R5 | Aggregations natively: terms, histogram, date_histogram, range, the metrics, cardinality, filter/filters | open |
 | R6 | Fetch (`_source`, stored fields, `docvalue_fields`) and get natively | open |
@@ -112,6 +112,29 @@ Acceptance:
       1.04–1.51×; msm 2 (0.97×), `must` + msm (0.99×) and `multi_match`
       (1.00×) are inside the run-to-run spread but not clearly above it.
       Carried to R7.
+
+## R3 — leaf queries (in progress)
+
+**Phrase (delivered).** `exec::phrase::PhraseScorer` is Lucene's two-phase
+`PhraseScorer`, so a phrase composes anywhere in a tree instead of being
+resolved up front; the JVM sends it as a tree node (ABI 8). Ten phrase shapes
+agree with real Lucene, pruned and exact (`tests/mixed_boolean_fixtures.rs`,
+91 queries: sloppy, repeated terms, pulsed singleton terms), and seen to fail
+on a seeded defect. They found one bug that predated R3: a phrase's idf was
+summed in `f32`, where `BM25Similarity.idfExplain` sums in `double` and casts
+once, so a phrase of three or more terms could score an ulp off (the
+self-test's random phrases showed it as 10 of 9,135 scores not bit-exact). In process (q56–q61,
+1M documents): 0.95–1.30×, with one exception that is not the phrase's.
+
+**The query cache.** q59 (`+t1 -"t0 t2"`) measured 0.20×. Lucene makes
+exactly as many `matches()` calls (70,435 per query, counted with a wrapping
+query), but `IndexSearcher`'s default `LRUQueryCache` caches the repeated
+`MUST_NOT` phrase as a bitset after a couple of uses: Lucene runs q59 at 472
+qps with the cache and 88 without, against our 94. OpenSearch caches the same
+way (`IndicesQueryCache`, on by default), so matching Lucene on repeated
+filters needs a native query cache: R3b, on `query_cache.rs`'s existing
+`LRUQueryCache` port. Every Java number in this document was measured with
+the cache on, as Lucene ships.
 
 ## Benchmark
 

@@ -39,6 +39,7 @@ mod bulk;
 mod conjunction;
 mod disjunction;
 mod leaf;
+mod phrase;
 mod req;
 mod wand;
 

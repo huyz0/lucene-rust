@@ -609,16 +609,19 @@ fn explain_phrase(
     };
 
     let doc_count = field_terms.doc_count as i64;
-    let mut idf_sum = 0.0f32;
+    // `BM25Similarity.idfExplain(TermStatistics[])` sums in a double and
+    // casts once: an `f32` sum of three or more idfs can be an ulp off.
+    let mut idf_acc = 0.0f64;
     let mut idf_details = Vec::with_capacity(query.terms.len());
     for term in &query.terms {
         let Some(stats) = field_terms.try_seek_exact(term)? else {
             return Ok(Explanation::no_match("no matching terms"));
         };
         let term_idf = similarity::idf(stats.doc_freq as i64, doc_count);
-        idf_sum += term_idf;
+        idf_acc += f64::from(term_idf);
         idf_details.push(idf_explanation(term_idf, stats.doc_freq as i64, doc_count));
     }
+    let idf_sum = idf_acc as f32;
 
     let mut per_term_docs: Vec<Vec<i32>> = Vec::with_capacity(query.terms.len());
     let mut per_term_maps: Vec<HashMap<i32, Vec<i32>>> = Vec::with_capacity(query.terms.len());

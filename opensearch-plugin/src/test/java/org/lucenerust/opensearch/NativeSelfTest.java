@@ -24,6 +24,7 @@ import org.apache.lucene.search.PhraseQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.WildcardQuery;
 import org.apache.lucene.store.FSDirectory;
 
 import java.nio.file.Files;
@@ -122,12 +123,17 @@ public final class NativeSelfTest {
         check(QueryEncoder.encode(new BoostQuery(t, 1f), f -> true).blob() != null, "unit BoostQuery encodes");
         check(QueryEncoder.encode(new BoostQuery(t, 2f), f -> true).blob() != null, "boosted encodes");
         check(QueryEncoder.encode(new ConstantScoreQuery(t), f -> true).blob() != null, "constant score encodes");
-        Query wrappedPhrase = new ConstantScoreQuery(new PhraseQuery("body", "a", "b"));
-        check("clause_PhraseQuery".equals(QueryEncoder.encode(wrappedPhrase, f -> true).fallbackReason()), "wrapped phrase falls back");
+        Query wrappedWildcard = new ConstantScoreQuery(new WildcardQuery(new Term("body", "a*b")));
+        check(
+            "clause_WildcardQuery".equals(QueryEncoder.encode(wrappedWildcard, f -> true).fallbackReason()),
+            "wrapped wildcard falls back"
+        );
         check("field_similarity".equals(QueryEncoder.encode(t, f -> false).fallbackReason()), "rejected field falls back");
         check(QueryEncoder.encode(MatchAllDocsQuery.INSTANCE, f -> true).blob() != null, "match_all encodes");
         Query phrase = new BooleanQuery.Builder().add(t, Occur.MUST).add(new PhraseQuery("body", "a", "b"), Occur.SHOULD).build();
-        check("clause_PhraseQuery".equals(QueryEncoder.encode(phrase, f -> true).fallbackReason()), "phrase clause falls back");
+        check(QueryEncoder.encode(phrase, f -> true).blob() != null, "a phrase clause encodes");
+        Query gap = new PhraseQuery.Builder().add(new Term("body", "a"), 0).add(new Term("body", "b"), 2).build();
+        check("phrase_positions".equals(QueryEncoder.encode(gap, f -> true).fallbackReason()), "a phrase with a gap falls back");
         Query negative = new BooleanQuery.Builder().add(t, Occur.MUST_NOT).build();
         check(QueryEncoder.encode(negative, f -> true).blob() != null, "pure negative encodes (and matches nothing)");
         Query t2 = new TermQuery(new Term("body", "b"));
@@ -143,10 +149,10 @@ public final class NativeSelfTest {
             "msm 2 is fast"
         );
         check(QueryEncoder.isFast(new DisjunctionMaxQuery(List.of(t, t2), 0.3f)), "dismax is fast");
-        check(QueryEncoder.isFast(wrappedPhrase) == false, "a phrase is not encodable yet");
+        check(QueryEncoder.isFast(wrappedWildcard) == false, "a wildcard is not encodable yet");
         check(QueryEncoder.encode(new BooleanQuery.Builder().build(), f -> true).blob() != null, "empty encodes (and matches nothing)");
         check(
-            "query_PhraseQuery".equals(QueryEncoder.encode(new PhraseQuery("body", "a", "b"), f -> true).fallbackReason()),
+            "query_WildcardQuery".equals(QueryEncoder.encode(new WildcardQuery(new Term("body", "a*b")), f -> true).fallbackReason()),
             "an unsupported root reports query_, not clause_"
         );
         // The native decoder's node cap, 1024 nodes: a boolean of 1023 terms is 1024.
@@ -184,6 +190,9 @@ public final class NativeSelfTest {
                     r.nextInt(3) * 0.25f
                 );
                 case 3 -> r.nextInt(3) == 0 ? MatchAllDocsQuery.INSTANCE : t;
+                // Phrases need positions: `body` only (`tag` is a keyword).
+                case 4 -> new PhraseQuery(r.nextInt(3) == 0 ? r.nextInt(3) : 0, "body", word(r), word(r));
+                case 5 -> r.nextInt(2) == 0 ? new PhraseQuery("body", word(r), word(r), word(r)) : t;
                 default -> t;
             };
         }
