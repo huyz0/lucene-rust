@@ -231,39 +231,54 @@ AGGS = {
     "min_p": {"min": {"field": "price"}},
     "max_n": {"max": {"field": "n"}},
     "card": {"cardinality": {"field": "tag"}},
-    "pct": {"percentiles": {"field": "n", "percents": [5, 50, 95]}},
+    # HDR, not the default TDigest: TDigest's result depends on the order it sees values in,
+    # which differs with segment layout between any two indices, Java or not.
+    "pct": {"percentiles": {"field": "price", "percents": [5, 50, 95],
+                            "hdr": {"number_of_significant_value_digits": 3}}},
     "nest": {"nested": {"path": "nest"}, "aggs": {"ks": {"terms": {"field": "nest.k"}}}},
     "flags": {"terms": {"field": "flag"}, "aggs": {"top": {"top_hits": {"size": 1, "sort": [{"n": "asc"}, {"_id": "asc"}]}}}},
 }
 
 
 def hits(index, query, sort):
-    body = {"query": query, "size": 50, "track_total_hits": True, "seq_no_primary_term": True, "version": True}
+    body = {"query": query, "size": 50 if sort else 10000, "track_total_hits": True,
+            "seq_no_primary_term": True, "version": True}
     if sort:
         body["sort"] = [{"n": "asc"}, {"_id": "asc"}]
     out = must("POST", f"/{index}/_search?request_cache=false", body)
     return out["hits"]
 
 
-def compare_searches(label, scores):
+def compare_searches(label, scores, exact_scores=False, java=None, rust=None):
     for q in QUERIES:
         for sort in (False, True):
             if not sort and not scores:
                 continue
-            a, b = hits(JAVA, q, sort), hits(RUST, q, sort)
+            a, b = hits(java or JAVA, q, sort), hits(rust or RUST, q, sort)
             check(a["total"] == b["total"], f"{label}: total {q} sort={sort}: {a['total']} vs {b['total']}")
             ka = [(h["_id"], h.get("_seq_no"), h.get("_primary_term"), h.get("_version"), h.get("sort")) for h in a["hits"]]
             kb = [(h["_id"], h.get("_seq_no"), h.get("_primary_term"), h.get("_version"), h.get("sort")) for h in b["hits"]]
             if sort:
                 check(ka == kb, f"{label}: hits {q}: {ka[:3]} vs {kb[:3]}")
-            else:
+            elif exact_scores:
                 sa = sorted((round(h["_score"], 4), h["_id"]) for h in a["hits"])
                 sb = sorted((round(h["_score"], 4), h["_id"]) for h in b["hits"])
                 check(sa == sb, f"{label}: scored hits {q}: {sa[:3]} vs {sb[:3]}")
-    ra = must("POST", f"/{JAVA}/_search?request_cache=false", {"size": 0, "aggs": AGGS})
-    rb = must("POST", f"/{RUST}/_search?request_cache=false", {"size": 0, "aggs": AGGS})
+            else:
+                # BM25 counts soft-deleted documents a merge kept, and how much history a shard
+                # keeps follows its retention leases' timing -- between any two indices.
+                check(sorted(h["_id"] for h in a["hits"]) == sorted(h["_id"] for h in b["hits"]),
+                      f"{label}: scored hit set {q}")
+    ra = must("POST", f"/{java or JAVA}/_search?request_cache=false", {"size": 0, "aggs": AGGS})
+    rb = must("POST", f"/{rust or RUST}/_search?request_cache=false", {"size": 0, "aggs": AGGS})
+    def strip(v):
+        if isinstance(v, dict):
+            return {k: strip(x) for k, x in v.items() if k != "_index"}
+        if isinstance(v, list):
+            return [strip(x) for x in v]
+        return v
     for name in AGGS:
-        check(ra["aggregations"][name] == rb["aggregations"][name],
+        check(strip(ra["aggregations"][name]) == strip(rb["aggregations"][name]),
               f"{label}: aggregation {name}: {json.dumps(ra['aggregations'][name])[:300]} vs "
               f"{json.dumps(rb['aggregations'][name])[:300]}")
 
@@ -293,11 +308,44 @@ def compare_all(label, ids):
         must("POST", f"/{idx}/_refresh")
     count = compare_gets(label, ids)
     compare_searches(label, scores=False)
+    # A flush first: the history a merge keeps is bounded by the safe commit, and the Rust
+    # engine commits on every refresh -- flushing gives Java's engine the same safe commit, so
+    # both merges keep the same soft-deleted documents and BM25 sees the same statistics.
     for idx in (JAVA, RUST):
+        must("POST", f"/{idx}/_flush")
         must("POST", f"/{idx}/_forcemerge?max_num_segments=1")
         must("POST", f"/{idx}/_refresh")
     compare_searches(label + " (merged)", scores=True)
     print(f"{label}: {count} documents compared", flush=True)
+
+
+def insert_only_scoring():
+    """No updates or deletes, so no retained history: BM25 sees the same statistics on both
+    engines however each merged, and every score must match."""
+    for idx, rust in (("score_java", False), ("score_rust", True)):
+        req("DELETE", f"/{idx}")
+        create(idx, rust)
+    wait_green("score_java,score_rust")
+    r = random.Random(9)
+    for batch in range(8):
+        lines = []
+        for i in range(250):
+            n = batch * 250 + i
+            lines += [{"index": {"_id": f"s{n}"}}, source(r, n)]
+        body = "\n".join(json.dumps(l) for l in lines) + "\n"
+        for idx in ("score_java", "score_rust"):
+            must("POST", f"/{idx}/_bulk", body, ndjson=True)
+            if batch % 3 == 2:
+                must("POST", f"/{idx}/_refresh")
+    for idx in ("score_java", "score_rust"):
+        must("POST", f"/{idx}/_refresh")
+    compare_searches("insert-only", scores=True, exact_scores=True, java="score_java", rust="score_rust")
+    for idx in ("score_java", "score_rust"):
+        must("POST", f"/{idx}/_forcemerge?max_num_segments=1")
+        must("POST", f"/{idx}/_refresh")
+    compare_searches("insert-only (merged)", scores=True, exact_scores=True, java="score_java", rust="score_rust")
+    for idx in ("score_java", "score_rust"):
+        must("DELETE", f"/{idx}")
 
 
 def wait_green(index, timeout=180):
@@ -322,9 +370,28 @@ def restart(container, kill):
     check(ok, f"cluster green after {'SIGKILL' if kill else 'restart'}")
 
 
-def primary_terms(index):
-    meta = must("GET", f"/_cluster/state/metadata/{index}")["metadata"]["indices"][index]
-    return meta["primary_terms"]
+def recoveries(index, shards=2):
+    """Each shard's latest recovery: (type, start time). A failed shard recovers again."""
+    got = {}
+
+    def read():
+        out = must("GET", f"/{index}/_recovery")[index]["shards"]
+        got.clear()
+        got.update({str(s["id"]): (s["type"], s["start_time_in_millis"]) for s in out if s["stage"] == "DONE"})
+        return len(got) == shards
+
+    wait(read, f"{index}: every shard recovered")
+    return dict(got)
+
+
+def wait(pred, what, timeout=120):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if pred():
+            return True
+        time.sleep(1)
+    check(False, f"timed out waiting for {what}")
+    return False
 
 
 def fault_containment():
@@ -336,15 +403,16 @@ def fault_containment():
         for i in range(20):
             must("PUT", f"/{idx}/_doc/p{i}?routing=r", {"n": i, "tag": "x"})
         must("POST", f"/{idx}/_refresh")
-    before_rust, before_peer = primary_terms("fault_rust"), primary_terms("fault_peer")
+    before_rust, before_peer = recoveries("fault_rust"), recoveries("fault_peer")
     java_before = must("GET", f"/{JAVA}/_count")["count"]
     status, out = req("PUT", "/fault_rust/_doc/boom?routing=r", {"__lucene_rust_panic": 1, "n": 1})
     check(status >= 500, f"the panicking write fails: {status} {json.dumps(out)[:300]}")
     check("panic" in json.dumps(out).lower(), f"the failure names the panic: {json.dumps(out)[:300]}")
     check(wait_green("fault_rust", 300), "the failed shard recovers")
-    after_rust, after_peer = primary_terms("fault_rust"), primary_terms("fault_peer")
+    after_rust, after_peer = recoveries("fault_rust"), recoveries("fault_peer")
     changed = [s for s in before_rust if after_rust[s] != before_rust[s]]
-    check(len(changed) == 1, f"exactly one shard of the index was failed: {before_rust} -> {after_rust}")
+    check(len(changed) == 1 and after_rust[changed[0]][0] == "EXISTING_STORE",
+          f"exactly one shard of the index was failed and recovered from its store: {before_rust} -> {after_rust}")
     check(after_peer == before_peer, f"no other Rust shard was failed: {before_peer} -> {after_peer}")
     must("POST", "/fault_rust/_refresh")
     check(must("GET", "/fault_rust/_count")["count"] == 20, "the failed shard lost no acknowledged write")
@@ -424,6 +492,10 @@ def main():
     create(RUST, True)
     wait_green(f"{JAVA},{RUST}")
     stream = run_stream(a.ops, seed=42)
+    stats = must("GET", f"/{RUST}/_stats/segments,indexing")["_all"]["primaries"]
+    check(stats["segments"]["count"] >= 1, "segment stats are populated")
+    check(stats["indexing"]["index_total"] > 0, "indexing stats are populated")
+    check(stats["segments"]["index_writer_memory_in_bytes"] >= 0, "writer memory is reported")
     compare_all("after the stream", stream.ids)
     # Recovery: a graceful restart replays nothing; SIGKILL replays the translog into the writer.
     run_stream(600, seed=43)
@@ -432,9 +504,7 @@ def main():
     run_stream(600, seed=44)
     restart(a.container, kill=True)
     compare_all("after SIGKILL", stream.ids)
-    seg = must("GET", f"/{RUST}/_stats/segments,indexing")["_all"]["primaries"]
-    check(seg["segments"]["count"] >= 1, "segment stats are populated")
-    check(seg["indexing"]["index_total"] > 0, "indexing stats are populated")
+    insert_only_scoring()
     fault_containment()
     breaker()
     unsupported()

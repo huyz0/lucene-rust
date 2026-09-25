@@ -24,10 +24,21 @@ import java.util.function.LongSupplier;
  * cannot produce -- so an unsupported index fails to start rather than indexing something else.
  */
 public final class RustEngineSupport {
+    /**
+     * What an index that does not set {@code index.lucene_rust.engine} gets, on this node -- so a
+     * node can serve every index, system indices included, with the Rust engine, as the REST
+     * suites' run of {@code scripts/verify-opensearch.sh --engine} does.
+     */
+    public static final Setting<Boolean> ENGINE_DEFAULT = Setting.boolSetting(
+        "lucene_rust.engine.default",
+        false,
+        Setting.Property.NodeScope
+    );
+
     /** Serves the index's primaries (and document-replication replicas) with {@link RustEngine}. */
     public static final Setting<Boolean> ENGINE_ENABLED = Setting.boolSetting(
         "index.lucene_rust.engine",
-        false,
+        ENGINE_DEFAULT,
         Setting.Property.IndexScope,
         Setting.Property.Final
     );

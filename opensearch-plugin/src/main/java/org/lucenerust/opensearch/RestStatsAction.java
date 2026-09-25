@@ -3,6 +3,8 @@
  */
 package org.lucenerust.opensearch;
 
+import org.lucenerust.opensearch.engine.RustEngineFactory;
+
 import org.opensearch.core.rest.RestStatus;
 import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.rest.BaseRestHandler;
@@ -54,6 +56,12 @@ public final class RestStatsAction extends BaseRestHandler {
             }
             b.endObject();
             b.field("open_native_readers", readers.openCount());
+            // Engines this node has created for Rust-engine indices, by kind (M5).
+            b.startObject("engines");
+            b.field("rust", RustEngineFactory.RUST.get());
+            b.field("java", RustEngineFactory.JAVA.get());
+            b.field("nrt_replica", RustEngineFactory.NRT_REPLICA.get());
+            b.endObject();
             b.endObject();
             channel.sendResponse(new BytesRestResponse(RestStatus.OK, b));
         };
