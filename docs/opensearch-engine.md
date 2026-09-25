@@ -51,7 +51,7 @@ When an index is created:
 - a codec other than `default` or `lucene_default`
 - index sorting
 - context-aware segments
-- segment replication, or remote-store nodes
+- remote-backed storage (remote-store indices or nodes)
 
 For each document, as a 400 on that document (the shard carries on). The
 node-default fallback reads the creation mapping and its dynamic templates
@@ -67,13 +67,26 @@ false` on such indices, or add their fields to the creation mapping:
 - custom term frequencies
 - any per-field postings or doc-values format other than Lucene104 / Lucene90
 
-**Segment replication.** On OpenSearch 3.8, a plugin engine cannot be a
-segment-replication primary. `CopyState` reads the primary's last refreshed
-checkpoint through `EngineBackedIndexer.lastRefreshedCheckpoint()`, which only
-answers for an `InternalEngine`, and `InternalEngine.lastRefreshedCheckpoint()`
-is final. Document replication is fully supported: primaries and replicas both
-run the Rust engine. Segment-replication *replicas* run OpenSearch's
-`NRTReplicationEngine` behind M2's native reads.
+**Replication.** Both modes work. With document replication, primaries and
+replicas both run the Rust engine. With segment replication, the primary runs
+the Rust engine and its replicas run OpenSearch's `NRTReplicationEngine`,
+which copies the Rust writer's segments and serves them through M2's native
+reads. A promoted replica becomes a Rust primary on the segments it copied.
+
+A plugin engine is not a segment-replication primary on OpenSearch 3.8 by
+itself. The primary's `CopyState` asks the shard's `Indexer` for the last
+refreshed checkpoint, and `EngineBackedIndexer` answers only for an
+`InternalEngine`. `InternalEngine.lastRefreshedCheckpoint()` is final, and
+enough of `InternalEngine` is final that a subclass cannot work either.
+`RustIndexerFactory` closes the gap: when a shard is created,
+before it has an engine, the plugin replaces the shard's `indexerFactory` with
+one that wraps a `RustEngine` in an `EngineBackedIndexer` that answers from
+the engine's own checkpoint listener. That is the plugin's one reflective
+write into OpenSearch's state. `IndexShard` builds every engine through that
+field: the first, a reset, a promotion. If the write ever fails, the shard's
+Rust engine refuses to start as a segment-replication primary, and says why.
+Remote-backed storage stays refused: its upload listener asks for an
+`InternalEngine` by class, in a place no factory reaches.
 
 ## Where it behaves differently
 
@@ -105,4 +118,4 @@ run the Rust engine. Segment-replication *replicas* run OpenSearch's
 | The Rust writer against Lucene's `IndexWriter` on the same operations | `EngineWriterDiffTest` (`gradle -p opensearch-plugin check`) |
 | One node, the Rust engine against OpenSearch's, operation for operation: bulk results, OCC, get, search, scores, aggregations; then restart, SIGKILL, a panic, the breaker, the refusals | `scripts/verify-opensearch.sh --engine` (`opensearch-plugin/e2e/verify_engine.py`) |
 | OpenSearch's REST YAML suites with every index on the Rust engine, against a stock node | `scripts/verify-opensearch.sh --engine --yaml` |
-| Three nodes: document replication, peer recovery, failover, relocation between Rust and Java nodes both ways, segment replication with native replicas | `scripts/verify-opensearch-cluster.sh` (`opensearch-plugin/e2e/verify_cluster.py`) |
+| Three nodes: document replication, peer recovery, failover, relocation between Rust and Java nodes both ways; segment replication from a Java primary to native-read replicas, and from a Rust primary through failover, promotion into the Rust engine, a replica on the Java node and a force merge | `scripts/verify-opensearch-cluster.sh` (`opensearch-plugin/e2e/verify_cluster.py`) |
