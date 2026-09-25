@@ -275,7 +275,9 @@ def main():
     # ...and the Rust writer refused as a segment-replication primary.
     must("PUT", "/segrep_rust", {"settings": {
         "number_of_shards": 1, "number_of_replicas": 0, "index.replication.type": "SEGMENT",
-        "index.lucene_rust.engine": True}})
+        "index.lucene_rust.engine": True,
+        # On os3 (node_enabled: false) OpenSearch's engine serves it, and there is nothing to refuse.
+        "index.routing.allocation.include._name": "os1,os2"}})
     time.sleep(5)
     explain = must("GET", "/_cluster/allocation/explain", {"index": "segrep_rust", "shard": 0, "primary": True})
     check("segment-replication primary" in json.dumps(explain), f"the refusal says why: {json.dumps(explain)[:400]}")
