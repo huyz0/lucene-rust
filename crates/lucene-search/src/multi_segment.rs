@@ -606,7 +606,7 @@ pub fn global_fuzzy_stats(
 /// mentions, so each segment scores with one idf per term -- see
 /// [`crate::CollectionStats`] -- plus every `Clause::Fuzzy`'s reader-wide
 /// expansion, see [`global_fuzzy_stats`].
-fn global_boolean_stats(
+pub(crate) fn global_boolean_stats(
     segments: &[OpenSegment<'_>],
     query: &BooleanQuery,
 ) -> crate::Result<crate::GlobalStats> {

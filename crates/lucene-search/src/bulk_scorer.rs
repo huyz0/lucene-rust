@@ -94,7 +94,7 @@ pub(crate) fn min_competitive_score<C: ScoringCollector + ?Sized>(collector: &C)
 }
 
 /// `MathUtil.sumRelativeErrorBound`.
-fn sum_relative_error_bound(num_values: usize) -> f64 {
+pub(crate) fn sum_relative_error_bound(num_values: usize) -> f64 {
     if num_values <= 1 {
         return 0.0;
     }
@@ -104,7 +104,7 @@ fn sum_relative_error_bound(num_values: usize) -> f64 {
 }
 
 /// `MathUtil.sumUpperBound`.
-fn sum_upper_bound(sum: f64, num_values: usize) -> f64 {
+pub(crate) fn sum_upper_bound(sum: f64, num_values: usize) -> f64 {
     if num_values <= 2 {
         return sum;
     }
@@ -154,15 +154,74 @@ fn filter_competitive_hits(
     acc.truncate(n);
 }
 
+/// What the conjunction bulk scorer needs of a clause: Lucene's `Scorer` as
+/// `BlockMaxConjunctionBulkScorer` uses it. [`TermLeg`] implements it with
+/// static dispatch; a boxed scorer tree implements it in `exec`, with
+/// `Scorer.nextDocsAndScores`'s default batching.
+pub(crate) trait BulkLeg {
+    fn doc_id(&self) -> i32;
+    fn advance(&mut self, target: i32) -> Result<i32>;
+    fn next_doc(&mut self) -> Result<i32>;
+    fn score(&mut self) -> Result<f32>;
+    fn advance_shallow(&mut self, target: i32) -> Result<i32>;
+    fn max_score(&mut self, up_to: i32) -> Result<f32>;
+    fn next_docs_and_scores(
+        &mut self,
+        up_to: i32,
+        live_docs: Option<&FixedBitSet>,
+        out: &mut DocScores,
+    ) -> Result<()>;
+}
+
+impl BulkLeg for TermLeg<'_> {
+    #[inline]
+    fn doc_id(&self) -> i32 {
+        TermLeg::doc_id(self)
+    }
+    #[inline]
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        TermLeg::advance(self, target)
+    }
+    #[inline]
+    fn next_doc(&mut self) -> Result<i32> {
+        TermLeg::next_doc(self)
+    }
+    #[inline]
+    fn score(&mut self) -> Result<f32> {
+        TermLeg::score(self)
+    }
+    #[inline]
+    fn advance_shallow(&mut self, target: i32) -> Result<i32> {
+        TermLeg::advance_shallow(self, target)
+    }
+    #[inline]
+    fn max_score(&mut self, up_to: i32) -> Result<f32> {
+        Ok(TermLeg::max_score(self, up_to))
+    }
+    #[inline]
+    fn next_docs_and_scores(
+        &mut self,
+        up_to: i32,
+        live_docs: Option<&FixedBitSet>,
+        out: &mut DocScores,
+    ) -> Result<()> {
+        TermLeg::next_docs_and_scores(self, up_to, live_docs, out)
+    }
+}
+
 /// One term clause: a lazy postings cursor, its BM25 weight and norms, and the
 /// `ImpactsDISI` / `MaxScoreCache` state that lets it skip blocks.
 pub(crate) struct TermLeg<'a> {
     cursor: LazyDocsCursor<'a>,
     /// `boost * idf`; `0` for a non-scoring (`FILTER`) clause.
     weight: f32,
-    /// `false` for a `FILTER` clause: every score is `0` and no frequency or
-    /// norm is ever read (its cursor was opened docs-only).
+    /// `false` for a `FILTER` clause or a `ConstantScoreQuery` around a term:
+    /// every score is [`Self::constant`] and no frequency or norm is ever read
+    /// (its cursor was opened docs-only).
     scoring: bool,
+    /// The score of every document when not `scoring`: `0` for a filter,
+    /// the constant for a `ConstantScoreScorer`.
+    constant: f32,
     /// `None` scores every document at the unnormed length, the same rule
     /// every other scoring path in this crate applies.
     norms: Option<FieldNormsCursor<'a, 'a>>,
@@ -225,6 +284,15 @@ impl<'a> TermLeg<'a> {
         Self::new(cursor, 0.0, false, None, 1.0, cost, 0.0)
     }
 
+    /// `ConstantScoreScorer` over a term's documents: every one scores
+    /// `score`, and once the threshold passes `score` nothing is left to
+    /// visit (the global bound is `score`, so `advance_target` ends it).
+    pub(crate) fn constant(cursor: LazyDocsCursor<'a>, cost: i64, score: f32) -> Self {
+        let mut leg = Self::new(cursor, 0.0, false, None, 1.0, cost, score);
+        leg.constant = score;
+        leg
+    }
+
     fn new(
         cursor: LazyDocsCursor<'a>,
         weight: f32,
@@ -238,6 +306,7 @@ impl<'a> TermLeg<'a> {
             cursor,
             weight,
             scoring,
+            constant: 0.0,
             norms,
             avg_field_length,
             cost,
@@ -301,7 +370,7 @@ impl<'a> TermLeg<'a> {
     /// `weight`.
     fn level0_max(&mut self) -> f32 {
         if !self.scoring {
-            return 0.0;
+            return self.constant;
         }
         let key = self.cursor.level0_last_doc_id();
         if key != self.l0_key {
@@ -324,7 +393,7 @@ impl<'a> TermLeg<'a> {
 
     fn level1_max(&mut self) -> f32 {
         if !self.scoring {
-            return 0.0;
+            return self.constant;
         }
         let key = self.cursor.level1_last_doc_id();
         if key != self.l1_key {
@@ -341,7 +410,7 @@ impl<'a> TermLeg<'a> {
     /// impacts level that covers it.
     pub(crate) fn max_score(&mut self, up_to: i32) -> f32 {
         if !self.scoring {
-            return 0.0;
+            return self.constant;
         }
         if up_to <= self.cursor.level0_last_doc_id() {
             return self.level0_max();
@@ -415,6 +484,38 @@ impl<'a> TermLeg<'a> {
         }
     }
 
+    /// `ImpactsDISI.advance`: the first document at or after `target` in a
+    /// block that can still compete. Until a minimum competitive score is set
+    /// this is a plain `advance`.
+    pub(crate) fn impacts_advance(&mut self, target: i32) -> Result<i32> {
+        let target = self.advance_target(target)?;
+        self.advance(target)
+    }
+
+    /// `ImpactsDISI.nextDoc`.
+    pub(crate) fn impacts_next_doc(&mut self) -> Result<i32> {
+        let doc = self.doc_id();
+        if doc < self.up_to {
+            return self.next_doc();
+        }
+        self.impacts_advance(doc.saturating_add(1))
+    }
+
+    /// A `FILTER` leg: matches only, every score `0`.
+    pub(crate) fn is_filter(&self) -> bool {
+        !self.scoring && self.constant == 0.0
+    }
+
+    /// `PostingsEnum.docIDRunEnd()`.
+    pub(crate) fn doc_id_run_end(&self) -> i32 {
+        self.cursor.doc_id_run_end()
+    }
+
+    /// `TermScorer.advanceShallow`.
+    pub(crate) fn shallow_advance(&mut self, target: i32) -> Result<i32> {
+        self.advance_shallow(target)
+    }
+
     /// `ImpactsDISI.ensureCompetitive`.
     fn ensure_competitive(&mut self) -> Result<()> {
         let doc = self.cursor.doc_id();
@@ -432,7 +533,7 @@ impl<'a> TermLeg<'a> {
     #[inline]
     pub(crate) fn score(&mut self) -> Result<f32> {
         if !self.scoring {
-            return Ok(0.0);
+            return Ok(self.constant);
         }
         let doc = self.cursor.doc_id();
         let freq = self.cursor.freq().unwrap_or(1) as f32;
@@ -482,7 +583,7 @@ impl<'a> TermLeg<'a> {
         }
         out.scores.clear();
         if !self.scoring {
-            out.scores.resize(out.docs.len(), 0.0);
+            out.scores.resize(out.docs.len(), self.constant);
             return Ok(());
         }
         match self.norms.as_mut() {
@@ -500,7 +601,7 @@ impl<'a> TermLeg<'a> {
 
 /// `ScorerUtil.applyRequiredClause`: keep only the buffered documents `leg`
 /// also matches, adding its score to theirs.
-fn apply_required_clause(acc: &mut DocScoreAcc, leg: &mut TermLeg<'_>) -> Result<()> {
+fn apply_required_clause<L: BulkLeg + ?Sized>(acc: &mut DocScoreAcc, leg: &mut L) -> Result<()> {
     let mut n = 0;
     let mut cur = leg.doc_id();
     for i in 0..acc.docs.len() {
@@ -539,21 +640,35 @@ fn apply_optional_clause(acc: &mut DocScoreAcc, leg: &mut TermLeg<'_>) -> Result
 // ---------------------------------------------------------------------------
 
 /// `BatchScoreBulkScorer.score` over the whole segment.
-pub(crate) fn score_term<C: ScoringCollector>(
+pub(crate) fn score_term<C: ScoringCollector + ?Sized>(
     leg: &mut TermLeg<'_>,
     live_docs: Option<&FixedBitSet>,
     collector: &mut C,
 ) -> Result<()> {
+    let mut buf = DocScores::default();
+    score_term_window(leg, &mut buf, live_docs, collector, 0, NO_MORE_DOCS).map(|_| ())
+}
+
+/// `BatchScoreBulkScorer.score(collector, acceptDocs, min, max)`: the term's
+/// documents in `[min, max)`. Returns the next document to score, at or past
+/// `max`.
+pub(crate) fn score_term_window<C: ScoringCollector + ?Sized>(
+    leg: &mut TermLeg<'_>,
+    buf: &mut DocScores,
+    live_docs: Option<&FixedBitSet>,
+    collector: &mut C,
+    min: i32,
+    max: i32,
+) -> Result<i32> {
     let mut min_competitive = min_competitive_score(collector);
     leg.set_min_competitive_score(min_competitive);
-    if leg.doc_id() < 0 {
-        leg.advance(0)?;
+    if leg.doc_id() < min {
+        leg.advance(min)?;
     }
-    let mut buf = DocScores::default();
     loop {
-        leg.next_docs_and_scores(NO_MORE_DOCS, live_docs, &mut buf)?;
+        leg.next_docs_and_scores(max, live_docs, buf)?;
         if buf.docs.is_empty() {
-            return Ok(());
+            return Ok(leg.doc_id());
         }
         for (&doc, &score) in buf.docs.iter().zip(&buf.scores) {
             if score >= min_competitive {
@@ -569,100 +684,110 @@ pub(crate) fn score_term<C: ScoringCollector>(
 // A conjunction: BlockMaxConjunctionBulkScorer.
 // ---------------------------------------------------------------------------
 
-/// `BlockMaxConjunctionBulkScorer.score` over the whole segment. `legs` must
-/// hold at least two clauses; they are reordered by cost.
-pub(crate) fn score_conjunction<C: ScoringCollector>(
-    legs: &mut [TermLeg<'_>],
-    live_docs: Option<&FixedBitSet>,
-    collector: &mut C,
-) -> Result<()> {
-    if legs.len() == 1 {
-        // One clause is not a conjunction: `BooleanScorerSupplier` hands a
-        // single required clause straight to its own scorer, and a lone
-        // `FILTER` clause scores 0 everywhere, which the term path already
-        // stops the moment the queue fills.
-        return score_term(&mut legs[0], live_docs, collector);
+/// `BlockMaxConjunctionBulkScorer`'s buffers, kept across windowed calls.
+pub(crate) struct ConjunctionBulk {
+    sum_of_others: Vec<f64>,
+    single: DocScores,
+    acc: DocScoreAcc,
+}
+
+impl ConjunctionBulk {
+    pub(crate) fn new(n: usize) -> Self {
+        Self {
+            sum_of_others: vec![f64::INFINITY; n],
+            single: DocScores::default(),
+            acc: DocScoreAcc::default(),
+        }
     }
-    legs.sort_by_key(|l| l.cost);
-    let n = legs.len();
-    let mut sum_of_others = vec![f64::INFINITY; n];
-    let mut single = DocScores::default();
-    let mut acc = DocScoreAcc::default();
-    let max = NO_MORE_DOCS;
 
-    let mut window_min = legs[0].doc_id().max(0);
-    if min_competitive_score(collector) == 0.0 {
-        window_min = conjunction_doc_first(legs, live_docs, collector, 0, max)?;
-    }
-    while window_min < max {
-        // The cheapest clause's block boundary is the window.
-        let mut window_max = legs[0].advance_shallow(window_min)?.min(max - 1);
-        window_max = window_max.min(window_min.saturating_add(MAX_WINDOW_SIZE));
+    /// `BlockMaxConjunctionBulkScorer.score(collector, acceptDocs, min, max)`
+    /// over `legs`, which must be at least two, cheapest first. Returns the
+    /// next document to score.
+    pub(crate) fn score<L: BulkLeg, C: ScoringCollector + ?Sized>(
+        &mut self,
+        legs: &mut [L],
+        live_docs: Option<&FixedBitSet>,
+        collector: &mut C,
+        min: i32,
+        max: i32,
+    ) -> Result<i32> {
+        let n = legs.len();
+        let (sum_of_others, single, acc) =
+            (&mut self.sum_of_others, &mut self.single, &mut self.acc);
+        let mut window_min = legs[0].doc_id().max(min);
+        if min_competitive_score(collector) == 0.0 {
+            window_min = conjunction_doc_first(legs, live_docs, collector, min, max)?;
+        }
+        while window_min < max {
+            // The cheapest clause's block boundary is the window.
+            let mut window_max = legs[0].advance_shallow(window_min)?.min(max - 1);
+            window_max = window_max.min(window_min.saturating_add(MAX_WINDOW_SIZE));
 
-        // `computeMaxScore`.
-        for leg in legs.iter_mut() {
-            leg.advance_shallow(window_min)?;
-        }
-        let mut max_window_score = 0.0f64;
-        for (i, leg) in legs.iter_mut().enumerate() {
-            let m = leg.max_score(window_max) as f64;
-            sum_of_others[i] = m;
-            max_window_score += m;
-        }
-        for i in (0..n - 1).rev() {
-            sum_of_others[i] += sum_of_others[i + 1];
-        }
-
-        // `scoreWindowScoreFirst`.
-        let window_end = window_max.saturating_add(1);
-        let mut min_competitive = min_competitive_score(collector);
-        if (max_window_score as f32) >= min_competitive {
-            if legs[0].doc_id() < window_min {
-                legs[0].advance(window_min)?;
+            // `computeMaxScore`.
+            for leg in legs.iter_mut() {
+                leg.advance_shallow(window_min)?;
             }
-            if legs[0].doc_id() < window_end {
-                loop {
-                    legs[0].next_docs_and_scores(window_end, live_docs, &mut single)?;
-                    if single.docs.is_empty() {
-                        break;
-                    }
-                    acc.copy_from(&single);
-                    for i in 1..n {
-                        let remaining = sum_of_others[i];
-                        // Two equal consecutive sums mean clause `i - 1` scores
-                        // nothing, so filtering again would remove nothing.
-                        if remaining != sum_of_others[i - 1] {
-                            filter_competitive_hits(&mut acc, remaining, min_competitive, n);
+            let mut max_window_score = 0.0f64;
+            for (i, leg) in legs.iter_mut().enumerate() {
+                let m = leg.max_score(window_max)? as f64;
+                sum_of_others[i] = m;
+                max_window_score += m;
+            }
+            for i in (0..n - 1).rev() {
+                sum_of_others[i] += sum_of_others[i + 1];
+            }
+
+            // `scoreWindowScoreFirst`.
+            let window_end = window_max.saturating_add(1);
+            let mut min_competitive = min_competitive_score(collector);
+            if (max_window_score as f32) >= min_competitive {
+                if legs[0].doc_id() < window_min {
+                    legs[0].advance(window_min)?;
+                }
+                if legs[0].doc_id() < window_end {
+                    loop {
+                        legs[0].next_docs_and_scores(window_end, live_docs, single)?;
+                        if single.docs.is_empty() {
+                            break;
                         }
-                        apply_required_clause(&mut acc, &mut legs[i])?;
+                        acc.copy_from(single);
+                        for i in 1..n {
+                            let remaining = sum_of_others[i];
+                            // Two equal consecutive sums mean clause `i - 1` scores
+                            // nothing, so filtering again would remove nothing.
+                            if remaining != sum_of_others[i - 1] {
+                                filter_competitive_hits(acc, remaining, min_competitive, n);
+                            }
+                            apply_required_clause(acc, &mut legs[i])?;
+                        }
+                        for (&doc, &score) in acc.docs.iter().zip(&acc.scores) {
+                            collector.collect(doc, score as f32);
+                        }
+                        min_competitive = min_competitive_score(collector);
                     }
-                    for (&doc, &score) in acc.docs.iter().zip(&acc.scores) {
-                        collector.collect(doc, score as f32);
+                    let mut max_other = -1;
+                    for leg in &legs[1..] {
+                        max_other = max_other.max(leg.doc_id());
                     }
-                    min_competitive = min_competitive_score(collector);
+                    if legs[0].doc_id() < max_other {
+                        legs[0].advance(max_other)?;
+                    }
                 }
-                let mut max_other = -1;
-                for leg in &legs[1..] {
-                    max_other = max_other.max(leg.doc_id());
-                }
-                if legs[0].doc_id() < max_other {
-                    legs[0].advance(max_other)?;
-                }
+            } else {
+                // The whole window goes without a single block body decoded.
+                #[cfg(any(test, feature = "test-support"))]
+                crate::test_only_maxscore_block_skip_counter::record_skip();
             }
-        } else {
-            // The whole window goes without a single block body decoded.
-            #[cfg(any(test, feature = "test-support"))]
-            crate::test_only_maxscore_block_skip_counter::record_skip();
+            window_min = legs[0].doc_id().max(window_end);
         }
-        window_min = legs[0].doc_id().max(window_end);
+        Ok(window_min)
     }
-    Ok(())
 }
 
 /// `scoreDocFirstUntilDynamicPruning`: a plain leapfrog, scoring every match,
 /// until the collector publishes a threshold. Returns the lead's next doc.
-fn conjunction_doc_first<C: ScoringCollector>(
-    legs: &mut [TermLeg<'_>],
+fn conjunction_doc_first<L: BulkLeg, C: ScoringCollector + ?Sized>(
+    legs: &mut [L],
     live_docs: Option<&FixedBitSet>,
     collector: &mut C,
     min: i32,
@@ -703,7 +828,7 @@ fn conjunction_doc_first<C: ScoringCollector>(
 // ---------------------------------------------------------------------------
 
 /// `MaxScoreBulkScorer`'s per-query state, minus the clauses themselves.
-struct MaxScore {
+pub(crate) struct MaxScore {
     /// Indices into the legs, in `allScorers` order: non-essential first.
     order: Vec<usize>,
     scratch: Vec<usize>,
@@ -722,78 +847,171 @@ struct MaxScore {
 }
 
 /// `MaxScoreBulkScorer.score` over the whole segment.
-pub(crate) fn score_disjunction<C: ScoringCollector>(
+pub(crate) fn score_disjunction<C: ScoringCollector + ?Sized>(
     legs: &mut [TermLeg<'_>],
     live_docs: Option<&FixedBitSet>,
     collector: &mut C,
 ) -> Result<()> {
-    let n = legs.len();
-    if n == 0 {
+    if legs.is_empty() {
         return Ok(());
     }
-    let mut ms = MaxScore {
-        order: (0..n).collect(),
-        scratch: Vec::with_capacity(n),
-        first_essential: 0,
-        first_required: n,
-        next_min_competitive: f32::INFINITY,
-        max_score_sums: vec![0.0; n],
-        window_matches: FixedBitSet::new(INNER_WINDOW_SIZE as usize),
-        window_scores: vec![0.0; INNER_WINDOW_SIZE as usize],
-        num_outer_windows: 0,
-        num_candidates: 0,
-        min_window_size: 1,
-        single: DocScores::default(),
-        acc: DocScoreAcc::default(),
-        min_competitive: min_competitive_score(collector),
-    };
-    for leg in legs.iter_mut() {
-        leg.doc = leg.doc_id();
-    }
-    let max = NO_MORE_DOCS;
-    let mut outer_min = 0;
-    'outer: while outer_min < max {
-        let mut outer_max = ms.compute_outer_window_max(legs, outer_min)?.min(max);
-        loop {
-            ms.update_max_window_scores(legs, outer_min, outer_max)?;
-            if !ms.partition_scorers(legs) {
-                // No clause can compete anywhere in this window.
-                #[cfg(any(test, feature = "test-support"))]
-                crate::test_only_maxscore_block_skip_counter::record_skip();
-                outer_min = outer_max;
-                continue 'outer;
-            }
-            let new_max = ms.compute_outer_window_max(legs, outer_min)?;
-            if new_max >= outer_max {
-                break;
-            }
-            outer_max = new_max;
-        }
-        // A clause the threshold made non-essential is never iterated in this
-        // window: its postings are only `advance`d to surviving candidates.
-        #[cfg(any(test, feature = "test-support"))]
-        if ms.first_essential > 0 {
-            crate::test_only_maxscore_block_skip_counter::record_skip();
-        }
-        for &i in &ms.order[ms.first_essential..] {
-            if legs[i].doc < outer_min {
-                legs[i].doc = legs[i].advance(outer_min)?;
-            }
-        }
-        while ms.top(legs).1 < outer_max {
-            ms.score_inner_window(legs, live_docs, collector, outer_max)?;
-            if ms.min_competitive >= ms.next_min_competitive {
-                // The threshold rose enough for a better partition.
-                break;
-            }
-        }
-        outer_min = ms.top(legs).1.min(outer_max);
-        ms.num_outer_windows += 1;
-    }
-    Ok(())
+    MaxScore::new(legs)
+        .score(legs, None, live_docs, collector, 0, NO_MORE_DOCS)
+        .map(|_| ())
 }
 
 impl MaxScore {
+    pub(crate) fn new(legs: &mut [TermLeg<'_>]) -> Self {
+        let n = legs.len();
+        for leg in legs.iter_mut() {
+            leg.doc = leg.doc_id();
+        }
+        MaxScore {
+            order: (0..n).collect(),
+            scratch: Vec::with_capacity(n),
+            first_essential: 0,
+            first_required: n,
+            next_min_competitive: f32::INFINITY,
+            max_score_sums: vec![0.0; n],
+            window_matches: FixedBitSet::new(INNER_WINDOW_SIZE as usize),
+            window_scores: vec![0.0; INNER_WINDOW_SIZE as usize],
+            num_outer_windows: 0,
+            num_candidates: 0,
+            min_window_size: 1,
+            single: DocScores::default(),
+            acc: DocScoreAcc::default(),
+            min_competitive: 0.0,
+        }
+    }
+
+    /// `MaxScoreBulkScorer.score(collector, acceptDocs, min, max)`: the
+    /// disjunction's documents in `[min, max)` -- those also matching
+    /// `filter`, when there is one (`filteredOptionalBulkScorer`). Returns the
+    /// next document to score.
+    pub(crate) fn score<C: ScoringCollector + ?Sized>(
+        &mut self,
+        legs: &mut [TermLeg<'_>],
+        mut filter: Option<&mut (dyn crate::exec::Scorer + '_)>,
+        live_docs: Option<&FixedBitSet>,
+        collector: &mut C,
+        min: i32,
+        max: i32,
+    ) -> Result<i32> {
+        let ms = self;
+        ms.min_competitive = min_competitive_score(collector);
+        let mut outer_min = min;
+        'outer: while outer_min < max {
+            let mut outer_max = ms.compute_outer_window_max(legs, outer_min)?.min(max);
+            loop {
+                ms.update_max_window_scores(legs, outer_min, outer_max)?;
+                if !ms.partition_scorers(legs) {
+                    // No clause can compete anywhere in this window.
+                    #[cfg(any(test, feature = "test-support"))]
+                    crate::test_only_maxscore_block_skip_counter::record_skip();
+                    outer_min = outer_max;
+                    continue 'outer;
+                }
+                let new_max = ms.compute_outer_window_max(legs, outer_min)?;
+                if new_max >= outer_max {
+                    break;
+                }
+                outer_max = new_max;
+            }
+            // A clause the threshold made non-essential is never iterated in
+            // this window: its postings are only `advance`d to surviving
+            // candidates.
+            #[cfg(any(test, feature = "test-support"))]
+            if ms.first_essential > 0 {
+                crate::test_only_maxscore_block_skip_counter::record_skip();
+            }
+            for &i in &ms.order[ms.first_essential..] {
+                if legs[i].doc < outer_min {
+                    legs[i].doc = legs[i].advance(outer_min)?;
+                }
+            }
+            while ms.top(legs).1 < outer_max {
+                match filter.as_deref_mut() {
+                    Some(f) => {
+                        ms.score_inner_window_with_filter(legs, f, live_docs, collector, outer_max)?
+                    }
+                    None => ms.score_inner_window(legs, live_docs, collector, outer_max)?,
+                }
+                if ms.min_competitive >= ms.next_min_competitive {
+                    // The threshold rose enough for a better partition.
+                    break;
+                }
+            }
+            outer_min = ms.top(legs).1.min(outer_max);
+            ms.num_outer_windows += 1;
+        }
+        Ok(Self::next_candidate(legs, max))
+    }
+
+    /// `nextCandidate(rangeEnd)`.
+    fn next_candidate(legs: &[TermLeg<'_>], range_end: i32) -> i32 {
+        let mut next = NO_MORE_DOCS;
+        for leg in legs {
+            if leg.doc < range_end {
+                return range_end;
+            }
+            next = next.min(leg.doc);
+        }
+        next
+    }
+
+    /// `scoreInnerWindowWithFilter` by leapfrog (`fillScoreBufferViaLeapFrog`):
+    /// the essential clauses' documents that the filter also matches, summed,
+    /// then the non-essential clauses as usual.
+    fn score_inner_window_with_filter<C: ScoringCollector + ?Sized>(
+        &mut self,
+        legs: &mut [TermLeg<'_>],
+        filter: &mut (dyn crate::exec::Scorer + '_),
+        live_docs: Option<&FixedBitSet>,
+        collector: &mut C,
+        max: i32,
+    ) -> Result<()> {
+        let (mut top, mut top_doc) = self.top(legs);
+        let mut filter_doc = filter.doc_id();
+        while top_doc < filter_doc {
+            legs[top].doc = legs[top].advance(filter_doc)?;
+            (top, top_doc) = self.top(legs);
+        }
+        if top_doc >= max {
+            return Ok(());
+        }
+        let inner_max = max.min(top_doc.saturating_add(INNER_WINDOW_SIZE));
+        self.acc.docs.clear();
+        self.acc.scores.clear();
+        while top_doc < inner_max {
+            if filter_doc < top_doc {
+                filter_doc = filter.advance(top_doc)?;
+            }
+            if filter_doc != top_doc {
+                while top_doc < filter_doc {
+                    legs[top].doc = legs[top].advance(filter_doc)?;
+                    (top, top_doc) = self.top(legs);
+                }
+            } else {
+                let doc = top_doc;
+                let matched = live_docs.is_none_or(|l| l.get_doc(doc))
+                    && (!filter.two_phase() || filter.matches()?);
+                let mut score = 0.0f64;
+                while top_doc == doc {
+                    if matched {
+                        score += legs[top].score()? as f64;
+                    }
+                    legs[top].doc = legs[top].next_doc()?;
+                    (top, top_doc) = self.top(legs);
+                }
+                if matched {
+                    self.acc.docs.push(doc);
+                    self.acc.scores.push(score);
+                }
+            }
+        }
+        self.score_non_essential(legs, collector)
+    }
+
     /// The essential clause with the smallest doc, and that doc; `NO_MORE_DOCS`
     /// when every essential clause is exhausted.
     fn top(&self, legs: &[TermLeg<'_>]) -> (usize, i32) {
@@ -820,6 +1038,15 @@ impl MaxScore {
         best
     }
 
+    /// `computeOuterWindowMax`.
+    ///
+    /// Deviation: with a filter, Lucene lets only the clauses at least as
+    /// costly as the filter bound the window. Under a dense filter that is
+    /// none of them, so the partition is computed over one huge window;
+    /// bounding by every clause measured faster (`FILTER` + two `SHOULD`s on
+    /// the benchmark corpus: 1.36x Lucene against 0.99x with the rule). The
+    /// windows only decide how often the partition is recomputed, never
+    /// which documents match or what they score.
     fn compute_outer_window_max(
         &mut self,
         legs: &mut [TermLeg<'_>],
@@ -921,7 +1148,7 @@ impl MaxScore {
         true
     }
 
-    fn score_inner_window<C: ScoringCollector>(
+    fn score_inner_window<C: ScoringCollector + ?Sized>(
         &mut self,
         legs: &mut [TermLeg<'_>],
         live_docs: Option<&FixedBitSet>,
@@ -940,7 +1167,7 @@ impl MaxScore {
         }
     }
 
-    fn score_single_essential<C: ScoringCollector>(
+    fn score_single_essential<C: ScoringCollector + ?Sized>(
         &mut self,
         legs: &mut [TermLeg<'_>],
         live_docs: Option<&FixedBitSet>,
@@ -960,7 +1187,7 @@ impl MaxScore {
         Ok(())
     }
 
-    fn score_multiple_essential<C: ScoringCollector>(
+    fn score_multiple_essential<C: ScoringCollector + ?Sized>(
         &mut self,
         legs: &mut [TermLeg<'_>],
         live_docs: Option<&FixedBitSet>,
@@ -1007,7 +1234,7 @@ impl MaxScore {
         self.score_non_essential(legs, collector)
     }
 
-    fn score_non_essential<C: ScoringCollector>(
+    fn score_non_essential<C: ScoringCollector + ?Sized>(
         &mut self,
         legs: &mut [TermLeg<'_>],
         collector: &mut C,
@@ -1034,5 +1261,427 @@ impl MaxScore {
         }
         self.min_competitive = min_competitive_score(collector);
         Ok(())
+    }
+}
+
+/// Filter legs as one iterator: a leapfrog over their documents, the filter
+/// a filtered `MaxScoreBulkScorer` checks candidates against.
+pub(crate) struct FilterConjunction<'x, 'a> {
+    pub(crate) legs: &'x mut [TermLeg<'a>],
+}
+
+impl FilterConjunction<'_, '_> {
+    /// Leapfrog to the first document at or after `doc` every leg matches.
+    ///
+    /// Unlike `ConjunctionDISI.doNext`, a leg already *past* `doc` counts as
+    /// a mismatch rather than a match: these legs come from the batch path,
+    /// which advances the non-lead legs to candidate documents on its own, so
+    /// one can sit ahead of the lead when this takes over.
+    fn do_next(&mut self, mut doc: i32) -> Result<i32> {
+        'head: loop {
+            if doc == NO_MORE_DOCS {
+                return Ok(doc);
+            }
+            for i in 1..self.legs.len() {
+                let mut other = self.legs[i].doc_id();
+                if other < doc {
+                    other = self.legs[i].advance(doc)?;
+                }
+                if other != doc {
+                    doc = self.legs[0].advance(other)?;
+                    continue 'head;
+                }
+            }
+            debug_assert!(
+                self.legs.iter().all(|l| l.doc_id() == doc),
+                "every filter leg must be on the document it reports"
+            );
+            return Ok(doc);
+        }
+    }
+
+    /// Positions the conjunction on its first match at or after `target`.
+    pub(crate) fn align(&mut self, target: i32) -> Result<i32> {
+        let lead = self.legs[0].doc_id();
+        let doc = if lead < target {
+            self.legs[0].advance(target)?
+        } else {
+            lead
+        };
+        self.do_next(doc)
+    }
+}
+
+impl crate::exec::Scorer for FilterConjunction<'_, '_> {
+    fn doc_id(&self) -> i32 {
+        self.legs[0].doc_id()
+    }
+    fn next_doc(&mut self) -> Result<i32> {
+        let doc = self.legs[0].next_doc()?;
+        self.do_next(doc)
+    }
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        let doc = self.legs[0].advance(target)?;
+        self.do_next(doc)
+    }
+    fn cost(&self) -> i64 {
+        self.legs[0].cost
+    }
+    fn score(&mut self) -> Result<f32> {
+        Ok(0.0)
+    }
+    fn max_score(&mut self, _up_to: i32) -> Result<f32> {
+        Ok(0.0)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Required plus optional clauses: `ReqOptSumScorer`, a batch at a time.
+// ---------------------------------------------------------------------------
+
+/// `ReqOptSumScorer` over term legs, as a bulk scorer. Lucene has none for
+/// this shape -- `BooleanScorerSupplier.booleanScorer()` declines `MUST` +
+/// `SHOULD` and `DefaultBulkScorer` drives `ReqOptSumScorer` a document at a
+/// time -- so this is the conjunction bulk scorer's batch loop with the
+/// optional clauses applied the way `ReqOptSumScorer.score` applies them:
+///
+/// - the required legs' scores summed in `double` and narrowed
+///   (`ConjunctionScorer.score`; a `FILTER` leg contributes `0`),
+/// - the optional legs' scores summed in `double` and narrowed
+///   (`DisjunctionSumScorer.score`),
+/// - the two added in `float` (`score += optScorer.score()`).
+///
+/// Each window is the lead's block. A window whose required and optional
+/// block maxima cannot reach the threshold is skipped outright
+/// (`ReqOptSumScorer`'s impacts approximation), and a batch document whose
+/// required score plus the optional maxima cannot reach it is dropped before
+/// the optional legs are advanced to it (`optIsRequired`, per document). Both
+/// bounds are the score's own arithmetic over the maxima, so neither can drop
+/// a document that would have entered the results.
+pub(crate) struct ReqOptBulk {
+    single: DocScores,
+    acc: DocScoreAcc,
+    /// `req_sums[i]`: the block maxima of required legs `i..`, summed.
+    req_sums: Vec<f64>,
+    opt_sums: Vec<f64>,
+    opt_hit: Vec<bool>,
+    /// The optional-led path's window: which documents an optional leg
+    /// matched, and their summed optional scores.
+    window_matches: FixedBitSet,
+    window_scores: Vec<f64>,
+    req_scores: Vec<f64>,
+    /// Once a threshold exists over filter-only required legs: the filtered
+    /// `MaxScoreBulkScorer` the rest of the segment runs on.
+    filtered: Option<MaxScore>,
+}
+
+impl ReqOptBulk {
+    pub(crate) fn new(num_required: usize) -> Self {
+        Self {
+            single: DocScores::default(),
+            acc: DocScoreAcc::default(),
+            req_sums: vec![0.0; num_required + 1],
+            opt_sums: Vec::new(),
+            opt_hit: Vec::new(),
+            window_matches: FixedBitSet::new(INNER_WINDOW_SIZE as usize),
+            window_scores: vec![0.0; INNER_WINDOW_SIZE as usize],
+            req_scores: Vec::new(),
+            filtered: None,
+        }
+    }
+
+    /// Collects the matches in `[min, max)`: documents every `req` leg
+    /// matches (cheapest first; `req[0]` leads), each with every `opt` leg's
+    /// score added where it matches too. Returns the next document to score.
+    pub(crate) fn score<C: ScoringCollector + ?Sized>(
+        &mut self,
+        req: &mut [TermLeg<'_>],
+        opt: &mut [TermLeg<'_>],
+        live_docs: Option<&FixedBitSet>,
+        collector: &mut C,
+        min: i32,
+        max: i32,
+    ) -> Result<i32> {
+        let nr = req.len();
+        let n = nr + opt.len();
+        let filters_only = req.iter().all(TermLeg::is_filter);
+        let mut window_min = req[0].doc_id().max(min);
+        while window_min < max {
+            let mut min_competitive = min_competitive_score(collector);
+            // Every required leg is a filter, so a document matching none of
+            // the optional legs scores 0. Once the threshold is above 0 it
+            // cannot compete, and the rest is a filtered disjunction:
+            // `MaxScoreBulkScorer` with the filters as its filter, which never
+            // iterates the optional legs the threshold makes non-essential.
+            if filters_only && min_competitive > 0.0 && opt.len() > 1 {
+                let state = self.filtered.get_or_insert_with(|| MaxScore::new(opt));
+                #[cfg(test)]
+                test_only_req_opt_paths::record(3);
+                let mut filter = FilterConjunction { legs: req };
+                filter.align(window_min)?;
+                return state.score(
+                    opt,
+                    Some(&mut filter),
+                    live_docs,
+                    collector,
+                    window_min,
+                    max,
+                );
+            }
+            let mut window_max = req[0].advance_shallow(window_min)?.min(max - 1);
+            window_max = window_max.min(window_min.saturating_add(MAX_WINDOW_SIZE));
+            let window_end = window_max.saturating_add(1);
+
+            for leg in req.iter_mut() {
+                leg.advance_shallow(window_min)?;
+            }
+            self.req_sums[nr] = 0.0;
+            for i in (0..nr).rev() {
+                self.req_sums[i] = self.req_sums[i + 1] + req[i].max_score(window_max) as f64;
+            }
+            let mut opt_max = 0.0f64;
+            for leg in opt.iter_mut() {
+                if leg.doc_id() <= window_max {
+                    if leg.doc_id() < window_min {
+                        leg.advance_shallow(window_min)?;
+                    }
+                    opt_max += leg.max_score(window_max) as f64;
+                }
+            }
+            let opt_max_f = opt_max as f32;
+            let window_bound = (self.req_sums[0] as f32) + opt_max_f;
+            if min_competitive > 0.0 && window_bound < min_competitive {
+                // No document in the window can compete: nothing is decoded.
+                #[cfg(any(test, feature = "test-support"))]
+                crate::test_only_maxscore_block_skip_counter::record_skip();
+                window_min = req[0].doc_id().max(window_end);
+                continue;
+            }
+
+            // Once the required clauses alone cannot reach the threshold, a
+            // hit must match an optional clause too (`optIsRequired`); when
+            // the optional clauses are also the cheaper side, they lead.
+            let opt_cost = opt.iter().fold(0i64, |a, l| a.saturating_add(l.cost));
+            if min_competitive > 0.0
+                && (self.req_sums[0] as f32) < min_competitive
+                && opt_cost < req[0].cost
+            {
+                self.score_optional_led(req, opt, live_docs, collector, window_min, window_end)?;
+                window_min = req[0].doc_id().max(window_end);
+                continue;
+            }
+
+            #[cfg(test)]
+            test_only_req_opt_paths::record(0);
+            if req[0].doc_id() < window_min {
+                req[0].advance(window_min)?;
+            }
+            loop {
+                req[0].next_docs_and_scores(window_end, live_docs, &mut self.single)?;
+                if self.single.docs.is_empty() {
+                    break;
+                }
+                let acc = &mut self.acc;
+                acc.copy_from(&self.single);
+                // A partial required sum is not yet the narrowed score, so
+                // these filters leave two ulps of slack below the threshold.
+                let slack = min_competitive.next_down().next_down().max(0.0);
+                for (i, leg) in req.iter_mut().enumerate().skip(1) {
+                    filter_competitive_hits(acc, self.req_sums[i] + opt_max, slack, n);
+                    apply_required_clause(acc, leg)?;
+                }
+                // The required score is final: drop what cannot compete even
+                // with every optional clause at its maximum.
+                if min_competitive > 0.0 {
+                    let mut k = 0;
+                    for i in 0..acc.docs.len() {
+                        if (acc.scores[i] as f32) + opt_max_f >= min_competitive {
+                            acc.docs[k] = acc.docs[i];
+                            acc.scores[k] = acc.scores[i];
+                            k += 1;
+                        }
+                    }
+                    acc.truncate(k);
+                }
+                self.opt_sums.clear();
+                self.opt_sums.resize(acc.docs.len(), 0.0);
+                self.opt_hit.clear();
+                self.opt_hit.resize(acc.docs.len(), false);
+                for leg in opt.iter_mut() {
+                    let mut cur = leg.doc_id();
+                    for (k, &doc) in acc.docs.iter().enumerate() {
+                        if cur < doc {
+                            cur = leg.advance(doc)?;
+                        }
+                        if cur == doc {
+                            self.opt_sums[k] += leg.score()? as f64;
+                            self.opt_hit[k] = true;
+                        }
+                    }
+                }
+                for (k, &doc) in acc.docs.iter().enumerate() {
+                    let mut score = acc.scores[k] as f32;
+                    if self.opt_hit[k] {
+                        score += self.opt_sums[k] as f32;
+                    }
+                    collector.collect(doc, score);
+                }
+                min_competitive = min_competitive_score(collector);
+            }
+            window_min = req[0].doc_id().max(window_end);
+        }
+        Ok(window_min)
+    }
+
+    /// One window with the optional legs leading: their documents (a batch
+    /// at a time, in inner windows of `INNER_WINDOW_SIZE`) are the candidates,
+    /// each dropped unless its optional score plus the required maxima can
+    /// compete, and the survivors advance the required legs -- which are
+    /// never decoded or scored for a document no optional leg matches.
+    #[allow(clippy::too_many_arguments)]
+    fn score_optional_led<C: ScoringCollector + ?Sized>(
+        &mut self,
+        req: &mut [TermLeg<'_>],
+        opt: &mut [TermLeg<'_>],
+        live_docs: Option<&FixedBitSet>,
+        collector: &mut C,
+        window_min: i32,
+        window_end: i32,
+    ) -> Result<()> {
+        let req_max = self.req_sums[0] as f32;
+        if let [only] = opt {
+            #[cfg(test)]
+            test_only_req_opt_paths::record(1);
+            // One optional leg: its batches are the candidates, already in
+            // order, with no window to merge them through.
+            if only.doc_id() < window_min {
+                only.advance(window_min)?;
+            }
+            loop {
+                only.next_docs_and_scores(window_end, live_docs, &mut self.single)?;
+                if self.single.docs.is_empty() {
+                    return Ok(());
+                }
+                let min_competitive = min_competitive_score(collector);
+                let acc = &mut self.acc;
+                acc.docs.clear();
+                acc.scores.clear();
+                for (&doc, &score) in self.single.docs.iter().zip(&self.single.scores) {
+                    if req_max + score >= min_competitive {
+                        acc.docs.push(doc);
+                        acc.scores.push(score as f64);
+                    }
+                }
+                self.apply_required_and_collect(req, collector)?;
+            }
+        }
+        #[cfg(test)]
+        test_only_req_opt_paths::record(2);
+        let mut inner_min = window_min;
+        while inner_min < window_end {
+            let inner_end = window_end.min(inner_min.saturating_add(INNER_WINDOW_SIZE));
+            let mut any = false;
+            for leg in opt.iter_mut() {
+                if leg.doc_id() < inner_min {
+                    leg.advance(inner_min)?;
+                }
+                loop {
+                    leg.next_docs_and_scores(inner_end, live_docs, &mut self.single)?;
+                    if self.single.docs.is_empty() {
+                        break;
+                    }
+                    any = true;
+                    for (&doc, &score) in self.single.docs.iter().zip(&self.single.scores) {
+                        let i = (doc - inner_min) as usize;
+                        // FBS: `next_docs_and_scores(inner_end, ..)` returns
+                        // documents in `inner_min..inner_end`, a span of at
+                        // most `INNER_WINDOW_SIZE`, the bitset's size.
+                        self.window_matches.set(i);
+                        self.window_scores[i] += score as f64;
+                    }
+                }
+            }
+            if any {
+                let min_competitive = min_competitive_score(collector);
+                // Candidates, ascending, with their optional sums.
+                let acc = &mut self.acc;
+                acc.docs.clear();
+                acc.scores.clear();
+                let window_scores = &mut self.window_scores;
+                self.window_matches.for_each_set_bit(|i| {
+                    let opt_score = window_scores[i];
+                    window_scores[i] = 0.0;
+                    if req_max + (opt_score as f32) >= min_competitive {
+                        acc.docs.push(inner_min + i as i32);
+                        acc.scores.push(opt_score);
+                    }
+                });
+                self.window_matches.clear_all();
+                self.apply_required_and_collect(req, collector)?;
+            }
+            inner_min = inner_end;
+        }
+        Ok(())
+    }
+
+    /// The candidates in `acc` (optional sums in its scores) that every
+    /// required leg matches, collected with `ReqOptSumScorer`'s arithmetic.
+    fn apply_required_and_collect<C: ScoringCollector + ?Sized>(
+        &mut self,
+        req: &mut [TermLeg<'_>],
+        collector: &mut C,
+    ) -> Result<()> {
+        let acc = &mut self.acc;
+        // Every required leg must match; their scores sum apart from the
+        // optional ones, as `ReqOptSumScorer` keeps them.
+        self.req_scores.clear();
+        self.req_scores.resize(acc.docs.len(), 0.0);
+        let mut len = acc.docs.len();
+        for leg in req.iter_mut() {
+            let mut cur = leg.doc_id();
+            let mut k = 0;
+            for i in 0..len {
+                let doc = acc.docs[i];
+                if cur < doc {
+                    cur = leg.advance(doc)?;
+                }
+                if cur == doc {
+                    acc.docs[k] = doc;
+                    acc.scores[k] = acc.scores[i];
+                    self.req_scores[k] = self.req_scores[i] + leg.score()? as f64;
+                    k += 1;
+                }
+            }
+            len = k;
+        }
+        for k in 0..len {
+            let score = (self.req_scores[k] as f32) + (acc.scores[k] as f32);
+            collector.collect(acc.docs[k], score);
+        }
+        Ok(())
+    }
+}
+
+/// Which of `ReqOptBulk`'s paths ran, per thread, for tests that must show
+/// every path is reached: `[required-led batch, optional-led with one
+/// optional leg, optional-led through the window bitset, filtered MaxScore]`.
+#[cfg(test)]
+pub(crate) mod test_only_req_opt_paths {
+    use std::cell::Cell;
+
+    thread_local! {
+        static HITS: Cell<[u64; 4]> = const { Cell::new([0; 4]) };
+    }
+
+    pub(crate) fn record(path: usize) {
+        HITS.with(|h| {
+            let mut v = h.get();
+            v[path] += 1;
+            h.set(v);
+        });
+    }
+
+    pub(crate) fn take() -> [u64; 4] {
+        HITS.with(|h| h.replace([0; 4]))
     }
 }
