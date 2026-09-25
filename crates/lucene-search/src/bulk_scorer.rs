@@ -1373,6 +1373,9 @@ pub(crate) struct ReqOptBulk {
     /// Once a threshold exists over filter-only required legs: the filtered
     /// `MaxScoreBulkScorer` the rest of the segment runs on.
     filtered: Option<MaxScore>,
+    /// The required legs' summed global maxima, once computed: a bound on
+    /// the required score anywhere in the segment.
+    req_global: Option<f32>,
 }
 
 impl ReqOptBulk {
@@ -1387,6 +1390,7 @@ impl ReqOptBulk {
             window_scores: vec![0.0; INNER_WINDOW_SIZE as usize],
             req_scores: Vec::new(),
             filtered: None,
+            req_global: None,
         }
     }
 
@@ -1549,6 +1553,18 @@ impl ReqOptBulk {
         window_end: i32,
     ) -> Result<()> {
         let req_max = self.req_sums[0] as f32;
+        let req_global = match self.req_global {
+            Some(g) => g,
+            None => {
+                let mut sum = 0.0f64;
+                for leg in req.iter_mut() {
+                    sum += leg.max_score(NO_MORE_DOCS) as f64;
+                }
+                let g = sum as f32;
+                self.req_global = Some(g);
+                g
+            }
+        };
         if let [only] = opt {
             #[cfg(test)]
             test_only_req_opt_paths::record(1);
@@ -1558,11 +1574,23 @@ impl ReqOptBulk {
                 only.advance(window_min)?;
             }
             loop {
+                // The optional leg is required, so a block of it whose
+                // maximum plus the required side's cannot compete holds
+                // nothing: hand it that as its own threshold, and its impacts
+                // skip the block undecoded. Against the required side's
+                // *global* maximum, so the bound only ever rises (a leg's
+                // threshold cannot fall), with four ulps of the threshold's
+                // own scale as slack for the two roundings of the final sum.
+                let min_competitive = min_competitive_score(collector);
+                let ulp = (min_competitive.next_up() - min_competitive) as f64;
+                let needed = min_competitive as f64 - req_global as f64 - 4.0 * ulp;
+                if needed > 0.0 {
+                    only.set_min_competitive_score((needed as f32).next_down());
+                }
                 only.next_docs_and_scores(window_end, live_docs, &mut self.single)?;
                 if self.single.docs.is_empty() {
                     return Ok(());
                 }
-                let min_competitive = min_competitive_score(collector);
                 let acc = &mut self.acc;
                 acc.docs.clear();
                 acc.scores.clear();
