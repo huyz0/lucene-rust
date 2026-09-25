@@ -279,6 +279,7 @@ public final class EngineWriterDiffTest {
                 null,
                 new KeepOnlyLastCommitDeletionPolicy(),
                 null,
+                null,
                 null
             );
             rust.setLiveCommitData(Map.of("k", "v").entrySet());
@@ -286,6 +287,14 @@ public final class EngineWriterDiffTest {
             Random rj = new Random(seed ^ 0x5eed);
             try (IndexWriter java = new IndexWriter(javaDir, cfg)) {
                 java.setLiveCommitData(Map.of("k", "v").entrySet());
+                // A soft update before any document has carried the soft-deletes field: it must
+                // still land (IndexWriter knows the field from its config).
+                long firstSeed = r.nextLong();
+                java.addDocument(doc(new Random(firstSeed), "first", -2, false));
+                rust.addDocument(doc(new Random(firstSeed), "first", -2, false), null);
+                Field firstSoft = new NumericDocValuesField(SOFT, 1);
+                java.softUpdateDocument(new Term("_id", "first"), doc(new Random(firstSeed), "first", -1, false), firstSoft);
+                rust.softUpdateDocument(new Term("_id", "first"), doc(new Random(firstSeed), "first", -1, false), 1, -1, 1, firstSoft);
                 int nextId = 0;
                 for (int op = 0; op < ops; op++) {
                     int kind = r.nextInt(20);
@@ -576,6 +585,7 @@ public final class EngineWriterDiffTest {
                 SOFT,
                 null,
                 new KeepOnlyLastCommitDeletionPolicy(),
+                null,
                 null,
                 null
             );

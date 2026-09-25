@@ -83,6 +83,18 @@ public final class RustEngineSupport {
         if (config.getIndexSettings().isContextAwareEnabled()) {
             throw new IllegalArgumentException("the Rust engine does not support context-aware segments");
         }
+        // OpenSearch 3.8's segment-replication source (CopyState) reads the primary's last refreshed
+        // checkpoint through EngineBackedIndexer, which answers only for an InternalEngine -- and
+        // InternalEngine.lastRefreshedCheckpoint() is final. A plugin engine cannot be a segment
+        // replication primary on this version; document replication is supported. (A segment
+        // replication replica never reaches this: it runs NRTReplicationEngine.)
+        if (config.getIndexSettings().isSegRepEnabledOrRemoteNode()) {
+            throw new IllegalArgumentException(
+                "the Rust engine cannot be a segment-replication primary on OpenSearch 3.8 "
+                    + "(EngineBackedIndexer.lastRefreshedCheckpoint answers only for InternalEngine); "
+                    + "use index.replication.type: DOCUMENT"
+            );
+        }
     }
 
     static RustIndexWriter openWriter(
@@ -95,9 +107,9 @@ public final class RustEngineSupport {
         Codec codec = config.getCodec();
         return RustIndexWriter.open(
             store.directory(),
-            store.shardPath().resolveIndex(),
+            indexPath(store),
             config.getIndexingBufferSize().getMbFrac(),
-            config.getIndexSettings().getValue(FAULT_INJECTION),
+            FAULT_INJECTION.get(config.getIndexSettings().getSettings()),
             config.getAnalyzer(),
             config.getSimilarity(),
             config.getIndexSettings().getIndexVersionCreated().luceneVersion.major,
@@ -105,8 +117,21 @@ public final class RustEngineSupport {
             (field, schema) -> unsupportedFormat(codec, field, schema),
             deletionPolicy,
             minRetainedSeqNo,
-            breaker
+            breaker,
+            codec
         );
+    }
+
+    /**
+     * Where the store's files are: the Rust writer reads and writes them itself, so the store's
+     * directory must be a filesystem one underneath its wrappers.
+     */
+    static java.nio.file.Path indexPath(Store store) {
+        org.apache.lucene.store.Directory d = org.apache.lucene.store.FilterDirectory.unwrap(store.directory());
+        if (d instanceof org.apache.lucene.store.FSDirectory fs) {
+            return fs.getDirectory();
+        }
+        throw new IllegalArgumentException("the Rust engine needs a filesystem directory, and the store's is a [" + d.getClass().getName() + "]");
     }
 
     /**

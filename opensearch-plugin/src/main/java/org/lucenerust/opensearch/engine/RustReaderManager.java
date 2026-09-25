@@ -9,7 +9,6 @@ import org.apache.lucene.index.IndexFileNames;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.SegmentInfos;
-import org.apache.lucene.index.SoftDeletesDirectoryReaderWrapper;
 import org.apache.lucene.index.StandardDirectoryReader;
 import org.apache.lucene.search.ReferenceManager;
 import org.apache.lucene.store.Directory;
@@ -24,9 +23,8 @@ import java.util.List;
 
 /**
  * The engine's internal reader manager: every reader is a Java {@link StandardDirectoryReader} on
- * one of the Rust writer's commits, with soft deletes applied ({@link
- * SoftDeletesDirectoryReaderWrapper}, as OpenSearch's segment-replication replicas read) and wrapped
- * for OpenSearch. A refresh asks the writer to commit whatever is buffered and opens the newest
+ * one of the Rust writer's commits, with soft deletes applied as {@code IndexWriter}'s NRT readers
+ * apply them ({@link SoftDeletesReader}) and wrapped for OpenSearch. A refresh asks the writer to commit whatever is buffered and opens the newest
  * commit, reusing the segment readers of every segment that did not change.
  *
  * <p>Each reader pins its commit's files on the Rust side for as long as it is open -- what {@code
@@ -82,7 +80,7 @@ final class RustReaderManager extends ReferenceManager<OpenSearchDirectoryReader
             DirectoryReader std = StandardDirectoryReader.open(directory, infos, old, leafSorter, null);
             std.getReaderCacheHelper().addClosedListener(key -> writer.releaseHold(hold));
             success = true;
-            return OpenSearchDirectoryReader.wrap(new SoftDeletesDirectoryReaderWrapper(std, Lucene.SOFT_DELETES_FIELD), shardId);
+            return OpenSearchDirectoryReader.wrap(new SoftDeletesReader(std, Lucene.SOFT_DELETES_FIELD), shardId);
         } finally {
             if (success == false) {
                 writer.releaseHold(hold);

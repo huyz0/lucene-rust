@@ -160,6 +160,56 @@ tasks.register('yamlRestTest', Test) {
     testLogging { events 'failed'; exceptionFormat 'full' }
 }
 
+// OpenSearch's own engine tests (InternalEngineTests), derived to run on
+// RustEngine by tools/derive_engine_tests.py. Needs Maven Central for the test
+// framework, as the YAML runner does.
+sourceSets {
+    engineTest {
+        java.srcDir 'src/engineTest/java'
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+    }
+}
+configurations {
+    engineTestImplementation
+}
+dependencies {
+    engineTestImplementation "org.opensearch.test:framework:${opensearchVersion}"
+    engineTestImplementation fileTree(dir: opensearchLib, include: '*.jar')
+}
+tasks.named('compileEngineTestJava') {
+    options.compilerArgs -= ['-Werror']
+    options.compilerArgs += ['-Xlint:none', '-nowarn']
+}
+tasks.register('engineTest', Test) {
+    description = "OpenSearch's InternalEngineTests, run on RustEngine."
+    dependsOn cargoBuild
+    testClassesDirs = sourceSets.engineTest.output.classesDirs
+    classpath = sourceSets.engineTest.runtimeClasspath
+    useJUnit()
+    systemProperty 'lucene_rust.library.path', nativeLib.absolutePath
+    systemProperty 'tests.security.manager', 'false'
+    systemProperty 'java.io.tmpdir', layout.buildDirectory.dir('engine-test-tmp').get().asFile.absolutePath
+    jvmArgs '-ea', '-Xmx2g', '--add-opens=java.base/java.nio=ALL-UNNAMED'
+    maxParallelForks = 1
+    ignoreFailures = findProperty('engineTestIgnoreFailures') == 'true'
+    outputs.upToDateWhen { false }
+    testLogging { events 'failed'; exceptionFormat 'short' }
+    doFirst { layout.buildDirectory.dir('engine-test-tmp').get().asFile.mkdirs() }
+}
+
+// Like the YAML runner, the engine tests refuse to run as root (BootstrapForTesting);
+// scripts/opensearch-engine-tests.sh runs them as nobody from this staged classpath.
+tasks.register('engineTestClasspath', Sync) {
+    description = 'Stages the engine tests\' classpath under build/engine-test-classpath.'
+    dependsOn tasks.named('engineTestClasses'), cargoBuild
+    from(sourceSets.engineTest.runtimeClasspath)
+    from(nativeLib)
+    into layout.buildDirectory.dir('engine-test-classpath')
+    // The distribution's jars and the framework's Maven ones are the same artifacts.
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
 // The YAML runner refuses to run as root (OpenSearch's Bootstrap check). For a
 // root shell -- a container, typically -- this stages the runner's classpath
 // where an unprivileged user can read it; scripts/verify-opensearch.sh runs it.
