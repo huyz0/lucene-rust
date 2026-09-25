@@ -133,6 +133,13 @@ pub enum RegistryTag {
     /// that a vectors-only segment does not have) -- see `registry.rs`'s
     /// `VectorsHandle` doc comment.
     Vectors = 11,
+    /// A reader opened for the OpenSearch plugin (`jvm_reader.rs`'s
+    /// `ffi_open_jvm_reader`): a `DirectoryReader` over a *Java* reader's
+    /// segment list, carrying that Java reader's live docs -- its own
+    /// registry because its search path ignores the segments' on-disk
+    /// deletions, which a `DirectoryReader` handle must never do. See
+    /// `registry.rs`'s `JvmReaderHandle` doc comment.
+    JvmReader = 12,
 }
 
 /// The largest slot index the 24-bit index field can represent, and so the

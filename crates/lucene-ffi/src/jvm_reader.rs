@@ -1,0 +1,976 @@
+//! The reader the OpenSearch plugin (`opensearch-plugin/`, M2) searches
+//! through: one handle per *Java* `DirectoryReader`, opened from the exact
+//! segment list that reader sees and masked with the exact live docs it
+//! sees, so that a hit's doc ID means the same document on both sides of the
+//! boundary.
+//!
+//! ## Why not [`crate::directory_reader::ffi_open_directory_reader`]
+//!
+//! That entry point opens the latest `segments_N` on disk. An OpenSearch
+//! searcher is almost never that commit: a refresh opens an NRT reader from
+//! the `IndexWriter` (`DirectoryReader.open(writer, applyAllDeletes = true,
+//! writeAllDeletes = false)`), which lists segments flushed since the last
+//! commit and carries deletions -- hard and soft -- that exist only in the
+//! JVM's memory. Searching the last commit instead would miss documents and
+//! serve deleted ones, and every doc ID after the first new segment would
+//! point at the wrong document.
+//!
+//! So the JVM hands over what it actually has:
+//!
+//! - **the segment list**, as the bytes `SegmentInfos.write(IndexOutput)`
+//!   produces for the reader's own `SegmentInfos` -- the `segments_N` format
+//!   `lucene_index::segment_infos::parse` already reads, so there is no second
+//!   encoding of a commit to keep in step with Java's;
+//! - **each segment's `maxDoc`**, which [`ffi_open_jvm_reader`] checks against
+//!   what it opened. A mismatch is an error, not a best effort: a wrong doc
+//!   base silently returns the wrong documents;
+//! - **each segment's live docs**, via [`ffi_jvm_reader_set_live_docs`],
+//!   copied from the Java leaf's `getLiveDocs()`. These replace whatever this
+//!   port read from `.liv` (or derived from a soft-deletes field) *entirely*,
+//!   because the JVM's view is the one OpenSearch answers with.
+//!
+//! A refresh passes the previous handle as `previous`, and every segment
+//! that is unchanged is shared rather than re-read
+//! ([`DirectoryReader::reopen_at`]).
+//!
+//! ## One crossing per query
+//!
+//! [`ffi_jvm_reader_search`] decodes the query, runs it, counts the total
+//! hits when the caller asks, and writes the top hits straight into the
+//! caller's buffers -- no results handle to read back and close. The query
+//! arrives as one byte blob ([`decode_query`] documents the layout), so a JNI
+//! caller passes one `byte[]` rather than seven parallel arrays of strings.
+//!
+//! ## Scope
+//!
+//! `TermQuery` and `BooleanQuery` trees of `TermQuery` leaves -- the shapes
+//! the occur-tagged clause format ([`crate::query::read_boolean_query`])
+//! already carries. Everything else is the caller's to fall back on.
+
+use std::os::raw::c_char;
+
+use lucene_search::directory_reader::DirectoryReader;
+use lucene_search::field_norms::FieldNorms;
+use lucene_search::multi_segment::OpenSegment;
+use lucene_search::query::{BooleanQuery, TermQuery};
+use lucene_search::weight_count::count_term_query;
+use lucene_search::{
+    search_boolean_query, search_boolean_query_multi_segment_maxscore,
+    search_term_query_multi_segment, CountCollector, ScoreDoc,
+};
+use lucene_store::MmapDirectory;
+use lucene_util::fixed_bit_set::{bits2words, FixedBitSet};
+
+use crate::error::{guard, set_last_error, FfiStatus};
+use crate::query::{check_clause_count, map_search_error, read_boolean_query};
+use crate::raw::{bytes_from_raw, str_from_raw, try_with_capacity};
+use crate::registry::{jvm_readers, lock_recovering, read_recovering, JvmReaderHandle};
+
+/// The version of the contract between this library and the Java classes in
+/// `opensearch-plugin/`: the entry points in this module and `jni_bridge.rs`,
+/// their argument order, and the query blob layout. The plugin refuses to
+/// start against a library reporting any other number -- a jar carrying a
+/// stale `.so` must not get as far as reading an index.
+///
+/// Bump it on any change a Java caller could observe.
+pub const JVM_ABI_VERSION: u32 = 1;
+
+/// Blob tag for a single `TermQuery`.
+pub const QUERY_TERM: u8 = 0;
+/// Blob tag for a `BooleanQuery` in the occur-tagged clause format.
+pub const QUERY_BOOLEAN: u8 = 1;
+
+/// [`JVM_ABI_VERSION`], for the plugin's load-time handshake.
+#[no_mangle]
+pub extern "C" fn ffi_jvm_abi_version() -> u32 {
+    JVM_ABI_VERSION
+}
+
+/// One decoded query blob.
+#[derive(Debug)]
+pub(crate) enum JvmQuery {
+    Term(TermQuery),
+    Boolean(BooleanQuery),
+}
+
+/// A bounds-checked little-endian reader over a caller's blob. Every read
+/// that would run past the end is [`FfiStatus::InvalidArgument`] -- the blob
+/// is caller-supplied, so a short one is a bad argument, not a panic.
+struct Cursor<'a> {
+    buf: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Cursor<'a> {
+    fn take(&mut self, n: usize) -> Result<&'a [u8], FfiStatus> {
+        let end = self.pos.checked_add(n).filter(|&e| e <= self.buf.len());
+        let Some(end) = end else {
+            set_last_error(format!(
+                "query blob truncated: need {n} bytes at offset {}, have {}",
+                self.pos,
+                self.buf.len()
+            ));
+            return Err(FfiStatus::InvalidArgument);
+        };
+        let out = &self.buf[self.pos..end];
+        self.pos = end;
+        Ok(out)
+    }
+
+    fn u8(&mut self) -> Result<u8, FfiStatus> {
+        Ok(self.take(1)?[0])
+    }
+
+    fn i32(&mut self) -> Result<i32, FfiStatus> {
+        let b = self.take(4)?;
+        Ok(i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+
+    fn len(&mut self) -> Result<usize, FfiStatus> {
+        let v = self.i32()?;
+        usize::try_from(v).map_err(|_| {
+            set_last_error(format!("query blob: negative length {v}"));
+            FfiStatus::InvalidArgument
+        })
+    }
+
+    fn bytes(&mut self) -> Result<&'a [u8], FfiStatus> {
+        let n = self.len()?;
+        self.take(n)
+    }
+}
+
+/// Decodes a query blob. Little-endian throughout; every length is an `i32`
+/// and must be non-negative.
+///
+/// | tag | layout after the tag byte |
+/// |---|---|
+/// | [`QUERY_TERM`] | `field_len`, field (UTF-8), `term_len`, term bytes |
+/// | [`QUERY_BOOLEAN`] | `minimum_should_match`, `clause_count`, then per clause: `occur: u8`, `kind: u8`, `parent: i32`, `param: i32`, `field_len`, field, `term_len`, term |
+///
+/// A boolean clause's fields mean exactly what the parallel arrays of
+/// [`read_boolean_query`] mean -- this decoder builds those arrays and hands
+/// them over, so the nesting, depth and clause-count rules (and their error
+/// messages) are that function's, not a second copy of them. A `BOOLEAN`
+/// clause carries empty field and term bytes.
+///
+/// Trailing bytes are an error: a blob that decodes with bytes left over was
+/// built by a writer that disagrees with this layout.
+pub(crate) fn decode_query(blob: &[u8]) -> Result<JvmQuery, FfiStatus> {
+    let mut c = Cursor { buf: blob, pos: 0 };
+    let query = match c.u8()? {
+        QUERY_TERM => {
+            let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
+            let term = c.bytes()?;
+            JvmQuery::Term(TermQuery::new(field, term.to_vec()))
+        }
+        QUERY_BOOLEAN => {
+            let msm = c.i32()?;
+            let count = c.len()?;
+            check_clause_count(count)?;
+            let mut occurs = try_with_capacity::<u8>(count)?;
+            let mut kinds = try_with_capacity::<u8>(count)?;
+            let mut parents = try_with_capacity::<i32>(count)?;
+            let mut params = try_with_capacity::<i32>(count)?;
+            let mut fields = try_with_capacity::<*const c_char>(count)?;
+            let mut field_lens = try_with_capacity::<usize>(count)?;
+            let mut terms = try_with_capacity::<*const u8>(count)?;
+            let mut term_lens = try_with_capacity::<usize>(count)?;
+            for _ in 0..count {
+                occurs.push(c.u8()?);
+                kinds.push(c.u8()?);
+                parents.push(c.i32()?);
+                params.push(c.i32()?);
+                let field = c.bytes()?;
+                fields.push(field.as_ptr().cast::<c_char>());
+                field_lens.push(field.len());
+                let term = c.bytes()?;
+                terms.push(term.as_ptr());
+                term_lens.push(term.len());
+            }
+            // SAFETY: all eight arrays hold exactly `count` elements, and every
+            // (pointer, length) pair points into `blob`, which outlives this
+            // call.
+            let query = unsafe {
+                read_boolean_query(
+                    occurs.as_ptr(),
+                    kinds.as_ptr(),
+                    fields.as_ptr(),
+                    field_lens.as_ptr(),
+                    terms.as_ptr(),
+                    term_lens.as_ptr(),
+                    parents.as_ptr(),
+                    params.as_ptr(),
+                    count,
+                    msm,
+                )?
+            };
+            JvmQuery::Boolean(query)
+        }
+        other => {
+            set_last_error(format!(
+                "query blob: unknown query tag {other} (expected 0=TERM, 1=BOOLEAN)"
+            ));
+            return Err(FfiStatus::InvalidArgument);
+        }
+    };
+    if c.pos != blob.len() {
+        set_last_error(format!(
+            "query blob: {} trailing bytes after the query",
+            blob.len() - c.pos
+        ));
+        return Err(FfiStatus::InvalidArgument);
+    }
+    Ok(query)
+}
+
+/// Opens a reader over the segments listed in `infos` (a whole `segments_N`
+/// file's bytes, as `SegmentInfos.write(IndexOutput)` writes them, at
+/// generation `generation`) under the directory at `path`, and checks that
+/// segment `i` has exactly `expected_max_docs[i]` documents.
+///
+/// `previous` is a handle from an earlier call over the same directory, or
+/// `0`: its unchanged segments are shared instead of re-read. It stays open
+/// -- the caller closes it when its own Java reader closes.
+///
+/// Every segment starts with no deletions. Call
+/// [`ffi_jvm_reader_set_live_docs`] for each one the Java reader has
+/// deletions in, before the first search.
+///
+/// # Safety
+/// `path` must be valid for `path_len` bytes, `infos` for `infos_len` bytes,
+/// `expected_max_docs` for `segment_count` `i32`s, `out_handle` for one
+/// `u64` write.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ffi_open_jvm_reader(
+    path: *const c_char,
+    path_len: usize,
+    infos: *const u8,
+    infos_len: usize,
+    generation: i64,
+    previous: u64,
+    expected_max_docs: *const i32,
+    segment_count: usize,
+    out_handle: *mut u64,
+) -> i32 {
+    guard(|| {
+        if out_handle.is_null() || (expected_max_docs.is_null() && segment_count > 0) {
+            return Err(FfiStatus::NullPointer);
+        }
+        // SAFETY: caller contract.
+        let (path, infos) = unsafe {
+            (
+                str_from_raw(path, path_len)?,
+                bytes_from_raw(infos, infos_len)?,
+            )
+        };
+        let expected: &[i32] = if segment_count == 0 {
+            &[]
+        } else {
+            // SAFETY: caller contract, non-null checked above.
+            unsafe { std::slice::from_raw_parts(expected_max_docs, segment_count) }
+        };
+        let segment_infos = lucene_index::segment_infos::parse(infos, generation).map_err(|e| {
+            set_last_error(format!("parsing the JVM reader's SegmentInfos: {e}"));
+            FfiStatus::Decode
+        })?;
+        // Mapped, not copied: a shard's postings are gigabytes, and Lucene's own
+        // `MMapDirectory` -- what OpenSearch searches with -- maps them too. The
+        // mapping lives as long as the segment reader, which is why closing the
+        // handle matters (M2 T2.6).
+        let dir = MmapDirectory::open(path);
+        let reader = if previous == 0 {
+            DirectoryReader::open_at(&dir, segment_infos)
+        } else {
+            let readers = read_recovering(jvm_readers());
+            let prev = readers.get(previous).ok_or_else(|| {
+                set_last_error("ffi_open_jvm_reader: unknown or already-closed previous handle");
+                FfiStatus::InvalidHandle
+            })?;
+            prev.reader.reopen_at(&dir, segment_infos)
+        }
+        .map_err(|e| {
+            set_last_error(format!("opening the JVM reader's segments: {e}"));
+            FfiStatus::Decode
+        })?;
+
+        let opened: Vec<i32> = reader.segment_readers().iter().map(|s| s.max_doc).collect();
+        if opened != expected {
+            set_last_error(format!(
+                "segment maxDocs {opened:?} do not match the JVM reader's {expected:?}"
+            ));
+            return Err(FfiStatus::InvalidArgument);
+        }
+        let live_docs = (0..opened.len()).map(|_| None).collect();
+        let handle =
+            lock_recovering(jvm_readers()).insert_checked(JvmReaderHandle { reader, live_docs })?;
+        // SAFETY: caller contract.
+        unsafe { *out_handle = handle };
+        Ok(())
+    })
+}
+
+/// Replaces segment `segment`'s live docs with the `words_len` words at
+/// `words` -- `FixedBitSet.getBits()` of the Java leaf's live docs, bit `d`
+/// set when doc `d` is live. `words_len` must be exactly
+/// `bits2words(maxDoc)`, and bits past `maxDoc` must be clear. A null `words`
+/// (with `words_len == 0`) means "no deletions".
+///
+/// # Safety
+/// `words` must be valid for `words_len` `u64`s.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_jvm_reader_set_live_docs(
+    handle: u64,
+    segment: usize,
+    words: *const u64,
+    words_len: usize,
+) -> i32 {
+    guard(|| {
+        let mut readers = lock_recovering(jvm_readers());
+        let h = readers.get_mut(handle).ok_or_else(|| {
+            set_last_error("ffi_jvm_reader_set_live_docs: unknown or already-closed handle");
+            FfiStatus::InvalidHandle
+        })?;
+        let Some(seg) = h.reader.segment_readers().get(segment) else {
+            set_last_error(format!(
+                "segment {segment} out of range: the reader has {}",
+                h.reader.segment_readers().len()
+            ));
+            return Err(FfiStatus::IndexOutOfBounds);
+        };
+        if words.is_null() {
+            if words_len != 0 {
+                return Err(FfiStatus::NullPointer);
+            }
+            h.live_docs[segment] = None;
+            return Ok(());
+        }
+        let max_doc = usize::try_from(seg.max_doc).unwrap_or(0);
+        if words_len != bits2words(max_doc) {
+            set_last_error(format!(
+                "segment {segment}: {words_len} live-docs words for maxDoc {max_doc}, expected {}",
+                bits2words(max_doc)
+            ));
+            return Err(FfiStatus::InvalidArgument);
+        }
+        // SAFETY: caller contract.
+        let src = unsafe { std::slice::from_raw_parts(words, words_len) };
+        let mut owned = try_with_capacity::<u64>(words_len)?;
+        owned.extend_from_slice(src);
+        let tail_bits = max_doc % 64;
+        if tail_bits != 0 {
+            if let Some(&last) = owned.last() {
+                if last >> tail_bits != 0 {
+                    set_last_error(format!(
+                        "segment {segment}: live-docs bits set past maxDoc {max_doc}"
+                    ));
+                    return Err(FfiStatus::InvalidArgument);
+                }
+            }
+        }
+        h.live_docs[segment] = Some(FixedBitSet::from_words(owned, max_doc));
+        Ok(())
+    })
+}
+
+/// Runs the query in the `query_len`-byte blob `query` ([`decode_query`])
+/// against `handle`, writing up to `top_n` hits -- global doc ID and score,
+/// best first, ties by ascending doc ID -- into `out_docs`/`out_scores` and
+/// their number into `*out_hit_count`.
+///
+/// When `count_total` is true, `*out_total` receives the exact number of
+/// live matching documents; otherwise `-1`. Counting is skipped whenever the
+/// top hits already prove it (fewer than `top_n` came back), so a caller that
+/// always asks pays for a second pass only when there could be more matches
+/// than it collected.
+///
+/// # Safety
+/// `query` must be valid for `query_len` bytes; `out_docs`/`out_scores` for
+/// `buf_len` elements each, with `buf_len >= top_n`; `out_hit_count` and
+/// `out_total` for one write each.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ffi_jvm_reader_search(
+    handle: u64,
+    query: *const u8,
+    query_len: usize,
+    top_n: usize,
+    count_total: bool,
+    out_docs: *mut i32,
+    out_scores: *mut f32,
+    buf_len: usize,
+    out_hit_count: *mut usize,
+    out_total: *mut i64,
+) -> i32 {
+    guard(|| {
+        if out_hit_count.is_null() || out_total.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        if buf_len < top_n {
+            return Err(FfiStatus::BufferTooSmall);
+        }
+        if top_n > 0 && (out_docs.is_null() || out_scores.is_null()) {
+            return Err(FfiStatus::NullPointer);
+        }
+        // SAFETY: caller contract.
+        let blob = unsafe { bytes_from_raw(query, query_len)? };
+        let query = decode_query(blob)?;
+        let readers = read_recovering(jvm_readers());
+        let h = readers.get(handle).ok_or_else(|| {
+            set_last_error("ffi_jvm_reader_search: unknown or already-closed handle");
+            FfiStatus::InvalidHandle
+        })?;
+        let (hits, total) = search(h, &query, top_n, count_total)?;
+        // SAFETY: caller contract; `hits.len() <= top_n <= buf_len`.
+        unsafe {
+            for (i, hit) in hits.iter().enumerate() {
+                *out_docs.add(i) = hit.doc_id;
+                *out_scores.add(i) = hit.score;
+            }
+            *out_hit_count = hits.len();
+            *out_total = total;
+        }
+        Ok(())
+    })
+}
+
+/// The search behind [`ffi_jvm_reader_search`], on an already-validated
+/// handle: the reader's segments with the JVM's live docs swapped in.
+pub(crate) fn search(
+    h: &JvmReaderHandle,
+    query: &JvmQuery,
+    top_n: usize,
+    count_total: bool,
+) -> Result<(Vec<ScoreDoc>, i64), FfiStatus> {
+    let opened = h.reader.open_segments().map_err(|e| {
+        set_last_error(format!("opening segment postings: {e}"));
+        FfiStatus::Decode
+    })?;
+    let segments: Vec<OpenSegment<'_>> = opened
+        .as_open_segments()
+        .into_iter()
+        .zip(&h.live_docs)
+        .map(|(mut s, live)| {
+            s.live_docs = live.as_ref();
+            s
+        })
+        .collect();
+
+    let hits = match query {
+        JvmQuery::Term(q) => {
+            let owned = h.reader.field_norms(&q.field);
+            let norms: Vec<Option<&FieldNorms<'_>>> = owned.iter().map(Option::as_ref).collect();
+            if top_n == 0 {
+                Vec::new()
+            } else {
+                search_term_query_multi_segment(&segments, q, &norms, top_n)
+                    .map_err(map_search_error)?
+            }
+        }
+        JvmQuery::Boolean(q) => {
+            let fields: Vec<String> = crate::query::clause_field_names(q)
+                .into_iter()
+                .map(str::to_string)
+                .collect();
+            let owned = h.reader.field_norms_by_field(&fields);
+            let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
+                owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
+            if top_n == 0 {
+                Vec::new()
+            } else {
+                search_boolean_query_multi_segment_maxscore(&segments, q, &norms, top_n)
+                    .map_err(map_search_error)?
+            }
+        }
+    };
+
+    let total = if !count_total {
+        -1
+    } else if hits.len() < top_n {
+        // The collector kept every match it saw, so it saw them all.
+        hits.len() as i64
+    } else {
+        count(&segments, query)?
+    };
+    Ok((hits, total))
+}
+
+/// `IndexSearcher.count`: the live documents matching `query`, summed over
+/// every segment.
+fn count(segments: &[OpenSegment<'_>], query: &JvmQuery) -> Result<i64, FfiStatus> {
+    let mut total = 0i64;
+    for seg in segments {
+        let n = match query {
+            JvmQuery::Term(q) => count_term_query(seg.fields, seg.doc_in, seg.live_docs, q),
+            JvmQuery::Boolean(q) => {
+                let mut counter = CountCollector::default();
+                search_boolean_query(
+                    seg.fields,
+                    seg.doc_in,
+                    seg.pos_in,
+                    seg.pay_in,
+                    seg.live_docs,
+                    None,
+                    q,
+                    &mut counter,
+                )
+                .map(|()| i64::from(counter.count))
+            }
+        }
+        .map_err(map_search_error)?;
+        total = total.saturating_add(n);
+    }
+    Ok(total)
+}
+
+/// Closes a JVM reader handle. Segments a later handle reused stay open
+/// until that handle closes too.
+#[no_mangle]
+pub extern "C" fn ffi_close_jvm_reader(handle: u64) -> i32 {
+    guard(|| {
+        lock_recovering(jvm_readers())
+            .remove(handle)
+            .map(|_| ())
+            .ok_or_else(|| {
+                set_last_error("ffi_close_jvm_reader: unknown or already-closed handle");
+                FfiStatus::InvalidHandle
+            })
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A real two-segment Java-written index whose `manifest.properties`
+    /// records Lucene's own top hits and scores (`GenMultiSegmentScoring`).
+    const FIXTURE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/data/multi_segment_scoring_index"
+    );
+
+    fn infos() -> Vec<u8> {
+        std::fs::read(format!("{FIXTURE}/segments_2")).expect("segments_2")
+    }
+
+    fn term_blob(field: &str, term: &str) -> Vec<u8> {
+        let mut b = vec![QUERY_TERM];
+        for part in [field.as_bytes(), term.as_bytes()] {
+            b.extend_from_slice(&(part.len() as i32).to_le_bytes());
+            b.extend_from_slice(part);
+        }
+        b
+    }
+
+    /// `(occur, kind, parent, param, field, term)` clauses under a root with
+    /// `msm`.
+    fn bool_blob(msm: i32, clauses: &[(u8, u8, i32, i32, &str, &str)]) -> Vec<u8> {
+        let mut b = vec![QUERY_BOOLEAN];
+        b.extend_from_slice(&msm.to_le_bytes());
+        b.extend_from_slice(&(clauses.len() as i32).to_le_bytes());
+        for &(occur, kind, parent, param, field, term) in clauses {
+            b.push(occur);
+            b.push(kind);
+            b.extend_from_slice(&parent.to_le_bytes());
+            b.extend_from_slice(&param.to_le_bytes());
+            for part in [field.as_bytes(), term.as_bytes()] {
+                b.extend_from_slice(&(part.len() as i32).to_le_bytes());
+                b.extend_from_slice(part);
+            }
+        }
+        b
+    }
+
+    fn open_with(max_docs: &[i32], previous: u64) -> (i32, u64) {
+        let infos = infos();
+        let mut handle = 0u64;
+        let rc = unsafe {
+            ffi_open_jvm_reader(
+                FIXTURE.as_ptr().cast(),
+                FIXTURE.len(),
+                infos.as_ptr(),
+                infos.len(),
+                2,
+                previous,
+                max_docs.as_ptr(),
+                max_docs.len(),
+                &mut handle,
+            )
+        };
+        (rc, handle)
+    }
+
+    fn open() -> u64 {
+        let (rc, handle) = open_with(&[4, 4], 0);
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        handle
+    }
+
+    fn run(
+        handle: u64,
+        blob: &[u8],
+        top_n: usize,
+        count: bool,
+    ) -> Result<(Vec<(i32, f32)>, i64), i32> {
+        let mut docs = vec![0i32; top_n];
+        let mut scores = vec![0f32; top_n];
+        let (mut n, mut total) = (0usize, 0i64);
+        let rc = unsafe {
+            ffi_jvm_reader_search(
+                handle,
+                blob.as_ptr(),
+                blob.len(),
+                top_n,
+                count,
+                docs.as_mut_ptr(),
+                scores.as_mut_ptr(),
+                top_n,
+                &mut n,
+                &mut total,
+            )
+        };
+        if rc != 0 {
+            return Err(rc);
+        }
+        Ok((
+            docs[..n]
+                .iter()
+                .copied()
+                .zip(scores[..n].iter().copied())
+                .collect(),
+            total,
+        ))
+    }
+
+    /// A handle that is certainly invalid: opened and closed. Its slot's
+    /// generation has moved on, so no reader a parallel test opens can make
+    /// it valid again -- unlike a fabricated value, which may land on one.
+    fn closed_handle() -> u64 {
+        let h = open();
+        assert_eq!(ffi_close_jvm_reader(h), 0);
+        h
+    }
+
+    fn set_live(handle: u64, segment: usize, words: &[u64]) -> i32 {
+        unsafe { ffi_jvm_reader_set_live_docs(handle, segment, words.as_ptr(), words.len()) }
+    }
+
+    #[test]
+    fn abi_version_is_the_constant() {
+        assert_eq!(ffi_jvm_abi_version(), JVM_ABI_VERSION);
+    }
+
+    /// Hits and scores are Lucene's own, bit for bit, from the fixture's
+    /// manifest -- the JVM reader is the multi-segment searcher, not a
+    /// re-derivation of it.
+    #[test]
+    fn term_and_boolean_hits_match_lucene_bit_for_bit() {
+        let h = open();
+        let (hits, total) = run(h, &term_blob("body", "fox"), 10, true).unwrap();
+        let want = [
+            (4, 1059136106u32),
+            (5, 1058735855),
+            (6, 1058247114),
+            (0, 1057234298),
+        ];
+        let got: Vec<(i32, u32)> = hits.iter().map(|&(d, s)| (d, s.to_bits())).collect();
+        assert_eq!(got, want);
+        assert_eq!(total, 4);
+
+        let should = bool_blob(
+            0,
+            &[(2, 0, -1, 0, "body", "fox"), (2, 0, -1, 0, "body", "dog")],
+        );
+        let (hits, total) = run(h, &should, 10, true).unwrap();
+        let want = [
+            (4, 1063370973u32),
+            (6, 1062787560),
+            (5, 1058735855),
+            (0, 1057234298),
+            (7, 1049727197),
+            (3, 1048058560),
+            (1, 1047552856),
+            (2, 1047077660),
+        ];
+        let got: Vec<(i32, u32)> = hits.iter().map(|&(d, s)| (d, s.to_bits())).collect();
+        assert_eq!(got, want);
+        assert_eq!(total, 8);
+        assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+
+    /// The total is counted, not inferred, once the top hits are full -- and
+    /// with `top_n == 0` it is the only thing computed.
+    #[test]
+    fn total_is_counted_when_top_hits_are_full() {
+        let h = open();
+        let (hits, total) = run(h, &term_blob("body", "fox"), 2, true).unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(total, 4);
+        let (hits, total) = run(h, &term_blob("body", "fox"), 0, true).unwrap();
+        assert!(hits.is_empty());
+        assert_eq!(total, 4);
+        let both = bool_blob(
+            0,
+            &[(0, 0, -1, 0, "body", "fox"), (0, 0, -1, 0, "body", "dog")],
+        );
+        let (hits, total) = run(h, &both, 1, true).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(total, 2, "docs 4 and 6 hold both terms");
+        let (_, total) = run(h, &term_blob("body", "fox"), 2, false).unwrap();
+        assert_eq!(total, -1);
+        ffi_close_jvm_reader(h);
+    }
+
+    /// The JVM's live docs are the only deletions a search sees -- including
+    /// in the count -- and clearing them restores every document.
+    #[test]
+    fn java_live_docs_mask_hits_and_counts() {
+        let h = open();
+        // Segment 1 holds global docs 4..8; clear local doc 0 (global 4).
+        assert_eq!(set_live(h, 1, &[0b1110]), 0);
+        let (hits, total) = run(h, &term_blob("body", "fox"), 2, true).unwrap();
+        assert_eq!(hits.iter().map(|h| h.0).collect::<Vec<_>>(), [5, 6]);
+        assert_eq!(total, 3);
+        let should = bool_blob(
+            0,
+            &[(2, 0, -1, 0, "body", "fox"), (2, 0, -1, 0, "body", "dog")],
+        );
+        let (_, total) = run(h, &should, 1, true).unwrap();
+        assert_eq!(total, 7);
+
+        let rc = unsafe { ffi_jvm_reader_set_live_docs(h, 1, std::ptr::null(), 0) };
+        assert_eq!(rc, 0);
+        let (_, total) = run(h, &term_blob("body", "fox"), 2, true).unwrap();
+        assert_eq!(total, 4);
+        ffi_close_jvm_reader(h);
+    }
+
+    #[test]
+    fn live_docs_are_validated() {
+        let h = open();
+        let invalid = FfiStatus::InvalidArgument.code();
+        assert_eq!(
+            set_live(h, 0, &[0b1111, 0]),
+            invalid,
+            "two words for maxDoc 4"
+        );
+        assert_eq!(set_live(h, 0, &[0b1_0000]), invalid, "a bit past maxDoc");
+        assert_eq!(set_live(h, 2, &[0]), FfiStatus::IndexOutOfBounds.code());
+        let rc = unsafe { ffi_jvm_reader_set_live_docs(h, 0, std::ptr::null(), 1) };
+        assert_eq!(rc, FfiStatus::NullPointer.code());
+        assert_eq!(
+            set_live(closed_handle(), 0, &[0]),
+            FfiStatus::InvalidHandle.code()
+        );
+        ffi_close_jvm_reader(h);
+    }
+
+    /// A reader whose segment sizes disagree with the JVM's is refused: its
+    /// doc IDs would name the wrong documents.
+    #[test]
+    fn open_refuses_a_segment_list_that_disagrees_with_the_jvm() {
+        let (rc, _) = open_with(&[4, 5], 0);
+        assert_eq!(rc, FfiStatus::InvalidArgument.code());
+        assert!(crate::error::last_error().contains("do not match"));
+        let (rc, _) = open_with(&[4], 0);
+        assert_eq!(rc, FfiStatus::InvalidArgument.code());
+    }
+
+    #[test]
+    fn open_rejects_bad_arguments() {
+        let infos = infos();
+        let docs = [4, 4];
+        let mut handle = 0u64;
+        let call = |infos: &[u8], generation: i64, previous: u64, out: *mut u64| unsafe {
+            ffi_open_jvm_reader(
+                FIXTURE.as_ptr().cast(),
+                FIXTURE.len(),
+                infos.as_ptr(),
+                infos.len(),
+                generation,
+                previous,
+                docs.as_ptr(),
+                docs.len(),
+                out,
+            )
+        };
+        assert_eq!(
+            call(&infos, 2, 0, std::ptr::null_mut()),
+            FfiStatus::NullPointer.code()
+        );
+        assert_eq!(
+            call(&infos, 3, 0, &mut handle),
+            FfiStatus::Decode.code(),
+            "wrong generation"
+        );
+        assert_eq!(
+            call(&infos[..20], 2, 0, &mut handle),
+            FfiStatus::Decode.code()
+        );
+        assert_eq!(
+            call(&infos, 2, 12345, &mut handle),
+            FfiStatus::InvalidHandle.code()
+        );
+        let rc = unsafe {
+            ffi_open_jvm_reader(
+                FIXTURE.as_ptr().cast(),
+                FIXTURE.len(),
+                infos.as_ptr(),
+                infos.len(),
+                2,
+                0,
+                std::ptr::null(),
+                2,
+                &mut handle,
+            )
+        };
+        assert_eq!(rc, FfiStatus::NullPointer.code());
+        let missing = "/nonexistent/lucene-rust-jvm-reader";
+        let rc = unsafe {
+            ffi_open_jvm_reader(
+                missing.as_ptr().cast(),
+                missing.len(),
+                infos.as_ptr(),
+                infos.len(),
+                2,
+                0,
+                docs.as_ptr(),
+                docs.len(),
+                &mut handle,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Decode.code());
+    }
+
+    /// A refresh shares the previous handle's segments, and each handle then
+    /// lives and closes on its own.
+    #[test]
+    fn reopening_from_a_previous_handle_shares_segments() {
+        let first = open();
+        let (rc, second) = open_with(&[4, 4], first);
+        assert_eq!(rc, 0);
+        {
+            let readers = read_recovering(jvm_readers());
+            let (a, b) = (readers.get(first).unwrap(), readers.get(second).unwrap());
+            // `field_infos()` borrows from the segment's shared core, so one
+            // address means one decoded copy.
+            assert!(std::ptr::eq(
+                a.reader.segment_readers()[1].field_infos(),
+                b.reader.segment_readers()[1].field_infos()
+            ));
+        }
+        assert_eq!(ffi_close_jvm_reader(first), 0);
+        let (hits, _) = run(second, &term_blob("body", "fox"), 10, false).unwrap();
+        assert_eq!(hits.len(), 4);
+        assert_eq!(ffi_close_jvm_reader(second), 0);
+        assert_eq!(
+            ffi_close_jvm_reader(second),
+            FfiStatus::InvalidHandle.code()
+        );
+    }
+
+    #[test]
+    fn search_rejects_bad_arguments() {
+        let h = open();
+        let blob = term_blob("body", "fox");
+        let (mut n, mut total) = (0usize, 0i64);
+        let mut docs = [0i32; 1];
+        let mut scores = [0f32; 1];
+        let mut call = |handle: u64, top_n: usize, docs: *mut i32, n: *mut usize| unsafe {
+            ffi_jvm_reader_search(
+                handle,
+                blob.as_ptr(),
+                blob.len(),
+                top_n,
+                true,
+                docs,
+                scores.as_mut_ptr(),
+                1,
+                n,
+                &mut total,
+            )
+        };
+        assert_eq!(
+            call(h, 2, docs.as_mut_ptr(), &mut n),
+            FfiStatus::BufferTooSmall.code()
+        );
+        assert_eq!(
+            call(h, 1, std::ptr::null_mut(), &mut n),
+            FfiStatus::NullPointer.code()
+        );
+        assert_eq!(
+            call(h, 1, docs.as_mut_ptr(), std::ptr::null_mut()),
+            FfiStatus::NullPointer.code()
+        );
+        assert_eq!(
+            call(closed_handle(), 1, docs.as_mut_ptr(), &mut n),
+            FfiStatus::InvalidHandle.code()
+        );
+        assert_eq!(
+            run(h, &[9], 1, true),
+            Err(FfiStatus::InvalidArgument.code())
+        );
+        ffi_close_jvm_reader(h);
+    }
+
+    #[test]
+    fn decode_query_rejects_malformed_blobs() {
+        let invalid = Err(FfiStatus::InvalidArgument);
+        let status = |b: &[u8]| decode_query(b).map(|_| ());
+        assert_eq!(status(&[]), invalid, "empty");
+        assert_eq!(status(&[7]), invalid, "unknown tag");
+        let term = term_blob("body", "fox");
+        assert_eq!(status(&term[..term.len() - 1]), invalid, "truncated");
+        let mut trailing = term.clone();
+        trailing.push(0);
+        assert_eq!(status(&trailing), invalid, "trailing bytes");
+        let mut negative = vec![QUERY_TERM];
+        negative.extend_from_slice(&(-1i32).to_le_bytes());
+        assert_eq!(status(&negative), invalid, "negative length");
+        let mut huge = vec![QUERY_TERM];
+        huge.extend_from_slice(&i32::MAX.to_le_bytes());
+        assert_eq!(status(&huge), invalid, "length past the end");
+        let mut bad_utf8 = vec![QUERY_TERM];
+        bad_utf8.extend_from_slice(&1i32.to_le_bytes());
+        bad_utf8.push(0xff);
+        bad_utf8.extend_from_slice(&0i32.to_le_bytes());
+        assert_eq!(status(&bad_utf8), Err(FfiStatus::InvalidUtf8));
+        // The clause rules are `read_boolean_query`'s: an unknown occur, a
+        // forward parent reference, and too many clauses.
+        assert_eq!(status(&bool_blob(0, &[(9, 0, -1, 0, "f", "t")])), invalid);
+        assert_eq!(status(&bool_blob(0, &[(2, 0, 3, 0, "f", "t")])), invalid);
+        let mut many = vec![QUERY_BOOLEAN];
+        many.extend_from_slice(&0i32.to_le_bytes());
+        many.extend_from_slice(&i32::MAX.to_le_bytes());
+        assert!(decode_query(&many).is_err());
+    }
+
+    #[test]
+    fn decode_query_builds_nested_booleans() {
+        // +(a b)~1 -c
+        let blob = bool_blob(
+            0,
+            &[
+                (0, 1, -1, 1, "", ""),
+                (2, 0, 0, 0, "f", "a"),
+                (2, 0, 0, 0, "f", "b"),
+                (3, 0, -1, 0, "f", "c"),
+            ],
+        );
+        let JvmQuery::Boolean(q) = decode_query(&blob).unwrap() else {
+            panic!("expected a boolean");
+        };
+        assert_eq!(q.must.len(), 1);
+        assert_eq!(q.must_not.len(), 1);
+        let lucene_search::query::Clause::Boolean(inner) = &q.must[0] else {
+            panic!("expected a nested boolean");
+        };
+        assert_eq!(inner.should.len(), 2);
+        assert_eq!(inner.minimum_should_match, 1);
+        assert!(matches!(
+            decode_query(&term_blob("f", "t")).unwrap(),
+            JvmQuery::Term(_)
+        ));
+    }
+}

@@ -160,7 +160,7 @@ pub fn set_last_error(message: impl Into<String>) {
     LAST_ERROR.with(|slot| *slot.borrow_mut() = message.into());
 }
 
-fn last_error() -> String {
+pub(crate) fn last_error() -> String {
     LAST_ERROR.with(|slot| slot.borrow().clone())
 }
 

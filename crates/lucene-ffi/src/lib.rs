@@ -286,6 +286,8 @@ mod explain;
 mod facets;
 mod handle;
 mod highlighter;
+mod jni_bridge;
+mod jvm_reader;
 #[cfg(test)]
 mod legacy_boolean_abi;
 mod points_query;

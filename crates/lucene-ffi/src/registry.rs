@@ -681,6 +681,21 @@ pub fn directory_readers() -> &'static RwLock<SlotMap<DirectoryReaderHandle>> {
     REGISTRY.get_or_init(|| RwLock::new(SlotMap::new(RegistryTag::DirectoryReader)))
 }
 
+/// A `DirectoryReader` opened over a JVM reader's segments, plus that JVM
+/// reader's live docs (`jvm_reader.rs`). `live_docs[i]` is segment `i`'s
+/// mask, `None` meaning no deletions; it **replaces** whatever the segment
+/// reader decoded from `.liv`, because an NRT reader's deletions live in the
+/// JVM's memory, not on disk.
+pub struct JvmReaderHandle {
+    pub reader: lucene_search::directory_reader::DirectoryReader,
+    pub live_docs: Vec<Option<FixedBitSet>>,
+}
+
+pub fn jvm_readers() -> &'static RwLock<SlotMap<JvmReaderHandle>> {
+    static REGISTRY: OnceLock<RwLock<SlotMap<JvmReaderHandle>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| RwLock::new(SlotMap::new(RegistryTag::JvmReader)))
+}
+
 pub fn facet_results() -> &'static Sharded<FacetResultsHandle> {
     static REGISTRY: OnceLock<Sharded<FacetResultsHandle>> = OnceLock::new();
     REGISTRY.get_or_init(|| Sharded::new(RegistryTag::FacetResults))
