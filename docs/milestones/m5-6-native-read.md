@@ -136,6 +136,13 @@ filters needs a native query cache: R3b, on `query_cache.rs`'s existing
 `LRUQueryCache` port. Every Java number in this document was measured with
 the cache on, as Lucene ships.
 
+**R3b, the native query cache (delivered).** `exec::cache` caches a
+non-scoring clause per segment under Lucene's own policy, built from the
+clause's scorer without live docs and kept with the segment's core across
+reopens. q59 went from 0.20× to 1.20× merged and 2.27× segmented; the
+other `FILTER`/`MUST_NOT` shapes (q41, q47–q49, q52, q54, q55) stay at
+1.2–4.3×.
+
 ## Benchmark
 
 `benchmarks/queries.tsv` q40–q55 are the mixed shapes (the `sexpr` kind, both
