@@ -79,8 +79,8 @@ use std::sync::Arc;
 /// 4, live docs passed to `ffi_open_jvm_reader` (no `set_live_docs`);
 /// 5, the engine writer (`engine_writer.rs`); 6, the writer's `max_docs`;
 /// 7, the [`QUERY_TREE`] blob (read path R2); 8, its phrase node (R3); 9,
-/// its term-set, prefix and wildcard nodes (R3).
-pub const JVM_ABI_VERSION: u32 = 9;
+/// its term-set, prefix and wildcard nodes (R3); 10, its points range node.
+pub const JVM_ABI_VERSION: u32 = 10;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -101,6 +101,7 @@ const NODE_PHRASE: u8 = 7;
 const NODE_TERM_SET: u8 = 8;
 const NODE_PREFIX: u8 = 9;
 const NODE_WILDCARD: u8 = 10;
+const NODE_POINT_RANGE: u8 = 11;
 
 /// [`JVM_ABI_VERSION`], for the plugin's load-time handshake.
 #[no_mangle]
@@ -146,6 +147,13 @@ impl<'a> Cursor<'a> {
     fn i32(&mut self) -> Result<i32, FfiStatus> {
         let b = self.take(4)?;
         Ok(i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+
+    fn i64(&mut self) -> Result<i64, FfiStatus> {
+        let b = self.take(8)?;
+        Ok(i64::from_le_bytes([
+            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+        ]))
     }
 
     fn len(&mut self) -> Result<usize, FfiStatus> {
@@ -510,6 +518,33 @@ pub unsafe extern "C" fn ffi_jvm_reader_search(
     })
 }
 
+/// Whether `query` has a points clause anywhere, so the search opens the
+/// segments' points (a cost a query without one should not pay).
+fn query_uses_points(query: &JvmQuery) -> bool {
+    fn clause(c: &Clause) -> bool {
+        match c {
+            Clause::PointsRange(_) => true,
+            Clause::Boolean(b) => boolean(b),
+            Clause::ConstantScore(c) => clause(&c.inner),
+            Clause::Boost(b) => clause(&b.inner),
+            Clause::DisjunctionMax(d) => d.disjuncts.iter().any(clause),
+            _ => false,
+        }
+    }
+    fn boolean(b: &BooleanQuery) -> bool {
+        b.must
+            .iter()
+            .chain(&b.filter)
+            .chain(&b.should)
+            .chain(&b.must_not)
+            .any(clause)
+    }
+    match query {
+        JvmQuery::Term(_) => false,
+        JvmQuery::Boolean(b) => boolean(b),
+    }
+}
+
 /// The search behind [`ffi_jvm_reader_search`], on an already-validated
 /// handle: the reader's segments with the JVM's live docs swapped in.
 pub(crate) fn search(
@@ -518,10 +553,16 @@ pub(crate) fn search(
     top_n: usize,
     count_limit: i64,
 ) -> Result<(Vec<ScoreDoc>, i64, bool), FfiStatus> {
-    let opened = h.reader.open_segments().map_err(|e| {
+    let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
         FfiStatus::Decode
     })?;
+    if query_uses_points(query) {
+        opened.open_points().map_err(|e| {
+            set_last_error(format!("opening segment points: {e}"));
+            FfiStatus::Decode
+        })?;
+    }
     let segments: Vec<OpenSegment<'_>> = opened
         .as_open_segments()
         .into_iter()
@@ -724,7 +765,7 @@ fn decode_node(c: &mut Cursor<'_>, depth: usize, nodes: &mut usize) -> Result<Cl
     use crate::query::MAX_CLAUSE_DEPTH;
     use lucene_search::query::{
         BoostQuery, ConstantScoreQuery, DisjunctionMaxQuery, MatchAllDocsQuery, MatchNoDocsQuery,
-        PhraseQuery, PrefixQuery, TermInSetQuery, WildcardQuery,
+        PhraseQuery, PointsRangeQuery, PrefixQuery, TermInSetQuery, WildcardQuery,
     };
     if depth >= MAX_CLAUSE_DEPTH {
         set_last_error(format!(
@@ -844,9 +885,17 @@ fn decode_node(c: &mut Cursor<'_>, depth: usize, nodes: &mut usize) -> Result<Cl
             let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
             Clause::Wildcard(WildcardQuery::new(field, c.bytes()?.to_vec()))
         }
+        NODE_POINT_RANGE => {
+            // A one-dimensional 8-byte `PointRangeQuery` (`long`, `date`,
+            // `double`): its inclusive bounds as the sortable longs
+            // `NumericUtils.sortableBytesToLong` reads from the packed bytes.
+            let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
+            let (min, max) = (c.i64()?, c.i64()?);
+            Clause::PointsRange(PointsRangeQuery::new(field, min, max))
+        }
         other => {
             set_last_error(format!(
-                "query tree: unknown node kind {other} (expected 0..=10)"
+                "query tree: unknown node kind {other} (expected 0..=11)"
             ));
             return Err(FfiStatus::InvalidArgument);
         }
@@ -1622,6 +1671,7 @@ mod tests {
         /// `(field, slop, [(position, term)])`.
         P(&'a str, i32, Vec<(i32, &'a str)>),
         Ts(&'a str, Vec<&'a str>),
+        R(&'a str, i64, i64),
         Pre(&'a str, &'a str),
         Wc(&'a str, &'a str),
     }
@@ -1666,6 +1716,12 @@ mod tests {
             }
             N::All => b.push(NODE_MATCH_ALL),
             N::None => b.push(NODE_MATCH_NONE),
+            N::R(field, min, max) => {
+                b.push(NODE_POINT_RANGE);
+                bytes(b, field.as_bytes());
+                b.extend_from_slice(&min.to_le_bytes());
+                b.extend_from_slice(&max.to_le_bytes());
+            }
             N::Ts(field, terms) => {
                 b.push(NODE_TERM_SET);
                 bytes(b, field.as_bytes());
@@ -1832,6 +1888,30 @@ mod tests {
             decode_query(&tree(N::Ts("body", long))).map(|_| ()),
             Err(FfiStatus::InvalidArgument),
             "a term set over the clause cap"
+        );
+    }
+
+    #[test]
+    fn a_points_range_opens_points_and_matches_nothing_where_there_are_none() {
+        let h = open();
+        // This fixture indexes no points: every segment gets an empty reader.
+        let range = tree(N::R("n", 0, 10));
+        assert_eq!(run(h, &range, 10, true).unwrap(), (vec![], 0));
+        let nested = tree(N::B(
+            0,
+            vec![(0, N::T("body", "dog")), (3, N::R("n", 0, 10))],
+        ));
+        let (with_range, _) = run(h, &nested, 10, true).unwrap();
+        let (dog, _) = run(h, &term_blob("body", "dog"), 10, true).unwrap();
+        assert_eq!(with_range, dog, "excluding nothing");
+        let mut short = vec![QUERY_TREE, NODE_POINT_RANGE];
+        short.extend_from_slice(&1i32.to_le_bytes());
+        short.push(b'n');
+        short.extend_from_slice(&[0; 5]);
+        assert_eq!(
+            decode_query(&short).map(|_| ()),
+            Err(FfiStatus::InvalidArgument),
+            "truncated"
         );
     }
 

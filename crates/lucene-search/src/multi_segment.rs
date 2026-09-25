@@ -103,7 +103,7 @@ use crate::collector::{
     TopFieldCollector, TotalHits,
 };
 use crate::field_norms::FieldNorms;
-use crate::query::{BooleanQuery, TermQuery};
+use crate::query::{BooleanQuery, Clause, TermQuery};
 use crate::Result;
 
 use std::collections::HashMap;
@@ -140,6 +140,8 @@ pub struct OpenSegment<'a> {
     /// The segment's query cache (`LRUQueryCache` for its core), when it has
     /// one: repeatedly used non-scoring clauses are iterated from it.
     pub cache: Option<&'a crate::SegmentQueryCache>,
+    /// The segment's points, when opened (a query with a points clause).
+    pub points: Option<&'a crate::points_query::PointsInput<'a>>,
 }
 
 /// The shared fan-out+merge core (see this module's doc comment): runs
@@ -947,6 +949,8 @@ pub fn search_boolean_query_multi_segment_maxscore_counting(
         norms.len(),
         "one norms entry per segment expected"
     );
+    let rewritten = rewrite_points_ranges(query, segments);
+    let query = rewritten.as_ref().unwrap_or(query);
     let global = global_boolean_stats(segments, query)?;
     let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
     search_leaves_shared_counting(&doc_bases, top_n, total_hits_threshold, |i, local| {
@@ -954,6 +958,103 @@ pub fn search_boolean_query_multi_segment_maxscore_counting(
         let seg_norms = norms.get(i).copied().flatten();
         crate::search_boolean_query_scored_segment(seg, query, seg_norms, Some(&global), local)
     })
+}
+
+/// `PointRangeQuery.rewrite` against the reader, then `BooleanQuery.rewrite`'s
+/// removal of match-all `FILTER` clauses: a points range outside every
+/// segment's values matches nothing, and one covering them where every
+/// document has a value matches everything -- which a `FILTER` beside another
+/// required clause then drops, so `+t #range(all)` runs as `t` alone. The JVM
+/// rewrites before encoding; this is the same for a query built here. `None`
+/// when nothing changes (or the segments' points are not open).
+pub(crate) fn rewrite_points_ranges(
+    query: &BooleanQuery,
+    segments: &[OpenSegment<'_>],
+) -> Option<BooleanQuery> {
+    fn range(q: &crate::query::PointsRangeQuery, segments: &[OpenSegment<'_>]) -> Option<Clause> {
+        let mut global: Option<(Vec<u8>, Vec<u8>)> = None;
+        let mut every_doc = true;
+        for seg in segments {
+            let points = seg.points?;
+            let field = points
+                .field_number(&q.field)
+                .and_then(|n| points.reader.field(n));
+            let Some(field) = field else {
+                every_doc = false;
+                continue;
+            };
+            every_doc &= Some(field.doc_count) == seg.max_doc && field.num_dims == 1;
+            global = Some(match global {
+                None => (
+                    field.min_packed_value.clone(),
+                    field.max_packed_value.clone(),
+                ),
+                Some((lo, hi)) => (
+                    lo.min(field.min_packed_value.clone()),
+                    hi.max(field.max_packed_value.clone()),
+                ),
+            });
+        }
+        let Some((lo, hi)) = global else {
+            return Some(Clause::MatchNoDocs(crate::query::MatchNoDocsQuery::new()));
+        };
+        let (min, max) = (
+            crate::points_query::pack_i64(q.min),
+            crate::points_query::pack_i64(q.max),
+        );
+        if max.as_slice() < lo.as_slice() || min.as_slice() > hi.as_slice() {
+            return Some(Clause::MatchNoDocs(crate::query::MatchNoDocsQuery::new()));
+        }
+        if every_doc && min.as_slice() <= lo.as_slice() && max.as_slice() >= hi.as_slice() {
+            return Some(Clause::MatchAllDocs(crate::query::MatchAllDocsQuery::new(
+                i32::MAX,
+            )));
+        }
+        None
+    }
+    fn clause(c: &Clause, segments: &[OpenSegment<'_>]) -> Option<Clause> {
+        match c {
+            Clause::PointsRange(q) => range(q, segments),
+            Clause::Boolean(b) => boolean(b, segments).map(|b| Clause::Boolean(Box::new(b))),
+            Clause::ConstantScore(cs) => clause(&cs.inner, segments).map(|inner| {
+                let mut cs = (**cs).clone();
+                cs.inner = Box::new(inner);
+                Clause::ConstantScore(Box::new(cs))
+            }),
+            Clause::Boost(b) => clause(&b.inner, segments).map(|inner| {
+                let mut b = (**b).clone();
+                b.inner = Box::new(inner);
+                Clause::Boost(Box::new(b))
+            }),
+            _ => None,
+        }
+    }
+    fn list(v: &[Clause], segments: &[OpenSegment<'_>], changed: &mut bool) -> Vec<Clause> {
+        v.iter()
+            .map(|c| match clause(c, segments) {
+                Some(n) => {
+                    *changed = true;
+                    n
+                }
+                None => c.clone(),
+            })
+            .collect()
+    }
+    fn boolean(b: &BooleanQuery, segments: &[OpenSegment<'_>]) -> Option<BooleanQuery> {
+        let mut changed = false;
+        let mut out = b.clone();
+        out.must = list(&b.must, segments, &mut changed);
+        out.filter = list(&b.filter, segments, &mut changed);
+        out.should = list(&b.should, segments, &mut changed);
+        out.must_not = list(&b.must_not, segments, &mut changed);
+        if out.filter.len() > 1 || !out.must.is_empty() {
+            let before = out.filter.len();
+            out.filter.retain(|c| !matches!(c, Clause::MatchAllDocs(_)));
+            changed |= out.filter.len() != before;
+        }
+        changed.then_some(out)
+    }
+    boolean(query, segments)
 }
 
 /// Concurrent sibling of [`search_boolean_query_multi_segment_maxscore`] --
@@ -1498,6 +1599,7 @@ mod tests {
                 doc_base: 0,
                 max_doc: None,
                 cache: None,
+                points: None,
             },
             OpenSegment {
                 fields: &fields1,
@@ -1507,6 +1609,7 @@ mod tests {
                 live_docs: None,
                 doc_base: max_doc0,
                 cache: None,
+                points: None,
                 max_doc: None,
             },
         ];
@@ -1572,6 +1675,7 @@ mod tests {
                 doc_base: 0,
                 max_doc: None,
                 cache: None,
+                points: None,
             },
             OpenSegment {
                 fields: &fields1,
@@ -1581,6 +1685,7 @@ mod tests {
                 live_docs: None,
                 doc_base: max_doc0,
                 cache: None,
+                points: None,
                 max_doc: None,
             },
         ];
@@ -1641,6 +1746,7 @@ mod tests {
                 doc_base: 0,
                 max_doc: None,
                 cache: None,
+                points: None,
             },
             OpenSegment {
                 fields: &fields1,
@@ -1650,6 +1756,7 @@ mod tests {
                 live_docs: None,
                 doc_base: max_doc0,
                 cache: None,
+                points: None,
                 max_doc: None,
             },
         ];
@@ -1684,6 +1791,7 @@ mod tests {
                 doc_base: 0,
                 max_doc: None,
                 cache: None,
+                points: None,
             },
             OpenSegment {
                 fields: &fields1,
@@ -1693,6 +1801,7 @@ mod tests {
                 live_docs: None,
                 doc_base: max_doc0,
                 cache: None,
+                points: None,
                 max_doc: None,
             },
         ];
@@ -1722,6 +1831,7 @@ mod tests {
             doc_base: 1000,
             max_doc: None,
             cache: None,
+            points: None,
         }];
         let norms = [None];
         let merged = search_term_query_multi_segment(&segments, &query, &norms, 10).unwrap();
@@ -2096,6 +2206,7 @@ mod tests {
                 doc_base: 0,
                 max_doc: None,
                 cache: None,
+                points: None,
             },
             OpenSegment {
                 fields: &fields1,
@@ -2105,6 +2216,7 @@ mod tests {
                 live_docs: None,
                 doc_base: max_doc0,
                 cache: None,
+                points: None,
                 max_doc: None,
             },
         ];
@@ -2137,6 +2249,7 @@ mod tests {
                 doc_base: 0,
                 max_doc: None,
                 cache: None,
+                points: None,
             },
             OpenSegment {
                 fields: &fields1,
@@ -2146,6 +2259,7 @@ mod tests {
                 live_docs: None,
                 doc_base: max_doc0,
                 cache: None,
+                points: None,
                 max_doc: None,
             },
         ];

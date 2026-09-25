@@ -17,6 +17,10 @@ pub(crate) struct ConjunctionScorer<'a> {
     /// Indices into `scorers` of the two-phase ones, cheapest match first.
     two_phase: Vec<usize>,
     match_cost: f32,
+    /// Indices past the lead that are advanced to agree with it.
+    leap: Vec<usize>,
+    /// Indices past the lead checked by membership (see [`Scorer::contains`]).
+    bits: Vec<usize>,
 }
 
 impl<'a> ConjunctionScorer<'a> {
@@ -43,11 +47,18 @@ impl<'a> ConjunctionScorer<'a> {
             .collect();
         two_phase.sort_by(|&a, &b| scorers[a].match_cost().total_cmp(&scorers[b].match_cost()));
         let match_cost = two_phase.iter().map(|&i| scorers[i].match_cost()).sum();
+        // `BitSetConjunctionDISI`: a non-lead, non-scoring iterator with random
+        // access is checked by membership rather than advanced.
+        let (bits, leap): (Vec<usize>, Vec<usize>) = (1..scorers.len()).partition(|&i| {
+            !scoring_idx.contains(&i) && !scorers[i].two_phase() && scorers[i].contains(0).is_some()
+        });
         Self {
             scorers,
             scoring: scoring_idx,
             two_phase,
             match_cost,
+            leap,
+            bits,
         }
     }
 
@@ -57,13 +68,33 @@ impl<'a> ConjunctionScorer<'a> {
             if doc == NO_MORE_DOCS {
                 return Ok(doc);
             }
-            for i in 1..self.scorers.len() {
-                let other = &mut self.scorers[i];
+            for k in 0..self.leap.len() {
+                let other = &mut self.scorers[self.leap[k]];
                 if other.doc_id() < doc {
                     let next = other.advance(doc)?;
                     if next > doc {
                         doc = self.scorers[0].advance(next)?;
                         continue 'head;
+                    }
+                }
+            }
+            for k in 0..self.bits.len() {
+                let other = &mut self.scorers[self.bits[k]];
+                match other.contains(doc) {
+                    Some(true) => {}
+                    Some(false) => {
+                        doc = self.scorers[0].next_doc()?;
+                        continue 'head;
+                    }
+                    // No longer random-access: leapfrog as any other.
+                    None => {
+                        if other.doc_id() < doc {
+                            let next = other.advance(doc)?;
+                            if next > doc {
+                                doc = self.scorers[0].advance(next)?;
+                                continue 'head;
+                            }
+                        }
                     }
                 }
             }

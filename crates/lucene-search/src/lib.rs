@@ -1920,6 +1920,10 @@ fn points_range_doc_ids(
     let Some(field_number) = points.field_number(&query.field) else {
         return Ok(Vec::new());
     };
+    // A field with no points in this segment (`PointValues` is `null`).
+    if points.reader.field(field_number).is_none() {
+        return Ok(Vec::new());
+    }
     let min_packed = points_query::pack_i64(query.min);
     let max_packed = points_query::pack_i64(query.max);
     let mut collector = collector::VecCollector::default();
@@ -3013,7 +3017,7 @@ pub(crate) fn search_boolean_query_scored_segment<C: ScoringCollector>(
         seg.pos_in,
         seg.pay_in,
         seg.live_docs,
-        None,
+        seg.points,
         query,
         norms,
         global,
@@ -3046,7 +3050,7 @@ pub fn count_boolean_query_segment(
         pos_in: seg.pos_in,
         pay_in: seg.pay_in,
         live_docs: seg.live_docs,
-        points: None,
+        points: seg.points,
         norms: None,
         global: None,
         max_doc: seg.max_doc,

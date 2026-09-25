@@ -117,6 +117,7 @@ pub(crate) fn build<'a>(
             ))))
         }
         Clause::MatchNoDocs(_) => Ok(None),
+        Clause::PointsRange(q) => points_range(ctx, q, boost, mode),
         Clause::Phrase(p) => match phrase(ctx, p, boost, mode)? {
             PhraseForm::Scorer(s) => Ok(Some(s)),
             PhraseForm::Absent => Ok(None),
@@ -127,6 +128,69 @@ pub(crate) fn build<'a>(
             None => materialized(ctx, other, boost, mode),
         },
     }
+}
+
+/// `PointRangeQuery`'s scorer: a `ConstantScoreWeight` over the documents
+/// the BKD walk collects. When every document has a value and the field's
+/// own range sits inside the query's, every document matches without a walk
+/// (`PointRangeQuery`'s `allDocsMatch`); a dense result is a bitset and a
+/// sparse one a sorted list, as `DocIdSetBuilder` switches at `maxDoc / 128`.
+fn points_range<'a>(
+    ctx: &LeafContext<'a>,
+    q: &crate::query::PointsRangeQuery,
+    boost: f32,
+    mode: Mode,
+) -> Result<Option<BoxScorer<'a>>> {
+    let (Some(points), Some(max_doc)) = (ctx.points, ctx.max_doc) else {
+        return materialized(ctx, &Clause::PointsRange(q.clone()), boost, mode);
+    };
+    let Some(field_number) = points.field_number(&q.field) else {
+        return Ok(None);
+    };
+    let Some(field) = points.reader.field(field_number) else {
+        return Ok(None);
+    };
+    let min = crate::points_query::pack_i64(q.min);
+    let max = crate::points_query::pack_i64(q.max);
+    let top_scores = mode == Mode::TopScores;
+    if field.doc_count == max_doc
+        && field.num_dims == 1
+        && min.as_slice() <= field.min_packed_value.as_slice()
+        && max.as_slice() >= field.max_packed_value.as_slice()
+    {
+        return Ok(Some(Box::new(ConstantScorer::new(
+            Box::new(AllDocs::new(max_doc)),
+            boost,
+            top_scores,
+        ))));
+    }
+    let mut docs = points.reader.range_query(field_number, &min, &max)?;
+    if docs.is_empty() {
+        return Ok(None);
+    }
+    let len = usize::try_from(max_doc).unwrap_or(0);
+    let inner: BoxScorer<'a> = if docs.len() > len / 128 {
+        let mut bits = FixedBitSet::new(len);
+        for &d in &docs {
+            if let Ok(i) = usize::try_from(d) {
+                // FBS: every doc id the walk returns is below `maxDoc`, the
+                // set's length; `i < len` holds by construction.
+                if i < len {
+                    bits.set(i);
+                }
+            }
+        }
+        let cardinality = bits.cardinality() as i64;
+        Box::new(super::cache::CachedScorer::new(std::sync::Arc::new(
+            super::cache::CachedSet::Bits { bits, cardinality },
+        )))
+    } else {
+        lucene_util::doc_id_sort::sort_dedup_doc_ids(&mut docs);
+        Box::new(DocList::new(docs, Vec::new()))
+    };
+    Ok(Some(Box::new(ConstantScorer::new(
+        inner, boost, top_scores,
+    ))))
 }
 
 enum PhraseForm<'a> {

@@ -6,6 +6,7 @@ package org.lucenerust.opensearch;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
+import org.apache.lucene.document.IntPoint;
 import org.apache.lucene.document.LongPoint;
 import org.apache.lucene.document.StringField;
 import org.apache.lucene.document.TextField;
@@ -166,6 +167,11 @@ public final class NativeSelfTest {
             ),
             "an escaped wildcard falls back"
         );
+        check(
+            "points_width".equals(QueryEncoder.encode(IntPoint.newRangeQuery("i", 1, 5), f -> true).fallbackReason()),
+            "a 4-byte points range falls back"
+        );
+        check(QueryEncoder.encode(LongPoint.newRangeQuery("n", 1, 5), f -> true).blob() != null, "a long range encodes");
         // The native decoder's node cap, 1024 nodes: a boolean of 1023 terms is 1024.
         BooleanQuery.Builder atCap = new BooleanQuery.Builder();
         for (int i = 0; i < 1023; i++) {
@@ -205,6 +211,10 @@ public final class NativeSelfTest {
                 case 4 -> new PhraseQuery(r.nextInt(3) == 0 ? r.nextInt(3) : 0, "body", word(r), word(r));
                 case 5 -> r.nextInt(2) == 0 ? new PhraseQuery("body", word(r), word(r), word(r)) : t;
                 // The multi-term family, rewritten by the searcher to its constant-score wrapper.
+                case 8 -> {
+                    long a = r.nextInt(400), b = a + r.nextInt(200);
+                    yield LongPoint.newRangeQuery("n", a, b);
+                }
                 case 6 -> new PrefixQuery(new Term(field, word(r).substring(0, 1 + r.nextInt(2))));
                 case 7 -> r.nextInt(2) == 0
                     ? new WildcardQuery(new Term(field, word(r).charAt(0) + "?" + "*"))

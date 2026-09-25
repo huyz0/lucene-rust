@@ -247,6 +247,10 @@ public final class BenchRunner {
                     int c = w.indexOf(':');
                     q = new TermQuery(c < 0 ? new Term(field, w) : new Term(w.substring(0, c), w.substring(c + 1)));
                 }
+                case "r" -> {
+                    String f = t.next();
+                    q = org.apache.lucene.document.LongPoint.newRangeQuery(f, Long.parseLong(t.next()), Long.parseLong(t.next()));
+                }
                 case "pre" -> q = new org.apache.lucene.search.PrefixQuery(new Term(field, t.next()));
                 case "wc" -> q = new org.apache.lucene.search.WildcardQuery(new Term(field, t.next()));
                 case "re" -> q = new org.apache.lucene.search.RegexpQuery(new Term(field, t.next()));

@@ -100,6 +100,8 @@ pub enum Error {
     #[error(transparent)]
     CompoundFormat(#[from] compound_format::Error),
     #[error(transparent)]
+    Points(#[from] lucene_codecs::points::Error),
+    #[error(transparent)]
     DocValues(#[from] doc_values::Error),
     #[error(transparent)]
     Norms(#[from] norms::Error),
@@ -1152,6 +1154,7 @@ impl DirectoryReader {
             doc_ins,
             pos_ins,
             pay_ins,
+            points_ins: Vec::new(),
         })
     }
 }
@@ -1164,9 +1167,37 @@ pub struct OpenedSegments<'a> {
     doc_ins: Vec<Option<DocInput<'a>>>,
     pos_ins: Vec<Option<PosInput<'a>>>,
     pay_ins: Vec<Option<PayInput<'a>>>,
+    /// Each segment's points, once [`Self::open_points`] has opened them;
+    /// empty until then (opening parses `.kdm` and the packed `.kdi` index,
+    /// work a query without a points clause should not pay).
+    points_ins: Vec<Option<crate::points_query::PointsInput<'a>>>,
 }
 
 impl<'a> OpenedSegments<'a> {
+    /// Opens every segment's points (`.kdm`/`.kdi`/`.kdd`), for a query
+    /// with a points clause.
+    pub fn open_points(&mut self) -> Result<()> {
+        if !self.points_ins.is_empty() {
+            return Ok(());
+        }
+        for r in self.readers {
+            let opened = match r.points_files() {
+                Some((kdm, kdi, kdd)) => Some(crate::points_query::PointsInput {
+                    reader: lucene_codecs::points::open(kdm, kdi, kdd, &r.segment_id, "")?,
+                    field_infos: &r.field_infos,
+                }),
+                // No points at all: an empty reader, so a points clause
+                // matches nothing here rather than finding no input.
+                None => Some(crate::points_query::PointsInput {
+                    reader: lucene_codecs::points::PointsReader::empty(),
+                    field_infos: &r.field_infos,
+                }),
+            };
+            self.points_ins.push(opened);
+        }
+        Ok(())
+    }
+
     /// The final step: a `Vec<OpenSegment>` ready to feed directly into
     /// `search_term_query_multi_segment`/`search_boolean_query_multi_segment`
     /// -- `doc_base` already computed, every field already opened.
@@ -1183,6 +1214,7 @@ impl<'a> OpenedSegments<'a> {
                 doc_base: r.doc_base,
                 max_doc: Some(r.max_doc),
                 cache: Some(&r.query_cache),
+                points: self.points_ins.get(i).and_then(Option::as_ref),
             })
             .collect()
     }

@@ -55,6 +55,12 @@ fn clause(field: &str, t: &mut Tokens) -> Clause {
             let (f, w) = w.split_once(':').unwrap_or((field, &w));
             Clause::Term(TermQuery::new(f, w.as_bytes().to_vec()))
         }
+        "r" => {
+            let f = t.next();
+            let min: i64 = t.next().parse().expect("min");
+            let max: i64 = t.next().parse().expect("max");
+            Clause::PointsRange(lucene_search::query::PointsRangeQuery::new(f, min, max))
+        }
         "pre" => Clause::Prefix(PrefixQuery::new(field, t.next().into_bytes())),
         "wc" => Clause::Wildcard(WildcardQuery::new(field, t.next().into_bytes())),
         "re" => Clause::Regexp(RegexpQuery::new(field, t.next())),

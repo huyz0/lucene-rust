@@ -58,7 +58,10 @@ fn main() {
     let queries = load_queries(queries_path);
     let dir = MmapDirectory::open(dir_path.clone());
     let reader = DirectoryReader::open(&dir).expect("open index");
-    let opened = reader.open_segments().expect("open segments");
+    let mut opened = reader.open_segments().expect("open segments");
+    // Points for the `sexpr` kind's `(r FIELD MIN MAX)`, opened once like
+    // every other per-segment reader here.
+    opened.open_points().expect("open points");
     let segments = opened.as_open_segments();
 
     // Norms, wired per segment. DirectoryReader does not load these itself (see
