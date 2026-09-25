@@ -88,8 +88,17 @@ def selfTest = tasks.register('selfTest', JavaExec) {
     jvmArgs '-Xcheck:jni', '-ea'
     args "${repoRoot}/fixtures/data"
 }
+// M5: the Rust engine's writer against Lucene's IndexWriter, document by document.
+def engineWriterTest = tasks.register('engineWriterTest', JavaExec) {
+    description = 'Differential test: RustIndexWriter against Lucene IndexWriter on the same operations.'
+    dependsOn tasks.named('testClasses'), cargoBuild
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'org.lucenerust.opensearch.engine.EngineWriterDiffTest'
+    systemProperty 'lucene_rust.library.path', nativeLib.absolutePath
+    jvmArgs '-Xcheck:jni', '-ea'
+}
 tasks.named('test') { enabled = false }
-tasks.named('check') { dependsOn selfTest }
+tasks.named('check') { dependsOn selfTest, engineWriterTest }
 
 // M2 T2.7 with the JVM in the loop: JNI crossing cost and in-process query
 // latency, native vs Lucene. Not part of `check` -- it is a measurement.
