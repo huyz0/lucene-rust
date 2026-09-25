@@ -115,6 +115,7 @@ public class RustSearchPlugin extends Plugin implements SearchPlugin, ActionPlug
             RustQueryPhaseSearcher.ENABLED,
             RustQueryPhaseSearcher.NATIVE_SHAPES,
             RustEngineSupport.ENGINE_ENABLED,
+            RustEngineSupport.ENGINE_DEFAULT,
             RustEngineSupport.FAULT_INJECTION,
             NODE_ENGINE_ENABLED
         );
