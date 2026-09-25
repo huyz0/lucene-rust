@@ -7943,6 +7943,18 @@ impl<'d> IndexWriter<'d> {
         self.pending_docs.len()
     }
 
+    /// `IndexWriter.hasUncommittedChanges()`: whether the next commit would
+    /// publish anything -- buffered documents, buffered deletes or updates, a
+    /// segment flushed since the last commit, or deletes already applied to a
+    /// committed segment.
+    pub fn has_uncommitted_changes(&self) -> bool {
+        !self.pending_docs.is_empty()
+            || self.delete_queue.any_changes()
+            || self.updates_stream.any()
+            || !self.flushed_segments.is_empty()
+            || self.segment_infos.segments != self.rollback_segments
+    }
+
     /// Total number of documents actually committed to disk right now,
     /// summed across every segment in [`IndexWriter::segment_infos`].
     ///

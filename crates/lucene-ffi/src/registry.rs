@@ -716,6 +716,19 @@ pub fn explain_results() -> &'static Sharded<ExplainResultsHandle> {
     REGISTRY.get_or_init(|| Sharded::new(RegistryTag::ExplainResults))
 }
 
+/// The OpenSearch engine's writers (`engine_writer.rs`): one per shard, each
+/// behind its own mutex so that two shards never serialize on each other --
+/// the registry lock is held only to clone the `Arc`.
+#[allow(clippy::type_complexity)]
+pub fn engine_writers(
+) -> &'static RwLock<SlotMap<std::sync::Arc<std::sync::Mutex<crate::engine_writer::EngineWriter>>>>
+{
+    static REGISTRY: OnceLock<
+        RwLock<SlotMap<std::sync::Arc<std::sync::Mutex<crate::engine_writer::EngineWriter>>>>,
+    > = OnceLock::new();
+    REGISTRY.get_or_init(|| RwLock::new(SlotMap::new(RegistryTag::EngineWriter)))
+}
+
 pub fn writers() -> &'static RwLock<SlotMap<WriterHandle>> {
     static REGISTRY: OnceLock<RwLock<SlotMap<WriterHandle>>> = OnceLock::new();
     REGISTRY.get_or_init(|| RwLock::new(SlotMap::new(RegistryTag::Writer)))

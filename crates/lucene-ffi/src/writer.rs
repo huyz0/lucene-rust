@@ -226,6 +226,10 @@ fn map_writer_error(context: &str, e: index_writer::Error) -> FfiStatus {
         | index_writer::Error::PrepareCommitAlreadyCalled
         | index_writer::Error::PreparedCommitPending(_)
         | index_writer::Error::ConcurrentUnsupported(_)
+        // The explicit-documents mode's refusals and `forceMerge(0)`: both
+        // Java's `IllegalArgumentException`.
+        | index_writer::Error::Explicit(_)
+        | index_writer::Error::InvalidMaxNumSegments(_)
         | index_writer::Error::UnknownPostingsField(_)
         | index_writer::Error::UnsupportedPostingsIndexOptions(_, _)
         // c23's two payload-configuration errors. Both are what Java raises
