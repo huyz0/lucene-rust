@@ -11,9 +11,7 @@
 //!
 //! Deviations from Lucene, neither of which changes a hit or a score: the
 //! block-max bound is the similarity's global one (`weight`) rather than
-//! `ExactPhraseMatcher`'s merged impacts, and `matches`' `maxFreq` check runs
-//! for an exact phrase only (the sloppy matcher's `maxFreq` is not ported).
-//! Both only mean less pruning.
+//! `ExactPhraseMatcher`'s merged impacts, which only means less pruning.
 
 use lucene_codecs::postings::PositionsCursor;
 
@@ -47,6 +45,8 @@ pub(crate) struct PhraseScorer<'a> {
     weight: f32,
     slop: u32,
     repeats: sloppy_phrase::PhraseRepeats,
+    /// The sloppy matcher's buffers, reused across documents.
+    scratch: sloppy_phrase::SloppyScratch,
     norms: Option<FieldNormsCursor<'a, 'a>>,
     /// `norms` read for `norm_doc`, so `matches` and `score` read it once.
     norm_doc: i32,
@@ -85,6 +85,7 @@ impl<'a> PhraseScorer<'a> {
             weight,
             slop,
             repeats,
+            scratch: sloppy_phrase::SloppyScratch::default(),
             norms,
             norm_doc: -1,
             norm_inverse: similarity::UNNORMED_NORM_INVERSE,
@@ -191,16 +192,24 @@ impl Scorer for PhraseScorer<'_> {
     /// `PhraseScorer.twoPhaseIterator().matches()`.
     fn matches(&mut self) -> Result<bool> {
         let doc = self.doc_id();
-        if self.top_scores && self.min_competitive > 0.0 && self.slop == 0 {
-            // `matcher.maxFreq()`: the phrase occurs at most as often as its
-            // rarest term, so a document that cannot compete even then is
-            // rejected before any position is read.
-            let max_freq = self
-                .terms
-                .iter()
-                .map(|t| t.cursor.freq())
-                .min()
-                .unwrap_or(0) as f32;
+        if self.top_scores && self.min_competitive > 0.0 {
+            // `matcher.maxFreq()`, so a document that cannot compete even at
+            // that frequency is rejected before any position is read. Exact:
+            // the phrase occurs at most as often as its rarest term. Sloppy:
+            // each term position heads at most one match, each weighing at
+            // most 1, so at most the sum of the frequencies (a `float` sum,
+            // as `SloppyPhraseMatcher.maxFreq` adds them).
+            let max_freq = if self.slop == 0 {
+                self.terms
+                    .iter()
+                    .map(|t| t.cursor.freq())
+                    .min()
+                    .unwrap_or(0) as f32
+            } else {
+                self.terms
+                    .iter()
+                    .fold(0.0f32, |sum, t| sum + t.cursor.freq() as f32)
+            };
             let norm_inverse = self.norm_inverse(doc)?;
             if similarity::do_score(self.weight, max_freq, norm_inverse) < self.min_competitive {
                 return Ok(false);
@@ -217,11 +226,27 @@ impl Scorer for PhraseScorer<'_> {
                 buf.push(t.cursor.next_position().map_err(pe)?);
             }
         }
-        let slices: Vec<&[i32]> = self.positions.iter().map(Vec::as_slice).collect();
-        self.freq = if self.slop == 0 {
-            crate::phrase_freq_exact(&slices) as f32
+        // A stack array for any ordinary phrase, a `Vec` only past eight terms.
+        let mut inline: [&[i32]; 8] = [&[]; 8];
+        let spilled: Vec<&[i32]>;
+        let slices: &[&[i32]] = if self.positions.len() <= inline.len() {
+            for (slot, p) in inline.iter_mut().zip(&self.positions) {
+                *slot = p.as_slice();
+            }
+            &inline[..self.positions.len()]
         } else {
-            sloppy_phrase::sloppy_phrase_freq(&slices, &self.repeats, self.slop)
+            spilled = self.positions.iter().map(Vec::as_slice).collect();
+            &spilled
+        };
+        self.freq = if self.slop == 0 {
+            crate::phrase_freq_exact(slices) as f32
+        } else {
+            sloppy_phrase::sloppy_phrase_freq_in(
+                &mut self.scratch,
+                slices,
+                &self.repeats,
+                self.slop,
+            )
         };
         Ok(self.freq > 0.0)
     }
