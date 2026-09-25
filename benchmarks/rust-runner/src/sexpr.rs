@@ -46,7 +46,12 @@ fn clause(field: &str, t: &mut Tokens) -> Clause {
     t.expect("(");
     let op = t.next();
     let q = match op.as_str() {
-        "t" => Clause::Term(TermQuery::new(field, t.next().into_bytes())),
+        // `(t word)` searches the query's field; `(t title:word)` another one.
+        "t" => {
+            let w = t.next();
+            let (f, w) = w.split_once(':').unwrap_or((field, &w));
+            Clause::Term(TermQuery::new(f, w.as_bytes().to_vec()))
+        }
         "boost" => {
             let f: f32 = t.next().parse().expect("boost");
             BoostQuery::new(clause(field, t), f).into()

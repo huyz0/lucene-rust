@@ -241,7 +241,12 @@ public final class BenchRunner {
             String op = t.next();
             Query q;
             switch (op) {
-                case "t" -> q = new TermQuery(new Term(field, t.next()));
+                case "t" -> {
+                    // `(t word)` searches the query's field; `(t title:word)` another one.
+                    String w = t.next();
+                    int c = w.indexOf(':');
+                    q = new TermQuery(c < 0 ? new Term(field, w) : new Term(w.substring(0, c), w.substring(c + 1)));
+                }
                 case "boost" -> {
                     float f = Float.parseFloat(t.next());
                     q = new org.apache.lucene.search.BoostQuery(parse(field, t), f);

@@ -30,6 +30,10 @@ pub(crate) struct LeafContext<'a> {
     pub(crate) points: Option<&'a PointsInput<'a>>,
     pub(crate) norms: Option<&'a HashMap<String, FieldNorms<'a>>>,
     pub(crate) global: Option<&'a GlobalStats>,
+    /// The segment's `maxDoc`, when the caller knows it: a
+    /// `MatchAllDocsQuery` matches every document below it. `None` uses the
+    /// `max_doc` the clause was built with.
+    pub(crate) max_doc: Option<i32>,
 }
 
 /// The scorer for `clause`, or `None` when it matches nothing in this
@@ -92,11 +96,18 @@ pub(crate) fn build<'a>(
             })
         }
         Clause::MatchAllDocs(m) => {
-            if m.max_doc <= 0 {
+            let max_doc = match ctx.max_doc {
+                Some(max_doc) => max_doc,
+                // A match-all decoded without a maxDoc (the JVM's) needs the
+                // segment's; walking to `i32::MAX` would read past its end.
+                None if m.max_doc == i32::MAX => return Err(crate::Error::MatchAllWithoutMaxDoc),
+                None => m.max_doc,
+            };
+            if max_doc <= 0 {
                 return Ok(None);
             }
             Ok(Some(Box::new(ConstantScorer::new(
-                Box::new(AllDocs::new(m.max_doc)),
+                Box::new(AllDocs::new(max_doc)),
                 boost,
                 mode == Mode::TopScores,
             ))))
@@ -419,6 +430,28 @@ pub(crate) fn compose<'a>(
         return Ok(Some(Box::new(ConstantScorer::new(scorer, 0.0, true))));
     }
     Ok(Some(scorer))
+}
+
+/// `BooleanScorerSupplier.getInternal`'s `minShouldMatch > 0` mix: the
+/// required side and the optional side (at least `msm` of it must match),
+/// which Lucene conjoins with a plain `ConjunctionScorer`. `bulk` runs the
+/// pair as a block-max conjunction instead.
+pub(crate) fn req_and_opt<'a>(
+    must: Vec<Child<'a>>,
+    filter: Vec<Child<'a>>,
+    should: Vec<Child<'a>>,
+    msm: usize,
+    mode: Mode,
+) -> Result<(BoxScorer<'a>, BoxScorer<'a>)> {
+    let min_required = must.iter().chain(&filter).map(|s| s.cost()).min();
+    let costs: Vec<i64> = should.iter().map(|s| s.cost()).collect();
+    let lead_cost = min_required
+        .unwrap_or(i64::MAX)
+        .min(cost_with_min_should_match(&costs, msm));
+    let should: Vec<BoxScorer<'a>> = should.into_iter().map(|c| c.into_scorer(mode)).collect();
+    let req = req(filter, must, mode, false)?;
+    let opt = opt(should, msm, mode, false, lead_cost)?;
+    Ok((req, opt))
 }
 
 /// `BooleanScorerSupplier.req`.

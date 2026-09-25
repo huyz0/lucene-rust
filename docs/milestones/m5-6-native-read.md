@@ -11,14 +11,14 @@ mixed booleans) 4–8× *slower*, because the port had fast paths for three
 shapes and a materializing path for everything else. M5 moved indexing. This
 milestone finishes the read side.
 
-**Status.** In progress. R1 delivered (below), with four shapes still under 1.0× listed as open; R2–R7 open.
+**Status.** In progress. R1 and R2 delivered (below); every shape the plugin sends native measures at least 1.0× Lucene in process on both indexes. R3–R7 open.
 
 ## Tasks
 
 | ID | Task | Status |
 |---|---|---|
-| R1 | Query execution engine: Lucene's scorer tree and bulk scorers, every boolean shape at least as fast as Lucene | ✅ delivered; four shapes still under 1.0× (below) |
-| R2 | General query wire format and Java encoder for every Lucene query OpenSearch builds | open |
+| R1 | Query execution engine: Lucene's scorer tree and bulk scorers, every boolean shape at least as fast as Lucene | ✅ delivered |
+| R2 | General query wire format and Java encoder for every Lucene query OpenSearch builds | ✅ delivered for the shapes R1 runs (term, boolean, constant score, boost, dismax, match-all, match-none); leaf queries arrive with R3 |
 | R3 | Leaf queries as streaming scorers: phrase, the multi-term family, points and doc-values ranges, exists, terms-in-set, dismax, synonym | open |
 | R4 | Sort and `search_after` natively (`TopFieldCollector`) | open |
 | R5 | Aggregations natively: terms, histogram, date_histogram, range, the metrics, cardinality, filter/filters | open |
@@ -39,7 +39,7 @@ plus two of our own where Lucene has none or answers conservatively: a batch
 Acceptance:
 
 - [x] Every mixed shape agrees with real Lucene, pruned and exact, doc ids and
-      score bits: `tests/mixed_boolean_fixtures.rs` (54 queries, two segments,
+      score bits: `tests/mixed_boolean_fixtures.rs` (68 queries since R2, two segments,
       deletions), and every bulk scorer and `ReqOptBulk` path is reached by
       one of them (`exec/tests.rs::fixture`).
 - [x] 1,500 random trees, with two-phase leaves, agree with brute force in all
@@ -48,12 +48,70 @@ Acceptance:
 - [x] Every mixed shape the M2 REST benchmark measured slower (boosts,
       `must_not`, `must` + `should`, `constant_score`, nesting) at least as
       fast as Lucene in process, on the merged index — 1.3× to 6.7×.
-- [ ] Every shape in the query file at least 1.0× on both indexes. After
-      the follow-up (impacts skipping for a required optional clause; an
-      inline bit-set `advance` that keeps the frequency rank): q40 2.45×
-      merged and 1.23× segmented; q43 1.06×; q07/q08/q11 1.06–1.24×; q14
-      0.93–1.09× (within the Java runs' spread). Open: q25 (fuzzy, R3's),
-      0.76× segmented.
+- [x] Every boolean shape in the query file at least 1.0× on both indexes
+      (after R2's run below: 1.04–13.7×; q11 0.99× merged with overlapping
+      runs). q25 (fuzzy, 0.76× segmented) is a leaf query, R3's.
+
+## R2 — the query tree on the wire (delivered)
+
+The plugin sent two shapes before: a lone `TermQuery` and a flat clause list
+of terms. R2 sends the rewritten Lucene query as a tree (JVM ABI 7, the
+`QUERY_TREE` blob): term, boolean with `minimumNumberShouldMatch`, constant
+score, boost, dismax, match-all and match-none, nested to Lucene's depth.
+`QueryEncoder` writes it, `jvm_reader::decode_node` reads it, and a query
+with anything else in it falls back to Lucene under `query_<Class>` (the
+root) or `clause_<Class>` (a nested clause). Count-only requests run the
+scorer tree without scores; totals follow OpenSearch's own
+`shortcutTotalHitCount` (a match-all counts `numDocs`, an exact term its
+`docFreq`s when nothing is deleted), so every total agrees with a stock node.
+
+The REST benchmark's shapes, measured in process first, found three places
+where the tree lost to Lucene and one where it lost badly:
+
+- **A lone term took an old unpruned path** (0.08×): the pre-R1 shortcut
+  for one-clause booleans scored every posting. It now takes the scorer
+  tree's term bulk scorer: 1.6–3.5×.
+- **`MaxScoreBulkScorer` only over terms.** Lucene runs it over any
+  `SHOULD` scorers in `TOP_SCORES`; a nested boolean fell to the tree.
+  `MaxScore` is now generic over its clauses (`MaxScoreLeg`), with
+  `LegConjunctionScorer` filling batches in a tight loop: nested bool
+  0.52× → 1.04×.
+- **Dismax** (0.85×; `multi_match`, a tie-breaker of 0, 0.36×): Lucene
+  has no skipping for a tie-breaker other than 0. `DisMaxBulk` scores terms
+  a block at a time into a window and drops windows whose dismax bound
+  cannot compete, and with a tie-breaker of 0 lets each clause skip its own
+  blocks as `DisjunctionMaxBulkScorer` does: 4.1× (REST corpus), 13×
+  (q51), `multi_match` 1.3–3.5×.
+- **`MUST` + `SHOULD` with a minimum** (0.77×): Lucene runs
+  `ConjunctionScorer(req, opt)` a document at a time; the same scorers as a
+  block-max conjunction score identically and skip: 1.3×.
+
+Acceptance:
+
+- [x] The tree searches exactly like the clause list it replaces (same hits
+      and score bits), malformed trees are invalid arguments, the depth
+      (32) and node (1,024) limits agree between the encoder and the
+      decoder at the boundary, and a match-all counts live documents only
+      (`jvm_reader` tests).
+- [x] The real node agrees with Lucene on every matrix row, on three
+      indices, one of them with no deletions and more than 10,000 documents
+      so every shortcut total applies (`scripts/verify-opensearch.sh`).
+      What it cannot catch: with the shortcut disabled the matrix still
+      passed (1,360 checks), because a REST response caps `hits.total` at
+      `track_total_hits` whichever way the shard counted. The shortcut
+      changes the work a shard does (it stops collecting after the top
+      hits), not a response a client can see.
+- [x] Every shape in the REST benchmark at least 1.0× in process on a
+      corpus built like the REST index (1M documents, 24-word vocabulary,
+      two fields), merged and 8-segment (`benchmarks/rest-shapes.tsv`,
+      `benchmarks/corpus/src/GenRestCorpus.java`): r1 msm 2 1.10×, r2 nested
+      1.04×, r3 `OR` 1.39×, r4 dismax 4.1×, r5 `must` + msm 1.3×, r6
+      `must` + `should` 1.4–3.0×, r7 one term 1.6×, r8 `multi_match`
+      (dismax, tie-breaker 0) 1.30× merged and 3.45× segmented.
+- [ ] Over REST (`docs/opensearch-native-queries.md`), 20 of 23 shapes are
+      1.04–1.51×; msm 2 (0.97×), `must` + msm (0.99×) and `multi_match`
+      (1.00×) are inside the run-to-run spread but not clearly above it.
+      Carried to R7.
 
 ## Benchmark
 

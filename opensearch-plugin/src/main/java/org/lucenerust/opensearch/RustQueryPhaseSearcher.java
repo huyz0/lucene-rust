@@ -5,7 +5,14 @@ package org.lucenerust.opensearch;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.lucene.index.IndexReader;
+import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.index.Term;
+import org.apache.lucene.search.BoostQuery;
+import org.apache.lucene.search.ConstantScoreQuery;
+import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.TotalHits;
@@ -15,6 +22,7 @@ import org.apache.lucene.search.similarities.Similarity;
 import org.opensearch.common.lucene.search.TopDocsAndMaxScore;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.search.aggregations.AggregationProcessor;
+import org.opensearch.search.approximate.ApproximateScoreQuery;
 import org.opensearch.search.internal.ContextIndexSearcher;
 import org.opensearch.search.internal.SearchContext;
 import org.opensearch.action.search.SearchType;
@@ -62,6 +70,8 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
     /**
      * Which encodable shapes run native: {@code fast} (default) only those measured at least as fast
      * as Lucene ({@link QueryEncoder#isFast}); {@code all} every shape the engine answers correctly.
+     * Since read path R1 the two agree -- every encodable shape is measured faster -- and the
+     * setting stays so that indices which set it keep opening.
      */
     public static final Setting<String> NATIVE_SHAPES = new Setting<>(
         "index.lucene_rust.search.native_shapes",
@@ -191,6 +201,21 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         long countLimit = trackUpTo == SearchContext.TRACK_TOTAL_HITS_DISABLED ? 0
             : trackUpTo == SearchContext.TRACK_TOTAL_HITS_ACCURATE ? Long.MAX_VALUE
             : Math.max(trackUpTo, numDocs);
+        // OpenSearch answers some totals without counting (TopDocsCollectorContext
+        // .shortcutTotalHitCount) and then collects with a threshold of 1; so must we, or
+        // the total differs ({10000, gte} for its {N, eq}) and the search scores documents
+        // Lucene never looks at.
+        int shortcut = -1;
+        if (trackUpTo != SearchContext.TRACK_TOTAL_HITS_DISABLED) {
+            try {
+                shortcut = shortcutTotalHitCount(ctx.searcher().getIndexReader(), ctx.query());
+            } catch (IOException e) {
+                return "native_error";
+            }
+            if (shortcut >= 0) {
+                countLimit = numDocs;
+            }
+        }
         int[] docs = new int[numDocs];
         float[] scores = new float[numDocs];
         long[] counts = new long[3];
@@ -209,10 +234,41 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             hits[i] = new ScoreDoc(docs[i], scores[i]);
         }
         // Lucene's own shape: with counting off, 0 hits "or more".
-        TotalHits total = countLimit == 0 ? new TotalHits(0, TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO)
+        TotalHits total = shortcut >= 0 ? new TotalHits(shortcut, TotalHits.Relation.EQUAL_TO)
+            : countLimit == 0 ? new TotalHits(0, TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO)
             : new TotalHits(counts[1], counts[2] != 0 ? TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO : TotalHits.Relation.EQUAL_TO);
         float maxScore = n == 0 ? Float.NaN : scores[0];
         ctx.queryResult().topDocs(new TopDocsAndMaxScore(new TopDocs(total, hits), maxScore), null);
         return null;
+    }
+
+    /**
+     * {@code TopDocsCollectorContext.shortcutTotalHitCount} (OpenSearch 3.8.0), for the queries the
+     * native engine runs: a match-all's count is the reader's {@code numDocs}, and an exact term's
+     * the sum of its {@code docFreq}s when nothing is deleted; {@code -1} otherwise.
+     */
+    static int shortcutTotalHitCount(IndexReader reader, Query query) throws IOException {
+        while (true) {
+            if (query instanceof ConstantScoreQuery c) {
+                query = c.getQuery();
+            } else if (query instanceof BoostQuery b) {
+                query = b.getQuery();
+            } else if (query instanceof ApproximateScoreQuery a) {
+                query = a.getOriginalQuery();
+            } else {
+                break;
+            }
+        }
+        if (query.getClass() == MatchAllDocsQuery.class) {
+            return reader.numDocs();
+        } else if (query.getClass() == TermQuery.class && reader.hasDeletions() == false) {
+            Term term = ((TermQuery) query).getTerm();
+            int count = 0;
+            for (LeafReaderContext leaf : reader.leaves()) {
+                count += leaf.reader().docFreq(term);
+            }
+            return count;
+        }
+        return -1;
     }
 }
