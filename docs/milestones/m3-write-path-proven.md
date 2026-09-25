@@ -10,7 +10,7 @@
 | **Depends on** | [M1](m1-performance-gate.md) passing |
 | **Unblocks** | [M4](m4-write-path-hardened.md) |
 | **Runs in parallel with** | [M2](m2-opensearch-read-path.md) |
-| **Status** | ✅ **delivered 2026-09-24** — see [Outcome](#outcome) |
+| **Status** | ✅ **delivered 2026-09-25** — see [Outcome](#outcome) |
 
 ---
 
@@ -216,96 +216,47 @@ Leaving it as-is is not an acceptable outcome for this milestone.
 ## Acceptance criteria
 
 - [x] `VerifyPostings.java` exists, covers the writer's full supported shape
-      set, and runs in CI. *Delivered as the postings walk inside
-      `VerifyIndex.java` rather than a separate class: every term of a
-      120 000-document index (140 311 terms: common and rare, with and without
-      positions, offsets and payloads, singletons included) is compared with
-      expectations computed from the generated text. `VerifyPositionsSegment`
-      already covered the occurrence-level walk through the skip data.*
+      set, and runs in CI. *Delivered under other names:* the postings and
+      term-dictionary write path is read back by real Lucene through whole
+      segments rather than one hand-assembled file set --
+      `VerifyFullSegment` (docs+freqs, impacts), `VerifyPositionsSegment`
+      (every `IndexOptions` rung, offsets, payloads, both skip levels),
+      `VerifyMergedSegment`, `VerifySortedSegment` and `VerifyIndex` -- all in
+      `scripts/verify-write-path.sh`, which CI's `write-path` job runs.
 - [x] Real Lucene reads a Rust-written index with **≥3 fields, ≥100k docs**, at
       least one term above `BLOCK_SIZE` (256) docs, and positions, offsets and
-      payloads indexed. *120 000 documents, five segments, four fields.*
+      payloads indexed. `VerifyIndex`: 120 000 documents, five fields, seven
+      segments, `body:w0` in 20 300 documents of one segment.
 - [x] Real Lucene's own **`CheckIndex` reports zero errors** on that index
       (`MIN_LEVEL_FOR_SLOW_CHECKS`).
 - [x] Across a **≥50-query set**, top-50 doc IDs match **exactly** and scores
-      match within **1e-5** between Java Lucene and this port. *62 queries:
-      term, conjunction, disjunction, cross-field, phrase and doc-values
-      range; largest score difference 1.2e-7. The range queries are over
-      doc values, because `IndexWriter` has no points write path at flush.*
+      match within **1e-5** between Java Lucene and this port. 57 queries
+      (term, AND, OR, NOT, `minimumShouldMatch`, FILTER, exact and sloppy
+      phrase, doc-values range sorted by field); max score difference
+      2.4e-7, 2 295 of 2 343 scores bit-identical; total match counts
+      (1 391 608 over the set) equal too.
 - [x] The blocktree writer produces multi-field, multi-block, floor-blocked,
       multi-level output, and each shape is verified from the Java side.
-      *Stronger than asked: `blocktree_writer_identity.rs` requires
-      byte-identical `.tim`/`.tip`/`.tmd` against four real Lucene term
-      dictionaries, one per shape.*
+      `VerifyIndex` requires floor blocks, inner blocks and blocks below
+      prefix length 2, and requires all 28 of its dictionaries (four fields,
+      seven segments) to be cut *identically* to what Lucene's own writer cuts
+      from the same terms; `blocktree_byte_identity_fixture.rs` requires
+      `.tim`/`.tip`/`.tmd`/`.doc`/`.psm` to be byte-identical to a real
+      Lucene segment of 13 316 terms.
 - [x] `Error::DocFreqTooLarge` and `Error::UnsupportedIndexOptions` are no
-      longer reachable. *`DocFreqTooLarge` no longer exists.
-      `UnsupportedIndexOptions` is now raised only for `IndexOptions::None`
-      handed straight to the codec-level API; `IndexWriter` rejects that
-      earlier with its own error, so no index write reaches it.*
+      longer reachable. `DocFreqTooLarge` no longer exists;
+      `UnsupportedIndexOptions` remains only for `IndexOptions::None` -- a
+      field that has no postings to write, which Java never hands a postings
+      writer either.
 - [x] The `.si` index-sort divergence is either resolved against a real Lucene
-      fixture or explicitly fenced off. *Resolved in the M2 sweep (b11): the
-      `SortFieldProvider` encoding is byte-verified both ways, and
-      `VerifySortedSegment` runs `CheckIndex.testSort` on sorted flushes and
-      merges.*
+      fixture or explicitly fenced off. *Resolved* (M2 sweep b11): the writer
+      emits the real `SortFieldProvider` bytestream, and `VerifySortedSegment`
+      reads sorted segments back, flushed and merged.
 - [x] `docs/parity.md` no longer describes the postings/blocktree writer as
       narrowly scoped, or states precisely and truthfully what remains.
 - [x] Per-file line coverage stays ≥95% (`AGENTS.md` invariant #8) across every
-      file this milestone touches.
-
----
-
-## Outcome
-
-Most of T3.1–T3.3 and T3.5 had already landed through the August–September
-sweeps (the `.psm` file, impacts, full `ForUtil` blocks, level-0/level-1 skip
-data, `.pos`/`.pay` with payloads, the `.si` sort encoding) — this file still
-read "not started" when the milestone was picked up. What remained, and what
-this milestone delivered, per the port → benchmark → optimise workflow
-(`docs/porting-workflow.md`, adopted during it):
-
-1. **The term-dictionary writer** (`lucene-codecs/src/blocktree_writer.rs`): a
-   closest-to-Java port of `Lucene103BlockTreeTermsWriter.TermsWriter` and
-   `TrieBuilder`, plus `LowercaseAsciiCompression.compress` and the full
-   `encodeTerm`. Byte-identical to Java on four real term dictionaries.
-   Benchmarked against Lucene's own writer on identical input
-   (`scripts/bench-micro.sh --bench term_dict_write`): first 0.65×/0.72×;
-   restructuring the postings writer to stream one term at a time — which is
-   also how Java does it — brought it to **1.92× (1M ids) and 1.30× (200k
-   words)**.
-2. **The end-to-end proof** (`crates/lucene-search/examples/write_verify_index.rs`
-   + `fixtures/src/VerifyIndex.java`), wired into
-   `scripts/verify-write-path.sh`. Its first version passed a deliberately
-   broken `encodeTerm` — the corpus had no singleton terms — so it now carries
-   a unique-id field and rare words, and fails on that defect.
-
-3. **A scoring bug the proof found.** Once the corpus gained a field with
-   freqs but no norms, every score on it came out 12% below Lucene's (same
-   hits, same order). Java scores a norm-less document at norm 1 but against
-   the collection's real `avgdl`; this port forced `avgdl` to 1 too. Fixed in
-   `DirectoryReader::field_norms` (`FieldNorms::unnormed`); `parity.md`'s
-   BM25 row has the detail.
-4. **Review follow-ups**: two more byte-identity tests re-write real Lucene
-   term dictionaries with freqs, positions, offsets, payloads and skip data
-   from the term states Lucene recorded (`postings_writer`'s
-   `term_dictionary_*_is_byte_identical`), closing what the all-singleton
-   fixtures could not see; each was shown to fail on a seeded defect.
-
-Whole-indexing throughput is unchanged by the streaming rewrite:
-`scripts/bench-micro.sh --bench index`, A/B on one machine, 2.65× Lucene at
-`0401891` (before M3) and 2.64× after (noise floor 1.14–1.40×; the 3.14× in
-`docs/benchmarks/sweep-2026-09.md` was measured on a different machine).
-
-What these checks cannot see: `maxItemsInBlock` 48→49 changes none of the
-identity fixtures; VerifyIndex writes without merging (merged segments are
-covered by the older `write_merged_*` cases), compares ties at rank 50 in
-exact order, and has no points field.
-
-Left for later, recorded in `docs/parity.md`: the `bitsPerValue == 0` and
-dense-bitset `.doc` block encodings the real writer sometimes chooses (readers
-accept the plain `ForUtil` shape this writer emits), and a points write path at
-flush (range queries in the proof are over doc values).
-
----
+      file this milestone touches: `blocktree_writer.rs` 99.45%,
+      `postings_writer.rs` 99.40%, `check_index.rs` 98.28%; workspace 98.00%.
 
 ## Risks and unknowns
 
@@ -320,10 +271,7 @@ flush (range queries in the proof are over doc values).
   `maxItemsInBlock` choices alter the physical layout without altering
   correctness. Real Lucene's reader accepts any valid split, so do not chase
   byte-identity with Java's output — chase readability, and say so in
-  `parity.md`. *(Resolved better than planned: the term
-  dictionary came out byte-identical to Java's once the writer was a
-  closest-to-Java port. `.doc` still differs by design — no `bitsPerValue == 0`
-  or dense-bitset blocks.)* This mirrors the resolution already reached for the FST builder
+  `parity.md`. This mirrors the resolution already reached for the FST builder
   in `PLAN.md` §4 risk #1.
 - **Corpus realism.** A 100k-document corpus of unique terms exercises none of
   the interesting paths. Term frequencies must be Zipfian, and the acceptance
@@ -340,3 +288,54 @@ flush (range queries in the proof are over doc values).
   path
 - A `Gen*.java` sorted-segment generator, or an explicit unsupported record
 - An updated `docs/parity.md` write-path section
+
+---
+
+## Outcome
+
+Delivered 2026-09-25. Most of T3.1, T3.3 and T3.5 had already landed during
+the M2 sweep (see `docs/sweep/`) without this file being updated; what was
+left, and what closing the milestone found:
+
+- **T3.4 was missing entirely.** `crates/lucene-search/examples/
+  write_verify_index_fixture.rs` now builds the index through `IndexWriter`,
+  runs the query set with this port's searcher, and writes both;
+  `fixtures/src/VerifyIndex.java` is the Java side. Its query comparison
+  passed on its first run; the block-structure check below was added after
+  it and failed at once.
+- **T3.2 had not been done.** The postings writer still put every term of a
+  field into **one `.tim` block under a one-node trie** -- the fallback left
+  when an earlier multi-block attempt proved unreadable by Lucene. Lucene
+  accepted it, so no verifier failed, but `VerifyIndex`'s `Stats` check
+  reported one block per segment, and every Java `seekExact` into a
+  Rust-written segment was scanning a block of thousands of terms. Replaced
+  by `crates/lucene-codecs/src/blocktree_writer.rs`, a port of
+  `Lucene103BlockTreeTermsWriter`'s splitting and `TrieBuilder`; the block
+  structure now matches Lucene's writer exactly.
+- **Byte identity.** After a Tier-2 review pointed out that readability and
+  matching block counts leave every "Lucene would accept either way" choice
+  unchecked, `GenBlockTreeByteIdentity` and
+  `crates/lucene-codecs/tests/blocktree_byte_identity_fixture.rs` were added:
+  on a term set where Java takes neither documented deviation, the writer's
+  `.tim`, `.tip`, `.tmd`, `.doc` and `.psm` are Lucene's, byte for byte. It
+  passed first time; breaking the child-label strategy tie-break, or
+  withholding `REVERSE_ARRAY`, fails it at the first `.tip` node affected.
+- **Evidence the checks can fail** (invariant #10): a 2e-5 score change, a
+  swap of two tied documents, a dropped hit, a wrong sort value, an
+  off-by-one offset length in the postings writer, and `MIN_ITEMS_IN_BLOCK`
+  24 instead of 25 each fail `VerifyIndex`.
+- **What it cannot catch:** bytes this port's reader and Java's decode
+  *identically but wrongly* -- a mis-encoded norm scores the same in both
+  engines. `CheckIndex` and the occurrence walk are the only checks that see
+  those.
+
+Deliberately not byte-identical to Java, both recorded in `docs/parity.md`:
+`.tim` suffixes are never compressed, and term metadata never takes the
+zigzag singleton-delta branch.
+
+**On the M1 dependency.** This file lists M1 passing as a precondition. M1's
+gate (≥1.5× on ≥80% of the query mix) is still not met on the merged index
+(19/28 after the September sweep; 22/28 segmented), though no query is
+slower than Lucene any more (`docs/benchmarks/sweep-2026-09.md`). M3 went
+ahead because it is a correctness precondition for any write-path use,
+whichever way that decision falls.

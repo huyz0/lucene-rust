@@ -13,10 +13,10 @@
 #   --keep      keep the generated fixtures instead of deleting them on exit
 #
 # The postings/term-dictionary write path (.doc/.pos/.pay/.tim/.tip/.tmd) is
-# covered by every whole-index case below; the last one (VerifyIndex, M3's
-# T3.1/T3.4) walks every term's full postings of a 120 000-document index and
-# compares 62 queries' ranked results and scores with this port's searcher.
-# See docs/milestones/m3-write-path-proven.md.
+# covered by the full-segment, merged-segment, sorted-segment and
+# positions-segment cases below -- the last of which (c23) is the one that
+# reads back positions, offsets and payloads occurrence by occurrence. Task
+# T3.1, see docs/milestones/m3-write-path-proven.md.
 set -euo pipefail
 
 LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries)
@@ -159,6 +159,25 @@ CASES=(
   # doc 8192, the level-0 one at doc 256, and dropping the payload-length
   # stream while the `.fnm` still claims payloads mis-frames every offset.
   "lucene-index|write_positions_segment_fixture|positions-segment|VerifyPositionsSegment"
+  # And the case every one above exists for (M3's T3.4): a whole index that
+  # *searches the same* in real Lucene as in this port. 120 000 Zipfian
+  # documents through IndexWriter, flushed into seven segments across two
+  # commits with deletes between them; five fields (text with positions,
+  # offsets and payloads; short text with positions; two keywords; a sparse
+  # numeric doc-values column). The example also runs 57 queries -- term,
+  # boolean AND/OR/NOT/minimumShouldMatch/FILTER, exact and sloppy phrase,
+  # doc-values range sorted by field -- through this port's searcher, and Java
+  # requires the same top 50 in the same order with every score within 1e-5
+  # and the same total match count, after checking ~58 000 occurrences
+  # against the stored text, requiring all 28 term dictionaries to be cut
+  # exactly as Lucene's own writer cuts the same terms, and running
+  # CheckIndex. Measured: a 2e-5 score change, two tied docs swapped, one
+  # hit dropped and an offset-length write defect each fail it.
+  #
+  # What it cannot catch: a defect in bytes that this port's reader and Java's
+  # decode *identically* but wrongly (a mis-encoded norm scores the same in
+  # both) -- only CheckIndex and the occurrence walk see those.
+  "lucene-search|write_verify_index_fixture|verify-index|VerifyIndex"
   # And a merge whose *sources real Lucene wrote*, disagreeing about the two
   # facts `SegmentMerger` derives from its readers rather than from the merging
   # writer: `minVersion` (the minimum across the sources) and `hasBlocks` (their
@@ -173,18 +192,6 @@ CASES=(
   # passes CheckIndex while claiming it never held older bytes and while
   # silently invalidating every parent/child join against it.
   "lucene-index|write_merged_metadata_fixture|merged-metadata|VerifyMergedMetadata|fixtures/data/merge_metadata"
-  # And last, M3's end-to-end proof (T3.4): a 120 000-document, five-segment
-  # index written by the real IndexWriter -- Zipf text with positions,
-  # offsets, payloads and norms, a keyword field, a unique-id field, a numeric
-  # doc-values field. Java walks the full postings of every one of its
-  # 140 000-odd terms against expectations computed from the generated text
-  # (not from this port's writer or reader), runs 62 term, boolean,
-  # cross-field, phrase and doc-values-range queries through IndexSearcher
-  # and requires this port's searcher's top 50 in the same order with every
-  # score within 1e-5, then runs CheckIndex. Measured: an off-by-one in
-  # encodeTerm's singleton doc-id delta fails it -- but only once the corpus
-  # had singletons; a Zipf vocabulary alone at this size has none.
-  "lucene-search|write_verify_index|verify-index|VerifyIndex"
   # Doc values sparse in all five types at once, flushed (three segments) and
   # merged (one): M4's T4.1. Until M4 only NUMERIC could be sparse in a
   # multi-field flush or a merge, and only sparse NUMERIC had ever been read by

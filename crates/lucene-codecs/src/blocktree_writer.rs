@@ -1,1042 +1,270 @@
-//! Write side of the block-tree term dictionary: `.tim` blocks and the `.tip`
-//! trie over them, for one field at a time.
+//! The block-splitting half of `Lucene103BlockTreeTermsWriter` and its
+//! `.tip` index builder, `TrieBuilder` -- the part of the term-dictionary
+//! write path that decides *which terms share a `.tim` block* and how the
+//! trie over those blocks is laid out.
 //!
-//! A port of `Lucene103BlockTreeTermsWriter.TermsWriter` (`pushTerm`,
-//! `writeBlocks`, `writeBlock`, `finish`) and `TrieBuilder` (`append`,
-//! `saveNodes`, `freezeNode`, `ChildSaveStrategy`). The postings half --
-//! `.doc`/`.pos`/`.pay` and the per-term metadata that points into them -- is
-//! `crate::postings_writer`'s; it hands this module each term's bytes and
-//! state (`BlockTermState`) plus a [`TermMetaEncoder`] that writes one
-//! term's metadata (`PostingsWriterBase.encodeTerm`), one term at a time, as
-//! Java's `TermsWriter.write` receives them; `finish` saves the trie and
-//! writes the field's `.tmd` record.
+//! [`crate::postings_writer`] owns everything per term (the `.doc`/`.pos`/
+//! `.pay` postings and the term metadata that points into them) and the
+//! per-field `.tmd` record. This module is handed a field's sorted terms and
+//! a callback that encodes the metadata for any subset of them, and writes:
 //!
-//! # What is ported, and what is deliberately different
+//! - **`.tim` blocks**, split exactly as Java splits them: a term is pushed
+//!   onto a pending stack; whenever the shared prefix shrinks, every prefix
+//!   that has accumulated at least [`MIN_ITEMS_IN_BLOCK`] entries is written
+//!   out as one or more blocks and replaced on the stack by a single
+//!   *sub-block* entry. A prefix with more than [`MAX_ITEMS_IN_BLOCK`] entries
+//!   is cut into **floor blocks** at changes of the next byte. A block holding
+//!   sub-block entries is a non-leaf block (its suffix-length stream carries a
+//!   flag bit per entry and a back-pointer per sub-block).
+//! - **the `.tip` trie**: one node per block prefix, built bottom-up from the
+//!   sub-block indexes each block collects, then serialised in one
+//!   post-order pass with Java's four node encodings (`SIGN_NO_CHILDREN`,
+//!   `SIGN_SINGLE_CHILD_WITH[OUT]_OUTPUT`, `SIGN_MULTI_CHILDREN`) and three
+//!   child-label strategies (`BITS`, `ARRAY`, `REVERSE_ARRAY`).
 //!
-//! - **Block splitting, floor blocks and the multi-level trie are Java's
-//!   algorithm, step for step**: the same pending stack, the same
-//!   `prefixStarts` bookkeeping, the same `minItemsInBlock`/`maxItemsInBlock`
-//!   defaults (25/48) and the same greedy floor segmentation. So for the same
-//!   term list the blocks fall on the same boundaries as Java's, and the trie
-//!   nodes pick the same child-label strategy.
-//! - **Suffix compression is Java's decision procedure** (LZ4 when it saves
-//!   more than a quarter, else lowercase-ASCII packing, only past a two-byte
-//!   prefix and two suffix bytes per entry), with this port's port of
-//!   `LZ4.HighCompressionHashTable`.
-//! - **The output is byte-identical to Java's** for the same terms and term
-//!   states: `tests/blocktree_writer_identity.rs` re-writes four real Lucene
-//!   term dictionaries (LZ4-compressed, multi-level, floor-split, every child
-//!   strategy), and `postings_writer`'s
-//!   `term_dictionary_*_is_byte_identical` tests re-write two more (freqs,
-//!   positions, offsets, payloads, skip data) from the term states Lucene
-//!   recorded -- all requiring identical bytes; real Lucene reads the output of
-//!   every whole-index case in `scripts/verify-write-path.sh`.
-//! - **`TrieBuilder` is ported with its in-memory form**: the separately
-//!   held first key, the prefix-coded entry buffer `append` bulk-copies, and
-//!   the two-phase frontier walk in `saveNodes`.
+//! # What is and is not byte-identical to Java
 //!
-//! Rust-forced differences only: `PendingEntry` is an enum rather than a
-//! class hierarchy, sub-block tries are moved rather than referenced, and a
-//! term is an index into the caller's term list rather than a copied
-//! `byte[]`.
+//! Block boundaries, block order, the trie's shape and every node's encoding
+//! follow Java's algorithm step for step, and two tests hold them to it.
+//! `tests/blocktree_byte_identity_fixture.rs` gives this writer the 13 316
+//! terms of a real Lucene segment (`GenBlockTreeByteIdentity`) and requires
+//! `.tim`, `.tip`, `.tmd`, `.doc` and `.psm` to be Lucene's byte for byte --
+//! pinning every choice a reader would accept either way (child-label
+//! strategy, pointer widths, the suffix-length shortcut). `VerifyIndex`
+//! requires every dictionary of its 120 000-document index to be cut exactly
+//! as Lucene's own writer cuts the same terms.
+//!
+//! The bytes differ from Java's in one deliberate way, avoided by the
+//! byte-identity fixture: suffixes are always written `NO_COMPRESSION`, where
+//! Java tries `LZ4` and `LOWERCASE_ASCII` on blocks whose prefix is longer
+//! than two bytes and keeps whichever saves space. Every reader accepts all
+//! three codes per block, so this changes the dictionary's size, never its
+//! meaning -- but it moves block file pointers, so the `.tip` bytes that
+//! encode them differ too. Recorded in `docs/parity.md`.
+//!
+//! # The `.tim` block this writes
+//!
+//! `vInt(entries << 1 | isLastInFloor)`, `vLong(suffixBytes << 3 | isLeaf <<
+//! 2 | compression)`, the suffix bytes, the suffix lengths (`vInt(n << 1 |
+//! allEqual)` then one byte or all of them; a non-leaf block's lengths carry
+//! a sub-block bit and each sub-block's backward `.tim` delta), the stats, and
+//! the postings metadata. `crate::blocktree`'s module doc describes the same
+//! layout from the reading side.
+//!
+//! # The in-memory shape
+//!
+//! Java's `TrieBuilder` keeps its (key, output) entries prefix-coded in a
+//! byte buffer, because a real segment can have millions of blocks. This port
+//! keeps them as a plain `Vec` of owned keys: an entry exists per *block*, not
+//! per term, so a field with a million terms has on the order of 30 000 of
+//! them, and each entry moves up the pending stack at most once per trie level
+//! it passes. The serialised output does not depend on the representation.
 
-use lucene_store::data_input::{DataInput, SliceInput};
 use lucene_store::data_output::DataOutput;
 
-use crate::lz4::{self, HighCompressionHashTable};
+use crate::blocktree::{
+    CHILD_STRATEGY_ARRAY, CHILD_STRATEGY_BITS, CHILD_STRATEGY_REVERSE_ARRAY, LEAF_NODE_HAS_FLOOR,
+    LEAF_NODE_HAS_TERMS, NON_LEAF_NODE_HAS_FLOOR, NON_LEAF_NODE_HAS_TERMS, SIGN_MULTI_CHILDREN,
+    SIGN_NO_CHILDREN, SIGN_SINGLE_CHILD_WITHOUT_OUTPUT, SIGN_SINGLE_CHILD_WITH_OUTPUT,
+};
 
 /// `Lucene103BlockTreeTermsWriter.DEFAULT_MIN_BLOCK_SIZE`.
-pub(crate) const DEFAULT_MIN_ITEMS_IN_BLOCK: usize = 25;
+pub const MIN_ITEMS_IN_BLOCK: usize = 25;
 /// `Lucene103BlockTreeTermsWriter.DEFAULT_MAX_BLOCK_SIZE`.
-pub(crate) const DEFAULT_MAX_ITEMS_IN_BLOCK: usize = 48;
+pub const MAX_ITEMS_IN_BLOCK: usize = 48;
 
-const SIGN_NO_CHILDREN: u32 = 0x00;
-const SIGN_SINGLE_CHILD_WITH_OUTPUT: u32 = 0x01;
-const SIGN_SINGLE_CHILD_WITHOUT_OUTPUT: u32 = 0x02;
-const SIGN_MULTI_CHILDREN: u32 = 0x03;
-const LEAF_NODE_HAS_TERMS: u32 = 1 << 5;
-const LEAF_NODE_HAS_FLOOR: u32 = 1 << 6;
-const NON_LEAF_NODE_HAS_TERMS: u64 = 1 << 1;
-const NON_LEAF_NODE_HAS_FLOOR: u64 = 1;
+/// One term as the block writer needs it: its bytes and the two statistics
+/// the block's stats stream carries. The term's postings metadata is not
+/// here -- it is encoded by the caller's callback, by index.
+pub(crate) struct BlockTerm<'a> {
+    pub(crate) bytes: &'a [u8],
+    pub(crate) doc_freq: i32,
+    pub(crate) total_term_freq: i64,
+}
 
-/// `CompressionAlgorithm` codes, as the low two bits of a block's token.
-const COMPRESSION_NONE: u64 = 0;
-const COMPRESSION_LOWERCASE_ASCII: u64 = 1;
-const COMPRESSION_LZ4: u64 = 2;
-
-/// [`TermsWriter::write`] was given a term that does not sort strictly
-/// after the previous one.
+/// Where a field's trie landed in `.tip`, as the `.tmd` record wants it:
+/// `indexStart` and `indexEnd` are absolute offsets into `.tip` (`indexEnd`
+/// after the 8-byte over-read pad), `root_fp` is relative to `indexStart`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct TermOutOfOrder;
-
-/// The length of the longest common prefix of `a` and `b` (`Arrays.mismatch`,
-/// or the shorter length when one is a prefix of the other), eight bytes at
-/// a time.
-// ARITH: `i` advances by 8 only while `i + 8 <= n`, and `trailing_zeros / 8`
-// of a non-zero XOR is below 8, so every sum stays within `n`.
-#[allow(clippy::arithmetic_side_effects)]
-fn common_prefix(a: &[u8], b: &[u8]) -> usize {
-    let n = a.len().min(b.len());
-    let mut i = 0;
-    while i + 8 <= n {
-        let x = u64::from_le_bytes(a[i..i + 8].try_into().unwrap());
-        let y = u64::from_le_bytes(b[i..i + 8].try_into().unwrap());
-        let diff = x ^ y;
-        if diff != 0 {
-            return i + (diff.trailing_zeros() / 8) as usize;
-        }
-        i += 8;
-    }
-    while i < n && a[i] == b[i] {
-        i += 1;
-    }
-    i
+pub(crate) struct TrieLocation {
+    pub(crate) index_start: u64,
+    pub(crate) root_fp: u64,
+    pub(crate) index_end: u64,
 }
 
-/// `PostingsWriterBase`'s side of the term dictionary: the per-term state
-/// its `writeTerm` returns (`BlockTermState`) and `encodeTerm`, which
-/// appends one term's postings metadata. `absolute` is true for the first
-/// term of every block, where the delta base resets -- exactly
-/// `SegmentTermsEnumFrame`'s per-block reset on the read side.
-pub(crate) trait TermMetaEncoder {
-    type State: Copy;
-    /// `BlockTermState.docFreq` and `totalTermFreq`.
-    fn stats(state: &Self::State) -> (i32, i64);
-    fn encode_term(&mut self, out: &mut Vec<u8>, state: &Self::State, absolute: bool);
-}
-
-/// Where one field's trie landed in `.tip` -- the three `.tmd` values
-/// `TrieBuilder.save` writes (`indexStart`, `rootFP`, `indexEnd`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct TrieLocation {
-    index_start: u64,
-    root_fp: u64,
-    index_end: u64,
-}
-
-enum PendingEntry<'t, S> {
-    /// `PendingTerm`: the term's bytes (borrowed from the caller, where Java
-    /// copies them) and its postings state.
-    Term { term: &'t [u8], state: S },
-    /// Boxed: a block is several times a term's size, and terms dominate
-    /// the stack.
-    Block(Box<PendingBlock>),
-}
-
-struct PendingBlock {
-    prefix: Vec<u8>,
-    fp: u64,
-    has_terms: bool,
-    is_floor: bool,
-    /// The floor block's leading suffix byte, `-1` for the first block of a
-    /// floor run (and for a block that is not a floor block at all).
-    floor_lead_byte: i32,
-    /// Set by `compile_index` on the first block of a run.
-    index: Option<Trie>,
-    /// The tries of the sub-blocks this (non-leaf) block points at, moved
-    /// into the run's trie by `compile_index`.
-    sub_indices: Vec<Trie>,
-}
-
-/// `Lucene103BlockTreeTermsWriter.TermsWriter`: one field's terms, fed in
-/// sorted order through [`TermsWriter::write`], then [`TermsWriter::finish`].
-pub(crate) struct TermsWriter<'a, 't, E: TermMetaEncoder> {
-    has_freqs: bool,
-    encoder: E,
-    tim: &'a mut Vec<u8>,
-    min_items_in_block: usize,
-    max_items_in_block: usize,
-    num_terms: i64,
-    sum_doc_freq: i64,
-    sum_total_term_freq: i64,
-    first_term: Option<&'t [u8]>,
-    last_pending_term: &'t [u8],
-    last_term: Vec<u8>,
-    /// `prefixStarts[i]`: the index into `pending` where the entries sharing
-    /// `last_term[..=i]` begin.
-    prefix_starts: Vec<usize>,
-    pending: Vec<PendingEntry<'t, E::State>>,
-    new_blocks: Vec<PendingBlock>,
-    suffix_bytes: Vec<u8>,
-    suffix_lengths: Vec<u8>,
-    stats: Vec<u8>,
-    meta: Vec<u8>,
-    spare: Vec<u8>,
-    spare_bytes: Vec<u8>,
-    lz4_table: Option<Box<HighCompressionHashTable>>,
-}
-
-impl<'a, 't, E: TermMetaEncoder> TermsWriter<'a, 't, E> {
-    /// `new TermsWriter(fieldInfo)`. The block sizes must satisfy
-    /// `Lucene103BlockTreeTermsWriter.validateSettings`, which the caller
-    /// checks.
-    pub(crate) fn new(
-        tim: &'a mut Vec<u8>,
-        has_freqs: bool,
-        encoder: E,
-        min_items_in_block: usize,
-        max_items_in_block: usize,
-    ) -> Self {
-        debug_assert!(min_items_in_block >= 2);
-        debug_assert!(min_items_in_block.saturating_sub(1).saturating_mul(2) <= max_items_in_block);
-        Self {
-            has_freqs,
-            encoder,
-            tim,
-            min_items_in_block,
-            max_items_in_block,
-            num_terms: 0,
-            sum_doc_freq: 0,
-            sum_total_term_freq: 0,
-            first_term: None,
-            last_pending_term: &[],
-            last_term: Vec::new(),
-            prefix_starts: Vec::new(),
-            pending: Vec::new(),
-            new_blocks: Vec::new(),
-            suffix_bytes: Vec::new(),
-            suffix_lengths: Vec::new(),
-            stats: Vec::new(),
-            meta: Vec::new(),
-            spare: Vec::new(),
-            spare_bytes: Vec::new(),
-            lz4_table: None,
-        }
-    }
-
-    /// `TermsWriter.write`, after the postings writer has written the term:
-    /// `pushTerm`, then the term joins the pending stack. Terms arrive sorted
-    /// ascending without duplicates.
-    // ARITH: the sums are of per-term document and occurrence counts over one
-    // field, which Java keeps in `long` for the same reason: they are bounded
-    // by the segment's in-memory postings.
-    #[allow(clippy::arithmetic_side_effects)]
-    pub(crate) fn write(&mut self, term: &'t [u8], state: E::State) -> Result<(), TermOutOfOrder> {
-        // Java asserts `lastTerm < term`; the port checks it, off the same
-        // common-prefix scan `pushTerm` needs anyway.
-        let prefix_len = common_prefix(&self.last_term, term);
-        if self.first_term.is_some() {
-            let follows = prefix_len < term.len()
-                && (prefix_len == self.last_term.len()
-                    || term[prefix_len] > self.last_term[prefix_len]);
-            if !follows {
-                return Err(TermOutOfOrder);
-            }
-        }
-        self.push_term_with_prefix(term, prefix_len);
-        self.pending.push(PendingEntry::Term { term, state });
-        let (doc_freq, total_term_freq) = E::stats(&state);
-        self.sum_doc_freq += i64::from(doc_freq);
-        self.sum_total_term_freq += total_term_freq;
-        self.num_terms += 1;
-        self.first_term.get_or_insert(term);
-        self.last_pending_term = term;
-        Ok(())
-    }
-
-    /// `TermsWriter.finish`: closes every open prefix, writes the root
-    /// block, saves the trie to `tip` and appends the field's `.tmd` record
-    /// to `meta`. A field with no terms writes nothing, as in Java.
-    pub(crate) fn finish(
-        mut self,
-        tip: &mut Vec<u8>,
-        meta: &mut Vec<u8>,
-        field_number: i32,
-        doc_count: i32,
-    ) {
-        let Some(first_term) = self.first_term else {
-            return;
-        };
-        // Two empty terms: the first closes every open prefix, the second
-        // is a no-op kept from Java (`pushTerm(new BytesRef())` twice).
-        self.push_term(&[]);
-        self.push_term(&[]);
-        let count = self.pending.len();
-        self.write_blocks(0, count);
-        let root = match self.pending.pop() {
-            Some(PendingEntry::Block(b)) if self.pending.is_empty() => b,
-            _ => unreachable!("writeBlocks(0, all) leaves exactly one root block"),
-        };
-        debug_assert!(root.prefix.is_empty());
-
-        meta.write_vint(field_number);
-        meta.write_vlong(self.num_terms);
-        if self.has_freqs {
-            meta.write_vlong(self.sum_total_term_freq);
-        }
-        meta.write_vlong(self.sum_doc_freq);
-        meta.write_vint(doc_count);
-        meta.write_vint(first_term.len() as i32);
-        meta.write_bytes(first_term);
-        meta.write_vint(self.last_pending_term.len() as i32);
-        meta.write_bytes(self.last_pending_term);
-        let location = root
-            .index
-            .expect("compile_index ran on the root block it just wrote")
-            .save(tip);
-        meta.write_vlong(location.index_start as i64);
-        meta.write_vlong(location.root_fp as i64);
-        meta.write_vlong(location.index_end as i64);
-    }
-
-    /// `TermsWriter.pushTerm`: closes every prefix of the previous term that
-    /// `text` abandons, writing a block for each that gathered at least
-    /// `minItemsInBlock` entries.
-    // ARITH: `i` runs over `prefix_len..last_term.len()`, so `i + 1` is at
-    // most a term length. `prefix_starts[i]` is a `pending` index recorded
-    // when `pending` was at least that long and `pending` only shrinks by
-    // collapsing the entries above such an index, so `pending.len() -
-    // prefix_starts[i]` cannot underflow; `prefix_top_size >= min >= 2` makes
-    // `prefix_top_size - 1` non-negative and it is at most `prefix_starts[i]`'s
-    // distance to the end, so the subtraction from it cannot underflow.
-    #[allow(clippy::arithmetic_side_effects)]
-    fn push_term(&mut self, text: &'t [u8]) {
-        let prefix_len = common_prefix(&self.last_term, text);
-        self.push_term_with_prefix(text, prefix_len);
-    }
-
-    /// [`Self::push_term`] with the common prefix of `text` and the last
-    /// term already known.
-    // ARITH: as `push_term`.
-    #[allow(clippy::arithmetic_side_effects)]
-    fn push_term_with_prefix(&mut self, text: &'t [u8], prefix_len: usize) {
-        for i in (prefix_len..self.last_term.len()).rev() {
-            let prefix_top_size = self.pending.len() - self.prefix_starts[i];
-            if prefix_top_size >= self.min_items_in_block {
-                self.write_blocks(i + 1, prefix_top_size);
-                // Java's `prefixStarts[i] -= prefixTopSize - 1`, which can go
-                // negative in its `int`. The value is dead either way: every
-                // index at or above `prefix_len` is re-initialised below
-                // before it is next read. Wrapping keeps Java's arithmetic
-                // without a debug-build panic on a value nothing reads.
-                self.prefix_starts[i] = self.prefix_starts[i].wrapping_sub(prefix_top_size - 1);
-            }
-        }
-        if self.prefix_starts.len() < text.len() {
-            self.prefix_starts.resize(text.len(), 0);
-        }
-        for i in prefix_len..text.len() {
-            self.prefix_starts[i] = self.pending.len();
-        }
-        self.last_term.clear();
-        self.last_term.extend_from_slice(text);
-    }
-
-    /// The lead byte of `ent`'s suffix past `prefix_len`, or `-1` for a term
-    /// equal to the prefix.
-    fn suffix_lead_label(ent: &PendingEntry<'t, E::State>, prefix_len: usize) -> i32 {
-        match ent {
-            PendingEntry::Term { term, .. } => term.get(prefix_len).map_or(-1, |&b| i32::from(b)),
-            PendingEntry::Block(b) => i32::from(b.prefix[prefix_len]),
-        }
-    }
-
-    /// `TermsWriter.writeBlocks`: writes the top `count` pending entries as
-    /// one block, or as a run of floor blocks when they are more than
-    /// `maxItemsInBlock`, then replaces them on the stack with the run's
-    /// first block.
-    // ARITH: `count <= pending.len()` (the callers pass either a distance to
-    // `pending`'s end or its length), so `start` does not underflow; `i` and
-    // `next_block_start` stay within `start..=end`, so every `-` between them
-    // is non-negative.
-    #[allow(clippy::arithmetic_side_effects)]
-    fn write_blocks(&mut self, prefix_len: usize, count: usize) {
-        debug_assert!(count > 0);
-        debug_assert!(prefix_len > 0 || count == self.pending.len());
-        let end = self.pending.len();
-        let start = end - count;
-        let mut last_suffix_lead_label = -1i32;
-        let mut has_terms = false;
-        let mut has_sub_blocks = false;
-        let mut next_block_start = start;
-        let mut next_floor_lead_label = -1i32;
-
-        for i in start..end {
-            let ent = &self.pending[i];
-            let suffix_lead_label = Self::suffix_lead_label(ent, prefix_len);
-            let is_term = matches!(ent, PendingEntry::Term { .. });
-            if suffix_lead_label != last_suffix_lead_label {
-                let items_in_block = i - next_block_start;
-                if items_in_block >= self.min_items_in_block
-                    && end - next_block_start > self.max_items_in_block
-                {
-                    // Too many for one block: greedily cut a floor block as
-                    // soon as it has `minItemsInBlock` entries.
-                    let is_floor = items_in_block < count;
-                    let block = self.write_block(
-                        prefix_len,
-                        is_floor,
-                        next_floor_lead_label,
-                        next_block_start,
-                        i,
-                        has_terms,
-                        has_sub_blocks,
-                    );
-                    self.new_blocks.push(block);
-                    has_terms = false;
-                    has_sub_blocks = false;
-                    next_floor_lead_label = suffix_lead_label;
-                    next_block_start = i;
-                }
-                last_suffix_lead_label = suffix_lead_label;
-            }
-            if is_term {
-                has_terms = true;
-            } else {
-                has_sub_blocks = true;
-            }
-        }
-
-        if next_block_start < end {
-            let items_in_block = end - next_block_start;
-            let is_floor = items_in_block < count;
-            let block = self.write_block(
-                prefix_len,
-                is_floor,
-                next_floor_lead_label,
-                next_block_start,
-                end,
-                has_terms,
-                has_sub_blocks,
-            );
-            self.new_blocks.push(block);
-        }
-
-        let mut blocks = std::mem::take(&mut self.new_blocks);
-        compile_index(&mut blocks);
-        self.pending.truncate(start);
-        let first = blocks.swap_remove(0);
-        debug_assert!(blocks.iter().all(|b| b.sub_indices.is_empty()));
-        self.pending.push(PendingEntry::Block(Box::new(first)));
-        blocks.clear();
-        self.new_blocks = blocks;
-    }
-
-    /// `TermsWriter.writeBlock`: writes `pending[start..end]` as one `.tim`
-    /// block and returns it as a pending block.
-    // ARITH: `end > start`, both within `pending`; `prefix_len` is at most
-    // every entry's key length (every entry in the range shares the prefix),
-    // so each `len - prefix_len` is non-negative; a sub-block was written
-    // before this block, so `start_fp - block.fp` is positive. The `<< 1`/
-    // `<< 3` shifts are on entry counts and byte lengths of one block, far
-    // below the top bits.
-    #[allow(clippy::arithmetic_side_effects, clippy::too_many_arguments)]
-    fn write_block(
-        &mut self,
-        prefix_len: usize,
-        is_floor: bool,
-        floor_lead_label: i32,
-        start: usize,
-        end: usize,
-        has_terms: bool,
-        has_sub_blocks: bool,
-    ) -> PendingBlock {
-        debug_assert!(end > start);
-        let start_fp = self.tim.len() as u64;
-        let has_floor_lead_label = is_floor && floor_lead_label != -1;
-        let mut prefix = Vec::with_capacity(prefix_len + usize::from(has_floor_lead_label));
-        prefix.extend_from_slice(&self.last_term[..prefix_len]);
-
-        let num_entries = end - start;
-        let mut code = (num_entries as i32) << 1;
-        if end == self.pending.len() {
-            code |= 1; // the last block of its floor run
-        }
-        self.tim.write_vint(code);
-
-        let is_leaf_block = !has_sub_blocks;
-        let mut sub_indices = Vec::new();
-        let mut absolute = true;
-        let mut stats = StatsWriter::new(self.has_freqs);
-        for i in start..end {
-            match &mut self.pending[i] {
-                PendingEntry::Term { term, state } => {
-                    let term: &[u8] = term;
-                    debug_assert!(term.starts_with(&prefix));
-                    let suffix = &term[prefix_len..];
-                    if is_leaf_block {
-                        self.suffix_lengths.write_vint(suffix.len() as i32);
-                    } else {
-                        // Non-leaf: bit 0 says term (0) or sub-block (1).
-                        self.suffix_lengths.write_vint((suffix.len() as i32) << 1);
-                    }
-                    self.suffix_bytes.extend_from_slice(suffix);
-                    let (doc_freq, total_term_freq) = E::stats(state);
-                    stats.add(&mut self.stats, doc_freq, total_term_freq);
-                    self.encoder.encode_term(&mut self.meta, state, absolute);
-                    absolute = false;
-                }
-                PendingEntry::Block(block) => {
-                    debug_assert!(block.prefix.starts_with(&prefix));
-                    debug_assert!(block.fp < start_fp);
-                    let suffix = &block.prefix[prefix_len..];
-                    debug_assert!(!suffix.is_empty());
-                    self.suffix_lengths
-                        .write_vint(((suffix.len() as i32) << 1) | 1);
-                    self.suffix_bytes.extend_from_slice(suffix);
-                    self.suffix_lengths
-                        .write_vlong((start_fp - block.fp) as i64);
-                    sub_indices.push(
-                        block
-                            .index
-                            .take()
-                            .expect("a pending sub-block was compiled when it was written"),
-                    );
-                }
-            }
-        }
-        stats.finish(&mut self.stats);
-
-        // Suffix bytes, compressed when that pays (`writeBlock`'s own gates).
-        let suffix_len = self.suffix_bytes.len();
-        let mut compression = COMPRESSION_NONE;
-        self.spare.clear();
-        if suffix_len > 2 * num_entries && prefix_len > 2 {
-            if suffix_len > 6 * num_entries {
-                let table = self
-                    .lz4_table
-                    .get_or_insert_with(|| Box::new(HighCompressionHashTable::new()));
-                lz4::compress_into(&self.suffix_bytes, &mut self.spare, table.as_mut());
-                if self.spare.len() < suffix_len - (suffix_len >> 2) {
-                    compression = COMPRESSION_LZ4;
-                }
-            }
-            if compression == COMPRESSION_NONE {
-                self.spare.clear();
-                if compress_lowercase_ascii(
-                    &self.suffix_bytes,
-                    &mut self.spare_bytes,
-                    &mut self.spare,
-                ) {
-                    compression = COMPRESSION_LOWERCASE_ASCII;
-                }
-            }
-        }
-        let mut token = (suffix_len as u64) << 3;
-        if is_leaf_block {
-            token |= 0x04;
-        }
-        token |= compression;
-        self.tim.write_vlong(token as i64);
-        if compression == COMPRESSION_NONE {
-            self.tim.write_bytes(&self.suffix_bytes);
-        } else {
-            self.tim.write_bytes(&self.spare);
-        }
-        self.suffix_bytes.clear();
-        self.spare.clear();
-
-        // Suffix lengths, collapsed to one byte when every one is the same.
-        let n = self.suffix_lengths.len();
-        let first = self.suffix_lengths[0];
-        if self.suffix_lengths[1..].iter().all(|&b| b == first) {
-            self.tim.write_vint(((n as i32) << 1) | 1);
-            self.tim.write_byte(first);
-        } else {
-            self.tim.write_vint((n as i32) << 1);
-            self.tim.write_bytes(&self.suffix_lengths);
-        }
-        self.suffix_lengths.clear();
-
-        self.tim.write_vint(self.stats.len() as i32);
-        self.tim.write_bytes(&self.stats);
-        self.stats.clear();
-
-        self.tim.write_vint(self.meta.len() as i32);
-        self.tim.write_bytes(&self.meta);
-        self.meta.clear();
-
-        if has_floor_lead_label {
-            prefix.push(floor_lead_label as u8);
-        }
-        PendingBlock {
-            prefix,
-            fp: start_fp,
-            has_terms,
-            is_floor,
-            floor_lead_byte: floor_lead_label,
-            index: None,
-            sub_indices,
-        }
-    }
-}
-
-/// `PendingBlock.compileIndex`, on `blocks[0]` of a run: its trie is its own
-/// prefix (with floor data naming every later block of the run), followed by
-/// every sub-block trie any block of the run points at.
-// ARITH: `blocks` is non-empty (a run writes at least one block) and later
-// blocks of a run are written after the first, so `sub.fp - first.fp` is
-// positive and small enough to shift left by one.
-#[allow(clippy::arithmetic_side_effects)]
-fn compile_index(blocks: &mut [PendingBlock]) {
-    debug_assert!(
-        (blocks[0].is_floor && blocks.len() > 1) || (!blocks[0].is_floor && blocks.len() == 1)
-    );
-    let fp = blocks[0].fp;
-    let floor_data = if blocks[0].is_floor {
-        let mut data = Vec::new();
-        data.write_vint((blocks.len() - 1) as i32);
-        for sub in &blocks[1..] {
-            debug_assert!(sub.floor_lead_byte != -1);
-            debug_assert!(sub.fp > fp);
-            data.write_byte(sub.floor_lead_byte as u8);
-            data.write_vlong((((sub.fp - fp) << 1) | u64::from(sub.has_terms)) as i64);
-        }
-        Some(data)
-    } else {
-        None
-    };
-    let mut trie = Trie::new(
-        &blocks[0].prefix,
-        TrieOutput {
-            fp,
-            has_terms: blocks[0].has_terms,
-            floor_data,
-        },
-    );
-    for block in blocks.iter_mut() {
-        for sub in block.sub_indices.drain(..) {
-            trie.append(sub);
-        }
-    }
-    blocks[0].index = Some(trie);
-}
-
-/// `StatsWriter`: a term's `(docFreq, totalTermFreq)`, with runs of
-/// singletons (`docFreq == 1`, and `totalTermFreq == 1` when freqs are
-/// indexed) run-length encoded.
-struct StatsWriter {
-    has_freqs: bool,
-    singleton_count: i32,
-}
-
-impl StatsWriter {
-    fn new(has_freqs: bool) -> Self {
-        Self {
-            has_freqs,
-            singleton_count: 0,
-        }
-    }
-
-    // ARITH: `singleton_count` counts terms of one block, which holds far
-    // fewer than `i32::MAX` entries; `total_term_freq >= doc_freq` when freqs
-    // are indexed (every freq is at least 1), and `doc_freq << 1` is a
-    // document count shifted once, which `docFreq`'s own `int` bound keeps
-    // below the sign bit in Java too.
-    #[allow(clippy::arithmetic_side_effects)]
-    fn add(&mut self, out: &mut Vec<u8>, doc_freq: i32, total_term_freq: i64) {
-        if doc_freq == 1 && (!self.has_freqs || total_term_freq == 1) {
-            self.singleton_count += 1;
-        } else {
-            self.finish(out);
-            out.write_vint(doc_freq << 1);
-            if self.has_freqs {
-                out.write_vlong(total_term_freq - i64::from(doc_freq));
-            }
-        }
-    }
-
-    // ARITH: `singleton_count > 0` on the branch that subtracts one.
-    #[allow(clippy::arithmetic_side_effects)]
-    fn finish(&mut self, out: &mut Vec<u8>) {
-        if self.singleton_count > 0 {
-            out.write_vint(((self.singleton_count - 1) << 1) | 1);
-            self.singleton_count = 0;
-        }
-    }
-}
-
-/// `LowercaseAsciiCompression.isCompressible`.
-// ARITH: `b` is a byte widened to `u32`, so `b + 1` is at most 256.
-#[allow(clippy::arithmetic_side_effects)]
-fn is_compressible(b: u8) -> bool {
-    let high3 = (u32::from(b) + 1) & !0x1F;
-    high3 == 0x20 || high3 == 0x60
-}
-
-/// `LowercaseAsciiCompression.compress`: packs four mostly-lowercase-ASCII
-/// bytes into three, with an exception list for the bytes that are not.
-/// Returns `false` (and leaves `out` in an unspecified state) when the input
-/// is too short or has more than one exception per 32 bytes.
-// ARITH: every index is below `len`; `compressed_len = len - len / 4` is at
-// most `len`; `i - previous_exception_index` is non-negative because
-// `previous_exception_index` only takes values of earlier `i` or steps of
-// 0xFF that the loop condition keeps below `i`; `num_exceptions` is bounded
-// by `len / 32`.
-#[allow(clippy::arithmetic_side_effects)]
-fn compress_lowercase_ascii(input: &[u8], tmp: &mut Vec<u8>, out: &mut Vec<u8>) -> bool {
-    let len = input.len();
-    if len < 8 {
-        return false;
-    }
-    let max_exceptions = len >> 5;
-    let mut previous_exception_index = 0usize;
-    let mut num_exceptions = 0usize;
-    for (i, &b) in input.iter().enumerate() {
-        if !is_compressible(b) {
-            while i - previous_exception_index > 0xFF {
-                num_exceptions += 1;
-                previous_exception_index += 0xFF;
-            }
-            num_exceptions += 1;
-            if num_exceptions > max_exceptions {
-                return false;
-            }
-            previous_exception_index = i;
-        }
-    }
-
-    let compressed_len = len - (len >> 2);
-    // Java's `spareBytes`: one scratch buffer reused across blocks.
-    tmp.clear();
-    tmp.extend(input.iter().map(|&b| {
-        let b = u32::from(b) + 1;
-        ((b & 0x1F) | ((b & 0x40) >> 1)) as u8
-    }));
-    let mut o = 0usize;
-    for i in compressed_len..len {
-        tmp[o] |= (tmp[i] & 0x30) << 2;
-        o += 1;
-    }
-    for i in compressed_len..len {
-        tmp[o] |= (tmp[i] & 0x0C) << 4;
-        o += 1;
-    }
-    for i in compressed_len..len {
-        tmp[o] |= (tmp[i] & 0x03) << 6;
-        o += 1;
-    }
-    debug_assert!(o <= compressed_len);
-    out.write_bytes(&tmp[..compressed_len]);
-
-    out.write_vint(num_exceptions as i32);
-    if num_exceptions > 0 {
-        previous_exception_index = 0;
-        for (i, &b) in input.iter().enumerate() {
-            if !is_compressible(b) {
-                while i - previous_exception_index > 0xFF {
-                    // Deltas are single bytes, so a gap wider than 0xFF gets
-                    // "artificial" exceptions that restore the byte already
-                    // there.
-                    out.write_byte(0xFF);
-                    previous_exception_index += 0xFF;
-                    out.write_byte(input[previous_exception_index]);
-                }
-                out.write_byte((i - previous_exception_index) as u8);
-                previous_exception_index = i;
-                out.write_byte(b);
-            }
-        }
-    }
-    true
-}
-
-/// `TrieBuilder.Output`.
+/// `TrieBuilder.Output`: the block a trie node points to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TrieOutput {
+    /// Absolute `.tim` offset of the block.
     fp: u64,
+    /// `false` when the block holds only sub-block entries.
     has_terms: bool,
+    /// Present when the prefix's entries were split into floor blocks:
+    /// `vInt(count - 1)` then, per follow-on block, its lead byte and
+    /// `vLong((fp - first fp) << 1 | hasTerms)`.
     floor_data: Option<Vec<u8>>,
 }
 
-impl TrieOutput {
-    /// `TrieBuilder.encodeFP`.
-    // ARITH: a `.tim` file pointer is far below `1 << 62`.
-    #[allow(clippy::arithmetic_side_effects)]
-    fn encoded_fp(&self) -> u64 {
-        debug_assert!(self.fp < 1 << 62);
-        (if self.floor_data.is_some() {
-            NON_LEAF_NODE_HAS_FLOOR
-        } else {
-            0
-        }) | (if self.has_terms {
-            NON_LEAF_NODE_HAS_TERMS
-        } else {
-            0
-        }) | (self.fp << 2)
-    }
-}
-
-/// `TrieBuilder`: a trie of block prefixes under construction.
-///
-/// As in Java, the first non-empty key (`min_key`) is held apart and every
-/// later entry lives in `buffer`, prefix-coded against its predecessor:
-/// `[prefixLen: vInt] [suffixLen: vInt] [suffix] [fp: vLong] [hasTerms:
-/// byte] [floorDataLen: vInt] [floorData]`. That is what lets `append`
-/// re-encode only `other`'s first entry and bulk-copy the rest.
-struct Trie {
-    /// Output for the empty key (the root block's prefix), if any.
+/// `TrieBuilder`, as an ordered list of (non-empty key, output) entries
+/// plus the empty key's output.
+#[derive(Debug, Default)]
+struct TrieBuilder {
     empty_output: Option<TrieOutput>,
-    min_key: Vec<u8>,
-    /// Output for `min_key`; `None` when the trie has no non-empty key.
-    min_output: Option<TrieOutput>,
-    buffer: Vec<u8>,
-    /// The last key appended, which is also the largest.
-    last_key: Vec<u8>,
-    max_key_depth: usize,
+    entries: Vec<(Vec<u8>, TrieOutput)>,
 }
 
-impl Trie {
+impl TrieBuilder {
     /// `TrieBuilder.bytesRefToTrie`.
     fn new(key: &[u8], output: TrieOutput) -> Self {
-        let mut trie = Self {
-            empty_output: None,
-            min_key: key.to_vec(),
-            min_output: None,
-            buffer: Vec::new(),
-            last_key: Vec::new(),
-            max_key_depth: key.len(),
-        };
         if key.is_empty() {
-            trie.empty_output = Some(output);
+            TrieBuilder {
+                empty_output: Some(output),
+                entries: Vec::new(),
+            }
         } else {
-            trie.min_output = Some(output);
-            trie.last_key.extend_from_slice(key);
+            TrieBuilder {
+                empty_output: None,
+                entries: vec![(key.to_vec(), output)],
+            }
         }
-        trie
     }
 
-    /// `TrieBuilder.append`: every key of `other` sorts after this trie's
-    /// last key.
-    // ARITH: `mismatch <= other.min_key.len()`, so the suffix length is
-    // non-negative; key and floor-data lengths are those of in-memory buffers
-    // built from terms, far below `i32::MAX`.
-    #[allow(clippy::arithmetic_side_effects)]
-    fn append(&mut self, other: Trie) {
-        debug_assert!(self.last_key < other.min_key);
-        if other.empty_output.is_some() && self.empty_output.is_none() {
+    /// `TrieBuilder.append`: every key in `other` sorts after every key
+    /// already here, which the block writer guarantees by appending sub-block
+    /// indexes in the order their blocks appear.
+    fn append(&mut self, other: TrieBuilder) {
+        debug_assert!(
+            match (self.entries.last(), other.entries.first()) {
+                (Some((a, _)), Some((b, _))) => a < b,
+                _ => true,
+            },
+            "trie entries must be appended in key order"
+        );
+        if self.empty_output.is_none() {
             self.empty_output = other.empty_output;
         }
-        if let Some(min_output) = &other.min_output {
-            let mismatch = self
-                .last_key
-                .iter()
-                .zip(&other.min_key)
-                .take_while(|(a, b)| a == b)
-                .count();
-            let suffix = &other.min_key[mismatch..];
-            self.buffer.write_vint(mismatch as i32);
-            self.buffer.write_vint(suffix.len() as i32);
-            self.buffer.write_bytes(suffix);
-            self.buffer.write_vlong(min_output.fp as i64);
-            self.buffer.write_byte(u8::from(min_output.has_terms));
-            match &min_output.floor_data {
-                Some(floor) => {
-                    self.buffer.write_vint(floor.len() as i32);
-                    self.buffer.write_bytes(floor);
-                }
-                None => self.buffer.write_vint(0),
-            }
-            // `other`'s later entries are prefix-coded against
-            // `other.min_key`, which is now our last entry: copy as-is.
-            self.buffer.extend_from_slice(&other.buffer);
-        }
-        self.last_key.clear();
-        self.last_key.extend_from_slice(&other.last_key);
-        self.max_key_depth = self.max_key_depth.max(other.max_key_depth);
+        self.entries.extend(other.entries);
     }
 
-    /// `TrieBuilder.save`: the nodes, then the eight bytes of over-read
-    /// padding `TrieReader` relies on.
-    // ARITH: `.tip` offsets are lengths of an in-memory buffer.
-    #[allow(clippy::arithmetic_side_effects)]
+    /// `TrieBuilder.save`: serialises the trie into `tip` and returns where
+    /// it landed. `saveNodes` rebuilds the trie from the sorted entries with
+    /// a frontier (one open node per depth along the last key) and writes
+    /// each node as soon as no later key can add a child to it -- children
+    /// always before their parent, which is what lets a parent store its
+    /// children as backward deltas.
     fn save(&self, tip: &mut Vec<u8>) -> TrieLocation {
         let index_start = tip.len() as u64;
-        let root_fp = self.save_nodes(tip);
-        tip.extend_from_slice(&0u64.to_le_bytes());
+        let max_depth = self.entries.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+        let mut frontier: Vec<FrontierNode<'_>> =
+            (0..=max_depth).map(|_| FrontierNode::default()).collect();
+        frontier[0].output = self.empty_output.as_ref();
+        let mut prev: &[u8] = &[];
+        for (key, output) in &self.entries {
+            let common = common_prefix_len(prev, key);
+            freeze_from(prev, common, &mut frontier, index_start, tip);
+            frontier[key.len()].output = Some(output);
+            prev = key;
+        }
+        freeze_from(prev, 0, &mut frontier, index_start, tip);
+        let root_fp = freeze_node(&frontier[0], index_start, tip);
+        // `index.writeLong(0L)`: the reader loads a node with fixed-width
+        // reads that may run past its last byte.
+        tip.write_i64(0);
         TrieLocation {
             index_start,
             root_fp,
             index_end: tip.len() as u64,
         }
     }
-
-    /// `TrieBuilder.saveNodes`: rebuilds the trie from the prefix-coded
-    /// entries with a frontier of one open node per depth, writing each node
-    /// once all its children are written, so every child pointer is a
-    /// positive backwards delta.
-    fn save_nodes(&self, tip: &mut Vec<u8>) -> u64 {
-        let start = tip.len();
-        let mut frontier: Vec<FrontierNode> = (0..=self.max_key_depth)
-            .map(|_| FrontierNode::default())
-            .collect();
-        frontier[0].output = self.empty_output.clone();
-
-        let mut iter = EntryIterator::new(self);
-        while iter.has_next() {
-            // Phase 1: the header only, while `iter.key` still holds the
-            // previous key -- exactly what freezing its abandoned tail needs.
-            let prev_key_len = iter.key_len;
-            iter.read_header();
-            freeze_from(
-                &iter.key[..prev_key_len],
-                iter.prefix_len,
-                &mut frontier,
-                start,
-                tip,
-            );
-            // Phase 2: the suffix and output; `iter.key` is now this key.
-            let output = iter.read_body();
-            frontier[iter.key_len].output = Some(output);
-        }
-        freeze_from(&iter.key[..iter.key_len], 0, &mut frontier, start, tip);
-        freeze_node(&frontier[0], start, tip)
-    }
 }
 
-/// `TrieBuilder.EntryIterator`: walks `min_key` and then the prefix-coded
-/// buffer, in two phases per entry (see [`Trie::save_nodes`]).
-struct EntryIterator<'a> {
-    trie: &'a Trie,
-    input: SliceInput<'a>,
-    min_key_consumed: bool,
-    prefix_len: usize,
-    suffix_len: usize,
-    key: Vec<u8>,
-    key_len: usize,
+fn common_prefix_len(a: &[u8], b: &[u8]) -> usize {
+    a.iter().zip(b).take_while(|(x, y)| x == y).count()
 }
 
-impl<'a> EntryIterator<'a> {
-    fn new(trie: &'a Trie) -> Self {
-        let mut key = vec![0u8; trie.max_key_depth.max(1)];
-        key[..trie.min_key.len()].copy_from_slice(&trie.min_key);
-        Self {
-            trie,
-            input: SliceInput::new(&trie.buffer),
-            min_key_consumed: trie.min_output.is_none(),
-            prefix_len: 0,
-            suffix_len: 0,
-            key,
-            key_len: 0,
-        }
-    }
-
-    fn has_next(&self) -> bool {
-        !self.min_key_consumed || self.input.position() < self.trie.buffer.len()
-    }
-
-    /// Phase 1: `prefixLen` and `suffixLen` only.
-    fn read_header(&mut self) {
-        if !self.min_key_consumed {
-            self.prefix_len = 0;
-            self.suffix_len = self.trie.min_key.len();
-            return;
-        }
-        self.prefix_len = read_len(&mut self.input);
-        self.suffix_len = read_len(&mut self.input);
-    }
-
-    /// Phase 2: the suffix (over `key[prefix_len..]`) and the output.
-    // ARITH: `prefix_len + suffix_len` is the length of a key this trie was
-    // built from, at most `max_key_depth`.
-    #[allow(clippy::arithmetic_side_effects)]
-    fn read_body(&mut self) -> TrieOutput {
-        if !self.min_key_consumed {
-            self.key_len = self.trie.min_key.len();
-            self.min_key_consumed = true;
-            return self
-                .trie
-                .min_output
-                .clone()
-                .expect("min_key_consumed starts false only when min_output is set");
-        }
-        self.key_len = self.prefix_len + self.suffix_len;
-        self.input
-            .read_bytes(&mut self.key[self.prefix_len..self.key_len])
-            .expect(BUFFER_WE_WROTE);
-        let fp = self.input.read_vlong().expect(BUFFER_WE_WROTE) as u64;
-        let has_terms = self.input.read_byte().expect(BUFFER_WE_WROTE) == 1;
-        let floor_len = read_len(&mut self.input);
-        let floor_data = (floor_len > 0).then(|| {
-            let mut floor = vec![0u8; floor_len];
-            self.input.read_bytes(&mut floor).expect(BUFFER_WE_WROTE);
-            floor
-        });
-        TrieOutput {
-            fp,
-            has_terms,
-            floor_data,
-        }
-    }
-}
-
-/// The trie buffer is written by [`Trie::append`] a few lines up and read
-/// back only by [`EntryIterator`]; a failed read is a bug here, not input.
-const BUFFER_WE_WROTE: &str = "reading back a trie buffer this writer encoded";
-
-fn read_len(input: &mut SliceInput<'_>) -> usize {
-    input.read_vint().expect(BUFFER_WE_WROTE) as usize
-}
-
-/// `TrieBuilder.FrontierNode`: the open node at one depth on the path to
-/// the last key.
+/// One open trie node on the path to the last key seen.
 #[derive(Default)]
-struct FrontierNode {
-    output: Option<TrieOutput>,
-    child_labels: Vec<u8>,
-    child_fps: Vec<u64>,
+struct FrontierNode<'a> {
+    output: Option<&'a TrieOutput>,
+    /// (label, fp relative to `indexStart`), labels ascending.
+    children: Vec<(u8, u64)>,
 }
 
-impl FrontierNode {
-    /// `FrontierNode.reset`, keeping the allocations.
-    fn reset(&mut self) {
-        self.output = None;
-        self.child_labels.clear();
-        self.child_fps.clear();
-    }
-}
-
-/// `TrieBuilder.freezeFrom`: freezes the frontier nodes on `key`'s path
-/// from depth `key.len()` down to (not including) `to_depth`, registering
-/// each with its parent.
-// ARITH: `d` runs over `to_depth + 1..=key.len()`, so `d - 1` is at least
-// `to_depth`.
-#[allow(clippy::arithmetic_side_effects)]
+/// `TrieBuilder.freezeFrom`: writes the frontier nodes deeper than `to_depth`
+/// on the path `key`, deepest first, registering each with its parent.
 fn freeze_from(
     key: &[u8],
     to_depth: usize,
-    frontier: &mut [FrontierNode],
-    start: usize,
+    frontier: &mut [FrontierNode<'_>],
+    index_start: u64,
     tip: &mut Vec<u8>,
 ) {
-    for d in (to_depth + 1..=key.len()).rev() {
-        let fp = freeze_node(&frontier[d], start, tip);
-        frontier[d - 1].child_labels.push(key[d - 1]);
-        frontier[d - 1].child_fps.push(fp);
-        frontier[d].reset();
+    // `(to_depth, key.len()]`, deepest first.
+    for depth in (to_depth..key.len()).map(|d| d.saturating_add(1)).rev() {
+        let fp = freeze_node(&frontier[depth], index_start, tip);
+        // ARITH: `depth` ranges over `to_depth + 1..`, so it is at least 1.
+        #[allow(clippy::arithmetic_side_effects)]
+        let (parent, label) = (depth - 1, key[depth - 1]);
+        frontier[parent].children.push((label, fp));
+        frontier[depth].output = None;
+        frontier[depth].children.clear();
     }
 }
 
-/// `TrieBuilder.bytesRequiredVLong`: bytes needed for `v` as a
-/// little-endian integer, at least one.
-// ARITH: `leading_zeros(v | 1) <= 63`, so the shifted value is at most 7.
-#[allow(clippy::arithmetic_side_effects)]
+/// `TrieBuilder.bytesRequiredVLong`: bytes needed for `v` little-endian,
+/// at least one.
 fn bytes_required(v: u64) -> usize {
-    8 - ((v | 1).leading_zeros() >> 3) as usize
+    // ARITH: `leading_zeros` of a non-zero `u64` is at most 63, so the shift
+    // yields at most 7 and the subtraction at least 1.
+    #[allow(clippy::arithmetic_side_effects)]
+    let n = 8 - ((v | 1).leading_zeros() >> 3) as usize;
+    n
 }
 
 /// `TrieBuilder.writeLongNBytes`: the low `n` bytes of `v`, little-endian.
 fn write_n_bytes(tip: &mut Vec<u8>, v: u64, n: usize) {
-    debug_assert!(n == 8 || v.checked_shr(n.saturating_mul(8) as u32) == Some(0));
+    debug_assert!(
+        n == 8 || v.checked_shr(8u32.saturating_mul(n as u32)) == Some(0),
+        "{v} does not fit {n} bytes"
+    );
     tip.extend_from_slice(&v.to_le_bytes()[..n]);
 }
 
-/// `TrieBuilder.freezeNode`: serializes one node and returns its fp
-/// relative to the trie's start.
-// ARITH: children are frozen before their parent, so `bottom_fp` exceeds
-// every child fp; the header fields are byte counts of 1..=8 minus one, a
-// strategy byte count of 1..=32 minus one, and a label below 256, each
-// shifted into its own bit range of a 24-bit header.
+/// `TrieBuilder.encodeFP`: an output's fp with its two flags, as a node with
+/// children stores it.
+fn encode_fp(output: &TrieOutput) -> u64 {
+    debug_assert!(output.fp < 1 << 62);
+    // ARITH: `fp` is a `.tim` offset, far below `1 << 62`.
+    #[allow(clippy::arithmetic_side_effects)]
+    let shifted = output.fp << 2;
+    shifted
+        | if output.floor_data.is_some() {
+            NON_LEAF_NODE_HAS_FLOOR
+        } else {
+            0
+        }
+        | if output.has_terms {
+            NON_LEAF_NODE_HAS_TERMS
+        } else {
+            0
+        }
+}
+
+/// `TrieBuilder.freezeNode`: writes one node and returns its fp relative to
+/// `index_start`.
+// ARITH: every subtraction is `node position - child position`, and children
+// are always written before their parent (the frontier freezes deepest
+// first), so each is positive; the shifts assemble header fields whose widths
+// are bounded by construction (byte counts 1..=8, a strategy code < 4, a
+// strategy length 1..=32, a label < 256).
 #[allow(clippy::arithmetic_side_effects)]
-fn freeze_node(node: &FrontierNode, start: usize, tip: &mut Vec<u8>) -> u64 {
-    let bottom_fp = (tip.len() - start) as u64;
-    let children = node.child_labels.len();
-    match children {
+fn freeze_node(node: &FrontierNode<'_>, index_start: u64, tip: &mut Vec<u8>) -> u64 {
+    let bottom_fp = tip.len() as u64 - index_start;
+    match node.children.len() {
         0 => {
             let output = node
                 .output
-                .as_ref()
-                .expect("a trie leaf always carries an output");
+                .expect("a trie node with no children always has an output");
             let fp_bytes = bytes_required(output.fp);
             let header = SIGN_NO_CHILDREN
                 | (((fp_bytes - 1) as u32) << 2)
@@ -1057,68 +285,58 @@ fn freeze_node(node: &FrontierNode, start: usize, tip: &mut Vec<u8>) -> u64 {
             }
         }
         1 => {
-            let child_delta = bottom_fp - node.child_fps[0];
-            debug_assert!(child_delta > 0);
+            let (label, child_fp) = node.children[0];
+            let child_delta = bottom_fp - child_fp;
             let child_bytes = bytes_required(child_delta);
-            let output_bytes = node
-                .output
-                .as_ref()
-                .map_or(0, |o| bytes_required(o.fp << 2));
-            let sign = if node.output.is_some() {
-                SIGN_SINGLE_CHILD_WITH_OUTPUT
-            } else {
-                SIGN_SINGLE_CHILD_WITHOUT_OUTPUT
+            let (sign, output_bytes) = match node.output {
+                Some(o) => (SIGN_SINGLE_CHILD_WITH_OUTPUT, bytes_required(o.fp << 2)),
+                // Java computes 0 here and writes `(0 - 1) << 5` into the
+                // header byte; only the low eight bits survive the cast, so
+                // the field reads back as 7 and is never consulted.
+                None => (SIGN_SINGLE_CHILD_WITHOUT_OUTPUT, 0),
             };
-            // With no output, Java's `(0 - 1) << 5` sets bits 5..31 of an int
-            // that is then truncated to a byte: bits 5-7 set. Reproduced
-            // rather than tidied, so the header byte is Java's.
-            let header =
-                sign as i32 | (((child_bytes - 1) as i32) << 2) | ((output_bytes as i32 - 1) << 5);
+            let header = (sign as i64)
+                | (((child_bytes - 1) as i64) << 2)
+                | ((output_bytes as i64 - 1) << 5);
             tip.push(header as u8);
-            tip.push(node.child_labels[0]);
+            tip.push(label);
             write_n_bytes(tip, child_delta, child_bytes);
-            if let Some(output) = &node.output {
-                write_n_bytes(tip, output.encoded_fp(), output_bytes);
+            if let Some(output) = node.output {
+                write_n_bytes(tip, encode_fp(output), output_bytes);
                 if let Some(floor) = &output.floor_data {
                     tip.extend_from_slice(floor);
                 }
             }
         }
-        _ => {
-            let min_label = u32::from(node.child_labels[0]);
-            let max_label = u32::from(node.child_labels[children - 1]);
+        n => {
+            let min_label = u32::from(node.children[0].0);
+            let max_label = u32::from(node.children[n - 1].0);
             debug_assert!(max_label > min_label);
-            let strategy = ChildSaveStrategy::choose(min_label, max_label, children as u32);
-            let strategy_bytes = strategy.need_bytes(min_label, max_label, children as u32);
-            debug_assert!((1..=32).contains(&strategy_bytes));
-            let max_child_delta = bottom_fp - node.child_fps[0];
-            let children_fp_bytes = bytes_required(max_child_delta);
-            let output_bytes = node
-                .output
-                .as_ref()
-                .map_or(1, |o| bytes_required(o.fp << 2));
-            let header = SIGN_MULTI_CHILDREN
-                | (((children_fp_bytes - 1) as u32) << 2)
-                | (u32::from(node.output.is_some()) << 5)
-                | (((output_bytes - 1) as u32) << 6)
-                | (strategy.code() << 9)
-                | ((strategy_bytes - 1) << 11)
-                | (min_label << 16);
-            write_n_bytes(tip, u64::from(header), 3);
-            if let Some(output) = &node.output {
-                write_n_bytes(tip, output.encoded_fp(), output_bytes);
+            let (strategy, strategy_bytes) = choose_strategy(min_label, max_label, n as u32);
+            // The first child is written first, so it is the furthest back.
+            let children_fp_bytes = bytes_required(bottom_fp - node.children[0].1);
+            let output_bytes = node.output.map_or(1, |o| bytes_required(o.fp << 2));
+            let header = u64::from(SIGN_MULTI_CHILDREN)
+                | (((children_fp_bytes - 1) as u64) << 2)
+                | (u64::from(node.output.is_some()) << 5)
+                | (((output_bytes - 1) as u64) << 6)
+                | (u64::from(strategy) << 9)
+                | (u64::from(strategy_bytes - 1) << 11)
+                | (u64::from(min_label) << 16);
+            write_n_bytes(tip, header, 3);
+            if let Some(output) = node.output {
+                write_n_bytes(tip, encode_fp(output), output_bytes);
                 if output.floor_data.is_some() {
-                    tip.push((children - 1) as u8);
+                    tip.push((n - 1) as u8);
                 }
             }
             let strategy_start = tip.len();
-            strategy.save(&node.child_labels, tip);
+            save_strategy(strategy, &node.children, tip);
             debug_assert_eq!(tip.len() - strategy_start, strategy_bytes as usize);
-            for &child_fp in &node.child_fps {
-                debug_assert!(bottom_fp > child_fp);
+            for &(_, child_fp) in &node.children {
                 write_n_bytes(tip, bottom_fp - child_fp, children_fp_bytes);
             }
-            if let Some(floor) = node.output.as_ref().and_then(|o| o.floor_data.as_ref()) {
+            if let Some(floor) = node.output.and_then(|o| o.floor_data.as_ref()) {
                 tip.extend_from_slice(floor);
             }
         }
@@ -1126,224 +344,608 @@ fn freeze_node(node: &FrontierNode, start: usize, tip: &mut Vec<u8>) -> u64 {
     bottom_fp
 }
 
-/// `TrieBuilder.ChildSaveStrategy`: how a multi-child node stores its
-/// children's labels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ChildSaveStrategy {
-    /// A presence bitset over `min..=max`.
-    Bits,
-    /// The labels after the first, in order.
-    Array,
-    /// The max label, then the labels in `min..max` that are absent.
-    ReverseArray,
+/// `ChildSaveStrategy.needBytes` for each strategy.
+// ARITH: `max_label > min_label`, both < 256, and `count` is the number of
+// distinct labels in `min_label..=max_label`, so it is at most their distance
+// plus one: every difference below is non-negative and every sum tiny.
+#[allow(clippy::arithmetic_side_effects)]
+fn strategy_bytes(strategy: u32, min_label: u32, max_label: u32, count: u32) -> u32 {
+    let distance = max_label - min_label + 1;
+    match strategy {
+        CHILD_STRATEGY_BITS => distance.div_ceil(8),
+        CHILD_STRATEGY_ARRAY => count - 1,
+        _ => distance - count + 1,
+    }
 }
 
-impl ChildSaveStrategy {
-    fn code(self) -> u32 {
-        match self {
-            Self::ReverseArray => 0,
-            Self::Array => 1,
-            Self::Bits => 2,
+/// `ChildSaveStrategy.choose`: the cheapest strategy, ties to the earlier
+/// one in `BITS, ARRAY, REVERSE_ARRAY` order.
+fn choose_strategy(min_label: u32, max_label: u32, count: u32) -> (u32, u32) {
+    let mut best = (CHILD_STRATEGY_BITS, u32::MAX);
+    for strategy in [
+        CHILD_STRATEGY_BITS,
+        CHILD_STRATEGY_ARRAY,
+        CHILD_STRATEGY_REVERSE_ARRAY,
+    ] {
+        let cost = strategy_bytes(strategy, min_label, max_label, count);
+        if cost < best.1 {
+            best = (strategy, cost);
         }
     }
+    best
+}
 
-    // ARITH: labels are bytes with `max > min` and `count` distinct labels
-    // in `min..=max`, so `count <= max - min + 1` and every result is in
-    // 1..=32.
-    #[allow(clippy::arithmetic_side_effects)]
-    fn need_bytes(self, min: u32, max: u32, count: u32) -> u32 {
-        let distance = max - min + 1;
-        match self {
-            Self::Bits => distance.div_ceil(8),
-            Self::Array => count - 1,
-            Self::ReverseArray => distance - count + 1,
-        }
-    }
-
-    /// `ChildSaveStrategy.choose`: the cheapest, ties to the earlier of
-    /// `BITS`, `ARRAY`, `REVERSE_ARRAY`.
-    fn choose(min: u32, max: u32, count: u32) -> Self {
-        let mut best = Self::Bits;
-        let mut best_bytes = best.need_bytes(min, max, count);
-        for s in [Self::Array, Self::ReverseArray] {
-            let b = s.need_bytes(min, max, count);
-            if b < best_bytes {
-                best = s;
-                best_bytes = b;
-            }
-        }
-        best
-    }
-
-    // ARITH: labels ascend strictly, so `label - previous` is positive and
-    // `presence_index` stays below 8 after each drain; `last + 1` stays below
-    // the next label, itself at most 255.
-    #[allow(clippy::arithmetic_side_effects)]
-    fn save(self, labels: &[u8], tip: &mut Vec<u8>) {
-        match self {
-            Self::Bits => {
-                let mut presence_bits: u8 = 1;
-                let mut presence_index = 0u32;
-                let mut previous = labels[0];
-                for &label in &labels[1..] {
-                    presence_index += u32::from(label - previous);
-                    while presence_index >= 8 {
-                        tip.push(presence_bits);
-                        presence_bits = 0;
-                        presence_index -= 8;
-                    }
-                    presence_bits |= 1 << presence_index;
-                    previous = label;
+/// `ChildSaveStrategy.save` for each strategy.
+// ARITH: labels are strictly ascending bytes, so every difference is in
+// `1..=255` and the presence index stays below 8 after each flush.
+#[allow(clippy::arithmetic_side_effects)]
+fn save_strategy(strategy: u32, children: &[(u8, u64)], tip: &mut Vec<u8>) {
+    match strategy {
+        CHILD_STRATEGY_BITS => {
+            let mut bits: u8 = 1; // the first label is always present
+            let mut index = 0u32;
+            let mut previous = children[0].0;
+            for &(label, _) in &children[1..] {
+                index += u32::from(label - previous);
+                while index >= 8 {
+                    tip.push(bits);
+                    bits = 0;
+                    index -= 8;
                 }
-                tip.push(presence_bits);
+                bits |= 1 << index;
+                previous = label;
             }
-            Self::Array => tip.extend_from_slice(&labels[1..]),
-            Self::ReverseArray => {
-                tip.push(labels[labels.len() - 1]);
-                let mut last = labels[0];
-                for &label in &labels[1..] {
+            tip.push(bits);
+        }
+        CHILD_STRATEGY_ARRAY => {
+            tip.extend(children[1..].iter().map(|&(label, _)| label));
+        }
+        _ => {
+            // REVERSE_ARRAY: the max label, then every absent label between.
+            tip.push(children[children.len() - 1].0);
+            let mut last = u32::from(children[0].0);
+            for &(label, _) in &children[1..] {
+                last += 1;
+                while last < u32::from(label) {
+                    tip.push(last as u8);
                     last += 1;
-                    while last < label {
-                        tip.push(last);
-                        last += 1;
-                    }
                 }
             }
         }
     }
+}
+
+/// `PendingBlock`.
+struct PendingBlock {
+    prefix: Vec<u8>,
+    fp: u64,
+    has_terms: bool,
+    is_floor: bool,
+    /// `-1` for the first block of a floor run (and for a non-floor block).
+    floor_lead_byte: i32,
+    /// This block's own trie, once [`compile_index`] has run.
+    index: Option<TrieBuilder>,
+    /// The tries of the sub-blocks this block points to, until
+    /// [`compile_index`] folds them into the first block of its run.
+    sub_indices: Vec<TrieBuilder>,
+}
+
+enum PendingEntry {
+    /// Index into the field's term list.
+    Term(usize),
+    Block(PendingBlock),
+}
+
+/// The per-block buffers `write_block` fills, kept across blocks as Java's
+/// `TermsWriter` keeps its `suffixWriter`/`statsWriter`/`metaWriter` -- one
+/// allocation each per field rather than per block.
+#[derive(Default)]
+struct BlockScratch {
+    suffixes: Vec<u8>,
+    suffix_lengths: Vec<u8>,
+    stats: StatsWriter,
+    term_indices: Vec<usize>,
+    meta: Vec<u8>,
+}
+
+/// `StatsWriter`: `docFreq`/`totalTermFreq` per term, with runs of terms
+/// that occur once (`docFreq == 1`, and `totalTermFreq == 1` when freqs are
+/// indexed) collapsed into one run-length entry.
+#[derive(Default)]
+struct StatsWriter {
+    out: Vec<u8>,
+    has_freqs: bool,
+    singletons: i32,
+}
+
+impl StatsWriter {
+    // ARITH: `ttf >= df >= 1` for every indexed term (validated by the
+    // postings writer before any block is written), and a block holds at
+    // most a few dozen terms, so neither the difference nor the shifts can
+    // overflow.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn add(&mut self, df: i32, ttf: i64) {
+        if df == 1 && (!self.has_freqs || ttf == 1) {
+            self.singletons += 1;
+        } else {
+            self.finish();
+            self.out.write_vint(df << 1);
+            if self.has_freqs {
+                self.out.write_vlong(ttf - i64::from(df));
+            }
+        }
+    }
+
+    // ARITH: `singletons >= 1` in the branch that subtracts.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn finish(&mut self) {
+        if self.singletons > 0 {
+            self.out.write_vint(((self.singletons - 1) << 1) | 1);
+            self.singletons = 0;
+        }
+    }
+}
+
+/// `TermsWriter`, for one field.
+struct TermsWriter<'t, 'o, F> {
+    terms: &'t [BlockTerm<'t>],
+    has_freqs: bool,
+    tim: &'o mut Vec<u8>,
+    encode_meta: F,
+    pending: Vec<PendingEntry>,
+    prefix_starts: Vec<usize>,
+    last_term: Vec<u8>,
+    scratch: BlockScratch,
+}
+
+/// Writes one field's terms into `.tim` blocks and its trie into `.tip`,
+/// returning where the trie landed.
+///
+/// `terms` must be non-empty, strictly ascending and unique; `has_freqs` is
+/// `indexOptions != DOCS`. `encode_meta(out, indices)` must append the
+/// postings metadata of `terms[i]` for each `i` in `indices`, in order, as
+/// `PostingsWriterBase.encodeTerm` does with `absolute = true` for the first
+/// term and deltas after -- the block writer calls it once per block, with
+/// that block's own terms.
+pub(crate) fn write_field_terms<F>(
+    tim: &mut Vec<u8>,
+    tip: &mut Vec<u8>,
+    terms: &[BlockTerm<'_>],
+    has_freqs: bool,
+    encode_meta: F,
+) -> TrieLocation
+where
+    F: FnMut(&mut Vec<u8>, &[usize]),
+{
+    assert!(!terms.is_empty(), "a field with no terms writes no blocks");
+    let mut w = TermsWriter {
+        terms,
+        has_freqs,
+        tim,
+        encode_meta,
+        pending: Vec::new(),
+        prefix_starts: Vec::new(),
+        last_term: Vec::new(),
+        scratch: BlockScratch::default(),
+    };
+    for (i, term) in terms.iter().enumerate() {
+        w.push_term(term.bytes);
+        w.pending.push(PendingEntry::Term(i));
+    }
+    // `finish()`: two empty terms flush every open prefix, then the root.
+    w.push_term(&[]);
+    w.push_term(&[]);
+    let all = w.pending.len();
+    w.write_blocks(0, all);
+    debug_assert_eq!(w.pending.len(), 1);
+    let Some(PendingEntry::Block(root)) = w.pending.pop() else {
+        unreachable!("write_blocks(0, all) leaves exactly the root block");
+    };
+    debug_assert!(root.prefix.is_empty());
+    root.index
+        .expect("write_blocks compiles the index of the block it leaves")
+        .save(tip)
+}
+
+impl<F> TermsWriter<'_, '_, F>
+where
+    F: FnMut(&mut Vec<u8>, &[usize]),
+{
+    /// `TermsWriter.pushTerm`: before `text` joins the stack, close every
+    /// prefix of the previous term that `text` does not share and that has
+    /// gathered at least `MIN_ITEMS_IN_BLOCK` entries.
+    // ARITH: `prefix_starts[i]` records `pending.len()` at the time prefix
+    // `i` opened, and entries are only removed from above it (a
+    // `write_blocks` for a longer prefix replaces entries past its own start
+    // with one), so `pending.len() - prefix_starts[i]` is non-negative.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn push_term(&mut self, text: &[u8]) {
+        let prefix_length = common_prefix_len(&self.last_term, text);
+        for i in (prefix_length..self.last_term.len()).rev() {
+            let top = self.pending.len() - self.prefix_starts[i];
+            if top >= MIN_ITEMS_IN_BLOCK {
+                self.write_blocks(i + 1, top);
+                // Java follows this with `prefixStarts[i] -= prefixTopSize -
+                // 1`, which can go negative and is never read: every slot
+                // from `prefix_length` up is either reset below for `text`
+                // or lies past `text`'s length, and is reset before a later
+                // term can read it.
+            }
+        }
+        if self.prefix_starts.len() < text.len() {
+            self.prefix_starts.resize(text.len(), 0);
+        }
+        for start in &mut self.prefix_starts[prefix_length..text.len()] {
+            *start = self.pending.len();
+        }
+        self.last_term.clear();
+        self.last_term.extend_from_slice(text);
+    }
+
+    /// The byte after `prefix_length` of an entry, or `None` for the term
+    /// equal to the prefix itself.
+    fn suffix_lead_label(&self, entry: &PendingEntry, prefix_length: usize) -> Option<u8> {
+        match entry {
+            PendingEntry::Term(i) => self.terms[*i].bytes.get(prefix_length).copied(),
+            PendingEntry::Block(b) => Some(b.prefix[prefix_length]),
+        }
+    }
+
+    /// `TermsWriter.writeBlocks`: writes the top `count` pending entries,
+    /// all sharing `last_term[..prefix_length]`, as one block or a run of
+    /// floor blocks, and replaces them on the stack with the first block.
+    // ARITH: `count <= pending.len()` (it is either the whole stack or a
+    // prefix's span of it), and the index loop keeps `next_block_start <= i
+    // <= end`.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn write_blocks(&mut self, prefix_length: usize, count: usize) {
+        debug_assert!(count > 0);
+        let end = self.pending.len();
+        let start = end - count;
+        let mut last_lead: Option<Option<u8>> = None;
+        let mut has_terms = false;
+        let mut has_sub_blocks = false;
+        let mut next_block_start = start;
+        let mut next_floor_lead: i32 = -1;
+        let mut new_blocks: Vec<PendingBlock> = Vec::new();
+        for i in start..end {
+            let lead = self.suffix_lead_label(&self.pending[i], prefix_length);
+            if last_lead != Some(lead) {
+                let items = i - next_block_start;
+                if items >= MIN_ITEMS_IN_BLOCK && end - next_block_start > MAX_ITEMS_IN_BLOCK {
+                    let is_floor = items < count;
+                    new_blocks.push(self.write_block(
+                        prefix_length,
+                        is_floor,
+                        next_floor_lead,
+                        next_block_start,
+                        i,
+                        has_terms,
+                        has_sub_blocks,
+                    ));
+                    has_terms = false;
+                    has_sub_blocks = false;
+                    next_floor_lead = lead.map_or(-1, i32::from);
+                    next_block_start = i;
+                }
+                last_lead = Some(lead);
+            }
+            match self.pending[i] {
+                PendingEntry::Term(_) => has_terms = true,
+                PendingEntry::Block(_) => has_sub_blocks = true,
+            }
+        }
+        if next_block_start < end {
+            let is_floor = end - next_block_start < count;
+            new_blocks.push(self.write_block(
+                prefix_length,
+                is_floor,
+                next_floor_lead,
+                next_block_start,
+                end,
+                has_terms,
+                has_sub_blocks,
+            ));
+        }
+        let first = compile_index(new_blocks);
+        self.pending.truncate(start);
+        self.pending.push(PendingEntry::Block(first));
+    }
+
+    /// `TermsWriter.writeBlock`: writes `pending[start..end]` as one `.tim`
+    /// block and returns its pending entry. The sub-block entries' tries are
+    /// moved into the returned block's `sub_indices`.
+    // ARITH: `end > start`; a suffix is `len - prefix_length` of an entry that
+    // extends the prefix, and a sub-block was written before this block, so
+    // `start_fp - block.fp > 0`; lengths are in-memory buffer sizes.
+    #[allow(clippy::arithmetic_side_effects, clippy::too_many_arguments)]
+    fn write_block(
+        &mut self,
+        prefix_length: usize,
+        is_floor: bool,
+        floor_lead: i32,
+        start: usize,
+        end: usize,
+        has_terms: bool,
+        has_sub_blocks: bool,
+    ) -> PendingBlock {
+        let start_fp = self.tim.len() as u64;
+        let has_floor_lead = is_floor && floor_lead != -1;
+        let mut prefix = self.last_term[..prefix_length].to_vec();
+        let num_entries = end - start;
+        let is_last_in_floor = end == self.pending.len();
+        self.tim
+            .write_vint(((num_entries as i32) << 1) | i32::from(is_last_in_floor));
+
+        let is_leaf = !has_sub_blocks;
+        let mut scratch = std::mem::take(&mut self.scratch);
+        let BlockScratch {
+            suffixes,
+            suffix_lengths,
+            stats,
+            term_indices,
+            meta,
+        } = &mut scratch;
+        suffixes.clear();
+        suffix_lengths.clear();
+        stats.out.clear();
+        stats.has_freqs = self.has_freqs;
+        stats.singletons = 0;
+        term_indices.clear();
+        meta.clear();
+        let mut sub_indices = Vec::new();
+        for entry in &mut self.pending[start..end] {
+            match entry {
+                PendingEntry::Term(i) => {
+                    let term = &self.terms[*i];
+                    let suffix = &term.bytes[prefix_length..];
+                    let len = suffix.len() as i32;
+                    suffix_lengths.write_vint(if is_leaf { len } else { len << 1 });
+                    suffixes.extend_from_slice(suffix);
+                    stats.add(term.doc_freq, term.total_term_freq);
+                    term_indices.push(*i);
+                }
+                PendingEntry::Block(block) => {
+                    debug_assert!(!is_leaf);
+                    let suffix = &block.prefix[prefix_length..];
+                    debug_assert!(!suffix.is_empty());
+                    suffix_lengths.write_vint(((suffix.len() as i32) << 1) | 1);
+                    suffixes.extend_from_slice(suffix);
+                    debug_assert!(block.fp < start_fp);
+                    suffix_lengths.write_vlong((start_fp - block.fp) as i64);
+                    sub_indices.push(
+                        block
+                            .index
+                            .take()
+                            .expect("a pending sub-block always has its index compiled"),
+                    );
+                }
+            }
+        }
+        stats.finish();
+
+        // Suffix bytes, always `NO_COMPRESSION` (code 0): see the module doc.
+        let token = ((suffixes.len() as u64) << 3) | if is_leaf { 0x04 } else { 0 };
+        self.tim.write_vlong(token as i64);
+        self.tim.write_bytes(suffixes);
+
+        let n = suffix_lengths.len();
+        if suffix_lengths[1..].iter().all(|&b| b == suffix_lengths[0]) {
+            self.tim.write_vint(((n as i32) << 1) | 1);
+            self.tim.push(suffix_lengths[0]);
+        } else {
+            self.tim.write_vint((n as i32) << 1);
+            self.tim.write_bytes(suffix_lengths);
+        }
+
+        self.tim.write_vint(stats.out.len() as i32);
+        self.tim.write_bytes(&stats.out);
+
+        (self.encode_meta)(meta, term_indices);
+        self.tim.write_vint(meta.len() as i32);
+        self.tim.write_bytes(meta);
+        self.scratch = scratch;
+
+        if has_floor_lead {
+            prefix.push(floor_lead as u8);
+        }
+        PendingBlock {
+            prefix,
+            fp: start_fp,
+            has_terms,
+            is_floor,
+            floor_lead_byte: floor_lead,
+            index: None,
+            sub_indices,
+        }
+    }
+}
+
+/// `PendingBlock.compileIndex`: builds the trie for a run of blocks written
+/// for one prefix (a single block, or a floor run) and returns the first
+/// block carrying it.
+// ARITH: follow-on floor blocks are written after the first, so their fp
+// deltas are positive; the count is at most the handful of blocks one
+// `write_blocks` call produces.
+#[allow(clippy::arithmetic_side_effects)]
+fn compile_index(blocks: Vec<PendingBlock>) -> PendingBlock {
+    let mut blocks = blocks.into_iter();
+    let mut first = blocks
+        .next()
+        .expect("write_blocks always writes at least one block");
+    let rest: Vec<PendingBlock> = blocks.collect();
+    debug_assert_eq!(first.is_floor, !rest.is_empty());
+    let floor_data = first.is_floor.then(|| {
+        let mut data = Vec::new();
+        data.write_vint(rest.len() as i32);
+        for sub in &rest {
+            debug_assert!(sub.floor_lead_byte != -1 && sub.fp > first.fp);
+            data.push(sub.floor_lead_byte as u8);
+            data.write_vlong((((sub.fp - first.fp) << 1) | u64::from(sub.has_terms)) as i64);
+        }
+        data
+    });
+    let mut trie = TrieBuilder::new(
+        &first.prefix,
+        TrieOutput {
+            fp: first.fp,
+            has_terms: first.has_terms,
+            floor_data,
+        },
+    );
+    for sub in std::mem::take(&mut first.sub_indices) {
+        trie.append(sub);
+    }
+    for block in rest {
+        for sub in block.sub_indices {
+            trie.append(sub);
+        }
+    }
+    first.index = Some(trie);
+    first
 }
 
 #[cfg(test)]
 mod tests {
-    // A test's `i + 1` is not a length read off disk; see
-    // `docs/arithmetic-gate.md`'s "Test code" section.
     #![allow(clippy::arithmetic_side_effects)]
 
     use super::*;
 
-    #[test]
-    fn child_strategy_matches_javas_choice_and_byte_counts() {
-        // Dense run: BITS wins (one byte covers eight labels).
-        let dense: Vec<u8> = (b'a'..=b'h').collect();
-        assert_eq!(
-            ChildSaveStrategy::choose(97, 104, dense.len() as u32),
-            ChildSaveStrategy::Bits
-        );
-        // Two far-apart labels: ARRAY (one byte) beats BITS (32 bytes).
-        assert_eq!(
-            ChildSaveStrategy::choose(0, 255, 2),
-            ChildSaveStrategy::Array
-        );
-        // Nearly full range with one hole: REVERSE_ARRAY (max + the hole).
-        assert_eq!(
-            ChildSaveStrategy::choose(0, 255, 255),
-            ChildSaveStrategy::ReverseArray
-        );
-        for (labels, strategy) in [
-            (vec![1u8, 3, 4, 200], ChildSaveStrategy::Array),
-            (vec![10u8, 11, 12, 15, 17, 30], ChildSaveStrategy::Bits),
-            (
-                (0u8..=254).filter(|&b| b != 7).collect(),
-                ChildSaveStrategy::ReverseArray,
-            ),
-        ] {
-            let mut out = Vec::new();
-            strategy.save(&labels, &mut out);
-            let (min, max) = (u32::from(labels[0]), u32::from(*labels.last().unwrap()));
-            assert_eq!(
-                out.len() as u32,
-                strategy.need_bytes(min, max, labels.len() as u32),
-                "{strategy:?}"
-            );
+    fn out(fp: u64) -> TrieOutput {
+        TrieOutput {
+            fp,
+            has_terms: true,
+            floor_data: None,
         }
-        let mut rev = Vec::new();
-        ChildSaveStrategy::ReverseArray.save(&[1, 2, 4, 6, 7, 8, 9, 10], &mut rev);
-        assert_eq!(rev, vec![10, 3, 5], "Java's own doc example");
-        let mut bits = Vec::new();
-        ChildSaveStrategy::Bits.save(&[0, 1, 9], &mut bits);
-        assert_eq!(bits, vec![0b0000_0011, 0b0000_0010]);
     }
 
     #[test]
-    fn common_prefix_matches_a_bytewise_scan() {
-        let words: [&[u8]; 9] = [
-            b"",
-            b"a",
-            b"ab",
-            b"abcdefgh",
-            b"abcdefghi",
-            b"abcdefgz",
-            b"abcdefghijklmnopq",
-            b"abcdefghijklmnopz",
-            b"zzzzzzzzzzzz",
+    fn bytes_required_matches_java() {
+        assert_eq!(bytes_required(0), 1);
+        assert_eq!(bytes_required(255), 1);
+        assert_eq!(bytes_required(256), 2);
+        assert_eq!(bytes_required(u64::MAX), 8);
+    }
+
+    #[test]
+    fn strategy_choice_prefers_bits_then_array_then_reverse() {
+        // Dense run a..h: BITS 1 byte, ARRAY 7, REVERSE 1 -> BITS (tie, earlier).
+        assert_eq!(choose_strategy(97, 104, 8), (CHILD_STRATEGY_BITS, 1));
+        // Two labels far apart: BITS 26, ARRAY 1, REVERSE 200 -> ARRAY.
+        assert_eq!(choose_strategy(0, 200, 2), (CHILD_STRATEGY_ARRAY, 1));
+        // 0..=100 with one gap: BITS 13, ARRAY 99, REVERSE 2 -> REVERSE_ARRAY.
+        assert_eq!(
+            choose_strategy(0, 100, 100),
+            (CHILD_STRATEGY_REVERSE_ARRAY, 2)
+        );
+    }
+
+    #[test]
+    fn strategies_write_their_computed_length() {
+        let cases: Vec<Vec<u8>> = vec![
+            (b'a'..=b'h').collect(),
+            vec![0, 200],
+            (0..=100).filter(|&l| l != 50).collect(),
+            vec![1, 9, 17, 64, 65, 255],
         ];
-        for a in words {
-            for b in words {
-                let want = a.iter().zip(b).take_while(|(x, y)| x == y).count();
-                assert_eq!(common_prefix(a, b), want, "{a:?} {b:?}");
+        for labels in cases {
+            let children: Vec<(u8, u64)> = labels.iter().map(|&l| (l, 0)).collect();
+            let (min, max) = (u32::from(labels[0]), u32::from(*labels.last().unwrap()));
+            for strategy in [
+                CHILD_STRATEGY_BITS,
+                CHILD_STRATEGY_ARRAY,
+                CHILD_STRATEGY_REVERSE_ARRAY,
+            ] {
+                let mut tip = Vec::new();
+                save_strategy(strategy, &children, &mut tip);
+                assert_eq!(
+                    tip.len() as u32,
+                    strategy_bytes(strategy, min, max, labels.len() as u32),
+                    "strategy {strategy} labels {labels:?}"
+                );
             }
         }
     }
 
     #[test]
-    fn bytes_required_is_at_least_one() {
-        assert_eq!(bytes_required(0), 1);
-        assert_eq!(bytes_required(0xFF), 1);
-        assert_eq!(bytes_required(0x100), 2);
-        assert_eq!(bytes_required(u64::MAX), 8);
+    fn reverse_array_lists_max_then_the_gaps() {
+        let children: Vec<(u8, u64)> = [1u8, 2, 4, 6, 7, 8, 9, 10]
+            .iter()
+            .map(|&l| (l, 0))
+            .collect();
+        let mut tip = Vec::new();
+        save_strategy(CHILD_STRATEGY_REVERSE_ARRAY, &children, &mut tip);
+        assert_eq!(tip, vec![10, 3, 5]);
     }
 
     #[test]
-    fn lowercase_ascii_round_trips_through_the_reader() {
-        let mut cases: Vec<Vec<u8>> = vec![
-            b"abcdefghijklmnopqrstuvwxyz0123456789".to_vec(),
-            b"lowercase-with.dots_and_digits_42".to_vec(),
-        ];
-        // One exception per 32 bytes is allowed, including a gap over 0xFF.
-        let mut long = vec![b'q'; 600];
-        long[3] = b'Q';
-        long[500] = 0xC3;
-        cases.push(long);
-        for input in cases {
-            let mut out = Vec::new();
-            assert!(
-                compress_lowercase_ascii(&input, &mut Vec::new(), &mut out),
-                "{input:?}"
-            );
-            assert!(out.len() < input.len() + 8);
-            let mut decoded = vec![0u8; input.len()];
-            let mut r = lucene_store::data_input::SliceInput::new(&out);
-            crate::blocktree::decompress_lowercase_ascii(&mut r, &mut decoded).unwrap();
-            assert_eq!(decoded, input);
-        }
-    }
-
-    /// The same real-Lucene vector `blocktree`'s decoder is pinned by
-    /// (`LowercaseAsciiCompression.compress` run from lucene-core-10.5.0 on
-    /// this string): the port must emit Java's bytes exactly, exception list
-    /// included.
-    #[test]
-    fn lowercase_ascii_is_byte_identical_to_real_lucene() {
-        let original = b"the-quick_brown.fox.jumps_over-42.lazy_dogs.1234567890Z!abcdefghij";
-        let expected_hex = "7569664ef236aaa4aca0a3b3b0b8af8fa7b0b90fab362e3174607077a6b38e95134fad62fbbaa0e53068b4cf125394d5161701365a";
-        let mut out = Vec::new();
-        assert!(compress_lowercase_ascii(
-            original,
-            &mut Vec::new(),
-            &mut out
-        ));
-        let hex: String = out.iter().map(|b| format!("{b:02x}")).collect();
-        assert_eq!(hex, expected_hex);
+    fn bits_marks_each_present_label() {
+        let children: Vec<(u8, u64)> = [3u8, 4, 12].iter().map(|&l| (l, 0)).collect();
+        let mut tip = Vec::new();
+        save_strategy(CHILD_STRATEGY_BITS, &children, &mut tip);
+        // Offsets 0, 1 and 9 from label 3.
+        assert_eq!(tip, vec![0b0000_0011, 0b0000_0010]);
     }
 
     #[test]
-    fn lowercase_ascii_refuses_short_or_exception_heavy_input() {
-        let mut out = Vec::new();
-        assert!(!compress_lowercase_ascii(b"abc", &mut Vec::new(), &mut out));
-        assert!(!compress_lowercase_ascii(
-            b"ABCDEFGHIJKLMNOP",
-            &mut Vec::new(),
-            &mut out
-        ));
+    fn single_leaf_trie_is_one_no_children_node_plus_pad() {
+        let trie = TrieBuilder::new(b"", out(0x1234));
+        let mut tip = vec![0xAA; 5]; // a header already in the file
+        let loc = trie.save(&mut tip);
+        assert_eq!(loc.index_start, 5);
+        assert_eq!(loc.root_fp, 0);
+        assert_eq!(
+            &tip[5..],
+            &[
+                (SIGN_NO_CHILDREN | (1 << 2) | LEAF_NODE_HAS_TERMS) as u8,
+                0x34,
+                0x12,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+            ]
+        );
+        assert_eq!(loc.index_end, tip.len() as u64);
+    }
+
+    #[test]
+    fn append_keeps_the_first_empty_output() {
+        let mut a = TrieBuilder::new(b"", out(1));
+        a.append(TrieBuilder::new(b"", out(2)));
+        a.append(TrieBuilder::new(b"b", out(3)));
+        assert_eq!(a.empty_output, Some(out(1)));
+        assert_eq!(a.entries.len(), 1);
+        let mut b = TrieBuilder::new(b"a", out(1));
+        b.append(TrieBuilder::new(b"", out(9)));
+        assert_eq!(b.empty_output, Some(out(9)));
+    }
+
+    #[test]
+    fn stats_writer_run_length_encodes_singletons() {
+        let mut s = StatsWriter {
+            out: Vec::new(),
+            has_freqs: true,
+            singletons: 0,
+        };
+        s.add(1, 1);
+        s.add(1, 1);
+        s.add(1, 3); // freq 3: not a singleton when freqs are indexed
+        s.add(1, 1);
+        s.finish();
+        assert_eq!(s.out, vec![(1 << 1) | 1, 1 << 1, 2, 1]);
+        let mut docs_only = StatsWriter {
+            out: Vec::new(),
+            has_freqs: false,
+            singletons: 0,
+        };
+        docs_only.add(1, 7);
+        docs_only.add(5, 5);
+        docs_only.finish();
+        assert_eq!(docs_only.out, vec![1, 10]);
     }
 }

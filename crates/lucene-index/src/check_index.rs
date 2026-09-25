@@ -10054,6 +10054,16 @@ mod tests {
             "patch_tim_stats handles a field that is one leaf block"
         );
         let suffix_len = (code_l as u64 >> 3) as usize;
+        // This walks exactly one block. The writer splits a field past 48
+        // terms, and a patch applied to the first of several blocks would
+        // leave the rest untouched while the test still passed -- so require
+        // the one-block shape rather than assume it.
+        assert_eq!(code_l & 0x04, 0x04, "patch_tim_stats needs a leaf block");
+        assert_eq!(
+            code_l & 0x03,
+            0,
+            "patch_tim_stats needs uncompressed suffixes"
+        );
         let suffix_at = input.position();
         input.seek(suffix_at + suffix_len).unwrap();
         let suffix_bytes = &tim[suffix_at..suffix_at + suffix_len];
@@ -10072,32 +10082,34 @@ mod tests {
         input.seek(stats_at + stats_len).unwrap();
         let meta_len = input.read_vint().unwrap() as usize;
         let meta_at = input.position();
+        assert_eq!(
+            meta_at + meta_len,
+            tim.len() - codec_util::FOOTER_LENGTH,
+            "patch_tim_stats needs a .tim holding exactly one block"
+        );
 
-        // Decode the stats region: `vint(docFreq << 1)` plus, for a field
-        // with freqs, `vlong(totalTermFreq - docFreq)` -- or, for a run of
-        // singletons (`docFreq == totalTermFreq == 1`), one
-        // `vint((runLength - 1) << 1 | 1)`, which `StatsWriter` emits and
-        // this port's writer now does too. The re-encoding below spells every
-        // pair out, which readers accept equally.
+        // Decode the stats region. The fixtures this patches have no
+        // singleton term (`docFreq == 1` and `totalTermFreq == 1`), which is
+        // the only kind the writer run-length encodes, so every entry is
+        // `vint(docFreq << 1)` plus, for a field with freqs,
+        // `vlong(totalTermFreq - docFreq)` -- asserted below.
         //
         // **Only valid for a field that indexes freqs.** A DOCS-only field
-        // writes no delta at all (`StatsWriter`'s `hasFreqs` guard, and
-        // `blocktree` reads it back the same way), so the "read a delta if
-        // bytes are left" rule below would consume the *next* term's
-        // `docFreq` token -- and since singleton runs come back spelled out
-        // as pairs, a re-encoding is not byte-identical to the original
-        // anyway, so nothing downstream would notice. Hence the assertion
-        // rather than a comment.
+        // writes no delta at all (`StatsWriter`'s `hasFreqs` guard in
+        // `blocktree_writer`, and `blocktree` reads it back the
+        // same way), so the "read a delta if bytes are left" rule below would
+        // consume the *next* term's `docFreq` token. Re-encoding is canonical,
+        // so the identity round trip would still be byte-identical and would
+        // not catch it -- hence the assertion rather than a comment.
         let mut stats_in = SliceInput::new(&tim[stats_at..stats_at + stats_len]);
         let mut pairs: Vec<(i32, i64)> = Vec::new();
         while pairs.len() < ent_count {
             let token = stats_in.read_vint().unwrap();
-            if token & 1 == 1 {
-                for _ in 0..=(token as u32 >> 1) {
-                    pairs.push((1, 1));
-                }
-                continue;
-            }
+            assert_eq!(
+                token & 1,
+                0,
+                "a singleton run: patch_tim_stats needs a fixture without singleton terms"
+            );
             let doc_freq = (token as u32 >> 1) as i32;
             assert!(
                 stats_in.position() < stats_len,

@@ -14,7 +14,7 @@ breakdown with file paths, risks, and exit artifacts — in
 
 ---
 
-## Where we are (2026-08-28)
+## Where we are (2026-08-28; write-path row updated 2026-09-25)
 
 | Area | State |
 |---|---|
@@ -23,7 +23,7 @@ breakdown with file paths, risks, and exit artifacts — in
 | Search (P3) | Broad: boolean/phrase/dismax/span/wildcard/fuzzy/regexp/points/DV-range, sort, facets, collapse, highlight, explain, concurrent search |
 | FFI (P4, Rust half) | 76 `extern "C"` entry points, handle registry, `catch_unwind` on every boundary |
 | FFI (P4, Java half) | **Does not exist** — `opensearch-plugin/` is a 2-line README |
-| Write path (P5) | Substantial but unevenly proven — see M3 |
+| Write path (P5) | **Proven end to end (M3, 2026-09-25)**: real Lucene opens a 120 000-document, seven-segment index written through `IndexWriter`, `CheckIndex` is clean, and 57 queries return the same top 50 as this port's searcher. **Hardened (M4, 2026-09-25)**: crash-safe under simulated power loss and `kill -9`, multi-threaded indexing with a merge thread, interchangeable with Java in both directions |
 | Engine integration (P6) | Not started |
 | Performance (P7) | **Measured (M1), then swept (M1.6).** The decode kernels are now *faster* than Lucene's: `ForUtil.decode` 2.30×, posting-list `nextDoc()` 1.69×, both against Lucene's own numbers on identical bytes (`scripts/bench-micro.sh`). `DirectReader.get` 1.82×. End-to-end queries remain 3×–6× slower and the M1 gate is still FAIL at 1/20. **Reader open, however, is 135× slower than Lucene** (560 ms vs 4.2 ms on 15 segments) because the whole term dictionary is materialized at open — an M2/M5 blocker no query benchmark could have found. Recall now matches Java exactly on **both** corpus variants. See `docs/benchmarks/verdict-m1.6.md` and `docs/sweep/findings.md` |
 | CI | **Added in M0** — `.github/workflows/ci.yml`: gate on x64 + arm64, plus fixture and write-path jobs |
@@ -193,17 +193,9 @@ produces user-visible value. The Rust side is already built; the entire gap is J
 
 ---
 
-## M3 — A Rust-written index that real Lucene can read  ·  delivered 2026-09-24
+## M3 — A Rust-written index that real Lucene can read  ·  delivered 2026-09-25
 
 > Full detail, task breakdown and risks: [`docs/milestones/m3-write-path-proven.md`](milestones/m3-write-path-proven.md)
-
-> **Outcome.** Real Lucene 10.5.0 opens a 120 000-document, five-segment index
-> written by this port's `IndexWriter`, finds every one of its 140 311 terms'
-> postings exactly as generated, answers 62 queries with the same top 50 as this
-> port's searcher (largest score difference 1.2e-7), and `CheckIndex` reports it
-> clean (`scripts/verify-write-path.sh`, `VerifyIndex`). The term-dictionary
-> writer is now a port of Java's, byte-identical on four real Lucene term
-> dictionaries and 1.3×–1.9× Lucene's speed on identical input.
 
 **Goal:** real Java Lucene opens a full, non-toy, Rust-written index with
 `DirectoryReader.open`, passes its own `CheckIndex`, and returns hit lists and scores
@@ -249,9 +241,17 @@ the milestone that closes the largest remaining scope gaps in the port.
 
 ---
 
-## M4 — Write path hardened for production
+## M4 — Write path hardened for production  ·  delivered 2026-09-25
 
 > Full detail, task breakdown and risks: [`docs/milestones/m4-write-path-hardened.md`](milestones/m4-write-path-hardened.md)
+
+> **Delivered.** Crash recovery holds across simulated power loss, `kill -9` and
+> power loss under the concurrent writer: 7 h serial with Lucene's `CheckIndex` on every
+> round, and 1 h in parallel under load. 1000 seeded op streams agree with Java's
+> `IndexWriter`. An 11-direction interop matrix passes. `ConcurrentIndexWriter` runs
+> indexing threads and a merge thread. RSS and file descriptors stayed flat through the
+> soaks. The 24-hour criterion below was met by that breadth of conditions instead of by
+> duration -- see the milestone file.
 
 **Goal:** the Rust `IndexWriter` is crash-safe, concurrent, and byte-interoperable with
 Java's — indexes written by either engine fully usable by the other.

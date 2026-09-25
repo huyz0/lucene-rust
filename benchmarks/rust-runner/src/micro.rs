@@ -1185,7 +1185,7 @@ fn bench_memory(index: &str) {
 /// singleton `IndexOptions::Docs` field written by `postings_writer`, so the
 /// work is the block-tree writer and `encodeTerm` (no `.doc` bytes). Same
 /// generated terms as the Java side; for these inputs both engines write
-/// identical bytes (`crates/lucene-codecs/tests/blocktree_writer_identity.rs`).
+/// identical bytes (`crates/lucene-codecs/tests/blocktree_byte_identity_fixture.rs`).
 fn bench_term_dict_write(warmup: Duration, measure: Duration) {
     use lucene_codecs::field_infos::IndexOptions;
     use lucene_codecs::postings_writer::{self, FieldPostingsInput, TermPostings};
