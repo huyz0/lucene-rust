@@ -868,11 +868,12 @@ fn recovery_source_pruning(
     let Some((data, entry, number)) = numeric_column(infos, columns, &|f| f.name == name) else {
         return Ok(None);
     };
-    let explicit_err = |e| Error::Explicit(format!("reading a recovery-source column: {e}"));
+    // A corrupt column is a read failure -- tragic, not a refused argument.
+    let read_err = Error::DocValuesRead;
     let mut flags = doc_values::NumericReader::new(data, entry);
     let mut flagged = false;
     for doc in 0..max_doc {
-        if flags.value(doc).map_err(explicit_err)?.is_some() {
+        if flags.value(doc).map_err(read_err)?.is_some() {
             flagged = true;
             break;
         }
@@ -890,7 +891,7 @@ fn recovery_source_pruning(
             let id = i32::try_from(doc).unwrap_or(i32::MAX);
             if seq
                 .value(id)
-                .map_err(explicit_err)?
+                .map_err(read_err)?
                 .is_some_and(|s| s >= retention.min_retained_seq_no)
             {
                 // FBS: `keep` was built with `len` bits and `doc < len`.
@@ -937,14 +938,15 @@ fn apply_soft_deletes_retention(
     });
     let mut soft = doc_values::NumericReader::new(soft_data, soft_entry);
     let mut seq = seq.map(|(data, entry, _)| doc_values::NumericReader::new(data, entry));
-    let explicit_err = |e| Error::Explicit(format!("reading a retention column: {e}"));
+    // A corrupt column is a read failure -- tragic, not a refused argument.
+    let read_err = Error::DocValuesRead;
     let mut postings_live = retention.prune_postings_field.as_ref().map(|_| out.clone());
     for doc in 0..out.len() {
         if !out.get(doc) {
             continue;
         }
         let id = i32::try_from(doc).unwrap_or(i32::MAX);
-        if soft.value(id).map_err(explicit_err)?.is_none() {
+        if soft.value(id).map_err(read_err)?.is_none() {
             continue;
         }
         if let Some(postings_live) = postings_live.as_mut() {
@@ -952,7 +954,7 @@ fn apply_soft_deletes_retention(
             postings_live.clear(doc);
         }
         let seq_no = match seq.as_mut() {
-            Some(reader) => reader.value(id).map_err(explicit_err)?,
+            Some(reader) => reader.value(id).map_err(read_err)?,
             None => None,
         };
         if seq_no.is_none_or(|s| s < retention.min_retained_seq_no) {
@@ -2546,7 +2548,7 @@ fn count_soft_deletes(
     } else {
         None
     };
-    let column_err = |e| Error::Explicit(format!("reading the soft-deletes column: {e}"));
+    let column_err = Error::DocValuesRead;
     let mut values = doc_values::NumericReader::new(&data, entry);
     let mut count = 0i32;
     for doc in 0..si.doc_count {
@@ -2574,6 +2576,11 @@ fn count_soft_deletes(
 /// ones included -- `Integer.MAX_VALUE - 128`, leaving headroom for the
 /// arrays Java sizes by `maxDoc`.
 pub const MAX_DOCS: usize = i32::MAX as usize - 128;
+
+/// `TieredMergePolicy`'s default `forceMergeDeletesPctAllowed`: a forced
+/// deletes merge takes a segment only when more than this percentage of its
+/// documents can be reclaimed.
+pub const FORCE_MERGE_DELETES_PCT_ALLOWED: i64 = 10;
 
 pub struct IndexWriter<'d> {
     dir: &'d dyn Directory,
@@ -2693,8 +2700,13 @@ pub struct IndexWriter<'d> {
     /// See [`IndexWriter::set_max_docs`].
     max_docs: usize,
     /// Each segment's `maxDoc`, read off its `.si` once -- what
-    /// [`IndexWriter::reserve_docs`] sums on every add.
+    /// [`IndexWriter::reserve_docs`] sums when the segment set changes.
     segment_max_docs: std::collections::HashMap<String, usize>,
+    /// [`IndexWriter::reserve_docs`]' sum over the segments, and the segment
+    /// set it was taken over: the commit generation (a commit's segments
+    /// never change) and the flushed-but-uncommitted tail, which only grows
+    /// between commits.
+    segment_docs_total: Option<(i64, usize, Option<String>, usize)>,
     /// `SegmentInfo.setHasBlocks()` for the segment currently being buffered:
     /// set by any [`IndexWriter::add_documents`]/
     /// [`IndexWriter::update_documents`] call that buffers more than one
@@ -3387,6 +3399,7 @@ impl<'d> IndexWriter<'d> {
             soft_deletes_retention: None,
             max_docs: MAX_DOCS,
             segment_max_docs: std::collections::HashMap::new(),
+            segment_docs_total: None,
             pending_has_blocks: false,
             segment_versions: std::collections::HashMap::new(),
         })
@@ -4246,6 +4259,14 @@ impl<'d> IndexWriter<'d> {
     /// soft-deleted document, which never loses history but never reclaims
     /// it either. Hard deletes are always dropped.
     ///
+    /// **A deliberate deviation.** Java's `IndexWriter` with a soft-deletes
+    /// field and *no* retention policy drops every soft-deleted document at
+    /// merge. This writer keeps them: before M5 soft deletes had no merge
+    /// semantics here at all, and keeping is the side that cannot lose an
+    /// operation's history. OpenSearch always installs a retention policy,
+    /// and so does the engine (`lucene-ffi`'s `engine_writer`), so the engine
+    /// never sees the difference.
+    ///
     /// Takes effect for merges that begin after the call, as Java's retention
     /// query is evaluated when a merge opens its readers.
     pub fn set_soft_deletes_retention(&mut self, retention: Option<SoftDeletesRetention>) {
@@ -4320,7 +4341,37 @@ impl<'d> IndexWriter<'d> {
     /// `pendingNumDocs`, every document of every segment plus the buffered
     /// ones; deleted documents count until a merge drops them.
     pub(crate) fn reserve_docs(&mut self, added: usize) -> Result<()> {
-        let mut total = self.pending_docs.len();
+        let generation = self.segment_infos.generation;
+        let flushed = self.flushed_segments.len();
+        let last = self
+            .flushed_segments
+            .last()
+            .map(|s| s.segment_name.as_str());
+        let segments = match &self.segment_docs_total {
+            Some((g, n, l, total)) if *g == generation && *n == flushed && l.as_deref() == last => {
+                *total
+            }
+            _ => {
+                let total = self.sum_segment_max_docs()?;
+                self.segment_docs_total = Some((
+                    generation,
+                    flushed,
+                    self.flushed_segments.last().map(|s| s.segment_name.clone()),
+                    total,
+                ));
+                total
+            }
+        };
+        let total = segments.saturating_add(self.pending_docs.len());
+        if total.saturating_add(added) > self.max_docs {
+            return Err(Error::TooManyDocs(self.max_docs));
+        }
+        Ok(())
+    }
+
+    /// Every committed and flushed segment's `maxDoc`, summed.
+    fn sum_segment_max_docs(&mut self) -> Result<usize> {
+        let mut total = 0usize;
         let segments = self
             .segment_infos
             .segments
@@ -4359,10 +4410,7 @@ impl<'d> IndexWriter<'d> {
                     .any(|s| &s.segment_name == name)
             });
         }
-        if total.saturating_add(added) > self.max_docs {
-            return Err(Error::TooManyDocs(self.max_docs));
-        }
-        Ok(())
+        Ok(total)
     }
 
     /// `IndexWriter.setMaxDocs`: lowers the limit [`IndexWriter::reserve_docs`]
@@ -7662,18 +7710,24 @@ impl<'d> IndexWriter<'d> {
         Ok(stat.del_count.saturating_add(reclaimable))
     }
 
-    /// `IndexWriter.forceMergeDeletes()`: every committed segment carrying a
-    /// hard or soft delete is merged, in one merge, so hard deletes and the
-    /// soft-deleted documents [`IndexWriter::set_soft_deletes_retention`] no
-    /// longer retains are reclaimed. A no-op when no segment has either.
+    /// `IndexWriter.forceMergeDeletes()` under `TieredMergePolicy.findForcedDeletesMerges`:
+    /// every committed segment whose reclaimable deletes --
+    /// [`IndexWriter::num_deletes_to_merge`], so soft deletes retention still
+    /// keeps do not count -- exceed [`FORCE_MERGE_DELETES_PCT_ALLOWED`]% of its
+    /// documents is merged, in one merge. A no-op, writing no commit, when no
+    /// segment qualifies.
     pub fn force_merge_deletes(&mut self) -> Result<()> {
-        let names: Vec<String> = self
-            .segment_infos
-            .segments
-            .iter()
-            .filter(|s| s.del_count > 0 || s.soft_del_count > 0)
-            .map(|s| s.segment_name.clone())
-            .collect();
+        let mut names: Vec<String> = Vec::new();
+        for stat in self.segment_stats()? {
+            let reclaimable = i64::from(self.num_deletes_to_merge(&stat)?);
+            // `100 * numDeletesToMerge / maxDoc > forceMergeDeletesPctAllowed`,
+            // in integers.
+            if reclaimable.saturating_mul(100)
+                > i64::from(stat.doc_count).saturating_mul(FORCE_MERGE_DELETES_PCT_ALLOWED)
+            {
+                names.push(stat.name);
+            }
+        }
         if names.is_empty() {
             return Ok(());
         }

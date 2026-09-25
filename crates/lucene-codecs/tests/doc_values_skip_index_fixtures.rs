@@ -320,3 +320,106 @@ fn writes_the_skip_index_java_writes() {
     let skipper = parsed.skipper_meta(field_number).copied().unwrap();
     doc_values::parse_skip_index(&dvs, &id, &suffix, &skipper).unwrap();
 }
+
+/// fixtures/src/GenDocValuesSkipIndexShapes.java: the skip index in the shapes
+/// the fixture above does not cover -- a constant run past one interval,
+/// sparse SORTED ordinals, sparse multi-valued SORTED_SET, single-valued
+/// SORTED_SET (the SORTED shape) and multi-valued SORTED_NUMERIC. Each
+/// field's skip summary and `.dvs` bytes are Java's. Fields are compared one
+/// by one because the `.dvs` holds them in whatever order Java wrote them.
+#[test]
+fn writes_every_skip_index_shape_java_writes() {
+    let base = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/data/doc_values_skip_index_shapes/"
+    );
+    let text = std::fs::read_to_string(format!("{base}manifest.properties"))
+        .expect("run GenDocValuesSkipIndexShapes first");
+    let get = |key: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(&format!("{key}=")))
+            .unwrap_or_else(|| panic!("manifest key {key} missing"))
+            .to_string()
+    };
+    let id = id_from_hex(&get("id_hex"));
+    let max_doc: i32 = get("max_doc").parse().unwrap();
+    let num = |name: &str| -> i32 { get(&format!("field.{name}")).parse().unwrap() };
+    let segment = get("segment_name");
+    let suffix = get("dvm_file_name")
+        .strip_prefix(&format!("{segment}_"))
+        .and_then(|s| s.strip_suffix(".dvm"))
+        .unwrap()
+        .to_string();
+
+    // The generator's formulas.
+    let run: Vec<i64> = (0..max_doc)
+        .map(|i| if i < 5000 { 42 } else { i64::from(i) * 3 - 7 })
+        .collect();
+    let sorted: Vec<(i32, Vec<u8>)> = (0..max_doc)
+        .filter(|i| i % 3 != 0)
+        .map(|i| (i, format!("s{}", i * 7 % 50).into_bytes()))
+        .collect();
+    let set_multi: Vec<(i32, Vec<Vec<u8>>)> = (0..max_doc)
+        .filter(|i| i % 4 != 0)
+        .map(|i| {
+            let mut v: Vec<Vec<u8>> = (0..1 + i % 3)
+                .map(|k| format!("m{}", (i + k * 11) % 40).into_bytes())
+                .collect();
+            v.sort();
+            v.dedup();
+            (i, v)
+        })
+        .collect();
+    let set_single: Vec<(i32, Vec<Vec<u8>>)> = (0..max_doc)
+        .filter(|i| i % 5 != 0)
+        .map(|i| (i, vec![format!("o{}", i % 17).into_bytes()]))
+        .collect();
+    let sn: Vec<Vec<i64>> = (0..max_doc)
+        .map(|i| {
+            let mut v = vec![i64::from(i) * 2];
+            if i % 2 == 0 {
+                v.push(-i64::from(i));
+            }
+            v
+        })
+        .collect();
+    let fields = [
+        doc_values::DenseField::Numeric(num("run"), &run),
+        doc_values::DenseField::SparseSorted(num("sorted"), &sorted),
+        doc_values::DenseField::SparseSortedSet(num("set_multi"), &set_multi),
+        doc_values::DenseField::SparseSortedSet(num("set_single"), &set_single),
+        doc_values::DenseField::SortedNumeric(num("sn"), &sn),
+    ];
+    let numbers: Vec<i32> = ["run", "sorted", "set_multi", "set_single", "sn"]
+        .iter()
+        .map(|n| num(n))
+        .collect();
+    let (dvm, _, dvs) =
+        doc_values::write_fields_with_skip_indexes(&fields, &numbers, max_doc, &id, &suffix)
+            .unwrap();
+
+    let raw = |key: &str| std::fs::read(format!("{base}{}.raw", get(key))).unwrap();
+    let fis = field_infos::parse(&raw("fnm_file_name"), &id, "").unwrap();
+    let (_, java) = doc_values::parse_meta(&raw("dvm_file_name"), &id, &suffix, &fis).unwrap();
+    let (_, rust) = doc_values::parse_meta(&dvm, &id, &suffix, &fis).unwrap();
+    let java_dvs = raw("dvs_file_name");
+    for name in ["run", "sorted", "set_multi", "set_single", "sn"] {
+        let n = num(name);
+        let (j, r) = (
+            *java.skipper_meta(n).unwrap(),
+            *rust.skipper_meta(n).unwrap(),
+        );
+        let slice = |b: &[u8], m: &DocValuesSkipperMeta| {
+            b[m.offset as usize..(m.offset + m.length) as usize].to_vec()
+        };
+        assert_eq!(
+            DocValuesSkipperMeta { offset: 0, ..r },
+            DocValuesSkipperMeta { offset: 0, ..j },
+            "{name}: skip summary"
+        );
+        assert!(
+            slice(&dvs, &r) == slice(&java_dvs, &j),
+            "{name}: .dvs bytes differ"
+        );
+    }
+}

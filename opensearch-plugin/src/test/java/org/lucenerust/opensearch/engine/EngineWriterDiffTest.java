@@ -101,10 +101,31 @@ public final class EngineWriterDiffTest {
             run(seed, 1500);
         }
         refusals();
+        mappingFallback();
         System.out.printf("EngineWriterDiffTest: %d checks, %d failures%n", checks, failures);
         if (failures > 0) {
             System.exit(1);
         }
+    }
+
+    /** Which creation mappings send a node-default index to OpenSearch's engine. */
+    private static void mappingFallback() {
+        java.util.function.Function<String, String> scan = json -> {
+            try (
+                org.opensearch.core.xcontent.XContentParser p = org.opensearch.common.xcontent.json.JsonXContent.jsonXContent
+                    .createParser(org.opensearch.core.xcontent.NamedXContentRegistry.EMPTY, null, json)
+            ) {
+                return RustEngineSupport.unsupportedField(p.map());
+            } catch (IOException e) {
+                throw new java.io.UncheckedIOException(e);
+            }
+        };
+        check(scan.apply("{\"properties\":{\"a\":{\"type\":\"keyword\"},\"t\":{\"type\":\"text\",\"term_vector\":\"no\"}}}") == null, "plain mapping is served");
+        check("s (completion)".equals(scan.apply("{\"properties\":{\"s\":{\"type\":\"completion\"}}}")), "completion falls back");
+        check("o.v (knn_vector)".equals(scan.apply("{\"properties\":{\"o\":{\"properties\":{\"v\":{\"type\":\"knn_vector\"}}}}}")), "nested object field falls back");
+        check("t.tv (term_vector)".equals(scan.apply("{\"properties\":{\"t\":{\"type\":\"text\",\"fields\":{\"tv\":{\"type\":\"text\",\"term_vector\":\"yes\"}}}}}")), "multi-field falls back");
+        String dyn = scan.apply("{\"dynamic_templates\":[{\"sugg\":{\"match\":\"*_s\",\"mapping\":{\"type\":\"completion\"}}}]}");
+        check(dyn != null && dyn.startsWith("dynamic template sugg"), "dynamic template falls back: " + dyn);
     }
 
     private static void check(boolean ok, String what) {
