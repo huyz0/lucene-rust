@@ -28,7 +28,7 @@ The writer side works like this:
 | Refresh | A Rust **commit**, carrying the live commit data. That data is evaluated under the writer's lock, as `IndexWriter` evaluates it inside `commit`. The engine's readers are Java `StandardDirectoryReader`s opened on those commits and reuse every unchanged segment reader. `SoftDeletesReader` applies soft deletes the way `IndexWriter`'s NRT readers do, and keeps fully soft-deleted segments for the history they hold. |
 | File lifetime | OpenSearch's `CombinedDeletionPolicy` runs in Java and names the commits to drop, and Rust deletes them. A reader pins its commit's files until it closes (`hold_commit` / `release_files`). |
 | Merges | The Rust writer's `TieredMergePolicy`, run at commit, with `SoftDeletesRetentionMergePolicy`, `PrunePostingsMergePolicy` and `RecoverySourcePruneMergePolicy` ported. The minimum retained sequence number comes from OpenSearch's `SoftDeletesPolicy` at every commit and force merge. |
-| Memory | The buffered documents' RAM is accounted to the `lucene_rust_writer` circuit breaker. It defaults to 20% of the heap, is set with `breaker.lucene_rust_writer.limit`, and counts toward the parent breaker. A trip is a 429, not an OOM. |
+| Memory | The buffered documents' RAM is accounted to the `lucene_rust_writer` circuit breaker. It defaults to 20% of the heap, is set with `breaker.lucene_rust_writer.limit`, and trips on that limit; the parent breaker adds it in only with `indices.breaker.total.use_real_memory: false` (the default real-memory parent measures the heap, and these bytes are native). A trip is a 429, not an OOM. |
 | Failure | A Rust panic is caught at the FFI boundary. The writer records it as tragic, the engine fails that one shard, and OpenSearch recovers the shard from its translog. |
 | `maxDocs` | Enforced by the Rust writer (`IndexWriter.MAX_DOCS`, or the engine's lower limit), with Lucene's message. |
 
@@ -53,9 +53,12 @@ When an index is created:
 - context-aware segments
 - segment replication, or remote-store nodes
 
-For each document, as a 400 on that document (the shard carries on). A
-mapping added after an index was created on the node default is not
-re-checked, so its documents are refused this way too:
+For each document, as a 400 on that document (the shard carries on). The
+node-default fallback reads the creation mapping and its dynamic templates
+only: a refused field that arrives later -- a mapping update, or dynamic
+mapping outside any template -- has its documents refused this way on an
+index that never asked for the Rust engine. Set `index.lucene_rust.engine:
+false` on such indices, or add their fields to the creation mapping:
 
 - term vectors
 - vector fields
