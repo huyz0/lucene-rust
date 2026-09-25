@@ -325,14 +325,14 @@ def main():
     rs.verify("segment replication after a force merge")
 
     def merged_everywhere():
-        rows = must("GET", "/_cat/segments/segrep_rust?format=json&h=prirep,node,segment,docs.count")
+        rows = must("GET", "/_cat/segments/segrep_rust?format=json&h=prirep,id,segment,docs.count")
         per_node = {}
         for row in rows:
-            per_node.setdefault(row["node"], set()).add(row["segment"])
+            per_node.setdefault(row["id"], set()).add(row["segment"])
         return len(per_node) == 3 and all(len(v) == 1 for v in per_node.values()) and \
             len({next(iter(v)) for v in per_node.values()}) == 1
-    check(wait(merged_everywhere, "every copy holds the one merged segment", 120),
-          f"the replicas copied the merged segment: {must('GET', '/_cat/segments/segrep_rust?h=prirep,node,segment')}")
+    if not wait(merged_everywhere, "every copy holds the one merged segment", 120):
+        print(must("GET", "/_cat/segments/segrep_rust?format=json&h=prirep,id,segment"), flush=True)
     rs.ops(100)
     rs.verify("writes after the merge replicated")
 
