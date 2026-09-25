@@ -931,6 +931,17 @@ impl DirectoryReader {
         Self::open_at_reusing(dir, segment_infos, &[])
     }
 
+    /// [`Self::open_at`], reusing every [`SegmentReader`] of `self` that
+    /// `segment_infos` still lists unchanged -- `StandardDirectoryReader.open(
+    /// directory, infos, oldReaders, ...)`, the path Java's
+    /// `openIfChanged(reader, writer)` takes for an NRT refresh, where the new
+    /// `SegmentInfos` comes from the writer rather than from a `segments_N` on
+    /// disk. `lucene-ffi`'s JVM reader uses it so that a refresh which only
+    /// flushed one new segment re-opens that segment and nothing else.
+    pub fn reopen_at(&self, dir: &dyn Directory, segment_infos: SegmentInfos) -> Result<Self> {
+        Self::open_at_reusing(dir, segment_infos, &self.segments)
+    }
+
     /// Shared by [`Self::open_at`] (no reuse candidates) and
     /// [`Self::open_if_changed`] (reuse candidates = the currently-open
     /// reader's segments): opens every segment in `segment_infos`, taking an
@@ -2024,6 +2035,39 @@ mod tests {
             .expect("the new .liv must have been read");
         assert!(!live.get(0), "doc 0 must now be marked deleted");
         assert_eq!(reopened.segment_readers()[0].del_gen, 1);
+
+        std::fs::remove_dir_all(&dir_path).ok();
+    }
+
+    /// [`DirectoryReader::reopen_at`] takes the new `SegmentInfos` from its
+    /// caller rather than from `segments_N` -- which is why it exists: an NRT
+    /// refresh's infos were never committed. Same proof as the
+    /// `open_if_changed` reuse test above: `_0`'s files are removed first, so
+    /// the reopen can only succeed by reusing the open reader, and no
+    /// `segments_2` is ever written.
+    #[test]
+    fn reopen_at_reuses_unchanged_segments_from_caller_supplied_infos() {
+        let dir_path = tempdir();
+        let dir = FsDirectory::open(&dir_path);
+        let commit0 = flush_stored_only(&dir, "_0", [1u8; ID_LENGTH], "hello");
+        write_commit(&dir, 1, vec![commit0.clone()]);
+        let reader = DirectoryReader::open(&dir).expect("open segments_1");
+
+        let commit1 = flush_stored_only(&dir, "_1", [2u8; ID_LENGTH], "world");
+        let mut infos = reader.segment_infos.clone();
+        infos.segments = vec![commit0, commit1];
+        for ext in [".fdt", ".fdx", ".fdm", ".fnm"] {
+            std::fs::remove_file(dir_path.join(format!("_0{ext}"))).ok();
+        }
+
+        let reopened = reader.reopen_at(&dir, infos).expect("reopen_at");
+        assert_eq!(reopened.segment_readers().len(), 2);
+        assert_eq!(reopened.segment_readers()[1].segment_name, "_1");
+        assert_eq!(reopened.segment_readers()[1].doc_base, 1);
+        assert!(Arc::ptr_eq(
+            &reader.segment_readers()[0].fields,
+            &reopened.segment_readers()[0].fields
+        ));
 
         std::fs::remove_dir_all(&dir_path).ok();
     }

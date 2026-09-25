@@ -1,0 +1,92 @@
+// The lucene-rust OpenSearch plugin (docs/milestones/m2-opensearch-read-path.md).
+//
+// It compiles against the jars of the OpenSearch distribution it installs
+// into -- `lib/` of the pinned `opensearchproject/opensearch` image, which
+// `scripts/opensearch-dist.sh` extracts -- rather than against Maven
+// artifacts. A plugin must match its node's exact version anyway, and this
+// keeps the build offline and identical to what runs.
+//
+//   scripts/opensearch-dist.sh               # once: extract lib/ from the image
+//   gradle -p opensearch-plugin bundlePlugin # the installable zip
+//   gradle -p opensearch-plugin check        # the JVM-side self test
+
+plugins {
+    id 'java'
+}
+
+group = 'org.lucenerust'
+version = '0.1.0'
+
+def opensearchVersion = '3.8.0'
+def repoRoot = projectDir.parentFile
+def opensearchLib = file(findProperty('opensearchLib') ?: "${repoRoot}/target/opensearch-dist/${opensearchVersion}/lib")
+def cargoTarget = file(System.getenv('CARGO_TARGET_DIR') ?: "${repoRoot}/target")
+def nativeLib = file("${cargoTarget}/release/liblucene_ffi.so")
+
+// Mirrors NativeLibrary.platform(): the directory the zip carries the
+// library under.
+def hostPlatform = {
+    def arch = System.getProperty('os.arch').toLowerCase()
+    arch = (arch in ['amd64', 'x86_64']) ? 'x86_64' : ((arch in ['aarch64', 'arm64']) ? 'aarch64' : arch)
+    return "linux-${arch}"
+}()
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 21
+    options.compilerArgs += ['-Xlint:all,-processing,-serial', '-Werror']
+    options.encoding = 'UTF-8'
+}
+
+dependencies {
+    compileOnly fileTree(dir: opensearchLib, include: '*.jar')
+    testImplementation fileTree(dir: opensearchLib, include: '*.jar')
+}
+
+def checkDist = tasks.register('checkOpensearchDist') {
+    doLast {
+        if (!file("${opensearchLib}/opensearch-${opensearchVersion}.jar").exists()) {
+            throw new GradleException("No OpenSearch ${opensearchVersion} jars at ${opensearchLib}: run scripts/opensearch-dist.sh")
+        }
+    }
+}
+tasks.named('compileJava') { dependsOn checkDist }
+
+def cargoBuild = tasks.register('cargoBuild', Exec) {
+    description = 'Builds liblucene_ffi.so (release) for this host.'
+    workingDir repoRoot
+    commandLine 'cargo', 'build', '--release', '-p', 'lucene-ffi'
+}
+
+tasks.register('bundlePlugin', Zip) {
+    description = 'The installable plugin zip: jar, descriptor, and native/<platform>/liblucene_ffi.so.'
+    dependsOn tasks.named('jar'), cargoBuild
+    archiveFileName = "lucene-rust-${version}.zip"
+    destinationDirectory = layout.buildDirectory.dir('distributions')
+    from(tasks.named('jar'))
+    from('src/plugin-metadata') {
+        expand(version: version, opensearchVersion: opensearchVersion)
+    }
+    from(nativeLib) { into "native/${hostPlatform}" }
+    // A library built elsewhere for another platform, e.g.
+    // -PextraNative=linux-aarch64=/path/to/liblucene_ffi.so
+    if (findProperty('extraNative')) {
+        findProperty('extraNative').split(',').each { spec ->
+            def (plat, path) = spec.split('=', 2)
+            from(file(path)) { into "native/${plat}" }
+        }
+    }
+}
+
+// The self test is a plain `main` (NativeSelfTest) rather than a JUnit suite,
+// so that the build needs no artifact beyond the distribution's own jars.
+def selfTest = tasks.register('selfTest', JavaExec) {
+    description = 'Differential self test: the native path against Lucene IndexSearcher.'
+    dependsOn tasks.named('testClasses'), cargoBuild
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'org.lucenerust.opensearch.NativeSelfTest'
+    systemProperty 'lucene_rust.library.path', nativeLib.absolutePath
+    jvmArgs '-Xcheck:jni', '-ea'
+    args "${repoRoot}/fixtures/data"
+}
+tasks.named('test') { enabled = false }
+tasks.named('check') { dependsOn selfTest }
