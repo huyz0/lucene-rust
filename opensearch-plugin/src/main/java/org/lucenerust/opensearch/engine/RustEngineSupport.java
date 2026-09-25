@@ -11,6 +11,7 @@ import org.apache.lucene.index.IndexDeletionPolicy;
 import org.apache.lucene.index.IndexOptions;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.core.common.breaker.CircuitBreaker;
+import org.opensearch.index.IndexSettings;
 import org.opensearch.index.engine.EngineConfig;
 import org.opensearch.index.store.Store;
 
@@ -71,30 +72,39 @@ public final class RustEngineSupport {
 
     /** Throws when the Rust writer cannot produce what this index is configured for. */
     static void checkSupported(EngineConfig config) {
-        String codec = config.getIndexSettings().getValue(EngineConfig.INDEX_CODEC_SETTING);
+        String reason = unsupported(config.getIndexSettings(), config.getIndexSort() != null);
+        if (reason != null) {
+            throw new IllegalArgumentException(reason);
+        }
+    }
+
+    /**
+     * Why the Rust writer cannot serve an index configured like this, or {@code null} when it can.
+     * An index that asks for the Rust engine gets this as its creation error; one that only
+     * inherits {@link #ENGINE_DEFAULT} is served by OpenSearch's own engine instead.
+     */
+    public static String unsupported(IndexSettings settings, boolean indexSorted) {
+        String codec = settings.getValue(EngineConfig.INDEX_CODEC_SETTING);
         if (CODECS.contains(codec) == false) {
-            throw new IllegalArgumentException(
-                "the Rust engine writes the default codec only, and index.codec is [" + codec + "]"
-            );
+            return "the Rust engine writes the default codec only, and index.codec is [" + codec + "]";
         }
-        if (config.getIndexSort() != null) {
-            throw new IllegalArgumentException("the Rust engine does not support index sorting");
+        if (indexSorted) {
+            return "the Rust engine does not support index sorting";
         }
-        if (config.getIndexSettings().isContextAwareEnabled()) {
-            throw new IllegalArgumentException("the Rust engine does not support context-aware segments");
+        if (settings.isContextAwareEnabled()) {
+            return "the Rust engine does not support context-aware segments";
         }
         // OpenSearch 3.8's segment-replication source (CopyState) reads the primary's last refreshed
         // checkpoint through EngineBackedIndexer, which answers only for an InternalEngine -- and
         // InternalEngine.lastRefreshedCheckpoint() is final. A plugin engine cannot be a segment
         // replication primary on this version; document replication is supported. (A segment
         // replication replica never reaches this: it runs NRTReplicationEngine.)
-        if (config.getIndexSettings().isSegRepEnabledOrRemoteNode()) {
-            throw new IllegalArgumentException(
-                "the Rust engine cannot be a segment-replication primary on OpenSearch 3.8 "
-                    + "(EngineBackedIndexer.lastRefreshedCheckpoint answers only for InternalEngine); "
-                    + "use index.replication.type: DOCUMENT"
-            );
+        if (settings.isSegRepEnabledOrRemoteNode()) {
+            return "the Rust engine cannot be a segment-replication primary on OpenSearch 3.8 "
+                + "(EngineBackedIndexer.lastRefreshedCheckpoint answers only for InternalEngine); "
+                + "use index.replication.type: DOCUMENT";
         }
+        return null;
     }
 
     static RustIndexWriter openWriter(
@@ -102,7 +112,8 @@ public final class RustEngineSupport {
         Store store,
         IndexDeletionPolicy deletionPolicy,
         LongSupplier minRetainedSeqNo,
-        String softDeletesField
+        String softDeletesField,
+        int maxDocs
     ) throws IOException {
         Codec codec = config.getCodec();
         return RustIndexWriter.open(
@@ -110,6 +121,7 @@ public final class RustEngineSupport {
             indexPath(store),
             config.getIndexingBufferSize().getMbFrac(),
             FAULT_INJECTION.get(config.getIndexSettings().getSettings()),
+            maxDocs,
             config.getAnalyzer(),
             config.getSimilarity(),
             config.getIndexSettings().getIndexVersionCreated().luceneVersion.major,

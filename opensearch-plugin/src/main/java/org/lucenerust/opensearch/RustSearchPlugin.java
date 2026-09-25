@@ -90,10 +90,18 @@ public class RustSearchPlugin extends Plugin implements SearchPlugin, ActionPlug
 
     @Override
     public Optional<EngineFactory> getEngineFactory(IndexSettings indexSettings) {
-        if (indexSettings.getValue(RustEngineSupport.ENGINE_ENABLED)) {
-            return Optional.of(new RustEngineFactory(nodeEngineEnabled));
+        if (indexSettings.getValue(RustEngineSupport.ENGINE_ENABLED) == false) {
+            return Optional.empty();
         }
-        return Optional.empty();
+        // An index that asks for the Rust engine gets it, or a creation error saying why not; one
+        // that only inherits the node default falls back to OpenSearch's engine where the Rust
+        // writer cannot serve it.
+        boolean asked = RustEngineSupport.ENGINE_ENABLED.exists(indexSettings.getSettings());
+        boolean sorted = indexSettings.getIndexSortConfig().hasIndexSort();
+        if (asked == false && RustEngineSupport.unsupported(indexSettings, sorted) != null) {
+            return Optional.empty();
+        }
+        return Optional.of(new RustEngineFactory(nodeEngineEnabled));
     }
 
     private static Path pluginDir() {

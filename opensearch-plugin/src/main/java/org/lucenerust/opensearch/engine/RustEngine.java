@@ -290,7 +290,7 @@ public class RustEngine extends Engine {
                 );
                 this.localCheckpointTracker = createLocalCheckpointTracker(localCheckpointTrackerSupplier);
                 this.isContextAwareEnabled = engineConfig.getIndexSettings().isContextAwareEnabled();
-                writer = getDocumentIndexWriter();
+                writer = getDocumentIndexWriter(maxDocs);
                 bootstrapAppendOnlyInfoFromWriter(writer);
                 final Map<String, String> commitData = commitDataAsMap(writer);
                 historyUUID = loadHistoryUUID(commitData);
@@ -381,13 +381,14 @@ public class RustEngine extends Engine {
         logger.trace("created new RustEngine");
     }
 
-    private DocumentIndexWriter getDocumentIndexWriter() throws IOException {
+    private DocumentIndexWriter getDocumentIndexWriter(int maxDocs) throws IOException {
         return RustEngineSupport.openWriter(
             engineConfig,
             store,
             combinedDeletionPolicy,
             softDeletesPolicy::getMinRetainedSeqNo,
-            softDeletesField.name()
+            softDeletesField.name(),
+            maxDocs
         );
     }
 

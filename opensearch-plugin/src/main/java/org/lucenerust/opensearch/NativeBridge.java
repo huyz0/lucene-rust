@@ -13,7 +13,7 @@ package org.lucenerust.opensearch;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 5;
+    public static final int EXPECTED_ABI_VERSION = 6;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -84,9 +84,16 @@ public final class NativeBridge {
     /**
      * Opens a shard's writer over the index at {@code path}, which must already hold a commit. Commit
      * points are dropped only through {@link #writerDeleteCommits}. {@code faultInjection} allows the
-     * test-only panic operation.
+     * test-only panic operation. {@code maxDocs} is {@code IndexWriter.getActualMaxDocs()}, which
+     * Lucene's tests lower.
      */
-    public static native int writerOpen(byte[] indexPathUtf8, double ramBufferMb, boolean faultInjection, long[] outHandle);
+    public static native int writerOpen(
+        byte[] indexPathUtf8,
+        double ramBufferMb,
+        boolean faultInjection,
+        int maxDocs,
+        long[] outHandle
+    );
 
     /** Registers a field spec (see {@code decode_field}); its global number goes to {@code outNumber[0]}. */
     public static native int writerRegisterField(long handle, byte[] spec, int[] outNumber);

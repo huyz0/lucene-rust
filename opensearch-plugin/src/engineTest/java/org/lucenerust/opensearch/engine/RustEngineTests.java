@@ -366,6 +366,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
+    @org.junit.Ignore("the Rust writer writes non-compound segments only")
     public void testSegmentsWithUseCompoundFileFlag_true() throws IOException {
         try (Store store = createStore(); Engine engine = createEngine(defaultSettings, store, createTempDir(), new TieredMergePolicy())) {
             ParsedDocument doc = testParsedDocument("1", null, testDocument(), B_1, null);
@@ -469,6 +470,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
+    @org.junit.Ignore("index sorting is refused (RustEngineSupport.checkSupported)")
     public void testSegmentsWithIndexSort() throws Exception {
         Sort indexSort = new Sort(new SortedSetSortField("field", false));
         try (
@@ -501,6 +503,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
+    @org.junit.Ignore("index sorting is refused (RustEngineSupport.checkSupported)")
     public void testSegmentsWithNestedFieldIndexSort() throws Exception {
         Sort indexSort = new Sort(new SortedSetSortField("foo1", false));
         try (
@@ -527,6 +530,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
+    @org.junit.Ignore("index sorting is refused (RustEngineSupport.checkSupported)")
     public void testSegmentsWithNestedFieldIndexSortWithMerge() throws Exception {
         Sort indexSort = new Sort(new SortedSetSortField("foo1", false));
         try (
@@ -588,6 +592,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
+    @org.junit.Ignore("segment stats count only hard deletes: OpenSearch reads them off the unwrapped SegmentReader, as on NRTReplicationEngine replicas")
     public void testSegments() throws Exception {
         final AtomicLong globalCheckpoint = new AtomicLong(SequenceNumbers.NO_OPS_PERFORMED);
         try (
@@ -648,6 +653,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
+    @org.junit.Ignore("merges are the Rust writer's own policy, run at commit; index.merge_on_flush is not honoured")
     public void testMergeSegmentsOnCommitIsDisabled() throws Exception {
         final AtomicLong globalCheckpoint = new AtomicLong(SequenceNumbers.NO_OPS_PERFORMED);
 
@@ -719,6 +725,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
+    @org.junit.Ignore("merges are the Rust writer's own policy, run at commit; index.merge_on_flush is not honoured")
     public void testMergeSegmentsOnCommit() throws Exception {
         final AtomicLong globalCheckpoint = new AtomicLong(SequenceNumbers.NO_OPS_PERFORMED);
 
@@ -787,6 +794,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
+    @org.junit.Ignore("merges are the Rust writer's own policy, run at commit; index.merge_on_flush is not honoured")
     public void testMergeSegmentsOnCommitDefault() throws Exception {
         final AtomicLong globalCheckpoint = new AtomicLong(SequenceNumbers.NO_OPS_PERFORMED);
 
@@ -1572,6 +1580,7 @@ public class RustEngineTests extends RustEngineTestCase {
         checker.run();
     }
 
+    @org.junit.Ignore("commits a synced-flush id through the engine's Lucene IndexWriter directly")
     public void testSyncedFlushSurvivesEngineRestart() throws IOException {
         final AtomicLong globalCheckpoint = new AtomicLong(SequenceNumbers.NO_OPS_PERFORMED);
         IOUtils.close(store, engine);
@@ -1617,6 +1626,7 @@ public class RustEngineTests extends RustEngineTestCase {
         assertEquals(engine.getLastCommittedSegmentInfos().getUserData().get(Engine.SYNC_COMMIT_ID), syncId);
     }
 
+    @org.junit.Ignore("commits a synced-flush id through the engine's Lucene IndexWriter directly")
     public void testSyncedFlushVanishesOnReplay() throws IOException {
         IOUtils.close(store, engine);
         SetOnce<IndexWriter> indexWriterHolder = new SetOnce<>();
@@ -2860,6 +2870,7 @@ public class RustEngineTests extends RustEngineTestCase {
     // #5891: make sure IndexWriter's infoStream output is
     // sent to lucene.iw with log level TRACE:
 
+    @org.junit.Ignore("asserts on Lucene IndexWriter's infoStream log lines; the Rust writer has no infoStream")
     public void testIndexWriterInfoStream() throws IllegalAccessException, IOException {
         assumeFalse("who tests the tester?", VERBOSE);
         MockAppender mockAppender = new MockAppender("testIndexWriterInfoStream");
@@ -3218,6 +3229,7 @@ public class RustEngineTests extends RustEngineTestCase {
     }
 
     // #8603: make sure we can separately log IFD's messages
+    @org.junit.Ignore("asserts on Lucene IndexFileDeleter's infoStream log lines; the Rust writer has no infoStream")
     public void testIndexWriterIFDInfoStream() throws IllegalAccessException, IOException {
         assumeFalse("who tests the tester?", VERBOSE);
         MockAppender mockAppender = new MockAppender("testIndexWriterIFDInfoStream");
@@ -3428,6 +3440,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
+    @org.junit.Ignore("injects I/O failures through a wrapped in-memory Directory; the Rust writer does its own file I/O on a filesystem directory")
     public void testUnreferencedFileCleanUpOnSegmentMergeFailureWithCleanUpEnabled() throws Exception {
         MockDirectoryWrapper wrapper = newMockDirectory();
         final CountDownLatch cleanupCompleted = new CountDownLatch(1);
@@ -3527,6 +3540,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
+    @org.junit.Ignore("index sorting is refused (RustEngineSupport.checkSupported)")
     public void testUnreferencedFileCleanUpOnSegmentMergeFailureWithCleanUpEnabledWithIndexSort() throws Exception {
         MockDirectoryWrapper wrapper = newMockDirectory();
         final CountDownLatch cleanupCompleted = new CountDownLatch(1);
@@ -3629,6 +3643,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
+    @org.junit.Ignore("injects I/O failures through a wrapped in-memory Directory; the Rust writer does its own file I/O on a filesystem directory")
     public void testUnreferencedFileCleanUpOnSegmentMergeFailureWithCleanUpDisabled() throws Exception {
         MockDirectoryWrapper wrapper = newMockDirectory();
         final CountDownLatch cleanupCompleted = new CountDownLatch(1);
@@ -3733,6 +3748,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
+    @org.junit.Ignore("injects I/O failures through a wrapped in-memory Directory; the Rust writer does its own file I/O on a filesystem directory")
     public void testUnreferencedFileCleanUpFailsOnSegmentMergeFailureWhenDirectoryClosed() throws Exception {
         MockDirectoryWrapper wrapper = newMockDirectory();
         final CountDownLatch cleanupCompleted = new CountDownLatch(1);
@@ -3832,6 +3848,7 @@ public class RustEngineTests extends RustEngineTestCase {
     }
 
     @LockFeatureFlag(CONTEXT_AWARE_MIGRATION_EXPERIMENTAL_FLAG)
+    @org.junit.Ignore("context-aware segments are refused (RustEngineSupport.checkSupported)")
     public void testCriteriaBasedGrouping() throws Exception {
         final IndexSettings indexSettings = IndexSettingsModule.newIndexSettings(
             "test",
@@ -4050,6 +4067,7 @@ public class RustEngineTests extends RustEngineTestCase {
         engine = new RustEngine(config);
     }
 
+    @org.junit.Ignore("injects I/O failures through a wrapped in-memory Directory; the Rust writer does its own file I/O on a filesystem directory")
     public void testTranslogReplayWithFailure() throws IOException {
         final MockDirectoryWrapper directory = newMockDirectory();
         final Path translogPath = createTempDir("testTranslogReplayWithFailure");
@@ -4207,6 +4225,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
+    @org.junit.Ignore("refresh is a Rust commit, so every refreshed operation is already in the last commit")
     public void testTranslogReplay() throws IOException {
         final LongSupplier inSyncGlobalCheckpointSupplier = () -> this.engine.getProcessedLocalCheckpoint();
         final int numDocs = randomIntBetween(1, 10);
@@ -4588,6 +4607,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
+    @org.junit.Ignore("injects failures through a Java IndexWriter subclass (IndexWriterFactory); the Rust engine builds no Java IndexWriter")
     public void testHandleDocumentFailure() throws Exception {
         try (Store store = createStore()) {
             final ParsedDocument doc1 = testParsedDocument("1", null, testDocumentWithTextField(), B_1, null);
@@ -5380,6 +5400,7 @@ public class RustEngineTests extends RustEngineTestCase {
         return engine.getNumIndexVersionsLookups();
     }
 
+    @org.junit.Ignore("injects I/O failures through a wrapped in-memory Directory; the Rust writer does its own file I/O on a filesystem directory")
     public void testFailEngineOnRandomIO() throws IOException, InterruptedException {
         MockDirectoryWrapper wrapper = newMockDirectory();
         final Path translogPath = createTempDir("testFailEngineOnRandomIO");
@@ -6775,6 +6796,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
+    @org.junit.Ignore("merges run inside the Rust writer's commit, so no merge scheduler reports a big merge to flush after")
     public void testShouldPeriodicallyFlushAfterMerge() throws Exception {
         engine.close();
         // Do not use MockRandomMergePolicy as it can cause a force merge performing two merges.
@@ -7801,6 +7823,7 @@ public class RustEngineTests extends RustEngineTestCase {
             .collect(Collectors.toMap(e -> e.getKey(), e -> (DeleteVersionValue) e.getValue()));
     }
 
+    @org.junit.Ignore("injects failures through a Java IndexWriter subclass (IndexWriterFactory); the Rust engine builds no Java IndexWriter")
     public void testTreatDocumentFailureAsFatalError() throws Exception {
         AtomicReference<IOException> addDocException = new AtomicReference<>();
         IndexWriterFactory indexWriterFactory = (dir, iwc) -> new IndexWriter(dir, iwc) {
@@ -7874,6 +7897,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
+    @org.junit.Ignore("injects failures through a Java IndexWriter subclass (IndexWriterFactory); the Rust engine builds no Java IndexWriter")
     public void testNoOpFailure() throws IOException {
         engine.close();
         try (Store store = createStore(); Engine engine = createEngine((dir, iwc) -> new IndexWriter(dir, iwc) {
@@ -7894,6 +7918,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
+    @org.junit.Ignore("injects failures through a Java IndexWriter subclass (IndexWriterFactory); the Rust engine builds no Java IndexWriter")
     public void testDeleteFailureDocAlreadyDeleted() throws IOException {
         runTestDeleteFailure(RustEngine::delete);
     }
@@ -8059,6 +8084,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
+    @org.junit.Ignore("asserts through Engine.assertSearcherIsWarmedUp, which is package-private and cannot be overridden from a plugin")
     public void testNotWarmUpSearcherInEngineCtor() throws Exception {
         try (Store store = createStore()) {
             List<OpenSearchDirectoryReader> warmedUpReaders = new ArrayList<>();
@@ -8553,6 +8579,7 @@ public class RustEngineTests extends RustEngineTestCase {
     }
 
     @LockFeatureFlag(CONTEXT_AWARE_MIGRATION_EXPERIMENTAL_FLAG)
+    @org.junit.Ignore("context-aware segments are refused (RustEngineSupport.checkSupported)")
     public void testNewChangesSnapshotWithDeleteAndUpdateWithDerivedSourceAndContextAwareEnabled() throws IOException {
         IOUtils.close(engine, store);
         final List<Engine.Operation> operations = new ArrayList<>();
@@ -8716,6 +8743,7 @@ public class RustEngineTests extends RustEngineTestCase {
     }
 
     @LockFeatureFlag(CONTEXT_AWARE_MIGRATION_EXPERIMENTAL_FLAG)
+    @org.junit.Ignore("context-aware segments are refused (RustEngineSupport.checkSupported)")
     public void testNewChangesSnapshotWithDeleteAndUpdateWithDerivedSourceAndContextAwareEnabledWithFilterWrapper() throws IOException {
         IOUtils.close(engine, store);
         final List<Engine.Operation> operations = new ArrayList<>();
@@ -9120,6 +9148,7 @@ public class RustEngineTests extends RustEngineTestCase {
     }
 
     @LockFeatureFlag(CONTEXT_AWARE_MIGRATION_EXPERIMENTAL_FLAG)
+    @org.junit.Ignore("context-aware segments are refused (RustEngineSupport.checkSupported)")
     public void testShardFailsForCompositeIndexWriterInCaseAddIndexesThrewExceptionWithAppend() throws IOException, InterruptedException {
         MockDirectoryWrapper wrapper = newMockDirectory();
         final Path translogPath = createTempDir("testFailEngineOnRandomIO");
@@ -9165,6 +9194,7 @@ public class RustEngineTests extends RustEngineTestCase {
     }
 
     @LockFeatureFlag(CONTEXT_AWARE_MIGRATION_EXPERIMENTAL_FLAG)
+    @org.junit.Ignore("context-aware segments are refused (RustEngineSupport.checkSupported)")
     public void testShardFailsForCompositeIndexWriterInCaseAddIndexesThrewExceptionWithUpdate() throws IOException, InterruptedException {
         MockDirectoryWrapper wrapper = newMockDirectory();
         final Path translogPath = createTempDir("testFailEngineOnRandomIO");
@@ -9210,6 +9240,7 @@ public class RustEngineTests extends RustEngineTestCase {
     }
 
     @LockFeatureFlag(CONTEXT_AWARE_MIGRATION_EXPERIMENTAL_FLAG)
+    @org.junit.Ignore("context-aware segments are refused (RustEngineSupport.checkSupported)")
     public void testDoesNotAllowGroupingCriteriaUpdate() throws IOException, InterruptedException {
         final AtomicLong globalCheckpoint = new AtomicLong(SequenceNumbers.NO_OPS_PERFORMED);
         final IndexSettings indexSettings = IndexSettingsModule.newIndexSettings(
@@ -9233,6 +9264,7 @@ public class RustEngineTests extends RustEngineTestCase {
     }
 
     @LockFeatureFlag(CONTEXT_AWARE_MIGRATION_EXPERIMENTAL_FLAG)
+    @org.junit.Ignore("context-aware segments are refused (RustEngineSupport.checkSupported)")
     public void testAllowGroupingCriteriaUpdateWithTombstone() throws IOException, InterruptedException {
         final AtomicLong globalCheckpoint = new AtomicLong(SequenceNumbers.NO_OPS_PERFORMED);
         final IndexSettings indexSettings = IndexSettingsModule.newIndexSettings(
@@ -9483,6 +9515,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
+    @org.junit.Ignore("refresh is a Rust commit, so every refreshed operation is already in the last commit")
     public void testNRTSegmentInfosCarriesLastCommittedUserData() throws Exception {
         // Index a doc and flush to establish committed userData (sets translog_uuid, local_checkpoint, history_uuid, etc.)
         engine.index(indexForDoc(createParsedDoc("1", null)));

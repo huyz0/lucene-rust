@@ -722,6 +722,14 @@ pub struct SourcePostings<'a> {
     pub doc_in: Option<&'a DocInput<'a>>,
     pub pos_in: Option<&'a lucene_codecs::postings::PosInput<'a>>,
     pub pay_in: Option<&'a lucene_codecs::postings::PayInput<'a>>,
+    /// Documents whose postings *for this field* the merge keeps, when that is
+    /// narrower than the documents it keeps at all -- OpenSearch's
+    /// `PrunePostingsMergePolicy`, which drops a soft-deleted document's `_id`
+    /// postings while `SoftDeletesRetentionMergePolicy` still carries the
+    /// document itself over for its history. `None` keeps every merged
+    /// document's postings. A term left with no document is dropped, and a
+    /// field left with no term is not written, as `BlockTreeTermsWriter` does.
+    pub live: Option<&'a FixedBitSet>,
 }
 
 /// One source's BKD points (`.kdm`/`.kdi`/`.kdd`) data for a single field --
@@ -836,6 +844,30 @@ pub struct MergeSource<'a> {
     /// Losing the flag is silent: the merged segment reads back perfectly and
     /// every parent/child join query against it is quietly invalid.
     pub has_blocks: bool,
+    /// A stored field, and the NUMERIC doc-values field of the same name,
+    /// this merge drops from some of this source's documents -- see
+    /// [`PrunedField`]. `None` keeps every field of every merged document.
+    pub pruned_field: Option<PrunedField<'a>>,
+}
+
+/// OpenSearch's `RecoverySourcePruneMergePolicy`: `_recovery_source` -- a
+/// stored copy of the original source, flagged by a NUMERIC doc-values field
+/// of the same name -- is kept only for the documents soft-deletes retention
+/// still needs, and every other merged document loses both.
+#[derive(Clone, Copy)]
+pub struct PrunedField<'a> {
+    /// The field's number in this source (pre-merge).
+    pub field_number: i32,
+    /// The documents that keep it; `None` drops it from every document.
+    pub keep: Option<&'a FixedBitSet>,
+}
+
+impl PrunedField<'_> {
+    /// Whether `doc`'s value for the field numbered `field_number` (in this
+    /// source) is dropped.
+    fn drops(&self, field_number: i32, doc: i32) -> bool {
+        field_number == self.field_number && !self.keep.is_some_and(|keep| keep.get_doc(doc))
+    }
 }
 
 impl<'a> MergeSource<'a> {
@@ -884,6 +916,7 @@ impl<'a> MergeSource<'a> {
             vectors: None,
             min_version,
             has_blocks: false,
+            pruned_field: None,
         }
     }
 }
@@ -1553,7 +1586,9 @@ fn stored_fields_merge_strategy(
     source: &MergeSource,
     matching: bool,
 ) -> StoredFieldsMergeStrategy {
-    if !matching {
+    // A pruning source hands the writer a filtering reader in Java, which is
+    // never the matching compressing reader either.
+    if !matching || source.pruned_field.is_some() {
         return StoredFieldsMergeStrategy::Visitor;
     }
     // "its not worth fine-graining this if there are deletions" -- plus the
@@ -1668,6 +1703,10 @@ fn write_merged_stored_fields(
                 let (num_stored_fields, bytes) =
                     chunk_cursors[src_idx].document(sources[src_idx].reader, doc_id)?;
                 let mut doc = stored_fields::parse_document(num_stored_fields, bytes)?;
+                if let Some(pruned) = sources[src_idx].pruned_field {
+                    doc.fields
+                        .retain(|field| !pruned.drops(field.field_number, doc_id));
+                }
                 let field_number_map = &per_source_maps[src_idx];
                 for field in &mut doc.fields {
                     field.field_number = *field_number_map.get(&field.field_number).ok_or(
@@ -2726,6 +2765,11 @@ fn merge_numeric_doc_values(
                 Some(reader) => reader.value(doc_id)?,
                 None => None,
             };
+            let pruned = sources[src_idx]
+                .pruned_field
+                .zip(per_source_entry[src_idx])
+                .is_some_and(|(pruned, entry)| pruned.drops(entry.entry.field_number, doc_id));
+            let value = value.filter(|_| !pruned);
             match value {
                 Some(value) => {
                     dense.push(value);
@@ -2847,15 +2891,22 @@ fn merge_binary_doc_values(
 /// source with no column (`None`) contributes nothing and gets an empty map.
 struct OrdinalMap {
     dict: Vec<Vec<u8>>,
-    /// `segment_to_global[source][ord]`.
-    segment_to_global: Vec<Vec<i64>>,
+    /// `segment_to_global[source][ord]`; `None` for a term no live document
+    /// of the source uses.
+    segment_to_global: Vec<Vec<Option<i64>>>,
 }
 
 impl OrdinalMap {
-    fn build(source_dicts: Vec<Option<Vec<Vec<u8>>>>) -> Self {
+    /// `OrdinalMap.build` over `source_dicts`, each restricted to its
+    /// `live_ords` when it has one -- `mergeSortedField`/`mergeSortedSetField`
+    /// hand a source with deletions over as a `BitsFilteredTermsEnum` of the
+    /// ordinals its live documents use, so a term only deleted documents
+    /// carried leaves the merged dictionary (Java's `CheckIndex` refuses a
+    /// dictionary with a term no document uses).
+    fn build(source_dicts: Vec<Option<Vec<Vec<u8>>>>, live_ords: Vec<Option<FixedBitSet>>) -> Self {
         use std::cmp::Reverse;
         use std::collections::BinaryHeap;
-        let mut segment_to_global: Vec<Vec<i64>> = source_dicts
+        let mut segment_to_global: Vec<Vec<Option<i64>>> = source_dicts
             .iter()
             .map(|d| Vec::with_capacity(d.as_ref().map_or(0, Vec::len)))
             .collect();
@@ -2872,12 +2923,20 @@ impl OrdinalMap {
             .collect();
         let mut dict: Vec<Vec<u8>> = Vec::new();
         while let Some(Reverse((term, src, ord))) = queue.pop() {
-            if dict.last().map(Vec::as_slice) != Some(term) {
-                dict.push(term.to_vec());
+            let live = live_ords
+                .get(src)
+                .and_then(Option::as_ref)
+                .is_none_or(|live| live.get_doc(i32::try_from(ord).unwrap_or(i32::MAX)));
+            if !live {
+                segment_to_global[src].push(None);
+            } else {
+                if dict.last().map(Vec::as_slice) != Some(term) {
+                    dict.push(term.to_vec());
+                }
+                // ARITH: `dict` is non-empty after the push above.
+                #[allow(clippy::arithmetic_side_effects)]
+                segment_to_global[src].push(Some((dict.len() - 1) as i64));
             }
-            // ARITH: `dict` is non-empty after the push above.
-            #[allow(clippy::arithmetic_side_effects)]
-            segment_to_global[src].push((dict.len() - 1) as i64);
             // ARITH: `ord` indexes `dicts[src]`, so `ord + 1 <= len`.
             #[allow(clippy::arithmetic_side_effects)]
             let next = ord + 1;
@@ -2897,7 +2956,39 @@ impl OrdinalMap {
         usize::try_from(ord)
             .ok()
             .and_then(|o| self.segment_to_global[source].get(o).copied())
+            .flatten()
     }
+}
+
+/// The ordinals `source`'s live documents use, for [`OrdinalMap::build`] --
+/// `None` when the source has no deletions, as Java hands such a source's
+/// terms over unfiltered. `ords` writes one document's ordinals.
+fn live_ords(
+    source: &MergeSource,
+    live_ids: &[i32],
+    value_count: usize,
+    mut ords: impl FnMut(i32, &mut Vec<i64>) -> Result<()>,
+) -> Result<Option<FixedBitSet>> {
+    if source.live_docs.is_none() {
+        return Ok(None);
+    }
+    let mut used = FixedBitSet::new(value_count);
+    let mut scratch = Vec::new();
+    for &doc in live_ids {
+        scratch.clear();
+        ords(doc, &mut scratch)?;
+        for &ord in &scratch {
+            // An ordinal outside the dictionary stays unset here and is
+            // reported by the merge's own lookup.
+            if let Ok(ord) = usize::try_from(ord) {
+                if ord < value_count {
+                    // FBS: `ord < value_count`, the bitset's length.
+                    used.set(ord);
+                }
+            }
+        }
+    }
+    Ok(Some(used))
 }
 
 /// Merges SORTED doc-values data across `sources`, one
@@ -2930,15 +3021,32 @@ fn merge_sorted_doc_values(
             |s| s.sorted_doc_values,
             |f: &SourceSortedDocValues| f.entry.field_number,
         );
-        let map = OrdinalMap::build(
-            per_source_entry
-                .iter()
-                .map(|e| {
-                    e.map(|e| terms_dict::decode_all_terms(e.data, &e.entry.terms))
-                        .transpose()
-                })
-                .collect::<std::result::Result<_, _>>()?,
-        );
+        let dicts: Vec<Option<Vec<Vec<u8>>>> = per_source_entry
+            .iter()
+            .map(|e| {
+                e.map(|e| terms_dict::decode_all_terms(e.data, &e.entry.terms))
+                    .transpose()
+            })
+            .collect::<std::result::Result<_, _>>()?;
+        let mut live = Vec::with_capacity(sources.len());
+        for (idx, entry) in per_source_entry.iter().enumerate() {
+            live.push(match (entry, &dicts[idx]) {
+                (Some(e), Some(dict)) => {
+                    let mut reader = doc_values::NumericReader::new(e.data, &e.entry.ords);
+                    live_ords(
+                        &sources[idx],
+                        &per_source_live_ids[idx],
+                        dict.len(),
+                        |doc, out| {
+                            out.extend(reader.value(doc)?);
+                            Ok(())
+                        },
+                    )?
+                }
+                _ => None,
+            });
+        }
+        let map = OrdinalMap::build(dicts, live);
         let mut readers: Vec<Option<doc_values::NumericReader>> = per_source_entry
             .iter()
             .map(|e| e.map(|e| doc_values::NumericReader::new(e.data, &e.entry.ords)))
@@ -3110,15 +3218,29 @@ fn merge_sorted_set_doc_values(
             |s| s.sorted_set_doc_values,
             |f: &SourceSortedSetDocValues| f.entry.field_number,
         );
-        let map = OrdinalMap::build(
-            per_source_entry
-                .iter()
-                .map(|e| {
-                    e.map(|e| sorted_set_source_dict(e.data, &e.entry))
-                        .transpose()
-                })
-                .collect::<Result<_>>()?,
-        );
+        let dicts: Vec<Option<Vec<Vec<u8>>>> = per_source_entry
+            .iter()
+            .map(|e| {
+                e.map(|e| sorted_set_source_dict(e.data, &e.entry))
+                    .transpose()
+            })
+            .collect::<Result<_>>()?;
+        let mut live = Vec::with_capacity(sources.len());
+        for (idx, entry) in per_source_entry.iter().enumerate() {
+            live.push(match (entry, &dicts[idx]) {
+                (Some(e), Some(dict)) => {
+                    let mut reader = SortedSetOrdsReader::new(e.data, &e.entry);
+                    live_ords(
+                        &sources[idx],
+                        &per_source_live_ids[idx],
+                        dict.len(),
+                        |doc, out| reader.ords(doc, out),
+                    )?
+                }
+                _ => None,
+            });
+        }
+        let map = OrdinalMap::build(dicts, live);
         let mut readers: Vec<Option<SortedSetOrdsReader>> = per_source_entry
             .iter()
             .map(|e| e.map(|e| SortedSetOrdsReader::new(e.data, &e.entry)))
@@ -4101,6 +4223,9 @@ fn merge_postings(
                     .zip(source_postings.freqs.iter())
                     .enumerate()
                 {
+                    if pf.live.is_some_and(|live| !live.get_doc(doc_id)) {
+                        continue;
+                    }
                     if let Some(merged_doc_id) = mapped_doc_id(doc_id_map, doc_id) {
                         docs.push((merged_doc_id, freq));
                         // Java's `docsSeen` bitset, not a `HashSet<i32>`: the
@@ -4197,6 +4322,11 @@ fn merge_postings(
             }
         }
 
+        if terms_out.is_empty() {
+            // Only reachable through `SourcePostings::live`: every term was
+            // pruned, and `BlockTreeTermsWriter` writes no field without terms.
+            continue;
+        }
         let doc_count = docs_seen.cardinality() as i32;
 
         result.push(MergedPostingsField {
@@ -5924,6 +6054,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -5941,6 +6072,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         let sci = merge_stored_only_segments(
@@ -6088,6 +6220,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         let sci = merge_stored_only_segments(
@@ -6181,6 +6314,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         // Source 1 has live docs but no numeric doc-values entry at all for
         // field "num": Java's `values == null` sub, i.e. all-missing.
@@ -6276,6 +6410,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         merge_stored_only_segments(
@@ -6385,6 +6520,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -6402,6 +6538,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         let sci = merge_stored_only_segments(
@@ -6483,6 +6620,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         // Source 1 has live docs but no binary doc-values entry at all for
         // field "bin" -- `DocValuesConsumer`'s "not a sub" case: its
@@ -6578,6 +6716,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         merge_stored_only_segments(
@@ -6746,6 +6885,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -6763,6 +6903,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         let tmp_dir = FsDirectory::open(&tmp);
@@ -6849,6 +6990,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -6866,6 +7008,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         merge_stored_only_segments(
@@ -6928,6 +7071,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         // Source 1 has live docs but no SORTED doc-values entry at all for
         // field "word".
@@ -7022,6 +7166,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         merge_stored_only_segments(
@@ -7101,6 +7246,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         merge_stored_only_segments(
@@ -7181,6 +7327,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         merge_stored_only_segments(
@@ -7287,6 +7434,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -7304,6 +7452,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         let sci = merge_stored_only_segments(
@@ -7392,6 +7541,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -7409,6 +7559,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         let sci = merge_stored_only_segments(
@@ -7496,6 +7647,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -7513,6 +7665,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         merge_stored_only_segments(
@@ -7589,6 +7742,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -7606,6 +7760,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         merge_stored_only_segments(
@@ -7684,6 +7839,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1 = MergeSource::stored_only(&stored1.fields, &reader1, None, Some(version()));
 
@@ -8026,6 +8182,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -8043,6 +8200,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         merge_stored_only_segments(
@@ -8142,6 +8300,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -8159,6 +8318,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         let merged_id = [9u8; ID_LENGTH];
@@ -8326,6 +8486,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -8343,6 +8504,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         let merged_id = [9u8; ID_LENGTH];
@@ -8514,6 +8676,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -8531,6 +8694,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         let merged_id = [9u8; ID_LENGTH];
@@ -9061,6 +9225,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -9078,6 +9243,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         let keys0: Vec<Option<i64>> = vec![Some(10), Some(30)];
@@ -9269,6 +9435,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1_num = MergeSource {
             field_infos: &stored1.fields,
@@ -9286,6 +9453,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         merge_sorted_stored_only_segments(
             &dir,
@@ -9346,6 +9514,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1_sorted = MergeSource {
             field_infos: &stored1.fields,
@@ -9363,6 +9532,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         merge_sorted_stored_only_segments(
             &dir,
@@ -9412,6 +9582,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1_sn = MergeSource {
             field_infos: &stored1.fields,
@@ -9429,6 +9600,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         merge_sorted_stored_only_segments(
             &dir,
@@ -9470,6 +9642,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1_ss = MergeSource {
             field_infos: &stored1.fields,
@@ -9487,6 +9660,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         merge_sorted_stored_only_segments(
             &dir,
@@ -9840,6 +10014,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -9857,6 +10032,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         merge_stored_only_segments(
@@ -9919,6 +10095,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         // Source 1 has live docs but no SORTED_NUMERIC doc-values entry at
         // all for field "nums".
@@ -9998,6 +10175,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         merge_stored_only_segments(
@@ -10163,6 +10341,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -10180,6 +10359,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         merge_stored_only_segments(
@@ -10275,6 +10455,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -10292,6 +10473,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         merge_stored_only_segments(
@@ -10357,6 +10539,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         // Source 1 has live docs but no SORTED_SET doc-values entry at all
         // for field "word".
@@ -10436,6 +10619,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         merge_stored_only_segments(
@@ -10787,6 +10971,7 @@ mod tests {
             doc_in: Some(&doc_in0),
             pos_in: None,
             pay_in: None,
+            live: None,
         }];
         let src_postings1 = [SourcePostings {
             field_number: 0,
@@ -10794,6 +10979,7 @@ mod tests {
             doc_in: Some(&doc_in1),
             pos_in: None,
             pay_in: None,
+            live: None,
         }];
         let source0 = MergeSource {
             field_infos: &stored0.fields,
@@ -10811,6 +10997,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -10828,6 +11015,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         let sci = merge_stored_only_segments(
@@ -11016,6 +11204,7 @@ mod tests {
             doc_in: Some(&doc_in0),
             pos_in: None,
             pay_in: None,
+            live: None,
         }];
         let src_postings1 = [SourcePostings {
             field_number: 0,
@@ -11023,6 +11212,7 @@ mod tests {
             doc_in: Some(&doc_in1),
             pos_in: None,
             pay_in: None,
+            live: None,
         }];
         let source0 = MergeSource {
             field_infos: &stored0.fields,
@@ -11040,6 +11230,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -11057,6 +11248,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         merge_stored_only_segments(
@@ -11218,6 +11410,7 @@ mod tests {
             doc_in: Some(&doc_in0),
             pos_in: None,
             pay_in: None,
+            live: None,
         }];
         let src_postings1 = [SourcePostings {
             field_number: 0,
@@ -11225,6 +11418,7 @@ mod tests {
             doc_in: Some(&doc_in1),
             pos_in: None,
             pay_in: None,
+            live: None,
         }];
         let source0 = MergeSource {
             field_infos: &stored0.fields,
@@ -11242,6 +11436,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -11259,6 +11454,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         let tmp2 = tmp.path().to_path_buf();
@@ -11395,6 +11591,7 @@ mod tests {
             doc_in: Some(&doc_in0),
             pos_in: None,
             pay_in: None,
+            live: None,
         }];
         let source0 = MergeSource {
             field_infos: &stored0.fields,
@@ -11412,6 +11609,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         merge_stored_only_segments(
@@ -11575,6 +11773,7 @@ mod tests {
             doc_in: Some(&doc_in0),
             pos_in: None,
             pay_in: None,
+            live: None,
         }];
         let src_postings1 = [SourcePostings {
             field_number: 0,
@@ -11582,6 +11781,7 @@ mod tests {
             doc_in: Some(&doc_in1),
             pos_in: None,
             pay_in: None,
+            live: None,
         }];
         let source0 = MergeSource {
             field_infos: &stored0.fields,
@@ -11599,6 +11799,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -11616,6 +11817,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         merge_stored_only_segments(
@@ -11753,6 +11955,7 @@ mod tests {
             doc_in: Some(&doc_in0),
             pos_in: None,
             pay_in: None,
+            live: None,
         }];
         let source0 = MergeSource {
             postings: &src_postings0,
@@ -11878,6 +12081,7 @@ mod tests {
             doc_in: Some(&doc_in0),
             pos_in: None,
             pay_in: None,
+            live: None,
         }];
         let source0 = MergeSource {
             field_infos: &stored0.fields,
@@ -11895,6 +12099,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -11912,6 +12117,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         merge_stored_only_segments(
@@ -12103,6 +12309,7 @@ mod tests {
             doc_in: Some(&doc_in0),
             pos_in: Some(&pos_in0),
             pay_in: Some(&pay_in0),
+            live: None,
         }];
         let src_postings1 = [SourcePostings {
             field_number: 0,
@@ -12110,6 +12317,7 @@ mod tests {
             doc_in: Some(&doc_in1),
             pos_in: Some(&pos_in1),
             pay_in: Some(&pay_in1),
+            live: None,
         }];
         let source0 = MergeSource {
             field_infos: &stored0.fields,
@@ -12127,6 +12335,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -12144,6 +12353,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         let sci = merge_stored_only_segments(
@@ -12397,6 +12607,7 @@ mod tests {
             doc_in: Some(&doc_in0),
             pos_in: None,
             pay_in: None,
+            live: None,
         }];
         let src_postings1 = [SourcePostings {
             field_number: 0,
@@ -12404,6 +12615,7 @@ mod tests {
             doc_in: Some(&doc_in1),
             pos_in: None,
             pay_in: None,
+            live: None,
         }];
         let source0 = MergeSource {
             field_infos: &stored0.fields,
@@ -12421,6 +12633,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -12438,6 +12651,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         let result = merge_stored_only_segments(
@@ -12580,6 +12794,7 @@ mod tests {
             doc_in: Some(&doc_in0),
             pos_in: Some(&pos_in0),
             pay_in: None,
+            live: None,
         }];
         let src_postings1 = [SourcePostings {
             field_number: 0,
@@ -12587,6 +12802,7 @@ mod tests {
             doc_in: Some(&doc_in1),
             pos_in: Some(&pos_in1),
             pay_in: None,
+            live: None,
         }];
         let source0 = MergeSource {
             field_infos: &stored0.fields,
@@ -12604,6 +12820,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -12621,6 +12838,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         merge_stored_only_segments(
@@ -12792,6 +13010,7 @@ mod tests {
             doc_in: Some(&doc_in0),
             pos_in: None,
             pay_in: None,
+            live: None,
         }];
         let source0 = MergeSource {
             field_infos: &stored0.fields,
@@ -12809,6 +13028,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         let result = merge_stored_only_segments(
@@ -12939,6 +13159,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -12956,6 +13177,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         let sci = merge_stored_only_segments(
@@ -13056,6 +13278,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         merge_stored_only_segments(
@@ -13127,6 +13350,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -13144,6 +13368,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         merge_stored_only_segments(
@@ -13215,6 +13440,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -13232,6 +13458,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         let result = merge_stored_only_segments(
@@ -13361,6 +13588,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -13378,6 +13606,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         let result = merge_stored_only_segments(
@@ -13466,6 +13695,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -13483,6 +13713,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         let sci = merge_stored_only_segments(
@@ -13591,6 +13822,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -13608,6 +13840,7 @@ mod tests {
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         };
 
         let result = merge_stored_only_segments(
@@ -14116,6 +14349,7 @@ mod tests {
             MergeSource {
                 min_version: Some(v(10, 1, 0)),
                 has_blocks: false,
+                pruned_field: None,
                 ..MergeSource::stored_only(&seg0.fields, &reader0, None, Some(version()))
             },
             MergeSource {
@@ -14123,6 +14357,7 @@ mod tests {
                 // own `version()`; blocks on this source only.
                 min_version: Some(v(9, 11, 2)),
                 has_blocks: true,
+                pruned_field: None,
                 ..MergeSource::stored_only(&seg1.fields, &reader1, None, Some(version()))
             },
         ];

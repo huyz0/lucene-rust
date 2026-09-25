@@ -465,6 +465,12 @@ pub enum Error {
     /// `IllegalArgumentException("at least one soft delete must be present")`.
     #[error("soft_update_document: at least one soft delete must be present")]
     NoSoftDeletesSupplied,
+    /// `IndexWriter.tooManyDocs`' `IllegalArgumentException`: the documents
+    /// already in the index -- deleted ones included, until a merge drops
+    /// them -- plus the ones being added would exceed the writer's limit
+    /// ([`MAX_DOCS`] unless [`IndexWriter::set_max_docs`] lowered it).
+    #[error("number of documents in the index cannot exceed {0}")]
+    TooManyDocs(usize),
     /// `IndexWriter.forceMerge`'s `IllegalArgumentException("maxNumSegments
     /// must be >= 1; got 0")`.
     #[error("force_merge: max_num_segments must be >= 1; got {0}")]
@@ -813,32 +819,113 @@ pub struct SoftDeletesRetention {
     pub seq_no_field: String,
     /// The lowest sequence number whose soft-deleted documents are kept.
     pub min_retained_seq_no: i64,
+    /// OpenSearch's `PrunePostingsMergePolicy`, which `InternalEngine` nests
+    /// inside the retention policy: a merge drops this field's postings for
+    /// every soft-deleted document it keeps, so a retained old version or
+    /// delete tombstone no longer answers a lookup by `_id`. `None` keeps them.
+    pub prune_postings_field: Option<String>,
+    /// OpenSearch's `RecoverySourcePruneMergePolicy`: a merge keeps this
+    /// stored field, and the NUMERIC doc-values field of the same name that
+    /// flags it, only on documents whose sequence number is still retained.
+    /// `None` keeps it everywhere.
+    pub prune_recovery_source_field: Option<String>,
+}
+
+/// A source's NUMERIC doc-values column for the first field `pred` accepts,
+/// with the field's number in that source.
+fn numeric_column<'c>(
+    infos: &lucene_codecs::field_infos::FieldInfos,
+    columns: &'c SourceDocValueColumns,
+    pred: &dyn Fn(&FieldInfo) -> bool,
+) -> Option<(&'c [u8], &'c doc_values::NumericEntry, i32)> {
+    let field = infos
+        .fields
+        .iter()
+        .find(|f| pred(f) && f.doc_values_type == DocValuesType::Numeric)?;
+    let &(_, at) = columns.per_field.iter().find(|(n, _)| *n == field.number)?;
+    let (meta, data) = &columns.columns[at];
+    Some((
+        data.as_slice(),
+        meta.numeric_entry(field.number)?,
+        field.number,
+    ))
+}
+
+/// `RecoverySourcePruneMergePolicy.wrapReader` for one source: the field's
+/// number and the documents that keep it -- those the retention query
+/// (`_seq_no >= min_retained_seq_no`) matches, deleted or not -- or `None`
+/// when nothing is pruned: no field configured, no document carrying it, or
+/// every document retained.
+fn recovery_source_pruning(
+    max_doc: i32,
+    infos: &lucene_codecs::field_infos::FieldInfos,
+    columns: &SourceDocValueColumns,
+    retention: &SoftDeletesRetention,
+) -> Result<Option<(i32, Option<FixedBitSet>)>> {
+    let Some(name) = retention.prune_recovery_source_field.as_deref() else {
+        return Ok(None);
+    };
+    let Some((data, entry, number)) = numeric_column(infos, columns, &|f| f.name == name) else {
+        return Ok(None);
+    };
+    let explicit_err = |e| Error::Explicit(format!("reading a recovery-source column: {e}"));
+    let mut flags = doc_values::NumericReader::new(data, entry);
+    let mut flagged = false;
+    for doc in 0..max_doc {
+        if flags.value(doc).map_err(explicit_err)?.is_some() {
+            flagged = true;
+            break;
+        }
+    }
+    if !flagged {
+        return Ok(None);
+    }
+    let len = usize::try_from(max_doc).unwrap_or(0);
+    let mut keep = FixedBitSet::new(len);
+    if let Some((seq_data, seq_entry, _)) =
+        numeric_column(infos, columns, &|f| f.name == retention.seq_no_field)
+    {
+        let mut seq = doc_values::NumericReader::new(seq_data, seq_entry);
+        for doc in 0..len {
+            let id = i32::try_from(doc).unwrap_or(i32::MAX);
+            if seq
+                .value(id)
+                .map_err(explicit_err)?
+                .is_some_and(|s| s >= retention.min_retained_seq_no)
+            {
+                // FBS: `keep` was built with `len` bits and `doc < len`.
+                keep.set(doc);
+            }
+        }
+    }
+    Ok(match keep.cardinality() {
+        n if n == len => None,
+        0 => Some((number, None)),
+        _ => Some((number, Some(keep))),
+    })
 }
 
 /// The live documents a merge should read from one source under `retention`:
 /// `live` (its hard deletes) minus every soft-deleted document whose sequence
 /// number is absent or below the retained minimum. A segment without the
 /// soft-deletes column comes back unchanged.
+///
+/// The second half is the documents whose postings
+/// [`SoftDeletesRetention::prune_postings_field`] keeps -- `live` minus every
+/// soft-deleted document -- or `None` when nothing is pruned.
 fn apply_soft_deletes_retention(
     live: Option<FixedBitSet>,
     max_doc: i32,
     infos: &lucene_codecs::field_infos::FieldInfos,
     columns: &SourceDocValueColumns,
     retention: &SoftDeletesRetention,
-) -> Result<Option<FixedBitSet>> {
-    let numeric = |pred: &dyn Fn(&FieldInfo) -> bool| {
-        let field = infos
-            .fields
-            .iter()
-            .find(|f| pred(f) && f.doc_values_type == DocValuesType::Numeric)?;
-        let &(_, at) = columns.per_field.iter().find(|(n, _)| *n == field.number)?;
-        let (meta, data) = &columns.columns[at];
-        Some((data.as_slice(), meta.numeric_entry(field.number)?))
+) -> Result<(Option<FixedBitSet>, Option<FixedBitSet>)> {
+    let Some((soft_data, soft_entry, _)) =
+        numeric_column(infos, columns, &|f| f.soft_deletes_field)
+    else {
+        return Ok((live, None));
     };
-    let Some((soft_data, soft_entry)) = numeric(&|f| f.soft_deletes_field) else {
-        return Ok(live);
-    };
-    let seq = numeric(&|f| f.name == retention.seq_no_field);
+    let seq = numeric_column(infos, columns, &|f| f.name == retention.seq_no_field);
     let len = usize::try_from(max_doc).unwrap_or(0);
     let mut out = live.unwrap_or_else(|| {
         let mut all = FixedBitSet::new(len);
@@ -849,8 +936,9 @@ fn apply_soft_deletes_retention(
         all
     });
     let mut soft = doc_values::NumericReader::new(soft_data, soft_entry);
-    let mut seq = seq.map(|(data, entry)| doc_values::NumericReader::new(data, entry));
+    let mut seq = seq.map(|(data, entry, _)| doc_values::NumericReader::new(data, entry));
     let explicit_err = |e| Error::Explicit(format!("reading a retention column: {e}"));
+    let mut postings_live = retention.prune_postings_field.as_ref().map(|_| out.clone());
     for doc in 0..out.len() {
         if !out.get(doc) {
             continue;
@@ -858,6 +946,10 @@ fn apply_soft_deletes_retention(
         let id = i32::try_from(doc).unwrap_or(i32::MAX);
         if soft.value(id).map_err(explicit_err)?.is_none() {
             continue;
+        }
+        if let Some(postings_live) = postings_live.as_mut() {
+            // FBS: a clone of `out`, so `doc < out.len()` bounds it too.
+            postings_live.clear(doc);
         }
         let seq_no = match seq.as_mut() {
             Some(reader) => reader.value(id).map_err(explicit_err)?,
@@ -867,7 +959,7 @@ fn apply_soft_deletes_retention(
             out.clear(doc);
         }
     }
-    Ok(Some(out))
+    Ok((Some(out), postings_live))
 }
 
 /// What [`IndexingConfig::run_merge`] produced.
@@ -1007,6 +1099,12 @@ impl IndexingConfig {
             fdx: Vec<u8>,
             fdm: Vec<u8>,
             live_docs: Option<FixedBitSet>,
+            /// The documents whose postings for the pruned field survive --
+            /// see [`SoftDeletesRetention::prune_postings_field`].
+            postings_live: Option<FixedBitSet>,
+            /// The pruned recovery-source field and who keeps it -- see
+            /// [`SoftDeletesRetention::prune_recovery_source_field`].
+            recovery_source: Option<(i32, Option<FixedBitSet>)>,
             postings: RawPostingsFiles,
             term_vectors: RawTermVectorFiles,
             doc_values: SourceDocValueColumns,
@@ -1259,7 +1357,7 @@ impl IndexingConfig {
             // `SoftDeletesRetentionMergePolicy`: a soft-deleted document
             // the retention policy no longer needs is dropped like a hard
             // delete; one it still needs is carried over, soft-deleted.
-            let live_docs = match &plan.retention {
+            let (live_docs, postings_live) = match &plan.retention {
                 Some(retention) => apply_soft_deletes_retention(
                     live_docs,
                     si.doc_count,
@@ -1267,7 +1365,13 @@ impl IndexingConfig {
                     &doc_values,
                     retention,
                 )?,
-                None => live_docs,
+                None => (live_docs, None),
+            };
+            let recovery_source = match &plan.retention {
+                Some(retention) => {
+                    recovery_source_pruning(si.doc_count, &current_infos, &doc_values, retention)?
+                }
+                None => None,
             };
 
             // Computed before the push, because the struct literal moves
@@ -1279,6 +1383,8 @@ impl IndexingConfig {
                 fdx,
                 fdm,
                 live_docs,
+                postings_live,
+                recovery_source,
                 postings,
                 term_vectors,
                 doc_values,
@@ -1438,10 +1544,15 @@ impl IndexingConfig {
         // One `Vec<SourcePostings>` per source, holding every
         // postings-eligible field that source's own term dictionary
         // actually has an entry for.
+        let prune_field = plan
+            .retention
+            .as_ref()
+            .and_then(|r| r.prune_postings_field.as_deref());
         let per_source_postings: Vec<Vec<merge::SourcePostings>> = opened_postings
             .iter()
             .zip(&postings_field_infos)
-            .map(|(maybe, postings_field_infos)| match maybe {
+            .zip(&opened)
+            .map(|((maybe, postings_field_infos), o)| match maybe {
                 Some((fields, doc_in, pos_in, pay_in)) => postings_field_infos
                     .fields
                     .iter()
@@ -1454,6 +1565,10 @@ impl IndexingConfig {
                                 doc_in: Some(doc_in),
                                 pos_in: pos_in.as_ref(),
                                 pay_in: pay_in.as_ref(),
+                                live: o
+                                    .postings_live
+                                    .as_ref()
+                                    .filter(|_| prune_field == Some(f.name.as_str())),
                             })
                     })
                     .collect(),
@@ -1670,6 +1785,12 @@ impl IndexingConfig {
                 // `SegmentReader.getMetaData()` builds its `LeafMetaData`.
                 min_version: opened[i].min_version,
                 has_blocks: opened[i].has_blocks,
+                pruned_field: opened[i].recovery_source.as_ref().map(|(number, keep)| {
+                    merge::PrunedField {
+                        field_number: *number,
+                        keep: keep.as_ref(),
+                    }
+                }),
             })
             .collect();
 
@@ -2344,10 +2465,15 @@ fn soft_delete_key(sci: &SegmentCommitInfo) -> SoftDeleteKey {
 /// Live documents of `sci` with a value in the soft-deletes field `soft`. A
 /// compound segment's base files are read through its archive; its `.liv`
 /// and update generations live beside it.
+///
+/// With `retention`, only the soft-deleted documents it no longer keeps are
+/// counted -- what a merge would reclaim, the soft half of Java's
+/// `MergePolicy.numDeletesToMerge` under `SoftDeletesRetentionMergePolicy`.
 fn count_soft_deletes(
     dir: &dyn Directory,
     sci: &SegmentCommitInfo,
     soft: &str,
+    retention: Option<&SoftDeletesRetention>,
 ) -> Result<Option<i32>> {
     let si = segment_info::parse(
         &dir.open(&format!("{}.si", sci.segment_name))?,
@@ -2375,25 +2501,39 @@ fn count_soft_deletes(
         None => (dir, si.files.clone()),
     };
     let infos = crate::field_updates::read_current_field_infos(dir, sci, &files)?;
-    let Some(index) = infos
-        .fields
-        .iter()
-        .position(|f| f.name == soft && f.doc_values_type == DocValuesType::Numeric)
-    else {
+    let column = |name: &str| -> Result<Option<(doc_values::DocValuesMeta, Vec<u8>, i32)>> {
+        let Some(index) = infos
+            .fields
+            .iter()
+            .position(|f| f.name == name && f.doc_values_type == DocValuesType::Numeric)
+        else {
+            return Ok(None);
+        };
+        let per_field = crate::field_updates::per_field_component(
+            &infos.fields[index],
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+        );
+        Ok(
+            crate::field_updates::read_current_column(dir, sci, &files, &infos, index, &per_field)?
+                .map(|(meta, data)| (meta, data, infos.fields[index].number)),
+        )
+    };
+    let Some((meta, data, number)) = column(soft)? else {
         return Ok(Some(0));
     };
-    let per_field = crate::field_updates::per_field_component(
-        &infos.fields[index],
-        &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
-    );
-    let Some((meta, data)) =
-        crate::field_updates::read_current_column(dir, sci, &files, &infos, index, &per_field)?
-    else {
+    let Some(entry) = meta.numeric_entry(number) else {
         return Ok(Some(0));
     };
-    let Some(entry) = meta.numeric_entry(infos.fields[index].number) else {
-        return Ok(Some(0));
+    let seq_column = match retention {
+        Some(r) => column(&r.seq_no_field)?,
+        None => None,
     };
+    let mut seq_values = seq_column.as_ref().and_then(|(meta, data, number)| {
+        Some(doc_values::NumericReader::new(
+            data,
+            meta.numeric_entry(*number)?,
+        ))
+    });
     let max_doc = usize::try_from(si.doc_count).unwrap_or(0);
     let live = if sci.del_gen >= 0 {
         Some(lucene_codecs::live_docs::parse(
@@ -2406,22 +2546,34 @@ fn count_soft_deletes(
     } else {
         None
     };
+    let column_err = |e| Error::Explicit(format!("reading the soft-deletes column: {e}"));
     let mut values = doc_values::NumericReader::new(&data, entry);
     let mut count = 0i32;
     for doc in 0..si.doc_count {
         if live.as_ref().is_some_and(|l| !l.get_doc(doc)) {
             continue;
         }
-        if values
-            .value(doc)
-            .map_err(|e| Error::Explicit(format!("reading the soft-deletes column: {e}")))?
-            .is_some()
-        {
-            count = count.saturating_add(1);
+        if values.value(doc).map_err(column_err)?.is_none() {
+            continue;
         }
+        if let Some(retention) = retention {
+            let seq_no = match seq_values.as_mut() {
+                Some(reader) => reader.value(doc).map_err(column_err)?,
+                None => None,
+            };
+            if seq_no.is_some_and(|s| s >= retention.min_retained_seq_no) {
+                continue;
+            }
+        }
+        count = count.saturating_add(1);
     }
     Ok(Some(count))
 }
+
+/// `IndexWriter.MAX_DOCS`: the most documents one index may hold, deleted
+/// ones included -- `Integer.MAX_VALUE - 128`, leaving headroom for the
+/// arrays Java sizes by `maxDoc`.
+pub const MAX_DOCS: usize = i32::MAX as usize - 128;
 
 pub struct IndexWriter<'d> {
     dir: &'d dyn Directory,
@@ -2538,6 +2690,11 @@ pub struct IndexWriter<'d> {
     soft_delete_counts: std::collections::HashMap<String, (SoftDeleteKey, i32)>,
     /// See [`IndexWriter::set_soft_deletes_retention`].
     soft_deletes_retention: Option<SoftDeletesRetention>,
+    /// See [`IndexWriter::set_max_docs`].
+    max_docs: usize,
+    /// Each segment's `maxDoc`, read off its `.si` once -- what
+    /// [`IndexWriter::reserve_docs`] sums on every add.
+    segment_max_docs: std::collections::HashMap<String, usize>,
     /// `SegmentInfo.setHasBlocks()` for the segment currently being buffered:
     /// set by any [`IndexWriter::add_documents`]/
     /// [`IndexWriter::update_documents`] call that buffers more than one
@@ -3226,6 +3383,8 @@ impl<'d> IndexWriter<'d> {
             pending_explicit: Vec::new(),
             soft_delete_counts,
             soft_deletes_retention: None,
+            max_docs: MAX_DOCS,
+            segment_max_docs: std::collections::HashMap::new(),
             pending_has_blocks: false,
             segment_versions: std::collections::HashMap::new(),
         })
@@ -4144,10 +4303,71 @@ impl<'d> IndexWriter<'d> {
         // for nothing. A one-document call can never set `has_blocks` (Java:
         // `numDocs > 1`) and carries no delete node, so there is nothing the
         // block path would do that this does not.
+        self.reserve_docs(1)?;
         let seq_no = self.delete_queue.next_sequence_number();
         self.buffer_document(doc);
         self.maybe_flush()?;
         Ok(seq_no)
+    }
+
+    /// `IndexWriter.reserveDocs`: refuses an add that would take the index
+    /// past [`IndexWriter::set_max_docs`]' limit, before anything -- the
+    /// add's own delete included -- is buffered. Java counts
+    /// `pendingNumDocs`, every document of every segment plus the buffered
+    /// ones; deleted documents count until a merge drops them.
+    pub(crate) fn reserve_docs(&mut self, added: usize) -> Result<()> {
+        let mut total = self.pending_docs.len();
+        let segments = self
+            .segment_infos
+            .segments
+            .iter()
+            .chain(&self.flushed_segments);
+        for sci in segments {
+            let max_doc = match self.segment_max_docs.get(&sci.segment_name) {
+                Some(&n) => n,
+                None => {
+                    let si = segment_info::parse(
+                        &self.dir.open(&format!("{}.si", sci.segment_name))?,
+                        &sci.segment_id,
+                    )?;
+                    let n = usize::try_from(si.doc_count).unwrap_or(0);
+                    self.segment_max_docs.insert(sci.segment_name.clone(), n);
+                    n
+                }
+            };
+            total = total.saturating_add(max_doc);
+        }
+        // Merged-away segments leave stale entries behind; drop them once
+        // they outnumber the live ones.
+        let live = self
+            .segment_infos
+            .segments
+            .len()
+            .saturating_add(self.flushed_segments.len());
+        if self.segment_max_docs.len() > live.saturating_mul(2) {
+            let infos = &self.segment_infos;
+            let flushed = &self.flushed_segments;
+            self.segment_max_docs.retain(|name, _| {
+                infos
+                    .segments
+                    .iter()
+                    .chain(flushed)
+                    .any(|s| &s.segment_name == name)
+            });
+        }
+        if total.saturating_add(added) > self.max_docs {
+            return Err(Error::TooManyDocs(self.max_docs));
+        }
+        Ok(())
+    }
+
+    /// `IndexWriter.setMaxDocs`: lowers the limit [`IndexWriter::reserve_docs`]
+    /// enforces from [`MAX_DOCS`]. Java keeps it for tests, and so does
+    /// this; a caller embedding a JVM passes it the JVM's own
+    /// `IndexWriter.getActualMaxDocs()`, so both engines refuse at the same
+    /// count. Values above [`MAX_DOCS`] are clamped to it.
+    pub fn set_max_docs(&mut self, max_docs: usize) {
+        self.max_docs = max_docs.min(MAX_DOCS);
     }
 
     /// Appends one document to the pending buffer, keeping the parallel
@@ -4292,6 +4512,7 @@ impl<'d> IndexWriter<'d> {
         delete: Option<DeleteNode>,
         docs: Vec<Document>,
     ) -> Result<SeqNo> {
+        self.reserve_docs(docs.len())?;
         let doc_id_upto = self.pending_doc_id_upto();
         let seq_no = match delete {
             Some(node) => self.buffer_delete_node(node, doc_id_upto),
@@ -4990,7 +5211,7 @@ impl<'d> IndexWriter<'d> {
                 }
             }
             let count =
-                count_soft_deletes(self.dir, sci, &soft_name)?.unwrap_or(sci.soft_del_count);
+                count_soft_deletes(self.dir, sci, &soft_name, None)?.unwrap_or(sci.soft_del_count);
             sci.soft_del_count = count;
             self.soft_delete_counts
                 .insert(sci.segment_name.clone(), (key, count));
@@ -7390,7 +7611,7 @@ impl<'d> IndexWriter<'d> {
             let mut stats = self.segment_stats()?;
             if stats.len() <= max_num_segments {
                 if let [only] = stats.as_slice() {
-                    if max_num_segments == 1 && only.del_count > 0 {
+                    if max_num_segments == 1 && self.num_deletes_to_merge(only)? > 0 {
                         self.execute_merge(std::slice::from_ref(&only.name))?;
                     }
                 }
@@ -7404,6 +7625,31 @@ impl<'d> IndexWriter<'d> {
             let names: Vec<String> = stats.into_iter().take(take).map(|s| s.name).collect();
             self.execute_merge(&names)?;
         }
+    }
+
+    /// `MergePolicy.numDeletesToMerge` under this writer's retention policy:
+    /// the segment's hard deletes plus the soft-deleted documents
+    /// [`IndexWriter::set_soft_deletes_retention`] no longer keeps. Without a
+    /// retention policy a merge keeps every soft-deleted document, so only
+    /// the hard deletes count.
+    fn num_deletes_to_merge(&self, stat: &merge_policy::SegmentStat) -> Result<i32> {
+        let (Some(retention), Some(soft)) = (
+            &self.soft_deletes_retention,
+            self.cfg.fields.iter().find(|f| f.soft_deletes_field),
+        ) else {
+            return Ok(stat.del_count);
+        };
+        let Some(sci) = self
+            .segment_infos
+            .segments
+            .iter()
+            .find(|s| s.segment_name == stat.name)
+        else {
+            return Ok(stat.del_count);
+        };
+        let reclaimable =
+            count_soft_deletes(self.dir, sci, &soft.name, Some(retention))?.unwrap_or(0);
+        Ok(stat.del_count.saturating_add(reclaimable))
     }
 
     /// `IndexWriter.forceMergeDeletes()`: every committed segment carrying a
