@@ -11,14 +11,15 @@ use lucene_util::fixed_bit_set::FixedBitSet;
 use super::conjunction::{BlockMaxConjunctionScorer, ConjunctionScorer, LegConjunctionScorer};
 use super::disjunction::{Combine, DisjunctionScorer};
 use super::leaf::{AllDocs, ConstantScorer, DocList, TermScorer, ZeroScorer};
+use super::phrase::{term_positions_cost, PhraseScorer, PhraseTerm};
 use super::req::{ReqExclScorer, ReqOptSumScorer};
 use super::wand::{cost_with_min_should_match, WandScorer};
 use super::{BoxScorer, Mode};
 use crate::bulk_scorer::TermLeg;
 use crate::field_norms::FieldNorms;
 use crate::points_query::PointsInput;
-use crate::query::{BooleanQuery, BoostQuery, Clause, TermQuery};
-use crate::{similarity, GlobalStats, Result};
+use crate::query::{BooleanQuery, BoostQuery, Clause, PhraseQuery, TermQuery};
+use crate::{similarity, sloppy_phrase, GlobalStats, Result};
 
 /// One segment's readers, and the reader-wide statistics to score with.
 pub(crate) struct LeafContext<'a> {
@@ -113,8 +114,81 @@ pub(crate) fn build<'a>(
             ))))
         }
         Clause::MatchNoDocs(_) => Ok(None),
+        Clause::Phrase(p) => match phrase(ctx, p, boost, mode)? {
+            PhraseForm::Scorer(s) => Ok(Some(s)),
+            PhraseForm::Absent => Ok(None),
+            PhraseForm::Other => materialized(ctx, clause, boost, mode),
+        },
         other => materialized(ctx, other, boost, mode),
     }
+}
+
+enum PhraseForm<'a> {
+    Scorer(BoxScorer<'a>),
+    /// A term is not in this segment: the phrase matches nothing.
+    Absent,
+    /// Not a shape the streaming scorer takes; resolve it up front.
+    Other,
+}
+
+/// `PhraseWeight.scorer`: a [`PhraseScorer`] over the terms' positions.
+fn phrase<'a>(
+    ctx: &LeafContext<'a>,
+    p: &PhraseQuery,
+    boost: f32,
+    mode: Mode,
+) -> Result<PhraseForm<'a>> {
+    if p.terms.len() < 2 {
+        // Empty matches nothing and one term is a term query, as
+        // `PhraseQuery.rewrite` has it; both are the up-front path's.
+        return Ok(PhraseForm::Other);
+    }
+    let (Some(doc_in), Some(pos_in)) = (ctx.doc_in, ctx.pos_in) else {
+        return Ok(PhraseForm::Other);
+    };
+    let Some(field_terms) = ctx.fields.field(&p.field) else {
+        return Ok(PhraseForm::Absent);
+    };
+    // `BM25Similarity.idfExplain(TermStatistics[])` sums in a double and
+    // casts once: an `f32` sum of three or more idfs can be an ulp off.
+    let mut idf_sum = 0.0f64;
+    let mut match_cost = 0.0f32;
+    let mut terms = Vec::with_capacity(p.terms.len());
+    for (slot, term) in p.terms.iter().enumerate() {
+        let Some(stats) = field_terms.try_seek_exact(term)? else {
+            return Ok(PhraseForm::Absent);
+        };
+        // A pulsed singleton keeps its one posting in the term dictionary,
+        // with no `.doc` stream for a lazy cursor to walk.
+        if stats.doc_freq <= 1 {
+            return Ok(PhraseForm::Other);
+        }
+        let (df, dc) = match ctx.global.and_then(|g| g.term(&p.field, term)) {
+            Some(g) => (g.doc_freq, g.doc_count),
+            None => (stats.doc_freq as i64, field_terms.doc_count as i64),
+        };
+        idf_sum += f64::from(similarity::idf(df, dc));
+        match_cost += term_positions_cost(stats.doc_freq as i64, stats.total_term_freq);
+        let Some(cursor) = field_terms.lazy_positions(term, doc_in, pos_in)? else {
+            return Ok(PhraseForm::Absent);
+        };
+        terms.push(PhraseTerm {
+            cursor,
+            slot,
+            cost: stats.doc_freq as i64,
+        });
+    }
+    let field_norms = ctx.norms.and_then(|m| m.get(&p.field));
+    Ok(PhraseForm::Scorer(Box::new(PhraseScorer::new(
+        terms,
+        boost * idf_sum as f32,
+        p.slop,
+        sloppy_phrase::PhraseRepeats::for_phrase(&p.terms),
+        field_norms.map(|n| n.cursor()),
+        match_cost,
+        mode == Mode::TopScores,
+        mode.needs_scores(),
+    ))))
 }
 
 /// A chain of nested `BoostQuery`s as `BoostQuery.rewrite` collapses it --

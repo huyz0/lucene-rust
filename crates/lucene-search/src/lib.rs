@@ -4001,7 +4001,9 @@ pub fn search_phrase_query_scored_with_stats<C: ScoringCollector>(
     // Real BM25's phrase idf is the sum of every constituent term's own idf --
     // see this function's doc comment. A missing term means the phrase can
     // never match, same convention as `search_phrase_query`.
-    let mut idf_sum = 0.0f32;
+    // `BM25Similarity.idfExplain(TermStatistics[])` sums in a double and
+    // casts once: an `f32` sum of three or more idfs can be an ulp off.
+    let mut idf_acc = 0.0f64;
     let mut term_doc_freqs = Vec::with_capacity(query.terms.len());
     for term in &query.terms {
         let Some(stats) = field_terms.try_seek_exact(term)? else {
@@ -4017,8 +4019,9 @@ pub fn search_phrase_query_scored_with_stats<C: ScoringCollector>(
             Some(g) => (g.doc_freq, g.doc_count),
             None => (stats.doc_freq as i64, field_terms.doc_count as i64),
         };
-        idf_sum += similarity::idf(df, dc);
+        idf_acc += f64::from(similarity::idf(df, dc));
     }
+    let idf_sum = idf_acc as f32;
 
     // `PhraseScorer` over lazy positions: a leapfrog over the terms' documents,
     // a `maxFreq` score check before any position is read, and positions
@@ -4389,7 +4392,9 @@ fn multi_phrase_hits<C: ScoringCollector>(
 
     // `MultiPhraseWeight`: the idf is summed over every term of every
     // position, and a term absent from this segment contributes nothing.
-    let mut idf_sum = 0.0f32;
+    // `BM25Similarity.idfExplain(TermStatistics[])` sums in a double and
+    // casts once: an `f32` sum of three or more idfs can be an ulp off.
+    let mut idf_acc = 0.0f64;
     let mut any_term_present = false;
     for alternatives in &query.term_arrays {
         for term in alternatives {
@@ -4401,9 +4406,10 @@ fn multi_phrase_hits<C: ScoringCollector>(
                 Some(g) => (g.doc_freq, g.doc_count),
                 None => (stats.doc_freq as i64, field_terms.doc_count as i64),
             };
-            idf_sum += similarity::idf(df, dc);
+            idf_acc += f64::from(similarity::idf(df, dc));
         }
     }
+    let idf_sum = idf_acc as f32;
     if !any_term_present {
         return Ok(());
     }

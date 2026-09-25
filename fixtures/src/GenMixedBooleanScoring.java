@@ -15,6 +15,7 @@ import org.apache.lucene.search.BoostQuery;
 import org.apache.lucene.search.ConstantScoreQuery;
 import org.apache.lucene.search.DisjunctionMaxQuery;
 import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.PhraseQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.TermQuery;
@@ -53,6 +54,8 @@ import java.util.stream.Stream;
  *   (boost F Q)                BoostQuery
  *   (const Q)                  ConstantScoreQuery (score 1)
  *   (dismax TIE Q...)          DisjunctionMaxQuery
+ *   (p TERM...)                PhraseQuery on body
+ *   (ps SLOP TERM...)          sloppy PhraseQuery
  * </pre>
  *
  * For each query the manifest records the top {@code N} under a total-hits threshold of 100 (so
@@ -154,6 +157,36 @@ public class GenMixedBooleanScoring {
     "(b 1 (# (t w0)) (? (b 0 (+ (t w1)) (+ (t w2)))) (? (t w3)))",
     "(b 0 (+ (b 0 (? (t w1)) (? (t w2)))) (+ (t w3)) (# (t w4)))",
     "(b 0 (# (b 0 (? (t w1)) (? (t w2)))))",
+    // Phrases inside the tree, two-phase (`PhraseScorer`): required, optional,
+    // excluded, in a dismax, constant-scored, sloppy, with a repeated term,
+    // under a minimum_should_match.
+    "(b 0 (+ (p w0 w1)) (? (t w2)))",
+    "(b 0 (? (p w0 w1)) (? (p w1 w2)) (? (t w5)))",
+    "(b 0 (+ (t w0)) (+ (p w1 w0)))",
+    "(b 0 (+ (t w3)) (- (p w0 w1)))",
+    "(dismax 0.2 (p w0 w1) (t w4))",
+    "(b 1 (+ (t w0)) (? (ps 2 w1 w3)) (? (t w6)))",
+    "(b 0 (+ (const (p w2 w0))) (? (t w1)))",
+    "(b 0 (+ (ps 1 w0 w0)) (? (t w1)))",
+    "(b 2 (? (p w0 w1)) (? (t w2)) (? (t w3)))",
+    "(b 0 (# (p w0 w2)) (? (t w1)) (? (t w4)))",
+    // Sloppy phrases with three terms and repeated terms, alone and nested.
+    "(ps 1 w0 w1 w0)",
+    "(ps 2 w0 w0 w1)",
+    "(ps 2 w3 w1 w2)",
+    "(p w0 w0)",
+    "(p w0 w1 w0)",
+    "(b 0 (? (ps 2 w0 w1 w2)) (? (t w3)))",
+    "(b 0 (? (ps 1 w1 w1)) (? (p w2 w2 w0)))",
+    // Phrases over pulsed singletons (docFreq 1 in each segment).
+    "(p solo pair)",
+    "(b 0 (? (p solo pair)) (? (t w0)))",
+    "(b 0 (+ (t w0)) (+ (p pair w0)))",
+    "(b 0 (? (ps 2 pair solo)) (? (t w1)))",
+    // A root phrase under a boost runs `PhraseScorer` itself, which then
+    // receives the collector's threshold (the `maxFreq` check).
+    "(boost 2 (p w0 w1))",
+    "(boost 0.5 (p w1 w0 w2))",
   };
 
   public static void main(String[] args) throws IOException {
@@ -179,7 +212,13 @@ public class GenMixedBooleanScoring {
             int id = seg * DOCS_PER_SEGMENT + i;
             Document doc = new Document();
             doc.add(new StringField("id", Integer.toString(id), Field.Store.NO));
-            doc.add(new TextField("body", body(random), Field.Store.NO));
+            String body = body(random);
+            if (i == 5) {
+              // `solo` and `pair` occur in one document per segment: pulsed
+              // singletons (docFreq 1, no .doc stream), inside phrases below.
+              body = "solo pair w0 w1 solo " + body;
+            }
+            doc.add(new TextField("body", body, Field.Store.NO));
             w.addDocument(doc);
           }
           w.commit();
@@ -290,6 +329,14 @@ public class GenMixedBooleanScoring {
     Query q;
     switch (op) {
       case "t" -> q = new TermQuery(new Term("body", t.next()));
+      case "p", "ps" -> {
+        int slop = op.equals("ps") ? Integer.parseInt(t.next()) : 0;
+        List<String> words = new ArrayList<>();
+        while (!t.peek().equals(")")) {
+          words.add(t.next());
+        }
+        q = new PhraseQuery(slop, "body", words.toArray(new String[0]));
+      }
       case "boost" -> {
         float f = Float.parseFloat(t.next());
         q = new BoostQuery(parse(t), f);

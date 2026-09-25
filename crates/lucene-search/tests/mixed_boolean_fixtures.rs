@@ -3,7 +3,7 @@
 //!
 //! `fixtures/src/GenMixedBooleanScoring.java` writes a two-segment, 24,000
 //! document Zipf corpus with deletions, and records Lucene's top hits for
-//! sixty-eight queries that mix every `Occur`, `minimum_should_match`, boosts,
+//! ninety-one queries that mix every `Occur`, `minimum_should_match`, boosts,
 //! `constant_score`, dismax and nesting -- the shapes the scorer tree in
 //! `lucene-search`'s `exec` module runs. Each query is recorded twice: with a
 //! total-hits threshold of 100, so the collector publishes a minimum
@@ -22,7 +22,7 @@ use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::multi_segment::search_boolean_query_multi_segment_maxscore_counting;
 use lucene_search::query::{BoostQuery, ConstantScoreQuery, DisjunctionMaxQuery};
-use lucene_search::{BooleanQuery, Clause, TermQuery};
+use lucene_search::{BooleanQuery, Clause, PhraseQuery, TermQuery};
 use lucene_store::FsDirectory;
 
 fn fixture_dir() -> String {
@@ -105,6 +105,18 @@ fn parse(t: &mut Tokens) -> Clause {
     let op = t.next();
     let q = match op.as_str() {
         "t" => Clause::Term(TermQuery::new("body", t.next().into_bytes())),
+        "p" | "ps" => {
+            let slop: u32 = if op == "ps" {
+                t.next().parse().unwrap()
+            } else {
+                0
+            };
+            let mut words = Vec::new();
+            while t.peek() != ")" {
+                words.push(t.next());
+            }
+            Clause::Phrase(PhraseQuery::new("body", words).with_slop(slop))
+        }
         "boost" => {
             let f: f32 = t.next().parse().unwrap();
             BoostQuery::new(parse(t), f).into()

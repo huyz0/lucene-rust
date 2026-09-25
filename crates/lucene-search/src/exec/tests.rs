@@ -480,6 +480,43 @@ fn scorer_disjunctions_match_brute_force() {
     assert!(two_phase_runs > 50, "two-phase clauses: {two_phase_runs}");
 }
 
+/// A phrase on a segment without norms scores every document at the
+/// unnormed length, like a term does.
+#[test]
+fn a_phrase_without_norms_scores_unnormed() {
+    use crate::directory_reader::DirectoryReader;
+    use crate::query::{Clause, PhraseQuery};
+    let dir = lucene_store::FsDirectory::open(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/data/mixed_boolean_scoring_index"
+    ));
+    let reader = DirectoryReader::open(&dir).unwrap();
+    let opened = reader.open_segments().unwrap();
+    let seg = &opened.as_open_segments()[0];
+    let ctx = super::build::LeafContext {
+        fields: seg.fields,
+        doc_in: seg.doc_in,
+        pos_in: seg.pos_in,
+        pay_in: seg.pay_in,
+        live_docs: None,
+        points: None,
+        norms: None,
+        global: None,
+        max_doc: seg.max_doc,
+    };
+    let phrase = Clause::Phrase(PhraseQuery::new("body", ["w0", "w1"]));
+    let s = super::build::build(&ctx, &phrase, 1.0, Mode::Complete, true)
+        .unwrap()
+        .unwrap();
+    let mut all = All(Vec::new());
+    score_segment(&mut Bulk::scorer(s), Mode::Complete, None, &mut all).unwrap();
+    assert!(!all.0.is_empty());
+    assert!(all
+        .0
+        .iter()
+        .all(|&(_, score)| score > 0.0 && score.is_finite()));
+}
+
 /// A match-all without a maxDoc of its own (as the JVM decodes it) on a
 /// segment that supplies none is an error, not a walk to `i32::MAX`.
 #[test]
@@ -647,6 +684,22 @@ mod fixture {
     }
 
     fn node(t: &[String], at: &mut usize) -> Clause {
+        if t[*at + 1] == "p" || t[*at + 1] == "ps" {
+            let slop: u32 = if t[*at + 1] == "ps" {
+                *at += 1;
+                t[*at + 1].parse().unwrap()
+            } else {
+                0
+            };
+            *at += 2;
+            let mut words = Vec::new();
+            while t[*at] != ")" {
+                words.push(t[*at].clone());
+                *at += 1;
+            }
+            *at += 1;
+            return Clause::Phrase(crate::query::PhraseQuery::new("body", words).with_slop(slop));
+        }
         let mut next = || {
             *at += 1;
             t[*at - 1].clone()
