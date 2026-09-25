@@ -13,6 +13,8 @@ import org.opensearch.common.settings.Settings;
 import org.opensearch.common.settings.SettingsFilter;
 import org.lucenerust.opensearch.engine.RustEngineFactory;
 import org.lucenerust.opensearch.engine.RustEngineSupport;
+import org.lucenerust.opensearch.engine.RustIndexerFactory;
+import org.opensearch.index.IndexModule;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.engine.EngineFactory;
 import org.opensearch.core.common.breaker.CircuitBreaker;
@@ -89,6 +91,12 @@ public class RustSearchPlugin extends Plugin implements SearchPlugin, ActionPlug
     @Override
     public void setCircuitBreaker(CircuitBreaker circuitBreaker) {
         RustEngineSupport.setBreaker(circuitBreaker);
+    }
+
+    /** Every shard of a Rust-engine index gets the indexer that lets it be a segment-replication primary. */
+    @Override
+    public void onIndexModule(IndexModule indexModule) {
+        indexModule.addIndexEventListener(RustIndexerFactory.listener());
     }
 
     @Override

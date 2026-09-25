@@ -78,6 +78,14 @@ public final class RustEngineSupport {
         if (reason != null) {
             throw new IllegalArgumentException(reason);
         }
+        // A segment-replication primary needs RustIndexerFactory in its shard (see there).
+        if (config.getIndexSettings().isSegRepLocalEnabled() && RustIndexerFactory.installed(config.getShardId()) == false) {
+            throw new IllegalArgumentException(
+                "the Rust engine's indexer is not installed on "
+                    + config.getShardId()
+                    + ", so it cannot be a segment-replication primary; use index.replication.type: DOCUMENT"
+            );
+        }
     }
 
     /**
@@ -96,15 +104,11 @@ public final class RustEngineSupport {
         if (settings.isContextAwareEnabled()) {
             return "the Rust engine does not support context-aware segments";
         }
-        // OpenSearch 3.8's segment-replication source (CopyState) reads the primary's last refreshed
-        // checkpoint through EngineBackedIndexer, which answers only for an InternalEngine -- and
-        // InternalEngine.lastRefreshedCheckpoint() is final. A plugin engine cannot be a segment
-        // replication primary on this version; document replication is supported. (A segment
-        // replication replica never reaches this: it runs NRTReplicationEngine.)
-        if (settings.isSegRepEnabledOrRemoteNode()) {
-            return "the Rust engine cannot be a segment-replication primary on OpenSearch 3.8 "
-                + "(EngineBackedIndexer.lastRefreshedCheckpoint answers only for InternalEngine); "
-                + "use index.replication.type: DOCUMENT";
+        // Remote-backed storage uploads segments through RemoteStoreRefreshListener, which asks for an
+        // InternalEngine by class; segment replication between nodes is served through
+        // RustIndexerFactory.
+        if (settings.isRemoteStoreEnabled() || settings.isAssignedOnRemoteNode()) {
+            return "the Rust engine does not support remote-backed storage";
         }
         return null;
     }

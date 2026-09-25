@@ -15,8 +15,10 @@ read with preference=_only_nodes -- must hold exactly that, after each of:
   6. relocation Java -> Rust: back to a Rust node, whose writer then soft-deletes documents in
      Java-written (compound) segments;
   7. segment replication: a Java primary whose replicas open its segments and answer the plugin's
-     native queries -- and a segment-replicated index asking for the Rust writer is refused, since
-     OpenSearch 3.8 cannot use a plugin engine as a segment-replication primary.
+     native queries;
+  8. segment replication with a Rust primary: replicas copy the Rust writer's segments, a replica
+     is promoted into the Rust engine when the primary's node stops, the node rejoins as a
+     replica, a replica on the Java node joins, and a force merge replicates.
 
 Standard library only.
 """
@@ -272,15 +274,43 @@ def main():
          {"query": {"match": {"title": "alpha"}}})
     after = must("GET", "/_plugins/lucene_rust/stats", node=replica)["native_queries"]
     check(after > before, f"the replica on {replica} answered a match query natively: {before} -> {after}")
-    # ...and the Rust writer refused as a segment-replication primary.
+
+    # 8. Segment replication with a Rust primary: its replicas copy the Rust writer's segments.
     must("PUT", "/segrep_rust", {"settings": {
-        "number_of_shards": 1, "number_of_replicas": 0, "index.replication.type": "SEGMENT",
-        "index.lucene_rust.engine": True,
-        # On os3 (node_enabled: false) OpenSearch's engine serves it, and there is nothing to refuse.
-        "index.routing.allocation.include._name": "os1,os2"}})
-    time.sleep(5)
-    explain = must("GET", "/_cluster/allocation/explain", {"index": "segrep_rust", "shard": 0, "primary": True})
-    check("segment-replication primary" in json.dumps(explain), f"the refusal says why: {json.dumps(explain)[:400]}")
+        "number_of_shards": 1, "number_of_replicas": 1, "index.replication.type": "SEGMENT",
+        "index.lucene_rust.engine": True, "index.routing.allocation.include._name": "os1,os2"}})
+    wait(lambda: health("segrep_rust", "green"), "segrep_rust green")
+    rs = Model("segrep_rust", 3)
+    for _ in range(4):
+        rs.ops(300)
+    rs.verify("segment replication (Rust primary, replica copying its segments)")
+    p = primary("segrep_rust")
+    r = next(n for n, prim in copies("segrep_rust").items() if not prim)
+    check(engines(r).get("nrt_replica", 0) >= 1, f"the replica on {r} runs NRTReplicationEngine: {engines(r)}")
+
+    # Promotion: the replica becomes a Rust primary on the segments it copied.
+    rust_before = engines(r).get("rust", 0)
+    docker("stop", p)
+    DOWN.add(p)
+    wait(lambda: health("segrep_rust", "yellow") and primary("segrep_rust") == r, "the segrep replica promoted")
+    check(engines(r).get("rust", 0) > rust_before, f"{r} was promoted into the Rust engine: {engines(r)}")
+    rs.ops(300)
+    rs.verify(f"writes after a segment-replication promotion to {r}")
+    docker("start", p)
+    DOWN.discard(p)
+    wait(lambda: must("GET", "/_cluster/health", node=r)["number_of_nodes"] == 3, "the node rejoins", 300)
+    wait(lambda: health("segrep_rust", "green"), "segrep_rust green again", 300)
+    rs.verify("the stopped node rejoined as a segment-replication replica")
+
+    # A replica on the Java node too, then a merge the replicas must copy.
+    settings("segrep_rust", {"index.number_of_replicas": 2, "index.routing.allocation.include._name": "os1,os2,os3"})
+    wait(lambda: health("segrep_rust", "green"), "three segrep copies", 300)
+    rs.ops(300)
+    rs.verify("a Rust segment-replication primary with a replica on the Java node")
+    must("POST", "/segrep_rust/_forcemerge?max_num_segments=1")
+    must("POST", "/segrep_rust/_refresh")
+    rs.ops(100)
+    rs.verify("segment replication after a force merge")
 
     print(f"verify_cluster: {CHECKS[0]} checks, {len(FAILURES)} failures", flush=True)
     sys.exit(1 if FAILURES else 0)

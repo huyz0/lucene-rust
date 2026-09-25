@@ -4,7 +4,8 @@
 # (lucene_rust.engine.node_enabled: false) with OpenSearch's own engine, then
 # opensearch-plugin/e2e/verify_cluster.py: document replication, peer recovery,
 # primary failover, primary relocation between the two kinds of node in both
-# directions, and segment replication with native replicas -- every copy
+# directions, and segment replication -- native replicas of a Java primary,
+# and a Rust primary through failover, promotion and a force merge -- every copy
 # checked against a model of what was acknowledged.
 #
 #   scripts/verify-opensearch-cluster.sh [--keep] [--no-build]

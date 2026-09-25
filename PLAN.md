@@ -3855,9 +3855,10 @@ luceneutil `wikimediumall` ingest.
 **Delivered as milestone M5 (2026-09-25).** `RustEngine` is `InternalEngine` derived from the
 pinned OpenSearch 3.8.0 sources with only the writer swapped, so items 1, 2 and 4 are OpenSearch's
 own code over the Rust writer. Documents are inverted in Java and written in Rust, and refresh is
-a Rust commit. Two things differ from this list. Item 3's segment replication cannot use a Rust
-*primary* on OpenSearch 3.8 (`EngineBackedIndexer` answers only for `InternalEngine`), so the Rust
-engine replicates by document. Item 5 needs no FFI cursor, because aggregations read the Rust
+a Rust commit. Two things differ from this list. Item 3's segment replication needs one hook,
+because OpenSearch 3.8's `EngineBackedIndexer` answers a primary's refresh checkpoint only for
+`InternalEngine`: the plugin swaps each shard's indexer factory (`RustIndexerFactory`), and both
+replication modes work. Item 5 needs no FFI cursor, because aggregations read the Rust
 writer's segments through Java readers. Details: `docs/opensearch-engine.md`,
 `docs/milestones/m5-engine-integration.md`.
 
