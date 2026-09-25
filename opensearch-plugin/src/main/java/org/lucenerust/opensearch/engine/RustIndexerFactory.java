@@ -34,14 +34,37 @@ import java.util.concurrent.atomic.AtomicLong;
  * it fails the node rather than a shard at failover.
  */
 public final class RustIndexerFactory extends EngineBackedIndexerFactory {
+    /**
+     * Whether this OpenSearch asks the engine itself -- an overridable {@code
+     * Engine#lastRefreshedCheckpoint()}, which {@link RustEngine}'s public method then overrides --
+     * rather than checking for {@code InternalEngine}. Then nothing here is needed: no field is
+     * written, and every Rust engine may be a segment-replication primary.
+     */
+    public static final boolean NATIVE = engineDeclaresRefreshCheckpoint();
+
+    /** {@code IndexModule.indexerFactory}; null when {@link #NATIVE}. */
     private static final Field INDEX_MODULE_FACTORY;
 
     static {
+        if (NATIVE) {
+            INDEX_MODULE_FACTORY = null;
+        } else {
+            try {
+                INDEX_MODULE_FACTORY = IndexModule.class.getDeclaredField("indexerFactory");
+                INDEX_MODULE_FACTORY.setAccessible(true);
+            } catch (ReflectiveOperationException e) {
+                throw new ExceptionInInitializerError(e);
+            }
+        }
+    }
+
+    private static boolean engineDeclaresRefreshCheckpoint() {
         try {
-            INDEX_MODULE_FACTORY = IndexModule.class.getDeclaredField("indexerFactory");
-            INDEX_MODULE_FACTORY.setAccessible(true);
-        } catch (ReflectiveOperationException e) {
-            throw new ExceptionInInitializerError(e);
+            Engine.class.getDeclaredMethod("lastRefreshedCheckpoint");
+            Engine.class.getDeclaredMethod("currentOngoingRefreshCheckpoint");
+            return true;
+        } catch (NoSuchMethodException e) {
+            return false;
         }
     }
 
@@ -73,7 +96,7 @@ public final class RustIndexerFactory extends EngineBackedIndexerFactory {
 
     /** Whether the engine being built on this thread is being built by this factory. */
     static boolean building() {
-        return BUILDING.get();
+        return NATIVE || BUILDING.get();
     }
 
     /** Resolves the field; called at node start so a missing one fails there. */
@@ -81,6 +104,9 @@ public final class RustIndexerFactory extends EngineBackedIndexerFactory {
 
     /** Installs this factory into an index whose engines are {@link RustEngineFactory}'s. */
     public static void install(IndexModule module) {
+        if (NATIVE) {
+            return;
+        }
         try {
             IndexerFactory current = (IndexerFactory) INDEX_MODULE_FACTORY.get(module);
             if (current instanceof EngineBackedIndexerFactory f

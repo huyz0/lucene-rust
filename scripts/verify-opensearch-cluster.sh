@@ -17,6 +17,11 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 VERSION=3.8.0
 IMAGE="lucene-rust-opensearch:${VERSION}"
+# OS_IMAGE runs the nodes from another image built on that one -- e.g. an
+# OpenSearch patched with an overridable Engine#lastRefreshedCheckpoint, under
+# which the plugin needs no hook for segment replication (see
+# docs/opensearch-engine.md). The build step still builds IMAGE.
+NODE_IMAGE="${OS_IMAGE:-$IMAGE}"
 KEEP=0
 BUILD=1
 for a in "$@"; do
@@ -63,7 +68,7 @@ start() { # name http-port transport-port rust-enabled
         -e DISABLE_SECURITY_PLUGIN=true -e DISABLE_INSTALL_DEMO_CONFIG=true \
         -e cluster.routing.allocation.disk.threshold_enabled=false \
         -e OPENSEARCH_JAVA_OPTS="-Xms768m -Xmx768m" \
-        "$IMAGE" >/dev/null
+        "$NODE_IMAGE" >/dev/null
 }
 start os1 9201 9301 true
 start os2 9202 9302 true
