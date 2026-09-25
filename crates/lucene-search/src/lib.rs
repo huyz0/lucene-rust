@@ -365,6 +365,11 @@ pub enum Error {
     /// parameters, and the alternative to reporting the disagreement is
     /// `FixedBitSet::set` writing a ghost bit or panicking (see
     /// `docs/mechanical-gates.md`'s `fixed-bitset-bound` rule).
+    /// A `MatchAllDocsQuery` built without a `maxDoc` (`i32::MAX`, as the
+    /// JVM's decoded queries carry) reached a segment that did not supply
+    /// its own: it would walk 2^31 documents past the segment's end.
+    #[error("match-all query has no maxDoc and the segment supplied none")]
+    MatchAllWithoutMaxDoc,
     #[error("cached query produced docID={doc_id}, outside the segment's 0..{num_docs}")]
     CachedDocOutOfRange { doc_id: i32, num_docs: usize },
 }
@@ -2903,6 +2908,86 @@ pub fn search_boolean_query_scored_with_stats<C: ScoringCollector>(
     global: Option<&GlobalStats>,
     collector: &mut C,
 ) -> Result<()> {
+    search_boolean_query_scored_impl(
+        fields, doc_in, pos_in, pay_in, live_docs, points, query, norms, global, None, collector,
+    )
+}
+
+/// [`search_boolean_query_scored_with_stats`] over one segment of a
+/// multi-segment search, which also knows the segment's `maxDoc` (for a
+/// `MatchAllDocsQuery` clause; see [`multi_segment::OpenSegment::max_doc`]).
+pub(crate) fn search_boolean_query_scored_segment<C: ScoringCollector>(
+    seg: &multi_segment::OpenSegment<'_>,
+    query: &BooleanQuery,
+    norms: Option<&HashMap<String, FieldNorms<'_>>>,
+    global: Option<&GlobalStats>,
+    collector: &mut C,
+) -> Result<()> {
+    let max_doc = seg.max_doc;
+    search_boolean_query_scored_impl(
+        seg.fields,
+        seg.doc_in,
+        seg.pos_in,
+        seg.pay_in,
+        seg.live_docs,
+        None,
+        query,
+        norms,
+        global,
+        max_doc,
+        collector,
+    )
+}
+
+/// `Weight.count`-free counting: how many live documents of one segment
+/// `query` matches, run on the same scorer tree and bulk scorers as the
+/// scored search, in `COMPLETE_NO_SCORES` -- frequencies never decoded, no
+/// score computed, no pruning.
+pub fn count_boolean_query_segment(
+    seg: &multi_segment::OpenSegment<'_>,
+    query: &BooleanQuery,
+) -> Result<u64> {
+    struct Count(u64);
+    impl ScoringCollector for Count {
+        fn collect(&mut self, _doc_id: i32, _score: f32) {
+            self.0 += 1;
+        }
+        fn score_mode(&self) -> collector::ScoreMode {
+            collector::ScoreMode::CompleteNoScores
+        }
+    }
+    let ctx = exec::LeafContext {
+        fields: seg.fields,
+        doc_in: seg.doc_in,
+        pos_in: seg.pos_in,
+        pay_in: seg.pay_in,
+        live_docs: seg.live_docs,
+        points: None,
+        norms: None,
+        global: None,
+        max_doc: seg.max_doc,
+    };
+    let mut count = Count(0);
+    if let Some(mut bulk) = exec::bulk_boolean(&ctx, query, 1.0, exec::Mode::NoScores)? {
+        exec::score_segment(&mut bulk, exec::Mode::NoScores, seg.live_docs, &mut count)?;
+    }
+    Ok(count.0)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn search_boolean_query_scored_impl<C: ScoringCollector>(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    pos_in: Option<&PosInput<'_>>,
+    pay_in: Option<&PayInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    points: Option<&PointsInput<'_>>,
+    query: &BooleanQuery,
+    norms: Option<&HashMap<String, FieldNorms<'_>>>,
+    global: Option<&GlobalStats>,
+    max_doc: Option<i32>,
+    collector: &mut C,
+) -> Result<()> {
     // One scoring clause and nothing to filter against: the clause's own score
     // map *is* the matched set, so running `matched_boolean_docs` first would
     // execute the clause a second time for an answer already in hand. On a
@@ -2911,11 +2996,11 @@ pub fn search_boolean_query_scored_with_stats<C: ScoringCollector>(
     // -- the single-clause shape is exactly how `search_phrase_query_scored`
     // reaches this function from the multi-segment layer.
     //
-    // Restricted to `Term` and `Phrase`, the two clause kinds whose
-    // `clause_scores` output is *exactly* their matched set. It is not true in
-    // general: a nested `Boolean` can match documents its scoring sub-clauses
-    // never mention, and the wildcard family expands to terms elsewhere. Those
-    // keep the two-pass path. `minimum_should_match` must be 0, not merely
+    // Restricted to `Phrase` and the wildcard family, the clause kinds whose
+    // matched set this path streams exactly (a lone `Term` takes the scorer
+    // tree below, which prunes). It is not true in general: a nested
+    // `Boolean` can match documents its scoring sub-clauses never mention.
+    // Those keep the two-pass path. `minimum_should_match` must be 0, not merely
     // `<= 1`: with no `should` clauses at all, a minimum of 1 means nothing
     // matches, and the fast path would wrongly return the `must` clause's
     // documents.
@@ -2951,11 +3036,7 @@ pub fn search_boolean_query_scored_with_stats<C: ScoringCollector>(
         && query.minimum_should_match == 0
         && matches!(
             query.must[0],
-            Clause::Term(_)
-                | Clause::Phrase(_)
-                | Clause::Prefix(_)
-                | Clause::Wildcard(_)
-                | Clause::Regexp(_)
+            Clause::Phrase(_) | Clause::Prefix(_) | Clause::Wildcard(_) | Clause::Regexp(_)
         )
     {
         // Straight to the collector, not through `clause_scores`. That function
@@ -2970,19 +3051,14 @@ pub fn search_boolean_query_scored_with_stats<C: ScoringCollector>(
         // `(doc, score)` to the collector in ascending document order, which is
         // exactly what both of these functions already do -- the map was pure
         // overhead between two things that already agreed on shape.
+        //
+        // A lone `Term` is not here: it takes the scorer tree below, whose
+        // term bulk scorer skips blocks on impacts once the collector has a
+        // threshold (`TermScorer` + `BatchScoreBulkScorer`). This path scored
+        // every posting -- 0.08x Lucene on a dense term, found by the REST
+        // benchmark's shapes once a lone term reached it through the query
+        // tree.
         match &query.must[0] {
-            Clause::Term(q) => {
-                let clause_norms = norms.and_then(|m| m.get(&q.field));
-                return search_term_query_scored_with_stats(
-                    fields,
-                    doc_in,
-                    live_docs,
-                    q,
-                    clause_norms,
-                    global,
-                    collector,
-                );
-            }
             Clause::Phrase(q) => {
                 let clause_norms = norms.and_then(|m| m.get(&q.field));
                 return search_phrase_query_scored_with_stats(
@@ -3056,6 +3132,7 @@ pub fn search_boolean_query_scored_with_stats<C: ScoringCollector>(
         points,
         norms,
         global,
+        max_doc,
     };
     let mode = exec::Mode::of(collector);
     if let Some(mut bulk) = exec::bulk_boolean(&ctx, query, 1.0, mode)? {
@@ -5289,6 +5366,7 @@ mod tests {
             points: None,
             norms: None,
             global: None,
+            max_doc: None,
         };
         exec::bulk_boolean(&ctx, q, 1.0, exec::Mode::Complete)
             .unwrap()

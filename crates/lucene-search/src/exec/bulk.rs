@@ -7,20 +7,25 @@
 //!
 //! The term-shaped bulk scorers are the batch ports in `bulk_scorer`; they
 //! take their clauses as [`TermLeg`]s, which a term, a boosted term and a
-//! constant-scored term all become (`build::term_leg`). A shape whose clauses are
-//! not all term legs runs on the scorer tree, as Lucene does for the shapes
-//! it has no bulk scorer for.
+//! constant-scored term all become (`build::term_leg`). `MaxScoreBulkScorer`
+//! and `BlockMaxConjunctionBulkScorer` also run over clauses that are not
+//! all terms, as in Lucene ([`ScorerLeg`], `Bulk::ScorerConjunction`). Any
+//! other shape runs on the scorer tree, as Lucene does for the shapes it has
+//! no bulk scorer for -- except two where Lucene's tree never skips a
+//! document and ours need not either: a dismax of terms (`DisMaxBulk`) and
+//! `MUST` + `SHOULD` with a minimum (the same two scorers, as a block-max
+//! conjunction).
 
 use lucene_util::fixed_bit_set::FixedBitSet;
 
-use super::build::{boost_chain, child, compose, Child, LeafContext};
+use super::build::{boost_chain, child, compose, term_leg, Child, LeafContext, TermForm};
 use super::conjunction::ConjunctionScorer;
 use super::disjunction::{Combine, DisjunctionScorer};
 use super::leaf::ZeroScorer;
 use super::{BoxScorer, Mode, NO_MORE_DOCS};
 use crate::bulk_scorer::{
-    min_competitive_score, score_term_window, ConjunctionBulk, DocScores, MaxScore, ReqOptBulk,
-    TermLeg,
+    min_competitive_score, score_term_window, BulkLeg, ConjunctionBulk, DisMaxBulk, DocScores,
+    MaxScore, MaxScoreLeg, ReqOptBulk, TermLeg,
 };
 use crate::collector::ScoringCollector;
 use crate::query::{BooleanQuery, Clause};
@@ -40,11 +45,16 @@ pub(crate) enum Bulk<'a> {
     ScorerConjunction(Vec<BoxScorer<'a>>, ConjunctionBulk),
     /// `MaxScoreBulkScorer`, with `filteredOptionalBulkScorer`'s filter.
     Disjunction(Vec<TermLeg<'a>>, Option<BoxScorer<'a>>, MaxScore),
+    /// `MaxScoreBulkScorer` over clauses that are not all terms (a nested
+    /// boolean, a dismax), with `filteredOptionalBulkScorer`'s filter.
+    ScorerDisjunction(Vec<ScorerLeg<'a>>, Option<BoxScorer<'a>>, MaxScore),
     /// `ReqOptSumScorer`'s shape, a batch at a time: the required legs
     /// (cheapest first), then the optional ones. See `ReqOptBulk`.
     ReqOpt(Vec<TermLeg<'a>>, Vec<TermLeg<'a>>, Box<ReqOptBulk>),
     /// `ReqExclBulkScorer`.
     ReqExcl(Box<Bulk<'a>>, BoxScorer<'a>),
+    /// A dismax of terms, a window at a time. See `DisMaxBulk`.
+    DisMax(Vec<TermLeg<'a>>, Box<DisMaxBulk>),
 }
 
 impl<'a> Bulk<'a> {
@@ -62,8 +72,10 @@ impl<'a> Bulk<'a> {
             Bulk::ScorerConjunction(..) => "scorer_conjunction",
             Bulk::Disjunction(_, None, _) => "disjunction",
             Bulk::Disjunction(_, Some(_), _) => "filtered_disjunction",
+            Bulk::ScorerDisjunction(..) => "scorer_disjunction",
             Bulk::ReqOpt(..) => "req_opt",
             Bulk::ReqExcl(..) => "req_excl",
+            Bulk::DisMax(..) => "dismax",
         }
     }
 
@@ -91,7 +103,12 @@ impl<'a> Bulk<'a> {
                 let filter = filter.as_deref_mut().map(|f| f as &mut dyn super::Scorer);
                 state.score(legs, filter, live_docs, collector, min, max)
             }
+            Bulk::ScorerDisjunction(legs, filter, state) => {
+                let filter = filter.as_deref_mut().map(|f| f as &mut dyn super::Scorer);
+                state.score(legs, filter, live_docs, collector, min, max)
+            }
             Bulk::ReqOpt(req, opt, state) => state.score(req, opt, live_docs, collector, min, max),
+            Bulk::DisMax(legs, state) => state.score(legs, live_docs, collector, min, max),
             Bulk::ReqExcl(req, excl) => {
                 req_excl_score(req, &mut **excl, mode, live_docs, collector, min, max)
             }
@@ -204,11 +221,53 @@ pub(crate) fn bulk_clause<'a>(
             return bulk_boolean(ctx, inner, chain * boost, mode);
         }
     }
+    let (dismax_boost, inner) = match clause {
+        Clause::Boost(b) => {
+            let (chain, inner) = boost_chain(b);
+            (chain * boost, inner)
+        }
+        other => (boost, other),
+    };
+    if let Clause::DisjunctionMax(d) = inner {
+        if let Some(bulk) = bulk_dismax(ctx, d, dismax_boost, mode)? {
+            return Ok(bulk);
+        }
+    }
     Ok(match child(ctx, clause, boost, mode, true)? {
         Some(Child::Leg(leg)) => Some(Bulk::Term(leg, DocScores::default())),
         Some(Child::Scorer(s)) => Some(Bulk::scorer(s)),
         None => None,
     })
+}
+
+/// A scored dismax whose disjuncts are all terms, as [`DisMaxBulk`]; `None`
+/// when it is not that shape (the scorer tree runs it).
+fn bulk_dismax<'a>(
+    ctx: &LeafContext<'a>,
+    d: &crate::query::DisjunctionMaxQuery,
+    boost: f32,
+    mode: Mode,
+) -> Result<Option<Option<Bulk<'a>>>> {
+    if !mode.needs_scores() {
+        return Ok(None);
+    }
+    let mut legs = Vec::with_capacity(d.disjuncts.len());
+    for disjunct in &d.disjuncts {
+        match term_leg(ctx, disjunct, boost, mode)? {
+            TermForm::Leg(leg) => legs.push(*leg),
+            TermForm::Absent => {}
+            TermForm::Other => return Ok(None),
+        }
+    }
+    Ok(Some(match legs.len() {
+        0 => None,
+        // `DisjunctionMaxQuery`'s one-scorer case: the scorer itself.
+        1 => Some(Bulk::Term(
+            Box::new(legs.pop().expect("one leg")),
+            DocScores::default(),
+        )),
+        _ => Some(Bulk::DisMax(legs, Box::new(DisMaxBulk::new(d.tie_breaker)))),
+    }))
 }
 
 /// `subs.get(..).iterator().next().bulkScorer()`: the bulk scorer of the one
@@ -222,9 +281,14 @@ fn lone<'a>(
     boost: f32,
     mode: Mode,
 ) -> Result<Option<Bulk<'a>>> {
+    // A nested boolean or dismax has its own bulk scorer, built from the
+    // clause again.
     let nested = match clause {
-        Clause::Boolean(_) => true,
-        Clause::Boost(b) => matches!(boost_chain(b).1, Clause::Boolean(_)),
+        Clause::Boolean(_) | Clause::DisjunctionMax(_) => true,
+        Clause::Boost(b) => matches!(
+            boost_chain(b).1,
+            Clause::Boolean(_) | Clause::DisjunctionMax(_)
+        ),
         _ => false,
     };
     Ok(match built {
@@ -245,8 +309,13 @@ pub(crate) fn bulk_boolean<'a>(
 ) -> Result<Option<Bulk<'a>>> {
     let clauses = q.must.len() + q.filter.len() + q.should.len() + q.must_not.len();
     if clauses == 1 {
+        // `BooleanQuery.rewrite`: a lone `MUST` is its clause only when no
+        // `SHOULD` is required -- with `minimum_should_match` 1 and no
+        // `SHOULD` clause the query matches nothing.
         if let [only] = &q.must[..] {
-            return bulk_clause(ctx, only, boost, mode);
+            if q.minimum_should_match == 0 {
+                return bulk_clause(ctx, only, boost, mode);
+            }
         }
         if let [only] = &q.should[..] {
             if q.minimum_should_match <= 1 {
@@ -313,26 +382,29 @@ pub(crate) fn bulk_boolean<'a>(
                 .collect();
             let state = MaxScore::new(&mut legs);
             Some(Bulk::Disjunction(legs, None, state))
+        } else if msm <= 1 && mode == Mode::TopScores {
+            // `optionalBulkScorer`: `MaxScoreBulkScorer` over whatever the
+            // clauses are.
+            let mut legs = scorer_legs(std::mem::take(&mut should), mode)?;
+            let state = MaxScore::new(&mut legs);
+            Some(Bulk::ScorerDisjunction(legs, None, state))
         } else {
             None
         }
     } else if must.is_empty() && should.len() > 1 && msm >= 1 {
         if mode == Mode::TopScores && msm == 1 && all_legs(&should) {
-            let mut filters: Vec<BoxScorer<'a>> = std::mem::take(&mut filter)
-                .into_iter()
-                .map(|(c, _)| c.into_scorer(Mode::NoScores))
-                .collect();
-            let filter_scorer: BoxScorer<'a> = if filters.len() == 1 {
-                filters.pop().expect("one filter")
-            } else {
-                Box::new(ConjunctionScorer::new(filters, Vec::new()))
-            };
+            let filter_scorer = filter_of(std::mem::take(&mut filter));
             let mut legs: Vec<TermLeg<'a>> = std::mem::take(&mut should)
                 .into_iter()
                 .map(|(c, _)| c.into_leg())
                 .collect();
             let state = MaxScore::new(&mut legs);
             Some(Bulk::Disjunction(legs, Some(filter_scorer), state))
+        } else if mode == Mode::TopScores && msm == 1 {
+            let filter_scorer = filter_of(std::mem::take(&mut filter));
+            let mut legs = scorer_legs(std::mem::take(&mut should), mode)?;
+            let state = MaxScore::new(&mut legs);
+            Some(Bulk::ScorerDisjunction(legs, Some(filter_scorer), state))
         } else {
             None
         }
@@ -402,6 +474,34 @@ pub(crate) fn bulk_boolean<'a>(
             .collect();
         let state = Box::new(ReqOptBulk::new(req.len()));
         Some(Bulk::ReqOpt(req, opt, state))
+    } else if required > 0 && msm >= 1 && !should.is_empty() && mode == Mode::TopScores {
+        // Our own: Lucene declines a bulk scorer here and runs
+        // `ConjunctionScorer(req, opt)` a document at a time, never skipping.
+        // The same two scorers as a block-max conjunction score identically
+        // (`ConjunctionScorer.score` is the same `f64` sum) and drop blocks
+        // whose summed maxima cannot compete.
+        let (req, opt) = super::build::req_and_opt(
+            std::mem::take(&mut must)
+                .into_iter()
+                .map(|(c, _)| c)
+                .collect(),
+            std::mem::take(&mut filter)
+                .into_iter()
+                .map(|(c, _)| c)
+                .collect(),
+            std::mem::take(&mut should)
+                .into_iter()
+                .map(|(c, _)| c)
+                .collect(),
+            msm,
+            mode,
+        )?;
+        if req.two_phase() || opt.two_phase() {
+            return bulk_boolean_tree(ctx, q, boost, mode);
+        }
+        let mut scorers = vec![req, opt];
+        scorers.sort_by_key(|s| s.cost());
+        Some(Bulk::ScorerConjunction(scorers, ConjunctionBulk::new(2)))
     } else {
         None
     };
@@ -449,6 +549,102 @@ fn bulk_boolean_tree<'a>(
     Ok(super::build::build_boolean(ctx, q, boost, mode, true)?.map(Bulk::scorer))
 }
 
+/// `filteredOptionalBulkScorer`'s filter: the `FILTER` clauses as one
+/// iterator.
+fn filter_of<'a>(filter: Vec<(Child<'a>, &Clause)>) -> BoxScorer<'a> {
+    let mut filters: Vec<BoxScorer<'a>> = filter
+        .into_iter()
+        .map(|(c, _)| c.into_scorer(Mode::NoScores))
+        .collect();
+    if filters.len() == 1 {
+        filters.pop().expect("one filter")
+    } else {
+        Box::new(ConjunctionScorer::new(filters, Vec::new()))
+    }
+}
+
+/// The `SHOULD` clauses as [`MaxScore`] clauses, positioned on their first
+/// match.
+fn scorer_legs<'a>(should: Vec<(Child<'a>, &Clause)>, mode: Mode) -> Result<Vec<ScorerLeg<'a>>> {
+    should
+        .into_iter()
+        .map(|(c, _)| Ok(ScorerLeg::new(c.into_scorer(mode))))
+        .collect()
+}
+
+impl<'a> ScorerLeg<'a> {
+    pub(crate) fn new(s: BoxScorer<'a>) -> Self {
+        let cost = s.cost();
+        let doc = s.doc_id();
+        ScorerLeg {
+            s,
+            doc,
+            cost,
+            max_window_score: 0.0,
+        }
+    }
+}
+
+/// A [`MaxScore`] clause that is any scorer: `DisiWrapper` around it,
+/// iterating `scorer.iterator()` -- a two-phase scorer's *exact* view, as
+/// `TwoPhaseIterator.asDocIdSetIterator` gives `MaxScoreBulkScorer`.
+pub(crate) struct ScorerLeg<'a> {
+    s: BoxScorer<'a>,
+    doc: i32,
+    cost: i64,
+    max_window_score: f32,
+}
+
+impl BulkLeg for ScorerLeg<'_> {
+    fn doc_id(&self) -> i32 {
+        self.s.doc_id()
+    }
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        super::exact_advance(&mut *self.s, target)
+    }
+    fn next_doc(&mut self) -> Result<i32> {
+        super::exact_next(&mut *self.s)
+    }
+    fn score(&mut self) -> Result<f32> {
+        super::Scorer::score(&mut *self.s)
+    }
+    fn advance_shallow(&mut self, target: i32) -> Result<i32> {
+        super::Scorer::advance_shallow(&mut *self.s, target)
+    }
+    fn max_score(&mut self, up_to: i32) -> Result<f32> {
+        super::Scorer::max_score(&mut *self.s, up_to)
+    }
+    fn next_docs_and_scores(
+        &mut self,
+        up_to: i32,
+        live_docs: Option<&FixedBitSet>,
+        out: &mut DocScores,
+    ) -> Result<()> {
+        // `Scorer`'s, over the exact iterator -- not `BulkLeg for BoxScorer`,
+        // which method resolution would pick and which walks the
+        // approximation.
+        super::Scorer::next_docs_and_scores(&mut *self.s, up_to, live_docs, out)
+    }
+}
+
+impl MaxScoreLeg for ScorerLeg<'_> {
+    fn cur(&self) -> i32 {
+        self.doc
+    }
+    fn set_cur(&mut self, doc: i32) {
+        self.doc = doc;
+    }
+    fn leg_cost(&self) -> i64 {
+        self.cost
+    }
+    fn window_max(&self) -> f32 {
+        self.max_window_score
+    }
+    fn set_window_max(&mut self, score: f32) {
+        self.max_window_score = score;
+    }
+}
+
 impl crate::bulk_scorer::BulkLeg for BoxScorer<'_> {
     fn doc_id(&self) -> i32 {
         super::Scorer::doc_id(&**self)
@@ -468,27 +664,16 @@ impl crate::bulk_scorer::BulkLeg for BoxScorer<'_> {
     fn max_score(&mut self, up_to: i32) -> Result<f32> {
         super::Scorer::max_score(&mut **self, up_to)
     }
-    /// `Scorer.nextDocsAndScores`'s default: up to 64 of the scorer's
-    /// documents from the current one on, below `up_to`, live ones only.
+    /// `Scorer.nextDocsAndScores`. Only non-two-phase scorers reach a bulk
+    /// scorer as a `BulkLeg`, so the exact iterator is the approximation.
     fn next_docs_and_scores(
         &mut self,
         up_to: i32,
         live_docs: Option<&FixedBitSet>,
         out: &mut DocScores,
     ) -> Result<()> {
-        const BATCH: usize = 64;
-        out.docs.clear();
-        out.scores.clear();
-        let s = &mut **self;
-        let mut doc = s.doc_id();
-        while doc < up_to && out.docs.len() < BATCH {
-            if live_docs.is_none_or(|l| l.get_doc(doc)) {
-                out.docs.push(doc);
-                out.scores.push(s.score()?);
-            }
-            doc = s.next_doc()?;
-        }
-        Ok(())
+        debug_assert!(!self.two_phase());
+        super::Scorer::next_docs_and_scores(&mut **self, up_to, live_docs, out)
     }
 }
 

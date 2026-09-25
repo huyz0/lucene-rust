@@ -1,0 +1,14 @@
+# The REST benchmark's slower shapes (opensearch-plugin/e2e/verify_opensearch.py
+# `bench`), in process, over the corpus benchmarks/corpus/src/GenRestCorpus.java
+# builds (the e2e index's vocabulary and fields, 1M documents):
+#   javac -cp "$CP" -d OUT benchmarks/corpus/src/GenRestCorpus.java
+#   java -cp OUT:"$CP" GenRestCorpus DIR 1000000 merged|segmented
+# `(t title:w)` searches another field than the row's.
+r1	sexpr	body	(b 2 (? (t alpha)) (? (t beta)) (? (t gamma)) (? (t delta)))
+r2	sexpr	body	(b 0 (? (b 0 (+ (t alpha)) (+ (t title:gamma)))) (? (t omega)))
+r3	sexpr	body	(b 0 (? (t delta)) (? (t theta)))
+r4	sexpr	body	(dismax 0.3 (t alpha) (t title:gamma))
+r5	sexpr	body	(b 1 (+ (t alpha)) (? (t title:beta)) (? (t title:gamma)))
+r6	sexpr	body	(b 0 (+ (t alpha)) (? (t title:beta)))
+r7	sexpr	body	(t alpha)
+r8	sexpr	body	(dismax 0 (t alpha) (t title:alpha))

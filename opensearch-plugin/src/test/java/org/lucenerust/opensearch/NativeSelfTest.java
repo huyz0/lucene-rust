@@ -17,6 +17,7 @@ import org.apache.lucene.search.BooleanClause.Occur;
 import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.BoostQuery;
 import org.apache.lucene.search.ConstantScoreQuery;
+import org.apache.lucene.search.DisjunctionMaxQuery;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.PhraseQuery;
@@ -124,26 +125,41 @@ public final class NativeSelfTest {
         Query wrappedPhrase = new ConstantScoreQuery(new PhraseQuery("body", "a", "b"));
         check("clause_PhraseQuery".equals(QueryEncoder.encode(wrappedPhrase, f -> true).fallbackReason()), "wrapped phrase falls back");
         check("field_similarity".equals(QueryEncoder.encode(t, f -> false).fallbackReason()), "rejected field falls back");
-        check(
-            "query_MatchAllDocsQuery".equals(QueryEncoder.encode(MatchAllDocsQuery.INSTANCE, f -> true).fallbackReason()),
-            "match_all falls back"
-        );
+        check(QueryEncoder.encode(MatchAllDocsQuery.INSTANCE, f -> true).blob() != null, "match_all encodes");
         Query phrase = new BooleanQuery.Builder().add(t, Occur.MUST).add(new PhraseQuery("body", "a", "b"), Occur.SHOULD).build();
         check("clause_PhraseQuery".equals(QueryEncoder.encode(phrase, f -> true).fallbackReason()), "phrase clause falls back");
         Query negative = new BooleanQuery.Builder().add(t, Occur.MUST_NOT).build();
-        check("boolean_pure_negative".equals(QueryEncoder.encode(negative, f -> true).fallbackReason()), "pure negative falls back");
+        check(QueryEncoder.encode(negative, f -> true).blob() != null, "pure negative encodes (and matches nothing)");
         Query t2 = new TermQuery(new Term("body", "b"));
         check(QueryEncoder.isFast(t) && QueryEncoder.isFast(new ConstantScoreQuery(t)), "terms are fast");
         check(QueryEncoder.isFast(new BooleanQuery.Builder().add(t, Occur.SHOULD).add(t2, Occur.SHOULD).build()), "disjunction is fast");
         check(QueryEncoder.isFast(new BooleanQuery.Builder().add(t, Occur.MUST).add(t2, Occur.FILTER).build()), "conjunction is fast");
-        check(QueryEncoder.isFast(new BooleanQuery.Builder().add(t, Occur.MUST).add(t2, Occur.SHOULD).build()) == false, "mixed is slow");
-        check(QueryEncoder.isFast(new BooleanQuery.Builder().add(t, Occur.MUST).add(t2, Occur.MUST_NOT).build()) == false, "must_not is slow");
-        check(QueryEncoder.isFast(new BoostQuery(t, 2f)) == false, "boost is slow");
+        // Since read path R1 every encodable shape is measured at least as fast as Lucene.
+        check(QueryEncoder.isFast(new BooleanQuery.Builder().add(t, Occur.MUST).add(t2, Occur.SHOULD).build()), "mixed is fast");
+        check(QueryEncoder.isFast(new BooleanQuery.Builder().add(t, Occur.MUST).add(t2, Occur.MUST_NOT).build()), "must_not is fast");
+        check(QueryEncoder.isFast(new BoostQuery(t, 2f)), "boost is fast");
         check(
-            QueryEncoder.isFast(new BooleanQuery.Builder().add(t, Occur.SHOULD).add(t2, Occur.SHOULD).setMinimumNumberShouldMatch(2).build()) == false,
-            "msm 2 is slow"
+            QueryEncoder.isFast(new BooleanQuery.Builder().add(t, Occur.SHOULD).add(t2, Occur.SHOULD).setMinimumNumberShouldMatch(2).build()),
+            "msm 2 is fast"
         );
-        check("boolean_empty".equals(QueryEncoder.encode(new BooleanQuery.Builder().build(), f -> true).fallbackReason()), "empty");
+        check(QueryEncoder.isFast(new DisjunctionMaxQuery(List.of(t, t2), 0.3f)), "dismax is fast");
+        check(QueryEncoder.isFast(wrappedPhrase) == false, "a phrase is not encodable yet");
+        check(QueryEncoder.encode(new BooleanQuery.Builder().build(), f -> true).blob() != null, "empty encodes (and matches nothing)");
+        check(
+            "query_PhraseQuery".equals(QueryEncoder.encode(new PhraseQuery("body", "a", "b"), f -> true).fallbackReason()),
+            "an unsupported root reports query_, not clause_"
+        );
+        // The native decoder's node cap, 1024 nodes: a boolean of 1023 terms is 1024.
+        BooleanQuery.Builder atCap = new BooleanQuery.Builder();
+        for (int i = 0; i < 1023; i++) {
+            atCap.add(new TermQuery(new Term("body", "t" + i)), Occur.SHOULD);
+        }
+        check(QueryEncoder.encode(atCap.build(), f -> true).blob() != null, "1024 nodes encode");
+        atCap.add(new TermQuery(new Term("body", "t1023")), Occur.SHOULD);
+        check(
+            "query_too_large".equals(QueryEncoder.encode(atCap.build(), f -> true).fallbackReason()),
+            "1025 nodes fall back as query_too_large, not a native error"
+        );
     }
 
     // --- differential ---------------------------------------------------------------------
@@ -160,9 +176,14 @@ public final class NativeSelfTest {
         String field = fields.get(r.nextInt(fields.size()));
         if (depth > 1 || r.nextInt(4) == 0) {
             Query t = new TermQuery(new Term(field, word(r)));
-            return switch (r.nextInt(6)) {
+            return switch (r.nextInt(10)) {
                 case 0 -> new ConstantScoreQuery(t);
                 case 1 -> new BoostQuery(t, r.nextInt(4) * 0.75f);
+                case 2 -> new DisjunctionMaxQuery(
+                    List.of(t, new TermQuery(new Term(field, word(r))), new BoostQuery(new TermQuery(new Term(field, word(r))), 1.5f)),
+                    r.nextInt(3) * 0.25f
+                );
+                case 3 -> r.nextInt(3) == 0 ? MatchAllDocsQuery.INSTANCE : t;
                 default -> t;
             };
         }

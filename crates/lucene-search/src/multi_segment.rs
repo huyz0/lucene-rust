@@ -132,6 +132,11 @@ pub struct OpenSegment<'a> {
     /// doc IDs with no way for this module to detect the mistake (it has no
     /// visibility into other segments' `maxDoc`).
     pub doc_base: i32,
+    /// This segment's `maxDoc`, which a `MatchAllDocsQuery` clause matches
+    /// every document below. `None` when not known here: such a clause then
+    /// uses the `max_doc` it was built with, so a query decoded without one
+    /// (the JVM's, whose match-all carries none) must come with this set.
+    pub max_doc: Option<i32>,
 }
 
 /// The shared fan-out+merge core (see this module's doc comment): runs
@@ -859,18 +864,7 @@ pub fn search_boolean_query_multi_segment(
     search_leaves_shared(&doc_bases, top_n, |i, local| {
         let seg = &segments[i];
         let seg_norms = norms.get(i).copied().flatten();
-        crate::search_boolean_query_scored_with_stats(
-            seg.fields,
-            seg.doc_in,
-            seg.pos_in,
-            seg.pay_in,
-            seg.live_docs,
-            None,
-            query,
-            seg_norms,
-            Some(&global),
-            local,
-        )
+        crate::search_boolean_query_scored_segment(seg, query, seg_norms, Some(&global), local)
     })
 }
 
@@ -893,18 +887,7 @@ pub fn search_boolean_query_multi_segment_concurrent(
     merge_multi_segment_scored_concurrent(&doc_bases, top_n, |i, local| {
         let seg = &segments[i];
         let seg_norms = norms.get(i).copied().flatten();
-        crate::search_boolean_query_scored_with_stats(
-            seg.fields,
-            seg.doc_in,
-            seg.pos_in,
-            seg.pay_in,
-            seg.live_docs,
-            None,
-            query,
-            seg_norms,
-            Some(&global),
-            local,
-        )
+        crate::search_boolean_query_scored_segment(seg, query, seg_norms, Some(&global), local)
     })
 }
 
@@ -966,18 +949,7 @@ pub fn search_boolean_query_multi_segment_maxscore_counting(
     search_leaves_shared_counting(&doc_bases, top_n, total_hits_threshold, |i, local| {
         let seg = &segments[i];
         let seg_norms = norms.get(i).copied().flatten();
-        crate::search_boolean_query_scored_maxscore_with_stats(
-            seg.fields,
-            seg.doc_in,
-            seg.pos_in,
-            seg.pay_in,
-            seg.live_docs,
-            None,
-            query,
-            seg_norms,
-            Some(&global),
-            local,
-        )
+        crate::search_boolean_query_scored_segment(seg, query, seg_norms, Some(&global), local)
     })
 }
 
@@ -1005,18 +977,7 @@ pub fn search_boolean_query_multi_segment_maxscore_concurrent(
     merge_multi_segment_scored_concurrent(&doc_bases, top_n, |i, local| {
         let seg = &segments[i];
         let seg_norms = norms.get(i).copied().flatten();
-        crate::search_boolean_query_scored_maxscore_with_stats(
-            seg.fields,
-            seg.doc_in,
-            seg.pos_in,
-            seg.pay_in,
-            seg.live_docs,
-            None,
-            query,
-            seg_norms,
-            Some(&global),
-            local,
-        )
+        crate::search_boolean_query_scored_segment(seg, query, seg_norms, Some(&global), local)
     })
 }
 
@@ -1532,6 +1493,7 @@ mod tests {
                 pay_in: None,
                 live_docs: None,
                 doc_base: 0,
+                max_doc: None,
             },
             OpenSegment {
                 fields: &fields1,
@@ -1540,6 +1502,7 @@ mod tests {
                 pay_in: None,
                 live_docs: None,
                 doc_base: max_doc0,
+                max_doc: None,
             },
         ];
         let norms = [None, None];
@@ -1602,6 +1565,7 @@ mod tests {
                 pay_in: None,
                 live_docs: None,
                 doc_base: 0,
+                max_doc: None,
             },
             OpenSegment {
                 fields: &fields1,
@@ -1610,6 +1574,7 @@ mod tests {
                 pay_in: None,
                 live_docs: None,
                 doc_base: max_doc0,
+                max_doc: None,
             },
         ];
         let norms = [None, None];
@@ -1667,6 +1632,7 @@ mod tests {
                 pay_in: None,
                 live_docs: None,
                 doc_base: 0,
+                max_doc: None,
             },
             OpenSegment {
                 fields: &fields1,
@@ -1675,6 +1641,7 @@ mod tests {
                 pay_in: None,
                 live_docs: None,
                 doc_base: max_doc0,
+                max_doc: None,
             },
         ];
         let norms = [None, None];
@@ -1706,6 +1673,7 @@ mod tests {
                 pay_in: None,
                 live_docs: None,
                 doc_base: 0,
+                max_doc: None,
             },
             OpenSegment {
                 fields: &fields1,
@@ -1714,6 +1682,7 @@ mod tests {
                 pay_in: None,
                 live_docs: None,
                 doc_base: max_doc0,
+                max_doc: None,
             },
         ];
         let norms = [None, None];
@@ -1740,6 +1709,7 @@ mod tests {
             pay_in: None,
             live_docs: None,
             doc_base: 1000,
+            max_doc: None,
         }];
         let norms = [None];
         let merged = search_term_query_multi_segment(&segments, &query, &norms, 10).unwrap();
@@ -2112,6 +2082,7 @@ mod tests {
                 pay_in: None,
                 live_docs: None,
                 doc_base: 0,
+                max_doc: None,
             },
             OpenSegment {
                 fields: &fields1,
@@ -2120,6 +2091,7 @@ mod tests {
                 pay_in: None,
                 live_docs: None,
                 doc_base: max_doc0,
+                max_doc: None,
             },
         ];
         let norms = [None, None];
@@ -2149,6 +2121,7 @@ mod tests {
                 pay_in: None,
                 live_docs: None,
                 doc_base: 0,
+                max_doc: None,
             },
             OpenSegment {
                 fields: &fields1,
@@ -2157,6 +2130,7 @@ mod tests {
                 pay_in: None,
                 live_docs: None,
                 doc_base: max_doc0,
+                max_doc: None,
             },
         ];
         let norms = [None, None];

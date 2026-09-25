@@ -192,6 +192,7 @@ fn multi_segment_merge_matches_real_lucene_scores_from_two_real_segment_copies()
             pay_in: None,
             live_docs: None,
             doc_base: 0,
+            max_doc: None,
         },
         OpenSegment {
             fields: &fields1,
@@ -200,6 +201,7 @@ fn multi_segment_merge_matches_real_lucene_scores_from_two_real_segment_copies()
             pay_in: None,
             live_docs: None,
             doc_base: doc_base1,
+            max_doc: None,
         },
     ];
     let norms = [None, None];
@@ -302,6 +304,7 @@ fn multi_segment_merge_respects_each_segments_own_distinct_live_docs() {
             pay_in: None,
             live_docs: None, // segment 0: every doc live, unchanged from the tests above.
             doc_base: 0,
+            max_doc: None,
         },
         OpenSegment {
             fields: &fields1,
@@ -310,6 +313,7 @@ fn multi_segment_merge_respects_each_segments_own_distinct_live_docs() {
             pay_in: None,
             live_docs: Some(&live1), // segment 1: one doc excluded, distinct from segment 0.
             doc_base: doc_base1,
+            max_doc: None,
         },
     ];
     let norms = [None, None];
@@ -361,6 +365,7 @@ fn multi_segment_zero_match_segment_does_not_break_real_fixture_merge() {
             pay_in: None,
             live_docs: None,
             doc_base: 0,
+            max_doc: None,
         },
         OpenSegment {
             fields: &fields1,
@@ -369,6 +374,7 @@ fn multi_segment_zero_match_segment_does_not_break_real_fixture_merge() {
             pay_in: None,
             live_docs: None,
             doc_base: max_doc0,
+            max_doc: None,
         },
     ];
     let norms = [None, None];
@@ -399,6 +405,7 @@ fn multi_segment_zero_match_segment_does_not_break_real_fixture_merge() {
             pay_in: None,
             live_docs: None,
             doc_base: 0,
+            max_doc: None,
         },
         OpenSegment {
             fields: &fields1,
@@ -407,6 +414,7 @@ fn multi_segment_zero_match_segment_does_not_break_real_fixture_merge() {
             pay_in: None,
             live_docs: Some(&live1),
             doc_base: max_doc0,
+            max_doc: None,
         },
     ];
 

@@ -38,7 +38,7 @@ cannot be installed alongside `neural-search`.
 | | |
 |---|---|
 | `index.lucene_rust.search.enabled` (index, dynamic, default `true`) | route this index's searches native when eligible |
-| `index.lucene_rust.search.native_shapes` (index, dynamic, `fast`/`all`, default `fast`) | `all` also runs shapes that are correct natively but measured slower |
+| `index.lucene_rust.search.native_shapes` (index, dynamic, `fast`/`all`, default `fast`) | `all` also runs shapes that are correct natively but measured slower. Since read path R1 there are none (every encodable shape measures faster), so the two values agree |
 | `GET /_plugins/lucene_rust/stats` | native queries, native errors, fallbacks by reason, open native readers |
 
 A native failure is logged, counted as `native_errors`, and the query is re-run

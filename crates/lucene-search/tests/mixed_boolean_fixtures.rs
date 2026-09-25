@@ -3,7 +3,7 @@
 //!
 //! `fixtures/src/GenMixedBooleanScoring.java` writes a two-segment, 24,000
 //! document Zipf corpus with deletions, and records Lucene's top hits for
-//! fifty-four queries that mix every `Occur`, `minimum_should_match`, boosts,
+//! sixty-eight queries that mix every `Occur`, `minimum_should_match`, boosts,
 //! `constant_score`, dismax and nesting -- the shapes the scorer tree in
 //! `lucene-search`'s `exec` module runs. Each query is recorded twice: with a
 //! total-hits threshold of 100, so the collector publishes a minimum

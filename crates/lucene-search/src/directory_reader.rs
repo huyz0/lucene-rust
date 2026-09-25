@@ -1169,6 +1169,7 @@ impl<'a> OpenedSegments<'a> {
                 pay_in: self.pay_ins[i].as_ref(),
                 live_docs: r.live_docs.as_deref(),
                 doc_base: r.doc_base,
+                max_doc: Some(r.max_doc),
             })
             .collect()
     }

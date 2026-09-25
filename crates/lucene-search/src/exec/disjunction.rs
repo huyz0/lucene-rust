@@ -40,20 +40,64 @@ impl<'a> Disi<'a> {
 #[derive(Default)]
 pub(crate) struct DisiQueue {
     heap: Vec<usize>,
+    /// A handful of members kept unordered and scanned, not heaped: Lucene's
+    /// `DisiPriorityQueue.ofMaxSize` picks `DisiPriorityQueue2` for two
+    /// clauses for the same reason -- at this size the heap's bookkeeping
+    /// costs more than comparing every member (a two-clause dismax spent a
+    /// fifth of its time in `down_heap` and `top_list`). Members on the top
+    /// document come out in member order rather than heap order; a
+    /// disjunction's `f64` sum of a few `f32` scores is exact either way
+    /// unless they differ in magnitude by more than 2^28.
+    linear: bool,
 }
+
+/// Up to this many members, [`DisiQueue::for_disjunction`] scans instead of
+/// heaping.
+const LINEAR_MAX: usize = 4;
 
 impl DisiQueue {
     pub(crate) fn with_capacity(n: usize) -> Self {
         Self {
             heap: Vec::with_capacity(n),
+            linear: false,
         }
+    }
+
+    /// A queue for `DisjunctionScorer`, which only ever asks for the top, the
+    /// members on its document, and a new top after the top moved.
+    pub(crate) fn for_disjunction(n: usize) -> Self {
+        Self {
+            heap: Vec::with_capacity(n),
+            linear: n <= LINEAR_MAX,
+        }
+    }
+
+    /// The member on the smallest document, the first such in member order.
+    #[inline]
+    fn scan_min(&self, disis: &[Disi<'_>]) -> usize {
+        let mut best = self.heap[0];
+        for &i in &self.heap[1..] {
+            if disis[i].doc < disis[best].doc {
+                best = i;
+            }
+        }
+        best
     }
 
     pub(crate) fn len(&self) -> usize {
         self.heap.len()
     }
 
+    /// Linear mode needs `disis` to find the top; heap mode ignores it.
+    pub(crate) fn top_of(&self, disis: &[Disi<'_>]) -> Option<usize> {
+        if self.linear && !self.heap.is_empty() {
+            return Some(self.scan_min(disis));
+        }
+        self.heap.first().copied()
+    }
+
     pub(crate) fn top(&self) -> Option<usize> {
+        debug_assert!(!self.linear, "a linear queue's top needs the members");
         self.heap.first().copied()
     }
 
@@ -64,6 +108,9 @@ impl DisiQueue {
 
     pub(crate) fn push(&mut self, disis: &[Disi<'_>], i: usize) {
         self.heap.push(i);
+        if self.linear {
+            return;
+        }
         let mut at = self.heap.len() - 1;
         while at > 0 {
             let parent = (at - 1) / 2;
@@ -76,6 +123,7 @@ impl DisiQueue {
     }
 
     pub(crate) fn pop(&mut self, disis: &[Disi<'_>]) -> Option<usize> {
+        debug_assert!(!self.linear, "a disjunction's queue never pops");
         let last = self.heap.pop()?;
         if self.heap.is_empty() {
             return Some(last);
@@ -87,12 +135,16 @@ impl DisiQueue {
 
     /// `updateTop()`: restores the heap after the top's `doc` grew.
     pub(crate) fn update_top(&mut self, disis: &[Disi<'_>]) -> usize {
+        if self.linear {
+            return self.scan_min(disis);
+        }
         self.down_heap(disis);
         self.heap[0]
     }
 
     /// `updateTop(replacement)`.
     pub(crate) fn replace_top(&mut self, disis: &[Disi<'_>], i: usize) -> usize {
+        debug_assert!(!self.linear, "a disjunction's queue never replaces its top");
         self.heap[0] = i;
         self.update_top(disis)
     }
@@ -122,6 +174,13 @@ impl DisiQueue {
     /// `topList()`: every member on the top's document, into `out`.
     pub(crate) fn top_list(&self, disis: &[Disi<'_>], out: &mut Vec<usize>) {
         out.clear();
+        if self.linear {
+            if let Some(top) = self.top_of(disis) {
+                let doc = disis[top].doc;
+                out.extend(self.heap.iter().copied().filter(|&i| disis[i].doc == doc));
+            }
+            return;
+        }
         let Some(&top) = self.heap.first() else {
             return;
         };
@@ -189,7 +248,7 @@ impl<'a> DisjunctionScorer<'a> {
             }
             cost = cost.saturating_add(w.cost);
         }
-        let mut heap = DisiQueue::with_capacity(subs.len());
+        let mut heap = DisiQueue::for_disjunction(subs.len());
         for i in 0..subs.len() {
             heap.push(&subs, i);
         }
@@ -235,7 +294,7 @@ impl Scorer for DisjunctionScorer<'_> {
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        let Some(mut top) = self.heap.top() else {
+        let Some(mut top) = self.heap.top_of(&self.subs) else {
             self.doc = NO_MORE_DOCS;
             return Ok(self.doc);
         };
@@ -253,7 +312,7 @@ impl Scorer for DisjunctionScorer<'_> {
     }
 
     fn advance(&mut self, target: i32) -> Result<i32> {
-        let Some(mut top) = self.heap.top() else {
+        let Some(mut top) = self.heap.top_of(&self.subs) else {
             self.doc = NO_MORE_DOCS;
             return Ok(self.doc);
         };

@@ -56,9 +56,8 @@ use lucene_search::multi_segment::OpenSegment;
 use lucene_search::query::{BooleanQuery, Clause, TermQuery};
 use lucene_search::weight_count::count_term_query;
 use lucene_search::{
-    search_boolean_query, search_boolean_query_multi_segment_maxscore_counting,
-    search_term_query_multi_segment_counting, CountCollector, ScoreDoc, TotalHits,
-    TotalHitsRelation,
+    count_boolean_query_segment, search_boolean_query_multi_segment_maxscore_counting,
+    search_term_query_multi_segment_counting, ScoreDoc, TotalHits, TotalHitsRelation,
 };
 use lucene_store::MmapDirectory;
 use lucene_util::fixed_bit_set::{bits2words, FixedBitSet};
@@ -78,13 +77,25 @@ use std::sync::Arc;
 /// Bump it on any change a Java caller could observe. History: 1, the first
 /// plugin; 2, `CONSTANT_SCORE` and `BOOST` clause kinds; 3, `count_limit`;
 /// 4, live docs passed to `ffi_open_jvm_reader` (no `set_live_docs`);
-/// 5, the engine writer (`engine_writer.rs`); 6, the writer's `max_docs`.
-pub const JVM_ABI_VERSION: u32 = 6;
+/// 5, the engine writer (`engine_writer.rs`); 6, the writer's `max_docs`;
+/// 7, the [`QUERY_TREE`] blob (read path R2).
+pub const JVM_ABI_VERSION: u32 = 7;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
 /// Blob tag for a `BooleanQuery` in the occur-tagged clause format.
 pub const QUERY_BOOLEAN: u8 = 1;
+/// Blob tag for a query tree: one recursive node, see [`decode_node`].
+pub const QUERY_TREE: u8 = 2;
+
+/// Query-tree node kinds ([`QUERY_TREE`]).
+const NODE_TERM: u8 = 0;
+const NODE_BOOLEAN: u8 = 1;
+const NODE_CONSTANT_SCORE: u8 = 2;
+const NODE_BOOST: u8 = 3;
+const NODE_DISMAX: u8 = 4;
+const NODE_MATCH_ALL: u8 = 5;
+const NODE_MATCH_NONE: u8 = 6;
 
 /// [`JVM_ABI_VERSION`], for the plugin's load-time handshake.
 #[no_mangle]
@@ -213,9 +224,19 @@ pub(crate) fn decode_query(blob: &[u8]) -> Result<JvmQuery, FfiStatus> {
             };
             JvmQuery::Boolean(query)
         }
+        QUERY_TREE => {
+            let mut nodes = 0usize;
+            match decode_node(&mut c, 0, &mut nodes)? {
+                Clause::Boolean(b) => JvmQuery::Boolean(*b),
+                other => JvmQuery::Boolean(BooleanQuery {
+                    must: vec![other],
+                    ..Default::default()
+                }),
+            }
+        }
         other => {
             set_last_error(format!(
-                "query blob: unknown query tag {other} (expected 0=TERM, 1=BOOLEAN)"
+                "query blob: unknown query tag {other} (expected 0=TERM, 1=BOOLEAN, 2=TREE)"
             ));
             return Err(FfiStatus::InvalidArgument);
         }
@@ -669,22 +690,109 @@ fn count_segment(seg: &OpenSegment<'_>, query: &JvmQuery) -> Result<i64, FfiStat
     Ok({
         match query {
             JvmQuery::Term(q) => count_term_query(seg.fields, seg.doc_in, seg.live_docs, q),
+            // The scored search's scorer tree, in `COMPLETE_NO_SCORES`.
             JvmQuery::Boolean(q) => {
-                let mut counter = CountCollector::default();
-                search_boolean_query(
-                    seg.fields,
-                    seg.doc_in,
-                    seg.pos_in,
-                    seg.pay_in,
-                    seg.live_docs,
-                    None,
-                    q,
-                    &mut counter,
-                )
-                .map(|()| i64::from(counter.count))
+                count_boolean_query_segment(seg, q).map(|n| i64::try_from(n).unwrap_or(i64::MAX))
             }
         }
         .map_err(map_search_error)?
+    })
+}
+
+/// One node of a [`QUERY_TREE`] blob, little-endian like the rest:
+///
+/// | kind | layout after the kind byte | Lucene query |
+/// |---|---|---|
+/// | `0` term | `field_len`, field (UTF-8), `term_len`, term | `TermQuery` |
+/// | `1` boolean | `minimum_should_match: i32`, `count: i32`, then per clause `occur: u8` (0 `MUST`, 1 `FILTER`, 2 `SHOULD`, 3 `MUST_NOT`) and a node | `BooleanQuery` |
+/// | `2` constant score | `score: f32` bits, node | `ConstantScoreQuery` (its score, normally 1) |
+/// | `3` boost | `boost: f32` bits, node | `BoostQuery` |
+/// | `4` dismax | `tie_breaker: f32` bits, `count: i32`, nodes | `DisjunctionMaxQuery` |
+/// | `5` match all | nothing | `MatchAllDocsQuery` |
+/// | `6` match none | nothing | `MatchNoDocsQuery` |
+///
+/// Depth is capped at `MAX_CLAUSE_DEPTH` and the whole tree at the clause
+/// count limit, so the recursion is bounded by the blob, not trusted to it.
+/// A score, boost or tie-breaker must be finite and non-negative (and a tie
+/// breaker at most 1), as Lucene's constructors require.
+fn decode_node(c: &mut Cursor<'_>, depth: usize, nodes: &mut usize) -> Result<Clause, FfiStatus> {
+    use crate::query::MAX_CLAUSE_DEPTH;
+    use lucene_search::query::{
+        BoostQuery, ConstantScoreQuery, DisjunctionMaxQuery, MatchAllDocsQuery, MatchNoDocsQuery,
+    };
+    if depth >= MAX_CLAUSE_DEPTH {
+        set_last_error(format!(
+            "query tree: nesting depth exceeds the maximum of {MAX_CLAUSE_DEPTH}"
+        ));
+        return Err(FfiStatus::InvalidArgument);
+    }
+    *nodes = nodes.saturating_add(1);
+    check_clause_count(*nodes)?;
+    let float = |c: &mut Cursor<'_>, what: &str, max: f32| -> Result<f32, FfiStatus> {
+        let v = f32::from_bits(c.i32()? as u32);
+        if !v.is_finite() || !(0.0..=max).contains(&v) {
+            set_last_error(format!("query tree: {what} {v} is out of range"));
+            return Err(FfiStatus::InvalidArgument);
+        }
+        Ok(v)
+    };
+    Ok(match c.u8()? {
+        NODE_TERM => {
+            let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
+            let term = c.bytes()?;
+            Clause::Term(TermQuery::new(field, term.to_vec()))
+        }
+        NODE_BOOLEAN => {
+            let msm = c.len()?;
+            let count = c.len()?;
+            check_clause_count(count)?;
+            let mut b = BooleanQuery::new().with_minimum_should_match(msm);
+            for _ in 0..count {
+                let occur = c.u8()?;
+                let child = decode_node(c, depth + 1, nodes)?;
+                match occur {
+                    0 => b.must.push(child),
+                    1 => b.filter.push(child),
+                    2 => b.should.push(child),
+                    3 => b.must_not.push(child),
+                    other => {
+                        set_last_error(format!(
+                            "query tree: unknown Occur tag {other} (expected 0..=3)"
+                        ));
+                        return Err(FfiStatus::InvalidArgument);
+                    }
+                }
+            }
+            Clause::Boolean(Box::new(b))
+        }
+        NODE_CONSTANT_SCORE => {
+            let score = float(c, "constant score", f32::MAX)?;
+            ConstantScoreQuery::new(decode_node(c, depth + 1, nodes)?, score).into()
+        }
+        NODE_BOOST => {
+            let boost = float(c, "boost", f32::MAX)?;
+            BoostQuery::new(decode_node(c, depth + 1, nodes)?, boost).into()
+        }
+        NODE_DISMAX => {
+            let tie = float(c, "tie breaker", 1.0)?;
+            let count = c.len()?;
+            check_clause_count(count)?;
+            let mut disjuncts = Vec::new();
+            for _ in 0..count {
+                disjuncts.push(decode_node(c, depth + 1, nodes)?);
+            }
+            DisjunctionMaxQuery::new(disjuncts, tie).into()
+        }
+        // The segment's own `maxDoc` is supplied per segment at search time
+        // (`OpenSegment::max_doc`); the query carries none.
+        NODE_MATCH_ALL => Clause::MatchAllDocs(MatchAllDocsQuery::new(i32::MAX)),
+        NODE_MATCH_NONE => Clause::MatchNoDocs(MatchNoDocsQuery::new()),
+        other => {
+            set_last_error(format!(
+                "query tree: unknown node kind {other} (expected 0..=6)"
+            ));
+            return Err(FfiStatus::InvalidArgument);
+        }
     })
 }
 
@@ -1441,5 +1549,247 @@ mod tests {
             decode_query(&term_blob("f", "t")).unwrap(),
             JvmQuery::Term(_)
         ));
+    }
+
+    // ---- the query-tree blob (ABI 7) ---------------------------------------
+
+    /// A query-tree node, for building blobs in tests.
+    enum N<'a> {
+        T(&'a str, &'a str),
+        B(i32, Vec<(u8, N<'a>)>),
+        C(f32, Box<N<'a>>),
+        Boost(f32, Box<N<'a>>),
+        D(f32, Vec<N<'a>>),
+        All,
+        None,
+    }
+
+    fn enc(n: &N<'_>, b: &mut Vec<u8>) {
+        let bytes = |b: &mut Vec<u8>, x: &[u8]| {
+            b.extend_from_slice(&(x.len() as i32).to_le_bytes());
+            b.extend_from_slice(x);
+        };
+        match n {
+            N::T(f, t) => {
+                b.push(NODE_TERM);
+                bytes(b, f.as_bytes());
+                bytes(b, t.as_bytes());
+            }
+            N::B(msm, clauses) => {
+                b.push(NODE_BOOLEAN);
+                b.extend_from_slice(&msm.to_le_bytes());
+                b.extend_from_slice(&(clauses.len() as i32).to_le_bytes());
+                for (occur, c) in clauses {
+                    b.push(*occur);
+                    enc(c, b);
+                }
+            }
+            N::C(score, c) => {
+                b.push(NODE_CONSTANT_SCORE);
+                b.extend_from_slice(&score.to_bits().to_le_bytes());
+                enc(c, b);
+            }
+            N::Boost(boost, c) => {
+                b.push(NODE_BOOST);
+                b.extend_from_slice(&boost.to_bits().to_le_bytes());
+                enc(c, b);
+            }
+            N::D(tie, ds) => {
+                b.push(NODE_DISMAX);
+                b.extend_from_slice(&tie.to_bits().to_le_bytes());
+                b.extend_from_slice(&(ds.len() as i32).to_le_bytes());
+                for d in ds {
+                    enc(d, b);
+                }
+            }
+            N::All => b.push(NODE_MATCH_ALL),
+            N::None => b.push(NODE_MATCH_NONE),
+        }
+    }
+
+    fn tree(n: N<'_>) -> Vec<u8> {
+        let mut b = vec![QUERY_TREE];
+        enc(&n, &mut b);
+        b
+    }
+
+    /// The tree blob and the clause-list blob describe the same queries, so
+    /// they must search identically: same hits, same score bits, same count.
+    #[test]
+    fn a_query_tree_searches_exactly_like_the_clause_list() {
+        let h = open();
+        let pairs = [
+            (
+                tree(N::B(
+                    0,
+                    vec![(0, N::T("body", "fox")), (2, N::T("body", "dog"))],
+                )),
+                bool_blob(
+                    0,
+                    &[(0, 0, -1, 0, "body", "fox"), (2, 0, -1, 0, "body", "dog")],
+                ),
+            ),
+            (
+                tree(N::B(
+                    0,
+                    vec![(2, N::T("body", "dog")), (3, N::T("body", "fox"))],
+                )),
+                bool_blob(
+                    0,
+                    &[(2, 0, -1, 0, "body", "dog"), (3, 0, -1, 0, "body", "fox")],
+                ),
+            ),
+            (
+                tree(N::Boost(2.0, Box::new(N::T("body", "fox")))),
+                bool_blob(
+                    0,
+                    &[
+                        (0, 3, -1, 2.0f32.to_bits() as i32, "", ""),
+                        (0, 0, 0, 0, "body", "fox"),
+                    ],
+                ),
+            ),
+            (
+                tree(N::C(1.0, Box::new(N::T("body", "dog")))),
+                bool_blob(
+                    0,
+                    &[
+                        (0, 2, -1, 1.0f32.to_bits() as i32, "", ""),
+                        (0, 0, 0, 0, "body", "dog"),
+                    ],
+                ),
+            ),
+        ];
+        for (t, b) in &pairs {
+            let a = run(h, t, 10, true).unwrap();
+            let e = run(h, b, 10, true).unwrap();
+            assert_eq!(a.1, e.1, "count");
+            assert_eq!(a.0.len(), e.0.len());
+            for (x, y) in a.0.iter().zip(&e.0) {
+                assert_eq!((x.0, x.1.to_bits()), (y.0, y.1.to_bits()));
+            }
+            // `size: 0`, the counting path.
+            assert_eq!(run(h, t, 0, true).unwrap().1, e.1);
+        }
+        assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+
+    /// `match_all` covers every live document of every segment -- each
+    /// segment's own `maxDoc`, which the blob does not carry -- `match_none`
+    /// none, and dismax scores as `max + tie * rest`.
+    #[test]
+    fn match_all_counts_the_live_documents_of_each_segment() {
+        // Segment 0 has document 2 deleted; the match-all spans each
+        // segment's own maxDoc and skips it.
+        let (rc, h) = open_live(&[4, 4], 0, &[&[0b1011]]);
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        let (hits, total) = run(h, &tree(N::All), 10, true).unwrap();
+        assert_eq!(total, 7);
+        let docs: Vec<i32> = hits.iter().map(|&(d, _)| d).collect();
+        assert_eq!(docs, [0, 1, 3, 4, 5, 6, 7]);
+        let (_, count) = run(h, &tree(N::C(1.0, Box::new(N::All))), 0, true).unwrap();
+        assert_eq!(count, 7, "the count-only path agrees");
+    }
+
+    #[test]
+    fn match_all_match_none_and_dismax_trees() {
+        let h = open();
+        let (hits, total) = run(h, &tree(N::All), 10, true).unwrap();
+        assert_eq!(total, 8, "two segments of four documents");
+        assert_eq!(hits.len(), 8);
+        assert!(hits.iter().all(|&(_, s)| s == 1.0));
+        assert_eq!(run(h, &tree(N::All), 0, true).unwrap().1, 8);
+        let boosted_all = tree(N::Boost(3.0, Box::new(N::All)));
+        assert!(run(h, &boosted_all, 3, true)
+            .unwrap()
+            .0
+            .iter()
+            .all(|&(_, s)| s == 3.0));
+        assert_eq!(run(h, &tree(N::None), 10, true).unwrap(), (vec![], 0));
+        assert_eq!(
+            run(h, &tree(N::B(0, vec![])), 10, true).unwrap(),
+            (vec![], 0)
+        );
+        assert_eq!(
+            run(h, &tree(N::B(0, vec![(3, N::T("body", "fox"))])), 10, true).unwrap(),
+            (vec![], 0),
+            "a pure negative boolean matches nothing"
+        );
+        let (fox, _) = run(h, &term_blob("body", "fox"), 10, true).unwrap();
+        let (dog, _) = run(h, &term_blob("body", "dog"), 10, true).unwrap();
+        let (dm, total) = run(
+            h,
+            &tree(N::D(0.5, vec![N::T("body", "fox"), N::T("body", "dog")])),
+            10,
+            true,
+        )
+        .unwrap();
+        let mut docs: Vec<i32> = fox.iter().chain(&dog).map(|h| h.0).collect();
+        docs.sort_unstable();
+        docs.dedup();
+        assert_eq!(total, docs.len() as i64);
+        for (doc, score) in dm {
+            let f = fox.iter().find(|h| h.0 == doc).map_or(0.0, |h| h.1);
+            let d = dog.iter().find(|h| h.0 == doc).map_or(0.0, |h| h.1);
+            let (hi, lo) = if f >= d { (f, d) } else { (d, f) };
+            let want = (f64::from(hi) + f64::from(lo) * 0.5) as f32;
+            assert_eq!(score.to_bits(), want.to_bits(), "doc {doc}");
+        }
+        assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+
+    #[test]
+    fn malformed_query_trees_are_invalid_arguments() {
+        let invalid = Err(FfiStatus::InvalidArgument);
+        let status = |b: &[u8]| decode_query(b).map(|_| ());
+        assert_eq!(status(&[QUERY_TREE, 99]), invalid, "unknown node kind");
+        let mut bad_occur = vec![QUERY_TREE, NODE_BOOLEAN];
+        bad_occur.extend_from_slice(&0i32.to_le_bytes());
+        bad_occur.extend_from_slice(&1i32.to_le_bytes());
+        bad_occur.push(7);
+        enc(&N::All, &mut bad_occur);
+        assert_eq!(status(&bad_occur), invalid, "unknown occur");
+        for bad in [f32::NAN, f32::INFINITY, -1.0] {
+            assert_eq!(
+                status(&tree(N::Boost(bad, Box::new(N::All)))),
+                invalid,
+                "boost {bad}"
+            );
+        }
+        assert_eq!(
+            status(&tree(N::D(1.5, vec![N::All]))),
+            invalid,
+            "tie breaker above 1"
+        );
+        // The Java encoder's `MAX_DEPTH`: the root at depth 0, so 32 levels
+        // decode and a 33rd does not.
+        let chain = |levels: usize| {
+            let mut n = N::All;
+            for _ in 1..levels {
+                n = N::Boost(1.0, Box::new(n));
+            }
+            tree(n)
+        };
+        assert_eq!(status(&chain(32)), Ok(()), "32 levels");
+        assert_eq!(status(&chain(33)), invalid, "33 levels is too deep");
+        // And its `MAX_NODES`: 1024 nodes decode, 1025 do not.
+        let wide = |nodes: usize| tree(N::B(0, (1..nodes).map(|_| (2, N::All)).collect()));
+        assert_eq!(status(&wide(1024)), Ok(()), "1024 nodes");
+        assert_eq!(status(&wide(1025)), invalid, "1025 nodes");
+        let mut negative_msm = vec![QUERY_TREE, NODE_BOOLEAN];
+        negative_msm.extend_from_slice(&(-1i32).to_le_bytes());
+        assert_eq!(
+            status(&negative_msm),
+            invalid,
+            "negative minimum_should_match"
+        );
+        let mut bad_utf8 = vec![QUERY_TREE, NODE_TERM];
+        bad_utf8.extend_from_slice(&1i32.to_le_bytes());
+        bad_utf8.push(0xff);
+        bad_utf8.extend_from_slice(&0i32.to_le_bytes());
+        assert_eq!(status(&bad_utf8), Err(FfiStatus::InvalidUtf8));
+        let mut trailing = tree(N::All);
+        trailing.push(0);
+        assert_eq!(status(&trailing), invalid, "trailing bytes");
     }
 }

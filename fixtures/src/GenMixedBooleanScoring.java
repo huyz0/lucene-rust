@@ -130,6 +130,30 @@ public class GenMixedBooleanScoring {
     "(b 0 (# (t w0)) (? (b 0 (+ (t w1)) (+ (t w2)))) (? (t w3)))",
     "(dismax 0.2 (b 0 (+ (t w1)) (+ (t w2))) (t w3))",
     "(b 0 (+ (const (b 0 (? (t w1)) (? (t w2))))) (? (t w5)))",
+    // minimum_should_match with fewer SHOULD clauses than it: nothing matches,
+    // even though a MUST clause alone would (BooleanQuery.rewrite only
+    // unwraps a lone MUST when minimum_should_match is 0).
+    "(b 1 (+ (t w1)))",
+    "(b 2 (+ (t w1)) (? (t w2)))",
+    // A top-level dismax of terms runs a window at a time (`DisMaxBulk`):
+    // dense and sparse legs, a boost, a constant-scored leg, an absent term.
+    "(dismax 0.3 (t w0) (t w1))",
+    "(boost 2 (dismax 0.5 (t w0) (t w3) (t w9)))",
+    "(dismax 0.1 (t w1) (const (t w2)))",
+    "(dismax 0.7 (t w0) (t nosuchterm))",
+    "(dismax 0.25 (t w5) (t w6) (t w7) (t w8) (t w9))",
+    // `MUST` + `SHOULD` with a minimum: `ConjunctionScorer(req, opt)` in
+    // Lucene, a block-max conjunction of the same two scorers here.
+    "(b 1 (+ (t w0)) (? (t w1)) (? (t w2)))",
+    "(b 2 (+ (t w1)) (? (t w0)) (? (t w3)) (? (t w5)))",
+    "(b 1 (+ (t w0)) (+ (t w2)) (? (t w1)) (? (t w4)) (- (t w6)))",
+    "(b 1 (# (t w0)) (+ (t w3)) (? (boost 3 (t w1))) (? (t w9)))",
+    // Dispatch branches over clauses that are not all terms: a filtered
+    // MaxScore over a nested boolean, a block-max conjunction with a filter,
+    // and a lone non-term FILTER (scored as 0).
+    "(b 1 (# (t w0)) (? (b 0 (+ (t w1)) (+ (t w2)))) (? (t w3)))",
+    "(b 0 (+ (b 0 (? (t w1)) (? (t w2)))) (+ (t w3)) (# (t w4)))",
+    "(b 0 (# (b 0 (? (t w1)) (? (t w2)))))",
   };
 
   public static void main(String[] args) throws IOException {

@@ -47,6 +47,8 @@ pub(crate) use build::LeafContext;
 pub(crate) use bulk::Bulk;
 pub(crate) use bulk::{bulk_boolean, score_segment};
 
+use lucene_util::fixed_bit_set::FixedBitSet;
+
 use crate::collector::ScoringCollector;
 use crate::Result;
 
@@ -127,13 +129,48 @@ pub(crate) trait Scorer {
     fn doc_id_run_end(&self) -> i32 {
         self.doc_id().saturating_add(1)
     }
+    /// `Scorer.nextDocsAndScores`: up to 64 matches from the current document
+    /// on, below `up_to`, live ones only, over the *exact* iterator; leaves
+    /// the scorer on the first document not returned.
+    fn next_docs_and_scores(
+        &mut self,
+        up_to: i32,
+        live_docs: Option<&FixedBitSet>,
+        out: &mut crate::bulk_scorer::DocScores,
+    ) -> Result<()> {
+        out.docs.clear();
+        out.scores.clear();
+        let mut doc = self.doc_id();
+        while doc < up_to && out.docs.len() < NEXT_DOCS_BATCH {
+            if live_docs.is_none_or(|l| l.get_doc(doc)) {
+                out.docs.push(doc);
+                out.scores.push(self.score()?);
+            }
+            doc = self.next_doc()?;
+            if self.two_phase() {
+                while doc != NO_MORE_DOCS && !self.matches()? {
+                    doc = self.next_doc()?;
+                }
+            }
+        }
+        Ok(())
+    }
 }
+
+/// The batch [`Scorer::next_docs_and_scores`] fills.
+pub(crate) const NEXT_DOCS_BATCH: usize = 64;
 
 pub(crate) type BoxScorer<'a> = Box<dyn Scorer + 'a>;
 
 /// `TwoPhaseIterator.asDocIdSetIterator(...).advance(target)`.
 pub(crate) fn exact_advance(s: &mut dyn Scorer, target: i32) -> Result<i32> {
     let doc = s.advance(target)?;
+    confirm(s, doc)
+}
+
+/// `TwoPhaseIterator.asDocIdSetIterator(...).nextDoc()`.
+pub(crate) fn exact_next(s: &mut dyn Scorer) -> Result<i32> {
+    let doc = s.next_doc()?;
     confirm(s, doc)
 }
 
