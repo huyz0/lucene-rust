@@ -22,6 +22,7 @@ use crate::query::{BooleanQuery, BoostQuery, Clause, PhraseQuery, TermQuery};
 use crate::{similarity, sloppy_phrase, GlobalStats, Result};
 
 /// One segment's readers, and the reader-wide statistics to score with.
+#[derive(Clone, Copy)]
 pub(crate) struct LeafContext<'a> {
     pub(crate) fields: &'a BlockTreeFields,
     pub(crate) doc_in: Option<&'a DocInput<'a>>,
@@ -35,6 +36,8 @@ pub(crate) struct LeafContext<'a> {
     /// `MatchAllDocsQuery` matches every document below it. `None` uses the
     /// `max_doc` the clause was built with.
     pub(crate) max_doc: Option<i32>,
+    /// The segment's query cache, if any; see `exec::cache`.
+    pub(crate) cache: Option<&'a super::cache::SegmentQueryCache>,
 }
 
 /// The scorer for `clause`, or `None` when it matches nothing in this
@@ -334,6 +337,27 @@ pub(crate) fn child<'a>(
     mode: Mode,
     top_level: bool,
 ) -> Result<Option<Child<'a>>> {
+    // `CachingWrapperWeight`: a clause built without scores asks the
+    // segment's query cache first.
+    if mode == Mode::NoScores {
+        if let (Some(cache), Some(max_doc)) = (ctx.cache, ctx.max_doc) {
+            // The core's matches, before deletions: no live docs, and no
+            // cache for the clauses inside it (Lucene caches those
+            // separately, from their own weights).
+            let core = LeafContext {
+                live_docs: None,
+                cache: None,
+                ..*ctx
+            };
+            match cache.scorer(clause, max_doc, || {
+                build(&core, clause, boost, mode, top_level)
+            })? {
+                Some(super::cache::CacheResult::Hit(s)) => return Ok(Some(Child::Scorer(s))),
+                Some(super::cache::CacheResult::Empty) => return Ok(None),
+                None => {}
+            }
+        }
+    }
     Ok(match term_leg(ctx, clause, boost, mode)? {
         TermForm::Leg(leg) => Some(Child::Leg(leg)),
         TermForm::Absent => None,

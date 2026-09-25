@@ -129,5 +129,9 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
   the native call, not during it; the Java path checks it per segment. A
   native query runs to completion (one call, no per-document crossings), and
   requests with an explicit `timeout` fall back.
+- **The native query cache is per segment, not node-wide.** It follows
+  Lucene's `LRUQueryCache` policy but is bounded per segment (64 entries,
+  16 MB), outside `indices.queries.cache.size` and its stats; a shard with
+  many large segments can hold more than that setting would allow.
 - **Linux only**, x86_64 and aarch64; the library needs glibc ≥ 2.34 (the
   OpenSearch 3.8.0 image has 2.34, and `verify-opensearch.sh` checks it).

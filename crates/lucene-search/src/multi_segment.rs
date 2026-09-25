@@ -137,6 +137,9 @@ pub struct OpenSegment<'a> {
     /// uses the `max_doc` it was built with, so a query decoded without one
     /// (the JVM's, whose match-all carries none) must come with this set.
     pub max_doc: Option<i32>,
+    /// The segment's query cache (`LRUQueryCache` for its core), when it has
+    /// one: repeatedly used non-scoring clauses are iterated from it.
+    pub cache: Option<&'a crate::SegmentQueryCache>,
 }
 
 /// The shared fan-out+merge core (see this module's doc comment): runs
@@ -1494,6 +1497,7 @@ mod tests {
                 live_docs: None,
                 doc_base: 0,
                 max_doc: None,
+                cache: None,
             },
             OpenSegment {
                 fields: &fields1,
@@ -1502,6 +1506,7 @@ mod tests {
                 pay_in: None,
                 live_docs: None,
                 doc_base: max_doc0,
+                cache: None,
                 max_doc: None,
             },
         ];
@@ -1566,6 +1571,7 @@ mod tests {
                 live_docs: None,
                 doc_base: 0,
                 max_doc: None,
+                cache: None,
             },
             OpenSegment {
                 fields: &fields1,
@@ -1574,6 +1580,7 @@ mod tests {
                 pay_in: None,
                 live_docs: None,
                 doc_base: max_doc0,
+                cache: None,
                 max_doc: None,
             },
         ];
@@ -1633,6 +1640,7 @@ mod tests {
                 live_docs: None,
                 doc_base: 0,
                 max_doc: None,
+                cache: None,
             },
             OpenSegment {
                 fields: &fields1,
@@ -1641,6 +1649,7 @@ mod tests {
                 pay_in: None,
                 live_docs: None,
                 doc_base: max_doc0,
+                cache: None,
                 max_doc: None,
             },
         ];
@@ -1674,6 +1683,7 @@ mod tests {
                 live_docs: None,
                 doc_base: 0,
                 max_doc: None,
+                cache: None,
             },
             OpenSegment {
                 fields: &fields1,
@@ -1682,6 +1692,7 @@ mod tests {
                 pay_in: None,
                 live_docs: None,
                 doc_base: max_doc0,
+                cache: None,
                 max_doc: None,
             },
         ];
@@ -1710,6 +1721,7 @@ mod tests {
             live_docs: None,
             doc_base: 1000,
             max_doc: None,
+            cache: None,
         }];
         let norms = [None];
         let merged = search_term_query_multi_segment(&segments, &query, &norms, 10).unwrap();
@@ -2083,6 +2095,7 @@ mod tests {
                 live_docs: None,
                 doc_base: 0,
                 max_doc: None,
+                cache: None,
             },
             OpenSegment {
                 fields: &fields1,
@@ -2091,6 +2104,7 @@ mod tests {
                 pay_in: None,
                 live_docs: None,
                 doc_base: max_doc0,
+                cache: None,
                 max_doc: None,
             },
         ];
@@ -2122,6 +2136,7 @@ mod tests {
                 live_docs: None,
                 doc_base: 0,
                 max_doc: None,
+                cache: None,
             },
             OpenSegment {
                 fields: &fields1,
@@ -2130,6 +2145,7 @@ mod tests {
                 pay_in: None,
                 live_docs: None,
                 doc_base: max_doc0,
+                cache: None,
                 max_doc: None,
             },
         ];

@@ -163,6 +163,11 @@ pub struct SegmentReader {
     /// that opening it did. A refcount bump is what that comment always
     /// described.
     doc_buf: Option<Arc<Input>>,
+    /// The core's query cache: shared by every reopen that keeps the
+    /// segment, like the core itself, and valid across new deletions because
+    /// entries are computed without live docs (`LRUQueryCache` keys on the
+    /// core cache helper for the same reason).
+    query_cache: Arc<crate::SegmentQueryCache>,
     pos_buf: Option<Arc<Input>>,
     pay_buf: Option<Arc<Input>>,
     live_docs: Option<Arc<FixedBitSet>>,
@@ -249,6 +254,12 @@ impl SegmentReader {
     /// `oldReader.incRef()`, not a copy of the segment's decoded state.
     fn clone_reader(&self) -> Self {
         self.clone()
+    }
+
+    /// The core's query cache.
+    #[cfg(test)]
+    pub(crate) fn query_cache(&self) -> &crate::SegmentQueryCache {
+        &self.query_cache
     }
 }
 
@@ -489,6 +500,7 @@ impl SegmentReader {
         };
 
         Ok(SegmentReader {
+            query_cache: Arc::default(),
             segment_name,
             max_doc: si.doc_count,
             doc_base,
@@ -1170,6 +1182,7 @@ impl<'a> OpenedSegments<'a> {
                 live_docs: r.live_docs.as_deref(),
                 doc_base: r.doc_base,
                 max_doc: Some(r.max_doc),
+                cache: Some(&r.query_cache),
             })
             .collect()
     }

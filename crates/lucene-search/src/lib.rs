@@ -230,6 +230,7 @@ pub use doc_value_query::{
     search_numeric_range, search_numeric_range_sorted_by_field, search_sorted_ord_range,
     sort_by_numeric_doc_value, sort_top_n_by_numeric_doc_value, MissingValue,
 };
+pub use exec::cache::SegmentQueryCache;
 pub use explain::{explain_clause, Explanation};
 pub use field_norms::FieldNorms;
 pub use multi_segment::{
@@ -2909,7 +2910,8 @@ pub fn search_boolean_query_scored_with_stats<C: ScoringCollector>(
     collector: &mut C,
 ) -> Result<()> {
     search_boolean_query_scored_impl(
-        fields, doc_in, pos_in, pay_in, live_docs, points, query, norms, global, None, collector,
+        fields, doc_in, pos_in, pay_in, live_docs, points, query, norms, global, None, None,
+        collector,
     )
 }
 
@@ -2935,6 +2937,7 @@ pub(crate) fn search_boolean_query_scored_segment<C: ScoringCollector>(
         norms,
         global,
         max_doc,
+        seg.cache,
         collector,
     )
 }
@@ -2966,6 +2969,7 @@ pub fn count_boolean_query_segment(
         norms: None,
         global: None,
         max_doc: seg.max_doc,
+        cache: seg.cache,
     };
     let mut count = Count(0);
     if let Some(mut bulk) = exec::bulk_boolean(&ctx, query, 1.0, exec::Mode::NoScores)? {
@@ -2986,6 +2990,7 @@ fn search_boolean_query_scored_impl<C: ScoringCollector>(
     norms: Option<&HashMap<String, FieldNorms<'_>>>,
     global: Option<&GlobalStats>,
     max_doc: Option<i32>,
+    cache: Option<&SegmentQueryCache>,
     collector: &mut C,
 ) -> Result<()> {
     // One scoring clause and nothing to filter against: the clause's own score
@@ -3133,6 +3138,7 @@ fn search_boolean_query_scored_impl<C: ScoringCollector>(
         norms,
         global,
         max_doc,
+        cache,
     };
     let mode = exec::Mode::of(collector);
     if let Some(mut bulk) = exec::bulk_boolean(&ctx, query, 1.0, mode)? {
@@ -5373,6 +5379,7 @@ mod tests {
             norms: None,
             global: None,
             max_doc: None,
+            cache: None,
         };
         exec::bulk_boolean(&ctx, q, 1.0, exec::Mode::Complete)
             .unwrap()

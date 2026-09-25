@@ -480,6 +480,68 @@ fn scorer_disjunctions_match_brute_force() {
     assert!(two_phase_runs > 50, "two-phase clauses: {two_phase_runs}");
 }
 
+/// The query cache: a non-scoring clause used again and again is cached per
+/// segment once the policy says so (a phrase after five uses), and every run
+/// -- uncached, the one that builds the entry, the ones served from it --
+/// returns the same hits and score bits, deletions included (the cached set
+/// is the core's, live docs are applied after).
+#[test]
+fn cached_clauses_search_exactly_like_uncached_ones() {
+    use crate::directory_reader::DirectoryReader;
+    use crate::field_norms::FieldNorms;
+    use crate::query::{BooleanQuery, Clause, PhraseQuery, TermQuery};
+    use std::collections::HashMap;
+    let dir = lucene_store::FsDirectory::open(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/data/mixed_boolean_scoring_index"
+    ));
+    let reader = DirectoryReader::open(&dir).unwrap();
+    let opened = reader.open_segments().unwrap();
+    let segments = opened.as_open_segments();
+    assert!(segments.iter().any(|s| s.live_docs.is_some()));
+    let owned: Vec<HashMap<String, FieldNorms<'_>>> = reader
+        .field_norms("body")
+        .into_iter()
+        .map(|n| n.into_iter().map(|n| ("body".to_string(), n)).collect())
+        .collect();
+    let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
+    let term = |w: &str| Clause::Term(TermQuery::new("body", w.as_bytes().to_vec()));
+    let phrase = |a: &str, b: &str| Clause::Phrase(PhraseQuery::new("body", [a, b]));
+    let mut excluded = BooleanQuery::new();
+    excluded.must.push(term("w3"));
+    excluded.must_not.push(phrase("w0", "w1"));
+    let mut filtered = BooleanQuery::new();
+    filtered.filter.push(phrase("w0", "w2"));
+    filtered.should.push(term("w1"));
+    filtered.should.push(term("w4"));
+    for q in [&excluded, &filtered] {
+        let run = || {
+            crate::multi_segment::search_boolean_query_multi_segment_maxscore_counting(
+                &segments,
+                q,
+                &norms,
+                10,
+                u64::MAX,
+            )
+            .unwrap()
+        };
+        let (first, first_total) = run();
+        let bits = |h: &[crate::ScoreDoc]| -> Vec<(i32, u32)> {
+            h.iter().map(|d| (d.doc_id, d.score.to_bits())).collect()
+        };
+        for i in 0..7 {
+            let (hits, total) = run();
+            assert_eq!(bits(&hits), bits(&first), "run {i} of {q:?}");
+            assert_eq!(total.value, first_total.value, "run {i} of {q:?}");
+        }
+    }
+    for r in reader.segment_readers() {
+        let (entries, bytes) = r.query_cache().stats();
+        assert_eq!(entries, 2, "both phrases cached in {}", r.segment_name);
+        assert!(bytes > 0);
+    }
+}
+
 /// A phrase on a segment without norms scores every document at the
 /// unnormed length, like a term does.
 #[test]
@@ -503,6 +565,7 @@ fn a_phrase_without_norms_scores_unnormed() {
         norms: None,
         global: None,
         max_doc: seg.max_doc,
+        cache: None,
     };
     let phrase = Clause::Phrase(PhraseQuery::new("body", ["w0", "w1"]));
     let s = super::build::build(&ctx, &phrase, 1.0, Mode::Complete, true)
@@ -534,6 +597,7 @@ fn a_match_all_needs_some_max_doc() {
         norms: None,
         global: None,
         max_doc: None,
+        cache: None,
     };
     let unknown = Clause::MatchAllDocs(MatchAllDocsQuery::new(i32::MAX));
     assert!(matches!(
@@ -796,6 +860,7 @@ mod fixture {
                     norms: norms[s],
                     global: Some(&global),
                     max_doc: None,
+                    cache: None,
                 };
                 for mode in [Mode::TopScores, Mode::Complete] {
                     if let Some(b) = bulk_boolean(&ctx, &q, 1.0, mode).unwrap() {
@@ -863,6 +928,7 @@ mod fixture {
             norms: None,
             global: None,
             max_doc: None,
+            cache: None,
         };
         let leg = |t: &str| -> TermLeg<'_> {
             match term_leg(

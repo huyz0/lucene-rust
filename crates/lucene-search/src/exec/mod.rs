@@ -36,6 +36,7 @@
 
 pub(crate) mod build;
 mod bulk;
+pub(crate) mod cache;
 mod conjunction;
 mod disjunction;
 mod leaf;
