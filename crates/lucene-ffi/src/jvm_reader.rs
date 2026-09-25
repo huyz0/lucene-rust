@@ -43,20 +43,22 @@
 //!
 //! ## Scope
 //!
-//! `TermQuery` and `BooleanQuery` trees of `TermQuery` leaves -- the shapes
-//! the occur-tagged clause format ([`crate::query::read_boolean_query`])
-//! already carries. Everything else is the caller's to fall back on.
+//! `TermQuery`, and `BooleanQuery` trees whose clauses are `TermQuery`,
+//! `BooleanQuery`, `ConstantScoreQuery` or `BoostQuery` -- the shapes the
+//! occur-tagged clause format ([`crate::query::read_boolean_query`])
+//! carries. Everything else is the caller's to fall back on.
 
 use std::os::raw::c_char;
 
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::multi_segment::OpenSegment;
-use lucene_search::query::{BooleanQuery, TermQuery};
+use lucene_search::query::{BooleanQuery, Clause, TermQuery};
 use lucene_search::weight_count::count_term_query;
 use lucene_search::{
-    search_boolean_query, search_boolean_query_multi_segment_maxscore,
-    search_term_query_multi_segment, CountCollector, ScoreDoc,
+    search_boolean_query, search_boolean_query_multi_segment_maxscore_counting,
+    search_term_query_multi_segment_counting, CountCollector, ScoreDoc, TotalHits,
+    TotalHitsRelation,
 };
 use lucene_store::MmapDirectory;
 use lucene_util::fixed_bit_set::{bits2words, FixedBitSet};
@@ -72,8 +74,9 @@ use crate::registry::{jvm_readers, lock_recovering, read_recovering, JvmReaderHa
 /// start against a library reporting any other number -- a jar carrying a
 /// stale `.so` must not get as far as reading an index.
 ///
-/// Bump it on any change a Java caller could observe.
-pub const JVM_ABI_VERSION: u32 = 1;
+/// Bump it on any change a Java caller could observe. History: 1, the first
+/// plugin; 2, `CONSTANT_SCORE` and `BOOST` clause kinds; 3, `count_limit`.
+pub const JVM_ABI_VERSION: u32 = 3;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -303,8 +306,12 @@ pub unsafe extern "C" fn ffi_open_jvm_reader(
             return Err(FfiStatus::InvalidArgument);
         }
         let live_docs = (0..opened.len()).map(|_| None).collect();
-        let handle =
-            lock_recovering(jvm_readers()).insert_checked(JvmReaderHandle { reader, live_docs })?;
+        let deleted = vec![0; opened.len()]; // alloc-ok: the reader's own segment count
+        let handle = lock_recovering(jvm_readers()).insert_checked(JvmReaderHandle {
+            reader,
+            live_docs,
+            deleted,
+        })?;
         // SAFETY: caller contract.
         unsafe { *out_handle = handle };
         Ok(())
@@ -344,6 +351,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_set_live_docs(
                 return Err(FfiStatus::NullPointer);
             }
             h.live_docs[segment] = None;
+            h.deleted[segment] = 0;
             return Ok(());
         }
         let max_doc = usize::try_from(seg.max_doc).unwrap_or(0);
@@ -369,7 +377,9 @@ pub unsafe extern "C" fn ffi_jvm_reader_set_live_docs(
                 }
             }
         }
-        h.live_docs[segment] = Some(FixedBitSet::from_words(owned, max_doc));
+        let live = FixedBitSet::from_words(owned, max_doc);
+        h.deleted[segment] = (max_doc - live.cardinality()) as i64;
+        h.live_docs[segment] = Some(live);
         Ok(())
     })
 }
@@ -379,16 +389,24 @@ pub unsafe extern "C" fn ffi_jvm_reader_set_live_docs(
 /// best first, ties by ascending doc ID -- into `out_docs`/`out_scores` and
 /// their number into `*out_hit_count`.
 ///
-/// When `count_total` is true, `*out_total` receives the exact number of
-/// live matching documents; otherwise `-1`. Counting is skipped whenever the
-/// top hits already prove it (fewer than `top_n` came back), so a caller that
-/// always asks pays for a second pass only when there could be more matches
-/// than it collected.
+/// Total hits follow Lucene's `totalHitsThreshold` (OpenSearch's
+/// `track_total_hits`): with `count_limit > 0`, `*out_total` is the number of
+/// live matching documents, exact (and `*out_total_is_lower_bound` false)
+/// whenever it is at most `count_limit`; once it exceeds `count_limit` it may
+/// instead be any lower bound that itself exceeds `count_limit`, with
+/// `*out_total_is_lower_bound` true -- Lucene's `GREATER_THAN_OR_EQUAL_TO`,
+/// which `TopScoreDocCollector` switches to only when the count passes the
+/// threshold, not when it reaches it.
+/// `count_limit == i64::MAX` asks for an exact count. `count_limit <= 0`
+/// counts nothing: `*out_total` is `-1`.
+///
+/// With `top_n > 0` the count comes from the search itself, exactly as
+/// Lucene's collector keeps it; with `top_n == 0` see [`total_hits`].
 ///
 /// # Safety
 /// `query` must be valid for `query_len` bytes; `out_docs`/`out_scores` for
-/// `buf_len` elements each, with `buf_len >= top_n`; `out_hit_count` and
-/// `out_total` for one write each.
+/// `buf_len` elements each, with `buf_len >= top_n`; `out_hit_count`,
+/// `out_total` and `out_total_is_lower_bound` for one write each.
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn ffi_jvm_reader_search(
@@ -396,15 +414,16 @@ pub unsafe extern "C" fn ffi_jvm_reader_search(
     query: *const u8,
     query_len: usize,
     top_n: usize,
-    count_total: bool,
+    count_limit: i64,
     out_docs: *mut i32,
     out_scores: *mut f32,
     buf_len: usize,
     out_hit_count: *mut usize,
     out_total: *mut i64,
+    out_total_is_lower_bound: *mut bool,
 ) -> i32 {
     guard(|| {
-        if out_hit_count.is_null() || out_total.is_null() {
+        if out_hit_count.is_null() || out_total.is_null() || out_total_is_lower_bound.is_null() {
             return Err(FfiStatus::NullPointer);
         }
         if buf_len < top_n {
@@ -421,7 +440,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_search(
             set_last_error("ffi_jvm_reader_search: unknown or already-closed handle");
             FfiStatus::InvalidHandle
         })?;
-        let (hits, total) = search(h, &query, top_n, count_total)?;
+        let (hits, total, lower_bound) = search(h, &query, top_n, count_limit)?;
         // SAFETY: caller contract; `hits.len() <= top_n <= buf_len`.
         unsafe {
             for (i, hit) in hits.iter().enumerate() {
@@ -430,6 +449,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_search(
             }
             *out_hit_count = hits.len();
             *out_total = total;
+            *out_total_is_lower_bound = lower_bound;
         }
         Ok(())
     })
@@ -441,8 +461,8 @@ pub(crate) fn search(
     h: &JvmReaderHandle,
     query: &JvmQuery,
     top_n: usize,
-    count_total: bool,
-) -> Result<(Vec<ScoreDoc>, i64), FfiStatus> {
+    count_limit: i64,
+) -> Result<(Vec<ScoreDoc>, i64, bool), FfiStatus> {
     let opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
         FfiStatus::Decode
@@ -457,51 +477,164 @@ pub(crate) fn search(
         })
         .collect();
 
-    let hits = match query {
-        JvmQuery::Term(q) => {
-            let owned = h.reader.field_norms(&q.field);
-            let norms: Vec<Option<&FieldNorms<'_>>> = owned.iter().map(Option::as_ref).collect();
-            if top_n == 0 {
-                Vec::new()
-            } else {
-                search_term_query_multi_segment(&segments, q, &norms, top_n)
+    // Lucene's `TopScoreDocCollectorManager(n, totalHitsThreshold)`: the
+    // search itself counts, exactly up to the threshold, and may prune past
+    // it. `u64::MAX` (an exact count) disables pruning, as Java's
+    // `Integer.MAX_VALUE` does; no count at all lets it prune at once.
+    let threshold = u64::try_from(count_limit).unwrap_or(0);
+    let searched: Option<(Vec<ScoreDoc>, TotalHits)> = if top_n == 0 {
+        None
+    } else {
+        Some(match query {
+            JvmQuery::Term(q) => {
+                let owned = h.reader.field_norms(&q.field);
+                let norms: Vec<Option<&FieldNorms<'_>>> =
+                    owned.iter().map(Option::as_ref).collect();
+                search_term_query_multi_segment_counting(&segments, q, &norms, top_n, threshold)
                     .map_err(map_search_error)?
             }
-        }
-        JvmQuery::Boolean(q) => {
-            let fields: Vec<String> = crate::query::clause_field_names(q)
-                .into_iter()
-                .map(str::to_string)
-                .collect();
-            let owned = h.reader.field_norms_by_field(&fields);
-            let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
-                owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
-            if top_n == 0 {
-                Vec::new()
-            } else {
-                search_boolean_query_multi_segment_maxscore(&segments, q, &norms, top_n)
-                    .map_err(map_search_error)?
+            JvmQuery::Boolean(q) => {
+                let fields: Vec<String> = crate::query::clause_field_names(q)
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect();
+                let owned = h.reader.field_norms_by_field(&fields);
+                let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
+                    owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
+                search_boolean_query_multi_segment_maxscore_counting(
+                    &segments, q, &norms, top_n, threshold,
+                )
+                .map_err(map_search_error)?
             }
-        }
+        })
     };
 
-    let total = if !count_total {
-        -1
-    } else if hits.len() < top_n {
-        // The collector kept every match it saw, so it saw them all.
-        hits.len() as i64
-    } else {
-        count(&segments, query)?
-    };
-    Ok((hits, total))
+    Ok(match searched {
+        _ if count_limit <= 0 => (searched.map(|(h, _)| h).unwrap_or_default(), -1, false),
+        Some((hits, total)) => {
+            let value = i64::try_from(total.value).unwrap_or(i64::MAX);
+            (
+                hits,
+                value,
+                total.relation == TotalHitsRelation::GreaterThanOrEqualTo,
+            )
+        }
+        // `size: 0`: no top hits to collect, so the count is its own pass.
+        None => {
+            let (total, lower_bound) = total_hits(h, &segments, query, count_limit)?;
+            (Vec::new(), total, lower_bound)
+        }
+    })
 }
 
-/// `IndexSearcher.count`: the live documents matching `query`, summed over
-/// every segment.
-fn count(segments: &[OpenSegment<'_>], query: &JvmQuery) -> Result<i64, FfiStatus> {
+/// The total-hits count behind a `size: 0` [`ffi_jvm_reader_search`] -- one
+/// with no top hits, and so no collector to count them -- as `(count,
+/// is_lower_bound)`.
+///
+/// Lucene stops counting at `totalHitsThreshold` and reports "at least"; so
+/// does this, in two steps, cheapest first:
+///
+/// 1. **A lower bound from the term dictionary alone** ([`lower_bound`]): a
+///    term matches at least `docFreq - deletedDocs` live documents of a
+///    segment, and a pure disjunction at least as many as its best clause.
+///    When that already exceeds `count_limit`, no postings are read at all.
+/// 2. **Counting segment by segment**, stopping at the first segment
+///    boundary where the running total exceeds `count_limit`.
+///
+/// Either way the answer is exact whenever it is at most `count_limit`,
+/// which is all Lucene promises.
+fn total_hits(
+    h: &JvmReaderHandle,
+    segments: &[OpenSegment<'_>],
+    query: &JvmQuery,
+    count_limit: i64,
+) -> Result<(i64, bool), FfiStatus> {
+    let mut bound = 0i64;
+    for (i, seg) in segments.iter().enumerate() {
+        let deleted = h.deleted.get(i).copied().unwrap_or(0);
+        let lb = match query {
+            JvmQuery::Term(q) => term_lower_bound(seg, deleted, q)?,
+            JvmQuery::Boolean(q) => lower_bound_boolean(seg, deleted, q)?,
+        };
+        bound = bound.saturating_add(lb);
+    }
+    if bound > count_limit {
+        return Ok((bound, true));
+    }
     let mut total = 0i64;
     for seg in segments {
-        let n = match query {
+        total = total.saturating_add(count_segment(seg, query)?);
+        if total > count_limit {
+            return Ok((total, true));
+        }
+    }
+    Ok((total, false))
+}
+
+/// Live documents of `seg` certainly matching `q`: its `docFreq` less every
+/// deleted document of the segment (each could have been one of them).
+fn term_lower_bound(seg: &OpenSegment<'_>, deleted: i64, q: &TermQuery) -> Result<i64, FfiStatus> {
+    let Some(field) = seg.fields.field(&q.field) else {
+        return Ok(0);
+    };
+    let df = field
+        .try_seek_exact(&q.term)
+        .map_err(|e| map_search_error(e.into()))?
+        .map_or(0, |s| i64::from(s.doc_freq));
+    Ok(df.saturating_sub(deleted).max(0))
+}
+
+/// [`lower_bound`] for a boolean: a pure disjunction (only `SHOULD` clauses,
+/// `minimum_should_match <= 1`) as its best clause; exactly one
+/// `MUST`/`FILTER` clause and nothing else as that clause; anything else --
+/// a conjunction, anything with a `MUST_NOT` -- `0`.
+fn lower_bound_boolean(
+    seg: &OpenSegment<'_>,
+    deleted: i64,
+    b: &BooleanQuery,
+) -> Result<i64, FfiStatus> {
+    if !b.must_not.is_empty() {
+        return Ok(0);
+    }
+    let required = b.must.len() + b.filter.len();
+    if required == 0 && b.minimum_should_match <= 1 {
+        let mut best = 0;
+        for c in &b.should {
+            best = best.max(lower_bound(seg, deleted, c)?);
+        }
+        Ok(best)
+    } else if required == 1 && b.should.is_empty() {
+        let only = b
+            .must
+            .first()
+            .or(b.filter.first())
+            .expect("one required clause");
+        lower_bound(seg, deleted, only)
+    } else {
+        Ok(0)
+    }
+}
+
+/// A cheap lower bound on the live documents of `seg` matching `clause`, from
+/// the term dictionary only. Deliberately narrow: a term (see
+/// [`term_lower_bound`]); a wrapper, as its inner clause; a boolean, see
+/// [`lower_bound_boolean`]. Anything else is `0`, which is always a valid
+/// lower bound. Recursion depth is the clause tree's, which the decoder caps
+/// at `MAX_CLAUSE_DEPTH`.
+fn lower_bound(seg: &OpenSegment<'_>, deleted: i64, clause: &Clause) -> Result<i64, FfiStatus> {
+    match clause {
+        Clause::Term(t) => term_lower_bound(seg, deleted, t),
+        Clause::ConstantScore(c) => lower_bound(seg, deleted, &c.inner),
+        Clause::Boost(b) => lower_bound(seg, deleted, &b.inner),
+        Clause::Boolean(b) => lower_bound_boolean(seg, deleted, b),
+        _ => Ok(0),
+    }
+}
+
+/// `IndexSearcher.count` for one segment.
+fn count_segment(seg: &OpenSegment<'_>, query: &JvmQuery) -> Result<i64, FfiStatus> {
+    Ok({
+        match query {
             JvmQuery::Term(q) => count_term_query(seg.fields, seg.doc_in, seg.live_docs, q),
             JvmQuery::Boolean(q) => {
                 let mut counter = CountCollector::default();
@@ -518,10 +651,8 @@ fn count(segments: &[OpenSegment<'_>], query: &JvmQuery) -> Result<i64, FfiStatu
                 .map(|()| i64::from(counter.count))
             }
         }
-        .map_err(map_search_error)?;
-        total = total.saturating_add(n);
-    }
-    Ok(total)
+        .map_err(map_search_error)?
+    })
 }
 
 /// Closes a JVM reader handle. Segments a later handle reused stay open
@@ -607,27 +738,39 @@ mod tests {
         handle
     }
 
+    /// `count` true is an exact count (`i64::MAX`), false none.
     fn run(
         handle: u64,
         blob: &[u8],
         top_n: usize,
         count: bool,
     ) -> Result<(Vec<(i32, f32)>, i64), i32> {
+        let limit = if count { i64::MAX } else { 0 };
+        run_limit(handle, blob, top_n, limit).map(|(h, t, _)| (h, t))
+    }
+
+    fn run_limit(
+        handle: u64,
+        blob: &[u8],
+        top_n: usize,
+        limit: i64,
+    ) -> Result<(Vec<(i32, f32)>, i64, bool), i32> {
         let mut docs = vec![0i32; top_n];
         let mut scores = vec![0f32; top_n];
-        let (mut n, mut total) = (0usize, 0i64);
+        let (mut n, mut total, mut lower) = (0usize, 0i64, false);
         let rc = unsafe {
             ffi_jvm_reader_search(
                 handle,
                 blob.as_ptr(),
                 blob.len(),
                 top_n,
-                count,
+                limit,
                 docs.as_mut_ptr(),
                 scores.as_mut_ptr(),
                 top_n,
                 &mut n,
                 &mut total,
+                &mut lower,
             )
         };
         if rc != 0 {
@@ -640,6 +783,7 @@ mod tests {
                 .zip(scores[..n].iter().copied())
                 .collect(),
             total,
+            lower,
         ))
     }
 
@@ -719,6 +863,117 @@ mod tests {
         assert_eq!(total, 2, "docs 4 and 6 hold both terms");
         let (_, total) = run(h, &term_blob("body", "fox"), 2, false).unwrap();
         assert_eq!(total, -1);
+        ffi_close_jvm_reader(h);
+    }
+
+    /// `count_limit` is Lucene's `totalHitsThreshold`: exact up to it, a lower
+    /// bound above it -- never at or below the limit. These are the `size: 0`
+    /// path's numbers ([`total_hits`]): from `docFreq` alone when that
+    /// suffices, else counted segment by segment.
+    #[test]
+    fn count_limit_reports_a_lower_bound_at_the_threshold() {
+        let h = open();
+        let totals = |blob: &[u8], limit: i64| {
+            let (hits, total, lower) = run_limit(h, blob, 0, limit).unwrap();
+            assert!(hits.is_empty());
+            (total, lower)
+        };
+        // fox: docFreq 1 + 3 over the two segments, no deletions.
+        let fox = term_blob("body", "fox");
+        assert_eq!(totals(&fox, 3), (4, true), "docFreq alone passes the limit");
+        assert_eq!(
+            totals(&fox, 4),
+            (4, false),
+            "reaching the limit is still exact"
+        );
+        assert_eq!(totals(&fox, 0), (-1, false), "no counting");
+        // dog: docFreq 3 + 3; fox OR dog matches all 8. A disjunction's bound
+        // is its best clause per segment: 3 + 3.
+        let either = bool_blob(
+            0,
+            &[(2, 0, -1, 0, "body", "fox"), (2, 0, -1, 0, "body", "dog")],
+        );
+        assert_eq!(totals(&either, 5), (6, true));
+        assert_eq!(totals(&either, 6), (8, true), "counted past the bound");
+        assert_eq!(totals(&either, 8), (8, false));
+        // fox AND dog: docs 4 and 6, both in segment 1. No cheap bound, so it
+        // is counted, stopping at the first segment that passes the limit.
+        let both = bool_blob(
+            0,
+            &[(0, 0, -1, 0, "body", "fox"), (0, 0, -1, 0, "body", "dog")],
+        );
+        assert_eq!(totals(&both, 1), (2, true));
+        assert_eq!(totals(&both, 2), (2, false));
+        // A MUST_NOT bounds nothing: counted.
+        let not = bool_blob(
+            0,
+            &[(2, 0, -1, 0, "body", "dog"), (3, 0, -1, 0, "body", "fox")],
+        );
+        assert_eq!(totals(&not, 100), (4, false));
+        // Wrappers bound as their inner clause.
+        let one = 1.0f32.to_bits() as i32;
+        let wrapped = bool_blob(0, &[(0, 2, -1, one, "", ""), (0, 0, 0, 0, "body", "fox")]);
+        assert_eq!(totals(&wrapped, 3), (4, true));
+        // A required clause alone bounds as itself.
+        let filtered = bool_blob(0, &[(1, 0, -1, 0, "body", "fox")]);
+        assert_eq!(totals(&filtered, 3), (4, true));
+
+        // Deletions lower the bound: delete global doc 4 (segment 1, local 0),
+        // which holds fox. fox's bound is now 1 + (3 - 1) = 3, its count 3.
+        assert_eq!(set_live(h, 1, &[0b1110]), 0);
+        assert_eq!(totals(&fox, 2), (3, true));
+        assert_eq!(totals(&fox, 3), (3, false));
+        ffi_close_jvm_reader(h);
+    }
+
+    /// With top hits to collect, the collector counts -- Lucene's
+    /// `TopScoreDocCollector` -- and the same contract holds whatever path
+    /// scored the query: exact up to the limit, and past it either exact or a
+    /// lower bound above the limit.
+    #[test]
+    fn collector_counts_obey_the_threshold_contract() {
+        let h = open();
+        let one = 1.0f32.to_bits() as i32;
+        let queries = [
+            (term_blob("body", "fox"), 4),
+            (term_blob("body", "dog"), 6),
+            (
+                bool_blob(
+                    0,
+                    &[(2, 0, -1, 0, "body", "fox"), (2, 0, -1, 0, "body", "dog")],
+                ),
+                8,
+            ),
+            (
+                bool_blob(
+                    0,
+                    &[(0, 0, -1, 0, "body", "fox"), (0, 0, -1, 0, "body", "dog")],
+                ),
+                2,
+            ),
+            (
+                bool_blob(0, &[(0, 2, -1, one, "", ""), (0, 0, 0, 0, "body", "dog")]),
+                6,
+            ),
+        ];
+        for (blob, exact) in &queries {
+            for limit in 1..=10 {
+                for top_n in [1, 3] {
+                    let (_, total, lower) = run_limit(h, blob, top_n, limit).unwrap();
+                    if *exact <= limit {
+                        assert_eq!((total, lower), (*exact, false), "limit {limit} top {top_n}");
+                    } else {
+                        assert!(
+                            (!lower && total == *exact)
+                                || (lower && total > limit && total <= *exact),
+                            "limit {limit} top {top_n}: {total} {lower}, exact {exact}"
+                        );
+                    }
+                }
+            }
+            let (_, total, lower) = run_limit(h, blob, 1, i64::MAX).unwrap();
+            assert_eq!((total, lower), (*exact, false), "an exact count");
+        }
         ffi_close_jvm_reader(h);
     }
 
@@ -874,7 +1129,7 @@ mod tests {
     fn search_rejects_bad_arguments() {
         let h = open();
         let blob = term_blob("body", "fox");
-        let (mut n, mut total) = (0usize, 0i64);
+        let (mut n, mut total, mut lower) = (0usize, 0i64, false);
         let mut docs = [0i32; 1];
         let mut scores = [0f32; 1];
         let mut call = |handle: u64, top_n: usize, docs: *mut i32, n: *mut usize| unsafe {
@@ -883,12 +1138,13 @@ mod tests {
                 blob.as_ptr(),
                 blob.len(),
                 top_n,
-                true,
+                i64::MAX,
                 docs,
                 scores.as_mut_ptr(),
                 1,
                 n,
                 &mut total,
+                &mut lower,
             )
         };
         assert_eq!(
@@ -944,6 +1200,124 @@ mod tests {
         many.extend_from_slice(&0i32.to_le_bytes());
         many.extend_from_slice(&i32::MAX.to_le_bytes());
         assert!(decode_query(&many).is_err());
+    }
+
+    /// `ConstantScoreQuery` and `BoostQuery` -- what OpenSearch builds for a
+    /// `term` on a keyword field and for a boosted `match` -- score as Lucene
+    /// defines them: the constant, and the inner score times the boost.
+    #[test]
+    fn constant_score_and_boost_wrappers_score_as_lucene_defines() {
+        let h = open();
+        let one = 1.0f32.to_bits() as i32;
+        let constant = bool_blob(0, &[(0, 2, -1, one, "", ""), (0, 0, 0, 0, "body", "fox")]);
+        let (hits, total) = run(h, &constant, 10, true).unwrap();
+        assert_eq!(
+            hits,
+            [(0, 1.0), (4, 1.0), (5, 1.0), (6, 1.0)],
+            "constant score, doc order"
+        );
+        assert_eq!(total, 4);
+
+        let two = 2.0f32.to_bits() as i32;
+        let boosted = bool_blob(0, &[(0, 3, -1, two, "", ""), (0, 0, 0, 0, "body", "fox")]);
+        let (hits, _) = run(h, &boosted, 10, true).unwrap();
+        let (plain, _) = run(h, &term_blob("body", "fox"), 10, true).unwrap();
+        assert_eq!(hits.len(), plain.len());
+        for (b, p) in hits.iter().zip(&plain) {
+            assert_eq!(b.0, p.0);
+            assert!((b.1 - 2.0 * p.1).abs() <= 1e-6, "{b:?} vs 2 x {p:?}");
+        }
+
+        // A wrapper nested in a boolean: SHOULD constant(tag) + SHOULD fox.
+        let nested = bool_blob(
+            0,
+            &[
+                (2, 2, -1, one, "", ""),
+                (0, 0, 0, 0, "body", "dog"),
+                (2, 0, -1, 0, "body", "fox"),
+            ],
+        );
+        let (hits, total) = run(h, &nested, 10, true).unwrap();
+        assert_eq!(total, 8);
+        let doc4 = hits.iter().find(|h| h.0 == 4).unwrap().1;
+        assert!(
+            (doc4 - (1.0 + f32::from_bits(1059136106))).abs() <= 1e-6,
+            "{doc4}"
+        );
+        ffi_close_jvm_reader(h);
+    }
+
+    #[test]
+    fn wrapper_clauses_are_validated() {
+        let invalid = Err(FfiStatus::InvalidArgument);
+        let status = |b: &[u8]| decode_query(b).map(|_| ());
+        let one = 1.0f32.to_bits() as i32;
+        assert_eq!(
+            status(&bool_blob(0, &[(0, 2, -1, one, "", "")])),
+            invalid,
+            "no child"
+        );
+        assert_eq!(
+            status(&bool_blob(
+                0,
+                &[
+                    (0, 3, -1, one, "", ""),
+                    (0, 0, 0, 0, "f", "a"),
+                    (0, 0, 0, 0, "f", "b")
+                ]
+            )),
+            invalid,
+            "two children"
+        );
+        assert_eq!(
+            status(&bool_blob(
+                0,
+                &[(0, 2, -1, one, "", ""), (2, 0, 0, 0, "f", "a")]
+            )),
+            invalid,
+            "a SHOULD child"
+        );
+        for bad in [f32::NAN, f32::INFINITY, -1.0] {
+            assert_eq!(
+                status(&bool_blob(
+                    0,
+                    &[
+                        (0, 3, -1, bad.to_bits() as i32, "", ""),
+                        (0, 0, 0, 0, "f", "a")
+                    ]
+                )),
+                invalid,
+                "boost {bad}"
+            );
+        }
+        assert_eq!(
+            status(&bool_blob(0, &[(0, 4, -1, 0, "", "")])),
+            invalid,
+            "unknown kind"
+        );
+        // Wrappers nest in each other and in booleans.
+        let two = 2.0f32.to_bits() as i32;
+        let ok = bool_blob(
+            0,
+            &[
+                (0, 3, -1, two, "", ""),
+                (0, 2, 0, one, "", ""),
+                (0, 1, 1, 0, "", ""),
+                (2, 0, 2, 0, "f", "a"),
+            ],
+        );
+        let JvmQuery::Boolean(q) = decode_query(&ok).unwrap() else {
+            panic!("expected a boolean");
+        };
+        let lucene_search::query::Clause::Boost(b) = &q.must[0] else {
+            panic!("expected a boost");
+        };
+        assert_eq!(b.boost, 2.0);
+        assert!(matches!(
+            &*b.inner,
+            lucene_search::query::Clause::ConstantScore(_)
+        ));
+        assert_eq!(crate::query::clause_field_names(&q), ["f"]);
     }
 
     #[test]

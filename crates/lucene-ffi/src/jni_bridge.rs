@@ -25,7 +25,7 @@
 //! caught here, not unwound into the JVM.
 
 use jni::objects::{JByteArray, JClass, JFloatArray, JIntArray, JLongArray};
-use jni::sys::{jboolean, jint, jlong, jstring, JNI_FALSE};
+use jni::sys::{jint, jlong, jstring};
 use jni::JNIEnv;
 
 use crate::error::{guard, last_error, set_last_error, FfiStatus};
@@ -184,7 +184,7 @@ pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_search<'l>(
     handle: jlong,
     query: JByteArray<'l>,
     top_n: jint,
-    count_total: jboolean,
+    count_limit: jlong,
     out_docs: JIntArray<'l>,
     out_scores: JFloatArray<'l>,
     out_counts: JLongArray<'l>,
@@ -218,6 +218,7 @@ pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_search<'l>(
         let mut scores: Vec<f32> = zeroed(top_n)?;
         let mut hit_count = 0usize;
         let mut total = 0i64;
+        let mut lower_bound = false;
         // SAFETY: every pointer/length pair describes a live Rust buffer.
         let status = unsafe {
             jvm_reader::ffi_jvm_reader_search(
@@ -225,12 +226,13 @@ pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_search<'l>(
                 blob.as_ptr(),
                 blob.len(),
                 top_n,
-                count_total != JNI_FALSE,
+                count_limit,
                 docs.as_mut_ptr(),
                 scores.as_mut_ptr(),
                 top_n,
                 &mut hit_count,
                 &mut total,
+                &mut lower_bound,
             )
         };
         if status == FfiStatus::Ok.code() {
@@ -238,8 +240,12 @@ pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_search<'l>(
                 .map_err(|e| jni_err(&env, "outDocs", e))?;
             env.set_float_array_region(&out_scores, 0, &scores[..hit_count])
                 .map_err(|e| jni_err(&env, "outScores", e))?;
-            env.set_long_array_region(&out_counts, 0, &[hit_count as jlong, total])
-                .map_err(|e| jni_err(&env, "outCounts", e))?;
+            env.set_long_array_region(
+                &out_counts,
+                0,
+                &[hit_count as jlong, total, jlong::from(lower_bound)],
+            )
+            .map_err(|e| jni_err(&env, "outCounts", e))?;
         }
         Ok(status)
     })
