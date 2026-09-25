@@ -233,12 +233,16 @@ Leaving it as-is is not an acceptable outcome for this milestone.
       match within **1e-5** between Java Lucene and this port. 57 queries
       (term, AND, OR, NOT, `minimumShouldMatch`, FILTER, exact and sloppy
       phrase, doc-values range sorted by field); max score difference
-      2.4e-7, 2 295 of 2 343 scores bit-identical.
+      2.4e-7, 2 295 of 2 343 scores bit-identical; total match counts
+      (1 391 608 over the set) equal too.
 - [x] The blocktree writer produces multi-field, multi-block, floor-blocked,
       multi-level output, and each shape is verified from the Java side.
       `VerifyIndex` requires floor blocks, inner blocks and blocks below
-      prefix length 2, and requires each segment's block structure to be
-      *identical* to what Lucene's own writer cuts from the same terms.
+      prefix length 2, and requires all 28 of its dictionaries (four fields,
+      seven segments) to be cut *identically* to what Lucene's own writer cuts
+      from the same terms; `blocktree_byte_identity_fixture.rs` requires
+      `.tim`/`.tip`/`.tmd`/`.doc`/`.psm` to be byte-identical to a real
+      Lucene segment of 13 316 terms.
 - [x] `Error::DocFreqTooLarge` and `Error::UnsupportedIndexOptions` are no
       longer reachable. `DocFreqTooLarge` no longer exists;
       `UnsupportedIndexOptions` remains only for `IndexOptions::None` -- a
@@ -251,7 +255,8 @@ Leaving it as-is is not an acceptable outcome for this milestone.
 - [x] `docs/parity.md` no longer describes the postings/blocktree writer as
       narrowly scoped, or states precisely and truthfully what remains.
 - [x] Per-file line coverage stays ≥95% (`AGENTS.md` invariant #8) across every
-      file this milestone touches.
+      file this milestone touches: `blocktree_writer.rs` 99.45%,
+      `postings_writer.rs` 99.40%, `check_index.rs` 98.28%; workspace 98.00%.
 
 ## Risks and unknowns
 
@@ -295,8 +300,9 @@ left, and what closing the milestone found:
 - **T3.4 was missing entirely.** `crates/lucene-search/examples/
   write_verify_index_fixture.rs` now builds the index through `IndexWriter`,
   runs the query set with this port's searcher, and writes both;
-  `fixtures/src/VerifyIndex.java` is the Java side. It passed on its first
-  run.
+  `fixtures/src/VerifyIndex.java` is the Java side. Its query comparison
+  passed on its first run; the block-structure check below was added after
+  it and failed at once.
 - **T3.2 had not been done.** The postings writer still put every term of a
   field into **one `.tim` block under a one-node trie** -- the fallback left
   when an earlier multi-block attempt proved unreadable by Lucene. Lucene
@@ -306,6 +312,14 @@ left, and what closing the milestone found:
   by `crates/lucene-codecs/src/blocktree_writer.rs`, a port of
   `Lucene103BlockTreeTermsWriter`'s splitting and `TrieBuilder`; the block
   structure now matches Lucene's writer exactly.
+- **Byte identity.** After a Tier-2 review pointed out that readability and
+  matching block counts leave every "Lucene would accept either way" choice
+  unchecked, `GenBlockTreeByteIdentity` and
+  `crates/lucene-codecs/tests/blocktree_byte_identity_fixture.rs` were added:
+  on a term set where Java takes neither documented deviation, the writer's
+  `.tim`, `.tip`, `.tmd`, `.doc` and `.psm` are Lucene's, byte for byte. It
+  passed first time; breaking the child-label strategy tie-break, or
+  withholding `REVERSE_ARRAY`, fails it at the first `.tip` node affected.
 - **Evidence the checks can fail** (invariant #10): a 2e-5 score change, a
   swap of two tied documents, a dropped hit, a wrong sort value, an
   off-by-one offset length in the postings writer, and `MIN_ITEMS_IN_BLOCK`

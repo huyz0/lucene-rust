@@ -10041,6 +10041,16 @@ mod tests {
         let ent_count = (code as u32 >> 1) as usize;
         let code_l = input.read_vlong().unwrap();
         let suffix_len = (code_l as u64 >> 3) as usize;
+        // This walks exactly one block. The writer splits a field past 48
+        // terms, and a patch applied to the first of several blocks would
+        // leave the rest untouched while the test still passed -- so require
+        // the one-block shape rather than assume it.
+        assert_eq!(code_l & 0x04, 0x04, "patch_tim_stats needs a leaf block");
+        assert_eq!(
+            code_l & 0x03,
+            0,
+            "patch_tim_stats needs uncompressed suffixes"
+        );
         let suffix_at = input.position();
         input.seek(suffix_at + suffix_len).unwrap();
         let suffix_bytes = &tim[suffix_at..suffix_at + suffix_len];
@@ -10053,6 +10063,11 @@ mod tests {
         input.seek(stats_at + stats_len).unwrap();
         let meta_len = input.read_vint().unwrap() as usize;
         let meta_at = input.position();
+        assert_eq!(
+            meta_at + meta_len,
+            tim.len() - codec_util::FOOTER_LENGTH,
+            "patch_tim_stats needs a .tim holding exactly one block"
+        );
 
         // Decode the stats region. The fixtures this patches have no
         // singleton term (`docFreq == 1` and `totalTermFreq == 1`), which is
