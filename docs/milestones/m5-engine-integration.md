@@ -8,7 +8,7 @@
 | **Effort** | XL — the largest milestone, and the most dependent on OpenSearch internals |
 | **Depends on** | [M2](m2-opensearch-read-path.md) **and** [M4](m4-write-path-hardened.md) — both delivered 2026-09-25 |
 | **Unblocks** | [M6](m6-production-candidate.md) |
-| **Status** | delivered (2026-09-25) with document replication; a Rust **segment-replication primary** is blocked by OpenSearch 3.8 itself (see Outcome) |
+| **Status** | delivered (2026-09-25): document and segment replication |
 
 ---
 
@@ -25,17 +25,21 @@ the answer to this file's biggest risk: sequence numbers, checkpoints, commit
 user data, the version map and history retention are OpenSearch's own code
 rather than a re-implementation of it.
 
-Two scope decisions differ from the plan below, both forced by OpenSearch 3.8:
+Two things differ from the plan below:
 
-- **Document replication, not segment replication, is the replication mode.**
+- **Segment replication needs one hook into OpenSearch.**
   `CopyState` reads a segment-replication primary's checkpoint through
   `EngineBackedIndexer.lastRefreshedCheckpoint()`. That call answers only for
   an `InternalEngine`, and `InternalEngine.lastRefreshedCheckpoint()` is
-  `final`, so no plugin engine can be a segment-replication primary on this
-  version. The Rust engine refuses segment replication with that explanation.
-  Segment-replication *replicas* (OpenSearch's `NRTReplicationEngine` behind
-  M2's native reads) are verified. Lifting this needs a change in OpenSearch,
-  which is an M6-or-later item.
+  `final`, so on its own no plugin engine can be a segment-replication
+  primary on 3.8. `RustIndexerFactory` replaces each shard's
+  `indexerFactory` when the shard is created, with one that wraps
+  `RustEngine` in an `EngineBackedIndexer` answering from the engine's own
+  checkpoint listener. This is the plugin's one reflective write, and
+  `docs/opensearch-engine.md` explains why nothing narrower exists. A shard
+  where the write fails refuses to be a segment-replication primary.
+  Remote-backed storage stays refused. Both replication modes are verified
+  in the cluster proof.
 - **Get-by-id and aggregations need no FFI path.** The engine's readers are
   Java `StandardDirectoryReader`s over the Rust writer's commits, so realtime
   get, `_source`, versioning and the aggregation framework run unchanged on
@@ -212,11 +216,16 @@ Keep OpenSearch's aggregation framework on the JVM and feed it from Rust:
       `@timestamp` one), now written. The rest were completion and
       term-vector mappings, which the node default now sends to OpenSearch's
       engine.
-- [~] Segment replication works end-to-end between a Rust primary and its
-      replicas. **Blocked by OpenSearch 3.8** (see Outcome): a plugin engine
-      cannot be a segment-replication primary. Segment replication with a
-      Java primary and native-read replicas is verified, and the Rust
-      primary's replication is document replication, verified below.
+- [x] Segment replication works end-to-end between a Rust primary and its
+      replicas (`scripts/verify-opensearch-cluster.sh` §8, via
+      `RustIndexerFactory` -- see Outcome):
+      - replicas copy the Rust writer's segments;
+      - when the primary's node stops, a replica is promoted into the Rust
+        engine on the segments it copied;
+      - the stopped node rejoins as a replica;
+      - a replica on the Java node joins;
+      - a force merge replicates.
+      Every copy is checked against the acknowledged writes.
 - [x] Peer recovery brings a new replica to a consistent state, verified by
       comparing document counts and a query result set against the primary
       (`scripts/verify-opensearch-cluster.sh`: every copy checked against a
