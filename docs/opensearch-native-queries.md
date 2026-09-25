@@ -34,21 +34,21 @@ A request runs native when **all** of these hold:
 
 | Request (DSL) | Rewritten Lucene query | Native by default | Measured, REST, native vs Lucene |
 |---|---|---|---|
-| `match` one term | `TermQuery` | yes | 1.46× |
-| `match` several terms (`or`) | `BooleanQuery` of `SHOULD` terms | yes | 1.15–1.31× |
-| `match` with `operator: and` | `BooleanQuery` of `MUST` terms | yes | 1.05× |
-| `term` on a `keyword` field | `ConstantScoreQuery(TermQuery)` | yes | 0.99× (noise) |
-| `term` on a missing value | same | yes | 1.30× |
-| `bool` of `must` term + `filter` term | `BooleanQuery` `MUST`/`FILTER` | yes | 1.22× |
-| `query_string` `a OR b` | `BooleanQuery` of `SHOULD` terms | yes | 1.08× |
-| any of the above with `size: 0`, `from`/`size` paging, or any `track_total_hits` | — | yes | 1.00–1.23× |
-| `match` with `minimum_should_match` ≥ 2 | `BooleanQuery` with `minimumNumberShouldMatch` | **no** (`slower_shape`) | 0.23× |
-| `bool` mixing `must` and `should` | mixed `BooleanQuery` | **no** (`slower_shape`) | 0.25× |
-| `bool` with `must_not` | `BooleanQuery` with `MUST_NOT` | **no** (`slower_shape`) | 0.30× |
-| nested `bool` | `BooleanQuery` in `BooleanQuery` | **no** (`slower_shape`) | 0.21× |
-| `bool` with only `filter` clauses | `BoostQuery(ConstantScoreQuery(…), 0)` | **no** (`slower_shape`) | 0.95× |
-| any query with `boost` ≠ 1 | `BoostQuery` | **no** (`slower_shape`) | 0.19–0.20× |
-| `constant_score` | `BoostQuery(ConstantScoreQuery(…))` | **no** (`slower_shape`) | 0.26× |
+| `match` one term | `TermQuery` | yes | 1.09–1.29× |
+| `match` several terms (`or`) | `BooleanQuery` of `SHOULD` terms | yes | 1.13–1.22× |
+| `match` with `operator: and` | `BooleanQuery` of `MUST` terms | yes | 1.04× |
+| `term` on a `keyword` field | `ConstantScoreQuery(TermQuery)` | yes | 1.12× |
+| `term` on a missing value | same | yes | 1.34× |
+| `bool` of `must` term + `filter` term | `BooleanQuery` `MUST`/`FILTER` | yes | 1.25× |
+| `query_string` `a OR b` | `BooleanQuery` of `SHOULD` terms | yes | 1.11× |
+| any of the above with `size: 0`, `from`/`size` paging, or any `track_total_hits` | — | yes | 1.00–1.48× |
+| `match` with `minimum_should_match` ≥ 2 | `BooleanQuery` with `minimumNumberShouldMatch` | **no** (`slower_shape`) | 0.15× |
+| `bool` mixing `must` and `should` | mixed `BooleanQuery` | **no** (`slower_shape`) | 0.19× |
+| `bool` with `must_not` | `BooleanQuery` with `MUST_NOT` | **no** (`slower_shape`) | 0.28× |
+| nested `bool` | `BooleanQuery` in `BooleanQuery` | **no** (`slower_shape`) | 0.16× |
+| `bool` with only `filter` clauses | `BoostQuery(ConstantScoreQuery(…), 0)` | **no** (`slower_shape`) | 0.80× |
+| any query with `boost` ≠ 1 | `BoostQuery` | **no** (`slower_shape`) | 0.13–0.18× |
+| `constant_score` | `BoostQuery(ConstantScoreQuery(…))` | **no** (`slower_shape`) | 0.22× |
 
 "Measured" is the median REST round trip over 80 requests per engine on one node, both
 engines on the same 100k-document index; the source and method are
