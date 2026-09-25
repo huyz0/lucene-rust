@@ -714,6 +714,8 @@ mod tests {
     #![allow(clippy::arithmetic_side_effects)]
     use super::*;
     use crate::buffered_updates::{DocValuesUpdate, Term};
+    use crate::index_file_deleter::DeletionPolicy;
+    use crate::index_writer::SoftDeletesRetention;
     use crate::segment_info::LuceneVersion;
     use lucene_store::directory::FsDirectory;
     use lucene_util::test_support::TempDir;
@@ -732,6 +734,7 @@ mod tests {
         tag: i32,
         num: i32,
         soft: i32,
+        seq: i32,
     }
 
     fn register(w: &mut IndexWriter<'_>) -> Fields {
@@ -772,6 +775,14 @@ mod tests {
                 FieldInfo::new("__soft_deletes", 0)
                     .with_doc_values(DocValuesType::Numeric, DocValuesSkipIndexType::None, -1)
                     .with_soft_deletes_field(true),
+            ),
+            seq: reg(
+                w,
+                FieldInfo::new("_seq_no", 0).with_doc_values(
+                    DocValuesType::Numeric,
+                    DocValuesSkipIndexType::None,
+                    -1,
+                ),
             ),
         }
     }
@@ -814,10 +825,16 @@ mod tests {
                     norm: None,
                 },
             ],
-            doc_values: vec![StoredField {
-                field_number: f.tag,
-                value: FieldValue::Binary(tag),
-            }],
+            doc_values: vec![
+                StoredField {
+                    field_number: f.tag,
+                    value: FieldValue::Binary(tag),
+                },
+                StoredField {
+                    field_number: f.seq,
+                    value: FieldValue::Long(i),
+                },
+            ],
             points: Vec::new(),
         };
         if i % 3 != 0 {
@@ -889,7 +906,7 @@ mod tests {
         let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(
             names,
-            ["_id", "_source", "body", "tag", "num"],
+            ["_id", "_source", "body", "tag", "num", "_seq_no"],
             "no soft-deletes field yet"
         );
         let attr = |name: &str, key: &str| {
@@ -1095,5 +1112,178 @@ mod tests {
         assert_eq!(w.committed_doc_count().unwrap(), 5);
         assert_eq!(deleted, 1, "the earlier d2 is deleted");
         check(&dir);
+    }
+
+    fn id_term(i: i64) -> Term {
+        Term {
+            field: "_id".to_string(),
+            bytes: format!("d{i}").into_bytes(),
+        }
+    }
+
+    /// Document `i` re-indexed as the operation with sequence number `seq_no`.
+    fn doc_at(f: &Fields, i: i64, seq_no: i64) -> ExplicitDocument {
+        let mut d = doc(f, i);
+        for v in &mut d.fields.doc_values {
+            if v.field_number == f.seq {
+                v.value = FieldValue::Long(seq_no);
+            }
+        }
+        d
+    }
+
+    fn soft_delete(i: i64) -> DocValuesUpdate {
+        DocValuesUpdate::Numeric {
+            term: id_term(i),
+            field: "__soft_deletes".to_string(),
+            value: Some(1),
+        }
+    }
+
+    /// `(maxDoc, softDelCount)` over the committed segments.
+    fn counts(w: &mut IndexWriter<'_>) -> (usize, i32) {
+        let soft = w
+            .commit()
+            .unwrap()
+            .segments
+            .iter()
+            .map(|s| s.soft_del_count)
+            .sum();
+        (w.committed_doc_count().unwrap(), soft)
+    }
+
+    /// `SoftDeletesRetentionMergePolicy`: a merge carries a soft-deleted
+    /// document over while its `_seq_no` is retained, and drops it after.
+    #[test]
+    fn merges_drop_only_the_soft_deleted_history_no_longer_retained() {
+        let tmp = TempDir::new("explicit-retention");
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        let f = register(&mut w);
+        w.set_max_buffered_docs(4).unwrap();
+        for i in 0..10 {
+            w.add_explicit_documents(vec![doc(&f, i)]).unwrap();
+        }
+        w.commit().unwrap();
+        // Operations 100..=105 replace d0..d5; seq_nos 0..=5 become history.
+        for i in 0..6 {
+            w.soft_update_explicit_documents(
+                id_term(i),
+                vec![doc_at(&f, i, 100 + i)],
+                &[soft_delete(i)],
+            )
+            .unwrap();
+        }
+        assert_eq!(counts(&mut w), (16, 6));
+
+        // No retention policy: every soft-deleted document survives.
+        w.force_merge(1).unwrap();
+        assert_eq!(w.commit().unwrap().segments.len(), 1);
+        assert_eq!(counts(&mut w), (16, 6));
+        check(&dir);
+
+        // Seq_nos 0..=2 fall out of retention; 3..=5 are still needed.
+        w.set_soft_deletes_retention(Some(SoftDeletesRetention {
+            seq_no_field: "_seq_no".to_string(),
+            min_retained_seq_no: 3,
+        }));
+        w.force_merge_deletes().unwrap();
+        assert_eq!(counts(&mut w), (13, 3));
+        check(&dir);
+
+        // Nothing retained: all history goes, and a clean index is left alone.
+        w.set_soft_deletes_retention(Some(SoftDeletesRetention {
+            seq_no_field: "_seq_no".to_string(),
+            min_retained_seq_no: i64::MAX,
+        }));
+        w.force_merge_deletes().unwrap();
+        assert_eq!(counts(&mut w), (10, 0));
+        let before = w.commit_generations();
+        w.force_merge_deletes().unwrap();
+        w.force_merge(1).unwrap();
+        assert_eq!(w.commit_generations(), before, "nothing to merge");
+        check(&dir);
+
+        assert!(matches!(
+            w.force_merge(0),
+            Err(Error::InvalidMaxNumSegments(0))
+        ));
+    }
+
+    /// A soft-deleted document with no sequence number is never retained.
+    #[test]
+    fn a_soft_deleted_document_without_a_seq_no_is_not_retained() {
+        let tmp = TempDir::new("explicit-retention-noseq");
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        let f = register(&mut w);
+        let mut tombstone = doc(&f, 7);
+        tombstone
+            .fields
+            .doc_values
+            .retain(|v| v.field_number != f.seq);
+        tombstone.fields.doc_values.push(StoredField {
+            field_number: f.soft,
+            value: FieldValue::Long(1),
+        });
+        w.add_explicit_documents(vec![doc(&f, 1), tombstone])
+            .unwrap();
+        w.commit().unwrap();
+        w.add_explicit_documents(vec![doc(&f, 2)]).unwrap();
+        assert_eq!(counts(&mut w), (3, 1));
+        w.set_soft_deletes_retention(Some(SoftDeletesRetention {
+            seq_no_field: "_seq_no".to_string(),
+            min_retained_seq_no: 0,
+        }));
+        w.force_merge(1).unwrap();
+        assert_eq!(counts(&mut w), (2, 0));
+        check(&dir);
+    }
+
+    /// OpenSearch's `CombinedDeletionPolicy` decides which commits live, and a
+    /// reader's hold keeps a dropped commit's segment files on disk.
+    #[test]
+    fn caller_driven_commit_deletion_respects_holds() {
+        let tmp = TempDir::new("explicit-holds");
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        w.set_deletion_policy(DeletionPolicy::KeepAll).unwrap();
+        let f = register(&mut w);
+        w.add_explicit_documents(vec![doc(&f, 0)]).unwrap();
+        let first = w.commit().unwrap().generation;
+        w.add_explicit_documents(vec![doc(&f, 1)]).unwrap();
+        let second = w.commit().unwrap().generation;
+        assert_eq!(w.commit_generations(), [first, second]);
+
+        let held = w.hold_commit(first).unwrap();
+        assert!(!held.is_empty());
+        assert!(held.iter().all(|f| !f.starts_with("segments")));
+        w.force_merge(1).unwrap();
+        let merged = w.commit_generations();
+        assert_eq!(merged.len(), 3);
+        let newest = *merged.last().unwrap();
+        w.delete_commits(&merged).unwrap();
+        assert_eq!(
+            w.commit_generations(),
+            [newest],
+            "the newest always survives"
+        );
+        let on_disk = dir.list_all().unwrap();
+        let first_name = lucene_store::directory::segments_file_name(first).unwrap();
+        assert!(!on_disk.contains(&first_name));
+        assert!(held.iter().all(|f| on_disk.contains(f)), "held files stay");
+        check(&dir);
+
+        w.release_files(&held).unwrap();
+        let on_disk = dir.list_all().unwrap();
+        assert!(
+            held.iter().all(|f| !on_disk.contains(f)),
+            "released files go"
+        );
+        check(&dir);
+
+        w.delete_commits(&[newest, 12345]).unwrap();
+        assert_eq!(w.commit_generations(), [newest]);
+        assert!(w.hold_commit(999).is_err(), "no such commit");
     }
 }
