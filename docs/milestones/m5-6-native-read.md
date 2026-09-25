@@ -142,6 +142,16 @@ documents: a fresh set per candidate was 30% of a sloppy phrase's time in
 `malloc`/`free`. In process: `(ps 2 t1 t0)` 1.03–1.14×, `(ps 2 t0 t1)`
 1.18–1.24×, q61 1.05–1.11×; `(ps 1 t2 t3)` 0.84–0.91× is open.
 
+**The multi-term family (delivered).** `prefix`, `wildcard`, `terms` and
+`regexp` run inside the tree as Lucene rewrites them (a constant-scored
+disjunction up to 16 terms, the blended 16-iterators-and-a-bitset past
+that), through a union scorer that holds the term cursors directly; the
+plugin sends prefix, wildcard and term sets (ABI 9). In process: filters
+over the family 7–39× (q62, q65, q67), a `SHOULD` prefix 1.1–1.4× (q63), a
+lone term set 0.92× merged and 3.4× segmented (q66). Open: a term set as a
+scored `MUST` beside a scoring `SHOULD` (q64), 0.47–0.58× -- Lucene makes the
+same 58,075 iterator moves, so the gap is the codec's docs-only `advance`.
+
 **R3b, the native query cache (delivered).** `exec::cache` caches a
 non-scoring clause per segment under Lucene's own policy, built from the
 clause's scorer without live docs and kept with the segment's core across

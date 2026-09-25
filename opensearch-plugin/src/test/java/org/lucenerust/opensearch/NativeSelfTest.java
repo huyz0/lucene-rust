@@ -25,6 +25,10 @@ import org.apache.lucene.search.Query;
 import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.WildcardQuery;
+import org.apache.lucene.search.PrefixQuery;
+import org.apache.lucene.search.TermInSetQuery;
+import org.apache.lucene.index.MultiReader;
+import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.store.FSDirectory;
 
 import java.nio.file.Files;
@@ -117,7 +121,7 @@ public final class NativeSelfTest {
 
     // --- QueryEncoder --------------------------------------------------------------------
 
-    private static void encoderMatrix() {
+    private static void encoderMatrix() throws Exception {
         Query t = new TermQuery(new Term("body", "a"));
         check(QueryEncoder.encode(t, f -> true).blob() != null, "TermQuery encodes");
         check(QueryEncoder.encode(new BoostQuery(t, 1f), f -> true).blob() != null, "unit BoostQuery encodes");
@@ -154,6 +158,13 @@ public final class NativeSelfTest {
         check(
             "query_WildcardQuery".equals(QueryEncoder.encode(new WildcardQuery(new Term("body", "a*b")), f -> true).fallbackReason()),
             "an unsupported root reports query_, not clause_"
+        );
+        check(
+            "wildcard_escape".equals(
+                QueryEncoder.encode(new IndexSearcher(new MultiReader()).rewrite(new WildcardQuery(new Term("body", "a\\*b"))), f -> true)
+                    .fallbackReason()
+            ),
+            "an escaped wildcard falls back"
         );
         // The native decoder's node cap, 1024 nodes: a boolean of 1023 terms is 1024.
         BooleanQuery.Builder atCap = new BooleanQuery.Builder();
@@ -193,6 +204,11 @@ public final class NativeSelfTest {
                 // Phrases need positions: `body` only (`tag` is a keyword).
                 case 4 -> new PhraseQuery(r.nextInt(3) == 0 ? r.nextInt(3) : 0, "body", word(r), word(r));
                 case 5 -> r.nextInt(2) == 0 ? new PhraseQuery("body", word(r), word(r), word(r)) : t;
+                // The multi-term family, rewritten by the searcher to its constant-score wrapper.
+                case 6 -> new PrefixQuery(new Term(field, word(r).substring(0, 1 + r.nextInt(2))));
+                case 7 -> r.nextInt(2) == 0
+                    ? new WildcardQuery(new Term(field, word(r).charAt(0) + "?" + "*"))
+                    : new TermInSetQuery(field, List.of(new BytesRef(word(r)), new BytesRef(word(r)), new BytesRef(word(r))));
                 default -> t;
             };
         }
