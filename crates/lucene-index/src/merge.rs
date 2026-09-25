@@ -218,12 +218,14 @@
 //! sources" restriction here: a source whose own `FieldInfos` never saw the
 //! field simply contributes no terms, matching `FieldsConsumer.merge`'s
 //! `Terms terms = fields.terms(field); if (terms == null) continue;` (this
-//! is the normal state of a segment written before the field existed). A
-//! source that *does* declare the field but whose caller supplied no
-//! [`SourcePostings`] for it is still a hard error
-//! ([`Error::PostingsFieldMissingInSource`]) -- that is a caller wiring
-//! bug, not index evolution. Ordinary per-doc/per-term sparsity (most docs
-//! don't contain most terms) is of course not an error either.
+//! is the normal state of a segment written before the field existed). So
+//! does a source that declares the field but has no [`SourcePostings`] for
+//! it: a segment whose every document had an empty value for the field
+//! declares it in its `.fnm` and has no terms for it in its `.tim`, in Java
+//! as here. (A source whose `.tim` was never opened at all is a different
+//! matter, and [`check_format_coverage`] refuses it.) Ordinary per-doc/
+//! per-term sparsity (most docs don't contain most terms) is of course not
+//! an error either.
 //!
 //! **Scope: `Docs`/`DocsAndFreqs`/`DocsAndCustomFreqs`, plus positions/
 //! offsets/payloads.** A field whose merged `index_options` indexes
@@ -462,29 +464,10 @@ pub enum Error {
         "merged field number {merged_field_number}: a source's sorted-set doc values name an ordinal outside its own dictionary"
     )]
     SortedSetDocValuesFieldMissingInSource { merged_field_number: i32 },
-    /// A live-doc-contributing source *declares* this field in its own
-    /// `FieldInfos` but its [`MergeSource::postings`] carries no entry for
-    /// it -- a caller wiring bug (the segment has postings on disk but the
-    /// caller never opened them), not index evolution. A source whose
-    /// `FieldInfos` never saw the field at all is fine and simply
-    /// contributes no terms, matching `FieldsConsumer.merge`.
-    ///
-    /// **Deliberately stricter than Java here**: real Lucene's `MultiFields`
-    /// also tolerates a declared field whose reader returns no `Terms` (a
-    /// segment where every doc happened to have no value for the field). This
-    /// port cannot tell that apart from "the caller forgot to open the
-    /// `.tim`", because [`SourcePostings`] is caller-supplied rather than
-    /// pulled from a reader, and silently merging away a whole source's
-    /// postings is the worse failure. Revisit if `MergeSource` ever takes a
-    /// reader instead of pre-opened per-field handles.
-    #[error(
-        "merged field number {merged_field_number} is declared by a live-doc-contributing source whose MergeSource supplied no postings for it"
-    )]
-    PostingsFieldMissingInSource { merged_field_number: i32 },
     /// A field's merged `index_options` indexes positions, but a source
     /// contributing live docs for it wasn't given an opened `.pos` reader
     /// (`SourcePostings::pos_in`) -- a caller-side wiring inconsistency,
-    /// same class of error as [`Error::PostingsFieldMissingInSource`] rather
+    /// a caller wiring bug rather
     /// than a panic, since a real, well-formed segment for this field always
     /// has a `.pos` file to open.
     #[error(
@@ -563,11 +546,11 @@ pub enum Error {
     Points(#[from] lucene_codecs::points::Error),
     /// A live-doc-contributing source *declares* this points field in its
     /// own `FieldInfos` but its [`MergeSource::points`] carries no entry for
-    /// it (or its opened reader has no such field) -- a caller wiring bug,
-    /// same distinction [`Error::PostingsFieldMissingInSource`] draws
-    /// (including its "deliberately stricter than Java" note: real
-    /// `PointsWriter.merge` also tolerates `values == null` for a declared
-    /// field). A source whose `FieldInfos` never saw the field at all is fine
+    /// it (or its opened reader has no such field) -- a caller wiring bug.
+    /// Deliberately stricter than Java (real `PointsWriter.merge` tolerates
+    /// `values == null` for a declared field): unlike an indexed field, a
+    /// points field cannot be declared by a segment without a value, since
+    /// every points instance carries one. A source whose `FieldInfos` never saw the field at all is fine
     /// and simply contributes no points, matching `PointsWriter.merge`.
     #[error(
         "merged field number {merged_field_number} is declared by a live-doc-contributing source whose MergeSource supplied no BKD points for it"
@@ -3917,13 +3900,9 @@ struct MergedPostingsField {
 ///
 /// A term's postings are naturally sparse per-doc (most docs don't contain
 /// most terms) -- that sparsity is exactly what a term dictionary already
-/// models, and is not an error here. What *is* an error, matching the same
-/// philosophy as doc-values/norms: if a merged field has postings data in
-/// at least one source that contributes live docs, but another live-doc-
-/// contributing source has no postings *field* at all for it (schema
-/// mismatch across sources), this returns
-/// [`Error::PostingsFieldMissingInSource`] rather than silently treating
-/// that source's docs as having no terms for the field.
+/// models, and is not an error here. Nor is a source that declares the
+/// field but has no terms for it at all -- every document of that segment
+/// had an empty value -- which contributes nothing, as in `MultiFields`.
 ///
 /// # Positions/offsets/payloads
 ///
@@ -4016,14 +3995,18 @@ fn merge_postings(
                 per_source_field.push(None);
                 continue;
             };
+            // A source that declares the field but has no terms for it --
+            // every one of its documents had an empty value, so its term
+            // dictionary never got the field -- contributes nothing, as in
+            // `MultiFields`. It cannot be a source whose `.tim` went
+            // unopened: `check_format_coverage` refuses that merge first.
             let Some(pf) = source
                 .postings
                 .iter()
                 .find(|pf| pf.field_number == original_number)
             else {
-                return Err(Error::PostingsFieldMissingInSource {
-                    merged_field_number,
-                });
+                per_source_field.push(None);
+                continue;
             };
             if has_positions && pf.pos_in.is_none() {
                 return Err(Error::PostingsPositionsInputMissingInSource {
@@ -11827,7 +11810,9 @@ mod tests {
     }
 
     #[test]
-    fn postings_field_missing_in_a_live_contributing_source_is_an_error() {
+    fn a_source_declaring_a_field_without_terms_contributes_none() {
+        // `MultiFields`: a segment whose every document had an empty value
+        // declares the field in its `.fnm` and has no terms for it.
         let seg0_id = [1u8; ID_LENGTH];
 
         let terms0 = vec![TermPostings {
@@ -11929,18 +11914,53 @@ mod tests {
             has_blocks: false,
         };
 
-        let result = merge_stored_only_segments(
+        merge_stored_only_segments(
             &dir,
             &[source0, source1],
             "_merged_missing_postings",
             [9u8; ID_LENGTH],
             "Lucene104",
             version(),
+        )
+        .unwrap();
+        let read = |ext: &str| {
+            std::fs::read(tmp.join(format!(
+                "{}.{ext}",
+                per_field_segment("_merged_missing_postings", POSTINGS_FORMAT_NAME)
+            )))
+            .unwrap()
+        };
+        let (tim, tip, tmd, doc) = (read("tim"), read("tip"), read("tmd"), read("doc"));
+        let merged_field_infos = field_infos::FieldInfos {
+            fields: vec![postings_field("body", 0)],
+        };
+        let merged_fields = lucene_codecs::blocktree::open(
+            &tim,
+            &tip,
+            &tmd,
+            &merged_field_infos,
+            &[9u8; ID_LENGTH],
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+            1,
+        )
+        .unwrap();
+        let merged_doc_in = DocInput::open(
+            &doc,
+            &[9u8; ID_LENGTH],
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
+        let apple = merged_fields
+            .field("body")
+            .unwrap()
+            .postings(b"apple", Some(&merged_doc_in))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            apple.docs,
+            vec![0],
+            "source 1 declares body but has no terms"
         );
-        assert!(matches!(
-            result,
-            Err(Error::PostingsFieldMissingInSource { .. })
-        ));
     }
 
     #[test]
