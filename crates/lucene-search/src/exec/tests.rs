@@ -542,6 +542,79 @@ fn cached_clauses_search_exactly_like_uncached_ones() {
     }
 }
 
+/// The multi-term builder's edges, and its union scorer driven directly.
+#[test]
+fn multi_term_edges_and_the_term_union() {
+    use crate::directory_reader::DirectoryReader;
+    use crate::query::{Clause, PrefixQuery, TermQuery};
+    let dir = lucene_store::FsDirectory::open(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/data/mixed_boolean_scoring_index"
+    ));
+    let reader = DirectoryReader::open(&dir).unwrap();
+    let opened = reader.open_segments().unwrap();
+    let seg = &opened.as_open_segments()[0];
+    let ctx = super::build::LeafContext {
+        fields: seg.fields,
+        doc_in: seg.doc_in,
+        pos_in: seg.pos_in,
+        pay_in: seg.pay_in,
+        live_docs: None,
+        points: None,
+        norms: None,
+        global: None,
+        max_doc: seg.max_doc,
+        cache: None,
+    };
+    fn mt<'a>(c: &Clause, ctx: &super::build::LeafContext<'a>) -> Option<Option<BoxScorer<'a>>> {
+        super::multi_term::multi_term(ctx, c, 1.0, Mode::Complete).unwrap()
+    }
+    let term = Clause::Term(TermQuery::new("body", "w0"));
+    assert!(mt(&term, &ctx).is_none(), "not the multi-term family");
+    let prefix = Clause::Prefix(PrefixQuery::new("body", "w1"));
+    let no_docs = super::build::LeafContext {
+        doc_in: None,
+        ..ctx
+    };
+    assert!(mt(&prefix, &no_docs).is_none(), "no .doc input");
+    let absent = Clause::Prefix(PrefixQuery::new("nosuchfield", "w"));
+    assert!(matches!(mt(&absent, &ctx), Some(None)), "absent field");
+    let none = Clause::Prefix(PrefixQuery::new("body", "zzz"));
+    assert!(matches!(mt(&none, &ctx), Some(None)), "no matching term");
+    // The union itself: advance, next, a 0 score and bound.
+    let Some(Some(mut s)) = mt(&prefix, &ctx) else {
+        panic!("w1 has terms")
+    };
+    let first = s.next_doc().unwrap();
+    let later = s.advance(first + 100).unwrap();
+    assert!(later >= first + 100);
+    assert_eq!(s.score().unwrap(), 1.0, "constant-scored");
+    let terms = crate::expanded_terms(ctx.fields, &prefix)
+        .unwrap()
+        .unwrap()
+        .1;
+    let field = ctx.fields.field("body").unwrap();
+    let legs = terms
+        .iter()
+        .map(|(_, t)| {
+            let c = field
+                .lazy_postings_for(
+                    t,
+                    ctx.doc_in.unwrap(),
+                    lucene_codecs::postings::PostingsFlags::DocsOnly,
+                )
+                .unwrap();
+            crate::bulk_scorer::TermLeg::filter(c, t.stats.doc_freq as i64)
+        })
+        .collect();
+    let mut u = super::multi_term::TermUnion::new(legs, None);
+    assert_eq!(u.next_doc().unwrap(), first);
+    assert_eq!(u.advance(first + 100).unwrap(), later);
+    assert_eq!(u.score().unwrap(), 0.0);
+    assert_eq!(u.max_score(NO_MORE_DOCS).unwrap(), 0.0);
+    assert!(u.cost() > 0);
+}
+
 /// A phrase on a segment without norms scores every document at the
 /// unnormed length, like a term does.
 #[test]
@@ -748,6 +821,29 @@ mod fixture {
     }
 
     fn node(t: &[String], at: &mut usize) -> Clause {
+        {
+            use crate::query::{PrefixQuery, RegexpQuery, TermInSetQuery, WildcardQuery};
+            let op = t[*at + 1].as_str();
+            if matches!(op, "pre" | "wc" | "re" | "ts") {
+                *at += 2;
+                let mut words = Vec::new();
+                while t[*at] != ")" {
+                    words.push(t[*at].clone());
+                    *at += 1;
+                }
+                *at += 1;
+                let w = words[0].clone();
+                return match op {
+                    "pre" => Clause::Prefix(PrefixQuery::new("body", w.into_bytes())),
+                    "wc" => Clause::Wildcard(WildcardQuery::new("body", w.into_bytes())),
+                    "re" => Clause::Regexp(RegexpQuery::new("body", w)),
+                    _ => Clause::TermInSet(TermInSetQuery::new(
+                        "body",
+                        words.iter().map(|w| w.clone().into_bytes()),
+                    )),
+                };
+            }
+        }
         if t[*at + 1] == "p" || t[*at + 1] == "ps" {
             let slop: u32 = if t[*at + 1] == "ps" {
                 *at += 1;

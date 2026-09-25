@@ -53,7 +53,7 @@ pub(crate) struct DisiQueue {
 
 /// Up to this many members, [`DisiQueue::for_disjunction`] scans instead of
 /// heaping.
-const LINEAR_MAX: usize = 4;
+const LINEAR_MAX: usize = 8;
 
 impl DisiQueue {
     pub(crate) fn with_capacity(n: usize) -> Self {

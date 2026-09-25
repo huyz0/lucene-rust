@@ -12,6 +12,15 @@ import org.apache.lucene.search.DisjunctionMaxQuery;
 import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.MatchNoDocsQuery;
 import org.apache.lucene.search.PhraseQuery;
+import org.apache.lucene.search.IndexOrDocValuesQuery;
+import org.apache.lucene.search.PrefixQuery;
+import org.apache.lucene.search.QueryVisitor;
+import org.apache.lucene.search.TermInSetQuery;
+import org.apache.lucene.search.WildcardQuery;
+import org.apache.lucene.util.BytesRefIterator;
+import org.apache.lucene.util.automaton.ByteRunAutomaton;
+import java.io.IOException;
+import java.util.function.Supplier;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.util.BytesRef;
@@ -121,6 +130,9 @@ public final class QueryEncoder {
     private static final byte NODE_MATCH_ALL = 5;
     private static final byte NODE_MATCH_NONE = 6;
     private static final byte NODE_PHRASE = 7;
+    private static final byte NODE_TERM_SET = 8;
+    private static final byte NODE_PREFIX = 9;
+    private static final byte NODE_WILDCARD = 10;
 
     /** Appends one node (and its children); returns a fallback reason, or null. */
     private static String node(Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
@@ -225,6 +237,22 @@ public final class QueryEncoder {
             }
             return null;
         }
+        if (q instanceof IndexOrDocValuesQuery iodv) {
+            // Two equivalent ways to run one query; the native side runs the index one. A
+            // wrapper, not a level (nor a node).
+            nodes[0]--;
+            return node(iodv.getIndexQuery(), out, fieldOk, depth, nodes);
+        }
+        String wrapper = q.getClass().getSimpleName();
+        if (wrapper.equals("MultiTermQueryConstantScoreBlendedWrapper") || wrapper.equals("MultiTermQueryConstantScoreWrapper")) {
+            // A MultiTermQuery under a constant-score rewrite (package-private classes, so found
+            // by name; their query by the visitor, which hands it over as it is).
+            Query inner = wrappedMultiTermQuery(q);
+            if (inner == null) {
+                return "clause_" + wrapper;
+            }
+            return multiTerm(inner, out, fieldOk, depth, nodes);
+        }
         if (q.getClass() == MatchAllDocsQuery.class) {
             out.write(NODE_MATCH_ALL);
             return null;
@@ -234,6 +262,75 @@ public final class QueryEncoder {
             return null;
         }
         // The whole query is unsupported ("query_"), or one clause of an otherwise native tree is.
+        return (depth == 0 ? "query_" : "clause_") + name(q);
+    }
+
+    /** The query a constant-score multi-term wrapper wraps, as its visitor reports it, or null. */
+    private static Query wrappedMultiTermQuery(Query wrapper) {
+        Query[] inner = new Query[1];
+        wrapper.visit(new QueryVisitor() {
+            @Override
+            public void consumeTerms(Query query, Term... terms) {
+                if (inner[0] == null) inner[0] = query;
+            }
+
+            @Override
+            public void consumeTermsMatching(Query query, String field, Supplier<ByteRunAutomaton> automaton) {
+                if (inner[0] == null) inner[0] = query;
+            }
+
+            @Override
+            public void visitLeaf(Query query) {
+                if (inner[0] == null) inner[0] = query;
+            }
+
+            @Override
+            public QueryVisitor getSubVisitor(BooleanClause.Occur occur, Query parent) {
+                return this;
+            }
+        });
+        return inner[0];
+    }
+
+    /** A term set, prefix or wildcard under a constant-score rewrite: scored as its boost. */
+    private static String multiTerm(Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
+        if (q.getClass() == TermInSetQuery.class) {
+            TermInSetQuery ts = (TermInSetQuery) q;
+            nodes[0] += (int) Math.min(Integer.MAX_VALUE, ts.getTermsCount());
+            if (nodes[0] > MAX_NODES) {
+                return "query_too_large";
+            }
+            out.write(NODE_TERM_SET);
+            writeBytes(out, ts.getField().getBytes(StandardCharsets.UTF_8));
+            writeInt(out, (int) ts.getTermsCount());
+            try {
+                BytesRefIterator it = ts.getBytesRefIterator();
+                for (BytesRef t = it.next(); t != null; t = it.next()) {
+                    writeBytes(out, BytesRef.deepCopyOf(t));
+                }
+            } catch (IOException e) {
+                return "clause_TermInSetQuery";
+            }
+            return null;
+        }
+        if (q.getClass() == PrefixQuery.class) {
+            Term t = ((PrefixQuery) q).getPrefix();
+            out.write(NODE_PREFIX);
+            writeBytes(out, t.field().getBytes(StandardCharsets.UTF_8));
+            writeBytes(out, t.bytes());
+            return null;
+        }
+        if (q.getClass() == WildcardQuery.class) {
+            Term t = ((WildcardQuery) q).getTerm();
+            if (t.text().indexOf(WildcardQuery.WILDCARD_ESCAPE) >= 0) {
+                // The native matcher has no escape syntax.
+                return "wildcard_escape";
+            }
+            out.write(NODE_WILDCARD);
+            writeBytes(out, t.field().getBytes(StandardCharsets.UTF_8));
+            writeBytes(out, t.bytes());
+            return null;
+        }
         return (depth == 0 ? "query_" : "clause_") + name(q);
     }
 

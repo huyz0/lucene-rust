@@ -16,6 +16,11 @@ import org.apache.lucene.search.ConstantScoreQuery;
 import org.apache.lucene.search.DisjunctionMaxQuery;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.PhraseQuery;
+import org.apache.lucene.search.PrefixQuery;
+import org.apache.lucene.search.RegexpQuery;
+import org.apache.lucene.search.TermInSetQuery;
+import org.apache.lucene.search.WildcardQuery;
+import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.TermQuery;
@@ -56,6 +61,10 @@ import java.util.stream.Stream;
  *   (dismax TIE Q...)          DisjunctionMaxQuery
  *   (p TERM...)                PhraseQuery on body
  *   (ps SLOP TERM...)          sloppy PhraseQuery
+ *   (pre PREFIX)               PrefixQuery on body
+ *   (wc PATTERN)               WildcardQuery on body
+ *   (re PATTERN)               RegexpQuery on body
+ *   (ts TERM...)               TermInSetQuery on body
  * </pre>
  *
  * For each query the manifest records the top {@code N} under a total-hits threshold of 100 (so
@@ -187,6 +196,17 @@ public class GenMixedBooleanScoring {
     // receives the collector's threshold (the `maxFreq` check).
     "(boost 2 (p w0 w1))",
     "(boost 0.5 (p w1 w0 w2))",
+    // The multi-term family: up to 16 terms a constant-scored disjunction,
+    // past that the blended rewrite (16 iterators and a bitset).
+    "(pre w1)",
+    "(b 0 (+ (t w2)) (# (pre w1)))",
+    "(b 0 (? (pre w)) (? (t w3)))",
+    "(b 0 (+ (t w0)) (- (wc w?5)))",
+    "(b 0 (? (re w[1-3][0-9])) (? (t w1)))",
+    "(b 0 (+ (ts w5 w9 w14 w40 nosuchterm)) (? (t w0)))",
+    "(ts w1 w2)",
+    "(dismax 0.3 (pre w4) (t w2))",
+    "(boost 3 (wc w1*))",
   };
 
   public static void main(String[] args) throws IOException {
@@ -329,6 +349,16 @@ public class GenMixedBooleanScoring {
     Query q;
     switch (op) {
       case "t" -> q = new TermQuery(new Term("body", t.next()));
+      case "pre" -> q = new PrefixQuery(new Term("body", t.next()));
+      case "wc" -> q = new WildcardQuery(new Term("body", t.next()));
+      case "re" -> q = new RegexpQuery(new Term("body", t.next()));
+      case "ts" -> {
+        List<BytesRef> terms = new ArrayList<>();
+        while (!t.peek().equals(")")) {
+          terms.add(new BytesRef(t.next()));
+        }
+        q = new TermInSetQuery("body", terms);
+      }
       case "p", "ps" -> {
         int slop = op.equals("ps") ? Integer.parseInt(t.next()) : 0;
         List<String> words = new ArrayList<>();

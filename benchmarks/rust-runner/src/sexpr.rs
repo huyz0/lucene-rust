@@ -7,7 +7,10 @@
 //!   (dismax TIE Q...)
 //! ```
 
-use lucene_search::query::{BoostQuery, ConstantScoreQuery, DisjunctionMaxQuery};
+use lucene_search::query::{
+    BoostQuery, ConstantScoreQuery, DisjunctionMaxQuery, PrefixQuery, RegexpQuery, TermInSetQuery,
+    WildcardQuery,
+};
 use lucene_search::{BooleanQuery, Clause, PhraseQuery, TermQuery};
 
 struct Tokens {
@@ -51,6 +54,16 @@ fn clause(field: &str, t: &mut Tokens) -> Clause {
             let w = t.next();
             let (f, w) = w.split_once(':').unwrap_or((field, &w));
             Clause::Term(TermQuery::new(f, w.as_bytes().to_vec()))
+        }
+        "pre" => Clause::Prefix(PrefixQuery::new(field, t.next().into_bytes())),
+        "wc" => Clause::Wildcard(WildcardQuery::new(field, t.next().into_bytes())),
+        "re" => Clause::Regexp(RegexpQuery::new(field, t.next())),
+        "ts" => {
+            let mut terms = Vec::new();
+            while t.peek() != ")" {
+                terms.push(t.next().into_bytes());
+            }
+            Clause::TermInSet(TermInSetQuery::new(field, terms))
         }
         "p" | "ps" => {
             let slop: u32 = if op == "ps" { t.next().parse().expect("slop") } else { 0 };

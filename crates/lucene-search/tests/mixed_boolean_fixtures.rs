@@ -21,7 +21,10 @@ use std::collections::HashMap;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::multi_segment::search_boolean_query_multi_segment_maxscore_counting;
-use lucene_search::query::{BoostQuery, ConstantScoreQuery, DisjunctionMaxQuery};
+use lucene_search::query::{
+    BoostQuery, ConstantScoreQuery, DisjunctionMaxQuery, PrefixQuery, RegexpQuery, TermInSetQuery,
+    WildcardQuery,
+};
 use lucene_search::{BooleanQuery, Clause, PhraseQuery, TermQuery};
 use lucene_store::FsDirectory;
 
@@ -105,6 +108,16 @@ fn parse(t: &mut Tokens) -> Clause {
     let op = t.next();
     let q = match op.as_str() {
         "t" => Clause::Term(TermQuery::new("body", t.next().into_bytes())),
+        "pre" => Clause::Prefix(PrefixQuery::new("body", t.next().into_bytes())),
+        "wc" => Clause::Wildcard(WildcardQuery::new("body", t.next().into_bytes())),
+        "re" => Clause::Regexp(RegexpQuery::new("body", t.next())),
+        "ts" => {
+            let mut terms = Vec::new();
+            while t.peek() != ")" {
+                terms.push(t.next().into_bytes());
+            }
+            Clause::TermInSet(TermInSetQuery::new("body", terms))
+        }
         "p" | "ps" => {
             let slop: u32 = if op == "ps" {
                 t.next().parse().unwrap()

@@ -122,7 +122,10 @@ pub(crate) fn build<'a>(
             PhraseForm::Absent => Ok(None),
             PhraseForm::Other => materialized(ctx, clause, boost, mode),
         },
-        other => materialized(ctx, other, boost, mode),
+        other => match super::multi_term::multi_term(ctx, other, boost, mode)? {
+            Some(scorer) => Ok(scorer),
+            None => materialized(ctx, other, boost, mode),
+        },
     }
 }
 
