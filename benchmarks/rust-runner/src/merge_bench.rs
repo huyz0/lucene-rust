@@ -534,6 +534,7 @@ fn postings_scenario(docs_per_segment: usize, num_segments: usize, vocab: &[Stri
                 doc_in: Some(d),
                 pos_in: None,
                 pay_in: None,
+                live: None,
             }]
         })
         .collect();
@@ -557,6 +558,7 @@ fn postings_scenario(docs_per_segment: usize, num_segments: usize, vocab: &[Stri
             vectors: None,
             min_version: None,
             has_blocks: false,
+            pruned_field: None,
         })
         .collect();
 

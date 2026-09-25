@@ -16,6 +16,7 @@ import org.opensearch.index.engine.EngineConfig;
 import org.opensearch.index.store.Store;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.LongSupplier;
@@ -111,11 +112,26 @@ public final class RustEngineSupport {
     /**
      * The first field of {@code mapping} (a mapping's source, as parsed) whose documents the Rust
      * writer would refuse -- completion fields (their postings format), term vectors, vector
-     * fields -- or {@code null}. An index that only inherits {@link #ENGINE_DEFAULT} and is created
+     * fields, in its properties or dynamic templates -- or {@code null}. An index that only inherits {@link #ENGINE_DEFAULT} and is created
      * with such a mapping is served by OpenSearch's engine; one that asked for the Rust engine
      * refuses those documents one by one.
      */
     public static String unsupportedField(Map<String, Object> mapping) {
+        if (mapping.get("dynamic_templates") instanceof List<?> templates) {
+            for (Object t : templates) {
+                if (t instanceof Map<?, ?> named) {
+                    for (Map.Entry<?, ?> e : named.entrySet()) {
+                        if (e.getValue() instanceof Map<?, ?> template && template.get("mapping") instanceof Map<?, ?> m) {
+                            @SuppressWarnings("unchecked")
+                            String found = unsupportedField(Map.of("properties", Map.of("*", (Map<String, Object>) m)));
+                            if (found != null) {
+                                return "dynamic template " + e.getKey() + ": " + found;
+                            }
+                        }
+                    }
+                }
+            }
+        }
         Object properties = mapping.get("properties");
         if (properties instanceof Map<?, ?> props) {
             for (Map.Entry<?, ?> e : props.entrySet()) {

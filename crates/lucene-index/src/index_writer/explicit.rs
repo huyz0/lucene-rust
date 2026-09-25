@@ -596,10 +596,26 @@ impl<'d> IndexWriter<'d> {
                 info.name
             )));
         }
+        // `FieldInfo`'s own rule, caught here rather than at flush -- where it
+        // would fail a whole segment -- as Java catches it at `addDocument`.
+        if info.doc_values_skip_index_type != DocValuesSkipIndexType::None
+            && matches!(
+                info.doc_values_type,
+                DocValuesType::Binary | DocValuesType::None
+            )
+        {
+            return Err(explicit_error(format!(
+                "field {:?}: a doc-values skip index needs NUMERIC, SORTED_NUMERIC, SORTED or \
+                 SORTED_SET doc values",
+                info.name
+            )));
+        }
         let same_schema = |a: &FieldInfo, b: &FieldInfo| {
             a.index_options == b.index_options
                 && a.omit_norms == b.omit_norms
                 && a.doc_values_type == b.doc_values_type
+                // `FieldInfo.verifySameDocValuesSkipIndex`.
+                && a.doc_values_skip_index_type == b.doc_values_skip_index_type
                 && a.point_dimension_count == b.point_dimension_count
                 && a.point_index_dimension_count == b.point_index_dimension_count
                 && a.point_num_bytes == b.point_num_bytes
@@ -1347,6 +1363,8 @@ mod tests {
         let before = w.commit_generations();
         w.force_merge(1).unwrap();
         assert_eq!(w.commit_generations(), before, "all history is retained");
+        w.force_merge_deletes().unwrap();
+        assert_eq!(w.commit_generations(), before, "nothing to expunge either");
 
         w.set_soft_deletes_retention(Some(retention(1)));
         w.force_merge(1).unwrap();
@@ -1465,10 +1483,25 @@ mod tests {
             .numeric_entry(fields.fields[recovery_at].number)
             .unwrap();
         let mut flags = lucene_codecs::doc_values::NumericReader::new(&data, entry);
-        let flagged: Vec<i32> = (0..stored.max_doc())
+        let mut flagged: Vec<String> = (0..stored.max_doc())
             .filter(|&d| flags.value(d).unwrap().is_some())
+            .map(|d| {
+                stored
+                    .document(d)
+                    .unwrap()
+                    .fields
+                    .into_iter()
+                    .find_map(|v| match v.value {
+                        FieldValue::String(s) if v.field_number == fields.fields[id_at].number => {
+                            Some(s)
+                        }
+                        _ => None,
+                    })
+                    .unwrap()
+            })
             .collect();
-        assert_eq!(flagged.len(), 2, "doc values: {flagged:?}");
+        flagged.sort();
+        assert_eq!(flagged, ["d0", "d2"], "doc values");
     }
 
     /// `IndexWriter.reserveDocs`: an add past the limit is refused before
@@ -1567,6 +1600,22 @@ mod tests {
                 -1,
             ))
             .unwrap();
+        // `verifySameDocValuesSkipIndex`, and no skip index without numbers
+        // or ordinals to summarize.
+        for bad in [
+            FieldInfo::new("rank", 0).with_doc_values(
+                DocValuesType::Numeric,
+                DocValuesSkipIndexType::None,
+                -1,
+            ),
+            FieldInfo::new("blob", 0).with_doc_values(
+                DocValuesType::Binary,
+                DocValuesSkipIndexType::Range,
+                -1,
+            ),
+        ] {
+            assert!(matches!(w.register_field(bad), Err(Error::Explicit(_))));
+        }
         let ranked = |i: i64| {
             let mut d = doc(&f, i);
             d.fields.doc_values.push(StoredField {
@@ -1618,6 +1667,40 @@ mod tests {
         w.soft_update_explicit_documents(id_term(1), Vec::new(), &[update])
             .unwrap();
         assert_eq!(skipper(&mut w), (10, 99, 3), "update generation");
+        check(&dir);
+    }
+
+    /// `findForcedDeletesMerges`: a segment is expunged only when more than
+    /// `forceMergeDeletesPctAllowed` (10%) of it can be reclaimed.
+    #[test]
+    fn force_merge_deletes_leaves_segments_under_the_threshold() {
+        let tmp = TempDir::new("explicit-expunge-pct");
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        let f = register(&mut w);
+        let docs: Vec<ExplicitDocument> = (0..20).map(|i| doc(&f, i)).collect();
+        w.add_explicit_documents(docs).unwrap();
+        w.commit().unwrap();
+        w.set_soft_deletes_retention(Some(SoftDeletesRetention {
+            seq_no_field: "_seq_no".to_string(),
+            min_retained_seq_no: i64::MAX,
+            prune_postings_field: None,
+            prune_recovery_source_field: None,
+        }));
+        // 2 of 20 is exactly 10%: not above it.
+        for i in 0..2 {
+            w.soft_update_explicit_documents(id_term(i), Vec::new(), &[soft_delete(i)])
+                .unwrap();
+        }
+        w.commit().unwrap();
+        let before = w.commit_generations();
+        w.force_merge_deletes().unwrap();
+        assert_eq!(w.commit_generations(), before);
+        w.soft_update_explicit_documents(id_term(2), Vec::new(), &[soft_delete(2)])
+            .unwrap();
+        w.commit().unwrap();
+        w.force_merge_deletes().unwrap();
+        assert_eq!(counts(&mut w), (17, 0), "3 of 20 is above it");
         check(&dir);
     }
 

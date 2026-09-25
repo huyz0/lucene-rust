@@ -67,7 +67,9 @@ public class RustSearchPlugin extends Plugin implements SearchPlugin, ActionPlug
     /**
      * The breaker the Rust writers' buffers are accounted to -- native memory the JVM's own breakers
      * cannot see. {@code breaker.lucene_rust_writer.limit} sets it (default: 20% of the heap, the
-     * same order as OpenSearch's own indexing buffer); it counts toward the parent breaker.
+     * same order as OpenSearch's own indexing buffer). It trips on its own limit. The parent
+     * breaker adds it in only with {@code indices.breaker.total.use_real_memory: false}; with the
+     * default real-memory parent, native bytes are outside the heap it measures.
      */
     @Override
     public BreakerSettings getCircuitBreaker(Settings settings) {

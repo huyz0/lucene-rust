@@ -48,11 +48,10 @@
 //! base column and base `FieldInfos` are read through the compound reader,
 //! and every generation is written loose beside the `.cfs`.
 //!
-//! No doc-values skip index on an updated field: writing a generation means
-//! running the field back through the doc-values consumer, and this port's
-//! consumer has no `writeSkipIndex` (see `doc_values.rs`'s own scope note). A
-//! field whose `.fnm` claims a skipper would come back out of a generation
-//! without one, which its own reader then rejects -- so it is refused up front.
+//! A field with a doc-values skip index gets one in every generation too
+//! (`doc_values_updates::write_numeric_generation_with_skip_index`), as
+//! `Lucene90DocValuesConsumer.addNumericField` writes one for every field
+//! whose `FieldInfo` asks for it.
 
 use lucene_codecs::doc_values::{self, DocValuesMeta};
 use lucene_codecs::doc_values_updates;

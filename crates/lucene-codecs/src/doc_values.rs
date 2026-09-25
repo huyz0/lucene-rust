@@ -2074,25 +2074,22 @@ impl DenseField<'_> {
     /// What `writeSkipIndex` iterates: every document with a value, in doc
     /// order, with its values ascending -- the numbers themselves for
     /// NUMERIC and SORTED_NUMERIC, the ordinals for SORTED and SORTED_SET
-    /// (`doAddSortedField`'s and `addSortedSetField`'s views).
+    /// (`doAddSortedField`'s and `addSortedSetField`'s views) -- flat, as
+    /// [`SortedNumericColumn`] lays a column out.
     // ARITH: indices into in-memory slices.
     #[allow(clippy::arithmetic_side_effects)]
-    fn skip_index_stream(&self, max_doc: i32) -> WriteResult<Vec<(i32, Vec<i64>)>> {
-        fn flat(docs: &[i32], counts: &[u32], values: &[i64]) -> Vec<(i32, Vec<i64>)> {
-            let mut at = 0usize;
-            docs.iter()
-                .zip(counts)
-                .map(|(&doc, &n)| {
-                    let n = n as usize;
-                    let mut v = values[at..at + n].to_vec();
-                    at += n;
-                    v.sort_unstable();
-                    (doc, v)
-                })
-                .collect()
-        }
-        fn set_ords(per_doc: &[Vec<Vec<u8>>]) -> Vec<Vec<i64>> {
-            let mut dict: Vec<&Vec<u8>> = per_doc.iter().flatten().collect();
+    fn skip_index_stream(&self, max_doc: i32) -> WriteResult<SortedNumericColumn> {
+        let mut out = SortedNumericColumn::default();
+        let push =
+            |out: &mut SortedNumericColumn, doc: i32, values: &mut dyn Iterator<Item = i64>| {
+                let start = out.values.len();
+                out.values.extend(values);
+                out.values[start..].sort_unstable();
+                out.docs.push(doc);
+                out.counts.push((out.values.len() - start) as u32);
+            };
+        fn set_ords(per_doc: &[&Vec<Vec<u8>>]) -> Vec<Vec<i64>> {
+            let mut dict: Vec<&Vec<u8>> = per_doc.iter().flat_map(|v| v.iter()).collect();
             dict.sort_unstable();
             dict.dedup();
             per_doc
@@ -2108,77 +2105,82 @@ impl DenseField<'_> {
                 })
                 .collect()
         }
-        let dense = |per_doc: Vec<Vec<i64>>| -> Vec<(i32, Vec<i64>)> {
-            per_doc
-                .into_iter()
-                .enumerate()
-                .map(|(doc, v)| (doc as i32, v))
-                .collect()
-        };
-        Ok(match self {
-            DenseField::Numeric(_, values) => dense(values.iter().map(|&v| vec![v]).collect()),
-            DenseField::SparseNumeric(_, pairs) => sort_sparse_pairs(pairs, max_doc)?
-                .into_iter()
-                .map(|(doc, v)| (doc, vec![v]))
-                .collect(),
-            DenseField::Sorted(_, values) => dense(
-                build_sorted_dict_and_ords(values)
-                    .1
-                    .into_iter()
-                    .map(|o| vec![o])
-                    .collect(),
-            ),
+        match self {
+            DenseField::Numeric(_, values) => {
+                for (doc, &v) in values.iter().enumerate() {
+                    push(&mut out, doc as i32, &mut std::iter::once(v));
+                }
+            }
+            DenseField::SparseNumeric(_, pairs) => {
+                for (doc, v) in sort_sparse_pairs(pairs, max_doc)? {
+                    push(&mut out, doc, &mut std::iter::once(v));
+                }
+            }
+            DenseField::Sorted(_, values) => {
+                let ords = build_sorted_dict_and_ords(values).1;
+                for (doc, o) in ords.into_iter().enumerate() {
+                    push(&mut out, doc as i32, &mut std::iter::once(o));
+                }
+            }
             DenseField::SparseSorted(_, pairs) => {
                 let sorted = sort_sparse_pairs(pairs, max_doc)?;
                 let values: Vec<Vec<u8>> = sorted.iter().map(|(_, v)| v.clone()).collect();
                 let ords = build_sorted_dict_and_ords(&values).1;
-                sorted
-                    .iter()
-                    .zip(ords)
-                    .map(|((doc, _), o)| (*doc, vec![o]))
-                    .collect()
+                for ((doc, _), o) in sorted.iter().zip(ords) {
+                    push(&mut out, *doc, &mut std::iter::once(o));
+                }
             }
-            DenseField::SortedOrds(_, c) => c
-                .docs
-                .iter()
-                .zip(&c.ords)
-                .map(|(&doc, &o)| (doc, vec![o]))
-                .collect(),
-            DenseField::SortedNumeric(_, values) => dense(
-                values
-                    .iter()
-                    .map(|v| {
-                        let mut v = v.clone();
-                        v.sort_unstable();
-                        v
-                    })
-                    .collect(),
-            ),
-            DenseField::SparseSortedNumeric(_, pairs) => sort_sparse_pairs(pairs, max_doc)?
-                .into_iter()
-                .map(|(doc, mut v)| {
-                    v.sort_unstable();
-                    (doc, v)
-                })
-                .collect(),
-            DenseField::SortedNumericColumn(_, c) => flat(&c.docs, &c.counts, &c.values),
-            DenseField::SortedSet(_, values) => dense(set_ords(values)),
+            DenseField::SortedOrds(_, c) => {
+                for (&doc, &o) in c.docs.iter().zip(&c.ords) {
+                    push(&mut out, doc, &mut std::iter::once(o));
+                }
+            }
+            DenseField::SortedNumeric(_, values) => {
+                for (doc, v) in values.iter().enumerate() {
+                    push(&mut out, doc as i32, &mut v.iter().copied());
+                }
+            }
+            DenseField::SparseSortedNumeric(_, pairs) => {
+                for (doc, v) in sort_sparse_pairs(pairs, max_doc)? {
+                    push(&mut out, doc, &mut v.into_iter());
+                }
+            }
+            DenseField::SortedNumericColumn(_, c) => {
+                let mut at = 0usize;
+                for (&doc, &n) in c.docs.iter().zip(&c.counts) {
+                    let n = n as usize;
+                    push(&mut out, doc, &mut c.values[at..at + n].iter().copied());
+                    at += n;
+                }
+            }
+            DenseField::SortedSet(_, values) => {
+                let per_doc: Vec<&Vec<Vec<u8>>> = values.iter().collect();
+                for (doc, ords) in set_ords(&per_doc).into_iter().enumerate() {
+                    push(&mut out, doc as i32, &mut ords.into_iter());
+                }
+            }
             DenseField::SparseSortedSet(_, pairs) => {
                 let sorted = sort_sparse_pairs(pairs, max_doc)?;
-                let values: Vec<Vec<Vec<u8>>> = sorted.iter().map(|(_, v)| v.clone()).collect();
-                sorted
-                    .iter()
-                    .map(|(doc, _)| *doc)
-                    .zip(set_ords(&values))
-                    .collect()
+                let per_doc: Vec<&Vec<Vec<u8>>> = sorted.iter().map(|(_, v)| v).collect();
+                for ((doc, _), ords) in sorted.iter().zip(set_ords(&per_doc)) {
+                    push(&mut out, *doc, &mut ords.into_iter());
+                }
             }
-            DenseField::SortedSetOrds(_, c) => flat(&c.docs, &c.counts, &c.ords),
+            DenseField::SortedSetOrds(_, c) => {
+                let mut at = 0usize;
+                for (&doc, &n) in c.docs.iter().zip(&c.counts) {
+                    let n = n as usize;
+                    push(&mut out, doc, &mut c.ords[at..at + n].iter().copied());
+                    at += n;
+                }
+            }
             DenseField::Binary(n, _)
             | DenseField::SparseBinary(n, _)
             | DenseField::BinaryColumn(n, _) => {
                 return Err(WriteError::SkipIndexOnBinary(*n));
             }
-        })
+        }
+        Ok(out)
     }
 
     fn field_number(&self) -> i32 {
@@ -2585,7 +2587,7 @@ impl SkipAccumulator {
 /// `skip_index`; the field's summary into `meta`.
 // ARITH: counters and offsets over in-memory data; `skip_index` only grows.
 #[allow(clippy::arithmetic_side_effects)]
-fn write_skip_index(meta: &mut Vec<u8>, skip_index: &mut Vec<u8>, stream: &[(i32, Vec<i64>)]) {
+fn write_skip_index(meta: &mut Vec<u8>, skip_index: &mut Vec<u8>, stream: &SortedNumericColumn) {
     let start = skip_index.len() as i64;
     let mut global_max_value = i64::MIN;
     let mut global_min_value = i64::MAX;
@@ -2596,8 +2598,11 @@ fn write_skip_index(meta: &mut Vec<u8>, skip_index: &mut Vec<u8>, stream: &[(i32
         1usize << (SKIP_INDEX_LEVEL_SHIFT * (u32::from(SKIP_INDEX_MAX_LEVEL) - 1));
     let mut accumulators: Vec<SkipAccumulator> = Vec::new();
     let mut current: Option<SkipAccumulator> = None;
-    for (doc, values) in stream {
-        let (doc, value_count) = (*doc, values.len());
+    let mut at = 0usize;
+    for (&doc, &count) in stream.docs.iter().zip(&stream.counts) {
+        let value_count = count as usize;
+        let values = &stream.values[at..at + value_count];
+        at += value_count;
         let Some(&first_value) = values.first() else {
             continue;
         };
