@@ -1398,7 +1398,7 @@ fn cache_ords<'a>(
     };
     let key = format!("ord\0{}\0{:?}", f.field, f.selector);
     let mut fresh = column.clone();
-    let built = cache.sort_column(&key, max_doc, || {
+    let built = cache.sort_column(&key, max_doc, &mut || {
         let mut v = Vec::with_capacity(usize::try_from(max_doc).unwrap_or(0));
         for d in 0..max_doc {
             v.push(fresh.ord(d)?);
@@ -1425,7 +1425,7 @@ fn cache_longs<'a>(
     };
     let key = format!("num\0{}\0{:?}", f.field, f.selector);
     let mut fresh = column.clone();
-    let built = cache.sort_column(&key, max_doc, || {
+    let built = cache.sort_column(&key, max_doc, &mut || {
         let n = usize::try_from(max_doc).unwrap_or(0);
         let mut values = Vec::with_capacity(n);
         let mut has = FixedBitSet::new(n);
