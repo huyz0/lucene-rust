@@ -15,7 +15,10 @@
 
 use std::collections::HashMap;
 
-use lucene_search::aggs::{metric_states, metric_states_sliced, MetricSpec, Source, ValueKind};
+use lucene_search::aggs::{
+    metric_states, metric_states_sliced, MetricSpec, Source, ValueKind, NEED_ALL, NEED_COUNT,
+    NEED_MAX, NEED_MIN, NEED_SUM,
+};
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::query::{MatchAllDocsQuery, PointsRangeQuery};
 use lucene_search::{BooleanQuery, Clause, PhraseQuery, TermQuery};
@@ -126,6 +129,7 @@ fn metric_aggregations_match_opensearch_bit_for_bit() {
             field: f.to_string(),
             kind,
             source: Source::DocValues,
+            needs: NEED_ALL,
         })
         .collect();
     let runs: usize = m["run_count"].parse().unwrap();
@@ -194,6 +198,30 @@ fn metric_aggregations_match_opensearch_bit_for_bit() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 
+    // Asked for less (a `min` alone, a `sum` alone...), the parts asked for
+    // come out as the full fold computes them.
+    let hex = |d: f64| format!("{:x}", d.to_bits());
+    for r in 0..runs {
+        let q = query(&m[&format!("run.{r}.query")]);
+        let full = metric_states(&segments, reader.segment_readers(), &q, &specs).unwrap();
+        for needs in [NEED_MIN, NEED_MAX, NEED_COUNT, NEED_COUNT | NEED_SUM] {
+            let part: Vec<MetricSpec> = specs
+                .iter()
+                .map(|s| MetricSpec { needs, ..s.clone() })
+                .collect();
+            let got = metric_states(&segments, reader.segment_readers(), &q, &part).unwrap();
+            for (g, f) in got.iter().zip(&full) {
+                let pick = |s: &lucene_search::aggs::MetricState| match needs {
+                    NEED_MIN => hex(s.min_of_mins),
+                    NEED_MAX => hex(s.max_of_maxes),
+                    NEED_COUNT => s.count.to_string(),
+                    _ => format!("{}:{}:{}", s.count, hex(s.sum), hex(s.delta)),
+                };
+                assert_eq!(pick(g), pick(f), "run {r} needs {needs}");
+            }
+        }
+    }
+
     // A field asked for twice (`sum` and `avg` of it, say) is read once and
     // reported twice, the same.
     let twice: Vec<MetricSpec> = specs.iter().chain(&specs).cloned().collect();
@@ -217,6 +245,7 @@ fn metric_aggregations_match_opensearch_bit_for_bit() {
                 field: f.to_string(),
                 kind,
                 source,
+                needs: NEED_ALL,
             })
         })
         .collect();
