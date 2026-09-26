@@ -308,3 +308,30 @@ fn keyword_sorts_match_real_lucene() {
             .join("\n")
     );
 }
+
+#[test]
+fn the_terms_dictionary_reports_what_it_cannot_answer() {
+    let reader = DirectoryReader::open(&FsDirectory::open(fixture_dir())).expect("open");
+    let (data, entry) = terms_entry(&reader, 0, "k");
+    let mut dict = TermsDict::open(data, entry).unwrap();
+    assert_eq!(dict.ord(), -1, "before any seek");
+    let size = dict.size();
+    let last = dict.seek_ord(size - 1).unwrap().to_vec();
+    assert_eq!((dict.ord(), dict.term()), (size - 1, last.as_slice()));
+    // An ordinal outside the dictionary is an error, not a term.
+    assert!(dict.seek_ord(-1).is_err());
+    assert!(dict.seek_ord(size).is_err());
+    // Past the last term: the end, and an insertion point after every ordinal.
+    let mut past = last.clone();
+    past.push(0xff);
+    assert_eq!(dict.lookup_term(&past).unwrap(), -size - 1);
+    // An entry without its random-access index cannot be opened for it.
+    let mut bare = entry.clone();
+    bare.index = None;
+    assert!(TermsDict::open(data, &bare).is_err());
+    // An empty dictionary ends at once.
+    let mut empty = entry.clone();
+    empty.terms_dict_size = 0;
+    let mut dict = TermsDict::open(data, &empty).unwrap();
+    assert_eq!(dict.lookup_term(b"anything").unwrap(), -1);
+}

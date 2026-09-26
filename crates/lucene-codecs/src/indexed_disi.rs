@@ -183,6 +183,63 @@ pub fn decode_doc_ids(data: &[u8], dense_rank_power: u8) -> Result<Vec<i32>> {
     Ok(docs)
 }
 
+/// ORs every doc id that has a value into `words`, a bit set of
+/// `words.len() * 64` documents: [`decode_doc_ids`] without the list, a DENSE
+/// block's words copied whole and an ALL block's filled. A document past the
+/// set is corruption.
+// ARITH: `block` is a `u16`, so `block << 16 | low` is below 2^32 and
+// `block << 10` plus a word index below 1024 is below 2^26 + 1024; the
+// sentinel check compares against `i32::MAX`. `doc & 63` is below 64.
+#[allow(clippy::arithmetic_side_effects)]
+pub fn or_into_words(data: &[u8], dense_rank_power: u8, words: &mut [u64]) -> Result<()> {
+    let mut input = SliceInput::new(data);
+    let len = words.len();
+    let past = move |doc: usize| {
+        lucene_store::Error::Corrupted(format!(
+            "IndexedDISI document {doc} past a {}-document set",
+            len * 64
+        ))
+    };
+    loop {
+        let block = input.read_u16()? as usize;
+        let num_values = 1u32 + input.read_u16()? as u32;
+        let base_word = block << 10;
+        if num_values <= MAX_ARRAY_LENGTH {
+            for _ in 0..num_values {
+                let low = input.read_u16()? as usize;
+                let doc = (block << 16) | low;
+                if doc == i32::MAX as usize {
+                    return Ok(());
+                }
+                if doc >> 6 >= len {
+                    return Err(past(doc));
+                }
+                words[doc >> 6] |= 1u64 << (doc & 63);
+            }
+        } else if num_values == BLOCK_SIZE {
+            // Every one of the block's 65,536 documents exists, so all of
+            // them must fit.
+            let end = base_word + DENSE_BLOCK_LONGS as usize;
+            if end > len {
+                return Err(past((end << 6) - 1));
+            }
+            words[base_word..end].fill(u64::MAX);
+        } else {
+            input.skip(dense_rank_bytes(dense_rank_power)?)?;
+            for i in 0..DENSE_BLOCK_LONGS as usize {
+                let word = input.read_i64()? as u64;
+                if word == 0 {
+                    continue;
+                }
+                if base_word + i >= len {
+                    return Err(past((base_word + i) << 6));
+                }
+                words[base_word + i] |= word;
+            }
+        }
+    }
+}
+
 /// A forward-only cursor over an `IndexedDISI` region -- a port of Lucene's
 /// `IndexedDISI` itself, state for state.
 ///
@@ -1159,6 +1216,41 @@ mod tests {
                     "power {power}, doc {doc}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn or_into_words_sets_exactly_the_decoded_documents() {
+        // SPARSE, DENSE (with and without a rank table) and ALL blocks.
+        let mut docs: Vec<i32> = (0..3_000).map(|i| i * 7).collect();
+        docs.extend((65_536..70_000).map(|i| i * 2).filter(|&d| d < 131_072));
+        docs.extend(131_072..196_608);
+        docs.push(200_001);
+        docs.sort_unstable();
+        docs.dedup();
+        for power in [NO_RANK, 9] {
+            let (bytes, _) = write_with_dense_rank_power(&docs, power);
+            let mut words = vec![0u64; 200_064 / 64 + 1];
+            or_into_words(&bytes, power, &mut words).unwrap();
+            let mut got = Vec::new();
+            for (i, &w) in words.iter().enumerate() {
+                for b in 0..64 {
+                    if w >> b & 1 != 0 {
+                        got.push((i * 64 + b) as i32);
+                    }
+                }
+            }
+            assert_eq!(got, decode_doc_ids(&bytes, power).unwrap(), "power {power}");
+        }
+        // A set too small for the documents is corruption, whatever the block.
+        for docs in [
+            vec![5, 700],
+            (0..10_000).map(|i| i * 3).collect(),
+            (0..65_536).collect::<Vec<_>>(),
+        ] {
+            let (bytes, _) = write(&docs);
+            let mut words = vec![0u64; 2];
+            assert!(or_into_words(&bytes, NO_RANK, &mut words).is_err());
         }
     }
 
