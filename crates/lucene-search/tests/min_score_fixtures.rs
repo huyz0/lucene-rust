@@ -257,7 +257,7 @@ fn min_score_matches_real_lucene() {
             &specs,
             &[],
             &[],
-            &[all.clone()],
+            std::slice::from_ref(&all),
             Some(&min_score),
         )
         .unwrap();
