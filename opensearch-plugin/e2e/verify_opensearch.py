@@ -94,6 +94,7 @@ def create(index, shards):
             "price": {"type": "double"},
             "qty": {"type": "integer"},
             "ts": {"type": "date"},
+            "@timestamp": {"type": "date"},
             "ratio": {"type": "float"},
             "m": {"type": "long"},
             "sp": {"type": "long"},
@@ -120,6 +121,7 @@ def load(index, docs, seed, deletes=True):
                 "price": round(r.uniform(-50, 500), 2),
                 "qty": r.randint(0, 40),
                 "ts": 1_700_000_000_000 + r.randint(0, 10_000) * 60_000,
+                "@timestamp": 1_700_000_000_000 + r.randint(0, 500) * 60_000,
                 "ratio": r.random(),
                 "m": [r.randint(0, 1000) for _ in range(r.randint(0, 3))],
             }
@@ -242,7 +244,10 @@ def matrix():
     add("agg stats + hits", {"query": {"match": {"body": "beta"}}, "aggs": {"s": {"stats": {"field": "qty"}}}}, "native")
     add("agg sum avg multi-valued", {"size": 0, "query": {"match_all": {}}, "aggs": {"s": {"sum": {"field": "m"}}, "a": {"avg": {"field": "m"}}, "c": {"value_count": {"field": "m"}}}}, "native")
     add("agg no query min max", {"size": 0, "aggs": {"hi": {"max": {"field": "n"}}, "t": {"max": {"field": "ts"}}, "lo": {"min": {"field": "qty"}}}}, "native")
-    add("agg match_all min double", {"size": 0, "aggs": {"lo": {"min": {"field": "price"}}, "lof": {"min": {"field": "ratio"}}}}, "native")
+    add("agg no query min double (points)", {"size": 0, "aggs": {"lo": {"min": {"field": "price"}}, "lof": {"min": {"field": "ratio"}}}}, "native")
+    add("agg explicit match_all min max", {"size": 0, "query": {"match_all": {}}, "aggs": {"lo": {"min": {"field": "price"}}, "hi": {"max": {"field": "ratio"}}}}, "native")
+    # A time-series shard sorted by @timestamp ascending: OpenSearch visits segments last first.
+    add("agg sort @timestamp asc", {"query": {"match": {"body": "alpha"}}, "sort": [{"@timestamp": "asc"}], "aggs": {"s": {"sum": {"field": "price"}}}}, "time_series_order")
     add("agg date min max", {"size": 0, "query": {"bool": {"filter": [{"term": {"tag": "gamma"}}]}}, "aggs": {"first": {"min": {"field": "ts"}}, "last": {"max": {"field": "ts"}}}}, "native")
     add("agg sparse, nothing matches", {"size": 0, "query": {"term": {"tag": "no-such-tag"}}, "aggs": {"s": {"stats": {"field": "sp"}}, "a": {"avg": {"field": "sp"}}}}, "native")
     add("agg float sum with sort", {"query": {"match": {"body": "gamma"}}, "sort": [{"n": "desc"}], "aggs": {"r": {"sum": {"field": "ratio"}}}}, "native")

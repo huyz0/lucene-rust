@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 
-use lucene_search::aggs::{metric_states, MetricSpec, Source, ValueKind};
+use lucene_search::aggs::{metric_states, metric_states_sliced, MetricSpec, Source, ValueKind};
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::query::{MatchAllDocsQuery, PointsRangeQuery};
 use lucene_search::{BooleanQuery, Clause, PhraseQuery, TermQuery};
@@ -156,6 +156,42 @@ fn metric_aggregations_match_opensearch_bit_for_bit() {
         }
     }
     assert!(nonempty > 30, "{nonempty} non-empty field states");
+
+    // Concurrent search: slices as Lucene groups segments (not by position),
+    // each with its own states from scratch.
+    let slices = [vec![0, 2], vec![1, 3]];
+    let hex = |d: f64| format!("{:x}", d.to_bits());
+    for r in 0..runs {
+        let text = &m[&format!("run.{r}.query")];
+        let got = metric_states_sliced(
+            &segments,
+            reader.segment_readers(),
+            &query(text),
+            &specs,
+            &slices,
+        )
+        .unwrap_or_else(|e| panic!("{text}: {e}"));
+        for (sl, states) in got.iter().enumerate() {
+            for ((field, _), state) in fields.iter().zip(states) {
+                let mine = format!(
+                    "{}:{}:{}:{}:{}:{}:{}",
+                    state.count,
+                    hex(state.sum),
+                    hex(state.delta),
+                    hex(state.min),
+                    hex(state.max),
+                    hex(state.min_of_mins),
+                    hex(state.max_of_maxes)
+                );
+                let want = &m[&format!("run.{r}.slice.{sl}.{field}")];
+                if &mine != want {
+                    failures.push(format!(
+                        "{text} slice {sl} {field}:\n  got    {mine}\n  Lucene {want}"
+                    ));
+                }
+            }
+        }
+    }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 
     // A field asked for twice (`sum` and `avg` of it, say) is read once and
@@ -210,4 +246,57 @@ fn metric_aggregations_match_opensearch_bit_for_bit() {
     // are all deleted, so that segment is read from doc values, NaN and all.
     let e = fields.iter().position(|f| f.0 == "e").unwrap();
     assert!(got[2 * e].min_of_mins.is_nan());
+}
+
+/// `SortedNumericReader::for_each_doc` -- the streaming read a match-all
+/// aggregation uses -- against `values` one document at a time, over whole
+/// segments and ranges inside them, on dense and sparse, single- and
+/// multi-valued columns (and a document with more values than one chunk).
+///
+/// What it cannot see: a sparse stream stopping at `end` inside a word of
+/// its bit set (`take_while`). The set is sized to `end` rounded up to a
+/// word, and a document with values past that makes the set fail to fill and
+/// the slow path run, so the guard only matters when no document past `end`
+/// in that last word has values -- a shape these columns do not have.
+#[test]
+fn streamed_columns_read_as_documents_do() {
+    use lucene_codecs::doc_values::SortedNumericReader;
+    let reader = DirectoryReader::open(&FsDirectory::open(fixture_dir())).expect("open");
+    let mut longest = 0;
+    let mut compared = 0;
+    for seg in reader.segment_readers() {
+        let max = seg.max_doc;
+        for field in ["l", "ml", "d", "md", "f", "i", "e"] {
+            let info = seg
+                .field_infos()
+                .fields
+                .iter()
+                .find(|i| i.name == field)
+                .unwrap();
+            let (meta, data) = seg.doc_values_for_field(info.number).unwrap();
+            let entry = meta.sorted_numeric_entry(info.number).unwrap();
+            for (start, end) in [(0, max), (137, max - 500), (0, 999), (max - 1, max), (5, 5)] {
+                let mut want = Vec::new();
+                let mut one = SortedNumericReader::new(data, entry);
+                let mut vals = Vec::new();
+                for doc in start..end {
+                    one.values(doc, &mut vals).unwrap();
+                    if !vals.is_empty() {
+                        want.push((doc, vals.clone()));
+                    }
+                }
+                let mut got = Vec::new();
+                SortedNumericReader::new(data, entry)
+                    .for_each_doc(start, end, |doc, v| {
+                        longest = longest.max(v.len());
+                        got.push((doc, v.to_vec()));
+                    })
+                    .unwrap();
+                assert_eq!(got, want, "{field} in {start}..{end}");
+                compared += got.len();
+            }
+        }
+    }
+    assert!(longest > 256, "a document longer than a chunk: {longest}");
+    assert!(compared > 100_000, "{compared}");
 }

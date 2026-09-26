@@ -198,6 +198,11 @@ public final class NativeAggregations {
         if (ctx.aggregations() == null || METADATA == null || SUB_FACTORIES == null || CONFIG == null) {
             return null;
         }
+        // A star-tree index answers min/max/sum/avg from its pre-aggregated tree
+        // (tryPrecomputeAggregationForLeaf), whose sums round differently.
+        if (ctx.getQueryShardContext() != null && ctx.getQueryShardContext().getStarTreeQueryContext() != null) {
+            return null;
+        }
         AggregatorFactories factories = ctx.aggregations().factories();
         if (factories.hasGlobalAggregator()) {
             return null;
@@ -217,8 +222,10 @@ public final class NativeAggregations {
                 if (valueKind < 0) {
                     return null;
                 }
-                // AggregatorBase.pointReaderIfAvailable: a top-level min or max under a bare
-                // match-all, on a field with points, reads each segment's bound off the points
+                // AggregatorBase.pointReaderIfAvailable: a top-level min or max whose query is a
+                // bare MatchAllDocsQuery (a request without a query; an explicit match_all is an
+                // ApproximateScoreQuery in 3.8), on a field with points, reads each segment's bound
+                // off the points
                 // (tryPrecomputeAggregationForLeaf) -- faster, and over a double field with a NaN
                 // document a different answer (NaN sorts last among the points).
                 byte source = DOC_VALUES;
