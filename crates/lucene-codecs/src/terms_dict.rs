@@ -295,7 +295,12 @@ impl<'a> TermsCursor<'a> {
             // cannot overflow `usize`.
             let buffer_len = self.term.len() + block_len as usize;
             let block_len = block_len as usize;
-            let mut buffer = vec![0u8; buffer_len];
+            // The previous block's buffer, reused: a random-access reader
+            // decompresses a block per seek, as Java's reused
+            // `blockBuffer` does, without an allocation each time.
+            let mut buffer = std::mem::take(&mut self.block_body);
+            buffer.clear();
+            buffer.resize(buffer_len, 0);
             buffer[..self.term.len()].copy_from_slice(&self.term);
             lz4::decompress_slice(&mut self.input, block_len, &mut buffer, self.term.len())?;
             buffer.drain(..self.term.len());
