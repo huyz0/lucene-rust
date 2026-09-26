@@ -180,3 +180,30 @@ fn terms_aggregations_match_opensearch() {
             .join("\n")
     );
 }
+
+#[test]
+fn a_field_with_other_doc_values_is_refused() {
+    let dir = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/data/metric_aggs_index"
+    );
+    let reader = DirectoryReader::open(&FsDirectory::open(dir)).expect("open");
+    let opened = reader.open_segments().expect("open postings");
+    let segments = opened.as_open_segments();
+    let all = query("(all)");
+    let err = terms(&segments, reader.segment_readers(), &all, "l", 10).unwrap_err();
+    assert!(err.to_string().contains("non-keyword doc values"), "{err}");
+    // A field the index does not have counts nothing.
+    let none = terms(&segments, reader.segment_readers(), &all, "nosuch", 10).unwrap();
+    assert_eq!(none, TermsResult::default());
+    // A slice naming a segment the reader lacks.
+    assert!(terms_sliced(
+        &segments,
+        reader.segment_readers(),
+        &all,
+        "nosuch",
+        10,
+        &[vec![9]]
+    )
+    .is_err());
+}

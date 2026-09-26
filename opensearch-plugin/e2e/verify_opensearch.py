@@ -89,6 +89,7 @@ def create(index, shards):
             "title": {"type": "text"},
             "tuned": {"type": "text", "similarity": "tuned"},
             "tag": {"type": "keyword"},
+            "mtag": {"type": "keyword"},
             "n": {"type": "long"},
             # Sort fields (read path R4): ties, gaps, several values per document.
             "price": {"type": "double"},
@@ -117,6 +118,7 @@ def load(index, docs, seed, deletes=True):
                 "title": " ".join(word(r) for _ in range(r.randint(1, 5))),
                 "tuned": " ".join(word(r) for _ in range(r.randint(1, 10))),
                 "tag": word(r),
+                "mtag": [word(r) + str(r.randint(0, 9)) for _ in range(r.randint(0, 3))],
                 "n": i,
                 "price": round(r.uniform(-50, 500), 2),
                 "qty": r.randint(0, 40),
@@ -254,7 +256,18 @@ def matrix():
     add("agg with meta", {"size": 0, "query": {"match": {"body": "delta"}}, "aggs": {"lo": {"min": {"field": "qty"}, "meta": {"k": "v"}}}}, "native")
     add("agg missing value", {"size": 0, "query": {"match": {"body": "alpha"}}, "aggs": {"s": {"sum": {"field": "sp", "missing": 1}}}}, "aggregations")
     add("agg sub-aggregation", {"size": 0, "query": {"match": {"body": "alpha"}}, "aggs": {"g": {"global": {}, "aggs": {"lo": {"min": {"field": "n"}}}}}}, "aggregations")
-    add("aggregation", {"query": {"match": {"body": "alpha"}}, "aggs": {"tags": {"terms": {"field": "tag"}}}}, "aggregations")
+    # terms on keyword fields: the default order, min_doc_count >= 1.
+    add("aggregation", {"query": {"match": {"body": "alpha"}}, "aggs": {"tags": {"terms": {"field": "tag"}}}}, "native")
+    add("agg terms size 0 match_all", {"size": 0, "aggs": {"tags": {"terms": {"field": "tag", "size": 5}}}}, "native")
+    add("agg terms multi-valued", {"size": 0, "query": {"match": {"body": "beta"}}, "aggs": {"m": {"terms": {"field": "mtag", "size": 20}}}}, "native")
+    add("agg terms shard_size", {"size": 0, "query": {"match": {"body": "gamma delta"}}, "aggs": {"t": {"terms": {"field": "mtag", "size": 3, "shard_size": 4}}}}, "native")
+    add("agg terms + metrics + hits", {"size": 5, "query": {"match": {"body": "delta"}}, "aggs": {"t": {"terms": {"field": "tag", "size": 3}}, "p": {"avg": {"field": "price"}}}}, "native")
+    add("agg terms with sort", {"query": {"match": {"body": "alpha"}}, "sort": [{"n": "desc"}], "aggs": {"t": {"terms": {"field": "tag"}}}}, "native")
+    add("agg terms min_doc_count 3", {"size": 0, "query": {"match": {"body": "omega"}}, "aggs": {"t": {"terms": {"field": "mtag", "min_doc_count": 3}}}}, "native")
+    add("agg terms order _key", {"size": 0, "aggs": {"t": {"terms": {"field": "tag", "order": {"_key": "asc"}}}}}, "aggregations")
+    add("agg terms min_doc_count 0", {"size": 0, "query": {"match": {"body": "omega"}}, "aggs": {"t": {"terms": {"field": "tag", "min_doc_count": 0}}}}, "aggregations")
+    add("agg terms include", {"size": 0, "aggs": {"t": {"terms": {"field": "tag", "include": "a.*"}}}}, "aggregations")
+    add("agg terms numeric", {"size": 0, "aggs": {"t": {"terms": {"field": "qty"}}}}, "aggregations")
     add("post_filter", {"query": {"match": {"body": "alpha"}}, "post_filter": {"term": {"tag": "beta"}}}, "post_filter")
     add("min_score", {"query": {"match": {"body": "alpha"}}, "min_score": 0.3}, "min_score")
     add("terminate_after", {"query": {"match": {"body": "alpha"}}, "terminate_after": 5}, "terminate_after")

@@ -3162,7 +3162,7 @@ fn sorted_set_doc_ordinals(data: &[u8], entry: &SortedSetEntry, doc_id: i32) -> 
 /// [`SortedSetKind`]'s two shapes it was written in.
 enum SortedSetOrdsReader<'a> {
     Single(Box<doc_values::NumericReader<'a>>),
-    Multi(doc_values::SortedNumericReader<'a>),
+    Multi(Box<doc_values::SortedNumericReader<'a>>),
 }
 
 impl<'a> SortedSetOrdsReader<'a> {
@@ -3172,7 +3172,7 @@ impl<'a> SortedSetOrdsReader<'a> {
                 Self::Single(Box::new(doc_values::NumericReader::new(data, &sorted.ords)))
             }
             SortedSetKind::Multi { ords, .. } => {
-                Self::Multi(doc_values::SortedNumericReader::new(data, ords))
+                Self::Multi(Box::new(doc_values::SortedNumericReader::new(data, ords)))
             }
         }
     }

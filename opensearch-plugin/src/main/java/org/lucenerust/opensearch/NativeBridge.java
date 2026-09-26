@@ -99,6 +99,15 @@ public final class NativeBridge {
      */
     public static native int aggregate(long handle, byte[] query, byte[] aggs, long[] outCounts, double[] outValues);
 
+    /**
+     * Runs a query blob's matches through a {@code terms} aggregation ({@link
+     * NativeAggregations.Terms#blob}); {@code out[0]} receives the encoded result: per slice (one
+     * when the blob names none) the other-doc count ({@code long}), the bucket count ({@code int})
+     * and per bucket, by term, its doc count ({@code long}) and term ({@code int} length, bytes),
+     * little-endian.
+     */
+    public static native int terms(long handle, byte[] query, byte[] spec, byte[][] out);
+
     public static native int closeReader(long handle);
 
     // ---- The engine writer (engine_writer.rs, M5). ----

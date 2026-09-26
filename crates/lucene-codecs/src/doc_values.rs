@@ -1915,6 +1915,9 @@ pub struct SortedNumericReader<'a> {
     /// `data` (a lookup then falls through to [`sorted_numeric_values`],
     /// which raises the error).
     docs: Option<indexed_disi::DisiCursor<'a>>,
+    /// The values array read by ordinal with one load each, when its shape
+    /// allows ([`FastDense::values`]); `None` decodes each value in full.
+    fast: Option<FastDense<'a>>,
 }
 
 impl<'a> SortedNumericReader<'a> {
@@ -1939,7 +1942,13 @@ impl<'a> SortedNumericReader<'a> {
                 )
             })
         };
-        Self { data, entry, docs }
+        let fast = FastDense::values(data, numeric);
+        Self {
+            data,
+            entry,
+            docs,
+            fast,
+        }
     }
 
     /// Replaces `out` with document `doc`'s values, in stored (ascending)
@@ -1987,7 +1996,13 @@ impl<'a> SortedNumericReader<'a> {
                     });
                 }
                 for i in start..end {
-                    out.push(decode_value(self.data, numeric, i)?);
+                    let fast = i32::try_from(i)
+                        .ok()
+                        .and_then(|i| self.fast.as_ref()?.get(i));
+                    out.push(match fast {
+                        Some(v) => v,
+                        None => decode_value(self.data, numeric, i)?,
+                    });
                 }
             }
         }

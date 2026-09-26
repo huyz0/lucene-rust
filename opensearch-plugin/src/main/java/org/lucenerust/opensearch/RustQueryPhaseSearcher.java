@@ -39,7 +39,9 @@ import org.opensearch.search.query.QueryPhaseSearcher;
 import org.opensearch.search.query.QueryPhaseSearcherWrapper;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.LinkedList;
+import java.util.List;
 
 /**
  * Runs the query phase of a shard search natively when the whole request is inside the supported
@@ -280,13 +282,26 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             int states = aggs.metrics().size() * Math.max(1, slices.length);
             long[] aggCounts = new long[states];
             double[] aggValues = new double[states * NativeAggregations.VALUES];
-            int rc = NativeBridge.aggregate(handle, blob, aggs.blob(slices), aggCounts, aggValues);
-            if (rc != NativeBridge.OK) {
-                stats.nativeError();
-                logger.warn("lucene-rust: native aggregation failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
-                return "native_error";
+            if (states > 0) {
+                int rc = NativeBridge.aggregate(handle, blob, aggs.blob(slices), aggCounts, aggValues);
+                if (rc != NativeBridge.OK) {
+                    stats.nativeError();
+                    logger.warn("lucene-rust: native aggregation failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
+                    return "native_error";
+                }
             }
-            aggResult = aggs.build(slices, aggCounts, aggValues, ctx.partialOnShard());
+            List<byte[]> terms = new ArrayList<>();
+            for (NativeAggregations.Terms t : aggs.terms()) {
+                byte[][] out = new byte[1][];
+                int rc = NativeBridge.terms(handle, blob, t.blob(slices), out);
+                if (rc != NativeBridge.OK) {
+                    stats.nativeError();
+                    logger.warn("lucene-rust: native terms aggregation failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
+                    return "native_error";
+                }
+                terms.add(out[0]);
+            }
+            aggResult = aggs.build(slices, aggCounts, aggValues, terms, ctx.partialOnShard());
         }
         String reason = sortBlob != null ? searchSorted(ctx, handle, blob, sortBlob, numDocs, countLimit, shortcut)
             : searchUnsorted(ctx, handle, blob, numDocs, countLimit, shortcut);
