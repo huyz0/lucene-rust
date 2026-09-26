@@ -72,6 +72,7 @@ public final class NativeSelfTest {
     private static int sortedChecks;
     private static int trackedPages;
     private static int terminateChecks;
+    private static int minScoreChecks;
     private static int aggChecks;
     private static int termsChecks;
 
@@ -93,8 +94,9 @@ public final class NativeSelfTest {
         check(aggChecks >= 100, "queries aggregated natively: " + aggChecks);
         check(termsChecks >= 300, "terms aggregations compared: " + termsChecks);
         check(terminateChecks >= 100, "terminate_after searches compared: " + terminateChecks);
+        check(minScoreChecks >= 100, "min_score searches compared: " + minScoreChecks);
         System.out.printf(
-            "NativeSelfTest: %d checks, %d failures; %d of %d compared scores bit-exact; %d sorted pages compared (%d tracking the max score); %d aggregations, %d terms; %d terminate_after%n",
+            "NativeSelfTest: %d checks, %d failures; %d of %d compared scores bit-exact; %d sorted pages compared (%d tracking the max score); %d aggregations, %d terms; %d terminate_after; %d min_score%n",
             checks,
             failures,
             bitExact,
@@ -103,7 +105,8 @@ public final class NativeSelfTest {
             trackedPages,
             aggChecks,
             termsChecks,
-            terminateChecks
+            terminateChecks,
+            minScoreChecks
         );
         if (failures > 0) {
             System.exit(1);
@@ -314,6 +317,7 @@ public final class NativeSelfTest {
             }
             compareSorted(where, searcher, acquired.handle(), rewritten, enc.blob(), new Random(where.hashCode() * 31L + rewritten.hashCode()));
             compareTerminateAfter(where, searcher, acquired.handle(), rewritten, enc.blob(), new Random(where.hashCode() * 17L + rewritten.hashCode()));
+            compareMinScore(where, searcher, acquired.handle(), rewritten, enc.blob());
             compareAggs(where + ": " + rewritten, searcher, acquired.handle(), rewritten, enc.blob());
             compareTerms(where + ": " + rewritten, searcher, acquired.handle(), rewritten, enc.blob());
             for (int topN : new int[] { 10, 3 }) {
@@ -774,6 +778,93 @@ public final class NativeSelfTest {
                 float luceneMax = Float.isInfinite(wantMax[0]) ? Float.NaN : wantMax[0];
                 check(Float.floatToIntBits(gotMax) == Float.floatToIntBits(luceneMax), what + ": max score " + gotMax + " vs " + luceneMax);
             }
+        }
+    }
+
+    /** OpenSearch's MinimumScoreCollector. */
+    private static final class MinScore extends org.apache.lucene.search.FilterCollector {
+        final float min;
+
+        MinScore(org.apache.lucene.search.Collector in, float min) {
+            super(in);
+            this.min = min;
+        }
+
+        @Override
+        public org.apache.lucene.search.LeafCollector getLeafCollector(org.apache.lucene.index.LeafReaderContext context)
+            throws java.io.IOException {
+            return new org.apache.lucene.search.FilterLeafCollector(super.getLeafCollector(context)) {
+                org.apache.lucene.search.Scorable scorer;
+
+                @Override
+                public void setScorer(org.apache.lucene.search.Scorable scorer) throws java.io.IOException {
+                    this.scorer = scorer;
+                    in.setScorer(scorer);
+                }
+
+                @Override
+                public void collect(int doc) throws java.io.IOException {
+                    if (scorer.score() >= min) {
+                        in.collect(doc);
+                    }
+                }
+            };
+        }
+
+        @Override
+        public void setWeight(org.apache.lucene.search.Weight weight) {
+            // MinimumScoreCollector passes no weight on.
+        }
+
+        @Override
+        public org.apache.lucene.search.ScoreMode scoreMode() {
+            return in.scoreMode() == org.apache.lucene.search.ScoreMode.TOP_SCORES
+                ? org.apache.lucene.search.ScoreMode.TOP_SCORES
+                : org.apache.lucene.search.ScoreMode.COMPLETE;
+        }
+    }
+
+    /**
+     * min_score as the plugin runs it natively (by score): the top hits and the exact total of
+     * the documents scoring at least the minimum, and the size-0 count, against Lucene's
+     * TopScoreDocCollector and TotalHitCountCollector behind OpenSearch's MinimumScoreCollector.
+     */
+    @SuppressWarnings("deprecation")
+    private static void compareMinScore(String where, IndexSearcher searcher, long handle, Query query, byte[] blob) throws Exception {
+        TopDocs top = searcher.search(query, 5);
+        if (top.scoreDocs.length == 0) {
+            return;
+        }
+        IndexSearcher sequential = new IndexSearcher(searcher.getIndexReader());
+        for (float min : new float[] { top.scoreDocs[0].score * 0.5f, top.scoreDocs[top.scoreDocs.length - 1].score }) {
+            org.apache.lucene.search.TopScoreDocCollector tc = new org.apache.lucene.search.TopScoreDocCollectorManager(10, null, Integer.MAX_VALUE)
+                .newCollector();
+            sequential.search(query, new MinScore(tc, min));
+            TopDocs want = tc.topDocs();
+            byte[] withMin = QueryEncoder.withMinScore(blob, min);
+            int[] docs = new int[10];
+            float[] scores = new float[10];
+            long[] counts = new long[3];
+            int rc = NativeBridge.search(handle, withMin, 10, Long.MAX_VALUE, docs, scores, counts);
+            String what = where + ": " + query + " min_score " + min;
+            check(rc == NativeBridge.OK, what + ": status " + rc + " " + NativeBridge.lastError());
+            if (rc != NativeBridge.OK) {
+                return;
+            }
+            boolean same = counts[0] == want.scoreDocs.length;
+            for (int i = 0; same && i < counts[0]; i++) {
+                same = docs[i] == want.scoreDocs[i].doc && Float.floatToIntBits(scores[i]) == Float.floatToIntBits(want.scoreDocs[i].score);
+            }
+            minScoreChecks++;
+            check(same, what + ": native " + Arrays.toString(Arrays.copyOf(docs, (int) counts[0])) + " lucene "
+                + Arrays.toString(Arrays.stream(want.scoreDocs).mapToInt(d -> d.doc).toArray()));
+            check(counts[1] == want.totalHits.value() && counts[2] == 0, what + ": total " + counts[1] + " vs " + want.totalHits);
+            org.apache.lucene.search.TotalHitCountCollector count = new org.apache.lucene.search.TotalHitCountCollector();
+            sequential.search(query, new MinScore(count, min));
+            long[] zero = new long[3];
+            rc = NativeBridge.search(handle, withMin, 0, Long.MAX_VALUE, new int[0], new float[0], zero);
+            check(rc == NativeBridge.OK && zero[1] == count.getTotalHits() && zero[2] == 0,
+                what + ": size 0 count " + zero[1] + " vs " + count.getTotalHits());
         }
     }
 

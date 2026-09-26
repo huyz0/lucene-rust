@@ -345,6 +345,7 @@ fn concurrent_count_termination_matches_real_lucene() {
             &slices,
             &iterate,
             n,
+            None,
         )
         .unwrap();
         if got != want {

@@ -960,6 +960,72 @@ pub fn search_boolean_query_multi_segment_maxscore_counting(
     })
 }
 
+/// [`search_boolean_query_multi_segment_maxscore_counting`] behind
+/// OpenSearch's `min_score`: a `MinimumScoreCollector` around the top-docs
+/// collector, so only documents scoring at least `min` are kept and counted.
+pub fn search_boolean_query_multi_segment_min_score(
+    segments: &[OpenSegment<'_>],
+    query: &BooleanQuery,
+    norms: &[Option<&HashMap<String, FieldNorms<'_>>>],
+    top_n: usize,
+    total_hits_threshold: u64,
+    min: f32,
+) -> Result<(Vec<ScoreDoc>, TotalHits)> {
+    let rewritten = rewrite_points_ranges(query, segments);
+    let query = rewritten.as_ref().unwrap_or(query);
+    let global = global_boolean_stats(segments, query)?;
+    let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
+    search_leaves_shared_counting(&doc_bases, top_n, total_hits_threshold, |i, local| {
+        let seg = &segments[i];
+        let seg_norms = norms.get(i).copied().flatten();
+        let mut min_score = crate::collector::MinScoreCollector::new(local, min);
+        crate::search_boolean_query_scored_segment(
+            seg,
+            query,
+            seg_norms,
+            Some(&global),
+            &mut min_score,
+        )
+    })
+}
+
+/// The `size: 0` count behind `min_score`: the live matches scoring at least
+/// `min`, segment by segment, stopping at the first segment boundary past
+/// `limit` -- `(count, is_lower_bound)`, as a threshold's count reports.
+pub fn count_boolean_query_min_score(
+    segments: &[OpenSegment<'_>],
+    query: &BooleanQuery,
+    norms: &[Option<&HashMap<String, FieldNorms<'_>>>],
+    min: f32,
+    limit: u64,
+) -> Result<(u64, bool)> {
+    struct Count(u64);
+    impl crate::collector::ScoringCollector for Count {
+        fn collect(&mut self, _doc_id: i32, _score: f32) {
+            self.0 = self.0.saturating_add(1);
+        }
+    }
+    let rewritten = rewrite_points_ranges(query, segments);
+    let query = rewritten.as_ref().unwrap_or(query);
+    let global = global_boolean_stats(segments, query)?;
+    let mut count = Count(0);
+    for (i, seg) in segments.iter().enumerate() {
+        let seg_norms = norms.get(i).copied().flatten();
+        let mut min_score = crate::collector::MinScoreCollector::new(&mut count, min);
+        crate::search_boolean_query_scored_segment(
+            seg,
+            query,
+            seg_norms,
+            Some(&global),
+            &mut min_score,
+        )?;
+        if count.0 > limit {
+            return Ok((count.0, true));
+        }
+    }
+    Ok((count.0, false))
+}
+
 /// `PointRangeQuery.rewrite` against the reader, then `BooleanQuery.rewrite`'s
 /// removal of match-all `FILTER` clauses: a points range outside every
 /// segment's values matches nothing, and one covering them where every
