@@ -218,6 +218,7 @@ pub mod similarity;
 pub mod sloppy_phrase;
 pub mod soft_deletes;
 pub mod term_vectors_query;
+pub mod top_field;
 pub mod vector_query;
 pub mod weight_count;
 
@@ -373,6 +374,8 @@ pub enum Error {
     MatchAllWithoutMaxDoc,
     #[error("cached query produced docID={doc_id}, outside the segment's 0..{num_docs}")]
     CachedDocOutOfRange { doc_id: i32, num_docs: usize },
+    #[error(transparent)]
+    Sort(#[from] top_field::SortError),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

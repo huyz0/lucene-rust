@@ -253,6 +253,87 @@ pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_search<'l>(
 }
 
 #[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_searchSorted<'l>(
+    env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    query: JByteArray<'l>,
+    sort: JByteArray<'l>,
+    top_n: jint,
+    count_limit: jlong,
+    out_docs: JIntArray<'l>,
+    out_values: JLongArray<'l>,
+    out_counts: JLongArray<'l>,
+) -> jint {
+    run(|| {
+        let top_n = usize::try_from(top_n).map_err(|_| {
+            set_last_error(format!("topN {top_n} is negative"));
+            FfiStatus::InvalidArgument
+        })?;
+        let blob = env
+            .convert_byte_array(&query)
+            .map_err(|e| jni_err(&env, "query", e))?;
+        let sort_blob = env
+            .convert_byte_array(&sort)
+            .map_err(|e| jni_err(&env, "sort", e))?;
+        let keys = usize::from(sort_blob.first().copied().unwrap_or(0));
+        let docs_len = env
+            .get_array_length(&out_docs)
+            .map_err(|e| jni_err(&env, "outDocs", e))?;
+        let values_len = env
+            .get_array_length(&out_values)
+            .map_err(|e| jni_err(&env, "outValues", e))?;
+        let docs_len = usize::try_from(docs_len).unwrap_or(0);
+        let values_len = usize::try_from(values_len).unwrap_or(0);
+        let want_values = top_n.checked_mul(keys).ok_or(FfiStatus::InvalidArgument)?;
+        if docs_len < top_n || values_len < want_values {
+            set_last_error(format!(
+                "output arrays hold {docs_len} hits and {values_len} values, topN is {top_n} with {keys} keys"
+            ));
+            return Err(FfiStatus::BufferTooSmall);
+        }
+        let mut docs: Vec<i32> = zeroed(top_n)?;
+        let mut values: Vec<i64> = zeroed(want_values)?;
+        let mut hit_count = 0usize;
+        let mut total = 0i64;
+        let mut lower_bound = false;
+        // SAFETY: every pointer/length pair describes a live Rust buffer;
+        // `values` holds `top_n` hits of `keys` values, the sort blob's count.
+        let status = unsafe {
+            jvm_reader::ffi_jvm_reader_search_sorted(
+                handle as u64,
+                blob.as_ptr(),
+                blob.len(),
+                sort_blob.as_ptr(),
+                sort_blob.len(),
+                top_n,
+                count_limit,
+                docs.as_mut_ptr(),
+                values.as_mut_ptr(),
+                top_n,
+                &mut hit_count,
+                &mut total,
+                &mut lower_bound,
+            )
+        };
+        if status == FfiStatus::Ok.code() {
+            env.set_int_array_region(&out_docs, 0, &docs[..hit_count])
+                .map_err(|e| jni_err(&env, "outDocs", e))?;
+            env.set_long_array_region(&out_values, 0, &values[..hit_count * keys])
+                .map_err(|e| jni_err(&env, "outValues", e))?;
+            env.set_long_array_region(
+                &out_counts,
+                0,
+                &[hit_count as jlong, total, jlong::from(lower_bound)],
+            )
+            .map_err(|e| jni_err(&env, "outCounts", e))?;
+        }
+        Ok(status)
+    })
+}
+
+#[no_mangle]
 pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_closeReader(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
