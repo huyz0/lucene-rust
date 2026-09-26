@@ -367,8 +367,10 @@ whole request on Lucene.
 What is computed (`lucene-search/src/aggs.rs`): one pass over the live matches
 keeps, per field, the value count, the `CompensatedSum` value and delta, the
 minimum and maximum over every value and over each document's first and last
-(`MultiValueMode.MIN`/`MAX`), with Java's `Math.min`/`Math.max`. A match-all
-`min`/`max` on a field with points reads each segment's bound off the points
+(`MultiValueMode.MIN`/`MAX`), with Java's `Math.min`/`Math.max`. A `min`/`max`
+whose query is a bare `MatchAllDocsQuery` -- a request without a query; 3.8
+turns an explicit `match_all` into an `ApproximateScoreQuery`, which does not
+qualify -- on a field with points reads each segment's bound off the points
 as `MinAggregator.findLeafMinValue`/`MaxAggregator.findLeafMaxValue` do,
 including the minimum's give-up after 1,024 deleted points; this is not only
 faster but a different answer over a `double` field holding a `NaN` document
@@ -390,6 +392,8 @@ rayon's pool as Lucene runs them on its executor, hits merged as
 `TopDocs.merge` merges them.
 
 Verified: `GenMetricAggs` (4 segments, 7 queries, 7 fields including `NaN`,
+per-slice states over the non-contiguous slices `[[0,2],[1,3]]`, a document
+with 300 values;
 signed zeros, infinities and values that round when widened) bit for bit,
 including the points answers and a segment where the points give up; seen to
 fail with the compensation dropped, a document's last value in place of its
@@ -397,8 +401,10 @@ first, the points ignored, the give-up removed, and deletions ignored by the
 minimum's walk (the maximum's cell pruning is a speed property only: without
 it the last live point is still the maximum, so no result can show it). The
 self test compares 1,862 query x field states through JNI; the REST matrix runs
-ten aggregation rows natively against a stock node, and three that must fall
-back; and `search_sorted_sliced` agrees with Lucene over every untracked run of
+ten aggregation rows natively against a stock node, and four that must
+fall back (`missing`, `global`, `terms`, and a sort by `@timestamp` ascending,
+whose segments OpenSearch visits last first -- the time-series optimisation,
+which the native pass does not port, so such searches stay on OpenSearch's); and `search_sorted_sliced` agrees with Lucene over every untracked run of
 both sort fixtures (seen to fail without the doc tie-break, with keyword
 missing values flipped, with `reverse` ignored, and with a slice's segments
 searched out of doc-base order).
@@ -435,7 +441,7 @@ wall latency, Lucene over native, 200 requests per engine per row):
 | float `sum` under a sort by `n` | 1.14x (1.12x at 800) | 0.99x (1.03x at 800) |
 | `min` + `max` of a `date`, term filter | 1.08x | 1.02x |
 | with `meta` | 1.03x | 1.10x |
-| no query / match-all `min`/`max` (points), nothing matches | 0.96-1.09x | 0.95-1.08x |
+| no query `min`/`max` (points), nothing matches | 0.96-1.09x | 0.95-1.08x |
 
 The last row's requests take about 1.7 ms end to end and under 0.1 ms in the
 search (`took` rounds to 0): both engines read each segment's bound off the
