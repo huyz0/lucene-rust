@@ -1082,6 +1082,7 @@ mod fixture {
             "req_opt",
             "req_excl",
             "dismax",
+            "union",
         ]
         .into_iter()
         .collect();
