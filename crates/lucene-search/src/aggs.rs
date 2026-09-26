@@ -723,10 +723,12 @@ pub(crate) fn segment_matches<'b>(
     };
     buf.clear();
     exec::score_segment(&mut bulk, Mode::NoScores, live, &mut Docs(buf))?;
-    // The readers downstream walk forward; a bulk scorer hands documents out
-    // in order, and this keeps that a checked fact rather than an assumption.
-    if !buf.is_sorted() {
+    // The readers downstream walk forward and count each document once; a
+    // bulk scorer hands documents out strictly ascending, and this keeps that
+    // a checked fact rather than an assumption.
+    if !buf.windows(2).all(|w| w[0] < w[1]) {
         buf.sort_unstable();
+        buf.dedup();
     }
     Ok(Some(Some(&buf[..])))
 }
