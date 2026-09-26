@@ -1037,7 +1037,7 @@ pub(crate) fn encode_terms(keys: &[SortField], hits: &[FieldDoc]) -> Result<Vec<
 }
 
 /// The search behind [`ffi_jvm_reader_search_sorted`].
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(crate) fn search_sorted(
     h: &JvmReaderHandle,
     query: &JvmQuery,
