@@ -76,6 +76,16 @@ public final class SortEncoder {
      */
     @SuppressWarnings("deprecation")
     public static Encoded encode(Sort sort, FieldDoc after, boolean trackMaxScore) {
+        return encode(sort, after, trackMaxScore, new int[0][]);
+    }
+
+    /**
+     * {@link #encode(Sort, FieldDoc, boolean)} for a concurrent segment search: {@code slices} as
+     * {@link NativeAggregations#slices} returns them, each searched by its own collector and the
+     * hits merged, as Lucene's concurrent {@code TopFieldCollectorManager} does.
+     */
+    @SuppressWarnings("deprecation")
+    public static Encoded encode(Sort sort, FieldDoc after, boolean trackMaxScore, int[][] slices) {
         SortField[] fields = sort.getSort();
         if (fields.length == 0 || fields.length > MAX_KEYS) {
             return new Encoded(null, "sort_keys");
@@ -143,6 +153,7 @@ public final class SortEncoder {
             }
         }
         out.write(trackMaxScore ? TRACK_MAX_SCORE : 0);
+        NativeAggregations.writeSlices(out, slices);
         return new Encoded(out.toByteArray(), null);
     }
 

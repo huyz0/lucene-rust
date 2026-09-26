@@ -380,7 +380,7 @@ public final class NativeSelfTest {
         );
         long[] counts = new long[AGG_FIELDS.length];
         double[] values = new double[AGG_FIELDS.length * NativeAggregations.VALUES];
-        int rc = NativeBridge.aggregate(handle, blob, plan.blob(), counts, values);
+        int rc = NativeBridge.aggregate(handle, blob, plan.blob(new int[0][]), counts, values);
         check(rc == NativeBridge.OK, what + ": aggregate status " + rc + " " + NativeBridge.lastError());
         if (rc != NativeBridge.OK) {
             return;

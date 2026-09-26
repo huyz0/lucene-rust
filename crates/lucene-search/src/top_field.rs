@@ -67,7 +67,12 @@
 //!   Lucene's match-all and filter conjunctions (`DenseConjunctionBulkScorer`)
 //!   collect whole 4,096-document windows first, so Lucene's bound is usually
 //!   the higher one there; and the missing-value skipping above can lower it
-//!   further.
+//!   further;
+//! * a sliced search ([`search_sorted_sliced`]) counts each slice to the
+//!   threshold on its own, where Lucene's slices share one threshold
+//!   checker, so its bound is the sum of the slices' (hits and their order
+//!   are the same: a collector per slice, merged as `TopDocs.merge` merges
+//!   them).
 //!
 //! And one in when a sort is refused: Lucene builds every segment's
 //! comparators before it searches, so a field with points of the wrong width
@@ -2679,16 +2684,204 @@ pub fn search_sorted_tracking(
     }
     let rewritten = crate::multi_segment::rewrite_points_ranges(query, segments);
     let query = rewritten.as_ref().unwrap_or(query);
-    let mut tf = TopField::new(sort, top_n, total_hits_threshold, after);
     // The score leading the sort gives the max score itself (the first hit).
     let track = track_max_score && sort[0].ty != SortType::Score;
+    let global = global_stats(segments, query, sort, track)?;
+    let all: Vec<usize> = (0..segments.len().min(readers.len())).collect();
+    let run = Run {
+        segments,
+        readers,
+        query,
+        norms,
+        sort,
+        top_n,
+        total_hits_threshold,
+        after,
+        track,
+        global: global.as_ref(),
+    };
+    search_segments(&run, &all)
+}
+
+/// [`search_sorted`] as a concurrent segment search runs it: one collector
+/// per slice (segment indices, each slice searched in doc-base order), on
+/// rayon's pool, their hits merged as `TopFieldCollectorManager.reduce` merges
+/// them (`TopDocs.merge`: the sort, then the document). The hits are the ones
+/// a single collector keeps; the total is the slices' totals summed, a lower
+/// bound if any slice's is -- Lucene's shared threshold stops counting at a
+/// different point, but both are at least the threshold, which is all
+/// `track_total_hits` reports of a lower bound.
+///
+/// # Errors
+/// What [`search_sorted`] reports, and a slice naming a segment the reader
+/// does not have.
+#[allow(clippy::too_many_arguments)]
+pub fn search_sorted_sliced(
+    segments: &[OpenSegment<'_>],
+    readers: &[SegmentReader],
+    query: &BooleanQuery,
+    norms: &[Option<&HashMap<String, FieldNorms<'_>>>],
+    sort: &[SortField],
+    top_n: usize,
+    total_hits_threshold: u64,
+    after: Option<&FieldDoc>,
+    slices: &[Vec<usize>],
+) -> Result<TopFieldDocs> {
+    use rayon::prelude::*;
+    if slices.len() <= 1 || top_n == 0 {
+        let parts = search_sorted(
+            segments,
+            readers,
+            query,
+            norms,
+            sort,
+            top_n,
+            total_hits_threshold,
+            after,
+        )?;
+        return Ok(parts);
+    }
+    // The arity checks, once.
+    search_sorted(segments, readers, query, norms, sort, 0, 0, after)?;
+    let rewritten = crate::multi_segment::rewrite_points_ranges(query, segments);
+    let query = rewritten.as_ref().unwrap_or(query);
+    let global = global_stats(segments, query, sort, false)?;
+    let run = Run {
+        segments,
+        readers,
+        query,
+        norms,
+        sort,
+        top_n,
+        total_hits_threshold,
+        after,
+        track: false,
+        global: global.as_ref(),
+    };
+    let parts = slices
+        .par_iter()
+        .map(|slice| {
+            // `LeafSlice` keeps its partitions by doc base: a collector breaks
+            // ties assuming ascending documents.
+            let mut order = slice.clone();
+            order.sort_unstable();
+            search_segments(&run, &order)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(merge_top_docs(sort, top_n, parts))
+}
+
+/// `TopDocs.merge(sort, topN, shardHits)` for slices of one index: the hits
+/// ordered by the sort's keys, ties by document; totals summed.
+fn merge_top_docs(sort: &[SortField], top_n: usize, parts: Vec<TopFieldDocs>) -> TopFieldDocs {
+    let mut total = TotalHits {
+        value: 0,
+        relation: TotalHitsRelation::EqualTo,
+    };
+    let mut hits = Vec::new();
+    for p in parts {
+        total.value = total.value.saturating_add(p.total.value);
+        if p.total.relation == TotalHitsRelation::GreaterThanOrEqualTo {
+            total.relation = TotalHitsRelation::GreaterThanOrEqualTo;
+        }
+        hits.extend(p.hits);
+    }
+    hits.sort_by(|a, b| compare_hits(sort, a, b));
+    hits.truncate(top_n);
+    TopFieldDocs {
+        hits,
+        total,
+        max_score: f32::NAN,
+    }
+}
+
+/// Two hits in the sort's order (`FieldComparator.compareValues` times
+/// `reverseMul`, key by key), then by document.
+fn compare_hits(sort: &[SortField], a: &FieldDoc, b: &FieldDoc) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    for (k, key) in sort.iter().enumerate() {
+        let (x, y) = (
+            a.values.get(k).copied().unwrap_or(0),
+            b.values.get(k).copied().unwrap_or(0),
+        );
+        let ord = match key.ty {
+            // Stored as its f32 bits; relevance orders the highest first.
+            SortType::Score => {
+                score_value(f32::from_bits(x as u32)).cmp(&score_value(f32::from_bits(y as u32)))
+            }
+            SortType::String => {
+                let missing_cmp = if key.missing != 0 {
+                    Ordering::Greater
+                } else {
+                    Ordering::Less
+                };
+                match (
+                    a.terms.get(k).and_then(Option::as_ref),
+                    b.terms.get(k).and_then(Option::as_ref),
+                ) {
+                    (None, None) => Ordering::Equal,
+                    (None, Some(_)) => missing_cmp,
+                    (Some(_), None) => missing_cmp.reverse(),
+                    (Some(p), Some(q)) => p.cmp(q),
+                }
+            }
+            _ => x.cmp(&y),
+        };
+        let ord = if key.reverse { ord.reverse() } else { ord };
+        if ord != Ordering::Equal {
+            return ord;
+        }
+    }
+    a.doc.cmp(&b.doc)
+}
+
+/// The statistics a scored sort needs, index-wide.
+fn global_stats(
+    segments: &[OpenSegment<'_>],
+    query: &BooleanQuery,
+    sort: &[SortField],
+    track: bool,
+) -> Result<Option<crate::GlobalStats>> {
+    if track || sort.iter().any(|f| f.ty == SortType::Score) {
+        Ok(Some(crate::multi_segment::global_boolean_stats(
+            segments, query,
+        )?))
+    } else {
+        Ok(None)
+    }
+}
+
+/// What one sorted search over a list of segments needs.
+struct Run<'r, 'a> {
+    segments: &'r [OpenSegment<'a>],
+    readers: &'r [SegmentReader],
+    query: &'r BooleanQuery,
+    norms: &'r [Option<&'r HashMap<String, FieldNorms<'a>>>],
+    sort: &'r [SortField],
+    top_n: usize,
+    total_hits_threshold: u64,
+    after: Option<&'r FieldDoc>,
+    track: bool,
+    global: Option<&'r crate::GlobalStats>,
+}
+
+/// One collector over the segments at `order`, in that order.
+fn search_segments(run: &Run<'_, '_>, order: &[usize]) -> Result<TopFieldDocs> {
+    let Run {
+        segments,
+        readers,
+        query,
+        norms,
+        sort,
+        top_n,
+        total_hits_threshold,
+        after,
+        track,
+        global,
+    } = *run;
+    let mut tf = TopField::new(sort, top_n, total_hits_threshold, after);
     let want_scores = tf.needs_scores || track;
     let mut max_score = f32::NEG_INFINITY;
-    let global = if want_scores {
-        Some(crate::multi_segment::global_boolean_stats(segments, query)?)
-    } else {
-        None
-    };
     // `BooleanQuery.rewrite`: a boolean of one clause is that clause (so a
     // lone term is a term to the query cache, not a composite).
     let clauses = query.must.len() + query.filter.len() + query.should.len() + query.must_not.len();
@@ -2702,9 +2895,12 @@ pub fn search_sorted_tracking(
         _ if want_scores => Mode::Complete,
         _ => Mode::NoScores,
     };
-    for (i, seg) in segments.iter().enumerate() {
-        let Some(reader) = readers.get(i) else {
-            break;
+    for &i in order {
+        let (Some(seg), Some(reader)) = (segments.get(i), readers.get(i)) else {
+            return Err(crate::Error::SliceOutOfRange {
+                segment: i,
+                segments: segments.len().min(readers.len()),
+            });
         };
         let ctx = exec::LeafContext {
             fields: seg.fields,
@@ -2714,7 +2910,7 @@ pub fn search_sorted_tracking(
             live_docs: seg.live_docs,
             points: seg.points,
             norms: norms.get(i).copied().flatten(),
-            global: global.as_ref(),
+            global,
             max_doc: seg.max_doc,
             cache: seg.cache,
         };

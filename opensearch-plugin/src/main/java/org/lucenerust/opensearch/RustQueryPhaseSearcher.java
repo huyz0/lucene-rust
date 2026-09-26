@@ -149,7 +149,10 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             } else {
                 // track_scores behind another key: OpenSearch's MaxScoreCollector over every match.
                 boolean trackMaxScore = ctx.trackScores() && sortByScore(ctx.sort().sort) == false;
-                SortEncoder.Encoded sorted = SortEncoder.encode(ctx.sort().sort, ctx.searchAfter(), trackMaxScore);
+                // A concurrent search collects each slice separately, as Lucene does.
+                int[][] slices = NativeAggregations.slices(ctx);
+                SortEncoder.Encoded sorted = slices == null ? new SortEncoder.Encoded(null, "intra_segment")
+                    : SortEncoder.encode(ctx.sort().sort, ctx.searchAfter(), trackMaxScore, slices);
                 reason = sorted.fallbackReason();
                 sortBlob = sorted.blob();
             }
@@ -266,15 +269,20 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // re-runs the whole request on Lucene.
         InternalAggregations aggResult = null;
         if (aggs != null) {
-            long[] aggCounts = new long[aggs.metrics().size()];
-            double[] aggValues = new double[aggs.metrics().size() * NativeAggregations.VALUES];
-            int rc = NativeBridge.aggregate(handle, blob, aggs.blob(), aggCounts, aggValues);
+            int[][] slices = NativeAggregations.slices(ctx);
+            if (slices == null) {
+                return "intra_segment";
+            }
+            int states = aggs.metrics().size() * Math.max(1, slices.length);
+            long[] aggCounts = new long[states];
+            double[] aggValues = new double[states * NativeAggregations.VALUES];
+            int rc = NativeBridge.aggregate(handle, blob, aggs.blob(slices), aggCounts, aggValues);
             if (rc != NativeBridge.OK) {
                 stats.nativeError();
                 logger.warn("lucene-rust: native aggregation failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
                 return "native_error";
             }
-            aggResult = aggs.build(aggCounts, aggValues);
+            aggResult = aggs.build(slices, aggCounts, aggValues, ctx.partialOnShard());
         }
         String reason = sortBlob != null ? searchSorted(ctx, handle, blob, sortBlob, numDocs, countLimit, shortcut)
             : searchUnsorted(ctx, handle, blob, numDocs, countLimit, shortcut);

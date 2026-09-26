@@ -541,6 +541,45 @@ const SORT_TRACK_MAX_SCORE: u8 = 1;
 /// costs a value per hit on the way back.
 const MAX_SORT_KEYS: usize = 16;
 
+/// A decoded sort blob: the keys, the search-after document, whether to
+/// track the max score, and the slices.
+pub(crate) type DecodedSort = (Vec<SortField>, Option<FieldDoc>, bool, Vec<Vec<usize>>);
+
+/// The concurrent-search slices ending a sort or metrics blob: `count: i32`,
+/// then per slice `len: i32` and that many segment indices (`i32`). None
+/// means the search is not concurrent.
+fn decode_slices(
+    c: &mut Cursor<'_>,
+    bad: &dyn Fn(String) -> FfiStatus,
+) -> Result<Vec<Vec<usize>>, FfiStatus> {
+    let slice_count =
+        usize::try_from(c.i32()?).map_err(|_| bad("blob: negative slice count".into()))?;
+    if slice_count > MAX_SLICES {
+        return Err(bad(format!(
+            "blob: {slice_count} slices, want at most {MAX_SLICES}"
+        )));
+    }
+    let mut slices = Vec::new();
+    let mut total = 0usize;
+    for _ in 0..slice_count {
+        let len =
+            usize::try_from(c.i32()?).map_err(|_| bad("blob: negative slice length".into()))?;
+        total = total.saturating_add(len);
+        if total > MAX_SLICED_SEGMENTS {
+            return Err(bad(format!(
+                "blob: more than {MAX_SLICED_SEGMENTS} sliced segments"
+            )));
+        }
+        let mut slice = Vec::new();
+        for _ in 0..len {
+            slice
+                .push(usize::try_from(c.i32()?).map_err(|_| bad("blob: negative segment".into()))?);
+        }
+        slices.push(slice);
+    }
+    Ok(slices)
+}
+
 /// Decodes a sort blob: `key_count: u8`, then per key `type: u8`,
 /// `flags: u8` ([`SORT_REVERSE`], [`SORT_MAX`]) and, for a field's type, the
 /// field (`len: i32`, UTF-8) and the missing value: a comparable `i64` for a
@@ -548,12 +587,10 @@ const MAX_SORT_KEYS: usize = 16;
 /// (`STRING_FIRST`) for a keyword one; then `has_after: u8` and, when 1, the
 /// search-after document (`doc: i32`) and one value per key, encoded as the
 /// search returns them -- an `i64`, or for a keyword key `present: u8` and,
-/// when 1, the term (`len: i32`, bytes); and last `options: u8`
-/// ([`SORT_TRACK_MAX_SCORE`]). Little-endian, and trailing bytes are an error.
-#[allow(clippy::type_complexity)]
-pub(crate) fn decode_sort(
-    blob: &[u8],
-) -> Result<(Vec<SortField>, Option<FieldDoc>, bool), FfiStatus> {
+/// when 1, the term (`len: i32`, bytes); then `options: u8`
+/// ([`SORT_TRACK_MAX_SCORE`]); and last the concurrent-search slices
+/// ([`decode_slices`]). Little-endian, and trailing bytes are an error.
+pub(crate) fn decode_sort(blob: &[u8]) -> Result<DecodedSort, FfiStatus> {
     let mut c = Cursor { buf: blob, pos: 0 };
     let bad = |msg: String| {
         set_last_error(msg);
@@ -637,13 +674,14 @@ pub(crate) fn decode_sort(
     if options & !SORT_TRACK_MAX_SCORE != 0 {
         return Err(bad(format!("sort blob: unknown options {options:#x}")));
     }
+    let slices = decode_slices(&mut c, &bad)?;
     if c.pos != blob.len() {
         return Err(bad(format!(
             "sort blob: {} trailing bytes",
             blob.len() - c.pos
         )));
     }
-    Ok((keys, after, options & SORT_TRACK_MAX_SCORE != 0))
+    Ok((keys, after, options & SORT_TRACK_MAX_SCORE != 0, slices))
 }
 
 /// Runs the query blob `query` sorted by the sort blob `sort`
@@ -778,13 +816,21 @@ pub(crate) fn search_sorted_blobs(
     count_limit: i64,
 ) -> Result<SortedOut, FfiStatus> {
     let query = decode_query(query_blob)?;
-    let (keys, after, track) = decode_sort(sort_blob)?;
+    let (keys, after, track, slices) = decode_sort(sort_blob)?;
     let h = lookup(
         handle,
         "ffi_jvm_reader_search_sorted: unknown or already-closed handle",
     )?;
-    let (hits, total, lower_bound, max_score) =
-        search_sorted(&h, &query, &keys, after.as_ref(), top_n, count_limit, track)?;
+    let (hits, total, lower_bound, max_score) = search_sorted(
+        &h,
+        &query,
+        &keys,
+        after.as_ref(),
+        top_n,
+        count_limit,
+        track,
+        &slices,
+    )?;
     let terms = encode_terms(&keys, &hits)?;
     Ok(SortedOut {
         max_score,
@@ -807,13 +853,16 @@ const METRIC_POINTS_MIN: u8 = 1;
 const METRIC_POINTS_MAX: u8 = 2;
 /// At most this many fields in one metrics blob.
 const MAX_METRICS: usize = 64;
+/// At most this many slices, and segments across them, in one metrics blob.
+const MAX_SLICES: usize = 4096;
+const MAX_SLICED_SEGMENTS: usize = 1 << 16;
 /// Doubles per field in [`ffi_jvm_reader_aggregate`]'s output.
 pub const METRIC_VALUES: usize = 6;
 
 /// Decodes a metrics blob: `count: u8`, then per field `kind: u8`
 /// ([`METRIC_LONG`], [`METRIC_DOUBLE`], [`METRIC_FLOAT`]) and the field
 /// (`len: i32`, UTF-8). Trailing bytes are an error.
-pub(crate) fn decode_metrics(blob: &[u8]) -> Result<Vec<MetricSpec>, FfiStatus> {
+pub(crate) fn decode_metrics(blob: &[u8]) -> Result<(Vec<MetricSpec>, Vec<Vec<usize>>), FfiStatus> {
     let mut c = Cursor { buf: blob, pos: 0 };
     let bad = |msg: String| {
         set_last_error(msg);
@@ -825,7 +874,7 @@ pub(crate) fn decode_metrics(blob: &[u8]) -> Result<Vec<MetricSpec>, FfiStatus> 
             "metrics blob: {n} fields, want 1..={MAX_METRICS}"
         )));
     }
-    let mut specs = Vec::with_capacity(n);
+    let mut specs = Vec::new();
     for _ in 0..n {
         let kind = match c.u8()? {
             METRIC_LONG => ValueKind::Long,
@@ -846,13 +895,15 @@ pub(crate) fn decode_metrics(blob: &[u8]) -> Result<Vec<MetricSpec>, FfiStatus> 
             source,
         });
     }
+    // The concurrent-search slices; none means one slice over every segment.
+    let slices = decode_slices(&mut c, &bad)?;
     if c.pos != blob.len() {
         return Err(bad(format!(
             "metrics blob: {} trailing bytes",
             blob.len() - c.pos
         )));
     }
-    Ok(specs)
+    Ok((specs, slices))
 }
 
 /// The numeric metric aggregations of a metrics blob ([`decode_metrics`])
@@ -915,7 +966,7 @@ pub(crate) fn aggregate_blobs(
     aggs_blob: &[u8],
 ) -> Result<Vec<MetricState>, FfiStatus> {
     let query = decode_query(query_blob)?;
-    let specs = decode_metrics(aggs_blob)?;
+    let (specs, slices) = decode_metrics(aggs_blob)?;
     let h = lookup(
         handle,
         "ffi_jvm_reader_aggregate: unknown or already-closed handle",
@@ -946,8 +997,15 @@ pub(crate) fn aggregate_blobs(
         },
         JvmQuery::Boolean(b) => b.clone(),
     };
-    lucene_search::aggs::metric_states(&segments, h.reader.segment_readers(), &q, &specs)
-        .map_err(map_search_error)
+    let readers = h.reader.segment_readers();
+    let slices = if slices.is_empty() {
+        vec![(0..segments.len().min(readers.len())).collect()]
+    } else {
+        slices
+    };
+    let sliced = lucene_search::aggs::metric_states_sliced(&segments, readers, &q, &specs, &slices)
+        .map_err(map_search_error)?;
+    Ok(sliced.into_iter().flatten().collect())
 }
 
 /// The keyword keys' terms of `hits`, as [`ffi_jvm_reader_search_sorted`]
@@ -988,6 +1046,7 @@ pub(crate) fn search_sorted(
     top_n: usize,
     count_limit: i64,
     track_max_score: bool,
+    slices: &[Vec<usize>],
 ) -> Result<(Vec<FieldDoc>, i64, bool, f32), FfiStatus> {
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
@@ -1037,17 +1096,33 @@ pub(crate) fn search_sorted(
         i64::MAX => u64::MAX,
         n => u64::try_from(n).unwrap_or(0),
     };
-    let top = lucene_search::top_field::search_sorted_tracking(
-        &segments,
-        h.reader.segment_readers(),
-        &q,
-        &norms,
-        keys,
-        top_n,
-        threshold,
-        after,
-        track_max_score,
-    )
+    // A concurrent search's slices each get a collector, as Lucene's do --
+    // except beside a tracked max score, which stays one pass.
+    let top = if slices.len() > 1 && !track_max_score {
+        lucene_search::top_field::search_sorted_sliced(
+            &segments,
+            h.reader.segment_readers(),
+            &q,
+            &norms,
+            keys,
+            top_n,
+            threshold,
+            after,
+            slices,
+        )
+    } else {
+        lucene_search::top_field::search_sorted_tracking(
+            &segments,
+            h.reader.segment_readers(),
+            &q,
+            &norms,
+            keys,
+            top_n,
+            threshold,
+            after,
+            track_max_score,
+        )
+    }
     .map_err(map_search_error)?;
     if count_limit <= 0 {
         return Ok((top.hits, -1, false, top.max_score));
@@ -1648,6 +1723,7 @@ mod tests {
             }
         }
         b.push(0); // options
+        b.extend_from_slice(&0i32.to_le_bytes()); // no slices
         b
     }
 
@@ -1714,7 +1790,7 @@ mod tests {
             ],
             Some((9, &[1, 2, 3, 4, 5, 6])),
         );
-        let (keys, after, _) = decode_sort(&blob).unwrap();
+        let (keys, after, _, _) = decode_sort(&blob).unwrap();
         assert_eq!(
             keys.iter().map(|k| k.ty).collect::<Vec<_>>(),
             [
@@ -1859,7 +1935,7 @@ mod tests {
             ],
             Some((4, &[0, 0, 9], &[Some(b"abc".as_slice()), None, None])),
         );
-        let (keys, after, _) = decode_sort(&blob).unwrap();
+        let (keys, after, _, _) = decode_sort(&blob).unwrap();
         assert_eq!(keys[0].ty, SortType::String);
         assert!(keys[0].reverse && keys[0].selector == Selector::Max && keys[0].missing == 1);
         assert_eq!((keys[1].missing, keys[1].reverse), (0, false));
@@ -1873,14 +1949,15 @@ mod tests {
             FfiStatus::InvalidArgument
         );
         let mut bad = sort_blob_terms(&[(SORT_STRING, 0, "k", 0)], Some((1, &[0], &[None])));
-        let at = bad.len() - 2; // the term's present flag, before the options byte
+        let at = bad.len() - 6; // the term's present flag, before the options byte and slices
         bad[at] = 2;
         assert_eq!(decode_sort(&bad).unwrap_err(), FfiStatus::InvalidArgument);
         // Options: bit 0 tracks the max score; any other bit is refused.
         let mut tracked = sort_blob(&[(SORT_DOC, 0, "", 0)], None);
-        *tracked.last_mut().unwrap() = SORT_TRACK_MAX_SCORE;
+        let options = tracked.len() - 5;
+        tracked[options] = SORT_TRACK_MAX_SCORE;
         assert!(decode_sort(&tracked).unwrap().2);
-        *tracked.last_mut().unwrap() = 2;
+        tracked[options] = 2;
         assert_eq!(
             decode_sort(&tracked).unwrap_err(),
             FfiStatus::InvalidArgument
@@ -2004,7 +2081,8 @@ mod tests {
         let q = term_blob("body", "fox");
         let (best, _) = run(h, &q, 1, true).unwrap();
         let mut sort = sort_blob(&[(SORT_DOC, 0, "", 0)], None);
-        *sort.last_mut().unwrap() = SORT_TRACK_MAX_SCORE;
+        let options = sort.len() - 5;
+        sort[options] = SORT_TRACK_MAX_SCORE;
         let (mut n, mut total, mut lower, mut terms_len) = (0usize, 0i64, false, 0usize);
         let mut max_score = 0f32;
         let (mut docs, mut values) = ([0i32; 3], [0i64; 3]);
@@ -2051,7 +2129,7 @@ mod tests {
         );
         assert_eq!(max_score.to_bits(), best[0].1.to_bits());
         // Untracked: no max score.
-        *sort.last_mut().unwrap() = 0;
+        sort[options] = 0;
         assert_eq!(
             call(
                 &sort,
@@ -2069,11 +2147,53 @@ mod tests {
         ffi_close_jvm_reader(h);
     }
 
+    #[test]
+    fn a_sliced_sort_merges_its_slices() {
+        let h = open();
+        let q = term_blob("body", "fox");
+        let keys = [
+            (SORT_LONG, SORT_REVERSE, "n", i64::MIN),
+            (SORT_DOC, 0, "", 0),
+        ];
+        let plain = sort_blob(&keys, None);
+        // Every segment its own slice, last first: the one-collector answer.
+        let n = lookup(h, "test").unwrap().reader.segment_readers().len() as i32;
+        assert!(n > 1, "the fixture has {n} segments");
+        let mut sliced = plain.clone();
+        sliced.truncate(sliced.len() - 4);
+        sliced.extend_from_slice(&n.to_le_bytes());
+        for seg in (0..n).rev() {
+            sliced.extend_from_slice(&1i32.to_le_bytes());
+            sliced.extend_from_slice(&seg.to_le_bytes());
+        }
+        let (_, _, _, slices) = decode_sort(&sliced).unwrap();
+        assert_eq!(slices.len(), n as usize);
+        assert_eq!(
+            run_sorted(h, &q, &sliced, 3, i64::MAX),
+            run_sorted(h, &q, &plain, 3, i64::MAX)
+        );
+        // A slice naming a segment the reader lacks is a search error.
+        let mut missing = plain.clone();
+        missing.truncate(missing.len() - 4);
+        for v in [2i32, 1, 7, 0] {
+            missing.extend_from_slice(&v.to_le_bytes());
+        }
+        assert_eq!(
+            run_sorted(h, &q, &missing, 3, i64::MAX).unwrap_err(),
+            FfiStatus::Search.code()
+        );
+        ffi_close_jvm_reader(h);
+    }
+
     fn metrics_blob(fields: &[(u8, &str)]) -> Vec<u8> {
         metrics_blob_from(&fields.iter().map(|&(k, f)| (k, 0, f)).collect::<Vec<_>>())
     }
 
     fn metrics_blob_from(fields: &[(u8, u8, &str)]) -> Vec<u8> {
+        metrics_blob_sliced(fields, &[])
+    }
+
+    fn metrics_blob_sliced(fields: &[(u8, u8, &str)], slices: &[&[i32]]) -> Vec<u8> {
         let mut b = vec![fields.len() as u8];
         for &(kind, source, f) in fields {
             b.push(kind);
@@ -2081,17 +2201,25 @@ mod tests {
             b.extend_from_slice(&(f.len() as i32).to_le_bytes());
             b.extend_from_slice(f.as_bytes());
         }
+        b.extend_from_slice(&(slices.len() as i32).to_le_bytes());
+        for slice in slices {
+            b.extend_from_slice(&(slice.len() as i32).to_le_bytes());
+            for &seg in *slice {
+                b.extend_from_slice(&seg.to_le_bytes());
+            }
+        }
         b
     }
 
     #[test]
     fn metrics_blobs_decode_and_aggregate() {
-        let specs = decode_metrics(&metrics_blob(&[
+        let (specs, slices) = decode_metrics(&metrics_blob(&[
             (METRIC_LONG, "a"),
             (METRIC_DOUBLE, "b"),
             (METRIC_FLOAT, "c"),
         ]))
         .unwrap();
+        assert!(slices.is_empty());
         assert_eq!(
             specs
                 .iter()
@@ -2121,9 +2249,61 @@ mod tests {
             (METRIC_LONG, METRIC_POINTS_MIN, "a"),
             (METRIC_LONG, METRIC_POINTS_MAX, "a"),
         ]))
-        .unwrap();
+        .unwrap()
+        .0;
         assert_eq!(sources[0].source, Source::PointsMin);
         assert_eq!(sources[1].source, Source::PointsMax);
+        let sliced = |slices: &[&[i32]]| {
+            decode_metrics(&metrics_blob_sliced(&[(METRIC_LONG, 0, "a")], slices)).map(|d| d.1)
+        };
+        assert_eq!(sliced(&[&[2, 0], &[1]]), Ok(vec![vec![2, 0], vec![1]]));
+        assert_eq!(sliced(&[&[-1]]).map(|_| ()), invalid, "negative segment");
+        let mut negative = metrics_blob(&[(METRIC_LONG, "a")]);
+        negative.truncate(negative.len() - 4);
+        assert_eq!(
+            decode_metrics(&[negative.clone(), (-1i32).to_le_bytes().to_vec()].concat())
+                .map(|_| ()),
+            invalid,
+            "negative slice count"
+        );
+        assert_eq!(
+            decode_metrics(
+                &[
+                    negative.clone(),
+                    1i32.to_le_bytes().to_vec(),
+                    (-1i32).to_le_bytes().to_vec()
+                ]
+                .concat()
+            )
+            .map(|_| ()),
+            invalid,
+            "negative slice length"
+        );
+        assert_eq!(
+            decode_metrics(
+                &[
+                    negative.clone(),
+                    ((MAX_SLICES + 1) as i32).to_le_bytes().to_vec()
+                ]
+                .concat()
+            )
+            .map(|_| ()),
+            invalid,
+            "too many slices"
+        );
+        assert_eq!(
+            decode_metrics(
+                &[
+                    negative,
+                    1i32.to_le_bytes().to_vec(),
+                    ((MAX_SLICED_SEGMENTS + 1) as i32).to_le_bytes().to_vec()
+                ]
+                .concat()
+            )
+            .map(|_| ()),
+            invalid,
+            "too many sliced segments"
+        );
         let mut utf8 = vec![1, METRIC_LONG, METRIC_DOC_VALUES];
         utf8.extend_from_slice(&1i32.to_le_bytes());
         utf8.push(0xff);
@@ -2167,6 +2347,26 @@ mod tests {
         assert_eq!(
             call(closed_handle(), counts.as_mut_ptr(), values.as_mut_ptr(), 1),
             FfiStatus::InvalidHandle.code()
+        );
+
+        // Slices: each keeps its own state; the same segment twice gives the
+        // one-slice answer twice. A segment the reader lacks is an error.
+        let q_all = term_blob("body", "fox");
+        let one = aggregate_blobs(h, &q_all, &metrics_blob(&[(METRIC_LONG, "n")])).unwrap();
+        let two = aggregate_blobs(
+            h,
+            &q_all,
+            &metrics_blob_sliced(&[(METRIC_LONG, 0, "n")], &[&[0], &[0]]),
+        )
+        .unwrap();
+        assert_eq!(two, [one[0], one[0]]);
+        assert_eq!(
+            aggregate_blobs(
+                h,
+                &q_all,
+                &metrics_blob_sliced(&[(METRIC_LONG, 0, "n")], &[&[99]])
+            ),
+            Err(FfiStatus::Search)
         );
         ffi_close_jvm_reader(h);
     }

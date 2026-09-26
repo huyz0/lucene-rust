@@ -1993,6 +1993,169 @@ impl<'a> SortedNumericReader<'a> {
         }
         Ok(())
     }
+
+    /// Calls `f(doc, values)` for every document in `start..end` that has
+    /// values, ascending, each document's values ascending -- [`Self::values`]
+    /// over a range, the way an aggregation over a match-all reads a column.
+    ///
+    /// A field whose values [`FastDense`] can read is streamed: the documents
+    /// with values come from the field's `IndexedDISI` as a bit set (a sparse
+    /// field, read from document 0) or are every document (a dense one), so
+    /// their value ranks run consecutively; one address per document (the
+    /// previous document's end is this one's start), and the values decoded a
+    /// chunk at a time. Every other shape goes through [`Self::values`]
+    /// document by document.
+    ///
+    /// # Errors
+    /// What [`Self::values`] reports, including an address range outside the
+    /// values array.
+    pub fn for_each_doc(&mut self, start: i32, end: i32, f: impl FnMut(i32, &[i64])) -> Result<()> {
+        let start = start.max(0);
+        if start >= end {
+            return Ok(());
+        }
+        let numeric = &self.entry.numeric;
+        let streamable = self.entry.addresses.is_some()
+            && FastDense::values(self.data, numeric).is_some()
+            && (numeric.is_dense() || start == 0);
+        if !streamable {
+            return self.for_each_doc_slow(start, end, f);
+        }
+        if numeric.is_dense() {
+            let end = end.min(self.entry.num_docs_with_field);
+            return self.stream(i64::from(start), start..end, f);
+        }
+        // Sparse: the documents with values, as bits.
+        let Some(words_len) = usize::try_from(end).ok().map(|e| e.div_ceil(64)) else {
+            return Ok(());
+        };
+        let mut words = vec![0u64; words_len];
+        let filled = region(
+            self.data,
+            numeric.docs_with_field_offset,
+            numeric.docs_with_field_length,
+        )
+        .ok()
+        .and_then(|r| indexed_disi::or_into_words(r, numeric.dense_rank_power, &mut words).ok());
+        if filled.is_none() {
+            return self.for_each_doc_slow(start, end, f);
+        }
+        // ARITH: `w < words_len`, itself `end / 64` rounded up, and `b < 64`,
+        // so `w * 64 + b` is below `words_len * 64 <= end + 63`.
+        #[allow(clippy::arithmetic_side_effects)]
+        let docs = words.iter().enumerate().flat_map(|(w, &bits)| {
+            let base = w * 64;
+            BitIter(bits).map(move |b| base + b)
+        });
+        // ARITH: a set bit is below `words_len * 64`, derived from an `i32`.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        let docs = docs.map(|d| d as i32).take_while(|&d| d < end);
+        self.stream(0, docs, f)
+    }
+
+    /// [`Self::for_each_doc`] one [`Self::values`] call per document.
+    fn for_each_doc_slow(
+        &mut self,
+        start: i32,
+        end: i32,
+        mut f: impl FnMut(i32, &[i64]),
+    ) -> Result<()> {
+        let mut vals = Vec::new();
+        for doc in start..end {
+            self.values(doc, &mut vals)?;
+            if !vals.is_empty() {
+                f(doc, &vals);
+            }
+        }
+        Ok(())
+    }
+
+    /// The streaming half of [`Self::for_each_doc`]: `docs` are documents with
+    /// values whose ranks run consecutively from `first_rank`.
+    fn stream(
+        &self,
+        first_rank: i64,
+        docs: impl Iterator<Item = i32>,
+        mut f: impl FnMut(i32, &[i64]),
+    ) -> Result<()> {
+        const CHUNK: usize = 256;
+        let numeric = &self.entry.numeric;
+        let (Some(addrs), Some(fast)) =
+            (&self.entry.addresses, FastDense::values(self.data, numeric))
+        else {
+            return Ok(());
+        };
+        let addr_region = region(self.data, addrs.offset, addrs.length)?;
+        let mut rank = first_rank;
+        let mut lo = direct_monotonic::get(addr_region, &addrs.meta, rank)?;
+        let mut buf = [0i64; CHUNK];
+        // `buf[..buf_n]` holds the values at ordinals `buf_lo..buf_lo + buf_n`.
+        let (mut buf_lo, mut buf_n) = (0i64, 0usize);
+        let mut long = Vec::new();
+        for doc in docs {
+            // ARITH: a rank is below the field's document count, an `i32`.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                rank += 1;
+            }
+            let hi = direct_monotonic::get(addr_region, &addrs.meta, rank)?;
+            if lo < 0 || hi < lo || hi > numeric.num_values {
+                return Err(Error::CorruptAddressRange {
+                    field_number: self.entry.field_number,
+                    start: lo,
+                    end: hi,
+                    num_values: numeric.num_values,
+                });
+            }
+            // ARITH: `0 <= lo <= hi <= num_values`, and `buf_lo + buf_n` is a
+            // value ordinal the buffer was filled from, so every difference
+            // below is non-negative and in range.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                if hi > buf_lo + buf_n as i64 {
+                    buf_n = match i32::try_from(lo) {
+                        Ok(at) => fast.fill(at, &mut buf),
+                        Err(_) => 0,
+                    };
+                    buf_lo = lo;
+                }
+                if hi <= buf_lo + buf_n as i64 {
+                    f(doc, &buf[(lo - buf_lo) as usize..(hi - buf_lo) as usize]);
+                } else {
+                    // More values than a chunk, or ones the fast reader
+                    // cannot answer: decode them one by one.
+                    long.clear();
+                    for i in lo..hi {
+                        long.push(decode_value(self.data, numeric, i)?);
+                    }
+                    f(doc, &long);
+                }
+            }
+            lo = hi;
+        }
+        Ok(())
+    }
+}
+
+/// The set bits of a word, lowest first.
+struct BitIter(u64);
+
+impl Iterator for BitIter {
+    type Item = usize;
+
+    #[inline]
+    fn next(&mut self) -> Option<usize> {
+        if self.0 == 0 {
+            return None;
+        }
+        let b = self.0.trailing_zeros() as usize;
+        // ARITH: the word is non-zero here, so `- 1` does not wrap.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            self.0 &= self.0 - 1;
+        }
+        Some(b)
+    }
 }
 
 /// A SORTED column whose dictionary is already built: `dict` sorted and
