@@ -171,6 +171,13 @@ impl Scorer for ConstantScorer<'_> {
         }
         self.inner.contains(doc)
     }
+
+    fn doc_id_run_end(&self) -> i32 {
+        if self.emptied {
+            return self.doc.saturating_add(1);
+        }
+        self.inner.doc_id_run_end()
+    }
 }
 
 /// The anonymous `FilterScorer` `BooleanScorerSupplier.req` wraps a lone
@@ -254,6 +261,11 @@ impl Scorer for AllDocs {
 
     fn contains(&self, doc: i32) -> Option<bool> {
         Some((0..self.max_doc).contains(&doc))
+    }
+
+    /// `DocIdSetIterator.all`'s `docIDRunEnd`: every document to `maxDoc`.
+    fn doc_id_run_end(&self) -> i32 {
+        self.max_doc
     }
 }
 
