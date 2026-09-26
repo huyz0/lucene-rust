@@ -29,9 +29,8 @@ use std::collections::HashMap;
 use lucene_codecs::doc_values::{NumericReader, SortedNumericReader, SortedSetKind};
 use lucene_codecs::terms_dict::TermsDict;
 
-use crate::aggs::{lone_clause, segment_matches};
+use crate::aggs::ColumnRead;
 use crate::directory_reader::SegmentReader;
-use crate::exec;
 use crate::multi_segment::OpenSegment;
 use crate::query::BooleanQuery;
 use crate::Result;
@@ -116,112 +115,103 @@ pub fn terms_sliced(
     shard_size: usize,
     slices: &[Vec<usize>],
 ) -> Result<Vec<TermsResult>> {
-    let rewritten = crate::multi_segment::rewrite_points_ranges(query, segments);
-    let query = rewritten.as_ref().unwrap_or(query);
-    let clause = lone_clause(query);
-    let one = |slice: &Vec<usize>| {
-        let counts = slice_counts(segments, readers, query, &clause, field, slice)?;
-        Ok(select(counts, shard_size))
-    };
-    if slices.len() > 1 {
-        use rayon::prelude::*;
-        return slices.par_iter().map(one).collect();
-    }
-    slices.iter().map(one).collect()
+    let spec = [TermsSpec {
+        field: field.to_string(),
+        shard_size,
+    }];
+    let sliced = crate::aggs::aggregate_sliced(segments, readers, query, &[], &spec, slices)?;
+    Ok(sliced
+        .into_iter()
+        .filter_map(|(_, mut terms)| terms.pop())
+        .collect())
 }
 
-/// Every term's count over one slice's segments.
-fn slice_counts(
-    segments: &[OpenSegment<'_>],
-    readers: &[SegmentReader],
-    query: &BooleanQuery,
-    clause: &crate::query::Clause,
+/// One `terms` aggregation: its field and `shard_size`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TermsSpec {
+    pub field: String,
+    pub shard_size: usize,
+}
+
+/// Per-segment scratch for [`segment_counts`], reused across segments.
+#[derive(Default)]
+pub(crate) struct TermsScratch {
+    ords: Vec<i64>,
+    per_ord: Vec<u64>,
+}
+
+/// Adds one segment's matches to `counts`, per term of `field`: `read` says
+/// how the matches meet the column (see [`crate::aggs::column_read`]).
+pub(crate) fn segment_counts(
+    reader: &SegmentReader,
     field: &str,
-    slice: &[usize],
-) -> Result<HashMap<Vec<u8>, u64>> {
-    let mut counts: HashMap<Vec<u8>, u64> = HashMap::new();
-    let mut docs_buf = Vec::new();
-    let mut ords_buf = Vec::new();
-    let mut per_ord: Vec<u64> = Vec::new();
-    for &i in slice {
-        let (Some(seg), Some(reader)) = (segments.get(i), readers.get(i)) else {
-            return Err(crate::Error::SliceOutOfRange {
-                segment: i,
-                segments: segments.len().min(readers.len()),
-            });
-        };
-        let (ords, dict) = open_ords(reader, field)?;
-        let Some(mut dict) = dict else {
-            continue;
-        };
-        let ctx = exec::LeafContext {
-            fields: seg.fields,
-            doc_in: seg.doc_in,
-            pos_in: seg.pos_in,
-            pay_in: seg.pay_in,
-            live_docs: seg.live_docs,
-            points: seg.points,
-            norms: None,
-            global: None,
-            max_doc: seg.max_doc,
-            cache: seg.cache,
-        };
-        let live = seg.live_docs;
-        let Some(docs) = segment_matches(&ctx, query, clause, live, &mut docs_buf)? else {
-            continue;
-        };
-        let is_live = |doc: i32| live.is_none_or(|l| l.get_doc(doc));
-        per_ord.clear();
-        per_ord.resize(usize::try_from(dict.size()).unwrap_or(0), 0);
-        // An ordinal past the dictionary is corrupt; it is reported by the
-        // term lookup below rather than counted.
-        let mut bad_ord: Option<i64> = None;
-        let mut bump = |ord: i64| match usize::try_from(ord).ok().and_then(|o| per_ord.get_mut(o)) {
-            Some(c) => *c += 1,
-            None => bad_ord = Some(ord),
-        };
-        match (ords, docs) {
-            (Ords::Absent, _) => {}
-            (Ords::Single(mut r), None) => r.for_each_value(0, reader.max_doc, |doc, ord| {
-                if is_live(doc) {
+    read: &ColumnRead<'_>,
+    counts: &mut HashMap<Vec<u8>, u64>,
+    scratch: &mut TermsScratch,
+) -> Result<()> {
+    let (ords, dict) = open_ords(reader, field)?;
+    let Some(mut dict) = dict else {
+        return Ok(());
+    };
+    let TermsScratch {
+        ords: ords_buf,
+        per_ord,
+    } = scratch;
+    per_ord.clear();
+    per_ord.resize(usize::try_from(dict.size()).unwrap_or(0), 0);
+    // An ordinal past the dictionary is corrupt; it is reported by the term
+    // lookup below rather than counted.
+    let mut bad_ord: Option<i64> = None;
+    let mut bump = |ord: i64| match usize::try_from(ord).ok().and_then(|o| per_ord.get_mut(o)) {
+        Some(c) => *c += 1,
+        None => bad_ord = Some(ord),
+    };
+    let max_doc = reader.max_doc;
+    match (ords, read) {
+        (Ords::Absent, _) => {}
+        (Ords::Single(mut r), ColumnRead::Stream(accept)) => {
+            r.for_each_value(0, max_doc, |doc, ord| {
+                if accept.test(doc) {
                     bump(ord);
                 }
-            })?,
-            (Ords::Single(mut r), Some(docs)) => {
-                for &doc in docs {
-                    if let Some(ord) = r.value(doc)? {
-                        bump(ord);
-                    }
+            })?
+        }
+        (Ords::Single(mut r), ColumnRead::Seek(docs)) => {
+            for &doc in *docs {
+                if let Some(ord) = r.value(doc)? {
+                    bump(ord);
                 }
             }
-            (Ords::Multi(mut r), None) => r.for_each_doc(0, reader.max_doc, |doc, ords| {
-                if is_live(doc) {
+        }
+        (Ords::Multi(mut r), ColumnRead::Stream(accept)) => {
+            r.for_each_doc(0, max_doc, |doc, ords| {
+                if accept.test(doc) {
                     for &ord in ords {
                         bump(ord);
                     }
                 }
-            })?,
-            (Ords::Multi(mut r), Some(docs)) => {
-                for &doc in docs {
-                    r.values(doc, &mut ords_buf)?;
-                    for &ord in &ords_buf {
-                        bump(ord);
-                    }
+            })?
+        }
+        (Ords::Multi(mut r), ColumnRead::Seek(docs)) => {
+            for &doc in *docs {
+                r.values(doc, ords_buf)?;
+                for &ord in ords_buf.iter() {
+                    bump(ord);
                 }
             }
         }
-        if let Some(ord) = bad_ord {
-            // Raises the dictionary's own out-of-range error.
-            dict.seek_ord(ord).map_err(store_err)?;
-        }
-        for (ord, &n) in per_ord.iter().enumerate() {
-            if n > 0 {
-                let term = dict.seek_ord(ord as i64).map_err(store_err)?;
-                *counts.entry(term.to_vec()).or_insert(0) += n;
-            }
+    }
+    if let Some(ord) = bad_ord {
+        // Raises the dictionary's own out-of-range error.
+        dict.seek_ord(ord).map_err(store_err)?;
+    }
+    for (ord, &n) in per_ord.iter().enumerate() {
+        if n > 0 {
+            let term = dict.seek_ord(ord as i64).map_err(store_err)?;
+            *counts.entry(term.to_vec()).or_insert(0) += n;
         }
     }
-    Ok(counts)
+    Ok(())
 }
 
 fn store_err(e: lucene_store::Error) -> crate::Error {
@@ -230,7 +220,7 @@ fn store_err(e: lucene_store::Error) -> crate::Error {
 
 /// `buildAggregations`: the top `shard_size` by count desc, term asc; the
 /// others' counts in `other_doc_count`; the kept listed by term.
-fn select(counts: HashMap<Vec<u8>, u64>, shard_size: usize) -> TermsResult {
+pub(crate) fn select(counts: HashMap<Vec<u8>, u64>, shard_size: usize) -> TermsResult {
     let total: u64 = counts.values().sum();
     let mut all: Vec<(Vec<u8>, u64)> = counts.into_iter().collect();
     let by_rank =

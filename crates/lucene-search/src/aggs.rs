@@ -45,7 +45,10 @@ use lucene_util::fixed_bit_set::FixedBitSet;
 use crate::directory_reader::SegmentReader;
 use crate::exec::{self, Mode};
 use crate::multi_segment::OpenSegment;
+use std::collections::HashMap;
+
 use crate::query::{BooleanQuery, Clause};
+use crate::terms_agg::{segment_counts, select, TermsResult, TermsScratch, TermsSpec};
 use crate::Result;
 
 /// How a field's stored longs become the `double`s an aggregation reads.
@@ -78,7 +81,23 @@ pub struct MetricSpec {
     pub field: String,
     pub kind: ValueKind,
     pub source: Source,
+    /// The parts of [`MetricState`] the caller reads ([`NEED_COUNT`] and the
+    /// rest, or [`NEED_ALL`]); the others may be left at their defaults.
+    pub needs: u8,
 }
+
+/// [`MetricState::count`] (`value_count`, `avg`, `stats`).
+pub const NEED_COUNT: u8 = 1;
+/// [`MetricState::sum`] and its delta (`sum`, `avg`, `stats`).
+pub const NEED_SUM: u8 = 2;
+/// [`MetricState::min`]/[`MetricState::max`] over every value (`stats`).
+pub const NEED_MIN_MAX: u8 = 4;
+/// [`MetricState::min_of_mins`] (`min`).
+pub const NEED_MIN: u8 = 8;
+/// [`MetricState::max_of_maxes`] (`max`).
+pub const NEED_MAX: u8 = 16;
+/// Every part.
+pub const NEED_ALL: u8 = NEED_COUNT | NEED_SUM | NEED_MIN_MAX | NEED_MIN | NEED_MAX;
 
 /// A field's state after the pass; see the module doc for what each part
 /// feeds.
@@ -128,32 +147,55 @@ impl MetricState {
         }
     }
 
-    /// A document with the one value `v`.
+    /// A document with the one value `v`, keeping the parts in `N`.
     #[inline]
-    fn one(&mut self, v: f64) {
-        self.count += 1;
-        self.add(v);
-        self.min = java_min(self.min, v);
-        self.max = java_max(self.max, v);
-        self.min_of_mins = java_min(self.min_of_mins, v);
-        self.max_of_maxes = java_max(self.max_of_maxes, v);
-    }
-
-    /// A document's stored values, ascending, read as `kind`.
-    #[inline]
-    fn many(&mut self, kind: ValueKind, values: &[i64]) {
-        let (Some(&first), Some(&last)) = (values.first(), values.last()) else {
-            return;
-        };
-        self.count += values.len() as u64;
-        for &v in values {
-            let v = to_double(kind, v);
+    fn one<const N: u8>(&mut self, v: f64) {
+        if N & NEED_COUNT != 0 {
+            self.count += 1;
+        }
+        if N & NEED_SUM != 0 {
             self.add(v);
+        }
+        if N & NEED_MIN_MAX != 0 {
             self.min = java_min(self.min, v);
             self.max = java_max(self.max, v);
         }
-        self.min_of_mins = java_min(self.min_of_mins, to_double(kind, first));
-        self.max_of_maxes = java_max(self.max_of_maxes, to_double(kind, last));
+        if N & NEED_MIN != 0 {
+            self.min_of_mins = java_min(self.min_of_mins, v);
+        }
+        if N & NEED_MAX != 0 {
+            self.max_of_maxes = java_max(self.max_of_maxes, v);
+        }
+    }
+
+    /// A document's stored values, ascending, read as `kind`, keeping the
+    /// parts in `N`.
+    #[inline]
+    fn many<const N: u8>(&mut self, kind: ValueKind, values: &[i64]) {
+        let (Some(&first), Some(&last)) = (values.first(), values.last()) else {
+            return;
+        };
+        if N & NEED_COUNT != 0 {
+            self.count += values.len() as u64;
+        }
+        if N & (NEED_SUM | NEED_MIN_MAX) != 0 {
+            for &v in values {
+                let v = to_double(kind, v);
+                if N & NEED_SUM != 0 {
+                    self.add(v);
+                }
+                if N & NEED_MIN_MAX != 0 {
+                    self.min = java_min(self.min, v);
+                    self.max = java_max(self.max, v);
+                }
+            }
+        }
+        if N & NEED_MIN != 0 {
+            self.min_of_mins = java_min(self.min_of_mins, to_double(kind, first));
+        }
+        if N & NEED_MAX != 0 {
+            self.max_of_maxes = java_max(self.max_of_maxes, to_double(kind, last));
+        }
     }
 }
 
@@ -416,63 +458,98 @@ pub fn metric_states_sliced(
     specs: &[MetricSpec],
     slices: &[Vec<usize>],
 ) -> Result<Vec<Vec<MetricState>>> {
+    let sliced = aggregate_sliced(segments, readers, query, specs, &[], slices)?;
+    Ok(sliced.into_iter().map(|(states, _)| states).collect())
+}
+
+/// A request's native aggregations in one pass per slice: the metrics of
+/// `specs` and the `terms` of `terms`, each segment's matches collected once
+/// and every column read over them -- per slice, as [`metric_states_sliced`]
+/// and [`crate::terms_agg::terms_sliced`] give them, which it serves.
+///
+/// # Errors
+/// What either reports.
+pub fn aggregate_sliced(
+    segments: &[OpenSegment<'_>],
+    readers: &[SegmentReader],
+    query: &BooleanQuery,
+    specs: &[MetricSpec],
+    terms: &[TermsSpec],
+    slices: &[Vec<usize>],
+) -> Result<Vec<(Vec<MetricState>, Vec<TermsResult>)>> {
     // A field asked for twice the same way (`sum` and `avg` of one field,
     // say) is read once: the state is the same.
     let mut unique: Vec<MetricSpec> = Vec::with_capacity(specs.len());
     let slot: Vec<usize> = specs
         .iter()
         .map(|s| {
-            unique.iter().position(|u| u == s).unwrap_or_else(|| {
-                unique.push(s.clone());
-                unique.len() - 1
-            })
+            let same =
+                |u: &MetricSpec| u.field == s.field && u.kind == s.kind && u.source == s.source;
+            match unique.iter().position(same) {
+                Some(i) => {
+                    unique[i].needs |= s.needs;
+                    i
+                }
+                None => {
+                    unique.push(s.clone());
+                    unique.len() - 1
+                }
+            }
         })
         .collect();
-    let states = unique_states(segments, readers, query, &unique, slices)?;
-    Ok(states
+    let sliced = unique_states(segments, readers, query, &unique, terms, slices)?;
+    Ok(sliced
         .into_iter()
-        .map(|per| slot.iter().map(|&i| per[i]).collect())
+        .map(|(per, t)| (slot.iter().map(|&i| per[i]).collect(), t))
         .collect())
 }
 
-/// [`metric_states_sliced`] over distinct specs.
+/// [`aggregate_sliced`] over distinct specs.
 fn unique_states(
     segments: &[OpenSegment<'_>],
     readers: &[SegmentReader],
     query: &BooleanQuery,
     specs: &[MetricSpec],
+    terms: &[TermsSpec],
     slices: &[Vec<usize>],
-) -> Result<Vec<Vec<MetricState>>> {
+) -> Result<Vec<(Vec<MetricState>, Vec<TermsResult>)>> {
     let rewritten = crate::multi_segment::rewrite_points_ranges(query, segments);
     let query = rewritten.as_ref().unwrap_or(query);
     let clause = lone_clause(query);
     // Slices are independent, as a concurrent search's are: they run on
-    // rayon's pool, one task each, as Lucene hands each to its executor.
-    if slices.len() > 1 {
+    // rayon's pool, one task each, as Lucene hands each to its executor --
+    // unless every aggregation is a points bound (one read per segment),
+    // where handing the slices to other threads costs more than it saves.
+    let points_only = terms.is_empty() && specs.iter().all(|s| s.source != Source::DocValues);
+    if slices.len() > 1 && !points_only {
         use rayon::prelude::*;
         return slices
             .par_iter()
-            .map(|slice| slice_states(segments, readers, query, &clause, specs, slice))
+            .map(|slice| slice_states(segments, readers, query, &clause, specs, terms, slice))
             .collect();
     }
     slices
         .iter()
-        .map(|slice| slice_states(segments, readers, query, &clause, specs, slice))
+        .map(|slice| slice_states(segments, readers, query, &clause, specs, terms, slice))
         .collect()
 }
 
-/// One slice's states: its segments, in order, from fresh states.
+/// One slice's states and terms: its segments, in order, from scratch.
 fn slice_states(
     segments: &[OpenSegment<'_>],
     readers: &[SegmentReader],
     query: &BooleanQuery,
     clause: &Clause,
     specs: &[MetricSpec],
+    terms: &[TermsSpec],
     slice: &[usize],
-) -> Result<Vec<MetricState>> {
+) -> Result<(Vec<MetricState>, Vec<TermsResult>)> {
+    let mut term_counts: Vec<HashMap<Vec<u8>, u64>> = vec![HashMap::new(); terms.len()];
+    let mut terms_scratch = TermsScratch::default();
     let clause = clause.clone();
     let mut raw = Vec::new();
     let mut docs_buf = Vec::new();
+    let mut words = Vec::new();
     let mut precomputed = Vec::with_capacity(specs.len());
     let mut states = vec![MetricState::default(); specs.len()];
     for &i in slice {
@@ -514,7 +591,7 @@ fn slice_states(
             }
             precomputed.push(bound.is_some());
         }
-        if answered == specs.len() {
+        if answered == specs.len() && terms.is_empty() {
             continue;
         }
         // The matches: every live document for a match-all (read straight
@@ -523,47 +600,79 @@ fn slice_states(
         let Some(docs) = segment_matches(&ctx, query, &clause, live, &mut docs_buf)? else {
             continue;
         };
-        let is_live = |doc: i32| live.is_none_or(|l| l.get_doc(doc));
+        let read = column_read(docs, live, reader.max_doc, &mut words);
         // Field by field: each state depends on its own column alone, read
         // in document order, so the order of the sums is Java's.
         for ((spec, state), &done) in specs.iter().zip(&mut states).zip(&precomputed) {
             if done {
                 continue;
             }
-            let kind = spec.kind;
-            match (open_values(reader, &spec.field)?, docs) {
-                (Values::Absent, _) => {}
-                (Values::Single(mut r), None) => {
-                    r.for_each_value(0, reader.max_doc, |doc, v| {
-                        if is_live(doc) {
-                            state.one(to_double(kind, v));
-                        }
-                    })?
+            let values = open_values(reader, &spec.field)?;
+            // The fold, compiled for the parts asked for: a `min` alone skips
+            // the compensated sum. More parts than asked is never wrong.
+            let (kind, max_doc) = (spec.kind, reader.max_doc);
+            match spec.needs {
+                NEED_MIN => fold::<NEED_MIN>(values, &read, state, kind, max_doc, &mut raw)?,
+                NEED_MAX => fold::<NEED_MAX>(values, &read, state, kind, max_doc, &mut raw)?,
+                NEED_COUNT => fold::<NEED_COUNT>(values, &read, state, kind, max_doc, &mut raw)?,
+                n if n & !(NEED_COUNT | NEED_SUM) == 0 => fold::<{ NEED_COUNT | NEED_SUM }>(
+                    values, &read, state, kind, max_doc, &mut raw,
+                )?,
+                _ => fold::<NEED_ALL>(values, &read, state, kind, max_doc, &mut raw)?,
+            }
+        }
+        for (t, counts) in terms.iter().zip(&mut term_counts) {
+            segment_counts(reader, &t.field, &read, counts, &mut terms_scratch)?;
+        }
+    }
+    let terms = terms
+        .iter()
+        .zip(term_counts)
+        .map(|(t, counts)| select(counts, t.shard_size))
+        .collect();
+    Ok((states, terms))
+}
+
+/// One field's column over a segment's matches into `state`, keeping `N`.
+fn fold<const N: u8>(
+    values: Values<'_>,
+    read: &ColumnRead<'_>,
+    state: &mut MetricState,
+    kind: ValueKind,
+    max_doc: i32,
+    raw: &mut Vec<i64>,
+) -> Result<()> {
+    match (values, read) {
+        (Values::Absent, _) => {}
+        (Values::Single(mut r), ColumnRead::Stream(accept)) => {
+            r.for_each_value(0, max_doc, |doc, v| {
+                if accept.test(doc) {
+                    state.one::<N>(to_double(kind, v));
                 }
-                (Values::Single(mut r), Some(docs)) => {
-                    for &doc in docs {
-                        if let Some(v) = r.value(doc)? {
-                            state.one(to_double(kind, v));
-                        }
-                    }
-                }
-                (Values::Multi(mut r), None) => {
-                    r.for_each_doc(0, reader.max_doc, |doc, vals| {
-                        if is_live(doc) {
-                            state.many(kind, vals);
-                        }
-                    })?
-                }
-                (Values::Multi(mut r), Some(docs)) => {
-                    for &doc in docs {
-                        r.values(doc, &mut raw)?;
-                        state.many(kind, &raw);
-                    }
+            })?
+        }
+        (Values::Single(mut r), ColumnRead::Seek(docs)) => {
+            for &doc in *docs {
+                if let Some(v) = r.value(doc)? {
+                    state.one::<N>(to_double(kind, v));
                 }
             }
         }
+        (Values::Multi(mut r), ColumnRead::Stream(accept)) => {
+            r.for_each_doc(0, max_doc, |doc, vals| {
+                if accept.test(doc) {
+                    state.many::<N>(kind, vals);
+                }
+            })?
+        }
+        (Values::Multi(mut r), ColumnRead::Seek(docs)) => {
+            for &doc in *docs {
+                r.values(doc, raw)?;
+                state.many::<N>(kind, raw);
+            }
+        }
     }
-    Ok(states)
+    Ok(())
 }
 
 /// A segment's live matches of `clause`: `None` when it has none (no
@@ -602,6 +711,64 @@ pub(crate) fn segment_matches<'b>(
         buf.sort_unstable();
     }
     Ok(Some(Some(&buf[..])))
+}
+
+/// How a segment's matches meet a column.
+pub(crate) enum ColumnRead<'b> {
+    /// Stream the column; a document counts when `accept` says so: every
+    /// live one (a match-all), or one marked in a bit set of the matches
+    /// (when they are dense enough that one pass down the column beats a
+    /// seek per match).
+    Stream(Accept<'b>),
+    /// Seek each match's values.
+    Seek(&'b [i32]),
+}
+
+/// Which documents a streamed column read keeps.
+pub(crate) enum Accept<'b> {
+    Live(Option<&'b FixedBitSet>),
+    Marked(&'b [u64]),
+}
+
+impl Accept<'_> {
+    #[inline]
+    pub(crate) fn test(&self, doc: i32) -> bool {
+        match self {
+            Accept::Live(live) => live.is_none_or(|l| l.get_doc(doc)),
+            Accept::Marked(words) => {
+                let d = doc as u32 as usize;
+                words.get(d >> 6).is_some_and(|w| w >> (d & 63) & 1 == 1)
+            }
+        }
+    }
+}
+
+/// Streams a column when the matches cover more than a quarter of the
+/// segment -- one decode per stored value and a bit test per document is
+/// then cheaper than a seek per match -- else seeks. `words` holds the bit
+/// set when one is built.
+pub(crate) fn column_read<'b>(
+    docs: Option<&'b [i32]>,
+    live: Option<&'b FixedBitSet>,
+    max_doc: i32,
+    words: &'b mut Vec<u64>,
+) -> ColumnRead<'b> {
+    let Some(docs) = docs else {
+        return ColumnRead::Stream(Accept::Live(live));
+    };
+    let max = usize::try_from(max_doc).unwrap_or(0);
+    if docs.len().saturating_mul(4) <= max {
+        return ColumnRead::Seek(docs);
+    }
+    words.clear();
+    words.resize(max.div_ceil(64), 0);
+    for &d in docs {
+        let d = d as u32 as usize;
+        if let Some(w) = words.get_mut(d >> 6) {
+            *w |= 1 << (d & 63);
+        }
+    }
+    ColumnRead::Stream(Accept::Marked(words))
 }
 
 /// Whether `clause` matches every document, whatever wraps the match-all
@@ -649,7 +816,7 @@ mod tests {
     /// A document's values, as a `double` column holds them.
     fn doc(s: &mut MetricState, values: &[f64]) {
         let stored: Vec<i64> = values.iter().map(|&d| enc(d)).collect();
-        s.many(ValueKind::Double, &stored);
+        s.many::<NEED_ALL>(ValueKind::Double, &stored);
     }
 
     #[test]
@@ -688,7 +855,7 @@ mod tests {
         // A single-valued document feeds every part the same way.
         let (mut one, mut many) = (MetricState::default(), MetricState::default());
         for v in [3.0, -0.0, 0.0, 1e300, f64::NEG_INFINITY] {
-            one.one(v);
+            one.one::<NEED_ALL>(v);
             doc(&mut many, &[v]);
         }
         assert_eq!(format!("{one:?}"), format!("{many:?}"));
