@@ -88,8 +88,9 @@ use std::sync::Arc;
 /// score (`track_scores`); 14, metric aggregations
 /// ([`ffi_jvm_reader_aggregate`], read path R5) and, in the same call, the
 /// `terms` aggregation; 15, `terminate_after` and the concurrent count
-/// replay (read path R7); 16, `min_score` in front of a query blob.
-pub const JVM_ABI_VERSION: u32 = 16;
+/// replay (read path R7); 16, `min_score` in front of a query blob; 17,
+/// [`doc_freq`] (the total-hits shortcut of a term query).
+pub const JVM_ABI_VERSION: u32 = 17;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -1239,6 +1240,23 @@ fn decode_count_spec(blob: &[u8]) -> Result<CountSpec, FfiStatus> {
     Ok((u64::from(n.unsigned_abs()), iterate, slices))
 }
 
+/// `IndexReader.docFreq(new Term(field, term))` over the handle's segments:
+/// OpenSearch's total-hits shortcut for a term query over a reader with no
+/// deletions (`TopDocsCollectorContext.shortcutTotalHitCount`), counted here
+/// rather than by Lucene's own term dictionaries in the JVM -- the native
+/// search reads the same dictionary blocks straight after.
+pub(crate) fn doc_freq(handle: u64, field: &[u8], term: &[u8]) -> Result<i64, FfiStatus> {
+    let field = std::str::from_utf8(field).map_err(|_| {
+        set_last_error("doc_freq: the field name is not UTF-8");
+        FfiStatus::InvalidArgument
+    })?;
+    let h = lookup(handle, "doc_freq: unknown or already-closed handle")?;
+    h.reader.doc_freq(field, term).map_err(|e| {
+        set_last_error(format!("doc_freq: {e}"));
+        FfiStatus::Decode
+    })
+}
+
 /// [`ffi_jvm_reader_count_terminates`] up to its output.
 pub(crate) fn count_terminates_blobs(
     handle: u64,
@@ -2292,6 +2310,24 @@ mod tests {
             blob.splice(at + 1..at + 1, n.to_le_bytes());
         }
         blob
+    }
+
+    #[test]
+    fn doc_freq_is_the_exact_count_of_a_term() {
+        let h = open();
+        let (_, total) = run(h, &term_blob("body", "fox"), 8, true).unwrap();
+        assert_eq!(doc_freq(h, b"body", b"fox"), Ok(total));
+        assert_eq!(doc_freq(h, b"body", b"no-such-term"), Ok(0));
+        assert_eq!(doc_freq(h, b"no-such-field", b"fox"), Ok(0));
+        assert_eq!(
+            doc_freq(h, &[0xff], b"fox"),
+            Err(FfiStatus::InvalidArgument)
+        );
+        assert_eq!(
+            doc_freq(u64::MAX, b"body", b"fox"),
+            Err(FfiStatus::InvalidHandle)
+        );
+        assert_eq!(ffi_close_jvm_reader(h), 0);
     }
 
     #[test]

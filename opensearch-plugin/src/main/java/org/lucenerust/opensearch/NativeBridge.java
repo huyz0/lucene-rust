@@ -13,7 +13,7 @@ package org.lucenerust.opensearch;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 16;
+    public static final int EXPECTED_ABI_VERSION = 17;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -60,6 +60,13 @@ public final class NativeBridge {
      * totalHitsThreshold}. A {@code countLimit} of 0 counts nothing ({@code outCounts[1]} is -1);
      * {@link Long#MAX_VALUE} counts exactly.
      */
+    /**
+     * {@code IndexReader.docFreq(new Term(field, term))} over the reader's segments, into
+     * {@code out[0]}: the total-hits shortcut of a term query, counted by the native term
+     * dictionaries the search reads next.
+     */
+    public static native int docFreq(long handle, byte[] field, byte[] term, long[] out);
+
     public static native int search(
         long handle,
         byte[] query,

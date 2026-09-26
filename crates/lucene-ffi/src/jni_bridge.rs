@@ -423,6 +423,29 @@ pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_countTerminat
 }
 
 #[no_mangle]
+pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_docFreq<'l>(
+    env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    field: JByteArray<'l>,
+    term: JByteArray<'l>,
+    out: JLongArray<'l>,
+) -> jint {
+    run(|| {
+        let field = env
+            .convert_byte_array(&field)
+            .map_err(|e| jni_err(&env, "field", e))?;
+        let term = env
+            .convert_byte_array(&term)
+            .map_err(|e| jni_err(&env, "term", e))?;
+        let n = jvm_reader::doc_freq(handle as u64, &field, &term)?;
+        env.set_long_array_region(&out, 0, &[n])
+            .map_err(|e| jni_err(&env, "out", e))?;
+        Ok(FfiStatus::Ok.code())
+    })
+}
+
+#[no_mangle]
 pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_closeReader(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,

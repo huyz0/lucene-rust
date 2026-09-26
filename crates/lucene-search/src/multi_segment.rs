@@ -1001,6 +1001,23 @@ pub fn search_boolean_query_multi_segment_maxscore_counting(
         norms.len(),
         "one norms entry per segment expected"
     );
+    // `BooleanQuery.rewrite`: a boolean of one scoring clause is that clause.
+    // A lone term runs as the term query it rewrites to -- one dictionary
+    // seek per segment, reused by its scorer, and no segment visited at all
+    // for a term that none of them holds.
+    if let Some(term) = lone_term(query) {
+        let term_norms: Vec<Option<&FieldNorms<'_>>> = norms
+            .iter()
+            .map(|m| m.and_then(|m| m.get(&term.field)))
+            .collect();
+        return search_term_query_multi_segment_counting(
+            segments,
+            term,
+            &term_norms,
+            top_n,
+            total_hits_threshold,
+        );
+    }
     let rewritten = rewrite_points_ranges(query, segments);
     let query = rewritten.as_ref().unwrap_or(query);
     let global = global_boolean_stats(segments, query)?;
@@ -1010,6 +1027,21 @@ pub fn search_boolean_query_multi_segment_maxscore_counting(
         let seg_norms = norms.get(i).copied().flatten();
         crate::search_boolean_query_scored_segment(seg, query, seg_norms, Some(&global), local)
     })
+}
+
+/// The term a boolean of one scoring term clause rewrites to
+/// (`BooleanQuery.rewrite`: a lone `MUST` clause with no `minimumShouldMatch`,
+/// or a lone `SHOULD` clause with it at most 1).
+fn lone_term(query: &BooleanQuery) -> Option<&TermQuery> {
+    let clauses = query.must.len() + query.filter.len() + query.should.len() + query.must_not.len();
+    if clauses != 1 {
+        return None;
+    }
+    match (&query.must[..], &query.should[..]) {
+        ([Clause::Term(t)], _) if query.minimum_should_match == 0 => Some(t),
+        (_, [Clause::Term(t)]) if query.minimum_should_match <= 1 => Some(t),
+        _ => None,
+    }
 }
 
 /// [`search_boolean_query_multi_segment_maxscore_counting`] behind

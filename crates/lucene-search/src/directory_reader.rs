@@ -702,6 +702,24 @@ impl SegmentReader {
         avg_field_length: f32,
         table: Arc<[f32; 256]>,
     ) -> Option<crate::field_norms::FieldNorms<'_>> {
+        Some(match self.norm_source(field)? {
+            NormSource::Unnormed => crate::field_norms::FieldNorms::unnormed_with_table(
+                self.max_doc,
+                avg_field_length,
+                table,
+            ),
+            NormSource::Stored(entry) => crate::field_norms::FieldNorms::with_inverse_table(
+                self.norms_data()?,
+                entry,
+                avg_field_length,
+                table,
+            ),
+        })
+    }
+
+    /// Where this segment's norms for `field` come from, or `None` when it
+    /// has none to score with (see [`Self::field_norms_with_table`]).
+    fn norm_source(&self, field: &str) -> Option<NormSource> {
         let info = self.field_infos.field_by_name(field)?;
         // A field with no term dictionary entry has no counters, and therefore
         // no norms this port will score with -- same precondition
@@ -710,20 +728,20 @@ impl SegmentReader {
         if info.omit_norms {
             // Indexed without norms: every document at norm 1 against the
             // real `avgdl`, as Java's `LeafSimScorer` scores it.
-            return Some(crate::field_norms::FieldNorms::unnormed_with_table(
-                self.max_doc,
-                avg_field_length,
-                table,
-            ));
+            return Some(NormSource::Unnormed);
         }
         let entry = self.norms_entry(info.number)?;
-        let data = self.norms_data()?;
-        Some(crate::field_norms::FieldNorms::with_inverse_table(
-            data,
-            *entry,
-            avg_field_length,
-            table,
-        ))
+        self.norms_data()?;
+        Some(NormSource::Stored(*entry))
+    }
+
+    /// `LeafReader.docFreq(term)`: how many of this segment's documents,
+    /// deleted ones included, hold `term` in `field` (0 when neither is here).
+    pub fn doc_freq(&self, field: &str, term: &[u8]) -> Result<i32> {
+        let Some(terms) = self.fields.field(field) else {
+            return Ok(0);
+        };
+        Ok(terms.try_seek_exact(term)?.map_or(0, |s| s.doc_freq))
     }
 
     /// This segment's `.tmd` aggregate counters for `field`:
@@ -962,6 +980,30 @@ pub struct DirectoryReader {
         std::sync::Mutex<std::collections::HashMap<String, Arc<crate::terms_agg::GlobalOrds>>>,
     /// BM25 norm tables by average field length's bits ([`Self::norm_table`]).
     norm_tables: std::sync::Mutex<std::collections::HashMap<u32, Arc<[f32; 256]>>>,
+    /// Each field's norms across the segments, resolved once
+    /// ([`Self::norms_plan`]).
+    norms_plans: std::sync::Mutex<std::collections::HashMap<String, Arc<NormsPlan>>>,
+}
+
+/// One field's norms over a reader's segments: the reader-wide
+/// `avgFieldLength`, its norm table, and where each segment's norms come from.
+/// What [`DirectoryReader::field_norms_by_field`] used to work out on every
+/// search -- two lookups by name, a norms entry and the field's statistics in
+/// every segment -- and which cannot change for the reader's life.
+#[derive(Debug)]
+struct NormsPlan {
+    avg: f32,
+    table: Arc<[f32; 256]>,
+    segments: Vec<Option<NormSource>>,
+}
+
+/// Where a segment's norms for a field come from.
+#[derive(Debug, Clone, Copy)]
+enum NormSource {
+    /// Indexed without norms: every document at norm 1.
+    Unnormed,
+    /// The segment's `.nvd` at this entry.
+    Stored(NormsEntry),
 }
 
 impl DirectoryReader {
@@ -1043,6 +1085,7 @@ impl DirectoryReader {
             segments,
             global_ords: std::sync::Mutex::default(),
             norm_tables: std::sync::Mutex::default(),
+            norms_plans: std::sync::Mutex::default(),
         })
     }
 
@@ -1146,6 +1189,14 @@ impl DirectoryReader {
         seen.then(|| crate::field_norms::avg_field_length(sum_total_term_freq, doc_count))
     }
 
+    /// `IndexReader.docFreq(term)`: the segments' [`SegmentReader::doc_freq`]
+    /// summed.
+    pub fn doc_freq(&self, field: &str, term: &[u8]) -> Result<i64> {
+        self.segments.iter().try_fold(0i64, |sum, seg| {
+            Ok(sum.saturating_add(i64::from(seg.doc_freq(field, term)?)))
+        })
+    }
+
     /// Every segment's norms for `field`, in commit order, **all built with the
     /// one reader-wide `avgFieldLength`** -- the `Vec` a multi-segment search
     /// function's `norms` parameter wants, with b13's F-26 fixed at the point
@@ -1168,6 +1219,33 @@ impl DirectoryReader {
             .collect()
     }
 
+    /// `field`'s [`NormsPlan`], resolved on first use and kept; `None` when no
+    /// segment has the field.
+    fn norms_plan(&self, field: &str) -> Option<Arc<NormsPlan>> {
+        if let Some(p) = self
+            .norms_plans
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(field)
+        {
+            return Some(p.clone());
+        }
+        let avg = self.avg_field_length(field)?;
+        let table = self.norm_table(avg);
+        let segments = self
+            .segments
+            .iter()
+            .map(|seg| seg.norm_source(field))
+            .collect();
+        let plan = Arc::new(NormsPlan {
+            avg,
+            table,
+            segments,
+        });
+        let mut plans = self.norms_plans.lock().unwrap_or_else(|e| e.into_inner());
+        Some(plans.entry(field.to_string()).or_insert(plan).clone())
+    }
+
     /// [`DirectoryReader::field_norms`] for several fields at once, as the
     /// per-segment `HashMap<String, FieldNorms>` the boolean search functions
     /// take. Each field's `avgFieldLength` is its own reader-wide value.
@@ -1178,20 +1256,35 @@ impl DirectoryReader {
         &self,
         fields: &[String],
     ) -> Vec<HashMap<String, crate::field_norms::FieldNorms<'_>>> {
-        let avgs: Vec<(&String, f32, Arc<[f32; 256]>)> = fields
+        let plans: Vec<(&String, Arc<NormsPlan>)> = fields
             .iter()
-            .filter_map(|f| {
-                self.avg_field_length(f)
-                    .map(|avg| (f, avg, self.norm_table(avg)))
-            })
+            .filter_map(|f| self.norms_plan(f).map(|p| (f, p)))
             .collect();
         self.segments
             .iter()
-            .map(|seg| {
-                avgs.iter()
-                    .filter_map(|(field, avg, table)| {
-                        seg.field_norms_with_table(field, *avg, table.clone())
-                            .map(|n| ((*field).clone(), n))
+            .enumerate()
+            .map(|(i, seg)| {
+                plans
+                    .iter()
+                    .filter_map(|(field, plan)| {
+                        let norms = match plan.segments.get(i).copied().flatten()? {
+                            NormSource::Unnormed => {
+                                crate::field_norms::FieldNorms::unnormed_with_table(
+                                    seg.max_doc,
+                                    plan.avg,
+                                    plan.table.clone(),
+                                )
+                            }
+                            NormSource::Stored(entry) => {
+                                crate::field_norms::FieldNorms::with_inverse_table(
+                                    seg.norms_data()?,
+                                    entry,
+                                    plan.avg,
+                                    plan.table.clone(),
+                                )
+                            }
+                        };
+                        Some(((*field).clone(), norms))
                     })
                     .collect()
             })
@@ -1357,6 +1450,28 @@ mod tests {
         for pair in hits.windows(2) {
             assert!(pair[0].score >= pair[1].score);
         }
+    }
+
+    /// `docFreq` is the number of documents holding the term (the fixture has
+    /// no deletions), and 0 for a term or a field that is not there.
+    #[test]
+    fn doc_freq_counts_the_documents_holding_a_term() {
+        let dir = FsDirectory::open(fixture_dir());
+        let reader = DirectoryReader::open(&dir).unwrap();
+        let opened = reader.open_segments().unwrap();
+        let segments = opened.as_open_segments();
+        let (_, total) = crate::multi_segment::search_term_query_multi_segment_counting(
+            &segments,
+            &TermQuery::new("body", "cat"),
+            &[None],
+            1000,
+            u64::MAX,
+        )
+        .unwrap();
+        assert!(total.value > 0);
+        assert_eq!(reader.doc_freq("body", b"cat").unwrap(), total.value as i64);
+        assert_eq!(reader.doc_freq("body", b"no-such-term").unwrap(), 0);
+        assert_eq!(reader.doc_freq("no-such-field", b"cat").unwrap(), 0);
     }
 
     /// A stored-fields-only segment (no postings/doc-values/norms/term
