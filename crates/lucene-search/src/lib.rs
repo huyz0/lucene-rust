@@ -219,6 +219,7 @@ pub mod similarity;
 pub mod sloppy_phrase;
 pub mod soft_deletes;
 pub mod term_vectors_query;
+pub mod terms_agg;
 pub mod top_field;
 pub mod vector_query;
 pub mod weight_count;
@@ -380,6 +381,9 @@ pub enum Error {
     /// A concurrent-search slice names a segment the reader does not have.
     #[error("aggregation slice names segment {segment} of {segments}")]
     SliceOutOfRange { segment: usize, segments: usize },
+    /// A `terms` aggregation's field has doc values but not keyword ones.
+    #[error("terms aggregation field {0} has non-keyword doc values")]
+    TermsAggType(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
