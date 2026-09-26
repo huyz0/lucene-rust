@@ -52,6 +52,9 @@ public final class SortEncoder {
 
     private SortEncoder() {}
 
+    // getOptimizeSortWithIndexedData is deprecated in 10.5.0 but still read by every comparator
+    // (it disables skipping), so a sort that set it must not run on the always-skipping native side.
+    @SuppressWarnings("deprecation")
     public static Encoded encode(Sort sort, FieldDoc after) {
         SortField[] fields = sort.getSort();
         if (fields.length == 0 || fields.length > MAX_KEYS) {
