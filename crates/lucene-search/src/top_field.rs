@@ -56,7 +56,9 @@
 use std::collections::HashMap;
 
 use lucene_codecs::doc_values::{NumericReader, SortedNumericReader};
+use lucene_codecs::field_infos::IndexOptions;
 use lucene_codecs::points::{IntersectVisitor, PointsReader, PointsScratch, Relation};
+use lucene_codecs::postings::{DocInput, LazyDocsCursor, PostingsFlags};
 use lucene_util::fixed_bit_set::FixedBitSet;
 
 use crate::collector::{ScoreMode, ScoringCollector, TotalHits, TotalHitsRelation};
@@ -212,6 +214,10 @@ pub enum SortError {
     Ordinal(i64),
     #[error("field {0} has doc values of a type that cannot be sorted by term")]
     KeywordType(String),
+    /// `TermOrdValComparator`: a doc-values term the terms index lacks, or
+    /// fewer indexed terms than doc-values ones.
+    #[error("doc-values term {0:?} and the terms index disagree")]
+    TermsIndex(Vec<u8>),
 }
 
 /// `NumericUtils.floatToSortableInt`, over `Float.floatToIntBits` (one NaN).
@@ -631,8 +637,10 @@ const MAX_SKIP_INTERVAL: u32 = 8192;
 
 /// `UpdateableDocIdSetIterator` over what `PointsCompetitiveDISIBuilder`
 /// hands it: all documents, or a materialized set -- sorted ids or, past
-/// `maxDoc / 128` of them, a bit set (`DocIdSetBuilder`'s two forms).
-enum Iter {
+/// `maxDoc / 128` of them, a bit set (`DocIdSetBuilder`'s two forms) -- or,
+/// for a keyword key, `TermOrdValComparator`'s disjunction of the competitive
+/// terms' postings.
+enum Iter<'a> {
     All {
         max_doc: i32,
         doc: i32,
@@ -646,17 +654,19 @@ enum Iter {
         bits: FixedBitSet,
         doc: i32,
     },
+    Union(Box<Union<'a>>),
 }
 
-impl Iter {
+impl Iter<'_> {
     fn doc_id(&self) -> i32 {
         match self {
             Iter::All { doc, .. } | Iter::Docs { doc, .. } | Iter::Bits { doc, .. } => *doc,
+            Iter::Union(u) => u.doc,
         }
     }
 
-    fn advance(&mut self, target: i32) -> i32 {
-        match self {
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        Ok(match self {
             Iter::All { max_doc, doc } => {
                 *doc = if target >= *max_doc {
                     NO_MORE_DOCS
@@ -686,6 +696,74 @@ impl Iter {
                     .map_or(NO_MORE_DOCS, |d| d as i32);
                 *doc
             }
+            Iter::Union(u) => u.advance(target)?,
+        })
+    }
+}
+
+/// `PostingsBasedCompetitiveState`'s disjunction: the postings of a run of
+/// consecutive ordinals, in ordinal order, and a heap of them by document.
+struct Union<'a> {
+    /// `postings`: each competitive term's cursor and ordinal; the live ones
+    /// are `legs[lo..hi]`.
+    legs: Vec<(LazyDocsCursor<'a>, i32)>,
+    lo: usize,
+    hi: usize,
+    /// `disjunction`: indices into `legs`, least document first.
+    heap: Vec<usize>,
+    doc: i32,
+}
+
+impl Union<'_> {
+    /// `disjunction.clear(); disjunction.addAll(postings)`, the cursors where
+    /// they are.
+    fn rebuild(&mut self) {
+        self.heap.clear();
+        self.heap.extend(self.lo..self.hi);
+        let legs = &self.legs;
+        self.heap.sort_by_key(|&i| legs[i].0.doc_id());
+    }
+
+    /// `updateTop`: the top moved; sink it.
+    fn sift_down(&mut self) {
+        let n = self.heap.len();
+        let key = |u: &Self, at: usize| u.legs[u.heap[at]].0.doc_id();
+        let mut i = 0;
+        loop {
+            let l = 2 * i + 1;
+            if l >= n {
+                break;
+            }
+            let r = l + 1;
+            let c = if r < n && key(self, r) < key(self, l) {
+                r
+            } else {
+                l
+            };
+            if key(self, c) >= key(self, i) {
+                break;
+            }
+            self.heap.swap(i, c);
+            i = c;
+        }
+    }
+
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        loop {
+            let Some(&top) = self.heap.first() else {
+                self.doc = NO_MORE_DOCS;
+                return Ok(self.doc);
+            };
+            let d = self.legs[top].0.doc_id();
+            if d >= target {
+                self.doc = d;
+                return Ok(d);
+            }
+            self.legs[top]
+                .0
+                .advance(target)
+                .map_err(|e| crate::Error::from(crate::blocktree::Error::Postings(e)))?;
+            self.sift_down();
         }
     }
 }
@@ -698,7 +776,7 @@ struct Competitive<'a> {
     point_doc_count: i32,
     max_doc: i32,
     leaf_top_set: bool,
-    iter: Iter,
+    iter: Iter<'a>,
     min_value: i64,
     max_value: i64,
     max_doc_visited: i32,
@@ -731,6 +809,27 @@ enum WithValue<'a> {
 }
 
 impl<'a> WithValue<'a> {
+    /// The set as an iterator.
+    fn iter(self, max_doc: i32) -> Result<Iter<'a>> {
+        Ok(match self {
+            WithValue::None => Iter::Docs {
+                docs: Vec::new(),
+                next: 0,
+                doc: -1,
+            },
+            WithValue::All => Iter::All { max_doc, doc: -1 },
+            WithValue::Disi {
+                region,
+                dense_rank_power,
+            } => Iter::Docs {
+                docs: lucene_codecs::indexed_disi::decode_doc_ids(region, dense_rank_power)
+                    .map_err(|e| crate::Error::from(lucene_codecs::doc_values::Error::from(e)))?,
+                next: 0,
+                doc: -1,
+            },
+        })
+    }
+
     fn of(data: &'a [u8], e: &lucene_codecs::doc_values::NumericEntry) -> Self {
         if e.is_empty_field() {
             return WithValue::None;
@@ -865,28 +964,7 @@ impl Competitive<'_> {
             self.update_skip_interval(false);
             if i64::from(self.point_doc_count) < self.iterator_cost {
                 // Use the set of documents with values to drive iteration.
-                self.iter = match self.with_value {
-                    WithValue::None => Iter::Docs {
-                        docs: Vec::new(),
-                        next: 0,
-                        doc: -1,
-                    },
-                    WithValue::All => Iter::All {
-                        max_doc: self.max_doc,
-                        doc: -1,
-                    },
-                    WithValue::Disi {
-                        region,
-                        dense_rank_power,
-                    } => Iter::Docs {
-                        docs: lucene_codecs::indexed_disi::decode_doc_ids(region, dense_rank_power)
-                            .map_err(|e| {
-                                crate::Error::from(lucene_codecs::doc_values::Error::from(e))
-                            })?,
-                        next: 0,
-                        doc: -1,
-                    },
-                };
+                self.iter = self.with_value.iter(self.max_doc)?;
                 self.iterator_cost = i64::from(self.point_doc_count);
             }
             return Ok(());
@@ -1105,6 +1183,10 @@ enum OrdColumn<'a> {
 
 impl OrdColumn<'_> {
     /// `advanceExact` + `ordValue`, `-1` for a document without a value.
+    //
+    // SENTINEL: `-1` = "no value", outside the domain of an ordinal (Java's
+    // `getOrdForDoc`). Its callers, `LeafStr::{compare_bottom, compare_top,
+    // copy}` through `LeafStr::ord`, test `== -1`.
     fn ord(&mut self, doc: i32) -> Result<i32> {
         let v = match self {
             OrdColumn::Absent => None,
@@ -1135,7 +1217,31 @@ struct LeafStr<'a> {
     missing_ord: i32,
     /// The last document read, so `compareBottom` and `copy` read once.
     cached: (i32, i32),
+    /// `competitiveState`, when this key may skip documents.
+    competitive: Option<StrCompetitive<'a>>,
 }
+
+/// `TermOrdValComparator`'s `CompetitiveState`: `EmptyCompetitiveState` for
+/// a segment without the field, `PostingsBasedCompetitiveState` for an
+/// indexed one.
+struct StrCompetitive<'a> {
+    /// The field's terms and postings; `None` for `EmptyCompetitiveState`.
+    postings: Option<(&'a crate::blocktree::FieldTerms, &'a DocInput<'a>)>,
+    /// Every document has a term.
+    dense: bool,
+    /// The column's documents with a value (`getSortedDocValues` as an
+    /// iterator), for when too many terms compete.
+    with_value: WithValue<'a>,
+    docs_with_field_set: bool,
+    max_doc: i32,
+    /// `postings != null`.
+    initialized: bool,
+    iter: Iter<'a>,
+}
+
+/// `PostingsBasedCompetitiveState.MAX_TERMS`, capped (as Lucene caps it) by
+/// `IndexSearcher.getMaxClauseCount()`'s default, which is the same.
+const MAX_COMPETITIVE_TERMS: i64 = 1024;
 
 impl<'a> LeafStr<'a> {
     fn ord(&mut self, doc: i32) -> Result<i32> {
@@ -1147,7 +1253,10 @@ impl<'a> LeafStr<'a> {
 
     /// `lookupTerm`: the term's ordinal here, or `-insertion - 1`; `-1` in a
     /// segment without the field (`DocValues.emptySorted`).
-    fn lookup(&mut self, term: &[u8]) -> Result<i32> {
+    //
+    // SENTINEL: none -- `-1` is `lookupTerm`'s "insert before ordinal 0", in
+    // its domain. Every caller tests `< 0`/`>= 0` for found.
+    fn lookup_term(&mut self, term: &[u8]) -> Result<i32> {
         let Some(d) = self.dict.as_mut() else {
             return Ok(-1);
         };
@@ -1158,12 +1267,14 @@ impl<'a> LeafStr<'a> {
     /// `lookupOrd`.
     fn term(&mut self, ord: i32) -> Result<Vec<u8>> {
         match self.dict.as_mut() {
-            Some(d) => Ok(d.seek_exact(i64::from(ord)).map_err(store_err)?.to_vec()),
+            Some(d) => Ok(d.seek_ord(i64::from(ord)).map_err(store_err)?.to_vec()),
             None => Err(SortError::Ordinal(i64::from(ord)).into()),
         }
     }
 
     /// `compareBottom`.
+    //
+    // SENTINEL: none -- `-1` is a comparison result, in the domain.
     fn compare_bottom(&mut self, doc: i32) -> Result<i32> {
         let mut o = self.ord(doc)?;
         if o == -1 {
@@ -1179,6 +1290,8 @@ impl<'a> LeafStr<'a> {
     }
 
     /// `compareTop`.
+    //
+    // SENTINEL: none -- `-1` is a comparison result, in the domain.
     fn compare_top(&mut self, doc: i32) -> Result<i32> {
         let mut o = self.ord(doc)?;
         if o == -1 {
@@ -1219,7 +1332,7 @@ impl<'a> LeafStr<'a> {
             st.reader_gen[slot] = st.current_gen;
         } else {
             let value = st.values[slot].clone().unwrap_or_default();
-            let o = self.lookup(&value)?;
+            let o = self.lookup_term(&value)?;
             if o < 0 {
                 self.bottom_ord = -o - 2;
                 self.bottom_same_reader = false;
@@ -1228,6 +1341,162 @@ impl<'a> LeafStr<'a> {
                 self.bottom_same_reader = true;
                 st.reader_gen[slot] = st.current_gen;
                 st.ords[slot] = o;
+            }
+        }
+        Ok(())
+    }
+
+    /// `updateCompetitiveIterator`: the ordinals that can still compete,
+    /// from the top (search after) to the bottom, or nothing while missing
+    /// values still compete.
+    fn update_competitive(&mut self, c: &Comparator) -> Result<()> {
+        let Some(st) = c.strs.as_deref() else {
+            return Ok(());
+        };
+        let Some(comp) = self.competitive.as_ref() else {
+            return Ok(());
+        };
+        if !c.hits_threshold_reached || st.bottom_slot.is_none() {
+            return Ok(());
+        }
+        let dense = comp.dense;
+        let missing_last = self.missing_ord == i32::MAX;
+        let value_count = self.value_count();
+        let single = c.single_sort;
+        let top_set = st.top.is_some();
+        let (min_ord, max_ord): (i64, i64) = if !c.field.reverse {
+            let min_ord = if top_set {
+                if self.top_same_reader {
+                    i64::from(self.top_ord)
+                } else {
+                    i64::from(self.top_ord) + 1
+                }
+            } else if missing_last || dense {
+                0
+            } else {
+                -1
+            };
+            let max_ord = if self.bottom_ord == self.missing_ord {
+                if single {
+                    value_count - 1
+                } else {
+                    i64::from(i32::MAX)
+                }
+            } else if self.bottom_same_reader && single {
+                i64::from(self.bottom_ord) - 1
+            } else {
+                i64::from(self.bottom_ord)
+            };
+            (min_ord, max_ord)
+        } else {
+            let min_ord = if self.bottom_ord == self.missing_ord {
+                if single {
+                    0
+                } else {
+                    -1
+                }
+            } else if self.bottom_same_reader {
+                i64::from(self.bottom_ord) + i64::from(single)
+            } else {
+                i64::from(self.bottom_ord) + 1
+            };
+            let max_ord = if top_set {
+                i64::from(self.top_ord)
+            } else if !missing_last || dense {
+                value_count - 1
+            } else {
+                i64::from(i32::MAX)
+            };
+            (min_ord, max_ord)
+        };
+        if min_ord == -1 || max_ord == i64::from(i32::MAX) {
+            // Missing values still compete: nothing can be skipped yet.
+            return Ok(());
+        }
+        self.update_state(min_ord, max_ord)
+    }
+
+    /// `getValueCount`.
+    fn value_count(&self) -> i64 {
+        self.dict.as_ref().map_or(0, |d| d.size())
+    }
+
+    /// `CompetitiveState.update(minOrd, maxOrd)`.
+    fn update_state(&mut self, min_ord: i64, max_ord: i64) -> Result<()> {
+        let Some(comp) = self.competitive.as_mut() else {
+            return Ok(());
+        };
+        let Some((terms, doc_in)) = comp.postings else {
+            // `EmptyCompetitiveState`.
+            comp.iter = Iter::Docs {
+                docs: Vec::new(),
+                next: 0,
+                doc: -1,
+            };
+            return Ok(());
+        };
+        let size = (max_ord - min_ord + 1).max(0);
+        if size > MAX_COMPETITIVE_TERMS {
+            if !comp.dense && !comp.docs_with_field_set {
+                comp.docs_with_field_set = true;
+                comp.iter = comp.with_value.iter(comp.max_doc)?;
+            }
+            return Ok(());
+        }
+        if !comp.initialized {
+            comp.initialized = true;
+            let mut legs = Vec::with_capacity(size as usize);
+            if size > 0 {
+                // `init`: the doc-values term of `minOrd`, found in the terms
+                // index, and the next `size - 1` terms after it.
+                let dict = self.dict.as_mut().ok_or(SortError::Ordinal(min_ord))?;
+                let min_term = dict.seek_ord(min_ord).map_err(store_err)?.to_vec();
+                let mut te = terms.iter();
+                let pe = |e| crate::Error::from(e);
+                if te.try_seek_ceil(&min_term).map_err(pe)? != crate::blocktree::SeekStatus::Found {
+                    return Err(SortError::TermsIndex(min_term).into());
+                }
+                let mut ord = min_ord;
+                loop {
+                    let seeked = te
+                        .try_seeked_term()
+                        .map_err(pe)?
+                        .ok_or_else(|| SortError::TermsIndex(min_term.clone()))?;
+                    let cursor = terms
+                        .lazy_postings_for(&seeked, doc_in, PostingsFlags::DocsOnly)
+                        .map_err(pe)?;
+                    legs.push((cursor, ord as i32));
+                    if ord == max_ord {
+                        break;
+                    }
+                    ord += 1;
+                    if te.try_next_term().map_err(pe)?.is_none() {
+                        return Err(SortError::TermsIndex(min_term).into());
+                    }
+                }
+            }
+            let hi = legs.len();
+            let mut u = Union {
+                legs,
+                lo: 0,
+                hi,
+                heap: Vec::with_capacity(hi),
+                doc: -1,
+            };
+            u.rebuild();
+            comp.iter = Iter::Union(Box::new(u));
+            return Ok(());
+        }
+        if let Iter::Union(u) = &mut comp.iter {
+            if (size as usize) < u.hi - u.lo {
+                // One or more ordinals left the range.
+                while u.lo < u.hi && i64::from(u.legs[u.lo].1) < min_ord {
+                    u.lo += 1;
+                }
+                while u.lo < u.hi && i64::from(u.legs[u.hi - 1].1) > max_ord {
+                    u.hi -= 1;
+                }
+                u.rebuild();
             }
         }
         Ok(())
@@ -1256,7 +1525,12 @@ fn store_err(e: lucene_store::Error) -> crate::Error {
 /// A keyword key's column and terms dictionary in one segment: a
 /// `SORTED_SET` column (single-valued or through the selector) or a `SORTED`
 /// one; none at all sorts every document as missing (`DocValues.emptySorted`).
-fn open_str<'a>(reader: &'a SegmentReader, f: &SortField) -> Result<LeafStr<'a>> {
+fn open_str<'a>(
+    reader: &'a SegmentReader,
+    seg: &OpenSegment<'a>,
+    c: &Comparator,
+) -> Result<LeafStr<'a>> {
+    let f = &c.field;
     use lucene_codecs::doc_values::SortedSetKind;
     use lucene_codecs::terms_dict::TermsDict;
     let info = reader
@@ -1269,14 +1543,15 @@ fn open_str<'a>(reader: &'a SegmentReader, f: &SortField) -> Result<LeafStr<'a>>
             .doc_values_for_field(i.number)
             .map(|dv| (i.number, dv))
     });
-    let (column, dict) = match dv {
-        None => (OrdColumn::Absent, None),
+    let (column, dict, with_value) = match dv {
+        None => (OrdColumn::Absent, None, WithValue::None),
         Some((num, (meta, data))) => {
             if let Some(e) = meta.sorted_set_entry(num) {
                 match &e.kind {
                     SortedSetKind::Single(se) => (
                         OrdColumn::Single(NumericReader::new(data, &se.ords)),
                         Some(TermsDict::open(data, &se.terms).map_err(store_err)?),
+                        WithValue::of(data, &se.ords),
                     ),
                     SortedSetKind::Multi { ords, terms } => (
                         OrdColumn::Multi(
@@ -1285,12 +1560,14 @@ fn open_str<'a>(reader: &'a SegmentReader, f: &SortField) -> Result<LeafStr<'a>>
                             f.selector,
                         ),
                         Some(TermsDict::open(data, terms).map_err(store_err)?),
+                        WithValue::of(data, &ords.numeric),
                     ),
                 }
             } else if let Some(se) = meta.sorted_entry(num) {
                 (
                     OrdColumn::Single(NumericReader::new(data, &se.ords)),
                     Some(TermsDict::open(data, &se.terms).map_err(store_err)?),
+                    WithValue::of(data, &se.ords),
                 )
             } else if meta.numeric_entry(num).is_some()
                 || meta.sorted_numeric_entry(num).is_some()
@@ -1298,11 +1575,44 @@ fn open_str<'a>(reader: &'a SegmentReader, f: &SortField) -> Result<LeafStr<'a>>
             {
                 return Err(SortError::KeywordType(f.field.clone()).into());
             } else {
-                (OrdColumn::Absent, None)
+                (OrdColumn::Absent, None, WithValue::None)
             }
         }
     };
     let missing_ord = if f.missing != 0 { i32::MAX } else { -1 };
+    // `canSkipDocuments`, then the competitive state the field allows.
+    let max_doc = reader.max_doc;
+    let state = |postings, dense| StrCompetitive {
+        postings,
+        dense,
+        with_value,
+        docs_with_field_set: false,
+        max_doc,
+        initialized: false,
+        iter: Iter::All { max_doc, doc: -1 },
+    };
+    let missing_last = f.missing != 0;
+    let top_set = c.strs.as_ref().is_some_and(|st| st.top.is_some());
+    let should_skip = |dense: bool| dense || top_set || f.reverse != missing_last;
+    let competitive = match info {
+        _ if c.pruning == Pruning::None => None,
+        // `EmptyCompetitiveState`: a segment without the field.
+        None => Some(state(None, false)),
+        Some(i) if i.index_options != IndexOptions::None => {
+            match (seg.fields.field(&f.field), seg.doc_in) {
+                (Some(terms), Some(doc_in)) => {
+                    let dense = terms.doc_count == max_doc;
+                    should_skip(dense).then(|| state(Some((terms, doc_in)), dense))
+                }
+                // Indexed, but no terms here: nothing to build a
+                // disjunction from, so nothing is skipped.
+                _ => None,
+            }
+        }
+        // A doc-values skip index is not used (no
+        // `SkipperBasedCompetitiveState`): the column is scanned.
+        Some(_) => None,
+    };
     Ok(LeafStr {
         column,
         dict,
@@ -1312,6 +1622,7 @@ fn open_str<'a>(reader: &'a SegmentReader, f: &SortField) -> Result<LeafStr<'a>>
         top_ord: missing_ord,
         missing_ord,
         cached: (-1, 0),
+        competitive,
     })
 }
 
@@ -1319,10 +1630,11 @@ fn open_str<'a>(reader: &'a SegmentReader, f: &SortField) -> Result<LeafStr<'a>>
 fn open_leaf<'a>(
     tf: &mut TopField,
     reader: &'a SegmentReader,
-    points: Option<&'a crate::points_query::PointsInput<'a>>,
-    doc_base: i32,
+    seg: &OpenSegment<'a>,
     cost: i64,
 ) -> Result<Leaf<'a>> {
+    let points = seg.points;
+    let doc_base = seg.doc_base;
     let max_doc = reader.max_doc;
     let mut keys = Vec::with_capacity(tf.comps.len());
     for c in &tf.comps {
@@ -1330,7 +1642,7 @@ fn open_leaf<'a>(
         keys.push(match f.ty {
             SortType::Score => LeafKey::Score,
             SortType::Doc => LeafKey::Doc,
-            SortType::String => LeafKey::Str(Box::new(open_str(reader, f)?)),
+            SortType::String => LeafKey::Str(Box::new(open_str(reader, seg, c)?)),
             _ => {
                 let info = reader
                     .field_infos()
@@ -1435,11 +1747,12 @@ fn open_leaf<'a>(
     // `getLeafComparator` for a keyword key: a new reader generation, the
     // search-after term and the bottom looked up in this segment.
     for (i, key) in keys.iter_mut().enumerate() {
-        if let (LeafKey::Str(k), Some(st)) = (key, tf.comps[i].strs.as_mut()) {
+        let c = &mut tf.comps[i];
+        if let (LeafKey::Str(k), Some(st)) = (key, c.strs.as_mut()) {
             st.current_gen += 1;
             match st.top.clone() {
                 Some(top) => {
-                    let o = k.lookup(&top)?;
+                    let o = k.lookup_term(&top)?;
                     if o >= 0 {
                         k.top_same_reader = true;
                         k.top_ord = o;
@@ -1456,6 +1769,7 @@ fn open_leaf<'a>(
             if let Some(b) = st.bottom_slot {
                 k.set_bottom(st, b)?;
             }
+            k.update_competitive(c)?;
         }
     }
     let after_doc = tf
@@ -1473,7 +1787,7 @@ fn open_leaf<'a>(
     })
 }
 
-impl Leaf<'_> {
+impl<'a> Leaf<'a> {
     /// Key `i`'s value for `doc`. A score is read from `scorer` the first
     /// time it is needed for a document and kept (`ScoreCachingWrappingScorer`);
     /// with no scorer, [`Self::score`] already holds it.
@@ -1550,6 +1864,7 @@ impl Leaf<'_> {
             c.bottom = c.values[slot];
             if let (LeafKey::Str(k), Some(st)) = (&mut self.keys[i], c.strs.as_mut()) {
                 k.set_bottom(st, slot)?;
+                k.update_competitive(c)?;
                 continue;
             }
             if let LeafKey::Numeric(n) = &mut self.keys[i] {
@@ -1564,18 +1879,26 @@ impl Leaf<'_> {
 
     fn set_hits_threshold_reached(&mut self, tf: &mut TopField) -> Result<()> {
         let c = &mut tf.comps[0];
-        if let LeafKey::Numeric(n) = &mut self.keys[0] {
-            c.hits_threshold_reached = true;
-            if let Some(comp) = n.competitive.as_mut() {
-                comp.update(c)?;
+        match &mut self.keys[0] {
+            LeafKey::Numeric(n) => {
+                c.hits_threshold_reached = true;
+                if let Some(comp) = n.competitive.as_mut() {
+                    comp.update(c)?;
+                }
             }
+            LeafKey::Str(k) => {
+                c.hits_threshold_reached = true;
+                k.update_competitive(c)?;
+            }
+            _ => {}
         }
         Ok(())
     }
 
-    fn competitive(&mut self) -> Option<&mut Iter> {
+    fn competitive(&mut self) -> Option<&mut Iter<'a>> {
         match self.keys.first_mut() {
             Some(LeafKey::Numeric(n)) => n.competitive.as_mut().map(|c| &mut c.iter),
+            Some(LeafKey::Str(k)) => k.competitive.as_mut().map(|c| &mut c.iter),
             _ => None,
         }
     }
@@ -1829,13 +2152,7 @@ pub fn search_sorted(
             let Some(mut bulk) = exec::bulk_boolean(&ctx, query, 1.0, mode)? else {
                 continue;
             };
-            let mut leaf = open_leaf(
-                &mut tf,
-                reader,
-                seg.points,
-                seg.doc_base,
-                i64::from(reader.max_doc),
-            )?;
+            let mut leaf = open_leaf(&mut tf, reader, seg, i64::from(reader.max_doc))?;
             let mut c = BulkLeaf {
                 tf: &mut tf,
                 leaf: &mut leaf,
@@ -1868,7 +2185,7 @@ pub fn search_sorted(
         } else {
             None
         };
-        let mut leaf = open_leaf(&mut tf, reader, seg.points, seg.doc_base, scorer.cost())?;
+        let mut leaf = open_leaf(&mut tf, reader, seg, scorer.cost())?;
         score_competitive(
             &mut *scorer,
             scores.as_mut(),
@@ -1908,7 +2225,7 @@ fn score_competitive(
                 .filter(|it| !matches!(it, Iter::All { .. }))
             {
                 let d = if it.doc_id() < doc {
-                    it.advance(doc)
+                    it.advance(doc)?
                 } else {
                     it.doc_id()
                 };
@@ -1941,7 +2258,7 @@ fn score_competitive(
         }
         if let Some(it) = leaf.competitive() {
             if it.doc_id() < doc {
-                let next = it.advance(doc);
+                let next = it.advance(doc)?;
                 if next != doc {
                     doc = scorer.advance(next)?;
                     continue;
@@ -2088,6 +2405,17 @@ mod tests {
         top_n: usize,
         after: Option<&FieldDoc>,
     ) -> Result<TopFieldDocs> {
+        run_t(reader, q, sort, top_n, u64::MAX, after)
+    }
+
+    fn run_t(
+        reader: &DirectoryReader,
+        q: &BooleanQuery,
+        sort: &[SortField],
+        top_n: usize,
+        threshold: u64,
+        after: Option<&FieldDoc>,
+    ) -> Result<TopFieldDocs> {
         let mut opened = reader.open_segments().expect("open");
         opened.open_points().expect("points");
         let segments = opened.as_open_segments();
@@ -2099,9 +2427,99 @@ mod tests {
             &norms,
             sort,
             top_n,
-            u64::MAX,
+            threshold,
             after,
         )
+    }
+
+    fn keyword(field: &str, reverse: bool, missing_last: bool) -> SortField {
+        SortField {
+            missing: i64::from(missing_last),
+            ..SortField::string(field, reverse)
+        }
+    }
+
+    #[test]
+    fn skipping_by_term_never_changes_the_keyword_hits() {
+        // Every competitive-state form: postings (sparse `k`, multi-valued
+        // `km`, dense `kd`), an indexed field without doc values (`id`: no
+        // terms to compete, so nothing does), a field no segment has
+        // (`EmptyCompetitiveState`), and the missing-first/last cases that
+        // keep everything.
+        let reader = fixture("keyword_sort_index");
+        let mut sorts = Vec::new();
+        for field in ["k", "km", "kd", "id", "nosuch"] {
+            for reverse in [false, true] {
+                for last in [false, true] {
+                    sorts.push(vec![keyword(field, reverse, last)]);
+                    sorts.push(vec![keyword(field, reverse, last), SortField::doc()]);
+                }
+            }
+        }
+        sorts.push(vec![SortField {
+            selector: Selector::Max,
+            ..keyword("km", true, true)
+        }]);
+        let mut checked = 0;
+        for sort in &sorts {
+            for top_n in [1, 7] {
+                let exact = run(&reader, &all(), sort, top_n, None).unwrap();
+                let pruned = run_t(&reader, &all(), sort, top_n, 0, None).unwrap();
+                assert_eq!(pruned.hits, exact.hits, "{sort:?} top {top_n}");
+                let Some(last) = exact.hits.last() else {
+                    continue;
+                };
+                let exact2 = run(&reader, &all(), sort, top_n, Some(last)).unwrap();
+                let pruned2 = run_t(&reader, &all(), sort, top_n, 0, Some(last)).unwrap();
+                assert_eq!(pruned2.hits, exact2.hits, "{sort:?} top {top_n} after");
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, sorts.len() * 2);
+        // A field no segment has sorts every document as missing: the first
+        // documents, in order, and a search-after term looked up nowhere.
+        let absent = [keyword("nosuch", false, true)];
+        let got = run_t(&reader, &all(), &absent, 3, 0, None).unwrap();
+        let docs: Vec<i32> = got.hits.iter().map(|h| h.doc).collect();
+        assert!(
+            docs.len() == 3 && docs.windows(2).all(|w| w[0] < w[1]),
+            "{docs:?}"
+        );
+        assert!(got.hits.iter().all(|h| h.terms == [None]));
+        assert_eq!(got.total.relation, TotalHitsRelation::GreaterThanOrEqualTo);
+        let after = FieldDoc {
+            doc: 5,
+            values: vec![0],
+            terms: vec![Some(b"m".to_vec())],
+        };
+        // Missing sorts last, so every document is after the term.
+        let got = run_t(&reader, &all(), &absent, 2, 0, Some(&after)).unwrap();
+        assert_eq!(
+            got.hits.iter().map(|h| h.doc).collect::<Vec<_>>(),
+            docs[..2]
+        );
+    }
+
+    #[test]
+    fn a_keyword_key_needs_a_sorted_column_and_a_numeric_key_a_numeric_one() {
+        let reader = fixture("keyword_sort_index");
+        let err = run(&reader, &all(), &[keyword("i", false, true)], 3, None).unwrap_err();
+        assert!(
+            matches!(err, crate::Error::Sort(SortError::KeywordType(ref f)) if f == "i"),
+            "{err}"
+        );
+        let err = run(
+            &reader,
+            &all(),
+            &[SortField::numeric("k", SortType::Long, false)],
+            3,
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, crate::Error::Sort(SortError::DocValuesType(ref f)) if f == "k"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -2234,17 +2652,17 @@ mod tests {
         ];
         for it in &mut forms {
             assert_eq!(it.doc_id(), -1);
-            assert_eq!(it.advance(0), 3);
-            assert_eq!(it.advance(4), 9);
-            assert_eq!(it.advance(9), 9);
-            assert_eq!(it.advance(21), NO_MORE_DOCS);
+            assert_eq!(it.advance(0).unwrap(), 3);
+            assert_eq!(it.advance(4).unwrap(), 9);
+            assert_eq!(it.advance(9).unwrap(), 9);
+            assert_eq!(it.advance(21).unwrap(), NO_MORE_DOCS);
         }
         let mut all = Iter::All {
             max_doc: 5,
             doc: -1,
         };
-        assert_eq!(all.advance(2), 2);
-        assert_eq!(all.advance(5), NO_MORE_DOCS);
+        assert_eq!(all.advance(2).unwrap(), 2);
+        assert_eq!(all.advance(5).unwrap(), NO_MORE_DOCS);
     }
 
     #[test]

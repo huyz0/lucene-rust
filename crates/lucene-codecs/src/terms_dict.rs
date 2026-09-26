@@ -467,7 +467,7 @@ impl<'a> TermsDict<'a> {
     // and `(block << 6) - 1 >= -1` are in range, and `self.ord + 1 <= ord`
     // inside the loop.
     #[allow(clippy::arithmetic_side_effects)]
-    pub fn seek_exact(&mut self, ord: i64) -> Result<&[u8]> {
+    pub fn seek_ord(&mut self, ord: i64) -> Result<&[u8]> {
         if ord < 0 || ord >= self.size {
             return Err(lucene_store::Error::Corrupted(format!(
                 "terms dict ordinal {ord} outside 0..{}",
