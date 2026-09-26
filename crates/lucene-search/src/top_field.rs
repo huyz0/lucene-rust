@@ -938,7 +938,7 @@ type Sc<'s> = Option<&'s mut dyn Scorer>;
 enum LeafKey<'a> {
     Score,
     Doc,
-    Numeric(LeafNumeric<'a>),
+    Numeric(Box<LeafNumeric<'a>>),
 }
 
 /// `TopFieldLeafCollector` for one segment.
@@ -1062,13 +1062,13 @@ fn open_leaf<'a>(
                 debug_assert!(competitive
                     .as_ref()
                     .is_none_or(|c| c.bytes == f.point_bytes().unwrap_or(0)));
-                LeafKey::Numeric(LeafNumeric {
+                LeafKey::Numeric(Box::new(LeafNumeric {
                     column,
                     int: f.ty == SortType::Int,
                     missing: f.missing,
                     cached: (-1, 0),
                     competitive,
-                })
+                }))
             }
         });
     }
