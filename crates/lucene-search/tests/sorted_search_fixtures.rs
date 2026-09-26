@@ -58,6 +58,7 @@ fn field_doc(s: &str) -> FieldDoc {
     FieldDoc {
         doc,
         values: parts.map(|v| v.parse().unwrap()).collect(),
+        terms: Vec::new(),
     }
 }
 
