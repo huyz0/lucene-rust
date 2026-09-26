@@ -50,7 +50,7 @@
 
 use std::os::raw::c_char;
 
-use lucene_search::aggs::{MetricSpec, MetricState, ValueKind};
+use lucene_search::aggs::{MetricSpec, MetricState, Source, ValueKind};
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::multi_segment::OpenSegment;
@@ -801,6 +801,10 @@ pub(crate) fn search_sorted_blobs(
 const METRIC_LONG: u8 = 0;
 const METRIC_DOUBLE: u8 = 1;
 const METRIC_FLOAT: u8 = 2;
+/// Sources in a metrics blob ([`lucene_search::aggs::Source`]).
+const METRIC_DOC_VALUES: u8 = 0;
+const METRIC_POINTS_MIN: u8 = 1;
+const METRIC_POINTS_MAX: u8 = 2;
 /// At most this many fields in one metrics blob.
 const MAX_METRICS: usize = 64;
 /// Doubles per field in [`ffi_jvm_reader_aggregate`]'s output.
@@ -829,10 +833,17 @@ pub(crate) fn decode_metrics(blob: &[u8]) -> Result<Vec<MetricSpec>, FfiStatus> 
             METRIC_FLOAT => ValueKind::Float,
             other => return Err(bad(format!("metrics blob: unknown kind {other}"))),
         };
+        let source = match c.u8()? {
+            METRIC_DOC_VALUES => Source::DocValues,
+            METRIC_POINTS_MIN => Source::PointsMin,
+            METRIC_POINTS_MAX => Source::PointsMax,
+            other => return Err(bad(format!("metrics blob: unknown source {other}"))),
+        };
         let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
         specs.push(MetricSpec {
             field: field.to_string(),
             kind,
+            source,
         });
     }
     if c.pos != blob.len() {
@@ -913,7 +924,7 @@ pub(crate) fn aggregate_blobs(
         set_last_error(format!("opening segment postings: {e}"));
         FfiStatus::Decode
     })?;
-    if query_uses_points(&query) {
+    if query_uses_points(&query) || specs.iter().any(|s| s.source != Source::DocValues) {
         opened.open_points().map_err(|e| {
             set_last_error(format!("opening segment points: {e}"));
             FfiStatus::Decode
@@ -2059,9 +2070,14 @@ mod tests {
     }
 
     fn metrics_blob(fields: &[(u8, &str)]) -> Vec<u8> {
+        metrics_blob_from(&fields.iter().map(|&(k, f)| (k, 0, f)).collect::<Vec<_>>())
+    }
+
+    fn metrics_blob_from(fields: &[(u8, u8, &str)]) -> Vec<u8> {
         let mut b = vec![fields.len() as u8];
-        for &(kind, f) in fields {
+        for &(kind, source, f) in fields {
             b.push(kind);
+            b.push(source);
             b.extend_from_slice(&(f.len() as i32).to_le_bytes());
             b.extend_from_slice(f.as_bytes());
         }
@@ -2096,7 +2112,19 @@ mod tests {
         let mut trailing = metrics_blob(&[(METRIC_LONG, "a")]);
         trailing.push(0);
         assert_eq!(decode_metrics(&trailing).map(|_| ()), invalid);
-        let mut utf8 = vec![1, METRIC_LONG];
+        assert_eq!(
+            decode_metrics(&metrics_blob_from(&[(METRIC_LONG, 3, "a")])).map(|_| ()),
+            invalid,
+            "unknown source"
+        );
+        let sources = decode_metrics(&metrics_blob_from(&[
+            (METRIC_LONG, METRIC_POINTS_MIN, "a"),
+            (METRIC_LONG, METRIC_POINTS_MAX, "a"),
+        ]))
+        .unwrap();
+        assert_eq!(sources[0].source, Source::PointsMin);
+        assert_eq!(sources[1].source, Source::PointsMax);
+        let mut utf8 = vec![1, METRIC_LONG, METRIC_DOC_VALUES];
         utf8.extend_from_slice(&1i32.to_le_bytes());
         utf8.push(0xff);
         assert_eq!(

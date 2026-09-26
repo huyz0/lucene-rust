@@ -21,8 +21,16 @@
 //! value converted to `double`, a `double` field's sortable long decoded, a
 //! `float` field's sortable int decoded and widened. `Math.min`/`Math.max`
 //! are Java's, including `NaN` and signed zeros.
+//!
+//! A top-level `min`/`max` under a bare match-all reads the field's points
+//! instead ([`Source::PointsMin`]/[`Source::PointsMax`]): a segment's bound
+//! comes from `MinAggregator.findLeafMinValue`/`MaxAggregator.findLeafMaxValue`
+//! (ported below) and only a segment they cannot answer is read document by
+//! document. Which requests qualify is the caller's to decide, as
+//! `AggregatorBase.pointReaderIfAvailable` decides it.
 
 use lucene_codecs::doc_values::{NumericReader, SortedNumericReader};
+use lucene_codecs::points::{IntersectVisitor, Relation};
 use lucene_util::fixed_bit_set::FixedBitSet;
 
 use crate::directory_reader::SegmentReader;
@@ -42,11 +50,25 @@ pub enum ValueKind {
     Float,
 }
 
+/// Where a field's per-document minimum or maximum comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Source {
+    /// The matches' doc values, document by document.
+    #[default]
+    DocValues,
+    /// `MinAggregator`'s points shortcut: each segment's smallest live
+    /// point, into [`MetricState::min_of_mins`]; nothing else is kept.
+    PointsMin,
+    /// `MaxAggregator`'s: the largest, into [`MetricState::max_of_maxes`].
+    PointsMax,
+}
+
 /// One field to aggregate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetricSpec {
     pub field: String,
     pub kind: ValueKind,
+    pub source: Source,
 }
 
 /// A field's state after the pass; see the module doc for what each part
@@ -161,6 +183,137 @@ fn to_double(kind: ValueKind, v: i64) -> f64 {
     }
 }
 
+/// `MinAggregator.MAX_BKD_LOOKUPS`: deleted points `findLeafMinValue` walks
+/// past before it gives the segment up to document-by-document collection.
+const MAX_BKD_LOOKUPS: u32 = 1024;
+
+/// `findLeafMinValue`'s visitor: the first live point in the tree's order.
+struct FirstLive<'a> {
+    live: &'a FixedBitSet,
+    found: Option<Vec<u8>>,
+    lookups: u32,
+    done: bool,
+}
+
+impl IntersectVisitor for FirstLive<'_> {
+    fn compare(&mut self, _min: &[u8], _max: &[u8]) -> Relation {
+        // Java stops the walk by throwing; here every cell after the stop is
+        // pruned instead.
+        if self.done {
+            Relation::CellOutsideQuery
+        } else {
+            Relation::CellCrossesQuery
+        }
+    }
+
+    fn visit(&mut self, _doc_id: i32) {}
+
+    fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) {
+        if self.done {
+            return;
+        }
+        if self.live.get_doc(doc_id) {
+            self.found = Some(packed_value.to_vec());
+            self.done = true;
+            return;
+        }
+        self.lookups = self.lookups.saturating_add(1);
+        if self.lookups > MAX_BKD_LOOKUPS {
+            self.done = true;
+        }
+    }
+}
+
+/// `findLeafMaxValue`'s visitor: the last live point of the cells holding the
+/// segment's maximum.
+struct LastLiveOfMax<'a> {
+    live: &'a FixedBitSet,
+    max: &'a [u8],
+    found: Option<Vec<u8>>,
+}
+
+impl IntersectVisitor for LastLiveOfMax<'_> {
+    fn compare(&mut self, _min: &[u8], max: &[u8]) -> Relation {
+        if max.get(..self.max.len()) == Some(self.max) {
+            Relation::CellCrossesQuery
+        } else {
+            Relation::CellOutsideQuery
+        }
+    }
+
+    fn visit(&mut self, _doc_id: i32) {}
+
+    fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) {
+        if self.live.get_doc(doc_id) {
+            let found = self.found.get_or_insert_with(Vec::new);
+            found.clear();
+            found.extend_from_slice(packed_value);
+        }
+    }
+}
+
+/// A point's value as the field's `pointReaderIfPossible` converter reads it
+/// (`IntPoint`/`LongPoint`/`FloatPoint`/`DoublePoint.decodeDimension`),
+/// widened to `double`; `None` for a width no numeric field has.
+fn decode_point(kind: ValueKind, packed: &[u8]) -> Option<f64> {
+    if let Ok(b) = <[u8; 8]>::try_from(packed) {
+        let v = i64::from_be_bytes(b) ^ i64::MIN;
+        return Some(match kind {
+            ValueKind::Long => v as f64,
+            ValueKind::Double | ValueKind::Float => sortable_long_to_double(v),
+        });
+    }
+    let b = <[u8; 4]>::try_from(packed).ok()?;
+    let v = i32::from_be_bytes(b) ^ i32::MIN;
+    Some(match kind {
+        ValueKind::Long => f64::from(v),
+        ValueKind::Double | ValueKind::Float => f64::from(sortable_int_to_float(v)),
+    })
+}
+
+/// `findLeafMinValue`/`findLeafMaxValue` for one segment: its smallest or
+/// largest live point, or `None` when the points cannot tell (no points for
+/// the field, or -- for the minimum -- no live point among the first
+/// [`MAX_BKD_LOOKUPS`] deleted ones).
+fn leaf_point_bound(seg: &OpenSegment<'_>, spec: &MetricSpec) -> Result<Option<f64>> {
+    let Some(points) = seg.points else {
+        return Ok(None);
+    };
+    let Some(number) = points.field_number(&spec.field) else {
+        return Ok(None);
+    };
+    let Some(field) = points.reader.field(number) else {
+        return Ok(None);
+    };
+    let width = usize::try_from(field.bytes_per_dim).unwrap_or(0);
+    let packed = match (seg.live_docs, spec.source) {
+        (_, Source::DocValues) => None,
+        (None, Source::PointsMin) => Some(field.min_packed_value.clone()),
+        (None, Source::PointsMax) => Some(field.max_packed_value.clone()),
+        (Some(live), Source::PointsMin) => {
+            let mut v = FirstLive {
+                live,
+                found: None,
+                lookups: 0,
+                done: false,
+            };
+            points.reader.intersect(number, &mut v)?;
+            v.found
+        }
+        (Some(live), Source::PointsMax) => {
+            let max = field.max_packed_value.get(..width).unwrap_or(&[]);
+            let mut v = LastLiveOfMax {
+                live,
+                max,
+                found: None,
+            };
+            points.reader.intersect(number, &mut v)?;
+            v.found
+        }
+    };
+    Ok(packed.and_then(|p| decode_point(spec.kind, p.get(..width)?)))
+}
+
 /// A segment's column for one field.
 enum Values<'a> {
     Absent,
@@ -204,6 +357,7 @@ pub fn metric_states(
     let clause = lone_clause(query);
     let mut raw = Vec::new();
     let mut doubles = Vec::new();
+    let mut precomputed = Vec::with_capacity(specs.len());
     for (i, seg) in segments.iter().enumerate() {
         let Some(reader) = readers.get(i) else {
             break;
@@ -220,13 +374,43 @@ pub fn metric_states(
             max_doc: seg.max_doc,
             cache: seg.cache,
         };
+        // The points shortcut first (AggregatorBase.getLeafCollector asks
+        // tryPrecomputeAggregationForLeaf before collecting): a field it
+        // answers is not read document by document in this segment.
+        let mut answered = 0;
+        precomputed.clear();
+        for (spec, state) in specs.iter().zip(&mut states) {
+            let bound = match spec.source {
+                Source::DocValues => None,
+                _ => leaf_point_bound(seg, spec)?,
+            };
+            if let Some(v) = bound {
+                if spec.source == Source::PointsMin {
+                    state.min_of_mins = java_min(state.min_of_mins, v);
+                } else {
+                    state.max_of_maxes = java_max(state.max_of_maxes, v);
+                }
+                answered += 1;
+            }
+            precomputed.push(bound.is_some());
+        }
+        if answered == specs.len() {
+            continue;
+        }
         let Some(child) = exec::build::child(&ctx, &clause, 1.0, Mode::NoScores, true)? else {
             continue;
         };
         let mut scorer = child.into_scorer(Mode::NoScores);
         let mut columns = specs
             .iter()
-            .map(|s| open_values(reader, &s.field))
+            .zip(&precomputed)
+            .map(|(s, &done)| {
+                if done {
+                    Ok(Values::Absent)
+                } else {
+                    open_values(reader, &s.field)
+                }
+            })
             .collect::<Result<Vec<_>>>()?;
         let live: Option<&FixedBitSet> = seg.live_docs;
         let mut doc = exec::exact_next(&mut *scorer)?;

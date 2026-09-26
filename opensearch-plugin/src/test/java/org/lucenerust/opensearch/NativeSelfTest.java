@@ -375,7 +375,7 @@ public final class NativeSelfTest {
         }
         NativeAggregations.Plan plan = new NativeAggregations.Plan(
             java.util.stream.IntStream.range(0, AGG_FIELDS.length)
-                .mapToObj(i -> new NativeAggregations.Metric("m" + i, NativeAggregations.Kind.STATS, AGG_FIELDS[i], AGG_KINDS[i], null, null, null))
+                .mapToObj(i -> new NativeAggregations.Metric("m" + i, NativeAggregations.Kind.STATS, AGG_FIELDS[i], AGG_KINDS[i], null, null, NativeAggregations.DOC_VALUES))
                 .toList()
         );
         long[] counts = new long[AGG_FIELDS.length];

@@ -274,11 +274,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 logger.warn("lucene-rust: native aggregation failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
                 return "native_error";
             }
-            try {
-                aggResult = aggs.build(ctx.searcher().getIndexReader(), aggCounts, aggValues);
-            } catch (IOException e) {
-                return "native_error";
-            }
+            aggResult = aggs.build(aggCounts, aggValues);
         }
         String reason = sortBlob != null ? searchSorted(ctx, handle, blob, sortBlob, numDocs, countLimit, shortcut)
             : searchUnsorted(ctx, handle, blob, numDocs, countLimit, shortcut);

@@ -3,9 +3,6 @@
  */
 package org.lucenerust.opensearch;
 
-import org.apache.lucene.index.IndexReader;
-import org.apache.lucene.index.LeafReader;
-import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.search.MatchAllDocsQuery;
 import org.opensearch.index.mapper.DateFieldMapper;
 import org.opensearch.index.mapper.MappedFieldType;
@@ -26,15 +23,11 @@ import org.opensearch.search.aggregations.support.ValuesSourceConfig;
 import org.opensearch.search.internal.SearchContext;
 
 import java.io.ByteArrayOutputStream;
-import java.io.IOException;
 import java.lang.reflect.Field;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Function;
 
 /**
  * The aggregations of a search that run natively (read path R5): top-level {@code min}, {@code
@@ -61,10 +54,12 @@ public final class NativeAggregations {
         STATS
     }
 
-    /**
-     * One aggregation. {@code minPoints} is set for a {@code min} that OpenSearch answers from the
-     * field's points rather than its doc values (see {@link #plan}); null otherwise.
-     */
+    /** Where a metric's minimum or maximum comes from ({@code aggs::Source} in Rust). */
+    static final byte DOC_VALUES = 0;
+    static final byte POINTS_MIN = 1;
+    static final byte POINTS_MAX = 2;
+
+    /** One aggregation; {@code source} is {@link #DOC_VALUES} or, see {@link #plan}, a points bound. */
     record Metric(
         String name,
         Kind kind,
@@ -72,7 +67,7 @@ public final class NativeAggregations {
         byte valueKind,
         DocValueFormat format,
         Map<String, Object> metadata,
-        Function<byte[], Number> minPoints
+        byte source
     ) {}
 
     /** The native aggregations of a search, or null when some aggregation must run on Lucene. */
@@ -82,6 +77,7 @@ public final class NativeAggregations {
             out.write(metrics.size());
             for (Metric m : metrics) {
                 out.write(m.valueKind());
+                out.write(m.source());
                 byte[] f = m.field().getBytes(StandardCharsets.UTF_8);
                 for (int i = 0; i < 4; i++) {
                     out.write(f.length >>> (8 * i));
@@ -92,7 +88,7 @@ public final class NativeAggregations {
         }
 
         /** The shard results, from the native per-field counts and values (see the class doc). */
-        InternalAggregations build(IndexReader reader, long[] counts, double[] values) throws IOException {
+        InternalAggregations build(long[] counts, double[] values) {
             List<InternalAggregation> aggs = new ArrayList<>(metrics.size());
             for (int i = 0; i < metrics.size(); i++) {
                 Metric m = metrics.get(i);
@@ -101,9 +97,6 @@ public final class NativeAggregations {
                 double min = values[i * VALUES + 2];
                 double max = values[i * VALUES + 3];
                 double minOfMins = values[i * VALUES + 4];
-                if (m.minPoints() != null && Double.isNaN(minOfMins)) {
-                    minOfMins = minFromPoints(reader, m);
-                }
                 double maxOfMaxes = values[i * VALUES + 5];
                 aggs.add(switch (m.kind()) {
                     case MIN -> new InternalMin(m.name(), minOfMins, m.format(), m.metadata());
@@ -118,47 +111,7 @@ public final class NativeAggregations {
         }
     }
 
-    /**
-     * {@code MinAggregator}'s match-all answer: per segment the smallest live point ({@code
-     * findLeafMinValue}), folded with {@code Math.min}. It differs from the doc-values answer only
-     * over a {@code NaN} -- a document whose only value is {@code NaN} makes {@code Math.min} over
-     * the documents {@code NaN}, while {@code NaN} sorts last among a double field's points -- so
-     * {@link Plan#build} asks for it only when the native minimum is {@code NaN}.
-     */
-    static double minFromPoints(IndexReader reader, Metric m) throws IOException {
-        double min = Double.POSITIVE_INFINITY;
-        for (LeafReaderContext leaf : reader.leaves()) {
-            Number segMin;
-            try {
-                segMin = (Number) FIND_LEAF_MIN.invoke(null, leaf.reader(), m.field(), m.minPoints());
-            } catch (InvocationTargetException e) {
-                if (e.getCause() instanceof IOException io) {
-                    throw io;
-                }
-                throw new IllegalStateException(e.getCause());
-            } catch (IllegalAccessException e) {
-                throw new IllegalStateException(e);
-            }
-            if (segMin != null) {
-                min = Math.min(min, segMin.doubleValue());
-            }
-        }
-        return min;
-    }
-
     private static final String METRICS = "org.opensearch.search.aggregations.metrics.";
-    private static final Method FIND_LEAF_MIN = findLeafMin();
-
-    private static Method findLeafMin() {
-        try {
-            Method f = Class.forName(METRICS + "MinAggregator").getDeclaredMethod("findLeafMinValue", LeafReader.class, String.class, Function.class);
-            f.setAccessible(true);
-            return f;
-        } catch (ReflectiveOperationException | RuntimeException e) {
-            return null;
-        }
-    }
-
     private static final Field METADATA = field(AggregatorFactory.class, "metadata");
     private static final Field SUB_FACTORIES = field(AggregatorFactory.class, "factories");
     private static final Field CONFIG = field(ValuesSourceAggregatorFactory.class, "config");
@@ -200,17 +153,15 @@ public final class NativeAggregations {
                 if (valueKind < 0) {
                     return null;
                 }
-                // AggregatorBase.pointReaderIfAvailable: a top-level min under a bare match-all
-                // reads the points. Over longs and dates both answers agree, so only a double or
-                // float field keeps the converter (for Plan.build's NaN case).
-                Function<byte[], Number> minPoints = null;
-                if (kind == Kind.MIN
-                    && valueKind != LONG
-                    && (ctx.query() == null || ctx.query().getClass() == MatchAllDocsQuery.class)) {
-                    minPoints = config.getPointReaderOrNull();
-                    if (minPoints != null && FIND_LEAF_MIN == null) {
-                        return null;
-                    }
+                // AggregatorBase.pointReaderIfAvailable: a top-level min or max under a bare
+                // match-all, on a field with points, reads each segment's bound off the points
+                // (tryPrecomputeAggregationForLeaf) -- faster, and over a double field with a NaN
+                // document a different answer (NaN sorts last among the points).
+                byte source = DOC_VALUES;
+                if ((kind == Kind.MIN || kind == Kind.MAX)
+                    && (ctx.query() == null || ctx.query().getClass() == MatchAllDocsQuery.class)
+                    && config.getPointReaderOrNull() != null) {
+                    source = kind == Kind.MIN ? POINTS_MIN : POINTS_MAX;
                 }
                 metrics.add(
                     new Metric(
@@ -220,7 +171,7 @@ public final class NativeAggregations {
                         valueKind,
                         config.format(),
                         (Map<String, Object>) METADATA.get(f),
-                        minPoints
+                        source
                     )
                 );
             }

@@ -43,7 +43,14 @@ import java.util.stream.Stream;
  * ({@code StatsAggregator}) and over each document's first/last value ({@code MinAggregator}'s
  * and {@code MaxAggregator}'s {@code MultiValueMode}).
  *
- * <p>Three segments of 20,000 documents, two with deletions:
+ * <p>The match-all run also records what OpenSearch's {@code min} and {@code max} answer from the
+ * points ({@code findLeafMinValue}/{@code findLeafMaxValue}, copied below) as {@code
+ * run.N.<field>.points=min:max}, a segment the points cannot answer read from doc values.
+ *
+ * <p>Four segments of 20,000 documents: the first and third with scattered deletions, the second
+ * with none, the fourth with every document whose {@code e} is below -1,400 deleted (more than
+ * {@code MAX_BKD_LOOKUPS} deleted points before the first live one, so {@code min} reads that
+ * segment's doc values, where a {@code NaN} document makes it {@code NaN}):
  *
  * <pre>
  *   l    long, 20% missing
@@ -52,6 +59,7 @@ import java.util.stream.Stream;
  *   md   double, 0-3 values, a NaN now and then
  *   f    float
  *   i    int, every document
+ *   e    double, a NaN now and then
  * </pre>
  *
  * <p>Each run records, per field, {@code count:sum:delta:min:max:minOfMins:maxOfMaxes} with the
@@ -59,8 +67,10 @@ import java.util.stream.Stream;
  */
 public class GenMetricAggs {
   static final int DOCS_PER_SEGMENT = 20_000;
-  static final int SEGMENTS = 3;
-  static final String[] FIELDS = {"l", "ml", "d", "md", "f", "i"};
+  static final int SEGMENTS = 4;
+  /** OpenSearch's MinAggregator.MAX_BKD_LOOKUPS. */
+  static final int MAX_BKD_LOOKUPS = 1024;
+  static final String[] FIELDS = {"l", "ml", "d", "md", "f", "i", "e"};
 
   static final String[] QUERIES = {
     "(all)",
@@ -110,7 +120,7 @@ public class GenMetricAggs {
 
   static double read(String field, long v) {
     return switch (field) {
-      case "d", "md" -> NumericUtils.sortableLongToDouble(v);
+      case "d", "md", "e" -> NumericUtils.sortableLongToDouble(v);
       case "f" -> NumericUtils.sortableIntToFloat((int) v);
       default -> (double) v;
     };
@@ -126,6 +136,138 @@ public class GenMetricAggs {
       case 5 -> (r.nextDouble() - 0.5) * 1e300;
       default -> r.nextGaussian() * 1e3;
     };
+  }
+
+  static java.util.function.Function<byte[], Number> converter(String field) {
+    return switch (field) {
+      case "d", "md", "e" -> b -> DoublePoint.decodeDimension(b, 0);
+      case "f" -> b -> FloatPoint.decodeDimension(b, 0);
+      case "i" -> b -> IntPoint.decodeDimension(b, 0);
+      default -> b -> LongPoint.decodeDimension(b, 0);
+    };
+  }
+
+  /**
+   * A match-all {@code min}/{@code max} as OpenSearch answers it: per segment the points' bound
+   * ({@code tryPrecomputeAggregationForLeaf}), or the segment's live documents' first/last value
+   * when the points cannot tell.
+   */
+  static String pointsBounds(DirectoryReader reader, String field) throws IOException {
+    double min = Double.POSITIVE_INFINITY;
+    double max = Double.NEGATIVE_INFINITY;
+    for (LeafReaderContext leaf : reader.leaves()) {
+      Number lo = findLeafMinValue(leaf.reader(), field, converter(field));
+      Number hi = findLeafMaxValue(leaf.reader(), field, converter(field));
+      SortedNumericDocValues dv = DocValues.getSortedNumeric(leaf.reader(), field);
+      org.apache.lucene.util.Bits live = leaf.reader().getLiveDocs();
+      if (lo != null) {
+        min = Math.min(min, lo.doubleValue());
+      }
+      if (hi != null) {
+        max = Math.max(max, hi.doubleValue());
+      }
+      for (int doc = dv.nextDoc(); doc != org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS; doc = dv.nextDoc()) {
+        if (live != null && live.get(doc) == false) {
+          continue;
+        }
+        double first = read(field, dv.nextValue());
+        double last = first;
+        for (int j = 1; j < dv.docValueCount(); j++) {
+          last = read(field, dv.nextValue());
+        }
+        if (lo == null) {
+          min = Math.min(min, first);
+        }
+        if (hi == null) {
+          max = Math.max(max, last);
+        }
+      }
+    }
+    return hex(min) + ":" + hex(max);
+  }
+
+  /** OpenSearch's MinAggregator.findLeafMinValue. */
+  static Number findLeafMinValue(org.apache.lucene.index.LeafReader reader, String fieldName,
+      java.util.function.Function<byte[], Number> converter) throws IOException {
+    final org.apache.lucene.index.PointValues pointValues = reader.getPointValues(fieldName);
+    if (pointValues == null) {
+      return null;
+    }
+    final org.apache.lucene.util.Bits liveDocs = reader.getLiveDocs();
+    if (liveDocs == null) {
+      return converter.apply(pointValues.getMinPackedValue());
+    }
+    final Number[] result = new Number[1];
+    try {
+      pointValues.intersect(new org.apache.lucene.index.PointValues.IntersectVisitor() {
+        private short lookupCounter = 0;
+
+        @Override
+        public void visit(int docID) {
+          throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public void visit(int docID, byte[] packedValue) {
+          if (liveDocs.get(docID)) {
+            result[0] = converter.apply(packedValue);
+            throw new org.apache.lucene.search.CollectionTerminatedException();
+          }
+          if (++lookupCounter > MAX_BKD_LOOKUPS) {
+            throw new org.apache.lucene.search.CollectionTerminatedException();
+          }
+        }
+
+        @Override
+        public org.apache.lucene.index.PointValues.Relation compare(byte[] minPackedValue, byte[] maxPackedValue) {
+          return org.apache.lucene.index.PointValues.Relation.CELL_CROSSES_QUERY;
+        }
+      });
+    } catch (org.apache.lucene.search.CollectionTerminatedException e) {
+    }
+    return result[0];
+  }
+
+  /** OpenSearch's MaxAggregator.findLeafMaxValue. */
+  static Number findLeafMaxValue(org.apache.lucene.index.LeafReader reader, String fieldName,
+      java.util.function.Function<byte[], Number> converter) throws IOException {
+    final org.apache.lucene.index.PointValues pointValues = reader.getPointValues(fieldName);
+    if (pointValues == null) {
+      return null;
+    }
+    final org.apache.lucene.util.Bits liveDocs = reader.getLiveDocs();
+    if (liveDocs == null) {
+      return converter.apply(pointValues.getMaxPackedValue());
+    }
+    int numBytes = pointValues.getBytesPerDimension();
+    final byte[] maxValue = pointValues.getMaxPackedValue();
+    final byte[][] result = new byte[1][];
+    pointValues.intersect(new org.apache.lucene.index.PointValues.IntersectVisitor() {
+      @Override
+      public void visit(int docID) {
+        throw new UnsupportedOperationException();
+      }
+
+      @Override
+      public void visit(int docID, byte[] packedValue) {
+        if (liveDocs.get(docID)) {
+          if (result[0] == null) {
+            result[0] = new byte[packedValue.length];
+          }
+          System.arraycopy(packedValue, 0, result[0], 0, packedValue.length);
+        }
+      }
+
+      @Override
+      public org.apache.lucene.index.PointValues.Relation compare(byte[] minPackedValue, byte[] maxPackedValue) {
+        if (java.util.Arrays.equals(maxValue, 0, numBytes, maxPackedValue, 0, numBytes)) {
+          return org.apache.lucene.index.PointValues.Relation.CELL_CROSSES_QUERY;
+        } else {
+          return org.apache.lucene.index.PointValues.Relation.CELL_OUTSIDE_QUERY;
+        }
+      }
+    });
+    return result[0] != null ? converter.apply(result[0]) : null;
   }
 
   public static void main(String[] args) throws IOException {
@@ -176,6 +318,9 @@ public class GenMetricAggs {
             int iv = random.nextInt(1000) - 500;
             doc.add(new SortedNumericDocValuesField("i", iv));
             doc.add(new IntPoint("i", iv));
+            double e = random.nextInt(200) == 0 ? Double.NaN : random.nextGaussian() * 1e3;
+            doc.add(new SortedNumericDocValuesField("e", NumericUtils.doubleToSortableLong(e)));
+            doc.add(new DoublePoint("e", e));
             w.addDocument(doc);
           }
           w.commit();
@@ -184,6 +329,12 @@ public class GenMetricAggs {
           w.deleteDocuments(new Term("id", Integer.toString(id)));
           w.deleteDocuments(new Term("id", Integer.toString(2 * DOCS_PER_SEGMENT + id + 7)));
         }
+        w.deleteDocuments(new org.apache.lucene.search.BooleanQuery.Builder()
+            .add(LongPoint.newRangeQuery("r", 3L * DOCS_PER_SEGMENT, 4L * DOCS_PER_SEGMENT - 1),
+                org.apache.lucene.search.BooleanClause.Occur.FILTER)
+            .add(DoublePoint.newRangeQuery("e", Double.NEGATIVE_INFINITY, -1400.0),
+                org.apache.lucene.search.BooleanClause.Occur.FILTER)
+            .build());
         w.commit();
       }
 
@@ -254,6 +405,10 @@ public class GenMetricAggs {
           m.append("run.").append(run).append(".query=").append(qs).append('\n');
           for (int k = 0; k < FIELDS.length; k++) {
             m.append("run.").append(run).append('.').append(FIELDS[k]).append('=').append(states[k].record()).append('\n');
+            if (qs.equals("(all)")) {
+              m.append("run.").append(run).append('.').append(FIELDS[k]).append(".points=")
+                  .append(pointsBounds(reader, FIELDS[k])).append('\n');
+            }
           }
           run++;
         }

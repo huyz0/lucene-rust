@@ -21,7 +21,7 @@ milestone finishes the read side.
 | R2 | General query wire format and Java encoder for every Lucene query OpenSearch builds | ✅ delivered for the shapes R1 runs (term, boolean, constant score, boost, dismax, match-all, match-none); leaf queries arrive with R3 |
 | R3 | Leaf queries as streaming scorers: phrase, the multi-term family, points and doc-values ranges, exists, terms-in-set, dismax, synonym | mostly delivered: phrase, prefix/wildcard/terms, points ranges, dismax, and a native query cache (R3b); open: `exists` (with R4's doc-values wiring), `regexp` over the wire, fuzzy speed (q25) |
 | R4 | Sort and `search_after` natively (`TopFieldCollector`) | numeric, score, `_doc` and keyword keys and `track_scores` delivered (below); open: `avg`/`sum`/`median` modes, nested sorts, index-sorted shards |
-| R5 | Aggregations natively: terms, histogram, date_histogram, range, the metrics, cardinality, filter/filters | open |
+| R5 | Aggregations natively: terms, histogram, date_histogram, range, the metrics, cardinality, filter/filters | metrics delivered (`min`, `max`, `sum`, `avg`, `value_count`, `stats`; below); open: the bucket aggregations, `cardinality`, sub-aggregations |
 | R6 | Fetch (`_source`, stored fields, `docvalue_fields`) and get natively | open |
 | R7 | scroll, `post_filter`, `min_score`, `terminate_after`, timeouts; the full read benchmark (in process and REST) with every native shape at least 1.0× Lucene | open |
 
@@ -340,6 +340,50 @@ Falls back, deliberately for now:
 * index-sorted shards: Lucene stops a segment early when the index sort is a
   prefix of the search sort (`canEarlyTerminate`), which changes the totals;
   not ported yet.
+
+## R5 — aggregations (metrics delivered)
+
+`min`, `max`, `sum`, `avg`, `value_count` and `stats` at the top level of a
+request run natively when every aggregation of the request is one of them, on a
+mapped `long`/`integer`/`short`/`byte`/`double`/`float` field or a millisecond
+`date`, with no `missing`, script or sub-aggregation (ABI 14,
+`ffi_jvm_reader_aggregate`). The rest -- `terms`, the histograms, `range`,
+`cardinality`, `filter(s)`, `global`, anything nested -- stays on OpenSearch's
+aggregators, as does a request mixing the two.
+
+How it hooks in. `QueryPhase` asks the `QueryPhaseSearcher` for its
+`AggregationProcessor`; the plugin keeps OpenSearch's, whose `preProcess`
+builds the aggregators and registers their collector manager, which `QueryPhase`
+turns into the one collector context `searchWith` receives. When
+`NativeAggregations.plan` accepts every factory (read through reflection: the
+factory classes are package-private), the native path runs the aggregation
+pass beside the top-hits search and stores OpenSearch's own shard results --
+`InternalMin` and the rest, with the factories' names, formats and metadata --
+before `postProcess`, which returns early when the result already has
+aggregations. The aggregators OpenSearch built are never fed and are released
+with the context, as they are after any search. A failure anywhere re-runs the
+whole request on Lucene.
+
+What is computed (`lucene-search/src/aggs.rs`): one pass over the live matches
+keeps, per field, the value count, the `CompensatedSum` value and delta, the
+minimum and maximum over every value and over each document's first and last
+(`MultiValueMode.MIN`/`MAX`), with Java's `Math.min`/`Math.max`. A match-all
+`min`/`max` on a field with points reads each segment's bound off the points
+as `MinAggregator.findLeafMinValue`/`MaxAggregator.findLeafMaxValue` do,
+including the minimum's give-up after 1,024 deleted points; this is not only
+faster but a different answer over a `double` field holding a `NaN` document
+(`NaN` sorts last among the points and wins `Math.min`).
+
+Verified: `GenMetricAggs` (4 segments, 7 queries, 7 fields including `NaN`,
+signed zeros, infinities and values that round when widened) bit for bit,
+including the points answers and a segment where the points give up; seen to
+fail with the compensation dropped, a document's last value in place of its
+first, the points ignored, the give-up removed, and deletions ignored by the
+minimum's walk (the maximum's cell pruning is a speed property only: without
+it the last live point is still the maximum, so no result can show it). The
+self test compares 1,862 query x field states through JNI; the REST matrix runs
+nine aggregation rows natively against a stock node, and three that must fall
+back.
 
 ## Benchmark
 

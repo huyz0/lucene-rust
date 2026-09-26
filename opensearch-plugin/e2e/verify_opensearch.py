@@ -241,6 +241,7 @@ def matrix():
     add("agg min max size 0", {"size": 0, "query": {"match": {"body": "alpha"}}, "aggs": {"lo": {"min": {"field": "price"}}, "hi": {"max": {"field": "n"}}}}, "native")
     add("agg stats + hits", {"query": {"match": {"body": "beta"}}, "aggs": {"s": {"stats": {"field": "qty"}}}}, "native")
     add("agg sum avg multi-valued", {"size": 0, "query": {"match_all": {}}, "aggs": {"s": {"sum": {"field": "m"}}, "a": {"avg": {"field": "m"}}, "c": {"value_count": {"field": "m"}}}}, "native")
+    add("agg no query min max", {"size": 0, "aggs": {"hi": {"max": {"field": "n"}}, "t": {"max": {"field": "ts"}}, "lo": {"min": {"field": "qty"}}}}, "native")
     add("agg match_all min double", {"size": 0, "aggs": {"lo": {"min": {"field": "price"}}, "lof": {"min": {"field": "ratio"}}}}, "native")
     add("agg date min max", {"size": 0, "query": {"bool": {"filter": [{"term": {"tag": "gamma"}}]}}, "aggs": {"first": {"min": {"field": "ts"}}, "last": {"max": {"field": "ts"}}}}, "native")
     add("agg sparse, nothing matches", {"size": 0, "query": {"term": {"tag": "no-such-tag"}}, "aggs": {"s": {"stats": {"field": "sp"}}, "a": {"avg": {"field": "sp"}}}}, "native")
