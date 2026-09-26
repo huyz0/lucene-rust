@@ -1,20 +1,21 @@
 //! `TopFieldCollector`: the top hits of a query by a sort -- one or more
-//! keys among the score, the document id and a numeric doc-values field --
-//! with `searchAfter` paging and `NumericComparator`'s points-based skipping
-//! of documents that can no longer compete.
+//! keys among the score, the document id, a numeric doc-values field and a
+//! keyword (`SORTED`/`SORTED_SET`) field -- with `searchAfter` paging and the
+//! comparators' skipping of documents that can no longer compete.
 //!
 //! A port of Lucene 10.5.0's `TopFieldCollector` (`SimpleFieldCollector`,
 //! `PagingFieldCollector`), `FieldValueHitQueue`, `MultiLeafFieldComparator`,
-//! `FieldComparator.RelevanceComparator`, `DocComparator` and
-//! `NumericComparator` with its `PointsCompetitiveDISIBuilder`, driven the way
+//! `FieldComparator.RelevanceComparator`, `DocComparator`, `NumericComparator`
+//! with its `PointsCompetitiveDISIBuilder`, and `TermOrdValComparator` with
+//! its `PostingsBasedCompetitiveState`, driven the way
 //! `Weight.DefaultBulkScorer` drives a collector that has a competitive
 //! iterator.
 //!
 //! # Values
 //!
-//! Every comparator here orders `i64`s ascending, with the sort's `reverse`
-//! flipping the sign of each comparison as `FieldValueHitQueue.reverseMul`
-//! does. What the `i64` is depends on the key:
+//! Every numeric comparator here orders `i64`s ascending, with the sort's
+//! `reverse` flipping the sign of each comparison as
+//! `FieldValueHitQueue.reverseMul` does. What the `i64` is depends on the key:
 //!
 //! * a numeric field: its *comparable long*, which is what
 //!   `NumericComparator` itself compares with points
@@ -27,18 +28,37 @@
 //! * the score: `-floatToSortableInt(score)` -- `RelevanceComparator` orders
 //!   `Float.compare(b, a)`, highest first.
 //!
+//! A keyword key compares ordinals within a segment and terms across
+//! segments (`TermOrdValComparator`); its values are the terms, in
+//! [`FieldDoc::terms`] (`None` for a document without one).
+//!
 //! [`FieldDoc::values`] carries a hit's values in the same encoding, except
 //! that a score is its `f32` bits, so a caller can hand back the float as it
 //! was computed.
 //!
+//! # Beyond Lucene
+//!
+//! None of these changes a hit, its order or its values: a document the keys
+//! alone rule out is dropped before `collect` (the same test
+//! `thresholdCheck` makes); a run of matching documents is walked without
+//! the scorer; the sparser of the scorer and the competitive iterator leads;
+//! a numeric key whose missing value still competes skips the documents whose
+//! value is out of range (Lucene skips nothing then); a keyword slot's term is
+//! read once per segment rather than per copy; and a sort column a
+//! per-document read would decode is decoded once per segment and cached
+//! ([`crate::exec::cache`]).
+//!
 //! # Deviations
 //!
-//! None in which hits are returned or in what order. Three in how much is
+//! None in which hits are returned or in what order. Some in how much is
 //! counted past the total-hits threshold -- a count both report as a lower
 //! bound, and OpenSearch caps at `track_total_hits` anyway:
 //!
-//! * a segment whose sort field has no points but a doc-values skip index is
-//!   scanned without skipping (Lucene's `DVSkipperCompetitiveDISIBuilder`);
+//! * a segment whose sort field has no points (or, for a keyword key, no
+//!   postings) but a doc-values skip index is scanned without skipping
+//!   (Lucene's `DVSkipperCompetitiveDISIBuilder` and
+//!   `SkipperBasedCompetitiveState`), and so is an indexed keyword field with
+//!   no terms in a segment (Lucene would build an empty competitive state);
 //! * `DocComparator`'s competitive iterator is not ported: a sort led by the
 //!   document id stops each segment once its count passes the threshold,
 //!   where Lucene skips the later segments whole, so the lower bound here is
@@ -46,7 +66,8 @@
 //! * the collector consults the competitive iterator per document, where
 //!   Lucene's match-all and filter conjunctions (`DenseConjunctionBulkScorer`)
 //!   collect whole 4,096-document windows first, so Lucene's bound is usually
-//!   the higher one there.
+//!   the higher one there; and the missing-value skipping above can lower it
+//!   further.
 //!
 //! And one in when a sort is refused: Lucene builds every segment's
 //! comparators before it searches, so a field with points of the wrong width
@@ -1018,6 +1039,16 @@ impl Competitive<'_> {
         if self.missing_range == Some(range) {
             return Ok(());
         }
+        // `updateCompetitiveIterator`'s sampling: past 256 updates, only one
+        // in `current_skip_interval` rebuilds (each rebuild is a points walk
+        // and a `maxDoc`-bit copy).
+        self.update_counter += 1;
+        if self.update_counter > 256
+            && (self.update_counter & (self.current_skip_interval - 1))
+                != self.current_skip_interval - 1
+        {
+            return Ok(());
+        }
         self.missing_range = Some(range);
         let max_doc = usize::try_from(self.max_doc).unwrap_or(0);
         let mut visitor = CompetitiveVisitor {
@@ -1043,6 +1074,7 @@ impl Competitive<'_> {
             )
             .map_err(crate::Error::from)?;
         if estimate >= threshold {
+            self.update_skip_interval(false);
             return Ok(());
         }
         self.points
@@ -1056,6 +1088,7 @@ impl Competitive<'_> {
             }
             .into());
         }
+        self.update_skip_interval(true);
         if self.missing_docs.is_none() {
             let WithValue::Disi {
                 region,
@@ -1396,7 +1429,11 @@ fn cache_ords<'a>(
     let Some(cache) = seg.cache.filter(|_| worth) else {
         return Ok(column);
     };
-    let key = format!("ord\0{}\0{:?}", f.field, f.selector);
+    // The selector matters only when a document can have several values.
+    let key = match &column {
+        OrdColumn::Multi(..) => format!("ord\0{}\0{:?}", f.field, f.selector),
+        _ => format!("ord\0{}", f.field),
+    };
     let mut fresh = column.clone();
     let built = cache.sort_column(&key, max_doc, &mut || {
         let mut v = Vec::with_capacity(usize::try_from(max_doc).unwrap_or(0));
@@ -1423,7 +1460,10 @@ fn cache_longs<'a>(
     let Some(cache) = seg.cache.filter(|_| worth) else {
         return Ok(column);
     };
-    let key = format!("num\0{}\0{:?}", f.field, f.selector);
+    let key = match &column {
+        Column::Multi(..) => format!("num\0{}\0{:?}", f.field, f.selector),
+        _ => format!("num\0{}", f.field),
+    };
     let mut fresh = column.clone();
     let built = cache.sort_column(&key, max_doc, &mut || {
         let n = usize::try_from(max_doc).unwrap_or(0);
@@ -2573,6 +2613,14 @@ pub fn search_sorted(
             }
             .into());
         }
+        // A keyword key's search-after value is its term: one slot per key.
+        if sort.iter().any(|k| k.ty == SortType::String) && a.terms.len() != sort.len() {
+            return Err(SortError::AfterArity {
+                got: a.terms.len(),
+                want: sort.len(),
+            }
+            .into());
+        }
     }
     let empty = TotalHits {
         value: 0,
@@ -3077,6 +3125,27 @@ mod tests {
     #[test]
     fn a_keyword_key_needs_a_sorted_column_and_a_numeric_key_a_numeric_one() {
         let reader = fixture("keyword_sort_index");
+        // A search-after page by a keyword key carries its term slot.
+        let after = FieldDoc {
+            doc: 1,
+            values: vec![0],
+            terms: Vec::new(),
+        };
+        let err = run(
+            &reader,
+            &all(),
+            &[keyword("k", false, true)],
+            3,
+            Some(&after),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                crate::Error::Sort(SortError::AfterArity { got: 0, want: 1 })
+            ),
+            "{err}"
+        );
         let err = run(&reader, &all(), &[keyword("i", false, true)], 3, None).unwrap_err();
         assert!(
             matches!(err, crate::Error::Sort(SortError::KeywordType(ref f)) if f == "i"),
@@ -3491,11 +3560,15 @@ mod tests {
         comp.with_value = WithValue::None;
         comp.update(&c).unwrap();
         assert!(matches!(&comp.iter, Iter::Docs { docs, .. } if docs.is_empty()));
-        // A missing value that could still compete stops the update.
+        // A missing value that could still compete stops Lucene's update;
+        // here it goes to the missing-value path, sampled like any update.
         c.field.missing = i64::MIN;
         let before = comp.update_counter;
         comp.update(&c).unwrap();
-        assert_eq!(comp.update_counter, before);
+        assert_eq!(comp.update_counter, before + 1);
+        // The same range again is not rebuilt, and not counted.
+        comp.update(&c).unwrap();
+        assert_eq!(comp.update_counter, before + 1);
     }
 
     #[test]
