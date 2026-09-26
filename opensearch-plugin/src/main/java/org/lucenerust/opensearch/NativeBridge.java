@@ -92,9 +92,10 @@ public final class NativeBridge {
 
     /**
      * Runs a query blob's matches through the numeric metrics of a metrics blob ({@link
-     * NativeAggregations.Plan#blob}): per field, {@code outCounts} receives its value count and
-     * {@code outValues} {@link NativeAggregations#VALUES} doubles -- the compensated sum and its
-     * delta, the minimum and maximum over every value, and over each document's first and last.
+     * NativeAggregations.Plan#blob}): per slice (one when the blob names none), per field, {@code
+     * outCounts} receives its value count and {@code outValues} {@link NativeAggregations#VALUES}
+     * doubles -- the compensated sum and its delta, the minimum and maximum over every value, and
+     * over each document's first and last.
      */
     public static native int aggregate(long handle, byte[] query, byte[] aggs, long[] outCounts, double[] outValues);
 

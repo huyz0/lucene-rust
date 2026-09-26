@@ -19,7 +19,9 @@ use std::collections::HashMap;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::query::{MatchAllDocsQuery, PointsRangeQuery};
-use lucene_search::top_field::{search_sorted_tracking, FieldDoc, Selector, SortField, SortType};
+use lucene_search::top_field::{
+    search_sorted_sliced, search_sorted_tracking, FieldDoc, Selector, SortField, SortType,
+};
 use lucene_search::{BooleanQuery, Clause, PhraseQuery, TermQuery};
 use lucene_store::FsDirectory;
 
@@ -185,6 +187,7 @@ fn sorted_searches_match_real_lucene() {
     let mut failures = Vec::new();
     let mut pruned = 0;
     let mut tracked = 0;
+    let mut sliced_runs = 0;
     for r in 0..runs {
         let k = format!("run.{r}");
         let text = m.get(&format!("{k}.query"));
@@ -242,6 +245,43 @@ fn sorted_searches_match_real_lucene() {
                 m.get(&format!("{k}.max_score"))
             ));
         }
+        // As a concurrent search runs it: slices of the segments, each its
+        // own collector, the hits merged.
+        if !track {
+            let n = segments.len();
+            // Given out of order: a slice's segments are searched by doc base.
+            let slices = [(n / 2..n).rev().collect::<Vec<_>>(), (0..n / 2).collect()];
+            let sliced = search_sorted_sliced(
+                &segments,
+                reader.segment_readers(),
+                &query(text),
+                &norms,
+                &sort(spec),
+                top_n,
+                threshold,
+                after.as_ref(),
+                &slices,
+            )
+            .unwrap_or_else(|e| panic!("{text} by {spec}, sliced: {e}"));
+            sliced_runs += 1;
+            let sliced_gte = sliced.total.relation
+                == lucene_search::collector::TotalHitsRelation::GreaterThanOrEqualTo;
+            // Each slice counts to its own threshold: past Lucene's, the sum
+            // is past it too (exact or not); below it, it is exact.
+            let sliced_total_ok = if gte {
+                sliced.total.value > threshold
+            } else {
+                !sliced_gte && sliced.total.value == total
+            };
+            if sliced.hits != want || !sliced_total_ok {
+                failures.push(format!(
+                    "run {r}: {text} by {spec}, sliced {slices:?}\n  got    {:?} total {} gte {sliced_gte}\n  Lucene {:?} total {total} gte {gte}",
+                    sliced.hits.iter().take(4).collect::<Vec<_>>(),
+                    sliced.total.value,
+                    want.iter().take(4).collect::<Vec<_>>(),
+                ));
+            }
+        }
         if got.hits != want || !total_ok {
             failures.push(format!(
                 "run {r}: {text} by {spec}, top {top_n}, threshold {threshold}, after {after:?}\n  got    {:?} total {} gte {got_gte}\n  Lucene {:?} total {total} gte {gte}",
@@ -252,6 +292,7 @@ fn sorted_searches_match_real_lucene() {
         }
     }
     assert!(pruned > 100, "the threshold runs must prune: {pruned}");
+    assert!(sliced_runs > 1000, "sliced runs: {sliced_runs}");
     assert!(tracked > 200, "tracked max-score runs: {tracked}");
     assert!(
         failures.is_empty(),
