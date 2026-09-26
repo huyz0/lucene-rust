@@ -107,6 +107,11 @@ struct Columns {
     bytes: usize,
 }
 
+/// A lock that a panicked holder left poisoned is still the data.
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// A sort column is decoded on its second use in a segment.
 const COLUMN_MIN_USES: u32 = 2;
 /// Decoded sort columns per segment.
@@ -222,13 +227,13 @@ impl SegmentQueryCache {
         &self,
         key: &str,
         max_doc: i32,
-        build: impl FnOnce() -> Result<SortColumn>,
+        build: &mut dyn FnMut() -> Result<SortColumn>,
     ) -> Result<Option<Arc<SortColumn>>> {
         if max_doc < MIN_SEGMENT_SIZE {
             return Ok(None);
         }
         {
-            let mut c = self.columns.lock().unwrap_or_else(|e| e.into_inner());
+            let mut c = lock(&self.columns);
             if let Some(col) = c.built.get(key) {
                 return Ok(Some(Arc::clone(col)));
             }
@@ -241,7 +246,7 @@ impl SegmentQueryCache {
         // Built without the lock; tried once (on the second use exactly).
         let col = Arc::new(build()?);
         let bytes = col.ram_bytes();
-        let mut c = self.columns.lock().unwrap_or_else(|e| e.into_inner());
+        let mut c = lock(&self.columns);
         if c.bytes.saturating_add(bytes) > MAX_COLUMN_BYTES {
             return Ok(None);
         }
@@ -575,33 +580,30 @@ mod tests {
     fn a_sort_column_is_decoded_on_its_second_use_within_the_budget() {
         let cache = SegmentQueryCache::default();
         let ords = |n: usize| move || Ok(SortColumn::Ords(vec![7; n]));
+        let col = |key: &str, max_doc: i32, n: usize| cache.sort_column(key, max_doc, &mut ords(n));
         // A small segment never caches.
-        assert!(cache.sort_column("k", 100, ords(100)).unwrap().is_none());
-        assert!(cache.sort_column("k", 100, ords(100)).unwrap().is_none());
+        assert!(col("k", 100, 100).unwrap().is_none());
+        assert!(col("k", 100, 100).unwrap().is_none());
         // First use: nothing; second: built; afterwards: the same column,
         // whatever the builder would say.
-        assert!(cache
-            .sort_column("f", 20_000, ords(20_000))
-            .unwrap()
-            .is_none());
-        let built = cache
-            .sort_column("f", 20_000, ords(20_000))
-            .unwrap()
-            .unwrap();
+        assert!(col("f", 20_000, 20_000).unwrap().is_none());
+        let built = col("f", 20_000, 20_000).unwrap().unwrap();
         assert!(matches!(&*built, SortColumn::Ords(v) if v.len() == 20_000));
         let again = cache
-            .sort_column("f", 20_000, || -> Result<SortColumn> { unreachable!() })
+            .sort_column("f", 20_000, &mut || -> Result<SortColumn> {
+                unreachable!()
+            })
             .unwrap()
             .unwrap();
         assert!(Arc::ptr_eq(&built, &again));
         // A column past the budget is built once and dropped; not retried.
         let big = MAX_COLUMN_BYTES / 4 + 1;
-        assert!(cache.sort_column("g", 20_000, ords(big)).unwrap().is_none());
-        assert!(cache.sort_column("g", 20_000, ords(big)).unwrap().is_none());
-        assert!(cache.sort_column("g", 20_000, ords(big)).unwrap().is_none());
+        assert!(col("g", 20_000, big).unwrap().is_none());
+        assert!(col("g", 20_000, big).unwrap().is_none());
+        assert!(col("g", 20_000, big).unwrap().is_none());
         // A failed build is the search's error.
-        assert!(cache.sort_column("h", 20_000, ords(1)).unwrap().is_none());
-        let err = cache.sort_column("h", 20_000, || -> Result<SortColumn> {
+        assert!(col("h", 20_000, 1).unwrap().is_none());
+        let err = cache.sort_column("h", 20_000, &mut || -> Result<SortColumn> {
             Err(crate::top_field::SortError::NoKeys.into())
         });
         assert!(err.is_err());
