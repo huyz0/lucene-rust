@@ -222,6 +222,31 @@ fn metric_aggregations_match_opensearch_bit_for_bit() {
         }
     }
 
+    // Asked for two ways at once (`sum` and `min`), one read serves both:
+    // the needs are joined, each part as the full fold has it.
+    for r in 0..runs {
+        let q = query(&m[&format!("run.{r}.query")]);
+        let full = metric_states(&segments, reader.segment_readers(), &q, &specs).unwrap();
+        let both: Vec<MetricSpec> = specs
+            .iter()
+            .flat_map(|s| [NEED_SUM, NEED_MIN].map(|needs| MetricSpec { needs, ..s.clone() }))
+            .collect();
+        let got = metric_states(&segments, reader.segment_readers(), &q, &both).unwrap();
+        for (k, f) in full.iter().enumerate() {
+            let (sum, min) = (&got[2 * k], &got[2 * k + 1]);
+            assert_eq!(
+                hex(sum.sum),
+                hex(f.sum),
+                "run {r}: the sum of a joined read"
+            );
+            assert_eq!(
+                hex(min.min_of_mins),
+                hex(f.min_of_mins),
+                "run {r}: the min of a joined read"
+            );
+        }
+    }
+
     // A field asked for twice (`sum` and `avg` of it, say) is read once and
     // reported twice, the same.
     let twice: Vec<MetricSpec> = specs.iter().chain(&specs).cloned().collect();
