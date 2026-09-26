@@ -91,3 +91,14 @@ q68	sexpr	body	(b 0 (+ (t t1)) (# (r num 100000 400000)))
 q69	sexpr	body	(b 0 (+ (t t0)) (- (r num 0 500000)))
 q70	sexpr	body	(b 0 (+ (t tz)) (# (r num 0 999999)))
 q71	sexpr	body	(r num 1000 2000)
+# Sorted searches (read path R4): the `sorted` kind, QUERY <TAB> SORT in GenSortedSearch's grammar.
+q72	sorted	body	(all)	num:long:min:asc:last
+q73	sorted	body	(all)	num:long:min:desc:last
+q74	sorted	body	(t t0)	num:long:min:asc:last
+q75	sorted	body	(t t2s)	num:long:min:desc:last
+q76	sorted	body	(b 0 (+ (t t1)) (- (t t2)))	num:long:min:asc:last
+q77	sorted	body	(b 0 (? (t t1)) (? (t t2)))	num:long:min:asc:last
+q78	sorted	body	(t t0)	doc
+q79	sorted	body	(b 0 (? (t t1)) (? (t t2)))	score,num:long:min:asc:last
+q80	sorted	body	(t t1)	num:long:min:asc:last,score
+q81	sorted	body	(all)	doc

@@ -189,6 +189,36 @@ Lucene's match-all and filter conjunctions collect whole 4,096-document windows
 before they consult the competitive iterator, and this collector consults it
 per document. REST responses cap the total at `track_total_hits` either way.
 
+In process (`benchmarks/queries.tsv` q72-q81, the `sorted` kind in both
+runners: `TopFieldCollectorManager(sort, 50, null, 1000)` against
+`search_sorted`, 1M documents, five interleaved runs, median qps, Lucene's
+default query cache on):
+
+| query | shape | merged | 15 segments |
+|---|---|---|---|
+| q72 | match-all by `num` asc | 27.7x | 16.0x |
+| q73 | match-all by `num` desc | 20.1x | 13.7x |
+| q74 | `t0` by `num` | 1.67x | 1.55x |
+| q75 | rare term by `num` desc | 1.42x | 1.32x |
+| q76 | `+t1 -t2` by `num` | 1.42x | 1.98x |
+| q77 | `t1 OR t2` by `num` | 1.52x | 13.45x |
+| q78 | `t0` by `_doc` | 2.45x | 3.15x |
+| q79 | `t1 OR t2` by `_score`, `num` | 1.71x | 1.55x |
+| q80 | `t1` by `num`, `_score` | 1.32x | 1.17x |
+| q81 | match-all by `_doc` | 2.40x | 2.50x |
+
+The first port measured 0.34-0.91x on six of these. What closed it, in
+order: a dense competitive set kept as a bit set, not a sorted list
+(`DocIdSetBuilder`'s form); the points walk's buffers kept across the ~250
+competitive updates a query makes; a scorer outside `TOP_SCORES` reading no
+impacts (Lucene's plain `FREQS` postings); a doc-led sort counting the rest
+of a segment in runs once its queue is full; a sort that reads the score only
+on ties iterating without scores and scoring just those documents; the
+competitive set walked by membership over a cached or match-all scorer; and
+whole inside leaves handed to the visitor at once. The match-all rows gain
+most from counting per document where Lucene collects 4,096-document windows
+first.
+
 Falls back: keyword sort (`SortedSetSortField`, next), `avg`/`sum`/`median`
 modes and nested sorts (OpenSearch's custom comparators), `track_scores`
 unless the score leads, and index-sorted shards.
