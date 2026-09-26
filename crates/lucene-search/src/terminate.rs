@@ -215,7 +215,9 @@ fn prefix_live(seg: &OpenSegment<'_>, last: i32) -> FixedBitSet {
         None => vec![u64::MAX; words_len],
     };
     // Bits [0, keep) stay; keep <= n, so no bit past n survives either.
-    let keep = usize::try_from(last).map_or(0, |l| l.saturating_add(1)).min(n);
+    let keep = usize::try_from(last)
+        .map_or(0, |l| l.saturating_add(1))
+        .min(n);
     let (full, rest) = (keep / 64, keep % 64);
     if let Some(w) = words.get_mut(full) {
         // ARITH: rest < 64.
@@ -248,10 +250,9 @@ pub fn search_sorted_until(
 ) -> Result<(TopFieldDocs, Cut)> {
     let cut = terminate_after(segments, query, n)?;
     // The cut segment's documents up to its last collected match, live.
-    let masked = match cut.last {
-        Some((i, last)) => Some((i, prefix_live(&segments[i], last))),
-        None => None,
-    };
+    let masked = cut
+        .last
+        .map(|(i, last)| (i, prefix_live(&segments[i], last)));
     let view: Vec<OpenSegment<'_>> = segments
         .iter()
         .enumerate()
