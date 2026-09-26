@@ -85,7 +85,8 @@ use std::sync::Arc;
 /// 11, sorted search ([`ffi_jvm_reader_search_sorted`], read path R4); 12,
 /// its keyword keys (terms in, terms out); 13, its options byte and max
 /// score (`track_scores`); 14, metric aggregations
-/// ([`ffi_jvm_reader_aggregate`], read path R5).
+/// ([`ffi_jvm_reader_aggregate`], read path R5) and the `terms` aggregation
+/// ([`ffi_jvm_reader_terms`]).
 pub const JVM_ABI_VERSION: u32 = 14;
 
 /// Blob tag for a single `TermQuery`.
@@ -953,6 +954,166 @@ pub unsafe extern "C" fn ffi_jvm_reader_aggregate(
                     *out_values.add(i * METRIC_VALUES + j) = v;
                 }
             }
+        }
+        Ok(())
+    })
+}
+
+/// Decodes a terms blob: the field (`len: i32`, UTF-8), `shard_size: i32`
+/// (at least 1), then the concurrent-search slices ([`decode_slices`]).
+/// Little-endian, and trailing bytes are an error.
+pub(crate) fn decode_terms_spec(
+    blob: &[u8],
+) -> Result<(String, usize, Vec<Vec<usize>>), FfiStatus> {
+    let mut c = Cursor { buf: blob, pos: 0 };
+    let bad = |msg: String| {
+        set_last_error(msg);
+        FfiStatus::InvalidArgument
+    };
+    let field = std::str::from_utf8(c.bytes()?)
+        .map_err(|_| FfiStatus::InvalidUtf8)?
+        .to_string();
+    let shard_size = c.i32()?;
+    let shard_size = usize::try_from(shard_size)
+        .ok()
+        .filter(|&n| n >= 1)
+        .ok_or_else(|| {
+            bad(format!(
+                "terms blob: shard_size {shard_size}, want at least 1"
+            ))
+        })?;
+    let slices = decode_slices(&mut c, &bad)?;
+    if c.pos != blob.len() {
+        return Err(bad(format!(
+            "terms blob: {} trailing bytes",
+            blob.len() - c.pos
+        )));
+    }
+    Ok((field, shard_size, slices))
+}
+
+/// The `terms` aggregation of a terms blob ([`decode_terms_spec`]) over the
+/// live matches of the query blob, encoded: per slice (one when the blob
+/// names none) `other_doc_count: i64`, `buckets: i32`, and per bucket, by term
+/// ascending, `doc_count: i64` and the term (`len: i32`, bytes).
+pub(crate) fn terms_blobs(
+    handle: u64,
+    query_blob: &[u8],
+    spec_blob: &[u8],
+) -> Result<Vec<u8>, FfiStatus> {
+    let query = decode_query(query_blob)?;
+    let (field, shard_size, slices) = decode_terms_spec(spec_blob)?;
+    let h = lookup(
+        handle,
+        "ffi_jvm_reader_terms: unknown or already-closed handle",
+    )?;
+    let mut opened = h.reader.open_segments().map_err(|e| {
+        set_last_error(format!("opening segment postings: {e}"));
+        FfiStatus::Decode
+    })?;
+    if query_uses_points(&query) {
+        opened.open_points().map_err(|e| {
+            set_last_error(format!("opening segment points: {e}"));
+            FfiStatus::Decode
+        })?;
+    }
+    let segments: Vec<OpenSegment<'_>> = opened
+        .as_open_segments()
+        .into_iter()
+        .zip(&h.live_docs)
+        .map(|(mut s, live)| {
+            s.live_docs = live.as_ref();
+            s
+        })
+        .collect();
+    let q = match &query {
+        JvmQuery::Term(t) => BooleanQuery {
+            must: vec![Clause::Term(t.clone())],
+            ..Default::default()
+        },
+        JvmQuery::Boolean(b) => b.clone(),
+    };
+    let readers = h.reader.segment_readers();
+    let slices = if slices.is_empty() {
+        vec![(0..segments.len().min(readers.len())).collect()]
+    } else {
+        slices
+    };
+    let results =
+        lucene_search::terms_agg::terms_sliced(&segments, readers, &q, &field, shard_size, &slices)
+            .map_err(map_search_error)?;
+    encode_terms_results(&results)
+}
+
+/// [`terms_blobs`]' output encoding.
+pub(crate) fn encode_terms_results(
+    results: &[lucene_search::terms_agg::TermsResult],
+) -> Result<Vec<u8>, FfiStatus> {
+    let too_big = || {
+        set_last_error("terms result: a term or bucket count past i32".to_string());
+        FfiStatus::InvalidArgument
+    };
+    let mut out = Vec::new();
+    for r in results {
+        out.extend_from_slice(
+            &i64::try_from(r.other_doc_count)
+                .unwrap_or(i64::MAX)
+                .to_le_bytes(),
+        );
+        out.extend_from_slice(
+            &i32::try_from(r.buckets.len())
+                .map_err(|_| too_big())?
+                .to_le_bytes(),
+        );
+        for (term, count) in &r.buckets {
+            out.extend_from_slice(&i64::try_from(*count).unwrap_or(i64::MAX).to_le_bytes());
+            out.extend_from_slice(
+                &i32::try_from(term.len())
+                    .map_err(|_| too_big())?
+                    .to_le_bytes(),
+            );
+            out.extend_from_slice(term);
+        }
+    }
+    Ok(out)
+}
+
+/// The `terms` aggregation ([`terms_blobs`]) into `out` (`cap` bytes); the
+/// encoded length goes to `out_len` either way, and a too-small `out` is
+/// [`FfiStatus::BufferTooSmall`], so a caller can size a second call.
+///
+/// # Safety
+/// `query`/`spec` must be valid for `query_len`/`spec_len` bytes, `out` for
+/// `cap` writable bytes (null when `cap` is 0), `out_len` writable.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ffi_jvm_reader_terms(
+    handle: u64,
+    query: *const u8,
+    query_len: usize,
+    spec: *const u8,
+    spec_len: usize,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        if out_len.is_null() || (out.is_null() && cap > 0) {
+            return Err(FfiStatus::NullPointer);
+        }
+        // SAFETY: caller contract.
+        let blob = unsafe { bytes_from_raw(query, query_len)? };
+        // SAFETY: caller contract.
+        let spec_blob = unsafe { bytes_from_raw(spec, spec_len)? };
+        let encoded = terms_blobs(handle, blob, spec_blob)?;
+        // SAFETY: caller contract.
+        unsafe { *out_len = encoded.len() };
+        if encoded.len() > cap {
+            return Err(FfiStatus::BufferTooSmall);
+        }
+        if !encoded.is_empty() {
+            // SAFETY: `out` is valid for `cap >= encoded.len()` bytes.
+            unsafe { std::ptr::copy_nonoverlapping(encoded.as_ptr(), out, encoded.len()) };
         }
         Ok(())
     })
@@ -2185,6 +2346,107 @@ mod tests {
         assert_eq!(
             run_sorted(h, &q, &missing, 3, i64::MAX).unwrap_err(),
             FfiStatus::Search.code()
+        );
+        ffi_close_jvm_reader(h);
+    }
+
+    fn terms_spec(field: &str, shard_size: i32, slices: &[&[i32]]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&(field.len() as i32).to_le_bytes());
+        b.extend_from_slice(field.as_bytes());
+        b.extend_from_slice(&shard_size.to_le_bytes());
+        b.extend_from_slice(&(slices.len() as i32).to_le_bytes());
+        for slice in slices {
+            b.extend_from_slice(&(slice.len() as i32).to_le_bytes());
+            for &seg in *slice {
+                b.extend_from_slice(&seg.to_le_bytes());
+            }
+        }
+        b
+    }
+
+    #[test]
+    fn terms_blobs_decode_run_and_encode() {
+        let invalid = Err(FfiStatus::InvalidArgument);
+        assert_eq!(
+            decode_terms_spec(&terms_spec("f", 0, &[])).map(|_| ()),
+            invalid,
+            "shard_size 0"
+        );
+        let mut trailing = terms_spec("f", 3, &[]);
+        trailing.push(0);
+        assert_eq!(decode_terms_spec(&trailing).map(|_| ()), invalid);
+        let mut utf8 = terms_spec("f", 3, &[]);
+        utf8[4] = 0xff;
+        assert_eq!(
+            decode_terms_spec(&utf8).map(|_| ()),
+            Err(FfiStatus::InvalidUtf8)
+        );
+        assert_eq!(
+            decode_terms_spec(&terms_spec("f", 3, &[&[1, 0]])),
+            Ok(("f".to_string(), 3, vec![vec![1, 0]]))
+        );
+        let enc = encode_terms_results(&[lucene_search::terms_agg::TermsResult {
+            buckets: vec![(b"ab".to_vec(), 2)],
+            other_doc_count: 5,
+        }])
+        .unwrap();
+        let mut want = 5i64.to_le_bytes().to_vec();
+        want.extend_from_slice(&1i32.to_le_bytes());
+        want.extend_from_slice(&2i64.to_le_bytes());
+        want.extend_from_slice(&2i32.to_le_bytes());
+        want.extend_from_slice(b"ab");
+        assert_eq!(enc, want);
+
+        // A field without keyword doc values: nothing counted, one slice.
+        let h = open();
+        let q = term_blob("body", "fox");
+        let spec = terms_spec("nosuch", 10, &[]);
+        let mut len = 0usize;
+        let call = |out: *mut u8, cap: usize, len: &mut usize| unsafe {
+            ffi_jvm_reader_terms(
+                h,
+                q.as_ptr(),
+                q.len(),
+                spec.as_ptr(),
+                spec.len(),
+                out,
+                cap,
+                len,
+            )
+        };
+        let mut buf = [0u8; 12];
+        assert_eq!(call(buf.as_mut_ptr(), buf.len(), &mut len), 0);
+        assert_eq!(len, 12);
+        assert_eq!(buf, [0u8; 12]);
+        assert_eq!(
+            call(std::ptr::null_mut(), 0, &mut len),
+            FfiStatus::BufferTooSmall.code()
+        );
+        assert_eq!(len, 12);
+        assert_eq!(
+            unsafe {
+                ffi_jvm_reader_terms(
+                    h,
+                    q.as_ptr(),
+                    q.len(),
+                    spec.as_ptr(),
+                    spec.len(),
+                    std::ptr::null_mut(),
+                    4,
+                    &mut len,
+                )
+            },
+            FfiStatus::NullPointer.code()
+        );
+        // A slice naming a segment the reader lacks is a search error.
+        assert_eq!(
+            terms_blobs(h, &q, &terms_spec("nosuch", 10, &[&[99]])),
+            Err(FfiStatus::Search)
+        );
+        assert_eq!(
+            terms_blobs(closed_handle(), &q, &spec),
+            Err(FfiStatus::InvalidHandle)
         );
         ffi_close_jvm_reader(h);
     }

@@ -48,7 +48,7 @@ pub struct TermsResult {
 enum Ords<'a> {
     Absent,
     Single(Box<NumericReader<'a>>),
-    Multi(SortedNumericReader<'a>),
+    Multi(Box<SortedNumericReader<'a>>),
 }
 
 fn open_ords<'a>(
@@ -70,7 +70,7 @@ fn open_ords<'a>(
                 Some(TermsDict::open(data, &se.terms).map_err(store)?),
             ),
             SortedSetKind::Multi { ords, terms } => (
-                Ords::Multi(SortedNumericReader::new(data, ords)),
+                Ords::Multi(Box::new(SortedNumericReader::new(data, ords))),
                 Some(TermsDict::open(data, terms).map_err(store)?),
             ),
         });
@@ -120,7 +120,7 @@ pub fn terms_sliced(
     let query = rewritten.as_ref().unwrap_or(query);
     let clause = lone_clause(query);
     let one = |slice: &Vec<usize>| {
-        let counts = slice_counts(segments, readers, &clause, field, slice)?;
+        let counts = slice_counts(segments, readers, query, &clause, field, slice)?;
         Ok(select(counts, shard_size))
     };
     if slices.len() > 1 {
@@ -134,6 +134,7 @@ pub fn terms_sliced(
 fn slice_counts(
     segments: &[OpenSegment<'_>],
     readers: &[SegmentReader],
+    query: &BooleanQuery,
     clause: &crate::query::Clause,
     field: &str,
     slice: &[usize],
@@ -166,7 +167,7 @@ fn slice_counts(
             cache: seg.cache,
         };
         let live = seg.live_docs;
-        let Some(docs) = segment_matches(&ctx, clause, live, &mut docs_buf)? else {
+        let Some(docs) = segment_matches(&ctx, query, clause, live, &mut docs_buf)? else {
             continue;
         };
         let is_live = |doc: i32| live.is_none_or(|l| l.get_doc(doc));

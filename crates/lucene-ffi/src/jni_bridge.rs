@@ -389,6 +389,34 @@ pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_aggregate<'l>
     })
 }
 
+/// `NativeBridge.terms`: [`jvm_reader::terms_blobs`], its encoded result
+/// stored in a new `byte[]` at `out[0]`.
+#[no_mangle]
+pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_terms<'l>(
+    env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    query: JByteArray<'l>,
+    spec: JByteArray<'l>,
+    out: JObjectArray<'l>,
+) -> jint {
+    run(|| {
+        let blob = env
+            .convert_byte_array(&query)
+            .map_err(|e| jni_err(&env, "query", e))?;
+        let spec_blob = env
+            .convert_byte_array(&spec)
+            .map_err(|e| jni_err(&env, "spec", e))?;
+        let encoded = jvm_reader::terms_blobs(handle as u64, &blob, &spec_blob)?;
+        let arr = env
+            .byte_array_from_slice(&encoded)
+            .map_err(|e| jni_err(&env, "out", e))?;
+        env.set_object_array_element(&out, 0, &arr)
+            .map_err(|e| jni_err(&env, "out", e))?;
+        Ok(FfiStatus::Ok.code())
+    })
+}
+
 #[no_mangle]
 pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_closeReader(
     _env: JNIEnv<'_>,
