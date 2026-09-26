@@ -3045,6 +3045,7 @@ mod tests {
             max_block_length: 8,
             terms_data_offset: 0,
             terms_data_length: 0,
+            index: None,
         };
         let err = facet_counts(&[], &entry, &terms, &[0]).unwrap_err();
         assert!(matches!(err, crate::Error::DocValues(_)));

@@ -595,7 +595,11 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<(Vec<SortField>, Option<FieldDo
             for _ in 0..n {
                 values.push(c.i64()?);
             }
-            Some(FieldDoc { doc, values })
+            Some(FieldDoc {
+                doc,
+                values,
+                terms: Vec::new(),
+            })
         }
         other => return Err(bad(format!("sort blob: has_after is {other}"))),
     };
@@ -1408,7 +1412,8 @@ mod tests {
             after,
             Some(FieldDoc {
                 doc: 9,
-                values: vec![1, 2, 3, 4, 5, 6]
+                values: vec![1, 2, 3, 4, 5, 6],
+                terms: Vec::new(),
             })
         );
 
