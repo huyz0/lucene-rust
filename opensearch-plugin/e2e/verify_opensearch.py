@@ -230,7 +230,10 @@ def matrix():
     # OpenSearch answers a top-level range, and a match_all sorted by one numeric field with no
     # `missing`, approximately (ApproximateScoreQuery): its ties follow BKD order, so these stay on
     # OpenSearch's own path.
-    add("sort keyword", {"query": {"match": {"body": "alpha"}}, "sort": [{"tag": "asc"}]}, "sort_*")
+    add("sort keyword", {"query": {"match": {"body": "alpha"}}, "sort": [{"tag": "asc"}]}, "native")
+    add("sort keyword desc then n", {"query": {"match_all": {}}, "sort": [{"tag": "desc"}, {"n": "asc"}]}, "native")
+    add("sort keyword missing first max", {"query": {"match": {"body": "beta"}}, "sort": [{"tag": {"order": "asc", "missing": "_first", "mode": "max"}}, "_score"]}, "native")
+    add("sort keyword search_after", {"query": {"match_all": {}}, "sort": [{"tag": "asc"}, {"n": "asc"}], "search_after": ["gamma", 100]}, "native")
     add("sort mode avg", {"query": {"match": {"body": "alpha"}}, "sort": [{"m": {"order": "asc", "mode": "avg"}}]}, "sort_*")
     add("sort track_scores", {"query": {"match": {"body": "alpha"}}, "sort": [{"n": "desc"}], "track_scores": True}, "track_scores")
     add("aggregation", {"query": {"match": {"body": "alpha"}}, "aggs": {"tags": {"terms": {"field": "tag"}}}}, "aggregations")
