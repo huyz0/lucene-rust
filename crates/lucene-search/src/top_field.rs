@@ -2790,7 +2790,9 @@ pub fn search_sorted_sliced(
         track: false,
         global: global.as_ref(),
     };
-    let parts = crate::slices::run_slices(slices, |slice| {
+    let parallel =
+        crate::slices::estimated_matches(segments, query) >= crate::slices::SEQUENTIAL_BELOW;
+    let parts = crate::slices::run_slices_if(parallel, slices, |slice| {
         // `LeafSlice` keeps its partitions by doc base: a collector breaks
         // ties assuming ascending documents.
         let mut order = slice.to_vec();
