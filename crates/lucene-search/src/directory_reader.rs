@@ -935,6 +935,10 @@ fn open_segment_file(
 pub struct DirectoryReader {
     pub segment_infos: SegmentInfos,
     segments: Vec<SegmentReader>,
+    /// Keyword fields' global ordinals, built on first use and kept for the
+    /// reader's life -- the `OrdinalMap` Lucene caches per reader and field.
+    global_ords:
+        std::sync::Mutex<std::collections::HashMap<String, Arc<crate::terms_agg::GlobalOrds>>>,
 }
 
 impl DirectoryReader {
@@ -1014,7 +1018,29 @@ impl DirectoryReader {
         Ok(DirectoryReader {
             segment_infos,
             segments,
+            global_ords: std::sync::Mutex::default(),
         })
+    }
+
+    /// `field`'s global ordinals over this reader's segments, built on the
+    /// first call and kept (see [`crate::terms_agg::GlobalOrds`]).
+    ///
+    /// # Errors
+    /// What building them reports ([`crate::terms_agg::GlobalOrds::build`]).
+    pub fn global_ords(&self, field: &str) -> crate::Result<Arc<crate::terms_agg::GlobalOrds>> {
+        let cached = |m: &std::collections::HashMap<String, Arc<crate::terms_agg::GlobalOrds>>| {
+            m.get(field).cloned()
+        };
+        // A poisoned lock only means another thread panicked while holding
+        // it; the map it guards is always whole.
+        if let Some(g) = cached(&self.global_ords.lock().unwrap_or_else(|e| e.into_inner())) {
+            return Ok(g);
+        }
+        // Built outside the lock: two threads may both build, and one's map
+        // is kept -- the same map either way.
+        let built = Arc::new(crate::terms_agg::GlobalOrds::build(&self.segments, field)?);
+        let mut map = self.global_ords.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(map.entry(field.to_string()).or_insert(built).clone())
     }
 
     /// `DirectoryReader.openIfChanged(DirectoryReader)`-equivalent: checks
