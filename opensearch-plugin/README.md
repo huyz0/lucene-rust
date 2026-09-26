@@ -44,6 +44,12 @@ cannot be installed alongside `neural-search`.
 A native failure is logged, counted as `native_errors`, and the query is re-run
 on Lucene: it never fails a search Lucene can answer.
 
+Native memory the JVM does not see, per segment of 10,000 documents or more:
+the query cache (at most 16 MB) and, for sorted searches, decoded sort columns
+(at most 32 MB per segment and 512 MB for the whole process; a column is
+decoded on its second use in a segment, only when a per-document read would
+decode it, and is freed with the segment).
+
 ## Layout
 
 | | |
