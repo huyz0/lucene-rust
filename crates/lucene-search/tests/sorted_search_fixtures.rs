@@ -4,7 +4,7 @@
 //! `fixtures/src/GenSortedSearch.java` writes a three-segment, 60,000
 //! document corpus with deletions and numeric fields indexed as doc values
 //! and points, and records `TopFieldCollector`'s answer for every
-//! combination of six queries, sixteen sorts (numeric types, selectors,
+//! combination of seven queries (one with a phrase), eighteen sorts (numeric types, selectors,
 //! directions, missing values, several keys, the score and the document), two
 //! page sizes and two total-hits thresholds -- then the next page twice, once
 //! after the last hit and once after its values alone (OpenSearch's
@@ -20,7 +20,7 @@ use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::query::{MatchAllDocsQuery, PointsRangeQuery};
 use lucene_search::top_field::{search_sorted, FieldDoc, Selector, SortField, SortType};
-use lucene_search::{BooleanQuery, Clause, TermQuery};
+use lucene_search::{BooleanQuery, Clause, PhraseQuery, TermQuery};
 use lucene_store::FsDirectory;
 
 fn fixture_dir() -> String {
@@ -106,6 +106,14 @@ fn parse(toks: &[String], at: &mut usize) -> Clause {
     let q = match op.as_str() {
         "all" => Clause::MatchAllDocs(MatchAllDocsQuery::new(0)),
         "t" => Clause::Term(TermQuery::new("body", next().into_bytes())),
+        "p" => {
+            let mut words = Vec::new();
+            while toks[*at] != ")" {
+                *at += 1;
+                words.push(toks[*at - 1].clone());
+            }
+            Clause::Phrase(PhraseQuery::new("body", words))
+        }
         "r" => {
             let min = next().parse().unwrap();
             let max = next().parse().unwrap();
