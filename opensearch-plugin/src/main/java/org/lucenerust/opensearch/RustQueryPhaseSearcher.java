@@ -586,6 +586,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             // Counted in the aggregations' pass: no hits to find, nothing left to search.
             counts[1] = counted[0];
             counts[2] = counted[1];
+        } else if (numDocs == 0 && (shortcut >= 0 || countLimit == 0)) {
+            // No hits, and a total already known (the shortcut) or not asked for: nothing the
+            // native search would answer is read below.
         } else {
             int rc = NativeBridge.search(handle, blob, numDocs, countLimit, docs, scores, counts);
             if (rc != NativeBridge.OK) {
