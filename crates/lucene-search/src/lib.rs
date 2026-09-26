@@ -196,6 +196,7 @@
 //! concept this port doesn't have yet) and skip-index-driven range pruning (this
 //! port doesn't parse doc-values skip indexes) are both deliberately deferred.
 
+pub mod aggs;
 mod bulk_scorer;
 pub mod collector;
 pub mod directory_reader;
