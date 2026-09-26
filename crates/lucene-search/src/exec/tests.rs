@@ -1087,6 +1087,10 @@ mod fixture {
         .collect();
         assert_eq!(kinds, all, "bulk scorers the fixture reaches");
         let paths = test_only_req_opt_paths::take();
+        // A window per lead block: never the 64K-id march through the whole
+        // `int` range once a skipped window leaves the lead in its last block.
+        let windows = test_only_req_opt_paths::take_windows();
+        assert!(windows < 30_000, "ReqOptBulk windows: {windows}");
         assert!(
             paths.iter().all(|&n| n > 0),
             "every ReqOptBulk path must run (required-led, optional-led single, \
