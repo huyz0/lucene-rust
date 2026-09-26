@@ -50,6 +50,7 @@
 
 use std::os::raw::c_char;
 
+use lucene_search::aggs::{MetricSpec, MetricState, ValueKind};
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::multi_segment::OpenSegment;
@@ -83,8 +84,9 @@ use std::sync::Arc;
 /// its term-set, prefix and wildcard nodes (R3); 10, its points range node;
 /// 11, sorted search ([`ffi_jvm_reader_search_sorted`], read path R4); 12,
 /// its keyword keys (terms in, terms out); 13, its options byte and max
-/// score (`track_scores`).
-pub const JVM_ABI_VERSION: u32 = 13;
+/// score (`track_scores`); 14, metric aggregations
+/// ([`ffi_jvm_reader_aggregate`], read path R5).
+pub const JVM_ABI_VERSION: u32 = 14;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -793,6 +795,148 @@ pub(crate) fn search_sorted_blobs(
         lower_bound,
         terms,
     })
+}
+
+/// Value kinds in a metrics blob ([`decode_metrics`]).
+const METRIC_LONG: u8 = 0;
+const METRIC_DOUBLE: u8 = 1;
+const METRIC_FLOAT: u8 = 2;
+/// At most this many fields in one metrics blob.
+const MAX_METRICS: usize = 64;
+/// Doubles per field in [`ffi_jvm_reader_aggregate`]'s output.
+pub const METRIC_VALUES: usize = 6;
+
+/// Decodes a metrics blob: `count: u8`, then per field `kind: u8`
+/// ([`METRIC_LONG`], [`METRIC_DOUBLE`], [`METRIC_FLOAT`]) and the field
+/// (`len: i32`, UTF-8). Trailing bytes are an error.
+pub(crate) fn decode_metrics(blob: &[u8]) -> Result<Vec<MetricSpec>, FfiStatus> {
+    let mut c = Cursor { buf: blob, pos: 0 };
+    let bad = |msg: String| {
+        set_last_error(msg);
+        FfiStatus::InvalidArgument
+    };
+    let n = usize::from(c.u8()?);
+    if n == 0 || n > MAX_METRICS {
+        return Err(bad(format!(
+            "metrics blob: {n} fields, want 1..={MAX_METRICS}"
+        )));
+    }
+    let mut specs = Vec::with_capacity(n);
+    for _ in 0..n {
+        let kind = match c.u8()? {
+            METRIC_LONG => ValueKind::Long,
+            METRIC_DOUBLE => ValueKind::Double,
+            METRIC_FLOAT => ValueKind::Float,
+            other => return Err(bad(format!("metrics blob: unknown kind {other}"))),
+        };
+        let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
+        specs.push(MetricSpec {
+            field: field.to_string(),
+            kind,
+        });
+    }
+    if c.pos != blob.len() {
+        return Err(bad(format!(
+            "metrics blob: {} trailing bytes",
+            blob.len() - c.pos
+        )));
+    }
+    Ok(specs)
+}
+
+/// The numeric metric aggregations of a metrics blob ([`decode_metrics`])
+/// over the live matches of the query blob `query`: per field, its value
+/// count into `out_counts` and [`METRIC_VALUES`] doubles into `out_values`
+/// -- the compensated sum and its delta, the minimum and maximum over every
+/// value, and the minimum of each document's first value and the maximum of
+/// each document's last (see [`lucene_search::aggs`]).
+///
+/// # Safety
+/// `query`/`aggs` must be valid for `query_len`/`aggs_len` bytes;
+/// `out_counts` for `n` elements and `out_values` for `n *`
+/// [`METRIC_VALUES`], `n` being at least the blob's field count.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ffi_jvm_reader_aggregate(
+    handle: u64,
+    query: *const u8,
+    query_len: usize,
+    aggs: *const u8,
+    aggs_len: usize,
+    out_counts: *mut i64,
+    out_values: *mut f64,
+    n: usize,
+) -> i32 {
+    guard(|| {
+        if out_counts.is_null() || out_values.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        // SAFETY: caller contract.
+        let blob = unsafe { bytes_from_raw(query, query_len)? };
+        // SAFETY: caller contract.
+        let aggs_blob = unsafe { bytes_from_raw(aggs, aggs_len)? };
+        let states = aggregate_blobs(handle, blob, aggs_blob)?;
+        if n < states.len() {
+            return Err(FfiStatus::BufferTooSmall);
+        }
+        // SAFETY: caller contract; `states.len() <= n`.
+        unsafe {
+            for (i, s) in states.iter().enumerate() {
+                *out_counts.add(i) = i64::try_from(s.count).unwrap_or(i64::MAX);
+                for (j, v) in metric_values(s).into_iter().enumerate() {
+                    *out_values.add(i * METRIC_VALUES + j) = v;
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
+/// A field's doubles, in [`ffi_jvm_reader_aggregate`]'s order.
+pub(crate) fn metric_values(s: &MetricState) -> [f64; METRIC_VALUES] {
+    [s.sum, s.delta, s.min, s.max, s.min_of_mins, s.max_of_maxes]
+}
+
+/// [`ffi_jvm_reader_aggregate`] up to its output buffers.
+pub(crate) fn aggregate_blobs(
+    handle: u64,
+    query_blob: &[u8],
+    aggs_blob: &[u8],
+) -> Result<Vec<MetricState>, FfiStatus> {
+    let query = decode_query(query_blob)?;
+    let specs = decode_metrics(aggs_blob)?;
+    let h = lookup(
+        handle,
+        "ffi_jvm_reader_aggregate: unknown or already-closed handle",
+    )?;
+    let mut opened = h.reader.open_segments().map_err(|e| {
+        set_last_error(format!("opening segment postings: {e}"));
+        FfiStatus::Decode
+    })?;
+    if query_uses_points(&query) {
+        opened.open_points().map_err(|e| {
+            set_last_error(format!("opening segment points: {e}"));
+            FfiStatus::Decode
+        })?;
+    }
+    let segments: Vec<OpenSegment<'_>> = opened
+        .as_open_segments()
+        .into_iter()
+        .zip(&h.live_docs)
+        .map(|(mut s, live)| {
+            s.live_docs = live.as_ref();
+            s
+        })
+        .collect();
+    let q = match &query {
+        JvmQuery::Term(t) => BooleanQuery {
+            must: vec![Clause::Term(t.clone())],
+            ..Default::default()
+        },
+        JvmQuery::Boolean(b) => b.clone(),
+    };
+    lucene_search::aggs::metric_states(&segments, h.reader.segment_readers(), &q, &specs)
+        .map_err(map_search_error)
 }
 
 /// The keyword keys' terms of `hits`, as [`ffi_jvm_reader_search_sorted`]
@@ -1911,6 +2055,91 @@ mod tests {
             0
         );
         assert!(max_score.is_nan());
+        ffi_close_jvm_reader(h);
+    }
+
+    fn metrics_blob(fields: &[(u8, &str)]) -> Vec<u8> {
+        let mut b = vec![fields.len() as u8];
+        for &(kind, f) in fields {
+            b.push(kind);
+            b.extend_from_slice(&(f.len() as i32).to_le_bytes());
+            b.extend_from_slice(f.as_bytes());
+        }
+        b
+    }
+
+    #[test]
+    fn metrics_blobs_decode_and_aggregate() {
+        let specs = decode_metrics(&metrics_blob(&[
+            (METRIC_LONG, "a"),
+            (METRIC_DOUBLE, "b"),
+            (METRIC_FLOAT, "c"),
+        ]))
+        .unwrap();
+        assert_eq!(
+            specs
+                .iter()
+                .map(|s| (s.field.as_str(), s.kind))
+                .collect::<Vec<_>>(),
+            [
+                ("a", ValueKind::Long),
+                ("b", ValueKind::Double),
+                ("c", ValueKind::Float)
+            ]
+        );
+        let invalid = Err(FfiStatus::InvalidArgument);
+        assert_eq!(decode_metrics(&[0]).map(|_| ()), invalid, "no fields");
+        assert_eq!(
+            decode_metrics(&metrics_blob(&[(9, "a")])).map(|_| ()),
+            invalid
+        );
+        let mut trailing = metrics_blob(&[(METRIC_LONG, "a")]);
+        trailing.push(0);
+        assert_eq!(decode_metrics(&trailing).map(|_| ()), invalid);
+        let mut utf8 = vec![1, METRIC_LONG];
+        utf8.extend_from_slice(&1i32.to_le_bytes());
+        utf8.push(0xff);
+        assert_eq!(
+            decode_metrics(&utf8).map(|_| ()),
+            Err(FfiStatus::InvalidUtf8)
+        );
+
+        // A field the index does not have: no values, the empty state.
+        let h = open();
+        let q = term_blob("body", "fox");
+        let aggs = metrics_blob(&[(METRIC_LONG, "nosuch")]);
+        let (mut counts, mut values) = ([7i64; 1], [7f64; METRIC_VALUES]);
+        let call = |handle: u64, counts: *mut i64, values: *mut f64, n: usize| unsafe {
+            ffi_jvm_reader_aggregate(
+                handle,
+                q.as_ptr(),
+                q.len(),
+                aggs.as_ptr(),
+                aggs.len(),
+                counts,
+                values,
+                n,
+            )
+        };
+        assert_eq!(call(h, counts.as_mut_ptr(), values.as_mut_ptr(), 1), 0);
+        assert_eq!(counts[0], 0);
+        assert_eq!(values[..4], [0.0, 0.0, f64::INFINITY, f64::NEG_INFINITY]);
+        assert_eq!(
+            call(h, counts.as_mut_ptr(), values.as_mut_ptr(), 0),
+            FfiStatus::BufferTooSmall.code()
+        );
+        assert_eq!(
+            call(h, std::ptr::null_mut(), values.as_mut_ptr(), 1),
+            FfiStatus::NullPointer.code()
+        );
+        assert_eq!(
+            call(h, counts.as_mut_ptr(), std::ptr::null_mut(), 1),
+            FfiStatus::NullPointer.code()
+        );
+        assert_eq!(
+            call(closed_handle(), counts.as_mut_ptr(), values.as_mut_ptr(), 1),
+            FfiStatus::InvalidHandle.code()
+        );
         ffi_close_jvm_reader(h);
     }
 

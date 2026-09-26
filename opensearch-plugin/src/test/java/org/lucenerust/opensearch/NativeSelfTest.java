@@ -71,6 +71,7 @@ public final class NativeSelfTest {
     private static int scored;
     private static int sortedChecks;
     private static int trackedPages;
+    private static int aggChecks;
 
     public static void main(String[] args) throws Exception {
         NativeLibrary.load(Path.of("."));
@@ -87,14 +88,16 @@ public final class NativeSelfTest {
         // A regression that stopped fixtures opening natively would otherwise pass silently.
         check(compared >= 20, "fixtures compared natively: " + compared);
         check(trackedPages >= 20, "sorted pages tracking the max score: " + trackedPages);
+        check(aggChecks >= 100, "queries aggregated natively: " + aggChecks);
         System.out.printf(
-            "NativeSelfTest: %d checks, %d failures; %d of %d compared scores bit-exact; %d sorted pages compared (%d tracking the max score)%n",
+            "NativeSelfTest: %d checks, %d failures; %d of %d compared scores bit-exact; %d sorted pages compared (%d tracking the max score); %d aggregations%n",
             checks,
             failures,
             bitExact,
             scored,
             sortedChecks,
-            trackedPages
+            trackedPages,
+            aggChecks
         );
         if (failures > 0) {
             System.exit(1);
@@ -304,6 +307,7 @@ public final class NativeSelfTest {
                 check(ok0 && zero[0] == 0, where + ": " + rewritten + " size 0 limit " + limit + " gave " + zero[1] + (zero[2] == 1 ? "+" : "") + ", exact " + exactCount);
             }
             compareSorted(where, searcher, acquired.handle(), rewritten, enc.blob(), new Random(where.hashCode() * 31L + rewritten.hashCode()));
+            compareAggs(where + ": " + rewritten, searcher, acquired.handle(), rewritten, enc.blob());
             for (int topN : new int[] { 10, 3 }) {
                 TopDocs want = searcher.search(rewritten, topN);
                 int[] docs = new int[topN];
@@ -340,6 +344,123 @@ public final class NativeSelfTest {
                 }
             }
         }
+    }
+
+    /** The metric fields and how each reads its stored longs ({@link NativeAggregations}' kinds). */
+    private static final String[] AGG_FIELDS = { "sl", "si", "sd", "sf", "missing" };
+    private static final byte[] AGG_KINDS = {
+        NativeAggregations.LONG,
+        NativeAggregations.LONG,
+        NativeAggregations.DOUBLE,
+        NativeAggregations.FLOAT,
+        NativeAggregations.LONG };
+
+    /**
+     * {@code NativeBridge.aggregate} against the loop OpenSearch's metric aggregators run (as in
+     * {@code fixtures/src/GenMetricAggs.java}): every value of every live match, summed with {@code
+     * CompensatedSum}, {@code Math.min}/{@code Math.max} over the values and over each document's
+     * first and last. Bit for bit.
+     */
+    private static void compareAggs(String what, IndexSearcher searcher, long handle, Query query, byte[] blob) throws Exception {
+        // Only where the fields are numeric (a fixture may use the names for other doc values).
+        for (org.apache.lucene.index.LeafReaderContext leaf : searcher.getIndexReader().leaves()) {
+            for (String f : AGG_FIELDS) {
+                org.apache.lucene.index.FieldInfo info = leaf.reader().getFieldInfos().fieldInfo(f);
+                if (info != null
+                    && info.getDocValuesType() != org.apache.lucene.index.DocValuesType.NUMERIC
+                    && info.getDocValuesType() != org.apache.lucene.index.DocValuesType.SORTED_NUMERIC) {
+                    return;
+                }
+            }
+        }
+        NativeAggregations.Plan plan = new NativeAggregations.Plan(
+            java.util.stream.IntStream.range(0, AGG_FIELDS.length)
+                .mapToObj(i -> new NativeAggregations.Metric("m" + i, NativeAggregations.Kind.STATS, AGG_FIELDS[i], AGG_KINDS[i], null, null, null))
+                .toList()
+        );
+        long[] counts = new long[AGG_FIELDS.length];
+        double[] values = new double[AGG_FIELDS.length * NativeAggregations.VALUES];
+        int rc = NativeBridge.aggregate(handle, blob, plan.blob(), counts, values);
+        check(rc == NativeBridge.OK, what + ": aggregate status " + rc + " " + NativeBridge.lastError());
+        if (rc != NativeBridge.OK) {
+            return;
+        }
+        long[] wantCounts = new long[AGG_FIELDS.length];
+        double[] want = new double[values.length];
+        for (int k = 0; k < AGG_FIELDS.length; k++) {
+            want[k * NativeAggregations.VALUES + 2] = Double.POSITIVE_INFINITY;
+            want[k * NativeAggregations.VALUES + 3] = Double.NEGATIVE_INFINITY;
+            want[k * NativeAggregations.VALUES + 4] = Double.POSITIVE_INFINITY;
+            want[k * NativeAggregations.VALUES + 5] = Double.NEGATIVE_INFINITY;
+        }
+        searcher.search(query, new org.apache.lucene.search.CollectorManager<org.apache.lucene.search.SimpleCollector, Void>() {
+            @Override
+            public org.apache.lucene.search.SimpleCollector newCollector() {
+                return new org.apache.lucene.search.SimpleCollector() {
+                    final org.apache.lucene.index.SortedNumericDocValues[] dvs = new org.apache.lucene.index.SortedNumericDocValues[AGG_FIELDS.length];
+
+                    @Override
+                    protected void doSetNextReader(org.apache.lucene.index.LeafReaderContext context) throws java.io.IOException {
+                        for (int k = 0; k < AGG_FIELDS.length; k++) {
+                            dvs[k] = org.apache.lucene.index.DocValues.getSortedNumeric(context.reader(), AGG_FIELDS[k]);
+                        }
+                    }
+
+                    @Override
+                    public void collect(int doc) throws java.io.IOException {
+                        for (int k = 0; k < AGG_FIELDS.length; k++) {
+                            if (dvs[k].advanceExact(doc) == false) {
+                                continue;
+                            }
+                            int at = k * NativeAggregations.VALUES;
+                            int n = dvs[k].docValueCount();
+                            wantCounts[k] += n;
+                            double first = 0, last = 0;
+                            for (int j = 0; j < n; j++) {
+                                long raw = dvs[k].nextValue();
+                                double v = switch (AGG_KINDS[k]) {
+                                    case NativeAggregations.DOUBLE -> org.apache.lucene.util.NumericUtils.sortableLongToDouble(raw);
+                                    case NativeAggregations.FLOAT -> org.apache.lucene.util.NumericUtils.sortableIntToFloat((int) raw);
+                                    default -> (double) raw;
+                                };
+                                first = j == 0 ? v : first;
+                                last = v;
+                                // CompensatedSum.add
+                                if (Double.isFinite(v) == false) {
+                                    want[at] = v + want[at];
+                                }
+                                if (Double.isFinite(want[at])) {
+                                    double corrected = v + want[at + 1];
+                                    double updated = want[at] + corrected;
+                                    want[at + 1] = corrected - (updated - want[at]);
+                                    want[at] = updated;
+                                }
+                                want[at + 2] = Math.min(want[at + 2], v);
+                                want[at + 3] = Math.max(want[at + 3], v);
+                            }
+                            want[at + 4] = Math.min(want[at + 4], first);
+                            want[at + 5] = Math.max(want[at + 5], last);
+                        }
+                    }
+
+                    @Override
+                    public org.apache.lucene.search.ScoreMode scoreMode() {
+                        return org.apache.lucene.search.ScoreMode.COMPLETE_NO_SCORES;
+                    }
+                };
+            }
+
+            @Override
+            public Void reduce(java.util.Collection<org.apache.lucene.search.SimpleCollector> collectors) {
+                return null;
+            }
+        });
+        boolean same = Arrays.equals(counts, wantCounts);
+        for (int i = 0; i < values.length && same; i++) {
+            same = Double.doubleToRawLongBits(values[i]) == Double.doubleToRawLongBits(want[i]);
+        }
+        check(same, what + ": aggregations native " + Arrays.toString(counts) + Arrays.toString(values) + " lucene " + Arrays.toString(wantCounts) + Arrays.toString(want));
+        aggChecks++;
     }
 
     /** A random sort of one to three keys over the self-test documents' sort fields. */
