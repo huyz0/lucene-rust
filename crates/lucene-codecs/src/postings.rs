@@ -490,14 +490,26 @@ pub enum PostingsFlags {
     /// a `TermInSetQuery` and a delete-by-term resolution all want: they read
     /// doc ids and never call `freq()`.
     DocsOnly,
-    /// `PostingsEnum.FREQS` and every flag above it: frequencies are decoded.
+    /// `TermsEnum.impacts(PostingsEnum.FREQS)`: frequencies are decoded, and
+    /// so is each skipped-to block's impacts, for block-max pruning.
     #[default]
     Freqs,
+    /// `TermsEnum.postings(PostingsEnum.FREQS)`: frequencies without impacts,
+    /// what a scorer that never prunes (`COMPLETE`, `TOP_DOCS_WITH_SCORES`)
+    /// asks for. Block headers it skips past are stepped over rather than
+    /// read, and [`LazyDocsCursor::level0_impacts`] stays empty -- the
+    /// "unknown, bound by the global maximum" answer every caller already
+    /// takes from a tail block.
+    FreqsNoImpacts,
 }
 
 impl PostingsFlags {
     /// `PostingsEnum.featureRequested(flags, PostingsEnum.FREQS)`.
     fn needs_freq(self) -> bool {
+        matches!(self, PostingsFlags::Freqs | PostingsFlags::FreqsNoImpacts)
+    }
+
+    fn needs_impacts(self) -> bool {
         matches!(self, PostingsFlags::Freqs)
     }
 }
@@ -880,7 +892,7 @@ impl<'a> DocInput<'a> {
             r,
             index_has_freq: index_options != IndexOptions::Docs,
             needs_freq: flags.needs_freq(),
-            needs_impacts: flags.needs_freq(),
+            needs_impacts: flags.needs_impacts(),
             needs_pos: false,
             index_has_pos: index_options.subsumes_positions(),
             index_has_offsets_or_payloads: index_options.subsumes_offsets() || has_payloads,
@@ -6159,6 +6171,60 @@ mod tests {
         }
         assert_eq!(lazy_docs, eager.docs);
         assert_eq!(lazy_freqs, eager.freqs);
+    }
+
+    #[test]
+    fn a_cursor_without_impacts_reads_the_same_postings_and_no_impacts() {
+        // Three full blocks with impacts on the wire and a tail: the
+        // no-impacts cursor must step over the headers it skips and still
+        // land on the same documents with the same frequencies.
+        let id = [23u8; ID_LENGTH];
+        let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
+        let doc_start_fp = doc.len() as u64;
+        write_full_block_with_impacts(&mut doc, true, 3, &[Impact { freq: 3, norm: 1 }]);
+        write_full_block_with_impacts(&mut doc, true, 4, &[Impact { freq: 4, norm: 1 }]);
+        write_full_block_with_impacts(&mut doc, true, 5, &[Impact { freq: 5, norm: 1 }]);
+        doc.write_group_vints(&[5 << 1, 1 << 1, 2 << 1]);
+        doc.extend_from_slice(&footer);
+        let input = DocInput::open(&doc, &id, "").unwrap();
+        let meta = TermMetadata {
+            doc_start_fp,
+            singleton_doc_id: -1,
+            ..TermMetadata::EMPTY
+        };
+        let doc_freq = 3 * BLOCK_SIZE + 3;
+        let open = |flags| {
+            input
+                .lazy_cursor_with_flags(meta, doc_freq, IndexOptions::DocsAndFreqs, false, flags)
+                .unwrap()
+        };
+        let walk = |mut c: LazyDocsCursor<'_>| {
+            let mut out = Vec::new();
+            let mut empty_in_block_1 = true;
+            for target in [0, 3, 200, 300, 520, 700, 769, 770] {
+                let d = c.advance(target).unwrap();
+                out.push((
+                    d,
+                    if d == NO_MORE_DOCS {
+                        0
+                    } else {
+                        c.freq().unwrap()
+                    },
+                ));
+                if target == 300 {
+                    empty_in_block_1 = c.level0_impacts().is_empty();
+                }
+                if d == NO_MORE_DOCS {
+                    break;
+                }
+            }
+            (out, empty_in_block_1)
+        };
+        let (with, with_empty) = walk(open(PostingsFlags::Freqs));
+        let (without, without_empty) = walk(open(PostingsFlags::FreqsNoImpacts));
+        assert_eq!(with, without);
+        assert!(!with_empty, "the impacts cursor decoded a block's impacts");
+        assert!(without_empty, "the plain one never does");
     }
 
     #[test]
