@@ -2571,6 +2571,38 @@ struct BulkLeaf<'l, 'a> {
     error: Option<crate::Error>,
 }
 
+/// [`BulkLeaf`] beside a `MaxScoreCollector`: every document's score is kept
+/// toward the max, and handed to the sort's leaf until that terminates.
+struct TrackingBulkLeaf<'l, 'a> {
+    tf: &'l mut TopField,
+    leaf: &'l mut Leaf<'a>,
+    max: f32,
+    error: Option<crate::Error>,
+}
+
+impl ScoringCollector for TrackingBulkLeaf<'_, '_> {
+    fn collect(&mut self, doc_id: i32, score: f32) {
+        self.max = self.max.max(score);
+        if self.error.is_some() || self.leaf.terminated {
+            return;
+        }
+        self.leaf.score = score;
+        self.leaf.score_doc = doc_id;
+        if let Err(e) = self.leaf.collect(self.tf, doc_id, None) {
+            self.error = Some(e);
+        }
+    }
+
+    /// `MultiCollector` passes no threshold down: every match is scored.
+    fn min_competitive_score(&self) -> Option<f32> {
+        None
+    }
+
+    fn score_mode(&self) -> ScoreMode {
+        ScoreMode::Complete
+    }
+}
+
 impl ScoringCollector for BulkLeaf<'_, '_> {
     fn collect(&mut self, doc_id: i32, score: f32) {
         if self.error.is_some() {
@@ -2965,6 +2997,29 @@ fn search_segments(run: &Run<'_, '_>, order: &[usize]) -> Result<TopFieldDocs> {
             leaf.finish(&mut tf)?;
             continue;
         }
+        if track && want_scores {
+            // Every match is scored for the max score (`MultiCollector` with
+            // a `MaxScoreCollector`, which prunes nothing): the bulk scorers,
+            // a window of documents at a time, as `BooleanWeight`'s bulk
+            // scorer serves such a collector.
+            let Some(mut bulk) = exec::bulk_boolean(&ctx, query, 1.0, Mode::Complete)? else {
+                continue;
+            };
+            let mut leaf = open_leaf(&mut tf, reader, seg, i64::from(reader.max_doc))?;
+            let mut c = TrackingBulkLeaf {
+                tf: &mut tf,
+                leaf: &mut leaf,
+                max: f32::NEG_INFINITY,
+                error: None,
+            };
+            exec::score_segment(&mut bulk, Mode::Complete, seg.live_docs, &mut c)?;
+            if let Some(e) = c.error {
+                return Err(e);
+            }
+            max_score = max_score.max(c.max);
+            leaf.finish(&mut tf)?;
+            continue;
+        }
         // The score is not the first key, so it only breaks ties: the
         // documents are iterated without scores (the cheaper tree, and the
         // one the query cache serves), and a scoring tree of the same query
@@ -2992,26 +3047,14 @@ fn search_segments(run: &Run<'_, '_>, order: &[usize]) -> Result<TopFieldDocs> {
             None
         };
         let mut leaf = open_leaf(&mut tf, reader, seg, scorer.cost())?;
-        if track {
-            let m = score_tracking(
-                &mut *scorer,
-                scores.as_mut(),
-                self_scores,
-                &mut tf,
-                &mut leaf,
-                seg.live_docs,
-            )?;
-            max_score = max_score.max(m);
-        } else {
-            score_competitive(
-                &mut *scorer,
-                scores.as_mut(),
-                self_scores,
-                &mut tf,
-                &mut leaf,
-                seg.live_docs,
-            )?;
-        }
+        score_competitive(
+            &mut *scorer,
+            scores.as_mut(),
+            self_scores,
+            &mut tf,
+            &mut leaf,
+            seg.live_docs,
+        )?;
         leaf.finish(&mut tf)?;
     }
     let mut out = tf.top_docs();
@@ -3019,45 +3062,6 @@ fn search_segments(run: &Run<'_, '_>, order: &[usize]) -> Result<TopFieldDocs> {
         out.max_score = max_score;
     }
     Ok(out)
-}
-
-/// `DefaultBulkScorer.scoreIterator` over a `MultiCollector` of the
-/// collector and a `MaxScoreCollector`: every match is scored, the highest
-/// score kept, and the document handed to the collector until it terminates.
-/// Returns the segment's highest score (`-inf` for none).
-fn score_tracking(
-    scorer: &mut dyn Scorer,
-    mut scores: Option<&mut ScoreAt<'_>>,
-    self_scores: bool,
-    tf: &mut TopField,
-    leaf: &mut Leaf<'_>,
-    live_docs: Option<&FixedBitSet>,
-) -> Result<f32> {
-    let two_phase = scorer.two_phase();
-    let mut max = f32::NEG_INFINITY;
-    let mut doc = scorer.next_doc()?;
-    while doc != NO_MORE_DOCS {
-        if live_docs.is_none_or(|l| l.get_doc(doc)) && (!two_phase || scorer.matches()?) {
-            let mut sc: Sc<'_> = if self_scores {
-                Some(&mut *scorer)
-            } else {
-                score_at(&mut scores, doc)
-            };
-            let Some(s) = sc.as_deref_mut() else {
-                return Err(SortError::ScoringTree(doc).into());
-            };
-            let score = s.score()?;
-            max = max.max(score);
-            // Read once: a score key's comparison reuses it.
-            leaf.score = score;
-            leaf.score_doc = doc;
-            if !leaf.terminated {
-                leaf.collect(tf, doc, sc)?;
-            }
-        }
-        doc = scorer.next_doc()?;
-    }
-    Ok(max)
 }
 
 /// `DefaultBulkScorer.score` for a collector that may have a competitive
