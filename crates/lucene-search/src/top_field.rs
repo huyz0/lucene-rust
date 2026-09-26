@@ -331,6 +331,8 @@ struct TopField {
     after: Option<FieldDoc>,
     /// `PagingFieldCollector.collectedHits`.
     collected_hits: usize,
+    /// `scoreMode.isExhaustive()`, fixed at construction.
+    exhaustive: bool,
 }
 
 impl TopField {
@@ -385,7 +387,9 @@ impl TopField {
             doc_first,
             after: after.cloned(),
             collected_hits: 0,
+            exhaustive: false,
         };
+        tf.exhaustive = tf.score_mode().is_exhaustive();
         match after {
             None if tf.comps.len() == 1 => tf.comps[0].single_sort = true,
             None => {}
@@ -1104,7 +1108,7 @@ impl Leaf<'_> {
     /// `countHit`.
     fn count_hit(&mut self, tf: &mut TopField) -> Result<()> {
         tf.total_hits += 1;
-        if !tf.score_mode().is_exhaustive()
+        if !tf.exhaustive
             && tf.relation == TotalHitsRelation::EqualTo
             && tf.total_hits > tf.threshold
         {
@@ -1407,8 +1411,67 @@ fn score_competitive(
             if leaf.terminated {
                 return Ok(());
             }
+            if leaf.collected_all_competitive {
+                return count_rest(scorer, tf, leaf, live_docs);
+            }
         }
         doc = scorer.next_doc()?;
+    }
+    Ok(())
+}
+
+/// The rest of a segment once a sort led by the document id has filled its
+/// queue: every later document is non-competitive, so `collect` would only
+/// count it (`countHit`, then `thresholdCheck` stopping the segment once the
+/// count passes the threshold). That is done here directly, a run of
+/// consecutive matches at a time where the scorer reports one.
+fn count_rest(
+    scorer: &mut dyn Scorer,
+    tf: &mut TopField,
+    leaf: &mut Leaf<'_>,
+    live_docs: Option<&FixedBitSet>,
+) -> Result<()> {
+    let two_phase = scorer.two_phase();
+    let limit = if tf.exhaustive {
+        u64::MAX
+    } else {
+        tf.threshold
+    };
+    let mut doc = scorer.next_doc()?;
+    while doc != NO_MORE_DOCS {
+        if !two_phase && live_docs.is_none() {
+            // Every document up to the run's end matches: count them at once,
+            // but no further than the one that passes the threshold.
+            let end = scorer.doc_id_run_end();
+            let run = u64::try_from(i64::from(end) - i64::from(doc))
+                .unwrap_or(1)
+                .max(1);
+            let room = limit.saturating_sub(tf.total_hits).saturating_add(1);
+            let n = run.min(room);
+            tf.total_hits += n;
+            if n < run || tf.total_hits > limit {
+                break;
+            }
+            doc = if end == NO_MORE_DOCS {
+                NO_MORE_DOCS
+            } else {
+                scorer.advance(end)?
+            };
+            continue;
+        }
+        if live_docs.is_none_or(|l| l.get_doc(doc)) && (!two_phase || scorer.matches()?) {
+            tf.total_hits += 1;
+            if tf.total_hits > limit {
+                break;
+            }
+        }
+        doc = scorer.next_doc()?;
+    }
+    if tf.total_hits > limit {
+        // `countHit`'s switch to a lower bound, then `thresholdCheck`'s
+        // `CollectionTerminatedException`.
+        tf.relation = TotalHitsRelation::GreaterThanOrEqualTo;
+        leaf.terminated = true;
     }
     Ok(())
 }
