@@ -124,7 +124,10 @@ mod tests {
     fn sequential_slices_answer_as_parallel_ones_do() {
         let slices: Vec<Vec<usize>> = (0..4).map(|i| vec![i, i * 3]).collect();
         let sum = |s: &[usize]| s.iter().sum::<usize>();
-        assert_eq!(run_slices_if(false, &slices, sum), run_slices_if(true, &slices, sum));
+        assert_eq!(
+            run_slices_if(false, &slices, sum),
+            run_slices_if(true, &slices, sum)
+        );
         assert_eq!(run_slices_if(false, &slices, sum), vec![0, 4, 8, 12]);
     }
 }
