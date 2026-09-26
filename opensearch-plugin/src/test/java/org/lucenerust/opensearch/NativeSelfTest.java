@@ -72,6 +72,7 @@ public final class NativeSelfTest {
     private static int sortedChecks;
     private static int trackedPages;
     private static int aggChecks;
+    private static int termsChecks;
 
     public static void main(String[] args) throws Exception {
         NativeLibrary.load(Path.of("."));
@@ -89,15 +90,17 @@ public final class NativeSelfTest {
         check(compared >= 20, "fixtures compared natively: " + compared);
         check(trackedPages >= 20, "sorted pages tracking the max score: " + trackedPages);
         check(aggChecks >= 100, "queries aggregated natively: " + aggChecks);
+        check(termsChecks >= 300, "terms aggregations compared: " + termsChecks);
         System.out.printf(
-            "NativeSelfTest: %d checks, %d failures; %d of %d compared scores bit-exact; %d sorted pages compared (%d tracking the max score); %d aggregations%n",
+            "NativeSelfTest: %d checks, %d failures; %d of %d compared scores bit-exact; %d sorted pages compared (%d tracking the max score); %d aggregations, %d terms%n",
             checks,
             failures,
             bitExact,
             scored,
             sortedChecks,
             trackedPages,
-            aggChecks
+            aggChecks,
+            termsChecks
         );
         if (failures > 0) {
             System.exit(1);
@@ -308,6 +311,7 @@ public final class NativeSelfTest {
             }
             compareSorted(where, searcher, acquired.handle(), rewritten, enc.blob(), new Random(where.hashCode() * 31L + rewritten.hashCode()));
             compareAggs(where + ": " + rewritten, searcher, acquired.handle(), rewritten, enc.blob());
+            compareTerms(where + ": " + rewritten, searcher, acquired.handle(), rewritten, enc.blob());
             for (int topN : new int[] { 10, 3 }) {
                 TopDocs want = searcher.search(rewritten, topN);
                 int[] docs = new int[topN];
@@ -375,7 +379,7 @@ public final class NativeSelfTest {
         }
         NativeAggregations.Plan plan = new NativeAggregations.Plan(
             java.util.stream.IntStream.range(0, AGG_FIELDS.length)
-                .mapToObj(i -> new NativeAggregations.Metric("m" + i, NativeAggregations.Kind.STATS, AGG_FIELDS[i], AGG_KINDS[i], null, null, NativeAggregations.DOC_VALUES))
+                .mapToObj(i -> (Object) new NativeAggregations.Metric("m" + i, NativeAggregations.Kind.STATS, AGG_FIELDS[i], AGG_KINDS[i], null, null, NativeAggregations.DOC_VALUES))
                 .toList()
         );
         long[] counts = new long[AGG_FIELDS.length];
@@ -461,6 +465,101 @@ public final class NativeSelfTest {
         }
         check(same, what + ": aggregations native " + Arrays.toString(counts) + Arrays.toString(values) + " lucene " + Arrays.toString(wantCounts) + Arrays.toString(want));
         aggChecks++;
+    }
+
+    /**
+     * {@code NativeBridge.terms} against the shard's {@code terms} steps on Lucene: every live match
+     * counted once per distinct term, the top {@code shard_size} by count desc then term, the rest
+     * summed, the kept by term.
+     */
+    private static void compareTerms(String what, IndexSearcher searcher, long handle, Query query, byte[] blob) throws Exception {
+        for (String field : new String[] { "kt", "kw", "kx" }) {
+            for (org.apache.lucene.index.LeafReaderContext leaf : searcher.getIndexReader().leaves()) {
+                org.apache.lucene.index.FieldInfo info = leaf.reader().getFieldInfos().fieldInfo(field);
+                if (info != null
+                    && info.getDocValuesType() != org.apache.lucene.index.DocValuesType.SORTED_SET
+                    && info.getDocValuesType() != org.apache.lucene.index.DocValuesType.SORTED) {
+                    return;
+                }
+            }
+            java.util.TreeMap<BytesRef, Long> counts = new java.util.TreeMap<>();
+            searcher.search(query, new org.apache.lucene.search.CollectorManager<org.apache.lucene.search.SimpleCollector, Void>() {
+                @Override
+                public org.apache.lucene.search.SimpleCollector newCollector() {
+                    return new org.apache.lucene.search.SimpleCollector() {
+                        org.apache.lucene.index.SortedSetDocValues dv;
+
+                        @Override
+                        protected void doSetNextReader(org.apache.lucene.index.LeafReaderContext context) throws java.io.IOException {
+                            dv = org.apache.lucene.index.DocValues.getSortedSet(context.reader(), field);
+                        }
+
+                        @Override
+                        public void collect(int doc) throws java.io.IOException {
+                            if (dv.advanceExact(doc)) {
+                                for (int i = 0; i < dv.docValueCount(); i++) {
+                                    counts.merge(BytesRef.deepCopyOf(dv.lookupOrd(dv.nextOrd())), 1L, Long::sum);
+                                }
+                            }
+                        }
+
+                        @Override
+                        public org.apache.lucene.search.ScoreMode scoreMode() {
+                            return org.apache.lucene.search.ScoreMode.COMPLETE_NO_SCORES;
+                        }
+                    };
+                }
+
+                @Override
+                public Void reduce(java.util.Collection<org.apache.lucene.search.SimpleCollector> collectors) {
+                    return null;
+                }
+            });
+            for (int shardSize : new int[] { 1, 3, 1000 }) {
+                List<java.util.Map.Entry<BytesRef, Long>> ranked = new ArrayList<>(counts.entrySet());
+                ranked.sort((a, b) -> a.getValue().equals(b.getValue()) ? a.getKey().compareTo(b.getKey()) : Long.compare(b.getValue(), a.getValue()));
+                long wantOther = 0;
+                java.util.TreeMap<BytesRef, Long> kept = new java.util.TreeMap<>();
+                for (int i = 0; i < ranked.size(); i++) {
+                    if (i < shardSize) {
+                        kept.put(ranked.get(i).getKey(), ranked.get(i).getValue());
+                    } else {
+                        wantOther += ranked.get(i).getValue();
+                    }
+                }
+                NativeAggregations.Terms spec = new NativeAggregations.Terms(
+                    "t",
+                    field,
+                    org.opensearch.search.DocValueFormat.RAW,
+                    null,
+                    org.opensearch.search.aggregations.BucketOrder.compound(
+                        org.opensearch.search.aggregations.BucketOrder.count(false),
+                        org.opensearch.search.aggregations.BucketOrder.key(true)
+                    ),
+                    new org.opensearch.search.aggregations.bucket.terms.TermsAggregator.BucketCountThresholds(1, 0, Math.min(10, shardSize), shardSize),
+                    false
+                );
+                byte[][] out = new byte[1][];
+                int rc = NativeBridge.terms(handle, blob, spec.blob(new int[0][]), out);
+                check(rc == NativeBridge.OK, what + ": terms status " + rc + " " + NativeBridge.lastError());
+                if (rc != NativeBridge.OK) {
+                    continue;
+                }
+                org.opensearch.search.aggregations.bucket.terms.StringTerms got = spec.read(
+                    java.nio.ByteBuffer.wrap(out[0]).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                );
+                java.util.TreeMap<BytesRef, Long> gotKept = new java.util.TreeMap<>();
+                for (org.opensearch.search.aggregations.bucket.terms.StringTerms.Bucket b : got.getBuckets()) {
+                    // The self-test terms are ASCII, so the key's string is its bytes.
+                    gotKept.put(new BytesRef(b.getKeyAsString()), b.getDocCount());
+                }
+                check(
+                    gotKept.equals(kept) && got.getSumOfOtherDocCounts() == wantOther,
+                    what + ": terms " + field + " shard_size " + shardSize + " native " + gotKept + " other " + got.getSumOfOtherDocCounts() + " lucene " + kept + " other " + wantOther
+                );
+                termsChecks++;
+            }
+        }
     }
 
     /** A random sort of one to three keys over the self-test documents' sort fields. */

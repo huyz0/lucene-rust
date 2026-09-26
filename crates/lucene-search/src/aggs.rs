@@ -43,7 +43,7 @@ use lucene_codecs::points::{IntersectVisitor, Relation};
 use lucene_util::fixed_bit_set::FixedBitSet;
 
 use crate::directory_reader::SegmentReader;
-use crate::exec::{self, Mode, NO_MORE_DOCS};
+use crate::exec::{self, Mode};
 use crate::multi_segment::OpenSegment;
 use crate::query::{BooleanQuery, Clause};
 use crate::Result;
@@ -366,7 +366,7 @@ fn leaf_point_bound(seg: &OpenSegment<'_>, spec: &MetricSpec) -> Result<Option<f
 enum Values<'a> {
     Absent,
     Single(Box<NumericReader<'a>>),
-    Multi(SortedNumericReader<'a>),
+    Multi(Box<SortedNumericReader<'a>>),
 }
 
 fn open_values<'a>(reader: &'a SegmentReader, field: &str) -> Result<Values<'a>> {
@@ -380,7 +380,7 @@ fn open_values<'a>(reader: &'a SegmentReader, field: &str) -> Result<Values<'a>>
         if e.addresses.is_none() {
             Values::Single(Box::new(NumericReader::new(data, &e.numeric)))
         } else {
-            Values::Multi(SortedNumericReader::new(data, e))
+            Values::Multi(Box::new(SortedNumericReader::new(data, e)))
         }
     } else if let Some(e) = meta.numeric_entry(info.number) {
         Values::Single(Box::new(NumericReader::new(data, e)))
@@ -452,12 +452,12 @@ fn unique_states(
         use rayon::prelude::*;
         return slices
             .par_iter()
-            .map(|slice| slice_states(segments, readers, &clause, specs, slice))
+            .map(|slice| slice_states(segments, readers, query, &clause, specs, slice))
             .collect();
     }
     slices
         .iter()
-        .map(|slice| slice_states(segments, readers, &clause, specs, slice))
+        .map(|slice| slice_states(segments, readers, query, &clause, specs, slice))
         .collect()
 }
 
@@ -465,6 +465,7 @@ fn unique_states(
 fn slice_states(
     segments: &[OpenSegment<'_>],
     readers: &[SegmentReader],
+    query: &BooleanQuery,
     clause: &Clause,
     specs: &[MetricSpec],
     slice: &[usize],
@@ -519,7 +520,7 @@ fn slice_states(
         // The matches: every live document for a match-all (read straight
         // down each column below), else the scorer's, collected once.
         let live: Option<&FixedBitSet> = seg.live_docs;
-        let Some(docs) = segment_matches(&ctx, &clause, live, &mut docs_buf)? else {
+        let Some(docs) = segment_matches(&ctx, query, &clause, live, &mut docs_buf)? else {
             continue;
         };
         let is_live = |doc: i32| live.is_none_or(|l| l.get_doc(doc));
@@ -571,6 +572,7 @@ fn slice_states(
 /// into `buf` once.
 pub(crate) fn segment_matches<'b>(
     ctx: &exec::LeafContext<'_>,
+    query: &BooleanQuery,
     clause: &Clause,
     live: Option<&FixedBitSet>,
     buf: &'b mut Vec<i32>,
@@ -578,17 +580,26 @@ pub(crate) fn segment_matches<'b>(
     if matches_everything(clause) {
         return Ok(Some(None));
     }
-    let Some(child) = exec::build::child(ctx, clause, 1.0, Mode::NoScores, true)? else {
+    // The bulk scorer, as `IndexSearcher.search` collects an aggregation:
+    // a disjunction a window at a time, not a heap step per document.
+    struct Docs<'v>(&'v mut Vec<i32>);
+    impl crate::collector::ScoringCollector for Docs<'_> {
+        fn collect(&mut self, doc_id: i32, _score: f32) {
+            self.0.push(doc_id);
+        }
+        fn score_mode(&self) -> crate::collector::ScoreMode {
+            crate::collector::ScoreMode::CompleteNoScores
+        }
+    }
+    let Some(mut bulk) = exec::bulk_boolean(ctx, query, 1.0, Mode::NoScores)? else {
         return Ok(None);
     };
-    let mut scorer = child.into_scorer(Mode::NoScores);
     buf.clear();
-    let mut doc = exec::exact_next(&mut *scorer)?;
-    while doc != NO_MORE_DOCS {
-        if live.is_none_or(|l| l.get_doc(doc)) {
-            buf.push(doc);
-        }
-        doc = exec::exact_next(&mut *scorer)?;
+    exec::score_segment(&mut bulk, Mode::NoScores, live, &mut Docs(buf))?;
+    // The readers downstream walk forward; a bulk scorer hands documents out
+    // in order, and this keeps that a checked fact rather than an assumption.
+    if !buf.is_sorted() {
+        buf.sort_unstable();
     }
     Ok(Some(Some(&buf[..])))
 }

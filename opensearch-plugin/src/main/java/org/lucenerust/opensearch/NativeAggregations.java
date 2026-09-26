@@ -5,7 +5,15 @@ package org.lucenerust.opensearch;
 
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.MatchAllDocsQuery;
+import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.util.BytesRef;
 import org.opensearch.index.mapper.DateFieldMapper;
+import org.opensearch.index.mapper.DocCountFieldMapper;
+import org.opensearch.index.mapper.KeywordFieldMapper;
+import org.opensearch.search.aggregations.BucketOrder;
+import org.opensearch.search.aggregations.bucket.BucketUtils;
+import org.opensearch.search.aggregations.bucket.terms.StringTerms;
+import org.opensearch.search.aggregations.bucket.terms.TermsAggregator;
 import org.opensearch.index.mapper.MappedFieldType;
 import org.opensearch.index.mapper.NumberFieldMapper;
 import org.opensearch.search.DocValueFormat;
@@ -25,6 +33,8 @@ import org.opensearch.search.internal.SearchContext;
 
 import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Field;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -71,19 +81,87 @@ public final class NativeAggregations {
         byte source
     ) {}
 
-    /** The native aggregations of a search, or null when some aggregation must run on Lucene. */
-    public record Plan(List<Metric> metrics) {
+    /**
+     * A {@code terms} aggregation on a keyword field: OpenSearch's own effective thresholds (the
+     * {@code shard_size} heuristic and {@code ensureValidity} applied, as {@code
+     * TermsAggregatorFactory.doCreateInternal} applies them), order, format and metadata.
+     */
+    record Terms(
+        String name,
+        String field,
+        DocValueFormat format,
+        Map<String, Object> metadata,
+        BucketOrder order,
+        TermsAggregator.BucketCountThresholds thresholds,
+        boolean showTermDocCountError
+    ) {
+        /** The terms blob ({@code decode_terms_spec} in Rust). */
+        byte[] blob(int[][] slices) {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] f = field.getBytes(StandardCharsets.UTF_8);
+            writeInt(out, f.length);
+            out.writeBytes(f);
+            writeInt(out, thresholds.getShardSize());
+            writeSlices(out, slices);
+            return out.toByteArray();
+        }
+
+        /**
+         * One slice's {@code StringTerms} from the native result at {@code in}: what {@code
+         * StandardTermsResults.buildResult} builds -- reduce order {@code KEY_ASC}, the buckets by
+         * term, no error.
+         */
+        StringTerms read(ByteBuffer in) {
+            long other = in.getLong();
+            int n = in.getInt();
+            List<StringTerms.Bucket> buckets = new ArrayList<>(n);
+            for (int b = 0; b < n; b++) {
+                long docCount = in.getLong();
+                byte[] term = new byte[in.getInt()];
+                in.get(term);
+                buckets.add(
+                    new StringTerms.Bucket(new BytesRef(term), docCount, InternalAggregations.EMPTY, showTermDocCountError, 0, format)
+                );
+            }
+            return new StringTerms(
+                name,
+                BucketOrder.key(true),
+                order,
+                metadata,
+                format,
+                thresholds.getShardSize(),
+                showTermDocCountError,
+                other,
+                buckets,
+                0,
+                thresholds
+            );
+        }
+    }
+
+    /**
+     * The native aggregations of a search, or null when some aggregation must run on Lucene:
+     * {@code entries} in the request's order, each a {@link Metric} or a {@link Terms}.
+     */
+    public record Plan(List<Object> entries) {
+        List<Metric> metrics() {
+            return entries.stream().filter(e -> e instanceof Metric).map(e -> (Metric) e).toList();
+        }
+
+        List<Terms> terms() {
+            return entries.stream().filter(e -> e instanceof Terms).map(e -> (Terms) e).toList();
+        }
+
         /** The metrics blob; {@code slices} as {@link NativeAggregations#slices} returns them. */
         byte[] blob(int[][] slices) {
+            List<Metric> metrics = metrics();
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             out.write(metrics.size());
             for (Metric m : metrics) {
                 out.write(m.valueKind());
                 out.write(m.source());
                 byte[] f = m.field().getBytes(StandardCharsets.UTF_8);
-                for (int i = 0; i < 4; i++) {
-                    out.write(f.length >>> (8 * i));
-                }
+                writeInt(out, f.length);
                 out.writeBytes(f);
             }
             writeSlices(out, slices);
@@ -93,41 +171,54 @@ public final class NativeAggregations {
         /**
          * The shard results from the native output: one set per slice (a single one when {@code
          * slices} is empty), and with slices reduced as {@code NonGlobalAggCollectorManager}
-         * reduces its collectors' -- each slice's result carrying its sum without the delta.
+         * reduces its collectors' -- each slice's sum without its delta, each slice's terms
+         * through {@code InternalTerms.reduce}. {@code terms} holds each terms entry's encoded
+         * result, in entry order.
          */
-        InternalAggregations build(int[][] slices, long[] counts, double[] values, InternalAggregation.ReduceContext onShard) {
-            if (slices.length == 0) {
-                return InternalAggregations.from(build(counts, values, 0));
+        InternalAggregations build(
+            int[][] slices,
+            long[] counts,
+            double[] values,
+            List<byte[]> terms,
+            InternalAggregation.ReduceContext onShard
+        ) {
+            int sliceCount = Math.max(1, slices.length);
+            List<ByteBuffer> termsIn = terms.stream().map(b -> ByteBuffer.wrap(b).order(ByteOrder.LITTLE_ENDIAN)).toList();
+            int metricCount = metrics().size();
+            List<InternalAggregation> all = new ArrayList<>(entries.size() * sliceCount);
+            for (int s = 0; s < sliceCount; s++) {
+                int metric = 0;
+                int term = 0;
+                for (Object e : entries) {
+                    if (e instanceof Metric m) {
+                        all.add(metric(m, counts, values, s * metricCount + metric++));
+                    } else {
+                        all.add(((Terms) e).read(termsIn.get(term++)));
+                    }
+                }
             }
-            List<InternalAggregation> all = new ArrayList<>(metrics.size() * slices.length);
-            for (int s = 0; s < slices.length; s++) {
-                all.addAll(build(counts, values, s * metrics.size()));
+            if (slices.length == 0) {
+                return InternalAggregations.from(all);
             }
             return InternalAggregations.reduce(List.of(InternalAggregations.from(all)), onShard);
         }
 
-        /** One slice's results, from the native counts and values starting at field {@code at}. */
-        List<InternalAggregation> build(long[] counts, double[] values, int at) {
-            List<InternalAggregation> aggs = new ArrayList<>(metrics.size());
-            for (int k = 0; k < metrics.size(); k++) {
-                Metric m = metrics.get(k);
-                int i = at + k;
-                long count = counts[i];
-                double sum = values[i * VALUES];
-                double min = values[i * VALUES + 2];
-                double max = values[i * VALUES + 3];
-                double minOfMins = values[i * VALUES + 4];
-                double maxOfMaxes = values[i * VALUES + 5];
-                aggs.add(switch (m.kind()) {
-                    case MIN -> new InternalMin(m.name(), minOfMins, m.format(), m.metadata());
-                    case MAX -> new InternalMax(m.name(), maxOfMaxes, m.format(), m.metadata());
-                    case SUM -> new InternalSum(m.name(), sum, m.format(), m.metadata());
-                    case AVG -> new InternalAvg(m.name(), sum, count, m.format(), m.metadata());
-                    case VALUE_COUNT -> new InternalValueCount(m.name(), count, m.metadata());
-                    case STATS -> new InternalStats(m.name(), count, sum, min, max, m.format(), m.metadata());
-                });
-            }
-            return aggs;
+        /** A metric's result from the native counts and values of state {@code i}. */
+        static InternalAggregation metric(Metric m, long[] counts, double[] values, int i) {
+            long count = counts[i];
+            double sum = values[i * VALUES];
+            double min = values[i * VALUES + 2];
+            double max = values[i * VALUES + 3];
+            double minOfMins = values[i * VALUES + 4];
+            double maxOfMaxes = values[i * VALUES + 5];
+            return switch (m.kind()) {
+                case MIN -> new InternalMin(m.name(), minOfMins, m.format(), m.metadata());
+                case MAX -> new InternalMax(m.name(), maxOfMaxes, m.format(), m.metadata());
+                case SUM -> new InternalSum(m.name(), sum, m.format(), m.metadata());
+                case AVG -> new InternalAvg(m.name(), sum, count, m.format(), m.metadata());
+                case VALUE_COUNT -> new InternalValueCount(m.name(), count, m.metadata());
+                case STATS -> new InternalStats(m.name(), count, sum, min, max, m.format(), m.metadata());
+            };
         }
     }
 
@@ -207,15 +298,26 @@ public final class NativeAggregations {
         if (factories.hasGlobalAggregator()) {
             return null;
         }
-        List<Metric> metrics = new ArrayList<>();
+        List<Object> entries = new ArrayList<>();
         try {
             for (AggregatorFactory f : factories.getFactories()) {
-                Kind kind = kind(f);
-                if (kind == null || ((AggregatorFactories) SUB_FACTORIES.get(f)).countAggregators() != 0) {
+                if (((AggregatorFactories) SUB_FACTORIES.get(f)).countAggregators() != 0) {
                     return null;
                 }
                 ValuesSourceConfig config = (ValuesSourceConfig) CONFIG.get(f);
                 if (config == null || config.script() != null || config.missing() != null || config.fieldContext() == null) {
+                    return null;
+                }
+                if (f.getClass().getName().equals(TERMS_FACTORY)) {
+                    Terms t = terms(ctx, f, config);
+                    if (t == null) {
+                        return null;
+                    }
+                    entries.add(t);
+                    continue;
+                }
+                Kind kind = kind(f);
+                if (kind == null) {
                     return null;
                 }
                 byte valueKind = valueKind(config.fieldContext().fieldType());
@@ -234,7 +336,7 @@ public final class NativeAggregations {
                     && config.getPointReaderOrNull() != null) {
                     source = kind == Kind.MIN ? POINTS_MIN : POINTS_MAX;
                 }
-                metrics.add(
+                entries.add(
                     new Metric(
                         f.name(),
                         kind,
@@ -249,7 +351,60 @@ public final class NativeAggregations {
         } catch (IllegalAccessException | RuntimeException e) {
             return null;
         }
-        return metrics.isEmpty() ? null : new Plan(List.copyOf(metrics));
+        return entries.isEmpty() ? null : new Plan(List.copyOf(entries));
+    }
+
+    private static final String TERMS_FACTORY = "org.opensearch.search.aggregations.bucket.terms.TermsAggregatorFactory";
+    private static final BucketOrder DEFAULT_TERMS_ORDER = BucketOrder.compound(BucketOrder.count(false), BucketOrder.key(true));
+
+    /**
+     * The native plan of a {@code terms} factory, or null: a keyword field, no include/exclude, the
+     * default order, {@code min_doc_count} at least 1 and {@code shard_min_doc_count} 0 (so only
+     * counted terms are candidates, and all of them), and no {@code _doc_count} field in the
+     * index (whose documents count as many).
+     */
+    private static Terms terms(SearchContext ctx, AggregatorFactory f, ValuesSourceConfig config) throws IllegalAccessException {
+        if (config.fieldContext().fieldType() instanceof KeywordFieldMapper.KeywordFieldType == false) {
+            return null;
+        }
+        Object include = declared(f, "includeExclude");
+        BucketOrder order = (BucketOrder) declared(f, "order");
+        TermsAggregator.BucketCountThresholds declaredThresholds = (TermsAggregator.BucketCountThresholds) declared(
+            f,
+            "bucketCountThresholds"
+        );
+        Boolean showError = (Boolean) declared(f, "showTermDocCountError");
+        if (include != null || DEFAULT_TERMS_ORDER.equals(order) == false || declaredThresholds == null || showError == null) {
+            return null;
+        }
+        // TermsAggregatorFactory.doCreateInternal: the shard_size heuristic, then ensureValidity.
+        TermsAggregator.BucketCountThresholds thresholds = new TermsAggregator.BucketCountThresholds(declaredThresholds);
+        if (thresholds.getShardSize() == -1) {
+            thresholds.setShardSize(BucketUtils.suggestShardSideQueueSize(thresholds.getRequiredSize()));
+        }
+        thresholds.ensureValidity();
+        if (thresholds.getMinDocCount() < 1 || thresholds.getShardMinDocCount() != 0) {
+            return null;
+        }
+        for (LeafReaderContext leaf : ctx.searcher().getIndexReader().leaves()) {
+            if (leaf.reader().getFieldInfos().fieldInfo(DocCountFieldMapper.NAME) != null) {
+                return null;
+            }
+        }
+        @SuppressWarnings("unchecked")
+        Map<String, Object> metadata = (Map<String, Object>) METADATA.get(f);
+        return new Terms(f.name(), config.fieldContext().field(), config.format(), metadata, order, thresholds, showError);
+    }
+
+    /** A private field of {@code f}'s own class, or null when it has none. */
+    private static Object declared(AggregatorFactory f, String name) throws IllegalAccessException {
+        try {
+            Field field = f.getClass().getDeclaredField(name);
+            field.setAccessible(true);
+            return field.get(f);
+        } catch (NoSuchFieldException e) {
+            return null;
+        }
     }
 
     /** The factories' classes are package-private, so they are told apart by name. */
