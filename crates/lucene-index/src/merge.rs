@@ -3161,7 +3161,7 @@ fn sorted_set_doc_ordinals(data: &[u8], entry: &SortedSetEntry, doc_id: i32) -> 
 /// A forward cursor over one source's SORTED_SET ordinals, whichever of
 /// [`SortedSetKind`]'s two shapes it was written in.
 enum SortedSetOrdsReader<'a> {
-    Single(doc_values::NumericReader<'a>),
+    Single(Box<doc_values::NumericReader<'a>>),
     Multi(doc_values::SortedNumericReader<'a>),
 }
 
@@ -3169,7 +3169,7 @@ impl<'a> SortedSetOrdsReader<'a> {
     fn new(data: &'a [u8], entry: &'a SortedSetEntry) -> Self {
         match &entry.kind {
             SortedSetKind::Single(sorted) => {
-                Self::Single(doc_values::NumericReader::new(data, &sorted.ords))
+                Self::Single(Box::new(doc_values::NumericReader::new(data, &sorted.ords)))
             }
             SortedSetKind::Multi { ords, .. } => {
                 Self::Multi(doc_values::SortedNumericReader::new(data, ords))
