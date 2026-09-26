@@ -25,6 +25,7 @@ import org.apache.lucene.search.Weight;
 import org.apache.lucene.search.similarities.BM25Similarity;
 import org.apache.lucene.search.similarities.PerFieldSimilarityWrapper;
 import org.apache.lucene.search.similarities.Similarity;
+import org.apache.lucene.util.BytesRef;
 import org.opensearch.common.lucene.search.TopDocsAndMaxScore;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.core.tasks.TaskCancelledException;
@@ -512,7 +513,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             && terminating == false
             && ctx.minimumScore() == null) {
             try {
-                shortcut = shortcutTotalHitCount(ctx.searcher().getIndexReader(), ctx.query());
+                shortcut = shortcutTotalHitCount(ctx.searcher().getIndexReader(), ctx.query(), handle);
             } catch (IOException e) {
                 return "native_error";
             }
@@ -832,9 +833,10 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
     /**
      * {@code TopDocsCollectorContext.shortcutTotalHitCount} (OpenSearch 3.8.0), for the queries the
      * native engine runs: a match-all's count is the reader's {@code numDocs}, and an exact term's
-     * the sum of its {@code docFreq}s when nothing is deleted; {@code -1} otherwise.
+     * the sum of its {@code docFreq}s when nothing is deleted (from {@code handle}'s segments, the
+     * same ones); {@code -1} otherwise.
      */
-    static int shortcutTotalHitCount(IndexReader reader, Query query) throws IOException {
+    static int shortcutTotalHitCount(IndexReader reader, Query query, long handle) throws IOException {
         while (true) {
             if (query instanceof ConstantScoreQuery c) {
                 query = c.getQuery();
@@ -849,12 +851,21 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         if (query.getClass() == MatchAllDocsQuery.class) {
             return reader.numDocs();
         } else if (query.getClass() == TermQuery.class && reader.hasDeletions() == false) {
+            // Summed by the native term dictionaries, which the search reads straight after:
+            // Lucene's own, in every segment, cost more than the search itself.
             Term term = ((TermQuery) query).getTerm();
-            int count = 0;
-            for (LeafReaderContext leaf : reader.leaves()) {
-                count += leaf.reader().docFreq(term);
+            BytesRef bytes = term.bytes();
+            long[] out = new long[1];
+            int rc = NativeBridge.docFreq(
+                handle,
+                term.field().getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                java.util.Arrays.copyOfRange(bytes.bytes, bytes.offset, bytes.offset + bytes.length),
+                out
+            );
+            if (rc != NativeBridge.OK) {
+                throw new IOException("native docFreq failed (" + rc + "): " + NativeBridge.lastError());
             }
-            return count;
+            return Math.toIntExact(out[0]);
         }
         return -1;
     }
