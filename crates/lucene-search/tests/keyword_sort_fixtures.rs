@@ -86,7 +86,7 @@ fn the_terms_dictionary_answers_lookups_as_lucene_does() {
             let ord: i64 = p.next().unwrap().parse().unwrap();
             let (data, entry) = terms_entry(&reader, seg, field);
             let mut dict = TermsDict::open(data, entry).unwrap();
-            assert_eq!(dict.seek_exact(ord).unwrap(), unhex(v).as_slice(), "{k}");
+            assert_eq!(dict.seek_ord(ord).unwrap(), unhex(v).as_slice(), "{k}");
             checked += 1;
         }
     }
