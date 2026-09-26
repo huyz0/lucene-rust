@@ -23,8 +23,9 @@ A request runs native when **all** of these hold:
 - the index has `index.lucene_rust.search.enabled: true` (the default);
 - it is a top-hits request, by score or by a sort the native side encodes
   (`docs/milestones/m5-6-native-read.md`, R4), with or without
-  `search_after`, `post_filter`, `timeout`, a `scroll`, and aggregations the
-  native side plans (R5) -- but no `min_score`, `terminate_after`,
+  `search_after`, `post_filter`, `timeout`, a `scroll`, `terminate_after`
+  (where Lucene collects document by document: see the milestone's R7), and
+  aggregations the native side plans (R5) -- but no `min_score`,
   `collapse`, `rescore` or `profile`, not `search_type=dfs_query_then_fetch`,
   and no other plugin replacing the top-docs collector. A `post_filter`
   searches the hits as `query AND filter` (the filter a non-scoring clause, as
@@ -116,7 +117,8 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | Reason | What it means |
 |---|---|
 | `disabled` | `index.lucene_rust.search.enabled: false` |
-| `aggregations`, `min_score`, `terminate_after`, `collectors` | the request adds a collector the native side does not run |
+| `aggregations`, `min_score`, `collectors` | the request adds a collector the native side does not run |
+| `terminate_after` | a `terminate_after` Lucene collects in ranges (an unscored sort, a constant-score or filter-only query), or with aggregations, `search_after`, a scroll, more than `track_total_hits` counts, or a `size: 0` count over a query whose `Weight.count` is not ported |
 | `sort_*`, `search_after`, `collapse`, `rescore`, `profile` | the request needs something the native top-hits path does not produce |
 | `scroll_after` | a sorted scroll page whose last emitted hit carries no sort values |
 | `timeout` | the request's `timeout` had already passed when the native call would start; Lucene answers it (nothing, `timed_out`) |
@@ -155,7 +157,11 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
   over is flagged `timed_out` (or fails without
   `allow_partial_search_results`), as `QueryPhase` does -- but with every
   hit, where Lucene would have stopped at the next segment and answered
-  part of them.
+  part of them. The check after the call is also a little stricter than
+  Lucene's: it counts the aggregation pass and building the result, which
+  Lucene's per-segment checks never see, so a search finishing just past its
+  deadline without `allow_partial_search_results` fails where Lucene's would
+  not.
 - **The native query cache is per segment, not node-wide.** It follows
   Lucene's `LRUQueryCache` policy but is bounded per segment (64 entries,
   16 MB), outside `indices.queries.cache.size` and its stats; a shard with

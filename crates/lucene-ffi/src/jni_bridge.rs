@@ -332,6 +332,7 @@ pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_searchSorted<
                 out.total,
                 jlong::from(out.lower_bound),
                 jlong::from(out.max_score.to_bits()),
+                jlong::from(out.terminated),
             ],
         )
         .map_err(|e| jni_err(&env, "outCounts", e))?;
@@ -392,6 +393,31 @@ pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_aggregate<'l>
             .map_err(|e| jni_err(&env, "outTerms", e))?;
         env.set_object_array_element(&out_terms, 0, &arr)
             .map_err(|e| jni_err(&env, "outTerms", e))?;
+        Ok(FfiStatus::Ok.code())
+    })
+}
+
+/// `NativeBridge.countTerminates`: [`jvm_reader::ffi_jvm_reader_count_terminates`],
+/// the answer as 1 or 0 in `out[0]`.
+#[no_mangle]
+pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_countTerminates<'l>(
+    env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    query: JByteArray<'l>,
+    spec: JByteArray<'l>,
+    out: JLongArray<'l>,
+) -> jint {
+    run(|| {
+        let blob = env
+            .convert_byte_array(&query)
+            .map_err(|e| jni_err(&env, "query", e))?;
+        let spec_blob = env
+            .convert_byte_array(&spec)
+            .map_err(|e| jni_err(&env, "spec", e))?;
+        let terminated = jvm_reader::count_terminates_blobs(handle as u64, &blob, &spec_blob)?;
+        env.set_long_array_region(&out, 0, &[jlong::from(terminated)])
+            .map_err(|e| jni_err(&env, "out", e))?;
         Ok(FfiStatus::Ok.code())
     })
 }
