@@ -519,22 +519,8 @@ fn slice_states(
         // The matches: every live document for a match-all (read straight
         // down each column below), else the scorer's, collected once.
         let live: Option<&FixedBitSet> = seg.live_docs;
-        let docs = if matches_everything(&clause) {
-            None
-        } else {
-            let Some(child) = exec::build::child(&ctx, &clause, 1.0, Mode::NoScores, true)? else {
-                continue;
-            };
-            let mut scorer = child.into_scorer(Mode::NoScores);
-            docs_buf.clear();
-            let mut doc = exec::exact_next(&mut *scorer)?;
-            while doc != NO_MORE_DOCS {
-                if live.is_none_or(|l| l.get_doc(doc)) {
-                    docs_buf.push(doc);
-                }
-                doc = exec::exact_next(&mut *scorer)?;
-            }
-            Some(&docs_buf[..])
+        let Some(docs) = segment_matches(&ctx, &clause, live, &mut docs_buf)? else {
+            continue;
         };
         let is_live = |doc: i32| live.is_none_or(|l| l.get_doc(doc));
         // Field by field: each state depends on its own column alone, read
@@ -579,6 +565,34 @@ fn slice_states(
     Ok(states)
 }
 
+/// A segment's live matches of `clause`: `None` when it has none (no
+/// scorer), `Some(None)` for every live document (a match-all, which the
+/// caller reads straight down its columns), else the documents, collected
+/// into `buf` once.
+pub(crate) fn segment_matches<'b>(
+    ctx: &exec::LeafContext<'_>,
+    clause: &Clause,
+    live: Option<&FixedBitSet>,
+    buf: &'b mut Vec<i32>,
+) -> Result<Option<Option<&'b [i32]>>> {
+    if matches_everything(clause) {
+        return Ok(Some(None));
+    }
+    let Some(child) = exec::build::child(ctx, clause, 1.0, Mode::NoScores, true)? else {
+        return Ok(None);
+    };
+    let mut scorer = child.into_scorer(Mode::NoScores);
+    buf.clear();
+    let mut doc = exec::exact_next(&mut *scorer)?;
+    while doc != NO_MORE_DOCS {
+        if live.is_none_or(|l| l.get_doc(doc)) {
+            buf.push(doc);
+        }
+        doc = exec::exact_next(&mut *scorer)?;
+    }
+    Ok(Some(Some(&buf[..])))
+}
+
 /// Whether `clause` matches every document, whatever wraps the match-all
 /// (a constant score, a boost, a boolean whose required clauses all match
 /// everything): its matches are then every live document, in order, and the
@@ -601,7 +615,7 @@ fn matches_everything(clause: &Clause) -> bool {
 }
 
 /// `BooleanQuery.rewrite`: a boolean of one clause is that clause.
-fn lone_clause(query: &BooleanQuery) -> Clause {
+pub(crate) fn lone_clause(query: &BooleanQuery) -> Clause {
     let clauses = query.must.len() + query.filter.len() + query.should.len() + query.must_not.len();
     match (&query.must[..], &query.filter[..], &query.should[..]) {
         ([only], _, _) if clauses == 1 && query.minimum_should_match == 0 => only.clone(),
