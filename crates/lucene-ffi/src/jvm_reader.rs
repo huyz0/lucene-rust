@@ -89,8 +89,9 @@ use std::sync::Arc;
 /// ([`ffi_jvm_reader_aggregate`], read path R5) and, in the same call, the
 /// `terms` aggregation; 15, `terminate_after` and the concurrent count
 /// replay (read path R7); 16, `min_score` in front of a query blob; 17,
-/// [`doc_freq`] (the total-hits shortcut of a term query).
-pub const JVM_ABI_VERSION: u32 = 17;
+/// [`doc_freq`] (the total-hits shortcut of a term query); 18, the `size: 0`
+/// count from the aggregation's own pass ([`aggregate_counting_blobs`]).
+pub const JVM_ABI_VERSION: u32 = 18;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -1128,6 +1129,21 @@ pub(crate) fn aggregate_blobs(
     query_blob: &[u8],
     aggs_blob: &[u8],
 ) -> Result<(Vec<MetricState>, Vec<u8>), FfiStatus> {
+    aggregate_counting_blobs(handle, query_blob, aggs_blob, -1).map(|(s, t, _)| (s, t))
+}
+
+/// [`aggregate_blobs`], and with a positive `count_limit` the `size: 0`
+/// search's `(total, is_lower_bound)` for the same query, as
+/// [`ffi_jvm_reader_search`] would count it -- from the matches the
+/// aggregations already visited, as Lucene's `MultiCollector` counts them in
+/// the same pass. Any other `count_limit` counts nothing (`None`).
+#[allow(clippy::type_complexity)]
+pub(crate) fn aggregate_counting_blobs(
+    handle: u64,
+    query_blob: &[u8],
+    aggs_blob: &[u8],
+    count_limit: i64,
+) -> Result<(Vec<MetricState>, Vec<u8>, Option<(i64, bool)>), FfiStatus> {
     let (query, min_score) = decode_request(query_blob)?;
     let (specs, terms, slices) = decode_metrics(aggs_blob)?;
     let h = lookup(
@@ -1185,7 +1201,7 @@ pub(crate) fn aggregate_blobs(
     let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
         owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
     let min = min_score.map(|min| lucene_search::aggs::MinScore { min, norms: &norms });
-    let sliced = lucene_search::aggs::aggregate_sliced_min_score(
+    let (sliced, seen) = lucene_search::aggs::aggregate_sliced_counting(
         &segments,
         readers,
         &q,
@@ -1202,7 +1218,14 @@ pub(crate) fn aggregate_blobs(
         states.extend(m);
         results.extend(t);
     }
-    Ok((states, encode_terms_results(&results)?))
+    // Behind `min_score` the aggregations saw only the passing documents,
+    // which the plain count does not ask about.
+    let total = if count_limit > 0 && min_score.is_none() {
+        Some(total_hits_with(&h, &segments, &query, count_limit, &seen)?)
+    } else {
+        None
+    };
+    Ok((states, encode_terms_results(&results)?, total))
 }
 
 /// A decoded count blob: the limit, the iterate flags, the slices.
@@ -1717,6 +1740,18 @@ fn total_hits(
     query: &JvmQuery,
     count_limit: i64,
 ) -> Result<(i64, bool), FfiStatus> {
+    total_hits_with(h, segments, query, count_limit, &[])
+}
+
+/// [`total_hits`], with `known[i]` segment `i`'s live match count where it is
+/// already known: those segments are not counted again.
+fn total_hits_with(
+    h: &JvmReaderHandle,
+    segments: &[OpenSegment<'_>],
+    query: &JvmQuery,
+    count_limit: i64,
+    known: &[Option<u64>],
+) -> Result<(i64, bool), FfiStatus> {
     let mut bound = 0i64;
     for (i, seg) in segments.iter().enumerate() {
         let deleted = h.deleted.get(i).copied().unwrap_or(0);
@@ -1730,8 +1765,12 @@ fn total_hits(
         return Ok((bound, true));
     }
     let mut total = 0i64;
-    for seg in segments {
-        total = total.saturating_add(count_segment(seg, query)?);
+    for (i, seg) in segments.iter().enumerate() {
+        let n = match known.get(i).copied().flatten() {
+            Some(n) => i64::try_from(n).unwrap_or(i64::MAX),
+            None => count_segment(seg, query)?,
+        };
+        total = total.saturating_add(n);
         if total > count_limit {
             return Ok((total, true));
         }
@@ -2978,6 +3017,25 @@ mod tests {
     }
 
     #[test]
+    fn the_aggregations_count_is_the_plain_count_under_deletions() {
+        // Segment 1's document 0 deleted: the lower bound and the live count
+        // part ways there.
+        let (rc, h) = open_live(&[4, 4], 0, &[&[], &[0b1110]]);
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        for term in ["fox", "dog", "the"] {
+            let q = term_blob("body", term);
+            for limit in [1, 2, 3, 4, 6, i64::MAX] {
+                let (_, _, fused) =
+                    aggregate_counting_blobs(h, &q, &metrics_blob(&[(METRIC_LONG, "n")]), limit)
+                        .unwrap();
+                let (_, total, lower) = run_limit(h, &q, 0, limit).unwrap();
+                assert_eq!(fused, Some((total, lower)), "{term} up to {limit}");
+            }
+        }
+        assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+
+    #[test]
     fn metrics_blobs_decode_and_aggregate() {
         let (specs, _, slices) = decode_metrics(&metrics_blob(&[
             (METRIC_LONG, "a"),
@@ -3131,6 +3189,22 @@ mod tests {
             call(closed_handle(), counts.as_mut_ptr(), values.as_mut_ptr(), 1),
             FfiStatus::InvalidHandle.code()
         );
+
+        // The size-0 count from the aggregation's own pass: the plain count's
+        // answer at every limit, and none asked for, none given.
+        for term in ["fox", "dog", "no-such-term"] {
+            let q = term_blob("body", term);
+            for limit in [1, 2, 3, 5, i64::MAX] {
+                let (_, _, fused) =
+                    aggregate_counting_blobs(h, &q, &metrics_blob(&[(METRIC_LONG, "n")]), limit)
+                        .unwrap();
+                let (_, total, lower) = run_limit(h, &q, 0, limit).unwrap();
+                assert_eq!(fused, Some((total, lower)), "{term} up to {limit}");
+            }
+            let (_, _, none) =
+                aggregate_counting_blobs(h, &q, &metrics_blob(&[(METRIC_LONG, "n")]), 0).unwrap();
+            assert_eq!(none, None);
+        }
 
         // Slices: each keeps its own state; the same segment twice gives the
         // one-slice answer twice. A segment the reader lacks is an error.

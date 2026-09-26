@@ -512,6 +512,31 @@ pub fn aggregate_sliced_min_score(
     slices: &[Vec<usize>],
     min_score: Option<&MinScore<'_, '_>>,
 ) -> Result<Vec<(Vec<MetricState>, Vec<TermsResult>)>> {
+    aggregate_sliced_counting(
+        segments, readers, query, specs, terms, globals, slices, min_score,
+    )
+    .map(|(sliced, _)| sliced)
+}
+
+/// [`aggregate_sliced_min_score`], and beside it each segment's live match
+/// count as the aggregations saw it (the documents passing `min_score`,
+/// behind one) -- `None` for a segment whose aggregations were all answered
+/// without visiting its matches (points bounds). What a `size: 0` search's
+/// hit count would otherwise count again (Lucene counts in the same pass).
+///
+/// # Errors
+/// What [`aggregate_sliced`] reports.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn aggregate_sliced_counting(
+    segments: &[OpenSegment<'_>],
+    readers: &[SegmentReader],
+    query: &BooleanQuery,
+    specs: &[MetricSpec],
+    terms: &[TermsSpec],
+    globals: &[std::sync::Arc<GlobalOrds>],
+    slices: &[Vec<usize>],
+    min_score: Option<&MinScore<'_, '_>>,
+) -> Result<(Vec<(Vec<MetricState>, Vec<TermsResult>)>, Vec<Option<u64>>)> {
     if globals.len() != terms.len() {
         return Err(crate::Error::TermsAggType(format!(
             "{} terms aggregations with {} global ordinal maps",
@@ -542,11 +567,22 @@ pub fn aggregate_sliced_min_score(
     let sliced = unique_states(
         segments, readers, query, &unique, terms, globals, slices, min_score,
     )?;
-    Ok(sliced
-        .into_iter()
-        .map(|(per, t)| (slot.iter().map(|&i| per[i]).collect(), t))
-        .collect())
+    let mut counts = vec![None; segments.len()];
+    let mut out = Vec::with_capacity(sliced.len());
+    for (per, t, seen) in sliced {
+        for (i, c) in seen {
+            if let Some(slot) = counts.get_mut(i) {
+                *slot = Some(c);
+            }
+        }
+        out.push((slot.iter().map(|&i| per[i]).collect(), t));
+    }
+    Ok((out, counts))
 }
+
+/// A slice's states, terms, and the live match count of each segment whose
+/// matches it visited.
+type SliceStates = (Vec<MetricState>, Vec<TermsResult>, Vec<(usize, u64)>);
 
 /// [`aggregate_sliced`] over distinct specs.
 #[allow(clippy::too_many_arguments)]
@@ -559,7 +595,7 @@ fn unique_states(
     globals: &[std::sync::Arc<GlobalOrds>],
     slices: &[Vec<usize>],
     min_score: Option<&MinScore<'_, '_>>,
-) -> Result<Vec<(Vec<MetricState>, Vec<TermsResult>)>> {
+) -> Result<Vec<SliceStates>> {
     let rewritten = crate::multi_segment::rewrite_points_ranges(query, segments);
     let query = rewritten.as_ref().unwrap_or(query);
     let clause = lone_clause(query);
@@ -612,7 +648,8 @@ fn slice_states(
     globals: &[std::sync::Arc<GlobalOrds>],
     slice: &[usize],
     scoring: Option<(&MinScore<'_, '_>, &crate::GlobalStats)>,
-) -> Result<(Vec<MetricState>, Vec<TermsResult>)> {
+) -> Result<SliceStates> {
+    let mut seen = Vec::with_capacity(slice.len());
     let mut term_counts: Vec<Vec<u64>> = globals.iter().map(|g| vec![0; g.value_count()]).collect();
     let mut terms_scratch = TermsScratch::default();
     let clause = clause.clone();
@@ -678,8 +715,16 @@ fn slice_states(
             None => segment_matches(&ctx, query, &clause, live, &mut docs_buf)?,
         };
         let Some(docs) = matched else {
+            seen.push((i, 0));
             continue;
         };
+        let count = match docs {
+            Some(d) => d.len(),
+            None => live.map_or(usize::try_from(reader.max_doc).unwrap_or(0), |l| {
+                l.cardinality()
+            }),
+        };
+        seen.push((i, u64::try_from(count).unwrap_or(u64::MAX)));
         let read = column_read(docs, live, reader.max_doc, &mut words);
         // Field by field: each state depends on its own column alone, read
         // in document order, so the order of the sums is Java's.
@@ -720,7 +765,7 @@ fn slice_states(
         .zip(&term_counts)
         .map(|((t, g), counts)| select(counts, t.shard_size, g, readers, &t.field))
         .collect::<Result<Vec<_>>>()?;
-    Ok((states, terms))
+    Ok((states, terms, seen))
 }
 
 /// One field's column over a segment's matches into `state`, keeping `N`.
