@@ -1422,12 +1422,30 @@ pub fn search_sorted(
             }
             continue;
         }
-        let Some(child) = exec::build::child(&ctx, &clause, 1.0, mode, true)? else {
+        // The score is not the first key, so it only breaks ties: the
+        // documents are iterated without scores (the cheaper tree, and the
+        // one the query cache serves), and a scoring tree of the same query
+        // is advanced only to the documents whose score a comparison reads.
+        let Some(child) = exec::build::child(&ctx, &clause, 1.0, Mode::NoScores, true)? else {
             continue;
         };
-        let mut scorer = child.into_scorer(mode);
+        let mut scorer = child.into_scorer(Mode::NoScores);
+        let mut scores = if tf.needs_scores {
+            exec::build::child(&ctx, &clause, 1.0, mode, true)?.map(|c| ScoreAt {
+                inner: c.into_scorer(mode),
+                doc: -1,
+            })
+        } else {
+            None
+        };
         let mut leaf = open_leaf(&tf, reader, seg.points, seg.doc_base, scorer.cost())?;
-        score_competitive(&mut *scorer, &mut tf, &mut leaf, seg.live_docs)?;
+        score_competitive(
+            &mut *scorer,
+            scores.as_mut(),
+            &mut tf,
+            &mut leaf,
+            seg.live_docs,
+        )?;
     }
     Ok(tf.top_docs())
 }
@@ -1437,6 +1455,7 @@ pub fn search_sorted(
 /// the scorer is advanced past documents the iterator has ruled out.
 fn score_competitive(
     scorer: &mut dyn Scorer,
+    mut scores: Option<&mut ScoreAt<'_>>,
     tf: &mut TopField,
     leaf: &mut Leaf<'_>,
     live_docs: Option<&FixedBitSet>,
@@ -1446,7 +1465,7 @@ fn score_competitive(
     // document matches without moving (a cached bit set, match-all) and no
     // score is read, a narrowed competitive set is walked on its own and each
     // of its documents tested -- one move per candidate instead of two.
-    let by_membership = !tf.needs_scores && !two_phase && scorer.contains(0).is_some();
+    let by_membership = !two_phase && scorer.contains(0).is_some();
     let mut doc = match leaf.competitive() {
         Some(it) if it.doc_id() > 0 => scorer.advance(it.doc_id())?,
         _ => scorer.next_doc()?,
@@ -1466,7 +1485,7 @@ fn score_competitive(
                     return Ok(());
                 }
                 if scorer.contains(d) == Some(true) && live_docs.is_none_or(|l| l.get_doc(d)) {
-                    leaf.collect(tf, d, None)?;
+                    leaf.collect(tf, d, score_at(&mut scores, d))?;
                     if leaf.terminated {
                         return Ok(());
                     }
@@ -1489,7 +1508,7 @@ fn score_competitive(
             }
         }
         if live_docs.is_none_or(|l| l.get_doc(doc)) && (!two_phase || scorer.matches()?) {
-            leaf.collect(tf, doc, Some(&mut *scorer))?;
+            leaf.collect(tf, doc, score_at(&mut scores, doc))?;
             if leaf.terminated {
                 return Ok(());
             }
@@ -1500,6 +1519,51 @@ fn score_competitive(
         doc = scorer.next_doc()?;
     }
     Ok(())
+}
+
+/// The scoring tree, pointed at `doc` for [`Leaf::value`] to read lazily.
+fn score_at<'s>(scores: &'s mut Option<&mut ScoreAt<'_>>, doc: i32) -> Sc<'s> {
+    scores.as_deref_mut().map(|s| {
+        s.doc = doc;
+        s as &mut dyn Scorer
+    })
+}
+
+/// A scoring tree read only for the documents whose score is compared:
+/// `score()` first moves it to [`Self::doc`], which the non-scoring tree has
+/// already matched, so it is there.
+struct ScoreAt<'a> {
+    inner: exec::BoxScorer<'a>,
+    doc: i32,
+}
+
+impl Scorer for ScoreAt<'_> {
+    fn doc_id(&self) -> i32 {
+        self.inner.doc_id()
+    }
+    fn next_doc(&mut self) -> Result<i32> {
+        self.inner.next_doc()
+    }
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.inner.advance(target)
+    }
+    fn cost(&self) -> i64 {
+        self.inner.cost()
+    }
+    fn score(&mut self) -> Result<f32> {
+        if self.inner.doc_id() < self.doc {
+            exec::exact_advance(&mut *self.inner, self.doc)?;
+        }
+        debug_assert_eq!(
+            self.inner.doc_id(),
+            self.doc,
+            "the scoring tree matches what the plain one did"
+        );
+        self.inner.score()
+    }
+    fn max_score(&mut self, up_to: i32) -> Result<f32> {
+        self.inner.max_score(up_to)
+    }
 }
 
 /// The rest of a segment once a sort led by the document id has filled its
