@@ -274,7 +274,7 @@ pub fn or_into_words(data: &[u8], dense_rank_power: u8, words: &mut [u64]) -> Re
 /// constructing a new `IndexedDISI`. That is what
 /// [`crate::doc_values::NumericReader`] does, and it costs one block-header
 /// walk, never an allocation.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DisiCursor<'a> {
     /// Java `slice`: the block payload, with the trailing jump table sliced
     /// off (`createBlockSlice`). Byte offsets inside it are exactly the
