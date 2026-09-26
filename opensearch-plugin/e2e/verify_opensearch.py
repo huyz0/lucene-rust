@@ -185,7 +185,8 @@ def matrix():
     add("match_phrase slop", {"query": {"match_phrase": {"body": {"query": "beta alpha", "slop": 2}}}}, "native")
     add("bool must + phrase", {"query": {"bool": {"must": [{"match": {"body": "gamma"}}], "should": [{"match_phrase": {"body": "alpha beta"}}]}}}, "native")
     add("bool must_not phrase", {"query": {"bool": {"must": [{"match": {"body": "beta"}}], "must_not": [{"match_phrase": {"body": "alpha gamma"}}]}}}, "native")
-    add("range", {"query": {"range": {"n": {"gte": 10, "lte": 500}}}}, "native")
+    add("range", {"query": {"range": {"n": {"gte": 10, "lte": 500}}}}, "approximate")
+    add("range, exact total", {"track_total_hits": True, "query": {"range": {"n": {"gte": 10, "lte": 500}}}}, "native")
     add("bool must + range filter", {"query": {"bool": {"must": [{"match": {"body": "alpha"}}], "filter": [{"range": {"n": {"gte": 1000, "lt": 30000}}}]}}}, "native")
     add("bool must_not range", {"query": {"bool": {"must": [{"match": {"body": "beta"}}], "must_not": [{"range": {"n": {"lte": 5000}}}]}}}, "native")
     add("prefix", {"query": {"prefix": {"tag": "al"}}}, "native")
@@ -213,7 +214,7 @@ def matrix():
     add("sort integer desc, long asc", {"query": {"match_all": {}}, "sort": [{"qty": "desc"}, {"n": "asc"}]}, "native")
     add("sort date desc", {"query": {"bool": {"filter": [{"term": {"tag": "gamma"}}]}}, "sort": [{"ts": "desc"}]}, "native")
     add("sort float asc", {"query": {"match": {"body": "delta"}}, "sort": [{"ratio": {"order": "asc"}}]}, "native")
-    add("sort multi-valued max", {"query": {"match_all": {}}, "sort": [{"m": {"order": "desc", "mode": "max"}}]}, "native")
+    add("sort multi-valued max", {"query": {"match_all": {}}, "sort": [{"m": {"order": "desc", "mode": "max"}}]}, "approximate")
     add("sort multi-valued min", {"query": {"match": {"body": "alpha"}}, "sort": [{"m": {"order": "asc", "mode": "min"}}]}, "native")
     add("sort sparse missing first", {"query": {"match": {"body": "gamma"}}, "sort": [{"sp": {"order": "asc", "missing": "_first"}}, {"n": "asc"}]}, "native")
     add("sort sparse missing last", {"query": {"match_all": {}}, "sort": [{"sp": {"order": "desc", "missing": "_last"}}]}, "native")
@@ -226,6 +227,9 @@ def matrix():
     add("sort size 0", {"size": 0, "query": {"match": {"body": "alpha"}}, "sort": [{"n": "desc"}]}, "native")
     add("search_after", {"query": {"match_all": {}}, "sort": [{"qty": "asc"}, {"n": "asc"}], "search_after": [10, 500]}, "native")
     add("search_after desc", {"query": {"match": {"body": "alpha"}}, "sort": [{"price": "desc"}, {"n": "asc"}], "search_after": [250.0, 100]}, "native")
+    # OpenSearch answers a top-level range, and a match_all sorted by one numeric field with no
+    # `missing`, approximately (ApproximateScoreQuery): its ties follow BKD order, so these stay on
+    # OpenSearch's own path.
     add("sort keyword", {"query": {"match": {"body": "alpha"}}, "sort": [{"tag": "asc"}]}, "sort_*")
     add("sort mode avg", {"query": {"match": {"body": "alpha"}}, "sort": [{"m": {"order": "asc", "mode": "avg"}}]}, "sort_*")
     add("sort track_scores", {"query": {"match": {"body": "alpha"}}, "sort": [{"n": "desc"}], "track_scores": True}, "track_scores")

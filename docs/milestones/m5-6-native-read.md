@@ -180,7 +180,7 @@ builds for `long`, `integer`, `short`, `byte`, `double`, `float` and `date`
 fields (`SortedNumericSortField`, `min`/`max` mode, any `missing`), for
 `_score` and `_doc`, and for `search_after` over them.
 
-It agrees with Lucene on 1,152 fixture runs (hits and values exact, totals
+It agrees with Lucene on 1,512 fixture runs (hits and values exact, totals
 exact wherever Lucene's are) and on 5,804 random sorted pages in the plugin's
 self test.
 

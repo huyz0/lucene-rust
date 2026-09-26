@@ -33,12 +33,25 @@
 //!
 //! # Deviations
 //!
-//! None in which hits are returned or in what order. Two in how much work is
-//! skipped: a segment whose sort field has no points but a doc-values skip
-//! index is scanned without skipping (Lucene's
-//! `DVSkipperCompetitiveDISIBuilder`). That only changes how many documents
-//! are counted past the total-hits threshold -- a count Lucene reports as a
-//! lower bound for exactly that reason.
+//! None in which hits are returned or in what order. Three in how much is
+//! counted past the total-hits threshold -- a count both report as a lower
+//! bound, and OpenSearch caps at `track_total_hits` anyway:
+//!
+//! * a segment whose sort field has no points but a doc-values skip index is
+//!   scanned without skipping (Lucene's `DVSkipperCompetitiveDISIBuilder`);
+//! * `DocComparator`'s competitive iterator is not ported: a sort led by the
+//!   document id stops each segment once its count passes the threshold,
+//!   where Lucene skips the later segments whole, so the lower bound here is
+//!   one hit higher per later matching segment;
+//! * the collector consults the competitive iterator per document, where
+//!   Lucene's match-all and filter conjunctions (`DenseConjunctionBulkScorer`)
+//!   collect whole 4,096-document windows first, so Lucene's bound is usually
+//!   the higher one there.
+//!
+//! And one in when a sort is refused: Lucene builds every segment's
+//! comparators before it searches, so a field with points of the wrong width
+//! or doc values of the wrong type fails the search even in a segment the
+//! query does not match; here only the segments searched are opened.
 
 use std::collections::HashMap;
 
@@ -161,6 +174,10 @@ pub enum SortError {
         bytes: i32,
         want: usize,
     },
+    /// The scoring tree of a sort that reads scores did not match a document
+    /// the non-scoring tree of the same query did.
+    #[error("the scoring tree does not match document {0}, which the query matched")]
+    ScoringTree(i32),
     /// A points leaf named a document outside the segment.
     #[error(
         "points field {field_number} names document {doc}, outside the segment's 0..{max_doc}"
@@ -410,7 +427,8 @@ impl TopField {
             }
         }
         if tf.doc_first {
-            // `firstComparator.disableSkipping()`.
+            // Never a points iterator for the document id (`DocComparator`'s
+            // own competitive iterator is not ported; see the module doc).
             tf.comps[0].pruning = Pruning::None;
         }
         tf
@@ -1498,7 +1516,12 @@ pub fn search_sorted(
         };
         let mut scorer = child.into_scorer(Mode::NoScores);
         let mut scores = if tf.needs_scores {
-            exec::build::child(&ctx, &clause, 1.0, mode, true)?.map(|c| ScoreAt {
+            // The same query, so the same segment answer: a tree here and
+            // none there would be a bug, reported rather than scored as 0.
+            let Some(c) = exec::build::child(&ctx, &clause, 1.0, mode, true)? else {
+                return Err(SortError::ScoringTree(-1).into());
+            };
+            Some(ScoreAt {
                 inner: c.into_scorer(mode),
                 doc: -1,
             })
@@ -1529,10 +1552,11 @@ fn score_competitive(
 ) -> Result<()> {
     let two_phase = scorer.two_phase();
     // Membership instead of leapfrog: when the scorer can say whether a
-    // document matches without moving (a cached bit set, match-all) and no
-    // score is read, a narrowed competitive set is walked on its own and each
-    // of its documents tested -- one move per candidate instead of two.
-    let by_membership = !two_phase && scorer.contains(0).is_some();
+    // document matches without moving (a cached bit set, match-all), a
+    // narrowed competitive set is walked on its own and each of its documents
+    // tested -- one move per candidate instead of two. Scores, when a key
+    // reads them, come from the separate scoring tree either way.
+    let mut by_membership = !two_phase && scorer.contains(0).is_some();
     let mut doc = match leaf.competitive() {
         Some(it) if it.doc_id() > 0 => scorer.advance(it.doc_id())?,
         _ => scorer.next_doc()?,
@@ -1551,10 +1575,20 @@ fn score_competitive(
                 if d == NO_MORE_DOCS {
                     return Ok(());
                 }
-                if scorer.contains(d) == Some(true) && live_docs.is_none_or(|l| l.get_doc(d)) {
-                    leaf.collect(tf, d, score_at(&mut scores, d))?;
-                    if leaf.terminated {
-                        return Ok(());
+                match scorer.contains(d) {
+                    Some(true) if live_docs.is_none_or(|l| l.get_doc(d)) => {
+                        leaf.collect(tf, d, score_at(&mut scores, d))?;
+                        if leaf.terminated {
+                            return Ok(());
+                        }
+                    }
+                    Some(_) => {}
+                    // The scorer stopped answering membership: leapfrog
+                    // from here, with `d` still to be looked at.
+                    None => {
+                        by_membership = false;
+                        doc = scorer.advance(d)?;
+                        continue;
                     }
                 }
                 doc = d.saturating_add(1);
@@ -1621,11 +1655,9 @@ impl Scorer for ScoreAt<'_> {
         if self.inner.doc_id() < self.doc {
             exec::exact_advance(&mut *self.inner, self.doc)?;
         }
-        debug_assert_eq!(
-            self.inner.doc_id(),
-            self.doc,
-            "the scoring tree matches what the plain one did"
-        );
+        if self.inner.doc_id() != self.doc {
+            return Err(SortError::ScoringTree(self.doc).into());
+        }
         self.inner.score()
     }
     fn max_score(&mut self, up_to: i32) -> Result<f32> {

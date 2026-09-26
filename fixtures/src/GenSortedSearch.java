@@ -80,6 +80,8 @@ public class GenSortedSearch {
     "(b 0 (+ (t w1)) (- (t w2)))",
     "(b 0 (? (t w3)) (? (t w4)) (? (t w5)))",
     "(b 0 (# (t w0)) (# (r 5000 45000)))",
+    // Two-phase: the lazily advanced scoring tree must land on a phrase's matches.
+    "(b 0 (+ (t w0)) (? (p w1 w2)))",
   };
 
   /** Sorts: comma-separated keys, {@code score}, {@code doc} or {@code FIELD:TYPE:SEL:ORDER:MISSING}. */
@@ -100,6 +102,8 @@ public class GenSortedSearch {
     "i:int:min:asc:last,score",
     "score,i:int:min:desc:last",
     "l:long:min:asc:none",
+    "score!,l:long:min:asc:last",
+    "i:int:min:asc:last,score!",
   };
 
   public static void main(String[] args) throws IOException {
@@ -279,6 +283,10 @@ public class GenSortedSearch {
     for (String k : s.split(",")) {
       if (k.equals("score")) {
         fields.add(SortField.FIELD_SCORE);
+        continue;
+      }
+      if (k.equals("score!")) {
+        fields.add(new SortField(null, SortField.Type.SCORE, true));
         continue;
       }
       if (k.equals("doc")) {

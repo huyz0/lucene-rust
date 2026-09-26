@@ -1221,9 +1221,5 @@ fn modes_follow_the_collector_and_scorer_defaults_are_conservative() {
     assert_eq!(all.advance_shallow(0).unwrap(), NO_MORE_DOCS);
     all.set_min_competitive_score(1.0).unwrap();
     assert_eq!(super::exact_advance(&mut all, 2).unwrap(), 2);
-    assert_eq!(
-        all.doc_id_run_end(),
-        3,
-        "one document, unless a scorer knows better"
-    );
+    assert_eq!(all.doc_id_run_end(), 4, "match-all runs to maxDoc");
 }

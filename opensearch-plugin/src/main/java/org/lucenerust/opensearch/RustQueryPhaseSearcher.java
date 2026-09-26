@@ -124,6 +124,12 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 reason = "slower_shape";
             }
         }
+        // OpenSearch's approximate match_all/range (ApproximateScoreQuery resolved to its
+        // ApproximateQuery) collects documents in BKD order and so breaks ties differently from
+        // Lucene's exact answer, which is what the native engine gives: stay on OpenSearch's.
+        if (reason == null && approximated(query)) {
+            reason = "approximate";
+        }
         // A sorted search: the sort blob, unless the hits are not asked for at all (size 0 has no
         // order to keep, and runs as the unsorted count it is).
         byte[] sortBlob = null;
@@ -263,6 +269,15 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             : countLimit == 0 ? new TotalHits(0, TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO)
             : new TotalHits(counts[1], counts[2] != 0 ? TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO : TotalHits.Relation.EQUAL_TO);
         float maxScore = n == 0 ? Float.NaN : scores[0];
+        if (ctx.sort() != null) {
+            // A sorted search with no hits asked for (size 0): what EmptyTopDocsCollectorContext
+            // stores, a TopFieldDocs carrying the sort -- the coordinator reads the class.
+            ctx.queryResult().topDocs(
+                new TopDocsAndMaxScore(new TopFieldDocs(total, new ScoreDoc[0], ctx.sort().sort.getSort()), Float.NaN),
+                null
+            );
+            return null;
+        }
         ctx.queryResult().topDocs(new TopDocsAndMaxScore(new TopDocs(total, hits), maxScore), null);
         return null;
     }
@@ -299,6 +314,51 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         float maxScore = n > 0 && sortByScore(ctx.sort().sort) ? (float) hits[0].fields[0] : Float.NaN;
         ctx.queryResult().topDocs(new TopDocsAndMaxScore(new TopFieldDocs(total, hits, fields), maxScore), ctx.sort().formats);
         return null;
+    }
+
+    private static final java.lang.reflect.Field RESOLVED_QUERY = resolvedQueryField();
+
+    private static java.lang.reflect.Field resolvedQueryField() {
+        try {
+            java.lang.reflect.Field f = ApproximateScoreQuery.class.getDeclaredField("resolvedQuery");
+            f.setAccessible(true);
+            return f;
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Whether {@code query} holds an {@link ApproximateScoreQuery} that OpenSearch resolved to its
+     * approximation for this request ({@code setContext}; the choice is package-private, so it is
+     * read reflectively). Unreadable counts as approximated: falling back is always correct.
+     */
+    static boolean approximated(Query query) {
+        if (query instanceof ApproximateScoreQuery a) {
+            if (RESOLVED_QUERY == null) {
+                return true;
+            }
+            try {
+                return RESOLVED_QUERY.get(a) instanceof org.opensearch.search.approximate.ApproximateQuery;
+            } catch (ReflectiveOperationException | RuntimeException e) {
+                return true;
+            }
+        }
+        if (query instanceof org.apache.lucene.search.BooleanQuery b) {
+            for (var c : b.clauses()) {
+                if (approximated(c.query())) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (query instanceof ConstantScoreQuery c) {
+            return approximated(c.getQuery());
+        }
+        if (query instanceof BoostQuery b) {
+            return approximated(b.getQuery());
+        }
+        return false;
     }
 
     /** {@code SortField.FIELD_SCORE.equals(sort.getSort()[0])}: the score, descending, leads. */
