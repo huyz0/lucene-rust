@@ -207,3 +207,22 @@ fn a_field_with_other_doc_values_is_refused() {
     )
     .is_err());
 }
+
+#[test]
+fn global_ordinals_cover_every_term_once_and_are_kept_per_reader() {
+    let m = manifest();
+    let reader = DirectoryReader::open(&FsDirectory::open(fixture_dir())).expect("open");
+    let kw = reader.global_ords("kw").expect("kw");
+    // Every `kw` term has live documents, so the match-all run with room for
+    // them all lists each once.
+    let all = &m["run.0.kw.1000.all"];
+    let listed = all.split_once('|').unwrap().1.split(',').count();
+    assert_eq!(kw.value_count(), listed);
+    // Built once per reader and field.
+    assert!(std::sync::Arc::ptr_eq(
+        &kw,
+        &reader.global_ords("kw").unwrap()
+    ));
+    assert_eq!(reader.global_ords("nosuch").unwrap().value_count(), 0);
+    assert!(reader.global_ords("r").unwrap().value_count() == 0);
+}

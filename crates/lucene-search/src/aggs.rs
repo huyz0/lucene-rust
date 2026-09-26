@@ -45,10 +45,8 @@ use lucene_util::fixed_bit_set::FixedBitSet;
 use crate::directory_reader::SegmentReader;
 use crate::exec::{self, Mode};
 use crate::multi_segment::OpenSegment;
-use std::collections::HashMap;
-
 use crate::query::{BooleanQuery, Clause};
-use crate::terms_agg::{segment_counts, select, TermsResult, TermsScratch, TermsSpec};
+use crate::terms_agg::{segment_counts, select, GlobalOrds, TermsResult, TermsScratch, TermsSpec};
 use crate::Result;
 
 /// How a field's stored longs become the `double`s an aggregation reads.
@@ -458,12 +456,13 @@ pub fn metric_states_sliced(
     specs: &[MetricSpec],
     slices: &[Vec<usize>],
 ) -> Result<Vec<Vec<MetricState>>> {
-    let sliced = aggregate_sliced(segments, readers, query, specs, &[], slices)?;
+    let sliced = aggregate_sliced(segments, readers, query, specs, &[], &[], slices)?;
     Ok(sliced.into_iter().map(|(states, _)| states).collect())
 }
 
 /// A request's native aggregations in one pass per slice: the metrics of
-/// `specs` and the `terms` of `terms`, each segment's matches collected once
+/// `specs` and the `terms` of `terms` (each counted into its field's
+/// [`GlobalOrds`], `globals` in the same order), each segment's matches collected once
 /// and every column read over them -- per slice, as [`metric_states_sliced`]
 /// and [`crate::terms_agg::terms_sliced`] give them, which it serves.
 ///
@@ -475,8 +474,16 @@ pub fn aggregate_sliced(
     query: &BooleanQuery,
     specs: &[MetricSpec],
     terms: &[TermsSpec],
+    globals: &[std::sync::Arc<GlobalOrds>],
     slices: &[Vec<usize>],
 ) -> Result<Vec<(Vec<MetricState>, Vec<TermsResult>)>> {
+    if globals.len() != terms.len() {
+        return Err(crate::Error::TermsAggType(format!(
+            "{} terms aggregations with {} global ordinal maps",
+            terms.len(),
+            globals.len()
+        )));
+    }
     // A field asked for twice the same way (`sum` and `avg` of one field,
     // say) is read once: the state is the same.
     let mut unique: Vec<MetricSpec> = Vec::with_capacity(specs.len());
@@ -497,7 +504,7 @@ pub fn aggregate_sliced(
             }
         })
         .collect();
-    let sliced = unique_states(segments, readers, query, &unique, terms, slices)?;
+    let sliced = unique_states(segments, readers, query, &unique, terms, globals, slices)?;
     Ok(sliced
         .into_iter()
         .map(|(per, t)| (slot.iter().map(|&i| per[i]).collect(), t))
@@ -511,6 +518,7 @@ fn unique_states(
     query: &BooleanQuery,
     specs: &[MetricSpec],
     terms: &[TermsSpec],
+    globals: &[std::sync::Arc<GlobalOrds>],
     slices: &[Vec<usize>],
 ) -> Result<Vec<(Vec<MetricState>, Vec<TermsResult>)>> {
     let rewritten = crate::multi_segment::rewrite_points_ranges(query, segments);
@@ -520,8 +528,11 @@ fn unique_states(
     // concurrently ([`crate::slices::run_slices`]) -- unless every
     // aggregation is a points bound (one read per segment), where handing
     // slices to other threads costs more than it saves.
-    let one =
-        |slice: &[usize]| slice_states(segments, readers, query, &clause, specs, terms, slice);
+    let one = |slice: &[usize]| {
+        slice_states(
+            segments, readers, query, &clause, specs, terms, globals, slice,
+        )
+    };
     let points_only = terms.is_empty() && specs.iter().all(|s| s.source != Source::DocValues);
     if points_only {
         return slices.iter().map(|s| one(s)).collect();
@@ -530,6 +541,7 @@ fn unique_states(
 }
 
 /// One slice's states and terms: its segments, in order, from scratch.
+#[allow(clippy::too_many_arguments)]
 fn slice_states(
     segments: &[OpenSegment<'_>],
     readers: &[SegmentReader],
@@ -537,9 +549,10 @@ fn slice_states(
     clause: &Clause,
     specs: &[MetricSpec],
     terms: &[TermsSpec],
+    globals: &[std::sync::Arc<GlobalOrds>],
     slice: &[usize],
 ) -> Result<(Vec<MetricState>, Vec<TermsResult>)> {
-    let mut term_counts: Vec<HashMap<Vec<u8>, u64>> = vec![HashMap::new(); terms.len()];
+    let mut term_counts: Vec<Vec<u64>> = globals.iter().map(|g| vec![0; g.value_count()]).collect();
     let mut terms_scratch = TermsScratch::default();
     let clause = clause.clone();
     let mut raw = Vec::new();
@@ -616,15 +629,16 @@ fn slice_states(
                 _ => fold::<NEED_ALL>(values, &read, state, kind, max_doc, &mut raw)?,
             }
         }
-        for (t, counts) in terms.iter().zip(&mut term_counts) {
-            segment_counts(reader, &t.field, &read, counts, &mut terms_scratch)?;
+        for ((t, g), counts) in terms.iter().zip(globals).zip(&mut term_counts) {
+            segment_counts(reader, i, &t.field, g, &read, counts, &mut terms_scratch)?;
         }
     }
     let terms = terms
         .iter()
-        .zip(term_counts)
-        .map(|(t, counts)| select(counts, t.shard_size))
-        .collect();
+        .zip(globals)
+        .zip(&term_counts)
+        .map(|((t, g), counts)| select(counts, t.shard_size, g, readers, &t.field))
+        .collect::<Result<Vec<_>>>()?;
     Ok((states, terms))
 }
 
