@@ -78,6 +78,10 @@ pub enum SortType {
     Int,
     Double,
     Float,
+    /// `SortedSetSortField` (and `SortField.Type.STRING` over a `SORTED`
+    /// column): by term, through `TermOrdValComparator`. `missing` is `1` for
+    /// `STRING_LAST`, `0` for `STRING_FIRST`.
+    String,
 }
 
 /// `SortedNumericSelector.Type`: which of a document's values it sorts by.
@@ -140,7 +144,18 @@ impl SortField {
         match self.ty {
             SortType::Long | SortType::Double => Some(8),
             SortType::Int | SortType::Float => Some(4),
-            SortType::Score | SortType::Doc => None,
+            SortType::Score | SortType::Doc | SortType::String => None,
+        }
+    }
+
+    /// A keyword key on `field` (`SortedSetSortField`, `MIN`), missing first.
+    pub fn string(field: &str, reverse: bool) -> Self {
+        Self {
+            field: field.to_string(),
+            ty: SortType::String,
+            reverse,
+            selector: Selector::Min,
+            missing: 0,
         }
     }
 }
@@ -150,6 +165,10 @@ impl SortField {
 pub struct FieldDoc {
     pub doc: i32,
     pub values: Vec<i64>,
+    /// A keyword key's value, parallel to `values` (whose entry is then
+    /// `0`): the term, or `None` for a document without one. Empty when the
+    /// sort has no keyword key.
+    pub terms: Vec<Option<Vec<u8>>>,
 }
 
 /// `TopFieldDocs`: the hits, best first, and the total.
@@ -189,6 +208,10 @@ pub enum SortError {
     },
     #[error("field {0} has doc values of a type that cannot be sorted numerically")]
     DocValuesType(String),
+    #[error("ordinal {0} out of range")]
+    Ordinal(i64),
+    #[error("field {0} has doc values of a type that cannot be sorted by term")]
+    KeywordType(String),
 }
 
 /// `NumericUtils.floatToSortableInt`, over `Float.floatToIntBits` (one NaN).
@@ -245,11 +268,49 @@ struct Comparator {
     single_sort: bool,
     hits_threshold_reached: bool,
     queue_full: bool,
+    /// A keyword key's `TermOrdValComparator` state.
+    strs: Option<Box<StrSlots>>,
+}
+
+/// `TermOrdValComparator`'s reader-wide state: each slot's ordinal, term and
+/// the segment (`readerGen`) the ordinal belongs to.
+struct StrSlots {
+    ords: Vec<i32>,
+    values: Vec<Option<Vec<u8>>>,
+    reader_gen: Vec<i32>,
+    current_gen: i32,
+    /// `missingSortCmp`: `1` for `STRING_LAST`, `-1` for `STRING_FIRST`.
+    missing_cmp: i32,
+    bottom_slot: Option<usize>,
+    /// `topValue`: the search-after term; `None` also for a missing one.
+    top: Option<Vec<u8>>,
+}
+
+impl StrSlots {
+    /// `compareValues`.
+    fn compare_values(&self, a: &Option<Vec<u8>>, b: &Option<Vec<u8>>) -> i32 {
+        match (a, b) {
+            (None, None) => 0,
+            (None, Some(_)) => self.missing_cmp,
+            (Some(_), None) => -self.missing_cmp,
+            (Some(x), Some(y)) => x.as_slice().cmp(y.as_slice()) as i32,
+        }
+    }
 }
 
 impl Comparator {
     fn compare(&self, a: usize, b: usize) -> i32 {
-        self.mul * cmp(self.values[a], self.values[b])
+        match &self.strs {
+            None => self.mul * cmp(self.values[a], self.values[b]),
+            Some(st) => {
+                let r = if st.reader_gen[a] == st.reader_gen[b] {
+                    st.ords[a].wrapping_sub(st.ords[b]).signum()
+                } else {
+                    st.compare_values(&st.values[a], &st.values[b])
+                };
+                self.mul * r
+            }
+        }
     }
 }
 
@@ -372,9 +433,20 @@ impl TopField {
                 } else {
                     Pruning::GreaterThanOrEqualTo
                 };
-                if f.point_bytes().is_none() {
+                if f.point_bytes().is_none() && f.ty != SortType::String {
                     pruning = Pruning::None;
                 }
+                let strs = (f.ty == SortType::String).then(|| {
+                    Box::new(StrSlots {
+                        ords: vec![0; num_hits],
+                        values: vec![None; num_hits],
+                        reader_gen: vec![0; num_hits],
+                        current_gen: -1,
+                        missing_cmp: if f.missing != 0 { 1 } else { -1 },
+                        bottom_slot: None,
+                        top: None,
+                    })
+                });
                 Comparator {
                     field: f.clone(),
                     mul: if f.reverse { -1 } else { 1 },
@@ -386,6 +458,7 @@ impl TopField {
                     single_sort: false,
                     hits_threshold_reached: false,
                     queue_full: false,
+                    strs,
                 }
             })
             .collect();
@@ -417,12 +490,15 @@ impl TopField {
             None if tf.comps.len() == 1 => tf.comps[0].single_sort = true,
             None => {}
             Some(a) => {
-                for (c, &v) in tf.comps.iter_mut().zip(&a.values) {
+                for (i, (c, &v)) in tf.comps.iter_mut().zip(&a.values).enumerate() {
                     c.top_set = true;
                     c.top = match c.field.ty {
                         SortType::Score => score_value(f32::from_bits(v as u32)),
                         _ => v,
                     };
+                    if let Some(st) = c.strs.as_mut() {
+                        st.top = a.terms.get(i).cloned().flatten();
+                    }
                 }
             }
         }
@@ -454,6 +530,7 @@ impl TopField {
     /// `populateResults`/`newTopDocs`.
     fn top_docs(mut self) -> TopFieldDocs {
         let mut hits = Vec::with_capacity(self.queue.heap.len());
+        let any_terms = self.comps.iter().any(|c| c.strs.is_some());
         while let Some(e) = self.queue.pop(&self.comps) {
             let values = self
                 .comps
@@ -462,11 +539,24 @@ impl TopField {
                     let v = c.values[e.slot];
                     match c.field.ty {
                         SortType::Score => i64::from(sortable_int_to_float(-v).to_bits()),
+                        SortType::String => 0,
                         _ => v,
                     }
                 })
                 .collect();
-            hits.push(FieldDoc { doc: e.doc, values });
+            let terms = if any_terms {
+                self.comps
+                    .iter()
+                    .map(|c| c.strs.as_ref().and_then(|st| st.values[e.slot].clone()))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            hits.push(FieldDoc {
+                doc: e.doc,
+                values,
+                terms,
+            });
         }
         hits.reverse();
         TopFieldDocs {
@@ -1001,6 +1091,147 @@ enum LeafKey<'a> {
     Score,
     Doc,
     Numeric(Box<LeafNumeric<'a>>),
+    Str(Box<LeafStr<'a>>),
+}
+
+/// A keyword column as `SortedDocValues`: a `SORTED` column, or a
+/// `SORTED_SET` one through `SortedSetSelector` (`MIN` the first ordinal,
+/// `MAX` the last).
+enum OrdColumn<'a> {
+    Absent,
+    Single(NumericReader<'a>),
+    Multi(SortedNumericReader<'a>, Vec<i64>, Selector),
+}
+
+impl OrdColumn<'_> {
+    /// `advanceExact` + `ordValue`, `-1` for a document without a value.
+    fn ord(&mut self, doc: i32) -> Result<i32> {
+        let v = match self {
+            OrdColumn::Absent => None,
+            OrdColumn::Single(r) => r.value(doc).map_err(crate::Error::from)?,
+            OrdColumn::Multi(r, buf, selector) => {
+                r.values(doc, buf).map_err(crate::Error::from)?;
+                match selector {
+                    Selector::Min => buf.first().copied(),
+                    Selector::Max => buf.last().copied(),
+                }
+            }
+        };
+        Ok(match v {
+            Some(o) => i32::try_from(o).map_err(|_| crate::Error::from(SortError::Ordinal(o)))?,
+            None => -1,
+        })
+    }
+}
+
+/// `TermOrdValComparator.TermOrdValLeafComparator`.
+struct LeafStr<'a> {
+    column: OrdColumn<'a>,
+    dict: Option<lucene_codecs::terms_dict::TermsDict<'a>>,
+    bottom_same_reader: bool,
+    bottom_ord: i32,
+    top_same_reader: bool,
+    top_ord: i32,
+    missing_ord: i32,
+    /// The last document read, so `compareBottom` and `copy` read once.
+    cached: (i32, i32),
+}
+
+impl<'a> LeafStr<'a> {
+    fn ord(&mut self, doc: i32) -> Result<i32> {
+        if self.cached.0 != doc {
+            self.cached = (doc, self.column.ord(doc)?);
+        }
+        Ok(self.cached.1)
+    }
+
+    /// `lookupTerm`: the term's ordinal here, or `-insertion - 1`; `-1` in a
+    /// segment without the field (`DocValues.emptySorted`).
+    fn lookup(&mut self, term: &[u8]) -> Result<i32> {
+        let Some(d) = self.dict.as_mut() else {
+            return Ok(-1);
+        };
+        let o = d.lookup_term(term).map_err(store_err)?;
+        i32::try_from(o).map_err(|_| SortError::Ordinal(o).into())
+    }
+
+    /// `lookupOrd`.
+    fn term(&mut self, ord: i32) -> Result<Vec<u8>> {
+        match self.dict.as_mut() {
+            Some(d) => Ok(d.seek_exact(i64::from(ord)).map_err(store_err)?.to_vec()),
+            None => Err(SortError::Ordinal(i64::from(ord)).into()),
+        }
+    }
+
+    /// `compareBottom`.
+    fn compare_bottom(&mut self, doc: i32) -> Result<i32> {
+        let mut o = self.ord(doc)?;
+        if o == -1 {
+            o = self.missing_ord;
+        }
+        Ok(if self.bottom_same_reader {
+            self.bottom_ord.wrapping_sub(o).signum()
+        } else if self.bottom_ord >= o {
+            1
+        } else {
+            -1
+        })
+    }
+
+    /// `compareTop`.
+    fn compare_top(&mut self, doc: i32) -> Result<i32> {
+        let mut o = self.ord(doc)?;
+        if o == -1 {
+            o = self.missing_ord;
+        }
+        Ok(if self.top_same_reader {
+            self.top_ord.wrapping_sub(o).signum()
+        } else if o <= self.top_ord {
+            1
+        } else {
+            -1
+        })
+    }
+
+    /// `copy`.
+    fn copy(&mut self, st: &mut StrSlots, slot: usize, doc: i32) -> Result<()> {
+        let o = self.ord(doc)?;
+        if o == -1 {
+            st.ords[slot] = self.missing_ord;
+            st.values[slot] = None;
+        } else {
+            st.values[slot] = Some(self.term(o)?);
+            st.ords[slot] = o;
+        }
+        st.reader_gen[slot] = st.current_gen;
+        Ok(())
+    }
+
+    /// `setBottom`.
+    fn set_bottom(&mut self, st: &mut StrSlots, slot: usize) -> Result<()> {
+        st.bottom_slot = Some(slot);
+        if st.current_gen == st.reader_gen[slot] {
+            self.bottom_ord = st.ords[slot];
+            self.bottom_same_reader = true;
+        } else if st.values[slot].is_none() {
+            self.bottom_ord = self.missing_ord;
+            self.bottom_same_reader = true;
+            st.reader_gen[slot] = st.current_gen;
+        } else {
+            let value = st.values[slot].clone().unwrap_or_default();
+            let o = self.lookup(&value)?;
+            if o < 0 {
+                self.bottom_ord = -o - 2;
+                self.bottom_same_reader = false;
+            } else {
+                self.bottom_ord = o;
+                self.bottom_same_reader = true;
+                st.reader_gen[slot] = st.current_gen;
+                st.ords[slot] = o;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// `TopFieldLeafCollector` for one segment.
@@ -1018,9 +1249,75 @@ struct Leaf<'a> {
     score_doc: i32,
 }
 
+fn store_err(e: lucene_store::Error) -> crate::Error {
+    crate::Error::from(lucene_codecs::doc_values::Error::from(e))
+}
+
+/// A keyword key's column and terms dictionary in one segment: a
+/// `SORTED_SET` column (single-valued or through the selector) or a `SORTED`
+/// one; none at all sorts every document as missing (`DocValues.emptySorted`).
+fn open_str<'a>(reader: &'a SegmentReader, f: &SortField) -> Result<LeafStr<'a>> {
+    use lucene_codecs::doc_values::SortedSetKind;
+    use lucene_codecs::terms_dict::TermsDict;
+    let info = reader
+        .field_infos()
+        .fields
+        .iter()
+        .find(|i| i.name == f.field);
+    let dv = info.and_then(|i| {
+        reader
+            .doc_values_for_field(i.number)
+            .map(|dv| (i.number, dv))
+    });
+    let (column, dict) = match dv {
+        None => (OrdColumn::Absent, None),
+        Some((num, (meta, data))) => {
+            if let Some(e) = meta.sorted_set_entry(num) {
+                match &e.kind {
+                    SortedSetKind::Single(se) => (
+                        OrdColumn::Single(NumericReader::new(data, &se.ords)),
+                        Some(TermsDict::open(data, &se.terms).map_err(store_err)?),
+                    ),
+                    SortedSetKind::Multi { ords, terms } => (
+                        OrdColumn::Multi(
+                            SortedNumericReader::new(data, ords),
+                            Vec::new(),
+                            f.selector,
+                        ),
+                        Some(TermsDict::open(data, terms).map_err(store_err)?),
+                    ),
+                }
+            } else if let Some(se) = meta.sorted_entry(num) {
+                (
+                    OrdColumn::Single(NumericReader::new(data, &se.ords)),
+                    Some(TermsDict::open(data, &se.terms).map_err(store_err)?),
+                )
+            } else if meta.numeric_entry(num).is_some()
+                || meta.sorted_numeric_entry(num).is_some()
+                || meta.binary_entry(num).is_some()
+            {
+                return Err(SortError::KeywordType(f.field.clone()).into());
+            } else {
+                (OrdColumn::Absent, None)
+            }
+        }
+    };
+    let missing_ord = if f.missing != 0 { i32::MAX } else { -1 };
+    Ok(LeafStr {
+        column,
+        dict,
+        bottom_same_reader: false,
+        bottom_ord: 0,
+        top_same_reader: true,
+        top_ord: missing_ord,
+        missing_ord,
+        cached: (-1, 0),
+    })
+}
+
 /// The segment's column and points for a numeric key.
 fn open_leaf<'a>(
-    tf: &TopField,
+    tf: &mut TopField,
     reader: &'a SegmentReader,
     points: Option<&'a crate::points_query::PointsInput<'a>>,
     doc_base: i32,
@@ -1033,6 +1330,7 @@ fn open_leaf<'a>(
         keys.push(match f.ty {
             SortType::Score => LeafKey::Score,
             SortType::Doc => LeafKey::Doc,
+            SortType::String => LeafKey::Str(Box::new(open_str(reader, f)?)),
             _ => {
                 let info = reader
                     .field_infos()
@@ -1134,6 +1432,32 @@ fn open_leaf<'a>(
             }
         });
     }
+    // `getLeafComparator` for a keyword key: a new reader generation, the
+    // search-after term and the bottom looked up in this segment.
+    for (i, key) in keys.iter_mut().enumerate() {
+        if let (LeafKey::Str(k), Some(st)) = (key, tf.comps[i].strs.as_mut()) {
+            st.current_gen += 1;
+            match st.top.clone() {
+                Some(top) => {
+                    let o = k.lookup(&top)?;
+                    if o >= 0 {
+                        k.top_same_reader = true;
+                        k.top_ord = o;
+                    } else {
+                        k.top_same_reader = false;
+                        k.top_ord = -o - 2;
+                    }
+                }
+                None => {
+                    k.top_same_reader = true;
+                    k.top_ord = k.missing_ord;
+                }
+            }
+            if let Some(b) = st.bottom_slot {
+                k.set_bottom(st, b)?;
+            }
+        }
+    }
     let after_doc = tf
         .after
         .as_ref()
@@ -1166,12 +1490,17 @@ impl Leaf<'_> {
             }
             LeafKey::Doc => i64::from(self.doc_base + doc),
             LeafKey::Numeric(n) => n.value(doc)?,
+            // A keyword key compares by ordinal in `compare_*`, never here.
+            LeafKey::Str(_) => 0,
         })
     }
 
     fn compare_bottom(&mut self, tf: &TopField, doc: i32, scorer: &mut Sc<'_>) -> Result<i32> {
         for (i, c) in tf.comps.iter().enumerate() {
-            let r = c.mul * cmp(c.bottom, self.value(i, doc, scorer)?);
+            let r = match &mut self.keys[i] {
+                LeafKey::Str(k) => c.mul * k.compare_bottom(doc)?,
+                _ => c.mul * cmp(c.bottom, self.value(i, doc, scorer)?),
+            };
             if r != 0 {
                 return Ok(r);
             }
@@ -1181,7 +1510,10 @@ impl Leaf<'_> {
 
     fn compare_top(&mut self, tf: &TopField, doc: i32, scorer: &mut Sc<'_>) -> Result<i32> {
         for (i, c) in tf.comps.iter().enumerate() {
-            let r = c.mul * cmp(c.top, self.value(i, doc, scorer)?);
+            let r = match &mut self.keys[i] {
+                LeafKey::Str(k) => c.mul * k.compare_top(doc)?,
+                _ => c.mul * cmp(c.top, self.value(i, doc, scorer)?),
+            };
             if r != 0 {
                 return Ok(r);
             }
@@ -1197,6 +1529,10 @@ impl Leaf<'_> {
         scorer: &mut Sc<'_>,
     ) -> Result<()> {
         for i in 0..tf.comps.len() {
+            if let (LeafKey::Str(k), Some(st)) = (&mut self.keys[i], tf.comps[i].strs.as_mut()) {
+                k.copy(st, slot, doc)?;
+                continue;
+            }
             let v = self.value(i, doc, scorer)?;
             tf.comps[i].values[slot] = v;
             if let LeafKey::Numeric(n) = &mut self.keys[i] {
@@ -1212,6 +1548,10 @@ impl Leaf<'_> {
         for i in 0..tf.comps.len() {
             let c = &mut tf.comps[i];
             c.bottom = c.values[slot];
+            if let (LeafKey::Str(k), Some(st)) = (&mut self.keys[i], c.strs.as_mut()) {
+                k.set_bottom(st, slot)?;
+                continue;
+            }
             if let LeafKey::Numeric(n) = &mut self.keys[i] {
                 c.queue_full = true;
                 if let Some(comp) = n.competitive.as_mut() {
@@ -1490,7 +1830,7 @@ pub fn search_sorted(
                 continue;
             };
             let mut leaf = open_leaf(
-                &tf,
+                &mut tf,
                 reader,
                 seg.points,
                 seg.doc_base,
@@ -1528,7 +1868,7 @@ pub fn search_sorted(
         } else {
             None
         };
-        let mut leaf = open_leaf(&tf, reader, seg.points, seg.doc_base, scorer.cost())?;
+        let mut leaf = open_leaf(&mut tf, reader, seg.points, seg.doc_base, scorer.cost())?;
         score_competitive(
             &mut *scorer,
             scores.as_mut(),
@@ -1774,6 +2114,7 @@ mod tests {
         let after = FieldDoc {
             doc: 3,
             values: vec![1, 2],
+            terms: Vec::new(),
         };
         assert!(matches!(
             run(&r, &all(), &[SortField::doc()], 10, Some(&after)),
@@ -2042,6 +2383,7 @@ mod tests {
             single_sort: true,
             hits_threshold_reached: false,
             queue_full: false,
+            strs: None,
         }
     }
 

@@ -40,6 +40,26 @@ pub struct TermsDictEntry {
     pub max_block_length: i32,
     pub terms_data_offset: i64,
     pub terms_data_length: i64,
+    /// The block-address array and the reverse terms index, for random
+    /// access ([`TermsDict`]); `None` for an entry built by hand.
+    pub index: Option<Box<TermsDictIndex>>,
+}
+
+/// `TermsDictEntry`'s random-access half: where each 64-term block starts
+/// (`termsAddresses`), and every `2^index_shift`-th term's bytes
+/// (`termsIndex`, found through `termsIndexAddresses`). All offsets are into
+/// the whole `.dvd`.
+#[derive(Debug, Clone)]
+pub struct TermsDictIndex {
+    pub addresses_meta: direct_monotonic::Meta,
+    pub addresses_offset: i64,
+    pub addresses_length: i64,
+    pub index_shift: u32,
+    pub index_addresses_meta: direct_monotonic::Meta,
+    pub index_offset: i64,
+    pub index_length: i64,
+    pub index_addresses_offset: i64,
+    pub index_addresses_length: i64,
 }
 
 /// Parses a `TermsDictEntry` from the `.dvm` metadata stream. Must be called
@@ -61,7 +81,7 @@ pub fn read_term_dict_entry(input: &mut SliceInput) -> Result<TermsDictEntry> {
             "terms dict size out of range: {terms_dict_size}"
         )));
     };
-    let _terms_addresses_meta = direct_monotonic::load_meta(input, addresses_size, block_shift)?;
+    let addresses_meta = direct_monotonic::load_meta(input, addresses_size, block_shift)?;
     let max_term_length = input.read_i32()?;
     let max_block_length = input.read_i32()?;
     if max_block_length < 0 {
@@ -71,8 +91,8 @@ pub fn read_term_dict_entry(input: &mut SliceInput) -> Result<TermsDictEntry> {
     }
     let terms_data_offset = input.read_i64()?;
     let terms_data_length = input.read_i64()?;
-    let _terms_addresses_offset = input.read_i64()?;
-    let _terms_addresses_length = input.read_i64()?;
+    let addresses_offset = input.read_i64()?;
+    let addresses_length = input.read_i64()?;
     let terms_dict_index_shift = input.read_i32()? as u32;
     // `termsDictIndexShift` is a raw `int` off the `.dvm`. Java's `1L <<
     // shift` masks the shift to its low six bits, so a corrupt value there is
@@ -99,12 +119,11 @@ pub fn read_term_dict_entry(input: &mut SliceInput) -> Result<TermsDictEntry> {
              shift={terms_dict_index_shift}"
         )));
     };
-    let _terms_index_addresses_meta =
-        direct_monotonic::load_meta(input, num_index_values, block_shift)?;
-    let _terms_index_offset = input.read_i64()?;
-    let _terms_index_length = input.read_i64()?;
-    let _terms_index_addresses_offset = input.read_i64()?;
-    let _terms_index_addresses_length = input.read_i64()?;
+    let index_addresses_meta = direct_monotonic::load_meta(input, num_index_values, block_shift)?;
+    let index_offset = input.read_i64()?;
+    let index_length = input.read_i64()?;
+    let index_addresses_offset = input.read_i64()?;
+    let index_addresses_length = input.read_i64()?;
 
     Ok(TermsDictEntry {
         terms_dict_size,
@@ -112,6 +131,17 @@ pub fn read_term_dict_entry(input: &mut SliceInput) -> Result<TermsDictEntry> {
         max_block_length,
         terms_data_offset,
         terms_data_length,
+        index: Some(Box::new(TermsDictIndex {
+            addresses_meta,
+            addresses_offset,
+            addresses_length,
+            index_shift: terms_dict_index_shift,
+            index_addresses_meta,
+            index_offset,
+            index_length,
+            index_addresses_offset,
+            index_addresses_length,
+        })),
     })
 }
 
@@ -342,6 +372,247 @@ impl<'a> TermsCursor<'a> {
     }
 }
 
+impl TermsCursor<'_> {
+    /// Moves to the start of block `block`, `address` bytes into the terms
+    /// region: the next [`Self::next_term`] reads ordinal `block * 64`.
+    fn seek_block(&mut self, block: i64, address: usize) -> Result<()> {
+        self.input.seek(address)?;
+        self.ord = block
+            .checked_mul(BLOCK_SIZE)
+            .ok_or_else(|| lucene_store::Error::Corrupted(format!("terms dict block {block}")))?;
+        Ok(())
+    }
+}
+
+/// Where [`TermsDict::seek_ceil`] landed: `TermsEnum.SeekStatus`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeekStatus {
+    Found,
+    /// On the first term past the target.
+    NotFound,
+    /// Past the last term.
+    End,
+}
+
+fn region(data: &[u8], offset: i64, length: i64) -> Result<&[u8]> {
+    let start = usize::try_from(offset).map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
+    let end = offset
+        .checked_add(length)
+        .and_then(|e| usize::try_from(e).ok())
+        .ok_or(lucene_store::Error::Eof { offset: 0 })?;
+    data.get(start..end)
+        .ok_or(lucene_store::Error::Eof { offset: start })
+}
+
+fn usize_of(v: i64, what: &str) -> Result<usize> {
+    usize::try_from(v).map_err(|_| lucene_store::Error::Corrupted(format!("negative {what} {v}")))
+}
+
+/// `Lucene90DocValuesProducer.TermsDict` with its random access: a term by
+/// ordinal (`seekExact(long)`, a block-address lookup and a scan inside the
+/// block) and an ordinal by term (`seekCeil`, a binary search of the reverse
+/// index, then of the blocks' first terms, then a scan) -- what a keyword sort
+/// needs to carry a value from one segment to the next.
+pub struct TermsDict<'a> {
+    cursor: TermsCursor<'a>,
+    size: i64,
+    index: &'a TermsDictIndex,
+    addresses: &'a [u8],
+    index_addresses: &'a [u8],
+    index_bytes: &'a [u8],
+    terms: &'a [u8],
+    /// The ordinal of the term the cursor holds; `-1` before any.
+    ord: i64,
+}
+
+impl<'a> TermsDict<'a> {
+    /// Opens the dictionary of `entry` in `data` (the whole `.dvd`).
+    pub fn open(data: &'a [u8], entry: &'a TermsDictEntry) -> Result<Self> {
+        let index = entry.index.as_deref().ok_or_else(|| {
+            lucene_store::Error::Corrupted("terms dict entry without its index".into())
+        })?;
+        Ok(TermsDict {
+            cursor: TermsCursor::open(data, entry)?,
+            size: entry.terms_dict_size,
+            index,
+            addresses: region(data, index.addresses_offset, index.addresses_length)?,
+            index_addresses: region(
+                data,
+                index.index_addresses_offset,
+                index.index_addresses_length,
+            )?,
+            index_bytes: region(data, index.index_offset, index.index_length)?,
+            terms: region(data, entry.terms_data_offset, entry.terms_data_length)?,
+            ord: -1,
+        })
+    }
+
+    /// `termsDictSize`.
+    pub fn size(&self) -> i64 {
+        self.size
+    }
+
+    /// The current term.
+    pub fn term(&self) -> &[u8] {
+        &self.cursor.term
+    }
+
+    /// The current term's ordinal (`-1` before any seek).
+    pub fn ord(&self) -> i64 {
+        self.ord
+    }
+
+    /// `seekExact(ord)`: the term of ordinal `ord`.
+    // ARITH: `0 <= ord < size <= i64::MAX` (checked first), so `ord >> 6`
+    // and `(block << 6) - 1 >= -1` are in range, and `self.ord + 1 <= ord`
+    // inside the loop.
+    #[allow(clippy::arithmetic_side_effects)]
+    pub fn seek_exact(&mut self, ord: i64) -> Result<&[u8]> {
+        if ord < 0 || ord >= self.size {
+            return Err(lucene_store::Error::Corrupted(format!(
+                "terms dict ordinal {ord} outside 0..{}",
+                self.size
+            )));
+        }
+        let block = ord >> TERMS_DICT_BLOCK_LZ4_SHIFT;
+        if ord < self.ord || block != self.ord >> TERMS_DICT_BLOCK_LZ4_SHIFT {
+            let address = direct_monotonic::get(self.addresses, &self.index.addresses_meta, block)?;
+            self.cursor
+                .seek_block(block, usize_of(address, "terms block address")?)?;
+            self.ord = (block << TERMS_DICT_BLOCK_LZ4_SHIFT) - 1;
+        }
+        while self.ord < ord {
+            if self.cursor.next_term()?.is_none() {
+                return Err(lucene_store::Error::Corrupted(format!(
+                    "terms dict ended before ordinal {ord}"
+                )));
+            }
+            self.ord += 1;
+        }
+        Ok(&self.cursor.term)
+    }
+
+    /// `getTermFromIndex`: the reverse index's `i`-th sample.
+    // ARITH: `i` is a reverse-index position found by `seek_terms_index`'s
+    // binary search, so `i + 1` is at most its (non-negative) upper bound + 1.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn term_from_index(&self, i: i64) -> Result<&'a [u8]> {
+        let start =
+            direct_monotonic::get(self.index_addresses, &self.index.index_addresses_meta, i)?;
+        let end = direct_monotonic::get(
+            self.index_addresses,
+            &self.index.index_addresses_meta,
+            i + 1,
+        )?;
+        if end < start {
+            return Err(lucene_store::Error::Corrupted(format!(
+                "terms index addresses decrease: {start} then {end}"
+            )));
+        }
+        region(self.index_bytes, start, end - start)
+    }
+
+    /// `getFirstTermFromBlock`: a block's uncompressed first term.
+    fn first_term_of_block(&self, block: i64) -> Result<&'a [u8]> {
+        let address = direct_monotonic::get(self.addresses, &self.index.addresses_meta, block)?;
+        let mut input = SliceInput::new(self.terms);
+        input.seek(usize_of(address, "terms block address")?)?;
+        let len = usize_of(i64::from(input.read_vint()?), "first term length")?;
+        let at = input.position();
+        let end = at
+            .checked_add(len)
+            .ok_or(lucene_store::Error::Eof { offset: at })?;
+        self.terms
+            .get(at..end)
+            .ok_or(lucene_store::Error::Eof { offset: at })
+    }
+
+    /// `seekTermsIndex`: the last reverse-index sample at or before `key`
+    /// (`-1` only for an empty dictionary: sample 0 is the empty term).
+    // ARITH: `lo <= hi + 1` and both are within `-1..=(size - 1) >> shift`,
+    // with `size >= 1` here; `(lo + hi) >> 1` cannot overflow for these.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn seek_terms_index(&self, key: &[u8]) -> Result<i64> {
+        let (mut lo, mut hi) = (0i64, (self.size - 1) >> self.index.index_shift);
+        while lo <= hi {
+            let mid = (lo + hi) >> 1;
+            if self.term_from_index(mid)? <= key {
+                lo = mid + 1;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        Ok(hi)
+    }
+
+    /// `seekCeil`: moves to `key`, or to the first term after it.
+    // ARITH: `index >= 0` and `index <= (size - 1) >> shift`, so `index <<
+    // shift < size`; `ord_lo + 2^shift` is at most `size + 2^shift`, which the
+    // writer's shift (at most 62, checked on read) keeps within `i64`. The
+    // block search mirrors `seek_terms_index`'s.
+    #[allow(clippy::arithmetic_side_effects)]
+    pub fn seek_ceil(&mut self, key: &[u8]) -> Result<SeekStatus> {
+        if self.size <= 0 {
+            self.ord = 0;
+            return Ok(SeekStatus::End);
+        }
+        let index = self.seek_terms_index(key)?;
+        if index < 0 {
+            self.ord = 0;
+            return Ok(SeekStatus::End);
+        }
+        let shift = self.index.index_shift;
+        let ord_lo = index << shift;
+        let ord_hi = self.size.min(ord_lo.saturating_add(1i64 << shift)) - 1;
+        let (mut lo, mut hi) = (
+            ord_lo >> TERMS_DICT_BLOCK_LZ4_SHIFT,
+            ord_hi >> TERMS_DICT_BLOCK_LZ4_SHIFT,
+        );
+        while lo <= hi {
+            let mid = (lo + hi) >> 1;
+            if self.first_term_of_block(mid)? <= key {
+                lo = mid + 1;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        let block = hi.max(0);
+        let address = direct_monotonic::get(self.addresses, &self.index.addresses_meta, block)?;
+        self.cursor
+            .seek_block(block, usize_of(address, "terms block address")?)?;
+        if self.cursor.next_term()?.is_none() {
+            return Ok(SeekStatus::End);
+        }
+        self.ord = block << TERMS_DICT_BLOCK_LZ4_SHIFT;
+        if hi < 0 {
+            return Ok(SeekStatus::NotFound);
+        }
+        loop {
+            match self.cursor.term.as_slice().cmp(key) {
+                std::cmp::Ordering::Equal => return Ok(SeekStatus::Found),
+                std::cmp::Ordering::Greater => return Ok(SeekStatus::NotFound),
+                std::cmp::Ordering::Less => {}
+            }
+            if self.cursor.next_term()?.is_none() {
+                return Ok(SeekStatus::End);
+            }
+            self.ord += 1;
+        }
+    }
+
+    /// `SortedDocValues.lookupTerm`: `key`'s ordinal, or `-insertionPoint - 1`.
+    // ARITH: `ord` and `size` are in `0..=i64::MAX`, so their negation minus
+    // one is in range.
+    #[allow(clippy::arithmetic_side_effects)]
+    pub fn lookup_term(&mut self, key: &[u8]) -> Result<i64> {
+        Ok(match self.seek_ceil(key)? {
+            SeekStatus::Found => self.ord,
+            SeekStatus::NotFound => -self.ord - 1,
+            SeekStatus::End => -self.size - 1,
+        })
+    }
+}
+
 /// Decodes every term in the dictionary, in ordinal order — [`TermsCursor`]
 /// collected. `data` is the whole `.dvd` file's bytes.
 ///
@@ -464,6 +735,7 @@ mod tests {
             max_block_length: 8192,
             terms_data_offset: 0,
             terms_data_length: 0,
+            index: None,
         };
         assert_eq!(
             decode_all_terms(&[], &entry).unwrap(),
@@ -485,6 +757,7 @@ mod tests {
             max_block_length: 8192,
             terms_data_offset: 0,
             terms_data_length: data.len() as i64,
+            index: None,
         };
         assert_eq!(
             decode_all_terms(&data, &entry).unwrap(),
@@ -516,6 +789,7 @@ mod tests {
             max_block_length: 8192,
             terms_data_offset: 0,
             terms_data_length: data.len() as i64,
+            index: None,
         };
         (data, entry)
     }
@@ -588,6 +862,7 @@ mod tests {
             max_block_length: 8192,
             terms_data_offset: 0,
             terms_data_length: data.len() as i64,
+            index: None,
         };
         let terms = decode_all_terms(&data, &entry).unwrap();
         assert_eq!(terms[0], previous);
@@ -618,6 +893,7 @@ mod tests {
             max_block_length: 8192,
             terms_data_offset: 0,
             terms_data_length: data.len() as i64,
+            index: None,
         };
         assert!(matches!(
             decode_all_terms(&data, &entry),
@@ -639,6 +915,7 @@ mod tests {
                 max_block_length: 8192,
                 terms_data_offset: 0,
                 terms_data_length: data.len() as i64,
+                index: None,
             };
             assert!(
                 matches!(
@@ -753,6 +1030,7 @@ mod tests {
                 max_block_length: 8192,
                 terms_data_offset: offset,
                 terms_data_length: length,
+                index: None,
             };
             assert!(
                 decode_all_terms(&data, &entry).is_err(),
@@ -782,6 +1060,7 @@ mod tests {
                 max_block_length: 8,
                 terms_data_offset: 0,
                 terms_data_length: data.len() as i64,
+                index: None,
             };
             let got = decode_all_terms(&data, &entry);
             assert!(
@@ -802,6 +1081,7 @@ mod tests {
                 max_block_length: 8192,
                 terms_data_offset: 0,
                 terms_data_length: data.len() as i64,
+                index: None,
             };
             let got = decode_all_terms(&data, &entry);
             assert!(got.is_err(), "block_len={block_len}: {got:?}");
@@ -832,6 +1112,7 @@ mod tests {
                     max_block_length: 8192,
                     terms_data_offset: 0,
                     terms_data_length: data.len() as i64,
+                    index: None,
                 };
                 let got = decode_all_terms(&data, &entry);
                 assert!(
