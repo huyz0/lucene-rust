@@ -334,7 +334,15 @@ fn term<'a>(
     let Some(field_terms) = ctx.fields.field(&t.field) else {
         return Ok(TermForm::Absent);
     };
-    let Some(seeked) = field_terms.seek_term_state(&t.term)? else {
+    // The statistics pass's seek, when it made one here (`TermStates`).
+    let seeked = match ctx
+        .global
+        .and_then(|g| g.term_state(&t.field, &t.term, ctx.fields))
+    {
+        Some(found) => found,
+        None => field_terms.seek_term_state(&t.term)?,
+    };
+    let Some(seeked) = seeked else {
         return Ok(TermForm::Absent);
     };
     let stats = seeked.stats;
