@@ -354,6 +354,8 @@ pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_aggregate<'l>
     out_counts: JLongArray<'l>,
     out_values: JDoubleArray<'l>,
     out_terms: JObjectArray<'l>,
+    count_limit: jlong,
+    out_total: JLongArray<'l>,
 ) -> jint {
     run(|| {
         let blob = env
@@ -362,7 +364,12 @@ pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_aggregate<'l>
         let aggs_blob = env
             .convert_byte_array(&aggs)
             .map_err(|e| jni_err(&env, "aggs", e))?;
-        let (states, terms) = jvm_reader::aggregate_blobs(handle as u64, &blob, &aggs_blob)?;
+        let (states, terms, total) =
+            jvm_reader::aggregate_counting_blobs(handle as u64, &blob, &aggs_blob, count_limit)?;
+        if let Some((total, lower_bound)) = total {
+            env.set_long_array_region(&out_total, 0, &[total, jlong::from(lower_bound)])
+                .map_err(|e| jni_err(&env, "outTotal", e))?;
+        }
         let counts_len = env
             .get_array_length(&out_counts)
             .map_err(|e| jni_err(&env, "outCounts", e))?;
