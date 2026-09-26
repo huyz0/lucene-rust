@@ -44,10 +44,12 @@ use lucene_util::fixed_bit_set::FixedBitSet;
 
 use crate::directory_reader::SegmentReader;
 use crate::exec::{self, Mode};
+use crate::field_norms::FieldNorms;
 use crate::multi_segment::OpenSegment;
 use crate::query::{BooleanQuery, Clause};
 use crate::terms_agg::{segment_counts, select, GlobalOrds, TermsResult, TermsScratch, TermsSpec};
 use crate::Result;
+use std::collections::HashMap;
 
 /// How a field's stored longs become the `double`s an aggregation reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -477,6 +479,39 @@ pub fn aggregate_sliced(
     globals: &[std::sync::Arc<GlobalOrds>],
     slices: &[Vec<usize>],
 ) -> Result<Vec<(Vec<MetricState>, Vec<TermsResult>)>> {
+    aggregate_sliced_min_score(
+        segments, readers, query, specs, terms, globals, slices, None,
+    )
+}
+
+/// OpenSearch's `min_score` in front of the aggregations: its
+/// `MinimumScoreCollector` wraps them too, so a document counts only when it
+/// scores at least `min` -- the query scored in `COMPLETE` mode with the
+/// segments' norms (per segment, parallel to the segments) and the reader's
+/// statistics.
+pub struct MinScore<'a, 'n> {
+    pub min: f32,
+    pub norms: &'a [Option<&'a HashMap<String, FieldNorms<'n>>>],
+}
+
+/// [`aggregate_sliced`] behind `min_score` (`None`: every match). The
+/// `MinimumScoreCollector` passes no weight on, so no aggregator answers a
+/// segment from its postings' statistics; the points bound of a `min`/`max`
+/// does not ask for one, and still answers.
+///
+/// # Errors
+/// What [`aggregate_sliced`] reports.
+#[allow(clippy::too_many_arguments)]
+pub fn aggregate_sliced_min_score(
+    segments: &[OpenSegment<'_>],
+    readers: &[SegmentReader],
+    query: &BooleanQuery,
+    specs: &[MetricSpec],
+    terms: &[TermsSpec],
+    globals: &[std::sync::Arc<GlobalOrds>],
+    slices: &[Vec<usize>],
+    min_score: Option<&MinScore<'_, '_>>,
+) -> Result<Vec<(Vec<MetricState>, Vec<TermsResult>)>> {
     if globals.len() != terms.len() {
         return Err(crate::Error::TermsAggType(format!(
             "{} terms aggregations with {} global ordinal maps",
@@ -504,7 +539,9 @@ pub fn aggregate_sliced(
             }
         })
         .collect();
-    let sliced = unique_states(segments, readers, query, &unique, terms, globals, slices)?;
+    let sliced = unique_states(
+        segments, readers, query, &unique, terms, globals, slices, min_score,
+    )?;
     Ok(sliced
         .into_iter()
         .map(|(per, t)| (slot.iter().map(|&i| per[i]).collect(), t))
@@ -512,6 +549,7 @@ pub fn aggregate_sliced(
 }
 
 /// [`aggregate_sliced`] over distinct specs.
+#[allow(clippy::too_many_arguments)]
 fn unique_states(
     segments: &[OpenSegment<'_>],
     readers: &[SegmentReader],
@@ -520,17 +558,24 @@ fn unique_states(
     terms: &[TermsSpec],
     globals: &[std::sync::Arc<GlobalOrds>],
     slices: &[Vec<usize>],
+    min_score: Option<&MinScore<'_, '_>>,
 ) -> Result<Vec<(Vec<MetricState>, Vec<TermsResult>)>> {
     let rewritten = crate::multi_segment::rewrite_points_ranges(query, segments);
     let query = rewritten.as_ref().unwrap_or(query);
     let clause = lone_clause(query);
+    // Scoring, for `min_score`: the reader's statistics, once.
+    let global = match min_score {
+        Some(_) => Some(crate::multi_segment::global_boolean_stats(segments, query)?),
+        None => None,
+    };
+    let scoring = min_score.zip(global.as_ref());
     // Slices are independent, as a concurrent search's are: they run
     // concurrently ([`crate::slices::run_slices`]) -- unless every
     // aggregation is a points bound (one read per segment), where handing
     // slices to other threads costs more than it saves.
     let one = |slice: &[usize]| {
         slice_states(
-            segments, readers, query, &clause, specs, terms, globals, slice,
+            segments, readers, query, &clause, specs, terms, globals, slice, scoring,
         )
     };
     let points_only = terms.is_empty() && specs.iter().all(|s| s.source != Source::DocValues);
@@ -551,6 +596,7 @@ fn slice_states(
     terms: &[TermsSpec],
     globals: &[std::sync::Arc<GlobalOrds>],
     slice: &[usize],
+    scoring: Option<(&MinScore<'_, '_>, &crate::GlobalStats)>,
 ) -> Result<(Vec<MetricState>, Vec<TermsResult>)> {
     let mut term_counts: Vec<Vec<u64>> = globals.iter().map(|g| vec![0; g.value_count()]).collect();
     let mut terms_scratch = TermsScratch::default();
@@ -605,7 +651,18 @@ fn slice_states(
         // The matches: every live document for a match-all (read straight
         // down each column below), else the scorer's, collected once.
         let live: Option<&FixedBitSet> = seg.live_docs;
-        let Some(docs) = segment_matches(&ctx, query, &clause, live, &mut docs_buf)? else {
+        let matched = match scoring {
+            Some((m, global)) => {
+                let scored = exec::LeafContext {
+                    norms: m.norms.get(i).copied().flatten(),
+                    global: Some(global),
+                    ..ctx
+                };
+                segment_matches_scoring(&scored, query, live, m.min, &mut docs_buf)?
+            }
+            None => segment_matches(&ctx, query, &clause, live, &mut docs_buf)?,
+        };
+        let Some(docs) = matched else {
             continue;
         };
         let read = column_read(docs, live, reader.max_doc, &mut words);
@@ -726,6 +783,36 @@ pub(crate) fn segment_matches<'b>(
     // The readers downstream walk forward and count each document once; a
     // bulk scorer hands documents out strictly ascending, and this keeps that
     // a checked fact rather than an assumption.
+    if !buf.windows(2).all(|w| w[0] < w[1]) {
+        buf.sort_unstable();
+        buf.dedup();
+    }
+    Ok(Some(Some(&buf[..])))
+}
+
+/// [`segment_matches`] behind `min_score`: the matches scoring at least
+/// `min`, the query scored in `COMPLETE` mode (never a match-all read straight
+/// down the columns).
+fn segment_matches_scoring<'b>(
+    ctx: &exec::LeafContext<'_>,
+    query: &BooleanQuery,
+    live: Option<&FixedBitSet>,
+    min: f32,
+    buf: &'b mut Vec<i32>,
+) -> Result<Option<Option<&'b [i32]>>> {
+    struct Docs<'v>(&'v mut Vec<i32>);
+    impl crate::collector::ScoringCollector for Docs<'_> {
+        fn collect(&mut self, doc_id: i32, _score: f32) {
+            self.0.push(doc_id);
+        }
+    }
+    let Some(mut bulk) = exec::bulk_boolean(ctx, query, 1.0, Mode::Complete)? else {
+        return Ok(None);
+    };
+    buf.clear();
+    let mut docs = Docs(buf);
+    let mut passing = crate::collector::MinScoreCollector::new(&mut docs, min);
+    exec::score_segment(&mut bulk, Mode::Complete, live, &mut passing)?;
     if !buf.windows(2).all(|w| w[0] < w[1]) {
         buf.sort_unstable();
         buf.dedup();

@@ -277,7 +277,18 @@ def matrix():
     add("post_filter bool query paged", {"from": 5, "size": 7, "query": {"bool": {"must": [{"match": {"body": "alpha"}}], "should": [{"match": {"title": "beta"}}]}}, "post_filter": {"range": {"sp": {"gte": 0}}}}, "native")
     add("post_filter no total", {"track_total_hits": False, "query": {"match": {"body": "beta delta"}}, "post_filter": {"term": {"tag": "gamma"}}}, "native")
     add("post_filter nothing", {"query": {"match": {"body": "alpha"}}, "post_filter": {"term": {"tag": "no-such-tag"}}}, "native")
-    add("min_score", {"query": {"match": {"body": "alpha"}}, "min_score": 0.3}, "min_score")
+    # min_score (R7): by score natively, OpenSearch's MinimumScoreCollector around every collector
+    # (aggregations too); behind a sort it stays on Lucene.
+    add("min_score", {"query": {"match": {"body": "alpha"}}, "min_score": 0.3}, "native")
+    add("min_score disjunction", {"query": {"match": {"body": "alpha beta gamma"}}, "min_score": 1.2}, "native")
+    add("min_score + aggs", {"query": {"match": {"body": "beta delta"}}, "min_score": 0.8, "aggs": {"t": {"terms": {"field": "tag"}}, "s": {"stats": {"field": "qty"}}}}, "native")
+    add("min_score size 0", {"size": 0, "query": {"match": {"body": "gamma"}}, "min_score": 0.5}, "native")
+    add("min_score size 0 aggs", {"size": 0, "query": {"match": {"body": "alpha omega"}}, "min_score": 0.9, "aggs": {"m": {"terms": {"field": "mtag", "size": 5}}, "p": {"avg": {"field": "price"}}}}, "native")
+    add("min_score + post_filter", {"query": {"match": {"body": "alpha beta"}}, "min_score": 0.6, "post_filter": {"term": {"tag": "gamma"}}}, "native")
+    add("min_score nothing passes", {"query": {"match": {"body": "alpha"}}, "min_score": 1000}, "native")
+    add("min_score everything passes", {"query": {"match_all": {}}, "min_score": 0}, "native")
+    add("min_score no total", {"track_total_hits": False, "query": {"match": {"body": "delta"}}, "min_score": 0.4}, "native")
+    add("min_score sort", {"query": {"match": {"body": "alpha"}}, "min_score": 0.3, "sort": [{"n": "desc"}]}, "min_score")
     # terminate_after (R7): native where Lucene collects document by document (a scored search
     # over a query whose bulk scorer hands out no ranges, anything under a post_filter) and for
     # a size-0 count over a term or match-all; Lucene's otherwise.

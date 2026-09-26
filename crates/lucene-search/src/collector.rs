@@ -272,6 +272,46 @@ impl<C: ScoringCollector + ?Sized> ScoringCollector for LeafCollector<'_, C> {
     }
 }
 
+/// OpenSearch's `MinimumScoreCollector` (`min_score`): only documents scoring
+/// at least `min` reach `inner` -- counted, kept, aggregated. It needs scores:
+/// `TOP_SCORES` when `inner` prunes by score (the threshold `inner` publishes
+/// still holds, since a document below `min` never enters it), `COMPLETE`
+/// otherwise.
+pub struct MinScoreCollector<'c, C: ?Sized> {
+    inner: &'c mut C,
+    min: f32,
+}
+
+impl<'c, C: ScoringCollector + ?Sized> MinScoreCollector<'c, C> {
+    pub fn new(inner: &'c mut C, min: f32) -> Self {
+        Self { inner, min }
+    }
+}
+
+impl<C: ScoringCollector + ?Sized> ScoringCollector for MinScoreCollector<'_, C> {
+    #[inline]
+    fn collect(&mut self, doc_id: i32, score: f32) {
+        // `scorer.score() >= minimumScore`: a NaN score never passes.
+        if score >= self.min {
+            self.inner.collect(doc_id, score);
+        }
+    }
+
+    #[inline]
+    fn min_competitive_score(&self) -> Option<f32> {
+        self.inner.min_competitive_score()
+    }
+
+    #[inline]
+    fn score_mode(&self) -> ScoreMode {
+        if self.inner.score_mode() == ScoreMode::TopScores {
+            ScoreMode::TopScores
+        } else {
+            ScoreMode::Complete
+        }
+    }
+}
+
 /// Collects every matching doc ID into a `Vec<i32>`, ascending — the
 /// `TopDocs`-shaped "give me the actual hits" collector.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]

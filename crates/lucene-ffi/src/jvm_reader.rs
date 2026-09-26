@@ -87,8 +87,9 @@ use std::sync::Arc;
 /// its keyword keys (terms in, terms out); 13, its options byte and max
 /// score (`track_scores`); 14, metric aggregations
 /// ([`ffi_jvm_reader_aggregate`], read path R5) and, in the same call, the
-/// `terms` aggregation.
-pub const JVM_ABI_VERSION: u32 = 15;
+/// `terms` aggregation; 15, `terminate_after` and the concurrent count
+/// replay (read path R7); 16, `min_score` in front of a query blob.
+pub const JVM_ABI_VERSION: u32 = 16;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -96,6 +97,9 @@ pub const QUERY_TERM: u8 = 0;
 pub const QUERY_BOOLEAN: u8 = 1;
 /// Blob tag for a query tree: one recursive node, see [`decode_node`].
 pub const QUERY_TREE: u8 = 2;
+/// Blob tag for OpenSearch's `min_score` in front of a query: the minimum
+/// (`f32`), then the query's own blob ([`decode_request`]).
+pub const QUERY_MIN_SCORE: u8 = 3;
 
 /// Query-tree node kinds ([`QUERY_TREE`]).
 const NODE_TERM: u8 = 0;
@@ -115,6 +119,22 @@ const NODE_POINT_RANGE: u8 = 11;
 #[no_mangle]
 pub extern "C" fn ffi_jvm_abi_version() -> u32 {
     JVM_ABI_VERSION
+}
+
+/// A request's query blob: the query, and the `min_score` in front of it
+/// ([`QUERY_MIN_SCORE`]) when there is one.
+pub(crate) fn decode_request(blob: &[u8]) -> Result<(JvmQuery, Option<f32>), FfiStatus> {
+    if blob.first() != Some(&QUERY_MIN_SCORE) {
+        return Ok((decode_query(blob)?, None));
+    }
+    let mut c = Cursor { buf: blob, pos: 1 };
+    let min = f32::from_bits(u32::from_le_bytes(c.i32()?.to_le_bytes()));
+    let rest = blob.get(c.pos..).ok_or(FfiStatus::InvalidArgument)?;
+    if rest.first() == Some(&QUERY_MIN_SCORE) {
+        set_last_error("query blob: min_score twice");
+        return Err(FfiStatus::InvalidArgument);
+    }
+    Ok((decode_query(rest)?, Some(min)))
 }
 
 /// One decoded query blob.
@@ -504,14 +524,17 @@ pub unsafe extern "C" fn ffi_jvm_reader_search(
         }
         // SAFETY: caller contract.
         let blob = unsafe { bytes_from_raw(query, query_len)? };
-        let query = decode_query(blob)?;
+        let (query, min_score) = decode_request(blob)?;
         // No lock is held while searching: a slow query must not block a
         // refresh's open or close, and through it every other search.
         let h = lookup(
             handle,
             "ffi_jvm_reader_search: unknown or already-closed handle",
         )?;
-        let (hits, total, lower_bound) = search(&h, &query, top_n, count_limit)?;
+        let (hits, total, lower_bound) = match min_score {
+            Some(min) => search_min_score(&h, &query, top_n, count_limit, min)?,
+            None => search(&h, &query, top_n, count_limit)?,
+        };
         // SAFETY: caller contract; `hits.len() <= top_n <= buf_len`.
         unsafe {
             for (i, hit) in hits.iter().enumerate() {
@@ -857,7 +880,11 @@ pub(crate) fn search_sorted_blobs(
     top_n: usize,
     count_limit: i64,
 ) -> Result<SortedOut, FfiStatus> {
-    let query = decode_query(query_blob)?;
+    let (query, min_score) = decode_request(query_blob)?;
+    if min_score.is_some() {
+        set_last_error("ffi_jvm_reader_search_sorted: min_score is not run behind a sort");
+        return Err(FfiStatus::InvalidArgument);
+    }
     let (keys, after, track, slices, terminate_after) = decode_sort(sort_blob)?;
     let h = lookup(
         handle,
@@ -1100,7 +1127,7 @@ pub(crate) fn aggregate_blobs(
     query_blob: &[u8],
     aggs_blob: &[u8],
 ) -> Result<(Vec<MetricState>, Vec<u8>), FfiStatus> {
-    let query = decode_query(query_blob)?;
+    let (query, min_score) = decode_request(query_blob)?;
     let (specs, terms, slices) = decode_metrics(aggs_blob)?;
     let h = lookup(
         handle,
@@ -1144,8 +1171,28 @@ pub(crate) fn aggregate_blobs(
         .map(|t| h.reader.global_ords(&t.field))
         .collect::<Result<Vec<_>, _>>()
         .map_err(map_search_error)?;
-    let sliced = lucene_search::aggs::aggregate_sliced(
-        &segments, readers, &q, &specs, &terms, &globals, &slices,
+    // min_score scores the query: its fields' norms.
+    let fields: Vec<String> = if min_score.is_some() {
+        crate::query::clause_field_names(&q)
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let owned = h.reader.field_norms_by_field(&fields);
+    let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
+        owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
+    let min = min_score.map(|min| lucene_search::aggs::MinScore { min, norms: &norms });
+    let sliced = lucene_search::aggs::aggregate_sliced_min_score(
+        &segments,
+        readers,
+        &q,
+        &specs,
+        &terms,
+        &globals,
+        &slices,
+        min.as_ref(),
     )
     .map_err(map_search_error)?;
     let mut states = Vec::new();
@@ -1198,7 +1245,7 @@ pub(crate) fn count_terminates_blobs(
     query_blob: &[u8],
     spec_blob: &[u8],
 ) -> Result<bool, FfiStatus> {
-    let query = decode_query(query_blob)?;
+    let (query, min_score) = decode_request(query_blob)?;
     let (n, iterate, slices) = decode_count_spec(spec_blob)?;
     let h = lookup(
         handle,
@@ -1235,7 +1282,19 @@ pub(crate) fn count_terminates_blobs(
     } else {
         slices
     };
-    lucene_search::terminate::count_terminates(&segments, &q, &slices, &iterate, n)
+    let fields: Vec<String> = if min_score.is_some() {
+        crate::query::clause_field_names(&q)
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let owned = h.reader.field_norms_by_field(&fields);
+    let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
+        owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
+    let min = min_score.map(|min| lucene_search::aggs::MinScore { min, norms: &norms });
+    lucene_search::terminate::count_terminates(&segments, &q, &slices, &iterate, n, min.as_ref())
         .map_err(map_search_error)
 }
 
@@ -1542,6 +1601,80 @@ pub(crate) fn search(
             (Vec::new(), total, lower_bound)
         }
     })
+}
+
+/// [`search`] behind OpenSearch's `min_score` (its `MinimumScoreCollector`
+/// around the top-docs collector): only documents scoring at least `min` are
+/// kept and counted; `size: 0` counts them.
+pub(crate) fn search_min_score(
+    h: &JvmReaderHandle,
+    query: &JvmQuery,
+    top_n: usize,
+    count_limit: i64,
+    min: f32,
+) -> Result<(Vec<ScoreDoc>, i64, bool), FfiStatus> {
+    let mut opened = h.reader.open_segments().map_err(|e| {
+        set_last_error(format!("opening segment postings: {e}"));
+        FfiStatus::Decode
+    })?;
+    if query_uses_points(query) {
+        opened.open_points().map_err(|e| {
+            set_last_error(format!("opening segment points: {e}"));
+            FfiStatus::Decode
+        })?;
+    }
+    let segments: Vec<OpenSegment<'_>> = opened
+        .as_open_segments()
+        .into_iter()
+        .zip(&h.live_docs)
+        .map(|(mut s, live)| {
+            s.live_docs = live.as_ref();
+            s
+        })
+        .collect();
+    let q = boolean_of(query);
+    let fields: Vec<String> = crate::query::clause_field_names(&q)
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    let owned = h.reader.field_norms_by_field(&fields);
+    let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
+        owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
+    let threshold = u64::try_from(count_limit).unwrap_or(0);
+    if top_n == 0 {
+        if count_limit <= 0 {
+            return Ok((Vec::new(), -1, false));
+        }
+        let (count, lower) = lucene_search::multi_segment::count_boolean_query_min_score(
+            &segments, &q, &norms, min, threshold,
+        )
+        .map_err(map_search_error)?;
+        return Ok((Vec::new(), i64::try_from(count).unwrap_or(i64::MAX), lower));
+    }
+    let (hits, total) = lucene_search::multi_segment::search_boolean_query_multi_segment_min_score(
+        &segments, &q, &norms, top_n, threshold, min,
+    )
+    .map_err(map_search_error)?;
+    if count_limit <= 0 {
+        return Ok((hits, -1, false));
+    }
+    Ok((
+        hits,
+        i64::try_from(total.value).unwrap_or(i64::MAX),
+        total.relation == TotalHitsRelation::GreaterThanOrEqualTo,
+    ))
+}
+
+/// A decoded query as the boolean the search functions take (a lone term as
+/// its one `MUST` clause).
+fn boolean_of(query: &JvmQuery) -> BooleanQuery {
+    match query {
+        JvmQuery::Term(t) => BooleanQuery {
+            must: vec![Clause::Term(t.clone())],
+            ..Default::default()
+        },
+        JvmQuery::Boolean(b) => b.clone(),
+    }
 }
 
 /// The total-hits count behind a `size: 0` [`ffi_jvm_reader_search`] -- one
@@ -2285,6 +2418,60 @@ mod tests {
             call(&count_spec(1, &iterate_all, &all), std::ptr::null_mut()),
             FfiStatus::NullPointer.code()
         );
+    }
+
+    #[test]
+    fn min_score_keeps_the_documents_scoring_at_least_it() {
+        let h = open();
+        let fox = term_blob("body", "fox");
+        let (scored, total) = run(h, &fox, 8, true).unwrap();
+        let min = scored[scored.len() / 2].1;
+        let mut blob = vec![QUERY_MIN_SCORE];
+        blob.extend_from_slice(&min.to_bits().to_le_bytes());
+        blob.extend_from_slice(&fox);
+        let want: Vec<(i32, f32)> = scored.iter().copied().filter(|&(_, s)| s >= min).collect();
+        let (hits, got_total) = run(h, &blob, 8, true).unwrap();
+        // The documents at or above the minimum lead, in the same order (ties at the
+        // minimum past the top 8 may follow).
+        assert_eq!(hits[..want.len()], want[..]);
+        assert!(hits.iter().all(|&(_, s)| s >= min));
+        assert!(got_total <= total);
+        // size: 0 counts the same documents (fox matches at most 8 here).
+        if total <= 8 {
+            let (none, count) = run(h, &blob, 0, true).unwrap();
+            assert!(none.is_empty());
+            assert_eq!(count, want.len() as i64);
+        }
+        // A sorted search refuses it; the aggregations and the count replay take it.
+        assert_eq!(
+            search_sorted_blobs(
+                h,
+                &blob,
+                &sort_blob(&[(SORT_DOC, 0, "", 0)], None),
+                4,
+                i64::MAX
+            )
+            .err(),
+            Some(FfiStatus::InvalidArgument)
+        );
+        // Malformed: a truncated minimum, the tag twice.
+        assert_eq!(
+            decode_request(&[QUERY_MIN_SCORE, 0, 0]).err(),
+            Some(FfiStatus::InvalidArgument)
+        );
+        let mut twice = vec![QUERY_MIN_SCORE, 0, 0, 0, 0];
+        twice.extend_from_slice(&blob);
+        assert_eq!(
+            decode_request(&twice).err(),
+            Some(FfiStatus::InvalidArgument)
+        );
+        // Beyond every score: nothing.
+        let mut high = vec![QUERY_MIN_SCORE];
+        high.extend_from_slice(&1.0e9f32.to_bits().to_le_bytes());
+        high.extend_from_slice(&fox);
+        let (none, count) = run(h, &high, 8, true).unwrap();
+        assert!(none.is_empty());
+        assert_eq!(count, 0);
     }
 
     #[test]

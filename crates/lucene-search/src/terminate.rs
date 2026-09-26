@@ -299,6 +299,8 @@ pub fn search_sorted_until(
 /// reaches the terminating collector -- or iterates its live matches, and the
 /// `n + 1`th stops it. `iterate[i]` says which: `true` where `Weight.count`
 /// gave `-1` (the caller asks Lucene's own weight, query cache included).
+/// Behind `min_score` only the documents scoring at least its minimum reach
+/// the collectors (its `MinimumScoreCollector` wraps them all).
 ///
 /// # Errors
 /// A postings or points read failure, or a slice naming a segment not in
@@ -309,9 +311,19 @@ pub fn count_terminates(
     slices: &[Vec<usize>],
     iterate: &[bool],
     n: u64,
+    min_score: Option<&crate::aggs::MinScore<'_, '_>>,
 ) -> Result<bool> {
     let rewritten = crate::multi_segment::rewrite_points_ranges(query, segments);
     let query = rewritten.as_ref().unwrap_or(query);
+    let global = match min_score {
+        Some(_) => Some(crate::multi_segment::global_boolean_stats(segments, query)?),
+        None => None,
+    };
+    let mode = if min_score.is_some() {
+        Mode::Complete
+    } else {
+        Mode::NoScores
+    };
     for slice in slices {
         let mut leaves = slice.clone();
         leaves.sort_unstable_by_key(|&i| segments.get(i).map_or(i32::MAX, |s| s.doc_base));
@@ -336,19 +348,21 @@ pub fn count_terminates(
                 pay_in: seg.pay_in,
                 live_docs: seg.live_docs,
                 points: seg.points,
-                norms: None,
-                global: None,
+                norms: min_score.and_then(|m| m.norms.get(i).copied().flatten()),
+                global: global.as_ref(),
                 max_doc: seg.max_doc,
                 cache: seg.cache,
             };
-            let Some(mut scorer) =
-                exec::build::build_boolean(&ctx, query, 1.0, Mode::NoScores, true)?
-            else {
+            let Some(mut scorer) = exec::build::build_boolean(&ctx, query, 1.0, mode, true)? else {
                 continue;
             };
             let mut doc = exec::exact_next(scorer.as_mut())?;
             while doc != NO_MORE_DOCS {
-                if seg.live_docs.is_none_or(|l| l.get_doc(doc)) {
+                let passes = match min_score {
+                    Some(m) => scorer.score()? >= m.min,
+                    None => true,
+                };
+                if passes && seg.live_docs.is_none_or(|l| l.get_doc(doc)) {
                     if collected == n {
                         return Ok(true);
                     }

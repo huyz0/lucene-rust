@@ -61,8 +61,8 @@ import java.util.List;
  * it), so an unsupported request runs precisely as it would without this plugin.
  *
  * <p>A request runs native when it is a top-hits search -- by score, or by a sort {@link
- * SortEncoder} can encode, with or without {@code search_after}, {@code post_filter}, {@code timeout} and
- * scroll, and {@code terminate_after} -- with no min score, collapse, rescore or profile, no aggregation beyond the
+ * SortEncoder} can encode, with or without {@code search_after}, {@code post_filter}, {@code timeout},
+ * scroll, {@code terminate_after} and (by score) {@code min_score} -- with no collapse, rescore or profile, no aggregation beyond the
  * metrics {@link NativeAggregations} plans, and a query {@link QueryEncoder} can encode over fields
  * using the default {@link BM25Similarity}. What it produces is what OpenSearch's own {@code
  * SimpleTopDocsCollectorContext} would: the top {@code from + size} hits (with their sort values),
@@ -154,6 +154,12 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             }
             if (reason == null && fast == false && "all".equals(ctx.indexShard().indexSettings().getValue(NATIVE_SHAPES)) == false) {
                 reason = "slower_shape";
+            }
+            // min_score: OpenSearch's MinimumScoreCollector sits outside every other collector,
+            // aggregations included, so every blob carries it.
+            if (reason == null && ctx.minimumScore() != null) {
+                blob = QueryEncoder.withMinScore(blob, ctx.minimumScore());
+                hitsBlob = QueryEncoder.withMinScore(hitsBlob, ctx.minimumScore());
             }
         }
         // OpenSearch's approximate match_all/range (ApproximateScoreQuery resolved to its
@@ -261,14 +267,20 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             && (nativeAggs == false
                 || ctx.queryCollectorManagers().size() != 1
                 || ctx.queryCollectorManagers().containsKey(NonGlobalAggCollectorManager.class) == false)) return "aggregations";
-        if (ctx.minimumScore() != null) return "min_score";
+        boolean minScore = ctx.minimumScore() != null;
+        // min_score natively by score only: behind a sort, a scroll's later pages or
+        // terminate_after it stays on Lucene.
+        if (minScore
+            && (ctx.sort() != null || ctx.scrollContext() != null || ctx.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER)) {
+            return "min_score";
+        }
         boolean terminating = ctx.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER;
         if (terminating && terminateAfterIneligible(ctx)) return "terminate_after";
-        // What is left in "collectors": the aggregations' context, the post_filter's and
-        // terminate_after's (the filter collectors, once min_score is out).
+        // What is left in "collectors": the aggregations' context and the filter collectors
+        // (post_filter, terminate_after, min_score).
         boolean postFilter = ctx.parsedPostFilter() != null;
-        if (collectors.size() > (nativeAggs ? 1 : 0) + (postFilter ? 1 : 0) + (terminating ? 1 : 0)
-            || hasFilterCollector != (postFilter || terminating)) return "collectors";
+        if (collectors.size() > (nativeAggs ? 1 : 0) + (postFilter ? 1 : 0) + (terminating ? 1 : 0) + (minScore ? 1 : 0)
+            || hasFilterCollector != (postFilter || terminating || minScore)) return "collectors";
         // A sort runs native when SortEncoder can encode it (searchWith); search_after only
         // with one. track_scores runs native too: the score leading the sort gives the max
         // score (the first hit), and otherwise the native search tracks it over every match.
@@ -473,7 +485,10 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // Lucene never looks at.
         int shortcut = -1;
         // TopDocsCollectorContext: "hasFilterCollector ? -1 : shortcutTotalHitCount(...)".
-        if (trackUpTo != SearchContext.TRACK_TOTAL_HITS_DISABLED && ctx.parsedPostFilter() == null && terminating == false) {
+        if (trackUpTo != SearchContext.TRACK_TOTAL_HITS_DISABLED
+            && ctx.parsedPostFilter() == null
+            && terminating == false
+            && ctx.minimumScore() == null) {
             try {
                 shortcut = shortcutTotalHitCount(ctx.searcher().getIndexReader(), ctx.query());
             } catch (IOException e) {
@@ -612,11 +627,12 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         NativeAggregations.writeInt(spec, trackUpTo);
         NativeAggregations.writeInt(spec, leaves.size());
         try {
-            Weight weight = ctx.parsedPostFilter() != null
+            Weight weight = ctx.parsedPostFilter() != null || ctx.minimumScore() != null
                 ? null
                 : ctx.searcher().createWeight(ctx.query(), org.apache.lucene.search.ScoreMode.COMPLETE_NO_SCORES, 1f);
             for (LeafReaderContext leaf : leaves) {
-                // Under a post_filter the count collector gets no weight: it iterates everywhere.
+                // Under a post_filter or min_score the count collector gets no weight (neither
+                // FilteredCollector nor MinimumScoreCollector passes it on): it iterates everywhere.
                 spec.write(weight == null || weight.count(leaf) == -1 ? 1 : 0);
             }
         } catch (IOException e) {
