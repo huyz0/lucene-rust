@@ -1163,6 +1163,8 @@ pub struct NumericReader<'a> {
     block: Option<VaryingBlock>,
     /// A dense single-width field, resolved once -- see [`FastDense`].
     fast: Option<FastDense<'a>>,
+    /// A sparse single-width field's values, by ordinal.
+    sparse_fast: Option<FastDense<'a>>,
 }
 
 /// A dense numeric field with one bit width for every value, resolved once:
@@ -1190,7 +1192,17 @@ enum FastDense<'a> {
 
 impl<'a> FastDense<'a> {
     fn new(data: &'a [u8], entry: &'a NumericEntry) -> Option<Self> {
-        if entry.is_empty_field() || !entry.is_dense() || entry.block_shift.is_some() {
+        if !entry.is_dense() {
+            return None;
+        }
+        Self::values(data, entry)
+    }
+
+    /// The same reader over the values array alone, indexed by value
+    /// ordinal: what a sparse field's reads use once its `IndexedDISI` has
+    /// turned the document into an ordinal.
+    fn values(data: &'a [u8], entry: &'a NumericEntry) -> Option<Self> {
+        if entry.is_empty_field() || entry.block_shift.is_some() {
             return None;
         }
         if entry.bits_per_value == 0 {
@@ -1333,6 +1345,11 @@ impl<'a> NumericReader<'a> {
             docs,
             block: None,
             fast: FastDense::new(data, entry),
+            sparse_fast: if entry.is_dense() {
+                None
+            } else {
+                FastDense::values(data, entry)
+            },
         }
     }
 
@@ -1362,6 +1379,19 @@ impl<'a> NumericReader<'a> {
         if let Some(v) = self.fast.as_ref().and_then(|f| f.get(doc)) {
             return Ok(Some(v));
         }
+        // A sparse single-width field read forward inside the current
+        // `IndexedDISI` block: nothing to decode but the ordinal's value.
+        if let (Some(cursor), Some(fast)) = (self.docs.as_mut(), self.sparse_fast.as_ref()) {
+            match cursor.advance_exact_in_block(doc) {
+                Some(None) => return Ok(None),
+                Some(Some(ordinal)) => {
+                    if let Some(v) = i32::try_from(ordinal).ok().and_then(|o| fast.get(o)) {
+                        return Ok(Some(v));
+                    }
+                }
+                None => {}
+            }
+        }
         self.value_slow(doc)
     }
 
@@ -1388,7 +1418,13 @@ impl<'a> NumericReader<'a> {
                 cursor.reset();
             }
             match cursor.advance_exact(doc)? {
-                Some(ordinal) => ordinal as i64,
+                Some(ordinal) => {
+                    let fast = self.sparse_fast.as_ref();
+                    if let Some(v) = fast.and_then(|f| f.get(i32::try_from(ordinal).ok()?)) {
+                        return Ok(Some(v));
+                    }
+                    ordinal as i64
+                }
                 None => return Ok(None),
             }
         };

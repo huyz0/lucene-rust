@@ -1447,16 +1447,24 @@ impl<'a> LeafStr<'a> {
         })
     }
 
-    /// [`Self::compare_bottom`] when a dense column answers directly, or
-    /// `None` for "ask it".
+    /// [`Self::compare_bottom`] for the fast reject: a dense column's
+    /// ordinal read inline, any other through [`Self::ord`]; `None` for an
+    /// error, left for `collect` to raise.
     //
     // SENTINEL: none -- `-1` is a comparison result, in the domain.
     #[inline]
-    fn quick_compare_bottom(&self, doc: i32) -> Option<i32> {
-        let OrdColumn::Single(r) = &self.column else {
-            return None;
+    fn quick_compare_bottom(&mut self, doc: i32) -> Option<i32> {
+        let dense = match &self.column {
+            OrdColumn::Single(r) => r.dense_value(doc),
+            _ => None,
         };
-        let o = i32::try_from(r.dense_value(doc)?).ok()?;
+        let o = match dense {
+            Some(v) => i32::try_from(v).ok()?,
+            None => match self.ord(doc).ok()? {
+                -1 => self.missing_ord,
+                o => o,
+            },
+        };
         Some(if self.bottom_same_reader {
             self.bottom_ord.wrapping_sub(o).signum()
         } else if self.bottom_ord >= o {
@@ -2133,18 +2141,20 @@ impl<'a> Leaf<'a> {
         }
     }
 
-    /// The whole of [`Self::collect`] for a document the leading key alone
-    /// rules out, when nothing else would happen on the way: the queue is
-    /// full, there is no search-after page, the count no longer changes
-    /// state, and no score bound is kept. `true` when `doc` was counted and
-    /// dropped; `false` means [`Self::collect`] must look at it.
+    /// The whole of [`Self::collect`] for a document the keys rule out when
+    /// nothing else would happen on the way: the queue is full (the paging
+    /// collector also checks the bottom first), counting the hit changes no
+    /// state (no switch to a lower bound), and no score bound is kept.
+    /// `true` when `doc` was counted and dropped; `false` means
+    /// [`Self::collect`] must look at it.
     #[inline]
     fn quick_reject(&mut self, tf: &mut TopField, doc: i32, scorer: &mut Sc<'_>) -> bool {
         if !tf.queue_full
-            || tf.after.is_some()
             || tf.can_set_min_score
             || tf.doc_first
-            || !(tf.exhaustive || tf.relation == TotalHitsRelation::GreaterThanOrEqualTo)
+            || !(tf.exhaustive
+                || tf.relation == TotalHitsRelation::GreaterThanOrEqualTo
+                || tf.total_hits < tf.threshold)
         {
             return false;
         }

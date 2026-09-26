@@ -275,6 +275,17 @@ sparser of the scorer and the competitive iterator leading the leapfrog. The
 last three also lifted the numeric rows: after them q72-q81 measure 1.12-25.1x
 merged and 1.14-14.7x segmented.
 
+A copy of the REST node's own shard (100K documents, two segments, OpenSearch's
+mappings) found a shape neither corpus has: a sparse `long` sorted with
+`missing: _first` behind a tie-break, 0.46x in process. `NumericComparator`
+skips nothing while the missing value can still compete, so both engines
+compared every match. Here the documents that can compete are the ones without
+a value plus the ones whose value is in range, and those are now the
+competitive iterator (a bit set of the documents without a value, built once
+per segment straight from the `IndexedDISI` words, joined with the points in
+range); with single-valued `SORTED_NUMERIC` columns read as the numeric column
+they are (`DocValues.singleton`), the shape measures 1.15x.
+
 Falls back: `avg`/`sum`/`median` modes and nested sorts (OpenSearch's custom
 comparators), `track_scores` unless the score leads, and index-sorted shards.
 
