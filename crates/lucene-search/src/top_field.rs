@@ -2233,11 +2233,16 @@ pub fn search_sorted(
         // documents are iterated without scores (the cheaper tree, and the
         // one the query cache serves), and a scoring tree of the same query
         // is advanced only to the documents whose score a comparison reads.
-        let Some(child) = exec::build::child(&ctx, &clause, 1.0, Mode::NoScores, true)? else {
+        // A lone term is the exception: its scoring cursor iterates as fast
+        // as a bare one, and scores where it stands, as Lucene's one scorer
+        // does -- no second walk over the same postings.
+        let self_scores = tf.needs_scores && matches!(clause, Clause::Term(_));
+        let iter_mode = if self_scores { mode } else { Mode::NoScores };
+        let Some(child) = exec::build::child(&ctx, &clause, 1.0, iter_mode, true)? else {
             continue;
         };
-        let mut scorer = child.into_scorer(Mode::NoScores);
-        let mut scores = if tf.needs_scores {
+        let mut scorer = child.into_scorer(iter_mode);
+        let mut scores = if tf.needs_scores && !self_scores {
             // The same query, so the same segment answer: a tree here and
             // none there would be a bug, reported rather than scored as 0.
             let Some(c) = exec::build::child(&ctx, &clause, 1.0, mode, true)? else {
@@ -2254,6 +2259,7 @@ pub fn search_sorted(
         score_competitive(
             &mut *scorer,
             scores.as_mut(),
+            self_scores,
             &mut tf,
             &mut leaf,
             seg.live_docs,
@@ -2268,6 +2274,7 @@ pub fn search_sorted(
 fn score_competitive(
     scorer: &mut dyn Scorer,
     mut scores: Option<&mut ScoreAt<'_>>,
+    self_scores: bool,
     tf: &mut TopField,
     leaf: &mut Leaf<'_>,
     live_docs: Option<&FixedBitSet>,
@@ -2278,7 +2285,13 @@ fn score_competitive(
     // narrowed competitive set is walked on its own and each of its documents
     // tested -- one move per candidate instead of two. Scores, when a key
     // reads them, come from the separate scoring tree either way.
-    let mut by_membership = !two_phase && scorer.contains(0).is_some();
+    // (Scores read off the iterating scorer need it on each collected
+    // document: leapfrog only.)
+    let mut by_membership = !two_phase && !self_scores && scorer.contains(0).is_some();
+    // Runs are asked for until this many documents in a row start none: an
+    // iterator without runs then stops paying for the question.
+    const RUN_PATIENCE: u32 = 64;
+    let mut run_misses = 0u32;
     let mut doc = match leaf.competitive() {
         Some(it) if it.doc_id() > 0 => scorer.advance(it.doc_id())?,
         _ => scorer.next_doc()?,
@@ -2334,12 +2347,16 @@ fn score_competitive(
         // time, without moving the scorer, while nothing narrows the
         // documents to visit.
         // (Asked only then: a postings list computes its run end per call.)
-        let run_end = if !two_phase && leaf.visits_all() {
-            scorer.doc_id_run_end()
+        let run_end =
+            if !two_phase && !self_scores && run_misses < RUN_PATIENCE && leaf.visits_all() {
+                scorer.doc_id_run_end()
+            } else {
+                doc
+            };
+        if run_end <= doc.saturating_add(1) {
+            run_misses = run_misses.saturating_add(1);
         } else {
-            doc
-        };
-        if run_end > doc.saturating_add(1) {
+            run_misses = 0;
             let mut d = doc;
             while d < run_end {
                 if live_docs.is_none_or(|l| l.get_doc(d)) && !leaf.quick_reject(tf, d) {
@@ -2374,7 +2391,12 @@ fn score_competitive(
                 doc = scorer.next_doc()?;
                 continue;
             }
-            leaf.collect(tf, doc, score_at(&mut scores, doc))?;
+            let sc: Sc<'_> = if self_scores {
+                Some(&mut *scorer)
+            } else {
+                score_at(&mut scores, doc)
+            };
+            leaf.collect(tf, doc, sc)?;
             if leaf.terminated {
                 return Ok(());
             }
