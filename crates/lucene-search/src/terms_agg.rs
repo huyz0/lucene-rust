@@ -314,15 +314,16 @@ pub(crate) fn segment_counts(
                 }
             }
         }
-        (Ords::Multi(mut r), ColumnRead::Stream(accept)) => {
-            r.for_each_doc(0, max_doc, |doc, ords| {
-                if accept.test(doc) {
-                    for &ord in ords {
-                        bump(ord);
-                    }
+        (Ords::Multi(mut r), ColumnRead::Stream(accept)) => r.for_each_accepted(
+            0,
+            max_doc,
+            |doc| accept.test(doc),
+            |_, ords| {
+                for &ord in ords {
+                    bump(ord);
                 }
-            })?
-        }
+            },
+        )?,
         (Ords::Multi(mut r), ColumnRead::Seek(docs)) => {
             for &doc in *docs {
                 r.values(doc, &mut scratch.ords)?;

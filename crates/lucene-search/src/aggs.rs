@@ -748,13 +748,14 @@ fn fold<const N: u8>(
                 }
             }
         }
-        (Values::Multi(mut r), ColumnRead::Stream(accept)) => {
-            r.for_each_doc(0, max_doc, |doc, vals| {
-                if accept.test(doc) {
-                    state.many::<N>(kind, vals);
-                }
-            })?
-        }
+        (Values::Multi(mut r), ColumnRead::Stream(accept)) => r.for_each_accepted(
+            0,
+            max_doc,
+            |doc| accept.test(doc),
+            |_, vals| {
+                state.many::<N>(kind, vals);
+            },
+        )?,
         (Values::Multi(mut r), ColumnRead::Seek(docs)) => {
             for &doc in *docs {
                 r.values(doc, raw)?;

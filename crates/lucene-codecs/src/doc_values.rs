@@ -2025,6 +2025,23 @@ impl<'a> SortedNumericReader<'a> {
     /// What [`Self::values`] reports, including an address range outside the
     /// values array.
     pub fn for_each_doc(&mut self, start: i32, end: i32, f: impl FnMut(i32, &[i64])) -> Result<()> {
+        self.for_each_accepted(start, end, |_| true, f)
+    }
+
+    /// [`Self::for_each_doc`] for the documents `accept` takes only: a
+    /// rejected document's values are neither decoded nor handed to `f`, and
+    /// on the streamed path its addresses are not read either -- what an
+    /// aggregation over a query's matches, a fraction of the column, costs.
+    ///
+    /// # Errors
+    /// What [`Self::for_each_doc`] reports, for the accepted documents.
+    pub fn for_each_accepted(
+        &mut self,
+        start: i32,
+        end: i32,
+        accept: impl FnMut(i32) -> bool,
+        f: impl FnMut(i32, &[i64]),
+    ) -> Result<()> {
         let start = start.max(0);
         if start >= end {
             return Ok(());
@@ -2034,11 +2051,11 @@ impl<'a> SortedNumericReader<'a> {
             && FastDense::values(self.data, numeric).is_some()
             && (numeric.is_dense() || start == 0);
         if !streamable {
-            return self.for_each_doc_slow(start, end, f);
+            return self.for_each_doc_slow(start, end, accept, f);
         }
         if numeric.is_dense() {
             let end = end.min(self.entry.num_docs_with_field);
-            return self.stream(i64::from(start), start..end, f);
+            return self.stream(i64::from(start), start..end, accept, f);
         }
         // Sparse: the documents with values, as bits.
         let Some(words_len) = usize::try_from(end).ok().map(|e| e.div_ceil(64)) else {
@@ -2053,7 +2070,7 @@ impl<'a> SortedNumericReader<'a> {
         .ok()
         .and_then(|r| indexed_disi::or_into_words(r, numeric.dense_rank_power, &mut words).ok());
         if filled.is_none() {
-            return self.for_each_doc_slow(start, end, f);
+            return self.for_each_doc_slow(start, end, accept, f);
         }
         // ARITH: `w < words_len`, itself `end / 64` rounded up, and `b < 64`,
         // so `w * 64 + b` is below `words_len * 64 <= end + 63`.
@@ -2065,7 +2082,7 @@ impl<'a> SortedNumericReader<'a> {
         // ARITH: a set bit is below `words_len * 64`, derived from an `i32`.
         #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
         let docs = docs.map(|d| d as i32).take_while(|&d| d < end);
-        self.stream(0, docs, f)
+        self.stream(0, docs, accept, f)
     }
 
     /// [`Self::for_each_doc`] one [`Self::values`] call per document.
@@ -2073,10 +2090,14 @@ impl<'a> SortedNumericReader<'a> {
         &mut self,
         start: i32,
         end: i32,
+        mut accept: impl FnMut(i32) -> bool,
         mut f: impl FnMut(i32, &[i64]),
     ) -> Result<()> {
         let mut vals = Vec::new();
         for doc in start..end {
+            if !accept(doc) {
+                continue;
+            }
             self.values(doc, &mut vals)?;
             if !vals.is_empty() {
                 f(doc, &vals);
@@ -2091,6 +2112,7 @@ impl<'a> SortedNumericReader<'a> {
         &self,
         first_rank: i64,
         docs: impl Iterator<Item = i32>,
+        mut accept: impl FnMut(i32) -> bool,
         mut f: impl FnMut(i32, &[i64]),
     ) -> Result<()> {
         const CHUNK: usize = 256;
@@ -2102,17 +2124,28 @@ impl<'a> SortedNumericReader<'a> {
         };
         let addr_region = region(self.data, addrs.offset, addrs.length)?;
         let mut rank = first_rank;
-        let mut lo = direct_monotonic::get(addr_region, &addrs.meta, rank)?;
+        // The start address of the document at `rank`, when the previous
+        // document's end already gave it; read afresh after a rejected one.
+        let mut next_lo: Option<i64> = None;
         let mut buf = [0i64; CHUNK];
         // `buf[..buf_n]` holds the values at ordinals `buf_lo..buf_lo + buf_n`.
         let (mut buf_lo, mut buf_n) = (0i64, 0usize);
         let mut long = Vec::new();
         for doc in docs {
+            let at = rank;
             // ARITH: a rank is below the field's document count, an `i32`.
             #[allow(clippy::arithmetic_side_effects)]
             {
                 rank += 1;
             }
+            if !accept(doc) {
+                next_lo = None;
+                continue;
+            }
+            let lo = match next_lo {
+                Some(lo) => lo,
+                None => direct_monotonic::get(addr_region, &addrs.meta, at)?,
+            };
             let hi = direct_monotonic::get(addr_region, &addrs.meta, rank)?;
             if lo < 0 || hi < lo || hi > numeric.num_values {
                 return Err(Error::CorruptAddressRange {
@@ -2146,7 +2179,7 @@ impl<'a> SortedNumericReader<'a> {
                     f(doc, &long);
                 }
             }
-            lo = hi;
+            next_lo = Some(hi);
         }
         Ok(())
     }
