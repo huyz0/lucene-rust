@@ -293,21 +293,15 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         int[] docs = new int[numDocs];
         long[] values = new long[numDocs * fields.length];
         long[] counts = new long[3];
-        int rc = NativeBridge.searchSorted(handle, blob, sortBlob, numDocs, countLimit, docs, values, counts);
+        byte[][] terms = new byte[1][];
+        int rc = NativeBridge.searchSorted(handle, blob, sortBlob, numDocs, countLimit, docs, values, counts, terms);
         if (rc != NativeBridge.OK) {
             stats.nativeError();
             logger.warn("lucene-rust: native sorted search failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
             return "native_error";
         }
         int n = (int) counts[0];
-        FieldDoc[] hits = new FieldDoc[n];
-        for (int i = 0; i < n; i++) {
-            Object[] row = new Object[fields.length];
-            for (int k = 0; k < fields.length; k++) {
-                row[k] = SortEncoder.value(fields[k], values[i * fields.length + k]);
-            }
-            hits[i] = new FieldDoc(docs[i], Float.NaN, row);
-        }
+        FieldDoc[] hits = SortEncoder.hits(fields, n, docs, values, terms[0]);
         TotalHits total = shortcut >= 0 ? new TotalHits(shortcut, TotalHits.Relation.EQUAL_TO)
             : countLimit == 0 ? new TotalHits(0, TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO)
             : new TotalHits(counts[1], counts[2] != 0 ? TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO : TotalHits.Relation.EQUAL_TO);

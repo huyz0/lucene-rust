@@ -209,6 +209,15 @@ public final class BenchRunner {
             if (k.equals("score")) { fields.add(SortField.FIELD_SCORE); continue; }
             if (k.equals("doc")) { fields.add(SortField.FIELD_DOC); continue; }
             String[] p = k.split(":");
+            if (p[1].equals("string")) {
+                org.apache.lucene.search.SortedSetSortField f = new org.apache.lucene.search.SortedSetSortField(
+                        p[0], p[3].equals("desc"),
+                        p[2].equals("max") ? org.apache.lucene.search.SortedSetSelector.Type.MAX
+                                : org.apache.lucene.search.SortedSetSelector.Type.MIN);
+                f.setMissingValue(p[4].equals("last") ? SortField.STRING_LAST : SortField.STRING_FIRST);
+                fields.add(f);
+                continue;
+            }
             SortField.Type type = SortField.Type.valueOf(p[1].toUpperCase());
             boolean reverse = p[3].equals("desc");
             org.apache.lucene.search.SortedNumericSortField f = new org.apache.lucene.search.SortedNumericSortField(
