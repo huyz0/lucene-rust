@@ -871,6 +871,14 @@ pub trait IntersectVisitor {
     /// `IntersectVisitor.visit(int)` -- called for every doc in a cell that
     /// is entirely inside the query; the packed value is not decoded at all.
     fn visit(&mut self, doc_id: i32);
+    /// `IntersectVisitor.visit(DocIdSetIterator)` in spirit: every doc id of a
+    /// leaf entirely inside the query, at once. Defaults to [`Self::visit`]
+    /// per id; a visitor that can take a run in bulk overrides it.
+    fn visit_many(&mut self, doc_ids: &[i32]) {
+        for &doc_id in doc_ids {
+            self.visit(doc_id);
+        }
+    }
     /// `IntersectVisitor.visit(int, byte[])` -- called for every point in a
     /// cell that crosses the query boundary; the visitor must do its own
     /// per-point check.
@@ -1468,9 +1476,7 @@ fn add_all<V: IntersectVisitor>(
         seek_leaf_block(&mut kdd_input, fp)?;
         let count = read_leaf_count(&mut kdd_input, ctx.field)?;
         read_doc_ids_into(&mut kdd_input, count, &mut ctx.doc_ids)?;
-        for &doc_id in &ctx.doc_ids {
-            visitor.visit(doc_id);
-        }
+        visitor.visit_many(&ctx.doc_ids);
         return Ok(());
     }
 
