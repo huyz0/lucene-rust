@@ -359,14 +359,9 @@ fn streamed_columns_read_as_documents_do() {
                 for (p, keep) in patterns.iter().enumerate() {
                     let mut got = Vec::new();
                     SortedNumericReader::new(data, entry)
-                        .for_each_accepted(
-                            start,
-                            end,
-                            |d| keep(d),
-                            |doc, v| {
-                                got.push((doc, v.to_vec()));
-                            },
-                        )
+                        .for_each_accepted(start, end, keep, |doc, v| {
+                            got.push((doc, v.to_vec()));
+                        })
                         .unwrap();
                     let filtered: Vec<_> = want.iter().filter(|(d, _)| keep(*d)).cloned().collect();
                     assert_eq!(got, filtered, "{field} in {start}..{end}, pattern {p}");
