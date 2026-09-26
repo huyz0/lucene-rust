@@ -33,15 +33,21 @@ pub(crate) fn scaling_factor(f: f32) -> i32 {
 ///
 /// `2^n` is built from its exponent bits while it is a normal double -- the
 /// same exact power `powi` returns, without the libm call on every document
-/// WAND scales a score for.
+/// WAND scales a score for. Past the largest normal power (a score of 0 has
+/// `getExponent` -1023, so a scaling factor over 1023) it is applied in two
+/// exact steps, as `Math.scalb` scales: 0 stays 0 and a true overflow is
+/// infinite, where `2^n` alone would overflow first and make `0 * inf` NaN.
 fn scalb(d: f64, n: i32) -> f64 {
-    let pow = if (-1022..=1023).contains(&n) {
-        // ARITH: -1022 <= n <= 1023, so the biased exponent is 1..=2046.
-        f64::from_bits(((n + 1023) as u64) << 52)
-    } else {
-        2f64.powi(n)
+    let pow2 = |e: i32| {
+        // ARITH: callers keep -1022 <= e <= 1023, a biased exponent of 1..=2046.
+        f64::from_bits(((e + 1023) as u64) << 52)
     };
-    d * pow
+    match n {
+        -1022..=1023 => d * pow2(n),
+        // ARITH: 1023 < n, and a float's scaling factor is at most 1045+149.
+        1024..=2046 => d * pow2(1023) * pow2(n - 1023),
+        _ => d * 2f64.powi(n),
+    }
 }
 
 /// `WANDScorer.scaleMaxScore`: rounds up.
@@ -481,7 +487,7 @@ mod tests {
 
     #[test]
     fn scalb_builds_the_power_powi_does() {
-        for n in -1100..=1100 {
+        for n in -1100..=1023 {
             for d in [1.0f64, 0.3, 17.25, f64::from(f32::MAX), 1e-30] {
                 assert_eq!(
                     scalb(d, n).to_bits(),
@@ -490,5 +496,17 @@ mod tests {
                 );
             }
         }
+        // Past the largest normal power: Math.scalb's answers, not powi's
+        // overflow -- zero stays zero, a small value scales to a finite one,
+        // and only a true overflow is infinite.
+        for n in 1024..=1100 {
+            assert_eq!(scalb(0.0, n).to_bits(), 0.0f64.to_bits(), "{n}");
+            assert!(scalb(1.0, n).is_infinite(), "{n}");
+        }
+        let small = scalb(1e-30, 1100);
+        assert!(small.is_finite());
+        assert_eq!(small, 1e-30 * 2f64.powi(1023) * 2f64.powi(77));
+        assert_eq!(scale_max_score(0.0, 1045), 0);
+        assert_eq!(scale_min_score(0.0, 1045), 0);
     }
 }
