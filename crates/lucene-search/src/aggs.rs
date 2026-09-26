@@ -579,7 +579,18 @@ fn unique_states(
         )
     };
     let points_only = terms.is_empty() && specs.iter().all(|s| s.source != Source::DocValues);
-    if points_only {
+    // Nor when every document matches and each terms aggregation reads its
+    // counts off the postings' `docFreq`s: no document is visited at all.
+    let stats_only = min_score.is_none()
+        && matches!(clause, Clause::MatchAllDocs(_))
+        && specs.iter().all(|s| s.source != Source::DocValues)
+        && segments.iter().all(|s| {
+            s.live_docs.is_none()
+                && terms
+                    .iter()
+                    .all(|t| crate::terms_agg::precomputable(s.fields, &t.field))
+        });
+    if points_only || stats_only {
         return slices.iter().map(|s| one(s)).collect();
     }
     let parallel =
