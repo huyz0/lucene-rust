@@ -541,7 +541,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             // counted there too, for a size-0 search of the same query (Lucene's MultiCollector
             // counts in the same pass), instead of a second search for the count.
             byte[][] terms = new byte[1][];
-            boolean countHere = numDocs == 0 && sortBlob == null && hitsBlob == blob && ctx.minimumScore() == null
+            // The hits' query is the aggregations' only without a post_filter (min_score, when
+            // there is one, sits in front of both, and behind it both count the passing documents).
+            boolean countHere = numDocs == 0 && sortBlob == null && ctx.parsedPostFilter() == null
                 && shortcut < 0 && countLimit > 0;
             long[] total = new long[] { -1, 0 };
             int rc = NativeBridge.aggregate(
