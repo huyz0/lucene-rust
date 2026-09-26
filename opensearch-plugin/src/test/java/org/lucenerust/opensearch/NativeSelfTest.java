@@ -25,6 +25,12 @@ import org.apache.lucene.search.PhraseQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.FieldDoc;
+import org.apache.lucene.search.Sort;
+import org.apache.lucene.search.SortField;
+import org.apache.lucene.search.TopFieldCollectorManager;
+import org.apache.lucene.search.TopFieldDocs;
+import org.apache.lucene.search.TotalHits;
 import org.apache.lucene.search.WildcardQuery;
 import org.apache.lucene.search.PrefixQuery;
 import org.apache.lucene.search.TermInSetQuery;
@@ -35,6 +41,7 @@ import org.apache.lucene.store.FSDirectory;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Random;
@@ -62,6 +69,7 @@ public final class NativeSelfTest {
     private static int failures;
     private static int bitExact;
     private static int scored;
+    private static int sortedChecks;
 
     public static void main(String[] args) throws Exception {
         NativeLibrary.load(Path.of("."));
@@ -78,11 +86,12 @@ public final class NativeSelfTest {
         // A regression that stopped fixtures opening natively would otherwise pass silently.
         check(compared >= 20, "fixtures compared natively: " + compared);
         System.out.printf(
-            "NativeSelfTest: %d checks, %d failures; %d of %d compared scores bit-exact%n",
+            "NativeSelfTest: %d checks, %d failures; %d of %d compared scores bit-exact; %d sorted pages compared%n",
             checks,
             failures,
             bitExact,
-            scored
+            scored,
+            sortedChecks
         );
         if (failures > 0) {
             System.exit(1);
@@ -172,6 +181,19 @@ public final class NativeSelfTest {
             "a 4-byte points range falls back"
         );
         check(QueryEncoder.encode(LongPoint.newRangeQuery("n", 1, 5), f -> true).blob() != null, "a long range encodes");
+        check(SortEncoder.encode(new Sort(SortField.FIELD_SCORE, SortField.FIELD_DOC), null).blob() != null, "score, doc sort encodes");
+        check(
+            SortEncoder.encode(new Sort(new org.apache.lucene.search.SortedSetSortField("k", false)), null).fallbackReason().startsWith("sort_"),
+            "a keyword sort falls back"
+        );
+        check(
+            SortEncoder.encode(new Sort(new SortField("n", SortField.Type.LONG)), null).fallbackReason().startsWith("sort_"),
+            "a plain numeric SortField falls back"
+        );
+        check(
+            "search_after_fields".equals(SortEncoder.encode(new Sort(SortField.FIELD_DOC), new FieldDoc(1, 0f, new Object[0])).fallbackReason()),
+            "search_after with the wrong arity falls back"
+        );
         // The native decoder's node cap, 1024 nodes: a boolean of 1023 terms is 1024.
         BooleanQuery.Builder atCap = new BooleanQuery.Builder();
         for (int i = 0; i < 1023; i++) {
@@ -259,6 +281,7 @@ public final class NativeSelfTest {
                 boolean ok0 = zero[2] == 0 ? zero[1] == exactCount : exactCount > limit && zero[1] > limit && zero[1] <= exactCount;
                 check(ok0 && zero[0] == 0, where + ": " + rewritten + " size 0 limit " + limit + " gave " + zero[1] + (zero[2] == 1 ? "+" : "") + ", exact " + exactCount);
             }
+            compareSorted(where, searcher, acquired.handle(), rewritten, enc.blob(), new Random(where.hashCode() * 31L + rewritten.hashCode()));
             for (int topN : new int[] { 10, 3 }) {
                 TopDocs want = searcher.search(rewritten, topN);
                 int[] docs = new int[topN];
@@ -293,6 +316,86 @@ public final class NativeSelfTest {
                         what + ": hit " + i + " native (" + docs[i] + ", " + scores[i] + ") lucene (" + want.scoreDocs[i].doc + ", " + w + ")"
                     );
                 }
+            }
+        }
+    }
+
+    /** A random sort of one to three keys over the self-test documents' sort fields. */
+    private static Sort randomSort(Random r) {
+        List<SortField> keys = new ArrayList<>();
+        for (int i = 0, n = 1 + r.nextInt(3); i < n; i++) {
+            boolean reverse = r.nextBoolean();
+            var sel = r.nextBoolean() ? org.apache.lucene.search.SortedNumericSelector.Type.MIN : org.apache.lucene.search.SortedNumericSelector.Type.MAX;
+            SortField f = switch (r.nextInt(6)) {
+                case 0 -> reverse ? new SortField(null, SortField.Type.SCORE, true) : SortField.FIELD_SCORE;
+                case 1 -> SortField.FIELD_DOC;
+                case 2 -> new org.apache.lucene.search.SortedNumericSortField("sl", SortField.Type.LONG, reverse, sel);
+                case 3 -> new org.apache.lucene.search.SortedNumericSortField("si", SortField.Type.INT, reverse, sel);
+                case 4 -> new org.apache.lucene.search.SortedNumericSortField("sd", SortField.Type.DOUBLE, reverse, sel);
+                default -> new org.apache.lucene.search.SortedNumericSortField("sf", SortField.Type.FLOAT, reverse, sel);
+            };
+            if (f instanceof org.apache.lucene.search.SortedNumericSortField sn && r.nextBoolean()) {
+                boolean high = r.nextBoolean();
+                sn.setMissingValue(switch (sn.getNumericType()) {
+                    case LONG -> high ? Long.MAX_VALUE : Long.MIN_VALUE;
+                    case INT -> high ? Integer.MAX_VALUE : Integer.MIN_VALUE;
+                    case DOUBLE -> high ? Double.POSITIVE_INFINITY : Double.NEGATIVE_INFINITY;
+                    default -> high ? Float.POSITIVE_INFINITY : Float.NEGATIVE_INFINITY;
+                });
+            }
+            keys.add(f);
+        }
+        return new Sort(keys.toArray(new SortField[0]));
+    }
+
+    /**
+     * The native sorted search against {@code TopFieldCollectorManager}: hits and their sort
+     * values exactly, the total exactly when Lucene's is exact (and past the threshold when it is
+     * a lower bound), then the next page after the last hit.
+     */
+    private static void compareSorted(String where, IndexSearcher searcher, long handle, Query query, byte[] blob, Random r) throws Exception {
+        for (int s = 0; s < 2; s++) {
+            Sort sort = randomSort(r);
+            int topN = r.nextBoolean() ? 10 : 3;
+            int threshold = r.nextBoolean() ? Integer.MAX_VALUE : 1 + r.nextInt(50);
+            FieldDoc after = null;
+            for (int page = 0; page < 2; page++) {
+                TopFieldDocs want = searcher.search(query, new TopFieldCollectorManager(sort, topN, after, threshold));
+                SortEncoder.Encoded enc = SortEncoder.encode(sort, after);
+                String what = where + ": " + query + " sorted " + sort + " top" + topN + " threshold " + threshold + " page " + page;
+                check(enc.blob() != null, what + ": sort encodes (" + enc.fallbackReason() + ")");
+                if (enc.blob() == null) {
+                    return;
+                }
+                SortField[] keys = sort.getSort();
+                int[] docs = new int[topN];
+                long[] values = new long[topN * keys.length];
+                long[] counts = new long[3];
+                long limit = threshold == Integer.MAX_VALUE ? Long.MAX_VALUE : threshold;
+                int rc = NativeBridge.searchSorted(handle, blob, enc.blob(), topN, limit, docs, values, counts);
+                check(rc == NativeBridge.OK, what + ": status " + rc + " " + NativeBridge.lastError());
+                if (rc != NativeBridge.OK) {
+                    return;
+                }
+                boolean same = counts[0] == want.scoreDocs.length;
+                for (int i = 0; same && i < counts[0]; i++) {
+                    FieldDoc w = (FieldDoc) want.scoreDocs[i];
+                    same = docs[i] == w.doc;
+                    for (int k = 0; same && k < keys.length; k++) {
+                        same = java.util.Objects.equals(SortEncoder.value(keys[k], values[i * keys.length + k]), w.fields[k]);
+                    }
+                }
+                sortedChecks++;
+                check(same, what + ": native " + Arrays.toString(Arrays.copyOf(docs, (int) counts[0])) + " lucene " + Arrays.toString(Arrays.stream(want.scoreDocs).mapToInt(d -> d.doc).toArray()));
+                boolean exact = want.totalHits.relation() == TotalHits.Relation.EQUAL_TO;
+                check(
+                    exact ? counts[2] == 0 && counts[1] == want.totalHits.value() : counts[2] == 1 && counts[1] > threshold,
+                    what + ": total " + counts[1] + (counts[2] == 1 ? "+" : "") + " vs " + want.totalHits
+                );
+                if (want.scoreDocs.length == 0) {
+                    break;
+                }
+                after = (FieldDoc) want.scoreDocs[want.scoreDocs.length - 1];
             }
         }
     }
@@ -405,6 +508,23 @@ public final class NativeSelfTest {
         d.add(new TextField("body", body.toString(), Field.Store.NO));
         d.add(new StringField("tag", word(r), Field.Store.NO));
         d.add(new LongPoint("n", id));
+        // Sort fields: doc values and points, with ties, gaps and several values per document.
+        if (r.nextInt(8) != 0) {
+            long l = r.nextInt(200) - 100;
+            d.add(new org.apache.lucene.document.SortedNumericDocValuesField("sl", l));
+            d.add(new LongPoint("sl", l));
+        }
+        for (int i = 0, n = r.nextInt(3); i < n; i++) {
+            int v = r.nextInt(50);
+            d.add(new org.apache.lucene.document.SortedNumericDocValuesField("si", v));
+            d.add(new org.apache.lucene.document.IntPoint("si", v));
+        }
+        double dv = r.nextInt(10) == 0 ? -0.0 : r.nextGaussian() * 1e3;
+        d.add(new org.apache.lucene.document.SortedNumericDocValuesField("sd", org.apache.lucene.util.NumericUtils.doubleToSortableLong(dv)));
+        d.add(new org.apache.lucene.document.DoublePoint("sd", dv));
+        float fv = (float) r.nextGaussian();
+        d.add(new org.apache.lucene.document.SortedNumericDocValuesField("sf", org.apache.lucene.util.NumericUtils.floatToSortableInt(fv)));
+        d.add(new org.apache.lucene.document.FloatPoint("sf", fv));
         return d;
     }
 

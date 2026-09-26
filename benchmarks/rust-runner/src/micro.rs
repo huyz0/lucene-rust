@@ -234,7 +234,10 @@ fn bench_direct_reader(warmup: Duration, measure: Duration) {
         }
         impl direct_reader::WidthVisitor for Walk {
             type Output = (Duration, u64);
-            fn visit<const B: u32>(self, reader: direct_reader::FixedWidthReader<'_, B>) -> Self::Output {
+            fn visit<const B: u32>(
+                self,
+                reader: direct_reader::FixedWidthReader<'_, B>,
+            ) -> Self::Output {
                 let mut i = 0usize;
                 let (elapsed, calls) = timed_loop(self.budget, || {
                     // Locals, not the captures: through a reference they stay
@@ -1210,7 +1213,10 @@ fn bench_term_dict_write(warmup: Duration, measure: Duration) {
         set.into_iter().collect()
     }
 
-    for (name, terms) in [("ids_1m", id_terms(1_000_000)), ("words_200k", word_terms(200_000))] {
+    for (name, terms) in [
+        ("ids_1m", id_terms(1_000_000)),
+        ("words_200k", word_terms(200_000)),
+    ] {
         let postings: Vec<TermPostings> = terms
             .into_iter()
             .enumerate()
@@ -1269,7 +1275,11 @@ fn bench_dv_merge(warmup: Duration, measure: Duration) {
 
     const DOCS: usize = 200_000;
     const SEGMENTS: usize = 4;
-    let version = LuceneVersion { major: 10, minor: 5, bugfix: 0 };
+    let version = LuceneVersion {
+        major: 10,
+        minor: 5,
+        bugfix: 0,
+    };
     let field = |name: &str, number: i32, dv: DocValuesType| FieldInfo {
         name: name.to_string(),
         number,
@@ -1301,7 +1311,12 @@ fn bench_dv_merge(warmup: Duration, measure: Duration) {
     };
     let document = |i: usize| {
         let mut fields = Vec::new();
-        let mut add = |field_number, value| fields.push(StoredField { field_number, value });
+        let mut add = |field_number, value| {
+            fields.push(StoredField {
+                field_number,
+                value,
+            })
+        };
         if !i.is_multiple_of(3) {
             add(0, FieldValue::Long(7 * i as i64 - 1000));
         }
@@ -1409,7 +1424,11 @@ fn bench_points_write(warmup: Duration, measure: Duration) {
 
     const DOCS: usize = 200_000;
     const SEGMENTS: usize = 4;
-    let version = LuceneVersion { major: 10, minor: 5, bugfix: 0 };
+    let version = LuceneVersion {
+        major: 10,
+        minor: 5,
+        bugfix: 0,
+    };
     let point = |name: &str, number: i32, dims: i32, bytes: i32| FieldInfo {
         name: name.to_string(),
         number,
@@ -1446,7 +1465,12 @@ fn bench_points_write(warmup: Duration, measure: Duration) {
     };
     let document = |i: usize| {
         let mut fields = Vec::new();
-        let mut add = |field_number, value| fields.push(StoredField { field_number, value });
+        let mut add = |field_number, value| {
+            fields.push(StoredField {
+                field_number,
+                value,
+            })
+        };
         add(0, FieldValue::Long(7 * i as i64 - 1000));
         if i.is_multiple_of(4) {
             add(0, FieldValue::Long(-(i as i64)));
@@ -1455,7 +1479,10 @@ fn bench_points_write(warmup: Duration, measure: Duration) {
             add(1, FieldValue::Int((i % 1000) as i32));
         }
         add(2, FieldValue::Double(i as f64 / 8.0 - 100.0));
-        add(3, FieldValue::Binary(pack(&[(i % 97) as i32, (i % 89) as i32 - 44])));
+        add(
+            3,
+            FieldValue::Binary(pack(&[(i % 97) as i32, (i % 89) as i32 - 44])),
+        );
         Document { fields }
     };
     let index = |path: &std::path::Path, per_segment: usize| {
@@ -1488,7 +1515,10 @@ fn bench_points_write(warmup: Duration, measure: Duration) {
                 break;
             }
         }
-        println!("{name}\t{:.3}\t{docs}", total.as_nanos() as f64 / docs as f64);
+        println!(
+            "{name}\t{:.3}\t{docs}",
+            total.as_nanos() as f64 / docs as f64
+        );
     };
 
     let root = std::env::temp_dir().join(format!("points-write-micro-{}", std::process::id()));
@@ -1554,7 +1584,11 @@ fn bench_concurrent_index(warmup: Duration, measure: Duration) {
     use lucene_store::FsDirectory;
 
     const DOCS: usize = 100_000;
-    let version = LuceneVersion { major: 10, minor: 5, bugfix: 0 };
+    let version = LuceneVersion {
+        major: 10,
+        minor: 5,
+        bugfix: 0,
+    };
     let fields = || {
         vec![
             FieldInfo {
@@ -1580,8 +1614,14 @@ fn bench_concurrent_index(warmup: Duration, measure: Duration) {
     };
     let document = |i: usize| Document {
         fields: vec![
-            StoredField { field_number: 0, value: FieldValue::String(format!("d{i}")) },
-            StoredField { field_number: 1, value: FieldValue::String(body(i)) },
+            StoredField {
+                field_number: 0,
+                value: FieldValue::String(format!("d{i}")),
+            },
+            StoredField {
+                field_number: 1,
+                value: FieldValue::String(body(i)),
+            },
         ],
     };
     let index = |path: &std::path::Path, threads: usize, update: bool| -> Duration {
@@ -1593,7 +1633,8 @@ fn bench_concurrent_index(warmup: Duration, measure: Duration) {
         w.set_postings_field(Some("id")).unwrap();
         w.add_postings_field("body").unwrap();
         w.set_max_buffered_docs(10_000).unwrap();
-        w.set_ram_buffer_size_mb(lucene_index::index_writer::DISABLE_AUTO_FLUSH_MB).unwrap();
+        w.set_ram_buffer_size_mb(lucene_index::index_writer::DISABLE_AUTO_FLUSH_MB)
+            .unwrap();
         let w = ConcurrentIndexWriter::new(w, threads).unwrap();
         std::thread::scope(|scope| {
             for t in 0..threads {
@@ -1628,15 +1669,21 @@ fn bench_concurrent_index(warmup: Duration, measure: Duration) {
                 break;
             }
         }
-        println!("{name}\t{:.3}\t{docs}", total.as_nanos() as f64 / docs as f64);
+        println!(
+            "{name}\t{:.3}\t{docs}",
+            total.as_nanos() as f64 / docs as f64
+        );
     };
 
     let root = std::env::temp_dir().join(format!("concurrent-index-micro-{}", std::process::id()));
     let dir = root.join("index");
     // `MICRO_CASE=<name>` runs one case alone, for a profiler.
     let only = std::env::var("MICRO_CASE").ok();
-    let cases: [(&str, usize, bool); 3] =
-        [("add_t1", 1, false), ("add_t4", 4, false), ("update_t4", 4, true)];
+    let cases: [(&str, usize, bool); 3] = [
+        ("add_t1", 1, false),
+        ("add_t4", 4, false),
+        ("update_t4", 4, true),
+    ];
     for (name, threads, update) in cases {
         if only.as_deref().is_none_or(|o| o == name) {
             run(name, &|| index(&dir, threads, update));

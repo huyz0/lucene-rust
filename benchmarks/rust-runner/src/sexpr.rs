@@ -61,6 +61,7 @@ fn clause(field: &str, t: &mut Tokens) -> Clause {
             let max: i64 = t.next().parse().expect("max");
             Clause::PointsRange(lucene_search::query::PointsRangeQuery::new(f, min, max))
         }
+        "all" => Clause::MatchAllDocs(lucene_search::query::MatchAllDocsQuery::new(0)),
         "pre" => Clause::Prefix(PrefixQuery::new(field, t.next().into_bytes())),
         "wc" => Clause::Wildcard(WildcardQuery::new(field, t.next().into_bytes())),
         "re" => Clause::Regexp(RegexpQuery::new(field, t.next())),
@@ -72,7 +73,11 @@ fn clause(field: &str, t: &mut Tokens) -> Clause {
             Clause::TermInSet(TermInSetQuery::new(field, terms))
         }
         "p" | "ps" => {
-            let slop: u32 = if op == "ps" { t.next().parse().expect("slop") } else { 0 };
+            let slop: u32 = if op == "ps" {
+                t.next().parse().expect("slop")
+            } else {
+                0
+            };
             let mut words = Vec::new();
             while t.peek() != ")" {
                 words.push(t.next());
@@ -126,4 +131,70 @@ pub fn root(clause: Clause) -> BooleanQuery {
             b
         }
     }
+}
+
+/// A sort in `GenSortedSearch`'s grammar: comma-separated keys, `score`,
+/// `doc` or `FIELD:TYPE:SELECTOR:ORDER:MISSING` (`asc`/`desc`; `last`,
+/// `first` or `none`).
+pub fn sort(spec: &str) -> Vec<lucene_search::top_field::SortField> {
+    use lucene_search::top_field::{Selector, SortField, SortType};
+    spec.split(',')
+        .map(|k| match k {
+            "score" => SortField::score(),
+            "doc" => SortField::doc(),
+            _ => {
+                let p: Vec<&str> = k.split(':').collect();
+                let ty = match p[1] {
+                    "long" => SortType::Long,
+                    "int" => SortType::Int,
+                    "double" => SortType::Double,
+                    "float" => SortType::Float,
+                    other => panic!("sort type {other}"),
+                };
+                let reverse = p[3] == "desc";
+                let high = (p[4] == "last") != reverse;
+                let missing = match (p[4], ty) {
+                    ("none", _) => 0,
+                    (_, SortType::Long) => {
+                        if high {
+                            i64::MAX
+                        } else {
+                            i64::MIN
+                        }
+                    }
+                    (_, SortType::Int) => i64::from(if high { i32::MAX } else { i32::MIN }),
+                    // doubleToSortableLong / floatToSortableInt of +-infinity.
+                    (_, SortType::Double) => {
+                        let bits = if high {
+                            f64::INFINITY
+                        } else {
+                            f64::NEG_INFINITY
+                        }
+                        .to_bits() as i64;
+                        bits ^ ((bits >> 63) & 0x7fff_ffff_ffff_ffff)
+                    }
+                    (_, _) => {
+                        let bits = if high {
+                            f32::INFINITY
+                        } else {
+                            f32::NEG_INFINITY
+                        }
+                        .to_bits() as i32;
+                        i64::from(bits ^ ((bits >> 31) & 0x7fff_ffff))
+                    }
+                };
+                SortField {
+                    field: p[0].to_string(),
+                    ty,
+                    reverse,
+                    selector: if p[2] == "max" {
+                        Selector::Max
+                    } else {
+                        Selector::Min
+                    },
+                    missing,
+                }
+            }
+        })
+        .collect()
 }

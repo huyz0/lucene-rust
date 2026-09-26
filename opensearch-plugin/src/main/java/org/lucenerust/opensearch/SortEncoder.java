@@ -1,0 +1,160 @@
+/*
+ * Licensed under the Apache License, Version 2.0 -- see the repository's LICENSE.
+ */
+package org.lucenerust.opensearch;
+
+import org.apache.lucene.search.FieldDoc;
+import org.apache.lucene.search.Sort;
+import org.apache.lucene.search.SortField;
+import org.apache.lucene.search.SortedNumericSelector;
+import org.apache.lucene.search.SortedNumericSortField;
+import org.apache.lucene.util.NumericUtils;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+
+/**
+ * Translates a search's {@link Sort} (and its {@code search_after} {@link FieldDoc}) into the sort
+ * blob {@code decode_sort} in {@code crates/lucene-ffi/src/jvm_reader.rs} reads, or says why it
+ * cannot -- and turns the native search's per-hit values back into the {@link FieldDoc#fields}
+ * Lucene's {@code TopFieldCollector} would have produced.
+ *
+ * <p>Encodable keys, in any number and order (read path R4):
+ *
+ * <ul>
+ *   <li>the score ({@link SortField.Type#SCORE}, either direction) and the document ({@link
+ *       SortField.Type#DOC});
+ *   <li>a {@link SortedNumericSortField} of type {@code LONG}, {@code INT}, {@code DOUBLE} or {@code
+ *       FLOAT} with the {@code MIN} or {@code MAX} selector -- what OpenSearch builds for a {@code
+ *       long}, {@code integer}, {@code short}, {@code byte}, {@code double}, {@code float} or {@code
+ *       date} field sorted with {@code mode} {@code min}/{@code max} (the default).
+ * </ul>
+ *
+ * <p>Values cross the boundary as {@code long}s, each key's comparable form: the value for {@code
+ * LONG}/{@code INT}, {@link NumericUtils#doubleToSortableLong} and {@link
+ * NumericUtils#floatToSortableInt} for {@code DOUBLE}/{@code FLOAT} (which round-trip exactly), the
+ * document id for {@code DOC}, and the float's bits for the score.
+ */
+public final class SortEncoder {
+    static final byte SCORE = 0;
+    static final byte DOC = 1;
+    static final byte LONG = 2;
+    static final byte INT = 3;
+    static final byte DOUBLE = 4;
+    static final byte FLOAT = 5;
+    static final byte REVERSE = 1;
+    static final byte MAX = 2;
+    /** {@code MAX_SORT_KEYS} in {@code jvm_reader.rs}. */
+    static final int MAX_KEYS = 16;
+
+    /** An encoded sort, or the reason there is none (exactly one is non-null). */
+    public record Encoded(byte[] blob, String fallbackReason) {}
+
+    private SortEncoder() {}
+
+    public static Encoded encode(Sort sort, FieldDoc after) {
+        SortField[] fields = sort.getSort();
+        if (fields.length == 0 || fields.length > MAX_KEYS) {
+            return new Encoded(null, "sort_keys");
+        }
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(fields.length);
+        for (SortField f : fields) {
+            byte type = type(f);
+            if (type < 0) {
+                return new Encoded(null, "sort_" + f.getClass().getSimpleName() + "_" + f.getType());
+            }
+            if (f.getOptimizeSortWithIndexedData() == false) {
+                // The native comparator always skips with points; this one was told not to.
+                return new Encoded(null, "sort_unoptimized");
+            }
+            byte flags = f.getReverse() ? REVERSE : 0;
+            if (f instanceof SortedNumericSortField sn && sn.getSelector() == SortedNumericSelector.Type.MAX) {
+                flags |= MAX;
+            }
+            out.write(type);
+            out.write(flags);
+            if (type != SCORE && type != DOC) {
+                byte[] name = f.getField().getBytes(StandardCharsets.UTF_8);
+                writeInt(out, name.length);
+                out.writeBytes(name);
+                Object missing = f.getMissingValue();
+                // Lucene's numeric comparators treat an unset missing value as 0.
+                writeLong(out, missing == null ? 0 : comparable(type, missing));
+            }
+        }
+        if (after == null) {
+            out.write(0);
+        } else {
+            if (after.fields == null || after.fields.length != fields.length) {
+                return new Encoded(null, "search_after_fields");
+            }
+            out.write(1);
+            writeInt(out, after.doc);
+            for (int i = 0; i < fields.length; i++) {
+                if (after.fields[i] == null) {
+                    return new Encoded(null, "search_after_null");
+                }
+                writeLong(out, comparable(type(fields[i]), after.fields[i]));
+            }
+        }
+        return new Encoded(out.toByteArray(), null);
+    }
+
+    /** The blob type of {@code f}, or -1 when it has none. */
+    static byte type(SortField f) {
+        if (f.getClass() == SortField.class) {
+            return switch (f.getType()) {
+                case SCORE -> SCORE;
+                case DOC -> DOC;
+                default -> -1;
+            };
+        }
+        if (f.getClass() == SortedNumericSortField.class) {
+            return switch (((SortedNumericSortField) f).getNumericType()) {
+                case LONG -> LONG;
+                case INT -> INT;
+                case DOUBLE -> DOUBLE;
+                case FLOAT -> FLOAT;
+                default -> -1;
+            };
+        }
+        return -1;
+    }
+
+    /** A sort value as the native side compares it. */
+    static long comparable(byte type, Object v) {
+        return switch (type) {
+            case SCORE -> Float.floatToIntBits(((Number) v).floatValue());
+            case DOC, INT -> ((Number) v).intValue();
+            case LONG -> ((Number) v).longValue();
+            case DOUBLE -> NumericUtils.doubleToSortableLong(((Number) v).doubleValue());
+            case FLOAT -> NumericUtils.floatToSortableInt(((Number) v).floatValue());
+            default -> throw new IllegalArgumentException("sort type " + type);
+        };
+    }
+
+    /** The {@link FieldDoc#fields} entry Lucene's comparator returns for a native value. */
+    static Object value(SortField f, long v) {
+        return switch (type(f)) {
+            case SCORE -> Float.intBitsToFloat((int) v);
+            case DOC, INT -> (int) v;
+            case LONG -> v;
+            case DOUBLE -> NumericUtils.sortableLongToDouble(v);
+            case FLOAT -> NumericUtils.sortableIntToFloat((int) v);
+            default -> throw new IllegalArgumentException(f.toString());
+        };
+    }
+
+    private static void writeInt(ByteArrayOutputStream out, int v) {
+        for (int i = 0; i < 4; i++) {
+            out.write(v >>> (8 * i));
+        }
+    }
+
+    private static void writeLong(ByteArrayOutputStream out, long v) {
+        for (int i = 0; i < 8; i++) {
+            out.write((int) (v >>> (8 * i)));
+        }
+    }
+}

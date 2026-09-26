@@ -14,7 +14,11 @@ import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.ScoreDoc;
+import org.apache.lucene.search.FieldDoc;
+import org.apache.lucene.search.Sort;
+import org.apache.lucene.search.SortField;
 import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.TopFieldDocs;
 import org.apache.lucene.search.TotalHits;
 import org.apache.lucene.search.similarities.BM25Similarity;
 import org.apache.lucene.search.similarities.PerFieldSimilarityWrapper;
@@ -46,11 +50,12 @@ import java.util.LinkedList;
  * QueryPhaseSearcherWrapper}, which also picks concurrent segment search when the index asks for
  * it), so an unsupported request runs precisely as it would without this plugin.
  *
- * <p>A request runs native only when it is a plain top-hits-by-score search: no sort, aggregation,
- * post filter, min score, terminate_after, scroll, search_after, collapse, rescore, timeout or
- * profile, and a query {@link QueryEncoder} can encode over fields using the default {@link
- * BM25Similarity}. What it produces is what OpenSearch's own {@code SimpleTopDocsCollectorContext}
- * would: the top {@code from + size} hits, the max score, and total hits under the same {@code
+ * <p>A request runs native when it is a top-hits search -- by score, or by a sort {@link
+ * SortEncoder} can encode, with or without {@code search_after} -- with no aggregation, post
+ * filter, min score, terminate_after, scroll, collapse, rescore, timeout or profile, and a query
+ * {@link QueryEncoder} can encode over fields using the default {@link BM25Similarity}. What it
+ * produces is what OpenSearch's own {@code SimpleTopDocsCollectorContext} would: the top {@code
+ * from + size} hits (with their sort values), the max score, and total hits under the same {@code
  * track_total_hits} rules.
  *
  * <p>A native failure is logged, counted, and the query is re-run on Lucene: it never fails a
@@ -119,13 +124,27 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 reason = "slower_shape";
             }
         }
+        // A sorted search: the sort blob, unless the hits are not asked for at all (size 0 has no
+        // order to keep, and runs as the unsorted count it is).
+        byte[] sortBlob = null;
+        if (reason == null && ctx.sort() != null && ctx.size() > 0) {
+            if (indexSorted(searcher.getIndexReader())) {
+                // TopFieldCollector stops early on an index sorted by the search's sort; the
+                // native collector has no such path.
+                reason = "index_sort";
+            } else {
+                SortEncoder.Encoded sorted = SortEncoder.encode(ctx.sort().sort, ctx.searchAfter());
+                reason = sorted.fallbackReason();
+                sortBlob = sorted.blob();
+            }
+        }
         NativeReaders.Acquired acquired = null;
         if (reason == null) {
             acquired = readers.acquire(searcher.getIndexReader());
             reason = acquired.fallbackReason();
         }
         if (reason == null) {
-            reason = searchNative(ctx, acquired.handle(), blob);
+            reason = searchNative(ctx, acquired.handle(), blob, sortBlob);
             if (reason == null) {
                 stats.nativeQuery();
                 return false;
@@ -151,8 +170,11 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         if (ctx.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER) return "terminate_after";
         if (collectors.isEmpty() == false || hasFilterCollector) return "collectors";
         if (ctx.scrollContext() != null) return "scroll";
-        if (ctx.sort() != null) return "sort";
-        if (ctx.searchAfter() != null) return "search_after";
+        // A sort runs native when SortEncoder can encode it (searchWith); search_after only
+        // with one, and track_scores only when the score leads it (OpenSearch then reads the
+        // max score off the first hit; otherwise it needs a MaxScoreCollector over every match).
+        if (ctx.searchAfter() != null && ctx.sort() == null) return "search_after";
+        if (ctx.sort() != null && ctx.trackScores() && sortByScore(ctx.sort().sort) == false) return "track_scores";
         if (ctx.collapse() != null) return "collapse";
         if (ctx.rescore() != null && ctx.rescore().isEmpty() == false) return "rescore";
         if (ctx.getProfilers() != null) return "profile";
@@ -192,7 +214,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
      * <p>Cancellation is checked before the call, not during it: a native search runs to completion
      * (see docs/opensearch-native-queries.md, Known limits).
      */
-    private String searchNative(SearchContext ctx, long handle, byte[] blob) {
+    private String searchNative(SearchContext ctx, long handle, byte[] blob, byte[] sortBlob) {
         int size = ctx.size();
         int numDocs = size == 0 ? 0 : Math.min(ctx.from() + size, Math.max(1, ctx.searcher().getIndexReader().numDocs()));
         int trackUpTo = ctx.trackTotalHitsUpTo();
@@ -216,12 +238,15 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 countLimit = numDocs;
             }
         }
-        int[] docs = new int[numDocs];
-        float[] scores = new float[numDocs];
-        long[] counts = new long[3];
         if (ctx.isCancelled()) {
             return "cancelled";
         }
+        if (sortBlob != null) {
+            return searchSorted(ctx, handle, blob, sortBlob, numDocs, countLimit, shortcut);
+        }
+        int[] docs = new int[numDocs];
+        float[] scores = new float[numDocs];
+        long[] counts = new long[3];
         int rc = NativeBridge.search(handle, blob, numDocs, countLimit, docs, scores, counts);
         if (rc != NativeBridge.OK) {
             stats.nativeError();
@@ -240,6 +265,55 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         float maxScore = n == 0 ? Float.NaN : scores[0];
         ctx.queryResult().topDocs(new TopDocsAndMaxScore(new TopDocs(total, hits), maxScore), null);
         return null;
+    }
+
+    /**
+     * The sorted half of {@link #searchNative}: {@code TopFieldCollectorManager(sort, numDocs,
+     * searchAfter, countLimit)}, answered as {@code SimpleTopDocsCollectorContext} answers it -- a
+     * {@link TopFieldDocs} of {@link FieldDoc}s with {@code NaN} scores, the max score read off the
+     * first hit when the score leads the sort and {@code NaN} otherwise.
+     */
+    private String searchSorted(SearchContext ctx, long handle, byte[] blob, byte[] sortBlob, int numDocs, long countLimit, int shortcut) {
+        SortField[] fields = ctx.sort().sort.getSort();
+        int[] docs = new int[numDocs];
+        long[] values = new long[numDocs * fields.length];
+        long[] counts = new long[3];
+        int rc = NativeBridge.searchSorted(handle, blob, sortBlob, numDocs, countLimit, docs, values, counts);
+        if (rc != NativeBridge.OK) {
+            stats.nativeError();
+            logger.warn("lucene-rust: native sorted search failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
+            return "native_error";
+        }
+        int n = (int) counts[0];
+        FieldDoc[] hits = new FieldDoc[n];
+        for (int i = 0; i < n; i++) {
+            Object[] row = new Object[fields.length];
+            for (int k = 0; k < fields.length; k++) {
+                row[k] = SortEncoder.value(fields[k], values[i * fields.length + k]);
+            }
+            hits[i] = new FieldDoc(docs[i], Float.NaN, row);
+        }
+        TotalHits total = shortcut >= 0 ? new TotalHits(shortcut, TotalHits.Relation.EQUAL_TO)
+            : countLimit == 0 ? new TotalHits(0, TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO)
+            : new TotalHits(counts[1], counts[2] != 0 ? TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO : TotalHits.Relation.EQUAL_TO);
+        float maxScore = n > 0 && sortByScore(ctx.sort().sort) ? (float) hits[0].fields[0] : Float.NaN;
+        ctx.queryResult().topDocs(new TopDocsAndMaxScore(new TopFieldDocs(total, hits, fields), maxScore), ctx.sort().formats);
+        return null;
+    }
+
+    /** {@code SortField.FIELD_SCORE.equals(sort.getSort()[0])}: the score, descending, leads. */
+    static boolean sortByScore(Sort sort) {
+        return SortField.FIELD_SCORE.equals(sort.getSort()[0]);
+    }
+
+    /** Whether any segment carries an index sort ({@code index.sort.*}). */
+    static boolean indexSorted(IndexReader reader) {
+        for (LeafReaderContext leaf : reader.leaves()) {
+            if (leaf.reader().getMetaData().sort() != null) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

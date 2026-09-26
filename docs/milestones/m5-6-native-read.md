@@ -11,7 +11,7 @@ mixed booleans) 4–8× *slower*, because the port had fast paths for three
 shapes and a materializing path for everything else. M5 moved indexing. This
 milestone finishes the read side.
 
-**Status.** In progress. R1 and R2 delivered, R3 in progress (below). R4–R7 open.
+**Status.** In progress. R1 and R2 delivered, R3 mostly and R4 partly delivered (below). R5–R7 open.
 
 ## Tasks
 
@@ -20,7 +20,7 @@ milestone finishes the read side.
 | R1 | Query execution engine: Lucene's scorer tree and bulk scorers, every boolean shape at least as fast as Lucene | ✅ delivered |
 | R2 | General query wire format and Java encoder for every Lucene query OpenSearch builds | ✅ delivered for the shapes R1 runs (term, boolean, constant score, boost, dismax, match-all, match-none); leaf queries arrive with R3 |
 | R3 | Leaf queries as streaming scorers: phrase, the multi-term family, points and doc-values ranges, exists, terms-in-set, dismax, synonym | mostly delivered: phrase, prefix/wildcard/terms, points ranges, dismax, and a native query cache (R3b); open: `exists` (with R4's doc-values wiring), `regexp` over the wire, fuzzy speed (q25) |
-| R4 | Sort and `search_after` natively (`TopFieldCollector`) | open |
+| R4 | Sort and `search_after` natively (`TopFieldCollector`) | numeric, score and `_doc` keys delivered (below); open: keyword sort (`SortedSetSortField`) |
 | R5 | Aggregations natively: terms, histogram, date_histogram, range, the metrics, cardinality, filter/filters | open |
 | R6 | Fetch (`_source`, stored fields, `docvalue_fields`) and get natively | open |
 | R7 | scroll, `post_filter`, `min_score`, `terminate_after`, timeouts; the full read benchmark (in process and REST) with every native shape at least 1.0× Lucene | open |
@@ -166,6 +166,32 @@ clause's scorer without live docs and kept with the segment's core across
 reopens. q59 went from 0.20× to 1.20× merged and 2.27× segmented; the
 other `FILTER`/`MUST_NOT` shapes (q41, q47–q49, q52, q54, q55) stay at
 1.2–4.3×.
+
+## R4 — sorted search (numeric keys delivered)
+
+`lucene-search/src/top_field.rs` is Lucene's `TopFieldCollector`: the hit
+queue, `SimpleFieldCollector`/`PagingFieldCollector`, the relevance, document
+and numeric comparators over any number of keys, and `NumericComparator`'s
+competitive iterator -- once the queue is full and the total-hits threshold
+passed, the sort field's points are intersected with the range that can still
+compete, and the scorer is advanced past everything else. The plugin sends a
+sort blob beside the query (ABI 11, `SortEncoder`) for the sorts OpenSearch
+builds for `long`, `integer`, `short`, `byte`, `double`, `float` and `date`
+fields (`SortedNumericSortField`, `min`/`max` mode, any `missing`), for
+`_score` and `_doc`, and for `search_after` over them.
+
+It agrees with Lucene on 1,152 fixture runs (hits and values exact, totals
+exact wherever Lucene's are) and on 5,804 random sorted pages in the plugin's
+self test.
+
+Past the threshold the two report different lower bounds for the total:
+Lucene's match-all and filter conjunctions collect whole 4,096-document windows
+before they consult the competitive iterator, and this collector consults it
+per document. REST responses cap the total at `track_total_hits` either way.
+
+Falls back: keyword sort (`SortedSetSortField`, next), `avg`/`sum`/`median`
+modes and nested sorts (OpenSearch's custom comparators), `track_scores`
+unless the score leads, and index-sorted shards.
 
 ## Benchmark
 

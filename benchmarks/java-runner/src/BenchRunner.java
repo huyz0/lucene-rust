@@ -82,10 +82,13 @@ public final class BenchRunner {
             System.out.println("id\thits\ttop1doc\ttop1score\ttopset\tqps\tp50_us\tp95_us\tp99_us\tscored");
             for (String[] q : queries) {
                 Query query = build(q);
+                Sort sortSpec = q[1].equals("sorted") ? sort(q[4]) : null;
 
                 long w = System.nanoTime();
                 do {
-                    if (q[1].equals("dv_sort")) {
+                    if (q[1].equals("sorted")) {
+                        searcher.search(query, new org.apache.lucene.search.TopFieldCollectorManager(sortSpec, TOP_N, null, 1000));
+                    } else if (q[1].equals("dv_sort")) {
                         searcher.search(query, TOP_N, new Sort(new SortField(q[2], SortField.Type.LONG)));
                     } else {
                         searcher.search(query, TOP_N);
@@ -99,7 +102,9 @@ public final class BenchRunner {
                 long t0 = System.nanoTime();
                 do {
                     long s = System.nanoTime();
-                    last = q[1].equals("dv_sort")
+                    last = q[1].equals("sorted")
+                            ? searcher.search(query, new org.apache.lucene.search.TopFieldCollectorManager(sortSpec, TOP_N, null, 1000))
+                            : q[1].equals("dv_sort")
                             ? searcher.search(
                                     query,
                                     TOP_N,
@@ -190,10 +195,39 @@ public final class BenchRunner {
             }
             // A mixed boolean in GenMixedBooleanScoring's S-expression grammar.
             case "sexpr":
+            case "sorted":
                 return Sexpr.parse(field, new Sexpr(f[3]));
             default:
                 throw new IllegalArgumentException("unknown query kind: " + kind);
         }
+    }
+
+    /** GenSortedSearch's sort grammar; see the Rust runner's `sexpr::sort`. */
+    static Sort sort(String s) {
+        List<SortField> fields = new ArrayList<>();
+        for (String k : s.split(",")) {
+            if (k.equals("score")) { fields.add(SortField.FIELD_SCORE); continue; }
+            if (k.equals("doc")) { fields.add(SortField.FIELD_DOC); continue; }
+            String[] p = k.split(":");
+            SortField.Type type = SortField.Type.valueOf(p[1].toUpperCase());
+            boolean reverse = p[3].equals("desc");
+            org.apache.lucene.search.SortedNumericSortField f = new org.apache.lucene.search.SortedNumericSortField(
+                    p[0], type, reverse,
+                    p[2].equals("max") ? org.apache.lucene.search.SortedNumericSelector.Type.MAX
+                            : org.apache.lucene.search.SortedNumericSelector.Type.MIN);
+            if (!p[4].equals("none")) {
+                boolean high = p[4].equals("last") != reverse;
+                f.setMissingValue(switch (type) {
+                    case LONG -> high ? Long.MAX_VALUE : Long.MIN_VALUE;
+                    case INT -> high ? Integer.MAX_VALUE : Integer.MIN_VALUE;
+                    case DOUBLE -> high ? Double.POSITIVE_INFINITY : Double.NEGATIVE_INFINITY;
+                    case FLOAT -> high ? Float.POSITIVE_INFINITY : Float.NEGATIVE_INFINITY;
+                    default -> throw new IllegalArgumentException(k);
+                });
+            }
+            fields.add(f);
+        }
+        return new Sort(fields.toArray(new SortField[0]));
     }
 
     private static List<String[]> loadQueries(Path p) throws Exception {
@@ -251,6 +285,7 @@ public final class BenchRunner {
                     String f = t.next();
                     q = org.apache.lucene.document.LongPoint.newRangeQuery(f, Long.parseLong(t.next()), Long.parseLong(t.next()));
                 }
+                case "all" -> q = new org.apache.lucene.search.MatchAllDocsQuery();
                 case "pre" -> q = new org.apache.lucene.search.PrefixQuery(new Term(field, t.next()));
                 case "wc" -> q = new org.apache.lucene.search.WildcardQuery(new Term(field, t.next()));
                 case "re" -> q = new org.apache.lucene.search.RegexpQuery(new Term(field, t.next()));
