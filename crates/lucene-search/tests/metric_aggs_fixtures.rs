@@ -348,6 +348,29 @@ fn streamed_columns_read_as_documents_do() {
                     .unwrap();
                 assert_eq!(got, want, "{field} in {start}..{end}");
                 compared += got.len();
+                // Only the accepted documents, their addresses read afresh
+                // after a rejected one: the same values as filtering after.
+                let patterns: [&dyn Fn(i32) -> bool; 4] = [
+                    &|d| d % 3 == 0,
+                    &|d| d % 97 < 40,
+                    &|d| (d / 7) % 2 == 1,
+                    &|_| false,
+                ];
+                for (p, keep) in patterns.iter().enumerate() {
+                    let mut got = Vec::new();
+                    SortedNumericReader::new(data, entry)
+                        .for_each_accepted(
+                            start,
+                            end,
+                            |d| keep(d),
+                            |doc, v| {
+                                got.push((doc, v.to_vec()));
+                            },
+                        )
+                        .unwrap();
+                    let filtered: Vec<_> = want.iter().filter(|(d, _)| keep(*d)).cloned().collect();
+                    assert_eq!(got, filtered, "{field} in {start}..{end}, pattern {p}");
+                }
             }
         }
     }
