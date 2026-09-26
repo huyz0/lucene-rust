@@ -1957,6 +1957,14 @@ impl<'a> Leaf<'a> {
         }
     }
 
+    /// Whether the competitive iterator, if any, still lets every document
+    /// through.
+    #[inline]
+    fn visits_all(&mut self) -> bool {
+        self.competitive()
+            .is_none_or(|it| matches!(it, Iter::All { .. }))
+    }
+
     /// `countHit`.
     #[inline]
     fn count_hit(&mut self, tf: &mut TopField) -> Result<()> {
@@ -2321,6 +2329,45 @@ fn score_competitive(
                     continue;
                 }
             }
+        }
+        // A run of matches (match-all): walked here, one document at a
+        // time, without moving the scorer, while nothing narrows the
+        // documents to visit.
+        // (Asked only then: a postings list computes its run end per call.)
+        let run_end = if !two_phase && leaf.visits_all() {
+            scorer.doc_id_run_end()
+        } else {
+            doc
+        };
+        if run_end > doc.saturating_add(1) {
+            let mut d = doc;
+            while d < run_end {
+                if live_docs.is_none_or(|l| l.get_doc(d)) && !leaf.quick_reject(tf, d) {
+                    leaf.collect(tf, d, score_at(&mut scores, d))?;
+                    if leaf.terminated {
+                        return Ok(());
+                    }
+                    if leaf.collected_all_competitive {
+                        if d > doc {
+                            scorer.advance(d)?;
+                        }
+                        return count_rest(scorer, tf, leaf, live_docs);
+                    }
+                    if !leaf.visits_all() {
+                        d += 1;
+                        break;
+                    }
+                }
+                d += 1;
+            }
+            doc = if d == NO_MORE_DOCS {
+                NO_MORE_DOCS
+            } else if d > doc {
+                scorer.advance(d)?
+            } else {
+                scorer.next_doc()?
+            };
+            continue;
         }
         if live_docs.is_none_or(|l| l.get_doc(doc)) && (!two_phase || scorer.matches()?) {
             if leaf.quick_reject(tf, doc) {
