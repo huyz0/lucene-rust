@@ -725,6 +725,55 @@ impl<'d> PointsReader<'d> {
         estimate_node(&mut input, 1, root_fp, &mut ctx, visitor, upper_bound, 0)
     }
 
+    /// [`intersect`](Self::intersect) walking with `scratch`'s buffers, so a
+    /// caller that intersects one tree many times -- `NumericComparator`'s
+    /// competitive iterator re-intersects on every new bottom -- allocates
+    /// them once rather than once per walk.
+    pub fn intersect_in<V: IntersectVisitor>(
+        &self,
+        field_number: i32,
+        visitor: &mut V,
+        scratch: &mut PointsScratch,
+    ) -> Result<()> {
+        let field = self
+            .field(field_number)
+            .ok_or(Error::IllegalFieldNumber(field_number))?;
+        let inner_nodes = self.inner_nodes(field)?;
+        let mut input = SliceInput::new(inner_nodes);
+        let mut ctx = IntersectCtx::from_scratch(field, self.kdd, scratch);
+        let root_fp = input.read_vlong();
+        let out = match root_fp {
+            Ok(fp) => intersect_node(&mut input, 1, fp, &mut ctx, visitor, 0),
+            Err(e) => Err(e.into()),
+        };
+        ctx.into_scratch(scratch);
+        out
+    }
+
+    /// [`estimate_point_count_bounded`](Self::estimate_point_count_bounded)
+    /// walking with `scratch`'s buffers -- see [`intersect_in`](Self::intersect_in).
+    pub fn estimate_point_count_bounded_in<V: IntersectVisitor>(
+        &self,
+        field_number: i32,
+        visitor: &mut V,
+        upper_bound: i64,
+        scratch: &mut PointsScratch,
+    ) -> Result<i64> {
+        let field = self
+            .field(field_number)
+            .ok_or(Error::IllegalFieldNumber(field_number))?;
+        let inner_nodes = self.inner_nodes(field)?;
+        let mut input = SliceInput::new(inner_nodes);
+        let mut ctx = IntersectCtx::from_scratch(field, self.kdd, scratch);
+        let root_fp = input.read_vlong();
+        let out = match root_fp {
+            Ok(fp) => estimate_node(&mut input, 1, fp, &mut ctx, visitor, upper_bound, 0),
+            Err(e) => Err(e.into()),
+        };
+        ctx.into_scratch(scratch);
+        out
+    }
+
     /// Convenience wrapper over [`intersect`](Self::intersect) implementing
     /// `PointRangeQuery`'s visitor: every doc whose packed value falls inside
     /// the inclusive per-dimension box `[lower, upper]` (compared unsigned
@@ -957,6 +1006,18 @@ struct IntersectCtx<'a> {
     doc_ids: Vec<i32>,
 }
 
+/// A tree walk's buffers, kept between walks by a caller that makes many
+/// ([`PointsReader::intersect_in`], [`PointsReader::estimate_point_count_bounded_in`]).
+#[derive(Default)]
+pub struct PointsScratch {
+    min: Vec<u8>,
+    max: Vec<u8>,
+    split_values: Vec<u8>,
+    negative_deltas: Vec<bool>,
+    stack: Vec<LevelScratch>,
+    doc_ids: Vec<i32>,
+}
+
 /// One level's reusable byte buffers -- see [`IntersectCtx::stack`].
 ///
 /// The two cell bounds share one buffer because the walk never holds both:
@@ -989,6 +1050,46 @@ impl<'a> IntersectCtx<'a> {
             reuse_scratch,
             doc_ids: Vec::new(),
         }
+    }
+
+    /// [`Self::new`], over `scratch`'s buffers: the bounds and split values
+    /// reset exactly as `new` sets them, the per-level stack and the leaf
+    /// doc-id buffer kept (every walk overwrites a level's entry before it
+    /// reads it, and a leaf's ids before it visits them).
+    fn from_scratch(field: &'a PointsField, kdd: &'a [u8], scratch: &mut PointsScratch) -> Self {
+        let mut min = std::mem::take(&mut scratch.min);
+        min.clear();
+        min.extend_from_slice(&field.min_packed_value);
+        let mut max = std::mem::take(&mut scratch.max);
+        max.clear();
+        max.extend_from_slice(&field.max_packed_value);
+        let mut split_values = std::mem::take(&mut scratch.split_values);
+        split_values.clear();
+        split_values.resize(field.min_packed_value.len(), 0);
+        let mut negative_deltas = std::mem::take(&mut scratch.negative_deltas);
+        negative_deltas.clear();
+        negative_deltas.resize(field.num_index_dims as usize, false);
+        IntersectCtx {
+            field,
+            kdd,
+            min,
+            max,
+            split_values,
+            negative_deltas,
+            stack: std::mem::take(&mut scratch.stack),
+            reuse_scratch: true,
+            doc_ids: std::mem::take(&mut scratch.doc_ids),
+        }
+    }
+
+    /// Hands the buffers back for the next walk.
+    fn into_scratch(self, scratch: &mut PointsScratch) {
+        scratch.min = self.min;
+        scratch.max = self.max;
+        scratch.split_values = self.split_values;
+        scratch.negative_deltas = self.negative_deltas;
+        scratch.stack = self.stack;
+        scratch.doc_ids = self.doc_ids;
     }
 
     /// Makes `self.stack[level]` addressable. The walk only ever descends one

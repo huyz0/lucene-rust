@@ -90,6 +90,13 @@ def create(index, shards):
             "tuned": {"type": "text", "similarity": "tuned"},
             "tag": {"type": "keyword"},
             "n": {"type": "long"},
+            # Sort fields (read path R4): ties, gaps, several values per document.
+            "price": {"type": "double"},
+            "qty": {"type": "integer"},
+            "ts": {"type": "date"},
+            "ratio": {"type": "float"},
+            "m": {"type": "long"},
+            "sp": {"type": "long"},
         }},
     })
 
@@ -104,13 +111,21 @@ def load(index, docs, seed, deletes=True):
         lines = []
         for i in range(start, min(docs, start + batch)):
             lines.append(json.dumps({"index": {"_index": index, "_id": str(i)}}))
-            lines.append(json.dumps({
+            doc = {
                 "body": " ".join(word(r) for _ in range(r.randint(1, 40))),
                 "title": " ".join(word(r) for _ in range(r.randint(1, 5))),
                 "tuned": " ".join(word(r) for _ in range(r.randint(1, 10))),
                 "tag": word(r),
                 "n": i,
-            }))
+                "price": round(r.uniform(-50, 500), 2),
+                "qty": r.randint(0, 40),
+                "ts": 1_700_000_000_000 + r.randint(0, 10_000) * 60_000,
+                "ratio": r.random(),
+                "m": [r.randint(0, 1000) for _ in range(r.randint(0, 3))],
+            }
+            if r.random() < 0.7:
+                doc["sp"] = r.randint(-100, 100)
+            lines.append(json.dumps(doc))
         res = req("POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
         check(not res["errors"], f"{index}: bulk batch at {start} has no errors")
         req("POST", f"/{index}/_refresh")
@@ -121,7 +136,7 @@ def load(index, docs, seed, deletes=True):
         lines.append(json.dumps({"delete": {"_index": index, "_id": str(i)}}))
     for i in r.sample(range(docs), docs // 60):
         lines.append(json.dumps({"index": {"_index": index, "_id": str(i)}}))
-        lines.append(json.dumps({"body": "updated " + word(r), "title": "updated", "tuned": "x", "tag": "updated", "n": i}))
+        lines.append(json.dumps({"body": "updated " + word(r), "title": "updated", "tuned": "x", "tag": "updated", "n": i, "qty": 3, "m": [5, 1]}))
     req("POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
     req("POST", f"/{index}/_refresh")
 
@@ -191,7 +206,29 @@ def matrix():
     add("match_all + filter", {"query": {"bool": {"must": [{"match_all": {}}], "filter": [{"term": {"tag": "beta"}}]}}}, "native")
     add("bool msm with must", {"query": {"bool": {"must": [{"match": {"body": "alpha"}}], "should": [{"match": {"title": "beta"}}, {"match": {"title": "gamma"}}], "minimum_should_match": 1}}}, "native")
     add("custom similarity", {"query": {"match": {"tuned": "alpha"}}}, "field_similarity")
-    add("sort", {"query": {"match": {"body": "alpha"}}, "sort": [{"n": "desc"}]}, "sort")
+    # Sorted searches (read path R4): numeric keys of every type, missing values, several keys,
+    # the score and _doc, search_after, and the ones that stay on Lucene.
+    add("sort long desc", {"query": {"match": {"body": "alpha"}}, "sort": [{"n": "desc"}]}, "native")
+    add("sort double asc", {"query": {"match": {"body": "beta"}}, "sort": [{"price": "asc"}]}, "native")
+    add("sort integer desc, long asc", {"query": {"match_all": {}}, "sort": [{"qty": "desc"}, {"n": "asc"}]}, "native")
+    add("sort date desc", {"query": {"bool": {"filter": [{"term": {"tag": "gamma"}}]}}, "sort": [{"ts": "desc"}]}, "native")
+    add("sort float asc", {"query": {"match": {"body": "delta"}}, "sort": [{"ratio": {"order": "asc"}}]}, "native")
+    add("sort multi-valued max", {"query": {"match_all": {}}, "sort": [{"m": {"order": "desc", "mode": "max"}}]}, "native")
+    add("sort multi-valued min", {"query": {"match": {"body": "alpha"}}, "sort": [{"m": {"order": "asc", "mode": "min"}}]}, "native")
+    add("sort sparse missing first", {"query": {"match": {"body": "gamma"}}, "sort": [{"sp": {"order": "asc", "missing": "_first"}}, {"n": "asc"}]}, "native")
+    add("sort sparse missing last", {"query": {"match_all": {}}, "sort": [{"sp": {"order": "desc", "missing": "_last"}}]}, "native")
+    add("sort sparse missing value", {"query": {"match_all": {}}, "sort": [{"sp": {"order": "asc", "missing": 7}}, {"n": "desc"}]}, "native")
+    add("sort score then field", {"query": {"match": {"body": "alpha beta"}}, "sort": ["_score", {"qty": "asc"}]}, "native")
+    add("sort field then score", {"query": {"match": {"body": "alpha beta"}}, "sort": [{"qty": "asc"}, "_score"]}, "native")
+    add("sort _doc", {"query": {"match": {"body": "alpha"}}, "sort": ["_doc"]}, "native")
+    add("sort from 20 size 15", {"from": 20, "size": 15, "query": {"match": {"body": "beta"}}, "sort": [{"qty": "asc"}, {"n": "desc"}]}, "native")
+    add("sort track_total_hits true", {"track_total_hits": True, "query": {"match_all": {}}, "sort": [{"price": "desc"}]}, "native")
+    add("sort size 0", {"size": 0, "query": {"match": {"body": "alpha"}}, "sort": [{"n": "desc"}]}, "native")
+    add("search_after", {"query": {"match_all": {}}, "sort": [{"qty": "asc"}, {"n": "asc"}], "search_after": [10, 500]}, "native")
+    add("search_after desc", {"query": {"match": {"body": "alpha"}}, "sort": [{"price": "desc"}, {"n": "asc"}], "search_after": [250.0, 100]}, "native")
+    add("sort keyword", {"query": {"match": {"body": "alpha"}}, "sort": [{"tag": "asc"}]}, "sort_*")
+    add("sort mode avg", {"query": {"match": {"body": "alpha"}}, "sort": [{"m": {"order": "asc", "mode": "avg"}}]}, "sort_*")
+    add("sort track_scores", {"query": {"match": {"body": "alpha"}}, "sort": [{"n": "desc"}], "track_scores": True}, "track_scores")
     add("aggregation", {"query": {"match": {"body": "alpha"}}, "aggs": {"tags": {"terms": {"field": "tag"}}}}, "aggregations")
     add("post_filter", {"query": {"match": {"body": "alpha"}}, "post_filter": {"term": {"tag": "beta"}}}, "post_filter")
     add("min_score", {"query": {"match": {"body": "alpha"}}, "min_score": 0.3}, "min_score")

@@ -108,6 +108,11 @@ fn main() {
     }
     println!("id\thits\ttop1doc\ttop1score\ttopset\tqps\tp50_us\tp95_us\tp99_us\tscored\tblocks");
     for q in &queries {
+        // Parsed once, outside the timed loop, as the Java runner builds its
+        // `Query` and `Sort` once.
+        let parsed = matches!(q.kind.as_str(), "sexpr" | "sorted")
+            .then(|| sexpr::root(sexpr::parse(&q.field, &q.args[0])));
+        let parsed_sort = (q.kind == "sorted").then(|| sexpr::sort(&q.args[1]));
         let run = || -> Vec<lucene_search::collector::ScoreDoc> {
             match q.kind.as_str() {
                 // Probe: the existing impacts-pruned single-segment path, which
@@ -177,16 +182,40 @@ fn main() {
                 // grammar, run the way the OpenSearch plugin runs it: the
                 // counting multi-segment search, Lucene's default threshold.
                 "sexpr" => {
-                    let bq = sexpr::root(sexpr::parse(&q.field, &q.args[0]));
+                    let bq = parsed.as_ref().expect("parsed");
                     lucene_search::search_boolean_query_multi_segment_maxscore_counting(
                         &segments,
-                        &bq,
+                        bq,
                         &bool_norms,
                         TOP_N,
                         TOTAL_HITS_THRESHOLD as u64,
                     )
                     .expect("sexpr")
                     .0
+                }
+                // A query and a sort (`GenSortedSearch`'s grammar), as
+                // `TopFieldCollectorManager(sort, n, null, 1000)`.
+                "sorted" => {
+                    let bq = parsed.as_ref().expect("parsed");
+                    let sort = parsed_sort.as_ref().expect("sort");
+                    lucene_search::top_field::search_sorted(
+                        &segments,
+                        reader.segment_readers(),
+                        bq,
+                        &bool_norms,
+                        sort,
+                        TOP_N,
+                        TOTAL_HITS_THRESHOLD as u64,
+                        None,
+                    )
+                    .expect("sorted")
+                    .hits
+                    .into_iter()
+                    .map(|h| lucene_search::collector::ScoreDoc {
+                        doc_id: h.doc,
+                        score: 0.0,
+                    })
+                    .collect()
                 }
                 "and" | "or" | "or_maxscore" => {
                     let clauses: Vec<Clause> = q
