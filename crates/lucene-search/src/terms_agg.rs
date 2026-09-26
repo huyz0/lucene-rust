@@ -229,6 +229,19 @@ pub struct TermsSpec {
 /// terms a segment may have for its counts to be read from its postings.
 const MAX_PRECOMPUTE_CARDINALITY: usize = 30_000;
 
+/// Whether a segment's counts for `field` can come from its postings alone
+/// ([`segment_counts`]' `tryCollectFromTermFrequencies`), given that every
+/// document matches: the field has postings with at most
+/// [`MAX_PRECOMPUTE_CARDINALITY`] terms.
+pub(crate) fn precomputable(
+    postings: &lucene_codecs::blocktree::BlockTreeFields,
+    field: &str,
+) -> bool {
+    postings.field(field).is_some_and(|t| {
+        usize::try_from(t.num_terms).is_ok_and(|n| n <= MAX_PRECOMPUTE_CARDINALITY)
+    })
+}
+
 /// Per-segment scratch for [`segment_counts`], reused across segments.
 #[derive(Default)]
 pub(crate) struct TermsScratch {
