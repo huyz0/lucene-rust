@@ -102,3 +102,12 @@ q78	sorted	body	(t t0)	doc
 q79	sorted	body	(b 0 (? (t t1)) (? (t t2)))	score,num:long:min:asc:last
 q80	sorted	body	(t t1)	num:long:min:asc:last,score
 q81	sorted	body	(all)	doc
+# Keyword sorts (read path R4): SortedSetSortField over `keyword` (dense SORTED, with postings) and `cat` (SORTED_SET, no postings).
+q82	sorted	body	(all)	keyword:string:min:asc:last
+q83	sorted	body	(all)	keyword:string:min:desc:last
+q84	sorted	body	(t t0)	keyword:string:min:asc:last
+q85	sorted	body	(t t2s)	keyword:string:min:desc:first
+q86	sorted	body	(b 0 (? (t t1)) (? (t t2)))	keyword:string:min:asc:last
+q87	sorted	body	(all)	cat:string:min:asc:last
+q88	sorted	body	(t t1)	cat:string:max:desc:first,num:long:min:asc:last
+q89	sorted	body	(t t1)	keyword:string:min:asc:last,score

@@ -20,7 +20,7 @@ milestone finishes the read side.
 | R1 | Query execution engine: Lucene's scorer tree and bulk scorers, every boolean shape at least as fast as Lucene | ✅ delivered |
 | R2 | General query wire format and Java encoder for every Lucene query OpenSearch builds | ✅ delivered for the shapes R1 runs (term, boolean, constant score, boost, dismax, match-all, match-none); leaf queries arrive with R3 |
 | R3 | Leaf queries as streaming scorers: phrase, the multi-term family, points and doc-values ranges, exists, terms-in-set, dismax, synonym | mostly delivered: phrase, prefix/wildcard/terms, points ranges, dismax, and a native query cache (R3b); open: `exists` (with R4's doc-values wiring), `regexp` over the wire, fuzzy speed (q25) |
-| R4 | Sort and `search_after` natively (`TopFieldCollector`) | numeric, score and `_doc` keys delivered (below); open: keyword sort (`SortedSetSortField`) |
+| R4 | Sort and `search_after` natively (`TopFieldCollector`) | numeric, score, `_doc` and keyword keys delivered (below); open: `avg`/`sum`/`median` modes, nested sorts, `track_scores` behind another key, index-sorted shards |
 | R5 | Aggregations natively: terms, histogram, date_histogram, range, the metrics, cardinality, filter/filters | open |
 | R6 | Fetch (`_source`, stored fields, `docvalue_fields`) and get natively | open |
 | R7 | scroll, `post_filter`, `min_score`, `terminate_after`, timeouts; the full read benchmark (in process and REST) with every native shape at least 1.0× Lucene | open |
@@ -167,7 +167,7 @@ reopens. q59 went from 0.20× to 1.20× merged and 2.27× segmented; the
 other `FILTER`/`MUST_NOT` shapes (q41, q47–q49, q52, q54, q55) stay at
 1.2–4.3×.
 
-## R4 — sorted search (numeric keys delivered)
+## R4 — sorted search (numeric, score, `_doc` and keyword keys delivered)
 
 `lucene-search/src/top_field.rs` is Lucene's `TopFieldCollector`: the hit
 queue, `SimpleFieldCollector`/`PagingFieldCollector`, the relevance, document
@@ -235,9 +235,48 @@ field without `missing`, approximately (`ApproximateScoreQuery` resolved to its
 BKD order); those stay on OpenSearch's path (`approximate`), since returning
 Lucene's exact answer would differ from a stock node's.
 
-Falls back: keyword sort (`SortedSetSortField`, next), `avg`/`sum`/`median`
-modes and nested sorts (OpenSearch's custom comparators), `track_scores`
-unless the score leads, and index-sorted shards.
+### Keyword keys
+
+`keyword` fields sort natively too (`SortedSetSortField`, `min`/`max` mode,
+`missing` `_first`/`_last`, `search_after` by term; ABI 12 carries the terms
+both ways). It is `TermOrdValComparator`: ordinals compared within a segment,
+the bottom and the search-after term looked up in each new segment through a
+random-access port of the doc-values terms dictionary
+(`lucene-codecs/src/terms_dict.rs::TermsDict`), and
+`PostingsBasedCompetitiveState` -- the postings of up to 1,024 competitive
+terms as a disjunction -- as the competitive iterator. Verified against 936
+Lucene runs and 4,072 `lookupTerm`/`lookupOrd` probes
+(`tests/keyword_sort_fixtures.rs`, `fixtures/src/GenKeywordSort.java`) and by
+the self test's random keyword sorts.
+
+In process (q82-q89, same method as above):
+
+| query | shape | merged | 15 segments |
+|---|---|---|---|
+| q82 | match-all by `keyword` asc | 203x | 131x |
+| q83 | match-all by `keyword` desc | 5.10x | 4.02x |
+| q84 | `t0` by `keyword` | 2.09x | 2.25x |
+| q85 | rare term by `keyword` desc, missing first | 1.56x | 1.54x |
+| q86 | `t1 OR t2` by `keyword` | 2.08x | 78.6x |
+| q87 | match-all by `cat` (no postings) | 1.31x | 1.30x |
+| q88 | `t1` by `cat` max desc, `num` | 1.54x | 1.66x |
+| q89 | `t1` by `keyword`, `_score` | 1.83x | 1.43x |
+
+The faithful port measured 0.44-0.84x on five of these. What closed it: the
+term of a copied hit read once per segment for the slots still queued, not per
+copy (Java's `copy` calls `lookupOrd` every time), while no earlier segment's
+slot is in the queue to compare it with by term; the dictionary's block buffer
+reused; a hit the leading key alone rules out dropped before `collect` (a dense
+column's ordinal or value compared with the bottom directly, and on a tie the
+score read and compared there); a run of matches (match-all) walked without
+moving the scorer, asked for only while runs keep turning up; a lone term
+scored by the cursor that iterates it rather than a second tree; and the
+sparser of the scorer and the competitive iterator leading the leapfrog. The
+last three also lifted the numeric rows: after them q72-q81 measure 1.12-25.1x
+merged and 1.14-14.7x segmented.
+
+Falls back: `avg`/`sum`/`median` modes and nested sorts (OpenSearch's custom
+comparators), `track_scores` unless the score leads, and index-sorted shards.
 
 ## Benchmark
 
