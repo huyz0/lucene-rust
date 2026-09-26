@@ -161,6 +161,15 @@ pub enum SortError {
         bytes: i32,
         want: usize,
     },
+    /// A points leaf named a document outside the segment.
+    #[error(
+        "points field {field_number} names document {doc}, outside the segment's 0..{max_doc}"
+    )]
+    PointsDoc {
+        field_number: i32,
+        doc: i32,
+        max_doc: i32,
+    },
     #[error("field {0} has doc values of a type that cannot be sorted numerically")]
     DocValuesType(String),
 }
@@ -227,12 +236,9 @@ impl Comparator {
     }
 }
 
+/// `Long.compare`, as the sign of an `i32`.
 fn cmp(a: i64, b: i64) -> i32 {
-    match a.cmp(&b) {
-        std::cmp::Ordering::Less => -1,
-        std::cmp::Ordering::Equal => 0,
-        std::cmp::Ordering::Greater => 1,
-    }
+    a.cmp(&b) as i32
 }
 
 /// `FieldValueHitQueue.Entry`.
@@ -734,6 +740,7 @@ impl Competitive<'_> {
             added: 0,
             spare: self.spare_bits.take(),
             max_doc: self.max_doc as usize,
+            corrupt: None,
         };
         let estimate = self
             .points
@@ -779,6 +786,14 @@ impl Competitive<'_> {
         self.points
             .intersect_in(self.field_number, &mut visitor, &mut self.walk)
             .map_err(crate::Error::from)?;
+        if let Some(doc) = visitor.corrupt {
+            return Err(SortError::PointsDoc {
+                field_number: self.field_number,
+                doc,
+                max_doc: self.max_doc,
+            }
+            .into());
+        }
         self.spare_bits = visitor.spare.take();
         let mut docs = visitor.docs;
         let new_iter = match visitor.bits {
@@ -846,13 +861,20 @@ struct CompetitiveVisitor {
     /// A cleared bit set to upgrade into, when one is spare.
     spare: Option<FixedBitSet>,
     max_doc: usize,
+    /// The first out-of-segment doc id a leaf named, if any.
+    corrupt: Option<i32>,
 }
 
 impl CompetitiveVisitor {
     #[inline]
     fn add(&mut self, doc: i32) {
+        if !self.in_segment(doc) {
+            return;
+        }
         self.added += 1;
         match &mut self.bits {
+            // FBS: `in_segment` bounded `doc` to `0..max_doc`, the length
+            // every set here is built with.
             Some(b) => b.set(doc as usize),
             None => {
                 self.docs.push(doc);
@@ -870,10 +892,23 @@ impl CompetitiveVisitor {
             .take()
             .unwrap_or_else(|| FixedBitSet::new(self.max_doc));
         for &d in &self.docs {
+            // FBS: every id in `docs` passed `in_segment` (`0..max_doc`), and
+            // `b` is `max_doc` bits (new, or a spare of the same segment).
             b.set(d as usize);
         }
         self.docs.clear();
         self.bits = Some(b);
+    }
+
+    /// Whether `doc` is a document of the segment; a points leaf naming one
+    /// outside it is corrupt, remembered for `do_update` to report.
+    #[inline]
+    fn in_segment(&mut self, doc: i32) -> bool {
+        let ok = doc >= 0 && (doc as usize) < self.max_doc;
+        if !ok && self.corrupt.is_none() {
+            self.corrupt = Some(doc);
+        }
+        ok
     }
 }
 
@@ -901,10 +936,19 @@ impl IntersectVisitor for CompetitiveVisitor {
             self.upgrade();
         }
         let floor = self.max_doc_visited;
+        if let Some(&bad) = doc_ids
+            .iter()
+            .find(|&&d| d < 0 || d as usize >= self.max_doc)
+        {
+            self.corrupt.get_or_insert(bad);
+            return;
+        }
         match &mut self.bits {
             Some(b) => {
                 for &d in doc_ids {
                     if d > floor {
+                        // FBS: every id was checked against `0..max_doc`
+                        // above, and `b` is `max_doc` bits.
                         b.set(d as usize);
                         self.added += 1;
                     }
@@ -1892,6 +1936,7 @@ mod tests {
             added: 0,
             spare: None,
             max_doc: 64,
+            corrupt: None,
         };
         v.visit(1); // already visited: dropped
         v.visit(9);
@@ -1921,6 +1966,7 @@ mod tests {
             added: 0,
             spare: Some(FixedBitSet::new(64)),
             max_doc: 64,
+            corrupt: None,
         };
         v.visit_many(&[3, 5, 6]);
         assert_eq!((v.docs.as_slice(), v.added), (&[5, 6][..], 2));
@@ -1929,6 +1975,25 @@ mod tests {
         assert!(v.spare.is_none(), "the spare set was used");
         assert_eq!(v.added, 4);
         assert_eq!(bits.cardinality(), 4);
+
+        // A leaf naming a document outside the segment is remembered, not
+        // indexed: singly or in bulk.
+        v.visit(64);
+        assert_eq!(v.corrupt, Some(64));
+        let mut w = CompetitiveVisitor {
+            min: 0,
+            max: 0,
+            max_doc_visited: -1,
+            docs: Vec::new(),
+            bits: None,
+            upgrade_at: 100,
+            added: 0,
+            spare: None,
+            max_doc: 8,
+            corrupt: None,
+        };
+        w.visit_many(&[1, -3, 2]);
+        assert_eq!((w.corrupt, w.added), (Some(-3), 0));
     }
 
     #[test]
