@@ -13,7 +13,7 @@ package org.lucenerust.opensearch;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 13;
+    public static final int EXPECTED_ABI_VERSION = 14;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -89,6 +89,14 @@ public final class NativeBridge {
         long[] outCounts,
         byte[][] outTerms
     );
+
+    /**
+     * Runs a query blob's matches through the numeric metrics of a metrics blob ({@link
+     * NativeAggregations.Plan#blob}): per field, {@code outCounts} receives its value count and
+     * {@code outValues} {@link NativeAggregations#VALUES} doubles -- the compensated sum and its
+     * delta, the minimum and maximum over every value, and over each document's first and last.
+     */
+    public static native int aggregate(long handle, byte[] query, byte[] aggs, long[] outCounts, double[] outValues);
 
     public static native int closeReader(long handle);
 
