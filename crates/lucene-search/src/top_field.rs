@@ -2028,6 +2028,311 @@ mod tests {
         assert_eq!((w.corrupt, w.added), (Some(-3), 0));
     }
 
+    fn comparator(reverse: bool, pruning: Pruning) -> Comparator {
+        let mut f = SortField::numeric("l", SortType::Long, reverse);
+        f.missing = 7;
+        Comparator {
+            field: f,
+            mul: if reverse { -1 } else { 1 },
+            values: vec![0; 4],
+            bottom: 10,
+            top: 3,
+            top_set: false,
+            pruning,
+            single_sort: true,
+            hits_threshold_reached: false,
+            queue_full: false,
+        }
+    }
+
+    fn competitive<'a>(
+        points: &'a PointsReader<'a>,
+        field_number: i32,
+        max_doc: i32,
+    ) -> Competitive<'a> {
+        Competitive {
+            points,
+            field_number,
+            bytes: 8,
+            point_doc_count: max_doc,
+            max_doc,
+            leaf_top_set: false,
+            iter: Iter::All { max_doc, doc: -1 },
+            min_value: i64::MIN,
+            max_value: i64::MAX,
+            max_doc_visited: -1,
+            update_counter: 0,
+            current_skip_interval: MIN_SKIP_INTERVAL,
+            iterator_cost: i64::from(max_doc),
+            try_update_fail_count: 0,
+            with_value: WithValue::None,
+            scratch: Vec::new(),
+            spare_bits: None,
+            walk: PointsScratch::default(),
+        }
+    }
+
+    #[test]
+    fn bounds_follow_the_bottom_the_top_and_the_pruning() {
+        let points = PointsReader::empty();
+        // Ascending, `>=` pruning: the bottom itself cannot compete.
+        let mut c = comparator(false, Pruning::GreaterThanOrEqualTo);
+        let mut comp = competitive(&points, 0, 100);
+        comp.encode_bottom(&c);
+        assert_eq!((comp.min_value, comp.max_value), (i64::MIN, 9));
+        // Descending with `>` pruning: the bottom still can (a later key).
+        let d = comparator(true, Pruning::GreaterThan);
+        comp.encode_bottom(&d);
+        assert_eq!(comp.min_value, 10);
+        // encodeTop tightens only for a single sort with a full queue.
+        c.queue_full = true;
+        comp.encode_top(&c);
+        assert_eq!(comp.min_value, 4);
+        let mut d = comparator(true, Pruning::GreaterThanOrEqualTo);
+        d.queue_full = true;
+        comp.encode_top(&d);
+        assert_eq!(comp.max_value, 2);
+        d.single_sort = false;
+        comp.encode_top(&d);
+        assert_eq!(comp.max_value, 3);
+
+        // isMissingValueCompetitive: missing 7 against bottom 10 and top 3.
+        let mut asc = comparator(false, Pruning::GreaterThanOrEqualTo);
+        asc.queue_full = true;
+        assert!(comp.missing_competitive(&asc), "7 < 10 ascending");
+        asc.bottom = 7;
+        assert!(!comp.missing_competitive(&asc), "a tie loses under >=");
+        asc.pruning = Pruning::GreaterThan;
+        assert!(comp.missing_competitive(&asc), "a tie can win under >");
+        let mut desc = comparator(true, Pruning::GreaterThanOrEqualTo);
+        desc.queue_full = true;
+        assert!(!comp.missing_competitive(&desc), "7 < 10 descending");
+        desc.pruning = Pruning::GreaterThan;
+        desc.bottom = 7;
+        assert!(comp.missing_competitive(&desc));
+        // With a top value: ascending needs missing >= top, descending <= top.
+        comp.leaf_top_set = true;
+        asc.bottom = 20;
+        assert!(comp.missing_competitive(&asc));
+        desc.bottom = 1;
+        assert!(!comp.missing_competitive(&desc));
+        asc.queue_full = false;
+        asc.top = 8;
+        assert!(!comp.missing_competitive(&asc));
+    }
+
+    #[test]
+    fn an_update_waits_for_the_threshold_and_a_full_queue_then_falls_back_to_values() {
+        let reader = fixture("sorted_search_index");
+        let mut opened = reader.open_segments().expect("open");
+        opened.open_points().expect("points");
+        let segments = opened.as_open_segments();
+        let p = segments[0].points.expect("points opened");
+        let num = p.field_number("l").expect("l has points");
+        let max_doc = reader.segment_readers()[0].max_doc;
+        let mut c = comparator(false, Pruning::GreaterThanOrEqualTo);
+        c.bottom = i64::MAX - 1;
+        let mut comp = competitive(&p.reader, num, max_doc);
+        comp.point_doc_count = max_doc; // no missing documents
+        comp.update(&c).unwrap();
+        assert_eq!(comp.update_counter, 0, "before the threshold, nothing");
+        c.hits_threshold_reached = true;
+        comp.update(&c).unwrap();
+        assert_eq!(comp.update_counter, 0, "no top and no full queue, nothing");
+        c.queue_full = true;
+        // A range this wide cannot narrow 8-fold: with fewer points than the
+        // iterator costs, the documents with values drive it instead.
+        comp.point_doc_count = max_doc - 1;
+        comp.iterator_cost = i64::from(max_doc) + 1;
+        c.field.missing = i64::MAX; // missing sorts last: not competitive
+        comp.with_value = WithValue::All;
+        comp.update(&c).unwrap();
+        assert!(matches!(comp.iter, Iter::All { .. }));
+        assert_eq!(comp.iterator_cost, i64::from(max_doc - 1));
+        comp.iterator_cost = i64::from(max_doc) + 1;
+        comp.with_value = WithValue::None;
+        comp.update(&c).unwrap();
+        assert!(matches!(&comp.iter, Iter::Docs { docs, .. } if docs.is_empty()));
+        // A missing value that could still compete stops the update.
+        c.field.missing = i64::MIN;
+        let before = comp.update_counter;
+        comp.update(&c).unwrap();
+        assert_eq!(comp.update_counter, before);
+    }
+
+    #[test]
+    fn docs_with_values_come_from_the_entry() {
+        let reader = fixture("sorted_search_index");
+        let r = &reader.segment_readers()[0];
+        let info = r
+            .field_infos()
+            .fields
+            .iter()
+            .find(|f| f.name == "l")
+            .unwrap();
+        let (meta, data) = r.doc_values_for_field(info.number).unwrap();
+        let entry = meta
+            .sorted_numeric_entry(info.number)
+            .unwrap()
+            .numeric
+            .clone();
+        assert!(
+            matches!(WithValue::of(data, &entry), WithValue::Disi { .. }),
+            "l is sparse"
+        );
+        let mut e = entry.clone();
+        e.docs_with_field_offset = -1;
+        assert!(matches!(WithValue::of(data, &e), WithValue::All));
+        e.docs_with_field_offset = -2;
+        assert!(matches!(WithValue::of(data, &e), WithValue::None));
+        e.docs_with_field_offset = data.len() as i64;
+        e.docs_with_field_length = 10;
+        assert!(
+            matches!(WithValue::of(data, &e), WithValue::None),
+            "past the file"
+        );
+    }
+
+    #[test]
+    fn the_scoring_tree_passes_through_and_reports_a_document_it_lacks() {
+        let reader = fixture("sorted_search_index");
+        let opened = reader.open_segments().expect("open");
+        let segments = opened.as_open_segments();
+        let seg = &segments[0];
+        let ctx = exec::LeafContext {
+            fields: seg.fields,
+            doc_in: seg.doc_in,
+            pos_in: seg.pos_in,
+            pay_in: seg.pay_in,
+            live_docs: None,
+            points: None,
+            norms: None,
+            global: None,
+            max_doc: seg.max_doc,
+            cache: None,
+        };
+        let all = Clause::MatchAllDocs(crate::query::MatchAllDocsQuery::new(0));
+        let tree = exec::build::child(&ctx, &all, 1.0, Mode::Complete, true)
+            .unwrap()
+            .unwrap()
+            .into_scorer(Mode::Complete);
+        let mut s = ScoreAt {
+            inner: tree,
+            doc: 5,
+        };
+        assert_eq!(s.cost(), i64::from(seg.max_doc.unwrap()));
+        assert_eq!(s.next_doc().unwrap(), 0);
+        assert_eq!(s.doc_id(), 0);
+        assert_eq!(s.score().unwrap(), 1.0, "moved to document 5 first");
+        assert_eq!(s.doc_id(), 5);
+        assert_eq!(s.advance(7).unwrap(), 7);
+        assert!(s.max_score(10).unwrap() >= 1.0);
+        s.doc = seg.max_doc.unwrap() + 3;
+        assert!(matches!(
+            s.score(),
+            Err(crate::Error::Sort(SortError::ScoringTree(_)))
+        ));
+    }
+
+    #[test]
+    fn counting_the_rest_stops_just_past_the_threshold() {
+        let reader = fixture("sorted_search_index");
+        let opened = reader.open_segments().expect("open");
+        let segments = opened.as_open_segments();
+        let seg = &segments[1];
+        let ctx = exec::LeafContext {
+            fields: seg.fields,
+            doc_in: seg.doc_in,
+            pos_in: seg.pos_in,
+            pay_in: seg.pay_in,
+            live_docs: None,
+            points: None,
+            norms: None,
+            global: None,
+            max_doc: seg.max_doc,
+            cache: None,
+        };
+        let all = Clause::MatchAllDocs(crate::query::MatchAllDocsQuery::new(0));
+        let scorer = || {
+            exec::build::child(&ctx, &all, 1.0, Mode::NoScores, true)
+                .unwrap()
+                .unwrap()
+                .into_scorer(Mode::NoScores)
+        };
+        let leaf = || Leaf {
+            doc_base: 0,
+            keys: vec![LeafKey::Doc],
+            collected_all_competitive: true,
+            after_doc: 0,
+            terminated: false,
+            score: 0.0,
+            score_doc: -1,
+        };
+        let max_doc = u64::try_from(seg.max_doc.unwrap()).unwrap();
+        // A run: counted at once, to one past the threshold.
+        let mut tf = TopField::new(&[SortField::doc()], 5, 100, None);
+        let mut l = leaf();
+        count_rest(&mut *scorer(), &mut tf, &mut l, None).unwrap();
+        assert_eq!(tf.total_hits, 101);
+        assert!(l.terminated);
+        assert_eq!(tf.relation, TotalHitsRelation::GreaterThanOrEqualTo);
+        // Exhaustive: every document but the one already on (next_doc skips it).
+        let mut tf = TopField::new(&[SortField::doc()], 5, u64::MAX, None);
+        let mut l = leaf();
+        count_rest(&mut *scorer(), &mut tf, &mut l, None).unwrap();
+        assert_eq!(tf.total_hits, max_doc);
+        assert!(!l.terminated);
+        // With live documents, one at a time.
+        let mut live = FixedBitSet::new(max_doc as usize);
+        for d in (0..max_doc as usize).step_by(2) {
+            live.set(d);
+        }
+        let mut tf = TopField::new(&[SortField::doc()], 5, 3, None);
+        let mut l = leaf();
+        count_rest(&mut *scorer(), &mut tf, &mut l, Some(&live)).unwrap();
+        assert_eq!(tf.total_hits, 6, "threshold max(3, 5 hits) + 1");
+        assert!(l.terminated);
+    }
+
+    #[test]
+    fn the_bulk_collector_keeps_its_first_error_and_asks_for_no_scores_by_document() {
+        let mut tf = TopField::new(&[SortField::doc()], 2, 10, None);
+        let mut l = Leaf {
+            doc_base: 0,
+            keys: vec![LeafKey::Doc],
+            collected_all_competitive: false,
+            after_doc: 0,
+            terminated: false,
+            score: 0.0,
+            score_doc: -1,
+        };
+        let mut c = BulkLeaf {
+            tf: &mut tf,
+            leaf: &mut l,
+            error: Some(SortError::NoKeys.into()),
+        };
+        assert_eq!(c.score_mode(), ScoreMode::CompleteNoScores);
+        assert_eq!(c.min_competitive_score(), None);
+        c.collect(1, 0.5);
+        assert_eq!(c.tf.total_hits, 0, "nothing collected past an error");
+        let mut tf = TopField::new(&[SortField::doc(), SortField::score()], 2, 10, None);
+        let mut l = Leaf {
+            doc_base: 0,
+            keys: vec![LeafKey::Doc, LeafKey::Score],
+            collected_all_competitive: false,
+            after_doc: 0,
+            terminated: false,
+            score: 0.0,
+            score_doc: -1,
+        };
+        let c = BulkLeaf {
+            tf: &mut tf,
+            leaf: &mut l,
+            error: None,
+        };
+        assert_eq!(c.score_mode(), ScoreMode::Complete);
+    }
+
     #[test]
     fn the_empty_queue_pops_nothing() {
         let mut q = HitQueue { heap: Vec::new() };
