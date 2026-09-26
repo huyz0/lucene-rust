@@ -903,15 +903,22 @@ impl<'a> WithValue<'a> {
                 doc: -1,
             },
             WithValue::All => Iter::All { max_doc, doc: -1 },
+            // A bit set filled a word at a time from the `IndexedDISI`
+            // (Lucene iterates the doc values lazily; a list of every id
+            // would cost a push per document on each segment's fallback).
             WithValue::Disi {
                 region,
                 dense_rank_power,
-            } => Iter::Docs {
-                docs: lucene_codecs::indexed_disi::decode_doc_ids(region, dense_rank_power)
-                    .map_err(|e| crate::Error::from(lucene_codecs::doc_values::Error::from(e)))?,
-                next: 0,
-                doc: -1,
-            },
+            } => {
+                let n = usize::try_from(max_doc).unwrap_or(0);
+                let mut words = vec![0u64; n.div_ceil(64)];
+                lucene_codecs::indexed_disi::or_into_words(region, dense_rank_power, &mut words)
+                    .map_err(|e| crate::Error::from(lucene_codecs::doc_values::Error::from(e)))?;
+                Iter::Bits {
+                    bits: FixedBitSet::from_words(words, n),
+                    doc: -1,
+                }
+            }
         })
     }
 
