@@ -219,6 +219,22 @@ whole inside leaves handed to the visitor at once. The match-all rows gain
 most from counting per document where Lucene collects 4,096-document windows
 first.
 
+Over REST on a real 3.8.0 node (`scripts/verify-opensearch.sh --docs 100000
+--bench-rounds 40`; mean latency, Lucene over native, 2 segments): every sorted
+row the matrix runs native is faster -- `_doc` 1.19x, `long` desc 1.03x,
+`double` 1.42x, `float` 1.20x, `date` 1.10x, `integer`,`long` 1.07x,
+multi-valued `min` 1.04x, sparse with each `missing` 1.01-1.04x, `_score` then
+a field 1.02x, a field then `_score` 2.50x, from 20 size 15 1.30x,
+`track_total_hits: true` 1.23x, `search_after` 1.03x and 1.30x, size 0 1.27x.
+The same run: 2,197 checks against a stock node, 0 failures; the self test's
+5,804 random sorted pages all agree with `TopFieldCollectorManager`.
+
+OpenSearch answers a top-level `range`, and a `match_all` sorted by one numeric
+field without `missing`, approximately (`ApproximateScoreQuery` resolved to its
+`ApproximatePointRangeQuery`/`ApproximateMatchAllQuery`, which break ties in
+BKD order); those stay on OpenSearch's path (`approximate`), since returning
+Lucene's exact answer would differ from a stock node's.
+
 Falls back: keyword sort (`SortedSetSortField`, next), `avg`/`sum`/`median`
 modes and nested sorts (OpenSearch's custom comparators), `track_scores`
 unless the score leads, and index-sorted shards.
