@@ -2694,12 +2694,14 @@ pub fn search_sorted_tracking(
         after,
         track_max_score,
         None,
+        None,
     )
 }
 
 /// [`search_sorted_tracking`] over the segments `leaves` names (in that
 /// order), every segment still counting toward the collection statistics;
-/// `None` for all of them.
+/// `None` for all of them. `until`, `(segment, end)`, searches that segment
+/// below `end` only.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn search_sorted_leaves(
     segments: &[OpenSegment<'_>],
@@ -2712,6 +2714,7 @@ pub(crate) fn search_sorted_leaves(
     after: Option<&FieldDoc>,
     track_max_score: bool,
     leaves: Option<&[usize]>,
+    until: Option<(usize, i32)>,
 ) -> Result<TopFieldDocs> {
     if sort.is_empty() {
         return Err(SortError::NoKeys.into());
@@ -2764,6 +2767,7 @@ pub(crate) fn search_sorted_leaves(
         after,
         track,
         global: global.as_ref(),
+        until,
     };
     search_segments(&run, &all)
 }
@@ -2821,6 +2825,7 @@ pub fn search_sorted_sliced(
         after,
         track: false,
         global: global.as_ref(),
+        until: None,
     };
     let parallel =
         crate::slices::estimated_matches(segments, query) >= crate::slices::SEQUENTIAL_BELOW;
@@ -2928,6 +2933,9 @@ struct Run<'r, 'a> {
     after: Option<&'r FieldDoc>,
     track: bool,
     global: Option<&'r crate::GlobalStats>,
+    /// `(segment, end)`: that segment is searched below `end` only -- the
+    /// cut a `terminate_after` search stops its last segment at.
+    until: Option<(usize, i32)>,
 }
 
 /// One collector over the segments at `order`, in that order.
@@ -2943,6 +2951,7 @@ fn search_segments(run: &Run<'_, '_>, order: &[usize]) -> Result<TopFieldDocs> {
         after,
         track,
         global,
+        until,
     } = *run;
     let mut tf = TopField::new(sort, top_n, total_hits_threshold, after);
     let want_scores = tf.needs_scores || track;
@@ -2967,6 +2976,10 @@ fn search_segments(run: &Run<'_, '_>, order: &[usize]) -> Result<TopFieldDocs> {
                 segments: segments.len().min(readers.len()),
             });
         };
+        let end = match until {
+            Some((u, end)) if u == i => end,
+            _ => NO_MORE_DOCS,
+        };
         let ctx = exec::LeafContext {
             fields: seg.fields,
             doc_in: seg.doc_in,
@@ -2990,7 +3003,7 @@ fn search_segments(run: &Run<'_, '_>, order: &[usize]) -> Result<TopFieldDocs> {
                 leaf: &mut leaf,
                 error: None,
             };
-            exec::score_segment(&mut bulk, mode, seg.live_docs, &mut c)?;
+            exec::score_segment_below(&mut bulk, mode, seg.live_docs, &mut c, end)?;
             if let Some(e) = c.error {
                 return Err(e);
             }
@@ -3012,7 +3025,7 @@ fn search_segments(run: &Run<'_, '_>, order: &[usize]) -> Result<TopFieldDocs> {
                 max: f32::NEG_INFINITY,
                 error: None,
             };
-            exec::score_segment(&mut bulk, Mode::Complete, seg.live_docs, &mut c)?;
+            exec::score_segment_below(&mut bulk, Mode::Complete, seg.live_docs, &mut c, end)?;
             if let Some(e) = c.error {
                 return Err(e);
             }
@@ -3033,6 +3046,9 @@ fn search_segments(run: &Run<'_, '_>, order: &[usize]) -> Result<TopFieldDocs> {
             continue;
         };
         let mut scorer = child.into_scorer(iter_mode);
+        if end != NO_MORE_DOCS {
+            scorer = Box::new(exec::Below::new(scorer, end));
+        }
         let mut scores = if want_scores && !self_scores {
             // The same query, so the same segment answer: a tree here and
             // none there would be a bug, reported rather than scored as 0.

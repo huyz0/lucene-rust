@@ -758,3 +758,15 @@ pub(crate) fn score_segment<C: ScoringCollector + ?Sized>(
     bulk.score(mode, live_docs, collector, 0, NO_MORE_DOCS)?;
     Ok(())
 }
+
+/// [`score_segment`] over the documents below `end` only.
+pub(crate) fn score_segment_below<C: ScoringCollector + ?Sized>(
+    bulk: &mut Bulk<'_>,
+    mode: Mode,
+    live_docs: Option<&FixedBitSet>,
+    collector: &mut C,
+    end: i32,
+) -> Result<()> {
+    bulk.score(mode, live_docs, collector, 0, end)?;
+    Ok(())
+}

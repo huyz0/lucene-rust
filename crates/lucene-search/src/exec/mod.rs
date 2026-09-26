@@ -48,7 +48,7 @@ mod wand;
 pub(crate) use build::LeafContext;
 #[cfg(test)]
 pub(crate) use bulk::Bulk;
-pub(crate) use bulk::{bulk_boolean, score_segment};
+pub(crate) use bulk::{bulk_boolean, score_segment, score_segment_below};
 
 use lucene_util::fixed_bit_set::FixedBitSet;
 
@@ -171,6 +171,90 @@ pub(crate) trait Scorer {
 pub(crate) const NEXT_DOCS_BATCH: usize = 64;
 
 pub(crate) type BoxScorer<'a> = Box<dyn Scorer + 'a>;
+
+/// A scorer whose documents end before `end`: at or past it, it reports
+/// [`NO_MORE_DOCS`]. A sorted search's last segment under `terminate_after`
+/// iterates only up to the cut this way, instead of past it with every later
+/// document masked out.
+pub(crate) struct Below<'a> {
+    inner: BoxScorer<'a>,
+    end: i32,
+    done: bool,
+}
+
+impl<'a> Below<'a> {
+    pub(crate) fn new(inner: BoxScorer<'a>, end: i32) -> Self {
+        Self {
+            inner,
+            end,
+            done: false,
+        }
+    }
+
+    fn clip(&mut self, doc: i32) -> i32 {
+        if doc >= self.end {
+            self.done = true;
+            NO_MORE_DOCS
+        } else {
+            doc
+        }
+    }
+}
+
+impl Scorer for Below<'_> {
+    fn doc_id(&self) -> i32 {
+        if self.done {
+            NO_MORE_DOCS
+        } else {
+            self.inner.doc_id()
+        }
+    }
+    fn next_doc(&mut self) -> Result<i32> {
+        if self.done {
+            return Ok(NO_MORE_DOCS);
+        }
+        let d = self.inner.next_doc()?;
+        Ok(self.clip(d))
+    }
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        if self.done || target >= self.end {
+            self.done = true;
+            return Ok(NO_MORE_DOCS);
+        }
+        let d = self.inner.advance(target)?;
+        Ok(self.clip(d))
+    }
+    fn cost(&self) -> i64 {
+        self.inner.cost()
+    }
+    fn two_phase(&self) -> bool {
+        self.inner.two_phase()
+    }
+    fn matches(&mut self) -> Result<bool> {
+        self.inner.matches()
+    }
+    fn match_cost(&self) -> f32 {
+        self.inner.match_cost()
+    }
+    fn score(&mut self) -> Result<f32> {
+        self.inner.score()
+    }
+    fn advance_shallow(&mut self, target: i32) -> Result<i32> {
+        self.inner.advance_shallow(target)
+    }
+    fn max_score(&mut self, up_to: i32) -> Result<f32> {
+        self.inner.max_score(up_to)
+    }
+    fn set_min_competitive_score(&mut self, min: f32) -> Result<()> {
+        self.inner.set_min_competitive_score(min)
+    }
+    fn doc_id_run_end(&self) -> i32 {
+        self.inner.doc_id_run_end().min(self.end)
+    }
+    fn contains(&self, doc: i32) -> Option<bool> {
+        self.inner.contains(doc).map(|m| m && doc < self.end)
+    }
+}
 
 /// `TwoPhaseIterator.asDocIdSetIterator(...).advance(target)`.
 pub(crate) fn exact_advance(s: &mut dyn Scorer, target: i32) -> Result<i32> {
