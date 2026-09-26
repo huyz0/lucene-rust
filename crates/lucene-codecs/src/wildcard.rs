@@ -47,7 +47,7 @@
 //! for task #34's `WildcardQuery` port.
 
 /// One token of a compiled glob pattern.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Token {
     /// A single literal byte that must match exactly.
     Literal(u8),
@@ -169,6 +169,35 @@ impl WildcardPattern {
     /// are exact; `?` is [`crate::automaton::Nfa::lenient_char`], exact for
     /// ASCII and a superset around multi-byte or truncated characters. Every
     /// term it accepts is still confirmed by [`Self::matches`].
+    /// [`Self::to_dfa`], compiled once per pattern for the process: a prefix
+    /// or wildcard query is expanded in every segment of every search, and the
+    /// subset construction behind the automaton was half of a keyword prefix
+    /// query's time. Lucene compiles its automaton once per query; this keeps
+    /// the last few hundred patterns. Bounded: cleared when full.
+    pub(crate) fn to_dfa_cached(&self) -> Option<std::sync::Arc<crate::automaton::ByteDfa>> {
+        type Cache = std::collections::HashMap<
+            Vec<Token>,
+            Option<std::sync::Arc<crate::automaton::ByteDfa>>,
+        >;
+        static CACHE: std::sync::LazyLock<std::sync::Mutex<Cache>> =
+            std::sync::LazyLock::new(Default::default);
+        const MAX_PATTERNS: usize = 512;
+        if let Some(hit) = CACHE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&self.tokens)
+        {
+            return hit.clone();
+        }
+        let dfa = self.to_dfa().map(std::sync::Arc::new);
+        let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if cache.len() >= MAX_PATTERNS {
+            cache.clear();
+        }
+        cache.insert(self.tokens.clone(), dfa.clone());
+        dfa
+    }
+
     pub(crate) fn to_dfa(&self) -> Option<crate::automaton::ByteDfa> {
         let mut nfa = crate::automaton::Nfa::new();
         let start = nfa.state()?;

@@ -759,19 +759,38 @@ fn small_constant_score_union<C: ScoringCollector>(
         docs.push(c.next_doc().map_err(pe)?);
         cursors.push(c);
     }
+    // A window of documents at a time, as `BooleanScorer` does: every term
+    // marks its documents in the window's bits, then the bits are collected
+    // in order -- deduplicated and sorted without a per-document scan of the
+    // terms' heads.
+    const WINDOW: i32 = 4096;
+    let mut words = [0u64; (WINDOW / 64) as usize];
     let mut left = need;
     loop {
-        let doc = docs.iter().copied().min().unwrap_or(NO_MORE_DOCS);
-        if doc == NO_MORE_DOCS || left == 0 {
+        let base = docs.iter().copied().min().unwrap_or(NO_MORE_DOCS);
+        if base == NO_MORE_DOCS || left == 0 {
             return Ok(true);
         }
-        if live_docs.is_none_or(|l| l.get_doc(doc)) {
-            collector.collect(doc, 1.0);
-            left -= 1;
-        }
+        let end = base.saturating_add(WINDOW);
         for (d, c) in docs.iter_mut().zip(cursors.iter_mut()) {
-            if *d == doc {
+            while *d < end {
+                // ARITH: base <= *d < base + WINDOW.
+                let i = (*d - base) as usize;
+                words[i >> 6] |= 1u64 << (i & 63);
                 *d = c.next_doc().map_err(pe)?;
+            }
+        }
+        for (w, word) in words.iter_mut().enumerate() {
+            let mut bits = std::mem::take(word);
+            while bits != 0 {
+                // ARITH: w < WINDOW / 64 and the bit < 64, so the offset is
+                // below WINDOW and base + offset below `end`.
+                let doc = base + (w * 64) as i32 + bits.trailing_zeros() as i32;
+                bits &= bits - 1;
+                if left > 0 && live_docs.is_none_or(|l| l.get_doc(doc)) {
+                    collector.collect(doc, 1.0);
+                    left -= 1;
+                }
             }
         }
     }

@@ -2256,10 +2256,7 @@ impl FieldTerms {
     ) -> impl Iterator<Item = Result<(Vec<u8>, SeekedTerm)>> + 'a {
         Intersect::new(
             self,
-            DfaFiltered::new(
-                PrefixMatcher(pattern),
-                pattern.to_dfa().map(std::sync::Arc::new),
-            ),
+            DfaFiltered::new(PrefixMatcher(pattern), pattern.to_dfa_cached()),
             pattern.literal_prefix(),
         )
     }
