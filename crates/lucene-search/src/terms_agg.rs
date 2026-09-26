@@ -24,8 +24,6 @@
 //! Counting by term bytes rather than by global ordinal gives the same counts
 //! (a global ordinal is a term); the order of the terms is the ordinals'.
 
-use std::collections::HashMap;
-
 use lucene_codecs::doc_values::{NumericReader, SortedNumericReader, SortedSetKind};
 use lucene_codecs::terms_dict::TermsDict;
 
@@ -80,7 +78,96 @@ fn open_ords<'a>(
             Some(TermsDict::open(data, &se.terms).map_err(store)?),
         ));
     }
-    Err(crate::Error::TermsAggType(field.to_string()))
+    // Doc values of another kind are a mapping error; none at all (a field
+    // indexed without doc values here) counts nothing.
+    if meta.numeric_entry(info.number).is_some()
+        || meta.sorted_numeric_entry(info.number).is_some()
+        || meta.binary_entry(info.number).is_some()
+    {
+        return Err(crate::Error::TermsAggType(field.to_string()));
+    }
+    Ok((Ords::Absent, None))
+}
+
+/// A keyword field's global ordinals over a reader's segments -- Lucene's
+/// `OrdinalMap`, which OpenSearch's `GlobalOrdinalsStringTermsAggregator`
+/// counts into: every distinct term of the field across the segments gets an
+/// ordinal in term order, and each segment's ordinals map onto them. Built
+/// once per reader and field (see
+/// [`crate::directory_reader::DirectoryReader::global_ords`]).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GlobalOrds {
+    /// Per segment, its ordinals' global ordinals (empty for a segment
+    /// without the field).
+    segment_to_global: Vec<Vec<u32>>,
+    /// Per global ordinal, a segment and ordinal holding its term.
+    first: Vec<(u32, u32)>,
+}
+
+impl GlobalOrds {
+    /// Merges the segments' dictionaries of `field`, in term order.
+    ///
+    /// # Errors
+    /// A field whose doc values are not keyword ones, a dictionary that
+    /// cannot be read, or more than `u32::MAX` terms.
+    pub fn build(readers: &[SegmentReader], field: &str) -> Result<Self> {
+        use std::cmp::Reverse;
+        use std::collections::BinaryHeap;
+        let too_many = || crate::Error::TermsAggType(format!("{field}: more than u32::MAX terms"));
+        let mut dicts = Vec::with_capacity(readers.len());
+        let mut segment_to_global = Vec::with_capacity(readers.len());
+        for reader in readers {
+            let (_, dict) = open_ords(reader, field)?;
+            let size = dict.as_ref().map_or(0, TermsDict::size);
+            segment_to_global.push(vec![0u32; usize::try_from(size).unwrap_or(0)]);
+            dicts.push(dict);
+        }
+        // A k-way merge of the dictionaries, each already in term order.
+        let mut heap: BinaryHeap<Reverse<(Vec<u8>, usize, u32)>> = BinaryHeap::new();
+        for (seg, dict) in dicts.iter_mut().enumerate() {
+            if let Some(d) = dict.as_mut().filter(|d| d.size() > 0) {
+                heap.push(Reverse((
+                    d.seek_ord(0).map_err(store_err)?.to_vec(),
+                    seg,
+                    0,
+                )));
+            }
+        }
+        let mut first: Vec<(u32, u32)> = Vec::new();
+        let mut last: Option<Vec<u8>> = None;
+        while let Some(Reverse((term, seg, ord))) = heap.pop() {
+            if last.as_deref() != Some(&term[..]) {
+                first.push((u32::try_from(seg).map_err(|_| too_many())?, ord));
+                last = Some(term);
+            }
+            let global = u32::try_from(first.len() - 1).map_err(|_| too_many())?;
+            if let Some(slot) = segment_to_global
+                .get_mut(seg)
+                .and_then(|m| m.get_mut(ord as usize))
+            {
+                *slot = global;
+            }
+            let next = ord.checked_add(1).ok_or_else(too_many)?;
+            if let Some(d) = dicts.get_mut(seg).and_then(Option::as_mut) {
+                if i64::from(next) < d.size() {
+                    heap.push(Reverse((
+                        d.seek_ord(i64::from(next)).map_err(store_err)?.to_vec(),
+                        seg,
+                        next,
+                    )));
+                }
+            }
+        }
+        Ok(GlobalOrds {
+            segment_to_global,
+            first,
+        })
+    }
+
+    /// The number of distinct terms (`OrdinalMap.getValueCount`).
+    pub fn value_count(&self) -> usize {
+        self.first.len()
+    }
 }
 
 /// The `terms` shard result of `field` over `query`'s live matches, the
@@ -119,7 +206,9 @@ pub fn terms_sliced(
         field: field.to_string(),
         shard_size,
     }];
-    let sliced = crate::aggs::aggregate_sliced(segments, readers, query, &[], &spec, slices)?;
+    let global = [std::sync::Arc::new(GlobalOrds::build(readers, field)?)];
+    let sliced =
+        crate::aggs::aggregate_sliced(segments, readers, query, &[], &spec, &global, slices)?;
     Ok(sliced
         .into_iter()
         .filter_map(|(_, mut terms)| terms.pop())
@@ -137,32 +226,31 @@ pub struct TermsSpec {
 #[derive(Default)]
 pub(crate) struct TermsScratch {
     ords: Vec<i64>,
-    per_ord: Vec<u64>,
 }
 
-/// Adds one segment's matches to `counts`, per term of `field`: `read` says
-/// how the matches meet the column (see [`crate::aggs::column_read`]).
+/// Adds segment `seg`'s matches to `counts`, indexed by global ordinal: `read`
+/// says how the matches meet the column (see [`crate::aggs::column_read`]).
 pub(crate) fn segment_counts(
     reader: &SegmentReader,
+    seg: usize,
     field: &str,
+    global: &GlobalOrds,
     read: &ColumnRead<'_>,
-    counts: &mut HashMap<Vec<u8>, u64>,
+    counts: &mut [u64],
     scratch: &mut TermsScratch,
 ) -> Result<()> {
-    let (ords, dict) = open_ords(reader, field)?;
-    let Some(mut dict) = dict else {
-        return Ok(());
-    };
-    let TermsScratch {
-        ords: ords_buf,
-        per_ord,
-    } = scratch;
-    per_ord.clear();
-    per_ord.resize(usize::try_from(dict.size()).unwrap_or(0), 0);
-    // An ordinal past the dictionary is corrupt; it is reported by the term
-    // lookup below rather than counted.
+    let (ords, _) = open_ords(reader, field)?;
+    let map = global
+        .segment_to_global
+        .get(seg)
+        .map_or(&[][..], Vec::as_slice);
+    // An ordinal past the dictionary is corrupt, and reported.
     let mut bad_ord: Option<i64> = None;
-    let mut bump = |ord: i64| match usize::try_from(ord).ok().and_then(|o| per_ord.get_mut(o)) {
+    let mut bump = |ord: i64| match usize::try_from(ord)
+        .ok()
+        .and_then(|o| map.get(o))
+        .and_then(|&g| counts.get_mut(g as usize))
+    {
         Some(c) => *c += 1,
         None => bad_ord = Some(ord),
     };
@@ -194,82 +282,103 @@ pub(crate) fn segment_counts(
         }
         (Ords::Multi(mut r), ColumnRead::Seek(docs)) => {
             for &doc in *docs {
-                r.values(doc, ords_buf)?;
-                for &ord in ords_buf.iter() {
+                r.values(doc, &mut scratch.ords)?;
+                for &ord in scratch.ords.iter() {
                     bump(ord);
                 }
             }
         }
     }
-    if let Some(ord) = bad_ord {
-        // Raises the dictionary's own out-of-range error.
-        dict.seek_ord(ord).map_err(store_err)?;
+    match bad_ord {
+        Some(ord) => Err(store_err(lucene_store::Error::Corrupted(format!(
+            "{field}: ordinal {ord} outside the segment's dictionary"
+        )))),
+        None => Ok(()),
     }
-    for (ord, &n) in per_ord.iter().enumerate() {
-        if n > 0 {
-            let term = dict.seek_ord(ord as i64).map_err(store_err)?;
-            *counts.entry(term.to_vec()).or_insert(0) += n;
-        }
-    }
-    Ok(())
 }
 
 fn store_err(e: lucene_store::Error) -> crate::Error {
     crate::Error::from(lucene_codecs::doc_values::Error::from(e))
 }
 
-/// `buildAggregations`: the top `shard_size` by count desc, term asc; the
-/// others' counts in `other_doc_count`; the kept listed by term.
-pub(crate) fn select(counts: HashMap<Vec<u8>, u64>, shard_size: usize) -> TermsResult {
-    let total: u64 = counts.values().sum();
-    let mut all: Vec<(Vec<u8>, u64)> = counts.into_iter().collect();
-    let by_rank =
-        |a: &(Vec<u8>, u64), b: &(Vec<u8>, u64)| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0));
-    if all.len() > shard_size {
+/// `buildAggregations`: the top `shard_size` by count desc, then global
+/// ordinal (term) asc; the others' counts in `other_doc_count`; the kept
+/// listed by term, their bytes read from a segment holding each.
+pub(crate) fn select(
+    counts: &[u64],
+    shard_size: usize,
+    global: &GlobalOrds,
+    readers: &[SegmentReader],
+    field: &str,
+) -> Result<TermsResult> {
+    let total: u64 = counts.iter().sum();
+    let mut kept: Vec<(u32, u64)> = counts
+        .iter()
+        .enumerate()
+        .filter(|&(_, &n)| n > 0)
+        .map(|(g, &n)| (g as u32, n))
+        .collect();
+    let by_rank = |a: &(u32, u64), b: &(u32, u64)| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0));
+    if kept.len() > shard_size {
         if shard_size > 0 {
-            all.select_nth_unstable_by(shard_size - 1, by_rank);
+            kept.select_nth_unstable_by(shard_size - 1, by_rank);
         }
-        all.truncate(shard_size);
+        kept.truncate(shard_size);
     }
-    let kept: u64 = all.iter().map(|b| b.1).sum();
-    all.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-    TermsResult {
-        buckets: all,
-        other_doc_count: total - kept,
+    let kept_docs: u64 = kept.iter().map(|b| b.1).sum();
+    kept.sort_unstable_by_key(|b| b.0);
+    let mut dicts: Vec<Option<TermsDict<'_>>> = Vec::new();
+    let mut buckets = Vec::with_capacity(kept.len());
+    for (g, n) in kept {
+        let Some(&(seg, ord)) = global.first.get(g as usize) else {
+            continue;
+        };
+        let seg = seg as usize;
+        if dicts.len() <= seg {
+            dicts.resize_with(seg + 1, || None);
+        }
+        if dicts[seg].is_none() {
+            if let Some(reader) = readers.get(seg) {
+                dicts[seg] = open_ords(reader, field)?.1;
+            }
+        }
+        let Some(dict) = dicts[seg].as_mut() else {
+            continue;
+        };
+        buckets.push((
+            dict.seek_ord(i64::from(ord)).map_err(store_err)?.to_vec(),
+            n,
+        ));
     }
+    Ok(TermsResult {
+        buckets,
+        other_doc_count: total - kept_docs,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn counts(pairs: &[(&str, u64)]) -> HashMap<Vec<u8>, u64> {
-        pairs
-            .iter()
-            .map(|&(t, n)| (t.as_bytes().to_vec(), n))
-            .collect()
-    }
-
     #[test]
     fn the_top_terms_are_kept_by_count_then_term_and_listed_by_term() {
-        let r = select(
-            counts(&[("b", 3), ("a", 3), ("c", 5), ("d", 1), ("e", 3)]),
-            3,
-        );
+        // No segments to read terms from: the buckets are empty, but the
+        // counts kept and left over are what selection decided.
+        let global = GlobalOrds {
+            segment_to_global: Vec::new(),
+            first: Vec::new(),
+        };
+        let r = select(&[3, 3, 5, 1, 3], 3, &global, &[], "f").unwrap();
         assert_eq!(
-            r.buckets,
-            vec![(b"a".to_vec(), 3), (b"b".to_vec(), 3), (b"c".to_vec(), 5)]
+            r.other_doc_count, 4,
+            "ordinals 0, 1, 2 kept (5 and the two lowest 3s)"
         );
-        assert_eq!(r.other_doc_count, 4);
-        // Room for every term: nothing left over.
-        let r = select(counts(&[("x", 2), ("y", 1)]), 10);
-        assert_eq!(r.buckets.len(), 2);
+        let r = select(&[2, 1], 10, &global, &[], "f").unwrap();
         assert_eq!(r.other_doc_count, 0);
-        // Unsigned byte order: 0xff after 'z'.
-        let mut c = counts(&[("z", 1)]);
-        c.insert(vec![0xff], 1);
-        let r = select(c, 1);
-        assert_eq!(r.buckets, vec![(b"z".to_vec(), 1)]);
-        assert_eq!(select(HashMap::new(), 0), TermsResult::default());
+        assert_eq!(
+            select(&[], 0, &global, &[], "f").unwrap(),
+            TermsResult::default()
+        );
+        assert_eq!(global.value_count(), 0);
     }
 }

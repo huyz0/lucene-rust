@@ -1096,9 +1096,16 @@ pub(crate) fn aggregate_blobs(
     } else {
         slices
     };
-    let sliced =
-        lucene_search::aggs::aggregate_sliced(&segments, readers, &q, &specs, &terms, &slices)
-            .map_err(map_search_error)?;
+    // Each terms field's global ordinals, built once per reader and kept.
+    let globals = terms
+        .iter()
+        .map(|t| h.reader.global_ords(&t.field))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(map_search_error)?;
+    let sliced = lucene_search::aggs::aggregate_sliced(
+        &segments, readers, &q, &specs, &terms, &globals, &slices,
+    )
+    .map_err(map_search_error)?;
     let mut states = Vec::new();
     let mut results = Vec::new();
     for (m, t) in sliced {
