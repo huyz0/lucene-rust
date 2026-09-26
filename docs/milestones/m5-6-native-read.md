@@ -23,7 +23,7 @@ milestone finishes the read side.
 | R4 | Sort and `search_after` natively (`TopFieldCollector`) | numeric, score, `_doc` and keyword keys and `track_scores` delivered (below); open: `avg`/`sum`/`median` modes, nested sorts, index-sorted shards |
 | R5 | Aggregations natively: terms, histogram, date_histogram, range, the metrics, cardinality, filter/filters | metrics (`min`, `max`, `sum`, `avg`, `value_count`, `stats`) and keyword `terms` delivered (below); open: the bucket aggregations, `cardinality`, sub-aggregations |
 | R6 | Fetch (`_source`, stored fields, `docvalue_fields`) and get natively | open |
-| R7 | scroll, `post_filter`, `min_score`, `terminate_after`, timeouts; the full read benchmark (in process and REST) with every native shape at least 1.0× Lucene | `post_filter`, `timeout`, scroll, `terminate_after` and `min_score` (by score) delivered (below); open: `min_score` behind a sort, the full read benchmark |
+| R7 | scroll, `post_filter`, `min_score`, `terminate_after`, timeouts; the full read benchmark (in process and REST) with every native shape at least 1.0× Lucene | `post_filter`, `timeout`, scroll, `terminate_after` and `min_score` (by score) delivered; the query-phase REST benchmark at median 1.58×, worst 0.89× (below); open: `min_score` behind a sort, the last shapes under 1.0× |
 
 ## R1 — the scorer tree (delivered)
 
@@ -572,8 +572,10 @@ contexts do, in the plugin's Java; the native searches underneath are R1-R5's.
   top-docs collector: the first `n` matches in index order are let through,
   the next one -- or the next segment -- ends the search. Natively
   (`lucene-search/src/terminate.rs`): find where the `n`th match falls, then
-  run the sorted search over that prefix of the index (the cut segment's live
-  documents masked past it) with the whole shard's statistics; a search by
+  run the sorted search over that prefix of the index (the cut segment
+  searched below its last collected match: the bulk scorers get the cut as
+  their `max`, an iterating scorer is wrapped to end there) with the whole
+  shard's statistics; a search by
   score runs as the `_score` sort. `terminated_early` is whether a match or a
   segment followed the cut. `size: 0` counts as `TotalHitCountCollector`
   does, a term's `docFreq` or a match-all's `numDocs` per visited segment
@@ -612,6 +614,54 @@ contexts do, in the plugin's Java; the native searches underneath are R1-R5's.
   would need it inside), a scroll's later pages or `terminate_after`, Lucene
   answers. `tests/min_score_fixtures.rs` checks 140 Lucene runs; the self test
   random queries at two minimums each.
+
+### The query-phase benchmark over REST
+
+The plugin's own `query_phase_nanos` counters, per path (no HTTP or fetch
+time in either): every native row of `verify_opensearch.py`'s matrix, 116
+request shapes, on one shard of 100,000 documents in eight segments, the
+index switched between the native path and Lucene six times, 20 requests per
+shape per turn after three warm-up requests, median per shape. Lucene over
+native:
+
+| | ratio |
+|---|---|
+| median | 1.58× |
+| 10th percentile | 1.11× |
+| worst | 0.89× (`constant_score` over `match_all`: 40 µs against 45 µs) |
+
+Shapes under 1.0× at the last run: that one; `agg terms shard_size` (0.87×
+to 1.10× across runs, Lucene's own time moving by 400 µs); and three at
+0.98-0.99×. Rows under 100 µs move ±10% between runs.
+
+What closed the gaps the first full run showed (worst 0.28×, 30 shapes
+under 1.0×), each measured before and after:
+
+- Fixed cost per request: the plugin's index settings read once per settings
+  version; BM25 norm tables once per reader; a field's per-segment norms
+  resolved once per reader; postings files validated once per reader; the
+  statistics pass's term seek reused by the scorer (`TermStates`); a term no
+  segment holds answered without visiting one; a boolean of one term clause
+  run as that term (`BooleanQuery.rewrite`); OpenSearch's total-hits shortcut
+  for a term (`docFreq` over the segments) counted by the native dictionaries
+  rather than Lucene's in the JVM, 25 µs a request; no JNI call at all for a
+  `size: 0` total already known.
+- Threads: a concurrent search's slices run on the calling thread when their
+  work is too small to repay a pool thread's wake-up (fewer than 4,096
+  estimated matches, or aggregations answered from index statistics alone):
+  a match-all `terms` aggregation over four slices, 134 µs to 18 µs.
+- Scorers: a `MUST` + `SHOULD` query no longer walks empty windows past its
+  leading clause's last block (32,000 a segment); unscored term disjunctions
+  union a block at a time into bit windows; a sort tracking scores scores
+  through the bulk scorers, not a second tree advanced per document; a
+  two-term sloppy phrase walks two pointers instead of the general matcher
+  (checked bit for bit against it); WAND's `scalb` builds its power of two
+  from the exponent bits, and `Math.scalb`'s way past the largest normal
+  power, not through `powi`; wildcard and prefix automata compiled once per
+  pattern; `terminate_after`'s cut segment searched below the cut.
+- Aggregations: a multi-valued column decoded only for the matching
+  documents; a `size: 0` search's hits counted in the aggregations' own pass
+  (ABI 18), with and without `min_score`, as Lucene's `MultiCollector` does.
 
 Acceptance, `scripts/verify-opensearch.sh` against a stock node's answers:
 `post_filter` with terms and metric aggregations, sorted, paged, `size: 0`,
