@@ -192,6 +192,11 @@ pub struct SegmentReader {
     kdm_buf: Option<Arc<Input>>,
     kdi_buf: Option<Arc<Input>>,
     kdd_buf: Option<Arc<Input>>,
+    /// The points fields' metadata, parsed from `.kdm` on first use and kept
+    /// (shared by every reopen that keeps the segment): Lucene's
+    /// `PointsReader` lives as long as the segment core, so a search does not
+    /// re-read `.kdm`.
+    points_meta: Arc<std::sync::OnceLock<Vec<(i32, lucene_codecs::points::PointsField)>>>,
     /// The segment's parsed `.dvm` (per-field entries -- `NumericEntry`,
     /// `SortedEntry`, etc., each already carrying whichever of the
     /// dense/sparse shapes `doc_values.rs`'s write side actually produced;
@@ -521,6 +526,7 @@ impl SegmentReader {
             kdm_buf,
             kdi_buf,
             kdd_buf,
+            points_meta: Arc::default(),
             dv_meta,
             dv_generations,
             norms_meta,
@@ -1182,10 +1188,21 @@ impl<'a> OpenedSegments<'a> {
         }
         for r in self.readers {
             let opened = match r.points_files() {
-                Some((kdm, kdi, kdd)) => Some(crate::points_query::PointsInput {
-                    reader: lucene_codecs::points::open(kdm, kdi, kdd, &r.segment_id, "")?,
-                    field_infos: &r.field_infos,
-                }),
+                Some((kdm, kdi, kdd)) => {
+                    if r.points_meta.get().is_none() {
+                        let parsed =
+                            lucene_codecs::points::open_meta(kdm, kdi, kdd, &r.segment_id, "")?;
+                        // A race loses nothing: both parsed the same bytes.
+                        let _ = r.points_meta.set(parsed);
+                    }
+                    // Set above (or by the racing thread), so this never
+                    // initializes: it only borrows what was parsed.
+                    let meta = r.points_meta.get_or_init(Vec::new);
+                    Some(crate::points_query::PointsInput {
+                        reader: lucene_codecs::points::PointsReader::with_meta(kdi, kdd, meta),
+                        field_infos: &r.field_infos,
+                    })
+                }
                 // No points at all: an empty reader, so a points clause
                 // matches nothing here rather than finding no input.
                 None => Some(crate::points_query::PointsInput {

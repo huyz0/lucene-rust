@@ -516,22 +516,17 @@ fn unique_states(
     let rewritten = crate::multi_segment::rewrite_points_ranges(query, segments);
     let query = rewritten.as_ref().unwrap_or(query);
     let clause = lone_clause(query);
-    // Slices are independent, as a concurrent search's are: they run on
-    // rayon's pool, one task each, as Lucene hands each to its executor --
-    // unless every aggregation is a points bound (one read per segment),
-    // where handing the slices to other threads costs more than it saves.
+    // Slices are independent, as a concurrent search's are: they run
+    // concurrently ([`crate::slices::run_slices`]) -- unless every
+    // aggregation is a points bound (one read per segment), where handing
+    // slices to other threads costs more than it saves.
+    let one =
+        |slice: &[usize]| slice_states(segments, readers, query, &clause, specs, terms, slice);
     let points_only = terms.is_empty() && specs.iter().all(|s| s.source != Source::DocValues);
-    if slices.len() > 1 && !points_only {
-        use rayon::prelude::*;
-        return slices
-            .par_iter()
-            .map(|slice| slice_states(segments, readers, query, &clause, specs, terms, slice))
-            .collect();
+    if points_only {
+        return slices.iter().map(|s| one(s)).collect();
     }
-    slices
-        .iter()
-        .map(|slice| slice_states(segments, readers, query, &clause, specs, terms, slice))
-        .collect()
+    crate::slices::run_slices(slices, one).into_iter().collect()
 }
 
 /// One slice's states and terms: its segments, in order, from scratch.

@@ -216,6 +216,7 @@ pub mod query;
 pub mod query_cache;
 pub mod query_parser;
 pub mod similarity;
+mod slices;
 pub mod sloppy_phrase;
 pub mod soft_deletes;
 pub mod term_vectors_query;
