@@ -582,7 +582,11 @@ fn unique_states(
     if points_only {
         return slices.iter().map(|s| one(s)).collect();
     }
-    crate::slices::run_slices(slices, one).into_iter().collect()
+    let parallel =
+        crate::slices::estimated_matches(segments, query) >= crate::slices::SEQUENTIAL_BELOW;
+    crate::slices::run_slices_if(parallel, slices, one)
+        .into_iter()
+        .collect()
 }
 
 /// One slice's states and terms: its segments, in order, from scratch.
