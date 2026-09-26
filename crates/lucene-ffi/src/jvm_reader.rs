@@ -81,8 +81,9 @@ use std::sync::Arc;
 /// 5, the engine writer (`engine_writer.rs`); 6, the writer's `max_docs`;
 /// 7, the [`QUERY_TREE`] blob (read path R2); 8, its phrase node (R3); 9,
 /// its term-set, prefix and wildcard nodes (R3); 10, its points range node;
-/// 11, sorted search ([`ffi_jvm_reader_search_sorted`], read path R4).
-pub const JVM_ABI_VERSION: u32 = 11;
+/// 11, sorted search ([`ffi_jvm_reader_search_sorted`], read path R4); 12,
+/// its keyword keys (terms in, terms out).
+pub const JVM_ABI_VERSION: u32 = 12;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -527,6 +528,7 @@ const SORT_LONG: u8 = 2;
 const SORT_INT: u8 = 3;
 const SORT_DOUBLE: u8 = 4;
 const SORT_FLOAT: u8 = 5;
+const SORT_STRING: u8 = 6;
 /// Sort-key flags.
 const SORT_REVERSE: u8 = 1;
 const SORT_MAX: u8 = 2;
@@ -535,11 +537,14 @@ const SORT_MAX: u8 = 2;
 const MAX_SORT_KEYS: usize = 16;
 
 /// Decodes a sort blob: `key_count: u8`, then per key `type: u8`,
-/// `flags: u8` ([`SORT_REVERSE`], [`SORT_MAX`]) and, for a numeric type, the
-/// field (`len: i32`, UTF-8) and the missing value as a comparable `i64`
-/// (see [`lucene_search::top_field`]); then `has_after: u8` and, when 1, the
-/// search-after document (`doc: i32`) and one `i64` value per key, encoded as
-/// the search returns them. Little-endian, and trailing bytes are an error.
+/// `flags: u8` ([`SORT_REVERSE`], [`SORT_MAX`]) and, for a field's type, the
+/// field (`len: i32`, UTF-8) and the missing value: a comparable `i64` for a
+/// numeric key (see [`lucene_search::top_field`]), `1` (`STRING_LAST`) or `0`
+/// (`STRING_FIRST`) for a keyword one; then `has_after: u8` and, when 1, the
+/// search-after document (`doc: i32`) and one value per key, encoded as the
+/// search returns them -- an `i64`, or for a keyword key `present: u8` and,
+/// when 1, the term (`len: i32`, bytes). Little-endian, and trailing bytes
+/// are an error.
 pub(crate) fn decode_sort(blob: &[u8]) -> Result<(Vec<SortField>, Option<FieldDoc>), FfiStatus> {
     let mut c = Cursor { buf: blob, pos: 0 };
     let bad = |msg: String| {
@@ -566,13 +571,20 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<(Vec<SortField>, Option<FieldDo
             SORT_INT => SortType::Int,
             SORT_DOUBLE => SortType::Double,
             SORT_FLOAT => SortType::Float,
+            SORT_STRING => SortType::String,
             other => return Err(bad(format!("sort blob: unknown key type {other}"))),
         };
         let (field, missing) = match ty {
             SortType::Score | SortType::Doc => (String::new(), 0),
             _ => {
                 let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
-                (field.to_string(), c.i64()?)
+                let missing = c.i64()?;
+                if ty == SortType::String && !(0..=1).contains(&missing) {
+                    return Err(bad(format!(
+                        "sort blob: keyword missing value {missing}, want 0 or 1"
+                    )));
+                }
+                (field.to_string(), missing)
             }
         };
         keys.push(SortField {
@@ -592,14 +604,24 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<(Vec<SortField>, Option<FieldDo
         1 => {
             let doc = c.i32()?;
             let mut values = Vec::new();
-            for _ in 0..n {
-                values.push(c.i64()?);
+            let mut terms = Vec::new();
+            for k in &keys {
+                if k.ty != SortType::String {
+                    values.push(c.i64()?);
+                    terms.push(None);
+                    continue;
+                }
+                values.push(0);
+                terms.push(match c.u8()? {
+                    0 => None,
+                    1 => Some(c.bytes()?.to_vec()),
+                    other => return Err(bad(format!("sort blob: term present is {other}"))),
+                });
             }
-            Some(FieldDoc {
-                doc,
-                values,
-                terms: Vec::new(),
-            })
+            if keys.iter().all(|k| k.ty != SortType::String) {
+                terms.clear();
+            }
+            Some(FieldDoc { doc, values, terms })
         }
         other => return Err(bad(format!("sort blob: has_after is {other}"))),
     };
@@ -616,7 +638,12 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<(Vec<SortField>, Option<FieldDo
 /// ([`decode_sort`]) -- Lucene's `TopFieldCollectorManager(sort, top_n,
 /// after, count_limit)` -- writing up to `top_n` hits' global doc ids into
 /// `out_docs` and their sort values, `keys` per hit in key order, into
-/// `out_values`.
+/// `out_values` (a keyword key's value there is 0), and the keyword keys'
+/// terms into `out_terms`: per hit, per keyword key in key order, a
+/// little-endian `i32` length (`-1` for a missing value) and the bytes.
+/// `out_terms_len` receives their length; when that exceeds `terms_cap`
+/// nothing is written but it, and the call returns
+/// [`FfiStatus::BufferTooSmall`] for the caller to retry with room.
 ///
 /// Total hits as [`ffi_jvm_reader_search`] reports them; `top_n` must be at
 /// least 1 (a `size: 0` search has no order to keep).
@@ -624,9 +651,10 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<(Vec<SortField>, Option<FieldDo
 /// # Safety
 /// `query`/`sort` must be valid for `query_len`/`sort_len` bytes;
 /// `out_docs` for `buf_len` elements and `out_values` for `buf_len * keys`
-/// (`keys` being the sort's key count), with `buf_len >= top_n`;
-/// `out_hit_count`, `out_total` and `out_total_is_lower_bound` for one write
-/// each.
+/// (`keys` being the sort's key count), with `buf_len >= top_n`; `out_terms`
+/// for `terms_cap` bytes (it may be null when `terms_cap` is 0);
+/// `out_hit_count`, `out_total`, `out_total_is_lower_bound` and
+/// `out_terms_len` for one write each.
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn ffi_jvm_reader_search_sorted(
@@ -640,16 +668,21 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_sorted(
     out_docs: *mut i32,
     out_values: *mut i64,
     buf_len: usize,
+    out_terms: *mut u8,
+    terms_cap: usize,
     out_hit_count: *mut usize,
     out_total: *mut i64,
     out_total_is_lower_bound: *mut bool,
+    out_terms_len: *mut usize,
 ) -> i32 {
     guard(|| {
         if out_hit_count.is_null()
             || out_total.is_null()
             || out_total_is_lower_bound.is_null()
+            || out_terms_len.is_null()
             || out_docs.is_null()
             || out_values.is_null()
+            || (out_terms.is_null() && terms_cap != 0)
         {
             return Err(FfiStatus::NullPointer);
         }
@@ -672,9 +705,22 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_sorted(
         )?;
         let (hits, total, lower_bound) =
             search_sorted(&h, &query, &keys, after.as_ref(), top_n, count_limit)?;
-        // SAFETY: caller contract; `hits.len() <= top_n <= buf_len`, and each
-        // hit carries `keys.len()` values.
+        let terms = encode_terms(&keys, &hits)?;
+        // SAFETY: caller contract.
+        unsafe { *out_terms_len = terms.len() };
+        if terms.len() > terms_cap {
+            set_last_error(format!(
+                "sort terms need {} bytes, the buffer holds {terms_cap}",
+                terms.len()
+            ));
+            return Err(FfiStatus::BufferTooSmall);
+        }
+        // SAFETY: caller contract; `hits.len() <= top_n <= buf_len`, each hit
+        // carries `keys.len()` values, and `terms` fits `terms_cap`.
         unsafe {
+            if !terms.is_empty() {
+                std::ptr::copy_nonoverlapping(terms.as_ptr(), out_terms, terms.len());
+            }
             for (i, hit) in hits.iter().enumerate() {
                 *out_docs.add(i) = hit.doc;
                 for (k, &v) in hit.values.iter().enumerate() {
@@ -687,6 +733,34 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_sorted(
         }
         Ok(())
     })
+}
+
+/// The keyword keys' terms of `hits`, as [`ffi_jvm_reader_search_sorted`]
+/// hands them back.
+pub(crate) fn encode_terms(keys: &[SortField], hits: &[FieldDoc]) -> Result<Vec<u8>, FfiStatus> {
+    let mut out = Vec::new();
+    if keys.iter().all(|k| k.ty != SortType::String) {
+        return Ok(out);
+    }
+    for hit in hits {
+        for (k, key) in keys.iter().enumerate() {
+            if key.ty != SortType::String {
+                continue;
+            }
+            match hit.terms.get(k).and_then(Option::as_ref) {
+                None => out.extend_from_slice(&(-1i32).to_le_bytes()),
+                Some(t) => {
+                    let len = i32::try_from(t.len()).map_err(|_| {
+                        set_last_error(format!("a {}-byte sort term", t.len()));
+                        FfiStatus::InvalidArgument
+                    })?;
+                    out.extend_from_slice(&len.to_le_bytes());
+                    out.extend_from_slice(t);
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// The search behind [`ffi_jvm_reader_search_sorted`].
@@ -705,7 +779,7 @@ pub(crate) fn search_sorted(
     // A numeric key skips with its field's points, as `NumericComparator` does.
     let numeric_key = keys
         .iter()
-        .any(|k| !matches!(k.ty, SortType::Score | SortType::Doc));
+        .any(|k| !matches!(k.ty, SortType::Score | SortType::Doc | SortType::String));
     if numeric_key || query_uses_points(query) {
         opened.open_points().map_err(|e| {
             set_last_error(format!("opening segment points: {e}"));
@@ -1313,6 +1387,16 @@ mod tests {
     /// A sort blob: `(type, flags, field, missing)` keys and an optional
     /// `(doc, values)` search-after.
     fn sort_blob(keys: &[(u8, u8, &str, i64)], after: Option<(i32, &[i64])>) -> Vec<u8> {
+        let terms = vec![None; keys.len()];
+        sort_blob_terms(keys, after.map(|(d, v)| (d, v, &terms[..])))
+    }
+
+    /// [`sort_blob`] with a search-after term per keyword key.
+    #[allow(clippy::type_complexity)]
+    fn sort_blob_terms(
+        keys: &[(u8, u8, &str, i64)],
+        after: Option<(i32, &[i64], &[Option<&[u8]>])>,
+    ) -> Vec<u8> {
         let mut b = vec![keys.len() as u8];
         for &(ty, flags, field, missing) in keys {
             b.push(ty);
@@ -1325,11 +1409,22 @@ mod tests {
         }
         match after {
             None => b.push(0),
-            Some((doc, values)) => {
+            Some((doc, values, terms)) => {
                 b.push(1);
                 b.extend_from_slice(&doc.to_le_bytes());
-                for v in values {
-                    b.extend_from_slice(&v.to_le_bytes());
+                for (i, v) in values.iter().enumerate() {
+                    if keys[i].0 != SORT_STRING {
+                        b.extend_from_slice(&v.to_le_bytes());
+                        continue;
+                    }
+                    match terms[i] {
+                        None => b.push(0),
+                        Some(t) => {
+                            b.push(1);
+                            b.extend_from_slice(&(t.len() as i32).to_le_bytes());
+                            b.extend_from_slice(t);
+                        }
+                    }
                 }
             }
         }
@@ -1350,6 +1445,8 @@ mod tests {
         let mut docs = vec![0i32; top_n.max(1)];
         let mut values = vec![0i64; top_n.max(1) * keys.max(1)];
         let (mut n, mut total, mut lower) = (0usize, 0i64, false);
+        let mut terms = vec![0u8; 1 << 16];
+        let mut terms_len = 0usize;
         let rc = unsafe {
             ffi_jvm_reader_search_sorted(
                 handle,
@@ -1362,9 +1459,12 @@ mod tests {
                 docs.as_mut_ptr(),
                 values.as_mut_ptr(),
                 top_n,
+                terms.as_mut_ptr(),
+                terms.len(),
                 &mut n,
                 &mut total,
                 &mut lower,
+                &mut terms_len,
             )
         };
         if rc != 0 {
@@ -1523,11 +1623,146 @@ mod tests {
     }
 
     #[test]
+    fn keyword_keys_take_a_term_after_and_hand_back_terms() {
+        let blob = sort_blob_terms(
+            &[
+                (SORT_STRING, SORT_REVERSE | SORT_MAX, "k", 1),
+                (SORT_STRING, 0, "j", 0),
+                (SORT_LONG, 0, "n", 3),
+            ],
+            Some((4, &[0, 0, 9], &[Some(b"abc".as_slice()), None, None])),
+        );
+        let (keys, after) = decode_sort(&blob).unwrap();
+        assert_eq!(keys[0].ty, SortType::String);
+        assert!(keys[0].reverse && keys[0].selector == Selector::Max && keys[0].missing == 1);
+        assert_eq!((keys[1].missing, keys[1].reverse), (0, false));
+        let after = after.unwrap();
+        assert_eq!(after.terms, [Some(b"abc".to_vec()), None, None]);
+        assert_eq!(after.values, [0, 0, 9]);
+        // A missing value is first or last, nothing else; a term is present
+        // or not.
+        assert_eq!(
+            decode_sort(&sort_blob(&[(SORT_STRING, 0, "k", 2)], None)).unwrap_err(),
+            FfiStatus::InvalidArgument
+        );
+        let mut bad = sort_blob_terms(&[(SORT_STRING, 0, "k", 0)], Some((1, &[0], &[None])));
+        *bad.last_mut().unwrap() = 2;
+        assert_eq!(decode_sort(&bad).unwrap_err(), FfiStatus::InvalidArgument);
+        // Terms out: per hit, per keyword key, a length or -1.
+        let hits = [
+            FieldDoc {
+                doc: 1,
+                values: vec![0, 0, 7],
+                terms: vec![Some(b"xy".to_vec()), None, None],
+            },
+            FieldDoc {
+                doc: 2,
+                values: vec![0, 0, 8],
+                terms: vec![None, Some(Vec::new()), None],
+            },
+        ];
+        let mut want = Vec::new();
+        for part in [
+            &2i32.to_le_bytes()[..],
+            b"xy",
+            &(-1i32).to_le_bytes(),
+            &(-1i32).to_le_bytes(),
+            &0i32.to_le_bytes(),
+        ] {
+            want.extend_from_slice(part);
+        }
+        assert_eq!(encode_terms(&keys, &hits).unwrap(), want);
+        assert!(encode_terms(&keys[2..], &hits).unwrap().is_empty());
+        // Through the search: a field no segment has sorts all as missing,
+        // and a buffer without room reports the room needed.
+        let h = open();
+        let q = term_blob("body", "fox");
+        let sort = sort_blob(&[(SORT_STRING, 0, "nosuch", 1)], None);
+        let (hits, _, _) = run_sorted(h, &q, &sort, 3, i64::MAX).unwrap();
+        assert!(!hits.is_empty());
+        let (mut n, mut total, mut lower, mut terms_len) = (0usize, 0i64, false, 0usize);
+        let (mut docs, mut values) = ([0i32; 3], [0i64; 3]);
+        let rc = unsafe {
+            ffi_jvm_reader_search_sorted(
+                h,
+                q.as_ptr(),
+                q.len(),
+                sort.as_ptr(),
+                sort.len(),
+                3,
+                i64::MAX,
+                docs.as_mut_ptr(),
+                values.as_mut_ptr(),
+                3,
+                std::ptr::null_mut(),
+                0,
+                &mut n,
+                &mut total,
+                &mut lower,
+                &mut terms_len,
+            )
+        };
+        assert_eq!(rc, FfiStatus::BufferTooSmall.code());
+        assert_eq!(terms_len, hits.len() * 4);
+        let mut terms = vec![0u8; terms_len];
+        let rc = unsafe {
+            ffi_jvm_reader_search_sorted(
+                h,
+                q.as_ptr(),
+                q.len(),
+                sort.as_ptr(),
+                sort.len(),
+                3,
+                i64::MAX,
+                docs.as_mut_ptr(),
+                values.as_mut_ptr(),
+                3,
+                terms.as_mut_ptr(),
+                terms.len(),
+                &mut n,
+                &mut total,
+                &mut lower,
+                &mut terms_len,
+            )
+        };
+        assert_eq!(rc, 0);
+        assert_eq!(
+            terms,
+            (0..n)
+                .flat_map(|_| (-1i32).to_le_bytes())
+                .collect::<Vec<_>>()
+        );
+        // A null terms buffer claiming room is refused.
+        let rc = unsafe {
+            ffi_jvm_reader_search_sorted(
+                h,
+                q.as_ptr(),
+                q.len(),
+                sort.as_ptr(),
+                sort.len(),
+                3,
+                i64::MAX,
+                docs.as_mut_ptr(),
+                values.as_mut_ptr(),
+                3,
+                std::ptr::null_mut(),
+                8,
+                &mut n,
+                &mut total,
+                &mut lower,
+                &mut terms_len,
+            )
+        };
+        assert_eq!(rc, FfiStatus::NullPointer.code());
+        ffi_close_jvm_reader(h);
+    }
+
+    #[test]
     fn a_sorted_search_rejects_bad_arguments() {
         let h = open();
         let q = term_blob("body", "fox");
         let sort = sort_blob(&[(SORT_DOC, 0, "", 0)], None);
-        let (mut n, mut total, mut lower) = (0usize, 0i64, false);
+        let (mut n, mut total, mut lower, mut terms_len) = (0usize, 0i64, false, 0usize);
         let mut docs = [0i32; 1];
         let mut values = [0i64; 1];
         let mut call =
@@ -1543,9 +1778,12 @@ mod tests {
                     docs,
                     values,
                     1,
+                    std::ptr::null_mut(),
+                    0,
                     n,
                     &mut total,
                     &mut lower,
+                    &mut terms_len,
                 )
             };
         let (d, v) = (docs.as_mut_ptr(), values.as_mut_ptr());

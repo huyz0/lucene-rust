@@ -144,6 +144,17 @@ pub fn sort(spec: &str) -> Vec<lucene_search::top_field::SortField> {
             "doc" => SortField::doc(),
             _ => {
                 let p: Vec<&str> = k.split(':').collect();
+                if p[1] == "string" {
+                    return SortField {
+                        selector: if p[2] == "max" {
+                            Selector::Max
+                        } else {
+                            Selector::Min
+                        },
+                        missing: i64::from(p[4] == "last"),
+                        ..SortField::string(p[0], p[3] == "desc")
+                    };
+                }
                 let ty = match p[1] {
                     "long" => SortType::Long,
                     "int" => SortType::Int,

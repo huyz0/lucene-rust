@@ -8,6 +8,9 @@ import org.apache.lucene.search.Sort;
 import org.apache.lucene.search.SortField;
 import org.apache.lucene.search.SortedNumericSelector;
 import org.apache.lucene.search.SortedNumericSortField;
+import org.apache.lucene.search.SortedSetSelector;
+import org.apache.lucene.search.SortedSetSortField;
+import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.NumericUtils;
 
 import java.io.ByteArrayOutputStream;
@@ -27,13 +30,18 @@ import java.nio.charset.StandardCharsets;
  *   <li>a {@link SortedNumericSortField} of type {@code LONG}, {@code INT}, {@code DOUBLE} or {@code
  *       FLOAT} with the {@code MIN} or {@code MAX} selector -- what OpenSearch builds for a {@code
  *       long}, {@code integer}, {@code short}, {@code byte}, {@code double}, {@code float} or {@code
- *       date} field sorted with {@code mode} {@code min}/{@code max} (the default).
+ *       date} field sorted with {@code mode} {@code min}/{@code max} (the default);
+ *   <li>a {@link SortedSetSortField} with the {@code MIN} or {@code MAX} selector and {@code
+ *       STRING_FIRST}/{@code STRING_LAST} -- what OpenSearch builds for a {@code keyword} field
+ *       sorted with {@code mode} {@code min}/{@code max} and {@code missing} {@code _first}/{@code
+ *       _last}.
  * </ul>
  *
  * <p>Values cross the boundary as {@code long}s, each key's comparable form: the value for {@code
  * LONG}/{@code INT}, {@link NumericUtils#doubleToSortableLong} and {@link
  * NumericUtils#floatToSortableInt} for {@code DOUBLE}/{@code FLOAT} (which round-trip exactly), the
- * document id for {@code DOC}, and the float's bits for the score.
+ * document id for {@code DOC}, and the float's bits for the score. A keyword key's values are
+ * its terms instead, as {@link BytesRef}s ({@code null} for a document without one), both ways.
  */
 public final class SortEncoder {
     static final byte SCORE = 0;
@@ -42,6 +50,7 @@ public final class SortEncoder {
     static final byte INT = 3;
     static final byte DOUBLE = 4;
     static final byte FLOAT = 5;
+    static final byte STRING = 6;
     static final byte REVERSE = 1;
     static final byte MAX = 2;
     /** {@code MAX_SORT_KEYS} in {@code jvm_reader.rs}. */
@@ -75,6 +84,9 @@ public final class SortEncoder {
             if (f instanceof SortedNumericSortField sn && sn.getSelector() == SortedNumericSelector.Type.MAX) {
                 flags |= MAX;
             }
+            if (f instanceof SortedSetSortField ss && ss.getSelector() == SortedSetSelector.Type.MAX) {
+                flags |= MAX;
+            }
             out.write(type);
             out.write(flags);
             if (type != SCORE && type != DOC) {
@@ -82,8 +94,13 @@ public final class SortEncoder {
                 writeInt(out, name.length);
                 out.writeBytes(name);
                 Object missing = f.getMissingValue();
-                // Lucene's numeric comparators treat an unset missing value as 0.
-                writeLong(out, missing == null ? 0 : comparable(type, missing));
+                if (type == STRING) {
+                    // TermOrdValComparator: last only for STRING_LAST, first otherwise.
+                    writeLong(out, missing == SortField.STRING_LAST ? 1 : 0);
+                } else {
+                    // Lucene's numeric comparators treat an unset missing value as 0.
+                    writeLong(out, missing == null ? 0 : comparable(type, missing));
+                }
             }
         }
         if (after == null) {
@@ -95,6 +112,19 @@ public final class SortEncoder {
             out.write(1);
             writeInt(out, after.doc);
             for (int i = 0; i < fields.length; i++) {
+                if (type(fields[i]) == STRING) {
+                    // A missing term is a value of its own (TermOrdValComparator's null top).
+                    if (after.fields[i] == null) {
+                        out.write(0);
+                    } else if (after.fields[i] instanceof BytesRef b) {
+                        out.write(1);
+                        writeInt(out, b.length);
+                        out.write(b.bytes, b.offset, b.length);
+                    } else {
+                        return new Encoded(null, "search_after_type");
+                    }
+                    continue;
+                }
                 if (after.fields[i] == null) {
                     return new Encoded(null, "search_after_null");
                 }
@@ -122,7 +152,49 @@ public final class SortEncoder {
                 default -> -1;
             };
         }
+        if (f.getClass() == SortedSetSortField.class) {
+            return STRING;
+        }
         return -1;
+    }
+
+    /** Whether any key of {@code fields} is a keyword key, whose terms come back as bytes. */
+    static boolean hasTerms(SortField[] fields) {
+        for (SortField f : fields) {
+            if (type(f) == STRING) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The native search's {@code n} hits as {@link FieldDoc}s: {@code values} holds one {@code
+     * long} per key per hit, and {@code terms} (null when no key is a keyword key) each keyword
+     * key's term per hit, in order, as a little-endian {@code int} length ({@code -1} for none) and
+     * the bytes.
+     */
+    static FieldDoc[] hits(SortField[] fields, int n, int[] docs, long[] values, byte[] terms) {
+        FieldDoc[] hits = new FieldDoc[n];
+        int pos = 0;
+        for (int i = 0; i < n; i++) {
+            Object[] row = new Object[fields.length];
+            for (int k = 0; k < fields.length; k++) {
+                if (type(fields[k]) != STRING) {
+                    row[k] = value(fields[k], values[i * fields.length + k]);
+                    continue;
+                }
+                int len = (terms[pos] & 0xff) | (terms[pos + 1] & 0xff) << 8 | (terms[pos + 2] & 0xff) << 16
+                    | (terms[pos + 3] & 0xff) << 24;
+                pos += 4;
+                if (len >= 0) {
+                    row[k] = new BytesRef(java.util.Arrays.copyOfRange(terms, pos, pos + len));
+                    pos += len;
+                }
+            }
+            hits[i] = new FieldDoc(docs[i], Float.NaN, row);
+        }
+        return hits;
     }
 
     /** A sort value as the native side compares it. */

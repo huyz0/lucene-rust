@@ -265,6 +265,7 @@ pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_searchSorted<
     out_docs: JIntArray<'l>,
     out_values: JLongArray<'l>,
     out_counts: JLongArray<'l>,
+    out_terms: JObjectArray<'l>,
 ) -> jint {
     run(|| {
         let top_n = usize::try_from(top_n).map_err(|_| {
@@ -298,26 +299,57 @@ pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_searchSorted<
         let mut hit_count = 0usize;
         let mut total = 0i64;
         let mut lower_bound = false;
-        // SAFETY: every pointer/length pair describes a live Rust buffer;
-        // `values` holds `top_n` hits of `keys` values, the sort blob's count.
-        let status = unsafe {
-            jvm_reader::ffi_jvm_reader_search_sorted(
-                handle as u64,
-                blob.as_ptr(),
-                blob.len(),
-                sort_blob.as_ptr(),
-                sort_blob.len(),
-                top_n,
-                count_limit,
-                docs.as_mut_ptr(),
-                values.as_mut_ptr(),
-                top_n,
-                &mut hit_count,
-                &mut total,
-                &mut lower_bound,
-            )
-        };
+        // Keyword keys hand back terms: room for short ones first, and the
+        // exact room the search reports when they are longer.
+        // A malformed blob is reported by the search itself.
+        let string_keys = jvm_reader::decode_sort(&sort_blob).map_or(0, |(k, _)| {
+            k.iter()
+                .filter(|k| k.ty == lucene_search::top_field::SortType::String)
+                .count()
+        });
+        let mut cap = top_n.saturating_mul(string_keys).saturating_mul(32);
+        let mut status = FfiStatus::Ok.code();
+        let mut terms: Vec<u8> = Vec::new();
+        let mut terms_len = 0usize;
+        // The same reader answers the same way, so a second try fits.
+        for _ in 0..2 {
+            terms = zeroed(cap)?;
+            // SAFETY: every pointer/length pair describes a live Rust buffer;
+            // `values` holds `top_n` hits of `keys` values, the sort blob's
+            // count, and `terms` `cap` bytes.
+            status = unsafe {
+                jvm_reader::ffi_jvm_reader_search_sorted(
+                    handle as u64,
+                    blob.as_ptr(),
+                    blob.len(),
+                    sort_blob.as_ptr(),
+                    sort_blob.len(),
+                    top_n,
+                    count_limit,
+                    docs.as_mut_ptr(),
+                    values.as_mut_ptr(),
+                    top_n,
+                    terms.as_mut_ptr(),
+                    cap,
+                    &mut hit_count,
+                    &mut total,
+                    &mut lower_bound,
+                    &mut terms_len,
+                )
+            };
+            if status != FfiStatus::BufferTooSmall.code() || terms_len <= cap {
+                break;
+            }
+            cap = terms_len;
+        }
         if status == FfiStatus::Ok.code() {
+            if string_keys > 0 {
+                let arr = env
+                    .byte_array_from_slice(&terms[..terms_len])
+                    .map_err(|e| jni_err(&env, "outTerms", e))?;
+                env.set_object_array_element(&out_terms, 0, &arr)
+                    .map_err(|e| jni_err(&env, "outTerms", e))?;
+            }
             env.set_int_array_region(&out_docs, 0, &docs[..hit_count])
                 .map_err(|e| jni_err(&env, "outDocs", e))?;
             env.set_long_array_region(&out_values, 0, &values[..hit_count * keys])

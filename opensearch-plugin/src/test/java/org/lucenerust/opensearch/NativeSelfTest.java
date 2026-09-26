@@ -183,8 +183,20 @@ public final class NativeSelfTest {
         check(QueryEncoder.encode(LongPoint.newRangeQuery("n", 1, 5), f -> true).blob() != null, "a long range encodes");
         check(SortEncoder.encode(new Sort(SortField.FIELD_SCORE, SortField.FIELD_DOC), null).blob() != null, "score, doc sort encodes");
         check(
-            SortEncoder.encode(new Sort(new org.apache.lucene.search.SortedSetSortField("k", false)), null).fallbackReason().startsWith("sort_"),
-            "a keyword sort falls back"
+            SortEncoder.encode(new Sort(new org.apache.lucene.search.SortedSetSortField("k", false)), null).blob() != null,
+            "a keyword sort encodes"
+        );
+        check(
+            "search_after_type".equals(
+                SortEncoder.encode(new Sort(new org.apache.lucene.search.SortedSetSortField("k", false)), new FieldDoc(1, 0f, new Object[] { "x" }))
+                    .fallbackReason()
+            ),
+            "a keyword search_after that is not a BytesRef falls back"
+        );
+        check(
+            SortEncoder.encode(new Sort(new org.apache.lucene.search.SortedSetSortField("k", false)), new FieldDoc(1, 0f, new Object[] { null }))
+                .blob() != null,
+            "a missing keyword search_after value encodes"
         );
         check(
             SortEncoder.encode(new Sort(new SortField("n", SortField.Type.LONG)), null).fallbackReason().startsWith("sort_"),
@@ -326,7 +338,11 @@ public final class NativeSelfTest {
         for (int i = 0, n = 1 + r.nextInt(3); i < n; i++) {
             boolean reverse = r.nextBoolean();
             var sel = r.nextBoolean() ? org.apache.lucene.search.SortedNumericSelector.Type.MIN : org.apache.lucene.search.SortedNumericSelector.Type.MAX;
-            SortField f = switch (r.nextInt(6)) {
+            var ssel = r.nextBoolean() ? org.apache.lucene.search.SortedSetSelector.Type.MIN : org.apache.lucene.search.SortedSetSelector.Type.MAX;
+            SortField f = switch (r.nextInt(9)) {
+                case 6 -> new org.apache.lucene.search.SortedSetSortField("kt", reverse, ssel);
+                case 7 -> new org.apache.lucene.search.SortedSetSortField("kw", reverse, ssel);
+                case 8 -> new org.apache.lucene.search.SortedSetSortField("kx", reverse, ssel);
                 case 0 -> reverse ? new SortField(null, SortField.Type.SCORE, true) : SortField.FIELD_SCORE;
                 case 1 -> SortField.FIELD_DOC;
                 case 2 -> new org.apache.lucene.search.SortedNumericSortField("sl", SortField.Type.LONG, reverse, sel);
@@ -342,6 +358,9 @@ public final class NativeSelfTest {
                     case DOUBLE -> high ? Double.POSITIVE_INFINITY : Double.NEGATIVE_INFINITY;
                     default -> high ? Float.POSITIVE_INFINITY : Float.NEGATIVE_INFINITY;
                 });
+            }
+            if (f instanceof org.apache.lucene.search.SortedSetSortField ss && r.nextInt(3) != 0) {
+                ss.setMissingValue(r.nextBoolean() ? SortField.STRING_LAST : SortField.STRING_FIRST);
             }
             keys.add(f);
         }
@@ -371,19 +390,19 @@ public final class NativeSelfTest {
                 int[] docs = new int[topN];
                 long[] values = new long[topN * keys.length];
                 long[] counts = new long[3];
+                byte[][] terms = new byte[1][];
                 long limit = threshold == Integer.MAX_VALUE ? Long.MAX_VALUE : threshold;
-                int rc = NativeBridge.searchSorted(handle, blob, enc.blob(), topN, limit, docs, values, counts);
+                int rc = NativeBridge.searchSorted(handle, blob, enc.blob(), topN, limit, docs, values, counts, terms);
                 check(rc == NativeBridge.OK, what + ": status " + rc + " " + NativeBridge.lastError());
                 if (rc != NativeBridge.OK) {
                     return;
                 }
                 boolean same = counts[0] == want.scoreDocs.length;
+                FieldDoc[] got = SortEncoder.hits(keys, (int) counts[0], docs, values, terms[0]);
+                check(SortEncoder.hasTerms(keys) == (terms[0] != null), what + ": terms come back exactly for keyword keys");
                 for (int i = 0; same && i < counts[0]; i++) {
                     FieldDoc w = (FieldDoc) want.scoreDocs[i];
-                    same = docs[i] == w.doc;
-                    for (int k = 0; same && k < keys.length; k++) {
-                        same = java.util.Objects.equals(SortEncoder.value(keys[k], values[i * keys.length + k]), w.fields[k]);
-                    }
+                    same = got[i].doc == w.doc && Arrays.equals(got[i].fields, w.fields);
                 }
                 sortedChecks++;
                 check(same, what + ": native " + Arrays.toString(Arrays.copyOf(docs, (int) counts[0])) + " lucene " + Arrays.toString(Arrays.stream(want.scoreDocs).mapToInt(d -> d.doc).toArray()));
@@ -506,7 +525,20 @@ public final class NativeSelfTest {
             body.append(word(r)).append(' ');
         }
         d.add(new TextField("body", body.toString(), Field.Store.NO));
-        d.add(new StringField("tag", word(r), Field.Store.NO));
+        String tag = word(r);
+        d.add(new StringField("tag", tag, Field.Store.NO));
+        // Keyword sort fields: dense with postings (`kt`), multi-valued and sparse with postings
+        // (`kw`), and doc values alone (`kx`).
+        d.add(new StringField("kt", tag, Field.Store.NO));
+        d.add(new org.apache.lucene.document.SortedSetDocValuesField("kt", new org.apache.lucene.util.BytesRef(tag)));
+        for (int i = 0, n = r.nextInt(3); i < n; i++) {
+            String k = word(r) + r.nextInt(20);
+            d.add(new StringField("kw", k, Field.Store.NO));
+            d.add(new org.apache.lucene.document.SortedSetDocValuesField("kw", new org.apache.lucene.util.BytesRef(k)));
+        }
+        if (r.nextInt(4) != 0) {
+            d.add(new org.apache.lucene.document.SortedSetDocValuesField("kx", new org.apache.lucene.util.BytesRef(word(r))));
+        }
         d.add(new LongPoint("n", id));
         // Sort fields: doc values and points, with ties, gaps and several values per document.
         if (r.nextInt(8) != 0) {

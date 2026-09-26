@@ -1336,6 +1336,13 @@ impl<'a> NumericReader<'a> {
         }
     }
 
+    /// [`Self::value`] when its dense single-width fast path can answer:
+    /// `doc`'s value, or `None` for "ask [`Self::value`]" (never "no value").
+    #[inline]
+    pub fn dense_value(&self, doc: i32) -> Option<i64> {
+        self.fast.as_ref().and_then(|f| f.get(doc))
+    }
+
     /// This document's value, or `None` when it legitimately has none.
     /// Identical to `numeric_value(data, entry, doc)`, just without the
     /// per-call rederivation.

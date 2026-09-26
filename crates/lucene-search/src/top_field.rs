@@ -1187,6 +1187,7 @@ impl OrdColumn<'_> {
     // SENTINEL: `-1` = "no value", outside the domain of an ordinal (Java's
     // `getOrdForDoc`). Its callers, `LeafStr::{compare_bottom, compare_top,
     // copy}` through `LeafStr::ord`, test `== -1`.
+    #[inline]
     fn ord(&mut self, doc: i32) -> Result<i32> {
         let v = match self {
             OrdColumn::Absent => None,
@@ -1244,6 +1245,7 @@ struct StrCompetitive<'a> {
 const MAX_COMPETITIVE_TERMS: i64 = 1024;
 
 impl<'a> LeafStr<'a> {
+    #[inline]
     fn ord(&mut self, doc: i32) -> Result<i32> {
         if self.cached.0 != doc {
             self.cached = (doc, self.column.ord(doc)?);
@@ -1275,12 +1277,32 @@ impl<'a> LeafStr<'a> {
     /// `compareBottom`.
     //
     // SENTINEL: none -- `-1` is a comparison result, in the domain.
+    #[inline]
     fn compare_bottom(&mut self, doc: i32) -> Result<i32> {
         let mut o = self.ord(doc)?;
         if o == -1 {
             o = self.missing_ord;
         }
         Ok(if self.bottom_same_reader {
+            self.bottom_ord.wrapping_sub(o).signum()
+        } else if self.bottom_ord >= o {
+            1
+        } else {
+            -1
+        })
+    }
+
+    /// [`Self::compare_bottom`] when a dense column answers directly, or
+    /// `None` for "ask it".
+    //
+    // SENTINEL: none -- `-1` is a comparison result, in the domain.
+    #[inline]
+    fn quick_compare_bottom(&self, doc: i32) -> Option<i32> {
+        let OrdColumn::Single(r) = &self.column else {
+            return None;
+        };
+        let o = i32::try_from(r.dense_value(doc)?).ok()?;
+        Some(if self.bottom_same_reader {
             self.bottom_ord.wrapping_sub(o).signum()
         } else if self.bottom_ord >= o {
             1
@@ -1809,6 +1831,7 @@ impl<'a> Leaf<'a> {
         })
     }
 
+    #[inline]
     fn compare_bottom(&mut self, tf: &TopField, doc: i32, scorer: &mut Sc<'_>) -> Result<i32> {
         for (i, c) in tf.comps.iter().enumerate() {
             let r = match &mut self.keys[i] {
@@ -1895,6 +1918,7 @@ impl<'a> Leaf<'a> {
         Ok(())
     }
 
+    #[inline]
     fn competitive(&mut self) -> Option<&mut Iter<'a>> {
         match self.keys.first_mut() {
             Some(LeafKey::Numeric(n)) => n.competitive.as_mut().map(|c| &mut c.iter),
@@ -1903,7 +1927,38 @@ impl<'a> Leaf<'a> {
         }
     }
 
+    /// The whole of [`Self::collect`] for a document the leading key alone
+    /// rules out, when nothing else would happen on the way: the queue is
+    /// full, there is no search-after page, the count no longer changes
+    /// state, and no score bound is kept. `true` when `doc` was counted and
+    /// dropped; `false` means [`Self::collect`] must look at it.
+    #[inline]
+    fn quick_reject(&mut self, tf: &mut TopField, doc: i32) -> bool {
+        if !tf.queue_full
+            || tf.after.is_some()
+            || tf.can_set_min_score
+            || tf.doc_first
+            || !(tf.exhaustive || tf.relation == TotalHitsRelation::GreaterThanOrEqualTo)
+        {
+            return false;
+        }
+        let r = match self.keys.first() {
+            Some(LeafKey::Str(k)) => k.quick_compare_bottom(doc),
+            _ => None,
+        };
+        // `thresholdCheck` drops a document that does not beat the bottom:
+        // decided here unless the first key ties with more keys to go.
+        match r.map(|r| tf.comps[0].mul * r) {
+            Some(r) if r < 0 || (r == 0 && tf.comps.len() == 1) => {
+                tf.total_hits += 1;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// `countHit`.
+    #[inline]
     fn count_hit(&mut self, tf: &mut TopField) -> Result<()> {
         tf.total_hits += 1;
         if !tf.exhaustive
@@ -1917,6 +1972,7 @@ impl<'a> Leaf<'a> {
     }
 
     /// `thresholdCheck`: true when `doc` cannot enter the queue.
+    #[inline]
     fn threshold_check(
         &mut self,
         tf: &mut TopField,
@@ -1983,6 +2039,7 @@ impl<'a> Leaf<'a> {
     }
 
     /// `SimpleFieldCollector`/`PagingFieldCollector`'s `collect`.
+    #[inline]
     fn collect(&mut self, tf: &mut TopField, doc: i32, mut scorer: Sc<'_>) -> Result<()> {
         let scorer = &mut scorer;
         self.count_hit(tf)?;
@@ -2266,6 +2323,10 @@ fn score_competitive(
             }
         }
         if live_docs.is_none_or(|l| l.get_doc(doc)) && (!two_phase || scorer.matches()?) {
+            if leaf.quick_reject(tf, doc) {
+                doc = scorer.next_doc()?;
+                continue;
+            }
             leaf.collect(tf, doc, score_at(&mut scores, doc))?;
             if leaf.terminated {
                 return Ok(());
