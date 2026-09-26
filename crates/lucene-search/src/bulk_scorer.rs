@@ -53,6 +53,23 @@ const INNER_WINDOW_SIZE: i32 = 1 << 12;
 /// `BlockMaxConjunctionBulkScorer.MAX_WINDOW_SIZE`.
 const MAX_WINDOW_SIZE: i32 = 65536;
 
+/// A window's inclusive end: the lead's block boundary `shallow`, capped at
+/// [`MAX_WINDOW_SIZE`] documents -- except in the lead's last block
+/// (`advanceShallow` gives `NO_MORE_DOCS`), which is one window to `max`.
+/// Capped there, the windows would march 64K ids at a time through the whole
+/// `int` range once a skipped window left the lead behind, each paying for its
+/// block maxima: 32K empty windows a segment. The window size decides only
+/// how finely the maxima prune, never what matches.
+fn last_window_or_capped(shallow: i32, window_min: i32, max: i32) -> i32 {
+    // ARITH: max > window_min >= 0 in every caller's loop.
+    let end = shallow.min(max - 1);
+    if shallow == NO_MORE_DOCS {
+        end
+    } else {
+        end.min(window_min.saturating_add(MAX_WINDOW_SIZE))
+    }
+}
+
 /// `DocAndFloatFeatureBuffer`: one clause's batch of documents and scores.
 #[derive(Debug, Default)]
 pub(crate) struct DocScores {
@@ -757,8 +774,8 @@ impl ConjunctionBulk {
         }
         while window_min < max {
             // The cheapest clause's block boundary is the window.
-            let mut window_max = legs[0].advance_shallow(window_min)?.min(max - 1);
-            window_max = window_max.min(window_min.saturating_add(MAX_WINDOW_SIZE));
+            let shallow = legs[0].advance_shallow(window_min)?;
+            let window_max = last_window_or_capped(shallow, window_min, max);
 
             // `computeMaxScore`.
             for leg in legs.iter_mut() {
@@ -1630,8 +1647,10 @@ impl ReqOptBulk {
                     max,
                 );
             }
-            let mut window_max = req[0].advance_shallow(window_min)?.min(max - 1);
-            window_max = window_max.min(window_min.saturating_add(MAX_WINDOW_SIZE));
+            #[cfg(test)]
+            test_only_req_opt_paths::window();
+            let shallow = req[0].advance_shallow(window_min)?;
+            let window_max = last_window_or_capped(shallow, window_min, max);
             let window_end = window_max.saturating_add(1);
 
             for leg in req.iter_mut() {
@@ -1909,5 +1928,18 @@ pub(crate) mod test_only_req_opt_paths {
 
     pub(crate) fn take() -> [u64; 4] {
         HITS.with(|h| h.replace([0; 4]))
+    }
+
+    thread_local! {
+        static WINDOWS: Cell<u64> = const { Cell::new(0) };
+    }
+
+    /// One window of the required-led loop.
+    pub(crate) fn window() {
+        WINDOWS.with(|w| w.set(w.get() + 1));
+    }
+
+    pub(crate) fn take_windows() -> u64 {
+        WINDOWS.with(|w| w.replace(0))
     }
 }
