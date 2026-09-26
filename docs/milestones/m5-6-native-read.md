@@ -325,8 +325,21 @@ the collector (ABI 13: a sort-blob options byte, the max score back in a fourth
 count slot). 224 Lucene runs through the same `MultiCollector` agree exactly --
 hits, totals, max-score bits -- and so do the self test's tracked pages.
 
-Falls back: `avg`/`sum`/`median` modes and nested sorts (OpenSearch's custom
-comparators) and index-sorted shards.
+Falls back, deliberately for now:
+
+* `avg`/`sum`/`median` modes. OpenSearch sorts them with its own
+  `LongValuesComparatorSource` (and the `Double`/`Float` ones): a Lucene
+  `NumericComparator` over `MultiValueMode.select` of the values with the
+  missing value filled in, and it keeps the comparator's points skipping. The
+  points hold the individual values, not their sum, so with negative values a
+  `sum` sort can skip a document that competes; and the docs-with-value
+  fallback it would hand the collector is an iterator that cannot iterate. A
+  native port would have to reproduce both to match a stock node, so these
+  stay on Lucene, where they run exactly as they do today.
+* nested sorts: they need the block-join parent/child sets, not ported yet.
+* index-sorted shards: Lucene stops a segment early when the index sort is a
+  prefix of the search sort (`canEarlyTerminate`), which changes the totals;
+  not ported yet.
 
 ## Benchmark
 
