@@ -21,10 +21,17 @@ that the plugin's own counters show the query ran where this table says.
 A request runs native when **all** of these hold:
 
 - the index has `index.lucene_rust.search.enabled: true` (the default);
-- it is a plain top-hits-by-score request — no `sort`, `aggs`, `post_filter`,
-  `min_score`, `terminate_after`, `scroll`, `search_after`, `collapse`,
-  `rescore`, `timeout` or `profile`, not `search_type=dfs_query_then_fetch`,
-  and no other plugin replacing the top-docs collector;
+- it is a top-hits request, by score or by a sort the native side encodes
+  (`docs/milestones/m5-6-native-read.md`, R4), with or without
+  `search_after`, `post_filter`, `timeout`, a `scroll`, and aggregations the
+  native side plans (R5) -- but no `min_score`, `terminate_after`,
+  `collapse`, `rescore` or `profile`, not `search_type=dfs_query_then_fetch`,
+  and no other plugin replacing the top-docs collector. A `post_filter`
+  searches the hits as `query AND filter` (the filter a non-scoring clause, as
+  `FilteredCollector` leaves the query's score alone) and the aggregations as
+  the query; a scroll's later pages search after its last emitted hit, as
+  `ScrollingTopDocsCollectorContext` does (by score, as the `_score` sort
+  whose paging `PagingTopScoreDocCollector` shares);
 - the rewritten Lucene query is built only from the shapes below --
   `TermQuery`, `BooleanQuery` (any `Occur`, any `minimum_should_match`,
   nested), `ConstantScoreQuery`, `BoostQuery`, `DisjunctionMaxQuery`,
@@ -109,8 +116,10 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | Reason | What it means |
 |---|---|
 | `disabled` | `index.lucene_rust.search.enabled: false` |
-| `aggregations`, `post_filter`, `min_score`, `terminate_after`, `collectors` | the request adds a collector to the query phase |
-| `sort`, `search_after`, `scroll`, `collapse`, `rescore`, `profile`, `timeout` | the request needs something the native top-hits path does not produce |
+| `aggregations`, `min_score`, `terminate_after`, `collectors` | the request adds a collector the native side does not run |
+| `sort_*`, `search_after`, `collapse`, `rescore`, `profile` | the request needs something the native top-hits path does not produce |
+| `scroll_after` | a sorted scroll page whose last emitted hit carries no sort values |
+| `timeout` | the request's `timeout` had already passed when the native call would start; Lucene answers it (nothing, `timed_out`) |
 | `query_<Class>` | the rewritten query's root is not a supported shape — e.g. `query_RegexpQuery` (`regexp`), `query_TermQuery` on a numeric field, `query_MultiTermQueryConstantScoreBlendedWrapper` (`prefix`, `wildcard`) |
 | `clause_<Class>` | the same, for a clause anywhere below the root (inside a `bool`, `constant_score`, `dis_max`, a boost) |
 | `query_too_deep`, `query_too_large` | more than 32 levels, or more than 1,024 nodes counting wrappers (Lucene counts only leaves, and `indices.query.bool.max_clause_count` can raise its limit) |
@@ -140,8 +149,13 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
   reader either way.
 - **A native query phase is not interruptible.** Cancellation is checked before
   the native call, not during it; the Java path checks it per segment. A
-  native query runs to completion (one call, no per-document crossings), and
-  requests with an explicit `timeout` fall back.
+  native query runs to completion (one call, no per-document crossings). A
+  request with a `timeout` runs native: the deadline is checked before the
+  call (already past: Lucene answers) and after it, where a search that ran
+  over is flagged `timed_out` (or fails without
+  `allow_partial_search_results`), as `QueryPhase` does -- but with every
+  hit, where Lucene would have stopped at the next segment and answered
+  part of them.
 - **The native query cache is per segment, not node-wide.** It follows
   Lucene's `LRUQueryCache` policy but is bounded per segment (64 entries,
   16 MB), outside `indices.queries.cache.size` and its stats; a shard with

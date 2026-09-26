@@ -23,7 +23,7 @@ milestone finishes the read side.
 | R4 | Sort and `search_after` natively (`TopFieldCollector`) | numeric, score, `_doc` and keyword keys and `track_scores` delivered (below); open: `avg`/`sum`/`median` modes, nested sorts, index-sorted shards |
 | R5 | Aggregations natively: terms, histogram, date_histogram, range, the metrics, cardinality, filter/filters | metrics (`min`, `max`, `sum`, `avg`, `value_count`, `stats`) and keyword `terms` delivered (below); open: the bucket aggregations, `cardinality`, sub-aggregations |
 | R6 | Fetch (`_source`, stored fields, `docvalue_fields`) and get natively | open |
-| R7 | scroll, `post_filter`, `min_score`, `terminate_after`, timeouts; the full read benchmark (in process and REST) with every native shape at least 1.0× Lucene | open |
+| R7 | scroll, `post_filter`, `min_score`, `terminate_after`, timeouts; the full read benchmark (in process and REST) with every native shape at least 1.0× Lucene | `post_filter`, `timeout` and scroll delivered (below); open: `min_score`, `terminate_after`, the full read benchmark |
 
 ## R1 — the scorer tree (delivered)
 
@@ -540,3 +540,36 @@ are where most of the `must_not` and `must` + `should` gains come from:
   touching the optional clauses, leads with the optional clauses once they
   are required and cheaper, and turns a filter-only required side into a
   filtered `MaxScoreBulkScorer` once a threshold exists.
+
+## R7 — the request features around the query (in progress)
+
+`RustQueryPhaseSearcher` answers these the way `QueryPhase` and its collector
+contexts do, in the plugin's Java; the native searches underneath are R1-R5's.
+
+- **`post_filter`**: `QueryPhase` wraps only the top-docs collector in a
+  `FilteredCollector`, so the hits are the query's matches the filter also
+  matches, each at the query's score, and the aggregations see every match
+  of the query. Natively: the hits search `+query #filter` (a `FILTER`
+  clause does not score), the aggregations the query's own blob. The filter
+  is a filter collector, so no total is answered from index statistics
+  (`hasFilterCollector ? -1 : shortcutTotalHitCount`).
+- **`timeout`**: `ContextIndexSearcher` checks the deadline before each
+  segment. The native search checks it before the call (already past: Lucene
+  answers, with nothing, `timed_out`) and after it: a native search that ran
+  over is flagged `timed_out` as `QueryPhase` flags one, or fails without
+  `allow_partial_search_results`. Its hits are complete, where Lucene would
+  have stopped at a segment boundary -- a partial answer allows either.
+- **scroll**: `ScrollingTopDocsCollectorContext`: each page is `size` hits,
+  the first counted exactly and its total and max score kept for the later
+  pages, which search after the last emitted hit (remembered here on one
+  shard, by the fetch phase on more). A sorted scroll pages with its sort; a
+  scroll by score as the `_score` sort, whose `PagingFieldCollector` skips
+  exactly what `PagingTopScoreDocCollector` skips, its hits handed back as
+  `ScoreDoc`s.
+
+Acceptance, `scripts/verify-opensearch.sh` against a stock node's answers:
+`post_filter` with terms and metric aggregations, sorted, paged, `size: 0`,
+`track_total_hits: false`, matching nothing; `timeout` with a sort and
+aggregations; five scrolls to the end on one shard and three (by score, by
+`_doc`, by two keys, by score with `track_scores`, with a `post_filter`),
+page for page the same, every page's query phase native on every shard.
