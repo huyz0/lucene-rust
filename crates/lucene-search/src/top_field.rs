@@ -290,7 +290,19 @@ struct StrSlots {
     bottom_slot: Option<usize>,
     /// `topValue`: the search-after term; `None` also for a missing one.
     top: Option<Vec<u8>>,
+    /// Slots copied in the current segment whose term is not read yet:
+    /// within a segment slots compare by ordinal, so the term (Java's
+    /// `lookupOrd` in `copy`) is read once, when the segment ends, and only
+    /// for the slots still in the queue.
+    pending: Vec<bool>,
+    /// Filled slots from earlier segments. The queue compares those with
+    /// this segment's by term, so while there are any, `copy` reads the
+    /// term at once, as Java does.
+    old_slots: usize,
 }
+
+/// `readerGen` of a slot never filled.
+const UNUSED_GEN: i32 = i32::MIN;
 
 impl StrSlots {
     /// `compareValues`.
@@ -446,11 +458,13 @@ impl TopField {
                     Box::new(StrSlots {
                         ords: vec![0; num_hits],
                         values: vec![None; num_hits],
-                        reader_gen: vec![0; num_hits],
+                        reader_gen: vec![UNUSED_GEN; num_hits],
                         current_gen: -1,
                         missing_cmp: if f.missing != 0 { 1 } else { -1 },
                         bottom_slot: None,
                         top: None,
+                        pending: vec![false; num_hits],
+                        old_slots: 0,
                     })
                 });
                 Comparator {
@@ -1331,14 +1345,34 @@ impl<'a> LeafStr<'a> {
     /// `copy`.
     fn copy(&mut self, st: &mut StrSlots, slot: usize, doc: i32) -> Result<()> {
         let o = self.ord(doc)?;
+        if st.reader_gen[slot] != st.current_gen && st.reader_gen[slot] != UNUSED_GEN {
+            st.old_slots = st.old_slots.saturating_sub(1);
+        }
+        st.values[slot] = None;
+        st.pending[slot] = false;
         if o == -1 {
             st.ords[slot] = self.missing_ord;
-            st.values[slot] = None;
         } else {
-            st.values[slot] = Some(self.term(o)?);
             st.ords[slot] = o;
+            if st.old_slots > 0 {
+                st.values[slot] = Some(self.term(o)?);
+            } else {
+                st.pending[slot] = true;
+            }
         }
         st.reader_gen[slot] = st.current_gen;
+        Ok(())
+    }
+
+    /// The terms of the slots [`Self::copy`] left pending, read in ordinal
+    /// order (the dictionary scans forward inside a block).
+    fn materialize(&mut self, st: &mut StrSlots) -> Result<()> {
+        let mut slots: Vec<usize> = (0..st.pending.len()).filter(|&i| st.pending[i]).collect();
+        slots.sort_unstable_by_key(|&i| st.ords[i]);
+        for i in slots {
+            st.values[i] = Some(self.term(st.ords[i])?);
+            st.pending[i] = false;
+        }
         Ok(())
     }
 
@@ -1352,6 +1386,7 @@ impl<'a> LeafStr<'a> {
             self.bottom_ord = self.missing_ord;
             self.bottom_same_reader = true;
             st.reader_gen[slot] = st.current_gen;
+            st.old_slots = st.old_slots.saturating_sub(1);
         } else {
             let value = st.values[slot].clone().unwrap_or_default();
             let o = self.lookup_term(&value)?;
@@ -1363,6 +1398,7 @@ impl<'a> LeafStr<'a> {
                 self.bottom_same_reader = true;
                 st.reader_gen[slot] = st.current_gen;
                 st.ords[slot] = o;
+                st.old_slots = st.old_slots.saturating_sub(1);
             }
         }
         Ok(())
@@ -1772,6 +1808,8 @@ fn open_leaf<'a>(
         let c = &mut tf.comps[i];
         if let (LeafKey::Str(k), Some(st)) = (key, c.strs.as_mut()) {
             st.current_gen += 1;
+            // Every filled slot is now from an earlier segment.
+            st.old_slots = st.reader_gen.iter().filter(|&&g| g != UNUSED_GEN).count();
             match st.top.clone() {
                 Some(top) => {
                     let o = k.lookup_term(&top)?;
@@ -1933,7 +1971,7 @@ impl<'a> Leaf<'a> {
     /// state, and no score bound is kept. `true` when `doc` was counted and
     /// dropped; `false` means [`Self::collect`] must look at it.
     #[inline]
-    fn quick_reject(&mut self, tf: &mut TopField, doc: i32) -> bool {
+    fn quick_reject(&mut self, tf: &mut TopField, doc: i32, scorer: &mut Sc<'_>) -> bool {
         if !tf.queue_full
             || tf.after.is_some()
             || tf.can_set_min_score
@@ -1946,15 +1984,28 @@ impl<'a> Leaf<'a> {
             Some(LeafKey::Str(k)) => k.quick_compare_bottom(doc),
             _ => None,
         };
-        // `thresholdCheck` drops a document that does not beat the bottom:
-        // decided here unless the first key ties with more keys to go.
-        match r.map(|r| tf.comps[0].mul * r) {
-            Some(r) if r < 0 || (r == 0 && tf.comps.len() == 1) => {
-                tf.total_hits += 1;
-                true
-            }
+        // `thresholdCheck` drops a document that does not beat the bottom;
+        // a tie on the first key goes to the others (a score read here is
+        // kept for `collect`, and an error is left for it to raise).
+        let drop = match r.map(|r| tf.comps[0].mul * r) {
+            Some(r) if r < 0 || (r == 0 && tf.comps.len() == 1) => true,
+            Some(0) => matches!(self.compare_bottom(tf, doc, scorer), Ok(r) if r <= 0),
             _ => false,
+        };
+        if drop {
+            tf.total_hits += 1;
         }
+        drop
+    }
+
+    /// The end of the segment: keyword slots read their terms.
+    fn finish(&mut self, tf: &mut TopField) -> Result<()> {
+        for (key, c) in self.keys.iter_mut().zip(tf.comps.iter_mut()) {
+            if let (LeafKey::Str(k), Some(st)) = (key, c.strs.as_mut()) {
+                k.materialize(st)?;
+            }
+        }
+        Ok(())
     }
 
     /// Whether the competitive iterator, if any, still lets every document
@@ -2227,6 +2278,7 @@ pub fn search_sorted(
             if let Some(e) = c.error {
                 return Err(e);
             }
+            leaf.finish(&mut tf)?;
             continue;
         }
         // The score is not the first key, so it only breaks ties: the
@@ -2264,6 +2316,7 @@ pub fn search_sorted(
             &mut leaf,
             seg.live_docs,
         )?;
+        leaf.finish(&mut tf)?;
     }
     Ok(tf.top_docs())
 }
@@ -2359,8 +2412,13 @@ fn score_competitive(
             run_misses = 0;
             let mut d = doc;
             while d < run_end {
-                if live_docs.is_none_or(|l| l.get_doc(d)) && !leaf.quick_reject(tf, d) {
-                    leaf.collect(tf, d, score_at(&mut scores, d))?;
+                if !live_docs.is_none_or(|l| l.get_doc(d)) {
+                    d += 1;
+                    continue;
+                }
+                let mut sc = score_at(&mut scores, d);
+                if !leaf.quick_reject(tf, d, &mut sc) {
+                    leaf.collect(tf, d, sc)?;
                     if leaf.terminated {
                         return Ok(());
                     }
@@ -2387,15 +2445,15 @@ fn score_competitive(
             continue;
         }
         if live_docs.is_none_or(|l| l.get_doc(doc)) && (!two_phase || scorer.matches()?) {
-            if leaf.quick_reject(tf, doc) {
-                doc = scorer.next_doc()?;
-                continue;
-            }
-            let sc: Sc<'_> = if self_scores {
+            let mut sc: Sc<'_> = if self_scores {
                 Some(&mut *scorer)
             } else {
                 score_at(&mut scores, doc)
             };
+            if leaf.quick_reject(tf, doc, &mut sc) {
+                doc = scorer.next_doc()?;
+                continue;
+            }
             leaf.collect(tf, doc, sc)?;
             if leaf.terminated {
                 return Ok(());
