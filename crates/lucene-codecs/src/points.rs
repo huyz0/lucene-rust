@@ -355,7 +355,7 @@ pub struct Leaf {
 pub struct PointsReader<'d> {
     kdi: &'d [u8],
     kdd: &'d [u8],
-    fields: Vec<(i32, PointsField)>,
+    fields: std::borrow::Cow<'d, [(i32, PointsField)]>,
 }
 
 impl PointsReader<'static> {
@@ -365,7 +365,21 @@ impl PointsReader<'static> {
         PointsReader {
             kdi: &[],
             kdd: &[],
-            fields: Vec::new(),
+            fields: std::borrow::Cow::Borrowed(&[]),
+        }
+    }
+}
+
+impl<'d> PointsReader<'d> {
+    /// A reader over `kdi`/`kdd` with the fields [`open_meta`] parsed from
+    /// the same segment, borrowed: what a reader that keeps the parsed
+    /// metadata (Lucene's `BKDReader`s live as long as the segment) builds
+    /// per search instead of re-parsing `.kdm`.
+    pub fn with_meta(kdi: &'d [u8], kdd: &'d [u8], fields: &'d [(i32, PointsField)]) -> Self {
+        PointsReader {
+            kdi,
+            kdd,
+            fields: std::borrow::Cow::Borrowed(fields),
         }
     }
 }
@@ -378,6 +392,23 @@ pub fn open<'d>(
     segment_id: &[u8; codec_util::ID_LENGTH],
     segment_suffix: &str,
 ) -> Result<PointsReader<'d>> {
+    let fields = open_meta(kdm, kdi, kdd, segment_id, segment_suffix)?;
+    Ok(PointsReader {
+        kdi,
+        kdd,
+        fields: std::borrow::Cow::Owned(fields),
+    })
+}
+
+/// [`open`]'s checks and `.kdm` parse, returning the fields' metadata alone
+/// (owned), for [`PointsReader::with_meta`].
+pub fn open_meta(
+    kdm: &[u8],
+    kdi: &[u8],
+    kdd: &[u8],
+    segment_id: &[u8; codec_util::ID_LENGTH],
+    segment_suffix: &str,
+) -> Result<Vec<(i32, PointsField)>> {
     let mut kdi_input = SliceInput::new(kdi);
     codec_util::check_index_header(
         &mut kdi_input,
@@ -425,7 +456,7 @@ pub fn open<'d>(
     let _data_length = meta_input.read_i64()?;
     codec_util::check_footer(&mut meta_input, kdm.len())?;
 
-    Ok(PointsReader { kdi, kdd, fields })
+    Ok(fields)
 }
 
 fn read_field_meta(meta_input: &mut SliceInput) -> Result<PointsField> {
@@ -6687,7 +6718,7 @@ mod intersect_tests {
         let reader = PointsReader {
             kdi: &kdi,
             kdd: &kdd,
-            fields: vec![(0, field)],
+            fields: std::borrow::Cow::Owned(vec![(0, field)]),
         };
         let err = reader.range_query(0, &[0x10], &[0x20]).unwrap_err();
         assert!(
@@ -6713,7 +6744,7 @@ mod intersect_tests {
         let reader = PointsReader {
             kdi: &kdi,
             kdd: &kdd,
-            fields: vec![(0, field)],
+            fields: std::borrow::Cow::Owned(vec![(0, field)]),
         };
         let err = reader.range_query(0, &[0x10], &[0x20]).unwrap_err();
         assert!(format!("{err}").contains("leftNumBytes"), "{err}");
@@ -6734,7 +6765,7 @@ mod intersect_tests {
         let reader = PointsReader {
             kdi: &kdi,
             kdd: &kdd,
-            fields: vec![(0, field)],
+            fields: std::borrow::Cow::Owned(vec![(0, field)]),
         };
         // The split value decodes to 0x00, so the left cell is [0x00, 0x00],
         // entirely below the query box.

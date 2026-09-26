@@ -2727,7 +2727,6 @@ pub fn search_sorted_sliced(
     after: Option<&FieldDoc>,
     slices: &[Vec<usize>],
 ) -> Result<TopFieldDocs> {
-    use rayon::prelude::*;
     if slices.len() <= 1 || top_n == 0 {
         let parts = search_sorted(
             segments,
@@ -2758,16 +2757,15 @@ pub fn search_sorted_sliced(
         track: false,
         global: global.as_ref(),
     };
-    let parts = slices
-        .par_iter()
-        .map(|slice| {
-            // `LeafSlice` keeps its partitions by doc base: a collector breaks
-            // ties assuming ascending documents.
-            let mut order = slice.clone();
-            order.sort_unstable();
-            search_segments(&run, &order)
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let parts = crate::slices::run_slices(slices, |slice| {
+        // `LeafSlice` keeps its partitions by doc base: a collector breaks
+        // ties assuming ascending documents.
+        let mut order = slice.to_vec();
+        order.sort_unstable();
+        search_segments(&run, &order)
+    })
+    .into_iter()
+    .collect::<Result<Vec<_>>>()?;
     Ok(merge_top_docs(sort, top_n, parts))
 }
 
