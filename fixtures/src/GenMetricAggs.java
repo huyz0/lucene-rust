@@ -54,7 +54,7 @@ import java.util.stream.Stream;
  *
  * <pre>
  *   l    long, 20% missing
- *   ml   long, 0-3 values, some near +-2^60 (rounded when widened to double)
+ *   ml   long, 0-3 values (300 in document 5), some near +-2^60 (rounded when widened to double)
  *   d    double, specials now and then (NaN, +-0.0, +-inf, tiny and huge magnitudes)
  *   md   double, 0-3 values, a NaN now and then
  *   f    float
@@ -111,6 +111,67 @@ public class GenMetricAggs {
     String record() {
       return count + ":" + hex(sum.value) + ":" + hex(sum.delta) + ":" + hex(min) + ":" + hex(max) + ":"
           + hex(minOfMins) + ":" + hex(maxOfMaxes);
+    }
+  }
+
+  /** One matching document into every field's state, as the aggregators read it. */
+  static void collectDoc(State[] states, SortedNumericDocValues[] dvs, int doc) throws IOException {
+    for (int k = 0; k < FIELDS.length; k++) {
+      if (dvs[k].advanceExact(doc) == false) {
+        continue;
+      }
+      State s = states[k];
+      int n = dvs[k].docValueCount();
+      s.count += n;
+      double first = 0, last = 0;
+      for (int j = 0; j < n; j++) {
+        double v = read(FIELDS[k], dvs[k].nextValue());
+        if (j == 0) {
+          first = v;
+        }
+        last = v;
+        s.sum.add(v);
+        s.min = Math.min(s.min, v);
+        s.max = Math.max(s.max, v);
+      }
+      s.minOfMins = Math.min(s.minOfMins, first);
+      s.maxOfMaxes = Math.max(s.maxOfMaxes, last);
+    }
+  }
+
+  /** Concurrent search's slices, as Lucene groups segments (not by position): fresh states each. */
+  static final int[][] SLICES = {{0, 2}, {1, 3}};
+
+  static void recordSlices(StringBuilder m, int run, IndexSearcher searcher, Query q) throws IOException {
+    org.apache.lucene.search.Weight w =
+        searcher.createWeight(searcher.rewrite(q), ScoreMode.COMPLETE_NO_SCORES, 1f);
+    for (int sl = 0; sl < SLICES.length; sl++) {
+      State[] states = new State[FIELDS.length];
+      for (int k = 0; k < FIELDS.length; k++) {
+        states[k] = new State();
+      }
+      for (int leafOrd : SLICES[sl]) {
+        LeafReaderContext leaf = searcher.getIndexReader().leaves().get(leafOrd);
+        SortedNumericDocValues[] dvs = new SortedNumericDocValues[FIELDS.length];
+        for (int k = 0; k < FIELDS.length; k++) {
+          dvs[k] = DocValues.getSortedNumeric(leaf.reader(), FIELDS[k]);
+        }
+        org.apache.lucene.search.Scorer scorer = w.scorer(leaf);
+        if (scorer == null) {
+          continue;
+        }
+        org.apache.lucene.util.Bits live = leaf.reader().getLiveDocs();
+        org.apache.lucene.search.DocIdSetIterator it = scorer.iterator();
+        for (int doc = it.nextDoc(); doc != org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS; doc = it.nextDoc()) {
+          if (live == null || live.get(doc)) {
+            collectDoc(states, dvs, doc);
+          }
+        }
+      }
+      for (int k = 0; k < FIELDS.length; k++) {
+        m.append("run.").append(run).append(".slice.").append(sl).append('.').append(FIELDS[k]).append('=')
+            .append(states[k].record()).append('\n');
+      }
     }
   }
 
@@ -300,7 +361,8 @@ public class GenMetricAggs {
               doc.add(new SortedNumericDocValuesField("l", l));
               doc.add(new LongPoint("l", l));
             }
-            for (int v = 0, n = random.nextInt(4); v < n; v++) {
+            // One document with more values than a decoding chunk (256).
+            for (int v = 0, n = id == 5 ? 300 : random.nextInt(4); v < n; v++) {
               long l = random.nextInt(10) == 0 ? (random.nextBoolean() ? 1L : -1L) * ((1L << 60) + random.nextInt(1 << 20))
                   : random.nextInt(1000);
               doc.add(new SortedNumericDocValuesField("ml", l));
@@ -367,27 +429,7 @@ public class GenMetricAggs {
 
                 @Override
                 public void collect(int doc) throws IOException {
-                  for (int k = 0; k < FIELDS.length; k++) {
-                    if (dvs[k].advanceExact(doc) == false) {
-                      continue;
-                    }
-                    State s = states[k];
-                    int n = dvs[k].docValueCount();
-                    s.count += n;
-                    double first = 0, last = 0;
-                    for (int j = 0; j < n; j++) {
-                      double v = read(FIELDS[k], dvs[k].nextValue());
-                      if (j == 0) {
-                        first = v;
-                      }
-                      last = v;
-                      s.sum.add(v);
-                      s.min = Math.min(s.min, v);
-                      s.max = Math.max(s.max, v);
-                    }
-                    s.minOfMins = Math.min(s.minOfMins, first);
-                    s.maxOfMaxes = Math.max(s.maxOfMaxes, last);
-                  }
+                  collectDoc(states, dvs, doc);
                 }
 
                 @Override
@@ -410,6 +452,7 @@ public class GenMetricAggs {
                   .append(pointsBounds(reader, FIELDS[k])).append('\n');
             }
           }
+          recordSlices(m, run, searcher, q);
           run++;
         }
       }

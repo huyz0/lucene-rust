@@ -202,6 +202,10 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         if (ctx.collapse() != null) return "collapse";
         if (ctx.rescore() != null && ctx.rescore().isEmpty() == false) return "rescore";
         if (ctx.getProfilers() != null) return "profile";
+        // A shard with an @timestamp field sorted by it ascending: ContextIndexSearcher visits
+        // each slice's segments last first, which breaks sort ties and orders an aggregation's sums
+        // differently from the native pass (ascending); stay on OpenSearch's.
+        if (ctx.shouldUseTimeSeriesDescSortOptimization()) return "time_series_order";
         if (hasTimeout) return "timeout";
         // dfs_query_then_fetch scores with statistics aggregated across shards
         // (ContextIndexSearcher.setAggregatedDfs); the native engine only knows this shard's.

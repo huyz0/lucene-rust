@@ -860,8 +860,10 @@ const MAX_SLICED_SEGMENTS: usize = 1 << 16;
 pub const METRIC_VALUES: usize = 6;
 
 /// Decodes a metrics blob: `count: u8`, then per field `kind: u8`
-/// ([`METRIC_LONG`], [`METRIC_DOUBLE`], [`METRIC_FLOAT`]) and the field
-/// (`len: i32`, UTF-8). Trailing bytes are an error.
+/// ([`METRIC_LONG`], [`METRIC_DOUBLE`], [`METRIC_FLOAT`]), `source: u8`
+/// ([`METRIC_DOC_VALUES`], [`METRIC_POINTS_MIN`], [`METRIC_POINTS_MAX`]) and
+/// the field (`len: i32`, UTF-8); then the concurrent-search slices
+/// ([`decode_slices`]). Little-endian, and trailing bytes are an error.
 pub(crate) fn decode_metrics(blob: &[u8]) -> Result<(Vec<MetricSpec>, Vec<Vec<usize>>), FfiStatus> {
     let mut c = Cursor { buf: blob, pos: 0 };
     let bad = |msg: String| {
@@ -916,7 +918,9 @@ pub(crate) fn decode_metrics(blob: &[u8]) -> Result<(Vec<MetricSpec>, Vec<Vec<us
 /// # Safety
 /// `query`/`aggs` must be valid for `query_len`/`aggs_len` bytes;
 /// `out_counts` for `n` elements and `out_values` for `n *`
-/// [`METRIC_VALUES`], `n` being at least the blob's field count.
+/// [`METRIC_VALUES`], `n` being at least the blob's field count times its
+/// slice count (or times one without slices): the states come slice by
+/// slice, each slice's fields in blob order.
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn ffi_jvm_reader_aggregate(
