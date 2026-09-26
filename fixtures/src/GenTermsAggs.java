@@ -57,6 +57,7 @@ import java.util.stream.Stream;
  *   hk   keyword, half the documents, ~15,000 terms
  *   bk   keyword, raw bytes including 0x00 and 0xff (unsigned order)
  *   sk   a SORTED field (single-valued doc values of the other kind)
+ *   pk   keyword as OpenSearch indexes one: postings and doc values, 0-2 values, some repeated
  * </pre>
  *
  * <p>Each run records {@code run.N.<field>.<shardSize>.<slice>=other|term:count,...} with the
@@ -65,7 +66,7 @@ import java.util.stream.Stream;
 public class GenTermsAggs {
   static final int DOCS_PER_SEGMENT = 10_000;
   static final int SEGMENTS = 4;
-  static final String[] FIELDS = {"kw", "mkw", "hk", "bk", "sk"};
+  static final String[] FIELDS = {"kw", "mkw", "hk", "bk", "sk", "pk"};
   static final int[] SHARD_SIZES = {1, 3, 25, 1000};
   static final int[][] SLICES = {{0, 2}, {1, 3}};
 
@@ -117,6 +118,11 @@ public class GenTermsAggs {
             doc.add(new SortedSetDocValuesField("bk", new BytesRef(b)));
             if (random.nextInt(3) != 0) {
               doc.add(new SortedDocValuesField("sk", new BytesRef("s" + random.nextInt(12))));
+            }
+            for (int v = 0, n = random.nextInt(3); v < n; v++) {
+              String p = "p" + random.nextInt(v == 1 && random.nextBoolean() ? 3 : 60);
+              doc.add(new StringField("pk", p, Field.Store.NO));
+              doc.add(new SortedSetDocValuesField("pk", new BytesRef(p)));
             }
             w.addDocument(doc);
           }

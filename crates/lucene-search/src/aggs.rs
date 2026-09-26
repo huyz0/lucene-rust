@@ -630,7 +630,16 @@ fn slice_states(
             }
         }
         for ((t, g), counts) in terms.iter().zip(globals).zip(&mut term_counts) {
-            segment_counts(reader, i, &t.field, g, &read, counts, &mut terms_scratch)?;
+            segment_counts(
+                reader,
+                seg.fields,
+                i,
+                &t.field,
+                g,
+                &read,
+                counts,
+                &mut terms_scratch,
+            )?;
         }
     }
     let terms = terms

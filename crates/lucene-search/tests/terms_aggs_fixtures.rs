@@ -128,7 +128,7 @@ fn terms_aggregations_match_opensearch() {
     let mut pruned = 0;
     for r in 0..runs {
         let text = &m[&format!("run.{r}.query")];
-        for field in ["kw", "mkw", "hk", "bk", "sk"] {
+        for field in ["kw", "mkw", "hk", "bk", "sk", "pk"] {
             for shard_size in [1usize, 3, 25, 1000] {
                 let prefix = format!("run.{r}.{field}.{shard_size}.");
                 let whole = terms(

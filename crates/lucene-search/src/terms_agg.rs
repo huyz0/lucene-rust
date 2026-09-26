@@ -222,6 +222,10 @@ pub struct TermsSpec {
     pub shard_size: usize,
 }
 
+/// `search.aggregations.terms.max_precompute_cardinality`'s default: the most
+/// terms a segment may have for its counts to be read from its postings.
+const MAX_PRECOMPUTE_CARDINALITY: usize = 30_000;
+
 /// Per-segment scratch for [`segment_counts`], reused across segments.
 #[derive(Default)]
 pub(crate) struct TermsScratch {
@@ -230,8 +234,10 @@ pub(crate) struct TermsScratch {
 
 /// Adds segment `seg`'s matches to `counts`, indexed by global ordinal: `read`
 /// says how the matches meet the column (see [`crate::aggs::column_read`]).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn segment_counts(
     reader: &SegmentReader,
+    postings: &lucene_codecs::blocktree::BlockTreeFields,
     seg: usize,
     field: &str,
     global: &GlobalOrds,
@@ -239,11 +245,32 @@ pub(crate) fn segment_counts(
     counts: &mut [u64],
     scratch: &mut TermsScratch,
 ) -> Result<()> {
-    let (ords, _) = open_ords(reader, field)?;
     let map = global
         .segment_to_global
         .get(seg)
         .map_or(&[][..], Vec::as_slice);
+    // `tryCollectFromTermFrequencies`: a segment every document of which
+    // matches (a match-all, nothing deleted) is counted from its postings --
+    // each term's `docFreq`, the i-th term being ordinal i -- when the field
+    // has postings and at most `MAX_PRECOMPUTE_CARDINALITY` terms.
+    if matches!(read, ColumnRead::Stream(crate::aggs::Accept::Live(None))) {
+        if let Some(terms) = postings.field(field) {
+            let n = usize::try_from(terms.num_terms).unwrap_or(usize::MAX);
+            if n <= MAX_PRECOMPUTE_CARDINALITY && n == map.len() {
+                let mut e = terms.iter();
+                let mut ord = 0usize;
+                while let Some((_, stats)) = e.next() {
+                    let slot = map.get(ord).and_then(|&g| counts.get_mut(g as usize));
+                    if let Some(c) = slot {
+                        *c += u64::try_from(stats.doc_freq).unwrap_or(0);
+                    }
+                    ord += 1;
+                }
+                return Ok(());
+            }
+        }
+    }
+    let (ords, _) = open_ords(reader, field)?;
     // An ordinal past the dictionary is corrupt, and reported.
     let mut bad_ord: Option<i64> = None;
     let mut bump = |ord: i64| match usize::try_from(ord)
