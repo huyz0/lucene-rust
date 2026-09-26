@@ -303,6 +303,21 @@ per segment, next to the query cache). The rows now measure 1.02-1.65x in proces
 (keyword 1.49x, date under a filter 1.02x, `long` 1.65x), and the
 match-all rows 5.4-41x.
 
+Over REST after this round (the same node and matrix, 100K documents, 400
+requests per engine per row, interleaved, median wall latency, Lucene over
+native): `_doc` 1.13x, `long` desc 1.10x, `double` 1.23x, `float` 1.14x,
+`date` 1.04x, multi-valued `min` 1.21x, sparse with `missing` `_first`/`_last`/a
+value 1.25x/1.08x/1.14x, a field then `_score` 2.41x, from 20 size 15 1.17x,
+`track_total_hits: true` 1.07x, size 0 1.13x, `search_after` 1.03x and 1.34x,
+keyword 1.05x, keyword then a field 1.11x, keyword `max` missing first then
+`_score` 1.35x, keyword `search_after` 1.16x; at parity: `integer` then `long`
+over match-all 0.98x and `_score` then a field 0.99x (server-side `took`
+0.89/1.00 ms and 1.71/2.01 ms, where the same searches measure 2-3x faster
+than Lucene in process on a copy of the shard -- the difference is not in the
+search and is not yet explained). The matrix's 2,278 checks against a stock
+node pass, and the self test's 6,576 random sorted pages (numeric, score,
+`_doc` and keyword keys) all agree with `TopFieldCollectorManager`.
+
 Falls back: `avg`/`sum`/`median` modes and nested sorts (OpenSearch's custom
 comparators), `track_scores` unless the score leads, and index-sorted shards.
 
