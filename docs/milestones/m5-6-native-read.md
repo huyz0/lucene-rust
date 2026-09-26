@@ -23,7 +23,7 @@ milestone finishes the read side.
 | R4 | Sort and `search_after` natively (`TopFieldCollector`) | numeric, score, `_doc` and keyword keys and `track_scores` delivered (below); open: `avg`/`sum`/`median` modes, nested sorts, index-sorted shards |
 | R5 | Aggregations natively: terms, histogram, date_histogram, range, the metrics, cardinality, filter/filters | metrics (`min`, `max`, `sum`, `avg`, `value_count`, `stats`) and keyword `terms` delivered (below); open: the bucket aggregations, `cardinality`, sub-aggregations |
 | R6 | Fetch (`_source`, stored fields, `docvalue_fields`) and get natively | open |
-| R7 | scroll, `post_filter`, `min_score`, `terminate_after`, timeouts; the full read benchmark (in process and REST) with every native shape at least 1.0× Lucene | `post_filter`, `timeout`, scroll and `terminate_after` delivered (below); open: `min_score`, the full read benchmark |
+| R7 | scroll, `post_filter`, `min_score`, `terminate_after`, timeouts; the full read benchmark (in process and REST) with every native shape at least 1.0× Lucene | `post_filter`, `timeout`, scroll, `terminate_after` and `min_score` (by score) delivered (below); open: `min_score` behind a sort, the full read benchmark |
 
 ## R1 — the scorer tree (delivered)
 
@@ -600,6 +600,18 @@ contexts do, in the plugin's Java; the native searches underneath are R1-R5's.
   answers from `Weight.count` (and so never shows the terminating collector)
   -- the plugin asks Lucene's own weight, query cache included, and the
   native side replays each slice over the others (`count_terminates`).
+
+- **`min_score`**: `MinimumScoreCollector` sits outside every other collector,
+  so the hits, the total, the `size: 0` count and the aggregations all see
+  only documents scoring at least the minimum. The plugin prefixes every
+  query blob with the minimum (`QUERY_MIN_SCORE`); natively the top-docs
+  collector is wrapped (`MinScoreCollector`, pruning as Lucene's does), the
+  count and the aggregations score the query `COMPLETE`, and the concurrent
+  count replay counts only passing documents. By score only: behind a field
+  sort (where the sorted collector's competitive iterators and lazy scoring
+  would need it inside), a scroll's later pages or `terminate_after`, Lucene
+  answers. `tests/min_score_fixtures.rs` checks 140 Lucene runs; the self test
+  random queries at two minimums each.
 
 Acceptance, `scripts/verify-opensearch.sh` against a stock node's answers:
 `post_filter` with terms and metric aggregations, sorted, paged, `size: 0`,

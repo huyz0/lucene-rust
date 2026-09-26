@@ -70,6 +70,24 @@ public final class QueryEncoder {
         }
     }
 
+    /** Blob tag for {@code min_score} in front of a query blob (the native {@code QUERY_MIN_SCORE}). */
+    static final byte QUERY_MIN_SCORE = 3;
+
+    /**
+     * {@code blob} behind OpenSearch's {@code min_score}: the tag, the minimum as a float's bits,
+     * then the query blob itself.
+     */
+    static byte[] withMinScore(byte[] blob, float min) {
+        byte[] out = new byte[blob.length + 5];
+        out[0] = QUERY_MIN_SCORE;
+        int bits = Float.floatToIntBits(min);
+        for (int i = 0; i < 4; i++) {
+            out[1 + i] = (byte) (bits >>> (8 * i));
+        }
+        System.arraycopy(blob, 0, out, 5, blob.length);
+        return out;
+    }
+
     /**
      * Whether the native engine is measured at least as fast as Lucene on {@code q}'s shape. Since
      * read path R1 (the scorer tree and bulk scorers, {@code docs/milestones/m5-6-native-read.md})
