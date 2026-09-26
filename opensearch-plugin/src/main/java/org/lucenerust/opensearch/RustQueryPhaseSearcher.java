@@ -152,7 +152,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 hitsBlob = filtered.blob();
                 fast = fast && filtered.fast();
             }
-            if (reason == null && fast == false && "all".equals(ctx.indexShard().indexSettings().getValue(NATIVE_SHAPES)) == false) {
+            if (reason == null && fast == false && flags(ctx).allShapes() == false) {
                 reason = "slower_shape";
             }
             // min_score: OpenSearch's MinimumScoreCollector sits outside every other collector,
@@ -258,7 +258,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         boolean hasFilterCollector,
         boolean nativeAggs
     ) {
-        if (ctx.indexShard().indexSettings().getValue(ENABLED) == false) return "disabled";
+        if (flags(ctx).enabled() == false) return "disabled";
         // The specific reasons first: each of these also adds a collector, and "collectors" alone
         // would not tell an operator which request feature to look at.
         // Aggregations only when NativeAggregations plans every one of them, and nothing else (a
@@ -428,6 +428,28 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         }
         return q.getClass() == TermQuery.class || q.getClass() == MatchAllDocsQuery.class
             || q.getClass() == org.apache.lucene.search.MatchNoDocsQuery.class;
+    }
+
+    /** The plugin's index settings as last read, and the settings version they were read at. */
+    private record Flags(long version, boolean enabled, boolean allShapes) {}
+
+    private static final java.util.concurrent.ConcurrentHashMap<String, Flags> FLAGS = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * The plugin's index settings for {@code ctx}'s index, re-read only when the index's settings
+     * version moves: {@code IndexSettings.getValue} parses the setting's string on every call, a
+     * cost every search paid twice. One small entry per index ever searched on this node.
+     */
+    static Flags flags(SearchContext ctx) {
+        org.opensearch.index.IndexSettings settings = ctx.indexShard().indexSettings();
+        long version = settings.getIndexMetadata().getSettingsVersion();
+        String uuid = settings.getUUID();
+        Flags f = FLAGS.get(uuid);
+        if (f == null || f.version() != version) {
+            f = new Flags(version, settings.getValue(ENABLED), "all".equals(settings.getValue(NATIVE_SHAPES)));
+            FLAGS.put(uuid, f);
+        }
+        return f;
     }
 
     /** True when {@code field} scores with a default-parameter {@link BM25Similarity}. */
