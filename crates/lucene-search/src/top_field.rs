@@ -631,17 +631,19 @@ struct LeafNumeric<'a> {
 }
 
 impl LeafNumeric<'_> {
-    /// [`Self::value`] when a dense single-valued column answers directly
-    /// (kept for [`Self::value`]), or `None` for "ask it".
+    /// [`Self::value`] for the fast reject: the dense single-valued read
+    /// inline, any other through [`Self::value`]; `None` for an error, left
+    /// for `collect` to raise.
     #[inline]
     fn quick_value(&mut self, doc: i32) -> Option<i64> {
-        let Column::Single(r) = &self.column else {
-            return None;
-        };
-        let v = r.dense_value(doc)?;
-        let v = if self.int { i64::from(v as i32) } else { v };
-        self.cached = (doc, v);
-        Some(v)
+        if let Column::Single(r) = &self.column {
+            if let Some(v) = r.dense_value(doc) {
+                let v = if self.int { i64::from(v as i32) } else { v };
+                self.cached = (doc, v);
+                return Some(v);
+            }
+        }
+        self.value(doc).ok()
     }
 
     fn value(&mut self, doc: i32) -> Result<i64> {
@@ -836,6 +838,11 @@ struct Competitive<'a> {
     /// The tree walk's buffers, kept across updates (Lucene keeps its
     /// `PointTree` for the estimate the same way).
     walk: PointsScratch,
+    /// The documents without a value, once needed (see
+    /// [`Self::update_with_missing`]), and the value range the current
+    /// iterator was built for.
+    missing_docs: Option<FixedBitSet>,
+    missing_range: Option<(i64, i64)>,
 }
 
 /// Where a column's docs-with-values set is: every document, or an
@@ -961,7 +968,7 @@ impl Competitive<'_> {
             return Ok(());
         }
         if self.point_doc_count != self.max_doc && self.missing_competitive(c) {
-            return Ok(());
+            return self.update_with_missing(c);
         }
         self.update_counter += 1;
         if self.update_counter > 256
@@ -974,6 +981,112 @@ impl Competitive<'_> {
             self.encode_bottom(c);
         }
         self.do_update()
+    }
+
+    /// Beyond `NumericComparator`, which skips nothing while the missing
+    /// value competes: the documents that can still compete are then the
+    /// ones without a value and the ones whose value is in range, so a
+    /// sparse field whose values are mostly out of range (a full queue of
+    /// missing-first documents) skips the rest. Built only when at most half
+    /// the documents lack a value and the range holds at most an eighth of
+    /// the values, and rebuilt only when the range moves.
+    fn update_with_missing(&mut self, c: &Comparator) -> Result<()> {
+        if !c.queue_full {
+            return Ok(());
+        }
+        let missing = i64::from(self.max_doc) - i64::from(self.point_doc_count);
+        if missing.saturating_mul(2) > i64::from(self.max_doc) {
+            return Ok(());
+        }
+        self.encode_bottom(c);
+        let range = (self.min_value, self.max_value);
+        if self.missing_range == Some(range) {
+            return Ok(());
+        }
+        self.missing_range = Some(range);
+        let max_doc = usize::try_from(self.max_doc).unwrap_or(0);
+        let mut visitor = CompetitiveVisitor {
+            min: self.min_value,
+            max: self.max_value,
+            max_doc_visited: self.max_doc_visited,
+            docs: Vec::new(),
+            bits: None,
+            upgrade_at: (max_doc >> 7).max(1),
+            added: 0,
+            spare: None,
+            max_doc,
+            corrupt: None,
+        };
+        let threshold = i64::from(self.point_doc_count) >> 3;
+        let estimate = self
+            .points
+            .estimate_point_count_bounded_in(
+                self.field_number,
+                &mut visitor,
+                threshold,
+                &mut self.walk,
+            )
+            .map_err(crate::Error::from)?;
+        if estimate >= threshold {
+            return Ok(());
+        }
+        self.points
+            .intersect_in(self.field_number, &mut visitor, &mut self.walk)
+            .map_err(crate::Error::from)?;
+        if let Some(doc) = visitor.corrupt {
+            return Err(SortError::PointsDoc {
+                field_number: self.field_number,
+                doc,
+                max_doc: self.max_doc,
+            }
+            .into());
+        }
+        if self.missing_docs.is_none() {
+            let WithValue::Disi {
+                region,
+                dense_rank_power,
+            } = self.with_value
+            else {
+                // Every document has a value (or the column is gone): the
+                // missing value cannot be what keeps this iterator wide.
+                return Ok(());
+            };
+            // The documents with a value, inverted; the last word's bits
+            // past `maxDoc` left clear.
+            let mut words = vec![0u64; max_doc.div_ceil(64)];
+            lucene_codecs::indexed_disi::or_into_words(region, dense_rank_power, &mut words)
+                .map_err(|e| crate::Error::from(lucene_codecs::doc_values::Error::from(e)))?;
+            for w in &mut words {
+                *w = !*w;
+            }
+            if let Some(last) = words.last_mut() {
+                let used = max_doc % 64;
+                if used != 0 {
+                    *last &= u64::MAX.wrapping_shr(64u32.wrapping_sub(used as u32));
+                }
+            }
+            self.missing_docs = Some(FixedBitSet::from_words(words, max_doc));
+        }
+        let mut bits = self
+            .missing_docs
+            .clone()
+            .unwrap_or_else(|| FixedBitSet::new(max_doc));
+        match visitor.bits {
+            Some(b) => bits.or(&b),
+            None => {
+                for d in visitor.docs {
+                    if let Ok(i) = usize::try_from(d) {
+                        // FBS: `i < max_doc`, the set's length, checked here.
+                        if i < max_doc {
+                            bits.set(i);
+                        }
+                    }
+                }
+            }
+        }
+        self.iterator_cost = bits.cardinality() as i64;
+        self.iter = Iter::Bits { bits, doc: -1 };
+        Ok(())
     }
 
     /// `PointsCompetitiveDISIBuilder.doUpdateCompetitiveIterator`.
@@ -1744,7 +1857,17 @@ fn open_leaf<'a>(
                     Some(info) => match reader.doc_values_for_field(info.number) {
                         None => (Column::Absent, WithValue::None),
                         Some((meta, data)) => {
-                            if let Some(e) = meta.sorted_numeric_entry(info.number) {
+                            if let Some(e) = meta
+                                .sorted_numeric_entry(info.number)
+                                .filter(|e| e.addresses.is_none())
+                            {
+                                // One value per document: `DocValues.singleton`
+                                // over the numeric column, as Lucene reads it.
+                                (
+                                    Column::Single(NumericReader::new(data, &e.numeric)),
+                                    WithValue::of(data, &e.numeric),
+                                )
+                            } else if let Some(e) = meta.sorted_numeric_entry(info.number) {
                                 (
                                     Column::Multi(
                                         SortedNumericReader::new(data, e),
@@ -1804,6 +1927,8 @@ fn open_leaf<'a>(
                                     scratch: Vec::new(),
                                     spare_bits: None,
                                     walk: PointsScratch::default(),
+                                    missing_docs: None,
+                                    missing_range: None,
                                 };
                                 if comp.leaf_top_set {
                                     comp.encode_top(c);
@@ -2954,6 +3079,8 @@ mod tests {
             scratch: Vec::new(),
             spare_bits: None,
             walk: PointsScratch::default(),
+            missing_docs: None,
+            missing_range: None,
         };
         // Below 257 updates the interval never moves.
         c.update_skip_interval(false);
@@ -3093,6 +3220,8 @@ mod tests {
             scratch: Vec::new(),
             spare_bits: None,
             walk: PointsScratch::default(),
+            missing_docs: None,
+            missing_range: None,
         }
     }
 
