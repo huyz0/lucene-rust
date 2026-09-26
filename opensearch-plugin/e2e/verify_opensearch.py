@@ -268,11 +268,22 @@ def matrix():
     add("agg terms min_doc_count 0", {"size": 0, "query": {"match": {"body": "omega"}}, "aggs": {"t": {"terms": {"field": "tag", "min_doc_count": 0}}}}, "aggregations")
     add("agg terms include", {"size": 0, "aggs": {"t": {"terms": {"field": "tag", "include": "a.*"}}}}, "aggregations")
     add("agg terms numeric", {"size": 0, "aggs": {"t": {"terms": {"field": "qty"}}}}, "aggregations")
-    add("post_filter", {"query": {"match": {"body": "alpha"}}, "post_filter": {"term": {"tag": "beta"}}}, "post_filter")
+    # post_filter (read path R7): the hits are "query AND filter", scored by the query alone;
+    # aggregations see every match of the query.
+    add("post_filter", {"query": {"match": {"body": "alpha"}}, "post_filter": {"term": {"tag": "beta"}}}, "native")
+    add("post_filter + aggs", {"query": {"match": {"body": "alpha"}}, "post_filter": {"term": {"tag": "beta"}}, "aggs": {"t": {"terms": {"field": "tag"}}, "p": {"sum": {"field": "price"}}}}, "native")
+    add("post_filter size 0", {"size": 0, "query": {"match_all": {}}, "post_filter": {"range": {"n": {"gte": 100, "lt": 900}}}}, "native")
+    add("post_filter sort", {"query": {"match": {"body": "gamma"}}, "sort": [{"n": "desc"}], "post_filter": {"bool": {"should": [{"term": {"tag": "alpha"}}, {"term": {"tag": "delta"}}]}}}, "native")
+    add("post_filter bool query paged", {"from": 5, "size": 7, "query": {"bool": {"must": [{"match": {"body": "alpha"}}], "should": [{"match": {"title": "beta"}}]}}, "post_filter": {"range": {"sp": {"gte": 0}}}}, "native")
+    add("post_filter no total", {"track_total_hits": False, "query": {"match": {"body": "beta delta"}}, "post_filter": {"term": {"tag": "gamma"}}}, "native")
+    add("post_filter nothing", {"query": {"match": {"body": "alpha"}}, "post_filter": {"term": {"tag": "no-such-tag"}}}, "native")
     add("min_score", {"query": {"match": {"body": "alpha"}}, "min_score": 0.3}, "min_score")
     add("terminate_after", {"query": {"match": {"body": "alpha"}}, "terminate_after": 5}, "terminate_after")
     add("profile", {"query": {"match": {"body": "alpha"}}, "profile": True}, "profile")
-    add("timeout", {"query": {"match": {"body": "alpha"}}, "timeout": "10s"}, "timeout")
+    # timeout (R7): native, checked before and after the native search as ContextIndexSearcher
+    # checks it before each segment; none of these reaches it.
+    add("timeout", {"query": {"match": {"body": "alpha"}}, "timeout": "10s"}, "native")
+    add("timeout sort aggs", {"query": {"match": {"body": "beta"}}, "timeout": "30s", "sort": [{"n": "asc"}], "aggs": {"t": {"terms": {"field": "tag"}}}}, "native")
     add("collapse", {"query": {"match": {"body": "alpha"}}, "collapse": {"field": "tag"}}, "collapse")
     # Scored with statistics the native engine does not have: cross-shard (dfs) or blended
     # TermStates (cross_fields; tie_breaker 1 makes Lucene rewrite the dismax to a boolean).
@@ -370,6 +381,47 @@ def run_matrix(index, shards, label, shapes="fast"):
             check(ran_native == 0 and matched == shards,
                   f"{label} {index} [{name}]: expected fallback '{expect}' on {shards} shards, got native={ran_native} fallbacks={delta}")
     return native_total
+
+
+SCROLLS = [
+    ("scroll by score", {"size": 7, "query": {"match": {"body": "alpha beta"}}}),
+    ("scroll by _doc", {"size": 50, "query": {"match_all": {}}, "sort": ["_doc"]}),
+    ("scroll sorted", {"size": 9, "query": {"match": {"body": "gamma"}}, "sort": [{"n": "desc"}, {"tag": "asc"}]}),
+    ("scroll score track_scores", {"size": 11, "query": {"bool": {"should": [{"match": {"body": "delta"}}, {"term": {"tag": "beta"}}]}}, "track_scores": True}),
+    ("scroll + post_filter", {"size": 6, "query": {"match": {"body": "omega"}}, "post_filter": {"term": {"tag": "alpha"}}}),
+]
+
+
+def scroll_pages(index, body, limit=40):
+    """Every page of a scroll (at most `limit`), each as `shape` gives it."""
+    resp = req("POST", f"/{index}/_search?scroll=1m", body)
+    pages = [shape(resp, body)]
+    sid = resp["_scroll_id"]
+    while resp["hits"]["hits"] and len(pages) < limit:
+        resp = req("POST", "/_search/scroll", {"scroll": "1m", "scroll_id": sid})
+        sid = resp["_scroll_id"]
+        pages.append(shape(resp, body))
+    req("DELETE", "/_search/scroll", {"scroll_id": sid})
+    return pages
+
+
+def run_scroll(index, shards, label):
+    """Scrolls to the end with the native engine off, then on: page for page the same, and every
+    page's query phase native on every shard."""
+    for name, body in SCROLLS:
+        set_native(index, False)
+        reference = scroll_pages(index, body)
+        set_native(index, True)
+        before = stats()
+        got = scroll_pages(index, body)
+        after = stats()
+        check(len(got) == len(reference), f"{label} {index} [{name}]: {len(got)} pages vs {len(reference)}")
+        for i, (g, r) in enumerate(zip(got, reference)):
+            diff = same(g, r)
+            check(diff is None, f"{label} {index} [{name}]: page {i} differs from Lucene: {diff}")
+        ran_native = after["native_queries"] - before["native_queries"]
+        check(ran_native == len(got) * shards,
+              f"{label} {index} [{name}]: ran native {ran_native} times for {len(got)} pages on {shards} shards; fallbacks {fallback_delta(before, after)}")
 
 
 def fallback_delta(before, after):
@@ -573,6 +625,8 @@ def main():
         native += run_matrix("single", 1, "initial", shapes) + run_matrix("multi", 3, "initial", shapes)
     native += run_matrix("clean", 1, "no deletions")
     print(f"matrix: {len(matrix())} request shapes x 3 indices; {native} shard queries ran native")
+    run_scroll("single", 1, "scroll")
+    run_scroll("multi", 3, "scroll")
     unsupported_format()
     lifecycle("single", a.container)
     run_matrix("single", 1, "after merge")
