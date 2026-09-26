@@ -56,6 +56,13 @@ public final class RestStatsAction extends BaseRestHandler {
             }
             b.endObject();
             b.field("open_native_readers", readers.openCount());
+            // searchWith's own time per path (SearchStats.nativeTime/luceneTime).
+            b.startObject("query_phase_nanos");
+            b.field("native", stats.nativeNanos());
+            b.field("native_count", stats.nativeCount());
+            b.field("lucene", stats.luceneNanos());
+            b.field("lucene_count", stats.luceneCount());
+            b.endObject();
             // Engines this node has created for Rust-engine indices, by kind (M5).
             b.startObject("engines");
             b.field("rust", RustEngineFactory.RUST.get());

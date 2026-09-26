@@ -55,6 +55,8 @@ public final class SortEncoder {
     static final byte MAX = 2;
     /** Blob options: track the max score over every match (track_scores). */
     static final byte TRACK_MAX_SCORE = 1;
+    static final byte TERMINATE_AFTER = 2;
+    static final byte COUNT_SEGMENTS = 4;
     /** {@code MAX_SORT_KEYS} in {@code jvm_reader.rs}. */
     static final int MAX_KEYS = 16;
 
@@ -86,6 +88,26 @@ public final class SortEncoder {
      */
     @SuppressWarnings("deprecation")
     public static Encoded encode(Sort sort, FieldDoc after, boolean trackMaxScore, int[][] slices) {
+        return encode(sort, after, trackMaxScore, slices, 0, false);
+    }
+
+    /**
+     * {@link #encode(Sort, FieldDoc, boolean, int[][])} behind OpenSearch's {@code terminate_after}
+     * ({@code terminateAfter} documents let through, {@code 0} for none): the native search collects
+     * the query's first {@code terminateAfter} matches in index order, as a sequential search's
+     * EarlyTerminatingCollector does, and keeps the top hits among them. With {@code
+     * countSegments} the total is a {@code size: 0} search's instead: TotalHitCountCollector's,
+     * which takes a whole segment's {@code Weight.count} where there is one.
+     */
+    @SuppressWarnings("deprecation")
+    public static Encoded encode(
+        Sort sort,
+        FieldDoc after,
+        boolean trackMaxScore,
+        int[][] slices,
+        int terminateAfter,
+        boolean countSegments
+    ) {
         SortField[] fields = sort.getSort();
         if (fields.length == 0 || fields.length > MAX_KEYS) {
             return new Encoded(null, "sort_keys");
@@ -152,7 +174,10 @@ public final class SortEncoder {
                 writeLong(out, comparable(type(fields[i]), after.fields[i]));
             }
         }
-        out.write(trackMaxScore ? TRACK_MAX_SCORE : 0);
+        out.write((trackMaxScore ? TRACK_MAX_SCORE : 0) | (terminateAfter > 0 ? TERMINATE_AFTER : 0) | (countSegments ? COUNT_SEGMENTS : 0));
+        if (terminateAfter > 0) {
+            writeInt(out, terminateAfter);
+        }
         NativeAggregations.writeSlices(out, slices);
         return new Encoded(out.toByteArray(), null);
     }

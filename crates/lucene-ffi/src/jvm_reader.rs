@@ -88,7 +88,7 @@ use std::sync::Arc;
 /// score (`track_scores`); 14, metric aggregations
 /// ([`ffi_jvm_reader_aggregate`], read path R5) and, in the same call, the
 /// `terms` aggregation.
-pub const JVM_ABI_VERSION: u32 = 14;
+pub const JVM_ABI_VERSION: u32 = 15;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -539,13 +539,27 @@ const SORT_REVERSE: u8 = 1;
 const SORT_MAX: u8 = 2;
 /// Sort-blob options: track the max score over every match.
 const SORT_TRACK_MAX_SCORE: u8 = 1;
+/// Sort-blob options: `terminate_after`, its count (`i32`, at least 1)
+/// following the options byte.
+const SORT_TERMINATE_AFTER: u8 = 2;
+/// Sort-blob options, beside [`SORT_TERMINATE_AFTER`]: the total is a `size:
+/// 0` search's, whole segments counted where `Weight.count` answers
+/// ([`lucene_search::terminate::count_until`]).
+const SORT_COUNT_SEGMENTS: u8 = 4;
 /// At most this many keys: OpenSearch's sorts are a handful, and each key
 /// costs a value per hit on the way back.
 const MAX_SORT_KEYS: usize = 16;
 
 /// A decoded sort blob: the keys, the search-after document, whether to
-/// track the max score, and the slices.
-pub(crate) type DecodedSort = (Vec<SortField>, Option<FieldDoc>, bool, Vec<Vec<usize>>);
+/// track the max score, the slices, and `terminate_after` with whether its
+/// total counts whole segments ([`SORT_COUNT_SEGMENTS`]).
+pub(crate) type DecodedSort = (
+    Vec<SortField>,
+    Option<FieldDoc>,
+    bool,
+    Vec<Vec<usize>>,
+    Option<(u64, bool)>,
+);
 
 /// The concurrent-search slices ending a sort or metrics blob: `count: i32`,
 /// then per slice `len: i32` and that many segment indices (`i32`). None
@@ -673,9 +687,23 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<DecodedSort, FfiStatus> {
         other => return Err(bad(format!("sort blob: has_after is {other}"))),
     };
     let options = c.u8()?;
-    if options & !SORT_TRACK_MAX_SCORE != 0 {
+    if options & !(SORT_TRACK_MAX_SCORE | SORT_TERMINATE_AFTER | SORT_COUNT_SEGMENTS) != 0 {
         return Err(bad(format!("sort blob: unknown options {options:#x}")));
     }
+    let count_segments = options & SORT_COUNT_SEGMENTS != 0;
+    let terminate_after = if options & SORT_TERMINATE_AFTER != 0 {
+        let n = c.i32()?;
+        if n < 1 {
+            return Err(bad(format!("sort blob: terminate_after {n}")));
+        }
+        Some((u64::from(n.unsigned_abs()), count_segments))
+    } else if count_segments {
+        return Err(bad(
+            "sort blob: segment counts without terminate_after".to_string()
+        ));
+    } else {
+        None
+    };
     let slices = decode_slices(&mut c, &bad)?;
     if c.pos != blob.len() {
         return Err(bad(format!(
@@ -683,7 +711,13 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<DecodedSort, FfiStatus> {
             blob.len() - c.pos
         )));
     }
-    Ok((keys, after, options & SORT_TRACK_MAX_SCORE != 0, slices))
+    Ok((
+        keys,
+        after,
+        options & SORT_TRACK_MAX_SCORE != 0,
+        slices,
+        terminate_after,
+    ))
 }
 
 /// Runs the query blob `query` sorted by the sort blob `sort`
@@ -728,6 +762,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_sorted(
     out_total_is_lower_bound: *mut bool,
     out_terms_len: *mut usize,
     out_max_score: *mut f32,
+    out_terminated: *mut bool,
 ) -> i32 {
     guard(|| {
         if out_hit_count.is_null()
@@ -735,6 +770,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_sorted(
             || out_total_is_lower_bound.is_null()
             || out_terms_len.is_null()
             || out_max_score.is_null()
+            || out_terminated.is_null()
             || out_docs.is_null()
             || out_values.is_null()
             || (out_terms.is_null() && terms_cap != 0)
@@ -759,6 +795,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_sorted(
             lower_bound,
             terms,
             max_score,
+            terminated,
             ..
         } = search_sorted_blobs(handle, blob, sort_blob, top_n, count_limit)?;
         // SAFETY: caller contract.
@@ -786,6 +823,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_sorted(
             *out_total = total;
             *out_total_is_lower_bound = lower_bound;
             *out_max_score = max_score;
+            *out_terminated = terminated;
         }
         Ok(())
     })
@@ -805,6 +843,8 @@ pub(crate) struct SortedOut {
     pub(crate) has_terms: bool,
     /// The max score over every match when tracked, else `NaN`.
     pub(crate) max_score: f32,
+    /// Whether `terminate_after` ended the search early.
+    pub(crate) terminated: bool,
 }
 
 /// [`ffi_jvm_reader_search_sorted`] up to its output buffers: the blobs
@@ -818,12 +858,12 @@ pub(crate) fn search_sorted_blobs(
     count_limit: i64,
 ) -> Result<SortedOut, FfiStatus> {
     let query = decode_query(query_blob)?;
-    let (keys, after, track, slices) = decode_sort(sort_blob)?;
+    let (keys, after, track, slices, terminate_after) = decode_sort(sort_blob)?;
     let h = lookup(
         handle,
         "ffi_jvm_reader_search_sorted: unknown or already-closed handle",
     )?;
-    let (hits, total, lower_bound, max_score) = search_sorted(
+    let (hits, total, lower_bound, max_score, terminated) = search_sorted(
         &h,
         &query,
         &keys,
@@ -832,6 +872,7 @@ pub(crate) fn search_sorted_blobs(
         count_limit,
         track,
         &slices,
+        terminate_after,
     )?;
     let terms = encode_terms(&keys, &hits)?;
     Ok(SortedOut {
@@ -842,6 +883,7 @@ pub(crate) fn search_sorted_blobs(
         total,
         lower_bound,
         terms,
+        terminated,
     })
 }
 
@@ -1115,6 +1157,120 @@ pub(crate) fn aggregate_blobs(
     Ok((states, encode_terms_results(&results)?))
 }
 
+/// A decoded count blob: the limit, the iterate flags, the slices.
+type CountSpec = (u64, Vec<bool>, Vec<Vec<usize>>);
+
+/// Decodes a count-terminates blob: `n: i32` (at least 1), the segments'
+/// iterate flags (`count: i32`, then one `u8` each: 1 where `Weight.count`
+/// gave `-1`), then the slices ([`decode_slices`]).
+fn decode_count_spec(blob: &[u8]) -> Result<CountSpec, FfiStatus> {
+    let mut c = Cursor { buf: blob, pos: 0 };
+    let bad = |msg: String| {
+        set_last_error(msg);
+        FfiStatus::InvalidArgument
+    };
+    let n = c.i32()?;
+    if n < 1 {
+        return Err(bad(format!("count blob: n {n}")));
+    }
+    let count = c.len()?;
+    let mut iterate = Vec::new();
+    for _ in 0..count {
+        iterate.push(match c.u8()? {
+            0 => false,
+            1 => true,
+            other => return Err(bad(format!("count blob: iterate flag {other}"))),
+        });
+    }
+    let slices = decode_slices(&mut c, &bad)?;
+    if c.pos != blob.len() {
+        return Err(bad(format!(
+            "count blob: {} trailing bytes",
+            blob.len() - c.pos
+        )));
+    }
+    Ok((u64::from(n.unsigned_abs()), iterate, slices))
+}
+
+/// [`ffi_jvm_reader_count_terminates`] up to its output.
+pub(crate) fn count_terminates_blobs(
+    handle: u64,
+    query_blob: &[u8],
+    spec_blob: &[u8],
+) -> Result<bool, FfiStatus> {
+    let query = decode_query(query_blob)?;
+    let (n, iterate, slices) = decode_count_spec(spec_blob)?;
+    let h = lookup(
+        handle,
+        "ffi_jvm_reader_count_terminates: unknown or already-closed handle",
+    )?;
+    let mut opened = h.reader.open_segments().map_err(|e| {
+        set_last_error(format!("opening segment postings: {e}"));
+        FfiStatus::Decode
+    })?;
+    if query_uses_points(&query) {
+        opened.open_points().map_err(|e| {
+            set_last_error(format!("opening segment points: {e}"));
+            FfiStatus::Decode
+        })?;
+    }
+    let segments: Vec<OpenSegment<'_>> = opened
+        .as_open_segments()
+        .into_iter()
+        .zip(&h.live_docs)
+        .map(|(mut s, live)| {
+            s.live_docs = live.as_ref();
+            s
+        })
+        .collect();
+    let q = match &query {
+        JvmQuery::Term(t) => BooleanQuery {
+            must: vec![Clause::Term(t.clone())],
+            ..Default::default()
+        },
+        JvmQuery::Boolean(b) => b.clone(),
+    };
+    let slices = if slices.is_empty() {
+        vec![(0..segments.len()).collect()]
+    } else {
+        slices
+    };
+    lucene_search::terminate::count_terminates(&segments, &q, &slices, &iterate, n)
+        .map_err(map_search_error)
+}
+
+/// Whether a concurrent `size: 0` search's count stops early
+/// ([`lucene_search::terminate::count_terminates`]): the query blob, and a
+/// count blob ([`decode_count_spec`]) of the limit, which segments the count
+/// iterates, and the slices; `*out_terminated` receives the answer.
+///
+/// # Safety
+/// `query`/`spec` must be valid for `query_len`/`spec_len` bytes and
+/// `out_terminated` for one write.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_jvm_reader_count_terminates(
+    handle: u64,
+    query: *const u8,
+    query_len: usize,
+    spec: *const u8,
+    spec_len: usize,
+    out_terminated: *mut bool,
+) -> i32 {
+    guard(|| {
+        if out_terminated.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        // SAFETY: caller contract.
+        let blob = unsafe { bytes_from_raw(query, query_len)? };
+        // SAFETY: caller contract.
+        let spec_blob = unsafe { bytes_from_raw(spec, spec_len)? };
+        let terminated = count_terminates_blobs(handle, blob, spec_blob)?;
+        // SAFETY: caller contract.
+        unsafe { *out_terminated = terminated };
+        Ok(())
+    })
+}
+
 /// The keyword keys' terms of `hits`, as [`ffi_jvm_reader_search_sorted`]
 /// hands them back.
 pub(crate) fn encode_terms(keys: &[SortField], hits: &[FieldDoc]) -> Result<Vec<u8>, FfiStatus> {
@@ -1154,7 +1310,8 @@ pub(crate) fn search_sorted(
     count_limit: i64,
     track_max_score: bool,
     slices: &[Vec<usize>],
-) -> Result<(Vec<FieldDoc>, i64, bool, f32), FfiStatus> {
+    terminate_after: Option<(u64, bool)>,
+) -> Result<(Vec<FieldDoc>, i64, bool, f32, bool), FfiStatus> {
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
         FfiStatus::Decode
@@ -1203,6 +1360,45 @@ pub(crate) fn search_sorted(
         i64::MAX => u64::MAX,
         n => u64::try_from(n).unwrap_or(0),
     };
+    // `terminate_after` (never concurrent): the top of the first n matches,
+    // each counted, as OpenSearch's EarlyTerminatingCollector lets them through.
+    if let Some((n, count_segments)) = terminate_after {
+        // `size: 0` (the segment counts): no hits to find, only the cut.
+        if count_segments {
+            let cut = lucene_search::terminate::terminate_after(&segments, &q, n)
+                .map_err(map_search_error)?;
+            let counted = lucene_search::terminate::count_until(&segments, &q, &cut)
+                .map_err(map_search_error)?
+                .ok_or_else(|| {
+                    set_last_error("terminate_after: no segment count for this query");
+                    FfiStatus::InvalidArgument
+                })?;
+            let total = if count_limit <= 0 {
+                -1
+            } else {
+                i64::try_from(counted).unwrap_or(i64::MAX)
+            };
+            return Ok((Vec::new(), total, false, f32::NAN, cut.terminated));
+        }
+        let (top, cut) = lucene_search::terminate::search_sorted_until(
+            &segments,
+            h.reader.segment_readers(),
+            &q,
+            &norms,
+            keys,
+            top_n,
+            after,
+            track_max_score,
+            n,
+        )
+        .map_err(map_search_error)?;
+        let total = if count_limit <= 0 {
+            -1
+        } else {
+            i64::try_from(cut.collected).unwrap_or(i64::MAX)
+        };
+        return Ok((top.hits, total, false, top.max_score, cut.terminated));
+    }
     // A concurrent search's slices each get a collector, as Lucene's do --
     // except beside a tracked max score, which stays one pass.
     let top = if slices.len() > 1 && !track_max_score {
@@ -1232,13 +1428,14 @@ pub(crate) fn search_sorted(
     }
     .map_err(map_search_error)?;
     if count_limit <= 0 {
-        return Ok((top.hits, -1, false, top.max_score));
+        return Ok((top.hits, -1, false, top.max_score, false));
     }
     Ok((
         top.hits,
         i64::try_from(top.total.value).unwrap_or(i64::MAX),
         top.total.relation == TotalHitsRelation::GreaterThanOrEqualTo,
         top.max_score,
+        false,
     ))
 }
 
@@ -1870,6 +2067,7 @@ mod tests {
                 &mut lower,
                 &mut terms_len,
                 &mut max_score,
+                &mut false,
             )
         };
         if rc != 0 {
@@ -1897,7 +2095,7 @@ mod tests {
             ],
             Some((9, &[1, 2, 3, 4, 5, 6])),
         );
-        let (keys, after, _, _) = decode_sort(&blob).unwrap();
+        let (keys, after, _, _, _) = decode_sort(&blob).unwrap();
         assert_eq!(
             keys.iter().map(|k| k.ty).collect::<Vec<_>>(),
             [
@@ -1949,6 +2147,143 @@ mod tests {
         assert_eq!(
             decode_sort(&bad_utf8).map(|_| ()),
             Err(FfiStatus::InvalidUtf8)
+        );
+    }
+
+    /// `blob` (a [`sort_blob`]) with its options byte set to `options` and,
+    /// when non-zero, `terminate_after` following it.
+    fn with_terminate_after(mut blob: Vec<u8>, options: u8, n: i32) -> Vec<u8> {
+        let at = blob.len() - 5;
+        blob[at] = options;
+        if options & SORT_TERMINATE_AFTER != 0 {
+            blob.splice(at + 1..at + 1, n.to_le_bytes());
+        }
+        blob
+    }
+
+    #[test]
+    fn terminate_after_keeps_the_first_matches_and_says_whether_it_stopped() {
+        let h = open();
+        let fox = term_blob("body", "fox");
+        let (scored, total) = run(h, &fox, 8, true).unwrap();
+        assert!(
+            total > 2,
+            "the fixture's fox matches more than two documents"
+        );
+        let mut in_order: Vec<i32> = scored.iter().map(|(d, _)| *d).collect();
+        in_order.sort_unstable();
+        let by_doc = sort_blob(&[(SORT_DOC, 0, "", 0)], None);
+        // Two let through, of more: the first two, counted, and stopped early.
+        let two = with_terminate_after(by_doc.clone(), SORT_TERMINATE_AFTER, 2);
+        let out = search_sorted_blobs(h, &fox, &two, 8, i64::MAX).unwrap();
+        assert_eq!(
+            out.hits.iter().map(|f| f.doc).collect::<Vec<_>>(),
+            in_order[..2]
+        );
+        assert_eq!(
+            (out.total, out.lower_bound, out.terminated),
+            (2, false, true)
+        );
+        // More than match: every match, not stopped; uncounted, -1.
+        let all = with_terminate_after(by_doc.clone(), SORT_TERMINATE_AFTER, 1_000_000);
+        let out = search_sorted_blobs(h, &fox, &all, 8, i64::MAX).unwrap();
+        assert_eq!((out.total, out.terminated), (total, false));
+        let out = search_sorted_blobs(h, &fox, &all, 8, 0).unwrap();
+        assert_eq!(out.total, -1);
+        // size: 0 over a term: the segments' counts, no hits.
+        let counted = with_terminate_after(
+            by_doc.clone(),
+            SORT_TERMINATE_AFTER | SORT_COUNT_SEGMENTS,
+            1,
+        );
+        let out = search_sorted_blobs(h, &fox, &counted, 1, i64::MAX).unwrap();
+        assert!(out.hits.is_empty() && out.terminated);
+        assert!(out.total >= 1);
+        let out = search_sorted_blobs(h, &fox, &counted, 1, 0).unwrap();
+        assert_eq!(out.total, -1);
+        // A query with no segment count is refused, not answered wrongly.
+        let both = bool_blob(
+            0,
+            &[(0, 0, -1, 0, "body", "fox"), (0, 0, -1, 0, "body", "dog")],
+        );
+        assert_eq!(
+            search_sorted_blobs(h, &both, &counted, 1, i64::MAX).err(),
+            Some(FfiStatus::InvalidArgument)
+        );
+        // Malformed: no count at all, and segment counts without one.
+        let zero = with_terminate_after(by_doc.clone(), SORT_TERMINATE_AFTER, 0);
+        assert_eq!(decode_sort(&zero).err(), Some(FfiStatus::InvalidArgument));
+        let stray = with_terminate_after(by_doc, SORT_COUNT_SEGMENTS, 0);
+        assert_eq!(decode_sort(&stray).err(), Some(FfiStatus::InvalidArgument));
+        assert_eq!(decode_sort(&two).unwrap().4, Some((2, false)));
+        assert_eq!(decode_sort(&counted).unwrap().4, Some((1, true)));
+    }
+
+    /// A count blob ([`decode_count_spec`]): `n`, the iterate flags, one slice
+    /// of `slice`.
+    fn count_spec(n: i32, iterate: &[u8], slice: &[i32]) -> Vec<u8> {
+        let mut b = n.to_le_bytes().to_vec();
+        b.extend_from_slice(&(iterate.len() as i32).to_le_bytes());
+        b.extend_from_slice(iterate);
+        b.extend_from_slice(&1i32.to_le_bytes());
+        b.extend_from_slice(&(slice.len() as i32).to_le_bytes());
+        for i in slice {
+            b.extend_from_slice(&i.to_le_bytes());
+        }
+        b
+    }
+
+    #[test]
+    fn a_concurrent_count_stops_past_its_limit_in_the_segments_it_iterates() {
+        let h = open();
+        let fox = term_blob("body", "fox");
+        let (_, total) = run(h, &fox, 8, true).unwrap();
+        let segments = lookup(h, "test").unwrap().reader.segment_readers().len();
+        let all: Vec<i32> = (0..segments as i32).collect();
+        let mut out = false;
+        let call = |spec: &[u8], out: *mut bool| unsafe {
+            ffi_jvm_reader_count_terminates(
+                h,
+                fox.as_ptr(),
+                fox.len(),
+                spec.as_ptr(),
+                spec.len(),
+                out,
+            )
+        };
+        let iterate_all = vec![1u8; segments];
+        let answered = vec![0u8; segments];
+        // Iterated, more than the limit: stopped.
+        assert_eq!(call(&count_spec(1, &iterate_all, &all), &mut out), 0);
+        assert!(out);
+        // Every match within the limit: not stopped.
+        assert_eq!(
+            call(&count_spec(total as i32, &iterate_all, &all), &mut out),
+            0
+        );
+        assert!(!out);
+        // Every segment answered from Weight.count: nothing reaches the collector.
+        assert_eq!(call(&count_spec(1, &answered, &all), &mut out), 0);
+        assert!(!out);
+        // Malformed: a limit of 0, a bad flag, trailing bytes, a missing segment, no output.
+        assert_eq!(
+            call(&count_spec(0, &iterate_all, &all), &mut out),
+            FfiStatus::InvalidArgument.code()
+        );
+        assert_eq!(
+            call(&count_spec(1, &[2], &all), &mut out),
+            FfiStatus::InvalidArgument.code()
+        );
+        let mut trailing = count_spec(1, &iterate_all, &all);
+        trailing.push(0);
+        assert_eq!(call(&trailing, &mut out), FfiStatus::InvalidArgument.code());
+        assert_ne!(
+            call(&count_spec(1, &iterate_all, &[segments as i32]), &mut out),
+            0
+        );
+        assert_eq!(
+            call(&count_spec(1, &iterate_all, &all), std::ptr::null_mut()),
+            FfiStatus::NullPointer.code()
         );
     }
 
@@ -2042,7 +2377,7 @@ mod tests {
             ],
             Some((4, &[0, 0, 9], &[Some(b"abc".as_slice()), None, None])),
         );
-        let (keys, after, _, _) = decode_sort(&blob).unwrap();
+        let (keys, after, _, _, _) = decode_sort(&blob).unwrap();
         assert_eq!(keys[0].ty, SortType::String);
         assert!(keys[0].reverse && keys[0].selector == Selector::Max && keys[0].missing == 1);
         assert_eq!((keys[1].missing, keys[1].reverse), (0, false));
@@ -2123,6 +2458,7 @@ mod tests {
                 &mut lower,
                 &mut terms_len,
                 &mut max_score,
+                &mut false,
             )
         };
         assert_eq!(rc, FfiStatus::BufferTooSmall.code());
@@ -2147,6 +2483,7 @@ mod tests {
                 &mut lower,
                 &mut terms_len,
                 &mut max_score,
+                &mut false,
             )
         };
         assert_eq!(rc, 0);
@@ -2176,6 +2513,7 @@ mod tests {
                 &mut lower,
                 &mut terms_len,
                 &mut max_score,
+                &mut false,
             )
         };
         assert_eq!(rc, FfiStatus::NullPointer.code());
@@ -2219,6 +2557,7 @@ mod tests {
                 lower,
                 terms_len,
                 max_score,
+                &mut false,
             )
         };
         assert_eq!(
@@ -2273,7 +2612,7 @@ mod tests {
             sliced.extend_from_slice(&1i32.to_le_bytes());
             sliced.extend_from_slice(&seg.to_le_bytes());
         }
-        let (_, _, _, slices) = decode_sort(&sliced).unwrap();
+        let (_, _, _, slices, _) = decode_sort(&sliced).unwrap();
         assert_eq!(slices.len(), n as usize);
         assert_eq!(
             run_sorted(h, &q, &sliced, 3, i64::MAX),
@@ -2621,6 +2960,7 @@ mod tests {
                     &mut lower,
                     &mut terms_len,
                     &mut max_score,
+                    &mut false,
                 )
             };
         let (d, v) = (docs.as_mut_ptr(), values.as_mut_ptr());

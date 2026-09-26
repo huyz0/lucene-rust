@@ -220,6 +220,7 @@ mod slices;
 pub mod sloppy_phrase;
 pub mod soft_deletes;
 pub mod term_vectors_query;
+pub mod terminate;
 pub mod terms_agg;
 pub mod top_field;
 pub mod vector_query;

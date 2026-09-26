@@ -30,6 +30,38 @@ public final class SearchStats {
         fallbacks.computeIfAbsent(reason, r -> new LongAdder()).increment();
     }
 
+    private final LongAdder nativeNanos = new LongAdder();
+    private final LongAdder luceneNanos = new LongAdder();
+    private final LongAdder luceneSearches = new LongAdder();
+
+    /**
+     * Time spent in {@code QueryPhaseSearcher.searchWith}, by the path that answered: the native
+     * one, or Lucene's (a fallback, the plugin's checks included). Comparing the two per search is
+     * how a request's shard-side cost is measured without the REST round trip's noise; Lucene's
+     * aggregations finish in {@code postProcess}, outside it, so an aggregation's Lucene time is
+     * understated.
+     */
+    public void nativeTime(long nanos) {
+        nativeNanos.add(nanos);
+    }
+
+    public void luceneTime(long nanos) {
+        luceneNanos.add(nanos);
+        luceneSearches.increment();
+    }
+
+    public long nativeNanos() {
+        return nativeNanos.sum();
+    }
+
+    public long luceneNanos() {
+        return luceneNanos.sum();
+    }
+
+    public long luceneCount() {
+        return luceneSearches.sum();
+    }
+
     public long nativeCount() {
         return nativeQueries.sum();
     }

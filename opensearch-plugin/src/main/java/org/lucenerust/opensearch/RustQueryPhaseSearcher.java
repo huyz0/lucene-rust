@@ -21,6 +21,7 @@ import org.apache.lucene.search.SortField;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.TopFieldDocs;
 import org.apache.lucene.search.TotalHits;
+import org.apache.lucene.search.Weight;
 import org.apache.lucene.search.similarities.BM25Similarity;
 import org.apache.lucene.search.similarities.PerFieldSimilarityWrapper;
 import org.apache.lucene.search.similarities.Similarity;
@@ -44,7 +45,9 @@ import org.opensearch.search.query.QueryPhaseSearcher;
 import org.opensearch.search.query.QueryPhaseSearcherWrapper;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.LinkedList;
+import java.util.List;
 
 /**
  * Runs the query phase of a shard search natively when the whole request is inside the supported
@@ -59,7 +62,7 @@ import java.util.LinkedList;
  *
  * <p>A request runs native when it is a top-hits search -- by score, or by a sort {@link
  * SortEncoder} can encode, with or without {@code search_after}, {@code post_filter}, {@code timeout} and
- * scroll -- with no min score, terminate_after, collapse, rescore or profile, no aggregation beyond the
+ * scroll, and {@code terminate_after} -- with no min score, collapse, rescore or profile, no aggregation beyond the
  * metrics {@link NativeAggregations} plans, and a query {@link QueryEncoder} can encode over fields
  * using the default {@link BM25Similarity}. What it produces is what OpenSearch's own {@code
  * SimpleTopDocsCollectorContext} would: the top {@code from + size} hits (with their sort values),
@@ -124,6 +127,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         boolean hasFilterCollector,
         boolean hasTimeout
     ) throws IOException {
+        long start = System.nanoTime();
         // Aggregations OpenSearch's DefaultAggregationProcessor.preProcess registered (their one
         // collector context is the one in "collectors"), when all of them run natively.
         NativeAggregations.Plan aggs = ctx.queryCollectorManagers().isEmpty() ? null : NativeAggregations.plan(ctx);
@@ -166,32 +170,45 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // PagingFieldCollector skips what PagingTopScoreDocCollector does, and keeps the same hits.
         Sort sort = ctx.sort() == null ? null : ctx.sort().sort;
         FieldDoc after = ctx.searchAfter();
-        boolean scoreScroll = false;
+        // A search by score run as the score sort, its hits handed back as ScoreDocs.
+        boolean scoreDocs = false;
         ScrollContext scroll = ctx.scrollContext();
         if (reason == null && scroll != null && scroll.totalHits != null && scroll.lastEmittedDoc != null) {
             ScoreDoc last = scroll.lastEmittedDoc;
             if (sort == null) {
                 sort = new Sort(SortField.FIELD_SCORE);
                 after = new FieldDoc(last.doc, last.score, new Object[] { last.score });
-                scoreScroll = true;
+                scoreDocs = true;
             } else if (last instanceof FieldDoc fd) {
                 after = fd;
             } else {
                 reason = "scroll_after";
             }
         }
-        if (reason == null && sort != null && ctx.size() > 0) {
-            if (indexSorted(searcher.getIndexReader())) {
+        // terminate_after runs on the sorted search, which takes the cut (SortEncoder): by score as
+        // the score sort, and without hits (size 0) by _doc, the cheapest order, its one hit dropped.
+        int terminateAfter = ctx.terminateAfter() == SearchContext.DEFAULT_TERMINATE_AFTER ? 0 : ctx.terminateAfter();
+        if (terminateAfter > 0 && ctx.size() == 0) {
+            sort = new Sort(SortField.FIELD_DOC);
+        } else if (terminateAfter > 0 && sort == null) {
+            sort = new Sort(SortField.FIELD_SCORE);
+            scoreDocs = true;
+        }
+        if (reason == null && sort != null && (ctx.size() > 0 || terminateAfter > 0)) {
+            // The request's own sort only: one put in here (the score, _doc) stands for a
+            // collector with no index-sort early exit (QueryPhase.canEarlyTerminate).
+            boolean ownSort = ctx.sort() != null && sort == ctx.sort().sort;
+            if (ownSort && indexSorted(searcher.getIndexReader())) {
                 // TopFieldCollector stops early on an index sorted by the search's sort; the
                 // native collector has no such path.
                 reason = "index_sort";
             } else {
                 // track_scores behind another key: OpenSearch's MaxScoreCollector over every match.
-                boolean trackMaxScore = ctx.trackScores() && sortByScore(sort) == false;
+                boolean trackMaxScore = ctx.trackScores() && ctx.size() > 0 && sortByScore(sort) == false;
                 // A concurrent search collects each slice separately, as Lucene does.
                 int[][] slices = NativeAggregations.slices(ctx);
                 SortEncoder.Encoded sorted = slices == null ? new SortEncoder.Encoded(null, "intra_segment")
-                    : SortEncoder.encode(sort, after, trackMaxScore, slices);
+                    : SortEncoder.encode(sort, after, trackMaxScore, slices, terminateAfter, countSegments(ctx, terminateAfter));
                 reason = sorted.fallbackReason();
                 sortBlob = sorted.blob();
             }
@@ -204,21 +221,28 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         if (reason == null) {
             // A timeout already past: Lucene would skip every segment and answer nothing, timed
             // out -- which is what its own path does fastest.
-            if (hasTimeout && deadlinePassed(ctx)) {
+            if (ctx.isCancelled()) {
+                reason = "cancelled";
+            } else if (hasTimeout && deadlinePassed(ctx)) {
                 reason = "timeout";
             } else {
-                reason = searchNative(ctx, acquired.handle(), blob, hitsBlob, sortBlob, scoreScroll ? sort : null, aggs);
+                reason = searchNative(ctx, acquired.handle(), blob, hitsBlob, sortBlob, sort, scoreDocs, aggs);
             }
             if (reason == null) {
                 stats.nativeQuery();
                 if (hasTimeout && deadlinePassed(ctx)) {
                     timedOut(ctx);
                 }
+                stats.nativeTime(System.nanoTime() - start);
                 return false;
             }
         }
         stats.fallback(reason);
-        return fallback.searchWith(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout);
+        // Lucene's own time only: not the plugin's checks, nor a native attempt that fell back.
+        long luceneStart = System.nanoTime();
+        boolean rescore = fallback.searchWith(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout);
+        stats.luceneTime(System.nanoTime() - luceneStart);
+        return rescore;
     }
 
     /** Why this request cannot run native, or null when it can. */
@@ -238,15 +262,20 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 || ctx.queryCollectorManagers().size() != 1
                 || ctx.queryCollectorManagers().containsKey(NonGlobalAggCollectorManager.class) == false)) return "aggregations";
         if (ctx.minimumScore() != null) return "min_score";
-        if (ctx.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER) return "terminate_after";
-        // What is left in "collectors": the aggregations' context and the post_filter's (the one
-        // filter collector left once terminate_after and min_score are out).
+        boolean terminating = ctx.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER;
+        if (terminating && terminateAfterIneligible(ctx)) return "terminate_after";
+        // What is left in "collectors": the aggregations' context, the post_filter's and
+        // terminate_after's (the filter collectors, once min_score is out).
         boolean postFilter = ctx.parsedPostFilter() != null;
-        if (collectors.size() > (nativeAggs ? 1 : 0) + (postFilter ? 1 : 0) || hasFilterCollector != postFilter) return "collectors";
+        if (collectors.size() > (nativeAggs ? 1 : 0) + (postFilter ? 1 : 0) + (terminating ? 1 : 0)
+            || hasFilterCollector != (postFilter || terminating)) return "collectors";
         // A sort runs native when SortEncoder can encode it (searchWith); search_after only
         // with one. track_scores runs native too: the score leading the sort gives the max
         // score (the first hit), and otherwise the native search tracks it over every match.
         if (ctx.searchAfter() != null && ctx.sort() == null) return "search_after";
+        // size 0 behind search_after: ContextIndexSearcher skips segments the after value rules out
+        // before any collector sees them, which the native count does not.
+        if (ctx.searchAfter() != null && ctx.size() == 0) return "search_after";
         if (ctx.collapse() != null) return "collapse";
         if (ctx.rescore() != null && ctx.rescore().isEmpty() == false) return "rescore";
         if (ctx.getProfilers() != null) return "profile";
@@ -268,6 +297,125 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             return "collector_spec";
         }
         return null;
+    }
+
+    /**
+     * Whether a {@code terminate_after} request needs something the native cut does not give it.
+     * With aggregations: OpenSearch's collectors let an aggregation see the whole of a segment it
+     * answers from index statistics (the points min/max, terms from doc frequencies) past the cut.
+     * With {@code search_after}: ContextIndexSearcher skips a segment the after value rules out
+     * before EarlyTerminatingCollector counts it. A scroll: each page recounts its prefix. And
+     * more documents than {@code track_total_hits} counts exactly: the collector's total there is a
+     * lower bound whose value depends on when it stopped counting.
+     */
+    static boolean terminateAfterIneligible(SearchContext ctx) {
+        int trackUpTo = ctx.trackTotalHitsUpTo();
+        return ctx.queryCollectorManagers().isEmpty() == false
+            || (countSegments(ctx, ctx.terminateAfter()) && segmentCountable(ctx.query()) == false)
+            || (ctx.size() > 0 && ctx.parsedPostFilter() == null && (scoresNeeded(ctx) == false || rangeCollected(ctx.query())))
+            || ctx.searchAfter() != null
+            || ctx.scrollContext() != null
+            || (trackUpTo != SearchContext.TRACK_TOTAL_HITS_ACCURATE
+                && trackUpTo != SearchContext.TRACK_TOTAL_HITS_DISABLED
+                && ctx.terminateAfter() > trackUpTo);
+    }
+
+    /**
+     * Whether a {@code terminate_after} search's total is a {@code size: 0} search's: counted by
+     * TotalHitCountCollector (EmptyTopDocsCollectorContext), which takes a segment's {@code
+     * Weight.count} whole where there is one -- past the cut -- rather than the documents let
+     * through.
+     */
+    static boolean countSegments(SearchContext ctx, int terminateAfter) {
+        // FilteredCollector passes no weight on: under a post_filter the count collector counts
+        // the documents let through.
+        return terminateAfter > 0 && ctx.size() == 0 && ctx.parsedPostFilter() == null
+            && ctx.trackTotalHitsUpTo() != SearchContext.TRACK_TOTAL_HITS_DISABLED;
+    }
+
+    /**
+     * Whether the top-docs collector needs scores, so that the MultiCollector beside
+     * EarlyTerminatingCollector (which needs none) runs the search {@code COMPLETE}.
+     */
+    static boolean scoresNeeded(SearchContext ctx) {
+        if (ctx.sort() == null || ctx.trackScores()) {
+            return true;
+        }
+        for (SortField f : ctx.sort().sort.getSort()) {
+            if (f.getType() == SortField.Type.SCORE) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether Lucene may hand {@code query}'s matches to the collector in {@code collectRange}
+     * batches when searching {@code COMPLETE}: DenseConjunctionBulkScorer (a constant-score
+     * query's bulk scorer when dense, a conjunction of filters) and the query cache's. MultiCollector
+     * gives a batch to EarlyTerminatingCollector first, which throws inside it, so the top-docs
+     * collector loses the whole batch the cut falls in -- which the native cut, document by
+     * document, does not reproduce. The positive bulk scorer is BooleanScorerSupplier.booleanScorer's
+     * choice: a lone optional or required clause's own, else one that collects by document.
+     */
+    static boolean rangeCollected(Query query) {
+        Query q = query;
+        while (q instanceof BoostQuery b) {
+            q = b.getQuery();
+        }
+        if (q instanceof org.apache.lucene.search.BooleanQuery bq) {
+            List<Query> must = new ArrayList<>();
+            List<Query> filter = new ArrayList<>();
+            List<Query> should = new ArrayList<>();
+            for (var c : bq.clauses()) {
+                switch (c.occur()) {
+                    case MUST -> must.add(c.query());
+                    case FILTER -> filter.add(c.query());
+                    case SHOULD -> should.add(c.query());
+                    default -> {
+                    }
+                }
+            }
+            int required = must.size() + filter.size();
+            if (required == 0) {
+                return should.size() == 1 && rangeCollected(should.get(0));
+            }
+            if (should.isEmpty() && bq.getMinimumNumberShouldMatch() == 0) {
+                if (required == 1) {
+                    // A lone filter: its non-scoring (possibly cached) bulk scorer.
+                    return must.isEmpty() || rangeCollected(must.get(0));
+                }
+                // Filters only: DenseConjunctionBulkScorer when dense.
+                return must.isEmpty();
+            }
+            return false;
+        }
+        return q instanceof TermQuery == false
+            && q instanceof org.apache.lucene.search.PhraseQuery == false
+            && q instanceof org.apache.lucene.search.DisjunctionMaxQuery == false;
+    }
+
+    /**
+     * Whether {@code query}'s {@code Weight.count} is one the native side has: a term's, a
+     * match-all's or a match-none's, through the wrappers whose weights pass {@code count} on.
+     * (With a post_filter, FilteredCollector does not pass the weight to the count collector at
+     * all; that case falls back too.)
+     */
+    static boolean segmentCountable(Query query) {
+        Query q = query;
+        while (true) {
+            if (q instanceof BoostQuery b) {
+                q = b.getQuery();
+            } else if (q instanceof ConstantScoreQuery c) {
+                q = c.getQuery();
+            } else if (q instanceof ApproximateScoreQuery a) {
+                q = a.getOriginalQuery();
+            } else {
+                break;
+            }
+        }
+        return q.getClass() == TermQuery.class || q.getClass() == MatchAllDocsQuery.class
+            || q.getClass() == org.apache.lucene.search.MatchNoDocsQuery.class;
     }
 
     /** True when {@code field} scores with a default-parameter {@link BM25Similarity}. */
@@ -295,15 +443,22 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         byte[] blob,
         byte[] hitsBlob,
         byte[] sortBlob,
-        Sort scoreScroll,
+        Sort sort,
+        boolean scoreDocs,
         NativeAggregations.Plan aggs
     ) {
         int size = ctx.size();
         ScrollContext scroll = ctx.scrollContext();
+        // A concurrent size-0 search reports terminated_early per slice: without whole-segment
+        // slices there is nothing to replay.
+        if (size == 0 && ctx.shouldUseConcurrentSearch() && NativeAggregations.slices(ctx) == null) {
+            return "intra_segment";
+        }
         // A scroll page is "size" hits whatever "from" says, and counts them on its first page only
         // (TopDocsCollectorContext.createTopDocsCollectorContext).
         int numDocs = size == 0 ? 0
             : Math.min(scroll != null ? size : ctx.from() + size, Math.max(1, ctx.searcher().getIndexReader().numDocs()));
+        boolean terminating = ctx.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER;
         int trackUpTo = scroll == null ? ctx.trackTotalHitsUpTo()
             : scroll.totalHits != null ? SearchContext.TRACK_TOTAL_HITS_DISABLED
             : SearchContext.TRACK_TOTAL_HITS_ACCURATE;
@@ -318,7 +473,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // Lucene never looks at.
         int shortcut = -1;
         // TopDocsCollectorContext: "hasFilterCollector ? -1 : shortcutTotalHitCount(...)".
-        if (trackUpTo != SearchContext.TRACK_TOTAL_HITS_DISABLED && ctx.parsedPostFilter() == null) {
+        if (trackUpTo != SearchContext.TRACK_TOTAL_HITS_DISABLED && ctx.parsedPostFilter() == null && terminating == false) {
             try {
                 shortcut = shortcutTotalHitCount(ctx.searcher().getIndexReader(), ctx.query());
             } catch (IOException e) {
@@ -352,7 +507,8 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             }
             aggResult = aggs.build(slices, aggCounts, aggValues, terms[0], ctx.partialOnShard());
         }
-        String reason = sortBlob != null ? searchSorted(ctx, handle, hitsBlob, sortBlob, scoreScroll, numDocs, countLimit, shortcut)
+        String reason = sortBlob != null
+            ? searchSorted(ctx, handle, hitsBlob, sortBlob, sort, scoreDocs, Math.max(1, numDocs), countLimit, shortcut)
             : searchUnsorted(ctx, handle, hitsBlob, numDocs, countLimit, shortcut);
         if (reason == null && aggResult != null) {
             // DefaultAggregationProcessor.postProcess keeps a result already there (hasAggs).
@@ -382,6 +538,15 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             : countLimit == 0 ? new TotalHits(0, TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO)
             : new TotalHits(counts[1], counts[2] != 0 ? TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO : TotalHits.Relation.EQUAL_TO);
         float maxScore = n == 0 ? Float.NaN : scores[0];
+        if (numDocs == 0 && ctx.shouldUseConcurrentSearch()) {
+            Boolean terminated = countTerminatedEarly(ctx, handle, blob, shortcut, total);
+            if (terminated == null) {
+                return "native_error";
+            }
+            if (terminated) {
+                ctx.queryResult().terminatedEarly(true);
+            }
+        }
         if (ctx.sort() != null) {
             // A sorted search with no hits asked for (size 0): what EmptyTopDocsCollectorContext
             // stores, a TopFieldDocs carrying the sort -- the coordinator reads the class.
@@ -419,6 +584,56 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
     }
 
     /**
+     * Whether a concurrent {@code size: 0} search reports {@code terminated_early}: its count runs
+     * in an EarlyTerminatingCollectorManager (EmptyTopDocsCollectorContext.createManager) whose
+     * reduce says so when any slice's collector stopped -- at once when nothing is counted (a
+     * disabled total, or one answered from index statistics: a limit of 0), past the limit
+     * otherwise, which is when the total is a lower bound.
+     */
+    private Boolean countTerminatedEarly(SearchContext ctx, long handle, byte[] blob, int shortcut, TotalHits total) {
+        int trackUpTo = ctx.trackTotalHitsUpTo();
+        List<LeafReaderContext> leaves = ctx.searcher().getIndexReader().leaves();
+        if (trackUpTo == SearchContext.TRACK_TOTAL_HITS_DISABLED || shortcut >= 0) {
+            return leaves.isEmpty() == false;
+        }
+        if (trackUpTo == SearchContext.TRACK_TOTAL_HITS_ACCURATE
+            || (total.relation() == TotalHits.Relation.EQUAL_TO && total.value() < trackUpTo)) {
+            // A slice's collector stops only past trackUpTo documents it iterated.
+            return false;
+        }
+        // Past the limit, it depends on which segments the count collector answers from Weight.count
+        // (nothing reaches the terminating collector) and which it iterates: Lucene's own weight,
+        // the query cache included, says; the native side replays each slice.
+        int[][] slices = NativeAggregations.slices(ctx);
+        if (slices == null) {
+            return null;
+        }
+        java.io.ByteArrayOutputStream spec = new java.io.ByteArrayOutputStream();
+        NativeAggregations.writeInt(spec, trackUpTo);
+        NativeAggregations.writeInt(spec, leaves.size());
+        try {
+            Weight weight = ctx.parsedPostFilter() != null
+                ? null
+                : ctx.searcher().createWeight(ctx.query(), org.apache.lucene.search.ScoreMode.COMPLETE_NO_SCORES, 1f);
+            for (LeafReaderContext leaf : leaves) {
+                // Under a post_filter the count collector gets no weight: it iterates everywhere.
+                spec.write(weight == null || weight.count(leaf) == -1 ? 1 : 0);
+            }
+        } catch (IOException e) {
+            return null;
+        }
+        NativeAggregations.writeSlices(spec, slices);
+        long[] out = new long[1];
+        int rc = NativeBridge.countTerminates(handle, blob, spec.toByteArray(), out);
+        if (rc != NativeBridge.OK) {
+            stats.nativeError();
+            logger.warn("lucene-rust: native count replay failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
+            return null;
+        }
+        return out[0] != 0;
+    }
+
+    /**
      * The sorted half of {@link #searchNative}: {@code TopFieldCollectorManager(sort, numDocs,
      * searchAfter, countLimit)}, answered as {@code SimpleTopDocsCollectorContext} answers it -- a
      * {@link TopFieldDocs} of {@link FieldDoc}s with {@code NaN} scores, the max score read off the
@@ -429,15 +644,16 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         long handle,
         byte[] blob,
         byte[] sortBlob,
-        Sort scoreScroll,
+        Sort sort,
+        boolean scoreDocs,
         int numDocs,
         long countLimit,
         int shortcut
     ) {
-        SortField[] fields = (scoreScroll != null ? scoreScroll : ctx.sort().sort).getSort();
+        SortField[] fields = sort.getSort();
         int[] docs = new int[numDocs];
         long[] values = new long[numDocs * fields.length];
-        long[] counts = new long[4];
+        long[] counts = new long[5];
         byte[][] terms = new byte[1][];
         int rc = NativeBridge.searchSorted(handle, blob, sortBlob, numDocs, countLimit, docs, values, counts, terms);
         if (rc != NativeBridge.OK) {
@@ -450,18 +666,29 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         TotalHits total = shortcut >= 0 ? new TotalHits(shortcut, TotalHits.Relation.EQUAL_TO)
             : countLimit == 0 ? new TotalHits(0, TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO)
             : new TotalHits(counts[1], counts[2] != 0 ? TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO : TotalHits.Relation.EQUAL_TO);
-        // The score leading the sort: its first hit's; a tracked max score (track_scores
-        // behind another key): the native MaxScoreCollector's, NaN without matches.
-        if (scoreScroll != null) {
-            // A later page of a scroll by score: the ScoreDocs TopScoreDocCollector gives, whose
-            // max score (the first page's) store() puts back.
+        if (ctx.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER) {
+            // QueryPhase: true when EarlyTerminatingCollector threw, false otherwise.
+            ctx.queryResult().terminatedEarly(counts[4] != 0);
+        }
+        if (ctx.size() == 0) {
+            // terminate_after without hits: EmptyTopDocsCollectorContext's answer, the count.
+            ScoreDoc[] none = new ScoreDoc[0];
+            TopDocs empty = ctx.sort() != null ? new TopFieldDocs(total, none, ctx.sort().sort.getSort()) : new TopDocs(total, none);
+            ctx.queryResult().topDocs(new TopDocsAndMaxScore(empty, Float.NaN), null);
+            return null;
+        }
+        if (scoreDocs) {
+            // By score: the ScoreDocs TopScoreDocCollector gives, the max score its first (a
+            // scroll's later page gets the first page's back from store()).
             ScoreDoc[] scored = new ScoreDoc[n];
             for (int i = 0; i < n; i++) {
                 scored[i] = new ScoreDoc(hits[i].doc, (float) hits[i].fields[0]);
             }
-            store(ctx, new TopDocsAndMaxScore(new TopDocs(total, scored), Float.NaN), null);
+            store(ctx, new TopDocsAndMaxScore(new TopDocs(total, scored), n == 0 ? Float.NaN : scored[0].score), null);
             return null;
         }
+        // The score leading the sort: its first hit's; a tracked max score (track_scores
+        // behind another key): the native MaxScoreCollector's, NaN without matches.
         float maxScore = n > 0 && sortByScore(ctx.sort().sort) ? (float) hits[0].fields[0]
             : ctx.trackScores() ? Float.intBitsToFloat((int) counts[3])
             : Float.NaN;
@@ -487,7 +714,8 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
      * part way (docs/opensearch-native-queries.md, Known limits) -- which a partial answer allows.
      */
     static void timedOut(SearchContext ctx) {
-        if (ctx.isCancelled()) {
+        // Only a registered low_level_cancellation check sees the task; the timeout's alone does not.
+        if (ctx.lowLevelCancellation() && ctx.isCancelled()) {
             throw new TaskCancelledException("cancelled task with reason: " + ctx.getTask().getReasonCancelled());
         }
         if (ctx.request().allowPartialSearchResults() == false) {

@@ -13,7 +13,7 @@ package org.lucenerust.opensearch;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 14;
+    public static final int EXPECTED_ABI_VERSION = 15;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -71,12 +71,21 @@ public final class NativeBridge {
     );
 
     /**
+     * Whether a concurrent {@code size: 0} search's count stops early: {@code spec} is the limit
+     * ({@code int}), each segment's iterate flag ({@code int} count, one byte each: 1 where Lucene's
+     * {@code Weight.count} gave -1) and the slices ({@link NativeAggregations#writeSlices});
+     * {@code out[0]} receives 1 or 0.
+     */
+    public static native int countTerminates(long handle, byte[] query, byte[] spec, long[] out);
+
+    /**
      * Runs a query blob sorted by a sort blob ({@link SortEncoder}): {@code outDocs} receives the
      * hits' global doc ids, best first, and {@code outValues} their sort values, one {@code long}
      * per key per hit in key order ({@link SortEncoder#value} turns them back). A keyword key's
      * terms come back in a new array stored in {@code outTerms[0]} (see {@link SortEncoder#hits});
-     * {@code outCounts} as for {@link #search}, and a fourth slot holding the tracked max score's
-     * float bits ({@code NaN} untracked); {@code topN} must be at least 1.
+     * {@code outCounts} as for {@link #search}, a fourth slot holding the tracked max score's
+     * float bits ({@code NaN} untracked) and a fifth 1 when the sort blob's {@code terminate_after}
+     * ended the search early; {@code topN} must be at least 1.
      */
     public static native int searchSorted(
         long handle,

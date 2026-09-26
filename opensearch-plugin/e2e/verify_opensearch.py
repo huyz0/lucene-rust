@@ -278,7 +278,23 @@ def matrix():
     add("post_filter no total", {"track_total_hits": False, "query": {"match": {"body": "beta delta"}}, "post_filter": {"term": {"tag": "gamma"}}}, "native")
     add("post_filter nothing", {"query": {"match": {"body": "alpha"}}, "post_filter": {"term": {"tag": "no-such-tag"}}}, "native")
     add("min_score", {"query": {"match": {"body": "alpha"}}, "min_score": 0.3}, "min_score")
-    add("terminate_after", {"query": {"match": {"body": "alpha"}}, "terminate_after": 5}, "terminate_after")
+    # terminate_after (R7): native where Lucene collects document by document (a scored search
+    # over a query whose bulk scorer hands out no ranges, anything under a post_filter) and for
+    # a size-0 count over a term or match-all; Lucene's otherwise.
+    add("terminate_after", {"query": {"match": {"body": "alpha"}}, "terminate_after": 5}, "native")
+    add("terminate_after disjunction", {"size": 3, "query": {"match": {"body": "alpha beta"}}, "terminate_after": 50}, "native")
+    add("terminate_after size 0 term", {"size": 0, "query": {"term": {"tag": "beta"}}, "terminate_after": 10}, "native")
+    add("terminate_after size 0 match_all", {"size": 0, "query": {"match_all": {}}, "terminate_after": 100}, "native")
+    add("terminate_after size 0 no query", {"size": 0, "terminate_after": 3}, "native")
+    add("terminate_after size 0 bool filter", {"size": 0, "query": {"bool": {"filter": [{"term": {"tag": "gamma"}}]}}, "terminate_after": 20}, "native")
+    add("terminate_after size 0 no total", {"size": 0, "track_total_hits": False, "query": {"match": {"body": "beta gamma"}}, "terminate_after": 7}, "native")
+    add("terminate_after sort track_scores", {"query": {"match": {"body": "gamma"}}, "sort": [{"n": "desc"}], "track_scores": True, "terminate_after": 40}, "native")
+    add("terminate_after sort score then field", {"query": {"match": {"body": "delta"}}, "sort": ["_score", {"n": "asc"}], "terminate_after": 25}, "native")
+    add("terminate_after post_filter", {"query": {"match_all": {}}, "post_filter": {"term": {"tag": "alpha"}}, "terminate_after": 7}, "native")
+    add("terminate_after not reached", {"track_total_hits": True, "query": {"match": {"body": "omega"}}, "terminate_after": 100000}, "native")
+    add("terminate_after field sort", {"query": {"match": {"body": "alpha"}}, "sort": [{"n": "desc"}], "terminate_after": 5}, "terminate_after")
+    add("terminate_after match_all hits", {"query": {"match_all": {}}, "terminate_after": 5}, "terminate_after")
+    add("terminate_after aggs", {"size": 0, "query": {"match": {"body": "alpha"}}, "terminate_after": 5, "aggs": {"t": {"terms": {"field": "tag"}}}}, "terminate_after")
     add("profile", {"query": {"match": {"body": "alpha"}}, "profile": True}, "profile")
     # timeout (R7): native, checked before and after the native search as ContextIndexSearcher
     # checks it before each segment; none of these reaches it.
@@ -304,6 +320,8 @@ def shape(resp, body):
     }
     if "aggregations" in resp:
         out["aggs"] = resp["aggregations"]
+    out["terminated_early"] = resp.get("terminated_early")
+    out["timed_out"] = resp.get("timed_out")
     if "highlight" in json.dumps(body):
         out["highlight"] = [h.get("highlight") for h in hits["hits"]]
     return out
@@ -313,7 +331,7 @@ def same(a, b):
     """Equal, with scores compared to 1e-5; hits whose scores tie may swap."""
     if a["total"] != b["total"]:
         return f"total {a['total']} vs {b['total']}"
-    for k in ("aggs", "highlight"):
+    for k in ("aggs", "highlight", "terminated_early", "timed_out"):
         if a.get(k) != b.get(k):
             return f"{k} differ"
     ma, mb = a["max_score"], b["max_score"]
