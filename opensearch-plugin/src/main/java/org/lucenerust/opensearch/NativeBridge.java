@@ -114,9 +114,10 @@ public final class NativeBridge {
      * over each document's first and last; and in {@code outTerms[0]} the {@code terms} results:
      * per slice, per terms aggregation, the other-doc count ({@code long}), the bucket count ({@code
      * int}) and per bucket, by term, its doc count ({@code long}) and term ({@code int} length,
-     * bytes), little-endian. With a positive {@code countLimit} (and no {@code min_score} in the
-     * query blob), {@code outTotal} receives the {@code size: 0} search's total and whether it is a
-     * lower bound, as {@link #search} counts them, from the matches the aggregations visited.
+     * bytes), little-endian. With a positive {@code countLimit}, {@code outTotal} receives the {@code
+     * size: 0} search's total and whether it is a lower bound, as {@link #search} counts them, from
+     * the matches the aggregations visited -- left alone when some segment's matches were not
+     * visited behind a {@code min_score} (its aggregations answered from points).
      */
     public static native int aggregate(
         long handle,
