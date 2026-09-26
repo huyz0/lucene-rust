@@ -55,6 +55,10 @@ pub(crate) enum Bulk<'a> {
     ReqExcl(Box<Bulk<'a>>, BoxScorer<'a>),
     /// A dismax of terms, a window at a time. See `DisMaxBulk`.
     DisMax(Vec<TermLeg<'a>>, Box<DisMaxBulk>),
+    /// A disjunction of terms whose scores nobody reads: their documents
+    /// OR-ed into a window's bits, as `DenseConjunctionBulkScorer` unions a
+    /// dense `COMPLETE_NO_SCORES` disjunction. See [`union_score`].
+    Union(Vec<TermLeg<'a>>),
 }
 
 impl<'a> Bulk<'a> {
@@ -76,6 +80,7 @@ impl<'a> Bulk<'a> {
             Bulk::ReqOpt(..) => "req_opt",
             Bulk::ReqExcl(..) => "req_excl",
             Bulk::DisMax(..) => "dismax",
+            Bulk::Union(..) => "union",
         }
     }
 
@@ -109,8 +114,67 @@ impl<'a> Bulk<'a> {
             }
             Bulk::ReqOpt(req, opt, state) => state.score(req, opt, live_docs, collector, min, max),
             Bulk::DisMax(legs, state) => state.score(legs, live_docs, collector, min, max),
+            Bulk::Union(legs) => union_score(legs, live_docs, collector, min, max),
             Bulk::ReqExcl(req, excl) => {
                 req_excl_score(req, &mut **excl, mode, live_docs, collector, min, max)
+            }
+        }
+    }
+}
+
+/// [`Bulk::Union`]: the documents of any leg in `[min, max)`, live ones
+/// collected in order with a score of 0 (the mode reads none). A window of
+/// 4096 documents at a time: every leg marks its documents in the window's
+/// bits, which are then read in order -- no per-document merge of the legs'
+/// heads. Returns the next document to score.
+fn union_score<C: ScoringCollector + ?Sized>(
+    legs: &mut [TermLeg<'_>],
+    live_docs: Option<&FixedBitSet>,
+    collector: &mut C,
+    min: i32,
+    max: i32,
+) -> Result<i32> {
+    const WINDOW: i32 = 4096;
+    let mut words = [0u64; (WINDOW / 64) as usize];
+    let mut batch = DocScores::default();
+    for leg in legs.iter_mut() {
+        if leg.doc_id() < min {
+            leg.advance(min)?;
+        }
+    }
+    loop {
+        let base = legs
+            .iter()
+            .map(TermLeg::doc_id)
+            .min()
+            .unwrap_or(NO_MORE_DOCS);
+        if base >= max {
+            return Ok(base);
+        }
+        let end = base.saturating_add(WINDOW).min(max);
+        for leg in legs.iter_mut() {
+            // A decoded block at a time, as the single-term bulk scorer reads.
+            while leg.doc_id() < end {
+                leg.next_docs_and_scores(end, None, &mut batch)?;
+                if batch.docs.is_empty() {
+                    break;
+                }
+                for &doc in &batch.docs {
+                    // ARITH: base <= doc < base + WINDOW.
+                    let i = (doc - base) as usize;
+                    words[i >> 6] |= 1u64 << (i & 63);
+                }
+            }
+        }
+        for (w, word) in words.iter_mut().enumerate() {
+            let mut bits = std::mem::take(word);
+            while bits != 0 {
+                // ARITH: w < WINDOW / 64 and the bit < 64: below `end`.
+                let doc = base + (w * 64) as i32 + bits.trailing_zeros() as i32;
+                bits &= bits - 1;
+                if live_docs.is_none_or(|l| l.get_doc(doc)) {
+                    collector.collect(doc, 0.0);
+                }
             }
         }
     }
@@ -375,6 +439,13 @@ pub(crate) fn bulk_boolean<'a>(
         if should.len() == 1 {
             let (c, clause) = should.pop().expect("one optional clause");
             lone(ctx, c, clause, boost, mode)?
+        } else if msm <= 1 && all_legs(&should) && !mode.needs_scores() {
+            // Nobody reads a score: the union, a window of bits at a time.
+            let legs: Vec<TermLeg<'a>> = std::mem::take(&mut should)
+                .into_iter()
+                .map(|(c, _)| c.into_leg())
+                .collect();
+            Some(Bulk::Union(legs))
         } else if msm <= 1 && all_legs(&should) {
             let mut legs: Vec<TermLeg<'a>> = std::mem::take(&mut should)
                 .into_iter()

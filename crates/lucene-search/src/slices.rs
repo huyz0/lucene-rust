@@ -13,7 +13,7 @@
 /// for even when the caller could have run the slice itself. Lucene's
 /// `TaskExecutor` has the caller run any task not yet started; rayon cannot
 /// take a spawned job back, so the choice is made before spawning.
-pub(crate) const SEQUENTIAL_BELOW: u64 = 32_768;
+pub(crate) const SEQUENTIAL_BELOW: u64 = 4_096;
 
 /// [`run_slices`], or the slices in turn on this thread when `parallel` is
 /// false -- the same results in the same order.
