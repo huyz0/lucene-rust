@@ -552,9 +552,16 @@ impl Iter {
                 *doc
             }
             Iter::Docs { docs, next, doc } => {
+                // Targets only grow, and usually by little: gallop from the
+                // current entry, then search the bracket found.
                 let rest = &docs[*next..];
-                let skip = rest.partition_point(|&d| d < target);
-                *next += skip;
+                let mut hi = 1;
+                while hi < rest.len() && rest[hi - 1] < target {
+                    hi *= 2;
+                }
+                let lo = hi / 2;
+                let hi = hi.min(rest.len());
+                *next += lo + rest[lo..hi].partition_point(|&d| d < target);
                 *doc = docs.get(*next).copied().unwrap_or(NO_MORE_DOCS);
                 *doc
             }
@@ -1435,11 +1442,43 @@ fn score_competitive(
     live_docs: Option<&FixedBitSet>,
 ) -> Result<()> {
     let two_phase = scorer.two_phase();
+    // Membership instead of leapfrog: when the scorer can say whether a
+    // document matches without moving (a cached bit set, match-all) and no
+    // score is read, a narrowed competitive set is walked on its own and each
+    // of its documents tested -- one move per candidate instead of two.
+    let by_membership = !tf.needs_scores && !two_phase && scorer.contains(0).is_some();
     let mut doc = match leaf.competitive() {
         Some(it) if it.doc_id() > 0 => scorer.advance(it.doc_id())?,
         _ => scorer.next_doc()?,
     };
     while doc != NO_MORE_DOCS {
+        if by_membership {
+            if let Some(it) = leaf
+                .competitive()
+                .filter(|it| !matches!(it, Iter::All { .. }))
+            {
+                let d = if it.doc_id() < doc {
+                    it.advance(doc)
+                } else {
+                    it.doc_id()
+                };
+                if d == NO_MORE_DOCS {
+                    return Ok(());
+                }
+                if scorer.contains(d) == Some(true) && live_docs.is_none_or(|l| l.get_doc(d)) {
+                    leaf.collect(tf, d, None)?;
+                    if leaf.terminated {
+                        return Ok(());
+                    }
+                }
+                doc = d.saturating_add(1);
+                continue;
+            }
+            if scorer.doc_id() < doc {
+                doc = scorer.advance(doc)?;
+                continue;
+            }
+        }
         if let Some(it) = leaf.competitive() {
             if it.doc_id() < doc {
                 let next = it.advance(doc);
