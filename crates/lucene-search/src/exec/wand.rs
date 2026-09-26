@@ -30,8 +30,18 @@ pub(crate) fn scaling_factor(f: f32) -> i32 {
 }
 
 /// `Math.scalb(d, n)` for the range a float's scaling factor spans.
+///
+/// `2^n` is built from its exponent bits while it is a normal double -- the
+/// same exact power `powi` returns, without the libm call on every document
+/// WAND scales a score for.
 fn scalb(d: f64, n: i32) -> f64 {
-    d * 2f64.powi(n)
+    let pow = if (-1022..=1023).contains(&n) {
+        // ARITH: -1022 <= n <= 1023, so the biased exponent is 1..=2046.
+        f64::from_bits(((n + 1023) as u64) << 52)
+    } else {
+        2f64.powi(n)
+    };
+    d * pow
 }
 
 /// `WANDScorer.scaleMaxScore`: rounds up.
@@ -462,5 +472,23 @@ impl Scorer for WandScorer<'_> {
     fn set_min_competitive_score(&mut self, min: f32) -> Result<()> {
         self.min_competitive_score = scale_min_score(min, self.scaling_factor);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scalb_builds_the_power_powi_does() {
+        for n in -1100..=1100 {
+            for d in [1.0f64, 0.3, 17.25, f64::from(f32::MAX), 1e-30] {
+                assert_eq!(
+                    scalb(d, n).to_bits(),
+                    (d * 2f64.powi(n)).to_bits(),
+                    "{d} {n}"
+                );
+            }
+        }
     }
 }
