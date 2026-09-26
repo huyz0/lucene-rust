@@ -70,6 +70,7 @@ public final class NativeSelfTest {
     private static int bitExact;
     private static int scored;
     private static int sortedChecks;
+    private static int trackedPages;
 
     public static void main(String[] args) throws Exception {
         NativeLibrary.load(Path.of("."));
@@ -85,13 +86,15 @@ public final class NativeSelfTest {
         }
         // A regression that stopped fixtures opening natively would otherwise pass silently.
         check(compared >= 20, "fixtures compared natively: " + compared);
+        check(trackedPages >= 20, "sorted pages tracking the max score: " + trackedPages);
         System.out.printf(
-            "NativeSelfTest: %d checks, %d failures; %d of %d compared scores bit-exact; %d sorted pages compared%n",
+            "NativeSelfTest: %d checks, %d failures; %d of %d compared scores bit-exact; %d sorted pages compared (%d tracking the max score)%n",
             checks,
             failures,
             bitExact,
             scored,
-            sortedChecks
+            sortedChecks,
+            trackedPages
         );
         if (failures > 0) {
             System.exit(1);
@@ -385,10 +388,16 @@ public final class NativeSelfTest {
             int topN = r.nextBoolean() ? 10 : 3;
             int threshold = r.nextBoolean() ? Integer.MAX_VALUE : 1 + r.nextInt(50);
             FieldDoc after = null;
+            // track_scores behind another key: Lucene's collector beside a max-score collector.
+            boolean track = sort.getSort()[0].getType() != SortField.Type.SCORE && r.nextInt(3) == 0;
             for (int page = 0; page < 2; page++) {
-                TopFieldDocs want = searcher.search(query, new TopFieldCollectorManager(sort, topN, after, threshold));
-                SortEncoder.Encoded enc = SortEncoder.encode(sort, after);
-                String what = where + ": " + query + " sorted " + sort + " top" + topN + " threshold " + threshold + " page " + page;
+                float[] wantMax = {Float.NEGATIVE_INFINITY};
+                TopFieldDocs want = track
+                    ? searchTracked(searcher, query, sort, topN, after, threshold, wantMax)
+                    : searcher.search(query, new TopFieldCollectorManager(sort, topN, after, threshold));
+                SortEncoder.Encoded enc = SortEncoder.encode(sort, after, track);
+                String what = where + ": " + query + " sorted " + sort + " top" + topN + " threshold " + threshold + " page " + page
+                    + (track ? " tracking the max score" : "");
                 check(enc.blob() != null, what + ": sort encodes (" + enc.fallbackReason() + ")");
                 if (enc.blob() == null) {
                     return;
@@ -396,7 +405,7 @@ public final class NativeSelfTest {
                 SortField[] keys = sort.getSort();
                 int[] docs = new int[topN];
                 long[] values = new long[topN * keys.length];
-                long[] counts = new long[3];
+                long[] counts = new long[4];
                 byte[][] terms = new byte[1][];
                 long limit = threshold == Integer.MAX_VALUE ? Long.MAX_VALUE : threshold;
                 int rc = NativeBridge.searchSorted(handle, blob, enc.blob(), topN, limit, docs, values, counts, terms);
@@ -415,15 +424,73 @@ public final class NativeSelfTest {
                 check(same, what + ": native " + Arrays.toString(Arrays.copyOf(docs, (int) counts[0])) + " lucene " + Arrays.toString(Arrays.stream(want.scoreDocs).mapToInt(d -> d.doc).toArray()));
                 boolean exact = want.totalHits.relation() == TotalHits.Relation.EQUAL_TO;
                 check(
-                    exact ? counts[2] == 0 && counts[1] == want.totalHits.value() : counts[2] == 1 && counts[1] > threshold,
+                    // Tracked, nothing is skipped on either side: the same count, bound or not.
+                    track ? counts[1] == want.totalHits.value() && (counts[2] == 1) == !exact
+                        : exact ? counts[2] == 0 && counts[1] == want.totalHits.value() : counts[2] == 1 && counts[1] > threshold,
                     what + ": total " + counts[1] + (counts[2] == 1 ? "+" : "") + " vs " + want.totalHits
                 );
+                if (track) {
+                    float gotMax = Float.intBitsToFloat((int) counts[3]);
+                    float luceneMax = Float.isInfinite(wantMax[0]) ? Float.NaN : wantMax[0];
+                    check(Float.floatToIntBits(gotMax) == Float.floatToIntBits(luceneMax), what + ": max score " + gotMax + " vs " + luceneMax);
+                    trackedPages++;
+                }
                 if (want.scoreDocs.length == 0) {
                     break;
                 }
                 after = (FieldDoc) want.scoreDocs[want.scoreDocs.length - 1];
             }
         }
+    }
+
+    /** OpenSearch's MaxScoreCollector. */
+    private static final class MaxScore extends org.apache.lucene.search.SimpleCollector {
+        private final float[] max;
+        private org.apache.lucene.search.Scorable scorer;
+
+        MaxScore(float[] max) {
+            this.max = max;
+        }
+
+        @Override
+        public void setScorer(org.apache.lucene.search.Scorable scorer) {
+            this.scorer = scorer;
+        }
+
+        @Override
+        public void collect(int doc) throws java.io.IOException {
+            max[0] = Math.max(max[0], scorer.score());
+        }
+
+        @Override
+        public org.apache.lucene.search.ScoreMode scoreMode() {
+            return org.apache.lucene.search.ScoreMode.COMPLETE;
+        }
+    }
+
+    /** What OpenSearch runs for track_scores behind another key: a MultiCollector of the two. */
+    private static TopFieldDocs searchTracked(IndexSearcher searcher, Query query, Sort sort, int topN, FieldDoc after, int threshold, float[] max)
+        throws Exception {
+        TopFieldCollectorManager tfcm = new TopFieldCollectorManager(sort, topN, after, threshold);
+        return searcher.search(query, new org.apache.lucene.search.CollectorManager<org.apache.lucene.search.Collector, TopFieldDocs>() {
+            @Override
+            public org.apache.lucene.search.Collector newCollector() throws java.io.IOException {
+                return org.apache.lucene.search.MultiCollector.wrap(tfcm.newCollector(), new MaxScore(max));
+            }
+
+            @Override
+            public TopFieldDocs reduce(java.util.Collection<org.apache.lucene.search.Collector> cs) throws java.io.IOException {
+                List<org.apache.lucene.search.TopFieldCollector> tops = new ArrayList<>();
+                for (org.apache.lucene.search.Collector c : cs) {
+                    for (org.apache.lucene.search.Collector sub : ((org.apache.lucene.search.MultiCollector) c).getCollectors()) {
+                        if (sub instanceof org.apache.lucene.search.TopFieldCollector t) {
+                            tops.add(t);
+                        }
+                    }
+                }
+                return tfcm.reduce(tops);
+            }
+        });
     }
 
     /** True when {@code doc} is one of the Lucene hits whose score ties hit {@code i}'s. */

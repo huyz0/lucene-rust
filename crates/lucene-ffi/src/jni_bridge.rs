@@ -325,7 +325,12 @@ pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_searchSorted<
         env.set_long_array_region(
             &out_counts,
             0,
-            &[hit_count as jlong, out.total, jlong::from(out.lower_bound)],
+            &[
+                hit_count as jlong,
+                out.total,
+                jlong::from(out.lower_bound),
+                jlong::from(out.max_score.to_bits()),
+            ],
         )
         .map_err(|e| jni_err(&env, "outCounts", e))?;
         Ok(FfiStatus::Ok.code())

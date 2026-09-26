@@ -197,10 +197,14 @@ pub struct FieldDoc {
 }
 
 /// `TopFieldDocs`: the hits, best first, and the total.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TopFieldDocs {
     pub hits: Vec<FieldDoc>,
     pub total: TotalHits,
+    /// `MaxScoreCollector.getMaxScore` over every match, when
+    /// [`search_sorted_tracking`] was asked to track it; `NaN` otherwise and
+    /// when nothing matched.
+    pub max_score: f32,
 }
 
 /// Why a sorted search could not run.
@@ -603,6 +607,7 @@ impl TopField {
         }
         hits.reverse();
         TopFieldDocs {
+            max_score: f32::NAN,
             hits,
             total: TotalHits {
                 value: self.total_hits,
@@ -2609,6 +2614,38 @@ pub fn search_sorted(
     total_hits_threshold: u64,
     after: Option<&FieldDoc>,
 ) -> Result<TopFieldDocs> {
+    search_sorted_tracking(
+        segments,
+        readers,
+        query,
+        norms,
+        sort,
+        top_n,
+        total_hits_threshold,
+        after,
+        false,
+    )
+}
+
+/// [`search_sorted`], and with `track_max_score` beside it a
+/// `MaxScoreCollector` in a `MultiCollector` -- what OpenSearch runs for
+/// `track_scores` when the score does not lead the sort: every match is
+/// scored for [`TopFieldDocs::max_score`], and since `MultiCollector` exposes
+/// no competitive iterator and ignores `setMinCompetitiveScore`, nothing is
+/// skipped and every match reaches the collector (a doc-led sort's early
+/// termination stops only the collector, not the scoring).
+#[allow(clippy::too_many_arguments)]
+pub fn search_sorted_tracking(
+    segments: &[OpenSegment<'_>],
+    readers: &[SegmentReader],
+    query: &BooleanQuery,
+    norms: &[Option<&HashMap<String, FieldNorms<'_>>>],
+    sort: &[SortField],
+    top_n: usize,
+    total_hits_threshold: u64,
+    after: Option<&FieldDoc>,
+    track_max_score: bool,
+) -> Result<TopFieldDocs> {
     if sort.is_empty() {
         return Err(SortError::NoKeys.into());
     }
@@ -2637,12 +2674,17 @@ pub fn search_sorted(
         return Ok(TopFieldDocs {
             hits: Vec::new(),
             total: empty,
+            max_score: f32::NAN,
         });
     }
     let rewritten = crate::multi_segment::rewrite_points_ranges(query, segments);
     let query = rewritten.as_ref().unwrap_or(query);
     let mut tf = TopField::new(sort, top_n, total_hits_threshold, after);
-    let global = if tf.needs_scores {
+    // The score leading the sort gives the max score itself (the first hit).
+    let track = track_max_score && sort[0].ty != SortType::Score;
+    let want_scores = tf.needs_scores || track;
+    let mut max_score = f32::NEG_INFINITY;
+    let global = if want_scores {
         Some(crate::multi_segment::global_boolean_stats(segments, query)?)
     } else {
         None
@@ -2657,7 +2699,7 @@ pub fn search_sorted(
     };
     let mode = match tf.score_mode() {
         ScoreMode::TopScores => Mode::TopScores,
-        _ if tf.needs_scores => Mode::Complete,
+        _ if want_scores => Mode::Complete,
         _ => Mode::NoScores,
     };
     for (i, seg) in segments.iter().enumerate() {
@@ -2701,13 +2743,13 @@ pub fn search_sorted(
         // A lone term is the exception: its scoring cursor iterates as fast
         // as a bare one, and scores where it stands, as Lucene's one scorer
         // does -- no second walk over the same postings.
-        let self_scores = tf.needs_scores && matches!(clause, Clause::Term(_));
+        let self_scores = want_scores && matches!(clause, Clause::Term(_));
         let iter_mode = if self_scores { mode } else { Mode::NoScores };
         let Some(child) = exec::build::child(&ctx, &clause, 1.0, iter_mode, true)? else {
             continue;
         };
         let mut scorer = child.into_scorer(iter_mode);
-        let mut scores = if tf.needs_scores && !self_scores {
+        let mut scores = if want_scores && !self_scores {
             // The same query, so the same segment answer: a tree here and
             // none there would be a bug, reported rather than scored as 0.
             let Some(c) = exec::build::child(&ctx, &clause, 1.0, mode, true)? else {
@@ -2721,17 +2763,72 @@ pub fn search_sorted(
             None
         };
         let mut leaf = open_leaf(&mut tf, reader, seg, scorer.cost())?;
-        score_competitive(
-            &mut *scorer,
-            scores.as_mut(),
-            self_scores,
-            &mut tf,
-            &mut leaf,
-            seg.live_docs,
-        )?;
+        if track {
+            let m = score_tracking(
+                &mut *scorer,
+                scores.as_mut(),
+                self_scores,
+                &mut tf,
+                &mut leaf,
+                seg.live_docs,
+            )?;
+            max_score = max_score.max(m);
+        } else {
+            score_competitive(
+                &mut *scorer,
+                scores.as_mut(),
+                self_scores,
+                &mut tf,
+                &mut leaf,
+                seg.live_docs,
+            )?;
+        }
         leaf.finish(&mut tf)?;
     }
-    Ok(tf.top_docs())
+    let mut out = tf.top_docs();
+    if track && max_score.is_finite() {
+        out.max_score = max_score;
+    }
+    Ok(out)
+}
+
+/// `DefaultBulkScorer.scoreIterator` over a `MultiCollector` of the
+/// collector and a `MaxScoreCollector`: every match is scored, the highest
+/// score kept, and the document handed to the collector until it terminates.
+/// Returns the segment's highest score (`-inf` for none).
+fn score_tracking(
+    scorer: &mut dyn Scorer,
+    mut scores: Option<&mut ScoreAt<'_>>,
+    self_scores: bool,
+    tf: &mut TopField,
+    leaf: &mut Leaf<'_>,
+    live_docs: Option<&FixedBitSet>,
+) -> Result<f32> {
+    let two_phase = scorer.two_phase();
+    let mut max = f32::NEG_INFINITY;
+    let mut doc = scorer.next_doc()?;
+    while doc != NO_MORE_DOCS {
+        if live_docs.is_none_or(|l| l.get_doc(doc)) && (!two_phase || scorer.matches()?) {
+            let mut sc: Sc<'_> = if self_scores {
+                Some(&mut *scorer)
+            } else {
+                score_at(&mut scores, doc)
+            };
+            let Some(s) = sc.as_deref_mut() else {
+                return Err(SortError::ScoringTree(doc).into());
+            };
+            let score = s.score()?;
+            max = max.max(score);
+            // Read once: a score key's comparison reuses it.
+            leaf.score = score;
+            leaf.score_doc = doc;
+            if !leaf.terminated {
+                leaf.collect(tf, doc, sc)?;
+            }
+        }
+        doc = scorer.next_doc()?;
+    }
+    Ok(max)
 }
 
 /// `DefaultBulkScorer.score` for a collector that may have a competitive
