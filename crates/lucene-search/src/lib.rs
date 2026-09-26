@@ -2928,9 +2928,18 @@ pub struct FuzzyCollectionStats {
 /// same `(field, term)` can appear in one boolean query and mean different
 /// things), and it carries the whole expansion rather than a single
 /// `docFreq`/`docCount` pair.
+/// One term's entry in [`GlobalStats`].
+#[derive(Debug, Clone, PartialEq)]
+struct TermEntry {
+    stats: CollectionStats,
+    states: Vec<(usize, Option<lucene_codecs::blocktree::SeekedTerm>)>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct GlobalStats {
-    terms: HashMap<(String, Vec<u8>), CollectionStats>,
+    /// By field, then term: the reader-wide statistics, and where gathering
+    /// them found the term in each segment.
+    terms: HashMap<String, HashMap<Vec<u8>, TermEntry>>,
     fuzzy: HashMap<FuzzyQuery, FuzzyCollectionStats>,
 }
 
@@ -2948,13 +2957,56 @@ impl GlobalStats {
         term: impl Into<Vec<u8>>,
         stats: CollectionStats,
     ) {
-        self.terms.insert((field.into(), term.into()), stats);
+        self.terms.entry(field.into()).or_default().insert(
+            term.into(),
+            TermEntry {
+                stats,
+                states: Vec::new(),
+            },
+        );
+    }
+
+    /// [`Self::insert_term`] with the term's state in each segment the
+    /// statistics were summed over (keyed by the segment's
+    /// [`BlockTreeFields`]' address; `None` where the term is absent) -- what
+    /// Lucene's `TermStates` keeps so `TermWeight.scorer` never seeks a term
+    /// twice.
+    pub(crate) fn insert_term_states(
+        &mut self,
+        field: String,
+        term: Vec<u8>,
+        stats: CollectionStats,
+        states: Vec<(usize, Option<lucene_codecs::blocktree::SeekedTerm>)>,
+    ) {
+        self.terms
+            .entry(field)
+            .or_default()
+            .insert(term, TermEntry { stats, states });
+    }
+
+    /// The term's state in the segment whose fields are `fields`, as the
+    /// statistics pass found it: `Some(None)` when it is absent there, `None`
+    /// when that segment was not recorded (the caller seeks).
+    pub(crate) fn term_state(
+        &self,
+        field: &str,
+        term: &[u8],
+        fields: &BlockTreeFields,
+    ) -> Option<Option<lucene_codecs::blocktree::SeekedTerm>> {
+        let addr = std::ptr::from_ref(fields).addr();
+        self.terms
+            .get(field)?
+            .get(term)?
+            .states
+            .iter()
+            .find(|(a, _)| *a == addr)
+            .map(|(_, s)| *s)
     }
 
     /// One term's reader-wide statistics, or `None` when the caller did not
     /// gather them (in which case the segment's own are already right).
     pub fn term(&self, field: &str, term: &[u8]) -> Option<&CollectionStats> {
-        self.terms.get(&(field.to_string(), term.to_vec()))
+        self.terms.get(field)?.get(term).map(|e| &e.stats)
     }
 
     /// Records one fuzzy clause's reader-wide expansion.

@@ -545,6 +545,44 @@ pub(crate) fn global_term_stats(
     }))
 }
 
+/// [`global_term_stats`], keeping where each segment's seek found the term
+/// (by the segment's fields' address), for the scorers to open its postings
+/// without seeking again -- Lucene's `TermStates.build`.
+pub(crate) fn global_term_stats_states(
+    segments: &[OpenSegment<'_>],
+    field: &str,
+    term: &[u8],
+) -> crate::Result<
+    Option<(
+        crate::CollectionStats,
+        Vec<(usize, Option<lucene_codecs::blocktree::SeekedTerm>)>,
+    )>,
+> {
+    let mut doc_freq = 0i64;
+    let mut doc_count = 0i64;
+    let mut seen = false;
+    let mut states = Vec::with_capacity(segments.len());
+    for seg in segments {
+        let Some(ft) = seg.fields.field(field) else {
+            continue;
+        };
+        seen = true;
+        doc_count += ft.doc_count as i64;
+        let state = ft.seek_term_state(term)?;
+        if let Some(s) = &state {
+            doc_freq += s.stats.doc_freq as i64;
+        }
+        states.push((std::ptr::from_ref(seg.fields).addr(), state));
+    }
+    Ok(seen.then_some((
+        crate::CollectionStats {
+            doc_freq,
+            doc_count,
+        },
+        states,
+    )))
+}
+
 /// Sum `sumTotalTermFreq` and `docCount` for one field across every segment and
 /// divide -- Java's `IndexSearcher.fieldStats(field)` feeding
 /// `BM25Similarity.avgFieldLength(FieldStats)`.
@@ -675,8 +713,8 @@ pub(crate) fn global_boolean_stats(
     walk(query, &mut collected);
     let mut map = crate::GlobalStats::new();
     for (field, term) in collected.terms {
-        if let Some(stats) = global_term_stats(segments, &field, &term)? {
-            map.insert_term(field, term, stats);
+        if let Some((stats, states)) = global_term_stats_states(segments, &field, &term)? {
+            map.insert_term_states(field, term, stats, states);
         }
     }
     for fuzzy in collected.fuzzy {
@@ -744,10 +782,26 @@ pub fn search_term_query_multi_segment_counting(
     // idf -- what Lucene's IndexSearcher does via CollectionStatistics. Scoring
     // each segment from its own counters silently reorders results across a
     // multi-segment index; see CollectionStats.
-    let global = global_term_stats(segments, &query.field, &query.term)?;
+    let found = global_term_stats_states(segments, &query.field, &query.term)?;
+    // A term no segment holds matches nothing: no leaf to visit.
+    if found.as_ref().is_none_or(|(stats, _)| stats.doc_freq == 0) {
+        return Ok((
+            Vec::new(),
+            TotalHits {
+                value: 0,
+                relation: crate::collector::TotalHitsRelation::EqualTo,
+            },
+        ));
+    }
+    let (global, states) = found.map(|(g, s)| (Some(g), s)).unwrap_or_default();
     let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
     search_leaves_shared_counting(&doc_bases, top_n, total_hits_threshold, |i, local| {
         let seg = &segments[i];
+        // The statistics pass found the term absent here: nothing to read.
+        let addr = std::ptr::from_ref(seg.fields).addr();
+        if states.iter().any(|(a, s)| *a == addr && s.is_none()) {
+            return Ok(());
+        }
         let seg_norms = norms.get(i).copied().flatten();
         crate::search_term_query_scored_maxscore_with_stats(
             seg.fields,

@@ -197,6 +197,9 @@ pub struct SegmentReader {
     /// `PointsReader` lives as long as the segment core, so a search does not
     /// re-read `.kdm`.
     points_meta: Arc<std::sync::OnceLock<Vec<(i32, lucene_codecs::points::PointsField)>>>,
+    /// Set once this segment's `.doc`/`.pos`/`.pay` headers and footers have
+    /// been validated: later searches open them without reading either again.
+    postings_validated: Arc<std::sync::atomic::AtomicBool>,
     /// The segment's parsed `.dvm` (per-field entries -- `NumericEntry`,
     /// `SortedEntry`, etc., each already carrying whichever of the
     /// dense/sparse shapes `doc_values.rs`'s write side actually produced;
@@ -527,6 +530,7 @@ impl SegmentReader {
             kdi_buf,
             kdd_buf,
             points_meta: Arc::default(),
+            postings_validated: Arc::default(),
             dv_meta,
             dv_generations,
             norms_meta,
@@ -683,6 +687,21 @@ impl SegmentReader {
         field: &str,
         avg_field_length: f32,
     ) -> Option<crate::field_norms::FieldNorms<'_>> {
+        self.field_norms_with_table(
+            field,
+            avg_field_length,
+            crate::field_norms::inverse_table(avg_field_length),
+        )
+    }
+
+    /// [`SegmentReader::field_norms_with_avg_field_length`] with the norm
+    /// table for that average already built.
+    pub fn field_norms_with_table(
+        &self,
+        field: &str,
+        avg_field_length: f32,
+        table: Arc<[f32; 256]>,
+    ) -> Option<crate::field_norms::FieldNorms<'_>> {
         let info = self.field_infos.field_by_name(field)?;
         // A field with no term dictionary entry has no counters, and therefore
         // no norms this port will score with -- same precondition
@@ -691,17 +710,19 @@ impl SegmentReader {
         if info.omit_norms {
             // Indexed without norms: every document at norm 1 against the
             // real `avgdl`, as Java's `LeafSimScorer` scores it.
-            return Some(crate::field_norms::FieldNorms::unnormed(
+            return Some(crate::field_norms::FieldNorms::unnormed_with_table(
                 self.max_doc,
                 avg_field_length,
+                table,
             ));
         }
         let entry = self.norms_entry(info.number)?;
         let data = self.norms_data()?;
-        Some(crate::field_norms::FieldNorms::with_avg_field_length(
+        Some(crate::field_norms::FieldNorms::with_inverse_table(
             data,
             *entry,
             avg_field_length,
+            table,
         ))
     }
 
@@ -939,6 +960,8 @@ pub struct DirectoryReader {
     /// reader's life -- the `OrdinalMap` Lucene caches per reader and field.
     global_ords:
         std::sync::Mutex<std::collections::HashMap<String, Arc<crate::terms_agg::GlobalOrds>>>,
+    /// BM25 norm tables by average field length's bits ([`Self::norm_table`]).
+    norm_tables: std::sync::Mutex<std::collections::HashMap<u32, Arc<[f32; 256]>>>,
 }
 
 impl DirectoryReader {
@@ -1019,6 +1042,7 @@ impl DirectoryReader {
             segment_infos,
             segments,
             global_ords: std::sync::Mutex::default(),
+            norm_tables: std::sync::Mutex::default(),
         })
     }
 
@@ -1027,6 +1051,19 @@ impl DirectoryReader {
     ///
     /// # Errors
     /// What building them reports ([`crate::terms_agg::GlobalOrds::build`]).
+    /// The BM25 norm table for one average field length
+    /// ([`crate::field_norms::inverse_table`]), built once per reader: every
+    /// search scoring a field over this reader uses the same reader-wide
+    /// average, and building the 256 entries per segment per search was a
+    /// cost small requests paid in full.
+    pub fn norm_table(&self, avg_field_length: f32) -> Arc<[f32; 256]> {
+        let key = avg_field_length.to_bits();
+        let mut map = self.norm_tables.lock().unwrap_or_else(|e| e.into_inner());
+        map.entry(key)
+            .or_insert_with(|| crate::field_norms::inverse_table(avg_field_length))
+            .clone()
+    }
+
     pub fn global_ords(&self, field: &str) -> crate::Result<Arc<crate::terms_agg::GlobalOrds>> {
         let cached = |m: &std::collections::HashMap<String, Arc<crate::terms_agg::GlobalOrds>>| {
             m.get(field).cloned()
@@ -1124,9 +1161,10 @@ impl DirectoryReader {
             // so the value is never read.
             None => crate::similarity::UNNORMED_FIELD_LENGTH,
         };
+        let table = self.norm_table(avg);
         self.segments
             .iter()
-            .map(|seg| seg.field_norms_with_avg_field_length(field, avg))
+            .map(|seg| seg.field_norms_with_table(field, avg, table.clone()))
             .collect()
     }
 
@@ -1140,16 +1178,19 @@ impl DirectoryReader {
         &self,
         fields: &[String],
     ) -> Vec<HashMap<String, crate::field_norms::FieldNorms<'_>>> {
-        let avgs: Vec<(&String, f32)> = fields
+        let avgs: Vec<(&String, f32, Arc<[f32; 256]>)> = fields
             .iter()
-            .filter_map(|f| self.avg_field_length(f).map(|avg| (f, avg)))
+            .filter_map(|f| {
+                self.avg_field_length(f)
+                    .map(|avg| (f, avg, self.norm_table(avg)))
+            })
             .collect();
         self.segments
             .iter()
             .map(|seg| {
                 avgs.iter()
-                    .filter_map(|(field, avg)| {
-                        seg.field_norms_with_avg_field_length(field, *avg)
+                    .filter_map(|(field, avg, table)| {
+                        seg.field_norms_with_table(field, *avg, table.clone())
                             .map(|n| ((*field).clone(), n))
                     })
                     .collect()
@@ -1164,19 +1205,28 @@ impl DirectoryReader {
         let mut doc_ins = Vec::with_capacity(self.segments.len());
         let mut pos_ins = Vec::with_capacity(self.segments.len());
         let mut pay_ins = Vec::with_capacity(self.segments.len());
+        use std::sync::atomic::Ordering;
         for seg in &self.segments {
+            // Validated the first time; each search after touches neither end
+            // of the files (six cache lines a segment a search, all misses on
+            // a busy node).
+            let validated = seg.postings_validated.load(Ordering::Acquire);
             let doc_in = match &seg.doc_buf {
+                Some(buf) if validated => Some(DocInput::validated(buf)),
                 Some(buf) => Some(DocInput::open(buf, &seg.segment_id, &seg.segment_suffix)?),
                 None => None,
             };
             let pos_in = match &seg.pos_buf {
+                Some(buf) if validated => Some(PosInput::validated(buf)),
                 Some(buf) => Some(PosInput::open(buf, &seg.segment_id, &seg.segment_suffix)?),
                 None => None,
             };
             let pay_in = match &seg.pay_buf {
+                Some(buf) if validated => Some(PayInput::validated(buf)),
                 Some(buf) => Some(PayInput::open(buf, &seg.segment_id, &seg.segment_suffix)?),
                 None => None,
             };
+            seg.postings_validated.store(true, Ordering::Release);
             doc_ins.push(doc_in);
             pos_ins.push(pos_in);
             pay_ins.push(pay_in);

@@ -43,7 +43,7 @@ pub struct FieldNorms<'a> {
     ///
     /// Only valid for [`crate::similarity::DEFAULT_K1`]/[`crate::similarity::DEFAULT_B`]; a caller
     /// using custom parameters must take the arithmetic path.
-    norm_inverse: [f32; 256],
+    norm_inverse: std::sync::Arc<[f32; 256]>,
     /// The flat one-byte-per-doc norm array, when this field's norms are dense
     /// and one byte wide -- which is the shape `Lucene90NormsConsumer` writes
     /// for any ordinary analyzed field, so it is the case that matters.
@@ -58,7 +58,7 @@ pub struct FieldNorms<'a> {
     /// `decode_norm(i)` for every one of the 256 possible norm bytes. Same idea
     /// as [`FieldNorms::norm_inverse`] and the same reason: the domain is one
     /// byte wide, so the decode is a table lookup, not a computation.
-    norm_length: [f32; 256],
+    norm_length: &'static [f32; 256],
     /// A sparse field's `IndexedDISI` region, sliced (and therefore
     /// bounds-checked) once. `None` when the field is dense, empty, or the
     /// recorded region does not lie inside `data` -- in which case the general
@@ -143,6 +143,9 @@ fn norm_length_table() -> [f32; 256] {
     t
 }
 
+/// [`norm_length_table`], built once for the process: it depends on nothing.
+static NORM_LENGTH: std::sync::LazyLock<[f32; 256]> = std::sync::LazyLock::new(norm_length_table);
+
 /// The flat norm array for a dense, one-byte-per-norm field, or `None` when
 /// this field is not that shape.
 fn dense_norm_bytes<'a>(data: &'a [u8], entry: &NormsEntry) -> Option<&'a [u8]> {
@@ -152,6 +155,14 @@ fn dense_norm_bytes<'a>(data: &'a [u8], entry: &NormsEntry) -> Option<&'a [u8]> 
     let start = usize::try_from(entry.norms_offset).ok()?;
     let len = usize::try_from(entry.num_docs_with_field).ok()?;
     data.get(start..start.checked_add(len)?)
+}
+
+/// [`FieldNorms::norm_inverse`] for one average field length, shareable: every
+/// segment of a reader scores a field against the same reader-wide average, so
+/// a reader builds the table once per average ([`crate::directory_reader::DirectoryReader`]
+/// caches it) instead of once per segment per search.
+pub fn inverse_table(avg_field_length: f32) -> std::sync::Arc<[f32; 256]> {
+    std::sync::Arc::new(norm_inverse_table(avg_field_length))
 }
 
 /// Builds [`FieldNorms::norm_inverse`] for one average field length.
@@ -221,10 +232,20 @@ impl<'a> FieldNorms<'a> {
     /// the field averages one token per document -- `VerifyIndex` (M3) caught
     /// it scoring a freqs-only field 12% low.
     pub fn unnormed(max_doc: i32, avg_field_length: f32) -> FieldNorms<'static> {
-        FieldNorms::with_avg_field_length(
+        FieldNorms::unnormed_with_table(max_doc, avg_field_length, inverse_table(avg_field_length))
+    }
+
+    /// [`FieldNorms::unnormed`] with its `norm_inverse` table already built.
+    pub fn unnormed_with_table(
+        max_doc: i32,
+        avg_field_length: f32,
+        table: std::sync::Arc<[f32; 256]>,
+    ) -> FieldNorms<'static> {
+        FieldNorms::with_inverse_table(
             &[],
             NormsEntry::constant(-1, max_doc, 1),
             avg_field_length,
+            table,
         )
     }
 
@@ -245,13 +266,29 @@ impl<'a> FieldNorms<'a> {
     /// [`crate::directory_reader::DirectoryReader::field_norms`] applies it to
     /// every leaf in one call.
     pub fn with_avg_field_length(data: &'a [u8], entry: NormsEntry, avg_field_length: f32) -> Self {
+        Self::with_inverse_table(
+            data,
+            entry,
+            avg_field_length,
+            inverse_table(avg_field_length),
+        )
+    }
+
+    /// [`FieldNorms::with_avg_field_length`] with its `norm_inverse` table
+    /// already built -- [`inverse_table`] of the same `avg_field_length`.
+    pub fn with_inverse_table(
+        data: &'a [u8],
+        entry: NormsEntry,
+        avg_field_length: f32,
+        table: std::sync::Arc<[f32; 256]>,
+    ) -> Self {
         Self {
             dense_norm_bytes: dense_norm_bytes(data, &entry),
             data,
             entry,
             avg_field_length,
-            norm_inverse: norm_inverse_table(avg_field_length),
-            norm_length: norm_length_table(),
+            norm_inverse: table,
+            norm_length: &NORM_LENGTH,
             sparse_region: sparse_region(data, &entry),
         }
     }
@@ -296,8 +333,8 @@ impl<'a> FieldNorms<'a> {
             // Only `norm_byte` is used below, and it reads neither; the real
             // values are filled in once the average is known.
             avg_field_length: crate::similarity::UNNORMED_FIELD_LENGTH,
-            norm_inverse: [0.0; 256],
-            norm_length: norm_length_table(),
+            norm_inverse: std::sync::Arc::new([0.0; 256]),
+            norm_length: &NORM_LENGTH,
             sparse_region: sparse_region(data, &entry),
         };
         let mut sum = 0.0f64;
@@ -320,7 +357,7 @@ impl<'a> FieldNorms<'a> {
             (sum / count as f64) as f32
         };
         scratch.avg_field_length = avg_field_length;
-        scratch.norm_inverse = norm_inverse_table(avg_field_length);
+        scratch.norm_inverse = inverse_table(avg_field_length);
         Ok(scratch)
     }
 

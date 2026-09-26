@@ -522,6 +522,12 @@ pub struct DocInput<'a> {
 }
 
 impl<'a> DocInput<'a> {
+    /// A buffer [`DocInput::open`] has already accepted: no header or footer is
+    /// read again. For a reader that validates a segment's postings once and
+    /// opens them per search.
+    pub fn validated(buf: &'a [u8]) -> Self {
+        DocInput { buf }
+    }
     /// Validates the `.doc` file's index header and footer checksum framing
     /// (`Lucene104PostingsReader`'s constructor, `Lucene104PostingsReader.java:134-140`).
     pub fn open(doc: &'a [u8], segment_id: &[u8; ID_LENGTH], segment_suffix: &str) -> Result<Self> {
@@ -967,6 +973,12 @@ pub struct PosInput<'a> {
 }
 
 impl<'a> PosInput<'a> {
+    /// A buffer [`PosInput::open`] has already accepted: no header or footer is
+    /// read again. For a reader that validates a segment's postings once and
+    /// opens them per search.
+    pub fn validated(buf: &'a [u8]) -> Self {
+        PosInput { buf }
+    }
     /// `Lucene104PostingsReader`'s constructor, the `.pos` branch
     /// (`Lucene104PostingsReader.java:142-149`).
     pub fn open(pos: &'a [u8], segment_id: &[u8; ID_LENGTH], segment_suffix: &str) -> Result<Self> {
@@ -992,6 +1004,12 @@ pub struct PayInput<'a> {
 }
 
 impl<'a> PayInput<'a> {
+    /// A buffer [`PayInput::open`] has already accepted: no header or footer is
+    /// read again. For a reader that validates a segment's postings once and
+    /// opens them per search.
+    pub fn validated(buf: &'a [u8]) -> Self {
+        PayInput { buf }
+    }
     pub fn open(pay: &'a [u8], segment_id: &[u8; ID_LENGTH], segment_suffix: &str) -> Result<Self> {
         let mut r = SliceInput::new(pay);
         codec_util::check_index_header(
