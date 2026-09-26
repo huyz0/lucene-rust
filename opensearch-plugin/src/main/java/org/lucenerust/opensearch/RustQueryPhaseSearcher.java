@@ -26,6 +26,8 @@ import org.apache.lucene.search.similarities.Similarity;
 import org.opensearch.common.lucene.search.TopDocsAndMaxScore;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.search.aggregations.AggregationProcessor;
+import org.opensearch.search.aggregations.InternalAggregations;
+import org.opensearch.search.aggregations.NonGlobalAggCollectorManager;
 import org.opensearch.search.approximate.ApproximateScoreQuery;
 import org.opensearch.search.internal.ContextIndexSearcher;
 import org.opensearch.search.internal.SearchContext;
@@ -51,12 +53,15 @@ import java.util.LinkedList;
  * it), so an unsupported request runs precisely as it would without this plugin.
  *
  * <p>A request runs native when it is a top-hits search -- by score, or by a sort {@link
- * SortEncoder} can encode, with or without {@code search_after} -- with no aggregation, post
- * filter, min score, terminate_after, scroll, collapse, rescore, timeout or profile, and a query
- * {@link QueryEncoder} can encode over fields using the default {@link BM25Similarity}. What it
- * produces is what OpenSearch's own {@code SimpleTopDocsCollectorContext} would: the top {@code
- * from + size} hits (with their sort values), the max score, and total hits under the same {@code
- * track_total_hits} rules.
+ * SortEncoder} can encode, with or without {@code search_after} -- with no post filter, min
+ * score, terminate_after, scroll, collapse, rescore, timeout or profile, no aggregation beyond the
+ * metrics {@link NativeAggregations} plans, and a query {@link QueryEncoder} can encode over fields
+ * using the default {@link BM25Similarity}. What it produces is what OpenSearch's own {@code
+ * SimpleTopDocsCollectorContext} would: the top {@code from + size} hits (with their sort values),
+ * the max score, and total hits under the same {@code track_total_hits} rules; and, with
+ * aggregations, the shard results their aggregators would have built, stored before {@code
+ * DefaultAggregationProcessor.postProcess} runs so that it keeps them rather than reducing its own
+ * (unfed) collectors.
  *
  * <p>A native failure is logged, counted, and the query is re-run on Lucene: it never fails a
  * search that Lucene could answer.
@@ -114,7 +119,10 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         boolean hasFilterCollector,
         boolean hasTimeout
     ) throws IOException {
-        String reason = ineligible(ctx, collectors, hasFilterCollector, hasTimeout);
+        // Aggregations OpenSearch's DefaultAggregationProcessor.preProcess registered (their one
+        // collector context is the one in "collectors"), when all of them run natively.
+        NativeAggregations.Plan aggs = ctx.queryCollectorManagers().isEmpty() ? null : NativeAggregations.plan(ctx);
+        String reason = ineligible(ctx, collectors, hasFilterCollector, hasTimeout, aggs != null);
         byte[] blob = null;
         if (reason == null) {
             QueryEncoder.Encoded enc = QueryEncoder.encode(query, field -> defaultBm25(searcher, field));
@@ -152,7 +160,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             reason = acquired.fallbackReason();
         }
         if (reason == null) {
-            reason = searchNative(ctx, acquired.handle(), blob, sortBlob);
+            reason = searchNative(ctx, acquired.handle(), blob, sortBlob, aggs);
             if (reason == null) {
                 stats.nativeQuery();
                 return false;
@@ -167,16 +175,22 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         SearchContext ctx,
         LinkedList<QueryCollectorContext> collectors,
         boolean hasFilterCollector,
-        boolean hasTimeout
+        boolean hasTimeout,
+        boolean nativeAggs
     ) {
         if (ctx.indexShard().indexSettings().getValue(ENABLED) == false) return "disabled";
         // The specific reasons first: each of these also adds a collector, and "collectors" alone
         // would not tell an operator which request feature to look at.
-        if (ctx.queryCollectorManagers().isEmpty() == false) return "aggregations";
+        // Aggregations only when NativeAggregations plans every one of them, and nothing else (a
+        // global aggregation, another plugin's manager) added a collector manager.
+        if (ctx.queryCollectorManagers().isEmpty() == false
+            && (nativeAggs == false
+                || ctx.queryCollectorManagers().size() != 1
+                || ctx.queryCollectorManagers().containsKey(NonGlobalAggCollectorManager.class) == false)) return "aggregations";
         if (ctx.parsedPostFilter() != null) return "post_filter";
         if (ctx.minimumScore() != null) return "min_score";
         if (ctx.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER) return "terminate_after";
-        if (collectors.isEmpty() == false || hasFilterCollector) return "collectors";
+        if (collectors.size() > (nativeAggs ? 1 : 0) || hasFilterCollector) return "collectors";
         if (ctx.scrollContext() != null) return "scroll";
         // A sort runs native when SortEncoder can encode it (searchWith); search_after only
         // with one. track_scores runs native too: the score leading the sort gives the max
@@ -221,7 +235,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
      * <p>Cancellation is checked before the call, not during it: a native search runs to completion
      * (see docs/opensearch-native-queries.md, Known limits).
      */
-    private String searchNative(SearchContext ctx, long handle, byte[] blob, byte[] sortBlob) {
+    private String searchNative(SearchContext ctx, long handle, byte[] blob, byte[] sortBlob, NativeAggregations.Plan aggs) {
         int size = ctx.size();
         int numDocs = size == 0 ? 0 : Math.min(ctx.from() + size, Math.max(1, ctx.searcher().getIndexReader().numDocs()));
         int trackUpTo = ctx.trackTotalHitsUpTo();
@@ -248,9 +262,35 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         if (ctx.isCancelled()) {
             return "cancelled";
         }
-        if (sortBlob != null) {
-            return searchSorted(ctx, handle, blob, sortBlob, numDocs, countLimit, shortcut);
+        // The aggregations first, kept aside until the hits are in too: a failure in either
+        // re-runs the whole request on Lucene.
+        InternalAggregations aggResult = null;
+        if (aggs != null) {
+            long[] aggCounts = new long[aggs.metrics().size()];
+            double[] aggValues = new double[aggs.metrics().size() * NativeAggregations.VALUES];
+            int rc = NativeBridge.aggregate(handle, blob, aggs.blob(), aggCounts, aggValues);
+            if (rc != NativeBridge.OK) {
+                stats.nativeError();
+                logger.warn("lucene-rust: native aggregation failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
+                return "native_error";
+            }
+            try {
+                aggResult = aggs.build(ctx.searcher().getIndexReader(), aggCounts, aggValues);
+            } catch (IOException e) {
+                return "native_error";
+            }
         }
+        String reason = sortBlob != null ? searchSorted(ctx, handle, blob, sortBlob, numDocs, countLimit, shortcut)
+            : searchUnsorted(ctx, handle, blob, numDocs, countLimit, shortcut);
+        if (reason == null && aggResult != null) {
+            // DefaultAggregationProcessor.postProcess keeps a result already there (hasAggs).
+            ctx.queryResult().aggregations(aggResult);
+        }
+        return reason;
+    }
+
+    /** The unsorted half of {@link #searchNative}. */
+    private String searchUnsorted(SearchContext ctx, long handle, byte[] blob, int numDocs, long countLimit, int shortcut) {
         int[] docs = new int[numDocs];
         float[] scores = new float[numDocs];
         long[] counts = new long[3];

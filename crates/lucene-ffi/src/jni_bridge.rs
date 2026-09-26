@@ -24,7 +24,9 @@
 //! Every body runs inside [`guard`], so a panic in the marshalling itself is
 //! caught here, not unwound into the JVM.
 
-use jni::objects::{JByteArray, JClass, JFloatArray, JIntArray, JLongArray, JObjectArray};
+use jni::objects::{
+    JByteArray, JClass, JDoubleArray, JFloatArray, JIntArray, JLongArray, JObjectArray,
+};
 use jni::sys::{jint, jlong, jstring};
 use jni::JNIEnv;
 
@@ -333,6 +335,56 @@ pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_searchSorted<
             ],
         )
         .map_err(|e| jni_err(&env, "outCounts", e))?;
+        Ok(FfiStatus::Ok.code())
+    })
+}
+
+/// `NativeBridge.aggregate`: [`jvm_reader::ffi_jvm_reader_aggregate`] into
+/// Java arrays -- per field its value count in `outCounts` and
+/// [`jvm_reader::METRIC_VALUES`] doubles in `outValues`.
+#[no_mangle]
+pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_aggregate<'l>(
+    env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    query: JByteArray<'l>,
+    aggs: JByteArray<'l>,
+    out_counts: JLongArray<'l>,
+    out_values: JDoubleArray<'l>,
+) -> jint {
+    run(|| {
+        let blob = env
+            .convert_byte_array(&query)
+            .map_err(|e| jni_err(&env, "query", e))?;
+        let aggs_blob = env
+            .convert_byte_array(&aggs)
+            .map_err(|e| jni_err(&env, "aggs", e))?;
+        let states = jvm_reader::aggregate_blobs(handle as u64, &blob, &aggs_blob)?;
+        let counts_len = env
+            .get_array_length(&out_counts)
+            .map_err(|e| jni_err(&env, "outCounts", e))?;
+        let values_len = env
+            .get_array_length(&out_values)
+            .map_err(|e| jni_err(&env, "outValues", e))?;
+        let want_values = states.len().saturating_mul(jvm_reader::METRIC_VALUES);
+        if usize::try_from(counts_len).unwrap_or(0) < states.len()
+            || usize::try_from(values_len).unwrap_or(0) < want_values
+        {
+            set_last_error(format!(
+                "output arrays hold {counts_len} counts and {values_len} values for {} fields",
+                states.len()
+            ));
+            return Err(FfiStatus::BufferTooSmall);
+        }
+        let counts: Vec<jlong> = states
+            .iter()
+            .map(|s| i64::try_from(s.count).unwrap_or(i64::MAX))
+            .collect();
+        let values: Vec<f64> = states.iter().flat_map(jvm_reader::metric_values).collect();
+        env.set_long_array_region(&out_counts, 0, &counts)
+            .map_err(|e| jni_err(&env, "outCounts", e))?;
+        env.set_double_array_region(&out_values, 0, &values)
+            .map_err(|e| jni_err(&env, "outValues", e))?;
         Ok(FfiStatus::Ok.code())
     })
 }
