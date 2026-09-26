@@ -13,7 +13,7 @@ package org.lucenerust.opensearch;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 17;
+    public static final int EXPECTED_ABI_VERSION = 18;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -114,9 +114,20 @@ public final class NativeBridge {
      * over each document's first and last; and in {@code outTerms[0]} the {@code terms} results:
      * per slice, per terms aggregation, the other-doc count ({@code long}), the bucket count ({@code
      * int}) and per bucket, by term, its doc count ({@code long}) and term ({@code int} length,
-     * bytes), little-endian.
+     * bytes), little-endian. With a positive {@code countLimit} (and no {@code min_score} in the
+     * query blob), {@code outTotal} receives the {@code size: 0} search's total and whether it is a
+     * lower bound, as {@link #search} counts them, from the matches the aggregations visited.
      */
-    public static native int aggregate(long handle, byte[] query, byte[] aggs, long[] outCounts, double[] outValues, byte[][] outTerms);
+    public static native int aggregate(
+        long handle,
+        byte[] query,
+        byte[] aggs,
+        long[] outCounts,
+        double[] outValues,
+        byte[][] outTerms,
+        long countLimit,
+        long[] outTotal
+    );
 
     public static native int closeReader(long handle);
 

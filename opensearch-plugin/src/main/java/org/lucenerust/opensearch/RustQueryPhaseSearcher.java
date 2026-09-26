@@ -527,6 +527,8 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // The aggregations first, kept aside until the hits are in too: a failure in either
         // re-runs the whole request on Lucene.
         InternalAggregations aggResult = null;
+        // The size-0 count the aggregations' pass already made: {total, lower bound}, or null.
+        long[] counted = null;
         if (aggs != null) {
             int[][] slices = NativeAggregations.slices(ctx);
             if (slices == null) {
@@ -535,19 +537,29 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             int states = aggs.metrics().size() * Math.max(1, slices.length);
             long[] aggCounts = new long[states];
             double[] aggValues = new double[states * NativeAggregations.VALUES];
-            // Every aggregation in one native pass: each segment's matches collected once.
+            // Every aggregation in one native pass: each segment's matches collected once -- and
+            // counted there too, for a size-0 search of the same query (Lucene's MultiCollector
+            // counts in the same pass), instead of a second search for the count.
             byte[][] terms = new byte[1][];
-            int rc = NativeBridge.aggregate(handle, blob, aggs.blob(slices), aggCounts, aggValues, terms);
+            boolean countHere = numDocs == 0 && sortBlob == null && hitsBlob == blob && ctx.minimumScore() == null
+                && shortcut < 0 && countLimit > 0;
+            long[] total = new long[] { -1, 0 };
+            int rc = NativeBridge.aggregate(
+                handle, blob, aggs.blob(slices), aggCounts, aggValues, terms, countHere ? countLimit : -1, total
+            );
             if (rc != NativeBridge.OK) {
                 stats.nativeError();
                 logger.warn("lucene-rust: native aggregation failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
                 return "native_error";
             }
             aggResult = aggs.build(slices, aggCounts, aggValues, terms[0], ctx.partialOnShard());
+            if (countHere && total[0] >= 0) {
+                counted = total;
+            }
         }
         String reason = sortBlob != null
             ? searchSorted(ctx, handle, hitsBlob, sortBlob, sort, scoreDocs, Math.max(1, numDocs), countLimit, shortcut)
-            : searchUnsorted(ctx, handle, hitsBlob, numDocs, countLimit, shortcut);
+            : searchUnsorted(ctx, handle, hitsBlob, numDocs, countLimit, shortcut, counted);
         if (reason == null && aggResult != null) {
             // DefaultAggregationProcessor.postProcess keeps a result already there (hasAggs).
             ctx.queryResult().aggregations(aggResult);
@@ -556,15 +568,29 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
     }
 
     /** The unsorted half of {@link #searchNative}. */
-    private String searchUnsorted(SearchContext ctx, long handle, byte[] blob, int numDocs, long countLimit, int shortcut) {
+    private String searchUnsorted(
+        SearchContext ctx,
+        long handle,
+        byte[] blob,
+        int numDocs,
+        long countLimit,
+        int shortcut,
+        long[] counted
+    ) {
         int[] docs = new int[numDocs];
         float[] scores = new float[numDocs];
         long[] counts = new long[3];
-        int rc = NativeBridge.search(handle, blob, numDocs, countLimit, docs, scores, counts);
-        if (rc != NativeBridge.OK) {
-            stats.nativeError();
-            logger.warn("lucene-rust: native search failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
-            return "native_error";
+        if (counted != null) {
+            // Counted in the aggregations' pass: no hits to find, nothing left to search.
+            counts[1] = counted[0];
+            counts[2] = counted[1];
+        } else {
+            int rc = NativeBridge.search(handle, blob, numDocs, countLimit, docs, scores, counts);
+            if (rc != NativeBridge.OK) {
+                stats.nativeError();
+                logger.warn("lucene-rust: native search failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
+                return "native_error";
+            }
         }
         int n = (int) counts[0];
         ScoreDoc[] hits = new ScoreDoc[n];

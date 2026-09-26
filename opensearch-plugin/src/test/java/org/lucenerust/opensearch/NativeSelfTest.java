@@ -392,7 +392,7 @@ public final class NativeSelfTest {
         );
         long[] counts = new long[AGG_FIELDS.length];
         double[] values = new double[AGG_FIELDS.length * NativeAggregations.VALUES];
-        int rc = NativeBridge.aggregate(handle, blob, plan.blob(new int[0][]), counts, values, new byte[1][]);
+        int rc = NativeBridge.aggregate(handle, blob, plan.blob(new int[0][]), counts, values, new byte[1][], -1, new long[2]);
         check(rc == NativeBridge.OK, what + ": aggregate status " + rc + " " + NativeBridge.lastError());
         if (rc != NativeBridge.OK) {
             return;
@@ -549,7 +549,7 @@ public final class NativeSelfTest {
                 );
                 byte[][] out = new byte[1][];
                 NativeAggregations.Plan plan = new NativeAggregations.Plan(List.of(spec));
-                int rc = NativeBridge.aggregate(handle, blob, plan.blob(new int[0][]), new long[0], new double[0], out);
+                int rc = NativeBridge.aggregate(handle, blob, plan.blob(new int[0][]), new long[0], new double[0], out, -1, new long[2]);
                 check(rc == NativeBridge.OK, what + ": terms status " + rc + " " + NativeBridge.lastError());
                 if (rc != NativeBridge.OK) {
                     continue;
