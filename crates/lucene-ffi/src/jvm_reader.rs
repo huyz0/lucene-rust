@@ -50,11 +50,12 @@
 
 use std::os::raw::c_char;
 
-use lucene_search::aggs::{MetricSpec, MetricState, Source, ValueKind};
+use lucene_search::aggs::{MetricSpec, MetricState, Source, ValueKind, NEED_ALL};
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::multi_segment::OpenSegment;
 use lucene_search::query::{BooleanQuery, Clause, TermQuery};
+use lucene_search::terms_agg::TermsSpec;
 use lucene_search::top_field::{FieldDoc, Selector, SortField, SortType};
 use lucene_search::weight_count::count_term_query;
 use lucene_search::{
@@ -85,8 +86,8 @@ use std::sync::Arc;
 /// 11, sorted search ([`ffi_jvm_reader_search_sorted`], read path R4); 12,
 /// its keyword keys (terms in, terms out); 13, its options byte and max
 /// score (`track_scores`); 14, metric aggregations
-/// ([`ffi_jvm_reader_aggregate`], read path R5) and the `terms` aggregation
-/// ([`ffi_jvm_reader_terms`]).
+/// ([`ffi_jvm_reader_aggregate`], read path R5) and, in the same call, the
+/// `terms` aggregation.
 pub const JVM_ABI_VERSION: u32 = 14;
 
 /// Blob tag for a single `TermQuery`.
@@ -862,19 +863,22 @@ pub const METRIC_VALUES: usize = 6;
 
 /// Decodes a metrics blob: `count: u8`, then per field `kind: u8`
 /// ([`METRIC_LONG`], [`METRIC_DOUBLE`], [`METRIC_FLOAT`]), `source: u8`
-/// ([`METRIC_DOC_VALUES`], [`METRIC_POINTS_MIN`], [`METRIC_POINTS_MAX`]) and
-/// the field (`len: i32`, UTF-8); then the concurrent-search slices
+/// ([`METRIC_DOC_VALUES`], [`METRIC_POINTS_MIN`], [`METRIC_POINTS_MAX`]),
+/// `needs: u8` (the parts read back, [`lucene_search::aggs::NEED_ALL`]'s
+/// bits, at least one) and the field (`len: i32`, UTF-8); then `count: u8`
+/// `terms` aggregations, each its field (`len: i32`, UTF-8) and
+/// `shard_size: i32` (at least 1) -- at least one aggregation in all; then the concurrent-search slices
 /// ([`decode_slices`]). Little-endian, and trailing bytes are an error.
-pub(crate) fn decode_metrics(blob: &[u8]) -> Result<(Vec<MetricSpec>, Vec<Vec<usize>>), FfiStatus> {
+pub(crate) fn decode_metrics(blob: &[u8]) -> Result<DecodedAggs, FfiStatus> {
     let mut c = Cursor { buf: blob, pos: 0 };
     let bad = |msg: String| {
         set_last_error(msg);
         FfiStatus::InvalidArgument
     };
     let n = usize::from(c.u8()?);
-    if n == 0 || n > MAX_METRICS {
+    if n > MAX_METRICS {
         return Err(bad(format!(
-            "metrics blob: {n} fields, want 1..={MAX_METRICS}"
+            "metrics blob: {n} fields, want at most {MAX_METRICS}"
         )));
     }
     let mut specs = Vec::new();
@@ -891,11 +895,39 @@ pub(crate) fn decode_metrics(blob: &[u8]) -> Result<(Vec<MetricSpec>, Vec<Vec<us
             METRIC_POINTS_MAX => Source::PointsMax,
             other => return Err(bad(format!("metrics blob: unknown source {other}"))),
         };
+        let needs = c.u8()?;
+        if needs == 0 || needs & !NEED_ALL != 0 {
+            return Err(bad(format!("metrics blob: needs {needs:#x}")));
+        }
         let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
         specs.push(MetricSpec {
             field: field.to_string(),
             kind,
             source,
+            needs,
+        });
+    }
+    let t = usize::from(c.u8()?);
+    if t > MAX_METRICS || n + t == 0 {
+        return Err(bad(format!(
+            "metrics blob: {n} fields and {t} terms, want 1..={MAX_METRICS} of each"
+        )));
+    }
+    let mut terms = Vec::new();
+    for _ in 0..t {
+        let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
+        let shard_size = c.i32()?;
+        let shard_size = usize::try_from(shard_size)
+            .ok()
+            .filter(|&n| n >= 1)
+            .ok_or_else(|| {
+                bad(format!(
+                    "metrics blob: shard_size {shard_size}, want at least 1"
+                ))
+            })?;
+        terms.push(TermsSpec {
+            field: field.to_string(),
+            shard_size,
         });
     }
     // The concurrent-search slices; none means one slice over every segment.
@@ -906,22 +938,30 @@ pub(crate) fn decode_metrics(blob: &[u8]) -> Result<(Vec<MetricSpec>, Vec<Vec<us
             blob.len() - c.pos
         )));
     }
-    Ok((specs, slices))
+    Ok((specs, terms, slices))
 }
 
-/// The numeric metric aggregations of a metrics blob ([`decode_metrics`])
-/// over the live matches of the query blob `query`: per field, its value
-/// count into `out_counts` and [`METRIC_VALUES`] doubles into `out_values`
-/// -- the compensated sum and its delta, the minimum and maximum over every
-/// value, and the minimum of each document's first value and the maximum of
-/// each document's last (see [`lucene_search::aggs`]).
+/// A decoded aggregations blob: the metrics, the `terms`, the slices.
+pub(crate) type DecodedAggs = (Vec<MetricSpec>, Vec<TermsSpec>, Vec<Vec<usize>>);
+
+/// The aggregations of an aggregations blob ([`decode_metrics`]) over the
+/// live matches of the query blob `query`, in one pass: per metric field,
+/// its value count into `out_counts` and [`METRIC_VALUES`] doubles into
+/// `out_values` -- the compensated sum and its delta, the minimum and maximum
+/// over every value, and the minimum of each document's first value and the
+/// maximum of each document's last (see [`lucene_search::aggs`]); and the
+/// `terms` results, encoded ([`encode_terms_results`]; slice by slice, each
+/// slice's aggregations in blob order), into `out_terms`, their length into
+/// `out_terms_len` either way (a too-small `out_terms` is
+/// [`FfiStatus::BufferTooSmall`], so a caller can size a second call).
 ///
 /// # Safety
 /// `query`/`aggs` must be valid for `query_len`/`aggs_len` bytes;
 /// `out_counts` for `n` elements and `out_values` for `n *`
 /// [`METRIC_VALUES`], `n` being at least the blob's field count times its
 /// slice count (or times one without slices): the states come slice by
-/// slice, each slice's fields in blob order.
+/// slice, each slice's fields in blob order; `out_terms` for `terms_cap`
+/// bytes (null when 0), `out_terms_len` writable.
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn ffi_jvm_reader_aggregate(
@@ -933,18 +973,31 @@ pub unsafe extern "C" fn ffi_jvm_reader_aggregate(
     out_counts: *mut i64,
     out_values: *mut f64,
     n: usize,
+    out_terms: *mut u8,
+    terms_cap: usize,
+    out_terms_len: *mut usize,
 ) -> i32 {
     guard(|| {
-        if out_counts.is_null() || out_values.is_null() {
+        if out_counts.is_null()
+            || out_values.is_null()
+            || out_terms_len.is_null()
+            || (out_terms.is_null() && terms_cap > 0)
+        {
             return Err(FfiStatus::NullPointer);
         }
         // SAFETY: caller contract.
         let blob = unsafe { bytes_from_raw(query, query_len)? };
         // SAFETY: caller contract.
         let aggs_blob = unsafe { bytes_from_raw(aggs, aggs_len)? };
-        let states = aggregate_blobs(handle, blob, aggs_blob)?;
-        if n < states.len() {
+        let (states, terms) = aggregate_blobs(handle, blob, aggs_blob)?;
+        // SAFETY: caller contract.
+        unsafe { *out_terms_len = terms.len() };
+        if n < states.len() || terms_cap < terms.len() {
             return Err(FfiStatus::BufferTooSmall);
+        }
+        if !terms.is_empty() {
+            // SAFETY: `out_terms` is valid for `terms_cap >= terms.len()` bytes.
+            unsafe { std::ptr::copy_nonoverlapping(terms.as_ptr(), out_terms, terms.len()) };
         }
         // SAFETY: caller contract; `states.len() <= n`.
         unsafe {
@@ -959,93 +1012,9 @@ pub unsafe extern "C" fn ffi_jvm_reader_aggregate(
     })
 }
 
-/// Decodes a terms blob: the field (`len: i32`, UTF-8), `shard_size: i32`
-/// (at least 1), then the concurrent-search slices ([`decode_slices`]).
-/// Little-endian, and trailing bytes are an error.
-pub(crate) fn decode_terms_spec(
-    blob: &[u8],
-) -> Result<(String, usize, Vec<Vec<usize>>), FfiStatus> {
-    let mut c = Cursor { buf: blob, pos: 0 };
-    let bad = |msg: String| {
-        set_last_error(msg);
-        FfiStatus::InvalidArgument
-    };
-    let field = std::str::from_utf8(c.bytes()?)
-        .map_err(|_| FfiStatus::InvalidUtf8)?
-        .to_string();
-    let shard_size = c.i32()?;
-    let shard_size = usize::try_from(shard_size)
-        .ok()
-        .filter(|&n| n >= 1)
-        .ok_or_else(|| {
-            bad(format!(
-                "terms blob: shard_size {shard_size}, want at least 1"
-            ))
-        })?;
-    let slices = decode_slices(&mut c, &bad)?;
-    if c.pos != blob.len() {
-        return Err(bad(format!(
-            "terms blob: {} trailing bytes",
-            blob.len() - c.pos
-        )));
-    }
-    Ok((field, shard_size, slices))
-}
-
-/// The `terms` aggregation of a terms blob ([`decode_terms_spec`]) over the
-/// live matches of the query blob, encoded: per slice (one when the blob
-/// names none) `other_doc_count: i64`, `buckets: i32`, and per bucket, by term
-/// ascending, `doc_count: i64` and the term (`len: i32`, bytes).
-pub(crate) fn terms_blobs(
-    handle: u64,
-    query_blob: &[u8],
-    spec_blob: &[u8],
-) -> Result<Vec<u8>, FfiStatus> {
-    let query = decode_query(query_blob)?;
-    let (field, shard_size, slices) = decode_terms_spec(spec_blob)?;
-    let h = lookup(
-        handle,
-        "ffi_jvm_reader_terms: unknown or already-closed handle",
-    )?;
-    let mut opened = h.reader.open_segments().map_err(|e| {
-        set_last_error(format!("opening segment postings: {e}"));
-        FfiStatus::Decode
-    })?;
-    if query_uses_points(&query) {
-        opened.open_points().map_err(|e| {
-            set_last_error(format!("opening segment points: {e}"));
-            FfiStatus::Decode
-        })?;
-    }
-    let segments: Vec<OpenSegment<'_>> = opened
-        .as_open_segments()
-        .into_iter()
-        .zip(&h.live_docs)
-        .map(|(mut s, live)| {
-            s.live_docs = live.as_ref();
-            s
-        })
-        .collect();
-    let q = match &query {
-        JvmQuery::Term(t) => BooleanQuery {
-            must: vec![Clause::Term(t.clone())],
-            ..Default::default()
-        },
-        JvmQuery::Boolean(b) => b.clone(),
-    };
-    let readers = h.reader.segment_readers();
-    let slices = if slices.is_empty() {
-        vec![(0..segments.len().min(readers.len())).collect()]
-    } else {
-        slices
-    };
-    let results =
-        lucene_search::terms_agg::terms_sliced(&segments, readers, &q, &field, shard_size, &slices)
-            .map_err(map_search_error)?;
-    encode_terms_results(&results)
-}
-
-/// [`terms_blobs`]' output encoding.
+/// The `terms` results' encoding: per slice `other_doc_count: i64`,
+/// `buckets: i32`, and per bucket, by term ascending, `doc_count: i64` and the
+/// term (`len: i32`, bytes).
 pub(crate) fn encode_terms_results(
     results: &[lucene_search::terms_agg::TermsResult],
 ) -> Result<Vec<u8>, FfiStatus> {
@@ -1078,47 +1047,6 @@ pub(crate) fn encode_terms_results(
     Ok(out)
 }
 
-/// The `terms` aggregation ([`terms_blobs`]) into `out` (`cap` bytes); the
-/// encoded length goes to `out_len` either way, and a too-small `out` is
-/// [`FfiStatus::BufferTooSmall`], so a caller can size a second call.
-///
-/// # Safety
-/// `query`/`spec` must be valid for `query_len`/`spec_len` bytes, `out` for
-/// `cap` writable bytes (null when `cap` is 0), `out_len` writable.
-#[no_mangle]
-#[allow(clippy::too_many_arguments)]
-pub unsafe extern "C" fn ffi_jvm_reader_terms(
-    handle: u64,
-    query: *const u8,
-    query_len: usize,
-    spec: *const u8,
-    spec_len: usize,
-    out: *mut u8,
-    cap: usize,
-    out_len: *mut usize,
-) -> i32 {
-    guard(|| {
-        if out_len.is_null() || (out.is_null() && cap > 0) {
-            return Err(FfiStatus::NullPointer);
-        }
-        // SAFETY: caller contract.
-        let blob = unsafe { bytes_from_raw(query, query_len)? };
-        // SAFETY: caller contract.
-        let spec_blob = unsafe { bytes_from_raw(spec, spec_len)? };
-        let encoded = terms_blobs(handle, blob, spec_blob)?;
-        // SAFETY: caller contract.
-        unsafe { *out_len = encoded.len() };
-        if encoded.len() > cap {
-            return Err(FfiStatus::BufferTooSmall);
-        }
-        if !encoded.is_empty() {
-            // SAFETY: `out` is valid for `cap >= encoded.len()` bytes.
-            unsafe { std::ptr::copy_nonoverlapping(encoded.as_ptr(), out, encoded.len()) };
-        }
-        Ok(())
-    })
-}
-
 /// A field's doubles, in [`ffi_jvm_reader_aggregate`]'s order.
 pub(crate) fn metric_values(s: &MetricState) -> [f64; METRIC_VALUES] {
     [s.sum, s.delta, s.min, s.max, s.min_of_mins, s.max_of_maxes]
@@ -1129,9 +1057,9 @@ pub(crate) fn aggregate_blobs(
     handle: u64,
     query_blob: &[u8],
     aggs_blob: &[u8],
-) -> Result<Vec<MetricState>, FfiStatus> {
+) -> Result<(Vec<MetricState>, Vec<u8>), FfiStatus> {
     let query = decode_query(query_blob)?;
-    let (specs, slices) = decode_metrics(aggs_blob)?;
+    let (specs, terms, slices) = decode_metrics(aggs_blob)?;
     let h = lookup(
         handle,
         "ffi_jvm_reader_aggregate: unknown or already-closed handle",
@@ -1168,9 +1096,16 @@ pub(crate) fn aggregate_blobs(
     } else {
         slices
     };
-    let sliced = lucene_search::aggs::metric_states_sliced(&segments, readers, &q, &specs, &slices)
-        .map_err(map_search_error)?;
-    Ok(sliced.into_iter().flatten().collect())
+    let sliced =
+        lucene_search::aggs::aggregate_sliced(&segments, readers, &q, &specs, &terms, &slices)
+            .map_err(map_search_error)?;
+    let mut states = Vec::new();
+    let mut results = Vec::new();
+    for (m, t) in sliced {
+        states.extend(m);
+        results.extend(t);
+    }
+    Ok((states, encode_terms_results(&results)?))
 }
 
 /// The keyword keys' terms of `hits`, as [`ffi_jvm_reader_search_sorted`]
@@ -2350,42 +2285,40 @@ mod tests {
         ffi_close_jvm_reader(h);
     }
 
-    fn terms_spec(field: &str, shard_size: i32, slices: &[&[i32]]) -> Vec<u8> {
-        let mut b = Vec::new();
-        b.extend_from_slice(&(field.len() as i32).to_le_bytes());
-        b.extend_from_slice(field.as_bytes());
-        b.extend_from_slice(&shard_size.to_le_bytes());
-        b.extend_from_slice(&(slices.len() as i32).to_le_bytes());
-        for slice in slices {
-            b.extend_from_slice(&(slice.len() as i32).to_le_bytes());
-            for &seg in *slice {
-                b.extend_from_slice(&seg.to_le_bytes());
-            }
-        }
-        b
+    /// An aggregations blob of `terms` alone.
+    fn terms_blob(terms: &[(&str, i32)], slices: &[&[i32]]) -> Vec<u8> {
+        aggs_blob(&[], terms, slices)
     }
 
     #[test]
-    fn terms_blobs_decode_run_and_encode() {
+    fn terms_run_in_the_aggregate_call() {
         let invalid = Err(FfiStatus::InvalidArgument);
         assert_eq!(
-            decode_terms_spec(&terms_spec("f", 0, &[])).map(|_| ()),
+            decode_metrics(&terms_blob(&[("f", 0)], &[])).map(|_| ()),
             invalid,
             "shard_size 0"
         );
-        let mut trailing = terms_spec("f", 3, &[]);
-        trailing.push(0);
-        assert_eq!(decode_terms_spec(&trailing).map(|_| ()), invalid);
-        let mut utf8 = terms_spec("f", 3, &[]);
-        utf8[4] = 0xff;
         assert_eq!(
-            decode_terms_spec(&utf8).map(|_| ()),
+            decode_metrics(&terms_blob(&[], &[])).map(|_| ()),
+            invalid,
+            "no aggregation at all"
+        );
+        let mut utf8 = terms_blob(&[("f", 3)], &[]);
+        utf8[6] = 0xff;
+        assert_eq!(
+            decode_metrics(&utf8).map(|_| ()),
             Err(FfiStatus::InvalidUtf8)
         );
+        let (specs, terms, slices) = decode_metrics(&terms_blob(&[("f", 3)], &[&[1, 0]])).unwrap();
+        assert!(specs.is_empty());
         assert_eq!(
-            decode_terms_spec(&terms_spec("f", 3, &[&[1, 0]])),
-            Ok(("f".to_string(), 3, vec![vec![1, 0]]))
+            terms,
+            vec![TermsSpec {
+                field: "f".to_string(),
+                shard_size: 3
+            }]
         );
+        assert_eq!(slices, vec![vec![1, 0]]);
         let enc = encode_terms_results(&[lucene_search::terms_agg::TermsResult {
             buckets: vec![(b"ab".to_vec(), 2)],
             other_doc_count: 5,
@@ -2398,24 +2331,29 @@ mod tests {
         want.extend_from_slice(b"ab");
         assert_eq!(enc, want);
 
-        // A field without keyword doc values: nothing counted, one slice.
+        // A field without keyword doc values: nothing counted, one slice;
+        // with a metric beside it, both come back.
         let h = open();
         let q = term_blob("body", "fox");
-        let spec = terms_spec("nosuch", 10, &[]);
+        let aggs = aggs_blob(&[(METRIC_LONG, 0, "nosuch")], &[("nosuch", 10)], &[]);
+        let (mut counts, mut values) = ([7i64; 1], [7f64; METRIC_VALUES]);
         let mut len = 0usize;
-        let call = |out: *mut u8, cap: usize, len: &mut usize| unsafe {
-            ffi_jvm_reader_terms(
+        let mut buf = [1u8; 12];
+        let mut call = |out: *mut u8, cap: usize, len: &mut usize| unsafe {
+            ffi_jvm_reader_aggregate(
                 h,
                 q.as_ptr(),
                 q.len(),
-                spec.as_ptr(),
-                spec.len(),
+                aggs.as_ptr(),
+                aggs.len(),
+                counts.as_mut_ptr(),
+                values.as_mut_ptr(),
+                1,
                 out,
                 cap,
                 len,
             )
         };
-        let mut buf = [0u8; 12];
         assert_eq!(call(buf.as_mut_ptr(), buf.len(), &mut len), 0);
         assert_eq!(len, 12);
         assert_eq!(buf, [0u8; 12]);
@@ -2425,29 +2363,10 @@ mod tests {
         );
         assert_eq!(len, 12);
         assert_eq!(
-            unsafe {
-                ffi_jvm_reader_terms(
-                    h,
-                    q.as_ptr(),
-                    q.len(),
-                    spec.as_ptr(),
-                    spec.len(),
-                    std::ptr::null_mut(),
-                    4,
-                    &mut len,
-                )
-            },
+            call(std::ptr::null_mut(), 4, &mut len),
             FfiStatus::NullPointer.code()
         );
-        // A slice naming a segment the reader lacks is a search error.
-        assert_eq!(
-            terms_blobs(h, &q, &terms_spec("nosuch", 10, &[&[99]])),
-            Err(FfiStatus::Search)
-        );
-        assert_eq!(
-            terms_blobs(closed_handle(), &q, &spec),
-            Err(FfiStatus::InvalidHandle)
-        );
+        assert_eq!(counts[0], 0);
         ffi_close_jvm_reader(h);
     }
 
@@ -2460,12 +2379,24 @@ mod tests {
     }
 
     fn metrics_blob_sliced(fields: &[(u8, u8, &str)], slices: &[&[i32]]) -> Vec<u8> {
+        aggs_blob(fields, &[], slices)
+    }
+
+    /// An aggregations blob: metrics, `terms` (field, shard size), slices.
+    fn aggs_blob(fields: &[(u8, u8, &str)], terms: &[(&str, i32)], slices: &[&[i32]]) -> Vec<u8> {
         let mut b = vec![fields.len() as u8];
         for &(kind, source, f) in fields {
             b.push(kind);
             b.push(source);
+            b.push(NEED_ALL);
             b.extend_from_slice(&(f.len() as i32).to_le_bytes());
             b.extend_from_slice(f.as_bytes());
+        }
+        b.push(terms.len() as u8);
+        for &(f, shard_size) in terms {
+            b.extend_from_slice(&(f.len() as i32).to_le_bytes());
+            b.extend_from_slice(f.as_bytes());
+            b.extend_from_slice(&shard_size.to_le_bytes());
         }
         b.extend_from_slice(&(slices.len() as i32).to_le_bytes());
         for slice in slices {
@@ -2479,7 +2410,7 @@ mod tests {
 
     #[test]
     fn metrics_blobs_decode_and_aggregate() {
-        let (specs, slices) = decode_metrics(&metrics_blob(&[
+        let (specs, _, slices) = decode_metrics(&metrics_blob(&[
             (METRIC_LONG, "a"),
             (METRIC_DOUBLE, "b"),
             (METRIC_FLOAT, "c"),
@@ -2520,7 +2451,7 @@ mod tests {
         assert_eq!(sources[0].source, Source::PointsMin);
         assert_eq!(sources[1].source, Source::PointsMax);
         let sliced = |slices: &[&[i32]]| {
-            decode_metrics(&metrics_blob_sliced(&[(METRIC_LONG, 0, "a")], slices)).map(|d| d.1)
+            decode_metrics(&metrics_blob_sliced(&[(METRIC_LONG, 0, "a")], slices)).map(|d| d.2)
         };
         assert_eq!(sliced(&[&[2, 0], &[1]]), Ok(vec![vec![2, 0], vec![1]]));
         assert_eq!(sliced(&[&[-1]]).map(|_| ()), invalid, "negative segment");
@@ -2570,7 +2501,20 @@ mod tests {
             invalid,
             "too many sliced segments"
         );
-        let mut utf8 = vec![1, METRIC_LONG, METRIC_DOC_VALUES];
+        let mut no_needs = metrics_blob(&[(METRIC_LONG, "a")]);
+        no_needs[3] = 0;
+        assert_eq!(
+            decode_metrics(&no_needs).map(|_| ()),
+            invalid,
+            "no parts asked for"
+        );
+        no_needs[3] = 0x40;
+        assert_eq!(
+            decode_metrics(&no_needs).map(|_| ()),
+            invalid,
+            "unknown part"
+        );
+        let mut utf8 = vec![1, METRIC_LONG, METRIC_DOC_VALUES, NEED_ALL];
         utf8.extend_from_slice(&1i32.to_le_bytes());
         utf8.push(0xff);
         assert_eq!(
@@ -2583,7 +2527,8 @@ mod tests {
         let q = term_blob("body", "fox");
         let aggs = metrics_blob(&[(METRIC_LONG, "nosuch")]);
         let (mut counts, mut values) = ([7i64; 1], [7f64; METRIC_VALUES]);
-        let call = |handle: u64, counts: *mut i64, values: *mut f64, n: usize| unsafe {
+        let mut terms_len = 0usize;
+        let mut call = |handle: u64, counts: *mut i64, values: *mut f64, n: usize| unsafe {
             ffi_jvm_reader_aggregate(
                 handle,
                 q.as_ptr(),
@@ -2593,6 +2538,9 @@ mod tests {
                 counts,
                 values,
                 n,
+                std::ptr::null_mut(),
+                0,
+                &mut terms_len,
             )
         };
         assert_eq!(call(h, counts.as_mut_ptr(), values.as_mut_ptr(), 1), 0);
@@ -2625,7 +2573,7 @@ mod tests {
             &metrics_blob_sliced(&[(METRIC_LONG, 0, "n")], &[&[0], &[0]]),
         )
         .unwrap();
-        assert_eq!(two, [one[0], one[0]]);
+        assert_eq!(two.0, [one.0[0], one.0[0]]);
         assert_eq!(
             aggregate_blobs(
                 h,

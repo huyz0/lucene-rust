@@ -78,7 +78,8 @@ public final class NativeAggregations {
         byte valueKind,
         DocValueFormat format,
         Map<String, Object> metadata,
-        byte source
+        byte source,
+        int needs
     ) {}
 
     /**
@@ -95,15 +96,12 @@ public final class NativeAggregations {
         TermsAggregator.BucketCountThresholds thresholds,
         boolean showTermDocCountError
     ) {
-        /** The terms blob ({@code decode_terms_spec} in Rust). */
-        byte[] blob(int[][] slices) {
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
+        /** Its entry in the aggregations blob: the field and the effective {@code shard_size}. */
+        void write(ByteArrayOutputStream out) {
             byte[] f = field.getBytes(StandardCharsets.UTF_8);
             writeInt(out, f.length);
             out.writeBytes(f);
             writeInt(out, thresholds.getShardSize());
-            writeSlices(out, slices);
-            return out.toByteArray();
         }
 
         /**
@@ -152,7 +150,10 @@ public final class NativeAggregations {
             return entries.stream().filter(e -> e instanceof Terms).map(e -> (Terms) e).toList();
         }
 
-        /** The metrics blob; {@code slices} as {@link NativeAggregations#slices} returns them. */
+        /**
+         * The aggregations blob ({@code decode_metrics} in Rust): the metrics, the {@code terms},
+         * then {@code slices} as {@link NativeAggregations#slices} returns them.
+         */
         byte[] blob(int[][] slices) {
             List<Metric> metrics = metrics();
             ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -160,9 +161,15 @@ public final class NativeAggregations {
             for (Metric m : metrics) {
                 out.write(m.valueKind());
                 out.write(m.source());
+                out.write(m.needs());
                 byte[] f = m.field().getBytes(StandardCharsets.UTF_8);
                 writeInt(out, f.length);
                 out.writeBytes(f);
+            }
+            List<Terms> terms = terms();
+            out.write(terms.size());
+            for (Terms t : terms) {
+                t.write(out);
             }
             writeSlices(out, slices);
             return out.toByteArray();
@@ -172,28 +179,27 @@ public final class NativeAggregations {
          * The shard results from the native output: one set per slice (a single one when {@code
          * slices} is empty), and with slices reduced as {@code NonGlobalAggCollectorManager}
          * reduces its collectors' -- each slice's sum without its delta, each slice's terms
-         * through {@code InternalTerms.reduce}. {@code terms} holds each terms entry's encoded
-         * result, in entry order.
+         * through {@code InternalTerms.reduce}. {@code terms} holds the terms results, slice by
+         * slice, each slice's in entry order.
          */
         InternalAggregations build(
             int[][] slices,
             long[] counts,
             double[] values,
-            List<byte[]> terms,
+            byte[] terms,
             InternalAggregation.ReduceContext onShard
         ) {
             int sliceCount = Math.max(1, slices.length);
-            List<ByteBuffer> termsIn = terms.stream().map(b -> ByteBuffer.wrap(b).order(ByteOrder.LITTLE_ENDIAN)).toList();
+            ByteBuffer termsIn = ByteBuffer.wrap(terms).order(ByteOrder.LITTLE_ENDIAN);
             int metricCount = metrics().size();
             List<InternalAggregation> all = new ArrayList<>(entries.size() * sliceCount);
             for (int s = 0; s < sliceCount; s++) {
                 int metric = 0;
-                int term = 0;
                 for (Object e : entries) {
                     if (e instanceof Metric m) {
                         all.add(metric(m, counts, values, s * metricCount + metric++));
                     } else {
-                        all.add(((Terms) e).read(termsIn.get(term++)));
+                        all.add(((Terms) e).read(termsIn));
                     }
                 }
             }
@@ -201,6 +207,21 @@ public final class NativeAggregations {
                 return InternalAggregations.from(all);
             }
             return InternalAggregations.reduce(List.of(InternalAggregations.from(all)), onShard);
+        }
+
+        /**
+         * The parts of the native state {@link #metric} reads for {@code kind} ({@code NEED_*} in
+         * {@code aggs.rs}): the fold computes only these.
+         */
+        static int needs(Kind kind) {
+            return switch (kind) {
+                case MIN -> 8;
+                case MAX -> 16;
+                case SUM -> 2;
+                case AVG -> 1 | 2;
+                case VALUE_COUNT -> 1;
+                case STATS -> 1 | 2 | 4;
+            };
         }
 
         /** A metric's result from the native counts and values of state {@code i}. */
@@ -344,7 +365,8 @@ public final class NativeAggregations {
                         valueKind,
                         config.format(),
                         (Map<String, Object>) METADATA.get(f),
-                        source
+                        source,
+                        Plan.needs(kind)
                     )
                 );
             }

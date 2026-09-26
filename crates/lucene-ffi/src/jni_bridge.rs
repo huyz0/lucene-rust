@@ -340,8 +340,9 @@ pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_searchSorted<
 }
 
 /// `NativeBridge.aggregate`: [`jvm_reader::ffi_jvm_reader_aggregate`] into
-/// Java arrays -- per field its value count in `outCounts` and
-/// [`jvm_reader::METRIC_VALUES`] doubles in `outValues`.
+/// Java arrays -- per metric field its value count in `outCounts` and
+/// [`jvm_reader::METRIC_VALUES`] doubles in `outValues`, and the `terms`
+/// results encoded in a new `byte[]` at `outTerms[0]`.
 #[no_mangle]
 pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_aggregate<'l>(
     env: JNIEnv<'l>,
@@ -351,6 +352,7 @@ pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_aggregate<'l>
     aggs: JByteArray<'l>,
     out_counts: JLongArray<'l>,
     out_values: JDoubleArray<'l>,
+    out_terms: JObjectArray<'l>,
 ) -> jint {
     run(|| {
         let blob = env
@@ -359,7 +361,7 @@ pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_aggregate<'l>
         let aggs_blob = env
             .convert_byte_array(&aggs)
             .map_err(|e| jni_err(&env, "aggs", e))?;
-        let states = jvm_reader::aggregate_blobs(handle as u64, &blob, &aggs_blob)?;
+        let (states, terms) = jvm_reader::aggregate_blobs(handle as u64, &blob, &aggs_blob)?;
         let counts_len = env
             .get_array_length(&out_counts)
             .map_err(|e| jni_err(&env, "outCounts", e))?;
@@ -385,34 +387,11 @@ pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_aggregate<'l>
             .map_err(|e| jni_err(&env, "outCounts", e))?;
         env.set_double_array_region(&out_values, 0, &values)
             .map_err(|e| jni_err(&env, "outValues", e))?;
-        Ok(FfiStatus::Ok.code())
-    })
-}
-
-/// `NativeBridge.terms`: [`jvm_reader::terms_blobs`], its encoded result
-/// stored in a new `byte[]` at `out[0]`.
-#[no_mangle]
-pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_terms<'l>(
-    env: JNIEnv<'l>,
-    _class: JClass<'l>,
-    handle: jlong,
-    query: JByteArray<'l>,
-    spec: JByteArray<'l>,
-    out: JObjectArray<'l>,
-) -> jint {
-    run(|| {
-        let blob = env
-            .convert_byte_array(&query)
-            .map_err(|e| jni_err(&env, "query", e))?;
-        let spec_blob = env
-            .convert_byte_array(&spec)
-            .map_err(|e| jni_err(&env, "spec", e))?;
-        let encoded = jvm_reader::terms_blobs(handle as u64, &blob, &spec_blob)?;
         let arr = env
-            .byte_array_from_slice(&encoded)
-            .map_err(|e| jni_err(&env, "out", e))?;
-        env.set_object_array_element(&out, 0, &arr)
-            .map_err(|e| jni_err(&env, "out", e))?;
+            .byte_array_from_slice(&terms)
+            .map_err(|e| jni_err(&env, "outTerms", e))?;
+        env.set_object_array_element(&out_terms, 0, &arr)
+            .map_err(|e| jni_err(&env, "outTerms", e))?;
         Ok(FfiStatus::Ok.code())
     })
 }
