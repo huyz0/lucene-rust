@@ -17,8 +17,6 @@
 //! its last collected match -- with collection statistics still taken from
 //! every segment, as Lucene's are.
 
-use lucene_util::fixed_bit_set::FixedBitSet;
-
 use crate::directory_reader::SegmentReader;
 use crate::exec::{self, Mode, NO_MORE_DOCS};
 use crate::field_norms::FieldNorms;
@@ -200,35 +198,6 @@ fn leaf_count(seg: &OpenSegment<'_>, query: &BooleanQuery) -> Result<LeafCount> 
     }
 }
 
-/// `seg`'s live documents up to and including `last`, as a bit set of the
-/// segment's size: its live-docs words copied (or all set) and every bit past
-/// `last` cleared -- a word at a time, not a document at a time.
-fn prefix_live(seg: &OpenSegment<'_>, last: i32) -> FixedBitSet {
-    let n = usize::try_from(seg.max_doc.unwrap_or(last.saturating_add(1))).unwrap_or(0);
-    let words_len = lucene_util::fixed_bit_set::bits2words(n);
-    let mut words = match seg.live_docs {
-        Some(live) => {
-            let mut w = live.words().to_vec();
-            w.resize(words_len, 0);
-            w
-        }
-        None => vec![u64::MAX; words_len],
-    };
-    // Bits [0, keep) stay; keep <= n, so no bit past n survives either.
-    let keep = usize::try_from(last)
-        .map_or(0, |l| l.saturating_add(1))
-        .min(n);
-    let (full, rest) = (keep / 64, keep % 64);
-    if let Some(w) = words.get_mut(full) {
-        // ARITH: rest < 64.
-        *w &= if rest == 0 { 0 } else { (1u64 << rest) - 1 };
-    }
-    for w in words.iter_mut().skip(full.saturating_add(1)) {
-        *w = 0;
-    }
-    FixedBitSet::from_words(words, n)
-}
-
 /// [`crate::top_field::search_sorted_tracking`] behind `terminate_after(n)`: the top
 /// `top_n` of the first `n` matches, as OpenSearch's collector chain keeps
 /// them, and the [`Cut`] (its `collected` is the total: the top-docs
@@ -249,31 +218,12 @@ pub fn search_sorted_until(
     n: u64,
 ) -> Result<(TopFieldDocs, Cut)> {
     let cut = terminate_after(segments, query, n)?;
-    // The cut segment's documents up to its last collected match, live.
-    let masked = cut
-        .last
-        .map(|(i, last)| (i, prefix_live(&segments[i], last)));
-    let view: Vec<OpenSegment<'_>> = segments
-        .iter()
-        .enumerate()
-        .map(|(i, s)| OpenSegment {
-            fields: s.fields,
-            doc_in: s.doc_in,
-            pos_in: s.pos_in,
-            pay_in: s.pay_in,
-            live_docs: match &masked {
-                Some((m, bits)) if *m == i => Some(bits),
-                _ => s.live_docs,
-            },
-            doc_base: s.doc_base,
-            max_doc: s.max_doc,
-            cache: s.cache,
-            points: s.points,
-        })
-        .collect();
+    // The segments before the cut whole, the cut segment up to and including
+    // its last collected match.
     let searched: Vec<usize> = (0..cut.leaves).collect();
+    let until = cut.last.map(|(i, last)| (i, last.saturating_add(1)));
     let top = crate::top_field::search_sorted_leaves(
-        &view,
+        segments,
         readers,
         query,
         norms,
@@ -284,6 +234,7 @@ pub fn search_sorted_until(
         after,
         track_max_score,
         Some(&searched),
+        until,
     )?;
     Ok((top, cut))
 }

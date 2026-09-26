@@ -1228,3 +1228,59 @@ fn modes_follow_the_collector_and_scorer_defaults_are_conservative() {
     assert_eq!(super::exact_advance(&mut all, 2).unwrap(), 2);
     assert_eq!(all.doc_id_run_end(), 4, "match-all runs to maxDoc");
 }
+
+#[test]
+fn below_stops_a_scorer_at_its_end() {
+    let docs = [2, 5, 9, 14, 20];
+    let leaf = || {
+        Leaf::new(
+            docs.iter().map(|&d| (d, 1.0)).collect(),
+            docs.to_vec(),
+            false,
+        )
+    };
+    let collect = |mut s: super::Below<'_>| {
+        let mut out = Vec::new();
+        let mut d = s.next_doc().unwrap();
+        while d != NO_MORE_DOCS {
+            assert_eq!(s.score().unwrap(), 1.0);
+            out.push(d);
+            d = s.next_doc().unwrap();
+        }
+        assert_eq!(s.doc_id(), NO_MORE_DOCS);
+        // Once past the end it stays there.
+        assert_eq!(s.next_doc().unwrap(), NO_MORE_DOCS);
+        out
+    };
+    // Documents below 14 only: 14 itself is past the end.
+    assert_eq!(
+        collect(super::Below::new(Box::new(Fake::new(leaf())), 14)),
+        [2, 5, 9]
+    );
+    assert_eq!(
+        collect(super::Below::new(Box::new(Fake::new(leaf())), 15)),
+        [2, 5, 9, 14]
+    );
+    assert!(collect(super::Below::new(Box::new(Fake::new(leaf())), 0)).is_empty());
+    // advance: to a match below the end, then to a target past it.
+    let mut s = super::Below::new(Box::new(Fake::new(leaf())), 14);
+    assert_eq!(s.advance(6).unwrap(), 9);
+    assert_eq!(s.doc_id(), 9);
+    assert_eq!(s.advance(14).unwrap(), NO_MORE_DOCS);
+    // advance landing past the end.
+    let mut s = super::Below::new(Box::new(Fake::new(leaf())), 12);
+    assert_eq!(s.advance(10).unwrap(), NO_MORE_DOCS);
+    assert_eq!(s.advance(11).unwrap(), NO_MORE_DOCS);
+    // The rest delegates.
+    let mut s = super::Below::new(Box::new(Fake::new(leaf())), 12);
+    assert_eq!(s.cost(), 5);
+    assert!(!s.two_phase());
+    assert_eq!(s.match_cost(), 0.0);
+    assert!(s.doc_id_run_end() <= 12);
+    assert_eq!(s.contains(13), None);
+    assert_eq!(s.next_doc().unwrap(), 2);
+    assert!(s.matches().unwrap());
+    assert!(s.advance_shallow(0).unwrap() >= 0);
+    assert!(s.max_score(11).unwrap() >= 1.0);
+    s.set_min_competitive_score(0.5).unwrap();
+}
