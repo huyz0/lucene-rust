@@ -468,18 +468,18 @@ public final class NativeSelfTest {
     }
 
     /**
-     * {@code NativeBridge.terms} against the shard's {@code terms} steps on Lucene: every live match
+     * {@code NativeBridge.aggregate}'s {@code terms} results against the shard's {@code terms} steps on Lucene: every live match
      * counted once per distinct term, the top {@code shard_size} by count desc then term, the rest
      * summed, the kept by term.
      */
     private static void compareTerms(String what, IndexSearcher searcher, long handle, Query query, byte[] blob) throws Exception {
-        for (String field : new String[] { "kt", "kw", "kx" }) {
+        fields: for (String field : new String[] { "kt", "kw", "kx" }) {
             for (org.apache.lucene.index.LeafReaderContext leaf : searcher.getIndexReader().leaves()) {
                 org.apache.lucene.index.FieldInfo info = leaf.reader().getFieldInfos().fieldInfo(field);
                 if (info != null
                     && info.getDocValuesType() != org.apache.lucene.index.DocValuesType.SORTED_SET
                     && info.getDocValuesType() != org.apache.lucene.index.DocValuesType.SORTED) {
-                    return;
+                    continue fields;
                 }
             }
             java.util.TreeMap<BytesRef, Long> counts = new java.util.TreeMap<>();

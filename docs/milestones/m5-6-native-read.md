@@ -11,7 +11,7 @@ mixed booleans) 4–8× *slower*, because the port had fast paths for three
 shapes and a materializing path for everything else. M5 moved indexing. This
 milestone finishes the read side.
 
-**Status.** In progress. R1 and R2 delivered; R3 mostly, R4 (numeric, score, `_doc` and keyword keys) and R5 (the metric aggregations) partly delivered (below). R6 and R7 open.
+**Status.** In progress. R1 and R2 delivered; R3 mostly, R4 (numeric, score, `_doc` and keyword keys) and R5 (the metrics and keyword `terms`) partly delivered (below). R6 and R7 open.
 
 ## Tasks
 
@@ -21,7 +21,7 @@ milestone finishes the read side.
 | R2 | General query wire format and Java encoder for every Lucene query OpenSearch builds | ✅ delivered for the shapes R1 runs (term, boolean, constant score, boost, dismax, match-all, match-none); leaf queries arrive with R3 |
 | R3 | Leaf queries as streaming scorers: phrase, the multi-term family, points and doc-values ranges, exists, terms-in-set, dismax, synonym | mostly delivered: phrase, prefix/wildcard/terms, points ranges, dismax, and a native query cache (R3b); open: `exists` (with R4's doc-values wiring), `regexp` over the wire, fuzzy speed (q25) |
 | R4 | Sort and `search_after` natively (`TopFieldCollector`) | numeric, score, `_doc` and keyword keys and `track_scores` delivered (below); open: `avg`/`sum`/`median` modes, nested sorts, index-sorted shards |
-| R5 | Aggregations natively: terms, histogram, date_histogram, range, the metrics, cardinality, filter/filters | metrics delivered (`min`, `max`, `sum`, `avg`, `value_count`, `stats`; below); open: the bucket aggregations, `cardinality`, sub-aggregations |
+| R5 | Aggregations natively: terms, histogram, date_histogram, range, the metrics, cardinality, filter/filters | metrics (`min`, `max`, `sum`, `avg`, `value_count`, `stats`) and keyword `terms` delivered (below); open: the bucket aggregations, `cardinality`, sub-aggregations |
 | R6 | Fetch (`_source`, stored fields, `docvalue_fields`) and get natively | open |
 | R7 | scroll, `post_filter`, `min_score`, `terminate_after`, timeouts; the full read benchmark (in process and REST) with every native shape at least 1.0× Lucene | open |
 
@@ -341,15 +341,16 @@ Falls back, deliberately for now:
   prefix of the search sort (`canEarlyTerminate`), which changes the totals;
   not ported yet.
 
-## R5 — aggregations (metrics delivered)
+## R5 — aggregations (metrics and keyword `terms` delivered)
 
 `min`, `max`, `sum`, `avg`, `value_count` and `stats` at the top level of a
 request run natively when every aggregation of the request is one of them, on a
 mapped `long`/`integer`/`short`/`byte`/`double`/`float` field or a millisecond
 `date`, with no `missing`, script or sub-aggregation (ABI 14,
-`ffi_jvm_reader_aggregate`). The rest -- `terms`, the histograms, `range`,
-`cardinality`, `filter(s)`, `global`, anything nested -- stays on OpenSearch's
-aggregators, as does a request mixing the two.
+`ffi_jvm_reader_aggregate`), and `terms` on a keyword field (below). The
+rest -- the histograms, `range`, `cardinality`, `filter(s)`, `global`, `terms`
+outside its supported shape, anything nested -- stays on OpenSearch's
+aggregators, as does a request mixing it with native ones.
 
 How it hooks in. `QueryPhase` asks the `QueryPhaseSearcher` for its
 `AggregationProcessor`; the plugin keeps OpenSearch's, whose `preProcess`
@@ -401,8 +402,11 @@ first, the points ignored, the give-up removed, and deletions ignored by the
 minimum's walk (the maximum's cell pruning is a speed property only: without
 it the last live point is still the maximum, so no result can show it). The
 self test compares 1,862 query x field states through JNI; the REST matrix runs
-ten aggregation rows natively against a stock node, and four that must
-fall back (`missing`, `global`, `terms`, and a sort by `@timestamp` ascending,
+its aggregation rows natively against a stock node (the metrics, and `terms`
+alone, beside metrics and hits, under a sort, multi-valued, with `shard_size`
+and `min_doc_count`) and the ones that must fall back (`missing`, `global`,
+`terms` by `_key`, with `min_doc_count` 0, with `include`, on a numeric field,
+and a sort by `@timestamp` ascending,
 whose segments OpenSearch visits last first -- the time-series optimisation,
 which the native pass does not port, so such searches stay on OpenSearch's); and `search_sorted_sliced` agrees with Lucene over every untracked run of
 both sort fixtures (seen to fail without the doc tie-break, with keyword
@@ -473,6 +477,11 @@ segments, and 60,000 with deletions):
 | `terms` under a sort | 1.21x | 1.03x |
 | `terms` on a multi-valued field | 1.11x | 1.15x |
 | `terms` with `shard_size`, a disjunction | 0.95x | 1.13x |
+
+(The `shard_size` row's shard search takes about 1.8 ms on both engines on the
+clean index -- `took` 1.78 against 1.82 -- and the rest is the same ~0.1 ms of
+native per-request cost as below; it measured 0.98x in the run before.)
+
 | `terms`/`min`/`max` whose shard search takes < 0.3 ms (match-all `terms`, no-query points, nothing matching, `min_doc_count` 3) | 0.94-0.99x | 0.97-1.13x |
 
 The last rows are requests of about 2 ms end to end whose shard search takes a

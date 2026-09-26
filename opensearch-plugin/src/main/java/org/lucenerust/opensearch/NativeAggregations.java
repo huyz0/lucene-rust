@@ -315,6 +315,10 @@ public final class NativeAggregations {
         if (ctx.getQueryShardContext() != null && ctx.getQueryShardContext().getStarTreeQueryContext() != null) {
             return null;
         }
+        // Stream search builds per-segment results (StreamStringTermsAggregator and kin).
+        if (ctx.isStreamSearch()) {
+            return null;
+        }
         AggregatorFactories factories = ctx.aggregations().factories();
         if (factories.hasGlobalAggregator()) {
             return null;

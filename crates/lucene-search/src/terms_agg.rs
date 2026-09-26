@@ -21,11 +21,13 @@
 //! slices with `InternalTerms.reduce`, which is the caller's (OpenSearch's
 //! own reduce, in the plugin).
 //!
-//! Counting by term bytes rather than by global ordinal gives the same counts
-//! (a global ordinal is a term); the order of the terms is the ordinals'.
+//! Counting is by global ordinal ([`GlobalOrds`]), as OpenSearch counts: a
+//! global ordinal is a term, and the ordinals are in term order.
 
 use lucene_codecs::doc_values::{NumericReader, SortedNumericReader, SortedSetKind};
-use lucene_codecs::terms_dict::TermsDict;
+use lucene_codecs::terms_dict::{TermsCursor, TermsDict, TermsDictEntry};
+
+use crate::ordinal_map::{OrdinalMap, TermCursor};
 
 use crate::aggs::ColumnRead;
 use crate::directory_reader::SegmentReader;
@@ -48,35 +50,38 @@ enum Ords<'a> {
     Multi(Box<SortedNumericReader<'a>>),
 }
 
-fn open_ords<'a>(
+/// `field`'s keyword doc values in `reader`: its ordinal column and terms
+/// dictionary, or `None` when the segment has no doc values for it.
+fn keyword_column<'a>(
     reader: &'a SegmentReader,
     field: &str,
-) -> Result<(Ords<'a>, Option<TermsDict<'a>>)> {
-    let store =
-        |e: lucene_store::Error| crate::Error::from(lucene_codecs::doc_values::Error::from(e));
+) -> Result<Option<(Ords<'a>, &'a [u8], &'a TermsDictEntry)>> {
     let Some(info) = reader.field_infos().fields.iter().find(|i| i.name == field) else {
-        return Ok((Ords::Absent, None));
+        return Ok(None);
     };
     let Some((meta, data)) = reader.doc_values_for_field(info.number) else {
-        return Ok((Ords::Absent, None));
+        return Ok(None);
     };
     if let Some(e) = meta.sorted_set_entry(info.number) {
-        return Ok(match &e.kind {
+        return Ok(Some(match &e.kind {
             SortedSetKind::Single(se) => (
                 Ords::Single(Box::new(NumericReader::new(data, &se.ords))),
-                Some(TermsDict::open(data, &se.terms).map_err(store)?),
+                data,
+                &se.terms,
             ),
             SortedSetKind::Multi { ords, terms } => (
                 Ords::Multi(Box::new(SortedNumericReader::new(data, ords))),
-                Some(TermsDict::open(data, terms).map_err(store)?),
+                data,
+                terms,
             ),
-        });
+        }));
     }
     if let Some(se) = meta.sorted_entry(info.number) {
-        return Ok((
+        return Ok(Some((
             Ords::Single(Box::new(NumericReader::new(data, &se.ords))),
-            Some(TermsDict::open(data, &se.terms).map_err(store)?),
-        ));
+            data,
+            &se.terms,
+        )));
     }
     // Doc values of another kind are a mapping error; none at all (a field
     // indexed without doc values here) counts nothing.
@@ -86,87 +91,85 @@ fn open_ords<'a>(
     {
         return Err(crate::Error::TermsAggType(field.to_string()));
     }
-    Ok((Ords::Absent, None))
+    Ok(None)
 }
 
-/// A keyword field's global ordinals over a reader's segments -- Lucene's
-/// `OrdinalMap`, which OpenSearch's `GlobalOrdinalsStringTermsAggregator`
-/// counts into: every distinct term of the field across the segments gets an
-/// ordinal in term order, and each segment's ordinals map onto them. Built
-/// once per reader and field (see
+/// The dictionary half of [`keyword_column`].
+fn terms_entry<'a>(
+    reader: &'a SegmentReader,
+    field: &str,
+) -> Result<Option<(&'a [u8], &'a TermsDictEntry)>> {
+    Ok(keyword_column(reader, field)?.map(|(_, data, entry)| (data, entry)))
+}
+
+/// [`keyword_column`] with its dictionary opened.
+fn open_ords<'a>(
+    reader: &'a SegmentReader,
+    field: &str,
+) -> Result<(Ords<'a>, Option<TermsDict<'a>>)> {
+    match keyword_column(reader, field)? {
+        Some((ords, data, entry)) => {
+            Ok((ords, Some(TermsDict::open(data, entry).map_err(store_err)?)))
+        }
+        None => Ok((Ords::Absent, None)),
+    }
+}
+
+/// A keyword field's global ordinals over a reader's segments: Lucene's
+/// `OrdinalMap` ([`OrdinalMap`], this port's one), which OpenSearch's
+/// `GlobalOrdinalsStringTermsAggregator` counts into -- every distinct term of
+/// the field across the segments has an ordinal in term order, and each
+/// segment's ordinals map onto them. Built once per reader and field (see
 /// [`crate::directory_reader::DirectoryReader::global_ords`]).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GlobalOrds {
-    /// Per segment, its ordinals' global ordinals (empty for a segment
-    /// without the field).
-    segment_to_global: Vec<Vec<u32>>,
-    /// Per global ordinal, a segment and ordinal holding its term.
-    first: Vec<(u32, u32)>,
+    map: OrdinalMap,
 }
 
 impl GlobalOrds {
-    /// Merges the segments' dictionaries of `field`, in term order.
+    /// Merges the segments' dictionaries of `field`, streamed
+    /// ([`OrdinalMap::build_streaming`]): nothing is sized by a count read
+    /// off disk.
     ///
     /// # Errors
-    /// A field whose doc values are not keyword ones, a dictionary that
-    /// cannot be read, or more than `u32::MAX` terms.
+    /// A field whose doc values are not keyword ones, or a dictionary that
+    /// cannot be read.
     pub fn build(readers: &[SegmentReader], field: &str) -> Result<Self> {
-        use std::cmp::Reverse;
-        use std::collections::BinaryHeap;
-        let too_many = || crate::Error::TermsAggType(format!("{field}: more than u32::MAX terms"));
-        let mut dicts = Vec::with_capacity(readers.len());
-        let mut segment_to_global = Vec::with_capacity(readers.len());
+        let mut cursors = Vec::with_capacity(readers.len());
         for reader in readers {
-            let (_, dict) = open_ords(reader, field)?;
-            let size = dict.as_ref().map_or(0, TermsDict::size);
-            segment_to_global.push(vec![0u32; usize::try_from(size).unwrap_or(0)]);
-            dicts.push(dict);
+            cursors.push(match terms_entry(reader, field)? {
+                Some((data, entry)) => Some(TermsCursor::open(data, entry).map_err(store_err)?),
+                None => None,
+            });
         }
-        // A k-way merge of the dictionaries, each already in term order.
-        let mut heap: BinaryHeap<Reverse<(Vec<u8>, usize, u32)>> = BinaryHeap::new();
-        for (seg, dict) in dicts.iter_mut().enumerate() {
-            if let Some(d) = dict.as_mut().filter(|d| d.size() > 0) {
-                heap.push(Reverse((
-                    d.seek_ord(0).map_err(store_err)?.to_vec(),
-                    seg,
-                    0,
-                )));
-            }
-        }
-        let mut first: Vec<(u32, u32)> = Vec::new();
-        let mut last: Option<Vec<u8>> = None;
-        while let Some(Reverse((term, seg, ord))) = heap.pop() {
-            if last.as_deref() != Some(&term[..]) {
-                first.push((u32::try_from(seg).map_err(|_| too_many())?, ord));
-                last = Some(term);
-            }
-            let global = u32::try_from(first.len() - 1).map_err(|_| too_many())?;
-            if let Some(slot) = segment_to_global
-                .get_mut(seg)
-                .and_then(|m| m.get_mut(ord as usize))
-            {
-                *slot = global;
-            }
-            let next = ord.checked_add(1).ok_or_else(too_many)?;
-            if let Some(d) = dicts.get_mut(seg).and_then(Option::as_mut) {
-                if i64::from(next) < d.size() {
-                    heap.push(Reverse((
-                        d.seek_ord(i64::from(next)).map_err(store_err)?.to_vec(),
-                        seg,
-                        next,
-                    )));
-                }
-            }
-        }
+        let mut empty: Vec<NoTerms> = std::iter::repeat_with(|| NoTerms)
+            .take(readers.len())
+            .collect();
+        let mut refs: Vec<&mut dyn TermCursor> = cursors
+            .iter_mut()
+            .zip(&mut empty)
+            .map(|(c, e)| match c {
+                Some(c) => c as &mut dyn TermCursor,
+                None => e as &mut dyn TermCursor,
+            })
+            .collect();
         Ok(GlobalOrds {
-            segment_to_global,
-            first,
+            map: OrdinalMap::build_streaming(&mut refs).map_err(store_err)?,
         })
     }
 
     /// The number of distinct terms (`OrdinalMap.getValueCount`).
     pub fn value_count(&self) -> usize {
-        self.first.len()
+        usize::try_from(self.map.value_count()).unwrap_or(0)
+    }
+}
+
+/// A segment without the field: no terms.
+struct NoTerms;
+
+impl TermCursor for NoTerms {
+    fn next_term(&mut self) -> lucene_store::Result<Option<&[u8]>> {
+        Ok(None)
     }
 }
 
@@ -245,10 +248,7 @@ pub(crate) fn segment_counts(
     counts: &mut [u64],
     scratch: &mut TermsScratch,
 ) -> Result<()> {
-    let map = global
-        .segment_to_global
-        .get(seg)
-        .map_or(&[][..], Vec::as_slice);
+    let map = global.map.segment_ords(seg).unwrap_or(&[]);
     // `tryCollectFromTermFrequencies`: a segment every document of which
     // matches (a match-all, nothing deleted) is counted from its postings --
     // each term's `docFreq`, the i-th term being ordinal i -- when the field
@@ -260,7 +260,10 @@ pub(crate) fn segment_counts(
                 let mut e = terms.iter();
                 let mut ord = 0usize;
                 while let Some((_, stats)) = e.next() {
-                    let slot = map.get(ord).and_then(|&g| counts.get_mut(g as usize));
+                    let slot = map
+                        .get(ord)
+                        .and_then(|&g| usize::try_from(g).ok())
+                        .and_then(|g| counts.get_mut(g));
                     if let Some(c) = slot {
                         *c += u64::try_from(stats.doc_freq).unwrap_or(0);
                     }
@@ -357,10 +360,12 @@ pub(crate) fn select(
     let mut dicts: Vec<Option<TermsDict<'_>>> = Vec::new();
     let mut buckets = Vec::with_capacity(kept.len());
     for (g, n) in kept {
-        let Some(&(seg, ord)) = global.first.get(g as usize) else {
+        let (Some(seg), Some(ord)) = (
+            global.map.first_segment(i64::from(g)),
+            global.map.first_segment_ord(i64::from(g)),
+        ) else {
             continue;
         };
-        let seg = seg as usize;
         if dicts.len() <= seg {
             dicts.resize_with(seg + 1, || None);
         }
@@ -372,10 +377,7 @@ pub(crate) fn select(
         let Some(dict) = dicts[seg].as_mut() else {
             continue;
         };
-        buckets.push((
-            dict.seek_ord(i64::from(ord)).map_err(store_err)?.to_vec(),
-            n,
-        ));
+        buckets.push((dict.seek_ord(ord).map_err(store_err)?.to_vec(), n));
     }
     Ok(TermsResult {
         buckets,
@@ -391,10 +393,7 @@ mod tests {
     fn the_top_terms_are_kept_by_count_then_term_and_listed_by_term() {
         // No segments to read terms from: the buckets are empty, but the
         // counts kept and left over are what selection decided.
-        let global = GlobalOrds {
-            segment_to_global: Vec::new(),
-            first: Vec::new(),
-        };
+        let global = GlobalOrds::build(&[], "f").unwrap();
         let r = select(&[3, 3, 5, 1, 3], 3, &global, &[], "f").unwrap();
         assert_eq!(
             r.other_doc_count, 4,
