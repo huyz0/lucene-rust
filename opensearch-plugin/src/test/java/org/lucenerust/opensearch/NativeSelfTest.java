@@ -187,6 +187,13 @@ public final class NativeSelfTest {
             "a keyword sort encodes"
         );
         check(
+            SortEncoder.encode(
+                new Sort(new org.apache.lucene.search.SortedSetSortField("k", false, org.apache.lucene.search.SortedSetSelector.Type.MIDDLE_MIN)),
+                null
+            ).fallbackReason().startsWith("sort_"),
+            "a keyword sort by a middle value falls back"
+        );
+        check(
             "search_after_type".equals(
                 SortEncoder.encode(new Sort(new org.apache.lucene.search.SortedSetSortField("k", false)), new FieldDoc(1, 0f, new Object[] { "x" }))
                     .fallbackReason()

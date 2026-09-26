@@ -116,6 +116,22 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 const COLUMN_MIN_USES: u32 = 2;
 /// Decoded sort columns per segment.
 pub(crate) const MAX_COLUMN_BYTES: usize = 32 << 20;
+/// Decoded sort columns across every segment of the process: the host (a
+/// JVM) cannot see this memory, so it is bounded here.
+pub(crate) const MAX_TOTAL_COLUMN_BYTES: usize = 512 << 20;
+/// Bytes of decoded sort columns held now, process-wide.
+static TOTAL_COLUMN_BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+impl Drop for Columns {
+    fn drop(&mut self) {
+        TOTAL_COLUMN_BYTES.fetch_sub(self.bytes, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Decoded sort-column bytes held process-wide.
+pub fn sort_column_bytes() -> usize {
+    TOTAL_COLUMN_BYTES.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 impl std::fmt::Debug for SegmentQueryCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -248,6 +264,19 @@ impl SegmentQueryCache {
         let bytes = col.ram_bytes();
         let mut c = lock(&self.columns);
         if c.bytes.saturating_add(bytes) > MAX_COLUMN_BYTES {
+            return Ok(None);
+        }
+        // Reserve against the process-wide cap; the segment's share goes
+        // back when its cache is dropped.
+        let reserved = TOTAL_COLUMN_BYTES.fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |t| {
+                t.checked_add(bytes)
+                    .filter(|&n| n <= MAX_TOTAL_COLUMN_BYTES)
+            },
+        );
+        if reserved.is_err() {
             return Ok(None);
         }
         c.bytes += bytes;
@@ -607,6 +636,10 @@ mod tests {
             Err(crate::top_field::SortError::NoKeys.into())
         });
         assert!(err.is_err());
+        // The process-wide count holds this cache's columns while it lives
+        // (other tests' caches come and go concurrently, so no upper bound).
+        assert!(sort_column_bytes() >= 20_000 * 4);
+        drop(cache);
         let longs = SortColumn::Longs {
             values: vec![1, 2],
             has: FixedBitSet::new(2),

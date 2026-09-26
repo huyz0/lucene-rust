@@ -695,17 +695,16 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_sorted(
         }
         // SAFETY: caller contract.
         let blob = unsafe { bytes_from_raw(query, query_len)? };
-        let query = decode_query(blob)?;
         // SAFETY: caller contract.
         let sort_blob = unsafe { bytes_from_raw(sort, sort_len)? };
-        let (keys, after) = decode_sort(sort_blob)?;
-        let h = lookup(
-            handle,
-            "ffi_jvm_reader_search_sorted: unknown or already-closed handle",
-        )?;
-        let (hits, total, lower_bound) =
-            search_sorted(&h, &query, &keys, after.as_ref(), top_n, count_limit)?;
-        let terms = encode_terms(&keys, &hits)?;
+        let SortedOut {
+            keys,
+            hits,
+            total,
+            lower_bound,
+            terms,
+            ..
+        } = search_sorted_blobs(handle, blob, sort_blob, top_n, count_limit)?;
         // SAFETY: caller contract.
         unsafe { *out_terms_len = terms.len() };
         if terms.len() > terms_cap {
@@ -724,7 +723,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_sorted(
             for (i, hit) in hits.iter().enumerate() {
                 *out_docs.add(i) = hit.doc;
                 for (k, &v) in hit.values.iter().enumerate() {
-                    *out_values.add(i * keys.len() + k) = v;
+                    *out_values.add(i * keys + k) = v;
                 }
             }
             *out_hit_count = hits.len();
@@ -732,6 +731,49 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_sorted(
             *out_total_is_lower_bound = lower_bound;
         }
         Ok(())
+    })
+}
+
+/// A sorted search's answer, ready to hand back.
+pub(crate) struct SortedOut {
+    /// The sort's key count.
+    pub(crate) keys: usize,
+    pub(crate) hits: Vec<FieldDoc>,
+    pub(crate) total: i64,
+    pub(crate) lower_bound: bool,
+    /// [`encode_terms`] of `hits`.
+    pub(crate) terms: Vec<u8>,
+    /// Whether any key is a keyword key (the terms are then an answer,
+    /// empty or not).
+    pub(crate) has_terms: bool,
+}
+
+/// [`ffi_jvm_reader_search_sorted`] up to its output buffers: the blobs
+/// decoded, the search run, the terms encoded (the JNI bridge sizes its
+/// Java array from them).
+pub(crate) fn search_sorted_blobs(
+    handle: u64,
+    query_blob: &[u8],
+    sort_blob: &[u8],
+    top_n: usize,
+    count_limit: i64,
+) -> Result<SortedOut, FfiStatus> {
+    let query = decode_query(query_blob)?;
+    let (keys, after) = decode_sort(sort_blob)?;
+    let h = lookup(
+        handle,
+        "ffi_jvm_reader_search_sorted: unknown or already-closed handle",
+    )?;
+    let (hits, total, lower_bound) =
+        search_sorted(&h, &query, &keys, after.as_ref(), top_n, count_limit)?;
+    let terms = encode_terms(&keys, &hits)?;
+    Ok(SortedOut {
+        has_terms: keys.iter().any(|k| k.ty == SortType::String),
+        keys: keys.len(),
+        hits,
+        total,
+        lower_bound,
+        terms,
     })
 }
 

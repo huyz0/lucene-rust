@@ -294,74 +294,41 @@ pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_searchSorted<
             ));
             return Err(FfiStatus::BufferTooSmall);
         }
-        let mut docs: Vec<i32> = zeroed(top_n)?;
-        let mut values: Vec<i64> = zeroed(want_values)?;
-        let mut hit_count = 0usize;
-        let mut total = 0i64;
-        let mut lower_bound = false;
-        // Keyword keys hand back terms: room for short ones first, and the
-        // exact room the search reports when they are longer.
-        // A malformed blob is reported by the search itself.
-        let string_keys = jvm_reader::decode_sort(&sort_blob).map_or(0, |(k, _)| {
-            k.iter()
-                .filter(|k| k.ty == lucene_search::top_field::SortType::String)
-                .count()
-        });
-        let mut cap = top_n.saturating_mul(string_keys).saturating_mul(32);
-        let mut status = FfiStatus::Ok.code();
-        let mut terms: Vec<u8> = Vec::new();
-        let mut terms_len = 0usize;
-        // The same reader answers the same way, so a second try fits.
-        for _ in 0..2 {
-            terms = zeroed(cap)?;
-            // SAFETY: every pointer/length pair describes a live Rust buffer;
-            // `values` holds `top_n` hits of `keys` values, the sort blob's
-            // count, and `terms` `cap` bytes.
-            status = unsafe {
-                jvm_reader::ffi_jvm_reader_search_sorted(
-                    handle as u64,
-                    blob.as_ptr(),
-                    blob.len(),
-                    sort_blob.as_ptr(),
-                    sort_blob.len(),
-                    top_n,
-                    count_limit,
-                    docs.as_mut_ptr(),
-                    values.as_mut_ptr(),
-                    top_n,
-                    terms.as_mut_ptr(),
-                    cap,
-                    &mut hit_count,
-                    &mut total,
-                    &mut lower_bound,
-                    &mut terms_len,
-                )
-            };
-            if status != FfiStatus::BufferTooSmall.code() || terms_len <= cap {
-                break;
-            }
-            cap = terms_len;
+        if top_n == 0 {
+            set_last_error("searchSorted: topN must be at least 1");
+            return Err(FfiStatus::InvalidArgument);
         }
-        if status == FfiStatus::Ok.code() {
-            if string_keys > 0 {
-                let arr = env
-                    .byte_array_from_slice(&terms[..terms_len])
-                    .map_err(|e| jni_err(&env, "outTerms", e))?;
-                env.set_object_array_element(&out_terms, 0, &arr)
-                    .map_err(|e| jni_err(&env, "outTerms", e))?;
+        // The C entry point's search, with the terms handed back in a Java
+        // array of exactly their length (no buffer to guess, no second run).
+        let out =
+            jvm_reader::search_sorted_blobs(handle as u64, &blob, &sort_blob, top_n, count_limit)?;
+        let hit_count = out.hits.len();
+        let mut docs: Vec<i32> = zeroed(hit_count)?;
+        let mut values: Vec<i64> = zeroed(hit_count.saturating_mul(out.keys))?;
+        for (i, hit) in out.hits.iter().enumerate() {
+            docs[i] = hit.doc;
+            for (k, &v) in hit.values.iter().take(out.keys).enumerate() {
+                values[i * out.keys + k] = v;
             }
-            env.set_int_array_region(&out_docs, 0, &docs[..hit_count])
-                .map_err(|e| jni_err(&env, "outDocs", e))?;
-            env.set_long_array_region(&out_values, 0, &values[..hit_count * keys])
-                .map_err(|e| jni_err(&env, "outValues", e))?;
-            env.set_long_array_region(
-                &out_counts,
-                0,
-                &[hit_count as jlong, total, jlong::from(lower_bound)],
-            )
-            .map_err(|e| jni_err(&env, "outCounts", e))?;
         }
-        Ok(status)
+        if out.has_terms {
+            let arr = env
+                .byte_array_from_slice(&out.terms)
+                .map_err(|e| jni_err(&env, "outTerms", e))?;
+            env.set_object_array_element(&out_terms, 0, &arr)
+                .map_err(|e| jni_err(&env, "outTerms", e))?;
+        }
+        env.set_int_array_region(&out_docs, 0, &docs)
+            .map_err(|e| jni_err(&env, "outDocs", e))?;
+        env.set_long_array_region(&out_values, 0, &values)
+            .map_err(|e| jni_err(&env, "outValues", e))?;
+        env.set_long_array_region(
+            &out_counts,
+            0,
+            &[hit_count as jlong, out.total, jlong::from(out.lower_bound)],
+        )
+        .map_err(|e| jni_err(&env, "outCounts", e))?;
+        Ok(FfiStatus::Ok.code())
     })
 }
 

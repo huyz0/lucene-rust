@@ -448,16 +448,6 @@ impl<'a> DisiCursor<'a> {
         self.doc
     }
 
-    /// The ordinal of `doc` among documents that have a value, or `None` when
-    /// `doc` has none.
-    ///
-    /// Port of `IndexedDISI.advanceExact`, including its `block < targetBlock`
-    /// / `block == targetBlock` structure.
-    ///
-    /// # Panics
-    ///
-    /// If `doc` is negative, or is less than the previous call's -- see the
-    /// type's doc comment for why that is a panic and not a `None`.
     /// [`Self::advance_exact`] when `doc` is at or after the current
     /// document and inside the block already loaded -- the common case of a
     /// forward walk, with no header to read and so nothing that can fail.
@@ -472,6 +462,16 @@ impl<'a> DisiCursor<'a> {
         Some(found.then_some(self.index as usize))
     }
 
+    /// The ordinal of `doc` among documents that have a value, or `None` when
+    /// `doc` has none.
+    ///
+    /// Port of `IndexedDISI.advanceExact`, including its `block < targetBlock`
+    /// / `block == targetBlock` structure.
+    ///
+    /// # Panics
+    ///
+    /// If `doc` is negative, or is less than the previous call's -- see the
+    /// type's doc comment for why that is a panic and not a `None`.
     pub fn advance_exact(&mut self, doc: i32) -> Result<Option<usize>> {
         assert!(doc >= 0, "doc id must be non-negative, got {doc}");
         assert!(

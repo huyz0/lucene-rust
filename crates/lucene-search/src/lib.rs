@@ -231,7 +231,7 @@ pub use doc_value_query::{
     search_numeric_range, search_numeric_range_sorted_by_field, search_sorted_ord_range,
     sort_by_numeric_doc_value, sort_top_n_by_numeric_doc_value, MissingValue,
 };
-pub use exec::cache::SegmentQueryCache;
+pub use exec::cache::{sort_column_bytes, SegmentQueryCache};
 pub use explain::{explain_clause, Explanation};
 pub use field_norms::FieldNorms;
 pub use multi_segment::{

@@ -92,10 +92,33 @@ fn the_terms_dictionary_answers_lookups_as_lucene_does() {
     }
     assert!(checked > 1000, "{checked} ordinals");
     let probes: usize = m["probe_count"].parse().unwrap();
-    // One dictionary per (segment, field), reused across its probes, as a
-    // comparator reuses its segment's: seeks go backwards and forwards.
+    // The sampled ordinals per (segment, field), to interleave with probes.
+    type Sampled = Vec<(i64, Vec<u8>)>;
+    let mut ords: HashMap<(usize, String), Sampled> = HashMap::new();
+    for (k, v) in &m {
+        if let Some(rest) = k.strip_prefix("ord.") {
+            let mut p = rest.splitn(3, '.');
+            let seg: usize = p.next().unwrap().parse().unwrap();
+            let field = p.next().unwrap().to_string();
+            let ord: i64 = p.next().unwrap().parse().unwrap();
+            ords.entry((seg, field)).or_default().push((ord, unhex(v)));
+        }
+    }
+    // One dictionary per (segment, field), reused across its probes in a
+    // shuffled order with ordinal seeks in between, as a comparator reuses
+    // its segment's: seeks go backwards and forwards, and the block buffer
+    // carries from one to the next.
+    let mut order: Vec<usize> = (0..probes).collect();
+    let mut x = 0x9E37_79B9_7F4A_7C15u64;
+    for i in (1..order.len()).rev() {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        order.swap(i, (x % (i as u64 + 1)) as usize);
+    }
+    let mut dicts: HashMap<(usize, String), TermsDict<'_>> = HashMap::new();
     let mut failures = Vec::new();
-    for i in 0..probes {
+    for (n, &i) in order.iter().enumerate() {
         let p: Vec<&str> = m[&format!("probe.{i}")].split(':').collect();
         let (seg, field, key, want): (usize, &str, Vec<u8>, i64) = (
             p[0].parse().unwrap(),
@@ -103,13 +126,23 @@ fn the_terms_dictionary_answers_lookups_as_lucene_does() {
             unhex(p[2]),
             p[3].parse().unwrap(),
         );
-        let (data, entry) = terms_entry(&reader, seg, field);
-        let mut dict = TermsDict::open(data, entry).unwrap();
+        let id = (seg, field.to_string());
+        let dict = dicts.entry(id.clone()).or_insert_with(|| {
+            let (data, entry) = terms_entry(&reader, seg, field);
+            TermsDict::open(data, entry).unwrap()
+        });
         let got = dict.lookup_term(&key).unwrap();
         if got != want {
             failures.push(format!(
                 "seg {seg} {field} {key:?}: got {got}, Lucene {want}"
             ));
+        }
+        if let Some(sampled) = ords.get(&id) {
+            let (ord, term) = &sampled[n % sampled.len()];
+            let got = dict.seek_ord(*ord).unwrap();
+            if got != term.as_slice() {
+                failures.push(format!("seg {seg} {field} ord {ord}: got {got:?}"));
+            }
         }
     }
     assert!(

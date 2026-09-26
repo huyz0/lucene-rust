@@ -153,7 +153,11 @@ public final class SortEncoder {
             };
         }
         if (f.getClass() == SortedSetSortField.class) {
-            return STRING;
+            // MIN and MAX only: the MIDDLE_* selectors pick a median the native side does not.
+            return switch (((SortedSetSortField) f).getSelector()) {
+                case MIN, MAX -> STRING;
+                default -> -1;
+            };
         }
         return -1;
     }
