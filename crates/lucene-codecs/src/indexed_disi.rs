@@ -458,6 +458,20 @@ impl<'a> DisiCursor<'a> {
     ///
     /// If `doc` is negative, or is less than the previous call's -- see the
     /// type's doc comment for why that is a panic and not a `None`.
+    /// [`Self::advance_exact`] when `doc` is at or after the current
+    /// document and inside the block already loaded -- the common case of a
+    /// forward walk, with no header to read and so nothing that can fail.
+    /// `None` means "ask [`Self::advance_exact`]".
+    #[inline]
+    pub fn advance_exact_in_block(&mut self, doc: i32) -> Option<Option<usize>> {
+        if doc < self.doc || doc == NO_MORE_DOCS || (doc & !0xFFFF) != self.block {
+            return None;
+        }
+        let found = self.advance_exact_within_block(doc);
+        self.doc = doc;
+        Some(found.then_some(self.index as usize))
+    }
+
     pub fn advance_exact(&mut self, doc: i32) -> Result<Option<usize>> {
         assert!(doc >= 0, "doc id must be non-negative, got {doc}");
         assert!(
@@ -606,6 +620,7 @@ impl<'a> DisiCursor<'a> {
     // block by the caller's `target_block` check, so the result is in
     // `index..index + 65536`.
     #[allow(clippy::arithmetic_side_effects)]
+    #[inline]
     fn advance_exact_within_block(&mut self, target: i32) -> bool {
         match self.method {
             Method::All => {
@@ -670,6 +685,7 @@ impl<'a> DisiCursor<'a> {
     // only returns for a power in `7..=15`. `ones` sums at most 1024 words of
     // 64 bits, and `number_of_ones` is bounded by the block's cardinality.
     #[allow(clippy::arithmetic_side_effects)]
+    #[inline]
     fn dense_advance_exact(&mut self, target: i32) -> bool {
         let target_in_block = target & 0xFFFF;
         let target_word_index = target_in_block >> 6;
