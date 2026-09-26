@@ -20,7 +20,7 @@ milestone finishes the read side.
 | R1 | Query execution engine: Lucene's scorer tree and bulk scorers, every boolean shape at least as fast as Lucene | ✅ delivered |
 | R2 | General query wire format and Java encoder for every Lucene query OpenSearch builds | ✅ delivered for the shapes R1 runs (term, boolean, constant score, boost, dismax, match-all, match-none); leaf queries arrive with R3 |
 | R3 | Leaf queries as streaming scorers: phrase, the multi-term family, points and doc-values ranges, exists, terms-in-set, dismax, synonym | mostly delivered: phrase, prefix/wildcard/terms, points ranges, dismax, and a native query cache (R3b); open: `exists` (with R4's doc-values wiring), `regexp` over the wire, fuzzy speed (q25) |
-| R4 | Sort and `search_after` natively (`TopFieldCollector`) | numeric, score, `_doc` and keyword keys delivered (below); open: `avg`/`sum`/`median` modes, nested sorts, `track_scores` behind another key, index-sorted shards |
+| R4 | Sort and `search_after` natively (`TopFieldCollector`) | numeric, score, `_doc` and keyword keys and `track_scores` delivered (below); open: `avg`/`sum`/`median` modes, nested sorts, index-sorted shards |
 | R5 | Aggregations natively: terms, histogram, date_histogram, range, the metrics, cardinality, filter/filters | open |
 | R6 | Fetch (`_source`, stored fields, `docvalue_fields`) and get natively | open |
 | R7 | scroll, `post_filter`, `min_score`, `terminate_after`, timeouts; the full read benchmark (in process and REST) with every native shape at least 1.0× Lucene | open |
@@ -318,8 +318,15 @@ search and is not yet explained). The matrix's 2,278 checks against a stock
 node pass, and the self test's 6,576 random sorted pages (numeric, score,
 `_doc` and keyword keys) all agree with `TopFieldCollectorManager`.
 
+`track_scores` behind another key runs natively as OpenSearch runs it: the
+collector beside a `MaxScoreCollector` in a `MultiCollector`, which exposes no
+competitive iterator, so every match is scored for the max score and handed to
+the collector (ABI 13: a sort-blob options byte, the max score back in a fourth
+count slot). 224 Lucene runs through the same `MultiCollector` agree exactly --
+hits, totals, max-score bits -- and so do the self test's tracked pages.
+
 Falls back: `avg`/`sum`/`median` modes and nested sorts (OpenSearch's custom
-comparators), `track_scores` unless the score leads, and index-sorted shards.
+comparators) and index-sorted shards.
 
 ## Benchmark
 

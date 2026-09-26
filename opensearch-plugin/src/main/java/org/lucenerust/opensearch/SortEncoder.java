@@ -53,6 +53,8 @@ public final class SortEncoder {
     static final byte STRING = 6;
     static final byte REVERSE = 1;
     static final byte MAX = 2;
+    /** Blob options: track the max score over every match (track_scores). */
+    static final byte TRACK_MAX_SCORE = 1;
     /** {@code MAX_SORT_KEYS} in {@code jvm_reader.rs}. */
     static final int MAX_KEYS = 16;
 
@@ -63,8 +65,17 @@ public final class SortEncoder {
 
     // getOptimizeSortWithIndexedData is deprecated in 10.5.0 but still read by every comparator
     // (it disables skipping), so a sort that set it must not run on the always-skipping native side.
-    @SuppressWarnings("deprecation")
     public static Encoded encode(Sort sort, FieldDoc after) {
+        return encode(sort, after, false);
+    }
+
+    /**
+     * {@link #encode(Sort, FieldDoc)}, asking also for the max score over every match -- what
+     * OpenSearch's {@code MaxScoreCollector} computes for {@code track_scores} when the score does
+     * not lead the sort.
+     */
+    @SuppressWarnings("deprecation")
+    public static Encoded encode(Sort sort, FieldDoc after, boolean trackMaxScore) {
         SortField[] fields = sort.getSort();
         if (fields.length == 0 || fields.length > MAX_KEYS) {
             return new Encoded(null, "sort_keys");
@@ -131,6 +142,7 @@ public final class SortEncoder {
                 writeLong(out, comparable(type(fields[i]), after.fields[i]));
             }
         }
+        out.write(trackMaxScore ? TRACK_MAX_SCORE : 0);
         return new Encoded(out.toByteArray(), null);
     }
 

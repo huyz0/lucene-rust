@@ -82,8 +82,9 @@ use std::sync::Arc;
 /// 7, the [`QUERY_TREE`] blob (read path R2); 8, its phrase node (R3); 9,
 /// its term-set, prefix and wildcard nodes (R3); 10, its points range node;
 /// 11, sorted search ([`ffi_jvm_reader_search_sorted`], read path R4); 12,
-/// its keyword keys (terms in, terms out).
-pub const JVM_ABI_VERSION: u32 = 12;
+/// its keyword keys (terms in, terms out); 13, its options byte and max
+/// score (`track_scores`).
+pub const JVM_ABI_VERSION: u32 = 13;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -532,6 +533,8 @@ const SORT_STRING: u8 = 6;
 /// Sort-key flags.
 const SORT_REVERSE: u8 = 1;
 const SORT_MAX: u8 = 2;
+/// Sort-blob options: track the max score over every match.
+const SORT_TRACK_MAX_SCORE: u8 = 1;
 /// At most this many keys: OpenSearch's sorts are a handful, and each key
 /// costs a value per hit on the way back.
 const MAX_SORT_KEYS: usize = 16;
@@ -543,9 +546,12 @@ const MAX_SORT_KEYS: usize = 16;
 /// (`STRING_FIRST`) for a keyword one; then `has_after: u8` and, when 1, the
 /// search-after document (`doc: i32`) and one value per key, encoded as the
 /// search returns them -- an `i64`, or for a keyword key `present: u8` and,
-/// when 1, the term (`len: i32`, bytes). Little-endian, and trailing bytes
-/// are an error.
-pub(crate) fn decode_sort(blob: &[u8]) -> Result<(Vec<SortField>, Option<FieldDoc>), FfiStatus> {
+/// when 1, the term (`len: i32`, bytes); and last `options: u8`
+/// ([`SORT_TRACK_MAX_SCORE`]). Little-endian, and trailing bytes are an error.
+#[allow(clippy::type_complexity)]
+pub(crate) fn decode_sort(
+    blob: &[u8],
+) -> Result<(Vec<SortField>, Option<FieldDoc>, bool), FfiStatus> {
     let mut c = Cursor { buf: blob, pos: 0 };
     let bad = |msg: String| {
         set_last_error(msg);
@@ -625,13 +631,17 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<(Vec<SortField>, Option<FieldDo
         }
         other => return Err(bad(format!("sort blob: has_after is {other}"))),
     };
+    let options = c.u8()?;
+    if options & !SORT_TRACK_MAX_SCORE != 0 {
+        return Err(bad(format!("sort blob: unknown options {options:#x}")));
+    }
     if c.pos != blob.len() {
         return Err(bad(format!(
             "sort blob: {} trailing bytes",
             blob.len() - c.pos
         )));
     }
-    Ok((keys, after))
+    Ok((keys, after, options & SORT_TRACK_MAX_SCORE != 0))
 }
 
 /// Runs the query blob `query` sorted by the sort blob `sort`
@@ -653,8 +663,9 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<(Vec<SortField>, Option<FieldDo
 /// `out_docs` for `buf_len` elements and `out_values` for `buf_len * keys`
 /// (`keys` being the sort's key count), with `buf_len >= top_n`; `out_terms`
 /// for `terms_cap` bytes (it may be null when `terms_cap` is 0);
-/// `out_hit_count`, `out_total`, `out_total_is_lower_bound` and
-/// `out_terms_len` for one write each.
+/// `out_hit_count`, `out_total`, `out_total_is_lower_bound`, `out_terms_len`
+/// and `out_max_score` (the tracked max score, `NaN` untracked) for one write
+/// each.
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn ffi_jvm_reader_search_sorted(
@@ -674,12 +685,14 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_sorted(
     out_total: *mut i64,
     out_total_is_lower_bound: *mut bool,
     out_terms_len: *mut usize,
+    out_max_score: *mut f32,
 ) -> i32 {
     guard(|| {
         if out_hit_count.is_null()
             || out_total.is_null()
             || out_total_is_lower_bound.is_null()
             || out_terms_len.is_null()
+            || out_max_score.is_null()
             || out_docs.is_null()
             || out_values.is_null()
             || (out_terms.is_null() && terms_cap != 0)
@@ -703,6 +716,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_sorted(
             total,
             lower_bound,
             terms,
+            max_score,
             ..
         } = search_sorted_blobs(handle, blob, sort_blob, top_n, count_limit)?;
         // SAFETY: caller contract.
@@ -729,6 +743,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_sorted(
             *out_hit_count = hits.len();
             *out_total = total;
             *out_total_is_lower_bound = lower_bound;
+            *out_max_score = max_score;
         }
         Ok(())
     })
@@ -746,6 +761,8 @@ pub(crate) struct SortedOut {
     /// Whether any key is a keyword key (the terms are then an answer,
     /// empty or not).
     pub(crate) has_terms: bool,
+    /// The max score over every match when tracked, else `NaN`.
+    pub(crate) max_score: f32,
 }
 
 /// [`ffi_jvm_reader_search_sorted`] up to its output buffers: the blobs
@@ -759,15 +776,16 @@ pub(crate) fn search_sorted_blobs(
     count_limit: i64,
 ) -> Result<SortedOut, FfiStatus> {
     let query = decode_query(query_blob)?;
-    let (keys, after) = decode_sort(sort_blob)?;
+    let (keys, after, track) = decode_sort(sort_blob)?;
     let h = lookup(
         handle,
         "ffi_jvm_reader_search_sorted: unknown or already-closed handle",
     )?;
-    let (hits, total, lower_bound) =
-        search_sorted(&h, &query, &keys, after.as_ref(), top_n, count_limit)?;
+    let (hits, total, lower_bound, max_score) =
+        search_sorted(&h, &query, &keys, after.as_ref(), top_n, count_limit, track)?;
     let terms = encode_terms(&keys, &hits)?;
     Ok(SortedOut {
+        max_score,
         has_terms: keys.iter().any(|k| k.ty == SortType::String),
         keys: keys.len(),
         hits,
@@ -806,6 +824,7 @@ pub(crate) fn encode_terms(keys: &[SortField], hits: &[FieldDoc]) -> Result<Vec<
 }
 
 /// The search behind [`ffi_jvm_reader_search_sorted`].
+#[allow(clippy::type_complexity)]
 pub(crate) fn search_sorted(
     h: &JvmReaderHandle,
     query: &JvmQuery,
@@ -813,7 +832,8 @@ pub(crate) fn search_sorted(
     after: Option<&FieldDoc>,
     top_n: usize,
     count_limit: i64,
-) -> Result<(Vec<FieldDoc>, i64, bool), FfiStatus> {
+    track_max_score: bool,
+) -> Result<(Vec<FieldDoc>, i64, bool, f32), FfiStatus> {
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
         FfiStatus::Decode
@@ -844,7 +864,7 @@ pub(crate) fn search_sorted(
         },
         JvmQuery::Boolean(b) => b.clone(),
     };
-    let needs_scores = keys.iter().any(|k| k.ty == SortType::Score);
+    let needs_scores = track_max_score || keys.iter().any(|k| k.ty == SortType::Score);
     let fields: Vec<String> = if needs_scores {
         crate::query::clause_field_names(&q)
             .into_iter()
@@ -862,7 +882,7 @@ pub(crate) fn search_sorted(
         i64::MAX => u64::MAX,
         n => u64::try_from(n).unwrap_or(0),
     };
-    let top = lucene_search::top_field::search_sorted(
+    let top = lucene_search::top_field::search_sorted_tracking(
         &segments,
         h.reader.segment_readers(),
         &q,
@@ -871,15 +891,17 @@ pub(crate) fn search_sorted(
         top_n,
         threshold,
         after,
+        track_max_score,
     )
     .map_err(map_search_error)?;
     if count_limit <= 0 {
-        return Ok((top.hits, -1, false));
+        return Ok((top.hits, -1, false, top.max_score));
     }
     Ok((
         top.hits,
         i64::try_from(top.total.value).unwrap_or(i64::MAX),
         top.total.relation == TotalHitsRelation::GreaterThanOrEqualTo,
+        top.max_score,
     ))
 }
 
@@ -1470,6 +1492,7 @@ mod tests {
                 }
             }
         }
+        b.push(0); // options
         b
     }
 
@@ -1489,6 +1512,7 @@ mod tests {
         let (mut n, mut total, mut lower) = (0usize, 0i64, false);
         let mut terms = vec![0u8; 1 << 16];
         let mut terms_len = 0usize;
+        let mut max_score = 0f32;
         let rc = unsafe {
             ffi_jvm_reader_search_sorted(
                 handle,
@@ -1507,6 +1531,7 @@ mod tests {
                 &mut total,
                 &mut lower,
                 &mut terms_len,
+                &mut max_score,
             )
         };
         if rc != 0 {
@@ -1534,7 +1559,7 @@ mod tests {
             ],
             Some((9, &[1, 2, 3, 4, 5, 6])),
         );
-        let (keys, after) = decode_sort(&blob).unwrap();
+        let (keys, after, _) = decode_sort(&blob).unwrap();
         assert_eq!(
             keys.iter().map(|k| k.ty).collect::<Vec<_>>(),
             [
@@ -1571,7 +1596,12 @@ mod tests {
             invalid,
             "has_after is not a bool"
         );
-        assert_eq!(status(&[1, SORT_DOC, 0, 0, 0]), invalid, "trailing bytes");
+        assert_eq!(status(&[1, SORT_DOC, 0, 0]), invalid, "no options byte");
+        assert_eq!(
+            status(&[1, SORT_DOC, 0, 0, 0, 0]),
+            invalid,
+            "trailing bytes"
+        );
         assert_eq!(status(&[1, SORT_DOC, 0, 1, 0]), invalid, "truncated after");
         let mut bad_utf8 = vec![1, SORT_LONG, 0];
         bad_utf8.extend_from_slice(&1i32.to_le_bytes());
@@ -1674,7 +1704,7 @@ mod tests {
             ],
             Some((4, &[0, 0, 9], &[Some(b"abc".as_slice()), None, None])),
         );
-        let (keys, after) = decode_sort(&blob).unwrap();
+        let (keys, after, _) = decode_sort(&blob).unwrap();
         assert_eq!(keys[0].ty, SortType::String);
         assert!(keys[0].reverse && keys[0].selector == Selector::Max && keys[0].missing == 1);
         assert_eq!((keys[1].missing, keys[1].reverse), (0, false));
@@ -1688,8 +1718,18 @@ mod tests {
             FfiStatus::InvalidArgument
         );
         let mut bad = sort_blob_terms(&[(SORT_STRING, 0, "k", 0)], Some((1, &[0], &[None])));
-        *bad.last_mut().unwrap() = 2;
+        let at = bad.len() - 2; // the term's present flag, before the options byte
+        bad[at] = 2;
         assert_eq!(decode_sort(&bad).unwrap_err(), FfiStatus::InvalidArgument);
+        // Options: bit 0 tracks the max score; any other bit is refused.
+        let mut tracked = sort_blob(&[(SORT_DOC, 0, "", 0)], None);
+        *tracked.last_mut().unwrap() = SORT_TRACK_MAX_SCORE;
+        assert!(decode_sort(&tracked).unwrap().2);
+        *tracked.last_mut().unwrap() = 2;
+        assert_eq!(
+            decode_sort(&tracked).unwrap_err(),
+            FfiStatus::InvalidArgument
+        );
         // Terms out: per hit, per keyword key, a length or -1.
         let hits = [
             FieldDoc {
@@ -1723,6 +1763,7 @@ mod tests {
         let (hits, _, _) = run_sorted(h, &q, &sort, 3, i64::MAX).unwrap();
         assert!(!hits.is_empty());
         let (mut n, mut total, mut lower, mut terms_len) = (0usize, 0i64, false, 0usize);
+        let mut max_score = 0f32;
         let (mut docs, mut values) = ([0i32; 3], [0i64; 3]);
         let rc = unsafe {
             ffi_jvm_reader_search_sorted(
@@ -1742,6 +1783,7 @@ mod tests {
                 &mut total,
                 &mut lower,
                 &mut terms_len,
+                &mut max_score,
             )
         };
         assert_eq!(rc, FfiStatus::BufferTooSmall.code());
@@ -1765,6 +1807,7 @@ mod tests {
                 &mut total,
                 &mut lower,
                 &mut terms_len,
+                &mut max_score,
             )
         };
         assert_eq!(rc, 0);
@@ -1793,9 +1836,81 @@ mod tests {
                 &mut total,
                 &mut lower,
                 &mut terms_len,
+                &mut max_score,
             )
         };
         assert_eq!(rc, FfiStatus::NullPointer.code());
+        ffi_close_jvm_reader(h);
+    }
+
+    #[test]
+    fn a_tracked_sort_reports_the_top_score() {
+        let h = open();
+        let q = term_blob("body", "fox");
+        let (best, _) = run(h, &q, 1, true).unwrap();
+        let mut sort = sort_blob(&[(SORT_DOC, 0, "", 0)], None);
+        *sort.last_mut().unwrap() = SORT_TRACK_MAX_SCORE;
+        let (mut n, mut total, mut lower, mut terms_len) = (0usize, 0i64, false, 0usize);
+        let mut max_score = 0f32;
+        let (mut docs, mut values) = ([0i32; 3], [0i64; 3]);
+        let call = |sort: &[u8],
+                    max_score: &mut f32,
+                    n: &mut usize,
+                    total: &mut i64,
+                    lower: &mut bool,
+                    terms_len: &mut usize,
+                    docs: &mut [i32; 3],
+                    values: &mut [i64; 3]| unsafe {
+            ffi_jvm_reader_search_sorted(
+                h,
+                q.as_ptr(),
+                q.len(),
+                sort.as_ptr(),
+                sort.len(),
+                3,
+                i64::MAX,
+                docs.as_mut_ptr(),
+                values.as_mut_ptr(),
+                3,
+                std::ptr::null_mut(),
+                0,
+                n,
+                total,
+                lower,
+                terms_len,
+                max_score,
+            )
+        };
+        assert_eq!(
+            call(
+                &sort,
+                &mut max_score,
+                &mut n,
+                &mut total,
+                &mut lower,
+                &mut terms_len,
+                &mut docs,
+                &mut values
+            ),
+            0
+        );
+        assert_eq!(max_score.to_bits(), best[0].1.to_bits());
+        // Untracked: no max score.
+        *sort.last_mut().unwrap() = 0;
+        assert_eq!(
+            call(
+                &sort,
+                &mut max_score,
+                &mut n,
+                &mut total,
+                &mut lower,
+                &mut terms_len,
+                &mut docs,
+                &mut values
+            ),
+            0
+        );
+        assert!(max_score.is_nan());
         ffi_close_jvm_reader(h);
     }
 
@@ -1805,6 +1920,7 @@ mod tests {
         let q = term_blob("body", "fox");
         let sort = sort_blob(&[(SORT_DOC, 0, "", 0)], None);
         let (mut n, mut total, mut lower, mut terms_len) = (0usize, 0i64, false, 0usize);
+        let mut max_score = 0f32;
         let mut docs = [0i32; 1];
         let mut values = [0i64; 1];
         let mut call =
@@ -1826,6 +1942,7 @@ mod tests {
                     &mut total,
                     &mut lower,
                     &mut terms_len,
+                    &mut max_score,
                 )
             };
         let (d, v) = (docs.as_mut_ptr(), values.as_mut_ptr());

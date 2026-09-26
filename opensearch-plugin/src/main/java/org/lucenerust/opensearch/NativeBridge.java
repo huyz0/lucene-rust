@@ -13,7 +13,7 @@ package org.lucenerust.opensearch;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 12;
+    public static final int EXPECTED_ABI_VERSION = 13;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -75,7 +75,8 @@ public final class NativeBridge {
      * hits' global doc ids, best first, and {@code outValues} their sort values, one {@code long}
      * per key per hit in key order ({@link SortEncoder#value} turns them back). A keyword key's
      * terms come back in a new array stored in {@code outTerms[0]} (see {@link SortEncoder#hits});
-     * {@code outCounts} as for {@link #search}; {@code topN} must be at least 1.
+     * {@code outCounts} as for {@link #search}, and a fourth slot holding the tracked max score's
+     * float bits ({@code NaN} untracked); {@code topN} must be at least 1.
      */
     public static native int searchSorted(
         long handle,

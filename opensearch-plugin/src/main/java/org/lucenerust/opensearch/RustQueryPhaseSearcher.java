@@ -139,7 +139,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 // native collector has no such path.
                 reason = "index_sort";
             } else {
-                SortEncoder.Encoded sorted = SortEncoder.encode(ctx.sort().sort, ctx.searchAfter());
+                // track_scores behind another key: OpenSearch's MaxScoreCollector over every match.
+                boolean trackMaxScore = ctx.trackScores() && sortByScore(ctx.sort().sort) == false;
+                SortEncoder.Encoded sorted = SortEncoder.encode(ctx.sort().sort, ctx.searchAfter(), trackMaxScore);
                 reason = sorted.fallbackReason();
                 sortBlob = sorted.blob();
             }
@@ -177,10 +179,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         if (collectors.isEmpty() == false || hasFilterCollector) return "collectors";
         if (ctx.scrollContext() != null) return "scroll";
         // A sort runs native when SortEncoder can encode it (searchWith); search_after only
-        // with one, and track_scores only when the score leads it (OpenSearch then reads the
-        // max score off the first hit; otherwise it needs a MaxScoreCollector over every match).
+        // with one. track_scores runs native too: the score leading the sort gives the max
+        // score (the first hit), and otherwise the native search tracks it over every match.
         if (ctx.searchAfter() != null && ctx.sort() == null) return "search_after";
-        if (ctx.sort() != null && ctx.trackScores() && sortByScore(ctx.sort().sort) == false) return "track_scores";
         if (ctx.collapse() != null) return "collapse";
         if (ctx.rescore() != null && ctx.rescore().isEmpty() == false) return "rescore";
         if (ctx.getProfilers() != null) return "profile";
@@ -292,7 +293,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         SortField[] fields = ctx.sort().sort.getSort();
         int[] docs = new int[numDocs];
         long[] values = new long[numDocs * fields.length];
-        long[] counts = new long[3];
+        long[] counts = new long[4];
         byte[][] terms = new byte[1][];
         int rc = NativeBridge.searchSorted(handle, blob, sortBlob, numDocs, countLimit, docs, values, counts, terms);
         if (rc != NativeBridge.OK) {
@@ -305,7 +306,11 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         TotalHits total = shortcut >= 0 ? new TotalHits(shortcut, TotalHits.Relation.EQUAL_TO)
             : countLimit == 0 ? new TotalHits(0, TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO)
             : new TotalHits(counts[1], counts[2] != 0 ? TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO : TotalHits.Relation.EQUAL_TO);
-        float maxScore = n > 0 && sortByScore(ctx.sort().sort) ? (float) hits[0].fields[0] : Float.NaN;
+        // The score leading the sort: its first hit's; a tracked max score (track_scores
+        // behind another key): the native MaxScoreCollector's, NaN without matches.
+        float maxScore = n > 0 && sortByScore(ctx.sort().sort) ? (float) hits[0].fields[0]
+            : ctx.trackScores() ? Float.intBitsToFloat((int) counts[3])
+            : Float.NaN;
         ctx.queryResult().topDocs(new TopDocsAndMaxScore(new TopFieldDocs(total, hits, fields), maxScore), ctx.sort().formats);
         return null;
     }
