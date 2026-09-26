@@ -63,11 +63,13 @@ use lucene_util::fixed_bit_set::FixedBitSet;
 
 use crate::collector::{ScoreMode, ScoringCollector, TotalHits, TotalHitsRelation};
 use crate::directory_reader::SegmentReader;
+use crate::exec::cache::SortColumn;
 use crate::exec::{self, Mode, Scorer, NO_MORE_DOCS};
 use crate::field_norms::FieldNorms;
 use crate::multi_segment::OpenSegment;
 use crate::query::{BooleanQuery, Clause};
 use crate::Result;
+use std::sync::Arc;
 
 /// `SortField.Type`, for the keys this collector sorts by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -597,10 +599,13 @@ fn sortable_int_to_float(v: i64) -> f32 {
 
 /// A numeric doc-values column as `NumericDocValues`: a `NUMERIC` column
 /// directly, a `SORTED_NUMERIC` one through `SortedNumericSelector`.
+#[derive(Clone)]
 enum Column<'a> {
     Absent,
     Single(NumericReader<'a>),
     Multi(SortedNumericReader<'a>, Vec<i64>, Selector),
+    /// The segment's decoded copy ([`SortColumn::Longs`]).
+    Cached(Arc<SortColumn>),
 }
 
 impl Column<'_> {
@@ -615,6 +620,7 @@ impl Column<'_> {
                     Selector::Max => buf.last().copied(),
                 }
             }
+            Column::Cached(c) => cached_long(c, doc),
         })
     }
 }
@@ -636,6 +642,15 @@ impl LeafNumeric<'_> {
     /// for `collect` to raise.
     #[inline]
     fn quick_value(&mut self, doc: i32) -> Option<i64> {
+        if let Column::Cached(c) = &self.column {
+            let v = match cached_long(c, doc) {
+                Some(v) if self.int => i64::from(v as i32),
+                Some(v) => v,
+                None => self.missing,
+            };
+            self.cached = (doc, v);
+            return Some(v);
+        }
         if let Column::Single(r) = &self.column {
             if let Some(v) = r.dense_value(doc) {
                 let v = if self.int { i64::from(v as i32) } else { v };
@@ -1330,10 +1345,103 @@ enum LeafKey<'a> {
 /// A keyword column as `SortedDocValues`: a `SORTED` column, or a
 /// `SORTED_SET` one through `SortedSetSelector` (`MIN` the first ordinal,
 /// `MAX` the last).
+#[derive(Clone)]
 enum OrdColumn<'a> {
     Absent,
     Single(NumericReader<'a>),
     Multi(SortedNumericReader<'a>, Vec<i64>, Selector),
+    /// The segment's decoded copy ([`SortColumn::Ords`]).
+    Cached(Arc<SortColumn>),
+}
+
+/// A decoded numeric column's value for `doc`.
+#[inline]
+fn cached_long(c: &SortColumn, doc: i32) -> Option<i64> {
+    match c {
+        SortColumn::Longs { values, has } if has.get_doc(doc) => usize::try_from(doc)
+            .ok()
+            .and_then(|i| values.get(i))
+            .copied(),
+        _ => None,
+    }
+}
+
+/// A decoded keyword column's ordinal for `doc`, `-1` for none.
+//
+// SENTINEL: `-1` = "no value", as `OrdColumn::ord`'s; its callers
+// (`OrdColumn::ord`, `LeafStr::quick_compare_bottom`) map it to the missing
+// ordinal.
+#[inline]
+fn cached_ord(c: &SortColumn, doc: i32) -> Option<i32> {
+    match c {
+        // FBS: `v` is a `Vec<i32>`, not a bit set; `get` bounds the index.
+        SortColumn::Ords(v) => usize::try_from(doc).ok().and_then(|i| v.get(i)).copied(),
+        SortColumn::Longs { .. } => None,
+    }
+}
+
+/// `column`, or the segment's decoded copy of it when the column is one a
+/// per-document read decodes (see [`SortColumn`]).
+fn cache_ords<'a>(
+    seg: &OpenSegment<'a>,
+    f: &SortField,
+    column: OrdColumn<'a>,
+    max_doc: i32,
+) -> Result<OrdColumn<'a>> {
+    let worth = match &column {
+        OrdColumn::Single(r) => !r.has_dense_fast(),
+        OrdColumn::Multi(..) => true,
+        _ => false,
+    };
+    let Some(cache) = seg.cache.filter(|_| worth) else {
+        return Ok(column);
+    };
+    let key = format!("ord\0{}\0{:?}", f.field, f.selector);
+    let mut fresh = column.clone();
+    let built = cache.sort_column(&key, max_doc, || {
+        let mut v = Vec::with_capacity(usize::try_from(max_doc).unwrap_or(0));
+        for d in 0..max_doc {
+            v.push(fresh.ord(d)?);
+        }
+        Ok(SortColumn::Ords(v))
+    })?;
+    Ok(built.map_or(column, OrdColumn::Cached))
+}
+
+/// [`cache_ords`] for a numeric column.
+fn cache_longs<'a>(
+    seg: &OpenSegment<'a>,
+    f: &SortField,
+    column: Column<'a>,
+    max_doc: i32,
+) -> Result<Column<'a>> {
+    let worth = match &column {
+        Column::Single(r) => !r.has_dense_fast(),
+        Column::Multi(..) => true,
+        _ => false,
+    };
+    let Some(cache) = seg.cache.filter(|_| worth) else {
+        return Ok(column);
+    };
+    let key = format!("num\0{}\0{:?}", f.field, f.selector);
+    let mut fresh = column.clone();
+    let built = cache.sort_column(&key, max_doc, || {
+        let n = usize::try_from(max_doc).unwrap_or(0);
+        let mut values = Vec::with_capacity(n);
+        let mut has = FixedBitSet::new(n);
+        for d in 0..max_doc {
+            match fresh.value(d)? {
+                Some(v) => {
+                    // FBS: `d < max_doc`, the set's length.
+                    has.set(d as usize);
+                    values.push(v);
+                }
+                None => values.push(0),
+            }
+        }
+        Ok(SortColumn::Longs { values, has })
+    })?;
+    Ok(built.map_or(column, Column::Cached))
 }
 
 impl OrdColumn<'_> {
@@ -1346,6 +1454,9 @@ impl OrdColumn<'_> {
     fn ord(&mut self, doc: i32) -> Result<i32> {
         let v = match self {
             OrdColumn::Absent => None,
+            OrdColumn::Cached(c) => {
+                return cached_ord(c, doc).ok_or_else(|| SortError::Ordinal(i64::from(doc)).into());
+            }
             OrdColumn::Single(r) => r.value(doc).map_err(crate::Error::from)?,
             OrdColumn::Multi(r, buf, selector) => {
                 r.values(doc, buf).map_err(crate::Error::from)?;
@@ -1456,9 +1567,11 @@ impl<'a> LeafStr<'a> {
     fn quick_compare_bottom(&mut self, doc: i32) -> Option<i32> {
         let dense = match &self.column {
             OrdColumn::Single(r) => r.dense_value(doc),
+            OrdColumn::Cached(c) => cached_ord(c, doc).map(i64::from),
             _ => None,
         };
         let o = match dense {
+            Some(-1) => self.missing_ord,
             Some(v) => i32::try_from(v).ok()?,
             None => match self.ord(doc).ok()? {
                 -1 => self.missing_ord,
@@ -1793,6 +1906,7 @@ fn open_str<'a>(
     let missing_ord = if f.missing != 0 { i32::MAX } else { -1 };
     // `canSkipDocuments`, then the competitive state the field allows.
     let max_doc = reader.max_doc;
+    let column = cache_ords(seg, f, column, max_doc)?;
     let state = |postings, dense| StrCompetitive {
         postings,
         dense,
@@ -1900,6 +2014,7 @@ fn open_leaf<'a>(
                         }
                     },
                 };
+                let column = cache_longs(seg, f, column, max_doc)?;
                 let competitive = match (c.pruning, points, f.point_bytes()) {
                     (Pruning::None, _, _) | (_, None, _) | (_, _, None) => None,
                     (_, Some(p), Some(bytes)) => match p.field_number(&f.field) {
@@ -2197,6 +2312,58 @@ impl<'a> Leaf<'a> {
             }
         }
         Ok(())
+    }
+
+    /// [`Self::quick_reject`] over a run `from..to` of matching documents,
+    /// in one loop: counts and drops documents (skipping deleted ones) while
+    /// the leading key alone rules them out, and returns the first one it
+    /// cannot -- a tie with more keys, a competitive document, one it cannot
+    /// read -- or `to`.
+    fn reject_run(
+        &mut self,
+        tf: &mut TopField,
+        from: i32,
+        to: i32,
+        live_docs: Option<&FixedBitSet>,
+    ) -> i32 {
+        if !tf.queue_full || tf.can_set_min_score || tf.doc_first {
+            return from;
+        }
+        // Counting may go on while it changes no state (see `quick_reject`).
+        let limit = if tf.exhaustive || tf.relation == TotalHitsRelation::GreaterThanOrEqualTo {
+            u64::MAX
+        } else {
+            tf.threshold
+        };
+        let single = tf.comps.len() == 1;
+        let (mul, bottom) = (tf.comps[0].mul, tf.comps[0].bottom);
+        let mut d = from;
+        macro_rules! run {
+            ($cmp:expr) => {
+                while d < to {
+                    if live_docs.is_some_and(|l| !l.get_doc(d)) {
+                        d += 1;
+                        continue;
+                    }
+                    if tf.total_hits >= limit {
+                        break;
+                    }
+                    match $cmp(d) {
+                        Some(r) if mul * r < 0 || (r == 0 && single) => {
+                            tf.total_hits += 1;
+                            d += 1;
+                        }
+                        _ => break,
+                    }
+                }
+            };
+        }
+        match self.keys.first_mut() {
+            Some(LeafKey::Str(k)) => run!(|d| k.quick_compare_bottom(d)),
+            Some(LeafKey::Numeric(n)) => run!(|d| n.quick_value(d).map(|v| cmp(bottom, v))),
+            _ => {}
+        }
+        d
     }
 
     /// Whether the competitive iterator, if any, still lets every document
@@ -2579,7 +2746,11 @@ fn score_competitive(
                 continue;
             }
         }
-        if let Some(it) = leaf.competitive() {
+        // (`All` rules nothing out: no call.)
+        if let Some(it) = leaf
+            .competitive()
+            .filter(|it| !matches!(it, Iter::All { .. }))
+        {
             if it.doc_id() < doc {
                 let next = it.advance(doc)?;
                 if next != doc {
@@ -2604,6 +2775,10 @@ fn score_competitive(
             run_misses = 0;
             let mut d = doc;
             while d < run_end {
+                d = leaf.reject_run(tf, d, run_end, live_docs);
+                if d >= run_end {
+                    break;
+                }
                 if !live_docs.is_none_or(|l| l.get_doc(d)) {
                     d += 1;
                     continue;

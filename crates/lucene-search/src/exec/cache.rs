@@ -75,7 +75,42 @@ struct Inner {
 #[derive(Default)]
 pub struct SegmentQueryCache {
     inner: Mutex<Inner>,
+    columns: Mutex<Columns>,
 }
+
+/// A sort column decoded once for the segment: every document's value, for
+/// a column a per-document read would decode (a sparse, block-encoded or
+/// multi-valued one). Lucene has no such cache -- its comparators read
+/// doc values per document on every search -- and none of this changes a
+/// value: it is the same read, done once.
+pub(crate) enum SortColumn {
+    /// Ordinals, `-1` for a document without one.
+    Ords(Vec<i32>),
+    /// Values, and which documents have one.
+    Longs { values: Vec<i64>, has: FixedBitSet },
+}
+
+impl SortColumn {
+    fn ram_bytes(&self) -> usize {
+        match self {
+            SortColumn::Ords(o) => o.len() * 4,
+            SortColumn::Longs { values, has } => values.len() * 8 + has.words().len() * 8,
+        }
+    }
+}
+
+/// Sort columns: uses seen, and the columns built.
+#[derive(Default)]
+struct Columns {
+    uses: HashMap<String, u32>,
+    built: HashMap<String, Arc<SortColumn>>,
+    bytes: usize,
+}
+
+/// A sort column is decoded on its second use in a segment.
+const COLUMN_MIN_USES: u32 = 2;
+/// Decoded sort columns per segment.
+pub(crate) const MAX_COLUMN_BYTES: usize = 32 << 20;
 
 impl std::fmt::Debug for SegmentQueryCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -178,6 +213,41 @@ impl SegmentQueryCache {
         let set = Arc::new(collect(&mut *s, max_doc)?);
         self.insert(key, Arc::clone(&set));
         Ok(Some(CacheResult::Hit(Box::new(CachedScorer::new(set)))))
+    }
+
+    /// The sort column `key` of a segment of `max_doc` documents: cached,
+    /// or built by `build` on its second use when it fits the budget. `None`
+    /// means read the column per document.
+    pub(crate) fn sort_column(
+        &self,
+        key: &str,
+        max_doc: i32,
+        build: impl FnOnce() -> Result<SortColumn>,
+    ) -> Result<Option<Arc<SortColumn>>> {
+        if max_doc < MIN_SEGMENT_SIZE {
+            return Ok(None);
+        }
+        {
+            let mut c = self.columns.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(col) = c.built.get(key) {
+                return Ok(Some(Arc::clone(col)));
+            }
+            let uses = c.uses.entry(key.to_string()).or_insert(0);
+            *uses = uses.saturating_add(1);
+            if *uses != COLUMN_MIN_USES {
+                return Ok(None);
+            }
+        }
+        // Built without the lock; tried once (on the second use exactly).
+        let col = Arc::new(build()?);
+        let bytes = col.ram_bytes();
+        let mut c = self.columns.lock().unwrap_or_else(|e| e.into_inner());
+        if c.bytes.saturating_add(bytes) > MAX_COLUMN_BYTES {
+            return Ok(None);
+        }
+        c.bytes += bytes;
+        c.built.insert(key.to_string(), Arc::clone(&col));
+        Ok(Some(col))
     }
 
     fn insert(&self, key: String, set: Arc<CachedSet>) {
@@ -337,6 +407,7 @@ impl Scorer for CachedScorer {
 
 #[cfg(test)]
 mod tests {
+
     #![allow(clippy::arithmetic_side_effects)]
     use super::*;
     use crate::exec::leaf::DocList;
@@ -498,5 +569,46 @@ mod tests {
             .scorer(&huge, max_doc, || list((0..max_doc / 50).collect()))
             .unwrap());
         assert!(cache.stats().1 <= MAX_BYTES);
+    }
+
+    #[test]
+    fn a_sort_column_is_decoded_on_its_second_use_within_the_budget() {
+        let cache = SegmentQueryCache::default();
+        let ords = |n: usize| move || Ok(SortColumn::Ords(vec![7; n]));
+        // A small segment never caches.
+        assert!(cache.sort_column("k", 100, ords(100)).unwrap().is_none());
+        assert!(cache.sort_column("k", 100, ords(100)).unwrap().is_none());
+        // First use: nothing; second: built; afterwards: the same column,
+        // whatever the builder would say.
+        assert!(cache
+            .sort_column("f", 20_000, ords(20_000))
+            .unwrap()
+            .is_none());
+        let built = cache
+            .sort_column("f", 20_000, ords(20_000))
+            .unwrap()
+            .unwrap();
+        assert!(matches!(&*built, SortColumn::Ords(v) if v.len() == 20_000));
+        let again = cache
+            .sort_column("f", 20_000, || -> Result<SortColumn> { unreachable!() })
+            .unwrap()
+            .unwrap();
+        assert!(Arc::ptr_eq(&built, &again));
+        // A column past the budget is built once and dropped; not retried.
+        let big = MAX_COLUMN_BYTES / 4 + 1;
+        assert!(cache.sort_column("g", 20_000, ords(big)).unwrap().is_none());
+        assert!(cache.sort_column("g", 20_000, ords(big)).unwrap().is_none());
+        assert!(cache.sort_column("g", 20_000, ords(big)).unwrap().is_none());
+        // A failed build is the search's error.
+        assert!(cache.sort_column("h", 20_000, ords(1)).unwrap().is_none());
+        let err = cache.sort_column("h", 20_000, || -> Result<SortColumn> {
+            Err(crate::top_field::SortError::NoKeys.into())
+        });
+        assert!(err.is_err());
+        let longs = SortColumn::Longs {
+            values: vec![1, 2],
+            has: FixedBitSet::new(2),
+        };
+        assert_eq!(longs.ram_bytes(), 16 + 8);
     }
 }

@@ -286,6 +286,23 @@ per segment straight from the `IndexedDISI` words, joined with the points in
 range); with single-valued `SORTED_NUMERIC` columns read as the numeric column
 they are (`DocValues.singleton`), the shape measures 1.15x.
 
+The same shard at REST's own parameters (`size` 10, `track_total_hits`
+10,000) showed three more: a keyword sort, a date sort under a filter and a
+`long` sort, each over a term matching fewer documents than the threshold, so
+nothing can be skipped and every match is compared, at 0.50-0.78x. The columns
+are sparse there (the shard's update tombstones have no fields), and a sparse
+per-document read went through the general decode path. Four changes: a
+forward read inside the current `IndexedDISI` block without the header logic
+(`DisiCursor::advance_exact_in_block`), a sparse column's values read by
+ordinal with the dense column's packed reader, the fast reject extended to
+sparse columns, to a total still below the threshold and to search-after
+pages, and a run of matches rejected in one loop. Then a per-segment column
+cache: a sort column that a per-document read has to decode is decoded once,
+on its second use in the segment, and read from memory afterwards (within 32 MB
+per segment, next to the query cache). The rows now measure 1.02-1.65x in process
+(keyword 1.49x, date under a filter 1.02x, `long` 1.65x), and the
+match-all rows 5.4-41x.
+
 Falls back: `avg`/`sum`/`median` modes and nested sorts (OpenSearch's custom
 comparators), `track_scores` unless the score leads, and index-sorted shards.
 
