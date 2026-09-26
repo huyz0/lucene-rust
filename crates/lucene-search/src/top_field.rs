@@ -896,6 +896,29 @@ impl IntersectVisitor for CompetitiveVisitor {
         }
     }
 
+    fn visit_many(&mut self, doc_ids: &[i32]) {
+        if self.bits.is_none() && self.docs.len() + doc_ids.len() >= self.upgrade_at {
+            self.upgrade();
+        }
+        let floor = self.max_doc_visited;
+        match &mut self.bits {
+            Some(b) => {
+                for &d in doc_ids {
+                    if d > floor {
+                        b.set(d as usize);
+                        self.added += 1;
+                    }
+                }
+            }
+            None => {
+                let before = self.docs.len();
+                self.docs
+                    .extend(doc_ids.iter().copied().filter(|&d| d > floor));
+                self.added += self.docs.len() - before;
+            }
+        }
+    }
+
     fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) {
         if doc_id <= self.max_doc_visited {
             return;
@@ -1884,6 +1907,27 @@ mod tests {
         for d in [7, 9, 40, 41] {
             assert!(bits.get(d), "{d}");
         }
+        assert_eq!(bits.cardinality(), 4);
+
+        // In bulk: below the floor dropped, the list kept until a run would
+        // pass the upgrade size, then set directly.
+        let mut v = CompetitiveVisitor {
+            min: 0,
+            max: 0,
+            max_doc_visited: 4,
+            docs: Vec::new(),
+            bits: None,
+            upgrade_at: 4,
+            added: 0,
+            spare: Some(FixedBitSet::new(64)),
+            max_doc: 64,
+        };
+        v.visit_many(&[3, 5, 6]);
+        assert_eq!((v.docs.as_slice(), v.added), (&[5, 6][..], 2));
+        v.visit_many(&[2, 8, 9]);
+        let bits = v.bits.as_ref().expect("upgraded");
+        assert!(v.spare.is_none(), "the spare set was used");
+        assert_eq!(v.added, 4);
         assert_eq!(bits.cardinality(), 4);
     }
 
