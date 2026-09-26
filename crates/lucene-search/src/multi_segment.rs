@@ -545,6 +545,9 @@ pub(crate) fn global_term_stats(
     }))
 }
 
+/// Where each segment's seek found a term, by the segment's fields' address.
+pub(crate) type TermStates = Vec<(usize, Option<lucene_codecs::blocktree::SeekedTerm>)>;
+
 /// [`global_term_stats`], keeping where each segment's seek found the term
 /// (by the segment's fields' address), for the scorers to open its postings
 /// without seeking again -- Lucene's `TermStates.build`.
@@ -552,12 +555,7 @@ pub(crate) fn global_term_stats_states(
     segments: &[OpenSegment<'_>],
     field: &str,
     term: &[u8],
-) -> crate::Result<
-    Option<(
-        crate::CollectionStats,
-        Vec<(usize, Option<lucene_codecs::blocktree::SeekedTerm>)>,
-    )>,
-> {
+) -> crate::Result<Option<(crate::CollectionStats, TermStates)>> {
     let mut doc_freq = 0i64;
     let mut doc_count = 0i64;
     let mut seen = false;
