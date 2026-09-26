@@ -1149,7 +1149,7 @@ pub fn numeric_value(data: &[u8], entry: &NumericEntry, doc: i32) -> Result<Opti
 /// Both caches are transparent: the values returned are identical to
 /// [`numeric_value`]'s, which is asserted document-for-document in this
 /// module's tests.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NumericReader<'a> {
     data: &'a [u8],
     entry: &'a NumericEntry,
@@ -1353,6 +1353,11 @@ impl<'a> NumericReader<'a> {
         }
     }
 
+    /// Whether [`Self::dense_value`] answers every in-range document.
+    pub fn has_dense_fast(&self) -> bool {
+        self.fast.is_some()
+    }
+
     /// [`Self::value`] when its dense single-width fast path can answer:
     /// `doc`'s value, or `None` for "ask [`Self::value`]" (never "no value").
     #[inline]
@@ -1379,20 +1384,30 @@ impl<'a> NumericReader<'a> {
         if let Some(v) = self.fast.as_ref().and_then(|f| f.get(doc)) {
             return Ok(Some(v));
         }
-        // A sparse single-width field read forward inside the current
-        // `IndexedDISI` block: nothing to decode but the ordinal's value.
-        if let (Some(cursor), Some(fast)) = (self.docs.as_mut(), self.sparse_fast.as_ref()) {
+        // A sparse field read forward inside the current `IndexedDISI`
+        // block: no header to read, only the ordinal's value to decode.
+        if let Some(cursor) = self.docs.as_mut() {
             match cursor.advance_exact_in_block(doc) {
                 Some(None) => return Ok(None),
                 Some(Some(ordinal)) => {
-                    if let Some(v) = i32::try_from(ordinal).ok().and_then(|o| fast.get(o)) {
+                    let fast = self.sparse_fast.as_ref();
+                    if let Some(v) = fast.and_then(|f| f.get(i32::try_from(ordinal).ok()?)) {
                         return Ok(Some(v));
                     }
+                    return self.decode_at(ordinal as i64).map(Some);
                 }
                 None => {}
             }
         }
         self.value_slow(doc)
+    }
+
+    /// The value at `ordinal` in the values array.
+    fn decode_at(&mut self, ordinal: i64) -> Result<i64> {
+        match self.entry.block_shift {
+            Some(shift) => self.decode_varying(shift, ordinal),
+            None => decode_value(self.data, self.entry, ordinal),
+        }
     }
 
     /// [`Self::value`] for every shape but the dense single-width one.
@@ -1428,10 +1443,7 @@ impl<'a> NumericReader<'a> {
                 None => return Ok(None),
             }
         };
-        match self.entry.block_shift {
-            Some(shift) => Ok(Some(self.decode_varying(shift, ordinal)?)),
-            None => Ok(Some(decode_value(self.data, self.entry, ordinal)?)),
-        }
+        self.decode_at(ordinal).map(Some)
     }
 
     /// Calls `f(doc, value)` for every document in `start..end` that has a
@@ -1895,6 +1907,7 @@ pub fn sorted_numeric_values(
 /// [`sorted_numeric_values`] answers the same question for one document but
 /// re-walks the region from its start and allocates each time; a merge,
 /// which visits every document of a source in order, holds one of these.
+#[derive(Debug, Clone)]
 pub struct SortedNumericReader<'a> {
     data: &'a [u8],
     entry: &'a SortedNumericEntry,
