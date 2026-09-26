@@ -2651,6 +2651,36 @@ pub fn search_sorted_tracking(
     after: Option<&FieldDoc>,
     track_max_score: bool,
 ) -> Result<TopFieldDocs> {
+    search_sorted_leaves(
+        segments,
+        readers,
+        query,
+        norms,
+        sort,
+        top_n,
+        total_hits_threshold,
+        after,
+        track_max_score,
+        None,
+    )
+}
+
+/// [`search_sorted_tracking`] over the segments `leaves` names (in that
+/// order), every segment still counting toward the collection statistics;
+/// `None` for all of them.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn search_sorted_leaves(
+    segments: &[OpenSegment<'_>],
+    readers: &[SegmentReader],
+    query: &BooleanQuery,
+    norms: &[Option<&HashMap<String, FieldNorms<'_>>>],
+    sort: &[SortField],
+    top_n: usize,
+    total_hits_threshold: u64,
+    after: Option<&FieldDoc>,
+    track_max_score: bool,
+    leaves: Option<&[usize]>,
+) -> Result<TopFieldDocs> {
     if sort.is_empty() {
         return Err(SortError::NoKeys.into());
     }
@@ -2687,7 +2717,10 @@ pub fn search_sorted_tracking(
     // The score leading the sort gives the max score itself (the first hit).
     let track = track_max_score && sort[0].ty != SortType::Score;
     let global = global_stats(segments, query, sort, track)?;
-    let all: Vec<usize> = (0..segments.len().min(readers.len())).collect();
+    let all: Vec<usize> = match leaves {
+        Some(l) => l.to_vec(),
+        None => (0..segments.len().min(readers.len())).collect(),
+    };
     let run = Run {
         segments,
         readers,

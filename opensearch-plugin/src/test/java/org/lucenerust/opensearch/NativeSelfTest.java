@@ -71,6 +71,7 @@ public final class NativeSelfTest {
     private static int scored;
     private static int sortedChecks;
     private static int trackedPages;
+    private static int terminateChecks;
     private static int aggChecks;
     private static int termsChecks;
 
@@ -91,8 +92,9 @@ public final class NativeSelfTest {
         check(trackedPages >= 20, "sorted pages tracking the max score: " + trackedPages);
         check(aggChecks >= 100, "queries aggregated natively: " + aggChecks);
         check(termsChecks >= 300, "terms aggregations compared: " + termsChecks);
+        check(terminateChecks >= 100, "terminate_after searches compared: " + terminateChecks);
         System.out.printf(
-            "NativeSelfTest: %d checks, %d failures; %d of %d compared scores bit-exact; %d sorted pages compared (%d tracking the max score); %d aggregations, %d terms%n",
+            "NativeSelfTest: %d checks, %d failures; %d of %d compared scores bit-exact; %d sorted pages compared (%d tracking the max score); %d aggregations, %d terms; %d terminate_after%n",
             checks,
             failures,
             bitExact,
@@ -100,7 +102,8 @@ public final class NativeSelfTest {
             sortedChecks,
             trackedPages,
             aggChecks,
-            termsChecks
+            termsChecks,
+            terminateChecks
         );
         if (failures > 0) {
             System.exit(1);
@@ -310,6 +313,7 @@ public final class NativeSelfTest {
                 check(ok0 && zero[0] == 0, where + ": " + rewritten + " size 0 limit " + limit + " gave " + zero[1] + (zero[2] == 1 ? "+" : "") + ", exact " + exactCount);
             }
             compareSorted(where, searcher, acquired.handle(), rewritten, enc.blob(), new Random(where.hashCode() * 31L + rewritten.hashCode()));
+            compareTerminateAfter(where, searcher, acquired.handle(), rewritten, enc.blob(), new Random(where.hashCode() * 17L + rewritten.hashCode()));
             compareAggs(where + ": " + rewritten, searcher, acquired.handle(), rewritten, enc.blob());
             compareTerms(where + ": " + rewritten, searcher, acquired.handle(), rewritten, enc.blob());
             for (int topN : new int[] { 10, 3 }) {
@@ -626,7 +630,7 @@ public final class NativeSelfTest {
                 SortField[] keys = sort.getSort();
                 int[] docs = new int[topN];
                 long[] values = new long[topN * keys.length];
-                long[] counts = new long[4];
+                long[] counts = new long[5];
                 byte[][] terms = new byte[1][];
                 long limit = threshold == Integer.MAX_VALUE ? Long.MAX_VALUE : threshold;
                 int rc = NativeBridge.searchSorted(handle, blob, enc.blob(), topN, limit, docs, values, counts, terms);
@@ -660,6 +664,115 @@ public final class NativeSelfTest {
                     break;
                 }
                 after = (FieldDoc) want.scoreDocs[want.scoreDocs.length - 1];
+            }
+        }
+    }
+
+    /** OpenSearch's EarlyTerminatingCollector(EMPTY_COLLECTOR, n, true): throws past n. */
+    private static final class Early implements org.apache.lucene.search.Collector {
+        static final class Stop extends RuntimeException {
+            Stop() {
+                super(null, null, false, false);
+            }
+        }
+
+        final int max;
+        int collected;
+        boolean terminated;
+
+        Early(int max) {
+            this.max = max;
+        }
+
+        @Override
+        public org.apache.lucene.search.LeafCollector getLeafCollector(org.apache.lucene.index.LeafReaderContext context) {
+            if (collected >= max) {
+                terminated = true;
+                throw new Stop();
+            }
+            return new org.apache.lucene.search.LeafCollector() {
+                @Override
+                public void setScorer(org.apache.lucene.search.Scorable scorer) {}
+
+                @Override
+                public void collect(int doc) {
+                    if (++collected > max) {
+                        terminated = true;
+                        throw new Stop();
+                    }
+                }
+            };
+        }
+
+        @Override
+        public org.apache.lucene.search.ScoreMode scoreMode() {
+            return org.apache.lucene.search.ScoreMode.COMPLETE_NO_SCORES;
+        }
+    }
+
+    /**
+     * terminate_after as the plugin runs it natively -- a search Lucene collects document by
+     * document (the score among the keys, or track_scores; a query RustQueryPhaseSearcher
+     * .rangeCollected passes) -- against Lucene's sequential search behind OpenSearch's
+     * terminating collector: hits, the total, whether it stopped early, the tracked max score.
+     */
+    @SuppressWarnings("deprecation")
+    private static void compareTerminateAfter(String where, IndexSearcher searcher, long handle, Query query, byte[] blob, Random r)
+        throws Exception {
+        if (RustQueryPhaseSearcher.rangeCollected(query)) {
+            return;
+        }
+        int[] ns = { 1, 2, 3, 7, 20, 100, 1000 };
+        for (int s = 0; s < 2; s++) {
+            Sort sort;
+            boolean track = false;
+            do {
+                sort = r.nextInt(3) == 0 ? new Sort(SortField.FIELD_SCORE) : randomSort(r);
+            } while (Arrays.stream(sort.getSort()).noneMatch(f -> f.getType() == SortField.Type.SCORE) && (track = r.nextBoolean()) == false);
+            int n = ns[r.nextInt(ns.length)];
+            int topN = r.nextBoolean() ? 10 : 3;
+            org.apache.lucene.search.TopFieldCollector top = new TopFieldCollectorManager(sort, topN, null, Integer.MAX_VALUE).newCollector();
+            float[] wantMax = { Float.NEGATIVE_INFINITY };
+            Early early = new Early(n);
+            org.apache.lucene.search.Collector c = track
+                ? org.apache.lucene.search.MultiCollector.wrap(early, top, new MaxScore(wantMax))
+                : org.apache.lucene.search.MultiCollector.wrap(early, top);
+            try {
+                new IndexSearcher(searcher.getIndexReader()).search(query, c);
+            } catch (Early.Stop e) {
+                // terminated
+            }
+            TopFieldDocs want = top.topDocs();
+            SortEncoder.Encoded enc = SortEncoder.encode(sort, null, track, new int[0][], n, false);
+            String what = where + ": " + query + " sorted " + sort + " terminate_after " + n + (track ? " tracking the max score" : "");
+            check(enc.blob() != null, what + ": sort encodes (" + enc.fallbackReason() + ")");
+            if (enc.blob() == null) {
+                return;
+            }
+            SortField[] keys = sort.getSort();
+            int[] docs = new int[topN];
+            long[] values = new long[topN * keys.length];
+            long[] counts = new long[5];
+            byte[][] terms = new byte[1][];
+            int rc = NativeBridge.searchSorted(handle, blob, enc.blob(), topN, Long.MAX_VALUE, docs, values, counts, terms);
+            check(rc == NativeBridge.OK, what + ": status " + rc + " " + NativeBridge.lastError());
+            if (rc != NativeBridge.OK) {
+                return;
+            }
+            FieldDoc[] got = SortEncoder.hits(keys, (int) counts[0], docs, values, terms[0]);
+            boolean same = counts[0] == want.scoreDocs.length;
+            for (int i = 0; same && i < counts[0]; i++) {
+                FieldDoc w = (FieldDoc) want.scoreDocs[i];
+                same = got[i].doc == w.doc && Arrays.equals(got[i].fields, w.fields);
+            }
+            terminateChecks++;
+            check(same, what + ": native " + Arrays.toString(Arrays.copyOf(docs, (int) counts[0])) + " lucene " + Arrays.toString(Arrays.stream(want.scoreDocs).mapToInt(d -> d.doc).toArray()));
+            check(counts[1] == want.totalHits.value() && counts[2] == 0, what + ": total " + counts[1] + " vs " + want.totalHits);
+            check((counts[4] != 0) == early.terminated, what + ": terminated " + counts[4] + " vs " + early.terminated);
+            if (track) {
+                float gotMax = Float.intBitsToFloat((int) counts[3]);
+                float luceneMax = Float.isInfinite(wantMax[0]) ? Float.NaN : wantMax[0];
+                check(Float.floatToIntBits(gotMax) == Float.floatToIntBits(luceneMax), what + ": max score " + gotMax + " vs " + luceneMax);
             }
         }
     }

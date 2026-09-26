@@ -271,7 +271,7 @@ public final class NativeAggregations {
         }
     }
 
-    private static void writeInt(ByteArrayOutputStream out, int v) {
+    static void writeInt(ByteArrayOutputStream out, int v) {
         for (int i = 0; i < 4; i++) {
             out.write(v >>> (8 * i));
         }

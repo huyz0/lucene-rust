@@ -23,7 +23,7 @@ milestone finishes the read side.
 | R4 | Sort and `search_after` natively (`TopFieldCollector`) | numeric, score, `_doc` and keyword keys and `track_scores` delivered (below); open: `avg`/`sum`/`median` modes, nested sorts, index-sorted shards |
 | R5 | Aggregations natively: terms, histogram, date_histogram, range, the metrics, cardinality, filter/filters | metrics (`min`, `max`, `sum`, `avg`, `value_count`, `stats`) and keyword `terms` delivered (below); open: the bucket aggregations, `cardinality`, sub-aggregations |
 | R6 | Fetch (`_source`, stored fields, `docvalue_fields`) and get natively | open |
-| R7 | scroll, `post_filter`, `min_score`, `terminate_after`, timeouts; the full read benchmark (in process and REST) with every native shape at least 1.0× Lucene | `post_filter`, `timeout` and scroll delivered (below); open: `min_score`, `terminate_after`, the full read benchmark |
+| R7 | scroll, `post_filter`, `min_score`, `terminate_after`, timeouts; the full read benchmark (in process and REST) with every native shape at least 1.0× Lucene | `post_filter`, `timeout`, scroll and `terminate_after` delivered (below); open: `min_score`, the full read benchmark |
 
 ## R1 — the scorer tree (delivered)
 
@@ -567,9 +567,48 @@ contexts do, in the plugin's Java; the native searches underneath are R1-R5's.
   exactly what `PagingTopScoreDocCollector` skips, its hits handed back as
   `ScoreDoc`s.
 
+- **`terminate_after`**: OpenSearch never runs it concurrently, and puts an
+  `EarlyTerminatingCollector` (forced) in a `MultiCollector` beside the
+  top-docs collector: the first `n` matches in index order are let through,
+  the next one -- or the next segment -- ends the search. Natively
+  (`lucene-search/src/terminate.rs`): find where the `n`th match falls, then
+  run the sorted search over that prefix of the index (the cut segment's live
+  documents masked past it) with the whole shard's statistics; a search by
+  score runs as the `_score` sort. `terminated_early` is whether a match or a
+  segment followed the cut. `size: 0` counts as `TotalHitCountCollector`
+  does, a term's `docFreq` or a match-all's `numDocs` per visited segment
+  whole. Lucene's own answer depends on how its bulk scorer hands matches
+  out: `DenseConjunctionBulkScorer` gives `collectRange` batches, which
+  `MultiCollector` hands to the terminating collector first, so the top-docs
+  collector loses the whole batch the cut falls in (a match-all stopped at
+  3,001 reports 2,571). The native side cuts at the document, so those
+  searches -- an unscored sort, a constant-score or filter-only query -- stay
+  on Lucene, as do aggregations (an aggregator answering a segment from
+  index statistics sees past the cut), `search_after` and scroll.
+  `tests/terminate_after_fixtures.rs` checks 864 Lucene runs through Lucene's
+  own collectors (`fixtures/src/GenTerminateAfter.java`), including the
+  ranged ones it leaves to Lucene; seen to fail with the cut one document
+  short (92 runs) and with a later segment not ending the search (6).
+- **`terminated_early` without `terminate_after`**: under concurrent search
+  OpenSearch counts a `size: 0` request through the same collector, not
+  forced, with a limit of 0 (a disabled total, or one answered from index
+  statistics) or `track_total_hits`, and reports `terminated_early: true`
+  when a slice's collector stopped. The REST matrix now compares the field,
+  which showed the native path leaving it out on every `size: 0` aggregation
+  row. With a limit of 0 it is set whenever the shard has a segment; past
+  `track_total_hits` it depends on which segments the count collector
+  answers from `Weight.count` (and so never shows the terminating collector)
+  -- the plugin asks Lucene's own weight, query cache included, and the
+  native side replays each slice over the others (`count_terminates`).
+
 Acceptance, `scripts/verify-opensearch.sh` against a stock node's answers:
 `post_filter` with terms and metric aggregations, sorted, paged, `size: 0`,
 `track_total_hits: false`, matching nothing; `timeout` with a sort and
 aggregations; five scrolls to the end on one shard and three (by score, by
 `_doc`, by two keys, by score with `track_scores`, with a `post_filter`),
-page for page the same, every page's query phase native on every shard.
+page for page the same, every page's query phase native on every shard;
+eleven `terminate_after` rows native (scored hits, a disjunction, `size: 0`
+over a term, a match-all, no query and a `bool` filter, uncounted, a field
+sort with `track_scores`, `_score` then a field, under a `post_filter`, not
+reached) and three left to Lucene (a field sort, a match-all's hits,
+aggregations), `terminated_early` compared.
