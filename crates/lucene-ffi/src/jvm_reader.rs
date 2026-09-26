@@ -1218,12 +1218,12 @@ pub(crate) fn aggregate_counting_blobs(
         states.extend(m);
         results.extend(t);
     }
-    // Behind `min_score` the aggregations saw only the passing documents,
-    // which the plain count does not ask about.
-    let total = if count_limit > 0 && min_score.is_none() {
-        Some(total_hits_with(&h, &segments, &query, count_limit, &seen)?)
-    } else {
-        None
+    // Behind `min_score` the aggregations saw the passing documents, which
+    // is what its count counts; otherwise every live match.
+    let total = match (count_limit > 0, min_score) {
+        (false, _) => None,
+        (true, None) => Some(total_hits_with(&h, &segments, &query, count_limit, &seen)?),
+        (true, Some(_)) => min_score_total(&seen, count_limit),
     };
     Ok((states, encode_terms_results(&results)?, total))
 }
@@ -1741,6 +1741,22 @@ fn total_hits(
     count_limit: i64,
 ) -> Result<(i64, bool), FfiStatus> {
     total_hits_with(h, segments, query, count_limit, &[])
+}
+
+/// `min_score`'s `size: 0` count ([`search_min_score`]) from each segment's
+/// passing documents: summed in segment order, stopping at the first segment
+/// boundary past `limit`. `None` when a segment on the way was not visited
+/// (its aggregations answered from points), which then counts it itself.
+fn min_score_total(seen: &[Option<u64>], limit: i64) -> Option<(i64, bool)> {
+    let limit = u64::try_from(limit).unwrap_or(0);
+    let mut count = 0u64;
+    for n in seen {
+        count = count.saturating_add((*n)?);
+        if count > limit {
+            return Some((i64::try_from(count).unwrap_or(i64::MAX), true));
+        }
+    }
+    Some((i64::try_from(count).unwrap_or(i64::MAX), false))
 }
 
 /// [`total_hits`], with `known[i]` segment `i`'s live match count where it is
@@ -2511,6 +2527,20 @@ mod tests {
         assert_eq!(hits[..want.len()], want[..]);
         assert!(hits.iter().all(|&(_, s)| s >= min));
         assert!(got_total <= total);
+        // The aggregations' pass counts what min_score's size-0 count does, at
+        // every limit.
+        for limit in [1, 2, 3, i64::MAX] {
+            let (_, _, fused) =
+                aggregate_counting_blobs(h, &blob, &metrics_blob(&[(METRIC_LONG, "n")]), limit)
+                    .unwrap();
+            let (_, count, lower) = run_limit(h, &blob, 0, limit).unwrap();
+            assert_eq!(fused, Some((count, lower)), "min_score up to {limit}");
+        }
+        // A segment not visited (its aggregations answered from points) leaves
+        // the count to the search; one past the limit before it does not.
+        assert_eq!(min_score_total(&[Some(2), None], 5), None);
+        assert_eq!(min_score_total(&[Some(6), None], 5), Some((6, true)));
+        assert_eq!(min_score_total(&[Some(2), Some(3)], 5), Some((5, false)));
         // size: 0 counts the same documents (fox matches at most 8 here).
         if total <= 8 {
             let (none, count) = run(h, &blob, 0, true).unwrap();
