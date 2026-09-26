@@ -631,6 +631,19 @@ struct LeafNumeric<'a> {
 }
 
 impl LeafNumeric<'_> {
+    /// [`Self::value`] when a dense single-valued column answers directly
+    /// (kept for [`Self::value`]), or `None` for "ask it".
+    #[inline]
+    fn quick_value(&mut self, doc: i32) -> Option<i64> {
+        let Column::Single(r) = &self.column else {
+            return None;
+        };
+        let v = r.dense_value(doc)?;
+        let v = if self.int { i64::from(v as i32) } else { v };
+        self.cached = (doc, v);
+        Some(v)
+    }
+
     fn value(&mut self, doc: i32) -> Result<i64> {
         if self.cached.0 == doc {
             return Ok(self.cached.1);
@@ -679,6 +692,17 @@ impl Iter<'_> {
         }
     }
 
+    /// `cost`: an upper bound of the documents left, for choosing the
+    /// iterator that leads (unknown for a bit set: never it).
+    fn cost(&self) -> i64 {
+        match self {
+            Iter::All { max_doc, .. } => i64::from(*max_doc),
+            Iter::Docs { docs, .. } => docs.len() as i64,
+            Iter::Bits { .. } => i64::MAX,
+            Iter::Union(u) => u.cost,
+        }
+    }
+
     fn advance(&mut self, target: i32) -> Result<i32> {
         Ok(match self {
             Iter::All { max_doc, doc } => {
@@ -721,6 +745,9 @@ struct Union<'a> {
     /// `postings`: each competitive term's cursor and ordinal; the live ones
     /// are `legs[lo..hi]`.
     legs: Vec<(LazyDocsCursor<'a>, i32)>,
+    /// Each leg's `docFreq`, and the live legs' sum (`cost`).
+    doc_freqs: Vec<i64>,
+    cost: i64,
     lo: usize,
     hi: usize,
     /// `disjunction`: indices into `legs`, least document first.
@@ -732,6 +759,7 @@ impl Union<'_> {
     /// `disjunction.clear(); disjunction.addAll(postings)`, the cursors where
     /// they are.
     fn rebuild(&mut self) {
+        self.cost = self.doc_freqs[self.lo..self.hi].iter().sum();
         self.heap.clear();
         self.heap.extend(self.lo..self.hi);
         let legs = &self.legs;
@@ -1504,6 +1532,7 @@ impl<'a> LeafStr<'a> {
         if !comp.initialized {
             comp.initialized = true;
             let mut legs = Vec::with_capacity(size as usize);
+            let mut doc_freqs = Vec::with_capacity(size as usize);
             if size > 0 {
                 // `init`: the doc-values term of `minOrd`, found in the terms
                 // index, and the next `size - 1` terms after it.
@@ -1524,6 +1553,7 @@ impl<'a> LeafStr<'a> {
                         .lazy_postings_for(&seeked, doc_in, PostingsFlags::DocsOnly)
                         .map_err(pe)?;
                     legs.push((cursor, ord as i32));
+                    doc_freqs.push(i64::from(seeked.stats.doc_freq));
                     if ord == max_ord {
                         break;
                     }
@@ -1536,6 +1566,8 @@ impl<'a> LeafStr<'a> {
             let hi = legs.len();
             let mut u = Union {
                 legs,
+                doc_freqs,
+                cost: 0,
                 lo: 0,
                 hi,
                 heap: Vec::with_capacity(hi),
@@ -1871,7 +1903,18 @@ impl<'a> Leaf<'a> {
 
     #[inline]
     fn compare_bottom(&mut self, tf: &TopField, doc: i32, scorer: &mut Sc<'_>) -> Result<i32> {
-        for (i, c) in tf.comps.iter().enumerate() {
+        self.compare_bottom_from(tf, 0, doc, scorer)
+    }
+
+    /// [`Self::compare_bottom`] over the keys from `first` on.
+    fn compare_bottom_from(
+        &mut self,
+        tf: &TopField,
+        first: usize,
+        doc: i32,
+        scorer: &mut Sc<'_>,
+    ) -> Result<i32> {
+        for (i, c) in tf.comps.iter().enumerate().skip(first) {
             let r = match &mut self.keys[i] {
                 LeafKey::Str(k) => c.mul * k.compare_bottom(doc)?,
                 _ => c.mul * cmp(c.bottom, self.value(i, doc, scorer)?),
@@ -1980,8 +2023,9 @@ impl<'a> Leaf<'a> {
         {
             return false;
         }
-        let r = match self.keys.first() {
+        let r = match self.keys.first_mut() {
             Some(LeafKey::Str(k)) => k.quick_compare_bottom(doc),
+            Some(LeafKey::Numeric(n)) => n.quick_value(doc).map(|v| cmp(tf.comps[0].bottom, v)),
             _ => None,
         };
         // `thresholdCheck` drops a document that does not beat the bottom;
@@ -1989,7 +2033,19 @@ impl<'a> Leaf<'a> {
         // kept for `collect`, and an error is left for it to raise).
         let drop = match r.map(|r| tf.comps[0].mul * r) {
             Some(r) if r < 0 || (r == 0 && tf.comps.len() == 1) => true,
-            Some(0) => matches!(self.compare_bottom(tf, doc, scorer), Ok(r) if r <= 0),
+            // The common tie-break, the score, read and kept directly.
+            Some(0) if tf.comps.len() == 2 && matches!(self.keys[1], LeafKey::Score) => {
+                match scorer.as_deref_mut().map(|s| s.score()) {
+                    Some(Ok(score)) => {
+                        self.score = score;
+                        self.score_doc = doc;
+                        let c = &tf.comps[1];
+                        c.mul * cmp(c.bottom, score_value(score)) <= 0
+                    }
+                    _ => false,
+                }
+            }
+            Some(0) => matches!(self.compare_bottom_from(tf, 1, doc, scorer), Ok(r) if r <= 0),
             _ => false,
         };
         if drop {
@@ -2341,6 +2397,7 @@ fn score_competitive(
     // (Scores read off the iterating scorer need it on each collected
     // document: leapfrog only.)
     let mut by_membership = !two_phase && !self_scores && scorer.contains(0).is_some();
+    let lead_cost = scorer.cost();
     // Runs are asked for until this many documents in a row start none: an
     // iterator without runs then stops paying for the question.
     const RUN_PATIENCE: u32 = 64;
@@ -2451,7 +2508,7 @@ fn score_competitive(
                 score_at(&mut scores, doc)
             };
             if leaf.quick_reject(tf, doc, &mut sc) {
-                doc = scorer.next_doc()?;
+                doc = step(scorer, leaf, doc, lead_cost)?;
                 continue;
             }
             leaf.collect(tf, doc, sc)?;
@@ -2462,9 +2519,28 @@ fn score_competitive(
                 return count_rest(scorer, tf, leaf, live_docs);
             }
         }
-        doc = scorer.next_doc()?;
+        doc = step(scorer, leaf, doc, lead_cost)?;
     }
     Ok(())
+}
+
+/// The next candidate after `doc`: the scorer's next document, or -- when
+/// the competitive iterator is the sparser of the two -- the scorer advanced
+/// to the competitive iterator's next. Either way the loop then checks the
+/// other side, so the same documents are collected in the same order.
+#[inline]
+fn step(scorer: &mut dyn Scorer, leaf: &mut Leaf<'_>, doc: i32, lead_cost: i64) -> Result<i32> {
+    if let Some(it) = leaf.competitive() {
+        if it.cost() < lead_cost && doc < NO_MORE_DOCS {
+            let next = it.advance(doc.saturating_add(1))?;
+            return if next == NO_MORE_DOCS {
+                Ok(NO_MORE_DOCS)
+            } else {
+                scorer.advance(next)
+            };
+        }
+    }
+    scorer.next_doc()
 }
 
 /// The scoring tree, pointed at `doc` for [`Leaf::value`] to read lazily.
