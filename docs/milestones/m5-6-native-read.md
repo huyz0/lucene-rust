@@ -409,44 +409,76 @@ both sort fixtures (seen to fail without the doc tie-break, with keyword
 missing values flipped, with `reverse` ignored, and with a slice's segments
 searched out of doc-base order).
 
-Speed. The straight port read the matches through the scorer and each value
-through the general doc-values path, one field after another per document, and
-lost to OpenSearch (0.54x on `sum`/`avg`/`value_count` over a multi-valued
-field, 0.71-0.81x on a float `sum` under a sort). Then:
+### `terms` on keyword fields
 
-* a match-all is read straight down each column -- a single-valued one through
-  `NumericReader::for_each_value`, a multi-valued one through the new
-  `SortedNumericReader::for_each_doc`, which streams the values (one address
-  per document, values decoded a chunk at a time, a sparse field's documents
-  from its `IndexedDISI` as a bit set) -- after seeing through the wrappers a
-  match-all arrives in; any other query's matches are collected once and each
-  column read over them;
-* `Math.min`/`Math.max` decide the ordinary case with one comparison;
-* a field asked for several ways (`sum` and `avg` of one field) is read once;
-* the slices run in parallel, as OpenSearch's do; and a sorted search beside
-  aggregations is sliced too (above).
+`terms` runs natively on a keyword field with the default order (`_count`
+desc, `_key` asc), `min_doc_count` of 1 or more, `shard_min_doc_count` 0 and no
+`include`/`exclude` or `_doc_count` field (`lucene-search/src/terms_agg.rs`).
+It is `GlobalOrdinalsStringTermsAggregator`: a keyword field's global
+ordinals (`GlobalOrds`, Lucene's `OrdinalMap`: the segments' dictionaries
+merged once per reader and cached on the `DirectoryReader`), every live match
+counted once per distinct term into an array by global ordinal, the top
+`shard_size` kept by count and then ordinal (term), the rest summed into
+`otherDocCount`, only the kept terms' bytes read. A segment every document of
+which matches is counted from its postings when the field has at most 30,000
+terms (`tryCollectFromTermFrequencies`). The plugin reads OpenSearch's own
+effective thresholds (the `shard_size` heuristic, `ensureValidity`) off the
+factory and builds `StringTerms` per slice, reduced with the metrics.
+Verified against `GenTermsAggs` (4 segments, 6 keyword fields including raw
+`0x00`/`0xff` bytes, a `SORTED` field and one with postings, 7 queries x 4
+shard sizes, whole shard and slices: 504 results), seen to fail with the
+tie-break reversed, deletions ignored, `otherDocCount` dropped, the buckets
+unsorted, segment ordinals used as global ones and the postings count off by
+one; the self test compares 18,018 results through JNI.
 
-In process, on a copy of the 8-segment shard: 100,000 documents' `double`
-column 1,420 -> 390 us, a multi-valued `long` column (150,000 values)
-4,370 -> 1,500 us.
+### Speed
 
-Over REST (100,000 documents, 8 segments, and 60,000 with deletions; median
-wall latency, Lucene over native, 200 requests per engine per row):
+The straight port read the matches through the scorer and each value through
+the general doc-values path, one field at a time per document, and lost to
+OpenSearch (0.54x on `sum`/`avg`/`value_count` over a multi-valued field,
+0.71-0.81x on a float `sum` under a sort). What changed, in order of effect:
+
+* every aggregation of a request runs in one native pass (one JNI call): each
+  segment's matches are collected once, with the bulk scorer (a disjunction a
+  window at a time), and every metric and `terms` column read over them;
+* a column is streamed (`NumericReader::for_each_value`, the new
+  `SortedNumericReader::for_each_doc`: one address per document, values
+  decoded a chunk at a time) for a match-all, and for any query whose matches
+  cover more than a quarter of the segment, tested against a bit set of the
+  matches; otherwise each match seeks;
+* the metric fold is compiled for the parts the request reads (a `min` alone
+  skips the compensated sum), and a field asked for several ways is read once;
+* `terms` counts into cached global ordinals (above);
+* the slices run concurrently, as OpenSearch's do -- the first on the calling
+  thread while rayon's pool takes the rest, so the handoff overlaps work -- and
+  a sorted search beside aggregations is sliced the same way; a points-only
+  request stays on one thread;
+* a segment keeps its parsed points metadata instead of re-reading `.kdm` per
+  search (35 -> 10 us per request on a shard of OpenSearch's many points
+  fields).
+
+Over REST (median wall latency, Lucene over native, 600 requests per engine per
+row interleaved and the engine order alternated; 100,000 documents in 8
+segments, and 60,000 with deletions):
 
 | row | clean | with deletions |
 |---|---|---|
-| `min` + `max`, a term query, size 0 | 1.12x | 1.24x |
-| `stats` with the hits | 1.26x | 1.19x |
-| `sum` + `avg` + `value_count`, multi-valued, match-all | 1.87x | 1.81x |
-| float `sum` under a sort by `n` | 1.14x (1.12x at 800) | 0.99x (1.03x at 800) |
-| `min` + `max` of a `date`, term filter | 1.08x | 1.02x |
-| with `meta` | 1.03x | 1.10x |
-| no query `min`/`max` (points), nothing matches | 0.96-1.09x | 0.95-1.08x |
+| `sum` + `avg` + `value_count`, multi-valued, match-all | 2.03x | 1.80x |
+| `min` + `max`, a term query, size 0 | 1.22x | 1.32x |
+| `stats` with the hits | 1.25x | 1.26x |
+| explicit `match_all` `min` + `max` | 1.28x | 1.24x |
+| float `sum` under a sort by `n` | 1.17x | 1.02x |
+| `terms` (`tag`), with the hits | 1.33x | 1.15x |
+| `terms` + `avg` + hits | 1.19x | 1.14x |
+| `terms` under a sort | 1.21x | 1.03x |
+| `terms` on a multi-valued field | 1.11x | 1.15x |
+| `terms` with `shard_size`, a disjunction | 0.95x | 1.13x |
+| `terms`/`min`/`max` whose shard search takes < 0.3 ms (match-all `terms`, no-query points, nothing matching, `min_doc_count` 3) | 0.94-0.99x | 0.97-1.13x |
 
-The last row's requests take about 1.7 ms end to end and under 0.1 ms in the
-search (`took` rounds to 0): both engines read each segment's bound off the
-points, and what remains is the plugin's fixed cost per request (JNI, the plan,
-opening the points), about 50 us, inside the noise of repeated runs.
+The last rows are requests of about 2 ms end to end whose shard search takes a
+fraction of a millisecond on both engines (`took` rounds to 0 or 1, native's
+average never above Lucene's); what separates them is under 0.1 ms, inside the
+run-to-run spread (the same row measured 0.91-1.03x across runs).
 
 ## Benchmark
 
