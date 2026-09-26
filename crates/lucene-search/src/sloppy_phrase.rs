@@ -741,6 +741,9 @@ pub(crate) fn sloppy_phrase_freq_in(
 ) -> f32 {
     match degenerate(term_positions) {
         Degenerate::Yes(freq) => freq,
+        Degenerate::No if !repeats.has_rpts && term_positions.len() == 2 => {
+            two_slot_freq(term_positions[0], term_positions[1], slop)
+        }
         Degenerate::No => {
             let mut m =
                 SloppyMatcher::new_in(term_positions, repeats, slop, std::mem::take(scratch));
@@ -753,6 +756,77 @@ pub(crate) fn sloppy_phrase_freq_in(
             }
             *scratch = m.into_scratch();
             freq
+        }
+    }
+}
+
+/// [`sloppy_phrase_freq_in`] for the common phrase: two slots holding
+/// different terms. `SloppyPhraseMatcher.nextMatch` over a two-entry
+/// `PhraseQueue` is a two-pointer walk -- the queue's least entry is the
+/// lesser slot by (position, offset), its top the other -- so it is run as
+/// one without building the matcher. Same match sequence, same weights, summed
+/// in the same order: the general matcher's frequency to the bit.
+fn two_slot_freq(a: &[i32], b: &[i32], slop: u32) -> f32 {
+    let slop = i64::from(slop);
+    // `PhrasePositions.position`: the raw position minus the slot's offset.
+    let at = |slot: usize, i: usize| -> Option<i64> {
+        let list = if slot == 0 { a } else { b };
+        list.get(i).map(|&raw| i64::from(raw) - slot as i64)
+    };
+    let mut idx = [1usize, 1usize];
+    let (Some(p0), Some(p1)) = (at(0, 0), at(1, 0)) else {
+        return 0.0;
+    };
+    let mut pos = [p0, p1];
+    let mut end = p0.max(p1);
+    // `pq.pop()`: the lesser by position, then offset (slot 0's is 0).
+    let lesser = |pos: &[i64; 2]| usize::from(pos[1] < pos[0]);
+    let mut freq = 0.0f32;
+    let mut first = true;
+    loop {
+        // One `nextMatch()`.
+        let mut pp = lesser(&pos);
+        let mut match_length = end.saturating_sub(pos[pp]);
+        let mut next = pos[1 - pp];
+        let mut found = false;
+        let mut exhausted = true;
+        while let Some(p) = at(pp, idx[pp]) {
+            idx[pp] += 1;
+            pos[pp] = p;
+            if p > end {
+                end = p;
+            }
+            if p > next {
+                if match_length <= slop {
+                    found = true;
+                    exhausted = false;
+                    break;
+                }
+                pp = lesser(&pos);
+                next = pos[1 - pp];
+                match_length = end.saturating_sub(pos[pp]);
+            } else {
+                let ml2 = end.saturating_sub(p);
+                if ml2 < match_length {
+                    match_length = ml2;
+                }
+            }
+        }
+        if exhausted {
+            found = match_length <= slop;
+        }
+        if !found {
+            return freq;
+        }
+        let w = 1.0f32 / (1.0f32 + match_length as f32);
+        if first {
+            freq = w;
+            first = false;
+        } else {
+            freq += w;
+        }
+        if exhausted {
+            return freq;
         }
     }
 }
@@ -952,6 +1026,45 @@ mod tests {
         // A one-slot phrase degenerates to the term's own frequency.
         assert!(matches(&[&[2, 9][..]], 0));
         assert_eq!(freq(&[&[2, 9][..]], 0), 2.0);
+    }
+
+    #[test]
+    fn two_slots_walk_to_the_general_matchers_frequency_bit_for_bit() {
+        // Every shape of two short position lists (both slots distinct terms):
+        // the two-pointer walk against the general matcher.
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut rand = |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        let list = |rand: &mut dyn FnMut(u64) -> u64| {
+            let len = 1 + rand(6) as usize;
+            let mut v: Vec<i32> = (0..len).map(|_| rand(20) as i32).collect();
+            v.sort_unstable();
+            v
+        };
+        for _ in 0..20_000 {
+            let a = list(&mut rand);
+            let b = list(&mut rand);
+            let slop = rand(6) as u32;
+            let lists = [&a[..], &b[..]];
+            let general = {
+                let mut m = SloppyMatcher::new(&lists, &PhraseRepeats::none(2), slop);
+                let mut f = 0.0f32;
+                if m.next_match() {
+                    f = m.sloppy_weight();
+                    while m.next_match() {
+                        f += m.sloppy_weight();
+                    }
+                }
+                f
+            };
+            let fast = two_slot_freq(&a, &b, slop);
+            assert_eq!(fast.to_bits(), general.to_bits(), "{a:?} {b:?} slop {slop}");
+        }
+        assert_eq!(two_slot_freq(&[], &[1], 3), 0.0);
     }
 
     #[test]
