@@ -567,17 +567,6 @@ impl Iter {
             }
         }
     }
-
-    /// The id buffer, for the next set to reuse.
-    fn into_buffer(self) -> Vec<i32> {
-        match self {
-            Iter::Docs { mut docs, .. } => {
-                docs.clear();
-                docs
-            }
-            _ => Vec::new(),
-        }
-    }
 }
 
 /// `NumericComparator.PointsCompetitiveDISIBuilder`.
@@ -601,6 +590,8 @@ struct Competitive<'a> {
     with_value: WithValue<'a>,
     /// A cleared id buffer for the next update to fill.
     scratch: Vec<i32>,
+    /// A cleared bit set for the next dense update.
+    spare_bits: Option<FixedBitSet>,
     /// The tree walk's buffers, kept across updates (Lucene keeps its
     /// `PointTree` for the estimate the same way).
     walk: PointsScratch,
@@ -731,6 +722,11 @@ impl Competitive<'_> {
             max: self.max_value,
             max_doc_visited: self.max_doc_visited,
             docs: std::mem::take(&mut self.scratch),
+            bits: None,
+            upgrade_at: ((self.max_doc as usize) >> 7).max(1),
+            added: 0,
+            spare: self.spare_bits.take(),
+            max_doc: self.max_doc as usize,
         };
         let estimate = self
             .points
@@ -743,6 +739,7 @@ impl Competitive<'_> {
             .map_err(crate::Error::from)?;
         if estimate >= threshold {
             self.scratch = visitor.docs;
+            self.spare_bits = visitor.spare;
             self.update_skip_interval(false);
             if i64::from(self.point_doc_count) < self.iterator_cost {
                 // Use the set of documents with values to drive iteration.
@@ -775,28 +772,35 @@ impl Competitive<'_> {
         self.points
             .intersect_in(self.field_number, &mut visitor, &mut self.walk)
             .map_err(crate::Error::from)?;
+        self.spare_bits = visitor.spare.take();
         let mut docs = visitor.docs;
-        let new_iter = if docs.len() >= (self.max_doc as usize) >> 7 {
-            let mut bits = FixedBitSet::new(self.max_doc as usize);
-            for &d in &docs {
-                bits.set(d as usize);
+        let new_iter = match visitor.bits {
+            Some(bits) => {
+                self.iterator_cost = visitor.added as i64;
+                self.scratch = docs;
+                Iter::Bits { bits, doc: -1 }
             }
-            self.iterator_cost = docs.len() as i64;
-            docs.clear();
-            self.scratch = docs;
-            Iter::Bits { bits, doc: -1 }
-        } else {
-            lucene_util::doc_id_sort::sort_dedup_doc_ids(&mut docs);
-            self.iterator_cost = docs.len() as i64;
-            Iter::Docs {
-                docs,
-                next: 0,
-                doc: -1,
+            None => {
+                lucene_util::doc_id_sort::sort_dedup_doc_ids(&mut docs);
+                self.iterator_cost = docs.len() as i64;
+                Iter::Docs {
+                    docs,
+                    next: 0,
+                    doc: -1,
+                }
             }
         };
-        let old = std::mem::replace(&mut self.iter, new_iter);
-        if self.scratch.capacity() == 0 {
-            self.scratch = old.into_buffer();
+        // The set being replaced gives its storage to the next update.
+        match std::mem::replace(&mut self.iter, new_iter) {
+            Iter::Docs { mut docs, .. } if self.scratch.capacity() == 0 => {
+                docs.clear();
+                self.scratch = docs;
+            }
+            Iter::Bits { mut bits, .. } if self.spare_bits.is_none() => {
+                bits.clear_all();
+                self.spare_bits = Some(bits);
+            }
+            _ => {}
         }
         self.update_skip_interval(true);
         Ok(())
@@ -826,6 +830,44 @@ struct CompetitiveVisitor {
     max: i64,
     max_doc_visited: i32,
     docs: Vec<i32>,
+    /// `DocIdSetBuilder`'s dense form: once `docs` would pass `upgrade_at`
+    /// ids, they move here and every later one is set directly.
+    bits: Option<FixedBitSet>,
+    upgrade_at: usize,
+    /// Ids added (`DocIdSetBuilder`'s cost), duplicates included.
+    added: usize,
+    /// A cleared bit set to upgrade into, when one is spare.
+    spare: Option<FixedBitSet>,
+    max_doc: usize,
+}
+
+impl CompetitiveVisitor {
+    #[inline]
+    fn add(&mut self, doc: i32) {
+        self.added += 1;
+        match &mut self.bits {
+            Some(b) => b.set(doc as usize),
+            None => {
+                self.docs.push(doc);
+                if self.docs.len() >= self.upgrade_at {
+                    self.upgrade();
+                }
+            }
+        }
+    }
+
+    /// `DocIdSetBuilder.upgradeToBitSet`.
+    fn upgrade(&mut self) {
+        let mut b = self
+            .spare
+            .take()
+            .unwrap_or_else(|| FixedBitSet::new(self.max_doc));
+        for &d in &self.docs {
+            b.set(d as usize);
+        }
+        self.docs.clear();
+        self.bits = Some(b);
+    }
 }
 
 impl IntersectVisitor for CompetitiveVisitor {
@@ -843,7 +885,7 @@ impl IntersectVisitor for CompetitiveVisitor {
 
     fn visit(&mut self, doc_id: i32) {
         if doc_id > self.max_doc_visited {
-            self.docs.push(doc_id);
+            self.add(doc_id);
         }
     }
 
@@ -853,7 +895,7 @@ impl IntersectVisitor for CompetitiveVisitor {
         }
         let v = sortable_bytes_to_long(packed_value);
         if v >= self.min && v <= self.max {
-            self.docs.push(doc_id);
+            self.add(doc_id);
         }
     }
 }
@@ -968,6 +1010,7 @@ fn open_leaf<'a>(
                                     try_update_fail_count: 0,
                                     with_value,
                                     scratch: Vec::new(),
+                                    spare_bits: None,
                                     walk: PointsScratch::default(),
                                 };
                                 if comp.leaf_top_set {
@@ -1659,16 +1702,6 @@ mod tests {
         };
         assert_eq!(all.advance(2), 2);
         assert_eq!(all.advance(5), NO_MORE_DOCS);
-        let Iter::Docs { docs: buf, .. } = &forms[0] else {
-            unreachable!()
-        };
-        assert_eq!(buf.len(), 3);
-        let [docs_form, bits_form] = forms;
-        assert!(
-            docs_form.into_buffer().is_empty(),
-            "a reused buffer comes back cleared"
-        );
-        assert_eq!(bits_form.into_buffer().capacity(), 0);
     }
 
     #[test]
@@ -1694,6 +1727,7 @@ mod tests {
             try_update_fail_count: 0,
             with_value: WithValue::None,
             scratch: Vec::new(),
+            spare_bits: None,
             walk: PointsScratch::default(),
         };
         // Below 257 updates the interval never moves.
@@ -1718,6 +1752,36 @@ mod tests {
         c.current_skip_interval = MIN_SKIP_INTERVAL;
         c.update_skip_interval(true);
         assert_eq!(c.current_skip_interval, MIN_SKIP_INTERVAL, "floored");
+    }
+
+    #[test]
+    fn the_visitor_moves_to_a_bit_set_past_the_upgrade_size() {
+        let mut v = CompetitiveVisitor {
+            min: 10,
+            max: 20,
+            max_doc_visited: 2,
+            docs: Vec::new(),
+            bits: None,
+            upgrade_at: 3,
+            added: 0,
+            spare: None,
+            max_doc: 64,
+        };
+        v.visit(1); // already visited: dropped
+        v.visit(9);
+        v.visit_with_value(5, &crate::points_query::pack_i64(30)); // out of range
+        v.visit_with_value(7, &crate::points_query::pack_i64(15));
+        assert!(v.bits.is_none());
+        assert_eq!(v.docs, [9, 7]);
+        v.visit(40); // the third id upgrades
+        v.visit(41);
+        let bits = v.bits.as_ref().expect("upgraded");
+        assert!(v.docs.is_empty());
+        assert_eq!(v.added, 4);
+        for d in [7, 9, 40, 41] {
+            assert!(bits.get(d), "{d}");
+        }
+        assert_eq!(bits.cardinality(), 4);
     }
 
     #[test]
