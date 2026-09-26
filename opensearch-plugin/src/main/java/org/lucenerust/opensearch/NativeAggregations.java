@@ -3,6 +3,7 @@
  */
 package org.lucenerust.opensearch;
 
+import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.MatchAllDocsQuery;
 import org.opensearch.index.mapper.DateFieldMapper;
 import org.opensearch.index.mapper.MappedFieldType;
@@ -72,7 +73,8 @@ public final class NativeAggregations {
 
     /** The native aggregations of a search, or null when some aggregation must run on Lucene. */
     public record Plan(List<Metric> metrics) {
-        byte[] blob() {
+        /** The metrics blob; {@code slices} as {@link NativeAggregations#slices} returns them. */
+        byte[] blob(int[][] slices) {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             out.write(metrics.size());
             for (Metric m : metrics) {
@@ -84,14 +86,32 @@ public final class NativeAggregations {
                 }
                 out.writeBytes(f);
             }
+            writeSlices(out, slices);
             return out.toByteArray();
         }
 
-        /** The shard results, from the native per-field counts and values (see the class doc). */
-        InternalAggregations build(long[] counts, double[] values) {
+        /**
+         * The shard results from the native output: one set per slice (a single one when {@code
+         * slices} is empty), and with slices reduced as {@code NonGlobalAggCollectorManager}
+         * reduces its collectors' -- each slice's result carrying its sum without the delta.
+         */
+        InternalAggregations build(int[][] slices, long[] counts, double[] values, InternalAggregation.ReduceContext onShard) {
+            if (slices.length == 0) {
+                return InternalAggregations.from(build(counts, values, 0));
+            }
+            List<InternalAggregation> all = new ArrayList<>(metrics.size() * slices.length);
+            for (int s = 0; s < slices.length; s++) {
+                all.addAll(build(counts, values, s * metrics.size()));
+            }
+            return InternalAggregations.reduce(List.of(InternalAggregations.from(all)), onShard);
+        }
+
+        /** One slice's results, from the native counts and values starting at field {@code at}. */
+        List<InternalAggregation> build(long[] counts, double[] values, int at) {
             List<InternalAggregation> aggs = new ArrayList<>(metrics.size());
-            for (int i = 0; i < metrics.size(); i++) {
-                Metric m = metrics.get(i);
+            for (int k = 0; k < metrics.size(); k++) {
+                Metric m = metrics.get(k);
+                int i = at + k;
                 long count = counts[i];
                 double sum = values[i * VALUES];
                 double min = values[i * VALUES + 2];
@@ -107,7 +127,7 @@ public final class NativeAggregations {
                     case STATS -> new InternalStats(m.name(), count, sum, min, max, m.format(), m.metadata());
                 });
             }
-            return InternalAggregations.from(aggs);
+            return aggs;
         }
     }
 
@@ -127,6 +147,50 @@ public final class NativeAggregations {
     }
 
     private NativeAggregations() {}
+
+    /** The slices section ending a metrics or sort blob ({@code decode_slices} in Rust). */
+    static void writeSlices(ByteArrayOutputStream out, int[][] slices) {
+        writeInt(out, slices.length);
+        for (int[] slice : slices) {
+            writeInt(out, slice.length);
+            for (int segment : slice) {
+                writeInt(out, segment);
+            }
+        }
+    }
+
+    private static void writeInt(ByteArrayOutputStream out, int v) {
+        for (int i = 0; i < 4; i++) {
+            out.write(v >>> (8 * i));
+        }
+    }
+
+    /**
+     * The segments (leaf ordinals) of each slice a concurrent segment search collects, in the order
+     * its collector visits them; empty when the search is not concurrent; null when a slice holds
+     * only part of a segment (intra-segment search), which the native pass cannot split.
+     *
+     * <p>A concurrent search gives every slice its own aggregators and reduces their results on the
+     * shard, so a sum's rounding depends on the slices; the native pass reproduces them.
+     */
+    static int[][] slices(SearchContext ctx) {
+        if (ctx.shouldUseConcurrentSearch() == false) {
+            return new int[0][];
+        }
+        IndexSearcher.LeafSlice[] leafSlices = ctx.searcher().getSlices();
+        int[][] out = new int[leafSlices.length][];
+        for (int s = 0; s < leafSlices.length; s++) {
+            IndexSearcher.LeafReaderContextPartition[] parts = leafSlices[s].partitions;
+            out[s] = new int[parts.length];
+            for (int p = 0; p < parts.length; p++) {
+                if (parts[p].minDocId != 0 || parts[p].maxDocId < parts[p].ctx.reader().maxDoc()) {
+                    return null;
+                }
+                out[s][p] = parts[p].ctx.ord;
+            }
+        }
+        return out;
+    }
 
     /** The native plan for {@code ctx}'s aggregations, or null when any of them is not supported. */
     @SuppressWarnings("unchecked")

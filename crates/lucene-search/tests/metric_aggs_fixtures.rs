@@ -158,6 +158,17 @@ fn metric_aggregations_match_opensearch_bit_for_bit() {
     assert!(nonempty > 30, "{nonempty} non-empty field states");
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 
+    // A field asked for twice (`sum` and `avg` of it, say) is read once and
+    // reported twice, the same.
+    let twice: Vec<MetricSpec> = specs.iter().chain(&specs).cloned().collect();
+    let text = &m["run.0.query"];
+    let got = metric_states(&segments, reader.segment_readers(), &query(text), &twice).unwrap();
+    let (a, b) = got.split_at(specs.len());
+    // Debug formatting compares NaN as NaN (PartialEq does not).
+    assert_eq!(format!("{a:?}"), format!("{b:?}"));
+    let once = metric_states(&segments, reader.segment_readers(), &query(text), &specs).unwrap();
+    assert_eq!(format!("{a:?}"), format!("{once:?}"));
+
     // The points shortcut, over the match-all run: every field once as `min`
     // and once as `max`, in one pass (fields without points read doc values).
     let r = (0..runs)

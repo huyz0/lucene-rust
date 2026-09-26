@@ -11,7 +11,7 @@ mixed booleans) 4–8× *slower*, because the port had fast paths for three
 shapes and a materializing path for everything else. M5 moved indexing. This
 milestone finishes the read side.
 
-**Status.** In progress. R1 and R2 delivered, R3 mostly and R4 partly delivered (below). R5–R7 open.
+**Status.** In progress. R1 and R2 delivered; R3 mostly, R4 (numeric, score, `_doc` and keyword keys) and R5 (the metric aggregations) partly delivered (below). R6 and R7 open.
 
 ## Tasks
 
@@ -374,6 +374,21 @@ including the minimum's give-up after 1,024 deleted points; this is not only
 faster but a different answer over a `double` field holding a `NaN` document
 (`NaN` sorts last among the points and wins `Math.min`).
 
+Concurrent segment search. OpenSearch 3.8's `auto` mode turns concurrent
+search on for aggregation requests (two slices by default on this node): each
+slice gets its own aggregators, and `NonGlobalAggCollectorManager` reduces their
+shard results with `InternalAggregations.reduce` -- so a slice's sum reaches the
+reduce without its compensation delta, and a multi-segment shard's `sum` rounds
+differently from a one-pass answer (the REST matrix caught it: one float `sum`
+in the last bit). The native pass therefore takes OpenSearch's slices
+(`IndexSearcher.getSlices()`, segments in each slice's order), keeps a state per
+slice, and the plugin builds each slice's results and hands them to the same
+`InternalAggregations.reduce(..., partialOnShard())`. Intra-segment slices
+(part of a segment) fall back. A sorted search under concurrent search is sliced
+the same way (`top_field::search_sorted_sliced`): a collector per slice, run on
+rayon's pool as Lucene runs them on its executor, hits merged as
+`TopDocs.merge` merges them.
+
 Verified: `GenMetricAggs` (4 segments, 7 queries, 7 fields including `NaN`,
 signed zeros, infinities and values that round when widened) bit for bit,
 including the points answers and a segment where the points give up; seen to
@@ -382,8 +397,50 @@ first, the points ignored, the give-up removed, and deletions ignored by the
 minimum's walk (the maximum's cell pruning is a speed property only: without
 it the last live point is still the maximum, so no result can show it). The
 self test compares 1,862 query x field states through JNI; the REST matrix runs
-nine aggregation rows natively against a stock node, and three that must fall
-back.
+ten aggregation rows natively against a stock node, and three that must fall
+back; and `search_sorted_sliced` agrees with Lucene over every untracked run of
+both sort fixtures (seen to fail without the doc tie-break, with keyword
+missing values flipped, with `reverse` ignored, and with a slice's segments
+searched out of doc-base order).
+
+Speed. The straight port read the matches through the scorer and each value
+through the general doc-values path, one field after another per document, and
+lost to OpenSearch (0.54x on `sum`/`avg`/`value_count` over a multi-valued
+field, 0.71-0.81x on a float `sum` under a sort). Then:
+
+* a match-all is read straight down each column -- a single-valued one through
+  `NumericReader::for_each_value`, a multi-valued one through the new
+  `SortedNumericReader::for_each_doc`, which streams the values (one address
+  per document, values decoded a chunk at a time, a sparse field's documents
+  from its `IndexedDISI` as a bit set) -- after seeing through the wrappers a
+  match-all arrives in; any other query's matches are collected once and each
+  column read over them;
+* `Math.min`/`Math.max` decide the ordinary case with one comparison;
+* a field asked for several ways (`sum` and `avg` of one field) is read once;
+* the slices run in parallel, as OpenSearch's do; and a sorted search beside
+  aggregations is sliced too (above).
+
+In process, on a copy of the 8-segment shard: 100,000 documents' `double`
+column 1,420 -> 390 us, a multi-valued `long` column (150,000 values)
+4,370 -> 1,500 us.
+
+Over REST (100,000 documents, 8 segments, and 60,000 with deletions; median
+wall latency, Lucene over native, 200 requests per engine per row):
+
+| row | clean | with deletions |
+|---|---|---|
+| `min` + `max`, a term query, size 0 | 1.12x | 1.24x |
+| `stats` with the hits | 1.26x | 1.19x |
+| `sum` + `avg` + `value_count`, multi-valued, match-all | 1.87x | 1.81x |
+| float `sum` under a sort by `n` | 1.14x (1.12x at 800) | 0.99x (1.03x at 800) |
+| `min` + `max` of a `date`, term filter | 1.08x | 1.02x |
+| with `meta` | 1.03x | 1.10x |
+| no query / match-all `min`/`max` (points), nothing matches | 0.96-1.09x | 0.95-1.08x |
+
+The last row's requests take about 1.7 ms end to end and under 0.1 ms in the
+search (`took` rounds to 0): both engines read each segment's bound off the
+points, and what remains is the plugin's fixed cost per request (JNI, the plan,
+opening the points), about 50 us, inside the noise of repeated runs.
 
 ## Benchmark
 

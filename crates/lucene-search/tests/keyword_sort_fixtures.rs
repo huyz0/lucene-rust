@@ -20,7 +20,9 @@ use lucene_codecs::terms_dict::{TermsDict, TermsDictEntry};
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::query::{MatchAllDocsQuery, PointsRangeQuery};
-use lucene_search::top_field::{search_sorted, FieldDoc, Selector, SortField, SortType};
+use lucene_search::top_field::{
+    search_sorted, search_sorted_sliced, FieldDoc, Selector, SortField, SortType,
+};
 use lucene_search::{BooleanQuery, Clause, PhraseQuery, TermQuery};
 use lucene_store::FsDirectory;
 
@@ -320,6 +322,36 @@ fn keyword_sorts_match_real_lucene() {
         } else {
             !got_gte && got.total.value == total
         };
+        // Sliced, as a concurrent search runs it: every segment its own
+        // collector, the hits merged by term (missing first or last).
+        let slices: Vec<Vec<usize>> = (0..segments.len()).rev().map(|i| vec![i]).collect();
+        let sliced = search_sorted_sliced(
+            &segments,
+            reader.segment_readers(),
+            &query(&text),
+            &norms,
+            &keys,
+            top_n,
+            threshold,
+            after.as_ref(),
+            &slices,
+        )
+        .unwrap_or_else(|e| panic!("{text} by {spec}, sliced: {e}"));
+        let sliced_gte = sliced.total.relation
+            == lucene_search::collector::TotalHitsRelation::GreaterThanOrEqualTo;
+        let sliced_ok = if gte {
+            sliced.total.value > threshold
+        } else {
+            !sliced_gte && sliced.total.value == total
+        };
+        if sliced.hits != want || !sliced_ok {
+            failures.push(format!(
+                "run {r}: {text} by {spec}, sliced\n  got    {:?} total {}\n  Lucene {:?} total {total}",
+                sliced.hits.iter().take(3).collect::<Vec<_>>(),
+                sliced.total.value,
+                want.iter().take(3).collect::<Vec<_>>(),
+            ));
+        }
         if got.hits != want || !total_ok {
             failures.push(format!(
                 "run {r}: {text} by {spec}, top {top_n}, threshold {threshold}, after {after:?}\n  got    {:?} total {} gte {got_gte}\n  Lucene {:?} total {total} gte {gte}",

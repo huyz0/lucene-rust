@@ -377,6 +377,9 @@ pub enum Error {
     CachedDocOutOfRange { doc_id: i32, num_docs: usize },
     #[error(transparent)]
     Sort(#[from] top_field::SortError),
+    /// A concurrent-search slice names a segment the reader does not have.
+    #[error("aggregation slice names segment {segment} of {segments}")]
+    SliceOutOfRange { segment: usize, segments: usize },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

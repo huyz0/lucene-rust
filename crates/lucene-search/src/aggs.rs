@@ -5,7 +5,12 @@
 //!
 //! One pass over the query's live matches in document order, segment by
 //! segment, keeps for each field what every one of those aggregators needs
-//! (the aggregators themselves differ only in which parts they report):
+//! (the aggregators themselves differ only in which parts they report; a
+//! field asked for twice is read once). Within a segment each field is read
+//! on its own -- a field's state depends on its column alone, in document
+//! order, so reading the columns one after another adds the values in
+//! Java's order -- straight down the column for a match-all, else over the
+//! matches collected once:
 //!
 //! * the number of values (`ValueCountAggregator`: `docValueCount` per
 //!   document);
@@ -28,6 +33,10 @@
 //! (ported below) and only a segment they cannot answer is read document by
 //! document. Which requests qualify is the caller's to decide, as
 //! `AggregatorBase.pointReaderIfAvailable` decides it.
+//!
+//! Under concurrent segment search every slice keeps its own states
+//! ([`metric_states_sliced`], slices in parallel on rayon's pool); reducing
+//! them is the caller's, as it is OpenSearch's `NonGlobalAggCollectorManager`'s.
 
 use lucene_codecs::doc_values::{NumericReader, SortedNumericReader};
 use lucene_codecs::points::{IntersectVisitor, Relation};
@@ -119,50 +128,89 @@ impl MetricState {
         }
     }
 
-    /// One document's values, ascending as `SORTED_NUMERIC` stores them.
-    fn doc(&mut self, values: &[f64]) {
+    /// A document with the one value `v`.
+    #[inline]
+    fn one(&mut self, v: f64) {
+        self.count += 1;
+        self.add(v);
+        self.min = java_min(self.min, v);
+        self.max = java_max(self.max, v);
+        self.min_of_mins = java_min(self.min_of_mins, v);
+        self.max_of_maxes = java_max(self.max_of_maxes, v);
+    }
+
+    /// A document's stored values, ascending, read as `kind`.
+    #[inline]
+    fn many(&mut self, kind: ValueKind, values: &[i64]) {
         let (Some(&first), Some(&last)) = (values.first(), values.last()) else {
             return;
         };
         self.count += values.len() as u64;
         for &v in values {
+            let v = to_double(kind, v);
             self.add(v);
             self.min = java_min(self.min, v);
             self.max = java_max(self.max, v);
         }
-        self.min_of_mins = java_min(self.min_of_mins, first);
-        self.max_of_maxes = java_max(self.max_of_maxes, last);
+        self.min_of_mins = java_min(self.min_of_mins, to_double(kind, first));
+        self.max_of_maxes = java_max(self.max_of_maxes, to_double(kind, last));
     }
 }
 
 /// Java's `Math.min(double, double)`: `NaN` wins, and `-0.0 < 0.0`.
+#[inline]
 pub fn java_min(a: f64, b: f64) -> f64 {
+    // The ordinary case first: one compare each way decides it.
+    if a < b {
+        return a;
+    }
+    if b < a {
+        return b;
+    }
+    java_min_tie(a, b)
+}
+
+/// [`java_min`] when neither is below the other: equal (signed zeros), or a
+/// `NaN`.
+#[cold]
+fn java_min_tie(a: f64, b: f64) -> f64 {
     if a.is_nan() {
         return a;
     }
-    if a == 0.0 && b == 0.0 && b.to_bits() == (-0.0f64).to_bits() {
+    if b.is_nan() {
         return b;
     }
-    if a <= b {
-        a
-    } else {
-        b
+    if a == 0.0 && b.to_bits() == (-0.0f64).to_bits() {
+        return b;
     }
+    a
 }
 
 /// Java's `Math.max(double, double)`.
+#[inline]
 pub fn java_max(a: f64, b: f64) -> f64 {
+    if a > b {
+        return a;
+    }
+    if b > a {
+        return b;
+    }
+    java_max_tie(a, b)
+}
+
+/// [`java_max`] when neither is above the other.
+#[cold]
+fn java_max_tie(a: f64, b: f64) -> f64 {
     if a.is_nan() {
         return a;
     }
-    if a == 0.0 && b == 0.0 && a.to_bits() == (-0.0f64).to_bits() {
+    if b.is_nan() {
         return b;
     }
-    if a >= b {
-        a
-    } else {
-        b
+    if a == 0.0 && a.to_bits() == (-0.0f64).to_bits() {
+        return b;
     }
+    a
 }
 
 /// `NumericUtils.sortableLongToDouble`.
@@ -348,19 +396,90 @@ pub fn metric_states(
     query: &BooleanQuery,
     specs: &[MetricSpec],
 ) -> Result<Vec<MetricState>> {
-    let mut states = vec![MetricState::default(); specs.len()];
-    if specs.is_empty() {
-        return Ok(states);
-    }
+    let all: Vec<usize> = (0..segments.len().min(readers.len())).collect();
+    let mut sliced = metric_states_sliced(segments, readers, query, specs, &[all])?;
+    Ok(sliced.pop().unwrap_or_default())
+}
+
+/// [`metric_states`] as a concurrent segment search computes them: each
+/// slice -- segment indices, in the order its collector visits them -- keeps
+/// its own states from scratch, one `Vec` per slice. (OpenSearch then reduces
+/// the slices' shard results, dropping each sum's delta; that is the
+/// caller's.)
+///
+/// # Errors
+/// A segment index out of range, or what [`metric_states`] reports.
+pub fn metric_states_sliced(
+    segments: &[OpenSegment<'_>],
+    readers: &[SegmentReader],
+    query: &BooleanQuery,
+    specs: &[MetricSpec],
+    slices: &[Vec<usize>],
+) -> Result<Vec<Vec<MetricState>>> {
+    // A field asked for twice the same way (`sum` and `avg` of one field,
+    // say) is read once: the state is the same.
+    let mut unique: Vec<MetricSpec> = Vec::with_capacity(specs.len());
+    let slot: Vec<usize> = specs
+        .iter()
+        .map(|s| {
+            unique.iter().position(|u| u == s).unwrap_or_else(|| {
+                unique.push(s.clone());
+                unique.len() - 1
+            })
+        })
+        .collect();
+    let states = unique_states(segments, readers, query, &unique, slices)?;
+    Ok(states
+        .into_iter()
+        .map(|per| slot.iter().map(|&i| per[i]).collect())
+        .collect())
+}
+
+/// [`metric_states_sliced`] over distinct specs.
+fn unique_states(
+    segments: &[OpenSegment<'_>],
+    readers: &[SegmentReader],
+    query: &BooleanQuery,
+    specs: &[MetricSpec],
+    slices: &[Vec<usize>],
+) -> Result<Vec<Vec<MetricState>>> {
     let rewritten = crate::multi_segment::rewrite_points_ranges(query, segments);
     let query = rewritten.as_ref().unwrap_or(query);
     let clause = lone_clause(query);
+    // Slices are independent, as a concurrent search's are: they run on
+    // rayon's pool, one task each, as Lucene hands each to its executor.
+    if slices.len() > 1 {
+        use rayon::prelude::*;
+        return slices
+            .par_iter()
+            .map(|slice| slice_states(segments, readers, &clause, specs, slice))
+            .collect();
+    }
+    slices
+        .iter()
+        .map(|slice| slice_states(segments, readers, &clause, specs, slice))
+        .collect()
+}
+
+/// One slice's states: its segments, in order, from fresh states.
+fn slice_states(
+    segments: &[OpenSegment<'_>],
+    readers: &[SegmentReader],
+    clause: &Clause,
+    specs: &[MetricSpec],
+    slice: &[usize],
+) -> Result<Vec<MetricState>> {
+    let clause = clause.clone();
     let mut raw = Vec::new();
-    let mut doubles = Vec::new();
+    let mut docs_buf = Vec::new();
     let mut precomputed = Vec::with_capacity(specs.len());
-    for (i, seg) in segments.iter().enumerate() {
-        let Some(reader) = readers.get(i) else {
-            break;
+    let mut states = vec![MetricState::default(); specs.len()];
+    for &i in slice {
+        let (Some(seg), Some(reader)) = (segments.get(i), readers.get(i)) else {
+            return Err(crate::Error::SliceOutOfRange {
+                segment: i,
+                segments: segments.len().min(readers.len()),
+            });
         };
         let ctx = exec::LeafContext {
             fields: seg.fields,
@@ -397,45 +516,88 @@ pub fn metric_states(
         if answered == specs.len() {
             continue;
         }
-        let Some(child) = exec::build::child(&ctx, &clause, 1.0, Mode::NoScores, true)? else {
-            continue;
-        };
-        let mut scorer = child.into_scorer(Mode::NoScores);
-        let mut columns = specs
-            .iter()
-            .zip(&precomputed)
-            .map(|(s, &done)| {
-                if done {
-                    Ok(Values::Absent)
-                } else {
-                    open_values(reader, &s.field)
-                }
-            })
-            .collect::<Result<Vec<_>>>()?;
+        // The matches: every live document for a match-all (read straight
+        // down each column below), else the scorer's, collected once.
         let live: Option<&FixedBitSet> = seg.live_docs;
-        let mut doc = exec::exact_next(&mut *scorer)?;
-        while doc != NO_MORE_DOCS {
-            if live.is_none_or(|l| l.get_doc(doc)) {
-                for ((col, spec), state) in columns.iter_mut().zip(specs).zip(&mut states) {
-                    raw.clear();
-                    match col {
-                        Values::Absent => {}
-                        Values::Single(r) => {
-                            if let Some(v) = r.value(doc).map_err(crate::Error::from)? {
-                                raw.push(v);
-                            }
+        let docs = if matches_everything(&clause) {
+            None
+        } else {
+            let Some(child) = exec::build::child(&ctx, &clause, 1.0, Mode::NoScores, true)? else {
+                continue;
+            };
+            let mut scorer = child.into_scorer(Mode::NoScores);
+            docs_buf.clear();
+            let mut doc = exec::exact_next(&mut *scorer)?;
+            while doc != NO_MORE_DOCS {
+                if live.is_none_or(|l| l.get_doc(doc)) {
+                    docs_buf.push(doc);
+                }
+                doc = exec::exact_next(&mut *scorer)?;
+            }
+            Some(&docs_buf[..])
+        };
+        let is_live = |doc: i32| live.is_none_or(|l| l.get_doc(doc));
+        // Field by field: each state depends on its own column alone, read
+        // in document order, so the order of the sums is Java's.
+        for ((spec, state), &done) in specs.iter().zip(&mut states).zip(&precomputed) {
+            if done {
+                continue;
+            }
+            let kind = spec.kind;
+            match (open_values(reader, &spec.field)?, docs) {
+                (Values::Absent, _) => {}
+                (Values::Single(mut r), None) => {
+                    r.for_each_value(0, reader.max_doc, |doc, v| {
+                        if is_live(doc) {
+                            state.one(to_double(kind, v));
                         }
-                        Values::Multi(r) => r.values(doc, &mut raw).map_err(crate::Error::from)?,
+                    })?
+                }
+                (Values::Single(mut r), Some(docs)) => {
+                    for &doc in docs {
+                        if let Some(v) = r.value(doc)? {
+                            state.one(to_double(kind, v));
+                        }
                     }
-                    doubles.clear();
-                    doubles.extend(raw.iter().map(|&v| to_double(spec.kind, v)));
-                    state.doc(&doubles);
+                }
+                (Values::Multi(mut r), None) => {
+                    r.for_each_doc(0, reader.max_doc, |doc, vals| {
+                        if is_live(doc) {
+                            state.many(kind, vals);
+                        }
+                    })?
+                }
+                (Values::Multi(mut r), Some(docs)) => {
+                    for &doc in docs {
+                        r.values(doc, &mut raw)?;
+                        state.many(kind, &raw);
+                    }
                 }
             }
-            doc = exec::exact_next(&mut *scorer)?;
         }
     }
     Ok(states)
+}
+
+/// Whether `clause` matches every document, whatever wraps the match-all
+/// (a constant score, a boost, a boolean whose required clauses all match
+/// everything): its matches are then every live document, in order, and the
+/// columns can be read straight down.
+fn matches_everything(clause: &Clause) -> bool {
+    match clause {
+        Clause::MatchAllDocs(_) => true,
+        Clause::ConstantScore(c) => matches_everything(&c.inner),
+        Clause::Boost(b) => matches_everything(&b.inner),
+        Clause::Boolean(b) if b.must_not.is_empty() => {
+            let required: Vec<&Clause> = b.must.iter().chain(&b.filter).collect();
+            if required.is_empty() {
+                b.minimum_should_match <= 1 && b.should.iter().any(matches_everything)
+            } else {
+                b.minimum_should_match == 0 && required.into_iter().all(matches_everything)
+            }
+        }
+        _ => false,
+    }
 }
 
 /// `BooleanQuery.rewrite`: a boolean of one clause is that clause.
@@ -452,6 +614,18 @@ fn lone_clause(query: &BooleanQuery) -> Clause {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `NumericUtils.doubleToSortableLong`: how a `double` field stores `d`.
+    fn enc(d: f64) -> i64 {
+        let bits = d.to_bits() as i64;
+        bits ^ ((bits >> 63) & 0x7fff_ffff_ffff_ffff)
+    }
+
+    /// A document's values, as a `double` column holds them.
+    fn doc(s: &mut MetricState, values: &[f64]) {
+        let stored: Vec<i64> = values.iter().map(|&d| enc(d)).collect();
+        s.many(ValueKind::Double, &stored);
+    }
 
     #[test]
     fn java_min_and_max_keep_nan_and_signed_zeros() {
@@ -471,21 +645,58 @@ mod tests {
     fn the_sum_is_compensated_as_opensearch_compensates_it() {
         // 1 + 1e-16 ten times: a naive sum stays 1.0, Kahan's does not.
         let mut s = MetricState::default();
-        s.doc(&[1.0]);
+        doc(&mut s, &[1.0]);
         for _ in 0..10 {
-            s.doc(&[1e-16]);
+            doc(&mut s, &[1e-16]);
         }
         assert!(s.sum > 1.0);
         assert_eq!(s.count, 11);
         // A non-finite value turns the tally non-finite, and it stays so.
         let mut s = MetricState::default();
-        s.doc(&[1.0, f64::INFINITY]);
+        doc(&mut s, &[1.0, f64::INFINITY]);
         assert_eq!(s.sum, f64::INFINITY);
-        s.doc(&[5.0]);
+        doc(&mut s, &[5.0]);
         assert_eq!(s.sum, f64::INFINITY);
         let mut s = MetricState::default();
-        s.doc(&[f64::NAN]);
+        doc(&mut s, &[f64::NAN]);
         assert!(s.sum.is_nan());
+        // A single-valued document feeds every part the same way.
+        let (mut one, mut many) = (MetricState::default(), MetricState::default());
+        for v in [3.0, -0.0, 0.0, 1e300, f64::NEG_INFINITY] {
+            one.one(v);
+            doc(&mut many, &[v]);
+        }
+        assert_eq!(format!("{one:?}"), format!("{many:?}"));
+    }
+
+    #[test]
+    fn a_match_all_is_seen_through_its_wrappers() {
+        let all = || Clause::MatchAllDocs(crate::query::MatchAllDocsQuery::new(0));
+        let term = || Clause::Term(crate::TermQuery::new("f", b"x".to_vec()));
+        assert!(matches_everything(&all()));
+        assert!(matches_everything(&Clause::ConstantScore(Box::new(
+            crate::query::ConstantScoreQuery::new(all(), 1.0)
+        ))));
+        assert!(matches_everything(&Clause::Boost(Box::new(
+            crate::query::BoostQuery::new(all(), 2.0)
+        ))));
+        let mut b = BooleanQuery::new();
+        b.filter.push(all());
+        b.must.push(all());
+        assert!(matches_everything(&Clause::Boolean(Box::new(b.clone()))));
+        b.must_not.push(term());
+        assert!(!matches_everything(&Clause::Boolean(Box::new(b))));
+        let mut b = BooleanQuery::new();
+        b.should.push(term());
+        b.should.push(all());
+        assert!(matches_everything(&Clause::Boolean(Box::new(b.clone()))));
+        b.minimum_should_match = 2;
+        assert!(!matches_everything(&Clause::Boolean(Box::new(b))));
+        let mut b = BooleanQuery::new();
+        b.must.push(all());
+        b.filter.push(term());
+        assert!(!matches_everything(&Clause::Boolean(Box::new(b))));
+        assert!(!matches_everything(&term()));
     }
 
     #[test]
@@ -493,9 +704,9 @@ mod tests {
         // `SORTED_NUMERIC` keeps NaN last: `min` reads the first value and
         // never sees it; `stats` reads every value and does.
         let mut s = MetricState::default();
-        s.doc(&[1.0, f64::NAN]);
-        s.doc(&[]);
-        s.doc(&[-2.0, 4.0]);
+        doc(&mut s, &[1.0, f64::NAN]);
+        doc(&mut s, &[]);
+        doc(&mut s, &[-2.0, 4.0]);
         assert_eq!(s.min_of_mins, -2.0);
         assert!(s.max_of_maxes.is_nan());
         assert!(s.min.is_nan());
