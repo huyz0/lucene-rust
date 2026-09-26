@@ -346,7 +346,14 @@ fn term<'a>(
             _ => TermLeg::filter(cursor, cost),
         })));
     }
-    let cursor = field_terms.lazy_postings_for(&seeked, doc_in, PostingsFlags::Freqs)?;
+    // Impacts only where a threshold can use them (`TermWeight`: `impacts`
+    // for `TOP_SCORES`, plain `postings(FREQS)` otherwise).
+    let flags = if mode == Mode::TopScores {
+        PostingsFlags::Freqs
+    } else {
+        PostingsFlags::FreqsNoImpacts
+    };
+    let cursor = field_terms.lazy_postings_for(&seeked, doc_in, flags)?;
     let (doc_freq, doc_count) = match ctx.global.and_then(|g| g.term(&t.field, &t.term)) {
         Some(g) => (g.doc_freq, g.doc_count),
         None => (cost, field_terms.doc_count as i64),
