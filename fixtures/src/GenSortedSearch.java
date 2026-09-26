@@ -17,6 +17,14 @@ import org.apache.lucene.index.SegmentInfos;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
+import org.apache.lucene.search.Collector;
+import org.apache.lucene.search.CollectorManager;
+import org.apache.lucene.search.MultiCollector;
+import org.apache.lucene.search.Scorable;
+import org.apache.lucene.search.ScoreMode;
+import org.apache.lucene.search.SimpleCollector;
+import org.apache.lucene.search.TopFieldCollector;
+import org.apache.lucene.search.TopFieldDocs;
 import org.apache.lucene.search.FieldDoc;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.MatchAllDocsQuery;
@@ -204,11 +212,79 @@ public class GenSortedSearch {
             }
           }
         }
+        // OpenSearch's track_scores behind another key: the collector beside a
+        // MaxScoreCollector in a MultiCollector (TopDocsCollectorContext).
+        for (String qs : QUERIES) {
+          Query q = parse(new GenMixedBooleanScoring.Tokens(qs));
+          for (String ss : SORTS) {
+            Sort sort = sort(ss);
+            if (sort.getSort()[0].getType() == SortField.Type.SCORE) {
+              continue;
+            }
+            for (int threshold : new int[] {100, Integer.MAX_VALUE}) {
+              TopFieldCollectorManager tfcm = new TopFieldCollectorManager(sort, 10, null, threshold);
+              float[] max = {Float.NEGATIVE_INFINITY};
+              TopFieldDocs td =
+                  searcher.search(
+                      q,
+                      new CollectorManager<Collector, TopFieldDocs>() {
+                        @Override
+                        public Collector newCollector() throws IOException {
+                          return MultiCollector.wrap(tfcm.newCollector(), new MaxScore(max));
+                        }
+
+                        @Override
+                        public TopFieldDocs reduce(java.util.Collection<Collector> cs) throws IOException {
+                          List<TopFieldCollector> tops = new ArrayList<>();
+                          for (Collector c : cs) {
+                            for (Collector sub : ((MultiCollector) c).getCollectors()) {
+                              if (sub instanceof TopFieldCollector t) {
+                                tops.add(t);
+                              }
+                            }
+                          }
+                          return tfcm.reduce(tops);
+                        }
+                      });
+              run = record(m, run, qs, sort, 10, threshold, null, td);
+              String k = "run." + (run - 1);
+              m.append(k).append(".track=true\n");
+              m.append(k).append(".max_score=")
+                  .append(Float.isInfinite(max[0]) ? "nan" : Integer.toString(Float.floatToIntBits(max[0])))
+                  .append('\n');
+            }
+          }
+        }
       }
       m.insert(0, "run_count=" + run + "\n");
     }
     Files.writeString(out.resolve("manifest.properties"), m.toString());
     System.out.println("wrote " + out);
+  }
+
+  /** OpenSearch's MaxScoreCollector: the highest score of every hit collected. */
+  static final class MaxScore extends SimpleCollector {
+    private final float[] max;
+    private Scorable scorer;
+
+    MaxScore(float[] max) {
+      this.max = max;
+    }
+
+    @Override
+    public void setScorer(Scorable scorer) {
+      this.scorer = scorer;
+    }
+
+    @Override
+    public void collect(int doc) throws IOException {
+      max[0] = Math.max(max[0], scorer.score());
+    }
+
+    @Override
+    public ScoreMode scoreMode() {
+      return ScoreMode.COMPLETE;
+    }
   }
 
   static int record(

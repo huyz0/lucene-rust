@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::query::{MatchAllDocsQuery, PointsRangeQuery};
-use lucene_search::top_field::{search_sorted, FieldDoc, Selector, SortField, SortType};
+use lucene_search::top_field::{search_sorted_tracking, FieldDoc, Selector, SortField, SortType};
 use lucene_search::{BooleanQuery, Clause, PhraseQuery, TermQuery};
 use lucene_store::FsDirectory;
 
@@ -184,6 +184,7 @@ fn sorted_searches_match_real_lucene() {
     assert!(runs > 1000, "the fixture records every combination");
     let mut failures = Vec::new();
     let mut pruned = 0;
+    let mut tracked = 0;
     for r in 0..runs {
         let k = format!("run.{r}");
         let text = m.get(&format!("{k}.query"));
@@ -194,7 +195,9 @@ fn sorted_searches_match_real_lucene() {
             n => n.parse().unwrap(),
         };
         let after = m.0.get(&format!("{k}.after")).map(|s| field_doc(s));
-        let got = search_sorted(
+        let track = m.0.contains_key(&format!("{k}.track"));
+        tracked += usize::from(track);
+        let got = search_sorted_tracking(
             &segments,
             reader.segment_readers(),
             &query(text),
@@ -203,6 +206,7 @@ fn sorted_searches_match_real_lucene() {
             top_n,
             threshold,
             after.as_ref(),
+            track,
         )
         .unwrap_or_else(|e| panic!("{text} by {spec}: {e}"));
         let want = hits(m.get(&format!("{k}.hits")));
@@ -216,11 +220,28 @@ fn sorted_searches_match_real_lucene() {
         // skipping (Lucene's match-all and filter conjunctions collect whole
         // 4096-document windows first); all that is promised is that it
         // exceeds the threshold.
-        let total_ok = if gte {
+        let total_ok = if track {
+            // Beside a MaxScoreCollector nothing is skipped on either side:
+            // the count is the same, bound or not.
+            got_gte == gte && got.total.value == total
+        } else if gte {
             got_gte && got.total.value > threshold
         } else {
             !got_gte && got.total.value == total
         };
+        let max_ok = !track
+            || match m.get(&format!("{k}.max_score")) {
+                "nan" => got.max_score.is_nan(),
+                bits => got.max_score.to_bits() as i32 == bits.parse::<i32>().unwrap(),
+            };
+        if !max_ok {
+            failures.push(format!(
+                "run {r}: {text} by {spec}: max score {} ({:#x}), Lucene {}",
+                got.max_score,
+                got.max_score.to_bits(),
+                m.get(&format!("{k}.max_score"))
+            ));
+        }
         if got.hits != want || !total_ok {
             failures.push(format!(
                 "run {r}: {text} by {spec}, top {top_n}, threshold {threshold}, after {after:?}\n  got    {:?} total {} gte {got_gte}\n  Lucene {:?} total {total} gte {gte}",
@@ -231,6 +252,7 @@ fn sorted_searches_match_real_lucene() {
         }
     }
     assert!(pruned > 100, "the threshold runs must prune: {pruned}");
+    assert!(tracked > 200, "tracked max-score runs: {tracked}");
     assert!(
         failures.is_empty(),
         "{} of {runs} runs disagree with Lucene:\n{}",
