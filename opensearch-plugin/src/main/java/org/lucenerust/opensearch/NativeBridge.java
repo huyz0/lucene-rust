@@ -13,7 +13,7 @@ package org.lucenerust.opensearch;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 27;
+    public static final int EXPECTED_ABI_VERSION = 28;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -72,6 +72,24 @@ public final class NativeBridge {
         byte[] query,
         int topN,
         long countLimit,
+        int[] outDocs,
+        float[] outScores,
+        long[] outCounts
+    );
+
+    /**
+     * {@link #search} and {@link #docFreq} of {@code field:term} in one call -- a term query's
+     * total-hits shortcut and its hits, one crossing into native code instead of two: {@code
+     * outCounts} as for {@link #search} (all 0 when {@code topN} is 0, which searches nothing),
+     * with a fourth slot receiving the document frequency.
+     */
+    public static native int searchDocFreq(
+        long handle,
+        byte[] query,
+        int topN,
+        long countLimit,
+        byte[] field,
+        byte[] term,
         int[] outDocs,
         float[] outScores,
         long[] outCounts

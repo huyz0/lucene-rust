@@ -82,9 +82,10 @@
 //! **`ffi_search_boolean_query_scored`'s clause list** is the same
 //! occur-tagged clause-array wire format as the unscored
 //! `ffi_search_boolean_query` above (see [`read_boolean_query`]) -- its norms
-//! map is built by [`clause_field_names`], which walks the whole decoded
-//! clause tree, nested `Clause::Boolean`s included, for every distinct
-//! `Clause::Term` field name.
+//! map is built by [`clause_field_names`], which walks the decoded clause
+//! tree, nested `Clause::Boolean`s included, for every distinct field name of
+//! a scoring clause (not `FILTER`, `MUST_NOT` or a constant score's inner
+//! query, which never read norms).
 
 use std::collections::HashMap;
 use std::os::raw::c_char;
@@ -678,27 +679,39 @@ pub(crate) unsafe fn read_boolean_query(
     Ok(root)
 }
 
-/// Every distinct field name a decoded `BooleanQuery`'s clauses mention, at
-/// any nesting depth -- the set a scored search needs norms for. Iterative
-/// (an explicit stack), for the same caller-controlled-depth reason
-/// [`MAX_CLAUSE_DEPTH`] gives.
+/// Every distinct field name a decoded `BooleanQuery`'s *scoring* clauses
+/// mention, at any nesting depth -- the set a scored search needs norms for.
+/// A `FILTER` or `MUST_NOT` clause and a constant-score query's inner query
+/// never score, so their fields are left out: building norms nobody reads
+/// was most of a small query's setup.
 pub(crate) fn clause_field_names(query: &BooleanQuery) -> Vec<&str> {
+    field_names(query, false)
+}
+
+/// [`clause_field_names`] over every clause, scoring or not: an explanation
+/// explains a `FILTER` or `MUST_NOT` term with its real norm, as Lucene's
+/// `TermWeight.explain` does whatever the weight's score mode.
+pub(crate) fn clause_field_names_all(query: &BooleanQuery) -> Vec<&str> {
+    field_names(query, true)
+}
+
+/// The walk behind [`clause_field_names`] and [`clause_field_names_all`].
+/// Iterative (an explicit stack), for the same caller-controlled-depth reason
+/// [`MAX_CLAUSE_DEPTH`] gives.
+fn field_names(query: &BooleanQuery, all: bool) -> Vec<&str> {
     let mut out: Vec<&str> = Vec::new();
     let mut stack: Vec<&Clause> = Vec::new();
-    fn push_all<'q>(q: &'q BooleanQuery, stack: &mut Vec<&'q Clause>) {
-        stack.extend(
-            q.must
-                .iter()
-                .chain(q.filter.iter())
-                .chain(q.should.iter())
-                .chain(q.must_not.iter()),
-        );
+    fn push_clauses<'q>(q: &'q BooleanQuery, stack: &mut Vec<&'q Clause>, all: bool) {
+        stack.extend(q.must.iter().chain(q.should.iter()));
+        if all {
+            stack.extend(q.filter.iter().chain(q.must_not.iter()));
+        }
     }
-    push_all(query, &mut stack);
+    push_clauses(query, &mut stack, all);
     while let Some(clause) = stack.pop() {
         match clause {
-            Clause::Boolean(nested) => push_all(nested, &mut stack),
-            Clause::ConstantScore(c) => stack.push(&c.inner),
+            Clause::Boolean(nested) => push_clauses(nested, &mut stack, all),
+            Clause::ConstantScore(c) if all => stack.push(&c.inner),
             Clause::Boost(b) => stack.push(&b.inner),
             // The query-tree blob (`jvm_reader::decode_node`) also builds
             // dismax, whose disjuncts score with their fields' norms like any
@@ -5113,9 +5126,11 @@ mod tests {
         ffi_close_directory(dir_handle);
     }
 
-    /// `clause_field_names` must find every field in the tree, including ones
-    /// only a nested clause mentions -- otherwise a nested clause's norms are
-    /// silently missing and its scores fall back to the unnormed constant.
+    /// `clause_field_names` must find every scoring clause's field, including
+    /// ones only a nested clause mentions -- otherwise a nested clause's norms
+    /// are silently missing and its scores fall back to the unnormed constant
+    /// -- and only those: a `FILTER` or `MUST_NOT` clause's field needs none,
+    /// though an explanation (`clause_field_names_all`) still reads it.
     #[test]
     fn clause_field_names_walks_nested_clauses() {
         let c = Clauses::new(&[
@@ -5123,6 +5138,9 @@ mod tests {
             (OCCUR_MUST, CLAUSE_KIND_BOOLEAN, "", b"", -1, 0),
             (OCCUR_SHOULD, CLAUSE_KIND_TERM, "inner", b"b", 1, 0),
             (OCCUR_FILTER, CLAUSE_KIND_TERM, "outer", b"c", 1, 0),
+            // Clauses that never score need no norms.
+            (OCCUR_FILTER, CLAUSE_KIND_TERM, "filtered", b"d", -1, 0),
+            (OCCUR_MUST_NOT, CLAUSE_KIND_TERM, "excluded", b"e", -1, 0),
         ]);
         let query = unsafe {
             read_boolean_query(
@@ -5134,7 +5152,7 @@ mod tests {
                 c.term_lens.as_ptr(),
                 c.parents.as_ptr(),
                 c.params.as_ptr(),
-                4,
+                6,
                 0,
             )
             .unwrap()
@@ -5142,6 +5160,9 @@ mod tests {
         let mut names = clause_field_names(&query);
         names.sort_unstable();
         assert_eq!(names, vec!["inner", "outer"]);
+        let mut all = clause_field_names_all(&query);
+        all.sort_unstable();
+        assert_eq!(all, vec!["excluded", "filtered", "inner", "outer"]);
     }
 
     /// Null `clause_occurs`/`clause_kinds` with a non-zero count is a status

@@ -11,12 +11,15 @@ measured 133 us before and 66 us after, the Lucene path barely moving).
 Then six turns alternate the two paths, ROUNDS/6 requests per shape per
 turn after three warm-up requests; the median per shape is reported.
 Aggregations finish in postProcess, outside the counters, so their Lucene
-times are understated: compare those over REST instead."""
-import os, sys, statistics
+times are understated: compare those over REST instead -- REST=1 times each
+request's round trip (the median of the turn's requests) in place of the
+counters."""
+import os, sys, statistics, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import verify_opensearch as v
 v.BASE = os.environ.get("BASE", "http://localhost:9200")
 WARMUP = int(os.environ.get("WARMUP", "40"))
+REST = os.environ.get("REST") == "1"
 
 rounds = int(sys.argv[1]); index = sys.argv[2]
 pat = sys.argv[3] if len(sys.argv) > 3 else ""
@@ -48,11 +51,17 @@ for rep in range(6):
                 for _ in range(3):
                     v.req("POST", url, b)
                 n0 = phase()
+                walls = []
                 for _ in range(rounds // 6):
+                    t = time.perf_counter()
                     v.req("POST", url, b)
+                    walls.append(time.perf_counter() - t)
                 n1 = phase()
             except RuntimeError:
                 continue  # a row the stock engine cannot answer
+            if REST:
+                res.setdefault(name, {}).setdefault(mode, []).append(statistics.median(walls) * 1e6)
+                continue
             if mode:
                 d, c = n1[0] - n0[0], n1[1] - n0[1]
             else:

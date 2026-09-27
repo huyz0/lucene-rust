@@ -141,6 +141,12 @@ public final class NativeSelfTest {
         check(NativeBridge.search(1, blob, -1, Long.MAX_VALUE, docs, scores, counts) == 10, "negative topN -> InvalidArgument");
         check(NativeBridge.search(1, blob, 8, Long.MAX_VALUE, docs, scores, counts) == 8, "short output arrays -> BufferTooSmall");
         check(NativeBridge.search(1, blob, 4, Long.MAX_VALUE, null, scores, counts) == 10, "null output array -> InvalidArgument");
+        long[] counts4 = new long[4];
+        byte[] f = { 'f' };
+        rc = NativeBridge.searchDocFreq(12345L, blob, 4, 4, f, f, docs, scores, counts4);
+        check(rc == NativeBridge.INVALID_HANDLE, "searchDocFreq on a fabricated handle -> INVALID_HANDLE, got " + rc);
+        check(NativeBridge.searchDocFreq(1, blob, 4, 4, null, f, docs, scores, counts4) == 10, "searchDocFreq null field -> InvalidArgument");
+        check(NativeBridge.searchDocFreq(1, blob, 4, 4, f, null, docs, scores, counts4) == 10, "searchDocFreq null term -> InvalidArgument");
         check(NativeBridge.openReader(null, new byte[0], 1, 0, new int[0], null, new long[1]) == 10, "null path -> InvalidArgument");
         check(
             NativeBridge.openReader(new byte[] { '/' }, new byte[0], 1, 0, new int[2], new long[1][], new long[1]) == 10,
@@ -324,6 +330,30 @@ public final class NativeSelfTest {
             compareMinScore(where, searcher, acquired.handle(), rewritten, enc.blob());
             compareAggs(where + ": " + rewritten, searcher, acquired.handle(), rewritten, enc.blob());
             compareTerms(where + ": " + rewritten, searcher, acquired.handle(), rewritten, enc.blob());
+            Term shortcut = RustQueryPhaseSearcher.shortcutTerm(reader, rewritten);
+            if (shortcut != null) {
+                // The term shortcut's one call: the document frequency, and the hits a search with
+                // the same limit finds.
+                byte[] field = shortcut.field().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                byte[] term = java.util.Arrays.copyOfRange(shortcut.bytes().bytes, shortcut.bytes().offset, shortcut.bytes().offset + shortcut.bytes().length);
+                for (int topN : new int[] { 0, 3 }) {
+                    int[] d1 = new int[topN], d2 = new int[topN];
+                    float[] s1 = new float[topN], s2 = new float[topN];
+                    long[] c1 = new long[4], c2 = new long[3];
+                    String what = where + ": " + rewritten + " searchDocFreq top" + topN;
+                    check(NativeBridge.searchDocFreq(acquired.handle(), enc.blob(), topN, topN, field, term, d1, s1, c1) == NativeBridge.OK, what);
+                    check(c1[3] == reader.docFreq(shortcut), what + ": docFreq " + c1[3] + " vs " + reader.docFreq(shortcut));
+                    if (topN > 0) {
+                        check(NativeBridge.search(acquired.handle(), enc.blob(), topN, topN, d2, s2, c2) == NativeBridge.OK, what + ": search");
+                        check(
+                            c1[0] == c2[0] && c1[1] == c2[1] && c1[2] == c2[2] && java.util.Arrays.equals(d1, d2) && java.util.Arrays.equals(s1, s2),
+                            what + ": differs from search"
+                        );
+                    } else {
+                        check(c1[0] == 0 && c1[1] == 0 && c1[2] == 0, what + ": searched at size 0");
+                    }
+                }
+            }
             for (int topN : new int[] { 10, 3 }) {
                 TopDocs want = searcher.search(rewritten, topN);
                 int[] docs = new int[topN];

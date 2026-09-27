@@ -99,8 +99,9 @@ use std::sync::Arc;
 /// (`SORT_NESTED`); 26, a document's stored fields
 /// ([`crate::jvm_fetch::ffi_jvm_reader_document`], read path R6); 27,
 /// `cardinality` answered as `HyperLogLogPlusPlus` sketches (its precision in
-/// the tree).
-pub const JVM_ABI_VERSION: u32 = 27;
+/// the tree); 28, the JNI `searchDocFreq` (a term query's total-hits shortcut
+/// and its search in one call).
+pub const JVM_ABI_VERSION: u32 = 28;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -4131,7 +4132,8 @@ pub(crate) mod tests {
             &*b.inner,
             lucene_search::query::Clause::ConstantScore(_)
         ));
-        assert_eq!(crate::query::clause_field_names(&q), ["f"]);
+        // A constant score's inner query never scores: no norms for it.
+        assert!(crate::query::clause_field_names(&q).is_empty());
     }
 
     #[test]

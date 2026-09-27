@@ -3,6 +3,8 @@
  */
 package org.lucenerust.opensearch;
 
+import org.apache.lucene.util.automaton.CompiledAutomaton;
+import java.util.concurrent.ConcurrentHashMap;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
@@ -434,7 +436,7 @@ public final class QueryEncoder {
             // The native grammar is RegexpQuery(term)'s: RegExp.ALL, no match flags. The flags are
             // not readable back, so the automaton they built is compared with that one's --
             // case_insensitive or a narrower flags set changes it and falls back.
-            if (rq.getCompiled().equals(new RegexpQuery(t).getCompiled()) == false) {
+            if (rq.getCompiled().equals(defaultCompiled(t)) == false) {
                 return "regexp_flags";
             }
             out.write(NODE_REGEXP);
@@ -443,6 +445,27 @@ public final class QueryEncoder {
             return null;
         }
         return (depth == 0 ? "query_" : "clause_") + name(q);
+    }
+
+    /** At most this many patterns' reference automata are kept; the cache is cleared when full. */
+    private static final int REGEXP_CACHE_SIZE = 64;
+    private static final ConcurrentHashMap<Term, CompiledAutomaton> DEFAULT_REGEXPS = new ConcurrentHashMap<>();
+
+    /**
+     * {@code new RegexpQuery(t).getCompiled()}, kept per pattern: compiling it determinizes the
+     * automaton, which for an interval such as {@code <1-20>} cost more than the native search
+     * it guards (30 us a request).
+     */
+    static CompiledAutomaton defaultCompiled(Term t) {
+        CompiledAutomaton c = DEFAULT_REGEXPS.get(t);
+        if (c == null) {
+            c = new RegexpQuery(t).getCompiled();
+            if (DEFAULT_REGEXPS.size() >= REGEXP_CACHE_SIZE) {
+                DEFAULT_REGEXPS.clear();
+            }
+            DEFAULT_REGEXPS.put(t, c);
+        }
+        return c;
     }
 
     /**
