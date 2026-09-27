@@ -63,7 +63,7 @@ import java.util.List;
  *
  * <p>A request runs native when it is a top-hits search -- by score, or by a sort {@link
  * SortEncoder} can encode, with or without {@code search_after}, {@code post_filter}, {@code timeout},
- * scroll, {@code terminate_after} and (by score) {@code min_score} -- with no collapse, rescore or profile, no aggregation beyond the
+ * scroll, {@code terminate_after} and {@code min_score} -- with no collapse, rescore or profile, no aggregation beyond the
  * metrics {@link NativeAggregations} plans, and a query {@link QueryEncoder} can encode over fields
  * using the default {@link BM25Similarity}. What it produces is what OpenSearch's own {@code
  * SimpleTopDocsCollectorContext} would: the top {@code from + size} hits (with their sort values),
@@ -264,10 +264,10 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 || ctx.queryCollectorManagers().size() != 1
                 || ctx.queryCollectorManagers().containsKey(NonGlobalAggCollectorManager.class) == false)) return "aggregations";
         boolean minScore = ctx.minimumScore() != null;
-        // min_score natively by score only: behind a sort, a scroll's later pages or
-        // terminate_after it stays on Lucene.
-        if (minScore
-            && (ctx.sort() != null || ctx.scrollContext() != null || ctx.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER)) {
+        // min_score natively by score or behind a sort (MinimumScoreCollector around the sort's
+        // collector: no competitive iterator); behind a scroll's later pages or terminate_after it
+        // stays on Lucene.
+        if (minScore && (ctx.scrollContext() != null || ctx.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER)) {
             return "min_score";
         }
         boolean terminating = ctx.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER;

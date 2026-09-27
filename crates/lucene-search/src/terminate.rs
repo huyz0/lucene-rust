@@ -236,6 +236,7 @@ pub fn search_sorted_until(
         track_max_score,
         Some(&searched),
         until,
+        None,
     )?;
     Ok((top, cut))
 }

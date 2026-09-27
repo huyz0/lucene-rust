@@ -23,7 +23,7 @@ milestone finishes the read side.
 | R4 | Sort and `search_after` natively (`TopFieldCollector`) | numeric, score, `_doc` and keyword keys and `track_scores` delivered (below); open: `avg`/`sum`/`median` modes, nested sorts, index-sorted shards |
 | R5 | Aggregations natively: terms, histogram, date_histogram, range, the metrics, cardinality, filter/filters | metrics (`min`, `max`, `sum`, `avg`, `value_count`, `stats`) and keyword `terms` delivered (below); open: the bucket aggregations, `cardinality`, sub-aggregations |
 | R6 | Fetch (`_source`, stored fields, `docvalue_fields`) and get natively | open |
-| R7 | scroll, `post_filter`, `min_score`, `terminate_after`, timeouts; the full read benchmark (in process and REST) with every native shape at least 1.0× Lucene | `post_filter`, `timeout`, scroll, `terminate_after` and `min_score` (by score) delivered; the query-phase REST benchmark at median 1.58×, worst 0.89× (below); open: `min_score` behind a sort, the last shapes under 1.0× |
+| R7 | scroll, `post_filter`, `min_score`, `terminate_after`, timeouts; the full read benchmark (in process and REST) with every native shape at least 1.0× Lucene | `post_filter`, `timeout`, scroll, `terminate_after` and `min_score` (by score and behind a sort) delivered; the query-phase REST benchmark at median 1.58×, worst 0.89× (below); open: the last shapes under 1.0× |
 
 ## R1 — the scorer tree (delivered)
 
@@ -609,11 +609,18 @@ contexts do, in the plugin's Java; the native searches underneath are R1-R5's.
   query blob with the minimum (`QUERY_MIN_SCORE`); natively the top-docs
   collector is wrapped (`MinScoreCollector`, pruning as Lucene's does), the
   count and the aggregations score the query `COMPLETE`, and the concurrent
-  count replay counts only passing documents. By score only: behind a field
-  sort (where the sorted collector's competitive iterators and lazy scoring
-  would need it inside), a scroll's later pages or `terminate_after`, Lucene
-  answers. `tests/min_score_fixtures.rs` checks 140 Lucene runs; the self test
-  random queries at two minimums each.
+  count replay counts only passing documents. Behind a sort
+  (`top_field::search_sorted_min_score`) the wrapper's leaf collector passes
+  on no competitive iterator, so no key skips anything; it asks for
+  `COMPLETE` scores unless the sort's collector wants `TOP_SCORES` (a
+  score-led sort, which still prunes by score): every match is scored by the
+  bulk scorers and only the passing ones reach the sort's collector and the
+  `MaxScoreCollector` beside it. Behind a scroll's later pages or
+  `terminate_after`, Lucene answers. `tests/min_score_fixtures.rs` checks 140
+  Lucene runs; the self test random queries at two minimums each, and a third
+  of its random sorted pages behind a minimum (2,644 pages, `MinimumScoreCollector`
+  around Lucene's `TopFieldCollector` and its `MaxScoreCollector` when
+  tracking).
 
 ### The query-phase benchmark over REST
 

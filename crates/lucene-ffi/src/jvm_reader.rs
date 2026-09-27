@@ -932,11 +932,11 @@ pub(crate) fn search_sorted_blobs(
     count_limit: i64,
 ) -> Result<SortedOut, FfiStatus> {
     let (query, min_score) = decode_request(query_blob)?;
-    if min_score.is_some() {
-        set_last_error("ffi_jvm_reader_search_sorted: min_score is not run behind a sort");
+    let (keys, after, track, slices, terminate_after, index_sorted) = decode_sort(sort_blob)?;
+    if min_score.is_some() && terminate_after.is_some() {
+        set_last_error("ffi_jvm_reader_search_sorted: min_score is not run behind terminate_after");
         return Err(FfiStatus::InvalidArgument);
     }
-    let (keys, after, track, slices, terminate_after, index_sorted) = decode_sort(sort_blob)?;
     let h = lookup(
         handle,
         "ffi_jvm_reader_search_sorted: unknown or already-closed handle",
@@ -952,6 +952,7 @@ pub(crate) fn search_sorted_blobs(
         &slices,
         terminate_after,
         &index_sorted,
+        min_score,
     )?;
     let terms = encode_terms(&keys, &hits)?;
     Ok(SortedOut {
@@ -1462,6 +1463,7 @@ pub(crate) fn search_sorted(
     slices: &[Vec<usize>],
     terminate_after: Option<(u64, bool)>,
     index_sorted: &[bool],
+    min_score: Option<f32>,
 ) -> Result<(Vec<FieldDoc>, i64, bool, f32, bool), FfiStatus> {
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
@@ -1495,7 +1497,8 @@ pub(crate) fn search_sorted(
         },
         JvmQuery::Boolean(b) => b.clone(),
     };
-    let needs_scores = track_max_score || keys.iter().any(|k| k.ty == SortType::Score);
+    let needs_scores =
+        track_max_score || min_score.is_some() || keys.iter().any(|k| k.ty == SortType::Score);
     let fields: Vec<String> = if needs_scores {
         crate::query::clause_field_names(&q)
             .into_iter()
@@ -1554,31 +1557,19 @@ pub(crate) fn search_sorted(
     }
     // A concurrent search's slices each get a collector, as Lucene's do --
     // except beside a tracked max score, which stays one pass.
-    let top = if slices.len() > 1 && !track_max_score {
-        lucene_search::top_field::search_sorted_sliced(
-            &segments,
-            h.reader.segment_readers(),
-            &q,
-            &norms,
-            keys,
-            top_n,
-            threshold,
-            after,
-            slices,
-        )
-    } else {
-        lucene_search::top_field::search_sorted_tracking(
-            &segments,
-            h.reader.segment_readers(),
-            &q,
-            &norms,
-            keys,
-            top_n,
-            threshold,
-            after,
-            track_max_score,
-        )
-    }
+    let top = lucene_search::top_field::search_sorted_min_score(
+        &segments,
+        h.reader.segment_readers(),
+        &q,
+        &norms,
+        keys,
+        top_n,
+        threshold,
+        after,
+        track_max_score,
+        slices,
+        min_score,
+    )
     .map_err(map_search_error)?;
     if count_limit <= 0 {
         return Ok((top.hits, -1, false, top.max_score, false));
@@ -2683,12 +2674,49 @@ mod tests {
             assert!(none.is_empty());
             assert_eq!(count, want.len() as i64);
         }
-        // A sorted search refuses it; the aggregations and the count replay take it.
+        // Behind a sort: every document scoring at least the minimum, in the
+        // sort's order, counted exactly; by score, the unsorted search's hits.
+        let (all, _) = run(h, &fox, 10_000, true).unwrap();
+        let mut passing: Vec<(i32, f32)> = all.iter().copied().filter(|&(_, s)| s >= min).collect();
+        let by_score = run_sorted(
+            h,
+            &blob,
+            &sort_blob(&[(SORT_SCORE, 0, "", 0)], None),
+            8,
+            i64::MAX,
+        )
+        .unwrap();
+        let docs: Vec<i32> = by_score.0.iter().map(|&(d, _)| d).collect();
+        let top: Vec<i32> = passing.iter().take(8).map(|&(d, _)| d).collect();
+        assert_eq!(docs, top);
+        assert_eq!(by_score.1, passing.len() as i64);
+        passing.sort_by_key(|&(d, _)| d);
+        let by_doc = sort_blob(&[(SORT_DOC, 0, "", 0)], None);
+        let (hits, count, lower) = run_sorted(h, &blob, &by_doc, 10_000, i64::MAX).unwrap();
+        assert_eq!(
+            hits.iter().map(|&(d, _)| d).collect::<Vec<_>>(),
+            passing.iter().map(|&(d, _)| d).collect::<Vec<_>>()
+        );
+        assert_eq!((count, lower), (passing.len() as i64, false));
+        // Tracked: the max is the best passing score.
+        let mut tracked = by_doc.clone();
+        let options = tracked.len() - 5;
+        tracked[options] = SORT_TRACK_MAX_SCORE;
+        let out = search_sorted_blobs(h, &blob, &tracked, 2, i64::MAX).unwrap();
+        assert_eq!(out.max_score, all[0].1);
+        assert_eq!(out.total, passing.len() as i64);
+        // Nothing passes: nothing collected, no max.
+        let mut high = vec![QUERY_MIN_SCORE];
+        high.extend_from_slice(&1.0e9f32.to_bits().to_le_bytes());
+        high.extend_from_slice(&fox);
+        let out = search_sorted_blobs(h, &high, &tracked, 2, i64::MAX).unwrap();
+        assert!(out.hits.is_empty() && out.total == 0 && out.max_score.is_nan());
+        // Behind terminate_after it is refused (the plugin leaves that to Lucene).
         assert_eq!(
             search_sorted_blobs(
                 h,
                 &blob,
-                &sort_blob(&[(SORT_DOC, 0, "", 0)], None),
+                &with_terminate_after(by_doc, SORT_TERMINATE_AFTER, 2),
                 4,
                 i64::MAX
             )
