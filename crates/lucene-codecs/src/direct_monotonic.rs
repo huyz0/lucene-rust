@@ -176,6 +176,73 @@ pub fn get(data: &[u8], meta: &Meta, index: i64) -> Result<i64> {
         .wrapping_add(delta))
 }
 
+/// [`get`] for the indexes `from..from + out.len()`, in order: each block's
+/// parameters looked up once and its packed deltas decoded a run at a time
+/// (`PackedLongs::decode_range`), each value the same expression [`get`]
+/// computes. For a reader of consecutive addresses (a window of documents'
+/// value ranges).
+///
+/// # Errors
+/// What [`get`] reports for the first index it would fail on.
+pub fn fill(data: &[u8], meta: &Meta, from: i64, out: &mut [i64]) -> Result<()> {
+    // ARITH: `block_shift <= 22` (see `get`), so the mask and a block's length
+    // fit; `i < out.len()` and `n <= out.len() - i`; `from + i` is checked.
+    #[allow(clippy::arithmetic_side_effects)]
+    {
+        let mask = (1i64 << meta.block_shift) - 1;
+        let mut i = 0usize;
+        while i < out.len() {
+            let Some(index) = i64::try_from(i).ok().and_then(|k| from.checked_add(k)) else {
+                return Err(lucene_store::Error::Eof { offset: 0 });
+            };
+            if index < 0 {
+                return Err(lucene_store::Error::Eof { offset: 0 });
+            }
+            let Some(&block) = meta.blocks.get((index >> meta.block_shift) as usize) else {
+                return Err(lucene_store::Error::Eof { offset: 0 });
+            };
+            let block_index = index & mask;
+            let in_block = usize::try_from(mask - block_index + 1).unwrap_or(usize::MAX);
+            let n = (out.len() - i).min(in_block);
+            let run = &mut out[i..i + n];
+            let mut decoded = 0;
+            if block.bpv == 0 {
+                run.fill(0);
+                decoded = n;
+            } else if direct_reader::is_supported_bits(block.bpv) {
+                let packed = usize::try_from(block.offset)
+                    .ok()
+                    .and_then(|o| data.get(o..))
+                    .and_then(|slice| {
+                        lucene_util::packed_longs::PackedLongs::new(slice, u32::from(block.bpv))
+                    });
+                if let Some(packed) = packed {
+                    decoded = packed.decode_range(block_index as u64, run);
+                }
+            }
+            // What the packed run could not reach (the end of the data), as
+            // `get` reads it.
+            for (k, v) in run.iter_mut().enumerate().skip(decoded) {
+                let Some(slice) = usize::try_from(block.offset)
+                    .ok()
+                    .and_then(|o| data.get(o..))
+                else {
+                    return Err(lucene_store::Error::Eof { offset: 0 });
+                };
+                *v = direct_reader::get(slice, block.bpv, block_index + k as i64)?;
+            }
+            for (k, v) in run.iter_mut().enumerate() {
+                *v = block
+                    .min
+                    .wrapping_add((block.avg * (block_index + k as i64) as f32) as i64)
+                    .wrapping_add(*v);
+            }
+            i += n;
+        }
+    }
+    Ok(())
+}
+
 /// The packed value at `index` of a block starting at byte `offset`, read with
 /// one 8-byte load when that window is inside `data` -- `DirectReader`'s
 /// per-width `get`, which the JIT specializes. `None` for anything the checked
