@@ -91,8 +91,9 @@ use std::sync::Arc;
 /// replay (read path R7); 16, `min_score` in front of a query blob; 17,
 /// [`doc_freq`] (the total-hits shortcut of a term query); 18, the `size: 0`
 /// count from the aggregation's own pass ([`aggregate_counting_blobs`]); 19,
-/// the regexp node; 20, the exists node; 21, a term with its own `docFreq`.
-pub const JVM_ABI_VERSION: u32 = 21;
+/// the regexp node; 20, the exists node; 21, a term with its own `docFreq`;
+/// 22, the sort keys' `sum`/`avg`/`median` modes.
+pub const JVM_ABI_VERSION: u32 = 22;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -566,6 +567,13 @@ const SORT_STRING: u8 = 6;
 /// Sort-key flags.
 const SORT_REVERSE: u8 = 1;
 const SORT_MAX: u8 = 2;
+/// Sort-key flags' mode field (`SORT_MODE_MASK`): OpenSearch's
+/// `MultiValueMode` for a numeric key it sorts with its own comparator source
+/// -- `0` is the `min`/`max` selector [`SORT_MAX`] says.
+const SORT_MODE_MASK: u8 = 12;
+const SORT_MODE_SUM: u8 = 4;
+const SORT_MODE_AVG: u8 = 8;
+const SORT_MODE_MEDIAN: u8 = 12;
 /// Sort-blob options: track the max score over every match.
 const SORT_TRACK_MAX_SCORE: u8 = 1;
 /// Sort-blob options: `terminate_after`, its count (`i32`, at least 1)
@@ -651,9 +659,10 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<DecodedSort, FfiStatus> {
     for _ in 0..n {
         let ty = c.u8()?;
         let flags = c.u8()?;
-        if flags & !(SORT_REVERSE | SORT_MAX) != 0 {
+        if flags & !(SORT_REVERSE | SORT_MAX | SORT_MODE_MASK) != 0 {
             return Err(bad(format!("sort blob: unknown flags {flags:#x}")));
         }
+        let mode = flags & SORT_MODE_MASK;
         let ty = match ty {
             SORT_SCORE => SortType::Score,
             SORT_DOC => SortType::Doc,
@@ -677,15 +686,28 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<DecodedSort, FfiStatus> {
                 (field.to_string(), missing)
             }
         };
+        let numeric = matches!(
+            ty,
+            SortType::Long | SortType::Int | SortType::Double | SortType::Float
+        );
+        let selector = match mode {
+            0 if flags & SORT_MAX != 0 => Selector::Max,
+            0 => Selector::Min,
+            _ if !numeric || flags & SORT_MAX != 0 => {
+                return Err(bad(format!(
+                    "sort blob: flags {flags:#x} name a mode for a non-numeric key or with max"
+                )));
+            }
+            SORT_MODE_SUM => Selector::Sum,
+            SORT_MODE_AVG => Selector::Avg,
+            SORT_MODE_MEDIAN => Selector::Median,
+            other => return Err(bad(format!("sort blob: unknown mode {other:#x}"))),
+        };
         keys.push(SortField {
             field,
             ty,
             reverse: flags & SORT_REVERSE != 0,
-            selector: if flags & SORT_MAX != 0 {
-                Selector::Max
-            } else {
-                Selector::Min
-            },
+            selector,
             missing,
         });
     }

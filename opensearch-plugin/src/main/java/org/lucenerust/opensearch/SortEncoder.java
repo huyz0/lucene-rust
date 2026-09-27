@@ -12,8 +12,11 @@ import org.apache.lucene.search.SortedSetSelector;
 import org.apache.lucene.search.SortedSetSortField;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.NumericUtils;
+import org.opensearch.index.fielddata.IndexFieldData;
+import org.opensearch.index.fielddata.IndexNumericFieldData;
 
 import java.io.ByteArrayOutputStream;
+import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 
 /**
@@ -53,6 +56,10 @@ public final class SortEncoder {
     static final byte STRING = 6;
     static final byte REVERSE = 1;
     static final byte MAX = 2;
+    /** Key flags' mode field: OpenSearch's {@code MultiValueMode} for its own comparator sources. */
+    static final byte MODE_SUM = 4;
+    static final byte MODE_AVG = 8;
+    static final byte MODE_MEDIAN = 12;
     /** Blob options: track the max score over every match (track_scores). */
     static final byte TRACK_MAX_SCORE = 1;
     static final byte TERMINATE_AFTER = 2;
@@ -127,6 +134,10 @@ public final class SortEncoder {
             if (f instanceof SortedNumericSortField sn && sn.getSelector() == SortedNumericSelector.Type.MAX) {
                 flags |= MAX;
             }
+            Mode mode = mode(f);
+            if (mode != null) {
+                flags |= mode.flags();
+            }
             if (f instanceof SortedSetSortField ss && ss.getSelector() == SortedSetSelector.Type.MAX) {
                 flags |= MAX;
             }
@@ -140,6 +151,9 @@ public final class SortEncoder {
                 if (type == STRING) {
                     // TermOrdValComparator: last only for STRING_LAST, first otherwise.
                     writeLong(out, missing == SortField.STRING_LAST ? 1 : 0);
+                } else if (mode != null) {
+                    // What the comparator source hands its comparator: `missingObject`.
+                    writeLong(out, comparable(type, mode.missing()));
                 } else {
                     // Lucene's numeric comparators treat an unset missing value as 0.
                     writeLong(out, missing == null ? 0 : comparable(type, missing));
@@ -188,6 +202,10 @@ public final class SortEncoder {
             return switch (f.getType()) {
                 case SCORE -> SCORE;
                 case DOC -> DOC;
+                case CUSTOM -> {
+                    Mode mode = mode(f);
+                    yield mode == null ? -1 : mode.type();
+                }
                 default -> -1;
             };
         }
@@ -208,6 +226,95 @@ public final class SortEncoder {
             };
         }
         return -1;
+    }
+
+    /**
+     * A numeric key OpenSearch sorts with its own comparator source ({@code LongValuesComparatorSource}
+     * and the {@code Int}, {@code Double} and {@code Float} ones) -- which it does for {@code mode}
+     * {@code sum}, {@code avg} and {@code median}: its blob type, its mode flags and the missing value
+     * its comparator is given.
+     */
+    record Mode(byte type, byte flags, Object missing) {}
+
+    private static final String SOURCES = "org.opensearch.index.fielddata.fieldcomparator.";
+    private static final Field SORT_MODE = field(IndexFieldData.XFieldComparatorSource.class, "sortMode");
+    private static final Field MISSING = field(IndexFieldData.XFieldComparatorSource.class, "missingValue");
+    private static final Field NESTED = field(IndexFieldData.XFieldComparatorSource.class, "nested");
+    private static final Field SKIPPING = field(IndexFieldData.XFieldComparatorSource.class, "enableSkipping");
+
+    /**
+     * {@code f}'s {@link Mode}, or null when it is not such a key or not one the native comparator
+     * reproduces: a nested sort, skipping disabled (the native comparator always skips with
+     * points), a converting source ({@code numeric_type}), or a comparator whose type is not the
+     * field's own (the native side reads the stored values in the key's encoding).
+     */
+    static Mode mode(SortField f) {
+        if (f.getClass() != SortField.class || f.getType() != SortField.Type.CUSTOM) {
+            return null;
+        }
+        if (!(f.getComparatorSource() instanceof IndexFieldData.XFieldComparatorSource src)) {
+            return null;
+        }
+        String name = src.getClass().getName();
+        byte type = switch (name.startsWith(SOURCES) ? name.substring(SOURCES.length()) : "") {
+            case "LongValuesComparatorSource" -> LONG;
+            case "IntValuesComparatorSource" -> INT;
+            case "DoubleValuesComparatorSource" -> DOUBLE;
+            case "FloatValuesComparatorSource" -> FLOAT;
+            default -> -1;
+        };
+        if (type < 0 || SORT_MODE == null || MISSING == null || NESTED == null || SKIPPING == null) {
+            return null;
+        }
+        try {
+            if (NESTED.get(src) != null || SKIPPING.getBoolean(src) == false) {
+                return null;
+            }
+            Field data = field(src.getClass(), "indexFieldData");
+            if (data == null || !(data.get(src) instanceof IndexNumericFieldData ifd)) {
+                return null;
+            }
+            boolean own = switch (ifd.getNumericType()) {
+                case LONG, DATE -> type == LONG;
+                case INT, SHORT, BYTE -> type == INT;
+                case DOUBLE -> type == DOUBLE;
+                case FLOAT -> type == FLOAT;
+                default -> false;
+            };
+            if (own == false) {
+                return null;
+            }
+            if (type == LONG) {
+                Field converter = field(src.getClass(), "converter");
+                if (converter == null || converter.get(src) != null) {
+                    return null;
+                }
+            }
+            byte flags = switch (((Enum<?>) SORT_MODE.get(src)).name()) {
+                case "MIN" -> 0;
+                case "MAX" -> MAX;
+                case "SUM" -> MODE_SUM;
+                case "AVG" -> MODE_AVG;
+                case "MEDIAN" -> MODE_MEDIAN;
+                default -> -1;
+            };
+            if (flags < 0) {
+                return null;
+            }
+            return new Mode(type, flags, src.missingObject(MISSING.get(src), f.getReverse()));
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return null;
+        }
+    }
+
+    private static Field field(Class<?> c, String name) {
+        try {
+            Field f = c.getDeclaredField(name);
+            f.setAccessible(true);
+            return f;
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return null;
+        }
     }
 
     /** Whether any key of {@code fields} is a keyword key, whose terms come back as bytes. */
