@@ -149,9 +149,17 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             blob = enc.blob();
             boolean fast = enc.fast();
             hitsBlob = blob;
-            if (reason == null && ctx.parsedPostFilter() != null) {
+            // The post_filter is rewritten here as QueryPhase rewrites it, which is also when an
+            // approximate range in it (ApproximateScoreQuery) resolves: approximated, it matches only
+            // the first track_total_hits documents it visits in BKD order -- a filter narrower than
+            // the range, which the native engine would not reproduce, so OpenSearch answers.
+            Query postFilter = reason == null && ctx.parsedPostFilter() != null ? searcher.rewrite(ctx.parsedPostFilter().query()) : null;
+            if (postFilter != null && approximated(postFilter)) {
+                reason = "approximate";
+            }
+            if (reason == null && postFilter != null) {
                 QueryEncoder.Encoded filtered = QueryEncoder.encode(
-                    postFiltered(query, searcher.rewrite(ctx.parsedPostFilter().query())),
+                    postFiltered(query, postFilter),
                     field -> defaultBm25(searcher, field),
                     searcher.getTopReaderContext()
                 );

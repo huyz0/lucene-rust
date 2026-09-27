@@ -1029,11 +1029,22 @@ impl SegmentReader {
     /// scan could still produce. Every other reader of this segment's points
     /// still reports the corruption.
     fn points_doc_count(&self, field_number: i32) -> Option<i32> {
-        let (kdm, kdi, kdd) = self.points_files()?;
-        let reader =
-            lucene_codecs::points::open(kdm, kdi, kdd, &self.segment_id, &self.segment_suffix)
-                .ok()?;
-        Some(reader.field(field_number)?.doc_count)
+        // The metadata `open_points` parses once per segment core, parsed
+        // here on first use if no search has yet: a count is answered per
+        // request, and parsing `.kdm` each time was most of it.
+        if self.points_meta.get().is_none() {
+            let (kdm, kdi, kdd) = self.points_files()?;
+            // No codec suffix, as `open_points` opens them:
+            // `Lucene90PointsFormat` is not a per-field format.
+            let parsed =
+                lucene_codecs::points::open_meta(kdm, kdi, kdd, &self.segment_id, "").ok()?;
+            let _ = self.points_meta.set(parsed);
+        }
+        self.points_meta
+            .get()?
+            .iter()
+            .find(|(number, _)| *number == field_number)
+            .map(|(_, f)| f.doc_count)
     }
 }
 

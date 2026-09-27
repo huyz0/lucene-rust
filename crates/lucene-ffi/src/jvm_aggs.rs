@@ -13,7 +13,7 @@
 //! nodes    := count:u8 node*                  (at most MAX_NODES in all)
 //! global   := 0 | 1 query:bytes nodes         (the global pass: its query and nodes)
 //! node     := METRIC value_kind:u8 source:u8 needs:u8 field
-//!           | CARDINALITY card_kind:u8 field
+//!           | CARDINALITY card_kind:u8 precision:u8 field
 //!           | TERMS field shard_size:i32 nodes
 //!           | HISTOGRAM field value_kind:u8 interval:f64 offset:f64 bounds_f64 nodes
 //!           | DATE_HISTOGRAM field unit:u8 [interval:i64 when unit = UNIT_INTERVAL]
@@ -35,7 +35,9 @@
 //!
 //! ```text
 //! METRIC       n:i32 (count:i64 sum delta min max min_of_mins max_of_maxes:f64)*n
-//! CARDINALITY  n:i32 (count:i32 value*)*n      value: term:bytes (keyword) | i64
+//! CARDINALITY  n:i32 (len:i32 sketch)*n       each bucket's `HyperLogLogPlusPlus`
+//!                                              as `writeTo` writes it (`len` 0:
+//!                                              the bucket saw nothing)
 //! TERMS        n:i32 (other:i64 count:i32 (docs:i64 term:bytes)*)*n  subs
 //! HISTOGRAM    n:i32 (count:i32 (key:f64 docs:i64)*)*n  subs
 //! DATE_HIST.   n:i32 (count:i32 (key:i64 docs:i64)*)*n  subs
@@ -50,8 +52,7 @@ use std::sync::Arc;
 
 use lucene_search::aggs::{MinScore, Source, ValueKind};
 use lucene_search::bucket_aggs::{
-    self, AggNode, AggResult, CardinalityKind, CardinalityValue, DateRounding, DateUnit, Globals,
-    RoundingKind,
+    self, AggNode, AggResult, CardinalityKind, DateRounding, DateUnit, Globals, RoundingKind,
 };
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::multi_segment::OpenSegment;
@@ -183,9 +184,20 @@ fn node(c: &mut Cursor<'_>, depth: usize, count: &mut usize) -> Result<AggNode, 
                 k @ 1..=3 => CardinalityKind::Numeric(value_kind(k - 1)?),
                 other => return Err(bad(format!("aggregation tree: cardinality kind {other}"))),
             };
+            // `AbstractCardinalityAlgorithm`'s bounds, refused here rather
+            // than at the first bucket.
+            let precision = match c.u8()? {
+                p @ 4..=18 => u32::from(p),
+                other => {
+                    return Err(bad(format!(
+                        "aggregation tree: cardinality precision {other}"
+                    )))
+                }
+            };
             AggNode::Cardinality {
                 field: field(c)?,
                 kind,
+                precision: Some(precision),
             }
         }
         AGG_TERMS => {
@@ -371,17 +383,17 @@ pub(crate) fn encode_result(r: &AggResult, out: &mut Vec<u8>) -> Result<(), FfiS
                 }
             }
         }
-        AggResult::Cardinality(per) => {
+        AggResult::CardinalitySketch(per) => {
             put_i32(out, per.len())?;
-            for values in per {
-                put_i32(out, values.len())?;
-                for v in values {
-                    match v {
-                        CardinalityValue::Term(t) => put_bytes(out, t)?,
-                        CardinalityValue::Long(l) => out.extend_from_slice(&l.to_le_bytes()),
-                    }
-                }
+            for sketch in per {
+                put_bytes(out, sketch)?;
             }
+        }
+        // The tree always asks for sketches (`CARDINALITY` carries a precision).
+        AggResult::Cardinality(_) => {
+            return Err(bad(
+                "aggregation tree: a cardinality without a precision".to_string()
+            ))
         }
         AggResult::Terms { buckets, subs } => {
             put_i32(out, buckets.len())?;
@@ -635,6 +647,7 @@ mod tests {
         metric(&mut b, 0, 1, "n");
         b.push(AGG_CARDINALITY);
         b.push(1);
+        b.push(14);
         string(&mut b, "n");
         // histogram(n, 1e9) > [metric, terms(body) > []]
         b.push(AGG_HISTOGRAM);
@@ -712,6 +725,7 @@ mod tests {
             t.nodes[1],
             AggNode::Cardinality {
                 kind: CardinalityKind::Numeric(ValueKind::Long),
+                precision: Some(14),
                 ..
             }
         ));
@@ -786,7 +800,17 @@ mod tests {
             invalid,
             "unknown needs"
         );
-        assert_eq!(bad(&with(&[AGG_CARDINALITY, 9, 0, 0, 0, 0])), invalid);
+        assert_eq!(bad(&with(&[AGG_CARDINALITY, 9, 14, 0, 0, 0, 0])), invalid);
+        assert_eq!(
+            bad(&with(&[AGG_CARDINALITY, 0, 3, 0, 0, 0, 0])),
+            invalid,
+            "precision"
+        );
+        assert_eq!(
+            bad(&with(&[AGG_CARDINALITY, 0, 19, 0, 0, 0, 0])),
+            invalid,
+            "precision"
+        );
         // A points source below the top, a zero interval, zero ranges.
         let mut deep = vec![AGG_GLOBAL, 1];
         metric(&mut deep, 0, 1, "n");
@@ -975,10 +999,7 @@ mod tests {
         let r = AggResult::Terms {
             buckets: vec![(3, vec![(b"a".to_vec(), 2)])],
             subs: vec![
-                AggResult::Cardinality(vec![vec![
-                    CardinalityValue::Term(b"x".to_vec()),
-                    CardinalityValue::Long(-1),
-                ]]),
+                AggResult::CardinalitySketch(vec![vec![4, 0, 1, 0, 0, 0, 7]]),
                 AggResult::Histogram {
                     buckets: vec![vec![(1.5, 4)]],
                     subs: vec![],
@@ -995,6 +1016,8 @@ mod tests {
             ],
         };
         encode_result(&r, &mut out).unwrap();
+        // Values rather than a sketch never reach the encoder from a tree.
+        assert!(encode_result(&AggResult::Cardinality(vec![]), &mut Vec::new()).is_err());
         let mut at = 0;
         assert_eq!(i32_at(&out, &mut at), 1);
         assert_eq!(i64_at(&out, &mut at), 3);
@@ -1003,12 +1026,11 @@ mod tests {
         assert_eq!(i32_at(&out, &mut at), 1);
         assert_eq!(out[at], b'a');
         at += 1;
-        // Cardinality: one owner, two values.
+        // Cardinality: one owner, its sketch's bytes.
         assert_eq!(i32_at(&out, &mut at), 1);
-        assert_eq!(i32_at(&out, &mut at), 2);
-        assert_eq!(i32_at(&out, &mut at), 1);
-        at += 1;
-        assert_eq!(i64_at(&out, &mut at), -1);
+        assert_eq!(i32_at(&out, &mut at), 7);
+        assert_eq!(&out[at..at + 7], &[4, 0, 1, 0, 0, 0, 7]);
+        at += 7;
         // Histogram, date histogram, fixed.
         assert_eq!((i32_at(&out, &mut at), i32_at(&out, &mut at)), (1, 1));
         assert_eq!(f64::from_bits(i64_at(&out, &mut at) as u64), 1.5);

@@ -375,6 +375,10 @@ pub enum AggNode {
     Cardinality {
         field: String,
         kind: CardinalityKind,
+        /// `HyperLogLogPlusPlus`'s precision: the result is each bucket's
+        /// sketch ([`AggResult::CardinalitySketch`]). `None` answers the
+        /// distinct values themselves ([`AggResult::Cardinality`]).
+        precision: Option<u32>,
     },
     /// Keyword `terms`, default order, `min_doc_count` of at least 1.
     Terms {
@@ -435,6 +439,7 @@ impl AggNode {
             | AggNode::Cardinality {
                 field,
                 kind: CardinalityKind::Keyword,
+                ..
             } if !out.contains(&field.as_str()) => out.push(field),
             _ => {}
         }
@@ -478,6 +483,9 @@ pub type TermsBuckets = (u64, Vec<(Vec<u8>, u64)>);
 pub enum AggResult {
     Metric(Vec<MetricState>),
     Cardinality(Vec<Vec<CardinalityValue>>),
+    /// Per owning bucket, its `HyperLogLogPlusPlus` as `writeTo` writes it
+    /// (`crate::cardinality_sketch`); empty for a bucket that saw nothing.
+    CardinalitySketch(Vec<Vec<u8>>),
     /// Per owning bucket: `otherDocCount` and the kept buckets by term;
     /// `subs[i]`'s owning buckets are the kept buckets in that order.
     Terms {
@@ -688,6 +696,7 @@ fn open_leaf<'a>(
         AggNode::Cardinality {
             field,
             kind: CardinalityKind::Keyword,
+            ..
         }
         | AggNode::Terms { field, .. } => {
             let map = globals.get(field)?.segment_map(view.index).unwrap_or(&[]);
@@ -937,11 +946,13 @@ fn collect(
                 let rounded = if hit {
                     leaf.memo.2
                 } else {
-                    let r = rounding.round(v);
-                    if let Some((from, to)) = rounding.bucket(v) {
-                        leaf.memo = (from, to, r, 0, u32::MAX);
+                    // The bucket's `from` is `round(v)`: the floor, back in
+                    // UTC. Only an overflowing value has no bucket.
+                    let bucket = rounding.bucket(v);
+                    if let Some((from, to)) = bucket {
+                        leaf.memo = (from, to, from, 0, u32::MAX);
                     }
-                    r
+                    bucket.map_or_else(|| rounding.round(v), |b| b.0)
                 };
                 if !single && rounded == previous {
                     continue;
@@ -1509,7 +1520,59 @@ fn finish(
                 .map(|&o| states.get(o as usize).copied().unwrap_or_default())
                 .collect(),
         )),
-        (AggNode::Cardinality { field, kind }, State::Cardinality(sets)) => {
+        (
+            AggNode::Cardinality {
+                field,
+                kind,
+                precision: Some(p),
+            },
+            State::Cardinality(sets),
+        ) => {
+            // The hashes `CardinalityAggregator` collects: a term's
+            // `MurmurHash3` (seed 0), a long's or a double's bits' `mix64`.
+            let mut out = Vec::with_capacity(owners.len());
+            for &o in owners {
+                let Some(set) = sets.get(o as usize).filter(|s| !s.is_empty()) else {
+                    out.push(Vec::new());
+                    continue;
+                };
+                let mut sketch = crate::cardinality_sketch::Sketch::new(*p).ok_or_else(|| {
+                    crate::Error::TermsAggType(format!("cardinality precision {p}"))
+                })?;
+                // In value order: a keyword's global ordinals are its terms'
+                // order, the order Java's `OrdinalsCollector` feeds them. The
+                // linear-counting table's layout (not its contents) depends
+                // on the order when hashes collide.
+                let mut values: Vec<i64> = set.iter().copied().collect();
+                values.sort_unstable();
+                match kind {
+                    CardinalityKind::Keyword => {
+                        let g = globals.get(field)?;
+                        for &v in &values {
+                            let term = terms.term(g, field, v)?;
+                            sketch.collect(crate::cardinality_sketch::murmur3_h1(&term, 0));
+                        }
+                    }
+                    CardinalityKind::Numeric(_) => {
+                        for &v in &values {
+                            sketch.collect(crate::cardinality_sketch::mix64(v));
+                        }
+                    }
+                }
+                let mut bytes = Vec::new();
+                sketch.write_to(&mut bytes);
+                out.push(bytes);
+            }
+            Ok(AggResult::CardinalitySketch(out))
+        }
+        (
+            AggNode::Cardinality {
+                field,
+                kind,
+                precision: None,
+            },
+            State::Cardinality(sets),
+        ) => {
             let mut out = Vec::with_capacity(owners.len());
             for &o in owners {
                 let Some(set) = sets.get(o as usize) else {
@@ -1689,6 +1752,30 @@ fn group(keys: &[(u32, i64)]) -> HashMap<u32, Vec<u32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The hasher's byte and word paths agree with its per-word mixing, and
+    /// the month tables are `DateUtilsRounding`'s (checked at run time too:
+    /// the constants are built by a `const fn`).
+    #[test]
+    fn the_fx_hasher_and_month_tables() {
+        let mut a = Fx::default();
+        a.write(&[1, 2]);
+        let mut b = Fx::default();
+        b.write_u64(1);
+        b.write_u64(2);
+        assert_eq!(a.finish(), b.finish());
+        let mut c = Fx::default();
+        c.write_u32(7);
+        let mut d = Fx::default();
+        d.write_i64(7);
+        assert_eq!(c.finish(), d.finish());
+        assert_eq!(month_starts(false), MIN_TOTAL_MILLIS_BY_MONTH);
+        assert_eq!(month_starts(true), MAX_TOTAL_MILLIS_BY_MONTH);
+        assert_eq!(
+            month_starts(true)[2] - month_starts(false)[2],
+            MILLIS_PER_DAY
+        );
+    }
     use crate::aggs::{MetricSpec, NEED_ALL};
     use crate::directory_reader::DirectoryReader;
     use crate::query::{Clause, MatchAllDocsQuery, PointsRangeQuery, TermQuery};
@@ -2020,6 +2107,63 @@ mod tests {
         vec![(0..reader.segment_readers().len()).collect()]
     }
 
+    /// The filter rewrite counts from points only what it can count
+    /// exactly: a top-level `date_histogram` or `range` without
+    /// sub-aggregations over a single-valued, one-dimensional points field
+    /// of the node's value type; anything else is left to the scan.
+    #[test]
+    fn counting_from_points_declines_what_it_cannot_count_exactly() {
+        let reader = fixture("metric_aggs_index");
+        let range = |field: &str, kind, subs: Vec<AggNode>| AggNode::Range {
+            field: field.to_string(),
+            kind,
+            ranges: vec![(f64::NEG_INFINITY, 0.0), (0.0, f64::INFINITY)],
+            subs,
+        };
+        let mut plain = reader.open_segments().unwrap();
+        {
+            let segments = plain.as_open_segments();
+            // No points opened for the segment at all.
+            let r = range("d", ValueKind::Double, vec![]);
+            assert!(count_from_points(&r, &segments[0]).unwrap().is_none());
+        }
+        plain.open_points().unwrap();
+        let segments = plain.as_open_segments();
+        let seg = &segments[0];
+        let terms = AggNode::Terms {
+            field: "d".to_string(),
+            shard_size: 1,
+            subs: vec![],
+        };
+        let declined = [
+            terms,
+            range(
+                "d",
+                ValueKind::Double,
+                vec![AggNode::Global { subs: vec![] }],
+            ),
+            AggNode::Range {
+                field: "d".to_string(),
+                kind: ValueKind::Double,
+                ranges: vec![(f64::NAN, 1.0)],
+                subs: vec![],
+            },
+            range("no-such-field", ValueKind::Double, vec![]),
+            // Multi-valued: more points than documents.
+            range("md", ValueKind::Double, vec![]),
+            // A double field read as a float: the widths disagree.
+            range("d", ValueKind::Float, vec![]),
+        ];
+        for node in &declined {
+            assert!(count_from_points(node, seg).unwrap().is_none(), "{node:?}");
+        }
+        assert!(
+            count_from_points(&range("d", ValueKind::Double, vec![]), seg)
+                .unwrap()
+                .is_some()
+        );
+    }
+
     #[test]
     fn a_match_all_filter_and_global_see_what_the_metrics_see() {
         let reader = fixture("metric_aggs_index");
@@ -2121,6 +2265,7 @@ mod tests {
                         AggNode::Cardinality {
                             field: field.to_string(),
                             kind: CardinalityKind::Numeric(kind),
+                            precision: None,
                         },
                     ],
                 };
@@ -2283,6 +2428,94 @@ mod tests {
         }
     }
 
+    /// With a precision, a `cardinality` answers each bucket's sketch: the
+    /// one its distinct values build when hashed as `CardinalityAggregator`
+    /// hashes them (`cardinality_sketch`'s tests hold the sketch to Java's).
+    #[test]
+    fn a_cardinality_with_a_precision_is_its_values_sketch() {
+        use crate::cardinality_sketch::{mix64, murmur3_h1, Sketch};
+        let sketch = |p: u32, values: &[CardinalityValue]| -> Vec<u8> {
+            if values.is_empty() {
+                return Vec::new();
+            }
+            let mut s = Sketch::new(p).unwrap();
+            for v in values {
+                s.collect(match v {
+                    CardinalityValue::Term(t) => murmur3_h1(t, 0),
+                    CardinalityValue::Long(l) => mix64(*l),
+                });
+            }
+            let mut out = Vec::new();
+            s.write_to(&mut out);
+            out
+        };
+        for (index, field, kind) in [
+            ("terms_aggs_index", "kw", CardinalityKind::Keyword),
+            ("terms_aggs_index", "mkw", CardinalityKind::Keyword),
+            (
+                "metric_aggs_index",
+                "ml",
+                CardinalityKind::Numeric(ValueKind::Long),
+            ),
+            (
+                "metric_aggs_index",
+                "d",
+                CardinalityKind::Numeric(ValueKind::Double),
+            ),
+        ] {
+            let reader = fixture(index);
+            for p in [4, 10, 14] {
+                let node = |precision| AggNode::Cardinality {
+                    field: field.to_string(),
+                    kind,
+                    precision,
+                };
+                // Under a filter bucket that matches nothing too: an empty
+                // bucket answers no sketch.
+                let nodes = vec![
+                    node(None),
+                    node(Some(p)),
+                    AggNode::Filters {
+                        filters: vec![all(), body("no-such-term")],
+                        other: false,
+                        subs: vec![node(None), node(Some(p))],
+                    },
+                ];
+                let got = run(&reader, &all(), &nodes, &whole(&reader))
+                    .unwrap()
+                    .remove(0);
+                let (AggResult::Cardinality(values), AggResult::CardinalitySketch(sketches)) =
+                    (&got[0], &got[1])
+                else {
+                    panic!("{got:?}")
+                };
+                assert_eq!(sketches[0], sketch(p, &values[0]), "{field} p {p}");
+                assert!(!sketches[0].is_empty());
+                let AggResult::Fixed { subs, .. } = &got[2] else {
+                    panic!()
+                };
+                let (AggResult::Cardinality(values), AggResult::CardinalitySketch(sketches)) =
+                    (&subs[0], &subs[1])
+                else {
+                    panic!()
+                };
+                assert_eq!(sketches.len(), 2);
+                for (v, s) in values.iter().zip(sketches) {
+                    assert_eq!(s, &sketch(p, v), "{field} p {p} under filters");
+                }
+                assert!(sketches[1].is_empty(), "the empty filter bucket");
+            }
+        }
+        // A precision OpenSearch would refuse is an error, not a panic.
+        let reader = fixture("terms_aggs_index");
+        let bad = AggNode::Cardinality {
+            field: "kw".to_string(),
+            kind: CardinalityKind::Keyword,
+            precision: Some(40),
+        };
+        assert!(run(&reader, &all(), &[bad], &whole(&reader)).is_err());
+    }
+
     #[test]
     fn terms_under_a_bucket_are_the_top_level_terms_of_its_documents() {
         let reader = fixture("terms_aggs_index");
@@ -2306,6 +2539,7 @@ mod tests {
                     subs: vec![AggNode::Cardinality {
                         field: field.to_string(),
                         kind: CardinalityKind::Keyword,
+                        precision: None,
                     }],
                 };
                 let nodes = vec![

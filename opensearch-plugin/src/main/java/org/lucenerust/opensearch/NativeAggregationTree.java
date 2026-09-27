@@ -8,9 +8,7 @@ import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.util.BytesRef;
 import org.opensearch.common.Rounding;
-import org.opensearch.common.hash.MurmurHash3;
 import org.opensearch.common.util.BigArrays;
-import org.opensearch.common.util.BitMixer;
 import org.opensearch.index.mapper.DateFieldMapper;
 import org.opensearch.index.mapper.DocCountFieldMapper;
 import org.opensearch.index.mapper.KeywordFieldMapper;
@@ -34,11 +32,14 @@ import org.opensearch.search.aggregations.bucket.histogram.LongBounds;
 import org.opensearch.search.aggregations.bucket.range.InternalRange;
 import org.opensearch.search.aggregations.bucket.range.RangeAggregator;
 import org.opensearch.search.aggregations.bucket.terms.StringTerms;
-import org.opensearch.search.aggregations.metrics.HyperLogLogPlusPlus;
+import org.opensearch.search.aggregations.metrics.AbstractHyperLogLogPlusPlus;
 import org.opensearch.search.aggregations.support.ValuesSourceConfig;
 import org.opensearch.search.internal.SearchContext;
 
+import org.opensearch.core.common.io.stream.StreamInput;
+
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
@@ -207,33 +208,34 @@ public final class NativeAggregationTree {
         void write(ByteArrayOutputStream out) {
             out.write(CARDINALITY);
             out.write(kind);
+            out.write(precision);
             writeString(out, field);
         }
 
+        /**
+         * Each bucket's sketch as the native side built it -- the hashes {@code CardinalityAggregator}
+         * collects into a {@code HyperLogLogPlusPlus}, written as {@code writeTo} writes it -- read back
+         * with {@code readFrom}, as a shard's sketch arriving at the coordinating node is.
+         */
         @Override
         List<InternalAggregation> read(ByteBuffer in, int n) throws ReflectiveOperationException {
             count(in, n);
             List<InternalAggregation> out = new ArrayList<>(n);
-            MurmurHash3.Hash128 hash = new MurmurHash3.Hash128();
             for (int i = 0; i < n; i++) {
-                int values = in.getInt();
-                if (values == 0) {
+                int len = in.getInt();
+                if (len == 0) {
                     // CardinalityAggregator.buildAggregation: a bucket that saw nothing.
                     out.add(agg.buildEmptyAggregation());
                     continue;
                 }
-                HyperLogLogPlusPlus counts = new HyperLogLogPlusPlus(precision, BigArrays.NON_RECYCLING_INSTANCE, 1);
-                for (int v = 0; v < values; v++) {
-                    if (kind == 0) {
-                        byte[] term = new byte[in.getInt()];
-                        in.get(term);
-                        MurmurHash3.hash128(term, 0, term.length, 0, hash);
-                        counts.collect(0, hash.h1);
-                    } else {
-                        // MurmurHash3Values: a long as is, a double as its doubleToLongBits.
-                        counts.collect(0, BitMixer.mix64(in.getLong()));
-                    }
+                AbstractHyperLogLogPlusPlus counts;
+                try {
+                    StreamInput sketch = StreamInput.wrap(in.array(), in.arrayOffset() + in.position(), len);
+                    counts = AbstractHyperLogLogPlusPlus.readFrom(sketch, BigArrays.NON_RECYCLING_INSTANCE);
+                } catch (IOException e) {
+                    throw new IllegalStateException("lucene-rust: unreadable cardinality sketch", e);
                 }
+                in.position(in.position() + len);
                 out.add(CARDINALITY_CTOR.newInstance(agg.name(), counts, agg.metadata()));
             }
             return out;

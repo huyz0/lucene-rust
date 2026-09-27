@@ -552,6 +552,21 @@ impl FieldNormsCursor<'_, '_> {
                 return Ok(());
             }
         }
+        // A constant-valued dense field -- every field without norms, a
+        // keyword's -- is one value for the whole batch, as `norm_byte`
+        // answers each document of it.
+        let entry = &self.norms.entry;
+        if let (Some(&first), Some(&last)) = (docs.first(), docs.last()) {
+            if entry.bytes_per_norm == 0
+                && entry.is_dense()
+                && first >= 0
+                && last < entry.num_docs_with_field
+            {
+                let v = self.norms.norm_inverse[entry.norms_offset as u8 as usize];
+                out.resize(docs.len(), v);
+                return Ok(());
+            }
+        }
         out.reserve(docs.len());
         for &d in docs {
             out.push(self.norm_inverse(d)?);

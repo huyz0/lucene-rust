@@ -72,9 +72,13 @@ pub(crate) fn build<'a>(
         }
         // `ConstantScoreQuery`: the inner query runs without scores.
         Clause::ConstantScore(c) => {
-            let Some(inner) = build(ctx, &c.inner, 1.0, Mode::NoScores, false)? else {
+            // `ConstantScoreWeight`'s inner weight is `IndexSearcher.createWeight`'s
+            // without scores, so `CachingWrapperWeight` caches it: through the
+            // segment's query cache here too, whatever the mode around it.
+            let Some(inner) = child(ctx, &c.inner, 1.0, Mode::NoScores, false)? else {
                 return Ok(None);
             };
+            let inner = inner.into_scorer(Mode::NoScores);
             if !mode.needs_scores() {
                 return Ok(Some(inner));
             }

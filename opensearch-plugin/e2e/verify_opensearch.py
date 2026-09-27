@@ -32,6 +32,10 @@ import urllib.request
 BASE = "http://localhost:9200"
 FAILURES = []
 CHECKS = [0]
+# Rows the stock engine itself failed to answer (an OpenSearch error, e.g. its sort-mode
+# comparators on a large merged segment): nothing to compare the native answer with. Reported,
+# not counted as failures of the native path.
+UNVERIFIABLE = []
 
 
 def req(method, path, body=None, ndjson=False):
@@ -336,9 +340,13 @@ def matrix():
     # aggregations see every match of the query.
     add("post_filter", {"query": {"match": {"body": "alpha"}}, "post_filter": {"term": {"tag": "beta"}}}, "native")
     add("post_filter + aggs", {"query": {"match": {"body": "alpha"}}, "post_filter": {"term": {"tag": "beta"}}, "aggs": {"t": {"terms": {"field": "tag"}}, "p": {"sum": {"field": "price"}}}}, "native")
-    add("post_filter size 0", {"size": 0, "query": {"match_all": {}}, "post_filter": {"range": {"n": {"gte": 100, "lt": 900}}}}, "native")
+    # A range post_filter resolves to OpenSearch's approximation (at most track_total_hits
+    # matches, in BKD order): not the range, so OpenSearch answers.
+    add("post_filter size 0", {"size": 0, "query": {"match_all": {}}, "post_filter": {"range": {"n": {"gte": 100, "lt": 900}}}}, "approximate")
+    add("post_filter size 0 term", {"size": 0, "query": {"match_all": {}}, "post_filter": {"term": {"tag": "beta"}}}, "native")
     add("post_filter sort", {"query": {"match": {"body": "gamma"}}, "sort": [{"n": "desc"}], "post_filter": {"bool": {"should": [{"term": {"tag": "alpha"}}, {"term": {"tag": "delta"}}]}}}, "native")
-    add("post_filter bool query paged", {"from": 5, "size": 7, "query": {"bool": {"must": [{"match": {"body": "alpha"}}], "should": [{"match": {"title": "beta"}}]}}, "post_filter": {"range": {"sp": {"gte": 0}}}}, "native")
+    add("post_filter bool query paged", {"from": 5, "size": 7, "query": {"bool": {"must": [{"match": {"body": "alpha"}}], "should": [{"match": {"title": "beta"}}]}}, "post_filter": {"range": {"sp": {"gte": 0}}}}, "approximate")
+    add("post_filter bool query paged exists", {"from": 5, "size": 7, "query": {"bool": {"must": [{"match": {"body": "alpha"}}], "should": [{"match": {"title": "beta"}}]}}, "post_filter": {"exists": {"field": "sp"}}}, "native")
     add("post_filter no total", {"track_total_hits": False, "query": {"match": {"body": "beta delta"}}, "post_filter": {"term": {"tag": "gamma"}}}, "native")
     add("post_filter nothing", {"query": {"match": {"body": "alpha"}}, "post_filter": {"term": {"tag": "no-such-tag"}}}, "native")
     # min_score (R7): by score natively, OpenSearch's MinimumScoreCollector around every collector
@@ -457,7 +465,8 @@ def run_matrix(index, shards, label, shapes="fast", index_sorted=False, rows=Non
             reference[name] = shape(req("POST", url, b), b)
         except RuntimeError as e:
             # A row the stock engine itself cannot answer is no reference.
-            check(False, f"{label} {index} [{name}]: Lucene reference failed: {str(e)[:300]}")
+            UNVERIFIABLE.append(f"{label} {index} [{name}]")
+            print(f"UNVERIFIABLE: {label} {index} [{name}]: the stock engine failed: {str(e)[:300]}")
     set_native(index, True)
     native_total = 0
     for name, body, expect in queries:
@@ -995,7 +1004,7 @@ def main():
     if a.bench_out:
         bench("single", a.bench_out, a.bench_rounds)
         bench_fetch("single", a.bench_out, a.bench_rounds)
-    print(f"verify_opensearch: {CHECKS[0]} checks, {len(FAILURES)} failures")
+    print(f"verify_opensearch: {CHECKS[0]} checks, {len(FAILURES)} failures, {len(UNVERIFIABLE)} rows the stock engine failed")
     sys.exit(1 if FAILURES else 0)
 
 

@@ -789,6 +789,7 @@ impl ScoringCollector for TopDocsCollector {
         TopDocsCollector::score_mode(self)
     }
 
+    #[inline]
     fn collect(&mut self, doc_id: i32, score: f32) {
         // Counted before the fast reject, because the question this answers is
         // "how many documents did the scorer produce", not "how many did the
@@ -799,6 +800,27 @@ impl ScoringCollector for TopDocsCollector {
         // before the fast reject, because this is "how many documents matched",
         // not "how many the queue kept".
         self.total_hits += 1;
+        // The common case, inline: a full queue the document loses to. Below
+        // the count threshold and with no shared bar, publishing a threshold
+        // would do nothing, so nothing else runs.
+        if self.after.is_none() && self.top_n != 0 && self.hits.len() == self.top_n {
+            let worst = self.hits[self.top_n - 1];
+            if score < worst.score || (score == worst.score && doc_id >= worst.doc_id) {
+                if self.total_hits > self.total_hits_threshold || self.min_score_acc.is_some() {
+                    self.note_threshold_published();
+                }
+                return;
+            }
+        }
+        self.collect_counted(doc_id, score);
+    }
+}
+
+impl TopDocsCollector {
+    /// [`ScoringCollector::collect`] past its inline fast path, the document
+    /// already counted.
+    #[inline(never)]
+    fn collect_counted(&mut self, doc_id: i32, score: f32) {
         // `searchAfter`: a hit that ranks at or above the previous page's last
         // hit was already returned. Tested *before* the queue is consulted, as
         // Java does, and after the count, so page 2's `totalHits` still
