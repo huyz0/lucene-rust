@@ -93,8 +93,10 @@ use std::sync::Arc;
 /// count from the aggregation's own pass ([`aggregate_counting_blobs`]); 19,
 /// the regexp node; 20, the exists node; 21, a term with its own `docFreq`;
 /// 22, the sort keys' `sum`/`avg`/`median` modes; 23, the sort blob's
-/// index-sort prefix flags.
-pub const JVM_ABI_VERSION: u32 = 23;
+/// index-sort prefix flags; 24, aggregation trees
+/// ([`crate::jvm_aggs::ffi_jvm_reader_aggregate_tree`]: bucket aggregations,
+/// sub-aggregations, `global`, `cardinality`).
+pub const JVM_ABI_VERSION: u32 = 24;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -155,12 +157,21 @@ pub(crate) enum JvmQuery {
 /// A bounds-checked little-endian reader over a caller's blob. Every read
 /// that would run past the end is [`FfiStatus::InvalidArgument`] -- the blob
 /// is caller-supplied, so a short one is a bad argument, not a panic.
-struct Cursor<'a> {
+pub(crate) struct Cursor<'a> {
     buf: &'a [u8],
     pos: usize,
 }
 
 impl<'a> Cursor<'a> {
+    pub(crate) fn new(buf: &'a [u8]) -> Self {
+        Cursor { buf, pos: 0 }
+    }
+
+    /// The offset of the next read.
+    pub(crate) fn pos(&self) -> usize {
+        self.pos
+    }
+
     fn take(&mut self, n: usize) -> Result<&'a [u8], FfiStatus> {
         let end = self.pos.checked_add(n).filter(|&e| e <= self.buf.len());
         let Some(end) = end else {
@@ -176,23 +187,23 @@ impl<'a> Cursor<'a> {
         Ok(out)
     }
 
-    fn u8(&mut self) -> Result<u8, FfiStatus> {
+    pub(crate) fn u8(&mut self) -> Result<u8, FfiStatus> {
         Ok(self.take(1)?[0])
     }
 
-    fn i32(&mut self) -> Result<i32, FfiStatus> {
+    pub(crate) fn i32(&mut self) -> Result<i32, FfiStatus> {
         let b = self.take(4)?;
         Ok(i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }
 
-    fn i64(&mut self) -> Result<i64, FfiStatus> {
+    pub(crate) fn i64(&mut self) -> Result<i64, FfiStatus> {
         let b = self.take(8)?;
         Ok(i64::from_le_bytes([
             b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
         ]))
     }
 
-    fn len(&mut self) -> Result<usize, FfiStatus> {
+    pub(crate) fn len(&mut self) -> Result<usize, FfiStatus> {
         let v = self.i32()?;
         usize::try_from(v).map_err(|_| {
             set_last_error(format!("query blob: negative length {v}"));
@@ -200,7 +211,7 @@ impl<'a> Cursor<'a> {
         })
     }
 
-    fn bytes(&mut self) -> Result<&'a [u8], FfiStatus> {
+    pub(crate) fn bytes(&mut self) -> Result<&'a [u8], FfiStatus> {
         let n = self.len()?;
         self.take(n)
     }
@@ -440,7 +451,7 @@ pub unsafe extern "C" fn ffi_open_jvm_reader(
 
 /// A shared reference to an open handle, taken under a read lock held only
 /// for the lookup.
-fn lookup(handle: u64, missing: &str) -> Result<Arc<JvmReaderHandle>, FfiStatus> {
+pub(crate) fn lookup(handle: u64, missing: &str) -> Result<Arc<JvmReaderHandle>, FfiStatus> {
     read_recovering(jvm_readers())
         .get(handle)
         .cloned()
@@ -609,7 +620,7 @@ pub(crate) type DecodedSort = (
 /// The concurrent-search slices ending a sort or metrics blob: `count: i32`,
 /// then per slice `len: i32` and that many segment indices (`i32`). None
 /// means the search is not concurrent.
-fn decode_slices(
+pub(crate) fn decode_slices(
     c: &mut Cursor<'_>,
     bad: &dyn Fn(String) -> FfiStatus,
 ) -> Result<Vec<Vec<usize>>, FfiStatus> {
@@ -1585,29 +1596,31 @@ pub(crate) fn search_sorted(
 
 /// Whether `query` has a points clause anywhere, so the search opens the
 /// segments' points (a cost a query without one should not pay).
-fn query_uses_points(query: &JvmQuery) -> bool {
+pub(crate) fn query_uses_points(query: &JvmQuery) -> bool {
+    match query {
+        JvmQuery::Term(_) => false,
+        JvmQuery::Boolean(b) => boolean_uses_points(b),
+    }
+}
+
+/// [`query_uses_points`] of a decoded boolean.
+pub(crate) fn boolean_uses_points(b: &BooleanQuery) -> bool {
     fn clause(c: &Clause) -> bool {
         match c {
             Clause::PointsRange(_) => true,
-            Clause::Boolean(b) => boolean(b),
+            Clause::Boolean(b) => boolean_uses_points(b),
             Clause::ConstantScore(c) => clause(&c.inner),
             Clause::Boost(b) => clause(&b.inner),
             Clause::DisjunctionMax(d) => d.disjuncts.iter().any(clause),
             _ => false,
         }
     }
-    fn boolean(b: &BooleanQuery) -> bool {
-        b.must
-            .iter()
-            .chain(&b.filter)
-            .chain(&b.should)
-            .chain(&b.must_not)
-            .any(clause)
-    }
-    match query {
-        JvmQuery::Term(_) => false,
-        JvmQuery::Boolean(b) => boolean(b),
-    }
+    b.must
+        .iter()
+        .chain(&b.filter)
+        .chain(&b.should)
+        .chain(&b.must_not)
+        .any(clause)
 }
 
 /// The search behind [`ffi_jvm_reader_search`], on an already-validated
@@ -1752,7 +1765,7 @@ pub(crate) fn search_min_score(
 
 /// A decoded query as the boolean the search functions take (a lone term as
 /// its one `MUST` clause).
-fn boolean_of(query: &JvmQuery) -> BooleanQuery {
+pub(crate) fn boolean_of(query: &JvmQuery) -> BooleanQuery {
     match query {
         JvmQuery::Term(t) => BooleanQuery {
             must: vec![Clause::Term(t.clone())],
@@ -2128,7 +2141,7 @@ pub extern "C" fn ffi_close_jvm_reader(handle: u64) -> i32 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// A real two-segment Java-written index whose `manifest.properties`
@@ -2142,7 +2155,7 @@ mod tests {
         std::fs::read(format!("{FIXTURE}/segments_2")).expect("segments_2")
     }
 
-    fn term_blob(field: &str, term: &str) -> Vec<u8> {
+    pub(crate) fn term_blob(field: &str, term: &str) -> Vec<u8> {
         let mut b = vec![QUERY_TERM];
         for part in [field.as_bytes(), term.as_bytes()] {
             b.extend_from_slice(&(part.len() as i32).to_le_bytes());
@@ -2201,7 +2214,7 @@ mod tests {
         (rc, handle)
     }
 
-    fn open() -> u64 {
+    pub(crate) fn open() -> u64 {
         let (rc, handle) = open_with(&[4, 4], 0);
         assert_eq!(rc, 0, "{}", crate::error::last_error());
         handle

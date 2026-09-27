@@ -31,6 +31,7 @@ import org.opensearch.common.settings.Setting;
 import org.opensearch.core.tasks.TaskCancelledException;
 import org.opensearch.search.aggregations.AggregationProcessor;
 import org.opensearch.search.aggregations.InternalAggregations;
+import org.opensearch.search.aggregations.GlobalAggCollectorManager;
 import org.opensearch.search.aggregations.NonGlobalAggCollectorManager;
 import org.opensearch.search.approximate.ApproximateScoreQuery;
 import org.opensearch.search.internal.ContextIndexSearcher;
@@ -132,7 +133,11 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // Aggregations OpenSearch's DefaultAggregationProcessor.preProcess registered (their one
         // collector context is the one in "collectors"), when all of them run natively.
         NativeAggregations.Plan aggs = ctx.queryCollectorManagers().isEmpty() ? null : NativeAggregations.plan(ctx);
-        String reason = ineligible(ctx, collectors, hasFilterCollector, aggs != null);
+        // Anything else -- bucket aggregations, sub-aggregations, global -- as a native tree.
+        NativeAggregationTree.Tree tree = aggs != null || ctx.queryCollectorManagers().isEmpty() || flags(ctx).enabled() == false
+            ? null
+            : NativeAggregationTree.plan(ctx, field -> true);
+        String reason = ineligible(ctx, collectors, hasFilterCollector, aggs != null || tree != null);
         byte[] blob = null;
         // A post_filter narrows the hits, not the aggregations (QueryPhase wraps only the top-docs
         // collector in its FilteredCollector): the hits search "query AND filter", the filter a
@@ -228,7 +233,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             } else if (hasTimeout && deadlinePassed(ctx)) {
                 reason = "timeout";
             } else {
-                reason = searchNative(ctx, acquired.handle(), blob, hitsBlob, sortBlob, sort, scoreDocs, aggs);
+                reason = searchNative(ctx, acquired.handle(), blob, hitsBlob, sortBlob, sort, scoreDocs, aggs, tree);
             }
             if (reason == null) {
                 stats.nativeQuery();
@@ -261,8 +266,10 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // global aggregation, another plugin's manager) added a collector manager.
         if (ctx.queryCollectorManagers().isEmpty() == false
             && (nativeAggs == false
-                || ctx.queryCollectorManagers().size() != 1
-                || ctx.queryCollectorManagers().containsKey(NonGlobalAggCollectorManager.class) == false)) return "aggregations";
+                || ctx.queryCollectorManagers()
+                    .keySet()
+                    .stream()
+                    .anyMatch(k -> k != NonGlobalAggCollectorManager.class && k != GlobalAggCollectorManager.class))) return "aggregations";
         boolean minScore = ctx.minimumScore() != null;
         // min_score natively by score or behind a sort (MinimumScoreCollector around the sort's
         // collector: no competitive iterator); behind a scroll's later pages or terminate_after it
@@ -475,7 +482,8 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         byte[] sortBlob,
         Sort sort,
         boolean scoreDocs,
-        NativeAggregations.Plan aggs
+        NativeAggregations.Plan aggs,
+        NativeAggregationTree.Tree tree
     ) {
         int size = ctx.size();
         ScrollContext scroll = ctx.scrollContext();
@@ -553,6 +561,25 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             if (countHere && total[0] >= 0) {
                 counted = total;
             }
+        } else if (tree != null) {
+            int[][] slices = NativeAggregations.slices(ctx);
+            if (slices == null) {
+                return "intra_segment";
+            }
+            byte[][] result = new byte[1][];
+            int rc = NativeBridge.aggregateTree(handle, blob, tree.blob(slices), result);
+            if (rc != NativeBridge.OK) {
+                stats.nativeError();
+                logger.warn("lucene-rust: native aggregation failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
+                return "native_error";
+            }
+            try {
+                aggResult = tree.build(result[0], slices, ctx.partialOnShard());
+            } catch (ReflectiveOperationException | RuntimeException e) {
+                stats.nativeError();
+                logger.warn("lucene-rust: building native aggregation results failed, re-running on Lucene", e);
+                return "native_error";
+            }
         }
         String reason = sortBlob != null
             ? searchSorted(ctx, handle, hitsBlob, sortBlob, sort, scoreDocs, Math.max(1, numDocs), countLimit, shortcut)
@@ -560,6 +587,11 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         if (reason == null && aggResult != null) {
             // DefaultAggregationProcessor.postProcess keeps a result already there (hasAggs).
             ctx.queryResult().aggregations(aggResult);
+            // ConcurrentAggregationProcessor.postProcess runs the global aggregations whatever is
+            // there, and adds them to it: the native pass answered them, so it has none to run.
+            if (tree != null && tree.global().isEmpty() == false) {
+                ctx.queryCollectorManagers().remove(GlobalAggCollectorManager.class);
+            }
         }
         return reason;
     }

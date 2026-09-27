@@ -341,43 +341,56 @@ public final class NativeAggregations {
                     entries.add(t);
                     continue;
                 }
-                Kind kind = kind(f);
-                if (kind == null) {
+                Metric m = metric(ctx, f, config, true);
+                if (m == null) {
                     return null;
                 }
-                byte valueKind = valueKind(config.fieldContext().fieldType());
-                if (valueKind < 0) {
-                    return null;
-                }
-                // AggregatorBase.pointReaderIfAvailable: a top-level min or max whose query is a
-                // bare MatchAllDocsQuery (a request without a query; an explicit match_all is an
-                // ApproximateScoreQuery in 3.8), on a field with points, reads each segment's bound
-                // off the points
-                // (tryPrecomputeAggregationForLeaf) -- faster, and over a double field with a NaN
-                // document a different answer (NaN sorts last among the points).
-                byte source = DOC_VALUES;
-                if ((kind == Kind.MIN || kind == Kind.MAX)
-                    && (ctx.query() == null || ctx.query().getClass() == MatchAllDocsQuery.class)
-                    && config.getPointReaderOrNull() != null) {
-                    source = kind == Kind.MIN ? POINTS_MIN : POINTS_MAX;
-                }
-                entries.add(
-                    new Metric(
-                        f.name(),
-                        kind,
-                        config.fieldContext().field(),
-                        valueKind,
-                        config.format(),
-                        (Map<String, Object>) METADATA.get(f),
-                        source,
-                        Plan.needs(kind)
-                    )
-                );
+                entries.add(m);
             }
         } catch (IllegalAccessException | RuntimeException e) {
             return null;
         }
         return entries.isEmpty() ? null : new Plan(List.copyOf(entries));
+    }
+
+    /**
+     * The metric of factory {@code f}, or null when it is not one of the native metrics on a
+     * numeric or date field. {@code top}: a top-level aggregation, the only kind a {@code min} or
+     * {@code max} may answer from the points.
+     */
+    @SuppressWarnings("unchecked")
+    static Metric metric(SearchContext ctx, AggregatorFactory f, ValuesSourceConfig config, boolean top)
+        throws IllegalAccessException {
+        Kind kind = kind(f);
+        if (kind == null) {
+            return null;
+        }
+        byte valueKind = valueKind(config.fieldContext().fieldType());
+        if (valueKind < 0) {
+            return null;
+        }
+        // AggregatorBase.pointReaderIfAvailable: a top-level min or max whose query is a bare
+        // MatchAllDocsQuery (a request without a query; an explicit match_all is an
+        // ApproximateScoreQuery in 3.8), on a field with points, reads each segment's bound off the
+        // points (tryPrecomputeAggregationForLeaf) -- faster, and over a double field with a NaN
+        // document a different answer (NaN sorts last among the points).
+        byte source = DOC_VALUES;
+        if (top
+            && (kind == Kind.MIN || kind == Kind.MAX)
+            && (ctx.query() == null || ctx.query().getClass() == MatchAllDocsQuery.class)
+            && config.getPointReaderOrNull() != null) {
+            source = kind == Kind.MIN ? POINTS_MIN : POINTS_MAX;
+        }
+        return new Metric(
+            f.name(),
+            kind,
+            config.fieldContext().field(),
+            valueKind,
+            config.format(),
+            (Map<String, Object>) METADATA.get(f),
+            source,
+            Plan.needs(kind)
+        );
     }
 
     private static final String TERMS_FACTORY = "org.opensearch.search.aggregations.bucket.terms.TermsAggregatorFactory";
@@ -389,7 +402,7 @@ public final class NativeAggregations {
      * counted terms are candidates, and all of them), and no {@code _doc_count} field in the
      * index (whose documents count as many).
      */
-    private static Terms terms(SearchContext ctx, AggregatorFactory f, ValuesSourceConfig config) throws IllegalAccessException {
+    static Terms terms(SearchContext ctx, AggregatorFactory f, ValuesSourceConfig config) throws IllegalAccessException {
         if (config.fieldContext().fieldType() instanceof KeywordFieldMapper.KeywordFieldType == false) {
             return null;
         }

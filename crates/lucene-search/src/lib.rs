@@ -197,6 +197,7 @@
 //! port doesn't parse doc-values skip indexes) are both deliberately deferred.
 
 pub mod aggs;
+pub mod bucket_aggs;
 mod bulk_scorer;
 pub mod collector;
 pub mod directory_reader;

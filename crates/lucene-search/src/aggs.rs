@@ -168,6 +168,11 @@ impl MetricState {
         }
     }
 
+    /// A document's stored values, ascending, read as `kind`: every part.
+    pub(crate) fn collect_all(&mut self, kind: ValueKind, values: &[i64]) {
+        self.many::<NEED_ALL>(kind, values);
+    }
+
     /// A document's stored values, ascending, read as `kind`, keeping the
     /// parts in `N`.
     #[inline]
@@ -265,7 +270,7 @@ fn sortable_int_to_float(v: i32) -> f32 {
     f32::from_bits((v ^ ((v >> 31) & 0x7fff_ffff)) as u32)
 }
 
-fn to_double(kind: ValueKind, v: i64) -> f64 {
+pub(crate) fn to_double(kind: ValueKind, v: i64) -> f64 {
     match kind {
         ValueKind::Long => v as f64,
         ValueKind::Double => sortable_long_to_double(v),
@@ -365,7 +370,7 @@ fn decode_point(kind: ValueKind, packed: &[u8]) -> Option<f64> {
 /// largest live point, or `None` when the points cannot tell (no points for
 /// the field, or -- for the minimum -- no live point among the first
 /// [`MAX_BKD_LOOKUPS`] deleted ones).
-fn leaf_point_bound(seg: &OpenSegment<'_>, spec: &MetricSpec) -> Result<Option<f64>> {
+pub(crate) fn leaf_point_bound(seg: &OpenSegment<'_>, spec: &MetricSpec) -> Result<Option<f64>> {
     let Some(points) = seg.points else {
         return Ok(None);
     };
@@ -405,13 +410,13 @@ fn leaf_point_bound(seg: &OpenSegment<'_>, spec: &MetricSpec) -> Result<Option<f
 }
 
 /// A segment's column for one field.
-enum Values<'a> {
+pub(crate) enum Values<'a> {
     Absent,
     Single(Box<NumericReader<'a>>),
     Multi(Box<SortedNumericReader<'a>>),
 }
 
-fn open_values<'a>(reader: &'a SegmentReader, field: &str) -> Result<Values<'a>> {
+pub(crate) fn open_values<'a>(reader: &'a SegmentReader, field: &str) -> Result<Values<'a>> {
     let Some(info) = reader.field_infos().fields.iter().find(|i| i.name == field) else {
         return Ok(Values::Absent);
     };
@@ -812,6 +817,24 @@ fn fold<const N: u8>(
     Ok(())
 }
 
+/// A segment's context for matching without scores (no norms, no
+/// statistics).
+pub(crate) fn plain_context<'s>(seg: &'s OpenSegment<'_>) -> exec::LeafContext<'s> {
+    exec::LeafContext {
+        fields: seg.fields,
+        doc_in: seg.doc_in,
+        pos_in: seg.pos_in,
+        pay_in: seg.pay_in,
+        live_docs: seg.live_docs,
+        points: seg.points,
+        norms: None,
+        global: None,
+        max_doc: seg.max_doc,
+        cache: seg.cache,
+        reader: seg.reader,
+    }
+}
+
 /// A segment's live matches of `clause`: `None` when it has none (no
 /// scorer), `Some(None)` for every live document (a match-all, which the
 /// caller reads straight down its columns), else the documents, collected
@@ -855,7 +878,7 @@ pub(crate) fn segment_matches<'b>(
 /// [`segment_matches`] behind `min_score`: the matches scoring at least
 /// `min`, the query scored in `COMPLETE` mode (never a match-all read straight
 /// down the columns).
-fn segment_matches_scoring<'b>(
+pub(crate) fn segment_matches_scoring<'b>(
     ctx: &exec::LeafContext<'_>,
     query: &BooleanQuery,
     live: Option<&FixedBitSet>,

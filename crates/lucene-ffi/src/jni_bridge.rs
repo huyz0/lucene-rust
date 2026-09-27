@@ -404,6 +404,34 @@ pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_aggregate<'l>
     })
 }
 
+/// `NativeBridge.aggregateTree`: [`crate::jvm_aggs::ffi_jvm_reader_aggregate_tree`],
+/// the encoded results as a new `byte[]` in `out[0]`.
+#[no_mangle]
+pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_aggregateTree<'l>(
+    env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    query: JByteArray<'l>,
+    tree: JByteArray<'l>,
+    out: JObjectArray<'l>,
+) -> jint {
+    run(|| {
+        let blob = env
+            .convert_byte_array(&query)
+            .map_err(|e| jni_err(&env, "query", e))?;
+        let tree_blob = env
+            .convert_byte_array(&tree)
+            .map_err(|e| jni_err(&env, "tree", e))?;
+        let encoded = crate::jvm_aggs::aggregate_tree_blobs(handle as u64, &blob, &tree_blob)?;
+        let arr = env
+            .byte_array_from_slice(&encoded)
+            .map_err(|e| jni_err(&env, "out", e))?;
+        env.set_object_array_element(&out, 0, &arr)
+            .map_err(|e| jni_err(&env, "out", e))?;
+        Ok(FfiStatus::Ok.code())
+    })
+}
+
 /// `NativeBridge.countTerminates`: [`jvm_reader::ffi_jvm_reader_count_terminates`],
 /// the answer as 1 or 0 in `out[0]`.
 #[no_mangle]

@@ -25,7 +25,9 @@ A request runs native when **all** of these hold:
   (`docs/milestones/m5-6-native-read.md`, R4), with or without
   `search_after`, `post_filter`, `timeout`, a `scroll`, `terminate_after`
   (where Lucene collects document by document: see the milestone's R7), and
-  aggregations the native side plans (R5), and `min_score` -- but
+  aggregations the native side plans (R5: the metrics, `terms`, the histograms,
+  ranges, `filter(s)`, `global` and `cardinality`, nested in any combination), and
+  `min_score` -- but
   no `collapse`, `rescore` or `profile`, not `search_type=dfs_query_then_fetch`,
   and no other plugin replacing the top-docs collector. A `post_filter`
   searches the hits as `query AND filter` (the filter a non-scoring clause, as
