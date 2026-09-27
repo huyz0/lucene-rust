@@ -278,3 +278,88 @@ fn a_field_absent_from_the_segment_counts_zero_and_blocks_the_rewrite() {
         ));
     });
 }
+
+/// `FieldExistsQuery`'s matches as the scorer tree reads them -- one set off
+/// the source's `IndexedDISI` -- are the documents the per-document scan
+/// finds, and their live count is real Lucene's.
+#[test]
+fn field_exists_docs_are_the_scans_documents() {
+    let cases: [(&str, &str); 7] = [
+        ("blocktree_index", "body"),
+        ("norms_index", "body"),
+        ("norms_index", "sparse_body"),
+        ("doc_values_index", "varying"),
+        ("doc_values_index", "sparse"),
+        ("doc_values_skip_index", "skip_numeric"),
+        ("doc_values_index", "no_such_field"),
+    ];
+    for (index, field) in cases {
+        let m = Manifest::load(index);
+        open_leaf(index, |seg, open| {
+            let live = |d: i32| seg.live_docs().is_none_or(|l| l.get_doc(d));
+            let got: Vec<i32> = match seg.field_exists_docs(field).expect("exists docs") {
+                lucene_search::directory_reader::ExistsDocs::None => Vec::new(),
+                lucene_search::directory_reader::ExistsDocs::All => (0..seg.max_doc).collect(),
+                lucene_search::directory_reader::ExistsDocs::Bits(bits) => {
+                    (0..seg.max_doc).filter(|&d| bits.get_doc(d)).collect()
+                }
+            }
+            .into_iter()
+            .filter(|&d| live(d))
+            .collect();
+            if field == "no_such_field" {
+                assert!(got.is_empty(), "{index}/{field}");
+                return;
+            }
+            assert_eq!(
+                got.len() as i64,
+                m.num(&format!("count.fieldexists.{field}")),
+                "{index}/{field}: live matches differ from real Lucene's count"
+            );
+            let mut scan = lucene_search::VecCollector::default();
+            match seg.field_exists_leaf(field, None).unwrap().source.unwrap() {
+                lucene_search::doc_value_query::FieldExistsSource::Norms => {
+                    lucene_search::doc_value_query::search_field_exists_norms(
+                        &seg.field_norms(field).unwrap(),
+                        seg.live_docs(),
+                        seg.max_doc,
+                        &mut scan,
+                    )
+                    .unwrap();
+                }
+                lucene_search::doc_value_query::FieldExistsSource::DocValues => {
+                    let number = seg
+                        .field_infos()
+                        .fields
+                        .iter()
+                        .find(|f| f.name == field)
+                        .unwrap()
+                        .number;
+                    let (meta, data) = seg.doc_values_for_field(number).unwrap();
+                    let dv =
+                        lucene_search::doc_value_query::doc_values_field(meta, number).unwrap();
+                    lucene_search::doc_value_query::search_field_exists(
+                        data,
+                        dv,
+                        seg.live_docs(),
+                        seg.max_doc,
+                        &mut scan,
+                    )
+                    .unwrap();
+                }
+                lucene_search::doc_value_query::FieldExistsSource::Vectors => unreachable!(),
+            }
+            assert_eq!(got, scan.docs, "{index}/{field}: the set is not the scan's");
+            // And through the scorer tree, as a search runs it.
+            let mut q = lucene_search::query::BooleanQuery::new();
+            q.must.push(lucene_search::query::Clause::Exists(
+                lucene_search::query::FieldExistsQuery::new(field),
+            ));
+            assert_eq!(
+                lucene_search::count_boolean_query_segment(open, &q).unwrap() as usize,
+                got.len(),
+                "{index}/{field}: the scorer's count"
+            );
+        });
+    }
+}

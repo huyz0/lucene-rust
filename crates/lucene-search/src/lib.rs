@@ -348,6 +348,11 @@ pub enum Error {
          (field {0:?})"
     )]
     MissingPointsInput(String),
+    /// A `Clause::Exists` reached a path that has no segment reader to read
+    /// its norms or doc values from -- the materializing and explain paths;
+    /// the scorer tree ([`exec`]) runs it with the segment's reader.
+    #[error("Clause::Exists needs the segment's reader to execute (field {0:?})")]
+    MissingSegmentReader(String),
     /// Surfaced by [`vector_query`] when the underlying `.vemf`/`.vec`/
     /// `.vem`/`.vex` decode fails -- the vector analog of [`Error::Points`].
     /// A *caller* mistake (an unknown field, a wrong-length query vector, a
@@ -1870,6 +1875,7 @@ fn resolve_clause_docs(
     clause: &Clause,
 ) -> Result<Vec<i32>> {
     match clause {
+        Clause::Exists(q) => Err(crate::Error::MissingSegmentReader(q.field.clone())),
         Clause::Term(query) => term_doc_ids(fields, doc_in, live_docs, query),
         Clause::Phrase(query) => {
             let mut collector = collector::VecCollector::default();
@@ -2637,6 +2643,7 @@ fn clause_scores(
     global: Option<&GlobalStats>,
 ) -> Result<HashMap<i32, f32>> {
     match clause {
+        Clause::Exists(q) => Err(crate::Error::MissingSegmentReader(q.field.clone())),
         Clause::Term(query) => {
             let clause_norms = norms.and_then(|m| m.get(&query.field));
             let mut scores = HashMap::new();
@@ -3079,7 +3086,7 @@ pub fn search_boolean_query_scored_with_stats<C: ScoringCollector>(
     collector: &mut C,
 ) -> Result<()> {
     search_boolean_query_scored_impl(
-        fields, doc_in, pos_in, pay_in, live_docs, points, query, norms, global, None, None,
+        fields, doc_in, pos_in, pay_in, live_docs, points, query, norms, global, None, None, None,
         collector,
     )
 }
@@ -3107,6 +3114,7 @@ pub(crate) fn search_boolean_query_scored_segment<C: ScoringCollector>(
         global,
         max_doc,
         seg.cache,
+        seg.reader,
         collector,
     )
 }
@@ -3139,6 +3147,7 @@ pub fn count_boolean_query_segment(
         global: None,
         max_doc: seg.max_doc,
         cache: seg.cache,
+        reader: seg.reader,
     };
     let mut count = Count(0);
     if let Some(mut bulk) = exec::bulk_boolean(&ctx, query, 1.0, exec::Mode::NoScores)? {
@@ -3160,6 +3169,7 @@ fn search_boolean_query_scored_impl<C: ScoringCollector>(
     global: Option<&GlobalStats>,
     max_doc: Option<i32>,
     cache: Option<&SegmentQueryCache>,
+    reader: Option<&directory_reader::SegmentReader>,
     collector: &mut C,
 ) -> Result<()> {
     // One scoring clause and nothing to filter against: the clause's own score
@@ -3315,6 +3325,7 @@ fn search_boolean_query_scored_impl<C: ScoringCollector>(
         global,
         max_doc,
         cache,
+        reader,
     };
     let mode = exec::Mode::of(collector);
     if let Some(mut bulk) = exec::bulk_boolean(&ctx, query, 1.0, mode)? {
@@ -5556,6 +5567,7 @@ mod tests {
             global: None,
             max_doc: None,
             cache: None,
+            reader: None,
         };
         exec::bulk_boolean(&ctx, q, 1.0, exec::Mode::Complete)
             .unwrap()

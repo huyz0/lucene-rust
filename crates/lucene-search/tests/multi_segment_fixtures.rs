@@ -194,6 +194,7 @@ fn multi_segment_merge_matches_real_lucene_scores_from_two_real_segment_copies()
             doc_base: 0,
             max_doc: None,
             cache: None,
+            reader: None,
             points: None,
         },
         OpenSegment {
@@ -205,6 +206,7 @@ fn multi_segment_merge_matches_real_lucene_scores_from_two_real_segment_copies()
             doc_base: doc_base1,
             max_doc: None,
             cache: None,
+            reader: None,
             points: None,
         },
     ];
@@ -310,6 +312,7 @@ fn multi_segment_merge_respects_each_segments_own_distinct_live_docs() {
             doc_base: 0,
             max_doc: None,
             cache: None,
+            reader: None,
             points: None,
         },
         OpenSegment {
@@ -321,6 +324,7 @@ fn multi_segment_merge_respects_each_segments_own_distinct_live_docs() {
             doc_base: doc_base1,
             max_doc: None,
             cache: None,
+            reader: None,
             points: None,
         },
     ];
@@ -375,6 +379,7 @@ fn multi_segment_zero_match_segment_does_not_break_real_fixture_merge() {
             doc_base: 0,
             max_doc: None,
             cache: None,
+            reader: None,
             points: None,
         },
         OpenSegment {
@@ -385,6 +390,7 @@ fn multi_segment_zero_match_segment_does_not_break_real_fixture_merge() {
             live_docs: None,
             doc_base: max_doc0,
             cache: None,
+            reader: None,
             points: None,
             max_doc: None,
         },
@@ -419,6 +425,7 @@ fn multi_segment_zero_match_segment_does_not_break_real_fixture_merge() {
             doc_base: 0,
             max_doc: None,
             cache: None,
+            reader: None,
             points: None,
         },
         OpenSegment {
@@ -429,6 +436,7 @@ fn multi_segment_zero_match_segment_does_not_break_real_fixture_merge() {
             live_docs: Some(&live1),
             doc_base: max_doc0,
             cache: None,
+            reader: None,
             points: None,
             max_doc: None,
         },

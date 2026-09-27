@@ -320,6 +320,25 @@ impl RegexpQuery {
 /// Only `i64`-typed bounds are supported (matching this port's existing
 /// `LongPoint`/`search_points_range` numeric convention) -- `String`/date
 /// range queries are out of scope for this struct.
+/// Lucene's `FieldExistsQuery`: the documents that have a value for `field`,
+/// read from the one data structure its `FieldInfo` selects -- norms, else
+/// vectors, else doc values ([`crate::doc_value_query::field_exists_source`])
+/// -- at a constant score. Vectors are not read here: such a field is an
+/// error ([`crate::Error::FieldExistsUnsupported`]), for the caller to answer
+/// another way.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FieldExistsQuery {
+    pub field: String,
+}
+
+impl FieldExistsQuery {
+    pub fn new(field: impl Into<String>) -> Self {
+        Self {
+            field: field.into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PointsRangeQuery {
     pub field: String,
@@ -671,6 +690,10 @@ pub enum Clause {
     /// A leaf `MultiPhraseQuery` -- a phrase whose every position accepts a
     /// *set* of alternative terms; see [`MultiPhraseQuery`]'s doc comment.
     MultiPhrase(MultiPhraseQuery),
+    /// A leaf `FieldExistsQuery` -- every document with a value for the field
+    /// (its norms, else its doc values), constant-scored; see
+    /// [`FieldExistsQuery`]'s doc comment.
+    Exists(FieldExistsQuery),
 }
 
 impl Clause {

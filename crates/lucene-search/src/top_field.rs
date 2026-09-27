@@ -2991,6 +2991,7 @@ fn search_segments(run: &Run<'_, '_>, order: &[usize]) -> Result<TopFieldDocs> {
             global,
             max_doc: seg.max_doc,
             cache: seg.cache,
+            reader: seg.reader,
         };
         if sort[0].ty == SortType::Score {
             // No competitive iterator: the bulk scorers, pruning by score.
@@ -3974,6 +3975,7 @@ mod tests {
             global: None,
             max_doc: seg.max_doc,
             cache: None,
+            reader: None,
         };
         let all = Clause::MatchAllDocs(crate::query::MatchAllDocsQuery::new(0));
         let tree = exec::build::child(&ctx, &all, 1.0, Mode::Complete, true)
@@ -4015,6 +4017,7 @@ mod tests {
             global: None,
             max_doc: seg.max_doc,
             cache: None,
+            reader: None,
         };
         let all = Clause::MatchAllDocs(crate::query::MatchAllDocsQuery::new(0));
         let scorer = || {
