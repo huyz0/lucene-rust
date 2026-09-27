@@ -482,7 +482,8 @@ fn scorer_disjunctions_match_brute_force() {
 
 /// The query cache: a non-scoring clause used again and again is cached per
 /// segment once the policy says so (a phrase after five uses), and every run
-/// -- uncached, the one that builds the entry, the ones served from it --
+/// (and a term set's rewritten disjunction under a scoring clause) -- uncached,
+/// the one that builds the entry, the ones served from it --
 /// returns the same hits and score bits, deletions included (the cached set
 /// is the core's, live docs are applied after).
 #[test]
@@ -514,7 +515,18 @@ fn cached_clauses_search_exactly_like_uncached_ones() {
     filtered.filter.push(phrase("w0", "w2"));
     filtered.should.push(term("w1"));
     filtered.should.push(term("w4"));
-    for q in [&excluded, &filtered] {
+    // A term set as a scoring `MUST`: its rewrite's `BooleanQuery` of terms
+    // is built without scores inside `ConstantScoreQuery`, so it is cached
+    // too (after four uses, a compound query) while the clause still scores.
+    let mut term_set = BooleanQuery::new();
+    term_set
+        .must
+        .push(Clause::TermInSet(crate::query::TermInSetQuery::new(
+            "body",
+            ["w3", "w5", "w7"],
+        )));
+    term_set.should.push(term("w0"));
+    for q in [&excluded, &filtered, &term_set] {
         let run = || {
             crate::multi_segment::search_boolean_query_multi_segment_maxscore_counting(
                 &segments,
@@ -537,8 +549,88 @@ fn cached_clauses_search_exactly_like_uncached_ones() {
     }
     for r in reader.segment_readers() {
         let (entries, bytes) = r.query_cache().stats();
-        assert_eq!(entries, 2, "both phrases cached in {}", r.segment_name);
+        assert_eq!(
+            entries, 3,
+            "both phrases and the term set cached in {}",
+            r.segment_name
+        );
         assert!(bytes > 0);
+    }
+}
+
+/// A lone term set, top hits with a small count threshold: once its
+/// rewritten disjunction is cached, the bulk scorer walks the cached bit set
+/// word by word and stops as soon as the threshold passes the constant score.
+/// Every run -- streamed-free uncached ones, the one that builds the entry,
+/// the cached ones -- returns the same hits and count relation, deletions
+/// included; and a count with no threshold walks the whole set.
+#[test]
+fn a_cached_term_set_is_walked_as_a_bit_set() {
+    use crate::directory_reader::DirectoryReader;
+    use crate::field_norms::FieldNorms;
+    use crate::query::{BooleanQuery, Clause, TermInSetQuery};
+    use std::collections::HashMap;
+    let dir = lucene_store::FsDirectory::open(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/data/mixed_boolean_scoring_index"
+    ));
+    let reader = DirectoryReader::open(&dir).unwrap();
+    let opened = reader.open_segments().unwrap();
+    let segments = opened.as_open_segments();
+    assert!(segments.iter().any(|s| s.live_docs.is_some()));
+    let owned: Vec<HashMap<String, FieldNorms<'_>>> = reader
+        .field_norms("body")
+        .into_iter()
+        .map(|n| n.into_iter().map(|n| ("body".to_string(), n)).collect())
+        .collect();
+    let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
+    let mut q = BooleanQuery::new();
+    q.must.push(Clause::TermInSet(TermInSetQuery::new(
+        "body",
+        ["w2", "w4", "w6"],
+    )));
+    let bits = |h: &[crate::ScoreDoc]| -> Vec<(i32, u32)> {
+        h.iter().map(|d| (d.doc_id, d.score.to_bits())).collect()
+    };
+    for (top_n, threshold) in [(10, 20u64), (5, 0), (7, u64::MAX)] {
+        let run = || {
+            crate::multi_segment::search_boolean_query_multi_segment_maxscore_counting(
+                &segments, &q, &norms, top_n, threshold,
+            )
+            .unwrap()
+        };
+        let (first, first_total) = run();
+        assert_eq!(first.len(), top_n);
+        for i in 0..6 {
+            let (hits, total) = run();
+            assert_eq!(bits(&hits), bits(&first), "run {i}, top {top_n}");
+            assert_eq!(
+                (total.value, total.relation),
+                (first_total.value, first_total.relation),
+                "run {i}, top {top_n}"
+            );
+        }
+        if threshold == u64::MAX {
+            // Counted exactly: the cached walk visits every live match.
+            let exact = crate::multi_segment::search_boolean_query_multi_segment_maxscore_counting(
+                &segments,
+                &q,
+                &norms,
+                1,
+                u64::MAX,
+            )
+            .unwrap()
+            .1;
+            assert_eq!(exact.value, first_total.value);
+        }
+    }
+    for r in reader.segment_readers() {
+        assert_eq!(
+            r.query_cache().stats().0,
+            1,
+            "the term set cached in {}",
+            r.segment_name
+        );
     }
 }
 

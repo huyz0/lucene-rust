@@ -16,15 +16,15 @@ use lucene_codecs::postings::PostingsFlags;
 use lucene_util::fixed_bit_set::FixedBitSet;
 
 use super::build::LeafContext;
-use super::cache::{CachedScorer, CachedSet};
+use super::cache::{CacheResult, CachedScorer, CachedSet};
 use super::leaf::{ConstantScorer, TermScorer};
 use super::{BoxScorer, Mode, Scorer, NO_MORE_DOCS};
 use crate::bulk_scorer::TermLeg;
-use crate::query::Clause;
+use crate::query::{BooleanQuery, Clause, TermQuery};
 use crate::{blocktree, Result};
 
 /// `AbstractMultiTermQueryConstantScoreWrapper.BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD`.
-const BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD: usize = 16;
+pub(crate) const BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD: usize = 16;
 
 /// The scorer for a multi-term `clause`: `Ok(None)` when it is not one this
 /// takes (the caller resolves it up front), `Ok(Some(None))` when it matches
@@ -55,6 +55,36 @@ pub(crate) fn multi_term<'a>(
         return Ok(Some(None));
     };
     let pe = |e| -> crate::Error { blocktree::Error::Postings(e).into() };
+    // `rewriteAsBooleanQuery`: up to 16 terms become `ConstantScoreQuery`
+    // around a `BooleanQuery` of `SHOULD` term queries, whose weight
+    // `ConstantScoreQuery` creates without scores -- so `IndexSearcher`
+    // wraps it in `CachingWrapperWeight`, and a term set used a few times
+    // is iterated from the segment's query cache like any other non-scoring
+    // clause, whatever the mode of the clause around it. One term rewrites
+    // to a `TermQuery`, which is never cached.
+    if terms.len() > 1 && terms.len() <= BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD {
+        if let (Some(cache), Some(max_doc)) = (ctx.cache, ctx.max_doc) {
+            let rewritten = Clause::Boolean(Box::new(BooleanQuery {
+                should: terms
+                    .iter()
+                    .map(|(t, _)| Clause::Term(TermQuery::new(field.clone(), t.clone())))
+                    .collect(),
+                ..BooleanQuery::default()
+            }));
+            let inner = match cache.scorer(&rewritten, max_doc, || {
+                Ok(Some(term_union(field_terms, doc_in, &terms)?))
+            })? {
+                Some(CacheResult::Hit(s)) => s,
+                Some(CacheResult::Empty) => return Ok(Some(None)),
+                None => term_union(field_terms, doc_in, &terms)?,
+            };
+            return Ok(Some(Some(Box::new(ConstantScorer::new(
+                inner,
+                boost,
+                mode == Mode::TopScores,
+            )))));
+        }
+    }
     let mut scorers: Vec<BoxScorer<'a>> = Vec::new();
     if terms.len() > BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD {
         let Some(max_doc) = ctx.max_doc else {
@@ -103,6 +133,20 @@ pub(crate) fn multi_term<'a>(
         boost,
         mode == Mode::TopScores,
     )))))
+}
+
+/// The union of `terms`' postings, documents only.
+fn term_union<'a>(
+    field_terms: &'a lucene_codecs::blocktree::FieldTerms,
+    doc_in: &'a lucene_codecs::postings::DocInput<'a>,
+    terms: &[(Vec<u8>, lucene_codecs::blocktree::SeekedTerm)],
+) -> Result<BoxScorer<'a>> {
+    let mut legs = Vec::with_capacity(terms.len());
+    for (_, seeked) in terms {
+        let cursor = field_terms.lazy_postings_for(seeked, doc_in, PostingsFlags::DocsOnly)?;
+        legs.push(TermLeg::filter(cursor, seeked.stats.doc_freq as i64));
+    }
+    Ok(Box::new(TermUnion::new(legs, None)))
 }
 
 /// `DisjunctionDISIApproximation` over at most 16 term iterators and the

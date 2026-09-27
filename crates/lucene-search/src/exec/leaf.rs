@@ -172,6 +172,13 @@ impl Scorer for ConstantScorer<'_> {
         self.inner.contains(doc)
     }
 
+    fn constant_bits(&self) -> Option<(std::sync::Arc<super::cache::CachedSet>, f32)> {
+        if self.emptied || self.inner.two_phase() {
+            return None;
+        }
+        self.inner.constant_bits().map(|(set, _)| (set, self.score))
+    }
+
     fn doc_id_run_end(&self) -> i32 {
         if self.emptied {
             return self.doc.saturating_add(1);
