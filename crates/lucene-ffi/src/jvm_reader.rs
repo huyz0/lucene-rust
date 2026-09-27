@@ -97,8 +97,10 @@ use std::sync::Arc;
 /// ([`crate::jvm_aggs::ffi_jvm_reader_aggregate_tree`]: bucket aggregations,
 /// sub-aggregations, `global`, `cardinality`); 25, nested sort keys
 /// (`SORT_NESTED`); 26, a document's stored fields
-/// ([`crate::jvm_fetch::ffi_jvm_reader_document`], read path R6).
-pub const JVM_ABI_VERSION: u32 = 26;
+/// ([`crate::jvm_fetch::ffi_jvm_reader_document`], read path R6); 27,
+/// `cardinality` answered as `HyperLogLogPlusPlus` sketches (its precision in
+/// the tree).
+pub const JVM_ABI_VERSION: u32 = 27;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;

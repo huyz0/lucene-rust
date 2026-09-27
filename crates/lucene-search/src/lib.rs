@@ -199,6 +199,7 @@
 pub mod aggs;
 pub mod bucket_aggs;
 mod bulk_scorer;
+pub mod cardinality_sketch;
 pub mod collector;
 pub mod directory_reader;
 pub mod doc_value_query;
@@ -3172,11 +3173,47 @@ pub fn count_boolean_query_segment(
         cache: seg.cache,
         reader: seg.reader,
     };
+    // `BooleanWeight.count` of a lone required clause is that clause's
+    // `Weight.count`: an `exists` is answered from the index statistics
+    // (`FieldExistsQuery.count`) when they are exact for this segment.
+    if let (Some(field), Some(reader)) = (lone_exists(query), seg.reader) {
+        let mut leaf = reader.field_exists_leaf(field, None)?;
+        // The deletions the searcher sees, not the commit's.
+        leaf.num_docs = match seg.live_docs {
+            Some(live) => i32::try_from(live.cardinality()).unwrap_or(i32::MAX),
+            None => leaf.max_doc,
+        };
+        if let Some(n) = weight_count::count_field_exists_leaf(&leaf) {
+            return Ok(u64::try_from(n).unwrap_or(0));
+        }
+    }
     let mut count = Count(0);
     if let Some(mut bulk) = exec::bulk_boolean(&ctx, query, 1.0, exec::Mode::NoScores)? {
         exec::score_segment(&mut bulk, exec::Mode::NoScores, seg.live_docs, &mut count)?;
     }
     Ok(count.0)
+}
+
+/// The field of a query that is one `exists` and nothing else -- as the only
+/// `MUST` or `FILTER` clause, possibly under a constant score or a boost,
+/// which `BooleanWeight.count` and those wrappers' `count` pass through.
+fn lone_exists(query: &BooleanQuery) -> Option<&str> {
+    fn inner(c: &Clause) -> Option<&str> {
+        match c {
+            Clause::Exists(e) => Some(&e.field),
+            Clause::ConstantScore(c) => inner(&c.inner),
+            Clause::Boost(b) => inner(&b.inner),
+            Clause::Boolean(b) => lone_exists(b),
+            _ => None,
+        }
+    }
+    if !query.should.is_empty() || !query.must_not.is_empty() {
+        return None;
+    }
+    match (query.must.as_slice(), query.filter.as_slice()) {
+        ([c], []) | ([], [c]) => inner(c),
+        _ => None,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4746,6 +4783,38 @@ fn multi_phrase_hits<C: ScoringCollector>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `BooleanWeight.count` passes a lone required `exists` through a
+    /// constant score, a boost or a nested boolean; anything else beside it
+    /// (a second clause, a `SHOULD`, a `MUST_NOT`) is counted by the scorer.
+    #[test]
+    fn a_lone_exists_is_found_through_wrappers_and_nothing_else() {
+        use crate::query::{BoostQuery, ConstantScoreQuery, FieldExistsQuery};
+        let exists = || Clause::Exists(FieldExistsQuery::new("f"));
+        let with = |must: Vec<Clause>, filter: Vec<Clause>| BooleanQuery {
+            must,
+            filter,
+            ..BooleanQuery::default()
+        };
+        assert_eq!(lone_exists(&with(vec![exists()], vec![])), Some("f"));
+        assert_eq!(lone_exists(&with(vec![], vec![exists()])), Some("f"));
+        let wrapped = Clause::Boost(Box::new(BoostQuery::new(
+            Clause::ConstantScore(Box::new(ConstantScoreQuery::new(exists(), 1.0))),
+            2.0,
+        )));
+        assert_eq!(lone_exists(&with(vec![wrapped], vec![])), Some("f"));
+        let nested = Clause::Boolean(Box::new(with(vec![], vec![exists()])));
+        assert_eq!(lone_exists(&with(vec![nested], vec![])), Some("f"));
+        assert_eq!(lone_exists(&with(vec![exists()], vec![exists()])), None);
+        let mut should = with(vec![exists()], vec![]);
+        should.should.push(exists());
+        assert_eq!(lone_exists(&should), None);
+        let mut not = with(vec![exists()], vec![]);
+        not.must_not.push(exists());
+        assert_eq!(lone_exists(&not), None);
+        let term = Clause::Term(crate::query::TermQuery::new("f", "t"));
+        assert_eq!(lone_exists(&with(vec![term], vec![])), None);
+    }
 
     #[test]
     fn cutoff_doc_set_keeps_exactly_the_lowest_n_documents() {
