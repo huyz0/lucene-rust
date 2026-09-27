@@ -35,8 +35,12 @@ use crate::query::Clause;
 use crate::query_cache::{CachingCost, QueryCachingPolicy, UsageTrackingPolicy};
 use crate::Result;
 
-/// Cached queries per segment (Lucene's node-wide default is 1,000).
-pub(crate) const MAX_ENTRIES: usize = 64;
+/// Cached queries per segment (OpenSearch's node-wide
+/// `indices.queries.cache.count` is 10,000; Lucene's own default 1,000).
+/// [`MAX_BYTES`] is the bound that matters: 64 entries let a workload of a
+/// few hundred distinct filters evict each one before its next use, where
+/// OpenSearch's cache would still hold it.
+pub(crate) const MAX_ENTRIES: usize = 1_000;
 /// Cached bytes per segment (Lucene's node-wide default is 32 MB).
 pub(crate) const MAX_BYTES: usize = 16 << 20;
 /// `LRUQueryCache`'s `MinSegmentSizePredicate` floor.
@@ -486,6 +490,41 @@ mod tests {
         BooleanQuery, DisjunctionMaxQuery, MatchAllDocsQuery, PhraseQuery, PrefixQuery, TermQuery,
     };
 
+    /// `ConstantScoreScorer` over a cached iterator: the constant as score
+    /// and bound; under `TOP_SCORES` a threshold past it empties the
+    /// iterator (no membership, no run, no bits, nothing left to advance
+    /// to); a threshold at it, or a scorer not pruning, leaves it be.
+    #[test]
+    fn a_constant_cached_scorer_empties_like_constant_score_scorer() {
+        let mut bits = FixedBitSet::new(100);
+        for d in [3, 4, 50] {
+            bits.set(d);
+        }
+        for set in [
+            CachedSet::Bits {
+                bits,
+                cardinality: 3,
+            },
+            CachedSet::Docs(vec![3, 4, 50]),
+        ] {
+            let set = Arc::new(set);
+            let mut s = CachedScorer::constant(Arc::clone(&set), 2.5, true);
+            assert_eq!(s.next_doc().unwrap(), 3);
+            assert_eq!(s.score().unwrap(), 2.5);
+            assert_eq!(s.max_score(NO_MORE_DOCS).unwrap(), 2.5);
+            s.set_min_competitive_score(2.5).unwrap();
+            assert_eq!(s.next_doc().unwrap(), 4, "a tie still competes");
+            s.set_min_competitive_score(3.0).unwrap();
+            assert!(s.contains(50).is_none());
+            assert_eq!(s.doc_id_run_end(), 5);
+            assert!(s.constant_bits().is_none());
+            assert_eq!(s.advance(10).unwrap(), NO_MORE_DOCS);
+            let mut t = CachedScorer::constant(set, 1.0, false);
+            t.set_min_competitive_score(9.0).unwrap();
+            assert_eq!(t.advance(40).unwrap(), 50, "not pruning: never emptied");
+        }
+    }
+
     fn list(docs: Vec<i32>) -> Result<Option<BoxScorer<'static>>> {
         Ok(Some(Box::new(DocList::new(docs, Vec::new()))))
     }
@@ -622,7 +661,13 @@ mod tests {
         // The first ones went; the last is still served.
         let last = Clause::Prefix(PrefixQuery::new("f", format!("p{}", MAX_ENTRIES + 5)));
         hit(cache.scorer(&last, 20_000, || panic!("cached")).unwrap());
+        // The first one went, and the policy's history (256 uses) has
+        // forgotten it too: it is a first use again, then cached on the next.
         let first = Clause::Prefix(PrefixQuery::new("f", "p0"));
+        assert!(cache
+            .scorer(&first, 20_000, || list(vec![5]))
+            .unwrap()
+            .is_none());
         let r = cache.scorer(&first, 20_000, || list(vec![5])).unwrap();
         assert!(
             matches!(r, Some(CacheResult::Hit(_))),

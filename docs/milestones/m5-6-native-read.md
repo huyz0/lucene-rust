@@ -23,7 +23,7 @@ milestone finishes the read side.
 | R4 | Sort and `search_after` natively (`TopFieldCollector`) | ✅ delivered: numeric, score, `_doc` and keyword keys, `track_scores`, the `avg`/`median` modes, index-sorted shards and nested keys (below); on Lucene by design: the `sum` mode on a top-level field (its points skipping is not exact), a nested sort on a shard large enough for Lucene's comparator to skip |
 | R5 | Aggregations natively: terms, histogram, date_histogram, range, the metrics, cardinality, filter/filters | ✅ delivered: the metrics (`min`, `max`, `sum`, `avg`, `value_count`, `stats`), keyword `terms`, `histogram`, `date_histogram`, `range`/`date_range`, `filter`, `filters`, `global`, `cardinality`, and any nesting of them (below); outside: scripts, `missing`, non-default `terms` orders, zones with daylight saving, other aggregation types |
 | R6 | Fetch (`_source`, stored fields, `docvalue_fields`) and get natively | ✅ delivered: every stored-fields read of the fetch phase and the get API (`_source`, `_id`, `stored_fields`, highlighting's source) is native, 1.24× Lucene per document (below); `docvalue_fields` stays on Lucene's doc-values readers by design |
-| R7 | scroll, `post_filter`, `min_score`, `terminate_after`, timeouts; the full read benchmark (in process and REST) with every native shape at least 1.0× Lucene | `post_filter`, `timeout`, scroll, `terminate_after` and `min_score` (by score and behind a sort) delivered; the query-phase REST benchmark at median 1.58×, worst 0.89× (below); open: the last shapes under 1.0× |
+| R7 | scroll, `post_filter`, `min_score`, `terminate_after`, timeouts; the full read benchmark (in process and REST) with every native shape at least 1.0× Lucene | `post_filter`, `timeout`, scroll, `terminate_after` and `min_score` (by score and behind a sort) delivered; the query-phase REST benchmark at median 1.58× on eight segments (worst 0.89×) and 1.60× on one merged segment of 100,000 documents, where 17 of 132 shapes are still under 1.0× (below); open: those shapes |
 
 ## R1 — the scorer tree (delivered)
 
@@ -543,8 +543,15 @@ per aggregator:
   `shard_size` by count then term, the rest into `otherDocCount`;
 * `cardinality`: the distinct values per bucket -- the terms of a keyword,
   the longs of a whole-number field, the `double` bits of a floating-point
-  one -- which the plugin hashes as `MurmurHash3Values` does into
-  `HyperLogLogPlusPlus` (a set of hashes: order does not matter);
+  one -- hashed as `CardinalityAggregator` hashes them (`MurmurHash3`'s
+  `h1`, `BitMixer.mix64`) into a native port of `HyperLogLogPlusPlus`
+  (`cardinality_sketch.rs`: linear counting in its open-addressing table,
+  the upgrade to registers past its threshold) and handed over as
+  `writeTo` writes a sketch, which the plugin reads with `readFrom` as a
+  coordinating node reads a shard's. The first version shipped the values
+  and let the plugin hash them into a Java sketch: the JVM then did all of
+  stock OpenSearch's per-value work plus the transfer, and `terms` >
+  `cardinality` at precision 10 measured 0.76-0.95x;
 * a top-level `min`/`max` keeps its points shortcut.
 
 The plugin reads every parameter off the aggregators OpenSearch built for the
@@ -878,6 +885,17 @@ contexts do, in the plugin's Java; the native searches underneath are R1-R5's.
   around Lucene's `TopFieldCollector` and its `MaxScoreCollector` when
   tracking).
 
+- **An approximate range in a `post_filter`**: OpenSearch rewrites a `range`
+  to `ApproximateScoreQuery` and, where it may, resolves it to the
+  approximation, which stops after `track_total_hits` matches in BKD order.
+  In a `post_filter` that is a filter narrower than the range: on one merged
+  segment of 99,534 documents stock OpenSearch answered a `range` post filter
+  with 9,429 hits "exactly" and without the best-scoring ones, where the same
+  range as a `filter` clause gives the full answer. The native engine gives
+  the full answer, so a `post_filter` that resolves to an approximation stays
+  on OpenSearch (`approximate`), as the main query already did. Found by the
+  first verification on 100,000 documents after a force merge.
+
 ### The query-phase benchmark over REST
 
 The plugin's own `query_phase_nanos` counters, per path (no HTTP or fetch
@@ -896,6 +914,47 @@ native:
 Shapes under 1.0× at the last run: that one; `agg terms shard_size` (0.87×
 to 1.10× across runs, Lucene's own time moving by 400 µs); and three at
 0.98-0.99×. Rows under 100 µs move ±10% between runs.
+
+**The same benchmark after a force merge, warmed** (`opensearch-plugin/e2e/phase_bench.py`,
+on the node `scripts/verify-opensearch.sh --docs 100000 --keep` leaves: one
+segment of 99,534 documents and one of 200, every shape first run 40 times on
+each path, then the six alternating turns). Of the 132 non-aggregation
+shapes, median 1.60×, 10th percentile 0.92×; 17 under 1.0×, the worst
+`exists` over a sparse field with hits (0.47×, 50 µs against 107 µs) and a
+multi-valued keyword (0.51×), `regexp` with an interval (0.53×), `fuzzy` on
+a keyword (0.60×), a lone `exists` counted (`size: 0`, 0.70×), then
+eleven between 0.82× and 0.99×. The one-segment shard is not the
+eight-segment one: per-request costs that eight small segments hid now show.
+
+The warm-up matters. Measured on a node that had served a few thousand
+requests, the plugin's own Java (planning, eligibility, encoding) had not
+been compiled yet: a term query's native query phase was 133 µs, of which
+53 µs before the native call; after 20,000 more requests, 66 µs and 5 µs,
+Lucene's path barely moving (its code is warm from every request the node
+serves). Earlier per-shape numbers on a freshly started node understate the
+native path by that much.
+
+What this round changed, each confirmed by the in-process search on a copy
+of the merged shard (`ffi_jvm_reader_search`, no JVM):
+
+- A keyword field has no norms, so its norm is one constant for every
+  document; the batch scorer looked it up per document through the general
+  path. A term on `tag` 69 µs to 43 µs, a dense one 154 µs to 86 µs.
+- `TopDocsCollector.collect`'s common case -- a full queue the document
+  loses to, below the count threshold -- is inline and does nothing else
+  (43 µs to 39 µs).
+- A lone `exists` counted is `FieldExistsQuery.count` from the index
+  statistics (0.08× to 0.70×), with the points' document count read from the
+  metadata the segment keeps rather than parsed per request.
+- `constant_score`'s inner clause goes through the query cache, as
+  `ConstantScoreWeight`'s does; the per-segment cache holds 1,000 entries
+  (it held 64: a matrix of a few hundred shapes evicted each before its next
+  use, where OpenSearch's node-wide cache, 10,000 entries, keeps it).
+
+What is left under 1.0× is per-request native work inside the node that
+the same call does not show in process (an `exists` with hits is 51 µs in
+process against about 100 µs inside the node) and the regexp and fuzzy
+expansions on the merged segment; the next round's work.
 
 What closed the gaps the first full run showed (worst 0.28×, 30 shapes
 under 1.0×), each measured before and after:
