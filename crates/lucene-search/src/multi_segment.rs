@@ -142,6 +142,9 @@ pub struct OpenSegment<'a> {
     pub cache: Option<&'a crate::SegmentQueryCache>,
     /// The segment's points, when opened (a query with a points clause).
     pub points: Option<&'a crate::points_query::PointsInput<'a>>,
+    /// The segment's reader, when the caller opened the segment through one:
+    /// what a leaf reading norms or doc values (`FieldExistsQuery`) needs.
+    pub reader: Option<&'a crate::directory_reader::SegmentReader>,
 }
 
 /// The shared fan-out+merge core (see this module's doc comment): runs
@@ -1749,6 +1752,7 @@ mod tests {
                 doc_base: 0,
                 max_doc: None,
                 cache: None,
+                reader: None,
                 points: None,
             },
             OpenSegment {
@@ -1759,6 +1763,7 @@ mod tests {
                 live_docs: None,
                 doc_base: max_doc0,
                 cache: None,
+                reader: None,
                 points: None,
                 max_doc: None,
             },
@@ -1825,6 +1830,7 @@ mod tests {
                 doc_base: 0,
                 max_doc: None,
                 cache: None,
+                reader: None,
                 points: None,
             },
             OpenSegment {
@@ -1835,6 +1841,7 @@ mod tests {
                 live_docs: None,
                 doc_base: max_doc0,
                 cache: None,
+                reader: None,
                 points: None,
                 max_doc: None,
             },
@@ -1896,6 +1903,7 @@ mod tests {
                 doc_base: 0,
                 max_doc: None,
                 cache: None,
+                reader: None,
                 points: None,
             },
             OpenSegment {
@@ -1906,6 +1914,7 @@ mod tests {
                 live_docs: None,
                 doc_base: max_doc0,
                 cache: None,
+                reader: None,
                 points: None,
                 max_doc: None,
             },
@@ -1941,6 +1950,7 @@ mod tests {
                 doc_base: 0,
                 max_doc: None,
                 cache: None,
+                reader: None,
                 points: None,
             },
             OpenSegment {
@@ -1951,6 +1961,7 @@ mod tests {
                 live_docs: None,
                 doc_base: max_doc0,
                 cache: None,
+                reader: None,
                 points: None,
                 max_doc: None,
             },
@@ -1981,6 +1992,7 @@ mod tests {
             doc_base: 1000,
             max_doc: None,
             cache: None,
+            reader: None,
             points: None,
         }];
         let norms = [None];
@@ -2356,6 +2368,7 @@ mod tests {
                 doc_base: 0,
                 max_doc: None,
                 cache: None,
+                reader: None,
                 points: None,
             },
             OpenSegment {
@@ -2366,6 +2379,7 @@ mod tests {
                 live_docs: None,
                 doc_base: max_doc0,
                 cache: None,
+                reader: None,
                 points: None,
                 max_doc: None,
             },
@@ -2399,6 +2413,7 @@ mod tests {
                 doc_base: 0,
                 max_doc: None,
                 cache: None,
+                reader: None,
                 points: None,
             },
             OpenSegment {
@@ -2409,6 +2424,7 @@ mod tests {
                 live_docs: None,
                 doc_base: max_doc0,
                 cache: None,
+                reader: None,
                 points: None,
                 max_doc: None,
             },

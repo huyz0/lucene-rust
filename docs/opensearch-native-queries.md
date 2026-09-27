@@ -41,8 +41,10 @@ A request runs native when **all** of these hold:
   `terms` (`PrefixQuery`, `WildcardQuery`, `RegexpQuery` with its default
   flags, `TermInSetQuery` under Lucene's default
   constant-score rewrite, also as the index side of an
-  `IndexOrDocValuesQuery`), and `range` on `long`, `date` and `double`
-  fields (`PointRangeQuery` of 8-byte values) -- at most 32 deep and 1,024 nodes,
+  `IndexOrDocValuesQuery`), `range` on `long`, `date` and `double`
+  fields (`PointRangeQuery` of 8-byte values), and `exists`
+  (`FieldExistsQuery` over norms or doc values; a vector field is answered
+  by Lucene) -- at most 32 deep and 1,024 nodes,
   over fields that score with the default BM25 (`k1 = 1.2`, `b = 0.75`), with
   every `TermQuery` scoring from the reader's own statistics (not blended
   `TermStates`, as `multi_match` `cross_fields` builds);

@@ -18,6 +18,7 @@ import org.apache.lucene.search.PrefixQuery;
 import org.apache.lucene.util.NumericUtils;
 import org.apache.lucene.search.QueryVisitor;
 import org.apache.lucene.search.TermInSetQuery;
+import org.apache.lucene.search.FieldExistsQuery;
 import org.apache.lucene.search.RegexpQuery;
 import org.apache.lucene.search.WildcardQuery;
 import org.apache.lucene.util.BytesRefIterator;
@@ -55,7 +56,8 @@ import java.util.function.Predicate;
  *       encoded as the original query it wraps, which scores identically;
  *   <li>the leaves: {@link PhraseQuery} without position gaps, {@link TermInSetQuery}, {@link
  *       PrefixQuery}, {@link WildcardQuery} without escapes and {@link RegexpQuery} with its default
- *       flags (under a constant-score rewrite), and a one-dimension 8-byte {@code PointRangeQuery}.
+ *       flags (under a constant-score rewrite), a one-dimension 8-byte {@code PointRangeQuery}, and
+ *       {@link FieldExistsQuery}.
  * </ul>
  *
  * <p>The blob is {@code QUERY_TREE}: one node per query, each a kind byte and its payload (the
@@ -159,6 +161,7 @@ public final class QueryEncoder {
     private static final byte NODE_WILDCARD = 10;
     private static final byte NODE_POINT_RANGE = 11;
     private static final byte NODE_REGEXP = 12;
+    private static final byte NODE_EXISTS = 13;
 
     /** Appends one node (and its children); returns a fallback reason, or null. */
     private static String node(Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
@@ -293,6 +296,13 @@ public final class QueryEncoder {
         }
         if (q.getClass() == MatchAllDocsQuery.class) {
             out.write(NODE_MATCH_ALL);
+            return null;
+        }
+        if (q.getClass() == FieldExistsQuery.class) {
+            // `exists` on a field with norms or doc values (one on every document was rewritten to
+            // a match-all already). A vector field is the native side's error, and Lucene's answer.
+            out.write(NODE_EXISTS);
+            writeBytes(out, ((FieldExistsQuery) q).getField().getBytes(StandardCharsets.UTF_8));
             return null;
         }
         if (q.getClass() == MatchNoDocsQuery.class) {

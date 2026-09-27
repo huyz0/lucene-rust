@@ -832,6 +832,100 @@ impl SegmentReader {
         })
     }
 
+    /// `FieldExistsQuery`'s matches in this segment: the documents its
+    /// `FieldInfo`-chosen source ([`crate::doc_value_query::field_exists_source`])
+    /// has a value for, deletions ignored (the scorer's caller applies them),
+    /// read as one set off the source's `IndexedDISI` rather than document by
+    /// document. A field not in this segment matches nothing, as a `null`
+    /// scorer does.
+    ///
+    /// # Errors
+    /// [`crate::Error::FieldExistsUnsupported`] for a field indexing none of
+    /// norms, vectors or doc values (Java's `IllegalStateException`) and for a
+    /// vectors-sourced one, which this reader does not open; a corrupt
+    /// docs-with-field region.
+    pub fn field_exists_docs(&self, field: &str) -> crate::Result<ExistsDocs> {
+        use crate::doc_value_query::{
+            doc_values_field, field_exists_source, DocValuesField, FieldExistsSource,
+        };
+        let Some(info) = self.field_infos.fields.iter().find(|f| f.name == field) else {
+            return Ok(ExistsDocs::None);
+        };
+        // (offset, length, dense rank power) of the docs-with-field region, and
+        // the data holding it.
+        let (data, offset, length, drp) = match field_exists_source(info)? {
+            FieldExistsSource::Norms => {
+                let (Some(e), Some(data)) = (self.norms_entry(info.number), self.norms_data())
+                else {
+                    return Ok(ExistsDocs::None);
+                };
+                (
+                    data,
+                    e.docs_with_field_offset,
+                    e.docs_with_field_length,
+                    e.dense_rank_power,
+                )
+            }
+            FieldExistsSource::Vectors => {
+                return Err(crate::Error::FieldExistsUnsupported(field.to_string()));
+            }
+            FieldExistsSource::DocValues => {
+                let Some((meta, data)) = self.doc_values_for_field(info.number) else {
+                    return Ok(ExistsDocs::None);
+                };
+                let numeric = |e: &doc_values::NumericEntry| {
+                    (
+                        e.docs_with_field_offset,
+                        e.docs_with_field_length,
+                        e.dense_rank_power,
+                    )
+                };
+                let (o, l, d) = match doc_values_field(meta, info.number) {
+                    None => return Ok(ExistsDocs::None),
+                    Some(DocValuesField::Numeric(e)) => numeric(e),
+                    Some(DocValuesField::Binary(e)) => (
+                        e.docs_with_field_offset,
+                        e.docs_with_field_length,
+                        e.dense_rank_power,
+                    ),
+                    Some(DocValuesField::Sorted(e)) => numeric(&e.ords),
+                    Some(DocValuesField::SortedNumeric(e)) => numeric(&e.numeric),
+                    Some(DocValuesField::SortedSet(e)) => match &e.kind {
+                        doc_values::SortedSetKind::Single(sorted) => numeric(&sorted.ords),
+                        doc_values::SortedSetKind::Multi { ords, .. } => numeric(&ords.numeric),
+                    },
+                };
+                (data, o, l, d)
+            }
+        };
+        // `DOCS_WITH_FIELD_EMPTY` / `DOCS_WITH_FIELD_DENSE`, shared by norms and
+        // doc values.
+        match offset {
+            -2 => return Ok(ExistsDocs::None),
+            -1 => return Ok(ExistsDocs::All),
+            _ => {}
+        }
+        let region = usize::try_from(offset)
+            .ok()
+            .zip(usize::try_from(length).ok())
+            .and_then(|(o, l)| data.get(o..o.checked_add(l)?))
+            .ok_or_else(|| {
+                crate::Error::DocValues(doc_values::Error::Store(lucene_store::Error::Corrupted(
+                    format!("field {field:?}: docs-with-field region {offset}+{length} outside its file"),
+                )))
+            })?;
+        let len = usize::try_from(self.max_doc).unwrap_or(0);
+        let mut words = vec![0u64; lucene_util::fixed_bit_set::bits2words(len)];
+        lucene_codecs::indexed_disi::or_into_words(region, drp, &mut words)
+            .map_err(|e| crate::Error::DocValues(doc_values::Error::Store(e)))?;
+        let bits = FixedBitSet::from_words(words, len);
+        Ok(if bits.cardinality() == 0 {
+            ExistsDocs::None
+        } else {
+            ExistsDocs::Bits(bits)
+        })
+    }
+
     /// `PointValues.getDocCount()` for one field, `None` when this segment has
     /// no BKD tree for it (or none at all).
     ///
@@ -852,6 +946,17 @@ impl SegmentReader {
                 .ok()?;
         Some(reader.field(field_number)?.doc_count)
     }
+}
+
+/// A segment's documents with a value for a field ([`SegmentReader::field_exists_docs`]).
+#[derive(Debug)]
+pub enum ExistsDocs {
+    /// None of them.
+    None,
+    /// Every document of the segment.
+    All,
+    /// These, a bit per document below `maxDoc`.
+    Bits(FixedBitSet),
 }
 
 /// The per-format codec suffix embedded in a segment sub-file's own name.
@@ -1401,6 +1506,7 @@ impl<'a> OpenedSegments<'a> {
                 max_doc: Some(r.max_doc),
                 cache: Some(&r.query_cache),
                 points: self.points_ins.get(i).and_then(Option::as_ref),
+                reader: Some(r),
             })
             .collect()
     }
