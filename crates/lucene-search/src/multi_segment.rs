@@ -145,6 +145,11 @@ pub struct OpenSegment<'a> {
     /// The segment's reader, when the caller opened the segment through one:
     /// what a leaf reading norms or doc values (`FieldExistsQuery`) needs.
     pub reader: Option<&'a crate::directory_reader::SegmentReader>,
+    /// Whether a sorted search's sort is a prefix of this segment's index
+    /// sort (`TopFieldCollector.canEarlyTerminate`), so its documents come in
+    /// the sort's order: set per request by a caller that knows both, and
+    /// only a sorted search reads it.
+    pub index_sort_prefix: bool,
 }
 
 /// The shared fan-out+merge core (see this module's doc comment): runs
@@ -1766,6 +1771,7 @@ mod tests {
                 max_doc: None,
                 cache: None,
                 reader: None,
+                index_sort_prefix: false,
                 points: None,
             },
             OpenSegment {
@@ -1777,6 +1783,7 @@ mod tests {
                 doc_base: max_doc0,
                 cache: None,
                 reader: None,
+                index_sort_prefix: false,
                 points: None,
                 max_doc: None,
             },
@@ -1844,6 +1851,7 @@ mod tests {
                 max_doc: None,
                 cache: None,
                 reader: None,
+                index_sort_prefix: false,
                 points: None,
             },
             OpenSegment {
@@ -1855,6 +1863,7 @@ mod tests {
                 doc_base: max_doc0,
                 cache: None,
                 reader: None,
+                index_sort_prefix: false,
                 points: None,
                 max_doc: None,
             },
@@ -1917,6 +1926,7 @@ mod tests {
                 max_doc: None,
                 cache: None,
                 reader: None,
+                index_sort_prefix: false,
                 points: None,
             },
             OpenSegment {
@@ -1928,6 +1938,7 @@ mod tests {
                 doc_base: max_doc0,
                 cache: None,
                 reader: None,
+                index_sort_prefix: false,
                 points: None,
                 max_doc: None,
             },
@@ -1964,6 +1975,7 @@ mod tests {
                 max_doc: None,
                 cache: None,
                 reader: None,
+                index_sort_prefix: false,
                 points: None,
             },
             OpenSegment {
@@ -1975,6 +1987,7 @@ mod tests {
                 doc_base: max_doc0,
                 cache: None,
                 reader: None,
+                index_sort_prefix: false,
                 points: None,
                 max_doc: None,
             },
@@ -2006,6 +2019,7 @@ mod tests {
             max_doc: None,
             cache: None,
             reader: None,
+            index_sort_prefix: false,
             points: None,
         }];
         let norms = [None];
@@ -2382,6 +2396,7 @@ mod tests {
                 max_doc: None,
                 cache: None,
                 reader: None,
+                index_sort_prefix: false,
                 points: None,
             },
             OpenSegment {
@@ -2393,6 +2408,7 @@ mod tests {
                 doc_base: max_doc0,
                 cache: None,
                 reader: None,
+                index_sort_prefix: false,
                 points: None,
                 max_doc: None,
             },
@@ -2427,6 +2443,7 @@ mod tests {
                 max_doc: None,
                 cache: None,
                 reader: None,
+                index_sort_prefix: false,
                 points: None,
             },
             OpenSegment {
@@ -2438,6 +2455,7 @@ mod tests {
                 doc_base: max_doc0,
                 cache: None,
                 reader: None,
+                index_sort_prefix: false,
                 points: None,
                 max_doc: None,
             },

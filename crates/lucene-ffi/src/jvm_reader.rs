@@ -92,8 +92,9 @@ use std::sync::Arc;
 /// [`doc_freq`] (the total-hits shortcut of a term query); 18, the `size: 0`
 /// count from the aggregation's own pass ([`aggregate_counting_blobs`]); 19,
 /// the regexp node; 20, the exists node; 21, a term with its own `docFreq`;
-/// 22, the sort keys' `sum`/`avg`/`median` modes.
-pub const JVM_ABI_VERSION: u32 = 22;
+/// 22, the sort keys' `sum`/`avg`/`median` modes; 23, the sort blob's
+/// index-sort prefix flags.
+pub const JVM_ABI_VERSION: u32 = 23;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -583,19 +584,26 @@ const SORT_TERMINATE_AFTER: u8 = 2;
 /// 0` search's, whole segments counted where `Weight.count` answers
 /// ([`lucene_search::terminate::count_until`]).
 const SORT_COUNT_SEGMENTS: u8 = 4;
+/// Sort-blob option: after the slices, `count: i32` and one `u8` per segment,
+/// `1` where the sort is a prefix of that segment's index sort
+/// (`TopFieldCollector.canEarlyTerminate`, which the JVM decides with
+/// `SortField.equals`).
+const SORT_INDEX_SORTED: u8 = 8;
 /// At most this many keys: OpenSearch's sorts are a handful, and each key
 /// costs a value per hit on the way back.
 const MAX_SORT_KEYS: usize = 16;
 
 /// A decoded sort blob: the keys, the search-after document, whether to
-/// track the max score, the slices, and `terminate_after` with whether its
-/// total counts whole segments ([`SORT_COUNT_SEGMENTS`]).
+/// track the max score, the slices, `terminate_after` with whether its
+/// total counts whole segments ([`SORT_COUNT_SEGMENTS`]), and per segment
+/// whether the sort is a prefix of its index sort ([`SORT_INDEX_SORTED`]).
 pub(crate) type DecodedSort = (
     Vec<SortField>,
     Option<FieldDoc>,
     bool,
     Vec<Vec<usize>>,
     Option<(u64, bool)>,
+    Vec<bool>,
 );
 
 /// The concurrent-search slices ending a sort or metrics blob: `count: i32`,
@@ -738,7 +746,10 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<DecodedSort, FfiStatus> {
         other => return Err(bad(format!("sort blob: has_after is {other}"))),
     };
     let options = c.u8()?;
-    if options & !(SORT_TRACK_MAX_SCORE | SORT_TERMINATE_AFTER | SORT_COUNT_SEGMENTS) != 0 {
+    if options
+        & !(SORT_TRACK_MAX_SCORE | SORT_TERMINATE_AFTER | SORT_COUNT_SEGMENTS | SORT_INDEX_SORTED)
+        != 0
+    {
         return Err(bad(format!("sort blob: unknown options {options:#x}")));
     }
     let count_segments = options & SORT_COUNT_SEGMENTS != 0;
@@ -756,6 +767,17 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<DecodedSort, FfiStatus> {
         None
     };
     let slices = decode_slices(&mut c, &bad)?;
+    let mut index_sorted = Vec::new();
+    if options & SORT_INDEX_SORTED != 0 {
+        let n = c.len()?;
+        for _ in 0..n {
+            index_sorted.push(match c.u8()? {
+                0 => false,
+                1 => true,
+                other => return Err(bad(format!("sort blob: index-sort flag {other}"))),
+            });
+        }
+    }
     if c.pos != blob.len() {
         return Err(bad(format!(
             "sort blob: {} trailing bytes",
@@ -768,6 +790,7 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<DecodedSort, FfiStatus> {
         options & SORT_TRACK_MAX_SCORE != 0,
         slices,
         terminate_after,
+        index_sorted,
     ))
 }
 
@@ -913,7 +936,7 @@ pub(crate) fn search_sorted_blobs(
         set_last_error("ffi_jvm_reader_search_sorted: min_score is not run behind a sort");
         return Err(FfiStatus::InvalidArgument);
     }
-    let (keys, after, track, slices, terminate_after) = decode_sort(sort_blob)?;
+    let (keys, after, track, slices, terminate_after, index_sorted) = decode_sort(sort_blob)?;
     let h = lookup(
         handle,
         "ffi_jvm_reader_search_sorted: unknown or already-closed handle",
@@ -928,6 +951,7 @@ pub(crate) fn search_sorted_blobs(
         track,
         &slices,
         terminate_after,
+        &index_sorted,
     )?;
     let terms = encode_terms(&keys, &hits)?;
     Ok(SortedOut {
@@ -1437,6 +1461,7 @@ pub(crate) fn search_sorted(
     track_max_score: bool,
     slices: &[Vec<usize>],
     terminate_after: Option<(u64, bool)>,
+    index_sorted: &[bool],
 ) -> Result<(Vec<FieldDoc>, i64, bool, f32, bool), FfiStatus> {
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
@@ -1456,8 +1481,10 @@ pub(crate) fn search_sorted(
         .as_open_segments()
         .into_iter()
         .zip(&h.live_docs)
-        .map(|(mut s, live)| {
+        .enumerate()
+        .map(|(i, (mut s, live))| {
             s.live_docs = live.as_ref();
+            s.index_sort_prefix = index_sorted.get(i).copied().unwrap_or(false);
             s
         })
         .collect();
@@ -2366,7 +2393,7 @@ mod tests {
             ],
             Some((9, &[1, 2, 3, 4, 5, 6])),
         );
-        let (keys, after, _, _, _) = decode_sort(&blob).unwrap();
+        let (keys, after, _, _, _, _) = decode_sort(&blob).unwrap();
         assert_eq!(
             keys.iter().map(|k| k.ty).collect::<Vec<_>>(),
             [
@@ -2430,6 +2457,50 @@ mod tests {
             blob.splice(at + 1..at + 1, n.to_le_bytes());
         }
         blob
+    }
+
+    /// `blob` (options last but the slices) with per-segment index-sort flags.
+    fn with_index_sorted(mut blob: Vec<u8>, flags: &[u8]) -> Vec<u8> {
+        let at = blob.len() - 5;
+        blob[at] |= SORT_INDEX_SORTED;
+        blob.extend_from_slice(&(flags.len() as i32).to_le_bytes());
+        blob.extend_from_slice(flags);
+        blob
+    }
+
+    #[test]
+    fn index_sort_flags_decode_and_leave_an_unsorted_prefix_alone() {
+        let h = open();
+        let fox = term_blob("body", "fox");
+        let by_score = sort_blob(&[(SORT_SCORE, 0, "", 0)], None);
+        assert!(decode_sort(&by_score).unwrap().5.is_empty());
+        let flagged = with_index_sorted(by_score.clone(), &[1, 0]);
+        assert_eq!(decode_sort(&flagged).unwrap().5, vec![true, false]);
+        assert_eq!(
+            decode_sort(&with_index_sorted(by_score.clone(), &[2])).err(),
+            Some(FfiStatus::InvalidArgument)
+        );
+        // Flags saying no segment's index sort begins with the search's: the
+        // answer without them.
+        let plain = search_sorted_blobs(h, &fox, &by_score, 8, i64::MAX).unwrap();
+        let off = search_sorted_blobs(h, &fox, &with_index_sorted(by_score, &[0, 0]), 8, i64::MAX)
+            .unwrap();
+        assert_eq!(
+            off.hits
+                .iter()
+                .map(|f| (f.doc, f.values.clone()))
+                .collect::<Vec<_>>(),
+            plain
+                .hits
+                .iter()
+                .map(|f| (f.doc, f.values.clone()))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            (off.total, off.lower_bound),
+            (plain.total, plain.lower_bound)
+        );
+        assert_eq!(ffi_close_jvm_reader(h), 0);
     }
 
     #[test]
@@ -2734,7 +2805,7 @@ mod tests {
             ],
             Some((4, &[0, 0, 9], &[Some(b"abc".as_slice()), None, None])),
         );
-        let (keys, after, _, _, _) = decode_sort(&blob).unwrap();
+        let (keys, after, _, _, _, _) = decode_sort(&blob).unwrap();
         assert_eq!(keys[0].ty, SortType::String);
         assert!(keys[0].reverse && keys[0].selector == Selector::Max && keys[0].missing == 1);
         assert_eq!((keys[1].missing, keys[1].reverse), (0, false));
@@ -2969,7 +3040,7 @@ mod tests {
             sliced.extend_from_slice(&1i32.to_le_bytes());
             sliced.extend_from_slice(&seg.to_le_bytes());
         }
-        let (_, _, _, slices, _) = decode_sort(&sliced).unwrap();
+        let (_, _, _, slices, _, _) = decode_sort(&sliced).unwrap();
         assert_eq!(slices.len(), n as usize);
         assert_eq!(
             run_sorted(h, &q, &sliced, 3, i64::MAX),
