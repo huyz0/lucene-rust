@@ -139,7 +139,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // non-scoring clause, so each hit keeps the query's score; the aggregations the query.
         byte[] hitsBlob = null;
         if (reason == null) {
-            QueryEncoder.Encoded enc = QueryEncoder.encode(query, field -> defaultBm25(searcher, field));
+            QueryEncoder.Encoded enc = QueryEncoder.encode(query, field -> defaultBm25(searcher, field), searcher.getTopReaderContext());
             reason = enc.fallbackReason();
             blob = enc.blob();
             boolean fast = enc.fast();
@@ -147,7 +147,8 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             if (reason == null && ctx.parsedPostFilter() != null) {
                 QueryEncoder.Encoded filtered = QueryEncoder.encode(
                     postFiltered(query, searcher.rewrite(ctx.parsedPostFilter().query())),
-                    field -> defaultBm25(searcher, field)
+                    field -> defaultBm25(searcher, field),
+                    searcher.getTopReaderContext()
                 );
                 reason = filtered.fallbackReason();
                 hitsBlob = filtered.blob();

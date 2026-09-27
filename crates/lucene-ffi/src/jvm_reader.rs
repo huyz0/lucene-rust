@@ -91,8 +91,8 @@ use std::sync::Arc;
 /// replay (read path R7); 16, `min_score` in front of a query blob; 17,
 /// [`doc_freq`] (the total-hits shortcut of a term query); 18, the `size: 0`
 /// count from the aggregation's own pass ([`aggregate_counting_blobs`]); 19,
-/// the regexp node; 20, the exists node.
-pub const JVM_ABI_VERSION: u32 = 20;
+/// the regexp node; 20, the exists node; 21, a term with its own `docFreq`.
+pub const JVM_ABI_VERSION: u32 = 21;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -119,6 +119,7 @@ const NODE_WILDCARD: u8 = 10;
 const NODE_POINT_RANGE: u8 = 11;
 const NODE_REGEXP: u8 = 12;
 const NODE_EXISTS: u8 = 13;
+const NODE_TERM_STATS: u8 = 14;
 
 /// [`JVM_ABI_VERSION`], for the plugin's load-time handshake.
 #[no_mangle]
@@ -1893,6 +1894,7 @@ fn count_segment(seg: &OpenSegment<'_>, query: &JvmQuery) -> Result<i64, FfiStat
 /// | `11` points range | `field`, `min: i64`, `max: i64` (sortable longs, inclusive) | a one-dimension 8-byte `PointRangeQuery` |
 /// | `12` regexp | `field`, the pattern (UTF-8) | `RegexpQuery` with `RegExp.ALL` and no match flags |
 /// | `13` exists | `field` | `FieldExistsQuery` |
+/// | `14` term with its own statistics | `field`, `term`, `doc_freq: i64` (at least 1) | `TermQuery(term, TermStates)`: a `BlendedTermQuery`'s terms (fuzzy, `cross_fields`) |
 ///
 /// Depth is capped at `MAX_CLAUSE_DEPTH` and the whole tree at the clause
 /// count limit, so the recursion is bounded by the blob, not trusted to it.
@@ -2034,6 +2036,20 @@ fn decode_node(c: &mut Cursor<'_>, depth: usize, nodes: &mut usize) -> Result<Cl
                 FfiStatus::InvalidArgument
             })?;
             Clause::Regexp(RegexpQuery::new(field, pattern))
+        }
+        NODE_TERM_STATS => {
+            // The term scores from the `docFreq` its `TermStates` carry
+            // (blended across a fuzzy expansion or `cross_fields`' fields).
+            let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
+            let term = c.bytes()?.to_vec();
+            let doc_freq = c.i64()?;
+            if doc_freq < 1 {
+                set_last_error(format!(
+                    "query tree: a term's docFreq {doc_freq} is below 1"
+                ));
+                return Err(FfiStatus::InvalidArgument);
+            }
+            Clause::Term(TermQuery::new(field, term).with_doc_freq(doc_freq))
         }
         NODE_EXISTS => {
             let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
@@ -3963,6 +3979,7 @@ mod tests {
         Wc(&'a str, &'a str),
         Re(&'a str, &'a str),
         Ex(&'a str),
+        Ts1(&'a str, &'a str, i64),
     }
 
     fn enc(n: &N<'_>, b: &mut Vec<u8>) {
@@ -4028,6 +4045,12 @@ mod tests {
                 b.push(NODE_WILDCARD);
                 bytes(b, field.as_bytes());
                 bytes(b, pattern.as_bytes());
+            }
+            N::Ts1(field, term, df) => {
+                b.push(NODE_TERM_STATS);
+                bytes(b, field.as_bytes());
+                bytes(b, term.as_bytes());
+                b.extend_from_slice(&df.to_le_bytes());
             }
             N::Ex(field) => {
                 b.push(NODE_EXISTS);
@@ -4144,6 +4167,44 @@ mod tests {
         let sloppy = tree(N::P("body", 2, vec![(0, "dog"), (1, "cat")]));
         let (hits, _) = run(h, &sloppy, 10, true).unwrap();
         assert!(hits.iter().any(|&(d, _)| d == 1 || d == 2), "{hits:?}");
+    }
+
+    #[test]
+    fn a_term_with_its_own_doc_freq_scores_from_it() {
+        let h = open();
+        let plain = tree(N::B(
+            0,
+            vec![(2, N::T("body", "fox")), (2, N::T("body", "dog"))],
+        ));
+        let (want, want_total) = run(h, &plain, 10, true).unwrap();
+        let df = doc_freq(h, b"body", b"fox").unwrap();
+        // Its own docFreq equal to the reader's: the same hits, bit for bit.
+        let same = tree(N::B(
+            0,
+            vec![(2, N::Ts1("body", "fox", df)), (2, N::T("body", "dog"))],
+        ));
+        let (got, total) = run(h, &same, 10, true).unwrap();
+        assert_eq!(total, want_total);
+        let bits = |v: &[(i32, f32)]| v.iter().map(|&(d, s)| (d, s.to_bits())).collect::<Vec<_>>();
+        assert_eq!(bits(&got), bits(&want));
+        // A rarer one: the same documents, and fox's weigh more.
+        let rare = tree(N::Ts1("body", "fox", 1));
+        let (rare_hits, _) = run(h, &rare, 10, true).unwrap();
+        let (plain_hits, _) =
+            run(h, &tree(N::B(0, vec![(2, N::T("body", "fox"))])), 10, true).unwrap();
+        let docs = |v: &[(i32, f32)]| {
+            let mut d: Vec<i32> = v.iter().map(|&(d, _)| d).collect();
+            d.sort_unstable();
+            d
+        };
+        assert_eq!(docs(&rare_hits), docs(&plain_hits));
+        assert!(rare_hits[0].1 > plain_hits[0].1);
+        // A docFreq below 1 is refused.
+        assert_eq!(
+            run(h, &tree(N::Ts1("body", "fox", 0)), 10, true).err(),
+            Some(FfiStatus::InvalidArgument.code())
+        );
+        assert_eq!(ffi_close_jvm_reader(h), 0);
     }
 
     #[test]
