@@ -198,7 +198,7 @@ impl SegmentQueryCache {
         clause: &Clause,
         max_doc: i32,
         uncached: impl FnOnce() -> Result<Option<BoxScorer<'a>>>,
-    ) -> Result<Option<CacheResult<'a>>> {
+    ) -> Result<Option<CacheResult>> {
         let (costly, composite, never) = shape(clause);
         if never || max_doc < MIN_SEGMENT_SIZE {
             return Ok(None);
@@ -217,9 +217,7 @@ impl SegmentQueryCache {
             inner.policy.on_use(&policy_key);
             if let Some(entry) = inner.entries.get_mut(&key) {
                 entry.last_used = now;
-                return Ok(Some(CacheResult::Hit(Box::new(CachedScorer::new(
-                    Arc::clone(&entry.set),
-                )))));
+                return Ok(Some(CacheResult::Hit(Arc::clone(&entry.set))));
             }
             inner.policy.should_cache(&policy_key)
         };
@@ -233,7 +231,7 @@ impl SegmentQueryCache {
         };
         let set = Arc::new(collect(&mut *s, max_doc)?);
         self.insert(key, Arc::clone(&set));
-        Ok(Some(CacheResult::Hit(Box::new(CachedScorer::new(set)))))
+        Ok(Some(CacheResult::Hit(set)))
     }
 
     /// The sort column `key` of a segment of `max_doc` documents: cached,
@@ -322,8 +320,9 @@ impl SegmentQueryCache {
     }
 }
 
-pub(crate) enum CacheResult<'a> {
-    Hit(BoxScorer<'a>),
+pub(crate) enum CacheResult {
+    /// The cached set, for a [`CachedScorer`].
+    Hit(Arc<CachedSet>),
     /// The clause matches nothing in this segment.
     Empty,
 }
@@ -357,20 +356,35 @@ fn collect(s: &mut dyn Scorer, max_doc: i32) -> Result<CachedSet> {
     Ok(CachedSet::Docs(docs))
 }
 
-/// A cached set as a scorer: matches only, every score 0.
+/// A cached set as a scorer: matches only, every score 0 -- or, built by
+/// [`CachedScorer::constant`], every score one constant (`ConstantScoreScorer`
+/// over the cached iterator, without a scorer in between).
 pub(crate) struct CachedScorer {
     set: Arc<CachedSet>,
     doc: i32,
     /// `Docs`: the index of `doc`.
     at: usize,
+    score: f32,
+    /// `ConstantScoreScorer`'s `TOP_SCORES` mode: a threshold past the
+    /// constant empties the iterator.
+    top_scores: bool,
+    emptied: bool,
 }
 
 impl CachedScorer {
     pub(crate) fn new(set: Arc<CachedSet>) -> Self {
+        Self::constant(set, 0.0, false)
+    }
+
+    /// `ConstantScoreScorer(score, scoreMode, cachedIterator)`.
+    pub(crate) fn constant(set: Arc<CachedSet>, score: f32, top_scores: bool) -> Self {
         Self {
             set,
             doc: -1,
             at: 0,
+            score,
+            top_scores,
+            emptied: false,
         }
     }
 }
@@ -386,6 +400,10 @@ impl Scorer for CachedScorer {
     }
 
     fn advance(&mut self, target: i32) -> Result<i32> {
+        if self.emptied {
+            self.doc = NO_MORE_DOCS;
+            return Ok(NO_MORE_DOCS);
+        }
         self.doc = match &*self.set {
             CachedSet::Bits { bits, .. } => usize::try_from(target)
                 .ok()
@@ -410,18 +428,30 @@ impl Scorer for CachedScorer {
     }
 
     fn score(&mut self) -> Result<f32> {
-        Ok(0.0)
+        Ok(self.score)
     }
 
     fn max_score(&mut self, _up_to: i32) -> Result<f32> {
-        Ok(0.0)
+        Ok(self.score)
+    }
+
+    fn set_min_competitive_score(&mut self, min: f32) -> Result<()> {
+        if self.top_scores && min > self.score {
+            // Emptied: no later document can compete.
+            self.emptied = true;
+        }
+        Ok(())
     }
 
     fn constant_bits(&self) -> Option<(Arc<CachedSet>, f32)> {
-        matches!(&*self.set, CachedSet::Bits { .. }).then(|| (Arc::clone(&self.set), 0.0))
+        (!self.emptied && matches!(&*self.set, CachedSet::Bits { .. }))
+            .then(|| (Arc::clone(&self.set), self.score))
     }
 
     fn contains(&self, doc: i32) -> Option<bool> {
+        if self.emptied {
+            return None;
+        }
         match &*self.set {
             CachedSet::Bits { bits, .. } => {
                 Some(usize::try_from(doc).is_ok_and(|d| d < bits.len() && bits.get(d)))
@@ -432,6 +462,9 @@ impl Scorer for CachedScorer {
 
     /// `BitSetIterator.docIDRunEnd`: the run of set bits from here.
     fn doc_id_run_end(&self) -> i32 {
+        if self.emptied {
+            return self.doc.saturating_add(1);
+        }
         match &*self.set {
             CachedSet::Bits { bits, .. } => {
                 let from = usize::try_from(self.doc).unwrap_or(0);
@@ -457,9 +490,9 @@ mod tests {
         Ok(Some(Box::new(DocList::new(docs, Vec::new()))))
     }
 
-    fn hit(r: Option<CacheResult<'static>>) -> BoxScorer<'static> {
+    fn hit(r: Option<CacheResult>) -> BoxScorer<'static> {
         match r {
-            Some(CacheResult::Hit(s)) => s,
+            Some(CacheResult::Hit(s)) => Box::new(CachedScorer::new(s)),
             _ => panic!("expected a cached scorer"),
         }
     }

@@ -11,7 +11,7 @@ mixed booleans) 4–8× *slower*, because the port had fast paths for three
 shapes and a materializing path for everything else. M5 moved indexing. This
 milestone finishes the read side.
 
-**Status.** In progress. R1, R2, R4, R5 and R6 delivered; R3 mostly and R7 partly delivered (below).
+**Status.** In progress. R1–R6 delivered; R7 partly delivered (below).
 
 ## Tasks
 
@@ -19,7 +19,7 @@ milestone finishes the read side.
 |---|---|---|
 | R1 | Query execution engine: Lucene's scorer tree and bulk scorers, every boolean shape at least as fast as Lucene | ✅ delivered |
 | R2 | General query wire format and Java encoder for every Lucene query OpenSearch builds | ✅ delivered for the shapes R1 runs (term, boolean, constant score, boost, dismax, match-all, match-none); leaf queries arrive with R3 |
-| R3 | Leaf queries as streaming scorers: phrase, the multi-term family, points and doc-values ranges, exists, terms-in-set, dismax, synonym | mostly delivered: phrase, prefix/wildcard/regexp/terms, fuzzy, points ranges, `exists`, dismax, a term's own `docFreq` (`cross_fields`), and a native query cache (R3b); open: fuzzy speed (q25) |
+| R3 | Leaf queries as streaming scorers: phrase, the multi-term family, points and doc-values ranges, exists, terms-in-set, dismax, synonym | ✅ delivered: phrase, prefix/wildcard/regexp/terms, fuzzy, points ranges, `exists`, dismax, a term's own `docFreq` (`cross_fields`), and a native query cache (R3b), every in-process shape at 1.0× or above but q64 (0.8–0.96×, reason below) |
 | R4 | Sort and `search_after` natively (`TopFieldCollector`) | ✅ delivered: numeric, score, `_doc` and keyword keys, `track_scores`, the `avg`/`median` modes, index-sorted shards and nested keys (below); on Lucene by design: the `sum` mode on a top-level field (its points skipping is not exact), a nested sort on a shard large enough for Lucene's comparator to skip |
 | R5 | Aggregations natively: terms, histogram, date_histogram, range, the metrics, cardinality, filter/filters | ✅ delivered: the metrics (`min`, `max`, `sum`, `avg`, `value_count`, `stats`), keyword `terms`, `histogram`, `date_histogram`, `range`/`date_range`, `filter`, `filters`, `global`, `cardinality`, and any nesting of them (below); outside: scripts, `missing`, non-default `terms` orders, zones with daylight saving, other aggregation types |
 | R6 | Fetch (`_source`, stored fields, `docvalue_fields`) and get natively | ✅ delivered: every stored-fields read of the fetch phase and the get API (`_source`, `_id`, `stored_fields`, highlighting's source) is native, 1.24× Lucene per document (below); `docvalue_fields` stays on Lucene's doc-values readers by design |
@@ -50,7 +50,8 @@ Acceptance:
       fast as Lucene in process, on the merged index — 1.3× to 6.7×.
 - [x] Every boolean shape in the query file at least 1.0× on both indexes
       (after R2's run below: 1.04–13.7×; q11 0.99× merged with overlapping
-      runs). q25 (fuzzy, 0.76× segmented) is a leaf query, R3's.
+      runs). q25 (fuzzy, 0.76× segmented) is a leaf query, R3's -- since
+      1.16–1.30× segmented (R3, fuzzy).
 
 ## R2 — the query tree on the wire (delivered)
 
@@ -113,7 +114,7 @@ Acceptance:
       (1.00×) are inside the run-to-run spread but not clearly above it.
       Carried to R7.
 
-## R3 — leaf queries (in progress)
+## R3 — leaf queries (delivered)
 
 **Phrase (delivered).** `exec::phrase::PhraseScorer` is Lucene's two-phase
 `PhraseScorer`, so a phrase composes anywhere in a tree instead of being
@@ -140,7 +141,8 @@ the cache on, as Lucene ships.
 frequencies) is ported, and the sloppy matcher reuses its buffers across
 documents: a fresh set per candidate was 30% of a sloppy phrase's time in
 `malloc`/`free`. In process: `(ps 2 t1 t0)` 1.03–1.14×, `(ps 2 t0 t1)`
-1.18–1.24×, q61 1.05–1.11×; `(ps 1 t2 t3)` 0.84–0.91× is open.
+1.18–1.24×, q61 1.05–1.11×; `(ps 1 t2 t3)`, 0.84–0.91× then, now measures
+1.40–1.46× (and `(ps 2 t1 t0)` 1.62–1.78×, q61 1.59×).
 
 **The multi-term family (delivered).** `prefix`, `wildcard`, `terms` and
 `regexp` run inside the tree as Lucene rewrites them (a constant-scored
@@ -148,8 +150,9 @@ disjunction up to 16 terms, the blended 16-iterators-and-a-bitset past
 that), through a union scorer that holds the term cursors directly; the
 plugin sends prefix, wildcard and term sets (ABI 9). In process: filters
 over the family 7–39× (q62, q65, q67), a `SHOULD` prefix 1.1–1.4× (q63), a
-lone term set 1.17–1.43× merged (q66, below). Open: a term set as a scored
-`MUST` beside a scoring `SHOULD` (q64), 0.73–0.88×.
+lone term set 1.17–1.43× merged (q66, below). A term set as a scored `MUST`
+beside a scoring `SHOULD` (q64) is the one shape left under 1.0×: 0.8–0.96×
+(below).
 
 **A term set's disjunction in the query cache.** A JFR profile of Lucene on
 q64 showed where its time went: `FixedBitSet.nextSetBit`, not postings.
@@ -171,6 +174,25 @@ spread over the `ReqOptSumScorer`, the impacts and BM25), q66 from 0.27×
 1,001 documents) to 1.17–1.43×. A prefix, wildcard or regexp stays on the
 streaming union: knowing its term count means walking the term dictionary,
 the whole cost of a regexp -- routing them too cost q32 and q34 40%.
+
+What q64 has left is per-document cost: both engines score the same 58,048
+candidates through `ReqOptSumScorer`, and the Rust chain (the required
+cached set, the optional term's impacts and BM25, the collector) is a
+dynamic call per step where the JIT inlines Lucene's. Two attempts that did
+not pay are recorded so they are not retried: testing the cached set by
+membership instead of leapfrogging (no gain, and it complicates keeping the
+required iterator positioned), and a per-term `(freq, norm)` score table in
+place of BM25's division (6–12% slower: the division overlaps with the
+postings work, the table's check does not).
+
+**Fuzzy (q25).** Its up-to-50 expansions run as a `MaxScoreBulkScorer`
+disjunction, and the essential clauses' next document was found by scanning
+every one of them per document step, each read from a `TermLeg` six
+kilobytes from the next -- Lucene keeps them in `DisiPriorityQueue`. The
+essential clauses are now a binary heap on a contiguous array of their
+current documents, rebuilt when the partition changes and sifted after the
+top moves. q25: 0.59–0.68× segmented to 1.16–1.30×, 0.93× merged to
+1.53–1.62×; the disjunction shapes q08/q11/q14 stay at 1.0–1.3×.
 
 **Points ranges (delivered).** `range` on `long`, `date` and `double`
 fields runs natively (ABI 10): a constant-scored range anywhere in a tree,
@@ -675,7 +697,11 @@ q47 at 0.37× and q52 at 0.47× (the materializing path).
 The whole file (q01–q55) on both indexes after R1: every query from the M1
 mix at 1.0× or above on the 15-segment index except q25 (fuzzy, 0.76×); on
 the merged index q07/q08/q11/q14 sit at 0.90–0.99×, as they did before R1.
-Both runs are in the R1 commit message.
+Both runs are in the R1 commit message. Since R3's fuzzy work (the
+`MaxScore` essential heap), q25 is 1.16–1.30× segmented and
+q07/q08/q11/q14 measure 0.97–1.24× across both indexes, within the noise
+this machine shows between runs (the Java side of one shape varies by up
+to 20%).
 
 Two things beat Lucene by construction rather than by constant factor, and
 are where most of the `must_not` and `must` + `should` gains come from:

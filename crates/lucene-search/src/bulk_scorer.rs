@@ -1039,6 +1039,15 @@ impl DisMaxBulk {
 
 /// `MaxScoreBulkScorer`'s per-query state, minus the clauses themselves.
 pub(crate) struct MaxScore {
+    /// Each leg's `cur()`, kept beside the order: the essential-clause scan
+    /// (`essentialQueue`'s top) reads these contiguously.
+    docs: Vec<i32>,
+    /// `essentialQueue`: the essential legs as a binary min-heap on `docs`
+    /// (ties by leg index), rebuilt when the partition changes. Only the top
+    /// ever moves between rebuilds, so a move is one sift down -- where a
+    /// scan of every essential clause per document was most of a 50-term
+    /// fuzzy query.
+    heap: Vec<usize>,
     /// Indices into the legs, in `allScorers` order: non-essential first.
     order: Vec<usize>,
     scratch: Vec<usize>,
@@ -1077,6 +1086,8 @@ impl MaxScore {
             leg.set_cur(leg.doc_id());
         }
         MaxScore {
+            docs: legs.iter().map(MaxScoreLeg::cur).collect(),
+            heap: Vec::with_capacity(n),
             order: (0..n).collect(),
             scratch: Vec::with_capacity(n),
             first_essential: 0,
@@ -1108,6 +1119,9 @@ impl MaxScore {
         max: i32,
     ) -> Result<i32> {
         let ms = self;
+        // The legs may have moved since the last call (a reused state).
+        ms.docs.clear();
+        ms.docs.extend(legs.iter().map(MaxScoreLeg::cur));
         ms.min_competitive = min_competitive_score(collector);
         let mut outer_min = min;
         'outer: while outer_min < max {
@@ -1138,9 +1152,11 @@ impl MaxScore {
                 if legs[i].cur() < outer_min {
                     let d = legs[i].advance(outer_min)?;
                     legs[i].set_cur(d);
+                    ms.docs[i] = d;
                 }
             }
-            while ms.top(legs).1 < outer_max {
+            ms.build_heap();
+            while ms.top().1 < outer_max {
                 match filter.as_deref_mut() {
                     Some(f) => {
                         ms.score_inner_window_with_filter(legs, f, live_docs, collector, outer_max)?
@@ -1152,7 +1168,7 @@ impl MaxScore {
                     break;
                 }
             }
-            outer_min = ms.top(legs).1.min(outer_max);
+            outer_min = ms.top().1.min(outer_max);
             ms.num_outer_windows += 1;
         }
         Ok(Self::next_candidate(legs, max))
@@ -1181,12 +1197,14 @@ impl MaxScore {
         collector: &mut C,
         max: i32,
     ) -> Result<()> {
-        let (mut top, mut top_doc) = self.top(legs);
+        let (mut top, mut top_doc) = self.top();
         let mut filter_doc = filter.doc_id();
         while top_doc < filter_doc {
             let d = legs[top].advance(filter_doc)?;
             legs[top].set_cur(d);
-            (top, top_doc) = self.top(legs);
+            self.docs[top] = legs[top].cur();
+            self.sift_top();
+            (top, top_doc) = self.top();
         }
         if top_doc >= max {
             return Ok(());
@@ -1202,7 +1220,9 @@ impl MaxScore {
                 while top_doc < filter_doc {
                     let d = legs[top].advance(filter_doc)?;
                     legs[top].set_cur(d);
-                    (top, top_doc) = self.top(legs);
+                    self.docs[top] = legs[top].cur();
+                    self.sift_top();
+                    (top, top_doc) = self.top();
                 }
             } else {
                 let doc = top_doc;
@@ -1215,7 +1235,9 @@ impl MaxScore {
                     }
                     let d = legs[top].next_doc()?;
                     legs[top].set_cur(d);
-                    (top, top_doc) = self.top(legs);
+                    self.docs[top] = legs[top].cur();
+                    self.sift_top();
+                    (top, top_doc) = self.top();
                 }
                 if matched {
                     self.acc.docs.push(doc);
@@ -1228,28 +1250,61 @@ impl MaxScore {
 
     /// The essential clause with the smallest doc, and that doc; `NO_MORE_DOCS`
     /// when every essential clause is exhausted.
-    fn top<L: MaxScoreLeg>(&self, legs: &[L]) -> (usize, i32) {
-        let mut best = (usize::MAX, NO_MORE_DOCS);
-        for &i in &self.order[self.first_essential..] {
-            if best.0 == usize::MAX || legs[i].cur() < best.1 {
-                best = (i, legs[i].cur());
-            }
-        }
-        best
+    fn top(&self) -> (usize, i32) {
+        self.heap
+            .first()
+            .map_or((usize::MAX, NO_MORE_DOCS), |&i| (i, self.docs[i]))
     }
 
     /// The second-smallest essential doc (`essentialQueue.top2()`), or `None`
-    /// with a single essential clause.
-    fn top2_doc<L: MaxScoreLeg>(&self, legs: &[L], top: usize) -> Option<i32> {
-        let mut best: Option<i32> = None;
-        for &i in &self.order[self.first_essential..] {
-            if i == top {
-                continue;
+    /// with a single essential clause: the smaller of the top's children.
+    fn top2_doc(&self, _top: usize) -> Option<i32> {
+        self.heap[1..self.heap.len().min(3)]
+            .iter()
+            .map(|&i| self.docs[i])
+            .min()
+    }
+
+    /// Whether heap slot `a` orders before slot `b`.
+    fn heap_less(&self, a: usize, b: usize) -> bool {
+        let (x, y) = (self.heap[a], self.heap[b]);
+        (self.docs[x], x) < (self.docs[y], y)
+    }
+
+    fn sift_down(&mut self, mut at: usize) {
+        let n = self.heap.len();
+        loop {
+            // ARITH: `at < n <= legs.len()`, far below `usize::MAX / 2`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let (l, r) = (2 * at + 1, 2 * at + 2);
+            let mut least = at;
+            if l < n && self.heap_less(l, least) {
+                least = l;
             }
-            let d = legs[i].cur();
-            best = Some(best.map_or(d, |b| b.min(d)));
+            if r < n && self.heap_less(r, least) {
+                least = r;
+            }
+            if least == at {
+                return;
+            }
+            self.heap.swap(at, least);
+            at = least;
         }
-        best
+    }
+
+    /// The top's doc moved forward: restore the heap.
+    fn sift_top(&mut self) {
+        self.sift_down(0);
+    }
+
+    /// The essential legs, as the partition left them, heapified.
+    fn build_heap(&mut self) {
+        self.heap.clear();
+        self.heap
+            .extend_from_slice(&self.order[self.first_essential..]);
+        for at in (0..self.heap.len() / 2).rev() {
+            self.sift_down(at);
+        }
     }
 
     /// `computeOuterWindowMax`.
@@ -1370,8 +1425,8 @@ impl MaxScore {
         collector: &mut C,
         max: i32,
     ) -> Result<()> {
-        let (top, top_doc) = self.top(legs);
-        match self.top2_doc(legs, top) {
+        let (top, top_doc) = self.top();
+        match self.top2_doc(top) {
             None => self.score_single_essential(legs, live_docs, collector, top, max),
             Some(top2) if top2.saturating_sub(INNER_WINDOW_SIZE / 2) >= top_doc => {
                 // The first half of the window only matches one clause: stream
@@ -1399,6 +1454,8 @@ impl MaxScore {
             self.score_non_essential(legs, collector)?;
         }
         legs[top].set_cur(legs[top].doc_id());
+        self.docs[top] = legs[top].cur();
+        self.sift_top();
         Ok(())
     }
 
@@ -1414,7 +1471,7 @@ impl MaxScore {
         // `collectEssentialScoresIntoWindow`: drain every essential clause's
         // documents below `inner_max` into the window bitset.
         loop {
-            let (top, top_doc) = self.top(legs);
+            let (top, top_doc) = self.top();
             if top_doc >= inner_max {
                 break;
             }
@@ -1434,6 +1491,8 @@ impl MaxScore {
                 }
             }
             legs[top].set_cur(legs[top].doc_id());
+            self.docs[top] = legs[top].cur();
+            self.sift_top();
         }
         // `flushWindowToDocAndScoreAccBuffer`.
         self.acc.docs.clear();
@@ -1470,6 +1529,7 @@ impl MaxScore {
                 apply_optional_clause(&mut self.acc, &mut legs[i])?;
             }
             legs[i].set_cur(legs[i].doc_id());
+            self.docs[i] = legs[i].cur();
         }
         for (&doc, &score) in self.acc.docs.iter().zip(&self.acc.scores) {
             collector.collect(doc, score as f32);
