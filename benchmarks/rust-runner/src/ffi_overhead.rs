@@ -86,6 +86,7 @@ fn main() {
     let query = TermQuery {
         field: field.clone(),
         term: term.clone().into_bytes(),
+        doc_freq: None,
     };
 
     // A: segments opened once, outside the loop.

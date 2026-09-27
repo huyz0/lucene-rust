@@ -126,6 +126,7 @@ fn main() {
                     let tq = TermQuery {
                         field: q.field.clone(),
                         term: q.args[0].clone().into_bytes(),
+                        doc_freq: None,
                     };
                     let mut merged = lucene_search::collector::TopDocsCollector::new(TOP_N);
                     for (i, seg) in segments.iter().enumerate() {
@@ -149,6 +150,7 @@ fn main() {
                     let tq = TermQuery {
                         field: q.field.clone(),
                         term: q.args[0].clone().into_bytes(),
+                        doc_freq: None,
                     };
                     let seg = &segments[0];
                     let mut c = lucene_search::collector::TopDocsCollector::new(TOP_N);
@@ -167,6 +169,7 @@ fn main() {
                     let tq = TermQuery {
                         field: q.field.clone(),
                         term: q.args[0].clone().into_bytes(),
+                        doc_freq: None,
                     };
                     // Per-query field, not a hardcoded one: scoring a `title` or
                     // `keyword` query with `body`'s norms silently produces a
@@ -225,6 +228,7 @@ fn main() {
                             Clause::Term(TermQuery {
                                 field: q.field.clone(),
                                 term: t.clone().into_bytes(),
+                                doc_freq: None,
                             })
                         })
                         .collect();
