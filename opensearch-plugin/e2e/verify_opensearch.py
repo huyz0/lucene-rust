@@ -98,6 +98,8 @@ def create(index, shards):
             "@timestamp": {"type": "date"},
             "ratio": {"type": "float"},
             "m": {"type": "long"},
+            "md": {"type": "double"},
+            "mi": {"type": "integer"},
             "sp": {"type": "long"},
         }},
     })
@@ -126,6 +128,8 @@ def load(index, docs, seed, deletes=True):
                 "@timestamp": 1_700_000_000_000 + r.randint(0, 500) * 60_000,
                 "ratio": r.random(),
                 "m": [r.randint(0, 1000) for _ in range(r.randint(0, 3))],
+                "md": [round(r.uniform(-50, 50), 3) for _ in range(r.randint(0, 4))],
+                "mi": [r.randint(-100, 100) for _ in range(r.randint(0, 4))],
             }
             if r.random() < 0.7:
                 doc["sp"] = r.randint(-100, 100)
@@ -249,7 +253,15 @@ def matrix():
     add("sort keyword desc then n", {"query": {"match_all": {}}, "sort": [{"tag": "desc"}, {"n": "asc"}]}, "native")
     add("sort keyword missing first max", {"query": {"match": {"body": "beta"}}, "sort": [{"tag": {"order": "asc", "missing": "_first", "mode": "max"}}, "_score"]}, "native")
     add("sort keyword search_after", {"query": {"match_all": {}}, "sort": [{"tag": "asc"}, {"n": "asc"}], "search_after": ["gamma", 100]}, "native")
-    add("sort mode avg", {"query": {"match": {"body": "alpha"}}, "sort": [{"m": {"order": "asc", "mode": "avg"}}]}, "sort_*")
+    add("sort mode avg", {"query": {"match": {"body": "alpha"}}, "sort": [{"m": {"order": "asc", "mode": "avg"}}]}, "native")
+    add("sort mode sum", {"query": {"match": {"body": "beta"}}, "sort": [{"m": {"order": "desc", "mode": "sum"}}, "_doc"]}, "native")
+    add("sort mode median", {"query": {"match": {"body": "gamma"}}, "sort": [{"m": {"order": "asc", "mode": "median", "missing": "_first"}}]}, "native")
+    add("sort mode avg double", {"query": {"match": {"body": "alpha"}}, "sort": [{"md": {"order": "desc", "mode": "avg"}}, "_doc"]}, "native")
+    add("sort mode sum double", {"query": {"match": {"body": "delta"}}, "sort": [{"md": {"order": "asc", "mode": "sum", "missing": "_last"}}]}, "native")
+    add("sort mode median double", {"query": {"match_all": {}}, "sort": [{"md": {"order": "asc", "mode": "median"}}, {"n": "asc"}]}, "native")
+    add("sort mode sum int", {"query": {"match": {"body": "beta"}}, "sort": [{"mi": {"order": "asc", "mode": "sum"}}, "_doc"]}, "native")
+    add("sort mode avg int", {"query": {"match": {"body": "gamma"}}, "sort": [{"mi": {"order": "desc", "mode": "avg", "missing": 0}}, "_doc"]}, "native")
+    add("sort mode median int", {"size": 25, "query": {"match": {"body": "alpha"}}, "sort": [{"mi": {"order": "asc", "mode": "median"}}, "_score"]}, "native")
     add("sort track_scores", {"query": {"match": {"body": "alpha"}}, "sort": [{"n": "desc"}], "track_scores": True}, "native")
     add("sort keyword track_scores", {"query": {"match": {"body": "beta gamma"}}, "sort": [{"tag": "asc"}, "_doc"], "track_scores": True}, "native")
     # Metric aggregations (read path R5): top level, numeric or date fields, no missing/script.
