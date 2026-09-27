@@ -1,0 +1,2003 @@
+//! OpenSearch's bucket aggregations, and whatever sits under them, as a shard
+//! computes them before any reduce (read path R5): `histogram`,
+//! `date_histogram`, `range` (and `date_range`), `filter`, `filters`,
+//! `global`, keyword `terms` with sub-aggregations, `cardinality`, and the
+//! metrics of [`crate::aggs`] at any depth.
+//!
+//! The shape is OpenSearch's `BucketsAggregator` tree, collected document by
+//! document: every aggregator receives `collect(doc, owningBucketOrd)`, and a
+//! bucketing one hands the document on to its sub-aggregators under the
+//! ordinal of each bucket the document falls in. A bucket's ordinal is
+//! assigned when its first document arrives (`LongKeyedBucketOrds.add`) for
+//! the keyed aggregations (histograms, `terms`), and is `owning * width +
+//! index` for the fixed ones (`range`, `filters`, `filter`, `global`). The
+//! documents come segment by segment, in document order, so each bucket's
+//! metric sums are added in Java's order.
+//!
+//! What is ported, per aggregator:
+//!
+//! * `histogram` (`NumericHistogramAggregator`): each distinct `Math.floor((v -
+//!   offset) / interval)` of a document's values, ascending, in the hard
+//!   bounds (`key * interval`, inclusive both ends); the bucket keyed by that
+//!   double's bits (`Double.doubleToLongBits`: one `NaN`, and `-0.0` apart
+//!   from `0.0`).
+//! * `date_histogram` (`DateHistogramAggregator`): each distinct rounded value
+//!   ([`DateRounding`]: `Rounding.Prepared.round` for a calendar unit or a
+//!   fixed interval, in a fixed-offset zone, with an offset), in the hard
+//!   bounds (`[min, max)`).
+//! * `range` (`RangeAggregator`): the ranges sorted as OpenSearch sorts them,
+//!   each value binary-searched from where the previous value's search ended
+//!   (`MatchedRange`), a range matching `from <= v < to`.
+//! * `filters`/`filter` (`FiltersAggregator`/`FilterAggregator`): a bucket
+//!   per filter a document matches (deletions aside: only live documents
+//!   arrive), and with `other_bucket` one for a document matching none.
+//! * `global` (`GlobalAggregator`): every document of the pass (the caller
+//!   runs it over every live document, as `DefaultAggregationProcessor`
+//!   searches a match-all for it).
+//! * `terms` (`GlobalOrdinalsStringTermsAggregator`, remapping ordinals under
+//!   a parent): per owning bucket, the live documents per distinct term, the
+//!   top `shard_size` by count then term, the rest into `otherDocCount`.
+//! * `cardinality`: the distinct values per bucket -- a keyword's terms, a
+//!   whole number field's longs, a floating-point field's doubles as
+//!   `Double.doubleToLongBits` -- which the caller hashes into
+//!   `HyperLogLogPlusPlus` (a set of hashes, so the order is immaterial).
+//! * the metrics: [`MetricState`] per owning bucket, and at the top level the
+//!   `min`/`max` points shortcut of [`crate::aggs`].
+
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+
+use lucene_codecs::terms_dict::TermsDict;
+
+use crate::aggs::{self, MetricState, Source, ValueKind, Values};
+use crate::directory_reader::SegmentReader;
+use crate::exec;
+use crate::multi_segment::OpenSegment;
+use crate::query::BooleanQuery;
+use crate::terms_agg::{GlobalOrds, Ords};
+use crate::Result;
+use lucene_util::fixed_bit_set::FixedBitSet;
+
+/// A calendar unit of `Rounding.DateTimeUnit`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DateUnit {
+    Week,
+    Year,
+    Quarter,
+    Month,
+    Day,
+    Hour,
+    Minute,
+    Second,
+}
+
+/// A `date_histogram`'s rounding: a calendar unit or a fixed interval.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoundingKind {
+    /// `TimeUnitRounding`.
+    Unit(DateUnit),
+    /// `TimeIntervalRounding`, in milliseconds (at least 1).
+    Interval(i64),
+}
+
+/// `Rounding.Prepared` for a zone whose offset is fixed (`UTC`, `+05:30`):
+/// `FixedToMidnightRounding`/`FixedNotToMidnightRounding`/`FixedRounding`
+/// behind `OffsetRounding`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DateRounding {
+    pub kind: RoundingKind,
+    /// The zone's offset from UTC, in milliseconds.
+    pub zone_ms: i64,
+    /// `OffsetRounding`'s offset, in milliseconds.
+    pub offset: i64,
+}
+
+const MILLIS_PER_DAY: i64 = 86_400_000;
+const DAYS_0000_TO_1970: i64 = 719_527;
+const MILLIS_PER_YEAR: i64 = 31_556_952_000;
+const MIN_TOTAL_MILLIS_BY_MONTH: [i64; 12] = month_starts(false);
+const MAX_TOTAL_MILLIS_BY_MONTH: [i64; 12] = month_starts(true);
+
+/// `DateUtilsRounding`'s `MIN_`/`MAX_TOTAL_MILLIS_BY_MONTH_ARRAY`.
+const fn month_starts(leap: bool) -> [i64; 12] {
+    let days = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut out = [0i64; 12];
+    let mut i = 0;
+    while i < 11 {
+        out[i + 1] = out[i] + days[i] * MILLIS_PER_DAY;
+        i += 1;
+    }
+    out
+}
+
+/// `DateUtils.roundFloor` (units of a day or less).
+fn round_floor(utc: i64, unit: i64) -> i64 {
+    if utc >= 0 {
+        utc - utc % unit
+    } else {
+        let u = utc.wrapping_add(1);
+        u.wrapping_sub(u % unit).wrapping_sub(unit)
+    }
+}
+
+/// `DateUtilsRounding.isLeapYear`.
+fn is_leap_year(year: i32) -> bool {
+    if year & 3 != 0 {
+        return false;
+    }
+    if year % 100 != 0 {
+        return true;
+    }
+    (year / 100) & 3 == 0
+}
+
+/// `DateUtilsRounding.utcMillisAtStartOfYear`.
+fn utc_millis_at_start_of_year(year: i32) -> i64 {
+    let mut leap_years = year / 100;
+    if year < 0 {
+        leap_years = ((year + 3) >> 2) - leap_years + ((leap_years + 3) >> 2) - 1;
+    } else {
+        leap_years = (year >> 2) - leap_years + (leap_years >> 2);
+        if is_leap_year(year) {
+            leap_years -= 1;
+        }
+    }
+    (i64::from(year) * 365 + (i64::from(leap_years) - DAYS_0000_TO_1970)) * MILLIS_PER_DAY
+}
+
+/// `DateUtilsRounding.getYear`.
+fn get_year(utc: i64) -> i32 {
+    let unit = MILLIS_PER_YEAR / 2;
+    let mut i2 = (utc >> 1) + (1970 * MILLIS_PER_YEAR) / 2;
+    if i2 < 0 {
+        i2 = i2 - unit + 1;
+    }
+    let mut year = (i2 / unit) as i32;
+    let mut year_start = utc_millis_at_start_of_year(year);
+    let diff = utc - year_start;
+    if diff < 0 {
+        year -= 1;
+    } else if diff >= MILLIS_PER_DAY * 365 {
+        let one_year = if is_leap_year(year) {
+            MILLIS_PER_DAY * 366
+        } else {
+            MILLIS_PER_DAY * 365
+        };
+        year_start += one_year;
+        if year_start <= utc {
+            year += 1;
+        }
+    }
+    year
+}
+
+/// `DateUtilsRounding.getMonthOfYear`: 1 to 12.
+fn get_month_of_year(utc: i64, year: i32) -> usize {
+    let i = ((utc - utc_millis_at_start_of_year(year)) >> 10) as i32;
+    let d = 84_375;
+    let bounds: [i32; 11] = if is_leap_year(year) {
+        [31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335]
+    } else {
+        [31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
+    };
+    1 + bounds.iter().take_while(|&&b| i >= b * d).count()
+}
+
+/// `DateUtils.of(year, month)`: the first millisecond of the month.
+fn start_of_month(year: i32, month: usize) -> i64 {
+    let table = if is_leap_year(year) {
+        &MAX_TOTAL_MILLIS_BY_MONTH
+    } else {
+        &MIN_TOTAL_MILLIS_BY_MONTH
+    };
+    utc_millis_at_start_of_year(year) + table.get(month - 1).copied().unwrap_or(0)
+}
+
+impl DateUnit {
+    /// `DateTimeUnit.roundFloor`.
+    pub fn round_floor(self, utc: i64) -> i64 {
+        match self {
+            DateUnit::Week => {
+                let three_days = 3 * MILLIS_PER_DAY;
+                round_floor(utc.wrapping_add(three_days), 7 * MILLIS_PER_DAY)
+                    .wrapping_sub(three_days)
+            }
+            DateUnit::Year => utc_millis_at_start_of_year(get_year(utc)),
+            DateUnit::Quarter => {
+                let year = get_year(utc);
+                let month = get_month_of_year(utc, year);
+                start_of_month(year, (month - 1) / 3 * 3 + 1)
+            }
+            DateUnit::Month => {
+                let year = get_year(utc);
+                start_of_month(year, get_month_of_year(utc, year))
+            }
+            DateUnit::Day => round_floor(utc, MILLIS_PER_DAY),
+            DateUnit::Hour => round_floor(utc, 3_600_000),
+            DateUnit::Minute => round_floor(utc, 60_000),
+            DateUnit::Second => round_floor(utc, 1_000),
+        }
+    }
+}
+
+impl DateRounding {
+    /// `Prepared.round`: `offset.localToUtcInThisOffset(roundFloor(
+    /// offset.utcToLocalTime(utc - offset))) + offset`.
+    pub fn round(&self, utc: i64) -> i64 {
+        let local = utc.wrapping_sub(self.offset).wrapping_add(self.zone_ms);
+        let rounded = match self.kind {
+            RoundingKind::Unit(u) => u.round_floor(local),
+            RoundingKind::Interval(interval) => {
+                // `TimeIntervalRounding.roundKey`.
+                let key = if local < 0 {
+                    local.wrapping_sub(interval).wrapping_add(1) / interval
+                } else {
+                    local / interval
+                };
+                key.wrapping_mul(interval)
+            }
+        };
+        rounded.wrapping_sub(self.zone_ms).wrapping_add(self.offset)
+    }
+}
+
+/// What a `cardinality` counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CardinalityKind {
+    /// A keyword field's terms.
+    Keyword,
+    /// A numeric field's values: longs as they are, doubles and floats as
+    /// the `double`'s bits (`MurmurHash3Values.hash(doubleValues)`).
+    Numeric(ValueKind),
+}
+
+/// One aggregation of a request, with its sub-aggregations.
+#[derive(Debug, Clone)]
+pub enum AggNode {
+    /// A metric of [`crate::aggs`]; `source` other than
+    /// [`Source::DocValues`] only at the top level.
+    Metric {
+        field: String,
+        kind: ValueKind,
+        source: Source,
+    },
+    Cardinality {
+        field: String,
+        kind: CardinalityKind,
+    },
+    /// Keyword `terms`, default order, `min_doc_count` of at least 1.
+    Terms {
+        field: String,
+        shard_size: usize,
+        subs: Vec<AggNode>,
+    },
+    Histogram {
+        field: String,
+        kind: ValueKind,
+        interval: f64,
+        offset: f64,
+        /// `hard_bounds`, each end optional.
+        hard_bounds: (Option<f64>, Option<f64>),
+        subs: Vec<AggNode>,
+    },
+    DateHistogram {
+        field: String,
+        rounding: DateRounding,
+        hard_bounds: (Option<i64>, Option<i64>),
+        subs: Vec<AggNode>,
+    },
+    /// The ranges as `(from, to)`, in `RangeAggregator`'s (sorted) order.
+    Range {
+        field: String,
+        kind: ValueKind,
+        ranges: Vec<(f64, f64)>,
+        subs: Vec<AggNode>,
+    },
+    /// `filters` (`other` adds the bucket for documents matching none);
+    /// `filter` is one filter without it.
+    Filters {
+        filters: Vec<BooleanQuery>,
+        other: bool,
+        subs: Vec<AggNode>,
+    },
+    /// `global`: one bucket holding every document of its pass.
+    Global { subs: Vec<AggNode> },
+}
+
+impl AggNode {
+    fn subs(&self) -> &[AggNode] {
+        match self {
+            AggNode::Metric { .. } | AggNode::Cardinality { .. } => &[],
+            AggNode::Terms { subs, .. }
+            | AggNode::Histogram { subs, .. }
+            | AggNode::DateHistogram { subs, .. }
+            | AggNode::Range { subs, .. }
+            | AggNode::Filters { subs, .. }
+            | AggNode::Global { subs } => subs,
+        }
+    }
+
+    /// The keyword fields whose global ordinals the tree reads.
+    pub fn keyword_fields<'n>(&'n self, out: &mut Vec<&'n str>) {
+        match self {
+            AggNode::Terms { field, .. }
+            | AggNode::Cardinality {
+                field,
+                kind: CardinalityKind::Keyword,
+            } if !out.contains(&field.as_str()) => out.push(field),
+            _ => {}
+        }
+        for s in self.subs() {
+            s.keyword_fields(out);
+        }
+    }
+
+    /// Whether the tree reads points (a filter's range query, a metric's
+    /// points bound).
+    pub fn filter_queries<'n>(&'n self, out: &mut Vec<&'n BooleanQuery>) {
+        if let AggNode::Filters { filters, .. } = self {
+            out.extend(filters.iter());
+        }
+        for s in self.subs() {
+            s.filter_queries(out);
+        }
+    }
+
+    /// Whether any metric of the tree reads a points bound.
+    pub fn reads_points(&self) -> bool {
+        matches!(self, AggNode::Metric { source, .. } if *source != Source::DocValues)
+            || self.subs().iter().any(AggNode::reads_points)
+    }
+}
+
+/// A distinct value a `cardinality` saw.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CardinalityValue {
+    Term(Vec<u8>),
+    Long(i64),
+}
+
+/// One owning bucket's `terms`: `otherDocCount`, and `(term, doc count)` of
+/// each kept bucket, by term.
+pub type TermsBuckets = (u64, Vec<(Vec<u8>, u64)>);
+
+/// One aggregation's shard result, per owning bucket (in the order the
+/// parent lists its buckets; one owning bucket at the top level).
+#[derive(Debug, Clone, PartialEq)]
+pub enum AggResult {
+    Metric(Vec<MetricState>),
+    Cardinality(Vec<Vec<CardinalityValue>>),
+    /// Per owning bucket: `otherDocCount` and the kept buckets by term;
+    /// `subs[i]`'s owning buckets are the kept buckets in that order.
+    Terms {
+        buckets: Vec<TermsBuckets>,
+        subs: Vec<AggResult>,
+    },
+    /// Per owning bucket: `(floor((v - offset) / interval), doc count)`, by
+    /// key ascending (`Double.compare`).
+    Histogram {
+        buckets: Vec<Vec<(f64, u64)>>,
+        subs: Vec<AggResult>,
+    },
+    /// Per owning bucket: `(rounded key, doc count)`, by key ascending.
+    DateHistogram {
+        buckets: Vec<Vec<(i64, u64)>>,
+        subs: Vec<AggResult>,
+    },
+    /// `width` buckets per owning bucket (a range, a filter), every one
+    /// listed, `docs[owning * width + i]`.
+    Fixed {
+        width: usize,
+        docs: Vec<u64>,
+        subs: Vec<AggResult>,
+    },
+}
+
+/// What a collection pass reads besides the tree: each keyword field's
+/// global ordinals.
+pub struct Globals<'g> {
+    pub ords: &'g HashMap<String, Arc<GlobalOrds>>,
+}
+
+impl<'g> Globals<'g> {
+    fn get(&self, field: &str) -> Result<&'g GlobalOrds> {
+        self.ords
+            .get(field)
+            .map(|g| &**g)
+            .ok_or_else(|| crate::Error::TermsAggType(format!("{field}: no global ordinals")))
+    }
+}
+
+/// The collected state of one aggregation (`BucketsAggregator` and kin).
+enum State {
+    Metric(Vec<MetricState>),
+    /// Distinct values per owning bucket: global ordinals for a keyword, raw
+    /// longs otherwise.
+    Cardinality(Vec<HashSet<i64>>),
+    /// `LongKeyedBucketOrds`: `(owning, key)` to bucket ordinal, the keys in
+    /// ordinal order, each bucket's document count.
+    Keyed {
+        ords: HashMap<(u32, i64), u32>,
+        keys: Vec<(u32, i64)>,
+        docs: Vec<u64>,
+        subs: Vec<State>,
+    },
+    Fixed {
+        width: usize,
+        docs: Vec<u64>,
+        subs: Vec<State>,
+    },
+}
+
+impl State {
+    fn new(node: &AggNode) -> State {
+        let subs = || node.subs().iter().map(State::new).collect();
+        match node {
+            AggNode::Metric { .. } => State::Metric(Vec::new()),
+            AggNode::Cardinality { .. } => State::Cardinality(Vec::new()),
+            AggNode::Terms { .. } | AggNode::Histogram { .. } | AggNode::DateHistogram { .. } => {
+                State::Keyed {
+                    ords: HashMap::new(),
+                    keys: Vec::new(),
+                    docs: Vec::new(),
+                    subs: subs(),
+                }
+            }
+            AggNode::Range { ranges, .. } => State::Fixed {
+                width: ranges.len(),
+                docs: Vec::new(),
+                subs: subs(),
+            },
+            AggNode::Filters { filters, other, .. } => State::Fixed {
+                width: filters.len() + usize::from(*other),
+                docs: Vec::new(),
+                subs: subs(),
+            },
+            AggNode::Global { .. } => State::Fixed {
+                width: 1,
+                docs: Vec::new(),
+                subs: subs(),
+            },
+        }
+    }
+}
+
+/// A slot of `v`, grown to hold it.
+fn slot<T: Default>(v: &mut Vec<T>, i: usize) -> &mut T {
+    if v.len() <= i {
+        v.resize_with(i + 1, T::default);
+    }
+    &mut v[i]
+}
+
+/// One aggregation's columns over one segment.
+struct Leaf<'a> {
+    col: Col<'a>,
+    /// The document's values, read by this node (its subs have their own).
+    buf: Vec<i64>,
+    /// A `range`'s `maxTo`.
+    max_to: Vec<f64>,
+    subs: Vec<Leaf<'a>>,
+}
+
+enum Col<'a> {
+    /// A numeric column; `done` when the points answered this segment.
+    Values(Values<'a>, bool),
+    /// A keyword column and its segment-to-global ordinal map.
+    Ords(Ords<'a>, &'a [i64]),
+    /// Each filter's matching documents (`None`: all of them), as bits.
+    Filters(Vec<Option<Vec<u64>>>),
+    None,
+}
+
+impl Leaf<'_> {
+    /// The document's values into `buf` (ascending); false without any.
+    fn read(&mut self, doc: i32) -> Result<bool> {
+        self.buf.clear();
+        match &mut self.col {
+            Col::Values(Values::Absent, _) | Col::Ords(Ords::Absent, _) => {}
+            Col::Values(Values::Single(r), _) => {
+                if let Some(v) = r.value(doc)? {
+                    self.buf.push(v);
+                }
+            }
+            Col::Values(Values::Multi(r), _) => r.values(doc, &mut self.buf)?,
+            Col::Ords(Ords::Single(r), _) => {
+                if let Some(v) = r.value(doc)? {
+                    self.buf.push(v);
+                }
+            }
+            Col::Ords(Ords::Multi(r), _) => r.values(doc, &mut self.buf)?,
+            Col::Filters(_) | Col::None => {}
+        }
+        Ok(!self.buf.is_empty())
+    }
+}
+
+fn bit(words: &[u64], doc: i32) -> bool {
+    let d = doc as u32 as usize;
+    words.get(d >> 6).is_some_and(|w| w >> (d & 63) & 1 == 1)
+}
+
+/// One segment's view: what opening a node's columns needs.
+struct SegmentView<'s, 'a> {
+    seg: &'s OpenSegment<'a>,
+    reader: &'a SegmentReader,
+    index: usize,
+    top: bool,
+}
+
+fn open_leaf<'a>(
+    node: &AggNode,
+    view: &SegmentView<'_, 'a>,
+    globals: &Globals<'a>,
+    state: &mut State,
+) -> Result<Leaf<'a>> {
+    let reader = view.reader;
+    let col = match node {
+        AggNode::Metric {
+            field,
+            kind,
+            source,
+        } => {
+            // The points shortcut (a top-level `min`/`max` over a match-all)
+            // answers the segment without visiting a document.
+            let bound = if view.top && *source != Source::DocValues {
+                let spec = aggs::MetricSpec {
+                    field: field.clone(),
+                    kind: *kind,
+                    source: *source,
+                    needs: aggs::NEED_ALL,
+                };
+                aggs::leaf_point_bound(view.seg, &spec)?
+            } else {
+                None
+            };
+            if let (Some(v), State::Metric(states)) = (bound, &mut *state) {
+                let s = slot(states, 0);
+                if *source == Source::PointsMin {
+                    s.min_of_mins = aggs::java_min(s.min_of_mins, v);
+                } else {
+                    s.max_of_maxes = aggs::java_max(s.max_of_maxes, v);
+                }
+            }
+            Col::Values(aggs::open_values(reader, field)?, bound.is_some())
+        }
+        AggNode::Cardinality {
+            field,
+            kind: CardinalityKind::Keyword,
+        }
+        | AggNode::Terms { field, .. } => {
+            let map = globals.get(field)?.segment_map(view.index).unwrap_or(&[]);
+            Col::Ords(crate::terms_agg::open_ords(reader, field)?.0, map)
+        }
+        AggNode::Cardinality { field, .. }
+        | AggNode::Histogram { field, .. }
+        | AggNode::DateHistogram { field, .. }
+        | AggNode::Range { field, .. } => Col::Values(aggs::open_values(reader, field)?, false),
+        AggNode::Filters { filters, .. } => {
+            let mut bits = Vec::with_capacity(filters.len());
+            for f in filters {
+                bits.push(filter_bits(view.seg, f)?);
+            }
+            Col::Filters(bits)
+        }
+        AggNode::Global { .. } => Col::None,
+    };
+    let mut subs = Vec::with_capacity(node.subs().len());
+    let sub_view = SegmentView {
+        top: false,
+        ..*view
+    };
+    let sub_states: &mut [State] = match state {
+        State::Keyed { subs, .. } | State::Fixed { subs, .. } => subs,
+        _ => &mut [],
+    };
+    for (s, st) in node.subs().iter().zip(sub_states) {
+        subs.push(open_leaf(s, &sub_view, globals, st)?);
+    }
+    let max_to = match node {
+        AggNode::Range { ranges, .. } => max_to(ranges),
+        _ => Vec::new(),
+    };
+    Ok(Leaf {
+        col,
+        buf: Vec::new(),
+        max_to,
+        subs,
+    })
+}
+
+/// A filter's matches in one segment, deletions ignored (`FiltersAggregator`
+/// asks the weight for every document; only live ones are collected), as
+/// bits; `None` when it matches every document.
+fn filter_bits(seg: &OpenSegment<'_>, filter: &BooleanQuery) -> Result<Option<Vec<u64>>> {
+    let rewritten = crate::multi_segment::rewrite_points_ranges(filter, std::slice::from_ref(seg));
+    let filter = rewritten.as_ref().unwrap_or(filter);
+    let clause = aggs::lone_clause(filter);
+    let ctx = aggs::plain_context(seg);
+    let mut docs = Vec::new();
+    let max = usize::try_from(seg.max_doc.unwrap_or(0)).unwrap_or(0);
+    let words = match aggs::segment_matches(&ctx, filter, &clause, None, &mut docs)? {
+        None => vec![0; max.div_ceil(64)],
+        Some(None) => return Ok(None),
+        Some(Some(d)) => {
+            let mut words = vec![0u64; max.div_ceil(64)];
+            for &doc in d {
+                let doc = doc as u32 as usize;
+                if let Some(w) = words.get_mut(doc >> 6) {
+                    *w |= 1 << (doc & 63);
+                }
+            }
+            words
+        }
+    };
+    Ok(Some(words))
+}
+
+/// Adds one to bucket `ord`'s count (`collectBucket`/`collectExistingBucket`)
+/// and hands the document to the sub-aggregations under it.
+fn collect_bucket(
+    node: &AggNode,
+    docs: &mut Vec<u64>,
+    subs: &mut [State],
+    leaf_subs: &mut [Leaf<'_>],
+    doc: i32,
+    ord: u32,
+) -> Result<()> {
+    *slot(docs, ord as usize) += 1;
+    for ((n, s), l) in node.subs().iter().zip(subs).zip(leaf_subs) {
+        collect(n, s, l, doc, ord)?;
+    }
+    Ok(())
+}
+
+/// `LongKeyedBucketOrds.add`: the bucket of `(owning, key)`, new or not.
+fn keyed_ord(
+    ords: &mut HashMap<(u32, i64), u32>,
+    keys: &mut Vec<(u32, i64)>,
+    owning: u32,
+    key: i64,
+) -> u32 {
+    let next = keys.len() as u32;
+    *ords.entry((owning, key)).or_insert_with(|| {
+        keys.push((owning, key));
+        next
+    })
+}
+
+/// `LeafBucketCollector.collect(doc, owningBucketOrd)` for `node`.
+fn collect(
+    node: &AggNode,
+    state: &mut State,
+    leaf: &mut Leaf<'_>,
+    doc: i32,
+    owning: u32,
+) -> Result<()> {
+    match (node, state) {
+        (AggNode::Metric { kind, .. }, State::Metric(states)) => {
+            if matches!(leaf.col, Col::Values(_, true)) || !leaf.read(doc)? {
+                return Ok(());
+            }
+            slot(states, owning as usize).collect_all(*kind, &leaf.buf);
+        }
+        (AggNode::Cardinality { kind, .. }, State::Cardinality(sets)) => {
+            if !leaf.read(doc)? {
+                return Ok(());
+            }
+            let set = slot(sets, owning as usize);
+            match (kind, &leaf.col) {
+                (CardinalityKind::Keyword, Col::Ords(_, map)) => {
+                    for &o in &leaf.buf {
+                        set.insert(global_ord(map, o)?);
+                    }
+                }
+                (CardinalityKind::Numeric(ValueKind::Long), _) => {
+                    set.extend(leaf.buf.iter().copied())
+                }
+                (CardinalityKind::Numeric(k), _) => {
+                    for &v in &leaf.buf {
+                        set.insert(java_double_bits(aggs::to_double(*k, v)));
+                    }
+                }
+                (CardinalityKind::Keyword, _) => {
+                    return Err(crate::Error::TermsAggType(
+                        "keyword cardinality without an ordinal column".to_string(),
+                    ))
+                }
+            }
+        }
+        (
+            AggNode::Terms { .. },
+            State::Keyed {
+                ords,
+                keys,
+                docs,
+                subs,
+                ..
+            },
+        ) => {
+            if !leaf.read(doc)? {
+                return Ok(());
+            }
+            let values = std::mem::take(&mut leaf.buf);
+            let map = match &leaf.col {
+                Col::Ords(_, map) => *map,
+                _ => &[],
+            };
+            let mut out = Ok(());
+            for &o in &values {
+                let ord = match global_ord(map, o) {
+                    Ok(g) => keyed_ord(ords, keys, owning, g),
+                    Err(e) => {
+                        out = Err(e);
+                        break;
+                    }
+                };
+                if let Err(e) = collect_bucket(node, docs, subs, &mut leaf.subs, doc, ord) {
+                    out = Err(e);
+                    break;
+                }
+            }
+            leaf.buf = values;
+            out?;
+        }
+        (
+            AggNode::Histogram {
+                kind,
+                interval,
+                offset,
+                hard_bounds,
+                ..
+            },
+            State::Keyed {
+                ords,
+                keys,
+                docs,
+                subs,
+                ..
+            },
+        ) => {
+            if !leaf.read(doc)? {
+                return Ok(());
+            }
+            let values = std::mem::take(&mut leaf.buf);
+            let mut previous = f64::NEG_INFINITY;
+            let mut out = Ok(());
+            for &v in &values {
+                let key = ((aggs::to_double(*kind, v) - offset) / interval).floor();
+                if key == previous {
+                    continue;
+                }
+                let bound = key * interval;
+                let contained = !hard_bounds.1.is_some_and(|max| bound > max)
+                    && !hard_bounds.0.is_some_and(|min| bound < min);
+                if contained {
+                    let ord = keyed_ord(ords, keys, owning, java_double_bits(key));
+                    if let Err(e) = collect_bucket(node, docs, subs, &mut leaf.subs, doc, ord) {
+                        out = Err(e);
+                        break;
+                    }
+                }
+                previous = key;
+            }
+            leaf.buf = values;
+            out?;
+        }
+        (
+            AggNode::DateHistogram {
+                rounding,
+                hard_bounds,
+                ..
+            },
+            State::Keyed {
+                ords,
+                keys,
+                docs,
+                subs,
+                ..
+            },
+        ) => {
+            if !leaf.read(doc)? {
+                return Ok(());
+            }
+            let values = std::mem::take(&mut leaf.buf);
+            let mut previous = i64::MIN;
+            let mut out = Ok(());
+            // A single-valued column's value is rounded as is; of a
+            // multi-valued one's, a rounded value equal to the last one
+            // collected is skipped.
+            let single = matches!(leaf.col, Col::Values(Values::Single(_), _));
+            for &v in &values {
+                let rounded = rounding.round(v);
+                if !single && rounded == previous {
+                    continue;
+                }
+                let contained = !hard_bounds.1.is_some_and(|max| rounded >= max)
+                    && !hard_bounds.0.is_some_and(|min| rounded < min);
+                if contained {
+                    let ord = keyed_ord(ords, keys, owning, rounded);
+                    if let Err(e) = collect_bucket(node, docs, subs, &mut leaf.subs, doc, ord) {
+                        out = Err(e);
+                        break;
+                    }
+                }
+                previous = rounded;
+            }
+            leaf.buf = values;
+            out?;
+        }
+        (
+            AggNode::Range { kind, ranges, .. },
+            State::Fixed {
+                width, docs, subs, ..
+            },
+        ) => {
+            if !leaf.read(doc)? {
+                return Ok(());
+            }
+            let values = std::mem::take(&mut leaf.buf);
+            let mut lo = 0usize;
+            let mut out = Ok(());
+            'values: for &v in &values {
+                let value = aggs::to_double(*kind, v);
+                let (start, end) = matched_range(ranges, lo, value, &leaf.max_to);
+                for (i, &(from, to)) in ranges.iter().enumerate().take(end).skip(start) {
+                    if value >= from && value < to {
+                        let ord = (owning as usize * *width + i) as u32;
+                        if let Err(e) = collect_bucket(node, docs, subs, &mut leaf.subs, doc, ord) {
+                            out = Err(e);
+                            break 'values;
+                        }
+                    }
+                }
+                lo = end;
+            }
+            leaf.buf = values;
+            out?;
+        }
+        (
+            AggNode::Filters { other, .. },
+            State::Fixed {
+                width, docs, subs, ..
+            },
+        ) => {
+            let base = owning as usize * *width;
+            let bits = match &leaf.col {
+                Col::Filters(b) => b,
+                _ => return Ok(()),
+            };
+            let hits: Vec<usize> = bits
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| b.as_ref().is_none_or(|w| bit(w, doc)))
+                .map(|(i, _)| i)
+                .collect();
+            for &i in &hits {
+                collect_bucket(node, docs, subs, &mut leaf.subs, doc, (base + i) as u32)?;
+            }
+            if *other && hits.is_empty() {
+                collect_bucket(
+                    node,
+                    docs,
+                    subs,
+                    &mut leaf.subs,
+                    doc,
+                    (base + bits.len()) as u32,
+                )?;
+            }
+        }
+        (AggNode::Global { .. }, State::Fixed { docs, subs, .. }) => {
+            collect_bucket(node, docs, subs, &mut leaf.subs, doc, owning)?;
+        }
+        _ => {
+            return Err(crate::Error::TermsAggType(
+                "aggregation state does not match its node".to_string(),
+            ))
+        }
+    }
+    Ok(())
+}
+
+/// `Double.doubleToLongBits`: every `NaN` is the canonical one.
+fn java_double_bits(d: f64) -> i64 {
+    if d.is_nan() {
+        f64::NAN.to_bits() as i64
+    } else {
+        d.to_bits() as i64
+    }
+}
+
+fn global_ord(map: &[i64], ord: i64) -> Result<i64> {
+    usize::try_from(ord)
+        .ok()
+        .and_then(|o| map.get(o))
+        .copied()
+        .ok_or_else(|| {
+            crate::Error::from(lucene_codecs::doc_values::Error::from(
+                lucene_store::Error::Corrupted(format!(
+                    "ordinal {ord} outside the segment's dictionary"
+                )),
+            ))
+        })
+}
+
+/// `RangeAggregator.maxTo`.
+fn max_to(ranges: &[(f64, f64)]) -> Vec<f64> {
+    let mut out = Vec::with_capacity(ranges.len());
+    for (i, &(_, to)) in ranges.iter().enumerate() {
+        out.push(match i {
+            0 => to,
+            _ => aggs::java_max(to, out[i - 1]),
+        });
+    }
+    out
+}
+
+/// `RangeAggregator.MatchedRange`: the ranges `[start, end)` that may hold
+/// `value`, searching from `low`.
+fn matched_range(ranges: &[(f64, f64)], low: usize, value: f64, max_to: &[f64]) -> (usize, usize) {
+    // Signed, as Java's ints are: `hi` may reach -1.
+    let from = |i: i64| ranges[i as usize].0;
+    let max = |i: i64| max_to[i as usize];
+    let (mut lo, mut hi) = (low as i64, ranges.len() as i64 - 1);
+    let mut mid = (lo + hi) >> 1;
+    while lo <= hi {
+        if value < from(mid) {
+            hi = mid - 1;
+        } else if value >= max(mid) {
+            lo = mid + 1;
+        } else {
+            break;
+        }
+        mid = (lo + hi) >> 1;
+    }
+    if lo > hi {
+        return (lo as usize, lo as usize);
+    }
+    let (mut start_lo, mut start_hi) = (lo, mid);
+    while start_lo <= start_hi {
+        let m = (start_lo + start_hi) >> 1;
+        if value >= max(m) {
+            start_lo = m + 1;
+        } else {
+            start_hi = m - 1;
+        }
+    }
+    let (mut end_lo, mut end_hi) = (mid, hi);
+    while end_lo <= end_hi {
+        let m = (end_lo + end_hi) >> 1;
+        if value < from(m) {
+            end_hi = m - 1;
+        } else {
+            end_lo = m + 1;
+        }
+    }
+    (start_lo as usize, (end_hi + 1) as usize)
+}
+
+/// The documents a pass collects: `min_score` behind the query, or none.
+pub struct PassScoring<'a, 'n> {
+    pub min_score: &'a aggs::MinScore<'a, 'n>,
+}
+
+/// One pass of aggregations: `nodes` over `query`'s live matches in the
+/// segments of each slice, a state per slice from scratch (a concurrent
+/// search's aggregators, reduced by the caller); slices run concurrently.
+///
+/// # Errors
+/// A column of the wrong kind, an unknown keyword field, a slice naming a
+/// segment the reader lacks, or what reading the index reports.
+#[allow(clippy::too_many_arguments)]
+pub fn aggregate_tree(
+    segments: &[OpenSegment<'_>],
+    readers: &[SegmentReader],
+    query: &BooleanQuery,
+    nodes: &[AggNode],
+    globals: &Globals<'_>,
+    slices: &[Vec<usize>],
+    min_score: Option<&aggs::MinScore<'_, '_>>,
+) -> Result<Vec<Vec<AggResult>>> {
+    let rewritten = crate::multi_segment::rewrite_points_ranges(query, segments);
+    let query = rewritten.as_ref().unwrap_or(query);
+    let clause = aggs::lone_clause(query);
+    let global = match min_score {
+        Some(_) => Some(crate::multi_segment::global_boolean_stats(segments, query)?),
+        None => None,
+    };
+    let scoring = min_score.zip(global.as_ref());
+    let one = |slice: &[usize]| -> Result<Vec<AggResult>> {
+        let mut states: Vec<State> = nodes.iter().map(State::new).collect();
+        let mut docs_buf = Vec::new();
+        for &i in slice {
+            let (Some(seg), Some(reader)) = (segments.get(i), readers.get(i)) else {
+                return Err(crate::Error::SliceOutOfRange {
+                    segment: i,
+                    segments: segments.len().min(readers.len()),
+                });
+            };
+            let view = SegmentView {
+                seg,
+                reader,
+                index: i,
+                top: true,
+            };
+            let mut leaves = Vec::with_capacity(nodes.len());
+            for (n, s) in nodes.iter().zip(&mut states) {
+                leaves.push(open_leaf(n, &view, globals, s)?);
+            }
+            let ctx = aggs::plain_context(seg);
+            let live: Option<&FixedBitSet> = seg.live_docs;
+            let matched = match scoring {
+                Some((m, g)) => {
+                    let scored = exec::LeafContext {
+                        norms: m.norms.get(i).copied().flatten(),
+                        global: Some(g),
+                        ..ctx
+                    };
+                    aggs::segment_matches_scoring(&scored, query, live, m.min, &mut docs_buf)?
+                }
+                None => aggs::segment_matches(&ctx, query, &clause, live, &mut docs_buf)?,
+            };
+            let mut visit = |doc: i32| -> Result<()> {
+                for ((n, s), l) in nodes.iter().zip(&mut states).zip(&mut leaves) {
+                    collect(n, s, l, doc, 0)?;
+                }
+                Ok(())
+            };
+            match matched {
+                None => {}
+                Some(Some(docs)) => {
+                    for &doc in docs {
+                        visit(doc)?;
+                    }
+                }
+                Some(None) => {
+                    for doc in 0..reader.max_doc {
+                        if live.is_none_or(|l| l.get_doc(doc)) {
+                            visit(doc)?;
+                        }
+                    }
+                }
+            }
+        }
+        let mut terms = TermLookup::new(readers);
+        nodes
+            .iter()
+            .zip(states)
+            .map(|(n, s)| finish(n, s, &[0], globals, &mut terms))
+            .collect()
+    };
+    let parallel =
+        crate::slices::estimated_matches(segments, query) >= crate::slices::SEQUENTIAL_BELOW;
+    crate::slices::run_slices_if(parallel, slices, one)
+        .into_iter()
+        .collect()
+}
+
+/// A global ordinal's term, read from the first segment holding it.
+struct TermLookup<'r> {
+    readers: &'r [SegmentReader],
+    dicts: HashMap<(String, usize), Option<TermsDict<'r>>>,
+}
+
+impl<'r> TermLookup<'r> {
+    fn new(readers: &'r [SegmentReader]) -> Self {
+        TermLookup {
+            readers,
+            dicts: HashMap::new(),
+        }
+    }
+
+    fn term(&mut self, global: &GlobalOrds, field: &str, g: i64) -> Result<Vec<u8>> {
+        let (Some(seg), Some(ord)) = (global.first_segment(g), global.first_segment_ord(g)) else {
+            return Err(crate::Error::TermsAggType(format!(
+                "{field}: global ordinal {g} has no segment"
+            )));
+        };
+        let readers = self.readers;
+        let dict = match self.dicts.entry((field.to_string(), seg)) {
+            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::hash_map::Entry::Vacant(e) => {
+                let d = match readers.get(seg) {
+                    Some(r) => crate::terms_agg::open_ords(r, field)?.1,
+                    None => None,
+                };
+                e.insert(d)
+            }
+        };
+        let Some(dict) = dict.as_mut() else {
+            return Err(crate::Error::TermsAggType(format!(
+                "{field}: segment {seg} has no dictionary"
+            )));
+        };
+        Ok(dict
+            .seek_ord(ord)
+            .map_err(|e| crate::Error::from(lucene_codecs::doc_values::Error::from(e)))?
+            .to_vec())
+    }
+}
+
+/// `buildAggregations(owningBucketOrds)`: the results for the owning buckets
+/// `owners` (in the parent's listed order).
+fn finish(
+    node: &AggNode,
+    state: State,
+    owners: &[u32],
+    globals: &Globals<'_>,
+    terms: &mut TermLookup<'_>,
+) -> Result<AggResult> {
+    let at = |v: &[u64], i: usize| v.get(i).copied().unwrap_or(0);
+    match (node, state) {
+        (AggNode::Metric { .. }, State::Metric(states)) => Ok(AggResult::Metric(
+            owners
+                .iter()
+                .map(|&o| states.get(o as usize).copied().unwrap_or_default())
+                .collect(),
+        )),
+        (AggNode::Cardinality { field, kind }, State::Cardinality(sets)) => {
+            let mut out = Vec::with_capacity(owners.len());
+            for &o in owners {
+                let Some(set) = sets.get(o as usize) else {
+                    out.push(Vec::new());
+                    continue;
+                };
+                let mut values: Vec<i64> = set.iter().copied().collect();
+                values.sort_unstable();
+                out.push(match kind {
+                    CardinalityKind::Keyword => {
+                        let g = globals.get(field)?;
+                        values
+                            .into_iter()
+                            .map(|v| terms.term(g, field, v).map(CardinalityValue::Term))
+                            .collect::<Result<Vec<_>>>()?
+                    }
+                    CardinalityKind::Numeric(_) => {
+                        values.into_iter().map(CardinalityValue::Long).collect()
+                    }
+                });
+            }
+            Ok(AggResult::Cardinality(out))
+        }
+        (
+            AggNode::Terms {
+                field,
+                shard_size,
+                subs,
+            },
+            State::Keyed {
+                keys,
+                docs,
+                subs: sub_states,
+                ..
+            },
+        ) => {
+            let g = globals.get(field)?;
+            let by_owner = group(&keys);
+            let mut buckets = Vec::with_capacity(owners.len());
+            let mut child = Vec::new();
+            for &o in owners {
+                let mut kept: Vec<(i64, u64, u32)> = by_owner
+                    .get(&o)
+                    .map(|ords| {
+                        ords.iter()
+                            .map(|&b| (keys[b as usize].1, at(&docs, b as usize), b))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let total: u64 = kept.iter().map(|k| k.1).sum();
+                kept.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+                kept.truncate(*shard_size);
+                let kept_docs: u64 = kept.iter().map(|k| k.1).sum();
+                kept.sort_unstable_by_key(|k| k.0);
+                let mut list = Vec::with_capacity(kept.len());
+                for (term, n, b) in kept {
+                    list.push((terms.term(g, field, term)?, n));
+                    child.push(b);
+                }
+                buckets.push((total - kept_docs, list));
+            }
+            let subs = finish_subs(subs, sub_states, &child, globals, terms)?;
+            Ok(AggResult::Terms { buckets, subs })
+        }
+        (
+            AggNode::Histogram { subs, .. },
+            State::Keyed {
+                keys,
+                docs,
+                subs: sub_states,
+                ..
+            },
+        ) => {
+            let by_owner = group(&keys);
+            let mut buckets = Vec::with_capacity(owners.len());
+            let mut child = Vec::new();
+            for &o in owners {
+                let mut list: Vec<(f64, u64, u32)> = by_owner
+                    .get(&o)
+                    .map(|ords| {
+                        ords.iter()
+                            .map(|&b| {
+                                let key = f64::from_bits(keys[b as usize].1 as u64);
+                                (key, at(&docs, b as usize), b)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                list.sort_by(|a, b| a.0.total_cmp(&b.0));
+                child.extend(list.iter().map(|k| k.2));
+                buckets.push(list.into_iter().map(|(k, n, _)| (k, n)).collect());
+            }
+            let subs = finish_subs(subs, sub_states, &child, globals, terms)?;
+            Ok(AggResult::Histogram { buckets, subs })
+        }
+        (
+            AggNode::DateHistogram { subs, .. },
+            State::Keyed {
+                keys,
+                docs,
+                subs: sub_states,
+                ..
+            },
+        ) => {
+            let by_owner = group(&keys);
+            let mut buckets = Vec::with_capacity(owners.len());
+            let mut child = Vec::new();
+            for &o in owners {
+                let mut list: Vec<(i64, u64, u32)> = by_owner
+                    .get(&o)
+                    .map(|ords| {
+                        ords.iter()
+                            .map(|&b| (keys[b as usize].1, at(&docs, b as usize), b))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                list.sort_by_key(|k| k.0);
+                child.extend(list.iter().map(|k| k.2));
+                buckets.push(list.into_iter().map(|(k, n, _)| (k, n)).collect());
+            }
+            let subs = finish_subs(subs, sub_states, &child, globals, terms)?;
+            Ok(AggResult::DateHistogram { buckets, subs })
+        }
+        (
+            AggNode::Range { subs, .. } | AggNode::Filters { subs, .. } | AggNode::Global { subs },
+            State::Fixed {
+                width,
+                docs,
+                subs: sub_states,
+            },
+        ) => {
+            let mut out = Vec::with_capacity(owners.len() * width);
+            let mut child = Vec::with_capacity(owners.len() * width);
+            for &o in owners {
+                for i in 0..width {
+                    let b = o as usize * width + i;
+                    out.push(at(&docs, b));
+                    child.push(b as u32);
+                }
+            }
+            let subs = finish_subs(subs, sub_states, &child, globals, terms)?;
+            Ok(AggResult::Fixed {
+                width,
+                docs: out,
+                subs,
+            })
+        }
+        _ => Err(crate::Error::TermsAggType(
+            "aggregation state does not match its node".to_string(),
+        )),
+    }
+}
+
+fn finish_subs(
+    nodes: &[AggNode],
+    states: Vec<State>,
+    owners: &[u32],
+    globals: &Globals<'_>,
+    terms: &mut TermLookup<'_>,
+) -> Result<Vec<AggResult>> {
+    nodes
+        .iter()
+        .zip(states)
+        .map(|(n, s)| finish(n, s, owners, globals, terms))
+        .collect()
+}
+
+/// A keyed aggregation's buckets by owning bucket, each in ordinal order.
+fn group(keys: &[(u32, i64)]) -> HashMap<u32, Vec<u32>> {
+    let mut out: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (b, &(o, _)) in keys.iter().enumerate() {
+        out.entry(o).or_default().push(b as u32);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::aggs::{MetricSpec, NEED_ALL};
+    use crate::directory_reader::DirectoryReader;
+    use crate::query::{Clause, MatchAllDocsQuery, PointsRangeQuery, TermQuery};
+    use lucene_store::FsDirectory;
+
+    const DAY: i64 = MILLIS_PER_DAY;
+
+    /// Days since 1970-01-01 of a proleptic Gregorian date (Hinnant's
+    /// `days_from_civil`): an oracle independent of the Joda-style port.
+    fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+        let y = if m <= 2 { y - 1 } else { y };
+        let era = y.div_euclid(400);
+        let yoe = y - era * 400;
+        let mp = (m + 9) % 12;
+        let doy = (153 * mp + 2) / 5 + d - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        era * 146_097 + doe - 719_468
+    }
+
+    /// `(year, month)` of a day count (`civil_from_days`).
+    fn civil_from_days(z: i64) -> (i64, i64) {
+        let z = z + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        (yoe + era * 400 + i64::from(m <= 2), m)
+    }
+
+    #[test]
+    fn calendar_units_round_as_opensearch_does() {
+        let t = 1_700_000_000_000; // 2023-11-14T22:13:20Z, a Tuesday
+        let r = |unit| DateRounding {
+            kind: RoundingKind::Unit(unit),
+            zone_ms: 0,
+            offset: 0,
+        };
+        assert_eq!(r(DateUnit::Second).round(t), t);
+        assert_eq!(r(DateUnit::Minute).round(t), 1_699_999_980_000);
+        assert_eq!(r(DateUnit::Hour).round(t), 1_699_999_200_000);
+        assert_eq!(r(DateUnit::Day).round(t), 1_699_920_000_000);
+        assert_eq!(r(DateUnit::Week).round(t), 1_699_833_600_000, "Monday 13th");
+        assert_eq!(r(DateUnit::Month).round(t), 1_698_796_800_000);
+        assert_eq!(r(DateUnit::Quarter).round(t), 1_696_118_400_000);
+        assert_eq!(r(DateUnit::Year).round(t), 1_672_531_200_000);
+        // Before the epoch, and across a leap day.
+        assert_eq!(r(DateUnit::Day).round(-1), -DAY);
+        assert_eq!(r(DateUnit::Second).round(-1), -1_000);
+        assert_eq!(r(DateUnit::Year).round(-1), -365 * DAY);
+        assert_eq!(r(DateUnit::Month).round(-1), -31 * DAY);
+        assert_eq!(
+            r(DateUnit::Week).round(0),
+            -3 * DAY,
+            "1970-01-01 was a Thursday"
+        );
+        let leap = days_from_civil(2024, 2, 29) * DAY + 43_200_000;
+        assert_eq!(
+            r(DateUnit::Month).round(leap),
+            days_from_civil(2024, 2, 1) * DAY
+        );
+        // Every unit against the oracle, over four centuries either side.
+        let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+        for _ in 0..20_000 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            let t = (x % (800 * 366 * DAY as u64)) as i64 - 400 * 366 * DAY;
+            let days = t.div_euclid(DAY);
+            let (y, m) = civil_from_days(days);
+            assert_eq!(r(DateUnit::Day).round(t), days * DAY, "{t}");
+            assert_eq!(
+                r(DateUnit::Month).round(t),
+                days_from_civil(y, m, 1) * DAY,
+                "{t}"
+            );
+            let q = (m - 1) / 3 * 3 + 1;
+            assert_eq!(
+                r(DateUnit::Quarter).round(t),
+                days_from_civil(y, q, 1) * DAY,
+                "{t}"
+            );
+            assert_eq!(
+                r(DateUnit::Year).round(t),
+                days_from_civil(y, 1, 1) * DAY,
+                "{t}"
+            );
+            // Monday on or before: 1970-01-05 was a Monday.
+            let monday = days - (days - 4).rem_euclid(7);
+            assert_eq!(r(DateUnit::Week).round(t), monday * DAY, "{t}");
+        }
+    }
+
+    #[test]
+    fn intervals_zones_and_offsets_round_as_opensearch_does() {
+        let t = 1_700_000_000_000;
+        // A fixed interval of 90 minutes, 17 minutes in.
+        let fixed = DateRounding {
+            kind: RoundingKind::Interval(90 * 60_000),
+            zone_ms: 0,
+            offset: 17 * 60_000,
+        };
+        let v = t - 17 * 60_000;
+        assert_eq!(fixed.round(t), v - v.rem_euclid(90 * 60_000) + 17 * 60_000);
+        assert_eq!(fixed.round(fixed.round(t)), fixed.round(t));
+        // Negative values round down, not toward zero.
+        let neg = DateRounding {
+            kind: RoundingKind::Interval(1_000),
+            zone_ms: 0,
+            offset: 0,
+        };
+        assert_eq!(neg.round(-1), -1_000);
+        assert_eq!(neg.round(-1_000), -1_000);
+        // A day in +05:30 starts at 18:30 UTC the day before.
+        let india = DateRounding {
+            kind: RoundingKind::Unit(DateUnit::Day),
+            zone_ms: 19_800_000,
+            offset: 0,
+        };
+        assert_eq!(india.round(t), 1_699_986_600_000);
+        let hour = DateRounding {
+            kind: RoundingKind::Unit(DateUnit::Hour),
+            zone_ms: 19_800_000,
+            offset: 0,
+        };
+        assert_eq!(hour.round(t), 1_699_999_200_000 - 1_800_000);
+    }
+
+    #[test]
+    fn matched_ranges_are_the_candidates_and_nothing_else() {
+        let ranges = [
+            (f64::NEG_INFINITY, 0.0),
+            (0.0, 100.0),
+            (50.0, 250.0),
+            (250.0, f64::INFINITY),
+        ];
+        let mt = max_to(&ranges);
+        assert_eq!(mt, vec![0.0, 100.0, 250.0, f64::INFINITY]);
+        let hits = |v: f64, low: usize| {
+            let (s, e) = matched_range(&ranges, low, v, &mt);
+            (s..e)
+                .filter(|&i| v >= ranges[i].0 && v < ranges[i].1)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(hits(-5.0, 0), vec![0]);
+        assert_eq!(hits(0.0, 0), vec![1]);
+        assert_eq!(hits(75.0, 0), vec![1, 2]);
+        assert_eq!(hits(75.0, 2), vec![2], "searching on from a previous value");
+        assert_eq!(hits(250.0, 0), vec![3]);
+        assert_eq!(hits(f64::NAN, 0), Vec::<usize>::new());
+        // Nothing can hold a value past every range.
+        let bounded = [(0.0, 1.0), (2.0, 3.0)];
+        let bt = max_to(&bounded);
+        assert_eq!(matched_range(&bounded, 0, 5.0, &bt), (2, 2));
+        assert_eq!(matched_range(&bounded, 0, -5.0, &bt), (0, 0));
+        assert_eq!(matched_range(&bounded, 0, 1.5, &bt), (1, 1));
+    }
+
+    /// A state's parts as bits (`NaN` equal to itself).
+    fn bits(s: &MetricState) -> [u64; 7] {
+        [
+            s.count,
+            s.sum.to_bits(),
+            s.delta.to_bits(),
+            s.min.to_bits(),
+            s.max.to_bits(),
+            s.min_of_mins.to_bits(),
+            s.max_of_maxes.to_bits(),
+        ]
+    }
+
+    fn fixture(name: &str) -> DirectoryReader {
+        let dir = format!("{}/../../fixtures/data/{name}", env!("CARGO_MANIFEST_DIR"));
+        DirectoryReader::open(&FsDirectory::open(dir)).expect("open fixture")
+    }
+
+    fn all() -> BooleanQuery {
+        BooleanQuery {
+            must: vec![Clause::MatchAllDocs(MatchAllDocsQuery::new(0))],
+            ..Default::default()
+        }
+    }
+
+    fn body(term: &str) -> BooleanQuery {
+        BooleanQuery {
+            must: vec![Clause::Term(TermQuery::new(
+                "body",
+                term.as_bytes().to_vec(),
+            ))],
+            ..Default::default()
+        }
+    }
+
+    fn metric(field: &str, kind: ValueKind) -> AggNode {
+        AggNode::Metric {
+            field: field.to_string(),
+            kind,
+            source: Source::DocValues,
+        }
+    }
+
+    /// Every live document matching `query` with its values of `field`,
+    /// segment by segment: the oracle the bucketed results are held to.
+    fn scan(
+        reader: &DirectoryReader,
+        query: &BooleanQuery,
+        field: &str,
+    ) -> Vec<(usize, i32, Vec<i64>)> {
+        let mut opened = reader.open_segments().unwrap();
+        opened.open_points().unwrap();
+        let segments = opened.as_open_segments();
+        let mut out = Vec::new();
+        let mut buf = Vec::new();
+        for (i, (seg, r)) in segments.iter().zip(reader.segment_readers()).enumerate() {
+            let clause = aggs::lone_clause(query);
+            let docs: Vec<i32> = match aggs::segment_matches(
+                &aggs::plain_context(seg),
+                query,
+                &clause,
+                seg.live_docs,
+                &mut buf,
+            )
+            .unwrap()
+            {
+                None => Vec::new(),
+                Some(Some(d)) => d.to_vec(),
+                Some(None) => (0..r.max_doc)
+                    .filter(|&d| seg.live_docs.is_none_or(|l| l.get_doc(d)))
+                    .collect(),
+            };
+            let mut values = aggs::open_values(r, field).unwrap();
+            for doc in docs {
+                let mut v = Vec::new();
+                match &mut values {
+                    Values::Absent => {}
+                    Values::Single(c) => v.extend(c.value(doc).unwrap()),
+                    Values::Multi(c) => c.values(doc, &mut v).unwrap(),
+                }
+                out.push((i, doc, v));
+            }
+        }
+        out
+    }
+
+    fn run(
+        reader: &DirectoryReader,
+        query: &BooleanQuery,
+        nodes: &[AggNode],
+        slices: &[Vec<usize>],
+    ) -> Result<Vec<Vec<AggResult>>> {
+        let mut opened = reader.open_segments().unwrap();
+        opened.open_points().unwrap();
+        let segments = opened.as_open_segments();
+        let mut fields = Vec::new();
+        for n in nodes {
+            n.keyword_fields(&mut fields);
+        }
+        let ords: HashMap<String, Arc<GlobalOrds>> = fields
+            .into_iter()
+            .map(|f| (f.to_string(), reader.global_ords(f).unwrap()))
+            .collect();
+        aggregate_tree(
+            &segments,
+            reader.segment_readers(),
+            query,
+            nodes,
+            &Globals { ords: &ords },
+            slices,
+            None,
+        )
+    }
+
+    fn whole(reader: &DirectoryReader) -> Vec<Vec<usize>> {
+        vec![(0..reader.segment_readers().len()).collect()]
+    }
+
+    #[test]
+    fn a_match_all_filter_and_global_see_what_the_metrics_see() {
+        let reader = fixture("metric_aggs_index");
+        let mut opened = reader.open_segments().unwrap();
+        opened.open_points().unwrap();
+        let segments = opened.as_open_segments();
+        for q in [all(), body("a"), body("b")] {
+            let specs: Vec<MetricSpec> = [
+                ("d", ValueKind::Double),
+                ("md", ValueKind::Double),
+                ("ml", ValueKind::Long),
+                ("f", ValueKind::Float),
+            ]
+            .iter()
+            .map(|&(f, kind)| MetricSpec {
+                field: f.to_string(),
+                kind,
+                source: Source::DocValues,
+                needs: NEED_ALL,
+            })
+            .collect();
+            let want = crate::aggs::metric_states(&segments, reader.segment_readers(), &q, &specs)
+                .unwrap();
+            let subs: Vec<AggNode> = specs.iter().map(|s| metric(&s.field, s.kind)).collect();
+            let nodes = vec![
+                AggNode::Filters {
+                    filters: vec![all()],
+                    other: true,
+                    subs: subs.clone(),
+                },
+                AggNode::Global { subs: subs.clone() },
+            ];
+            let got = run(&reader, &q, &nodes, &whole(&reader)).unwrap().remove(0);
+            let AggResult::Fixed {
+                width: 2,
+                docs,
+                subs: f,
+            } = &got[0]
+            else {
+                panic!("{got:?}")
+            };
+            let matched = scan(&reader, &q, "d").len() as u64;
+            assert_eq!(
+                docs,
+                &vec![matched, 0],
+                "every match in the filter, none in other"
+            );
+            for (i, s) in f.iter().enumerate() {
+                let AggResult::Metric(states) = s else {
+                    panic!()
+                };
+                assert_eq!(
+                    bits(&states[0]),
+                    bits(&want[i]),
+                    "{i}: bit for bit, the documents in the same order"
+                );
+                assert_eq!(states[1], MetricState::default(), "the empty other bucket");
+            }
+            let AggResult::Fixed {
+                width: 1,
+                docs,
+                subs: g,
+            } = &got[1]
+            else {
+                panic!()
+            };
+            assert_eq!(docs, &vec![matched]);
+            for (i, s) in g.iter().enumerate() {
+                let AggResult::Metric(g) = s else { panic!() };
+                assert_eq!(bits(&g[0]), bits(&want[i]));
+            }
+        }
+    }
+
+    #[test]
+    fn histograms_and_ranges_bucket_what_a_scan_buckets() {
+        let reader = fixture("metric_aggs_index");
+        for (q, field, kind) in [
+            (all(), "d", ValueKind::Double),
+            (body("a"), "md", ValueKind::Double),
+            (all(), "ml", ValueKind::Long),
+            (body("b"), "f", ValueKind::Float),
+            (all(), "i", ValueKind::Long),
+        ] {
+            let rows = scan(&reader, &q, field);
+            for (interval, offset, bounds) in [
+                (10.0, 0.0, (None, None)),
+                (3.5, 1.25, (Some(-20.0), Some(40.0))),
+                (1e9, 0.0, (None, None)),
+            ] {
+                let node = AggNode::Histogram {
+                    field: field.to_string(),
+                    kind,
+                    interval,
+                    offset,
+                    hard_bounds: bounds,
+                    subs: vec![
+                        metric("ml", ValueKind::Long),
+                        AggNode::Cardinality {
+                            field: field.to_string(),
+                            kind: CardinalityKind::Numeric(kind),
+                        },
+                    ],
+                };
+                // The oracle: each distinct key of a document's values once.
+                let mut want: std::collections::BTreeMap<i64, u64> =
+                    std::collections::BTreeMap::new();
+                let mut distinct: HashMap<i64, HashSet<i64>> = HashMap::new();
+                for (_, _, values) in &rows {
+                    // Java's loop: a key equal to the previous one -- which
+                    // starts at -Infinity, so a -Infinity value never counts,
+                    // and moves on past out-of-bounds keys too -- is skipped.
+                    let mut previous = f64::NEG_INFINITY;
+                    for &v in values {
+                        let k = ((aggs::to_double(kind, v) - offset) / interval).floor();
+                        if k == previous {
+                            continue;
+                        }
+                        previous = k;
+                        let b = k * interval;
+                        if bounds.0.is_some_and(|m| b < m) || bounds.1.is_some_and(|m| b > m) {
+                            continue;
+                        }
+                        *want.entry(java_double_bits(k)).or_default() += 1;
+                        let set = distinct.entry(java_double_bits(k)).or_default();
+                        // A whole number field's longs as they are, not widened.
+                        for &v in values {
+                            set.insert(match kind {
+                                ValueKind::Long => v,
+                                _ => java_double_bits(aggs::to_double(kind, v)),
+                            });
+                        }
+                    }
+                }
+                let got = run(&reader, &q, std::slice::from_ref(&node), &whole(&reader))
+                    .unwrap()
+                    .remove(0)
+                    .remove(0);
+                let AggResult::Histogram { buckets, subs } = got else {
+                    panic!()
+                };
+                let mut got_counts: Vec<(i64, u64)> = buckets[0]
+                    .iter()
+                    .map(|&(k, n)| (java_double_bits(k), n))
+                    .collect();
+                got_counts.sort_unstable();
+                let mut want_counts: Vec<(i64, u64)> = want.into_iter().collect();
+                want_counts.sort_unstable();
+                assert_eq!(got_counts, want_counts, "{field} / {interval}");
+                assert!(
+                    buckets[0]
+                        .windows(2)
+                        .all(|w| w[0].0.total_cmp(&w[1].0).is_lt()),
+                    "listed by key"
+                );
+                let AggResult::Cardinality(sets) = &subs[1] else {
+                    panic!()
+                };
+                for ((k, _), values) in buckets[0].iter().zip(sets) {
+                    assert_eq!(values.len(), distinct[&java_double_bits(*k)].len());
+                }
+            }
+            // Ranges: overlapping, open-ended, one past every value.
+            let ranges = vec![
+                (f64::NEG_INFINITY, 0.0),
+                (-5.0, 5.0),
+                (0.0, 1e9),
+                (1e9, f64::INFINITY),
+            ];
+            let node = AggNode::Range {
+                field: field.to_string(),
+                kind,
+                ranges: ranges.clone(),
+                subs: vec![],
+            };
+            let mut want = vec![0u64; ranges.len()];
+            for (_, _, values) in &rows {
+                for (i, &(from, to)) in ranges.iter().enumerate() {
+                    if values.iter().any(|&v| {
+                        let d = aggs::to_double(kind, v);
+                        d >= from && d < to
+                    }) {
+                        want[i] += 1;
+                    }
+                }
+            }
+            let got = run(&reader, &q, &[node], &whole(&reader))
+                .unwrap()
+                .remove(0)
+                .remove(0);
+            assert_eq!(
+                got,
+                AggResult::Fixed {
+                    width: 4,
+                    docs: want,
+                    subs: vec![]
+                },
+                "{field}"
+            );
+        }
+    }
+
+    #[test]
+    fn date_histograms_bucket_each_rounded_value_once() {
+        let reader = fixture("metric_aggs_index");
+        let rows = scan(&reader, &all(), "ml");
+        for kind in [
+            RoundingKind::Interval(7),
+            RoundingKind::Unit(DateUnit::Second),
+            RoundingKind::Interval(1),
+        ] {
+            let rounding = DateRounding {
+                kind,
+                zone_ms: 0,
+                offset: 3,
+            };
+            for bounds in [(None, None), (Some(0), Some(500))] {
+                let node = AggNode::DateHistogram {
+                    field: "ml".to_string(),
+                    rounding,
+                    hard_bounds: bounds,
+                    subs: vec![metric("d", ValueKind::Double)],
+                };
+                let mut want: std::collections::BTreeMap<i64, u64> =
+                    std::collections::BTreeMap::new();
+                for (_, _, values) in &rows {
+                    let mut keys: Vec<i64> = values.iter().map(|&v| rounding.round(v)).collect();
+                    keys.dedup();
+                    for k in keys {
+                        if bounds.0.is_some_and(|m| k < m) || bounds.1.is_some_and(|m| k >= m) {
+                            continue;
+                        }
+                        *want.entry(k).or_default() += 1;
+                    }
+                }
+                let got = run(&reader, &all(), &[node], &whole(&reader))
+                    .unwrap()
+                    .remove(0)
+                    .remove(0);
+                let AggResult::DateHistogram { buckets, subs } = got else {
+                    panic!()
+                };
+                assert_eq!(buckets[0], want.into_iter().collect::<Vec<_>>());
+                let AggResult::Metric(states) = &subs[0] else {
+                    panic!()
+                };
+                assert_eq!(states.len(), buckets[0].len());
+            }
+        }
+    }
+
+    #[test]
+    fn terms_under_a_bucket_are_the_top_level_terms_of_its_documents() {
+        let reader = fixture("terms_aggs_index");
+        let mut opened = reader.open_segments().unwrap();
+        opened.open_points().unwrap();
+        let segments = opened.as_open_segments();
+        let n = reader.segment_readers().len();
+        for q in [all(), body("a")] {
+            for (field, shard_size) in [("kw", 5), ("mkw", 3), ("bk", 1000), ("sk", 2)] {
+                let want = crate::terms_agg::terms(
+                    &segments,
+                    reader.segment_readers(),
+                    &q,
+                    field,
+                    shard_size,
+                )
+                .unwrap();
+                let terms = AggNode::Terms {
+                    field: field.to_string(),
+                    shard_size,
+                    subs: vec![AggNode::Cardinality {
+                        field: field.to_string(),
+                        kind: CardinalityKind::Keyword,
+                    }],
+                };
+                let nodes = vec![
+                    terms.clone(),
+                    AggNode::Filters {
+                        filters: vec![
+                            all(),
+                            BooleanQuery {
+                                must: vec![Clause::PointsRange(PointsRangeQuery::new("r", 0, 99))],
+                                ..Default::default()
+                            },
+                        ],
+                        other: false,
+                        subs: vec![terms],
+                    },
+                ];
+                let got = run(&reader, &q, &nodes, &whole(&reader)).unwrap().remove(0);
+                let AggResult::Terms { buckets, subs } = &got[0] else {
+                    panic!()
+                };
+                assert_eq!(buckets[0].0, want.other_doc_count, "{field}");
+                assert_eq!(buckets[0].1, want.buckets, "{field}");
+                // A bucket's cardinality of its own field is its one term.
+                let AggResult::Cardinality(sets) = &subs[0] else {
+                    panic!()
+                };
+                for ((term, _), set) in buckets[0].1.iter().zip(sets) {
+                    if field != "mkw" {
+                        assert_eq!(set, &vec![CardinalityValue::Term(term.clone())]);
+                    } else {
+                        assert!(set.contains(&CardinalityValue::Term(term.clone())));
+                    }
+                }
+                let AggResult::Fixed { subs, .. } = &got[1] else {
+                    panic!()
+                };
+                let AggResult::Terms { buckets: under, .. } = &subs[0] else {
+                    panic!()
+                };
+                assert_eq!(under[0].1, want.buckets, "under a match-all filter");
+                assert_eq!(under[0].0, want.other_doc_count);
+                assert_eq!(under.len(), 2, "one owning bucket per filter");
+            }
+            // Sliced: every slice from scratch; the counts add up.
+            let node = AggNode::Terms {
+                field: "kw".to_string(),
+                shard_size: 10_000,
+                subs: vec![],
+            };
+            let slices: Vec<Vec<usize>> = (0..n).rev().map(|i| vec![i]).collect();
+            let per = run(&reader, &q, std::slice::from_ref(&node), &slices).unwrap();
+            let total: u64 = per
+                .iter()
+                .map(|r| match &r[0] {
+                    AggResult::Terms { buckets, .. } => {
+                        buckets[0].1.iter().map(|b| b.1).sum::<u64>()
+                    }
+                    _ => 0,
+                })
+                .sum();
+            let one = run(&reader, &q, &[node], &whole(&reader))
+                .unwrap()
+                .remove(0)
+                .remove(0);
+            let AggResult::Terms { buckets, .. } = one else {
+                panic!()
+            };
+            assert_eq!(total, buckets[0].1.iter().map(|b| b.1).sum::<u64>());
+        }
+    }
+
+    #[test]
+    fn a_bad_tree_or_slice_is_an_error() {
+        let reader = fixture("terms_aggs_index");
+        let nodes = [AggNode::Terms {
+            field: "kw".to_string(),
+            shard_size: 1,
+            subs: vec![],
+        }];
+        assert!(
+            run(&reader, &all(), &nodes, &[vec![99]]).is_err(),
+            "no such segment"
+        );
+        let mut opened = reader.open_segments().unwrap();
+        opened.open_points().unwrap();
+        let segments = opened.as_open_segments();
+        let empty = HashMap::new();
+        let missing = aggregate_tree(
+            &segments,
+            reader.segment_readers(),
+            &all(),
+            &nodes,
+            &Globals { ords: &empty },
+            &whole(&reader),
+            None,
+        );
+        assert!(missing.is_err(), "no global ordinals for the field");
+        // A numeric field under terms is a mapping error.
+        let numeric = [AggNode::Terms {
+            field: "r".to_string(),
+            shard_size: 1,
+            subs: vec![],
+        }];
+        let _ = run(&reader, &all(), &numeric, &whole(&reader));
+        assert!(AggNode::Metric {
+            field: "x".into(),
+            kind: ValueKind::Long,
+            source: Source::PointsMin
+        }
+        .reads_points());
+        let mut qs = Vec::new();
+        let g = AggNode::Global {
+            subs: vec![AggNode::Filters {
+                filters: vec![all()],
+                other: false,
+                subs: vec![],
+            }],
+        };
+        g.filter_queries(&mut qs);
+        assert_eq!(qs.len(), 1);
+    }
+}

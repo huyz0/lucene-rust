@@ -11,7 +11,7 @@ mixed booleans) 4–8× *slower*, because the port had fast paths for three
 shapes and a materializing path for everything else. M5 moved indexing. This
 milestone finishes the read side.
 
-**Status.** In progress. R1 and R2 delivered; R3 mostly, R4 (numeric, score, `_doc` and keyword keys) and R5 (the metrics and keyword `terms`) partly delivered (below). R6 and R7 open.
+**Status.** In progress. R1, R2 and R5 delivered; R3 mostly, R4 (numeric, score, `_doc` and keyword keys, the sort modes, index-sorted shards) and R7 partly delivered (below). R6 open.
 
 ## Tasks
 
@@ -19,9 +19,9 @@ milestone finishes the read side.
 |---|---|---|
 | R1 | Query execution engine: Lucene's scorer tree and bulk scorers, every boolean shape at least as fast as Lucene | ✅ delivered |
 | R2 | General query wire format and Java encoder for every Lucene query OpenSearch builds | ✅ delivered for the shapes R1 runs (term, boolean, constant score, boost, dismax, match-all, match-none); leaf queries arrive with R3 |
-| R3 | Leaf queries as streaming scorers: phrase, the multi-term family, points and doc-values ranges, exists, terms-in-set, dismax, synonym | mostly delivered: phrase, prefix/wildcard/terms, points ranges, dismax, and a native query cache (R3b); open: `exists` (with R4's doc-values wiring), `regexp` over the wire, fuzzy speed (q25) |
-| R4 | Sort and `search_after` natively (`TopFieldCollector`) | numeric, score, `_doc` and keyword keys and `track_scores` delivered (below); open: `avg`/`sum`/`median` modes, nested sorts, index-sorted shards |
-| R5 | Aggregations natively: terms, histogram, date_histogram, range, the metrics, cardinality, filter/filters | metrics (`min`, `max`, `sum`, `avg`, `value_count`, `stats`) and keyword `terms` delivered (below); open: the bucket aggregations, `cardinality`, sub-aggregations |
+| R3 | Leaf queries as streaming scorers: phrase, the multi-term family, points and doc-values ranges, exists, terms-in-set, dismax, synonym | mostly delivered: phrase, prefix/wildcard/regexp/terms, fuzzy, points ranges, `exists`, dismax, a term's own `docFreq` (`cross_fields`), and a native query cache (R3b); open: fuzzy speed (q25) |
+| R4 | Sort and `search_after` natively (`TopFieldCollector`) | numeric, score, `_doc` and keyword keys, `track_scores`, the `avg`/`median` modes and index-sorted shards delivered (below); open: nested sorts, the `sum` mode |
+| R5 | Aggregations natively: terms, histogram, date_histogram, range, the metrics, cardinality, filter/filters | ✅ delivered: the metrics (`min`, `max`, `sum`, `avg`, `value_count`, `stats`), keyword `terms`, `histogram`, `date_histogram`, `range`/`date_range`, `filter`, `filters`, `global`, `cardinality`, and any nesting of them (below); outside: scripts, `missing`, non-default `terms` orders, zones with daylight saving, other aggregation types |
 | R6 | Fetch (`_source`, stored fields, `docvalue_fields`) and get natively | open |
 | R7 | scroll, `post_filter`, `min_score`, `terminate_after`, timeouts; the full read benchmark (in process and REST) with every native shape at least 1.0× Lucene | `post_filter`, `timeout`, scroll, `terminate_after` and `min_score` (by score and behind a sort) delivered; the query-phase REST benchmark at median 1.58×, worst 0.89× (below); open: the last shapes under 1.0× |
 
@@ -341,7 +341,7 @@ Falls back, deliberately for now:
   prefix of the search sort (`canEarlyTerminate`), which changes the totals;
   not ported yet.
 
-## R5 — aggregations (metrics and keyword `terms` delivered)
+## R5 — aggregations (delivered)
 
 `min`, `max`, `sum`, `avg`, `value_count` and `stats` at the top level of a
 request run natively when every aggregation of the request is one of them, on a
@@ -434,6 +434,76 @@ shard sizes, whole shard and slices: 504 results), seen to fail with the
 tie-break reversed, deletions ignored, `otherDocCount` dropped, the buckets
 unsorted, segment ordinals used as global ones and the postings count off by
 one; the self test compares 18,018 results through JNI.
+
+### Bucket aggregations and sub-aggregations
+
+Everything else runs as a tree (ABI 24, `ffi_jvm_reader_aggregate_tree`,
+`lucene-search/src/bucket_aggs.rs`): `histogram`, `date_histogram`, `range`
+and `date_range`, `filter`, `filters`, `global`, keyword `terms` and
+`cardinality`, with the metrics above, nested in any combination. The flat
+path above stays for the requests it takes (its column streaming and
+points shortcuts are faster there).
+
+The shape is OpenSearch's `BucketsAggregator` tree, collected document by
+document: each aggregator gets `collect(doc, owningBucketOrd)`, a keyed one
+(the histograms, `terms`) assigns a bucket ordinal when a bucket's first
+document arrives, as `LongKeyedBucketOrds.add` does, a fixed one (`range`,
+`filters`) uses `owning * width + index`, and each hands the document on to
+its sub-aggregations under the bucket's ordinal. The documents come segment
+by segment in document order, so every bucket's metric sums are added in
+Java's order, and the slices of a concurrent search keep states of their own,
+reduced by the plugin with OpenSearch's `InternalAggregations.reduce`. Ported
+per aggregator:
+
+* `histogram` (`NumericHistogramAggregator`): each distinct
+  `Math.floor((v - offset) / interval)` of a document's values, the previous
+  key starting at `-Infinity` -- so a `-Infinity` value is never bucketed, as
+  in Java -- keyed by `Double.doubleToLongBits`, in the hard bounds
+  (`key * interval`, both ends inclusive);
+* `date_histogram` (`DateHistogramAggregator`): `Rounding.Prepared.round`
+  for the calendar units and fixed intervals in a fixed-offset zone, with an
+  offset (`DateUtils.roundFloor`, `roundWeekOfWeekYear`, and the month,
+  quarter and year floors of `DateUtilsRounding`, checked against a
+  proleptic-Gregorian oracle over eight centuries), a multi-valued document's
+  equal rounded values once, hard bounds `[min, max)`;
+* `range` (`RangeAggregator`): the aggregator's own sorted ranges and
+  `maxTo`, each value binary-searched from where the previous one's search
+  ended (`MatchedRange`);
+* `filter`/`filters` (`FilterAggregator`/`FiltersAggregator`): each filter's
+  matches in a segment, deletions ignored as the weight ignores them, a
+  bucket per matching filter and the `other` bucket for a document matching
+  none;
+* `global`: the global query (`buildFilteredQuery(match_all)`) over every
+  segment, with the main search's slices -- `ConcurrentAggregationProcessor`
+  runs it with them and adds it to whatever is already there, so the plugin
+  removes its collector manager once the native pass has answered it;
+* `terms` under a bucket (`RemapGlobalOrds`): per owning bucket the top
+  `shard_size` by count then term, the rest into `otherDocCount`;
+* `cardinality`: the distinct values per bucket -- the terms of a keyword,
+  the longs of a whole-number field, the `double` bits of a floating-point
+  one -- which the plugin hashes as `MurmurHash3Values` does into
+  `HyperLogLogPlusPlus` (a set of hashes: order does not matter);
+* a top-level `min`/`max` keeps its points shortcut.
+
+The plugin reads every parameter off the aggregators OpenSearch built for the
+request (the sorted ranges, the rounding, the bounds, the effective
+`shard_size`, the precision; a deferred sub-aggregation behind its
+`WrappedAggregator`), and builds the results through their own empty results
+and factories where OpenSearch exposes them (`InternalHistogram.create`,
+`InternalRange.Factory`), by reflection where it does not (`InternalFilter`,
+`InternalGlobal`, `InternalCardinality`, and `InternalDateHistogram`, whose
+empty-bucket rounding drops the offset only in `buildAggregations`).
+
+Verified: `bucket_aggs.rs`'s tests (the calendar rounding against the oracle;
+a match-all `filters` and `global` bit for bit against the flat metrics pass;
+histograms, ranges and date histograms against a scan of the columns, with
+the cardinality of each bucket; `terms` under a filter against the flat
+`terms`), and the REST matrix against a stock node: 28 rows of bucket trees
+(every aggregation above, nested three deep, keyed, with hard and extended
+bounds, offsets, `min_doc_count: 0`, a `+05:30` zone, multi-valued and float
+fields, beside hits and a sort, behind `min_score`) on every index of the
+matrix, and the shapes that stay on OpenSearch (a zone with daylight saving,
+`terms` ordered by a sub-aggregation).
 
 ### Speed
 

@@ -273,8 +273,8 @@ def matrix():
     add("sort mode median", {"query": {"match": {"body": "gamma"}}, "sort": [{"m": {"order": "asc", "mode": "median", "missing": "_first"}}]}, "native")
     add("sort mode avg double", {"query": {"match": {"body": "alpha"}}, "sort": [{"md": {"order": "desc", "mode": "avg"}}, "_doc"]}, "native")
     add("sort mode median double", {"query": {"match_all": {}}, "sort": [{"md": {"order": "asc", "mode": "median"}}, {"n": "asc"}]}, "native")
-    add("sort mode avg int", {"query": {"match": {"body": "gamma"}}, "sort": [{"mi": {"order": "desc", "mode": "avg", "missing": 0}}, "_doc"]}, "native")
-    add("sort mode median int", {"query": {"match": {"body": "gamma"}}, "sort": [{"mi": {"order": "desc", "mode": "median"}}, "_doc"]}, "native")
+    add("sort mode avg int", {"query": {"match": {"body": "sigma omega"}}, "sort": [{"mi": {"order": "desc", "mode": "avg", "missing": 0}}, "_doc"]}, "native")
+    add("sort mode median int", {"query": {"match": {"body": "tau omega"}}, "sort": [{"mi": {"order": "desc", "mode": "median"}}, "_doc"]}, "native")
     add("sort mode median int missing first", {"size": 25, "query": {"match_all": {}}, "sort": [{"mi": {"order": "asc", "mode": "median", "missing": "_first"}}]}, "native")
     add("sort track_scores", {"query": {"match": {"body": "alpha"}}, "sort": [{"n": "desc"}], "track_scores": True}, "native")
     add("sort keyword track_scores", {"query": {"match": {"body": "beta gamma"}}, "sort": [{"tag": "asc"}, "_doc"], "track_scores": True}, "native")
@@ -292,7 +292,34 @@ def matrix():
     add("agg float sum with sort", {"query": {"match": {"body": "gamma"}}, "sort": [{"n": "desc"}], "aggs": {"r": {"sum": {"field": "ratio"}}}}, "native")
     add("agg with meta", {"size": 0, "query": {"match": {"body": "delta"}}, "aggs": {"lo": {"min": {"field": "qty"}, "meta": {"k": "v"}}}}, "native")
     add("agg missing value", {"size": 0, "query": {"match": {"body": "alpha"}}, "aggs": {"s": {"sum": {"field": "sp", "missing": 1}}}}, "aggregations")
-    add("agg sub-aggregation", {"size": 0, "query": {"match": {"body": "alpha"}}, "aggs": {"g": {"global": {}, "aggs": {"lo": {"min": {"field": "n"}}}}}}, "aggregations")
+    add("agg global sub-aggregation", {"size": 0, "query": {"match": {"body": "epsilon"}}, "aggs": {"g": {"global": {}, "aggs": {"lo": {"min": {"field": "n"}}}}}}, "native")
+    # Bucket aggregations and sub-aggregations (R5): the native tree.
+    add("agg histogram", {"size": 0, "query": {"match": {"body": "zeta"}}, "aggs": {"h": {"histogram": {"field": "price", "interval": 50}}}}, "native")
+    add("agg histogram offset + min_doc_count 0", {"size": 0, "query": {"match": {"body": "eta"}}, "aggs": {"h": {"histogram": {"field": "qty", "interval": 7, "offset": 3, "min_doc_count": 0, "extended_bounds": {"min": -10, "max": 60}}}}}, "native")
+    add("agg histogram multi-valued + stats", {"size": 0, "aggs": {"h": {"histogram": {"field": "md", "interval": 10}, "aggs": {"s": {"stats": {"field": "md"}}, "a": {"avg": {"field": "price"}}}}}}, "native")
+    add("agg histogram hard_bounds keyed", {"size": 0, "query": {"match": {"body": "theta"}}, "aggs": {"h": {"histogram": {"field": "mi", "interval": 25, "hard_bounds": {"min": -50, "max": 50}, "keyed": True}}}}, "native")
+    add("agg histogram float", {"size": 0, "aggs": {"h": {"histogram": {"field": "ratio", "interval": 0.1}, "aggs": {"m": {"max": {"field": "n"}}}}}}, "native")
+    add("agg date_histogram calendar day", {"size": 0, "query": {"match": {"body": "iota"}}, "aggs": {"d": {"date_histogram": {"field": "ts", "calendar_interval": "day"}}}}, "native")
+    add("agg date_histogram month + sum", {"size": 0, "aggs": {"d": {"date_histogram": {"field": "ts", "calendar_interval": "month"}, "aggs": {"s": {"sum": {"field": "price"}}}}}}, "native")
+    add("agg date_histogram week, year, quarter", {"size": 0, "aggs": {"w": {"date_histogram": {"field": "ts", "calendar_interval": "week"}}, "y": {"date_histogram": {"field": "ts", "calendar_interval": "year"}}, "q": {"date_histogram": {"field": "ts", "calendar_interval": "quarter"}}}}, "native")
+    add("agg date_histogram fixed + offset", {"size": 0, "query": {"match": {"body": "kappa"}}, "aggs": {"d": {"date_histogram": {"field": "ts", "fixed_interval": "90m", "offset": "+17m", "min_doc_count": 0}}}}, "native")
+    add("agg date_histogram hour in +05:30", {"size": 0, "aggs": {"d": {"date_histogram": {"field": "@timestamp", "calendar_interval": "hour", "time_zone": "+05:30", "min_doc_count": 1}}}}, "native")
+    add("agg date_histogram in a DST zone", {"size": 0, "aggs": {"d": {"date_histogram": {"field": "ts", "calendar_interval": "day", "time_zone": "Europe/Paris"}}}}, "aggregations")
+    add("agg range", {"size": 0, "query": {"match": {"body": "lambda"}}, "aggs": {"r": {"range": {"field": "price", "ranges": [{"to": 0}, {"from": 0, "to": 100}, {"from": 50, "to": 250}, {"from": 250}]}}}}, "native")
+    add("agg range multi-valued keyed + avg", {"size": 0, "aggs": {"r": {"range": {"field": "mi", "keyed": True, "ranges": [{"key": "neg", "to": 0}, {"from": -20, "to": 20}, {"from": 0}]}, "aggs": {"a": {"avg": {"field": "mi"}}}}}}, "native")
+    add("agg date_range", {"size": 0, "aggs": {"r": {"date_range": {"field": "ts", "ranges": [{"to": 1_700_100_000_000}, {"from": 1_700_100_000_000, "to": 1_700_300_000_000}, {"from": 1_700_300_000_000}]}}}}, "native")
+    add("agg filter + sub", {"size": 0, "query": {"match": {"body": "mu"}}, "aggs": {"f": {"filter": {"term": {"tag": "beta"}}, "aggs": {"m": {"min": {"field": "price"}}}}}}, "native")
+    add("agg filters + other", {"size": 0, "aggs": {"f": {"filters": {"other_bucket_key": "rest", "filters": {"a": {"match": {"body": "nu"}}, "b": {"range": {"n": {"gte": 1000, "lt": 9000}}}}}, "aggs": {"s": {"sum": {"field": "qty"}}}}}}, "native")
+    add("agg filters anonymous", {"size": 0, "query": {"match": {"body": "xi"}}, "aggs": {"f": {"filters": {"filters": [{"term": {"tag": "alpha"}}, {"term": {"tag": "gamma"}}]}}}}, "native")
+    add("agg terms + sub metrics", {"size": 0, "query": {"match": {"body": "omicron"}}, "aggs": {"t": {"terms": {"field": "tag", "size": 5}, "aggs": {"a": {"avg": {"field": "price"}}, "c": {"value_count": {"field": "m"}}}}}}, "native")
+    add("agg histogram > terms", {"size": 0, "aggs": {"h": {"histogram": {"field": "qty", "interval": 10}, "aggs": {"t": {"terms": {"field": "mtag", "size": 3}}}}}}, "native")
+    add("agg terms > date_histogram > max", {"size": 0, "query": {"match": {"body": "pi"}}, "aggs": {"t": {"terms": {"field": "tag", "size": 4}, "aggs": {"d": {"date_histogram": {"field": "ts", "calendar_interval": "week"}, "aggs": {"m": {"max": {"field": "price"}}}}}}}}, "native")
+    add("agg cardinality", {"size": 0, "query": {"match": {"body": "rho"}}, "aggs": {"k": {"cardinality": {"field": "tag"}}, "km": {"cardinality": {"field": "mtag"}}, "kn": {"cardinality": {"field": "qty"}}, "kd": {"cardinality": {"field": "md"}}, "kf": {"cardinality": {"field": "ratio"}}}}, "native")
+    add("agg cardinality under terms, low precision", {"size": 0, "aggs": {"t": {"terms": {"field": "tag", "size": 3}, "aggs": {"k": {"cardinality": {"field": "n", "precision_threshold": 10}}}}}}, "native")
+    add("agg global + main", {"size": 3, "query": {"match": {"body": "sigma"}}, "aggs": {"all": {"global": {}, "aggs": {"t": {"terms": {"field": "tag", "size": 2}}}}, "s": {"sum": {"field": "qty"}}}}, "native")
+    add("agg bucket tree with hits and a sort", {"query": {"match": {"body": "tau"}}, "sort": [{"n": "desc"}], "aggs": {"h": {"histogram": {"field": "qty", "interval": 5}, "aggs": {"s": {"sum": {"field": "ratio"}}}}}}, "native")
+    add("agg bucket tree behind min_score", {"size": 0, "query": {"match": {"body": "upsilon"}}, "min_score": 0.8, "aggs": {"r": {"range": {"field": "qty", "ranges": [{"to": 10}, {"from": 10}]}, "aggs": {"k": {"cardinality": {"field": "tag"}}}}}}, "native")
+    add("agg terms ordered by sub", {"size": 0, "aggs": {"t": {"terms": {"field": "tag", "order": {"a": "desc"}}, "aggs": {"a": {"avg": {"field": "price"}}}}}}, "aggregations")
     # terms on keyword fields: the default order, min_doc_count >= 1.
     add("aggregation", {"query": {"match": {"body": "alpha"}}, "aggs": {"tags": {"terms": {"field": "tag"}}}}, "native")
     add("agg terms size 0 match_all", {"size": 0, "aggs": {"tags": {"terms": {"field": "tag", "size": 5}}}}, "native")
@@ -392,7 +419,7 @@ def same(a, b):
         return f"total {a['total']} vs {b['total']}"
     for k in ("aggs", "highlight", "terminated_early", "timed_out"):
         if a.get(k) != b.get(k):
-            return f"{k} differ"
+            return f"{k} differ: {json.dumps(a.get(k), sort_keys=True)[:1500]} vs {json.dumps(b.get(k), sort_keys=True)[:1500]}"
     ma, mb = a["max_score"], b["max_score"]
     if (ma is None) != (mb is None) or (ma is not None and abs(ma - mb) > 1e-5 * max(1, abs(mb))):
         return f"max_score {ma} vs {mb}"
@@ -426,10 +453,16 @@ def run_matrix(index, shards, label, shapes="fast", index_sorted=False):
     reference = {}
     for name, body, _ in queries:
         url, b = search_url(index, body)
-        reference[name] = shape(req("POST", url, b), b)
+        try:
+            reference[name] = shape(req("POST", url, b), b)
+        except RuntimeError as e:
+            # A row the stock engine itself cannot answer is no reference.
+            check(False, f"{label} {index} [{name}]: Lucene reference failed: {str(e)[:300]}")
     set_native(index, True)
     native_total = 0
     for name, body, expect in queries:
+        if name not in reference:
+            continue
         if expect == "slow":
             expect = "native" if shapes == "all" else "slower_shape"
         if expect == "dfs_multi":
