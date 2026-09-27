@@ -27,9 +27,21 @@ public final class SearchStats {
         nativeErrors.increment();
     }
 
-    /** A document whose stored fields the native reader served (read path R6). */
-    public void nativeFetch() {
+    private final LongAdder nativeSequentialFetches = new LongAdder();
+
+    /**
+     * A document whose stored fields the native reader served (read path R6); {@code sequential}
+     * when through the fetch phase's sequential reader (a run of adjacent hits).
+     */
+    public void nativeFetch(boolean sequential) {
         nativeFetches.increment();
+        if (sequential) {
+            nativeSequentialFetches.increment();
+        }
+    }
+
+    public long sequentialFetchCount() {
+        return nativeSequentialFetches.sum();
     }
 
     public long fetchCount() {

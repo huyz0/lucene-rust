@@ -51,6 +51,7 @@ public final class RestStatsAction extends BaseRestHandler {
             b.field("native_queries", stats.nativeCount());
             b.field("native_errors", stats.errorCount());
             b.field("native_fetches", stats.fetchCount());
+            b.field("native_sequential_fetches", stats.sequentialFetchCount());
             b.startObject("fallbacks");
             for (Map.Entry<String, Long> e : stats.fallbackCounts().entrySet()) {
                 b.field(e.getKey(), e.getValue());

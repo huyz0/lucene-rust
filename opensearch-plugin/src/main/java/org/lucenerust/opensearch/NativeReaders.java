@@ -74,6 +74,18 @@ public final class NativeReaders {
         return byReader.size();
     }
 
+    /**
+     * The native handle {@link #acquire} already opened for {@code reader}, or 0: never opens one.
+     * The fetch phase reads through the query phase's handle; a reader no search has opened -- the
+     * realtime get's internal reader, say -- stays on Lucene rather than paying a native open for a
+     * handful of documents.
+     */
+    public long peek(IndexReader reader) {
+        IndexReader.CacheHelper helper = reader.getReaderCacheHelper();
+        Acquired cached = helper == null ? null : byReader.get(helper.getKey());
+        return cached == null ? 0 : cached.handle();
+    }
+
     public Acquired acquire(IndexReader reader) {
         IndexReader.CacheHelper helper = reader.getReaderCacheHelper();
         if (helper == null) {
