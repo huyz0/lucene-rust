@@ -254,14 +254,18 @@ def matrix():
     add("sort keyword missing first max", {"query": {"match": {"body": "beta"}}, "sort": [{"tag": {"order": "asc", "missing": "_first", "mode": "max"}}, "_score"]}, "native")
     add("sort keyword search_after", {"query": {"match_all": {}}, "sort": [{"tag": "asc"}, {"n": "asc"}], "search_after": ["gamma", 100]}, "native")
     add("sort mode avg", {"query": {"match": {"body": "alpha"}}, "sort": [{"m": {"order": "asc", "mode": "avg"}}]}, "native")
-    add("sort mode sum", {"query": {"match": {"body": "beta"}}, "sort": [{"m": {"order": "desc", "mode": "sum"}}, "_doc"]}, "native")
+    # sum: OpenSearch's comparator skips with the points of the single values,
+    # which a sum can pass -- its answer depends on where skipping starts, so it
+    # stays Lucene's (and a mode whose points path is not selective iterates a
+    # doc-values wrapper that cannot iterate: a stock node answers some of these
+    # shapes with a 500, which are left out here).
+    add("sort mode sum", {"query": {"match": {"body": "beta"}}, "sort": [{"m": {"order": "desc", "mode": "sum"}}, "_doc"]}, "sort_*")
     add("sort mode median", {"query": {"match": {"body": "gamma"}}, "sort": [{"m": {"order": "asc", "mode": "median", "missing": "_first"}}]}, "native")
     add("sort mode avg double", {"query": {"match": {"body": "alpha"}}, "sort": [{"md": {"order": "desc", "mode": "avg"}}, "_doc"]}, "native")
-    add("sort mode sum double", {"query": {"match": {"body": "delta"}}, "sort": [{"md": {"order": "asc", "mode": "sum", "missing": "_last"}}]}, "native")
     add("sort mode median double", {"query": {"match_all": {}}, "sort": [{"md": {"order": "asc", "mode": "median"}}, {"n": "asc"}]}, "native")
-    add("sort mode sum int", {"query": {"match": {"body": "beta"}}, "sort": [{"mi": {"order": "asc", "mode": "sum"}}, "_doc"]}, "native")
     add("sort mode avg int", {"query": {"match": {"body": "gamma"}}, "sort": [{"mi": {"order": "desc", "mode": "avg", "missing": 0}}, "_doc"]}, "native")
-    add("sort mode median int", {"size": 25, "query": {"match": {"body": "alpha"}}, "sort": [{"mi": {"order": "asc", "mode": "median"}}, "_score"]}, "native")
+    add("sort mode median int", {"query": {"match": {"body": "gamma"}}, "sort": [{"mi": {"order": "desc", "mode": "median"}}, "_doc"]}, "native")
+    add("sort mode median int missing first", {"size": 25, "query": {"match_all": {}}, "sort": [{"mi": {"order": "asc", "mode": "median", "missing": "_first"}}]}, "native")
     add("sort track_scores", {"query": {"match": {"body": "alpha"}}, "sort": [{"n": "desc"}], "track_scores": True}, "native")
     add("sort keyword track_scores", {"query": {"match": {"body": "beta gamma"}}, "sort": [{"tag": "asc"}, "_doc"], "track_scores": True}, "native")
     # Metric aggregations (read path R5): top level, numeric or date fields, no missing/script.

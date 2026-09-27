@@ -293,7 +293,10 @@ public final class SortEncoder {
             byte flags = switch (((Enum<?>) SORT_MODE.get(src)).name()) {
                 case "MIN" -> 0;
                 case "MAX" -> MAX;
-                case "SUM" -> MODE_SUM;
+                // SUM stays Lucene's: its comparator skips with the points of the single values,
+                // which a sum can pass, so which documents it keeps depends on where skipping
+                // starts. An average or median lies between a document's least and greatest value,
+                // so the same skipping is exact for them, and the native answer is Lucene's.
                 case "AVG" -> MODE_AVG;
                 case "MEDIAN" -> MODE_MEDIAN;
                 default -> -1;
