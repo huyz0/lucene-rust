@@ -71,6 +71,7 @@ public final class NativeSelfTest {
     private static int scored;
     private static int sortedChecks;
     private static int trackedPages;
+    private static int sortedMinScoreChecks;
     private static int terminateChecks;
     private static int minScoreChecks;
     private static int aggChecks;
@@ -91,18 +92,20 @@ public final class NativeSelfTest {
         // A regression that stopped fixtures opening natively would otherwise pass silently.
         check(compared >= 20, "fixtures compared natively: " + compared);
         check(trackedPages >= 20, "sorted pages tracking the max score: " + trackedPages);
+        check(sortedMinScoreChecks >= 20, "sorted pages behind min_score: " + sortedMinScoreChecks);
         check(aggChecks >= 100, "queries aggregated natively: " + aggChecks);
         check(termsChecks >= 300, "terms aggregations compared: " + termsChecks);
         check(terminateChecks >= 100, "terminate_after searches compared: " + terminateChecks);
         check(minScoreChecks >= 100, "min_score searches compared: " + minScoreChecks);
         System.out.printf(
-            "NativeSelfTest: %d checks, %d failures; %d of %d compared scores bit-exact; %d sorted pages compared (%d tracking the max score); %d aggregations, %d terms; %d terminate_after; %d min_score%n",
+            "NativeSelfTest: %d checks, %d failures; %d of %d compared scores bit-exact; %d sorted pages compared (%d tracking the max score, %d behind min_score); %d aggregations, %d terms; %d terminate_after; %d min_score%n",
             checks,
             failures,
             bitExact,
             scored,
             sortedChecks,
             trackedPages,
+            sortedMinScoreChecks,
             aggChecks,
             termsChecks,
             terminateChecks,
@@ -619,14 +622,18 @@ public final class NativeSelfTest {
             FieldDoc after = null;
             // track_scores behind another key: Lucene's collector beside a max-score collector.
             boolean track = sort.getSort()[0].getType() != SortField.Type.SCORE && r.nextInt(3) == 0;
+            // min_score behind the sort: OpenSearch's MinimumScoreCollector around the collectors.
+            TopDocs best = r.nextInt(3) == 0 ? searcher.search(query, 1) : null;
+            Float min = best != null && best.scoreDocs.length > 0 ? best.scoreDocs[0].score * (r.nextBoolean() ? 0.5f : 1f) : null;
+            byte[] queryBlob = min == null ? blob : QueryEncoder.withMinScore(blob, min);
             for (int page = 0; page < 2; page++) {
                 float[] wantMax = {Float.NEGATIVE_INFINITY};
-                TopFieldDocs want = track
-                    ? searchTracked(searcher, query, sort, topN, after, threshold, wantMax)
+                TopFieldDocs want = min != null ? searchMinScore(searcher, query, sort, topN, after, threshold, track, wantMax, min)
+                    : track ? searchTracked(searcher, query, sort, topN, after, threshold, wantMax)
                     : searcher.search(query, new TopFieldCollectorManager(sort, topN, after, threshold));
                 SortEncoder.Encoded enc = SortEncoder.encode(sort, after, track);
                 String what = where + ": " + query + " sorted " + sort + " top" + topN + " threshold " + threshold + " page " + page
-                    + (track ? " tracking the max score" : "");
+                    + (track ? " tracking the max score" : "") + (min != null ? " min_score " + min : "");
                 check(enc.blob() != null, what + ": sort encodes (" + enc.fallbackReason() + ")");
                 if (enc.blob() == null) {
                     return;
@@ -637,10 +644,13 @@ public final class NativeSelfTest {
                 long[] counts = new long[5];
                 byte[][] terms = new byte[1][];
                 long limit = threshold == Integer.MAX_VALUE ? Long.MAX_VALUE : threshold;
-                int rc = NativeBridge.searchSorted(handle, blob, enc.blob(), topN, limit, docs, values, counts, terms);
+                int rc = NativeBridge.searchSorted(handle, queryBlob, enc.blob(), topN, limit, docs, values, counts, terms);
                 check(rc == NativeBridge.OK, what + ": status " + rc + " " + NativeBridge.lastError());
                 if (rc != NativeBridge.OK) {
                     return;
+                }
+                if (min != null) {
+                    sortedMinScoreChecks++;
                 }
                 boolean same = counts[0] == want.scoreDocs.length;
                 FieldDoc[] got = SortEncoder.hits(keys, (int) counts[0], docs, values, terms[0]);
@@ -916,6 +926,29 @@ public final class NativeSelfTest {
                 return tfcm.reduce(tops);
             }
         });
+    }
+
+    /**
+     * A sorted search behind OpenSearch's MinimumScoreCollector, one collector over the whole
+     * reader as the native search's one slice: the TopFieldCollector (beside a MaxScoreCollector
+     * when tracking) sees only the matches scoring at least {@code min}.
+     */
+    @SuppressWarnings("deprecation")
+    private static TopFieldDocs searchMinScore(
+        IndexSearcher searcher,
+        Query query,
+        Sort sort,
+        int topN,
+        FieldDoc after,
+        int threshold,
+        boolean track,
+        float[] max,
+        float min
+    ) throws Exception {
+        org.apache.lucene.search.TopFieldCollector top = new TopFieldCollectorManager(sort, topN, after, threshold).newCollector();
+        org.apache.lucene.search.Collector inner = track ? org.apache.lucene.search.MultiCollector.wrap(top, new MaxScore(max)) : top;
+        new IndexSearcher(searcher.getIndexReader()).search(query, new MinScore(inner, min));
+        return top.topDocs();
     }
 
     /** True when {@code doc} is one of the Lucene hits whose score ties hit {@code i}'s. */

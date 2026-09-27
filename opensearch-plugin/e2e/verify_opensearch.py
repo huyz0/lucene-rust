@@ -325,7 +325,13 @@ def matrix():
     add("min_score nothing passes", {"query": {"match": {"body": "alpha"}}, "min_score": 1000}, "native")
     add("min_score everything passes", {"query": {"match_all": {}}, "min_score": 0}, "native")
     add("min_score no total", {"track_total_hits": False, "query": {"match": {"body": "delta"}}, "min_score": 0.4}, "native")
-    add("min_score sort", {"query": {"match": {"body": "alpha"}}, "min_score": 0.3, "sort": [{"n": "desc"}]}, "min_score")
+    add("min_score sort", {"query": {"match": {"body": "alpha"}}, "min_score": 0.3, "sort": [{"n": "desc"}]}, "native")
+    add("min_score sort keyword + track_scores", {"query": {"match": {"body": "beta gamma"}}, "min_score": 0.9, "sort": [{"tag": "asc"}, {"n": "desc"}], "track_scores": True}, "native")
+    add("min_score sort by score then n", {"query": {"match": {"body": "alpha delta"}}, "min_score": 0.7, "sort": ["_score", {"n": "asc"}], "size": 5}, "native")
+    add("min_score sort _doc", {"query": {"match": {"body": "omega"}}, "min_score": 0.5, "sort": ["_doc"], "size": 7}, "native")
+    add("min_score sort search_after", {"query": {"match": {"body": "alpha"}}, "min_score": 0.3, "sort": [{"n": "desc"}, {"qty": "asc"}], "search_after": [50, 3], "size": 6}, "native")
+    add("min_score sort nothing passes", {"query": {"match": {"body": "alpha"}}, "min_score": 1000, "sort": [{"n": "desc"}], "track_scores": True}, "native")
+    add("min_score sort + aggs", {"query": {"match": {"body": "gamma"}}, "min_score": 0.6, "sort": [{"price": "asc"}], "aggs": {"s": {"stats": {"field": "qty"}}}}, "native")
     # terminate_after (R7): native where Lucene collects document by document (a scored search
     # over a query whose bulk scorer hands out no ranges, anything under a post_filter) and for
     # a size-0 count over a term or match-all; Lucene's otherwise.
