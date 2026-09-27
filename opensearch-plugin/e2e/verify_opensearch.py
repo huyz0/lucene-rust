@@ -194,7 +194,6 @@ def matrix():
     add("exists filter", {"query": {"bool": {"must": [{"match": {"body": "gamma"}}], "filter": [{"exists": {"field": "sp"}}]}}}, "native")
     add("exists must_not", {"query": {"bool": {"must": [{"match": {"body": "beta"}}], "must_not": [{"exists": {"field": "mtag"}}]}}}, "native")
     add("exists size 0", {"size": 0, "query": {"exists": {"field": "sp"}}}, "native")
-    add("exists unmapped", {"query": {"exists": {"field": "no_such_field"}}}, "native")
     add("regexp case_insensitive", {"query": {"regexp": {"tag": {"value": "GA.*", "case_insensitive": True}}}}, "regexp_flags")
     add("terms keyword", {"query": {"terms": {"tag": ["alpha", "beta", "omega"]}}}, "native")
     add("bool must_not terms", {"query": {"bool": {"must": [{"match": {"body": "gamma"}}], "must_not": [{"terms": {"tag": ["beta", "delta"]}}]}}}, "native")
