@@ -12,7 +12,7 @@
 //! blob     := nodes global slices
 //! nodes    := count:u8 node*                  (at most MAX_NODES in all)
 //! global   := 0 | 1 query:bytes nodes         (the global pass: its query and nodes)
-//! node     := METRIC value_kind:u8 source:u8 field
+//! node     := METRIC value_kind:u8 source:u8 needs:u8 field
 //!           | CARDINALITY card_kind:u8 field
 //!           | TERMS field shard_size:i32 nodes
 //!           | HISTOGRAM field value_kind:u8 interval:f64 offset:f64 bounds_f64 nodes
@@ -166,10 +166,15 @@ fn node(c: &mut Cursor<'_>, depth: usize, count: &mut usize) -> Result<AggNode, 
                     )))
                 }
             };
+            let needs = c.u8()?;
+            if needs == 0 || needs & !lucene_search::aggs::NEED_ALL != 0 {
+                return Err(bad(format!("aggregation tree: metric needs {needs:#x}")));
+            }
             AggNode::Metric {
                 field: field(c)?,
                 kind,
                 source,
+                needs,
             }
         }
         AGG_CARDINALITY => {
@@ -466,7 +471,12 @@ pub(crate) fn aggregate_tree_blobs(
             .copied()
             .chain(global_query)
             .any(jvm_reader::boolean_uses_points)
-        || tree.nodes.iter().any(AggNode::reads_points);
+        || tree.nodes.iter().any(AggNode::reads_points)
+        // A top-level histogram or range may be counted from the points.
+        || tree
+            .nodes
+            .iter()
+            .any(|n| matches!(n, AggNode::DateHistogram { .. } | AggNode::Range { .. }));
     if points {
         opened.open_points().map_err(|e| {
             set_last_error(format!("opening segment points: {e}"));
@@ -614,7 +624,7 @@ mod tests {
     }
 
     fn metric(b: &mut Vec<u8>, kind: u8, source: u8, field: &str) {
-        b.extend_from_slice(&[AGG_METRIC, kind, source]);
+        b.extend_from_slice(&[AGG_METRIC, kind, source, lucene_search::aggs::NEED_ALL]);
         string(b, field);
     }
 
@@ -764,8 +774,18 @@ mod tests {
             b
         };
         assert_eq!(bad(&with(&[99])), invalid);
-        assert_eq!(bad(&with(&[AGG_METRIC, 9, 0, 0, 0, 0, 0])), invalid);
-        assert_eq!(bad(&with(&[AGG_METRIC, 0, 7, 0, 0, 0, 0])), invalid);
+        assert_eq!(bad(&with(&[AGG_METRIC, 9, 0, 1, 0, 0, 0, 0])), invalid);
+        assert_eq!(bad(&with(&[AGG_METRIC, 0, 7, 1, 0, 0, 0, 0])), invalid);
+        assert_eq!(
+            bad(&with(&[AGG_METRIC, 0, 0, 0, 0, 0, 0, 0])),
+            invalid,
+            "no needs"
+        );
+        assert_eq!(
+            bad(&with(&[AGG_METRIC, 0, 0, 0x80, 0, 0, 0, 0])),
+            invalid,
+            "unknown needs"
+        );
         assert_eq!(bad(&with(&[AGG_CARDINALITY, 9, 0, 0, 0, 0])), invalid);
         // A points source below the top, a zero interval, zero ranges.
         let mut deep = vec![AGG_GLOBAL, 1];

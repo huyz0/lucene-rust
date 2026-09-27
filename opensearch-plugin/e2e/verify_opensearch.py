@@ -444,11 +444,11 @@ def search_url(index, body):
     return f"/{index}/_search?request_cache=false{params}", {k: v for k, v in body.items() if k != "_params"}
 
 
-def run_matrix(index, shards, label, shapes="fast", index_sorted=False):
-    """The whole matrix against the Lucene reference, under one routing mode."""
+def run_matrix(index, shards, label, shapes="fast", index_sorted=False, rows=None):
+    """The whole matrix (or `rows`) against the Lucene reference, under one routing mode."""
     label = f"{label}/{shapes}"
     set_shapes(index, shapes)
-    queries = matrix()
+    queries = rows if rows is not None else matrix()
     set_native(index, False)
     reference = {}
     for name, body, _ in queries:
@@ -707,6 +707,95 @@ def bench(index, out, rounds):
     print(f"bench: wrote {out}")
 
 
+def create_nested(index, shards):
+    req("PUT", f"/{index}", {
+        "settings": {"number_of_shards": shards, "number_of_replicas": 0, "refresh_interval": -1},
+        "mappings": {"properties": {
+            "body": {"type": "text"},
+            "tag": {"type": "keyword"},
+            "n": {"type": "long"},
+            "props": {"type": "nested", "properties": {
+                "v": {"type": "long"},
+                "w": {"type": "double"},
+                "i": {"type": "integer"},
+                "f": {"type": "float"},
+                "k": {"type": "keyword"},
+            }},
+        }},
+    })
+
+
+def load_nested(index, docs, seed):
+    """Root documents with zero to four nested `props` each (some with no
+    value for a field), in batches with a refresh after each, then deletes
+    and updates. Few enough documents, children included, that a default
+    track_total_hits never lets Lucene's comparators skip."""
+    r = random.Random(seed)
+    batch = max(1, docs // 5)
+    for start in range(0, docs, batch):
+        lines = []
+        for i in range(start, min(docs, start + batch)):
+            props = []
+            for _ in range(r.randint(0, 4)):
+                p = {"k": word(r)}
+                if r.random() < 0.85:
+                    p["v"] = [r.randint(-60, 60) for _ in range(r.randint(1, 2))]
+                if r.random() < 0.8:
+                    p["w"] = round(r.uniform(-9, 9), 3)
+                if r.random() < 0.8:
+                    p["i"] = r.randint(-9, 9)
+                if r.random() < 0.8:
+                    p["f"] = round(r.uniform(-3, 3), 2)
+                props.append(p)
+            lines.append(json.dumps({"index": {"_index": index, "_id": str(i)}}))
+            lines.append(json.dumps({"body": " ".join(word(r) for _ in range(r.randint(1, 12))), "tag": word(r), "n": i, "props": props}))
+        res = req("POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
+        check(not res["errors"], f"{index}: nested bulk batch at {start} has no errors")
+        req("POST", f"/{index}/_refresh")
+    lines = []
+    for i in r.sample(range(docs), docs // 30):
+        lines.append(json.dumps({"delete": {"_index": index, "_id": str(i)}}))
+    for i in r.sample(range(docs), docs // 50):
+        lines.append(json.dumps({"index": {"_index": index, "_id": str(i)}}))
+        lines.append(json.dumps({"body": "updated " + word(r), "tag": "updated", "n": i, "props": [{"v": [7], "w": 0.5}]}))
+    req("POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
+    req("POST", f"/{index}/_refresh")
+
+
+def nested_rows():
+    """Sorts on nested fields (read path R4): OpenSearch's XFieldComparatorSource.Nested."""
+    rows = []
+
+    def add(name, body, expect):
+        rows.append((name, body, expect))
+
+    def ns(field, order, mode, **extra):
+        spec = {"order": order, "mode": mode, "nested": {"path": "props", **extra.pop("nested", {})}}
+        spec.update(extra)
+        return [{field: spec}, "_doc"]
+
+    add("nested min asc", {"query": {"match": {"body": "alpha"}}, "sort": ns("props.v", "asc", "min")}, "native")
+    add("nested max desc", {"query": {"match": {"body": "beta"}}, "sort": ns("props.v", "desc", "max")}, "native")
+    add("nested sum missing first", {"query": {"match": {"body": "gamma"}}, "sort": ns("props.v", "asc", "sum", missing="_first")}, "native")
+    add("nested avg desc", {"query": {"match": {"body": "delta"}}, "sort": ns("props.v", "desc", "avg")}, "native")
+    add("nested double", {"query": {"match": {"body": "alpha beta"}}, "sort": ns("props.w", "asc", "min")}, "native")
+    add("nested double sum", {"query": {"match": {"body": "epsilon"}}, "sort": ns("props.w", "desc", "sum")}, "native")
+    add("nested double avg missing", {"query": {"match": {"body": "zeta"}}, "sort": ns("props.w", "asc", "avg", missing=100)}, "native")
+    add("nested integer", {"query": {"match": {"body": "eta"}}, "sort": ns("props.i", "desc", "max")}, "native")
+    add("nested integer avg", {"query": {"match": {"body": "theta"}}, "sort": ns("props.i", "asc", "avg")}, "native")
+    add("nested float", {"query": {"match": {"body": "iota"}}, "sort": ns("props.f", "asc", "min")}, "native")
+    add("nested float sum", {"query": {"match": {"body": "kappa"}}, "sort": ns("props.f", "desc", "sum")}, "native")
+    add("nested filter", {"query": {"match": {"body": "lambda"}}, "sort": ns("props.v", "asc", "min", nested={"filter": {"range": {"props.v": {"gte": 0}}}})}, "native")
+    add("nested keyword filter", {"query": {"match": {"body": "mu"}}, "sort": ns("props.w", "desc", "max", nested={"filter": {"term": {"props.k": "alpha"}}})}, "native")
+    add("nested max_children", {"query": {"match": {"body": "nu"}}, "sort": ns("props.v", "asc", "min", nested={"max_children": 1})}, "native")
+    add("nested match_all", {"sort": ns("props.v", "desc", "min")}, "native")
+    add("nested then n", {"query": {"match": {"body": "xi"}}, "sort": [{"props.w": {"order": "asc", "nested": {"path": "props"}}}, {"n": "desc"}]}, "native")
+    add("nested search_after", {"query": {"match": {"body": "alpha"}}, "sort": [{"props.v": {"order": "asc", "mode": "min", "nested": {"path": "props"}}}, {"n": "asc"}], "search_after": [0, 500]}, "native")
+    add("nested with aggs", {"query": {"match": {"body": "omicron"}}, "sort": ns("props.v", "asc", "max"), "aggs": {"t": {"terms": {"field": "tag"}}}}, "native")
+    add("nested no total", {"query": {"match": {"body": "rho"}}, "track_total_hits": False, "sort": ns("props.v", "asc", "min")}, "sort_nested")
+    return rows
+
+
 def main():
     global BASE
     ap = argparse.ArgumentParser()
@@ -747,6 +836,15 @@ def main():
     create("isorted", 1, index_sort=[("qty", "asc"), ("n", "desc")])
     load("isorted", a.docs, 4)
     native += run_matrix("isorted", 1, "index sorted", index_sorted=True)
+    # Nested documents: sorts on nested fields.
+    for index, shards in (("nest", 1), ("nestm", 2)):
+        try:
+            req("DELETE", f"/{index}")
+        except RuntimeError:
+            pass
+        create_nested(index, shards)
+        load_nested(index, 1500, 5 + shards)
+        native += run_matrix(index, shards, "nested", rows=nested_rows())
     print(f"matrix: {len(matrix())} request shapes x 4 indices; {native} shard queries ran native")
     run_scroll("single", 1, "scroll")
     run_scroll("multi", 3, "scroll")
