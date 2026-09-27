@@ -13,7 +13,7 @@ package org.lucenerust.opensearch;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 23;
+    public static final int EXPECTED_ABI_VERSION = 24;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -129,6 +129,13 @@ public final class NativeBridge {
         long countLimit,
         long[] outTotal
     );
+
+    /**
+     * Runs a query blob's matches through an aggregation tree blob ({@link
+     * NativeAggregationTree.Tree#blob}): the encoded shard results in {@code out[0]} (the layout
+     * {@code jvm_aggs.rs} documents), which {@link NativeAggregationTree.Tree#build} reads.
+     */
+    public static native int aggregateTree(long handle, byte[] query, byte[] tree, byte[][] out);
 
     public static native int closeReader(long handle);
 

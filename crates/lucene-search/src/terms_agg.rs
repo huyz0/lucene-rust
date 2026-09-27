@@ -44,7 +44,7 @@ pub struct TermsResult {
 }
 
 /// A segment's ordinal column for the field.
-enum Ords<'a> {
+pub(crate) enum Ords<'a> {
     Absent,
     Single(Box<NumericReader<'a>>),
     Multi(Box<SortedNumericReader<'a>>),
@@ -103,7 +103,7 @@ fn terms_entry<'a>(
 }
 
 /// [`keyword_column`] with its dictionary opened.
-fn open_ords<'a>(
+pub(crate) fn open_ords<'a>(
     reader: &'a SegmentReader,
     field: &str,
 ) -> Result<(Ords<'a>, Option<TermsDict<'a>>)> {
@@ -156,6 +156,21 @@ impl GlobalOrds {
         Ok(GlobalOrds {
             map: OrdinalMap::build_streaming(&mut refs).map_err(store_err)?,
         })
+    }
+
+    /// Segment `seg`'s ordinals to global ones.
+    pub(crate) fn segment_map(&self, seg: usize) -> Option<&[i64]> {
+        self.map.segment_ords(seg)
+    }
+
+    /// The first segment holding global ordinal `g`.
+    pub(crate) fn first_segment(&self, g: i64) -> Option<usize> {
+        self.map.first_segment(g)
+    }
+
+    /// Global ordinal `g`'s ordinal in [`Self::first_segment`].
+    pub(crate) fn first_segment_ord(&self, g: i64) -> Option<i64> {
+        self.map.first_segment_ord(g)
     }
 
     /// The number of distinct terms (`OrdinalMap.getValueCount`).
