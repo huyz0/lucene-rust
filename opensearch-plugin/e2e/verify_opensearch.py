@@ -75,15 +75,19 @@ def word(r):
     return WORDS[min(len(WORDS) - 1, int((r.random() ** 2.2) * len(WORDS)))]
 
 
-def create(index, shards):
+def create(index, shards, index_sort=None):
+    settings = {
+        "number_of_shards": shards,
+        "number_of_replicas": 0,
+        "refresh_interval": -1,
+        # A field with non-default BM25 parameters: must fall back.
+        "similarity": {"tuned": {"type": "BM25", "k1": 2.0, "b": 0.5}},
+    }
+    if index_sort:
+        settings["sort.field"] = [f for f, _ in index_sort]
+        settings["sort.order"] = [o for _, o in index_sort]
     req("PUT", f"/{index}", {
-        "settings": {
-            "number_of_shards": shards,
-            "number_of_replicas": 0,
-            "refresh_interval": -1,
-            # A field with non-default BM25 parameters: must fall back.
-            "similarity": {"tuned": {"type": "BM25", "k1": 2.0, "b": 0.5}},
-        },
+        "settings": settings,
         "mappings": {"properties": {
             "body": {"type": "text"},
             "title": {"type": "text"},
@@ -240,6 +244,12 @@ def matrix():
     add("sort sparse missing value", {"query": {"match_all": {}}, "sort": [{"sp": {"order": "asc", "missing": 7}}, {"n": "desc"}]}, "native")
     add("sort score then field", {"query": {"match": {"body": "alpha beta"}}, "sort": ["_score", {"qty": "asc"}]}, "native")
     add("sort field then score", {"query": {"match": {"body": "alpha beta"}}, "sort": [{"qty": "asc"}, "_score"]}, "native")
+    # Prefixes of the isorted index's sort (qty asc, n desc): there, early termination.
+    add("sort index prefix", {"query": {"match": {"body": "gamma"}}, "sort": [{"qty": "asc"}]}, "native")
+    add("sort index whole", {"query": {"match": {"body": "alpha"}}, "sort": [{"qty": "asc"}, {"n": "desc"}]}, "native")
+    add("sort index prefix no total", {"track_total_hits": False, "query": {"match_all": {}}, "sort": [{"qty": "asc"}, {"n": "desc"}]}, "native")
+    add("sort index prefix small total", {"track_total_hits": 50, "query": {"match": {"body": "beta"}}, "sort": [{"qty": "asc"}]}, "native")
+    add("sort index prefix after", {"query": {"match": {"body": "delta"}}, "sort": [{"qty": "asc"}, {"n": "desc"}], "search_after": [3, 500]}, "native")
     add("sort _doc", {"query": {"match": {"body": "alpha"}}, "sort": ["_doc"]}, "native")
     add("sort from 20 size 15", {"from": 20, "size": 15, "query": {"match": {"body": "beta"}}, "sort": [{"qty": "asc"}, {"n": "desc"}]}, "native")
     add("sort track_total_hits true", {"track_total_hits": True, "query": {"match_all": {}}, "sort": [{"price": "desc"}]}, "native")
@@ -685,7 +695,16 @@ def main():
     for shapes in ("fast", "all"):
         native += run_matrix("single", 1, "initial", shapes) + run_matrix("multi", 3, "initial", shapes)
     native += run_matrix("clean", 1, "no deletions")
-    print(f"matrix: {len(matrix())} request shapes x 3 indices; {native} shard queries ran native")
+    # An index sorted by qty then n: a search whose sort begins it ends each
+    # segment at its first non-competitive document (TopFieldCollector).
+    try:
+        req("DELETE", "/isorted")
+    except RuntimeError:
+        pass
+    create("isorted", 1, index_sort=[("qty", "asc"), ("n", "desc")])
+    load("isorted", a.docs, 4)
+    native += run_matrix("isorted", 1, "index sorted")
+    print(f"matrix: {len(matrix())} request shapes x 4 indices; {native} shard queries ran native")
     run_scroll("single", 1, "scroll")
     run_scroll("multi", 3, "scroll")
     unsupported_format()

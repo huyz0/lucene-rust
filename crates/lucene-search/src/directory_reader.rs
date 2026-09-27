@@ -1507,6 +1507,7 @@ impl<'a> OpenedSegments<'a> {
                 cache: Some(&r.query_cache),
                 points: self.points_ins.get(i).and_then(Option::as_ref),
                 reader: Some(r),
+                index_sort_prefix: false,
             })
             .collect()
     }

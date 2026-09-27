@@ -1982,6 +1982,11 @@ struct Leaf<'a> {
     after_doc: i32,
     /// `CollectionTerminatedException`.
     terminated: bool,
+    /// `TopFieldLeafCollector.searchSortPartOfIndexSort`
+    /// (`TopFieldCollector.canEarlyTerminate`): the documents come in the
+    /// sort's order, `_doc` leading or the segment's index sort beginning with
+    /// the search's, so the first non-competitive one ends the segment.
+    early: bool,
     /// The current document's score, when the sort reads it, and the
     /// document it belongs to.
     score: f32,
@@ -2269,6 +2274,7 @@ fn open_leaf<'a>(
         collected_all_competitive: false,
         after_doc,
         terminated: false,
+        early: tf.doc_first || seg.index_sort_prefix,
         score: 0.0,
         score_doc: -1,
     })
@@ -2413,7 +2419,7 @@ impl<'a> Leaf<'a> {
     fn quick_reject(&mut self, tf: &mut TopField, doc: i32, scorer: &mut Sc<'_>) -> bool {
         if !tf.queue_full
             || tf.can_set_min_score
-            || tf.doc_first
+            || self.early
             || !(tf.exhaustive
                 || tf.relation == TotalHitsRelation::GreaterThanOrEqualTo
                 || tf.total_hits < tf.threshold)
@@ -2473,7 +2479,7 @@ impl<'a> Leaf<'a> {
         to: i32,
         live_docs: Option<&FixedBitSet>,
     ) -> i32 {
-        if !tf.queue_full || tf.can_set_min_score || tf.doc_first {
+        if !tf.queue_full || tf.can_set_min_score || self.early {
             return from;
         }
         // Counting may go on while it changes no state (see `quick_reject`).
@@ -2544,7 +2550,7 @@ impl<'a> Leaf<'a> {
         scorer: &mut Sc<'_>,
     ) -> Result<bool> {
         if self.collected_all_competitive || self.compare_bottom(tf, doc, scorer)? <= 0 {
-            if tf.doc_first {
+            if self.early {
                 if tf.total_hits > tf.threshold {
                     tf.relation = TotalHitsRelation::GreaterThanOrEqualTo;
                     self.terminated = true;
@@ -4168,6 +4174,7 @@ mod tests {
             collected_all_competitive: true,
             after_doc: 0,
             terminated: false,
+            early: false,
             score: 0.0,
             score_doc: -1,
         };
@@ -4206,6 +4213,7 @@ mod tests {
             collected_all_competitive: false,
             after_doc: 0,
             terminated: false,
+            early: false,
             score: 0.0,
             score_doc: -1,
         };
@@ -4225,6 +4233,7 @@ mod tests {
             collected_all_competitive: false,
             after_doc: 0,
             terminated: false,
+            early: false,
             score: 0.0,
             score_doc: -1,
         };

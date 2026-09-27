@@ -203,23 +203,17 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             scoreDocs = true;
         }
         if (reason == null && sort != null && (ctx.size() > 0 || terminateAfter > 0)) {
-            // The request's own sort only: one put in here (the score, _doc) stands for a
-            // collector with no index-sort early exit (QueryPhase.canEarlyTerminate).
-            boolean ownSort = ctx.sort() != null && sort == ctx.sort().sort;
-            if (ownSort && indexSorted(searcher.getIndexReader())) {
-                // TopFieldCollector stops early on an index sorted by the search's sort; the
-                // native collector has no such path.
-                reason = "index_sort";
-            } else {
-                // track_scores behind another key: OpenSearch's MaxScoreCollector over every match.
-                boolean trackMaxScore = ctx.trackScores() && ctx.size() > 0 && sortByScore(sort) == false;
-                // A concurrent search collects each slice separately, as Lucene does.
-                int[][] slices = NativeAggregations.slices(ctx);
-                SortEncoder.Encoded sorted = slices == null ? new SortEncoder.Encoded(null, "intra_segment")
-                    : SortEncoder.encode(sort, after, trackMaxScore, slices, terminateAfter, countSegments(ctx, terminateAfter));
-                reason = sorted.fallbackReason();
-                sortBlob = sorted.blob();
-            }
+            // track_scores behind another key: OpenSearch's MaxScoreCollector over every match.
+            boolean trackMaxScore = ctx.trackScores() && ctx.size() > 0 && sortByScore(sort) == false;
+            // A concurrent search collects each slice separately, as Lucene does.
+            int[][] slices = NativeAggregations.slices(ctx);
+            // TopFieldCollector ends a segment whose index sort begins with the search's sort at its
+            // first non-competitive document; the native collector does too, told which segments.
+            boolean[] indexSorted = SortEncoder.indexSorted(searcher.getIndexReader(), sort);
+            SortEncoder.Encoded sorted = slices == null ? new SortEncoder.Encoded(null, "intra_segment")
+                : SortEncoder.encode(sort, after, trackMaxScore, slices, terminateAfter, countSegments(ctx, terminateAfter), indexSorted);
+            reason = sorted.fallbackReason();
+            sortBlob = sorted.blob();
         }
         NativeReaders.Acquired acquired = null;
         if (reason == null) {
@@ -850,16 +844,6 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
     /** {@code SortField.FIELD_SCORE.equals(sort.getSort()[0])}: the score, descending, leads. */
     static boolean sortByScore(Sort sort) {
         return SortField.FIELD_SCORE.equals(sort.getSort()[0]);
-    }
-
-    /** Whether any segment carries an index sort ({@code index.sort.*}). */
-    static boolean indexSorted(IndexReader reader) {
-        for (LeafReaderContext leaf : reader.leaves()) {
-            if (leaf.reader().getMetaData().sort() != null) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /**

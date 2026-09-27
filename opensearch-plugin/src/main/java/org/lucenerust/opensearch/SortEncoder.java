@@ -3,6 +3,8 @@
  */
 package org.lucenerust.opensearch;
 
+import org.apache.lucene.index.IndexReader;
+import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.search.FieldDoc;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.search.SortField;
@@ -17,6 +19,8 @@ import org.opensearch.index.fielddata.IndexNumericFieldData;
 
 import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Field;
+import java.util.Arrays;
+import java.util.List;
 import java.nio.charset.StandardCharsets;
 
 /**
@@ -64,6 +68,8 @@ public final class SortEncoder {
     static final byte TRACK_MAX_SCORE = 1;
     static final byte TERMINATE_AFTER = 2;
     static final byte COUNT_SEGMENTS = 4;
+    /** Blob options: per-segment index-sort prefix flags follow the slices. */
+    static final byte INDEX_SORTED = 8;
     /** {@code MAX_SORT_KEYS} in {@code jvm_reader.rs}. */
     static final int MAX_KEYS = 16;
 
@@ -114,6 +120,25 @@ public final class SortEncoder {
         int[][] slices,
         int terminateAfter,
         boolean countSegments
+    ) {
+        return encode(sort, after, trackMaxScore, slices, terminateAfter, countSegments, null);
+    }
+
+    /**
+     * {@link #encode(Sort, FieldDoc, boolean, int[][], int, boolean)} with, per segment, whether
+     * the sort is a prefix of its index sort ({@link #indexSorted}; null for none): such a
+     * segment's documents come in the sort's order, and the collector ends it at the first one that
+     * does not compete, as {@code TopFieldCollector} does.
+     */
+    @SuppressWarnings("deprecation")
+    public static Encoded encode(
+        Sort sort,
+        FieldDoc after,
+        boolean trackMaxScore,
+        int[][] slices,
+        int terminateAfter,
+        boolean countSegments,
+        boolean[] indexSorted
     ) {
         SortField[] fields = sort.getSort();
         if (fields.length == 0 || fields.length > MAX_KEYS) {
@@ -188,11 +213,20 @@ public final class SortEncoder {
                 writeLong(out, comparable(type(fields[i]), after.fields[i]));
             }
         }
-        out.write((trackMaxScore ? TRACK_MAX_SCORE : 0) | (terminateAfter > 0 ? TERMINATE_AFTER : 0) | (countSegments ? COUNT_SEGMENTS : 0));
+        out.write(
+            (trackMaxScore ? TRACK_MAX_SCORE : 0) | (terminateAfter > 0 ? TERMINATE_AFTER : 0) | (countSegments ? COUNT_SEGMENTS : 0)
+                | (indexSorted != null ? INDEX_SORTED : 0)
+        );
         if (terminateAfter > 0) {
             writeInt(out, terminateAfter);
         }
         NativeAggregations.writeSlices(out, slices);
+        if (indexSorted != null) {
+            writeInt(out, indexSorted.length);
+            for (boolean b : indexSorted) {
+                out.write(b ? 1 : 0);
+            }
+        }
         return new Encoded(out.toByteArray(), null);
     }
 
@@ -318,6 +352,27 @@ public final class SortEncoder {
         } catch (ReflectiveOperationException | RuntimeException e) {
             return null;
         }
+    }
+
+    /**
+     * Per leaf of {@code reader}, whether {@code sort} is a prefix of the leaf's index sort --
+     * {@code TopFieldCollector.canEarlyTerminateOnPrefix}, field by field with {@link
+     * SortField#equals} -- or null when no leaf's is.
+     */
+    static boolean[] indexSorted(IndexReader reader, Sort sort) {
+        List<LeafReaderContext> leaves = reader.leaves();
+        boolean[] out = new boolean[leaves.size()];
+        boolean any = false;
+        SortField[] search = sort.getSort();
+        for (int i = 0; i < out.length; i++) {
+            Sort index = leaves.get(i).reader().getMetaData().sort();
+            if (index == null || search.length > index.getSort().length) {
+                continue;
+            }
+            out[i] = Arrays.asList(search).equals(Arrays.asList(index.getSort()).subList(0, search.length));
+            any |= out[i];
+        }
+        return any ? out : null;
     }
 
     /** Whether any key of {@code fields} is a keyword key, whose terms come back as bytes. */
