@@ -74,7 +74,14 @@ pub(crate) fn multi_term<'a>(
             let inner = match cache.scorer(&rewritten, max_doc, || {
                 Ok(Some(term_union(field_terms, doc_in, &terms)?))
             })? {
-                Some(CacheResult::Hit(s)) => s,
+                // The cached iterator scores the constant itself.
+                Some(CacheResult::Hit(set)) => {
+                    return Ok(Some(Some(Box::new(CachedScorer::constant(
+                        set,
+                        boost,
+                        mode == Mode::TopScores,
+                    )))))
+                }
                 Some(CacheResult::Empty) => return Ok(Some(None)),
                 None => term_union(field_terms, doc_in, &terms)?,
             };

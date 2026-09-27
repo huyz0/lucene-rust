@@ -471,7 +471,11 @@ pub(crate) fn child<'a>(
             match cache.scorer(clause, max_doc, || {
                 build(&core, clause, boost, mode, top_level)
             })? {
-                Some(super::cache::CacheResult::Hit(s)) => return Ok(Some(Child::Scorer(s))),
+                Some(super::cache::CacheResult::Hit(set)) => {
+                    return Ok(Some(Child::Scorer(Box::new(
+                        super::cache::CachedScorer::new(set),
+                    ))))
+                }
                 Some(super::cache::CacheResult::Empty) => return Ok(None),
                 None => {}
             }
