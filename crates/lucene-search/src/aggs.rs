@@ -676,6 +676,7 @@ fn slice_states(
             global: None,
             max_doc: seg.max_doc,
             cache: seg.cache,
+            reader: seg.reader,
         };
         // The points shortcut first (AggregatorBase.getLeafCollector asks
         // tryPrecomputeAggregationForLeaf before collecting): a field it

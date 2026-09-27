@@ -565,6 +565,7 @@ fn multi_term_edges_and_the_term_union() {
         global: None,
         max_doc: seg.max_doc,
         cache: None,
+        reader: None,
     };
     fn mt<'a>(c: &Clause, ctx: &super::build::LeafContext<'a>) -> Option<Option<BoxScorer<'a>>> {
         super::multi_term::multi_term(ctx, c, 1.0, Mode::Complete).unwrap()
@@ -685,6 +686,7 @@ fn conjunction_membership_fallback_and_leg_thresholds() {
         global: None,
         max_doc: seg.max_doc,
         cache: None,
+        reader: None,
     };
     let mut b = BooleanQuery::new();
     b.must.push(Clause::Term(TermQuery::new("body", "w0")));
@@ -725,6 +727,7 @@ fn a_phrase_without_norms_scores_unnormed() {
         global: None,
         max_doc: seg.max_doc,
         cache: None,
+        reader: None,
     };
     let phrase = Clause::Phrase(PhraseQuery::new("body", ["w0", "w1"]));
     let s = super::build::build(&ctx, &phrase, 1.0, Mode::Complete, true)
@@ -757,6 +760,7 @@ fn a_match_all_needs_some_max_doc() {
         global: None,
         max_doc: None,
         cache: None,
+        reader: None,
     };
     let unknown = Clause::MatchAllDocs(MatchAllDocsQuery::new(i32::MAX));
     assert!(matches!(
@@ -1050,6 +1054,7 @@ mod fixture {
                     global: Some(&global),
                     max_doc: None,
                     cache: None,
+                    reader: None,
                 };
                 for mode in [Mode::TopScores, Mode::Complete] {
                     if let Some(b) = bulk_boolean(&ctx, &q, 1.0, mode).unwrap() {
@@ -1123,6 +1128,7 @@ mod fixture {
             global: None,
             max_doc: None,
             cache: None,
+            reader: None,
         };
         let leg = |t: &str| -> TermLeg<'_> {
             match term_leg(

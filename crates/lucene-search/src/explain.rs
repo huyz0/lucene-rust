@@ -155,6 +155,8 @@ fn describe_clause(clause: &Clause) -> String {
         String::from_utf8_lossy(bytes).into_owned()
     }
     match clause {
+        // `FieldExistsQuery.toString`.
+        Clause::Exists(q) => format!("FieldExistsQuery [field={}]", q.field),
         Clause::Term(q) => format!("{}:{}", q.field, term(&q.term)),
         Clause::Phrase(q) => {
             let body = q
@@ -309,6 +311,7 @@ pub fn explain_clause(
     norms: Option<&HashMap<String, FieldNorms<'_>>>,
 ) -> Result<Explanation> {
     match clause {
+        Clause::Exists(q) => Err(crate::Error::MissingSegmentReader(q.field.clone())),
         Clause::Term(query) => {
             let clause_norms = norms.and_then(|m| m.get(&query.field));
             explain_term(fields, doc_in, live_docs, query, doc, clause_norms)

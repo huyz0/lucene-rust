@@ -91,8 +91,8 @@ use std::sync::Arc;
 /// replay (read path R7); 16, `min_score` in front of a query blob; 17,
 /// [`doc_freq`] (the total-hits shortcut of a term query); 18, the `size: 0`
 /// count from the aggregation's own pass ([`aggregate_counting_blobs`]); 19,
-/// the regexp node.
-pub const JVM_ABI_VERSION: u32 = 19;
+/// the regexp node; 20, the exists node.
+pub const JVM_ABI_VERSION: u32 = 20;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -118,6 +118,7 @@ const NODE_PREFIX: u8 = 9;
 const NODE_WILDCARD: u8 = 10;
 const NODE_POINT_RANGE: u8 = 11;
 const NODE_REGEXP: u8 = 12;
+const NODE_EXISTS: u8 = 13;
 
 /// [`JVM_ABI_VERSION`], for the plugin's load-time handshake.
 #[no_mangle]
@@ -1891,6 +1892,7 @@ fn count_segment(seg: &OpenSegment<'_>, query: &JvmQuery) -> Result<i64, FfiStat
 /// | `10` wildcard | `field`, the pattern (no `\` escapes) | `WildcardQuery` |
 /// | `11` points range | `field`, `min: i64`, `max: i64` (sortable longs, inclusive) | a one-dimension 8-byte `PointRangeQuery` |
 /// | `12` regexp | `field`, the pattern (UTF-8) | `RegexpQuery` with `RegExp.ALL` and no match flags |
+/// | `13` exists | `field` | `FieldExistsQuery` |
 ///
 /// Depth is capped at `MAX_CLAUSE_DEPTH` and the whole tree at the clause
 /// count limit, so the recursion is bounded by the blob, not trusted to it.
@@ -1899,8 +1901,9 @@ fn count_segment(seg: &OpenSegment<'_>, query: &JvmQuery) -> Result<i64, FfiStat
 fn decode_node(c: &mut Cursor<'_>, depth: usize, nodes: &mut usize) -> Result<Clause, FfiStatus> {
     use crate::query::MAX_CLAUSE_DEPTH;
     use lucene_search::query::{
-        BoostQuery, ConstantScoreQuery, DisjunctionMaxQuery, MatchAllDocsQuery, MatchNoDocsQuery,
-        PhraseQuery, PointsRangeQuery, PrefixQuery, RegexpQuery, TermInSetQuery, WildcardQuery,
+        BoostQuery, ConstantScoreQuery, DisjunctionMaxQuery, FieldExistsQuery, MatchAllDocsQuery,
+        MatchNoDocsQuery, PhraseQuery, PointsRangeQuery, PrefixQuery, RegexpQuery, TermInSetQuery,
+        WildcardQuery,
     };
     if depth >= MAX_CLAUSE_DEPTH {
         set_last_error(format!(
@@ -2031,6 +2034,10 @@ fn decode_node(c: &mut Cursor<'_>, depth: usize, nodes: &mut usize) -> Result<Cl
                 FfiStatus::InvalidArgument
             })?;
             Clause::Regexp(RegexpQuery::new(field, pattern))
+        }
+        NODE_EXISTS => {
+            let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
+            Clause::Exists(FieldExistsQuery::new(field))
         }
         NODE_POINT_RANGE => {
             // A one-dimensional 8-byte `PointRangeQuery` (`long`, `date`,
@@ -3955,6 +3962,7 @@ mod tests {
         Pre(&'a str, &'a str),
         Wc(&'a str, &'a str),
         Re(&'a str, &'a str),
+        Ex(&'a str),
     }
 
     fn enc(n: &N<'_>, b: &mut Vec<u8>) {
@@ -4020,6 +4028,10 @@ mod tests {
                 b.push(NODE_WILDCARD);
                 bytes(b, field.as_bytes());
                 bytes(b, pattern.as_bytes());
+            }
+            N::Ex(field) => {
+                b.push(NODE_EXISTS);
+                bytes(b, field.as_bytes());
             }
             N::Re(field, pattern) => {
                 b.push(NODE_REGEXP);
@@ -4155,6 +4167,12 @@ mod tests {
         assert_eq!(docs(&tree(N::Re("body", "d[aeiou]g"))), dog);
         assert_eq!(docs(&tree(N::Re("body", "(dog|nosuch)"))), dog);
         assert_eq!(docs(&tree(N::Re("body", "#"))), Vec::<i32>::new());
+        // exists: every document has a body (its norms, dense here); a field
+        // no segment has matches nothing. The sparse and doc-values sources
+        // are `weight_count_fixtures`' against real Lucene.
+        let all = docs(&tree(N::All));
+        assert_eq!(docs(&tree(N::Ex("body"))), all);
+        assert_eq!(docs(&tree(N::Ex("no_such_field"))), Vec::<i32>::new());
         // A pattern the grammar rejects fails the decode, not the search.
         assert_eq!(
             run(h, &tree(N::Re("body", "d[og")), 10, true).err(),

@@ -38,6 +38,8 @@ pub(crate) struct LeafContext<'a> {
     pub(crate) max_doc: Option<i32>,
     /// The segment's query cache, if any; see `exec::cache`.
     pub(crate) cache: Option<&'a super::cache::SegmentQueryCache>,
+    /// The segment's reader, if any: its norms and doc values.
+    pub(crate) reader: Option<&'a crate::directory_reader::SegmentReader>,
 }
 
 /// The scorer for `clause`, or `None` when it matches nothing in this
@@ -118,6 +120,7 @@ pub(crate) fn build<'a>(
         }
         Clause::MatchNoDocs(_) => Ok(None),
         Clause::PointsRange(q) => points_range(ctx, q, boost, mode),
+        Clause::Exists(q) => exists(ctx, q, boost, mode),
         Clause::Phrase(p) => match phrase(ctx, p, boost, mode)? {
             PhraseForm::Scorer(s) => Ok(Some(s)),
             PhraseForm::Absent => Ok(None),
@@ -187,6 +190,40 @@ fn points_range<'a>(
     } else {
         lucene_util::doc_id_sort::sort_dedup_doc_ids(&mut docs);
         Box::new(DocList::new(docs, Vec::new()))
+    };
+    Ok(Some(Box::new(ConstantScorer::new(
+        inner, boost, top_scores,
+    ))))
+}
+
+/// `FieldExistsQuery`'s scorer: a `ConstantScoreWeight` over the documents
+/// the field's source has a value for -- every document when the source is
+/// dense, the set read off its `IndexedDISI` otherwise, nothing when the
+/// segment has no value (Java's `null` iterator).
+fn exists<'a>(
+    ctx: &LeafContext<'a>,
+    q: &crate::query::FieldExistsQuery,
+    boost: f32,
+    mode: Mode,
+) -> Result<Option<BoxScorer<'a>>> {
+    let Some(reader) = ctx.reader else {
+        return Err(crate::Error::MissingSegmentReader(q.field.clone()));
+    };
+    let top_scores = mode == Mode::TopScores;
+    let inner: BoxScorer<'a> = match reader.field_exists_docs(&q.field)? {
+        crate::directory_reader::ExistsDocs::None => return Ok(None),
+        crate::directory_reader::ExistsDocs::All => {
+            if reader.max_doc <= 0 {
+                return Ok(None);
+            }
+            Box::new(AllDocs::new(reader.max_doc))
+        }
+        crate::directory_reader::ExistsDocs::Bits(bits) => {
+            let cardinality = bits.cardinality() as i64;
+            Box::new(super::cache::CachedScorer::new(std::sync::Arc::new(
+                super::cache::CachedSet::Bits { bits, cardinality },
+            )))
+        }
     };
     Ok(Some(Box::new(ConstantScorer::new(
         inner, boost, top_scores,
