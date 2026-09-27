@@ -2664,7 +2664,15 @@ fn update_min_competitive_score(tf: &mut TopField) {
 struct BulkLeaf<'l, 'a> {
     tf: &'l mut TopField,
     leaf: &'l mut Leaf<'a>,
+    /// `MinimumScoreCollector`: a match scoring below it is not collected.
+    min_score: Option<f32>,
     error: Option<crate::Error>,
+}
+
+/// `MinimumScoreCollector.collect`'s test, `score >= minimumScore` (so a
+/// `NaN` score never passes).
+fn passes(min_score: Option<f32>, score: f32) -> bool {
+    min_score.is_none_or(|m| score >= m)
 }
 
 /// [`BulkLeaf`] beside a `MaxScoreCollector`: every document's score is kept
@@ -2673,11 +2681,17 @@ struct TrackingBulkLeaf<'l, 'a> {
     tf: &'l mut TopField,
     leaf: &'l mut Leaf<'a>,
     max: f32,
+    /// `MinimumScoreCollector` around both: what scores below it is neither
+    /// collected nor counted toward the max.
+    min_score: Option<f32>,
     error: Option<crate::Error>,
 }
 
 impl ScoringCollector for TrackingBulkLeaf<'_, '_> {
     fn collect(&mut self, doc_id: i32, score: f32) {
+        if !passes(self.min_score, score) {
+            return;
+        }
         self.max = self.max.max(score);
         if self.error.is_some() || self.leaf.terminated {
             return;
@@ -2701,7 +2715,7 @@ impl ScoringCollector for TrackingBulkLeaf<'_, '_> {
 
 impl ScoringCollector for BulkLeaf<'_, '_> {
     fn collect(&mut self, doc_id: i32, score: f32) {
-        if self.error.is_some() {
+        if self.error.is_some() || !passes(self.min_score, score) {
             return;
         }
         self.leaf.score = score;
@@ -2791,6 +2805,7 @@ pub fn search_sorted_tracking(
         track_max_score,
         None,
         None,
+        None,
     )
 }
 
@@ -2811,6 +2826,7 @@ pub(crate) fn search_sorted_leaves(
     track_max_score: bool,
     leaves: Option<&[usize]>,
     until: Option<(usize, i32)>,
+    min_score: Option<f32>,
 ) -> Result<TopFieldDocs> {
     if sort.is_empty() {
         return Err(SortError::NoKeys.into());
@@ -2847,7 +2863,7 @@ pub(crate) fn search_sorted_leaves(
     let query = rewritten.as_ref().unwrap_or(query);
     // The score leading the sort gives the max score itself (the first hit).
     let track = track_max_score && sort[0].ty != SortType::Score;
-    let global = global_stats(segments, query, sort, track)?;
+    let global = global_stats(segments, query, sort, track || min_score.is_some())?;
     let all: Vec<usize> = match leaves {
         Some(l) => l.to_vec(),
         None => (0..segments.len().min(readers.len())).collect(),
@@ -2864,6 +2880,7 @@ pub(crate) fn search_sorted_leaves(
         track,
         global: global.as_ref(),
         until,
+        min_score,
     };
     search_segments(&run, &all)
 }
@@ -2892,8 +2909,45 @@ pub fn search_sorted_sliced(
     after: Option<&FieldDoc>,
     slices: &[Vec<usize>],
 ) -> Result<TopFieldDocs> {
-    if slices.len() <= 1 || top_n == 0 {
-        let parts = search_sorted(
+    search_sorted_min_score(
+        segments,
+        readers,
+        query,
+        norms,
+        sort,
+        top_n,
+        total_hits_threshold,
+        after,
+        false,
+        slices,
+        None,
+    )
+}
+
+/// [`search_sorted_sliced`] (or, beside a tracked max score, one pass as
+/// [`search_sorted_tracking`] runs it) behind OpenSearch's `min_score`: its
+/// `MinimumScoreCollector` wraps the sort's collector (and the
+/// `MaxScoreCollector` beside it), handing on only the matches scoring at
+/// least `min_score` -- counted, collected and tracked -- and no competitive
+/// iterator, so a key skips nothing; a score-led sort still prunes by score
+/// (the wrapper asks for `TOP_SCORES` when its collector does). `None` is
+/// the plain search.
+#[allow(clippy::too_many_arguments)]
+pub fn search_sorted_min_score(
+    segments: &[OpenSegment<'_>],
+    readers: &[SegmentReader],
+    query: &BooleanQuery,
+    norms: &[Option<&HashMap<String, FieldNorms<'_>>>],
+    sort: &[SortField],
+    top_n: usize,
+    total_hits_threshold: u64,
+    after: Option<&FieldDoc>,
+    track_max_score: bool,
+    slices: &[Vec<usize>],
+    min_score: Option<f32>,
+) -> Result<TopFieldDocs> {
+    if slices.len() <= 1 || top_n == 0 || track_max_score {
+        return search_sorted_leaves(
             segments,
             readers,
             query,
@@ -2902,14 +2956,17 @@ pub fn search_sorted_sliced(
             top_n,
             total_hits_threshold,
             after,
-        )?;
-        return Ok(parts);
+            track_max_score,
+            None,
+            None,
+            min_score,
+        );
     }
     // The arity checks, once.
     search_sorted(segments, readers, query, norms, sort, 0, 0, after)?;
     let rewritten = crate::multi_segment::rewrite_points_ranges(query, segments);
     let query = rewritten.as_ref().unwrap_or(query);
-    let global = global_stats(segments, query, sort, false)?;
+    let global = global_stats(segments, query, sort, min_score.is_some())?;
     let run = Run {
         segments,
         readers,
@@ -2922,6 +2979,7 @@ pub fn search_sorted_sliced(
         track: false,
         global: global.as_ref(),
         until: None,
+        min_score,
     };
     let parallel =
         crate::slices::estimated_matches(segments, query) >= crate::slices::SEQUENTIAL_BELOW;
@@ -3032,6 +3090,9 @@ struct Run<'r, 'a> {
     /// `(segment, end)`: that segment is searched below `end` only -- the
     /// cut a `terminate_after` search stops its last segment at.
     until: Option<(usize, i32)>,
+    /// OpenSearch's `min_score` (its `MinimumScoreCollector` around the
+    /// collector): only the matches scoring at least it are collected.
+    min_score: Option<f32>,
 }
 
 /// One collector over the segments at `order`, in that order.
@@ -3048,9 +3109,10 @@ fn search_segments(run: &Run<'_, '_>, order: &[usize]) -> Result<TopFieldDocs> {
         track,
         global,
         until,
+        min_score,
     } = *run;
     let mut tf = TopField::new(sort, top_n, total_hits_threshold, after);
-    let want_scores = tf.needs_scores || track;
+    let want_scores = tf.needs_scores || track || min_score.is_some();
     let mut max_score = f32::NEG_INFINITY;
     // `BooleanQuery.rewrite`: a boolean of one clause is that clause (so a
     // lone term is a term to the query cache, not a composite).
@@ -3098,6 +3160,7 @@ fn search_segments(run: &Run<'_, '_>, order: &[usize]) -> Result<TopFieldDocs> {
             let mut c = BulkLeaf {
                 tf: &mut tf,
                 leaf: &mut leaf,
+                min_score,
                 error: None,
             };
             exec::score_segment_below(&mut bulk, mode, seg.live_docs, &mut c, end)?;
@@ -3107,11 +3170,14 @@ fn search_segments(run: &Run<'_, '_>, order: &[usize]) -> Result<TopFieldDocs> {
             leaf.finish(&mut tf)?;
             continue;
         }
-        if track && want_scores {
+        if track || min_score.is_some() {
             // Every match is scored for the max score (`MultiCollector` with
-            // a `MaxScoreCollector`, which prunes nothing): the bulk scorers,
-            // a window of documents at a time, as `BooleanWeight`'s bulk
-            // scorer serves such a collector.
+            // a `MaxScoreCollector`, which prunes nothing) or for the minimum
+            // (`MinimumScoreCollector`'s leaf passes on no competitive
+            // iterator, and asks for `COMPLETE` scores unless the sort's
+            // collector wants `TOP_SCORES` -- a score-led sort, above): the
+            // bulk scorers, a window of documents at a time, as
+            // `BooleanWeight`'s bulk scorer serves such a collector.
             let Some(mut bulk) = exec::bulk_boolean(&ctx, query, 1.0, Mode::Complete)? else {
                 continue;
             };
@@ -3120,6 +3186,7 @@ fn search_segments(run: &Run<'_, '_>, order: &[usize]) -> Result<TopFieldDocs> {
                 tf: &mut tf,
                 leaf: &mut leaf,
                 max: f32::NEG_INFINITY,
+                min_score,
                 error: None,
             };
             exec::score_segment_below(&mut bulk, Mode::Complete, seg.live_docs, &mut c, end)?;
@@ -4220,6 +4287,7 @@ mod tests {
         let mut c = BulkLeaf {
             tf: &mut tf,
             leaf: &mut l,
+            min_score: None,
             error: Some(SortError::NoKeys.into()),
         };
         assert_eq!(c.score_mode(), ScoreMode::CompleteNoScores);
@@ -4237,12 +4305,19 @@ mod tests {
             score: 0.0,
             score_doc: -1,
         };
-        let c = BulkLeaf {
+        let mut c = BulkLeaf {
             tf: &mut tf,
             leaf: &mut l,
+            min_score: Some(1.0),
             error: None,
         };
         assert_eq!(c.score_mode(), ScoreMode::Complete);
+        // Below the minimum (and a NaN score): not collected.
+        c.collect(1, 0.5);
+        c.collect(2, f32::NAN);
+        assert_eq!(c.tf.total_hits, 0, "nothing below min_score collected");
+        c.collect(3, 1.0);
+        assert_eq!(c.tf.total_hits, 1);
     }
 
     #[test]
