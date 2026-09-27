@@ -313,6 +313,7 @@ fn term(field: &str, t: &str) -> Clause {
     Clause::Term(TermQuery {
         field: field.to_string(),
         term: t.as_bytes().to_vec(),
+        doc_freq: None,
     })
 }
 
@@ -508,6 +509,7 @@ fn scored(
             let tq = TermQuery {
                 field: f.to_string(),
                 term: a[0].as_bytes().to_vec(),
+                doc_freq: None,
             };
             return search_term_query_multi_segment(segments, &tq, &norms, top_n)
                 .expect("term query");

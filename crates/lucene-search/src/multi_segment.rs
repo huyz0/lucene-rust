@@ -662,14 +662,16 @@ pub(crate) fn global_boolean_stats(
     fn walk_clause(c: &crate::query::Clause, out: &mut Collected) {
         use crate::query::Clause;
         match c {
-            Clause::Term(t) => out.terms.push((t.field.clone(), t.term.clone())),
+            Clause::Term(t) => out
+                .terms
+                .push((t.field.clone(), t.term.clone(), t.doc_freq)),
             // A phrase's idf is the sum of its constituent terms' idfs, so each
             // of them needs the same reader-wide treatment. Missing this left
             // two phrase queries disagreeing with Java on the 15-segment corpus
             // after every other query had been fixed.
             Clause::Phrase(p) => {
                 for term in &p.terms {
-                    out.terms.push((p.field.clone(), term.clone()));
+                    out.terms.push((p.field.clone(), term.clone(), None));
                 }
             }
             // A fuzzy clause *does* score from term statistics -- its default
@@ -713,8 +715,15 @@ pub(crate) fn global_boolean_stats(
     let mut collected = Collected::default();
     walk(query, &mut collected);
     let mut map = crate::GlobalStats::new();
-    for (field, term) in collected.terms {
-        if let Some((stats, states)) = global_term_stats_states(segments, &field, &term)? {
+    for (field, term, doc_freq) in collected.terms {
+        if let Some((mut stats, states)) = global_term_stats_states(segments, &field, &term)? {
+            // A term carrying its own `TermStates` scores from their `docFreq`
+            // (`TermWeight`'s `searcher.termStatistics(term, states.docFreq(),
+            // ...)`); where it occurs, and the field's `docCount`, are the
+            // reader's.
+            if let Some(df) = doc_freq {
+                stats.doc_freq = df;
+            }
             map.insert_term_states(field, term, stats, states);
         }
     }
@@ -731,7 +740,8 @@ pub(crate) fn global_boolean_stats(
 /// must be.
 #[derive(Default)]
 struct Collected {
-    terms: Vec<(String, Vec<u8>)>,
+    /// `(field, term, the term's own docFreq if it carries one)`.
+    terms: Vec<(String, Vec<u8>, Option<i64>)>,
     fuzzy: Vec<crate::FuzzyQuery>,
 }
 
@@ -1045,6 +1055,9 @@ fn lone_term(query: &BooleanQuery) -> Option<&TermQuery> {
         (_, [Clause::Term(t)]) if query.minimum_should_match <= 1 => Some(t),
         _ => None,
     }
+    // The term path reads the reader's statistics; its own docFreq is the
+    // boolean path's to apply.
+    .filter(|t| t.doc_freq.is_none())
 }
 
 /// [`search_boolean_query_multi_segment_maxscore_counting`] behind

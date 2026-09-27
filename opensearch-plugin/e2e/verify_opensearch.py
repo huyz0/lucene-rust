@@ -325,7 +325,12 @@ def matrix():
     add("collapse", {"query": {"match": {"body": "alpha"}}, "collapse": {"field": "tag"}}, "collapse")
     # Scored with statistics the native engine does not have: cross-shard (dfs) or blended
     # TermStates (cross_fields; tie_breaker 1 makes Lucene rewrite the dismax to a boolean).
-    add("cross_fields", {"query": {"multi_match": {"query": "alpha", "type": "cross_fields", "fields": ["body", "title"], "tie_breaker": 1}}}, "term_states")
+    add("cross_fields", {"query": {"multi_match": {"query": "alpha", "type": "cross_fields", "fields": ["body", "title"], "tie_breaker": 1}}}, "native")
+    add("cross_fields two terms", {"query": {"multi_match": {"query": "alpha gamma", "type": "cross_fields", "fields": ["body", "title"]}}}, "native")
+    add("fuzzy", {"query": {"fuzzy": {"body": "alpah"}}}, "native")
+    add("fuzzy keyword", {"query": {"fuzzy": {"tag": {"value": "gamna", "fuzziness": 2}}}}, "native")
+    add("match fuzziness", {"query": {"match": {"body": {"query": "alpah betta", "fuzziness": "AUTO"}}}}, "native")
+    add("fuzzy in bool", {"query": {"bool": {"must": [{"match": {"body": "gamma"}}], "should": [{"fuzzy": {"body": "delda"}}]}}}, "native")
     add("dfs_query_then_fetch", {"_params": "&search_type=dfs_query_then_fetch", "query": {"match": {"body": "alpha"}}}, "dfs_multi")
     add("rescore", {"query": {"match": {"body": "alpha"}}, "rescore": {"window_size": 20, "query": {"rescore_query": {"match": {"title": "beta"}}}}}, "rescore")
     return q

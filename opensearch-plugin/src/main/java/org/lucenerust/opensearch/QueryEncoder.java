@@ -18,6 +18,8 @@ import org.apache.lucene.search.PrefixQuery;
 import org.apache.lucene.util.NumericUtils;
 import org.apache.lucene.search.QueryVisitor;
 import org.apache.lucene.search.TermInSetQuery;
+import org.apache.lucene.index.IndexReaderContext;
+import org.apache.lucene.index.TermStates;
 import org.apache.lucene.search.FieldExistsQuery;
 import org.apache.lucene.search.RegexpQuery;
 import org.apache.lucene.search.WildcardQuery;
@@ -113,8 +115,32 @@ public final class QueryEncoder {
      * field it rejects (a non-default similarity, say) falls the whole query back.
      */
     public static Encoded encode(Query query, Predicate<String> fieldOk) {
+        return encode(query, fieldOk, null);
+    }
+
+    /**
+     * {@link #encode(Query, Predicate)} for a search over {@code top}: a {@link TermQuery} carrying
+     * {@code TermStates} built for it -- a {@code BlendedTermQuery}'s terms, as a fuzzy query's
+     * rewrite and {@code multi_match} {@code cross_fields} build them -- is sent with their {@code
+     * docFreq}, which is all BM25 reads of them ({@code TermWeight} uses them only when {@code
+     * wasBuiltFor} its searcher's top context; other states it rebuilds from the reader, and so
+     * would the native side). Without {@code top} such a term falls back.
+     */
+    public static Encoded encode(Query query, Predicate<String> fieldOk, IndexReaderContext top) {
+        TOP.set(top);
+        try {
+            return encodeRoot(query, fieldOk);
+        } finally {
+            TOP.remove();
+        }
+    }
+
+    /** The reader context of the search being encoded, for {@link #encode(Query, Predicate, IndexReaderContext)}. */
+    private static final ThreadLocal<IndexReaderContext> TOP = new ThreadLocal<>();
+
+    private static Encoded encodeRoot(Query query, Predicate<String> fieldOk) {
         query = unwrapUnitBoost(query);
-        if (query instanceof TermQuery tq) {
+        if (query instanceof TermQuery tq && tq.getTermStates() == null) {
             if (plainTerm(tq) == false) {
                 return Encoded.fallback("term_states");
             }
@@ -162,6 +188,7 @@ public final class QueryEncoder {
     private static final byte NODE_POINT_RANGE = 11;
     private static final byte NODE_REGEXP = 12;
     private static final byte NODE_EXISTS = 13;
+    private static final byte NODE_TERM_STATS = 14;
 
     /** Appends one node (and its children); returns a fallback reason, or null. */
     private static String node(Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
@@ -173,16 +200,38 @@ public final class QueryEncoder {
         }
         q = unwrapUnitBoost(q);
         if (q instanceof TermQuery tq) {
-            if (plainTerm(tq) == false) {
+            if (tq.getClass() != TermQuery.class) {
                 return "term_states";
             }
             Term t = tq.getTerm();
             if (fieldOk.test(t.field()) == false) {
                 return "field_similarity";
             }
-            out.write(NODE_TERM);
+            TermStates states = tq.getTermStates();
+            if (states == null) {
+                out.write(NODE_TERM);
+                writeBytes(out, t.field().getBytes(StandardCharsets.UTF_8));
+                writeBytes(out, t.bytes());
+                return null;
+            }
+            IndexReaderContext top = TOP.get();
+            if (top == null || states.wasBuiltFor(top) == false) {
+                return "term_states";
+            }
+            int docFreq;
+            try {
+                docFreq = states.docFreq();
+            } catch (IllegalStateException | AssertionError e) {
+                // States built without statistics: nothing to score from.
+                return "term_states";
+            }
+            if (docFreq < 1) {
+                return "term_states";
+            }
+            out.write(NODE_TERM_STATS);
             writeBytes(out, t.field().getBytes(StandardCharsets.UTF_8));
             writeBytes(out, t.bytes());
+            writeLong(out, docFreq);
             return null;
         }
         if (q instanceof BooleanQuery bq) {

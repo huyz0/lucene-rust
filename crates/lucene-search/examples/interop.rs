@@ -416,6 +416,7 @@ fn verify(path: &str, num_docs: i64, deleted: Option<i64>) -> usize {
             &TermQuery {
                 field: "body".to_string(),
                 term: term.as_bytes().to_vec(),
+                doc_freq: None,
             },
             &norms,
             top_n,
