@@ -114,11 +114,101 @@ pub enum SortType {
     String,
 }
 
-/// `SortedNumericSelector.Type`: which of a document's values it sorts by.
+/// Which of a document's values it sorts by: `SortedNumericSelector.Type`
+/// (`Min`, `Max`), or OpenSearch's `MultiValueMode` for the modes it sorts
+/// with its own comparator sources (`LongValuesComparatorSource` and the
+/// rest): the values combined ([`Selector::pick`]), which that comparator
+/// then orders and skips over exactly as a `Min`/`Max` key's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Selector {
     Min,
     Max,
+    /// `MultiValueMode.SUM`.
+    Sum,
+    /// `MultiValueMode.AVG`.
+    Avg,
+    /// `MultiValueMode.MEDIAN`.
+    Median,
+}
+
+impl Selector {
+    /// The value this selector sorts a document with `values` (ascending,
+    /// at least one) by, in the key's comparable encoding: `MultiValueMode`'s
+    /// `pick` over longs for a `Long`/`Int` key (an `Int` key's cast to `int`
+    /// follows, as `IntValuesComparatorSource` casts), over doubles for a
+    /// `Double`/`Float` one (a `Float` key's result cast to `float`).
+    pub fn pick(self, ty: SortType, values: &[i64]) -> Option<i64> {
+        let (first, last) = (*values.first()?, *values.last()?);
+        let n = values.len();
+        let mid = (n - 1) / 2;
+        Some(match (self, ty) {
+            (Selector::Min, _) => first,
+            (Selector::Max, _) => last,
+            (_, SortType::Double | SortType::Float) => {
+                let float = ty == SortType::Float;
+                let d = |v: i64| {
+                    if float {
+                        f64::from(sortable_int_to_float(v))
+                    } else {
+                        sortable_long_to_double(v)
+                    }
+                };
+                let sum = || values.iter().fold(0.0f64, |s, &v| s + d(v));
+                let r = match self {
+                    Selector::Sum => sum(),
+                    Selector::Avg => sum() / n as f64,
+                    _ if n.is_multiple_of(2) => (d(values[mid]) + d(values[mid + 1])) / 2.0,
+                    _ => d(values[mid]),
+                };
+                if float {
+                    i64::from(float_to_sortable_int(r as f32))
+                } else {
+                    double_to_sortable_long(r)
+                }
+            }
+            (Selector::Sum, _) => values.iter().fold(0i64, |s, &v| s.wrapping_add(v)),
+            (Selector::Avg, _) => {
+                let total = values.iter().fold(0i64, |s, &v| s.wrapping_add(v));
+                if n > 1 {
+                    java_round(total as f64 / n as f64)
+                } else {
+                    total
+                }
+            }
+            (Selector::Median, _) if n.is_multiple_of(2) => {
+                java_round((values[mid] as f64 + values[mid + 1] as f64) / 2.0)
+            }
+            (Selector::Median, _) => values[mid],
+        })
+    }
+}
+
+/// `Math.round(double)`: the closest long, ties toward positive infinity;
+/// `NaN` is 0 and anything past the range saturates.
+fn java_round(x: f64) -> i64 {
+    if x.is_nan() {
+        return 0;
+    }
+    let f = x.floor();
+    let r = if x - f >= 0.5 { f + 1.0 } else { f };
+    // Saturating, as Java's `(long)` of an out-of-range double.
+    r as i64
+}
+
+/// `NumericUtils.sortableLongToDouble`.
+fn sortable_long_to_double(v: i64) -> f64 {
+    f64::from_bits((v ^ ((v >> 63) & 0x7fff_ffff_ffff_ffff)) as u64)
+}
+
+/// `NumericUtils.doubleToSortableLong`, over `Double.doubleToLongBits` (one
+/// NaN).
+fn double_to_sortable_long(d: f64) -> i64 {
+    let v = if d.is_nan() {
+        0x7ff8_0000_0000_0000
+    } else {
+        d.to_bits() as i64
+    };
+    v ^ ((v >> 63) & 0x7fff_ffff_ffff_ffff)
 }
 
 /// One sort key: `SortField` for the score or the document, or a
@@ -634,7 +724,7 @@ fn sortable_int_to_float(v: i64) -> f32 {
 enum Column<'a> {
     Absent,
     Single(NumericReader<'a>),
-    Multi(SortedNumericReader<'a>, Vec<i64>, Selector),
+    Multi(SortedNumericReader<'a>, Vec<i64>, Selector, SortType),
     /// The segment's decoded copy ([`SortColumn::Longs`]).
     Cached(Arc<SortColumn>),
 }
@@ -644,12 +734,9 @@ impl Column<'_> {
         Ok(match self {
             Column::Absent => None,
             Column::Single(r) => r.value(doc).map_err(crate::Error::from)?,
-            Column::Multi(r, buf, selector) => {
+            Column::Multi(r, buf, selector, ty) => {
                 r.values(doc, buf).map_err(crate::Error::from)?;
-                match selector {
-                    Selector::Min => buf.first().copied(),
-                    Selector::Max => buf.last().copied(),
-                }
+                selector.pick(*ty, buf)
             }
             Column::Cached(c) => cached_long(c, doc),
         })
@@ -1517,9 +1604,11 @@ impl OrdColumn<'_> {
             OrdColumn::Single(r) => r.value(doc).map_err(crate::Error::from)?,
             OrdColumn::Multi(r, buf, selector) => {
                 r.values(doc, buf).map_err(crate::Error::from)?;
+                // `SortedSetSelector`: a keyword key sorts by its least or
+                // greatest ordinal only (the sort blob sends no other).
                 match selector {
-                    Selector::Min => buf.first().copied(),
                     Selector::Max => buf.last().copied(),
+                    _ => buf.first().copied(),
                 }
             }
         };
@@ -2052,6 +2141,7 @@ fn open_leaf<'a>(
                                         SortedNumericReader::new(data, e),
                                         Vec::new(),
                                         f.selector,
+                                        f.ty,
                                     ),
                                     WithValue::of(data, &e.numeric),
                                 )
@@ -3357,6 +3447,52 @@ fn count_rest(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modes_pick_as_multi_value_mode_does() {
+        use SortType::{Double, Float, Long};
+        let p = |sel: Selector, v: &[i64]| sel.pick(Long, v).unwrap();
+        assert_eq!(p(Selector::Min, &[-3, 1, 9]), -3);
+        assert_eq!(p(Selector::Max, &[-3, 1, 9]), 9);
+        assert_eq!(p(Selector::Sum, &[-3, 1, 9]), 7);
+        assert_eq!(
+            p(Selector::Sum, &[i64::MAX, 1]),
+            i64::MIN,
+            "a long sum wraps"
+        );
+        // AVG: Math.round of the double quotient, ties toward +infinity.
+        assert_eq!(p(Selector::Avg, &[1, 2]), 2);
+        assert_eq!(p(Selector::Avg, &[-2, -1]), -1);
+        assert_eq!(p(Selector::Avg, &[5]), 5);
+        assert_eq!(p(Selector::Avg, &[1, 1, 2]), 1);
+        // MEDIAN: the middle value, or the rounded mean of the middle two.
+        assert_eq!(p(Selector::Median, &[1, 2, 3]), 2);
+        assert_eq!(p(Selector::Median, &[1, 2, 3, 4]), 3);
+        assert_eq!(p(Selector::Median, &[-3, -2]), -2);
+        assert_eq!(p(Selector::Median, &[7]), 7);
+        assert_eq!(Selector::Sum.pick(Long, &[]), None);
+        // Doubles: over the decoded values, re-encoded.
+        let d = double_to_sortable_long;
+        let dv = |sel: Selector, v: &[f64]| {
+            let enc: Vec<i64> = v.iter().map(|&x| d(x)).collect();
+            sortable_long_to_double(sel.pick(Double, &enc).unwrap())
+        };
+        assert_eq!(dv(Selector::Sum, &[0.1, 0.2]), 0.1 + 0.2);
+        assert_eq!(dv(Selector::Avg, &[1.0, 2.0, 4.0]), 7.0 / 3.0);
+        assert_eq!(dv(Selector::Median, &[1.0, 2.0, 3.0, 10.0]), 2.5);
+        assert_eq!(dv(Selector::Median, &[-1.5]), -1.5);
+        // Floats: summed as doubles, the result cast back to float.
+        let f = |x: f32| i64::from(float_to_sortable_int(x));
+        let got = Selector::Sum.pick(Float, &[f(0.1), f(0.2)]).unwrap();
+        assert_eq!(got, f((f64::from(0.1f32) + f64::from(0.2f32)) as f32));
+        // Math.round's edges.
+        assert_eq!(java_round(0.499_999_999_999_999_94), 0);
+        assert_eq!(java_round(-0.5), 0);
+        assert_eq!(java_round(2.5), 3);
+        assert_eq!(java_round(f64::NAN), 0);
+        assert_eq!(java_round(1e300), i64::MAX);
+        assert_eq!(java_round(-1e300), i64::MIN);
+    }
     use crate::directory_reader::DirectoryReader;
     use lucene_store::FsDirectory;
 
