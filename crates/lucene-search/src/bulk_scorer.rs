@@ -83,9 +83,24 @@ pub(crate) struct DocScores {
 pub(crate) struct DocScoreAcc {
     pub(crate) docs: Vec<i32>,
     pub(crate) scores: Vec<f64>,
+    /// `scores` narrowed to the `float` Java collects, for
+    /// [`Self::collect_all`].
+    narrowed: Vec<f32>,
 }
 
 impl DocScoreAcc {
+    /// Every document collected at its score as a `float`, in order: the
+    /// collector takes as many as it can in one batch
+    /// ([`ScoringCollector::collect_many`]), the rest one by one.
+    fn collect_all<C: ScoringCollector + ?Sized>(&mut self, collector: &mut C) {
+        self.narrowed.clear();
+        self.narrowed.extend(self.scores.iter().map(|&s| s as f32));
+        let from = collector.collect_many(&self.docs, &self.narrowed, 0);
+        for (&doc, &score) in self.docs[from..].iter().zip(&self.narrowed[from..]) {
+            collector.collect(doc, score);
+        }
+    }
+
     fn copy_from(&mut self, src: &DocScores) {
         self.docs.clear();
         self.docs.extend_from_slice(&src.docs);
@@ -322,7 +337,8 @@ impl<'a> TermLeg<'a> {
             None => similarity::UNNORMED_NORM_INVERSE,
         };
         let global_max = similarity::do_score(weight, max_freq, max_norm_inverse);
-        Self::new(
+        let has_freqs = cursor.has_freqs();
+        let mut leg = Self::new(
             cursor,
             weight,
             true,
@@ -330,7 +346,19 @@ impl<'a> TermLeg<'a> {
             avg_field_length,
             cost,
             global_max,
-        )
+        );
+        if !has_freqs {
+            // `Lucene104PostingsReader`'s impacts for a field without
+            // frequencies: one level up to `NO_MORE_DOCS` holding the impact
+            // `(freq 1, norm 1)` -- every document's frequency is 1, and the
+            // shortest non-empty field scores highest. The norm-free global
+            // bound above takes the largest norm inverse there is (an empty
+            // field's), which a keyword's one-token documents never reach, so
+            // a full queue could never end the scan.
+            let dummy = [Impact { freq: 1, norm: 1 }];
+            leg.global_max = leg.global_max.min(leg.impacts_bound(&dummy));
+        }
+        leg
     }
 
     /// A `FILTER` clause: matches gate the conjunction and contribute `0`.
@@ -724,7 +752,19 @@ pub(crate) fn score_term_window<C: ScoringCollector + ?Sized>(
         if buf.docs.is_empty() {
             return Ok(leg.doc_id());
         }
-        for (&doc, &score) in buf.docs.iter().zip(&buf.scores) {
+        // Until a threshold is published every document is collected; the
+        // collector takes those in one batch, up to where one could be. The
+        // per-document test `score >= 0` passes every score a term produces:
+        // a non-negative boost times a positive idf and tf.
+        debug_assert!(buf.scores.iter().all(|s| *s >= 0.0));
+        let mut from = 0;
+        if min_competitive == 0.0 {
+            from = collector.collect_many(&buf.docs, &buf.scores, 0);
+            if from > 0 {
+                min_competitive = min_competitive_score(collector);
+            }
+        }
+        for (&doc, &score) in buf.docs[from..].iter().zip(&buf.scores[from..]) {
             if score >= min_competitive {
                 collector.collect(doc, score);
                 min_competitive = min_competitive_score(collector);
@@ -814,9 +854,7 @@ impl ConjunctionBulk {
                             }
                             apply_required_clause(acc, &mut legs[i])?;
                         }
-                        for (&doc, &score) in acc.docs.iter().zip(&acc.scores) {
-                            collector.collect(doc, score as f32);
-                        }
+                        acc.collect_all(collector);
                         min_competitive = min_competitive_score(collector);
                     }
                     let mut max_other = -1;
@@ -1531,9 +1569,7 @@ impl MaxScore {
             legs[i].set_cur(legs[i].doc_id());
             self.docs[i] = legs[i].cur();
         }
-        for (&doc, &score) in self.acc.docs.iter().zip(&self.acc.scores) {
-            collector.collect(doc, score as f32);
-        }
+        self.acc.collect_all(collector);
         self.min_competitive = min_competitive_score(collector);
         Ok(())
     }

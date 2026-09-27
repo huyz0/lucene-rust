@@ -215,6 +215,29 @@ pub trait ScoringCollector {
     fn constant_score_hits_needed(&self) -> Option<u64> {
         None
     }
+
+    /// Counts `n` more hits at `score` without collecting them one by one --
+    /// allowed only when every one of them would lose to the kept hits
+    /// anyway: the queue full, its worst hit scoring at least `score`, and
+    /// the hits arriving after it in doc-id order so a tie loses too. Returns
+    /// `false`, having counted nothing, whenever that cannot be proved; the
+    /// caller then collects them itself. A constant-scored bit-set walk uses
+    /// it to count the hits between a full queue and the `totalHits`
+    /// threshold by popcount. The default, `false`, is always correct.
+    fn count_losing_hits(&mut self, _n: u64, _score: f32) -> bool {
+        false
+    }
+
+    /// [`Self::collect`] over a prefix of `docs` (each shifted by
+    /// `doc_base`) and their `scores`, stopping before the first document
+    /// that could change [`Self::pruning_threshold`]; returns how many were
+    /// collected, which the caller follows with per-document calls. For a
+    /// scoring loop that consults the threshold between documents, a batch
+    /// of documents that cannot move it is collected the same either way.
+    /// The default, `0`, is always correct.
+    fn collect_many(&mut self, _docs: &[i32], _scores: &[f32], _doc_base: i32) -> usize {
+        0
+    }
 }
 
 /// `Collector.getLeafCollector(context)` for a collector shared by every
@@ -269,6 +292,17 @@ impl<C: ScoringCollector + ?Sized> ScoringCollector for LeafCollector<'_, C> {
     #[inline]
     fn constant_score_hits_needed(&self) -> Option<u64> {
         self.inner.constant_score_hits_needed()
+    }
+
+    #[inline]
+    fn count_losing_hits(&mut self, n: u64, score: f32) -> bool {
+        self.inner.count_losing_hits(n, score)
+    }
+
+    #[inline]
+    fn collect_many(&mut self, docs: &[i32], scores: &[f32], doc_base: i32) -> usize {
+        self.inner
+            .collect_many(docs, scores, self.doc_base.saturating_add(doc_base))
     }
 }
 
@@ -657,6 +691,7 @@ impl TopDocsCollector {
     /// threshold is `u64::MAX` (pruning disabled, every hit counted),
     /// [`ScoreMode::TopScores`] otherwise -- the same `totalHitsThreshold ==
     /// Integer.MAX_VALUE ? COMPLETE : TOP_SCORES` test Java makes.
+    #[inline]
     pub fn score_mode(&self) -> ScoreMode {
         if self.total_hits_threshold == u64::MAX {
             ScoreMode::Complete
@@ -682,6 +717,7 @@ impl TopDocsCollector {
     /// upper bound against. Returns `None` before the collector is full (every
     /// remaining candidate still has a chance, so there is no safe threshold
     /// yet) or when `top_n == 0`.
+    #[inline]
     pub fn min_competitive_score(&self) -> Option<f32> {
         let local = self.local_min_competitive_score();
         // `updateGlobalMinCompetitiveScore`: what some other leaf has already
@@ -703,6 +739,7 @@ impl TopDocsCollector {
     /// The half of [`Self::min_competitive_score`] this collector's own queue
     /// knows: the worst kept hit's score, once the queue is full and the
     /// caller's exact-count budget is spent.
+    #[inline]
     fn local_min_competitive_score(&self) -> Option<f32> {
         // `TopScoreDocCollector.updateMinCompetitiveScore`: a threshold is only
         // published once `totalHits > totalHitsThreshold`, so a caller that
@@ -764,8 +801,20 @@ impl TopDocsCollector {
 }
 
 impl ScoringCollector for TopDocsCollector {
+    #[inline]
     fn min_competitive_score(&self) -> Option<f32> {
         TopDocsCollector::min_competitive_score(self)
+    }
+
+    #[inline]
+    fn pruning_threshold(&self) -> Option<f32> {
+        // The trait's default, inline: every document-at-a-time loop asks
+        // after each hit.
+        if self.score_mode().is_exhaustive() {
+            None
+        } else {
+            self.min_competitive_score()
+        }
     }
 
     /// Full once `top_n` hits are kept *and* more than `total_hits_threshold`
@@ -785,6 +834,73 @@ impl ScoringCollector for TopDocsCollector {
         Some(fill.saturating_sub(self.total_hits))
     }
 
+    /// [`ScoringCollector::collect`] per document, the count kept in a local
+    /// while the documents lose to the worst kept hit. No threshold can be
+    /// published until `total_hits` passes `total_hits_threshold` (and never
+    /// by this leaf alone while a shared bar exists), so the batch stops at
+    /// that count and declines a collector with a shared bar.
+    fn collect_many(&mut self, docs: &[i32], scores: &[f32], doc_base: i32) -> usize {
+        if self.min_score_acc.is_some() {
+            return 0;
+        }
+        let room = self.total_hits_threshold.saturating_sub(self.total_hits);
+        let k = docs
+            .len()
+            .min(scores.len())
+            .min(usize::try_from(room).unwrap_or(usize::MAX));
+        // The fast reject needs a full queue and no `searchAfter` page.
+        let fast = self.after.is_none() && self.top_n != 0;
+        let mut worst = (fast && self.hits.len() == self.top_n).then(|| self.hits[self.top_n - 1]);
+        let mut counted = 0u64;
+        for (&doc, &score) in docs[..k].iter().zip(&scores[..k]) {
+            // ARITH: a global doc id, below the reader's `i32` `max_doc`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let doc_id = doc_base + doc;
+            #[cfg(any(test, feature = "test-support"))]
+            crate::test_only_scored_docs_counter::record_scored();
+            if let Some(w) = worst {
+                if score < w.score || (score == w.score && doc_id >= w.doc_id) {
+                    counted += 1;
+                    continue;
+                }
+            }
+            self.total_hits += counted + 1;
+            counted = 0;
+            self.collect_counted(doc_id, score);
+            if fast && self.hits.len() == self.top_n {
+                worst = Some(self.hits[self.top_n - 1]);
+            }
+        }
+        self.total_hits += counted;
+        k
+    }
+
+    /// The per-document [`ScoringCollector::collect`] fast reject, `n` times
+    /// at once: each would bump `total_hits` and lose to the worst kept hit.
+    /// Only for a full queue with no `searchAfter` page and no shared bar,
+    /// the case `constant_score_hits_needed` answers for; the caller hands
+    /// its hits over in ascending doc-id order after every kept one.
+    fn count_losing_hits(&mut self, n: u64, score: f32) -> bool {
+        if self.after.is_some()
+            || self.min_score_acc.is_some()
+            || self.top_n == 0
+            || self.hits.len() != self.top_n
+            || self.hits[self.top_n - 1].score < score
+        {
+            return false;
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        for _ in 0..n {
+            crate::test_only_scored_docs_counter::record_scored();
+        }
+        self.total_hits = self.total_hits.saturating_add(n);
+        if n != 0 && self.total_hits > self.total_hits_threshold {
+            self.note_threshold_published();
+        }
+        true
+    }
+
+    #[inline]
     fn score_mode(&self) -> ScoreMode {
         TopDocsCollector::score_mode(self)
     }
@@ -1146,6 +1262,76 @@ impl CollapsingCollector {
 
 #[cfg(test)]
 mod tests {
+
+    /// `collect_many` against `collect` one document at a time, from the same
+    /// state: the kept hits, the total and its relation, and how far the
+    /// batch went (the rest collected one by one). Streams with ties, a NaN,
+    /// a queue filling mid-batch, thresholds at, below and past the batch, a
+    /// `searchAfter` page and a shared bar (declined).
+    #[test]
+    fn collect_many_is_collect_per_document() {
+        use std::sync::Arc;
+        let mut scores = vec![1.0f32, 3.0, 2.0, 2.0, 5.0, 0.5, 2.0, f32::NAN, 4.0, 1.0];
+        scores.extend((0..30).map(|i| (i % 7) as f32 * 0.5));
+        let docs: Vec<i32> = (0..scores.len() as i32).map(|d| d * 3).collect();
+        let bases = [0, 1000];
+        let mut makers: Vec<Box<dyn Fn() -> TopDocsCollector>> = Vec::new();
+        for top_n in [0usize, 1, 3, 10, 50] {
+            for threshold in [0u64, 2, 5, 10, 39, 40, u64::MAX] {
+                makers.push(Box::new(move || {
+                    TopDocsCollector::with_total_hits_threshold(top_n, threshold)
+                }));
+            }
+            makers.push(Box::new(move || {
+                TopDocsCollector::with_total_hits_threshold(top_n, 20).with_after(ScoreDoc {
+                    doc_id: 30,
+                    score: 2.0,
+                })
+            }));
+            makers.push(Box::new(move || {
+                TopDocsCollector::with_total_hits_threshold(top_n, 20)
+                    .with_shared_max_score(Arc::new(MaxScoreAccumulator::new()), 0)
+            }));
+        }
+        let mut batched = 0;
+        for make in &makers {
+            for &base in &bases {
+                for split in [0, 1, 4, docs.len()] {
+                    // A prefix one by one first, so batches start from a
+                    // partly or wholly filled queue.
+                    let (mut one, mut many) = (make(), make());
+                    for c in [&mut one, &mut many] {
+                        for i in 0..split {
+                            c.collect(base + docs[i], scores[i]);
+                        }
+                    }
+                    for i in split..docs.len() {
+                        one.collect(base + docs[i], scores[i]);
+                    }
+                    let n = many.collect_many(&docs[split..], &scores[split..], base);
+                    batched += n;
+                    for i in split + n..docs.len() {
+                        many.collect(base + docs[i], scores[i]);
+                    }
+                    let key = |c: &TopDocsCollector| {
+                        let hits: Vec<(i32, u32)> = c
+                            .top_docs()
+                            .iter()
+                            .map(|h| (h.doc_id, h.score.to_bits()))
+                            .collect();
+                        let t = c.total_hits();
+                        (hits, t.value, t.relation)
+                    };
+                    assert_eq!(
+                        key(&many),
+                        key(&one),
+                        "split {split} base {base} batched {n}"
+                    );
+                }
+            }
+        }
+        assert!(batched > 0, "some batch went through collect_many");
+    }
     use super::*;
 
     fn field_docs(v: &[(i32, i64)]) -> Vec<FieldValueDoc> {

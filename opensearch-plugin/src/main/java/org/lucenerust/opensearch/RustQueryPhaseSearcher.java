@@ -518,17 +518,25 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // the total differs ({10000, gte} for its {N, eq}) and the search scores documents
         // Lucene never looks at.
         int shortcut = -1;
+        // A term query's shortcut, left to the unsorted search's own native call (searchDocFreq):
+        // each crossing into native code costs more than the term lookup it makes.
+        Term shortcutTerm = null;
         // TopDocsCollectorContext: "hasFilterCollector ? -1 : shortcutTotalHitCount(...)".
         if (trackUpTo != SearchContext.TRACK_TOTAL_HITS_DISABLED
             && ctx.parsedPostFilter() == null
             && terminating == false
             && ctx.minimumScore() == null) {
-            try {
-                shortcut = shortcutTotalHitCount(ctx.searcher().getIndexReader(), ctx.query(), handle);
-            } catch (IOException e) {
-                return "native_error";
+            if (sortBlob == null && aggs == null && tree == null) {
+                shortcutTerm = shortcutTerm(ctx.searcher().getIndexReader(), ctx.query());
             }
-            if (shortcut >= 0) {
+            if (shortcutTerm == null) {
+                try {
+                    shortcut = shortcutTotalHitCount(ctx.searcher().getIndexReader(), ctx.query(), handle);
+                } catch (IOException e) {
+                    return "native_error";
+                }
+            }
+            if (shortcut >= 0 || shortcutTerm != null) {
                 countLimit = numDocs;
             }
         }
@@ -591,7 +599,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         }
         String reason = sortBlob != null
             ? searchSorted(ctx, handle, hitsBlob, sortBlob, sort, scoreDocs, Math.max(1, numDocs), countLimit, shortcut)
-            : searchUnsorted(ctx, handle, hitsBlob, numDocs, countLimit, shortcut, counted);
+            : searchUnsorted(ctx, handle, hitsBlob, numDocs, countLimit, shortcut, shortcutTerm, counted);
         if (reason == null && aggResult != null) {
             // DefaultAggregationProcessor.postProcess keeps a result already there (hasAggs).
             ctx.queryResult().aggregations(aggResult);
@@ -612,15 +620,37 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         int numDocs,
         long countLimit,
         int shortcut,
+        Term shortcutTerm,
         long[] counted
     ) {
         int[] docs = new int[numDocs];
         float[] scores = new float[numDocs];
-        long[] counts = new long[3];
+        long[] counts = new long[4];
         if (counted != null) {
             // Counted in the aggregations' pass: no hits to find, nothing left to search.
             counts[1] = counted[0];
             counts[2] = counted[1];
+        } else if (shortcutTerm != null) {
+            // The total from the term's document frequency, the hits (if any are asked for) from
+            // the same native call.
+            BytesRef bytes = shortcutTerm.bytes();
+            int rc = NativeBridge.searchDocFreq(
+                handle,
+                blob,
+                numDocs,
+                countLimit,
+                shortcutTerm.field().getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                java.util.Arrays.copyOfRange(bytes.bytes, bytes.offset, bytes.offset + bytes.length),
+                docs,
+                scores,
+                counts
+            );
+            if (rc != NativeBridge.OK) {
+                stats.nativeError();
+                logger.warn("lucene-rust: native search failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
+                return "native_error";
+            }
+            shortcut = Math.toIntExact(counts[3]);
         } else if (numDocs == 0 && (shortcut >= 0 || countLimit == 0)) {
             // No hits, and a total already known (the shortcut) or not asked for: nothing the
             // native search would answer is read below.
@@ -899,23 +929,14 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
      * same ones); {@code -1} otherwise.
      */
     static int shortcutTotalHitCount(IndexReader reader, Query query, long handle) throws IOException {
-        while (true) {
-            if (query instanceof ConstantScoreQuery c) {
-                query = c.getQuery();
-            } else if (query instanceof BoostQuery b) {
-                query = b.getQuery();
-            } else if (query instanceof ApproximateScoreQuery a) {
-                query = a.getOriginalQuery();
-            } else {
-                break;
-            }
-        }
+        query = unwrapShortcut(query);
         if (query.getClass() == MatchAllDocsQuery.class) {
             return reader.numDocs();
-        } else if (query.getClass() == TermQuery.class && reader.hasDeletions() == false) {
+        }
+        Term term = shortcutTerm(reader, query);
+        if (term != null) {
             // Summed by the native term dictionaries, which the search reads straight after:
             // Lucene's own, in every segment, cost more than the search itself.
-            Term term = ((TermQuery) query).getTerm();
             BytesRef bytes = term.bytes();
             long[] out = new long[1];
             int rc = NativeBridge.docFreq(
@@ -930,5 +951,33 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             return Math.toIntExact(out[0]);
         }
         return -1;
+    }
+
+    /**
+     * The term whose document frequency {@link #shortcutTotalHitCount} answers the total with: a
+     * plain {@code TermQuery}'s, behind any constant-score or boost wrappers, on a reader without
+     * deletions; else null.
+     */
+    static Term shortcutTerm(IndexReader reader, Query query) {
+        query = unwrapShortcut(query);
+        if (query.getClass() == TermQuery.class && reader.hasDeletions() == false) {
+            return ((TermQuery) query).getTerm();
+        }
+        return null;
+    }
+
+    /** The wrappers {@code shortcutTotalHitCount} looks through. */
+    private static Query unwrapShortcut(Query query) {
+        while (true) {
+            if (query instanceof ConstantScoreQuery c) {
+                query = c.getQuery();
+            } else if (query instanceof BoostQuery b) {
+                query = b.getQuery();
+            } else if (query instanceof ApproximateScoreQuery a) {
+                query = a.getOriginalQuery();
+            } else {
+                return query;
+            }
+        }
     }
 }

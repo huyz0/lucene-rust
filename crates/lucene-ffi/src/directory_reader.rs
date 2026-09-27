@@ -56,15 +56,16 @@
 
 use std::os::raw::c_char;
 
-/// Every distinct field named by a `Clause::Term` in `query`, sorted and
+/// Every distinct field named by a scoring `Clause::Term` in `query` (not a
+/// `FILTER` or `MUST_NOT` one, which never reads norms), sorted and
 /// deduplicated -- the fields
 /// `DirectoryReader::field_norms_by_field` should open norms for.
 ///
 /// The multi-segment FFI entry points build their `BooleanQuery` with
 /// [`crate::query::read_boolean_query`], which produces only `Clause::Term`
-/// and `Clause::Boolean` -- so walking the tree for every `Clause::Term`'s
-/// field name (which is what `clause_field_names` does) covers every field
-/// that can appear. Mirrors `query.rs`'s single-segment field-name
+/// and `Clause::Boolean` -- so walking the tree for every scoring
+/// `Clause::Term`'s field name (which is what `clause_field_names` does)
+/// covers every field whose norms a score can read. Mirrors `query.rs`'s single-segment field-name
 /// collection, differing only in returning owned `String`s, which the
 /// per-segment norms map here needs.
 fn boolean_query_term_fields(query: &lucene_search::query::BooleanQuery) -> Vec<String> {

@@ -3722,6 +3722,13 @@ impl<'a> LazyDocsCursor<'a> {
         self.needs_pos = true;
     }
 
+    /// Whether the field was indexed with frequencies (`indexHasFreq`):
+    /// without them every document's frequency is 1 and no block carries
+    /// impacts.
+    pub fn has_freqs(&self) -> bool {
+        self.index_has_freq
+    }
+
     /// The current doc's frequency, or `None` before the first
     /// `next_doc()`/`advance()` call or once exhausted.
     pub fn freq(&self) -> Option<i32> {

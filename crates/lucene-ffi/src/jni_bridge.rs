@@ -193,65 +193,150 @@ pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_search<'l>(
     out_counts: JLongArray<'l>,
 ) -> jint {
     run(|| {
-        let top_n = usize::try_from(top_n).map_err(|_| {
-            set_last_error(format!("topN {top_n} is negative"));
-            FfiStatus::InvalidArgument
-        })?;
-        let blob = env
-            .convert_byte_array(&query)
-            .map_err(|e| jni_err(&env, "query", e))?;
-        let docs_len = if top_n == 0 {
-            0
-        } else {
-            let a = env
-                .get_array_length(&out_docs)
-                .map_err(|e| jni_err(&env, "outDocs", e))?;
-            let b = env
-                .get_array_length(&out_scores)
-                .map_err(|e| jni_err(&env, "outScores", e))?;
-            usize::try_from(a.min(b)).unwrap_or(0)
+        let (hit_count, total, lower_bound) = match search_into(
+            &env,
+            handle,
+            &query,
+            top_n,
+            count_limit,
+            &out_docs,
+            &out_scores,
+        )? {
+            Ok(found) => found,
+            Err(status) => return Ok(status),
         };
-        if docs_len < top_n {
-            set_last_error(format!(
-                "output arrays hold {docs_len} hits, topN is {top_n}"
-            ));
-            return Err(FfiStatus::BufferTooSmall);
-        }
-        let mut docs: Vec<i32> = zeroed(top_n)?;
-        let mut scores: Vec<f32> = zeroed(top_n)?;
-        let mut hit_count = 0usize;
-        let mut total = 0i64;
-        let mut lower_bound = false;
-        // SAFETY: every pointer/length pair describes a live Rust buffer.
-        let status = unsafe {
-            jvm_reader::ffi_jvm_reader_search(
-                handle as u64,
-                blob.as_ptr(),
-                blob.len(),
+        env.set_long_array_region(
+            &out_counts,
+            0,
+            &[hit_count as jlong, total, jlong::from(lower_bound)],
+        )
+        .map_err(|e| jni_err(&env, "outCounts", e))?;
+        Ok(FfiStatus::Ok.code())
+    })
+}
+
+/// `search` with a term query's total-hits shortcut
+/// (`IndexReader.docFreq`) answered in the same call: `outCounts[3]`
+/// receives the term's document frequency.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_searchDocFreq<'l>(
+    env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    query: JByteArray<'l>,
+    top_n: jint,
+    count_limit: jlong,
+    field: JByteArray<'l>,
+    term: JByteArray<'l>,
+    out_docs: JIntArray<'l>,
+    out_scores: JFloatArray<'l>,
+    out_counts: JLongArray<'l>,
+) -> jint {
+    run(|| {
+        let field = env
+            .convert_byte_array(&field)
+            .map_err(|e| jni_err(&env, "field", e))?;
+        let term = env
+            .convert_byte_array(&term)
+            .map_err(|e| jni_err(&env, "term", e))?;
+        let doc_freq = jvm_reader::doc_freq(handle as u64, &field, &term)?;
+        let (hit_count, total, lower_bound) = if top_n == 0 {
+            (0, 0, false)
+        } else {
+            match search_into(
+                &env,
+                handle,
+                &query,
                 top_n,
                 count_limit,
-                docs.as_mut_ptr(),
-                scores.as_mut_ptr(),
-                top_n,
-                &mut hit_count,
-                &mut total,
-                &mut lower_bound,
-            )
+                &out_docs,
+                &out_scores,
+            )? {
+                Ok(found) => found,
+                Err(status) => return Ok(status),
+            }
         };
-        if status == FfiStatus::Ok.code() {
-            env.set_int_array_region(&out_docs, 0, &docs[..hit_count])
-                .map_err(|e| jni_err(&env, "outDocs", e))?;
-            env.set_float_array_region(&out_scores, 0, &scores[..hit_count])
-                .map_err(|e| jni_err(&env, "outScores", e))?;
-            env.set_long_array_region(
-                &out_counts,
-                0,
-                &[hit_count as jlong, total, jlong::from(lower_bound)],
-            )
-            .map_err(|e| jni_err(&env, "outCounts", e))?;
-        }
-        Ok(status)
+        env.set_long_array_region(
+            &out_counts,
+            0,
+            &[
+                hit_count as jlong,
+                total,
+                jlong::from(lower_bound),
+                doc_freq,
+            ],
+        )
+        .map_err(|e| jni_err(&env, "outCounts", e))?;
+        Ok(FfiStatus::Ok.code())
     })
+}
+
+/// The marshalling `search` and `searchDocFreq` share: runs `query`, writes
+/// its hits into the Java arrays, and returns `(hits, total, lower_bound)` --
+/// or, inside, the search's own failing status, which the caller returns.
+fn search_into(
+    env: &JNIEnv<'_>,
+    handle: jlong,
+    query: &JByteArray<'_>,
+    top_n: jint,
+    count_limit: jlong,
+    out_docs: &JIntArray<'_>,
+    out_scores: &JFloatArray<'_>,
+) -> Result<Result<(usize, i64, bool), i32>, FfiStatus> {
+    let top_n = usize::try_from(top_n).map_err(|_| {
+        set_last_error(format!("topN {top_n} is negative"));
+        FfiStatus::InvalidArgument
+    })?;
+    let blob = env
+        .convert_byte_array(query)
+        .map_err(|e| jni_err(env, "query", e))?;
+    let docs_len = if top_n == 0 {
+        0
+    } else {
+        let a = env
+            .get_array_length(out_docs)
+            .map_err(|e| jni_err(env, "outDocs", e))?;
+        let b = env
+            .get_array_length(out_scores)
+            .map_err(|e| jni_err(env, "outScores", e))?;
+        usize::try_from(a.min(b)).unwrap_or(0)
+    };
+    if docs_len < top_n {
+        set_last_error(format!(
+            "output arrays hold {docs_len} hits, topN is {top_n}"
+        ));
+        return Err(FfiStatus::BufferTooSmall);
+    }
+    let mut docs: Vec<i32> = zeroed(top_n)?;
+    let mut scores: Vec<f32> = zeroed(top_n)?;
+    let mut hit_count = 0usize;
+    let mut total = 0i64;
+    let mut lower_bound = false;
+    // SAFETY: every pointer/length pair describes a live Rust buffer.
+    let status = unsafe {
+        jvm_reader::ffi_jvm_reader_search(
+            handle as u64,
+            blob.as_ptr(),
+            blob.len(),
+            top_n,
+            count_limit,
+            docs.as_mut_ptr(),
+            scores.as_mut_ptr(),
+            top_n,
+            &mut hit_count,
+            &mut total,
+            &mut lower_bound,
+        )
+    };
+    if status != FfiStatus::Ok.code() {
+        return Ok(Err(status));
+    }
+    env.set_int_array_region(out_docs, 0, &docs[..hit_count])
+        .map_err(|e| jni_err(env, "outDocs", e))?;
+    env.set_float_array_region(out_scores, 0, &scores[..hit_count])
+        .map_err(|e| jni_err(env, "outScores", e))?;
+    Ok(Ok((hit_count, total, lower_bound)))
 }
 
 #[no_mangle]
