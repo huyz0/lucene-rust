@@ -731,34 +731,67 @@ def fetched(resp):
     return [{k: v for k, v in h.items() if k != "_score"} for h in resp["hits"]["hits"]]
 
 
+def fetch_counters():
+    st = stats()
+    return st["native_fetches"], st["native_sequential_fetches"], st["fetch_nanos"]["lucene_count"], st["native_errors"]
+
+
 def run_fetch(index, label):
-    """The fetch phase and get API with native stored fields against Lucene's, whole hits compared;
-    the native side must actually have served documents."""
+    """The fetch phase and get API with native stored fields against Lucene's, whole hits compared.
+    With the setting on, every stored-fields read of a search (and of a non-realtime get or mget)
+    must be native: the native counter moves, Lucene's and the error counter do not."""
     ids = [h["_id"] for h in req("POST", f"/{index}/_search", {"size": 40, "query": {"match_all": {}}, "_source": False})["hits"]["hits"]]
-    for name, body in FETCH_ROWS:
+
+    def compare(what, method, path, body, reads_stored, sequential=False):
         set_fetch(index, False)
-        want = fetched(req("POST", f"/{index}/_search?request_cache=false", body))
+        want = req(method, path, body)
         set_fetch(index, True)
-        before = stats()["native_fetches"]
-        got = fetched(req("POST", f"/{index}/_search?request_cache=false", body))
-        after = stats()["native_fetches"]
-        check(got == want, f"{label} {index} [{name}]: native fetch differs from Lucene's: {json.dumps(got)[:600]} vs {json.dumps(want)[:600]}")
-        reads_stored = body.get("_source", True) is not False or "stored_fields" in body
+        native, seq, lucene, errors = fetch_counters()
+        got = req(method, path, body)
+        native2, seq2, lucene2, errors2 = fetch_counters()
+        if method == "POST" and path.endswith("_search?request_cache=false"):
+            got, want = fetched(got), fetched(want)
+        check(got == want, f"{label} {index} [{what}]: native fetch differs from Lucene's: {json.dumps(got)[:600]} vs {json.dumps(want)[:600]}")
         if reads_stored and want:
-            check(after > before, f"{label} {index} [{name}]: no document fetched natively ({before} -> {after})")
+            check(native2 > native, f"{label} {index} [{what}]: no document fetched natively ({native} -> {native2})")
+            check(lucene2 == lucene, f"{label} {index} [{what}]: {lucene2 - lucene} documents read by Lucene")
+            check(errors2 == errors, f"{label} {index} [{what}]: {errors2 - errors} native errors")
+        if sequential:
+            check(seq2 > seq, f"{label} {index} [{what}]: the sequential reader served nothing natively")
+
+    for name, body in FETCH_ROWS:
+        reads_stored = body.get("_source", True) is not False or "stored_fields" in body
+        compare(name, "POST", f"/{index}/_search?request_cache=false", body, reads_stored)
+    # A run of adjacent hits in one segment -- the fetch phase's sequential reader -- on an index of
+    # one segment with no deletions, where the first 30 hits by _doc are 30 adjacent documents.
+    seq = "fetchseq"
+    if index == "single":
+        req("DELETE", f"/{seq}?ignore_unavailable=true")
+        req("PUT", f"/{seq}", {"settings": {"number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1}})
+        lines = []
+        for i in range(60):
+            lines.append(json.dumps({"index": {"_index": seq, "_id": str(i)}}))
+            lines.append(json.dumps({"body": f"doc {i}", "n": i}))
+        req("POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
+        req("POST", f"/{seq}/_refresh")
+        # The query phase opens the native reader the fetch then reads through.
+        req("POST", f"/{seq}/_search", {"size": 0, "query": {"match_all": {}}})
+        before = stats()["native_sequential_fetches"]
+        set_fetch(seq, False)
+        want = fetched(req("POST", f"/{seq}/_search?request_cache=false", {"size": 30, "query": {"match_all": {}}, "sort": ["_doc"]}))
+        set_fetch(seq, True)
+        got = fetched(req("POST", f"/{seq}/_search?request_cache=false", {"size": 30, "query": {"match_all": {}}, "sort": ["_doc"]}))
+        check(got == want and len(got) == 30, f"{label} {seq}: native sequential fetch differs from Lucene's")
+        check(stats()["native_sequential_fetches"] >= before + 30, f"{label} {seq}: the sequential reader served nothing natively")
+        req("DELETE", f"/{seq}")
     for doc_id in ids[:10]:
-        for params in ("", "?_source_includes=tag,n", "?stored_fields=title", "?realtime=false"):
-            set_fetch(index, False)
-            want = req("GET", f"/{index}/_doc/{doc_id}{params}")
-            set_fetch(index, True)
-            got = req("GET", f"/{index}/_doc/{doc_id}{params}")
-            check(got == want, f"{label} {index} get {doc_id}{params}: native differs: {json.dumps(got)[:400]} vs {json.dumps(want)[:400]}")
-    body = {"ids": ids[10:30]}
-    set_fetch(index, False)
-    want = req("POST", f"/{index}/_mget", body)
-    set_fetch(index, True)
-    got = req("POST", f"/{index}/_mget", body)
-    check(got == want, f"{label} {index} mget: native differs")
+        # A realtime get may read through the engine's internal reader, which no search opened
+        # natively: Lucene reads it, so only the output is compared.
+        for params in ("", "?_source_includes=tag,n", "?stored_fields=title"):
+            compare(f"get {doc_id}{params}", "GET", f"/{index}/_doc/{doc_id}{params}", None, False)
+        compare(f"get {doc_id}?realtime=false", "GET", f"/{index}/_doc/{doc_id}?realtime=false", None, True)
+    compare("mget", "POST", f"/{index}/_mget", {"ids": ids[10:30]}, False)
+    compare("mget realtime=false", "POST", f"/{index}/_mget?realtime=false", {"ids": ids[10:30]}, True)
 
 
 def bench_fetch(index, out, rounds):

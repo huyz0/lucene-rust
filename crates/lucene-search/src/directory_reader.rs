@@ -109,6 +109,8 @@ pub enum Error {
     PartialBlockTreeFiles { segment: String, found: usize },
     #[error("segment {segment} has one of .nvm/.nvd (need both or neither)")]
     PartialNormsFiles { segment: String },
+    #[error("segment {segment} has {found} of .fdt/.fdx/.fdm (need all three or none)")]
+    PartialStoredFieldsFiles { segment: String, found: usize },
     #[error(transparent)]
     StoredFields(#[from] lucene_codecs::stored_fields::Error),
 }
@@ -438,7 +440,19 @@ impl SegmentReader {
                     meta: OnceLock::new(),
                 }))
             }
-            _ => None,
+            (None, None, None) => None,
+            // A partial set is a damaged segment, not one without stored
+            // fields: answering "no fields" would hand the fetch phase a
+            // document with no `_source` and no `_id`.
+            (fdt, fdx, fdm) => {
+                return Err(Error::PartialStoredFieldsFiles {
+                    segment: segment_name,
+                    found: [fdt.is_some(), fdx.is_some(), fdm.is_some()]
+                        .iter()
+                        .filter(|p| **p)
+                        .count(),
+                })
+            }
         };
         let kdm_buf = open_segment_file(dir, compound.as_ref(), &si.files, ".kdm")?;
         let kdi_buf = open_segment_file(dir, compound.as_ref(), &si.files, ".kdi")?;
@@ -633,6 +647,7 @@ impl SegmentReader {
     /// # Errors
     /// A document outside the segment, stored fields that do not decode, or
     /// the visitor's own error.
+    #[must_use = "`false` means the segment has no stored fields and the visitor saw nothing"]
     pub fn visit_stored_document(
         &self,
         doc: i32,
@@ -2724,6 +2739,56 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir_path).ok();
+    }
+
+    /// Two of the three stored-fields files is a damaged segment, not one
+    /// with no stored fields.
+    #[test]
+    fn a_segment_with_part_of_its_stored_fields_files_is_an_error() {
+        let dir_path = tempdir();
+        let dir = FsDirectory::open(&dir_path);
+        let commit0 = flush_stored_only(&dir, "_0", [1u8; ID_LENGTH], "hello");
+        write_commit(&dir, 1, vec![commit0.clone()]);
+        let si_bytes = dir.open("_0.si").unwrap();
+        let mut si = segment_info::parse(&si_bytes, &commit0.segment_id).unwrap();
+        assert!(si.files.iter().any(|f| f.ends_with(".fdx")));
+        si.files.retain(|f| !f.ends_with(".fdx"));
+        std::fs::write(dir_path.join("_0.si"), segment_info::write(&si, "")).unwrap();
+
+        let err = DirectoryReader::open(&dir).unwrap_err();
+        assert!(
+            matches!(err, Error::PartialStoredFieldsFiles { found: 2, .. }),
+            "expected PartialStoredFieldsFiles, got {err:?}"
+        );
+    }
+
+    /// Stored-fields metadata that does not parse fails each read and is not
+    /// kept: the segment still opens (Java opens its stored-fields reader
+    /// with the segment core; this one reads `.fdm` on the first document).
+    #[test]
+    fn stored_fields_metadata_that_does_not_parse_is_an_error_every_time() {
+        let dir_path = tempdir();
+        let src = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/stored_fields_index"
+        );
+        for e in std::fs::read_dir(src).unwrap() {
+            let e = e.unwrap();
+            std::fs::copy(e.path(), dir_path.join(e.file_name())).unwrap();
+        }
+        let fdm = dir_path.join("_0.fdm");
+        let bytes = std::fs::read(&fdm).unwrap();
+        std::fs::write(&fdm, &bytes[..bytes.len() / 2]).unwrap();
+        let reader = DirectoryReader::open(&FsDirectory::open(&dir_path)).unwrap();
+        let seg = &reader.segment_readers()[0];
+        for _ in 0..2 {
+            assert!(matches!(
+                seg.stored_document(0),
+                Err(Error::StoredFields(_))
+            ));
+        }
+        assert!(seg.stored.as_deref().unwrap().meta.get().is_none());
+        assert!(format!("{:?}", seg.stored.as_deref().unwrap()).contains("meta_read: false"));
     }
 
     use lucene_util::test_support::TempDir;
