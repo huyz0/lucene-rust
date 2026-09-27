@@ -148,9 +148,29 @@ disjunction up to 16 terms, the blended 16-iterators-and-a-bitset past
 that), through a union scorer that holds the term cursors directly; the
 plugin sends prefix, wildcard and term sets (ABI 9). In process: filters
 over the family 7–39× (q62, q65, q67), a `SHOULD` prefix 1.1–1.4× (q63), a
-lone term set 0.92× merged and 3.4× segmented (q66). Open: a term set as a
-scored `MUST` beside a scoring `SHOULD` (q64), 0.47–0.58× -- Lucene makes the
-same 58,075 iterator moves, so the gap is the codec's docs-only `advance`.
+lone term set 1.17–1.43× merged (q66, below). Open: a term set as a scored
+`MUST` beside a scoring `SHOULD` (q64), 0.73–0.88×.
+
+**A term set's disjunction in the query cache.** A JFR profile of Lucene on
+q64 showed where its time went: `FixedBitSet.nextSetBit`, not postings.
+`rewriteAsBooleanQuery` turns up to 16 terms into `ConstantScoreQuery`
+around a `BooleanQuery` of `SHOULD` terms, and `ConstantScoreQuery` creates
+that query's weight without scores -- so `IndexSearcher` wraps it in
+`CachingWrapperWeight`, and a term set used a few times is read from a
+cached bitset *whatever the mode of the clause around it*, a scoring `MUST`
+included. `exec::multi_term` now does the same, keyed on the rewritten
+`BooleanQuery` (compound, so cached on its fourth use), and a top-level term
+set of 2 to 16 terms on a segment with a cache runs through the scorer tree
+instead of the streaming union so its uses are counted. A constant score
+over a cached bitset is walked word by word by the default bulk scorer
+(`Scorer::constant_bits`, Lucene's `DocIdStream`), not stepped through three
+virtual calls per document. q64 went from 0.50× to 0.73–0.88× (both engines
+now score the same 58,048 documents; what is left is per-document cost
+spread over the `ReqOptSumScorer`, the impacts and BM25), q66 from 0.27×
+(its streaming union decoded whole windows of three dense terms to keep
+1,001 documents) to 1.17–1.43×. A prefix, wildcard or regexp stays on the
+streaming union: knowing its term count means walking the term dictionary,
+the whole cost of a regexp -- routing them too cost q32 and q34 40%.
 
 **Points ranges (delivered).** `range` on `long`, `date` and `double`
 fields runs natively (ABI 10): a constant-scored range anywhere in a tree,
@@ -691,10 +711,27 @@ stored order, and the plugin replays it into OpenSearch's visitor with its
 wrapped reader is asked goes to Lucene, and both cache helpers are the
 wrapped reader's, so the query cache, the request cache and the
 `_id` lookups' per-segment caches are unchanged. The native handle is the
-query phase's own (`NativeReaders`, keyed by the reader's cache key); a
-reader the native side cannot open, or a document it fails to read, is read
-by Lucene, and `index.lucene_rust.fetch.enabled` (dynamic, default on)
-sends every document to Lucene.
+query phase's own (`NativeReaders.peek`, keyed by the reader's cache key),
+never opened for the fetch: a reader no search opened natively -- the
+realtime get's internal reader -- is read by Lucene rather than paying a
+native open for a handful of documents. A document the native side fails to
+read (a damaged segment, one without stored-fields files) is read by Lucene
+too, and `index.lucene_rust.fetch.enabled` (dynamic, default on) sends every
+document to Lucene.
+
+An index takes one reader wrapper (`IndexModule.setReaderWrapper` is
+set-once), and the security plugin claims it for field- and document-level
+security. The node setting `lucene_rust.fetch.reader_wrapper` decides
+whether this plugin installs its wrapper: on by default, off by default when
+the security plugin is installed beside it (stored fields are then Lucene's),
+and a wrapper another plugin set first is left in place with a warning.
+
+The blob carries every stored field of the document; the visitor's
+`needsField` answers are applied in Java. A visitor that wants only `_id`
+(`_source: false`) still has the whole document copied across the boundary,
+which Lucene skips with a `skipBytes` -- measured within the numbers below,
+and the obvious next step (a field mask from the visitor) if a workload of
+id-only fetches shows it.
 
 `docvalue_fields` is not a stored-fields read: OpenSearch's
 `FetchDocValuesPhase` reads each value through the field's doc-values
@@ -705,15 +742,25 @@ design (the REST rows compare its output all the same).
 
 Verified: `jvm_fetch.rs`'s tests (every document of the Lucene-written
 `stored_fields_index` through the FFI blob equals the segment reader's
-decoding; every value type round-trips), `directory_reader.rs`'s (the
-segment reader answers what the codec reader answers), and
+decoding; every value type round-trips; a damaged chunk and a segment
+without stored-fields files are errors, not empty documents),
+`directory_reader.rs`'s (the segment reader answers what the codec reader
+answers; a partial `.fdt/.fdx/.fdm` set is an error; metadata that does not
+parse fails every read and is never kept), the plugin's self test (a
+Lucene-written index with every stored type read through the wrapper --
+random access and the sequential reader -- and by Lucene with the same
+visitors: every field, `NO` on some including the last, `STOP` midway;
+every `needsField` and value call compared, about 750 of its 3,000
+documents under each visitor), and
 `verify_opensearch.py`'s fetch rows on the same node with the setting
 toggled: whole hits for `_source`, `_source` includes and excludes, no
 `_source`, `stored_fields` (with and without `_source`), `docvalue_fields`,
-`from`, `version`/`seq_no_primary_term` and highlighting, then `get` (plain,
-`_source_includes`, `stored_fields`, `realtime=false`) and `mget` -- after
-the query matrix and again after the SIGKILL restart -- each requiring the
-native counter to move.
+`from`, `version`/`seq_no_primary_term`, highlighting and a run of adjacent
+hits (the sequential reader), then `get` (plain, `_source_includes`,
+`stored_fields`, `realtime=false`) and `mget` (realtime and not) -- after
+the query matrix and again after the SIGKILL restart. Every search and
+non-realtime get must be served natively throughout: the native counter
+moves, and neither Lucene's count nor the error count does.
 
 **Speed.** The plugin times `StoredFields.document` on both paths
 (`fetch_nanos` in its stats): over the benchmark's fetch rows, native

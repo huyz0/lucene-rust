@@ -576,6 +576,28 @@ pub(crate) fn expanded_terms(
     Ok(Some(out))
 }
 
+/// Whether the multi-term `clause` is one the scorer tree runs through the
+/// segment's query cache: a term set of 2 to 16 terms (Lucene's
+/// `rewriteAsBooleanQuery`) on a segment the cache takes. Its size bounds its
+/// expansion without seeking a term (a lone term present runs in the tree as
+/// a plain term, as Lucene's rewrite does). A prefix, wildcard or regexp
+/// would have to be expanded to know -- a walk of the term dictionary that
+/// is the whole cost of a `regexp`, paid twice -- so those keep streaming,
+/// uncached.
+fn small_rewrite_is_cached(
+    cache: Option<&SegmentQueryCache>,
+    max_doc: Option<i32>,
+    clause: &Clause,
+) -> bool {
+    let Clause::TermInSet(q) = clause else {
+        return false;
+    };
+    cache.is_some()
+        && max_doc.is_some_and(|m| m >= exec::cache::MIN_SEGMENT_SIZE)
+        && q.terms.len() > 1
+        && q.terms.len() <= exec::multi_term::BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD
+}
+
 /// Streams a constant-scoring clause's matched documents in ascending order and
 /// stops as soon as the collector cannot be beaten.
 ///
@@ -3291,21 +3313,31 @@ fn search_boolean_query_scored_impl<C: ScoringCollector>(
             | Clause::Wildcard(_)
             | Clause::Regexp(_)
             | Clause::TermInSet(_)) => {
-                // Lazily merge the expanded terms' postings and stop at the
-                // collector's capacity -- see `stream_constant_score_clause`.
-                if stream_constant_score_clause(fields, doc_in, live_docs, other, collector)? {
+                // A small term set on a segment with a query cache: the
+                // scorer tree below, whose rewrite of them (a `BooleanQuery` of
+                // `SHOULD` terms, built without scores) is cached as Lucene's
+                // `CachingWrapperWeight` caches it -- a term set used again
+                // is then iterated from a bitset. Streaming here would never
+                // count a use, so it would never be cached.
+                if !small_rewrite_is_cached(cache, max_doc, other) {
+                    // Lazily merge the expanded terms' postings and stop at
+                    // the collector's capacity -- see
+                    // `stream_constant_score_clause`.
+                    if stream_constant_score_clause(fields, doc_in, live_docs, other, collector)? {
+                        return Ok(());
+                    }
+                    let matched = resolve_clause_docs(
+                        fields, doc_in, pos_in, pay_in, live_docs, points, other,
+                    )?;
+                    debug_assert!(
+                        matched.windows(2).all(|w| w[0] < w[1]),
+                        "resolve_clause_docs must yield ascending, deduplicated doc ids"
+                    );
+                    for doc_id in matched {
+                        collector.collect(doc_id, 1.0);
+                    }
                     return Ok(());
                 }
-                let matched =
-                    resolve_clause_docs(fields, doc_in, pos_in, pay_in, live_docs, points, other)?;
-                debug_assert!(
-                    matched.windows(2).all(|w| w[0] < w[1]),
-                    "resolve_clause_docs must yield ascending, deduplicated doc ids"
-                );
-                for doc_id in matched {
-                    collector.collect(doc_id, 1.0);
-                }
-                return Ok(());
             }
             // Unreachable: the guard above admits only the arms handled here.
             _ => unreachable!("guarded by the matches! above"),
