@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.LongAdder;
 public final class SearchStats {
     private final LongAdder nativeQueries = new LongAdder();
     private final LongAdder nativeErrors = new LongAdder();
+    private final LongAdder nativeFetches = new LongAdder();
     private final ConcurrentHashMap<String, LongAdder> fallbacks = new ConcurrentHashMap<>();
 
     public void nativeQuery() {
@@ -24,6 +25,45 @@ public final class SearchStats {
     /** A native search that failed and was re-run on Lucene; also counted as a fallback. */
     public void nativeError() {
         nativeErrors.increment();
+    }
+
+    /** A document whose stored fields the native reader served (read path R6). */
+    public void nativeFetch() {
+        nativeFetches.increment();
+    }
+
+    public long fetchCount() {
+        return nativeFetches.sum();
+    }
+
+    private final LongAdder fetchNativeNanos = new LongAdder();
+    private final LongAdder fetchLuceneNanos = new LongAdder();
+    private final LongAdder fetchLuceneDocs = new LongAdder();
+
+    /**
+     * Time spent in {@code StoredFields.document} by the fetch phase and get API, by the path that
+     * read the document: per document, without the REST round trip, as {@link #nativeTime} is for
+     * the query phase.
+     */
+    public void fetchTime(boolean nativePath, long nanos) {
+        if (nativePath) {
+            fetchNativeNanos.add(nanos);
+        } else {
+            fetchLuceneNanos.add(nanos);
+            fetchLuceneDocs.increment();
+        }
+    }
+
+    public long fetchNativeNanos() {
+        return fetchNativeNanos.sum();
+    }
+
+    public long fetchLuceneNanos() {
+        return fetchLuceneNanos.sum();
+    }
+
+    public long fetchLuceneCount() {
+        return fetchLuceneDocs.sum();
     }
 
     public void fallback(String reason) {

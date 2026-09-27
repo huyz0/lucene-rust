@@ -432,6 +432,28 @@ pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_aggregateTree
     })
 }
 
+/// `NativeBridge.document`: [`crate::jvm_fetch::ffi_jvm_reader_document`],
+/// the encoded fields as a new `byte[]` in `out[0]`.
+#[no_mangle]
+pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_document<'l>(
+    env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    segment: jint,
+    doc: jint,
+    out: JObjectArray<'l>,
+) -> jint {
+    run(|| {
+        let encoded = crate::jvm_fetch::document_blob(handle as u64, segment, doc)?;
+        let arr = env
+            .byte_array_from_slice(&encoded)
+            .map_err(|e| jni_err(&env, "out", e))?;
+        env.set_object_array_element(&out, 0, &arr)
+            .map_err(|e| jni_err(&env, "out", e))?;
+        Ok(FfiStatus::Ok.code())
+    })
+}
+
 /// `NativeBridge.countTerminates`: [`jvm_reader::ffi_jvm_reader_count_terminates`],
 /// the answer as 1 or 0 in `out[0]`.
 #[no_mangle]
