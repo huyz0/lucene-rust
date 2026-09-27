@@ -533,6 +533,16 @@ enum State {
     /// Distinct values per owning bucket: global ordinals for a keyword, raw
     /// longs otherwise.
     Cardinality(Vec<FastSet<i64>>),
+    /// A keyword `cardinality`: each owning bucket's global ordinals as bits
+    /// (`OrdinalsCollector`'s per-bucket `BitArray`), read back in term order.
+    OrdBits(Vec<Vec<u64>>),
+    /// A numeric `cardinality` with a precision: each owning bucket's
+    /// `HyperLogLogPlusPlus`, fed each value's hash as it is collected --
+    /// `CardinalityAggregator.DirectCollector`, in document order.
+    Sketches {
+        p: u32,
+        sketches: Vec<Option<crate::cardinality_sketch::Sketch>>,
+    },
     /// `LongKeyedBucketOrds`: `(owning, key)` to bucket ordinal, the keys in
     /// ordinal order, each bucket's document count.
     Keyed {
@@ -553,6 +563,18 @@ impl State {
         let subs = || node.subs().iter().map(State::new).collect();
         match node {
             AggNode::Metric { .. } => State::Metric(Vec::new()),
+            AggNode::Cardinality {
+                kind: CardinalityKind::Numeric(_),
+                precision: Some(p),
+                ..
+            } => State::Sketches {
+                p: *p,
+                sketches: Vec::new(),
+            },
+            AggNode::Cardinality {
+                kind: CardinalityKind::Keyword,
+                ..
+            } => State::OrdBits(Vec::new()),
             AggNode::Cardinality { .. } => State::Cardinality(Vec::new()),
             AggNode::Terms { .. } | AggNode::Histogram { .. } | AggNode::DateHistogram { .. } => {
                 State::Keyed {
@@ -629,6 +651,10 @@ struct Leaf<'a> {
     pre_len: usize,
     pre_vals: Vec<i64>,
     pre_bits: Vec<u64>,
+    /// A multi-valued column's window instead: document `pre_base + i`'s
+    /// values are `pre_vals[pre_offsets[i]..pre_offsets[i + 1]]`.
+    pre_multi: bool,
+    pre_offsets: Vec<u32>,
     /// The documents this node placed in a bucket during a window, and the
     /// buckets: what its sub-aggregations collect next ([`collect_window`]).
     win_docs: Vec<i32>,
@@ -653,13 +679,29 @@ impl Leaf<'_> {
     /// per document. [`Self::read`] answers from the window what it covers.
     fn prefetch(&mut self, base: i32, len: usize) -> Result<()> {
         self.pre_len = 0;
-        if let Col::Values(Values::Single(r), false) = &mut self.col {
-            self.pre_vals.resize(len, 0);
-            self.pre_bits.resize(len.div_ceil(64), 0);
-            r.fill_window(base, &mut self.pre_vals, &mut self.pre_bits)
-                .map_err(crate::Error::from)?;
-            self.pre_base = base;
-            self.pre_len = len;
+        self.pre_multi = false;
+        match &mut self.col {
+            // A keyword's segment ordinals are the same column shapes.
+            Col::Values(Values::Single(r), false) | Col::Ords(Ords::Single(r), _) => {
+                self.pre_vals.resize(len, 0);
+                self.pre_bits.resize(len.div_ceil(64), 0);
+                r.fill_window(base, &mut self.pre_vals, &mut self.pre_bits)
+                    .map_err(crate::Error::from)?;
+                self.pre_base = base;
+                self.pre_len = len;
+            }
+            Col::Values(Values::Multi(r), false) | Col::Ords(Ords::Multi(r), _) => {
+                // A column that cannot be read a window at a time is read
+                // document by document, for the matching ones only.
+                if r.fill_window(base, len, &mut self.pre_offsets, &mut self.pre_vals)
+                    .map_err(crate::Error::from)?
+                {
+                    self.pre_multi = true;
+                    self.pre_base = base;
+                    self.pre_len = len;
+                }
+            }
+            _ => {}
         }
         for s in &mut self.subs {
             s.prefetch(base, len)?;
@@ -672,7 +714,7 @@ impl Leaf<'_> {
     #[inline]
     fn prefetched(&self, doc: i32) -> Option<Option<i64>> {
         let i = doc.wrapping_sub(self.pre_base) as u32 as usize;
-        if i >= self.pre_len {
+        if i >= self.pre_len || self.pre_multi {
             return None;
         }
         let has = self
@@ -696,7 +738,14 @@ impl Leaf<'_> {
         // The window read ahead, when it covers the document.
         let i = doc.wrapping_sub(self.pre_base) as u32 as usize;
         if i < self.pre_len {
-            if self
+            if self.pre_multi {
+                let range = self.pre_offsets.get(i).zip(self.pre_offsets.get(i + 1));
+                if let Some((&from, &to)) = range {
+                    if let Some(v) = self.pre_vals.get(from as usize..to as usize) {
+                        self.buf.extend_from_slice(v);
+                    }
+                }
+            } else if self
                 .pre_bits
                 .get(i >> 6)
                 .is_some_and(|w| w >> (i & 63) & 1 == 1)
@@ -828,6 +877,8 @@ fn open_leaf<'a>(
         pre_len: 0,
         pre_vals: Vec::new(),
         pre_bits: Vec::new(),
+        pre_multi: false,
+        pre_offsets: Vec::new(),
         win_docs: Vec::new(),
         win_ords: Vec::new(),
         subs,
@@ -892,6 +943,30 @@ fn keyed_ord(
     })
 }
 
+/// The hash `CardinalityAggregator` collects for a numeric value: `mix64` of
+/// a long, or of a double's `doubleToLongBits`.
+#[inline]
+fn numeric_hash(kind: ValueKind, v: i64) -> i64 {
+    crate::cardinality_sketch::mix64(match kind {
+        ValueKind::Long => v,
+        k => java_double_bits(aggs::to_double(k, v)),
+    })
+}
+
+/// An owning bucket's sketch, created at its first value.
+fn sketch_for(
+    s: &mut Option<crate::cardinality_sketch::Sketch>,
+    p: u32,
+) -> Result<&mut crate::cardinality_sketch::Sketch> {
+    if s.is_none() {
+        *s = Some(
+            crate::cardinality_sketch::Sketch::new(p)
+                .ok_or_else(|| crate::Error::TermsAggType(format!("cardinality precision {p}")))?,
+        );
+    }
+    Ok(s.as_mut().expect("just set"))
+}
+
 /// [`collect`] for each of `docs` (ascending, inside the window read ahead)
 /// under owning bucket `owners[i]` -- the same calls in the same order, per
 /// node: a bucket aggregation places the whole window, then hands its
@@ -907,7 +982,9 @@ fn collect_window(
     docs: &[i32],
     owners: &[u32],
 ) -> Result<()> {
-    let prefetched = leaf.pre_len > 0;
+    // The single-valued fast paths below read `Leaf::prefetched`; a
+    // multi-valued window goes document by document (through `Leaf::read`).
+    let prefetched = leaf.pre_len > 0 && !leaf.pre_multi;
     match (node, &mut *state) {
         (AggNode::Metric { kind, needs, .. }, State::Metric(states)) if prefetched => {
             // `collect_needs`'s dispatch, once for the window.
@@ -933,6 +1010,20 @@ fn collect_window(
                     run::<{ NEED_COUNT | NEED_SUM }>(states, leaf, *kind, docs, owners)
                 }
                 _ => run::<NEED_ALL>(states, leaf, *kind, docs, owners),
+            }
+            return Ok(());
+        }
+        (
+            AggNode::Cardinality {
+                kind: CardinalityKind::Numeric(k),
+                ..
+            },
+            State::Sketches { p, sketches },
+        ) if prefetched => {
+            for (&doc, &owner) in docs.iter().zip(owners) {
+                if let Some(Some(v)) = leaf.prefetched(doc) {
+                    sketch_for(slot(sketches, owner as usize), *p)?.collect(numeric_hash(*k, v));
+                }
             }
             return Ok(());
         }
@@ -1082,28 +1173,58 @@ fn collect(
             }
             slot(states, owning as usize).collect_needs(*needs, *kind, &leaf.buf);
         }
+        (AggNode::Cardinality { .. }, State::OrdBits(bits)) => {
+            if !leaf.read(doc)? {
+                return Ok(());
+            }
+            let Col::Ords(_, map) = &leaf.col else {
+                return Err(crate::Error::TermsAggType(
+                    "keyword cardinality without an ordinal column".to_string(),
+                ));
+            };
+            let words = slot(bits, owning as usize);
+            for &o in &leaf.buf {
+                // A global ordinal is below the reader's term count; a
+                // negative one never reaches the bit set.
+                let Ok(g) = usize::try_from(global_ord(map, o)?) else {
+                    return Err(crate::Error::TermsAggType(format!(
+                        "negative global ordinal for segment ordinal {o}"
+                    )));
+                };
+                *slot(words, g >> 6) |= 1 << (g & 63);
+            }
+        }
+        (AggNode::Cardinality { kind, .. }, State::Sketches { p, sketches }) => {
+            if !leaf.read(doc)? {
+                return Ok(());
+            }
+            let CardinalityKind::Numeric(k) = kind else {
+                return Err(crate::Error::TermsAggType(
+                    "a keyword cardinality has no direct sketch".to_string(),
+                ));
+            };
+            let sketch = sketch_for(slot(sketches, owning as usize), *p)?;
+            for &v in &leaf.buf {
+                sketch.collect(numeric_hash(*k, v));
+            }
+        }
         (AggNode::Cardinality { kind, .. }, State::Cardinality(sets)) => {
             if !leaf.read(doc)? {
                 return Ok(());
             }
+            // A numeric one without a precision (a keyword's is `OrdBits`,
+            // one with a precision `Sketches`).
             let set = slot(sets, owning as usize);
-            match (kind, &leaf.col) {
-                (CardinalityKind::Keyword, Col::Ords(_, map)) => {
-                    for &o in &leaf.buf {
-                        set.insert(global_ord(map, o)?);
-                    }
-                }
-                (CardinalityKind::Numeric(ValueKind::Long), _) => {
-                    set.extend(leaf.buf.iter().copied())
-                }
-                (CardinalityKind::Numeric(k), _) => {
+            match kind {
+                CardinalityKind::Numeric(ValueKind::Long) => set.extend(leaf.buf.iter().copied()),
+                CardinalityKind::Numeric(k) => {
                     for &v in &leaf.buf {
                         set.insert(java_double_bits(aggs::to_double(*k, v)));
                     }
                 }
-                (CardinalityKind::Keyword, _) => {
+                CardinalityKind::Keyword => {
                     return Err(crate::Error::TermsAggType(
-                        "keyword cardinality without an ordinal column".to_string(),
+                        "keyword cardinality counted as values".to_string(),
                     ))
                 }
             }
@@ -1722,8 +1843,11 @@ pub fn aggregate_tree(
                 None => {}
                 Some(Some(docs)) => {
                     let mut i = 0;
-                    while let Some(&base) = docs.get(i) {
-                        let end = base.saturating_add(WINDOW).min(max_doc).max(base + 1);
+                    while let Some(&first) = docs.get(i) {
+                        // Windows aligned as the whole-segment ones are, so
+                        // a column's blocks can be read in one piece.
+                        let base = first - first.rem_euclid(WINDOW);
+                        let end = base.saturating_add(WINDOW).min(max_doc).max(first + 1);
                         let j = i + docs[i..].partition_point(|&d| d < end);
                         window(&mut leaves, base, end, j - i)?;
                         visit_window(&mut states, &mut leaves, &docs[i..j])?;
@@ -1820,57 +1944,78 @@ fn finish(
         )),
         (
             AggNode::Cardinality {
-                field,
-                kind,
-                precision: Some(p),
+                field, precision, ..
             },
-            State::Cardinality(sets),
+            State::OrdBits(bits),
         ) => {
-            // The hashes `CardinalityAggregator` collects: a term's
-            // `MurmurHash3` (seed 0), a long's or a double's bits' `mix64`.
-            let mut out = Vec::with_capacity(owners.len());
-            for &o in owners {
-                let Some(set) = sets.get(o as usize).filter(|s| !s.is_empty()) else {
-                    out.push(Vec::new());
-                    continue;
-                };
-                let mut sketch = crate::cardinality_sketch::Sketch::new(*p).ok_or_else(|| {
-                    crate::Error::TermsAggType(format!("cardinality precision {p}"))
-                })?;
-                // In value order: a keyword's global ordinals are its terms'
-                // order, the order Java's `OrdinalsCollector` feeds them. The
-                // linear-counting table's layout (not its contents) depends
-                // on the order when hashes collide.
-                let mut values: Vec<i64> = set.iter().copied().collect();
-                values.sort_unstable();
-                match kind {
-                    CardinalityKind::Keyword => {
-                        let g = globals.get(field)?;
+            // Each owner's global ordinals in ascending -- term -- order.
+            let ords_of = |o: u32| -> Vec<i64> {
+                let mut out = Vec::new();
+                if let Some(words) = bits.get(o as usize) {
+                    for (w, &word) in words.iter().enumerate() {
+                        let mut word = word;
+                        while word != 0 {
+                            out.push((w * 64 + word.trailing_zeros() as usize) as i64);
+                            word &= word - 1;
+                        }
+                    }
+                }
+                out
+            };
+            let g = globals.get(field)?;
+            match precision {
+                Some(p) => {
+                    let mut out = Vec::with_capacity(owners.len());
+                    for &o in owners {
+                        let values = ords_of(o);
+                        if values.is_empty() {
+                            out.push(Vec::new());
+                            continue;
+                        }
+                        let mut sketch =
+                            crate::cardinality_sketch::Sketch::new(*p).ok_or_else(|| {
+                                crate::Error::TermsAggType(format!("cardinality precision {p}"))
+                            })?;
                         for &v in &values {
                             let term = terms.term(g, field, v)?;
                             sketch.collect(crate::cardinality_sketch::murmur3_h1(&term, 0));
                         }
+                        let mut bytes = Vec::new();
+                        sketch.write_to(&mut bytes);
+                        out.push(bytes);
                     }
-                    CardinalityKind::Numeric(_) => {
-                        for &v in &values {
-                            sketch.collect(crate::cardinality_sketch::mix64(v));
-                        }
-                    }
+                    Ok(AggResult::CardinalitySketch(out))
                 }
-                let mut bytes = Vec::new();
-                sketch.write_to(&mut bytes);
-                out.push(bytes);
+                None => {
+                    let mut out = Vec::with_capacity(owners.len());
+                    for &o in owners {
+                        out.push(
+                            ords_of(o)
+                                .into_iter()
+                                .map(|v| terms.term(g, field, v).map(CardinalityValue::Term))
+                                .collect::<Result<Vec<_>>>()?,
+                        );
+                    }
+                    Ok(AggResult::Cardinality(out))
+                }
             }
-            Ok(AggResult::CardinalitySketch(out))
         }
-        (
-            AggNode::Cardinality {
-                field,
-                kind,
-                precision: None,
-            },
-            State::Cardinality(sets),
-        ) => {
+        (AggNode::Cardinality { .. }, State::Sketches { sketches, .. }) => {
+            Ok(AggResult::CardinalitySketch(
+                owners
+                    .iter()
+                    .map(|&o| {
+                        let mut bytes = Vec::new();
+                        if let Some(Some(s)) = sketches.get(o as usize) {
+                            s.write_to(&mut bytes);
+                        }
+                        bytes
+                    })
+                    .collect(),
+            ))
+        }
+        // A numeric one without a precision: its distinct values, ascending.
+        (AggNode::Cardinality { .. }, State::Cardinality(sets)) => {
             let mut out = Vec::with_capacity(owners.len());
             for &o in owners {
                 let Some(set) = sets.get(o as usize) else {
@@ -1879,18 +2024,7 @@ fn finish(
                 };
                 let mut values: Vec<i64> = set.iter().copied().collect();
                 values.sort_unstable();
-                out.push(match kind {
-                    CardinalityKind::Keyword => {
-                        let g = globals.get(field)?;
-                        values
-                            .into_iter()
-                            .map(|v| terms.term(g, field, v).map(CardinalityValue::Term))
-                            .collect::<Result<Vec<_>>>()?
-                    }
-                    CardinalityKind::Numeric(_) => {
-                        values.into_iter().map(CardinalityValue::Long).collect()
-                    }
-                });
+                out.push(values.into_iter().map(CardinalityValue::Long).collect());
             }
             Ok(AggResult::Cardinality(out))
         }
@@ -2773,7 +2907,23 @@ mod tests {
                     },
                 ],
             ),
-            histogram("e", ValueKind::Double, vec![metric("l", ValueKind::Long)]),
+            histogram(
+                "e",
+                ValueKind::Double,
+                vec![
+                    metric("l", ValueKind::Long),
+                    AggNode::Cardinality {
+                        field: "d".to_string(),
+                        kind: CardinalityKind::Numeric(ValueKind::Double),
+                        precision: Some(5),
+                    },
+                    AggNode::Cardinality {
+                        field: "ml".to_string(),
+                        kind: CardinalityKind::Numeric(ValueKind::Long),
+                        precision: Some(14),
+                    },
+                ],
+            ),
             histogram("md", ValueKind::Double, vec![metric("i", ValueKind::Long)]),
             AggNode::Range {
                 field: "d".to_string(),
@@ -2783,16 +2933,110 @@ mod tests {
             },
             metric("f", ValueKind::Float),
         ];
+        let both = |reader: &DirectoryReader, q: &BooleanQuery, tree: &AggNode| {
+            let nodes = std::slice::from_ref(tree);
+            NO_WINDOWS.with(|w| w.set(true));
+            let one = run(reader, q, nodes, &whole(reader)).unwrap();
+            NO_WINDOWS.with(|w| w.set(false));
+            let windowed = run(reader, q, nodes, &whole(reader)).unwrap();
+            assert_eq!(format!("{windowed:?}"), format!("{one:?}"), "{tree:?}");
+        };
         for q in [all(), body("a"), body("b")] {
             for tree in &trees {
-                let nodes = std::slice::from_ref(tree);
-                NO_WINDOWS.with(|w| w.set(true));
-                let one = run(&reader, &q, nodes, &whole(&reader)).unwrap();
-                NO_WINDOWS.with(|w| w.set(false));
-                let windowed = run(&reader, &q, nodes, &whole(&reader)).unwrap();
-                assert_eq!(format!("{windowed:?}"), format!("{one:?}"), "{tree:?}");
+                both(&reader, &q, tree);
             }
         }
+        // Keyword columns: single- and multi-valued ordinals, as terms and as
+        // cardinalities, with and without a precision.
+        let reader = fixture("terms_aggs_index");
+        for (field, other) in [("kw", "mkw"), ("mkw", "kw")] {
+            let tree = AggNode::Terms {
+                field: field.to_string(),
+                shard_size: 5,
+                subs: vec![
+                    AggNode::Cardinality {
+                        field: other.to_string(),
+                        kind: CardinalityKind::Keyword,
+                        precision: None,
+                    },
+                    AggNode::Cardinality {
+                        field: other.to_string(),
+                        kind: CardinalityKind::Keyword,
+                        precision: Some(12),
+                    },
+                ],
+            };
+            for q in [all(), body("a")] {
+                both(&reader, &q, &tree);
+            }
+        }
+    }
+
+    /// `SortedNumericReader::fill_window` is `values` document by document,
+    /// on the fixtures' multi-valued columns (numbers and keyword ordinals,
+    /// dense and sparse): aligned windows across each segment, windows that
+    /// are not aligned, one running past the documents, and a rewind.
+    #[test]
+    fn a_multi_valued_window_is_each_documents_values() {
+        let (mut checked, mut declined) = (0, 0);
+        for (index, field, keyword) in [
+            ("metric_aggs_index", "ml", false),
+            ("metric_aggs_index", "md", false),
+            ("terms_aggs_index", "mkw", true),
+        ] {
+            let reader = fixture(index);
+            for r in reader.segment_readers() {
+                let open = || -> Option<Box<lucene_codecs::doc_values::SortedNumericReader<'_>>> {
+                    if keyword {
+                        match crate::terms_agg::open_ords(r, field).unwrap().0 {
+                            Ords::Multi(m) => Some(m),
+                            _ => None,
+                        }
+                    } else {
+                        match aggs::open_values(r, field).unwrap() {
+                            Values::Multi(m) => Some(m),
+                            _ => None,
+                        }
+                    }
+                };
+                let Some(mut windowed) = open() else {
+                    continue;
+                };
+                let max = r.max_doc;
+                let mut windows: Vec<(i32, usize)> = (0..max)
+                    .step_by(WINDOW as usize)
+                    .map(|b| (b, WINDOW as usize))
+                    .collect();
+                windows.extend([(3, 100), (max - 5, 64), (0, 64), (max, 0)]);
+                let (mut offsets, mut values) = (Vec::new(), Vec::new());
+                for (base, len) in windows {
+                    if !windowed
+                        .fill_window(base, len, &mut offsets, &mut values)
+                        .unwrap()
+                    {
+                        declined += 1;
+                        continue;
+                    }
+                    assert_eq!(offsets.len(), len + 1);
+                    let mut by_doc = open().unwrap();
+                    let mut want = Vec::new();
+                    for i in 0..len {
+                        let doc = base + i as i32;
+                        if doc < max {
+                            by_doc.values(doc, &mut want).unwrap();
+                        } else {
+                            want.clear();
+                        }
+                        let got = &values[offsets[i] as usize..offsets[i + 1] as usize];
+                        assert_eq!(got, &want[..], "{field} doc {doc} window {base}+{len}");
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked > 1000, "{checked}");
+        // Unaligned windows over a sparse column are left to the caller.
+        assert!(declined > 0);
     }
 
     /// With a precision, a `cardinality` answers each bucket's sketch: the
@@ -2831,6 +3075,31 @@ mod tests {
             ),
         ] {
             let reader = fixture(index);
+            // A numeric one is fed every value in document order, as
+            // `DirectCollector` feeds it; a keyword one its distinct terms
+            // in term order, as `OrdinalsCollector` does.
+            let rows = match kind {
+                CardinalityKind::Numeric(_) => scan(&reader, &all(), field),
+                CardinalityKind::Keyword => Vec::new(),
+            };
+            let in_doc_order = |p: u32| -> Vec<u8> {
+                let CardinalityKind::Numeric(k) = kind else {
+                    unreachable!()
+                };
+                let mut s = Sketch::new(p).unwrap();
+                for (_, _, values) in &rows {
+                    for &v in values {
+                        s.collect(numeric_hash(k, v));
+                    }
+                }
+                let mut out = Vec::new();
+                s.write_to(&mut out);
+                out
+            };
+            let want = |p: u32, values: &[CardinalityValue]| match kind {
+                CardinalityKind::Numeric(_) if !values.is_empty() => in_doc_order(p),
+                _ => sketch(p, values),
+            };
             for p in [4, 10, 14] {
                 let node = |precision| AggNode::Cardinality {
                     field: field.to_string(),
@@ -2856,7 +3125,7 @@ mod tests {
                 else {
                     panic!("{got:?}")
                 };
-                assert_eq!(sketches[0], sketch(p, &values[0]), "{field} p {p}");
+                assert_eq!(sketches[0], want(p, &values[0]), "{field} p {p}");
                 assert!(!sketches[0].is_empty());
                 let AggResult::Fixed { subs, .. } = &got[2] else {
                     panic!()
@@ -2868,7 +3137,7 @@ mod tests {
                 };
                 assert_eq!(sketches.len(), 2);
                 for (v, s) in values.iter().zip(sketches) {
-                    assert_eq!(s, &sketch(p, v), "{field} p {p} under filters");
+                    assert_eq!(s, &want(p, v), "{field} p {p} under filters");
                 }
                 assert!(sketches[1].is_empty(), "the empty filter bucket");
             }

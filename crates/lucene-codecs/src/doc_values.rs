@@ -2127,6 +2127,146 @@ impl<'a> SortedNumericReader<'a> {
         Ok(())
     }
 
+    /// The values of the documents `start..start + len` in one forward pass:
+    /// document `start + i`'s values are `values[offsets[i]..offsets[i + 1]]`
+    /// (`offsets` gets `len + 1` entries), each what [`Self::values`]
+    /// answers, which the tests check document for document.
+    ///
+    /// For a window-at-a-time consumer. Where the values are a single-width
+    /// array: a dense field's ranks are its documents, a sparse one's come
+    /// off its `IndexedDISI` a block window at a time
+    /// (`DisiCursor::window_bits`); either way they run consecutively, so one
+    /// address per document is read (the previous one's end is the next one's
+    /// start) and the values are decoded a chunk at a time. Any other shape
+    /// (a SPARSE block, a window across blocks, values not in one width) reads
+    /// nothing and answers `false`: the caller asks [`Self::values`] for the
+    /// documents it wants, rather than every document of the window.
+    ///
+    /// # Errors
+    /// What [`Self::values`] reports, including an address range outside the
+    /// values array.
+    pub fn fill_window(
+        &mut self,
+        start: i32,
+        len: usize,
+        offsets: &mut Vec<u32>,
+        values: &mut Vec<i64>,
+    ) -> Result<bool> {
+        offsets.clear();
+        values.clear();
+        offsets.push(0);
+        let fits = i32::try_from(len).ok().and_then(|l| start.checked_add(l));
+        if start < 0 || fits.is_none() {
+            return Err(Error::DocOutOfRange(start, len as i64));
+        }
+        // A window behind the cursor rewinds it, whichever path reads it.
+        if let Some(cursor) = self.docs.as_mut() {
+            if start < cursor.doc_id() {
+                cursor.reset();
+            }
+        }
+        let numeric = &self.entry.numeric;
+        // The documents with values and the rank of the first, when they
+        // come in one piece.
+        let mut present = vec![0u64; len.div_ceil(64)];
+        let first_rank: Option<i64> = match (&self.entry.addresses, self.fast) {
+            (Some(_), Some(_)) if numeric.is_empty_field() => None,
+            (Some(_), Some(_)) if numeric.is_dense() => {
+                let have = usize::try_from(self.entry.num_docs_with_field.saturating_sub(start))
+                    .unwrap_or(0)
+                    .min(len);
+                // ARITH: `i < have <= len`, and `i >> 6 < present.len()`.
+                #[allow(clippy::arithmetic_side_effects)]
+                for i in 0..have {
+                    present[i >> 6] |= 1 << (i & 63);
+                }
+                Some(i64::from(start))
+            }
+            (Some(_), Some(_)) if len.is_multiple_of(64) => match self.docs.as_mut() {
+                Some(cursor) => cursor.window_bits(start, &mut present)?,
+                None => None,
+            },
+            _ => None,
+        };
+        let (Some(rank0), Some(addrs), Some(fast)) = (first_rank, &self.entry.addresses, self.fast)
+        else {
+            // An empty field has nothing in any window.
+            if numeric.is_empty_field() {
+                // ARITH: `len` fits an `i32` (checked above).
+                #[allow(clippy::arithmetic_side_effects)]
+                offsets.resize(len + 1, 0);
+                return Ok(true);
+            }
+            return Ok(false);
+        };
+        let addr_region = region(self.data, addrs.offset, addrs.length)?;
+        let count: usize = present.iter().map(|w| w.count_ones() as usize).sum();
+        // The addresses of ranks `rank0..=rank0 + count`, in one pass: each
+        // present document's values run from its address to the next.
+        // ARITH: `count <= len`, which fits an `i32`.
+        #[allow(clippy::arithmetic_side_effects)]
+        let mut bounds = vec![0i64; if count == 0 { 0 } else { count + 1 }];
+        direct_monotonic::fill(addr_region, &addrs.meta, rank0, &mut bounds)?;
+        let first = bounds.first().copied().unwrap_or(0);
+        let mut lo = first;
+        let mut k = 0usize;
+        // ARITH: `i < len`, `k < count` for every present document, and every
+        // address is checked against `num_values` before it sizes anything.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            if lo < 0 || lo > numeric.num_values {
+                return Err(Error::CorruptAddressRange {
+                    field_number: self.entry.field_number,
+                    start: lo,
+                    end: lo,
+                    num_values: numeric.num_values,
+                });
+            }
+            for i in 0..len {
+                if present[i >> 6] >> (i & 63) & 1 == 1 {
+                    k += 1;
+                    let hi = bounds[k];
+                    if hi < lo || hi > numeric.num_values {
+                        return Err(Error::CorruptAddressRange {
+                            field_number: self.entry.field_number,
+                            start: lo,
+                            end: hi,
+                            num_values: numeric.num_values,
+                        });
+                    }
+                    lo = hi;
+                }
+                // Checked just above: `first <= lo <= num_values`, and the
+                // window's values fit the `u32` offsets a window's length
+                // bounds in practice (saturating otherwise, and caught below).
+                offsets.push(u32::try_from(lo - first).unwrap_or(u32::MAX));
+            }
+            // The window's values, ranks `first..lo`, a chunk at a time.
+            let n = usize::try_from(lo - first).unwrap_or(0);
+            values.resize(n, 0);
+            let mut done = 0;
+            while done < n {
+                let at = first + done as i64;
+                let got = i32::try_from(at).map_or(0, |a| fast.fill(a, &mut values[done..]));
+                if got == 0 {
+                    values[done] = decode_value(self.data, numeric, at)?;
+                    done += 1;
+                } else {
+                    done += got;
+                }
+            }
+            if offsets.last().is_some_and(|&o| o as usize != n) {
+                return Err(Error::CorruptAddressRange {
+                    field_number: self.entry.field_number,
+                    start: first,
+                    end: lo,
+                    num_values: numeric.num_values,
+                });
+            }
+        }
+        Ok(true)
+    }
+
     /// Calls `f(doc, values)` for every document in `start..end` that has
     /// values, ascending, each document's values ascending -- [`Self::values`]
     /// over a range, the way an aggregation over a match-all reads a column.
