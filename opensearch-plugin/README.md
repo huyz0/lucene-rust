@@ -39,7 +39,9 @@ cannot be installed alongside `neural-search`.
 |---|---|
 | `index.lucene_rust.search.enabled` (index, dynamic, default `true`) | route this index's searches native when eligible |
 | `index.lucene_rust.search.native_shapes` (index, dynamic, `fast`/`all`, default `fast`) | `all` also runs shapes that are correct natively but measured slower. Since read path R1 there are none (every encodable shape measures faster), so the two values agree |
-| `GET /_plugins/lucene_rust/stats` | native queries, native errors, fallbacks by reason, open native readers |
+| `index.lucene_rust.fetch.enabled` (index, dynamic, default `true`) | read this index's stored fields (`_source`, `_id`, `stored_fields`) natively in the fetch phase and the get API (read path R6) |
+| `lucene_rust.fetch.reader_wrapper` (node, default `true` unless the security plugin is installed) | install the index reader wrapper native stored fields need. An index takes one reader wrapper and the security plugin claims it for field- and document-level security, so with it installed the default is off and stored fields are read by Lucene; if another plugin set a wrapper first, this one logs and stands down |
+| `GET /_plugins/lucene_rust/stats` | native queries, native errors, fallbacks by reason, open native readers, native stored-fields reads (`native_fetches`, `native_sequential_fetches`) and `StoredFields.document` time per path (`fetch_nanos`) |
 
 A native failure is logged, counted as `native_errors`, and the query is re-run
 on Lucene: it never fails a search Lucene can answer.

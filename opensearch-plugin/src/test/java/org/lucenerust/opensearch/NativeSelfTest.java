@@ -85,6 +85,7 @@ public final class NativeSelfTest {
         encoderMatrix();
         nrtReaders(new Random(42));
         softDeletes(new Random(7));
+        storedFields(new Random(11));
         int compared = 0;
         for (Path fixture : fixtureIndexes(Path.of(args[0]))) {
             compared += fixture(fixture) ? 1 : 0;
@@ -1005,6 +1006,152 @@ public final class NativeSelfTest {
         }
         try (Stream<Path> s = Files.walk(dir)) {
             s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
+        }
+    }
+
+    /**
+     * Read path R6: a Lucene-written index with every stored type, read through {@link
+     * NativeStoredFieldsReader} (random access and the sequential reader) and by Lucene with the same
+     * visitors -- everything, a {@code NO} on some fields (the last included), a {@code STOP} midway --
+     * every visit recorded and compared call for call.
+     */
+    private static void storedFields(Random r) throws Exception {
+        Path dir = Files.createTempDirectory("lucene-rust-selftest-stored");
+        NativeReaders readers = new NativeReaders();
+        SearchStats stats = new SearchStats();
+        try (FSDirectory d = FSDirectory.open(dir); IndexWriter w = new IndexWriter(d, new IndexWriterConfig(new StandardAnalyzer()))) {
+            for (int i = 0; i < 3000; i++) {
+                Document doc = new Document();
+                doc.add(new StringField("id", Integer.toString(i), Field.Store.YES));
+                doc.add(new org.apache.lucene.document.StoredField("_source", randomBytes(r, r.nextInt(400))));
+                if (r.nextBoolean()) {
+                    doc.add(new org.apache.lucene.document.StoredField("i", r.nextInt()));
+                }
+                doc.add(new org.apache.lucene.document.StoredField("l", r.nextLong()));
+                doc.add(new org.apache.lucene.document.StoredField("f", r.nextFloat() - 0.5f));
+                doc.add(new org.apache.lucene.document.StoredField("d", r.nextGaussian()));
+                doc.add(new org.apache.lucene.document.StoredField("s", "t" + r.nextInt(100) + "\u00e9"));
+                w.addDocument(doc);
+                if (i % 1000 == 999) {
+                    w.commit();
+                }
+            }
+            w.commit();
+            try (DirectoryReader lucene = DirectoryReader.open(d)) {
+                check(readers.acquire(lucene).handle() != 0, "stored fields: a native handle");
+                DirectoryReader wrapped = NativeStoredFieldsReader.wrap(lucene, readers, stats, () -> true);
+                String[] skip = { "l", "s" };
+                for (int leaf = 0; leaf < lucene.leaves().size(); leaf++) {
+                    org.apache.lucene.index.LeafReader want = lucene.leaves().get(leaf).reader();
+                    org.apache.lucene.index.LeafReader got = wrapped.leaves().get(leaf).reader();
+                    org.apache.lucene.index.StoredFields wantFields = want.storedFields();
+                    org.apache.lucene.index.StoredFields gotFields = got.storedFields();
+                    org.apache.lucene.codecs.StoredFieldsReader sequential =
+                        ((org.opensearch.common.lucene.index.SequentialStoredFieldsLeafReader) got).getSequentialStoredFieldsReader();
+                    for (int doc = 0; doc < want.maxDoc(); doc += 1 + r.nextInt(7)) {
+                        for (int mode = 0; mode < 3; mode++) {
+                            int stopAfter = mode == 2 ? 1 + r.nextInt(5) : Integer.MAX_VALUE;
+                            String[] no = mode == 1 ? skip : new String[0];
+                            Recorder a = new Recorder(no, stopAfter);
+                            Recorder b = new Recorder(no, stopAfter);
+                            Recorder c = new Recorder(no, stopAfter);
+                            wantFields.document(doc, a);
+                            gotFields.document(doc, b);
+                            sequential.document(doc, c);
+                            check(a.log.equals(b.log), "stored fields leaf " + leaf + " doc " + doc + " mode " + mode + ": " + firstDiff(b.log, a.log));
+                            check(a.log.equals(c.log), "stored fields (sequential) leaf " + leaf + " doc " + doc + " mode " + mode);
+                        }
+                    }
+                }
+                check(stats.fetchCount() > 1000, "stored fields read natively: " + stats.fetchCount());
+                check(stats.sequentialFetchCount() > 300, "through the sequential reader: " + stats.sequentialFetchCount());
+                check(stats.fetchLuceneCount() == 0, "no document fell back to Lucene: " + stats.fetchLuceneCount());
+                // Disabled, every document is Lucene's.
+                DirectoryReader off = NativeStoredFieldsReader.wrap(lucene, readers, stats, () -> false);
+                Recorder x = new Recorder(new String[0], Integer.MAX_VALUE);
+                off.leaves().get(0).reader().storedFields().document(0, x);
+                check(stats.fetchLuceneCount() == 1 && x.log.isEmpty() == false, "disabled: read by Lucene");
+                // No native handle for a reader no search opened: Lucene reads it.
+                long before = stats.fetchLuceneCount();
+                try (DirectoryReader other = DirectoryReader.open(d)) {
+                    DirectoryReader unopened = NativeStoredFieldsReader.wrap(other, readers, stats, () -> true);
+                    unopened.leaves().get(0).reader().storedFields().document(0, new Recorder(new String[0], Integer.MAX_VALUE));
+                    check(stats.fetchLuceneCount() == before + 1, "a reader without a native handle: read by Lucene");
+                }
+            }
+            readers.closeAll();
+        }
+        try (Stream<Path> s = Files.walk(dir)) {
+            s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
+        }
+    }
+
+    /** The first entry where two visit logs part, for a failure message. */
+    private static String firstDiff(List<String> got, List<String> want) {
+        for (int i = 0; i < Math.max(got.size(), want.size()); i++) {
+            String g = i < got.size() ? got.get(i) : "<end>";
+            String w = i < want.size() ? want.get(i) : "<end>";
+            if (g.equals(w) == false) {
+                return "at " + i + ": " + (g.length() > 120 ? g.substring(0, 120) : g) + " vs " + (w.length() > 120 ? w.substring(0, 120) : w);
+            }
+        }
+        return "equal";
+    }
+
+    private static byte[] randomBytes(Random r, int n) {
+        byte[] b = new byte[n];
+        r.nextBytes(b);
+        return b;
+    }
+
+    /** Every visit, in order, as text; {@code NO} for the named fields, {@code STOP} after {@code stopAfter} fields. */
+    private static final class Recorder extends org.apache.lucene.index.StoredFieldVisitor {
+        final List<String> log = new ArrayList<>();
+        private final List<String> no;
+        private int left;
+
+        Recorder(String[] no, int stopAfter) {
+            this.no = List.of(no);
+            this.left = stopAfter;
+        }
+
+        @Override
+        public Status needsField(org.apache.lucene.index.FieldInfo fi) {
+            log.add("needs " + (fi == null ? null : fi.name));
+            if (left-- <= 0) {
+                return Status.STOP;
+            }
+            return no.contains(fi.name) ? Status.NO : Status.YES;
+        }
+
+        @Override
+        public void binaryField(org.apache.lucene.index.FieldInfo fi, byte[] value) {
+            log.add(fi.name + "=" + Arrays.toString(value));
+        }
+
+        @Override
+        public void stringField(org.apache.lucene.index.FieldInfo fi, String value) {
+            log.add(fi.name + "=" + value);
+        }
+
+        @Override
+        public void intField(org.apache.lucene.index.FieldInfo fi, int value) {
+            log.add(fi.name + "=i" + value);
+        }
+
+        @Override
+        public void longField(org.apache.lucene.index.FieldInfo fi, long value) {
+            log.add(fi.name + "=l" + value);
+        }
+
+        @Override
+        public void floatField(org.apache.lucene.index.FieldInfo fi, float value) {
+            log.add(fi.name + "=f" + Float.floatToRawIntBits(value));
+        }
+
+        @Override
+        public void doubleField(org.apache.lucene.index.FieldInfo fi, double value) {
+            log.add(fi.name + "=d" + Double.doubleToRawLongBits(value));
         }
     }
 

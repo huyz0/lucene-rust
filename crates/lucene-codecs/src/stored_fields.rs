@@ -30,6 +30,8 @@
 //! `infoAndBits` (vlong: field number `<< 3 | type tag`) followed by the
 //! field's value in one of six encodings -- see [`visit_field`].
 
+use std::sync::Arc;
+
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
 use lucene_store::data_output::DataOutput;
@@ -165,10 +167,12 @@ pub struct StoredFieldsReader<'d> {
     max_pointer: i64,
     docs_start_pointer: i64,
     docs_end_pointer: i64,
-    docs_meta: direct_monotonic::Meta,
+    /// Shared, not owned: [`StoredFieldsReader::rebind`] hands the parsed
+    /// metadata to a reader over the same files without copying its blocks.
+    docs_meta: Arc<direct_monotonic::Meta>,
     start_pointers_start_pointer: i64,
     start_pointers_end_pointer: i64,
-    start_pointers_meta: direct_monotonic::Meta,
+    start_pointers_meta: Arc<direct_monotonic::Meta>,
 }
 
 /// Parses `.fdt`+`.fdm`+`.fdx` (already read into memory) and returns a
@@ -348,10 +352,10 @@ pub fn open<'d>(
         max_pointer,
         docs_start_pointer,
         docs_end_pointer,
-        docs_meta,
+        docs_meta: Arc::new(docs_meta),
         start_pointers_start_pointer,
         start_pointers_end_pointer,
-        start_pointers_meta,
+        start_pointers_meta: Arc::new(start_pointers_meta),
     })
 }
 
@@ -376,10 +380,10 @@ impl<'d> StoredFieldsReader<'d> {
             max_pointer: self.max_pointer,
             docs_start_pointer: self.docs_start_pointer,
             docs_end_pointer: self.docs_end_pointer,
-            docs_meta: self.docs_meta.clone(),
+            docs_meta: Arc::clone(&self.docs_meta),
             start_pointers_start_pointer: self.start_pointers_start_pointer,
             start_pointers_end_pointer: self.start_pointers_end_pointer,
-            start_pointers_meta: self.start_pointers_meta.clone(),
+            start_pointers_meta: Arc::clone(&self.start_pointers_meta),
         }
     }
 

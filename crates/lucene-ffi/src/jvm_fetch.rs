@@ -48,10 +48,19 @@ pub(crate) fn document_blob(handle: u64, segment: i32, doc: i32) -> Result<Vec<u
         out: 0i32.to_le_bytes().to_vec(),
         count: 0,
     };
-    reader.visit_stored_document(doc, &mut blob).map_err(|e| {
+    let stored = reader.visit_stored_document(doc, &mut blob).map_err(|e| {
         set_last_error(format!("reading stored fields: {e}"));
         FfiStatus::Decode
     })?;
+    if !stored {
+        // Java's reader has stored-fields files for every segment (an empty
+        // one when nothing is stored); without them the plugin must ask
+        // Lucene rather than replay a document with no fields.
+        set_last_error(format!(
+            "ffi_jvm_reader_document: segment {segment} has no stored-fields files"
+        ));
+        return Err(FfiStatus::Decode);
+    }
     let Blob { mut out, count } = blob;
     out[..4].copy_from_slice(&count.to_le_bytes());
     Ok(out)
@@ -175,32 +184,13 @@ mod tests {
     #[test]
     fn a_document_comes_back_with_its_stored_fields() {
         let h = open();
-        // The fixture's documents store their fields; every segment answers.
-        let mut seen = 0;
+        // The fixture's documents store no fields: each answers an empty list
+        // (the next test reads a fixture that stores them).
         for segment in 0..2 {
             for doc in 0..4 {
-                let blob = document_blob(h, segment, doc).unwrap();
-                let mut at = 0;
-                let n = i32_at(&blob, &mut at);
-                for _ in 0..n {
-                    let _number = i32_at(&blob, &mut at);
-                    let ty = blob[at];
-                    at += 1;
-                    at += match ty {
-                        STRING | BINARY => i32_at(&blob, &mut at) as usize,
-                        INT | FLOAT => 4,
-                        LONG | DOUBLE => 8,
-                        other => panic!("type {other}"),
-                    };
-                    seen += 1;
-                }
-                assert_eq!(at, blob.len());
+                assert!(decode(&document_blob(h, segment, doc).unwrap()).is_empty());
             }
         }
-        // The fixture's documents store no fields: each answers an empty list
-        // (`stored_document`'s own decoding is tested on a stored-fields
-        // fixture in lucene-search).
-        assert_eq!(seen, 0);
         // Out of range, and through the C entry point with a small buffer.
         assert_eq!(
             document_blob(h, 9, 0).err(),
@@ -251,7 +241,9 @@ mod tests {
                     FieldValue::Float(f32::from_bits(i32_at(blob, &mut at) as u32)),
                     0,
                 ),
-                LONG | DOUBLE => {
+                // LONG or DOUBLE: every other type is a writer bug.
+                _ => {
+                    assert!(ty == LONG || ty == DOUBLE, "type {ty}");
                     let v = u64::from_le_bytes(blob[at..at + 8].try_into().unwrap());
                     let value = if ty == LONG {
                         FieldValue::Long(v as i64)
@@ -260,7 +252,6 @@ mod tests {
                     };
                     (value, 8)
                 }
-                other => panic!("type {other}"),
             };
             at += len;
             fields.push((number, value));
@@ -273,17 +264,53 @@ mod tests {
     fn stored_documents_come_back_as_the_segment_reader_reads_them() {
         // A Lucene-written index whose documents store strings, binaries and
         // every numeric type (`fixtures/src/GenStoredFields.java`).
-        let dir = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../fixtures/data/stored_fields_index"
-        );
+        let (tmp, h) = open_copy(|_, _| {});
         let reader = lucene_search::directory_reader::DirectoryReader::open(
-            &lucene_store::directory::FsDirectory::open(dir),
+            &lucene_store::directory::FsDirectory::open(tmp.path_str()),
         )
         .unwrap();
         let seg = &reader.segment_readers()[0];
-        let infos = std::fs::read(format!("{dir}/segments_1")).unwrap();
+        let mut types = std::collections::HashSet::new();
+        for doc in 0..seg.max_doc {
+            let got = decode(&document_blob(h, 0, doc).unwrap());
+            let want: Vec<_> = seg
+                .stored_document(doc)
+                .unwrap()
+                .unwrap()
+                .fields
+                .into_iter()
+                .map(|f| (f.field_number, f.value))
+                .collect();
+            assert_eq!(got, want, "document {doc}");
+            types.extend(got.iter().map(|(_, v)| std::mem::discriminant(v)));
+        }
+        assert!(types.len() >= 2, "the fixture stores several field types");
+        crate::jvm_reader::ffi_close_jvm_reader(h);
+    }
+
+    /// A copy of the stored-fields fixture, changed by `mutate` (given the
+    /// copy's path and the segment's id), opened as a handle.
+    fn open_copy(
+        mutate: impl FnOnce(&std::path::Path, [u8; 16]),
+    ) -> (lucene_util::test_support::TempDir, u64) {
+        let src = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/stored_fields_index"
+        );
+        let tmp = lucene_util::test_support::TempDir::new("jvm-fetch");
+        for e in std::fs::read_dir(src).unwrap() {
+            let e = e.unwrap();
+            std::fs::copy(e.path(), tmp.path().join(e.file_name())).unwrap();
+        }
+        let dir = tmp.path_str().to_string();
+        let reader = lucene_search::directory_reader::DirectoryReader::open(
+            &lucene_store::directory::FsDirectory::open(&dir),
+        )
+        .unwrap();
+        let seg = &reader.segment_readers()[0];
         let max_docs = [seg.max_doc];
+        mutate(tmp.path(), seg.segment_id());
+        let infos = std::fs::read(format!("{dir}/segments_1")).unwrap();
         let counts = [0usize];
         let mut h = 0u64;
         let rc = unsafe {
@@ -302,22 +329,53 @@ mod tests {
             )
         };
         assert_eq!(rc, 0, "{}", crate::error::last_error());
-        let mut types = std::collections::HashSet::new();
-        for doc in 0..seg.max_doc {
-            let got = decode(&document_blob(h, 0, doc).unwrap());
-            let want: Vec<_> = seg
-                .stored_document(doc)
-                .unwrap()
-                .unwrap()
-                .fields
-                .into_iter()
-                .map(|f| (f.field_number, f.value))
-                .collect();
-            assert_eq!(got, want, "document {doc}");
-            types.extend(got.iter().map(|(_, v)| std::mem::discriminant(v)));
-        }
-        assert!(types.len() >= 2, "the fixture stores several field types");
+        (tmp, h)
+    }
+
+    #[test]
+    fn a_document_that_does_not_decode_is_a_decode_error() {
+        // The first chunk claims to start at document 127: no document of
+        // the segment is in it.
+        let (_tmp, h) = open_copy(|dir, _| {
+            let fdt = dir.join("_0.fdt");
+            let mut bytes = std::fs::read(&fdt).unwrap();
+            // The index header (magic, `Lucene90StoredFieldsFastData`,
+            // version, id, empty suffix) is 54 bytes; the chunk's `docBase`
+            // vint follows.
+            assert_eq!(&bytes[5..33], b"Lucene90StoredFieldsFastData");
+            assert_eq!(bytes[54], 0, "the first chunk starts at document 0");
+            bytes[54] = 127;
+            std::fs::write(&fdt, bytes).unwrap();
+        });
+        assert_eq!(document_blob(h, 0, 0).err(), Some(FfiStatus::Decode));
+        assert!(crate::error::last_error().contains("reading stored fields"));
         crate::jvm_reader::ffi_close_jvm_reader(h);
+    }
+
+    #[test]
+    fn a_segment_without_stored_fields_files_is_refused_not_empty() {
+        // The segment's `.si` no longer lists `.fdt`/`.fdx`/`.fdm`: the
+        // plugin must read the document with Lucene, not replay nothing.
+        let (_tmp, h) = open_copy(|dir, id| {
+            let si_path = dir.join("_0.si");
+            let mut si =
+                lucene_index::segment_info::parse(&std::fs::read(&si_path).unwrap(), &id).unwrap();
+            si.files.retain(|f| !f.contains(".fd"));
+            std::fs::write(&si_path, lucene_index::segment_info::write(&si, "")).unwrap();
+        });
+        assert_eq!(document_blob(h, 0, 0).err(), Some(FfiStatus::Decode));
+        assert!(crate::error::last_error().contains("no stored-fields files"));
+        crate::jvm_reader::ffi_close_jvm_reader(h);
+    }
+
+    #[test]
+    fn a_document_with_more_fields_than_an_i32_counts_is_refused() {
+        let mut b = Blob {
+            out: Vec::new(),
+            count: i32::MAX,
+        };
+        let e = b.int_field(1, 1).unwrap_err();
+        assert!(e.to_string().contains("too large for the JVM"), "{e}");
     }
 
     #[test]

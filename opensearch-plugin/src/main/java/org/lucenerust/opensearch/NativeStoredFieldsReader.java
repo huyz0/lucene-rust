@@ -10,8 +10,11 @@ import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.FilterDirectoryReader;
 import org.apache.lucene.index.LeafReader;
+import org.apache.lucene.index.FieldInfos;
+import org.apache.lucene.index.StoredFieldDataInput;
 import org.apache.lucene.index.StoredFieldVisitor;
 import org.apache.lucene.index.StoredFields;
+import org.apache.lucene.store.ByteArrayDataInput;
 
 import org.opensearch.common.lucene.index.SequentialStoredFieldsLeafReader;
 
@@ -33,8 +36,9 @@ import java.util.function.BooleanSupplier;
  * <p>Installed as the index's reader wrapper ({@code IndexModule.setReaderWrapper}), so it wraps
  * each searcher OpenSearch hands out, per request; it changes nothing else: every other read goes to
  * the wrapped reader, and both cache helpers are the wrapped reader's (OpenSearch requires it). The
- * native handle is the query phase's own ({@link NativeReaders#acquire}, keyed by that cache key),
- * opened on the first document asked for. A reader the native side cannot open, or a document it
+ * native handle is the query phase's own ({@link NativeReaders#peek}, keyed by that cache key), never
+ * opened here: a reader no search has opened natively -- the realtime get's internal reader -- is
+ * read by Lucene. A reader the native side cannot open, or a document it
  * fails to read, is read by Lucene, as is every document while {@code index.lucene_rust.fetch.enabled}
  * is off.
  */
@@ -63,12 +67,11 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
             this.enabled = enabled;
         }
 
-        /** The native handle, acquired on first use; 0 when there is none. */
+        /** The query phase's native handle for this reader, looked up on first use; 0 when there is none. */
         long handle() {
             long h = handle;
             if (h < 0) {
-                NativeReaders.Acquired a = readers.acquire(top);
-                h = a.handle();
+                h = readers.peek(top);
                 handle = h;
             }
             return h;
@@ -140,7 +143,7 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
 
                 @Override
                 public void document(int docID, StoredFieldVisitor visitor) throws IOException {
-                    read(docID, visitor, lucene::document);
+                    read(docID, visitor, lucene::document, false);
                 }
             };
         }
@@ -160,7 +163,7 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
 
             @Override
             public void document(int docID, StoredFieldVisitor visitor) throws IOException {
-                read(docID, visitor, lucene::document);
+                read(docID, visitor, lucene::document, true);
             }
 
             @Override
@@ -186,9 +189,9 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
         }
 
         /** Document {@code docID}, natively when enabled and possible, else by Lucene; timed either way. */
-        private void read(int docID, StoredFieldVisitor visitor, LuceneDocument lucene) throws IOException {
+        private void read(int docID, StoredFieldVisitor visitor, LuceneDocument lucene, boolean sequential) throws IOException {
             long start = System.nanoTime();
-            if (shared.enabled.getAsBoolean() && nativeDocument(docID, visitor)) {
+            if (shared.enabled.getAsBoolean() && nativeDocument(docID, visitor, sequential)) {
                 shared.stats.fetchTime(true, System.nanoTime() - start);
                 return;
             }
@@ -197,7 +200,7 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
         }
 
         /** Document {@code docID} replayed into {@code visitor} from the native reader; false when it cannot be. */
-        private boolean nativeDocument(int docID, StoredFieldVisitor visitor) throws IOException {
+        private boolean nativeDocument(int docID, StoredFieldVisitor visitor, boolean sequential) throws IOException {
             long h = shared.handle();
             if (h == 0) {
                 return false;
@@ -209,68 +212,11 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
                 logger.warn("lucene-rust: native stored fields failed ({}), reading with Lucene: {}", rc, NativeBridge.lastError());
                 return false;
             }
-            replay(out[0], visitor);
-            shared.stats.nativeFetch();
+            replay(getFieldInfos(), out[0], visitor);
+            shared.stats.nativeFetch(sequential);
             return true;
         }
 
-        /** The native document's fields into {@code visitor}, as the stored-fields reader visits them. */
-        private void replay(byte[] blob, StoredFieldVisitor visitor) throws IOException {
-            ByteBuffer b = ByteBuffer.wrap(blob).order(ByteOrder.LITTLE_ENDIAN);
-            int n = b.getInt();
-            for (int i = 0; i < n; i++) {
-                FieldInfo fi = getFieldInfos().fieldInfo(b.getInt());
-                byte type = b.get();
-                int len = type == STRING || type == BINARY ? b.getInt() : 0;
-                StoredFieldVisitor.Status status = fi == null ? StoredFieldVisitor.Status.NO : visitor.needsField(fi);
-                if (status == StoredFieldVisitor.Status.STOP) {
-                    return;
-                }
-                boolean yes = status == StoredFieldVisitor.Status.YES;
-                switch (type) {
-                    case STRING -> {
-                        if (yes) {
-                            visitor.stringField(fi, new String(blob, b.position(), len, StandardCharsets.UTF_8));
-                        }
-                        b.position(b.position() + len);
-                    }
-                    case BINARY -> {
-                        if (yes) {
-                            byte[] value = new byte[len];
-                            b.get(value);
-                            visitor.binaryField(fi, value);
-                        } else {
-                            b.position(b.position() + len);
-                        }
-                    }
-                    case INT -> {
-                        int v = b.getInt();
-                        if (yes) {
-                            visitor.intField(fi, v);
-                        }
-                    }
-                    case LONG -> {
-                        long v = b.getLong();
-                        if (yes) {
-                            visitor.longField(fi, v);
-                        }
-                    }
-                    case FLOAT -> {
-                        float v = Float.intBitsToFloat(b.getInt());
-                        if (yes) {
-                            visitor.floatField(fi, v);
-                        }
-                    }
-                    case DOUBLE -> {
-                        double v = Double.longBitsToDouble(b.getLong());
-                        if (yes) {
-                            visitor.doubleField(fi, v);
-                        }
-                    }
-                    default -> throw new IOException("native stored field of unknown type " + type);
-                }
-            }
-        }
 
         @Override
         public CacheHelper getCoreCacheHelper() {
@@ -280,6 +226,68 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
         @Override
         public CacheHelper getReaderCacheHelper() {
             return in.getReaderCacheHelper();
+        }
+    }
+
+    /**
+     * A native document's fields into {@code visitor} as {@code
+     * Lucene90CompressingStoredFieldsReader.document} visits them: each field's {@code FieldInfo}
+     * (null for a number {@code infos} does not know, asked all the same) to {@code needsField} before
+     * its value, {@code NO} skipping the value and {@code STOP} ending the document, a binary value
+     * handed over as a {@link StoredFieldDataInput}.
+     */
+    static void replay(FieldInfos infos, byte[] blob, StoredFieldVisitor visitor) throws IOException {
+        ByteBuffer b = ByteBuffer.wrap(blob).order(ByteOrder.LITTLE_ENDIAN);
+        int n = b.getInt();
+        for (int i = 0; i < n; i++) {
+            FieldInfo fi = infos.fieldInfo(b.getInt());
+            byte type = b.get();
+            int len = type == STRING || type == BINARY ? b.getInt() : 0;
+            StoredFieldVisitor.Status status = visitor.needsField(fi);
+            if (status == StoredFieldVisitor.Status.STOP) {
+                return;
+            }
+            boolean yes = status == StoredFieldVisitor.Status.YES;
+            switch (type) {
+                case STRING -> {
+                    if (yes) {
+                        visitor.stringField(fi, new String(blob, b.position(), len, StandardCharsets.UTF_8));
+                    }
+                    b.position(b.position() + len);
+                }
+                case BINARY -> {
+                    if (yes) {
+                        // Two arguments: `ByteArrayDataInput.length()` is its limit (offset + len), not len.
+                        visitor.binaryField(fi, new StoredFieldDataInput(new ByteArrayDataInput(blob, b.position(), len), len));
+                    }
+                    b.position(b.position() + len);
+                }
+                case INT -> {
+                    int v = b.getInt();
+                    if (yes) {
+                        visitor.intField(fi, v);
+                    }
+                }
+                case LONG -> {
+                    long v = b.getLong();
+                    if (yes) {
+                        visitor.longField(fi, v);
+                    }
+                }
+                case FLOAT -> {
+                    float v = Float.intBitsToFloat(b.getInt());
+                    if (yes) {
+                        visitor.floatField(fi, v);
+                    }
+                }
+                case DOUBLE -> {
+                    double v = Double.longBitsToDouble(b.getLong());
+                    if (yes) {
+                        visitor.doubleField(fi, v);
+                    }
+                }
+                default -> throw new IOException("native stored field of unknown type " + type);
+            }
         }
     }
 }
