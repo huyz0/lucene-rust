@@ -1465,16 +1465,20 @@ fn a_docs_only_field_with_norms_ends_its_scan_as_lucene_does() {
     let reader = DirectoryReader::open(&lucene_store::FsDirectory::open(base)).unwrap();
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms("kw");
+    let owned = reader.field_norms("docs_only");
     assert!(
         owned.iter().all(Option::is_some),
         "the field keeps its norms"
     );
     let term_norms: Vec<Option<&FieldNorms<'_>>> = owned.iter().map(Option::as_ref).collect();
     let maps: Vec<HashMap<String, FieldNorms<'_>>> = reader
-        .field_norms("kw")
+        .field_norms("docs_only")
         .into_iter()
-        .map(|n| n.into_iter().map(|n| ("kw".to_string(), n)).collect())
+        .map(|n| {
+            n.into_iter()
+                .map(|n| ("docs_only".to_string(), n))
+                .collect()
+        })
         .collect();
     let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = maps.iter().map(Some).collect();
     let runs: usize = get("run_count".into()).parse().unwrap();
@@ -1497,7 +1501,7 @@ fn a_docs_only_field_with_norms_ends_its_scan_as_lucene_does() {
             .collect();
         let want_total: u64 = k("total").parse().unwrap();
         let want_gte = k("relation") == "gte";
-        let q = TermQuery::new("kw", term.as_bytes().to_vec());
+        let q = TermQuery::new("docs_only", term.as_bytes().to_vec());
         crate::test_only_maxscore_block_skip_counter::reset();
         let (hits, total) = if boost == 1.0 {
             crate::multi_segment::search_term_query_multi_segment_counting(
@@ -1522,7 +1526,7 @@ fn a_docs_only_field_with_norms_ends_its_scan_as_lucene_does() {
         let got: Vec<(i32, u32)> = hits.iter().map(|h| (h.doc_id, h.score.to_bits())).collect();
         assert_eq!(
             got, want,
-            "run {r}: kw:{term}^{boost} threshold {threshold}"
+            "run {r}: docs_only:{term}^{boost} threshold {threshold}"
         );
         assert_eq!(
             (
@@ -1530,7 +1534,7 @@ fn a_docs_only_field_with_norms_ends_its_scan_as_lucene_does() {
                 total.relation == crate::collector::TotalHitsRelation::GreaterThanOrEqualTo
             ),
             (want_total, want_gte),
-            "run {r}: kw:{term}^{boost} threshold {threshold}"
+            "run {r}: docs_only:{term}^{boost} threshold {threshold}"
         );
         if want_gte && crate::test_only_maxscore_block_skip_counter::count() > 0 {
             ended_early += 1;

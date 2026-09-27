@@ -34,9 +34,9 @@ import java.util.stream.Stream;
  * <p>Without frequencies {@code Lucene104PostingsReader} gives a term one impacts level up to
  * {@code NO_MORE_DOCS} holding the impact {@code (freq 1, norm 1)}: every document's frequency is
  * 1 and the shortest non-empty field scores highest, so once a full queue's threshold passes that
- * score nothing is left to visit. Most documents of {@code kw} hold one token; every seventh holds
- * two and every eleventh three (longer fields, lower scores), so {@code kw:a}'s top hits are its
- * one-token documents and {@code kw:c}, only ever the second token, never reaches the bound.
+ * score nothing is left to visit. Most documents of {@code docs_only} hold one token; every seventh holds
+ * two and every eleventh three (longer fields, lower scores), so {@code docs_only:a}'s top hits are its
+ * one-token documents and {@code docs_only:c}, only ever the second token, never reaches the bound.
  *
  * <p>One segment of 5,000 documents. Per query, the top 10 under three total-hits thresholds
  * (hits as {@code doc:scoreBits}, the total and its relation).
@@ -70,7 +70,7 @@ public class GenDocsOnlyNorms {
           String first = i % 3 == 0 ? "b" : "a";
           String value = i % 11 == 0 ? first + " c d" : i % 7 == 0 ? first + " c" : first;
           Document doc = new Document();
-          doc.add(new Field("kw", value, kwType));
+          doc.add(new Field("docs_only", value, kwType));
           w.addDocument(doc);
         }
         w.commit();
@@ -88,7 +88,7 @@ public class GenDocsOnlyNorms {
         float[] boosts = {1f, 2f};
         for (String t : terms) {
           for (float boost : boosts) {
-            Query q = new TermQuery(new Term("kw", t));
+            Query q = new TermQuery(new Term("docs_only", t));
             if (boost != 1f) {
               q = new BoostQuery(q, boost);
             }

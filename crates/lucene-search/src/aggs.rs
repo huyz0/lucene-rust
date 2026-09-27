@@ -186,7 +186,7 @@ impl MetricState {
     /// A document's stored values, ascending, read as `kind`, keeping the
     /// parts in `N`.
     #[inline]
-    fn many<const N: u8>(&mut self, kind: ValueKind, values: &[i64]) {
+    pub(crate) fn many<const N: u8>(&mut self, kind: ValueKind, values: &[i64]) {
         let (Some(&first), Some(&last)) = (values.first(), values.last()) else {
             return;
         };

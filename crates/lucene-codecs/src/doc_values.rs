@@ -1501,6 +1501,124 @@ impl<'a> NumericReader<'a> {
         Ok(())
     }
 
+    /// The values of the documents `start..start + values.len()` in one
+    /// forward pass: `values[i]` is document `start + i`'s value when bit `i`
+    /// of `present` is set (`present` must hold at least
+    /// `values.len().div_ceil(64)` words; the others are left as they are).
+    /// Each is what [`Self::value`] answers, which the tests check document
+    /// for document.
+    ///
+    /// For a window-at-a-time consumer (an aggregation over every document of
+    /// a segment): a dense single-width column is decoded a chunk at a time
+    /// ([`FastDense::fill`]), and a sparse one walks its `IndexedDISI` once
+    /// and decodes the window's values -- consecutive ordinals -- in one
+    /// batch, instead of a checked lookup through every layer per document.
+    pub fn fill_window(
+        &mut self,
+        start: i32,
+        values: &mut [i64],
+        present: &mut [u64],
+    ) -> Result<()> {
+        let len = values.len();
+        let words = len.div_ceil(64);
+        let Some(present) = present.get_mut(..words) else {
+            return Err(Error::DocOutOfRange(start, len as i64));
+        };
+        present.fill(0);
+        if start < 0 || i32::try_from(len).is_err() || start.checked_add(len as i32).is_none() {
+            return Err(Error::DocOutOfRange(start, len as i64));
+        }
+        // ARITH: `start + len` fits an `i32` (checked above), so every
+        // `start + i` below does, and `i >> 6 < words`.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            let mut done = 0usize;
+            if let Some(fast) = self.fast {
+                while done < len {
+                    let n = fast.fill(start + done as i32, &mut values[done..]);
+                    if n == 0 {
+                        break;
+                    }
+                    done += n;
+                }
+                for i in 0..done {
+                    present[i >> 6] |= 1 << (i & 63);
+                }
+            } else if let (Some(cursor), Some(sparse)) = (self.docs.as_mut(), self.sparse_fast) {
+                if start < cursor.doc_id() {
+                    cursor.reset();
+                }
+                // Walk the window: which documents have a value, and the
+                // first one's ordinal; the rest follow it one by one. A whole
+                // block's worth of words at once where the encoding allows.
+                let mut first = None;
+                let mut count = 0usize;
+                let whole = if len.is_multiple_of(64) {
+                    cursor
+                        .window_bits(start, &mut present[..len / 64])?
+                        .and_then(|o| usize::try_from(o).ok())
+                } else {
+                    None
+                };
+                match whole {
+                    Some(o) => {
+                        count = present.iter().map(|w| w.count_ones() as usize).sum();
+                        first = (count > 0).then_some(o);
+                    }
+                    // Document by document, from a clean slate.
+                    None => present.fill(0),
+                }
+                for i in (0..len).filter(|_| whole.is_none()) {
+                    let doc = start + i as i32;
+                    let ord = match cursor.advance_exact_in_block(doc) {
+                        Some(o) => o,
+                        None => cursor.advance_exact(doc)?,
+                    };
+                    if let Some(o) = ord {
+                        if first.is_none() {
+                            first = Some(o);
+                        }
+                        present[i >> 6] |= 1 << (i & 63);
+                        count += 1;
+                    }
+                }
+                if let Some(first) = first {
+                    // The values, packed at the front, then moved to their
+                    // documents from the last down (each moves up or stays).
+                    let mut n = 0;
+                    while n < count {
+                        let got = i32::try_from(first + n)
+                            .map_or(0, |o| sparse.fill(o, &mut values[n..count]));
+                        if got == 0 {
+                            values[n] = self.decode_at((first + n) as i64)?;
+                            n += 1;
+                        } else {
+                            n += got;
+                        }
+                    }
+                    let mut k = count;
+                    for w in (0..words).rev() {
+                        let mut bits = present[w];
+                        while bits != 0 {
+                            let b = 63 - bits.leading_zeros() as usize;
+                            bits &= !(1u64 << b);
+                            k -= 1;
+                            values[w * 64 + b] = values[k];
+                        }
+                    }
+                }
+                return Ok(());
+            }
+            for i in done..len {
+                if let Some(v) = self.value(start + i as i32)? {
+                    values[i] = v;
+                    present[i >> 6] |= 1 << (i & 63);
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// [`decode_value_varying_bpv`] with the block header kept between calls --
     /// `VaryingBPVReader.getLongValue`'s `if (this.block != block)`.
     fn decode_varying(&mut self, shift: u32, ordinal: i64) -> Result<i64> {
@@ -6684,6 +6802,77 @@ mod tests {
         let (meta_bytes, data, _) =
             write_single_sparse_numeric_field(0, &sparse, n, &id, "").unwrap();
         check(&meta_bytes, &data);
+    }
+
+    /// `fill_window` is `value` over a window, for every field shape: the
+    /// dense shapes `for_each_value` covers, and a sparse field with all three
+    /// `IndexedDISI` block encodings (SPARSE, ALL, DENSE) -- windows walked
+    /// forward across block boundaries, one straddling the end of the
+    /// documents, one going backwards (a rewind), and a short `present`.
+    #[test]
+    fn fill_window_agrees_with_value_on_every_shape() {
+        let id = [24u8; ID_LENGTH];
+        let fis = field_infos_with(&[0]);
+        let check = |meta_bytes: &[u8], data: &[u8], max_doc: i32, windows: &[(i32, usize)]| {
+            let (_, meta) = parse_meta(meta_bytes, &id, "", &fis).unwrap();
+            let entry = meta.numeric_entry(0).unwrap();
+            let mut windowed = NumericReader::new(data, entry);
+            for &(start, len) in windows {
+                let mut values = vec![i64::MIN; len];
+                let mut present = vec![u64::MAX; len.div_ceil(64) + 1];
+                windowed
+                    .fill_window(start, &mut values, &mut present)
+                    .unwrap();
+                let mut by_value = NumericReader::new(data, entry);
+                for (i, &v) in values.iter().enumerate() {
+                    let doc = start + i as i32;
+                    let want = if doc < max_doc {
+                        by_value.value(doc).unwrap()
+                    } else {
+                        None
+                    };
+                    let has = present[i >> 6] >> (i & 63) & 1 == 1;
+                    assert_eq!(has.then_some(v), want, "window {start}+{len}, doc {doc}");
+                }
+                // The words past the window are left alone.
+                assert_eq!(present[len.div_ceil(64)], u64::MAX);
+            }
+        };
+        let n = 3_000i32;
+        let dense: Vec<Vec<i64>> = vec![
+            vec![42; n as usize],
+            (0..n as i64).map(|i| 1_000 + 7 * (i % 13)).collect(),
+            (0..n as i64)
+                .map(|i| [5, -3, 1 << 40][(i % 3) as usize])
+                .collect(),
+            (0..n as i64).map(|i| (i * 7919) % 65_000).collect(),
+        ];
+        for values in &dense {
+            let (meta_bytes, data, _) =
+                write_single_dense_numeric_field(0, values, n, &id, "").unwrap();
+            check(
+                &meta_bytes,
+                &data,
+                n,
+                &[(0, 1024), (1024, 1024), (2048, 952), (100, 300)],
+            );
+        }
+        let max_doc = 196_608i32;
+        let mut sparse: Vec<(i32, i64)> = (0..10).map(|i| (i * 1000, i as i64 - 5)).collect();
+        sparse.extend((65_536..131_072).map(|d| (d, d as i64 * 3)));
+        sparse.extend((131_072..196_608).step_by(3).map(|d| (d, -(d as i64))));
+        let (meta_bytes, data, _) =
+            write_single_sparse_numeric_field(0, &sparse, max_doc, &id, "").unwrap();
+        let mut windows: Vec<(i32, usize)> =
+            (0..max_doc).step_by(1024).map(|s| (s, 1024)).collect();
+        windows.extend([(3_000, 2_000), (65_000, 1_100), (131_000, 200), (1, 63)]);
+        check(&meta_bytes, &data, max_doc, &windows);
+        // Too few words for the window, or a negative start: an error.
+        let (_, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
+        let mut reader = NumericReader::new(&data, meta.numeric_entry(0).unwrap());
+        assert!(reader.fill_window(0, &mut [0; 65], &mut [0]).is_err());
+        assert!(reader.fill_window(-1, &mut [0; 4], &mut [0]).is_err());
+        assert!(reader.fill_window(i32::MAX, &mut [0; 4], &mut [0]).is_err());
     }
 
     /// A sparse entry whose docs-with-field byte range is not inside the data
