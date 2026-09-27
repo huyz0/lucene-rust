@@ -76,6 +76,7 @@ fn sort(spec: &str) -> Vec<SortField> {
         .map(|k| {
             let p: Vec<&str> = k.split(':').collect();
             SortField {
+                nested: None,
                 field: p[0].to_string(),
                 ty: match p[1] {
                     "score" => SortType::Score,

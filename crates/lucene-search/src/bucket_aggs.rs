@@ -45,6 +45,7 @@
 //!   `min`/`max` points shortcut of [`crate::aggs`].
 
 use std::collections::{HashMap, HashSet};
+use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::Arc;
 
 use lucene_codecs::terms_dict::TermsDict;
@@ -57,6 +58,53 @@ use crate::query::BooleanQuery;
 use crate::terms_agg::{GlobalOrds, Ords};
 use crate::Result;
 use lucene_util::fixed_bit_set::FixedBitSet;
+
+/// An FxHash-style hasher for the bucket ordinals and the distinct values:
+/// integer keys, hashed once per document, where SipHash's cost shows.
+#[derive(Default, Clone, Copy)]
+struct Fx(u64);
+
+impl Fx {
+    #[inline]
+    fn add(&mut self, w: u64) {
+        self.0 = (self.0.rotate_left(5) ^ w).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+}
+
+impl Hasher for Fx {
+    /// MurmurHash3's `fmix64`: the multiply alone leaves a key's zero low
+    /// bits zero (a `float` widened to a `double`, a histogram key), and the
+    /// table buckets by the low bits.
+    fn finish(&self) -> u64 {
+        let mut h = self.0;
+        h ^= h >> 33;
+        h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
+        h ^= h >> 33;
+        h = h.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+        h ^ (h >> 33)
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.add(u64::from(b));
+        }
+    }
+
+    fn write_u32(&mut self, i: u32) {
+        self.add(u64::from(i));
+    }
+
+    fn write_u64(&mut self, i: u64) {
+        self.add(i);
+    }
+
+    fn write_i64(&mut self, i: i64) {
+        self.add(i as u64);
+    }
+}
+
+type FastMap<K, V> = HashMap<K, V, BuildHasherDefault<Fx>>;
+type FastSet<K> = HashSet<K, BuildHasherDefault<Fx>>;
 
 /// A calendar unit of `Rounding.DateTimeUnit`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,7 +203,11 @@ fn utc_millis_at_start_of_year(year: i32) -> i64 {
             leap_years -= 1;
         }
     }
-    (i64::from(year) * 365 + (i64::from(leap_years) - DAYS_0000_TO_1970)) * MILLIS_PER_DAY
+    // Java's long arithmetic, which wraps at the far ends of the range.
+    i64::from(year)
+        .wrapping_mul(365)
+        .wrapping_add(i64::from(leap_years) - DAYS_0000_TO_1970)
+        .wrapping_mul(MILLIS_PER_DAY)
 }
 
 /// `DateUtilsRounding.getYear`.
@@ -167,7 +219,7 @@ fn get_year(utc: i64) -> i32 {
     }
     let mut year = (i2 / unit) as i32;
     let mut year_start = utc_millis_at_start_of_year(year);
-    let diff = utc - year_start;
+    let diff = utc.wrapping_sub(year_start);
     if diff < 0 {
         year -= 1;
     } else if diff >= MILLIS_PER_DAY * 365 {
@@ -176,7 +228,7 @@ fn get_year(utc: i64) -> i32 {
         } else {
             MILLIS_PER_DAY * 365
         };
-        year_start += one_year;
+        year_start = year_start.wrapping_add(one_year);
         if year_start <= utc {
             year += 1;
         }
@@ -186,7 +238,7 @@ fn get_year(utc: i64) -> i32 {
 
 /// `DateUtilsRounding.getMonthOfYear`: 1 to 12.
 fn get_month_of_year(utc: i64, year: i32) -> usize {
-    let i = ((utc - utc_millis_at_start_of_year(year)) >> 10) as i32;
+    let i = (utc.wrapping_sub(utc_millis_at_start_of_year(year)) >> 10) as i32;
     let d = 84_375;
     let bounds: [i32; 11] = if is_leap_year(year) {
         [31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335]
@@ -203,7 +255,7 @@ fn start_of_month(year: i32, month: usize) -> i64 {
     } else {
         &MIN_TOTAL_MILLIS_BY_MONTH
     };
-    utc_millis_at_start_of_year(year) + table.get(month - 1).copied().unwrap_or(0)
+    utc_millis_at_start_of_year(year).wrapping_add(table.get(month - 1).copied().unwrap_or(0))
 }
 
 impl DateUnit {
@@ -233,7 +285,51 @@ impl DateUnit {
     }
 }
 
+impl DateUnit {
+    /// The first millisecond of the unit after the one starting at `start`
+    /// (a value [`Self::round_floor`] returned); `None` past the range.
+    fn next_start(self, start: i64) -> Option<i64> {
+        let months = match self {
+            DateUnit::Week => return start.checked_add(7 * MILLIS_PER_DAY),
+            DateUnit::Day => return start.checked_add(MILLIS_PER_DAY),
+            DateUnit::Hour => return start.checked_add(3_600_000),
+            DateUnit::Minute => return start.checked_add(60_000),
+            DateUnit::Second => return start.checked_add(1_000),
+            DateUnit::Month => 1,
+            DateUnit::Quarter => 3,
+            DateUnit::Year => 12,
+        };
+        let year = get_year(start);
+        let month = get_month_of_year(start, year) + months;
+        let (year, month) = if month > 12 {
+            (year.checked_add(1)?, month - 12)
+        } else {
+            (year, month)
+        };
+        Some(start_of_month(year, month))
+    }
+}
+
 impl DateRounding {
+    /// `utc`'s bucket: its rounded value and the first value past it that
+    /// rounds elsewhere (every value in between rounds the same); `None`
+    /// where that bound would overflow.
+    pub fn bucket(&self, utc: i64) -> Option<(i64, i64)> {
+        let shift = self.zone_ms.checked_sub(self.offset)?;
+        let local = utc.checked_add(shift)?;
+        let (floor, next) = match self.kind {
+            RoundingKind::Unit(u) => {
+                let floor = u.round_floor(local);
+                (floor, u.next_start(floor)?)
+            }
+            RoundingKind::Interval(interval) => {
+                let floor = self.round(utc).checked_add(shift)?;
+                (floor, floor.checked_add(interval)?)
+            }
+        };
+        Some((floor.checked_sub(shift)?, next.checked_sub(shift)?))
+    }
+
     /// `Prepared.round`: `offset.localToUtcInThisOffset(roundFloor(
     /// offset.utcToLocalTime(utc - offset))) + offset`.
     pub fn round(&self, utc: i64) -> i64 {
@@ -273,6 +369,8 @@ pub enum AggNode {
         field: String,
         kind: ValueKind,
         source: Source,
+        /// The parts of [`MetricState`] the caller reads (`aggs::NEED_*`).
+        needs: u8,
     },
     Cardinality {
         field: String,
@@ -426,11 +524,11 @@ enum State {
     Metric(Vec<MetricState>),
     /// Distinct values per owning bucket: global ordinals for a keyword, raw
     /// longs otherwise.
-    Cardinality(Vec<HashSet<i64>>),
+    Cardinality(Vec<FastSet<i64>>),
     /// `LongKeyedBucketOrds`: `(owning, key)` to bucket ordinal, the keys in
     /// ordinal order, each bucket's document count.
     Keyed {
-        ords: HashMap<(u32, i64), u32>,
+        ords: FastMap<(u32, i64), u32>,
         keys: Vec<(u32, i64)>,
         docs: Vec<u64>,
         subs: Vec<State>,
@@ -450,7 +548,7 @@ impl State {
             AggNode::Cardinality { .. } => State::Cardinality(Vec::new()),
             AggNode::Terms { .. } | AggNode::Histogram { .. } | AggNode::DateHistogram { .. } => {
                 State::Keyed {
-                    ords: HashMap::new(),
+                    ords: FastMap::default(),
                     keys: Vec::new(),
                     docs: Vec::new(),
                     subs: subs(),
@@ -490,6 +588,11 @@ struct Leaf<'a> {
     buf: Vec<i64>,
     /// A `range`'s `maxTo`.
     max_to: Vec<f64>,
+    /// A `date_histogram`'s last bucket: `[from, to)` rounds to `rounded`,
+    /// whose ordinal under owning bucket `.3` is `.4` (`u32::MAX`: none yet).
+    memo: (i64, i64, i64, u32, u32),
+    /// This segment was answered from the points ([`count_from_points`]).
+    done: bool,
     subs: Vec<Leaf<'a>>,
 }
 
@@ -510,13 +613,18 @@ impl Leaf<'_> {
         match &mut self.col {
             Col::Values(Values::Absent, _) | Col::Ords(Ords::Absent, _) => {}
             Col::Values(Values::Single(r), _) => {
-                if let Some(v) = r.value(doc)? {
+                // A dense column's value inline; any other through `value`.
+                if let Some(v) = r.dense_value(doc) {
+                    self.buf.push(v);
+                } else if let Some(v) = r.value(doc)? {
                     self.buf.push(v);
                 }
             }
             Col::Values(Values::Multi(r), _) => r.values(doc, &mut self.buf)?,
             Col::Ords(Ords::Single(r), _) => {
-                if let Some(v) = r.value(doc)? {
+                if let Some(v) = r.dense_value(doc) {
+                    self.buf.push(v);
+                } else if let Some(v) = r.value(doc)? {
                     self.buf.push(v);
                 }
             }
@@ -552,6 +660,7 @@ fn open_leaf<'a>(
             field,
             kind,
             source,
+            ..
         } => {
             // The points shortcut (a top-level `min`/`max` over a match-all)
             // answers the segment without visiting a document.
@@ -617,6 +726,8 @@ fn open_leaf<'a>(
         col,
         buf: Vec::new(),
         max_to,
+        memo: (1, 0, 0, 0, u32::MAX),
+        done: false,
         subs,
     })
 }
@@ -667,7 +778,7 @@ fn collect_bucket(
 
 /// `LongKeyedBucketOrds.add`: the bucket of `(owning, key)`, new or not.
 fn keyed_ord(
-    ords: &mut HashMap<(u32, i64), u32>,
+    ords: &mut FastMap<(u32, i64), u32>,
     keys: &mut Vec<(u32, i64)>,
     owning: u32,
     key: i64,
@@ -688,11 +799,11 @@ fn collect(
     owning: u32,
 ) -> Result<()> {
     match (node, state) {
-        (AggNode::Metric { kind, .. }, State::Metric(states)) => {
+        (AggNode::Metric { kind, needs, .. }, State::Metric(states)) => {
             if matches!(leaf.col, Col::Values(_, true)) || !leaf.read(doc)? {
                 return Ok(());
             }
-            slot(states, owning as usize).collect_all(*kind, &leaf.buf);
+            slot(states, owning as usize).collect_needs(*needs, *kind, &leaf.buf);
         }
         (AggNode::Cardinality { kind, .. }, State::Cardinality(sets)) => {
             if !leaf.read(doc)? {
@@ -822,14 +933,36 @@ fn collect(
             // collected is skipped.
             let single = matches!(leaf.col, Col::Values(Values::Single(_), _));
             for &v in &values {
-                let rounded = rounding.round(v);
+                let hit = v >= leaf.memo.0 && v < leaf.memo.1;
+                let rounded = if hit {
+                    leaf.memo.2
+                } else {
+                    let r = rounding.round(v);
+                    if let Some((from, to)) = rounding.bucket(v) {
+                        leaf.memo = (from, to, r, 0, u32::MAX);
+                    }
+                    r
+                };
                 if !single && rounded == previous {
                     continue;
                 }
                 let contained = !hard_bounds.1.is_some_and(|max| rounded >= max)
                     && !hard_bounds.0.is_some_and(|min| rounded < min);
                 if contained {
-                    let ord = keyed_ord(ords, keys, owning, rounded);
+                    // The last bucket's ordinal again, when the owner is the same.
+                    let ord = if leaf.memo.2 == rounded
+                        && leaf.memo.3 == owning
+                        && leaf.memo.4 != u32::MAX
+                    {
+                        leaf.memo.4
+                    } else {
+                        let o = keyed_ord(ords, keys, owning, rounded);
+                        if leaf.memo.2 == rounded {
+                            leaf.memo.3 = owning;
+                            leaf.memo.4 = o;
+                        }
+                        o
+                    };
                     if let Err(e) = collect_bucket(node, docs, subs, &mut leaf.subs, doc, ord) {
                         out = Err(e);
                         break;
@@ -989,6 +1122,218 @@ fn matched_range(ranges: &[(f64, f64)], low: usize, value: f64, max_to: &[f64]) 
     (start_lo as usize, (end_hi + 1) as usize)
 }
 
+/// How a points field's packed values read as its doc values do (the
+/// sortable longs of a `double`, the sortable ints of a `float`).
+#[derive(Debug, Clone, Copy)]
+enum PointDecode {
+    Long8,
+    Int4,
+    Float4,
+}
+
+impl PointDecode {
+    fn of(kind: ValueKind, bytes: i32) -> Option<Self> {
+        match (kind, bytes) {
+            (ValueKind::Long | ValueKind::Double, 8) => Some(PointDecode::Long8),
+            (ValueKind::Long, 4) => Some(PointDecode::Int4),
+            (ValueKind::Float, 4) => Some(PointDecode::Float4),
+            _ => None,
+        }
+    }
+
+    fn decode(self, packed: &[u8]) -> Option<i64> {
+        match self {
+            PointDecode::Long8 => {
+                let b: [u8; 8] = packed.get(..8)?.try_into().ok()?;
+                Some(i64::from_be_bytes(b) ^ i64::MIN)
+            }
+            PointDecode::Int4 | PointDecode::Float4 => {
+                let b: [u8; 4] = packed.get(..4)?.try_into().ok()?;
+                Some(i64::from(i32::from_be_bytes(b) ^ i32::MIN))
+            }
+        }
+    }
+}
+
+/// Counts the points whose value `side` places in its interval
+/// (`Ordering::Equal`); `side` must be monotone in the points' order.
+struct CountIn<'f> {
+    decode: PointDecode,
+    side: &'f dyn Fn(i64) -> std::cmp::Ordering,
+    count: u64,
+}
+
+impl lucene_codecs::points::IntersectVisitor for CountIn<'_> {
+    fn compare(&mut self, min: &[u8], max: &[u8]) -> lucene_codecs::points::Relation {
+        use lucene_codecs::points::Relation;
+        use std::cmp::Ordering::Equal;
+        match (self.decode.decode(min), self.decode.decode(max)) {
+            (Some(a), Some(b)) => match ((self.side)(a), (self.side)(b)) {
+                (Equal, Equal) => Relation::CellInsideQuery,
+                (x, y) if x == y => Relation::CellOutsideQuery,
+                _ => Relation::CellCrossesQuery,
+            },
+            _ => Relation::CellCrossesQuery,
+        }
+    }
+
+    fn visit(&mut self, _doc_id: i32) {
+        self.count += 1;
+    }
+
+    fn visit_many(&mut self, doc_ids: &[i32]) {
+        self.count += doc_ids.len() as u64;
+    }
+
+    fn visit_with_value(&mut self, _doc_id: i32, packed: &[u8]) {
+        if self
+            .decode
+            .decode(packed)
+            .is_some_and(|v| (self.side)(v) == std::cmp::Ordering::Equal)
+        {
+            self.count += 1;
+        }
+    }
+}
+
+/// What [`count_from_points`] counted: a `date_histogram`'s non-empty
+/// buckets by key, or a `range`'s every range.
+enum PointCounts {
+    Keyed(Vec<(i64, u64)>),
+    Fixed(Vec<u64>),
+}
+
+/// At most this many `date_histogram` buckets are counted from the points
+/// in one segment; past it the segment is read document by document.
+const MAX_POINT_BUCKETS: usize = 1024;
+
+/// A top-level `date_histogram` or `range` without sub-aggregations, counted
+/// from a segment's points -- valid when every document of the segment is a
+/// match (the caller's check) and the field has one point per document, so
+/// that the points hold each document's one value. `None` otherwise.
+fn count_from_points(node: &AggNode, seg: &OpenSegment<'_>) -> Result<Option<PointCounts>> {
+    let (field, kind) = match node {
+        AggNode::DateHistogram { field, subs, .. } if subs.is_empty() => (field, ValueKind::Long),
+        AggNode::Range {
+            field,
+            kind,
+            subs,
+            ranges,
+        } if subs.is_empty() && ranges.iter().all(|r| !r.0.is_nan() && !r.1.is_nan()) => {
+            (field, *kind)
+        }
+        _ => return Ok(None),
+    };
+    let Some(points) = seg.points else {
+        return Ok(None);
+    };
+    let Some(num) = points.field_number(field) else {
+        return Ok(None);
+    };
+    let Some(pf) = points.reader.field(num) else {
+        return Ok(None);
+    };
+    if pf.num_dims != 1 || i64::from(pf.doc_count) != pf.point_count {
+        return Ok(None);
+    }
+    let Some(decode) = PointDecode::of(kind, pf.bytes_per_dim) else {
+        return Ok(None);
+    };
+    let count = |side: &dyn Fn(i64) -> std::cmp::Ordering| -> Result<u64> {
+        let mut v = CountIn {
+            decode,
+            side,
+            count: 0,
+        };
+        points.reader.intersect(num, &mut v)?;
+        Ok(v.count)
+    };
+    match node {
+        AggNode::DateHistogram {
+            rounding,
+            hard_bounds,
+            ..
+        } => {
+            let (Some(min), Some(max)) = (
+                decode.decode(&pf.min_packed_value),
+                decode.decode(&pf.max_packed_value),
+            ) else {
+                return Ok(None);
+            };
+            let mut out = Vec::new();
+            let mut at = min;
+            while at <= max {
+                let Some((from, to)) = rounding.bucket(at) else {
+                    return Ok(None);
+                };
+                if out.len() >= MAX_POINT_BUCKETS || to <= from {
+                    return Ok(None);
+                }
+                let contained = !hard_bounds.1.is_some_and(|m| from >= m)
+                    && !hard_bounds.0.is_some_and(|m| from < m);
+                if contained {
+                    let n = count(&|v: i64| {
+                        if v < from {
+                            std::cmp::Ordering::Less
+                        } else if v < to {
+                            std::cmp::Ordering::Equal
+                        } else {
+                            std::cmp::Ordering::Greater
+                        }
+                    })?;
+                    if n > 0 {
+                        out.push((from, n));
+                    }
+                }
+                at = to;
+            }
+            Ok(Some(PointCounts::Keyed(out)))
+        }
+        AggNode::Range { ranges, .. } => {
+            let mut out = Vec::with_capacity(ranges.len());
+            for &(from, to) in ranges {
+                out.push(count(&|v: i64| {
+                    let d = aggs::to_double(kind, v);
+                    if d.is_nan() {
+                        std::cmp::Ordering::Greater
+                    } else if d < from {
+                        std::cmp::Ordering::Less
+                    } else if d < to {
+                        std::cmp::Ordering::Equal
+                    } else {
+                        std::cmp::Ordering::Greater
+                    }
+                })?);
+            }
+            Ok(Some(PointCounts::Fixed(out)))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Adds [`count_from_points`]' counts to the top-level state.
+fn apply_counts(state: &mut State, counts: PointCounts) {
+    match (state, counts) {
+        (
+            State::Keyed {
+                ords, keys, docs, ..
+            },
+            PointCounts::Keyed(buckets),
+        ) => {
+            for (key, n) in buckets {
+                let ord = keyed_ord(ords, keys, 0, key);
+                *slot(docs, ord as usize) += n;
+            }
+        }
+        (State::Fixed { docs, .. }, PointCounts::Fixed(counts)) => {
+            for (i, n) in counts.into_iter().enumerate() {
+                *slot(docs, i) += n;
+            }
+        }
+        _ => {}
+    }
+}
+
 /// The documents a pass collects: `min_score` behind the query, or none.
 pub struct PassScoring<'a, 'n> {
     pub min_score: &'a aggs::MinScore<'a, 'n>,
@@ -1052,9 +1397,25 @@ pub fn aggregate_tree(
                 }
                 None => aggs::segment_matches(&ctx, query, &clause, live, &mut docs_buf)?,
             };
+            // OpenSearch's filter rewrite: a top-level `date_histogram` or
+            // `range` without sub-aggregations over a segment every document
+            // of which matches is counted from the points.
+            if scoring.is_none() && seg.live_docs.is_none() && matches!(matched, Some(None)) {
+                for ((n, s), l) in nodes.iter().zip(&mut states).zip(&mut leaves) {
+                    if let Some(counts) = count_from_points(n, seg)? {
+                        apply_counts(s, counts);
+                        l.done = true;
+                    }
+                }
+                if leaves.iter().all(|l| l.done) {
+                    continue;
+                }
+            }
             let mut visit = |doc: i32| -> Result<()> {
                 for ((n, s), l) in nodes.iter().zip(&mut states).zip(&mut leaves) {
-                    collect(n, s, l, doc, 0)?;
+                    if !l.done {
+                        collect(n, s, l, doc, 0)?;
+                    }
                 }
                 Ok(())
             };
@@ -1458,6 +1819,59 @@ mod tests {
     }
 
     #[test]
+    fn a_bucket_is_the_run_of_values_rounding_the_same() {
+        let mut x: u64 = 0x2545_f491_4f6c_dd1d;
+        let kinds = [
+            RoundingKind::Unit(DateUnit::Week),
+            RoundingKind::Unit(DateUnit::Year),
+            RoundingKind::Unit(DateUnit::Quarter),
+            RoundingKind::Unit(DateUnit::Month),
+            RoundingKind::Unit(DateUnit::Day),
+            RoundingKind::Unit(DateUnit::Hour),
+            RoundingKind::Unit(DateUnit::Minute),
+            RoundingKind::Unit(DateUnit::Second),
+            RoundingKind::Interval(7_777),
+        ];
+        for kind in kinds {
+            for (zone_ms, offset) in [(0, 0), (19_800_000, 0), (-3_600_000, 17 * 60_000)] {
+                let r = DateRounding {
+                    kind,
+                    zone_ms,
+                    offset,
+                };
+                for _ in 0..500 {
+                    x ^= x << 13;
+                    x ^= x >> 7;
+                    x ^= x << 17;
+                    let t = (x % (400 * 366 * DAY as u64)) as i64 - 200 * 366 * DAY;
+                    let (from, to) = r.bucket(t).unwrap();
+                    assert_eq!(from, r.round(t), "{kind:?} {t}");
+                    assert!(from <= t && t < to, "{kind:?} {t}");
+                    assert_eq!(r.round(to - 1), from, "{kind:?} {t}: the last value in it");
+                    assert_eq!(
+                        r.round(to),
+                        to,
+                        "{kind:?} {t}: the next bucket starts at to"
+                    );
+                }
+            }
+        }
+        // At the edges of the range there is no bucket to name.
+        let day = DateRounding {
+            kind: RoundingKind::Unit(DateUnit::Day),
+            zone_ms: 0,
+            offset: 0,
+        };
+        assert_eq!(day.bucket(i64::MAX - 5), None);
+        let far = DateRounding {
+            kind: RoundingKind::Unit(DateUnit::Day),
+            zone_ms: 5,
+            offset: i64::MIN,
+        };
+        assert_eq!(far.bucket(0), None);
+    }
+
+    #[test]
     fn matched_ranges_are_the_candidates_and_nothing_else() {
         let ranges = [
             (f64::NEG_INFINITY, 0.0),
@@ -1527,6 +1941,7 @@ mod tests {
             field: field.to_string(),
             kind,
             source: Source::DocValues,
+            needs: NEED_ALL,
         }
     }
 
@@ -1810,48 +2225,60 @@ mod tests {
     #[test]
     fn date_histograms_bucket_each_rounded_value_once() {
         let reader = fixture("metric_aggs_index");
-        let rows = scan(&reader, &all(), "ml");
-        for kind in [
-            RoundingKind::Interval(7),
-            RoundingKind::Unit(DateUnit::Second),
-            RoundingKind::Interval(1),
-        ] {
-            let rounding = DateRounding {
-                kind,
-                zone_ms: 0,
-                offset: 3,
-            };
-            for bounds in [(None, None), (Some(0), Some(500))] {
-                let node = AggNode::DateHistogram {
-                    field: "ml".to_string(),
-                    rounding,
-                    hard_bounds: bounds,
-                    subs: vec![metric("d", ValueKind::Double)],
+        // `l` has one point per document: its segment without deletions is
+        // counted from the points; `ml`, multi-valued, never is.
+        for field in ["ml", "l"] {
+            let rows = scan(&reader, &all(), field);
+            for kind in [
+                RoundingKind::Interval(7),
+                RoundingKind::Unit(DateUnit::Second),
+                RoundingKind::Interval(1),
+                // Few enough buckets to count from the points.
+                RoundingKind::Interval(1 << 56),
+                RoundingKind::Unit(DateUnit::Year),
+            ] {
+                let rounding = DateRounding {
+                    kind,
+                    zone_ms: 0,
+                    offset: 3,
                 };
-                let mut want: std::collections::BTreeMap<i64, u64> =
-                    std::collections::BTreeMap::new();
-                for (_, _, values) in &rows {
-                    let mut keys: Vec<i64> = values.iter().map(|&v| rounding.round(v)).collect();
-                    keys.dedup();
-                    for k in keys {
-                        if bounds.0.is_some_and(|m| k < m) || bounds.1.is_some_and(|m| k >= m) {
-                            continue;
+                for bounds in [(None, None), (Some(0), Some(500))] {
+                    let subs = if field == "l" {
+                        vec![]
+                    } else {
+                        vec![metric("d", ValueKind::Double)]
+                    };
+                    let node = AggNode::DateHistogram {
+                        field: field.to_string(),
+                        rounding,
+                        hard_bounds: bounds,
+                        subs,
+                    };
+                    let mut want: std::collections::BTreeMap<i64, u64> =
+                        std::collections::BTreeMap::new();
+                    for (_, _, values) in &rows {
+                        let mut keys: Vec<i64> =
+                            values.iter().map(|&v| rounding.round(v)).collect();
+                        keys.dedup();
+                        for k in keys {
+                            if bounds.0.is_some_and(|m| k < m) || bounds.1.is_some_and(|m| k >= m) {
+                                continue;
+                            }
+                            *want.entry(k).or_default() += 1;
                         }
-                        *want.entry(k).or_default() += 1;
+                    }
+                    let got = run(&reader, &all(), &[node], &whole(&reader))
+                        .unwrap()
+                        .remove(0)
+                        .remove(0);
+                    let AggResult::DateHistogram { buckets, subs } = got else {
+                        panic!()
+                    };
+                    assert_eq!(buckets[0], want.into_iter().collect::<Vec<_>>());
+                    if let Some(AggResult::Metric(states)) = subs.first() {
+                        assert_eq!(states.len(), buckets[0].len());
                     }
                 }
-                let got = run(&reader, &all(), &[node], &whole(&reader))
-                    .unwrap()
-                    .remove(0)
-                    .remove(0);
-                let AggResult::DateHistogram { buckets, subs } = got else {
-                    panic!()
-                };
-                assert_eq!(buckets[0], want.into_iter().collect::<Vec<_>>());
-                let AggResult::Metric(states) = &subs[0] else {
-                    panic!()
-                };
-                assert_eq!(states.len(), buckets[0].len());
             }
         }
     }
@@ -1986,7 +2413,8 @@ mod tests {
         assert!(AggNode::Metric {
             field: "x".into(),
             kind: ValueKind::Long,
-            source: Source::PointsMin
+            source: Source::PointsMin,
+            needs: NEED_ALL,
         }
         .reads_points());
         let mut qs = Vec::new();

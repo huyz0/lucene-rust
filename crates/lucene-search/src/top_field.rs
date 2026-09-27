@@ -211,6 +211,34 @@ fn double_to_sortable_long(d: f64) -> i64 {
     v ^ ((v >> 63) & 0x7fff_ffff_ffff_ffff)
 }
 
+/// OpenSearch's nested sort (`XFieldComparatorSource.Nested`): a root
+/// document's value is picked, by the key's [`Selector`], from the values of
+/// the child documents just before it -- those between the previous root and
+/// it that the inner query matches (`MultiValueMode.select` over
+/// `rootDocs`/`innerDocs`), deletions ignored as `BitSetProducer` and the
+/// inner weight ignore them -- at most `max_children` of them with a value;
+/// a root without any sorts as the key's missing value.
+#[derive(Debug, Clone)]
+pub struct NestedSort {
+    /// `rootFilter`: the root documents.
+    pub parents: BooleanQuery,
+    /// `innerQuery`: the child documents whose values count.
+    pub children: BooleanQuery,
+    /// `NestedSortBuilder.maxChildren` (`Integer.MAX_VALUE` when unset).
+    pub max_children: i32,
+}
+
+impl PartialEq for NestedSort {
+    fn eq(&self, o: &Self) -> bool {
+        self.max_children == o.max_children
+            && self.parents == o.parents
+            && self.children == o.children
+    }
+}
+
+// The queries' only float is a boost, never `NaN` from a sort blob.
+impl Eq for NestedSort {}
+
 /// One sort key: `SortField` for the score or the document, or a
 /// `SortedNumericSortField` (which also reads a single-valued `NUMERIC`
 /// column, as `DocValues.getSortedNumeric` does).
@@ -224,6 +252,8 @@ pub struct SortField {
     /// The comparable long a document without a value sorts as (see the
     /// module doc); Lucene's default missing value is `0`.
     pub missing: i64,
+    /// A numeric key read from nested documents ([`NestedSort`]).
+    pub nested: Option<Arc<NestedSort>>,
 }
 
 impl SortField {
@@ -245,6 +275,7 @@ impl SortField {
             reverse,
             selector: Selector::Min,
             missing: 0,
+            nested: None,
         }
     }
 
@@ -255,6 +286,7 @@ impl SortField {
             reverse: false,
             selector: Selector::Min,
             missing: 0,
+            nested: None,
         }
     }
 
@@ -276,6 +308,7 @@ impl SortField {
             reverse,
             selector: Selector::Min,
             missing: 0,
+            nested: None,
         }
     }
 }
@@ -727,6 +760,8 @@ enum Column<'a> {
     Multi(SortedNumericReader<'a>, Vec<i64>, Selector, SortType),
     /// The segment's decoded copy ([`SortColumn::Longs`]).
     Cached(Arc<SortColumn>),
+    /// A root document's value from its children ([`NestedSort`]).
+    Nested(Box<NestedColumn<'a>>),
 }
 
 impl Column<'_> {
@@ -739,8 +774,191 @@ impl Column<'_> {
                 selector.pick(*ty, buf)
             }
             Column::Cached(c) => cached_long(c, doc),
+            Column::Nested(n) => Some(n.value(doc)?),
         })
     }
+}
+
+/// The child column of a [`NestedSort`] key, before any selection.
+#[derive(Clone)]
+enum ChildValues<'a> {
+    Absent,
+    Single(NumericReader<'a>),
+    Multi(SortedNumericReader<'a>),
+}
+
+/// `MultiValueMode.select(values, missingValue, rootDocs, innerDocs,
+/// maxDoc, maxChildren)`: the `NumericDocValues` a nested key's comparator
+/// reads, evaluated for ascending root documents.
+#[derive(Clone)]
+struct NestedColumn<'a> {
+    values: ChildValues<'a>,
+    /// The root documents, ascending.
+    parents: Vec<i32>,
+    /// The inner query's documents, ascending, and the iterator's position
+    /// in them (`None`: not yet advanced, `docID() == -1`).
+    children: Vec<i32>,
+    pos: Option<usize>,
+    selector: Selector,
+    ty: SortType,
+    missing: i64,
+    max_children: i32,
+    /// `lastSeenParentDoc`, `lastEmittedValue`.
+    last_parent: i32,
+    last_value: i64,
+    buf: Vec<i64>,
+}
+
+impl NestedColumn<'_> {
+    /// `docItr.docID()`.
+    //
+    // SENTINEL: `-1` = "not yet advanced", `DocIdSetIterator.docID()`'s own
+    // value before the first move; its one caller, `value`, only compares it
+    // with the previous root (`> prev_parent`), where `-1` is below every
+    // root, as in Java.
+    fn child_doc(&self) -> i32 {
+        match self.pos {
+            None => -1,
+            Some(p) => self.children.get(p).copied().unwrap_or(NO_MORE_DOCS),
+        }
+    }
+
+    /// `docItr.advance(target)`.
+    fn advance(&mut self, target: i32) -> i32 {
+        let from = self.pos.unwrap_or(0);
+        let rest = self.children.get(from..).unwrap_or(&[]);
+        self.pos = Some(from + rest.partition_point(|&d| d < target));
+        self.child_doc()
+    }
+
+    /// `docItr.nextDoc()`.
+    fn next_child(&mut self) -> i32 {
+        self.pos = Some(self.pos.map_or(0, |p| p + 1));
+        self.child_doc()
+    }
+
+    /// The child's values, ascending; false without any (`advanceExact`).
+    fn read(&mut self, doc: i32) -> Result<bool> {
+        self.buf.clear();
+        match &mut self.values {
+            ChildValues::Absent => {}
+            ChildValues::Single(r) => self.buf.extend(r.value(doc).map_err(crate::Error::from)?),
+            ChildValues::Multi(r) => r.values(doc, &mut self.buf).map_err(crate::Error::from)?,
+        }
+        Ok(!self.buf.is_empty())
+    }
+
+    /// `advanceExact(parentDoc)` then `longValue()`.
+    fn value(&mut self, parent: i32) -> Result<i64> {
+        if parent == self.last_parent {
+            return Ok(self.last_value);
+        }
+        if parent == 0 {
+            // As Java: the missing value, `lastSeenParentDoc` left alone.
+            self.last_value = self.missing;
+            return Ok(self.last_value);
+        }
+        // `parentDocs.prevSetBit(parentDoc - 1)`.
+        let before = self.parents.partition_point(|&d| d < parent);
+        let prev_parent = before.checked_sub(1).map_or(-1, |i| self.parents[i]);
+        let first = if self.child_doc() > prev_parent {
+            self.child_doc()
+        } else {
+            self.advance(prev_parent + 1)
+        };
+        self.last_parent = parent;
+        self.last_value = self.pick(first, parent)?;
+        Ok(self.last_value)
+    }
+
+    /// `pick(values, missingValue, docItr, startDoc, endDoc, maxChildren)`
+    /// for the key's type: longs for a `Long`/`Int` key, doubles for a
+    /// `Double`/`Float` one (a `Float` result cast to `float`), each returned
+    /// in the comparator's encoding.
+    fn pick(&mut self, start: i32, end: i32) -> Result<i64> {
+        let float = self.ty == SortType::Float;
+        let floating = float || self.ty == SortType::Double;
+        let d = |v: i64| {
+            if float {
+                f64::from(sortable_int_to_float(v))
+            } else {
+                sortable_long_to_double(v)
+            }
+        };
+        let (mut long_acc, mut double_acc) = match self.selector {
+            Selector::Min => (i64::MAX, f64::INFINITY),
+            Selector::Max => (i64::MIN, f64::NEG_INFINITY),
+            _ => (0, 0.0),
+        };
+        let (mut total_count, mut count, mut has) = (0i64, 0i32, false);
+        let mut doc = start;
+        while doc < end {
+            if self.read(doc)? {
+                count = count.saturating_add(1);
+                if count > self.max_children {
+                    break;
+                }
+                has = true;
+                let (first, last) = (self.buf[0], self.buf[self.buf.len() - 1]);
+                match self.selector {
+                    Selector::Min if floating => {
+                        double_acc = crate::aggs::java_min(double_acc, d(first))
+                    }
+                    Selector::Min => long_acc = long_acc.min(first),
+                    Selector::Max if floating => {
+                        double_acc = crate::aggs::java_max(double_acc, d(last))
+                    }
+                    Selector::Max => long_acc = long_acc.max(last),
+                    _ => {
+                        for &v in &self.buf {
+                            if floating {
+                                double_acc += d(v);
+                            } else {
+                                long_acc = long_acc.wrapping_add(v);
+                            }
+                        }
+                        total_count += self.buf.len() as i64;
+                    }
+                }
+            }
+            doc = self.next_child();
+        }
+        if !has || (matches!(self.selector, Selector::Sum | Selector::Avg) && total_count < 1) {
+            return Ok(self.missing);
+        }
+        let encode = |r: f64| {
+            if float {
+                i64::from(float_to_sortable_int(r as f32))
+            } else {
+                double_to_sortable_long(r)
+            }
+        };
+        Ok(match (self.selector, floating) {
+            (Selector::Avg, true) => encode(double_acc / total_count as f64),
+            (_, true) => encode(double_acc),
+            (Selector::Avg, false) if total_count > 1 => {
+                java_round(long_acc as f64 / total_count as f64)
+            }
+            (_, false) => long_acc,
+        })
+    }
+}
+
+/// A [`NestedSort`]'s query over one segment, deletions ignored: its
+/// documents, ascending.
+fn nested_docs(seg: &OpenSegment<'_>, q: &BooleanQuery) -> Result<Vec<i32>> {
+    let rewritten = crate::multi_segment::rewrite_points_ranges(q, std::slice::from_ref(seg));
+    let q = rewritten.as_ref().unwrap_or(q);
+    let clause = crate::aggs::lone_clause(q);
+    let ctx = crate::aggs::plain_context(seg);
+    let mut buf = Vec::new();
+    Ok(
+        match crate::aggs::segment_matches(&ctx, q, &clause, None, &mut buf)? {
+            None => Vec::new(),
+            Some(Some(d)) => d.to_vec(),
+            Some(None) => (0..seg.max_doc.unwrap_or(0)).collect(),
+        },
+    )
 }
 
 /// `NumericComparator.NumericLeafComparator`: one segment's column, and the
@@ -2166,8 +2384,30 @@ fn open_leaf<'a>(
                         }
                     },
                 };
-                let column = cache_longs(seg, f, column, max_doc)?;
+                let column = match &f.nested {
+                    None => cache_longs(seg, f, column, max_doc)?,
+                    Some(n) => Column::Nested(Box::new(NestedColumn {
+                        values: match column {
+                            Column::Single(r) => ChildValues::Single(r),
+                            Column::Multi(r, ..) => ChildValues::Multi(r),
+                            _ => ChildValues::Absent,
+                        },
+                        parents: nested_docs(seg, &n.parents)?,
+                        children: nested_docs(seg, &n.children)?,
+                        pos: None,
+                        selector: f.selector,
+                        ty: f.ty,
+                        missing: f.missing,
+                        max_children: n.max_children,
+                        last_parent: -1,
+                        last_value: f.missing,
+                        buf: Vec::new(),
+                    })),
+                };
+                // A nested key does not skip: the caller runs one only where
+                // Lucene's would not either (see `NestedSort`).
                 let competitive = match (c.pruning, points, f.point_bytes()) {
+                    _ if f.nested.is_some() => None,
                     (Pruning::None, _, _) | (_, None, _) | (_, _, None) => None,
                     (_, Some(p), Some(bytes)) => match p.field_number(&f.field) {
                         None => None,
@@ -3615,6 +3855,213 @@ mod tests {
             threshold,
             after,
         )
+    }
+
+    /// Every document of `field` in `reader`'s segments: `(segment, doc,
+    /// values)`, and the values' doc-values encoding.
+    fn column(reader: &DirectoryReader, field: &str) -> Vec<Vec<Vec<i64>>> {
+        let mut out = Vec::new();
+        for r in reader.segment_readers() {
+            let info = r
+                .field_infos()
+                .fields
+                .iter()
+                .find(|i| i.name == field)
+                .unwrap();
+            let (meta, data) = r.doc_values_for_field(info.number).unwrap();
+            let mut seg = Vec::new();
+            let e = meta.sorted_numeric_entry(info.number);
+            let n = meta.numeric_entry(info.number);
+            for doc in 0..r.max_doc {
+                let mut v = Vec::new();
+                if let Some(e) = e {
+                    SortedNumericReader::new(data, e)
+                        .values(doc, &mut v)
+                        .unwrap();
+                } else if let Some(n) = n {
+                    v.extend(NumericReader::new(data, n).value(doc).unwrap());
+                }
+                seg.push(v);
+            }
+            out.push(seg);
+        }
+        out
+    }
+
+    #[test]
+    fn a_nested_key_picks_from_the_children_before_each_root() {
+        // Roots every seventh document; children the documents a points
+        // range matches (deletions ignored, as Lucene's inner weight does).
+        let reader = fixture("sorted_search_index");
+        let mut opened = reader.open_segments().expect("open");
+        opened.open_points().expect("points");
+        let segments = opened.as_open_segments();
+        let parents: Vec<Vec<i32>> = reader
+            .segment_readers()
+            .iter()
+            .map(|r| (0..r.max_doc).filter(|d| d % 7 == 6).collect())
+            .collect();
+        let children = BooleanQuery {
+            must: vec![Clause::PointsRange(crate::query::PointsRangeQuery::new(
+                "r", 0, 2_000_000,
+            ))],
+            ..Default::default()
+        };
+        for (field, ty) in [
+            ("m", SortType::Long),
+            ("l", SortType::Long),
+            ("d", SortType::Double),
+            ("f", SortType::Float),
+            ("i", SortType::Int),
+        ] {
+            let values = column(&reader, field);
+            for selector in [Selector::Min, Selector::Max, Selector::Sum, Selector::Avg] {
+                for max_children in [i32::MAX, 2] {
+                    for (s, seg) in segments.iter().enumerate() {
+                        let child_docs = nested_docs(seg, &children).unwrap();
+                        let (column, _) = {
+                            let r = &reader.segment_readers()[s];
+                            let info = r
+                                .field_infos()
+                                .fields
+                                .iter()
+                                .find(|i| i.name == field)
+                                .unwrap();
+                            let (meta, data) = r.doc_values_for_field(info.number).unwrap();
+                            match meta.sorted_numeric_entry(info.number) {
+                                Some(e) => {
+                                    (ChildValues::Multi(SortedNumericReader::new(data, e)), ())
+                                }
+                                None => (
+                                    ChildValues::Single(NumericReader::new(
+                                        data,
+                                        meta.numeric_entry(info.number).unwrap(),
+                                    )),
+                                    (),
+                                ),
+                            }
+                        };
+                        let mut col = NestedColumn {
+                            values: column,
+                            parents: parents[s].clone(),
+                            children: child_docs.clone(),
+                            pos: None,
+                            selector,
+                            ty,
+                            missing: -77,
+                            max_children,
+                            last_parent: -1,
+                            last_value: -77,
+                            buf: Vec::new(),
+                        };
+                        let mut prev = -1;
+                        for &p in &parents[s] {
+                            // The oracle: the children strictly between the
+                            // previous root and this one, in order.
+                            let kids: Vec<&Vec<i64>> = child_docs
+                                .iter()
+                                .filter(|&&c| c > prev && c < p)
+                                .map(|&c| &values[s][c as usize])
+                                .filter(|v| !v.is_empty())
+                                .take(usize::try_from(max_children).unwrap())
+                                .collect();
+                            prev = p;
+                            let floating = matches!(ty, SortType::Double | SortType::Float);
+                            let d = |v: i64| {
+                                if ty == SortType::Float {
+                                    f64::from(sortable_int_to_float(v))
+                                } else {
+                                    sortable_long_to_double(v)
+                                }
+                            };
+                            let enc = |r: f64| {
+                                if ty == SortType::Float {
+                                    i64::from(float_to_sortable_int(r as f32))
+                                } else {
+                                    double_to_sortable_long(r)
+                                }
+                            };
+                            let all: Vec<i64> =
+                                kids.iter().flat_map(|v| v.iter().copied()).collect();
+                            let want = if kids.is_empty() {
+                                -77
+                            } else {
+                                match (selector, floating) {
+                                    (Selector::Min, false) => {
+                                        kids.iter().map(|v| v[0]).min().unwrap()
+                                    }
+                                    (Selector::Max, false) => {
+                                        kids.iter().map(|v| *v.last().unwrap()).max().unwrap()
+                                    }
+                                    (Selector::Sum, false) => {
+                                        all.iter().fold(0i64, |a, &b| a.wrapping_add(b))
+                                    }
+                                    (Selector::Avg, false) => {
+                                        let t = all.iter().fold(0i64, |a, &b| a.wrapping_add(b));
+                                        if all.len() > 1 {
+                                            java_round(t as f64 / all.len() as f64)
+                                        } else {
+                                            t
+                                        }
+                                    }
+                                    (Selector::Min, true) => {
+                                        enc(kids.iter().fold(f64::INFINITY, |a, v| {
+                                            crate::aggs::java_min(a, d(v[0]))
+                                        }))
+                                    }
+                                    (Selector::Max, true) => {
+                                        enc(kids.iter().fold(f64::NEG_INFINITY, |a, v| {
+                                            crate::aggs::java_max(a, d(*v.last().unwrap()))
+                                        }))
+                                    }
+                                    (Selector::Sum, true) => {
+                                        enc(all.iter().fold(0.0, |a, &b| a + d(b)))
+                                    }
+                                    _ => {
+                                        enc(all.iter().fold(0.0, |a, &b| a + d(b))
+                                            / all.len() as f64)
+                                    }
+                                }
+                            };
+                            let got = col.value(p).unwrap();
+                            if p == 0 {
+                                assert_eq!(got, -77);
+                            } else {
+                                assert_eq!(
+                                    got, want,
+                                    "{field} {selector:?} max {max_children} seg {s} root {p}"
+                                );
+                            }
+                            // Asked again: the same, without reading.
+                            assert_eq!(col.value(p).unwrap(), got);
+                        }
+                    }
+                }
+            }
+        }
+        // Through the collector: a nested key sorts the roots by their picks.
+        let nested = Arc::new(NestedSort {
+            parents: BooleanQuery {
+                must: vec![Clause::PointsRange(crate::query::PointsRangeQuery::new(
+                    "r", 0, 2_000_000,
+                ))],
+                ..Default::default()
+            },
+            children: children.clone(),
+            max_children: i32::MAX,
+        });
+        let key = SortField {
+            nested: Some(nested.clone()),
+            ..SortField::numeric("l", SortType::Long, false)
+        };
+        assert_eq!(key, key.clone());
+        assert_ne!(key, SortField::numeric("l", SortType::Long, false));
+        let top = run(&reader, &all(), &[key, SortField::doc()], 5, None).unwrap();
+        assert_eq!(top.hits.len(), 5);
+        assert!(top
+            .hits
+            .windows(2)
+            .all(|w| w[0].values[0] <= w[1].values[0]));
     }
 
     fn keyword(field: &str, reverse: bool, missing_last: bool) -> SortField {

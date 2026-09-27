@@ -11,7 +11,7 @@ mixed booleans) 4–8× *slower*, because the port had fast paths for three
 shapes and a materializing path for everything else. M5 moved indexing. This
 milestone finishes the read side.
 
-**Status.** In progress. R1, R2 and R5 delivered; R3 mostly, R4 (numeric, score, `_doc` and keyword keys, the sort modes, index-sorted shards) and R7 partly delivered (below). R6 open.
+**Status.** In progress. R1, R2, R4 and R5 delivered; R3 mostly and R7 partly delivered (below). R6 open.
 
 ## Tasks
 
@@ -20,7 +20,7 @@ milestone finishes the read side.
 | R1 | Query execution engine: Lucene's scorer tree and bulk scorers, every boolean shape at least as fast as Lucene | ✅ delivered |
 | R2 | General query wire format and Java encoder for every Lucene query OpenSearch builds | ✅ delivered for the shapes R1 runs (term, boolean, constant score, boost, dismax, match-all, match-none); leaf queries arrive with R3 |
 | R3 | Leaf queries as streaming scorers: phrase, the multi-term family, points and doc-values ranges, exists, terms-in-set, dismax, synonym | mostly delivered: phrase, prefix/wildcard/regexp/terms, fuzzy, points ranges, `exists`, dismax, a term's own `docFreq` (`cross_fields`), and a native query cache (R3b); open: fuzzy speed (q25) |
-| R4 | Sort and `search_after` natively (`TopFieldCollector`) | numeric, score, `_doc` and keyword keys, `track_scores`, the `avg`/`median` modes and index-sorted shards delivered (below); open: nested sorts, the `sum` mode |
+| R4 | Sort and `search_after` natively (`TopFieldCollector`) | ✅ delivered: numeric, score, `_doc` and keyword keys, `track_scores`, the `avg`/`median` modes, index-sorted shards and nested keys (below); on Lucene by design: the `sum` mode on a top-level field (its points skipping is not exact), a nested sort on a shard large enough for Lucene's comparator to skip |
 | R5 | Aggregations natively: terms, histogram, date_histogram, range, the metrics, cardinality, filter/filters | ✅ delivered: the metrics (`min`, `max`, `sum`, `avg`, `value_count`, `stats`), keyword `terms`, `histogram`, `date_histogram`, `range`/`date_range`, `filter`, `filters`, `global`, `cardinality`, and any nesting of them (below); outside: scripts, `missing`, non-default `terms` orders, zones with daylight saving, other aggregation types |
 | R6 | Fetch (`_source`, stored fields, `docvalue_fields`) and get natively | open |
 | R7 | scroll, `post_filter`, `min_score`, `terminate_after`, timeouts; the full read benchmark (in process and REST) with every native shape at least 1.0× Lucene | `post_filter`, `timeout`, scroll, `terminate_after` and `min_score` (by score and behind a sort) delivered; the query-phase REST benchmark at median 1.58×, worst 0.89× (below); open: the last shapes under 1.0× |
@@ -167,7 +167,7 @@ reopens. q59 went from 0.20× to 1.20× merged and 2.27× segmented; the
 other `FILTER`/`MUST_NOT` shapes (q41, q47–q49, q52, q54, q55) stay at
 1.2–4.3×.
 
-## R4 — sorted search (numeric, score, `_doc` and keyword keys delivered)
+## R4 — sorted search (delivered)
 
 `lucene-search/src/top_field.rs` is Lucene's `TopFieldCollector`: the hit
 queue, `SimpleFieldCollector`/`PagingFieldCollector`, the relevance, document
@@ -325,21 +325,41 @@ the collector (ABI 13: a sort-blob options byte, the max score back in a fourth
 count slot). 224 Lucene runs through the same `MultiCollector` agree exactly --
 hits, totals, max-score bits -- and so do the self test's tracked pages.
 
-Falls back, deliberately for now:
+### Sort modes, index-sorted shards and nested keys
 
-* `avg`/`sum`/`median` modes. OpenSearch sorts them with its own
-  `LongValuesComparatorSource` (and the `Double`/`Float` ones): a Lucene
-  `NumericComparator` over `MultiValueMode.select` of the values with the
-  missing value filled in, and it keeps the comparator's points skipping. The
-  points hold the individual values, not their sum, so with negative values a
-  `sum` sort can skip a document that competes; and the docs-with-value
-  fallback it would hand the collector is an iterator that cannot iterate. A
-  native port would have to reproduce both to match a stock node, so these
-  stay on Lucene, where they run exactly as they do today.
-* nested sorts: they need the block-join parent/child sets, not ported yet.
-* index-sorted shards: Lucene stops a segment early when the index sort is a
-  prefix of the search sort (`canEarlyTerminate`), which changes the totals;
-  not ported yet.
+* `avg` and `median` modes (ABI 22) run natively: OpenSearch sorts them with
+  its own `LongValuesComparatorSource` (and the `Int`, `Double` and `Float`
+  ones), a `NumericComparator` over `MultiValueMode.select` of a document's
+  values with the missing value filled in, skipping with the points of the
+  individual values; an average or median lies between a document's least and
+  greatest value, so that skipping is exact for them and the native answer is
+  Lucene's. `sum` stays on Lucene: a sum can pass the points, so which
+  documents it keeps depends on where skipping starts.
+* Index-sorted shards (ABI 23): a segment whose index sort begins with the
+  search's sort ends at its first non-competitive document
+  (`TopFieldCollector.canEarlyTerminate`), decided per segment by the plugin
+  with `SortField.equals`, as Lucene decides it.
+* Nested keys (ABI 25, `top_field::NestedSort`): a root document's value is
+  `MultiValueMode.select(values, missing, rootDocs, innerDocs, maxDoc,
+  maxChildren)` -- the `min`, `max`, `sum` or `avg` of the values of the
+  children between the previous root and it that the inner query matches
+  (deletions ignored, as the `BitSetProducer` and the inner weight ignore
+  them), at most `max_children` with a value, the missing value for a root
+  without any; longs for a whole-number key, doubles for a floating-point one
+  (`Math.min`/`Math.max`, a `float` result cast back). The plugin sends the
+  root filter (`Queries.newNonNestedFilter()`, an `exists` on
+  `_primary_term`, or the parent object's type filter) and the inner query
+  (the nested type filter and any `filter`) as query blobs. Lucene's
+  comparator keeps skipping with the field's points -- the children's -- once
+  more than the threshold's hits are in, which can drop roots; the native key
+  does not skip, so the plugin runs a nested sort only on a shard that cannot
+  hold more documents than the threshold (`sort_nested` otherwise), where the
+  two agree. `median` has no nested pick in OpenSearch and stays there.
+  Verified by `top_field.rs`'s test against an independent pick over a fixture
+  (every mode, both `max_children`, five field types) and by the REST matrix's
+  nested rows against a stock node on a one-shard and a two-shard nested
+  index (each mode and type, a nested `filter`, `max_children`,
+  `search_after`, beside aggregations, and the two that fall back).
 
 ## R5 — aggregations (delivered)
 
@@ -504,6 +524,45 @@ bounds, offsets, `min_doc_count: 0`, a `+05:30` zone, multi-valued and float
 fields, beside hits and a sort, behind `min_score`) on every index of the
 matrix, and the shapes that stay on OpenSearch (a zone with daylight saving,
 `terms` ordered by a sub-aggregation).
+
+Speed. The straight port lost on six of the new rows (0.54-0.90x). OpenSearch
+counts a top-level `date_histogram` or `range` without sub-aggregations from
+the BKD tree on a segment every document of which matches (its filter
+rewrite); the native pass now does too (`count_from_points`: a segment
+without deletions, a field with one point per document, at most 1,024 buckets,
+each bucket's interval counted by an intersect whose cells inside it are
+counted whole). The bucket ordinals and distinct values use a multiplicative
+hash finished with MurmurHash3's `fmix64` (SipHash cost the most; a bare
+multiply left a widened float's zero low bits zero, and the table buckets by
+the low bits -- `cardinality` over a float field went to 0.54x until the
+finisher); a `date_histogram` keeps its last bucket's bounds and ordinal; a
+metric under a bucket folds only the parts it reads; a dense column is read
+inline. Over REST (same node and method as below, 21,703 documents in two
+segments, Lucene over native, median of 60 requests per engine):
+
+| row | ratio |
+|---|---|
+| `histogram` | 1.04x |
+| `histogram` multi-valued + `stats` | 1.09x |
+| `histogram` on a float | 1.07x |
+| `date_histogram` by day | 1.26x |
+| `date_histogram` week, year and quarter | 1.10x |
+| `range` | 1.18x |
+| `date_range` | 1.01x |
+| `filters` + `other` + `sum` | 1.32x |
+| `terms` + sub-metrics | 1.21x |
+| `histogram` > `terms` | 1.15x |
+| `terms` > `date_histogram` > `max` | 1.15x |
+| `cardinality` of five fields | 1.07x |
+| `global` + a metric | 1.11x |
+| `date_histogram` by month + `sum` | 0.94x |
+| `terms` > `cardinality`, precision 10 | 0.95x |
+
+The last two are a match-all read document by document under a
+sub-aggregation, about 3 ms end to end on both engines; the same rows measured
+0.87x and 0.91x in the run before and 1.00x/0.99x on neighbouring rows in this
+one, so the gap is within the run-to-run spread but not yet shown to be
+closed.
 
 ### Speed
 

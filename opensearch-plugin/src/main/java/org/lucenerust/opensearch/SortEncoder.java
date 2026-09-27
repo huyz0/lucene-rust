@@ -64,6 +64,11 @@ public final class SortEncoder {
     static final byte MODE_SUM = 4;
     static final byte MODE_AVG = 8;
     static final byte MODE_MEDIAN = 12;
+    /**
+     * Key flags: a nested key -- its root filter and inner query (query blobs) and {@code
+     * max_children} follow its missing value.
+     */
+    static final byte NESTED_KEY = 16;
     /** Blob options: track the max score over every match (track_scores). */
     static final byte TRACK_MAX_SCORE = 1;
     static final byte TERMINATE_AFTER = 2;
@@ -179,6 +184,13 @@ public final class SortEncoder {
                 } else if (mode != null) {
                     // What the comparator source hands its comparator: `missingObject`.
                     writeLong(out, comparable(type, mode.missing()));
+                    if (mode.parents() != null) {
+                        writeInt(out, mode.parents().length);
+                        out.writeBytes(mode.parents());
+                        writeInt(out, mode.children().length);
+                        out.writeBytes(mode.children());
+                        writeInt(out, mode.maxChildren());
+                    }
                 } else {
                     // Lucene's numeric comparators treat an unset missing value as 0.
                     writeLong(out, missing == null ? 0 : comparable(type, missing));
@@ -268,7 +280,7 @@ public final class SortEncoder {
      * {@code sum}, {@code avg} and {@code median}: its blob type, its mode flags and the missing value
      * its comparator is given.
      */
-    record Mode(byte type, byte flags, Object missing) {}
+    record Mode(byte type, byte flags, Object missing, byte[] parents, byte[] children, int maxChildren) {}
 
     private static final String SOURCES = "org.opensearch.index.fielddata.fieldcomparator.";
     private static final Field SORT_MODE = field(IndexFieldData.XFieldComparatorSource.class, "sortMode");
@@ -278,9 +290,13 @@ public final class SortEncoder {
 
     /**
      * {@code f}'s {@link Mode}, or null when it is not such a key or not one the native comparator
-     * reproduces: a nested sort, skipping disabled (the native comparator always skips with
-     * points), a converting source ({@code numeric_type}), or a comparator whose type is not the
-     * field's own (the native side reads the stored values in the key's encoding).
+     * reproduces: skipping disabled (the native comparator always skips with points), a converting
+     * source ({@code numeric_type}), a comparator whose type is not the field's own (the native
+     * side reads the stored values in the key's encoding), or a nested key whose filters the native
+     * side cannot run or whose mode has no nested pick ({@code median}). A nested key ({@link
+     * #NESTED_KEY}) is sent with
+     * its root filter and inner query; the native side does not skip with it, so the searcher runs
+     * one only where Lucene's comparator would not skip either ({@link #hasNested}).
      */
     static Mode mode(SortField f) {
         if (f.getClass() != SortField.class || f.getType() != SortField.Type.CUSTOM) {
@@ -301,8 +317,35 @@ public final class SortEncoder {
             return null;
         }
         try {
-            if (NESTED.get(src) != null || SKIPPING.getBoolean(src) == false) {
+            if (SKIPPING.getBoolean(src) == false) {
                 return null;
+            }
+            Object nested = NESTED.get(src);
+            byte[] parents = null;
+            byte[] children = null;
+            int maxChildren = Integer.MAX_VALUE;
+            if (nested != null) {
+                // XFieldComparatorSource.Nested: the root documents' BitSetProducer (the query
+                // it wraps), the inner query, the searcher that rewrites it, max_children.
+                if (!(nested instanceof IndexFieldData.XFieldComparatorSource.Nested n)) {
+                    return null;
+                }
+                Object producer = NativeAggregationTree.get(n, "rootFilter");
+                org.apache.lucene.search.IndexSearcher searcher = (org.apache.lucene.search.IndexSearcher) NativeAggregationTree.get(
+                    n,
+                    "searcher"
+                );
+                if (!(NativeAggregationTree.get(producer, "query") instanceof org.apache.lucene.search.Query parentQuery)) {
+                    return null;
+                }
+                parents = QueryEncoder.encode(searcher.rewrite(parentQuery), field -> true).blob();
+                children = QueryEncoder.encode(searcher.rewrite(n.getInnerQuery()), field -> true).blob();
+                if (parents == null || children == null) {
+                    return null;
+                }
+                if (n.getNestedSort() != null) {
+                    maxChildren = n.getNestedSort().getMaxChildren();
+                }
             }
             Field data = field(src.getClass(), "indexFieldData");
             if (data == null || !(data.get(src) instanceof IndexNumericFieldData ifd)) {
@@ -330,16 +373,22 @@ public final class SortEncoder {
                 // SUM stays Lucene's: its comparator skips with the points of the single values,
                 // which a sum can pass, so which documents it keeps depends on where skipping
                 // starts. An average or median lies between a document's least and greatest value,
-                // so the same skipping is exact for them, and the native answer is Lucene's.
+                // so the same skipping is exact for them, and the native answer is Lucene's. A
+                // nested key never skips natively and runs only where Lucene's does not either.
+                case "SUM" -> nested != null ? MODE_SUM : -1;
                 case "AVG" -> MODE_AVG;
-                case "MEDIAN" -> MODE_MEDIAN;
+                // MultiValueMode.MEDIAN has no nested pick.
+                case "MEDIAN" -> nested != null ? -1 : MODE_MEDIAN;
                 default -> -1;
             };
             if (flags < 0) {
                 return null;
             }
-            return new Mode(type, flags, src.missingObject(MISSING.get(src), f.getReverse()));
-        } catch (ReflectiveOperationException | RuntimeException e) {
+            if (nested != null) {
+                flags |= NESTED_KEY;
+            }
+            return new Mode(type, flags, src.missingObject(MISSING.get(src), f.getReverse()), parents, children, maxChildren);
+        } catch (ReflectiveOperationException | RuntimeException | java.io.IOException e) {
             return null;
         }
     }
@@ -373,6 +422,17 @@ public final class SortEncoder {
             any |= out[i];
         }
         return any ? out : null;
+    }
+
+    /** Whether any key of {@code fields} is a nested one ({@link #NESTED_KEY}). */
+    static boolean hasNested(SortField[] fields) {
+        for (SortField f : fields) {
+            Mode m = mode(f);
+            if (m != null && m.parents() != null) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Whether any key of {@code fields} is a keyword key, whose terms come back as bytes. */

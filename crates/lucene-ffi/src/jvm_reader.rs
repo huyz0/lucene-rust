@@ -56,7 +56,7 @@ use lucene_search::field_norms::FieldNorms;
 use lucene_search::multi_segment::OpenSegment;
 use lucene_search::query::{BooleanQuery, Clause, TermQuery};
 use lucene_search::terms_agg::TermsSpec;
-use lucene_search::top_field::{FieldDoc, Selector, SortField, SortType};
+use lucene_search::top_field::{FieldDoc, NestedSort, Selector, SortField, SortType};
 use lucene_search::weight_count::count_term_query;
 use lucene_search::{
     count_boolean_query_segment, search_boolean_query_multi_segment_maxscore_counting,
@@ -95,8 +95,9 @@ use std::sync::Arc;
 /// 22, the sort keys' `sum`/`avg`/`median` modes; 23, the sort blob's
 /// index-sort prefix flags; 24, aggregation trees
 /// ([`crate::jvm_aggs::ffi_jvm_reader_aggregate_tree`]: bucket aggregations,
-/// sub-aggregations, `global`, `cardinality`).
-pub const JVM_ABI_VERSION: u32 = 24;
+/// sub-aggregations, `global`, `cardinality`); 25, nested sort keys
+/// (`SORT_NESTED`).
+pub const JVM_ABI_VERSION: u32 = 25;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -586,6 +587,10 @@ const SORT_MODE_MASK: u8 = 12;
 const SORT_MODE_SUM: u8 = 4;
 const SORT_MODE_AVG: u8 = 8;
 const SORT_MODE_MEDIAN: u8 = 12;
+/// Key flag: a nested key ([`NestedSort`]); after its missing value come the
+/// root filter and the inner query (query blobs, `len: i32` each) and
+/// `max_children: i32`.
+const SORT_NESTED: u8 = 16;
 /// Sort-blob options: track the max score over every match.
 const SORT_TRACK_MAX_SCORE: u8 = 1;
 /// Sort-blob options: `terminate_after`, its count (`i32`, at least 1)
@@ -678,7 +683,7 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<DecodedSort, FfiStatus> {
     for _ in 0..n {
         let ty = c.u8()?;
         let flags = c.u8()?;
-        if flags & !(SORT_REVERSE | SORT_MAX | SORT_MODE_MASK) != 0 {
+        if flags & !(SORT_REVERSE | SORT_MAX | SORT_MODE_MASK | SORT_NESTED) != 0 {
             return Err(bad(format!("sort blob: unknown flags {flags:#x}")));
         }
         let mode = flags & SORT_MODE_MASK;
@@ -722,12 +727,31 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<DecodedSort, FfiStatus> {
             SORT_MODE_MEDIAN => Selector::Median,
             other => return Err(bad(format!("sort blob: unknown mode {other:#x}"))),
         };
+        let nested = if flags & SORT_NESTED != 0 {
+            // `MultiValueMode.MEDIAN` has no nested pick.
+            if !numeric || selector == Selector::Median {
+                return Err(bad(format!(
+                    "sort blob: flags {flags:#x} nest a key that cannot be nested"
+                )));
+            }
+            let parents = boolean_of(&decode_query(c.bytes()?)?);
+            let children = boolean_of(&decode_query(c.bytes()?)?);
+            let max_children = c.i32()?;
+            Some(Arc::new(NestedSort {
+                parents,
+                children,
+                max_children,
+            }))
+        } else {
+            None
+        };
         keys.push(SortField {
             field,
             ty,
             reverse: flags & SORT_REVERSE != 0,
             selector,
             missing,
+            nested,
         });
     }
     let after = match c.u8()? {
@@ -2382,6 +2406,47 @@ pub(crate) mod tests {
             total,
             lower,
         ))
+    }
+
+    #[test]
+    fn a_nested_key_carries_its_filters_and_runs_over_a_handle() {
+        let nested_key = |ty: u8, flags: u8| {
+            let mut b = vec![2u8, ty, flags | SORT_NESTED];
+            b.extend_from_slice(&1i32.to_le_bytes());
+            b.push(b'n');
+            b.extend_from_slice(&i64::MAX.to_le_bytes());
+            for q in [term_blob("body", "fox"), term_blob("body", "dog")] {
+                b.extend_from_slice(&(q.len() as i32).to_le_bytes());
+                b.extend_from_slice(&q);
+            }
+            b.extend_from_slice(&3i32.to_le_bytes());
+            b.extend_from_slice(&[SORT_DOC, 0]);
+            b.push(0); // no search-after
+            b.push(0); // options
+            b.extend_from_slice(&0i32.to_le_bytes()); // no slices
+            b
+        };
+        let (keys, ..) = decode_sort(&nested_key(SORT_LONG, SORT_MODE_SUM)).unwrap();
+        let n = keys[0].nested.as_ref().expect("nested");
+        assert_eq!(n.max_children, 3);
+        assert_eq!(keys[0].selector, Selector::Sum);
+        assert!(keys[1].nested.is_none());
+        // Not for the score, a keyword or a median (no nested pick).
+        for (ty, flags) in [(SORT_STRING, 0), (SORT_LONG, SORT_MODE_MEDIAN)] {
+            let mut b = nested_key(ty, flags);
+            if ty == SORT_STRING {
+                // A keyword's missing value is 0 or 1.
+                b[8..16].copy_from_slice(&0i64.to_le_bytes());
+            }
+            assert_eq!(decode_sort(&b).err(), Some(FfiStatus::InvalidArgument));
+        }
+        // Over a handle: the roots (documents matching "fox") sort by their
+        // children's (dog documents') values.
+        let h = open();
+        let q = term_blob("body", "fox");
+        let (hits, total, _) = run_sorted(h, &q, &nested_key(SORT_LONG, 0), 5, i64::MAX).unwrap();
+        assert!(!hits.is_empty() && total >= hits.len() as i64);
+        ffi_close_jvm_reader(h);
     }
 
     #[test]

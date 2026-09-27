@@ -169,6 +169,7 @@ public final class NativeAggregationTree {
             out.write(METRIC);
             out.write(metric.valueKind());
             out.write(metric.source());
+            out.write(metric.needs());
             writeString(out, metric.field());
         }
 
