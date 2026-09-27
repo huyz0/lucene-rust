@@ -462,6 +462,58 @@ impl<'a> DisiCursor<'a> {
         Some(found.then_some(self.index as usize))
     }
 
+    /// The documents `start..start + 64 * words.len()` that have a value, as
+    /// bits into `words`, and the ordinal the first of them has (the others
+    /// follow one by one) -- or `None` when this cannot be read off a block in
+    /// one piece: a window not aligned to 64 documents, one spanning two
+    /// blocks, one in a SPARSE block, or one behind the cursor. The caller then
+    /// asks [`Self::advance_exact`] document by document. Leaves the cursor
+    /// where `advance_exact(start)` would.
+    ///
+    /// An ALL block's window is every document; a DENSE block's is its bitmap
+    /// words, and its first ordinal what `advance_exact(start)` computes.
+    // ARITH: `words.len()` is checked to fit with `start` below; the word
+    // range `(start & 0xFFFF) >> 6 ..+ n` stays inside one block's 1,024
+    // bitmap words because the window does not leave the block.
+    #[allow(clippy::arithmetic_side_effects)]
+    pub fn window_bits(&mut self, start: i32, words: &mut [u64]) -> Result<Option<i64>> {
+        let Ok(n) = i32::try_from(words.len()) else {
+            return Ok(None);
+        };
+        let span = n.checked_mul(64).and_then(|s| start.checked_add(s));
+        let Some(end) = span else {
+            return Ok(None);
+        };
+        if n == 0 || start < 0 || start & 63 != 0 || start < self.doc {
+            return Ok(None);
+        }
+        let block = start & !0xFFFF;
+        if (end - 1) & !0xFFFF != block {
+            return Ok(None);
+        }
+        self.advance_exact(start)?;
+        if self.block != block {
+            // No block for this range: none of its documents has a value.
+            words.fill(0);
+            return Ok(Some(self.index + 1));
+        }
+        match self.method {
+            Method::All => {
+                words.fill(u64::MAX);
+                Ok(Some(self.index))
+            }
+            Method::Dense => {
+                let first_word = ((start & 0xFFFF) >> 6) as usize;
+                let bytes = &self.dense_bitmap[first_word * 8..(first_word + words.len()) * 8];
+                for (w, chunk) in words.iter_mut().zip(bytes.chunks_exact(8)) {
+                    *w = u64::from_le_bytes(chunk.try_into().expect("8 bytes"));
+                }
+                Ok(Some(self.index))
+            }
+            Method::Sparse => Ok(None),
+        }
+    }
+
     /// The ordinal of `doc` among documents that have a value, or `None` when
     /// `doc` has none.
     ///

@@ -589,6 +589,27 @@ fn slot<T: Default>(v: &mut Vec<T>, i: usize) -> &mut T {
     &mut v[i]
 }
 
+/// The documents an aggregation reads its columns ahead for at a time.
+const WINDOW: i32 = 1024;
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: read every column document by document, the path the windows
+    /// must agree with.
+    static NO_WINDOWS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn no_windows() -> bool {
+    #[cfg(test)]
+    {
+        NO_WINDOWS.with(std::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
+}
+
 /// One aggregation's columns over one segment.
 struct Leaf<'a> {
     col: Col<'a>,
@@ -601,6 +622,17 @@ struct Leaf<'a> {
     memo: (i64, i64, i64, u32, u32),
     /// This segment was answered from the points ([`count_from_points`]).
     done: bool,
+    /// A window of a single-valued numeric column read ahead
+    /// ([`Leaf::prefetch`]): document `pre_base + i`'s value is `pre_vals[i]`
+    /// when bit `i` of `pre_bits` is set, for `i < pre_len`.
+    pre_base: i32,
+    pre_len: usize,
+    pre_vals: Vec<i64>,
+    pre_bits: Vec<u64>,
+    /// The documents this node placed in a bucket during a window, and the
+    /// buckets: what its sub-aggregations collect next ([`collect_window`]).
+    win_docs: Vec<i32>,
+    win_ords: Vec<u32>,
     subs: Vec<Leaf<'a>>,
 }
 
@@ -615,9 +647,64 @@ enum Col<'a> {
 }
 
 impl Leaf<'_> {
+    /// Reads the documents `base..base + len` of this node's single-valued
+    /// numeric column ahead, and its sub-aggregations' -- one pass over each
+    /// column per window (`NumericReader::fill_window`) instead of a lookup
+    /// per document. [`Self::read`] answers from the window what it covers.
+    fn prefetch(&mut self, base: i32, len: usize) -> Result<()> {
+        self.pre_len = 0;
+        if let Col::Values(Values::Single(r), false) = &mut self.col {
+            self.pre_vals.resize(len, 0);
+            self.pre_bits.resize(len.div_ceil(64), 0);
+            r.fill_window(base, &mut self.pre_vals, &mut self.pre_bits)
+                .map_err(crate::Error::from)?;
+            self.pre_base = base;
+            self.pre_len = len;
+        }
+        for s in &mut self.subs {
+            s.prefetch(base, len)?;
+        }
+        Ok(())
+    }
+
+    /// The value a window read ahead holds for `doc`: `Some(None)` when the
+    /// document has none, `None` when the window does not cover it.
+    #[inline]
+    fn prefetched(&self, doc: i32) -> Option<Option<i64>> {
+        let i = doc.wrapping_sub(self.pre_base) as u32 as usize;
+        if i >= self.pre_len {
+            return None;
+        }
+        let has = self
+            .pre_bits
+            .get(i >> 6)
+            .is_some_and(|w| w >> (i & 63) & 1 == 1);
+        Some(has.then(|| self.pre_vals[i]))
+    }
+
+    /// Forgets the window read ahead, here and in the sub-aggregations.
+    fn drop_prefetch(&mut self) {
+        self.pre_len = 0;
+        for s in &mut self.subs {
+            s.drop_prefetch();
+        }
+    }
+
     /// The document's values into `buf` (ascending); false without any.
     fn read(&mut self, doc: i32) -> Result<bool> {
         self.buf.clear();
+        // The window read ahead, when it covers the document.
+        let i = doc.wrapping_sub(self.pre_base) as u32 as usize;
+        if i < self.pre_len {
+            if self
+                .pre_bits
+                .get(i >> 6)
+                .is_some_and(|w| w >> (i & 63) & 1 == 1)
+            {
+                self.buf.push(self.pre_vals[i]);
+            }
+            return Ok(!self.buf.is_empty());
+        }
         match &mut self.col {
             Col::Values(Values::Absent, _) | Col::Ords(Ords::Absent, _) => {}
             Col::Values(Values::Single(r), _) => {
@@ -737,6 +824,12 @@ fn open_leaf<'a>(
         max_to,
         memo: (1, 0, 0, 0, u32::MAX),
         done: false,
+        pre_base: 0,
+        pre_len: 0,
+        pre_vals: Vec::new(),
+        pre_bits: Vec::new(),
+        win_docs: Vec::new(),
+        win_ords: Vec::new(),
         subs,
     })
 }
@@ -797,6 +890,181 @@ fn keyed_ord(
         keys.push((owning, key));
         next
     })
+}
+
+/// [`collect`] for each of `docs` (ascending, inside the window read ahead)
+/// under owning bucket `owners[i]` -- the same calls in the same order, per
+/// node: a bucket aggregation places the whole window, then hands its
+/// sub-aggregations the documents it placed and their buckets in one call,
+/// so each sub-aggregation still sees its documents in ascending order. A
+/// metric, and a `histogram` or `date_histogram` over a single-valued column,
+/// run without the per-document dispatch; everything else document by
+/// document.
+fn collect_window(
+    node: &AggNode,
+    state: &mut State,
+    leaf: &mut Leaf<'_>,
+    docs: &[i32],
+    owners: &[u32],
+) -> Result<()> {
+    let prefetched = leaf.pre_len > 0;
+    match (node, &mut *state) {
+        (AggNode::Metric { kind, needs, .. }, State::Metric(states)) if prefetched => {
+            // `collect_needs`'s dispatch, once for the window.
+            use aggs::{NEED_ALL, NEED_COUNT, NEED_MAX, NEED_MIN, NEED_SUM};
+            fn run<const N: u8>(
+                states: &mut Vec<aggs::MetricState>,
+                leaf: &Leaf<'_>,
+                kind: ValueKind,
+                docs: &[i32],
+                owners: &[u32],
+            ) {
+                for (&doc, &owner) in docs.iter().zip(owners) {
+                    if let Some(Some(v)) = leaf.prefetched(doc) {
+                        slot(states, owner as usize).many::<N>(kind, &[v]);
+                    }
+                }
+            }
+            match *needs {
+                NEED_MIN => run::<NEED_MIN>(states, leaf, *kind, docs, owners),
+                NEED_MAX => run::<NEED_MAX>(states, leaf, *kind, docs, owners),
+                NEED_COUNT => run::<NEED_COUNT>(states, leaf, *kind, docs, owners),
+                n if n & !(NEED_COUNT | NEED_SUM) == 0 => {
+                    run::<{ NEED_COUNT | NEED_SUM }>(states, leaf, *kind, docs, owners)
+                }
+                _ => run::<NEED_ALL>(states, leaf, *kind, docs, owners),
+            }
+            return Ok(());
+        }
+        (
+            AggNode::DateHistogram {
+                rounding,
+                hard_bounds,
+                ..
+            },
+            State::Keyed {
+                ords,
+                keys,
+                docs: counts,
+                ..
+            },
+        ) if prefetched => {
+            let (mut win_docs, mut win_ords) = (
+                std::mem::take(&mut leaf.win_docs),
+                std::mem::take(&mut leaf.win_ords),
+            );
+            win_docs.clear();
+            win_ords.clear();
+            for (&doc, &owning) in docs.iter().zip(owners) {
+                let Some(Some(v)) = leaf.prefetched(doc) else {
+                    continue;
+                };
+                // As `collect`'s single-valued case.
+                let rounded = if v >= leaf.memo.0 && v < leaf.memo.1 {
+                    leaf.memo.2
+                } else {
+                    let bucket = rounding.bucket(v);
+                    if let Some((from, to)) = bucket {
+                        leaf.memo = (from, to, from, 0, u32::MAX);
+                    }
+                    bucket.map_or_else(|| rounding.round(v), |b| b.0)
+                };
+                let contained = !hard_bounds.1.is_some_and(|max| rounded >= max)
+                    && !hard_bounds.0.is_some_and(|min| rounded < min);
+                if !contained {
+                    continue;
+                }
+                let ord =
+                    if leaf.memo.2 == rounded && leaf.memo.3 == owning && leaf.memo.4 != u32::MAX {
+                        leaf.memo.4
+                    } else {
+                        let o = keyed_ord(ords, keys, owning, rounded);
+                        if leaf.memo.2 == rounded {
+                            leaf.memo.3 = owning;
+                            leaf.memo.4 = o;
+                        }
+                        o
+                    };
+                *slot(counts, ord as usize) += 1;
+                win_docs.push(doc);
+                win_ords.push(ord);
+            }
+            let out = collect_subs_window(node, state, leaf, &win_docs, &win_ords);
+            leaf.win_docs = win_docs;
+            leaf.win_ords = win_ords;
+            return out;
+        }
+        (
+            AggNode::Histogram {
+                kind,
+                interval,
+                offset,
+                hard_bounds,
+                ..
+            },
+            State::Keyed {
+                ords,
+                keys,
+                docs: counts,
+                ..
+            },
+        ) if prefetched => {
+            let (mut win_docs, mut win_ords) = (
+                std::mem::take(&mut leaf.win_docs),
+                std::mem::take(&mut leaf.win_ords),
+            );
+            win_docs.clear();
+            win_ords.clear();
+            for (&doc, &owning) in docs.iter().zip(owners) {
+                let Some(Some(v)) = leaf.prefetched(doc) else {
+                    continue;
+                };
+                // As `collect`'s case for one value: its `previous` starts at
+                // negative infinity, so a key of negative infinity is skipped.
+                let key = ((aggs::to_double(*kind, v) - offset) / interval).floor();
+                if key == f64::NEG_INFINITY {
+                    continue;
+                }
+                let bound = key * interval;
+                let contained = !hard_bounds.1.is_some_and(|max| bound > max)
+                    && !hard_bounds.0.is_some_and(|min| bound < min);
+                if contained {
+                    let ord = keyed_ord(ords, keys, owning, java_double_bits(key));
+                    *slot(counts, ord as usize) += 1;
+                    win_docs.push(doc);
+                    win_ords.push(ord);
+                }
+            }
+            let out = collect_subs_window(node, state, leaf, &win_docs, &win_ords);
+            leaf.win_docs = win_docs;
+            leaf.win_ords = win_ords;
+            return out;
+        }
+        _ => {}
+    }
+    for (&doc, &owner) in docs.iter().zip(owners) {
+        collect(node, state, leaf, doc, owner)?;
+    }
+    Ok(())
+}
+
+/// A bucket aggregation's sub-aggregations over the documents it placed in
+/// a window ([`collect_window`]).
+fn collect_subs_window(
+    node: &AggNode,
+    state: &mut State,
+    leaf: &mut Leaf<'_>,
+    docs: &[i32],
+    ords: &[u32],
+) -> Result<()> {
+    let subs: &mut [State] = match state {
+        State::Keyed { subs, .. } | State::Fixed { subs, .. } => subs,
+        _ => &mut [],
+    };
+    for ((n, s), l) in node.subs().iter().zip(subs).zip(&mut leaf.subs) {
+        collect_window(n, s, l, docs, ords)?;
+    }
+    Ok(())
 }
 
 /// `LeafBucketCollector.collect(doc, owningBucketOrd)` for `node`.
@@ -1422,26 +1690,56 @@ pub fn aggregate_tree(
                     continue;
                 }
             }
-            let mut visit = |doc: i32| -> Result<()> {
-                for ((n, s), l) in nodes.iter().zip(&mut states).zip(&mut leaves) {
-                    if !l.done {
-                        collect(n, s, l, doc, 0)?;
+            let zeros = vec![0u32; WINDOW as usize];
+            let mut live_window: Vec<i32> = Vec::with_capacity(WINDOW as usize);
+            let visit_window =
+                |states: &mut [State], leaves: &mut [Leaf<'_>], docs: &[i32]| -> Result<()> {
+                    for ((n, s), l) in nodes.iter().zip(states).zip(leaves) {
+                        if !l.done {
+                            collect_window(n, s, l, docs, &zeros[..docs.len()])?;
+                        }
+                    }
+                    Ok(())
+                };
+            // Windows of documents, each column read ahead for the window
+            // where the matches are dense enough to repay reading every
+            // document's value (one in eight).
+            let window = |leaves: &mut [Leaf<'_>], base: i32, end: i32, matches: usize| {
+                // ARITH: `base < end <= max_doc`.
+                #[allow(clippy::arithmetic_side_effects)]
+                let len = (end - base) as usize;
+                for l in leaves.iter_mut().filter(|l| !l.done) {
+                    if matches.saturating_mul(8) >= len && !no_windows() {
+                        l.prefetch(base, len)?;
+                    } else {
+                        l.drop_prefetch();
                     }
                 }
-                Ok(())
+                Ok::<(), crate::Error>(())
             };
+            let max_doc = reader.max_doc;
             match matched {
                 None => {}
                 Some(Some(docs)) => {
-                    for &doc in docs {
-                        visit(doc)?;
+                    let mut i = 0;
+                    while let Some(&base) = docs.get(i) {
+                        let end = base.saturating_add(WINDOW).min(max_doc).max(base + 1);
+                        let j = i + docs[i..].partition_point(|&d| d < end);
+                        window(&mut leaves, base, end, j - i)?;
+                        visit_window(&mut states, &mut leaves, &docs[i..j])?;
+                        i = j;
                     }
                 }
                 Some(None) => {
-                    for doc in 0..reader.max_doc {
-                        if live.is_none_or(|l| l.get_doc(doc)) {
-                            visit(doc)?;
-                        }
+                    let mut base = 0;
+                    while base < max_doc {
+                        let end = base.saturating_add(WINDOW).min(max_doc);
+                        window(&mut leaves, base, end, (end - base) as usize)?;
+                        live_window.clear();
+                        live_window
+                            .extend((base..end).filter(|&d| live.is_none_or(|l| l.get_doc(d))));
+                        visit_window(&mut states, &mut leaves, &live_window)?;
+                        base = end;
                     }
                 }
             }
@@ -2424,6 +2722,75 @@ mod tests {
                         assert_eq!(states.len(), buckets[0].len());
                     }
                 }
+            }
+        }
+    }
+
+    /// Reading columns a window at a time and collecting a window per node
+    /// (`collect_window`) answers what document-at-a-time collection does:
+    /// nested buckets with metrics, a cardinality and multi-valued columns,
+    /// over every document (windows) and a sparse query (documents one by
+    /// one), with sparse single-valued columns and `-Infinity` values.
+    #[test]
+    fn windows_answer_what_documents_one_at_a_time_answer() {
+        let reader = fixture("metric_aggs_index");
+        let rounding = DateRounding {
+            kind: RoundingKind::Interval(7),
+            zone_ms: 0,
+            offset: 3,
+        };
+        let date = |field: &str, subs| AggNode::DateHistogram {
+            field: field.to_string(),
+            rounding,
+            hard_bounds: (None, None),
+            subs,
+        };
+        let histogram = |field: &str, kind, subs| AggNode::Histogram {
+            field: field.to_string(),
+            kind,
+            interval: 3.5,
+            offset: 1.25,
+            hard_bounds: (Some(-20.0), Some(40.0)),
+            subs,
+        };
+        let trees = vec![
+            date(
+                "l",
+                vec![
+                    metric("d", ValueKind::Double),
+                    metric("ml", ValueKind::Long),
+                ],
+            ),
+            histogram(
+                "d",
+                ValueKind::Double,
+                vec![
+                    date("i", vec![metric("f", ValueKind::Float)]),
+                    AggNode::Cardinality {
+                        field: "e".to_string(),
+                        kind: CardinalityKind::Numeric(ValueKind::Double),
+                        precision: None,
+                    },
+                ],
+            ),
+            histogram("e", ValueKind::Double, vec![metric("l", ValueKind::Long)]),
+            histogram("md", ValueKind::Double, vec![metric("i", ValueKind::Long)]),
+            AggNode::Range {
+                field: "d".to_string(),
+                kind: ValueKind::Double,
+                ranges: vec![(f64::NEG_INFINITY, 0.0), (0.0, 10.0), (5.0, f64::INFINITY)],
+                subs: vec![date("l", vec![metric("e", ValueKind::Double)])],
+            },
+            metric("f", ValueKind::Float),
+        ];
+        for q in [all(), body("a"), body("b")] {
+            for tree in &trees {
+                let nodes = std::slice::from_ref(tree);
+                NO_WINDOWS.with(|w| w.set(true));
+                let one = run(&reader, &q, nodes, &whole(&reader)).unwrap();
+                NO_WINDOWS.with(|w| w.set(false));
+                let windowed = run(&reader, &q, nodes, &whole(&reader)).unwrap();
+                assert_eq!(format!("{windowed:?}"), format!("{one:?}"), "{tree:?}");
             }
         }
     }
