@@ -951,10 +951,66 @@ of the merged shard (`ffi_jvm_reader_search`, no JVM):
   (it held 64: a matrix of a few hundred shapes evicted each before its next
   use, where OpenSearch's node-wide cache, 10,000 entries, keeps it).
 
-What is left under 1.0× is per-request native work inside the node that
-the same call does not show in process (an `exists` with hits is 51 µs in
-process against about 100 µs inside the node) and the regexp and fuzzy
-expansions on the merged segment; the next round's work.
+The next round (same node and shapes, after `verify-opensearch.sh --docs
+100000 --keep` rebuilt it: 6,863 checks, 0 failures): of the 132
+non-aggregation shapes, median 1.67×, 10th percentile 1.09× (from 0.92×), 10
+under 1.0× (from 17). What the in-node gap turned out to be, and what closed
+most of it:
+
+- **A native call in the node runs with cold caches.** Timed inside the JNI
+  entry, a no-hit term's search took 21 µs of CPU per call in the node and
+  1.2 µs in a loop in process; the same call with the caches evicted between
+  calls (64 MB swept) took 24 µs. So the per-request cost is the code and data
+  a call touches, not the work: every allocation, map and clone in the setup
+  counts. Cut from it: norms built for clauses that never score (`FILTER`,
+  `MUST_NOT`, a constant score's inner query; 3.8 µs cold), and the points
+  rewrite's clone of the whole query when it holds no range (3.4 µs cold);
+  24 µs to 17 µs cold.
+- **One crossing instead of two.** OpenSearch answers a lone term's total
+  from `docFreq`; that was its own JNI call before the search (14 µs in the
+  node). `searchDocFreq` (ABI 28) answers both in one.
+- **A keyword term with norms never stopped.** A field without frequencies
+  gets one impacts level from Lucene, `(freq 1, norm 1)` up to
+  `NO_MORE_DOCS`; the port bounded it by the largest norm inverse there is,
+  which one-token values never reach, so a full queue never ended the scan.
+  With a threshold of 10 (the shortcut's), a 6,457-document term 11.2 µs to
+  2.7 µs, the fuzzy query's rewritten term 12.8 µs to 3.8 µs (verified
+  against Lucene: `GenDocsOnlyNorms.java`).
+- **Per-document collection.** A cached bit set's constant-scored walk counts
+  the hits between a full queue and the count threshold by popcount (an
+  `exists` with hits 49 µs to 1.7 µs in process), and a block of scored
+  documents below the threshold is collected in one batch with the count in a
+  register (a 8,635-document term, top 10, counted, 38 µs to 15 µs).
+- **The plugin's regexp check** compiled a second `RegexpQuery` per request
+  to compare flags (30 µs for `<1-20>`); the reference automaton is now kept
+  per pattern.
+
+Still under 1.0× at the last run, and why:
+
+- `fuzzy` on a keyword (0.73×, 74 µs against 54 µs): the rewrite that runs
+  before the query phase (Levenshtein automata) leaves both the Java side and
+  the native call colder than a plain term's (the call 56 µs against 40 µs in
+  the node); the boosted, statistics-carrying term also takes the general
+  scorer tree (39 µs cold in process against 28 µs for a lone term's own
+  path), which a lone boosted term could skip.
+- A handful of 40-60 µs shapes (`constant_score` over `match_all` 0.84×,
+  `regexp` with an interval 0.90×, a lone `exists` counted 0.90×, `exists`
+  on a text field 0.93×): the remaining cold setup of one native call against
+  Lucene's warm path; these move ±10% between runs (term keyword read 0.83×,
+  0.97× and 1.13× across three).
+- Real work, 0.5-5 ms: `minimum_should_match` (0.89×), `cross_fields`
+  (0.85×), a `regexp` filter (0.87×), `search_after` over `match_all`
+  (0.92×), a `post_filter` `exists` behind a paged `bool` (0.88×) -- the next
+  round's scorer work.
+
+Aggregations finish outside the phase counters, so they are timed over REST
+(`REST=1 phase_bench.py 30 single agg`, whole round trips, median per
+shape): of 47 aggregation shapes, median 1.08×, 14 under 1.0×. The worst are
+real work, not setup: `date_histogram` by month with a `sum` (0.65×, 6.7 ms
+against 4.3 ms), `cardinality` (0.68×) and under `terms` at a low precision
+(0.76×), `global` beside the main query (0.84×), a float `histogram`
+(0.88×), `date_range` (0.89×); the rest between 0.87× and 0.98×. Those are
+R7's remaining work.
 
 What closed the gaps the first full run showed (worst 0.28×, 30 shapes
 under 1.0×), each measured before and after:

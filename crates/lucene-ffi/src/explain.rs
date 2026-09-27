@@ -443,7 +443,9 @@ pub unsafe extern "C" fn ffi_explain_boolean_query(
         // `ffi_search_boolean_query_scored` (see that function's own comment) --
         // every clause here is `Clause::Term` by `read_boolean_query`'s own
         // contract, so the `Clause::Term(t) => ...` arm is the only reachable one.
-        let field_names = crate::query::clause_field_names(&query);
+        // Every clause, scoring or not: `TermWeight.explain` reads the real norm
+        // of a `FILTER` or `MUST_NOT` term too.
+        let field_names = crate::query::clause_field_names_all(&query);
         let mut norms_map: HashMap<String, FieldNorms<'_>> = HashMap::new();
         for name in field_names {
             if let Some(field_norms) = open_field_norms(segment, name)? {

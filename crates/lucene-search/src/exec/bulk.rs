@@ -261,6 +261,30 @@ fn constant_bits_score<C: ScoringCollector + ?Sized>(
                     // `ConstantScoreScorer.setMinCompetitiveScore`: emptied.
                     return scorer.advance(d.saturating_add(1));
                 }
+                // A full queue: every later hit ties on score and loses on
+                // doc id, so until the `totalHits` threshold is crossed each
+                // one only bumps the count. Count them a word at a time; the
+                // one that crosses it is where the loop above would publish
+                // and stop.
+                if let Some(need) = collector.constant_score_hits_needed() {
+                    if need > 0 && collector.count_losing_hits(0, score) {
+                        // ARITH: `at < end <= len`.
+                        #[allow(clippy::arithmetic_side_effects)]
+                        let (n, stop) = count_set_bits(words, live_docs, at + 1, end, need);
+                        if collector.count_losing_hits(n, score) {
+                            if let Some(last) = stop {
+                                publish(scorer, published, collector)?;
+                                if *published > score {
+                                    return scorer.advance((last as i32).saturating_add(1));
+                                }
+                            }
+                            at = stop.unwrap_or(end);
+                            if stop.is_none() {
+                                break;
+                            }
+                        }
+                    }
+                }
             }
         }
         // The next set bit after `at`, from the words directly.
@@ -269,11 +293,59 @@ fn constant_bits_score<C: ScoringCollector + ?Sized>(
         let from = at + 1;
         at = lucene_util::fixed_bit_set::next_set_bit_in_words(words, from).unwrap_or(len);
     }
+    let at = if at < end {
+        at
+    } else {
+        // Past `max`: where the scorer's next set bit is.
+        lucene_util::fixed_bit_set::next_set_bit_in_words(words, end).unwrap_or(len)
+    };
     let next = if at < len { at as i32 } else { NO_MORE_DOCS };
     if next == doc {
         return Ok(doc);
     }
     scorer.advance(next)
+}
+
+/// The set bits of `words` (and of `live`, when there is one) in
+/// `[from, end)`, counted until `need` of them: the count, and the document
+/// that reached `need` if one did.
+pub(super) fn count_set_bits(
+    words: &[u64],
+    live: Option<&FixedBitSet>,
+    from: usize,
+    end: usize,
+    need: u64,
+) -> (u64, Option<usize>) {
+    let live = live.map(FixedBitSet::words);
+    let mut count = 0u64;
+    let mut w = from / 64;
+    // ARITH: word indices below `end / 64 + 1 <= words.len()`; popcounts of
+    // at most `end` bits.
+    #[allow(clippy::arithmetic_side_effects)]
+    while w * 64 < end {
+        let mut word = words.get(w).copied().unwrap_or(0);
+        if let Some(l) = live {
+            // FBS: `l` is the live docs' word slice, not the bit set, read
+            // with a checked `get`: a word past its end counts nothing.
+            word &= l.get(w).copied().unwrap_or(0);
+        }
+        if w == from / 64 {
+            word &= u64::MAX << (from % 64);
+        }
+        if (w + 1) * 64 > end {
+            word &= u64::MAX >> (64 - (end - w * 64));
+        }
+        let ones = u64::from(word.count_ones());
+        if count + ones >= need {
+            for _ in 1..need - count {
+                word &= word - 1;
+            }
+            return (need, Some(w * 64 + word.trailing_zeros() as usize));
+        }
+        count += ones;
+        w += 1;
+    }
+    (count, None)
 }
 
 #[inline]

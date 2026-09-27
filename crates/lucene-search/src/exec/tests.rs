@@ -592,7 +592,16 @@ fn a_cached_term_set_is_walked_as_a_bit_set() {
     let bits = |h: &[crate::ScoreDoc]| -> Vec<(i32, u32)> {
         h.iter().map(|d| (d.doc_id, d.score.to_bits())).collect()
     };
-    for (top_n, threshold) in [(10, 20u64), (5, 0), (7, u64::MAX)] {
+    // Thresholds the cached walk reaches mid-segment, in a later segment, and
+    // never: its popcount count must agree with the first, uncached run.
+    for (top_n, threshold) in [
+        (10, 20u64),
+        (5, 0),
+        (7, u64::MAX),
+        (3, 77),
+        (1, 200),
+        (2, 100_000),
+    ] {
         let run = || {
             crate::multi_segment::search_boolean_query_multi_segment_maxscore_counting(
                 &segments, &q, &norms, top_n, threshold,
@@ -1381,4 +1390,152 @@ fn below_stops_a_scorer_at_its_end() {
     assert!(s.advance_shallow(0).unwrap() >= 0);
     assert!(s.max_score(11).unwrap() >= 1.0);
     s.set_min_competitive_score(0.5).unwrap();
+}
+
+/// The popcount the cached bit-set walk counts losing hits with: range ends
+/// inside and on word boundaries, deleted documents, and the document that
+/// reaches the count.
+#[test]
+fn count_set_bits_counts_live_bits_until_the_need() {
+    use super::bulk::count_set_bits;
+    use lucene_util::fixed_bit_set::FixedBitSet;
+    let mut bits = FixedBitSet::new(200);
+    let set: Vec<usize> = (0..200).filter(|d| d % 3 == 0).collect();
+    for &d in &set {
+        // FBS: `set` holds documents below 200, the set's length.
+        bits.set(d);
+    }
+    let words = bits.words();
+    let naive = |from: usize, end: usize, live: Option<&FixedBitSet>| -> Vec<usize> {
+        set.iter()
+            .copied()
+            .filter(|&d| d >= from && d < end && live.is_none_or(|l| l.get(d)))
+            .collect()
+    };
+    let mut live = FixedBitSet::new(200);
+    for d in 0..200 {
+        if d % 7 != 0 {
+            // FBS: `d < 200`, the set's length.
+            live.set(d);
+        }
+    }
+    for l in [None, Some(&live)] {
+        for (from, end) in [(0, 200), (1, 64), (63, 129), (64, 128), (100, 101), (5, 5)] {
+            let all = naive(from, end, l);
+            assert_eq!(
+                count_set_bits(words, l, from, end, u64::MAX),
+                (all.len() as u64, None)
+            );
+            for need in 1..=all.len() {
+                assert_eq!(
+                    count_set_bits(words, l, from, end, need as u64),
+                    (need as u64, Some(all[need - 1])),
+                    "{from}..{end} need {need}"
+                );
+            }
+        }
+    }
+}
+
+/// A field indexed without frequencies but with norms, against Lucene
+/// (`fixtures/src/GenDocsOnlyNorms.java`): a term's top 10 under three
+/// total-hits thresholds, through the term path and, boosted, through the
+/// scorer tree. Lucene bounds such a term by the impact `(freq 1, norm 1)`, so
+/// a full queue whose threshold passes the one-token score ends the scan: the
+/// totals show where, and the skip counter that it was a skip, not the end of
+/// the postings.
+#[test]
+fn a_docs_only_field_with_norms_ends_its_scan_as_lucene_does() {
+    use crate::directory_reader::DirectoryReader;
+    use crate::field_norms::FieldNorms;
+    use crate::query::{BooleanQuery, BoostQuery, Clause, TermQuery};
+    use std::collections::HashMap;
+    let base = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/data/docs_only_norms_index"
+    );
+    let manifest: HashMap<String, String> =
+        std::fs::read_to_string(format!("{base}/manifest.properties"))
+            .expect("run scripts/gen-fixtures.sh --only GenDocsOnlyNorms")
+            .lines()
+            .filter_map(|l| l.split_once('='))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+    let get = |k: String| manifest.get(&k).unwrap_or_else(|| panic!("{k}")).clone();
+    let reader = DirectoryReader::open(&lucene_store::FsDirectory::open(base)).unwrap();
+    let opened = reader.open_segments().unwrap();
+    let segments = opened.as_open_segments();
+    let owned = reader.field_norms("kw");
+    assert!(
+        owned.iter().all(Option::is_some),
+        "the field keeps its norms"
+    );
+    let term_norms: Vec<Option<&FieldNorms<'_>>> = owned.iter().map(Option::as_ref).collect();
+    let maps: Vec<HashMap<String, FieldNorms<'_>>> = reader
+        .field_norms("kw")
+        .into_iter()
+        .map(|n| n.into_iter().map(|n| ("kw".to_string(), n)).collect())
+        .collect();
+    let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = maps.iter().map(Some).collect();
+    let runs: usize = get("run_count".into()).parse().unwrap();
+    assert_eq!(runs, 18);
+    let mut ended_early = 0;
+    for r in 0..runs {
+        let k = |f: &str| get(format!("run.{r}.{f}"));
+        let term = k("term");
+        let boost = f32::from_bits(k("boost").parse::<i32>().unwrap() as u32);
+        let threshold: u64 = match k("threshold").as_str() {
+            "max" => u64::MAX,
+            n => n.parse().unwrap(),
+        };
+        let want: Vec<(i32, u32)> = k("hits")
+            .split(',')
+            .map(|h| {
+                let (d, s) = h.split_once(':').unwrap();
+                (d.parse().unwrap(), s.parse::<i32>().unwrap() as u32)
+            })
+            .collect();
+        let want_total: u64 = k("total").parse().unwrap();
+        let want_gte = k("relation") == "gte";
+        let q = TermQuery::new("kw", term.as_bytes().to_vec());
+        crate::test_only_maxscore_block_skip_counter::reset();
+        let (hits, total) = if boost == 1.0 {
+            crate::multi_segment::search_term_query_multi_segment_counting(
+                &segments,
+                &q,
+                &term_norms,
+                10,
+                threshold,
+            )
+            .unwrap()
+        } else {
+            let mut b = BooleanQuery::new();
+            b.must.push(Clause::Boost(Box::new(BoostQuery::new(
+                Clause::Term(q),
+                boost,
+            ))));
+            crate::multi_segment::search_boolean_query_multi_segment_maxscore_counting(
+                &segments, &b, &norms, 10, threshold,
+            )
+            .unwrap()
+        };
+        let got: Vec<(i32, u32)> = hits.iter().map(|h| (h.doc_id, h.score.to_bits())).collect();
+        assert_eq!(
+            got, want,
+            "run {r}: kw:{term}^{boost} threshold {threshold}"
+        );
+        assert_eq!(
+            (
+                total.value,
+                total.relation == crate::collector::TotalHitsRelation::GreaterThanOrEqualTo
+            ),
+            (want_total, want_gte),
+            "run {r}: kw:{term}^{boost} threshold {threshold}"
+        );
+        if want_gte && crate::test_only_maxscore_block_skip_counter::count() > 0 {
+            ended_early += 1;
+        }
+    }
+    // `kw:a` and `kw:b` at both finite thresholds, boosted or not.
+    assert_eq!(ended_early, 8, "the scans a full queue ends");
 }
