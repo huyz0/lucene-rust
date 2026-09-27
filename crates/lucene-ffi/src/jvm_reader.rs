@@ -90,8 +90,9 @@ use std::sync::Arc;
 /// `terms` aggregation; 15, `terminate_after` and the concurrent count
 /// replay (read path R7); 16, `min_score` in front of a query blob; 17,
 /// [`doc_freq`] (the total-hits shortcut of a term query); 18, the `size: 0`
-/// count from the aggregation's own pass ([`aggregate_counting_blobs`]).
-pub const JVM_ABI_VERSION: u32 = 18;
+/// count from the aggregation's own pass ([`aggregate_counting_blobs`]); 19,
+/// the regexp node.
+pub const JVM_ABI_VERSION: u32 = 19;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -116,6 +117,7 @@ const NODE_TERM_SET: u8 = 8;
 const NODE_PREFIX: u8 = 9;
 const NODE_WILDCARD: u8 = 10;
 const NODE_POINT_RANGE: u8 = 11;
+const NODE_REGEXP: u8 = 12;
 
 /// [`JVM_ABI_VERSION`], for the plugin's load-time handshake.
 #[no_mangle]
@@ -1883,6 +1885,12 @@ fn count_segment(seg: &OpenSegment<'_>, query: &JvmQuery) -> Result<i64, FfiStat
 /// | `4` dismax | `tie_breaker: f32` bits, `count: i32`, nodes | `DisjunctionMaxQuery` |
 /// | `5` match all | nothing | `MatchAllDocsQuery` |
 /// | `6` match none | nothing | `MatchNoDocsQuery` |
+/// | `7` phrase | `field`, `slop: i32`, `count: i32`, then per term its position (`i32`) and bytes | `PhraseQuery` |
+/// | `8` term set | `field`, `count: i32`, the terms | `TermInSetQuery` |
+/// | `9` prefix | `field`, the prefix | `PrefixQuery` |
+/// | `10` wildcard | `field`, the pattern (no `\` escapes) | `WildcardQuery` |
+/// | `11` points range | `field`, `min: i64`, `max: i64` (sortable longs, inclusive) | a one-dimension 8-byte `PointRangeQuery` |
+/// | `12` regexp | `field`, the pattern (UTF-8) | `RegexpQuery` with `RegExp.ALL` and no match flags |
 ///
 /// Depth is capped at `MAX_CLAUSE_DEPTH` and the whole tree at the clause
 /// count limit, so the recursion is bounded by the blob, not trusted to it.
@@ -1892,7 +1900,7 @@ fn decode_node(c: &mut Cursor<'_>, depth: usize, nodes: &mut usize) -> Result<Cl
     use crate::query::MAX_CLAUSE_DEPTH;
     use lucene_search::query::{
         BoostQuery, ConstantScoreQuery, DisjunctionMaxQuery, MatchAllDocsQuery, MatchNoDocsQuery,
-        PhraseQuery, PointsRangeQuery, PrefixQuery, TermInSetQuery, WildcardQuery,
+        PhraseQuery, PointsRangeQuery, PrefixQuery, RegexpQuery, TermInSetQuery, WildcardQuery,
     };
     if depth >= MAX_CLAUSE_DEPTH {
         set_last_error(format!(
@@ -2011,6 +2019,18 @@ fn decode_node(c: &mut Cursor<'_>, depth: usize, nodes: &mut usize) -> Result<Cl
             // sends (such a pattern falls back).
             let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
             Clause::Wildcard(WildcardQuery::new(field, c.bytes()?.to_vec()))
+        }
+        NODE_REGEXP => {
+            // `RegexpQuery(term)`'s grammar, `RegExp.ALL` and no match flags:
+            // the encoder sends no other. Parsed here, so a pattern the native
+            // grammar rejects fails the decode rather than the search.
+            let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
+            let pattern = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
+            lucene_codecs::regexp::RegexpPattern::new(pattern.as_bytes()).map_err(|e| {
+                set_last_error(format!("query tree: regexp {pattern:?}: {e}"));
+                FfiStatus::InvalidArgument
+            })?;
+            Clause::Regexp(RegexpQuery::new(field, pattern))
         }
         NODE_POINT_RANGE => {
             // A one-dimensional 8-byte `PointRangeQuery` (`long`, `date`,
@@ -3934,6 +3954,7 @@ mod tests {
         R(&'a str, i64, i64),
         Pre(&'a str, &'a str),
         Wc(&'a str, &'a str),
+        Re(&'a str, &'a str),
     }
 
     fn enc(n: &N<'_>, b: &mut Vec<u8>) {
@@ -3997,6 +4018,11 @@ mod tests {
             }
             N::Wc(field, pattern) => {
                 b.push(NODE_WILDCARD);
+                bytes(b, field.as_bytes());
+                bytes(b, pattern.as_bytes());
+            }
+            N::Re(field, pattern) => {
+                b.push(NODE_REGEXP);
                 bytes(b, field.as_bytes());
                 bytes(b, pattern.as_bytes());
             }
@@ -4126,6 +4152,14 @@ mod tests {
         let fox = docs(&tree(N::C(1.0, Box::new(N::T("body", "fox")))));
         assert_eq!(docs(&tree(N::Pre("body", "do"))), dog);
         assert_eq!(docs(&tree(N::Wc("body", "d?g"))), dog);
+        assert_eq!(docs(&tree(N::Re("body", "d[aeiou]g"))), dog);
+        assert_eq!(docs(&tree(N::Re("body", "(dog|nosuch)"))), dog);
+        assert_eq!(docs(&tree(N::Re("body", "#"))), Vec::<i32>::new());
+        // A pattern the grammar rejects fails the decode, not the search.
+        assert_eq!(
+            run(h, &tree(N::Re("body", "d[og")), 10, true).err(),
+            Some(FfiStatus::InvalidArgument.code())
+        );
         let mut either = [dog.clone(), fox].concat();
         either.sort_unstable();
         either.dedup();
