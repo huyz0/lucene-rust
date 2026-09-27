@@ -11,7 +11,7 @@ mixed booleans) 4–8× *slower*, because the port had fast paths for three
 shapes and a materializing path for everything else. M5 moved indexing. This
 milestone finishes the read side.
 
-**Status.** In progress. R1, R2, R4 and R5 delivered; R3 mostly and R7 partly delivered (below). R6 open.
+**Status.** In progress. R1, R2, R4, R5 and R6 delivered; R3 mostly and R7 partly delivered (below).
 
 ## Tasks
 
@@ -22,7 +22,7 @@ milestone finishes the read side.
 | R3 | Leaf queries as streaming scorers: phrase, the multi-term family, points and doc-values ranges, exists, terms-in-set, dismax, synonym | mostly delivered: phrase, prefix/wildcard/regexp/terms, fuzzy, points ranges, `exists`, dismax, a term's own `docFreq` (`cross_fields`), and a native query cache (R3b); open: fuzzy speed (q25) |
 | R4 | Sort and `search_after` natively (`TopFieldCollector`) | ✅ delivered: numeric, score, `_doc` and keyword keys, `track_scores`, the `avg`/`median` modes, index-sorted shards and nested keys (below); on Lucene by design: the `sum` mode on a top-level field (its points skipping is not exact), a nested sort on a shard large enough for Lucene's comparator to skip |
 | R5 | Aggregations natively: terms, histogram, date_histogram, range, the metrics, cardinality, filter/filters | ✅ delivered: the metrics (`min`, `max`, `sum`, `avg`, `value_count`, `stats`), keyword `terms`, `histogram`, `date_histogram`, `range`/`date_range`, `filter`, `filters`, `global`, `cardinality`, and any nesting of them (below); outside: scripts, `missing`, non-default `terms` orders, zones with daylight saving, other aggregation types |
-| R6 | Fetch (`_source`, stored fields, `docvalue_fields`) and get natively | open |
+| R6 | Fetch (`_source`, stored fields, `docvalue_fields`) and get natively | ✅ delivered: every stored-fields read of the fetch phase and the get API (`_source`, `_id`, `stored_fields`, highlighting's source) is native, 1.24× Lucene per document (below); `docvalue_fields` stays on Lucene's doc-values readers by design |
 | R7 | scroll, `post_filter`, `min_score`, `terminate_after`, timeouts; the full read benchmark (in process and REST) with every native shape at least 1.0× Lucene | `post_filter`, `timeout`, scroll, `terminate_after` and `min_score` (by score and behind a sort) delivered; the query-phase REST benchmark at median 1.58×, worst 0.89× (below); open: the last shapes under 1.0× |
 
 ## R1 — the scorer tree (delivered)
@@ -669,6 +669,60 @@ are where most of the `must_not` and `must` + `should` gains come from:
   touching the optional clauses, leads with the optional clauses once they
   are required and cheaper, and turns a filter-only required side into a
   filtered `MaxScoreBulkScorer` once a threshold exists.
+
+## R6 — fetch and get (delivered)
+
+The fetch phase and the get API read a hit's stored fields through
+`StoredFields.document(docID, StoredFieldVisitor)`; OpenSearch's visitors
+(`FieldsVisitor` and its subclasses) turn them into `_source`, `_id`,
+`_routing` and the requested `stored_fields`. The plugin installs an index
+reader wrapper (`IndexModule.setReaderWrapper`, `NativeStoredFieldsReader`)
+on every index, so every searcher OpenSearch hands out -- the fetch phase's,
+the get API's, `mget`'s -- has leaves whose `storedFields()`, and whose
+sequential reader (`SequentialStoredFieldsLeafReader`, which the fetch
+phase asks for on runs of adjacent hits), answer from the native reader of
+the same segments: `ffi_jvm_reader_document` decodes the document
+(`SegmentReader::visit_stored_document`, the fixture-verified
+`stored_fields` reader, its `.fdm` metadata parsed once per segment core as
+Java's reader keeps it) into one blob of `(number, type, value)` fields in
+stored order, and the plugin replays it into OpenSearch's visitor with its
+`needsField` answers (`NO` skips a field, `STOP` ends the document), as
+`Lucene90CompressingStoredFieldsReader.document` does. Everything else the
+wrapped reader is asked goes to Lucene, and both cache helpers are the
+wrapped reader's, so the query cache, the request cache and the
+`_id` lookups' per-segment caches are unchanged. The native handle is the
+query phase's own (`NativeReaders`, keyed by the reader's cache key); a
+reader the native side cannot open, or a document it fails to read, is read
+by Lucene, and `index.lucene_rust.fetch.enabled` (dynamic, default on)
+sends every document to Lucene.
+
+`docvalue_fields` is not a stored-fields read: OpenSearch's
+`FetchDocValuesPhase` reads each value through the field's doc-values
+iterator, one leaf reader call per value, which the wrapper leaves on
+Lucene. Moving it across the JNI boundary would pay a call per value to save
+a few nanoseconds of doc-values decoding each, so it stays on Lucene by
+design (the REST rows compare its output all the same).
+
+Verified: `jvm_fetch.rs`'s tests (every document of the Lucene-written
+`stored_fields_index` through the FFI blob equals the segment reader's
+decoding; every value type round-trips), `directory_reader.rs`'s (the
+segment reader answers what the codec reader answers), and
+`verify_opensearch.py`'s fetch rows on the same node with the setting
+toggled: whole hits for `_source`, `_source` includes and excludes, no
+`_source`, `stored_fields` (with and without `_source`), `docvalue_fields`,
+`from`, `version`/`seq_no_primary_term` and highlighting, then `get` (plain,
+`_source_includes`, `stored_fields`, `realtime=false`) and `mget` -- after
+the query matrix and again after the SIGKILL restart -- each requiring the
+native counter to move.
+
+**Speed.** The plugin times `StoredFields.document` on both paths
+(`fetch_nanos` in its stats): over the benchmark's fetch rows, native
+16.4 µs per document against Lucene's 20.4 µs, **1.24×**. The first version
+opened the stored-fields reader (parsing `.fdm`) and built a `Document` per
+call; keeping the parsed metadata with the segment and encoding straight
+from the decompressed bytes took it from parity to 1.24×. Over REST, where
+a request's fetch is a small part of its ~2 ms, the rows measure
+0.95–1.12× (median 1.04×) and `get` 1.12×, within the round trip's noise.
 
 ## R7 — the request features around the query (in progress)
 

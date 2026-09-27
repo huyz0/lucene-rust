@@ -356,6 +356,33 @@ pub fn open<'d>(
 }
 
 impl<'d> StoredFieldsReader<'d> {
+    /// This reader's parsed metadata over `fdt`/`fdx` instead of the bytes it
+    /// was opened on -- what Java's reader keeps for the life of a segment
+    /// core, so a caller holding the files can parse `.fdm` once rather than
+    /// per document. `open` validated the metadata against the files it was
+    /// given, so `fdt` and `fdx` must be those same files' bytes (reading
+    /// through other bytes fails or answers garbage, never undefined
+    /// behaviour: every read is bounds-checked).
+    pub fn rebind<'e>(&self, fdt: &'e [u8], fdx: &'e [u8]) -> StoredFieldsReader<'e> {
+        StoredFieldsReader {
+            fdt,
+            fdx,
+            mode: self.mode,
+            chunk_size: self.chunk_size,
+            max_doc: self.max_doc,
+            num_chunks: self.num_chunks,
+            num_dirty_chunks: self.num_dirty_chunks,
+            num_dirty_docs: self.num_dirty_docs,
+            max_pointer: self.max_pointer,
+            docs_start_pointer: self.docs_start_pointer,
+            docs_end_pointer: self.docs_end_pointer,
+            docs_meta: self.docs_meta.clone(),
+            start_pointers_start_pointer: self.start_pointers_start_pointer,
+            start_pointers_end_pointer: self.start_pointers_end_pointer,
+            start_pointers_meta: self.start_pointers_meta.clone(),
+        }
+    }
+
     pub fn max_doc(&self) -> i32 {
         self.max_doc
     }

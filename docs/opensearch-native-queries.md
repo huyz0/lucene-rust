@@ -3,9 +3,12 @@
 The lucene-rust OpenSearch plugin (`opensearch-plugin/`, milestone
 [M2](milestones/m2-opensearch-read-path.md)) runs the **query phase** of a shard
 search in Rust when the request is inside the table below, and on Lucene
-otherwise — per query, transparently. The fetch phase (`_source`, highlighting,
-`docvalue_fields`, …), indexing, refresh and every other API are OpenSearch's own
-code, unchanged.
+otherwise — per query, transparently. The fetch phase and the get API are
+OpenSearch's own code, but their stored-fields reads (`_source`, `_id`,
+`stored_fields`, highlighting's source) come from the native reader through an
+index reader wrapper (read path R6; `index.lucene_rust.fetch.enabled`, default
+on). `docvalue_fields`, indexing, refresh and every other API are OpenSearch's
+own code, unchanged.
 
 Pinned versions: **OpenSearch 3.8.0**, **Lucene 10.5.0**.
 

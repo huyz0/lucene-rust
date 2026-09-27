@@ -77,7 +77,7 @@ use lucene_store::codec_util::ID_LENGTH;
 use lucene_store::directory::{Directory, Input};
 use lucene_util::fixed_bit_set::FixedBitSet;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::multi_segment::OpenSegment;
 
@@ -109,6 +109,8 @@ pub enum Error {
     PartialBlockTreeFiles { segment: String, found: usize },
     #[error("segment {segment} has one of .nvm/.nvd (need both or neither)")]
     PartialNormsFiles { segment: String },
+    #[error(transparent)]
+    StoredFields(#[from] lucene_codecs::stored_fields::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -192,6 +194,9 @@ pub struct SegmentReader {
     kdm_buf: Option<Arc<Input>>,
     kdi_buf: Option<Arc<Input>>,
     kdd_buf: Option<Arc<Input>>,
+    /// The segment's stored fields (`.fdt`/`.fdx`/`.fdm`) and their codec
+    /// suffix, when it has any: what `StoredFields.document` reads.
+    stored: Option<Arc<StoredFiles>>,
     /// The points fields' metadata, parsed from `.kdm` on first use and kept
     /// (shared by every reopen that keeps the segment): Lucene's
     /// `PointsReader` lives as long as the segment core, so a search does not
@@ -417,6 +422,24 @@ impl SegmentReader {
         // tests in `index_writer.rs`), but a real Lucene-written segment
         // (e.g. `fixtures/data/compound_index/`) gives doc values their own
         // codec suffix (`Lucene90_<n>`), independent of the postings suffix.
+        let stored = match (
+            open_segment_file(dir, compound.as_ref(), &si.files, ".fdt")?,
+            open_segment_file(dir, compound.as_ref(), &si.files, ".fdx")?,
+            open_segment_file(dir, compound.as_ref(), &si.files, ".fdm")?,
+        ) {
+            (Some(fdt), Some(fdx), Some(fdm)) => {
+                let name = find_segment_file_name(&si.files, compound.as_ref(), ".fdt")
+                    .expect("an opened .fdt has an entry");
+                Some(Arc::new(StoredFiles {
+                    fdt,
+                    fdx,
+                    fdm,
+                    suffix: codec_suffix_of(&name, &segment_name, ".fdt"),
+                    meta: OnceLock::new(),
+                }))
+            }
+            _ => None,
+        };
         let kdm_buf = open_segment_file(dir, compound.as_ref(), &si.files, ".kdm")?;
         let kdi_buf = open_segment_file(dir, compound.as_ref(), &si.files, ".kdi")?;
         let kdd_buf = open_segment_file(dir, compound.as_ref(), &si.files, ".kdd")?;
@@ -529,6 +552,7 @@ impl SegmentReader {
             kdm_buf,
             kdi_buf,
             kdd_buf,
+            stored,
             points_meta: Arc::default(),
             postings_validated: Arc::default(),
             dv_meta,
@@ -582,6 +606,56 @@ impl SegmentReader {
             &***self.kdi_buf.as_ref()?,
             &***self.kdd_buf.as_ref()?,
         ))
+    }
+
+    /// Document `doc`'s stored fields, in the order they were stored
+    /// (`StoredFields.document`); `None` when the segment has no stored
+    /// fields files.
+    ///
+    /// # Errors
+    /// A document outside the segment, or stored fields that do not decode.
+    pub fn stored_document(
+        &self,
+        doc: i32,
+    ) -> Result<Option<lucene_codecs::stored_fields::Document>> {
+        let mut visitor = lucene_codecs::stored_fields::DocumentVisitor::all();
+        Ok(self
+            .visit_stored_document(doc, &mut visitor)?
+            .then(|| visitor.into_document()))
+    }
+
+    /// `StoredFields.document(docID, StoredFieldVisitor)`: document `doc`'s
+    /// stored fields into `visitor`, in stored order, asked about each before
+    /// it is decoded; `false` when the segment has no stored fields files.
+    /// The `.fdm` metadata is parsed on first use and kept, as Java's reader
+    /// keeps it for the life of the segment core.
+    ///
+    /// # Errors
+    /// A document outside the segment, stored fields that do not decode, or
+    /// the visitor's own error.
+    pub fn visit_stored_document(
+        &self,
+        doc: i32,
+        visitor: &mut dyn lucene_codecs::stored_fields::StoredFieldVisitor,
+    ) -> Result<bool> {
+        let Some(f) = self.stored.as_deref() else {
+            return Ok(false);
+        };
+        let meta = match f.meta.get() {
+            Some(m) => m,
+            None => {
+                let opened = lucene_codecs::stored_fields::open(
+                    &f.fdt,
+                    &f.fdx,
+                    &f.fdm,
+                    &self.segment_id,
+                    &f.suffix,
+                )?;
+                f.meta.get_or_init(|| opened.rebind(&[], &[]))
+            }
+        };
+        meta.rebind(&f.fdt, &f.fdx).visit_document(doc, visitor)?;
+        Ok(true)
     }
 
     /// This segment's 16-byte id, needed by any codec reader opened directly
@@ -1066,6 +1140,27 @@ fn open_segment_file(
                 .to_vec(),
         )))),
         None => Ok(Some(Arc::new(dir.open(&name)?))),
+    }
+}
+
+/// A segment's stored-fields files and their codec suffix.
+struct StoredFiles {
+    fdt: Arc<Input>,
+    fdx: Arc<Input>,
+    fdm: Arc<Input>,
+    suffix: String,
+    /// The files' parsed metadata, once read, bound to no bytes: each read
+    /// rebinds it to `fdt`/`fdx` (the reader borrows its files, and these
+    /// are owned beside it).
+    meta: OnceLock<lucene_codecs::stored_fields::StoredFieldsReader<'static>>,
+}
+
+impl std::fmt::Debug for StoredFiles {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoredFiles")
+            .field("suffix", &self.suffix)
+            .field("meta_read", &self.meta.get().is_some())
+            .finish_non_exhaustive()
     }
 }
 
@@ -1585,6 +1680,41 @@ mod tests {
     /// vectors at all -- exactly `segment_writer.rs`'s
     /// `flush_stored_only_segment` output) must open cleanly with no
     /// postings files, not error out just because they're missing.
+    #[test]
+    fn a_segments_stored_documents_are_its_stored_fields_readers() {
+        // The codec-level reader is verified against Lucene by the
+        // stored-fields fixture tests; through the segment reader every
+        // document must come back the same.
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/stored_fields_index"
+        );
+        let reader = DirectoryReader::open(&FsDirectory::open(dir)).expect("open");
+        let seg = &reader.segment_readers()[0];
+        let f = seg.stored.as_deref().expect("stored fields");
+        let direct =
+            lucene_codecs::stored_fields::open(&f.fdt, &f.fdx, &f.fdm, &seg.segment_id, &f.suffix)
+                .unwrap();
+        assert!(seg.max_doc > 0);
+        for doc in 0..seg.max_doc {
+            let got = seg.stored_document(doc).unwrap().expect("a document");
+            let want = direct.document(doc).unwrap();
+            assert_eq!(got.fields.len(), want.fields.len());
+            for (g, w) in got.fields.iter().zip(&want.fields) {
+                assert_eq!((g.field_number, &g.value), (w.field_number, &w.value));
+            }
+            assert!(!got.fields.is_empty());
+        }
+        assert!(
+            seg.stored_document(seg.max_doc).is_err(),
+            "past the segment"
+        );
+        // A segment with no stored-fields files answers none.
+        let mut bare = seg.clone();
+        bare.stored = None;
+        assert!(bare.stored_document(0).unwrap().is_none());
+    }
+
     #[test]
     fn stored_fields_only_segment_opens_without_postings_files() {
         use lucene_codecs::field_infos::{DocValuesType, FieldInfo, IndexOptions};
