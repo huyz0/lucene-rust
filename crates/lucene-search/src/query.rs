@@ -16,6 +16,12 @@
 pub struct TermQuery {
     pub field: String,
     pub term: Vec<u8>,
+    /// The `docFreq` its idf is computed from, when the query carries its
+    /// own `TermStates` (`TermQuery(term, states)`: a `BlendedTermQuery`'s
+    /// terms, as a fuzzy query's rewrite or `multi_match` `cross_fields`
+    /// builds them) rather than reading the reader's. Only the idf changes:
+    /// the term still matches in each segment exactly where it occurs.
+    pub doc_freq: Option<i64>,
 }
 
 impl TermQuery {
@@ -23,7 +29,15 @@ impl TermQuery {
         Self {
             field: field.into(),
             term: term.into(),
+            doc_freq: None,
         }
+    }
+
+    /// This term scoring with `doc_freq` as its `docFreq` (see
+    /// [`Self::doc_freq`]).
+    pub fn with_doc_freq(mut self, doc_freq: i64) -> Self {
+        self.doc_freq = Some(doc_freq);
+        self
     }
 }
 

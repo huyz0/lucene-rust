@@ -349,6 +349,7 @@ fn dump(path: &Path) -> Result<String, String> {
             &TermQuery {
                 field: "body".to_string(),
                 term: t.as_bytes().to_vec(),
+                doc_freq: None,
             },
             &norms,
             top_n,
