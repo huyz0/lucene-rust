@@ -37,8 +37,9 @@ A request runs native when **all** of these hold:
   `TermQuery`, `BooleanQuery` (any `Occur`, any `minimum_should_match`,
   nested), `ConstantScoreQuery`, `BoostQuery`, `DisjunctionMaxQuery`,
   `MatchAllDocsQuery`, `MatchNoDocsQuery`, `PhraseQuery` (exact or sloppy,
-  terms at consecutive positions), and `prefix`, `wildcard` and `terms`
-  (`PrefixQuery`, `WildcardQuery`, `TermInSetQuery` under Lucene's default
+  terms at consecutive positions), and `prefix`, `wildcard`, `regexp` and
+  `terms` (`PrefixQuery`, `WildcardQuery`, `RegexpQuery` with its default
+  flags, `TermInSetQuery` under Lucene's default
   constant-score rewrite, also as the index side of an
   `IndexOrDocValuesQuery`), and `range` on `long`, `date` and `double`
   fields (`PointRangeQuery` of 8-byte values) -- at most 32 deep and 1,024 nodes,
@@ -84,6 +85,7 @@ frequency when nothing is deleted, without counting.
 | `prefix` on a `keyword` | `PrefixQuery` (constant-score rewrite) | 1.08× |
 | `prefix` as a text `filter` | `BooleanQuery` with a `PrefixQuery` `FILTER` | 0.98× |
 | `wildcard` | `WildcardQuery` | 1.12× |
+| `regexp` | `RegexpQuery` (default flags, constant-score rewrite) | — |
 | `terms` on a `keyword` | `TermInSetQuery` | 1.19× |
 | `bool` with a `must_not` `terms` | `BooleanQuery` with a `MUST_NOT` `TermInSetQuery` | 1.13× |
 | `range` on a `long` | `PointRangeQuery` (via `IndexOrDocValuesQuery`) | 1.21× |
@@ -123,7 +125,8 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `sort_*`, `search_after`, `collapse`, `rescore`, `profile` | the request needs something the native top-hits path does not produce |
 | `scroll_after` | a sorted scroll page whose last emitted hit carries no sort values |
 | `timeout` | the request's `timeout` had already passed when the native call would start; Lucene answers it (nothing, `timed_out`) |
-| `query_<Class>` | the rewritten query's root is not a supported shape — e.g. `query_RegexpQuery` (`regexp`), `query_TermQuery` on a numeric field, `query_MultiTermQueryConstantScoreBlendedWrapper` (`prefix`, `wildcard`) |
+| `query_<Class>` | the rewritten query's root is not a supported shape — e.g. `query_FuzzyQuery` (`fuzzy`), `query_TermQuery` on a numeric field |
+| `regexp_flags` | a `regexp` whose flags are not the default `ALL` with no match flags — e.g. `case_insensitive` (compared by the automaton they build) |
 | `clause_<Class>` | the same, for a clause anywhere below the root (inside a `bool`, `constant_score`, `dis_max`, a boost) |
 | `query_too_deep`, `query_too_large` | more than 32 levels, or more than 1,024 nodes counting wrappers (Lucene counts only leaves, and `indices.query.bool.max_clause_count` can raise its limit) |
 | `boolean_msm_negative` | a `BooleanQuery` with a negative `minimumNumberShouldMatch` |
