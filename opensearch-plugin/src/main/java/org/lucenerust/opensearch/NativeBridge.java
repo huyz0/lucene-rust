@@ -13,7 +13,7 @@ package org.lucenerust.opensearch;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 25;
+    public static final int EXPECTED_ABI_VERSION = 26;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -136,6 +136,13 @@ public final class NativeBridge {
      * {@code jvm_aggs.rs} documents), which {@link NativeAggregationTree.Tree#build} reads.
      */
     public static native int aggregateTree(long handle, byte[] query, byte[] tree, byte[][] out);
+
+    /**
+     * Segment {@code segment}'s document {@code doc} (segment-local): its stored fields, in stored
+     * order, encoded as {@code jvm_fetch.rs} documents, in {@code out[0]} ({@link
+     * NativeStoredFieldsReader} reads them).
+     */
+    public static native int document(long handle, int segment, int doc, byte[][] out);
 
     public static native int closeReader(long handle);
 

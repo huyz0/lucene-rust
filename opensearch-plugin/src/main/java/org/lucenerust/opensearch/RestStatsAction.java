@@ -50,6 +50,7 @@ public final class RestStatsAction extends BaseRestHandler {
             b.field("abi_version", NativeBridge.abiVersion());
             b.field("native_queries", stats.nativeCount());
             b.field("native_errors", stats.errorCount());
+            b.field("native_fetches", stats.fetchCount());
             b.startObject("fallbacks");
             for (Map.Entry<String, Long> e : stats.fallbackCounts().entrySet()) {
                 b.field(e.getKey(), e.getValue());
@@ -62,6 +63,13 @@ public final class RestStatsAction extends BaseRestHandler {
             b.field("native_count", stats.nativeCount());
             b.field("lucene", stats.luceneNanos());
             b.field("lucene_count", stats.luceneCount());
+            b.endObject();
+            // StoredFields.document's time per path (SearchStats.fetchTime).
+            b.startObject("fetch_nanos");
+            b.field("native", stats.fetchNativeNanos());
+            b.field("native_count", stats.fetchCount());
+            b.field("lucene", stats.fetchLuceneNanos());
+            b.field("lucene_count", stats.fetchLuceneCount());
             b.endObject();
             // Engines this node has created for Rust-engine indices, by kind (M5).
             b.startObject("engines");

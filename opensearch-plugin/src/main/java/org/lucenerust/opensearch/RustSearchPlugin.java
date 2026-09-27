@@ -98,7 +98,42 @@ public class RustSearchPlugin extends Plugin implements SearchPlugin, ActionPlug
     @Override
     public void onIndexModule(IndexModule indexModule) {
         RustIndexerFactory.install(indexModule);
+        // Read path R6: every searcher OpenSearch hands out for the index -- the fetch phase's, the
+        // get API's -- reads stored fields natively while index.lucene_rust.fetch.enabled is on, and
+        // with Lucene otherwise (either way timed, SearchStats.fetchTime).
+        indexModule.setReaderWrapper(indexService -> {
+            FetchFlag flag = new FetchFlag(indexService.getIndexSettings());
+            return reader -> NativeStoredFieldsReader.wrap(reader, readers, stats, flag::enabled);
+        });
     }
+
+    /** {@link #FETCH_ENABLED} for one index, re-read only when its settings version moves. */
+    private static final class FetchFlag {
+        private final org.opensearch.index.IndexSettings settings;
+        private volatile long version = -1;
+        private volatile boolean enabled;
+
+        FetchFlag(org.opensearch.index.IndexSettings settings) {
+            this.settings = settings;
+        }
+
+        boolean enabled() {
+            long v = settings.getIndexMetadata().getSettingsVersion();
+            if (v != version) {
+                enabled = settings.getValue(FETCH_ENABLED);
+                version = v;
+            }
+            return enabled;
+        }
+    }
+
+    /** Whether the index's stored fields are read natively (read path R6). */
+    public static final Setting<Boolean> FETCH_ENABLED = Setting.boolSetting(
+        "index.lucene_rust.fetch.enabled",
+        true,
+        Setting.Property.IndexScope,
+        Setting.Property.Dynamic
+    );
 
     @Override
     public Optional<EngineFactory> getEngineFactory(IndexSettings indexSettings) {
@@ -139,6 +174,7 @@ public class RustSearchPlugin extends Plugin implements SearchPlugin, ActionPlug
     public List<Setting<?>> getSettings() {
         return List.of(
             RustQueryPhaseSearcher.ENABLED,
+            FETCH_ENABLED,
             RustQueryPhaseSearcher.NATIVE_SHAPES,
             RustEngineSupport.ENGINE_ENABLED,
             RustEngineSupport.ENGINE_DEFAULT,

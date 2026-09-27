@@ -90,7 +90,7 @@ def create(index, shards, index_sort=None):
         "settings": settings,
         "mappings": {"properties": {
             "body": {"type": "text"},
-            "title": {"type": "text"},
+            "title": {"type": "text", "store": True},
             "tuned": {"type": "text", "similarity": "tuned"},
             "tag": {"type": "keyword"},
             "mtag": {"type": "keyword"},
@@ -707,6 +707,106 @@ def bench(index, out, rounds):
     print(f"bench: wrote {out}")
 
 
+def set_fetch(index, on):
+    req("PUT", f"/{index}/_settings", {"index.lucene_rust.fetch.enabled": on})
+
+
+FETCH_ROWS = [
+    ("fetch _source", {"size": 20, "query": {"match": {"body": "alpha"}}}),
+    ("fetch _source by n", {"size": 15, "query": {"match_all": {}}, "sort": [{"n": "desc"}]}),
+    ("fetch includes", {"size": 10, "query": {"match": {"body": "beta"}}, "_source": {"includes": ["tag", "n", "m"]}}),
+    ("fetch excludes", {"size": 10, "query": {"match": {"body": "gamma"}}, "_source": {"excludes": ["body", "title"]}}),
+    ("fetch no _source", {"size": 10, "query": {"match": {"body": "delta"}}, "_source": False}),
+    ("fetch stored_fields", {"size": 10, "query": {"match": {"body": "omega"}}, "stored_fields": ["title", "_source"]}),
+    ("fetch stored_fields only", {"size": 10, "query": {"match": {"body": "psi"}}, "stored_fields": ["title"]}),
+    ("fetch docvalue_fields", {"size": 10, "query": {"match": {"body": "alpha beta"}}, "docvalue_fields": ["n", "tag", {"field": "ts", "format": "epoch_millis"}]}),
+    ("fetch from 30", {"from": 30, "size": 25, "query": {"match": {"body": "alpha"}}}),
+    ("fetch version seq_no", {"size": 10, "query": {"match": {"body": "zeta"}}, "version": True, "seq_no_primary_term": True}),
+    ("fetch highlight", {"size": 5, "query": {"match": {"body": "theta"}}, "highlight": {"fields": {"body": {}}}}),
+]
+
+
+def fetched(resp):
+    """Everything the fetch phase produced for each hit (not the timings)."""
+    return [{k: v for k, v in h.items() if k != "_score"} for h in resp["hits"]["hits"]]
+
+
+def run_fetch(index, label):
+    """The fetch phase and get API with native stored fields against Lucene's, whole hits compared;
+    the native side must actually have served documents."""
+    ids = [h["_id"] for h in req("POST", f"/{index}/_search", {"size": 40, "query": {"match_all": {}}, "_source": False})["hits"]["hits"]]
+    for name, body in FETCH_ROWS:
+        set_fetch(index, False)
+        want = fetched(req("POST", f"/{index}/_search?request_cache=false", body))
+        set_fetch(index, True)
+        before = stats()["native_fetches"]
+        got = fetched(req("POST", f"/{index}/_search?request_cache=false", body))
+        after = stats()["native_fetches"]
+        check(got == want, f"{label} {index} [{name}]: native fetch differs from Lucene's: {json.dumps(got)[:600]} vs {json.dumps(want)[:600]}")
+        reads_stored = body.get("_source", True) is not False or "stored_fields" in body
+        if reads_stored and want:
+            check(after > before, f"{label} {index} [{name}]: no document fetched natively ({before} -> {after})")
+    for doc_id in ids[:10]:
+        for params in ("", "?_source_includes=tag,n", "?stored_fields=title", "?realtime=false"):
+            set_fetch(index, False)
+            want = req("GET", f"/{index}/_doc/{doc_id}{params}")
+            set_fetch(index, True)
+            got = req("GET", f"/{index}/_doc/{doc_id}{params}")
+            check(got == want, f"{label} {index} get {doc_id}{params}: native differs: {json.dumps(got)[:400]} vs {json.dumps(want)[:400]}")
+    body = {"ids": ids[10:30]}
+    set_fetch(index, False)
+    want = req("POST", f"/{index}/_mget", body)
+    set_fetch(index, True)
+    got = req("POST", f"/{index}/_mget", body)
+    check(got == want, f"{label} {index} mget: native differs")
+
+
+def bench_fetch(index, out, rounds):
+    """REST latency of the fetch phase, native stored fields against Lucene's: the same searches
+    (their query phase native both times) with index.lucene_rust.fetch.enabled toggled, interleaved,
+    median wall time; and the get API the same way."""
+    rows = [(n, b) for n, b in FETCH_ROWS if b.get("_source", True) is not False or "stored_fields" in b]
+    rows.append(("fetch 100 _source", {"size": 100, "query": {"match": {"body": "alpha"}}}))
+    ids = [h["_id"] for h in req("POST", f"/{index}/_search", {"size": 50, "query": {"match_all": {}}, "_source": False})["hits"]["hits"]]
+    results = {}
+    before = stats()["fetch_nanos"]
+    for mode in (False, True, False, True):
+        set_fetch(index, mode)
+        for name, body in rows:
+            for _ in range(3):
+                req("POST", f"/{index}/_search?request_cache=false", body)
+            wall = []
+            for _ in range(rounds):
+                t = time.perf_counter()
+                req("POST", f"/{index}/_search?request_cache=false", body)
+                wall.append((time.perf_counter() - t) * 1000)
+            results.setdefault(name, {}).setdefault("native" if mode else "lucene", []).extend(wall)
+        wall = []
+        for _ in range(rounds):
+            doc_id = ids[len(wall) % len(ids)]
+            t = time.perf_counter()
+            req("GET", f"/{index}/_doc/{doc_id}?realtime=false")
+            wall.append((time.perf_counter() - t) * 1000)
+        results.setdefault("get", {}).setdefault("native" if mode else "lucene", []).extend(wall)
+    set_fetch(index, True)
+    after = stats()["fetch_nanos"]
+    # StoredFields.document per document, per path, from the plugin's own counters: the fetch's
+    # shard-side cost without the REST round trip (warm-up requests included on both sides).
+    per_doc = {}
+    for path in ("native", "lucene"):
+        docs = after[f"{path}_count"] - before[f"{path}_count"]
+        per_doc[path] = (after[path] - before[path]) / docs if docs else None
+    try:
+        with open(out) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        data = {}
+    data["fetch"] = {k: {m: statistics.median(v) for m, v in d.items()} for k, d in results.items()}
+    data["fetch"]["document_nanos"] = per_doc
+    with open(out, "w") as f:
+        json.dump(data, f, indent=1)
+
+
 def create_nested(index, shards):
     req("PUT", f"/{index}", {
         "settings": {"number_of_shards": shards, "number_of_replicas": 0, "refresh_interval": -1},
@@ -846,6 +946,9 @@ def main():
         load_nested(index, 1500, 5 + shards)
         native += run_matrix(index, shards, "nested", rows=nested_rows())
     print(f"matrix: {len(matrix())} request shapes x 4 indices; {native} shard queries ran native")
+    # Read path R6: the fetch phase and get API with native stored fields.
+    run_fetch("single", "fetch")
+    run_fetch("multi", "fetch")
     run_scroll("single", 1, "scroll")
     run_scroll("multi", 3, "scroll")
     unsupported_format()
@@ -855,8 +958,10 @@ def main():
     crash(a.container, ["single", "multi"])
     run_matrix("single", 1, "after crash")
     run_matrix("multi", 3, "after crash")
+    run_fetch("single", "fetch after crash")
     if a.bench_out:
         bench("single", a.bench_out, a.bench_rounds)
+        bench_fetch("single", a.bench_out, a.bench_rounds)
     print(f"verify_opensearch: {CHECKS[0]} checks, {len(FAILURES)} failures")
     sys.exit(1 if FAILURES else 0)
 
