@@ -411,7 +411,7 @@ def search_url(index, body):
     return f"/{index}/_search?request_cache=false{params}", {k: v for k, v in body.items() if k != "_params"}
 
 
-def run_matrix(index, shards, label, shapes="fast"):
+def run_matrix(index, shards, label, shapes="fast", index_sorted=False):
     """The whole matrix against the Lucene reference, under one routing mode."""
     label = f"{label}/{shapes}"
     set_shapes(index, shapes)
@@ -430,6 +430,10 @@ def run_matrix(index, shards, label, shapes="fast"):
             # OpenSearch runs a one-shard dfs search as query_then_fetch
             # (TransportSearchAction), so only a multi-shard index gets the dfs phase.
             expect = "dfs" if shards > 1 else "native"
+        if expect == "time_series_order" and index_sorted:
+            # IndexShard enables the time-series segment order only on a shard without
+            # an index sort; an index-sorted shard visits segments in order, as native does.
+            expect = "native"
         before = stats()
         url, b = search_url(index, body)
         got = shape(req("POST", url, b), b)
@@ -703,7 +707,7 @@ def main():
         pass
     create("isorted", 1, index_sort=[("qty", "asc"), ("n", "desc")])
     load("isorted", a.docs, 4)
-    native += run_matrix("isorted", 1, "index sorted")
+    native += run_matrix("isorted", 1, "index sorted", index_sorted=True)
     print(f"matrix: {len(matrix())} request shapes x 4 indices; {native} shard queries ran native")
     run_scroll("single", 1, "scroll")
     run_scroll("multi", 3, "scroll")
