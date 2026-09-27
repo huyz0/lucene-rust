@@ -40,7 +40,7 @@ pub(crate) const MAX_ENTRIES: usize = 64;
 /// Cached bytes per segment (Lucene's node-wide default is 32 MB).
 pub(crate) const MAX_BYTES: usize = 16 << 20;
 /// `LRUQueryCache`'s `MinSegmentSizePredicate` floor.
-const MIN_SEGMENT_SIZE: i32 = 10_000;
+pub(crate) const MIN_SEGMENT_SIZE: i32 = 10_000;
 
 /// A segment's matches for one query, before deletions.
 pub(crate) enum CachedSet {
@@ -415,6 +415,10 @@ impl Scorer for CachedScorer {
 
     fn max_score(&mut self, _up_to: i32) -> Result<f32> {
         Ok(0.0)
+    }
+
+    fn constant_bits(&self) -> Option<(Arc<CachedSet>, f32)> {
+        matches!(&*self.set, CachedSet::Bits { .. }).then(|| (Arc::clone(&self.set), 0.0))
     }
 
     fn contains(&self, doc: i32) -> Option<bool> {

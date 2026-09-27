@@ -206,6 +206,16 @@ fn default_score<C: ScoringCollector + ?Sized>(
             scorer.advance(min)?
         };
     }
+    if !two_phase && doc < max {
+        if let Some((set, score)) = scorer.constant_bits() {
+            if let super::cache::CachedSet::Bits { bits, .. } = &*set {
+                let score = if needs_scores { score } else { 0.0 };
+                return constant_bits_score(
+                    scorer, published, prune, bits, score, live_docs, collector, doc, max,
+                );
+            }
+        }
+    }
     while doc < max {
         if live_docs.is_none_or(|l| l.get_doc(doc)) && (!two_phase || scorer.matches()?) {
             let score = if needs_scores { scorer.score()? } else { 0.0 };
@@ -217,6 +227,53 @@ fn default_score<C: ScoringCollector + ?Sized>(
         doc = scorer.next_doc()?;
     }
     Ok(doc)
+}
+
+/// [`default_score`] over a constant-scored cached bit set: every set bit in
+/// `[doc, max)` collected at `score`, read word by word, the scorer moved
+/// once at the end to where the walk stopped. Pruning publishes after each
+/// hit as the document-at-a-time loop does; once the threshold passes the
+/// constant, the scorer has emptied itself and the walk ends.
+#[allow(clippy::too_many_arguments)]
+fn constant_bits_score<C: ScoringCollector + ?Sized>(
+    scorer: &mut dyn super::Scorer,
+    published: &mut f32,
+    prune: bool,
+    bits: &FixedBitSet,
+    score: f32,
+    live_docs: Option<&FixedBitSet>,
+    collector: &mut C,
+    doc: i32,
+    max: i32,
+) -> Result<i32> {
+    let words = bits.words();
+    let len = bits.len();
+    let end = usize::try_from(max).map_or(len, |m| m.min(len));
+    // `doc` is the scorer's current document, a set bit: the walk starts on it.
+    let mut at = usize::try_from(doc).unwrap_or(0);
+    while at < end {
+        let d = at as i32;
+        if live_docs.is_none_or(|l| l.get_doc(d)) {
+            collector.collect(d, score);
+            if prune {
+                publish(scorer, published, collector)?;
+                if *published > score {
+                    // `ConstantScoreScorer.setMinCompetitiveScore`: emptied.
+                    return scorer.advance(d.saturating_add(1));
+                }
+            }
+        }
+        // The next set bit after `at`, from the words directly.
+        // ARITH: `at < end <= len`, so `at + 1` does not overflow.
+        #[allow(clippy::arithmetic_side_effects)]
+        let from = at + 1;
+        at = lucene_util::fixed_bit_set::next_set_bit_in_words(words, from).unwrap_or(len);
+    }
+    let next = if at < len { at as i32 } else { NO_MORE_DOCS };
+    if next == doc {
+        return Ok(doc);
+    }
+    scorer.advance(next)
 }
 
 #[inline]

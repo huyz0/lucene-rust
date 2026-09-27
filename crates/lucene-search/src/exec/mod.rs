@@ -132,6 +132,13 @@ pub(crate) trait Scorer {
     fn doc_id_run_end(&self) -> i32 {
         self.doc_id().saturating_add(1)
     }
+    /// A constant-scored iterator over a cached bit set: the set and the
+    /// score every document gets, for a bulk scorer to walk the set's words
+    /// itself instead of stepping the iterator document by document (Lucene
+    /// hands such a range over as a `DocIdStream`). `None` for anything else.
+    fn constant_bits(&self) -> Option<(std::sync::Arc<cache::CachedSet>, f32)> {
+        None
+    }
     /// Random access, for an iterator backed by a bit set (or matching every
     /// document): whether `doc` matches, without moving. `None` for an
     /// iterator that can only be advanced. `ConjunctionDISI` checks such
