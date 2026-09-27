@@ -168,9 +168,19 @@ impl MetricState {
         }
     }
 
-    /// A document's stored values, ascending, read as `kind`: every part.
-    pub(crate) fn collect_all(&mut self, kind: ValueKind, values: &[i64]) {
-        self.many::<NEED_ALL>(kind, values);
+    /// A document's stored values, ascending, read as `kind`, keeping the
+    /// parts `needs` names (more is never wrong: an unrecognised mix keeps
+    /// every part), as the flat pass's fold does.
+    pub(crate) fn collect_needs(&mut self, needs: u8, kind: ValueKind, values: &[i64]) {
+        match needs {
+            NEED_MIN => self.many::<NEED_MIN>(kind, values),
+            NEED_MAX => self.many::<NEED_MAX>(kind, values),
+            NEED_COUNT => self.many::<NEED_COUNT>(kind, values),
+            n if n & !(NEED_COUNT | NEED_SUM) == 0 => {
+                self.many::<{ NEED_COUNT | NEED_SUM }>(kind, values)
+            }
+            _ => self.many::<NEED_ALL>(kind, values),
+        }
     }
 
     /// A document's stored values, ascending, read as `kind`, keeping the

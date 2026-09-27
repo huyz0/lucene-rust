@@ -168,6 +168,7 @@ fn sort(spec: &str) -> Vec<SortField> {
                 other => panic!("type {other}"),
             };
             SortField {
+                nested: None,
                 field: p[0].to_string(),
                 ty,
                 selector: if p[2] == "max" {
