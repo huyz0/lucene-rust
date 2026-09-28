@@ -347,7 +347,7 @@ fn vectors_input<'h>(
 /// The split is the point of [`lucene_search::Error::InvalidKnnQuery`]: a
 /// caller mistake (an unknown field, a wrong-length query vector, a `k` under
 /// one) is [`FfiStatus::InvalidArgument`] with Java's own message, and only a
-/// genuine decode failure is [`FfiStatus::Decode`] -- which a JNI caller
+/// genuine decode failure is [`FfiStatus::Decode`] -- which a Java caller
 /// reads as "this index is corrupt" and may fail a shard over.
 fn map_knn_error(e: lucene_search::Error) -> FfiStatus {
     match e {
@@ -912,7 +912,7 @@ mod tests {
 
     /// The calling thread's last-error message, read back through the real
     /// exported accessor (not the thread-local directly), so these tests also
-    /// prove the message actually reaches a JNI caller.
+    /// prove the message actually reaches a Java caller.
     fn last_error() -> String {
         let mut buf = [0 as c_char; 512];
         let rc = unsafe {
@@ -1292,7 +1292,7 @@ mod tests {
     /// Java's `AbstractKnnVectorQuery` raises `IllegalArgumentException` for a
     /// query vector of the wrong length, so this must be `InvalidArgument`
     /// with Java's message -- not the `Decode` the reader would report, which
-    /// a JNI caller reads as "the index is corrupt".
+    /// a Java caller reads as "the index is corrupt".
     #[test]
     fn a_wrong_dimension_query_is_an_invalid_argument_not_a_decode_error() {
         let m = Manifest::load();
@@ -1738,7 +1738,7 @@ mod tests {
     }
 
     /// `ffi_knn_*_vector_search` must keep a *caller* mistake and a *corrupt
-    /// index* apart, because a JNI caller reads `Decode` as "fail this shard".
+    /// index* apart, because a Java caller reads `Decode` as "fail this shard".
     #[test]
     fn a_caller_error_is_an_invalid_argument_and_a_decode_error_is_a_decode() {
         assert_eq!(

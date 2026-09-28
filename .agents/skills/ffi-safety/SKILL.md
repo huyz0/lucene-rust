@@ -1,6 +1,6 @@
 ---
 name: ffi-safety
-description: "WHAT: The C-ABI/JNI boundary contract — handles, panics, unsafe scope. USE WHEN: touching crates/lucene-ffi, adding an exported function, or writing any `unsafe` block anywhere in the workspace."
+description: "WHAT: The C-ABI/FFM boundary contract — handles, panics, unsafe scope. USE WHEN: touching crates/lucene-ffi, adding an exported function, or writing any `unsafe` block anywhere in the workspace."
 ---
 
 # FFI safety (the JVM-facing boundary)
@@ -49,11 +49,16 @@ test. This boundary gets more scrutiny than anything else in the workspace.
   change.
 - Code review: no exported `lucene-ffi` function without a `catch_unwind`
   wrapper and a handle-validation check.
-- **JNI** (`jni_bridge.rs`, for `opensearch-plugin/`) marshals only: it
-  copies Java arrays into Rust memory and calls the matching C-ABI function,
-  which owns validation and the guard. `NativeSelfTest` drives every JNI error
-  path under `-Xcheck:jni` (`gradle -p opensearch-plugin check`); a Java
-  exception left pending is cleared so the caller sees a status, not a throw.
+- **The JVM side** (`opensearch-plugin/`'s `NativeBridge`) calls the C ABI
+  directly through Panama FFM downcalls (JDK 25): it copies Java arrays into
+  per-thread native scratch memory and results back out, never passing heap
+  arrays (that needs a `critical` downcall, which holds off every JVM
+  safepoint for the length of the call). Results whose size is known only
+  afterwards come back as a buffer Rust allocated (`ffm_bridge.rs`), freed
+  with `ffi_jvm_free_bytes` -- never a guessed capacity and a second run.
+  Arguments Java refuses itself (null or short arrays) report through the same
+  last-error slot (`ffi_jvm_set_last_error`). `NativeSelfTest` drives every
+  error path (`gradle -p opensearch-plugin check`).
 - `cargo-fuzz` targets over the C ABI under AddressSanitizer
   (`crates/lucene-ffi/fuzz/`, CI job `fuzz`): a *caught* panic counts as a
   finding, since every input must get a status the caller can act on.
@@ -62,4 +67,5 @@ test. This boundary gets more scrutiny than anything else in the workspace.
 ## Deep dive
 
 [PLAN.md](../../../PLAN.md) §2 Phase 4 (FFI layer design), risk #3 in §4
-(JNI crash blast radius).
+(native crash blast radius: a fault in Rust takes the JVM with it, whether
+the call came through JNI or FFM).

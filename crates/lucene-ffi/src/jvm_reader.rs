@@ -38,7 +38,7 @@
 //! [`ffi_jvm_reader_search`] decodes the query, runs it, counts the total
 //! hits when the caller asks, and writes the top hits straight into the
 //! caller's buffers -- no results handle to read back and close. The query
-//! arrives as one byte blob ([`decode_query`] documents the layout), so a JNI
+//! arrives as one byte blob ([`decode_query`] documents the layout), so a Java
 //! caller passes one `byte[]` rather than seven parallel arrays of strings.
 //!
 //! ## Scope
@@ -72,7 +72,8 @@ use crate::registry::{jvm_readers, lock_recovering, read_recovering, JvmReaderHa
 use std::sync::Arc;
 
 /// The version of the contract between this library and the Java classes in
-/// `opensearch-plugin/`: the entry points in this module and `jni_bridge.rs`,
+/// `opensearch-plugin/`: the entry points in this module, `engine_writer.rs`
+/// and `ffm_bridge.rs`,
 /// their argument order, and the query blob layout. The plugin refuses to
 /// start against a library reporting any other number -- a jar carrying a
 /// stale `.so` must not get as far as reading an index.
@@ -100,8 +101,9 @@ use std::sync::Arc;
 /// ([`crate::jvm_fetch::ffi_jvm_reader_document`], read path R6); 27,
 /// `cardinality` answered as `HyperLogLogPlusPlus` sketches (its precision in
 /// the tree); 28, the JNI `searchDocFreq` (a term query's total-hits shortcut
-/// and its search in one call).
-pub const JVM_ABI_VERSION: u32 = 28;
+/// and its search in one call); 29, the JNI entry points replaced by the
+/// Foreign Function & Memory API's downcalls ([`crate::ffm_bridge`]).
+pub const JVM_ABI_VERSION: u32 = 29;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -576,11 +578,11 @@ pub unsafe extern "C" fn ffi_jvm_reader_search(
 /// Sort-key types in a sort blob ([`decode_sort`]).
 const SORT_SCORE: u8 = 0;
 const SORT_DOC: u8 = 1;
-const SORT_LONG: u8 = 2;
+pub(crate) const SORT_LONG: u8 = 2;
 const SORT_INT: u8 = 3;
 const SORT_DOUBLE: u8 = 4;
 const SORT_FLOAT: u8 = 5;
-const SORT_STRING: u8 = 6;
+pub(crate) const SORT_STRING: u8 = 6;
 /// Sort-key flags.
 const SORT_REVERSE: u8 = 1;
 const SORT_MAX: u8 = 2;
@@ -961,8 +963,8 @@ pub(crate) struct SortedOut {
 }
 
 /// [`ffi_jvm_reader_search_sorted`] up to its output buffers: the blobs
-/// decoded, the search run, the terms encoded (the JNI bridge sizes its
-/// Java array from them).
+/// decoded, the search run, the terms encoded (`ffm_bridge` hands them back
+/// as a buffer of their exact length).
 pub(crate) fn search_sorted_blobs(
     handle: u64,
     query_blob: &[u8],
@@ -995,8 +997,8 @@ pub(crate) fn search_sorted_blobs(
     )?;
     let terms = encode_terms(&keys, &hits)?;
     Ok(SortedOut {
-        max_score,
         has_terms: keys.iter().any(|k| k.ty == SortType::String),
+        max_score,
         keys: keys.len(),
         hits,
         total,
@@ -2321,7 +2323,7 @@ pub(crate) mod tests {
 
     /// [`sort_blob`] with a search-after term per keyword key.
     #[allow(clippy::type_complexity)]
-    fn sort_blob_terms(
+    pub(crate) fn sort_blob_terms(
         keys: &[(u8, u8, &str, i64)],
         after: Option<(i32, &[i64], &[Option<&[u8]>])>,
     ) -> Vec<u8> {
@@ -3267,7 +3269,11 @@ pub(crate) mod tests {
     }
 
     /// An aggregations blob: metrics, `terms` (field, shard size), slices.
-    fn aggs_blob(fields: &[(u8, u8, &str)], terms: &[(&str, i32)], slices: &[&[i32]]) -> Vec<u8> {
+    pub(crate) fn aggs_blob(
+        fields: &[(u8, u8, &str)],
+        terms: &[(&str, i32)],
+        slices: &[&[i32]],
+    ) -> Vec<u8> {
         let mut b = vec![fields.len() as u8];
         for &(kind, source, f) in fields {
             b.push(kind);

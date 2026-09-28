@@ -55,7 +55,7 @@ pub unsafe fn bytes_from_raw<'a>(ptr: *const u8, len: usize) -> Result<&'a [u8],
 /// allocation failure as [`FfiStatus::InvalidArgument`] instead of aborting.
 ///
 /// **Why this exists rather than `Vec::with_capacity`**: every count reaching
-/// this crate is caller-supplied over a C ABI, where a JNI wrapper bug (a
+/// this crate is caller-supplied over a C ABI, where a Java wrapper bug (a
 /// negative `int` widened to `usize`, an uninitialised length) turns into an
 /// absurd allocation request. `Vec::with_capacity` responds to a failed
 /// allocation by calling `handle_alloc_error`, which **aborts the process** --
@@ -99,7 +99,7 @@ mod tests {
 
     #[test]
     fn try_with_capacity_rejects_an_absurd_length_instead_of_aborting() {
-        // The exact shape a JNI caller's negative `int` takes once widened to
+        // The exact shape a Java caller's negative `int` takes once widened to
         // `usize`: far larger than any allocator can serve. `Vec::with_capacity`
         // would abort the process here; this must be a status code.
         let got = try_with_capacity::<u64>(usize::MAX / 4);
@@ -227,7 +227,7 @@ mod allocation_hazard_tests {
 
     /// No production code in this crate may allocate a caller-supplied
     /// length through a method that aborts on failure: every length reaching
-    /// this crate comes from a JNI caller, and `Vec`/`String::with_capacity`
+    /// this crate comes from a Java caller, and `Vec`/`String::with_capacity`
     /// and `vec![x; n]` all call `handle_alloc_error`, which **aborts** --
     /// an abort is not an unwind, so `catch_unwind` cannot contain it and a
     /// single bad length takes the JVM down. [`super::try_with_capacity`]/

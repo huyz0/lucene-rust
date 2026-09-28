@@ -293,7 +293,7 @@ pub(crate) fn check_clause_count(clause_count: usize) -> Result<(), FfiStatus> {
 /// `BooleanClause.Occur.MUST`'s ordinal in Java's own enum declaration order
 /// (`MUST, FILTER, SHOULD, MUST_NOT` -- `BooleanClause.java`). The wire
 /// format uses Java's ordinals rather than inventing its own numbering, so a
-/// JNI caller can send `occur.ordinal()` straight through.
+/// Java caller can send `occur.ordinal()` straight through.
 pub(crate) const OCCUR_MUST: u8 = 0;
 /// `BooleanClause.Occur.FILTER` -- "like `MUST` except that these clauses do
 /// not participate in scoring".
@@ -1941,7 +1941,7 @@ mod tests {
     }
 
     /// The calling thread's last-error message, read back through the real
-    /// exported accessor so these tests also prove it reaches a JNI caller.
+    /// exported accessor so these tests also prove it reaches a Java caller.
     fn last_error_message() -> String {
         let mut buf = [0 as c_char; 512];
         let rc = unsafe {
