@@ -169,3 +169,65 @@ fn parses_real_varying_bpv_numeric_dv_and_matches_lucene_values() {
     assert!(reader.value(max_doc as i32).is_err());
     assert!(reader.value(-1).is_err());
 }
+
+/// `NumericReader::fill_window` over varying-bits-per-value columns, dense
+/// and sparse, is Lucene's value for every document of every window: whole
+/// windows across the blocks, windows that are not aligned or run past the
+/// last document, and a window behind the previous one (a rewind).
+#[test]
+fn windows_of_varying_bpv_values_are_lucenes_values() {
+    let manifest = Manifest::load();
+    let id = id_from_hex(manifest.get("id_hex"));
+    let fis = load_field_infos(&manifest, &id);
+    let meta_buf =
+        std::fs::read(format!("{}{}.raw", dir(), manifest.get("dvm_file_name"))).unwrap();
+    let data_buf =
+        std::fs::read(format!("{}{}.raw", dir(), manifest.get("dvd_file_name"))).unwrap();
+    let (_, parsed) = ndv::parse_meta(&meta_buf, &id, &dv_suffix(&manifest), &fis).unwrap();
+    let max_doc: i32 = manifest.get("max_doc").parse().unwrap();
+    for (field, dense) in [("varying_bpv", true), ("sparse_varying_bpv", false)] {
+        let entry = parsed
+            .numeric_entry(field_number(&manifest, field))
+            .unwrap();
+        assert_eq!(entry.is_dense(), dense, "{field}");
+        assert!(
+            entry.block_shift.is_some(),
+            "{field} did not split into blocks"
+        );
+        let expected: Vec<Option<i64>> = manifest
+            .get(&format!("field.{field}.values"))
+            .split(',')
+            .map(|s| (s != "NONE").then(|| s.parse().unwrap()))
+            .collect();
+        let mut windows: Vec<(i32, usize)> =
+            (0..max_doc).step_by(1024).map(|b| (b, 1024)).collect();
+        windows.extend([
+            (3, 100),
+            (16_300, 200),
+            (max_doc - 10, 64),
+            (0, 64),
+            (5, 3000),
+        ]);
+        let mut reader = ndv::NumericReader::new(&data_buf, entry);
+        let mut checked = 0;
+        for (start, len) in windows {
+            let mut values = vec![i64::MIN; len];
+            let mut present = vec![0u64; len.div_ceil(64)];
+            reader
+                .fill_window(start, &mut values, &mut present)
+                .unwrap();
+            for i in 0..len {
+                let doc = start as usize + i;
+                let want = expected.get(doc).copied().flatten();
+                let has = present[i >> 6] >> (i & 63) & 1 == 1;
+                assert_eq!(
+                    has.then_some(values[i]),
+                    want,
+                    "{field} doc {doc} window {start}+{len}"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > max_doc as usize, "{field}: {checked}");
+    }
+}

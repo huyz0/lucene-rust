@@ -616,8 +616,8 @@ const WINDOW: i32 = 1024;
 
 #[cfg(test)]
 thread_local! {
-    /// Tests: read every column document by document, the path the windows
-    /// must agree with.
+    /// Tests: read every column and collect every node document by
+    /// document, the path the windows must agree with.
     static NO_WINDOWS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
@@ -1130,6 +1130,14 @@ fn collect_window(
             leaf.win_docs = win_docs;
             leaf.win_ords = win_ords;
             return out;
+        }
+        // `global`: every document in its owner's bucket, the window handed
+        // on as it came.
+        (AggNode::Global { .. }, State::Fixed { docs: counts, .. }) => {
+            for &owner in owners {
+                *slot(counts, owner as usize) += 1;
+            }
+            return collect_subs_window(node, state, leaf, docs, owners);
         }
         _ => {}
     }
@@ -1816,7 +1824,12 @@ pub fn aggregate_tree(
             let visit_window =
                 |states: &mut [State], leaves: &mut [Leaf<'_>], docs: &[i32]| -> Result<()> {
                     for ((n, s), l) in nodes.iter().zip(states).zip(leaves) {
-                        if !l.done {
+                        if l.done {
+                        } else if no_windows() {
+                            for &doc in docs {
+                                collect(n, s, l, doc, 0)?;
+                            }
+                        } else {
                             collect_window(n, s, l, docs, &zeros[..docs.len()])?;
                         }
                     }
@@ -2932,6 +2945,12 @@ mod tests {
                 subs: vec![date("l", vec![metric("e", ValueKind::Double)])],
             },
             metric("f", ValueKind::Float),
+            AggNode::Global {
+                subs: vec![
+                    metric("l", ValueKind::Long),
+                    date("l", vec![metric("d", ValueKind::Double)]),
+                ],
+            },
         ];
         let both = |reader: &DirectoryReader, q: &BooleanQuery, tree: &AggNode| {
             let nodes = std::slice::from_ref(tree);

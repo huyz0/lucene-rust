@@ -416,11 +416,13 @@ impl Scorer for WandScorer<'_> {
 
     fn matches(&mut self) -> Result<bool> {
         self.move_to_next_candidate()?;
-        let mut scaled_lead = if self.top_scores {
-            self.scaled_lead_score()
-        } else {
-            0
-        };
+        // The lead's scaled score is only ever compared with the minimum
+        // competitive score; while that is 0 (no threshold yet) every
+        // comparison holds whatever it is -- a scaled score is never
+        // negative -- so it is not computed (its float conversions were most
+        // of this function).
+        let bound = self.top_scores && self.min_competitive_score > 0;
+        let mut scaled_lead = if bound { self.scaled_lead_score() } else { 0 };
         while scaled_lead < self.min_competitive_score || self.freq < self.min_should_match {
             if scaled_lead + self.tail_max_score < self.min_competitive_score
                 || self.freq + self.tail.len() < self.min_should_match
@@ -429,7 +431,7 @@ impl Scorer for WandScorer<'_> {
             }
             let before = self.lead.len();
             self.advance_tail()?;
-            if self.top_scores && self.lead.len() != before {
+            if bound && self.lead.len() != before {
                 scaled_lead = self.scaled_lead_score();
             }
         }

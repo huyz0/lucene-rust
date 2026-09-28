@@ -346,6 +346,10 @@ pub(crate) struct LegConjunctionScorer<'a> {
     /// which it iterates through its impacts (`ImpactsDISI`).
     top_scores: bool,
     impacts: bool,
+    /// `is_scoring[i]`: whether `legs[i]` is one of [`Self::scoring`].
+    is_scoring: Vec<bool>,
+    /// The lead's batch, in [`Scorer::next_docs_and_scores`].
+    buf: crate::bulk_scorer::DocScores,
 }
 
 impl<'a> LegConjunctionScorer<'a> {
@@ -369,11 +373,17 @@ impl<'a> LegConjunctionScorer<'a> {
             }
             legs.push(l);
         }
+        let mut is_scoring = vec![false; legs.len()];
+        for &i in &scoring_idx {
+            is_scoring[i] = true;
+        }
         Self {
             legs,
             scoring: scoring_idx,
             top_scores,
             impacts: false,
+            is_scoring,
+            buf: crate::bulk_scorer::DocScores::default(),
         }
     }
 
@@ -478,13 +488,50 @@ impl Scorer for LegConjunctionScorer<'_> {
     ) -> Result<()> {
         out.docs.clear();
         out.scores.clear();
-        let mut doc = self.legs[0].doc_id();
-        while doc < up_to && out.docs.len() < super::NEXT_DOCS_BATCH {
-            if live_docs.is_none_or(|l| l.get_doc(doc)) {
-                out.docs.push(doc);
-                out.scores.push(Scorer::score(self)?);
+        if self.impacts {
+            // A lone scoring leg iterating through its impacts: a document
+            // at a time, as `next_doc` moves.
+            let mut doc = self.legs[0].doc_id();
+            while doc < up_to && out.docs.len() < super::NEXT_DOCS_BATCH {
+                if live_docs.is_none_or(|l| l.get_doc(doc)) {
+                    out.docs.push(doc);
+                    out.scores.push(Scorer::score(self)?);
+                }
+                doc = Scorer::next_doc(self)?;
             }
-            doc = Scorer::next_doc(self)?;
+            return Ok(());
+        }
+        // The lead's postings a decoded block at a time (scored, live ones
+        // only), each candidate then checked against the other legs in
+        // order -- the documents `next_doc` would stop on, each scored as
+        // `score` sums it: the scoring legs' `f64` sum in leg order.
+        let lead_scores = self.is_scoring[0];
+        while self.legs[0].doc_id() < up_to && out.docs.len() < super::NEXT_DOCS_BATCH {
+            self.legs[0].next_docs_and_scores(up_to, live_docs, &mut self.buf)?;
+            if self.buf.docs.is_empty() {
+                break;
+            }
+            'candidate: for (&d, &lead) in self.buf.docs.iter().zip(&self.buf.scores) {
+                let mut sum = if lead_scores { f64::from(lead) } else { 0.0 };
+                for i in 1..self.legs.len() {
+                    let leg = &mut self.legs[i];
+                    let mut at = leg.doc_id();
+                    if at < d {
+                        at = leg.advance(d)?;
+                    }
+                    if at != d {
+                        continue 'candidate;
+                    }
+                    if self.is_scoring[i] {
+                        sum += f64::from(leg.score()?);
+                    }
+                }
+                out.docs.push(d);
+                out.scores.push(sum as f32);
+            }
+            // Back on a match of every leg (or past the end).
+            let next = self.legs[0].doc_id();
+            self.do_next(next)?;
         }
         Ok(())
     }
