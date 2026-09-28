@@ -636,32 +636,45 @@ impl<'a> TermLeg<'a> {
         live_docs: Option<&FixedBitSet>,
         out: &mut DocScores,
     ) -> Result<()> {
+        self.next_docs_and_scores_where(up_to, live_docs, |_| Ok(true), out)
+    }
+
+    /// [`Self::next_docs_and_scores`] keeping only the documents `accept`
+    /// takes, dropped before they are scored: what a conjunction with
+    /// non-scoring clauses scores (`exec::Bulk::FilteredTerm`).
+    /// `accept` is asked about each document once, in ascending order. An
+    /// empty buffer still means there are no more documents below `up_to`.
+    pub(crate) fn next_docs_and_scores_where(
+        &mut self,
+        up_to: i32,
+        live_docs: Option<&FixedBitSet>,
+        mut accept: impl FnMut(i32) -> Result<bool>,
+        out: &mut DocScores,
+    ) -> Result<()> {
         loop {
             self.ensure_competitive()?;
             self.cursor
                 .next_postings(up_to, &mut out.docs, &mut self.freqs)
                 .map_err(blocktree::Error::Postings)?;
-            if let Some(live) = live_docs {
-                if !out.docs.is_empty() {
-                    let mut n = 0;
-                    for i in 0..out.docs.len() {
-                        let d = out.docs[i];
-                        if live.get_doc(d) {
-                            out.docs[n] = d;
-                            self.freqs[n] = self.freqs[i];
-                            n += 1;
-                        }
-                    }
-                    out.docs.truncate(n);
-                    self.freqs.truncate(n);
-                    // A whole batch of deleted documents is not the end of the
-                    // postings: fetch the next one, as Java loops.
-                    if n == 0 {
-                        continue;
-                    }
+            if out.docs.is_empty() {
+                break;
+            }
+            let mut n = 0;
+            for i in 0..out.docs.len() {
+                let d = out.docs[i];
+                if live_docs.is_none_or(|l| l.get_doc(d)) && accept(d)? {
+                    out.docs[n] = d;
+                    self.freqs[n] = self.freqs[i];
+                    n += 1;
                 }
             }
-            break;
+            out.docs.truncate(n);
+            self.freqs.truncate(n);
+            // A whole batch of rejected documents is not the end of the
+            // postings: fetch the next one, as Java loops.
+            if n > 0 {
+                break;
+            }
         }
         out.scores.clear();
         if !self.scoring {
@@ -771,6 +784,187 @@ pub(crate) fn score_term_window<C: ScoringCollector + ?Sized>(
             }
         }
         leg.set_min_competitive_score(min_competitive);
+    }
+}
+
+/// A term with non-scoring clauses (`+term #filter...`): what Lucene scores
+/// as `DefaultBulkScorer` over a `ConjunctionScorer` whose one scoring
+/// clause takes the minimum competitive score (and skips blocks by it), a
+/// batch at a time instead of a document at a time. Each batch of the term's
+/// postings is narrowed to the documents `filter` matches -- by membership
+/// when it can answer that, else leapfrogging it forward -- before they are
+/// scored; the rest is [`score_term_window`]. The documents collected, their
+/// scores and their order are the conjunction's; past the hit threshold,
+/// where the total is a lower bound, fewer non-competitive ones are counted.
+/// `filter` must not be two-phase.
+pub(crate) fn score_filtered_term_window<C: ScoringCollector + ?Sized>(
+    leg: &mut TermLeg<'_>,
+    filter: &mut dyn crate::exec::Scorer,
+    buf: &mut DocScores,
+    live_docs: Option<&FixedBitSet>,
+    collector: &mut C,
+    min: i32,
+    max: i32,
+) -> Result<i32> {
+    debug_assert!(!filter.two_phase());
+    let mut min_competitive = min_competitive_score(collector);
+    leg.set_min_competitive_score(min_competitive);
+    if leg.doc_id() < min {
+        leg.advance(min)?;
+    }
+    loop {
+        leg.next_docs_and_scores_where(
+            max,
+            live_docs,
+            |d| {
+                Ok(match filter.contains(d) {
+                    Some(m) => m,
+                    None => {
+                        let at = filter.doc_id();
+                        (if at < d { filter.advance(d)? } else { at }) == d
+                    }
+                })
+            },
+            buf,
+        )?;
+        if buf.docs.is_empty() {
+            return Ok(leg.doc_id());
+        }
+        let mut from = 0;
+        if min_competitive == 0.0 {
+            from = collector.collect_many(&buf.docs, &buf.scores, 0);
+            if from > 0 {
+                min_competitive = min_competitive_score(collector);
+            }
+        }
+        for (&doc, &score) in buf.docs[from..].iter().zip(&buf.scores[from..]) {
+            if score >= min_competitive {
+                collector.collect(doc, score);
+                min_competitive = min_competitive_score(collector);
+            }
+        }
+        leg.set_min_competitive_score(min_competitive);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Optional terms with minimum_should_match > 1: a window at a time.
+// ---------------------------------------------------------------------------
+
+/// A disjunction of terms where at least `msm > 1` must match, scored.
+/// Lucene runs `WANDScorer` (with `minShouldMatch`) under
+/// `DefaultBulkScorer` here, a candidate at a time; this reads every term's
+/// postings a decoded block at a time into a window of
+/// [`INNER_WINDOW_SIZE`] documents, counting each document's matching
+/// clauses and summing their scores in `f64`, then collects the documents
+/// matching at least `msm` in order, each scoring its sum narrowed to `f32`
+/// -- `WANDScorer.score`'s arithmetic (the order the `f64` sum takes does not
+/// change a sum of a few BM25 `f32`s, as for [`DisMaxBulk`]). Once a
+/// threshold exists, a window whose clause maxima cannot reach it, or where
+/// fewer than `msm` clauses have a document, is skipped without decoding.
+/// Until then every match is collected, so an exact total is WAND's; past it
+/// (a lower bound) the count can differ.
+pub(crate) struct MsmBulk {
+    msm: u32,
+    matches: FixedBitSet,
+    counts: Vec<u32>,
+    sums: Vec<f64>,
+    buf: DocScores,
+}
+
+impl MsmBulk {
+    pub(crate) fn new(msm: usize) -> Self {
+        MsmBulk {
+            msm: u32::try_from(msm).unwrap_or(u32::MAX),
+            matches: FixedBitSet::new(INNER_WINDOW_SIZE as usize),
+            counts: vec![0; INNER_WINDOW_SIZE as usize],
+            sums: vec![0.0; INNER_WINDOW_SIZE as usize],
+            buf: DocScores::default(),
+        }
+    }
+
+    /// `BulkScorer.score(collector, acceptDocs, min, max)`; returns the next
+    /// document to score.
+    pub(crate) fn score<C: ScoringCollector + ?Sized>(
+        &mut self,
+        legs: &mut [TermLeg<'_>],
+        live_docs: Option<&FixedBitSet>,
+        collector: &mut C,
+        min: i32,
+        max: i32,
+    ) -> Result<i32> {
+        let msm = self.msm as usize;
+        let mut window_min = min;
+        loop {
+            let mut start = NO_MORE_DOCS;
+            for leg in legs.iter_mut() {
+                let mut doc = leg.doc_id();
+                if doc < window_min {
+                    doc = leg.advance(window_min)?;
+                }
+                start = start.min(doc);
+            }
+            if start >= max {
+                return Ok(start);
+            }
+            let end = max.min(start.saturating_add(INNER_WINDOW_SIZE));
+            let min_competitive = min_competitive_score(collector);
+            // The clauses with a document in the window, and (with a
+            // threshold) the sum of their maxima there.
+            let mut present = 0usize;
+            let mut bound = 0.0f64;
+            for leg in legs.iter_mut() {
+                let doc = leg.doc_id();
+                if doc < end {
+                    present += 1;
+                    if min_competitive > 0.0 {
+                        leg.advance_shallow(doc)?;
+                        bound += f64::from(leg.max_score(end - 1));
+                    }
+                }
+            }
+            if present < msm || (min_competitive > 0.0 && (bound as f32) < min_competitive) {
+                #[cfg(any(test, feature = "test-support"))]
+                crate::test_only_maxscore_block_skip_counter::record_skip();
+                window_min = end;
+                continue;
+            }
+            for leg in legs.iter_mut() {
+                if leg.doc_id() >= end {
+                    continue;
+                }
+                loop {
+                    leg.next_docs_and_scores(end, live_docs, &mut self.buf)?;
+                    if self.buf.docs.is_empty() {
+                        break;
+                    }
+                    for (&doc, &sub) in self.buf.docs.iter().zip(&self.buf.scores) {
+                        // ARITH: `start <= doc < end <= start + INNER_WINDOW_SIZE`.
+                        let i = (doc - start) as usize;
+                        // FBS: `matches` holds `INNER_WINDOW_SIZE` bits, `i` below it.
+                        self.matches.set(i);
+                        self.counts[i] += 1;
+                        self.sums[i] += f64::from(sub);
+                    }
+                }
+            }
+            let (counts, sums, want) = (&mut self.counts, &mut self.sums, self.msm);
+            let mut threshold = min_competitive;
+            self.matches.for_each_set_bit(|i| {
+                if counts[i] >= want {
+                    let score = sums[i] as f32;
+                    if score >= threshold {
+                        // ARITH: `i < INNER_WINDOW_SIZE`, `start + i < end`.
+                        collector.collect(start + i as i32, score);
+                        threshold = min_competitive_score(collector);
+                    }
+                }
+                counts[i] = 0;
+                sums[i] = 0.0;
+            });
+            self.matches.clear_all();
+            window_min = end;
+        }
     }
 }
 

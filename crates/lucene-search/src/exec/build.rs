@@ -89,6 +89,34 @@ pub(crate) fn build<'a>(
             ))))
         }
         Clause::DisjunctionMax(d) => {
+            // Every disjunct a term, scored: `TermDisMaxScorer`, which a
+            // disjunction around it can read a block at a time.
+            if mode.needs_scores() && d.disjuncts.len() > 1 {
+                let mut terms = Vec::with_capacity(d.disjuncts.len());
+                let mut all_terms = true;
+                for disjunct in &d.disjuncts {
+                    match term_leg(ctx, disjunct, boost, mode)? {
+                        TermForm::Leg(leg) => {
+                            terms.push(TermScorer::new(*leg, mode == Mode::TopScores))
+                        }
+                        TermForm::Absent => {}
+                        TermForm::Other => {
+                            all_terms = false;
+                            break;
+                        }
+                    }
+                }
+                if all_terms {
+                    return Ok(match terms.len() {
+                        0 => None,
+                        1 => terms.pop().map(|t| -> super::BoxScorer<'a> { Box::new(t) }),
+                        _ => Some(Box::new(super::term_dismax::TermDisMaxScorer::new(
+                            terms,
+                            d.tie_breaker,
+                        ))),
+                    });
+                }
+            }
             let mut subs = Vec::with_capacity(d.disjuncts.len());
             for disjunct in &d.disjuncts {
                 if let Some(s) = build(ctx, disjunct, boost, mode, false)? {

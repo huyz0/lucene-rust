@@ -1544,7 +1544,22 @@ impl<'a> NumericReader<'a> {
                 for i in 0..done {
                     present[i >> 6] |= 1 << (i & 63);
                 }
-            } else if let (Some(cursor), Some(sparse)) = (self.docs.as_mut(), self.sparse_fast) {
+            } else if let (true, Some(shift)) = (self.entry.is_dense(), self.entry.block_shift) {
+                // Dense, varying bits per value: the documents are the
+                // ordinals.
+                let have = usize::try_from(self.entry.num_values.saturating_sub(i64::from(start)))
+                    .unwrap_or(0)
+                    .min(len);
+                self.decode_varying_run(shift, i64::from(start), &mut values[..have])?;
+                for i in 0..have {
+                    present[i >> 6] |= 1 << (i & 63);
+                }
+                return Ok(());
+            } else if let (true, Some(cursor)) = (
+                self.sparse_fast.is_some() || self.entry.block_shift.is_some(),
+                self.docs.as_mut(),
+            ) {
+                let sparse = self.sparse_fast;
                 if start < cursor.doc_id() {
                     cursor.reset();
                 }
@@ -1586,9 +1601,15 @@ impl<'a> NumericReader<'a> {
                     // The values, packed at the front, then moved to their
                     // documents from the last down (each moves up or stays).
                     let mut n = 0;
+                    if let (None, Some(shift)) = (sparse, self.entry.block_shift) {
+                        self.decode_varying_run(shift, first as i64, &mut values[..count])?;
+                        n = count;
+                    }
                     while n < count {
-                        let got = i32::try_from(first + n)
-                            .map_or(0, |o| sparse.fill(o, &mut values[n..count]));
+                        let got = match (sparse, i32::try_from(first + n)) {
+                            (Some(sparse), Ok(o)) => sparse.fill(o, &mut values[n..count]),
+                            _ => 0,
+                        };
                         if got == 0 {
                             values[n] = self.decode_at((first + n) as i64)?;
                             n += 1;
@@ -1634,13 +1655,70 @@ impl<'a> NumericReader<'a> {
         if block.bits_per_value == 0 {
             return Ok(block.delta);
         }
-        let values = self
-            .data
-            .get(block.values_start..block.values_end)
-            .ok_or(lucene_store::Error::Eof { offset: 0 })?;
+        // `let ... else`, not `ok_or`: the error is built only when it is
+        // raised, not on every value (it was, per document, in an
+        // aggregation's profile).
+        let Some(values) = self.data.get(block.values_start..block.values_end) else {
+            return Err(lucene_store::Error::Eof { offset: 0 }.into());
+        };
         let mask = low_bits_mask(shift);
         let raw = direct_reader::get(values, block.bits_per_value, ordinal & mask)?;
         Ok(self.entry.gcd.wrapping_mul(raw).wrapping_add(block.delta))
+    }
+
+    /// The values at ordinals `first..first + out.len()` of a
+    /// varying-bits-per-value field, each what [`Self::decode_varying`]
+    /// answers: a block's header read once and its packed run decoded in one
+    /// pass (`PackedLongs::decode_range`), the rest of a run the packed reader
+    /// cannot reach read value by value.
+    fn decode_varying_run(&mut self, shift: u32, first: i64, out: &mut [i64]) -> Result<()> {
+        let mask = low_bits_mask(shift);
+        let mut done = 0usize;
+        // ARITH: `done < out.len()`, `n <= out.len() - done`, `first + done`
+        // is an ordinal below the field's value count (an `i64` read off
+        // disk, checked by the block lookup), and `in_block >= 1`.
+        #[allow(clippy::arithmetic_side_effects)]
+        while done < out.len() {
+            let ordinal = first + done as i64;
+            let within = ordinal & mask;
+            let in_block = usize::try_from(mask - within + 1).unwrap_or(usize::MAX);
+            let n = (out.len() - done).min(in_block);
+            let index = ordinal >> shift;
+            let block = match self.block {
+                Some(b) if b.index == index => b,
+                _ => {
+                    let b = read_varying_block(self.data, self.entry, index)?;
+                    self.block = Some(b);
+                    b
+                }
+            };
+            let run = &mut out[done..done + n];
+            if block.bits_per_value == 0 {
+                run.fill(block.delta);
+            } else {
+                let Some(values) = self.data.get(block.values_start..block.values_end) else {
+                    return Err(lucene_store::Error::Eof { offset: 0 }.into());
+                };
+                let decoded = if direct_reader::is_supported_bits(block.bits_per_value) {
+                    lucene_util::packed_longs::PackedLongs::new(
+                        values,
+                        u32::from(block.bits_per_value),
+                    )
+                    .map_or(0, |p| p.decode_range(within as u64, run))
+                } else {
+                    0
+                };
+                for (k, v) in run.iter_mut().enumerate().skip(decoded) {
+                    *v = direct_reader::get(values, block.bits_per_value, within + k as i64)?;
+                }
+                let (gcd, delta) = (self.entry.gcd, block.delta);
+                for v in run.iter_mut() {
+                    *v = gcd.wrapping_mul(*v).wrapping_add(delta);
+                }
+            }
+            done += n;
+        }
+        Ok(())
     }
 }
 

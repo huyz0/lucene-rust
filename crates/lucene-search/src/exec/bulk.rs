@@ -40,11 +40,23 @@ pub(crate) enum Bulk<'a> {
     Term(Box<TermLeg<'a>>, DocScores),
     /// `BlockMaxConjunctionBulkScorer`; the legs cheapest first.
     Conjunction(Vec<TermLeg<'a>>, ConjunctionBulk),
+    /// One scoring term and non-scoring clauses (none two-phase), a batch
+    /// of the term's postings at a time. See
+    /// [`crate::bulk_scorer::score_filtered_term_window`].
+    FilteredTerm(Box<TermLeg<'a>>, BoxScorer<'a>, DocScores),
+    /// One scoring clause that has its own bulk scorer (a nested boolean or
+    /// dismax) and a dense filter answering membership: the clause's bulk
+    /// scorer, its hits kept only where the filter matches. See
+    /// [`FilterCollector`].
+    Filtered(Box<Bulk<'a>>, BoxScorer<'a>),
     /// `BlockMaxConjunctionBulkScorer` over clauses that are not all terms
     /// (a nested boolean, a dismax); cheapest first.
     ScorerConjunction(Vec<BoxScorer<'a>>, ConjunctionBulk),
     /// `MaxScoreBulkScorer`, with `filteredOptionalBulkScorer`'s filter.
     Disjunction(Vec<TermLeg<'a>>, Option<BoxScorer<'a>>, MaxScore),
+    /// Terms of which at least `minimum_should_match > 1` must match, scored,
+    /// a window at a time. See [`crate::bulk_scorer::MsmBulk`].
+    MinShouldMatch(Vec<TermLeg<'a>>, Box<crate::bulk_scorer::MsmBulk>),
     /// `MaxScoreBulkScorer` over clauses that are not all terms (a nested
     /// boolean, a dismax), with `filteredOptionalBulkScorer`'s filter.
     ScorerDisjunction(Vec<ScorerLeg<'a>>, Option<BoxScorer<'a>>, MaxScore),
@@ -73,8 +85,11 @@ impl<'a> Bulk<'a> {
             Bulk::Scorer(..) => "scorer",
             Bulk::Term(..) => "term",
             Bulk::Conjunction(..) => "conjunction",
+            Bulk::FilteredTerm(..) => "filtered_term",
+            Bulk::Filtered(..) => "filtered",
             Bulk::ScorerConjunction(..) => "scorer_conjunction",
             Bulk::Disjunction(_, None, _) => "disjunction",
+            Bulk::MinShouldMatch(..) => "min_should_match",
             Bulk::Disjunction(_, Some(_), _) => "filtered_disjunction",
             Bulk::ScorerDisjunction(..) => "scorer_disjunction",
             Bulk::ReqOpt(..) => "req_opt",
@@ -101,6 +116,15 @@ impl<'a> Bulk<'a> {
             }
             Bulk::Term(leg, buf) => score_term_window(leg, buf, live_docs, collector, min, max),
             Bulk::Conjunction(legs, state) => state.score(legs, live_docs, collector, min, max),
+            Bulk::FilteredTerm(leg, filter, buf) => crate::bulk_scorer::score_filtered_term_window(
+                leg,
+                &mut **filter,
+                buf,
+                live_docs,
+                collector,
+                min,
+                max,
+            ),
             Bulk::ScorerConjunction(scorers, state) => {
                 state.score(scorers, live_docs, collector, min, max)
             }
@@ -115,10 +139,53 @@ impl<'a> Bulk<'a> {
             Bulk::ReqOpt(req, opt, state) => state.score(req, opt, live_docs, collector, min, max),
             Bulk::DisMax(legs, state) => state.score(legs, live_docs, collector, min, max),
             Bulk::Union(legs) => union_score(legs, live_docs, collector, min, max),
+            Bulk::MinShouldMatch(legs, state) => state.score(legs, live_docs, collector, min, max),
+            Bulk::Filtered(inner, filter) => {
+                let mut fc = FilterCollector {
+                    inner: collector,
+                    filter: &**filter,
+                };
+                // As a trait object: a filtered scorer inside another would
+                // otherwise instantiate this function for ever-deeper types.
+                let fc: &mut dyn ScoringCollector = &mut fc;
+                inner.score(mode, live_docs, fc, min, max)
+            }
             Bulk::ReqExcl(req, excl) => {
                 req_excl_score(req, &mut **excl, mode, live_docs, collector, min, max)
             }
         }
+    }
+}
+
+/// [`Bulk::Filtered`]'s collector: the hits of the scoring clause's bulk
+/// scorer, forwarded only where `filter` matches -- the documents
+/// `ConjunctionScorer(clause, filter)` would collect, with their scores.
+/// The threshold is the real collector's, so the clause prunes by it: a
+/// document it skips could not have entered the results through the filter
+/// either. Until a threshold exists every match of the clause is offered and
+/// the filtered ones counted, so an exact total is the conjunction's; past
+/// it (a lower bound) fewer non-competitive documents are counted. The batch
+/// shortcuts, which assume every offered document is a hit, are declined.
+struct FilterCollector<'c, 'f, 'a, C: ?Sized> {
+    inner: &'c mut C,
+    /// Answers `contains` for every document (checked when planned).
+    filter: &'f (dyn super::Scorer + 'a),
+}
+
+impl<C: ScoringCollector + ?Sized> ScoringCollector for FilterCollector<'_, '_, '_, C> {
+    fn collect(&mut self, doc_id: i32, score: f32) {
+        if self.filter.contains(doc_id) == Some(true) {
+            self.inner.collect(doc_id, score);
+        }
+    }
+    fn min_competitive_score(&self) -> Option<f32> {
+        self.inner.min_competitive_score()
+    }
+    fn score_mode(&self) -> crate::collector::ScoreMode {
+        self.inner.score_mode()
+    }
+    fn pruning_threshold(&self) -> Option<f32> {
+        self.inner.pruning_threshold()
     }
 }
 
@@ -582,6 +649,17 @@ pub(crate) fn bulk_boolean<'a>(
                 .collect();
             let state = MaxScore::new(&mut legs);
             Some(Bulk::Disjunction(legs, None, state))
+        } else if msm > 1 && all_legs(&should) && mode.needs_scores() {
+            // `WANDScorer` with `minShouldMatch` in Lucene, a candidate at a
+            // time; here a window at a time.
+            let legs: Vec<TermLeg<'a>> = std::mem::take(&mut should)
+                .into_iter()
+                .map(|(c, _)| c.into_leg())
+                .collect();
+            Some(Bulk::MinShouldMatch(
+                legs,
+                Box::new(crate::bulk_scorer::MsmBulk::new(msm)),
+            ))
         } else if msm <= 1 && mode == Mode::TopScores {
             // `optionalBulkScorer`: `MaxScoreBulkScorer` over whatever the
             // clauses are.
@@ -632,6 +710,46 @@ pub(crate) fn bulk_boolean<'a>(
             legs.sort_by_key(|l| l.cost);
             let state = ConjunctionBulk::new(legs.len());
             Some(Bulk::Conjunction(legs, state))
+        } else if mode.needs_scores()
+            && must.len() == 1
+            && all_legs(&must)
+            && filter.iter().all(|(c, _)| !c.is_leg())
+        {
+            // One scoring term and filters that are not terms (a cached set,
+            // a range, a prefix): Lucene's `ConjunctionScorer` under
+            // `DefaultBulkScorer`, a batch at a time.
+            let (c, _) = must.pop().expect("one scoring clause");
+            let filter_scorer = filter_of(std::mem::take(&mut filter));
+            if filter_scorer.two_phase() {
+                return bulk_boolean_tree(ctx, q, boost, mode);
+            }
+            Some(Bulk::FilteredTerm(
+                Box::new(c.into_leg()),
+                filter_scorer,
+                DocScores::default(),
+            ))
+        } else if mode.needs_scores()
+            && must.len() == 1
+            && filter.iter().all(|(c, _)| !c.is_leg())
+            && has_own_bulk(must[0].1)
+        {
+            // A nested boolean or dismax and filters that are not terms: the
+            // clause's own bulk scorer, filtered by membership -- when the
+            // filter can answer it and matches at least one document in
+            // eight of the clause's (else the conjunction's leapfrog, which
+            // lets a sparse filter lead, reads less).
+            let (c, clause) = must.pop().expect("one scoring clause");
+            let inner_cost = c.cost();
+            let filter_scorer = filter_of(std::mem::take(&mut filter));
+            let dense = filter_scorer.cost().saturating_mul(8) >= inner_cost;
+            if filter_scorer.two_phase() || filter_scorer.contains(0).is_none() || !dense {
+                return bulk_boolean_tree(ctx, q, boost, mode);
+            }
+            drop(c);
+            match bulk_clause(ctx, clause, boost, mode)? {
+                Some(inner) => Some(Bulk::Filtered(Box::new(inner), filter_scorer)),
+                None => return Ok(None),
+            }
         } else if mode.needs_scores() && must.len() > 1 {
             // `BlockMaxConjunctionBulkScorer` over any clauses, when none is
             // two-phase: the filters join it as constant-0 scorers.
@@ -736,6 +854,19 @@ pub(crate) fn bulk_boolean<'a>(
         true,
     )?
     .map(Bulk::scorer))
+}
+
+/// Whether `clause` gets a bulk scorer of its own (a boolean or a dismax,
+/// behind any boosts) rather than `DefaultBulkScorer` over its scorer.
+fn has_own_bulk(clause: &Clause) -> bool {
+    match clause {
+        Clause::Boolean(_) | Clause::DisjunctionMax(_) => true,
+        Clause::Boost(b) => matches!(
+            boost_chain(b).1,
+            Clause::Boolean(_) | Clause::DisjunctionMax(_)
+        ),
+        _ => false,
+    }
 }
 
 /// The scorer tree for `q`, driven by `DefaultBulkScorer`: what

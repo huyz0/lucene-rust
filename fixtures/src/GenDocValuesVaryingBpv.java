@@ -48,10 +48,17 @@ public class GenDocValuesVaryingBpv {
       cfg.setMergePolicy(NoMergePolicy.INSTANCE);
 
       try (IndexWriter w = new IndexWriter(dir, cfg)) {
+        // A sparse field too (four documents in five), its values shaped by
+        // ordinal as the dense one's are by document, so its value blocks
+        // split the same way behind an IndexedDISI.
+        int sparseOrd = 0;
         for (int i = 0; i < NUM_DOCS; i++) {
           Document doc = new Document();
           doc.add(new StringField("id", Integer.toString(i), Field.Store.NO));
           doc.add(new NumericDocValuesField("varying_bpv", valueFor(i)));
+          if (i % 5 != 0) {
+            doc.add(new NumericDocValuesField("sparse_varying_bpv", valueFor(sparseOrd++)));
+          }
           w.addDocument(doc);
         }
         w.commit();
@@ -83,6 +90,7 @@ public class GenDocValuesVaryingBpv {
       org.apache.lucene.index.FieldInfos fis =
           sci.info.getCodec().fieldInfosFormat().read(dir, sci.info, "", IOContext.READONCE);
       org.apache.lucene.index.FieldInfo field = fis.fieldInfo("varying_bpv");
+      org.apache.lucene.index.FieldInfo sparseField = fis.fieldInfo("sparse_varying_bpv");
 
       StringBuilder m = new StringBuilder();
       m.append("dvm_file_name=").append(dvmFileName).append('\n');
@@ -91,7 +99,8 @@ public class GenDocValuesVaryingBpv {
       m.append("segment_name=").append(sci.info.name).append('\n');
       m.append("id_hex=").append(hex(sci.info.getId())).append('\n');
       m.append("max_doc=").append(sci.info.maxDoc()).append('\n');
-      m.append("field_numbers=varying_bpv:").append(field.number).append('\n');
+      m.append("field_numbers=varying_bpv:").append(field.number)
+          .append(",sparse_varying_bpv:").append(sparseField.number).append('\n');
 
       org.apache.lucene.codecs.DocValuesProducer dvProducer =
           sci.info
@@ -101,17 +110,19 @@ public class GenDocValuesVaryingBpv {
                   new org.apache.lucene.index.SegmentReadState(
                       dir, sci.info, fis, IOContext.READONCE));
 
-      NumericDocValues values = dvProducer.getNumeric(field);
-      StringBuilder vals = new StringBuilder();
-      for (int doc = 0; doc < sci.info.maxDoc(); doc++) {
-        if (doc > 0) vals.append(',');
-        if (values.advanceExact(doc)) {
-          vals.append(values.longValue());
-        } else {
-          vals.append("NONE");
+      for (org.apache.lucene.index.FieldInfo f : new org.apache.lucene.index.FieldInfo[] {field, sparseField}) {
+        NumericDocValues values = dvProducer.getNumeric(f);
+        StringBuilder vals = new StringBuilder();
+        for (int doc = 0; doc < sci.info.maxDoc(); doc++) {
+          if (doc > 0) vals.append(',');
+          if (values.advanceExact(doc)) {
+            vals.append(values.longValue());
+          } else {
+            vals.append("NONE");
+          }
         }
+        m.append("field.").append(f.name).append(".values=").append(vals).append('\n');
       }
-      m.append("field.varying_bpv.values=").append(vals).append('\n');
       dvProducer.close();
 
       Files.writeString(out.resolve("manifest.properties"), m.toString());

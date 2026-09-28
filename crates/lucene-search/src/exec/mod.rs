@@ -43,6 +43,7 @@ mod leaf;
 pub(crate) mod multi_term;
 mod phrase;
 mod req;
+mod term_dismax;
 mod wand;
 
 pub(crate) use build::LeafContext;

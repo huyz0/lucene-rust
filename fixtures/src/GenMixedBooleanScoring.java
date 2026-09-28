@@ -156,6 +156,22 @@ public class GenMixedBooleanScoring {
     "(dismax 0.1 (t w1) (const (t w2)))",
     "(dismax 0.7 (t w0) (t nosuchterm))",
     "(dismax 0.25 (t w5) (t w6) (t w7) (t w8) (t w9))",
+    // Term dismaxes nested in a disjunction, as `multi_match` builds them:
+    // the disjunction reads each a block at a time (`TermDisMaxScorer`).
+    "(b 0 (? (dismax 0 (t w0) (t w1))) (? (dismax 0 (t w2) (t w3))))",
+    "(b 0 (? (dismax 0.3 (t w0) (t w4))) (? (dismax 0.1 (t w1) (t w2) (t w5))))",
+    "(b 0 (? (dismax 0 (t w1) (t w2))) (? (t w3)))",
+    "(b 1 (? (dismax 0.2 (t w0) (t w1))) (? (dismax 0 (t w2) (t w3))) (? (t w4)))",
+    "(b 0 (+ (t w5)) (? (dismax 0.3 (t w0) (t w1))))",
+    "(b 0 (? (boost 2 (dismax 0 (t w0) (t w3)))) (? (dismax 0.5 (t w6) (t w7) (t nosuchterm))))",
+    // A nested boolean or dismax behind a dense filter: its own bulk scorer,
+    // its hits kept where the filter matches; a sparse filter leads instead.
+    "(b 0 (+ (b 0 (+ (t w0)) (? (t w1)))) (# (r 1000 20000)))",
+    "(b 0 (+ (b 0 (? (t w1)) (? (t w2)))) (# (r 0 23000)))",
+    "(b 0 (+ (dismax 0.3 (t w1) (t w2))) (# (r 500 18000)))",
+    "(b 0 (+ (b 0 (+ (t w0)) (? (t w3)))) (# (pre w1)))",
+    "(b 0 (+ (b 0 (+ (t w0)) (? (t w1)))) (# (r 100 400)))",
+    "(b 0 (+ (b 0 (+ (t w2)) (? (t w5)))) (# (r 0 20000)) (- (t w9)))",
     // `MUST` + `SHOULD` with a minimum: `ConjunctionScorer(req, opt)` in
     // Lucene, a block-max conjunction of the same two scorers here.
     "(b 1 (+ (t w0)) (? (t w1)) (? (t w2)))",
