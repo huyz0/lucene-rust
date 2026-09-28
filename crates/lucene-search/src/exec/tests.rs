@@ -1181,9 +1181,11 @@ mod fixture {
             "scorer",
             "term",
             "conjunction",
+            "filtered_term",
             "scorer_conjunction",
             "disjunction",
             "filtered_disjunction",
+            "min_should_match",
             "scorer_disjunction",
             "req_opt",
             "req_excl",
@@ -1293,6 +1295,154 @@ mod fixture {
             checked += 1;
         }
         assert!(checked > 50, "enough out-of-step starts: {checked}");
+    }
+
+    /// A scored dismax of terms (`TermDisMaxScorer`) answers every question
+    /// the dismax `DisjunctionScorer` over the same terms answers: the
+    /// documents a walk of `next_doc`s and `advance`s lands on, their
+    /// scores and run ends, the block bounds (`advance_shallow`,
+    /// `max_score`), with a threshold handed down part way (which a
+    /// tie-breaker of 0 passes to the terms), and a batch at a time the
+    /// documents and scores the walk gives -- with ties of 0 and not, and a
+    /// term the segment lacks.
+    #[test]
+    fn a_term_dismax_answers_what_the_dismax_disjunction_answers() {
+        use super::super::disjunction::{Combine, DisjunctionScorer};
+        use super::super::{BoxScorer, NO_MORE_DOCS};
+        use crate::query::DisjunctionMaxQuery;
+        let reader = DirectoryReader::open(&lucene_store::FsDirectory::open(dir())).unwrap();
+        let opened = reader.open_segments().unwrap();
+        let seg = &opened.as_open_segments()[0];
+        let owned = reader.field_norms("body");
+        let norms: HashMap<String, FieldNorms<'_>> = owned
+            .into_iter()
+            .next()
+            .flatten()
+            .map(|n| ("body".to_string(), n))
+            .into_iter()
+            .collect();
+        let ctx = LeafContext {
+            fields: seg.fields,
+            doc_in: seg.doc_in,
+            pos_in: None,
+            pay_in: None,
+            live_docs: seg.live_docs,
+            points: None,
+            norms: Some(&norms),
+            global: None,
+            max_doc: None,
+            cache: None,
+            reader: None,
+        };
+        let mut checked = 0usize;
+        for tie in [0.0f32, 0.3] {
+            for terms in [
+                &["w0", "w1"][..],
+                &["w2", "w5", "w7"],
+                &["w1", "nosuchterm", "w3"],
+            ] {
+                let d = DisjunctionMaxQuery {
+                    disjuncts: terms
+                        .iter()
+                        .map(|t| Clause::Term(TermQuery::new("body", *t)))
+                        .collect(),
+                    tie_breaker: tie,
+                };
+                let clause = Clause::DisjunctionMax(Box::new(d.clone()));
+                let fast = || {
+                    super::super::build::build(&ctx, &clause, 1.0, Mode::TopScores, false)
+                        .unwrap()
+                        .unwrap()
+                };
+                let slow = || -> BoxScorer<'_> {
+                    let subs: Vec<BoxScorer<'_>> = d
+                        .disjuncts
+                        .iter()
+                        .filter_map(|c| {
+                            super::super::build::build(&ctx, c, 1.0, Mode::TopScores, false)
+                                .unwrap()
+                        })
+                        .collect();
+                    Box::new(DisjunctionScorer::new(subs, Combine::Max(tie), true))
+                };
+                // A walk: steps and jumps, bounds read on the way, and a
+                // threshold from half way.
+                let (mut a, mut b) = (fast(), slow());
+                assert_eq!(a.cost(), b.cost());
+                assert!(!a.two_phase());
+                let mut step = 0i32;
+                loop {
+                    let (da, db) = if step % 3 == 2 {
+                        let target = a.doc_id().saturating_add(1 + step % 97);
+                        (a.advance(target).unwrap(), b.advance(target).unwrap())
+                    } else {
+                        (a.next_doc().unwrap(), b.next_doc().unwrap())
+                    };
+                    assert_eq!(da, db, "{terms:?} tie {tie} step {step}");
+                    if da == NO_MORE_DOCS {
+                        break;
+                    }
+                    assert_eq!(a.doc_id(), b.doc_id());
+                    assert_eq!(
+                        a.score().unwrap().to_bits(),
+                        b.score().unwrap().to_bits(),
+                        "{terms:?} tie {tie} doc {da}"
+                    );
+                    assert_eq!(a.doc_id_run_end(), b.doc_id_run_end());
+                    if step % 11 == 0 {
+                        let target = da.saturating_add(step % 300);
+                        assert_eq!(
+                            a.advance_shallow(target).unwrap(),
+                            b.advance_shallow(target).unwrap()
+                        );
+                        let up_to = target.saturating_add(500);
+                        assert_eq!(
+                            a.max_score(up_to).unwrap().to_bits(),
+                            b.max_score(up_to).unwrap().to_bits()
+                        );
+                    }
+                    if step == 200 {
+                        a.set_min_competitive_score(1.0).unwrap();
+                        b.set_min_competitive_score(1.0).unwrap();
+                    }
+                    step += 1;
+                    checked += 1;
+                }
+                // Batches: what the per-document walk collects, live ones only.
+                let (mut a, mut b) = (fast(), slow());
+                a.next_doc().unwrap();
+                let mut batched = Vec::new();
+                let mut buf = crate::bulk_scorer::DocScores::default();
+                let mut up_to = 700;
+                while a.doc_id() != NO_MORE_DOCS {
+                    a.next_docs_and_scores(up_to, seg.live_docs, &mut buf)
+                        .unwrap();
+                    if buf.docs.is_empty() {
+                        up_to = up_to.saturating_add(9_001);
+                        continue;
+                    }
+                    batched.extend(
+                        buf.docs
+                            .iter()
+                            .zip(&buf.scores)
+                            .map(|(&d, &s)| (d, s.to_bits())),
+                    );
+                }
+                let mut walked = Vec::new();
+                while b.next_doc().unwrap() != NO_MORE_DOCS {
+                    let doc = b.doc_id();
+                    if seg.live_docs.is_none_or(|l| l.get_doc(doc)) {
+                        walked.push((doc, b.score().unwrap().to_bits()));
+                    }
+                }
+                assert_eq!(batched, walked, "{terms:?} tie {tie} batched");
+                // Past the end: an empty batch.
+                a.next_docs_and_scores(NO_MORE_DOCS, None, &mut buf)
+                    .unwrap();
+                assert!(buf.docs.is_empty());
+            }
+        }
+        assert!(checked > 1000, "{checked}");
     }
 
     struct Count(u64);

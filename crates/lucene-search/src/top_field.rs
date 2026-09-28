@@ -2688,6 +2688,21 @@ impl<'a> Leaf<'a> {
                     _ => false,
                 }
             }
+            // A numeric second key, read and compared inline; a tie on it
+            // too goes to the rest.
+            Some(0) if matches!(self.keys.get(1), Some(LeafKey::Numeric(_))) => {
+                let second = match &mut self.keys[1] {
+                    LeafKey::Numeric(n) => n.quick_value(doc),
+                    _ => None,
+                };
+                match second.map(|v| tf.comps[1].mul * cmp(tf.comps[1].bottom, v)) {
+                    Some(r) if r < 0 || (r == 0 && tf.comps.len() == 2) => true,
+                    Some(0) => {
+                        matches!(self.compare_bottom_from(tf, 2, doc, scorer), Ok(r) if r <= 0)
+                    }
+                    _ => false,
+                }
+            }
             Some(0) => matches!(self.compare_bottom_from(tf, 1, doc, scorer), Ok(r) if r <= 0),
             _ => false,
         };
@@ -3529,9 +3544,13 @@ fn score_competitive(
                 }
                 match scorer.contains(d) {
                     Some(true) if live_docs.is_none_or(|l| l.get_doc(d)) => {
-                        leaf.collect(tf, d, score_at(&mut scores, d))?;
-                        if leaf.terminated {
-                            return Ok(());
+                        // The fast reject first, as the other two paths do.
+                        let mut sc = score_at(&mut scores, d);
+                        if !leaf.quick_reject(tf, d, &mut sc) {
+                            leaf.collect(tf, d, sc)?;
+                            if leaf.terminated {
+                                return Ok(());
+                            }
                         }
                     }
                     Some(_) => {}

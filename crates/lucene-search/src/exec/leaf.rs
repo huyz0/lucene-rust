@@ -23,6 +23,14 @@ pub(crate) struct TermScorer<'a> {
 }
 
 impl<'a> TermScorer<'a> {
+    /// The term's leg, for a caller that reads its postings a block at a
+    /// time ([`super::term_dismax::TermDisMaxScorer`]). Its threshold is
+    /// this scorer's: the leg iterates through its impacts exactly when this
+    /// scorer does.
+    pub(crate) fn leg_mut(&mut self) -> &mut TermLeg<'a> {
+        &mut self.leg
+    }
+
     pub(crate) fn new(leg: TermLeg<'a>, top_scores: bool) -> Self {
         Self {
             leg,
