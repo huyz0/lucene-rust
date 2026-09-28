@@ -8,7 +8,7 @@
 //! this port has no unified "open every file a `.si` names" reader yet (see
 //! `lucene-search/src/lib.rs`'s module doc, "no `SegmentReader`/
 //! `DirectoryReader` abstraction exists yet") — building one is its own
-//! task. A real caller (the JNI wrapper, out of this repo's scope) already
+//! task. A real caller (the Java wrapper, out of this repo's scope) already
 //! has to parse `segments_N`/`.si` to discover segment names, field
 //! numbers, and the segment ID/suffix before it can call anything in this
 //! crate; passing those already-known values straight through keeps this
@@ -2005,7 +2005,7 @@ mod live_docs_tests {
 
     /// The calling thread's last-error message, read back through the real
     /// exported accessor rather than the thread-local directly, so these
-    /// tests also prove the message reaches a JNI caller.
+    /// tests also prove the message reaches a Java caller.
     fn last_error_message() -> String {
         let mut buf = [0 as c_char; 512];
         let rc = unsafe {

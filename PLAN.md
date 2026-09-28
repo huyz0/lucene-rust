@@ -1,7 +1,7 @@
 # lucene-rust: Porting Apache Lucene to Rust with FFI integration into OpenSearch
 
 This is the master plan for porting Apache Lucene (Java, ~1.5M LOC in `lucene/core` alone)
-to Rust, exposed over a JNI/FFI boundary so OpenSearch (JVM) can use it as a drop-in
+to Rust, exposed over an FFI boundary (a C ABI, called from the JVM through Panama FFM) so OpenSearch (JVM) can use it as a drop-in
 engine for the hot paths. Source of truth for the Java side: `/home/tuong/work/lucene`.
 OpenSearch checkout: `/home/tuong/work/OpenSearch`.
 
@@ -25,11 +25,12 @@ OpenSearch checkout: `/home/tuong/work/OpenSearch`.
    Java-written segments delivers value early (query CPU is the OpenSearch hot path),
    is verifiable byte-for-byte against Java results, and avoids the hardest correctness
    risks (merge policy, deletes, transactional commits) until the foundations are proven.
-4. **FFI = JNI via the `jni` crate + a thin handle-based C ABI.** OpenSearch is JVM;
-   "FFI" concretely means a `cdylib` loaded by a JNI wrapper. Design the Rust-side API
-   as a C ABI (opaque handles, no Rust types across the boundary) so the same library
-   also works from Panama/FFM (`java.lang.foreign`), which is the better long-term
-   binding (JDK 21+, which OpenSearch already requires).
+4. **FFI = a thin handle-based C ABI, bound from Java.** OpenSearch is JVM;
+   "FFI" concretely means a `cdylib` loaded by a Java wrapper. The Rust-side API is a
+   C ABI (opaque handles, no Rust types across the boundary), so any binding reaches
+   it. M2 bound it with JNI (the `jni` crate); since 2026-09-28 the plugin targets
+   JDK 25, the JDK OpenSearch 3.8.0 bundles, and calls it through Panama FFM
+   (`java.lang.foreign`) downcalls, with no JNI layer at all.
 5. **Differential testing is the correctness backbone.** Every milestone gates on
    comparing lucene-rust output against Java Lucene on the same input: same segments,
    same queries, same top-k docs and scores (within float tolerance), same term stats.
@@ -76,15 +77,15 @@ Cargo workspace, one crate per Java module boundary (roughly):
 | `lucene-analysis` | `o.a.l.analysis` + `analysis/common` subset | TokenStream trait, StandardTokenizer (from Unicode segmentation), lowercase/stop/ascii-folding/Porter-stem; everything else stays JVM-side long-term |
 | `lucene-search` | `o.a.l.search` | Query/Weight/Scorer, Boolean (WAND/BMW), term/phrase/points ranges, collectors, BM25, ConstantScore, MatchAll |
 | `lucene-core` | — | Facade crate re-exporting the above; the "public API" |
-| `lucene-ffi` | — | `cdylib`: C ABI + JNI export layer, handle registry, panic → error-code mapping |
-| `opensearch-plugin/` | — | Java: OpenSearch engine plugin (`EngineFactory`) + JNI binding class, native lib loading, CI packaging |
+| `lucene-ffi` | — | `cdylib`: C ABI (called from Java through FFM downcalls), handle registry, panic → error-code mapping |
+| `opensearch-plugin/` | — | Java: OpenSearch engine plugin (`EngineFactory`) + FFM binding class, native lib loading, CI packaging |
 
 Rationale: matches Lucene's own dependency DAG (`util ← store ← codecs ← index ← search`),
 lets phases parallelize, and keeps `lucene-ffi` as the only `unsafe`-heavy crate.
 
 Key crates from the ecosystem to use rather than re-port: `memmap2` (mmap directory),
 `zstd`/`lz4_flex` (stored fields), `crc32fast` (checksums), `unicode-segmentation`
-(StandardTokenizer is UAX#29), `rayon` (concurrent merge/search), `jni` (JNI layer).
+(StandardTokenizer is UAX#29), `rayon` (concurrent merge/search). (`jni` was the JNI layer until the move to FFM.)
 Study but do not depend on: **Tantivy** (license-compatible, MIT — prior art for nearly
 every component; where a design question comes up, check how Tantivy solved it, but its
 index format is NOT Lucene-compatible, which is exactly what we need to be).
@@ -634,7 +635,8 @@ it. Two decisions differ from this section's plan: the plugin hooks
 arrives with indexing, in M5), and it binds with JNI rather than Panama/FFM
 (OpenSearch 3.8.0 supports JDK 21, where FFM is a preview API). Both are
 reasoned in `docs/milestones/m2-opensearch-read-path.md`; the progress notes
-below are the Rust half's history.
+below are the Rust half's history. (The second was reversed on 2026-09-28: the
+plugin now targets JDK 25 and binds through FFM downcalls.)
 
 **Progress (task #20):** the first real FFI surface now exists in `lucene-ffi`,
 wrapping `lucene-search`'s existing `search_term_query`/`search_boolean_query`/

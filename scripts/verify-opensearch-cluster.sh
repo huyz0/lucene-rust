@@ -10,7 +10,7 @@
 #
 #   scripts/verify-opensearch-cluster.sh [--keep] [--no-build]
 #
-# Needs Docker, a JDK 21, Gradle and cargo; the plugin image is the one
+# Needs Docker, a JDK 25 (Gradle's toolchain; see opensearch-plugin/build.gradle), Gradle and cargo; the plugin image is the one
 # scripts/verify-opensearch.sh builds. Nodes listen on localhost:9201..9203.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."

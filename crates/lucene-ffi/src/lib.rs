@@ -1,11 +1,13 @@
-//! lucene-ffi: the C-ABI/JNI boundary for this port's query execution path.
+//! lucene-ffi: the C-ABI boundary for this port's query execution path,
+//! which the OpenSearch plugin reaches through Java's Foreign Function &
+//! Memory API ([`ffm_bridge`] holds the few functions only it needs).
 //!
 //! ## Scope of this task (see PLAN.md's Phase 4 section for the full plan)
 //!
 //! This is the first real FFI surface in this workspace, wrapping this
 //! port's existing `search_term_query`/`search_boolean_query`/
 //! `search_phrase_query` (`crates/lucene-search`) so a JVM caller (a
-//! separate JNI wrapper class, not part of this Rust repo) can open a
+//! separate wrapper class, not part of this Rust repo) can open a
 //! filesystem directory, open one segment's already-decoded term
 //! dictionary and postings files, run a query, and read the matching doc
 //! IDs back out — all through opaque `u64` handles, `catch_unwind`-guarded
@@ -235,7 +237,7 @@
 //!   plain caller-supplied input (the caller computes them however it likes,
 //!   e.g. by calling `lucene_search::term_vectors_query::matched_term_offsets`
 //!   directly if it links against `lucene-search` itself, or by some other
-//!   means); a JNI-only caller with no Rust-side access to that function
+//!   means); a JVM-only caller with no Rust-side access to that function
 //!   would need it exposed too before it could get real spans, but that is a
 //!   separate, mechanical follow-up wrapping a different `lucene-search`
 //!   module, not part of this task's scope.
@@ -251,8 +253,9 @@
 //!   is a new `clause_kinds` tag value plus, for the ones carrying an `f32`
 //!   or a term *list*, one more parallel array -- see `read_boolean_query`'s
 //!   doc comment for exactly where the wire format's edge is.
-//! - **The JNI wrapper class itself** — out of scope for this Rust repo;
-//!   this crate only needs to expose a stable C ABI a JNI class can bind to.
+//! - **The Java wrapper class itself** — out of scope for this Rust repo;
+//!   this crate only needs to expose a stable C ABI a Java class can bind to
+//!   (`opensearch-plugin/`'s `NativeBridge` does, through FFM downcalls).
 //!
 //! ## Design summary (see the `ffi-safety` skill for the full rule set)
 //!
@@ -285,9 +288,9 @@ pub(crate) mod engine_writer;
 mod error;
 mod explain;
 mod facets;
+mod ffm_bridge;
 mod handle;
 mod highlighter;
-mod jni_bridge;
 mod jvm_aggs;
 mod jvm_fetch;
 mod jvm_reader;

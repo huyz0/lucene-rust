@@ -19,7 +19,7 @@
 #
 #   scripts/verify-opensearch.sh [--docs N] [--bench-out FILE] [--yaml] [--engine] [--keep]
 #
-# Needs Docker, a JDK 21, Gradle and cargo. The node listens on
+# Needs Docker, a JDK 25 (Gradle's toolchain; see opensearch-plugin/build.gradle), Gradle and cargo. The node listens on
 # localhost:${OS_PORT:-9200}.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."

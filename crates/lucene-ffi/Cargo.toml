@@ -12,7 +12,6 @@ lucene-codecs = { path = "../lucene-codecs" }
 lucene-index = { path = "../lucene-index" }
 lucene-search = { path = "../lucene-search" }
 lucene-util = { path = "../lucene-util" }
-jni.workspace = true
 
 [dev-dependencies]
 # The shared RAII scratch-directory guard (`lucene_util::test_support::TempDir`).

@@ -360,7 +360,7 @@ pub enum Error {
     /// A *caller* mistake (an unknown field, a wrong-length query vector, a
     /// `k` below 1) is [`Error::InvalidKnnQuery`] instead, deliberately: the
     /// two are indistinguishable to a caller that only sees one error type,
-    /// and "the index is corrupt" is the wrong thing to tell a JNI caller
+    /// and "the index is corrupt" is the wrong thing to tell a Java caller
     /// who sent a bad request (see `lucene_ffi::vectors`).
     #[error(transparent)]
     Vectors(#[from] lucene_codecs::vectors::Error),

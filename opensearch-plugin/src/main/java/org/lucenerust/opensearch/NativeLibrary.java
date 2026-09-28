@@ -3,6 +3,8 @@
  */
 package org.lucenerust.opensearch;
 
+import java.lang.foreign.Arena;
+import java.lang.foreign.SymbolLookup;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Locale;
@@ -16,6 +18,12 @@ import java.util.Locale;
  * plugin directory is already on disk, so extraction would only add a temp file to clean up. The
  * system property {@value #PATH_PROPERTY} overrides the location, for tests.
  *
+ * <p>The library is opened with {@link SymbolLookup#libraryLookup(Path, Arena)} in the global
+ * arena -- loaded for the life of the JVM, as {@code System.load} would -- and {@link NativeBridge}
+ * binds its downcalls against that lookup. Both are restricted methods: the node needs {@code
+ * --enable-native-access=ALL-UNNAMED} in its {@code jvm.options}, or the JVM warns on first use (and
+ * a later JDK refuses).
+ *
  * <p>Every failure is a {@link IllegalStateException} naming what was looked for and why it did not
  * work, so that a node refusing to start says so in one line rather than as a {@link
  * UnsatisfiedLinkError} three calls later.
@@ -25,8 +33,18 @@ public final class NativeLibrary {
     public static final String LIBRARY_FILE = "liblucene_ffi.so";
 
     private static volatile String loaded;
+    private static volatile SymbolLookup lookup;
 
     private NativeLibrary() {}
+
+    /** The loaded library's symbols; {@link #load} must have succeeded first. */
+    static SymbolLookup lookup() {
+        SymbolLookup l = lookup;
+        if (l == null) {
+            throw new UnsatisfiedLinkError("lucene-rust: the native library is not loaded");
+        }
+        return l;
+    }
 
     /** {@code linux-x86_64} or {@code linux-aarch64}; anything else has no library. */
     public static String platform() {
@@ -42,6 +60,7 @@ public final class NativeLibrary {
     }
 
     /** Loads the library once per JVM; later calls return the path it was loaded from. */
+    @SuppressWarnings("restricted") // loading the library is the point; see the class comment
     public static synchronized String load(Path pluginDir) {
         if (loaded != null) {
             return loaded;
@@ -60,15 +79,15 @@ public final class NativeLibrary {
             );
         }
         try {
-            System.load(lib.toAbsolutePath().toString());
-        } catch (UnsatisfiedLinkError e) {
+            lookup = SymbolLookup.libraryLookup(lib.toAbsolutePath(), Arena.global());
+        } catch (IllegalArgumentException | IllegalCallerException e) {
             throw new IllegalStateException("lucene-rust: failed to load [" + lib + "]: " + e.getMessage(), e);
         }
         int abi;
         try {
             abi = NativeBridge.abiVersion();
-        } catch (UnsatisfiedLinkError e) {
-            throw new IllegalStateException("lucene-rust: [" + lib + "] has no JNI entry points; is it a lucene-ffi build?", e);
+        } catch (UnsatisfiedLinkError | ExceptionInInitializerError | NoClassDefFoundError e) {
+            throw new IllegalStateException("lucene-rust: [" + lib + "] lacks the entry points this plugin calls; is it a lucene-ffi build?", e);
         }
         if (abi != NativeBridge.EXPECTED_ABI_VERSION) {
             throw new IllegalStateException(

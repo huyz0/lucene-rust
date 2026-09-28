@@ -50,14 +50,14 @@ import java.util.stream.Stream;
 /**
  * The JVM half of the plugin's tests: loads the real {@code liblucene_ffi.so} through {@link
  * NativeLibrary} and checks the whole native path -- {@link QueryEncoder}, {@link NativeReaders},
- * {@link NativeBridge}'s JNI marshalling -- against Lucene's own {@link IndexSearcher} on the same
+ * {@link NativeBridge}'s downcalls and their marshalling -- against Lucene's own {@link IndexSearcher} on the same
  * reader.
  *
  * <ul>
  *   <li>NRT readers straight from an {@link IndexWriter}, with deletions that exist only in memory
  *       -- the reader OpenSearch actually searches -- across refreshes, merges and reuse;
  *   <li>every Java-written multi-segment fixture index under {@code fixtures/data};
- *   <li>the JNI error paths: bad handles, bad blobs, short and null arrays;
+ *   <li>the bridge's error paths: bad handles, bad blobs, short and null arrays;
  *   <li>lifecycle: closing a Java reader closes its native reader.
  * </ul>
  *
@@ -81,7 +81,7 @@ public final class NativeSelfTest {
         NativeLibrary.load(Path.of("."));
         check(NativeBridge.abiVersion() == NativeBridge.EXPECTED_ABI_VERSION, "ABI handshake");
 
-        jniErrorPaths();
+        bridgeErrorPaths();
         encoderMatrix();
         nrtReaders(new Random(42));
         softDeletes(new Random(7));
@@ -125,9 +125,9 @@ public final class NativeSelfTest {
         }
     }
 
-    // --- JNI error paths ---------------------------------------------------------------
+    // --- The bridge's error paths ----------------------------------------------------------
 
-    private static void jniErrorPaths() {
+    private static void bridgeErrorPaths() {
         int[] docs = new int[4];
         float[] scores = new float[4];
         long[] counts = new long[3];
@@ -138,6 +138,8 @@ public final class NativeSelfTest {
         check(NativeBridge.closeReader(0) == NativeBridge.INVALID_HANDLE, "closing handle 0");
         // Marshalling failures are status codes, never exceptions.
         check(NativeBridge.search(1, null, 4, Long.MAX_VALUE, docs, scores, counts) == 10, "null query blob -> InvalidArgument");
+        // A refusal made in Java reports through the same last-error slot as the native code's.
+        check(NativeBridge.lastError().contains("query is null"), "lastError names the Java-side refusal: " + NativeBridge.lastError());
         check(NativeBridge.search(1, blob, -1, Long.MAX_VALUE, docs, scores, counts) == 10, "negative topN -> InvalidArgument");
         check(NativeBridge.search(1, blob, 8, Long.MAX_VALUE, docs, scores, counts) == 8, "short output arrays -> BufferTooSmall");
         check(NativeBridge.search(1, blob, 4, Long.MAX_VALUE, null, scores, counts) == 10, "null output array -> InvalidArgument");
@@ -152,6 +154,25 @@ public final class NativeSelfTest {
             NativeBridge.openReader(new byte[] { '/' }, new byte[0], 1, 0, new int[2], new long[1][], new long[1]) == 10,
             "liveDocs shorter than maxDocs -> InvalidArgument"
         );
+        byte[] sort = SortEncoder.encode(new Sort(SortField.FIELD_SCORE), null).blob();
+        long[] values = new long[4];
+        long[] counts5 = new long[5];
+        byte[][] out = new byte[1][];
+        check(NativeBridge.searchSorted(1, blob, null, 4, 0, docs, values, counts5, out) == 10, "null sort blob -> InvalidArgument");
+        check(NativeBridge.searchSorted(1, blob, sort, 8, 0, docs, values, counts5, out) == 8, "short sorted outputs -> BufferTooSmall");
+        check(NativeBridge.searchSorted(1, blob, sort, 4, 0, docs, values, new long[4], out) == 10, "short sorted counts -> InvalidArgument");
+        check(NativeBridge.searchSorted(12345L, blob, sort, 4, 0, docs, values, counts5, out) == NativeBridge.INVALID_HANDLE, "sorted search on a fabricated handle");
+        check(out[0] == null, "a failed call hands back nothing");
+        check(NativeBridge.aggregate(1, blob, new byte[0], new long[1], new double[6], null, 0, new long[2]) == 10, "null aggregate terms slot -> InvalidArgument");
+        check(NativeBridge.aggregateTree(1, blob, new byte[0], new byte[0][]) == 10, "empty aggregateTree out -> InvalidArgument");
+        check(NativeBridge.document(12345L, 0, 0, out) == NativeBridge.INVALID_HANDLE && out[0] == null, "document on a fabricated handle");
+        check(NativeBridge.document(12345L, 0, 0, null) == 10, "null document out -> InvalidArgument");
+        check(NativeBridge.countTerminates(1, blob, null, new long[1]) == 10, "null count spec -> InvalidArgument");
+        check(NativeBridge.docFreq(12345L, f, f, new long[1]) == NativeBridge.INVALID_HANDLE, "docFreq on a fabricated handle");
+        check(NativeBridge.writerApply(12345L, new byte[2], 5) == 10, "writerApply past the array -> InvalidArgument");
+        check(NativeBridge.writerApply(12345L, null, -1) == 10, "null op -> InvalidArgument");
+        check(NativeBridge.writerCommitGenerations(12345L, new long[4], null) == 10, "null outLen -> InvalidArgument");
+        check(NativeBridge.writerStats(12345L, new long[NativeBridge.STAT_COUNT]) == NativeBridge.INVALID_HANDLE, "writer stats on a fabricated handle");
     }
 
     // --- QueryEncoder --------------------------------------------------------------------
@@ -428,6 +449,10 @@ public final class NativeSelfTest {
         double[] values = new double[AGG_FIELDS.length * NativeAggregations.VALUES];
         int rc = NativeBridge.aggregate(handle, blob, plan.blob(new int[0][]), counts, values, new byte[1][], -1, new long[2]);
         check(rc == NativeBridge.OK, what + ": aggregate status " + rc + " " + NativeBridge.lastError());
+        // A count with nowhere to put it: refused after the native call, whose results (the terms
+        // buffer included) must still be released -- a status, not a throw or a leak.
+        int unusable = NativeBridge.aggregate(handle, blob, plan.blob(new int[0][]), new long[counts.length], new double[values.length], new byte[1][], Long.MAX_VALUE, null);
+        check(unusable == NativeBridge.OK || unusable == NativeBridge.INVALID_ARGUMENT, what + ": a null outTotal is a status, got " + unusable);
         if (rc != NativeBridge.OK) {
             return;
         }

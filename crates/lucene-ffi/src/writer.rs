@@ -253,7 +253,7 @@ pub(crate) fn map_writer_error(context: &str, e: index_writer::Error) -> FfiStat
         // Everything below was reaching the `_ => Io` arm, which is wrong for
         // the same reason the variants above are listed: each one is a
         // caller-misuse error real Lucene raises as `IllegalArgumentException`,
-        // and a JNI caller branching on `Io` would retry, log a disk problem,
+        // and a Java caller branching on `Io` would retry, log a disk problem,
         // or fail a shard for what is actually a bad argument. The list grew
         // (vector fields, custom-freq postings, norms, the auto-flush knobs,
         // and `c7-delete-queue`'s soft-delete/doc-values-update errors) while
@@ -306,14 +306,14 @@ pub(crate) fn map_writer_error(context: &str, e: index_writer::Error) -> FfiStat
         // `IllegalArgumentException`: segments in one merge declaring
         // different sorts, and a sort field this writer's field list does not
         // contain. Retrying either is futile, so `Io` would be actively
-        // misleading to a JNI caller.
+        // misleading to a Java caller.
         | index_writer::Error::MergeSortDisagreement { .. }
         | index_writer::Error::UnknownSortField(_) => FfiStatus::InvalidArgument,
         // Everything left is a genuine I/O or decode failure of the index
         // itself. Enumerated rather than left to a `_` arm so that the next
         // variant added to `lucene_index::index_writer::Error` fails to
         // compile here and has to be *classified*, instead of silently
-        // becoming an `Io` a JNI caller would read as "the disk or the index
+        // becoming an `Io` a Java caller would read as "the disk or the index
         // is broken" -- which is exactly how the whole list above came to be
         // misclassified in the first place.
         index_writer::Error::Store(_)

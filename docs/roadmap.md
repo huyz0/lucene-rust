@@ -22,7 +22,7 @@ breakdown with file paths, risks, and exit artifacts — in
 | Read path (P1–P2) | Effectively complete for the pinned Lucene 10.5.0 codec |
 | Search (P3) | Broad: boolean/phrase/dismax/span/wildcard/fuzzy/regexp/points/DV-range, sort, facets, collapse, highlight, explain, concurrent search |
 | FFI (P4, Rust half) | 76 `extern "C"` entry points, handle registry, `catch_unwind` on every boundary |
-| FFI (P4, Java half) | **Delivered (M2, 2026-09-25)**: `opensearch-plugin/` is an installable OpenSearch 3.8.0 plugin serving the query phase from Rust over JNI, per query, with measured routing and fallback to Lucene — see `docs/opensearch-native-queries.md` |
+| FFI (P4, Java half) | **Delivered (M2, 2026-09-25)**: `opensearch-plugin/` is an installable OpenSearch 3.8.0 plugin serving the query phase from Rust (over JNI at M2; through Panama FFM downcalls on JDK 25 since 2026-09-28), per query, with measured routing and fallback to Lucene — see `docs/opensearch-native-queries.md` |
 | Write path (P5) | **Proven end to end (M3, 2026-09-25)**: real Lucene opens a 120 000-document, seven-segment index written through `IndexWriter`, `CheckIndex` is clean, and 57 queries return the same top 50 as this port's searcher. **Hardened (M4, 2026-09-25)**: crash-safe under simulated power loss and `kill -9`, multi-threaded indexing with a merge thread, interchangeable with Java in both directions |
 | Engine integration (P6) | **Delivered (M2 + M5, 2026-09-25)**: the query phase runs natively (M2), and `RustEngine` indexes through the Rust writer (M5) with document replication, peer recovery and mixed Rust/Java clusters — see `docs/opensearch-engine.md` |
 | Performance (P7) | **Measured (M1), then swept (M1.6).** The decode kernels are now *faster* than Lucene's: `ForUtil.decode` 2.30×, posting-list `nextDoc()` 1.69×, both against Lucene's own numbers on identical bytes (`scripts/bench-micro.sh`). `DirectReader.get` 1.82×. End-to-end queries remain 3×–6× slower and the M1 gate is still FAIL at 1/20. **Reader open, however, is 135× slower than Lucene** (560 ms vs 4.2 ms on 15 segments) because the whole term dictionary is materialized at open — an M2/M5 blocker no query benchmark could have found. Recall now matches Java exactly on **both** corpus variants. See `docs/benchmarks/verdict-m1.6.md` and `docs/sweep/findings.md` |
@@ -162,7 +162,9 @@ instead of the price of a Java plugin. If the answer is no, everything after M1 
 > suites (501 tests) fail identically with and without the plugin. It hooks the
 > query phase (`QueryPhaseSearcher`) rather than the engine, over JNI rather
 > than FFM (JDK 21 has FFM only as a preview) -- both reasoned in the milestone
-> file. The shapes the M1 mix never measured (boosts, `must_not`, mixed
+> file. (Superseded 2026-09-28: the plugin now targets JDK 25, the JDK
+> OpenSearch 3.8.0 bundles, and calls the C ABI through FFM downcalls; see
+> `docs/parity.md`'s `lucene-ffi` section.) The shapes the M1 mix never measured (boosts, `must_not`, mixed
 > booleans) are 4–8× slower natively and are routed to Lucene; that is the next
 > engine performance item.
 

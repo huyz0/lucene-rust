@@ -948,7 +948,7 @@ mod tests {
 
 /// Tests for the `DefaultPassageFormatter`/`PassageScorer` knobs
 /// [`ffi_assemble_fragments`] gained in the M2 sweep -- previously
-/// unreachable over the C ABI, so a JNI caller always got Java's defaults
+/// unreachable over the C ABI, so a Java caller always got Java's defaults
 /// whether it wanted them or not.
 #[cfg(test)]
 mod formatter_knob_tests {

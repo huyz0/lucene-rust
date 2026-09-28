@@ -38,7 +38,7 @@ use std::os::raw::c_char;
 use std::sync::Once;
 
 /// Every exported function's return code. `0` (`Ok`) is success; every
-/// other value is a specific, stable failure reason a JNI caller can branch
+/// other value is a specific, stable failure reason a Java caller can branch
 /// on without parsing a string (the string is available too, via
 /// [`crate::ffi_get_last_error_message`], for logging).
 #[repr(i32)]
@@ -71,7 +71,7 @@ impl FfiStatus {
     /// status without calling [`set_last_error`] itself -- see `guard`'s doc
     /// comment for why no error path may leave the thread-local slot holding
     /// an *older*, unrelated failure's text.
-    fn default_message(self) -> &'static str {
+    pub(crate) fn default_message(self) -> &'static str {
         match self {
             FfiStatus::Ok => "ok",
             FfiStatus::NullPointer => {
@@ -152,7 +152,7 @@ fn install_panic_hook() {
 /// Records `message` in this thread's last-error slot, overwriting any
 /// previous message. Called on every non-`Ok` path so
 /// [`crate::ffi_get_last_error_message`] always reflects the most recent
-/// failure on the calling thread (JNI callers are expected to check the
+/// failure on the calling thread (Java callers are expected to check the
 /// status code and only then, if non-zero, fetch the message — matching a
 /// plain `errno`-style contract).
 pub fn set_last_error(message: impl Into<String>) {

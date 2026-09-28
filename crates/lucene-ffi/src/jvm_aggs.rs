@@ -620,7 +620,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_aggregate_tree(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::jvm_reader::tests::{open, term_blob};
 
@@ -641,7 +641,7 @@ mod tests {
     }
 
     /// A tree over the fixture's `n` (a long) and `body`: every node kind.
-    fn every_kind(global: bool) -> Vec<u8> {
+    pub(crate) fn every_kind(global: bool) -> Vec<u8> {
         let mut b = vec![6u8];
         // A top-level metric reading the points bound.
         metric(&mut b, 0, 1, "n");

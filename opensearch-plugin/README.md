@@ -1,7 +1,8 @@
 # opensearch-plugin
 
 The lucene-rust plugin for **OpenSearch 3.8.0** (Lucene 10.5.0): it runs the
-query phase of supported searches in Rust, through `liblucene_ffi.so` over JNI,
+query phase of supported searches in Rust, through `liblucene_ffi.so` called
+with Java's Foreign Function & Memory API (JDK 25, the JDK OpenSearch 3.8.0 bundles),
 and leaves everything else — unsupported searches, fetch, indexing, refresh —
 to OpenSearch and Lucene. Milestone:
 [`docs/milestones/m2-opensearch-read-path.md`](../docs/milestones/m2-opensearch-read-path.md).
@@ -27,6 +28,16 @@ adds one built elsewhere.
 ```
 bin/opensearch-plugin install file:///path/to/lucene-rust-0.1.0.zip
 ```
+
+Give the node native access, in `config/jvm.options.d/lucene-rust.options`:
+
+```
+--enable-native-access=ALL-UNNAMED
+```
+
+Without it JDK 25 prints a warning the first time any code in the node calls a
+restricted method (OpenSearch's own JNA usually gets there first); a later JDK
+will refuse the call instead.
 
 The node loads the library and checks its ABI version at startup; a missing
 or mismatched library stops the node with one line saying which file and
@@ -60,12 +71,15 @@ decode it, and is freed with the segment).
 | `RustQueryPhaseSearcher` | eligibility, then native search or OpenSearch's own `QueryPhaseSearcherWrapper` |
 | `QueryEncoder` | rewritten Lucene `Query` → the query blob `jvm_reader.rs` decodes, or a fallback reason; `isFast` is the measured routing |
 | `NativeReaders` | one native reader per Java searcher reader: built from its `SegmentInfos`, `maxDoc`s and live docs, closed by its close listener |
-| `NativeBridge`, `NativeLibrary` | the JNI surface and the loader/handshake |
-| `src/test/…/NativeSelfTest` | the native path against Lucene's `IndexSearcher`: NRT readers with in-memory deletes, refreshes, merges, every Java-written fixture, JNI error paths |
-| `src/test/…/NativeBench` | `gradle nativeBench`: JNI crossing cost and in-process latency |
+| `NativeBridge`, `NativeLibrary` | the FFM downcalls (per-thread native scratch memory for arguments and results) and the loader/handshake |
+| `src/test/…/NativeSelfTest` | the native path against Lucene's `IndexSearcher`: NRT readers with in-memory deletes, refreshes, merges, every Java-written fixture, the bridge's error paths |
+| `src/test/…/NativeBench` | `gradle nativeBench`: the downcall's crossing cost and in-process latency |
 | `src/yamlRestTest/…/LuceneRustYamlIT` | OpenSearch's REST YAML suites, for `verify-opensearch.sh --yaml` |
 | `e2e/verify_opensearch.py` | the node-level harness `scripts/verify-opensearch.sh` runs |
 | `docker/Dockerfile` | the test node: the pinned image, bundled plugins removed, this one installed |
 
-The Rust side is `crates/lucene-ffi/src/jvm_reader.rs` (C ABI, unit-tested
-without a JVM) and `crates/lucene-ffi/src/jni_bridge.rs` (marshalling only).
+The Rust side is plain C ABI, unit-tested without a JVM:
+`crates/lucene-ffi/src/jvm_reader.rs` and `engine_writer.rs`, which the
+downcalls reach directly, and `crates/lucene-ffi/src/ffm_bridge.rs` for what
+they lack (results handed back as Rust-allocated buffers, `docFreq`, the
+last-error slot).

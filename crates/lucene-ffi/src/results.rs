@@ -6,8 +6,8 @@
 //! [`ffi_close_results`].
 //!
 //! **Why a bulk `ffi_results_copy` instead of a per-index `ffi_results_get`**:
-//! a JNI caller almost always wants the whole doc-ID array at once (to
-//! build a Java `int[]`/`IntBuffer`) rather than one JNI round-trip per
+//! a Java caller almost always wants the whole doc-ID array at once (to
+//! build a Java `int[]`/`IntBuffer`) rather than one native call per
 //! doc; `ffi_results_copy` matches that access pattern with one call. Both
 //! are cheap to add, but `ffi_results_len` + `ffi_results_copy` is the
 //! documented, supported bulk path.
