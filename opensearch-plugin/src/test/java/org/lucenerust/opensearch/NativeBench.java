@@ -28,7 +28,7 @@ import java.util.Map;
 import java.util.Random;
 
 /**
- * M2 T2.7, with the JVM in the loop: the cost of one JNI crossing, and per-query latency of the
+ * M2 T2.7, with the JVM in the loop: the cost of one native crossing (an FFM downcall), and per-query latency of the
  * native path against Lucene's {@link IndexSearcher} on the same NRT reader, in one process.
  *
  * <p>Lucene runs with {@code TopScoreDocCollectorManager(10, 10_000)} -- OpenSearch's default
@@ -58,7 +58,7 @@ public final class NativeBench {
             }
             crossing[r] = (System.nanoTime() - t) / 1_000_000.0;
         }
-        System.out.printf("jni_crossing_ns %.1f%n", median(crossing));
+        System.out.printf("crossing_ns %.1f%n", median(crossing));
 
         Path dir = Files.createTempDirectory("lucene-rust-bench");
         Random rnd = new Random(1);

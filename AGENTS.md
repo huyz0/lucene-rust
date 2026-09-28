@@ -7,7 +7,7 @@ its topic — fix the drift.
 
 ## What this is
 
-A Rust port of Apache Lucene, exposed over an FFI (JNI / Panama FFM) boundary
+A Rust port of Apache Lucene, exposed over an FFI (C ABI, reached from the JVM through Panama FFM) boundary
 so OpenSearch (JVM) can use it as a native search engine. Pinned Lucene
 version: **10.5.0** (matches OpenSearch's `gradle/libs.versions.toml` — see
 `docs/parity.md`). The Java source of truth lives at `/home/tuong/work/lucene`;
@@ -108,7 +108,7 @@ the hook, the container and this table cannot drift apart:
 | Rust engine (M5), one node: Rust vs OpenSearch's engine op for op, restart/SIGKILL/panic/breaker, YAML suites with every index on the Rust engine | `scripts/verify-opensearch.sh --engine --yaml` (see `docs/opensearch-engine.md`) |
 | Rust engine (M5), three nodes: document replication, recovery, failover, Rust<->Java relocation | `scripts/verify-opensearch-cluster.sh` |
 | OpenSearch's own `InternalEngineTests` on the Rust engine | `scripts/opensearch-engine-tests.sh` (skips are listed with reasons in `opensearch-plugin/tools/derive_engine_tests.py`) |
-| OpenSearch plugin, JVM-side self test only (native path vs Lucene `IndexSearcher`, JNI error paths) | `scripts/opensearch-dist.sh && gradle -p opensearch-plugin check` |
+| OpenSearch plugin, JVM-side self test only (native path vs Lucene `IndexSearcher`, the bridge's error paths) | `scripts/opensearch-dist.sh && gradle -p opensearch-plugin check` (needs a JDK 25 for Gradle's toolchain, which the capped container lacks: run it on the host) |
 | FFI fuzzing (libFuzzer + ASan; nightly, outside the workspace) | `cd crates/lucene-ffi/fuzz && cargo +nightly fuzz run <target> corpus/<target> seeds/<target>` |
 
 Prefix any of the individual commands with `scripts/docker-test.sh` to run it
@@ -127,12 +127,12 @@ implicitly.
 
 Two caveats worth knowing about the coverage gate. `--fail-under-lines`
 enforces the **workspace total** (line coverage, currently 97.98%), not
-invariant #8's per-file bar. As of `c41-gates-and-record` no file sat below
-that bar. Since M2 one does, by construction:
-`lucene-ffi/src/jni_bridge.rs` (0%) holds the JNI entry points, which only a
-JVM can call. It is marshalling only -- every decision is in `jvm_reader.rs`
-(98%) -- and it is exercised by the plugin's `NativeSelfTest` under
-`-Xcheck:jni` and by `scripts/verify-opensearch.sh`, not by `cargo llvm-cov`. CI reports the per-file view in its job summary
+invariant #8's per-file bar. From M2 until the move to Panama FFM one file sat
+below it by construction: the JNI entry points (`jni_bridge.rs`, 0%), which only
+a JVM could call. The FFM bridge has no such file -- the JVM calls plain
+C-ABI functions (`jvm_reader.rs`, `ffm_bridge.rs`), all unit-tested without a
+JVM, and the Java half is exercised by the plugin's `NativeSelfTest` and by
+`scripts/verify-opensearch.sh`. CI reports the per-file view in its job summary
 without failing on it, so the day one drops below 95% it is visible rather than
 enforced.
 
@@ -157,7 +157,7 @@ Skills are the process source of truth; `PLAN.md`/`docs/` are the deep-dives.
 | New decoder for a Lucene file format | `differential-testing` |
 | Optimising a ported module (stage 3, after its benchmark) | `rust-performance` |
 | Anything in `lucene-ffi`, any `unsafe` block | `ffi-safety` |
-| The OpenSearch plugin (`opensearch-plugin/`), its JNI surface | `ffi-safety` + [`opensearch-plugin/README.md`](opensearch-plugin/README.md) |
+| The OpenSearch plugin (`opensearch-plugin/`), its native (FFM) surface | `ffi-safety` + [`opensearch-plugin/README.md`](opensearch-plugin/README.md) |
 | Finished a format, need to record it | `parity-tracking` |
 | Committing / finishing a unit of work | `git-workflow`, `code-review` |
 | Writing tests for a new/changed module | `test-coverage` |

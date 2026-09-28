@@ -245,10 +245,16 @@ jobs:
             runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
+      # JDK 25 for the plugin (the Foreign Function & Memory API, and the
+      # JDK OpenSearch 3.8.0 bundles), found through
+      # opensearch-plugin/gradle.properties; JDK 21, listed last and so
+      # JAVA_HOME, runs Gradle 8.14.3, which predates JDK 25.
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: |
+            25
+            21
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.14.3'
@@ -273,10 +279,16 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      # JDK 25 for the plugin (the Foreign Function & Memory API, and the
+      # JDK OpenSearch 3.8.0 bundles), found through
+      # opensearch-plugin/gradle.properties; JDK 21, listed last and so
+      # JAVA_HOME, runs Gradle 8.14.3, which predates JDK 25.
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: |
+            25
+            21
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.14.3'

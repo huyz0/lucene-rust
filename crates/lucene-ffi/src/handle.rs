@@ -7,7 +7,7 @@
 //! never a dereference of freed memory.
 //!
 //! **Why hand-rolled instead of reusing a crate**: this is FFI-specific
-//! plumbing (pack/unpack into a single `u64` a JNI `long` can carry, not a
+//! plumbing (pack/unpack into a single `u64` a Java `long` can carry, not a
 //! general in-process slotmap need any other crate in this workspace has —
 //! `lucene-util`/`lucene-store` have no analogous "many opaque handles,
 //! caller-driven open/close lifecycle" requirement), so it lives here rather
@@ -305,7 +305,7 @@ impl<T> SlotMap<T> {
     /// [`SlotMap::insert`] with registry exhaustion already mapped to
     /// [`FfiStatus::HandleLimit`] plus a last-error message -- the form every
     /// exported function uses, so "too many open handles" is a status code a
-    /// JNI caller can branch on rather than a truncated, aliasing handle.
+    /// Java caller can branch on rather than a truncated, aliasing handle.
     pub fn insert_checked(&mut self, value: T) -> Result<u64, FfiStatus> {
         self.insert(value).ok_or_else(|| {
             crate::error::set_last_error(format!(

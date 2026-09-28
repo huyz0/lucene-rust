@@ -1,7 +1,7 @@
-//! Process-wide handle registries. A JNI caller has no way to hand this
+//! Process-wide handle registries. A Java caller has no way to hand this
 //! crate a Rust reference across calls (see the `ffi-safety` skill), so
 //! every opened `Directory`/segment/result set lives in one of these global
-//! [`SlotMap`]s, guarded by an `RwLock` (JNI callers may call from more than
+//! [`SlotMap`]s, guarded by an `RwLock` (Java callers may call from more than
 //! one JVM thread) behind a `u64` handle the caller carries between calls.
 //!
 //! **Why `RwLock`, not `Mutex`** (changed in the M2 sweep): a query holds

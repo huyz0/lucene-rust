@@ -11,7 +11,7 @@
 //! buffer and scores into a separate caller-allocated `*mut f32` buffer (both
 //! of length `buf_len`, index `i` in one corresponding to index `i` in the
 //! other) rather than one `[i32, f32, i32, f32, ...]`-interleaved buffer. A
-//! JNI caller almost always wants to build two separate Java arrays (`int[]`
+//! Java caller almost always wants to build two separate Java arrays (`int[]`
 //! doc IDs, `float[]` scores) or feed a doc-ID array plus a score array to two
 //! different downstream APIs -- parallel buffers hand that back directly,
 //! while an interleaved buffer would force the caller to de-interleave one
