@@ -1226,11 +1226,13 @@ pub(crate) fn rewrite_points_ranges(
         changed.then_some(out)
     }
     // Whether anything here can change: a points range, or a match-all a
-    // `FILTER` may drop. Most queries have neither, and finding that out
-    // without cloning the tree is most of a small query's rewrite.
+    // `FILTER` list drops (`boolean`'s `retain`: one directly in it, beside
+    // another filter or a `MUST`). Most queries have neither -- a match-all
+    // anywhere else is left as it is -- and finding that out without
+    // cloning the tree is most of a small query's rewrite.
     fn may_change(c: &Clause) -> bool {
         match c {
-            Clause::PointsRange(_) | Clause::MatchAllDocs(_) => true,
+            Clause::PointsRange(_) => true,
             Clause::Boolean(b) => boolean_may_change(b),
             Clause::ConstantScore(cs) => may_change(&cs.inner),
             Clause::Boost(b) => may_change(&b.inner),
@@ -1238,12 +1240,17 @@ pub(crate) fn rewrite_points_ranges(
         }
     }
     fn boolean_may_change(b: &BooleanQuery) -> bool {
-        b.must
-            .iter()
-            .chain(&b.filter)
-            .chain(&b.should)
-            .chain(&b.must_not)
-            .any(may_change)
+        let drops_match_all = (b.filter.len() > 1 || !b.must.is_empty())
+            && b.filter
+                .iter()
+                .any(|c| matches!(c, Clause::MatchAllDocs(_)));
+        drops_match_all
+            || b.must
+                .iter()
+                .chain(&b.filter)
+                .chain(&b.should)
+                .chain(&b.must_not)
+                .any(may_change)
     }
     if !boolean_may_change(query) {
         return None;
