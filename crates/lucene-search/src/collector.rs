@@ -228,6 +228,17 @@ pub trait ScoringCollector {
         false
     }
 
+    /// Counts `n` more hits without collecting them one by one -- allowed
+    /// only for a collector whose [`Self::collect`] does nothing but count
+    /// (`TotalHitCountCollector`), where it is exactly `n` calls to it.
+    /// Returns `false`, having counted nothing, for any other; a caller asks
+    /// with `n == 0` before counting. A constant bit-set walk that reads no
+    /// scores uses it to count a window by popcount. The default, `false`, is
+    /// always correct.
+    fn add_hits(&mut self, _n: u64) -> bool {
+        false
+    }
+
     /// [`Self::collect`] over a prefix of `docs` (each shifted by
     /// `doc_base`) and their `scores`, stopping before the first document
     /// that could change [`Self::pruning_threshold`]; returns how many were
@@ -297,6 +308,12 @@ impl<C: ScoringCollector + ?Sized> ScoringCollector for LeafCollector<'_, C> {
     #[inline]
     fn count_losing_hits(&mut self, n: u64, score: f32) -> bool {
         self.inner.count_losing_hits(n, score)
+    }
+
+    #[inline]
+    fn add_hits(&mut self, n: u64) -> bool {
+        // A count is the same whatever the documents' base.
+        self.inner.add_hits(n)
     }
 
     #[inline]
@@ -800,6 +817,29 @@ impl TopDocsCollector {
     }
 }
 
+/// How many hits [`TopDocsCollector`]'s `collect_many` tests against the
+/// worst kept hit at once: long enough to vectorize, short enough that a hit
+/// which does compete is reached without re-testing many before it.
+const COLLECT_RUN: usize = 16;
+
+/// Whether any of `scores` might not lose to `worst` -- `collect_many`'s run
+/// test: true for a score above it, and whenever either side is a NaN, which
+/// the per-document test does not reject (a negative NaN, what x86 produces
+/// at run time, ranks below every score, so it can be the worst kept hit). A
+/// whole run is compared as a fixed-size array, which vectorizes; a shorter
+/// tail one by one.
+#[inline]
+fn run_competes(scores: &[f32], worst: f32) -> bool {
+    // `!(s <= worst)`, not `s > worst`: the negation is what makes a NaN on
+    // either side stop the run.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+    let competes = |any: bool, &s: &f32| any | !(s <= worst);
+    match <&[f32; COLLECT_RUN]>::try_from(scores) {
+        Ok(run) => run.iter().fold(false, competes),
+        Err(_) => scores.iter().fold(false, competes),
+    }
+}
+
 impl ScoringCollector for TopDocsCollector {
     #[inline]
     fn min_competitive_score(&self) -> Option<f32> {
@@ -851,8 +891,39 @@ impl ScoringCollector for TopDocsCollector {
         // The fast reject needs a full queue and no `searchAfter` page.
         let fast = self.after.is_none() && self.top_n != 0;
         let mut worst = (fast && self.hits.len() == self.top_n).then(|| self.hits[self.top_n - 1]);
+        let (docs, scores) = (&docs[..k], &scores[..k]);
         let mut counted = 0u64;
-        for (&doc, &score) in docs[..k].iter().zip(&scores[..k]) {
+        let mut i = 0;
+        // Past a run that failed the test below, the rest of that run goes
+        // one by one: testing it again from each next hit would re-read the
+        // same scores up to `COLLECT_RUN` times.
+        let mut one_by_one_until = 0;
+        while i < k {
+            if let Some(w) = worst.filter(|_| i >= one_by_one_until) {
+                // A run of hits all past the worst kept hit's doc id (they
+                // ascend, so the first one decides) loses exactly when none
+                // scores above it and no NaN is involved (`run_competes`).
+                // Checked a chunk at a time without a branch per hit.
+                let end = i.saturating_add(COLLECT_RUN).min(k);
+                if i64::from(doc_base) + i64::from(docs[i]) > i64::from(w.doc_id)
+                    && !run_competes(&scores[i..end], w.score)
+                {
+                    #[cfg(any(test, feature = "test-support"))]
+                    for _ in i..end {
+                        crate::test_only_scored_docs_counter::record_scored();
+                    }
+                    // ARITH: `i < end <= k`.
+                    #[allow(clippy::arithmetic_side_effects)]
+                    {
+                        counted += (end - i) as u64;
+                    }
+                    i = end;
+                    continue;
+                }
+                one_by_one_until = end;
+            }
+            let (doc, score) = (docs[i], scores[i]);
+            i += 1;
             // ARITH: a global doc id, below the reader's `i32` `max_doc`.
             #[allow(clippy::arithmetic_side_effects)]
             let doc_id = doc_base + doc;
@@ -1271,8 +1342,20 @@ mod tests {
     #[test]
     fn collect_many_is_collect_per_document() {
         use std::sync::Arc;
-        let mut scores = vec![1.0f32, 3.0, 2.0, 2.0, 5.0, 0.5, 2.0, f32::NAN, 4.0, 1.0];
+        // First a negative NaN -- x86's run-time NaN -- which ranks below
+        // every score: kept while the queue fills, it is then the worst kept
+        // hit, and the runs after it must still compete with it.
+        let mut scores = vec![f32::from_bits(0xFFC0_0000)];
+        scores.extend([1.0f32, 3.0, 2.0, 2.0, 5.0, 0.5, 2.0, f32::NAN, 4.0, 1.0]);
         scores.extend((0..30).map(|i| (i % 7) as f32 * 0.5));
+        // Long runs past a full queue, as a keyword's equal scores arrive:
+        // losers, a NaN and a winner deep inside a run of them.
+        scores.extend(std::iter::repeat_n(1.0, 60));
+        scores.push(f32::NAN);
+        scores.extend(std::iter::repeat_n(1.0, 13));
+        scores.push(9.0);
+        scores.extend(std::iter::repeat_n(1.0, 20));
+
         let docs: Vec<i32> = (0..scores.len() as i32).map(|d| d * 3).collect();
         let bases = [0, 1000];
         let mut makers: Vec<Box<dyn Fn() -> TopDocsCollector>> = Vec::new();

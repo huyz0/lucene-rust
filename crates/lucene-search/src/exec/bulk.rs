@@ -318,6 +318,13 @@ fn constant_bits_score<C: ScoringCollector + ?Sized>(
     let end = usize::try_from(max).map_or(len, |m| m.min(len));
     // `doc` is the scorer's current document, a set bit: the walk starts on it.
     let mut at = usize::try_from(doc).unwrap_or(0);
+    if !prune && at < end && collector.add_hits(0) {
+        // A collector that only counts: the window's live set bits by
+        // popcount, a word at a time, rather than a call per document.
+        let (n, _) = count_set_bits(words, live_docs, at, end, u64::MAX);
+        collector.add_hits(n);
+        at = end;
+    }
     while at < end {
         let d = at as i32;
         if live_docs.is_none_or(|l| l.get_doc(d)) {

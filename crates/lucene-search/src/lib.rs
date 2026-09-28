@@ -3159,6 +3159,10 @@ pub fn count_boolean_query_segment(
         fn score_mode(&self) -> collector::ScoreMode {
             collector::ScoreMode::CompleteNoScores
         }
+        fn add_hits(&mut self, n: u64) -> bool {
+            self.0 = self.0.saturating_add(n);
+            true
+        }
     }
     let ctx = exec::LeafContext {
         fields: seg.fields,
@@ -3175,17 +3179,28 @@ pub fn count_boolean_query_segment(
     };
     // `BooleanWeight.count` of a lone required clause is that clause's
     // `Weight.count`: an `exists` is answered from the index statistics
-    // (`FieldExistsQuery.count`) when they are exact for this segment.
-    if let (Some(field), Some(reader)) = (lone_exists(query), seg.reader) {
-        let mut leaf = reader.field_exists_leaf(field, None)?;
-        // The deletions the searcher sees, not the commit's.
-        leaf.num_docs = match seg.live_docs {
-            Some(live) => i32::try_from(live.cardinality()).unwrap_or(i32::MAX),
-            None => leaf.max_doc,
-        };
-        if let Some(n) = weight_count::count_field_exists_leaf(&leaf) {
-            return Ok(u64::try_from(n).unwrap_or(0));
+    // (`FieldExistsQuery.count`) when they are exact for this segment, a term
+    // from its `docFreq` when the segment has no deletions (`TermWeight.count`
+    // -- the dictionary's own, whatever statistics the term scores with).
+    match (lone_leaf(query), seg.reader) {
+        (Some(Clause::Exists(e)), Some(reader)) => {
+            let mut leaf = reader.field_exists_leaf(&e.field, None)?;
+            // The deletions the searcher sees, not the commit's.
+            leaf.num_docs = match seg.live_docs {
+                Some(live) => i32::try_from(live.cardinality()).unwrap_or(i32::MAX),
+                None => leaf.max_doc,
+            };
+            if let Some(n) = weight_count::count_field_exists_leaf(&leaf) {
+                return Ok(u64::try_from(n).unwrap_or(0));
+            }
         }
+        (Some(Clause::Term(t)), _) => {
+            if let Some(n) = weight_count::count_term_query_shortcut(seg.fields, seg.live_docs, t)?
+            {
+                return Ok(u64::try_from(n).unwrap_or(0));
+            }
+        }
+        _ => {}
     }
     let mut count = Count(0);
     if let Some(mut bulk) = exec::bulk_boolean(&ctx, query, 1.0, exec::Mode::NoScores)? {
@@ -3194,20 +3209,22 @@ pub fn count_boolean_query_segment(
     Ok(count.0)
 }
 
-/// The field of a query that is one `exists` and nothing else -- as the only
-/// `MUST` or `FILTER` clause, possibly under a constant score or a boost,
-/// which `BooleanWeight.count` and those wrappers' `count` pass through.
-fn lone_exists(query: &BooleanQuery) -> Option<&str> {
-    fn inner(c: &Clause) -> Option<&str> {
+/// The one leaf a query is and nothing else -- the only `MUST` or `FILTER`
+/// clause, possibly under a constant score, a boost or a nested boolean of
+/// the same shape, which `BooleanWeight.count` and those wrappers' `count`
+/// pass through. `None` for anything else -- including a
+/// `minimum_should_match` above 0 with no `SHOULD` clause, which matches
+/// nothing.
+fn lone_leaf(query: &BooleanQuery) -> Option<&Clause> {
+    fn inner(c: &Clause) -> Option<&Clause> {
         match c {
-            Clause::Exists(e) => Some(&e.field),
             Clause::ConstantScore(c) => inner(&c.inner),
             Clause::Boost(b) => inner(&b.inner),
-            Clause::Boolean(b) => lone_exists(b),
-            _ => None,
+            Clause::Boolean(b) => lone_leaf(b),
+            leaf => Some(leaf),
         }
     }
-    if !query.should.is_empty() || !query.must_not.is_empty() {
+    if !query.should.is_empty() || !query.must_not.is_empty() || query.minimum_should_match > 0 {
         return None;
     }
     match (query.must.as_slice(), query.filter.as_slice()) {
@@ -4784,36 +4801,62 @@ fn multi_phrase_hits<C: ScoringCollector>(
 mod tests {
     use super::*;
 
-    /// `BooleanWeight.count` passes a lone required `exists` through a
-    /// constant score, a boost or a nested boolean; anything else beside it
-    /// (a second clause, a `SHOULD`, a `MUST_NOT`) is counted by the scorer.
+    /// `BooleanWeight.count` passes a lone required leaf through a constant
+    /// score, a boost or a nested boolean; anything else beside it (a second
+    /// clause, a `SHOULD`, a `MUST_NOT`) is counted by the scorer.
     #[test]
-    fn a_lone_exists_is_found_through_wrappers_and_nothing_else() {
-        use crate::query::{BoostQuery, ConstantScoreQuery, FieldExistsQuery};
+    fn a_lone_leaf_is_found_through_wrappers_and_nothing_else() {
+        use crate::query::{BoostQuery, ConstantScoreQuery, FieldExistsQuery, TermQuery};
         let exists = || Clause::Exists(FieldExistsQuery::new("f"));
         let with = |must: Vec<Clause>, filter: Vec<Clause>| BooleanQuery {
             must,
             filter,
             ..BooleanQuery::default()
         };
-        assert_eq!(lone_exists(&with(vec![exists()], vec![])), Some("f"));
-        assert_eq!(lone_exists(&with(vec![], vec![exists()])), Some("f"));
+        let field = |q: &BooleanQuery| match lone_leaf(q) {
+            Some(Clause::Exists(e)) => Some(e.field.clone()),
+            Some(Clause::Term(t)) => Some(format!("term {}", t.field)),
+            Some(_) => Some("other".to_string()),
+            None => None,
+        };
+        let f = Some("f".to_string());
+        assert_eq!(field(&with(vec![exists()], vec![])), f);
+        assert_eq!(field(&with(vec![], vec![exists()])), f);
         let wrapped = Clause::Boost(Box::new(BoostQuery::new(
             Clause::ConstantScore(Box::new(ConstantScoreQuery::new(exists(), 1.0))),
             2.0,
         )));
-        assert_eq!(lone_exists(&with(vec![wrapped], vec![])), Some("f"));
+        assert_eq!(field(&with(vec![wrapped], vec![])), f);
         let nested = Clause::Boolean(Box::new(with(vec![], vec![exists()])));
-        assert_eq!(lone_exists(&with(vec![nested], vec![])), Some("f"));
-        assert_eq!(lone_exists(&with(vec![exists()], vec![exists()])), None);
+        assert_eq!(field(&with(vec![nested], vec![])), f);
+        assert_eq!(field(&with(vec![exists()], vec![exists()])), None);
         let mut should = with(vec![exists()], vec![]);
         should.should.push(exists());
-        assert_eq!(lone_exists(&should), None);
+        assert_eq!(field(&should), None);
         let mut not = with(vec![exists()], vec![]);
         not.must_not.push(exists());
-        assert_eq!(lone_exists(&not), None);
-        let term = Clause::Term(crate::query::TermQuery::new("f", "t"));
-        assert_eq!(lone_exists(&with(vec![term], vec![])), None);
+        assert_eq!(field(&not), None);
+        // One required `SHOULD` and none to match it: nothing matches.
+        let mut impossible = with(vec![exists()], vec![]);
+        impossible.minimum_should_match = 1;
+        assert_eq!(field(&impossible), None);
+        // A fuzzy expansion's one term: boosted, scoring with its own
+        // statistics.
+        let term = TermQuery::new("f", "t").with_doc_freq(7);
+        let boosted = Clause::Boost(Box::new(BoostQuery::new(Clause::Term(term), 0.8)));
+        assert_eq!(
+            field(&with(vec![boosted], vec![])),
+            Some("term f".to_string())
+        );
+        assert_eq!(
+            field(&with(
+                vec![Clause::MatchAllDocs(crate::query::MatchAllDocsQuery::new(
+                    3
+                ))],
+                vec![]
+            )),
+            Some("other".to_string())
+        );
     }
 
     #[test]
