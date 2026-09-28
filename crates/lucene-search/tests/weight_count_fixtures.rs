@@ -79,6 +79,18 @@ fn open_leaf<R>(
     body(&reader.segment_readers()[0], &segments[0])
 }
 
+/// `query` as a fuzzy expansion of one term reaches a count: boosted, with
+/// its own statistics, as the only `MUST` clause.
+fn as_fuzzy_expansion(query: &TermQuery) -> lucene_search::query::BooleanQuery {
+    use lucene_search::query::{BoostQuery, Clause};
+    let mut q = lucene_search::query::BooleanQuery::new();
+    q.must.push(Clause::Boost(Box::new(BoostQuery::new(
+        Clause::Term(query.clone().with_doc_freq(1_000)),
+        0.8,
+    ))));
+    q
+}
+
 #[test]
 fn term_query_counts_match_real_lucene_without_deletions() {
     let m = Manifest::load("blocktree_index");
@@ -109,6 +121,23 @@ fn term_query_counts_match_real_lucene_without_deletions() {
             assert_eq!(
                 count_term_query(open.fields, open.doc_in, None, &query).unwrap(),
                 m.num(key)
+            );
+            // A required `SHOULD` and none to match it: nothing matches,
+            // whatever the lone clause's own count.
+            let mut impossible = as_fuzzy_expansion(&query);
+            impossible.minimum_should_match = 1;
+            assert_eq!(
+                lucene_search::count_boolean_query_segment(open, &impossible).unwrap(),
+                0,
+                "{key}: minimum_should_match 1 with no SHOULD clause"
+            );
+            // And through a boolean, as a fuzzy query's one expansion arrives:
+            // `BooleanWeight.count` passes through to the term's.
+            assert_eq!(
+                lucene_search::count_boolean_query_segment(open, &as_fuzzy_expansion(&query))
+                    .unwrap() as i64,
+                m.num(key),
+                "{key}: through a boolean"
             );
         }
 
@@ -144,6 +173,13 @@ fn term_query_counts_match_real_lucene_with_deletions() {
                 count_term_query(open.fields, open.doc_in, seg.live_docs(), &query).unwrap(),
                 m.num(key),
                 "{key}: the scan must agree with real Lucene"
+            );
+            // Through a boolean the shortcut declines the same way.
+            assert_eq!(
+                lucene_search::count_boolean_query_segment(open, &as_fuzzy_expansion(&query))
+                    .unwrap() as i64,
+                m.num(key),
+                "{key}: through a boolean"
             );
             // And the shortcut, taken anyway, would have been wrong for the
             // deleted document -- which is the whole reason Java gates it.
@@ -359,6 +395,14 @@ fn field_exists_docs_are_the_scans_documents() {
                 lucene_search::count_boolean_query_segment(open, &q).unwrap() as usize,
                 got.len(),
                 "{index}/{field}: the scorer's count"
+            );
+            // A required `SHOULD` and none to match it: nothing, not the
+            // exists count.
+            q.minimum_should_match = 1;
+            assert_eq!(
+                lucene_search::count_boolean_query_segment(open, &q).unwrap(),
+                0,
+                "{index}/{field}: minimum_should_match 1 with no SHOULD clause"
             );
         });
     }

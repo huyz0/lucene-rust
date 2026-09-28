@@ -992,7 +992,8 @@ Still under 1.0× at the last run, and why:
   the native call colder than a plain term's (the call 56 µs against 40 µs in
   the node); the boosted, statistics-carrying term also takes the general
   scorer tree (39 µs cold in process against 28 µs for a lone term's own
-  path), which a lone boosted term could skip.
+  path) -- though counted in instructions that path is only 4% more work
+  (see the next round, below).
 - A handful of 40-60 µs shapes (`constant_score` over `match_all` 0.84×,
   `regexp` with an interval 0.90×, a lone `exists` counted 0.90×, `exists`
   on a text field 0.93×): the remaining cold setup of one native call against
@@ -1002,6 +1003,45 @@ Still under 1.0× at the last run, and why:
   (0.85×), a `regexp` filter (0.87×), `search_after` over `match_all`
   (0.92×), a `post_filter` `exists` behind a paged `bool` (0.88×) -- the next
   round's scorer work.
+
+The next round on the small shapes (2026-09-28) measured before changing
+anything, and the premise above did not hold up:
+
+- **Setup is not the small shapes' cost.** A native call for a term no
+  segment holds is 0.6-0.7 µs in process (the per-reader caches above are
+  what is left of setup). Wall-clock timing on the benchmark VM swings 10x
+  between identical runs, so the work was counted instead: instructions per
+  call under cachegrind (`valgrind --tool=cachegrind`, the difference of
+  two run lengths), deterministic, with the shipped `x86-64-v3` flags -- a
+  benchmark crate outside the workspace does not read `.cargo/config.toml`
+  and silently measures the 2003 baseline.
+- **`fuzzy` on a keyword** (a boosted term with blended statistics, under
+  the scorer tree) does 191k instructions a top-10 call against a plain
+  term's 184k on the same 6,457 hits: 4%, not worth a second scoring route.
+  Both spend them in the same per-hit loop, below. Its `size: 0` count was
+  the real gap: the tree walked the query cache's bit set a document at a
+  time (156k against 9k). `BooleanWeight.count` passes a lone required term
+  through to `TermWeight.count` (its `docFreq`, no deletions), as it did an
+  `exists`; and a collector that only counts takes a cached set's hits by
+  popcount (`ScoringCollector::add_hits`). Now 10k. The pass-through also
+  stopped answering for `minimum_should_match` 1 with no `SHOULD` clause,
+  which matches nothing -- `lone_exists` had the same gap.
+- **The per-hit loop.** A keyword's hits all score the same, so once the
+  queue is full every later one loses until the `totalHits` threshold;
+  `TopDocsCollector::collect_many` tested each with a branch. It now tests
+  sixteen at a time (none above the worst kept score, or a NaN, which the
+  per-hit test does not reject) and falls back to the per-hit test for a
+  run that fails. Top-10 on a keyword term: 184k to 100k instructions.
+
+In the node (four alternations of the two builds on the same index, focused
+shapes): `bool` with one filter 0.78× of before, `match_all` + filter 0.88×;
+`term` and `fuzzy` on a keyword and `match` with fuzziness unchanged within
+noise -- the saved instructions do not show against a query phase dominated
+by the Java side and a cold call. Three `post_filter` shapes and a `bool` with
+a range filter read 4-10% slower while Lucene in the same slots did not move;
+the native work for them is identical in instructions (4,839,179 against
+4,839,187 for the `post_filter` without a total), so this is layout or noise,
+not more work, but it was not shown to be either.
 
 Aggregations finish outside the phase counters, so they are timed over REST
 (`REST=1 phase_bench.py 30 single agg`, whole round trips, median per
