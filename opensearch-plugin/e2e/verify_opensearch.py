@@ -273,7 +273,14 @@ def matrix():
     # stays Lucene's (and a mode whose points path is not selective iterates a
     # doc-values wrapper that cannot iterate: a stock node answers some of these
     # shapes with a 500, which are left out here).
-    add("sort mode sum", {"query": {"match": {"body": "beta"}}, "sort": [{"m": {"order": "desc", "mode": "sum"}}, "_doc"]}, "sort_*")
+    # An exact total, or on more than one shard the stock answer is not one:
+    # the coordinator sends each later shard the bottom sort value so far, and
+    # the shard skips itself when its bounds cannot beat it -- bounds that
+    # FieldSortBuilder.getMinMaxOrNull reads off the field's single points,
+    # whatever the mode. A shard's largest sum is above its largest value, so a
+    # shard holding the top sums is dropped depending on which shard answered
+    # first (OpenSearch 3.8.0). An exact total turns that pruning off.
+    add("sort mode sum", {"track_total_hits": True, "query": {"match": {"body": "beta"}}, "sort": [{"m": {"order": "desc", "mode": "sum"}}, "_doc"]}, "sort_*")
     add("sort mode median", {"query": {"match": {"body": "gamma"}}, "sort": [{"m": {"order": "asc", "mode": "median", "missing": "_first"}}]}, "native")
     add("sort mode avg double", {"query": {"match": {"body": "alpha"}}, "sort": [{"md": {"order": "desc", "mode": "avg"}}, "_doc"]}, "native")
     add("sort mode median double", {"query": {"match_all": {}}, "sort": [{"md": {"order": "asc", "mode": "median"}}, {"n": "asc"}]}, "native")
