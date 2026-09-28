@@ -336,15 +336,30 @@ fn phrase<'a>(
 /// The association matters: three factors can round differently the other
 /// way, and the product is the BM25 weight's multiplier.
 pub(crate) fn boost_chain(b: &BoostQuery) -> (f32, &Clause) {
-    let mut factors = vec![b.boost];
+    // The product innermost first, as `createWeight` multiplies it on the
+    // way out: a pass to the innermost clause, then the factors walked back
+    // outward -- each step down the chain from the top to one level short
+    // of where the last multiplication left off. Chains are a boost or two
+    // deep, so the quadratic walk costs nothing a `Vec` would not.
+    let mut depth = 1usize;
     let mut inner = b.inner.as_ref();
     while let Clause::Boost(next) = inner {
-        factors.push(next.boost);
+        depth += 1;
         inner = next.inner.as_ref();
     }
-    let mut product = factors.pop().expect("at least one boost");
-    while let Some(outer) = factors.pop() {
-        product *= outer;
+    let factor = |level: usize| -> f32 {
+        let mut q = b;
+        for _ in 0..level {
+            let Clause::Boost(next) = q.inner.as_ref() else {
+                unreachable!("level below the chain's depth")
+            };
+            q = next;
+        }
+        q.boost
+    };
+    let mut product = factor(depth - 1);
+    for level in (0..depth - 1).rev() {
+        product *= factor(level);
     }
     (product, inner)
 }
