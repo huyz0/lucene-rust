@@ -175,14 +175,7 @@ impl WildcardPattern {
     /// query's time. Lucene compiles its automaton once per query; this keeps
     /// the last few hundred patterns. Bounded: cleared when full.
     pub(crate) fn to_dfa_cached(&self) -> Option<std::sync::Arc<crate::automaton::ByteDfa>> {
-        type Cache = std::collections::HashMap<
-            Vec<Token>,
-            Option<std::sync::Arc<crate::automaton::ByteDfa>>,
-        >;
-        static CACHE: std::sync::LazyLock<std::sync::Mutex<Cache>> =
-            std::sync::LazyLock::new(Default::default);
-        const MAX_PATTERNS: usize = 512;
-        if let Some(hit) = CACHE
+        if let Some(hit) = DFA_CACHE
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&self.tokens)
@@ -190,8 +183,8 @@ impl WildcardPattern {
             return hit.clone();
         }
         let dfa = self.to_dfa().map(std::sync::Arc::new);
-        let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        if cache.len() >= MAX_PATTERNS {
+        let mut cache = DFA_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if cache.len() >= MAX_CACHED_PATTERNS {
             cache.clear();
         }
         cache.insert(self.tokens.clone(), dfa.clone());
@@ -295,9 +288,33 @@ fn matches_from(tokens: &[Token], term: &[u8]) -> bool {
     }
 }
 
+type DfaCache =
+    std::collections::HashMap<Vec<Token>, Option<std::sync::Arc<crate::automaton::ByteDfa>>>;
+
+/// The process-wide automata of [`WildcardPattern::to_dfa_cached`], by
+/// pattern.
+static DFA_CACHE: std::sync::LazyLock<std::sync::Mutex<DfaCache>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Patterns [`DFA_CACHE`] holds before it is cleared.
+const MAX_CACHED_PATTERNS: usize = 512;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A stream of distinct patterns cannot grow the process-wide automaton
+    /// cache past its bound.** Every distinct user pattern lands in it, so a
+    /// workload of unique wildcard queries is exactly the tight loop that
+    /// would grow an unbounded one. Three times the bound, checked after each.
+    #[test]
+    fn the_process_wide_automaton_cache_stays_bounded_under_distinct_patterns() {
+        for i in 0..3 * MAX_CACHED_PATTERNS {
+            WildcardPattern::new(format!("bound{i}*x?").as_bytes()).to_dfa_cached();
+            let len = DFA_CACHE.lock().unwrap_or_else(|e| e.into_inner()).len();
+            assert!(len <= MAX_CACHED_PATTERNS, "pattern {i}: {len} cached");
+        }
+    }
 
     fn m(pattern: &str, term: &str) -> bool {
         WildcardPattern::new(pattern.as_bytes()).matches(term.as_bytes())

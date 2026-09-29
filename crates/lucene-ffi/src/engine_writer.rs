@@ -1203,6 +1203,186 @@ mod tests {
         assert_eq!(ffi_engine_writer_close(h), FfiStatus::InvalidHandle.code());
     }
 
+    /// Files of this index a process-wide table lists: `/proc/self/fd`'s
+    /// link targets or `/proc/self/maps`' paths under `dir`, `(deleted)`
+    /// marker included. Scoped to `dir`, so tests running alongside cannot
+    /// disturb the count.
+    #[cfg(target_os = "linux")]
+    fn open_under(dir: &std::path::Path) -> (Vec<String>, Vec<String>) {
+        let root = dir.to_string_lossy().into_owned();
+        let fds = std::fs::read_dir("/proc/self/fd")
+            .unwrap()
+            .filter_map(|e| std::fs::read_link(e.ok()?.path()).ok())
+            .map(|t| t.to_string_lossy().into_owned())
+            .filter(|t| t.starts_with(&root))
+            .collect();
+        let mut maps: Vec<String> = std::fs::read_to_string("/proc/self/maps")
+            .unwrap()
+            .lines()
+            .filter_map(|l| l.find(&root).map(|i| l[i..].to_string()))
+            .collect();
+        maps.sort();
+        maps.dedup();
+        (fds, maps)
+    }
+
+    /// **The NRT refresh loop releases everything the previous reader held.**
+    /// What OpenSearch does on every refresh, 150 times: write, commit, hold
+    /// the commit, open a JVM reader over it sharing the previous reader's
+    /// unchanged segments, search it, close the previous reader, release its
+    /// hold, drop the older commits. Each round must leave no descriptor
+    /// open under the index, no mapping of a file that is gone, no file on
+    /// disk that neither the live commit nor the held one names -- and when
+    /// the last reader closes, no mapping at all. The soak watched RSS, fds
+    /// and disk for days to see the same thing.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_nrt_refresh_loop_releases_every_file_mapping_and_hold() {
+        use crate::jvm_reader::{ffi_close_jvm_reader, ffi_jvm_reader_search, ffi_open_jvm_reader};
+        let tmp = empty_index("engine-writer-refresh-loop");
+        let h = open(&tmp, 0);
+        let f = setup(h);
+        let words: Vec<String> = (0..60).map(|w| format!("w{w}")).collect();
+        let (mut reader, mut hold) = (0u64, 0u64);
+        let mut seq = 0i64;
+        let mut max_maps = 0;
+        for round in 0..150 {
+            for k in 0..40 {
+                let id = format!("{}", (round * 40 + k) % 1500);
+                let text: Vec<&str> = (0..50)
+                    .map(|j| words[(round + k * 7 + j) % words.len()].as_str())
+                    .collect();
+                let op = Blob::default()
+                    .u8(OP_SOFT_UPDATE)
+                    .bytes(b"_id")
+                    .bytes(id.as_bytes())
+                    .bytes(b"__soft_deletes")
+                    .i64(1)
+                    .i32(1);
+                assert_eq!(apply(h, &doc(op, &f, &id, &text, seq, false).0), 0);
+                seq += 1;
+            }
+            let gen = commit(h, &[]);
+            let mut new_hold = 0;
+            // SAFETY: live out-pointer.
+            assert_eq!(
+                unsafe { ffi_engine_writer_hold_commit(h, gen, &mut new_hold) },
+                0
+            );
+
+            let name = lucene_store::directory::segments_file_name(gen).unwrap();
+            let infos_bytes = std::fs::read(tmp.path().join(name)).unwrap();
+            let infos = lucene_index::segment_infos::parse(&infos_bytes, gen).unwrap();
+            let max_docs: Vec<i32> = infos
+                .segments
+                .iter()
+                .map(|s| {
+                    let si = std::fs::read(tmp.path().join(format!("{}.si", s.segment_name)));
+                    lucene_index::segment_info::parse(&si.unwrap(), &s.segment_id)
+                        .unwrap()
+                        .doc_count
+                })
+                .collect();
+            let path = tmp.path().to_str().unwrap();
+            let mut next = 0u64;
+            // SAFETY: live slices and out-pointer; no live-docs words.
+            let rc = unsafe {
+                ffi_open_jvm_reader(
+                    path.as_ptr().cast(),
+                    path.len(),
+                    infos_bytes.as_ptr(),
+                    infos_bytes.len(),
+                    gen,
+                    reader,
+                    max_docs.as_ptr(),
+                    max_docs.len(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    &mut next,
+                )
+            };
+            assert_eq!(rc, 0, "round {round}: {}", crate::error::last_error());
+            let query = crate::jvm_reader::tests::term_blob("body", "w3");
+            let (mut docs, mut scores) = ([0i32; 10], [0f32; 10]);
+            let (mut n, mut total, mut lower) = (0usize, 0i64, false);
+            // SAFETY: live buffers of 10 and out-pointers.
+            let rc = unsafe {
+                ffi_jvm_reader_search(
+                    next,
+                    query.as_ptr(),
+                    query.len(),
+                    10,
+                    i64::MAX,
+                    docs.as_mut_ptr(),
+                    scores.as_mut_ptr(),
+                    10,
+                    &mut n,
+                    &mut total,
+                    &mut lower,
+                )
+            };
+            assert_eq!(rc, 0, "round {round}: {}", crate::error::last_error());
+            assert!(total > 0);
+
+            if reader != 0 {
+                assert_eq!(ffi_close_jvm_reader(reader), 0);
+                assert_eq!(ffi_engine_writer_release_hold(h, hold), 0);
+            }
+            (reader, hold) = (next, new_hold);
+            let gens = generations(h);
+            let old: Vec<i64> = gens.iter().copied().filter(|&g| g != gen).collect();
+            // SAFETY: live slice.
+            assert_eq!(
+                unsafe { ffi_engine_writer_delete_commits(h, old.as_ptr(), old.len()) },
+                0
+            );
+
+            let (fds, maps) = open_under(tmp.path());
+            assert!(
+                fds.is_empty(),
+                "round {round}: descriptors left open {fds:?}"
+            );
+            let gone: Vec<&String> = maps.iter().filter(|m| m.ends_with("(deleted)")).collect();
+            assert!(
+                gone.is_empty(),
+                "round {round}: mappings of deleted files {gone:?}"
+            );
+            let live: std::collections::HashSet<&str> = infos
+                .segments
+                .iter()
+                .map(|s| s.segment_name.as_str())
+                .collect();
+            let orphans: Vec<String> = std::fs::read_dir(tmp.path())
+                .unwrap()
+                .map(|e| e.unwrap().file_name().into_string().unwrap())
+                .filter(|n| n.starts_with('_'))
+                .filter(|n| {
+                    !live
+                        .iter()
+                        .any(|s| n.starts_with(&format!("{s}.")) || n.starts_with(&format!("{s}_")))
+                })
+                .collect();
+            assert!(
+                orphans.is_empty(),
+                "round {round}: files no commit or hold names {orphans:?}"
+            );
+            max_maps = max_maps.max(maps.len());
+        }
+        assert!(
+            max_maps > 0,
+            "no file was ever mapped: the mapping checks tested nothing"
+        );
+        assert_eq!(ffi_close_jvm_reader(reader), 0);
+        assert_eq!(ffi_engine_writer_release_hold(h, hold), 0);
+        let (fds, maps) = open_under(tmp.path());
+        assert!(
+            fds.is_empty() && maps.is_empty(),
+            "after the last close: {fds:?} {maps:?}"
+        );
+        check(&tmp);
+        assert_eq!(ffi_engine_writer_close(h), 0);
+    }
+
     #[test]
     fn holds_pin_a_readers_files_until_released() {
         let tmp = empty_index("engine-writer-holds");

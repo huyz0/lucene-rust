@@ -16,11 +16,13 @@
 
 Everything before this proves individual properties: the bytes are right, the
 engine is faster, the shard works. This milestone proves the properties hold
-*together*, *for days*, and that there is a way back if they do not.
+*together*, *over time*, and that there is a way back if they do not.
 
-`PLAN.md`'s Phase 6 exit criteria name it directly:
-
-> multi-day soak test with random restarts, no index corruption.
+`PLAN.md`'s Phase 6 exit criteria first asked for a multi-day soak test with
+random restarts. That was replaced (see [T6.1](#t61--resource-bounds-instead-of-a-soak)):
+a soak cannot run in CI, takes days per iteration, and only says *that*
+something grew. Tight-loop tests on each thing that can accumulate say *what*
+grew, on the iteration it grew, in seconds, on every push.
 
 The second half — the rollback path — matters because backward-codecs are out
 of scope project-wide. A cluster that moves onto the Rust engine and cannot
@@ -32,7 +34,8 @@ move back is a cluster nobody will move in the first place.
 
 ### In scope
 
-- Sustained soak testing under realistic mixed load.
+- Resource-bound tests on everything that can accumulate across repeated
+  operations (in place of a soak).
 - Continuous performance regression tracking.
 - Completing the parity ledger and publishing an operator-facing feature
   matrix.
@@ -49,17 +52,48 @@ move back is a cluster nobody will move in the first place.
 
 ## Tasks
 
-### T6.1 — Multi-day soak
+### T6.1 — Resource bounds instead of a soak
 
-- ≥7 days, mixed index and search load, on a multi-node cluster.
-- Random restarts and random node kills throughout — not a quiet steady-state
-  run.
-- Merges running continuously, so the merge scheduler and file lifecycle are
-  exercised rather than idle.
-- Monitor for the failure modes that only appear over time: memory growth,
-  file-handle growth, mmap exhaustion, disk growth from undeleted segments,
-  slow degradation in query latency.
-- At the end, run real Lucene's `CheckIndex` over every shard.
+A multi-day soak was built and run (a three-node cluster under mixed load
+with random restarts and SIGKILLs). It was dropped as a gate: it cannot run in
+CI, a leak costs days per iteration to see and to confirm fixed, and it
+reports growth, not its cause. Its three trial runs found only defects in the
+soak harness itself. The CI step that ran `concurrent_soak` for two minutes
+went too: its correctness half is covered by the concurrent writer's unit
+tests and the interop matrix's threaded direction. The example remains a
+manual tool.
+
+In their place, one test per thing that can accumulate. Each drives one
+operation in a tight loop and fails on the iteration a bound is broken. Each
+was seen to fail against the defect it targets (the negative control).
+
+| What can accumulate | Test | Bound | Negative control |
+|---|---|---|---|
+| The writer's per-segment caches (`segment_versions`, the deleter's file sets) and files on disk: the two leaks M4's soak found | `index_writer::tests::per_segment_state_and_files_track_the_live_segments_over_many_rounds`: 400 rounds of adds, deletes, flushes, commits, 50+ merges | entries ⊆ live segments; no file of a dead segment; one `segments_N` | M4's pruning removed: fails at round 3 |
+| The same under the concurrent writer, whose merges and flushes stamp no commit | `concurrent_writer::tests::merges_between_commits_keep_per_segment_state_to_the_view`: 300 rounds, a commit every 50 | versions ⊆ view; file sets and `.si` on disk ≤ view + last commit | view-change pruning removed: fails at round 40 |
+| The NRT refresh loop: reader handles, their `mmap`s, descriptors, commit holds, old commits | `engine_writer::tests::the_nrt_refresh_loop_releases_every_file_mapping_and_hold`: 150 refreshes as OpenSearch drives them, then `CheckIndex` | no fd under the index; no mapping of a deleted file; no file neither the commit nor the hold names; nothing mapped after the last close | reader not closed: round 16; hold not released: round 8 |
+| Heap behind the C ABI: handles, result buffers, error strings, reopen chains | `crates/lucene-ffi/tests/resource_bounds.rs`: a counting global allocator, 2 × 2,000 calls per path | ≤ 1 KiB growth per window (measured: 0); fd and thread counts unchanged | freed error buffer, results handle, previous reader each skipped: 218 KB, 179 KB, 5.2 MB |
+| Process-wide pattern caches | `wildcard::…stays_bounded_under_distinct_patterns`, `regexp::…stays_bounded_under_distinct_patterns`: 3 × the bound in distinct patterns | ≤ 512 / ≤ 64 entries | eviction removed: 513 / 65 |
+
+Already bounded by existing tests: the per-segment native query cache
+(`exec::cache` eviction tests) and handle-slot reuse (any slot not reused
+grows the heap in the allocator test).
+
+**What these cannot catch:** growth that only a mix of operations across
+threads produces, which none of the loops runs; memory a cache legitimately
+fills during a warm-up and then holds; the JVM side's own heap; disk growth
+from soft-deleted history a retention policy keeps (that is policy, not a
+leak).
+
+**What they found.** Four defects. Two are bounded lags, fixed:
+`segment_versions` kept a merge's sources until the next `segments_N` (under
+the concurrent writer, until the next commit); the deleter forgot a merged
+segment's file set only at the next checkpoint. One is a false failure in this
+port's `CheckIndex`, fixed: a soft delete applied as a doc-values update was
+counted from the base column, so a segment real Lucene's `CheckIndex` passes
+failed ours. One is queued: the concurrent writer merges only committed
+segments, so between commits its segment count grows with every flush. Nothing
+in production uses that writer yet.
 
 ### T6.2 — Continuous performance regression tracking
 
@@ -130,11 +164,12 @@ What someone needs to run this who did not build it:
 
 ## Acceptance criteria
 
-- [ ] **7-day soak** completes with: no index corruption, no memory growth, no
-      file-handle growth, no unexplained shard failures.
-- [ ] Real Lucene's `CheckIndex` passes on every shard after the soak.
-- [ ] Query latency at the end of the soak is within noise of the start — no
-      slow degradation.
+- [x] **Resource bounds** (replacing the 7-day soak): every structure that can
+      accumulate across repeated writes, commits, merges, refreshes, searches
+      and FFI calls has a tight-loop test holding it to a bound, each seen to
+      fail against its defect ([T6.1](#t61--resource-bounds-instead-of-a-soak)).
+- [x] The index the NRT refresh loop leaves passes `CheckIndex` (and real
+      Lucene's, checked by hand on the kept directory).
 - [ ] [M1](m1-performance-gate.md)'s performance bar is still met on the final
       build, measured by the nightly job rather than by hand.
 - [ ] The nightly performance job fails the build when the ratio drops below
@@ -153,13 +188,13 @@ What someone needs to run this who did not build it:
 
 ## Risks and unknowns
 
-- **Soak failures are expensive to diagnose.** A leak that manifests on day
-  five costs five days per iteration. Instrument memory, handles and segment
-  counts continuously from the start of the run so the diagnosis does not
-  require a re-run.
+- **A bound test only covers the loop it runs.** The resource tests each drive
+  one operation; growth that only an interleaving produces is outside them.
+  New state that can accumulate needs its own test, with its own negative
+  control.
 - **"No memory growth" needs a definition.** Caches legitimately grow to a
-  steady state. Define the criterion as a bounded plateau, and record what the
-  plateau is, rather than as a flat line.
+  steady state. The tests hold each structure to a stated bound, and measure
+  heap only after a warm-up.
 - **The rollback path may reveal a one-way door.** If some Rust-written state
   cannot be consumed by the Java engine even after force-merge, that is a
   release blocker discovered late. Sanity-check the rollback direction during
@@ -173,7 +208,7 @@ What someone needs to run this who did not build it:
 
 ## Exit artifacts
 
-- Soak test results, with continuous instrumentation traces
+- Resource-bound tests, each with a recorded negative control
 - A nightly performance regression job and its historical record
 - A complete `docs/parity.md`
 - An operator-facing feature matrix

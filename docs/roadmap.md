@@ -340,7 +340,9 @@ it changes M5's scope materially.
 
 **Tasks**
 
-- Multi-day soak with random restarts, under mixed index and search load.
+- Resource-bound tests on everything that can accumulate (writer caches, files, NRT readers and
+  their mappings, commit holds, FFI handles and buffers, process-wide caches), each a tight loop
+  that fails on the iteration a bound breaks -- in place of a multi-day soak, which cannot run in CI.
 - Nightly performance regression tracking, so M1's gate stays held rather than being a
   one-off measurement.
 - Complete `docs/parity.md` for the supported matrix, and publish a supported-vs-unsupported
@@ -351,7 +353,8 @@ it changes M5's scope materially.
 
 **Acceptance criteria**
 
-- 7-day soak: no index corruption, no memory or handle growth, no unexplained shard failures.
+- Every structure that can accumulate held to a bound by a test seen to fail against its defect;
+  `CheckIndex` clean after the NRT refresh loop.
 - M1's performance bar still met on the final build.
 - A rollback from the Rust engine to the Java engine executed successfully on a test cluster.
 

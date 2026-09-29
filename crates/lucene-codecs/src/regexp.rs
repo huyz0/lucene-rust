@@ -1571,6 +1571,23 @@ const PREDEFINED_ESCAPE_LEADS: &str = "\\ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklm
 mod tests {
     use super::*;
 
+    /// **A stream of distinct patterns cannot grow the process-wide compiled
+    /// cache past its bound** -- the regexp counterpart of the wildcard
+    /// cache's test. Three times the bound, checked after each.
+    #[test]
+    fn the_process_wide_compiled_cache_stays_bounded_under_distinct_patterns() {
+        for i in 0..3 * COMPILED_CACHE_ENTRIES {
+            RegexpPattern::parse(&format!("bound{i}[a-c]+"))
+                .unwrap()
+                .compiled();
+            let len = compiled_cache()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .len();
+            assert!(len <= COMPILED_CACHE_ENTRIES, "pattern {i}: {len} cached");
+        }
+    }
+
     fn m(pattern: &str, term: &str) -> bool {
         RegexpPattern::parse(pattern)
             .unwrap()
