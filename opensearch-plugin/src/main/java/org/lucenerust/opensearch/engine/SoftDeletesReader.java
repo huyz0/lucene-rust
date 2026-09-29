@@ -3,8 +3,10 @@
  */
 package org.lucenerust.opensearch.engine;
 
+import org.apache.lucene.index.CodecReader;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.DocValues;
+import org.apache.lucene.index.FilterCodecReader;
 import org.apache.lucene.index.FilterDirectoryReader;
 import org.apache.lucene.index.FilterLeafReader;
 import org.apache.lucene.index.LeafReader;
@@ -71,7 +73,14 @@ final class SoftDeletesReader extends FilterDirectoryReader {
                 softDeleted++;
             }
         }
-        return new SoftDeletedLeaf(reader, live, reader.numDocs() - softDeleted);
+        int numDocs = reader.numDocs() - softDeleted;
+        // A codec reader stays one, as Lucene's `SoftDeletesFilterCodecReader` keeps it: OpenSearch's
+        // fetch phase reads adjacent documents through `SequentialStoredFieldsLeafReader`, which
+        // needs a `CodecReader` underneath (its merge instance) and fails the shard otherwise.
+        if (reader instanceof CodecReader codec) {
+            return new SoftDeletedCodecLeaf(codec, live, numDocs);
+        }
+        return new SoftDeletedLeaf(reader, live, numDocs);
     }
 
     @Override
@@ -82,6 +91,39 @@ final class SoftDeletesReader extends FilterDirectoryReader {
     @Override
     public CacheHelper getReaderCacheHelper() {
         return in.getReaderCacheHelper();
+    }
+
+    /** {@link SoftDeletedLeaf} for a segment reader: still a {@link CodecReader}. */
+    private static final class SoftDeletedCodecLeaf extends FilterCodecReader {
+        private final FixedBitSet live;
+        private final int numDocs;
+
+        SoftDeletedCodecLeaf(CodecReader in, FixedBitSet live, int numDocs) {
+            super(in);
+            this.live = live;
+            this.numDocs = numDocs;
+        }
+
+        @Override
+        public Bits getLiveDocs() {
+            return live;
+        }
+
+        @Override
+        public int numDocs() {
+            return numDocs;
+        }
+
+        @Override
+        public CacheHelper getCoreCacheHelper() {
+            return in.getCoreCacheHelper();
+        }
+
+        /** As {@link SoftDeletedLeaf#getReaderCacheHelper}. */
+        @Override
+        public CacheHelper getReaderCacheHelper() {
+            return in.getReaderCacheHelper();
+        }
     }
 
     /** A leaf whose live documents exclude the soft-deleted ones. */
