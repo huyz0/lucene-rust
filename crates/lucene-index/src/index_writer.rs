@@ -16734,6 +16734,67 @@ pub(crate) mod tests {
         assert!(matches!(empty, Error::NoDocValuesUpdatesSupplied));
     }
 
+    /// **`CheckIndex` counts a soft delete that reached a segment as a
+    /// doc-values update.** Such a delete lands in a new `.fnm` and
+    /// `.dvm`/`.dvd` generation; the check read the base column instead,
+    /// counted only the soft deletes the segment was written with, and failed
+    /// a segment real Lucene's `CheckIndex` passes (the engine writer's
+    /// refresh-loop test found it: 4460 counted, 4500 recorded).
+    #[test]
+    fn check_index_counts_soft_deletes_applied_as_doc_values_updates() {
+        let tmp = tempdir("soft-deletes-generation");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![
+            stored_only_field("id", 0),
+            body_field(1),
+            FieldInfo {
+                soft_deletes_field: true,
+                ..numeric_dv_field("soft", 2)
+            },
+        ];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_postings_field(Some("body")).unwrap();
+        for id in ["a", "b", "c"] {
+            writer
+                .add_document(doc_with_body(id, &format!("k{id}")))
+                .unwrap();
+        }
+        writer.commit().unwrap();
+        let mark = |term: &str| {
+            [DocValuesUpdate::Numeric {
+                term: body_term(term),
+                field: "soft".into(),
+                value: Some(1),
+            }]
+        };
+        writer
+            .soft_update_document(body_term("ka"), doc_with_body("a2", "ka2"), &mark("ka"))
+            .unwrap();
+        writer
+            .soft_update_document(body_term("kb"), doc_with_body("b2", "kb2"), &mark("kb"))
+            .unwrap();
+        let infos = writer.commit().unwrap().clone();
+
+        let first = &infos.segments[0];
+        assert_eq!(first.soft_del_count, 2);
+        assert_ne!(
+            first.field_infos_gen, -1,
+            "the marks must be a doc-values update"
+        );
+        let results = crate::check_index::check_directory(&dir).unwrap();
+        let checked = results
+            .iter()
+            .find(|r| r.segment_name == first.segment_name)
+            .unwrap();
+        let soft = checked
+            .checks
+            .iter()
+            .find(|c| c.name == "soft_deletes.count_matches")
+            .unwrap();
+        assert!(soft.passed(), "{soft:?}");
+        assert!(checked.all_passed(), "{:?}", checked.failures());
+    }
+
     #[test]
     fn soft_update_document_adds_the_new_doc_and_marks_the_old_one_without_deleting_it() {
         // The whole point of a soft delete: the previous version keeps its
