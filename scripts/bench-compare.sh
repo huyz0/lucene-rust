@@ -7,7 +7,10 @@
 # ratio is meaningless. A speedup obtained by returning fewer results is a bug
 # report, not a benchmark result.
 #
-# Usage: scripts/bench-compare.sh [--index DIR] [--queries F] [--warmup N] [--iters N] [--pin CPUS]
+# Usage: scripts/bench-compare.sh [--index DIR] [--queries F] [--warmup-ms N] [--measure-ms N]
+#                                 [--pin CPUS] [--tsv FILE]
+# --tsv writes the joined results (id, qps both sides, ratio, recall verdict)
+# for scripts/bench-gate.py.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
@@ -20,6 +23,7 @@ JARS="$PWD/fixtures/.jars"
 # single P-core pair so the scheduler cannot migrate a run onto an E-core
 # mid-measurement, which would otherwise dominate the variance.
 PIN="0,1"
+TSV=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -29,7 +33,8 @@ while [ $# -gt 0 ]; do
     --measure-ms) ITERS="$2"; shift 2 ;;
     --pin)     PIN="$2";     shift 2 ;;
     --jars)    JARS="$2";    shift 2 ;;
-    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+    --tsv)     TSV="$2";     shift 2 ;;
+    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
     *) echo "bench-compare: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -70,7 +75,7 @@ echo "bench-compare: index=$INDEX warmup=${WARMUP}ms measure=${ITERS}ms pinned=$
     "$INDEX" "$QUERIES" "$WARMUP" "$ITERS" > "$OUT/java.tsv" 2>"$OUT/java.err" || {
       echo "bench-compare: java runner failed"; cat "$OUT/java.err"; exit 1; }
 
-python3 - "$OUT/rust.tsv" "$OUT/java.tsv" <<'PY'
+python3 - "$OUT/rust.tsv" "$OUT/java.tsv" "$TSV" <<'PY'
 import sys, csv
 
 def load(p):
@@ -114,6 +119,13 @@ if mismatch:
     for m in mismatch[:12]:
         print(f"  {m[0]}: {m[1]}\n    rust={m[2]}\n    java={m[3]}")
     print()
+
+if sys.argv[3]:
+    with open(sys.argv[3], "w") as f:
+        f.write("id\trust_qps\tjava_qps\tratio\trecall\n")
+        for i, ratio in ratios:
+            ok = "mismatch" if i in bad else ("tie" if i in tie_only else "ok")
+            f.write(f"{i}\t{rust[i]['qps']}\t{java[i]['qps']}\t{ratio:.4f}\t{ok}\n")
 
 wins = [i for i, r in ratios if r >= 1.5]
 losses = [i for i, r in ratios if r < 1.0]

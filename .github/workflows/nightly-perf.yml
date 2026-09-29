@@ -1,0 +1,105 @@
+# M6 T6.2: the nightly performance gate. The M1 query mix on both corpora,
+# Rust against Lucene 10.5.0 on the same index in the same job; fails when a
+# query is slower than Lucene, regressed from the baseline recorded on this
+# runner class (benchmarks/baseline/ci/, committed from an `update_baseline`
+# run's artifact -- until then the regression rule is off), or disagrees with
+# Lucene on its hits. See
+# scripts/bench-gate.py and docs/benchmarks/perf-gate.md.
+#
+# Run by hand with `negative_control: 2` to watch it fail: the Rust runner then
+# does every query twice, and the job passes only if the gate caught that.
+name: nightly-perf
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      negative_control:
+        description: 'Run each Rust query N times (a known regression the gate must catch); 0 = off'
+        default: '0'
+      update_baseline:
+        description: 'Record this run as the baseline (uploaded as an artifact to commit)'
+        type: boolean
+        default: false
+
+concurrency:
+  group: nightly-perf
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # A hosted runner is never idle; bench-compare's own guard is for a
+  # developer's machine with a build running beside it.
+  BENCH_MAX_LOAD: '4'
+
+jobs:
+  perf:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [merged, segmented]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            benchmarks/rust-runner/target
+          key: bench-${{ hashFiles('**/Cargo.toml', 'rust-toolchain.toml') }}
+          restore-keys: bench-
+      - uses: actions/cache@v4
+        with:
+          path: fixtures/.jars
+          key: lucene-jars-10.5.0
+      # The corpus is a pure function of the generator and its seed.
+      - uses: actions/cache@v4
+        id: corpus
+        with:
+          path: benchmarks/.corpus
+          key: corpus-1m-${{ hashFiles('scripts/bench-corpus.sh', 'benchmarks/corpus/src/GenCorpus.java') }}
+      - name: Build the corpus
+        if: steps.corpus.outputs.cache-hit != 'true'
+        run: scripts/bench-corpus.sh --docs 1000000
+      # The history accumulates run over run: restored from the last run's
+      # cache entry, appended to, saved under this run's id -- failed runs
+      # included, which are the ones worth having.
+      - uses: actions/cache/restore@v4
+        with:
+          path: perf-history-${{ matrix.variant }}.jsonl
+          key: perf-history-${{ matrix.variant }}-${{ github.run_id }}
+          restore-keys: perf-history-${{ matrix.variant }}-
+      - name: Gate
+        run: |
+          args=(--index "benchmarks/.corpus/${{ matrix.variant }}"
+                --baseline "benchmarks/baseline/ci/${{ matrix.variant }}.tsv")
+          nc="${{ github.event.inputs.negative_control || '0' }}"
+          # A negative control's deliberately slow ratios stay out of the
+          # nightly history.
+          if [ "$nc" -gt 1 ]; then
+            args+=(--negative-control "$nc" --history negative-control.jsonl)
+          else
+            args+=(--history "perf-history-${{ matrix.variant }}.jsonl")
+          fi
+          [ "${{ github.event.inputs.update_baseline }}" = "true" ] && args+=(--update-baseline)
+          python3 scripts/bench-gate.py "${args[@]}"
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: perf-history-${{ matrix.variant }}.jsonl
+          key: perf-history-${{ matrix.variant }}-${{ github.run_id }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: perf-${{ matrix.variant }}
+          path: |
+            perf-history-${{ matrix.variant }}.jsonl
+            negative-control.jsonl
+            benchmarks/baseline/ci/${{ matrix.variant }}.tsv
