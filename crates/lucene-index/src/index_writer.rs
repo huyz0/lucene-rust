@@ -5283,6 +5283,35 @@ impl<'d> IndexWriter<'d> {
         Ok(())
     }
 
+    /// `(segments in the view, cached versions, segments the deleter tracks)`:
+    /// what a resource-bound test holds the per-segment state to.
+    #[cfg(test)]
+    pub(crate) fn per_segment_sizes(&self) -> (usize, usize, usize) {
+        let view = self.live_infos().segments.len();
+        (
+            view,
+            self.segment_versions.len(),
+            self.deleter.tracked_sizes().0,
+        )
+    }
+
+    /// Drops the versions of segments this writer's view no longer holds.
+    /// A merge takes its sources out of the view, and so does applying
+    /// deletes that empty a segment: without this their entries lived until
+    /// the next `segments_N` was stamped, and the concurrent writer's merges
+    /// and flushes stamp nothing, so they piled up until a commit.
+    fn prune_segment_versions(&mut self) {
+        let in_view: std::collections::HashSet<&str> = self
+            .segment_infos
+            .segments
+            .iter()
+            .chain(&self.flushed_segments)
+            .map(|s| s.segment_name.as_str())
+            .collect();
+        self.segment_versions
+            .retain(|name, _| in_view.contains(name.as_str()));
+    }
+
     fn stamp_min_segment_version(&mut self, infos: &mut SegmentInfos) -> Result<()> {
         // A cache (a miss re-reads the `.si`), kept to the segments still in
         // play -- the commit being written and this writer's live view -- so
@@ -8101,6 +8130,7 @@ impl<'d> IndexWriter<'d> {
         let mut keep = flushed.iter();
         self.flushed_segments
             .retain(|_| !keep.next().copied().unwrap_or(false));
+        self.prune_segment_versions();
     }
 
     /// [`IndexingConfig::apply_packets_to_segment`] with this writer's
@@ -8577,6 +8607,7 @@ impl<'d> IndexWriter<'d> {
             if let Some(merged) = merged {
                 self.segment_infos.segments.push(merged);
             }
+            self.prune_segment_versions();
             let live = self.live_infos();
             self.deleter.checkpoint(&live, false)?;
             return Ok(&self.segment_infos);
@@ -8611,6 +8642,7 @@ impl<'d> IndexWriter<'d> {
         // once the superseded commit point dies here, so this is what actually
         // reclaims them -- `commitMerge` -> `checkpoint` in Java.
         self.segment_infos = new_segment_infos;
+        self.prune_segment_versions();
         // `finishCommit`: `rollbackSegments =
         // pendingCommit.createBackupSegmentInfos()`. This is the one place a
         // commit becomes durable, so it is the one place the rollback snapshot
@@ -15017,6 +15049,100 @@ pub(crate) mod tests {
 
     fn body_term(text: &str) -> Term {
         Term::new("body", text.as_bytes())
+    }
+
+    /// **Nothing the writer keeps per segment outlives the segment**, over
+    /// hundreds of flushes, deletes, commits and automatic merges.
+    ///
+    /// The time-based soak's replacement for the writer: it found two
+    /// per-segment caches that were never pruned (the deleter's recorded
+    /// file sets and `segment_versions`), each growing by one entry per
+    /// segment ever written. Here every round must leave them, and the
+    /// directory, holding only what the live commit and the unflushed view
+    /// need: an entry kept for a dead segment fails the round it appears in,
+    /// not after a week.
+    #[test]
+    fn per_segment_state_and_files_track_the_live_segments_over_many_rounds() {
+        let tmp = tempdir("resource-bounds");
+        let dir = FsDirectory::open(&tmp);
+        let mut writer = seq_writer(&dir);
+        writer.set_merge_policy(Some(tight_merge_policy()));
+        let mut merged = 0;
+        for round in 0..400 {
+            for k in 0..3 {
+                let n = round * 3 + k;
+                writer
+                    .add_document(doc_with_body(&n.to_string(), &format!("t{n}")))
+                    .unwrap();
+            }
+            // A delete into an older segment: new `.liv` generations, whose
+            // predecessors must go too.
+            if round >= 5 {
+                let old = (round - 5) * 3;
+                writer
+                    .delete_documents_by_term(&[body_term(&format!("t{old}"))])
+                    .unwrap();
+            }
+            if round % 3 == 2 {
+                writer.flush().unwrap(); // a segment no commit has seen yet
+                continue;
+            }
+            let before = writer.segment_infos().segments.len();
+            writer.commit().unwrap();
+            if writer.segment_infos().segments.len() < before + 1 {
+                merged += 1;
+            }
+
+            let live: std::collections::HashSet<String> = writer
+                .segment_infos()
+                .segments
+                .iter()
+                .map(|s| s.segment_name.clone())
+                .collect();
+            let stale: Vec<&String> = writer
+                .segment_versions
+                .keys()
+                .filter(|k| !live.contains(*k))
+                .collect();
+            assert!(
+                stale.is_empty(),
+                "round {round}: versions kept for dead segments {stale:?}"
+            );
+            let (segments, files) = writer.deleter.tracked_sizes();
+            assert!(
+                segments <= live.len(),
+                "round {round}: the deleter tracks {segments} segments, {} are live",
+                live.len()
+            );
+            let on_disk: Vec<String> = std::fs::read_dir(tmp.path())
+                .unwrap()
+                .map(|e| e.unwrap().file_name().into_string().unwrap())
+                .filter(|f| crate::index_file_deleter::is_index_file_name(f))
+                .collect();
+            let orphans: Vec<&String> = on_disk
+                .iter()
+                .filter(|f| {
+                    !f.starts_with("segments")
+                        && !live.contains(crate::index_file_deleter::parse_segment_name(f))
+                })
+                .collect();
+            assert!(
+                orphans.is_empty(),
+                "round {round}: files of dead segments {orphans:?}"
+            );
+            assert!(
+                files <= on_disk.len(),
+                "round {round}: {files} files referenced, {} on disk",
+                on_disk.len()
+            );
+            // One commit point: old `segments_N` and `.liv` generations go.
+            let commits = on_disk
+                .iter()
+                .filter(|f| f.starts_with("segments_"))
+                .count();
+            assert_eq!(commits, 1, "round {round}: {on_disk:?}");
+        }
+        assert!(merged > 50, "the merge policy must have merged: {merged}");
     }
 
     /// Every live document's `id`, in commit order.

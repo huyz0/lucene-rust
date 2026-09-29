@@ -462,7 +462,9 @@ impl<'d> IndexFileDeleter<'d> {
             .filter(|name| !self.exists(name))
             .cloned()
             .collect();
-        self.delete_files(&to_delete)
+        self.delete_files(&to_delete)?;
+        self.forget_dead_segments();
+        Ok(())
     }
 
     /// `FileDeleter.getRefCount`: 0 for a file the deleter has never seen.
@@ -480,6 +482,13 @@ impl<'d> IndexFileDeleter<'d> {
     /// under [`DeletionPolicy::KeepOnlyLastCommit`] once anything has committed.
     pub fn commit_count(&self) -> usize {
         self.commits.len()
+    }
+
+    /// How many segments' file sets and how many files this deleter tracks:
+    /// what a resource-bound test holds to the live segments and files.
+    #[cfg(test)]
+    pub(crate) fn tracked_sizes(&self) -> (usize, usize) {
+        (self.si_files.len(), self.ref_counts.len())
     }
 
     /// The `segments_N` names of every live commit point, oldest first.
@@ -623,7 +632,12 @@ impl<'d> IndexFileDeleter<'d> {
     /// Drops [`Self::hold_segment_files`]' references, deleting whatever
     /// nothing else still holds.
     pub(crate) fn release_files(&mut self, files: &[String]) -> Result<()> {
-        self.dec_ref_all(files)
+        // A merge releases its sources after the commit that retired them:
+        // their files go here, and so must their recorded file sets, not at
+        // the next checkpoint.
+        self.dec_ref_all(files)?;
+        self.forget_dead_segments();
+        Ok(())
     }
 
     fn inc_ref_all(&mut self, files: &[String]) {
@@ -835,7 +849,7 @@ pub(crate) fn parse_generation_for_test(file_name: &str) -> i64 {
 /// means it starts with the ASCII `_` (or is the fixed, all-ASCII
 /// `segments.gen`), so byte 1 is a character boundary; and `find` returns a
 /// boundary by construction.
-fn parse_segment_name(file_name: &str) -> &str {
+pub(crate) fn parse_segment_name(file_name: &str) -> &str {
     // ARITH: `i` is a byte offset *within* `file_name[1..]`, so `i + 1` is at
     // most `file_name.len()` -- an in-memory length, hence at most
     // `isize::MAX`.
