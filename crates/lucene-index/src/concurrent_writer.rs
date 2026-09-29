@@ -1582,4 +1582,60 @@ mod tests {
         assert_eq!(docs.keys().collect::<Vec<_>>(), ["p", "r"]);
         assert_clean(&dir);
     }
+
+    /// **Merges and flushes between commits leave no per-segment state
+    /// behind.** The concurrent writer merges and flushes without stamping a
+    /// `segments_N`, so the writer's version cache had only a commit to prune
+    /// it: it held every segment each merge retired or each delete emptied
+    /// until then. Here one commit comes every 50 rounds, and every round must
+    /// hold the cache to the writer's view, and the deleter and the directory
+    /// to the view plus the last commit.
+    #[test]
+    fn merges_between_commits_keep_per_segment_state_to_the_view() {
+        let tmp = TempDir::new("concurrent-resource-bounds");
+        let dir = FsDirectory::open(&tmp);
+        let w = ConcurrentIndexWriter::new(writer(&dir, 5), 1).unwrap();
+        let mut merges = 0;
+        for round in 0..300u32 {
+            for k in 0..10u32 {
+                let id = format!("{}", (round * 10 + k) % 400);
+                w.update_document(Term::new("id", id.clone().into_bytes()), doc(&id, round))
+                    .unwrap();
+            }
+            merges += w.maybe_merge().unwrap();
+            if round % 50 == 49 {
+                w.commit().unwrap();
+            }
+            let (view, versions, tracked) = lock(&w.core).writer.per_segment_sizes();
+            assert!(
+                versions <= view,
+                "round {round}: {versions} versions for {view} segments"
+            );
+            // A caller-driven merge keeps its sources' files while the last
+            // commit names them; the next commit releases them. So the bound
+            // is the view plus that commit -- not every segment ever written.
+            let committed = segment_infos::read_latest(&dir).map_or(0, |i| i.segments.len());
+            assert!(
+                tracked <= view + committed,
+                "round {round}: {tracked} file sets for {view} segments + {committed} committed"
+            );
+            let on_disk = std::fs::read_dir(tmp.path())
+                .unwrap()
+                .filter(|e| {
+                    e.as_ref()
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .ends_with(".si")
+                })
+                .count();
+            assert!(
+                on_disk <= view + committed,
+                "round {round}: {on_disk} segments on disk for {view} + {committed} committed"
+            );
+        }
+        assert!(merges > 50, "the policy must have merged: {merges}");
+        w.commit().unwrap();
+        assert_clean(&dir);
+    }
 }
