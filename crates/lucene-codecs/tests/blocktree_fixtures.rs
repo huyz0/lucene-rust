@@ -1105,3 +1105,65 @@ fn docs_only_lazy_cursor_matches_real_lucene_postings() {
         }
     }
 }
+
+/// `LazyDocsCursor::into_window` -- `BooleanScorer`'s window fill, a bit-set
+/// block ORed in a word at a time -- over the same Java-written terms, against
+/// the eager decode: windows of every alignment relative to the blocks, a
+/// first window that starts before the cursor's document, and both a
+/// docs-only cursor (the word-at-a-time path) and a freqs cursor (document by
+/// document).
+#[test]
+fn into_window_marks_exactly_the_real_lucene_postings_in_each_window() {
+    let (fields, m) = open_fixture();
+    let (doc, id, suffix) = open_doc_input(&m);
+    let doc_in = postings::DocInput::open(&doc, &id, &suffix).expect("open .doc");
+    for (field, term) in [("big", "everywhere"), ("l1", "l1term"), ("body", "cat")] {
+        let terms = fields.field(field).unwrap();
+        let docs = terms
+            .postings(term.as_bytes(), Some(&doc_in))
+            .unwrap()
+            .expect("term found")
+            .docs;
+        for flags in [
+            postings::PostingsFlags::DocsOnly,
+            postings::PostingsFlags::Freqs,
+        ] {
+            for (skip, win) in [(0usize, 4096i32), (0, 64), (3, 100), (130, 1000), (7, 4033)] {
+                let skip = skip.min(docs.len() - 1);
+                let mut cursor = terms
+                    .lazy_postings_with_flags(term.as_bytes(), &doc_in, flags)
+                    .unwrap()
+                    .expect("term found");
+                let mut d = cursor.next_doc().unwrap();
+                for _ in 0..skip {
+                    d = cursor.next_doc().unwrap();
+                }
+                // The first window starts a little before the current document.
+                let mut base = (d - 5).max(0);
+                let mut seen = Vec::new();
+                while d != postings::NO_MORE_DOCS {
+                    let end = base + win;
+                    let mut words = [0u64; 64];
+                    let next = cursor.into_window(base, end, &mut words).unwrap();
+                    assert!(next >= end, "{field}/{term} {flags:?} window {base}..{end}");
+                    for (w, &word) in words.iter().enumerate() {
+                        let mut bits = word;
+                        while bits != 0 {
+                            seen.push(base + (w * 64) as i32 + bits.trailing_zeros() as i32);
+                            bits &= bits - 1;
+                        }
+                    }
+                    d = next;
+                    base = d;
+                }
+                // Only documents from the cursor's own on: those before it are
+                // not the cursor's to mark.
+                assert_eq!(
+                    seen,
+                    docs[skip..],
+                    "{field}/{term} {flags:?} skip {skip} win {win}"
+                );
+            }
+        }
+    }
+}

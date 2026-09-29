@@ -2171,7 +2171,7 @@ impl FieldTerms {
 
     /// `seekExact` plus `decodeMetaData` — the stats *and* the postings file
     /// pointers, in one trie walk.
-    fn term_state(&self, term: &[u8]) -> Result<Option<(TermStats, TermMetadata)>> {
+    pub(crate) fn term_state(&self, term: &[u8]) -> Result<Option<(TermStats, TermMetadata)>> {
         self.with_scratch(|ste| {
             if !ste.seek_exact(term)? {
                 return Ok(None);
@@ -3034,7 +3034,14 @@ impl<'a, M: TermMatcher> Intersect<'a, M> {
                 self.done = true;
                 return Ok(None);
             };
-            if !term.starts_with(&self.prefix) {
+            // A byte loop, not `starts_with`: the prefix is a byte or two and
+            // this runs for every term the walk visits, where a `memcmp` call
+            // per term was a tenth of a fuzzy expansion.
+            let n = self.prefix.len();
+            if !term
+                .get(..n)
+                .is_some_and(|h| h.iter().zip(&self.prefix).all(|(a, b)| a == b))
+            {
                 self.done = true;
                 return Ok(None);
             }

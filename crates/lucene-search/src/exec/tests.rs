@@ -558,6 +558,90 @@ fn cached_clauses_search_exactly_like_uncached_ones() {
     }
 }
 
+/// A cached term set as a scoring `MUST` beside one optional term
+/// (`Bulk::ReqBitsOpt`): with a count threshold small enough that the
+/// collector's threshold passes the set's constant score, the walk switches
+/// from the set's bits to the term's postings. Every run -- the uncached
+/// first ones through `ReqOptSumScorer`, the cached ones through the
+/// specialised bulk scorer -- returns the same hits and score bits, whatever
+/// the threshold and the number of hits, deletions included.
+#[test]
+fn a_cached_required_set_with_an_optional_term_scores_like_req_opt_sum() {
+    use crate::directory_reader::DirectoryReader;
+    use crate::field_norms::FieldNorms;
+    use crate::query::{BooleanQuery, Clause, TermInSetQuery, TermQuery};
+    use std::collections::HashMap;
+    let dir = lucene_store::FsDirectory::open(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/data/mixed_boolean_scoring_index"
+    ));
+    let bits = |h: &[crate::ScoreDoc]| -> Vec<(i32, u32)> {
+        h.iter().map(|d| (d.doc_id, d.score.to_bits())).collect()
+    };
+    crate::bulk_scorer::test_only_req_bits_opt_phases::take();
+    // Each with and without a `MUST_NOT` (which wraps the bulk scorer in
+    // `ReqExcl`, re-entering it window by window).
+    for (set, opt, not) in [
+        (["w3", "w5", "w7"], "w0", None),
+        (["w1", "w2", "w9"], "w4", None),
+        (["w3", "w5", "w7"], "w0", Some("w8")),
+        (["w1", "w2", "w9"], "w4", Some("w6")),
+    ] {
+        for (top_n, threshold) in [(10, 10u64), (3, 0), (5, 50), (20, 1000), (1, 1)] {
+            // A fresh reader: every combination starts uncached.
+            let reader = DirectoryReader::open(&dir).unwrap();
+            let opened = reader.open_segments().unwrap();
+            let segments = opened.as_open_segments();
+            assert!(segments.iter().any(|s| s.live_docs.is_some()));
+            let owned: Vec<HashMap<String, FieldNorms<'_>>> = reader
+                .field_norms("body")
+                .into_iter()
+                .map(|n| n.into_iter().map(|n| ("body".to_string(), n)).collect())
+                .collect();
+            let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> =
+                owned.iter().map(Some).collect();
+            let mut q = BooleanQuery::new();
+            q.must
+                .push(Clause::TermInSet(TermInSetQuery::new("body", set)));
+            q.should.push(Clause::Term(TermQuery::new(
+                "body",
+                opt.as_bytes().to_vec(),
+            )));
+            let run = || {
+                crate::multi_segment::search_boolean_query_multi_segment_maxscore_counting(
+                    &segments, &q, &norms, top_n, threshold,
+                )
+                .unwrap()
+                .0
+            };
+            let first = run();
+            assert!(!first.is_empty());
+            for i in 0..7 {
+                assert_eq!(
+                    bits(&run()),
+                    bits(&first),
+                    "run {i}, {set:?} + {opt} - {not:?}, top {top_n}, threshold {threshold}"
+                );
+            }
+            for r in reader.segment_readers() {
+                assert_eq!(
+                    r.query_cache().stats().0,
+                    1,
+                    "the set cached in {}",
+                    r.segment_name
+                );
+            }
+        }
+    }
+    // The specialised scorer ran, in both of its phases: the cached runs
+    // above did not all fall back to the generic `ReqOptSumScorer`.
+    let [required, optional] = crate::bulk_scorer::test_only_req_bits_opt_phases::take();
+    assert!(
+        required > 0 && optional > 0,
+        "phases reached: {required}, {optional}"
+    );
+}
+
 /// A lone term set, top hits with a small count threshold: once its
 /// rewritten disjunction is cached, the bulk scorer walks the cached bit set
 /// word by word and stops as soon as the threshold passes the constant score.

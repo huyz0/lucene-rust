@@ -222,9 +222,7 @@ impl Scorer for PhraseScorer<'_> {
         for t in self.terms.iter_mut() {
             let buf = &mut self.positions[t.slot];
             buf.clear();
-            for _ in 0..t.cursor.freq() {
-                buf.push(t.cursor.next_position().map_err(pe)?);
-            }
+            t.cursor.positions_into(buf).map_err(pe)?;
         }
         // A stack array for any ordinary phrase, a `Vec` only past eight terms.
         let mut inline: [&[i32]; 8] = [&[]; 8];

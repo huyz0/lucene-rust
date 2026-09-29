@@ -173,17 +173,27 @@ fn filter_competitive_hits(
     if min_required <= 0.0 {
         return;
     }
-    // `VectorUtil.filterByScore`: a stable in-place compaction.
-    let mut n = 0;
-    for i in 0..acc.docs.len() {
-        let s = acc.scores[i];
-        if s >= min_required {
-            acc.docs[n] = acc.docs[i];
-            acc.scores[n] = s;
-            n += 1;
-        }
-    }
+    // `VectorUtil.filterByScore` (`DefaultVectorUtilSupport`): a stable
+    // in-place compaction without a branch per hit -- every hit is written,
+    // and the write position moves on only past a kept one. Whether a score
+    // clears the bar is close to a coin flip, so a branch mispredicts.
+    let n = compact_by_score(&mut acc.docs, &mut acc.scores, min_required);
     acc.truncate(n);
+}
+
+/// Keeps the pairs whose score is at least `min`, in order, at the front;
+/// returns how many.
+fn compact_by_score(docs: &mut [i32], scores: &mut [f64], min: f64) -> usize {
+    let len = docs.len().min(scores.len());
+    let mut n = 0;
+    for i in 0..len {
+        let (d, s) = (docs[i], scores[i]);
+        // `n <= i < len`: in bounds, and written before it is read again.
+        docs[n] = d;
+        scores[n] = s;
+        n += usize::from(s >= min);
+    }
+    n
 }
 
 /// What the conjunction bulk scorer needs of a clause: Lucene's `Scorer` as
@@ -203,6 +213,13 @@ pub(crate) trait BulkLeg {
         live_docs: Option<&FixedBitSet>,
         out: &mut DocScores,
     ) -> Result<()>;
+    /// Whether the leg matches exactly `target` (past its current doc),
+    /// when it can tell without moving past it: `Some(true)` leaves it on
+    /// `target`, `Some(false)` where it was. `None`: use [`Self::advance`].
+    #[inline]
+    fn advance_exact_cheap(&mut self, _target: i32) -> Option<bool> {
+        None
+    }
 }
 
 /// What [`MaxScore`] keeps per clause besides the iterator itself
@@ -246,6 +263,10 @@ impl BulkLeg for TermLeg<'_> {
     #[inline]
     fn doc_id(&self) -> i32 {
         TermLeg::doc_id(self)
+    }
+    #[inline]
+    fn advance_exact_cheap(&mut self, target: i32) -> Option<bool> {
+        self.cursor.advance_exact_in_bits(target)
     }
     #[inline]
     fn advance(&mut self, target: i32) -> Result<i32> {
@@ -317,6 +338,17 @@ pub(crate) struct TermLeg<'a> {
     max_window_score: f32,
     freqs: Vec<i32>,
     norm_inv: Vec<f32>,
+}
+
+/// The largest score `impacts` allow for a term of `weight` -- the same float
+/// expression the document is scored with, so the bound can never land one
+/// ULP under a real score.
+fn bound(normed: bool, weight: f32, avg_field_length: f32, impacts: &[Impact]) -> f32 {
+    if normed {
+        similarity::max_score_for_impacts_weighted(impacts, weight, avg_field_length)
+    } else {
+        similarity::max_score_for_impacts_unnormed_weighted(impacts, weight)
+    }
 }
 
 impl<'a> TermLeg<'a> {
@@ -436,14 +468,12 @@ impl<'a> TermLeg<'a> {
     /// the document is scored with, so the bound can never land one ULP under
     /// a real score.
     fn impacts_bound(&self, impacts: &[Impact]) -> f32 {
-        match &self.norms {
-            Some(_) => similarity::max_score_for_impacts_weighted(
-                impacts,
-                self.weight,
-                self.avg_field_length,
-            ),
-            None => similarity::max_score_for_impacts_unnormed_weighted(impacts, self.weight),
-        }
+        bound(
+            self.norms.is_some(),
+            self.weight,
+            self.avg_field_length,
+            impacts,
+        )
     }
 
     /// `MaxScoreCache.getMaxScoreForLevel(0)`; an empty level (the tail block,
@@ -456,11 +486,12 @@ impl<'a> TermLeg<'a> {
         }
         let key = self.cursor.level0_last_doc_id();
         if key != self.l0_key {
+            let (normed, weight, avg) = (self.norms.is_some(), self.weight, self.avg_field_length);
             let impacts = self.cursor.level0_impacts();
             self.l0_max = if impacts.is_empty() {
                 self.global_max
             } else {
-                self.impacts_bound(impacts).min(self.global_max)
+                bound(normed, weight, avg, impacts).min(self.global_max)
             };
             self.l0_key = key;
         }
@@ -601,7 +632,9 @@ impl<'a> TermLeg<'a> {
     /// `ImpactsDISI.ensureCompetitive`.
     fn ensure_competitive(&mut self) -> Result<()> {
         let doc = self.cursor.doc_id();
-        if doc == NO_MORE_DOCS {
+        // No threshold yet: every block competes, so `advanceTarget` would
+        // return `doc` after reading the next block's impacts for nothing.
+        if doc == NO_MORE_DOCS || self.min_competitive <= 0.0 {
             return Ok(());
         }
         let target = self.advance_target(doc)?;
@@ -696,13 +729,28 @@ impl<'a> TermLeg<'a> {
 
 /// `ScorerUtil.applyRequiredClause`: keep only the buffered documents `leg`
 /// also matches, adding its score to theirs.
+///
+/// A candidate the leg's current block answers by itself (a bit set) is
+/// tested there, without moving past it: a miss leaves the leg behind the
+/// candidate. Once the buffer is done the leg is advanced to its last
+/// candidate if it is still behind it -- Lucene's position at that point too
+/// (the first posting at or after the last candidate it had to advance for,
+/// which is at or after the last candidate), so every caller sees the same
+/// state.
 fn apply_required_clause<L: BulkLeg + ?Sized>(acc: &mut DocScoreAcc, leg: &mut L) -> Result<()> {
+    let Some(&last) = acc.docs.last() else {
+        return Ok(());
+    };
     let mut n = 0;
     let mut cur = leg.doc_id();
     for i in 0..acc.docs.len() {
         let target = acc.docs[i];
         if cur < target {
-            cur = leg.advance(target)?;
+            match leg.advance_exact_cheap(target) {
+                Some(true) => cur = target,
+                Some(false) => continue,
+                None => cur = leg.advance(target)?,
+            }
         }
         if cur == target {
             acc.docs[n] = target;
@@ -711,6 +759,9 @@ fn apply_required_clause<L: BulkLeg + ?Sized>(acc: &mut DocScoreAcc, leg: &mut L
         }
     }
     acc.truncate(n);
+    if leg.doc_id() < last {
+        leg.advance(last)?;
+    }
     Ok(())
 }
 
@@ -812,21 +863,35 @@ pub(crate) fn score_filtered_term_window<C: ScoringCollector + ?Sized>(
     if leg.doc_id() < min {
         leg.advance(min)?;
     }
+    // A filter held as a bit set (a cached or dense clause) is tested inline,
+    // a bit per document, rather than through a virtual `contains` per
+    // document -- which was a quarter of a term filtered by a cached range.
+    // Taken once per window: nothing here sets the filter's threshold, so it
+    // cannot be emptied meanwhile.
+    let bits = filter.constant_bits();
+    let bits = bits.as_ref().and_then(|(set, _)| match &**set {
+        crate::exec::cache::CachedSet::Bits { bits, .. } => Some(bits),
+        crate::exec::cache::CachedSet::Docs(_) => None,
+    });
     loop {
-        leg.next_docs_and_scores_where(
-            max,
-            live_docs,
-            |d| {
-                Ok(match filter.contains(d) {
-                    Some(m) => m,
-                    None => {
-                        let at = filter.doc_id();
-                        (if at < d { filter.advance(d)? } else { at }) == d
-                    }
-                })
-            },
-            buf,
-        )?;
+        if let Some(bits) = bits {
+            leg.next_docs_and_scores_where(max, live_docs, |d| Ok(bits.get_doc(d)), buf)?;
+        } else {
+            leg.next_docs_and_scores_where(
+                max,
+                live_docs,
+                |d| {
+                    Ok(match filter.contains(d) {
+                        Some(m) => m,
+                        None => {
+                            let at = filter.doc_id();
+                            (if at < d { filter.advance(d)? } else { at }) == d
+                        }
+                    })
+                },
+                buf,
+            )?;
+        }
         if buf.docs.is_empty() {
             return Ok(leg.doc_id());
         }
@@ -844,6 +909,107 @@ pub(crate) fn score_filtered_term_window<C: ScoringCollector + ?Sized>(
             }
         }
         leg.set_min_competitive_score(min_competitive);
+    }
+}
+
+/// `ReqOptSumScorer(req, opt)` under `DefaultBulkScorer`, where `req` is a
+/// constant-scoring bit set (score `c`, a cached clause) and `opt` one
+/// scoring term: every document of `req` scores `c`, plus the term's score
+/// where the term matches too -- `float score = reqScore; score +=
+/// optScore`.
+///
+/// Two phases, as `ReqOptSumScorer` has. While the collector's threshold is
+/// at most `c`, a document of `req` alone can still compete, so every one is
+/// visited in order and the term advanced to it (Java's approximation skips
+/// no block then: `c + blockMax >= threshold` always holds). Once the
+/// threshold passes `c` (`optIsRequired`), only documents of both can
+/// compete, and they are the term's postings a batch at a time kept where
+/// the bit is set -- [`score_filtered_term_window`] with `c` added -- the
+/// term skipping blocks whose maximum cannot reach `threshold - c`. That
+/// bound is taken a few ulps low, so a block Java's `c + blockMax <
+/// threshold` keeps is never skipped here; what it lets through the
+/// collector's own `score >= threshold` check drops, as in Java.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn score_req_bits_opt_term<C: ScoringCollector + ?Sized>(
+    set: &crate::exec::cache::CachedSet,
+    c: f32,
+    leg: &mut TermLeg<'_>,
+    buf: &mut DocScores,
+    top_scores: bool,
+    live_docs: Option<&FixedBitSet>,
+    collector: &mut C,
+    min: i32,
+    max: i32,
+) -> Result<i32> {
+    // `Bulk::ReqBitsOpt` is only built from `constant_bits()`, which answers
+    // for a bit set alone.
+    debug_assert!(
+        matches!(set, crate::exec::cache::CachedSet::Bits { .. }),
+        "ReqBitsOpt over a sparse cached set"
+    );
+    let crate::exec::cache::CachedSet::Bits { bits, .. } = set else {
+        return Ok(NO_MORE_DOCS);
+    };
+    let words = bits.words();
+    let len = bits.len();
+    let next_bit = |from: i32| -> i32 {
+        let from = usize::try_from(from).unwrap_or(0);
+        match lucene_util::fixed_bit_set::next_set_bit_in_words(words, from) {
+            Some(i) if i < len => i as i32,
+            _ => NO_MORE_DOCS,
+        }
+    };
+    let mut min_competitive = min_competitive_score(collector);
+    let mut doc = next_bit(min);
+    while !(top_scores && min_competitive > c) {
+        if doc >= max {
+            return Ok(doc);
+        }
+        if live_docs.is_none_or(|l| l.get_doc(doc)) {
+            let mut score = c;
+            if leg.doc_id() < doc {
+                leg.advance(doc)?;
+            }
+            if leg.doc_id() == doc {
+                score += leg.score()?;
+            }
+            collector.collect(doc, score);
+            min_competitive = min_competitive_score(collector);
+            #[cfg(test)]
+            test_only_req_bits_opt_phases::record(0);
+        }
+        doc = next_bit(doc.saturating_add(1));
+    }
+    // `optIsRequired` from `doc` on.
+    let conservative = |min: f32| {
+        // ARITH: finite, non-negative scores; a few ulps of the larger
+        // operand below the exact difference, clamped at zero.
+        #[allow(clippy::arithmetic_side_effects)]
+        let t = (min - c) - (min.abs() + c.abs()) * 4.0 * f32::EPSILON;
+        t.max(0.0)
+    };
+    leg.set_min_competitive_score(conservative(min_competitive));
+    if leg.doc_id() < doc {
+        leg.advance(doc)?;
+    }
+    loop {
+        if leg.doc_id() >= max {
+            return Ok(leg.doc_id());
+        }
+        leg.next_docs_and_scores_where(max, live_docs, |d| Ok(bits.get_doc(d)), buf)?;
+        if buf.docs.is_empty() {
+            return Ok(leg.doc_id());
+        }
+        #[cfg(test)]
+        test_only_req_bits_opt_phases::record(1);
+        for (&d, &s) in buf.docs.iter().zip(&buf.scores) {
+            let score = c + s;
+            if score >= min_competitive {
+                collector.collect(d, score);
+                min_competitive = min_competitive_score(collector);
+            }
+        }
+        leg.set_min_competitive_score(conservative(min_competitive));
     }
 }
 
@@ -1283,6 +1449,8 @@ pub(crate) struct MaxScore {
     /// Indices into the legs, in `allScorers` order: non-essential first.
     order: Vec<usize>,
     scratch: Vec<usize>,
+    /// [`Self::partition_scorers`]' sort keys, paired with their leg.
+    keyed: Vec<(f64, usize)>,
     first_essential: usize,
     first_required: usize,
     next_min_competitive: f32,
@@ -1322,6 +1490,7 @@ impl MaxScore {
             heap: Vec::with_capacity(n),
             order: (0..n).collect(),
             scratch: Vec::with_capacity(n),
+            keyed: Vec::with_capacity(n),
             first_essential: 0,
             first_required: n,
             next_min_competitive: f32::INFINITY,
@@ -1601,14 +1770,20 @@ impl MaxScore {
 
     fn partition_scorers<L: MaxScoreLeg>(&mut self, legs: &[L]) -> bool {
         let n = legs.len();
+        // Stable, like Java's `Arrays.sort` over objects. The keys are worked
+        // out once per leg, not once per comparison: with a wide disjunction
+        // (a fuzzy expansion's fifty terms) re-deriving them inside the
+        // comparator was a tenth of the query.
+        self.keyed.clear();
+        self.keyed.extend(self.order.iter().map(|&w| {
+            (
+                legs[w].window_max() as f64 / legs[w].leg_cost().max(1) as f64,
+                w,
+            )
+        }));
+        self.keyed.sort_by(|a, b| a.0.total_cmp(&b.0));
         self.scratch.clear();
-        self.scratch.extend_from_slice(&self.order);
-        // Stable, like Java's `Arrays.sort` over objects.
-        self.scratch.sort_by(|&a, &b| {
-            let ka = legs[a].window_max() as f64 / legs[a].leg_cost().max(1) as f64;
-            let kb = legs[b].window_max() as f64 / legs[b].leg_cost().max(1) as f64;
-            ka.total_cmp(&kb)
-        });
+        self.scratch.extend(self.keyed.iter().map(|&(_, w)| w));
         let mut max_score_sum = 0.0f64;
         self.first_essential = 0;
         self.next_min_competitive = f32::INFINITY;
@@ -2197,6 +2372,30 @@ impl ReqOptBulk {
     }
 }
 
+/// How far [`score_req_bits_opt_term`] got, per thread: `[documents of the
+/// required set collected, batches of the optional term collected once it
+/// became required]`.
+#[cfg(test)]
+pub(crate) mod test_only_req_bits_opt_phases {
+    use std::cell::Cell;
+
+    thread_local! {
+        static HITS: Cell<[u64; 2]> = const { Cell::new([0; 2]) };
+    }
+
+    pub(crate) fn record(phase: usize) {
+        HITS.with(|h| {
+            let mut v = h.get();
+            v[phase] += 1;
+            h.set(v);
+        });
+    }
+
+    pub(crate) fn take() -> [u64; 2] {
+        HITS.with(|h| h.replace([0; 2]))
+    }
+}
+
 /// Which of `ReqOptBulk`'s paths ran, per thread, for tests that must show
 /// every path is reached: `[required-led batch, optional-led with one
 /// optional leg, optional-led through the window bitset, filtered MaxScore]`.
@@ -2231,5 +2430,26 @@ pub(crate) mod test_only_req_opt_paths {
 
     pub(crate) fn take_windows() -> u64 {
         WINDOWS.with(|w| w.replace(0))
+    }
+}
+
+#[cfg(test)]
+mod compact_tests {
+    use super::compact_by_score;
+
+    /// The documents scoring at least `min`, in order, each beside its own
+    /// score -- a score equal to `min` kept -- and nothing from an empty or
+    /// wholly non-competitive batch.
+    #[test]
+    fn compact_by_score_keeps_the_competitive_hits_in_order() {
+        let mut docs = vec![1, 2, 3, 4, 5, 6];
+        let mut scores = vec![0.5, 2.0, 1.0, 0.99, 3.0, 1.0];
+        let n = compact_by_score(&mut docs, &mut scores, 1.0);
+        assert_eq!(n, 4);
+        assert_eq!(&docs[..n], &[2, 3, 5, 6]);
+        assert_eq!(&scores[..n], &[2.0, 1.0, 3.0, 1.0]);
+        let (mut d, mut s) = (vec![7], vec![0.1]);
+        assert_eq!(compact_by_score(&mut d, &mut s, 1.0), 0);
+        assert_eq!(compact_by_score(&mut [], &mut [], 0.0), 0);
     }
 }

@@ -99,26 +99,41 @@ pub(crate) fn multi_term<'a>(
         };
         // Highest `docFreq` first, ties in term order: the first 16 stay
         // iterators, the rest go into one bitset.
-        terms.sort_by_key(|t| std::cmp::Reverse(t.1.stats.doc_freq));
-        let rest = terms.split_off(BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD);
+        // Only which 16 matters, not the order of the rest: a selection by
+        // `(docFreq desc, term order)` on indices, where a full stable sort
+        // moved every expanded term (thousands, for a short prefix) around.
+        let mut order: Vec<usize> = (0..terms.len()).collect();
+        let key = |i: &usize| (std::cmp::Reverse(terms[*i].1.stats.doc_freq), *i);
+        order.select_nth_unstable_by_key(BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD, key);
+        order[..BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD].sort_unstable_by_key(key);
+        let mut keep = vec![false; terms.len()];
+        for &i in &order[..BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD] {
+            keep[i] = true;
+        }
+        let mut top = Vec::with_capacity(BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD);
+        let mut rest = Vec::with_capacity(terms.len() - BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD);
+        let mut slots: Vec<Option<_>> = terms.drain(..).map(Some).collect();
+        for &i in &order[..BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD] {
+            top.extend(slots[i].take());
+        }
+        for (i, slot) in slots.into_iter().enumerate() {
+            if !keep[i] {
+                rest.extend(slot);
+            }
+        }
+        terms = top;
+        // `DocIdSetBuilder` over the rest, each term's postings ORed in --
+        // a bit-set block a word at a time (`intoBitSet`).
         let len = usize::try_from(max_doc).unwrap_or(0);
-        let mut bits = FixedBitSet::new(len);
-        let mut cardinality = 0i64;
+        let mut words = vec![0u64; lucene_util::fixed_bit_set::bits2words(len)];
         for (_, seeked) in &rest {
             let mut cursor =
                 field_terms.lazy_postings_for(seeked, doc_in, PostingsFlags::DocsOnly)?;
-            let mut doc = cursor.next_doc().map_err(pe)?;
-            while doc != NO_MORE_DOCS {
-                if let Ok(i) = usize::try_from(doc) {
-                    // FBS: `i < len`, the set's length, checked here.
-                    if i < len && !bits.get(i) {
-                        bits.set(i);
-                        cardinality += 1;
-                    }
-                }
-                doc = cursor.next_doc().map_err(pe)?;
-            }
+            cursor.next_doc().map_err(pe)?;
+            cursor.into_window(0, max_doc, &mut words).map_err(pe)?;
         }
+        let bits = FixedBitSet::from_words(words, len);
+        let cardinality = bits.cardinality() as i64;
         if cardinality > 0 {
             scorers.push(Box::new(CachedScorer::new(std::sync::Arc::new(
                 CachedSet::Bits { bits, cardinality },

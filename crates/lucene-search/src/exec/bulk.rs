@@ -63,6 +63,15 @@ pub(crate) enum Bulk<'a> {
     /// `ReqOptSumScorer`'s shape, a batch at a time: the required legs
     /// (cheapest first), then the optional ones. See `ReqOptBulk`.
     ReqOpt(Vec<TermLeg<'a>>, Vec<TermLeg<'a>>, Box<ReqOptBulk>),
+    /// `ReqOptSumScorer` over one required constant-scoring bit set (a
+    /// cached clause) and one optional scoring term. See
+    /// [`crate::bulk_scorer::score_req_bits_opt_term`].
+    ReqBitsOpt(
+        std::sync::Arc<super::cache::CachedSet>,
+        f32,
+        Box<TermLeg<'a>>,
+        DocScores,
+    ),
     /// `ReqExclBulkScorer`.
     ReqExcl(Box<Bulk<'a>>, BoxScorer<'a>),
     /// A dismax of terms, a window at a time. See `DisMaxBulk`.
@@ -93,6 +102,7 @@ impl<'a> Bulk<'a> {
             Bulk::Disjunction(_, Some(_), _) => "filtered_disjunction",
             Bulk::ScorerDisjunction(..) => "scorer_disjunction",
             Bulk::ReqOpt(..) => "req_opt",
+            Bulk::ReqBitsOpt(..) => "req_bits_opt",
             Bulk::ReqExcl(..) => "req_excl",
             Bulk::DisMax(..) => "dismax",
             Bulk::Union(..) => "union",
@@ -137,6 +147,17 @@ impl<'a> Bulk<'a> {
                 state.score(legs, filter, live_docs, collector, min, max)
             }
             Bulk::ReqOpt(req, opt, state) => state.score(req, opt, live_docs, collector, min, max),
+            Bulk::ReqBitsOpt(set, c, leg, buf) => crate::bulk_scorer::score_req_bits_opt_term(
+                set,
+                *c,
+                leg,
+                buf,
+                mode == Mode::TopScores,
+                live_docs,
+                collector,
+                min,
+                max,
+            ),
             Bulk::DisMax(legs, state) => state.score(legs, live_docs, collector, min, max),
             Bulk::Union(legs) => union_score(legs, live_docs, collector, min, max),
             Bulk::MinShouldMatch(legs, state) => state.score(legs, live_docs, collector, min, max),
@@ -780,6 +801,29 @@ pub(crate) fn bulk_boolean<'a>(
         } else {
             None
         }
+    } else if let Some((set, c)) = (must.len() == 1
+        && filter.is_empty()
+        && should.len() == 1
+        && msm == 0
+        && mode.needs_scores()
+        && should[0].0.is_leg())
+    .then(|| match &must[0].0 {
+        Child::Scorer(s) => s.constant_bits(),
+        Child::Leg(_) => None,
+    })
+    .flatten()
+    {
+        // A required clause the query cache answers as a constant-scored bit
+        // set, and one optional term: `ReqOptSumScorer`, without a virtual
+        // call per document on either side.
+        let (leg, _) = should.pop().expect("one optional clause");
+        must.clear();
+        Some(Bulk::ReqBitsOpt(
+            set,
+            c,
+            Box::new(leg.into_leg()),
+            DocScores::default(),
+        ))
     } else if required > 0
         && msm == 0
         && mode.needs_scores()
