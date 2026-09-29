@@ -317,6 +317,14 @@ def compare_all(label, ids):
     for idx in (JAVA, RUST):
         must("POST", f"/{idx}/_refresh")
     count = compare_gets(label, ids)
+    # Adjacent doc ids in one fetch take OpenSearch's sequential stored-fields reader, which
+    # needs a `CodecReader` under every leaf wrapper -- a soft-deletes wrapper that was not one
+    # failed the whole shard's fetch once a segment had deletes.
+    seq = {"query": {"match_all": {}}, "size": 30, "sort": ["_doc"], "track_total_hits": True}
+    for idx in (JAVA, RUST):
+        r = must("POST", f"/{idx}/_search?request_cache=false", seq)
+        check(r["_shards"]["failed"] == 0 and len(r["hits"]["hits"]) == min(30, r["hits"]["total"]["value"]),
+              f"{label}: sequential fetch on {idx}: {json.dumps(r['_shards'])[:300]}")
     compare_searches(label, scores=False)
     # A flush first: the history a merge keeps is bounded by the safe commit, and the Rust
     # engine commits on every refresh -- flushing gives Java's engine the same safe commit, so
