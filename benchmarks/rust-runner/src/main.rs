@@ -54,6 +54,11 @@ fn main() {
     // wins. Time-boxing gives every query the same warmup *duration*.
     let warmup_ms: u128 = a[3].parse().expect("warmup_ms");
     let measure_ms: u128 = a[4].parse().expect("measure_ms");
+    let negative_control: u32 = std::env::var("BENCH_NEGATIVE_CONTROL")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1)
+        .max(1);
 
     let queries = load_queries(queries_path);
     let dir = MmapDirectory::open(dir_path.clone());
@@ -450,6 +455,12 @@ fn main() {
         let t0 = Instant::now();
         loop {
             let s = Instant::now();
+            // The nightly perf job's negative control: every timed query runs
+            // `N` times, a known `N`-fold regression the gate must catch
+            // (`scripts/bench-gate.py --negative-control`).
+            for _ in 1..negative_control {
+                std::hint::black_box(run());
+            }
             last = run();
             samples.push(s.elapsed().as_micros() as u64);
             // At least 5 samples so a percentile means something, even when a
