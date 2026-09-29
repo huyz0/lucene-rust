@@ -132,7 +132,7 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `sort_*`, `search_after`, `collapse`, `rescore`, `profile` | the request needs something the native top-hits path does not produce |
 | `scroll_after` | a sorted scroll page whose last emitted hit carries no sort values |
 | `timeout` | the request's `timeout` had already passed when the native call would start; Lucene answers it (nothing, `timed_out`) |
-| `query_<Class>` | the rewritten query's root is not a supported shape — e.g. `query_FuzzyQuery` (`fuzzy`), `query_TermQuery` on a numeric field |
+| `query_<Class>` | the rewritten query's root is not a supported shape — e.g. `query_ToParentBlockJoinQuery` (`nested`), `query_FunctionScoreQuery` (`function_score`), `query_TermQuery` on a numeric field |
 | `regexp_flags` | a `regexp` whose flags are not the default `ALL` with no match flags — e.g. `case_insensitive` (compared by the automaton they build) |
 | `clause_<Class>` | the same, for a clause anywhere below the root (inside a `bool`, `constant_score`, `dis_max`, a boost) |
 | `query_too_deep`, `query_too_large` | more than 32 levels, or more than 1,024 nodes counting wrappers (Lucene counts only leaves, and `indices.query.bool.max_clause_count` can raise its limit) |
@@ -174,7 +174,7 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
   deadline without `allow_partial_search_results` fails where Lucene's would
   not.
 - **The native query cache is per segment, not node-wide.** It follows
-  Lucene's `LRUQueryCache` policy but is bounded per segment (64 entries,
+  Lucene's `LRUQueryCache` policy but is bounded per segment (1,000 entries,
   16 MB), outside `indices.queries.cache.size` and its stats; a shard with
   many large segments can hold more than that setting would allow.
 - **Linux only**, x86_64 and aarch64; the library needs glibc ≥ 2.34 (the
