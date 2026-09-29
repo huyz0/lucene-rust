@@ -149,7 +149,7 @@ impl MetricState {
 
     /// A document with the one value `v`, keeping the parts in `N`.
     #[inline]
-    fn one<const N: u8>(&mut self, v: f64) {
+    pub(crate) fn one<const N: u8>(&mut self, v: f64) {
         if N & NEED_COUNT != 0 {
             self.count += 1;
         }
@@ -784,6 +784,67 @@ fn slice_states(
     Ok((states, terms, seen))
 }
 
+/// Documents per [`fold_windows`] window: a multiple of 64, so each window's
+/// presence words line up with the segment's bit sets.
+const FOLD_WINDOW: usize = 1024;
+
+/// A single-valued column streamed into `state` a window at a time
+/// ([`NumericReader::fill_window`]: a sparse column's `IndexedDISI` walked
+/// once per window rather than probed per document), each window's
+/// documents with a value and `accept`ed taken a word at a time, in
+/// ascending order -- the order the sum's compensation depends on. A `min`
+/// or `max` of longs is folded as integers and handed over once per window:
+/// `long -> double` is monotonic, so the extreme of the converted values is
+/// the converted extreme.
+fn fold_windows<const N: u8>(
+    r: &mut NumericReader<'_>,
+    accept: &Accept<'_>,
+    state: &mut MetricState,
+    kind: ValueKind,
+    max_doc: i32,
+    values: &mut Vec<i64>,
+) -> Result<()> {
+    let integer_extreme = kind == ValueKind::Long && (N == NEED_MIN || N == NEED_MAX);
+    values.resize(FOLD_WINDOW, 0);
+    let mut present = [0u64; FOLD_WINDOW / 64];
+    let mut start = 0i32;
+    while start < max_doc {
+        // ARITH: `start < max_doc`, so the difference is positive; `start`
+        // stays a multiple of `FOLD_WINDOW` below `max_doc + FOLD_WINDOW`,
+        // and `base + w` indexes the segment's words.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            let len = ((max_doc - start) as usize).min(FOLD_WINDOW);
+            r.fill_window(start, &mut values[..len], &mut present)?;
+            let base = start as usize >> 6;
+            let mut best = if N == NEED_MIN { i64::MAX } else { i64::MIN };
+            let mut any = false;
+            for (w, &have) in present[..len.div_ceil(64)].iter().enumerate() {
+                let mut bits = have & accept.word(base + w);
+                while bits != 0 {
+                    let v = values[w * 64 + bits.trailing_zeros() as usize];
+                    bits &= bits - 1;
+                    if integer_extreme {
+                        any = true;
+                        best = if N == NEED_MIN {
+                            best.min(v)
+                        } else {
+                            best.max(v)
+                        };
+                    } else {
+                        state.one::<N>(to_double(kind, v));
+                    }
+                }
+            }
+            if any {
+                state.one::<N>(best as f64);
+            }
+            start += len as i32;
+        }
+    }
+    Ok(())
+}
+
 /// One field's column over a segment's matches into `state`, keeping `N`.
 fn fold<const N: u8>(
     values: Values<'_>,
@@ -796,11 +857,7 @@ fn fold<const N: u8>(
     match (values, read) {
         (Values::Absent, _) => {}
         (Values::Single(mut r), ColumnRead::Stream(accept)) => {
-            r.for_each_value(0, max_doc, |doc, v| {
-                if accept.test(doc) {
-                    state.one::<N>(to_double(kind, v));
-                }
-            })?
+            fold_windows::<N>(&mut r, accept, state, kind, max_doc, raw)?
         }
         (Values::Single(mut r), ColumnRead::Seek(docs)) => {
             for &doc in *docs {
@@ -933,6 +990,16 @@ pub(crate) enum Accept<'b> {
 }
 
 impl Accept<'_> {
+    /// Word `i` of the accepted documents' bits: documents `64 i..64 i + 64`.
+    #[inline]
+    fn word(&self, i: usize) -> u64 {
+        match self {
+            Accept::Live(None) => u64::MAX,
+            Accept::Live(Some(l)) => l.words().get(i).copied().unwrap_or(0),
+            Accept::Marked(words) => words.get(i).copied().unwrap_or(0),
+        }
+    }
+
     #[inline]
     pub(crate) fn test(&self, doc: i32) -> bool {
         match self {

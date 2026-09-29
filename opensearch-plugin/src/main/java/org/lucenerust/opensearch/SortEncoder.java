@@ -347,7 +347,7 @@ public final class SortEncoder {
                     maxChildren = n.getNestedSort().getMaxChildren();
                 }
             }
-            Field data = field(src.getClass(), "indexFieldData");
+            Field data = Reflect.declared(src.getClass(), "indexFieldData");
             if (data == null || !(data.get(src) instanceof IndexNumericFieldData ifd)) {
                 return null;
             }
@@ -362,7 +362,7 @@ public final class SortEncoder {
                 return null;
             }
             if (type == LONG) {
-                Field converter = field(src.getClass(), "converter");
+                Field converter = Reflect.declared(src.getClass(), "converter");
                 if (converter == null || converter.get(src) != null) {
                     return null;
                 }
