@@ -437,13 +437,8 @@ public final class NativeAggregations {
 
     /** A private field of {@code f}'s own class, or null when it has none. */
     private static Object declared(AggregatorFactory f, String name) throws IllegalAccessException {
-        try {
-            Field field = f.getClass().getDeclaredField(name);
-            field.setAccessible(true);
-            return field.get(f);
-        } catch (NoSuchFieldException e) {
-            return null;
-        }
+        Field field = Reflect.declared(f.getClass(), name);
+        return field == null ? null : field.get(f);
     }
 
     /** The factories' classes are package-private, so they are told apart by name. */

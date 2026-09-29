@@ -32,8 +32,10 @@ pub(crate) fn run_slices_if<T: Send>(
 /// An upper bound on how many documents `query` matches over `segments`,
 /// from the term dictionaries alone: a term's `docFreq`, a conjunction's
 /// smallest required clause, a disjunction's clauses summed, and every other
-/// clause as all of each segment's documents. Only ever used to decide
-/// whether to hand slices to other threads.
+/// clause -- or a term whose dictionary cannot be read -- as all of each
+/// segment's documents. Deciding whether to hand slices to other threads,
+/// and [`crate::terminate::cannot_reach`], whose answer is only right while
+/// this never falls below the true count.
 pub(crate) fn estimated_matches(
     segments: &[crate::multi_segment::OpenSegment<'_>],
     query: &crate::query::BooleanQuery,
@@ -49,12 +51,13 @@ pub(crate) fn estimated_matches(
         match c {
             Clause::Term(t) => segments
                 .iter()
-                .map(|s| {
-                    s.fields
-                        .field(&t.field)
-                        .and_then(|f| f.try_seek_exact(&t.term).ok().flatten())
-                        .map_or(0, |st| u64::try_from(st.doc_freq).unwrap_or(0))
-                })
+                .map(
+                    |s| match s.fields.field(&t.field).map(|f| f.try_seek_exact(&t.term)) {
+                        None | Some(Ok(None)) => 0,
+                        Some(Ok(Some(st))) => u64::try_from(st.doc_freq).unwrap_or(0),
+                        Some(Err(_)) => u64::try_from(s.max_doc.unwrap_or(i32::MAX)).unwrap_or(0),
+                    },
+                )
                 .fold(0, u64::saturating_add),
             Clause::MatchNoDocs(_) => 0,
             Clause::Boolean(b) => boolean(segments, b),
