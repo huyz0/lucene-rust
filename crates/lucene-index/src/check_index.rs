@@ -3699,7 +3699,45 @@ fn check_soft_deletes(
     let Some(fi) = field_infos.fields.iter().find(|f| f.soft_deletes_field) else {
         return;
     };
-    let Some(opened) = open_doc_values(dir, commit, si, field_infos) else {
+    // A soft delete that lands on a segment already written is a doc-values
+    // update: a new `.fnm` generation naming the field's new
+    // `.dvm`/`.dvd` generation (`_4o_1_Lucene90_0.dvm`). Reading only the
+    // base column counted the soft deletes the segment was written with, and
+    // failed every segment that took one later -- where real Lucene's
+    // `CheckIndex`, reading through `SegmentDocValuesProducer`, passes.
+    let updated = if commit.field_infos_gen == -1 {
+        None
+    } else {
+        match crate::field_updates::read_current_field_infos(dir, commit, &si.files) {
+            Ok(current) => current
+                .fields
+                .iter()
+                .position(|f| f.soft_deletes_field && f.doc_values_gen != -1)
+                .map(|index| (current, index)),
+            Err(e) => {
+                checks.push(Check::fail("soft_deletes.count_matches", e.to_string()));
+                return;
+            }
+        }
+    };
+    let opened = match &updated {
+        Some((current, index)) => {
+            let per_field =
+                crate::field_updates::field_per_field_component(&current.fields[*index])
+                    .unwrap_or_default();
+            crate::field_updates::read_current_column(
+                dir, commit, &si.files, current, *index, &per_field,
+            )
+            .map_err(|e| e.to_string())
+            .transpose()
+            .map(|r| r.map(|(meta, dvd)| (meta, lucene_store::directory::Input::Owned(dvd))))
+        }
+        None => open_doc_values(dir, commit, si, field_infos),
+    };
+    let fi = updated
+        .as_ref()
+        .map_or(fi, |(current, index)| &current.fields[*index]);
+    let Some(column) = opened else {
         // Same shape as the index sort above: `.fnm` names a soft-deletes
         // field, so `softDelCount` is a claim about data -- and with no
         // doc-values files there is no data to check it against. Reported,
@@ -3711,7 +3749,7 @@ fn check_soft_deletes(
         return;
     };
     let result = (|| -> Result<i32, String> {
-        let (meta, dvd) = opened?;
+        let (meta, dvd) = column?;
         let live = if commit.del_gen == -1 {
             None
         } else {
