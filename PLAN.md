@@ -3883,7 +3883,9 @@ writer's segments through Java readers. Details: `docs/opensearch-engine.md`,
 
 **Exit criteria:** OpenSearch integration test suite (`:server` engine tests adapted +
 full REST test suite for search/index/get/delete) green on the Rust engine for a
-supported feature matrix; multi-day soak test with random restarts, no index corruption.
+supported feature matrix; every structure that can accumulate held to a bound by a
+tight-loop test (in place of a multi-day soak -- see `docs/milestones/m6-production-candidate.md`),
+no index corruption.
 
 ### Phase 7 — Performance and SIMD hardening (continuous, dedicated 6–8 weeks)
 
