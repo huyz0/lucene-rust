@@ -85,6 +85,9 @@ tasks.register('bundlePlugin', Zip) {
         expand(version: version, opensearchVersion: opensearchVersion)
     }
     from(nativeLib) { into "native/${hostPlatform}" }
+    // The licence and notices ship with the binary they cover.
+    from(file("${repoRoot}/LICENSE"))
+    from(file("${repoRoot}/NOTICE"))
     // A library built elsewhere for another platform, e.g.
     // -PextraNative=linux-aarch64=/path/to/liblucene_ffi.so
     if (findProperty('extraNative')) {
