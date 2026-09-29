@@ -781,6 +781,28 @@ impl<'d> PointsReader<'d> {
         out
     }
 
+    /// `PointRangeQuery`'s `Weight.count` walk (its private `pointCount`),
+    /// exact: a cell entirely inside the query adds its point count
+    /// (`BKDPointTree.size()`) without reading a leaf, a cell outside adds
+    /// nothing, and a leaf the query crosses is decoded and handed to the
+    /// visitor value by value ([`IntersectVisitor::visit_with_value`]), as
+    /// [`intersect`](Self::intersect) does. Returns the inside cells' points;
+    /// the visitor counts what it accepted of the crossing leaves.
+    pub fn count_points<V: IntersectVisitor>(
+        &self,
+        field_number: i32,
+        visitor: &mut V,
+    ) -> Result<i64> {
+        let field = self
+            .field(field_number)
+            .ok_or(Error::IllegalFieldNumber(field_number))?;
+        let inner_nodes = self.inner_nodes(field)?;
+        let mut input = SliceInput::new(inner_nodes);
+        let mut ctx = IntersectCtx::new(field, self.kdd, true);
+        let root_fp = input.read_vlong()?;
+        count_node(&mut input, 1, root_fp, &mut ctx, visitor, 0)
+    }
+
     /// [`estimate_point_count_bounded`](Self::estimate_point_count_bounded)
     /// walking with `scratch`'s buffers -- see [`intersect_in`](Self::intersect_in).
     pub fn estimate_point_count_bounded_in<V: IntersectVisitor>(
@@ -1486,6 +1508,66 @@ fn estimate_node<V: IntersectVisitor>(
 
             node.restore(ctx);
             Ok(cost)
+        }
+    }
+}
+
+/// One node of [`PointsReader::count_points`]' walk: [`estimate_node`]'s
+/// descent with [`intersect_node`]'s leaf.
+fn count_node<V: IntersectVisitor>(
+    input: &mut SliceInput,
+    node_id: i32,
+    fp: i64,
+    ctx: &mut IntersectCtx,
+    visitor: &mut V,
+    level: usize,
+) -> Result<i64> {
+    match visitor.compare(&ctx.min, &ctx.max) {
+        Relation::CellOutsideQuery => Ok(0),
+        Relation::CellInsideQuery => ctx.field.subtree_size(node_id),
+        Relation::CellCrossesQuery if node_id >= ctx.field.num_leaves => {
+            let mut kdd_input = SliceInput::new(ctx.kdd);
+            seek_leaf_block(&mut kdd_input, fp)?;
+            read_leaf_block_into(
+                &mut kdd_input,
+                ctx.field,
+                &mut ctx.doc_ids,
+                &mut VisitSink(visitor),
+            )?;
+            Ok(0)
+        }
+        Relation::CellCrossesQuery => {
+            let node = read_inner_node(input, node_id, ctx, level)?;
+            // ARITH: bounded by `child_ids`' ~31-level cap, as in
+            // `intersect_node`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let child_level = level + 1;
+            clamp_bound(
+                &mut ctx.max,
+                &mut ctx.stack[level],
+                node.dim_pos..node.dim_end,
+                ctx.reuse_scratch,
+            );
+            ctx.negative_deltas[node.split_dim] = true;
+            let left = count_node(input, node.left_child, fp, ctx, visitor, child_level)?;
+            restore_bound(&mut ctx.max, &ctx.stack[level], node.dim_pos..node.dim_end);
+
+            input.seek(node.right_node_position)?;
+            let right_delta = input.read_vlong()?;
+            let right_fp = child_block_fp(fp, right_delta)?;
+            clamp_bound(
+                &mut ctx.min,
+                &mut ctx.stack[level],
+                node.dim_pos..node.dim_end,
+                ctx.reuse_scratch,
+            );
+            ctx.negative_deltas[node.split_dim] = false;
+            let right = count_node(input, node.right_child, right_fp, ctx, visitor, child_level)?;
+            restore_bound(&mut ctx.min, &ctx.stack[level], node.dim_pos..node.dim_end);
+
+            node.restore(ctx);
+            // Each half is at most the field's point count, an `i64`.
+            Ok(left.saturating_add(right))
         }
     }
 }
@@ -6951,6 +7033,47 @@ mod intersect_tests {
             format!("{err}").contains("range query bounds must be 8 bytes"),
             "unexpected error: {err}"
         );
+    }
+
+    /// `count_points` is exact: the inside cells' sizes plus what the
+    /// visitor accepts of the crossing leaves is the number of points
+    /// `range_query` finds, for ranges inside one leaf, across many, over
+    /// everything and over nothing; an unknown field is an error.
+    #[test]
+    fn count_points_counts_what_range_query_finds() {
+        let (kdm, kdi, kdd, id) = single_dim_index();
+        let reader = open(&kdm, &kdi, &kdd, &id, "").unwrap();
+        let field = reader.field(0).unwrap();
+        let bounds = [
+            i64::MIN,
+            -1_000_001,
+            -1_000_000,
+            -992_081,
+            -500_000,
+            0,
+            7_919,
+            1_000_000,
+            1_367_000,
+            i64::MAX,
+        ];
+        let (mut saw_inside, mut saw_crossing) = (false, false);
+        for &lo in &bounds {
+            for &hi in bounds.iter().filter(|&&h| h >= lo) {
+                let (lower, upper) = (long_sortable_bytes(lo), long_sortable_bytes(hi));
+                let want = reader.range_query(0, &lower, &upper).unwrap().len() as i64;
+                let mut visitor = reader.range_visitor(field, &lower, &upper).unwrap();
+                let inside = reader.count_points(0, &mut visitor).unwrap();
+                let crossing = visitor.docs.len() as i64;
+                assert_eq!(inside + crossing, want, "[{lo}, {hi}]");
+                saw_inside |= inside > 0;
+                saw_crossing |= crossing > 0;
+            }
+        }
+        assert!(saw_inside && saw_crossing, "both kinds of cell counted");
+        assert!(matches!(
+            reader.count_points(99, &mut CountingVisitor::default()),
+            Err(Error::IllegalFieldNumber(99))
+        ));
     }
 
     /// `estimate_point_count` never visits a document and never decodes a

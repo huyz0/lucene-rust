@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::query::{MatchAllDocsQuery, PointsRangeQuery};
-use lucene_search::terminate::{count_until, search_sorted_until, terminate_after};
+use lucene_search::terminate::{cannot_reach, count_until, search_sorted_until, terminate_after};
 use lucene_search::top_field::{FieldDoc, Selector, SortField, SortType};
 use lucene_search::{BooleanQuery, Clause, PhraseQuery, TermQuery};
 use lucene_store::FsDirectory;
@@ -203,6 +203,7 @@ fn terminate_after_matches_real_lucene() {
     let mut failures = Vec::new();
     let (mut terminated, mut not_terminated, mut counted, mut tracked, mut ranged) =
         (0, 0, 0, 0, 0);
+    let mut unreachable = 0;
     for r in 0..runs {
         let k = format!("run.{r}");
         let text = m.get(&format!("{k}.query"));
@@ -215,6 +216,16 @@ fn terminate_after_matches_real_lucene() {
             terminated += 1;
         } else {
             not_terminated += 1;
+        }
+        // A limit the dictionaries say cannot be reached is one Lucene
+        // neither reached nor stopped early at.
+        if cannot_reach(&segments, &q, n) {
+            unreachable += 1;
+            if want_terminated || collected >= n {
+                failures.push(format!(
+                    "run {r}: {text} n={n}: cannot_reach, but Lucene collected {collected} terminated {want_terminated}"
+                ));
+            }
         }
         let spec = m.get(&format!("{k}.sort"));
         if spec == "count" {
@@ -296,6 +307,10 @@ fn terminate_after_matches_real_lucene() {
     assert!(counted > 20, "segment-counted runs: {counted}");
     assert!(tracked > 50, "tracked max-score runs: {tracked}");
     assert!(ranged > 50, "runs left to Lucene: {ranged}");
+    assert!(
+        unreachable > 20,
+        "runs whose limit cannot be reached: {unreachable}"
+    );
     assert!(
         failures.is_empty(),
         "{} of {runs} runs disagree with Lucene:\n{}",

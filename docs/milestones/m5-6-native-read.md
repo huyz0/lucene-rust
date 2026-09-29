@@ -11,7 +11,10 @@ mixed booleans) 4–8× *slower*, because the port had fast paths for three
 shapes and a materializing path for everything else. M5 moved indexing. This
 milestone finishes the read side.
 
-**Status.** In progress. R1–R6 delivered; R7 partly delivered (below).
+**Status.** Delivered 2026-09-29. R1–R7 delivered: the full read benchmark
+over REST, 174 native shapes, median 1.14× Lucene and none under 1.0× beyond
+the rounds' own spread; by the query-phase counters median 1.89×, with twelve
+sub-60 µs shapes 2-24 µs behind for the reason written up under R7.
 
 ## Tasks
 
@@ -23,7 +26,7 @@ milestone finishes the read side.
 | R4 | Sort and `search_after` natively (`TopFieldCollector`) | ✅ delivered: numeric, score, `_doc` and keyword keys, `track_scores`, the `avg`/`median` modes, index-sorted shards and nested keys (below); on Lucene by design: the `sum` mode on a top-level field (its points skipping is not exact), a nested sort on a shard large enough for Lucene's comparator to skip |
 | R5 | Aggregations natively: terms, histogram, date_histogram, range, the metrics, cardinality, filter/filters | ✅ delivered: the metrics (`min`, `max`, `sum`, `avg`, `value_count`, `stats`), keyword `terms`, `histogram`, `date_histogram`, `range`/`date_range`, `filter`, `filters`, `global`, `cardinality`, and any nesting of them (below); outside: scripts, `missing`, non-default `terms` orders, zones with daylight saving, other aggregation types |
 | R6 | Fetch (`_source`, stored fields, `docvalue_fields`) and get natively | ✅ delivered: every stored-fields read of the fetch phase and the get API (`_source`, `_id`, `stored_fields`, highlighting's source) is native, 1.24× Lucene per document (below); `docvalue_fields` stays on Lucene's doc-values readers by design |
-| R7 | scroll, `post_filter`, `min_score`, `terminate_after`, timeouts; the full read benchmark (in process and REST) with every native shape at least 1.0× Lucene | `post_filter`, `timeout`, scroll, `terminate_after` and `min_score` (by score and behind a sort) delivered; the query-phase REST benchmark at median 1.58× on eight segments (worst 0.89×) and 1.60× on one merged segment of 100,000 documents, where 17 of 132 shapes are still under 1.0× (below); open: those shapes |
+| R7 | scroll, `post_filter`, `min_score`, `terminate_after`, timeouts; the full read benchmark (in process and REST) with every native shape at least 1.0× Lucene | ✅ delivered: `post_filter`, `timeout`, scroll, `terminate_after` and `min_score` (by score and behind a sort); the full read benchmark, 174 native shapes on 100,000 documents, over REST median 1.14× (two within noise of 1.0×, 0.97× and 0.99×) and by the query-phase counters 1.89×, twelve sub-60 µs shapes 2-24 µs behind from one cold native call (reason below) |
 
 ## R1 — the scorer tree (delivered)
 
@@ -804,7 +807,7 @@ from the decompressed bytes took it from parity to 1.24×. Over REST, where
 a request's fetch is a small part of its ~2 ms, the rows measure
 0.95–1.12× (median 1.04×) and `get` 1.12×, within the round trip's noise.
 
-## R7 — the request features around the query (in progress)
+## R7 — the request features around the query (delivered)
 
 `RustQueryPhaseSearcher` answers these the way `QueryPhase` and its collector
 contexts do, in the plugin's Java; the native searches underneath are R1-R5's.
@@ -1043,6 +1046,88 @@ the native work for them is identical in instructions (4,839,179 against
 4,839,187 for the `post_filter` without a total), so this is layout or noise,
 not more work, but it was not shown to be either.
 
+### The last round and the full read benchmark (2026-09-29)
+
+Measured over REST first, since the phase counters stop before an
+aggregation's `postProcess` (Lucene's `global` pass is outside them entirely:
+`agg global sub-aggregation` reads 0.10× by the counters and 1.50× over
+REST). Three rounds of every native row over REST, each alternating the two
+paths six times: 8 shapes under 1.0× in all three, every other one flipping
+around it -- and three of the 8 with real gaps, 200-700 µs. Each fix measured
+in process (instructions per call under cachegrind, or alternating wall
+time) and then in the node:
+
+- **Plain metrics read a window at a time.** A top-level `min`/`max`/`sum`/
+  `stats` streamed its column through `for_each_value`, which on a sparse
+  column (a field some documents lack) probes the `IndexedDISI` per
+  document. It now reads `fill_window`'s 1,024-document windows and takes
+  the documents with a value and matching a word at a time, in ascending
+  order (the order the compensated sum depends on); a `min` or `max` of
+  longs folds as integers and hands over one value per window (`long ->
+  double` is monotonic). In the node, native time over before: `agg with
+  meta` 0.84, `min max size 0` 0.73, `stats + hits` 0.82, a float `sum`
+  behind a sort 0.84.
+- **A histogram counted from the points counts cells, not documents.** The
+  filter rewrite's per-bucket count walked every document ID of every cell
+  inside a bucket; it now takes a cell's point count (`PointRangeQuery`'s
+  `Weight.count` walk, `PointsReader::count_points`), reading only the
+  leaves a bucket boundary crosses. Three calendar histograms over a match
+  -all, 161 µs to 14 µs in process; and when every node is answered that
+  way the slices stay on the calling thread (a pool thread's wake-up cost
+  more than the walk).
+- **Bucket windows without per-document overhead.** A `date_histogram`
+  window keeps the current bucket (its range, ordinal and whether the hard
+  bounds keep it) and writes its documents into buffers sized once; a sparse
+  column's window is filled without a branch per value (6% on a month
+  histogram with a `sum`); a sub-metric's states are sized and its value
+  kind settled once per window. A `terms` aggregation over single-valued
+  ordinals gets the same window path -- it went document by document, 640
+  instructions a match -- with the bucket per segment ordinal cached for its
+  owner. `month + sum` 20.5 to 17.9 million instructions per call, `terms` of
+  36,907 matches with two sub-metrics 36 to 23 million (3.1 to 2.1 ms).
+- **`terminate_after` that cannot be reached is an ordinary search.** When the
+  term dictionaries bound the matches below the limit
+  (`terminate::cannot_reach`), the search neither cuts nor stops early --
+  a limit equal to the matches still stops at the next segment, which is why
+  the bound must be strictly below (`tests/terminate_unreachable.rs`) -- so
+  it runs as one, without first walking every match to place a cut.
+- **Reflection once.** The plugin read an aggregation's or a sort's private
+  settings with `getDeclaredField` per request, throwing on every superclass
+  miss; `Reflect` resolves each once per class.
+
+The full benchmark after them, on the node `verify-opensearch.sh --docs
+100000 --keep` leaves (one segment of 99,534 documents and one of 200), 174
+native shapes -- queries, sorts, aggregations, `post_filter`, `min_score`,
+`terminate_after` -- three rounds each, Lucene over native, median per shape:
+
+| | over REST (whole request) | query-phase counters |
+|---|---|---|
+| median | 1.14× | 1.89× |
+| 10th percentile | 1.00× | 1.11× |
+| under 1.0× in every round | 2 | 13 |
+
+Over REST, the two are `agg no query min max` (0.97×, 20-60 µs on a 2.0 ms
+round trip) and `regexp text` (0.99×, 4-200 µs): inside the rounds' own
+spread. Every shape that was real work before now leads: `date_histogram`
+by month with a `sum` 1.24×, `terms` with sub-metrics 1.23×, `cardinality`
+1.08× and under `terms` 2.11×, a float `histogram` 2.12×,
+`minimum_should_match` 1.97×, `cross_fields` 1.25×, a `post_filter` `exists`
+behind a paged `bool` 1.36×, `terminate_after` not reached 1.17×.
+
+By the counters, besides `global` (outside Lucene's counter, above), twelve
+shapes Lucene answers in 22-57 µs read 0.70-0.94×, 2 to 24 µs a request:
+`regexp` with an interval, `fuzzy` and `term` on a keyword, `constant_score`
+(over `match_all` and alone), four `exists` shapes, `match_all` and `bool`
+with a lone filter, a `terminate_after` `size: 0` count. Their native work is
+single microseconds in process; what the counter sees is one cold native
+call against Lucene's warm path (a call's first touch of its code and data,
+measured at 17 µs cold against about 1 µs warm, above). Profiled over the
+whole node, the two paths spend the same CPU: `constant_score` over
+`match_all` and `fuzzy` on a keyword under sustained load, native against
+Lucene, differ by no symbol more than 0.4% of samples, and their round trips
+are within noise of each other. That is the written-up reason these twelve
+stay under 1.0× by the counters -- and M5.6's close.
+
 Aggregations finish outside the phase counters, so they are timed over REST
 (`REST=1 phase_bench.py 30 single agg`, whole round trips, median per
 shape): of 47 aggregation shapes, median 1.08×, 14 under 1.0×. The worst are
@@ -1050,7 +1135,7 @@ real work, not setup: `date_histogram` by month with a `sum` (0.65×, 6.7 ms
 against 4.3 ms), `cardinality` (0.68×) and under `terms` at a low precision
 (0.76×), `global` beside the main query (0.84×), a float `histogram`
 (0.88×), `date_range` (0.89×); the rest between 0.87× and 0.98×. Those are
-R7's remaining work.
+R7's remaining work -- closed by the last round, below.
 
 What closed the gaps the first full run showed (worst 0.28×, 30 shapes
 under 1.0×), each measured before and after:

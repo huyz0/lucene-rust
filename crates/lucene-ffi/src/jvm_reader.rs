@@ -1577,6 +1577,28 @@ pub(crate) fn search_sorted(
             };
             return Ok((Vec::new(), total, false, f32::NAN, cut.terminated));
         }
+        if lucene_search::terminate::cannot_reach(&segments, &q, n) {
+            let top = lucene_search::top_field::search_sorted_min_score(
+                &segments,
+                h.reader.segment_readers(),
+                &q,
+                &norms,
+                keys,
+                top_n,
+                u64::MAX,
+                after,
+                track_max_score,
+                &[],
+                None,
+            )
+            .map_err(map_search_error)?;
+            let total = if count_limit <= 0 {
+                -1
+            } else {
+                i64::try_from(top.total.value).unwrap_or(i64::MAX)
+            };
+            return Ok((top.hits, total, false, top.max_score, false));
+        }
         let (top, cut) = lucene_search::terminate::search_sorted_until(
             &segments,
             h.reader.segment_readers(),

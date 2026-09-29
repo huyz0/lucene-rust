@@ -44,6 +44,16 @@ pub struct Cut {
     pub per_leaf: Vec<u64>,
 }
 
+/// Whether `query` certainly matches fewer than `n` documents over
+/// `segments`, from the term dictionaries alone
+/// ([`crate::slices::estimated_matches`], an upper bound): then a
+/// `terminate_after(n)` never cuts, nor ends the search early -- a search
+/// collecting exactly `n` still stops at the next segment -- and the search
+/// is an ordinary one, every match counted.
+pub fn cannot_reach(segments: &[OpenSegment<'_>], query: &BooleanQuery, n: u64) -> bool {
+    crate::slices::estimated_matches(segments, query) < n
+}
+
 /// The first `n` live matches of `query` over `segments` in index order, and
 /// whether a search collecting them stops early.
 ///

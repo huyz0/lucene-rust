@@ -659,8 +659,19 @@ struct Leaf<'a> {
     /// buckets: what its sub-aggregations collect next ([`collect_window`]).
     win_docs: Vec<i32>,
     win_ords: Vec<u32>,
+    /// A `terms` node's last bucket per segment ordinal, with the owning
+    /// bucket it was for (`(NO_BUCKET, NO_BUCKET)` until seen):
+    /// [`collect_window`]'s cache, a hit only for the same owner -- so a
+    /// parent switching owners from document to document costs a lookup per
+    /// switch, never a reset.
+    term_buckets: Vec<(u32, u32)>,
     subs: Vec<Leaf<'a>>,
 }
+
+/// An ordinal a `terms` window has not placed yet.
+const NO_BUCKET: u32 = u32::MAX;
+/// Largest segment dictionary whose ordinals a `terms` window caches.
+const MAX_CACHED_TERMS: usize = 1 << 16;
 
 enum Col<'a> {
     /// A numeric column; `done` when the points answered this segment.
@@ -881,6 +892,7 @@ fn open_leaf<'a>(
         pre_offsets: Vec::new(),
         win_docs: Vec::new(),
         win_ords: Vec::new(),
+        term_buckets: Vec::new(),
         subs,
     })
 }
@@ -996,17 +1008,82 @@ fn collect_window(
                 docs: &[i32],
                 owners: &[u32],
             ) {
-                for (&doc, &owner) in docs.iter().zip(owners) {
-                    if let Some(Some(v)) = leaf.prefetched(doc) {
-                        slot(states, owner as usize).many::<N>(kind, &[v]);
+                // Every owner's state exists before the loop, and the value
+                // kind is settled once: per document, only the value and its
+                // one update (`many` of one value is `one`). A state made for
+                // an owner none of whose documents has a value is the default
+                // `finish` reads for a missing one.
+                if let Some(&top) = owners.iter().max() {
+                    slot(states, top as usize);
+                }
+                fn go<const N: u8>(
+                    states: &mut [aggs::MetricState],
+                    leaf: &Leaf<'_>,
+                    docs: &[i32],
+                    owners: &[u32],
+                    to_double: impl Fn(i64) -> f64,
+                ) {
+                    for (&doc, &owner) in docs.iter().zip(owners) {
+                        if let (Some(Some(v)), Some(state)) =
+                            (leaf.prefetched(doc), states.get_mut(owner as usize))
+                        {
+                            state.one::<N>(to_double(v));
+                        }
                     }
                 }
+                match kind {
+                    ValueKind::Long => go::<N>(states, leaf, docs, owners, |v| {
+                        aggs::to_double(ValueKind::Long, v)
+                    }),
+                    ValueKind::Double => go::<N>(states, leaf, docs, owners, |v| {
+                        aggs::to_double(ValueKind::Double, v)
+                    }),
+                    ValueKind::Float => go::<N>(states, leaf, docs, owners, |v| {
+                        aggs::to_double(ValueKind::Float, v)
+                    }),
+                }
             }
-            match *needs {
-                NEED_MIN => run::<NEED_MIN>(states, leaf, *kind, docs, owners),
-                NEED_MAX => run::<NEED_MAX>(states, leaf, *kind, docs, owners),
-                NEED_COUNT => run::<NEED_COUNT>(states, leaf, *kind, docs, owners),
-                n if n & !(NEED_COUNT | NEED_SUM) == 0 => {
+            /// A `min` or `max` of longs with one owning bucket for the
+            /// whole window (a top-level metric): folded as integers and
+            /// handed over once. `long -> double` is monotonic, so the
+            /// extreme of the converted values is the converted extreme.
+            fn run_extreme<const N: u8>(
+                states: &mut Vec<aggs::MetricState>,
+                leaf: &Leaf<'_>,
+                docs: &[i32],
+                owner: u32,
+            ) {
+                let mut best = if N == NEED_MIN { i64::MAX } else { i64::MIN };
+                let mut any = false;
+                for &doc in docs {
+                    if let Some(Some(v)) = leaf.prefetched(doc) {
+                        any = true;
+                        best = if N == NEED_MIN {
+                            best.min(v)
+                        } else {
+                            best.max(v)
+                        };
+                    }
+                }
+                if any {
+                    slot(states, owner as usize).many::<N>(ValueKind::Long, &[best]);
+                }
+            }
+            let one_owner = owners
+                .first()
+                .filter(|&&o| owners.iter().all(|&x| x == o))
+                .copied();
+            match (*needs, *kind, one_owner) {
+                (NEED_MIN, ValueKind::Long, Some(o)) => {
+                    run_extreme::<NEED_MIN>(states, leaf, docs, o)
+                }
+                (NEED_MAX, ValueKind::Long, Some(o)) => {
+                    run_extreme::<NEED_MAX>(states, leaf, docs, o)
+                }
+                (NEED_MIN, ..) => run::<NEED_MIN>(states, leaf, *kind, docs, owners),
+                (NEED_MAX, ..) => run::<NEED_MAX>(states, leaf, *kind, docs, owners),
+                (NEED_COUNT, ..) => run::<NEED_COUNT>(states, leaf, *kind, docs, owners),
+                (n, ..) if n & !(NEED_COUNT | NEED_SUM) == 0 => {
                     run::<{ NEED_COUNT | NEED_SUM }>(states, leaf, *kind, docs, owners)
                 }
                 _ => run::<NEED_ALL>(states, leaf, *kind, docs, owners),
@@ -1028,6 +1105,84 @@ fn collect_window(
             return Ok(());
         }
         (
+            AggNode::Terms { .. },
+            State::Keyed {
+                ords,
+                keys,
+                docs: counts,
+                ..
+            },
+        ) if prefetched && matches!(leaf.col, Col::Ords(..)) => {
+            // As `collect`'s case for one value: the segment ordinal's global
+            // one, its bucket for the owner, counted, then the window to the
+            // sub-aggregations. A bucket per segment ordinal is kept while
+            // one owner holds -- always, at the top level.
+            let map: &[i64] = match &leaf.col {
+                Col::Ords(_, map) => map,
+                _ => &[],
+            };
+            let cache = map.len() <= MAX_CACHED_TERMS;
+            if cache && leaf.term_buckets.len() != map.len() {
+                leaf.term_buckets = vec![(NO_BUCKET, NO_BUCKET); map.len()];
+            }
+            let (mut win_docs, mut win_ords) = (
+                std::mem::take(&mut leaf.win_docs),
+                std::mem::take(&mut leaf.win_ords),
+            );
+            win_docs.clear();
+            win_ords.clear();
+            win_docs.resize(docs.len(), 0);
+            win_ords.resize(docs.len(), 0);
+            let mut kept = 0usize;
+            let mut out = Ok(());
+            for (&doc, &owning) in docs.iter().zip(owners) {
+                let Some(Some(o)) = leaf.prefetched(doc) else {
+                    continue;
+                };
+                let cached = usize::try_from(o)
+                    .ok()
+                    .and_then(|i| leaf.term_buckets.get(i))
+                    .filter(|&&(owner, b)| owner == owning && b != NO_BUCKET)
+                    .map(|&(_, b)| b);
+                let ord = match cached {
+                    Some(b) => b,
+                    None => {
+                        let g = match global_ord(map, o) {
+                            Ok(g) => g,
+                            Err(e) => {
+                                out = Err(e);
+                                break;
+                            }
+                        };
+                        let b = keyed_ord(ords, keys, owning, g);
+                        slot(counts, b as usize);
+                        if let Some(c) = usize::try_from(o)
+                            .ok()
+                            .and_then(|i| leaf.term_buckets.get_mut(i))
+                        {
+                            *c = (owning, b);
+                        }
+                        b
+                    }
+                };
+                if let Some(c) = counts.get_mut(ord as usize) {
+                    *c += 1;
+                }
+                if let (Some(d), Some(w)) = (win_docs.get_mut(kept), win_ords.get_mut(kept)) {
+                    *d = doc;
+                    *w = ord;
+                    kept += 1;
+                }
+            }
+            win_docs.truncate(kept);
+            win_ords.truncate(kept);
+            let subs =
+                out.and_then(|()| collect_subs_window(node, state, leaf, &win_docs, &win_ords));
+            leaf.win_docs = win_docs;
+            leaf.win_ords = win_ords;
+            return subs;
+        }
+        (
             AggNode::DateHistogram {
                 rounding,
                 hard_bounds,
@@ -1044,42 +1199,57 @@ fn collect_window(
                 std::mem::take(&mut leaf.win_docs),
                 std::mem::take(&mut leaf.win_ords),
             );
+            // Written by index into buffers as long as the window, then cut
+            // to what was kept: no capacity check per document.
             win_docs.clear();
             win_ords.clear();
+            win_docs.resize(docs.len(), 0);
+            win_ords.resize(docs.len(), 0);
+            let mut kept = 0usize;
+            // The bucket the last value fell in, for its owner: every value
+            // in `from..to` rounds to `from` (`DateRounding::bucket`), so it
+            // has the same ordinal and is inside the hard bounds or not
+            // alike (`NOT_KEPT`). As `collect`'s single-valued case.
+            const NOT_KEPT: u32 = u32::MAX;
+            let mut cur: Option<(i64, i64, u32, u32)> = None;
             for (&doc, &owning) in docs.iter().zip(owners) {
                 let Some(Some(v)) = leaf.prefetched(doc) else {
                     continue;
                 };
-                // As `collect`'s single-valued case.
-                let rounded = if v >= leaf.memo.0 && v < leaf.memo.1 {
-                    leaf.memo.2
-                } else {
-                    let bucket = rounding.bucket(v);
-                    if let Some((from, to)) = bucket {
-                        leaf.memo = (from, to, from, 0, u32::MAX);
+                let ord = match cur {
+                    Some((from, to, ord, owner)) if v >= from && v < to && owner == owning => ord,
+                    _ => {
+                        let bucket = rounding.bucket(v);
+                        let rounded = bucket.map_or_else(|| rounding.round(v), |b| b.0);
+                        let contained = !hard_bounds.1.is_some_and(|max| rounded >= max)
+                            && !hard_bounds.0.is_some_and(|min| rounded < min);
+                        let ord = if contained {
+                            let o = keyed_ord(ords, keys, owning, rounded);
+                            slot(counts, o as usize);
+                            o
+                        } else {
+                            NOT_KEPT
+                        };
+                        cur = bucket.map(|(from, to)| (from, to, ord, owning));
+                        ord
                     }
-                    bucket.map_or_else(|| rounding.round(v), |b| b.0)
                 };
-                let contained = !hard_bounds.1.is_some_and(|max| rounded >= max)
-                    && !hard_bounds.0.is_some_and(|min| rounded < min);
-                if !contained {
+                if ord == NOT_KEPT {
                     continue;
                 }
-                let ord =
-                    if leaf.memo.2 == rounded && leaf.memo.3 == owning && leaf.memo.4 != u32::MAX {
-                        leaf.memo.4
-                    } else {
-                        let o = keyed_ord(ords, keys, owning, rounded);
-                        if leaf.memo.2 == rounded {
-                            leaf.memo.3 = owning;
-                            leaf.memo.4 = o;
-                        }
-                        o
-                    };
-                *slot(counts, ord as usize) += 1;
-                win_docs.push(doc);
-                win_ords.push(ord);
+                if let Some(c) = counts.get_mut(ord as usize) {
+                    *c += 1;
+                }
+                // `kept` counts documents of this window, so it stays below
+                // its length.
+                if let (Some(d), Some(o)) = (win_docs.get_mut(kept), win_ords.get_mut(kept)) {
+                    *d = doc;
+                    *o = ord;
+                    kept += 1;
+                }
             }
+            win_docs.truncate(kept);
+            win_ords.truncate(kept);
             let out = collect_subs_window(node, state, leaf, &win_docs, &win_ords);
             leaf.win_docs = win_docs;
             leaf.win_ords = win_ords;
@@ -1615,11 +1785,23 @@ enum PointCounts {
 /// in one segment; past it the segment is read document by document.
 const MAX_POINT_BUCKETS: usize = 1024;
 
-/// A top-level `date_histogram` or `range` without sub-aggregations, counted
-/// from a segment's points -- valid when every document of the segment is a
-/// match (the caller's check) and the field has one point per document, so
-/// that the points hold each document's one value. `None` otherwise.
-fn count_from_points(node: &AggNode, seg: &OpenSegment<'_>) -> Result<Option<PointCounts>> {
+/// What [`count_from_points`] needs of a segment to count `node` from its
+/// points: a top-level `date_histogram` or `range` without sub-aggregations
+/// over a one-dimensional points field with one point per document (so the
+/// points hold each document's one value), of a type the node reads -- its
+/// reader, field number, field and decoding, and the kind it reads. `None`
+/// when it cannot.
+#[allow(clippy::type_complexity)]
+fn countable_points<'s>(
+    node: &AggNode,
+    seg: &OpenSegment<'s>,
+) -> Option<(
+    &'s lucene_codecs::points::PointsReader<'s>,
+    i32,
+    &'s lucene_codecs::points::PointsField,
+    PointDecode,
+    ValueKind,
+)> {
     let (field, kind) = match node {
         AggNode::DateHistogram { field, subs, .. } if subs.is_empty() => (field, ValueKind::Long),
         AggNode::Range {
@@ -1630,21 +1812,29 @@ fn count_from_points(node: &AggNode, seg: &OpenSegment<'_>) -> Result<Option<Poi
         } if subs.is_empty() && ranges.iter().all(|r| !r.0.is_nan() && !r.1.is_nan()) => {
             (field, *kind)
         }
-        _ => return Ok(None),
+        _ => return None,
     };
-    let Some(points) = seg.points else {
-        return Ok(None);
-    };
-    let Some(num) = points.field_number(field) else {
-        return Ok(None);
-    };
-    let Some(pf) = points.reader.field(num) else {
-        return Ok(None);
-    };
+    let points = seg.points?;
+    let num = points.field_number(field)?;
+    let pf = points.reader.field(num)?;
     if pf.num_dims != 1 || i64::from(pf.doc_count) != pf.point_count {
-        return Ok(None);
+        return None;
     }
-    let Some(decode) = PointDecode::of(kind, pf.bytes_per_dim) else {
+    Some((
+        &points.reader,
+        num,
+        pf,
+        PointDecode::of(kind, pf.bytes_per_dim)?,
+        kind,
+    ))
+}
+
+/// A top-level `date_histogram` or `range` without sub-aggregations, counted
+/// from a segment's points -- valid when every document of the segment is a
+/// match (the caller's check) and the field has one point per document, so
+/// that the points hold each document's one value. `None` otherwise.
+fn count_from_points(node: &AggNode, seg: &OpenSegment<'_>) -> Result<Option<PointCounts>> {
+    let Some((reader, num, pf, decode, kind)) = countable_points(node, seg) else {
         return Ok(None);
     };
     let count = |side: &dyn Fn(i64) -> std::cmp::Ordering| -> Result<u64> {
@@ -1653,8 +1843,9 @@ fn count_from_points(node: &AggNode, seg: &OpenSegment<'_>) -> Result<Option<Poi
             side,
             count: 0,
         };
-        points.reader.intersect(num, &mut v)?;
-        Ok(v.count)
+        // `PointRangeQuery`'s count: a cell inside the bucket by its size.
+        let inside = reader.count_points(num, &mut v)?;
+        Ok(v.count.saturating_add(u64::try_from(inside).unwrap_or(0)))
     };
     match node {
         AggNode::DateHistogram {
@@ -1873,8 +2064,10 @@ pub fn aggregate_tree(
                         let end = base.saturating_add(WINDOW).min(max_doc);
                         window(&mut leaves, base, end, (end - base) as usize)?;
                         live_window.clear();
-                        live_window
-                            .extend((base..end).filter(|&d| live.is_none_or(|l| l.get_doc(d))));
+                        match live {
+                            None => live_window.extend(base..end),
+                            Some(l) => live_window.extend((base..end).filter(|&d| l.get_doc(d))),
+                        }
                         visit_window(&mut states, &mut leaves, &live_window)?;
                         base = end;
                     }
@@ -1888,8 +2081,24 @@ pub fn aggregate_tree(
             .map(|(n, s)| finish(n, s, &[0], globals, &mut terms))
             .collect()
     };
-    let parallel =
-        crate::slices::estimated_matches(segments, query) >= crate::slices::SEQUENTIAL_BELOW;
+    // With every document a match and none deleted (the filter rewrite's
+    // case), a segment whose nodes are all counted from its points costs a
+    // few tree walks: only the others' documents are work worth handing
+    // slices to other threads for. `countable_points` is the static test; a
+    // segment `count_from_points` still declines at run time (more buckets
+    // than `MAX_POINT_BUCKETS`) is then scanned on this thread.
+    let parallel = if scoring.is_none() && matches!(clause, crate::query::Clause::MatchAllDocs(_)) {
+        let scanned: u64 = segments
+            .iter()
+            .filter(|s| {
+                s.live_docs.is_some() || nodes.iter().any(|n| countable_points(n, s).is_none())
+            })
+            .map(|s| u64::try_from(s.max_doc.unwrap_or(i32::MAX)).unwrap_or(0))
+            .fold(0, u64::saturating_add);
+        scanned >= crate::slices::SEQUENTIAL_BELOW
+    } else {
+        crate::slices::estimated_matches(segments, query) >= crate::slices::SEQUENTIAL_BELOW
+    };
     crate::slices::run_slices_if(parallel, slices, one)
         .into_iter()
         .collect()
@@ -2945,6 +3154,14 @@ mod tests {
                 subs: vec![date("l", vec![metric("e", ValueKind::Double)])],
             },
             metric("f", ValueKind::Float),
+            // A lone `min` or `max` of longs: folded as integers when the
+            // window has one owner (top level), per document under buckets.
+            only("l", aggs::NEED_MIN),
+            only("i", aggs::NEED_MAX),
+            date(
+                "l",
+                vec![only("i", aggs::NEED_MIN), only("l", aggs::NEED_MAX)],
+            ),
             AggNode::Global {
                 subs: vec![
                     metric("l", ValueKind::Long),
@@ -2952,6 +3169,14 @@ mod tests {
                 ],
             },
         ];
+        fn only(field: &str, needs: u8) -> AggNode {
+            AggNode::Metric {
+                field: field.to_string(),
+                kind: ValueKind::Long,
+                source: Source::DocValues,
+                needs,
+            }
+        }
         let both = |reader: &DirectoryReader, q: &BooleanQuery, tree: &AggNode| {
             let nodes = std::slice::from_ref(tree);
             NO_WINDOWS.with(|w| w.set(true));
@@ -2988,6 +3213,17 @@ mod tests {
             for q in [all(), body("a")] {
                 both(&reader, &q, &tree);
             }
+        }
+        // Single-valued terms under single-valued terms: each window's owner
+        // changes from document to document.
+        let keyword = |field: &str, subs| AggNode::Terms {
+            field: field.to_string(),
+            shard_size: 5,
+            subs,
+        };
+        let nested = keyword("sk", vec![keyword("kw", vec![]), keyword("hk", vec![])]);
+        for q in [all(), body("a")] {
+            both(&reader, &q, &nested);
         }
     }
 

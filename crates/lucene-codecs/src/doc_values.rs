@@ -1541,9 +1541,7 @@ impl<'a> NumericReader<'a> {
                     }
                     done += n;
                 }
-                for i in 0..done {
-                    present[i >> 6] |= 1 << (i & 63);
-                }
+                set_first_bits(present, done);
             } else if let (true, Some(shift)) = (self.entry.is_dense(), self.entry.block_shift) {
                 // Dense, varying bits per value: the documents are the
                 // ordinals.
@@ -1551,9 +1549,7 @@ impl<'a> NumericReader<'a> {
                     .unwrap_or(0)
                     .min(len);
                 self.decode_varying_run(shift, i64::from(start), &mut values[..have])?;
-                for i in 0..have {
-                    present[i >> 6] |= 1 << (i & 63);
-                }
+                set_first_bits(present, have);
                 return Ok(());
             } else if let (true, Some(cursor)) = (
                 self.sparse_fast.is_some() || self.entry.block_shift.is_some(),
@@ -1617,14 +1613,23 @@ impl<'a> NumericReader<'a> {
                             n += got;
                         }
                     }
+                    // Slot by slot from the top, without a branch per value:
+                    // each slot takes the next value down, which only a set
+                    // bit consumes. In place, since a slot is never below the
+                    // values still to move (`k <= slot + 1` throughout), and
+                    // a slot without a value is left holding a copy that
+                    // `present` says to ignore.
                     let mut k = count;
                     for w in (0..words).rev() {
-                        let mut bits = present[w];
-                        while bits != 0 {
-                            let b = 63 - bits.leading_zeros() as usize;
-                            bits &= !(1u64 << b);
-                            k -= 1;
-                            values[w * 64 + b] = values[k];
+                        let bits = present[w];
+                        if bits == 0 {
+                            continue;
+                        }
+                        let top = (64 - bits.leading_zeros() as usize).min(len - w * 64);
+                        for b in (0..top).rev() {
+                            let slot = w * 64 + b;
+                            values[slot] = values[k.saturating_sub(1)];
+                            k -= (bits >> b & 1) as usize;
                         }
                     }
                 }
@@ -4777,6 +4782,19 @@ pub fn write_single_sparse_sorted_set_field(
         segment_id,
         segment_suffix,
     )
+}
+
+/// Sets bits `0..n` of `bits` (which the caller cleared), a word at a time.
+fn set_first_bits(bits: &mut [u64], n: usize) {
+    let (whole, rest) = (n / 64, n % 64);
+    for w in bits.iter_mut().take(whole) {
+        *w = u64::MAX;
+    }
+    if rest != 0 {
+        if let Some(w) = bits.get_mut(whole) {
+            *w |= !(u64::MAX << rest);
+        }
+    }
 }
 
 #[cfg(test)]

@@ -960,16 +960,11 @@ public final class NativeAggregationTree {
 
     /** A field of {@code o}'s class or a superclass. */
     static Object get(Object o, String name) throws ReflectiveOperationException {
-        for (Class<?> c = o.getClass(); c != null; c = c.getSuperclass()) {
-            try {
-                Field f = c.getDeclaredField(name);
-                f.setAccessible(true);
-                return f.get(o);
-            } catch (NoSuchFieldException e) {
-                // next superclass
-            }
+        Field f = Reflect.inHierarchy(o.getClass(), name);
+        if (f == null) {
+            throw new NoSuchFieldException(o.getClass().getName() + "." + name);
         }
-        throw new NoSuchFieldException(o.getClass().getName() + "." + name);
+        return f.get(o);
     }
 
     private static Object declared(AggregatorFactory f, String name) throws ReflectiveOperationException {
