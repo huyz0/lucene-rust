@@ -8,7 +8,7 @@
 | **Effort** | M |
 | **Depends on** | [M5](m5-engine-integration.md) |
 | **Unblocks** | shipping |
-| **Status** | not started |
+| **Status** | in progress |
 
 ---
 
@@ -69,9 +69,9 @@ was seen to fail against the defect it targets (the negative control).
 
 | What can accumulate | Test | Bound | Negative control |
 |---|---|---|---|
-| The writer's per-segment caches (`segment_versions`, the deleter's file sets) and files on disk: the two leaks M4's soak found | `index_writer::tests::per_segment_state_and_files_track_the_live_segments_over_many_rounds`: 400 rounds of adds, deletes, flushes, commits, 50+ merges | entries ⊆ live segments; no file of a dead segment; one `segments_N` | M4's pruning removed: fails at round 3 |
+| The writer's per-segment caches (`segment_versions`, the deleter's file sets) and files on disk: the two leaks M4's soak found | `index_writer::tests::per_segment_state_and_files_track_the_live_segments_over_many_rounds`: 400 rounds of adds, deletes, flushes, commits, 50+ merges | entries ⊆ live segments; the index files on disk exactly the deleter's references; one `segments_N` | M4's pruning removed: fails at round 3; superseded `.liv` generations left on disk: round 6 |
 | The same under the concurrent writer, whose merges and flushes stamp no commit | `concurrent_writer::tests::merges_between_commits_keep_per_segment_state_to_the_view`: 300 rounds, a commit every 50 | versions ⊆ view; file sets and `.si` on disk ≤ view + last commit | view-change pruning removed: fails at round 40 |
-| The NRT refresh loop: reader handles, their `mmap`s, descriptors, commit holds, old commits | `engine_writer::tests::the_nrt_refresh_loop_releases_every_file_mapping_and_hold`: 150 refreshes as OpenSearch drives them, then `CheckIndex` | no fd under the index; no mapping of a deleted file; no file neither the commit nor the hold names; nothing mapped after the last close | reader not closed: round 16; hold not released: round 8 |
+| The NRT refresh loop: reader handles, their `mmap`s, descriptors, commit holds, old commits | `engine_writer::tests::the_nrt_refresh_loop_releases_every_file_mapping_and_hold`: 150 refreshes as OpenSearch drives them, then `CheckIndex` | no fd under the index; no mapping of a deleted file; the index files on disk exactly the live commit's (`segments_N` and each segment's `files()`, generations included); nothing mapped after the last close | reader not closed: round 16; hold not released: round 8; a superseded doc-values generation left on disk: round 38 |
 | Heap behind the C ABI: handles, result buffers, error strings, reopen chains | `crates/lucene-ffi/tests/resource_bounds.rs`: a counting global allocator, 2 × 2,000 calls per path | ≤ 1 KiB growth per window (measured: 0); fd and thread counts unchanged | freed error buffer, results handle, previous reader each skipped: 218 KB, 179 KB, 5.2 MB |
 | Process-wide pattern caches | `wildcard::…stays_bounded_under_distinct_patterns`, `regexp::…stays_bounded_under_distinct_patterns`: 3 × the bound in distinct patterns | ≤ 512 / ≤ 64 entries | eviction removed: 513 / 65 |
 
@@ -83,15 +83,20 @@ grows the heap in the allocator test).
 threads produces, which none of the loops runs; memory a cache legitimately
 fills during a warm-up and then holds; the JVM side's own heap; disk growth
 from soft-deleted history a retention policy keeps (that is policy, not a
-leak).
+leak). The allocator test declares the C ABI by hand, as the fuzz targets
+do: a changed signature would still link.
 
 **What they found.** Four defects. Two are bounded lags, fixed:
 `segment_versions` kept a merge's sources until the next `segments_N` (under
 the concurrent writer, until the next commit); the deleter forgot a merged
-segment's file set only at the next checkpoint. One is a false failure in this
-port's `CheckIndex`, fixed: a soft delete applied as a doc-values update was
-counted from the base column, so a segment real Lucene's `CheckIndex` passes
-failed ours. One is queued: the concurrent writer merges only committed
+segment's file set only at the next checkpoint. One is in this port's
+`CheckIndex`, fixed: its soft-deletes check read the base `.fnm` and column,
+so a soft delete applied as a doc-values update was miscounted (a segment real
+Lucene's `CheckIndex` passes failed ours), and on a segment whose soft-deletes
+field arrived by such an update the check never ran at all. It now reads the
+current generation, and agrees with Java on `GenFieldInfos`' index. The other
+per-field checks still read the base generation only, a gap in coverage
+rather than a false failure. One is queued: the concurrent writer merges only committed
 segments, so between commits its segment count grows with every flush. Nothing
 in production uses that writer yet.
 
@@ -168,8 +173,9 @@ What someone needs to run this who did not build it:
       accumulate across repeated writes, commits, merges, refreshes, searches
       and FFI calls has a tight-loop test holding it to a bound, each seen to
       fail against its defect ([T6.1](#t61--resource-bounds-instead-of-a-soak)).
-- [x] The index the NRT refresh loop leaves passes `CheckIndex` (and real
-      Lucene's, checked by hand on the kept directory).
+- [x] The index the NRT refresh loop leaves passes this port's `CheckIndex`,
+      whose soft-deletes check agrees with Java's on a Java-written index
+      where the field arrived by an update.
 - [ ] [M1](m1-performance-gate.md)'s performance bar is still met on the final
       build, measured by the nightly job rather than by hand.
 - [ ] The nightly performance job fails the build when the ratio drops below

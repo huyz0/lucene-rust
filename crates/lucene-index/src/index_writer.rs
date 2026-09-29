@@ -15130,10 +15130,16 @@ pub(crate) mod tests {
                 orphans.is_empty(),
                 "round {round}: files of dead segments {orphans:?}"
             );
-            assert!(
-                files <= on_disk.len(),
-                "round {round}: {files} files referenced, {} on disk",
-                on_disk.len()
+            // Exactly what the deleter references: a superseded `.liv`
+            // generation of a live segment, which this loop's deletes write
+            // every round, would be left behind with nothing naming it.
+            let mut disk_sorted = on_disk.clone();
+            disk_sorted.sort();
+            assert_eq!(files, disk_sorted.len(), "round {round}");
+            assert_eq!(
+                writer.deleter.referenced_files(),
+                disk_sorted,
+                "round {round}"
             );
             // One commit point: old `segments_N` and `.liv` generations go.
             let commits = on_disk

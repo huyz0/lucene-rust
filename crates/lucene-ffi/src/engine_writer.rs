@@ -1271,7 +1271,7 @@ mod tests {
             );
 
             let name = lucene_store::directory::segments_file_name(gen).unwrap();
-            let infos_bytes = std::fs::read(tmp.path().join(name)).unwrap();
+            let infos_bytes = std::fs::read(tmp.path().join(&name)).unwrap();
             let infos = lucene_index::segment_infos::parse(&infos_bytes, gen).unwrap();
             let max_docs: Vec<i32> = infos
                 .segments
@@ -1347,24 +1347,30 @@ mod tests {
                 gone.is_empty(),
                 "round {round}: mappings of deleted files {gone:?}"
             );
-            let live: std::collections::HashSet<&str> = infos
-                .segments
-                .iter()
-                .map(|s| s.segment_name.as_str())
-                .collect();
-            let orphans: Vec<String> = std::fs::read_dir(tmp.path())
+            // Exactly the live commit's files: its `segments_N` and each
+            // segment's `.si`-declared files plus the `.liv`, field-infos and
+            // doc-values generations it names. A superseded generation of a
+            // live segment -- what this loop writes every round -- counts.
+            let mut want: std::collections::BTreeSet<String> =
+                std::iter::once(name.clone()).collect();
+            for sci in &infos.segments {
+                let si = lucene_index::segment_info::parse(
+                    &std::fs::read(tmp.path().join(format!("{}.si", sci.segment_name))).unwrap(),
+                    &sci.segment_id,
+                )
+                .unwrap();
+                want.extend(sci.files(&si.files));
+            }
+            let have: std::collections::BTreeSet<String> = std::fs::read_dir(tmp.path())
                 .unwrap()
                 .map(|e| e.unwrap().file_name().into_string().unwrap())
-                .filter(|n| n.starts_with('_'))
-                .filter(|n| {
-                    !live
-                        .iter()
-                        .any(|s| n.starts_with(&format!("{s}.")) || n.starts_with(&format!("{s}_")))
-                })
+                .filter(|n| lucene_index::index_file_deleter::is_index_file_name(n))
                 .collect();
+            let extra: Vec<&String> = have.difference(&want).collect();
+            let missing: Vec<&String> = want.difference(&have).collect();
             assert!(
-                orphans.is_empty(),
-                "round {round}: files no commit or hold names {orphans:?}"
+                extra.is_empty() && missing.is_empty(),
+                "round {round}: on disk but not in the commit {extra:?}; missing {missing:?}"
             );
             max_maps = max_maps.max(maps.len());
         }

@@ -491,6 +491,14 @@ impl<'d> IndexFileDeleter<'d> {
         (self.si_files.len(), self.ref_counts.len())
     }
 
+    /// Every file this deleter holds a reference to, sorted.
+    #[cfg(test)]
+    pub(crate) fn referenced_files(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.ref_counts.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
     /// The `segments_N` names of every live commit point, oldest first.
     pub fn commit_file_names(&self) -> Vec<&str> {
         self.commits
