@@ -3696,47 +3696,45 @@ fn check_soft_deletes(
     field_infos: &FieldInfos,
     checks: &mut Vec<Check>,
 ) {
-    let Some(fi) = field_infos.fields.iter().find(|f| f.soft_deletes_field) else {
-        return;
-    };
-    // A soft delete that lands on a segment already written is a doc-values
-    // update: a new `.fnm` generation naming the field's new
-    // `.dvm`/`.dvd` generation (`_4o_1_Lucene90_0.dvm`). Reading only the
-    // base column counted the soft deletes the segment was written with, and
-    // failed every segment that took one later -- where real Lucene's
-    // `CheckIndex`, reading through `SegmentDocValuesProducer`, passes.
-    let updated = if commit.field_infos_gen == -1 {
+    // Java asks the reader's *current* field infos
+    // (`reader.getFieldInfos().getSoftDeletesField()`). A soft delete that
+    // lands on a segment already written is a doc-values update: a new `.fnm`
+    // generation, and a new `.dvm`/`.dvd` generation for the field
+    // (`_4o_1_Lucene90_0.dvm`) -- possibly the first the segment ever had of
+    // it, the field absent from the base `.fnm` altogether. Reading only the
+    // base `.fnm` and column skipped the check for such segments and
+    // miscounted the others, failing segments real Lucene's `CheckIndex`
+    // passes.
+    let current = if commit.field_infos_gen == -1 {
         None
     } else {
         match crate::field_updates::read_current_field_infos(dir, commit, &si.files) {
-            Ok(current) => current
-                .fields
-                .iter()
-                .position(|f| f.soft_deletes_field && f.doc_values_gen != -1)
-                .map(|index| (current, index)),
+            Ok(current) => Some(current),
             Err(e) => {
                 checks.push(Check::fail("soft_deletes.count_matches", e.to_string()));
                 return;
             }
         }
     };
-    let opened = match &updated {
-        Some((current, index)) => {
-            let per_field =
-                crate::field_updates::field_per_field_component(&current.fields[*index])
-                    .unwrap_or_default();
+    let lookup = current.as_ref().unwrap_or(field_infos);
+    let Some(index) = lookup.fields.iter().position(|f| f.soft_deletes_field) else {
+        return;
+    };
+    let fi = &lookup.fields[index];
+    // A field with no update generation is read from the base column, as
+    // `SegmentDocValuesProducer` hands it to the base producer.
+    let opened = match &current {
+        Some(current) if fi.doc_values_gen != -1 => {
+            let per_field = crate::field_updates::field_per_field_component(fi).unwrap_or_default();
             crate::field_updates::read_current_column(
-                dir, commit, &si.files, current, *index, &per_field,
+                dir, commit, &si.files, current, index, &per_field,
             )
             .map_err(|e| e.to_string())
             .transpose()
             .map(|r| r.map(|(meta, dvd)| (meta, lucene_store::directory::Input::Owned(dvd))))
         }
-        None => open_doc_values(dir, commit, si, field_infos),
+        _ => open_doc_values(dir, commit, si, field_infos),
     };
-    let fi = updated
-        .as_ref()
-        .map_or(fi, |(current, index)| &current.fields[*index]);
     let Some(column) = opened else {
         // Same shape as the index sort above: `.fnm` names a soft-deletes
         // field, so `softDelCount` is a claim about data -- and with no
@@ -6532,6 +6530,29 @@ mod tests {
 
     /// `CheckIndex.checkSoftDeletes`: `softDelCount` must equal the number of
     /// live docs carrying a value for the soft-deletes field.
+    /// **The soft-deletes check runs on a segment whose soft-deletes field
+    /// exists only in a field-infos generation**, and agrees with Java. In
+    /// `GenFieldInfos` the field arrives through `updateDocValues` on a
+    /// segment that never had it: it is in `_0_1.fnm`, not `_0.fnm`. Looked
+    /// up in the base `.fnm`, the check was never run -- no pass, no skip --
+    /// and `softDelCount` went unvalidated on exactly the segments OpenSearch
+    /// soft-deletes into after they were written.
+    #[test]
+    fn a_soft_deletes_field_added_by_an_update_is_checked_against_java() {
+        let dir = FsDirectory::open(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/field_infos_index"
+        ));
+        let results = check_directory(&dir).unwrap();
+        let segment = results.iter().find(|r| r.segment_name == "_0").unwrap();
+        let soft = segment
+            .checks
+            .iter()
+            .find(|c| c.name == "soft_deletes.count_matches")
+            .expect("the soft-deletes check must run");
+        assert!(soft.passed(), "{soft:?}");
+    }
+
     #[test]
     fn soft_delete_count_is_verified_against_the_soft_deletes_field() {
         let dst_dir = tempdir();
