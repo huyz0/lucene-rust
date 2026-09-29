@@ -93,6 +93,11 @@ jobs:
       - name: Port invariants clippy cannot express
         run: python3 scripts/check-port-invariants.py
 
+      # M6's licence audit, kept true: a dependency the shipped library links
+      # must be under a licence recorded in docs/licences.md.
+      - name: Dependency licences
+        run: python3 scripts/check-licences.py
+
       - name: docs/parity.md consistency
         run: python3 scripts/check-parity.py
 
