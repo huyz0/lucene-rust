@@ -764,9 +764,11 @@ fn stream_constant_score_clause<C: ScoringCollector>(
 /// The first `need` documents of the union of a few terms, in doc-id order,
 /// each collected at `1.0`: `BooleanQuery(SHOULD terms)` under
 /// `ConstantScoreQuery`, stopped as `ConstantScoreScorer` stops once the
-/// collector can take nothing more. A k-way merge document by document: a
-/// window-at-a-time bitset union (`BooleanScorer`'s shape) measured half as
-/// fast here, because it decodes whole windows to keep the first `need`.
+/// collector can take nothing more. A window-at-a-time bitset union
+/// (`BooleanScorer`'s shape), each term's bit-set blocks ORed in a word at a
+/// time ([`lucene_codecs::postings::LazyDocsCursor::into_window`]), with
+/// windows sized to the documents still needed so it reads little past the
+/// `need`-th match.
 fn small_constant_score_union<C: ScoringCollector>(
     field_terms: &blocktree::FieldTerms,
     terms: &[(Vec<u8>, blocktree::SeekedTerm)],
@@ -792,22 +794,48 @@ fn small_constant_score_union<C: ScoringCollector>(
     // marks its documents in the window's bits, then the bits are collected
     // in order -- deduplicated and sorted without a per-document scan of the
     // terms' heads.
-    const WINDOW: i32 = 4096;
+    //
+    // The window is sized to what is still needed rather than fixed at
+    // `BooleanScorer`'s 4,096: a union of frequent terms finds its `need`
+    // documents in the first few hundred doc ids, and every posting read past
+    // them is wasted (a fixed window read `regexp body:t1[0-9]` two to three
+    // times further than Lucene's document-at-a-time disjunction stops). The
+    // first window is `need` documents long -- the union can hold at most one
+    // match per doc id -- and each later one is stretched by the density the
+    // windows so far showed.
+    const WINDOW: i64 = 4096;
     let mut words = [0u64; (WINDOW / 64) as usize];
     let mut left = need;
+    let (mut spanned, mut found) = (0i64, 0i64);
     loop {
         let base = docs.iter().copied().min().unwrap_or(NO_MORE_DOCS);
         if base == NO_MORE_DOCS || left == 0 {
             return Ok(true);
         }
-        let end = base.saturating_add(WINDOW);
+        let want = i64::try_from(left).unwrap_or(WINDOW);
+        // ARITH: `found <= spanned`, both bounded by the segment's doc count;
+        // `want <= WINDOW` after the clamp, so the product stays small.
+        #[allow(clippy::arithmetic_side_effects)]
+        let win = {
+            let want = want.min(WINDOW);
+            let est = match (found, spanned) {
+                (0, 0) => want,
+                (0, _) => WINDOW,
+                _ => want * spanned / found + want / 8,
+            };
+            ((est.clamp(64, WINDOW) + 63) & !63) as i32
+        };
+        let end = base.saturating_add(win);
         for (d, c) in docs.iter_mut().zip(cursors.iter_mut()) {
-            while *d < end {
-                // ARITH: base <= *d < base + WINDOW.
-                let i = (*d - base) as usize;
-                words[i >> 6] |= 1u64 << (i & 63);
-                *d = c.next_doc().map_err(pe)?;
+            if *d < end {
+                *d = c.into_window(base, end, &mut words).map_err(pe)?;
             }
+        }
+        // ARITH: `end - base <= WINDOW`.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            spanned += i64::from(end - base);
+            found += words.iter().map(|w| i64::from(w.count_ones())).sum::<i64>();
         }
         for (w, word) in words.iter_mut().enumerate() {
             let mut bits = std::mem::take(word);
@@ -1337,14 +1365,23 @@ impl FuzzyTopTerms {
             // (`t.termState.register(state, ord, docFreq, totalTermFreq)`),
             // and nothing is republished. Only reachable across leaves --
             // within one leaf the term dictionary yields each term once.
-            if let Some(entry) = self.queue.iter_mut().find(|e| e.term == term) {
-                entry.doc_freq = entry.doc_freq.saturating_add(stats.doc_freq as i64);
-                continue;
-            }
-
+            //
+            // The queue is sorted by `(boost desc, term asc)` and a term's
+            // boost is a function of the term alone, so an entry for it can
+            // only sit where it would be inserted: the binary search for the
+            // insertion point answers the lookup too, where a scan compared
+            // the term against every entry.
             let at = self.queue.partition_point(|e| {
                 e.boost > boost || (e.boost == boost && e.term.as_slice() < term.as_slice())
             });
+            if let Some(entry) = self
+                .queue
+                .get_mut(at)
+                .filter(|e| e.boost == boost && e.term == term)
+            {
+                entry.doc_freq = entry.doc_freq.saturating_add(stats.doc_freq as i64);
+                continue;
+            }
             self.queue.insert(
                 at,
                 ExpandedTerm {

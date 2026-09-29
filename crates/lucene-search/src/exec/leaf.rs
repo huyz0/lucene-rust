@@ -92,6 +92,20 @@ impl Scorer for TermScorer<'_> {
     fn doc_id_run_end(&self) -> i32 {
         self.leg.doc_id_run_end()
     }
+
+    /// `TermScorer.nextDocsAndScores`: the rest of the postings block below
+    /// `up_to` at once (`nextPostings`), its norms and scores in batch --
+    /// `ImpactsDISI.ensureCompetitive` first, which the leg runs from its own
+    /// threshold. The trait's default scores one document per call, which
+    /// was the largest cost of a term beside phrases in a disjunction.
+    fn next_docs_and_scores(
+        &mut self,
+        up_to: i32,
+        live_docs: Option<&lucene_util::fixed_bit_set::FixedBitSet>,
+        out: &mut crate::bulk_scorer::DocScores,
+    ) -> Result<()> {
+        self.leg.next_docs_and_scores(up_to, live_docs, out)
+    }
 }
 
 /// `ConstantScoreScorer`: the wrapped scorer's matches, each scoring `score`.
