@@ -288,4 +288,3 @@ Before rolling a new build out, run the proofs a release is held to:
 | `scripts/verify-opensearch.sh --engine --yaml` | the same with every index on the Rust engine |
 | `scripts/verify-opensearch-cluster.sh` | three nodes: replication, recovery, failover, relocation between the engines |
 | `scripts/verify-rollback.sh` | this page's upgrade and rollback |
-| `scripts/soak-opensearch.sh` | the multi-day soak under chaos, ending in Lucene `CheckIndex` on every shard |
