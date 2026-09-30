@@ -146,11 +146,15 @@ Each is a counter under `fallbacks` in `GET /_plugins/lucene_rust/stats`.
 
 ## Not supported
 
-- **Other Lucene versions and codecs.** Only Lucene 10.5.0's default codec is
-  read natively (`Lucene104` postings); OpenSearch 3.8.0 writes nothing else
-  by default. Indices from older Lucene majors are answered by OpenSearch
-  (their postings format falls back), and the Rust engine refuses non-default
-  codecs. Backward codecs are out of scope for the project.
+- **Other Lucene versions and codecs.** Segments with Lucene's default codec
+  of 9.0-10.5 are read natively (M8: `Lucene90`..`Lucene104`), so an index
+  upgraded from OpenSearch 2.x is served natively
+  (`scripts/verify-opensearch-upgrade.sh`). Not read: Lucene 8 and earlier
+  (OpenSearch 3.x cannot open them either), non-default postings formats
+  (`completion`: `postings_format`), and segments the k-NN plugin wrote with
+  `index.knn: true`, which name the plugin's codec (`KNN9120Codec` from 2.19)
+  and fall back as `native_open_failed`. The Rust engine refuses non-default
+  codecs.
 - **Remote-backed storage** (remote store, searchable snapshots): the Rust
   engine refuses it and native search falls back.
 - **Windows and macOS.**

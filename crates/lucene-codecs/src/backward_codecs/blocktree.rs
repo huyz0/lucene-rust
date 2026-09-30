@@ -26,20 +26,28 @@
 //!
 //! # How this port reads it
 //!
-//! [`open`] enumerates each field's FST once -- every `(block prefix, output)`
-//! pair, `BytesRefFSTEnum`'s walk -- decodes each output into a
-//! `TrieBuilder.Output`, and saves the result as a trie with this crate's own
-//! `TrieBuilder` port. From there every lookup, enumeration and intersection
-//! is [`crate::blocktree`]'s, over the untouched `.tim`: `SegmentTermsEnum`
-//! follows an FST arc per target byte exactly where it follows a trie child,
-//! and pushes a frame wherever the arc is final exactly where a trie node has
-//! an output, so both indexes send a seek to the same block.
+//! [`open`] reads each field's `.tmd` record and FST metadata, as
+//! `FieldReader`'s constructor does, and nothing of the FST's body. The first
+//! walk of a field ([`FstIndex::to_trie`]) enumerates its FST once -- every
+//! `(block prefix, output)` pair, `BytesRefFSTEnum`'s walk -- decodes each
+//! output into a `TrieBuilder.Output`, and saves the result as a trie with
+//! this crate's own `TrieBuilder` port. From there every lookup, enumeration
+//! and intersection is [`crate::blocktree`]'s, over the untouched `.tim`:
+//! `SegmentTermsEnum` follows an FST arc per target byte exactly where it
+//! follows a trie child, and pushes a frame wherever the arc is final exactly
+//! where a trie node has an output, so both indexes send a seek to the same
+//! block.
 //!
 //! This is the one place M8 converts rather than reads in place: Lucene walks
-//! the FST off-heap on every seek. The conversion costs one pass over the
-//! index at open -- the index has an entry per *block* (on the order of one
-//! per 25-48 terms), not per term -- and buys the whole trie-based search
-//! path, intersections included, unchanged. Recorded in `docs/parity.md`.
+//! the FST off-heap on every seek. The conversion costs one pass over a
+//! field's index -- an entry per *block* (on the order of one per 25-48
+//! terms), not per term -- and buys the whole trie-based search path,
+//! intersections included, unchanged. It used to run for every field at
+//! open (3.4 ms on a 1M-document 9.0 segment, where Lucene opens in 0.65 ms);
+//! deferred to each field's first use, opening costs what reading `.tmd`
+//! costs and a field never searched is never converted. A corrupt FST body
+//! is then found by the field's first walk, as Lucene's off-heap FST finds
+//! it at the first seek. Recorded in `docs/parity.md`.
 
 use std::sync::Arc;
 
@@ -123,6 +131,67 @@ fn decode_output(output: &[u8], version: i32) -> Result<TrieOutput> {
         has_terms: code & OUTPUT_FLAG_HAS_TERMS != 0,
         floor_data: floor.then(|| r.as_slice().to_vec()),
     })
+}
+
+/// One field's FST terms index, as `.tmd` and `.tip` hold it: what
+/// [`FstIndex::to_trie`] converts the first time the field is walked.
+struct FstIndex {
+    field: String,
+    tip: SharedBytes,
+    /// The FST's metadata, as `.tmd` records it (`FST.readMetadata`).
+    fst_meta: Vec<u8>,
+    /// Where the FST's body starts in `.tip` (`indexStartFP`).
+    index_start_fp: u64,
+    /// The root block's output (`rootCode`, the FST's empty output).
+    empty_output: TrieOutput,
+    version: i32,
+}
+
+impl FstIndex {
+    fn corrupt(&self, e: impl std::fmt::Display) -> Error {
+        corrupt(format!("field {:?} terms index: {e}", self.field))
+    }
+
+    /// Enumerates the FST -- every `(block prefix, output)` pair,
+    /// `BytesRefFSTEnum`'s walk -- and saves it as a trie.
+    fn to_trie(&self) -> Result<blocktree::TrieSlice> {
+        let tip_bytes: &[u8] = self.tip.as_ref().as_ref();
+        let fst = Fst::read_split(
+            &mut SliceInput::new(&self.fst_meta),
+            tip_bytes,
+            self.index_start_fp,
+        )
+        .map_err(|e| self.corrupt(e))?;
+        // The FST's keys are the block prefixes; the empty prefix is the
+        // root block, whose output `.tmd` also records as `rootCode`
+        // (`FieldReader`: "rootCode.equals(emptyOutput)").
+        let mut builder = TrieBuilder {
+            empty_output: Some(self.empty_output.clone()),
+            entries: Vec::new(),
+        };
+        for entry in fst.iter().map_err(|e| self.corrupt(e))? {
+            let (key, output) = entry.map_err(|e| self.corrupt(e))?;
+            if key.is_empty() {
+                continue;
+            }
+            builder
+                .entries
+                .push((key, decode_output(&output, self.version)?));
+        }
+        let mut trie = Vec::new();
+        let location = builder.save(&mut trie);
+        let slice = blocktree::TrieSlice {
+            start: location.index_start as usize,
+            root_fp: location.root_fp as usize,
+            end: location.index_end as usize,
+            bytes: Arc::new(trie),
+        };
+        blocktree::load_node(
+            &slice.bytes.as_ref().as_ref()[slice.start..slice.end],
+            slice.root_fp,
+        )?;
+        Ok(slice)
+    }
 }
 
 /// `Lucene90BlockTreeTermsReader`'s constructor plus a `FieldReader` per
@@ -232,41 +301,25 @@ pub(crate) fn open(
         let index_start_fp = tmd_input.read_vlong()?;
         let index_start_fp = u64::try_from(index_start_fp)
             .map_err(|_| corrupt(format!("negative indexStartFP {index_start_fp}")))?;
-        let fst = Fst::read_split(&mut tmd_input, tip_bytes, index_start_fp)
+        // The FST's metadata is read (and its body's extent in `.tip`
+        // checked) now, as `FieldReader`'s constructor reads it; the body is
+        // walked into a trie only when the field is first used.
+        let fst_meta_start = tmd_input.position();
+        Fst::read_split(&mut tmd_input, tip_bytes, index_start_fp)
             .map_err(|e| corrupt(format!("field {:?} terms index: {e}", field_info.name)))?;
-
-        // The FST's keys are the block prefixes; the empty prefix is the
-        // root block, whose output `.tmd` also records as `rootCode`
-        // (`FieldReader`: "rootCode.equals(emptyOutput)").
-        let mut builder = TrieBuilder {
-            empty_output: Some(decode_output(&root_code, version)?),
-            entries: Vec::new(),
-        };
-        let walk = fst
-            .iter()
-            .map_err(|e| corrupt(format!("field {:?} terms index: {e}", field_info.name)))?;
-        for entry in walk {
-            let (key, output) = entry
-                .map_err(|e| corrupt(format!("field {:?} terms index: {e}", field_info.name)))?;
-            if key.is_empty() {
-                continue;
-            }
-            builder
-                .entries
-                .push((key, decode_output(&output, version)?));
-        }
-        let mut trie = Vec::new();
-        let location = builder.save(&mut trie);
-        let (index_start, root_fp, index_end) = (
-            location.index_start as usize,
-            location.root_fp as usize,
-            location.index_end as usize,
-        );
-        blocktree::load_node(&trie[index_start..index_end], root_fp)?;
+        let fst_meta = tmd[fst_meta_start..tmd_input.position()].to_vec();
+        let empty_output = decode_output(&root_code, version)?;
         if fields.iter().any(|(n, _)| n == &field_info.name) {
             return Err(Error::DuplicateField(field_info.name.clone()));
         }
-        let trie: SharedBytes = Arc::new(trie);
+        let source = FstIndex {
+            field: field_info.name.clone(),
+            tip: Arc::clone(&tip),
+            fst_meta,
+            index_start_fp,
+            empty_output,
+            version,
+        };
         fields.push((
             field_info.name.clone(),
             FieldTerms::from_parts(
@@ -276,8 +329,7 @@ pub(crate) fn open(
                 field_info,
                 postings_format,
                 Arc::clone(&tim),
-                trie,
-                (index_start, root_fp, index_end),
+                Box::new(move || source.to_trie()),
             ),
         ));
     }
@@ -369,6 +421,74 @@ mod tests {
         assert_eq!(body.num_terms, 20);
         assert!(body.try_seek_exact(b"zeta").unwrap().is_some());
         assert!(body.try_seek_exact(b"zzz").unwrap().is_none());
+    }
+
+    /// Opening converts nothing: each field's FST becomes a trie the first
+    /// time that field is walked, and only that field's.
+    #[test]
+    fn the_fst_index_is_converted_on_first_use_not_at_open() {
+        let (tim, tip, tmd, fnm, id, suffix) = fixture();
+        let fields = open_fixture(&tim, &tip, &tmd, &fnm, &id, &suffix).unwrap();
+        let debug = |name: &str| format!("{:?}", fields.field(name).unwrap());
+        for (name, _) in fields.iter_fields() {
+            assert!(
+                debug(name).contains("Deferred(not built)"),
+                "{}",
+                debug(name)
+            );
+        }
+        assert!(fields
+            .field("body")
+            .unwrap()
+            .try_seek_exact(b"zeta")
+            .unwrap()
+            .is_some());
+        assert!(debug("body").contains("Deferred(0.."), "{}", debug("body"));
+        let untouched = fields.iter_fields().filter(|(n, _)| *n != "body").count();
+        assert!(untouched > 0);
+        for (name, _) in fields.iter_fields().filter(|(n, _)| *n != "body") {
+            assert!(
+                debug(name).contains("Deferred(not built)"),
+                "{}",
+                debug(name)
+            );
+        }
+        // A clone shares the built trie (and the pending ones).
+        let copy = fields.field("body").unwrap().clone();
+        assert!(format!("{copy:?}").contains("Deferred(0.."));
+        assert!(copy.try_seek_exact(b"zzz").unwrap().is_none());
+    }
+
+    /// A corrupt FST body is found by the first walk of the field, as
+    /// Lucene's off-heap FST finds it at the first seek -- and every later
+    /// walk fails the same way instead of retrying the conversion.
+    #[test]
+    fn a_corrupt_fst_body_fails_the_first_walk_and_every_later_one() {
+        let (tim, mut tip, tmd, fnm, id, suffix) = fixture();
+        let header = codec_util::index_header_length(TERMS_INDEX_CODEC_NAME, &suffix);
+        let footer = tip.len() - 16;
+        for b in &mut tip[header..footer] {
+            *b = 0xff;
+        }
+        let fields = open_fixture(&tim, &tip, &tmd, &fnm, &id, &suffix).unwrap();
+        // A field whose index is only the root block has an FST with no
+        // arcs, which nothing in the body can corrupt; the others fail.
+        let mut failed = 0;
+        for (name, field) in fields.iter_fields() {
+            let Err(first) = field.try_seek_exact(&field.max_term) else {
+                continue;
+            };
+            let first = first.to_string();
+            assert!(first.contains("terms index"), "{name}: {first}");
+            let again = field
+                .try_seek_exact(&field.min_term)
+                .unwrap_err()
+                .to_string();
+            assert_eq!(first, again, "{name}");
+            assert!(format!("{field:?}").contains("Deferred(failed:"), "{name}");
+            failed += 1;
+        }
+        assert!(failed > 0, "no field's index reached the corrupt bytes");
     }
 
     #[test]
