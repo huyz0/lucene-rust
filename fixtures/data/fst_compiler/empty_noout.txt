@@ -1,0 +1,4 @@
+config long BYTE1 32.0 true 1.0 9
+k - 0
+stats 1 0
+fst 3fd76c17034653540000000901010000000100

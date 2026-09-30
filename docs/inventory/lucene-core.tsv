@@ -1078,20 +1078,20 @@ util/bkd/PointWriter	not-needed	interface over heap/offline point buffers
 util/compress/LZ4	ported	crates/lucene-codecs/src/lz4.rs::decompress
 util/compress/LowercaseAsciiCompression	partial	crates/lucene-codecs/src/blocktree.rs::decompress_lowercase_ascii -- M7: decompress only; no compress (the blocktree writer emits NO_COMPRESSION)
 util/fst/BitTableUtil	ported	crates/lucene-codecs/src/fst.rs::bit_table_count_bits
-util/fst/ByteBlockPoolReverseBytesReader	not-needed	FSTCompiler in-progress byte-pool reader; the Rust builder serialises a finished trie into a Vec<u8>
+util/fst/ByteBlockPoolReverseBytesReader	not-needed	NodeHash's reader over its copied node bytes; the Rust NodeHash keys its tables on the node's arcs (which nodes are shared does not depend on how the copy is read back), so there is no byte-pool copy to read
 util/fst/ByteSequenceOutputs	ported	crates/lucene-codecs/src/fst.rs::ByteSequenceOutputs
 util/fst/BytesRefFSTEnum	ported	crates/lucene-codecs/src/fst.rs::FstEnum
-util/fst/CharSequenceOutputs	todo:M7	char-sequence FST outputs
+util/fst/CharSequenceOutputs	ported	crates/lucene-codecs/src/fst_compiler.rs::CharSequenceOutputs
 util/fst/FST	ported	crates/lucene-codecs/src/fst.rs::Fst
-util/fst/FSTCompiler	partial	crates/lucene-codecs/src/fst.rs::build_fst -- M7: whole-trie build, not incremental/streaming; no output pushing, fixed-length arc nodes or BIT_TARGET_NEXT on write, single-byte labels only; bytes differ from Java's
+util/fst/FSTCompiler	ported	crates/lucene-codecs/src/fst_compiler.rs::FstCompiler
 util/fst/FSTEnum	ported	crates/lucene-codecs/src/fst.rs::FstEnum
 util/fst/FSTReader	not-needed	FST body store interface; Rust Fst holds owned or borrowed bytes
 util/fst/ForwardBytesReader	not-needed	forward byte cursor over a byte[]; Rust reads the slice directly
-util/fst/GrowableByteArrayDataOutput	not-needed	FSTCompiler growable output; Rust Vec<u8>
-util/fst/IntSequenceOutputs	todo:M7	int-sequence FST outputs
+util/fst/GrowableByteArrayDataOutput	not-needed	FSTCompiler scratch buffer; fst_compiler.rs keeps it as a Vec<u8> with the same lifetime (never cleared between nodes, which fixed-length arc padding depends on)
+util/fst/IntSequenceOutputs	ported	crates/lucene-codecs/src/fst_compiler.rs::IntSequenceOutputs
 util/fst/IntsRefFSTEnum	ported	crates/lucene-codecs/src/fst.rs::IntsRefFstEnum
-util/fst/NoOutputs	partial	crates/lucene-codecs/src/fst.rs::read_fst_metadata_prefix -- M7: FSTs written with NoOutputs are read; no NoOutputs Outputs impl for typed building
-util/fst/NodeHash	partial	crates/lucene-codecs/src/fst.rs::NodeHash -- M7: whole-trie hash-consing; no RAM-bounded (suffixRAMLimitMB) LRU table, so sharing can differ from Java on large inputs
+util/fst/NoOutputs	ported	crates/lucene-codecs/src/fst_compiler.rs::NoOutputs
+util/fst/NodeHash	ported	crates/lucene-codecs/src/fst_compiler.rs::dedup_add
 util/fst/OffHeapFSTStore	ported	crates/lucene-codecs/src/fst.rs::read_borrowed
 util/fst/OnHeapFSTStore	ported	crates/lucene-codecs/src/fst.rs::read
 util/fst/Outputs	ported	crates/lucene-codecs/src/fst.rs::Outputs
@@ -1100,7 +1100,7 @@ util/fst/PositiveIntOutputs	ported	crates/lucene-codecs/src/fst.rs::PositiveIntO
 util/fst/ReadWriteDataOutput	not-needed	FSTCompiler output readable while writing; Rust Vec<u8>
 util/fst/ReverseBytesReader	ported	crates/lucene-codecs/src/fst.rs::BytesReader
 util/fst/ReverseRandomAccessReader	ported	crates/lucene-codecs/src/fst.rs::BytesReader
-util/fst/Util	partial	crates/lucene-codecs/src/fst.rs::get -- M7: Util.get/binarySearch only (plus the suggester's own top-N in suggest.rs); no general shortestPaths/TopNSearcher, getByOutput, readCeilArc, toDot
+util/fst/Util	ported	crates/lucene-codecs/src/fst_util.rs::shortest_paths
 util/graph/GraphTokenStreamFiniteStrings	todo:M7	finite-path enumeration of graph token streams for QueryBuilder
 util/hnsw/AbstractHnswGraphSearcher	ported	crates/lucene-codecs/src/hnsw.rs::HnswGraphSearcher
 util/hnsw/BlockingFloatHeap	ported	crates/lucene-util/src/float_heap.rs::BlockingFloatHeap
