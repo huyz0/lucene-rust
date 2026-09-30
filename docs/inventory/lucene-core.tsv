@@ -1040,7 +1040,7 @@ util/automaton/ByteRunAutomaton	ported	crates/lucene-util/src/automaton/run_auto
 util/automaton/ByteRunnable	ported	crates/lucene-util/src/automaton/run_automaton.rs::ByteRunnable
 util/automaton/CaseFolding	ported	crates/lucene-util/src/automaton/case_folding.rs::expand
 util/automaton/CharacterRunAutomaton	ported	crates/lucene-util/src/automaton/run_automaton.rs::CharacterRunAutomaton
-util/automaton/CompiledAutomaton	partial	crates/lucene-util/src/automaton/compiled_automaton.rs::CompiledAutomaton -- M7: getTermsEnum/visit need Terms and QueryVisitor (lucene-search) and are not ported; the codecs term intersection still runs on lucene-codecs/src/automaton.rs::CompiledDfa, not on this type
+util/automaton/CompiledAutomaton	ported	crates/lucene-util/src/automaton/compiled_automaton.rs::CompiledAutomaton
 util/automaton/FiniteStringsIterator	ported	crates/lucene-util/src/automaton/finite_strings.rs::FiniteStringsIterator
 util/automaton/FrozenIntSet	ported	crates/lucene-util/src/automaton/state_set.rs::FrozenIntSet
 util/automaton/IntSet	ported	crates/lucene-util/src/automaton/state_set.rs::IntSet
