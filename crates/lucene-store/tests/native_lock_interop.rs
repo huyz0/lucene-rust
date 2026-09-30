@@ -42,13 +42,37 @@ fn find_jar() -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-fn java_available() -> bool {
-    Command::new("java")
-        .arg("-version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+/// Lucene 10.5.0's classes are Java 21 bytecode (class file version 65).
+const MIN_JAVA: u32 = 21;
+
+/// The feature release of a `java -version` banner: `openjdk version
+/// "17.0.12" ...` is 17, `"21"` is 21, and a pre-9 `"1.8.0_402"` is 1.
+fn java_major(banner: &str) -> Option<u32> {
+    let quoted = banner.split('"').nth(1)?;
+    quoted.split(['.', '-', '+', '_']).next()?.parse().ok()
+}
+
+/// The major version of the `java` on the PATH, if there is one.
+fn java_version() -> Option<u32> {
+    let out = Command::new("java").arg("-version").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    java_major(&String::from_utf8_lossy(&out.stderr))
+}
+
+#[test]
+fn java_major_reads_the_version_banner() {
+    let banner = |v: &str| format!("openjdk version \"{v}\" 2024-07-16\nOpenJDK Runtime\n");
+    assert_eq!(java_major(&banner("17.0.12")), Some(17));
+    assert_eq!(java_major(&banner("21")), Some(21));
+    assert_eq!(java_major(&banner("25.0.4.1")), Some(25));
+    assert_eq!(java_major(&banner("26-ea")), Some(26));
+    assert_eq!(java_major(&banner("1.8.0_402")), Some(1));
+    // A JAVA_TOOL_OPTIONS notice may come first; it carries no quotes.
+    let noisy = format!("Picked up JAVA_TOOL_OPTIONS: -Dx=y\n{}", banner("21.0.8"));
+    assert_eq!(java_major(&noisy), Some(21));
+    assert_eq!(java_major("no version here"), None);
 }
 
 fn program() -> PathBuf {
@@ -79,9 +103,22 @@ fn rust_and_java_native_locks_exclude_each_other() {
         eprintln!("native_lock_interop: skipped -- no {JAR} (set LUCENE_CORE_JAR)");
         return;
     };
-    if !java_available() {
-        eprintln!("native_lock_interop: skipped -- no `java` on the PATH");
-        return;
+    // A runner's default `java` may predate Lucene 10 (ubuntu-24.04's is 17)
+    // and cannot compile the program against the jar. The CI job that must
+    // run this for real (scripts/verify-write-path.sh, on JDK 21) fails on
+    // the word "skipped", so skipping here cannot hide it there.
+    match java_version() {
+        None => {
+            eprintln!("native_lock_interop: skipped -- no `java` on the PATH");
+            return;
+        }
+        Some(v) if v < MIN_JAVA => {
+            eprintln!(
+                "native_lock_interop: skipped -- `java` is {v}, Lucene 10.5.0 needs {MIN_JAVA}"
+            );
+            return;
+        }
+        Some(_) => {}
     }
     let root = TempDir::new("native-lock-interop");
     let dir = FsDirectory::open(&root);
