@@ -142,6 +142,7 @@ frequency attributes (on `index/IndexingChain`'s row).
 - One point range/set query: the document package runs the scorer tree's `PointRangeQuery`/`PointInSetQuery` (hits and scores unchanged against `GenDocumentFields`).
 - `IndexOrDocValuesQuery` in the scorer tree, choosing points or doc values by the boolean's lead cost (`GenM7Queries` gained seven searches).
 - `RescoreTopNQuery` as a clause (rewritten to a `DocAndScoreQuery` by the searcher), and values-source sorts over query-backed and vector sources (`rewrite_sort`); `GenValuesRescore` gained both.
+- Comparator skipping: `DocComparator`'s competitive iterator (Lucene's exact lower bound), `NumericComparator`'s `DVSkipperCompetitiveDISIBuilder` and `TermOrdValComparator`'s `SkipperBasedCompetitiveState` (skip-index sorts added to `GenSortedSearch`/`GenKeywordSort`).
 
 Each follows [`port-workflow`](../porting-workflow.md): the closest-to-Java
 port with a Java-fixture differential test, a `bench-micro` pair against

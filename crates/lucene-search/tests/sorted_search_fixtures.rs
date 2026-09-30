@@ -190,6 +190,7 @@ fn sorted_searches_match_real_lucene() {
     let mut pruned = 0;
     let mut tracked = 0;
     let mut sliced_runs = 0;
+    let mut doc_led_exact = 0;
     for r in 0..runs {
         let k = format!("run.{r}");
         let text = m.get(&format!("{k}.query"));
@@ -229,6 +230,15 @@ fn sorted_searches_match_real_lucene() {
             // Beside a MaxScoreCollector nothing is skipped on either side:
             // the count is the same, bound or not.
             got_gte == gte && got.total.value == total
+        } else if gte && spec.starts_with(":doc:") && !text.starts_with("(b 0 (?") {
+            // Led by the document id, both stop at the same hit
+            // (`DocComparator`'s competitive iterator empties once the top
+            // hits are in, skipping every later segment whole) -- except
+            // under a pure disjunction, whose `BooleanScorer` Lucene runs a
+            // 2048-document window at a time, consulting the iterator per
+            // window.
+            doc_led_exact += 1;
+            got_gte && got.total.value == total
         } else if gte {
             got_gte && got.total.value > threshold
         } else {
@@ -295,6 +305,7 @@ fn sorted_searches_match_real_lucene() {
     }
     assert!(pruned > 100, "the threshold runs must prune: {pruned}");
     assert!(sliced_runs > 1000, "sliced runs: {sliced_runs}");
+    assert!(doc_led_exact >= 20, "doc-led pruned runs: {doc_led_exact}");
     assert!(tracked > 200, "tracked max-score runs: {tracked}");
     assert!(
         failures.is_empty(),
