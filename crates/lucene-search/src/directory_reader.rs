@@ -114,6 +114,10 @@ pub enum Error {
     PartialStoredFieldsFiles { segment: String, found: usize },
     #[error(transparent)]
     StoredFields(#[from] lucene_codecs::stored_fields::Error),
+    /// The writer a near-real-time reader is opened from failed to flush or
+    /// snapshot (`crate::nrt_reader`).
+    #[error(transparent)]
+    IndexWriter(#[from] lucene_index::index_writer::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -1299,6 +1303,10 @@ pub struct DirectoryReader {
     /// Each field's norms across the segments, resolved once
     /// ([`Self::norms_plan`]).
     norms_plans: std::sync::Mutex<std::collections::HashMap<String, Arc<NormsPlan>>>,
+    /// For a near-real-time reader, the pin on its files the writer handed
+    /// out (see `crate::nrt_reader`); released when the last reader sharing
+    /// it drops.
+    pub(crate) nrt_hold: Option<Arc<lucene_index::nrt::NrtFileHold>>,
 }
 
 /// One field's norms over a reader's segments: the reader-wide
@@ -1419,6 +1427,7 @@ impl DirectoryReader {
             global_ords: std::sync::Mutex::default(),
             norm_tables: std::sync::Mutex::default(),
             norms_plans: std::sync::Mutex::default(),
+            nrt_hold: None,
         })
     }
 
@@ -1519,6 +1528,7 @@ impl DirectoryReader {
             global_ords: std::sync::Mutex::default(),
             norm_tables: std::sync::Mutex::default(),
             norms_plans: std::sync::Mutex::default(),
+            nrt_hold: self.nrt_hold.clone(),
         }
     }
 

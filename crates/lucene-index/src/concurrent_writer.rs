@@ -1070,6 +1070,43 @@ impl ConcurrentIndexWriter<'static> {
     }
 }
 
+/// `DirectoryReader.open(IndexWriter)` over a concurrent writer: a full flush
+/// (every slot's buffer to a segment, every delete issued before it applied)
+/// and then the live segment list, pinned -- `IndexWriter.getReader`, which
+/// also flushes all threads and then `maybeMerge(GET_READER)`.
+impl<'d> crate::nrt::NrtSource for ConcurrentIndexWriter<'d> {
+    fn directory(&self) -> &dyn Directory {
+        self.dir
+    }
+
+    fn nrt_snapshot(
+        &self,
+        _apply_all_deletes: bool,
+        _write_all_deletes: bool,
+    ) -> Result<crate::nrt::NrtSnapshot> {
+        let snapshot = {
+            let _full_flush = lock(&self.full_flush);
+            self.flush_all(false)?;
+            lock(&self.core).writer.nrt_snapshot_of_live_view()?
+        };
+        self.schedule_merges(MergeTrigger::GetReader)?;
+        Ok(snapshot)
+    }
+
+    fn nrt_is_current(&self, infos: &crate::segment_infos::SegmentInfos) -> Result<bool> {
+        if self.pending_doc_count() > 0 {
+            return Ok(false);
+        }
+        {
+            let log = lock(&self.log);
+            if log.handed < log.end() {
+                return Ok(false);
+            }
+        }
+        Ok(lock(&self.core).writer.nrt_is_current(infos))
+    }
+}
+
 /// The writer as its scheduler sees it: `IndexWriter`'s own `MergeSource`.
 impl MergeSource for ConcurrentIndexWriter<'static> {
     fn next_merge(&self) -> Option<Arc<ScheduledMerge>> {
