@@ -36,7 +36,7 @@ use crate::{blocktree, sloppy_phrase, CollectionStats, Result};
 
 /// `IndexSearcher.getSimilarity().scorer(...)`: the searcher's similarity, or
 /// the default BM25 when the caller runs the fast path.
-fn sim_scorer(
+pub(crate) fn sim_scorer(
     ctx: &LeafContext<'_>,
     field: &str,
     boost: f32,
@@ -80,7 +80,7 @@ pub(crate) fn term_entry(
 
 /// `searcher.collectionStatistics(field)` from an entry: `null` (here
 /// `None`) when no document has the field.
-fn collection_of(entry: &CollectionStats) -> Option<CollectionStatistics> {
+pub(crate) fn collection_of(entry: &CollectionStats) -> Option<CollectionStatistics> {
     (entry.doc_count > 0).then(|| entry.collection_statistics())
 }
 
@@ -122,7 +122,10 @@ fn scoring_flags(mode: Mode) -> PostingsFlags {
     }
 }
 
-fn norms_cursor<'a>(ctx: &LeafContext<'a>, field: &str) -> Option<FieldNormsCursor<'a, 'a>> {
+pub(crate) fn norms_cursor<'a>(
+    ctx: &LeafContext<'a>,
+    field: &str,
+) -> Option<FieldNormsCursor<'a, 'a>> {
     ctx.norms.and_then(|m| m.get(field)).map(|n| n.cursor())
 }
 
@@ -960,6 +963,50 @@ fn blended<'a>(
     mode: Mode,
     top_level: bool,
 ) -> Result<Option<BoxScorer<'a>>> {
+    let children = blended_children(ctx, q, boost, mode)?;
+    match q.rewrite {
+        BlendedRewrite::Boolean => build::compose(
+            Vec::new(),
+            Vec::new(),
+            children,
+            Vec::new(),
+            0,
+            mode,
+            top_level,
+        ),
+        BlendedRewrite::DisjunctionMax(tie) => {
+            let mut terms: Vec<TermScorer<'a>> = children
+                .into_iter()
+                .map(|c| TermScorer::new(c.into_leg(), mode == Mode::TopScores))
+                .collect();
+            Ok(match terms.len() {
+                0 => None,
+                1 => terms.pop().map(|t| -> BoxScorer<'a> { Box::new(t) }),
+                _ if mode.needs_scores() => Some(Box::new(
+                    super::term_dismax::TermDisMaxScorer::new(terms, tie),
+                )),
+                _ => Some(Box::new(super::disjunction::DisjunctionScorer::new(
+                    terms
+                        .into_iter()
+                        .map(|t| -> BoxScorer<'a> { Box::new(t) })
+                        .collect(),
+                    super::disjunction::Combine::Max(tie),
+                    false,
+                ))),
+            })
+        }
+    }
+}
+
+/// `BlendedTermQuery.rewrite`'s term clauses, each a `TermQuery` over the
+/// blended statistics (boosted when its boost is not 1), as the children of
+/// the query it rewrites to.
+fn blended_children<'a>(
+    ctx: &LeafContext<'a>,
+    q: &BlendedTermQuery,
+    boost: f32,
+    mode: Mode,
+) -> Result<Vec<Child<'a>>> {
     let mut entries = Vec::with_capacity(q.terms.len());
     let mut df = 0i64;
     let mut ttf = 0i64;
@@ -1016,51 +1063,14 @@ fn blended<'a>(
             cost,
         ))));
     }
-    match q.rewrite {
-        BlendedRewrite::Boolean => build::compose(
-            Vec::new(),
-            Vec::new(),
-            children,
-            Vec::new(),
-            0,
-            mode,
-            top_level,
-        ),
-        BlendedRewrite::DisjunctionMax(tie) => {
-            let mut terms: Vec<TermScorer<'a>> = children
-                .into_iter()
-                .map(|c| TermScorer::new(c.into_leg(), mode == Mode::TopScores))
-                .collect();
-            Ok(match terms.len() {
-                0 => None,
-                1 => terms.pop().map(|t| -> BoxScorer<'a> { Box::new(t) }),
-                _ if mode.needs_scores() => Some(Box::new(
-                    super::term_dismax::TermDisMaxScorer::new(terms, tie),
-                )),
-                _ => Some(Box::new(super::disjunction::DisjunctionScorer::new(
-                    terms
-                        .into_iter()
-                        .map(|t| -> BoxScorer<'a> { Box::new(t) })
-                        .collect(),
-                    super::disjunction::Combine::Max(tie),
-                    false,
-                ))),
-            })
-        }
-    }
+    Ok(children)
 }
 
-/// `FuzzyQuery` under a similarity other than the default BM25: its
-/// `TopTermsBlendedFreqScoringRewrite` is a [`BlendedTermQuery`] with
-/// `BOOLEAN_REWRITE` over the reader-wide expansion, each term boosted by its
-/// `FuzzyTermsEnum` boost (`Math.max(0, boost)`).
-pub(crate) fn fuzzy_sim<'a>(
-    ctx: &LeafContext<'a>,
-    q: &crate::FuzzyQuery,
-    boost: f32,
-    mode: Mode,
-    top_level: bool,
-) -> Result<Option<BoxScorer<'a>>> {
+/// `FuzzyQuery.rewrite`: `TopTermsBlendedFreqScoringRewrite` makes it a
+/// [`BlendedTermQuery`] with `BOOLEAN_REWRITE` over the reader-wide
+/// expansion, each term boosted by its `FuzzyTermsEnum` boost
+/// (`Math.max(0, boost)`). `None` when the field is in no segment.
+fn fuzzy_blended(ctx: &LeafContext<'_>, q: &crate::FuzzyQuery) -> Result<Option<BlendedTermQuery>> {
     let expansion = match ctx.global.and_then(|g| g.fuzzy(q)) {
         Some(e) => e.clone(),
         None => {
@@ -1070,14 +1080,46 @@ pub(crate) fn fuzzy_sim<'a>(
             crate::fuzzy_expansion_across_leaves(&[ft], q, i64::from(ft.doc_count))?
         }
     };
-    let blended = BlendedTermQuery::new(
+    Ok(Some(BlendedTermQuery::new(
         expansion
             .terms
             .iter()
             .map(|(t, b)| (q.field.clone(), t.clone(), b.max(0.0))),
         BlendedRewrite::Boolean,
-    )?;
+    )?))
+}
+
+/// `FuzzyQuery`'s scorer, under any similarity and score mode: its rewrite
+/// ([`fuzzy_blended`]).
+pub(crate) fn fuzzy_sim<'a>(
+    ctx: &LeafContext<'a>,
+    q: &crate::FuzzyQuery,
+    boost: f32,
+    mode: Mode,
+    top_level: bool,
+) -> Result<Option<BoxScorer<'a>>> {
+    let Some(blended) = fuzzy_blended(ctx, q)? else {
+        return Ok(None);
+    };
     self::blended(ctx, &blended, boost, mode, top_level)
+}
+
+/// A fuzzy `SHOULD` clause of a boolean whose `minimumNumberShouldMatch` is
+/// at most 1, flattened into it: `BooleanQuery.rewrite` inlines a nested
+/// pure disjunction ("Flatten nested disjunctions"), and the fuzzy clause's
+/// rewrite is one, so its term clauses become the enclosing boolean's own
+/// `SHOULD` clauses -- summed with its other clauses in one disjunction, not
+/// as a sub-total.
+pub(crate) fn fuzzy_children<'a>(
+    ctx: &LeafContext<'a>,
+    q: &crate::FuzzyQuery,
+    boost: f32,
+    mode: Mode,
+) -> Result<Vec<Child<'a>>> {
+    match fuzzy_blended(ctx, q)? {
+        Some(blended) => blended_children(ctx, &blended, boost, mode),
+        None => Ok(Vec::new()),
+    }
 }
 
 /// Records the reader-wide statistics of every term a fuzzy clause expanded

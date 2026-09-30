@@ -14,19 +14,28 @@
 //! Weight, Collector)` drives one: the leaves in doc-base order, each document
 //! shifted to its global id ([`LeafCollector`]), statistics reader-wide
 //! (`IndexSearcher.collectionStatistics`/`termStatistics`).
+//!
+//! `setTimeout(queryTimeout)` wraps every leaf's bulk scorer in a
+//! `TimeLimitingBulkScorer` ([`crate::exec::score_segment_time_limited`]),
+//! which asks the timeout before each window of documents; a leaf it stops
+//! keeps what it collected, the search moves on to the next leaf (which asks
+//! again), and [`IndexSearcher::timed_out`] reports it from then on, as
+//! Java's `partialResult` does (it is never reset).
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
-use crate::collector::{LeafCollector, ScoreMode, ScoringCollector, TotalHits};
+use crate::collector::{LeafCollector, ScoreMode, ScoringCollector};
 use crate::collectors::CollectorManager;
 use crate::explain::{explain_clause_with_stats, Explanation};
 use crate::field_norms::FieldNorms;
 use crate::multi_segment::{
     global_boolean_stats, rewrite_points_ranges,
-    search_boolean_query_multi_segment_maxscore_counting,
-    search_boolean_query_multi_segment_with_similarity, OpenSegment,
+    search_boolean_query_multi_segment_maxscore_counting, OpenSegment,
 };
 use crate::query::{BooleanQuery, Clause};
+use crate::reader::exitable::QueryTimeout;
 use crate::similarities::Similarity;
 use crate::top_docs::{ShardScoreDoc, TopDocs};
 use crate::{Error, Result};
@@ -44,6 +53,10 @@ pub struct IndexSearcher<'s, 'a> {
     norms: &'s [SegmentNorms<'s, 'a>],
     similarity: Option<&'s dyn Similarity>,
     slices: Vec<Vec<usize>>,
+    /// `queryTimeout`.
+    timeout: Option<Arc<dyn QueryTimeout>>,
+    /// `partialResult`: set by the first search a timeout stopped.
+    partial_result: AtomicBool,
 }
 
 impl<'s, 'a> IndexSearcher<'s, 'a> {
@@ -66,7 +79,27 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
             norms,
             similarity: None,
             slices: vec![(0..segments.len()).collect()],
+            timeout: None,
+            partial_result: AtomicBool::new(false),
         })
+    }
+
+    /// `setTimeout(queryTimeout)`: every search from now on asks `timeout`
+    /// before each window of documents a leaf's bulk scorer scores; `None`
+    /// removes it.
+    pub fn set_timeout(&mut self, timeout: Option<Arc<dyn QueryTimeout>>) {
+        self.timeout = timeout;
+    }
+
+    /// `getTimeout()`.
+    pub fn timeout(&self) -> Option<&Arc<dyn QueryTimeout>> {
+        self.timeout.as_ref()
+    }
+
+    /// `timedOut()`: whether any search so far hit the timeout (its results
+    /// were partial).
+    pub fn timed_out(&self) -> bool {
+        self.partial_result.load(Ordering::Relaxed)
     }
 
     /// `setSimilarity(similarity)`.
@@ -139,34 +172,36 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
 
     /// `search(query, n)`: the top `n` by score, counted exactly up to
     /// [`TOTAL_HITS_THRESHOLD`] (`TopScoreDocCollectorManager(n, 1000)`).
-    /// Under a similarity other than the default the count is not tracked
-    /// and reported as the hits returned, a lower bound.
+    /// Under a similarity other than the default, or a timeout, this is one
+    /// `TopScoreDocCollector` over the leaves in order (Java's single slice);
+    /// a timeout leaves the relation what the collector counted, as Java
+    /// does -- [`Self::timed_out`] is the flag.
     pub fn search(&self, query: &BooleanQuery, n: usize) -> Result<TopDocs> {
-        let rescored = self.rewrite_rescore(query)?;
-        let query = rescored.as_ref().unwrap_or(query);
-        let (hits, total_hits) = match self.similarity {
-            Some(sim) if !sim.is_default_bm25() => {
-                let hits = search_boolean_query_multi_segment_with_similarity(
-                    self.segments,
-                    query,
-                    self.norms,
-                    n,
-                    sim,
-                )?;
-                let total = TotalHits {
-                    value: hits.len() as u64,
-                    relation: crate::collector::TotalHitsRelation::GreaterThanOrEqualTo,
-                };
-                (hits, total)
-            }
-            _ => search_boolean_query_multi_segment_maxscore_counting(
-                self.segments,
-                query,
-                self.norms,
+        let sim = self.similarity.filter(|s| !s.is_default_bm25());
+        if sim.is_some() || self.timeout.is_some() {
+            let mut c = crate::collector::TopDocsCollector::with_total_hits_threshold(
                 n,
                 TOTAL_HITS_THRESHOLD,
-            )?,
-        };
+            );
+            self.search_collector(query, &mut c)?;
+            return Ok(TopDocs {
+                total_hits: c.total_hits(),
+                score_docs: c
+                    .top_docs()
+                    .iter()
+                    .map(|h| ShardScoreDoc::new(h.doc_id, h.score))
+                    .collect(),
+            });
+        }
+        let rescored = self.rewrite_rescore(query)?;
+        let query = rescored.as_ref().unwrap_or(query);
+        let (hits, total_hits) = search_boolean_query_multi_segment_maxscore_counting(
+            self.segments,
+            query,
+            self.norms,
+            n,
+            TOTAL_HITS_THRESHOLD,
+        )?;
         Ok(TopDocs {
             total_hits,
             score_docs: hits
@@ -284,15 +319,29 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
         collector: &mut C,
     ) -> Result<()> {
         let sim = self.similarity.filter(|s| !s.is_default_bm25());
-        if sim.is_some() {
-            crate::check_similarity_supported(query)?;
-        }
         let mut order = order.to_vec();
         order.sort_by_key(|&i| self.segments[i].doc_base);
         for i in order {
             let seg = &self.segments[i];
             let norms = self.norms(i);
             let mut leaf = LeafCollector::new(&mut *collector, seg.doc_base);
+            if let Some(timeout) = &self.timeout {
+                // `searchLeaf`: `new TimeLimitingBulkScorer(scorer,
+                // queryTimeout)`; a `TimeExceededException` marks the
+                // result partial and the next leaf is searched.
+                if crate::search_boolean_query_scored_segment_time_limited(
+                    seg,
+                    query,
+                    norms,
+                    global,
+                    sim,
+                    &mut leaf,
+                    || timeout.should_exit(),
+                )? {
+                    self.partial_result.store(true, Ordering::Relaxed);
+                }
+                continue;
+            }
             match sim {
                 Some(sim) => crate::search_boolean_query_scored_segment_with_similarity(
                     seg, query, norms, global, sim, &mut leaf,
@@ -417,9 +466,6 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
         let (rewritten, global) = self.prepare(query)?;
         let query = rewritten.as_ref().unwrap_or(query);
         let sim = self.similarity.filter(|s| !s.is_default_bm25());
-        if sim.is_some() {
-            crate::check_similarity_supported(query)?;
-        }
         let one = OpenSegment {
             live_docs: if include_deleted { None } else { seg.live_docs },
             ..*seg
