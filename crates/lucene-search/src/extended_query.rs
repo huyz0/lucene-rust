@@ -684,17 +684,34 @@ pub struct PointRangeQuery {
 }
 
 impl PointRangeQuery {
-    /// The corners must be `num_dims * bytes_per_dim` bytes each.
+    /// `new PointRangeQuery(field, lowerPoint, upperPoint, numDims)`, with
+    /// `PointRangeQuery.checkArgs`' checks and messages: the corners must be
+    /// `num_dims * bytes_per_dim` bytes each.
     pub fn new(
         field: impl Into<String>,
         num_dims: usize,
         lower: Vec<u8>,
         upper: Vec<u8>,
     ) -> Result<Self> {
-        if num_dims == 0 || lower.len() != upper.len() || !lower.len().is_multiple_of(num_dims) {
+        if num_dims == 0 {
             return Err(Error::InvalidQuery(
-                "lowerPoint and upperPoint must be num_dims * bytesPerDim bytes".into(),
+                "numDims must be positive, got 0".into(),
             ));
+        }
+        if lower.is_empty() {
+            return Err(Error::InvalidQuery("lowerPoint has length of zero".into()));
+        }
+        if !lower.len().is_multiple_of(num_dims) {
+            return Err(Error::InvalidQuery(
+                "lowerPoint is not a fixed multiple of numDims".into(),
+            ));
+        }
+        if lower.len() != upper.len() {
+            return Err(Error::InvalidQuery(format!(
+                "lowerPoint has length={} but upperPoint has different length={}",
+                lower.len(),
+                upper.len()
+            )));
         }
         Ok(Self {
             field: field.into(),
@@ -745,20 +762,31 @@ pub struct PointInSetQuery {
 }
 
 impl PointInSetQuery {
+    /// `new PointInSetQuery(field, numDims, bytesPerDim, packedPoints)`, with
+    /// its checks and messages.
     pub fn new(
         field: impl Into<String>,
         num_dims: usize,
         bytes_per_dim: usize,
         points: impl IntoIterator<Item = Vec<u8>>,
     ) -> Result<Self> {
+        if !(1..=16).contains(&bytes_per_dim) {
+            return Err(Error::InvalidQuery(format!(
+                "bytesPerDim must be > 0 and <= 16; got {bytes_per_dim}"
+            )));
+        }
+        if !(1..=8).contains(&num_dims) {
+            return Err(Error::InvalidQuery(format!(
+                "numDims must be > 0 and <= 8; got {num_dims}"
+            )));
+        }
         let mut points: Vec<Vec<u8>> = points.into_iter().collect();
-        if points
-            .iter()
-            .any(|p| p.len() != num_dims.saturating_mul(bytes_per_dim))
-        {
-            return Err(Error::InvalidQuery(
-                "every point must be num_dims * bytesPerDim bytes".into(),
-            ));
+        let want = num_dims.saturating_mul(bytes_per_dim);
+        if let Some(bad) = points.iter().find(|p| p.len() != want) {
+            return Err(Error::InvalidQuery(format!(
+                "packed point length should be {want} but got {}",
+                bad.len()
+            )));
         }
         points.sort();
         points.dedup();
