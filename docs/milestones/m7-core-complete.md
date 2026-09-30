@@ -165,6 +165,10 @@ share one RAM buffer and the largest is flushed, marked slots are flushed by
 whichever thread checks (`checkPendingFlushOnUpdate`), and buffered deletes
 count toward the buffer and are applied on their own once they fill it, in
 both writers -- and `deleteAll` on the concurrent writer.
+
+Delivered (ported, not yet benchmarked): `CheckIndex`'s `checkImpacts` and
+`checkDocIDRuns` over the lazy postings cursor, checked against every
+Java-written fixture, and the `-exorcise` repair (`check_index::exorcise`).
 ### T7.8 — `StandardTokenizer` and the attribute model · delivered 2026-09-30, two rows partial
 
 `crates/lucene-analysis` is now Lucene's streaming model: `TokenStream`/
