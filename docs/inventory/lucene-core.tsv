@@ -419,7 +419,7 @@ index/MergeRateLimiter	ported	crates/lucene-index/src/merge_rate_limiter.rs::Mer
 index/MergeScheduler	partial	crates/lucene-index/src/concurrent_writer.rs::run_merges -- M7: no pluggable scheduler: merges run synchronously inside `commit`/`force_merge` or on the thread calling `run_merges`
 index/MergeState	ported	crates/lucene-index/src/merge.rs::build_doc_id_maps
 index/MergeTrigger	ported	crates/lucene-index/src/merge_policy/api.rs::MergeTrigger
-index/MultiBits	todo:M7	live docs concatenated across a composite reader's leaves
+index/MultiBits	ported	crates/lucene-search/src/multi_bits.rs::MultiBits
 index/MultiDocValues	partial	crates/lucene-search/src/ordinal_map.rs::OrdinalMap -- M7: only the SortedSet/Sorted ordinal mapping (`OrdinalMap`) exists; no composite `getNumericValues`/`getBinaryValues`/`getNormValues`/`getSortedValues`/`getSortedSetValues` views over a reader
 index/MultiFields	partial	crates/lucene-index/src/merge.rs::merge_postings -- M7: the field union across segments exists only inside merging; no top-level `Fields` view over a composite reader
 index/MultiIndexMergeScheduler	todo:M7	merge scheduling shared across several indexes (multi-tenant)
