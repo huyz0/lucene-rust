@@ -153,7 +153,7 @@ impl Rescorer for QueryRescorer {
         first_pass: &TopDocs,
         top_n: usize,
     ) -> Result<TopDocs> {
-        let searcher = ctx.searcher;
+        let searcher = ctx.searcher()?;
         let mut hits = first_pass.score_docs.clone();
         hits.sort_by_key(|h| h.doc);
         // One scorer per leaf, advanced through the leaf's hits in order.
@@ -181,7 +181,7 @@ impl Rescorer for QueryRescorer {
         first_pass: &Explanation,
         doc: i32,
     ) -> Result<Explanation> {
-        let second = self.second_pass(ctx.searcher, doc)?;
+        let second = self.second_pass(ctx.searcher()?, doc)?;
         let score = match second {
             Some(s) => (self.combine)(first_pass.value, true, s),
             None => (self.combine)(first_pass.value, false, 0.0),
@@ -226,7 +226,7 @@ impl Rescorer for DoubleValuesSourceRescorer {
         first_pass: &TopDocs,
         top_n: usize,
     ) -> Result<TopDocs> {
-        let searcher = ctx.searcher;
+        let searcher = ctx.searcher()?;
         let mut hits = first_pass.score_docs.clone();
         hits.sort_by_key(|h| h.doc);
         let mut current: Option<(usize, crate::values_source::BoxDoubleValues<'_>)> = None;
@@ -258,10 +258,10 @@ impl Rescorer for DoubleValuesSourceRescorer {
         first_pass: &Explanation,
         doc: i32,
     ) -> Result<Explanation> {
-        let (leaf, local) = ctx
-            .searcher
+        let searcher = ctx.searcher()?;
+        let (leaf, local) = searcher
             .segment_of(doc)
-            .map(|l| (l, doc - ctx.searcher.segments()[l].doc_base))
+            .map(|l| (l, doc - searcher.segments()[l].doc_base))
             .ok_or_else(|| {
                 Error::IllegalArgument(format!(
                     "docId={doc} not found in any leaf in provided searcher"
@@ -373,8 +373,35 @@ fn key_value(
             "leaf {leaf}: a field sort needs the segment's reader"
         ))
     })?;
+    if let SortType::Custom(id) = key.ty {
+        let c = crate::top_field::custom_comparator(id, key, 1)?;
+        let mut l = c.leaf(crate::top_field::LeafCtx {
+            reader,
+            doc_base: seg.doc_base,
+        })?;
+        return Ok(match l.value(doc, score)? {
+            crate::top_field::SortValue::Long(v) => (v, None),
+            crate::top_field::SortValue::Bytes(b) => (0, b),
+        });
+    }
     let info = reader.field_infos().field_by_name(&key.field);
     let column = info.and_then(|i| reader.doc_values_for_field(i.number).map(|c| (i, c)));
+    if key.ty == SortType::StringVal {
+        let Some((info, (meta, data))) = column else {
+            return Ok((0, None));
+        };
+        return match info.doc_values_type {
+            DocValuesType::Binary => {
+                let e = meta
+                    .binary_entry(info.number)
+                    .ok_or_else(|| Error::IllegalState("binary entry".to_string()))?;
+                let v = lucene_codecs::doc_values::BinaryReader::new(data, e).value(doc)?;
+                Ok((0, v.map(<[u8]>::to_vec)))
+            }
+            DocValuesType::None => Ok((0, None)),
+            _ => Err(crate::top_field::SortError::BinaryType(key.field.clone()).into()),
+        };
+    }
     if key.ty == SortType::String {
         let Some((info, (meta, data))) = column else {
             return Ok((0, None));
@@ -461,7 +488,7 @@ impl SortRescorer {
         first_pass: &TopDocs,
         top_n: usize,
     ) -> Result<ShardTopFieldDocs> {
-        let searcher = ctx.searcher;
+        let searcher = ctx.searcher()?;
         let mut hits = first_pass.score_docs.clone();
         hits.sort_by_key(|h| h.doc);
         let mut collected: Vec<ShardFieldDoc> = Vec::with_capacity(hits.len());
@@ -474,7 +501,12 @@ impl SortRescorer {
                 values.push(v);
                 terms.push(t);
             }
-            if !self.sort.iter().any(|k| k.ty == SortType::String) {
+            if !self.sort.iter().any(|k| match k.ty {
+                SortType::String | SortType::StringVal => true,
+                SortType::Custom(id) => crate::top_field::custom_comparator(id, k, 1)
+                    .is_ok_and(|c| c.values_are_bytes()),
+                _ => false,
+            }) {
                 terms.clear();
             }
             collected.push(ShardFieldDoc {
@@ -631,7 +663,7 @@ impl RescoreTopNQuery {
     /// none), the best `n` kept by `HitQueue` (the higher value, then the
     /// lower document).
     pub fn rewrite(&self, ctx: &ValuesContext<'_>) -> Result<DocAndScores> {
-        let searcher = ctx.searcher;
+        let searcher = ctx.searcher()?;
         let mut all: Vec<ShardScoreDoc> = Vec::new();
         let mut original_count: u64 = 0;
         for leaf in 0..searcher.segments().len() {
@@ -676,7 +708,7 @@ impl RescoreTopNQuery {
     /// are live, by score then document, and their count.
     pub fn search(&self, ctx: &ValuesContext<'_>, top_n: usize) -> Result<TopDocs> {
         let rewritten = self.rewrite(ctx)?;
-        let searcher = ctx.searcher;
+        let searcher = ctx.searcher()?;
         let mut hits: Vec<ShardScoreDoc> = Vec::new();
         for (&doc, &score) in rewritten.docs.iter().zip(&rewritten.scores) {
             let (leaf, local) = leaf_of(searcher, doc)?;

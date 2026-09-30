@@ -233,6 +233,48 @@ public class GenValuesRescore {
           m.append('\n');
         }
 
+        // Sorting by a values source (`getSortField`).
+        String[] vsorts = {"float", "double_rev", "long", "long_rev", "scores", "late", "float_scores"};
+        int vsort = 0;
+        for (String qs : new String[] {"(t w0)", "(all)"}) {
+          for (String vs : vsorts) {
+            SortField[] fields =
+                switch (vs) {
+                  case "float" -> new SortField[] {DoubleValuesSource.fromFloatField("f").getSortField(false)};
+                  case "double_rev" -> new SortField[] {DoubleValuesSource.fromDoubleField("d").getSortField(true, -1.5)};
+                  case "long" -> new SortField[] {LongValuesSource.fromLongField("n").getSortField(false)};
+                  case "long_rev" -> new SortField[] {LongValuesSource.fromLongField("n").getSortField(true, 42)};
+                  case "scores" -> new SortField[] {DoubleValuesSource.SCORES.getSortField(true)};
+                  case "late" -> new SortField[] {new LateInteractionFloatValuesSource("li", QMV).getSortField(true)};
+                  default -> new SortField[] {
+                    DoubleValuesSource.fromFloatField("f").getSortField(true),
+                    DoubleValuesSource.SCORES.getSortField(false)
+                  };
+                };
+            org.apache.lucene.search.TopFieldDocs td =
+                searcher.search(query(qs), 15, new Sort(fields));
+            String k = "vsort." + vsort++;
+            m.append(k).append(".query=").append(qs).append('\n');
+            m.append(k).append(".sort=").append(vs).append('\n');
+            StringBuilder b = new StringBuilder();
+            for (ScoreDoc sd : td.scoreDocs) {
+              if (b.length() > 0) b.append(',');
+              b.append(sd.doc);
+              for (Object v : ((FieldDoc) sd).fields) {
+                b.append(':');
+                if (v instanceof Double dv) {
+                  b.append('d').append(Double.doubleToRawLongBits(dv));
+                } else {
+                  b.append('l').append(v);
+                }
+              }
+            }
+            m.append(k).append(".hits=").append(b).append('\n');
+            m.append(k).append(".total=").append(td.totalHits.value()).append('\n');
+          }
+        }
+        m.append("vsort_count=").append(vsort).append('\n');
+
         // Rescorers.
         int qr = 0, dvr = 0, late = 0, sort = 0, rtn = 0;
         for (int f = 0; f < FIRST_PASS.length; f++) {
