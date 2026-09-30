@@ -98,6 +98,12 @@ jobs:
       - name: Dependency licences
         run: python3 scripts/check-licences.py
 
+      # Every class of the Lucene 10.5.0 jar has a status in docs/inventory/
+      # and every "ported" row names Rust code that exists. The jar is fetched
+      # from Maven Central here; see docs/mechanical-gates.md#port-inventory.
+      - name: Port inventory
+        run: python3 scripts/check-port-inventory.py
+
       - name: docs/parity.md consistency
         run: python3 scripts/check-parity.py
 

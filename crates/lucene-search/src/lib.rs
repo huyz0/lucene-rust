@@ -217,6 +217,7 @@ pub mod points_query;
 pub mod query;
 pub mod query_cache;
 pub mod query_parser;
+pub mod similarities;
 pub mod similarity;
 mod slices;
 pub mod sloppy_phrase;

@@ -1,0 +1,1199 @@
+# Lucene 10.5.0 lucene-core: every top-level class of the jar, and what became of it.
+# Checked by scripts/check-port-inventory.py (see its docstring for the statuses).
+# class	status	detail
+analysis/AbstractAnalysisFactory	not-needed	Base class of the SPI name-based factory plumbing (Solr/CustomAnalyzer configuration); Rust composes analyzers directly in code.
+analysis/AnalysisSPILoader	not-needed	JVM ServiceLoader lookup of analysis factories by name; no Rust equivalent needed.
+analysis/Analyzer	partial	crates/lucene-analysis/src/lib.rs::Analyzer -- M7: fixed built-in chains only (standard/keyword + opt-in filters): no user-defined createComponents/TokenStreamComponents, no normalize() for query terms, no ReuseStrategy, no initReader CharFilter hook
+analysis/AnalyzerWrapper	todo:M7	per-field analyzer wrapping (base of PerFieldAnalyzerWrapper) not ported
+analysis/AutomatonToTokenStream	todo:M7	automaton-to-token-graph conversion not ported
+analysis/CachingTokenFilter	ported	crates/lucene-analysis/src/lib.rs::TokenStream
+analysis/CharArrayMap	not-needed	char[]-keyed map that exists to avoid String allocation on the JVM; its only core use is backing CharArraySet, and Rust's HashMap<String,_> covers it.
+analysis/CharArraySet	partial	crates/lucene-analysis/src/lib.rs::StopFilter -- M7: stop sets are a plain case-sensitive HashSet<String>; the ignoreCase=true mode and copy/unmodifiableSet helpers are missing
+analysis/CharFilter	todo:M7	CharFilter abstraction (pre-tokenizer text rewrite with offset correction) not ported
+analysis/CharFilterFactory	not-needed	SPI name-based factory plumbing for CharFilters; no behaviour beyond construction by name.
+analysis/CharacterUtils	not-needed	JVM char[]/codepoint buffer helpers; the one behavioural piece (simple toLowerCase) lives in lucene-analysis::simple_to_lowercase.
+analysis/DelegatingAnalyzerWrapper	todo:M7	delegating per-field analyzer wrapper not ported
+analysis/FilteringTokenFilter	partial	crates/lucene-analysis/src/lib.rs::StopFilter -- M7: skipped-position carry and end() increment exist only inside StopFilter::apply_to_stream; no generic accept()-predicate filtering filter
+analysis/GraphTokenFilter	todo:M7	token-graph lookahead base filter not ported
+analysis/LowerCaseFilter	ported	crates/lucene-analysis/src/lib.rs::LowerCaseFilter
+analysis/ReusableStringReader	not-needed	JVM Reader reuse to avoid allocation when analyzing a String; Rust analyzes &str directly.
+analysis/StopFilter	ported	crates/lucene-analysis/src/lib.rs::StopFilter
+analysis/StopwordAnalyzerBase	partial	crates/lucene-analysis/src/lib.rs::Analyzer -- M7: an Analyzer can carry a stop set (Analyzer::standard(Some(..))); loadStopwordSet from a file/resource/Reader is missing
+analysis/TokenFilter	partial	crates/lucene-analysis/src/lib.rs::TokenStream -- M7: filters are concrete Vec<Token>/TokenStream functions; no TokenFilter trait a caller can implement and chain into an Analyzer, no incremental reset/incrementToken/end/close lifecycle
+analysis/TokenFilterFactory	not-needed	SPI name-based factory plumbing for TokenFilters; no behaviour beyond construction by name.
+analysis/TokenStream	partial	crates/lucene-analysis/src/lib.rs::TokenStream -- M7: materialised token list plus end() values (final position increment/offset); no incremental incrementToken/reset/close lifecycle and no AttributeSource (only term/offset/posInc/posLen carried)
+analysis/TokenStreamToAutomaton	todo:M7	token-graph to automaton conversion not ported
+analysis/Tokenizer	partial	crates/lucene-analysis/src/lib.rs::tokenize -- M7: one built-in tokenizer function (plus keyword short-circuit); no Tokenizer abstraction with setReader/correctOffset for CharFilters
+analysis/TokenizerFactory	not-needed	SPI name-based factory plumbing for Tokenizers; no behaviour beyond construction by name.
+analysis/WordlistLoader	todo:M7	stopword/wordlist file loaders (getWordSet, getSnowballWordSet, getStemDict, getLines) not ported
+analysis/standard/StandardAnalyzer	partial	crates/lucene-analysis/src/lib.rs::Analyzer -- M7: Analyzer::standard composes tokenize+LowerCaseFilter+StopFilter, but no maxTokenLength (255) handling and it inherits StandardTokenizer gaps (token types, emoji)
+analysis/standard/StandardTokenizer	partial	crates/lucene-analysis/src/lib.rs::tokenize -- M7: UAX#29 word segmentation via unicode-segmentation; missing maxTokenLength split, token types (<ALPHANUM>/<NUM>/<EMOJI>/...), emoji tokens (emoji yield no token), Unicode-version parity with the JFlex grammar unverified beyond fixtures
+analysis/standard/StandardTokenizerFactory	not-needed	SPI name-based factory for StandardTokenizer; construction plumbing only.
+analysis/standard/StandardTokenizerImpl	partial	crates/lucene-analysis/src/lib.rs::tokenize -- M7: JFlex scanner replaced by unicode_word_indices; no token-type classification, no emoji/southeast-asian/hiragana type rules, no buffer-size/maxTokenLength handling
+analysis/tokenattributes/BytesTermAttribute	todo:M7	binary (BytesRef) token terms in the analysis model not ported
+analysis/tokenattributes/BytesTermAttributeImpl	todo:M7	binary (BytesRef) token terms in the analysis model not ported
+analysis/tokenattributes/CharTermAttribute	ported	crates/lucene-analysis/src/lib.rs::Token
+analysis/tokenattributes/CharTermAttributeImpl	ported	crates/lucene-analysis/src/lib.rs::Token
+analysis/tokenattributes/FlagsAttribute	todo:M7	token flags attribute not ported
+analysis/tokenattributes/FlagsAttributeImpl	todo:M7	token flags attribute not ported
+analysis/tokenattributes/KeywordAttribute	todo:M7	keyword marking (protect token from stemming) not ported
+analysis/tokenattributes/KeywordAttributeImpl	todo:M7	keyword marking (protect token from stemming) not ported
+analysis/tokenattributes/OffsetAttribute	ported	crates/lucene-analysis/src/lib.rs::Token
+analysis/tokenattributes/OffsetAttributeImpl	ported	crates/lucene-analysis/src/lib.rs::Token
+analysis/tokenattributes/PackedTokenAttributeImpl	partial	crates/lucene-analysis/src/lib.rs::Token -- M7: term, offsets, position increment and length are carried; type and termFrequency are not
+analysis/tokenattributes/PayloadAttribute	partial	crates/lucene-index/src/index_writer.rs::BoxedPayloadSource -- M7: payloads come from a writer-level per-occurrence callback, not a token attribute a TokenFilter sets
+analysis/tokenattributes/PayloadAttributeImpl	partial	crates/lucene-index/src/index_writer.rs::BoxedPayloadSource -- M7: payloads come from a writer-level per-occurrence callback, not a token attribute a TokenFilter sets
+analysis/tokenattributes/PositionIncrementAttribute	ported	crates/lucene-analysis/src/lib.rs::Token
+analysis/tokenattributes/PositionIncrementAttributeImpl	ported	crates/lucene-analysis/src/lib.rs::Token
+analysis/tokenattributes/PositionLengthAttribute	ported	crates/lucene-analysis/src/lib.rs::Token
+analysis/tokenattributes/PositionLengthAttributeImpl	ported	crates/lucene-analysis/src/lib.rs::Token
+analysis/tokenattributes/SentenceAttribute	todo:M7	sentence-index token attribute not ported
+analysis/tokenattributes/SentenceAttributeImpl	todo:M7	sentence-index token attribute not ported
+analysis/tokenattributes/TermFrequencyAttribute	partial	crates/lucene-index/src/index_writer.rs::add_document_with_custom_freq_terms -- M7: custom term freqs are supplied as (term, freq) pairs outside analysis, not as a token attribute; that path is exclusive with analyzed postings per writer
+analysis/tokenattributes/TermFrequencyAttributeImpl	partial	crates/lucene-index/src/index_writer.rs::add_document_with_custom_freq_terms -- M7: custom term freqs are supplied as (term, freq) pairs outside analysis, not as a token attribute; that path is exclusive with analyzed postings per writer
+analysis/tokenattributes/TermToBytesRefAttribute	ported	crates/lucene-analysis/src/lib.rs::Token
+analysis/tokenattributes/TypeAttribute	todo:M7	token type attribute not ported (Token has no type)
+analysis/tokenattributes/TypeAttributeImpl	todo:M7	token type attribute not ported (Token has no type)
+codecs/BlockTermState	ported	crates/lucene-codecs/src/blocktree.rs::SeekedTerm
+codecs/BufferingKnnVectorsWriter	not-needed	Abstract heap-buffering KnnVectorsWriter base that no lucene-core format extends (only SimpleText/test codecs); the port buffers vectors in IndexWriter (DocumentVector) for its one vectors format.
+codecs/Codec	not-needed	NamedSPILoader codec registry/lookup-by-name; the port hard-wires the Lucene104 format set and rejects any other codec name at the CodecUtil header check.
+codecs/CodecUtil	ported	crates/lucene-store/src/codec_util.rs::check_header
+codecs/CompetitiveImpactAccumulator	ported	crates/lucene-codecs/src/postings_writer.rs::CompetitiveImpactAccumulator
+codecs/CompoundDirectory	ported	crates/lucene-index/src/compound_reader.rs::CompoundReader
+codecs/CompoundFormat	ported	crates/lucene-codecs/src/compound_format.rs::parse_entries
+codecs/DocValuesConsumer	ported	crates/lucene-codecs/src/doc_values.rs::write_fields_with_skip_indexes
+codecs/DocValuesFormat	ported	crates/lucene-codecs/src/doc_values.rs::parse_meta
+codecs/DocValuesProducer	ported	crates/lucene-codecs/src/doc_values.rs::NumericReader
+codecs/FieldInfosFormat	ported	crates/lucene-codecs/src/field_infos.rs::parse
+codecs/FieldsConsumer	ported	crates/lucene-codecs/src/postings_writer.rs::write_fields
+codecs/FieldsProducer	ported	crates/lucene-codecs/src/blocktree.rs::BlockTreeFields
+codecs/FilterCodec	not-needed	Codec-delegation base for swapping formats inside the SPI codec registry; the port has no pluggable codec object to wrap.
+codecs/Impact	ported	crates/lucene-codecs/src/postings.rs::Impact
+codecs/KnnFieldVectorsWriter	ported	crates/lucene-index/src/index_writer.rs::add_vector_field
+codecs/KnnVectorsFormat	ported	crates/lucene-codecs/src/hnsw_vectors.rs::HnswVectorsReader
+codecs/KnnVectorsReader	ported	crates/lucene-codecs/src/hnsw_vectors.rs::HnswVectorsReader
+codecs/KnnVectorsWriter	ported	crates/lucene-codecs/src/hnsw_vectors.rs::write_hnsw_vectors
+codecs/LiveDocsFormat	ported	crates/lucene-codecs/src/live_docs.rs::parse
+codecs/MultiLevelSkipListReader	deferred:M8	Skip-list reader used by no 10.5.0 lucene-core format; only the pre-Lucene99 postings formats in backward-codecs use it.
+codecs/MultiLevelSkipListWriter	deferred:M8	Skip-list writer used by no 10.5.0 lucene-core format; only the pre-Lucene99 postings formats in backward-codecs use it.
+codecs/MutablePointTree	ported	crates/lucene-codecs/src/points.rs::PackedPointsField
+codecs/NormsConsumer	ported	crates/lucene-codecs/src/norms.rs::write_fields
+codecs/NormsFormat	ported	crates/lucene-codecs/src/norms.rs::parse_meta
+codecs/NormsProducer	ported	crates/lucene-codecs/src/norms.rs::NormsReader
+codecs/PointsFormat	ported	crates/lucene-codecs/src/points.rs::PointsReader
+codecs/PointsReader	ported	crates/lucene-codecs/src/points.rs::PointsReader
+codecs/PointsWriter	ported	crates/lucene-codecs/src/points.rs::write
+codecs/PostingsFormat	ported	crates/lucene-codecs/src/postings.rs::DocInput
+codecs/PostingsReaderBase	ported	crates/lucene-codecs/src/postings.rs::LazyDocsCursor
+codecs/PostingsWriterBase	ported	crates/lucene-codecs/src/postings_writer.rs::write_fields
+codecs/PushPostingsWriterBase	ported	crates/lucene-codecs/src/postings_writer.rs::write_fields
+codecs/SegmentInfoFormat	ported	crates/lucene-index/src/segment_info.rs::parse
+codecs/StoredFieldsFormat	ported	crates/lucene-codecs/src/stored_fields.rs::StoredFieldsReader
+codecs/StoredFieldsReader	ported	crates/lucene-codecs/src/stored_fields.rs::StoredFieldsReader
+codecs/StoredFieldsWriter	ported	crates/lucene-codecs/src/stored_fields.rs::StoredFieldsWriter
+codecs/TermStats	ported	crates/lucene-codecs/src/blocktree.rs::TermStats
+codecs/TermVectorsFormat	ported	crates/lucene-codecs/src/term_vectors.rs::TermVectorsReader
+codecs/TermVectorsReader	ported	crates/lucene-codecs/src/term_vectors.rs::TermVectorsReader
+codecs/TermVectorsWriter	ported	crates/lucene-codecs/src/term_vectors.rs::TermVectorsWriter
+codecs/compressing/CompressionMode	ported	crates/lucene-codecs/src/lz4.rs::compress_with_dictionary
+codecs/compressing/Compressor	ported	crates/lucene-codecs/src/lz4.rs::compress_with_dictionary
+codecs/compressing/Decompressor	ported	crates/lucene-codecs/src/lz4.rs::decompress
+codecs/compressing/MatchingReaders	ported	crates/lucene-index/src/merge.rs::matching_readers
+codecs/hnsw/DefaultFlatVectorScorer	ported	crates/lucene-codecs/src/vectors.rs::FloatVectorScorer
+codecs/hnsw/FlatFieldVectorsWriter	ported	crates/lucene-codecs/src/vectors.rs::FlatVectorsWriter
+codecs/hnsw/FlatVectorScorerUtil	not-needed	Factory returning the VectorizationProvider-chosen (Panama or default) flat scorer; the port has one scorer and picks SIMD kernels at compile time.
+codecs/hnsw/FlatVectorsFormat	ported	crates/lucene-codecs/src/vectors.rs::FlatVectorsReader
+codecs/hnsw/FlatVectorsReader	ported	crates/lucene-codecs/src/vectors.rs::FlatVectorsReader
+codecs/hnsw/FlatVectorsScorer	ported	crates/lucene-codecs/src/vectors.rs::FloatVectorScorer
+codecs/hnsw/FlatVectorsWriter	ported	crates/lucene-codecs/src/vectors.rs::FlatVectorsWriter
+codecs/hnsw/HnswGraphProvider	ported	crates/lucene-codecs/src/hnsw_vectors.rs::HnswVectorsReader
+codecs/hnsw/PrefetchableFlatVectorScorer	not-needed	Performance-only wrapper that issues IndexInput.prefetch for off-heap vectors before delegating; scores are unchanged.
+codecs/hnsw/ScalarQuantizedVectorScorer	deferred:M8	Scores the Lucene99 scalar-quantized format (ScalarQuantizer), whose format lives in backward-codecs in 10.5.0; its only core caller is Lucene99ScalarQuantizedVectorScorer.
+codecs/lucene103/blocktree/CompressionAlgorithm	ported	crates/lucene-codecs/src/blocktree.rs::load_block
+codecs/lucene103/blocktree/FieldReader	ported	crates/lucene-codecs/src/blocktree.rs::FieldTerms
+codecs/lucene103/blocktree/IntersectTermsEnum	ported	crates/lucene-codecs/src/blocktree.rs::DfaIntersect
+codecs/lucene103/blocktree/IntersectTermsEnumFrame	ported	crates/lucene-codecs/src/blocktree.rs::DfaIntersect
+codecs/lucene103/blocktree/Lucene103BlockTreeTermsReader	ported	crates/lucene-codecs/src/blocktree.rs::BlockTreeFields
+codecs/lucene103/blocktree/Lucene103BlockTreeTermsWriter	partial	crates/lucene-codecs/src/blocktree_writer.rs::write_field_terms -- M7: "writer: `.tim` suffixes never compressed, no zigzag singleton delta (size only)" (parity supported matrix); LZ4/LOWERCASE_ASCII suffix compression is read but never written
+codecs/lucene103/blocktree/SegmentTermsEnum	ported	crates/lucene-codecs/src/blocktree.rs::SegmentTermsEnum
+codecs/lucene103/blocktree/SegmentTermsEnumFrame	ported	crates/lucene-codecs/src/blocktree.rs::Frame
+codecs/lucene103/blocktree/Stats	not-needed	Diagnostic block statistics (FieldReader.getStats, printed by CheckIndex -verbose); no read or write path depends on it.
+codecs/lucene103/blocktree/TrieBuilder	ported	crates/lucene-codecs/src/blocktree_writer.rs::TrieBuilder
+codecs/lucene103/blocktree/TrieReader	ported	crates/lucene-codecs/src/blocktree.rs::load_node
+codecs/lucene104/ForUtil	ported	crates/lucene-codecs/src/for_util.rs::ForUtil
+codecs/lucene104/Lucene104Codec	ported	crates/lucene-index/src/index_writer.rs::POSTINGS_FORMAT_NAME
+codecs/lucene104/Lucene104HnswScalarQuantizedVectorsFormat	todo:M7	HNSW over scalar-quantized vectors (not ported)
+codecs/lucene104/Lucene104PostingsFormat	ported	crates/lucene-codecs/src/postings.rs::DocInput
+codecs/lucene104/Lucene104PostingsReader	partial	crates/lucene-codecs/src/postings.rs::LazyDocsCursor -- M7: "a term whose `totalTermFreq` exceeds `u32::MAX` cannot have its positions walked (`Error::Unsupported`)" (parity)
+codecs/lucene104/Lucene104PostingsWriter	ported	crates/lucene-codecs/src/postings_writer.rs::write_fields
+codecs/lucene104/Lucene104ScalarQuantizedVectorScorer	todo:M7	scalar-quantized vector scoring (not ported)
+codecs/lucene104/Lucene104ScalarQuantizedVectorsFormat	todo:M7	scalar-quantized vectors format (not ported)
+codecs/lucene104/Lucene104ScalarQuantizedVectorsReader	todo:M7	scalar-quantized vectors reader (not ported)
+codecs/lucene104/Lucene104ScalarQuantizedVectorsWriter	todo:M7	scalar-quantized vectors writer (not ported)
+codecs/lucene104/OffHeapScalarQuantizedFloatVectorValues	todo:M7	off-heap scalar-quantized float vector values (not ported)
+codecs/lucene104/OffHeapScalarQuantizedVectorValues	todo:M7	off-heap scalar-quantized vector values (not ported)
+codecs/lucene104/PForUtil	ported	crates/lucene-codecs/src/for_util.rs::pfor_decode
+codecs/lucene104/PostingIndexInput	ported	crates/lucene-codecs/src/for_util.rs::ForUtil
+codecs/lucene104/PostingsUtil	ported	crates/lucene-codecs/src/postings.rs::read_tail_block
+codecs/lucene90/DeflateWithPresetDictCompressionMode	partial	crates/lucene-codecs/src/deflate.rs::compress -- M7: "`BEST_COMPRESSION` writes each DEFLATE sub-block without the preset dictionary (ratio only)" (parity); decode side with the dictionary is complete
+codecs/lucene90/IndexedDISI	ported	crates/lucene-codecs/src/indexed_disi.rs::DisiCursor
+codecs/lucene90/LZ4WithPresetDictCompressionMode	ported	crates/lucene-codecs/src/stored_fields.rs::decompress_unit
+codecs/lucene90/Lucene90CompoundFormat	partial	crates/lucene-codecs/src/compound_format.rs::write -- M7: "the writer is ported and verified, but `IndexWriter` never calls it: every flush and merge writes loose files" (parity)
+codecs/lucene90/Lucene90CompoundReader	ported	crates/lucene-index/src/compound_reader.rs::CompoundReader
+codecs/lucene90/Lucene90DocValuesConsumer	partial	crates/lucene-codecs/src/doc_values.rs::write_fields_with_skip_indexes -- M7: "Not ported: `writeValues`' `doBlocks` split (a NUMERIC column is always packed at one width, never in per-16384-value blocks)" (parity; size only)
+codecs/lucene90/Lucene90DocValuesFormat	ported	crates/lucene-codecs/src/doc_values.rs::parse_meta
+codecs/lucene90/Lucene90DocValuesProducer	ported	crates/lucene-codecs/src/doc_values.rs::DocValuesMeta
+codecs/lucene90/Lucene90LiveDocsFormat	ported	crates/lucene-codecs/src/live_docs.rs::parse
+codecs/lucene90/Lucene90NormsConsumer	ported	crates/lucene-codecs/src/norms.rs::write_fields
+codecs/lucene90/Lucene90NormsFormat	ported	crates/lucene-codecs/src/norms.rs::parse_meta
+codecs/lucene90/Lucene90NormsProducer	ported	crates/lucene-codecs/src/norms.rs::NormsReader
+codecs/lucene90/Lucene90PointsFormat	ported	crates/lucene-codecs/src/points.rs::PointsReader
+codecs/lucene90/Lucene90PointsReader	ported	crates/lucene-codecs/src/points.rs::PointsReader
+codecs/lucene90/Lucene90PointsWriter	partial	crates/lucene-codecs/src/points.rs::write -- M7: "every leaf uses common prefix 0, `compressedDim = -2`, run length 1 and doc ids as `CONTINUOUS_IDS`/`BPV_32` only (Java also picks its bitset, delta-16 and 21/24-bit doc-id encodings)"; `widest_dim` omits `parentSplits` fairness (parity; size only)
+codecs/lucene90/Lucene90StoredFieldsFormat	ported	crates/lucene-codecs/src/stored_fields.rs::StoredFieldsReader
+codecs/lucene90/Lucene90TermVectorsFormat	ported	crates/lucene-codecs/src/term_vectors.rs::TermVectorsReader
+codecs/lucene90/compressing/FieldsIndex	ported	crates/lucene-codecs/src/stored_fields.rs::ChunkIndexEntry
+codecs/lucene90/compressing/FieldsIndexReader	ported	crates/lucene-codecs/src/stored_fields.rs::chunk_for_doc
+codecs/lucene90/compressing/FieldsIndexWriter	ported	crates/lucene-codecs/src/stored_fields.rs::write_index_and_meta
+codecs/lucene90/compressing/Lucene90CompressingStoredFieldsFormat	ported	crates/lucene-codecs/src/stored_fields.rs::StoredFieldsReader
+codecs/lucene90/compressing/Lucene90CompressingStoredFieldsReader	ported	crates/lucene-codecs/src/stored_fields.rs::StoredFieldsReader
+codecs/lucene90/compressing/Lucene90CompressingStoredFieldsWriter	partial	crates/lucene-codecs/src/stored_fields.rs::StoredFieldsWriter -- M7: "`BEST_COMPRESSION` writes each DEFLATE sub-block without the preset dictionary (ratio only)" (parity)
+codecs/lucene90/compressing/Lucene90CompressingTermVectorsFormat	ported	crates/lucene-codecs/src/term_vectors.rs::TermVectorsReader
+codecs/lucene90/compressing/Lucene90CompressingTermVectorsReader	ported	crates/lucene-codecs/src/term_vectors.rs::TermVectorsReader
+codecs/lucene90/compressing/Lucene90CompressingTermVectorsWriter	ported	crates/lucene-codecs/src/term_vectors.rs::TermVectorsWriter
+codecs/lucene90/compressing/StoredFieldsInts	ported	crates/lucene-codecs/src/stored_fields.rs::read_bulk_ints
+codecs/lucene94/Lucene94FieldInfosFormat	ported	crates/lucene-codecs/src/field_infos.rs::parse
+codecs/lucene95/HasIndexSlice	ported	crates/lucene-codecs/src/vectors.rs::raw_range
+codecs/lucene95/OffHeapByteVectorValues	ported	crates/lucene-codecs/src/vectors.rs::ByteVectorValues
+codecs/lucene95/OffHeapFloatVectorValues	ported	crates/lucene-codecs/src/vectors.rs::FloatVectorValues
+codecs/lucene95/OrdToDocDISIReaderConfiguration	ported	crates/lucene-codecs/src/vectors.rs::OrdToDoc
+codecs/lucene99/Lucene99FlatVectorsFormat	ported	crates/lucene-codecs/src/vectors.rs::FlatVectorsReader
+codecs/lucene99/Lucene99FlatVectorsReader	ported	crates/lucene-codecs/src/vectors.rs::FlatVectorsReader
+codecs/lucene99/Lucene99FlatVectorsWriter	ported	crates/lucene-codecs/src/vectors.rs::write_flat_vectors
+codecs/lucene99/Lucene99HnswVectorsFormat	ported	crates/lucene-codecs/src/hnsw_vectors.rs::HnswVectorsReader
+codecs/lucene99/Lucene99HnswVectorsReader	ported	crates/lucene-codecs/src/hnsw_vectors.rs::HnswVectorsReader
+codecs/lucene99/Lucene99HnswVectorsWriter	ported	crates/lucene-codecs/src/hnsw_vectors.rs::write_hnsw_vectors
+codecs/lucene99/Lucene99ScalarQuantizedVectorScorer	deferred:M8	Scorer for the Lucene99 scalar-quantized vectors format, which 10.5.0 ships only in backward-codecs (superseded by Lucene104ScalarQuantizedVectorsFormat).
+codecs/lucene99/Lucene99SegmentInfoFormat	ported	crates/lucene-index/src/segment_info.rs::write
+codecs/perfield/PerFieldDocValuesFormat	partial	crates/lucene-index/src/index_writer.rs::per_field_codec_suffix -- M7: per-field routing is single-format only: every field goes to one fixed format with suffix "0"; parity: "any per-field postings or doc-values format other than `Lucene104`/`Lucene90`" is out of scope
+codecs/perfield/PerFieldKnnVectorsFormat	partial	crates/lucene-index/src/index_writer.rs::KNN_VECTORS_FORMAT_NAME -- M7: writes/merges the PerFieldKnnVectorsFormat.format/.suffix attributes for Lucene99HnswVectorsFormat only; no routing of fields to other KNN formats
+codecs/perfield/PerFieldMergeState	todo:M7	per-format FieldInfos filtering for multi-format merges
+codecs/perfield/PerFieldPostingsFormat	partial	crates/lucene-index/src/index_writer.rs::per_field_codec_suffix -- M7: per-field routing is single-format only: every field goes to one fixed format with suffix "0"; parity: "any per-field postings or doc-values format other than `Lucene104`/`Lucene90`" is out of scope
+document/BaseShapeDocValuesQuery	deferred:M9	base query over shape doc values (geo)
+document/BinaryDocValuesField	ported	crates/lucene-index/src/index_writer/explicit.rs::ExplicitFields
+document/BinaryPoint	partial	crates/lucene-index/src/index_writer/explicit.rs::ExplicitFields -- M7: packed bytes indexable via ExplicitFields.points and queryable via points_query::search_points_range/search_points_in_set, but no BinaryPoint type or newExactQuery/newRangeQuery/newSetQuery factories
+document/BinaryRangeDocValues	todo:M7	binary-encoded range doc values reader not ported
+document/BinaryRangeDocValuesField	todo:M7	range-field doc values encoding not ported
+document/BinaryRangeFieldRangeQuery	todo:M7	doc-values range-field relation query not ported
+document/DateTools	todo:M7	date <-> sortable string/resolution helpers not ported
+document/DocValuesLongHashSet	todo:M7	long hash set backing SortedNumeric/Numeric newSlowSetQuery not ported
+document/Document	partial	crates/lucene-codecs/src/stored_fields.rs::Document -- M7: the native Document is a list of stored values (indexing decided by writer config) and ExplicitDocument is pre-inverted; no IndexableField list with per-field FieldType, no get/getValues/removeField by name
+document/DocumentStoredFieldVisitor	ported	crates/lucene-codecs/src/stored_fields.rs::DocumentVisitor
+document/DoubleDocValuesField	ported	crates/lucene-index/src/index_writer/explicit.rs::ExplicitFields
+document/DoubleField	partial	crates/lucene-index/src/index_writer/explicit.rs::ExplicitFields -- M7: point + SORTED_NUMERIC doc value indexable only by hand-encoding sortable bytes/longs; no DoubleField type, no typed newExactQuery/newRangeQuery/newSetQuery/newSortField (search has only an i64 PointsRangeQuery and byte-level points functions)
+document/DoublePoint	partial	crates/lucene-index/src/index_writer/explicit.rs::ExplicitFields -- M7: packed point indexable (native path via FieldValue::Double also stores it); no public double sortable-bytes pack/unpack, nextUp/nextDown, or typed newExactQuery/newRangeQuery/newSetQuery
+document/DoubleRange	todo:M7	double range field (intersects/within/contains/crosses) not ported
+document/DoubleRangeDocValuesField	todo:M7	double range doc-values field not ported
+document/DoubleRangeSlowRangeQuery	todo:M7	double range doc-values slow query not ported
+document/FeatureDoubleValuesSource	todo:M7	feature-field DoubleValuesSource not ported
+document/FeatureField	partial	crates/lucene-index/src/index_writer.rs::add_document_with_custom_freq_terms -- M7: a feature term with a custom freq can be indexed, but the feature-value->freq encoding (float bits >>> 15) and all query factories (saturation/log/sigmoid/linear, newFeatureSort, newDoubleValues) are missing
+document/FeatureQuery	todo:M7	feature-field scoring query not ported
+document/FeatureSortField	todo:M7	feature-field sort not ported
+document/Field	partial	crates/lucene-index/src/index_writer/explicit.rs::ExplicitDocument -- M7: no generic Field(value, FieldType): stored values, pre-inverted terms, doc values and points are separate entries; per-field analyzer/TokenStream/Reader values are not supported (native path re-analyses stored text with one writer-wide Analyzer)
+document/FieldType	partial	crates/lucene-codecs/src/field_infos.rs::FieldInfo -- M7: index options, norms, doc-values type/skip index, point and vector shape are carried; stored/tokenized/storeTermVectorPositions/Offsets/Payloads flags and InvertableType are not, and term vectors are refused on the explicit path
+document/FloatDocValuesField	ported	crates/lucene-index/src/index_writer/explicit.rs::ExplicitFields
+document/FloatField	partial	crates/lucene-index/src/index_writer/explicit.rs::ExplicitFields -- M7: point + SORTED_NUMERIC doc value indexable only by hand-encoding sortable bytes/longs; no FloatField type, no typed newExactQuery/newRangeQuery/newSetQuery/newSortField
+document/FloatPoint	partial	crates/lucene-index/src/index_writer/explicit.rs::ExplicitFields -- M7: packed point indexable (native path via FieldValue::Float also stores it); no public float sortable-bytes pack/unpack, nextUp/nextDown, or typed newExactQuery/newRangeQuery/newSetQuery
+document/FloatRange	todo:M7	float range field (intersects/within/contains/crosses) not ported
+document/FloatRangeDocValuesField	todo:M7	float range doc-values field not ported
+document/FloatRangeSlowRangeQuery	todo:M7	float range doc-values slow query not ported
+document/InetAddressPoint	todo:M7	IP address point field (16-byte encoding, prefix/range/set queries) not ported
+document/InetAddressRange	todo:M7	IP address range field not ported
+document/IntField	partial	crates/lucene-index/src/index_writer/explicit.rs::ExplicitFields -- M7: point + SORTED_NUMERIC doc value indexable only by hand-encoding sortable bytes; no IntField type, no typed newExactQuery/newRangeQuery/newSetQuery/newSortField
+document/IntPoint	partial	crates/lucene-index/src/index_writer/explicit.rs::ExplicitFields -- M7: packed point indexable (native path via FieldValue::Int also stores it); no public int sortable-bytes pack/unpack or typed newExactQuery/newRangeQuery/newSetQuery (search has only i64 PointsRangeQuery)
+document/IntRange	todo:M7	int range field (intersects/within/contains/crosses) not ported
+document/IntRangeDocValuesField	todo:M7	int range doc-values field not ported
+document/IntRangeSlowRangeQuery	todo:M7	int range doc-values slow query not ported
+document/InvertableType	partial	crates/lucene-index/src/index_writer/explicit.rs::InvertedTerm -- M7: a single binary term can be supplied pre-inverted; no field-type TERM/BINARY switch in the writer
+document/KeywordField	partial	crates/lucene-index/src/index_writer/explicit.rs::ExplicitFields -- M7: term + SORTED_SET doc value indexable by hand-building an ExplicitDocument; no KeywordField type, and newExactQuery/newSetQuery lack their doc-values halves (no SortedSet slow exact/set query); newSortField via top_field keyword keys
+document/KnnByteVectorField	ported	crates/lucene-index/src/index_writer.rs::DocumentVector
+document/KnnFloatVectorField	ported	crates/lucene-index/src/index_writer.rs::DocumentVector
+document/LatLonDocValuesBoxQuery	deferred:M9	lat/lon geo doc values box query (geo)
+document/LatLonDocValuesField	deferred:M9	lat/lon geo doc values field (geo)
+document/LatLonDocValuesQuery	deferred:M9	lat/lon geo doc values query (geo)
+document/LatLonPoint	deferred:M9	lat/lon geo point (geo)
+document/LatLonPointDistanceComparator	deferred:M9	lat/lon geo point distance comparator (geo)
+document/LatLonPointDistanceFeatureQuery	deferred:M9	lat/lon geo point distance feature query (geo)
+document/LatLonPointDistanceQuery	deferred:M9	lat/lon geo point distance query (geo)
+document/LatLonPointQuery	deferred:M9	lat/lon geo point query (geo)
+document/LatLonPointSortField	deferred:M9	lat/lon geo point sort field (geo)
+document/LatLonShape	deferred:M9	lat/lon geo shape (geo)
+document/LatLonShapeBoundingBoxQuery	deferred:M9	lat/lon geo shape bounding box query (geo)
+document/LatLonShapeDocValues	deferred:M9	lat/lon geo shape doc values (geo)
+document/LatLonShapeDocValuesField	deferred:M9	lat/lon geo shape doc values field (geo)
+document/LatLonShapeDocValuesQuery	deferred:M9	lat/lon geo shape doc values query (geo)
+document/LatLonShapeQuery	deferred:M9	lat/lon geo shape query (geo)
+document/LateInteractionField	todo:M7	multi-vector late-interaction binary field (encode/decode) not ported
+document/LongDistanceFeatureQuery	todo:M7	long distance-feature scoring query not ported
+document/LongField	partial	crates/lucene-index/src/index_writer/explicit.rs::ExplicitFields -- M7: point + SORTED_NUMERIC doc value indexable by hand (pack_i64 exists in points_query); no LongField type, no typed newExactQuery/newSetQuery/newSortField/newDistanceFeatureQuery; range only as 1-D PointsRangeQuery without the doc-values IndexOrDocValues half wired
+document/LongPoint	partial	crates/lucene-search/src/query.rs::PointsRangeQuery -- M7: indexing via add_points_field (FieldValue::Long, also stored) or ExplicitFields packed bytes; 1-D range via PointsRangeQuery and set via search_points_in_set; missing multi-dimensional range factories, typed newSetQuery/newExactQuery, newDistanceFeatureQuery, unpack helpers
+document/LongRange	todo:M7	long range field (intersects/within/contains/crosses) not ported
+document/LongRangeDocValuesField	todo:M7	long range doc-values field not ported
+document/LongRangeSlowRangeQuery	todo:M7	long range doc-values slow query not ported
+document/NearestNeighbor	deferred:M9	lat/lon nearest-neighbour search over the BKD tree (geo)
+document/NumericDocValuesField	partial	crates/lucene-search/src/doc_value_query.rs::search_numeric_range -- M7: indexing via ExplicitFields/add_doc_values_field; newSlowRangeQuery/newSlowExactQuery via search_numeric_range(_with_skip_index); newSlowSetQuery missing
+document/RangeBulkScorer	todo:M7	doc-id-interval bulk scorer (collectRange) not ported
+document/RangeFieldQuery	todo:M7	range-field relation query (intersects/within/contains/crosses) not ported
+document/ShapeDocValues	deferred:M9	shape doc-values encoding (geo)
+document/ShapeDocValuesField	deferred:M9	shape doc-values field (geo)
+document/ShapeField	deferred:M9	triangle-encoded shape field (geo)
+document/SortedDocValuesField	partial	crates/lucene-search/src/doc_value_query.rs::search_sorted_ord_range -- M7: indexing via ExplicitFields/add_doc_values_field; slow range only over ordinals (no BytesRef-bound lookup), no newSlowExactQuery/newSlowSetQuery
+document/SortedNumericDocValuesField	partial	crates/lucene-search/src/doc_value_query.rs::search_sorted_numeric_range -- M7: indexing via ExplicitFields/add_doc_values_field; newSlowRangeQuery/newSlowExactQuery via search_sorted_numeric_range; newSlowSetQuery missing
+document/SortedNumericDocValuesRangeQuery	partial	crates/lucene-search/src/doc_value_query.rs::search_sorted_numeric_range -- M7: no skip-index or index-sort doc-range fast path for SORTED_NUMERIC, no rewrite to FieldExistsQuery/MatchNoDocs, not a scorer-tree Query
+document/SortedNumericDocValuesSetQuery	todo:M7	doc-values numeric set query not ported
+document/SortedSetDocValuesField	partial	crates/lucene-search/src/doc_value_query.rs::search_multi_valued_range -- M7: indexing via ExplicitFields/add_doc_values_field; no any-value SORTED_SET range query (search_multi_valued_range is min/max-selector only), no newSlowExactQuery/newSlowSetQuery
+document/SortedSetDocValuesRangeQuery	todo:M7	any-value SORTED_SET doc-values range query not ported
+document/SortedSkipperScorerSupplier	todo:M7	skipper + index-sort aligned doc-range scorer supplier not ported
+document/SpatialQuery	deferred:M9	base class of geo shape/point spatial queries (geo)
+document/StoredField	ported	crates/lucene-codecs/src/stored_fields.rs::StoredField
+document/StoredValue	ported	crates/lucene-codecs/src/stored_fields.rs::FieldValue
+document/StringField	ported	crates/lucene-index/src/index_writer/explicit.rs::InvertedField
+document/TextField	partial	crates/lucene-index/src/index_writer.rs::add_postings_field -- M7: native path analyses a stored text with one writer-wide Analyzer (text is always stored); a non-stored or custom-analyzed TextField needs caller-side analysis + norm into ExplicitDocument; no Reader/TokenStream values
+document/XYDocValuesField	deferred:M9	cartesian x/y point doc values field (geo)
+document/XYDocValuesPointInGeometryQuery	deferred:M9	cartesian doc-values point-in-geometry query (geo)
+document/XYPointDistanceComparator	deferred:M9	cartesian point distance sort comparator (geo)
+document/XYPointField	deferred:M9	cartesian x/y point field (geo)
+document/XYPointInGeometryQuery	deferred:M9	cartesian point-in-geometry query (geo)
+document/XYPointSortField	deferred:M9	cartesian point distance sort field (geo)
+document/XYShape	deferred:M9	cartesian shape field factory (geo)
+document/XYShapeDocValues	deferred:M9	cartesian shape doc values (geo)
+document/XYShapeDocValuesField	deferred:M9	cartesian shape doc values field (geo)
+document/XYShapeDocValuesQuery	deferred:M9	cartesian shape doc values query (geo)
+document/XYShapeQuery	deferred:M9	cartesian shape query (geo)
+document/column/BinaryColumn	todo:M7	binary column of the columnar addBatch API not ported
+document/column/BinaryColumnAdapter	todo:M7	binary column IndexableField adapter of the columnar addBatch API not ported
+document/column/BytesRefValuesCursor	todo:M7	dense binary cursor of the columnar addBatch API not ported
+document/column/Column	todo:M7	column abstraction of the columnar addBatch API not ported
+document/column/ColumnBatch	todo:M7	columnar batch indexing (IndexWriter.addBatch) not ported
+document/column/ColumnFieldAdapter	todo:M7	column-to-IndexableField adapter of the columnar addBatch API not ported
+document/column/ColumnValidation	todo:M7	validation of the columnar addBatch API not ported
+document/column/DictionaryColumn	todo:M7	dictionary+ordinals column of the columnar addBatch API not ported
+document/column/LongColumn	todo:M7	long column of the columnar addBatch API not ported
+document/column/LongColumnAdapter	todo:M7	long column IndexableField adapter of the columnar addBatch API not ported
+document/column/LongTupleCursor	todo:M7	long tuple cursor of the columnar addBatch API not ported
+document/column/LongValuesCursor	todo:M7	dense long cursor of the columnar addBatch API not ported
+document/column/ObjectTupleCursor	todo:M7	object tuple cursor of the columnar addBatch API not ported
+document/column/OrdinalsCursor	todo:M7	dense ordinals cursor of the columnar addBatch API not ported
+document/column/OrdinalsTupleCursor	todo:M7	ordinals tuple cursor of the columnar addBatch API not ported
+document/column/TokenStreamColumn	todo:M7	token-stream column of the columnar addBatch API not ported
+document/column/VectorColumn	todo:M7	vector column of the columnar addBatch API not ported
+geo/Circle	deferred:M9	lat/lon circle geometry
+geo/Circle2D	deferred:M9	2D circle component for relations
+geo/Component2D	deferred:M9	2D geometry relation interface
+geo/ComponentTree	deferred:M9	interval tree of 2D components
+geo/EdgeTree	deferred:M9	polygon/line edge tree
+geo/GeoEncodingUtils	deferred:M9	lat/lon integer encoding and distance/polygon predicates
+geo/GeoUtils	deferred:M9	geo math helpers
+geo/Geometry	deferred:M9	geometry base class
+geo/LatLonGeometry	deferred:M9	lat/lon geometry base class
+geo/Line	deferred:M9	lat/lon line geometry
+geo/Line2D	deferred:M9	2D line component
+geo/Point	deferred:M9	lat/lon point geometry
+geo/Point2D	deferred:M9	2D point component
+geo/Polygon	deferred:M9	lat/lon polygon geometry
+geo/Polygon2D	deferred:M9	2D polygon component
+geo/Rectangle	deferred:M9	lat/lon rectangle geometry
+geo/Rectangle2D	deferred:M9	2D rectangle component
+geo/SimpleGeoJSONPolygonParser	deferred:M9	GeoJSON polygon parser
+geo/SimpleWKTShapeParser	deferred:M9	WKT shape parser
+geo/Tessellator	deferred:M9	polygon tessellator
+geo/XYCircle	deferred:M9	cartesian circle geometry
+geo/XYEncodingUtils	deferred:M9	cartesian float encoding
+geo/XYGeometry	deferred:M9	cartesian geometry base class
+geo/XYLine	deferred:M9	cartesian line geometry
+geo/XYPoint	deferred:M9	cartesian point geometry
+geo/XYPolygon	deferred:M9	cartesian polygon geometry
+geo/XYRectangle	deferred:M9	cartesian rectangle geometry
+index/ApproximatePriorityQueue	not-needed	internal scheduling queue of DocumentsWriterPerThreadPool; the Rust ConcurrentIndexWriter assigns indexing slots without it (no user-visible behaviour).
+index/AutomatonTermsEnum	ported	crates/lucene-codecs/src/blocktree.rs::regexp_intersect
+index/BaseCompositeReader	ported	crates/lucene-search/src/directory_reader.rs::DirectoryReader
+index/BaseTermsEnum	ported	crates/lucene-codecs/src/blocktree.rs::TermsEnum
+index/BinaryDocValues	ported	crates/lucene-codecs/src/doc_values.rs::BinaryReader
+index/BinaryDocValuesFieldUpdates	ported	crates/lucene-index/src/field_updates.rs::BinaryFieldUpdates
+index/BinaryDocValuesWriter	ported	crates/lucene-index/src/index_writer.rs::build_binary_doc_values_output
+index/BitsSlice	not-needed	slice view over a Bits used only by composite-reader plumbing (MultiBits/merge); Rust addresses per-segment FixedBitSets directly.
+index/BufferedUpdates	ported	crates/lucene-index/src/buffered_updates.rs::BufferedUpdates
+index/BufferedUpdatesStream	ported	crates/lucene-index/src/buffered_updates.rs::BufferedUpdatesStream
+index/ByteSlicePool	ported	crates/lucene-index/src/inverter.rs::FieldInverter
+index/ByteSliceReader	ported	crates/lucene-index/src/inverter.rs::FieldInverter
+index/ByteVectorValues	ported	crates/lucene-codecs/src/vectors.rs::ByteVectorValues
+index/CachingMergeContext	not-needed	memoizes MergeContext.numDeletesToMerge during one merge selection; a pure caching wrapper with no behaviour of its own.
+index/CheckIndex	partial	crates/lucene-index/src/check_index.rs::check_directory -- M7: per parity.md: `checkImpacts` and `checkDocIDRuns` not written; doc-values generation columns of an updated segment are checksummed but their contents not decoded (except the soft-deletes field); no `-exorcise` repair mode
+index/CodecReader	partial	crates/lucene-search/src/directory_reader.rs::SegmentReader -- M7: does not open term vectors or KNN vectors (lucene-search/src/term_vectors_query.rs and vector_query.rs take their own readers); no reader-closed listeners / CacheHelper
+index/CompositeReader	ported	crates/lucene-search/src/directory_reader.rs::DirectoryReader
+index/CompositeReaderContext	ported	crates/lucene-search/src/directory_reader.rs::segment_readers
+index/ConcurrentApproximatePriorityQueue	not-needed	lock-striped variant of ApproximatePriorityQueue inside the DWPT pool; Rust slot selection needs no such queue (no user-visible behaviour).
+index/ConcurrentMergeScheduler	partial	crates/lucene-index/src/concurrent_writer.rs::run_merges -- M7: merges run on the caller thread (`run_merges`) or inside `commit`; no merge thread pool (maxThreadCount/maxMergeCount), no merge stalling, no auto IO throttle, no intra-merge executor
+index/CorruptIndexException	ported	crates/lucene-store/src/error.rs::Corrupted
+index/DirectoryReader	partial	crates/lucene-search/src/directory_reader.rs::DirectoryReader -- M7: per parity.md: no NRT open from a live Rust `IndexWriter` (uncommitted segments invisible until `commit`), no `openIfChanged(reader, IndexCommit)`, no `listCommits`, no reader-closed listeners; term vectors and KNN vectors are not opened by the reader
+index/DocIDMerger	ported	crates/lucene-index/src/merge.rs::merge_segments
+index/DocValues	ported	crates/lucene-search/src/directory_reader.rs::doc_values_for_field
+index/DocValuesFieldUpdates	ported	crates/lucene-index/src/field_updates.rs::write_field_updates
+index/DocValuesIterator	ported	crates/lucene-codecs/src/doc_values.rs::NumericReader
+index/DocValuesLeafReader	not-needed	internal adapter exposing in-RAM DocValuesWriters to IndexSorter at flush; Rust reads sort keys straight from the buffered documents (segment_writer::sort_permutation).
+index/DocValuesSkipIndexType	ported	crates/lucene-codecs/src/field_infos.rs::DocValuesSkipIndexType
+index/DocValuesSkipper	ported	crates/lucene-codecs/src/doc_values.rs::DocValuesSkipper
+index/DocValuesType	ported	crates/lucene-codecs/src/field_infos.rs::DocValuesType
+index/DocValuesUpdate	ported	crates/lucene-index/src/buffered_updates.rs::DocValuesUpdate
+index/DocValuesWriter	ported	crates/lucene-index/src/index_writer.rs::build_doc_values_output
+index/DocsWithFieldSet	not-needed	internal doc-id set the per-field in-RAM writers use to remember which docs had a value; the Rust build_*_output functions track presence inline.
+index/DocumentsWriter	partial	crates/lucene-index/src/concurrent_writer.rs::ConcurrentIndexWriter -- M7: per parity.md: not ported `deleteAll`, vectors and custom-frequency postings on the concurrent path (use `into_writer`), flushing on delete RAM
+index/DocumentsWriterDeleteQueue	ported	crates/lucene-index/src/buffered_updates.rs::DeleteQueue
+index/DocumentsWriterFlushControl	partial	crates/lucene-index/src/concurrent_writer.rs::ConcurrentIndexWriter -- M7: per parity.md: no flush-by-RAM across slots (`FlushByRamOrCountsPolicy` picking the largest DWPT), no flushing on delete RAM, no stalling (`DocumentsWriterStallControl`)
+index/DocumentsWriterFlushQueue	ported	crates/lucene-index/src/index_writer.rs::SegmentTicket
+index/DocumentsWriterPerThread	ported	crates/lucene-index/src/index_writer.rs::DocumentBuffer
+index/DocumentsWriterPerThreadPool	ported	crates/lucene-index/src/concurrent_writer.rs::ConcurrentIndexWriter
+index/DocumentsWriterStallControl	todo:M7	stalling indexing threads when flushing falls behind indexing
+index/EmptyDocValuesProducer	not-needed	abstract convenience base for a DocValuesProducer with no fields; Rust returns None for absent doc values.
+index/ExitableDirectoryReader	todo:M7	reader wrapper that aborts term/points/doc-values enumeration on a QueryTimeout
+index/FieldInfo	ported	crates/lucene-codecs/src/field_infos.rs::FieldInfo
+index/FieldInfos	ported	crates/lucene-codecs/src/field_infos.rs::FieldInfos
+index/FieldInvertState	partial	crates/lucene-index/src/inverter.rs::lengths -- M7: only the field length for BM25 norms is tracked; no numOverlap/maxTermFrequency/uniqueTermCount/position/offset state handed to a `Similarity.computeNorm` (needed by the non-BM25 similarities)
+index/FieldTermIterator	not-needed	iterator abstraction over PrefixCodedTerms for delete packets; Rust iterates the sorted Vec in FrozenBufferedUpdates.
+index/FieldUpdatesBuffer	ported	crates/lucene-index/src/buffered_updates.rs::FieldUpdatesBuffer
+index/Fields	ported	crates/lucene-codecs/src/blocktree.rs::BlockTreeFields
+index/FilterBinaryDocValues	todo:M7	delegating BinaryDocValues wrapper (reader-wrapping extension point)
+index/FilterCodecReader	todo:M7	delegating CodecReader wrapper (reader-wrapping extension point)
+index/FilterDirectoryReader	todo:M7	delegating DirectoryReader wrapper (reader-wrapping extension point)
+index/FilterLeafReader	todo:M7	delegating LeafReader wrapper and its Fields/Terms/TermsEnum/PostingsEnum filters
+index/FilterMergePolicy	todo:M7	delegating MergePolicy wrapper
+index/FilterNumericDocValues	todo:M7	delegating NumericDocValues wrapper (reader-wrapping extension point)
+index/FilterSortedDocValues	todo:M7	delegating SortedDocValues wrapper (reader-wrapping extension point)
+index/FilterSortedNumericDocValues	todo:M7	delegating SortedNumericDocValues wrapper (reader-wrapping extension point)
+index/FilterSortedSetDocValues	todo:M7	delegating SortedSetDocValues wrapper (reader-wrapping extension point)
+index/FilteredTermsEnum	partial	crates/lucene-codecs/src/blocktree.rs::intersect -- M7: only the concrete wildcard/regexp/fuzzy intersections exist; no generic accept()/nextSeekTerm filtering TermsEnum a caller can subclass
+index/FloatVectorValues	ported	crates/lucene-codecs/src/vectors.rs::FloatVectorValues
+index/FlushByRamOrCountsPolicy	partial	crates/lucene-index/src/index_writer.rs::set_ram_buffer_size_mb -- M7: per parity.md: each concurrent slot flushes on its own count or RAM; no flush of the largest DWPT across slots, no flush on delete RAM
+index/FlushPolicy	partial	crates/lucene-index/src/index_writer.rs::set_ram_buffer_size_mb -- M7: only the RAM/doc-count policy exists; no pluggable flush policy, no cross-slot or delete-RAM flushing
+index/FreqAndNormBuffer	ported	crates/lucene-codecs/src/postings.rs::decode_impacts_into
+index/FreqProxFields	ported	crates/lucene-index/src/inverter.rs::into_term_postings
+index/FreqProxTermsWriter	ported	crates/lucene-index/src/inverter.rs::FieldInverter
+index/FreqProxTermsWriterPerField	ported	crates/lucene-index/src/inverter.rs::FieldInverter
+index/FrozenBufferedUpdates	ported	crates/lucene-index/src/buffered_updates.rs::FrozenBufferedUpdates
+index/Impacts	ported	crates/lucene-codecs/src/postings.rs::Impacts
+index/ImpactsEnum	ported	crates/lucene-codecs/src/postings.rs::LazyDocsCursor
+index/ImpactsSource	ported	crates/lucene-codecs/src/postings.rs::LazyDocsCursor
+index/IndexCommit	partial	crates/lucene-index/src/index_writer.rs::commit_generations -- M7: commits are exposed as generations only; no `IndexCommit` object (user data, segment count, file names), no `DirectoryReader.listCommits`/open-at-commit
+index/IndexDeletionPolicy	partial	crates/lucene-index/src/index_file_deleter.rs::DeletionPolicy -- M7: only the two stateless built-ins; no pluggable onInit/onCommit policy (a caller prunes commits itself via `IndexWriter::delete_commits`)
+index/IndexFileDeleter	ported	crates/lucene-index/src/index_file_deleter.rs::IndexFileDeleter
+index/IndexFileNames	ported	crates/lucene-index/src/index_file_deleter.rs::is_index_file_name
+index/IndexFormatTooNewException	ported	crates/lucene-store/src/codec_util.rs::check_header_no_magic
+index/IndexFormatTooOldException	ported	crates/lucene-store/src/codec_util.rs::check_header_no_magic
+index/IndexNotFoundException	ported	crates/lucene-store/src/directory.rs::read_latest_commit
+index/IndexOptions	ported	crates/lucene-codecs/src/field_infos.rs::IndexOptions
+index/IndexReader	partial	crates/lucene-search/src/directory_reader.rs::DirectoryReader -- M7: no reader-level `termVectors()` or KNN vector access (not opened by `DirectoryReader`), no reader-closed listeners / `CacheHelper`
+index/IndexReaderContext	ported	crates/lucene-search/src/multi_segment.rs::OpenSegment
+index/IndexSorter	partial	crates/lucene-index/src/segment_info.rs::SortKeyComparator -- M7: per parity.md: the writer sorts only NUMERIC/SORTED_NUMERIC keys; `STRING`/`SortedSetSortField`/`BinarySortField` index sorts are refused with `Error::UnsupportedIndexSortKind`
+index/IndexUpgrader	deferred:M8	command-line tool rewriting older-format segments into the current format
+index/IndexWriter	partial	crates/lucene-index/src/index_writer.rs::IndexWriter -- M7: per parity.md: not ported `tryDeleteDocument`, `tryUpdateDocValue`, `addIndexes` (both overloads), `addBatch`/`ColumnBatch` updates, NRT readers from the writer (`DirectoryReader.open(writer)`), `maybeMerge` and a merge scheduler, `flushNextBuffer`, `infoStream`, writing compound segments, the write lock (`NativeFSLockFactory`)
+index/IndexWriterConfig	partial	crates/lucene-index/src/index_writer.rs::set_index_sort -- M7: settings are writer setters; missing `STRING`/`SortedSet`/`Binary` index sorts, `setUseCompoundFile` (compound segments not written), codec/per-field format choice, `Similarity`, `MergeScheduler`, `IndexWriterEventListener`, `infoStream`, `leafSorter`, `commitOnClose`
+index/IndexWriterEventListener	not-needed	callback hook for merge begin/end events used for metrics and tests; no effect on the index.
+index/IndexableField	partial	crates/lucene-index/src/index_writer/explicit.rs::ExplicitDocument -- M7: no `IndexableField` abstraction: fields are configured per writer (`set_*_field`/`add_*_field`) or arrive pre-inverted; the document field-type API is M7 T7.2
+index/IndexableFieldType	partial	crates/lucene-codecs/src/field_infos.rs::FieldInfo -- M7: field properties exist only as the writer's per-field `FieldInfo` schema; no per-field-instance type descriptor of the document API (M7 T7.2)
+index/IndexingChain	partial	crates/lucene-index/src/indexing_chain.rs::invert_documents -- M7: `maybeSortSegment` handles only NUMERIC/SORTED_NUMERIC index sorts (`STRING`/`SortedSet`/`Binary` refused with `Error::UnsupportedIndexSortKind`)
+index/KeepLastNCommitsDeletionPolicy	todo:M7	deletion policy keeping the last N commits
+index/KeepOnlyLastCommitDeletionPolicy	ported	crates/lucene-index/src/index_file_deleter.rs::DeletionPolicy
+index/KnnVectorValues	ported	crates/lucene-codecs/src/vectors.rs::FloatVectorValues
+index/LeafMetaData	ported	crates/lucene-index/src/segment_info.rs::SegmentInfo
+index/LeafReader	partial	crates/lucene-search/src/directory_reader.rs::SegmentReader -- M7: does not open term vectors or KNN vectors (lucene-search/src/term_vectors_query.rs and vector_query.rs take their own readers); no reader-closed listeners / CacheHelper
+index/LeafReaderContext	ported	crates/lucene-search/src/multi_segment.rs::OpenSegment
+index/LiveIndexWriterConfig	partial	crates/lucene-index/src/index_writer.rs::set_ram_buffer_size_mb -- M7: RAM buffer, max buffered docs and merge policy are live-settable; no `setUseCompoundFile`, merged-segment warmer, `maxFullFlushMergeWaitMillis` (merge-on-commit) or `checkPendingFlushOnUpdate`
+index/LockableConcurrentApproximatePriorityQueue	not-needed	lock-holding queue of idle DWPTs inside DocumentsWriterPerThreadPool; Rust slots are Mutex-guarded buffers (no user-visible behaviour).
+index/LogByteSizeMergePolicy	todo:M7	log-structured merge policy measured in bytes
+index/LogDocMergePolicy	todo:M7	log-structured merge policy measured in doc counts
+index/LogMergePolicy	todo:M7	log-structured merge policy base (levels, mergeFactor, forced merges)
+index/MappedMultiFields	ported	crates/lucene-index/src/merge.rs::merge_postings
+index/MappingMultiPostingsEnum	ported	crates/lucene-index/src/merge.rs::merge_postings
+index/MergePolicy	partial	crates/lucene-index/src/merge_policy.rs::MergePolicyConfig -- M7: no pluggable MergePolicy: only TieredMergePolicy decisions (plus soft-deletes retention); no `findFullFlushMerges` (merge-on-commit/refresh), `useCompoundFile`, `OneMerge.reorder`/`wrapForMerge`
+index/MergeRateLimiter	todo:M7	per-merge IO rate limiting (ConcurrentMergeScheduler auto-throttle)
+index/MergeScheduler	partial	crates/lucene-index/src/concurrent_writer.rs::run_merges -- M7: no pluggable scheduler: merges run synchronously inside `commit`/`force_merge` or on the thread calling `run_merges`
+index/MergeState	ported	crates/lucene-index/src/merge.rs::build_doc_id_maps
+index/MergeTrigger	not-needed	enum argument naming what asked MergePolicy.findMerges to run; this port triggers merges only from commit/force_merge and TieredMergePolicy decisions do not read it.
+index/MultiBits	todo:M7	live docs concatenated across a composite reader's leaves
+index/MultiDocValues	partial	crates/lucene-search/src/ordinal_map.rs::OrdinalMap -- M7: only the SortedSet/Sorted ordinal mapping (`OrdinalMap`) exists; no composite `getNumericValues`/`getBinaryValues`/`getNormValues`/`getSortedValues`/`getSortedSetValues` views over a reader
+index/MultiFields	partial	crates/lucene-index/src/merge.rs::merge_postings -- M7: the field union across segments exists only inside merging; no top-level `Fields` view over a composite reader
+index/MultiIndexMergeScheduler	todo:M7	merge scheduling shared across several indexes (multi-tenant)
+index/MultiLeafReader	todo:M7	leaf-style helpers over a composite reader (merged FieldInfos, live docs, terms, postings)
+index/MultiPostingsEnum	todo:M7	PostingsEnum concatenated across a composite reader's leaves
+index/MultiReader	todo:M7	composite reader over several independent readers/indexes
+index/MultiSorter	ported	crates/lucene-index/src/merge.rs::sorted_doc_order
+index/MultiTerms	partial	crates/lucene-index/src/merge.rs::merge_postings -- M7: merged term dictionary exists only inside merging; no public `MultiTerms.getTerms(reader, field)` view (parity.md: "No `MultiTerms`/composite leaf view")
+index/MultiTermsEnum	partial	crates/lucene-index/src/merge.rs::merge_postings -- M7: k-way term merge exists only inside merging (and `OrdinalMap::build`); no public merged `TermsEnum` over a reader
+index/NoDeletionPolicy	ported	crates/lucene-index/src/index_file_deleter.rs::DeletionPolicy
+index/NoMergePolicy	ported	crates/lucene-index/src/index_writer.rs::set_merge_policy
+index/NoMergeScheduler	ported	crates/lucene-index/src/index_writer.rs::set_merge_policy
+index/NormValuesWriter	ported	crates/lucene-index/src/index_writer.rs::build_norms_output
+index/NumericDocValues	ported	crates/lucene-codecs/src/doc_values.rs::NumericReader
+index/NumericDocValuesFieldUpdates	ported	crates/lucene-index/src/field_updates.rs::NumericFieldUpdates
+index/NumericDocValuesWriter	ported	crates/lucene-index/src/index_writer.rs::build_numeric_doc_values_output
+index/OneMergeWrappingMergePolicy	todo:M7	merge policy wrapping each OneMerge the delegate returns
+index/OrdTermState	ported	crates/lucene-codecs/src/terms_dict.rs::seek_ord
+index/OrdinalMap	ported	crates/lucene-search/src/ordinal_map.rs::OrdinalMap
+index/ParallelCompositeReader	todo:M7	composite reader joining parallel indexes field-wise
+index/ParallelLeafReader	todo:M7	leaf reader joining parallel indexes field-wise
+index/ParallelPostingsArray	ported	crates/lucene-index/src/inverter.rs::FieldInverter
+index/PendingDeletes	ported	crates/lucene-index/src/deletes.rs::apply_deletes
+index/PendingSoftDeletes	ported	crates/lucene-search/src/soft_deletes.rs::effective_live_docs
+index/PersistentSnapshotDeletionPolicy	todo:M7	snapshot deletion policy whose snapshots persist in the directory across restarts
+index/PointValues	ported	crates/lucene-codecs/src/points.rs::PointsField
+index/PointValuesWriter	ported	crates/lucene-index/src/index_writer.rs::build_points_output
+index/PostingsEnum	ported	crates/lucene-codecs/src/postings.rs::LazyDocsCursor
+index/PrefixCodedTerms	ported	crates/lucene-index/src/buffered_updates.rs::FrozenBufferedUpdates
+index/QueryTimeout	partial	crates/lucene-search/src/multi_segment.rs::merge_multi_segment_scored_with_deadline -- M7: only a wall-clock deadline checked once per segment on the multi-segment scored path; no `QueryTimeout` abstraction checked during rewrite/enumeration (`ExitableDirectoryReader`) or inside a leaf
+index/QueryTimeoutImpl	partial	crates/lucene-search/src/multi_segment.rs::merge_multi_segment_scored_with_deadline -- M7: `Instant` deadline only; not consulted by term/points enumeration (`ExitableDirectoryReader`)
+index/ReaderManager	todo:M7	reference-counted DirectoryReader refresh manager (parity.md: "`ReaderManager`/`SearcherManager`" missing)
+index/ReaderPool	partial	crates/lucene-index/src/index_writer.rs::open_segment_for_deletes -- M7: segments are opened per delete/update application; no pooled `ReadersAndUpdates` shared with NRT readers (`DirectoryReader.open(writer)` not ported)
+index/ReaderSlice	not-needed	plain (start, length, readerIndex) record for composite-reader plumbing; Rust carries a doc_base per segment (multi_segment::OpenSegment).
+index/ReaderUtil	not-needed	@lucene.internal helpers for walking IndexReaderContext trees (subIndex, getTopLevelContext); Rust addresses segments by index with an explicit doc_base.
+index/ReadersAndUpdates	ported	crates/lucene-index/src/field_updates.rs::write_field_updates
+index/SegmentCommitInfo	ported	crates/lucene-index/src/segment_infos.rs::SegmentCommitInfo
+index/SegmentCoreReaders	ported	crates/lucene-search/src/directory_reader.rs::SegmentReader
+index/SegmentDocValues	not-needed	ref-counts per-generation DocValuesProducers shared between SegmentReaders; Rust owns them per SegmentReader (doc_values_for_field), a lifecycle detail only.
+index/SegmentDocValuesProducer	ported	crates/lucene-search/src/directory_reader.rs::doc_values_for_field
+index/SegmentInfo	ported	crates/lucene-index/src/segment_info.rs::SegmentInfo
+index/SegmentInfos	ported	crates/lucene-index/src/segment_infos.rs::SegmentInfos
+index/SegmentMerger	ported	crates/lucene-index/src/merge.rs::merge_segments
+index/SegmentOrder	todo:M7	re-ordering an IndexReader's segments to help early termination
+index/SegmentReadState	not-needed	parameter bundle passed to codec readers; Rust passes the directory, segment info and field infos directly.
+index/SegmentReader	partial	crates/lucene-search/src/directory_reader.rs::SegmentReader -- M7: does not open term vectors or KNN vectors (lucene-search/src/term_vectors_query.rs and vector_query.rs take their own readers); no reader-closed listeners / CacheHelper
+index/SegmentWriteState	not-needed	parameter bundle passed to codec writers; Rust passes segment name, suffix and field infos directly.
+index/SerialMergeScheduler	ported	crates/lucene-index/src/index_writer.rs::run_merge
+index/SharedIndexingScratch	not-needed	lazily allocated scratch buffers shared by IndexingChain's per-field writers; allocation detail only.
+index/SimpleMergedSegmentWarmer	not-needed	NRT merged-segment warmer that only touches data structures to prime caches; no effect on results (and no NRT-from-writer here).
+index/SingleTermsEnum	ported	crates/lucene-codecs/src/blocktree.rs::seek_exact
+index/SingletonSortedNumericDocValues	ported	crates/lucene-codecs/src/doc_values.rs::SortedNumericReader
+index/SingletonSortedSetDocValues	ported	crates/lucene-codecs/src/doc_values.rs::SortedSetKind
+index/SlowCodecReaderWrapper	todo:M7	LeafReader-to-CodecReader adapter used by addIndexes(CodecReader...)
+index/SlowCompositeCodecReaderWrapper	todo:M7	merged CodecReader view over several readers, used by addIndexes and OneMerge.reorder
+index/SlowImpactsEnum	not-needed	adapter presenting plain postings through the ImpactsEnum API with a trivial one-level bound; Rust scorers take the no-impacts path directly (PostingsFlags::FreqsNoImpacts).
+index/SnapshotDeletionPolicy	partial	crates/lucene-index/src/index_writer.rs::hold_commit -- M7: a commit's files can be pinned by generation and released (`release_files`), but there is no snapshot()/release()/getSnapshots policy object; `index_file_deleter.rs` says it is not modelled
+index/SoftDeletesDirectoryReaderWrapper	ported	crates/lucene-search/src/soft_deletes.rs::effective_live_docs
+index/SoftDeletesRetentionMergePolicy	ported	crates/lucene-index/src/index_writer.rs::SoftDeletesRetention
+index/SortFieldProvider	partial	crates/lucene-index/src/segment_info.rs::read_sort_field -- M7: all four providers are read; the writer emits only provider `SortField` with type `LONG` (numeric index sorts)
+index/SortedDocValues	ported	crates/lucene-codecs/src/doc_values.rs::sorted_ord
+index/SortedDocValuesTermsEnum	ported	crates/lucene-codecs/src/terms_dict.rs::TermsCursor
+index/SortedDocValuesWriter	ported	crates/lucene-index/src/index_writer.rs::build_sorted_doc_values_output
+index/SortedNumericDocValues	ported	crates/lucene-codecs/src/doc_values.rs::SortedNumericReader
+index/SortedNumericDocValuesWriter	ported	crates/lucene-index/src/index_writer.rs::build_sorted_numeric_doc_values_output
+index/SortedSetDocValues	ported	crates/lucene-codecs/src/doc_values.rs::SortedSetEntry
+index/SortedSetDocValuesTermsEnum	ported	crates/lucene-codecs/src/terms_dict.rs::TermsCursor
+index/SortedSetDocValuesWriter	ported	crates/lucene-index/src/index_writer.rs::build_sorted_set_doc_values_output
+index/Sorter	partial	crates/lucene-index/src/segment_writer.rs::sort_permutation -- M7: `Sorter.DocMap` over NUMERIC/SORTED_NUMERIC keys only; `STRING`/`SortedSet`/`Binary` index sorts refused (`Error::UnsupportedIndexSortKind`)
+index/SortingCodecReader	todo:M7	CodecReader view re-sorted by an index sort (addIndexes into a sorted index)
+index/SortingStoredFieldsConsumer	ported	crates/lucene-index/src/segment_writer.rs::permute_in_place
+index/SortingTermVectorsConsumer	ported	crates/lucene-index/src/segment_writer.rs::permute_in_place
+index/StandardDirectoryReader	partial	crates/lucene-search/src/directory_reader.rs::reopen_at -- M7: no NRT reader from a live Rust `IndexWriter`; no `ReaderPool`-wide sharing of segment readers between readers (parity.md)
+index/StoredFieldDataInput	not-needed	lazy DataInput view handed to a StoredFieldVisitor; Rust visitors receive the decoded bytes.
+index/StoredFieldVisitor	ported	crates/lucene-codecs/src/stored_fields.rs::StoredFieldVisitor
+index/StoredFields	ported	crates/lucene-search/src/directory_reader.rs::stored_document
+index/StoredFieldsConsumer	ported	crates/lucene-index/src/segment_writer.rs::write_stored_only_segment_files
+index/TemporalMergePolicy	todo:M7	time-window merge policy for time-series indexes
+index/Term	ported	crates/lucene-index/src/buffered_updates.rs::Term
+index/TermState	ported	crates/lucene-codecs/src/blocktree.rs::SeekedTerm
+index/TermStates	ported	crates/lucene-search/src/multi_segment.rs::TermStates
+index/TermVectors	ported	crates/lucene-codecs/src/term_vectors.rs::TermVectorsReader
+index/TermVectorsConsumer	ported	crates/lucene-index/src/index_writer.rs::build_term_vectors_output
+index/TermVectorsConsumerPerField	ported	crates/lucene-index/src/index_writer.rs::build_term_vectors_output
+index/Terms	ported	crates/lucene-codecs/src/blocktree.rs::FieldTerms
+index/TermsEnum	ported	crates/lucene-codecs/src/blocktree.rs::TermsEnum
+index/TermsEnumIndex	ported	crates/lucene-search/src/ordinal_map.rs::TermCursor
+index/TermsHash	ported	crates/lucene-index/src/inverter.rs::FieldInverter
+index/TermsHashPerField	ported	crates/lucene-index/src/inverter.rs::FieldInverter
+index/TieredMergePolicy	ported	crates/lucene-index/src/merge_policy.rs::find_merges
+index/TrackingTmpOutputDirectoryWrapper	not-needed	tracks temp files for the sort-by-rewrite flush of Java's Sorting*Consumer; Rust permutes the buffer before writing (segment_writer::permute_in_place).
+index/TwoPhaseCommit	ported	crates/lucene-index/src/index_writer.rs::prepare_commit
+index/TwoPhaseCommitTool	not-needed	generic loop calling prepareCommit/commit/rollback across several TwoPhaseCommit objects; composed directly from IndexWriter::prepare_commit/finish_commit/rollback.
+index/UpgradeIndexMergePolicy	deferred:M8	merge policy rewriting older-format segments on forceMerge
+index/VectorEncoding	ported	crates/lucene-codecs/src/field_infos.rs::VectorEncoding
+index/VectorSimilarityFunction	ported	crates/lucene-codecs/src/field_infos.rs::VectorSimilarityFunction
+index/VectorValuesConsumer	ported	crates/lucene-index/src/index_writer.rs::build_vectors_output
+internal/hppc/AbstractIterator	not-needed	Forked HPPC primitive collection; Rust uses std Vec/HashMap/HashSet over primitive types directly.
+internal/hppc/BitMixer	not-needed	Forked HPPC primitive collection; Rust uses std Vec/HashMap/HashSet over primitive types directly.
+internal/hppc/BufferAllocationException	not-needed	Forked HPPC primitive collection; Rust uses std Vec/HashMap/HashSet over primitive types directly.
+internal/hppc/CharCursor	not-needed	Forked HPPC primitive collection; Rust uses std Vec/HashMap/HashSet over primitive types directly.
+internal/hppc/CharHashSet	not-needed	Forked HPPC primitive collection; Rust uses std Vec/HashMap/HashSet over primitive types directly.
+internal/hppc/CharObjectHashMap	not-needed	Forked HPPC primitive collection; Rust uses std Vec/HashMap/HashSet over primitive types directly.
+internal/hppc/DoubleCursor	not-needed	Forked HPPC primitive collection; Rust uses std Vec/HashMap/HashSet over primitive types directly.
+internal/hppc/FloatArrayList	not-needed	Forked HPPC primitive collection; Rust uses std Vec/HashMap/HashSet over primitive types directly.
+internal/hppc/FloatCursor	not-needed	Forked HPPC primitive collection; Rust uses std Vec/HashMap/HashSet over primitive types directly.
+internal/hppc/HashContainers	not-needed	Forked HPPC primitive collection; Rust uses std Vec/HashMap/HashSet over primitive types directly.
+internal/hppc/IntArrayList	not-needed	Forked HPPC primitive collection; Rust uses std Vec/HashMap/HashSet over primitive types directly.
+internal/hppc/IntCursor	not-needed	Forked HPPC primitive collection; Rust uses std Vec/HashMap/HashSet over primitive types directly.
+internal/hppc/IntDoubleHashMap	not-needed	Forked HPPC primitive collection; Rust uses std Vec/HashMap/HashSet over primitive types directly.
+internal/hppc/IntFloatHashMap	not-needed	Forked HPPC primitive collection; Rust uses std Vec/HashMap/HashSet over primitive types directly.
+internal/hppc/IntHashSet	not-needed	Forked HPPC primitive collection; Rust uses std Vec/HashMap/HashSet over primitive types directly.
+internal/hppc/IntIntHashMap	not-needed	Forked HPPC primitive collection; Rust uses std Vec/HashMap/HashSet over primitive types directly.
+internal/hppc/IntLongHashMap	not-needed	Forked HPPC primitive collection; Rust uses std Vec/HashMap/HashSet over primitive types directly.
+internal/hppc/IntObjectHashMap	not-needed	Forked HPPC primitive collection; Rust uses std Vec/HashMap/HashSet over primitive types directly.
+internal/hppc/LongArrayList	not-needed	Forked HPPC primitive collection; Rust uses std Vec/HashMap/HashSet over primitive types directly.
+internal/hppc/LongCursor	not-needed	Forked HPPC primitive collection; Rust uses std Vec/HashMap/HashSet over primitive types directly.
+internal/hppc/LongFloatHashMap	not-needed	Forked HPPC primitive collection; Rust uses std Vec/HashMap/HashSet over primitive types directly.
+internal/hppc/LongHashSet	not-needed	Forked HPPC primitive collection; Rust uses std Vec/HashMap/HashSet over primitive types directly.
+internal/hppc/LongIntHashMap	not-needed	Forked HPPC primitive collection; Rust uses std Vec/HashMap/HashSet over primitive types directly.
+internal/hppc/LongObjectHashMap	not-needed	Forked HPPC primitive collection; Rust uses std Vec/HashMap/HashSet over primitive types directly.
+internal/hppc/MaxSizedFloatArrayList	not-needed	Forked HPPC primitive collection; Rust uses std Vec/HashMap/HashSet over primitive types directly.
+internal/hppc/MaxSizedIntArrayList	not-needed	Forked HPPC primitive collection; Rust uses std Vec/HashMap/HashSet over primitive types directly.
+internal/hppc/ObjectCursor	not-needed	Forked HPPC primitive collection; Rust uses std Vec/HashMap/HashSet over primitive types directly.
+internal/tests/ConcurrentMergeSchedulerAccess	not-needed	Test-framework access hook into package-private internals; Rust tests use crate-internal visibility.
+internal/tests/FilterIndexInputAccess	not-needed	Test-framework access hook into package-private internals; Rust tests use crate-internal visibility.
+internal/tests/IndexPackageAccess	not-needed	Test-framework access hook into package-private internals; Rust tests use crate-internal visibility.
+internal/tests/IndexWriterAccess	not-needed	Test-framework access hook into package-private internals; Rust tests use crate-internal visibility.
+internal/tests/SegmentReaderAccess	not-needed	Test-framework access hook into package-private internals; Rust tests use crate-internal visibility.
+internal/tests/TestSecrets	not-needed	Test-framework access hook into package-private internals; Rust tests use crate-internal visibility.
+internal/vectorization/DefaultDocValuesBulkDecodeSupport	ported	crates/lucene-util/src/packed_longs.rs::decode_range
+internal/vectorization/DefaultDocValuesRangeSupport	ported	crates/lucene-search/src/doc_value_query.rs::search_numeric_range
+internal/vectorization/DefaultVectorUtilSupport	partial	crates/lucene-util/src/simd.rs::dot_f32 -- M7: VectorUtilSupport kernels for the scalar-quantized formats are absent: int4*/uint8* dot products and square distances, int4BitDotProduct/int4DibitDotProduct, minMaxScalarQuantize/recalculateScalarQuantizationOffset
+internal/vectorization/DefaultVectorizationProvider	not-needed	Runtime provider selection between scalar and Panama implementations; the port selects SIMD kernels at compile time (lucene-util simd.rs).
+internal/vectorization/DocValuesBulkDecodeSupport	ported	crates/lucene-util/src/packed_longs.rs::decode_range
+internal/vectorization/DocValuesRangeSupport	ported	crates/lucene-search/src/doc_value_query.rs::search_numeric_range
+internal/vectorization/Lucene99MemorySegmentByteVectorScorer	ported	crates/lucene-codecs/src/vectors.rs::ByteVectorScorer
+internal/vectorization/Lucene99MemorySegmentByteVectorScorerSupplier	ported	crates/lucene-codecs/src/vectors.rs::ByteVectorScorer
+internal/vectorization/Lucene99MemorySegmentFlatVectorsScorer	ported	crates/lucene-codecs/src/vectors.rs::FloatVectorScorer
+internal/vectorization/Lucene99MemorySegmentFloatVectorScorer	ported	crates/lucene-codecs/src/vectors.rs::FloatVectorScorer
+internal/vectorization/Lucene99MemorySegmentFloatVectorScorerSupplier	ported	crates/lucene-codecs/src/vectors.rs::FloatVectorScorer
+internal/vectorization/Lucene99MemorySegmentScalarQuantizedVectorScorer	deferred:M8	Panama scorer for the Lucene99 scalar-quantized format, which 10.5.0 ships only in backward-codecs.
+internal/vectorization/MemorySegmentBulkVectorOps	ported	crates/lucene-util/src/simd.rs::dot_f32
+internal/vectorization/MemorySegmentPostingDecodingUtil	ported	crates/lucene-codecs/src/for_util.rs::ForUtil
+internal/vectorization/PanamaDocValuesBulkDecodeSupport	ported	crates/lucene-util/src/packed_longs.rs::decode_range
+internal/vectorization/PanamaDocValuesRangeSupport	ported	crates/lucene-search/src/doc_value_query.rs::search_numeric_range
+internal/vectorization/PanamaVectorConstants	not-needed	Panama Vector API species/lane-width constants; lucene-util simd.rs fixes its lane widths per compile target.
+internal/vectorization/PanamaVectorUtilSupport	partial	crates/lucene-util/src/simd.rs::dot_f32 -- M7: VectorUtilSupport kernels for the scalar-quantized formats are absent: int4*/uint8* dot products and square distances, int4BitDotProduct/int4DibitDotProduct, minMaxScalarQuantize/recalculateScalarQuantizationOffset
+internal/vectorization/PanamaVectorizationProvider	not-needed	Runtime Panama provider bootstrap; the port selects SIMD kernels at compile time (lucene-util simd.rs).
+internal/vectorization/PostingDecodingUtil	ported	crates/lucene-codecs/src/for_util.rs::ForUtil
+internal/vectorization/VectorUtilSupport	partial	crates/lucene-util/src/simd.rs::dot_f32 -- M7: VectorUtilSupport kernels for the scalar-quantized formats are absent: int4*/uint8* dot products and square distances, int4BitDotProduct/int4DibitDotProduct, minMaxScalarQuantize/recalculateScalarQuantizationOffset
+internal/vectorization/VectorizationProvider	not-needed	Runtime vectorization provider lookup (JDK/Panama detection); the port selects SIMD kernels at compile time (lucene-util simd.rs).
+search/AbstractDocIdSetIterator	not-needed	Java base class that caches docID to cut call-site polymorphism; every Rust Scorer tracks its own doc_id.
+search/AbstractKnnCollector	ported	crates/lucene-codecs/src/hnsw.rs::KnnCollector
+search/AbstractKnnVectorQuery	partial	crates/lucene-search/src/vector_query.rs::search_knn_float_vector_query_multi_segment -- M7: standalone functions, not a Clause (cannot nest in BooleanQuery/scorer tree, no query-blob node); filter is a pre-resolved per-segment bitset; no query timeout (TimeLimitingKnnCollectorManager)
+search/AbstractMultiTermQueryConstantScoreWrapper	ported	crates/lucene-search/src/exec/multi_term.rs::multi_term
+search/AbstractVectorSimilarityQuery	todo:M7	vector similarity-threshold (radius) query base
+search/AcceptDocs	ported	crates/lucene-search/src/vector_query.rs::accept_bitset
+search/AutomatonQuery	partial	crates/lucene-codecs/src/automaton.rs::CompiledDfa -- M7: automaton engine exists and backs Prefix/Wildcard/Regexp queries, but there is no user-facing AutomatonQuery over an arbitrary automaton
+search/BatchScoreBulkScorer	ported	crates/lucene-search/src/bulk_scorer.rs::score_term
+search/BayesianScoreEstimator	todo:M7	Bayesian BM25 parameter estimator
+search/BayesianScoreQuery	todo:M7	Bayesian BM25 sigmoid-calibrated score query
+search/BinarySortField	partial	crates/lucene-index/src/segment_info.rs::PROVIDER_BINARY -- M7: index-sort (de)serialization only; no search-time sort by BINARY doc values in top_field.rs, and the writer applies numeric index sorts only
+search/BitSetDocIdStream	ported	crates/lucene-search/src/exec/mod.rs::constant_bits
+search/BlendedTermQuery	partial	crates/lucene-search/src/lib.rs::FuzzyExpansion -- M7: only the max-docFreq blend inside FuzzyQuery's TopTermsBlendedFreqScoringRewrite; no standalone BlendedTermQuery (user terms, totalTermFreq blending, BOOLEAN/DISJUNCTION_MAX rewrite methods)
+search/BlockMaxConjunctionBulkScorer	ported	crates/lucene-search/src/bulk_scorer.rs::ConjunctionBulk
+search/BlockMaxConjunctionScorer	ported	crates/lucene-search/src/exec/conjunction.rs::BlockMaxConjunctionScorer
+search/BooleanClause	ported	crates/lucene-search/src/query.rs::BooleanQuery
+search/BooleanQuery	ported	crates/lucene-search/src/query.rs::BooleanQuery
+search/BooleanScorer	ported	crates/lucene-search/src/docid_set.rs::WindowedDisjunction
+search/BooleanScorerSupplier	ported	crates/lucene-search/src/exec/build.rs::build_boolean
+search/BooleanWeight	ported	crates/lucene-search/src/exec/build.rs::build_boolean
+search/BoostAttribute	ported	crates/lucene-search/src/lib.rs::ExpandedTerm
+search/BoostAttributeImpl	not-needed	AttributeImpl plumbing behind BoostAttribute; Rust carries the per-term boost as a plain field.
+search/BoostQuery	ported	crates/lucene-search/src/query.rs::BoostQuery
+search/BulkScorer	ported	crates/lucene-search/src/exec/bulk.rs::Bulk
+search/ByteVectorSimilarityQuery	todo:M7	byte-vector similarity-threshold query
+search/ByteVectorSimilarityValuesSource	todo:M7	byte-vector similarity DoubleValuesSource
+search/CachingCollector	todo:M7	caching/replaying collector
+search/CheckedIntConsumer	not-needed	Java functional interface existing only to let a lambda throw checked exceptions.
+search/CollectionStatistics	ported	crates/lucene-search/src/lib.rs::CollectionStats
+search/CollectionTerminatedException	not-needed	Java control-flow exception for early termination; Rust collection paths stop by return value (weight_count.rs, terminate.rs).
+search/Collector	ported	crates/lucene-search/src/collector.rs::ScoringCollector
+search/CollectorManager	ported	crates/lucene-search/src/slices.rs::run_slices
+search/CombinedFieldQuery	todo:M7	BM25F multi-field query
+search/ConjunctionBulkScorer	ported	crates/lucene-search/src/bulk_scorer.rs::ConjunctionBulk
+search/ConjunctionDISI	ported	crates/lucene-search/src/exec/conjunction.rs::ConjunctionScorer
+search/ConjunctionScorer	ported	crates/lucene-search/src/exec/conjunction.rs::ConjunctionScorer
+search/ConjunctionUtils	ported	crates/lucene-search/src/exec/conjunction.rs::ConjunctionScorer
+search/ConstantScoreBulkScorer	ported	crates/lucene-search/src/exec/bulk.rs::Bulk
+search/ConstantScoreQuery	ported	crates/lucene-search/src/query.rs::ConstantScoreQuery
+search/ConstantScoreScorer	ported	crates/lucene-search/src/exec/leaf.rs::ConstantScorer
+search/ConstantScoreScorerSupplier	ported	crates/lucene-search/src/exec/leaf.rs::ConstantScorer
+search/ConstantScoreWeight	ported	crates/lucene-search/src/exec/leaf.rs::ConstantScorer
+search/ControlledRealTimeReopenThread	todo:M7	NRT reopen thread waiting on indexing generations
+search/DenseConjunctionBulkScorer	ported	crates/lucene-search/src/exec/bulk.rs::Bulk
+search/DisiPriorityQueue	ported	crates/lucene-search/src/exec/disjunction.rs::DisiQueue
+search/DisiPriorityQueue2	ported	crates/lucene-search/src/exec/disjunction.rs::DisiQueue
+search/DisiPriorityQueueN	ported	crates/lucene-search/src/exec/disjunction.rs::DisiQueue
+search/DisiWrapper	ported	crates/lucene-search/src/exec/disjunction.rs::Disi
+search/DisjunctionDISIApproximation	ported	crates/lucene-search/src/exec/disjunction.rs::DisjunctionScorer
+search/DisjunctionMatchesIterator	todo:M7	Matches API (disjunction matches iterator)
+search/DisjunctionMaxBulkScorer	ported	crates/lucene-search/src/bulk_scorer.rs::DisMaxBulk
+search/DisjunctionMaxQuery	ported	crates/lucene-search/src/query.rs::DisjunctionMaxQuery
+search/DisjunctionMaxScorer	ported	crates/lucene-search/src/exec/disjunction.rs::DisjunctionScorer
+search/DisjunctionScoreBlockBoundaryPropagator	partial	crates/lucene-search/src/exec/disjunction.rs::DisjunctionScorer -- M7: not ported as such: DisjunctionMaxScorer.advanceShallow uses the sub-scorers' minimum boundary instead of the propagator (parity row R1), which changes pruning granularity only
+search/DisjunctionScorer	ported	crates/lucene-search/src/exec/disjunction.rs::DisjunctionScorer
+search/DisjunctionSumScorer	ported	crates/lucene-search/src/exec/disjunction.rs::DisjunctionScorer
+search/DocAndFloatFeatureBuffer	ported	crates/lucene-search/src/bulk_scorer.rs::DocScores
+search/DocAndScoreAccBuffer	ported	crates/lucene-search/src/bulk_scorer.rs::DocScoreAcc
+search/DocAndScoreQuery	partial	crates/lucene-search/src/exec/leaf.rs::DocList -- M7: a precomputed docs+scores scorer exists, but KNN results are never rewritten into a query-tree node as AbstractKnnVectorQuery.rewrite does
+search/DocIdSet	ported	crates/lucene-search/src/docid_set.rs::CachedDocIdSet
+search/DocIdSetBulkIterator	ported	crates/lucene-search/src/exec/bulk.rs::score_segment_below
+search/DocIdSetIterator	ported	crates/lucene-search/src/exec/mod.rs::Scorer
+search/DocIdStream	ported	crates/lucene-search/src/exec/mod.rs::constant_bits
+search/DocScoreEncoder	ported	crates/lucene-search/src/collector.rs::doc_score_encoder
+search/DocValuesRangeIterator	partial	crates/lucene-search/src/doc_value_query.rs::search_numeric_range_with_skip_index -- M7: skip-index range pruning for NUMERIC only, as a standalone single-segment scan, not a TwoPhaseIterator in the scorer tree
+search/DocValuesRewriteMethod	todo:M7	MultiTermQuery rewrite over SORTED_SET doc values
+search/DoubleValues	todo:M7	per-document double values (function/values-source API)
+search/DoubleValuesSource	todo:M7	double values-source API (function scoring, rescoring)
+search/DoubleValuesSourceRescorer	todo:M7	rescorer over a DoubleValuesSource
+search/ExactPhraseMatcher	ported	crates/lucene-search/src/exec/phrase.rs::PhraseScorer
+search/Explanation	ported	crates/lucene-search/src/explain.rs::Explanation
+search/FieldComparator	partial	crates/lucene-search/src/top_field.rs::Comparator -- M7: relevance, doc, numeric and TermOrdVal comparators only; inner TermValComparator (SortField.Type.STRING_VAL) not ported, no user-pluggable comparator
+search/FieldComparatorSource	todo:M7	custom comparator source (SortField.Type.CUSTOM)
+search/FieldDoc	ported	crates/lucene-search/src/top_field.rs::FieldDoc
+search/FieldExistsQuery	ported	crates/lucene-search/src/query.rs::FieldExistsQuery
+search/FieldValueHitQueue	ported	crates/lucene-search/src/top_field.rs::HitQueue
+search/FilterCollector	not-needed	Java delegating base class for overriding collectors; Rust wraps a collector in its own ScoringCollector impl (e.g. collector.rs LeafCollector).
+search/FilterDocIdSetIterator	not-needed	Java delegating base class; Rust scorers wrap a BoxScorer directly.
+search/FilterLeafCollector	not-needed	Java delegating base class for overriding leaf collectors; Rust wraps a collector in its own ScoringCollector impl.
+search/FilterMatchesIterator	todo:M7	Matches API (delegating matches iterator)
+search/FilterScorable	not-needed	Java delegating base class; Rust passes scores to ScoringCollector::collect directly.
+search/FilterScorer	not-needed	Java delegating base class; Rust wraps a BoxScorer directly (e.g. exec/leaf.rs ZeroScorer).
+search/FilterWeight	not-needed	Java delegating base class for the Weight hierarchy, which Rust collapses into exec/build.rs.
+search/FilteredDocIdSetIterator	not-needed	Java predicate-filtering base class; Rust iterators filter with Iterator::filter or a two-phase Scorer.
+search/FloatVectorSimilarityQuery	todo:M7	float-vector similarity-threshold query
+search/FloatVectorSimilarityValuesSource	todo:M7	float-vector similarity DoubleValuesSource
+search/FullPrecisionFloatVectorSimilarityValuesSource	todo:M7	full-precision float-vector similarity values source
+search/FuzzyAutomatonBuilder	ported	crates/lucene-codecs/src/fuzzy.rs::FuzzyMatch
+search/FuzzyQuery	partial	crates/lucene-search/src/query.rs::FuzzyQuery -- M7: not a scorer-tree leaf (standalone/eager path only; M7 T7.4), not in the plugin query blob; no LevenshteinAutomata (banded DP with the same accept decision)
+search/FuzzyTermsEnum	ported	crates/lucene-codecs/src/blocktree.rs::fuzzy_intersect
+search/HitQueue	ported	crates/lucene-search/src/collector.rs::TopDocsCollector
+search/HnswQueueSaturationCollector	todo:M7	patience-based early-exit KNN collector
+search/ImpactsDISI	ported	crates/lucene-search/src/bulk_scorer.rs::TermLeg
+search/IndexOrDocValuesQuery	partial	crates/lucene-search/src/doc_value_query.rs::plan_index_or_doc_values -- M7: planner exists but has no caller; the doc-values side never runs in the scorer tree (only the points side is sent)
+search/IndexSearcher	partial	crates/lucene-search/src/multi_segment.rs::search_boolean_query_multi_segment_maxscore -- M7: no IndexSearcher object: search/count/explain are free functions over OpenSegment; explain only for term, phrase and flat term-only boolean (parity row 300); BM25 only, no setSimilarity; Fuzzy/MultiPhrase/span/KNN run outside the tree
+search/IndexSortSortedNumericDocValuesRangeQuery	todo:M7	range query exploiting index sort
+search/IndriAndQuery	todo:M7	Indri AND query
+search/IndriAndScorer	todo:M7	Indri AND scorer
+search/IndriAndWeight	todo:M7	Indri AND weight
+search/IndriDisjunctionScorer	todo:M7	Indri disjunction scorer
+search/IndriQuery	todo:M7	Indri query base
+search/IndriScorer	todo:M7	Indri scorer base
+search/KnnByteVectorQuery	partial	crates/lucene-search/src/vector_query.rs::KnnByteVectorQuery -- M7: standalone search functions, not a Clause (cannot nest in a BooleanQuery/scorer tree, no query-blob node); filter passed as a pre-resolved bitset
+search/KnnCollector	ported	crates/lucene-codecs/src/hnsw.rs::KnnCollector
+search/KnnFloatVectorQuery	partial	crates/lucene-search/src/vector_query.rs::KnnFloatVectorQuery -- M7: standalone search functions, not a Clause (cannot nest in a BooleanQuery/scorer tree, no query-blob node); filter passed as a pre-resolved bitset
+search/LRUQueryCache	ported	crates/lucene-search/src/exec/cache.rs::SegmentQueryCache
+search/LateInteractionFloatValuesSource	todo:M7	multi-vector late-interaction values source
+search/LateInteractionRescorer	todo:M7	late-interaction multi-vector rescorer
+search/LeafCollector	ported	crates/lucene-search/src/collector.rs::LeafCollector
+search/LeafFieldComparator	ported	crates/lucene-search/src/top_field.rs::LeafKey
+search/LiveFieldValues	todo:M7	NRT live field-value cache over ReferenceManager
+search/LogOddsFusionQuery	todo:M7	log-odds probability fusion query
+search/LogOddsFusionScorer	todo:M7	log-odds probability fusion scorer
+search/LongValues	todo:M7	per-document long values (values-source API)
+search/LongValuesSource	todo:M7	long values-source API
+search/MatchAllDocsQuery	ported	crates/lucene-search/src/query.rs::MatchAllDocsQuery
+search/MatchNoDocsQuery	ported	crates/lucene-search/src/query.rs::MatchNoDocsQuery
+search/Matches	todo:M7	Matches API (Weight.matches)
+search/MatchesIterator	todo:M7	Matches API iterator
+search/MatchesUtils	todo:M7	Matches API helpers
+search/MaxNonCompetitiveBoostAttribute	ported	crates/lucene-search/src/lib.rs::FuzzyTopTerms
+search/MaxNonCompetitiveBoostAttributeImpl	not-needed	AttributeImpl plumbing behind MaxNonCompetitiveBoostAttribute; Rust keeps the two values on FuzzyTopTerms.
+search/MaxScoreAccumulator	ported	crates/lucene-search/src/collector.rs::MaxScoreAccumulator
+search/MaxScoreBulkScorer	ported	crates/lucene-search/src/bulk_scorer.rs::MaxScore
+search/MaxScoreCache	ported	crates/lucene-search/src/bulk_scorer.rs::TermLeg
+search/MultiCollector	todo:M7	generic fan-out over several collectors
+search/MultiCollectorManager	todo:M7	collector manager over several managers
+search/MultiLeafFieldComparator	ported	crates/lucene-search/src/top_field.rs::Leaf
+search/MultiNormsLeafSimScorer	todo:M7	multi-field norms scorer for CombinedFieldQuery
+search/MultiPhraseQuery	partial	crates/lucene-search/src/query.rs::MultiPhraseQuery -- M7: no explicit positions (Builder.add(Term[], int position)); not a scorer-tree leaf (standalone path only, M7 T7.4), not in the plugin query blob
+search/MultiTermQuery	partial	crates/lucene-search/src/exec/multi_term.rs::multi_term -- M7: only the default CONSTANT_SCORE_BLENDED_REWRITE (and FuzzyQuery's TopTermsBlendedFreqScoringRewrite); no selectable RewriteMethod (CONSTANT_SCORE_REWRITE, SCORING_BOOLEAN_REWRITE, CONSTANT_SCORE_BOOLEAN_REWRITE, TopTermsScoringBooleanQueryRewrite, TopTermsBoostOnlyBooleanQueryRewrite)
+search/MultiTermQueryConstantScoreBlendedWrapper	ported	crates/lucene-search/src/exec/multi_term.rs::TermUnion
+search/MultiTermQueryConstantScoreWrapper	todo:M7	CONSTANT_SCORE_REWRITE (non-blended) multi-term rewrite
+search/MultiVectorSimilarity	todo:M7	multi-vector similarity interface
+search/Multiset	not-needed	lucene.internal generic collection used for BooleanQuery clause equality; Rust uses std collections.
+search/NGramPhraseQuery	todo:M7	n-gram phrase query
+search/NamedMatches	todo:M7	Matches API (named sub-query matches)
+search/NumericDocValuesRangeQuery	partial	crates/lucene-search/src/doc_value_query.rs::search_numeric_range -- M7: standalone single-segment function, not a Clause/scorer-tree leaf and not in the query blob
+search/NumericFieldStats	todo:M7	global numeric min/max from points or skipper
+search/PatienceKnnVectorQuery	todo:M7	KNN query with patience-based early exit
+search/PhraseMatcher	ported	crates/lucene-search/src/exec/phrase.rs::PhraseScorer
+search/PhrasePositions	ported	crates/lucene-search/src/sloppy_phrase.rs::Pp
+search/PhraseQuery	partial	crates/lucene-search/src/query.rs::PhraseQuery -- M7: no explicit per-term positions (PhraseQuery.Builder.add(Term, int position)); terms are implicitly at 0..n
+search/PhraseQueue	ported	crates/lucene-search/src/sloppy_phrase.rs::SloppyMatcher
+search/PhraseScorer	ported	crates/lucene-search/src/exec/phrase.rs::PhraseScorer
+search/PhraseWeight	ported	crates/lucene-search/src/exec/phrase.rs::PhraseScorer
+search/PointInSetQuery	partial	crates/lucene-search/src/points_query.rs::search_points_in_set -- M7: single-segment standalone function, one dimension only; not a Clause/scorer-tree leaf
+search/PointRangeQuery	partial	crates/lucene-search/src/exec/build.rs::points_range -- M7: one-dimensional 8-byte (long) ranges only; multi-dimensional and other point widths not ported
+search/PositiveScoresOnlyCollector	todo:M7	collector dropping non-positive scores
+search/PrefixQuery	ported	crates/lucene-search/src/query.rs::PrefixQuery
+search/Pruning	ported	crates/lucene-search/src/top_field.rs::Pruning
+search/Query	ported	crates/lucene-search/src/query.rs::Clause
+search/QueryCache	ported	crates/lucene-search/src/exec/cache.rs::SegmentQueryCache
+search/QueryCachingPolicy	ported	crates/lucene-search/src/query_cache.rs::QueryCachingPolicy
+search/QueryRescorer	todo:M7	second-pass query rescorer
+search/QueryVisitor	partial	crates/lucene-search/src/query.rs::Clause -- M7: no visitor API (Query.visit, QueryVisitor.termCollector, per-field filtering); callers match the public Clause enum directly
+search/RangeDocIdStream	ported	crates/lucene-search/src/exec/mod.rs::doc_id_run_end
+search/ReferenceManager	todo:M7	acquire/release/refresh reference manager
+search/RefreshCommitSupplier	todo:M7	commit supplier for searcher refresh
+search/RegexpQuery	ported	crates/lucene-search/src/query.rs::RegexpQuery
+search/ReqExclBulkScorer	ported	crates/lucene-search/src/exec/bulk.rs::Bulk
+search/ReqExclScorer	ported	crates/lucene-search/src/exec/req.rs::ReqExclScorer
+search/ReqOptSumScorer	ported	crates/lucene-search/src/exec/req.rs::ReqOptSumScorer
+search/RescoreTopNQuery	todo:M7	rewrite-time top-N rescoring query
+search/Rescorer	todo:M7	rescorer API
+search/Scorable	ported	crates/lucene-search/src/exec/mod.rs::Scorer
+search/ScoreCachingWrappingScorer	ported	crates/lucene-search/src/top_field.rs::ScoreAt
+search/ScoreDoc	ported	crates/lucene-search/src/collector.rs::ScoreDoc
+search/ScoreMode	ported	crates/lucene-search/src/collector.rs::ScoreMode
+search/Scorer	ported	crates/lucene-search/src/exec/mod.rs::Scorer
+search/ScorerSupplier	ported	crates/lucene-search/src/exec/build.rs::Child
+search/ScorerUtil	ported	crates/lucene-search/src/exec/wand.rs::cost_with_min_should_match
+search/ScoringRewrite	todo:M7	SCORING_BOOLEAN_REWRITE / CONSTANT_SCORE_BOOLEAN_REWRITE
+search/SearcherFactory	todo:M7	searcher factory/warm-up hook for managers
+search/SearcherLifetimeManager	todo:M7	versioned searcher lease manager
+search/SearcherManager	todo:M7	NRT searcher refresh/acquire/release manager
+search/SeededKnnVectorQuery	partial	crates/lucene-codecs/src/hnsw.rs::search_seeded -- M7: seeded graph walk exists (used by the re-entry pass), but the query that turns a seed Query's hits into entry points is not ported
+search/SegmentCacheable	partial	crates/lucene-search/src/exec/cache.rs::SegmentQueryCache -- M7: cacheability decided per clause kind; no per-leaf isCacheable check (e.g. DocValues.isCacheable for fields with doc-values updates)
+search/SimpleCollector	ported	crates/lucene-search/src/collector.rs::ScoringCollector
+search/SimpleFieldComparator	not-needed	Java convenience base merging FieldComparator and LeafFieldComparator; Rust comparators are the closed top_field.rs types.
+search/SimpleScorable	not-needed	mutable score holder handed to collectors; Rust passes the score as an argument of ScoringCollector::collect.
+search/SkipBlockRangeIterator	partial	crates/lucene-search/src/doc_value_query.rs::search_numeric_range_with_skip_index -- M7: skip-block range walk for NUMERIC only, standalone single-segment scan, not a DocIdSetIterator in the scorer tree
+search/SloppyPhraseMatcher	ported	crates/lucene-search/src/sloppy_phrase.rs::SloppyMatcher
+search/Sort	ported	crates/lucene-search/src/top_field.rs::search_sorted
+search/SortField	partial	crates/lucene-search/src/top_field.rs::SortField -- M7: SCORE, DOC, LONG/INT/DOUBLE/FLOAT and STRING only; STRING_VAL and CUSTOM (FieldComparatorSource) not ported
+search/SortRescorer	todo:M7	sort-based rescorer
+search/SortedNumericSelector	ported	crates/lucene-search/src/top_field.rs::Selector
+search/SortedNumericSortField	ported	crates/lucene-search/src/top_field.rs::SortField
+search/SortedSetSelector	partial	crates/lucene-search/src/top_field.rs::Selector -- M7: MIN/MAX only; "MIDDLE_MIN/MIDDLE_MAX are ported nowhere" (parity)
+search/SortedSetSortField	partial	crates/lucene-search/src/top_field.rs::SortField -- M7: MIN/MAX selectors only; MIDDLE_MIN/MIDDLE_MAX not ported
+search/SynonymQuery	todo:M7	synonym query with blended term stats
+search/TaskExecutor	ported	crates/lucene-search/src/slices.rs::run_slices
+search/TermCollectingRewrite	ported	crates/lucene-search/src/lib.rs::fuzzy_expansion_across_leaves
+search/TermInSetQuery	ported	crates/lucene-search/src/query.rs::TermInSetQuery
+search/TermMatchesIterator	todo:M7	Matches API (term matches iterator)
+search/TermQuery	ported	crates/lucene-search/src/query.rs::TermQuery
+search/TermRangeQuery	partial	crates/lucene-index/src/buffered_updates.rs::DeleteQuery -- M7: only as a delete-by-query in the writer; no search-side TermRangeQuery (not a Clause, not in the scorer tree)
+search/TermScorer	ported	crates/lucene-search/src/exec/leaf.rs::TermScorer
+search/TermStatistics	ported	crates/lucene-search/src/lib.rs::CollectionStats
+search/TimeLimitingBulkScorer	partial	crates/lucene-search/src/multi_segment.rs::merge_multi_segment_scored_with_deadline -- M7: deadline checked between segments only (an in-flight segment is not interrupted), and only on the term/boolean fan-out paths
+search/TimeLimitingKnnCollectorManager	todo:M7	query timeout for KNN collection
+search/TopDocs	partial	crates/lucene-search/src/multi_segment.rs::merge_multi_segment_scored -- M7: merge ported (no shardIndex); TopDocs.rrf (reciprocal rank fusion) not ported
+search/TopDocsCollector	ported	crates/lucene-search/src/collector.rs::TopDocsCollector
+search/TopFieldCollector	ported	crates/lucene-search/src/top_field.rs::search_sorted
+search/TopFieldCollectorManager	ported	crates/lucene-search/src/top_field.rs::search_sorted_sliced
+search/TopFieldDocs	ported	crates/lucene-search/src/top_field.rs::TopFieldDocs
+search/TopKnnCollector	ported	crates/lucene-codecs/src/hnsw.rs::KnnCollector
+search/TopScoreDocCollector	ported	crates/lucene-search/src/collector.rs::TopDocsCollector
+search/TopScoreDocCollectorManager	ported	crates/lucene-search/src/multi_segment.rs::search_leaves_shared_counting
+search/TopTermsRewrite	partial	crates/lucene-search/src/lib.rs::FuzzyTopTerms -- M7: only TopTermsBlendedFreqScoringRewrite for FuzzyQuery; TopTermsScoringBooleanQueryRewrite/TopTermsBoostOnlyBooleanQueryRewrite and top-terms rewrites of other multi-term queries not ported
+search/TotalHitCountCollector	ported	crates/lucene-search/src/collector.rs::CountCollector
+search/TotalHitCountCollectorManager	ported	crates/lucene-search/src/collector.rs::CountCollector
+search/TotalHits	ported	crates/lucene-search/src/collector.rs::TotalHits
+search/TwoPhaseIterator	ported	crates/lucene-search/src/exec/mod.rs::Scorer
+search/UsageTrackingQueryCachingPolicy	ported	crates/lucene-search/src/query_cache.rs::UsageTrackingPolicy
+search/VectorScorer	ported	crates/lucene-codecs/src/hnsw.rs::VectorScorer
+search/VectorSimilarityCollector	todo:M7	similarity-threshold graph-search collector
+search/VectorSimilarityValuesSource	todo:M7	vector similarity values source base
+search/WANDScorer	ported	crates/lucene-search/src/exec/wand.rs::WandScorer
+search/Weight	ported	crates/lucene-search/src/exec/build.rs::build
+search/WildcardQuery	ported	crates/lucene-search/src/query.rs::WildcardQuery
+search/comparators/DocComparator	partial	crates/lucene-search/src/top_field.rs::SortType -- M7: values only; its competitive iterator (skipping later segments whole) is not ported
+search/comparators/DoubleComparator	ported	crates/lucene-search/src/top_field.rs::LeafNumeric
+search/comparators/FloatComparator	ported	crates/lucene-search/src/top_field.rs::LeafNumeric
+search/comparators/IntComparator	ported	crates/lucene-search/src/top_field.rs::LeafNumeric
+search/comparators/LongComparator	ported	crates/lucene-search/src/top_field.rs::LeafNumeric
+search/comparators/NumericComparator	partial	crates/lucene-search/src/top_field.rs::LeafNumeric -- M7: points-based competitive iterator ported; DVSkipperCompetitiveDISIBuilder (doc-values skip-index skipping) not ported
+search/comparators/TermOrdValComparator	partial	crates/lucene-search/src/top_field.rs::StrSlots -- M7: postings-based competitive state ported; SkipperBasedCompetitiveState not ported
+search/comparators/UpdateableDocIdSetIterator	ported	crates/lucene-search/src/top_field.rs::Iter
+search/knn/KnnCollectorManager	ported	crates/lucene-search/src/vector_query.rs::per_leaf_top_k
+search/knn/KnnSearchStrategy	partial	crates/lucene-codecs/src/hnsw_vectors.rs::SearchOptions -- M7: default Hnsw strategy and Seeded entry points ported; a non-zero filteredSearchThreshold (FilteredHnswGraphSearcher) is not
+search/knn/MultiLeafKnnCollector	todo:M7	cross-leaf shared-threshold KNN collector
+search/knn/TopKnnCollectorManager	ported	crates/lucene-search/src/vector_query.rs::per_leaf_top_k
+search/similarities/AfterEffect	ported	crates/lucene-search/src/similarities.rs::AfterEffect
+search/similarities/AfterEffectB	ported	crates/lucene-search/src/similarities.rs::AfterEffect
+search/similarities/AfterEffectL	ported	crates/lucene-search/src/similarities.rs::AfterEffect
+search/similarities/Axiomatic	ported	crates/lucene-search/src/similarities.rs::AxiomaticSimilarity
+search/similarities/AxiomaticF1EXP	ported	crates/lucene-search/src/similarities.rs::AxiomaticVariant
+search/similarities/AxiomaticF1LOG	ported	crates/lucene-search/src/similarities.rs::AxiomaticVariant
+search/similarities/AxiomaticF2EXP	ported	crates/lucene-search/src/similarities.rs::AxiomaticVariant
+search/similarities/AxiomaticF2LOG	ported	crates/lucene-search/src/similarities.rs::AxiomaticVariant
+search/similarities/AxiomaticF3EXP	ported	crates/lucene-search/src/similarities.rs::AxiomaticVariant
+search/similarities/AxiomaticF3LOG	ported	crates/lucene-search/src/similarities.rs::AxiomaticVariant
+search/similarities/BM25Similarity	ported	crates/lucene-search/src/similarities.rs::Bm25Similarity
+search/similarities/BasicModel	ported	crates/lucene-search/src/similarities.rs::BasicModel
+search/similarities/BasicModelG	ported	crates/lucene-search/src/similarities.rs::BasicModel
+search/similarities/BasicModelIF	ported	crates/lucene-search/src/similarities.rs::BasicModel
+search/similarities/BasicModelIn	ported	crates/lucene-search/src/similarities.rs::BasicModel
+search/similarities/BasicModelIne	ported	crates/lucene-search/src/similarities.rs::BasicModel
+search/similarities/BasicStats	ported	crates/lucene-search/src/similarities.rs::BasicStats
+search/similarities/BooleanSimilarity	ported	crates/lucene-search/src/similarities.rs::BooleanSimilarity
+search/similarities/ClassicSimilarity	ported	crates/lucene-search/src/similarities.rs::ClassicSimilarity
+search/similarities/DFISimilarity	ported	crates/lucene-search/src/similarities.rs::DfiSimilarity
+search/similarities/DFRSimilarity	ported	crates/lucene-search/src/similarities.rs::DfrSimilarity
+search/similarities/Distribution	ported	crates/lucene-search/src/similarities.rs::Distribution
+search/similarities/DistributionLL	ported	crates/lucene-search/src/similarities.rs::Distribution
+search/similarities/DistributionSPL	ported	crates/lucene-search/src/similarities.rs::Distribution
+search/similarities/IBSimilarity	ported	crates/lucene-search/src/similarities.rs::IbSimilarity
+search/similarities/Independence	ported	crates/lucene-search/src/similarities.rs::Independence
+search/similarities/IndependenceChiSquared	ported	crates/lucene-search/src/similarities.rs::Independence
+search/similarities/IndependenceSaturated	ported	crates/lucene-search/src/similarities.rs::Independence
+search/similarities/IndependenceStandardized	ported	crates/lucene-search/src/similarities.rs::Independence
+search/similarities/IndriDirichletSimilarity	ported	crates/lucene-search/src/similarities.rs::IndriDirichletSimilarity
+search/similarities/LMDirichletSimilarity	ported	crates/lucene-search/src/similarities.rs::LmDirichletSimilarity
+search/similarities/LMJelinekMercerSimilarity	ported	crates/lucene-search/src/similarities.rs::LmJelinekMercerSimilarity
+search/similarities/LMSimilarity	ported	crates/lucene-search/src/similarities.rs::CollectionModel
+search/similarities/Lambda	ported	crates/lucene-search/src/similarities.rs::Lambda
+search/similarities/LambdaDF	ported	crates/lucene-search/src/similarities.rs::Lambda
+search/similarities/LambdaTTF	ported	crates/lucene-search/src/similarities.rs::Lambda
+search/similarities/MultiSimilarity	ported	crates/lucene-search/src/similarities.rs::MultiSimilarity
+search/similarities/Normalization	ported	crates/lucene-search/src/similarities.rs::Normalization
+search/similarities/NormalizationH1	ported	crates/lucene-search/src/similarities.rs::Normalization
+search/similarities/NormalizationH2	ported	crates/lucene-search/src/similarities.rs::Normalization
+search/similarities/NormalizationH3	ported	crates/lucene-search/src/similarities.rs::Normalization
+search/similarities/NormalizationZ	ported	crates/lucene-search/src/similarities.rs::Normalization
+search/similarities/PerFieldSimilarityWrapper	ported	crates/lucene-search/src/similarities.rs::PerFieldSimilarity
+search/similarities/RawTFSimilarity	ported	crates/lucene-search/src/similarities.rs::RawTfSimilarity
+search/similarities/Similarity	partial	crates/lucene-search/src/similarities.rs::Similarity -- M7: the scorer tree scores default BM25 only; a Similarity is not yet accepted by search (IndexSearcher.setSimilarity) or by IndexWriterConfig
+search/similarities/SimilarityBase	ported	crates/lucene-search/src/similarities.rs::base_scorer
+search/similarities/TFIDFSimilarity	ported	crates/lucene-search/src/similarities.rs::ClassicSimilarity
+store/AlreadyClosedException	not-needed	Use-after-close exception; Rust ownership makes use-after-close unrepresentable, and the FFI reports a closed handle as FfiStatus::InvalidHandle.
+store/BaseDirectory	todo:M7	LockFactory-holding Directory base (obtainLock) absent
+store/BufferedChecksum	ported	crates/lucene-store/src/index_output.rs::FsIndexOutput
+store/BufferedChecksumIndexInput	ported	crates/lucene-store/src/codec_util.rs::check_footer
+store/BufferedIndexInput	ported	crates/lucene-store/src/directory.rs::FsDirectory
+store/ByteArrayDataInput	ported	crates/lucene-store/src/data_input.rs::SliceInput
+store/ByteArrayDataOutput	ported	crates/lucene-store/src/data_output.rs::VecDataOutput
+store/ByteBuffersDataInput	ported	crates/lucene-store/src/data_input.rs::SliceInput
+store/ByteBuffersDataOutput	ported	crates/lucene-store/src/data_output.rs::VecDataOutput
+store/ByteBuffersDirectory	todo:M7	in-memory Directory implementation absent
+store/ByteBuffersIndexInput	ported	crates/lucene-store/src/data_input.rs::SliceInput
+store/ByteBuffersIndexOutput	ported	crates/lucene-store/src/data_output.rs::VecDataOutput
+store/ChecksumIndexInput	ported	crates/lucene-store/src/codec_util.rs::check_footer
+store/DataAccessHint	not-needed	IOContext file-open hint; the Rust Directory::open takes no context, and hints only steer madvise/preload (performance, not results).
+store/DataInput	ported	crates/lucene-store/src/data_input.rs::DataInput
+store/DataOutput	ported	crates/lucene-store/src/data_output.rs::DataOutput
+store/DefaultIOContext	not-needed	IOContext file-open hint; the Rust Directory::open takes no context, and hints only steer madvise/preload (performance, not results).
+store/Directory	partial	crates/lucene-store/src/directory.rs::Directory -- M7: no obtainLock/write.lock (parity: "Locking (`NativeFSLockFactory`) ... still deferred"), no createTempOutput, no getPendingDeletions
+store/FSDirectory	partial	crates/lucene-store/src/directory.rs::FsDirectory -- M7: no write lock and no pending-delete (Windows) semantics (parity: "The write lock and Windows delete semantics (`NativeFSLockFactory`, pending deletes)" out of scope)
+store/FSLockFactory	todo:M7	filesystem lock-factory base absent
+store/FileDataHint	not-needed	IOContext file-open hint; the Rust Directory::open takes no context, and hints only steer madvise/preload (performance, not results).
+store/FileSwitchDirectory	todo:M7	extension-routed composite Directory absent
+store/FileTypeHint	not-needed	IOContext file-open hint; the Rust Directory::open takes no context, and hints only steer madvise/preload (performance, not results).
+store/FilterDirectory	not-needed	Delegating base class; Rust wrappers (CrashingDirectory, compound CompoundReader, TrackingDirectory) implement the Directory trait directly.
+store/FilterIndexInput	not-needed	Delegating base class; no Rust IndexInput wrapper needs one (SliceInput is a concrete type).
+store/FilterIndexOutput	not-needed	Delegating base class; Rust IndexOutput wrappers implement the trait directly.
+store/FlushInfo	not-needed	IOContext flush metadata (doc count/size estimate) consumed only by hints and NRTCachingDirectory sizing; Directory::create_output takes no context.
+store/IOContext	not-needed	Per-open context/hint carrier; the Rust Directory API takes none and results never depend on it.
+store/IndexInput	ported	crates/lucene-store/src/data_input.rs::SliceInput
+store/IndexOutput	ported	crates/lucene-store/src/index_output.rs::IndexOutput
+store/InputStreamDataInput	not-needed	Adapter from java.io.InputStream; Rust callers read bytes into a slice and use SliceInput.
+store/Lock	todo:M7	write.lock Lock handle absent
+store/LockFactory	todo:M7	LockFactory abstraction absent
+store/LockObtainFailedException	todo:M7	write.lock contention error absent (no locking)
+store/LockReleaseFailedException	todo:M7	write.lock release error absent (no locking)
+store/LockStressTest	not-needed	Command-line stress-test tool for LockFactory implementations, not runtime behaviour.
+store/LockValidatingDirectoryWrapper	todo:M7	directory wrapper that validates write.lock before mutations absent
+store/LockVerifyServer	not-needed	Command-line server used only by LockStressTest to verify LockFactory implementations.
+store/MMapDirectory	ported	crates/lucene-store/src/directory.rs::MmapDirectory
+store/MemorySegmentAccessInput	ported	crates/lucene-store/src/directory.rs::Input
+store/MemorySegmentIndexInput	ported	crates/lucene-store/src/directory.rs::Input
+store/MemorySegmentIndexInputProvider	ported	crates/lucene-store/src/directory.rs::MmapDirectory
+store/MergeInfo	not-needed	IOContext merge metadata consumed only by hints, rate limiting and NRTCachingDirectory sizing; Directory::create_output takes no context.
+store/NIOFSDirectory	ported	crates/lucene-store/src/directory.rs::FsDirectory
+store/NRTCachingDirectory	todo:M7	RAM-caching NRT Directory wrapper absent
+store/NativeAccess	not-needed	madvise/posix_madvise glue behind ReadAdvice; the Rust mmap backend (memmap2) issues no advice, which only affects paging performance.
+store/NativeFSLockFactory	todo:M7	native (OS file lock) write.lock factory absent
+store/NoLockFactory	todo:M7	LockFactory API absent (the port behaves as if NoLockFactory, implicitly)
+store/OutputStreamDataOutput	not-needed	Adapter onto java.io.OutputStream; Rust DataOutput is implemented directly on Vec<u8> and FsIndexOutput.
+store/OutputStreamIndexOutput	ported	crates/lucene-store/src/index_output.rs::FsIndexOutput
+store/PosixNativeAccess	not-needed	POSIX madvise implementation of NativeAccess via Panama FFI; the Rust mmap backend issues no advice (performance only).
+store/PreloadHint	not-needed	IOContext file-open hint; the Rust Directory::open takes no context, and hints only steer madvise/preload (performance, not results).
+store/RandomAccessInput	ported	crates/lucene-store/src/data_input.rs::SliceInput
+store/RateLimitedIndexOutput	todo:M7	merge write throttling absent
+store/RateLimiter	todo:M7	merge IO rate limiter absent
+store/ReadAdvice	not-needed	madvise access-pattern enum for MMapDirectory; the Rust mmap backend issues no advice (performance only).
+store/ReadOnceHint	not-needed	IOContext file-open hint; the Rust Directory::open takes no context, and hints only steer madvise/preload (performance, not results).
+store/RefCountedSharedArena	ported	crates/lucene-store/src/directory.rs::Input
+store/SimpleFSLockFactory	todo:M7	lock-file write.lock factory absent
+store/SingleInstanceLockFactory	todo:M7	in-process write.lock factory absent
+store/SleepingLockWrapper	todo:M7	retrying obtainLock wrapper absent
+store/TrackingDirectoryWrapper	ported	crates/lucene-index/src/concurrent_writer.rs::TrackingDirectory
+store/VerifyingLockFactory	todo:M7	lock-verifying LockFactory wrapper absent
+util/Accountable	not-needed	RAM-accounting interface; the port exposes ad hoc ram_bytes_used() methods where accounting matters (e.g. RoaringDocIdSet::ram_bytes_used)
+util/Accountables	not-needed	toString/child-resource helpers for the Accountable interface, which the port does not have
+util/ArrayInPlaceMergeSorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
+util/ArrayIntroSorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
+util/ArrayTimSorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
+util/ArrayUtil	not-needed	array growth/oversize/copy/compare helpers; Rust uses Vec growth, slice copy and slice Ord
+util/Attribute	todo:M7	token attribute model (M7 T7.8)
+util/AttributeFactory	not-needed	reflection-based AttributeImpl instantiation; Rust constructs attribute values directly
+util/AttributeImpl	todo:M7	token attribute model (M7 T7.8)
+util/AttributeReflector	not-needed	reflection-style attribute introspection callback (toString/debugging); Rust uses Debug
+util/AttributeSource	partial	crates/lucene-analysis/src/lib.rs::Token -- M7: a fixed attribute set (term, offsets, position increment/length) as struct fields; no pluggable AttributeSource (addAttribute, captureState/restoreState, cloneAttributes) -- M7 T7.8
+util/BitDocIdSet	ported	crates/lucene-search/src/docid_set.rs::CachedDocIdSet
+util/BitSet	partial	crates/lucene-util/src/fixed_bit_set.rs::FixedBitSet -- M7: no abstract BitSet over dense/sparse implementations; BitSet.of(iterator), or(DocIdSetIterator), prevSetBit, approximateCardinality missing
+util/BitSetIterator	ported	crates/lucene-util/src/fixed_bit_set.rs::next_set_bit
+util/BitUtil	partial	crates/lucene-util/src/zigzag.rs::encode -- M7: zigZag encode/decode only; interleave/deinterleave (Morton), flipFlop, nextHighestPowerOfTwo, isZeroOrPowerOfTwo not shared helpers (VarHandle LE access replaced by from_le_bytes)
+util/Bits	partial	crates/lucene-util/src/fixed_bit_set.rs::get_doc -- M7: no Bits trait (MatchAllBits/MatchNoBits, applyMask); membership is always a concrete FixedBitSet or None for all-live
+util/ByteBlockPool	not-needed	byte arena/block allocator for the JVM heap; the Rust inverter buffers term bytes in Vec arenas (lucene-index inverter.rs TermHash)
+util/BytesRef	not-needed	byte-slice reference; Rust &[u8]/Vec<u8>, whose Ord is the same unsigned-byte order
+util/BytesRefArray	not-needed	append-only byte-string list; Rust Vec<Vec<u8>> / flat Vec<u8> with offsets
+util/BytesRefBlockPool	not-needed	ByteBlockPool-backed term storage for BytesRefHash; Rust stores term bytes in a Vec<u8> arena (inverter.rs TermHash)
+util/BytesRefBuilder	not-needed	growable byte buffer; Rust Vec<u8>
+util/BytesRefComparator	not-needed	BytesRef comparator with radix-sort byteAt hook; Rust slice Ord and std sort
+util/BytesRefHash	partial	crates/lucene-index/src/inverter.rs::TermHash -- M7: private open-addressing term hash (add, term, sorted_ids = sort); no public BytesRefHash API (find without add, compact, clear/reinit, addByPoolOffset)
+util/BytesRefIterator	not-needed	pull iterator over BytesRefs; Rust Iterator<Item=&[u8]>
+util/CharsRef	not-needed	char-array reference; Rust &str/String
+util/CharsRefBuilder	not-needed	growable char buffer; Rust String
+util/ClassLoaderUtils	not-needed	JVM classloader helper
+util/ClasspathResourceLoader	not-needed	JVM classpath resource loading; Rust callers pass data or use std::fs
+util/CloseableThreadLocal	not-needed	JVM ThreadLocal leak workaround; Rust uses owned per-thread state / thread_local!
+util/CollectionUtil	not-needed	in-place List sorting helpers; Rust slice::sort (stable) / sort_unstable
+util/CommandLineUtil	not-needed	reflection loading of Directory/FSDirectory classes by name for CLI tools
+util/Constants	not-needed	JVM/OS detection constants; Rust cfg!/std::env::consts
+util/Counter	not-needed	mutable long counter (optionally atomic); Rust i64/AtomicI64
+util/DenseLiveDocs	partial	crates/lucene-codecs/src/live_docs.rs::parse -- M7: dense live docs are a bare FixedBitSet; no LiveDocs wrapper with cached deletedCount, liveDocsIterator/deletedDocsIterator
+util/DocBaseBitSetIterator	ported	crates/lucene-codecs/src/points.rs::read_bitset_ids
+util/DocIdSetBuilder	ported	crates/lucene-util/src/doc_id_sort.rs::sort_dedup_doc_ids
+util/FileDeleter	ported	crates/lucene-index/src/index_file_deleter.rs::IndexFileDeleter
+util/FilterIterator	not-needed	filtering iterator adapter; Rust Iterator::filter
+util/FilteredDocIdSetIterator	not-needed	0..maxDoc iterator filtered by an IntPredicate; Rust (0..max_doc).filter(..)
+util/FixedBitSet	partial	crates/lucene-util/src/fixed_bit_set.rs::FixedBitSet -- M7: get/set/clear/cardinality/nextSetBit/or/and/andNot/intersectionCount ported; prevSetBit, flip, getAndSet/getAndClear, xor, intersects, range set/clear, unionCount/andNotCount, ensureCapacity, cardinality(from,to) missing
+util/FixedBits	not-needed	read-only Bits view of a FixedBitSet; Rust shares &FixedBitSet
+util/FixedLengthBytesRefArray	not-needed	fixed-width value buffer for BKDWriter/OfflineSorter; the Rust points writer holds packed values in one Vec<u8>
+util/FloatToFloatFunction	not-needed	functional interface; Rust Fn(f32) -> f32
+util/FrequencyTrackingRingBuffer	ported	crates/lucene-search/src/query_cache.rs::FrequencyRingBuffer
+util/GroupVIntUtil	ported	crates/lucene-store/src/data_input.rs::read_group_vints
+util/HotspotVMOptions	not-needed	JVM HotSpot MXBean probe
+util/IOBooleanSupplier	not-needed	checked-exception functional interface; Rust closures returning Result
+util/IOConsumer	not-needed	checked-exception functional interface; Rust closures returning Result
+util/IOFunction	not-needed	checked-exception functional interface; Rust closures returning Result
+util/IORunnable	not-needed	checked-exception functional interface; Rust closures returning Result
+util/IOSupplier	not-needed	checked-exception functional interface; Rust closures returning Result
+util/IOUtils	not-needed	close/delete-quietly and fsync helpers; Rust Drop, ? and std::fs (ignore-errors deletes done inline in segment_infos.rs/index_writer.rs)
+util/IgnoreRandomChains	not-needed	test-framework annotation
+util/InPlaceMergeSorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
+util/InfoStream	not-needed	IndexWriter debug-message sink with no effect on results; the port has no diagnostics channel (Rust would use log/tracing)
+util/IntArrayDocIdSet	not-needed	sparse DocIdSetBuilder result; Rust uses a sorted Vec<i32>
+util/IntBlockPool	not-needed	int arena for posting slices; the Rust inverter uses per-term Vec buffers
+util/IntroSelector	not-needed	generic introselect framework; Rust slice::select_nth_unstable(_by)
+util/IntroSorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
+util/IntsRef	not-needed	int-slice reference; Rust &[i32]/Vec<i32> (e.g. FST label keys)
+util/IntsRefBuilder	not-needed	growable int buffer; Rust Vec<i32>
+util/JavaLoggingInfoStream	not-needed	InfoStream over java.util.logging
+util/LSBRadixSorter	ported	crates/lucene-util/src/doc_id_sort.rs::sort_dedup_doc_ids
+util/LiveDocs	partial	crates/lucene-codecs/src/live_docs.rs::parse -- M7: live docs are a bare FixedBitSet; no LiveDocs abstraction (liveDocsIterator, deletedDocsIterator, deletedCount)
+util/LongBitSet	not-needed	long-indexed FixedBitSet; the Rust FixedBitSet is usize-indexed, which subsumes it
+util/LongHeap	not-needed	generic long min-heap; Rust std BinaryHeap (TernaryLongHeap ported separately where Lucene's order matters)
+util/LongValues	not-needed	index->long accessor interface; readers expose get() directly (e.g. direct_reader.rs DirectReader::get)
+util/LongsRef	not-needed	long-slice reference; Rust &[i64]/Vec<i64>
+util/MSBRadixSorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
+util/MapOfSets	not-needed	map of sets helper; Rust HashMap<K, HashSet<V>>
+util/MathUtil	partial	crates/lucene-search/src/bulk_scorer.rs::sum_upper_bound -- M7: sumUpperBound/sumRelativeErrorBound here and a private gcd in doc_values.rs; no shared log(x, base) integer log (inlined in points.rs), asinh/acosh/atanh are std f64 methods
+util/MergedIterator	not-needed	k-way merge of sorted iterators with dedup; Rust BTreeSet/merge loops
+util/ModuleResourceLoader	not-needed	JVM module resource loading
+util/NamedSPILoader	not-needed	JVM ServiceLoader-based SPI lookup; Rust codecs are selected statically
+util/NamedThreadFactory	not-needed	named thread factory; Rust std::thread::Builder::name
+util/NotDocIdSet	partial	crates/lucene-search/src/docid_set.rs::InverseSparse -- M7: only as RoaringDocIdSet's complemented-block encoding; no general complement DocIdSet
+util/NumericUtils	partial	crates/lucene-util/src/numeric_utils.rs::float_to_sortable_int -- M7: float half shared; double/long halves are private copies (segment_info.rs, facets.rs, top_field.rs, aggs.rs); int/long/bigIntToSortableBytes, sortableBytesToX, add/subtract not shared helpers
+util/OfflineSorter	todo:M7	external (temp-file) merge sort of byte sequences
+util/PagedBytes	not-needed	paged byte arena for buffering writers; Rust writers buffer in Vec<u8>
+util/PrintStreamInfoStream	not-needed	InfoStream over a PrintStream
+util/PriorityQueue	not-needed	generic binary heap; Rust std BinaryHeap, with Lucene's heap re-implemented where its tie order matters (top_field.rs HitQueue)
+util/QueryBuilder	todo:M7	analyzer-driven query construction (createBooleanQuery/createPhraseQuery, graph token streams)
+util/RadixSelector	not-needed	generic radix select; Rust select_nth_unstable_by (points.rs compute_leaf_plan)
+util/RamUsageEstimator	not-needed	JVM object-size estimation
+util/RecyclingByteBlockAllocator	not-needed	ByteBlockPool block recycling; no block pools in the port
+util/RecyclingIntBlockAllocator	not-needed	IntBlockPool block recycling; no block pools in the port
+util/RefCount	not-needed	ref-counted holder; Rust Arc / plain counts (index_file_deleter.rs refcounts)
+util/ResourceLoader	not-needed	JVM resource/class loading for analysis factories; Rust callers pass data directly
+util/ResourceLoaderAware	not-needed	JVM resource-loading callback for analysis factories
+util/RoaringDocIdSet	ported	crates/lucene-search/src/docid_set.rs::RoaringDocIdSet
+util/RollingBuffer	not-needed	generic ring buffer; Rust VecDeque
+util/SameThreadExecutorService	not-needed	JVM ExecutorService running tasks inline
+util/Selector	not-needed	generic selection framework; Rust slice::select_nth_unstable(_by)
+util/SentinelIntSet	not-needed	open-addressing int set; Rust HashSet<i32>
+util/SetOnce	not-needed	write-once holder; Rust std::sync::OnceLock
+util/SloppyMath	deferred:M9	fast approximate trig/haversin distance for geo
+util/SmallFloat	partial	crates/lucene-util/src/small_float.rs::int_to_byte4 -- M7: intToByte4/byte4ToInt (with long4/int4) only; floatToByte/byteToFloat and floatToByte315/byte315ToFloat missing
+util/SortableBytesRefArray	not-needed	internal interface over BytesRefArray/FixedLengthBytesRefArray
+util/Sorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
+util/SparseFixedBitSet	todo:M7	sparse bitset (the port always uses a dense FixedBitSet)
+util/SparseLiveDocs	todo:M7	sparse live-docs representation (dense FixedBitSet always)
+util/StableMSBRadixSorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
+util/StableStringSorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
+util/StrictStringTokenizer	not-needed	string splitter for Version parsing; Rust str::split
+util/StringHelper	partial	crates/lucene-index/src/index_writer.rs::generate_segment_id -- M7: randomId role only (not the xorshift128 stream); bytesDifference is a private copy in doc_values.rs; murmurhash3_x86_32, sortKeyLength, startsWith/endsWith, idToString missing
+util/StringSorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
+util/SuppressForbidden	not-needed	forbidden-apis annotation
+util/TermAndVector	not-needed	(term, vector) record; a Rust tuple
+util/TernaryLongHeap	ported	crates/lucene-util/src/ternary_long_heap.rs::TernaryLongHeap
+util/ThreadInterruptedException	not-needed	unchecked wrapper for InterruptedException; Rust has no thread interruption
+util/TimSorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
+util/ToStringUtils	not-needed	toString helpers; Rust Display/Debug
+util/UnicodeUtil	not-needed	UTF-8/UTF-16/UTF-32 conversion and counting; Rust std str/char (from_utf8, encode_utf16, chars().count())
+util/Unwrappable	not-needed	wrapper-unwrapping interface
+util/VectorUtil	partial	crates/lucene-util/src/simd.rs::dot_f32 -- M7: float dot/squareDistance/cosine, findNextGEQ here; byte-vector similarities, scaleMaxInnerProductScore, normalizeToUnitInterval, checkFinite in vectors.rs, filterByScore in bulk_scorer.rs; l2normalize, isUnitVector/isZeroVector, add, int4*/uint8* quantized kernels, int4BitDotProduct/int4DibitDotProduct, xorBitCount, minMaxScalarQuantize/recalculateOffset missing
+util/Version	partial	crates/lucene-index/src/segment_infos.rs::LuceneVersion -- M7: major/minor/bugfix with fromBits range checks; no Version.parse/parseLeniently, named constants or onOrAfter API
+util/VirtualMethod	not-needed	reflection-based override detection
+util/WeakIdentityMap	not-needed	JVM weak-reference identity map
+util/automaton/Automata	partial	crates/lucene-codecs/src/automaton.rs::Nfa -- M7: construction helpers (bytes, code-point ranges, any char, digit intervals) exist only inside the NFA builder for regexp/wildcard/fuzzy; no public Automata factory (makeString, makeStringUnion, makeBinaryInterval, makeDecimalInterval as Automaton)
+util/automaton/Automaton	partial	crates/lucene-codecs/src/automaton.rs::Nfa -- M7: byte-level NFA/DFA for term intersection only; no general code-point-labelled Automaton API (createState/addTransition/finishState, Builder, getNumTransitions, toDot)
+util/automaton/AutomatonProvider	partial	crates/lucene-codecs/src/regexp.rs::NamedAutomatonNotFound -- M7: <name> parses and always fails as with RegexpQuery's DEFAULT_PROVIDER; no pluggable provider
+util/automaton/ByteRunAutomaton	ported	crates/lucene-codecs/src/automaton.rs::ByteDfa
+util/automaton/ByteRunnable	ported	crates/lucene-codecs/src/automaton.rs::TermAutomaton
+util/automaton/CaseFolding	todo:M7	Unicode case folding for RegExp CASE_INSENSITIVE matching
+util/automaton/CharacterRunAutomaton	todo:M7	char (code point) run automaton
+util/automaton/CompiledAutomaton	partial	crates/lucene-codecs/src/automaton.rs::CompiledDfa -- M7: AUTOMATON_TYPE.ALL swap and UTF-8-total states only; no NONE/SINGLE classification, commonSuffixRef, floor(), getTermsEnum; built only for regexp/wildcard/prefix/fuzzy
+util/automaton/FiniteStringsIterator	todo:M7	enumerate an automaton's finite accepted strings
+util/automaton/FrozenIntSet	not-needed	state-set key for determinize; automaton.rs keys subsets by Vec<u32> in a HashMap
+util/automaton/IntSet	not-needed	state-set key abstraction for determinize; automaton.rs uses Vec<u32> keys
+util/automaton/Lev1ParametricDescription	not-needed	precomputed Levenshtein transition tables; the port builds the same edit-distance-1 language by DP and subset construction (fuzzy.rs FuzzyMatch::to_dfa)
+util/automaton/Lev1TParametricDescription	not-needed	precomputed Levenshtein (transposition) tables; the port builds the same language by DP and subset construction (fuzzy.rs FuzzyMatch::to_dfa)
+util/automaton/Lev2ParametricDescription	not-needed	precomputed Levenshtein transition tables; the port builds the same edit-distance-2 language by DP and subset construction (fuzzy.rs FuzzyMatch::to_dfa)
+util/automaton/Lev2TParametricDescription	not-needed	precomputed Levenshtein (transposition) tables; the port builds the same language by DP and subset construction (fuzzy.rs FuzzyMatch::to_dfa)
+util/automaton/LevenshteinAutomata	partial	crates/lucene-codecs/src/fuzzy.rs::FuzzyMatch -- M7: same accepted language via banded DP plus a byte DFA (to_dfa); no public LevenshteinAutomata/toAutomaton(n, prefix) API or custom alphabet
+util/automaton/LimitedFiniteStringsIterator	todo:M7	finite-strings enumeration with a limit
+util/automaton/NFARunAutomaton	ported	crates/lucene-codecs/src/automaton.rs::LazyDfa
+util/automaton/Operations	partial	crates/lucene-codecs/src/automaton.rs::determinize -- M7: determinize (bounded), product intersection (ByteDfa::intersect), pruning; no union/concatenate/repeat/complement/minus/minimize/isEmpty/sameLanguage/subsetOf/getCommonPrefix public API
+util/automaton/RegExp	partial	crates/lucene-codecs/src/regexp.rs::RegexpPattern -- M7: whole RegExp.ALL syntax; no CASE_INSENSITIVE/CASE_INSENSITIVE_RANGE match flags, no DEPRECATED_COMPLEMENT, no toAutomaton() returning an Automaton
+util/automaton/RunAutomaton	ported	crates/lucene-codecs/src/automaton.rs::ByteDfa
+util/automaton/StatePair	not-needed	(state, state) tuple for product constructions; Rust tuples
+util/automaton/StateSet	not-needed	mutable state-set for determinize; automaton.rs uses Vec<u32> subsets
+util/automaton/StringsToAutomaton	todo:M7	minimal automaton from sorted strings (Daciuk-Mihov), makeStringUnion
+util/automaton/TooComplexToDeterminizeException	partial	crates/lucene-codecs/src/blocktree.rs::too_complex -- M7: raised only when the lazy DFA exceeds its state budget, not at Lucene's determinizeWorkLimit; patterns Java rejects run here via LazyDfa
+util/automaton/Transition	not-needed	(min, max, dest) holder; ByteDfa::transitions returns tuples
+util/automaton/TransitionAccessor	not-needed	transition-iteration interface over Automaton
+util/automaton/UTF32ToUTF8	ported	crates/lucene-codecs/src/automaton.rs::utf8_sequences
+util/bkd/BKDConfig	ported	crates/lucene-codecs/src/points.rs::check_config
+util/bkd/BKDRadixSelector	partial	crates/lucene-codecs/src/points.rs::compute_leaf_plan -- M7: in-heap selection only; no offline (temp-file) radix selection for point sets larger than heap
+util/bkd/BKDReader	ported	crates/lucene-codecs/src/points.rs::PointsReader
+util/bkd/BKDUtil	not-needed	fixed-width byte comparator/equality specialisations; Rust compares byte slices (points.rs cmp_unsigned)
+util/bkd/BKDWriter	partial	crates/lucene-codecs/src/points.rs::write -- M7: readable-by-Lucene bytes, not Java's: common prefix always 0, no run-length/low-cardinality leaf compression, doc ids only CONTINUOUS/BPV_32, widest_dim without parentSplits fairness, no offline spill
+util/bkd/DocIdsWriter	partial	crates/lucene-codecs/src/points.rs::read_doc_ids_into -- M7: every encoding read; write side emits only CONTINUOUS_IDS/BPV_32 (no BITSET/DELTA_BPV_16/BPV_21/BPV_24)
+util/bkd/HeapPointReader	not-needed	BKDWriter heap scratch reader; the Rust writer holds points in a Vec<u8>
+util/bkd/HeapPointWriter	not-needed	BKDWriter heap scratch buffer; the Rust writer holds points in a Vec<u8>
+util/bkd/MutablePointTreeReaderUtils	ported	crates/lucene-codecs/src/points.rs::compute_leaf_plan
+util/bkd/OfflinePointReader	todo:M7	temp-file point spill for BKD builds larger than heap
+util/bkd/OfflinePointWriter	todo:M7	temp-file point spill for BKD builds larger than heap
+util/bkd/PointReader	not-needed	interface over heap/offline point buffers
+util/bkd/PointValue	ported	crates/lucene-codecs/src/points.rs::Point
+util/bkd/PointWriter	not-needed	interface over heap/offline point buffers
+util/compress/LZ4	ported	crates/lucene-codecs/src/lz4.rs::decompress
+util/compress/LowercaseAsciiCompression	partial	crates/lucene-codecs/src/blocktree.rs::decompress_lowercase_ascii -- M7: decompress only; no compress (the blocktree writer emits NO_COMPRESSION)
+util/fst/BitTableUtil	ported	crates/lucene-codecs/src/fst.rs::bit_table_count_bits
+util/fst/ByteBlockPoolReverseBytesReader	not-needed	FSTCompiler in-progress byte-pool reader; the Rust builder serialises a finished trie into a Vec<u8>
+util/fst/ByteSequenceOutputs	ported	crates/lucene-codecs/src/fst.rs::ByteSequenceOutputs
+util/fst/BytesRefFSTEnum	ported	crates/lucene-codecs/src/fst.rs::FstEnum
+util/fst/CharSequenceOutputs	todo:M7	char-sequence FST outputs
+util/fst/FST	ported	crates/lucene-codecs/src/fst.rs::Fst
+util/fst/FSTCompiler	partial	crates/lucene-codecs/src/fst.rs::build_fst -- M7: whole-trie build, not incremental/streaming; no output pushing, fixed-length arc nodes or BIT_TARGET_NEXT on write, single-byte labels only; bytes differ from Java's
+util/fst/FSTEnum	ported	crates/lucene-codecs/src/fst.rs::FstEnum
+util/fst/FSTReader	not-needed	FST body store interface; Rust Fst holds owned or borrowed bytes
+util/fst/ForwardBytesReader	not-needed	forward byte cursor over a byte[]; Rust reads the slice directly
+util/fst/GrowableByteArrayDataOutput	not-needed	FSTCompiler growable output; Rust Vec<u8>
+util/fst/IntSequenceOutputs	todo:M7	int-sequence FST outputs
+util/fst/IntsRefFSTEnum	ported	crates/lucene-codecs/src/fst.rs::IntsRefFstEnum
+util/fst/NoOutputs	partial	crates/lucene-codecs/src/fst.rs::read_fst_metadata_prefix -- M7: FSTs written with NoOutputs are read; no NoOutputs Outputs impl for typed building
+util/fst/NodeHash	partial	crates/lucene-codecs/src/fst.rs::NodeHash -- M7: whole-trie hash-consing; no RAM-bounded (suffixRAMLimitMB) LRU table, so sharing can differ from Java on large inputs
+util/fst/OffHeapFSTStore	ported	crates/lucene-codecs/src/fst.rs::read_borrowed
+util/fst/OnHeapFSTStore	ported	crates/lucene-codecs/src/fst.rs::read
+util/fst/Outputs	ported	crates/lucene-codecs/src/fst.rs::Outputs
+util/fst/PairOutputs	ported	crates/lucene-codecs/src/fst.rs::PairOutputs
+util/fst/PositiveIntOutputs	ported	crates/lucene-codecs/src/fst.rs::PositiveIntOutputs
+util/fst/ReadWriteDataOutput	not-needed	FSTCompiler output readable while writing; Rust Vec<u8>
+util/fst/ReverseBytesReader	ported	crates/lucene-codecs/src/fst.rs::BytesReader
+util/fst/ReverseRandomAccessReader	ported	crates/lucene-codecs/src/fst.rs::BytesReader
+util/fst/Util	partial	crates/lucene-codecs/src/fst.rs::get -- M7: Util.get/binarySearch only (plus the suggester's own top-N in suggest.rs); no general shortestPaths/TopNSearcher, getByOutput, readCeilArc, toDot
+util/graph/GraphTokenStreamFiniteStrings	todo:M7	finite-path enumeration of graph token streams for QueryBuilder
+util/hnsw/AbstractHnswGraphSearcher	ported	crates/lucene-codecs/src/hnsw.rs::HnswGraphSearcher
+util/hnsw/BlockingFloatHeap	todo:M7	thread-safe bounded float heap backing MultiLeafKnnCollector (unported)
+util/hnsw/CloseableRandomVectorScorerSupplier	not-needed	closeable supplier over a merge temp file; Rust lifetimes/Drop
+util/hnsw/ConcurrentHnswMerger	todo:M7	multi-threaded HNSW graph merge (numMergeWorkers > 1)
+util/hnsw/FilteredHnswGraphSearcher	todo:M7	filtered (ACORN-style) graph search via KnnSearchStrategy.Hnsw with a non-zero threshold
+util/hnsw/FloatHeap	todo:M7	bounded float heap backing MultiLeafKnnCollector (unported)
+util/hnsw/HasKnnVectorValues	not-needed	accessor interface for vector values
+util/hnsw/HnswBuilder	ported	crates/lucene-codecs/src/hnsw.rs::HnswGraphBuilder
+util/hnsw/HnswConcurrentMergeBuilder	todo:M7	multi-threaded HNSW graph merge builder
+util/hnsw/HnswGraph	ported	crates/lucene-codecs/src/hnsw.rs::HnswGraphView
+util/hnsw/HnswGraphBuilder	ported	crates/lucene-codecs/src/hnsw.rs::HnswGraphBuilder
+util/hnsw/HnswGraphMerger	ported	crates/lucene-codecs/src/hnsw.rs::merge_graphs
+util/hnsw/HnswGraphSearcher	ported	crates/lucene-codecs/src/hnsw.rs::HnswGraphSearcher
+util/hnsw/HnswLock	not-needed	per-node locks for concurrent graph building; the Rust builder is single-threaded
+util/hnsw/HnswUtil	todo:M7	graph connectivity diagnostics (graphIsRooted, componentSizes, components)
+util/hnsw/IncrementalHnswGraphMerger	ported	crates/lucene-codecs/src/hnsw_vectors.rs::merge_one_field
+util/hnsw/InitializedHnswGraphBuilder	ported	crates/lucene-codecs/src/hnsw.rs::init_graph
+util/hnsw/IntToIntFunction	not-needed	functional interface; Rust Fn(i32) -> i32 / slices
+util/hnsw/MergingHnswGraphBuilder	ported	crates/lucene-codecs/src/hnsw.rs::merge_graphs
+util/hnsw/NeighborArray	ported	crates/lucene-codecs/src/hnsw.rs::NeighborArray
+util/hnsw/NeighborQueue	ported	crates/lucene-codecs/src/hnsw.rs::NeighborQueue
+util/hnsw/OnHeapHnswGraph	ported	crates/lucene-codecs/src/hnsw.rs::OnHeapHnswGraph
+util/hnsw/OrdinalTranslatedKnnCollector	ported	crates/lucene-codecs/src/vectors.rs::ord_to_doc
+util/hnsw/RandomVectorScorer	ported	crates/lucene-codecs/src/hnsw.rs::VectorScorer
+util/hnsw/RandomVectorScorerSupplier	ported	crates/lucene-codecs/src/vectors.rs::ord_scorer
+util/hnsw/SeededHnswGraphSearcher	ported	crates/lucene-codecs/src/hnsw.rs::search_seeded
+util/hnsw/UpdateGraphsUtils	ported	crates/lucene-codecs/src/hnsw.rs::compute_join_set
+util/hnsw/UpdateableRandomVectorScorer	ported	crates/lucene-codecs/src/hnsw.rs::UpdateableVectorScorer
+util/mutable/MutableValue	not-needed	mutable boxed value holder for function-query/grouping value filling; Rust uses plain Option<T>/enum values
+util/mutable/MutableValueBool	not-needed	mutable boxed value holder for function-query/grouping value filling; Rust uses plain Option<T>/enum values
+util/mutable/MutableValueDate	not-needed	mutable boxed value holder for function-query/grouping value filling; Rust uses plain Option<T>/enum values
+util/mutable/MutableValueDouble	not-needed	mutable boxed value holder for function-query/grouping value filling; Rust uses plain Option<T>/enum values
+util/mutable/MutableValueFloat	not-needed	mutable boxed value holder for function-query/grouping value filling; Rust uses plain Option<T>/enum values
+util/mutable/MutableValueInt	not-needed	mutable boxed value holder for function-query/grouping value filling; Rust uses plain Option<T>/enum values
+util/mutable/MutableValueLong	not-needed	mutable boxed value holder for function-query/grouping value filling; Rust uses plain Option<T>/enum values
+util/mutable/MutableValueStr	not-needed	mutable boxed value holder for function-query/grouping value filling; Rust uses plain Option<T>/enum values
+util/packed/AbstractBlockPackedWriter	ported	crates/lucene-codecs/src/block_packed.rs::encode_all
+util/packed/AbstractPagedMutable	todo:M7	paged in-memory packed mutable arrays
+util/packed/BlockPackedReaderIterator	partial	crates/lucene-codecs/src/block_packed.rs::decode_all -- M7: decode-all only; no streaming next/skip iterator
+util/packed/BlockPackedWriter	ported	crates/lucene-codecs/src/block_packed.rs::encode_all
+util/packed/BulkOperation	partial	crates/lucene-codecs/src/packed_ints.rs::get -- M7: PACKED format only (no PACKED_SINGLE_BLOCK); no block-wise long[]/byte[] bulk encode/decode API
+util/packed/BulkOperationPacked	ported	crates/lucene-codecs/src/packed_ints.rs::encode
+util/packed/BulkOperationPacked1	ported	crates/lucene-codecs/src/packed_ints.rs::get
+util/packed/BulkOperationPacked10	ported	crates/lucene-codecs/src/packed_ints.rs::get
+util/packed/BulkOperationPacked11	ported	crates/lucene-codecs/src/packed_ints.rs::get
+util/packed/BulkOperationPacked12	ported	crates/lucene-codecs/src/packed_ints.rs::get
+util/packed/BulkOperationPacked13	ported	crates/lucene-codecs/src/packed_ints.rs::get
+util/packed/BulkOperationPacked14	ported	crates/lucene-codecs/src/packed_ints.rs::get
+util/packed/BulkOperationPacked15	ported	crates/lucene-codecs/src/packed_ints.rs::get
+util/packed/BulkOperationPacked16	ported	crates/lucene-codecs/src/packed_ints.rs::get
+util/packed/BulkOperationPacked17	ported	crates/lucene-codecs/src/packed_ints.rs::get
+util/packed/BulkOperationPacked18	ported	crates/lucene-codecs/src/packed_ints.rs::get
+util/packed/BulkOperationPacked19	ported	crates/lucene-codecs/src/packed_ints.rs::get
+util/packed/BulkOperationPacked2	ported	crates/lucene-codecs/src/packed_ints.rs::get
+util/packed/BulkOperationPacked20	ported	crates/lucene-codecs/src/packed_ints.rs::get
+util/packed/BulkOperationPacked21	ported	crates/lucene-codecs/src/packed_ints.rs::get
+util/packed/BulkOperationPacked22	ported	crates/lucene-codecs/src/packed_ints.rs::get
+util/packed/BulkOperationPacked23	ported	crates/lucene-codecs/src/packed_ints.rs::get
+util/packed/BulkOperationPacked24	ported	crates/lucene-codecs/src/packed_ints.rs::get
+util/packed/BulkOperationPacked3	ported	crates/lucene-codecs/src/packed_ints.rs::get
+util/packed/BulkOperationPacked4	ported	crates/lucene-codecs/src/packed_ints.rs::get
+util/packed/BulkOperationPacked5	ported	crates/lucene-codecs/src/packed_ints.rs::get
+util/packed/BulkOperationPacked6	ported	crates/lucene-codecs/src/packed_ints.rs::get
+util/packed/BulkOperationPacked7	ported	crates/lucene-codecs/src/packed_ints.rs::get
+util/packed/BulkOperationPacked8	ported	crates/lucene-codecs/src/packed_ints.rs::get
+util/packed/BulkOperationPacked9	ported	crates/lucene-codecs/src/packed_ints.rs::get
+util/packed/BulkOperationPackedSingleBlock	todo:M7	PACKED_SINGLE_BLOCK bulk encoding
+util/packed/DeltaPackedLongValues	todo:M7	delta-packed in-memory long buffer (port uses Vec<i64>)
+util/packed/DirectMonotonicReader	ported	crates/lucene-codecs/src/direct_monotonic.rs::get
+util/packed/DirectMonotonicWriter	ported	crates/lucene-codecs/src/direct_monotonic.rs::write
+util/packed/DirectPacked64SingleBlockReader	todo:M7	direct reader for PACKED_SINGLE_BLOCK
+util/packed/DirectPackedReader	ported	crates/lucene-codecs/src/packed_ints.rs::get
+util/packed/DirectReader	ported	crates/lucene-codecs/src/direct_reader.rs::DirectReader
+util/packed/DirectWriter	ported	crates/lucene-codecs/src/direct_reader.rs::encode
+util/packed/GrowableWriter	todo:M7	growable in-memory packed mutable
+util/packed/MonotonicBlockPackedReader	todo:M7	monotonic block-packed reader
+util/packed/MonotonicBlockPackedWriter	todo:M7	monotonic block-packed writer
+util/packed/MonotonicLongValues	todo:M7	monotonic in-memory long buffer (port uses Vec<i64>)
+util/packed/Packed64	todo:M7	in-memory PackedInts.Mutable (PACKED layout)
+util/packed/Packed64SingleBlock	todo:M7	in-memory PackedInts.Mutable (single-block layout)
+util/packed/PackedDataInput	todo:M7	bit-level packed value stream reader
+util/packed/PackedDataOutput	todo:M7	bit-level packed value stream writer
+util/packed/PackedInts	partial	crates/lucene-codecs/src/packed_ints.rs::get -- M7: PACKED no-header read/write and byteCount only; no Mutable/Reader factories (getMutable, getReader, getReaderIterator), PACKED_SINGLE_BLOCK, fastestFormatAndBits
+util/packed/PackedLongValues	todo:M7	packed in-memory long buffer (port uses Vec<i64>, e.g. OrdinalMap)
+util/packed/PackedReaderIterator	ported	crates/lucene-codecs/src/packed_ints.rs::get
+util/packed/PackedWriter	ported	crates/lucene-codecs/src/packed_ints.rs::encode
+util/packed/PagedGrowableWriter	todo:M7	paged growable packed mutable
+util/packed/PagedMutable	todo:M7	paged packed mutable
+util/quantization/BaseQuantizedByteVectorValues	todo:M7	scalar vector quantization (M7 T7.6)
+util/quantization/LegacyQuantizedByteVectorValues	todo:M7	scalar vector quantization (M7 T7.6)
+util/quantization/OptimizedScalarQuantizer	todo:M7	scalar vector quantization (M7 T7.6)
+util/quantization/QuantizedByteVectorValues	todo:M7	scalar vector quantization (M7 T7.6)
+util/quantization/QuantizedVectorsReader	todo:M7	scalar vector quantization (M7 T7.6)
+util/quantization/ScalarQuantizedVectorSimilarity	todo:M7	scalar vector quantization (M7 T7.6)
+util/quantization/ScalarQuantizer	todo:M7	scalar vector quantization (M7 T7.6)

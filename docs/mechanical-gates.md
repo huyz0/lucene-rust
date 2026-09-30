@@ -272,6 +272,28 @@ stay human, and the ledger's own preamble names the two habits that catch them:
 verify against the tree rather than a batch report, and treat a recorded
 blocker as a claim with an expiry date.
 
+## port-inventory
+
+`scripts/check-port-inventory.py`, over `docs/inventory/lucene-core.tsv`:
+every top-level class of Lucene 10.5.0's `lucene-core` jar (1,196, the
+Java 21 multi-release variants included), one status each -- `ported` with a
+Rust file and symbol, `partial` with the milestone that closes its gap,
+`not-needed` with a reason, `todo:M<n>`/`deferred:M<n>`. `parity.md` records
+what someone chose to write down; this records what nobody did, which is what
+"fully ported" has to be measured against. `--milestone M7` lists what M7
+still owes; `--summary` counts by status and package.
+
+**Seen to fail**: a deleted row (`index/IndexWriter: in the jar, not in
+lucene-core.tsv`), a `ported` row naming a symbol its file lacks, and a
+`partial` row without its milestone tag.
+
+**Blind spots.** It checks that a cited symbol *exists*, not that it does
+what the Java class does -- the classification is a judgement, made per class
+against the Java source and recorded in the row, and a wrong `ported` passes.
+It covers `lucene-core` only; other modules get their own file as their
+milestones start. Without a jar (offline, no Gradle cache) the membership
+check is skipped and says so; the per-row checks still run.
+
 ## rustdoc
 
 `rustdoc::broken_intra_doc_links` and its neighbours are warn-by-default and
