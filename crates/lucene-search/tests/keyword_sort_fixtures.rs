@@ -169,6 +169,7 @@ fn sort(spec: &str) -> Vec<SortField> {
             };
             SortField {
                 nested: None,
+                rewritten: None,
                 field: p[0].to_string(),
                 ty,
                 selector: if p[2] == "max" {

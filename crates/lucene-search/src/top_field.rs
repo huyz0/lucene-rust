@@ -180,6 +180,71 @@ pub trait FieldComparatorSource: Send + Sync {
         num_hits: usize,
         reverse: bool,
     ) -> Box<dyn FieldComparator>;
+
+    /// `SortField.rewrite(searcher)` for a key of this source: the source to
+    /// sort with instead, or `None` when it needs no rewriting.
+    fn rewrite(
+        &self,
+        ctx: &crate::values_source::ValuesContext<'_>,
+    ) -> Result<Option<Arc<dyn FieldComparatorSource>>> {
+        let _ = ctx;
+        Ok(None)
+    }
+}
+
+/// A custom key's comparator source after [`rewrite_sort`]: held by the key
+/// itself (a rewritten source is bound to one reader, so it is not
+/// registered process-wide). Equal only to itself.
+#[derive(Clone)]
+pub struct RewrittenSource(pub Arc<dyn FieldComparatorSource>);
+
+impl std::fmt::Debug for RewrittenSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RewrittenSource")
+    }
+}
+
+impl PartialEq for RewrittenSource {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for RewrittenSource {}
+
+/// `Sort.rewrite(searcher)`: every custom key whose source rewrites
+/// ([`FieldComparatorSource::rewrite`]) sorts with the rewritten source;
+/// the others are kept as they are.
+///
+/// # Errors
+/// An unknown comparator source, and whatever a rewrite reports.
+pub fn rewrite_sort(
+    sort: &[SortField],
+    ctx: &crate::values_source::ValuesContext<'_>,
+) -> Result<Vec<SortField>> {
+    let mut out = Vec::with_capacity(sort.len());
+    for f in sort {
+        let mut f = f.clone();
+        if let SortType::Custom(id) = f.ty {
+            if f.rewritten.is_none() {
+                if let Some(r) = registered_source(id)?.rewrite(ctx)? {
+                    f.rewritten = Some(RewrittenSource(r));
+                }
+            }
+        }
+        out.push(f);
+    }
+    Ok(out)
+}
+
+/// The registered source of a custom key.
+fn registered_source(id: CustomSortId) -> Result<Arc<dyn FieldComparatorSource>> {
+    let all = COMPARATOR_SOURCES.read().unwrap_or_else(|e| e.into_inner());
+    Ok(usize::try_from(id.0)
+        .ok()
+        .and_then(|i| all.get(i))
+        .ok_or(SortError::UnknownComparatorSource(id.0))?
+        .clone())
 }
 
 static COMPARATOR_SOURCES: std::sync::RwLock<Vec<Arc<dyn FieldComparatorSource>>> =
@@ -201,12 +266,10 @@ pub(crate) fn custom_comparator(
     f: &SortField,
     num_hits: usize,
 ) -> Result<Box<dyn FieldComparator>> {
-    let all = COMPARATOR_SOURCES.read().unwrap_or_else(|e| e.into_inner());
-    let source = usize::try_from(id.0)
-        .ok()
-        .and_then(|i| all.get(i))
-        .ok_or(SortError::UnknownComparatorSource(id.0))?;
-    Ok(source.new_comparator(&f.field, num_hits, f.reverse))
+    if let Some(r) = &f.rewritten {
+        return Ok(r.0.new_comparator(&f.field, num_hits, f.reverse));
+    }
+    Ok(registered_source(id)?.new_comparator(&f.field, num_hits, f.reverse))
 }
 
 /// Whether a key reads the score: the score itself, or a custom comparator
@@ -400,6 +463,8 @@ pub struct SortField {
     pub missing: i64,
     /// A numeric key read from nested documents ([`NestedSort`]).
     pub nested: Option<Arc<NestedSort>>,
+    /// A custom key's source once [`rewrite_sort`] rewrote it.
+    pub rewritten: Option<RewrittenSource>,
 }
 
 impl SortField {
@@ -422,6 +487,7 @@ impl SortField {
             selector: Selector::Min,
             missing: 0,
             nested: None,
+            rewritten: None,
         }
     }
 
@@ -433,6 +499,7 @@ impl SortField {
             selector: Selector::Min,
             missing: 0,
             nested: None,
+            rewritten: None,
         }
     }
 
@@ -460,6 +527,7 @@ impl SortField {
             selector: Selector::Min,
             missing: 0,
             nested: None,
+            rewritten: None,
         }
     }
 
@@ -472,6 +540,7 @@ impl SortField {
             selector: Selector::Min,
             missing: 0,
             nested: None,
+            rewritten: None,
         }
     }
 
@@ -492,6 +561,7 @@ impl SortField {
             selector: Selector::Min,
             missing: 0,
             nested: None,
+            rewritten: None,
         }
     }
 }
@@ -4483,6 +4553,7 @@ mod tests {
         });
         let key = SortField {
             nested: Some(nested.clone()),
+            rewritten: None,
             ..SortField::numeric("l", SortType::Long, false)
         };
         assert_eq!(key, key.clone());
