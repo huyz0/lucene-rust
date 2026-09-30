@@ -948,6 +948,67 @@ fn blended<'a>(
     }
 }
 
+/// `FuzzyQuery` under a similarity other than the default BM25: its
+/// `TopTermsBlendedFreqScoringRewrite` is a [`BlendedTermQuery`] with
+/// `BOOLEAN_REWRITE` over the reader-wide expansion, each term boosted by its
+/// `FuzzyTermsEnum` boost (`Math.max(0, boost)`).
+pub(crate) fn fuzzy_sim<'a>(
+    ctx: &LeafContext<'a>,
+    q: &crate::FuzzyQuery,
+    boost: f32,
+    mode: Mode,
+    top_level: bool,
+) -> Result<Option<BoxScorer<'a>>> {
+    let expansion = match ctx.global.and_then(|g| g.fuzzy(q)) {
+        Some(e) => e.clone(),
+        None => {
+            let Some(ft) = ctx.fields.field(&q.field) else {
+                return Ok(None);
+            };
+            crate::fuzzy_expansion_across_leaves(&[ft], q, i64::from(ft.doc_count))?
+        }
+    };
+    let blended = BlendedTermQuery::new(
+        expansion
+            .terms
+            .iter()
+            .map(|(t, b)| (q.field.clone(), t.clone(), b.max(0.0))),
+        BlendedRewrite::Boolean,
+    )?;
+    self::blended(ctx, &blended, boost, mode, top_level)
+}
+
+/// Records the reader-wide statistics of every term a fuzzy clause expanded
+/// to, which a similarity other than BM25 reads (`totalTermFreq`, the
+/// field's sums) and the BM25 fast path does not.
+pub(crate) fn add_fuzzy_term_stats(
+    global: &mut crate::GlobalStats,
+    segments: &[crate::multi_segment::OpenSegment<'_>],
+) -> Result<()> {
+    let fuzzy: Vec<(String, Vec<Vec<u8>>)> = global
+        .fuzzy_entries()
+        .map(|(q, e)| {
+            (
+                q.field.clone(),
+                e.terms.iter().map(|(t, _)| t.clone()).collect(),
+            )
+        })
+        .collect();
+    for (field, terms) in fuzzy {
+        for term in terms {
+            if global.term(&field, &term).is_some() {
+                continue;
+            }
+            if let Some((stats, states)) =
+                crate::multi_segment::global_term_stats_states(segments, &field, &term)?
+            {
+                global.insert_term_states(field.clone(), term, stats, states);
+            }
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // MultiTermQuery rewrite methods
 // ---------------------------------------------------------------------------

@@ -1137,7 +1137,8 @@ pub fn search_boolean_query_multi_segment_with_similarity(
     crate::check_similarity_supported(query)?;
     let rewritten = rewrite_points_ranges(query, segments);
     let query = rewritten.as_ref().unwrap_or(query);
-    let global = global_boolean_stats(segments, query)?;
+    let mut global = global_boolean_stats(segments, query)?;
+    crate::exec::extended::add_fuzzy_term_stats(&mut global, segments)?;
     let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
     search_leaves_shared(&doc_bases, top_n, |i, local| {
         let seg = &segments[i];

@@ -3159,6 +3159,13 @@ impl GlobalStats {
         self.terms.get(field)?.get(term).map(|e| &e.stats)
     }
 
+    /// Every fuzzy clause's recorded expansion.
+    pub(crate) fn fuzzy_entries(
+        &self,
+    ) -> impl Iterator<Item = (&FuzzyQuery, &FuzzyCollectionStats)> {
+        self.fuzzy.iter()
+    }
+
     /// Records a multi-term query's reader-wide rewrite under `key`.
     pub(crate) fn insert_extended_rewrite(&mut self, key: String, rewritten: Clause) {
         self.extended.insert(key, rewritten);
@@ -3299,7 +3306,8 @@ pub(crate) fn check_similarity_supported(query: &BooleanQuery) -> Result<()> {
             Clause::Boolean(b) => check_similarity_supported(b),
             Clause::Boost(b) => clause(&b.inner),
             Clause::DisjunctionMax(d) => d.disjuncts.iter().try_for_each(clause),
-            Clause::Fuzzy(_) => Err(Error::SimilarityUnsupported("FuzzyQuery")),
+            // Scored through the similarity as its blended rewrite.
+            Clause::Fuzzy(_) => Ok(()),
             Clause::Span(_) => Err(Error::SimilarityUnsupported("a span query")),
             // Scored through the similarity by the scorer tree.
             Clause::MultiPhrase(_) => Ok(()),
