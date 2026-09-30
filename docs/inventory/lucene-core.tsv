@@ -621,7 +621,7 @@ search/DisiPriorityQueue2	ported	crates/lucene-search/src/exec/disjunction.rs::D
 search/DisiPriorityQueueN	ported	crates/lucene-search/src/exec/disjunction.rs::DisiQueue
 search/DisiWrapper	ported	crates/lucene-search/src/exec/disjunction.rs::Disi
 search/DisjunctionDISIApproximation	ported	crates/lucene-search/src/exec/disjunction.rs::DisjunctionScorer
-search/DisjunctionMatchesIterator	todo:M7	Matches API (disjunction matches iterator)
+search/DisjunctionMatchesIterator	ported	crates/lucene-search/src/matches.rs::DisjunctionMatchesIterator
 search/DisjunctionMaxBulkScorer	ported	crates/lucene-search/src/bulk_scorer.rs::DisMaxBulk
 search/DisjunctionMaxQuery	ported	crates/lucene-search/src/query.rs::DisjunctionMaxQuery
 search/DisjunctionMaxScorer	ported	crates/lucene-search/src/exec/disjunction.rs::DisjunctionScorer
@@ -651,7 +651,7 @@ search/FieldValueHitQueue	ported	crates/lucene-search/src/top_field.rs::HitQueue
 search/FilterCollector	not-needed	Java delegating base class for overriding collectors; Rust wraps a collector in its own ScoringCollector impl (e.g. collector.rs LeafCollector).
 search/FilterDocIdSetIterator	not-needed	Java delegating base class; Rust scorers wrap a BoxScorer directly.
 search/FilterLeafCollector	not-needed	Java delegating base class for overriding leaf collectors; Rust wraps a collector in its own ScoringCollector impl.
-search/FilterMatchesIterator	todo:M7	Matches API (delegating matches iterator)
+search/FilterMatchesIterator	ported	crates/lucene-search/src/matches.rs::FilterMatchesIterator
 search/FilterScorable	not-needed	Java delegating base class; Rust passes scores to ScoringCollector::collect directly.
 search/FilterScorer	not-needed	Java delegating base class; Rust wraps a BoxScorer directly (e.g. exec/leaf.rs ZeroScorer).
 search/FilterWeight	not-needed	Java delegating base class for the Weight hierarchy, which Rust collapses into exec/build.rs.
@@ -689,9 +689,9 @@ search/LongValues	ported	crates/lucene-search/src/values_source.rs::LongValues
 search/LongValuesSource	partial	crates/lucene-search/src/values_source.rs::LongValuesSource -- M7: getSortField (LongValuesSortField) not ported
 search/MatchAllDocsQuery	ported	crates/lucene-search/src/query.rs::MatchAllDocsQuery
 search/MatchNoDocsQuery	ported	crates/lucene-search/src/query.rs::MatchNoDocsQuery
-search/Matches	todo:M7	Matches API (Weight.matches)
-search/MatchesIterator	todo:M7	Matches API iterator
-search/MatchesUtils	todo:M7	Matches API helpers
+search/Matches	ported	crates/lucene-search/src/matches.rs::Matches
+search/MatchesIterator	ported	crates/lucene-search/src/matches.rs::MatchesIterator
+search/MatchesUtils	ported	crates/lucene-search/src/matches.rs::from_sub_matches
 search/MaxNonCompetitiveBoostAttribute	ported	crates/lucene-search/src/lib.rs::FuzzyTopTerms
 search/MaxNonCompetitiveBoostAttributeImpl	not-needed	AttributeImpl plumbing behind MaxNonCompetitiveBoostAttribute; Rust keeps the two values on FuzzyTopTerms.
 search/MaxScoreAccumulator	ported	crates/lucene-search/src/collector.rs::MaxScoreAccumulator
@@ -708,7 +708,7 @@ search/MultiTermQueryConstantScoreWrapper	todo:M7	CONSTANT_SCORE_REWRITE (non-bl
 search/MultiVectorSimilarity	ported	crates/lucene-search/src/values_source.rs::MultiVectorSimilarity
 search/Multiset	not-needed	lucene.internal generic collection used for BooleanQuery clause equality; Rust uses std collections.
 search/NGramPhraseQuery	todo:M7	n-gram phrase query
-search/NamedMatches	todo:M7	Matches API (named sub-query matches)
+search/NamedMatches	ported	crates/lucene-search/src/matches.rs::NamedMatches
 search/NumericDocValuesRangeQuery	partial	crates/lucene-search/src/doc_value_query.rs::search_numeric_range -- M7: standalone single-segment function, not a Clause/scorer-tree leaf and not in the query blob
 search/NumericFieldStats	ported	crates/lucene-search/src/values_source.rs::numeric_field_stats
 search/PatienceKnnVectorQuery	todo:M7	KNN query with patience-based early exit
@@ -766,7 +766,7 @@ search/SynonymQuery	todo:M7	synonym query with blended term stats
 search/TaskExecutor	ported	crates/lucene-search/src/slices.rs::run_slices
 search/TermCollectingRewrite	ported	crates/lucene-search/src/lib.rs::fuzzy_expansion_across_leaves
 search/TermInSetQuery	ported	crates/lucene-search/src/query.rs::TermInSetQuery
-search/TermMatchesIterator	todo:M7	Matches API (term matches iterator)
+search/TermMatchesIterator	ported	crates/lucene-search/src/matches.rs::ListMatchesIterator
 search/TermQuery	ported	crates/lucene-search/src/query.rs::TermQuery
 search/TermRangeQuery	partial	crates/lucene-index/src/buffered_updates.rs::DeleteQuery -- M7: only as a delete-by-query in the writer; no search-side TermRangeQuery (not a Clause, not in the scorer tree)
 search/TermScorer	ported	crates/lucene-search/src/exec/leaf.rs::TermScorer
