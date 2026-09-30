@@ -163,6 +163,7 @@ use lucene_store::directory::Directory;
 use lucene_util::fixed_bit_set::FixedBitSet;
 
 mod explicit;
+mod pluggable_merge;
 pub use explicit::{ExplicitDocument, ExplicitFields, InvertedField, InvertedTerm};
 
 pub use crate::merge_policy::MergePolicyConfig;
@@ -2644,6 +2645,9 @@ pub struct IndexWriter<'d> {
     /// counts and how it relates to Java's `DocumentsWriterPerThread.bytesUsed`.
     ram_bytes_used: usize,
     merge_policy: Option<MergePolicyConfig>,
+    /// See [`IndexWriter::set_pluggable_merge_policy`]; decides instead of
+    /// `merge_policy` when set.
+    pluggable_merge_policy: Option<std::sync::Arc<dyn merge_policy::MergePolicy>>,
     /// See [`IndexWriter::set_merges_by_caller`].
     merges_by_caller: bool,
 
@@ -3399,6 +3403,32 @@ impl<'d> IndexWriter<'d> {
         codec_name: impl Into<String>,
         lucene_version: LuceneVersion,
     ) -> Result<Self> {
+        Self::open_inner(dir, fields, codec_name, lucene_version, None)
+    }
+
+    /// [`IndexWriter::open`] under a pluggable deletion policy --
+    /// `IndexWriterConfig.setIndexDeletionPolicy` before `new IndexWriter`:
+    /// the policy's `on_init` sees every commit already in `dir` (so a
+    /// [`crate::deletion_policy::KeepLastNCommitsDeletionPolicy`] or a
+    /// [`crate::deletion_policy::PersistentSnapshotDeletionPolicy`] keeps what
+    /// it wants of them), and its `on_commit` runs after each commit.
+    pub fn open_with_deletion_policy(
+        dir: &'d dyn Directory,
+        fields: Vec<FieldInfo>,
+        codec_name: impl Into<String>,
+        lucene_version: LuceneVersion,
+        policy: std::sync::Arc<dyn crate::deletion_policy::IndexDeletionPolicy>,
+    ) -> Result<Self> {
+        Self::open_inner(dir, fields, codec_name, lucene_version, Some(policy))
+    }
+
+    fn open_inner(
+        dir: &'d dyn Directory,
+        fields: Vec<FieldInfo>,
+        codec_name: impl Into<String>,
+        lucene_version: LuceneVersion,
+        policy: Option<std::sync::Arc<dyn crate::deletion_policy::IndexDeletionPolicy>>,
+    ) -> Result<Self> {
         // `writeLock = d.obtainLock(WRITE_LOCK_NAME)`: before anything reads
         // the index, and held by the writer from here on. A held lock is
         // `LockObtainFailedException` (`lucene_store::Error::LockObtainFailed`).
@@ -3425,8 +3455,12 @@ impl<'d> IndexWriter<'d> {
         // leaked: a `pending_segments_N` from a prepare that never finished, the
         // segment files of a flush that was never committed, and every commit
         // generation the deletion policy no longer wants.
-        let deleter =
-            IndexFileDeleter::open(dir, &segment_infos, DeletionPolicy::KeepOnlyLastCommit)?;
+        let deleter = match policy {
+            None => {
+                IndexFileDeleter::open(dir, &segment_infos, DeletionPolicy::KeepOnlyLastCommit)?
+            }
+            Some(policy) => IndexFileDeleter::open_with_policy(dir, &segment_infos, policy)?,
+        };
 
         // `IndexFileDeleter.inflateGens`, applied *after* the deleter has
         // refcounted the real current commit (so it still recognises it), using
@@ -3480,6 +3514,7 @@ impl<'d> IndexWriter<'d> {
             max_buffered_docs: DEFAULT_MAX_BUFFERED_DOCS,
             ram_bytes_used: 0,
             merge_policy: None,
+            pluggable_merge_policy: None,
             merges_by_caller: false,
             pending_custom_freq_terms: Vec::new(),
             pending_sort_map: None,
@@ -4818,6 +4853,23 @@ impl<'d> IndexWriter<'d> {
         Ok(())
     }
 
+    /// [`IndexWriter::set_deletion_policy`] with a pluggable policy: its
+    /// `on_commit` runs over the live commits at once (`revisitPolicy`), then
+    /// after every commit.
+    pub fn set_index_deletion_policy(
+        &mut self,
+        policy: std::sync::Arc<dyn crate::deletion_policy::IndexDeletionPolicy>,
+    ) -> Result<()> {
+        self.deleter.set_custom_policy(policy)?;
+        Ok(())
+    }
+
+    /// An `IndexCommit` for each commit point the deleter still holds, oldest
+    /// first: the list a deletion policy is handed.
+    pub fn index_commits(&self) -> Vec<crate::deletion_policy::IndexCommit> {
+        self.deleter.index_commits()
+    }
+
     /// The generations of the commit points this writer's deleter still
     /// holds, oldest first -- what `IndexWriter`'s deletion policy is handed
     /// as its `List<IndexCommit>`. Under [`DeletionPolicy::KeepAll`] the
@@ -4859,7 +4911,8 @@ impl<'d> IndexWriter<'d> {
         Ok(())
     }
 
-    /// `IndexWriter.deleteUnusedFiles()`: re-apply the deletion policy and
+    /// `IndexWriter.deleteUnusedFiles()`: re-apply the deletion policy
+    /// (`revisitPolicy`) and
     /// re-scan `dir` for index files no live commit and no pending flush names,
     /// deleting them.
     ///
@@ -4867,6 +4920,7 @@ impl<'d> IndexWriter<'d> {
     /// silently -- use it when you want a failure to reclaim disk space to
     /// surface as an error rather than be ignored.
     pub fn delete_unused_files(&mut self) -> Result<()> {
+        self.deleter.revisit_policy()?;
         let live = self.live_infos();
         self.deleter.checkpoint(&live, false)?;
         self.deleter.refresh()?;
@@ -5885,7 +5939,9 @@ impl<'d> IndexWriter<'d> {
         self.rollback_segments = self.segment_infos.segments.clone();
         self.checkpoint_committed()?;
 
-        if self.merge_policy.is_some() && !self.merges_by_caller {
+        if (self.merge_policy.is_some() || self.pluggable_merge_policy.is_some())
+            && !self.merges_by_caller
+        {
             self.auto_merge()?;
         }
 
@@ -7666,6 +7722,9 @@ impl<'d> IndexWriter<'d> {
     /// executed merge strictly reduces this writer's segment count by at
     /// least one (merging >= 2 segments into exactly 1).
     fn auto_merge(&mut self) -> Result<()> {
+        if let Some(policy) = self.pluggable_merge_policy.clone() {
+            return self.auto_merge_pluggable(&policy);
+        }
         let config = self
             .merge_policy
             .clone()
@@ -7815,6 +7874,9 @@ impl<'d> IndexWriter<'d> {
         if max_num_segments == 0 {
             return Err(Error::InvalidMaxNumSegments(max_num_segments));
         }
+        if let Some(policy) = self.pluggable_merge_policy.clone() {
+            return self.force_merge_pluggable(&policy, max_num_segments);
+        }
         loop {
             let mut stats = self.segment_stats()?;
             if stats.len() <= max_num_segments {
@@ -7867,6 +7929,9 @@ impl<'d> IndexWriter<'d> {
     /// documents is merged, in one merge. A no-op, writing no commit, when no
     /// segment qualifies.
     pub fn force_merge_deletes(&mut self) -> Result<()> {
+        if let Some(policy) = self.pluggable_merge_policy.clone() {
+            return self.force_merge_deletes_pluggable(&policy);
+        }
         let mut names: Vec<String> = Vec::new();
         for stat in self.segment_stats()? {
             let reclaimable = i64::from(self.num_deletes_to_merge(&stat)?);
@@ -8721,12 +8786,11 @@ impl<'d> IndexWriter<'d> {
             // `commitMerge`: swap the segments and checkpoint; the next
             // `commit()` makes it durable. The last commit still names the
             // sources, so the deleter keeps their files until then.
-            self.segment_infos
-                .segments
-                .retain(|s| !source_segment_names.contains(&s.segment_name.as_str()));
-            if let Some(merged) = merged {
-                self.segment_infos.segments.push(merged);
-            }
+            apply_merge_changes(
+                &mut self.segment_infos.segments,
+                source_segment_names,
+                merged,
+            );
             self.prune_segment_versions();
             let live = self.live_infos();
             self.deleter.checkpoint(&live, false)?;
@@ -8745,15 +8809,11 @@ impl<'d> IndexWriter<'d> {
             new_segment_infos.version += 1;
         }
         new_segment_infos.id = generate_segment_id(new_segment_infos.generation);
-        new_segment_infos
-            .segments
-            .retain(|s| !source_segment_names.contains(&s.segment_name.as_str()));
-        // `SegmentInfos.applyMergeChanges(merge, dropSegment)`: the sources go
-        // either way; the merged segment is inserted only when it was not
-        // dropped.
-        if let Some(merged) = merged {
-            new_segment_infos.segments.push(merged);
-        }
+        apply_merge_changes(
+            &mut new_segment_infos.segments,
+            source_segment_names,
+            merged,
+        );
 
         self.stamp_min_segment_version(&mut new_segment_infos)?;
         self.stamp_soft_delete_counts(&mut new_segment_infos)?;
@@ -9384,6 +9444,33 @@ fn generate_segment_id(salt: i64) -> [u8; ID_LENGTH] {
     id[0..8].copy_from_slice(&h1.finish().to_le_bytes());
     id[8..16].copy_from_slice(&h2.finish().to_le_bytes());
     id
+}
+
+/// `SegmentInfos.applyMergeChanges(merge, dropSegment)`: the sources go
+/// either way; the merged segment (`None` standing for `dropSegment`) takes
+/// the place of the first source, so a policy that reads segment order
+/// (`LogMergePolicy`) sees the layout Java's writer would. When no source is
+/// present any more it goes first, as in Java.
+fn apply_merge_changes(
+    segments: &mut Vec<SegmentCommitInfo>,
+    source_segment_names: &[&str],
+    merged: Option<SegmentCommitInfo>,
+) {
+    let mut merged = merged;
+    let mut out = Vec::with_capacity(segments.len());
+    for info in segments.drain(..) {
+        if source_segment_names.contains(&info.segment_name.as_str()) {
+            if let Some(m) = merged.take() {
+                out.push(m);
+            }
+        } else {
+            out.push(info);
+        }
+    }
+    if let Some(m) = merged {
+        out.insert(0, m);
+    }
+    *segments = out;
 }
 
 #[cfg(test)]

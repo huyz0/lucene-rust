@@ -15,6 +15,7 @@ pub mod checksum_verify;
 pub mod compound_reader;
 pub mod concurrent_writer;
 pub mod deletes;
+pub mod deletion_policy;
 pub mod field_updates;
 pub mod index_file_deleter;
 pub mod index_writer;

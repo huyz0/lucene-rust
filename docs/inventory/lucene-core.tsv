@@ -366,7 +366,7 @@ index/FilterBinaryDocValues	todo:M7	delegating BinaryDocValues wrapper (reader-w
 index/FilterCodecReader	todo:M7	delegating CodecReader wrapper (reader-wrapping extension point)
 index/FilterDirectoryReader	todo:M7	delegating DirectoryReader wrapper (reader-wrapping extension point)
 index/FilterLeafReader	todo:M7	delegating LeafReader wrapper and its Fields/Terms/TermsEnum/PostingsEnum filters
-index/FilterMergePolicy	todo:M7	delegating MergePolicy wrapper
+index/FilterMergePolicy	ported	crates/lucene-index/src/merge_policy/filter.rs::FilterMergePolicy
 index/FilterNumericDocValues	todo:M7	delegating NumericDocValues wrapper (reader-wrapping extension point)
 index/FilterSortedDocValues	todo:M7	delegating SortedDocValues wrapper (reader-wrapping extension point)
 index/FilterSortedNumericDocValues	todo:M7	delegating SortedNumericDocValues wrapper (reader-wrapping extension point)
@@ -383,8 +383,8 @@ index/FrozenBufferedUpdates	ported	crates/lucene-index/src/buffered_updates.rs::
 index/Impacts	ported	crates/lucene-codecs/src/postings.rs::Impacts
 index/ImpactsEnum	ported	crates/lucene-codecs/src/postings.rs::LazyDocsCursor
 index/ImpactsSource	ported	crates/lucene-codecs/src/postings.rs::LazyDocsCursor
-index/IndexCommit	partial	crates/lucene-index/src/index_writer.rs::commit_generations -- M7: commits are exposed as generations only; no `IndexCommit` object (user data, segment count, file names), no `DirectoryReader.listCommits`/open-at-commit
-index/IndexDeletionPolicy	partial	crates/lucene-index/src/index_file_deleter.rs::DeletionPolicy -- M7: only the two stateless built-ins; no pluggable onInit/onCommit policy (a caller prunes commits itself via `IndexWriter::delete_commits`)
+index/IndexCommit	partial	crates/lucene-index/src/deletion_policy.rs::IndexCommit -- M7: the commit a deletion policy is handed (generation, segments file, file names, segment count, user data); no `DirectoryReader.listCommits`/open-at-commit
+index/IndexDeletionPolicy	ported	crates/lucene-index/src/deletion_policy.rs::IndexDeletionPolicy
 index/IndexFileDeleter	ported	crates/lucene-index/src/index_file_deleter.rs::IndexFileDeleter
 index/IndexFileNames	ported	crates/lucene-index/src/index_file_deleter.rs::is_index_file_name
 index/IndexFormatTooNewException	ported	crates/lucene-store/src/codec_util.rs::check_header_no_magic
@@ -402,23 +402,23 @@ index/IndexableField	partial	crates/lucene-index/src/index_writer/explicit.rs::E
 index/IndexableFieldType	partial	crates/lucene-codecs/src/field_infos.rs::FieldInfo -- M7: field properties exist only as the writer's per-field `FieldInfo` schema; no per-field-instance type descriptor of the document API (M7 T7.2)
 index/IndexingChain	partial	crates/lucene-index/src/indexing_chain.rs::invert_documents -- M7: `maybeSortSegment` handles only NUMERIC/SORTED_NUMERIC index sorts (`STRING`/`SortedSet`/`Binary` refused with `Error::UnsupportedIndexSortKind`); a PayloadAttribute or TermFrequencyAttribute a TokenFilter sets is not read by the inverter (payloads still come from BoxedPayloadSource, custom frequencies from add_document_with_custom_freq_terms)
 index/KeepLastNCommitsDeletionPolicy	todo:M7	deletion policy keeping the last N commits
-index/KeepOnlyLastCommitDeletionPolicy	ported	crates/lucene-index/src/index_file_deleter.rs::DeletionPolicy
+index/KeepOnlyLastCommitDeletionPolicy	ported	crates/lucene-index/src/deletion_policy.rs::KeepOnlyLastCommitDeletionPolicy
 index/KnnVectorValues	ported	crates/lucene-codecs/src/vectors.rs::FloatVectorValues
 index/LeafMetaData	ported	crates/lucene-index/src/segment_info.rs::SegmentInfo
 index/LeafReader	partial	crates/lucene-search/src/directory_reader.rs::SegmentReader -- M7: does not open term vectors or KNN vectors (lucene-search/src/term_vectors_query.rs and vector_query.rs take their own readers); no reader-closed listeners / CacheHelper
 index/LeafReaderContext	ported	crates/lucene-search/src/multi_segment.rs::OpenSegment
 index/LiveIndexWriterConfig	partial	crates/lucene-index/src/index_writer.rs::set_ram_buffer_size_mb -- M7: RAM buffer, max buffered docs and merge policy are live-settable; no `setUseCompoundFile`, merged-segment warmer, `maxFullFlushMergeWaitMillis` (merge-on-commit) or `checkPendingFlushOnUpdate`
 index/LockableConcurrentApproximatePriorityQueue	not-needed	lock-holding queue of idle DWPTs inside DocumentsWriterPerThreadPool; Rust slots are Mutex-guarded buffers (no user-visible behaviour).
-index/LogByteSizeMergePolicy	todo:M7	log-structured merge policy measured in bytes
-index/LogDocMergePolicy	todo:M7	log-structured merge policy measured in doc counts
-index/LogMergePolicy	todo:M7	log-structured merge policy base (levels, mergeFactor, forced merges)
+index/LogByteSizeMergePolicy	ported	crates/lucene-index/src/merge_policy/log.rs::LogByteSizeMergePolicy
+index/LogDocMergePolicy	ported	crates/lucene-index/src/merge_policy/log.rs::LogDocMergePolicy
+index/LogMergePolicy	ported	crates/lucene-index/src/merge_policy/log.rs::LogMergePolicy
 index/MappedMultiFields	ported	crates/lucene-index/src/merge.rs::merge_postings
 index/MappingMultiPostingsEnum	ported	crates/lucene-index/src/merge.rs::merge_postings
-index/MergePolicy	partial	crates/lucene-index/src/merge_policy.rs::MergePolicyConfig -- M7: no pluggable MergePolicy: only TieredMergePolicy decisions (plus soft-deletes retention); no `findFullFlushMerges` (merge-on-commit/refresh), `useCompoundFile`, `OneMerge.reorder`/`wrapForMerge`
+index/MergePolicy	partial	crates/lucene-index/src/merge_policy/api.rs::MergePolicy -- M7: `OneMerge` carries no `reorder`/`wrapForMerge` hooks (a `OneMergeWrappingMergePolicy` wrapper rewrites the merge itself), and no `infoStream` messages
 index/MergeRateLimiter	todo:M7	per-merge IO rate limiting (ConcurrentMergeScheduler auto-throttle)
 index/MergeScheduler	partial	crates/lucene-index/src/concurrent_writer.rs::run_merges -- M7: no pluggable scheduler: merges run synchronously inside `commit`/`force_merge` or on the thread calling `run_merges`
 index/MergeState	ported	crates/lucene-index/src/merge.rs::build_doc_id_maps
-index/MergeTrigger	not-needed	enum argument naming what asked MergePolicy.findMerges to run; this port triggers merges only from commit/force_merge and TieredMergePolicy decisions do not read it.
+index/MergeTrigger	ported	crates/lucene-index/src/merge_policy/api.rs::MergeTrigger
 index/MultiBits	todo:M7	live docs concatenated across a composite reader's leaves
 index/MultiDocValues	partial	crates/lucene-search/src/ordinal_map.rs::OrdinalMap -- M7: only the SortedSet/Sorted ordinal mapping (`OrdinalMap`) exists; no composite `getNumericValues`/`getBinaryValues`/`getNormValues`/`getSortedValues`/`getSortedSetValues` views over a reader
 index/MultiFields	partial	crates/lucene-index/src/merge.rs::merge_postings -- M7: the field union across segments exists only inside merging; no top-level `Fields` view over a composite reader
@@ -429,14 +429,14 @@ index/MultiReader	todo:M7	composite reader over several independent readers/inde
 index/MultiSorter	ported	crates/lucene-index/src/merge.rs::sorted_doc_order
 index/MultiTerms	partial	crates/lucene-index/src/merge.rs::merge_postings -- M7: merged term dictionary exists only inside merging; no public `MultiTerms.getTerms(reader, field)` view (parity.md: "No `MultiTerms`/composite leaf view")
 index/MultiTermsEnum	partial	crates/lucene-index/src/merge.rs::merge_postings -- M7: k-way term merge exists only inside merging (and `OrdinalMap::build`); no public merged `TermsEnum` over a reader
-index/NoDeletionPolicy	ported	crates/lucene-index/src/index_file_deleter.rs::DeletionPolicy
-index/NoMergePolicy	ported	crates/lucene-index/src/index_writer.rs::set_merge_policy
+index/NoDeletionPolicy	ported	crates/lucene-index/src/deletion_policy.rs::NoDeletionPolicy
+index/NoMergePolicy	ported	crates/lucene-index/src/merge_policy/api.rs::NoMergePolicy
 index/NoMergeScheduler	ported	crates/lucene-index/src/index_writer.rs::set_merge_policy
 index/NormValuesWriter	ported	crates/lucene-index/src/index_writer.rs::build_norms_output
 index/NumericDocValues	ported	crates/lucene-codecs/src/doc_values.rs::NumericReader
 index/NumericDocValuesFieldUpdates	ported	crates/lucene-index/src/field_updates.rs::NumericFieldUpdates
 index/NumericDocValuesWriter	ported	crates/lucene-index/src/index_writer.rs::build_numeric_doc_values_output
-index/OneMergeWrappingMergePolicy	todo:M7	merge policy wrapping each OneMerge the delegate returns
+index/OneMergeWrappingMergePolicy	ported	crates/lucene-index/src/merge_policy/filter.rs::OneMergeWrappingMergePolicy
 index/OrdTermState	ported	crates/lucene-codecs/src/terms_dict.rs::seek_ord
 index/OrdinalMap	ported	crates/lucene-search/src/ordinal_map.rs::OrdinalMap
 index/ParallelCompositeReader	todo:M7	composite reader joining parallel indexes field-wise
@@ -444,7 +444,7 @@ index/ParallelLeafReader	todo:M7	leaf reader joining parallel indexes field-wise
 index/ParallelPostingsArray	ported	crates/lucene-index/src/inverter.rs::FieldInverter
 index/PendingDeletes	ported	crates/lucene-index/src/deletes.rs::apply_deletes
 index/PendingSoftDeletes	ported	crates/lucene-search/src/soft_deletes.rs::effective_live_docs
-index/PersistentSnapshotDeletionPolicy	todo:M7	snapshot deletion policy whose snapshots persist in the directory across restarts
+index/PersistentSnapshotDeletionPolicy	ported	crates/lucene-index/src/deletion_policy.rs::PersistentSnapshotDeletionPolicy
 index/PointValues	ported	crates/lucene-codecs/src/points.rs::PointsField
 index/PointValuesWriter	ported	crates/lucene-index/src/index_writer.rs::build_points_output
 index/PostingsEnum	ported	crates/lucene-codecs/src/postings.rs::LazyDocsCursor
@@ -476,7 +476,7 @@ index/SingletonSortedSetDocValues	ported	crates/lucene-codecs/src/doc_values.rs:
 index/SlowCodecReaderWrapper	todo:M7	LeafReader-to-CodecReader adapter used by addIndexes(CodecReader...)
 index/SlowCompositeCodecReaderWrapper	todo:M7	merged CodecReader view over several readers, used by addIndexes and OneMerge.reorder
 index/SlowImpactsEnum	not-needed	adapter presenting plain postings through the ImpactsEnum API with a trivial one-level bound; Rust scorers take the no-impacts path directly (PostingsFlags::FreqsNoImpacts).
-index/SnapshotDeletionPolicy	partial	crates/lucene-index/src/index_writer.rs::hold_commit -- M7: a commit's files can be pinned by generation and released (`release_files`), but there is no snapshot()/release()/getSnapshots policy object; `index_file_deleter.rs` says it is not modelled
+index/SnapshotDeletionPolicy	ported	crates/lucene-index/src/deletion_policy.rs::SnapshotDeletionPolicy
 index/SoftDeletesDirectoryReaderWrapper	ported	crates/lucene-search/src/soft_deletes.rs::effective_live_docs
 index/SoftDeletesRetentionMergePolicy	ported	crates/lucene-index/src/index_writer.rs::SoftDeletesRetention
 index/SortFieldProvider	partial	crates/lucene-index/src/segment_info.rs::read_sort_field -- M7: all four providers are read; the writer emits only provider `SortField` with type `LONG` (numeric index sorts)
@@ -497,7 +497,7 @@ index/StoredFieldDataInput	not-needed	lazy DataInput view handed to a StoredFiel
 index/StoredFieldVisitor	ported	crates/lucene-codecs/src/stored_fields.rs::StoredFieldVisitor
 index/StoredFields	ported	crates/lucene-search/src/directory_reader.rs::stored_document
 index/StoredFieldsConsumer	ported	crates/lucene-index/src/segment_writer.rs::write_stored_only_segment_files
-index/TemporalMergePolicy	todo:M7	time-window merge policy for time-series indexes
+index/TemporalMergePolicy	ported	crates/lucene-index/src/merge_policy/temporal.rs::TemporalMergePolicy
 index/Term	ported	crates/lucene-index/src/buffered_updates.rs::Term
 index/TermState	ported	crates/lucene-codecs/src/blocktree.rs::SeekedTerm
 index/TermStates	ported	crates/lucene-search/src/multi_segment.rs::TermStates
