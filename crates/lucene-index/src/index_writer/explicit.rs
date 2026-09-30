@@ -51,9 +51,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
-    per_field_codec_suffix, DocValuesFieldConfig, DocumentBuffer, Error, IndexWriter,
-    IndexingConfig, PointsFieldConfig, Result, DOC_VALUES_FORMAT_NAME, PER_FIELD_SUFFIX,
-    POSTINGS_FORMAT_NAME,
+    DocValuesFieldConfig, DocumentBuffer, Error, IndexWriter, IndexingConfig, PointsFieldConfig,
+    Result, DOC_VALUES_FORMAT_NAME, PER_FIELD_SUFFIX, POSTINGS_FORMAT_NAME,
 };
 use crate::segment_infos::SegmentCommitInfo;
 use crate::segment_writer;
@@ -433,12 +432,7 @@ impl IndexingConfig {
                     values,
                 })
                 .collect();
-            Some(postings_writer::write_fields_with_norms(
-                &inputs,
-                &norms_for_impacts,
-                &segment_id,
-                &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
-            )?)
+            Some(self.write_postings_groups(&inputs, &norms_for_impacts, &segment_id)?)
         };
 
         // Norms: a column for every present indexed field with norms, dense
@@ -570,14 +564,21 @@ impl IndexingConfig {
             .map(|f| {
                 let mut f = f.clone();
                 f.attributes.retain(|(k, _)| !k.starts_with("PerField"));
-                if postings_fields.contains(&f.number) {
+                let postings_suffix = postings_output.as_ref().and_then(|groups| {
+                    groups
+                        .iter()
+                        .find(|g| g.field_numbers.contains(&f.number))
+                        .map(|g| g.suffix)
+                });
+                if let (true, Some(suffix)) = (postings_fields.contains(&f.number), postings_suffix)
+                {
                     f.attributes.push((
                         "PerFieldPostingsFormat.format".to_string(),
                         POSTINGS_FORMAT_NAME.to_string(),
                     ));
                     f.attributes.push((
                         "PerFieldPostingsFormat.suffix".to_string(),
-                        PER_FIELD_SUFFIX.to_string(),
+                        suffix.to_string(),
                     ));
                 }
                 if f.doc_values_type != DocValuesType::None {
@@ -648,6 +649,10 @@ impl IndexingConfig {
         }
         if let Some(output) = &vectors_output {
             record(IndexWriter::write_vector_files(dir, segment_name, output)?);
+        }
+        if self.use_compound_file {
+            flushed.pending_sync =
+                segment_writer::create_compound_file(dir, segment_name, &mut flushed.info)?;
         }
         segment_writer::seal_flushed_segment(dir, segment_name, flushed).map_err(Error::from)
     }

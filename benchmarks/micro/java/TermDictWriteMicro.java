@@ -37,8 +37,9 @@ import org.apache.lucene.util.Version;
  * <p>Every term is a singleton ({@code docFreq == 1}, {@code IndexOptions.DOCS}), so the postings
  * writer emits no {@code .doc} bytes and what is measured is the term dictionary: block splitting,
  * suffix compression, the trie, and {@code encodeTerm}. For these inputs both engines write the
- * same bytes ({@code crates/lucene-codecs/tests/blocktree_writer_identity.rs}), so this is a
- * comparison of identical work.
+ * same bytes -- suffix compression and the zigzag singleton branch included ({@code
+ * crates/lucene-codecs/tests/blocktree_byte_identity_fixture.rs}) -- so this is a comparison of
+ * identical work.
  *
  * <p>Emits {@code case<TAB>ns_per_term<TAB>terms}.
  */

@@ -129,8 +129,22 @@ the skipper path, range relations, feature, distance feature) in
 ### T7.3 — Similarities, bit-for-bit
 ### T7.4 — The remaining core queries and comparators, in the scorer tree
 ### T7.5 — Per-field formats, read and write
+- Delivered 2026-09-30: `PerFieldPostingsFormat` routing -- `IndexWriter::set_postings_format_for_field` sends fields to their own `Lucene104PostingsFormat(min, max)` files; flush, merge (`PerFieldMergeState`), buffered deletes and `check_index` read multi-format segments (`GenPerFieldFormats`, `VerifyPerFieldFormats`). Doc-values write routing is still single-format.
+
 ### T7.6 — Scalar-quantized vectors
 ### T7.7 — Writer gaps: compound segments, string index sorts, write lock
+- Delivered 2026-09-30: the term-dictionary writer is byte-identical to Lucene -- `.tim` suffix compression (LZ4, LOWERCASE_ASCII) and `encodeTerm`'s zigzag singleton delta (`GenBlockTreeSuffixCompression`).
+
+- Delivered 2026-09-30: a term with more than `u32::MAX` occurrences is walked like any other (`wire_count` no longer caps it); only whole-term materialising readers refuse a stream past `u32::MAX` entries.
+
+- Delivered 2026-09-30: doc-values `writeValues`' `doBlocks` split (per-16384-value widths), byte-identical on `GenDocValuesVaryingBpv`.
+
+- Delivered 2026-09-30: `BEST_COMPRESSION` stored fields byte-identical to Lucene -- a port of zlib's `deflate` with the preset dictionary (`deflater.rs`, `GenStoredFieldsDeflate`).
+
+- Delivered 2026-09-30: points flush and merge through the byte-identical `BkdWriter` (real `maxDoc`, N-dimension merges via `add`/`finish`); `GenPoints`' flush reproduced byte for byte.
+
+- Delivered 2026-09-30: compound segments -- flushes honour `useCompoundFile` (this writer defaults it to `false`), merges `MergePolicy.useCompoundFile` (`noCFSRatio`, `maxCFSSegmentSizeMB`).
+
 ### T7.8 — `StandardTokenizer` and the attribute model · delivered 2026-09-30, two rows partial
 
 `crates/lucene-analysis` is now Lucene's streaming model: `TokenStream`/
@@ -162,8 +176,12 @@ Lucene, then optimisation to a ratio of at least 1.0.
 - [ ] Every new query and similarity matches Lucene's hits and scores
       bit for bit on a generated fixture, and is no slower than Lucene on its
       benchmark.
-- [ ] Real Lucene reads a Rust-written index using two postings formats and a
-      compound segment (`verify-write-path.sh`).
+- [x] Real Lucene reads a Rust-written index using two postings formats and a
+      compound segment (`verify-write-path.sh`). *2026-09-30: the
+      `per-field-formats` case (`VerifyPerFieldFormats`: two
+      `Lucene104PostingsFormat` instances in one segment) and the
+      `compound-segments` case (`VerifyCompoundSegments`: flushed and merged
+      `.cfs`) pass with Lucene 10.5.0's CheckIndex, 30/30 in all.*
 - [ ] `StandardTokenizer` agrees with Lucene token for token on the UAX#29
       conformance tests and a large corpus sample.
 

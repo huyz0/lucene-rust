@@ -804,7 +804,11 @@ mod tests {
         // in Java too). A narrow range makes the root cell
         // `CELL_CROSSES_QUERY`, which is the branch that decodes the block.
         let footer_start = kdd.len() - lucene_store::codec_util::FOOTER_LENGTH;
-        let header_end = 60; // past `check_index_header`'s magic+name+version+id+suffix prefix
+        // The `.kdd` index header: magic (4) + `"Lucene90PointsFormatData"`
+        // (1 + 24) + version (4) + id (16) + empty suffix (1). Scrambling from
+        // the first leaf byte on corrupts its point count, which no leaf
+        // layout can decode past.
+        let header_end = 50;
         for b in kdd[header_end..footer_start].iter_mut() {
             *b = 0xFF;
         }

@@ -53,13 +53,13 @@
 //! - **No `connectComponents`.** Java's `finish()` has it commented out
 //!   upstream (apache/lucene#14214: "exceptionally expensive"), so the graph a
 //!   current Lucene writes does not have it either.
-//! - **No `FilteredHnswGraphSearcher`.** It is the strategy variant selected
-//!   by `KnnSearchStrategy.Hnsw.useFilteredSearch`, and 10.5.0's
-//!   `DEFAULT_FILTERED_SEARCH_THRESHOLD` is **`0`**, so
-//!   `ratioPassingFilter * 100 < 0` is false for every ratio and no query
-//!   reachable from `KnnFloatVectorQuery` ever selects it. (`main` raised the
-//!   threshold to 60; that is a post-10.5.0 change -- see
-//!   `docs/sweep/m2/c18-version-audit.md`.)
+//! - **`FilteredHnswGraphSearcher` is a method too**:
+//!   [`HnswGraphSearcher::search_filtered`], chosen by
+//!   `crate::hnsw_vectors::search_with` when `KnnSearchStrategy.Hnsw`'s
+//!   `filteredSearchThreshold` exceeds the percentage of the graph the filter
+//!   passes. 10.5.0's `DEFAULT_FILTERED_SEARCH_THRESHOLD` is **`0`**, so only
+//!   an explicit strategy reaches it (`main` raised the default to 60 after
+//!   10.5.0 -- see `docs/sweep/m2/c18-version-audit.md`).
 //! - **`SeededHnswGraphSearcher` is a method, not a class.**
 //!   [`HnswGraphSearcher::search_seeded`] is Java's whole seeded searcher:
 //!   the class exists there only to override `findBestEntryPoint` with a

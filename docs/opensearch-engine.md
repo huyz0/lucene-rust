@@ -139,8 +139,6 @@ Remote-backed storage stays refused, because its upload listener asks for an
   run inside commits, not on a merge scheduler, so `_stats` reports no merge
   activity, and a big merge does not trigger an early flush. That flush is not
   needed, because the merged segment is already committed.
-- **Segments are never compound.** The Rust writer writes non-compound
-  segments only (it reads compound ones). The result is more files per segment.
 - **No infoStream.** Lucene's `IndexWriter` debug log has no counterpart.
 
 ## How it is verified

@@ -1881,6 +1881,20 @@ struct PostingsFileBytes {
     /// The postings codec's per-segment suffix, e.g. `Lucene104_0`, taken
     /// from the `.tim`'s own file name.
     segment_suffix: String,
+    /// `PerFieldPostingsFormat` with more than one format: each group's
+    /// suffix, dictionary files and where its `.doc`/`.pos`/`.pay` start in
+    /// `doc`/`pos`/`pay`, which then hold every group's files concatenated,
+    /// each validated as it was read. Empty for a single-format segment.
+    groups: Vec<PostingsGroupBytes>,
+}
+
+/// One postings format's dictionary of a multi-format segment.
+struct PostingsGroupBytes {
+    suffix: String,
+    tim: lucene_store::directory::Input,
+    tip: lucene_store::directory::Input,
+    tmd: lucene_store::directory::Input,
+    base: [u64; 3],
 }
 
 /// The opened readers over [`PostingsFileBytes`].
@@ -1915,29 +1929,12 @@ fn open_postings_bytes(
     // duplicated here rather than shared since that logic lives in a crate
     // this module has no dependency on (see this module's own top doc
     // comment on why it doesn't build on `lucene-search`).
-    let segment_suffix = tim_name
-        .rsplit_once('_')
-        .map(|(_, tail)| tail)
-        .and_then(|tail| tail.strip_suffix(".tim"))
-        .map(|counter| {
-            // ARITH: `rsplit_once('_')` succeeded and `strip_suffix(".tim")`
-            // succeeded, so `tim_name` is exactly `<stem>_<counter>.tim` and
-            // `len - counter.len() - 4 - 1 == stem.len() >= 0`. `i` is a byte
-            // index `rfind` returned, so `i + 1 <= stem.len()`. Both are char
-            // boundaries because both split on ASCII `_`.
-            #[allow(clippy::arithmetic_side_effects)]
-            let stem = &tim_name[..tim_name.len() - counter.len() - ".tim".len() - 1];
-            // ARITH: `i` is a byte index `rfind` returned, so
-            // `i + 1 <= stem.len()`, and it is a char boundary because the
-            // split is on ASCII `_`.
-            #[allow(clippy::arithmetic_side_effects)]
-            match stem.rfind('_') {
-                Some(i) => format!("{}_{counter}", &stem[i + 1..]),
-                None => counter.to_string(),
-            }
-        })
-        .unwrap_or_default();
+    let segment_suffix = suffix_of(&tim_name, ".tim");
     let open = |name: &str| dir.open(name).map_err(|e| e.to_string());
+    let tmds: Vec<&String> = si.files.iter().filter(|f| f.ends_with(".tmd")).collect();
+    if tmds.len() > 1 {
+        return Some(open_postings_groups(dir, si, &tmds));
+    }
     Some((|| {
         Ok(PostingsFileBytes {
             tim: open(&tim_name)?,
@@ -1947,8 +1944,96 @@ fn open_postings_bytes(
             pos: find(".pos").map(|n| open(n)).transpose()?,
             pay: find(".pay").map(|n| open(n)).transpose()?,
             segment_suffix,
+            groups: Vec::new(),
         })
     })())
+}
+
+/// [`open_postings_bytes`] for a segment with one `.tmd` per postings
+/// format: `PerFieldPostingsFormat.FieldsReader`, every group's header and
+/// footer checked here, their `.doc`/`.pos`/`.pay` concatenated.
+fn open_postings_groups(
+    dir: &dyn Directory,
+    si: &SegmentInfo,
+    tmds: &[&String],
+) -> Result<PostingsFileBytes, String> {
+    let id = &si.id;
+    let err = |e: &dyn std::fmt::Display| e.to_string();
+    let open = |name: &str| dir.open(name).map_err(|e| err(&e));
+    let (mut doc, mut pos, mut pay) = (Vec::new(), Vec::new(), Vec::new());
+    let mut groups = Vec::with_capacity(tmds.len());
+    for tmd_name in tmds {
+        let stem = tmd_name.strip_suffix(".tmd").unwrap_or(tmd_name);
+        let suffix = suffix_of(tmd_name, ".tmd");
+        let file = |ext: &str| format!("{stem}.{ext}");
+        let has = |ext: &str| si.files.contains(&file(ext));
+        let offset = |v: &Vec<u8>| u64::try_from(v.len()).unwrap_or(u64::MAX);
+        let base = [offset(&doc), offset(&pos), offset(&pay)];
+        if has("doc") {
+            let bytes = open(&file("doc"))?;
+            DocInput::open(&bytes, id, &suffix).map_err(|e| err(&e))?;
+            doc.extend_from_slice(&bytes);
+        }
+        if has("pos") {
+            let bytes = open(&file("pos"))?;
+            postings::PosInput::open(&bytes, id, &suffix).map_err(|e| err(&e))?;
+            pos.extend_from_slice(&bytes);
+        }
+        if has("pay") {
+            let bytes = open(&file("pay"))?;
+            postings::PayInput::open(&bytes, id, &suffix).map_err(|e| err(&e))?;
+            pay.extend_from_slice(&bytes);
+        }
+        groups.push(PostingsGroupBytes {
+            tim: open(&file("tim"))?,
+            tip: open(&file("tip"))?,
+            tmd: open(tmd_name)?,
+            suffix,
+            base,
+        });
+    }
+    let owned = |bytes: Vec<u8>| {
+        (!bytes.is_empty()).then_some(lucene_store::directory::Input::Owned(bytes))
+    };
+    let empty = || lucene_store::directory::Input::Owned(Vec::new());
+    Ok(PostingsFileBytes {
+        // Unused: [`PostingsFileBytes::group_handles`] reads `groups`.
+        tim: empty(),
+        tip: empty(),
+        tmd: empty(),
+        doc: owned(doc),
+        pos: owned(pos),
+        pay: owned(pay),
+        segment_suffix: String::new(),
+        groups,
+    })
+}
+
+/// The postings codec suffix embedded in a sub-file's own name.
+fn suffix_of(file_name: &str, ext: &str) -> String {
+    let tim_name = file_name;
+    tim_name
+        .rsplit_once('_')
+        .map(|(_, tail)| tail)
+        .and_then(|tail| tail.strip_suffix(ext))
+        .map(|counter| {
+            // ARITH: `rsplit_once('_')` succeeded and `strip_suffix(".tim")`
+            // succeeded, so `tim_name` is exactly `<stem>_<counter>.tim` and
+            // `len - counter.len() - 4 - 1 == stem.len() >= 0`. `i` is a byte
+            // index `rfind` returned, so `i + 1 <= stem.len()`. Both are char
+            // boundaries because both split on ASCII `_`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let stem = &tim_name[..tim_name.len() - counter.len() - ext.len() - 1];
+            // ARITH: `i` is a byte index `rfind` returned, so
+            // `i + 1 <= stem.len()`, and it is a char boundary because the
+            // split is on ASCII `_`.
+            #[allow(clippy::arithmetic_side_effects)]
+            match stem.rfind('_') {
+                Some(i) => format!("{}_{counter}", &stem[i + 1..]),
+                None => counter.to_string(),
+            }
+        })
+        .unwrap_or_default()
 }
 
 impl PostingsFileBytes {
@@ -1958,6 +2043,9 @@ impl PostingsFileBytes {
         field_infos: &FieldInfos,
         si: &SegmentInfo,
     ) -> Result<PostingsHandles<'_>, String> {
+        if !self.groups.is_empty() {
+            return self.group_handles(commit, field_infos, si);
+        }
         let fields = blocktree::open(
             &self.tim,
             &self.tip,
@@ -1991,6 +2079,37 @@ impl PostingsFileBytes {
             doc_in,
             pos_in,
             pay_in,
+        })
+    }
+
+    /// [`Self::handles`] for a multi-format segment: every group's
+    /// dictionary combined into one, decoding at its group's offsets into
+    /// the concatenated, already-validated `.doc`/`.pos`/`.pay`.
+    fn group_handles(
+        &self,
+        commit: &SegmentCommitInfo,
+        field_infos: &FieldInfos,
+        si: &SegmentInfo,
+    ) -> Result<PostingsHandles<'_>, String> {
+        let mut opened = Vec::with_capacity(self.groups.len());
+        for g in &self.groups {
+            let fields = blocktree::open(
+                &g.tim,
+                &g.tip,
+                &g.tmd,
+                field_infos,
+                &commit.segment_id,
+                &g.suffix,
+                si.doc_count,
+            )
+            .map_err(|e| e.to_string())?;
+            opened.push((fields, g.base));
+        }
+        Ok(PostingsHandles {
+            fields: blocktree::BlockTreeFields::combine(opened).map_err(|e| e.to_string())?,
+            doc_in: self.doc.as_deref().map(DocInput::validated),
+            pos_in: self.pos.as_deref().map(postings::PosInput::validated),
+            pay_in: self.pay.as_deref().map(postings::PayInput::validated),
         })
     }
 }
