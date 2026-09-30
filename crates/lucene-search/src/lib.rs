@@ -220,6 +220,7 @@ pub mod points_query;
 pub mod query;
 pub mod query_cache;
 pub mod query_parser;
+pub mod reference_manager;
 pub mod rescorer;
 pub mod similarities;
 pub mod similarity;
@@ -415,6 +416,13 @@ pub enum Error {
     /// a collector replayed after its cache overflowed).
     #[error("{0}")]
     IllegalState(String),
+    /// Java's `AlreadyClosedException` (a reference manager used after
+    /// `close`).
+    #[error("{0}")]
+    AlreadyClosed(String),
+    /// Opening or reopening a [`directory_reader::DirectoryReader`].
+    #[error(transparent)]
+    DirectoryReader(#[from] directory_reader::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

@@ -614,7 +614,7 @@ search/ConstantScoreQuery	ported	crates/lucene-search/src/query.rs::ConstantScor
 search/ConstantScoreScorer	ported	crates/lucene-search/src/exec/leaf.rs::ConstantScorer
 search/ConstantScoreScorerSupplier	ported	crates/lucene-search/src/exec/leaf.rs::ConstantScorer
 search/ConstantScoreWeight	ported	crates/lucene-search/src/exec/leaf.rs::ConstantScorer
-search/ControlledRealTimeReopenThread	todo:M7	NRT reopen thread waiting on indexing generations
+search/ControlledRealTimeReopenThread	ported	crates/lucene-search/src/reference_manager.rs::ControlledRealTimeReopenThread
 search/DenseConjunctionBulkScorer	ported	crates/lucene-search/src/exec/bulk.rs::Bulk
 search/DisiPriorityQueue	ported	crates/lucene-search/src/exec/disjunction.rs::DisiQueue
 search/DisiPriorityQueue2	ported	crates/lucene-search/src/exec/disjunction.rs::DisiQueue
@@ -682,7 +682,7 @@ search/LateInteractionFloatValuesSource	ported	crates/lucene-search/src/values_s
 search/LateInteractionRescorer	ported	crates/lucene-search/src/rescorer.rs::late_interaction_rescorer
 search/LeafCollector	ported	crates/lucene-search/src/collector.rs::LeafCollector
 search/LeafFieldComparator	ported	crates/lucene-search/src/top_field.rs::LeafKey
-search/LiveFieldValues	todo:M7	NRT live field-value cache over ReferenceManager
+search/LiveFieldValues	ported	crates/lucene-search/src/reference_manager.rs::LiveFieldValues
 search/LogOddsFusionQuery	todo:M7	log-odds probability fusion query
 search/LogOddsFusionScorer	todo:M7	log-odds probability fusion scorer
 search/LongValues	ported	crates/lucene-search/src/values_source.rs::LongValues
@@ -729,8 +729,8 @@ search/QueryCachingPolicy	ported	crates/lucene-search/src/query_cache.rs::QueryC
 search/QueryRescorer	ported	crates/lucene-search/src/rescorer.rs::QueryRescorer
 search/QueryVisitor	partial	crates/lucene-search/src/query.rs::Clause -- M7: no visitor API (Query.visit, QueryVisitor.termCollector, per-field filtering); callers match the public Clause enum directly
 search/RangeDocIdStream	ported	crates/lucene-search/src/exec/mod.rs::doc_id_run_end
-search/ReferenceManager	todo:M7	acquire/release/refresh reference manager
-search/RefreshCommitSupplier	todo:M7	commit supplier for searcher refresh
+search/ReferenceManager	ported	crates/lucene-search/src/reference_manager.rs::ReferenceManager
+search/RefreshCommitSupplier	ported	crates/lucene-search/src/reference_manager.rs::RefreshCommitSupplier
 search/RegexpQuery	ported	crates/lucene-search/src/query.rs::RegexpQuery
 search/ReqExclBulkScorer	ported	crates/lucene-search/src/exec/bulk.rs::Bulk
 search/ReqExclScorer	ported	crates/lucene-search/src/exec/req.rs::ReqExclScorer
@@ -745,9 +745,9 @@ search/Scorer	ported	crates/lucene-search/src/exec/mod.rs::Scorer
 search/ScorerSupplier	ported	crates/lucene-search/src/exec/build.rs::Child
 search/ScorerUtil	ported	crates/lucene-search/src/exec/wand.rs::cost_with_min_should_match
 search/ScoringRewrite	todo:M7	SCORING_BOOLEAN_REWRITE / CONSTANT_SCORE_BOOLEAN_REWRITE
-search/SearcherFactory	todo:M7	searcher factory/warm-up hook for managers
-search/SearcherLifetimeManager	todo:M7	versioned searcher lease manager
-search/SearcherManager	todo:M7	NRT searcher refresh/acquire/release manager
+search/SearcherFactory	ported	crates/lucene-search/src/reference_manager.rs::SearcherFactory
+search/SearcherLifetimeManager	ported	crates/lucene-search/src/reference_manager.rs::SearcherLifetimeManager
+search/SearcherManager	partial	crates/lucene-search/src/reference_manager.rs::SearcherManager -- M7: the IndexWriter constructors (DirectoryReader.open(writer, applyAllDeletes, writeAllDeletes)) are not ported: this port's IndexWriter has no NRT reader, so a SearcherManager refreshes from the directory's commits
 search/SeededKnnVectorQuery	partial	crates/lucene-codecs/src/hnsw.rs::search_seeded -- M7: seeded graph walk exists (used by the re-entry pass), but the query that turns a seed Query's hits into entry points is not ported
 search/SegmentCacheable	partial	crates/lucene-search/src/exec/cache.rs::SegmentQueryCache -- M7: cacheability decided per clause kind; no per-leaf isCacheable check (e.g. DocValues.isCacheable for fields with doc-values updates)
 search/SimpleCollector	ported	crates/lucene-search/src/collector.rs::ScoringCollector
