@@ -649,6 +649,10 @@ impl IndexingConfig {
         if let Some(output) = &vectors_output {
             record(IndexWriter::write_vector_files(dir, segment_name, output)?);
         }
+        if self.use_compound_file {
+            flushed.pending_sync =
+                segment_writer::create_compound_file(dir, segment_name, &mut flushed.info)?;
+        }
         segment_writer::seal_flushed_segment(dir, segment_name, flushed).map_err(Error::from)
     }
 }
