@@ -229,9 +229,103 @@ pub(crate) struct DisjunctionScorer<'a> {
     /// Two-phase sub-scorers on the current document not yet verified.
     unverified: Vec<usize>,
     scratch: Vec<usize>,
+    /// `DisjunctionMaxScorer.disjunctionBlockPropagator`: set only under
+    /// `TOP_SCORES`.
+    propagator: Option<BlockBoundaryPropagator>,
+}
+
+/// A clause a [`BlockBoundaryPropagator`] reads through.
+pub(crate) trait Clause {
+    fn scorer(&mut self) -> &mut dyn Scorer;
+}
+
+impl Clause for Disi<'_> {
+    fn scorer(&mut self) -> &mut dyn Scorer {
+        &mut *self.scorer
+    }
+}
+
+/// `DisjunctionScoreBlockBoundaryPropagator`: block boundaries for a dis-max
+/// under `TOP_SCORES`. The clauses are ordered by their global maximum score
+/// (then cost); once the minimum competitive score exceeds a clause's global
+/// maximum, that clause (and every lower one) no longer bounds the block, so
+/// the boundary follows the "lead" clause and the stronger ones only.
+#[derive(Debug)]
+pub(crate) struct BlockBoundaryPropagator {
+    /// Indices into the scorer's sub-scorers, ascending by global max score.
+    order: Vec<usize>,
+    max_scores: Vec<f32>,
+    lead: usize,
+}
+
+impl BlockBoundaryPropagator {
+    pub(crate) fn new<C: Clause>(subs: &mut [C]) -> Result<Self> {
+        let mut keyed = Vec::with_capacity(subs.len());
+        for (i, w) in subs.iter_mut().enumerate() {
+            let s = w.scorer();
+            s.advance_shallow(0)?;
+            keyed.push((s.max_score(NO_MORE_DOCS)?, s.cost(), i));
+        }
+        // `Arrays.sort` on objects is stable; `Float.compareTo` is a total order.
+        keyed.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        let order: Vec<usize> = keyed.iter().map(|k| k.2).collect();
+        let mut max_scores = Vec::with_capacity(order.len());
+        for &i in &order {
+            max_scores.push(subs[i].scorer().max_score(NO_MORE_DOCS)?);
+        }
+        Ok(Self {
+            order,
+            max_scores,
+            lead: 0,
+        })
+    }
+
+    pub(crate) fn advance_shallow<C: Clause>(&self, subs: &mut [C], target: i32) -> Result<i32> {
+        // Clauses below the lead only propagate.
+        for &i in &self.order[..self.lead] {
+            let s = subs[i].scorer();
+            if s.doc_id() < target {
+                s.advance_shallow(target)?;
+            }
+        }
+        // The lead and the clauses above it bound the block.
+        let lead = subs[self.order[self.lead]].scorer();
+        let lead_doc = lead.doc_id();
+        let mut up_to = lead.advance_shallow(lead_doc.max(target))?;
+        for &i in &self.order[self.lead + 1..] {
+            let s = subs[i].scorer();
+            if s.doc_id() <= target {
+                up_to = up_to.min(s.advance_shallow(target)?);
+            }
+        }
+        // The strongest clauses already beyond `target` end the block before
+        // their next document, keeping them out of its maximum score.
+        for &i in self.order[self.lead + 1..].iter().rev() {
+            let doc = subs[i].scorer().doc_id();
+            if doc > target {
+                up_to = up_to.min(doc - 1);
+            } else {
+                break;
+            }
+        }
+        Ok(up_to)
+    }
+
+    pub(crate) fn set_min_competitive_score(&mut self, min: f32) {
+        while self.lead < self.max_scores.len() - 1 && min > self.max_scores[self.lead] {
+            self.lead += 1;
+        }
+    }
 }
 
 impl<'a> DisjunctionScorer<'a> {
+    /// Installs the [`BlockBoundaryPropagator`], as `DisjunctionMaxScorer`
+    /// does under `ScoreMode.TOP_SCORES`.
+    pub(crate) fn with_block_propagator(mut self) -> Result<Self> {
+        self.propagator = Some(BlockBoundaryPropagator::new(&mut self.subs)?);
+        Ok(self)
+    }
+
     pub(crate) fn new(scorers: Vec<BoxScorer<'a>>, combine: Combine, needs_scores: bool) -> Self {
         debug_assert!(scorers.len() >= 2);
         let subs: Vec<Disi<'a>> = scorers.into_iter().map(Disi::new).collect();
@@ -268,6 +362,7 @@ impl<'a> DisjunctionScorer<'a> {
             unverified: Vec::with_capacity(subs.len()),
             scratch: Vec::with_capacity(subs.len()),
             subs,
+            propagator: None,
         }
     }
 
@@ -399,6 +494,9 @@ impl Scorer for DisjunctionScorer<'_> {
     }
 
     fn advance_shallow(&mut self, target: i32) -> Result<i32> {
+        if let Some(p) = &self.propagator {
+            return p.advance_shallow(&mut self.subs, target);
+        }
         let mut min = NO_MORE_DOCS;
         for w in &mut self.subs {
             if w.scorer.doc_id() <= target {
@@ -457,6 +555,9 @@ impl Scorer for DisjunctionScorer<'_> {
     fn set_min_competitive_score(&mut self, min: f32) -> Result<()> {
         // `DisjunctionSumScorer` inherits `Scorable`'s no-op; a dismax with no
         // tie-breaker is bounded by its best clause alone.
+        if let Some(p) = &mut self.propagator {
+            p.set_min_competitive_score(min);
+        }
         if let Combine::Max(tie) = self.combine {
             if tie == 0.0 {
                 for w in &mut self.subs {

@@ -271,11 +271,14 @@ fn build(node: &Node, mode: Mode, top_level: bool) -> Option<BoxScorer<'static>>
             match subs.len() {
                 0 => None,
                 1 => subs.pop(),
-                _ => Some(Box::new(DisjunctionScorer::new(
-                    subs,
-                    Combine::Max(*tie),
-                    mode.needs_scores(),
-                ))),
+                _ => {
+                    let d = DisjunctionScorer::new(subs, Combine::Max(*tie), mode.needs_scores());
+                    Some(Box::new(if mode == Mode::TopScores {
+                        d.with_block_propagator().unwrap()
+                    } else {
+                        d
+                    }))
+                }
             }
         }
         Node::Bool {
@@ -1454,7 +1457,11 @@ mod fixture {
                                 .unwrap()
                         })
                         .collect();
-                    Box::new(DisjunctionScorer::new(subs, Combine::Max(tie), true))
+                    Box::new(
+                        DisjunctionScorer::new(subs, Combine::Max(tie), true)
+                            .with_block_propagator()
+                            .unwrap(),
+                    )
                 };
                 // A walk: steps and jumps, bounds read on the way, and a
                 // threshold from half way.
@@ -1842,4 +1849,56 @@ fn similarity_bounds_prune_soundly() {
         crate::test_only_maxscore_block_skip_counter::count() > 0,
         "the bounds skipped nothing: the test proves nothing about them"
     );
+}
+
+impl super::disjunction::Clause for Fake {
+    fn scorer(&mut self) -> &mut dyn Scorer {
+        self
+    }
+}
+
+/// `DisjunctionScoreBlockBoundaryPropagator`: clauses ordered by their
+/// global maximum, block bounds from the lead clause up, the stronger
+/// clauses' next documents ending a block early, and the lead moving past
+/// every clause the minimum competitive score has outgrown.
+#[test]
+fn block_boundary_propagator_follows_the_lead_clause() {
+    use super::disjunction::BlockBoundaryPropagator;
+    let leaf = |hits: &[(i32, f32)]| {
+        Fake::new(Leaf::new(
+            hits.to_vec(),
+            hits.iter().map(|h| h.0).collect(),
+            false,
+        ))
+    };
+    // Given strongest first; the propagator orders them weakest first.
+    let mut subs = vec![
+        leaf(&[(30, 3.0)]),
+        leaf(&[(2, 2.0), (50, 2.0)]),
+        leaf(&[(0, 1.0), (20, 1.0), (40, 1.0)]),
+    ];
+    let mut p = BlockBoundaryPropagator::new(&mut subs).unwrap();
+    assert_eq!(p.advance_shallow(&mut subs, 0).unwrap(), BLOCK - 1);
+    subs[0].next_doc().unwrap();
+    subs[1].next_doc().unwrap();
+    // The strongest clause is on 30: the block ends before it.
+    assert_eq!(p.advance_shallow(&mut subs, 24).unwrap(), 29);
+    assert_eq!(p.advance_shallow(&mut subs, 10).unwrap(), 15);
+
+    // Above the weakest clause's maximum: the middle one leads, the weakest
+    // is only propagated to.
+    p.set_min_competitive_score(1.5);
+    subs[2].shallow = 0;
+    assert_eq!(p.advance_shallow(&mut subs, 24).unwrap(), 29);
+    assert_eq!(subs[2].shallow, 24);
+    subs[1].next_doc().unwrap();
+    // The lead advances shallowly to its own document when that is beyond.
+    assert_eq!(p.advance_shallow(&mut subs, 24).unwrap(), 29);
+    assert_eq!(subs[1].shallow, 50);
+
+    // Above both: the strongest leads alone, and never past the last clause.
+    p.set_min_competitive_score(2.5);
+    p.set_min_competitive_score(10.0);
+    assert_eq!(p.advance_shallow(&mut subs, 24).unwrap(), 31);
+    assert_eq!(subs[0].shallow, 30);
 }

@@ -145,10 +145,15 @@ pub(crate) fn build<'a>(
                     return Ok(match terms.len() {
                         0 => None,
                         1 => terms.pop().map(|t| -> super::BoxScorer<'a> { Box::new(t) }),
-                        _ => Some(Box::new(super::term_dismax::TermDisMaxScorer::new(
-                            terms,
-                            d.tie_breaker,
-                        ))),
+                        _ => {
+                            let scorer =
+                                super::term_dismax::TermDisMaxScorer::new(terms, d.tie_breaker);
+                            Some(Box::new(if mode == Mode::TopScores {
+                                scorer.with_block_propagator()?
+                            } else {
+                                scorer
+                            }))
+                        }
                     });
                 }
             }
@@ -161,11 +166,18 @@ pub(crate) fn build<'a>(
             Ok(match subs.len() {
                 0 => None,
                 1 => subs.pop(),
-                _ => Some(Box::new(DisjunctionScorer::new(
-                    subs,
-                    Combine::Max(d.tie_breaker),
-                    mode.needs_scores(),
-                ))),
+                _ => {
+                    let scorer = DisjunctionScorer::new(
+                        subs,
+                        Combine::Max(d.tie_breaker),
+                        mode.needs_scores(),
+                    );
+                    Some(Box::new(if mode == Mode::TopScores {
+                        scorer.with_block_propagator()?
+                    } else {
+                        scorer
+                    }))
+                }
             })
         }
         Clause::MatchAllDocs(m) => {
