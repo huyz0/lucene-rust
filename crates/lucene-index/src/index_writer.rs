@@ -1140,7 +1140,7 @@ impl IndexingConfig {
             // `SegmentInfo.maxDoc()`, never from the stored-fields file. It is
             // also what says whether the segment is compound.
             let si_bytes = dir.open(&format!("{name}.si"))?.to_vec();
-            let si = segment_info::parse(&si_bytes, &sci.segment_id)?;
+            let si = segment_info::parse_for_codec(&si_bytes, &sci.segment_id, &sci.codec_name)?;
 
             // `SegmentCoreReaders`: a compound segment -- every segment real
             // Lucene flushes by default -- keeps its codec files inside
@@ -2477,9 +2477,10 @@ fn count_soft_deletes(
     soft: &str,
     retention: Option<&SoftDeletesRetention>,
 ) -> Result<Option<i32>> {
-    let si = segment_info::parse(
+    let si = segment_info::parse_for_codec(
         &dir.open(&format!("{}.si", sci.segment_name))?,
         &sci.segment_id,
+        &sci.codec_name,
     )?;
     let compound = if si.is_compound_file {
         Some(CompoundReader::open(
@@ -4016,7 +4017,7 @@ impl<'d> IndexWriter<'d> {
             .chain(self.flushed_segments.iter());
         for sci in existing_segments {
             let si_bytes = self.dir.open(&format!("{}.si", sci.segment_name))?.to_vec();
-            let si = segment_info::parse(&si_bytes, &sci.segment_id)?;
+            let si = segment_info::parse_for_codec(&si_bytes, &sci.segment_id, &sci.codec_name)?;
             let congruent = match &si.index_sort {
                 None => false,
                 Some(existing) => {
@@ -4381,9 +4382,10 @@ impl<'d> IndexWriter<'d> {
             let max_doc = match self.segment_max_docs.get(&sci.segment_name) {
                 Some(&n) => n,
                 None => {
-                    let si = segment_info::parse(
+                    let si = segment_info::parse_for_codec(
                         &self.dir.open(&format!("{}.si", sci.segment_name))?,
                         &sci.segment_id,
+                        &sci.codec_name,
                     )?;
                     let n = usize::try_from(si.doc_count).unwrap_or(0);
                     self.segment_max_docs.insert(sci.segment_name.clone(), n);
@@ -5334,7 +5336,8 @@ impl<'d> IndexWriter<'d> {
                 None => {
                     let si_bytes = self.dir.open(&format!("{}.si", sci.segment_name))?;
                     let v = to_segment_infos_version(
-                        segment_info::parse(&si_bytes, &sci.segment_id)?.version,
+                        segment_info::parse_for_codec(&si_bytes, &sci.segment_id, &sci.codec_name)?
+                            .version,
                     );
                     self.segment_versions.insert(sci.segment_name.clone(), v);
                     v
@@ -7609,7 +7612,7 @@ impl<'d> IndexWriter<'d> {
         let mut stats = Vec::with_capacity(self.segment_infos.segments.len());
         for sci in &self.segment_infos.segments {
             let si_bytes = self.dir.open(&format!("{}.si", sci.segment_name))?.to_vec();
-            let si = segment_info::parse(&si_bytes, &sci.segment_id)?;
+            let si = segment_info::parse_for_codec(&si_bytes, &sci.segment_id, &sci.codec_name)?;
             let size_bytes = merge_policy::segment_byte_size(self.dir, &si);
             stats.push(merge_policy::SegmentStat {
                 name: sci.segment_name.clone(),
@@ -8338,7 +8341,7 @@ impl<'d> IndexWriter<'d> {
         let mut total = 0usize;
         for sci in &self.segment_infos.segments {
             let si_bytes = self.dir.open(&format!("{}.si", sci.segment_name))?.to_vec();
-            let si = segment_info::parse(&si_bytes, &sci.segment_id)?;
+            let si = segment_info::parse_for_codec(&si_bytes, &sci.segment_id, &sci.codec_name)?;
             // ARITH: `segment_info::parse` rejects a negative `doc_count`, so
             // each term is in `0..=i32::MAX`, and `segments_N`'s own parse
             // rejects a segment count above the number of bytes left in that
@@ -8954,7 +8957,7 @@ impl IndexingConfig {
     ) -> Result<OpenedDeleteSegment> {
         let suffix = per_field_codec_suffix(POSTINGS_FORMAT_NAME);
         let si_bytes = dir.open(&format!("{}.si", sci.segment_name))?;
-        let si = segment_info::parse(&si_bytes, &sci.segment_id)?;
+        let si = segment_info::parse_for_codec(&si_bytes, &sci.segment_id, &sci.codec_name)?;
         let max_doc = si.doc_count as usize;
 
         let live_docs = if sci.del_gen >= 0 {
