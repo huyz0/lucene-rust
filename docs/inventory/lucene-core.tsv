@@ -598,7 +598,7 @@ search/BoostQuery	ported	crates/lucene-search/src/query.rs::BoostQuery
 search/BulkScorer	ported	crates/lucene-search/src/exec/bulk.rs::Bulk
 search/ByteVectorSimilarityQuery	todo:M7	byte-vector similarity-threshold query
 search/ByteVectorSimilarityValuesSource	todo:M7	byte-vector similarity DoubleValuesSource
-search/CachingCollector	todo:M7	caching/replaying collector
+search/CachingCollector	ported	crates/lucene-search/src/collectors.rs::CachingCollector
 search/CheckedIntConsumer	not-needed	Java functional interface existing only to let a lambda throw checked exceptions.
 search/CollectionStatistics	ported	crates/lucene-search/src/similarities.rs::CollectionStatistics
 search/CollectionTerminatedException	not-needed	Java control-flow exception for early termination; Rust collection paths stop by return value (weight_count.rs, terminate.rs).
@@ -666,7 +666,7 @@ search/HitQueue	ported	crates/lucene-search/src/collector.rs::TopDocsCollector
 search/HnswQueueSaturationCollector	todo:M7	patience-based early-exit KNN collector
 search/ImpactsDISI	ported	crates/lucene-search/src/bulk_scorer.rs::TermLeg
 search/IndexOrDocValuesQuery	partial	crates/lucene-search/src/doc_value_query.rs::plan_index_or_doc_values -- M7: planner exists but has no caller; the doc-values side never runs in the scorer tree (only the points side is sent)
-search/IndexSearcher	partial	crates/lucene-search/src/multi_segment.rs::search_boolean_query_multi_segment_maxscore -- M7: no IndexSearcher object: search/count/explain are free functions over OpenSegment; explain only for term, phrase and flat term-only boolean (parity row 300); `setSimilarity` is search_boolean_query_multi_segment_with_similarity (term, phrase, boolean; fuzzy/span/multi-phrase scoring clauses refused under a non-default similarity), not the FFI; Fuzzy/MultiPhrase/span/KNN run outside the tree
+search/IndexSearcher	partial	crates/lucene-search/src/index_searcher.rs::IndexSearcher -- M7: explain is per segment (a multi-segment IndexSearcher refuses it: explain_clause takes no reader-wide statistics) and only for term, phrase and flat term-only boolean (parity row 300); searchAfter, search(query, n, sort), timeouts and the query cache policy are not methods of the object (free functions in multi_segment.rs/top_field.rs); fuzzy/span/multi-phrase scoring clauses refused under a non-default similarity; Fuzzy/MultiPhrase/span/KNN run outside the tree
 search/IndexSortSortedNumericDocValuesRangeQuery	todo:M7	range query exploiting index sort
 search/IndriAndQuery	todo:M7	Indri AND query
 search/IndriAndScorer	todo:M7	Indri AND scorer
@@ -697,8 +697,8 @@ search/MaxNonCompetitiveBoostAttributeImpl	not-needed	AttributeImpl plumbing beh
 search/MaxScoreAccumulator	ported	crates/lucene-search/src/collector.rs::MaxScoreAccumulator
 search/MaxScoreBulkScorer	ported	crates/lucene-search/src/bulk_scorer.rs::MaxScore
 search/MaxScoreCache	ported	crates/lucene-search/src/bulk_scorer.rs::TermLeg
-search/MultiCollector	todo:M7	generic fan-out over several collectors
-search/MultiCollectorManager	todo:M7	collector manager over several managers
+search/MultiCollector	ported	crates/lucene-search/src/collectors.rs::MultiCollector
+search/MultiCollectorManager	ported	crates/lucene-search/src/collectors.rs::MultiCollectorManager
 search/MultiLeafFieldComparator	ported	crates/lucene-search/src/top_field.rs::Leaf
 search/MultiNormsLeafSimScorer	todo:M7	multi-field norms scorer for CombinedFieldQuery
 search/MultiPhraseQuery	partial	crates/lucene-search/src/query.rs::MultiPhraseQuery -- M7: no explicit positions (Builder.add(Term[], int position)); not a scorer-tree leaf (standalone path only, M7 T7.4), not in the plugin query blob
@@ -720,7 +720,7 @@ search/PhraseScorer	ported	crates/lucene-search/src/exec/phrase.rs::PhraseScorer
 search/PhraseWeight	ported	crates/lucene-search/src/exec/phrase.rs::PhraseScorer
 search/PointInSetQuery	partial	crates/lucene-search/src/points_query.rs::search_points_in_set -- M7: single-segment standalone function, one dimension only; not a Clause/scorer-tree leaf
 search/PointRangeQuery	partial	crates/lucene-search/src/exec/build.rs::points_range -- M7: one-dimensional 8-byte (long) ranges only; multi-dimensional and other point widths not ported
-search/PositiveScoresOnlyCollector	todo:M7	collector dropping non-positive scores
+search/PositiveScoresOnlyCollector	ported	crates/lucene-search/src/collectors.rs::PositiveScoresOnlyCollector
 search/PrefixQuery	ported	crates/lucene-search/src/query.rs::PrefixQuery
 search/Pruning	ported	crates/lucene-search/src/top_field.rs::Pruning
 search/Query	ported	crates/lucene-search/src/query.rs::Clause
