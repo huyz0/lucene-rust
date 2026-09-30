@@ -711,6 +711,26 @@ pub(crate) fn global_boolean_stats(
                 }
             }
             Clause::Boost(b) => walk_clause(&b.inner, out),
+            Clause::MultiPhrase(m) => {
+                let mut terms = Vec::new();
+                crate::exec::extended::collect_multi_phrase_terms(m, &mut terms);
+                out.terms
+                    .extend(terms.into_iter().map(|(f, t)| (f, t, None)));
+            }
+            // The extended queries' own terms, their sub-clauses, and the
+            // multi-term queries whose rewrite must see every segment.
+            Clause::Extended(e) => {
+                let mut terms = Vec::new();
+                crate::exec::extended::collect_terms(e, &mut terms);
+                out.terms
+                    .extend(terms.into_iter().map(|(f, t)| (f, t, None)));
+                if let crate::extended_query::ExtendedQuery::MultiTerm(m) = &**e {
+                    out.multi_term.push(m.clone());
+                }
+                for child in e.children() {
+                    walk_clause(child, out);
+                }
+            }
             // Everything else either does not score from term statistics
             // (`ConstantScore`, points, doc-values ranges) or expands to terms
             // and scores a flat `1.0` per match (`Wildcard`, `Prefix`,
@@ -740,6 +760,18 @@ pub(crate) fn global_boolean_stats(
     let mut collected = Collected::default();
     walk(query, &mut collected);
     let mut map = crate::GlobalStats::new();
+    // `TermCollectingRewrite.collectTerms` across every leaf, then the
+    // rewritten query's own terms.
+    if !collected.multi_term.is_empty() {
+        let fields: Vec<&lucene_codecs::blocktree::BlockTreeFields> =
+            segments.iter().map(|s| s.fields).collect();
+        for m in std::mem::take(&mut collected.multi_term) {
+            if let Some(rewritten) = crate::exec::extended::rewrite_multi_term(&fields, &m)? {
+                walk_clause(&rewritten, &mut collected);
+                map.insert_extended_rewrite(format!("{m:?}"), rewritten);
+            }
+        }
+    }
     for (field, term, doc_freq) in collected.terms {
         if let Some((mut stats, states)) = global_term_stats_states(segments, &field, &term)? {
             // A term carrying its own `TermStates` scores from their `docFreq`
@@ -768,6 +800,8 @@ struct Collected {
     /// `(field, term, the term's own docFreq if it carries one)`.
     terms: Vec<(String, Vec<u8>, Option<i64>)>,
     fuzzy: Vec<crate::FuzzyQuery>,
+    /// Multi-term queries under a rewrite that needs every segment's terms.
+    multi_term: Vec<crate::extended_query::MultiTermQuery>,
 }
 
 /// Multi-segment sibling of [`crate::search_term_query_scored`]: runs `query`

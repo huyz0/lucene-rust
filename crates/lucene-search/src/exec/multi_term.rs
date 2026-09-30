@@ -41,18 +41,39 @@ pub(crate) fn multi_term<'a>(
     ) {
         return Ok(None);
     }
-    let Some(doc_in) = ctx.doc_in else {
+    if ctx.doc_in.is_none() {
         return Ok(None);
-    };
-    let Some((field, mut terms, _)) = crate::expanded_terms(ctx.fields, clause)? else {
+    }
+    let Some((field, terms, _)) = crate::expanded_terms(ctx.fields, clause)? else {
         // The field is not in this segment.
         return Ok(Some(None));
     };
+    constant_score_terms(ctx, &field, terms, boost, mode, true).map(Some)
+}
+
+/// `AbstractMultiTermQueryConstantScoreWrapper` over one segment's expanded
+/// `terms` (term order): up to 16 terms are a constant-scored boolean of
+/// them; past that, `blended` (`MultiTermQueryConstantScoreBlendedWrapper`)
+/// keeps the 16 highest-`docFreq` terms as iterators and ORs the rest into a
+/// bitset, and the plain wrapper (`MultiTermQueryConstantScoreWrapper`, the
+/// `CONSTANT_SCORE_REWRITE`) ORs every term into it.
+pub(crate) fn constant_score_terms<'a>(
+    ctx: &LeafContext<'a>,
+    field: &str,
+    mut terms: Vec<(Vec<u8>, lucene_codecs::blocktree::SeekedTerm)>,
+    boost: f32,
+    mode: Mode,
+    blended: bool,
+) -> Result<Option<BoxScorer<'a>>> {
+    let field = field.to_string();
+    let Some(doc_in) = ctx.doc_in else {
+        return Ok(None);
+    };
     if terms.is_empty() {
-        return Ok(Some(None));
+        return Ok(None);
     }
     let Some(field_terms) = ctx.fields.field(&field) else {
-        return Ok(Some(None));
+        return Ok(None);
     };
     let pe = |e| -> crate::Error { blocktree::Error::Postings(e).into() };
     // `rewriteAsBooleanQuery`: up to 16 terms become `ConstantScoreQuery`
@@ -76,26 +97,62 @@ pub(crate) fn multi_term<'a>(
             })? {
                 // The cached iterator scores the constant itself.
                 Some(CacheResult::Hit(set)) => {
-                    return Ok(Some(Some(Box::new(CachedScorer::constant(
+                    return Ok(Some(Box::new(CachedScorer::constant(
                         set,
                         boost,
                         mode == Mode::TopScores,
-                    )))))
+                    ))))
                 }
-                Some(CacheResult::Empty) => return Ok(Some(None)),
+                Some(CacheResult::Empty) => return Ok(None),
                 None => term_union(field_terms, doc_in, &terms)?,
             };
-            return Ok(Some(Some(Box::new(ConstantScorer::new(
+            return Ok(Some(Box::new(ConstantScorer::new(
                 inner,
                 boost,
                 mode == Mode::TopScores,
-            )))));
+            ))));
         }
     }
     let mut scorers: Vec<BoxScorer<'a>> = Vec::new();
-    if terms.len() > BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD {
-        let Some(max_doc) = ctx.max_doc else {
+    let max_doc = ctx.max_doc.or(ctx.reader.map(|r| r.max_doc));
+    if let (false, Some(max_doc), true) = (
+        blended,
+        max_doc,
+        terms.len() > BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD,
+    ) {
+        // `MultiTermQueryConstantScoreWrapper`: every term's documents into
+        // one `DocIdSetBuilder`.
+        let len = usize::try_from(max_doc).unwrap_or(0);
+        let mut words = vec![0u64; lucene_util::fixed_bit_set::bits2words(len)];
+        for (_, seeked) in &terms {
+            let mut cursor =
+                field_terms.lazy_postings_for(seeked, doc_in, PostingsFlags::DocsOnly)?;
+            cursor.next_doc().map_err(pe)?;
+            cursor.into_window(0, max_doc, &mut words).map_err(pe)?;
+        }
+        let bits = FixedBitSet::from_words(words, len);
+        let cardinality = bits.cardinality() as i64;
+        if cardinality == 0 {
             return Ok(None);
+        }
+        let inner: BoxScorer<'a> =
+            Box::new(CachedScorer::new(std::sync::Arc::new(CachedSet::Bits {
+                bits,
+                cardinality,
+            })));
+        return Ok(Some(Box::new(ConstantScorer::new(
+            inner,
+            boost,
+            mode == Mode::TopScores,
+        ))));
+    }
+    if terms.len() > BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD {
+        let Some(max_doc) = max_doc else {
+            return Ok(Some(Box::new(ConstantScorer::new(
+                term_union(field_terms, doc_in, &terms)?,
+                boost,
+                mode == Mode::TopScores,
+            ))));
         };
         // Highest `docFreq` first, ties in term order: the first 16 stay
         // iterators, the rest go into one bitset.
@@ -150,11 +207,11 @@ pub(crate) fn multi_term<'a>(
         (bits, _) => Box::new(TermUnion::new(legs, bits)),
     };
     // `ConstantScoreQuery`'s score: the boost.
-    Ok(Some(Some(Box::new(ConstantScorer::new(
+    Ok(Some(Box::new(ConstantScorer::new(
         inner,
         boost,
         mode == Mode::TopScores,
-    )))))
+    ))))
 }
 
 /// The union of `terms`' postings, documents only.
