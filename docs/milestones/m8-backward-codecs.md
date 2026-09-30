@@ -266,14 +266,18 @@ OpenSearch 2.x.
 
 ## Acceptance criteria
 
-- [ ] Every fixture index from T8.1 opens, passes this port's `CheckIndex`,
+- [x] Every fixture index from T8.1 opens, passes this port's `CheckIndex`,
       and returns the same hits and scores as the Lucene version that wrote it.
+      (`bwc_fixtures.rs`, no expected failures left; the reference is Lucene
+      10.5.0 + backward-codecs reading each index, `BwcDump`.)
 - [x] Merging a mixed-version index yields `Lucene104` segments that real
       Lucene 10.5.0 reads and `CheckIndex` passes. (`scripts/verify-bwc-merge.sh`,
       T8.4.)
 - [ ] A cluster upgraded from OpenSearch 2.x serves its old index natively,
       verified by `verify-opensearch.sh` against a snapshot restored from 2.x.
-- [ ] Reading an old format is no slower than Lucene reading it.
+- [ ] Reading an old format is no slower than Lucene reading it. (86 of 87
+      queries on 1M-document 9.0 and 9.12 indexes; q89 on 9.0 open, and
+      3-6 ms of FST-to-trie conversion per segment at open. T8.3.)
 
 ## Risks and unknowns
 
@@ -285,6 +289,6 @@ OpenSearch 2.x.
 
 ## Exit artifacts
 
-- `fixtures/data/backward/<version>/` indices and their generator
+- `fixtures/data/bwc/<version>/` and `fixtures/data/bwc-big/<version>/` indices and their generators
 - `docs/parity.md` rows for every `lucene-backward-codecs` class
 - The plugin's fallback table in `feature-matrix.md` updated
