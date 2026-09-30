@@ -324,7 +324,8 @@ fn vectors_input<'h>(
         None => None,
         Some((vem, vex)) => Some(
             HnswVectorsReader::open(vem, vex, &handle.segment_id, &handle.suffix)
-                .map_err(|e| map_vectors_error("reopening HNSW graph", e))?,
+                .map_err(|e| map_vectors_error("reopening HNSW graph", e))?
+                .into(),
         ),
     };
     Ok(vector_query::VectorsInput {

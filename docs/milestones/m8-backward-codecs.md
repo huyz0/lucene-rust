@@ -100,10 +100,9 @@ record is `docs/inventory/lucene-backward-codecs.tsv`
 
 - `bwc_fixtures_match_lucene` reproduces every line of every
   `expected.txt` from this port's readers. 10.4.0 passed before any M8 change
-  (the current readers were already exact); 9.11.1, 9.12.2, 10.0.0 and 10.2.2
-  pass in full; 9.0.0-9.8.0 pass every line but `vec`/`knn`, the retired HNSW
-  formats, which the test's `EXPECTED_FAILURES` table lists and which fails
-  when an entry starts passing.
+  (the current readers were already exact); every other version passes in
+  full since the retired HNSW readers landed (T8.3), so the test's
+  `EXPECTED_FAILURES` table is empty.
 - `every_version_searches_like_the_current_codec` opens every fixture with
   `DirectoryReader` and runs 34 queries (term, prefix, wildcard, regexp,
   term-in-set, exact and sloppy phrase on positions/offsets/payloads fields,
@@ -111,11 +110,12 @@ record is `docs/inventory/lucene-backward-codecs.tsv`
   block-max pruned: every version returns 10.4.0's hits, scores (bit for bit)
   and totals.
 - `every_version_passes_check_index`: this port's `CheckIndex` finds nothing
-  on any fixture, bar the retired HNSW vector families of 9.0-9.8.
+  on any fixture, and its vector (and, on `_0`, graph) families must have
+  run.
 - Seen to fail: shifting the retired postings' first-document delta base by
   one fails all three.
 
-### T8.3 — Old BKD, old HNSW, old postings · delivered 2026-09-30 except HNSW
+### T8.3 — Old BKD, old HNSW, old postings · delivered 2026-09-30 (quantized vectors open)
 
 Old BKD: version 9 (every index before 10.2) and its scalar `BPV_24` doc-id
 layout. Old postings: `Lucene90`, `Lucene99`, `Lucene912`, `Lucene101` (and
@@ -124,12 +124,24 @@ layout. Old postings: `Lucene90`, `Lucene99`, `Lucene912`, `Lucene101` (and
 whose FST index is converted at open into the trie the current dictionary
 navigates (`backward_codecs/blocktree.rs`; the `.tim` blocks are unchanged).
 
+Old HNSW: `Lucene90`, `Lucene91`, `lucene92`, `Lucene94` and `Lucene95`
+(`backward_codecs/hnsw_vectors.rs::RetiredHnswVectorsReader`): each `.vem`
+entry becomes the current flat reader's `FlatFieldEntry` plus a graph view
+(`Lucene90`'s single level, the fixed-slot graphs of 9.1-9.4, and 9.5's, which
+is `Lucene99` version 0). Search is each reader's own: the current
+`HnswGraphSearcher` without an exhaustive branch for 9.1-9.8, and 9.0's
+random-entry-point search seeded from the `.vex` checksum through a
+bit-exact `SplittableRandom.nextInt(bound)`. KNN hits match Java's exactly,
+including 10.5.0's `Lucene90` quirk of reporting vector ordinals as doc ids.
+The KNN query layer (`vector_query::GraphReader`) and `CheckIndex` serve all
+five.
+
 **Open, precisely:**
 
-- HNSW `Lucene90`..`Lucene95` (9.0-9.8 fixtures), `Lucene99` scalar
-  quantization, `Lucene102` binary quantization: not ported. The seam is the
-  vector reader's header check (`hnsw_vectors.rs`/`vectors.rs`); the fixture
-  lines are `EXPECTED_FAILURES`.
+- `Lucene99ScalarQuantizedVectorsFormat`/`Lucene99HnswScalarQuantizedVectorsFormat`
+  and `Lucene102(Hnsw)BinaryQuantizedVectorsFormat`: not ported (inventory
+  `deferred:M8`). No default codec wrote them -- they are per-field opt-ins --
+  and no fixture holds one yet.
 - Performance (port-workflow stages 2-3): a retired-format term is decoded
   whole when its cursor opens and served through the tail-block path, with no
   block skipping and no impacts (the skip data, trailing or inline, is
