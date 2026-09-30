@@ -46,12 +46,14 @@ pub(crate) mod multi_term;
 mod phrase;
 pub(crate) mod ranges;
 mod req;
+pub(crate) mod span;
 mod term_dismax;
 mod wand;
 
 pub(crate) use build::LeafContext;
 pub(crate) use bulk::{
-    bulk_boolean, score_segment, score_segment_below, score_segment_with_deadline, Bulk,
+    bulk_boolean, score_segment, score_segment_below, score_segment_time_limited,
+    score_segment_with_deadline, Bulk,
 };
 
 use lucene_util::fixed_bit_set::FixedBitSet;

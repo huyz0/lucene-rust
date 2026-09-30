@@ -377,12 +377,6 @@ pub enum Error {
     /// the scorer tree ([`exec`]) runs it with the segment's reader.
     #[error("Clause::Exists needs the segment's reader to execute (field {0:?})")]
     MissingSegmentReader(String),
-    /// A scoring clause of a kind that scores BM25 only, in a search run
-    /// under another similarity
-    /// ([`multi_segment::search_boolean_query_multi_segment_with_similarity`]):
-    /// refused rather than scored with the wrong formula.
-    #[error("{0} is scored with BM25 only; it cannot be scored under a different similarity")]
-    SimilarityUnsupported(&'static str),
     /// Surfaced by [`vector_query`] when the underlying `.vemf`/`.vec`/
     /// `.vem`/`.vex` decode fails -- the vector analog of [`Error::Points`].
     /// A *caller* mistake (an unknown field, a wrong-length query vector, a
@@ -2908,17 +2902,12 @@ fn clause_scores(
                 .map(|doc_id| (doc_id, 1.0_f32))
                 .collect())
         }
-        Clause::Span(query) => {
-            // Unscored: flat 1.0 per matching doc -- see `SpanQuery`'s doc
-            // comment for why (same rationale as `Clause::Wildcard`'s arm
-            // above -- real span-aware scoring is a separate, unscoped
-            // problem).
-            let matched = span_doc_ids(fields, doc_in, pos_in, pay_in, live_docs, query)?;
-            Ok(matched
-                .into_iter()
-                .map(|doc_id| (doc_id, 1.0_f32))
-                .collect())
-        }
+        // `SpanWeight`/`SpanScorer` under BM25: see `exec::span`.
+        Clause::Span(query) => Ok(exec::span::resolve_span(
+            fields, doc_in, pos_in, pay_in, live_docs, norms, global, query,
+        )?
+        .into_iter()
+        .collect()),
         Clause::PointsRange(query) => {
             // Unscored: flat 1.0 per matching doc -- real Lucene's
             // `PointRangeQuery` is `ConstantScoreQuery`-shaped (see
@@ -3354,38 +3343,42 @@ pub(crate) fn search_boolean_query_scored_segment_with_similarity<C: ScoringColl
     Ok(())
 }
 
-/// Refuses a query with a scoring clause that only scores BM25 -- a fuzzy,
-/// span or multi-phrase clause where its score counts (a `MUST`, `SHOULD`,
-/// dis-max or boosted position) -- before a search under another similarity
-/// scores it with the wrong formula. Term, phrase and boolean clauses score
-/// through the similarity; constant-scored ones (`constant_score`, filters,
-/// ranges, the wildcard family, `exists`, match-all) do not depend on it.
-pub(crate) fn check_similarity_supported(query: &BooleanQuery) -> Result<()> {
-    fn clause(c: &Clause) -> Result<()> {
-        match c {
-            Clause::Boolean(b) => check_similarity_supported(b),
-            Clause::Boost(b) => clause(&b.inner),
-            Clause::DisjunctionMax(d) => d.disjuncts.iter().try_for_each(clause),
-            // Scored through the similarity as its blended rewrite.
-            Clause::Fuzzy(_) => Ok(()),
-            Clause::Span(_) => Err(Error::SimilarityUnsupported("a span query")),
-            // Scored through the similarity by the scorer tree.
-            Clause::MultiPhrase(_) => Ok(()),
-            Clause::Extended(e) => e.children().into_iter().try_for_each(clause),
-            Clause::Term(_)
-            | Clause::Phrase(_)
-            | Clause::ConstantScore(_)
-            | Clause::Wildcard(_)
-            | Clause::Prefix(_)
-            | Clause::Regexp(_)
-            | Clause::PointsRange(_)
-            | Clause::MatchAllDocs(_)
-            | Clause::MatchNoDocs(_)
-            | Clause::TermInSet(_)
-            | Clause::Exists(_) => Ok(()),
+/// `IndexSearcher.searchLeaf` under `setTimeout(queryTimeout)`: the scorer
+/// tree's bulk scorer wrapped in a `TimeLimitingBulkScorer`, which asks
+/// `should_exit` before each window of documents
+/// ([`exec::score_segment_time_limited`]). `similarity` `None` is the default
+/// BM25. Returns whether the timeout cut this segment short
+/// (`TimeExceededException`); the hits collected before it stand.
+pub(crate) fn search_boolean_query_scored_segment_time_limited<C: ScoringCollector>(
+    seg: &multi_segment::OpenSegment<'_>,
+    query: &BooleanQuery,
+    norms: Option<&HashMap<String, FieldNorms<'_>>>,
+    global: &GlobalStats,
+    similarity: Option<&dyn similarities::Similarity>,
+    collector: &mut C,
+    should_exit: impl FnMut() -> bool,
+) -> Result<bool> {
+    let ctx = exec::LeafContext {
+        fields: seg.fields,
+        doc_in: seg.doc_in,
+        pos_in: seg.pos_in,
+        pay_in: seg.pay_in,
+        live_docs: seg.live_docs,
+        points: seg.points,
+        norms,
+        global: Some(global),
+        max_doc: seg.max_doc,
+        cache: seg.cache,
+        reader: seg.reader,
+        similarity,
+    };
+    let mode = exec::Mode::of(collector);
+    match exec::bulk_boolean(&ctx, query, 1.0, mode)? {
+        Some(mut bulk) => {
+            exec::score_segment_time_limited(&mut bulk, mode, seg.live_docs, collector, should_exit)
         }
+        None => Ok(false),
     }
-    query.must.iter().chain(&query.should).try_for_each(clause)
 }
 
 /// `Weight.count`-free counting: how many live documents of one segment
@@ -3946,7 +3939,7 @@ pub(crate) fn phrase_freq_exact(term_positions: &[&[i32]]) -> i32 {
 /// query ever needs a position list for (unlike `PhraseQuery`, a `SpanQuery`'s
 /// leaves aren't all implicitly the same field — see [`SpanQuery`]'s doc
 /// comment).
-type SpanLeafKey = (String, Vec<u8>);
+pub(crate) type SpanLeafKey = (String, Vec<u8>);
 
 /// Computes `query`'s matching span ranges (`[start, end)` position pairs, real
 /// `SpanTermQuery`/`SpanNearQuery`/`SpanOrQuery`'s per-doc result shape) against
@@ -4100,7 +4093,7 @@ fn span_near_matches(
 /// appearing anywhere in `query` (recursively through `SpanNear`/`SpanOr`),
 /// deduplicated -- the set of position lists [`span_doc_ids`] needs to fetch
 /// before it can evaluate [`span_matches_in_doc`] for any candidate doc.
-fn collect_span_leaves(query: &SpanQuery, leaves: &mut Vec<SpanLeafKey>) {
+pub(crate) fn collect_span_leaves(query: &SpanQuery, leaves: &mut Vec<SpanLeafKey>) {
     match query {
         SpanQuery::SpanTerm { field, term } => leaves.push((field.clone(), term.clone())),
         SpanQuery::SpanNear { clauses, .. } | SpanQuery::SpanOr { clauses } => {
@@ -4191,10 +4184,45 @@ pub fn span_doc_extents(
     live_docs: Option<&FixedBitSet>,
     query: &SpanQuery,
 ) -> Result<Vec<DocSpans>> {
+    let Some((candidate_docs, per_leaf_maps)) =
+        span_leaf_positions(fields, doc_in, pos_in, pay_in, live_docs, query)?
+    else {
+        return Ok(Vec::new());
+    };
+    let mut result: Vec<DocSpans> = Vec::new();
+    for doc_id in candidate_docs {
+        let mut doc_positions: HashMap<SpanLeafKey, Vec<i32>> = HashMap::new();
+        for (key, map) in &per_leaf_maps {
+            if let Some(positions) = map.get(&doc_id) {
+                doc_positions.insert(key.clone(), positions.clone());
+            }
+        }
+        let extents = span_matches_in_doc(query, &doc_positions);
+        if !extents.is_empty() {
+            result.push((doc_id, extents));
+        }
+    }
+    Ok(result)
+}
+
+/// Every leaf of a span query with its live documents' positions: the
+/// candidate documents (any leaf's, ascending) and, per distinct leaf
+/// `(field, term)` present in the segment, a `doc -> positions` map. `None`
+/// when the query has no leaf. See [`span_doc_ids`] for why the candidates
+/// are the union of every leaf's documents.
+#[allow(clippy::type_complexity)]
+pub(crate) fn span_leaf_positions(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    pos_in: Option<&PosInput<'_>>,
+    pay_in: Option<&PayInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &SpanQuery,
+) -> Result<Option<(Vec<i32>, Vec<(SpanLeafKey, HashMap<i32, Vec<i32>>)>)>> {
     let mut leaves: Vec<SpanLeafKey> = Vec::new();
     collect_span_leaves(query, &mut leaves);
     if leaves.is_empty() {
-        return Ok(Vec::new());
+        return Ok(None);
     }
     let Some(pos_in) = pos_in else {
         return Err(Error::MissingPosInput);
@@ -4227,21 +4255,7 @@ pub fn span_doc_extents(
     }
     candidate_docs.sort_unstable();
     candidate_docs.dedup();
-
-    let mut result: Vec<DocSpans> = Vec::new();
-    for doc_id in candidate_docs {
-        let mut doc_positions: HashMap<SpanLeafKey, Vec<i32>> = HashMap::new();
-        for (key, map) in &per_leaf_maps {
-            if let Some(positions) = map.get(&doc_id) {
-                doc_positions.insert(key.clone(), positions.clone());
-            }
-        }
-        let extents = span_matches_in_doc(query, &doc_positions);
-        if !extents.is_empty() {
-            result.push((doc_id, extents));
-        }
-    }
-    Ok(result)
+    Ok(Some((candidate_docs, per_leaf_maps)))
 }
 
 /// Executes `query` (see [`query::SpanQuery`] for the exact matching

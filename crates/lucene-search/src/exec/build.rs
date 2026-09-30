@@ -201,11 +201,13 @@ pub(crate) fn build<'a>(
         Clause::PointsRange(q) => points_range(ctx, q, boost, mode),
         Clause::Exists(q) => exists(ctx, q, boost, mode),
         Clause::Extended(q) => super::extended::build(ctx, q, boost, mode, top_level),
-        // `FuzzyQuery`'s `TopTermsBlendedFreqScoringRewrite`, streamed.
-        Clause::Fuzzy(f) if mode.needs_scores() => {
-            super::extended::fuzzy_sim(ctx, f, boost, mode, top_level)
-        }
+        // `FuzzyQuery`'s `TopTermsBlendedFreqScoringRewrite`, streamed. The
+        // rewrite does not depend on the score mode: an unscored fuzzy
+        // clause matches the same reader-wide expansion.
+        Clause::Fuzzy(f) => super::extended::fuzzy_sim(ctx, f, boost, mode, top_level),
         Clause::MultiPhrase(m) => super::extended::multi_phrase(ctx, m, boost, mode),
+        // `SpanWeight`/`SpanScorer`.
+        Clause::Span(s) => super::span::span(ctx, s, boost, mode),
         Clause::Phrase(p) if !p.has_implicit_positions() => {
             super::extended::positional_phrase(ctx, p, boost, mode)
         }
@@ -755,8 +757,18 @@ pub(crate) fn build_clauses<'a, 'q>(
     let mut built: [Vec<Option<Child<'a>>>; 4] = Default::default();
     // The index-side cost of each deferred clause, by group and position.
     let mut costs: [Vec<Option<i64>>; 4] = Default::default();
+    // `SHOULD` fuzzy clauses flattened into this boolean, by position.
+    let mut flattened: Vec<Option<Vec<Child<'a>>>> = (0..q.should.len()).map(|_| None).collect();
+    let flatten = mode.needs_scores() && q.minimum_should_match <= 1;
     for (g, (clauses, m, top, required)) in groups.iter().enumerate() {
-        for c in clauses.iter() {
+        for (i, c) in clauses.iter().enumerate() {
+            if let (2, true, Clause::Fuzzy(f)) = (g, flatten, c) {
+                let children = super::extended::fuzzy_children(ctx, f, boost, *m)?;
+                costs[g].push(None);
+                built[g].push(None);
+                flattened[i] = Some(children);
+                continue;
+            }
             if deferred && index_or_doc_values_of(c).is_some() {
                 let q = index_or_doc_values_of(c).expect("checked");
                 match index_side(ctx, &q.index_query)? {
@@ -783,7 +795,13 @@ pub(crate) fn build_clauses<'a, 'q>(
     if deferred {
         // `BooleanWeight.scorerSupplier`: exactly `msm` optional clauses
         // present are all required.
-        let present_should = costs[2].iter().filter(|c| c.is_some()).count();
+        let flat_costs: Vec<i64> = flattened
+            .iter()
+            .flatten()
+            .flatten()
+            .map(Child::cost)
+            .collect();
+        let present_should = costs[2].iter().filter(|c| c.is_some()).count() + flat_costs.len();
         let mut msm = q.minimum_should_match;
         let mut required: Vec<i64> = costs[0]
             .iter()
@@ -792,6 +810,7 @@ pub(crate) fn build_clauses<'a, 'q>(
             .copied()
             .collect();
         let mut optional: Vec<i64> = costs[2].iter().flatten().copied().collect();
+        optional.extend(flat_costs);
         if present_should == msm {
             required.append(&mut optional);
             msm = 0;
@@ -826,10 +845,17 @@ pub(crate) fn build_clauses<'a, 'q>(
             .filter_map(|(c, clause)| c.map(|c| (c, clause)))
             .collect()
     };
+    let mut should_pairs = Vec::with_capacity(should.len());
+    for ((c, clause), flat) in should.into_iter().zip(&q.should).zip(flattened) {
+        match flat {
+            Some(children) => should_pairs.extend(children.into_iter().map(|c| (c, clause))),
+            None => should_pairs.extend(c.map(|c| (c, clause))),
+        }
+    }
     Ok(Some((
         pair(must, &q.must),
         pair(filter, &q.filter),
-        pair(should, &q.should),
+        should_pairs,
         pair(must_not, &q.must_not),
     )))
 }
