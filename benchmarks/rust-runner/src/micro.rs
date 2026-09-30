@@ -833,6 +833,74 @@ fn bench_vectors(w: Duration, m: Duration) {
     }
 }
 
+/// The scalar-quantized vector kernels (M7 T7.6) -- see
+/// `SweepMicro.quantized`: the per-candidate distance of each
+/// `ScalarEncoding` over 1024 stored vectors, and the per-vector
+/// `OptimizedScalarQuantizer.scalarQuantize` the writer and every query run.
+fn bench_quantized(w: Duration, m: Duration) {
+    use lucene_util::quantization::{OptimizedScalarQuantizer, VectorSimilarityFunction};
+    use lucene_util::vector_util;
+    for dim in [128usize, 768] {
+        let bdocs = byte_vectors(1024, dim, 0xB17E + dim as u64);
+        let bq = &byte_vectors(1, dim, 0xB0B + dim as u64)[0];
+        measure(&format!("uint8_dot_{dim}"), w, m, || {
+            let mut s = 0i64;
+            for d in &bdocs {
+                s += vector_util::uint8_dot_product(black_box(bq), d) as i64;
+            }
+            black_box(s);
+            bdocs.len() as u64
+        });
+        // 4-bit: an unpacked query (one nibble per byte) against a packed doc.
+        let q4: Vec<u8> = bq.iter().map(|b| b & 0x0f).collect();
+        let packed: Vec<Vec<u8>> = bdocs.iter().map(|d| d[..dim / 2].to_vec()).collect();
+        measure(&format!("int4_packed_dot_{dim}"), w, m, || {
+            let mut s = 0i64;
+            for d in &packed {
+                s += vector_util::int4_dot_product_single_packed(black_box(&q4), d) as i64;
+            }
+            black_box(s);
+            packed.len() as u64
+        });
+        // 1-bit docs against a 4-bit transposed query (4 bit planes).
+        let tq = &bq[..dim / 2];
+        let bits: Vec<Vec<u8>> = bdocs.iter().map(|d| d[..dim / 8].to_vec()).collect();
+        measure(&format!("int4_bit_dot_{dim}"), w, m, || {
+            let mut s = 0i64;
+            for d in &bits {
+                s += vector_util::int4_bit_dot_product(black_box(tq), d);
+            }
+            black_box(s);
+            bits.len() as u64
+        });
+        let dibits: Vec<Vec<u8>> = bdocs.iter().map(|d| d[..dim / 4].to_vec()).collect();
+        measure(&format!("int4_dibit_dot_{dim}"), w, m, || {
+            let mut s = 0i64;
+            for d in &dibits {
+                s += vector_util::int4_dibit_dot_product(black_box(tq), d);
+            }
+            black_box(s);
+            dibits.len() as u64
+        });
+        let fdocs = float_vectors(64, dim, 0xF00D + dim as u64);
+        let centroid = &float_vectors(1, dim, 0xCE17 + dim as u64)[0];
+        let q = OptimizedScalarQuantizer::new(VectorSimilarityFunction::Euclidean);
+        let mut dest = vec![0u8; dim];
+        let mut scratch = vec![0f32; dim];
+        measure(&format!("osq_quantize4_{dim}"), w, m, || {
+            let mut s = 0i64;
+            for d in &fdocs {
+                scratch.copy_from_slice(d);
+                s += q
+                    .scalar_quantize(&mut scratch, &mut dest, 4, black_box(centroid))
+                    .quantized_component_sum as i64;
+            }
+            black_box(s);
+            fdocs.len() as u64
+        });
+    }
+}
+
 /// Opens the corpus and hands the first segment's pieces to `f`.
 fn with_segment(
     index: &str,
@@ -1739,6 +1807,7 @@ fn main() {
         "checksum" => bench_checksum(warmup, measure),
         "analysis" => bench_analysis(warmup, measure),
         "vectors" => bench_vectors(warmup, measure),
+        "quantized" => bench_quantized(warmup, measure),
         "term_dict_write" => bench_term_dict_write(warmup, measure),
         "dv_merge" => bench_dv_merge(warmup, measure),
         "points_write" => bench_points_write(warmup, measure),
