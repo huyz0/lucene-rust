@@ -17,9 +17,11 @@
 // which silently breaks every intra-doc link the module writes to its own
 // items. See `docs/rustdoc-gate.md`.
 pub mod automaton;
+pub mod backward_codecs;
 mod block_packed;
 pub mod blocktree;
 mod blocktree_writer;
+pub mod codecs;
 pub mod compound_format;
 mod deflate;
 pub mod direct_monotonic;

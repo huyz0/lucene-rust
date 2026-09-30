@@ -615,14 +615,57 @@ impl FieldInfos {
 }
 
 /// Parses a whole `.fnm` file already read into memory.
+///
+/// Both field-infos generations Lucene 10.5.0 reads are accepted, told apart
+/// by the codec name in the file's own header: `Lucene94FieldInfos`
+/// (versions 0..=2, every codec from `Lucene94` on) and the retired
+/// `Lucene90FieldInfos` (version 0, the `Lucene90`..`Lucene92` codecs --
+/// `backward_codecs.lucene90.Lucene90FieldInfosFormat`), whose wire format
+/// has no vector-encoding byte (every vector field is `FLOAT32`), no
+/// doc-values-skip-index byte and no parent-field bit, and whose reader
+/// validates none of the flag bits.
 pub fn parse(buf: &[u8], segment_id: &[u8; ID_LENGTH], segment_suffix: &str) -> Result<FieldInfos> {
+    let generation = match codec_util::peek_codec_name(buf).as_deref() {
+        Some(LUCENE90_CODEC_NAME) => Generation::Lucene90,
+        _ => Generation::Lucene94,
+    };
+    parse_generation(buf, segment_id, segment_suffix, generation)
+}
+
+/// `Lucene90FieldInfosFormat.CODEC_NAME`.
+const LUCENE90_CODEC_NAME: &str = "Lucene90FieldInfos";
+
+/// Which `FieldInfosFormat` wrote a `.fnm`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Generation {
+    /// `backward_codecs.lucene90.Lucene90FieldInfosFormat`.
+    Lucene90,
+    /// `codecs.lucene94.Lucene94FieldInfosFormat`.
+    Lucene94,
+}
+
+fn parse_generation(
+    buf: &[u8],
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+    generation: Generation,
+) -> Result<FieldInfos> {
     let mut input = SliceInput::new(buf);
 
+    // `Lucene90FieldInfosFormat` has one version (0). Its fields are read as
+    // a `Lucene94` format-0 file would be, minus the vector-encoding byte and
+    // the bit validation, both gated on `lucene90` below.
+    let lucene90 = generation == Generation::Lucene90;
+    let (codec_name, format_current) = if lucene90 {
+        (LUCENE90_CODEC_NAME, FORMAT_START)
+    } else {
+        (CODEC_NAME, FORMAT_CURRENT)
+    };
     let header = codec_util::check_index_header(
         &mut input,
-        CODEC_NAME,
+        codec_name,
         FORMAT_START,
-        FORMAT_CURRENT,
+        format_current,
         segment_id,
         segment_suffix,
     )?;
@@ -645,14 +688,18 @@ pub fn parse(buf: &[u8], segment_id: &[u8; ID_LENGTH], segment_suffix: &str) -> 
         let soft_deletes_field = bits & SOFT_DELETES_FIELD != 0;
         let parent_field = format >= FORMAT_PARENT_FIELD && bits & PARENT_FIELD_FIELD != 0;
 
-        if bits & 0xC0 != 0 {
-            return Err(Error::UnusedBitsSet(bits));
-        }
-        if format < FORMAT_PARENT_FIELD && bits & 0xF0 != 0 {
-            return Err(Error::ParentFieldBitSetButTooOld(bits));
-        }
-        if format < FORMAT_DOCVALUE_SKIPPER && bits & DOCVALUES_SKIPPER != 0 {
-            return Err(Error::DocValuesSkipperBitSetButTooOld(bits));
+        // `Lucene90FieldInfosFormat.read` reads the four flags it knows and
+        // ignores every other bit.
+        if !lucene90 {
+            if bits & 0xC0 != 0 {
+                return Err(Error::UnusedBitsSet(bits));
+            }
+            if format < FORMAT_PARENT_FIELD && bits & 0xF0 != 0 {
+                return Err(Error::ParentFieldBitSetButTooOld(bits));
+            }
+            if format < FORMAT_DOCVALUE_SKIPPER && bits & DOCVALUES_SKIPPER != 0 {
+                return Err(Error::DocValuesSkipperBitSetButTooOld(bits));
+            }
         }
 
         let index_options = IndexOptions::from_byte(input.read_byte()?)?;
@@ -673,7 +720,13 @@ pub fn parse(buf: &[u8], segment_id: &[u8; ID_LENGTH], segment_suffix: &str) -> 
         };
 
         let vector_dimension = input.read_vint()?;
-        let vector_encoding = VectorEncoding::from_byte(input.read_byte()?)?;
+        // `Lucene90FieldInfosFormat` predates byte vectors: no encoding byte,
+        // every vector field is `VectorEncoding.FLOAT32`.
+        let vector_encoding = if lucene90 {
+            VectorEncoding::Float32
+        } else {
+            VectorEncoding::from_byte(input.read_byte()?)?
+        };
         let vector_similarity_function = VectorSimilarityFunction::from_byte(input.read_byte()?)?;
 
         let field = FieldInfo {

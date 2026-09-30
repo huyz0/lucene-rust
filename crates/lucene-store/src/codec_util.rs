@@ -82,6 +82,25 @@ pub fn check_header_no_magic(
     Ok(Header { version })
 }
 
+/// The codec name a header-carrying file starts with, without validating
+/// anything past it -- `None` when the file does not start with
+/// [`CODEC_MAGIC`] and a readable string.
+///
+/// Not a Java method: Lucene always knows which format to expect, because
+/// the codec (named in `segments_N`) says so. A backward-codecs reader that
+/// serves several generations of one component from one call site -- `.fnm`
+/// written as `Lucene90FieldInfos` or `Lucene94FieldInfos`, postings files as
+/// `Lucene90PostingsWriterDoc` .. `Lucene104PostingsWriterDoc` -- instead
+/// dispatches on the name the file itself carries, and then runs the full
+/// [`check_index_header`] for the generation it picked.
+pub fn peek_codec_name(buf: &[u8]) -> Option<String> {
+    let mut input = SliceInput::new(buf);
+    if input.read_be_u32().ok()? != CODEC_MAGIC {
+        return None;
+    }
+    input.read_string().ok()
+}
+
 /// Port of `CodecUtil.checkIndexHeader`.
 pub fn check_index_header(
     input: &mut SliceInput,
@@ -379,6 +398,18 @@ mod tests {
         write_string(&mut out, codec);
         out.extend_from_slice(&version.to_be_bytes());
         out
+    }
+
+    #[test]
+    fn peek_codec_name_reads_only_the_name() {
+        let buf = header_bytes("Lucene90FieldInfos", 7);
+        assert_eq!(peek_codec_name(&buf).as_deref(), Some("Lucene90FieldInfos"));
+        // A wrong magic, and a name cut short, are both "no name".
+        let mut bad = buf.clone();
+        bad[0] ^= 1;
+        assert_eq!(peek_codec_name(&bad), None);
+        assert_eq!(peek_codec_name(&buf[..6]), None);
+        assert_eq!(peek_codec_name(&[]), None);
     }
 
     /// A complete, valid header + payload + footer, with a correct checksum.

@@ -182,6 +182,168 @@ use lucene_store::data_input::{DataInput, SliceInput};
 use crate::field_infos::IndexOptions;
 use crate::for_util::{self, ForUtil};
 
+/// Which postings format wrote a segment's `.doc`/`.pos`/`.pay` -- the
+/// `PerFieldPostingsFormat.format` a field's `FieldInfo` names, and the
+/// generation every file of that format announces in its header
+/// (`<name>PostingsWriterDoc`/`Pos`/`Pay`).
+///
+/// `Lucene104` is this module's own reader. The retired generations are read
+/// by [`crate::backward_codecs`]: their `.doc` block framing and bit packing
+/// differ (see `backward_codecs::postings`), while their `.pos`/`.pay` layout
+/// is `Lucene104`'s at a 128-value block, which [`read_positions`] and its
+/// siblings handle directly.
+///
+/// This is the seam M8 cut into the read path: a [`DocInput`]/[`PosInput`]/
+/// [`PayInput`] learns its generation from its own header, the term
+/// dictionary learns it from `FieldInfo` (`decodeTerm` differs too), and
+/// every decode entry point dispatches on it. For a retired generation the
+/// lazy cursors serve a term from its fully decoded postings: correct, but
+/// without `Lucene104`'s block skipping -- see `docs/parity.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PostingsFormat {
+    /// `backward_codecs.lucene90.Lucene90PostingsFormat` (9.0-9.10).
+    Lucene90,
+    /// `backward_codecs.lucene99.Lucene99PostingsFormat` (9.11).
+    Lucene99,
+    /// `backward_codecs.lucene912.Lucene912PostingsFormat` (9.12, 10.0).
+    Lucene912,
+    /// `backward_codecs.lucene101.Lucene101PostingsFormat` (10.1, 10.2).
+    Lucene101,
+    /// `backward_codecs.lucene103.Lucene103PostingsFormat` (10.3): the
+    /// `Lucene101` postings under the trie term dictionary.
+    Lucene103,
+    /// `codecs.lucene104.Lucene104PostingsFormat`.
+    #[default]
+    Lucene104,
+}
+
+impl PostingsFormat {
+    /// Every generation, oldest first.
+    pub const ALL: [PostingsFormat; 6] = [
+        PostingsFormat::Lucene90,
+        PostingsFormat::Lucene99,
+        PostingsFormat::Lucene912,
+        PostingsFormat::Lucene101,
+        PostingsFormat::Lucene103,
+        PostingsFormat::Lucene104,
+    ];
+
+    /// `PostingsFormat.getName()`.
+    pub fn name(self) -> &'static str {
+        match self {
+            PostingsFormat::Lucene90 => "Lucene90",
+            PostingsFormat::Lucene99 => "Lucene99",
+            PostingsFormat::Lucene912 => "Lucene912",
+            PostingsFormat::Lucene101 => "Lucene101",
+            PostingsFormat::Lucene103 => "Lucene103",
+            PostingsFormat::Lucene104 => "Lucene104",
+        }
+    }
+
+    /// `PostingsFormat.forName`, restricted to the formats this port reads.
+    pub fn from_name(name: &str) -> Option<PostingsFormat> {
+        Self::ALL.into_iter().find(|f| f.name() == name)
+    }
+
+    /// The format a field's `FieldInfo` names
+    /// (`PerFieldPostingsFormat.format`), defaulting to `Lucene104` for a
+    /// field without the attribute -- this port's own writer records none.
+    pub fn of_field(field: &crate::field_infos::FieldInfo) -> Option<PostingsFormat> {
+        match field
+            .attributes
+            .iter()
+            .find(|(k, _)| k == "PerFieldPostingsFormat.format")
+        {
+            Some((_, v)) => Self::from_name(v),
+            None => Some(PostingsFormat::Lucene104),
+        }
+    }
+
+    /// The generation a postings file's header names: the codec name up to
+    /// `PostingsWriter`. `None` for a file of no postings format.
+    ///
+    /// Read in place, without allocating: [`DocInput::validated`] calls this
+    /// on every search's open of a segment. A codec name is ASCII shorter
+    /// than 128 bytes (`CodecUtil.writeHeader`), so its length is one byte.
+    fn of_header(buf: &[u8]) -> Option<PostingsFormat> {
+        let magic = buf.get(..4)?;
+        if magic != codec_util::CODEC_MAGIC.to_be_bytes() {
+            return None;
+        }
+        let len = usize::from(*buf.get(4)?);
+        let name = buf.get(5..5usize.checked_add(len)?)?;
+        let name = std::str::from_utf8(name).ok()?;
+        let prefix = name.split("PostingsWriter").next()?;
+        Self::from_name(prefix)
+    }
+
+    /// `BLOCK_SIZE`: 256 for `Lucene104`, 128 for every retired generation.
+    pub fn block_size(self) -> usize {
+        match self {
+            PostingsFormat::Lucene104 => BLOCK_SIZE as usize,
+            _ => crate::backward_codecs::for_util::BLOCK_SIZE,
+        }
+    }
+
+    /// The word the generation's `ForUtil` packs into.
+    pub(crate) fn word(self) -> crate::backward_codecs::for_util::Word {
+        use crate::backward_codecs::for_util::Word;
+        match self {
+            PostingsFormat::Lucene90 | PostingsFormat::Lucene99 | PostingsFormat::Lucene912 => {
+                Word::Long
+            }
+            _ => Word::Int,
+        }
+    }
+
+    /// Whether the term dictionary is `Lucene90BlockTreeTermsReader`'s (an
+    /// FST index) rather than `Lucene103BlockTreeTermsReader`'s (a trie).
+    pub fn uses_fst_terms_index(self) -> bool {
+        matches!(
+            self,
+            PostingsFormat::Lucene90
+                | PostingsFormat::Lucene99
+                | PostingsFormat::Lucene912
+                | PostingsFormat::Lucene101
+        )
+    }
+}
+
+/// `decodeTerm` for any [`PostingsFormat`]: the `Lucene104` wire layout at
+/// the generation's block size, plus -- for `Lucene90`/`Lucene99`, whose skip
+/// data trails the postings -- the `skipOffset` vlong of a term with more
+/// than one block of documents, read and dropped (this port's readers never
+/// seek to skip data; see [`PostingsFormat`]).
+#[allow(clippy::too_many_arguments)]
+pub fn decode_term_metadata_for(
+    format: PostingsFormat,
+    r: &mut SliceInput,
+    doc_freq: i32,
+    absolute: bool,
+    prev: TermMetadata,
+    index_options: IndexOptions,
+    has_payloads: bool,
+    total_term_freq: i64,
+) -> Result<TermMetadata> {
+    let block = format.block_size() as i64;
+    let meta = decode_term_metadata_with_block(
+        r,
+        doc_freq,
+        absolute,
+        prev,
+        index_options,
+        has_payloads,
+        total_term_freq,
+        block,
+    )?;
+    if matches!(format, PostingsFormat::Lucene90 | PostingsFormat::Lucene99)
+        && i64::from(doc_freq) > block
+    {
+        r.read_vlong()?;
+    }
+    Ok(meta)
+}
+
 /// `Lucene104PostingsFormat.DOC_CODEC`.
 pub(crate) const DOC_CODEC: &str = "Lucene104PostingsWriterDoc";
 /// `Lucene104PostingsFormat.META_CODEC` -- the `.psm` metadata file's codec.
@@ -278,6 +440,31 @@ pub fn decode_term_metadata(
     has_payloads: bool,
     total_term_freq: i64,
 ) -> Result<TermMetadata> {
+    decode_term_metadata_with_block(
+        r,
+        doc_freq,
+        absolute,
+        prev,
+        index_options,
+        has_payloads,
+        total_term_freq,
+        BLOCK_SIZE as i64,
+    )
+}
+
+/// [`decode_term_metadata`] with the format's `BLOCK_SIZE`, which decides
+/// whether a `lastPosBlockOffset` is on the wire.
+#[allow(clippy::too_many_arguments)]
+fn decode_term_metadata_with_block(
+    r: &mut SliceInput,
+    doc_freq: i32,
+    absolute: bool,
+    prev: TermMetadata,
+    index_options: IndexOptions,
+    has_payloads: bool,
+    total_term_freq: i64,
+    block_size: i64,
+) -> Result<TermMetadata> {
     // `Lucene104PostingsReader.decodeTerm` zeroes every FP accumulator before
     // applying this term's deltas when `absolute` is set (a fresh term-dict
     // block always starts its first term's FPs from 0), rather than basing
@@ -315,7 +502,7 @@ pub fn decode_term_metadata(
         if index_options.subsumes_offsets() || has_payloads {
             pay_start_fp = pay_start_fp.wrapping_add(r.read_vlong()? as u64);
         }
-        if total_term_freq > BLOCK_SIZE as i64 {
+        if total_term_freq > block_size {
             last_pos_block_offset = r.read_vlong()?;
         }
     }
@@ -519,29 +706,70 @@ impl PostingsFlags {
 /// everything this slice doesn't support (positions, skip data, impacts).
 pub struct DocInput<'a> {
     buf: &'a [u8],
+    format: PostingsFormat,
+}
+
+/// `(codec name, VERSION_START, VERSION_CURRENT)` of one of a format's
+/// postings files: `kind` is `Doc`, `Pos` or `Pay`.
+fn postings_header(format: PostingsFormat, kind: &str) -> (String, i32, i32) {
+    let current = match format {
+        // `Lucene90PostingsFormat.VERSION_CURRENT` and
+        // `Lucene101PostingsFormat.VERSION_DENSE_BLOCKS_AS_BITSETS`.
+        PostingsFormat::Lucene90 | PostingsFormat::Lucene101 => 1,
+        PostingsFormat::Lucene104 => VERSION_CURRENT,
+        _ => 0,
+    };
+    let codec = if format == PostingsFormat::Lucene104 {
+        match kind {
+            "Doc" => DOC_CODEC,
+            "Pos" => POS_CODEC,
+            _ => PAY_CODEC,
+        }
+        .to_string()
+    } else {
+        format!("{}PostingsWriter{kind}", format.name())
+    };
+    (codec, VERSION_START, current)
+}
+
+/// Opens one postings file of whichever generation its header names: the
+/// shared half of [`DocInput::open`]/[`PosInput::open`]/[`PayInput::open`].
+fn open_postings_file(
+    buf: &[u8],
+    kind: &str,
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+) -> Result<PostingsFormat> {
+    let format = PostingsFormat::of_header(buf).unwrap_or_default();
+    let (codec, start, current) = postings_header(format, kind);
+    let mut r = SliceInput::new(buf);
+    codec_util::check_index_header(&mut r, &codec, start, current, segment_id, segment_suffix)?;
+    codec_util::retrieve_checksum(buf)?;
+    Ok(format)
 }
 
 impl<'a> DocInput<'a> {
     /// A buffer [`DocInput::open`] has already accepted: no header or footer is
     /// read again. For a reader that validates a segment's postings once and
-    /// opens them per search.
+    /// opens them per search. The generation is re-read from the header's
+    /// codec name, a few bytes.
     pub fn validated(buf: &'a [u8]) -> Self {
-        DocInput { buf }
+        DocInput {
+            buf,
+            format: PostingsFormat::of_header(buf).unwrap_or_default(),
+        }
     }
     /// Validates the `.doc` file's index header and footer checksum framing
-    /// (`Lucene104PostingsReader`'s constructor, `Lucene104PostingsReader.java:134-140`).
+    /// (`Lucene104PostingsReader`'s constructor, `Lucene104PostingsReader.java:134-140`),
+    /// for whichever [`PostingsFormat`] the header names.
     pub fn open(doc: &'a [u8], segment_id: &[u8; ID_LENGTH], segment_suffix: &str) -> Result<Self> {
-        let mut r = SliceInput::new(doc);
-        codec_util::check_index_header(
-            &mut r,
-            DOC_CODEC,
-            VERSION_START,
-            VERSION_CURRENT,
-            segment_id,
-            segment_suffix,
-        )?;
-        codec_util::retrieve_checksum(doc)?;
-        Ok(DocInput { buf: doc })
+        let format = open_postings_file(doc, "Doc", segment_id, segment_suffix)?;
+        Ok(DocInput { buf: doc, format })
+    }
+
+    /// The postings format that wrote this `.doc`.
+    pub fn format(&self) -> PostingsFormat {
+        self.format
     }
 
     /// Decodes a term's `(docID, freq)` pairs for any `docFreq > 1`
@@ -589,6 +817,19 @@ impl<'a> DocInput<'a> {
         flags: PostingsFlags,
     ) -> Result<Postings> {
         let needs_freq = flags.needs_freq();
+        if self.format != PostingsFormat::Lucene104 {
+            let mut p = crate::backward_codecs::postings::read_postings(
+                self.buf,
+                self.format,
+                meta,
+                doc_freq,
+                index_options,
+            )?;
+            if !needs_freq {
+                p.freqs.fill(1);
+            }
+            return Ok(p);
+        }
         if doc_freq <= 1 {
             return Err(Error::Unsupported(
                 "docFreq <= 1: use singleton_postings instead (no .doc bytes are written)",
@@ -878,8 +1119,27 @@ impl<'a> DocInput<'a> {
                 "IndexOptions::None is not supported in this slice",
             ));
         }
+        let old = if self.format != PostingsFormat::Lucene104 && doc_freq > 1 {
+            let p = crate::backward_codecs::postings::read_postings(
+                self.buf,
+                self.format,
+                meta,
+                doc_freq,
+                index_options,
+            )?;
+            Some(Box::new(OldPostings {
+                docs: p.docs,
+                freqs: p.freqs,
+                next: 0,
+                window_start: 0,
+            }))
+        } else {
+            None
+        };
         let mut r = SliceInput::new(self.buf);
-        r.seek(meta.doc_start_fp as usize)?;
+        if old.is_none() {
+            r.seek(meta.doc_start_fp as usize)?;
+        }
 
         // Mirror `Lucene104PostingsReader.BlockPostingsEnum.reset`'s level-1
         // setup (`Lucene104PostingsReader.java:559-568`): below
@@ -888,7 +1148,7 @@ impl<'a> DocInput<'a> {
         // path entirely (`target > NO_MORE_DOCS` is never true). At or above
         // it, start the running last-doc at `-1` with `level1_doc_end_fp`
         // pointing at the first level-1 entry (which sits at `docStartFP`).
-        let level1_last_doc_id = if doc_freq < LEVEL1_NUM_DOCS {
+        let level1_last_doc_id = if doc_freq < LEVEL1_NUM_DOCS || old.is_some() {
             NO_MORE_DOCS
         } else {
             -1
@@ -943,6 +1203,7 @@ impl<'a> DocInput<'a> {
                 pos_buffer_upto: 0,
             },
             block_gen: 0,
+            old,
         })
     }
 }
@@ -972,6 +1233,7 @@ pub struct Position {
 /// [`DocInput`].
 pub struct PosInput<'a> {
     buf: &'a [u8],
+    format: PostingsFormat,
 }
 
 impl<'a> PosInput<'a> {
@@ -979,22 +1241,22 @@ impl<'a> PosInput<'a> {
     /// read again. For a reader that validates a segment's postings once and
     /// opens them per search.
     pub fn validated(buf: &'a [u8]) -> Self {
-        PosInput { buf }
+        PosInput {
+            buf,
+            format: PostingsFormat::of_header(buf).unwrap_or_default(),
+        }
     }
     /// `Lucene104PostingsReader`'s constructor, the `.pos` branch
-    /// (`Lucene104PostingsReader.java:142-149`).
+    /// (`Lucene104PostingsReader.java:142-149`), for whichever
+    /// [`PostingsFormat`] the header names.
     pub fn open(pos: &'a [u8], segment_id: &[u8; ID_LENGTH], segment_suffix: &str) -> Result<Self> {
-        let mut r = SliceInput::new(pos);
-        codec_util::check_index_header(
-            &mut r,
-            POS_CODEC,
-            VERSION_START,
-            VERSION_CURRENT,
-            segment_id,
-            segment_suffix,
-        )?;
-        codec_util::retrieve_checksum(pos)?;
-        Ok(PosInput { buf: pos })
+        let format = open_postings_file(pos, "Pos", segment_id, segment_suffix)?;
+        Ok(PosInput { buf: pos, format })
+    }
+
+    /// The postings format that wrote this `.pos`.
+    pub fn format(&self) -> PostingsFormat {
+        self.format
     }
 }
 
@@ -1012,17 +1274,11 @@ impl<'a> PayInput<'a> {
     pub fn validated(buf: &'a [u8]) -> Self {
         PayInput { buf }
     }
+    /// The `.pay` branch of the postings reader's constructor, for whichever
+    /// [`PostingsFormat`] the header names. `.pay` is only ever read alongside
+    /// its `.pos`, whose generation decides the layout.
     pub fn open(pay: &'a [u8], segment_id: &[u8; ID_LENGTH], segment_suffix: &str) -> Result<Self> {
-        let mut r = SliceInput::new(pay);
-        codec_util::check_index_header(
-            &mut r,
-            PAY_CODEC,
-            VERSION_START,
-            VERSION_CURRENT,
-            segment_id,
-            segment_suffix,
-        )?;
-        codec_util::retrieve_checksum(pay)?;
+        open_postings_file(pay, "Pay", segment_id, segment_suffix)?;
         Ok(PayInput { buf: pay })
     }
 }
@@ -1090,7 +1346,16 @@ fn decode_position_streams(
     // real reader's `posIn.getFilePointer() == lastPosBlockFP` check) simply
     // computing how many full 256-position blocks precede it from
     // `total_term_freq` itself.
-    let (num_full_blocks, tail_count) = full_blocks_and_tail(n);
+    let format = pos.format;
+    let (num_full_blocks, tail_count) = if format == PostingsFormat::Lucene104 {
+        full_blocks_and_tail(n)
+    } else {
+        let b = format.block_size();
+        // ARITH: `b` is 128.
+        #[allow(clippy::arithmetic_side_effects)]
+        let split = (n / b, n % b);
+        split
+    };
 
     // `.pay` is only ever touched by full PForUtil blocks (the vint tail's
     // payload bytes live inline in `.pos`, see below) -- so a term whose
@@ -1104,16 +1369,14 @@ fn decode_position_streams(
     }
 
     for _ in 0..num_full_blocks {
-        let mut deltas = [0u32; for_util::BLOCK_SIZE];
-        for_util::pfor_decode(&mut pos_r, &mut deltas)?;
-        pos_deltas.extend(deltas.iter().map(|&d| d as i32));
+        pfor_block(format, &mut pos_r, |d| pos_deltas.push(d as i32))?;
 
         if has_payloads {
             let pay_r = pay_r
                 .as_mut()
                 .expect("checked above: has_payloads implies pay.is_some()");
-            let mut lens = [0u32; for_util::BLOCK_SIZE];
-            for_util::pfor_decode(pay_r, &mut lens)?;
+            let mut lens: Vec<u32> = Vec::with_capacity(format.block_size());
+            pfor_block(format, pay_r, |l| lens.push(l))?;
             // `read_length`, not `read_vint as usize`: a negative or
             // longer-than-the-file byte count would otherwise size the
             // `resize` below straight off disk.
@@ -1127,12 +1390,8 @@ fn decode_position_streams(
             let pay_r = pay_r
                 .as_mut()
                 .expect("checked above: has_offsets implies pay.is_some()");
-            let mut starts = [0u32; for_util::BLOCK_SIZE];
-            for_util::pfor_decode(pay_r, &mut starts)?;
-            let mut lens = [0u32; for_util::BLOCK_SIZE];
-            for_util::pfor_decode(pay_r, &mut lens)?;
-            offset_start_deltas.extend(starts.iter().map(|&s| s as i32));
-            offset_lengths.extend(lens.iter().map(|&l| l as i32));
+            pfor_block(format, pay_r, |s| offset_start_deltas.push(s as i32))?;
+            pfor_block(format, pay_r, |l| offset_lengths.push(l as i32))?;
         }
     }
 
@@ -1194,6 +1453,22 @@ fn decode_position_streams(
         offset_start_deltas,
         offset_lengths,
     })
+}
+
+/// One full `.pos`/`.pay` `PForUtil` block of `format`, each value handed to
+/// `sink` in order: 256 values through [`for_util::pfor_decode`] for
+/// `Lucene104`, 128 through the retired generations' decoder otherwise.
+fn pfor_block(format: PostingsFormat, r: &mut SliceInput, mut sink: impl FnMut(u32)) -> Result<()> {
+    if format == PostingsFormat::Lucene104 {
+        let mut block = [0u32; for_util::BLOCK_SIZE];
+        for_util::pfor_decode(r, &mut block)?;
+        block.iter().for_each(|&v| sink(v));
+    } else {
+        let mut block = [0u64; crate::backward_codecs::for_util::BLOCK_SIZE];
+        crate::backward_codecs::for_util::pfor_decode(r, format.word(), &mut block)?;
+        block.iter().for_each(|&v| sink(v as u32));
+    }
+    Ok(())
 }
 
 /// Positions only, in one flat array with per-document start offsets, instead
@@ -2204,6 +2479,32 @@ pub fn read_positions_for_docs(
     has_payloads: bool,
     wanted: &[usize],
 ) -> Result<(Vec<i32>, Vec<u32>)> {
+    if pos.format != PostingsFormat::Lucene104 {
+        // A retired format: every delta, then the wanted documents' ranges
+        // of them, each summed from 0 (a document's first delta is absolute).
+        let n = wire_count(total_term_freq, "total_term_freq")?;
+        let deltas = crate::backward_codecs::postings::read_position_deltas(
+            pos.buf,
+            pos.format,
+            meta,
+            total_term_freq,
+            index_options.subsumes_offsets(),
+            has_payloads,
+        )?;
+        let ranges = wanted_ranges(wanted, freqs, n)?;
+        let mut positions = Vec::new();
+        let mut doc_starts = Vec::with_capacity(ranges.len().saturating_add(1));
+        for (a, b) in ranges {
+            doc_starts.push(positions.len() as u32);
+            let mut p = 0i32;
+            for &d in deltas.get(a..b).unwrap_or(&[]) {
+                p = p.wrapping_add(d);
+                positions.push(p);
+            }
+        }
+        doc_starts.push(positions.len() as u32);
+        return Ok((positions, doc_starts));
+    }
     // ARITH: `wanted` is a live slice, so `wanted.len() <= isize::MAX` and
     // the `+ 1` cannot reach `usize::MAX`. It is the caller's own document
     // list, not a count read off disk.
@@ -2255,6 +2556,29 @@ pub fn read_occurrences_for_docs(
     has_payloads: bool,
     wanted: &[usize],
 ) -> Result<(Vec<Position>, Vec<u32>)> {
+    if pos.format != PostingsFormat::Lucene104 {
+        // A retired format: every occurrence, then the wanted documents'.
+        let n = wire_count(total_term_freq, "total_term_freq")?;
+        let ranges = wanted_ranges(wanted, freqs, n)?;
+        let all = read_positions(
+            pos,
+            pay,
+            meta,
+            freqs,
+            total_term_freq,
+            index_options,
+            has_payloads,
+        )?;
+        let flat: Vec<Position> = all.into_iter().flatten().collect();
+        let mut occurrences = Vec::new();
+        let mut doc_starts = Vec::with_capacity(ranges.len().saturating_add(1));
+        for (a, b) in ranges {
+            doc_starts.push(occurrences.len() as u32);
+            occurrences.extend_from_slice(flat.get(a..b).unwrap_or(&[]));
+        }
+        doc_starts.push(occurrences.len() as u32);
+        return Ok((occurrences, doc_starts));
+    }
     // ARITH: `wanted` is a live slice, so `wanted.len() <= isize::MAX` and
     // the `+ 1` cannot reach `usize::MAX`. It is the caller's own document
     // list, not a count read off disk.
@@ -2320,6 +2644,27 @@ pub fn read_occurrences_for_doc(
         ));
     }
     let n = wire_count(total_term_freq, "total_term_freq")?;
+    if doc.format != PostingsFormat::Lucene104 {
+        // A retired format has no skip data this port walks: find the
+        // document in the decoded list, then its occurrences.
+        let postings = doc.read_postings(meta, doc_freq, index_options, has_payloads)?;
+        let Ok(i) = postings.docs.binary_search(&doc_id) else {
+            return Ok(None);
+        };
+        let mut all = read_positions(
+            pos,
+            pay,
+            meta,
+            &postings.freqs,
+            total_term_freq,
+            index_options,
+            has_payloads,
+        )?;
+        if i >= all.len() {
+            return Err(corrupted("document past the term's decoded positions"));
+        }
+        return Ok(Some(all.swap_remove(i)));
+    }
     let mut cursor = doc.lazy_cursor(meta, doc_freq, index_options, has_payloads)?;
     cursor.track_positions();
     if cursor.advance(doc_id)? != doc_id {
@@ -3665,6 +4010,27 @@ pub struct LazyDocsCursor<'a> {
     /// `advance`: the next one expands the block instead. See
     /// [`Self::next_doc`].
     bits_stepped: bool,
+    /// A term of a retired [`PostingsFormat`]: its postings decoded whole at
+    /// open, served through the tail-block path a window of up to
+    /// `BLOCK_SIZE` documents at a time ([`Self::load_old_window`]). `None`
+    /// for `Lucene104`, which never takes this branch.
+    old: Option<Box<OldPostings>>,
+}
+
+/// A retired-format term's decoded postings, behind a [`LazyDocsCursor`].
+///
+/// These formats' skip data is not navigated (see [`PostingsFormat`]), so the
+/// cursor presents the term as if it were all tail blocks: no headers, no
+/// impacts, no level-1 spans -- the shape every caller already handles for a
+/// `Lucene104` term's last block.
+#[derive(Debug)]
+struct OldPostings {
+    docs: Vec<i32>,
+    freqs: Vec<i32>,
+    /// Index of the first document not yet copied into the cursor's block.
+    next: usize,
+    /// Index of the document in `block_docs[0]`.
+    window_start: usize,
 }
 
 /// A running `.pos`/`.pay` position: the absolute file pointers plus how many
@@ -4442,6 +4808,9 @@ impl<'a> LazyDocsCursor<'a> {
             self.doc_id = NO_MORE_DOCS;
             return Ok(NO_MORE_DOCS);
         }
+        if self.old.is_some() {
+            return Ok(self.load_old_window(target));
+        }
 
         // The tail block: no skip data on the wire at all, so there is nothing
         // to decide from and it must be decoded.
@@ -4514,6 +4883,13 @@ impl<'a> LazyDocsCursor<'a> {
         // Already positioned on a block that covers `target`, decoded or not.
         if target <= self.level0_last_doc_id {
             return Ok(self.level0_last_doc_id);
+        }
+        // A retired format has no headers to walk: every window is a tail.
+        if self.old.is_some() {
+            self.level0_impacts.clear();
+            self.level0_impacts_stale = false;
+            self.level0_last_doc_id = NO_MORE_DOCS;
+            return Ok(NO_MORE_DOCS);
         }
 
         // A shallow block that `target` has moved past: skip it without ever
@@ -4716,6 +5092,64 @@ impl<'a> LazyDocsCursor<'a> {
             body_end,
         });
         Ok(Some(last))
+    }
+
+    /// The next window of a retired-format term ([`OldPostings`]): the up to
+    /// `BLOCK_SIZE` documents from the first one `>= target`, copied into the
+    /// block as a tail block would be decoded into it, the cursor on its
+    /// first document. Windows wholly behind `target` are skipped by a binary
+    /// search over the decoded list rather than copied.
+    fn load_old_window(&mut self, target: i32) -> i32 {
+        let Some(old) = self.old.as_mut() else {
+            return self.doc_id;
+        };
+        let rest = &old.docs[old.next..];
+        // ARITH: `partition_point` returns at most `rest.len()`, so the sum is
+        // at most `docs.len()`.
+        #[allow(clippy::arithmetic_side_effects)]
+        let start = old.next + rest.partition_point(|&d| d < target);
+        let end = start
+            .saturating_add(BLOCK_SIZE as usize)
+            .min(old.docs.len());
+        // ARITH: `start <= end <= docs.len()`, and the window is at most
+        // `BLOCK_SIZE` long, the size of both block arrays.
+        #[allow(clippy::arithmetic_side_effects)]
+        let n = end - start;
+        self.block_docs[..n].copy_from_slice(&old.docs[start..end]);
+        if self.needs_freq {
+            self.block_freqs[..n].copy_from_slice(&old.freqs[start..end]);
+        }
+        old.window_start = start;
+        old.next = end;
+        // ARITH: `end <= docs.len()`.
+        #[allow(clippy::arithmetic_side_effects)]
+        let left = old.docs.len() - end;
+        self.doc_count_left = i32::try_from(left).unwrap_or(i32::MAX);
+        self.block_len = n;
+        self.block_pos = 0;
+        self.bits = None;
+        self.block_gen = self.block_gen.wrapping_add(1);
+        self.level0_impacts.clear();
+        self.level0_impacts_stale = false;
+        if n == 0 {
+            self.doc_count_left = 0;
+            self.doc_id = NO_MORE_DOCS;
+            return NO_MORE_DOCS;
+        }
+        // ARITH: `n >= 1`.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            self.prev_doc_id = self.block_docs[n - 1];
+        }
+        self.doc_id = self.block_docs[0];
+        self.doc_id
+    }
+
+    /// For a retired-format cursor, the index in the term's doc list of the
+    /// document the cursor is on; `None` for `Lucene104`.
+    fn old_doc_index(&self) -> Option<usize> {
+        let old = self.old.as_ref()?;
+        Some(old.window_start.saturating_add(self.block_pos))
     }
 
     /// `Lucene104PostingsReader.refillDocs`: unpack the block
@@ -5010,6 +5444,21 @@ pub struct PositionsCursor<'a> {
     /// position, and most of what a positions walk cost.
     doc_left: u64,
     position: i32,
+    /// A retired [`PostingsFormat`]'s term: every position delta decoded at
+    /// open and the offset of each document's first one, walked in step with
+    /// the document cursor's [`LazyDocsCursor::old_doc_index`] instead of
+    /// `.pos` skip data. `None` for `Lucene104`.
+    old: Option<Box<OldPositions>>,
+}
+
+/// A retired-format term's position deltas, behind a [`PositionsCursor`].
+#[derive(Debug)]
+struct OldPositions {
+    deltas: Vec<i32>,
+    /// `starts[i]..starts[i + 1]` are document `i`'s deltas.
+    starts: Vec<usize>,
+    /// Next delta of the current document.
+    upto: usize,
 }
 
 impl<'a> PositionsCursor<'a> {
@@ -5022,12 +5471,47 @@ impl<'a> PositionsCursor<'a> {
         total_term_freq: i64,
         has_offsets: bool,
         has_payloads: bool,
-    ) -> Self {
+    ) -> Result<Self> {
+        let old = if pos.format != PostingsFormat::Lucene104 {
+            let deltas = crate::backward_codecs::postings::read_position_deltas(
+                pos.buf,
+                pos.format,
+                meta,
+                total_term_freq,
+                has_offsets,
+                has_payloads,
+            )?;
+            let singleton = [i32::try_from(total_term_freq).unwrap_or(i32::MAX)];
+            let freqs: &[i32] = match &docs.old {
+                Some(o) => &o.freqs,
+                None => &singleton,
+            };
+            let mut starts = Vec::with_capacity(freqs.len().saturating_add(1));
+            let mut at = 0usize;
+            for &f in freqs {
+                starts.push(at);
+                at = at.saturating_add(usize::try_from(f).unwrap_or(0));
+            }
+            starts.push(at);
+            if at != deltas.len() {
+                return Err(corrupted(format!(
+                    "document frequencies sum to {at} but the term has {} positions",
+                    deltas.len()
+                )));
+            }
+            Some(Box::new(OldPositions {
+                deltas,
+                starts,
+                upto: 0,
+            }))
+        } else {
+            None
+        };
         let mut docs = docs;
         docs.track_positions();
         // `total_term_freq % BLOCK_SIZE`, which is in `0..256`.
         let tail_count = total_term_freq.rem_euclid(BLOCK_SIZE as i64) as usize;
-        PositionsCursor {
+        Ok(PositionsCursor {
             docs,
             pos_r: SliceInput::new(pos.buf),
             for_util: for_util::ForUtil::new(),
@@ -5052,7 +5536,53 @@ impl<'a> PositionsCursor<'a> {
             pos_doc: -1,
             doc_left: 0,
             position: 0,
+            old,
+        })
+    }
+
+    /// [`Self::start_doc`] for a retired-format term: the current document's
+    /// deltas in the decoded list.
+    fn start_old_doc(&mut self) -> Result<()> {
+        let doc = self.docs.doc_id;
+        if doc < 0 || doc == NO_MORE_DOCS {
+            return Err(Error::Unsupported(
+                "next_position needs the cursor positioned on a decoded document",
+            ));
         }
+        let idx = self.docs.old_doc_index().unwrap_or(0);
+        let Some(old) = self.old.as_mut() else {
+            return Ok(());
+        };
+        let (start, end) = match (old.starts.get(idx), old.starts.get(idx.saturating_add(1))) {
+            (Some(&a), Some(&b)) => (a, b),
+            _ => return Err(corrupted("document index past the term's positions")),
+        };
+        old.upto = start;
+        // ARITH: `starts` ascends.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            self.doc_left = (end - start) as u64;
+        }
+        self.position = 0;
+        self.pos_doc = doc;
+        Ok(())
+    }
+
+    /// The next position of a retired-format term's current document.
+    fn next_old_position(&mut self) -> Result<i32> {
+        let Some(old) = self.old.as_mut() else {
+            return Err(positions_overrun());
+        };
+        let d = *old.deltas.get(old.upto).ok_or_else(positions_overrun)?;
+        // ARITH: `upto < deltas.len()`; `doc_left > 0` was checked by the
+        // caller; positions wrap as Java's `int` sum does.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            old.upto += 1;
+            self.doc_left -= 1;
+        }
+        self.position = self.position.wrapping_add(d);
+        Ok(self.position)
     }
 
     /// The underlying document cursor, for everything that is not a position:
@@ -5094,12 +5624,19 @@ impl<'a> PositionsCursor<'a> {
     #[inline]
     pub fn next_position(&mut self) -> Result<i32> {
         if self.docs.doc_id != self.pos_doc {
-            self.start_doc()?;
+            if self.old.is_some() {
+                self.start_old_doc()?;
+            } else {
+                self.start_doc()?;
+            }
         }
         if self.doc_left == 0 {
             return Err(Error::Unsupported(
                 "next_position called more times than the document's frequency",
             ));
+        }
+        if self.old.is_some() {
+            return self.next_old_position();
         }
         if self.buf_upto >= self.block.len {
             self.refill()?;
@@ -5126,6 +5663,16 @@ impl<'a> PositionsCursor<'a> {
     /// checks made once per positions block instead of once per position. A
     /// phrase scorer reads each term's positions whole before matching them.
     pub fn positions_into(&mut self, out: &mut Vec<i32>) -> Result<()> {
+        if self.old.is_some() {
+            if self.docs.doc_id != self.pos_doc {
+                self.start_old_doc()?;
+            }
+            while self.doc_left > 0 {
+                let p = self.next_old_position()?;
+                out.push(p);
+            }
+            return Ok(());
+        }
         if self.docs.doc_id != self.pos_doc {
             self.start_doc()?;
         }
@@ -5353,7 +5900,7 @@ mod tests {
             // A multiple of the block size: the tail the real total leaves
             // (at `lastPosBlockOffset`) now holds no positions at all.
             let short = stats.total_term_freq / BLOCK_SIZE as i64 * BLOCK_SIZE as i64;
-            let mut c = PositionsCursor::new(docs, &pos_in, meta, short, true, true);
+            let mut c = PositionsCursor::new(docs, &pos_in, meta, short, true, true).unwrap();
             let mut out = Vec::new();
             let err = loop {
                 if c.next_doc().unwrap() == NO_MORE_DOCS {

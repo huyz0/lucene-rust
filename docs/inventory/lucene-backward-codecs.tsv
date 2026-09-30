@@ -1,0 +1,161 @@
+# Lucene 10.5.0 lucene-backward-codecs: every top-level class of the jar, and what became of it.
+# Checked by scripts/check-port-inventory.py --module backward-codecs (see its docstring for the statuses).
+# class	status	detail
+backward_codecs/Placeholder	not-needed	empty class the module system needs so the package exists; no behaviour
+backward_codecs/compressing/CompressionMode	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/compressing/Compressor	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/compressing/Decompressor	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/compressing/MatchingReaders	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene100/Lucene100Codec	ported	crates/lucene-codecs/src/codecs.rs::CODECS
+backward_codecs/lucene101/ForDeltaUtil	ported	crates/lucene-codecs/src/backward_codecs/for_util.rs::for_decode
+backward_codecs/lucene101/ForUtil	ported	crates/lucene-codecs/src/backward_codecs/for_util.rs::for_decode
+backward_codecs/lucene101/Lucene101Codec	ported	crates/lucene-codecs/src/codecs.rs::CODECS
+backward_codecs/lucene101/Lucene101PostingsFormat	partial	crates/lucene-codecs/src/backward_codecs/postings.rs::read_postings -- M8: Lucene101Postings decoded front to back; its skip data is stepped over, never used to jump (lazy cursors serve the decoded list)
+backward_codecs/lucene101/Lucene101PostingsReader	partial	crates/lucene-codecs/src/backward_codecs/postings.rs::read_postings -- M8: Lucene101Postings decoded front to back; its skip data is stepped over, never used to jump (lazy cursors serve the decoded list)
+backward_codecs/lucene101/PForUtil	ported	crates/lucene-codecs/src/backward_codecs/for_util.rs::pfor_decode
+backward_codecs/lucene101/PostingDecodingUtil	not-needed	vectorisation shim over IndexInput; the bits it hands ForUtil are decoded by backward_codecs::for_util::for_decode
+backward_codecs/lucene101/PostingsUtil	ported	crates/lucene-codecs/src/backward_codecs/postings.rs::read_tail
+backward_codecs/lucene102/BinarizedByteVectorValues	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene102/Lucene102BinaryFlatVectorsScorer	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene102/Lucene102BinaryQuantizedVectorsFormat	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene102/Lucene102BinaryQuantizedVectorsReader	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene102/Lucene102HnswBinaryQuantizedVectorsFormat	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene102/OffHeapBinarizedVectorValues	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene103/ForDeltaUtil	ported	crates/lucene-codecs/src/backward_codecs/for_util.rs::for_decode
+backward_codecs/lucene103/ForUtil	ported	crates/lucene-codecs/src/backward_codecs/for_util.rs::for_decode
+backward_codecs/lucene103/Lucene103Codec	ported	crates/lucene-codecs/src/codecs.rs::CODECS
+backward_codecs/lucene103/Lucene103PostingsFormat	partial	crates/lucene-codecs/src/backward_codecs/postings.rs::read_postings -- M8: Lucene103Postings decoded front to back; its skip data is stepped over, never used to jump (lazy cursors serve the decoded list)
+backward_codecs/lucene103/Lucene103PostingsReader	partial	crates/lucene-codecs/src/backward_codecs/postings.rs::read_postings -- M8: Lucene103Postings decoded front to back; its skip data is stepped over, never used to jump (lazy cursors serve the decoded list)
+backward_codecs/lucene103/PForUtil	ported	crates/lucene-codecs/src/backward_codecs/for_util.rs::pfor_decode
+backward_codecs/lucene103/PostingDecodingUtil	not-needed	vectorisation shim over IndexInput; the bits it hands ForUtil are decoded by backward_codecs::for_util::for_decode
+backward_codecs/lucene103/PostingsUtil	ported	crates/lucene-codecs/src/backward_codecs/postings.rs::read_tail
+backward_codecs/lucene40/blocktree/CompressionAlgorithm	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene40/blocktree/FieldReader	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene40/blocktree/IntersectTermsEnum	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene40/blocktree/IntersectTermsEnumFrame	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene40/blocktree/Lucene40BlockTreeTermsReader	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene40/blocktree/SegmentTermsEnum	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene40/blocktree/SegmentTermsEnumFrame	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene40/blocktree/Stats	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene50/ForUtil	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene50/Lucene50CompoundFormat	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene50/Lucene50CompoundReader	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene50/Lucene50LiveDocsFormat	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene50/Lucene50PostingsFormat	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene50/Lucene50PostingsReader	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene50/Lucene50ScoreSkipReader	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene50/Lucene50SkipReader	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene50/Lucene50StoredFieldsFormat	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene50/Lucene50TermVectorsFormat	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene50/compressing/FieldsIndex	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene50/compressing/FieldsIndexReader	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene50/compressing/LegacyFieldsIndexReader	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene50/compressing/Lucene50CompressingStoredFieldsFormat	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene50/compressing/Lucene50CompressingStoredFieldsReader	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene50/compressing/Lucene50CompressingTermVectorsFormat	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene50/compressing/Lucene50CompressingTermVectorsReader	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene60/Lucene60FieldInfosFormat	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene60/Lucene60PointsFormat	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene60/Lucene60PointsReader	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene70/Lucene70SegmentInfoFormat	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene80/IndexedDISI	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene80/Lucene80Codec	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene80/Lucene80DocValuesConsumer	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene80/Lucene80DocValuesFormat	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene80/Lucene80DocValuesProducer	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene80/Lucene80NormsFormat	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene80/Lucene80NormsProducer	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene84/ForDeltaUtil	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene84/ForUtil	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene84/Lucene84Codec	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene84/Lucene84PostingsFormat	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene84/Lucene84PostingsReader	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene84/Lucene84ScoreSkipReader	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene84/Lucene84SkipReader	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene84/PForUtil	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene86/Lucene86Codec	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene86/Lucene86PointsFormat	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene86/Lucene86PointsReader	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene86/Lucene86SegmentInfoFormat	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene87/DeflateWithPresetDictCompressionMode	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene87/LZ4WithPresetDictCompressionMode	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene87/Lucene87Codec	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene87/Lucene87StoredFieldsFormat	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/lucene90/ForUtil	ported	crates/lucene-codecs/src/backward_codecs/for_util.rs::for_decode
+backward_codecs/lucene90/Lucene90BoundsChecker	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene90/Lucene90Codec	ported	crates/lucene-codecs/src/codecs.rs::CODECS
+backward_codecs/lucene90/Lucene90FieldInfosFormat	ported	crates/lucene-codecs/src/field_infos.rs::LUCENE90_CODEC_NAME
+backward_codecs/lucene90/Lucene90HnswGraphBuilder	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene90/Lucene90HnswVectorsFormat	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene90/Lucene90HnswVectorsReader	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene90/Lucene90NeighborArray	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene90/Lucene90OnHeapHnswGraph	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene90/Lucene90PostingsFormat	partial	crates/lucene-codecs/src/backward_codecs/postings.rs::read_postings -- M8: Lucene90Postings decoded front to back; its skip data is stepped over, never used to jump (lazy cursors serve the decoded list)
+backward_codecs/lucene90/Lucene90PostingsReader	partial	crates/lucene-codecs/src/backward_codecs/postings.rs::read_postings -- M8: Lucene90Postings decoded front to back; its skip data is stepped over, never used to jump (lazy cursors serve the decoded list)
+backward_codecs/lucene90/Lucene90PostingsWriter	not-needed	writes a retired format; backward-codecs keeps it for tests only and M8 reads, never writes, old formats
+backward_codecs/lucene90/Lucene90ScoreSkipReader	deferred:M8	skip-list navigation of the retired postings: the port decodes a term front to back and advance() searches the decoded list (T8.3 optimisation)
+backward_codecs/lucene90/Lucene90SegmentInfoFormat	ported	crates/lucene-index/src/segment_info.rs::parse_for_codec
+backward_codecs/lucene90/Lucene90SkipReader	deferred:M8	skip-list navigation of the retired postings: the port decodes a term front to back and advance() searches the decoded list (T8.3 optimisation)
+backward_codecs/lucene90/Lucene90SkipWriter	not-needed	writes a retired format; backward-codecs keeps it for tests only and M8 reads, never writes, old formats
+backward_codecs/lucene90/PForUtil	ported	crates/lucene-codecs/src/backward_codecs/for_util.rs::pfor_decode
+backward_codecs/lucene90/blocktree/CompressionAlgorithm	ported	crates/lucene-codecs/src/blocktree.rs::load_block
+backward_codecs/lucene90/blocktree/FieldReader	ported	crates/lucene-codecs/src/backward_codecs/blocktree.rs::decode_output
+backward_codecs/lucene90/blocktree/IntersectTermsEnum	ported	crates/lucene-codecs/src/blocktree.rs::DfaIntersect
+backward_codecs/lucene90/blocktree/IntersectTermsEnumFrame	ported	crates/lucene-codecs/src/blocktree.rs::DfaIntersect
+backward_codecs/lucene90/blocktree/Lucene90BlockTreeTermsReader	ported	crates/lucene-codecs/src/backward_codecs/blocktree.rs::open
+backward_codecs/lucene90/blocktree/SegmentTermsEnum	ported	crates/lucene-codecs/src/blocktree.rs::SegmentTermsEnum
+backward_codecs/lucene90/blocktree/SegmentTermsEnumFrame	ported	crates/lucene-codecs/src/blocktree.rs::Frame
+backward_codecs/lucene90/blocktree/Stats	not-needed	Diagnostic block statistics (FieldReader.getStats, printed by CheckIndex -verbose); no read path depends on it.
+backward_codecs/lucene91/Lucene91BoundsChecker	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene91/Lucene91Codec	ported	crates/lucene-codecs/src/codecs.rs::CODECS
+backward_codecs/lucene91/Lucene91HnswVectorsFormat	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene91/Lucene91HnswVectorsReader	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene91/Lucene91NeighborArray	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene91/Lucene91OnHeapHnswGraph	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene912/ForDeltaUtil	ported	crates/lucene-codecs/src/backward_codecs/for_util.rs::for_decode
+backward_codecs/lucene912/ForUtil	ported	crates/lucene-codecs/src/backward_codecs/for_util.rs::for_decode
+backward_codecs/lucene912/Lucene912Codec	ported	crates/lucene-codecs/src/codecs.rs::CODECS
+backward_codecs/lucene912/Lucene912PostingsFormat	partial	crates/lucene-codecs/src/backward_codecs/postings.rs::read_postings -- M8: Lucene912Postings decoded front to back; its skip data is stepped over, never used to jump (lazy cursors serve the decoded list)
+backward_codecs/lucene912/Lucene912PostingsReader	partial	crates/lucene-codecs/src/backward_codecs/postings.rs::read_postings -- M8: Lucene912Postings decoded front to back; its skip data is stepped over, never used to jump (lazy cursors serve the decoded list)
+backward_codecs/lucene912/PForUtil	ported	crates/lucene-codecs/src/backward_codecs/for_util.rs::pfor_decode
+backward_codecs/lucene912/PostingsUtil	ported	crates/lucene-codecs/src/backward_codecs/postings.rs::read_tail
+backward_codecs/lucene92/Lucene92Codec	ported	crates/lucene-codecs/src/codecs.rs::CODECS
+backward_codecs/lucene92/Lucene92HnswVectorsFormat	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene92/Lucene92HnswVectorsReader	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene92/OffHeapFloatVectorValues	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene94/Lucene94Codec	ported	crates/lucene-codecs/src/codecs.rs::CODECS
+backward_codecs/lucene94/Lucene94HnswVectorsFormat	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene94/Lucene94HnswVectorsReader	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene94/OffHeapByteVectorValues	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene94/OffHeapFloatVectorValues	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene95/Lucene95Codec	ported	crates/lucene-codecs/src/codecs.rs::CODECS
+backward_codecs/lucene95/Lucene95HnswVectorsFormat	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene95/Lucene95HnswVectorsReader	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene99/ForDeltaUtil	ported	crates/lucene-codecs/src/backward_codecs/for_util.rs::for_decode
+backward_codecs/lucene99/ForUtil	ported	crates/lucene-codecs/src/backward_codecs/for_util.rs::for_decode
+backward_codecs/lucene99/Lucene99Codec	ported	crates/lucene-codecs/src/codecs.rs::CODECS
+backward_codecs/lucene99/Lucene99HnswScalarQuantizedVectorsFormat	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene99/Lucene99PostingsFormat	partial	crates/lucene-codecs/src/backward_codecs/postings.rs::read_postings -- M8: Lucene99Postings decoded front to back; its skip data is stepped over, never used to jump (lazy cursors serve the decoded list)
+backward_codecs/lucene99/Lucene99PostingsReader	partial	crates/lucene-codecs/src/backward_codecs/postings.rs::read_postings -- M8: Lucene99Postings decoded front to back; its skip data is stepped over, never used to jump (lazy cursors serve the decoded list)
+backward_codecs/lucene99/Lucene99ScalarQuantizedVectorsFormat	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene99/Lucene99ScalarQuantizedVectorsReader	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene99/Lucene99ScoreSkipReader	deferred:M8	skip-list navigation of the retired postings: the port decodes a term front to back and advance() searches the decoded list (T8.3 optimisation)
+backward_codecs/lucene99/Lucene99SkipReader	deferred:M8	skip-list navigation of the retired postings: the port decodes a term front to back and advance() searches the decoded list (T8.3 optimisation)
+backward_codecs/lucene99/Lucene99SkipWriter	not-needed	writes a retired format; backward-codecs keeps it for tests only and M8 reads, never writes, old formats
+backward_codecs/lucene99/OffHeapQuantizedByteVectorValues	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene99/OffHeapQuantizedFloatVectorValues	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene99/PForUtil	ported	crates/lucene-codecs/src/backward_codecs/for_util.rs::pfor_decode
+backward_codecs/lucene99/PostingsUtil	ported	crates/lucene-codecs/src/backward_codecs/postings.rs::read_tail
+backward_codecs/packed/LegacyDirectMonotonicReader	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/packed/LegacyDirectMonotonicWriter	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/packed/LegacyDirectReader	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/packed/LegacyDirectWriter	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/packed/LegacyPacked64	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/packed/LegacyPacked64SingleBlock	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/packed/LegacyPackedInts	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/store/EndiannessReverserChecksumIndexInput	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/store/EndiannessReverserDataInput	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/store/EndiannessReverserDataOutput	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/store/EndiannessReverserIndexInput	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/store/EndiannessReverserIndexOutput	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.
+backward_codecs/store/EndiannessReverserUtil	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.

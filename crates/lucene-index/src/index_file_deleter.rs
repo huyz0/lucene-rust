@@ -596,7 +596,7 @@ impl<'d> IndexFileDeleter<'d> {
         }
         let name = format!("{}.si", sci.segment_name);
         let bytes = self.dir.open(&name)?.to_vec();
-        let si = segment_info::parse(&bytes, &sci.segment_id)?;
+        let si = segment_info::parse_for_codec(&bytes, &sci.segment_id, &sci.codec_name)?;
         let files = Self::with_self_listing(&sci.segment_name, si.files);
         self.si_files
             .insert(sci.segment_name.clone(), (sci.segment_id, files));
