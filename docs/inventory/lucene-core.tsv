@@ -347,9 +347,9 @@ index/DocValuesType	ported	crates/lucene-codecs/src/field_infos.rs::DocValuesTyp
 index/DocValuesUpdate	ported	crates/lucene-index/src/buffered_updates.rs::DocValuesUpdate
 index/DocValuesWriter	ported	crates/lucene-index/src/index_writer.rs::build_doc_values_output
 index/DocsWithFieldSet	not-needed	internal doc-id set the per-field in-RAM writers use to remember which docs had a value; the Rust build_*_output functions track presence inline.
-index/DocumentsWriter	partial	crates/lucene-index/src/concurrent_writer.rs::ConcurrentIndexWriter -- M7: per parity.md: not ported `deleteAll`, vectors and custom-frequency postings on the concurrent path (use `into_writer`), flushing on delete RAM
+index/DocumentsWriter	partial	crates/lucene-index/src/concurrent_writer.rs::ConcurrentIndexWriter -- M7: per parity.md: not ported vectors and custom-frequency postings on the concurrent path (use `into_writer`)
 index/DocumentsWriterDeleteQueue	ported	crates/lucene-index/src/buffered_updates.rs::DeleteQueue
-index/DocumentsWriterFlushControl	partial	crates/lucene-index/src/concurrent_writer.rs::ConcurrentIndexWriter -- M7: per parity.md: no flush-by-RAM across slots (`FlushByRamOrCountsPolicy` picking the largest DWPT), no flushing on delete RAM
+index/DocumentsWriterFlushControl	ported	crates/lucene-index/src/flush_policy.rs::FlushControl
 index/DocumentsWriterFlushQueue	ported	crates/lucene-index/src/index_writer.rs::SegmentTicket
 index/DocumentsWriterPerThread	ported	crates/lucene-index/src/index_writer.rs::DocumentBuffer
 index/DocumentsWriterPerThreadPool	ported	crates/lucene-index/src/concurrent_writer.rs::ConcurrentIndexWriter
@@ -373,8 +373,8 @@ index/FilterSortedNumericDocValues	ported	crates/lucene-search/src/reader/filter
 index/FilterSortedSetDocValues	ported	crates/lucene-search/src/reader/filter.rs::FilterSortedSetDocValues
 index/FilteredTermsEnum	ported	crates/lucene-search/src/reader/filtered_terms_enum.rs::FilteredTermsEnum
 index/FloatVectorValues	ported	crates/lucene-codecs/src/vectors.rs::FloatVectorValues
-index/FlushByRamOrCountsPolicy	partial	crates/lucene-index/src/index_writer.rs::set_ram_buffer_size_mb -- M7: per parity.md: each concurrent slot flushes on its own count or RAM; no flush of the largest DWPT across slots, no flush on delete RAM
-index/FlushPolicy	partial	crates/lucene-index/src/index_writer.rs::set_ram_buffer_size_mb -- M7: only the RAM/doc-count policy exists; no pluggable flush policy, no cross-slot or delete-RAM flushing
+index/FlushByRamOrCountsPolicy	ported	crates/lucene-index/src/flush_policy.rs::FlushByRamOrCountsPolicy
+index/FlushPolicy	ported	crates/lucene-index/src/flush_policy.rs::FlushPolicy
 index/FreqAndNormBuffer	ported	crates/lucene-codecs/src/postings.rs::decode_impacts_into
 index/FreqProxFields	ported	crates/lucene-index/src/inverter.rs::into_term_postings
 index/FreqProxTermsWriter	ported	crates/lucene-index/src/inverter.rs::FieldInverter
@@ -407,7 +407,7 @@ index/KnnVectorValues	ported	crates/lucene-codecs/src/vectors.rs::FloatVectorVal
 index/LeafMetaData	ported	crates/lucene-index/src/segment_info.rs::SegmentInfo
 index/LeafReader	ported	crates/lucene-search/src/reader/mod.rs::LeafReader
 index/LeafReaderContext	ported	crates/lucene-search/src/reader/mod.rs::LeafReaderContext
-index/LiveIndexWriterConfig	partial	crates/lucene-index/src/index_writer.rs::set_ram_buffer_size_mb -- M7: RAM buffer, max buffered docs, merge policy and the merged-segment warmer are live-settable; no `setUseCompoundFile` (compound segments come with the codec writers' change), `maxFullFlushMergeWaitMillis` (merge-on-commit) or `checkPendingFlushOnUpdate`
+index/LiveIndexWriterConfig	partial	crates/lucene-index/src/index_writer.rs::set_ram_buffer_size_mb -- M7: RAM buffer, max buffered docs, merge policy and the merged-segment warmer are live-settable; no `setUseCompoundFile` (compound segments come with the codec writers' change), or `maxFullFlushMergeWaitMillis` (merge-on-commit); `checkPendingFlushOnUpdate` is `ConcurrentIndexWriter::set_check_pending_flush_on_update`
 index/LockableConcurrentApproximatePriorityQueue	not-needed	lock-holding queue of idle DWPTs inside DocumentsWriterPerThreadPool; Rust slots are Mutex-guarded buffers (no user-visible behaviour).
 index/LogByteSizeMergePolicy	ported	crates/lucene-index/src/merge_policy/log.rs::LogByteSizeMergePolicy
 index/LogDocMergePolicy	ported	crates/lucene-index/src/merge_policy/log.rs::LogDocMergePolicy
