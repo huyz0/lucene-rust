@@ -87,11 +87,21 @@ public final class NativeSelfTest {
         softDeletes(new Random(7));
         storedFields(new Random(11));
         int compared = 0;
+        int bwc = 0;
+        int bwcCompared = 0;
         for (Path fixture : fixtureIndexes(Path.of(args[0]))) {
-            compared += fixture(fixture) ? 1 : 0;
+            boolean old = fixture.getParent().getFileName().toString().startsWith("bwc");
+            boolean ok = fixture(fixture);
+            compared += ok ? 1 : 0;
+            bwc += old ? 1 : 0;
+            bwcCompared += old && ok ? 1 : 0;
+            // M8 T8.5: every index an older Lucene 9.x/10.x wrote opens natively.
+            check(old == false || ok, "backward-codecs fixture served natively: " + fixture);
         }
         // A regression that stopped fixtures opening natively would otherwise pass silently.
         check(compared >= 20, "fixtures compared natively: " + compared);
+        check(bwc >= 17, "backward-codecs fixtures found: " + bwc);
+        System.out.printf("NativeSelfTest: %d of %d backward-codecs fixture indexes compared natively%n", bwcCompared, bwc);
         check(trackedPages >= 20, "sorted pages tracking the max score: " + trackedPages);
         check(sortedMinScoreChecks >= 20, "sorted pages behind min_score: " + sortedMinScoreChecks);
         check(aggChecks >= 100, "queries aggregated natively: " + aggChecks);
@@ -1297,21 +1307,38 @@ public final class NativeSelfTest {
         return d;
     }
 
-    /** Every fixture directory holding a {@code segments_N}. */
+    /**
+     * Every fixture directory holding a {@code segments_N}, one level down, plus -- for the
+     * backward-codecs corpora ({@code bwc/<version>}, {@code bwc-big/<version>},
+     * {@code bwc-quantized/<version>}, M8) -- two levels down.
+     */
     private static List<Path> fixtureIndexes(Path root) throws Exception {
         List<Path> out = new ArrayList<>();
         try (Stream<Path> s = Files.list(root)) {
             for (Path p : s.sorted().toList()) {
-                if (Files.isDirectory(p)) {
-                    try (Stream<Path> files = Files.list(p)) {
-                        if (files.anyMatch(f -> f.getFileName().toString().startsWith("segments_"))) {
-                            out.add(p);
+                if (Files.isDirectory(p) == false) {
+                    continue;
+                }
+                if (isIndex(p)) {
+                    out.add(p);
+                } else if (p.getFileName().toString().startsWith("bwc")) {
+                    try (Stream<Path> versions = Files.list(p)) {
+                        for (Path v : versions.sorted().toList()) {
+                            if (Files.isDirectory(v) && isIndex(v)) {
+                                out.add(v);
+                            }
                         }
                     }
                 }
             }
         }
         return out;
+    }
+
+    private static boolean isIndex(Path dir) throws Exception {
+        try (Stream<Path> files = Files.list(dir)) {
+            return files.anyMatch(f -> f.getFileName().toString().startsWith("segments_"));
+        }
     }
 
     /** A Java-written fixture: term and boolean queries over its own terms; true if it was compared. */
