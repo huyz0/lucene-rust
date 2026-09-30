@@ -227,6 +227,7 @@ pub mod query;
 pub mod query_cache;
 pub mod query_parser;
 pub mod query_visitor;
+pub mod reader;
 pub mod reader_manager;
 pub mod reference_manager;
 pub mod rescorer;
@@ -443,6 +444,25 @@ pub enum Error {
     /// Opening or reopening a [`directory_reader::DirectoryReader`].
     #[error(transparent)]
     DirectoryReader(#[from] directory_reader::Error),
+    /// A low-level decode (an `IndexedDISI` region, a doc-values terms
+    /// dictionary) read through the [`reader`] layer.
+    #[error(transparent)]
+    Store(#[from] lucene_store::Error),
+    /// A term's postings or positions read through the [`reader`] layer.
+    #[error(transparent)]
+    Postings(#[from] lucene_codecs::postings::Error),
+    /// Stored fields read through the [`reader`] layer.
+    #[error(transparent)]
+    StoredFields(#[from] lucene_codecs::stored_fields::Error),
+    /// `ExitableDirectoryReader.ExitingReaderException`: a
+    /// [`reader::exitable::QueryTimeout`] said to stop while a wrapped
+    /// reader was being enumerated.
+    #[error("{0}")]
+    ExitingReader(String),
+    /// Java's `UnsupportedOperationException` (a `FilteredTermsEnum` asked
+    /// to seek, `ord()` on a dictionary without ordinals).
+    #[error("{0}")]
+    Unsupported(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
