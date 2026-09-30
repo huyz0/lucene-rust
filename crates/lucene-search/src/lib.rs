@@ -1624,7 +1624,6 @@ fn try_fuzzy_bulk<C: ScoringCollector>(
         }
     };
     let idf = similarity::idf(blended_doc_freq, doc_count);
-    let avg_field_length = norms.map_or(similarity::UNNORMED_FIELD_LENGTH, |n| n.avg_field_length);
     let mut legs: Vec<bulk_scorer::TermLeg<'_>> = Vec::with_capacity(selected.len());
     for (term, raw_boost) in &selected {
         let Some(seeked) = field_terms.seek_term_state(term)? else {
@@ -1643,7 +1642,6 @@ fn try_fuzzy_bulk<C: ScoringCollector>(
             // `BoostQuery` folds the boost into the similarity weight.
             raw_boost.max(0.0) * idf,
             norms.map(|n| n.cursor()),
-            avg_field_length,
             stats.doc_freq as i64,
             (stats.total_term_freq - stats.doc_freq as i64 + 1).max(1) as f32,
         ));
@@ -2559,10 +2557,6 @@ pub fn search_term_query_scored_maxscore_with_stats<C: ScoringCollector>(
         Some(g) => (g.doc_freq, g.doc_count),
         None => (stats.doc_freq as i64, field_terms.doc_count as i64),
     };
-    let avg_field_length = match norms {
-        Some(fn_) => fn_.avg_field_length,
-        None => similarity::UNNORMED_FIELD_LENGTH,
-    };
     // The highest frequency any one document can have for this term, which
     // bounds every score from above (`MaxScoreCache.globalMaxScore`, but
     // tight). Both statistics must describe the SAME postings: `doc_freq`
@@ -2583,7 +2577,6 @@ pub fn search_term_query_scored_maxscore_with_stats<C: ScoringCollector>(
         cursor,
         similarity::idf(doc_freq, doc_count),
         norms.map(|n| n.cursor()),
-        avg_field_length,
         stats.doc_freq as i64,
         max_freq,
     );
