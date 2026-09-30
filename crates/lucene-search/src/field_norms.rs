@@ -574,6 +574,12 @@ impl FieldNormsCursor<'_, '_> {
         Ok(())
     }
 
+    /// `normInverse` for each of the 256 norm bytes: the table every document
+    /// of this field is scored with.
+    pub fn norm_inverse_table(&self) -> &[f32; 256] {
+        &self.norms.norm_inverse
+    }
+
     /// The largest value [`Self::norm_inverse`] can return for this field --
     /// the shortest possible document, or a document with no norm at all --
     /// which bounds every score from above the way `MaxScoreCache`'s global

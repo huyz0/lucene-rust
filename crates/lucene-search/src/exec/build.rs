@@ -455,7 +455,6 @@ fn term<'a>(
         cursor,
         boost * similarity::idf(doc_freq, doc_count),
         field_norms.map(|n| n.cursor()),
-        field_norms.map_or(similarity::UNNORMED_FIELD_LENGTH, |n| n.avg_field_length),
         cost,
         (stats.total_term_freq - cost + 1).max(1) as f32,
     ))))

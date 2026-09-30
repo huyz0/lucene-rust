@@ -315,8 +315,6 @@ pub(crate) struct TermLeg<'a> {
     /// `None` scores every document at the unnormed length, the same rule
     /// every other scoring path in this crate applies.
     norms: Option<FieldNormsCursor<'a, 'a>>,
-    /// `avgFieldLength`, for bounding impacts the way the term path does.
-    avg_field_length: f32,
     /// `DocIdSetIterator.cost()`: the term's document frequency.
     pub(crate) cost: i64,
     /// Upper bound on any document's score, whatever the impacts say --
@@ -343,11 +341,10 @@ pub(crate) struct TermLeg<'a> {
 /// The largest score `impacts` allow for a term of `weight` -- the same float
 /// expression the document is scored with, so the bound can never land one
 /// ULP under a real score.
-fn bound(normed: bool, weight: f32, avg_field_length: f32, impacts: &[Impact]) -> f32 {
-    if normed {
-        similarity::max_score_for_impacts_weighted(impacts, weight, avg_field_length)
-    } else {
-        similarity::max_score_for_impacts_unnormed_weighted(impacts, weight)
+fn bound(norm_inverse_table: Option<&[f32; 256]>, weight: f32, impacts: &[Impact]) -> f32 {
+    match norm_inverse_table {
+        Some(table) => similarity::max_score_for_impacts_table(impacts, weight, table),
+        None => similarity::max_score_for_impacts_unnormed_weighted(impacts, weight),
     }
 }
 
@@ -360,7 +357,6 @@ impl<'a> TermLeg<'a> {
         cursor: LazyDocsCursor<'a>,
         weight: f32,
         norms: Option<FieldNormsCursor<'a, 'a>>,
-        avg_field_length: f32,
         cost: i64,
         max_freq: f32,
     ) -> Self {
@@ -370,15 +366,7 @@ impl<'a> TermLeg<'a> {
         };
         let global_max = similarity::do_score(weight, max_freq, max_norm_inverse);
         let has_freqs = cursor.has_freqs();
-        let mut leg = Self::new(
-            cursor,
-            weight,
-            true,
-            norms,
-            avg_field_length,
-            cost,
-            global_max,
-        );
+        let mut leg = Self::new(cursor, weight, true, norms, cost, global_max);
         if !has_freqs {
             // `Lucene104PostingsReader`'s impacts for a field without
             // frequencies: one level up to `NO_MORE_DOCS` holding the impact
@@ -395,14 +383,14 @@ impl<'a> TermLeg<'a> {
 
     /// A `FILTER` clause: matches gate the conjunction and contribute `0`.
     pub(crate) fn filter(cursor: LazyDocsCursor<'a>, cost: i64) -> Self {
-        Self::new(cursor, 0.0, false, None, 1.0, cost, 0.0)
+        Self::new(cursor, 0.0, false, None, cost, 0.0)
     }
 
     /// `ConstantScoreScorer` over a term's documents: every one scores
     /// `score`, and once the threshold passes `score` nothing is left to
     /// visit (the global bound is `score`, so `advance_target` ends it).
     pub(crate) fn constant(cursor: LazyDocsCursor<'a>, cost: i64, score: f32) -> Self {
-        let mut leg = Self::new(cursor, 0.0, false, None, 1.0, cost, score);
+        let mut leg = Self::new(cursor, 0.0, false, None, cost, score);
         leg.constant = score;
         leg
     }
@@ -412,7 +400,6 @@ impl<'a> TermLeg<'a> {
         weight: f32,
         scoring: bool,
         norms: Option<FieldNormsCursor<'a, 'a>>,
-        avg_field_length: f32,
         cost: i64,
         global_max: f32,
     ) -> Self {
@@ -422,7 +409,6 @@ impl<'a> TermLeg<'a> {
             scoring,
             constant: 0.0,
             norms,
-            avg_field_length,
             cost,
             global_max,
             l0_key: i32::MIN,
@@ -469,9 +455,10 @@ impl<'a> TermLeg<'a> {
     /// a real score.
     fn impacts_bound(&self, impacts: &[Impact]) -> f32 {
         bound(
-            self.norms.is_some(),
+            self.norms
+                .as_ref()
+                .map(FieldNormsCursor::norm_inverse_table),
             self.weight,
-            self.avg_field_length,
             impacts,
         )
     }
@@ -486,16 +473,27 @@ impl<'a> TermLeg<'a> {
         }
         let key = self.cursor.level0_last_doc_id();
         if key != self.l0_key {
-            let (normed, weight, avg) = (self.norms.is_some(), self.weight, self.avg_field_length);
-            let impacts = self.cursor.level0_impacts();
-            self.l0_max = if impacts.is_empty() {
-                self.global_max
-            } else {
-                bound(normed, weight, avg, impacts).min(self.global_max)
-            };
-            self.l0_key = key;
+            self.refresh_level0_max(key);
         }
         self.l0_max
+    }
+
+    /// [`Self::level0_max`] for a new block. Out of line on purpose: inlined,
+    /// it grew the per-block scoring loop it sits in (`next_docs_and_scores`)
+    /// and cost a four-term disjunction 7%.
+    #[inline(never)]
+    fn refresh_level0_max(&mut self, key: i32) {
+        let table = self
+            .norms
+            .as_ref()
+            .map(FieldNormsCursor::norm_inverse_table);
+        let impacts = self.cursor.level0_impacts();
+        self.l0_max = if impacts.is_empty() {
+            self.global_max
+        } else {
+            bound(table, self.weight, impacts).min(self.global_max)
+        };
+        self.l0_key = key;
     }
 
     /// Whether a level-1 span with impacts is available -- Lucene's
