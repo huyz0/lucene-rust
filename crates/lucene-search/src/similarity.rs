@@ -400,6 +400,29 @@ pub fn max_score_for_impacts_weighted(
         .fold(0.0f32, f32::max)
 }
 
+/// [`max_score_for_impacts_weighted`] over a field's norm-inverse table
+/// ([`crate::field_norms::FieldNormsCursor::norm_inverse_table`]) -- what
+/// `MaxScoreCache.computeMaxScore` does with `BM25Scorer`'s `cache[]`.
+///
+/// One multiply per impact instead of a norm decode, a `norm_inverse` division
+/// and a score division: [`do_score`] is `w - w / (1 + x)` with
+/// `x = freq * normInverse`, and every IEEE operation in it is monotone, so
+/// the largest `x` gives the largest score, bit for bit. The documents are
+/// scored from the same table, so the bound and the scores it gates share
+/// one source. `0.0` for no impacts, as the fold it replaces.
+pub fn max_score_for_impacts_table(
+    impacts: &[lucene_codecs::postings::Impact],
+    weight: f32,
+    norm_inverse_table: &[f32; 256],
+) -> f32 {
+    let mut max_x = None::<f32>;
+    for impact in impacts {
+        let x = impact.freq as f32 * norm_inverse_table[impact.norm as u8 as usize];
+        max_x = Some(max_x.map_or(x, |m| m.max(x)));
+    }
+    max_x.map_or(0.0, |x| (weight - weight / (1.0 + x)).max(0.0))
+}
+
 /// [`max_score_for_impacts`]'s sibling for the `norms == None` scoring path.
 ///
 /// When a search runs without opened norms every document is scored with
@@ -429,10 +452,15 @@ pub fn max_score_for_impacts_unnormed_weighted(
         DEFAULT_K1,
         DEFAULT_B,
     );
+    // One `norm_inverse` for every document, so the largest frequency gives
+    // the largest score (see [`max_score_for_impacts_table`]).
     impacts
         .iter()
-        .map(|impact| do_score(weight, impact.freq as f32, norm_inverse))
-        .fold(0.0f32, f32::max)
+        .map(|impact| impact.freq)
+        .max()
+        .map_or(0.0, |freq| {
+            do_score(weight, freq as f32, norm_inverse).max(0.0)
+        })
 }
 
 /// Demonstration/proof harness for [`max_score_for_impacts`]-driven
@@ -841,6 +869,61 @@ mod tests {
             "got {got}, expected {expected}"
         );
         assert!((got - 1.058_289).abs() < 1e-3, "got {got}");
+    }
+
+    /// **The table-driven bound is the arithmetic one, bit for bit**, and the
+    /// unnormed bound's largest-frequency shortcut is the fold it replaced:
+    /// the score is monotone in `freq * normInverse`, so taking the largest
+    /// product first changes no bit. Random impact lists (unsorted, with
+    /// repeats), weights and average lengths, and the empty list.
+    #[test]
+    fn the_table_bound_is_the_arithmetic_bound_exactly() {
+        use lucene_codecs::postings::Impact;
+        let mut s = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        for _ in 0..500 {
+            let avg = 1.0 + (next() % 5000) as f32 / 7.0;
+            let weight = (next() % 10_000) as f32 / 997.0;
+            let table = crate::field_norms::inverse_table(avg);
+            let n = (next() % 12) as usize;
+            let impacts: Vec<Impact> = (0..n)
+                .map(|_| Impact {
+                    freq: 1 + (next() % 300) as i32,
+                    norm: (next() % 256) as i64,
+                })
+                .collect();
+            let want = max_score_for_impacts_weighted(&impacts, weight, avg);
+            let got = max_score_for_impacts_table(&impacts, weight, &table);
+            assert_eq!(
+                got.to_bits(),
+                want.to_bits(),
+                "{impacts:?} w={weight} avg={avg}"
+            );
+            let unnormed = impacts
+                .iter()
+                .map(|i| {
+                    do_score(
+                        weight,
+                        i.freq as f32,
+                        norm_inverse(
+                            UNNORMED_FIELD_LENGTH,
+                            UNNORMED_FIELD_LENGTH,
+                            DEFAULT_K1,
+                            DEFAULT_B,
+                        ),
+                    )
+                })
+                .fold(0.0f32, f32::max);
+            assert_eq!(
+                max_score_for_impacts_unnormed_weighted(&impacts, weight).to_bits(),
+                unnormed.to_bits()
+            );
+        }
     }
 
     #[test]
