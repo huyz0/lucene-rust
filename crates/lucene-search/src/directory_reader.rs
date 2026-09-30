@@ -118,6 +118,8 @@ pub enum Error {
     /// snapshot (`crate::nrt_reader`).
     #[error(transparent)]
     IndexWriter(#[from] lucene_index::index_writer::Error),
+    #[error("segment {segment} has {found} of .tvd/.tvx/.tvm (need all three or none)")]
+    PartialTermVectorsFiles { segment: String, found: usize },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -246,6 +248,30 @@ pub struct SegmentReader {
     /// segment's `NormsProducer` in exactly the same place.
     norms_meta: Option<Arc<Norms>>,
     norms_data: Option<Arc<Input>>,
+    /// The segment's term vectors (`.tvd`/`.tvx`/`.tvm`) and their codec
+    /// suffix, when it has any -- `SegmentCoreReaders.termVectorsReaderOrig`.
+    term_vectors: Option<Arc<CodecFiles>>,
+    /// The segment's flat KNN vectors (`.vec` data, `.vemf` metadata) and
+    /// their per-field-format suffix, when it has any -- the flat half of
+    /// `SegmentCoreReaders.knnVectorsReader`.
+    vectors: Option<Arc<CodecFiles>>,
+    /// `getCoreCacheHelper()`: shared by every reader over this segment core,
+    /// across reopens that keep it.
+    core_cache: crate::reader::CacheHelper,
+    /// `getReaderCacheHelper()`: this reader's own key -- a reopen that
+    /// changes the live docs is a new reader with a new key.
+    reader_cache: crate::reader::CacheHelper,
+}
+
+/// A codec's data file, index or second data file, and metadata file, with
+/// the codec suffix their names carry.
+#[derive(Debug)]
+struct CodecFiles {
+    data: Arc<Input>,
+    /// `.tvx` for term vectors; unused (empty) for vectors.
+    index: Option<Arc<Input>>,
+    meta: Arc<Input>,
+    suffix: String,
 }
 
 /// One field's doc-values **update generation** -- the rewritten column
@@ -566,7 +592,60 @@ impl SegmentReader {
             }
         };
 
+        // `.tvd`/`.tvx`/`.tvm`: all three or none, like stored fields.
+        let term_vectors = match (
+            open_segment_file(dir, compound.as_ref(), &si.files, ".tvd")?,
+            open_segment_file(dir, compound.as_ref(), &si.files, ".tvx")?,
+            open_segment_file(dir, compound.as_ref(), &si.files, ".tvm")?,
+        ) {
+            (Some(data), Some(index), Some(meta)) => {
+                let name = find_segment_file_name(&si.files, compound.as_ref(), ".tvd")
+                    .expect("an opened .tvd has an entry");
+                Some(Arc::new(CodecFiles {
+                    data,
+                    index: Some(index),
+                    meta,
+                    suffix: codec_suffix_of(&name, &segment_name, ".tvd"),
+                }))
+            }
+            (None, None, None) => None,
+            (d, x, m) => {
+                return Err(Error::PartialTermVectorsFiles {
+                    segment: segment_name,
+                    found: [d.is_some(), x.is_some(), m.is_some()]
+                        .iter()
+                        .filter(|p| **p)
+                        .count(),
+                })
+            }
+        };
+        // `.vec`/`.vemf`: the flat vectors every HNSW field stores beside its
+        // graph (`.vex`/`.vem`, read by `crate::vector_query`'s own callers).
+        let vectors = match (
+            open_segment_file(dir, compound.as_ref(), &si.files, ".vec")?,
+            open_segment_file(dir, compound.as_ref(), &si.files, ".vemf")?,
+        ) {
+            (Some(data), Some(meta)) => {
+                let name = find_segment_file_name(&si.files, compound.as_ref(), ".vec")
+                    .expect("an opened .vec has an entry");
+                Some(Arc::new(CodecFiles {
+                    data,
+                    index: None,
+                    meta,
+                    suffix: codec_suffix_of(&name, &segment_name, ".vec"),
+                }))
+            }
+            // A `.vec` without `.vemf` is a pre-`Lucene99` vectors format
+            // (`.vec` + `.vem` only), read through the backward codecs, not
+            // this reader.
+            _ => None,
+        };
+
         Ok(SegmentReader {
+            term_vectors,
+            vectors,
+            core_cache: crate::reader::CacheHelper::new(),
+            reader_cache: crate::reader::CacheHelper::new(),
             query_cache: Arc::default(),
             segment_name,
             index_sort: si.index_sort.clone().map(Arc::new),
@@ -629,6 +708,8 @@ impl SegmentReader {
         let mut reader = self.clone_reader();
         reader.del_gen = commit.del_gen;
         reader.live_docs = live_docs;
+        // Same core, new reader: `SegmentReader(commitInfo, oldReader, ...)`.
+        reader.reader_cache = crate::reader::CacheHelper::new();
         Ok(reader)
     }
 
@@ -650,6 +731,138 @@ impl SegmentReader {
         Ok(lucene_codecs::points::PointsReader::with_meta(
             kdi, kdd, meta,
         ))
+    }
+
+    /// `SegmentReader.getTermVectorsReader()`: a reader over this segment's
+    /// term vectors, `None` when it stores none.
+    ///
+    /// # Errors
+    /// Term-vectors files that do not decode.
+    pub fn term_vectors_reader(
+        &self,
+    ) -> crate::Result<Option<lucene_codecs::term_vectors::TermVectorsReader<'_>>> {
+        let Some(f) = self.term_vectors.as_deref() else {
+            return Ok(None);
+        };
+        let index = f.index.as_deref().map_or(&[][..], |i| &**i);
+        Ok(Some(lucene_codecs::term_vectors::open(
+            &f.data,
+            index,
+            &f.meta,
+            &self.segment_id,
+            &f.suffix,
+        )?))
+    }
+
+    /// `SegmentReader.getVectorReader()`'s flat half: a reader over this
+    /// segment's KNN vectors (`.vec`/`.vemf`), `None` when it has none.
+    ///
+    /// # Errors
+    /// Vector files that do not decode.
+    pub fn flat_vectors_reader(
+        &self,
+    ) -> crate::Result<Option<lucene_codecs::vectors::FlatVectorsReader<'_>>> {
+        let Some(f) = self.vectors.as_deref() else {
+            return Ok(None);
+        };
+        Ok(Some(lucene_codecs::vectors::FlatVectorsReader::open(
+            &f.meta,
+            &f.data,
+            &self.segment_id,
+            &f.suffix,
+        )?))
+    }
+
+    /// `getCoreCacheHelper()`: this segment core's cache key and
+    /// closed listeners.
+    pub fn core_cache_helper(&self) -> &crate::reader::CacheHelper {
+        &self.core_cache
+    }
+
+    /// `getReaderCacheHelper()`: this reader's cache key and closed
+    /// listeners.
+    pub fn reader_cache_helper(&self) -> &crate::reader::CacheHelper {
+        &self.reader_cache
+    }
+
+    /// `SegmentReader.checkIntegrity()`: `CodecUtil.checksumEntireFile` over
+    /// every data file this reader holds -- postings (`.doc`/`.pos`/`.pay`),
+    /// stored fields, term vectors, doc values (every generation), norms,
+    /// points and vectors. The term dictionary's `.tim`/`.tip` are owned by
+    /// the lazily-navigated `BlockTreeFields` and not re-read here.
+    ///
+    /// # Errors
+    /// The first file whose footer or checksum does not verify.
+    pub fn check_integrity(&self) -> crate::Result<()> {
+        let mut files: Vec<&[u8]> = Vec::new();
+        for f in [
+            &self.doc_buf,
+            &self.pos_buf,
+            &self.pay_buf,
+            &self.dv_data,
+            &self.norms_data,
+            &self.kdi_buf,
+            &self.kdd_buf,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            files.push(f);
+        }
+        if let Some(s) = self.stored.as_deref() {
+            files.extend([&**s.fdt, &**s.fdx]);
+        }
+        for c in [&self.term_vectors, &self.vectors].into_iter().flatten() {
+            files.push(&c.data);
+            if let Some(i) = &c.index {
+                files.push(i);
+            }
+        }
+        for g in &self.dv_generations {
+            files.push(&g.data);
+        }
+        for f in files {
+            let end = f
+                .len()
+                .saturating_sub(lucene_store::codec_util::FOOTER_LENGTH);
+            lucene_store::codec_util::check_whole_file_footer(f, end)?;
+        }
+        Ok(())
+    }
+
+    /// The segment's term dictionary.
+    pub(crate) fn block_tree_fields(&self) -> &BlockTreeFields {
+        &self.fields
+    }
+
+    /// The segment's `.doc`/`.pos`/`.pay` inputs, validated on first use as
+    /// [`DirectoryReader::open_segments`] validates them.
+    pub(crate) fn postings_inputs(
+        &self,
+    ) -> Result<(
+        Option<DocInput<'_>>,
+        Option<PosInput<'_>>,
+        Option<PayInput<'_>>,
+    )> {
+        use std::sync::atomic::Ordering;
+        let validated = self.postings_validated.load(Ordering::Acquire);
+        let doc_in = match &self.doc_buf {
+            Some(buf) if validated => Some(DocInput::validated(buf)),
+            Some(buf) => Some(DocInput::open(buf, &self.segment_id, &self.segment_suffix)?),
+            None => None,
+        };
+        let pos_in = match &self.pos_buf {
+            Some(buf) if validated => Some(PosInput::validated(buf)),
+            Some(buf) => Some(PosInput::open(buf, &self.segment_id, &self.segment_suffix)?),
+            None => None,
+        };
+        let pay_in = match &self.pay_buf {
+            Some(buf) if validated => Some(PayInput::validated(buf)),
+            Some(buf) => Some(PayInput::open(buf, &self.segment_id, &self.segment_suffix)?),
+            None => None,
+        };
+        self.postings_validated.store(true, Ordering::Release);
+        Ok((doc_in, pos_in, pay_in))
     }
 
     /// The segment's `.kdm`/`.kdi`/`.kdd` bytes, or `None` when it indexes no
@@ -1307,6 +1520,8 @@ pub struct DirectoryReader {
     /// out (see `crate::nrt_reader`); released when the last reader sharing
     /// it drops.
     pub(crate) nrt_hold: Option<Arc<lucene_index::nrt::NrtFileHold>>,
+    /// `getReaderCacheHelper()`: this reader's own key.
+    reader_cache: crate::reader::CacheHelper,
 }
 
 /// One field's norms over a reader's segments: the reader-wide
@@ -1428,6 +1643,7 @@ impl DirectoryReader {
             norm_tables: std::sync::Mutex::default(),
             norms_plans: std::sync::Mutex::default(),
             nrt_hold: None,
+            reader_cache: crate::reader::CacheHelper::new(),
         })
     }
 
@@ -1500,6 +1716,28 @@ impl DirectoryReader {
         Some(Self::open_at_reusing(dir, latest, &self.segments)).transpose()
     }
 
+    /// `DirectoryReader.openIfChanged(reader, IndexCommit)`: the index as of
+    /// `commit`, reusing every unchanged segment of `self`; `None` when
+    /// `self` was opened from that very commit.
+    pub fn open_if_changed_to_commit(
+        &self,
+        dir: &dyn Directory,
+        commit: &IndexCommit,
+    ) -> Result<Option<Self>> {
+        if commit.generation() == self.segment_infos.generation {
+            return Ok(None);
+        }
+        let bytes = dir.open(commit.segments_file_name())?.to_vec();
+        let segment_infos = segment_infos::parse(&bytes, commit.generation())?;
+        Some(Self::open_at_reusing(dir, segment_infos, &self.segments)).transpose()
+    }
+
+    /// `getReaderCacheHelper()`: this reader's cache key and closed
+    /// listeners.
+    pub fn reader_cache_helper(&self) -> &crate::reader::CacheHelper {
+        &self.reader_cache
+    }
+
     /// Every opened segment's own reader, in commit order.
     pub fn segment_readers(&self) -> &[SegmentReader] {
         &self.segments
@@ -1529,6 +1767,7 @@ impl DirectoryReader {
             norm_tables: std::sync::Mutex::default(),
             norms_plans: std::sync::Mutex::default(),
             nrt_hold: self.nrt_hold.clone(),
+            reader_cache: crate::reader::CacheHelper::new(),
         }
     }
 

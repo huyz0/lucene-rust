@@ -390,6 +390,12 @@ pub enum OrdToDoc {
         addresses_length: i64,
         meta: direct_monotonic::Meta,
     },
+    /// The retired `Lucene90`/`Lucene91` HNSW formats' `int[] ordToDoc`, read
+    /// whole into memory at open (`Lucene90HnswVectorsReader.FieldEntry`,
+    /// `Lucene91HnswVectorsReader.FieldEntry`): `ords[ord]` is the doc id.
+    /// Strictly increasing -- the backward-codecs reader rejects anything else
+    /// when it builds this, because [`DocToOrdCursor`] binary-searches it.
+    Explicit(std::sync::Arc<[i32]>),
 }
 
 /// `[offset, offset + length)` of `file`, or `None` if that is not a range
@@ -409,7 +415,7 @@ pub enum OrdToDoc {
 /// *passes*, and the slice then panics with `start > end`. c30 reached it
 /// from `check_index`'s side with a re-signed `.vemf` overwrite -- and this
 /// decoder is on the query path, so through the FFI that is a dead JVM.
-fn file_region(file: &[u8], offset: i64, length: i64) -> Option<&[u8]> {
+pub(crate) fn file_region(file: &[u8], offset: i64, length: i64) -> Option<&[u8]> {
     let start = usize::try_from(offset).ok()?;
     let end = start.checked_add(usize::try_from(length).ok()?)?;
     file.get(start..end)
@@ -417,7 +423,7 @@ fn file_region(file: &[u8], offset: i64, length: i64) -> Option<&[u8]> {
 
 impl OrdToDoc {
     /// Port of `OrdToDocDISIReaderConfiguration.fromStoredMeta`.
-    fn from_stored_meta(input: &mut SliceInput<'_>, size: i32) -> Result<Self> {
+    pub(crate) fn from_stored_meta(input: &mut SliceInput<'_>, size: i32) -> Result<Self> {
         let docs_with_field_offset = input.read_i64()?;
         let docs_with_field_length = input.read_i64()?;
         let jump_table_entry_count = input.read_i16()?;
@@ -466,7 +472,12 @@ impl OrdToDoc {
 /// four/eight metadata fields to `meta`.
 ///
 /// `docs` must be strictly ascending; `count` is `docs.len()`.
-fn write_stored_meta(meta: &mut Vec<u8>, data: &mut Vec<u8>, docs: &[i32], max_doc: i32) {
+pub(crate) fn write_stored_meta(
+    meta: &mut Vec<u8>,
+    data: &mut Vec<u8>,
+    docs: &[i32],
+    max_doc: i32,
+) {
     let count = docs.len() as i32;
     if count == 0 {
         meta.write_i64(-2); // docsWithFieldOffset
@@ -604,6 +615,15 @@ impl<'a> FlatVectorsReader<'a> {
         })
     }
 
+    /// A reader over field entries some other format's metadata described
+    /// -- the retired HNSW formats (`Lucene90`..`Lucene95`) kept their vectors
+    /// in the same `.vec` layout this reader serves, but described them in
+    /// their own `.vem`. Every entry must already have passed
+    /// [`check_vector_region`] against `data`.
+    pub(crate) fn from_entries(data: &'a [u8], fields: Vec<FlatFieldEntry>) -> Self {
+        FlatVectorsReader { data, fields }
+    }
+
     pub fn fields(&self) -> &[FlatFieldEntry] {
         &self.fields
     }
@@ -700,6 +720,41 @@ fn read_field_entry(
     let vector_data_length = meta.read_vlong()?;
     let dimension = meta.read_vint()?;
     let size = meta.read_i32()?;
+    check_vector_region(
+        encoding,
+        dimension,
+        size,
+        vector_data_offset,
+        vector_data_length,
+        data_len,
+    )?;
+    let ord_to_doc = OrdToDoc::from_stored_meta(meta, size)?;
+    Ok(FlatFieldEntry {
+        field_number,
+        encoding,
+        similarity,
+        vector_data_offset,
+        vector_data_length,
+        dimension,
+        size,
+        ord_to_doc,
+    })
+}
+
+/// The checks every `FieldEntry` of a flat vector store gets before any
+/// vector is read: a positive dimension, a non-negative count, and a data
+/// region that is exactly `size * dimension * byteSize` bytes and lies inside
+/// the `.vec` file. Shared by [`read_field_entry`] and the retired HNSW
+/// formats of `crate::backward_codecs::hnsw_vectors`, whose readers assert
+/// the same identity (`validateFieldEntry`).
+pub(crate) fn check_vector_region(
+    encoding: VectorEncoding,
+    dimension: i32,
+    size: i32,
+    vector_data_offset: i64,
+    vector_data_length: i64,
+    data_len: usize,
+) -> Result<()> {
     if dimension <= 0 {
         return corrupt(format!("illegal vector dimension {dimension}"));
     }
@@ -744,17 +799,7 @@ fn read_field_entry(
              {data_len} byte .vec file"
         ));
     }
-    let ord_to_doc = OrdToDoc::from_stored_meta(meta, size)?;
-    Ok(FlatFieldEntry {
-        field_number,
-        encoding,
-        similarity,
-        vector_data_offset,
-        vector_data_length,
-        dimension,
-        size,
-        ord_to_doc,
-    })
+    Ok(())
 }
 
 /// Port of `Lucene99HnswVectorsReader.readVectorEncoding` (shared by the flat
@@ -886,6 +931,12 @@ impl RawVectorValues<'_> {
         }
         match &self.ord_to_doc {
             OrdToDoc::Empty | OrdToDoc::Dense => Ok(ord),
+            // `ord < size` above, and the reader built `docs` with exactly
+            // `size` entries -- but `get`, so a mismatch is an error.
+            OrdToDoc::Explicit(docs) => match docs.get(ord as usize) {
+                Some(&doc) => Ok(doc),
+                None => Err(Error::OrdOutOfRange(ord, self.size)),
+            },
             OrdToDoc::Sparse {
                 addresses_offset,
                 addresses_length,
@@ -915,8 +966,12 @@ impl RawVectorValues<'_> {
 #[derive(Debug)]
 pub enum DocToOrdCursor<'a> {
     Empty,
-    Dense { size: i32 },
+    Dense {
+        size: i32,
+    },
     Sparse(Box<DisiCursor<'a>>),
+    /// [`OrdToDoc::Explicit`], answered by binary search.
+    Explicit(&'a [i32]),
 }
 
 impl DocToOrdCursor<'_> {
@@ -926,6 +981,8 @@ impl DocToOrdCursor<'_> {
             DocToOrdCursor::Empty => Ok(None),
             DocToOrdCursor::Dense { size } => Ok((doc >= 0 && doc < *size).then_some(doc)),
             DocToOrdCursor::Sparse(cursor) => Ok(cursor.advance_exact(doc)?.map(|o| o as i32)),
+            // An ordinal is an index into an `i32`-sized array, so it fits.
+            DocToOrdCursor::Explicit(docs) => Ok(docs.binary_search(&doc).ok().map(|o| o as i32)),
         }
     }
 
@@ -973,6 +1030,7 @@ macro_rules! vector_values_common {
                     OrdToDoc::Dense => Ok(DocToOrdCursor::Dense {
                         size: self.values.size,
                     }),
+                    OrdToDoc::Explicit(docs) => Ok(DocToOrdCursor::Explicit(docs)),
                     OrdToDoc::Sparse {
                         docs_with_field_offset,
                         docs_with_field_length,

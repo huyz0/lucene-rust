@@ -2159,6 +2159,11 @@ impl FieldTerms {
         self.index_options
     }
 
+    /// Whether the field stores payloads (`Terms.hasPayloads()`).
+    pub fn has_payloads(&self) -> bool {
+        self.has_payloads
+    }
+
     /// Runs `f` against the pooled lookup state.
     fn with_scratch<T>(&self, f: impl FnOnce(&mut SegmentTermsEnum<'_>) -> Result<T>) -> Result<T> {
         // `try_lock`, never `lock`: a `BlockTreeFields` is shared by every

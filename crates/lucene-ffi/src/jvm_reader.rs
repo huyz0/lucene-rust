@@ -2272,6 +2272,108 @@ pub(crate) mod tests {
         handle
     }
 
+    /// Opens `fixtures/data/bwc/<version>` the way the plugin opens a
+    /// searcher's reader: its `segments_N` bytes, every segment's `maxDoc`
+    /// and its live docs as words.
+    fn open_bwc(version: &str) -> u64 {
+        let path = format!(
+            "{}/../../fixtures/data/bwc/{version}",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let dir = lucene_store::FsDirectory::open(&path);
+        let files: Vec<String> = std::fs::read_dir(&path)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        let generation = lucene_store::directory::last_commit_generation(&files).unwrap();
+        let infos = std::fs::read(format!(
+            "{path}/{}",
+            lucene_store::directory::segments_file_name(generation).unwrap()
+        ))
+        .unwrap();
+        let reader = DirectoryReader::open(&dir).unwrap();
+        let max_docs: Vec<i32> = reader.segment_readers().iter().map(|s| s.max_doc).collect();
+        let live: Vec<Vec<u64>> = reader
+            .segment_readers()
+            .iter()
+            .map(|s| s.live_docs().map_or(Vec::new(), |l| l.words().to_vec()))
+            .collect();
+        let counts: Vec<usize> = live.iter().map(Vec::len).collect();
+        let words: Vec<u64> = live.concat();
+        let mut handle = 0u64;
+        let rc = unsafe {
+            ffi_open_jvm_reader(
+                path.as_ptr().cast(),
+                path.len(),
+                infos.as_ptr(),
+                infos.len(),
+                generation,
+                0,
+                max_docs.as_ptr(),
+                max_docs.len(),
+                words.as_ptr(),
+                counts.as_ptr(),
+                &mut handle,
+            )
+        };
+        assert_eq!(rc, 0, "{version}: {}", crate::error::last_error());
+        handle
+    }
+
+    /// M8 T8.5: an index Lucene 9.0-10.3 wrote -- every retired postings,
+    /// term-dictionary, points and segment-info generation -- opens through
+    /// the plugin's own entry point and answers term and boolean queries
+    /// with the current codec's (10.4.0's) hits, scores and totals -- the
+    /// fixture writes the same documents in every version.
+    /// The plugin's `NativeReaders` no longer falls back to Lucene for these
+    /// postings formats; this is the native half of that.
+    #[test]
+    fn every_bwc_version_is_served_natively_like_the_current_codec() {
+        let queries = [
+            term_blob("body", "alpha"),
+            term_blob("docs", "zeta"),
+            bool_blob(
+                0,
+                &[
+                    (
+                        crate::query::OCCUR_SHOULD,
+                        crate::query::CLAUSE_KIND_TERM,
+                        -1,
+                        0,
+                        "body",
+                        "alpha",
+                    ),
+                    (
+                        crate::query::OCCUR_SHOULD,
+                        crate::query::CLAUSE_KIND_TERM,
+                        -1,
+                        0,
+                        "title",
+                        "delta",
+                    ),
+                ],
+            ),
+        ];
+        let answer = |version: &str| {
+            let h = open_bwc(version);
+            let out: Vec<_> = queries
+                .iter()
+                .map(|q| run(h, q, 10, true).unwrap_or_else(|rc| panic!("{version}: {rc}")))
+                .collect();
+            assert_eq!(ffi_close_jvm_reader(h), 0);
+            out
+        };
+        let reference = answer("10.4.0");
+        assert!(reference
+            .iter()
+            .all(|(hits, total)| !hits.is_empty() && *total > 0));
+        for version in [
+            "9.0.0", "9.1.0", "9.3.0", "9.4.2", "9.8.0", "9.11.1", "9.12.2", "10.0.0", "10.2.2",
+        ] {
+            assert_eq!(answer(version), reference, "{version}");
+        }
+    }
+
     /// `count` true is an exact count (`i64::MAX`), false none.
     fn run(
         handle: u64,

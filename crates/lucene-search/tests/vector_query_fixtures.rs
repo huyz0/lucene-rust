@@ -194,6 +194,7 @@ impl SegmentBytes {
             hnsw: with_graph.then(|| {
                 HnswVectorsReader::open(&self.vem, &self.vex, &self.id, &self.suffix)
                     .expect(".vem/.vex")
+                    .into()
             }),
             field_infos: infos,
             live_docs,
@@ -907,14 +908,12 @@ fn the_seeded_fixture_still_reaches_the_reentry_pass_on_a_leaf_with_a_graph() {
         .find(|fi| fi.name == f.m.get("f0.name"))
         .expect("the vector field")
         .number;
+    let Some(lucene_search::vector_query::GraphReader::Lucene99(graphs)) = input.hnsw.as_ref()
+    else {
+        panic!("a Lucene99 graph reader");
+    };
     assert!(
-        input
-            .hnsw
-            .as_ref()
-            .unwrap()
-            .graph(number)
-            .unwrap()
-            .is_some(),
+        graphs.graph(number).unwrap().is_some(),
         "leaf {clustered} was written without a graph, so seeding cannot reach it"
     );
 

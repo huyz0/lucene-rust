@@ -25,6 +25,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use lucene_codecs::backward_codecs::hnsw_vectors::{RetiredHnswFormat, RetiredHnswVectorsReader};
 use lucene_codecs::blocktree;
 use lucene_codecs::doc_values::{self, SortedSetKind};
 use lucene_codecs::field_infos::{
@@ -42,6 +43,7 @@ use lucene_codecs::vectors::{FlatVectorsReader, MergeSourceValues};
 use lucene_index::deletes::liv_file_name;
 use lucene_index::segment_info::{self, SegmentInfo};
 use lucene_index::segment_infos::{self, SegmentCommitInfo};
+use lucene_search::vector_query::GraphReader;
 use lucene_store::directory::{Directory, FsDirectory, Input};
 use lucene_util::fixed_bit_set::FixedBitSet;
 
@@ -54,20 +56,10 @@ const VERSIONS: &[&str] = &[
 /// `field` is the field name for per-field lines and `*` matches every field
 /// (or the segment-level line) of that kind in both segments.
 ///
-/// Vectors (`vec`/`knn`) before 9.11 need the retired `Lucene90`..`Lucene95`
-/// HNSW readers, which M8 ports separately from everything else here.
-const EXPECTED_FAILURES: &[(&str, &str, &str)] = &[
-    ("9.0.0", "vec", "*"),
-    ("9.0.0", "knn", "*"),
-    ("9.1.0", "vec", "*"),
-    ("9.1.0", "knn", "*"),
-    ("9.3.0", "vec", "*"),
-    ("9.3.0", "knn", "*"),
-    ("9.4.2", "vec", "*"),
-    ("9.4.2", "knn", "*"),
-    ("9.8.0", "vec", "*"),
-    ("9.8.0", "knn", "*"),
-];
+/// Empty since the retired `Lucene90`..`Lucene95` HNSW readers landed (the
+/// last `vec`/`knn` lines of 9.0-9.8); kept so a future fixture version can
+/// record a known gap without weakening the whole-file comparison.
+const EXPECTED_FAILURES: &[(&str, &str, &str)] = &[];
 
 fn fixture_dir(version: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -768,9 +760,6 @@ fn vec_lines(dir: &dyn Directory, seg: &Segment, fi: &FieldInfo, out: &mut Lines
     let knn_key = format!("knn {} {}", seg.name(), fi.name);
     let result = (|| -> Result<(String, String), String> {
         let vec_name = seg.file_with(".vec").ok_or("no .vec")?;
-        let vemf = dir
-            .open(seg.file_with(".vemf").ok_or("no .vemf")?)
-            .map_err(err)?;
         let vec = dir.open(vec_name).map_err(err)?;
         let vem = dir
             .open(seg.file_with(".vem").ok_or("no .vem")?)
@@ -780,9 +769,37 @@ fn vec_lines(dir: &dyn Directory, seg: &Segment, fi: &FieldInfo, out: &mut Lines
             .map_err(err)?;
         let suffix = seg.suffix_of(vec_name, ".vec");
         let id = &seg.commit.segment_id;
-        let flat = FlatVectorsReader::open(&vemf, &vec, id, &suffix).map_err(err)?;
-        let hnsw = lucene_codecs::hnsw_vectors::HnswVectorsReader::open(&vem, &vex, id, &suffix)
-            .map_err(err)?;
+        // `PerFieldKnnVectorsFormat.format`: a retired 9.0-9.8 format keeps
+        // its vectors in the `.vem`/`.vec`/`.vex` triple; the current one
+        // adds a `.vemf` for them.
+        let format = fi
+            .attributes
+            .iter()
+            .find(|(k, _)| k == "PerFieldKnnVectorsFormat.format")
+            .map(|(_, v)| v.as_str())
+            .unwrap_or_default();
+        let vemf;
+        let (flat, hnsw): (FlatVectorsReader<'_>, GraphReader<'_>) =
+            match RetiredHnswFormat::for_name(format) {
+                Some(retired) => {
+                    let r = RetiredHnswVectorsReader::open(retired, &vem, &vec, &vex, id, &suffix)
+                        .map_err(err)?;
+                    (r.flat().clone(), r.into())
+                }
+                None => {
+                    vemf = dir
+                        .open(seg.file_with(".vemf").ok_or("no .vemf")?)
+                        .map_err(err)?;
+                    (
+                        FlatVectorsReader::open(&vemf, &vec, id, &suffix).map_err(err)?,
+                        lucene_codecs::hnsw_vectors::HnswVectorsReader::open(
+                            &vem, &vex, id, &suffix,
+                        )
+                        .map_err(err)?
+                        .into(),
+                    )
+                }
+            };
         let mut f = Fnv::new();
         let (values, count) = match fi.vector_encoding {
             VectorEncoding::Float32 => {
@@ -1168,11 +1185,17 @@ fn query_set() -> Vec<(String, lucene_search::BooleanQuery)> {
 /// Every query of [`query_set`] against one fixture, top 20 exact and
 /// pruned, as `name mode total hits(doc:scorebits)`.
 fn search_version(version: &str) -> Result<Vec<String>, String> {
+    search_dir(&fixture_dir(version))
+}
+
+/// [`query_set`] over the index in `path`, exact and pruned: one line per
+/// query and mode, `name mode total hits`.
+fn search_dir(path: &std::path::Path) -> Result<Vec<String>, String> {
     use lucene_search::directory_reader::DirectoryReader;
     use lucene_search::field_norms::FieldNorms;
     use lucene_search::multi_segment::search_boolean_query_multi_segment_maxscore_counting;
     use std::collections::HashMap;
-    let dir = FsDirectory::open(fixture_dir(version));
+    let dir = FsDirectory::open(path);
     let reader = DirectoryReader::open(&dir).map_err(err)?;
     let mut opened = reader.open_segments().map_err(err)?;
     opened.open_points().map_err(err)?;
@@ -1249,16 +1272,149 @@ fn every_version_passes_check_index() {
                     r.segment_name, c.name, c.message
                 ));
             }
+            // A pass is only worth something if the vector families ran:
+            // every segment has an `fvec` field whose vectors must have been
+            // read, whichever format wrote them, and `_0` (3,000 documents)
+            // always carries a graph -- 10.4's `_1` is under
+            // `HNSW_GRAPH_THRESHOLD` and has none.
+            if r.segment_name.starts_with('_') {
+                let mut families = vec!["vectors.values_decode:fvec"];
+                if r.segment_name == "_0" {
+                    families.push("hnsw.neighbors_on_level:fvec");
+                }
+                for family in families {
+                    if !r.checks.iter().any(|c| c.name == family && c.passed()) {
+                        failures.push(format!(
+                            "{version} {}: {family} did not run",
+                            r.segment_name
+                        ));
+                    }
+                }
+            }
         }
     }
-    // The retired HNSW formats (9.0-9.8) are not read yet, so CheckIndex's
-    // vector families cannot open them; everything else must pass. Shrinks
-    // with EXPECTED_FAILURES' `vec`/`knn` entries.
-    failures.retain(|f| {
-        let retired_vectors = EXPECTED_FAILURES
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// M8 T8.4, this side of it: a buffered delete by term resolves against an
+/// old segment's own term dictionary, and every fixture, force-merged by
+/// this port's `IndexWriter`, becomes one `Lucene104` segment -- every postings field
+/// `Lucene104`, every vector field `Lucene99HnswVectorsFormat` -- that this
+/// port's `CheckIndex` passes, holding the original's live documents: every
+/// query of [`query_set`] matches as many documents as it did before. (Scores
+/// differ: a merge drops the deleted documents the statistics counted.)
+/// Real Lucene's verdict on the same merges -- `CheckIndex` and a
+/// per-document comparison of every kind of content -- is
+/// `scripts/verify-bwc-merge.sh`.
+#[test]
+fn every_version_force_merges_into_lucene104() {
+    use lucene_index::index_writer::IndexWriter;
+    use lucene_index::segment_info::LuceneVersion;
+    let mut failures = Vec::new();
+    for version in VERSIONS {
+        let tmp = lucene_util::test_support::TempDir::new(&format!("bwc-merge-{version}"));
+        for entry in std::fs::read_dir(fixture_dir(version)).unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !name.ends_with(".txt") {
+                std::fs::copy(entry.path(), tmp.path().join(&name)).unwrap();
+            }
+        }
+        let dir = FsDirectory::open(tmp.path());
+        fn open_writer(dir: &FsDirectory) -> IndexWriter<'_> {
+            IndexWriter::open(
+                dir,
+                Vec::new(),
+                "Lucene104",
+                LuceneVersion {
+                    major: 10,
+                    minor: 5,
+                    bugfix: 0,
+                },
+            )
+            .unwrap()
+        }
+        let deleted = |dir: &FsDirectory| -> i32 {
+            segment_infos::read_latest(dir)
+                .unwrap()
+                .segments
+                .iter()
+                .map(|s| s.del_count)
+                .sum()
+        };
+        // `id:5` lives in the old `_0`; deleting it rewrites that segment's
+        // `.liv` through its `Lucene90`..`Lucene104` postings.
+        let deleted_before = deleted(&dir);
+        {
+            let mut w = open_writer(&dir);
+            w.delete_documents_by_term(&[lucene_index::buffered_updates::Term {
+                field: "id".to_string(),
+                bytes: b"5".to_vec(),
+            }])
+            .unwrap();
+            w.commit().unwrap();
+        }
+        if deleted(&dir) != deleted_before + 1 {
+            failures.push(format!(
+                "{version}: delete id:5 on the old segment matched nothing"
+            ));
+        }
+        let before = search_dir(tmp.path()).unwrap();
+        {
+            let mut w = open_writer(&dir);
+            w.force_merge(1)
+                .unwrap_or_else(|e| panic!("{version}: force_merge: {e}"));
+            w.commit().unwrap();
+        }
+        let infos = segment_infos::read_latest(&dir).unwrap();
+        let segs: Vec<(&str, &str)> = infos
+            .segments
             .iter()
-            .any(|&(v, k, _)| k == "vec" && f.starts_with(&format!("{v} ")));
-        !(retired_vectors && (f.contains(": vectors.") || f.contains(": hnsw.")))
-    });
+            .map(|s| (s.segment_name.as_str(), s.codec_name.as_str()))
+            .collect();
+        if segs.len() != 1 || segs[0].1 != "Lucene104" {
+            failures.push(format!("{version}: merged into {segs:?}"));
+            continue;
+        }
+        let seg = open_segment(&dir, &infos.segments[0]).unwrap();
+        for fi in &seg.field_infos.fields {
+            for (key, want) in [
+                ("PerFieldPostingsFormat.format", "Lucene104"),
+                (
+                    "PerFieldKnnVectorsFormat.format",
+                    "Lucene99HnswVectorsFormat",
+                ),
+            ] {
+                if let Some((_, got)) = fi.attributes.iter().find(|(k, _)| k == key) {
+                    if got != want {
+                        failures.push(format!("{version}: {} {key}={got}", fi.name));
+                    }
+                }
+            }
+        }
+        for r in lucene_index::check_index::check_directory(&dir).unwrap() {
+            for c in r.failures() {
+                failures.push(format!("{version}: CheckIndex {} {}", c.name, c.message));
+            }
+        }
+        let totals = |lines: Vec<String>| -> Vec<String> {
+            lines
+                .into_iter()
+                .filter(|l| l.contains(" exact "))
+                .map(|l| {
+                    l.rsplit_once(' ')
+                        .map(|(head, _)| head.to_string())
+                        .unwrap()
+                })
+                .collect()
+        };
+        let before = totals(before);
+        let after = totals(search_dir(tmp.path()).unwrap_or_else(|e| panic!("{version}: {e}")));
+        for (b, a) in before.iter().zip(&after) {
+            if b != a {
+                failures.push(format!("{version}: before {b}, after {a}"));
+            }
+        }
+    }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
