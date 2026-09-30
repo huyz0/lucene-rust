@@ -681,3 +681,76 @@ fn hex_bytes(hex: &str) -> Vec<u8> {
         .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap())
         .collect()
 }
+
+/// The write side, byte for byte: the fixture's three fields -- one
+/// dimension, two dimensions, four dimensions with two indexed -- handed to
+/// [`points::write_packed`] in insertion (doc) order with the segment's
+/// `maxDoc`, in the order `IndexingChain.writePoints` walks its field hash
+/// (`shape`, `val`, `multi` here; read off the `.kdm` below rather than
+/// assumed), produce Lucene's `.kdm`, `.kdi` and `.kdd`.
+#[test]
+fn flushed_points_are_written_byte_identical_to_lucene() {
+    let m = Manifest::load();
+    let id = id_from_hex(m.get("id_hex"));
+    let max_doc: i32 = m.get("max_doc").parse().unwrap();
+    let ints = |v: &[i64], width: usize| -> Vec<u8> {
+        v.iter()
+            .flat_map(|&x| match width {
+                8 => ((x as u64) ^ (1 << 63)).to_be_bytes().to_vec(),
+                _ => ((x as i32 as u32) ^ (1 << 31)).to_be_bytes().to_vec(),
+            })
+            .collect()
+    };
+    let field = |prefix: &str, points_key: &str| -> points::PackedPointsField {
+        let key = |k: &str| format!("{prefix}{k}");
+        let bytes_per_dim: i32 = m.get(&key("bytes_per_dim")).parse().unwrap();
+        let mut docs = Vec::new();
+        let mut values = Vec::new();
+        for entry in m.get(points_key).split(';') {
+            let mut parts = entry.split(':').map(|p| p.parse::<i64>().unwrap());
+            docs.push(parts.next().unwrap() as i32);
+            let dims: Vec<i64> = parts.collect();
+            values.extend(ints(&dims, bytes_per_dim as usize));
+        }
+        points::PackedPointsField {
+            field_number: m.get(&key("field_number")).parse().unwrap(),
+            num_dims: m.get(&key("num_dims")).parse().unwrap(),
+            num_index_dims: m.get(&key("num_index_dims")).parse().unwrap(),
+            bytes_per_dim,
+            docs,
+            values,
+        }
+    };
+    let mut fields = vec![
+        field("", "points"),
+        field("multi_", "multi_points"),
+        field("shape_", "shape_points"),
+    ];
+
+    let raw = |k: &str| std::fs::read(format!("{}{}.raw", dir(), m.get(k))).unwrap();
+    let (want_kdm, want_kdi, want_kdd) = (
+        raw("kdm_file_name"),
+        raw("kdi_file_name"),
+        raw("kdd_file_name"),
+    );
+    // The field order Java wrote, from the real `.kdm`.
+    let reader = points::open(&want_kdm, &want_kdi, &want_kdd, &id, "").unwrap();
+    let order: Vec<i32> = reader.field_numbers().collect();
+    // `shape` (2), `val` (3), `multi` (1): the field hash's bucket order
+    // for first-seen `id`, `multi`, `shape`, `val` -- not field-number order.
+    assert_eq!(order, [2, 3, 1]);
+    fields.sort_by_key(|f| order.iter().position(|&n| n == f.field_number).unwrap());
+
+    let (kdm, kdi, kdd) = points::write_packed(
+        fields,
+        points::DEFAULT_MAX_POINTS_IN_LEAF_NODE,
+        max_doc,
+        &id,
+        "",
+    )
+    .unwrap();
+    assert_eq!(kdm, want_kdm, ".kdm");
+    assert_eq!(kdi, want_kdi, ".kdi");
+    assert_eq!(kdd.len(), want_kdd.len(), ".kdd length");
+    assert!(kdd == want_kdd, ".kdd bytes differ");
+}
