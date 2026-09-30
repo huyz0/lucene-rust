@@ -3360,7 +3360,36 @@ fn check_doc_values(
     field_infos: &FieldInfos,
     checks: &mut Vec<Check>,
 ) {
-    let dv_fields: Vec<&field_infos::FieldInfo> = field_infos
+    // `testDocValues` walks `reader.getFieldInfos()` -- the *current*
+    // generation's field infos -- and reads every field through
+    // `SegmentDocValuesProducer`, which hands a field with an update
+    // generation to that generation's producer and every other field to the
+    // base one of its own `PerFieldDocValuesFormat` instance. Reading only
+    // the first `.dvm` the `.si` lists decoded one format's fields and none
+    // of an update's.
+    let current = if commit.field_infos_gen == -1 {
+        None
+    } else {
+        match crate::field_updates::read_current_field_infos(dir, commit, &si.files) {
+            Ok(current) => Some(current),
+            Err(e) => {
+                checks.push(Check::fail("doc_values.open", e.to_string()));
+                skip_families(
+                    checks,
+                    &[
+                        "doc_values.values_decode",
+                        "doc_values.skipper",
+                        "doc_values.ords_dense",
+                        "doc_values.terms_sorted",
+                    ],
+                    "doc_values.open",
+                );
+                return;
+            }
+        }
+    };
+    let lookup = current.as_ref().unwrap_or(field_infos);
+    let dv_fields: Vec<&field_infos::FieldInfo> = lookup
         .fields
         .iter()
         .filter(|f| f.doc_values_type != field_infos::DocValuesType::None)
@@ -3368,52 +3397,35 @@ fn check_doc_values(
     if dv_fields.is_empty() {
         return;
     }
-    let (Some(dvm_name), Some(dvd_name)) = (
-        si.files.iter().find(|f| f.ends_with(".dvm")),
-        si.files.iter().find(|f| f.ends_with(".dvd")),
-    ) else {
+    // Only an update generation can hold a column without a base `.dvm`.
+    if dv_fields.iter().all(|f| f.doc_values_gen == -1)
+        && !si.files.iter().any(|f| f.ends_with(".dvm"))
+    {
         return; // already reported by fnm.doc_values_vs_files
-    };
+    }
 
     let result = (|| -> Result<Vec<Check>, String> {
-        let dvm = dir.open(dvm_name).map_err(|e| e.to_string())?;
-        let dvd = dir.open(dvd_name).map_err(|e| e.to_string())?;
-        // The per-format suffix is embedded in the file name, exactly as
-        // `check_postings_term_stats` derives the postings one.
-        let suffix = if *dvm_name == format!("{}.dvm", commit.segment_name) {
-            String::new()
-        } else {
-            dvm_name
-                .strip_prefix(&format!("{}_", commit.segment_name))
-                .or_else(|| dvm_name.strip_prefix('_'))
-                .and_then(|s| s.strip_suffix(".dvm"))
-                .unwrap_or_default()
-                .to_string()
-        };
-        let (_version, meta) =
-            doc_values::parse_meta(&dvm, &commit.segment_id, &suffix, field_infos)
-                .map_err(|e| e.to_string())?;
-        doc_values::check_data_header_footer(&dvd, &commit.segment_id, &suffix)
-            .map_err(|e| e.to_string())?;
-
-        // `.dvs` is a separate file, present only when some field asked for a
-        // skip index (`Lucene90DocValuesConsumer`'s
-        // `VERSION_SKIPPER_SEPARATE_FILE`). Opened once here rather than per
-        // field, like `.dvm`/`.dvd`.
-        let dvs = if dv_fields
-            .iter()
-            .any(|f| f.doc_values_skip_index_type != field_infos::DocValuesSkipIndexType::None)
-        {
-            match si.files.iter().find(|f| f.ends_with(".dvs")) {
-                Some(dvs_name) => Some(dir.open(dvs_name).map_err(|e| e.to_string())?),
-                None => None, // already reported by fnm.doc_values_vs_files
-            }
-        } else {
-            None
-        };
-
+        // One opened column per `(generation, format instance)`, shared by
+        // every field that lives in it.
+        let mut columns: Vec<((i64, String), DocValuesColumn)> = Vec::new();
         let mut out = Vec::new();
         for fi in &dv_fields {
+            let key = column_key(fi);
+            let at = match columns.iter().position(|(k, _)| *k == key) {
+                Some(at) => at,
+                None => {
+                    let column = open_field_column(dir, commit, si, field_infos, fi)?;
+                    columns.push((key, column));
+                    columns.len().saturating_sub(1)
+                }
+            };
+            let DocValuesColumn {
+                meta,
+                dvd,
+                dvs,
+                suffix,
+            } = &columns[at].1;
+            let (meta, dvd, dvs, suffix) = (meta, &dvd[..], dvs.as_deref(), suffix.as_str());
             let name = &fi.name;
             let mut problems: Vec<String> = Vec::new();
             let mut docs_with_value = 0i64;
@@ -3443,7 +3455,7 @@ fn check_doc_values(
                         continue;
                     };
                     for doc in 0..si.doc_count {
-                        match doc_values::numeric_value(&dvd, entry, doc) {
+                        match doc_values::numeric_value(dvd, entry, doc) {
                             Ok(Some(_)) => docs_with_value = docs_with_value.saturating_add(1),
                             Ok(None) => {}
                             Err(e) => problems.push(format!("docID={doc}: {e}")),
@@ -3469,7 +3481,7 @@ fn check_doc_values(
                     };
                     expected_docs_with_value = Some(entry.num_docs_with_field as i64);
                     for doc in 0..si.doc_count {
-                        match doc_values::binary_value(&dvd, entry, doc) {
+                        match doc_values::binary_value(dvd, entry, doc) {
                             Ok(Some(v)) => {
                                 docs_with_value = docs_with_value.saturating_add(1);
                                 let len = v.len() as i32;
@@ -3511,7 +3523,7 @@ fn check_doc_values(
                     let mut seen =
                         lucene_util::fixed_bit_set::FixedBitSet::new(value_count.max(0) as usize);
                     for doc in 0..si.doc_count {
-                        match doc_values::sorted_ord(&dvd, entry, doc) {
+                        match doc_values::sorted_ord(dvd, entry, doc) {
                             Ok(Some(ord)) => {
                                 docs_with_value = docs_with_value.saturating_add(1);
                                 if ord < 0 || ord >= value_count {
@@ -3553,7 +3565,7 @@ fn check_doc_values(
                     };
                     expected_docs_with_value = Some(entry.num_docs_with_field as i64);
                     for doc in 0..si.doc_count {
-                        match doc_values::sorted_numeric_values(&dvd, entry, doc) {
+                        match doc_values::sorted_numeric_values(dvd, entry, doc) {
                             Ok(values) => {
                                 if !values.is_empty() {
                                     docs_with_value = docs_with_value.saturating_add(1);
@@ -3611,7 +3623,7 @@ fn check_doc_values(
                                 value_count.max(0) as usize,
                             );
                             for doc in 0..si.doc_count {
-                                match doc_values::sorted_ord(&dvd, single, doc) {
+                                match doc_values::sorted_ord(dvd, single, doc) {
                                     Ok(Some(ord)) => {
                                         docs_with_value = docs_with_value.saturating_add(1);
                                         if ord < 0 || ord >= value_count {
@@ -3641,7 +3653,7 @@ fn check_doc_values(
                             );
                             expected_docs_with_value = Some(ords.num_docs_with_field as i64);
                             for doc in 0..si.doc_count {
-                                match doc_values::sorted_numeric_values(&dvd, ords, doc) {
+                                match doc_values::sorted_numeric_values(dvd, ords, doc) {
                                     Ok(values) => {
                                         if values.is_empty() {
                                             continue;
@@ -3703,12 +3715,12 @@ fn check_doc_values(
                 let name = &fi.name;
                 let mut skip_problems: Vec<String> = Vec::new();
                 let mut intervals = 0i64;
-                match (dvs.as_ref(), meta.skipper_meta(fi.number)) {
+                match (dvs, meta.skipper_meta(fi.number)) {
                     (Some(dvs), Some(skipper_meta)) => {
                         match doc_values::parse_skip_index(
                             dvs,
                             &commit.segment_id,
-                            &suffix,
+                            suffix,
                             skipper_meta,
                         ) {
                             Ok(index) => {
@@ -3765,7 +3777,7 @@ fn check_doc_values(
                 // index sort relies on) and must hold exactly `valueCount`
                 // terms.
                 let mut order: Vec<String> = Vec::new();
-                match lucene_codecs::terms_dict::decode_all_terms(&dvd, terms) {
+                match lucene_codecs::terms_dict::decode_all_terms(dvd, terms) {
                     Ok(all) => {
                         if all.len() as i64 != value_count {
                             order.push(format!(
@@ -3814,6 +3826,130 @@ fn check_doc_values(
             );
         }
     }
+}
+
+/// One doc-values column as [`check_doc_values`] reads it: a base
+/// `PerFieldDocValuesFormat` instance's `.dvm`/`.dvd`(/`.dvs`), or one update
+/// generation's, with the segment suffix every one of its headers carries.
+struct DocValuesColumn {
+    meta: doc_values::DocValuesMeta,
+    dvd: lucene_store::directory::Input,
+    dvs: Option<lucene_store::directory::Input>,
+    suffix: String,
+}
+
+/// Which column a field is read from: its update generation (`-1`: the
+/// base) and its `PerFieldDocValuesFormat` component (`Lucene90_1`), empty
+/// for a field whose `.fnm` entry carries no format attributes.
+fn column_key(fi: &field_infos::FieldInfo) -> (i64, String) {
+    (
+        fi.doc_values_gen,
+        crate::field_updates::field_per_field_component(fi).unwrap_or_default(),
+    )
+}
+
+/// `SegmentDocValuesProducer`'s choice of producer for one field, opened:
+/// the update generation `docValuesGen` names (whose `.dvm` describes that
+/// one field, so it is parsed against it alone, as Java hands the
+/// generation's producer a one-field `FieldInfos`), or the base column of the
+/// format instance the field's attributes name. A base field with no
+/// attributes falls back to the first `.dvm` the `.si` lists, the one column
+/// a single-format segment has.
+fn open_field_column(
+    dir: &dyn Directory,
+    commit: &SegmentCommitInfo,
+    si: &SegmentInfo,
+    base_infos: &FieldInfos,
+    fi: &field_infos::FieldInfo,
+) -> Result<DocValuesColumn, String> {
+    let component = crate::field_updates::field_per_field_component(fi);
+    let wants_dvs = fi.doc_values_skip_index_type != field_infos::DocValuesSkipIndexType::None;
+    let (dvm_name, dvd_name, dvs_name, suffix, only);
+    if fi.doc_values_gen != -1 {
+        let component = component.ok_or_else(|| {
+            format!(
+                "field {:?} has doc-values generation {} but no PerFieldDocValuesFormat \
+                 attributes",
+                fi.name, fi.doc_values_gen
+            )
+        })?;
+        let gen = fi.doc_values_gen;
+        let name = |ext| {
+            crate::field_updates::generation_file_name(&commit.segment_name, gen, &component, ext)
+        };
+        dvm_name = name("dvm");
+        dvd_name = name("dvd");
+        dvs_name = Some(name("dvs"));
+        suffix = crate::field_updates::generation_segment_suffix(gen, &component);
+        only = Some(FieldInfos {
+            fields: vec![fi.clone()],
+        });
+    } else {
+        let base = |ext: &str| -> Option<String> {
+            match &component {
+                Some(c) => {
+                    let want = format!("{}_{c}.{ext}", commit.segment_name);
+                    si.files.iter().find(|f| **f == want).cloned()
+                }
+                None => si
+                    .files
+                    .iter()
+                    .find(|f| f.ends_with(&format!(".{ext}")))
+                    .cloned(),
+            }
+        };
+        let missing = || {
+            format!(
+                "field {:?}'s doc-values format instance {:?} has no .dvm/.dvd in the segment",
+                fi.name,
+                component.as_deref().unwrap_or("")
+            )
+        };
+        dvm_name = base("dvm").ok_or_else(missing)?;
+        dvd_name = base("dvd").ok_or_else(missing)?;
+        dvs_name = base("dvs");
+        // The per-format suffix is embedded in the file name, exactly as
+        // `check_postings_term_stats` derives the postings one.
+        suffix = if dvm_name == format!("{}.dvm", commit.segment_name) {
+            String::new()
+        } else {
+            dvm_name
+                .strip_prefix(&format!("{}_", commit.segment_name))
+                .or_else(|| dvm_name.strip_prefix('_'))
+                .and_then(|s| s.strip_suffix(".dvm"))
+                .unwrap_or_default()
+                .to_string()
+        };
+        only = None;
+    }
+    let dvm = dir
+        .open(&dvm_name)
+        .map_err(|e| format!("{dvm_name}: {e}"))?;
+    let dvd = dir
+        .open(&dvd_name)
+        .map_err(|e| format!("{dvd_name}: {e}"))?;
+    let (_version, meta) = doc_values::parse_meta(
+        &dvm,
+        &commit.segment_id,
+        &suffix,
+        only.as_ref().unwrap_or(base_infos),
+    )
+    .map_err(|e| e.to_string())?;
+    doc_values::check_data_header_footer(&dvd, &commit.segment_id, &suffix)
+        .map_err(|e| e.to_string())?;
+    // `.dvs` is a separate file, present only when some field asked for a
+    // skip index (`Lucene90DocValuesConsumer`'s
+    // `VERSION_SKIPPER_SEPARATE_FILE`); its absence is reported per field.
+    let dvs = match dvs_name {
+        Some(name) if wants_dvs => Some(dir.open(&name).map_err(|e| format!("{name}: {e}"))?),
+        _ => None,
+    };
+    Ok(DocValuesColumn {
+        meta,
+        dvd,
+        dvs,
+        suffix,
+    })
 }
 
 /// `CheckIndex.checkDocValueSkipper`: the `.dvs` skip index's own semantic
@@ -7524,6 +7660,64 @@ mod tests {
     /// up in the base `.fnm`, the check was never run -- no pass, no skip --
     /// and `softDelCount` went unvalidated on exactly the segments OpenSearch
     /// soft-deletes into after they were written.
+    /// `testDocValues` reads an updated field through its update
+    /// generation's producer: `GenDocValuesUpdates`' `val` lives in
+    /// generation 4 (`_0_4_Lucene90_0.*`, a sparse column),
+    /// `tag` in generation 2 and `keep` in the base column, and every one of
+    /// them is decoded -- Java's `CheckIndex` passes the index, and so must
+    /// this.
+    #[test]
+    fn doc_values_update_generations_are_decoded_against_java() {
+        let dir = FsDirectory::open(fixture_dir("doc_values_updates_index"));
+        let results = check_directory(&dir).unwrap();
+        assert!(failed_names(&results).is_empty(), "{results:?}");
+        let segment = results.iter().find(|r| r.segment_name == "_0").unwrap();
+        for name in [
+            "doc_values.values_decode:val",
+            "doc_values.values_decode:tag",
+            "doc_values.values_decode:keep",
+        ] {
+            let check = segment.checks.iter().find(|c| c.name == name);
+            assert!(
+                check.is_some_and(|c| c.passed()),
+                "{name} must run and pass: {check:?}"
+            );
+        }
+    }
+
+    /// Negative control for the above: corrupting an update generation's
+    /// `.dvd` payload (checksum repaired, so only a decode can notice) is
+    /// caught by the doc-values checks. Before they read generations, every
+    /// one of these flips passed: the generation files were only
+    /// checksummed.
+    #[test]
+    fn a_corrupt_update_generation_is_caught_by_the_doc_values_checks() {
+        let dst = copy_fixture("doc_values_updates_index");
+        let dvd_path = dst.join("_0_2_Lucene90_0.dvd");
+        let original = std::fs::read(&dvd_path).unwrap();
+        let mut caught = 0usize;
+        for off in 40..original.len() - 16 {
+            let mut bytes = original.clone();
+            bytes[off] ^= 0xff;
+            repair_checksum(&mut bytes);
+            std::fs::write(&dvd_path, &bytes).unwrap();
+            let dir = FsDirectory::open(&dst);
+            if let Ok(results) = check_directory(&dir) {
+                if failed_names(&results)
+                    .iter()
+                    .any(|n| n.starts_with("doc_values."))
+                {
+                    caught += 1;
+                }
+            }
+        }
+        std::fs::write(&dvd_path, &original).unwrap();
+        assert!(
+            caught > 0,
+            "no corruption of the generation-2 column was caught"
+        );
+    }
+
     #[test]
     fn a_soft_deletes_field_added_by_an_update_is_checked_against_java() {
         let dir = FsDirectory::open(concat!(

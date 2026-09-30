@@ -213,6 +213,10 @@ frequency attributes (on `index/IndexingChain`'s row).
 - `QueryBuilder` and `GraphTokenStreamFiniteStrings` over the streaming analysis model (`GenQueryBuilder`: 29 cases, `toString` and hits/scores bit for bit).
 - `IndexSearcher.explain` over several segments with reader-wide statistics (and `searchAfter`), each top hit's explanation Lucene's `toString` verbatim (`GenMinScore`); counts print as Java longs, scientific notation as Java's.
 
+### Writer, codec-routing and check gaps · delivered 2026-09-30
+
+- `CheckIndex.testDocValues` decodes doc-values update generations and every `PerFieldDocValuesFormat` instance's column, not just the first `.dvm` (`GenDocValuesUpdates`; re-signed generation corruptions caught).
+
 Each follows [`port-workflow`](../porting-workflow.md): the closest-to-Java
 port with a Java-fixture differential test, a `bench-micro` pair against
 Lucene, then optimisation to a ratio of at least 1.0.

@@ -328,7 +328,7 @@ index/ByteSlicePool	ported	crates/lucene-index/src/inverter.rs::FieldInverter
 index/ByteSliceReader	ported	crates/lucene-index/src/inverter.rs::FieldInverter
 index/ByteVectorValues	ported	crates/lucene-codecs/src/vectors.rs::ByteVectorValues
 index/CachingMergeContext	not-needed	memoizes MergeContext.numDeletesToMerge during one merge selection; a pure caching wrapper with no behaviour of its own.
-index/CheckIndex	partial	crates/lucene-index/src/check_index.rs::check_directory -- M7: per parity.md: doc-values generation columns of an updated segment are checksummed but their contents not decoded (except the soft-deletes field)
+index/CheckIndex	ported	crates/lucene-index/src/check_index.rs::check_directory
 index/CodecReader	ported	crates/lucene-search/src/reader/mod.rs::CodecReader
 index/CompositeReader	ported	crates/lucene-search/src/reader/mod.rs::CompositeReader
 index/CompositeReaderContext	ported	crates/lucene-search/src/directory_reader.rs::segment_readers
