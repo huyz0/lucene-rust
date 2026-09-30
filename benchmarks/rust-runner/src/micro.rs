@@ -943,6 +943,37 @@ fn bench_fst_build(w: Duration, m: Duration) {
     });
 }
 
+/// `BKDWriter.writeField` (the flush path) plus `writeIndex` over 200k
+/// points of one and of two 4-byte dimensions (dim `d` of point `i` is
+/// `(i * 7919 + d * 104729) % 1000003`, big-endian; doc `i`), 512 points per
+/// leaf. One op is one point. Mirrors `SweepMicro.bkdBuild`.
+fn bench_bkd_build(w: Duration, m: Duration) {
+    use lucene_codecs::bkd_writer::{BkdConfig, BkdWriter, MutablePointTree, VERSION_CURRENT};
+    const N: usize = 200_000;
+    for dims in [1usize, 2] {
+        let config = BkdConfig::new(dims, dims, 4, 512).unwrap();
+        let mut tree = MutablePointTree::new(config.packed_bytes_length());
+        let mut v = vec![0u8; config.packed_bytes_length()];
+        for i in 0..N {
+            for d in 0..dims {
+                let x = ((i * 7919 + d * 104_729) % 1_000_003) as u32;
+                v[d * 4..d * 4 + 4].copy_from_slice(&x.to_be_bytes());
+            }
+            tree.push(&v, i as i32);
+        }
+        measure(&format!("bkd_flush_{dims}d_200k"), w, m, || {
+            let mut t = tree.clone();
+            let mut bw =
+                BkdWriter::new(N, None, "_0", config, 16.0, N as u64, VERSION_CURRENT).unwrap();
+            let (mut meta, mut index, mut data) = (Vec::new(), Vec::new(), Vec::new());
+            let plan = bw.write_field(&mut data, &mut t).unwrap().unwrap();
+            bw.write_index(&mut meta, &mut index, &plan);
+            black_box((meta.len(), index.len(), data.len()));
+            N as u64
+        });
+    }
+}
+
 /// Opens the corpus and hands the first segment's pieces to `f`.
 fn with_segment(
     index: &str,
@@ -1852,6 +1883,7 @@ fn main() {
         "quantized" => bench_quantized(warmup, measure),
         "fst_build" => bench_fst_build(warmup, measure),
         "bytes_ref_hash" => bench_bytes_ref_hash(warmup, measure),
+        "bkd_build" => bench_bkd_build(warmup, measure),
         "term_dict_write" => bench_term_dict_write(warmup, measure),
         "dv_merge" => bench_dv_merge(warmup, measure),
         "points_write" => bench_points_write(warmup, measure),
