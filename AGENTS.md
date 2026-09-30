@@ -92,7 +92,7 @@ the hook, the container and this table cannot drift apart:
 | Lint | `cargo clippy --workspace --all-targets -- -D warnings` (includes the arithmetic gate — see [`docs/arithmetic-gate.md`](docs/arithmetic-gate.md)) |
 | Lint for arm64 (catches target-dependent defects) | `cargo clippy --workspace --all-targets --target aarch64-unknown-linux-gnu -- -D warnings` |
 | Port invariants clippy cannot express | `python3 scripts/check-port-invariants.py` (FixedBitSet bounds, sentinel call sites, codec-suffix literals, blocktree `try_*`, per-document doc-values, ledger drift — see [`docs/mechanical-gates.md`](docs/mechanical-gates.md)) |
-| Port inventory (every `lucene-core` class has a status; `--milestone M7 --summary` shows what M7 still owes) | `python3 scripts/check-port-inventory.py` |
+| Port inventory (every `lucene-core` class has a status; `--milestone M7 --summary` shows what M7 still owes; `--module backward-codecs` the same for `lucene-backward-codecs`) | `python3 scripts/check-port-inventory.py` (and `--module backward-codecs`) |
 | Rustdoc link lints | `RUSTDOCFLAGS="-D warnings -A rustdoc::private_intra_doc_links" cargo doc --workspace --no-deps --document-private-items` |
 | Type-check the out-of-workspace benchmarks | `cargo check --manifest-path benchmarks/rust-runner/Cargo.toml --all-targets` |
 | Tests + coverage gate | `cargo llvm-cov --workspace --fail-under-lines 95` |

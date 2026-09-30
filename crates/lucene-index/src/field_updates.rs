@@ -253,7 +253,7 @@ fn write_field_updates_inner(
 ) -> Result<()> {
     let segment = sci.segment_name.clone();
     let si_bytes = dir.open(&format!("{segment}.si"))?;
-    let si = segment_info::parse(&si_bytes, &sci.segment_id)?;
+    let si = segment_info::parse_for_codec(&si_bytes, &sci.segment_id, &sci.codec_name)?;
     let max_doc = si.doc_count;
 
     // A compound segment keeps its base `.fnm` and base columns inside the

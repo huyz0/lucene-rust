@@ -55,6 +55,14 @@ const BKD_CODEC_NAME: &str = "BKD";
 /// The only BKD version this port understands -- current Lucene always
 /// writes this one (vectorized BPV24, BPV21 introduced).
 const BKD_VERSION_CURRENT: i32 = 10;
+/// `BKDWriter.VERSION_META_FILE`: the oldest BKD version this reader opens,
+/// the one `Lucene90PointsFormat` version 0 always wrote. Older versions
+/// (balanced trees, index-file-resident metadata) only ever came from the
+/// Lucene 8 `Lucene60`/`Lucene86` points formats, which neither Lucene 10
+/// nor OpenSearch 3.x reads.
+const BKD_VERSION_META_FILE: i32 = 9;
+/// `BKDWriter.VERSION_VECTORIZE_BPV24_AND_INTRODUCE_BPV21`.
+const BKD_VERSION_VECTORIZE_BPV24: i32 = 10;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -226,6 +234,12 @@ pub struct PointsField {
     pub doc_count: i32,
     index_start_pointer: i64,
     num_index_bytes: i32,
+    /// The field's `BKDWriter` version, from its `.kdm` header: 9
+    /// (`VERSION_META_FILE`, what `Lucene90PointsFormat` version 0 wrote --
+    /// every Lucene 9.x and 10.0/10.1 index) or 10
+    /// (`VERSION_VECTORIZE_BPV24_AND_INTRODUCE_BPV21`). The only difference
+    /// a reader sees is the `BPV_24` doc-id layout -- see [`read_doc_ids_into`].
+    bkd_version: i32,
 }
 
 impl PointsField {
@@ -463,12 +477,13 @@ fn read_field_meta(meta_input: &mut SliceInput) -> Result<PointsField> {
     // `check_header` enforces the exact version (min == max == CURRENT)
     // itself, surfacing a mismatch as a `Corrupted` error -- no separate
     // check needed here.
-    codec_util::check_header(
+    let bkd_version = codec_util::check_header(
         meta_input,
         BKD_CODEC_NAME,
+        BKD_VERSION_META_FILE,
         BKD_VERSION_CURRENT,
-        BKD_VERSION_CURRENT,
-    )?;
+    )?
+    .version;
 
     let num_dims = meta_input.read_vint()?;
     let num_index_dims = meta_input.read_vint()?;
@@ -547,6 +562,7 @@ fn read_field_meta(meta_input: &mut SliceInput) -> Result<PointsField> {
         doc_count,
         index_start_pointer,
         num_index_bytes,
+        bkd_version,
     })
 }
 
@@ -1591,7 +1607,12 @@ fn add_all<V: IntersectVisitor>(
         let mut kdd_input = SliceInput::new(ctx.kdd);
         seek_leaf_block(&mut kdd_input, fp)?;
         let count = read_leaf_count(&mut kdd_input, ctx.field)?;
-        read_doc_ids_into(&mut kdd_input, count, &mut ctx.doc_ids)?;
+        read_doc_ids_into(
+            &mut kdd_input,
+            count,
+            &mut ctx.doc_ids,
+            ctx.field.bkd_version,
+        )?;
         visitor.visit_many(&ctx.doc_ids);
         return Ok(());
     }
@@ -1925,7 +1946,7 @@ fn read_leaf_block_into<S: LeafSink>(
     out: &mut S,
 ) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
     let count = read_leaf_count(input, field)?;
-    read_doc_ids_into(input, count, doc_ids)?;
+    read_doc_ids_into(input, count, doc_ids, field.bkd_version)?;
     let doc_ids: &[i32] = doc_ids;
 
     let num_dims = field.num_dims as usize;
@@ -2162,7 +2183,7 @@ fn require_bytes(input: &SliceInput, needed: usize, what: &str) -> Result<()> {
 #[cfg(test)]
 fn read_doc_ids(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
     let mut out = Vec::new();
-    read_doc_ids_into(input, count, &mut out)?;
+    read_doc_ids_into(input, count, &mut out, BKD_VERSION_CURRENT)?;
     Ok(out)
 }
 
@@ -2176,7 +2197,17 @@ fn read_doc_ids(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
 /// `count` must have come from [`read_leaf_count`], i.e. be bounded by the
 /// field's `maxPointsInLeafNode`; that is what Java's fixed
 /// `int[maxPointsInLeafNode]` decode buffer enforces implicitly.
-fn read_doc_ids_into(input: &mut SliceInput, count: usize, out: &mut Vec<i32>) -> Result<()> {
+///
+/// `bkd_version` is the field's `BKDWriter` version: before
+/// `VERSION_VECTORIZE_BPV24_AND_INTRODUCE_BPV21` (10) a `BPV_24` leaf is the
+/// scalar big-endian packing [`read_scalar_bpv24`] decodes, as
+/// `DocIdsWriter.readInts` dispatches on `version`.
+fn read_doc_ids_into(
+    input: &mut SliceInput,
+    count: usize,
+    out: &mut Vec<i32>,
+    bkd_version: i32,
+) -> Result<()> {
     let bpv = input.read_byte()? as i8;
     out.clear();
     match bpv {
@@ -2194,6 +2225,7 @@ fn read_doc_ids_into(input: &mut SliceInput, count: usize, out: &mut Vec<i32>) -
         BITSET_IDS => read_bitset_ids(input, count, out),
         DELTA_BPV_16 => read_delta_bpv16(input, count, out),
         BPV_21 => read_bpv21(input, count, out),
+        BPV_24 if bkd_version < BKD_VERSION_VECTORIZE_BPV24 => read_scalar_bpv24(input, count, out),
         BPV_24 => read_bpv24(input, count, out),
         BPV_32 => {
             let bytes = take_bytes(input, count.saturating_mul(4), "BPV_32 doc ids")?;
@@ -2417,6 +2449,45 @@ fn read_bpv21(input: &mut SliceInput, count: usize, out: &mut Vec<i32>) -> Resul
         // `hi` is a byte, so `hi << 16` is at most 0x00FF_0000.
         out[i] = lo | (hi << 16);
         i += 1;
+    }
+    Ok(())
+}
+
+/// Port of `DocIdsWriter.readScalarInts24`: the `BPV_24` layout BKD versions
+/// before 10 wrote -- every eight ids packed big-endian-first into three
+/// little-endian `long`s, then each remaining id as a `short` (its high 16
+/// bits) followed by a byte (its low 8 bits).
+// ARITH: `count / 8` and `count % 8` by a constant; every shift below moves a
+// `u64` by a constant under 64 and is masked to at most 24 bits before the
+// narrowing cast, and `hi << 8` of a 16-bit value stays under 2^24.
+#[allow(clippy::arithmetic_side_effects)]
+fn read_scalar_bpv24(input: &mut SliceInput, count: usize, out: &mut Vec<i32>) -> Result<()> {
+    let (blocks, tail) = (count / 8, count % 8);
+    let needed = blocks
+        .saturating_mul(24)
+        .saturating_add(tail.saturating_mul(3));
+    require_bytes(input, needed, "scalar BPV_24 doc ids")?;
+    out.reserve(count);
+    for _ in 0..blocks {
+        let l1 = input.read_i64()? as u64;
+        let l2 = input.read_i64()? as u64;
+        let l3 = input.read_i64()? as u64;
+        // Every value is masked (or shifted) down to at most 24 bits before
+        // the narrowing cast, so none of these can change sign.
+        out.push((l1 >> 40) as i32);
+        out.push(((l1 >> 16) & 0xff_ffff) as i32);
+        out.push((((l1 & 0xffff) << 8) | (l2 >> 56)) as i32);
+        out.push(((l2 >> 32) & 0xff_ffff) as i32);
+        out.push(((l2 >> 8) & 0xff_ffff) as i32);
+        out.push((((l2 & 0xff) << 16) | (l3 >> 48)) as i32);
+        out.push(((l3 >> 24) & 0xff_ffff) as i32);
+        out.push((l3 & 0xff_ffff) as i32);
+    }
+    for _ in 0..tail {
+        let hi = i32::from(input.read_u16()?);
+        let lo = i32::from(input.read_byte()?);
+        // `hi` is 16 bits, so `hi << 8` is at most 0x00FF_FF00.
+        out.push((hi << 8) | lo);
     }
     Ok(())
 }
@@ -3841,6 +3912,7 @@ mod tests {
             doc_count: 3,
             index_start_pointer: 0,
             num_index_bytes: 0,
+            bkd_version: BKD_VERSION_CURRENT,
         };
         let mut inner = Vec::new();
         write_vlong(&mut inner, 300_000); // large enough to need vlong continuation bytes
@@ -3864,6 +3936,7 @@ mod tests {
             doc_count: 3,
             index_start_pointer: 0,
             num_index_bytes: 0,
+            bkd_version: BKD_VERSION_CURRENT,
         };
         // leafNodeOffset=3. node1 (root) is not a leaf (1<3); its children
         // are node2 (leaf, 2>=3? no wait 2<3 so node2 is NOT a leaf either;
@@ -3913,6 +3986,7 @@ mod tests {
             doc_count: 0,
             index_start_pointer: 0,
             num_index_bytes: 0,
+            bkd_version: BKD_VERSION_CURRENT,
         }
     }
 
@@ -4004,6 +4078,7 @@ mod tests {
             doc_count: 0,
             index_start_pointer: 0,
             num_index_bytes: 0,
+            bkd_version: BKD_VERSION_CURRENT,
         };
         let mut bytes = Vec::new();
         write_vint(&mut bytes, 1); // count
@@ -6872,6 +6947,7 @@ mod intersect_tests {
             doc_count: 2,
             index_start_pointer: 0,
             num_index_bytes,
+            bkd_version: BKD_VERSION_CURRENT,
         }
     }
 
@@ -7046,6 +7122,7 @@ mod intersect_tests {
             doc_count: 1,
             index_start_pointer: 0,
             num_index_bytes: 0,
+            bkd_version: BKD_VERSION_CURRENT,
         }
     }
 

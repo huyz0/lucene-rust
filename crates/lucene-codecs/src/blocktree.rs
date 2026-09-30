@@ -129,6 +129,31 @@ pub(crate) const VERSION_CURRENT: i32 = 0;
 /// `Lucene104PostingsFormat.TERMS_CODEC` — the postings writer's own header,
 /// embedded in the `.tmd` stream right after BlockTree's own index header.
 pub(crate) const POSTINGS_TERMS_CODEC: &str = "Lucene104PostingsWriterTerms";
+/// `Lucene103PostingsFormat.TERMS_CODEC`: the 10.3 postings under this same
+/// trie dictionary.
+const LUCENE103_POSTINGS_TERMS_CODEC: &str = "Lucene103PostingsWriterTerms";
+
+/// The postings reader's terms codec that follows `.tmd`'s own index header
+/// (`PostingsReaderBase.init`), or `None` when `.tmd` does not start with a
+/// `BlockTreeTermsMeta` header for this segment at any version either
+/// dictionary generation writes.
+fn postings_terms_codec(
+    tmd: &[u8],
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+) -> Option<String> {
+    let mut r = SliceInput::new(tmd);
+    codec_util::check_index_header(
+        &mut r,
+        TERMS_META_CODEC_NAME,
+        0,
+        crate::backward_codecs::blocktree::VERSION_CURRENT,
+        segment_id,
+        segment_suffix,
+    )
+    .ok()?;
+    codec_util::peek_codec_name(r.as_slice())
+}
 const POSTINGS_VERSION_START: i32 = 0;
 pub(crate) const POSTINGS_VERSION_CURRENT: i32 = 0;
 /// `Lucene104PostingsFormat.BLOCK_SIZE` (= `ForUtil.BLOCK_SIZE`), the postings
@@ -167,7 +192,7 @@ pub(crate) const CHILD_STRATEGY_BITS: u32 = 2;
 /// `minTerm`/`maxTerm`, and `indexStart`/`rootFP`/`indexEnd` -- less the one
 /// `sumDocFreq` that `IndexOptions::Docs` aliases away. Used only as a ceiling
 /// on `numFields`, so undercounting is the safe direction.
-const MIN_FIELD_RECORD_BYTES: usize = 9;
+pub(crate) const MIN_FIELD_RECORD_BYTES: usize = 9;
 
 const BYTES_MINUS_1_MASK: [u64; 8] = [
     0xFF,
@@ -1239,7 +1264,12 @@ impl Frame {
     // either `next_ent.max(0)` or `term_block_ord` -- both bounded by
     // `ent_count <= i32::MAX` (`ENT_COUNT`), well inside `u32`.
     #[allow(clippy::arithmetic_side_effects)]
-    fn decode_meta_data(&mut self, index_options: IndexOptions, has_payloads: bool) -> Result<()> {
+    fn decode_meta_data(
+        &mut self,
+        index_options: IndexOptions,
+        has_payloads: bool,
+        format: postings::PostingsFormat,
+    ) -> Result<()> {
         let limit = self.term_block_ord();
         if limit == 0 {
             return Err(Error::Store(lucene_store::Error::Corrupted(
@@ -1298,7 +1328,8 @@ impl Frame {
             } = self;
             let mut r = SliceInput::new(&meta_bytes[..*meta_bytes_len]);
             r.seek(*meta_pos)?;
-            *meta = postings::decode_term_metadata(
+            *meta = postings::decode_term_metadata_for(
+                format,
                 &mut r,
                 doc_freq,
                 absolute,
@@ -1755,9 +1786,13 @@ impl<'a> SegmentTermsEnum<'a> {
 
     /// `SegmentTermsEnum.docFreq()`/`totalTermFreq()`.
     fn stats(&mut self) -> Result<TermStats> {
-        let (index_options, has_payloads) = (self.field.index_options, self.field.has_payloads);
+        let (index_options, has_payloads, format) = (
+            self.field.index_options,
+            self.field.has_payloads,
+            self.field.postings_format,
+        );
         let f = self.cur();
-        f.decode_meta_data(index_options, has_payloads)?;
+        f.decode_meta_data(index_options, has_payloads, format)?;
         Ok(TermStats {
             doc_freq: f.doc_freq,
             total_term_freq: f.total_term_freq,
@@ -1767,9 +1802,13 @@ impl<'a> SegmentTermsEnum<'a> {
     /// `SegmentTermsEnum.postings()`'s half of `decodeMetaData`: the postings
     /// file pointers for the term the enum is parked on.
     fn stats_and_meta(&mut self) -> Result<(TermStats, TermMetadata)> {
-        let (index_options, has_payloads) = (self.field.index_options, self.field.has_payloads);
+        let (index_options, has_payloads, format) = (
+            self.field.index_options,
+            self.field.has_payloads,
+            self.field.postings_format,
+        );
         let f = self.cur();
-        f.decode_meta_data(index_options, has_payloads)?;
+        f.decode_meta_data(index_options, has_payloads, format)?;
         Ok((
             TermStats {
                 doc_freq: f.doc_freq,
@@ -2034,6 +2073,10 @@ pub struct FieldTerms {
     pub max_term: Vec<u8>,
     index_options: IndexOptions,
     has_payloads: bool,
+    /// The postings format that wrote this field (its `FieldInfo`'s
+    /// `PerFieldPostingsFormat.format`): each generation's `decodeTerm`
+    /// differs, so the dictionary has to know which one it is decoding.
+    postings_format: postings::PostingsFormat,
     /// The whole segment's `.tim`, shared by every field.
     tim: SharedBytes,
     /// The whole segment's `.tip`, shared by every field; this field's trie
@@ -2091,6 +2134,7 @@ impl Clone for FieldTerms {
             max_term: self.max_term.clone(),
             index_options: self.index_options,
             has_payloads: self.has_payloads,
+            postings_format: self.postings_format,
             tim: Arc::clone(&self.tim),
             tip: Arc::clone(&self.tip),
             index_start: self.index_start,
@@ -2482,7 +2526,7 @@ impl FieldTerms {
             stats.total_term_freq,
             self.index_options == IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
             self.has_payloads,
-        )))
+        )?))
     }
 
     /// `postings(term, doc_in)` followed by `PostingsEnum.nextPosition()`/
@@ -2697,6 +2741,61 @@ impl FieldTerms {
 #[derive(Debug, Clone, Default)]
 pub struct BlockTreeFields {
     fields: Vec<(String, FieldTerms)>,
+}
+
+impl BlockTreeFields {
+    /// A dictionary of already-opened fields, in `.tmd` order.
+    pub(crate) fn from_fields(fields: Vec<(String, FieldTerms)>) -> Self {
+        BlockTreeFields { fields }
+    }
+}
+
+impl FieldTerms {
+    /// One field's dictionary over a `.tim` and the trie at
+    /// `[index_start, index_end)` of `tip`, rooted at `root_fp` -- what
+    /// [`open_shared`] builds per `.tmd` record, for a reader that obtains
+    /// the trie some other way (`crate::backward_codecs::blocktree`).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_parts(
+        stats: (i64, i64, i64, i32),
+        min_term: Vec<u8>,
+        max_term: Vec<u8>,
+        field_info: &crate::field_infos::FieldInfo,
+        postings_format: postings::PostingsFormat,
+        tim: SharedBytes,
+        tip: SharedBytes,
+        index: (usize, usize, usize),
+    ) -> Self {
+        let (num_terms, sum_total_term_freq, sum_doc_freq, doc_count) = stats;
+        let (index_start, root_fp, index_end) = index;
+        FieldTerms {
+            num_terms,
+            sum_total_term_freq,
+            sum_doc_freq,
+            doc_count,
+            min_term,
+            max_term,
+            index_options: field_info.index_options,
+            has_payloads: field_info.store_payloads,
+            postings_format,
+            tim,
+            tip,
+            index_start,
+            index_end,
+            root_fp,
+            scratch: Mutex::new(EnumState {
+                current: -1,
+                ..EnumState::default()
+            }),
+            ngram: std::sync::OnceLock::new(),
+            wide_walks: std::sync::atomic::AtomicU32::new(0),
+        }
+    }
+
+    /// The postings format that wrote this field.
+    pub fn postings_format(&self) -> postings::PostingsFormat {
+        self.postings_format
+    }
 }
 
 impl BlockTreeFields {
@@ -3613,7 +3712,7 @@ fn prefix_upper_bound(prefix: &[u8]) -> Option<Vec<u8>> {
 /// a file Lucene wrote: `readBytesRef` is immediately followed by
 /// `readBytes(bytes, 0, numBytes)`, so a well-formed record always has at
 /// least `numBytes` left.
-fn read_bytes_ref(input: &mut SliceInput) -> Result<Vec<u8>> {
+pub(crate) fn read_bytes_ref(input: &mut SliceInput) -> Result<Vec<u8>> {
     let len = input.read_vint()?;
     if len < 0 {
         return Err(Error::Store(lucene_store::Error::Corrupted(format!(
@@ -3636,7 +3735,10 @@ fn read_bytes_ref(input: &mut SliceInput) -> Result<Vec<u8>> {
 /// written when `IndexOptions::Docs` (frequencies aren't stored at all, so
 /// `sumTotalTermFreq == sumDocFreq` and only one vlong is on the wire) —
 /// mirrors `Lucene103BlockTreeTermsReader`'s constructor exactly.
-fn read_freq_pair(input: &mut SliceInput, index_options: IndexOptions) -> Result<(i64, i64)> {
+pub(crate) fn read_freq_pair(
+    input: &mut SliceInput,
+    index_options: IndexOptions,
+) -> Result<(i64, i64)> {
     let first = input.read_vlong()?;
     if index_options == IndexOptions::Docs {
         Ok((first, first))
@@ -3654,7 +3756,7 @@ fn read_freq_pair(input: &mut SliceInput, index_options: IndexOptions) -> Result
 /// fields relevant to `node.sign`, mirroring how `TrieReader.Node` itself
 /// mixes single-child/multi-child fields in one class.
 #[derive(Debug, Clone, Copy)]
-struct TrieNode {
+pub(crate) struct TrieNode {
     sign: u32,
     /// This node's own file pointer within the field's `.tip` index slice.
     fp: usize,
@@ -3751,7 +3853,7 @@ fn read_u64_n_bytes(slice: &[u8], fp: usize, n_bytes: usize) -> Result<u64> {
 // `read_u64_n_bytes`, which do the bounds check at the point of use, exactly
 // as `TrieReader` leaves it to `RandomAccessInput`.
 #[allow(clippy::arithmetic_side_effects)]
-fn load_node(slice: &[u8], fp: usize) -> Result<TrieNode> {
+pub(crate) fn load_node(slice: &[u8], fp: usize) -> Result<TrieNode> {
     let word = read_u64_at(slice, fp)?;
     let term = word as u32;
     let sign = term & 0x03;
@@ -4210,7 +4312,11 @@ fn decode_block_at_depth(
             )?;
             continue;
         }
-        frame.decode_meta_data(index_options, has_payloads)?;
+        frame.decode_meta_data(
+            index_options,
+            has_payloads,
+            postings::PostingsFormat::Lucene104,
+        )?;
         out.push((
             term.get().to_vec(),
             TermStats {
@@ -4266,6 +4372,25 @@ pub fn open_shared(
     segment_suffix: &str,
     max_doc: i32,
 ) -> Result<BlockTreeFields> {
+    // `Lucene90BlockTreeTermsReader` (the FST-indexed dictionary of every
+    // postings format from `Lucene90` to `Lucene101`) and
+    // `Lucene103BlockTreeTermsReader` write the same three codec names at
+    // overlapping versions; what tells them apart is the postings reader's
+    // own header that follows in `.tmd`, which the older formats all name
+    // `Lucene90PostingsWriterTerms`.
+    if postings_terms_codec(tmd, segment_id, segment_suffix).as_deref()
+        == Some(crate::backward_codecs::blocktree::POSTINGS_TERMS_CODEC)
+    {
+        return crate::backward_codecs::blocktree::open(
+            tim,
+            tip,
+            tmd,
+            field_infos,
+            segment_id,
+            segment_suffix,
+            max_doc,
+        );
+    }
     let tim_bytes: &[u8] = tim.as_ref().as_ref();
     let tip_bytes: &[u8] = tip.as_ref().as_ref();
     let mut tim_input = SliceInput::new(tim_bytes);
@@ -4300,16 +4425,31 @@ pub fn open_shared(
 
     // PostingsReaderBase.init: the postings writer's own header, embedded in
     // the same .tmd stream right after BlockTree's index header.
+    //
+    // `Lucene103PostingsFormat` (10.3) shares this dictionary with a 128-doc
+    // block and its own terms codec; everything else about the two is read
+    // by the same code, the postings generation travelling with each field.
+    let terms_format = if codec_util::peek_codec_name(tmd_input.as_slice()).as_deref()
+        == Some(LUCENE103_POSTINGS_TERMS_CODEC)
+    {
+        postings::PostingsFormat::Lucene103
+    } else {
+        postings::PostingsFormat::Lucene104
+    };
     codec_util::check_index_header(
         &mut tmd_input,
-        POSTINGS_TERMS_CODEC,
+        if terms_format == postings::PostingsFormat::Lucene103 {
+            LUCENE103_POSTINGS_TERMS_CODEC
+        } else {
+            POSTINGS_TERMS_CODEC
+        },
         POSTINGS_VERSION_START,
         POSTINGS_VERSION_CURRENT,
         segment_id,
         segment_suffix,
     )?;
     let index_block_size = tmd_input.read_vint()?;
-    if index_block_size != POSTINGS_BLOCK_SIZE {
+    if index_block_size as usize != terms_format.block_size() {
         return Err(Error::UnexpectedBlockSize {
             found: index_block_size,
         });
@@ -4341,6 +4481,7 @@ pub fn open_shared(
         let field_info = field_infos
             .field_by_number(field_number)
             .ok_or(Error::InvalidFieldNumber(field_number))?;
+        let postings_format = terms_format;
 
         let (sum_total_term_freq, sum_doc_freq) =
             read_freq_pair(&mut tmd_input, field_info.index_options)?;
@@ -4396,6 +4537,7 @@ pub fn open_shared(
                 max_term,
                 index_options: field_info.index_options,
                 has_payloads: field_info.store_payloads,
+                postings_format,
                 tim: Arc::clone(&tim),
                 tip: Arc::clone(&tip),
                 index_start,
