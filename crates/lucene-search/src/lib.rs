@@ -202,6 +202,7 @@ pub mod bucket_aggs;
 mod bulk_scorer;
 pub mod cardinality_sketch;
 pub mod collector;
+pub mod collectors;
 pub mod directory_reader;
 pub mod doc_value_query;
 pub mod docid_set;
@@ -212,7 +213,9 @@ pub mod extended_query;
 pub mod facets;
 pub mod field_norms;
 pub mod highlighter;
+pub mod index_searcher;
 pub mod knn_collectors;
+pub mod matches;
 pub mod multi_bits;
 pub mod multi_segment;
 pub mod multi_terms;
@@ -223,7 +226,11 @@ pub mod points_query;
 pub mod query;
 pub mod query_cache;
 pub mod query_parser;
+pub mod query_visitor;
 pub mod reader_manager;
+pub mod reference_manager;
+pub mod rescorer;
+pub mod segment_cacheable;
 pub mod segment_order;
 pub mod similarities;
 pub mod similarity;
@@ -233,7 +240,9 @@ pub mod soft_deletes;
 pub mod term_vectors_query;
 pub mod terminate;
 pub mod terms_agg;
+pub mod top_docs;
 pub mod top_field;
+pub mod values_source;
 pub mod vector_query;
 pub mod weight_count;
 
@@ -418,6 +427,22 @@ pub enum Error {
     /// package.
     #[error("document query: {0}")]
     DocumentQuery(String),
+    /// Java's `IllegalArgumentException` from an API precondition (M7's
+    /// search infrastructure: `TopDocs.merge`/`rrf`, rescorers, values
+    /// sources, the Matches API).
+    #[error("{0}")]
+    IllegalArgument(String),
+    /// Java's `IllegalStateException` (a reference manager used after close,
+    /// a collector replayed after its cache overflowed).
+    #[error("{0}")]
+    IllegalState(String),
+    /// Java's `AlreadyClosedException` (a reference manager used after
+    /// `close`).
+    #[error("{0}")]
+    AlreadyClosed(String),
+    /// Opening or reopening a [`directory_reader::DirectoryReader`].
+    #[error(transparent)]
+    DirectoryReader(#[from] directory_reader::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

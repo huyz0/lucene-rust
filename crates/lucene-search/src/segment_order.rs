@@ -123,9 +123,11 @@ impl SegmentOrder {
         let point_bytes = match primary.ty {
             SortType::Int | SortType::Float => 4,
             SortType::Long | SortType::Double => 8,
-            SortType::Score | SortType::Doc | SortType::String => {
-                return SegmentOrder { numeric: None }
-            }
+            SortType::Score
+            | SortType::Doc
+            | SortType::String
+            | SortType::StringVal
+            | SortType::Custom(_) => return SegmentOrder { numeric: None },
         };
         SegmentOrder {
             numeric: Some(NumericOrder {

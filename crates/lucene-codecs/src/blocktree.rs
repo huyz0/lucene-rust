@@ -2153,6 +2153,12 @@ impl Clone for FieldTerms {
 }
 
 impl FieldTerms {
+    /// The field's `IndexOptions` (`Terms.hasPositions`/`hasOffsets` and the
+    /// rest read it).
+    pub fn index_options(&self) -> IndexOptions {
+        self.index_options
+    }
+
     /// Runs `f` against the pooled lookup state.
     fn with_scratch<T>(&self, f: impl FnOnce(&mut SegmentTermsEnum<'_>) -> Result<T>) -> Result<T> {
         // `try_lock`, never `lock`: a `BlockTreeFields` is shared by every
