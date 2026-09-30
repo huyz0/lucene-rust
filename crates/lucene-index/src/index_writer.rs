@@ -604,6 +604,15 @@ pub enum Error {
          writer's index sort ({sort})"
     )]
     DocValuesUpdateOnIndexSortField { field: String, sort: String },
+    /// `ConcurrentMergeScheduler.setMaxMergesAndThreads`'
+    /// `IllegalArgumentException`.
+    #[error("merge scheduler: {0}")]
+    InvalidMergeScheduler(String),
+    /// A merge run on a merge thread panicked; the scheduler caught it and
+    /// reports it as this merge's failure (Java: an uncaught `Throwable`
+    /// wrapped in `MergePolicy.MergeException`).
+    #[error("a merge thread panicked: {0}")]
+    MergeThreadPanicked(String),
     /// `add_doc_values_field` twice for the same field, the doc-values
     /// analogue of [`Error::DuplicatePostingsField`]/
     /// [`Error::DuplicateVectorField`].
@@ -1102,6 +1111,27 @@ impl IndexingConfig {
             std::sync::Arc::clone(&progress),
         ));
         lucene_store::RateLimiter::set_mb_per_sec(&*limiter, mb_per_sec);
+        let merge_dir = crate::merge_rate_limiter::MergeDirectory::new(dir, limiter);
+        let outcome = self.run_merge_unthrottled(&merge_dir, plan)?;
+        if progress.is_aborted() {
+            return Err(Error::MergeAborted);
+        }
+        Ok(outcome)
+    }
+
+    /// [`Self::run_merge`], with every output written through `limiter` when
+    /// a merge scheduler supplies one (`MergeScheduler.wrapForMerge`) instead
+    /// of the writer's own configured rate.
+    pub(crate) fn run_merge_limited(
+        &self,
+        dir: &dyn Directory,
+        plan: &MergePlan,
+        limiter: Option<std::sync::Arc<crate::merge_rate_limiter::MergeRateLimiter>>,
+    ) -> Result<MergeOutcome> {
+        let Some(limiter) = limiter else {
+            return self.run_merge(dir, plan);
+        };
+        let progress = std::sync::Arc::clone(limiter.merge_progress());
         let merge_dir = crate::merge_rate_limiter::MergeDirectory::new(dir, limiter);
         let outcome = self.run_merge_unthrottled(&merge_dir, plan)?;
         if progress.is_aborted() {
@@ -3503,12 +3533,41 @@ impl<'d> IndexWriter<'d> {
         config: &MergePolicyConfig,
         merging: &std::collections::HashSet<String>,
     ) -> Result<Option<Vec<String>>> {
+        Ok(self
+            .next_merge_sized(config, merging)?
+            .map(|(names, _)| names))
+    }
+
+    /// [`Self::next_merge`], with the merge's `OneMerge.estimatedMergeBytes`:
+    /// the sources' sizes pro-rated by their live documents, as
+    /// `IndexWriter.registerMerge` estimates it.
+    pub(crate) fn next_merge_sized(
+        &self,
+        config: &MergePolicyConfig,
+        merging: &std::collections::HashSet<String>,
+    ) -> Result<Option<(Vec<String>, u64)>> {
         let stats: Vec<merge_policy::SegmentStat> = self
             .segment_stats()?
             .into_iter()
             .filter(|s| !merging.contains(&s.name))
             .collect();
-        Ok(merge_policy::find_merges(&stats, config).into_iter().next())
+        let Some(names) = merge_policy::find_merges(&stats, config).into_iter().next() else {
+            return Ok(None);
+        };
+        let estimated = stats
+            .iter()
+            .filter(|s| names.contains(&s.name))
+            .map(|s| {
+                let live = f64::from(s.doc_count.saturating_sub(s.del_count).max(0));
+                let ratio = if s.doc_count > 0 {
+                    live / f64::from(s.doc_count)
+                } else {
+                    0.0
+                };
+                (s.size_bytes as f64 * ratio) as u64
+            })
+            .fold(0u64, u64::saturating_add);
+        Ok(Some((names, estimated)))
     }
 
     /// The configuration every segment is built with, shared.

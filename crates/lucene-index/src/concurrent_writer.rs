@@ -83,7 +83,7 @@
 use std::collections::{HashSet, VecDeque};
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
 use lucene_codecs::stored_fields::Document;
@@ -97,7 +97,9 @@ use crate::index_writer::{
     buffer_node, document_ram_bytes, DeleteNode, DocumentBuffer, Error, ExplicitFields,
     FlushDeletes, IndexWriter, IndexingConfig, Result, SegmentTicket, DISABLE_AUTO_FLUSH,
 };
-use crate::merge_policy::MergePolicyConfig;
+use crate::merge_policy::{MergePolicyConfig, MergeTrigger};
+use crate::merge_rate_limiter::MergeRateLimiter;
+use crate::merge_scheduler::{MergeScheduler, MergeSource, PendingMerges, ScheduledMerge};
 use crate::segment_infos::SegmentCommitInfo;
 use crate::stall_control::DocumentsWriterStallControl;
 
@@ -233,6 +235,19 @@ pub struct ConcurrentIndexWriter<'d> {
     ram: Mutex<RamAccounting>,
     /// `DocumentsWriterFlushControl.stallControl`.
     stall: DocumentsWriterStallControl,
+    /// `IndexWriter.pendingMerges`: merges registered for a scheduler and
+    /// not yet taken by it. Their segments are in `Core::merging`.
+    pending_merges: PendingMerges,
+    /// `IndexWriterConfig.getMergeScheduler()`, when one was given
+    /// ([`ConcurrentIndexWriter::with_merge_scheduler`]).
+    scheduler: Option<SchedulerHook>,
+}
+
+/// The scheduler this writer hands its pending merges to, and the writer
+/// itself as the `MergeSource` the scheduler's threads call back into.
+struct SchedulerHook {
+    scheduler: Arc<dyn MergeScheduler>,
+    source: Weak<dyn MergeSource>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -294,7 +309,105 @@ impl<'d> ConcurrentIndexWriter<'d> {
             merge_policy,
             ram: Mutex::new(RamAccounting::default()),
             stall: DocumentsWriterStallControl::new(),
+            pending_merges: PendingMerges::new(),
+            scheduler: None,
         })
+    }
+
+    /// `IndexWriter.updatePendingMerges`: registers every merge the policy
+    /// proposes among segments not already merging -- claiming their
+    /// segments -- for the scheduler to take. Nothing without a policy.
+    fn register_merges(&self, core: &mut Core<'_>) -> Result<()> {
+        let Some(policy) = &self.merge_policy else {
+            return Ok(());
+        };
+        while let Some((names, estimated)) = core.writer.next_merge_sized(policy, &core.merging)? {
+            core.merging.extend(names.iter().cloned());
+            self.pending_merges
+                .push(Arc::new(ScheduledMerge::new(names, estimated)));
+        }
+        Ok(())
+    }
+
+    /// `IndexWriter.maybeMerge(trigger)`: registers what the policy wants and
+    /// hands it to the scheduler. A no-op for a writer without one, whose
+    /// caller runs merges itself ([`Self::maybe_merge`], [`Self::run_merges`]).
+    fn schedule_merges(&self, trigger: MergeTrigger) -> Result<()> {
+        let Some(hook) = &self.scheduler else {
+            return Ok(());
+        };
+        let Some(source) = hook.source.upgrade() else {
+            return Ok(());
+        };
+        self.register_merges(&mut lock(&self.core))?;
+        hook.scheduler.merge(&source, trigger)
+    }
+
+    /// Runs one scheduled merge on the calling (merge) thread, every output
+    /// through `limiter` -- `IndexWriter.merge(OneMerge)`: `mergeInit`, the
+    /// merge without the control lock, `commitMerge`, `mergeFinish`, then
+    /// `updatePendingMerges(MERGE_FINISHED)` so a cascade of merges is
+    /// registered for the scheduler's next round.
+    fn run_scheduled_merge(
+        &self,
+        merge: &ScheduledMerge,
+        limiter: Option<Arc<MergeRateLimiter>>,
+    ) -> Result<()> {
+        let release = |core: &mut Core<'_>| {
+            for name in &merge.segments {
+                core.merging.remove(name);
+            }
+        };
+        let plan = {
+            let mut core = lock(&self.core);
+            match core.writer.begin_merge(&merge.segments) {
+                Ok(plan) => plan,
+                Err(e) => {
+                    release(&mut core);
+                    return Err(e);
+                }
+            }
+        };
+        let tracking = TrackingDirectory::new(self.dir);
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            self.cfg.run_merge_limited(&tracking, &plan, limiter)
+        }));
+        let mut core = lock(&self.core);
+        release(&mut core);
+        let result = match outcome {
+            Ok(Ok(outcome)) => core
+                .writer
+                .finish_merge(plan, outcome)
+                .and_then(|_| self.register_merges(&mut core)),
+            Ok(Err(e)) => {
+                let _ = core.writer.abort_merge(plan);
+                let _ = core.writer.delete_new_files(&tracking.created());
+                Err(e)
+            }
+            Err(panic) => {
+                let _ = core.writer.abort_merge(plan);
+                let _ = core.writer.delete_new_files(&tracking.created());
+                drop(core);
+                self.changed.notify_all();
+                resume_unwind(panic);
+            }
+        };
+        drop(core);
+        self.changed.notify_all();
+        result
+    }
+
+    /// `IndexWriter.close()`'s merge half: registers what the policy still
+    /// wants, lets the scheduler run it with throttling lifted
+    /// (`MergeTrigger.CLOSING`), and waits for every merge the scheduler
+    /// started -- returning the first merge failure. A no-op without a
+    /// scheduler.
+    pub fn close_merges(&self) -> Result<()> {
+        let Some(hook) = &self.scheduler else {
+            return Ok(());
+        };
+        self.schedule_merges(MergeTrigger::Closing)?;
+        hook.scheduler.close()
     }
 
     /// `DocumentsWriterFlushControl.updateStallState`, after `change` has
@@ -520,6 +633,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         };
         if let Some(batch) = batch {
             self.complete_flush(batch)?;
+            self.schedule_merges(MergeTrigger::SegmentFlush)?;
         }
         Ok(seq_no)
     }
@@ -791,8 +905,11 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// Flushes every slot's buffer to a segment and waits until every segment
     /// ticketed so far is published -- `DocumentsWriter.flushAllThreads`.
     pub fn flush(&self) -> Result<()> {
-        let _full_flush = lock(&self.full_flush);
-        self.flush_all(false).map(|_| ())
+        {
+            let _full_flush = lock(&self.full_flush);
+            self.flush_all(false)?;
+        }
+        self.schedule_merges(MergeTrigger::FullFlush)
     }
 
     /// `IndexWriter.commit`: flushes every buffer, applies every delete issued
@@ -807,11 +924,15 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// Java's does: every operation numbered at or below it is in, every one
     /// above it is not.
     pub fn commit(&self) -> Result<SeqNo> {
-        let _full_flush = lock(&self.full_flush);
-        let _barrier = BarrierGuard(self);
-        let last_seq = self.flush_all(true)?;
-        let mut core = lock(&self.core);
-        core.writer.commit()?;
+        let last_seq = {
+            let _full_flush = lock(&self.full_flush);
+            let _barrier = BarrierGuard(self);
+            let last_seq = self.flush_all(true)?;
+            let mut core = lock(&self.core);
+            core.writer.commit()?;
+            last_seq
+        };
+        self.schedule_merges(MergeTrigger::FullFlush)?;
         Ok(last_seq)
     }
 
@@ -822,7 +943,15 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// a merged segment becomes durable with the next [`Self::commit`]. A
     /// merge abandoned because a source changed under it ends the round: it
     /// is proposed again next time, not straight away.
+    ///
+    /// With a merge scheduler ([`Self::with_merge_scheduler`]) the merges are
+    /// registered and handed to it instead, and `0` is returned: they run on
+    /// the scheduler's threads.
     pub fn maybe_merge(&self) -> Result<usize> {
+        if self.scheduler.is_some() {
+            self.schedule_merges(MergeTrigger::Explicit)?;
+            return Ok(0);
+        }
         let Some(policy) = &self.merge_policy else {
             return Ok(0);
         };
@@ -912,6 +1041,58 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// Documents buffered in every slot, not yet in a segment.
     pub fn pending_doc_count(&self) -> usize {
         self.slots.iter().map(|s| lock(s).docs.len()).sum()
+    }
+}
+
+impl ConcurrentIndexWriter<'static> {
+    /// [`ConcurrentIndexWriter::new`] with `IndexWriterConfig.setMergeScheduler`:
+    /// merges are registered after every flush and commit (and by
+    /// [`Self::maybe_merge`]) and run as `scheduler` decides -- on the
+    /// indexing thread for a [`crate::merge_scheduler::SerialMergeScheduler`],
+    /// on a pool of merge threads, stalling indexing threads when merging
+    /// falls behind, for a [`crate::merge_scheduler::ConcurrentMergeScheduler`].
+    ///
+    /// The writer is returned in an `Arc` because the scheduler's threads
+    /// hold it while they merge, which is also why the directory must be
+    /// `'static`. [`Self::close_merges`] waits for them; after it,
+    /// `Arc::try_unwrap` gives the writer back for [`Self::into_writer`].
+    pub fn with_merge_scheduler(
+        writer: IndexWriter<'static>,
+        slots: usize,
+        scheduler: Arc<dyn MergeScheduler>,
+    ) -> Result<Arc<Self>> {
+        let mut w = Self::new(writer, slots)?;
+        Ok(Arc::new_cyclic(|me: &Weak<Self>| {
+            let source: Weak<dyn MergeSource> = me.clone();
+            w.scheduler = Some(SchedulerHook { scheduler, source });
+            w
+        }))
+    }
+}
+
+/// The writer as its scheduler sees it: `IndexWriter`'s own `MergeSource`.
+impl MergeSource for ConcurrentIndexWriter<'static> {
+    fn next_merge(&self) -> Option<Arc<ScheduledMerge>> {
+        self.pending_merges.pop()
+    }
+
+    fn on_merge_finished(&self, merge: &Arc<ScheduledMerge>) {
+        let mut core = lock(&self.core);
+        for name in &merge.segments {
+            core.merging.remove(name);
+        }
+    }
+
+    fn has_pending_merges(&self) -> bool {
+        !self.pending_merges.is_empty()
+    }
+
+    fn merge(
+        &self,
+        merge: &Arc<ScheduledMerge>,
+        limiter: Option<Arc<MergeRateLimiter>>,
+    ) -> Result<()> {
+        self.run_scheduled_merge(merge, limiter)
     }
 }
 
@@ -1862,5 +2043,141 @@ mod tests {
         assert!(merges > 50, "the policy must have merged: {merges}");
         w.commit().unwrap();
         assert_clean(&dir);
+    }
+
+    /// A directory that lives for the rest of the test process -- what a
+    /// merge scheduler's threads need to hold the writer (the directory
+    /// itself is removed by its `TempDir` guard).
+    fn static_dir(tmp: &TempDir) -> &'static FsDirectory {
+        Box::leak(Box::new(FsDirectory::open(tmp)))
+    }
+
+    /// `ConcurrentMergeScheduler` behind the writer: merges are registered
+    /// after flushes and commits and run on merge threads while four threads
+    /// index; nothing here runs a merge itself. After `close_merges` the
+    /// writer can be taken back out of its `Arc`.
+    #[test]
+    fn a_concurrent_merge_scheduler_merges_while_threads_index() {
+        let tmp = TempDir::new("concurrent-cms");
+        let dir = static_dir(&tmp);
+        let cms = crate::merge_scheduler::ConcurrentMergeScheduler::new();
+        cms.set_max_merges_and_threads(3, 2).unwrap();
+        let w =
+            ConcurrentIndexWriter::with_merge_scheduler(writer(dir, 7), 4, Arc::new(cms.clone()))
+                .unwrap();
+        std::thread::scope(|scope| {
+            for t in 0..4 {
+                let w = &w;
+                scope.spawn(move || {
+                    for i in 0..400 {
+                        w.add_document(doc(&format!("t{t}x{i}"), 0)).unwrap();
+                        if i % 61 == 0 {
+                            w.commit().unwrap();
+                        }
+                    }
+                });
+            }
+        });
+        w.commit().unwrap();
+        assert_eq!(w.maybe_merge().unwrap(), 0, "merges are the scheduler's");
+        w.close_merges().unwrap();
+        assert_eq!(cms.merge_thread_count(), 0);
+        w.commit().unwrap();
+        let (docs, segments) = live_documents(dir);
+        assert_eq!(docs.len(), 1600);
+        assert!(
+            segments < 1600 / 7 / 2,
+            "{segments} segments: the scheduler merged too little"
+        );
+        assert_clean(dir);
+        let w = Arc::try_unwrap(w)
+            .ok()
+            .expect("no merge thread still holds the writer");
+        let mut single = w.into_writer().unwrap();
+        single.commit().unwrap();
+    }
+
+    /// `SerialMergeScheduler` behind the writer: a commit's merges run on the
+    /// committing thread before `commit` returns.
+    #[test]
+    fn a_serial_merge_scheduler_merges_on_the_committing_thread() {
+        let tmp = TempDir::new("concurrent-serial");
+        let dir = static_dir(&tmp);
+        let w = ConcurrentIndexWriter::with_merge_scheduler(
+            writer(dir, 5),
+            1,
+            Arc::new(crate::merge_scheduler::SerialMergeScheduler::new()),
+        )
+        .unwrap();
+        for i in 0..60 {
+            w.add_document(doc(&format!("d{i}"), 0)).unwrap();
+            if i % 5 == 4 {
+                w.commit().unwrap();
+            }
+        }
+        // Twelve flushed segments, merged by the commits themselves.
+        let merged = lock(&w.core).writer.segment_infos().segments.len();
+        assert!(merged < 12, "{merged} segments: nothing was merged");
+        w.close_merges().unwrap();
+        w.commit().unwrap();
+        assert_eq!(live_documents(dir).0.len(), 60);
+        assert_clean(dir);
+
+        // Without a policy, a scheduler has nothing to do.
+        let tmp2 = TempDir::new("concurrent-serial-nopolicy");
+        let dir2 = static_dir(&tmp2);
+        let mut plain = writer(dir2, 5);
+        plain.set_merge_policy(None);
+        let w = ConcurrentIndexWriter::with_merge_scheduler(
+            plain,
+            1,
+            Arc::new(crate::merge_scheduler::SerialMergeScheduler::new()),
+        )
+        .unwrap();
+        for i in 0..20 {
+            w.add_document(doc(&format!("d{i}"), 0)).unwrap();
+        }
+        w.commit().unwrap();
+        w.flush().unwrap();
+        assert_eq!(w.maybe_merge().unwrap(), 0);
+        w.close_merges().unwrap();
+        assert_eq!(lock(&w.core).writer.segment_infos().segments.len(), 4);
+    }
+
+    /// `onMergeFinished` releases a merge the scheduler took but will not
+    /// run, and a writer with no scheduler has nothing to close.
+    #[test]
+    fn a_merge_the_scheduler_gives_back_releases_its_segments() {
+        let tmp = TempDir::new("concurrent-sched-release");
+        let dir = static_dir(&tmp);
+        let w = ConcurrentIndexWriter::with_merge_scheduler(
+            writer(dir, 5),
+            1,
+            Arc::new(crate::merge_scheduler::NoMergeScheduler),
+        )
+        .unwrap();
+        for i in 0..40 {
+            w.add_document(doc(&format!("d{i}"), 0)).unwrap();
+            if i % 5 == 4 {
+                w.commit().unwrap();
+            }
+        }
+        // `NoMergeScheduler` leaves what the commits registered pending.
+        assert!(w.has_pending_merges());
+        let merge = w.next_merge().expect("a registered merge");
+        assert!(merge
+            .segments
+            .iter()
+            .all(|n| lock(&w.core).merging.contains(n)));
+        w.on_merge_finished(&merge);
+        assert!(merge
+            .segments
+            .iter()
+            .all(|n| !lock(&w.core).merging.contains(n)));
+
+        let tmp2 = TempDir::new("concurrent-no-sched");
+        let dir2 = FsDirectory::open(&tmp2);
+        let plain = ConcurrentIndexWriter::new(writer(&dir2, 5), 1).unwrap();
+        plain.close_merges().unwrap();
     }
 }
