@@ -700,6 +700,80 @@ public class GenM7Queries {
       Files.writeString(out.resolve("estimator.tsv"), est);
     }
     writeKnnIndex(root);
+    writeDvIndex(root);
+  }
+
+  /** Doc-values ranges over fields with a skip index, several skip blocks per segment. */
+  static final String[] DV = {
+    "NR sk 100 140",
+    "NR sk 0 5",
+    "NR sk -1000 100000",
+    "NR sk 5000 6000",
+    "NR sk 250 250",
+    "NR msk 30 35",
+    "NR msk -5 1000000",
+    "B 1 0 0 T body t1 F2 NR sk 50 300",
+    "B 0 2 0 T body t3 NR sk 10 12",
+  };
+
+  /**
+   * {@code m7_dv_index}: two segments (12000 and 5000 documents, a few deleted) with doc values
+   * indexed with a skip index -- {@code sk} (NUMERIC, clustered by document, missing on some) and
+   * {@code msk} (SORTED_NUMERIC, one to three values) -- searched with {@link #DV}.
+   */
+  static void writeDvIndex(Path root) throws IOException {
+    Path out = root.resolve("m7_dv_index");
+    deleteRecursive(out);
+    Files.createDirectories(out);
+    Random r = new Random(20261003L);
+    try (Directory dir = FSDirectory.open(out)) {
+      IndexWriterConfig cfg = new IndexWriterConfig(new StandardAnalyzer());
+      cfg.setUseCompoundFile(false);
+      cfg.setMergePolicy(NoMergePolicy.INSTANCE);
+      cfg.setRAMBufferSizeMB(256);
+      cfg.setMaxBufferedDocs(100000);
+      int id = 0;
+      try (IndexWriter w = new IndexWriter(dir, cfg)) {
+        for (int size : new int[] {12000, 5000}) {
+          for (int k = 0; k < size; k++) {
+            Document doc = new Document();
+            doc.add(new StringField("id", Integer.toString(id), Field.Store.NO));
+            doc.add(new TextField("body", words(r, 1 + r.nextInt(4), 8), Field.Store.NO));
+            if (r.nextInt(11) != 0) {
+              doc.add(NumericDocValuesField.indexedField("sk", id / 37 + r.nextInt(5)));
+            }
+            int n = 1 + r.nextInt(3);
+            for (int j = 0; j < n; j++) {
+              doc.add(SortedNumericDocValuesField.indexedField("msk", id / 50 + r.nextInt(20)));
+            }
+            w.addDocument(doc);
+            id++;
+          }
+          w.commit();
+        }
+        for (int d = 11; d < 17000; d += 211) {
+          w.deleteDocuments(new Term("id", Integer.toString(d)));
+        }
+        w.commit();
+      }
+      StringBuilder sb = new StringBuilder();
+      try (DirectoryReader reader = DirectoryReader.open(dir)) {
+        if (reader.leaves().size() != 2) {
+          throw new AssertionError("expected two segments, got " + reader.leaves().size());
+        }
+        IndexSearcher searcher = new IndexSearcher(reader);
+        searcher.setQueryCache(null);
+        for (String q : DV) {
+          pos = 0;
+          String[] tok = q.split(" ");
+          Query query = parse(tok);
+          if (pos != tok.length) throw new AssertionError("trailing tokens in " + q);
+          TopDocs td = searcher.search(query, 50);
+          sb.append("bm25").append('\t').append(q).append('\t').append(hits(td)).append('\n');
+        }
+      }
+      Files.writeString(out.resolve("searches.tsv"), sb);
+    }
   }
 
   /** Vector queries over graphs large enough that filtered, patient and seeded walks happen. */

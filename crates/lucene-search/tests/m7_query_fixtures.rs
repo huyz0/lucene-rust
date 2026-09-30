@@ -378,13 +378,18 @@ fn query(text: &str, ctx: &Ctx<'_>) -> Option<BooleanQuery> {
 const QVEC: [f32; 4] = [0.5, -0.25, 0.75, 0.1];
 const QBVEC: [u8; 4] = [12, (-7i8) as u8, 30, 1];
 
-/// Each segment's `Lucene99HnswVectorsFormat` files, read once.
+/// Each segment's `Lucene99HnswVectorsFormat` files, read once (none for an
+/// index without vector fields).
 struct VectorFiles {
     per_segment: Vec<[Vec<u8>; 4]>,
 }
 
 impl VectorFiles {
     fn read(dir: &std::path::Path, reader: &DirectoryReader) -> Self {
+        let first = &reader.segment_readers()[0].segment_name;
+        if !dir.join(format!("{first}_Lucene99HnswVectorsFormat_0.vem")).exists() {
+            return Self { per_segment: Vec::new() };
+        }
         let per_segment = reader
             .segment_readers()
             .iter()
@@ -453,6 +458,24 @@ fn m7_queries_match_lucene_bit_for_bit() {
 fn m7_knn_queries_match_lucene_bit_for_bit() {
     let cases = check_fixture("m7_knn_index", &QVEC8, 50, false);
     assert!(cases >= 16, "{cases} searches");
+}
+
+/// Doc-values ranges over fields with a skip index (`SkipBlockRangeIterator`,
+/// `DocValuesRangeIterator`), several skip blocks a segment.
+#[test]
+fn m7_doc_values_skip_ranges_match_lucene_bit_for_bit() {
+    // The ranges must run on the skip-index path, not the plain-column one.
+    let reader = DirectoryReader::open(&FsDirectory::open(&data("m7_dv_index"))).unwrap();
+    for seg in reader.segment_readers() {
+        for field in ["sk", "msk"] {
+            let number = seg.field_infos().field_by_name(field).unwrap().number;
+            assert!(seg.doc_values_skip_index(number).unwrap().is_some(), "{field}");
+        }
+        let body = seg.field_infos().field_by_name("body").unwrap().number;
+        assert!(seg.doc_values_skip_index(body).unwrap().is_none());
+    }
+    let cases = check_fixture("m7_dv_index", &QVEC, 50, false);
+    assert!(cases >= 9, "{cases} searches");
 }
 
 /// `GenM7Queries.QVEC8`.

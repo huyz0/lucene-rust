@@ -133,6 +133,11 @@ pub struct SegmentReader {
     /// `SegmentInfo.getIndexSort()`: the sort this segment's documents are
     /// in, `None` for an unsorted segment.
     index_sort: Option<Arc<Vec<lucene_index::segment_info::IndexSortField>>>,
+    /// The segment's `.dvs` and its codec suffix, when it has one: every
+    /// field's doc-values skip index, parsed on first use into
+    /// [`Self::skip_indexes`].
+    dvs: Option<(Arc<Input>, String)>,
+    skip_indexes: Arc<OnceLock<HashMap<i32, doc_values::DocValuesSkipIndex>>>,
     segment_id: [u8; ID_LENGTH],
     /// The generation of this segment's deletions at the time this reader
     /// was opened (`-1` if it has none) -- used by
@@ -462,6 +467,7 @@ impl SegmentReader {
         let kdd_buf = open_segment_file(dir, compound.as_ref(), &si.files, ".kdd")?;
         let dvm_bytes = open_segment_file(dir, compound.as_ref(), &si.files, ".dvm")?;
         let dvd_bytes = open_segment_file(dir, compound.as_ref(), &si.files, ".dvd")?;
+        let mut dvs = None;
         let (dv_meta, dv_data) = match (dvm_bytes, dvd_bytes) {
             (Some(dvm), Some(dvd)) => {
                 let dvm_file_name = find_segment_file_name(&si.files, compound.as_ref(), ".dvm")
@@ -474,6 +480,9 @@ impl SegmentReader {
                 let dv_suffix = codec_suffix_of(&dvm_file_name, &segment_name, ".dvm");
                 let (_, meta) =
                     doc_values::parse_meta(&dvm, &segment_id, &dv_suffix, &field_infos)?;
+                if let Some(bytes) = open_segment_file(dir, compound.as_ref(), &si.files, ".dvs")? {
+                    dvs = Some((bytes, dv_suffix.clone()));
+                }
                 (Some(Arc::new(meta)), Some(dvd))
             }
             _ => (None, None),
@@ -553,6 +562,8 @@ impl SegmentReader {
             query_cache: Arc::default(),
             segment_name,
             index_sort: si.index_sort.clone().map(Arc::new),
+            dvs,
+            skip_indexes: Arc::default(),
             max_doc: si.doc_count,
             doc_base,
             segment_id,
@@ -725,6 +736,43 @@ impl SegmentReader {
             (Some(meta), Some(data)) => Some((meta, &***data)),
             _ => None,
         }
+    }
+
+    /// `LeafReader.getDocValuesSkipper(field)`'s index: the field's
+    /// doc-values skip index (`.dvs`), `None` when it has none. Parsed for
+    /// every field on first use. A field whose doc values were updated
+    /// (served from a generation) reports none.
+    pub fn doc_values_skip_index(
+        &self,
+        field_number: i32,
+    ) -> crate::Result<Option<&doc_values::DocValuesSkipIndex>> {
+        if self
+            .field_infos
+            .fields
+            .iter()
+            .any(|f| f.number == field_number && f.doc_values_gen != -1)
+        {
+            return Ok(None);
+        }
+        if let Some(map) = self.skip_indexes.get() {
+            return Ok(map.get(&field_number));
+        }
+        let (Some((dvs, suffix)), Some(meta)) = (&self.dvs, self.dv_meta.as_deref()) else {
+            return Ok(None);
+        };
+        let mut map = HashMap::new();
+        for field in &self.field_infos.fields {
+            if let Some(skipper) = meta.skipper_meta(field.number) {
+                let index = doc_values::parse_skip_index(dvs, &self.segment_id, suffix, skipper)?;
+                map.insert(field.number, index);
+            }
+        }
+        // A race loses nothing: both parsed the same bytes.
+        let _ = self.skip_indexes.set(map);
+        Ok(self
+            .skip_indexes
+            .get()
+            .and_then(|m| m.get(&field_number)))
     }
 
     /// `LeafReader.getMetaData().sort()`: the index sort, primary field
