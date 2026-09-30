@@ -28,6 +28,7 @@
 use std::sync::Arc;
 
 use lucene_codecs::field_infos::FieldInfos;
+use lucene_index::index_sorter::rank_terms;
 use lucene_index::segment_info::{
     IndexSortField, IndexSortKind, SortKeyComparator, SortedNumericSelector, SortedSetSelector,
 };
@@ -139,8 +140,21 @@ fn sort_keys(reader: &dyn LeafReader, sort: &IndexSortField) -> Result<Vec<Optio
                 None => Vec::new(),
             }
         }
-        // Refused by `sort_doc_map` before any key is read.
-        IndexSortKind::Binary(_) => Vec::new(),
+        // Bytes compare by rank among the segment's distinct values, the key
+        // the writer sorts a binary-sorted segment by (`index_sorter`).
+        IndexSortKind::Binary(_) => match reader.binary_doc_values(&sort.field)? {
+            Some(mut v) => {
+                let values = collect(&mut *v, |v| Ok(v.binary_value().to_vec()))?;
+                let mut bytes = vec![None; n];
+                for (d, b) in values {
+                    if let Some(slot) = usize::try_from(d).ok().and_then(|d| bytes.get_mut(d)) {
+                        *slot = Some(b);
+                    }
+                }
+                return Ok(rank_terms(&[bytes]).pop().unwrap_or_default());
+            }
+            None => Vec::new(),
+        },
     };
     let mut keys = vec![None; n];
     for (d, k) in pairs {
@@ -155,17 +169,11 @@ fn sort_keys(reader: &dyn LeafReader, sort: &IndexSortField) -> Result<Vec<Optio
 /// by doc id; `None` when they already are in that order.
 ///
 /// # Errors
-/// A binary sort field ([`Error::Unsupported`]) and doc-values read errors.
+/// Doc-values read errors.
 pub fn sort_doc_map(reader: &dyn LeafReader, sort: &[IndexSortField]) -> Result<Option<DocMap>> {
     let mut columns = Vec::with_capacity(sort.len());
     for field in sort {
-        let cmp = SortKeyComparator::new(field).ok_or_else(|| {
-            Error::Unsupported(format!(
-                "sorting a reader by the binary sort field {:?}",
-                field.field
-            ))
-        })?;
-        columns.push((cmp, sort_keys(reader, field)?));
+        columns.push((SortKeyComparator::new(field), sort_keys(reader, field)?));
     }
     let n = reader.max_doc().max(0) as usize;
     let mut order: Vec<i32> = (0..n as i32).collect();

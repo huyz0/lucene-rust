@@ -85,13 +85,11 @@
 //! - A `SortedNumericSortField` whose type is `STRING`, which is an
 //!   `AssertionError` inside Java's own `serialize`.
 //!
-//! What this port cannot yet *act on* is narrower than what it can read, and
-//! is stated per consumer rather than by refusing the file:
-//! [`IndexSortField::key_comparison`] gives the comparator for every kind
-//! whose per-document key is a single `i64` (the four numeric types, both
-//! numeric selectors, and term ordinals for `STRING`/`SortedSetSortField`);
-//! a `BinarySortField` sorts on raw bytes and has none. See `docs/parity.md`
-//! for which consumer honours which.
+//! [`IndexSortField::key_comparison`] gives the comparator for every kind:
+//! a single `i64` per document for the four numeric types and both numeric
+//! selectors, and an ordinal rank for `STRING`, `SortedSetSortField` and
+//! `BinarySortField` (computed by [`crate::index_sorter`]). The writer, the
+//! merge and `CheckIndex` all act on every kind.
 
 pub use lucene_codecs::codecs::SegmentInfoFormat;
 use lucene_store::codec_util::{self, ID_LENGTH};
@@ -275,8 +273,8 @@ pub enum IndexSortKind {
         missing: StringMissingValue,
     },
     /// `BinarySortField` provider: a BINARY column compared as raw unsigned
-    /// bytes. The one kind whose per-document key is not a single `i64`, so
-    /// [`IndexSortField::key_comparison`] has none for it.
+    /// bytes -- by rank among the values compared, see
+    /// [`crate::index_sorter`].
     Binary(StringMissingValue),
 }
 
@@ -346,9 +344,7 @@ impl IndexSortField {
     }
 
     /// How this sort's per-document key is compared and what a document with
-    /// no value compares as, or `None` when the key is not a single `i64` --
-    /// which is exactly `BinarySortField`, whose `IndexSorter.BinarySorter`
-    /// compares raw `BytesRef`s.
+    /// no value compares as.
     ///
     /// This is the whole comparator contract: a consumer reads each
     /// document's key out of the right doc-values column (applying the
@@ -356,16 +352,23 @@ impl IndexSortField {
     /// document that has none, compares as [`SortKeyKind`] says, and then
     /// applies `reverse` -- **including to the sentinel**, which is an
     /// ordinary value inside `reverseMul * X.compare(a, b)`.
-    pub fn key_comparison(&self) -> Option<(SortKeyKind, i64)> {
+    ///
+    /// The three byte-keyed kinds (`STRING`, `SortedSetSortField`,
+    /// `BinarySortField`) all compare [`SortKeyKind::Ordinal`]: the key is
+    /// the value's rank among the distinct values being compared, which is
+    /// the term ordinal for a SORTED/SORTED_SET column and orders a BINARY
+    /// column exactly as `BytesRef.compareTo` does -- see
+    /// [`crate::index_sorter`], which computes it for every consumer.
+    pub fn key_comparison(&self) -> (SortKeyKind, i64) {
         match &self.kind {
-            IndexSortKind::Numeric(key) => Some(key.key_comparison()),
+            IndexSortKind::Numeric(key) => key.key_comparison(),
             // A SORTED_NUMERIC FLOAT/DOUBLE column holds
             // `NumericUtils.floatToSortableInt`/`doubleToSortableLong`, not
             // the raw bits a NUMERIC one holds, and
             // `SortedNumericSelector.wrap` undoes that before the sorter sees
             // a value. Comparing the stored form as raw bits instead would
             // reverse the whole negative half of the ordering.
-            IndexSortKind::SortedNumeric { key, .. } => Some(match *key {
+            IndexSortKind::SortedNumeric { key, .. } => match *key {
                 NumericSortKey::Float(m) => (
                     SortKeyKind::SortableFloat,
                     float_to_sortable_int(m.unwrap_or(0.0)) as i64,
@@ -375,12 +378,10 @@ impl IndexSortField {
                     double_to_sortable_long(m.unwrap_or(0.0)),
                 ),
                 key => key.key_comparison(),
-            }),
-            IndexSortKind::String(missing) => Some((SortKeyKind::Ordinal, missing.missing_ord())),
-            IndexSortKind::SortedSet { missing, .. } => {
-                Some((SortKeyKind::Ordinal, missing.missing_ord()))
-            }
-            IndexSortKind::Binary(_) => None,
+            },
+            IndexSortKind::String(missing)
+            | IndexSortKind::SortedSet { missing, .. }
+            | IndexSortKind::Binary(missing) => (SortKeyKind::Ordinal, missing.missing_ord()),
         }
     }
 }
@@ -389,9 +390,7 @@ impl IndexSortField {
 ///
 /// Java rebuilds this per segment in `IndexSorter.*Sorter.getDocComparator`,
 /// which closes over `reverseMul`, the pre-filled sentinel and the type's own
-/// `compare`; resolving it once here is the same thing, and it makes the
-/// unsupportable case ([`IndexSortKind::Binary`], whose keys are raw bytes)
-/// *unconstructible* rather than a branch inside every comparison.
+/// `compare`; resolving it once here is the same thing.
 ///
 /// # The sentinel is an ordinary value
 ///
@@ -418,15 +417,14 @@ pub struct SortKeyComparator {
 }
 
 impl SortKeyComparator {
-    /// `None` for a sort whose per-document key is not a single `i64` --
-    /// see [`IndexSortField::key_comparison`].
-    pub fn new(sort: &IndexSortField) -> Option<Self> {
-        let (kind, sentinel) = sort.key_comparison()?;
-        Some(Self {
+    /// The comparator for `sort` -- see [`IndexSortField::key_comparison`].
+    pub fn new(sort: &IndexSortField) -> Self {
+        let (kind, sentinel) = sort.key_comparison();
+        Self {
             kind,
             sentinel,
             reverse: sort.reverse,
-        })
+        }
     }
 
     /// Compares two documents' keys, `None` meaning "this document has no
@@ -1592,7 +1590,7 @@ mod tests {
         b.sort_field_bytes = SiBuilder::plain_sort_field_bytes("price", TYPE_LONG, 0, None);
         let sf = &parse(&b.build(), &b.id).unwrap().index_sort.unwrap()[0];
         assert_eq!(sf.kind, IndexSortKind::Numeric(NumericSortKey::Long(None)));
-        let cmp = SortKeyComparator::new(sf).unwrap();
+        let cmp = SortKeyComparator::new(sf);
         // A missing document compares as 0: above -1, below 1.
         assert_eq!(cmp.compare(None, Some(-1)), std::cmp::Ordering::Greater);
         assert_eq!(cmp.compare(None, Some(1)), std::cmp::Ordering::Less);
@@ -1610,7 +1608,7 @@ mod tests {
         let parsed = parse(&bytes, &si.id).unwrap();
         assert_eq!(parsed.index_sort, si.index_sort);
         let sf = &parsed.index_sort.unwrap()[0];
-        let cmp = SortKeyComparator::new(sf).unwrap();
+        let cmp = SortKeyComparator::new(sf);
         // Descending, so a missing (42) document sorts *before* 100 and
         // *after* 7 -- the sentinel is compared like any other value.
         assert_eq!(cmp.compare(None, Some(100)), std::cmp::Ordering::Greater);
@@ -1899,26 +1897,26 @@ mod tests {
         };
         assert_eq!(
             sf(IndexSortKind::Numeric(NumericSortKey::Int(Some(5)))).key_comparison(),
-            Some((SortKeyKind::Int, 5))
+            (SortKeyKind::Int, 5)
         );
         assert_eq!(
             sf(IndexSortKind::Numeric(NumericSortKey::Long(None))).key_comparison(),
-            Some((SortKeyKind::Long, 0))
+            (SortKeyKind::Long, 0)
         );
         assert_eq!(
             sf(IndexSortKind::Numeric(NumericSortKey::Float(Some(1.0)))).key_comparison(),
-            Some((SortKeyKind::Float, 1.0f32.to_bits() as i32 as i64))
+            (SortKeyKind::Float, 1.0f32.to_bits() as i32 as i64)
         );
         assert_eq!(
             sf(IndexSortKind::Numeric(NumericSortKey::Double(Some(-1.0)))).key_comparison(),
-            Some((SortKeyKind::Double, (-1.0f64).to_bits() as i64))
+            (SortKeyKind::Double, (-1.0f64).to_bits() as i64)
         );
         // `None` behaves like `First` in the comparator even though the two
         // are distinguishable on disk.
         for missing in [StringMissingValue::None, StringMissingValue::First] {
             assert_eq!(
                 sf(IndexSortKind::String(missing)).key_comparison(),
-                Some((SortKeyKind::Ordinal, i32::MIN as i64))
+                (SortKeyKind::Ordinal, i32::MIN as i64)
             );
         }
         assert_eq!(
@@ -1927,21 +1925,22 @@ mod tests {
                 missing: StringMissingValue::Last,
             })
             .key_comparison(),
-            Some((SortKeyKind::Ordinal, i32::MAX as i64))
+            (SortKeyKind::Ordinal, i32::MAX as i64)
         );
-        // The one kind with no single-`i64` key.
+        // A BinarySortField compares ranks with StringSorter's sentinels.
         assert_eq!(
             sf(IndexSortKind::Binary(StringMissingValue::Last)).key_comparison(),
-            None
+            (SortKeyKind::Ordinal, i32::MAX as i64)
         );
-        assert!(
-            SortKeyComparator::new(&sf(IndexSortKind::Binary(StringMissingValue::Last))).is_none()
+        assert_eq!(
+            sf(IndexSortKind::Binary(StringMissingValue::None)).key_comparison(),
+            (SortKeyKind::Ordinal, i32::MIN as i64)
         );
 
         // INT compares the low 32 bits, so a value whose 64-bit form is
         // larger can still be the smaller INT.
         let int_cmp =
-            SortKeyComparator::new(&sf(IndexSortKind::Numeric(NumericSortKey::Int(None)))).unwrap();
+            SortKeyComparator::new(&sf(IndexSortKind::Numeric(NumericSortKey::Int(None))));
         assert_eq!(
             int_cmp.compare(Some(0xFFFF_FFFF), Some(1)),
             Ordering::Less,
@@ -1959,7 +1958,7 @@ mod tests {
             reverse: false,
             kind: IndexSortKind::Numeric(NumericSortKey::Float(None)),
         };
-        let cmp = SortKeyComparator::new(&f).unwrap();
+        let cmp = SortKeyComparator::new(&f);
         let bits = |v: f32| Some(v.to_bits() as i32 as i64);
         // The ordinary cases first: `Float.compare`'s `<` and `>` arms, which
         // are the ones that make a FLOAT sort a *float* sort -- comparing the
@@ -1983,7 +1982,7 @@ mod tests {
             reverse: true,
             kind: IndexSortKind::Numeric(NumericSortKey::Double(None)),
         };
-        let cmp = SortKeyComparator::new(&d).unwrap();
+        let cmp = SortKeyComparator::new(&d);
         let dbits = |v: f64| Some(v.to_bits() as i64);
         // Reversed, so `<` becomes `Greater`.
         assert_eq!(cmp.compare(dbits(-2.5), dbits(2.5)), Ordering::Greater);
@@ -2139,7 +2138,7 @@ mod tests {
             },
         };
 
-        let cmp = SortKeyComparator::new(&sorted_numeric(NumericSortKey::Float(None))).unwrap();
+        let cmp = SortKeyComparator::new(&sorted_numeric(NumericSortKey::Float(None)));
         // What `FloatField` stores: `floatToSortableInt`.
         let stored = |v: f32| Some(float_to_sortable_int(v) as i64);
         for (a, b) in [(-2.0f32, -1.0), (-1.0, 0.0), (0.0, 1.0), (1.0, 2.0)] {
@@ -2154,12 +2153,10 @@ mod tests {
         assert_eq!(cmp.compare(None, stored(-1.0)), Ordering::Greater);
         assert_eq!(cmp.compare(None, stored(1.0)), Ordering::Less);
         // With an explicit sentinel it lands where that sentinel does.
-        let cmp =
-            SortKeyComparator::new(&sorted_numeric(NumericSortKey::Float(Some(-5.0)))).unwrap();
+        let cmp = SortKeyComparator::new(&sorted_numeric(NumericSortKey::Float(Some(-5.0))));
         assert_eq!(cmp.compare(None, stored(-1.0)), Ordering::Less);
 
-        let cmp =
-            SortKeyComparator::new(&sorted_numeric(NumericSortKey::Double(Some(-5.0)))).unwrap();
+        let cmp = SortKeyComparator::new(&sorted_numeric(NumericSortKey::Double(Some(-5.0))));
         let stored = |v: f64| Some(double_to_sortable_long(v));
         assert_eq!(cmp.compare(stored(-2.0), stored(-1.0)), Ordering::Less);
         assert_eq!(cmp.compare(None, stored(-1.0)), Ordering::Less);
@@ -2172,8 +2169,7 @@ mod tests {
             field: "f".to_string(),
             reverse: false,
             kind: IndexSortKind::Numeric(NumericSortKey::Float(None)),
-        })
-        .unwrap();
+        });
         assert_eq!(
             raw.compare(
                 Some(float_to_sortable_int(-2.0) as i64),

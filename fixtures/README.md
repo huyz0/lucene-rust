@@ -568,6 +568,17 @@ outright.
   reader sees them, so `crates/lucene-index/tests/index_sort_fixtures.rs`
   checks this port's own comparator against Lucene's behaviour rather than
   against a reading of its source.
+- `GenStringSortedIndex.java` — the **byte-keyed index sorts**
+  (`string_sorted_index/`): eight `IndexWriter` sessions, each sorted by one
+  of `SortField.Type.STRING`, `SortedSetSortField` (all four selectors) or
+  `BinarySortField` with `reverse`, every missing-value form and a second
+  tier, over the same 120 documents in three committed batches, then every
+  seventh document deleted and the rest force-merged (`LogDocMergePolicy`,
+  so segments merge in index order). The manifest holds the documents and
+  the id order of every flushed segment and of the merged one; the merged
+  index is kept. `crates/lucene-index/tests/string_index_sort_fixtures.rs`
+  replays the documents through this port's writer and requires Lucene's
+  order, and runs this port's `CheckIndex` over Java's segments.
 - `GenCompoundFormat.java` — a real single-segment `IndexWriter` session
   (`compound_index/` subdirectory) with `useCompoundFile=true` forced on the
   writer config, so the segment's sub-files (`.fnm`, `.fdt`/`.fdx`/`.fdm`,
