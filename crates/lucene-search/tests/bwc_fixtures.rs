@@ -1078,3 +1078,187 @@ fn bwc_fixtures_match_lucene() {
         stale.join("\n")
     );
 }
+
+// ---------------------------------------------------------------------------
+// The normal read path: every fixture opened with `DirectoryReader` and
+// searched. `BwcWrite` writes the same documents under every version (the
+// digests above are identical from 9.0.0 to 10.4.0), and 10.4.0 is the
+// current `Lucene104` codec whose search path is verified against Lucene by
+// the rest of this crate's fixtures -- so every older version must return
+// 10.4.0's hits and scores, bit for bit, through the same query code.
+
+fn query_set() -> Vec<(String, lucene_search::BooleanQuery)> {
+    use lucene_search::query::{
+        DisjunctionMaxQuery, PointsRangeQuery, PrefixQuery, RegexpQuery, TermInSetQuery,
+        WildcardQuery,
+    };
+    use lucene_search::{BooleanQuery, Clause, PhraseQuery, TermQuery};
+    let term = |f: &str, t: &str| Clause::Term(TermQuery::new(f, t.as_bytes().to_vec()));
+    let one = |name: &str, c: Clause| {
+        let mut b = BooleanQuery::new();
+        b.must.push(c);
+        (name.to_string(), b)
+    };
+    let mut out = Vec::new();
+    for f in ["body", "title", "off", "pay", "freqs", "docs"] {
+        out.push(one(&format!("term {f}:alpha"), term(f, "alpha")));
+        out.push(one(&format!("term {f}:zeta"), term(f, "zeta")));
+        out.push(one(
+            &format!("prefix {f}:e"),
+            Clause::Prefix(PrefixQuery::new(f, b"e".to_vec())),
+        ));
+    }
+    for f in ["body", "off", "pay", "title"] {
+        out.push(one(
+            &format!("phrase {f}:alpha beta"),
+            Clause::Phrase(PhraseQuery::new(f, vec!["alpha", "beta"])),
+        ));
+        out.push(one(
+            &format!("phrase~3 {f}:gamma alpha"),
+            Clause::Phrase(PhraseQuery::new(f, vec!["gamma", "alpha"]).with_slop(3)),
+        ));
+    }
+    out.push(one("id:17", term("id", "17")));
+    out.push(one(
+        "wildcard body:*ta",
+        Clause::Wildcard(WildcardQuery::new("body", b"*ta".to_vec())),
+    ));
+    out.push(one(
+        "regexp body:[a-e].*a",
+        Clause::Regexp(RegexpQuery::new("body", "[a-e].*a")),
+    ));
+    out.push(one(
+        "terms id:{1,2,3000,3399}",
+        Clause::TermInSet(TermInSetQuery::new(
+            "id",
+            vec![
+                b"1".to_vec(),
+                b"2".to_vec(),
+                b"3000".to_vec(),
+                b"3399".to_vec(),
+            ],
+        )),
+    ));
+    out.push(one(
+        "range lpt:[-2^54, 2^54]",
+        Clause::PointsRange(PointsRangeQuery::new("lpt", -(1 << 54), 1 << 54)),
+    ));
+    out.push(one(
+        "dismax body:beta|title:beta",
+        DisjunctionMaxQuery::new([term("body", "beta"), term("title", "beta")], 0.1).into(),
+    ));
+    let mut b = BooleanQuery::new();
+    b.should.push(term("body", "alpha"));
+    b.should.push(term("body", "omega"));
+    b.should.push(term("title", "delta"));
+    out.push(("or body:alpha body:omega title:delta".into(), b));
+    let mut b = BooleanQuery::new();
+    b.must.push(term("body", "beta"));
+    b.must.push(term("off", "gamma"));
+    b.must_not.push(term("docs", "delta"));
+    b.filter.push(Clause::PointsRange(PointsRangeQuery::new(
+        "lpt",
+        i64::MIN,
+        0,
+    )));
+    out.push(("and +body:beta +off:gamma -docs:delta #lpt<=0".into(), b));
+    out
+}
+
+/// Every query of [`query_set`] against one fixture, top 20 exact and
+/// pruned, as `name mode total hits(doc:scorebits)`.
+fn search_version(version: &str) -> Result<Vec<String>, String> {
+    use lucene_search::directory_reader::DirectoryReader;
+    use lucene_search::field_norms::FieldNorms;
+    use lucene_search::multi_segment::search_boolean_query_multi_segment_maxscore_counting;
+    use std::collections::HashMap;
+    let dir = FsDirectory::open(fixture_dir(version));
+    let reader = DirectoryReader::open(&dir).map_err(err)?;
+    let mut opened = reader.open_segments().map_err(err)?;
+    opened.open_points().map_err(err)?;
+    let segments = opened.as_open_segments();
+    let mut owned: Vec<HashMap<String, FieldNorms<'_>>> =
+        (0..segments.len()).map(|_| HashMap::new()).collect();
+    for f in ["body", "title", "off", "pay", "freqs"] {
+        for (i, n) in reader.field_norms(f).into_iter().enumerate() {
+            if let Some(n) = n {
+                owned[i].insert(f.to_string(), n);
+            }
+        }
+    }
+    let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
+    let mut out = Vec::new();
+    for (name, q) in query_set() {
+        for (mode, limit) in [("exact", u64::MAX), ("pruned", 1000)] {
+            let (hits, total) = search_boolean_query_multi_segment_maxscore_counting(
+                &segments, &q, &norms, 20, limit,
+            )
+            .map_err(|e| format!("{name}: {e}"))?;
+            let hits = hits
+                .iter()
+                .map(|h| format!("{}:{:x}", h.doc_id, h.score.to_bits()))
+                .collect::<Vec<_>>()
+                .join(",");
+            let total = if mode == "exact" {
+                total.value.to_string()
+            } else {
+                "-".to_string()
+            };
+            out.push(format!("{name} {mode} {total} {hits}"));
+        }
+    }
+    Ok(out)
+}
+
+#[test]
+fn every_version_searches_like_the_current_codec() {
+    let reference = search_version("10.4.0").expect("10.4.0 searches");
+    // The reference itself must be worth comparing against: every query
+    // but a lookup of one (possibly deleted) id matches something.
+    for line in reference.iter().filter(|l| !l.starts_with("id:")) {
+        let hits = line.rsplit(' ').next().unwrap_or("");
+        assert!(!hits.is_empty(), "10.4.0 query matched nothing: {line}");
+    }
+    let mut failures = Vec::new();
+    for version in VERSIONS.iter().filter(|v| **v != "10.4.0") {
+        match search_version(version) {
+            Ok(got) => {
+                for (g, r) in got.iter().zip(&reference) {
+                    if g != r {
+                        failures.push(format!("{version}:\n  got      {g}\n  10.4.0   {r}"));
+                    }
+                }
+            }
+            Err(e) => failures.push(format!("{version}: {e}")),
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn every_version_passes_check_index() {
+    let mut failures = Vec::new();
+    for version in VERSIONS {
+        let dir = FsDirectory::open(fixture_dir(version));
+        let results = lucene_index::check_index::check_directory(&dir)
+            .unwrap_or_else(|e| panic!("{version}: {e}"));
+        for r in results {
+            for c in r.failures() {
+                failures.push(format!(
+                    "{version} {}: {} {}",
+                    r.segment_name, c.name, c.message
+                ));
+            }
+        }
+    }
+    // The retired HNSW formats (9.0-9.8) are not read yet, so CheckIndex's
+    // vector families cannot open them; everything else must pass. Shrinks
+    // with EXPECTED_FAILURES' `vec`/`knn` entries.
+    failures.retain(|f| {
+        let retired_vectors = EXPECTED_FAILURES
+            .iter()
+            .any(|&(v, k, _)| k == "vec" && f.starts_with(&format!("{v} ")));
+        !(retired_vectors && (f.contains(": vectors.") || f.contains(": hnsw.")))
+    });
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
