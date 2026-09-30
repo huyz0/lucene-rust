@@ -393,14 +393,14 @@ index/IndexNotFoundException	ported	crates/lucene-store/src/directory.rs::read_l
 index/IndexOptions	ported	crates/lucene-codecs/src/field_infos.rs::IndexOptions
 index/IndexReader	partial	crates/lucene-search/src/directory_reader.rs::DirectoryReader -- M7: no reader-level `termVectors()` or KNN vector access (not opened by `DirectoryReader`), no reader-closed listeners / `CacheHelper`
 index/IndexReaderContext	ported	crates/lucene-search/src/multi_segment.rs::OpenSegment
-index/IndexSorter	partial	crates/lucene-index/src/segment_info.rs::SortKeyComparator -- M7: per parity.md: the writer sorts only NUMERIC/SORTED_NUMERIC keys; `STRING`/`SortedSetSortField`/`BinarySortField` index sorts are refused with `Error::UnsupportedIndexSortKind`
+index/IndexSorter	ported	crates/lucene-index/src/index_sorter.rs::read_segment_terms
 index/IndexUpgrader	deferred:M8	command-line tool rewriting older-format segments into the current format
 index/IndexWriter	partial	crates/lucene-index/src/index_writer.rs::IndexWriter -- M7: per parity.md: not ported `tryDeleteDocument`, `tryUpdateDocValue`, `addIndexes` (both overloads), `addBatch`/`ColumnBatch` updates, NRT readers from the writer (`DirectoryReader.open(writer)`), `maybeMerge` and a merge scheduler, `flushNextBuffer`, `infoStream`, writing compound segments
-index/IndexWriterConfig	partial	crates/lucene-index/src/index_writer.rs::set_index_sort -- M7: settings are writer setters (`setSimilarity` is `IndexWriter::set_similarity`, norms via `NormSimilarity`); missing `STRING`/`SortedSet`/`Binary` index sorts, `setUseCompoundFile` (compound segments not written), codec/per-field format choice, `MergeScheduler`, `IndexWriterEventListener`, `infoStream`, `leafSorter`, `commitOnClose`
+index/IndexWriterConfig	partial	crates/lucene-index/src/index_writer.rs::set_index_sort -- M7: settings are writer setters (`setSimilarity` is `IndexWriter::set_similarity`, norms via `NormSimilarity`); missing `setUseCompoundFile` (compound segments not written), codec/per-field format choice, `MergeScheduler`, `IndexWriterEventListener`, `infoStream`, `leafSorter`, `commitOnClose`
 index/IndexWriterEventListener	not-needed	callback hook for merge begin/end events used for metrics and tests; no effect on the index.
 index/IndexableField	partial	crates/lucene-index/src/index_writer/explicit.rs::ExplicitDocument -- M7: no `IndexableField` abstraction: fields are configured per writer (`set_*_field`/`add_*_field`) or arrive pre-inverted; the document field-type API is M7 T7.2
 index/IndexableFieldType	partial	crates/lucene-codecs/src/field_infos.rs::FieldInfo -- M7: field properties exist only as the writer's per-field `FieldInfo` schema; no per-field-instance type descriptor of the document API (M7 T7.2)
-index/IndexingChain	partial	crates/lucene-index/src/indexing_chain.rs::invert_documents -- M7: `maybeSortSegment` handles only NUMERIC/SORTED_NUMERIC index sorts (`STRING`/`SortedSet`/`Binary` refused with `Error::UnsupportedIndexSortKind`); a PayloadAttribute or TermFrequencyAttribute a TokenFilter sets is not read by the inverter (payloads still come from BoxedPayloadSource, custom frequencies from add_document_with_custom_freq_terms)
+index/IndexingChain	partial	crates/lucene-index/src/indexing_chain.rs::invert_documents -- M7: a PayloadAttribute or TermFrequencyAttribute a TokenFilter sets is not read by the inverter (payloads still come from BoxedPayloadSource, custom frequencies from add_document_with_custom_freq_terms)
 index/KeepLastNCommitsDeletionPolicy	ported	crates/lucene-index/src/deletion_policy.rs::KeepLastNCommitsDeletionPolicy
 index/KeepOnlyLastCommitDeletionPolicy	ported	crates/lucene-index/src/deletion_policy.rs::KeepOnlyLastCommitDeletionPolicy
 index/KnnVectorValues	ported	crates/lucene-codecs/src/vectors.rs::FloatVectorValues
@@ -479,7 +479,7 @@ index/SlowImpactsEnum	not-needed	adapter presenting plain postings through the I
 index/SnapshotDeletionPolicy	ported	crates/lucene-index/src/deletion_policy.rs::SnapshotDeletionPolicy
 index/SoftDeletesDirectoryReaderWrapper	ported	crates/lucene-search/src/soft_deletes.rs::effective_live_docs
 index/SoftDeletesRetentionMergePolicy	ported	crates/lucene-index/src/index_writer.rs::SoftDeletesRetention
-index/SortFieldProvider	partial	crates/lucene-index/src/segment_info.rs::read_sort_field -- M7: all four providers are read; the writer emits only provider `SortField` with type `LONG` (numeric index sorts)
+index/SortFieldProvider	ported	crates/lucene-index/src/segment_info.rs::read_sort_field
 index/SortedDocValues	ported	crates/lucene-codecs/src/doc_values.rs::sorted_ord
 index/SortedDocValuesTermsEnum	ported	crates/lucene-codecs/src/terms_dict.rs::TermsCursor
 index/SortedDocValuesWriter	ported	crates/lucene-index/src/index_writer.rs::build_sorted_doc_values_output
@@ -488,7 +488,7 @@ index/SortedNumericDocValuesWriter	ported	crates/lucene-index/src/index_writer.r
 index/SortedSetDocValues	ported	crates/lucene-codecs/src/doc_values.rs::SortedSetEntry
 index/SortedSetDocValuesTermsEnum	ported	crates/lucene-codecs/src/terms_dict.rs::TermsCursor
 index/SortedSetDocValuesWriter	ported	crates/lucene-index/src/index_writer.rs::build_sorted_set_doc_values_output
-index/Sorter	partial	crates/lucene-index/src/segment_writer.rs::sort_permutation -- M7: `Sorter.DocMap` over NUMERIC/SORTED_NUMERIC keys only; `STRING`/`SortedSet`/`Binary` index sorts refused (`Error::UnsupportedIndexSortKind`)
+index/Sorter	ported	crates/lucene-index/src/segment_writer.rs::sort_permutation
 index/SortingCodecReader	todo:M7	CodecReader view re-sorted by an index sort (addIndexes into a sorted index)
 index/SortingStoredFieldsConsumer	ported	crates/lucene-index/src/segment_writer.rs::permute_in_place
 index/SortingTermVectorsConsumer	ported	crates/lucene-index/src/segment_writer.rs::permute_in_place
@@ -582,7 +582,7 @@ search/AutomatonQuery	ported	crates/lucene-search/src/extended_query.rs::Automat
 search/BatchScoreBulkScorer	ported	crates/lucene-search/src/bulk_scorer.rs::score_term
 search/BayesianScoreEstimator	ported	crates/lucene-search/src/bayesian_estimator.rs::estimate
 search/BayesianScoreQuery	ported	crates/lucene-search/src/extended_query.rs::BayesianScoreQuery
-search/BinarySortField	partial	crates/lucene-search/src/top_field.rs::SortField -- M7: search-time sort ported (SortField::binary, TermValComparator); the writer applies numeric index sorts only (IndexSorter.BinarySorter), and index-sort (de)serialization lives in crates/lucene-index/src/segment_info.rs::PROVIDER_BINARY
+search/BinarySortField	ported	crates/lucene-search/src/top_field.rs::SortField
 search/BitSetDocIdStream	ported	crates/lucene-search/src/exec/mod.rs::constant_bits
 search/BlendedTermQuery	ported	crates/lucene-search/src/extended_query.rs::BlendedTermQuery
 search/BlockMaxConjunctionBulkScorer	ported	crates/lucene-search/src/bulk_scorer.rs::ConjunctionBulk

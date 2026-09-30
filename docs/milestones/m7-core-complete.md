@@ -118,6 +118,12 @@ the skipper path, range relations, feature, distance feature) in
 ### T7.5 — Per-field formats, read and write
 ### T7.6 — Scalar-quantized vectors
 ### T7.7 — Writer gaps: compound segments, string index sorts, write lock
+
+Delivered (ported, not yet benchmarked): `STRING`, `SortedSetSortField` and
+`BinarySortField` index sorts in the flush and the sort-preserving merge
+(`lucene-index/src/index_sorter.rs`), and `CheckIndex.testSort` for every
+kind; differential against `GenStringSortedIndex` and, Rust-written, against
+Lucene's own `IndexWriter` (`VerifyStringSortedIndex`).
 ### T7.8 — `StandardTokenizer` and the attribute model · delivered 2026-09-30, two rows partial
 
 `crates/lucene-analysis` is now Lucene's streaming model: `TokenStream`/
