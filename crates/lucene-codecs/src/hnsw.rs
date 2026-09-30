@@ -714,21 +714,21 @@ pub trait HnswGraphView {
 pub struct OnHeapHnswGraph {
     /// `M + 1`: Java over-allocates by one so `addAndEnsureDiversity` can
     /// append before pruning.
-    nsize: usize,
+    pub(crate) nsize: usize,
     /// `2 * M + 1`, the level-0 budget.
-    nsize0: usize,
+    pub(crate) nsize0: usize,
     pub(crate) graph: Vec<Vec<NeighborArray>>,
-    entry_node: i32,
-    entry_level: i32,
-    size: i32,
-    max_node_id: i32,
+    pub(crate) entry_node: i32,
+    pub(crate) entry_level: i32,
+    pub(crate) size: i32,
+    pub(crate) max_node_id: i32,
     /// `OnHeapHnswGraph`'s `noGrowth`: when the eventual node count is known
     /// up front (every merge knows it), Java refuses to grow the graph and
     /// reports `maxNodeId()` as `graph.length - 1` rather than the largest
     /// ordinal added so far. That matters because merging adds nodes **out of
     /// order**, so the largest-so-far is not a bound on what a search may
     /// visit.
-    fixed_size: Option<i32>,
+    pub(crate) fixed_size: Option<i32>,
 }
 
 impl OnHeapHnswGraph {
@@ -2380,7 +2380,7 @@ fn map_ord(ord_map: &[i32], old: i32) -> Result<i32> {
 
 /// `HnswGraphBuilder.popToScratch`: drains the beam (worst first) into an
 /// ascending-score `NeighborArray`.
-fn pop_to_scratch(candidates: &mut KnnCollector, scratch: &mut NeighborArray) {
+pub(crate) fn pop_to_scratch(candidates: &mut KnnCollector, scratch: &mut NeighborArray) {
     scratch.clear();
     let count = candidates.size();
     for _ in 0..count {
