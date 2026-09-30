@@ -678,7 +678,7 @@ pub fn segment_date_range(
     field: &str,
 ) -> std::result::Result<Option<SegmentDateRange>, crate::field_updates::Error> {
     let si_bytes = dir.open(&format!("{}.si", sci.segment_name))?;
-    let si = crate::segment_info::parse(&si_bytes, &sci.segment_id)?;
+    let si = crate::segment_info::parse_for_codec(&si_bytes, &sci.segment_id, &sci.codec_name)?;
     let compound;
     let (reader_dir, files): (&dyn Directory, Vec<String>) = if si.is_compound_file {
         compound =

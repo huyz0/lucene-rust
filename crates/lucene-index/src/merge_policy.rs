@@ -97,6 +97,7 @@ pub mod api;
 pub mod filter;
 pub mod log;
 pub mod temporal;
+pub mod upgrade;
 
 pub use api::{
     BasicMergeContext, CompoundFileSettings, MergeContext, MergePolicy, MergeSegment,
