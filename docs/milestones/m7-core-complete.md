@@ -122,6 +122,8 @@ the skipper path, range relations, feature, distance feature) in
 
 - Delivered 2026-09-30: a term with more than `u32::MAX` occurrences is walked like any other (`wire_count` no longer caps it); only whole-term materialising readers refuse a stream past `u32::MAX` entries.
 
+- Delivered 2026-09-30: doc-values `writeValues`' `doBlocks` split (per-16384-value widths), byte-identical on `GenDocValuesVaryingBpv`.
+
 ### T7.8 — `StandardTokenizer` and the attribute model · delivered 2026-09-30, two rows partial
 
 `crates/lucene-analysis` is now Lucene's streaming model: `TokenStream`/
