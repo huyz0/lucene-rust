@@ -1405,10 +1405,12 @@ impl<'a> SegmentTermsEnum<'a> {
         self.field.tim.as_ref().as_ref()
     }
 
-    /// The field's own `[indexStart, indexEnd)` region of `.tip`.
+    /// The field's own trie: its `[indexStart, indexEnd)` region of `.tip`.
+    /// Empty if a deferred trie failed to build, which [`Self::root`] --
+    /// where every walk starts -- reports as the error it was.
     #[inline]
     fn index(&self) -> &'a [u8] {
-        &self.field.tip.as_ref().as_ref()[self.field.index_start..self.field.index_end]
+        self.field.index.bytes_or_empty()
     }
 
     #[inline]
@@ -1530,7 +1532,8 @@ impl<'a> SegmentTermsEnum<'a> {
     }
 
     fn root(&self) -> Result<TrieNode> {
-        load_node(self.index(), self.field.root_fp)
+        let trie = self.field.index.resolve()?;
+        load_node(trie.bytes(), trie.root_fp)
     }
 
     /// `SegmentTermsEnum.seekExact(BytesRef)`.
@@ -2064,6 +2067,78 @@ impl<'a> TermsEnum<'a> {
 /// or per term. Measured: no change to `blocktree_open`'s seek cases.
 pub type SharedBytes = Arc<dyn AsRef<[u8]> + Send + Sync>;
 
+/// A field's trie: `[start, end)` of `bytes`, rooted at `root_fp`.
+#[derive(Clone)]
+pub(crate) struct TrieSlice {
+    pub(crate) bytes: SharedBytes,
+    pub(crate) start: usize,
+    pub(crate) root_fp: usize,
+    pub(crate) end: usize,
+}
+
+impl TrieSlice {
+    fn bytes(&self) -> &[u8] {
+        &self.bytes.as_ref().as_ref()[self.start..self.end]
+    }
+}
+
+/// Makes a field's trie on first use; see [`FieldTerms::from_parts`].
+pub(crate) type TrieBuild = Box<dyn Fn() -> Result<TrieSlice> + Send + Sync>;
+
+/// A trie built once, by the first walk that needs it. The outcome is kept
+/// either way: a build that failed fails every later walk with the same
+/// message rather than being retried.
+pub(crate) struct DeferredTrie {
+    built: std::sync::OnceLock<std::result::Result<TrieSlice, String>>,
+    build: TrieBuild,
+}
+
+/// Where a field's trie comes from.
+#[derive(Clone)]
+enum TermsIndex {
+    /// `.tip` read in place (`Lucene103BlockTreeTermsReader`).
+    InPlace(TrieSlice),
+    /// Built from a retired format's FST the first time the field is walked
+    /// (`Lucene90BlockTreeTermsReader`; `crate::backward_codecs::blocktree`),
+    /// so that opening a segment costs what Lucene's in-place FST costs.
+    Deferred(Arc<DeferredTrie>),
+}
+
+impl TermsIndex {
+    /// The trie, building it now if it is deferred and not yet built.
+    fn resolve(&self) -> Result<&TrieSlice> {
+        match self {
+            TermsIndex::InPlace(trie) => Ok(trie),
+            TermsIndex::Deferred(d) => d
+                .built
+                .get_or_init(|| (d.build)().map_err(|e| e.to_string()))
+                .as_ref()
+                .map_err(|msg| Error::Store(lucene_store::Error::Corrupted(msg.clone()))),
+        }
+    }
+
+    /// [`Self::resolve`]'s bytes, or none if the build failed.
+    #[inline]
+    fn bytes_or_empty(&self) -> &[u8] {
+        self.resolve().map_or(&[], TrieSlice::bytes)
+    }
+}
+
+impl std::fmt::Debug for TermsIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TermsIndex::InPlace(t) => {
+                write!(f, "InPlace({}..{}, root {})", t.start, t.end, t.root_fp)
+            }
+            TermsIndex::Deferred(d) => match d.built.get() {
+                None => write!(f, "Deferred(not built)"),
+                Some(Ok(t)) => write!(f, "Deferred({}..{}, root {})", t.start, t.end, t.root_fp),
+                Some(Err(e)) => write!(f, "Deferred(failed: {e})"),
+            },
+        }
+    }
+}
+
 pub struct FieldTerms {
     pub num_terms: i64,
     pub sum_total_term_freq: i64,
@@ -2079,12 +2154,9 @@ pub struct FieldTerms {
     postings_format: postings::PostingsFormat,
     /// The whole segment's `.tim`, shared by every field.
     tim: SharedBytes,
-    /// The whole segment's `.tip`, shared by every field; this field's trie
-    /// occupies `[index_start, index_end)`.
-    tip: SharedBytes,
-    index_start: usize,
-    index_end: usize,
-    root_fp: usize,
+    /// The field's terms index: its trie, read in place from `.tip`, or --
+    /// for a retired FST index -- built the first time the field is used.
+    index: TermsIndex,
     /// One pooled [`EnumState`] so the `&self` lookups
     /// ([`Self::seek_exact`], [`Self::postings`], ...) keep the last-loaded
     /// blocks warm across calls instead of re-decoding them. Java gets the
@@ -2115,10 +2187,7 @@ impl std::fmt::Debug for FieldTerms {
             .field("index_options", &self.index_options)
             .field("has_payloads", &self.has_payloads)
             .field("tim_len", &self.tim.as_ref().as_ref().len())
-            .field("tip_len", &self.tip.as_ref().as_ref().len())
-            .field("index_start", &self.index_start)
-            .field("index_end", &self.index_end)
-            .field("root_fp", &self.root_fp)
+            .field("index", &self.index)
             .finish_non_exhaustive()
     }
 }
@@ -2136,10 +2205,7 @@ impl Clone for FieldTerms {
             has_payloads: self.has_payloads,
             postings_format: self.postings_format,
             tim: Arc::clone(&self.tim),
-            tip: Arc::clone(&self.tip),
-            index_start: self.index_start,
-            index_end: self.index_end,
-            root_fp: self.root_fp,
+            index: self.index.clone(),
             scratch: Mutex::new(EnumState {
                 current: -1,
                 ..EnumState::default()
@@ -2762,11 +2828,10 @@ impl BlockTreeFields {
 }
 
 impl FieldTerms {
-    /// One field's dictionary over a `.tim` and the trie at
-    /// `[index_start, index_end)` of `tip`, rooted at `root_fp` -- what
-    /// [`open_shared`] builds per `.tmd` record, for a reader that obtains
-    /// the trie some other way (`crate::backward_codecs::blocktree`).
-    #[allow(clippy::too_many_arguments)]
+    /// One field's dictionary over a `.tim` and a trie that `build` makes
+    /// the first time the field is walked -- what [`open_shared`] builds per
+    /// `.tmd` record, for a reader that obtains the trie some other way
+    /// (`crate::backward_codecs::blocktree`, from a retired FST index).
     pub(crate) fn from_parts(
         stats: (i64, i64, i64, i32),
         min_term: Vec<u8>,
@@ -2774,11 +2839,9 @@ impl FieldTerms {
         field_info: &crate::field_infos::FieldInfo,
         postings_format: postings::PostingsFormat,
         tim: SharedBytes,
-        tip: SharedBytes,
-        index: (usize, usize, usize),
+        build: TrieBuild,
     ) -> Self {
         let (num_terms, sum_total_term_freq, sum_doc_freq, doc_count) = stats;
-        let (index_start, root_fp, index_end) = index;
         FieldTerms {
             num_terms,
             sum_total_term_freq,
@@ -2790,10 +2853,10 @@ impl FieldTerms {
             has_payloads: field_info.store_payloads,
             postings_format,
             tim,
-            tip,
-            index_start,
-            index_end,
-            root_fp,
+            index: TermsIndex::Deferred(Arc::new(DeferredTrie {
+                built: std::sync::OnceLock::new(),
+                build,
+            })),
             scratch: Mutex::new(EnumState {
                 current: -1,
                 ..EnumState::default()
@@ -3395,7 +3458,7 @@ impl<'a, A: TermAutomaton> DfaIntersect<'a, A> {
     }
 
     fn seek_live_floor_unbudgeted(&mut self, ord: usize, from: u32) -> Result<bool> {
-        let index = &self.field.tip.as_ref().as_ref()[self.field.index_start..self.field.index_end];
+        let index = self.field.index.bytes_or_empty();
         let tim: &[u8] = self.field.tim.as_ref().as_ref();
         let s = self.states[ord];
         let f = &mut self.st.stack[ord];
@@ -3525,8 +3588,7 @@ impl<'a, A: TermAutomaton> DfaIntersect<'a, A> {
                 // The child's trie node, reached from this frame's by the
                 // entry's suffix bytes: it carries the floor data. Accepted
                 // only when it names the very block the entry points at.
-                let index =
-                    &self.field.tip.as_ref().as_ref()[self.field.index_start..self.field.index_end];
+                let index = self.field.index.bytes_or_empty();
                 let mut node = self.nodes.get(ord).cloned().flatten();
                 for &b in &self.st.term.get()[self.st.stack[ord].prefix_length..] {
                     node = match node {
@@ -4550,10 +4612,12 @@ pub fn open_shared(
                 has_payloads: field_info.store_payloads,
                 postings_format,
                 tim: Arc::clone(&tim),
-                tip: Arc::clone(&tip),
-                index_start,
-                index_end,
-                root_fp,
+                index: TermsIndex::InPlace(TrieSlice {
+                    bytes: Arc::clone(&tip),
+                    start: index_start,
+                    root_fp,
+                    end: index_end,
+                }),
                 scratch: Mutex::new(EnumState {
                     current: -1,
                     ..EnumState::default()
@@ -6178,6 +6242,9 @@ mod tests {
             assert_eq!(field.seek_exact(b"beta").unwrap().doc_freq, 4);
             assert!(field.seek_exact(b"gamma").is_none());
         }
+        // The current format's trie is read in place, never deferred.
+        let debug = format!("{:?}", fields.field("text").unwrap());
+        assert!(debug.contains("index: InPlace("), "{debug}");
     }
 
     /// `open_shared` is `open` without the `.tim`/`.tip` copy: same answers,
