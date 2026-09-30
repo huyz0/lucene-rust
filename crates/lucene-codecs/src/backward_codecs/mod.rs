@@ -22,12 +22,16 @@
 //! of `Lucene90`/`Lucene99` ([`skip_list`]), the FST terms index of
 //! `Lucene90BlockTreeTermsReader` ([`blocktree`]), and the retired
 //! `Lucene90`..`Lucene95` HNSW vector formats' metadata, graphs and searches
-//! ([`hnsw_vectors`]), whose vectors the current flat reader serves. The
-//! opt-in quantized formats (`Lucene99` scalar, `Lucene102` binary) are not
-//! ported yet.
+//! ([`hnsw_vectors`]), whose vectors the current flat reader serves; and the
+//! opt-in quantized formats, `Lucene99` scalar ([`scalar_quantized_vectors`])
+//! and `Lucene102` binary ([`binary_quantized_vectors`]), whose per-field
+//! reader is [`quantized_vectors`].
 
+pub mod binary_quantized_vectors;
 pub mod blocktree;
 pub mod for_util;
 pub mod hnsw_vectors;
 pub mod postings;
+pub mod quantized_vectors;
+pub mod scalar_quantized_vectors;
 pub(crate) mod skip_list;

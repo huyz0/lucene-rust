@@ -61,9 +61,21 @@ const VERSIONS: &[&str] = &[
 /// record a known gap without weakening the whole-file comparison.
 const EXPECTED_FAILURES: &[(&str, &str, &str)] = &[];
 
+/// `fixtures/data/bwc-quantized/<version>/` (`fixtures/bwc/BwcQuantized.java`):
+/// per-field `Lucene99(Hnsw)ScalarQuantizedVectorsFormat` fields from every
+/// release that wrote them at a distinct format version, and the
+/// `Lucene102(Hnsw)BinaryQuantizedVectorsFormat` fields of 10.2.
+const QUANTIZED_VERSIONS: &[&str] = &["9.9.2", "9.12.2", "10.2.2"];
+
 fn fixture_dir(version: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../fixtures/data/bwc")
+        .join(version)
+}
+
+fn quantized_fixture_dir(version: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/data/bwc-quantized")
         .join(version)
 }
 
@@ -698,7 +710,14 @@ fn stored_line(dir: &dyn Directory, seg: &Segment) -> Result<String, String> {
 }
 
 fn tv_line(dir: &dyn Directory, seg: &Segment) -> Result<String, String> {
-    let tvd_name = seg.file_with(".tvd").ok_or("no .tvd")?;
+    let Some(tvd_name) = seg.file_with(".tvd") else {
+        // No term vectors at all: `L(-1)` for every document.
+        let mut f = Fnv::new();
+        for _ in 0..seg.max_doc() {
+            f.l(-1);
+        }
+        return Ok(format!("tv {} {}", seg.name(), f.hex()));
+    };
     let tvd = dir.open(tvd_name).map_err(err)?;
     let tvx = dir
         .open(seg.file_with(".tvx").ok_or("no .tvx")?)
@@ -755,50 +774,122 @@ fn tv_line(dir: &dyn Directory, seg: &Segment) -> Result<String, String> {
     Ok(format!("tv {} {}", seg.name(), f.hex()))
 }
 
+/// The per-field vector lines `BwcDump` writes for one field: `vec`, `knn`
+/// and the query-level `knnf`, `knne`, `patience`, `vsim`, `vsimf`.
+const VECTOR_LINE_KINDS: [&str; 7] = ["vec", "knn", "knnf", "knne", "patience", "vsim", "vsimf"];
+
+/// `BwcDump.ModQuery`: the documents `doc % m == 0` of a segment.
+fn mod_filter(max_doc: i32, m: i32) -> FixedBitSet {
+    let mut bits = FixedBitSet::new(max_doc as usize);
+    for d in (0..max_doc).step_by(m as usize) {
+        bits.set(d as usize);
+    }
+    bits
+}
+
+fn hits_str(hits: &[lucene_search::ScoreDoc]) -> String {
+    hits.iter()
+        .map(|h| format!("{}:{:x}", h.doc_id, h.score.to_bits()))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// The files of one field's `PerFieldKnnVectorsFormat` group, by the
+/// field's `format` and `suffix` attributes: `_0_<format>_<suffix>.<ext>`.
+fn vector_files(
+    dir: &dyn Directory,
+    seg: &Segment,
+    fi: &FieldInfo,
+) -> Result<(String, String, BTreeMap<&'static str, Input>), String> {
+    let attr = |key: &str| {
+        fi.attributes
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+            .ok_or(format!("{} has no {key}", fi.name))
+    };
+    let format = attr("PerFieldKnnVectorsFormat.format")?;
+    let suffix = format!("{format}_{}", attr("PerFieldKnnVectorsFormat.suffix")?);
+    let mut files = BTreeMap::new();
+    for ext in ["vec", "vem", "vex", "vemf", "vemq", "veq", "vemb", "veb"] {
+        let name = format!("{}_{suffix}.{ext}", seg.name());
+        if seg.si.files.contains(&name) {
+            files.insert(ext, dir.open(&name).map_err(err)?);
+        }
+    }
+    Ok((format, suffix, files))
+}
+
 fn vec_lines(dir: &dyn Directory, seg: &Segment, fi: &FieldInfo, out: &mut Lines) {
-    let vec_key = format!("vec {} {}", seg.name(), fi.name);
-    let knn_key = format!("knn {} {}", seg.name(), fi.name);
-    let result = (|| -> Result<(String, String), String> {
-        let vec_name = seg.file_with(".vec").ok_or("no .vec")?;
-        let vec = dir.open(vec_name).map_err(err)?;
-        let vem = dir
-            .open(seg.file_with(".vem").ok_or("no .vem")?)
-            .map_err(err)?;
-        let vex = dir
-            .open(seg.file_with(".vex").ok_or("no .vex")?)
-            .map_err(err)?;
-        let suffix = seg.suffix_of(vec_name, ".vec");
+    use lucene_codecs::backward_codecs::quantized_vectors::{
+        QuantizedFiles, QuantizedFormat, QuantizedVectorsReader,
+    };
+    use lucene_search::vector_query::{
+        self as vq, ByteVectorSimilarityQuery, FloatVectorSimilarityQuery, KnnByteVectorQuery,
+        KnnFloatVectorQuery, KnnSegment, PatienceKnnVectorQuery,
+    };
+    let keys: Vec<String> = VECTOR_LINE_KINDS
+        .iter()
+        .map(|k| format!("{k} {} {}", seg.name(), fi.name))
+        .collect();
+    let result = (|| -> Result<Vec<String>, String> {
+        let (format, suffix, files) = vector_files(dir, seg, fi)?;
+        let file = |ext: &str| -> Result<&[u8], String> {
+            files
+                .get(ext)
+                .map(|i| &i[..])
+                .ok_or(format!("{} has no .{ext}", fi.name))
+        };
         let id = &seg.commit.segment_id;
         // `PerFieldKnnVectorsFormat.format`: a retired 9.0-9.8 format keeps
         // its vectors in the `.vem`/`.vec`/`.vex` triple; the current one
-        // adds a `.vemf` for them.
-        let format = fi
-            .attributes
-            .iter()
-            .find(|(k, _)| k == "PerFieldKnnVectorsFormat.format")
-            .map(|(_, v)| v.as_str())
-            .unwrap_or_default();
-        let vemf;
-        let (flat, hnsw): (FlatVectorsReader<'_>, GraphReader<'_>) =
-            match RetiredHnswFormat::for_name(format) {
-                Some(retired) => {
-                    let r = RetiredHnswVectorsReader::open(retired, &vem, &vec, &vex, id, &suffix)
-                        .map_err(err)?;
-                    (r.flat().clone(), r.into())
-                }
-                None => {
-                    vemf = dir
-                        .open(seg.file_with(".vemf").ok_or("no .vemf")?)
-                        .map_err(err)?;
-                    (
-                        FlatVectorsReader::open(&vemf, &vec, id, &suffix).map_err(err)?,
-                        lucene_codecs::hnsw_vectors::HnswVectorsReader::open(
-                            &vem, &vex, id, &suffix,
-                        )
-                        .map_err(err)?
-                        .into(),
-                    )
-                }
+        // adds a `.vemf` for them; a quantized one adds its own pair too.
+        let (flat, hnsw): (FlatVectorsReader<'_>, Option<GraphReader<'_>>) =
+            if let Some(retired) = RetiredHnswFormat::for_name(&format) {
+                let r = RetiredHnswVectorsReader::open(
+                    retired,
+                    file("vem")?,
+                    file("vec")?,
+                    file("vex")?,
+                    id,
+                    &suffix,
+                )
+                .map_err(err)?;
+                (r.flat().clone(), Some(r.into()))
+            } else if let Some(quantized) = QuantizedFormat::for_name(&format) {
+                let (meta_ext, data_ext) = quantized.quantized_extensions();
+                let graph = match (files.get("vem"), files.get("vex")) {
+                    (Some(m), Some(x)) => Some((&m[..], &x[..])),
+                    _ => None,
+                };
+                let r = QuantizedVectorsReader::open(
+                    quantized,
+                    QuantizedFiles {
+                        vemf: file("vemf")?,
+                        vec: file("vec")?,
+                        quantized_meta: file(meta_ext)?,
+                        quantized_data: file(data_ext)?,
+                        graph,
+                    },
+                    &seg.field_infos,
+                    id,
+                    &suffix,
+                )
+                .map_err(err)?;
+                r.check_integrity().map_err(err)?;
+                (r.flat().clone(), Some(r.into()))
+            } else {
+                let flat = FlatVectorsReader::open(file("vemf")?, file("vec")?, id, &suffix)
+                    .map_err(err)?;
+                let graph = match (files.get("vem"), files.get("vex")) {
+                    (Some(m), Some(x)) => Some(
+                        lucene_codecs::hnsw_vectors::HnswVectorsReader::open(m, x, id, &suffix)
+                            .map_err(err)?
+                            .into(),
+                    ),
+                    _ => None,
+                };
+                (flat, graph)
             };
         let mut f = Fnv::new();
         let (values, count) = match fi.vector_encoding {
@@ -826,52 +917,123 @@ fn vec_lines(dir: &dyn Directory, seg: &Segment, fi: &FieldInfo, out: &mut Lines
             }
         };
         drop(values);
-        let vec_line = format!("vec {} {} n={count} {}", seg.name(), fi.name, f.hex());
+        let (s, n) = (seg.name(), &fi.name);
+        let vec_line = format!("vec {s} {n} n={count} {}", f.hex());
 
-        let input = lucene_search::vector_query::VectorsInput {
-            flat: flat.clone(),
-            hnsw: Some(hnsw),
-            field_infos: &seg.field_infos,
-            live_docs: seg.live.as_ref(),
-            filter: None,
-            max_doc: seg.max_doc(),
+        let mod3 = mod_filter(seg.max_doc(), 3);
+        let mod89 = mod_filter(seg.max_doc(), 89);
+        fn make<'d>(
+            flat: &FlatVectorsReader<'d>,
+            hnsw: &Option<GraphReader<'d>>,
+            seg: &'d Segment,
+            filter: Option<&'d FixedBitSet>,
+        ) -> lucene_search::vector_query::VectorsInput<'d> {
+            lucene_search::vector_query::VectorsInput {
+                flat: flat.clone(),
+                hnsw: hnsw.clone(),
+                field_infos: &seg.field_infos,
+                live_docs: seg.live.as_ref(),
+                filter,
+                max_doc: seg.max_doc(),
+            }
+        }
+        let input = |filter| make(&flat, &hnsw, seg, filter);
+        let leaf = |filter| {
+            [KnnSegment {
+                vectors: make(&flat, &hnsw, seg, filter),
+                doc_base: 0,
+            }]
         };
         let dim = fi.vector_dimension as usize;
-        let hits = match fi.vector_encoding {
+        let by_doc = |mut hits: Vec<lucene_search::ScoreDoc>| {
+            hits.sort_by_key(|h| h.doc_id);
+            hits_str(&hits)
+        };
+        let thr =
+            |knn: &[lucene_search::ScoreDoc]| knn.get(4).or(knn.last()).map_or(0.0f32, |h| h.score);
+        let lines = match fi.vector_encoding {
             VectorEncoding::Float32 => {
                 let q: Vec<f32> = (0..dim).map(|k| ((k + 1) as f64).sin() as f32).collect();
-                let query =
-                    lucene_search::vector_query::KnnFloatVectorQuery::new(fi.name.clone(), q, 10)
+                let knn = |k: usize| KnnFloatVectorQuery::new(n.clone(), q.clone(), k).map_err(err);
+                let hits =
+                    vq::search_knn_float_vector_query(&input(None), &knn(10)?).map_err(err)?;
+                let knnf =
+                    vq::search_knn_float_vector_query_multi_segment(&leaf(Some(&mod3)), &knn(10)?)
                         .map_err(err)?;
-                lucene_search::vector_query::search_knn_float_vector_query(&input, &query)
-                    .map_err(err)?
+                let knne =
+                    vq::search_knn_float_vector_query_multi_segment(&leaf(Some(&mod89)), &knn(20)?)
+                        .map_err(err)?;
+                let patience = vq::search_patience_knn_float_vector_query_multi_segment(
+                    &leaf(None),
+                    &PatienceKnnVectorQuery::new(knn(10)?, 0.5, 2),
+                )
+                .map_err(err)?;
+                let t = thr(&hits);
+                let sim = FloatVectorSimilarityQuery::new(
+                    n.clone(),
+                    q.clone(),
+                    t,
+                    FloatVectorSimilarityQuery::DEFAULT_DECAY,
+                )
+                .map_err(err)?;
+                let vsim = vq::float_vector_similarity_hits(&leaf(None), &sim).map_err(err)?;
+                let vsimf =
+                    vq::float_vector_similarity_hits(&leaf(Some(&mod3)), &sim).map_err(err)?;
+                (hits, knnf, knne, patience, t, vsim, vsimf)
             }
             VectorEncoding::Byte => {
                 let q: Vec<u8> = (0..dim)
                     .map(|k| ((k as i32) * 37 - 100) as i8 as u8)
                     .collect();
-                let query =
-                    lucene_search::vector_query::KnnByteVectorQuery::new(fi.name.clone(), q, 10)
+                let knn = |k: usize| KnnByteVectorQuery::new(n.clone(), q.clone(), k).map_err(err);
+                let hits =
+                    vq::search_knn_byte_vector_query(&input(None), &knn(10)?).map_err(err)?;
+                let knnf =
+                    vq::search_knn_byte_vector_query_multi_segment(&leaf(Some(&mod3)), &knn(10)?)
                         .map_err(err)?;
-                lucene_search::vector_query::search_knn_byte_vector_query(&input, &query)
-                    .map_err(err)?
+                let knne =
+                    vq::search_knn_byte_vector_query_multi_segment(&leaf(Some(&mod89)), &knn(20)?)
+                        .map_err(err)?;
+                let patience = vq::search_patience_knn_byte_vector_query_multi_segment(
+                    &leaf(None),
+                    &PatienceKnnVectorQuery::new(knn(10)?, 0.5, 2),
+                )
+                .map_err(err)?;
+                let t = thr(&hits);
+                let sim = ByteVectorSimilarityQuery::new(
+                    n.clone(),
+                    q.clone(),
+                    t,
+                    ByteVectorSimilarityQuery::DEFAULT_DECAY,
+                )
+                .map_err(err)?;
+                let vsim = vq::byte_vector_similarity_hits(&leaf(None), &sim).map_err(err)?;
+                let vsimf =
+                    vq::byte_vector_similarity_hits(&leaf(Some(&mod3)), &sim).map_err(err)?;
+                (hits, knnf, knne, patience, t, vsim, vsimf)
             }
         };
-        let hits = hits
-            .iter()
-            .map(|h| format!("{}:{:x}", h.doc_id, h.score.to_bits()))
-            .collect::<Vec<_>>()
-            .join(",");
-        Ok((vec_line, format!("knn {} {} {hits}", seg.name(), fi.name)))
+        let (hits, knnf, knne, patience, t, vsim, vsimf) = lines;
+        Ok(vec![
+            vec_line,
+            format!("knn {s} {n} {}", hits_str(&hits)),
+            format!("knnf {s} {n} {}", hits_str(&knnf)),
+            format!("knne {s} {n} {}", hits_str(&knne)),
+            format!("patience {s} {n} {}", hits_str(&patience)),
+            format!("vsim {s} {n} thr={:x} {}", t.to_bits(), by_doc(vsim)),
+            format!("vsimf {s} {n} thr={:x} {}", t.to_bits(), by_doc(vsimf)),
+        ])
     })();
     match result {
-        Ok((v, k)) => {
-            out.insert(vec_key, Ok(v));
-            out.insert(knn_key, Ok(k));
+        Ok(lines) => {
+            for (key, line) in keys.into_iter().zip(lines) {
+                out.insert(key, Ok(line));
+            }
         }
         Err(e) => {
-            out.insert(vec_key, Err(e.clone()));
-            out.insert(knn_key, Err(e));
+            for key in keys {
+                out.insert(key, Err(e.clone()));
+            }
         }
     }
 }
@@ -988,10 +1150,14 @@ fn key_of(line: &str) -> String {
 
 /// Every line of `version`'s fixture, as `(key, expected, actual)`.
 fn run_version(version: &str) -> Vec<(String, String, Result<String, String>)> {
-    let path = fixture_dir(version);
+    run_dir(version, &fixture_dir(version))
+}
+
+/// Every line of the fixture in `path`, as `(key, expected, actual)`.
+fn run_dir(version: &str, path: &std::path::Path) -> Vec<(String, String, Result<String, String>)> {
     let expected = std::fs::read_to_string(path.join("expected.txt"))
         .unwrap_or_else(|e| panic!("{version}: expected.txt: {e}"));
-    let dir = FsDirectory::open(&path);
+    let dir = FsDirectory::open(path);
     let mut actual = Lines::new();
     let mut seg_errors: BTreeMap<String, String> = BTreeMap::new();
     match segment_infos::read_latest(&dir) {
@@ -1084,6 +1250,27 @@ fn bwc_fixtures_match_lucene() {
             }
         }
         summary.push(format!("{version}: {pass} pass, {fail} fail"));
+    }
+    for version in QUANTIZED_VERSIONS {
+        let lines = run_dir(version, &quantized_fixture_dir(version));
+        let mut pass = 0;
+        for (key, expected, got) in &lines {
+            if matches!(got, Ok(g) if g == expected) {
+                pass += 1;
+            } else {
+                let got = match got {
+                    Ok(g) => format!("got      {g}"),
+                    Err(e) => format!("error    {e}"),
+                };
+                unexpected.push(format!(
+                    "quantized {version}: {key}\n  expected {expected}\n  {got}"
+                ));
+            }
+        }
+        summary.push(format!(
+            "quantized {version}: {pass} of {} lines",
+            lines.len()
+        ));
     }
     eprintln!("{}", summary.join("\n"));
     assert!(
@@ -1414,6 +1601,179 @@ fn every_version_force_merges_into_lucene104() {
             if b != a {
                 failures.push(format!("{version}: before {b}, after {a}"));
             }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Per vector field, how many live documents of the index in `dir` carry a
+/// vector: each field read through its own per-field group's raw vectors.
+fn live_vector_counts(dir: &FsDirectory) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for commit in segment_infos::read_latest(dir).unwrap().segments {
+        let seg = open_segment(dir, &commit).unwrap();
+        for fi in seg
+            .field_infos
+            .fields
+            .iter()
+            .filter(|f| f.vector_dimension > 0)
+        {
+            let (format, suffix, files) = vector_files(dir, &seg, fi).unwrap();
+            assert!(
+                RetiredHnswFormat::for_name(&format).is_none(),
+                "{format}: not a group this helper reads"
+            );
+            let flat = FlatVectorsReader::open(
+                &files["vemf"],
+                &files["vec"],
+                &seg.commit.segment_id,
+                &suffix,
+            )
+            .unwrap();
+            let n = match fi.vector_encoding {
+                VectorEncoding::Float32 => {
+                    let v = flat.float_vector_values(fi.number).unwrap();
+                    (0..v.size())
+                        .filter(|&o| seg.is_live(v.ord_to_doc(o).unwrap()))
+                        .count()
+                }
+                VectorEncoding::Byte => {
+                    let v = flat.byte_vector_values(fi.number).unwrap();
+                    (0..v.size())
+                        .filter(|&o| seg.is_live(v.ord_to_doc(o).unwrap()))
+                        .count()
+                }
+            };
+            *counts.entry(fi.name.clone()).or_insert(0) += n;
+        }
+    }
+    counts
+}
+
+/// The quantized fixtures through this port's `CheckIndex` and `IndexWriter`:
+/// every group opens and checks clean (the quantized codes included), and a
+/// force merge turns them into one `Lucene104` segment whose vector fields are
+/// all `Lucene99HnswVectorsFormat` and hold every live vector. Real Lucene's
+/// verdict on the same merges is `scripts/verify-bwc-merge.sh`.
+#[test]
+fn quantized_fixtures_check_clean_and_force_merge_into_lucene104() {
+    use lucene_index::index_writer::IndexWriter;
+    use lucene_index::segment_info::LuceneVersion;
+    let mut failures = Vec::new();
+    for version in QUANTIZED_VERSIONS {
+        let src = FsDirectory::open(quantized_fixture_dir(version));
+        for r in lucene_index::check_index::check_directory(&src).unwrap() {
+            for c in r.failures() {
+                failures.push(format!(
+                    "{version} {}: {} {}",
+                    r.segment_name, c.name, c.message
+                ));
+            }
+            if !r.segment_name.starts_with('_') {
+                continue;
+            }
+            let seg = open_segment(
+                &src,
+                &segment_infos::read_latest(&src)
+                    .unwrap()
+                    .segments
+                    .into_iter()
+                    .find(|s| s.segment_name == r.segment_name)
+                    .unwrap(),
+            )
+            .unwrap();
+            for fi in seg
+                .field_infos
+                .fields
+                .iter()
+                .filter(|f| f.vector_dimension > 0)
+            {
+                let mut families = vec![format!("vectors.values_decode:{}", fi.name)];
+                if fi.vector_encoding == VectorEncoding::Float32 {
+                    families.push(format!("vectors.quantized:{}", fi.name));
+                }
+                for family in families {
+                    if !r.checks.iter().any(|c| c.name == family && c.passed()) {
+                        failures.push(format!(
+                            "{version} {}: {family} did not run",
+                            r.segment_name
+                        ));
+                    }
+                }
+            }
+            if r.segment_name == "_0"
+                && !r
+                    .checks
+                    .iter()
+                    .any(|c| c.name.starts_with("hnsw.neighbors_on_level:") && c.passed())
+            {
+                failures.push(format!("{version} _0: no graph was checked"));
+            }
+        }
+        let before = live_vector_counts(&src);
+
+        let tmp = lucene_util::test_support::TempDir::new(&format!("bwc-q-merge-{version}"));
+        for entry in std::fs::read_dir(quantized_fixture_dir(version)).unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !name.ends_with(".txt") {
+                std::fs::copy(entry.path(), tmp.path().join(&name)).unwrap();
+            }
+        }
+        let dir = FsDirectory::open(tmp.path());
+        {
+            let mut w = IndexWriter::open(
+                &dir,
+                Vec::new(),
+                "Lucene104",
+                LuceneVersion {
+                    major: 10,
+                    minor: 5,
+                    bugfix: 0,
+                },
+            )
+            .unwrap();
+            w.force_merge(1)
+                .unwrap_or_else(|e| panic!("{version}: force_merge: {e}"));
+            w.commit().unwrap();
+        }
+        let infos = segment_infos::read_latest(&dir).unwrap();
+        if infos.segments.len() != 1 || infos.segments[0].codec_name != "Lucene104" {
+            failures.push(format!(
+                "{version}: merged into {} segments",
+                infos.segments.len()
+            ));
+            continue;
+        }
+        let seg = open_segment(&dir, &infos.segments[0]).unwrap();
+        for fi in seg
+            .field_infos
+            .fields
+            .iter()
+            .filter(|f| f.vector_dimension > 0)
+        {
+            let format = fi
+                .attributes
+                .iter()
+                .find(|(k, _)| k == "PerFieldKnnVectorsFormat.format")
+                .map(|(_, v)| v.as_str());
+            if format != Some("Lucene99HnswVectorsFormat") {
+                failures.push(format!("{version}: {} merged as {format:?}", fi.name));
+            }
+        }
+        for r in lucene_index::check_index::check_directory(&dir).unwrap() {
+            for c in r.failures() {
+                failures.push(format!(
+                    "{version}: merged CheckIndex {} {}",
+                    c.name, c.message
+                ));
+            }
+        }
+        let after = live_vector_counts(&dir);
+        if before != after {
+            failures.push(format!(
+                "{version}: live vectors {before:?} before, {after:?} after"
+            ));
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));

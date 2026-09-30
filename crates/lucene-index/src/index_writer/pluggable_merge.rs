@@ -67,7 +67,7 @@ impl IndexWriter<'_> {
         let mut deletes_to_merge = HashMap::new();
         for sci in &self.segment_infos.segments {
             let si_bytes = self.dir.open(&format!("{}.si", sci.segment_name))?.to_vec();
-            let si = segment_info::parse(&si_bytes, &sci.segment_id)?;
+            let si = segment_info::parse_for_codec(&si_bytes, &sci.segment_id, &sci.codec_name)?;
             let size = merge_policy::segment_byte_size(self.dir, &si);
             let stat = merge_policy::SegmentStat {
                 name: sci.segment_name.clone(),
@@ -76,7 +76,11 @@ impl IndexWriter<'_> {
                 size_bytes: size,
             };
             deletes_to_merge.insert(stat.name.clone(), self.num_deletes_to_merge(&stat)?);
-            infos.push(MergeSegment::from(&stat).with_compound_file(si.is_compound_file));
+            infos.push(
+                MergeSegment::from(&stat)
+                    .with_compound_file(si.is_compound_file)
+                    .with_version(si.version),
+            );
         }
         Ok((
             infos,

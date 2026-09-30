@@ -10,21 +10,21 @@ backward_codecs/lucene100/Lucene100Codec	ported	crates/lucene-codecs/src/codecs.
 backward_codecs/lucene101/ForDeltaUtil	ported	crates/lucene-codecs/src/backward_codecs/for_util.rs::for_decode
 backward_codecs/lucene101/ForUtil	ported	crates/lucene-codecs/src/backward_codecs/for_util.rs::for_decode
 backward_codecs/lucene101/Lucene101Codec	ported	crates/lucene-codecs/src/codecs.rs::CODECS
-backward_codecs/lucene101/Lucene101PostingsFormat	partial	crates/lucene-codecs/src/backward_codecs/postings.rs::read_postings -- M8: Lucene101Postings decoded front to back; its skip data is stepped over, never used to jump (lazy cursors serve the decoded list)
+backward_codecs/lucene101/Lucene101PostingsFormat	ported	crates/lucene-codecs/src/postings.rs::LazyDocsCursor -- blocks decoded by backward_codecs/postings.rs; the lazy cursor jumps through the format's own skip data (trailing multi-level list for Lucene90/99, inline levels for Lucene912/101) and serves its impacts
 backward_codecs/lucene101/Lucene101PostingsReader	ported	crates/lucene-codecs/src/postings.rs::LazyDocsCursor -- whole-term decode in backward_codecs/postings.rs::read_postings; lazy cursors jump through the format's own skip data (trailing multi-level list or inline levels) and serve its impacts
 backward_codecs/lucene101/PForUtil	ported	crates/lucene-codecs/src/backward_codecs/for_util.rs::pfor_decode
 backward_codecs/lucene101/PostingDecodingUtil	not-needed	vectorisation shim over IndexInput; the bits it hands ForUtil are decoded by backward_codecs::for_util::for_decode
 backward_codecs/lucene101/PostingsUtil	ported	crates/lucene-codecs/src/backward_codecs/postings.rs::read_tail
-backward_codecs/lucene102/BinarizedByteVectorValues	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
-backward_codecs/lucene102/Lucene102BinaryFlatVectorsScorer	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
-backward_codecs/lucene102/Lucene102BinaryQuantizedVectorsFormat	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
-backward_codecs/lucene102/Lucene102BinaryQuantizedVectorsReader	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
-backward_codecs/lucene102/Lucene102HnswBinaryQuantizedVectorsFormat	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
-backward_codecs/lucene102/OffHeapBinarizedVectorValues	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene102/BinarizedByteVectorValues	ported	crates/lucene-codecs/src/backward_codecs/binary_quantized_vectors.rs::BinarizedVectorValues
+backward_codecs/lucene102/Lucene102BinaryFlatVectorsScorer	ported	crates/lucene-codecs/src/backward_codecs/binary_quantized_vectors.rs::{Lucene102BinaryQuantizedScorer, Lucene102BinaryQuantizedOrdScorer, quantized_score}
+backward_codecs/lucene102/Lucene102BinaryQuantizedVectorsFormat	ported	crates/lucene-codecs/src/backward_codecs/quantized_vectors.rs::QuantizedFormat
+backward_codecs/lucene102/Lucene102BinaryQuantizedVectorsReader	ported	crates/lucene-codecs/src/backward_codecs/binary_quantized_vectors.rs::Lucene102BinaryQuantizedVectorsReader
+backward_codecs/lucene102/Lucene102HnswBinaryQuantizedVectorsFormat	ported	crates/lucene-codecs/src/backward_codecs/quantized_vectors.rs::QuantizedVectorsReader
+backward_codecs/lucene102/OffHeapBinarizedVectorValues	ported	crates/lucene-codecs/src/backward_codecs/binary_quantized_vectors.rs::BinarizedVectorValues
 backward_codecs/lucene103/ForDeltaUtil	ported	crates/lucene-codecs/src/backward_codecs/for_util.rs::for_decode
 backward_codecs/lucene103/ForUtil	ported	crates/lucene-codecs/src/backward_codecs/for_util.rs::for_decode
 backward_codecs/lucene103/Lucene103Codec	ported	crates/lucene-codecs/src/codecs.rs::CODECS
-backward_codecs/lucene103/Lucene103PostingsFormat	partial	crates/lucene-codecs/src/backward_codecs/postings.rs::read_postings -- M8: Lucene103Postings decoded front to back; its skip data is stepped over, never used to jump (lazy cursors serve the decoded list)
+backward_codecs/lucene103/Lucene103PostingsFormat	ported	crates/lucene-codecs/src/postings.rs::LazyDocsCursor -- blocks decoded by backward_codecs/postings.rs (the Lucene101 .doc layout, version 1); the lazy cursor jumps through its inline skip levels and serves its impacts
 backward_codecs/lucene103/Lucene103PostingsReader	ported	crates/lucene-codecs/src/postings.rs::LazyDocsCursor -- whole-term decode in backward_codecs/postings.rs::read_postings; lazy cursors jump through the format's own skip data (trailing multi-level list or inline levels) and serve its impacts
 backward_codecs/lucene103/PForUtil	ported	crates/lucene-codecs/src/backward_codecs/for_util.rs::pfor_decode
 backward_codecs/lucene103/PostingDecodingUtil	not-needed	vectorisation shim over IndexInput; the bits it hands ForUtil are decoded by backward_codecs::for_util::for_decode
@@ -90,7 +90,7 @@ backward_codecs/lucene90/Lucene90HnswVectorsFormat	ported	crates/lucene-codecs/s
 backward_codecs/lucene90/Lucene90HnswVectorsReader	ported	crates/lucene-codecs/src/backward_codecs/hnsw_vectors.rs::RetiredHnswVectorsReader
 backward_codecs/lucene90/Lucene90NeighborArray	not-needed	write side of a retired HNSW format (graph construction); Lucene 10.5.0 only reads the format, and backward-codecs writes it in tests only
 backward_codecs/lucene90/Lucene90OnHeapHnswGraph	ported	crates/lucene-codecs/src/backward_codecs/hnsw_vectors.rs::lucene90_search
-backward_codecs/lucene90/Lucene90PostingsFormat	partial	crates/lucene-codecs/src/backward_codecs/postings.rs::read_postings -- M8: Lucene90Postings decoded front to back; its skip data is stepped over, never used to jump (lazy cursors serve the decoded list)
+backward_codecs/lucene90/Lucene90PostingsFormat	ported	crates/lucene-codecs/src/postings.rs::LazyDocsCursor -- blocks decoded by backward_codecs/postings.rs; the lazy cursor jumps through the format's own skip data (trailing multi-level list for Lucene90/99, inline levels for Lucene912/101) and serves its impacts
 backward_codecs/lucene90/Lucene90PostingsReader	ported	crates/lucene-codecs/src/postings.rs::LazyDocsCursor -- whole-term decode in backward_codecs/postings.rs::read_postings; lazy cursors jump through the format's own skip data (trailing multi-level list or inline levels) and serve its impacts
 backward_codecs/lucene90/Lucene90PostingsWriter	not-needed	writes a retired format; backward-codecs keeps it for tests only and M8 reads, never writes, old formats
 backward_codecs/lucene90/Lucene90ScoreSkipReader	ported	crates/lucene-codecs/src/backward_codecs/skip_list.rs::SkipList
@@ -115,7 +115,7 @@ backward_codecs/lucene91/Lucene91OnHeapHnswGraph	not-needed	write side of a reti
 backward_codecs/lucene912/ForDeltaUtil	ported	crates/lucene-codecs/src/backward_codecs/for_util.rs::for_decode
 backward_codecs/lucene912/ForUtil	ported	crates/lucene-codecs/src/backward_codecs/for_util.rs::for_decode
 backward_codecs/lucene912/Lucene912Codec	ported	crates/lucene-codecs/src/codecs.rs::CODECS
-backward_codecs/lucene912/Lucene912PostingsFormat	partial	crates/lucene-codecs/src/backward_codecs/postings.rs::read_postings -- M8: Lucene912Postings decoded front to back; its skip data is stepped over, never used to jump (lazy cursors serve the decoded list)
+backward_codecs/lucene912/Lucene912PostingsFormat	ported	crates/lucene-codecs/src/postings.rs::LazyDocsCursor -- blocks decoded by backward_codecs/postings.rs; the lazy cursor jumps through the format's own skip data (trailing multi-level list for Lucene90/99, inline levels for Lucene912/101) and serves its impacts
 backward_codecs/lucene912/Lucene912PostingsReader	ported	crates/lucene-codecs/src/postings.rs::LazyDocsCursor -- whole-term decode in backward_codecs/postings.rs::read_postings; lazy cursors jump through the format's own skip data (trailing multi-level list or inline levels) and serve its impacts
 backward_codecs/lucene912/PForUtil	ported	crates/lucene-codecs/src/backward_codecs/for_util.rs::pfor_decode
 backward_codecs/lucene912/PostingsUtil	ported	crates/lucene-codecs/src/backward_codecs/postings.rs::read_tail
@@ -134,16 +134,16 @@ backward_codecs/lucene95/Lucene95HnswVectorsReader	ported	crates/lucene-codecs/s
 backward_codecs/lucene99/ForDeltaUtil	ported	crates/lucene-codecs/src/backward_codecs/for_util.rs::for_decode
 backward_codecs/lucene99/ForUtil	ported	crates/lucene-codecs/src/backward_codecs/for_util.rs::for_decode
 backward_codecs/lucene99/Lucene99Codec	ported	crates/lucene-codecs/src/codecs.rs::CODECS
-backward_codecs/lucene99/Lucene99HnswScalarQuantizedVectorsFormat	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
-backward_codecs/lucene99/Lucene99PostingsFormat	partial	crates/lucene-codecs/src/backward_codecs/postings.rs::read_postings -- M8: Lucene99Postings decoded front to back; its skip data is stepped over, never used to jump (lazy cursors serve the decoded list)
+backward_codecs/lucene99/Lucene99HnswScalarQuantizedVectorsFormat	ported	crates/lucene-codecs/src/backward_codecs/quantized_vectors.rs::QuantizedVectorsReader
+backward_codecs/lucene99/Lucene99PostingsFormat	ported	crates/lucene-codecs/src/postings.rs::LazyDocsCursor -- blocks decoded by backward_codecs/postings.rs; the lazy cursor jumps through the format's own skip data (trailing multi-level list for Lucene90/99, inline levels for Lucene912/101) and serves its impacts
 backward_codecs/lucene99/Lucene99PostingsReader	ported	crates/lucene-codecs/src/postings.rs::LazyDocsCursor -- whole-term decode in backward_codecs/postings.rs::read_postings; lazy cursors jump through the format's own skip data (trailing multi-level list or inline levels) and serve its impacts
-backward_codecs/lucene99/Lucene99ScalarQuantizedVectorsFormat	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
-backward_codecs/lucene99/Lucene99ScalarQuantizedVectorsReader	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene99/Lucene99ScalarQuantizedVectorsFormat	ported	crates/lucene-codecs/src/backward_codecs/quantized_vectors.rs::QuantizedFormat
+backward_codecs/lucene99/Lucene99ScalarQuantizedVectorsReader	ported	crates/lucene-codecs/src/backward_codecs/scalar_quantized_vectors.rs::Lucene99ScalarQuantizedVectorsReader
 backward_codecs/lucene99/Lucene99ScoreSkipReader	ported	crates/lucene-codecs/src/backward_codecs/skip_list.rs::SkipList
 backward_codecs/lucene99/Lucene99SkipReader	ported	crates/lucene-codecs/src/backward_codecs/skip_list.rs::SkipList
 backward_codecs/lucene99/Lucene99SkipWriter	not-needed	writes a retired format; backward-codecs keeps it for tests only and M8 reads, never writes, old formats
-backward_codecs/lucene99/OffHeapQuantizedByteVectorValues	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
-backward_codecs/lucene99/OffHeapQuantizedFloatVectorValues	deferred:M8	retired vector format (HNSW 9.0-9.5, Lucene99 scalar / Lucene102 binary quantization): M8's vector part, not ported yet
+backward_codecs/lucene99/OffHeapQuantizedByteVectorValues	ported	crates/lucene-codecs/src/backward_codecs/scalar_quantized_vectors.rs::LegacyQuantizedVectorValues
+backward_codecs/lucene99/OffHeapQuantizedFloatVectorValues	ported	crates/lucene-codecs/src/backward_codecs/scalar_quantized_vectors.rs::LegacyQuantizedVectorValues::dequantized
 backward_codecs/lucene99/PForUtil	ported	crates/lucene-codecs/src/backward_codecs/for_util.rs::pfor_decode
 backward_codecs/lucene99/PostingsUtil	ported	crates/lucene-codecs/src/backward_codecs/postings.rs::read_tail
 backward_codecs/packed/LegacyDirectMonotonicReader	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), so no segment such an index holds was written with it.

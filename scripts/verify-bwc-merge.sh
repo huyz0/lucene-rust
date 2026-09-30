@@ -11,6 +11,13 @@
 #           (fixtures/bwc/BwcAppend.java: an upgraded shard), merged by an
 #           ordinary TieredMergePolicy merge at commit that takes old and new
 #           segments together
+#   upgrade the same mixed index through IndexUpgrader, which rewrites only
+#           the segments the older Lucene wrote and keeps the new ones
+#
+# The same two merges run over every fixtures/data/bwc-quantized/<version>
+# index (9.9.2, 9.12.2, 10.2.2: per-field Lucene99 scalar- and Lucene102
+# binary-quantized vector fields, flat and HNSW), whose raw vectors the merge
+# carries into Lucene99HnswVectorsFormat.
 #
 # BwcMergeCheck requires CheckIndex to be clean, every segment the merge wrote
 # to be Lucene104 (postings Lucene104, vectors Lucene99HnswVectorsFormat), and
@@ -19,17 +26,20 @@
 # doc-values types, points, stored fields, term vectors and vectors.
 #
 # Usage: scripts/verify-bwc-merge.sh [--only <version>] [--keep]
+#
+# The merge binary is built with cargo's `dev` profile, or $CARGO_BWC_PROFILE.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 VERSIONS=(9.0.0 9.1.0 9.3.0 9.4.2 9.8.0 9.11.1 9.12.2 10.0.0 10.2.2 10.4.0)
+QUANTIZED_VERSIONS=(9.9.2 9.12.2 10.2.2)
 ONLY=""
 KEEP=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --only) ONLY="$2"; shift 2 ;;
     --keep) KEEP=1; shift ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
     *) echo "verify-bwc-merge: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -45,8 +55,11 @@ trap cleanup EXIT
 
 javac -nowarn -proc:none -cp "$CP" -d "$WORK/classes" \
   fixtures/bwc/BwcMergeCheck.java fixtures/bwc/BwcAppend.java
-cargo build --quiet -p lucene-search --example bwc_merge
-MERGE="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')/debug/examples/bwc_merge"
+PROFILE="${CARGO_BWC_PROFILE:-dev}"
+PROFILE_DIR="$PROFILE"
+[ "$PROFILE" = dev ] && PROFILE_DIR=debug
+cargo build --quiet --profile "$PROFILE" -p lucene-search --example bwc_merge
+MERGE="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')/$PROFILE_DIR/examples/bwc_merge"
 
 failed=0
 passed=0
@@ -62,10 +75,15 @@ check() {
   fi
 }
 
-for v in "${VERSIONS[@]}"; do
+runs=()
+for v in "${VERSIONS[@]}"; do runs+=("bwc/$v"); done
+for v in "${QUANTIZED_VERSIONS[@]}"; do runs+=("bwc-quantized/$v"); done
+for run in "${runs[@]}"; do
+  v="${run#*/}"
   [ -z "$ONLY" ] || [ "$v" = "$ONLY" ] || continue
-  src="fixtures/data/bwc/$v"
-  echo "verify-bwc-merge: $v"
+  src="fixtures/data/$run"
+  echo "verify-bwc-merge: $run"
+  v="${run/\//-}"
 
   "$MERGE" "$src" "$WORK/$v-force" force > /dev/null
   check "$v force_merge(1)" "$src" "$WORK/$v-force"
@@ -75,6 +93,9 @@ for v in "${VERSIONS[@]}"; do
   java -cp "$WORK/classes:$CP" BwcAppend "$WORK/$v-mixed" 3 2>/dev/null
   "$MERGE" "$WORK/$v-mixed" "$WORK/$v-mixed-merged" policy > /dev/null
   check "$v + 3 Lucene 10.5.0 segments, ordinary merge" "$WORK/$v-mixed" "$WORK/$v-mixed-merged"
+
+  "$MERGE" "$WORK/$v-mixed" "$WORK/$v-mixed-upgraded" upgrade > /dev/null
+  check "$v + 3 Lucene 10.5.0 segments, IndexUpgrader" "$WORK/$v-mixed" "$WORK/$v-mixed-upgraded"
 done
 
 echo "verify-bwc-merge: $passed passed, $failed failed"
