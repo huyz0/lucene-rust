@@ -929,7 +929,7 @@ util/AttributeSource	partial	crates/lucene-analysis/src/lib.rs::Token -- M7: a f
 util/BitDocIdSet	ported	crates/lucene-search/src/docid_set.rs::CachedDocIdSet
 util/BitSet	partial	crates/lucene-util/src/fixed_bit_set.rs::FixedBitSet -- M7: no abstract BitSet over dense/sparse implementations; BitSet.of(iterator), or(DocIdSetIterator), prevSetBit, approximateCardinality missing
 util/BitSetIterator	ported	crates/lucene-util/src/fixed_bit_set.rs::next_set_bit
-util/BitUtil	partial	crates/lucene-util/src/zigzag.rs::encode -- M7: zigZag encode/decode only; interleave/deinterleave (Morton), flipFlop, nextHighestPowerOfTwo, isZeroOrPowerOfTwo not shared helpers (VarHandle LE access replaced by from_le_bytes)
+util/BitUtil	ported	crates/lucene-util/src/bit_util.rs::interleave
 util/Bits	partial	crates/lucene-util/src/fixed_bit_set.rs::get_doc -- M7: no Bits trait (MatchAllBits/MatchNoBits, applyMask); membership is always a concrete FixedBitSet or None for all-live
 util/ByteBlockPool	not-needed	byte arena/block allocator for the JVM heap; the Rust inverter buffers term bytes in Vec arenas (lucene-index inverter.rs TermHash)
 util/BytesRef	not-needed	byte-slice reference; Rust &[u8]/Vec<u8>, whose Ord is the same unsigned-byte order
@@ -954,7 +954,7 @@ util/DocIdSetBuilder	ported	crates/lucene-util/src/doc_id_sort.rs::sort_dedup_do
 util/FileDeleter	ported	crates/lucene-index/src/index_file_deleter.rs::IndexFileDeleter
 util/FilterIterator	not-needed	filtering iterator adapter; Rust Iterator::filter
 util/FilteredDocIdSetIterator	not-needed	0..maxDoc iterator filtered by an IntPredicate; Rust (0..max_doc).filter(..)
-util/FixedBitSet	partial	crates/lucene-util/src/fixed_bit_set.rs::FixedBitSet -- M7: get/set/clear/cardinality/nextSetBit/or/and/andNot/intersectionCount ported; prevSetBit, flip, getAndSet/getAndClear, xor, intersects, range set/clear, unionCount/andNotCount, ensureCapacity, cardinality(from,to) missing
+util/FixedBitSet	ported	crates/lucene-util/src/fixed_bit_set.rs::prev_set_bit
 util/FixedBits	not-needed	read-only Bits view of a FixedBitSet; Rust shares &FixedBitSet
 util/FixedLengthBytesRefArray	not-needed	fixed-width value buffer for BKDWriter/OfflineSorter; the Rust points writer holds packed values in one Vec<u8>
 util/FloatToFloatFunction	not-needed	functional interface; Rust Fn(f32) -> f32
@@ -985,13 +985,13 @@ util/LongValues	not-needed	index->long accessor interface; readers expose get() 
 util/LongsRef	not-needed	long-slice reference; Rust &[i64]/Vec<i64>
 util/MSBRadixSorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
 util/MapOfSets	not-needed	map of sets helper; Rust HashMap<K, HashSet<V>>
-util/MathUtil	partial	crates/lucene-search/src/bulk_scorer.rs::sum_upper_bound -- M7: sumUpperBound/sumRelativeErrorBound here and a private gcd in doc_values.rs; no shared log(x, base) integer log (inlined in points.rs), asinh/acosh/atanh are std f64 methods
+util/MathUtil	ported	crates/lucene-util/src/math_util.rs::gcd
 util/MergedIterator	not-needed	k-way merge of sorted iterators with dedup; Rust BTreeSet/merge loops
 util/ModuleResourceLoader	not-needed	JVM module resource loading
 util/NamedSPILoader	not-needed	JVM ServiceLoader-based SPI lookup; Rust codecs are selected statically
 util/NamedThreadFactory	not-needed	named thread factory; Rust std::thread::Builder::name
 util/NotDocIdSet	partial	crates/lucene-search/src/docid_set.rs::InverseSparse -- M7: only as RoaringDocIdSet's complemented-block encoding; no general complement DocIdSet
-util/NumericUtils	partial	crates/lucene-util/src/numeric_utils.rs::float_to_sortable_int -- M7: float half shared; double/long halves are private copies (segment_info.rs, facets.rs, top_field.rs, aggs.rs); int/long/bigIntToSortableBytes, sortableBytesToX, add/subtract not shared helpers
+util/NumericUtils	ported	crates/lucene-util/src/numeric_utils.rs::big_int_to_sortable_bytes
 util/OfflineSorter	todo:M7	external (temp-file) merge sort of byte sequences
 util/PagedBytes	not-needed	paged byte arena for buffering writers; Rust writers buffer in Vec<u8>
 util/PrintStreamInfoStream	not-needed	InfoStream over a PrintStream
@@ -1011,7 +1011,7 @@ util/Selector	not-needed	generic selection framework; Rust slice::select_nth_uns
 util/SentinelIntSet	not-needed	open-addressing int set; Rust HashSet<i32>
 util/SetOnce	not-needed	write-once holder; Rust std::sync::OnceLock
 util/SloppyMath	deferred:M9	fast approximate trig/haversin distance for geo
-util/SmallFloat	partial	crates/lucene-util/src/small_float.rs::int_to_byte4 -- M7: intToByte4/byte4ToInt (with long4/int4) only; floatToByte/byteToFloat and floatToByte315/byte315ToFloat missing
+util/SmallFloat	ported	crates/lucene-util/src/small_float.rs::float_to_byte315
 util/SortableBytesRefArray	not-needed	internal interface over BytesRefArray/FixedLengthBytesRefArray
 util/Sorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
 util/SparseFixedBitSet	ported	crates/lucene-util/src/sparse_fixed_bit_set.rs::SparseFixedBitSet
@@ -1019,7 +1019,7 @@ util/SparseLiveDocs	todo:M7	sparse live-docs representation (dense FixedBitSet a
 util/StableMSBRadixSorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
 util/StableStringSorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
 util/StrictStringTokenizer	not-needed	string splitter for Version parsing; Rust str::split
-util/StringHelper	partial	crates/lucene-index/src/index_writer.rs::generate_segment_id -- M7: randomId role only (not the xorshift128 stream); bytesDifference is a private copy in doc_values.rs; murmurhash3_x86_32, sortKeyLength, startsWith/endsWith, idToString missing
+util/StringHelper	ported	crates/lucene-util/src/string_helper.rs::murmurhash3_x86_32
 util/StringSorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
 util/SuppressForbidden	not-needed	forbidden-apis annotation
 util/TermAndVector	not-needed	(term, vector) record; a Rust tuple
@@ -1030,7 +1030,7 @@ util/ToStringUtils	not-needed	toString helpers; Rust Display/Debug
 util/UnicodeUtil	not-needed	UTF-8/UTF-16/UTF-32 conversion and counting; Rust std str/char (from_utf8, encode_utf16, chars().count())
 util/Unwrappable	not-needed	wrapper-unwrapping interface
 util/VectorUtil	ported	crates/lucene-util/src/vector_util.rs::l2normalize
-util/Version	partial	crates/lucene-index/src/segment_infos.rs::LuceneVersion -- M7: major/minor/bugfix with fromBits range checks; no Version.parse/parseLeniently, named constants or onOrAfter API
+util/Version	ported	crates/lucene-util/src/version.rs::Version
 util/VirtualMethod	not-needed	reflection-based override detection
 util/WeakIdentityMap	not-needed	JVM weak-reference identity map
 util/automaton/Automata	partial	crates/lucene-codecs/src/automaton.rs::Nfa -- M7: construction helpers (bytes, code-point ranges, any char, digit intervals) exist only inside the NFA builder for regexp/wildcard/fuzzy; no public Automata factory (makeString, makeStringUnion, makeBinaryInterval, makeDecimalInterval as Automaton)
