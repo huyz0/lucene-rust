@@ -280,6 +280,34 @@ pub struct LatestCommit;
 
 impl RefreshCommitSupplier for LatestCommit {}
 
+/// `SegmentInfos.FindSegmentsFile.run`: `body` opens the latest commit; a
+/// writer committing concurrently may delete that commit's files between
+/// the listing and the open, so a failure is retried for as long as the
+/// latest commit generation keeps advancing, and reported once it stops.
+fn find_segments_file<T>(dir: &dyn Directory, mut body: impl FnMut() -> Result<T>) -> Result<T> {
+    let mut last_gen = -1i64;
+    let mut first_err = None;
+    loop {
+        let gen = dir
+            .list_all()
+            .and_then(|files| lucene_store::directory::last_commit_generation(&files))
+            .map_err(|e| Error::DirectoryReader(e.into()))?;
+        if gen <= last_gen {
+            // No error yet only when the first listing found no commit at
+            // all (`IndexNotFoundException`).
+            return Err(first_err
+                .unwrap_or_else(|| Error::IllegalState("no segments_N commit file found".into())));
+        }
+        match body() {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                first_err.get_or_insert(e);
+            }
+        }
+        last_gen = gen;
+    }
+}
+
 /// `SearcherManager`'s `refreshIfNeeded`.
 struct SearcherRefresher<F> {
     dir: Arc<dyn Directory>,
@@ -295,7 +323,9 @@ impl<F: SearcherFactory> Refresher<F::Searcher> for SearcherRefresher<F> {
             // reader's own commit.
             Some(infos) if infos.generation == reader.segment_infos.generation => None,
             Some(infos) => Some(reader.reopen_at(self.dir.as_ref(), infos)?),
-            None => reader.open_if_changed(self.dir.as_ref())?,
+            None => find_segments_file(self.dir.as_ref(), || {
+                Ok(reader.open_if_changed(self.dir.as_ref())?)
+            })?,
         };
         match new {
             None => Ok(None),
@@ -322,7 +352,7 @@ impl SearcherManager<DefaultSearcherFactory> {
 impl<F: SearcherFactory + 'static> SearcherManager<F> {
     /// `new SearcherManager(dir, searcherFactory)`: over the latest commit.
     pub fn with_factory(dir: Arc<dyn Directory>, factory: F) -> Result<Self> {
-        let reader = DirectoryReader::open(dir.as_ref())?;
+        let reader = find_segments_file(dir.as_ref(), || Ok(DirectoryReader::open(dir.as_ref())?))?;
         Self::from_reader(dir, reader, factory, Box::new(LatestCommit))
     }
 
@@ -1114,5 +1144,44 @@ mod tests {
         live.add("z", "9".into());
         m.maybe_refresh_blocking().unwrap();
         assert_eq!(live.size(), 1, "no longer listening");
+    }
+
+    #[test]
+    fn find_segments_file_retries_while_the_commit_generation_advances() {
+        use lucene_store::byte_buffers_directory::ByteBuffersDirectory;
+        use lucene_store::data_output::DataOutput;
+        let dir = ByteBuffersDirectory::new();
+        let commit = |name: &str| {
+            let mut out = dir.create_output(name).unwrap();
+            out.write_bytes(b"x");
+            out.close().unwrap();
+        };
+        // No commit at all: `IndexNotFoundException`, the body never runs.
+        let err = find_segments_file(&dir, || -> Result<()> { unreachable!() }).unwrap_err();
+        assert!(matches!(err, Error::IllegalState(_)), "{err}");
+
+        // A failure on an unchanged generation is reported, the first one.
+        commit("segments_1");
+        let mut calls = 0;
+        let err = find_segments_file(&dir, || -> Result<()> {
+            calls += 1;
+            Err(Error::IllegalArgument(format!("try {calls}")))
+        })
+        .unwrap_err();
+        assert_eq!(calls, 1);
+        assert!(matches!(&err, Error::IllegalArgument(m) if m == "try 1"));
+
+        // A commit landing while the body reads: the body runs again.
+        let mut calls = 0;
+        let got = find_segments_file(&dir, || {
+            calls += 1;
+            if calls == 1 {
+                commit("segments_2");
+                return Err(Error::IllegalArgument("deleted under us".into()));
+            }
+            Ok(calls)
+        })
+        .unwrap();
+        assert_eq!(got, 2);
     }
 }
