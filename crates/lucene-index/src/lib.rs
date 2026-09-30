@@ -23,6 +23,7 @@ pub mod indexing_chain;
 pub mod inverter;
 pub mod merge;
 pub mod merge_policy;
+pub mod merge_rate_limiter;
 pub mod points_delete;
 pub mod segment_info;
 pub mod segment_infos;

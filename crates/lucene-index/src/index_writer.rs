@@ -198,6 +198,15 @@ pub enum Error {
     Deleter(#[from] index_file_deleter::Error),
     #[error(transparent)]
     Merge(#[from] merge::Error),
+    /// `MergePolicy.MergeAbortedException`: the merge's
+    /// [`crate::merge_rate_limiter::OneMergeProgress`] was aborted while it
+    /// ran; its output is discarded.
+    #[error("merge aborted")]
+    MergeAborted,
+    /// `MergeRateLimiter.setMBPerSec`'s `IllegalArgumentException("mbPerSec
+    /// must be positive")`.
+    #[error("mbPerSec must be positive; got: {0}")]
+    InvalidMergeRate(f64),
     #[error(transparent)]
     SegmentInfo(#[from] segment_info::Error),
     #[error(transparent)]
@@ -796,6 +805,10 @@ pub(crate) struct IndexingConfig {
     /// Lucene's own ([`hnsw::DEFAULT_MAX_CONN`] / [`hnsw::DEFAULT_BEAM_WIDTH`]).
     hnsw_m: i32,
     hnsw_beam_width: i32,
+    /// The IO rate, in MB/s, every merge's outputs are held to
+    /// (`ConcurrentMergeScheduler`'s per-merge `MergeRateLimiter`); `None`,
+    /// the default, is unthrottled. See [`IndexWriter::set_merge_mb_per_sec`].
+    merge_mb_per_sec: Option<f64>,
     /// `IndexWriterConfig.getSimilarity()`, as far as the writer reads it
     /// (`computeNorm`): `None` is Lucene's default, `BM25Similarity`. See
     /// [`IndexWriter::set_similarity`].
@@ -1079,7 +1092,30 @@ impl IndexingConfig {
     /// `.kdm`/`.kdi`/`.kdd` (when its `.si` lists them) becomes one
     /// [`crate::merge::SourcePoints`] per field, and
     /// [`crate::merge::merge_points`] remaps and rebuilds the trees.
+    ///
+    /// With [`IndexWriter::set_merge_mb_per_sec`] in force, every file the
+    /// merge writes goes through a [`crate::merge_rate_limiter::MergeDirectory`]
+    /// held to that rate, as `IndexWriter.mergeMiddle` writes through its
+    /// rate-limited merge directory.
     pub(crate) fn run_merge(&self, dir: &dyn Directory, plan: &MergePlan) -> Result<MergeOutcome> {
+        let Some(mb_per_sec) = self.merge_mb_per_sec else {
+            return self.run_merge_unthrottled(dir, plan);
+        };
+        let progress = std::sync::Arc::new(crate::merge_rate_limiter::OneMergeProgress::new());
+        let limiter = std::sync::Arc::new(crate::merge_rate_limiter::MergeRateLimiter::new(
+            std::sync::Arc::clone(&progress),
+        ));
+        lucene_store::RateLimiter::set_mb_per_sec(&*limiter, mb_per_sec);
+        let merge_dir = crate::merge_rate_limiter::MergeDirectory::new(dir, limiter);
+        let outcome = self.run_merge_unthrottled(&merge_dir, plan)?;
+        if progress.is_aborted() {
+            return Err(Error::MergeAborted);
+        }
+        Ok(outcome)
+    }
+
+    /// [`Self::run_merge`] with no rate limit.
+    fn run_merge_unthrottled(&self, dir: &dyn Directory, plan: &MergePlan) -> Result<MergeOutcome> {
         /// Raw `.tim`/`.tip`/`.tmd`/`.doc` bytes for a source that has
         /// postings, plus its `.pos`/`.pay` when the segment has them --
         /// `None` when that source's `.si` lists no `.tim` file.
@@ -3271,6 +3307,26 @@ impl<'d> IndexWriter<'d> {
     /// The configuration, to change it: copied first if a
     /// [`crate::concurrent_writer::ConcurrentIndexWriter`] shares it, so a
     /// change never reaches a segment already being built with the old one.
+    /// Holds every merge's writes to `mb_per_sec` MB/s -- what
+    /// `ConcurrentMergeScheduler` does with a `MergeRateLimiter` per merge
+    /// (`setMBPerSec`; this port has no auto-throttle adjusting it). `None`
+    /// lifts the limit; `Some(0.0)` stops merges until it changes. A negative
+    /// or NaN rate is Java's `IllegalArgumentException`.
+    pub fn set_merge_mb_per_sec(&mut self, mb_per_sec: Option<f64>) -> Result<()> {
+        if let Some(rate) = mb_per_sec {
+            if rate < 0.0 || rate.is_nan() {
+                return Err(Error::InvalidMergeRate(rate));
+            }
+        }
+        self.cfg_mut().merge_mb_per_sec = mb_per_sec;
+        Ok(())
+    }
+
+    /// The rate [`IndexWriter::set_merge_mb_per_sec`] set.
+    pub fn merge_mb_per_sec(&self) -> Option<f64> {
+        self.cfg.merge_mb_per_sec
+    }
+
     fn cfg_mut(&mut self) -> &mut IndexingConfig {
         std::sync::Arc::make_mut(&mut self.cfg)
     }
@@ -3504,6 +3560,7 @@ impl<'d> IndexWriter<'d> {
                 points_fields: Vec::new(),
                 hnsw_m: hnsw::DEFAULT_MAX_CONN,
                 hnsw_beam_width: hnsw::DEFAULT_BEAM_WIDTH,
+                merge_mb_per_sec: None,
                 similarity: None,
             }),
             segment_infos,
