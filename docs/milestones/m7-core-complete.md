@@ -148,8 +148,8 @@ by `ConcurrentIndexWriter::with_merge_scheduler`.
 Delivered (ported, not yet benchmarked): near-real-time readers from a live
 writer -- `DirectoryReader::open_from_writer`/`open_nrt`/`open_if_changed_nrt`
 over `lucene-index/src/nrt.rs`'s `NrtSource` (both writers), with the
-snapshot's files pinned until the reader drops -- `SearcherManager`'s writer
-constructors, and a `ReaderPool` keeping segments opened for delete
+snapshot's files pinned until the reader drops -- `SearcherManager`'s and
+`ReaderManager`'s writer constructors, and a `ReaderPool` keeping segments opened for delete
 resolution between rounds.
 
 Delivered (ported, not yet benchmarked): the rest of `IndexWriter`'s
