@@ -953,6 +953,18 @@ impl Directory for TrackingDirectory<'_> {
         Ok(output)
     }
 
+    fn create_output_with_estimate(
+        &self,
+        name: &str,
+        estimated_bytes: Option<u64>,
+    ) -> lucene_store::Result<FsIndexOutput> {
+        let output = self
+            .inner
+            .create_output_with_estimate(name, estimated_bytes)?;
+        lock(&self.created).push(name.to_string());
+        Ok(output)
+    }
+
     fn sync(&self, names: &[String]) -> lucene_store::Result<()> {
         self.inner.sync(names)
     }

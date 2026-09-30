@@ -333,6 +333,28 @@ impl Directory for MergeDirectory<'_> {
     ) -> lucene_store::Result<FsIndexOutput> {
         Ok(self.throttled(self.inner.create_temp_output(prefix, suffix)?))
     }
+    fn create_output_with_estimate(
+        &self,
+        name: &str,
+        estimated_bytes: Option<u64>,
+    ) -> lucene_store::Result<FsIndexOutput> {
+        Ok(self.throttled(
+            self.inner
+                .create_output_with_estimate(name, estimated_bytes)?,
+        ))
+    }
+    fn create_temp_output_with_estimate(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        estimated_bytes: Option<u64>,
+    ) -> lucene_store::Result<FsIndexOutput> {
+        Ok(self.throttled(self.inner.create_temp_output_with_estimate(
+            prefix,
+            suffix,
+            estimated_bytes,
+        )?))
+    }
     fn sync(&self, names: &[String]) -> lucene_store::Result<()> {
         self.inner.sync(names)
     }

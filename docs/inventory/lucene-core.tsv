@@ -878,8 +878,8 @@ store/FileTypeHint	not-needed	IOContext file-open hint; the Rust Directory::open
 store/FilterDirectory	not-needed	Delegating base class; Rust wrappers (CrashingDirectory, compound CompoundReader, TrackingDirectory) implement the Directory trait directly.
 store/FilterIndexInput	not-needed	Delegating base class; no Rust IndexInput wrapper needs one (SliceInput is a concrete type).
 store/FilterIndexOutput	not-needed	Delegating base class; Rust IndexOutput wrappers implement the trait directly.
-store/FlushInfo	not-needed	IOContext flush metadata (doc count/size estimate) consumed only by hints and NRTCachingDirectory sizing; Directory::create_output takes no context.
-store/IOContext	not-needed	Per-open context/hint carrier; the Rust Directory API takes none and results never depend on it.
+store/FlushInfo	not-needed	IOContext flush metadata; its one result-affecting field, the size estimate, is Directory::create_output_with_estimate's argument (IndexWriter passes it through lucene-store's EstimatedWrites); the rest are I/O hints.
+store/IOContext	not-needed	Per-open context/hint carrier; its hints never change results, and its flush/merge size estimate is Directory::create_output_with_estimate's argument.
 store/IndexInput	ported	crates/lucene-store/src/data_input.rs::SliceInput
 store/IndexOutput	ported	crates/lucene-store/src/index_output.rs::IndexOutput
 store/InputStreamDataInput	not-needed	Adapter from java.io.InputStream; Rust callers read bytes into a slice and use SliceInput.
@@ -894,9 +894,9 @@ store/MMapDirectory	ported	crates/lucene-store/src/directory.rs::MmapDirectory
 store/MemorySegmentAccessInput	ported	crates/lucene-store/src/directory.rs::Input
 store/MemorySegmentIndexInput	ported	crates/lucene-store/src/directory.rs::Input
 store/MemorySegmentIndexInputProvider	ported	crates/lucene-store/src/directory.rs::MmapDirectory
-store/MergeInfo	not-needed	IOContext merge metadata consumed only by hints, rate limiting and NRTCachingDirectory sizing; Directory::create_output takes no context.
+store/MergeInfo	not-needed	IOContext merge metadata; its one result-affecting field, estimatedMergeBytes, is Directory::create_output_with_estimate's argument (IndexWriter passes it through lucene-store's EstimatedWrites); the rest are I/O hints and rate limiting.
 store/NIOFSDirectory	ported	crates/lucene-store/src/directory.rs::FsDirectory
-store/NRTCachingDirectory	partial	crates/lucene-store/src/nrt_caching_directory.rs::NrtCachingDirectory -- M7: the flush/merge size estimate Java reads off IOContext is a create_output_with_estimate argument IndexWriter does not pass yet, so writes through the Directory trait bypass the cache
+store/NRTCachingDirectory	ported	crates/lucene-store/src/nrt_caching_directory.rs::NrtCachingDirectory
 store/NativeAccess	not-needed	madvise/posix_madvise glue behind ReadAdvice; the Rust mmap backend (memmap2) issues no advice, which only affects paging performance.
 store/NativeFSLockFactory	ported	crates/lucene-store/src/fs_lock_factory.rs::NativeFsLockFactory
 store/NoLockFactory	ported	crates/lucene-store/src/lock.rs::NoLockFactory
