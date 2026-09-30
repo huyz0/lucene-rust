@@ -451,7 +451,7 @@ index/PostingsEnum	ported	crates/lucene-codecs/src/postings.rs::LazyDocsCursor
 index/PrefixCodedTerms	ported	crates/lucene-index/src/buffered_updates.rs::FrozenBufferedUpdates
 index/QueryTimeout	partial	crates/lucene-search/src/multi_segment.rs::merge_multi_segment_scored_with_deadline -- M7: only a wall-clock deadline checked once per segment on the multi-segment scored path; no `QueryTimeout` abstraction checked during rewrite/enumeration (`ExitableDirectoryReader`) or inside a leaf
 index/QueryTimeoutImpl	partial	crates/lucene-search/src/multi_segment.rs::merge_multi_segment_scored_with_deadline -- M7: `Instant` deadline only; not consulted by term/points enumeration (`ExitableDirectoryReader`)
-index/ReaderManager	todo:M7	reference-counted DirectoryReader refresh manager (parity.md: "`ReaderManager`/`SearcherManager`" missing)
+index/ReaderManager	partial	crates/lucene-search/src/reader_manager.rs::ReaderManager -- M7: the `ReaderManager(Directory)`/`ReaderManager(DirectoryReader)` forms; no `ReaderManager(IndexWriter)` (no NRT reader over a live writer)
 index/ReaderPool	partial	crates/lucene-index/src/index_writer.rs::open_segment_for_deletes -- M7: segments are opened per delete/update application; no pooled `ReadersAndUpdates` shared with NRT readers (`DirectoryReader.open(writer)` not ported)
 index/ReaderSlice	not-needed	plain (start, length, readerIndex) record for composite-reader plumbing; Rust carries a doc_base per segment (multi_segment::OpenSegment).
 index/ReaderUtil	not-needed	@lucene.internal helpers for walking IndexReaderContext trees (subIndex, getTopLevelContext); Rust addresses segments by index with an explicit doc_base.
@@ -729,7 +729,7 @@ search/QueryCachingPolicy	ported	crates/lucene-search/src/query_cache.rs::QueryC
 search/QueryRescorer	todo:M7	second-pass query rescorer
 search/QueryVisitor	partial	crates/lucene-search/src/query.rs::Clause -- M7: no visitor API (Query.visit, QueryVisitor.termCollector, per-field filtering); callers match the public Clause enum directly
 search/RangeDocIdStream	ported	crates/lucene-search/src/exec/mod.rs::doc_id_run_end
-search/ReferenceManager	todo:M7	acquire/release/refresh reference manager
+search/ReferenceManager	ported	crates/lucene-search/src/reader_manager.rs::ReferenceManager
 search/RefreshCommitSupplier	todo:M7	commit supplier for searcher refresh
 search/RegexpQuery	ported	crates/lucene-search/src/query.rs::RegexpQuery
 search/ReqExclBulkScorer	ported	crates/lucene-search/src/exec/bulk.rs::Bulk
