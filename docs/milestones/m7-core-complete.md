@@ -109,7 +109,22 @@ family, offline sorting, and the analysis attribute model.
 ### T7.5 — Per-field formats, read and write
 ### T7.6 — Scalar-quantized vectors
 ### T7.7 — Writer gaps: compound segments, string index sorts, write lock
-### T7.8 — `StandardTokenizer` and the attribute model
+### T7.8 — `StandardTokenizer` and the attribute model · delivered 2026-09-30, two rows partial
+
+`crates/lucene-analysis` is now Lucene's streaming model: `TokenStream`/
+`Tokenizer`/`TokenFilter`/`FilteringTokenFilter`/`CachingTokenFilter`/
+`GraphTokenFilter`, every core attribute, `CharFilter` offset correction,
+`Analyzer` with components, reuse, `normalize` and both wrappers,
+`StopwordAnalyzerBase`/`CharArraySet`/`WordlistLoader`, and
+`StandardTokenizer` as Lucene's own JFlex scanner over tables extracted from
+the 10.5.0 class. `GenStandardTokenizer` checks `zzCMap` for every code point
+and 17,073 analyses (Unicode's word-break and emoji conformance inputs from
+Lucene's test framework, the tokenizer, `StandardAnalyzer`, a custom chain
+with a char filter) token for token, plus the graph filter and both automaton
+converters. Still partial: `TokenStreamToAutomaton`/`AutomatonToTokenStream`
+build this crate's minimal automaton until `lucene-util`'s automaton API
+lands. Not in this task: the inverter reading a filter's payload and term
+frequency attributes (on `index/IndexingChain`'s row).
 
 Each follows [`port-workflow`](../porting-workflow.md): the closest-to-Java
 port with a Java-fixture differential test, a `bench-micro` pair against
