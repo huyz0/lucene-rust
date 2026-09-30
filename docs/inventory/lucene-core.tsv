@@ -394,7 +394,7 @@ index/IndexOptions	ported	crates/lucene-codecs/src/field_infos.rs::IndexOptions
 index/IndexReader	partial	crates/lucene-search/src/directory_reader.rs::DirectoryReader -- M7: no reader-level `termVectors()` or KNN vector access (not opened by `DirectoryReader`), no reader-closed listeners / `CacheHelper`
 index/IndexReaderContext	ported	crates/lucene-search/src/multi_segment.rs::OpenSegment
 index/IndexSorter	partial	crates/lucene-index/src/segment_info.rs::SortKeyComparator -- M7: per parity.md: the writer sorts only NUMERIC/SORTED_NUMERIC keys; `STRING`/`SortedSetSortField`/`BinarySortField` index sorts are refused with `Error::UnsupportedIndexSortKind`
-index/IndexUpgrader	deferred:M8	command-line tool rewriting older-format segments into the current format
+index/IndexUpgrader	ported	crates/lucene-index/src/index_upgrader.rs::IndexUpgrader
 index/IndexWriter	partial	crates/lucene-index/src/index_writer.rs::IndexWriter -- M7: per parity.md: not ported `tryDeleteDocument`, `tryUpdateDocValue`, `addIndexes` (both overloads), `addBatch`/`ColumnBatch` updates, NRT readers from the writer (`DirectoryReader.open(writer)`), `maybeMerge` and a merge scheduler, `flushNextBuffer`, `infoStream`, writing compound segments
 index/IndexWriterConfig	partial	crates/lucene-index/src/index_writer.rs::set_index_sort -- M7: settings are writer setters (`setSimilarity` is `IndexWriter::set_similarity`, norms via `NormSimilarity`); missing `STRING`/`SortedSet`/`Binary` index sorts, `setUseCompoundFile` (compound segments not written), codec/per-field format choice, `MergeScheduler`, `IndexWriterEventListener`, `infoStream`, `leafSorter`, `commitOnClose`
 index/IndexWriterEventListener	not-needed	callback hook for merge begin/end events used for metrics and tests; no effect on the index.
@@ -513,7 +513,7 @@ index/TieredMergePolicy	ported	crates/lucene-index/src/merge_policy.rs::find_mer
 index/TrackingTmpOutputDirectoryWrapper	not-needed	tracks temp files for the sort-by-rewrite flush of Java's Sorting*Consumer; Rust permutes the buffer before writing (segment_writer::permute_in_place).
 index/TwoPhaseCommit	ported	crates/lucene-index/src/index_writer.rs::prepare_commit
 index/TwoPhaseCommitTool	not-needed	generic loop calling prepareCommit/commit/rollback across several TwoPhaseCommit objects; composed directly from IndexWriter::prepare_commit/finish_commit/rollback.
-index/UpgradeIndexMergePolicy	deferred:M8	merge policy rewriting older-format segments on forceMerge
+index/UpgradeIndexMergePolicy	ported	crates/lucene-index/src/merge_policy/upgrade.rs::UpgradeIndexMergePolicy
 index/VectorEncoding	ported	crates/lucene-codecs/src/field_infos.rs::VectorEncoding
 index/VectorSimilarityFunction	ported	crates/lucene-codecs/src/field_infos.rs::VectorSimilarityFunction
 index/VectorValuesConsumer	ported	crates/lucene-index/src/index_writer.rs::build_vectors_output
