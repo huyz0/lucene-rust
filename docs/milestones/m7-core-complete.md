@@ -144,11 +144,6 @@ operations -- `tryDeleteDocument`/`tryUpdateDocValue` by NRT doc id,
 `addIndexes` (copying segments as they are, and merging them into one),
 `maybeMerge`, `flushNextBuffer`, `close` under `commitOnClose`, the
 merged-segment warmer -- and a reader's leaf sorter.
-
-Delivered (ported, not yet benchmarked): compound segments from the writer --
-`IndexWriter::set_use_compound_file` for flushes, the merge policy's
-`useCompoundFile` for merges -- verified by `VerifyCompoundSegment` (real
-Lucene reads every format through its compound reader; `CheckIndex` clean).
 ### T7.8 — `StandardTokenizer` and the attribute model · delivered 2026-09-30, two rows partial
 
 `crates/lucene-analysis` is now Lucene's streaming model: `TokenStream`/
