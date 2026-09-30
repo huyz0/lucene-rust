@@ -125,6 +125,118 @@ impl<F: FnMut(i32) -> Result<bool>> Scorer for TwoPhaseDocs<F> {
     }
 }
 
+/// `SkipBlockRangeIterator.Match`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlockMatch {
+    /// Every document of the block has a value, and every value is in range.
+    Yes,
+    /// Every value of the block is in range; a document matches if it has
+    /// one.
+    YesIfPresent,
+    /// The document's value must be checked.
+    Maybe,
+}
+
+/// `SkipBlockRangeIterator` as the approximation of
+/// `DocValuesRangeIterator`'s bulk range iterators: it visits only the
+/// skip-index blocks whose value range meets `[min, max]`, and classifies
+/// each so `matches` reads a value only where it must.
+struct SkipBlockRange<'a, F> {
+    skipper: lucene_codecs::doc_values::DocValuesSkipper<'a>,
+    min: i64,
+    max: i64,
+    doc: i32,
+    matched: BlockMatch,
+    /// `check(doc, presence_only)`: whether `doc` has a value (presence) or
+    /// a value in range.
+    check: F,
+}
+
+impl<'a, F: FnMut(i32, bool) -> Result<bool>> SkipBlockRange<'a, F> {
+    fn new(
+        skipper: lucene_codecs::doc_values::DocValuesSkipper<'a>,
+        min: i64,
+        max: i64,
+        check: F,
+    ) -> Self {
+        Self {
+            skipper,
+            min,
+            max,
+            doc: -1,
+            matched: BlockMatch::Maybe,
+            check,
+        }
+    }
+
+    /// `classifyBlock()`.
+    fn classify(&self) -> BlockMatch {
+        let s = &self.skipper;
+        if s.min_value(0) >= self.min && s.max_value(0) <= self.max {
+            if i64::from(s.max_doc_id(0)) - i64::from(s.min_doc_id(0))
+                == i64::from(s.doc_count(0)) - 1
+            {
+                return BlockMatch::Yes;
+            }
+            return BlockMatch::YesIfPresent;
+        }
+        BlockMatch::Maybe
+    }
+}
+
+impl<F: FnMut(i32, bool) -> Result<bool>> Scorer for SkipBlockRange<'_, F> {
+    fn doc_id(&self) -> i32 {
+        self.doc
+    }
+    fn next_doc(&mut self) -> Result<i32> {
+        let target = self.doc.saturating_add(1);
+        self.advance(target)
+    }
+    /// `SkipBlockRangeIterator.advance`.
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        if target <= self.skipper.max_doc_id(0) {
+            if self.doc > -1 {
+                self.doc = target;
+                return Ok(target);
+            }
+        } else {
+            self.skipper.advance(target);
+        }
+        self.skipper.advance_range(self.min, self.max);
+        let next = target.max(self.skipper.min_doc_id(0));
+        self.matched = if next == NO_MORE_DOCS {
+            BlockMatch::Maybe
+        } else {
+            self.classify()
+        };
+        self.doc = next;
+        Ok(next)
+    }
+    fn cost(&self) -> i64 {
+        i64::from(NO_MORE_DOCS)
+    }
+    fn two_phase(&self) -> bool {
+        true
+    }
+    /// `BulkBlockRangeIterator.matches`.
+    fn matches(&mut self) -> Result<bool> {
+        match self.matched {
+            BlockMatch::Yes => Ok(true),
+            BlockMatch::YesIfPresent => (self.check)(self.doc, true),
+            BlockMatch::Maybe => (self.check)(self.doc, false),
+        }
+    }
+    fn match_cost(&self) -> f32 {
+        2.0
+    }
+    fn score(&mut self) -> Result<f32> {
+        Ok(0.0)
+    }
+    fn max_score(&mut self, _up_to: i32) -> Result<f32> {
+        Ok(0.0)
+    }
+}
+
 fn reader<'a>(ctx: &LeafContext<'a>, what: &str) -> Result<&'a SegmentReader> {
     ctx.reader
         .ok_or_else(|| crate::Error::MissingSegmentReader(what.to_string()))
@@ -159,8 +271,45 @@ pub(crate) fn numeric_range<'a>(
     let Some(values) = Values::open(reader, &q.field) else {
         return Ok(None);
     };
-    let mut column = values.column();
     let (lower, upper) = (q.lower, q.upper);
+    let skip_index = match reader.field_infos().field_by_name(&q.field) {
+        Some(fi) => reader.doc_values_skip_index(fi.number)?,
+        None => None,
+    };
+    if let Some(index) = skip_index {
+        // `docCountIgnoringDeletes`: the skipper's global bounds answer a
+        // range that misses every value, or holds every document.
+        let skipper = lucene_codecs::doc_values::DocValuesSkipper::new(index);
+        if skipper.global_min_value() > upper || skipper.global_max_value() < lower {
+            return Ok(None);
+        }
+        if skipper.global_doc_count() == reader.max_doc
+            && skipper.global_min_value() >= lower
+            && skipper.global_max_value() <= upper
+        {
+            let all: BoxScorer<'a> = Box::new(super::leaf::AllDocs::new(reader.max_doc));
+            return Ok(constant(all, boost, mode));
+        }
+        // `DocValuesRangeIterator.forRange` with a skipper.
+        let mut column = values.column();
+        let mut buf = Vec::new();
+        let check = move |doc: i32, presence: bool| -> Result<bool> {
+            column.values(doc, &mut buf)?;
+            if presence {
+                return Ok(!buf.is_empty());
+            }
+            Ok(buf
+                .iter()
+                .find(|&&v| v >= lower)
+                .is_some_and(|&v| v <= upper))
+        };
+        return Ok(constant(
+            Box::new(SkipBlockRange::new(skipper, lower, upper, check)),
+            boost,
+            mode,
+        ));
+    }
+    let mut column = values.column();
     let mut buf = Vec::new();
     let accept = move |doc: i32| -> Result<bool> {
         column.values(doc, &mut buf)?;
