@@ -533,23 +533,15 @@ pub enum Error {
     UnknownIndexSortField(String),
     /// `IndexingChain.validateIndexSortDVType`: Java refuses a sort field
     /// whose `DocValuesType` is not the one the `SortField.Type` reads
-    /// (`"SortField <..> expected field [x] to be NUMERIC but it is [BINARY]"`).
-    /// This port's `.si` encoder emits a single-valued `LONG` sort
-    /// (`segment_info::write_sort_field`), which real Lucene resolves through
-    /// `DocValues.getNumeric`, so the field must be NUMERIC.
+    /// (`"SortField <..> expected field [x] to be NUMERIC but it is [BINARY]"`):
+    /// NUMERIC for a numeric `SortField`, SORTED_NUMERIC for a
+    /// `SortedNumericSortField`, SORTED for a `STRING` one, SORTED_SET for a
+    /// `SortedSetSortField` and BINARY for a `BinarySortField`.
     #[error(
-        "set_index_sort: sort field {0:?} is declared with doc_values_type {1:?}; an index sort \
-         field must be NUMERIC (this port's .si encodes a single-valued LONG sort, which real \
-         Lucene reads through DocValues.getNumeric)"
+        "set_index_sort: sort field {0:?} is declared with doc_values_type {1:?}, which is not \
+         the doc-values type its kind of sort reads"
     )]
     UnsupportedIndexSortField(String, DocValuesType),
-    #[error(
-        "set_index_sort: sort field {0:?} sorts by term ordinal or by raw bytes; this writer \
-         assigns ordinals after it permutes the buffer, so the key would not exist when the \
-         sort runs, and a BinarySortField has no single-i64 key at all. Such a sort can be \
-         read (segment_info parses every SortFieldProvider encoding) but not produced"
-    )]
-    UnsupportedIndexSortKind(String),
     /// A sort field with no doc values written for it makes every
     /// sort-order check downstream vacuous: real Lucene's
     /// `DocValues.getNumeric` returns an all-missing instance rather than
@@ -1873,11 +1865,37 @@ impl IndexingConfig {
         // NUMERIC column the merged segment will carry -- so the order the
         // merge imposes and the column `CheckIndex.testSort` re-derives it
         // from are one fact, exactly as at flush time.
+        //
+        // A byte-keyed tier (`STRING`, `SortedSetSortField`,
+        // `BinarySortField`) is read as each document's bytes and ranked
+        // across **all** sources at once -- `StringSorter`'s `OrdinalMap`
+        // global ordinals, which is what makes one source's "b" compare
+        // equal to another's.
         let per_tier_keys: Vec<Vec<Vec<Option<i64>>>> = match &merge_sort {
             None => Vec::new(),
             Some(sort) => sort
                 .iter()
                 .map(|tier| {
+                    let byte_keyed = !matches!(
+                        tier.kind,
+                        segment_info::IndexSortKind::Numeric(_)
+                            | segment_info::IndexSortKind::SortedNumeric { .. }
+                    );
+                    if byte_keyed {
+                        let terms = opened
+                            .iter()
+                            .zip(readers.iter())
+                            .map(|(o, reader)| {
+                                IndexWriter::read_sort_terms(
+                                    &o.doc_values,
+                                    &o.field_infos,
+                                    tier,
+                                    reader.max_doc(),
+                                )
+                            })
+                            .collect::<Result<Vec<_>>>()?;
+                        return Ok(crate::index_sorter::rank_terms(&terms));
+                    }
                     opened
                         .iter()
                         .zip(readers.iter())
@@ -1927,6 +1945,115 @@ impl IndexingConfig {
         })
     }
 
+    /// One sort tier's key for every buffered document, in buffer order --
+    /// what `IndexingChain.maybeSortSegment` gets from each field's
+    /// `DocValuesWriter.getDocComparator`.
+    ///
+    /// The numeric kinds read the document's value(s) directly; the three
+    /// byte-keyed kinds (`STRING`, `SortedSetSortField`, `BinarySortField`)
+    /// collect each document's bytes exactly as the column builder will
+    /// ([`IndexWriter::collect_binary_values`]/[`IndexWriter::collect_sorted_set_values`])
+    /// and rank them ([`crate::index_sorter::rank_terms`]) -- the ordinals
+    /// `SortedDocValuesWriter`'s sorted `BytesRefHash` hands Java's
+    /// comparator, so the key and the column are one fact.
+    fn buffer_sort_keys(
+        &self,
+        docs: &[Document],
+        sf: &segment_info::IndexSortField,
+    ) -> Result<Vec<Option<i64>>> {
+        let field_number = self
+            .fields
+            .iter()
+            .find(|f| f.name == sf.field)
+            .map(|f| f.number)
+            .expect("set_index_sort resolved every sort field against this fixed list");
+        let selector = match &sf.kind {
+            segment_info::IndexSortKind::SortedNumeric { selector, .. } => Some(*selector),
+            segment_info::IndexSortKind::Numeric(_) => None,
+            segment_info::IndexSortKind::String(_)
+            | segment_info::IndexSortKind::SortedSet { .. }
+            | segment_info::IndexSortKind::Binary(_) => {
+                return self.buffer_term_sort_keys(docs, sf, field_number);
+            }
+        };
+        Ok(docs
+            .iter()
+            .map(|doc| {
+                // A SORTED_NUMERIC column is "repeat the field on the
+                // document" here (see
+                // `build_sorted_numeric_doc_values_output`), and the
+                // values are stored **sorted**
+                // (`SortedNumericDocValuesWriter.finishCurrentDoc`),
+                // so the selector has to be applied to the sorted
+                // form -- `SortedNumericSelector.MIN`/`MAX` are the
+                // first and the last *stored* value, not the first
+                // and last the caller happened to write. Sorting
+                // here rather than reading the column keeps the sort
+                // key and the column one fact, which is what stops
+                // the two from drifting.
+                let mut values: Vec<i64> = doc
+                    .fields
+                    .iter()
+                    .filter(|f| f.field_number == field_number)
+                    .filter_map(|f| match &f.value {
+                        FieldValue::Int(v) => Some(*v as i64),
+                        FieldValue::Long(v) => Some(*v),
+                        // Not numeric: `build_doc_values_output` is
+                        // about to fail the whole flush with
+                        // `NonNumericDocValue` naming the document, a
+                        // better message than anything this could
+                        // raise. Treated as missing until then.
+                        _ => None,
+                    })
+                    .collect();
+                match selector {
+                    // Single-valued NUMERIC: the document's one value.
+                    None => values.into_iter().next(),
+                    Some(segment_info::SortedNumericSelector::Min) => {
+                        values.sort_unstable();
+                        values.into_iter().next()
+                    }
+                    Some(segment_info::SortedNumericSelector::Max) => {
+                        values.sort_unstable();
+                        values.into_iter().last()
+                    }
+                }
+            })
+            .collect())
+    }
+
+    /// [`Self::buffer_sort_keys`] for the byte-keyed kinds.
+    fn buffer_term_sort_keys(
+        &self,
+        docs: &[Document],
+        sf: &segment_info::IndexSortField,
+        field_number: i32,
+    ) -> Result<Vec<Option<i64>>> {
+        let config = self
+            .doc_values_fields
+            .iter()
+            .find(|c| c.field_number == field_number)
+            .ok_or_else(|| Error::IndexSortFieldWithoutDocValues(sf.field.clone()))?;
+        let mut terms: Vec<Option<Vec<u8>>> = vec![None; docs.len()];
+        if let segment_info::IndexSortKind::SortedSet { selector, .. } = &sf.kind {
+            for (doc, mut values) in IndexWriter::collect_sorted_set_values(docs, config)? {
+                // `SortedSetDocValuesWriter` stores a document's values
+                // deduplicated and ascending; the selector picks among those.
+                values.sort_unstable();
+                values.dedup();
+                terms[doc as usize] =
+                    crate::index_sorter::select_sorted_set(&values, *selector).cloned();
+            }
+        } else {
+            for (doc, value) in IndexWriter::collect_binary_values(docs, config)? {
+                terms[doc as usize] = Some(value);
+            }
+        }
+        Ok(crate::index_sorter::rank_terms(&[terms])
+            .pop()
+            .unwrap_or_default())
+    }
+
     /// Puts one document buffer into index-sort order and returns the
     /// `new -> old` permutation (`None`: unsorted index, or already in order)
     /// -- the half of `IndexWriter::flush` a
@@ -1948,65 +2075,8 @@ impl IndexingConfig {
 
         let keys: Vec<Vec<Option<i64>>> = sort
             .iter()
-            .map(|sf| {
-                let field_number = self
-                    .fields
-                    .iter()
-                    .find(|f| f.name == sf.field)
-                    .map(|f| f.number)
-                    .expect("set_index_sort resolved every sort field against this fixed list");
-                let selector = match &sf.kind {
-                    segment_info::IndexSortKind::SortedNumeric { selector, .. } => Some(*selector),
-                    // Single-valued NUMERIC: the first (and only) value.
-                    // `set_index_sort` has already refused every kind that
-                    // is neither of these two.
-                    _ => None,
-                };
-                docs.iter()
-                    .map(|doc| {
-                        // A SORTED_NUMERIC column is "repeat the field on the
-                        // document" here (see
-                        // `build_sorted_numeric_doc_values_output`), and the
-                        // values are stored **sorted**
-                        // (`SortedNumericDocValuesWriter.finishCurrentDoc`),
-                        // so the selector has to be applied to the sorted
-                        // form -- `SortedNumericSelector.MIN`/`MAX` are the
-                        // first and the last *stored* value, not the first
-                        // and last the caller happened to write. Sorting
-                        // here rather than reading the column keeps the sort
-                        // key and the column one fact, which is what stops
-                        // the two from drifting.
-                        let mut values: Vec<i64> = doc
-                            .fields
-                            .iter()
-                            .filter(|f| f.field_number == field_number)
-                            .filter_map(|f| match &f.value {
-                                FieldValue::Int(v) => Some(*v as i64),
-                                FieldValue::Long(v) => Some(*v),
-                                // Not numeric: `build_doc_values_output` is
-                                // about to fail the whole flush with
-                                // `NonNumericDocValue` naming the document, a
-                                // better message than anything this could
-                                // raise. Treated as missing until then.
-                                _ => None,
-                            })
-                            .collect();
-                        match selector {
-                            // Single-valued NUMERIC: the document's one value.
-                            None => values.into_iter().next(),
-                            Some(segment_info::SortedNumericSelector::Min) => {
-                                values.sort_unstable();
-                                values.into_iter().next()
-                            }
-                            Some(segment_info::SortedNumericSelector::Max) => {
-                                values.sort_unstable();
-                                values.into_iter().last()
-                            }
-                        }
-                    })
-                    .collect()
-            })
-            .collect();
+            .map(|sf| self.buffer_sort_keys(docs, sf))
+            .collect::<Result<_>>()?;
 
         let specs: Vec<segment_writer::SortKeySpec<'_>> = sort
             .iter()
@@ -4125,18 +4195,12 @@ impl<'d> IndexWriter<'d> {
     ///   `IndexingChain.validateIndexSortDVType`, which asks the
     ///   `SortField`'s own `IndexSorter` which column it reads: a numeric
     ///   `SortField` needs NUMERIC, a `SortedNumericSortField` needs
-    ///   SORTED_NUMERIC.
-    /// - **The kind of sort is one this writer can produce**
-    ///   ([`Error::UnsupportedIndexSortKind`]). `segment_info` can now *read*
-    ///   every sort `SortFieldProvider` round-trips, which is what lets this
-    ///   port open an index someone else wrote; producing one is narrower.
-    ///   A `SortField.Type.STRING` or `SortedSetSortField` sorts by **term
-    ///   ordinal**, and this writer assigns ordinals inside
-    ///   `build_sorted_doc_values_output` *after* the buffer is permuted, so
-    ///   the key the sort needs does not exist when the sort runs; a
-    ///   `BinarySortField` has no single-`i64` key at all
-    ///   ([`segment_info::IndexSortField::key_comparison`]). Both are
-    ///   refused here rather than mis-ordered.
+    ///   SORTED_NUMERIC, a `STRING` `SortField` needs SORTED, a
+    ///   `SortedSetSortField` needs SORTED_SET and a `BinarySortField`
+    ///   needs BINARY. The byte-keyed three sort by the rank of the
+    ///   document's value ([`crate::index_sorter`]), which the flush computes
+    ///   from the buffer before it permutes it -- the same ordinals Java's
+    ///   `SortedDocValuesWriter` hands its comparator.
     ///
     ///   A `FLOAT`/`DOUBLE` sort *is* supported: Lucene's own
     ///   `FloatDocValuesField`/`DoubleDocValuesField` store
@@ -4195,11 +4259,9 @@ impl<'d> IndexWriter<'d> {
             let wanted = match &sf.kind {
                 segment_info::IndexSortKind::Numeric(_) => DocValuesType::Numeric,
                 segment_info::IndexSortKind::SortedNumeric { .. } => DocValuesType::SortedNumeric,
-                segment_info::IndexSortKind::String(_)
-                | segment_info::IndexSortKind::SortedSet { .. }
-                | segment_info::IndexSortKind::Binary(_) => {
-                    return Err(Error::UnsupportedIndexSortKind(sf.field.clone()))
-                }
+                segment_info::IndexSortKind::String(_) => DocValuesType::Sorted,
+                segment_info::IndexSortKind::SortedSet { .. } => DocValuesType::SortedSet,
+                segment_info::IndexSortKind::Binary(_) => DocValuesType::Binary,
             };
             if info.doc_values_type != wanted {
                 return Err(Error::UnsupportedIndexSortField(
@@ -8229,9 +8291,8 @@ impl<'d> IndexWriter<'d> {
                     })
                     .collect()
             }
-            // Everything else `set_index_sort` allows reads a single-valued
-            // NUMERIC column; the ordinal and byte kinds it refuses cannot
-            // reach a merge this writer runs.
+            // A single-valued NUMERIC column; the byte-keyed kinds are read
+            // by `read_sort_terms` and never reach here.
             _ => {
                 let entry = meta.numeric_entry(field_number).ok_or_else(missing)?;
                 // One `NumericReader` for the whole column, not a
@@ -8244,6 +8305,35 @@ impl<'d> IndexWriter<'d> {
                 (0..max_doc).map(|doc| Ok(reader.value(doc)?)).collect()
             }
         }
+    }
+
+    /// [`Self::read_sort_keys`] for a byte-keyed sort tier: each document's
+    /// bytes out of the source's current SORTED / SORTED_SET (through the
+    /// tier's selector) / BINARY column, to be ranked across every source
+    /// by [`crate::index_sorter::rank_terms`]. A missing column is the same
+    /// error as for a numeric tier.
+    fn read_sort_terms(
+        columns: &SourceDocValueColumns,
+        fields: &[FieldInfo],
+        sort: &segment_info::IndexSortField,
+        max_doc: i32,
+    ) -> Result<Vec<Option<Vec<u8>>>> {
+        let field_name = sort.field.as_str();
+        let field_number = fields
+            .iter()
+            .find(|f| f.name == field_name)
+            .map(|f| f.number)
+            .ok_or_else(|| Error::UnknownSortField(field_name.to_string()))?;
+        let missing = || Error::MergeSortColumnMissing(field_name.to_string());
+        let at = columns
+            .per_field
+            .iter()
+            .find(|(n, _)| *n == field_number)
+            .map(|&(_, at)| at)
+            .ok_or_else(missing)?;
+        let (meta, dvd) = &columns.columns[at];
+        crate::index_sorter::read_segment_terms(dvd, meta, sort, field_number, max_doc)?
+            .ok_or_else(missing)
     }
 
     /// `IndexWriter.applyAllDeletesAndUpdates()`: freeze whatever the global
@@ -19386,46 +19476,66 @@ pub(crate) mod tests {
         }
     }
 
-    /// `set_index_sort` accepts every kind whose key this writer can produce
-    /// and names the ones it cannot, rather than mis-ordering them. Reading
-    /// them is a separate question -- `segment_info::parse` handles all four
-    /// providers, which is what lets this port open an index Lucene wrote.
+    /// `set_index_sort` accepts the byte-keyed kinds over the doc-values type
+    /// each reads (`validateIndexSortDVType`) and refuses them over any
+    /// other -- a `STRING` sort over a SORTED_SET column is not quietly read
+    /// as its first value.
     #[test]
-    fn set_index_sort_refuses_the_ordinal_and_byte_sort_kinds() {
+    fn set_index_sort_matches_each_byte_kind_to_its_doc_values_type() {
         use crate::segment_info::{IndexSortKind, SortedSetSelector, StringMissingValue};
         let tmp = tempdir("sort-kind-gate");
         let dir = FsDirectory::open(&tmp);
+        let mut tags = sorted_field("tags", 3);
+        tags.doc_values_type = DocValuesType::SortedSet;
+        let mut blob = sorted_field("blob", 4);
+        blob.doc_values_type = DocValuesType::Binary;
         let fields = vec![
             stored_only_field("id", 0),
             numeric_field("rank", 1),
             sorted_field("name", 2),
+            tags,
+            blob,
         ];
         let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
         writer.set_doc_values_field(Some("name")).unwrap();
-        for kind in [
-            IndexSortKind::String(StringMissingValue::First),
-            IndexSortKind::SortedSet {
-                selector: SortedSetSelector::Min,
-                missing: StringMissingValue::None,
-            },
-            IndexSortKind::Binary(StringMissingValue::Last),
+        writer.add_doc_values_field("tags").unwrap();
+        writer.add_doc_values_field("blob").unwrap();
+        let string = IndexSortKind::String(StringMissingValue::First);
+        let set = IndexSortKind::SortedSet {
+            selector: SortedSetSelector::Min,
+            missing: StringMissingValue::None,
+        };
+        let binary = IndexSortKind::Binary(StringMissingValue::Last);
+        for (field, kind) in [("name", &string), ("tags", &set), ("blob", &binary)] {
+            let sf = IndexSortField {
+                field: field.to_string(),
+                reverse: false,
+                kind: kind.clone(),
+            };
+            writer.set_index_sort(Some(&[sf])).unwrap();
+        }
+        for (field, kind, dv) in [
+            ("tags", &string, DocValuesType::SortedSet),
+            ("name", &set, DocValuesType::Sorted),
+            ("name", &binary, DocValuesType::Sorted),
         ] {
             let sf = IndexSortField {
-                field: "name".to_string(),
+                field: field.to_string(),
                 reverse: false,
                 kind: kind.clone(),
             };
             assert!(
                 matches!(
                     writer.set_index_sort(Some(&[sf])),
-                    Err(Error::UnsupportedIndexSortKind(f)) if f == "name"
+                    Err(Error::UnsupportedIndexSortField(f, t)) if f == field && t == dv
                 ),
-                "{kind:?}"
+                "{kind:?} over {field}"
             );
         }
         // And the doc-values type still has to match the kind: a
         // SortedNumeric sort over a NUMERIC column is refused by
         // `validateIndexSortDVType`'s rule, not silently read as NUMERIC.
+        writer.set_index_sort(None).unwrap();
         writer.set_doc_values_field(Some("rank")).unwrap();
         let sf = IndexSortField {
             field: "rank".to_string(),

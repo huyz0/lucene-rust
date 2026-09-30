@@ -496,25 +496,10 @@ pub fn flush_sorted_stored_only_segment(
 }
 
 /// The comparators `sort_fields` induces, in priority order.
-///
-/// Panics if any of them has none ([`SortKeyComparator::new`] returning
-/// `None`, i.e. a `BinarySortField`). That is a programming error, not a
-/// data error: `IndexWriter::set_index_sort` refuses such a sort, so no
-/// buffer can be permuted by one. Sorting by "always equal" instead would
-/// produce a segment whose `.si` claims an order it does not have -- valid
-/// files, clean checksums, wrong index.
 fn comparators(sort_fields: &[SortKeySpec<'_>]) -> Vec<SortKeyComparator> {
     sort_fields
         .iter()
-        .map(|spec| {
-            SortKeyComparator::new(spec.sort).unwrap_or_else(|| {
-                panic!(
-                    "sort field {:?} has no single-i64 comparator; \
-                     IndexWriter::set_index_sort must refuse it before a flush sees it",
-                    spec.sort.field
-                )
-            })
-        })
+        .map(|spec| SortKeyComparator::new(spec.sort))
         .collect()
 }
 
@@ -874,29 +859,46 @@ mod tests {
         TempDir::new("segment-writer")
     }
 
-    /// `comparators`' guard, which is unreachable through `IndexWriter`
-    /// (`set_index_sort` refuses a `BinarySortField`) but is the difference
-    /// between a loud failure and a segment whose `.si` claims an order its
-    /// bytes do not have: with no comparator, every pair would compare equal
-    /// and the "sort" would be the identity permutation.
+    /// A `BinarySortField` tier sorts by its rank key with `StringSorter`'s
+    /// sentinels: missing first unless `STRING_LAST`, and `reverse` flips
+    /// the sentinel too.
     #[test]
-    #[should_panic(expected = "has no single-i64 comparator")]
-    fn a_sort_with_no_comparator_panics_rather_than_sorting_by_nothing() {
-        let sort = IndexSortField {
-            field: "bytes".to_string(),
-            reverse: false,
-            kind: crate::segment_info::IndexSortKind::Binary(
-                crate::segment_info::StringMissingValue::Last,
+    fn a_binary_sort_tier_sorts_by_rank_with_string_sentinels() {
+        let keys = [Some(1), None, Some(0), None];
+        for (missing, reverse, want) in [
+            (
+                crate::segment_info::StringMissingValue::None,
+                false,
+                vec![1, 3, 2, 0],
             ),
-        };
-        let keys = [Some(1), Some(0)];
-        sort_permutation(
-            2,
-            &[SortKeySpec {
-                sort: &sort,
-                keys: &keys,
-            }],
-        );
+            (
+                crate::segment_info::StringMissingValue::Last,
+                false,
+                vec![2, 0, 1, 3],
+            ),
+            (
+                crate::segment_info::StringMissingValue::Last,
+                true,
+                vec![1, 3, 0, 2],
+            ),
+        ] {
+            let sort = IndexSortField {
+                field: "bytes".to_string(),
+                reverse,
+                kind: crate::segment_info::IndexSortKind::Binary(missing),
+            };
+            assert_eq!(
+                sort_permutation(
+                    4,
+                    &[SortKeySpec {
+                        sort: &sort,
+                        keys: &keys,
+                    }],
+                ),
+                want,
+                "{missing:?} reverse={reverse}"
+            );
+        }
     }
 
     fn doc_ids(

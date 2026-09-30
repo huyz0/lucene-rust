@@ -299,7 +299,6 @@ pub(crate) fn map_writer_error(context: &str, e: index_writer::Error) -> FfiStat
         | index_writer::Error::EmptyIndexSort
         | index_writer::Error::UnknownIndexSortField(_)
         | index_writer::Error::UnsupportedIndexSortField(_, _)
-        | index_writer::Error::UnsupportedIndexSortKind(_)
         | index_writer::Error::IndexSortFieldWithoutDocValues(_)
         | index_writer::Error::IncongruentIndexSort { .. }
         | index_writer::Error::IndexSortChangedMidBuffer(_)

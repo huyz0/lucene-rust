@@ -3487,12 +3487,11 @@ fn doc_values_presence(
 /// and yields the **term ordinal** (`IndexSorter.StringSorter` compares ords,
 /// not bytes). `Err` names the combination rather than guessing.
 ///
-/// Deliberately not supported, and reported as such rather than silently
-/// mis-verified: a `SortedSetSortField` (its per-document reduction is
-/// `SortedSetSelector`, which needs a SORTED_SET ordinal reader this port's
-/// `doc_values` module does not expose) and a `BinarySortField` (whose keys
-/// are raw bytes, so there is no `Option<i64>` to return at all -- see
-/// [`segment_info::IndexSortField::key_comparison`]).
+/// A `SortedSetSortField` reads SORTED_SET and applies its
+/// `SortedSetSelector`, and a `BinarySortField` reads BINARY; both, like
+/// STRING, reduce to the rank of the chosen value among the segment's values
+/// ([`crate::index_sorter`]) -- for a SORTED_SET that is its ordinal, for
+/// BINARY the order `BytesRef.compareTo` gives.
 fn sort_key_values(
     dvd: &[u8],
     meta: &doc_values::DocValuesMeta,
@@ -3542,18 +3541,20 @@ fn sort_key_values(
                 keys.push(doc_values::sorted_ord(dvd, entry, doc).map_err(|e| e.to_string())?);
             }
         }
-        (IndexSortKind::SortedSet { .. }, _) => {
-            return Err(
-                "a SortedSetSortField's per-document ordinal needs a SORTED_SET selector \
-                 reader this port does not expose"
-                    .to_string(),
-            )
-        }
-        (IndexSortKind::Binary(_), _) => {
-            return Err(
-                "a BinarySortField compares raw bytes, which is not a single-i64 sort key"
-                    .to_string(),
-            )
+        (IndexSortKind::SortedSet { .. }, field_infos::DocValuesType::SortedSet)
+        | (IndexSortKind::Binary(_), field_infos::DocValuesType::Binary) => {
+            let terms = crate::index_sorter::read_segment_terms(dvd, meta, sf, fi.number, max_doc)
+                .map_err(|e| e.to_string())?
+                .ok_or(
+                    if fi.doc_values_type == field_infos::DocValuesType::Binary {
+                        "no BINARY doc-values entry"
+                    } else {
+                        "no SORTED_SET doc-values entry"
+                    },
+                )?;
+            keys = crate::index_sorter::rank_terms(&[terms])
+                .pop()
+                .unwrap_or_default();
         }
         (kind, dv) => {
             return Err(format!(
@@ -3572,13 +3573,12 @@ fn sort_key_values(
 /// sort-on-flush writer and the sort-preserving merge use to *produce* the
 /// order, applied in reverse as a verifier.
 ///
-/// Skipped (not failed) for an unsorted segment, a segment with no
-/// doc-values files, or a sort this port can read but not
-/// compare (a `SortedSetSortField` or a `BinarySortField` -- see
-/// [`sort_key_values`]). "Skipped" is deliberate for the last of those: the
-/// index is openable and everything else about it is checked, but this one
-/// property is unverified and saying so is the difference between a check
-/// that passed and one that never ran.
+/// Not run for an unsorted segment, and skipped (not failed) for a segment
+/// with no doc-values files -- the index is openable and everything else
+/// about it is checked, but this one property is unverified and saying so is
+/// the difference between a check that passed and one that never ran. Every
+/// sort kind is verified, the byte-keyed ones through
+/// [`crate::index_sorter`].
 fn check_index_sort(
     dir: &dyn Directory,
     commit: &SegmentCommitInfo,
@@ -3589,32 +3589,6 @@ fn check_index_sort(
     let Some(sort_fields) = &si.index_sort else {
         return;
     };
-    // A sort kind this port can read but not *verify* is unverifiable before
-    // any file is opened, and reporting it as a failure would call a
-    // perfectly good real-Lucene index corrupt. Skipped, with the reason and
-    // the field, so it is visible that the check did not run.
-    if let Some(sf) = sort_fields.iter().find(|sf| {
-        matches!(
-            sf.kind,
-            segment_info::IndexSortKind::SortedSet { .. } | segment_info::IndexSortKind::Binary(_)
-        )
-    }) {
-        checks.push(Check::skipped(
-            "sort.docs_in_index_sort_order",
-            &format!(
-                "a comparator for sort field {:?}, a {},",
-                sf.field,
-                match sf.kind {
-                    segment_info::IndexSortKind::Binary(_) =>
-                        "BinarySortField whose keys are raw bytes rather than one i64",
-                    _ =>
-                        "SortedSetSortField whose per-document ordinal needs a SORTED_SET \
-                          selector reader this port does not expose",
-                }
-            ),
-        ));
-        return;
-    }
     let Some(opened) = open_doc_values(dir, commit, si, field_infos) else {
         // The sharpest of the skip cases, and the reason this is modelled at
         // all: a segment that *declares* an index sort but carries no
@@ -3641,8 +3615,7 @@ fn check_index_sort(
                 .iter()
                 .find(|f| f.name == sf.field)
                 .ok_or_else(|| format!("sort field {:?} is not in .fnm", sf.field))?;
-            let cmp = segment_info::SortKeyComparator::new(sf)
-                .expect("the unsupported kinds returned above");
+            let cmp = segment_info::SortKeyComparator::new(sf);
             per_field.push((
                 sort_key_values(&dvd, &meta, sf, fi, si.doc_count)
                     .map_err(|e| format!("sort field {:?}: {e}", sf.field))?,
@@ -12263,12 +12236,10 @@ mod tests {
     /// `soft_deletes.count_matches`. Every failure arm of both was unfired:
     /// the only segments that reached them were healthy ones.
     ///
-    /// 1. A `SortedSetSortField` sort. `segment_info` can *read* it (that is
-    ///    what lets this port open an index Lucene wrote with one), but
-    ///    reducing a SORTED_SET column by a `SortedSetSelector` needs an
-    ///    ordinal reader `doc_values` does not expose -- so the check must
-    ///    report itself **skipped**, naming the field. Failing it would call
-    ///    a healthy real-Lucene index corrupt.
+    /// 1. A `SortedSetSortField` sort is verified, not skipped: the column
+    ///    is reduced by its `SortedSetSelector` and compared by ordinal, so
+    ///    a segment in order passes and a declared descending order over the
+    ///    same ascending column fails.
     /// 2. A sort whose *kind* disagrees with the field's doc-values type --
     ///    a numeric `SortField` over a SORTED_SET column, which is what
     ///    `DocValues.getNumeric` throws on in Java. A `.si` and a `.fnm`
@@ -12319,18 +12290,21 @@ mod tests {
                 std::fs::write(&si_path, segment_info::write(&si, "")).unwrap();
             };
 
-        // (1) A SORTED_SET sort: skipped, not failed, and it says which field.
+        // (1) A SORTED_SET sort is verified: in order passes, and the same
+        // column declared descending fails.
         let dst = tempdir();
         let commit = write_single_valued_sorted_set_fixture(&dst, &[b"a", b"b"]);
         restamp_sort(&dst, &commit, sorted_set_sort_on_tags());
         let dir = FsDirectory::open(&dst);
         let sort = sort_check(&dir, &commit);
-        assert!(
-            sort.was_skipped(),
-            "a real-Lucene SortedSetSortField index must not be called corrupt: {sort:?}"
-        );
-        assert!(sort.message.contains("SortedSetSortField"), "{sort:?}");
-        assert!(sort.message.contains("\"tags\""), "{sort:?}");
+        assert!(sort.passed(), "{sort:?}");
+        let mut descending = sorted_set_sort_on_tags();
+        descending.as_mut().unwrap()[0].reverse = true;
+        restamp_sort(&dst, &commit, descending);
+        let dir = FsDirectory::open(&dst);
+        let sort = sort_check(&dir, &commit);
+        assert!(!sort.passed() && !sort.was_skipped(), "{sort:?}");
+        assert!(sort.message.contains("sorts after"), "{sort:?}");
 
         // (2) A numeric sort over the same SORTED_SET column: a real
         // `.si`/`.fnm` disagreement, and a failure.
