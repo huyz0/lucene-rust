@@ -139,6 +139,12 @@ snapshot's files pinned until the reader drops -- `SearcherManager`'s writer
 constructors, and a `ReaderPool` keeping segments opened for delete
 resolution between rounds.
 
+Delivered (ported, not yet benchmarked): the rest of `IndexWriter`'s
+operations -- `tryDeleteDocument`/`tryUpdateDocValue` by NRT doc id,
+`addIndexes` (copying segments as they are, and merging them into one),
+`maybeMerge`, `flushNextBuffer`, `close` under `commitOnClose`, the
+merged-segment warmer -- and a reader's leaf sorter.
+
 Delivered (ported, not yet benchmarked): compound segments from the writer --
 `IndexWriter::set_use_compound_file` for flushes, the merge policy's
 `useCompoundFile` for merges -- verified by `VerifyCompoundSegment` (real

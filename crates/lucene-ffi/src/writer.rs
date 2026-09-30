@@ -317,6 +317,8 @@ pub(crate) fn map_writer_error(context: &str, e: index_writer::Error) -> FfiStat
         // `ConcurrentMergeScheduler.setMaxMergesAndThreads`'.
         | index_writer::Error::InvalidMergeRate(_)
         | index_writer::Error::InvalidMergeScheduler(_)
+        // `addIndexes`' conflicting-schema `IllegalArgumentException`.
+        | index_writer::Error::AddIndexes(_)
         | index_writer::Error::UnknownSortField(_) => FfiStatus::InvalidArgument,
         // Everything left is a genuine I/O or decode failure of the index
         // itself. Enumerated rather than left to a `_` arm so that the next

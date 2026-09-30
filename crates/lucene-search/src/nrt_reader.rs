@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use lucene_index::nrt::NrtSource;
 
-use crate::directory_reader::{DirectoryReader, Result};
+use crate::directory_reader::{DirectoryReader, Result, SegmentReader};
 
 impl DirectoryReader {
     /// `DirectoryReader.open(IndexWriter)`: `open_nrt(writer, true, false)`.
@@ -71,6 +71,24 @@ impl DirectoryReader {
     /// whether it already shows everything the writer has.
     pub fn is_current_nrt(&self, writer: &dyn NrtSource) -> Result<bool> {
         Ok(writer.nrt_is_current(&self.segment_infos)?)
+    }
+
+    /// `IndexWriterConfig.setLeafSorter(comparator)` /
+    /// `DirectoryReader.open(directory, leafSorter)`: this reader with its
+    /// segments in `leaf_sorter`'s order (stable, as Java's `Arrays.sort`
+    /// over the leaves), doc bases recomputed; segments are shared, not
+    /// reopened, and a near-real-time reader keeps its file pin. The writer's
+    /// configuration cannot carry a comparator over this crate's
+    /// [`SegmentReader`], so the sorter is applied to the reader a writer
+    /// hands out -- which is where Java applies it too.
+    pub fn with_leaf_sorter(
+        &self,
+        leaf_sorter: impl Fn(&SegmentReader, &SegmentReader) -> std::cmp::Ordering,
+    ) -> Self {
+        let segments = self.segment_readers();
+        let mut order: Vec<usize> = (0..segments.len()).collect();
+        order.sort_by(|&a, &b| leaf_sorter(&segments[a], &segments[b]));
+        self.with_segment_order(&order)
     }
 
     /// Whether this reader was opened from a writer (and pins that writer's

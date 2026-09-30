@@ -395,8 +395,8 @@ index/IndexReader	partial	crates/lucene-search/src/directory_reader.rs::Director
 index/IndexReaderContext	ported	crates/lucene-search/src/multi_segment.rs::OpenSegment
 index/IndexSorter	ported	crates/lucene-index/src/index_sorter.rs::read_segment_terms
 index/IndexUpgrader	deferred:M8	command-line tool rewriting older-format segments into the current format
-index/IndexWriter	partial	crates/lucene-index/src/index_writer.rs::IndexWriter -- M7: per parity.md: not ported `tryDeleteDocument`, `tryUpdateDocValue`, `addIndexes` (both overloads), `addBatch`/`ColumnBatch` updates, `maybeMerge` on the single-threaded writer, `flushNextBuffer`, `infoStream`
-index/IndexWriterConfig	partial	crates/lucene-index/src/index_writer.rs::set_index_sort -- M7: settings are writer setters (`setSimilarity` is `IndexWriter::set_similarity`, norms via `NormSimilarity`); missing codec/per-field format choice, `IndexWriterEventListener`, `infoStream`, `leafSorter`, `commitOnClose`
+index/IndexWriter	ported	crates/lucene-index/src/index_writer.rs::IndexWriter
+index/IndexWriterConfig	partial	crates/lucene-index/src/index_writer.rs::set_index_sort -- M7: settings are writer setters (`setSimilarity` is `IndexWriter::set_similarity`, norms via `NormSimilarity`); missing codec and per-field format choice (T7.5). `IndexWriterEventListener` and `infoStream` are not needed (rows `index/IndexWriterEventListener`, `util/InfoStream`); `leafSorter` is `DirectoryReader::with_leaf_sorter`, `commitOnClose` is `IndexWriter::set_commit_on_close`
 index/IndexWriterEventListener	not-needed	callback hook for merge begin/end events used for metrics and tests; no effect on the index.
 index/IndexableField	partial	crates/lucene-index/src/index_writer/explicit.rs::ExplicitDocument -- M7: no `IndexableField` abstraction: fields are configured per writer (`set_*_field`/`add_*_field`) or arrive pre-inverted; the document field-type API is M7 T7.2
 index/IndexableFieldType	partial	crates/lucene-codecs/src/field_infos.rs::FieldInfo -- M7: field properties exist only as the writer's per-field `FieldInfo` schema; no per-field-instance type descriptor of the document API (M7 T7.2)
@@ -407,7 +407,7 @@ index/KnnVectorValues	ported	crates/lucene-codecs/src/vectors.rs::FloatVectorVal
 index/LeafMetaData	ported	crates/lucene-index/src/segment_info.rs::SegmentInfo
 index/LeafReader	partial	crates/lucene-search/src/directory_reader.rs::SegmentReader -- M7: does not open term vectors or KNN vectors (lucene-search/src/term_vectors_query.rs and vector_query.rs take their own readers); no reader-closed listeners / CacheHelper
 index/LeafReaderContext	ported	crates/lucene-search/src/multi_segment.rs::OpenSegment
-index/LiveIndexWriterConfig	partial	crates/lucene-index/src/index_writer.rs::set_ram_buffer_size_mb -- M7: RAM buffer, max buffered docs and merge policy are live-settable; no merged-segment warmer, `maxFullFlushMergeWaitMillis` (merge-on-commit) or `checkPendingFlushOnUpdate`
+index/LiveIndexWriterConfig	partial	crates/lucene-index/src/index_writer.rs::set_ram_buffer_size_mb -- M7: RAM buffer, max buffered docs and merge policy are live-settable; no `maxFullFlushMergeWaitMillis` (merge-on-commit) or `checkPendingFlushOnUpdate`
 index/LockableConcurrentApproximatePriorityQueue	not-needed	lock-holding queue of idle DWPTs inside DocumentsWriterPerThreadPool; Rust slots are Mutex-guarded buffers (no user-visible behaviour).
 index/LogByteSizeMergePolicy	ported	crates/lucene-index/src/merge_policy/log.rs::LogByteSizeMergePolicy
 index/LogDocMergePolicy	ported	crates/lucene-index/src/merge_policy/log.rs::LogDocMergePolicy
