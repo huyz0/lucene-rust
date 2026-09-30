@@ -115,7 +115,7 @@ fn main() {
     let id = commit.segment_id;
 
     let si_bytes = dir.open(&format!("{name}.si")).expect(".si");
-    let si = segment_info::parse(&si_bytes, &id).expect("parse .si");
+    let si = segment_info::parse_for_codec(&si_bytes, &id, &commit.codec_name).expect("parse .si");
     assert!(
         !si.is_compound_file,
         "reader_open_profile replicates the non-compound path only"
@@ -154,7 +154,7 @@ fn main() {
         ".si open + parse",
         best(reps, || {
             let b = dir.open(&format!("{name}.si")).expect(".si");
-            let si = segment_info::parse(&b, &id).expect("parse");
+            let si = segment_info::parse_for_codec(&b, &id, &commit.codec_name).expect("parse");
             si.doc_count as u64
         }),
     );

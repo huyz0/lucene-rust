@@ -144,6 +144,76 @@ pub(crate) fn read_postings(
     })
 }
 
+/// One full block of an inline-skip generation (`Lucene912`, `Lucene101`,
+/// `Lucene103`) or a trailing-skip one (`Lucene90`, `Lucene99`), decoded into
+/// the first [`BLOCK_SIZE`] slots of a [`crate::postings::LazyDocsCursor`]'s
+/// block arrays: `refillFullBlock`'s doc deltas (the generation's encoding,
+/// bit-set blocks expanded), then the frequency block -- decoded when
+/// `needs_freq`, stepped over otherwise (`PForUtil.skip`), and all ones for a
+/// field without frequencies.
+pub(crate) fn decode_block_body(
+    r: &mut SliceInput,
+    format: PostingsFormat,
+    prev_doc: i32,
+    index_has_freq: bool,
+    needs_freq: bool,
+    docs: &mut [i32],
+    freqs: &mut [i32],
+) -> Result<()> {
+    let mut block = [0u64; BLOCK_SIZE];
+    // `Lucene90`/`Lucene99` delta-code from the previous block's last document
+    // as well; only the first document's base differs, and the cursor passes
+    // that in.
+    decode_full_doc_block(r, format, i64::from(prev_doc), &mut block)?;
+    for (d, &v) in docs.iter_mut().zip(block.iter()) {
+        *d = v as i32;
+    }
+    if index_has_freq && needs_freq {
+        for_util::pfor_decode(r, format.word(), &mut block)?;
+        for (f, &v) in freqs.iter_mut().zip(block.iter()) {
+            *f = v as i32;
+        }
+    } else {
+        if index_has_freq {
+            for_util::pfor_skip(r, format.word())?;
+        }
+        for f in freqs.iter_mut().take(BLOCK_SIZE) {
+            *f = 1;
+        }
+    }
+    Ok(())
+}
+
+/// `Lucene90PostingsReader.readVIntBlock` into a lazy cursor's block: the
+/// `docFreq % 128` remainder of a `Lucene90` term, one vint per document
+/// (`docDelta << 1 | freq == 1` when the field has frequencies, then the
+/// frequency itself when it is not 1).
+// ARITH: `code >> 1` of an unsigned code cannot overflow; doc ids accumulate
+// with `wrapping_add`, as Java's `int` sum wraps on a corrupt file.
+#[allow(clippy::arithmetic_side_effects)]
+pub(crate) fn read_tail_block_90(
+    r: &mut SliceInput,
+    prev_doc: i32,
+    index_has_freq: bool,
+    docs: &mut [i32],
+    freqs: &mut [i32],
+) -> Result<()> {
+    let mut acc = prev_doc;
+    for (d, f) in docs.iter_mut().zip(freqs.iter_mut()) {
+        let code = r.read_vint()? as u32;
+        let (delta, freq) = if index_has_freq {
+            let freq = if code & 1 != 0 { 1 } else { r.read_vint()? };
+            (code >> 1, freq)
+        } else {
+            (code, 1)
+        };
+        acc = acc.wrapping_add(delta as i32);
+        *d = acc;
+        *f = freq;
+    }
+    Ok(())
+}
+
 /// One full block's 128 doc ids, absolute, from the previous block's last
 /// id `prev_doc`.
 fn decode_full_doc_block(
