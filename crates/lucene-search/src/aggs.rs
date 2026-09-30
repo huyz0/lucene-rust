@@ -137,7 +137,8 @@ impl MetricState {
     fn add(&mut self, value: f64) {
         // "If the value is Inf or NaN, just add it to the running tally."
         if !value.is_finite() {
-            // Java's `value = v + value`, with one NaN. The bits of a NaN
+            // Java's `value = v + value`, in Java's operand order, and the
+            // result canonicalised to Java's `Double.NaN`. The bits of a NaN
             // this addition makes are not Java's to promise nor Rust's: x86
             // gives `inf + -inf` the negative default NaN (`0xfff8...`),
             // aarch64 the positive one, and with two NaN operands keeps
@@ -225,7 +226,7 @@ impl MetricState {
 
 /// Java's `Double.NaN` (`0x7ff8000000000000L`), spelled out: `f64::NAN`'s
 /// bits are not guaranteed.
-const JAVA_NAN: f64 = f64::from_bits(0x7ff8_0000_0000_0000);
+pub(crate) const JAVA_NAN: f64 = f64::from_bits(0x7ff8_0000_0000_0000);
 
 /// Java's `Math.min(double, double)`: `NaN` wins, and `-0.0 < 0.0`.
 #[inline]

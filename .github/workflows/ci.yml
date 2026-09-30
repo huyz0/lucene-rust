@@ -131,7 +131,8 @@ jobs:
       # 0xfff8... or 0x7ff8... depending on operand order and target), which
       # once made the native metric aggregations differ from Lucene's only
       # under --release. So lucene-search's tests, whose fixtures compare
-      # doubles bit for bit, run in release too, on both targets.
+      # doubles bit for bit, run in release too, on both targets. The same step
+      # ends scripts/gate.sh; see docs/mechanical-gates.md#release-profile.
       - name: lucene-search tests in release
         run: cargo test --release -p lucene-search
 

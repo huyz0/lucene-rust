@@ -528,7 +528,10 @@ public final class NativeSelfTest {
         });
         boolean same = Arrays.equals(counts, wantCounts);
         for (int i = 0; i < values.length && same; i++) {
-            same = Double.doubleToRawLongBits(values[i]) == Double.doubleToRawLongBits(want[i]);
+            // doubleToLongBits: a NaN the sum makes by arithmetic has whichever
+            // bits HotSpot's operand order and the CPU give; OpenSearch
+            // serialises it canonically, and the native sum is canonical.
+            same = Double.doubleToLongBits(values[i]) == Double.doubleToLongBits(want[i]);
         }
         check(same, what + ": aggregations native " + Arrays.toString(counts) + Arrays.toString(values) + " lucene " + Arrays.toString(wantCounts) + Arrays.toString(want));
         aggChecks++;
