@@ -96,6 +96,7 @@ the hook, the container and this table cannot drift apart:
 | Type-check the out-of-workspace benchmarks | `cargo check --manifest-path benchmarks/rust-runner/Cargo.toml --all-targets` |
 | Tests + coverage gate | `cargo llvm-cov --workspace --fail-under-lines 95` |
 | Coverage report, per file | `cargo llvm-cov --workspace --summary-only` |
+| `lucene-search`'s tests in release (bit-for-bit float fixtures under the profile the plugin ships) | `cargo test --release -p lucene-search` |
 | Regenerate Java fixtures | `scripts/gen-fixtures.sh --only <Gen…>` (a full run rewrites every index with fresh segment ids — see [`fixtures/README.md`](fixtures/README.md)) |
 | Check fixtures are still Java-produced | `scripts/gen-fixtures.sh --check` |
 | Verify the write path (Lucene reads Rust bytes) | `scripts/verify-write-path.sh` |

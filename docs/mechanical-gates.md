@@ -320,6 +320,28 @@ for `PLAN.md` or for prose in Rust comments. When a diff removes a `fn` or a
 `struct`, grep `crates/`, `docs/parity.md` and `PLAN.md` for its name by hand;
 `docs/sweep/` is an archive and is deliberately exempt.
 
+## release-profile
+
+`cargo test --release -p lucene-search`, in `scripts/gate.sh` and CI's gate
+job (x64 and arm64). Every other test step runs a debug build, which is not
+what the plugin ships. The optimiser may reorder a floating-point addition,
+and nothing preserves a `NaN`'s sign or payload across that: x86 makes
+`inf + -inf` the negative default `NaN`, aarch64 the positive one, and with
+two `NaN` operands keeps whichever comes first. The metric aggregations' sum
+came out `0xfff8...` under `--release` where Java's fixture records
+`Double.NaN`, and `metric_aggs_fixtures` failed in release only.
+
+**Seen to fail** on the commit before `f571c71`: `metric_aggs_fixtures`, three
+slices of field `d` (`got 38429:fff8000000000000:...`,
+`Lucene 38429:7ff8000000000000:...`).
+
+**Blind spots.** Only `lucene-search`: `lucene-codecs`' and `lucene-ffi`'s
+tests, which also compare floats bit for bit, still run in debug only, as
+does every Java-side check. A difference that needs a CPU other than x64 or
+arm64, or a toolchain other than the pinned one, is not reached. The step
+adds `lucene-search`'s release build to the gate's time (about 1m40 on a
+warm dependency cache).
+
 ---
 
 ## Running them

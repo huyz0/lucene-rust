@@ -63,7 +63,10 @@ import java.util.stream.Stream;
  * </pre>
  *
  * <p>Each run records, per field, {@code count:sum:delta:min:max:minOfMins:maxOfMaxes} with the
- * doubles as {@code doubleToRawLongBits} in hex.
+ * doubles as {@code doubleToRawLongBits} in hex -- except the sum, as {@code doubleToLongBits}:
+ * a {@code NaN} the sum makes by arithmetic ({@code inf + -inf}) has whichever bits the CPU and the
+ * JIT's operand order give ({@code 0xfff8...} on x86), and OpenSearch serialises it through {@code
+ * doubleToLongBits} anyway, so its canonical bits are the only ones an oracle should hold.
  */
 public class GenMetricAggs {
   static final int DOCS_PER_SEGMENT = 20_000;
@@ -109,7 +112,7 @@ public class GenMetricAggs {
     double maxOfMaxes = Double.NEGATIVE_INFINITY;
 
     String record() {
-      return count + ":" + hex(sum.value) + ":" + hex(sum.delta) + ":" + hex(min) + ":" + hex(max) + ":"
+      return count + ":" + hexCanonical(sum.value) + ":" + hex(sum.delta) + ":" + hex(min) + ":" + hex(max) + ":"
           + hex(minOfMins) + ":" + hex(maxOfMaxes);
     }
   }
@@ -177,6 +180,11 @@ public class GenMetricAggs {
 
   static String hex(double d) {
     return Long.toHexString(Double.doubleToRawLongBits(d));
+  }
+
+  /** {@link #hex}, over {@code doubleToLongBits}: every {@code NaN} the canonical one. */
+  static String hexCanonical(double d) {
+    return Long.toHexString(Double.doubleToLongBits(d));
   }
 
   static double read(String field, long v) {
