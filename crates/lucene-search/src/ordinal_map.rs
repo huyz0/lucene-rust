@@ -652,12 +652,14 @@ mod tests {
     /// materialized one, and it has to be its own check: `build`'s runs over
     /// the lists before the merge starts, and a cursor has no list to scan.
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "not strictly ascending")]
     fn an_unsorted_cursor_is_caught_in_debug_builds() {
         let _ = streamed(vec![VecCursor::new(&["b", "a"])]);
     }
 
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "not strictly ascending")]
     fn unsorted_input_is_caught_in_debug_builds() {
         OrdinalMap::build(&[terms(&["b", "a"])]);

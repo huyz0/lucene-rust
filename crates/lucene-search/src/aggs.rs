@@ -137,7 +137,16 @@ impl MetricState {
     fn add(&mut self, value: f64) {
         // "If the value is Inf or NaN, just add it to the running tally."
         if !value.is_finite() {
-            self.sum += value;
+            // Java's `value = v + value`, with one NaN. The bits of a NaN
+            // this addition makes are not Java's to promise nor Rust's: x86
+            // gives `inf + -inf` the negative default NaN (`0xfff8...`),
+            // aarch64 the positive one, and with two NaN operands keeps
+            // whichever the optimiser put first -- so a release build
+            // differed from a debug one. OpenSearch only ever sees the value
+            // through `doubleToLongBits` (`StreamOutput.writeDouble`), which
+            // is Java's `Double.NaN`; so is this.
+            let sum = value + self.sum;
+            self.sum = if sum.is_nan() { JAVA_NAN } else { sum };
         }
         if self.sum.is_finite() {
             let corrected = value + self.delta;
@@ -213,6 +222,10 @@ impl MetricState {
         }
     }
 }
+
+/// Java's `Double.NaN` (`0x7ff8000000000000L`), spelled out: `f64::NAN`'s
+/// bits are not guaranteed.
+const JAVA_NAN: f64 = f64::from_bits(0x7ff8_0000_0000_0000);
 
 /// Java's `Math.min(double, double)`: `NaN` wins, and `-0.0 < 0.0`.
 #[inline]
@@ -1100,6 +1113,32 @@ mod tests {
         assert_eq!(java_max(0.0, -0.0).to_bits(), 0.0f64.to_bits());
         assert_eq!(java_min(2.0, 3.0), 2.0);
         assert_eq!(java_max(2.0, 3.0), 3.0);
+    }
+
+    /// **A NaN sum is Java's `Double.NaN`, in every build profile.** On x86
+    /// `inf + -inf` is the negative default NaN, and a release build (which
+    /// may commute the addition) returned `0xfff8...` where Java's fixture
+    /// records `0x7ff8...`; `metric_aggs_fixtures` failed under `--release`
+    /// only. The values go through `black_box` so the additions run at run
+    /// time, not folded; CI runs this test in release as well.
+    #[test]
+    fn a_nan_sum_has_javas_nan_bits() {
+        let neg_nan = f64::from_bits(0xfff8_0000_0000_0000);
+        let payload_nan = f64::from_bits(0x7ff8_0000_0000_0001);
+        for values in [
+            [f64::INFINITY, f64::NEG_INFINITY, 1.0],
+            [f64::NEG_INFINITY, 2.0, f64::INFINITY],
+            [neg_nan, 1.0, 1.0],
+            [f64::INFINITY, neg_nan, f64::NEG_INFINITY],
+            [payload_nan, f64::INFINITY, neg_nan],
+            [f64::NAN, f64::NEG_INFINITY, f64::INFINITY],
+        ] {
+            let mut s = MetricState::default();
+            for v in values {
+                s.one::<NEED_SUM>(std::hint::black_box(v));
+            }
+            assert_eq!(s.sum.to_bits(), 0x7ff8_0000_0000_0000, "{values:?}");
+        }
     }
 
     #[test]

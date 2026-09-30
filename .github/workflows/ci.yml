@@ -126,6 +126,15 @@ jobs:
           set -o pipefail
           cargo llvm-cov --workspace --summary-only --fail-under-lines 95 | tee coverage.txt
 
+      # The plugin ships the release build, and the optimiser may change what
+      # debug arithmetic promised: a NaN's bits, for one (`inf + -inf` is
+      # 0xfff8... or 0x7ff8... depending on operand order and target), which
+      # once made the native metric aggregations differ from Lucene's only
+      # under --release. So lucene-search's tests, whose fixtures compare
+      # doubles bit for bit, run in release too, on both targets.
+      - name: lucene-search tests in release
+        run: cargo test --release -p lucene-search
+
       # AGENTS.md invariant #8 asks for >=95% line coverage *per file*, but the
       # gate command above only enforces the workspace total. Report the
       # per-file view so the difference stays visible rather than silent. This
