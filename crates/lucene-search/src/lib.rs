@@ -225,6 +225,7 @@ pub mod soft_deletes;
 pub mod term_vectors_query;
 pub mod terminate;
 pub mod terms_agg;
+pub mod top_docs;
 pub mod top_field;
 pub mod vector_query;
 pub mod weight_count;
@@ -400,6 +401,15 @@ pub enum Error {
     /// A `terms` aggregation's field has doc values but not keyword ones.
     #[error("terms aggregation field {0} has non-keyword doc values")]
     TermsAggType(String),
+    /// Java's `IllegalArgumentException` from an API precondition (M7's
+    /// search infrastructure: `TopDocs.merge`/`rrf`, rescorers, values
+    /// sources, the Matches API).
+    #[error("{0}")]
+    IllegalArgument(String),
+    /// Java's `IllegalStateException` (a reference manager used after close,
+    /// a collector replayed after its cache overflowed).
+    #[error("{0}")]
+    IllegalState(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

@@ -773,7 +773,7 @@ search/TermScorer	ported	crates/lucene-search/src/exec/leaf.rs::TermScorer
 search/TermStatistics	ported	crates/lucene-search/src/similarities.rs::TermStatistics
 search/TimeLimitingBulkScorer	partial	crates/lucene-search/src/multi_segment.rs::merge_multi_segment_scored_with_deadline -- M7: deadline checked between segments only (an in-flight segment is not interrupted), and only on the term/boolean fan-out paths
 search/TimeLimitingKnnCollectorManager	todo:M7	query timeout for KNN collection
-search/TopDocs	partial	crates/lucene-search/src/multi_segment.rs::merge_multi_segment_scored -- M7: merge ported (no shardIndex); TopDocs.rrf (reciprocal rank fusion) not ported
+search/TopDocs	ported	crates/lucene-search/src/top_docs.rs::merge
 search/TopDocsCollector	ported	crates/lucene-search/src/collector.rs::TopDocsCollector
 search/TopFieldCollector	ported	crates/lucene-search/src/top_field.rs::search_sorted
 search/TopFieldCollectorManager	ported	crates/lucene-search/src/top_field.rs::search_sorted_sliced
