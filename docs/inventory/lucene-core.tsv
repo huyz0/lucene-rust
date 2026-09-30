@@ -1014,7 +1014,7 @@ util/SloppyMath	deferred:M9	fast approximate trig/haversin distance for geo
 util/SmallFloat	partial	crates/lucene-util/src/small_float.rs::int_to_byte4 -- M7: intToByte4/byte4ToInt (with long4/int4) only; floatToByte/byteToFloat and floatToByte315/byte315ToFloat missing
 util/SortableBytesRefArray	not-needed	internal interface over BytesRefArray/FixedLengthBytesRefArray
 util/Sorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
-util/SparseFixedBitSet	todo:M7	sparse bitset (the port always uses a dense FixedBitSet)
+util/SparseFixedBitSet	ported	crates/lucene-util/src/sparse_fixed_bit_set.rs::SparseFixedBitSet
 util/SparseLiveDocs	todo:M7	sparse live-docs representation (dense FixedBitSet always)
 util/StableMSBRadixSorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
 util/StableStringSorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
@@ -1103,11 +1103,11 @@ util/fst/ReverseRandomAccessReader	ported	crates/lucene-codecs/src/fst.rs::Bytes
 util/fst/Util	partial	crates/lucene-codecs/src/fst.rs::get -- M7: Util.get/binarySearch only (plus the suggester's own top-N in suggest.rs); no general shortestPaths/TopNSearcher, getByOutput, readCeilArc, toDot
 util/graph/GraphTokenStreamFiniteStrings	todo:M7	finite-path enumeration of graph token streams for QueryBuilder
 util/hnsw/AbstractHnswGraphSearcher	ported	crates/lucene-codecs/src/hnsw.rs::HnswGraphSearcher
-util/hnsw/BlockingFloatHeap	todo:M7	thread-safe bounded float heap backing MultiLeafKnnCollector (unported)
+util/hnsw/BlockingFloatHeap	ported	crates/lucene-util/src/float_heap.rs::BlockingFloatHeap
 util/hnsw/CloseableRandomVectorScorerSupplier	not-needed	closeable supplier over a merge temp file; Rust lifetimes/Drop
 util/hnsw/ConcurrentHnswMerger	todo:M7	multi-threaded HNSW graph merge (numMergeWorkers > 1)
 util/hnsw/FilteredHnswGraphSearcher	todo:M7	filtered (ACORN-style) graph search via KnnSearchStrategy.Hnsw with a non-zero threshold
-util/hnsw/FloatHeap	todo:M7	bounded float heap backing MultiLeafKnnCollector (unported)
+util/hnsw/FloatHeap	ported	crates/lucene-util/src/float_heap.rs::FloatHeap
 util/hnsw/HasKnnVectorValues	not-needed	accessor interface for vector values
 util/hnsw/HnswBuilder	ported	crates/lucene-codecs/src/hnsw.rs::HnswGraphBuilder
 util/hnsw/HnswConcurrentMergeBuilder	todo:M7	multi-threaded HNSW graph merge builder
@@ -1116,7 +1116,7 @@ util/hnsw/HnswGraphBuilder	ported	crates/lucene-codecs/src/hnsw.rs::HnswGraphBui
 util/hnsw/HnswGraphMerger	ported	crates/lucene-codecs/src/hnsw.rs::merge_graphs
 util/hnsw/HnswGraphSearcher	ported	crates/lucene-codecs/src/hnsw.rs::HnswGraphSearcher
 util/hnsw/HnswLock	not-needed	per-node locks for concurrent graph building; the Rust builder is single-threaded
-util/hnsw/HnswUtil	todo:M7	graph connectivity diagnostics (graphIsRooted, componentSizes, components)
+util/hnsw/HnswUtil	ported	crates/lucene-codecs/src/hnsw_util.rs::components
 util/hnsw/IncrementalHnswGraphMerger	ported	crates/lucene-codecs/src/hnsw_vectors.rs::merge_one_field
 util/hnsw/InitializedHnswGraphBuilder	ported	crates/lucene-codecs/src/hnsw.rs::init_graph
 util/hnsw/IntToIntFunction	not-needed	functional interface; Rust Fn(i32) -> i32 / slices
@@ -1139,10 +1139,10 @@ util/mutable/MutableValueInt	not-needed	mutable boxed value holder for function-
 util/mutable/MutableValueLong	not-needed	mutable boxed value holder for function-query/grouping value filling; Rust uses plain Option<T>/enum values
 util/mutable/MutableValueStr	not-needed	mutable boxed value holder for function-query/grouping value filling; Rust uses plain Option<T>/enum values
 util/packed/AbstractBlockPackedWriter	ported	crates/lucene-codecs/src/block_packed.rs::encode_all
-util/packed/AbstractPagedMutable	todo:M7	paged in-memory packed mutable arrays
-util/packed/BlockPackedReaderIterator	partial	crates/lucene-codecs/src/block_packed.rs::decode_all -- M7: decode-all only; no streaming next/skip iterator
+util/packed/AbstractPagedMutable	ported	crates/lucene-util/src/packed/paged_mutable.rs::AbstractPagedMutable
+util/packed/BlockPackedReaderIterator	ported	crates/lucene-codecs/src/block_packed.rs::BlockPackedReaderIterator
 util/packed/BlockPackedWriter	ported	crates/lucene-codecs/src/block_packed.rs::encode_all
-util/packed/BulkOperation	partial	crates/lucene-codecs/src/packed_ints.rs::get -- M7: PACKED format only (no PACKED_SINGLE_BLOCK); no block-wise long[]/byte[] bulk encode/decode API
+util/packed/BulkOperation	ported	crates/lucene-util/src/packed/bulk_operation.rs::BulkOperation
 util/packed/BulkOperationPacked	ported	crates/lucene-codecs/src/packed_ints.rs::encode
 util/packed/BulkOperationPacked1	ported	crates/lucene-codecs/src/packed_ints.rs::get
 util/packed/BulkOperationPacked10	ported	crates/lucene-codecs/src/packed_ints.rs::get
@@ -1168,28 +1168,28 @@ util/packed/BulkOperationPacked6	ported	crates/lucene-codecs/src/packed_ints.rs:
 util/packed/BulkOperationPacked7	ported	crates/lucene-codecs/src/packed_ints.rs::get
 util/packed/BulkOperationPacked8	ported	crates/lucene-codecs/src/packed_ints.rs::get
 util/packed/BulkOperationPacked9	ported	crates/lucene-codecs/src/packed_ints.rs::get
-util/packed/BulkOperationPackedSingleBlock	todo:M7	PACKED_SINGLE_BLOCK bulk encoding
-util/packed/DeltaPackedLongValues	todo:M7	delta-packed in-memory long buffer (port uses Vec<i64>)
+util/packed/BulkOperationPackedSingleBlock	ported	crates/lucene-util/src/packed/bulk_operation.rs::PackedSingleBlock
+util/packed/DeltaPackedLongValues	ported	crates/lucene-util/src/packed/packed_long_values.rs::DeltaPacked
 util/packed/DirectMonotonicReader	ported	crates/lucene-codecs/src/direct_monotonic.rs::get
 util/packed/DirectMonotonicWriter	ported	crates/lucene-codecs/src/direct_monotonic.rs::write
-util/packed/DirectPacked64SingleBlockReader	todo:M7	direct reader for PACKED_SINGLE_BLOCK
+util/packed/DirectPacked64SingleBlockReader	ported	crates/lucene-codecs/src/packed_ints.rs::DirectPacked64SingleBlockReader
 util/packed/DirectPackedReader	ported	crates/lucene-codecs/src/packed_ints.rs::get
 util/packed/DirectReader	ported	crates/lucene-codecs/src/direct_reader.rs::DirectReader
 util/packed/DirectWriter	ported	crates/lucene-codecs/src/direct_reader.rs::encode
-util/packed/GrowableWriter	todo:M7	growable in-memory packed mutable
-util/packed/MonotonicBlockPackedReader	todo:M7	monotonic block-packed reader
-util/packed/MonotonicBlockPackedWriter	todo:M7	monotonic block-packed writer
-util/packed/MonotonicLongValues	todo:M7	monotonic in-memory long buffer (port uses Vec<i64>)
-util/packed/Packed64	todo:M7	in-memory PackedInts.Mutable (PACKED layout)
-util/packed/Packed64SingleBlock	todo:M7	in-memory PackedInts.Mutable (single-block layout)
-util/packed/PackedDataInput	todo:M7	bit-level packed value stream reader
-util/packed/PackedDataOutput	todo:M7	bit-level packed value stream writer
-util/packed/PackedInts	partial	crates/lucene-codecs/src/packed_ints.rs::get -- M7: PACKED no-header read/write and byteCount only; no Mutable/Reader factories (getMutable, getReader, getReaderIterator), PACKED_SINGLE_BLOCK, fastestFormatAndBits
-util/packed/PackedLongValues	todo:M7	packed in-memory long buffer (port uses Vec<i64>, e.g. OrdinalMap)
-util/packed/PackedReaderIterator	ported	crates/lucene-codecs/src/packed_ints.rs::get
-util/packed/PackedWriter	ported	crates/lucene-codecs/src/packed_ints.rs::encode
-util/packed/PagedGrowableWriter	todo:M7	paged growable packed mutable
-util/packed/PagedMutable	todo:M7	paged packed mutable
+util/packed/GrowableWriter	ported	crates/lucene-util/src/packed/growable_writer.rs::GrowableWriter
+util/packed/MonotonicBlockPackedReader	ported	crates/lucene-codecs/src/monotonic_block_packed.rs::MonotonicBlockPackedReader
+util/packed/MonotonicBlockPackedWriter	ported	crates/lucene-codecs/src/monotonic_block_packed.rs::MonotonicBlockPackedWriter
+util/packed/MonotonicLongValues	ported	crates/lucene-util/src/packed/packed_long_values.rs::Monotonic
+util/packed/Packed64	ported	crates/lucene-util/src/packed/packed64.rs::Packed64
+util/packed/Packed64SingleBlock	ported	crates/lucene-util/src/packed/packed64_single_block.rs::Packed64SingleBlock
+util/packed/PackedDataInput	ported	crates/lucene-codecs/src/packed_data.rs::PackedDataInput
+util/packed/PackedDataOutput	ported	crates/lucene-codecs/src/packed_data.rs::PackedDataOutput
+util/packed/PackedInts	ported	crates/lucene-util/src/packed/mod.rs::get_mutable
+util/packed/PackedLongValues	ported	crates/lucene-util/src/packed/packed_long_values.rs::PackedLongValues
+util/packed/PackedReaderIterator	ported	crates/lucene-codecs/src/packed_ints.rs::PackedReaderIterator
+util/packed/PackedWriter	ported	crates/lucene-codecs/src/packed_ints.rs::PackedWriter
+util/packed/PagedGrowableWriter	ported	crates/lucene-util/src/packed/paged_mutable.rs::PagedGrowableWriter
+util/packed/PagedMutable	ported	crates/lucene-util/src/packed/paged_mutable.rs::PagedMutable
 util/quantization/BaseQuantizedByteVectorValues	todo:M7	scalar vector quantization (M7 T7.6)
 util/quantization/LegacyQuantizedByteVectorValues	todo:M7	scalar vector quantization (M7 T7.6)
 util/quantization/OptimizedScalarQuantizer	todo:M7	scalar vector quantization (M7 T7.6)
