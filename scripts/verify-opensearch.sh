@@ -88,10 +88,13 @@ fi
 # root shell runs it as `nobody` from a staged classpath.
 run_yaml() { # port out-dir
     local cp="$PWD/opensearch-plugin/build/yaml-classpath"
+    # The JDK 25 the classes were compiled for, not whatever `java` is on PATH.
+    local java_bin
+    java_bin=$(cat "$PWD/opensearch-plugin/build/java-launcher.txt")
     local as=()
     [[ $(id -u) == 0 ]] && as=(runuser -u nobody --)
     mkdir -p "$2" && chmod 777 "$2"
-    (cd "$2" && "${as[@]}" java -ea -cp "$cp:$cp/*" \
+    (cd "$2" && "${as[@]}" "$java_bin" -ea -cp "$cp:$cp/*" \
         -Dtests.rest.cluster="localhost:$1" -Dtests.cluster="localhost:$1" \
         -Dtests.clustername=docker-cluster -Dtests.rest.suite="$YAML_SUITES" \
         -Dtests.security.manager=false -Djava.io.tmpdir="$2" \

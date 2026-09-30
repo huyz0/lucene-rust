@@ -44,6 +44,20 @@ def jdk25 = javaToolchains.launcherFor(java.toolchain)
 tasks.withType(JavaExec).configureEach { javaLauncher = jdk25 }
 tasks.withType(Test).configureEach { javaLauncher = jdk25 }
 
+// The scripts that run a staged classpath outside Gradle (the YAML runner, the
+// engine tests) need this same JDK: the classes are release 25, and a bare
+// `java` on PATH is often Gradle's older one (CI's JAVA_HOME is JDK 21), which
+// refuses them with UnsupportedClassVersionError. They read the path here.
+def javaLauncherFile = layout.buildDirectory.file('java-launcher.txt')
+def writeJavaLauncher = tasks.register('writeJavaLauncher') {
+    description = 'Writes the JDK 25 launcher path to build/java-launcher.txt.'
+    def exe = jdk25.map { it.executablePath.asFile.absolutePath }
+    def out = javaLauncherFile
+    outputs.file(out)
+    outputs.upToDateWhen { false }
+    doLast { out.get().asFile.text = exe.get() + '\n' }
+}
+
 // Downcalls and `SymbolLookup.libraryLookup` are restricted methods; without
 // this the JVM warns on first use (a later JDK refuses). The node needs the
 // same line in its jvm.options (see README.md).
@@ -223,6 +237,7 @@ tasks.register('engineTest', Test) {
 // Like the YAML runner, the engine tests refuse to run as root (BootstrapForTesting);
 // scripts/opensearch-engine-tests.sh runs them as nobody from this staged classpath.
 tasks.register('engineTestClasspath', Sync) {
+    dependsOn writeJavaLauncher
     description = 'Stages the engine tests\' classpath under build/engine-test-classpath.'
     dependsOn tasks.named('engineTestClasses'), cargoBuild
     from(sourceSets.engineTest.runtimeClasspath)
@@ -236,6 +251,7 @@ tasks.register('engineTestClasspath', Sync) {
 // root shell -- a container, typically -- this stages the runner's classpath
 // where an unprivileged user can read it; scripts/verify-opensearch.sh runs it.
 tasks.register('yamlRestTestClasspath', Sync) {
+    dependsOn writeJavaLauncher
     description = 'Stages the YAML runner classpath under build/yaml-classpath.'
     dependsOn tasks.named('yamlRestTestClasses'), extractRestSpec
     from(sourceSets.yamlRestTest.runtimeClasspath)
