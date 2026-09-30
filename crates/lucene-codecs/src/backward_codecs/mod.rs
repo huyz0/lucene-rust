@@ -18,7 +18,8 @@
 //!   ([`crate::postings::read_positions`] at a 128-value block).
 //!
 //! What is here is what did change: the postings `.doc` framing and bit
-//! packing ([`postings`], [`for_util`]) and the FST terms index of
+//! packing ([`postings`], [`for_util`]), the trailing multi-level skip list
+//! of `Lucene90`/`Lucene99` ([`skip_list`]), the FST terms index of
 //! `Lucene90BlockTreeTermsReader` ([`blocktree`]), and the retired
 //! `Lucene90`..`Lucene95` HNSW vector formats' metadata, graphs and searches
 //! ([`hnsw_vectors`]), whose vectors the current flat reader serves. The
@@ -29,3 +30,4 @@ pub mod blocktree;
 pub mod for_util;
 pub mod hnsw_vectors;
 pub mod postings;
+pub(crate) mod skip_list;

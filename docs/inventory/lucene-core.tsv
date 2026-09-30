@@ -74,8 +74,8 @@ codecs/KnnVectorsFormat	ported	crates/lucene-codecs/src/hnsw_vectors.rs::HnswVec
 codecs/KnnVectorsReader	ported	crates/lucene-codecs/src/hnsw_vectors.rs::HnswVectorsReader
 codecs/KnnVectorsWriter	ported	crates/lucene-codecs/src/hnsw_vectors.rs::write_hnsw_vectors
 codecs/LiveDocsFormat	ported	crates/lucene-codecs/src/live_docs.rs::parse
-codecs/MultiLevelSkipListReader	deferred:M8	Skip-list reader used by no 10.5.0 lucene-core format; only the pre-Lucene99 postings formats in backward-codecs use it.
-codecs/MultiLevelSkipListWriter	deferred:M8	Skip-list writer used by no 10.5.0 lucene-core format; only the pre-Lucene99 postings formats in backward-codecs use it.
+codecs/MultiLevelSkipListReader	ported	crates/lucene-codecs/src/backward_codecs/skip_list.rs::SkipList -- only the retired Lucene90/Lucene99 postings formats use it
+codecs/MultiLevelSkipListWriter	not-needed	only the retired Lucene90/Lucene99 postings writers use it, and M8 reads old formats, never writes them
 codecs/MutablePointTree	ported	crates/lucene-codecs/src/points.rs::PackedPointsField
 codecs/NormsConsumer	ported	crates/lucene-codecs/src/norms.rs::write_fields
 codecs/NormsFormat	ported	crates/lucene-codecs/src/norms.rs::parse_meta
