@@ -512,6 +512,18 @@ impl IndexWriter<'_> {
         docs: &[Document],
         delete: Option<Term>,
     ) -> Result<SeqNo> {
+        self.add_fields_documents_registering(docs, delete, Vec::new())
+    }
+
+    /// [`Self::add_fields_documents_with_vectors`], with `registered` field
+    /// numbers put in the segment's `FieldInfos` even when no document
+    /// carries a value for them (a column batch's empty columns).
+    pub(crate) fn add_fields_documents_registering(
+        &mut self,
+        docs: &[Document],
+        delete: Option<Term>,
+        registered: Vec<i32>,
+    ) -> Result<SeqNo> {
         self.enable_explicit_documents()?;
         let mut explicit = Vec::with_capacity(docs.len());
         let mut vectors = Vec::with_capacity(docs.len());
@@ -519,6 +531,9 @@ impl IndexWriter<'_> {
             let (e, v) = self.invert_fields_document(doc)?;
             explicit.push(e);
             vectors.push(v);
+        }
+        if let Some(first) = explicit.first_mut() {
+            first.fields.registered = registered;
         }
         self.add_explicit_documents_with_vectors(delete, explicit, vectors)
     }
@@ -556,9 +571,13 @@ impl IndexWriter<'_> {
     pub(crate) fn register_batch_field_types(
         &mut self,
         types: &[(&str, &super::FieldType)],
-    ) -> Result<()> {
+    ) -> Result<Vec<i32>> {
         self.enable_explicit_documents()?;
-        self.register_field_types(types).map(|_| ())
+        Ok(self
+            .register_field_types(types)?
+            .into_iter()
+            .map(|(_, n)| n)
+            .collect())
     }
 
     /// `IndexingChain.processDocument` for one document; see the module doc.
@@ -765,6 +784,9 @@ pub(crate) fn test_check_stored_string(name: &str, len: usize) -> super::Result<
 impl ExplicitFields {
     /// Whether this document carries nothing but stored values.
     pub fn is_empty(&self) -> bool {
-        self.inverted.is_empty() && self.doc_values.is_empty() && self.points.is_empty()
+        self.inverted.is_empty()
+            && self.doc_values.is_empty()
+            && self.points.is_empty()
+            && self.registered.is_empty()
     }
 }
