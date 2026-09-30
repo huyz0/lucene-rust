@@ -9,7 +9,7 @@
 | **Effort** | XL |
 | **Depends on** | [M5.6](m5-6-native-read.md); can run alongside [M6](m6-production-candidate.md) |
 | **Unblocks** | [M8](m8-backward-codecs.md), [M9](m9-geo-and-spatial.md), [M10](m10-joins-grouping-queries.md), [M11](m11-analysis-common.md) |
-| **Status** | in progress: T7.1 inventory gate delivered; T7.3 similarities ported and wired into search (`search_boolean_query_multi_segment_with_similarity`) and indexing (`IndexWriter::set_similarity`) |
+| **Status** | in progress -- delivered: T7.1 inventory gate; T7.3 similarities ported and wired into search (`search_boolean_query_multi_segment_with_similarity`) and indexing (`IndexWriter::set_similarity`); the public `util/automaton` API (`lucene-util::automaton`, fixture-verified; term intersection still on the codecs byte DFA); `store` locks and directories. `scripts/check-port-inventory.py --milestone M7 --summary` is the live count |
 
 ---
 
