@@ -251,6 +251,11 @@ CASES=(
   # and merged over a source without payloads. Lucene must read every
   # payload and frequency back as the filter set them, and pass CheckIndex.
   "lucene-index|write_token_attributes_fixture|token-attributes|VerifyTokenAttributes"
+  # OneMerge.wrapForMerge/reorder in the writer's merge (M7): three segments
+  # with deletes force-merged by a policy whose merges hide every rank
+  # multiple of 11 and order by rank descending. Lucene must find exactly the
+  # carried-over documents, in that order, and pass CheckIndex.
+  "lucene-search|write_merge_reorder_fixture|merge-reorder|VerifyMergeReorder"
 )
 
 echo "verify-write-path: compiling verifiers"

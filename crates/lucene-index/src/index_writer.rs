@@ -197,6 +197,11 @@ pub enum Error {
     /// has tokens, a value only an empty field may carry.
     #[error("the similarity returned a norm of 0 for non-empty field {0:?}")]
     ZeroNorm(String),
+    /// A `OneMerge`'s `wrapForMerge`/`reorder`
+    /// ([`crate::merge_policy::MergeHooks`]) failed, or answered something
+    /// the merge cannot honour.
+    #[error("merge hooks: {0}")]
+    MergeHook(String),
     #[error(transparent)]
     SegmentWriter(#[from] segment_writer::Error),
     #[error(transparent)]
@@ -922,6 +927,12 @@ pub(crate) struct MergePlan {
     /// Which soft-deleted documents survive this merge -- see
     /// [`IndexWriter::set_soft_deletes_retention`]. `None` keeps them all.
     retention: Option<SoftDeletesRetention>,
+    /// The `OneMerge`'s `wrapForMerge`/`reorder`, with the sources as the
+    /// segment infos the hooks open them from.
+    hooks: Option<(
+        std::sync::Arc<dyn crate::merge_policy::MergeHooks>,
+        crate::segment_infos::SegmentInfos,
+    )>,
 }
 
 /// `SoftDeletesRetentionMergePolicy` with OpenSearch's retention query,
@@ -1779,6 +1790,42 @@ impl IndexingConfig {
         // merge of segments that disagree is refused rather than silently
         // producing an unsorted segment (or one whose `.si` lies).
         let merge_sort = opened.first().and_then(|o| o.index_sort.clone());
+
+        // `mergeMiddle`: `merge.wrapForMerge(reader)` on every source, then
+        // `merge.reorder(mergedView)` -- unless an index sort is configured,
+        // or blocks cannot be identified by a parent field.
+        let mut reorder: Option<Vec<i32>> = None;
+        if let Some((hooks, infos)) = &plan.hooks {
+            let blocks_without_parent = opened.iter().any(|o| o.has_blocks)
+                && opened
+                    .iter()
+                    .any(|o| !o.field_infos.iter().any(|f| f.parent_field));
+            let may_reorder =
+                self.index_sort.is_none() && merge_sort.is_none() && !blocks_without_parent;
+            let prepared = hooks
+                .prepare(dir, infos, may_reorder)
+                .map_err(Error::MergeHook)?;
+            if prepared.live_docs.len() != opened.len() {
+                return Err(Error::MergeHook(format!(
+                    "wrapForMerge returned {} readers for {} sources",
+                    prepared.live_docs.len(),
+                    opened.len()
+                )));
+            }
+            // A live-docs length other than the source's `maxDoc` is caught
+            // by the merge itself (`LiveDocsLengthMismatch`).
+            for (o, live) in opened.iter_mut().zip(prepared.live_docs) {
+                if let (Some(postings_live), Some(bits)) = (o.postings_live.as_mut(), &live) {
+                    for doc in 0..bits.len().min(postings_live.len()) {
+                        if !bits.get(doc) {
+                            postings_live.clear(doc);
+                        }
+                    }
+                }
+                o.live_docs = live;
+            }
+            reorder = may_reorder.then_some(prepared.new_to_old).flatten();
+        }
         if let Some(bad) = opened
             .iter()
             .find(|o| o.index_sort.as_deref() != merge_sort.as_deref())
@@ -2387,6 +2434,7 @@ impl IndexingConfig {
                 doc_values_formats: self.doc_values_formats.clone(),
                 knn_vectors_formats: self.knn_vectors_formats.clone(),
                 codec: self.codec.clone(),
+                reorder,
             },
             &plan.merged_name,
             plan.merged_id,
@@ -9085,7 +9133,22 @@ impl IndexWriter<'_> {
     /// [`crate::merge::SourcePoints`] per field, and
     /// [`crate::merge::merge_points`] remaps and rebuilds the trees.
     fn execute_merge(&mut self, names: &[String]) -> Result<()> {
-        let plan = self.begin_merge(names)?;
+        self.execute_merge_hooked(names, None)
+    }
+
+    /// [`Self::execute_merge`] of a `OneMerge` whose `wrapForMerge` and
+    /// `reorder` are `hooks` (see [`crate::merge_policy::MergeHooks`]).
+    pub(crate) fn execute_merge_hooked(
+        &mut self,
+        names: &[String],
+        hooks: Option<std::sync::Arc<dyn crate::merge_policy::MergeHooks>>,
+    ) -> Result<()> {
+        let mut plan = self.begin_merge(names)?;
+        if let Some(hooks) = hooks {
+            let mut infos = self.segment_infos.clone();
+            infos.segments = plan.sources.clone();
+            plan.hooks = Some((hooks, infos));
+        }
         let cfg = std::sync::Arc::clone(&self.cfg);
         match cfg.run_merge(self.dir, &plan) {
             Ok(outcome) => self.finish_merge(plan, outcome).map(|_| ()),
@@ -9223,6 +9286,7 @@ impl IndexWriter<'_> {
             merged_id,
             held,
             retention: self.soft_deletes_retention.clone(),
+            hooks: None,
         })
     }
 

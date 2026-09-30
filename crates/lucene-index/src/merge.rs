@@ -412,6 +412,9 @@ pub enum Error {
     /// id is a word past it. Reported rather than clamped: a merge that
     /// guessed here would write a segment containing documents that were
     /// deleted, or missing documents that were not.
+    /// `OneMerge.reorder`'s doc map is not one the merge can apply.
+    #[error("reorder: {0}")]
+    InvalidReorder(String),
     #[error(
         "source {source_index}: live docs cover {live_docs_len} documents but the segment's maxDoc is {max_doc}"
     )]
@@ -1386,6 +1389,56 @@ fn verify_same_schema(merged: &FieldInfo, source: &FieldInfo) -> Result<()> {
 /// `merge_*` helpers can also be driven by [`merge_sorted_stored_only_segments`]'s
 /// k-way-merge order instead, without duplicating each helper's field-
 /// resolution/candidate logic per call site.
+/// `SortingCodecReader.wrap(mergedView, docMap)` compacted by the merge: the
+/// merged view's documents in `new_to_old` order, each a `(source, doc)`,
+/// the deleted ones left out. `new_to_old` must be a permutation of the
+/// merged view's `0..sum(maxDoc)` -- `Sorter.DocMap`'s own invariant, checked
+/// here because a hook supplied it.
+fn reordered_doc_order(
+    new_to_old: &[i32],
+    per_source_max_doc: &[i32],
+    sources: &[MergeSource<'_>],
+) -> Result<Vec<(usize, i32)>> {
+    // Each merged-view document's source and its id there.
+    let mut owner: Vec<(usize, i32)> = Vec::new();
+    for (src, &max_doc) in per_source_max_doc.iter().enumerate() {
+        owner.extend((0..max_doc.max(0)).map(|d| (src, d)));
+    }
+    if new_to_old.len() != owner.len() {
+        return Err(Error::InvalidReorder(format!(
+            "the doc map covers {} documents but the merged view has {}",
+            new_to_old.len(),
+            owner.len()
+        )));
+    }
+    let mut seen = vec![false; owner.len()];
+    let mut order = Vec::with_capacity(owner.len());
+    for &old in new_to_old {
+        let Some(at) = usize::try_from(old).ok().filter(|&o| o < owner.len()) else {
+            return Err(Error::InvalidReorder(format!(
+                "old document {old} is outside the merged view"
+            )));
+        };
+        if std::mem::replace(&mut seen[at], true) {
+            return Err(Error::InvalidReorder(format!(
+                "old document {old} appears twice"
+            )));
+        }
+        let (src, doc) = owner[at];
+        // FBS: `doc < max_doc`, and the caller checked every source's
+        // `bits.len() == max_doc` (`LiveDocsLengthMismatch`); bounded again
+        // so a caller that did not is a dead document, not a ghost bit.
+        let live = sources[src].live_docs.is_none_or(|bits| {
+            let d = doc as usize;
+            d < bits.len() && bits.get(d)
+        });
+        if live {
+            order.push((src, doc));
+        }
+    }
+    Ok(order)
+}
+
 fn concat_doc_order(per_source_live_ids: &[Vec<i32>]) -> Vec<(usize, i32)> {
     let mut order = Vec::new();
     for (src_idx, live_ids) in per_source_live_ids.iter().enumerate() {
@@ -2052,12 +2105,18 @@ pub fn merge_segments_mapped(
         per_source_live_ids.push(live_ids);
     }
 
-    let doc_order = match sort_fields {
-        None => concat_doc_order(&per_source_live_ids),
-        Some(sort_fields) => sorted_doc_order(sort_fields, &per_source_live_ids),
+    let per_source_max_doc: Vec<i32> = sources.iter().map(|s| s.reader.max_doc()).collect();
+    let doc_order = match (sort_fields, &options.reorder) {
+        (None, None) => concat_doc_order(&per_source_live_ids),
+        (Some(sort_fields), None) => sorted_doc_order(sort_fields, &per_source_live_ids),
+        (None, Some(new_to_old)) => reordered_doc_order(new_to_old, &per_source_max_doc, sources)?,
+        (Some(_), Some(_)) => {
+            return Err(Error::InvalidReorder(
+                "a merge of index-sorted segments cannot be reordered".to_string(),
+            ))
+        }
     };
     let doc_count = doc_order.len() as i32;
-    let per_source_max_doc: Vec<i32> = sources.iter().map(|s| s.reader.max_doc()).collect();
     let doc_id_maps = build_doc_id_maps(&per_source_max_doc, &doc_order);
 
     // Doc values, norms and term vectors, all resolved through the one
@@ -3626,6 +3685,12 @@ pub struct MergeOptions {
     /// The writer's codec ([`crate::index_writer::IndexWriter::set_codec`]),
     /// consulted for a field the lists above do not route.
     pub codec: Option<std::sync::Arc<dyn lucene_codecs::codec::Lucene104Codec>>,
+    /// `OneMerge.reorder`'s `Sorter.DocMap` as `newToOld` over every
+    /// source's documents concatenated (deleted ones included): the merged
+    /// segment holds the live ones in that order -- `SortingCodecReader`
+    /// over the merged view. Refused together with an index sort, and when
+    /// it is not a permutation of the merged view's documents.
+    pub reorder: Option<Vec<i32>>,
 }
 
 impl MergeOptions {
@@ -3684,6 +3749,7 @@ impl Default for MergeOptions {
             doc_values_formats: Vec::new(),
             knn_vectors_formats: Vec::new(),
             codec: None,
+            reorder: None,
         }
     }
 }
