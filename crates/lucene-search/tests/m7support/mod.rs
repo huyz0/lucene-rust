@@ -86,7 +86,40 @@ impl Grammar {
                 }
                 Clause::Phrase(PhraseQuery::new(f, words).with_slop(slop))
             }
-            "pre" => Clause::Prefix(PrefixQuery::new(field, next(at).into_bytes())),
+            "pre" => {
+                let p = if toks[*at] == ")" {
+                    String::new()
+                } else {
+                    next(at)
+                };
+                Clause::Prefix(PrefixQuery::new(field, p.into_bytes()))
+            }
+            "none" => Clause::MatchNoDocs(lucene_search::query::MatchNoDocsQuery::new()),
+            "exists" => Clause::Exists(lucene_search::query::FieldExistsQuery::new(next(at))),
+            "fz" => {
+                let term = next(at);
+                let edits: u8 = next(at).parse().unwrap();
+                let mut q = lucene_search::FuzzyQuery::new(field, term);
+                q.max_edits = edits;
+                Clause::Fuzzy(q)
+            }
+            "mp" => {
+                let mut positions = Vec::new();
+                while toks[*at] != ")" {
+                    positions.push(
+                        next(at)
+                            .split('|')
+                            .map(|s| s.as_bytes().to_vec())
+                            .collect::<Vec<_>>(),
+                    );
+                }
+                Clause::MultiPhrase(lucene_search::MultiPhraseQuery::new(field, positions))
+            }
+            "st" | "snear" | "sor" => {
+                *at -= 2;
+                let s = self.span(toks, at);
+                return Clause::Span(s);
+            }
             "wc" => Clause::Wildcard(WildcardQuery::new(field, next(at).into_bytes())),
             "re" => Clause::Regexp(RegexpQuery::new(field, next(at))),
             "ts" => {
@@ -149,6 +182,39 @@ impl Grammar {
                 Clause::Boolean(Box::new(b))
             }
             other => panic!("op {other}"),
+        };
+        assert_eq!(next(at), ")");
+        q
+    }
+
+    /// A span query: `(st t)`, `(snear slop in_order ...)`, `(sor ...)`.
+    fn span(&self, toks: &[String], at: &mut usize) -> lucene_search::SpanQuery {
+        use lucene_search::SpanQuery;
+        let next = |at: &mut usize| {
+            *at += 1;
+            toks[*at - 1].clone()
+        };
+        assert_eq!(next(at), "(");
+        let op = next(at);
+        let q = match op.as_str() {
+            "st" => SpanQuery::span_term(self.text, next(at).into_bytes()),
+            "snear" => {
+                let slop = next(at).parse().unwrap();
+                let in_order = next(at) == "true";
+                let mut cs = Vec::new();
+                while toks[*at] == "(" {
+                    cs.push(self.span(toks, at));
+                }
+                SpanQuery::span_near(cs, slop, in_order)
+            }
+            "sor" => {
+                let mut cs = Vec::new();
+                while toks[*at] == "(" {
+                    cs.push(self.span(toks, at));
+                }
+                SpanQuery::span_or(cs)
+            }
+            other => panic!("span op {other}"),
         };
         assert_eq!(next(at), ")");
         q
