@@ -775,10 +775,10 @@ pub fn expand_bitset(words: &[u64], base: i32, out: &mut [i32]) -> usize {
             }
             continue;
         }
+        // No `byte == 0` test: at a postings block's typical density about one
+        // byte in eight is empty, too often to predict, and an empty byte's
+        // row writes nothing `found` keeps.
         for (k, byte) in word.to_le_bytes().into_iter().enumerate() {
-            if byte == 0 {
-                continue;
-            }
             let at = word_base.wrapping_add((k * 8) as i32);
             let lanes = &BYTE_BITS[byte as usize];
             // `found < cap <= 256` here (checked below), so `found + 8 <= 263`.
