@@ -4181,6 +4181,45 @@ mod tests {
         assert_eq!(read_doc_ids(&mut input, count).unwrap(), ids);
     }
 
+    /// BKD version 9's `BPV_24` (`DocIdsWriter.writeScalarInts24`'s layout):
+    /// eight ids in three little-endian longs, most significant bits first,
+    /// then short+byte per remaining id. The same bytes under version 10
+    /// decode to different ids, so the version must be what picks the
+    /// decoder.
+    #[test]
+    fn scalar_bpv24_is_bkd_version_9s_layout() {
+        let ids: Vec<i32> = (0..11).map(|i| 0x0A_0000 + i * 0x1_0203).collect();
+        let mut bytes = vec![BPV_24 as u8];
+        let v = |i: usize| ids[i] as u64;
+        let l1 = (v(0) << 40) | (v(1) << 16) | (v(2) >> 8);
+        let l2 = ((v(2) & 0xff) << 56) | (v(3) << 32) | (v(4) << 8) | (v(5) >> 16);
+        let l3 = ((v(5) & 0xffff) << 48) | (v(6) << 24) | v(7);
+        for l in [l1, l2, l3] {
+            bytes.extend_from_slice(&l.to_le_bytes());
+        }
+        for &id in &ids[8..] {
+            bytes.extend_from_slice(&((id >> 8) as u16).to_le_bytes());
+            bytes.push(id as u8);
+        }
+        let mut out = Vec::new();
+        read_doc_ids_into(&mut SliceInput::new(&bytes), ids.len(), &mut out, 9).unwrap();
+        assert_eq!(out, ids);
+        let mut vectorized = Vec::new();
+        read_doc_ids_into(
+            &mut SliceInput::new(&bytes),
+            ids.len(),
+            &mut vectorized,
+            BKD_VERSION_CURRENT,
+        )
+        .unwrap();
+        assert_ne!(vectorized, ids);
+        // Too few bytes for the ids it claims.
+        let mut out = Vec::new();
+        assert!(
+            read_doc_ids_into(&mut SliceInput::new(&bytes[..20]), ids.len(), &mut out, 9).is_err()
+        );
+    }
+
     #[test]
     fn bpv24_round_trips() {
         // count=42 makes quarter=10 (nonzero -- exercises the vectorized

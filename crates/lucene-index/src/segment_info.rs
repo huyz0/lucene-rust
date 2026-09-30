@@ -1264,6 +1264,38 @@ fn read_version(input: &mut SliceInput) -> Result<LuceneVersion> {
 mod tests {
     use super::*;
 
+    /// A 9.0.0 segment (`Lucene90` codec, `Lucene90SegmentInfoFormat`) reads
+    /// only by its codec: the same bytes through `Lucene99SegmentInfoFormat`
+    /// take the first diagnostics byte for `hasBlocks` and misread the rest.
+    #[test]
+    fn a_lucene90_si_is_read_by_its_codec_name() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/data/bwc/9.0.0/_0.si");
+        let bytes = std::fs::read(path).unwrap();
+        // The id the index header carries, after magic, name and version.
+        let name_len = bytes[4] as usize;
+        let mut id = [0u8; ID_LENGTH];
+        id.copy_from_slice(&bytes[9 + name_len..9 + name_len + ID_LENGTH]);
+        let si = parse_for_codec(&bytes, &id, "Lucene90").unwrap();
+        assert_eq!(si.doc_count, 3000);
+        assert!(!si.has_blocks);
+        assert!(si.files.iter().any(|f| f == "_0.fnm"));
+        assert_eq!(
+            si.version,
+            LuceneVersion {
+                major: 9,
+                minor: 0,
+                bugfix: 0
+            }
+        );
+        let misread = parse_for_codec(&bytes, &id, "Lucene99");
+        assert!(!misread.is_ok_and(|s| s.files == si.files));
+        assert!(matches!(
+            parse_for_codec(&bytes, &id, "Lucene87"),
+            Err(Error::UnknownCodec(n)) if n == "Lucene87"
+        ));
+    }
+
     /// Test-only `.si` byte builder: independent of the Java fixtures under
     /// `tests/segment_info_fixtures.rs` (which exercise real Lucene-written
     /// bytes) — this covers the parser's own corruption/error handling, which

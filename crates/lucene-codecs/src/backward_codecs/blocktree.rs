@@ -296,6 +296,8 @@ pub(crate) fn open(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::arithmetic_side_effects)]
+
     use super::*;
 
     #[test]
@@ -323,5 +325,80 @@ mod tests {
         // A vlong that decodes negative is not a block pointer.
         let neg = [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01];
         assert!(decode_output(&neg, VERSION_START).is_err());
+    }
+
+    /// The 9.0.0 fixture's first segment (`Lucene90` postings, block tree
+    /// version 0): `(tim, tip, tmd, fnm, id, suffix)`.
+    fn fixture() -> (Vec<u8>, Vec<u8>, Vec<u8>, FieldInfos, [u8; 16], String) {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/data/bwc/9.0.0");
+        let read = |n: &str| std::fs::read(dir.join(n)).unwrap();
+        let tim = read("_0_Lucene90_0.tim");
+        // The id every index header carries, after magic, name and version.
+        let name_len = tim[4] as usize;
+        let mut id = [0u8; 16];
+        id.copy_from_slice(&tim[9 + name_len..25 + name_len]);
+        let fnm = crate::field_infos::parse(&read("_0.fnm"), &id, "").unwrap();
+        (
+            tim,
+            read("_0_Lucene90_0.tip"),
+            read("_0_Lucene90_0.tmd"),
+            fnm,
+            id,
+            "Lucene90_0".to_string(),
+        )
+    }
+
+    fn open_fixture(
+        tim: &[u8],
+        tip: &[u8],
+        tmd: &[u8],
+        fnm: &FieldInfos,
+        id: &[u8; 16],
+        suffix: &str,
+    ) -> Result<BlockTreeFields> {
+        blocktree::open(tim, tip, tmd, fnm, id, suffix, 3000)
+    }
+
+    #[test]
+    fn a_real_lucene90_dictionary_opens_through_the_common_entry_point() {
+        let (tim, tip, tmd, fnm, id, suffix) = fixture();
+        let fields = open_fixture(&tim, &tip, &tmd, &fnm, &id, &suffix).unwrap();
+        let body = fields.field("body").unwrap();
+        assert_eq!(body.postings_format(), PostingsFormat::Lucene90);
+        assert_eq!(body.num_terms, 20);
+        assert!(body.try_seek_exact(b"zeta").unwrap().is_some());
+        assert!(body.try_seek_exact(b"zzz").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_field_naming_a_trie_format_is_rejected() {
+        let (tim, tip, tmd, mut fnm, id, suffix) = fixture();
+        for f in &mut fnm.fields {
+            for (k, v) in &mut f.attributes {
+                if k == "PerFieldPostingsFormat.format" {
+                    *v = "Lucene104".to_string();
+                }
+            }
+        }
+        let err = open_fixture(&tim, &tip, &tmd, &fnm, &id, &suffix).unwrap_err();
+        assert!(
+            err.to_string().contains("names no postings format"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn truncated_or_mismatched_files_are_errors() {
+        let (tim, tip, tmd, fnm, id, suffix) = fixture();
+        // `.tmd` cut short: the field records run out.
+        assert!(open_fixture(&tim, &tip, &tmd[..tmd.len() / 2], &fnm, &id, &suffix).is_err());
+        // `.tip` of the wrong length fails `retrieveChecksum`'s length check.
+        let mut long_tip = tip.clone();
+        long_tip.insert(40, 0);
+        assert!(open_fixture(&tim, &long_tip, &tmd, &fnm, &id, &suffix).is_err());
+        // A different segment's id fails every header.
+        let other = [7u8; 16];
+        assert!(open_fixture(&tim, &tip, &tmd, &fnm, &other, &suffix).is_err());
     }
 }
