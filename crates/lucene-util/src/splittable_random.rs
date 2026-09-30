@@ -47,6 +47,46 @@ impl SplittableRandom {
     pub fn next_double(&mut self) -> f64 {
         (self.next_long() >> 11) as f64 * (1.0 / (1u64 << 53) as f64)
     }
+
+    /// `SplittableRandom.mix32`.
+    fn mix32(mut z: u64) -> i32 {
+        z = (z ^ (z >> 33)).wrapping_mul(0x62a9_d9ed_7997_05f5);
+        ((z ^ (z >> 28)).wrapping_mul(0xcb24_d0a5_c88c_35b3) >> 32) as i32
+    }
+
+    fn next_int_raw(&mut self) -> i32 {
+        self.seed = self.seed.wrapping_add(Self::GOLDEN_GAMMA);
+        Self::mix32(self.seed)
+    }
+
+    /// `SplittableRandom.nextInt(origin, bound)` (`RandomSupport.
+    /// boundedNextInt`): uniform in `origin..bound`; `origin` itself when the
+    /// range is empty.
+    pub fn next_int_range(&mut self, origin: i32, bound: i32) -> i32 {
+        let mut r = self.next_int_raw();
+        if origin < bound {
+            let n = bound.wrapping_sub(origin);
+            let m = n.wrapping_sub(1);
+            if n & m == 0 {
+                r = (r & m).wrapping_add(origin);
+            } else if n > 0 {
+                let mut u = ((r as u32) >> 1) as i32;
+                loop {
+                    r = u % n;
+                    if u.wrapping_add(m).wrapping_sub(r) >= 0 {
+                        break;
+                    }
+                    u = ((self.next_int_raw() as u32) >> 1) as i32;
+                }
+                r = r.wrapping_add(origin);
+            } else {
+                while r < origin || r >= bound {
+                    r = self.next_int_raw();
+                }
+            }
+        }
+        r
+    }
 }
 
 #[cfg(test)]
@@ -74,6 +114,26 @@ mod tests {
         // `nextLong` is the same stream one step earlier.
         let mut r2 = SplittableRandom::new(1);
         assert_ne!(r2.next_long(), 0);
+    }
+
+    #[test]
+    fn bounded_ints_stay_in_range() {
+        let mut r = SplittableRandom::new(9);
+        for (o, b) in [
+            (0, 1),
+            (3, 11),
+            (0, 16),
+            (-5, 5),
+            (i32::MIN, i32::MAX),
+            (7, 7),
+        ] {
+            for _ in 0..200 {
+                let v = r.next_int_range(o, b);
+                if o < b {
+                    assert!(v >= o && v < b, "{v} not in {o}..{b}");
+                }
+            }
+        }
     }
 
     /// `nextDouble` is `(nextLong() >>> 11) * 0x1.0p-53`, so it is always in
