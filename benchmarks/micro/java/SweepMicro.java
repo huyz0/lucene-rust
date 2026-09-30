@@ -7,7 +7,7 @@ import java.util.List;
 import java.util.zip.CRC32;
 import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
-import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
+import org.apache.lucene.analysis.tokenattributes.TermToBytesRefAttribute;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.NumericDocValues;
@@ -437,27 +437,95 @@ public final class SweepMicro {
     return docs;
   }
 
+  /** Non-Latin words the multilingual documents mix in (the same list as micro.rs). */
+  static final String[] MULTI = {
+    "日本語", "テキスト", "ひらがな", "한국어", "ภาษาไทย", "Москва", "naïve", "😀", "👨‍👩‍👧",
+    "3.14", "e-mail", "user@example.com", "中国人", "العربية", "Straße", "1,000"
+  };
+
+  /** analysisDocs' shape with every other word drawn from {@link #MULTI}; 1000 documents. */
+  static List<String> multilingualDocs() {
+    Rng r = new Rng(0x1357_9BDF_2468_ACE0L);
+    List<String> docs = new ArrayList<>();
+    for (int d = 0; d < 1000; d++) {
+      int words = 40 + (int) Long.remainderUnsigned(r.next(), 120);
+      StringBuilder sb = new StringBuilder();
+      for (int w = 0; w < words; w++) {
+        if (w > 0) sb.append(' ');
+        long x = r.next();
+        if ((x & 1) == 0) {
+          sb.append(MULTI[(int) Long.remainderUnsigned(x >>> 8, MULTI.length)]);
+        } else {
+          sb.append("t").append(Long.toString(Long.remainderUnsigned(x >>> 8, 50000), 36));
+        }
+      }
+      docs.add(sb.toString());
+    }
+    return docs;
+  }
+
+  /**
+   * reset, every token, end, close -- the consumer loop IndexingChain runs, reading each term the
+   * way it does: {@code TermToBytesRefAttribute.getBytesRef()}, the term's UTF-8. (The Rust
+   * attribute holds UTF-8 already, so a consumer reading only the UTF-16 length would leave out of
+   * Java's side the encoding Rust's side pays at tokenization.)
+   */
+  static long consume(TokenStream ts) throws IOException {
+    long tokens = 0;
+    try (ts) {
+      TermToBytesRefAttribute term = ts.addAttribute(TermToBytesRefAttribute.class);
+      ts.reset();
+      while (ts.incrementToken()) {
+        tokens++;
+        sink += term.getBytesRef().length;
+      }
+      ts.end();
+    }
+    return tokens;
+  }
+
   static void analysis() throws IOException {
     List<String> docs = analysisDocs();
+    List<String> multi = multilingualDocs();
     try (StandardAnalyzer a = new StandardAnalyzer()) {
       measure(
           "standard",
           () -> {
             long tokens = 0;
-            for (String text : docs) {
-              try (TokenStream ts = a.tokenStream("body", text)) {
-                CharTermAttribute term = ts.addAttribute(CharTermAttribute.class);
-                ts.reset();
-                while (ts.incrementToken()) {
-                  tokens++;
-                  sink += term.length();
-                }
-                ts.end();
-              }
-            }
+            for (String text : docs) tokens += consume(a.tokenStream("body", text));
+            return tokens;
+          });
+      measure(
+          "standard_multilingual",
+          () -> {
+            long tokens = 0;
+            for (String text : multi) tokens += consume(a.tokenStream("body", text));
             return tokens;
           });
     }
+    // The bare tokenizer, reused as Analyzer reuses it.
+    org.apache.lucene.analysis.standard.StandardTokenizer tok =
+        new org.apache.lucene.analysis.standard.StandardTokenizer();
+    measure(
+        "tokenizer",
+        () -> {
+          long tokens = 0;
+          for (String text : docs) {
+            tok.setReader(new java.io.StringReader(text));
+            tokens += consume(tok);
+          }
+          return tokens;
+        });
+    measure(
+        "tokenizer_multilingual",
+        () -> {
+          long tokens = 0;
+          for (String text : multi) {
+            tok.setReader(new java.io.StringReader(text));
+            tokens += consume(tok);
+          }
+          return tokens;
+        });
   }
 
   /** Patterns of {@link #automaton}, the same list on the Rust side. */

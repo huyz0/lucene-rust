@@ -130,8 +130,7 @@ fn ascii_folding_matches_real_ascii_folding_filter() {
 /// syllables, mixed CJK/Latin text, and midword punctuation (numeric
 /// decimal/comma, acronym periods, apostrophe contraction) -- recorded by
 /// `fixtures/src/GenAnalysis.java`'s `uax29_*` cases. Confirms this port's
-/// `tokenize()` (now backed by the `unicode-segmentation` crate's UAX#29
-/// word-boundary implementation) agrees with real Lucene on all of these --
+/// `tokenize()` (now Lucene's own JFlex scanner) agrees with real Lucene on all of these --
 /// terms, position increments and offsets, compared verbatim, both sides in
 /// Java `char`s.
 #[test]
@@ -693,13 +692,10 @@ fn tokenizer_offsets_are_java_char_indices() {
 /// c33: an emoji shifts every later token by exactly **two** Java `char`s --
 /// one scalar, four UTF-8 bytes.
 ///
-/// Real `StandardTokenizer` also emits the emoji itself as a token; this
-/// port's `unicode_word_indices` does not (b8's F40, recorded there and
-/// unchanged here -- it needs `split_word_bounds` plus an Extended_Pictographic
-/// pass, i.e. a tokenizer rewrite, not an offset fix). So this case asserts the
-/// exact shape of that gap: the tokens this port does produce must match
-/// Lucene's *verbatim*, offsets included, and the only ones missing must be the
-/// non-alphanumeric ones.
+/// Real `StandardTokenizer` also emits the emoji itself as an `<EMOJI>`
+/// token. The pre-M7 `unicode_word_indices` stand-in did not (b8's F40), and
+/// this test used to pin that gap; the JFlex scanner port closes it, so the
+/// whole stream now matches Lucene verbatim.
 #[test]
 fn an_emoji_shifts_later_offsets_by_two_java_chars() {
     let m = Manifest::load();
@@ -707,25 +703,11 @@ fn an_emoji_shifts_later_offsets_by_two_java_chars() {
     let text = m.get(&format!("{case}.text"));
     let expected = expected_tokens(&m, case);
 
-    let alphanumeric: Vec<(String, i32, i32, i32)> = expected
-        .iter()
-        .filter(|(term, ..)| term.chars().any(char::is_alphanumeric))
-        .cloned()
-        .collect();
-    assert_eq!(
-        expected.len() - alphanumeric.len(),
-        1,
-        "{case}: expected exactly one token dropped by b8's F40 (the emoji)"
-    );
-
     let actual: Vec<(String, i32, i32, i32)> = lucene_analysis::tokenize(text)
         .into_iter()
         .map(|t| (t.term, t.position_increment, t.start_offset, t.end_offset))
         .collect();
-    assert_eq!(
-        actual, alphanumeric,
-        "{case}: the tokens this port does produce diverged from real Lucene"
-    );
+    assert_eq!(actual, expected, "{case}: diverged from real Lucene");
     // The whole point: "beta" starts two chars after the emoji's own start,
     // which is neither its scalar index (7) nor its byte index (11).
     let beta = actual.last().expect("beta");
