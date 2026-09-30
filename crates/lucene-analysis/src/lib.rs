@@ -1,13 +1,32 @@
 #![forbid(unsafe_code)]
-//! lucene-analysis: see /PLAN.md for scope.
+//! lucene-analysis: Lucene's analysis model (`org.apache.lucene.analysis`,
+//! `.standard`, `.tokenattributes`), plus analysis-common filters ported
+//! ahead of M11.
 //!
-//! A minimal, real analyzer chain mirroring Lucene's
-//! `Analyzer`/`Tokenizer`/`TokenFilter` pipeline: a UAX#29 word-boundary
-//! tokenizer (see the module docs on [`tokenize`] for exactly what's covered
-//! vs. deliberately deferred relative to real Lucene's `StandardTokenizer`),
-//! plus `LowerCaseFilter`, `StopFilter`,
-//! `AsciiFoldingFilter`, `PorterStemFilter`, `SynonymFilter`, and
-//! `NGramTokenFilter`/`EdgeNGramTokenFilter`.
+//! # The model
+//!
+//! - [`TokenStream`] -- Java's streaming lifecycle (`reset`,
+//!   `increment_token`, `end`, `close`) over one shared [`AttributeSource`]
+//!   carrying every core attribute ([`attributes`] explains the fixed-struct
+//!   shape).
+//! - [`Tokenizer`] (reads a [`CharReader`], corrects offsets through
+//!   [`CharFilter`]s), [`TokenFilter`] (implement it to write a filter; chains
+//!   compose by ownership), [`FilteringTokenFilter`], [`CachingTokenFilter`],
+//!   [`GraphTokenFilter`].
+//! - [`Analyzer`] over an [`AnalyzerDefinition`] (`createComponents`,
+//!   `normalize`, `initReader`, the gaps), with [`ReuseStrategy`],
+//!   [`AnalyzerWrapper`] and [`DelegatingAnalyzerWrapper`];
+//!   [`StopwordAnalyzerBase`], [`CharArraySet`], [`wordlist_loader`].
+//! - [`StandardTokenizer`] -- Lucene's JFlex UAX#29 scanner, tables and all --
+//!   and [`StandardAnalyzer`].
+//! - [`token_stream_to_automaton`] / [`automaton_to_token_stream`].
+//!
+//! Offsets everywhere are **UTF-16 code units** (Java `char` indices); see
+//! [`Token`] and [`reader`].
+//!
+//! The older materialised API -- [`tokenize`], [`Token`], [`AnalyzedTokens`],
+//! the `Vec<Token>` filter functions and [`Analyzer::standard`]'s builders --
+//! is kept for the workspace's callers and now runs on the streaming model.
 //!
 //! This crate sits below both `lucene-index` and `lucene-search` in the
 //! workspace's downward dependency graph (it depends on nothing else in the
@@ -15,8 +34,57 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::sync::Arc;
 
-use unicode_segmentation::UnicodeSegmentation;
+mod analyzer;
+pub mod attributes;
+mod automaton;
+mod char_array_set;
+mod graph_token_filter;
+mod keyword_tokenizer;
+mod legacy;
+pub mod reader;
+pub mod standard;
+mod stopword_analyzer_base;
+pub mod token_stream;
+pub mod wordlist_loader;
+
+pub use analyzer::{
+    collect_tokens, Analyzer, AnalyzerDefinition, AnalyzerTokenStream, AnalyzerWrapper,
+    DelegatingAnalyzerWrapper, ReuseStrategy, SourceFn, TokenStreamComponents,
+};
+pub use attributes::{AttributeSource, State, DEFAULT_TYPE};
+pub use automaton::{
+    automaton_to_token_stream, token_stream_to_automaton, Automaton, AutomatonBuilder,
+    TokenStreamToAutomaton, Transition, HOLE, POS_SEP,
+};
+pub use char_array_set::CharArraySet;
+pub use graph_token_filter::{GraphTokenFilter, MAX_GRAPH_STACK_SIZE, MAX_TOKEN_CACHE_SIZE};
+pub use keyword_tokenizer::KeywordTokenizer;
+pub use reader::{CharFilter, CharReader, StrReader};
+pub use standard::{StandardAnalyzer, StandardTokenizer};
+pub use stopword_analyzer_base::StopwordAnalyzerBase;
+pub use token_stream::{
+    Accept, CachingTokenFilter, FilteringTokenFilter, TokenFilter, TokenStream, Tokenizer,
+    TokenizerInput,
+};
+
+/// What Java analysis throws, as a value.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum AnalysisError {
+    /// `IllegalArgumentException`: a bad setting or attribute value.
+    #[error("illegal argument: {0}")]
+    IllegalArgument(String),
+    /// `IllegalStateException`: a broken `TokenStream` contract.
+    #[error("illegal state: {0}")]
+    IllegalState(String),
+    /// `AlreadyClosedException`.
+    #[error("already closed: {0}")]
+    AlreadyClosed(String),
+    /// `IOException` from a reader.
+    #[error("i/o: {0}")]
+    Io(String),
+}
 
 /// One analyzed token: term text plus the attributes real Lucene's
 /// `CharTermAttribute`/`OffsetAttribute`/`PositionIncrementAttribute` carry.
@@ -101,7 +169,7 @@ pub struct Token {
 /// [`final_position_increment`](Self::final_position_increment) and
 /// [`final_offset`](Self::final_offset) are exactly those two attribute reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TokenStream {
+pub struct AnalyzedTokens {
     /// The tokens `incrementToken()` produced, in order.
     pub tokens: Vec<Token>,
     /// `PositionIncrementAttribute.getPositionIncrement()` **after** `end()`.
@@ -119,278 +187,52 @@ pub struct TokenStream {
     pub final_offset: i32,
 }
 
-/// A UAX#29-based word-boundary tokenizer, standing in for real Lucene's
-/// `StandardTokenizer` (which itself is a JFlex-generated implementation of
-/// [UAX #29, Unicode Text Segmentation](https://www.unicode.org/reports/tr29/)'s
-/// default word-boundary algorithm, extended with a handful of Lucene-specific
-/// rules for URLs/emails/host names that are out of scope here -- see below).
+/// Lucene's `StandardTokenizer` (default `maxTokenLength` 255) over `text`,
+/// materialised: the term text, offsets, position increments and lengths of
+/// every token. See [`StandardTokenizer`] for the tokenizer itself (and its
+/// token types, which [`Token`] does not carry).
 ///
-/// **Implementation**: this delegates word segmentation itself to the
-/// `unicode-segmentation` crate's [`UnicodeSegmentation::unicode_word_indices`]
-/// (already a workspace dependency -- no new crate was added for this), which
-/// is a compliant implementation of UAX#29's `Word_Break` property tables and
-/// rule set (WB1-WB999, per the current Unicode Character Database the crate
-/// ships). That single call is what gives this tokenizer real UAX#29
-/// semantics rather than the ad hoc hand-rolled rules a previous version of
-/// this function used:
+/// This used to be a stand-in built on the `unicode-segmentation` crate's
+/// word boundaries, which agree with Lucene's grammar on most text but not
+/// all of it: it emitted nothing for emoji (Lucene emits `<EMOJI>` tokens,
+/// ZWJ sequences whole), did not keep Southeast Asian runs whole, and had no
+/// `maxTokenLength` splitting. It now *is* Lucene's scanner.
 ///
-/// - **Combining diacritical marks**: a base character followed by one or
-///   more `Grapheme_Extend`/combining-mark characters (e.g. a bare `e`
-///   followed by a combining acute accent, U+0301) is never split apart --
-///   UAX#29's `WB` rules never insert a boundary before an `Extend`/`ZWJ`
-///   character, so `"cafe\u{0301}"` tokenizes as the one token `"café"`
-///   (grapheme-equivalent), not two.
-/// - **CJK ideograph segmentation**: each Han ideograph is `Word_Break =
-///   Other`/`Ideographic` with no `ALetter`-style clustering rule joining
-///   adjacent ideographs, so a run of CJK text segments into one token *per
-///   character* (e.g. `"你好世界"` -> four separate one-character tokens),
-///   matching real `StandardTokenizer`'s behavior on unsegmented CJK (neither
-///   real Lucene nor this port does dictionary-based CJK word segmentation;
-///   that is a distinct, heavier feature -- see `CJKAnalyzer`'s bigram
-///   filter, which remains out of scope here).
-/// - **Hangul syllable clustering**: precomposed Hangul syllables (e.g. `안`)
-///   are single Unicode scalars already and naturally form single tokens;
-///   sequences of *conjoining* Hangul Jamo (leading/vowel/trailing consonant
-///   codepoints, U+1100-U+11FF) are clustered into one token per syllable
-///   block by UAX#29's dedicated Hangul `WB` rules (the same rules real
-///   Lucene's tokenizer relies on), rather than splitting at each Jamo
-///   codepoint.
-/// - **Midword punctuation**: UAX#29's `MidLetter`/`MidNumLet`/`MidNum` rules
-///   (WB6/WB7/WB11/WB12) are exactly what already produced this crate's
-///   previously hand-coded exceptions -- e.g. `.`/`,` embedded in a number
-///   (`"3.14"`, `"1,000"`), `.` between single letters in an acronym
-///   (`"U.S.A."` -> `"U.S.A"`, the trailing period still splits off since
-///   nothing alphanumeric follows), and `'`/`’` inside a contraction/name
-///   (`"don't"`, `"O'Brien"`) -- so this port's existing documented behavior
-///   for those cases is preserved (and is now backed by the real algorithm
-///   these rules come from, not a 4-character lookup table).
-///
-/// **What real UAX#29/`StandardTokenizer` includes that this does *not*
-/// port** (deliberately out of scope, not silently wrong -- see
-/// `docs/parity.md`):
-/// - **Emoji/ZWJ *sequence* grouping as a single visual glyph**: a bare ZWJ
-///   between two letters is itself `Extend`-like and does not split (see
-///   `"a\u{200D}b"` above), but a ZWJ emoji sequence (e.g. family emoji built
-///   from base emoji + ZWJ + modifiers) contains no alphanumeric codepoints
-///   at all, so -- like every other non-alphanumeric run -- it produces *no*
-///   token, same as a lone emoji. Grapheme-cluster-aware emoji tokenization
-///   (treating a whole ZWJ sequence as one indivisible unit for filters that
-///   *do* want to emit it as a term) is a distinct, heavier Unicode
-///   grapheme-segmentation feature this crate does not attempt; adding it
-///   would not require a new external crate (the workspace's
-///   `unicode-segmentation` dependency also implements UAX#29 grapheme
-///   clusters via `graphemes()`), but is out of scope for this task since
-///   this tokenizer -- like real `StandardTokenizer` -- only ever emits
-///   alphanumeric-containing segments as terms in the first place.
-/// - **Lucene's own URL/email/host-name JFlex extensions** to the base
-///   UAX#29 grammar (e.g. keeping `user@example.com` or
-///   `https://example.com/path` as a single token) are Lucene-specific
-///   additions layered on top of UAX#29, not part of UAX#29 itself, and
-///   remain unimplemented here -- an email/URL still gets split into its
-///   alphanumeric-run pieces (`user`, `example`, `com`, ...).
-/// - **Locale-specific tailoring** (UAX#29 §5.3's optional locale exceptions,
-///   e.g. Southeast Asian dictionary-based segmentation for Thai/Lao/Khmer/
-///   Myanmar) is not implemented -- the crate, like real Lucene's default
-///   `BreakIterator`-free tokenizer, applies the same rules regardless of
-///   detected script/language.
-///
-/// Every token gets `position_increment == 1` (tokenizers never skip
-/// positions -- that only happens in filters, e.g. [`StopFilter`]).
-///
-/// **Offsets are UTF-16 code units** -- Java `char` indices into `text`, the
-/// unit `OffsetAttribute` reports (see [`Token`]). `unicode_word_indices`
-/// hands back **byte** indices, so this walks the text once, converting as it
-/// goes: the segmenter yields segments in ascending byte order, so the
-/// conversion is a single running sum over the gaps between them, O(n) in the
-/// text length overall rather than O(n) per token.
+/// Every token gets `position_increment == 1` unless a token longer than the
+/// maximum is skipped (see [`StandardTokenizer`]); offsets are UTF-16 code
+/// units (see [`Token`]).
 pub fn tokenize(text: &str) -> Vec<Token> {
-    // One word-at-a-time scan decides the whole document: for ASCII text the
-    // byte index the segmenter yields *is* the Java `char` index, so the
-    // common case pays nothing per token.
-    let ascii = text.is_ascii();
-    if ascii {
-        let mut out = Vec::with_capacity(text.len() / 6);
-        ascii_words(text.as_bytes(), |start, end| {
-            out.push(Token {
-                term: text[start..end].to_string(),
-                start_offset: start as i32,
-                end_offset: end as i32,
-                position_increment: 1,
-                position_length: 1,
-            })
-        });
-        return out;
-    }
-    let mut byte_pos = 0usize;
-    let mut utf16_pos = 0usize;
-    text.unicode_word_indices()
-        .map(|(start, word)| {
-            // Non-ASCII text only (ASCII returned above): the (non-token) gap
-            // since the previous segment, then the token itself. Segments
-            // arrive in ascending byte order, so this is one running sum over
-            // the text, not a rescan per token.
-            utf16_pos += utf16_len(&text[byte_pos..start]);
-            let start_offset = utf16_pos;
-            utf16_pos += utf16_len(word);
-            byte_pos = start + word.len();
-            let end_offset = utf16_pos;
-            Token {
-                term: word.to_string(),
-                start_offset: start_offset as i32,
-                end_offset: end_offset as i32,
-                position_increment: 1,
-                position_length: 1,
-            }
-        })
-        .collect()
+    tokenize_stream(text).tokens
 }
 
-/// UAX#29 `Word_Break` classes of the ASCII range, as far as word segmentation
-/// can tell them apart: `ALetter`, `Numeric`, `ExtendNumLet`, the three
-/// "middle" classes, and everything else (which always breaks).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum AsciiWb {
-    Other,
-    ALetter,
-    Numeric,
-    ExtendNumLet,
-    /// `MidLetter`: `:`. Joins letters only (WB6/WB7).
-    MidLetter,
-    /// `MidNumLet` `.` and `Single_Quote` `'` -- UAX#29's `MidNumLetQ`. Joins
-    /// letters (WB6/WB7) and digits (WB11/WB12).
-    MidNumLetQ,
-    /// `MidNum`: `,` and `;`. Joins digits only (WB11/WB12).
-    MidNum,
-}
-
-const fn ascii_wb_table() -> [AsciiWb; 128] {
-    let mut t = [AsciiWb::Other; 128];
-    let mut c = 0;
-    while c < 128 {
-        t[c] = match c as u8 {
-            b'A'..=b'Z' | b'a'..=b'z' => AsciiWb::ALetter,
-            b'0'..=b'9' => AsciiWb::Numeric,
-            b'_' => AsciiWb::ExtendNumLet,
-            b':' => AsciiWb::MidLetter,
-            b'.' | b'\'' => AsciiWb::MidNumLetQ,
-            b',' | b';' => AsciiWb::MidNum,
-            _ => AsciiWb::Other,
-        };
-        c += 1;
-    }
-    t
-}
-
-static ASCII_WB: [AsciiWb; 128] = ascii_wb_table();
-
-/// [`UnicodeSegmentation::unicode_word_indices`] for **ASCII** input, without
-/// the general machinery: calls `emit(start, end)` for every word segment that
-/// contains a letter or digit, in order -- exactly the segments
-/// `unicode_word_indices` yields, which `ascii_words_matches_unicode_word_indices`
-/// checks exhaustively over short strings and by property test over long ones.
-///
-/// Over ASCII only these UAX#29 rules can apply, and they reduce to a scan:
-///
-/// - WB5/WB8/WB9/WB10/WB13a/WB13b: a run of letters, digits and `_` never
-///   breaks inside.
-/// - WB6/WB7: a single `:`, `.` or `'` between two letters does not break.
-/// - WB11/WB12: a single `,`, `;`, `.` or `'` between two digits does not break.
-/// - WB999: everything else breaks, and a segment with no letter or digit (a
-///   run of spaces, a lone `_`, punctuation) is not a word.
-///
-/// The general segmenter walks a property table per `char` with a state
-/// machine sized for all of Unicode; for the common ASCII document this is one
-/// table load per byte.
-#[inline]
-fn ascii_words(b: &[u8], mut emit: impl FnMut(usize, usize)) {
-    let class = |i: usize| ASCII_WB[(b[i] & 0x7f) as usize];
-    let is_run = |c: AsciiWb| {
-        matches!(
-            c,
-            AsciiWb::ALetter | AsciiWb::Numeric | AsciiWb::ExtendNumLet
-        )
-    };
-    let n = b.len();
-    let mut i = 0;
-    while i < n {
-        if !is_run(class(i)) {
-            i += 1;
-            continue;
-        }
-        let start = i;
-        let mut alnum = false;
-        loop {
-            while i < n {
-                let c = class(i);
-                if !is_run(c) {
-                    break;
-                }
-                alnum |= c != AsciiWb::ExtendNumLet;
-                i += 1;
-            }
-            // `i > start`, so `i - 1` is inside the segment.
-            if i + 1 < n {
-                let (prev, mid, next) = (class(i - 1), class(i), class(i + 1));
-                let joins = match mid {
-                    AsciiWb::MidLetter => prev == AsciiWb::ALetter && next == AsciiWb::ALetter,
-                    AsciiWb::MidNumLetQ => {
-                        (prev == AsciiWb::ALetter && next == AsciiWb::ALetter)
-                            || (prev == AsciiWb::Numeric && next == AsciiWb::Numeric)
-                    }
-                    AsciiWb::MidNum => prev == AsciiWb::Numeric && next == AsciiWb::Numeric,
-                    _ => false,
-                };
-                if joins {
-                    i += 1;
-                    continue;
-                }
-            }
-            break;
-        }
-        if alnum {
-            emit(start, i);
-        }
-    }
-}
-
-/// [`tokenize`] as a whole `TokenStream`, i.e. with `Tokenizer.end()` run.
-///
-/// A tokenizer never swallows a position, so
-/// [`TokenStream::final_position_increment`] is `0` (`TokenStream.end()`'s own
-/// `posIncrAtt.setPositionIncrement(0)`); the value that matters here is
-/// [`TokenStream::final_offset`], Java's
-/// `Tokenizer.end()`'s `finalOffset = correctOffset(charCount)` -- the length
-/// of the **whole input**, in UTF-16 code units, not the end of the last
-/// token. `"fox   "` ends at offset 6, not 3, and a multi-valued field's next
-/// value starts from there plus the analyzer's `getOffsetGap`.
-pub fn tokenize_stream(text: &str) -> TokenStream {
-    TokenStream {
-        tokens: tokenize(text),
-        final_position_increment: 0,
-        final_offset: utf16_len(text) as i32,
-    }
+/// [`tokenize`] as a whole stream, i.e. with `Tokenizer.end()` run:
+/// [`AnalyzedTokens::final_offset`] is Java's `finalOffset =
+/// correctOffset(charCount)` -- the length of the **whole input** in UTF-16
+/// code units, not the end of the last token (`"fox   "` ends at 6, not 3).
+pub fn tokenize_stream(text: &str) -> AnalyzedTokens {
+    let mut tok = StandardTokenizer::new();
+    tok.set_reader(Box::new(StrReader::new(text)))
+        .and_then(|()| collect_tokens(&mut tok))
+        .expect("StandardTokenizer over an in-memory string cannot fail")
 }
 
 /// Java's `String.length()` for the same text: the number of UTF-16 code
 /// units `s` encodes to, i.e. one per BMP scalar and two per
-/// supplementary-plane scalar.
-///
-/// The ASCII fast path is what keeps [`tokenize`]'s new unit off the hot
-/// path for the overwhelmingly common case: `str::is_ascii` is a word-at-a-
-/// time scan over the bytes with no per-scalar decode, and for ASCII the
-/// byte length *is* the code-unit length. Only genuinely non-ASCII text pays
-/// the per-scalar `len_utf16` sum.
+/// supplementary-plane scalar. ASCII (the common case) is its byte length.
 #[inline]
-fn utf16_len(s: &str) -> usize {
+pub(crate) fn utf16_len(s: &str) -> usize {
     if s.is_ascii() {
         return s.len();
     }
     s.chars().map(char::len_utf16).sum()
 }
 
-/// Real Lucene's `LowerCaseFilter`: lowercases each token's term text,
-/// leaving offsets and position increments untouched.
-pub struct LowerCaseFilter;
+/// Lucene's `org.apache.lucene.analysis.LowerCaseFilter`: lowercases each
+/// token's term with Java's simple per-code-point mapping
+/// ([`simple_to_lowercase`]), leaving every other attribute untouched.
+pub struct LowerCaseFilter<I = Box<dyn TokenStream>> {
+    input: I,
+}
 
 /// Java's `CharacterUtils.toLowerCase` applied to one codepoint.
 ///
@@ -409,54 +251,137 @@ pub struct LowerCaseFilter;
 ///   `str::to_lowercase` applies the final-sigma rule and produces
 ///   `"οδος"`.
 ///
-/// Either disagreement means a term indexed under different bytes than
-/// Lucene would use, which breaks exact term lookup outright.
-///
 /// `char::to_lowercase` in Rust is per-character (so no final-sigma context)
 /// but still the full mapping, and the only unconditional full lowercase
 /// mapping in Unicode that expands to more than one character is `U+0130`'s.
 /// So: take the single-character result where there is one, special-case
 /// `İ`, and otherwise leave the character alone -- which is what
 /// `Character.toLowerCase` does for a codepoint with no simple mapping.
-fn simple_to_lowercase(c: char) -> char {
+pub(crate) fn simple_to_lowercase(c: char) -> char {
+    if is_caseless_block(c) {
+        return c;
+    }
     let mut it = c.to_lowercase();
     match (it.next(), it.next()) {
         (Some(lower), None) => lower,
-        // `Character.toLowerCase('\u0130') == 'i'`.
+        // `Character.toLowerCase('İ') == 'i'`.
         _ if c == '\u{0130}' => 'i',
         _ => c,
     }
 }
 
+/// Blocks with no case mappings at all (Thai/Lao, CJK punctuation through
+/// the unified ideographs, Hangul syllables, emoji and the supplementary
+/// ideographic planes): `to_lowercase` is a table search Rust would do only
+/// to return the character itself. `caseless_blocks_have_no_lowercase`
+/// checks every code point in them.
+#[inline]
+fn is_caseless_block(c: char) -> bool {
+    matches!(c as u32, 0x0E00..=0x0EFF | 0x3000..=0x9FFF | 0xAC00..=0xD7AF | 0x1F000..=0x1FBFF | 0x20000..=0x3FFFF)
+}
+
+/// `CharacterUtils.toLowerCase` over a whole term, in place; a term that
+/// lowercasing leaves unchanged (most non-Latin text) is not rebuilt.
+fn lowercase_term(term: &mut String) {
+    if term.is_ascii() {
+        term.make_ascii_lowercase();
+        return;
+    }
+    let Some(first) = term
+        .char_indices()
+        .find(|&(_, c)| simple_to_lowercase(c) != c)
+        .map(|(i, _)| i)
+    else {
+        return;
+    };
+    let mut out = String::with_capacity(term.len());
+    out.push_str(&term[..first]);
+    out.extend(term[first..].chars().map(simple_to_lowercase));
+    *term = out;
+}
+
+impl<I: TokenStream> LowerCaseFilter<I> {
+    /// `new LowerCaseFilter(TokenStream)`.
+    pub fn new(input: I) -> Self {
+        LowerCaseFilter { input }
+    }
+}
+
 impl LowerCaseFilter {
+    /// The filter over a materialised token list.
     pub fn apply(tokens: Vec<Token>) -> Vec<Token> {
         tokens
             .into_iter()
             .map(|mut t| {
-                if !t.term.is_ascii() {
-                    t.term = t.term.chars().map(simple_to_lowercase).collect();
-                } else {
-                    t.term.make_ascii_lowercase();
-                }
+                lowercase_term(&mut t.term);
                 t
             })
             .collect()
     }
 }
 
-/// Real Lucene's `StopFilter`: removes tokens whose term matches a
-/// caller-supplied stopword set.
+impl<I: TokenStream> TokenFilter for LowerCaseFilter<I> {
+    type Input = I;
+    fn input(&self) -> &I {
+        &self.input
+    }
+    fn input_mut(&mut self) -> &mut I {
+        &mut self.input
+    }
+    fn increment(&mut self) -> Result<bool, AnalysisError> {
+        if self.input.increment_token()? {
+            lowercase_term(self.input.attributes_mut().term_mut());
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+}
+
+/// Lucene's `org.apache.lucene.analysis.StopFilter`: a
+/// [`FilteringTokenFilter`] dropping the tokens whose term is in a
+/// [`CharArraySet`].
 ///
 /// Position-increment preservation (real Lucene semantics, not "just drop
 /// the removed token"): a removed stopword's own `position_increment` is
 /// *not* discarded -- it is added onto the position increment of the next
-/// surviving token, so the position gap it would have occupied is preserved.
-/// Consecutive removed stopwords accumulate onto whichever token survives
-/// next. If the text is nothing but stopwords, the output is empty (no
-/// increment is left dangling anywhere since there's no surviving token to
-/// carry it -- matching real Lucene, which simply produces zero tokens here
-/// too).
-pub struct StopFilter;
+/// surviving token, so the position gap it would have occupied is preserved,
+/// and trailing removed stopwords add theirs to the increment `end()`
+/// reports. If the text is nothing but stopwords, the output is empty.
+pub struct StopFilter<I = Box<dyn TokenStream>> {
+    inner: FilteringTokenFilter<I, StopWords>,
+}
+
+/// `StopFilter.accept()`: `!stopWords.contains(term)`.
+pub struct StopWords(Arc<CharArraySet>);
+
+impl Accept for StopWords {
+    fn accept(&mut self, attributes: &AttributeSource) -> Result<bool, AnalysisError> {
+        Ok(!self.0.contains(attributes.term()))
+    }
+}
+
+impl<I: TokenStream> StopFilter<I> {
+    /// `new StopFilter(TokenStream, CharArraySet)`.
+    pub fn new(input: I, stop_words: Arc<CharArraySet>) -> Self {
+        StopFilter {
+            inner: FilteringTokenFilter::new(input, StopWords(stop_words)),
+        }
+    }
+}
+
+impl<I: TokenStream> TokenFilter for StopFilter<I> {
+    type Input = FilteringTokenFilter<I, StopWords>;
+    fn input(&self) -> &Self::Input {
+        &self.inner
+    }
+    fn input_mut(&mut self) -> &mut Self::Input {
+        &mut self.inner
+    }
+    fn increment(&mut self) -> Result<bool, AnalysisError> {
+        self.inner.increment_token()
+    }
+}
 
 /// The classic Lucene/Snowball English stop word list, byte-for-byte the
 /// same 33 words as real Lucene's
@@ -547,7 +472,7 @@ pub fn french_stop_words() -> HashSet<String> {
 impl StopFilter {
     pub fn apply(tokens: Vec<Token>, stopwords: &HashSet<String>) -> Vec<Token> {
         Self::apply_to_stream(
-            TokenStream {
+            AnalyzedTokens {
                 tokens,
                 final_position_increment: 0,
                 final_offset: 0,
@@ -570,10 +495,10 @@ impl StopFilter {
     /// `skippedPositions` at end of stream is what the trailing stopwords in
     /// `"fox the the"` left behind: `apply` drops them with nowhere to put
     /// their increments, and this carries them out on
-    /// [`TokenStream::final_position_increment`], which is what
+    /// [`AnalyzedTokens::final_position_increment`], which is what
     /// `IndexingChain` adds to the field's position counter.
-    pub fn apply_to_stream(stream: TokenStream, stopwords: &HashSet<String>) -> TokenStream {
-        let TokenStream {
+    pub fn apply_to_stream(stream: AnalyzedTokens, stopwords: &HashSet<String>) -> AnalyzedTokens {
+        let AnalyzedTokens {
             tokens,
             final_position_increment,
             final_offset,
@@ -589,7 +514,7 @@ impl StopFilter {
             pending_increment = 0;
             out.push(t);
         }
-        TokenStream {
+        AnalyzedTokens {
             tokens: out,
             final_position_increment: final_position_increment + pending_increment,
             final_offset,
@@ -1921,6 +1846,26 @@ impl AsciiFoldingFilter {
     /// `State` and replays it on the next `incrementToken` call
     /// (`posIncAttr.setPositionIncrement(0)`), which is exactly this shape.
     /// A token folding left alone is emitted once either way.
+    /// The folded form of `term`, or `None` when folding leaves it as is
+    /// (the streaming filter's per-token step).
+    pub(crate) fn fold_term(term: &str) -> Option<String> {
+        if term.is_ascii() {
+            return None;
+        }
+        let mut folded = String::with_capacity(term.len());
+        let mut changed = false;
+        for c in term.chars() {
+            match Self::fold_char(c) {
+                Some(replacement) => {
+                    changed = true;
+                    folded.push_str(replacement);
+                }
+                None => folded.push(c),
+            }
+        }
+        changed.then_some(folded)
+    }
+
     pub fn apply_with(tokens: Vec<Token>, preserve_original: bool) -> Vec<Token> {
         let mut out = Vec::with_capacity(tokens.len());
         for t in tokens {
@@ -2526,7 +2471,7 @@ fn validate_gram_range(min_gram: i32, max_gram: i32) -> Result<(), String> {
 /// `end()` publishes whatever `curPosIncr` is left over when the stream runs
 /// dry, so a document whose *last* tokens were all shorter than `min_gram`
 /// still advances the position counter. That is carried on
-/// [`TokenStream::final_position_increment`] by
+/// [`AnalyzedTokens::final_position_increment`] by
 /// [`apply_ngram_filter_to_stream`]; this function is the token-vector-only
 /// form both filters' `apply` entry points keep.
 ///
@@ -2535,20 +2480,20 @@ fn validate_gram_range(min_gram: i32, max_gram: i32) -> Result<(), String> {
 /// end-of-stream increment (a `StopFilter`'s `skippedPositions`, say) is
 /// discarded when an n-gram filter sits downstream of it. Reproduced as-is.
 fn apply_ngram_filter_to_stream(
-    stream: TokenStream,
+    stream: AnalyzedTokens,
     min_gram: i32,
     max_gram: i32,
     edge_only: bool,
     preserve_original: bool,
-) -> Result<TokenStream, String> {
-    let TokenStream {
+) -> Result<AnalyzedTokens, String> {
+    let AnalyzedTokens {
         tokens,
         final_position_increment: _,
         final_offset,
     } = stream;
     let (tokens, cur_pos_incr) =
         ngram_tokens(tokens, min_gram, max_gram, edge_only, preserve_original)?;
-    Ok(TokenStream {
+    Ok(AnalyzedTokens {
         tokens,
         final_position_increment: cur_pos_incr,
         final_offset,
@@ -2647,13 +2592,13 @@ impl NGramTokenFilter {
 
     /// [`Self::apply`] with `NGramTokenFilter.end()` run: the leftover
     /// `curPosIncr` from trailing input tokens that produced no gram lands on
-    /// [`TokenStream::final_position_increment`] instead of being dropped.
+    /// [`AnalyzedTokens::final_position_increment`] instead of being dropped.
     pub fn apply_to_stream(
-        stream: TokenStream,
+        stream: AnalyzedTokens,
         min_gram: i32,
         max_gram: i32,
         preserve_original: bool,
-    ) -> Result<TokenStream, String> {
+    ) -> Result<AnalyzedTokens, String> {
         apply_ngram_filter_to_stream(stream, min_gram, max_gram, false, preserve_original)
     }
 }
@@ -2692,334 +2637,12 @@ impl EdgeNGramTokenFilter {
     /// [`Self::apply`] with `EdgeNGramTokenFilter.end()` run -- see
     /// [`NGramTokenFilter::apply_to_stream`].
     pub fn apply_to_stream(
-        stream: TokenStream,
+        stream: AnalyzedTokens,
         min_gram: i32,
         max_gram: i32,
         preserve_original: bool,
-    ) -> Result<TokenStream, String> {
+    ) -> Result<AnalyzedTokens, String> {
         apply_ngram_filter_to_stream(stream, min_gram, max_gram, true, preserve_original)
-    }
-}
-
-/// An analyzer composing a tokenizer with a configurable filter chain.
-///
-/// At minimum applies [`LowerCaseFilter`]; optionally applies [`StopFilter`]
-/// when stopwords are configured, optionally applies [`AsciiFoldingFilter`]
-/// when enabled via [`Analyzer::with_ascii_folding`], optionally applies
-/// [`PorterStemFilter`] when enabled via [`Analyzer::with_stemming`], and
-/// optionally applies [`SynonymFilter`] when enabled via
-/// [`Analyzer::with_synonyms`]. Additional real-Lucene filters (multi-word
-/// synonym phrases via `SynonymGraphFilter`, etc.) are out of scope for this
-/// MVP -- see `docs/parity.md`.
-///
-/// A second, entirely distinct producer, [`Analyzer::keyword`], mirrors real
-/// Lucene's `KeywordAnalyzer` instead: see that constructor's docs for its
-/// no-tokenization, single-token semantics.
-pub struct Analyzer {
-    stopwords: Option<HashSet<String>>,
-    ascii_folding: bool,
-    stemming: bool,
-    snowball_stemming: bool,
-    synonyms: Option<HashMap<String, Vec<String>>>,
-    synonyms_bidirectional: bool,
-    /// When `true`, [`Analyzer::analyze`] short-circuits to
-    /// [`Analyzer::keyword`]'s single-token behavior and every other field
-    /// on this struct is inert (a keyword analyzer has no filter chain to
-    /// configure -- see that constructor's docs).
-    keyword: bool,
-    /// `Analyzer.getPositionIncrementGap(String)` -- see
-    /// [`Analyzer::with_position_increment_gap`]. Java's default: `0`.
-    position_increment_gap: i32,
-    /// `Analyzer.getOffsetGap(String)` -- see [`Analyzer::with_offset_gap`].
-    /// Java's default: `1`.
-    offset_gap: i32,
-}
-
-impl Analyzer {
-    /// A "standard"-style analyzer: word-boundary tokenizer + lowercase +
-    /// optional stopword removal, mirroring real Lucene's `StandardAnalyzer`
-    /// (`StandardTokenizer` + `LowerCaseFilter` + `StopFilter`) at this
-    /// crate's documented scope. ASCII-folding and stemming are off by
-    /// default -- use [`Analyzer::with_ascii_folding`] / [`Analyzer::with_stemming`]
-    /// to enable them -- so every existing caller's behavior is unchanged.
-    pub fn standard(stopwords: Option<&HashSet<String>>) -> Self {
-        Analyzer {
-            stopwords: stopwords.cloned(),
-            ascii_folding: false,
-            stemming: false,
-            snowball_stemming: false,
-            synonyms: None,
-            synonyms_bidirectional: false,
-            keyword: false,
-            position_increment_gap: 0,
-            offset_gap: 1,
-        }
-    }
-
-    /// Mirrors real Lucene's
-    /// `org.apache.lucene.analysis.core.KeywordAnalyzer`: the entire input
-    /// text becomes **exactly one token**, byte-for-byte as given -- no word
-    /// segmentation, no lowercasing, no stopword removal, no stemming, no
-    /// ASCII-folding, no synonym expansion. This is real Lucene's documented
-    /// behavior for `KeywordAnalyzer` (which wires up a bare
-    /// `KeywordTokenizer` with no filters at all), not a partial/deferred
-    /// version of [`Analyzer::standard`] -- it is the intentional, complete
-    /// scope of this producer, used for exact-match/sort fields (IDs, tags,
-    /// status codes) where any tokenization at all would be wrong.
-    ///
-    /// The one edge case worth calling out explicitly: **empty input still
-    /// produces exactly one token**, with an empty `term` and a zero-length
-    /// `0..0` offset span -- matching real Lucene's `KeywordTokenizer`,
-    /// whose `incrementToken()` unconditionally returns `true` (and reports
-    /// `done = true` so the *next* call returns `false`) regardless of how
-    /// many characters it read, including zero.
-    ///
-    /// Every other `Analyzer` builder method (`with_ascii_folding`,
-    /// `with_stemming`, `with_synonyms`, `with_bidirectional_synonyms`) is
-    /// meaningless on a keyword analyzer (there is no filter chain to
-    /// configure) and calling one on the result of `Analyzer::keyword()` has
-    /// no effect on [`Analyzer::analyze`]'s output.
-    pub fn keyword() -> Self {
-        Analyzer {
-            stopwords: None,
-            ascii_folding: false,
-            stemming: false,
-            snowball_stemming: false,
-            synonyms: None,
-            synonyms_bidirectional: false,
-            keyword: true,
-            position_increment_gap: 0,
-            offset_gap: 1,
-        }
-    }
-
-    /// Enables [`AsciiFoldingFilter`] in this analyzer's chain. Filter
-    /// order: tokenize -> **fold** -> lowercase -> stopwords -> stemming.
-    /// Folding runs before lowercasing so that an uppercase accented letter
-    /// (e.g. `É`) folds straight to its ASCII letter (`E`) and then gets
-    /// lowercased along with every other token in the same pass, rather than
-    /// needing its own case-conversion step; this also means stopword
-    /// matching (which happens next, against already-lowercased terms) sees
-    /// the fully folded-and-lowercased form regardless of the input's
-    /// original diacritics/casing.
-    pub fn with_ascii_folding(mut self) -> Self {
-        self.ascii_folding = true;
-        self
-    }
-
-    /// Enables [`PorterStemFilter`] in this analyzer's chain, mirroring real
-    /// Lucene's `EnglishAnalyzer` running `PorterStemFilter` as its last
-    /// stage. Filter order: tokenize -> fold -> lowercase -> stopwords ->
-    /// **stem**. Stemming runs last so that stopword matching sees
-    /// unstemmed terms (matching real Lucene: `EnglishAnalyzer`'s stop set
-    /// contains unstemmed words like `"the"`, not stems).
-    pub fn with_stemming(mut self) -> Self {
-        self.stemming = true;
-        self
-    }
-
-    /// Enables [`SnowballEnglishStemFilter`] (task #209's Porter2/Snowball
-    /// English stemmer) instead of [`PorterStemFilter`] in this analyzer's
-    /// chain. Filter order is otherwise identical to
-    /// [`Analyzer::with_stemming`]: tokenize -> fold -> lowercase ->
-    /// stopwords -> **stem**. Mutually exclusive with `with_stemming` in
-    /// effect (not in flag storage) -- if both are enabled on the same
-    /// `Analyzer`, this method's Snowball stemmer takes precedence and the
-    /// classic Porter stemmer is skipped, since running both in sequence
-    /// would double-stem and isn't a real Lucene configuration either
-    /// filter is meant to model.
-    pub fn with_snowball_stemming(mut self) -> Self {
-        self.snowball_stemming = true;
-        self
-    }
-
-    /// Enables [`SynonymFilter`] in this analyzer's chain, injecting
-    /// configured single-word synonyms at the same position as the term
-    /// they replace (see [`SynonymFilter`] for the full scope/positional
-    /// semantics). Filter order: tokenize -> fold -> lowercase -> stopwords
-    /// -> stem -> **synonyms** (last). Synonyms run last for two reasons:
-    /// (1) real Lucene's convention is that synonym expansion operates on
-    /// already-normalized terms, so it should see lowercased/stemmed forms,
-    /// matching the caller-supplied map's expected (normalized) keys; (2)
-    /// running after [`StopFilter`] means a term that is itself a stopword
-    /// (and thus removed) never gets its synonym expanded -- expanding a
-    /// term that's about to be dropped would be wasted and would leave an
-    /// orphaned synonym token with no corresponding original.
-    pub fn with_synonyms(mut self, synonyms: HashMap<String, Vec<String>>) -> Self {
-        self.synonyms = Some(synonyms);
-        self
-    }
-
-    /// Opt-in bidirectional variant of [`Analyzer::with_synonyms`]: same
-    /// filter-chain position (last), but applies
-    /// [`SynonymFilter::apply_bidirectional`] instead of
-    /// [`SynonymFilter::apply`], so a configured `key -> [values]` mapping
-    /// also expands each `value -> key`. Does not affect any other
-    /// existing behavior -- an `Analyzer` built with [`Analyzer::with_synonyms`]
-    /// is completely unaffected by this method's existence.
-    pub fn with_bidirectional_synonyms(mut self, synonyms: HashMap<String, Vec<String>>) -> Self {
-        self.synonyms = Some(synonyms);
-        self.synonyms_bidirectional = true;
-        self
-    }
-
-    /// Sets this analyzer's `Analyzer.getPositionIncrementGap(String)`.
-    ///
-    /// The number of positions inserted **between two values of the same
-    /// multi-valued field**. Java's base `Analyzer` returns `0` from it, which
-    /// is this port's default too -- and 0 means a phrase query *can* match
-    /// across a value boundary, which surprises people often enough that every
-    /// consumer of Lucene (OpenSearch's `position_increment_gap`, default 100)
-    /// exposes an override. Java overrides it by subclassing; this port has no
-    /// per-field analyzer configuration, so the gap is per-`Analyzer` and the
-    /// field name is not a parameter -- see this crate's scope notes.
-    pub fn with_position_increment_gap(mut self, gap: i32) -> Self {
-        self.position_increment_gap = gap;
-        self
-    }
-
-    /// Sets this analyzer's `Analyzer.getOffsetGap(String)`: the number of
-    /// character offsets inserted between two values of the same multi-valued
-    /// field. Java's default is **`1`**, not `0` -- it exists so the last
-    /// character of one value and the first of the next do not share an
-    /// offset -- and that is this port's default too.
-    pub fn with_offset_gap(mut self, gap: i32) -> Self {
-        self.offset_gap = gap;
-        self
-    }
-
-    /// `Analyzer.getPositionIncrementGap(fieldName)`.
-    pub fn position_increment_gap(&self) -> i32 {
-        self.position_increment_gap
-    }
-
-    /// `Analyzer.getOffsetGap(fieldName)`.
-    pub fn offset_gap(&self) -> i32 {
-        self.offset_gap
-    }
-
-    /// Streams the tokens [`Self::analyze_stream`] produces for `text`,
-    /// calling `f(term, start_offset, end_offset, position_increment)` for
-    /// each, and returns the stream's `(final_position_increment,
-    /// final_offset)` -- the same values, in the same order, without building
-    /// a `Vec<Token>` of owned `String`s.
-    ///
-    /// This is the indexing chain's view of analysis: Lucene's
-    /// `IndexingChain` reads each token out of one reused `CharTermAttribute`
-    /// buffer and hashes it straight into `BytesRefHash`, allocating nothing
-    /// per token. For ASCII text through the standard chain -- tokenizer,
-    /// lowercasing, optional stopwords, ASCII folding (the identity on ASCII)
-    /// -- this does the same: [`ascii_words`] finds each word, it is
-    /// lowercased into one reused buffer, and a stopword only adds its
-    /// increment to the next kept token (`FilteringTokenFilter`'s
-    /// `skippedPositions`). Anything else -- non-ASCII text, stemming,
-    /// synonyms, the keyword analyzer -- runs [`Self::analyze_stream`] and
-    /// replays its tokens, so every analyzer keeps its exact behaviour.
-    pub fn for_each_token(&self, text: &str, mut f: impl FnMut(&str, i32, i32, i32)) -> (i32, i32) {
-        let plain =
-            !self.keyword && !self.stemming && !self.snowball_stemming && self.synonyms.is_none();
-        if plain && text.is_ascii() {
-            let mut term = String::new();
-            let mut skipped = 0i32;
-            ascii_words(text.as_bytes(), |start, end| {
-                term.clear();
-                term.push_str(&text[start..end]);
-                term.make_ascii_lowercase();
-                if self
-                    .stopwords
-                    .as_ref()
-                    .is_some_and(|stop| stop.contains(term.as_str()))
-                {
-                    skipped = skipped.saturating_add(1);
-                    return;
-                }
-                f(&term, start as i32, end as i32, skipped.saturating_add(1));
-                skipped = 0;
-            });
-            return (skipped, text.len() as i32);
-        }
-        let stream = self.analyze_stream(text);
-        for t in &stream.tokens {
-            f(&t.term, t.start_offset, t.end_offset, t.position_increment);
-        }
-        (stream.final_position_increment, stream.final_offset)
-    }
-    pub fn analyze(&self, text: &str) -> Vec<Token> {
-        self.analyze_stream(text).tokens
-    }
-
-    /// [`Self::analyze`] as a whole `TokenStream`: the same tokens, plus the
-    /// two end-of-stream attribute values `IndexingChain` reads after
-    /// `stream.end()`. See [`TokenStream`] for why they matter.
-    pub fn analyze_stream(&self, text: &str) -> TokenStream {
-        if self.keyword {
-            return TokenStream {
-                tokens: vec![Token {
-                    term: text.to_string(),
-                    start_offset: 0,
-                    // Java's `KeywordTokenizer` ends the one token at
-                    // `finalOffset = correctOffset(charCount)`, a Java `char`
-                    // count -- `utf16_len`, not `text.len()` (see [`Token`]).
-                    end_offset: utf16_len(text) as i32,
-                    position_increment: 1,
-                    position_length: 1,
-                }],
-                final_position_increment: 0,
-                final_offset: utf16_len(text) as i32,
-            };
-        }
-        let TokenStream {
-            tokens,
-            final_position_increment,
-            final_offset,
-        } = tokenize_stream(text);
-        let tokens = if self.ascii_folding {
-            AsciiFoldingFilter::apply(tokens)
-        } else {
-            tokens
-        };
-        let tokens = LowerCaseFilter::apply(tokens);
-        // `StopFilter` is the only filter in this chain that overrides `end()`;
-        // every other one inherits `TokenFilter.end()`, which just forwards, so
-        // they run on the token vector alone.
-        let TokenStream {
-            tokens,
-            final_position_increment,
-            final_offset,
-        } = match &self.stopwords {
-            Some(stopwords) => StopFilter::apply_to_stream(
-                TokenStream {
-                    tokens,
-                    final_position_increment,
-                    final_offset,
-                },
-                stopwords,
-            ),
-            None => TokenStream {
-                tokens,
-                final_position_increment,
-                final_offset,
-            },
-        };
-        let tokens = if self.snowball_stemming {
-            SnowballEnglishStemFilter::apply(tokens)
-        } else if self.stemming {
-            PorterStemFilter::apply(tokens)
-        } else {
-            tokens
-        };
-        let tokens = match &self.synonyms {
-            Some(synonyms) if self.synonyms_bidirectional => {
-                SynonymFilter::apply_bidirectional(tokens, synonyms)
-            }
-            Some(synonyms) => SynonymFilter::apply(tokens, synonyms),
-            None => tokens,
-        };
-        TokenStream {
-            tokens,
-            final_position_increment,
-            final_offset,
-        }
     }
 }
 
@@ -3844,66 +3467,27 @@ mod snowball_english {
 mod tests {
     use super::*;
 
-    fn fast_words(s: &str) -> Vec<(usize, &str)> {
-        let mut v = Vec::new();
-        ascii_words(s.as_bytes(), |a, b| v.push((a, &s[a..b])));
-        v
-    }
-
-    /// The ASCII fast path must produce exactly the segments the general
-    /// UAX#29 segmenter does. Every string of up to five characters over an
-    /// alphabet holding one representative of every class the rules
-    /// distinguish -- and a second member of the classes with two -- is
-    /// checked, which covers every rule's full context window (WB6/WB7/WB11/
-    /// WB12 look at most two characters either side of a boundary).
     #[test]
-    fn ascii_words_matches_unicode_word_indices_exhaustively() {
-        const ALPHABET: &[u8] = b"aZ09_:.',; -\"";
-        let mut buf = Vec::new();
-        for len in 0..=5u32 {
-            let total = ALPHABET.len().pow(len);
-            for mut n in 0..total {
-                buf.clear();
-                for _ in 0..len {
-                    buf.push(ALPHABET[n % ALPHABET.len()]);
-                    n /= ALPHABET.len();
-                }
-                let s = std::str::from_utf8(&buf).unwrap();
-                let expected: Vec<(usize, &str)> = s.unicode_word_indices().collect();
-                assert_eq!(fast_words(s), expected, "input {s:?}");
+    fn caseless_blocks_have_no_lowercase() {
+        for cp in (0x0E00..=0x0EFF)
+            .chain(0x3000..=0x9FFF)
+            .chain(0xAC00..=0xD7AF)
+            .chain(0x1F000..=0x1FBFF)
+            .chain(0x20000..=0x3FFFF)
+        {
+            if let Some(c) = char::from_u32(cp) {
+                assert!(is_caseless_block(c));
+                let mut it = c.to_lowercase();
+                assert_eq!((it.next(), it.next()), (Some(c), None), "{cp:#x}");
             }
         }
-    }
-
-    /// Long random ASCII documents, including every printable character, so a
-    /// class the exhaustive alphabet left out would still be caught.
-    #[test]
-    fn ascii_words_matches_unicode_word_indices_on_random_documents() {
-        let mut state = 0x9E37_79B9_7F4A_7C15u64;
-        let mut next = || {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            state
-        };
-        for _ in 0..2000 {
-            let len = (next() % 200) as usize;
-            let s: String = (0..len)
-                .map(|_| {
-                    let x = next();
-                    // Mostly word characters and joiners, so long joined
-                    // segments actually occur; sometimes any ASCII byte.
-                    match x % 4 {
-                        0 => (b' ' + (x >> 8) as u8 % 95) as char,
-                        1 => b"a.b'c:d,e;f_"[(x >> 8) as usize % 12] as char,
-                        2 => b"0123456789"[(x >> 8) as usize % 10] as char,
-                        _ => ((x >> 8) as u8 % 128) as char,
-                    }
-                })
-                .collect();
-            let expected: Vec<(usize, &str)> = s.unicode_word_indices().collect();
-            assert_eq!(fast_words(&s), expected, "input {s:?}");
-        }
+        assert!(!is_caseless_block('A'));
+        let mut t = "日本Ωx".to_string();
+        lowercase_term(&mut t);
+        assert_eq!(t, "日本ωx");
+        let mut t = "日本".to_string();
+        lowercase_term(&mut t);
+        assert_eq!(t, "日本");
     }
 
     fn tok(term: &str, start: i32, end: i32, pos_inc: i32) -> Token {
@@ -4149,14 +3733,20 @@ mod tests {
     }
 
     #[test]
-    fn tokenize_emoji_produces_no_token() {
-        // Emoji contain no alphanumeric codepoints, so -- like any other
-        // non-alphanumeric run -- they produce no token at all, but do not
-        // corrupt tokenization of the surrounding text.
-        // U+1F44D is one scalar, **two** UTF-16 code units and four UTF-8
-        // bytes, so "emoji" starts at Java `char` 6, not scalar 5 or byte 8.
+    fn tokenize_emoji_is_its_own_token() {
+        // Lucene's grammar emits an emoji as an <EMOJI> token (the old
+        // unicode-segmentation stand-in dropped it). U+1F44D is one scalar,
+        // **two** UTF-16 code units and four UTF-8 bytes, so "emoji" starts
+        // at Java `char` 6, not scalar 5 or byte 8.
         let tokens = tokenize("test\u{1F44D}emoji");
-        assert_eq!(tokens, vec![tok("test", 0, 4, 1), tok("emoji", 6, 11, 1)]);
+        assert_eq!(
+            tokens,
+            vec![
+                tok("test", 0, 4, 1),
+                tok("\u{1F44D}", 4, 6, 1),
+                tok("emoji", 6, 11, 1)
+            ]
+        );
     }
 
     #[test]
@@ -4223,7 +3813,7 @@ mod tests {
         let tokens = tokenize("fox the the");
         let via_apply = StopFilter::apply(tokens.clone(), &stopwords);
         let via_stream = StopFilter::apply_to_stream(
-            TokenStream {
+            AnalyzedTokens {
                 tokens,
                 final_position_increment: 0,
                 final_offset: 11,
@@ -4243,7 +3833,7 @@ mod tests {
     fn ngram_end_publishes_the_leftover_increment_and_overwrites_the_upstream_one() {
         // "ab" is shorter than min_gram 3, so it emits nothing and its
         // increment is still owed at end of stream.
-        let stream = TokenStream {
+        let stream = AnalyzedTokens {
             tokens: tokenize("abcd ab"),
             final_position_increment: 7,
             final_offset: 7,
@@ -4259,7 +3849,7 @@ mod tests {
         assert_eq!(out.final_position_increment, 1, "the skipped \"ab\"");
         assert_eq!(out.final_offset, 7);
 
-        let stream = TokenStream {
+        let stream = AnalyzedTokens {
             tokens: tokenize("abcd ab"),
             final_position_increment: 7,
             final_offset: 7,
@@ -4275,7 +3865,7 @@ mod tests {
         assert_eq!(out.final_position_increment, 1);
 
         // preserveOriginal emits the short token, so nothing is owed.
-        let stream = TokenStream {
+        let stream = AnalyzedTokens {
             tokens: tokenize("abcd ab"),
             final_position_increment: 0,
             final_offset: 7,
