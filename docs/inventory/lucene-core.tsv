@@ -395,7 +395,7 @@ index/IndexReader	partial	crates/lucene-search/src/directory_reader.rs::Director
 index/IndexReaderContext	ported	crates/lucene-search/src/multi_segment.rs::OpenSegment
 index/IndexSorter	partial	crates/lucene-index/src/segment_info.rs::SortKeyComparator -- M7: per parity.md: the writer sorts only NUMERIC/SORTED_NUMERIC keys; `STRING`/`SortedSetSortField`/`BinarySortField` index sorts are refused with `Error::UnsupportedIndexSortKind`
 index/IndexUpgrader	deferred:M8	command-line tool rewriting older-format segments into the current format
-index/IndexWriter	partial	crates/lucene-index/src/index_writer.rs::IndexWriter -- M7: per parity.md: not ported `tryDeleteDocument`, `tryUpdateDocValue`, `addIndexes` (both overloads), `addBatch`/`ColumnBatch` updates, NRT readers from the writer (`DirectoryReader.open(writer)`), `maybeMerge` and a merge scheduler, `flushNextBuffer`, `infoStream`, writing compound segments, the write lock (`NativeFSLockFactory`)
+index/IndexWriter	partial	crates/lucene-index/src/index_writer.rs::IndexWriter -- M7: per parity.md: not ported `tryDeleteDocument`, `tryUpdateDocValue`, `addIndexes` (both overloads), `addBatch`/`ColumnBatch` updates, NRT readers from the writer (`DirectoryReader.open(writer)`), `maybeMerge` and a merge scheduler, `flushNextBuffer`, `infoStream`, writing compound segments
 index/IndexWriterConfig	partial	crates/lucene-index/src/index_writer.rs::set_index_sort -- M7: settings are writer setters (`setSimilarity` is `IndexWriter::set_similarity`, norms via `NormSimilarity`); missing `STRING`/`SortedSet`/`Binary` index sorts, `setUseCompoundFile` (compound segments not written), codec/per-field format choice, `MergeScheduler`, `IndexWriterEventListener`, `infoStream`, `leafSorter`, `commitOnClose`
 index/IndexWriterEventListener	not-needed	callback hook for merge begin/end events used for metrics and tests; no effect on the index.
 index/IndexableField	partial	crates/lucene-index/src/index_writer/explicit.rs::ExplicitDocument -- M7: no `IndexableField` abstraction: fields are configured per writer (`set_*_field`/`add_*_field`) or arrive pre-inverted; the document field-type API is M7 T7.2
@@ -853,7 +853,7 @@ search/similarities/Similarity	ported	crates/lucene-search/src/similarities.rs::
 search/similarities/SimilarityBase	ported	crates/lucene-search/src/similarities.rs::base_scorer
 search/similarities/TFIDFSimilarity	ported	crates/lucene-search/src/similarities.rs::ClassicSimilarity
 store/AlreadyClosedException	not-needed	Use-after-close exception; Rust ownership makes use-after-close unrepresentable, and the FFI reports a closed handle as FfiStatus::InvalidHandle.
-store/BaseDirectory	todo:M7	LockFactory-holding Directory base (obtainLock) absent
+store/BaseDirectory	ported	crates/lucene-store/src/directory.rs::BaseDirectory
 store/BufferedChecksum	ported	crates/lucene-store/src/index_output.rs::FsIndexOutput
 store/BufferedChecksumIndexInput	ported	crates/lucene-store/src/codec_util.rs::check_footer
 store/BufferedIndexInput	ported	crates/lucene-store/src/directory.rs::FsDirectory
@@ -861,7 +861,7 @@ store/ByteArrayDataInput	ported	crates/lucene-store/src/data_input.rs::SliceInpu
 store/ByteArrayDataOutput	ported	crates/lucene-store/src/data_output.rs::VecDataOutput
 store/ByteBuffersDataInput	ported	crates/lucene-store/src/data_input.rs::SliceInput
 store/ByteBuffersDataOutput	ported	crates/lucene-store/src/data_output.rs::VecDataOutput
-store/ByteBuffersDirectory	todo:M7	in-memory Directory implementation absent
+store/ByteBuffersDirectory	ported	crates/lucene-store/src/byte_buffers_directory.rs::ByteBuffersDirectory
 store/ByteBuffersIndexInput	ported	crates/lucene-store/src/data_input.rs::SliceInput
 store/ByteBuffersIndexOutput	ported	crates/lucene-store/src/data_output.rs::VecDataOutput
 store/ChecksumIndexInput	ported	crates/lucene-store/src/codec_util.rs::check_footer
@@ -869,11 +869,11 @@ store/DataAccessHint	not-needed	IOContext file-open hint; the Rust Directory::op
 store/DataInput	ported	crates/lucene-store/src/data_input.rs::DataInput
 store/DataOutput	ported	crates/lucene-store/src/data_output.rs::DataOutput
 store/DefaultIOContext	not-needed	IOContext file-open hint; the Rust Directory::open takes no context, and hints only steer madvise/preload (performance, not results).
-store/Directory	partial	crates/lucene-store/src/directory.rs::Directory -- M7: no obtainLock/write.lock (parity: "Locking (`NativeFSLockFactory`) ... still deferred"), no createTempOutput, no getPendingDeletions
-store/FSDirectory	partial	crates/lucene-store/src/directory.rs::FsDirectory -- M7: no write lock and no pending-delete (Windows) semantics (parity: "The write lock and Windows delete semantics (`NativeFSLockFactory`, pending deletes)" out of scope)
-store/FSLockFactory	todo:M7	filesystem lock-factory base absent
+store/Directory	ported	crates/lucene-store/src/directory.rs::Directory
+store/FSDirectory	ported	crates/lucene-store/src/directory.rs::FsDirectory
+store/FSLockFactory	ported	crates/lucene-store/src/fs_lock_factory.rs::FsLockFactory
 store/FileDataHint	not-needed	IOContext file-open hint; the Rust Directory::open takes no context, and hints only steer madvise/preload (performance, not results).
-store/FileSwitchDirectory	todo:M7	extension-routed composite Directory absent
+store/FileSwitchDirectory	ported	crates/lucene-store/src/file_switch_directory.rs::FileSwitchDirectory
 store/FileTypeHint	not-needed	IOContext file-open hint; the Rust Directory::open takes no context, and hints only steer madvise/preload (performance, not results).
 store/FilterDirectory	not-needed	Delegating base class; Rust wrappers (CrashingDirectory, compound CompoundReader, TrackingDirectory) implement the Directory trait directly.
 store/FilterIndexInput	not-needed	Delegating base class; no Rust IndexInput wrapper needs one (SliceInput is a concrete type).
@@ -883,12 +883,12 @@ store/IOContext	not-needed	Per-open context/hint carrier; the Rust Directory API
 store/IndexInput	ported	crates/lucene-store/src/data_input.rs::SliceInput
 store/IndexOutput	ported	crates/lucene-store/src/index_output.rs::IndexOutput
 store/InputStreamDataInput	not-needed	Adapter from java.io.InputStream; Rust callers read bytes into a slice and use SliceInput.
-store/Lock	todo:M7	write.lock Lock handle absent
-store/LockFactory	todo:M7	LockFactory abstraction absent
-store/LockObtainFailedException	todo:M7	write.lock contention error absent (no locking)
-store/LockReleaseFailedException	todo:M7	write.lock release error absent (no locking)
+store/Lock	ported	crates/lucene-store/src/lock.rs::Lock
+store/LockFactory	ported	crates/lucene-store/src/lock.rs::LockFactory
+store/LockObtainFailedException	ported	crates/lucene-store/src/error.rs::LockObtainFailed
+store/LockReleaseFailedException	ported	crates/lucene-store/src/error.rs::LockReleaseFailed
 store/LockStressTest	not-needed	Command-line stress-test tool for LockFactory implementations, not runtime behaviour.
-store/LockValidatingDirectoryWrapper	todo:M7	directory wrapper that validates write.lock before mutations absent
+store/LockValidatingDirectoryWrapper	ported	crates/lucene-store/src/lock_wrappers.rs::LockValidatingDirectoryWrapper
 store/LockVerifyServer	not-needed	Command-line server used only by LockStressTest to verify LockFactory implementations.
 store/MMapDirectory	ported	crates/lucene-store/src/directory.rs::MmapDirectory
 store/MemorySegmentAccessInput	ported	crates/lucene-store/src/directory.rs::Input
@@ -896,25 +896,25 @@ store/MemorySegmentIndexInput	ported	crates/lucene-store/src/directory.rs::Input
 store/MemorySegmentIndexInputProvider	ported	crates/lucene-store/src/directory.rs::MmapDirectory
 store/MergeInfo	not-needed	IOContext merge metadata consumed only by hints, rate limiting and NRTCachingDirectory sizing; Directory::create_output takes no context.
 store/NIOFSDirectory	ported	crates/lucene-store/src/directory.rs::FsDirectory
-store/NRTCachingDirectory	todo:M7	RAM-caching NRT Directory wrapper absent
+store/NRTCachingDirectory	partial	crates/lucene-store/src/nrt_caching_directory.rs::NrtCachingDirectory -- M7: the flush/merge size estimate Java reads off IOContext is a create_output_with_estimate argument IndexWriter does not pass yet, so writes through the Directory trait bypass the cache
 store/NativeAccess	not-needed	madvise/posix_madvise glue behind ReadAdvice; the Rust mmap backend (memmap2) issues no advice, which only affects paging performance.
-store/NativeFSLockFactory	todo:M7	native (OS file lock) write.lock factory absent
-store/NoLockFactory	todo:M7	LockFactory API absent (the port behaves as if NoLockFactory, implicitly)
+store/NativeFSLockFactory	ported	crates/lucene-store/src/fs_lock_factory.rs::NativeFsLockFactory
+store/NoLockFactory	ported	crates/lucene-store/src/lock.rs::NoLockFactory
 store/OutputStreamDataOutput	not-needed	Adapter onto java.io.OutputStream; Rust DataOutput is implemented directly on Vec<u8> and FsIndexOutput.
 store/OutputStreamIndexOutput	ported	crates/lucene-store/src/index_output.rs::FsIndexOutput
 store/PosixNativeAccess	not-needed	POSIX madvise implementation of NativeAccess via Panama FFI; the Rust mmap backend issues no advice (performance only).
 store/PreloadHint	not-needed	IOContext file-open hint; the Rust Directory::open takes no context, and hints only steer madvise/preload (performance, not results).
 store/RandomAccessInput	ported	crates/lucene-store/src/data_input.rs::SliceInput
-store/RateLimitedIndexOutput	todo:M7	merge write throttling absent
-store/RateLimiter	todo:M7	merge IO rate limiter absent
+store/RateLimitedIndexOutput	ported	crates/lucene-store/src/rate_limiter.rs::RateLimitedIndexOutput
+store/RateLimiter	ported	crates/lucene-store/src/rate_limiter.rs::SimpleRateLimiter
 store/ReadAdvice	not-needed	madvise access-pattern enum for MMapDirectory; the Rust mmap backend issues no advice (performance only).
 store/ReadOnceHint	not-needed	IOContext file-open hint; the Rust Directory::open takes no context, and hints only steer madvise/preload (performance, not results).
 store/RefCountedSharedArena	ported	crates/lucene-store/src/directory.rs::Input
-store/SimpleFSLockFactory	todo:M7	lock-file write.lock factory absent
-store/SingleInstanceLockFactory	todo:M7	in-process write.lock factory absent
-store/SleepingLockWrapper	todo:M7	retrying obtainLock wrapper absent
+store/SimpleFSLockFactory	ported	crates/lucene-store/src/fs_lock_factory.rs::SimpleFsLockFactory
+store/SingleInstanceLockFactory	ported	crates/lucene-store/src/lock.rs::SingleInstanceLockFactory
+store/SleepingLockWrapper	ported	crates/lucene-store/src/lock_wrappers.rs::SleepingLockWrapper
 store/TrackingDirectoryWrapper	ported	crates/lucene-index/src/concurrent_writer.rs::TrackingDirectory
-store/VerifyingLockFactory	todo:M7	lock-verifying LockFactory wrapper absent
+store/VerifyingLockFactory	ported	crates/lucene-store/src/lock.rs::VerifyingLockFactory
 util/Accountable	not-needed	RAM-accounting interface; the port exposes ad hoc ram_bytes_used() methods where accounting matters (e.g. RoaringDocIdSet::ram_bytes_used)
 util/Accountables	not-needed	toString/child-resource helpers for the Accountable interface, which the port does not have
 util/ArrayInPlaceMergeSorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
