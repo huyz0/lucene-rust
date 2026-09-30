@@ -193,6 +193,10 @@ jobs:
           key: lucene-jars-10.5.0
       - name: Regenerate and verify
         run: ./scripts/gen-fixtures.sh --check
+      # fixtures/data/bwc is written by old Lucene jars, not by the
+      # generators above; this re-reads it with 10.5.0 + backward-codecs.
+      - name: Backward-codecs fixtures
+        run: ./scripts/gen-bwc-fixtures.sh --check
 
   # ---------------------------------------------------------------------------
   # Reverse direction: Rust writes real Lucene bytes, Lucene reads them back.

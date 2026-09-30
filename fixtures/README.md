@@ -102,6 +102,21 @@ and the baseline is where that coupling is now written down.
 
 CI runs `--check` on every change (`.github/workflows/ci.yml`, job `fixtures`).
 
+`data/bwc/` is not any generator's here: `scripts/gen-bwc-fixtures.sh` writes
+it with each old release's own jar, so the tree comparison above skips it.
+`scripts/gen-bwc-fixtures.sh --check` covers it instead (re-reads every
+committed version with 10.5.0 + backward-codecs and byte-compares
+`expected.txt`), and its segment ids are in `segment-ids.txt` like every other
+index. CI runs both.
+
+Every fixture `java` runs with `-Dlucene.useScalarFMA=true
+-Dlucene.useVectorFMA=true` (`LUCENE_FIXTURE_JVM_OPTS` in
+`scripts/lib-lucene-jars.sh`). Lucene decides whether its float vector kernels
+fuse multiply-add from a CPU heuristic (`Constants.HAS_FAST_SCALAR_FMA`: on for
+Intel and arm64 Linux, off for most AMD), so without the pin a vector score's
+last bits depend on the machine -- `m7_*_index/searches.tsv` regenerated
+byte for byte locally and differed on an AMD CI runner.
+
 ## Verifying the write path (reverse direction)
 
 Every generator above is Java-writes-Rust-reads. The write path (PLAN.md Phase 5)
