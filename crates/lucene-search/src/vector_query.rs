@@ -55,8 +55,9 @@
 //! the best one.
 
 use lucene_codecs::backward_codecs::hnsw_vectors::RetiredHnswVectorsReader;
+use lucene_codecs::backward_codecs::quantized_vectors::{QuantizedVectorsReader, SearchKind};
 use lucene_codecs::field_infos::{FieldInfos, VectorEncoding, VectorSimilarityFunction};
-use lucene_codecs::hnsw::{HnswGraphView, KnnCollect, KnnCollector, VectorScorer};
+use lucene_codecs::hnsw::{KnnCollect, KnnCollector, VectorScorer};
 use lucene_codecs::hnsw_vectors::{self, HnswVectorsReader, OffHeapHnswGraph, SearchOptions};
 use lucene_codecs::vectors::{FlatFieldEntry, FlatVectorsReader};
 use lucene_util::fixed_bit_set::FixedBitSet;
@@ -141,7 +142,8 @@ pub struct VectorsInput<'d> {
 ///
 /// A retired (`Lucene90`..`Lucene95`) reader also owns its flat vectors --
 /// [`RetiredHnswVectorsReader::flat`] is what [`VectorsInput::flat`] should
-/// be for such a segment.
+/// be for such a segment -- and so does a retired quantized one
+/// ([`QuantizedVectorsReader::flat`]).
 #[derive(Debug, Clone)]
 pub enum GraphReader<'d> {
     /// `Lucene99HnswVectorsReader`.
@@ -149,6 +151,11 @@ pub enum GraphReader<'d> {
     /// `Lucene9{0,1,2,4,5}HnswVectorsReader`: no exhaustive-scan branch, and
     /// `Lucene90` walks its own single-level graph.
     Retired(RetiredHnswVectorsReader<'d>),
+    /// `Lucene99(Hnsw)ScalarQuantizedVectorsFormat` or
+    /// `Lucene102(Hnsw)BinaryQuantizedVectorsFormat`: a float query is scored
+    /// on the quantized codes, and each format searches its own way
+    /// ([`SearchKind`]).
+    Quantized(QuantizedVectorsReader<'d>),
 }
 
 impl<'d> From<HnswVectorsReader<'d>> for GraphReader<'d> {
@@ -163,17 +170,69 @@ impl<'d> From<RetiredHnswVectorsReader<'d>> for GraphReader<'d> {
     }
 }
 
-/// One leaf field's graph, resolved: what [`leaf_results`] walks.
+impl<'d> From<QuantizedVectorsReader<'d>> for GraphReader<'d> {
+    fn from(r: QuantizedVectorsReader<'d>) -> Self {
+        GraphReader::Quantized(r)
+    }
+}
+
+/// One leaf field's graph, resolved: what [`leaf_results`] walks -- the
+/// field's reader's `search(field, target, knnCollector, acceptDocs)`.
 enum LeafGraph<'a, 'd> {
     /// `Lucene99HnswVectorsReader.search`: the graph (or `None` for none),
     /// with its own graph-versus-scan choice.
     Lucene99(Option<OffHeapHnswGraph<'d>>),
     /// A retired reader's `search`, for `field_number`.
     Retired(&'a RetiredHnswVectorsReader<'d>, i32),
+    /// `FlatVectorsReader.search`: a flat format that indexed no graph
+    /// collects nothing ([`SearchKind::Nothing`]).
+    Nothing,
+    /// `Lucene102BinaryQuantizedVectorsReader.search` ([`SearchKind::ScanAll`]).
+    ScanAll,
 }
 
 impl LeafGraph<'_, '_> {
-    /// The reader's `search(field, target, collector, acceptDocs)`.
+    /// The reader's `search` into `collector`.
+    fn search_with<S: VectorScorer, C: KnnCollect + ?Sized>(
+        &self,
+        scorer: &mut S,
+        collector: &mut C,
+        options: SearchOptions<'_>,
+    ) -> Result<()> {
+        match self {
+            LeafGraph::Lucene99(graph) => {
+                hnsw_vectors::search_with(scorer, graph.as_ref(), collector, options)?
+            }
+            LeafGraph::Retired(reader, field) => reader.search_with(
+                *field,
+                scorer,
+                collector,
+                options.accept_ords,
+                options.seed_ords,
+            )?,
+            LeafGraph::Nothing => {}
+            LeafGraph::ScanAll => {
+                // `if (knnCollector.k() == 0) return;` then every accepted
+                // ordinal, collected and counted one at a time, with no
+                // early-termination check.
+                if collector.k() == 0 {
+                    return Ok(());
+                }
+                for ord in 0..scorer.max_ord() {
+                    if options.accept_ords.is_none_or(|b| b.get_doc(ord)) {
+                        let score = scorer.score(ord)?;
+                        collector.collect(ord, score);
+                        collector.inc_visited_count(1);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The reader's `search` for a collector of `k` (Java's
+    /// `TopKnnCollector`, decorated by `extras`), returning its hits, best
+    /// first, and whether it early-terminated.
     fn search<S: VectorScorer>(
         &self,
         scorer: &mut S,
@@ -182,13 +241,14 @@ impl LeafGraph<'_, '_> {
         options: SearchOptions<'_>,
         extras: &LeafExtras,
     ) -> Result<(Vec<(i32, f32)>, bool)> {
-        Ok(match self {
+        if extras.patience.is_some() || extras.deadline.is_some() {
             // Patience and deadlines wrap the collector; see [`approximate`].
+            return approximate(scorer, self, k, visit_limit, options, extras);
+        }
+        Ok(match self {
             LeafGraph::Lucene99(graph) => {
-                approximate(scorer, graph.as_ref(), k, visit_limit, options, extras)?
+                hnsw_vectors::search(scorer, graph.as_ref(), k, visit_limit, options)?
             }
-            // A retired (Lucene 9.x) graph is walked by its own reader, whose
-            // collector is fixed: patience and deadlines are not applied.
             LeafGraph::Retired(reader, field) => reader.search(
                 *field,
                 scorer,
@@ -197,6 +257,15 @@ impl LeafGraph<'_, '_> {
                 options.accept_ords,
                 options.seed_ords,
             )?,
+            LeafGraph::Nothing | LeafGraph::ScanAll => {
+                if scorer.max_ord() <= 0 || k == 0 {
+                    return Ok((Vec::new(), false));
+                }
+                let mut collector = KnnCollector::new(k, visit_limit);
+                self.search_with(scorer, &mut collector, options)?;
+                let early = collector.early_terminated();
+                (collector.top_docs(), early)
+            }
         })
     }
 
@@ -205,6 +274,59 @@ impl LeafGraph<'_, '_> {
     fn hits_are_ordinals(&self) -> bool {
         matches!(self, LeafGraph::Retired(r, _) if r.hits_are_ordinals())
     }
+}
+
+/// `Lucene99HnswVectorsReader`'s graph for a field, with its "unknown field"
+/// mapped to the caller mistake it is.
+fn lucene99_graph<'d>(
+    reader: &HnswVectorsReader<'d>,
+    field_number: i32,
+) -> Result<Option<OffHeapHnswGraph<'d>>> {
+    reader.graph(field_number).map_err(|e| match e {
+        // A field the `.vemf` has and the `.vem` does not is a caller
+        // mistake, not a damaged index -- Java's `getFieldEntryOrThrow`
+        // raises `IllegalArgumentException` for it. Unreachable with
+        // Lucene-written files (both metas list every vector field),
+        // but the two must not be confused: `lucene-ffi` turns a decode
+        // error into "this index is corrupt".
+        lucene_codecs::vectors::Error::UnknownField(number) => Error::InvalidKnnQuery(format!(
+            "field number {number} has vectors but no HNSW graph entry in this segment's .vem"
+        )),
+        other => Error::Vectors(other),
+    })
+}
+
+/// The field's reader's search, resolved for one leaf. The graph is
+/// optional twice over for `Lucene99HnswVectorsReader`: the caller may have
+/// opened no `.vem`/`.vex`, and a field written below
+/// `HNSW_GRAPH_THRESHOLD` documents carries none even when they were
+/// opened. Both mean the same thing -- take the exhaustive branch.
+fn leaf_graph<'a, 'd>(
+    input: &'a VectorsInput<'d>,
+    field_number: i32,
+    float_target: bool,
+) -> Result<LeafGraph<'a, 'd>> {
+    Ok(match &input.hnsw {
+        None => LeafGraph::Lucene99(None),
+        Some(GraphReader::Retired(reader)) => LeafGraph::Retired(reader, field_number),
+        Some(GraphReader::Lucene99(reader)) => {
+            LeafGraph::Lucene99(lucene99_graph(reader, field_number)?)
+        }
+        Some(GraphReader::Quantized(reader)) => {
+            match (reader.format().search_kind(), reader.graph()) {
+                (SearchKind::Hnsw, Some(graphs)) => {
+                    LeafGraph::Lucene99(lucene99_graph(graphs, field_number)?)
+                }
+                // A quantized field with the HNSW kind always has its graph
+                // reader (`QuantizedVectorsReader::open` requires it).
+                (SearchKind::Hnsw, None) | (SearchKind::Nothing, _) => LeafGraph::Nothing,
+                // A byte field of the binary format goes to the raw reader's
+                // `search`, which is `FlatVectorsReader`'s: nothing.
+                (SearchKind::ScanAll, _) if float_target => LeafGraph::ScanAll,
+                (SearchKind::ScanAll, _) => LeafGraph::Nothing,
+            }
+        }
+    })
 }
 
 /// Turns a doc-id list -- e.g. straight out of
@@ -662,22 +784,22 @@ impl LeafExtras {
     }
 }
 
-/// `searchNearestVectors` into the leaf's collector chain: plain
-/// [`hnsw_vectors::search`] for a `TopKnnCollector`, the decorated one
-/// otherwise. Returns the hits, best first, and whether they are partial
+/// `searchNearestVectors` into the leaf's collector chain when it is
+/// decorated: `PatienceKnnVectorQuery`'s `HnswQueueSaturationCollector`
+/// and/or `TimeLimitingKnnCollectorManager`'s deadline around the
+/// `TopKnnCollector`, handed to whichever reader the field has -- retired
+/// ones included, since their `search` takes any collector. Returns the
+/// hits, best first, and whether they are partial
 /// (`TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO`).
-fn approximate<S: VectorScorer, G: HnswGraphView>(
+fn approximate<S: VectorScorer>(
     scorer: &mut S,
-    graph: Option<&G>,
+    graph: &LeafGraph<'_, '_>,
     k: usize,
     limit: u64,
     options: SearchOptions<'_>,
     extras: &LeafExtras,
 ) -> Result<(Vec<(i32, f32)>, bool)> {
     use crate::knn_collectors::{HnswQueueSaturationCollector, TimeLimitingKnnCollector};
-    if extras.patience.is_none() && extras.deadline.is_none() {
-        return Ok(hnsw_vectors::search(scorer, graph, k, limit, options)?);
-    }
     if scorer.max_ord() == 0 || k == 0 {
         return Ok((Vec::new(), false));
     }
@@ -688,7 +810,7 @@ fn approximate<S: VectorScorer, G: HnswGraphView>(
             let patient = match deadline {
                 Some(d) => {
                     let mut c = TimeLimitingKnnCollector::new(patient, d);
-                    hnsw_vectors::search_with(scorer, graph, &mut c, options)?;
+                    graph.search_with(scorer, &mut c, options)?;
                     let timed_out = c.timed_out();
                     let p = c.into_inner();
                     let partial = p.partial() || timed_out;
@@ -696,7 +818,7 @@ fn approximate<S: VectorScorer, G: HnswGraphView>(
                 }
                 None => {
                     let mut c = patient;
-                    hnsw_vectors::search_with(scorer, graph, &mut c, options)?;
+                    graph.search_with(scorer, &mut c, options)?;
                     c
                 }
             };
@@ -705,13 +827,18 @@ fn approximate<S: VectorScorer, G: HnswGraphView>(
         }
         (None, Some(d)) => {
             let mut c = TimeLimitingKnnCollector::new(top, d);
-            hnsw_vectors::search_with(scorer, graph, &mut c, options)?;
+            graph.search_with(scorer, &mut c, options)?;
             let timed_out = c.timed_out();
             let inner = c.into_inner();
             let partial = KnnCollect::early_terminated(&inner) || timed_out;
             (inner, partial)
         }
-        (None, None) => unreachable!("handled above"),
+        (None, None) => {
+            let mut c = top;
+            graph.search_with(scorer, &mut c, options)?;
+            let early = c.early_terminated();
+            (c, early)
+        }
     };
     Ok((top.top_docs(), partial))
 }
@@ -851,36 +978,31 @@ fn search_leaf(
     plan: &LeafPlan,
     seed_ords: Option<&[i32]>,
 ) -> Result<(LeafHits, bool)> {
-    // The graph is optional twice over: the caller may have opened no
-    // `.vem`/`.vex`, and a field written below `HNSW_GRAPH_THRESHOLD`
-    // documents carries none even when they were opened. Both mean the same
-    // thing -- take the exhaustive branch.
-    let graph = match &input.hnsw {
-        None => LeafGraph::Lucene99(None),
-        Some(GraphReader::Retired(reader)) => LeafGraph::Retired(reader, resolved.field_number),
-        Some(GraphReader::Lucene99(reader)) => {
-            LeafGraph::Lucene99(reader.graph(resolved.field_number).map_err(|e| match e {
-                // A field the `.vemf` has and the `.vem` does not is a caller
-                // mistake, not a damaged index -- Java's `getFieldEntryOrThrow`
-                // raises `IllegalArgumentException` for it. Unreachable with
-                // Lucene-written files (both metas list every vector field),
-                // but the two must not be confused: `lucene-ffi` turns a decode
-                // error into "this index is corrupt".
-                lucene_codecs::vectors::Error::UnknownField(number) => {
-                    Error::InvalidKnnQuery(format!(
-                        "field number {number} has vectors but no HNSW graph entry in this \
-                         segment's .vem"
-                    ))
-                }
-                other => Error::Vectors(other),
-            })?)
-        }
-    };
+    let graph = leaf_graph(
+        input,
+        resolved.field_number,
+        matches!(target, Target::Float(_)),
+    )?;
     match target {
         Target::Float(t) => {
             let values = input.flat.float_vector_values(resolved.field_number)?;
             let ord_to_doc = |ord: i32| Ok(values.ord_to_doc(ord)?);
             let accept = accept_ords(input, resolved, &ord_to_doc)?;
+            if let Some(GraphReader::Quantized(reader)) = &input.hnsw {
+                // `getRandomVectorScorer(field, target)` of the quantized
+                // flat reader -- which is also `FloatVectorValues.scorer`, so
+                // the exact-search fallback scores on the codes too.
+                let mut scorer = reader.float_scorer(resolved.field_number, t)?;
+                return leaf_results(
+                    &mut scorer,
+                    &graph,
+                    accept.as_ref(),
+                    &ord_to_doc,
+                    input.max_doc,
+                    plan,
+                    seed_ords,
+                );
+            }
             let mut scorer = values.scorer(t)?;
             leaf_results(
                 &mut scorer,
@@ -1204,7 +1326,27 @@ fn knn_multi_segment_with<Q: KnnQuery + Sync>(
             merged = merge_leaves(segments, &per_leaf, k)?;
         }
     }
+    // `IndexSearcher.search(rewritten, n)` collects the rewritten
+    // `DocAndScoreQuery` with the leaves' live docs as `acceptDocs`. Every
+    // hit a reader translated through `ordToDoc` is live already (the accept
+    // set says so); a `Lucene90` hit is an *ordinal* standing in for a
+    // document, which can name a deleted one -- and Java drops it here,
+    // after the top `k` was cut, so the answer comes back short.
+    merged.retain(|h| hit_is_live(segments, h.doc_id));
     Ok(merged)
+}
+
+/// Whether global doc `doc` is live in the leaf that holds it.
+fn hit_is_live(segments: &[KnnSegment<'_>], doc: i32) -> bool {
+    segments
+        .iter()
+        .rev()
+        .find(|s| s.doc_base <= doc)
+        .is_none_or(|s| {
+            s.vectors
+                .live_docs
+                .is_none_or(|live| live.get_doc(doc - s.doc_base))
+        })
 }
 
 /// Phase 2's entry points for leaf `i`, or `None` for "not seeded".
@@ -1644,21 +1786,65 @@ pub fn byte_vector_similarity_clause(
     )
 }
 
-fn vector_similarity_clause<T>(
+/// Every document [`float_vector_similarity_clause`] matches, with its
+/// score: global doc ids, leaf by leaf in segment order, each leaf's in the
+/// order its scorer supplier yields them (`fromScoreDocs` or
+/// `fromAcceptDocs`), which a caller sorts as it needs.
+pub fn float_vector_similarity_hits(
+    segments: &[KnnSegment<'_>],
+    query: &FloatVectorSimilarityQuery,
+) -> Result<Vec<ScoreDoc>> {
+    vector_similarity_hits(
+        segments,
+        query,
+        Target::Float(&query.target),
+        VectorEncoding::Float32,
+    )
+}
+
+/// The byte-vector twin of [`float_vector_similarity_hits`].
+pub fn byte_vector_similarity_hits(
+    segments: &[KnnSegment<'_>],
+    query: &ByteVectorSimilarityQuery,
+) -> Result<Vec<ScoreDoc>> {
+    vector_similarity_hits(
+        segments,
+        query,
+        Target::Byte(&query.target),
+        VectorEncoding::Byte,
+    )
+}
+
+fn vector_similarity_hits<T>(
     segments: &[KnnSegment<'_>],
     query: &VectorSimilarityQuery<T>,
     target: Target<'_>,
     encoding: VectorEncoding,
-) -> Result<crate::query::Clause> {
+) -> Result<Vec<ScoreDoc>> {
     let mut hits = Vec::new();
     for seg in segments {
         for (doc, score) in similarity_leaf(&seg.vectors, query, target, encoding)? {
+            // The scorer is iterated under the leaf's live docs; only a
+            // `Lucene90` ordinal-as-document can name a deleted one.
+            if seg.vectors.live_docs.is_some_and(|live| !live.get_doc(doc)) {
+                continue;
+            }
             hits.push(ScoreDoc {
                 doc_id: doc + seg.doc_base,
                 score,
             });
         }
     }
+    Ok(hits)
+}
+
+fn vector_similarity_clause<T>(
+    segments: &[KnnSegment<'_>],
+    query: &VectorSimilarityQuery<T>,
+    target: Target<'_>,
+    encoding: VectorEncoding,
+) -> Result<crate::query::Clause> {
+    let hits = vector_similarity_hits(segments, query, target, encoding)?;
     Ok(knn_hits_to_clause(segments, &hits))
 }
 
@@ -1696,20 +1882,11 @@ fn similarity_leaf<T>(
     if input.filter.is_some() && cardinality == 0 {
         return Ok(Vec::new());
     }
-    let graph = match &input.hnsw {
-        None => None,
-        Some(GraphReader::Lucene99(reader)) => reader.graph(resolved.field_number)?,
-        // `AbstractVectorSimilarityQuery` walks the graph with its own
-        // collector, which the retired readers' fixed search cannot take. An
-        // exhaustive scan instead would return a different hit set from
-        // Java's graph walk, so refuse rather than answer differently.
-        Some(GraphReader::Retired(_)) => {
-            return Err(Error::InvalidKnnQuery(
-                "a vector similarity query over a Lucene 9.x HNSW graph is not supported yet"
-                    .into(),
-            ))
-        }
-    };
+    let graph = leaf_graph(
+        input,
+        resolved.field_number,
+        matches!(target, Target::Float(_)),
+    )?;
     let leaf = SimilarityLeaf {
         input,
         resolved: &resolved,
@@ -1721,14 +1898,20 @@ fn similarity_leaf<T>(
         Target::Float(t) => {
             let values = input.flat.float_vector_values(resolved.field_number)?;
             let ord_to_doc = |ord: i32| -> Result<i32> { Ok(values.ord_to_doc(ord)?) };
+            // `createVectorScorer`: `FloatVectorValues.scorer(target)`, which a
+            // quantized format answers on its codes.
+            if let Some(GraphReader::Quantized(reader)) = &input.hnsw {
+                let mut scorer = reader.float_scorer(resolved.field_number, t)?;
+                return leaf.run(&mut scorer, &graph, &ord_to_doc);
+            }
             let mut scorer = values.scorer(t)?;
-            leaf.run(&mut scorer, graph.as_ref(), &ord_to_doc)
+            leaf.run(&mut scorer, &graph, &ord_to_doc)
         }
         Target::Byte(t) => {
             let values = input.flat.byte_vector_values(resolved.field_number)?;
             let ord_to_doc = |ord: i32| -> Result<i32> { Ok(values.ord_to_doc(ord)?) };
             let mut scorer = values.scorer(t)?;
-            leaf.run(&mut scorer, graph.as_ref(), &ord_to_doc)
+            leaf.run(&mut scorer, &graph, &ord_to_doc)
         }
     }
 }
@@ -1745,16 +1928,20 @@ struct SimilarityLeaf<'q, 'd> {
 }
 
 impl SimilarityLeaf<'_, '_> {
-    fn run<S: VectorScorer, G: HnswGraphView>(
+    fn run<S: VectorScorer>(
         &self,
         scorer: &mut S,
-        graph: Option<&G>,
+        graph: &LeafGraph<'_, '_>,
         ord_to_doc: &impl Fn(i32) -> Result<i32>,
     ) -> Result<Vec<(i32, f32)>> {
         use crate::knn_collectors::{VectorSimilarityCollector, DECAY_MAX_QUALITY};
         let accept = accept_ords(self.input, self.resolved, ord_to_doc)?;
         let accept_bits = accept.as_ref().map(|a| a.bits());
         let filtered = self.input.filter.is_some();
+        // Whether the hits are the reader's `search` output (and so, for
+        // `Lucene90`, ordinals standing in for documents) rather than
+        // `fromAcceptDocs`' real documents.
+        let mut from_graph = false;
         let hits = if self.decay == DECAY_MAX_QUALITY {
             self.exact(scorer, accept_bits)?
         } else {
@@ -1767,9 +1954,8 @@ impl SimilarityLeaf<'_, '_> {
             };
             let mut collector =
                 VectorSimilarityCollector::new(self.result_similarity, self.decay, limit);
-            hnsw_vectors::search_with(
+            graph.search_with(
                 scorer,
-                graph,
                 &mut collector,
                 SearchOptions {
                     accept_ords: accept_bits,
@@ -1784,12 +1970,21 @@ impl SimilarityLeaf<'_, '_> {
                 // The walk ran out of visits: `fromAcceptDocs`, exhaustive.
                 self.exact(scorer, accept_bits)?
             } else {
+                from_graph = true;
                 hits
             }
         };
+        let ordinals_as_docs = from_graph && graph.hits_are_ordinals();
         let mut out = Vec::with_capacity(hits.len());
         for (ord, score) in hits {
-            out.push((ord_to_doc(ord)?, score));
+            out.push((
+                if ordinals_as_docs {
+                    ord
+                } else {
+                    ord_to_doc(ord)?
+                },
+                score,
+            ));
         }
         Ok(out)
     }

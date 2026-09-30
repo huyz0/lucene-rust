@@ -284,6 +284,9 @@ use crate::deletes::liv_file_name;
 use crate::segment_info::{self, SegmentInfo};
 use crate::segment_infos::{self, SegmentCommitInfo, SegmentInfos};
 use lucene_codecs::backward_codecs::hnsw_vectors::{RetiredHnswFormat, RetiredHnswVectorsReader};
+use lucene_codecs::backward_codecs::quantized_vectors::{
+    QuantizedFiles, QuantizedFormat, QuantizedReader, QuantizedVectorsReader,
+};
 use lucene_codecs::blocktree;
 use lucene_codecs::doc_values;
 use lucene_codecs::field_infos::{self, FieldInfos};
@@ -4434,11 +4437,57 @@ fn check_vectors(
             .collect();
         check_retired_vectors(dir, commit, si, &fields, format, &suffix, stats, checks);
     }
+    // The same for the retired quantized formats (Lucene 9.9-10.3), whose
+    // groups hold raw vectors, codes and (for an HNSW wrapper) a graph.
+    let (quantized, with_vectors): (Vec<_>, Vec<_>) = with_vectors
+        .into_iter()
+        .partition(|fi| quantized_vectors_format(fi).is_some());
+    let mut qgroups: Vec<(QuantizedFormat, String)> = Vec::new();
+    for fi in &quantized {
+        if let Some(group) = quantized_vectors_format(fi) {
+            if !qgroups.contains(&group) {
+                qgroups.push(group);
+            }
+        }
+    }
+    for (format, suffix) in qgroups {
+        let fields: Vec<&field_infos::FieldInfo> = quantized
+            .iter()
+            .copied()
+            .filter(|fi| {
+                quantized_vectors_format(fi).is_some_and(|g| g == (format, suffix.clone()))
+            })
+            .collect();
+        check_quantized_vectors(
+            dir,
+            commit,
+            si,
+            field_infos,
+            &fields,
+            format,
+            &suffix,
+            stats,
+            checks,
+        );
+    }
     if with_vectors.is_empty() {
         return;
     }
-    let vec_name = si.files.iter().find(|f| f.ends_with(".vec"));
-    let vemf_name = si.files.iter().find(|f| f.ends_with(".vemf"));
+    // The current format's group: not one a quantized format wrote beside it.
+    let is_current_group = |f: &&String, ext: &str| {
+        f.strip_suffix(ext)
+            .and_then(|stem| stem.strip_prefix(&format!("{}_", commit.segment_name)))
+            .and_then(|suffix| suffix.rsplit_once('_'))
+            .is_none_or(|(format, _)| QuantizedFormat::for_name(format).is_none())
+    };
+    let vec_name = si
+        .files
+        .iter()
+        .find(|f| f.ends_with(".vec") && is_current_group(f, ".vec"));
+    let vemf_name = si
+        .files
+        .iter()
+        .find(|f| f.ends_with(".vemf") && is_current_group(f, ".vemf"));
     let (Some(vec_name), Some(vemf_name)) = (vec_name, vemf_name) else {
         checks.push(Check::fail(
             "vectors.open",
@@ -4652,6 +4701,160 @@ fn retired_vectors_format(fi: &field_infos::FieldInfo) -> Option<(RetiredHnswFor
     };
     let format = RetiredHnswFormat::for_name(attr("PerFieldKnnVectorsFormat.format")?)?;
     Some((format, attr("PerFieldKnnVectorsFormat.suffix")?.to_string()))
+}
+
+/// The retired quantized format and file suffix a vector field was written
+/// with, from its `PerFieldKnnVectorsFormat` attributes; `None` for any other.
+fn quantized_vectors_format(fi: &field_infos::FieldInfo) -> Option<(QuantizedFormat, String)> {
+    let attr = |key: &str| {
+        fi.attributes
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    };
+    let format = QuantizedFormat::for_name(attr("PerFieldKnnVectorsFormat.format")?)?;
+    Some((format, attr("PerFieldKnnVectorsFormat.suffix")?.to_string()))
+}
+
+/// [`check_vectors`] for fields a retired quantized format wrote: the flat
+/// checks over the raw vectors, the graph checks for an HNSW wrapper, and
+/// `vectors.quantized:<field>` -- the quantized file's checksum
+/// (`checkIntegrity`), and for every `FLOAT32` field codes for exactly the
+/// raw vectors' ordinals, each readable and mapped to the same document.
+#[allow(clippy::too_many_arguments)]
+fn check_quantized_vectors(
+    dir: &dyn Directory,
+    commit: &SegmentCommitInfo,
+    si: &SegmentInfo,
+    field_infos: &FieldInfos,
+    fields: &[&field_infos::FieldInfo],
+    format: QuantizedFormat,
+    suffix: &str,
+    stats: &mut CheckStats,
+    checks: &mut Vec<Check>,
+) {
+    let segment_suffix = format!("{}_{suffix}", format.name());
+    let name = |ext: &str| format!("{}_{segment_suffix}.{ext}", commit.segment_name);
+    let (meta_ext, data_ext) = format.quantized_extensions();
+    let open = |ext: &str| dir.open(&name(ext)).map_err(|e| e.to_string());
+    let opened = (|| {
+        let graph = if format.has_graph() {
+            Some((open("vem")?, open("vex")?))
+        } else {
+            None
+        };
+        Ok::<_, String>((
+            open("vemf")?,
+            open("vec")?,
+            open(meta_ext)?,
+            open(data_ext)?,
+            graph,
+        ))
+    })();
+    let (vemf, vec, qmeta, qdata, graph) = match opened {
+        Ok(v) => v,
+        Err(e) => {
+            checks.push(Check::fail("vectors.open", e));
+            skip_families(checks, VECTOR_FAMILIES, "vectors.open");
+            return;
+        }
+    };
+    let reader = match QuantizedVectorsReader::open(
+        format,
+        QuantizedFiles {
+            vemf: &vemf,
+            vec: &vec,
+            quantized_meta: &qmeta,
+            quantized_data: &qdata,
+            graph: graph.as_ref().map(|(m, x)| (&m[..], &x[..])),
+        },
+        field_infos,
+        &commit.segment_id,
+        &segment_suffix,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            checks.push(Check::fail("vectors.open", e.to_string()));
+            skip_families(checks, VECTOR_FAMILIES, "vectors.open");
+            return;
+        }
+    };
+    check_flat_vector_fields(reader.flat(), fields, si, stats, checks);
+    let integrity = reader.check_integrity().err().map(|e| e.to_string());
+    for fi in fields {
+        let mut problems: Vec<String> = integrity.iter().cloned().collect();
+        if fi.vector_encoding == field_infos::VectorEncoding::Float32 {
+            if let Err(e) = check_quantized_field(&reader, fi.number) {
+                problems.push(e);
+            }
+        }
+        checks.push(named_field_check(
+            &format!("vectors.quantized:{}", fi.name),
+            &problems,
+            1,
+            "field",
+        ));
+        if let Some(graphs) = reader.graph() {
+            match graphs.graph(fi.number) {
+                Ok(Some(graph)) => check_one_graph(&graph, &fi.name, true, checks),
+                Ok(None) => {}
+                Err(e) => checks.push(Check::fail(format!("hnsw.open:{}", fi.name), e.to_string())),
+            }
+        }
+    }
+}
+
+/// One `FLOAT32` field of a quantized group: as many codes as raw vectors,
+/// each ordinal's codes and corrections readable, on the same document.
+fn check_quantized_field(reader: &QuantizedVectorsReader<'_>, field: i32) -> Result<(), String> {
+    let raw = reader
+        .flat()
+        .float_vector_values(field)
+        .map_err(|e| e.to_string())?;
+    // Every ordinal's codes and corrections decoded, and its document.
+    let docs: Vec<i32> = match reader.quantized() {
+        QuantizedReader::Scalar(r) => {
+            let v = r
+                .quantized_vector_values(field)
+                .map_err(|e| e.to_string())?;
+            let mut codes = Vec::new();
+            (0..v.size())
+                .map(|ord| {
+                    v.vector_into(ord, &mut codes)?;
+                    v.score_correction_constant(ord)?;
+                    v.ord_to_doc(ord)
+                })
+                .collect::<Result<_, _>>()
+                .map_err(|e| e.to_string())?
+        }
+        QuantizedReader::Binary(r) => {
+            let v = r
+                .binarized_vector_values(field)
+                .map_err(|e| e.to_string())?;
+            (0..v.size())
+                .map(|ord| {
+                    v.vector(ord)?;
+                    v.corrective_terms(ord)?;
+                    v.ord_to_doc(ord)
+                })
+                .collect::<Result<_, _>>()
+                .map_err(|e| e.to_string())?
+        }
+    };
+    let size = docs.len() as i32;
+    if size != raw.size() {
+        return Err(format!(
+            "{size} quantized vectors for {} raw ones",
+            raw.size()
+        ));
+    }
+    for (ord, &q) in (0..size).zip(&docs) {
+        let r = raw.ord_to_doc(ord).map_err(|e| e.to_string())?;
+        if q != r {
+            return Err(format!("ord={ord}: quantized doc {q}, raw doc {r}"));
+        }
+    }
+    Ok(())
 }
 
 /// [`check_vectors`] for fields a retired `Lucene90`..`Lucene95` HNSW format
