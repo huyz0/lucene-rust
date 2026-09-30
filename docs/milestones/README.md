@@ -20,6 +20,14 @@ and the artifacts that must exist before it can be called done.
 | M5 | [Engine integration](m5-engine-integration.md) | A shard fully served by Rust — indexing and search | XL | ✅ **delivered 2026-09-25** — `RustEngine` is `InternalEngine` with the Rust writer: OpenSearch's own `InternalEngineTests` pass on it (117, 34 skipped with reasons); it agrees with OpenSearch's engine operation for operation, through restarts, SIGKILL, a writer panic (one shard fails) and a tripped breaker; a 3-node cluster does document replication, peer recovery, failover and relocation between Rust and Java nodes. Segment replication works too, from a Rust primary through failover and promotion (one hook into OpenSearch 3.8's `IndexModule`) |
 | M5.6 | [The whole read path native](m5-6-native-read.md) | Every part of a search request in Rust through the plugin -- query phase for every shape, sort, aggregations, fetch/get, scroll -- each at least as fast as Lucene | XL | ✅ **delivered 2026-09-29** — the query phase for every shape OpenSearch builds, sorting and `search_after`, aggregations, fetch and get, scroll, `post_filter`, `min_score`, `terminate_after` and timeouts run natively and agree with Lucene (196,130 plugin self-test checks with bit-exact scores; a 6,863-row native-vs-Lucene matrix on a real node; OpenSearch's YAML suites fail identically with and without it). Full read benchmark, 174 native shapes on 100,000 documents: over REST median 1.14× Lucene, none under 1.0× beyond noise; by the query-phase counters 1.89×, twelve sub-60 µs shapes 2–24 µs behind from one cold native call (written up) |
 | M6 | [Production candidate](m6-production-candidate.md) | Resource-bounded, perf-held, rollback-documented | M | in progress: resource bounds, the nightly perf gate, rollback, feature matrix and licences done; M1's 1.5×-on-80% bar still unmet (75% / 74%) |
+| M7 | [`lucene-core` complete](m7-core-complete.md) | Every `lucene-core` class ported or justified, and an inventory gate that makes "fully ported" checkable | XL | not started |
+| M8 | [Backward codecs](m8-backward-codecs.md) | Read and merge Lucene 9.x–10.4 segments, so existing indices need no reindex | XL | not started |
+| M9 | [Geo and spatial](m9-geo-and-spatial.md) | `geo`, `LatLon*`/`XY*` fields and queries, `spatial3d`, `spatial-extras` | L | not started |
+| M10 | [Joins, grouping, `queries`](m10-joins-grouping-queries.md) | Block and query-time joins, grouping, function/interval/payload queries | L | not started |
+| M11 | [Text analysis](m11-analysis-common.md) | All of `lucene-analysis-common`, token for token | XL | not started |
+| M12 | [Language analysis](m12-language-analysis.md) | ICU, Kuromoji, Nori, SmartCN, Stempel, Morfologik, phonetic, OpenNLP | L | not started |
+| M13 | [Search-application modules](m13-search-application-modules.md) | Query parsers, highlighters, suggesters, taxonomy facets, `memory`, `monitor` | XL | not started |
+| M14 | [Remaining modules and tooling](m14-remaining-modules-and-tooling.md) | Non-default codecs, expressions, the rest; test framework and tool equivalents; inventory allowlist empty | L | not started |
 
 ## Dependency structure
 
@@ -41,6 +49,18 @@ CI green   benchmark     │          │                           │   engine
   reason (posting lists are materialized instead of skipped). See
   [`docs/benchmarks/verdict.md`](../benchmarks/verdict.md). M2–M6 are on hold
   pending the algorithmic fix the verdict recommends.
+- **M7–M14 are the full port** (added 2026-09-30, sized from the 10.5.0
+  sources jars). M7 comes first because its inventory gate is what the
+  others close against; after it, M8, M9, M10 and M11 are independent, and
+  M12 needs M11, M13 needs M10 and M11, M14 needs the rest:
+
+  ```
+  M7 ──┬──▶ M8  backward codecs
+       ├──▶ M9  geo / spatial
+       ├──▶ M10 joins, grouping, queries ──┐
+       └──▶ M11 analysis-common ──┬────────┴──▶ M13 parsers, highlight, suggest, facets ──▶ M14 rest + tooling
+                                  └──▶ M12 language analysis ─────────────────────────────▶ M14
+  ```
 - **M2 and M3 are independent.** One is Java-writes/Rust-reads through
   OpenSearch; the other is Rust-writes/Java-reads at the format level. Work
   them in parallel or in either order. M5 needs both.
