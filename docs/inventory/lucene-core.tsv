@@ -793,13 +793,13 @@ search/VectorSimilarityValuesSource	ported	crates/lucene-search/src/values_sourc
 search/WANDScorer	ported	crates/lucene-search/src/exec/wand.rs::WandScorer
 search/Weight	ported	crates/lucene-search/src/exec/build.rs::build
 search/WildcardQuery	ported	crates/lucene-search/src/query.rs::WildcardQuery
-search/comparators/DocComparator	partial	crates/lucene-search/src/top_field.rs::SortType -- M7: values only; its competitive iterator (skipping later segments whole) is not ported
+search/comparators/DocComparator	ported	crates/lucene-search/src/top_field.rs::DocCompetitive
 search/comparators/DoubleComparator	ported	crates/lucene-search/src/top_field.rs::LeafNumeric
 search/comparators/FloatComparator	ported	crates/lucene-search/src/top_field.rs::LeafNumeric
 search/comparators/IntComparator	ported	crates/lucene-search/src/top_field.rs::LeafNumeric
 search/comparators/LongComparator	ported	crates/lucene-search/src/top_field.rs::LeafNumeric
-search/comparators/NumericComparator	partial	crates/lucene-search/src/top_field.rs::LeafNumeric -- M7: points-based competitive iterator ported; DVSkipperCompetitiveDISIBuilder (doc-values skip-index skipping) not ported
-search/comparators/TermOrdValComparator	partial	crates/lucene-search/src/top_field.rs::StrSlots -- M7: postings-based competitive state ported; SkipperBasedCompetitiveState not ported
+search/comparators/NumericComparator	ported	crates/lucene-search/src/top_field.rs::LeafNumeric
+search/comparators/TermOrdValComparator	ported	crates/lucene-search/src/top_field.rs::StrSlots
 search/comparators/UpdateableDocIdSetIterator	ported	crates/lucene-search/src/top_field.rs::Iter
 search/knn/KnnCollectorManager	ported	crates/lucene-search/src/vector_query.rs::per_leaf_top_k
 search/knn/KnnSearchStrategy	ported	crates/lucene-codecs/src/hnsw_vectors.rs::SearchOptions

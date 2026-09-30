@@ -5,9 +5,11 @@
 //!
 //! A port of Lucene 10.5.0's `TopFieldCollector` (`SimpleFieldCollector`,
 //! `PagingFieldCollector`), `FieldValueHitQueue`, `MultiLeafFieldComparator`,
-//! `FieldComparator.RelevanceComparator`, `DocComparator`, `NumericComparator`
-//! with its `PointsCompetitiveDISIBuilder`, and `TermOrdValComparator` with
-//! its `PostingsBasedCompetitiveState`, driven the way
+//! `FieldComparator.RelevanceComparator`, `DocComparator` with its competitive
+//! iterator, `NumericComparator` with its `PointsCompetitiveDISIBuilder` and
+//! `DVSkipperCompetitiveDISIBuilder`, and `TermOrdValComparator` with its
+//! `PostingsBasedCompetitiveState` and `SkipperBasedCompetitiveState`, driven
+//! the way
 //! `Weight.DefaultBulkScorer` drives a collector that has a competitive
 //! iterator.
 //!
@@ -54,15 +56,8 @@
 //! counted past the total-hits threshold -- a count both report as a lower
 //! bound, and OpenSearch caps at `track_total_hits` anyway:
 //!
-//! * a segment whose sort field has no points (or, for a keyword key, no
-//!   postings) but a doc-values skip index is scanned without skipping
-//!   (Lucene's `DVSkipperCompetitiveDISIBuilder` and
-//!   `SkipperBasedCompetitiveState`), and so is an indexed keyword field with
-//!   no terms in a segment (Lucene would build an empty competitive state);
-//! * `DocComparator`'s competitive iterator is not ported: a sort led by the
-//!   document id stops each segment once its count passes the threshold,
-//!   where Lucene skips the later segments whole, so the lower bound here is
-//!   one hit higher per later matching segment;
+//! * an indexed keyword field with no terms in a segment is scanned without
+//!   skipping (Lucene would build an empty competitive state);
 //! * the collector consults the competitive iterator per document, where
 //!   Lucene's match-all and filter conjunctions (`DenseConjunctionBulkScorer`)
 //!   collect whole 4,096-document windows first, so Lucene's bound is usually
@@ -1359,6 +1354,30 @@ impl LeafNumeric<'_> {
     }
 }
 
+/// The reader a skip-index competitive iterator carries for its unused
+/// points slot.
+static EMPTY_POINTS: std::sync::LazyLock<PointsReader<'static>> =
+    std::sync::LazyLock::new(PointsReader::empty);
+
+#[cfg(test)]
+thread_local! {
+    /// Turns the doc-values skip-index competitive iterator off, so a test
+    /// can watch what it saves.
+    pub(crate) static DISABLE_SKIPPER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[inline]
+fn disable_skipper_for_tests() -> bool {
+    #[cfg(test)]
+    {
+        DISABLE_SKIPPER.with(std::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
+}
+
 /// `MIN_SKIP_INTERVAL`, `MAX_SKIP_INTERVAL`.
 const MIN_SKIP_INTERVAL: u32 = 32;
 const MAX_SKIP_INTERVAL: u32 = 8192;
@@ -1382,13 +1401,108 @@ enum Iter<'a> {
         bits: FixedBitSet,
         doc: i32,
     },
+    /// `DocIdSetIterator.range(min, max_doc)`.
+    Range {
+        min: i32,
+        max_doc: i32,
+        doc: i32,
+    },
+    /// `SkipBlockRangeIterator`: the documents of the doc-values skip
+    /// index's blocks whose value range meets `[min, max]`.
+    Skip(Box<SkipIter<'a>>),
+    /// `SkipperBasedCompetitiveState.AdaptiveSkipIterator`.
+    Adaptive(Box<AdaptiveSkip<'a>>),
     Union(Box<Union<'a>>),
+}
+
+/// `SkipBlockRangeIterator` as a competitive iterator (its block match state
+/// is not needed: a competitive iterator only has to be a superset).
+struct SkipIter<'a> {
+    skipper: lucene_codecs::doc_values::DocValuesSkipper<'a>,
+    min: i64,
+    max: i64,
+    doc: i32,
+}
+
+/// `SkipperBasedCompetitiveState.State`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SkipState {
+    Warming,
+    Active,
+    Disabled,
+}
+
+/// `SkipperBasedCompetitiveState.WARMUP_BOUNDARY_CROSSINGS`.
+const WARMUP_BOUNDARY_CROSSINGS: u32 = 16;
+
+/// `AdaptiveSkipIterator`: a [`SkipIter`] that watches whether it skips.
+/// After [`WARMUP_BOUNDARY_CROSSINGS`] skip-block boundaries crossed without
+/// skipping it disables itself (every document from then on); one effective
+/// skip makes it permanent. The state outlives the iterator: the competitive
+/// state's next update carries it over (Java's field of the enclosing
+/// state).
+struct AdaptiveSkip<'a> {
+    inner: SkipIter<'a>,
+    state: SkipState,
+    block_end_doc: i32,
+    boundary_crossings: u32,
+    max_doc: i32,
+    doc: i32,
+}
+
+impl AdaptiveSkip<'_> {
+    fn advance(&mut self, target: i32) -> i32 {
+        self.doc = match self.state {
+            // `iterator.update(DocIdSetIterator.all(maxDoc))`.
+            SkipState::Disabled if target >= self.max_doc => NO_MORE_DOCS,
+            SkipState::Disabled => target,
+            SkipState::Active => self.inner.advance(target),
+            SkipState::Warming => {
+                let result = self.inner.advance(target);
+                if target > self.block_end_doc {
+                    self.block_end_doc = self.inner.skipper.max_doc_id(0);
+                    self.boundary_crossings += 1;
+                    if result > target {
+                        // Skipping happened: stay on permanently.
+                        self.state = SkipState::Active;
+                    } else if self.boundary_crossings >= WARMUP_BOUNDARY_CROSSINGS {
+                        // Not helping: stop paying for it.
+                        self.state = SkipState::Disabled;
+                    }
+                }
+                result
+            }
+        };
+        self.doc
+    }
+}
+
+impl SkipIter<'_> {
+    /// `SkipBlockRangeIterator.advance`.
+    fn advance(&mut self, target: i32) -> i32 {
+        if target <= self.skipper.max_doc_id(0) {
+            if self.doc > -1 {
+                self.doc = target;
+                return target;
+            }
+        } else {
+            self.skipper.advance(target);
+        }
+        self.skipper.advance_range(self.min, self.max);
+        self.doc = target.max(self.skipper.min_doc_id(0));
+        self.doc
+    }
 }
 
 impl Iter<'_> {
     fn doc_id(&self) -> i32 {
         match self {
-            Iter::All { doc, .. } | Iter::Docs { doc, .. } | Iter::Bits { doc, .. } => *doc,
+            Iter::All { doc, .. }
+            | Iter::Docs { doc, .. }
+            | Iter::Bits { doc, .. }
+            | Iter::Range { doc, .. } => *doc,
+            Iter::Skip(s) => s.doc,
+            Iter::Adaptive(a) => a.doc,
             Iter::Union(u) => u.doc,
         }
     }
@@ -1400,6 +1514,9 @@ impl Iter<'_> {
             Iter::All { max_doc, .. } => i64::from(*max_doc),
             Iter::Docs { docs, .. } => docs.len() as i64,
             Iter::Bits { .. } => i64::MAX,
+            Iter::Range { min, max_doc, .. } => i64::from(*max_doc) - i64::from(*min),
+            // `SkipBlockRangeIterator.cost()`: `NO_MORE_DOCS`, never the lead.
+            Iter::Skip(_) | Iter::Adaptive(_) => i64::from(NO_MORE_DOCS),
             Iter::Union(u) => u.cost,
         }
     }
@@ -1435,8 +1552,70 @@ impl Iter<'_> {
                     .map_or(NO_MORE_DOCS, |d| d as i32);
                 *doc
             }
+            Iter::Range { min, max_doc, doc } => {
+                let t = target.max(*min);
+                *doc = if t >= *max_doc { NO_MORE_DOCS } else { t };
+                *doc
+            }
+            Iter::Skip(s) => s.advance(target),
+            Iter::Adaptive(a) => a.advance(target),
             Iter::Union(u) => u.advance(target)?,
         })
+    }
+}
+
+/// `DocComparator.DocLeafComparator`'s competitive iterator: every document
+/// until the hits threshold is reached; then none once the queue is full (a
+/// sort led by the document id has collected its top hits, so this segment
+/// and every later one is skipped whole), or, paging after `top`, the
+/// documents from `top` on.
+struct DocCompetitive<'a> {
+    iter: Iter<'a>,
+    doc_base: i32,
+    max_doc: i32,
+    /// `minDoc`: the `after` hit's document, when paging.
+    top: Option<i32>,
+}
+
+impl DocCompetitive<'_> {
+    fn new(doc_base: i32, max_doc: i32, top: Option<i32>) -> Self {
+        Self {
+            iter: Iter::All { max_doc, doc: -1 },
+            doc_base,
+            max_doc,
+            top,
+        }
+    }
+
+    /// `updateIterator`.
+    fn update(&mut self, hits_threshold_reached: bool, bottom_set: bool) {
+        if !hits_threshold_reached {
+            return;
+        }
+        let empty = Iter::Docs {
+            docs: Vec::new(),
+            next: 0,
+            doc: -1,
+        };
+        if bottom_set {
+            // The top hits are collected: early termination.
+            self.iter = empty;
+        } else if let Some(min_doc) = self.top {
+            if i64::from(self.doc_base) + i64::from(self.max_doc) <= i64::from(min_doc) {
+                self.iter = empty;
+            } else {
+                let segment_min = self
+                    .iter
+                    .doc_id()
+                    .max(min_doc.saturating_sub(self.doc_base))
+                    .max(0);
+                self.iter = Iter::Range {
+                    min: segment_min,
+                    max_doc: self.max_doc,
+                    doc: -1,
+                };
+            }
+        }
     }
 }
 
@@ -1511,9 +1690,13 @@ impl Union<'_> {
     }
 }
 
-/// `NumericComparator.PointsCompetitiveDISIBuilder`.
+/// `NumericComparator.PointsCompetitiveDISIBuilder`, or -- a segment without
+/// the field's points but with its doc-values skip index --
+/// `DVSkipperCompetitiveDISIBuilder` (`skipper` set, `points` unused).
 struct Competitive<'a> {
     points: &'a PointsReader<'a>,
+    /// `DVSkipperCompetitiveDISIBuilder`'s skip index.
+    skipper: Option<&'a lucene_codecs::doc_values::DocValuesSkipIndex>,
     field_number: i32,
     bytes: usize,
     point_doc_count: i32,
@@ -1674,6 +1857,10 @@ impl Competitive<'_> {
             return Ok(());
         }
         if self.point_doc_count != self.max_doc && self.missing_competitive(c) {
+            if self.skipper.is_some() {
+                // `hasMissingDocs() && isMissingValueCompetitive()`.
+                return Ok(());
+            }
             return self.update_with_missing(c);
         }
         self.update_counter += 1;
@@ -1807,8 +1994,19 @@ impl Competitive<'_> {
         Ok(())
     }
 
-    /// `PointsCompetitiveDISIBuilder.doUpdateCompetitiveIterator`.
+    /// `PointsCompetitiveDISIBuilder.doUpdateCompetitiveIterator`, or
+    /// `DVSkipperCompetitiveDISIBuilder`'s: a `SkipBlockRangeIterator` over
+    /// the current range.
     fn do_update(&mut self) -> Result<()> {
+        if let Some(index) = self.skipper {
+            self.iter = Iter::Skip(Box::new(SkipIter {
+                skipper: lucene_codecs::doc_values::DocValuesSkipper::new(index),
+                min: self.min_value,
+                max: self.max_value,
+                doc: -1,
+            }));
+            return Ok(());
+        }
         let threshold = ((self.iterator_cost as u64) >> 3) as i64;
         let mut visitor = CompetitiveVisitor {
             min: self.min_value,
@@ -2258,6 +2456,18 @@ struct StrCompetitive<'a> {
     /// `postings != null`.
     initialized: bool,
     iter: Iter<'a>,
+    /// `SkipperBasedCompetitiveState`: the field is not indexed, but has a
+    /// doc-values skip index (over ordinals).
+    skipper: Option<SkipperState<'a>>,
+}
+
+/// `SkipperBasedCompetitiveState`'s own fields.
+struct SkipperState<'a> {
+    index: &'a lucene_codecs::doc_values::DocValuesSkipIndex,
+    prev: (i64, i64),
+    /// The state as it stood when the current iterator was built, for an
+    /// iterator that is no longer the current one.
+    state: SkipState,
 }
 
 /// `PostingsBasedCompetitiveState.MAX_TERMS`, capped (as Lucene caps it) by
@@ -2500,6 +2710,30 @@ impl<'a> LeafStr<'a> {
         let Some(comp) = self.competitive.as_mut() else {
             return Ok(());
         };
+        if let Some(sk) = comp.skipper.as_mut() {
+            // `SkipperBasedCompetitiveState.update`.
+            if let Iter::Adaptive(a) = &comp.iter {
+                sk.state = a.state;
+            }
+            if sk.state == SkipState::Disabled || (min_ord, max_ord) == sk.prev {
+                return Ok(());
+            }
+            sk.prev = (min_ord, max_ord);
+            comp.iter = Iter::Adaptive(Box::new(AdaptiveSkip {
+                inner: SkipIter {
+                    skipper: lucene_codecs::doc_values::DocValuesSkipper::new(sk.index),
+                    min: min_ord,
+                    max: max_ord,
+                    doc: -1,
+                },
+                state: sk.state,
+                block_end_doc: -1,
+                boundary_crossings: 0,
+                max_doc: comp.max_doc,
+                doc: -1,
+            }));
+            return Ok(());
+        }
         let Some((terms, doc_in)) = comp.postings else {
             // `EmptyCompetitiveState`.
             comp.iter = Iter::Docs {
@@ -2599,6 +2833,9 @@ struct Leaf<'a> {
     /// document it belongs to.
     score: f32,
     score_doc: i32,
+    /// A sort led by the document id, ascending: `DocComparator`'s
+    /// competitive iterator.
+    doc_competitive: Option<DocCompetitive<'a>>,
 }
 
 fn store_err(e: lucene_store::Error) -> crate::Error {
@@ -2674,6 +2911,7 @@ fn open_str<'a>(
         max_doc,
         initialized: false,
         iter: Iter::All { max_doc, doc: -1 },
+        skipper: None,
     };
     let missing_last = f.missing != 0;
     let top_set = c.strs.as_ref().is_some_and(|st| st.top.is_some());
@@ -2693,8 +2931,29 @@ fn open_str<'a>(
                 _ => None,
             }
         }
-        // A doc-values skip index is not used (no
-        // `SkipperBasedCompetitiveState`): the column is scanned.
+        // Not indexed, with a doc-values skip index over the ordinals:
+        // `SkipperBasedCompetitiveState` (or, when the segment has no
+        // skipper for it, `EmptyCompetitiveState`, as Java's).
+        Some(i)
+            if i.doc_values_skip_index_type
+                != lucene_codecs::field_infos::DocValuesSkipIndexType::None
+                && !disable_skipper_for_tests() =>
+        {
+            match reader.doc_values_skip_index(i.number)? {
+                Some(index) => {
+                    let dense = index.doc_count == max_doc;
+                    should_skip(dense).then(|| StrCompetitive {
+                        skipper: Some(SkipperState {
+                            index,
+                            prev: (i64::MIN, i64::MIN),
+                            state: SkipState::Warming,
+                        }),
+                        ..state(None, dense)
+                    })
+                }
+                None => should_skip(false).then(|| state(None, false)),
+            }
+        }
         Some(_) => None,
     };
     Ok(LeafStr {
@@ -2807,60 +3066,101 @@ fn open_leaf<'a>(
                 };
                 // A nested key does not skip: the caller runs one only where
                 // Lucene's would not either (see `NestedSort`).
-                let competitive = match (c.pruning, points, f.point_bytes()) {
+                let points_field = points.and_then(|p| {
+                    p.field_number(&f.field)
+                        .and_then(|num| p.reader.field(num).map(|pf| (p, num, pf)))
+                });
+                let competitive = match (c.pruning, points_field, f.point_bytes()) {
                     _ if f.nested.is_some() => None,
-                    (Pruning::None, _, _) | (_, None, _) | (_, _, None) => None,
-                    (_, Some(p), Some(bytes)) => match p.field_number(&f.field) {
-                        None => None,
-                        Some(num) => match p.reader.field(num) {
-                            None => None,
-                            Some(pf) => {
-                                if pf.num_dims != 1 || pf.bytes_per_dim as usize != bytes {
-                                    return Err(SortError::PointsShape {
-                                        field: f.field.clone(),
-                                        dims: pf.num_dims,
-                                        bytes: pf.bytes_per_dim,
-                                        want: bytes,
+                    (Pruning::None, _, _) | (_, _, None) => None,
+                    // `buildCompetitiveDISIBuilder`: no points for the
+                    // field, so its doc-values skip index, if it has one.
+                    (_, None, Some(bytes)) => match info {
+                        Some(info) if !disable_skipper_for_tests() => {
+                            match reader.doc_values_skip_index(info.number)? {
+                                None => None,
+                                Some(index) => {
+                                    let mut comp = Competitive {
+                                        points: &EMPTY_POINTS,
+                                        skipper: Some(index),
+                                        field_number: info.number,
+                                        bytes,
+                                        // `skipper.docCount()`.
+                                        point_doc_count: index.doc_count,
+                                        max_doc,
+                                        leaf_top_set: c.top_set,
+                                        iter: Iter::All { max_doc, doc: -1 },
+                                        min_value: i64::MIN,
+                                        max_value: i64::MAX,
+                                        max_doc_visited: -1,
+                                        update_counter: 0,
+                                        current_skip_interval: MIN_SKIP_INTERVAL,
+                                        iterator_cost: i64::from(max_doc),
+                                        try_update_fail_count: 0,
+                                        with_value,
+                                        scratch: Vec::new(),
+                                        spare_bits: None,
+                                        walk: PointsScratch::default(),
+                                        missing_docs: None,
+                                        missing_range: None,
+                                    };
+                                    if comp.leaf_top_set {
+                                        comp.encode_top(c);
                                     }
-                                    .into());
+                                    // `setScorer` updates the iterator.
+                                    comp.update(c)?;
+                                    Some(comp)
                                 }
-                                let mut comp = Competitive {
-                                    points: &p.reader,
-                                    field_number: num,
-                                    bytes,
-                                    point_doc_count: pf.doc_count,
-                                    max_doc,
-                                    leaf_top_set: c.top_set,
-                                    iter: Iter::All { max_doc, doc: -1 },
-                                    min_value: i64::MIN,
-                                    max_value: i64::MAX,
-                                    max_doc_visited: -1,
-                                    update_counter: 0,
-                                    current_skip_interval: MIN_SKIP_INTERVAL,
-                                    iterator_cost: -1,
-                                    try_update_fail_count: 0,
-                                    with_value,
-                                    scratch: Vec::new(),
-                                    spare_bits: None,
-                                    walk: PointsScratch::default(),
-                                    missing_docs: None,
-                                    missing_range: None,
-                                };
-                                if comp.leaf_top_set {
-                                    comp.encode_top(c);
-                                }
-                                // `setScorer`: the scorer's cost, or `maxDoc`
-                                // behind `ScoreCachingWrappingScorer`.
-                                comp.iterator_cost = if tf.needs_scores {
-                                    i64::from(max_doc)
-                                } else {
-                                    cost
-                                };
-                                comp.update(c)?;
-                                Some(comp)
                             }
-                        },
+                        }
+                        _ => None,
                     },
+                    (_, Some((p, num, pf)), Some(bytes)) => {
+                        if pf.num_dims != 1 || pf.bytes_per_dim as usize != bytes {
+                            return Err(SortError::PointsShape {
+                                field: f.field.clone(),
+                                dims: pf.num_dims,
+                                bytes: pf.bytes_per_dim,
+                                want: bytes,
+                            }
+                            .into());
+                        }
+                        let mut comp = Competitive {
+                            points: &p.reader,
+                            skipper: None,
+                            field_number: num,
+                            bytes,
+                            point_doc_count: pf.doc_count,
+                            max_doc,
+                            leaf_top_set: c.top_set,
+                            iter: Iter::All { max_doc, doc: -1 },
+                            min_value: i64::MIN,
+                            max_value: i64::MAX,
+                            max_doc_visited: -1,
+                            update_counter: 0,
+                            current_skip_interval: MIN_SKIP_INTERVAL,
+                            iterator_cost: -1,
+                            try_update_fail_count: 0,
+                            with_value,
+                            scratch: Vec::new(),
+                            spare_bits: None,
+                            walk: PointsScratch::default(),
+                            missing_docs: None,
+                            missing_range: None,
+                        };
+                        if comp.leaf_top_set {
+                            comp.encode_top(c);
+                        }
+                        // `setScorer`: the scorer's cost, or `maxDoc`
+                        // behind `ScoreCachingWrappingScorer`.
+                        comp.iterator_cost = if tf.needs_scores {
+                            i64::from(max_doc)
+                        } else {
+                            cost
+                        };
+                        comp.update(c)?;
+                        Some(comp)
+                    }
                 };
                 debug_assert!(competitive
                     .as_ref()
@@ -2918,6 +3218,16 @@ fn open_leaf<'a>(
         early: tf.doc_first || seg.index_sort_prefix,
         score: 0.0,
         score_doc: -1,
+        doc_competitive: tf.doc_first.then(|| {
+            // `setScorer` on a new segment updates the iterator.
+            let mut d = DocCompetitive::new(
+                doc_base,
+                max_doc,
+                tf.comps[0].top_set.then_some(tf.comps[0].top as i32),
+            );
+            d.update(tf.comps[0].hits_threshold_reached, tf.queue_full);
+            d
+        }),
     })
 }
 
@@ -3061,6 +3371,9 @@ impl<'a> Leaf<'a> {
     }
 
     fn set_bottom(&mut self, tf: &mut TopField, slot: usize) -> Result<()> {
+        if let Some(d) = self.doc_competitive.as_mut() {
+            d.update(tf.comps[0].hits_threshold_reached, true);
+        }
         for i in 0..tf.comps.len() {
             let c = &mut tf.comps[i];
             c.bottom = c.values[slot];
@@ -3089,6 +3402,10 @@ impl<'a> Leaf<'a> {
 
     fn set_hits_threshold_reached(&mut self, tf: &mut TopField) -> Result<()> {
         let c = &mut tf.comps[0];
+        if let Some(d) = self.doc_competitive.as_mut() {
+            c.hits_threshold_reached = true;
+            d.update(true, tf.queue_full);
+        }
         match &mut self.keys[0] {
             LeafKey::Numeric(n) => {
                 c.hits_threshold_reached = true;
@@ -3107,6 +3424,9 @@ impl<'a> Leaf<'a> {
 
     #[inline]
     fn competitive(&mut self) -> Option<&mut Iter<'a>> {
+        if let Some(d) = self.doc_competitive.as_mut() {
+            return Some(&mut d.iter);
+        }
         match self.keys.first_mut() {
             Some(LeafKey::Numeric(n)) => n.competitive.as_mut().map(|c| &mut c.iter),
             Some(LeafKey::Str(k)) => k.competitive.as_mut().map(|c| &mut c.iter),
@@ -4250,8 +4570,12 @@ fn count_rest(
         doc = scorer.next_doc()?;
     }
     if tf.total_hits > limit {
-        // `countHit`'s switch to a lower bound, then `thresholdCheck`'s
-        // `CollectionTerminatedException`.
+        // `countHit`'s switch to a lower bound (telling the comparators, so a
+        // later segment's competitive iterator starts from it), then
+        // `thresholdCheck`'s `CollectionTerminatedException`.
+        if tf.relation == TotalHitsRelation::EqualTo && !tf.exhaustive {
+            leaf.set_hits_threshold_reached(tf)?;
+        }
         tf.relation = TotalHitsRelation::GreaterThanOrEqualTo;
         leaf.terminated = true;
     }
@@ -4356,6 +4680,83 @@ mod tests {
             threshold,
             after,
         )
+    }
+
+    /// A doc-values skip index lets a numeric key (`DVSkipperCompetitiveDISIBuilder`)
+    /// and a keyword key (`SkipperBasedCompetitiveState`) skip whole blocks
+    /// once the queue is full: the same hits as with skipping turned off,
+    /// over fewer documents (the total, a lower bound past the threshold,
+    /// counts every document visited).
+    #[test]
+    fn a_skip_index_skips_documents_without_changing_the_hits() {
+        let numeric = fixture("sorted_search_index");
+        let keyword = fixture("keyword_sort_index");
+        let cases: Vec<(&DirectoryReader, Vec<SortField>)> = vec![
+            (
+                &numeric,
+                vec![SortField::numeric("k", SortType::Long, false)],
+            ),
+            (
+                &numeric,
+                vec![SortField::numeric("k", SortType::Long, true)],
+            ),
+            (
+                &numeric,
+                vec![
+                    SortField::numeric("k", SortType::Long, false),
+                    SortField::score(),
+                ],
+            ),
+            (&keyword, vec![keyword_last("ks", false)]),
+            (&keyword, vec![keyword_last("ks", true)]),
+        ];
+        for (reader, sort) in cases {
+            let with = |disabled: bool| {
+                DISABLE_SKIPPER.with(|d| d.set(disabled));
+                let r = run_t(reader, &all(), &sort, 10, 100, None).unwrap();
+                DISABLE_SKIPPER.with(|d| d.set(false));
+                r
+            };
+            let skipping = with(false);
+            let scanning = with(true);
+            assert_eq!(skipping.hits, scanning.hits, "{sort:?}");
+            assert!(
+                skipping.total.value * 2 < scanning.total.value,
+                "{sort:?}: visited {} with the skip index, {} without",
+                skipping.total.value,
+                scanning.total.value
+            );
+        }
+    }
+
+    fn keyword_last(field: &str, reverse: bool) -> SortField {
+        SortField {
+            missing: 1,
+            ..SortField::string(field, reverse)
+        }
+    }
+
+    /// `DocComparator`'s competitive iterator: nothing before the hits
+    /// threshold; then empty once the queue is full, or -- paging -- the
+    /// documents from the `after` document on, a segment before it skipped.
+    #[test]
+    fn the_doc_iterator_follows_the_threshold_the_bottom_and_the_top() {
+        let mut d = DocCompetitive::new(100, 50, None);
+        d.update(false, true);
+        assert!(matches!(d.iter, Iter::All { .. }));
+        d.update(true, true);
+        assert_eq!(d.iter.advance(0).unwrap(), NO_MORE_DOCS);
+        // Paging after global doc 120: this segment (100..150) from 20 on.
+        let mut d = DocCompetitive::new(100, 50, Some(120));
+        d.update(true, false);
+        assert_eq!(d.iter.advance(0).unwrap(), 20);
+        assert_eq!(d.iter.cost(), 30);
+        assert_eq!(d.iter.advance(49).unwrap(), 49);
+        assert_eq!(d.iter.advance(50).unwrap(), NO_MORE_DOCS);
+        // A segment wholly before the top.
+        let mut d = DocCompetitive::new(0, 50, Some(120));
+        d.update(true, false);
+        assert_eq!(d.iter.advance(0).unwrap(), NO_MORE_DOCS);
     }
 
     /// Every document of `field` in `reader`'s segments: `(segment, doc,
@@ -4825,6 +5226,7 @@ mod tests {
         let points = PointsReader::empty();
         let mut c = Competitive {
             points: &points,
+            skipper: None,
             field_number: 0,
             bytes: 8,
             point_doc_count: 0,
@@ -4971,6 +5373,7 @@ mod tests {
     ) -> Competitive<'a> {
         Competitive {
             points,
+            skipper: None,
             field_number,
             bytes: 8,
             point_doc_count: max_doc,
@@ -5197,6 +5600,7 @@ mod tests {
             early: false,
             score: 0.0,
             score_doc: -1,
+            doc_competitive: None,
         };
         let max_doc = u64::try_from(seg.max_doc.unwrap()).unwrap();
         // A run: counted at once, to one past the threshold.
@@ -5236,6 +5640,7 @@ mod tests {
             early: false,
             score: 0.0,
             score_doc: -1,
+            doc_competitive: None,
         };
         let mut c = BulkLeaf {
             tf: &mut tf,
@@ -5257,6 +5662,7 @@ mod tests {
             early: false,
             score: 0.0,
             score_doc: -1,
+            doc_competitive: None,
         };
         let mut c = BulkLeaf {
             tf: &mut tf,
