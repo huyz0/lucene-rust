@@ -43,6 +43,7 @@ pub mod lowercase_ascii;
 pub mod lz4;
 pub mod monotonic_block_packed;
 pub mod norms;
+pub mod offline_sorter;
 pub mod packed_data;
 pub mod packed_ints;
 pub mod points;
