@@ -235,12 +235,12 @@ for case in "${CASES[@]}"; do
     echo "  FAIL (rust write)   $example"; failed=$((failed+1)); continue
   fi
   # shellcheck disable=SC2086 -- $extra is a deliberate word split
-  if java --enable-native-access=ALL-UNNAMED -cp "$CLASSES:$CP" "$verifier" "$out" $extra >/dev/null 2>&1; then
+  if java "${LUCENE_FIXTURE_JVM_OPTS[@]}" --enable-native-access=ALL-UNNAMED -cp "$CLASSES:$CP" "$verifier" "$out" $extra >/dev/null 2>&1; then
     echo "  ok                  $verifier <- $example"
   else
     echo "  FAIL (java verify)  $verifier <- $example"
     # shellcheck disable=SC2086
-    java --enable-native-access=ALL-UNNAMED -cp "$CLASSES:$CP" "$verifier" "$out" $extra 2>&1 | sed 's/^/      /' | tail -15
+    java "${LUCENE_FIXTURE_JVM_OPTS[@]}" --enable-native-access=ALL-UNNAMED -cp "$CLASSES:$CP" "$verifier" "$out" $extra 2>&1 | sed 's/^/      /' | tail -15
     failed=$((failed+1))
   fi
 done

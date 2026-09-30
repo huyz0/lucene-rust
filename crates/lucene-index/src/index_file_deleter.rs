@@ -986,7 +986,7 @@ fn commit_file_names(dir: &dyn Directory, infos: &SegmentInfos) -> Result<Vec<St
     }
     for sci in &infos.segments {
         let bytes = dir.open(&format!("{}.si", sci.segment_name))?.to_vec();
-        let si = segment_info::parse(&bytes, &sci.segment_id)?;
+        let si = segment_info::parse_for_codec(&bytes, &sci.segment_id, &sci.codec_name)?;
         let si_files = IndexFileDeleter::with_self_listing(&sci.segment_name, si.files);
         for f in sci.files(&si_files) {
             if !out.contains(&f) {

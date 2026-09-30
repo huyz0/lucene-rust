@@ -21,6 +21,15 @@ bwc-big/9.11.1/_0.si 0342c219a622b62878d36a6ca0995adf
 bwc-big/9.11.1/segments_1 0342c219a622b62878d36a6ca0995ae2
 bwc-big/9.12.2/_0.si ea5fe5e2731f776f9386e0bae3d56566
 bwc-big/9.12.2/segments_1 ea5fe5e2731f776f9386e0bae3d56569
+bwc-quantized/10.2.2/_0.si f3780c301bb9425cd681f8aca88463f6
+bwc-quantized/10.2.2/_1.si f3780c301bb9425cd681f8aca88463f9
+bwc-quantized/10.2.2/segments_1 f3780c301bb9425cd681f8aca88463fe
+bwc-quantized/9.12.2/_0.si b2555cb04684b28e6c30c0781cdc2322
+bwc-quantized/9.12.2/_1.si b2555cb04684b28e6c30c0781cdc2325
+bwc-quantized/9.12.2/segments_1 b2555cb04684b28e6c30c0781cdc232a
+bwc-quantized/9.9.2/_0.si 1f0fb4188921fbf7639f3f535ba9ab60
+bwc-quantized/9.9.2/_1.si 1f0fb4188921fbf7639f3f535ba9ab63
+bwc-quantized/9.9.2/segments_1 1f0fb4188921fbf7639f3f535ba9ab68
 bwc/10.0.0/_0.si 0cce44907a0a3f2f0d8ebb1c9d78de6c
 bwc/10.0.0/_1.si 0cce44907a0a3f2f0d8ebb1c9d78de6f
 bwc/10.0.0/segments_1 0cce44907a0a3f2f0d8ebb1c9d78de74
