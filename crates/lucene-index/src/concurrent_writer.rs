@@ -896,6 +896,18 @@ impl Directory for TrackingDirectory<'_> {
     fn sync_meta_data(&self) -> lucene_store::Result<()> {
         self.inner.sync_meta_data()
     }
+
+    fn obtain_lock(&self, name: &str) -> lucene_store::Result<Box<dyn lucene_store::Lock>> {
+        self.inner.obtain_lock(name)
+    }
+
+    fn file_length(&self, name: &str) -> lucene_store::Result<u64> {
+        self.inner.file_length(name)
+    }
+
+    fn pending_deletions(&self) -> lucene_store::Result<std::collections::BTreeSet<String>> {
+        self.inner.pending_deletions()
+    }
 }
 
 #[cfg(test)]

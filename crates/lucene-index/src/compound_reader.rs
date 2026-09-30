@@ -148,6 +148,10 @@ impl Directory for CompoundReader<'_> {
     fn sync_meta_data(&self) -> Result<()> {
         Err(read_only("syncMetaData"))
     }
+
+    fn obtain_lock(&self, _name: &str) -> Result<Box<dyn lucene_store::Lock>> {
+        Err(read_only("obtainLock"))
+    }
 }
 
 #[cfg(test)]

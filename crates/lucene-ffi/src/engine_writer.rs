@@ -1338,8 +1338,11 @@ mod tests {
             );
 
             let (fds, maps) = open_under(tmp.path());
+            // The writer's own `write.lock` descriptor is the one that must
+            // stay open: it is what holds the OS lock.
+            let lock = tmp.path().join("write.lock").to_string_lossy().into_owned();
             assert!(
-                fds.is_empty(),
+                fds == [lock.clone()],
                 "round {round}: descriptors left open {fds:?}"
             );
             let gone: Vec<&String> = maps.iter().filter(|m| m.ends_with("(deleted)")).collect();
@@ -1381,12 +1384,17 @@ mod tests {
         assert_eq!(ffi_close_jvm_reader(reader), 0);
         assert_eq!(ffi_engine_writer_release_hold(h, hold), 0);
         let (fds, maps) = open_under(tmp.path());
+        let lock = tmp.path().join("write.lock").to_string_lossy().into_owned();
         assert!(
-            fds.is_empty() && maps.is_empty(),
+            fds == [lock] && maps.is_empty(),
             "after the last close: {fds:?} {maps:?}"
         );
         check(&tmp);
         assert_eq!(ffi_engine_writer_close(h), 0);
+        // Closing the writer releases the lock, and with it the last
+        // descriptor.
+        let (fds, _) = open_under(tmp.path());
+        assert!(fds.is_empty(), "after the writer closed: {fds:?}");
     }
 
     #[test]

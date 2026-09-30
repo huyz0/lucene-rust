@@ -13,6 +13,9 @@ lucene-util = { path = "../lucene-util" }
 memmap2.workspace = true
 crc32fast.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [features]
 # `crashing_directory::CrashingDirectory`, the crash half of Lucene's
 # test-framework `MockDirectoryWrapper`. Test infrastructure, like Java's:

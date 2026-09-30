@@ -18,7 +18,7 @@ test. This boundary gets more scrutiny than anything else in the workspace.
   last-error message in a TLS slot, never a propagated unwind.
 - **All exported calls return a status code**, results via out-buffers/handles
   — no exceptions-as-control-flow across the boundary.
-- **`unsafe` lives only in `lucene-util` (SIMD), `lucene-store` (mmap), and
+- **`unsafe` lives only in `lucene-util` (SIMD), `lucene-store` (mmap, the `fcntl` write lock), and
   `lucene-ffi` (C ABI).** Every other crate keeps `#![forbid(unsafe_code)]`.
   An `unsafe` block outside those three crates is a design smell — fix the
   boundary instead of adding more `unsafe`.
