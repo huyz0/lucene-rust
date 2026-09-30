@@ -582,7 +582,7 @@ search/AutomatonQuery	ported	crates/lucene-search/src/extended_query.rs::Automat
 search/BatchScoreBulkScorer	ported	crates/lucene-search/src/bulk_scorer.rs::score_term
 search/BayesianScoreEstimator	ported	crates/lucene-search/src/bayesian_estimator.rs::estimate
 search/BayesianScoreQuery	ported	crates/lucene-search/src/extended_query.rs::BayesianScoreQuery
-search/BinarySortField	partial	crates/lucene-index/src/segment_info.rs::PROVIDER_BINARY -- M7: index-sort (de)serialization only; no search-time sort by BINARY doc values in top_field.rs, and the writer applies numeric index sorts only
+search/BinarySortField	partial	crates/lucene-search/src/top_field.rs::SortField -- M7: search-time sort ported (SortField::binary, TermValComparator); the writer applies numeric index sorts only (IndexSorter.BinarySorter), and index-sort (de)serialization lives in crates/lucene-index/src/segment_info.rs::PROVIDER_BINARY
 search/BitSetDocIdStream	ported	crates/lucene-search/src/exec/mod.rs::constant_bits
 search/BlendedTermQuery	ported	crates/lucene-search/src/extended_query.rs::BlendedTermQuery
 search/BlockMaxConjunctionBulkScorer	ported	crates/lucene-search/src/bulk_scorer.rs::ConjunctionBulk
@@ -597,8 +597,8 @@ search/BoostAttributeImpl	not-needed	AttributeImpl plumbing behind BoostAttribut
 search/BoostQuery	ported	crates/lucene-search/src/query.rs::BoostQuery
 search/BulkScorer	ported	crates/lucene-search/src/exec/bulk.rs::Bulk
 search/ByteVectorSimilarityQuery	ported	crates/lucene-search/src/vector_query.rs::ByteVectorSimilarityQuery
-search/ByteVectorSimilarityValuesSource	todo:M7	byte-vector similarity DoubleValuesSource
-search/CachingCollector	todo:M7	caching/replaying collector
+search/ByteVectorSimilarityValuesSource	ported	crates/lucene-search/src/values_source.rs::byte_vector_similarity
+search/CachingCollector	ported	crates/lucene-search/src/collectors.rs::CachingCollector
 search/CheckedIntConsumer	not-needed	Java functional interface existing only to let a lambda throw checked exceptions.
 search/CollectionStatistics	ported	crates/lucene-search/src/similarities.rs::CollectionStatistics
 search/CollectionTerminatedException	not-needed	Java control-flow exception for early termination; Rust collection paths stop by return value (weight_count.rs, terminate.rs).
@@ -614,18 +614,18 @@ search/ConstantScoreQuery	ported	crates/lucene-search/src/query.rs::ConstantScor
 search/ConstantScoreScorer	ported	crates/lucene-search/src/exec/leaf.rs::ConstantScorer
 search/ConstantScoreScorerSupplier	ported	crates/lucene-search/src/exec/leaf.rs::ConstantScorer
 search/ConstantScoreWeight	ported	crates/lucene-search/src/exec/leaf.rs::ConstantScorer
-search/ControlledRealTimeReopenThread	todo:M7	NRT reopen thread waiting on indexing generations
+search/ControlledRealTimeReopenThread	ported	crates/lucene-search/src/reference_manager.rs::ControlledRealTimeReopenThread
 search/DenseConjunctionBulkScorer	ported	crates/lucene-search/src/exec/bulk.rs::Bulk
 search/DisiPriorityQueue	ported	crates/lucene-search/src/exec/disjunction.rs::DisiQueue
 search/DisiPriorityQueue2	ported	crates/lucene-search/src/exec/disjunction.rs::DisiQueue
 search/DisiPriorityQueueN	ported	crates/lucene-search/src/exec/disjunction.rs::DisiQueue
 search/DisiWrapper	ported	crates/lucene-search/src/exec/disjunction.rs::Disi
 search/DisjunctionDISIApproximation	ported	crates/lucene-search/src/exec/disjunction.rs::DisjunctionScorer
-search/DisjunctionMatchesIterator	todo:M7	Matches API (disjunction matches iterator)
+search/DisjunctionMatchesIterator	ported	crates/lucene-search/src/matches.rs::DisjunctionMatchesIterator
 search/DisjunctionMaxBulkScorer	ported	crates/lucene-search/src/bulk_scorer.rs::DisMaxBulk
 search/DisjunctionMaxQuery	ported	crates/lucene-search/src/query.rs::DisjunctionMaxQuery
 search/DisjunctionMaxScorer	ported	crates/lucene-search/src/exec/disjunction.rs::DisjunctionScorer
-search/DisjunctionScoreBlockBoundaryPropagator	partial	crates/lucene-search/src/exec/disjunction.rs::DisjunctionScorer -- M7: not ported as such: DisjunctionMaxScorer.advanceShallow uses the sub-scorers' minimum boundary instead of the propagator (parity row R1), which changes pruning granularity only
+search/DisjunctionScoreBlockBoundaryPropagator	ported	crates/lucene-search/src/exec/disjunction.rs::BlockBoundaryPropagator
 search/DisjunctionScorer	ported	crates/lucene-search/src/exec/disjunction.rs::DisjunctionScorer
 search/DisjunctionSumScorer	ported	crates/lucene-search/src/exec/disjunction.rs::DisjunctionScorer
 search/DocAndFloatFeatureBuffer	ported	crates/lucene-search/src/bulk_scorer.rs::DocScores
@@ -638,27 +638,27 @@ search/DocIdStream	ported	crates/lucene-search/src/exec/mod.rs::constant_bits
 search/DocScoreEncoder	ported	crates/lucene-search/src/collector.rs::doc_score_encoder
 search/DocValuesRangeIterator	ported	crates/lucene-search/src/exec/ranges.rs::SkipBlockRange
 search/DocValuesRewriteMethod	ported	crates/lucene-search/src/exec/ranges.rs::doc_values_rewrite
-search/DoubleValues	todo:M7	per-document double values (function/values-source API)
-search/DoubleValuesSource	todo:M7	double values-source API (function scoring, rescoring)
-search/DoubleValuesSourceRescorer	todo:M7	rescorer over a DoubleValuesSource
+search/DoubleValues	ported	crates/lucene-search/src/values_source.rs::DoubleValues
+search/DoubleValuesSource	partial	crates/lucene-search/src/values_source.rs::DoubleValuesSource -- M7: getSortField (double_sort_field) serves sources that read one segment; a query-backed or vector source cannot sort (a comparator has neither the searcher nor the opened vectors)
+search/DoubleValuesSourceRescorer	ported	crates/lucene-search/src/rescorer.rs::DoubleValuesSourceRescorer
 search/ExactPhraseMatcher	ported	crates/lucene-search/src/exec/phrase.rs::PhraseScorer
 search/Explanation	ported	crates/lucene-search/src/explain.rs::Explanation
-search/FieldComparator	partial	crates/lucene-search/src/top_field.rs::Comparator -- M7: relevance, doc, numeric and TermOrdVal comparators only; inner TermValComparator (SortField.Type.STRING_VAL) not ported, no user-pluggable comparator
-search/FieldComparatorSource	todo:M7	custom comparator source (SortField.Type.CUSTOM)
+search/FieldComparator	ported	crates/lucene-search/src/top_field.rs::FieldComparator
+search/FieldComparatorSource	ported	crates/lucene-search/src/top_field.rs::FieldComparatorSource
 search/FieldDoc	ported	crates/lucene-search/src/top_field.rs::FieldDoc
 search/FieldExistsQuery	ported	crates/lucene-search/src/query.rs::FieldExistsQuery
 search/FieldValueHitQueue	ported	crates/lucene-search/src/top_field.rs::HitQueue
 search/FilterCollector	not-needed	Java delegating base class for overriding collectors; Rust wraps a collector in its own ScoringCollector impl (e.g. collector.rs LeafCollector).
 search/FilterDocIdSetIterator	not-needed	Java delegating base class; Rust scorers wrap a BoxScorer directly.
 search/FilterLeafCollector	not-needed	Java delegating base class for overriding leaf collectors; Rust wraps a collector in its own ScoringCollector impl.
-search/FilterMatchesIterator	todo:M7	Matches API (delegating matches iterator)
+search/FilterMatchesIterator	ported	crates/lucene-search/src/matches.rs::FilterMatchesIterator
 search/FilterScorable	not-needed	Java delegating base class; Rust passes scores to ScoringCollector::collect directly.
 search/FilterScorer	not-needed	Java delegating base class; Rust wraps a BoxScorer directly (e.g. exec/leaf.rs ZeroScorer).
 search/FilterWeight	not-needed	Java delegating base class for the Weight hierarchy, which Rust collapses into exec/build.rs.
 search/FilteredDocIdSetIterator	not-needed	Java predicate-filtering base class; Rust iterators filter with Iterator::filter or a two-phase Scorer.
 search/FloatVectorSimilarityQuery	ported	crates/lucene-search/src/vector_query.rs::FloatVectorSimilarityQuery
-search/FloatVectorSimilarityValuesSource	todo:M7	float-vector similarity DoubleValuesSource
-search/FullPrecisionFloatVectorSimilarityValuesSource	todo:M7	full-precision float-vector similarity values source
+search/FloatVectorSimilarityValuesSource	ported	crates/lucene-search/src/values_source.rs::float_vector_similarity
+search/FullPrecisionFloatVectorSimilarityValuesSource	ported	crates/lucene-search/src/values_source.rs::full_precision_float_vector_similarity
 search/FuzzyAutomatonBuilder	ported	crates/lucene-codecs/src/fuzzy.rs::FuzzyMatch
 search/FuzzyQuery	ported	crates/lucene-search/src/exec/extended.rs::fuzzy_sim
 search/FuzzyTermsEnum	ported	crates/lucene-codecs/src/blocktree.rs::fuzzy_intersect
@@ -666,7 +666,7 @@ search/HitQueue	ported	crates/lucene-search/src/collector.rs::TopDocsCollector
 search/HnswQueueSaturationCollector	ported	crates/lucene-search/src/knn_collectors.rs::HnswQueueSaturationCollector
 search/ImpactsDISI	ported	crates/lucene-search/src/bulk_scorer.rs::TermLeg
 search/IndexOrDocValuesQuery	partial	crates/lucene-search/src/doc_value_query.rs::plan_index_or_doc_values -- M7: planner exists but has no caller; the doc-values side never runs in the scorer tree (only the points side is sent)
-search/IndexSearcher	partial	crates/lucene-search/src/multi_segment.rs::search_boolean_query_multi_segment_maxscore -- M7: no IndexSearcher object: search/count/explain are free functions over OpenSegment; explain only for term, phrase and flat term-only boolean (parity row 300); `setSimilarity` is search_boolean_query_multi_segment_with_similarity (term, phrase, boolean; fuzzy/span/multi-phrase scoring clauses refused under a non-default similarity), not the FFI; Fuzzy/MultiPhrase/span/KNN run outside the tree
+search/IndexSearcher	partial	crates/lucene-search/src/index_searcher.rs::IndexSearcher -- M7: explain is per segment (a multi-segment IndexSearcher refuses it: explain_clause takes no reader-wide statistics) and only for term, phrase and flat term-only boolean (parity row 300); searchAfter, search(query, n, sort), timeouts and the query cache policy are not methods of the object (free functions in multi_segment.rs/top_field.rs); fuzzy/span/multi-phrase scoring clauses refused under a non-default similarity; Fuzzy/MultiPhrase/span/KNN run outside the tree
 search/IndexSortSortedNumericDocValuesRangeQuery	ported	crates/lucene-search/src/extended_query.rs::IndexSortSortedNumericDocValuesRangeQuery
 search/IndriAndQuery	ported	crates/lucene-search/src/extended_query.rs::IndriAndQuery
 search/IndriAndScorer	ported	crates/lucene-search/src/exec/extended.rs::IndriAndScorer
@@ -678,39 +678,39 @@ search/KnnByteVectorQuery	ported	crates/lucene-search/src/vector_query.rs::KnnBy
 search/KnnCollector	ported	crates/lucene-codecs/src/hnsw.rs::KnnCollector
 search/KnnFloatVectorQuery	ported	crates/lucene-search/src/vector_query.rs::KnnFloatVectorQuery
 search/LRUQueryCache	ported	crates/lucene-search/src/exec/cache.rs::SegmentQueryCache
-search/LateInteractionFloatValuesSource	todo:M7	multi-vector late-interaction values source
-search/LateInteractionRescorer	todo:M7	late-interaction multi-vector rescorer
+search/LateInteractionFloatValuesSource	ported	crates/lucene-search/src/values_source.rs::LateInteractionFloatValuesSource
+search/LateInteractionRescorer	ported	crates/lucene-search/src/rescorer.rs::late_interaction_rescorer
 search/LeafCollector	ported	crates/lucene-search/src/collector.rs::LeafCollector
 search/LeafFieldComparator	ported	crates/lucene-search/src/top_field.rs::LeafKey
-search/LiveFieldValues	todo:M7	NRT live field-value cache over ReferenceManager
+search/LiveFieldValues	ported	crates/lucene-search/src/reference_manager.rs::LiveFieldValues
 search/LogOddsFusionQuery	ported	crates/lucene-search/src/extended_query.rs::LogOddsFusionQuery
 search/LogOddsFusionScorer	ported	crates/lucene-search/src/exec/extended.rs::LogOddsScorer
-search/LongValues	todo:M7	per-document long values (values-source API)
-search/LongValuesSource	todo:M7	long values-source API
+search/LongValues	ported	crates/lucene-search/src/values_source.rs::LongValues
+search/LongValuesSource	partial	crates/lucene-search/src/values_source.rs::LongValuesSource -- M7: getSortField (long_sort_field) serves sources that read one segment; one wrapping a query-backed or vector double source cannot sort
 search/MatchAllDocsQuery	ported	crates/lucene-search/src/query.rs::MatchAllDocsQuery
 search/MatchNoDocsQuery	ported	crates/lucene-search/src/query.rs::MatchNoDocsQuery
-search/Matches	todo:M7	Matches API (Weight.matches)
-search/MatchesIterator	todo:M7	Matches API iterator
-search/MatchesUtils	todo:M7	Matches API helpers
+search/Matches	ported	crates/lucene-search/src/matches.rs::Matches
+search/MatchesIterator	ported	crates/lucene-search/src/matches.rs::MatchesIterator
+search/MatchesUtils	ported	crates/lucene-search/src/matches.rs::from_sub_matches
 search/MaxNonCompetitiveBoostAttribute	ported	crates/lucene-search/src/lib.rs::FuzzyTopTerms
 search/MaxNonCompetitiveBoostAttributeImpl	not-needed	AttributeImpl plumbing behind MaxNonCompetitiveBoostAttribute; Rust keeps the two values on FuzzyTopTerms.
 search/MaxScoreAccumulator	ported	crates/lucene-search/src/collector.rs::MaxScoreAccumulator
 search/MaxScoreBulkScorer	ported	crates/lucene-search/src/bulk_scorer.rs::MaxScore
 search/MaxScoreCache	ported	crates/lucene-search/src/bulk_scorer.rs::TermLeg
-search/MultiCollector	todo:M7	generic fan-out over several collectors
-search/MultiCollectorManager	todo:M7	collector manager over several managers
+search/MultiCollector	ported	crates/lucene-search/src/collectors.rs::MultiCollector
+search/MultiCollectorManager	ported	crates/lucene-search/src/collectors.rs::MultiCollectorManager
 search/MultiLeafFieldComparator	ported	crates/lucene-search/src/top_field.rs::Leaf
 search/MultiNormsLeafSimScorer	ported	crates/lucene-search/src/exec/extended.rs::FreqSumScorer
 search/MultiPhraseQuery	ported	crates/lucene-search/src/exec/extended.rs::multi_phrase
 search/MultiTermQuery	ported	crates/lucene-search/src/extended_query.rs::MultiTermQuery
 search/MultiTermQueryConstantScoreBlendedWrapper	ported	crates/lucene-search/src/exec/multi_term.rs::TermUnion
 search/MultiTermQueryConstantScoreWrapper	ported	crates/lucene-search/src/exec/multi_term.rs::constant_score_terms
-search/MultiVectorSimilarity	todo:M7	multi-vector similarity interface
+search/MultiVectorSimilarity	ported	crates/lucene-search/src/values_source.rs::MultiVectorSimilarity
 search/Multiset	not-needed	lucene.internal generic collection used for BooleanQuery clause equality; Rust uses std collections.
 search/NGramPhraseQuery	ported	crates/lucene-search/src/extended_query.rs::NGramPhraseQuery
-search/NamedMatches	todo:M7	Matches API (named sub-query matches)
+search/NamedMatches	ported	crates/lucene-search/src/matches.rs::NamedMatches
 search/NumericDocValuesRangeQuery	ported	crates/lucene-search/src/extended_query.rs::NumericDocValuesRangeQuery
-search/NumericFieldStats	todo:M7	global numeric min/max from points or skipper
+search/NumericFieldStats	ported	crates/lucene-search/src/values_source.rs::numeric_field_stats
 search/PatienceKnnVectorQuery	ported	crates/lucene-search/src/vector_query.rs::PatienceKnnVectorQuery
 search/PhraseMatcher	ported	crates/lucene-search/src/exec/phrase.rs::PhraseScorer
 search/PhrasePositions	ported	crates/lucene-search/src/sloppy_phrase.rs::Pp
@@ -720,23 +720,23 @@ search/PhraseScorer	ported	crates/lucene-search/src/exec/phrase.rs::PhraseScorer
 search/PhraseWeight	ported	crates/lucene-search/src/exec/phrase.rs::PhraseScorer
 search/PointInSetQuery	ported	crates/lucene-search/src/extended_query.rs::PointInSetQuery
 search/PointRangeQuery	ported	crates/lucene-search/src/extended_query.rs::PointRangeQuery
-search/PositiveScoresOnlyCollector	todo:M7	collector dropping non-positive scores
+search/PositiveScoresOnlyCollector	ported	crates/lucene-search/src/collectors.rs::PositiveScoresOnlyCollector
 search/PrefixQuery	ported	crates/lucene-search/src/query.rs::PrefixQuery
 search/Pruning	ported	crates/lucene-search/src/top_field.rs::Pruning
 search/Query	ported	crates/lucene-search/src/query.rs::Clause
 search/QueryCache	ported	crates/lucene-search/src/exec/cache.rs::SegmentQueryCache
 search/QueryCachingPolicy	ported	crates/lucene-search/src/query_cache.rs::QueryCachingPolicy
-search/QueryRescorer	todo:M7	second-pass query rescorer
-search/QueryVisitor	partial	crates/lucene-search/src/query.rs::Clause -- M7: no visitor API (Query.visit, QueryVisitor.termCollector, per-field filtering); callers match the public Clause enum directly
+search/QueryRescorer	ported	crates/lucene-search/src/rescorer.rs::QueryRescorer
+search/QueryVisitor	ported	crates/lucene-search/src/query_visitor.rs::QueryVisitor
 search/RangeDocIdStream	ported	crates/lucene-search/src/exec/mod.rs::doc_id_run_end
-search/ReferenceManager	ported	crates/lucene-search/src/reader_manager.rs::ReferenceManager
-search/RefreshCommitSupplier	todo:M7	commit supplier for searcher refresh
+search/ReferenceManager	ported	crates/lucene-search/src/reference_manager.rs::ReferenceManager
+search/RefreshCommitSupplier	ported	crates/lucene-search/src/reference_manager.rs::RefreshCommitSupplier
 search/RegexpQuery	ported	crates/lucene-search/src/query.rs::RegexpQuery
 search/ReqExclBulkScorer	ported	crates/lucene-search/src/exec/bulk.rs::Bulk
 search/ReqExclScorer	ported	crates/lucene-search/src/exec/req.rs::ReqExclScorer
 search/ReqOptSumScorer	ported	crates/lucene-search/src/exec/req.rs::ReqOptSumScorer
-search/RescoreTopNQuery	todo:M7	rewrite-time top-N rescoring query
-search/Rescorer	todo:M7	rescorer API
+search/RescoreTopNQuery	partial	crates/lucene-search/src/rescorer.rs::RescoreTopNQuery -- M7: rewrite yields DocAndScores and search runs it standalone; not a Clause (cannot nest in a BooleanQuery until DocAndScoreQuery is a scorer-tree node)
+search/Rescorer	ported	crates/lucene-search/src/rescorer.rs::Rescorer
 search/Scorable	ported	crates/lucene-search/src/exec/mod.rs::Scorer
 search/ScoreCachingWrappingScorer	ported	crates/lucene-search/src/top_field.rs::ScoreAt
 search/ScoreDoc	ported	crates/lucene-search/src/collector.rs::ScoreDoc
@@ -745,35 +745,35 @@ search/Scorer	ported	crates/lucene-search/src/exec/mod.rs::Scorer
 search/ScorerSupplier	ported	crates/lucene-search/src/exec/build.rs::Child
 search/ScorerUtil	ported	crates/lucene-search/src/exec/wand.rs::cost_with_min_should_match
 search/ScoringRewrite	ported	crates/lucene-search/src/exec/extended.rs::rewrite_multi_term
-search/SearcherFactory	todo:M7	searcher factory/warm-up hook for managers
-search/SearcherLifetimeManager	todo:M7	versioned searcher lease manager
-search/SearcherManager	todo:M7	NRT searcher refresh/acquire/release manager
+search/SearcherFactory	ported	crates/lucene-search/src/reference_manager.rs::SearcherFactory
+search/SearcherLifetimeManager	ported	crates/lucene-search/src/reference_manager.rs::SearcherLifetimeManager
+search/SearcherManager	partial	crates/lucene-search/src/reference_manager.rs::SearcherManager -- M7: the IndexWriter constructors (DirectoryReader.open(writer, applyAllDeletes, writeAllDeletes)) are not ported: this port's IndexWriter has no NRT reader, so a SearcherManager refreshes from the directory's commits
 search/SeededKnnVectorQuery	ported	crates/lucene-search/src/vector_query.rs::search_seeded_knn_float_vector_query_multi_segment
-search/SegmentCacheable	partial	crates/lucene-search/src/exec/cache.rs::SegmentQueryCache -- M7: cacheability decided per clause kind; no per-leaf isCacheable check (e.g. DocValues.isCacheable for fields with doc-values updates)
+search/SegmentCacheable	ported	crates/lucene-search/src/segment_cacheable.rs::is_cacheable
 search/SimpleCollector	ported	crates/lucene-search/src/collector.rs::ScoringCollector
 search/SimpleFieldComparator	not-needed	Java convenience base merging FieldComparator and LeafFieldComparator; Rust comparators are the closed top_field.rs types.
 search/SimpleScorable	not-needed	mutable score holder handed to collectors; Rust passes the score as an argument of ScoringCollector::collect.
 search/SkipBlockRangeIterator	ported	crates/lucene-search/src/exec/ranges.rs::SkipBlockRange
 search/SloppyPhraseMatcher	ported	crates/lucene-search/src/sloppy_phrase.rs::SloppyMatcher
 search/Sort	ported	crates/lucene-search/src/top_field.rs::search_sorted
-search/SortField	partial	crates/lucene-search/src/top_field.rs::SortField -- M7: SCORE, DOC, LONG/INT/DOUBLE/FLOAT and STRING only; STRING_VAL and CUSTOM (FieldComparatorSource) not ported
-search/SortRescorer	todo:M7	sort-based rescorer
+search/SortField	ported	crates/lucene-search/src/top_field.rs::SortField
+search/SortRescorer	ported	crates/lucene-search/src/rescorer.rs::SortRescorer
 search/SortedNumericSelector	ported	crates/lucene-search/src/top_field.rs::Selector
 search/SortedNumericSortField	ported	crates/lucene-search/src/top_field.rs::SortField
-search/SortedSetSelector	partial	crates/lucene-search/src/top_field.rs::Selector -- M7: MIN/MAX only; "MIDDLE_MIN/MIDDLE_MAX are ported nowhere" (parity)
-search/SortedSetSortField	partial	crates/lucene-search/src/top_field.rs::SortField -- M7: MIN/MAX selectors only; MIDDLE_MIN/MIDDLE_MAX not ported
+search/SortedSetSelector	ported	crates/lucene-search/src/top_field.rs::Selector
+search/SortedSetSortField	ported	crates/lucene-search/src/top_field.rs::SortField
 search/SynonymQuery	ported	crates/lucene-search/src/extended_query.rs::SynonymQuery
 search/TaskExecutor	ported	crates/lucene-search/src/slices.rs::run_slices
 search/TermCollectingRewrite	ported	crates/lucene-search/src/lib.rs::fuzzy_expansion_across_leaves
 search/TermInSetQuery	ported	crates/lucene-search/src/query.rs::TermInSetQuery
-search/TermMatchesIterator	todo:M7	Matches API (term matches iterator)
+search/TermMatchesIterator	ported	crates/lucene-search/src/matches.rs::ListMatchesIterator
 search/TermQuery	ported	crates/lucene-search/src/query.rs::TermQuery
 search/TermRangeQuery	ported	crates/lucene-search/src/extended_query.rs::TermRangeQuery
 search/TermScorer	ported	crates/lucene-search/src/exec/leaf.rs::TermScorer
 search/TermStatistics	ported	crates/lucene-search/src/similarities.rs::TermStatistics
 search/TimeLimitingBulkScorer	ported	crates/lucene-search/src/exec/bulk.rs::score_segment_with_deadline
 search/TimeLimitingKnnCollectorManager	ported	crates/lucene-search/src/knn_collectors.rs::TimeLimitingKnnCollector
-search/TopDocs	partial	crates/lucene-search/src/multi_segment.rs::merge_multi_segment_scored -- M7: merge ported (no shardIndex); TopDocs.rrf (reciprocal rank fusion) not ported
+search/TopDocs	ported	crates/lucene-search/src/top_docs.rs::merge
 search/TopDocsCollector	ported	crates/lucene-search/src/collector.rs::TopDocsCollector
 search/TopFieldCollector	ported	crates/lucene-search/src/top_field.rs::search_sorted
 search/TopFieldCollectorManager	ported	crates/lucene-search/src/top_field.rs::search_sorted_sliced
@@ -789,7 +789,7 @@ search/TwoPhaseIterator	ported	crates/lucene-search/src/exec/mod.rs::Scorer
 search/UsageTrackingQueryCachingPolicy	ported	crates/lucene-search/src/query_cache.rs::UsageTrackingPolicy
 search/VectorScorer	ported	crates/lucene-codecs/src/hnsw.rs::VectorScorer
 search/VectorSimilarityCollector	ported	crates/lucene-search/src/knn_collectors.rs::VectorSimilarityCollector
-search/VectorSimilarityValuesSource	todo:M7	vector similarity values source base
+search/VectorSimilarityValuesSource	ported	crates/lucene-search/src/values_source.rs::VectorScores
 search/WANDScorer	ported	crates/lucene-search/src/exec/wand.rs::WandScorer
 search/Weight	ported	crates/lucene-search/src/exec/build.rs::build
 search/WildcardQuery	ported	crates/lucene-search/src/query.rs::WildcardQuery

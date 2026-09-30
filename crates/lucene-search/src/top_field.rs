@@ -112,6 +112,128 @@ pub enum SortType {
     /// column): by term, through `TermOrdValComparator`. `missing` is `1` for
     /// `STRING_LAST`, `0` for `STRING_FIRST`.
     String,
+    /// `SortField.Type.STRING_VAL`, and `BinarySortField` at search time: by
+    /// a `BINARY` column's bytes, compared value by value through
+    /// `FieldComparator.TermValComparator` (no ordinals, no skipping).
+    /// `missing` as for [`SortType::String`].
+    StringVal,
+    /// `SortField.Type.CUSTOM`: a [`FieldComparatorSource`] registered with
+    /// [`register_comparator_source`].
+    Custom(CustomSortId),
+}
+
+/// A registered [`FieldComparatorSource`]: what [`SortType::Custom`] names.
+/// A handle (not the source) so a sort key stays `Copy`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CustomSortId(u32);
+
+/// A custom key's value, as a hit carries it: `FieldComparator.value(slot)`
+/// for a comparator of longs or of bytes (`None`: the document has none).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SortValue {
+    Long(i64),
+    Bytes(Option<Vec<u8>>),
+}
+
+/// What a custom comparator reads a segment through
+/// (`FieldComparator.getLeafComparator(context)`).
+#[derive(Clone, Copy)]
+pub struct LeafCtx<'a> {
+    pub reader: &'a SegmentReader,
+    pub doc_base: i32,
+}
+
+/// `LeafFieldComparator`'s reading half: a document's value in one segment.
+pub trait LeafFieldComparator {
+    /// The value `doc` (segment-local) sorts by; `score` is its score when
+    /// the comparator [needs scores](FieldComparator::needs_scores).
+    fn value(&mut self, doc: i32, score: f32) -> Result<SortValue>;
+}
+
+/// `FieldComparator` for a custom key. Slots, the bottom and the top are
+/// kept by the collector as [`SortValue`]s and compared with
+/// [`Self::compare_values`], which must be the comparator's `compare` (Java's
+/// contract between `compare` and `compareValues`); ascending, before the
+/// sort's `reverse` applies.
+pub trait FieldComparator: Send + Sync {
+    /// `getLeafComparator(context)`.
+    fn leaf<'a>(&self, ctx: LeafCtx<'a>) -> Result<Box<dyn LeafFieldComparator + 'a>>;
+    /// `compareValues(first, second)`.
+    fn compare_values(&self, a: &SortValue, b: &SortValue) -> std::cmp::Ordering;
+    /// Whether values are bytes ([`FieldDoc::terms`]) rather than longs
+    /// ([`FieldDoc::values`]).
+    fn values_are_bytes(&self) -> bool {
+        false
+    }
+    /// Whether [`LeafFieldComparator::value`] reads the score.
+    fn needs_scores(&self) -> bool {
+        false
+    }
+}
+
+/// `FieldComparatorSource`: makes the comparator of a `CUSTOM` key.
+pub trait FieldComparatorSource: Send + Sync {
+    /// `newComparator(fieldname, numHits, pruning, reversed)`.
+    fn new_comparator(
+        &self,
+        field: &str,
+        num_hits: usize,
+        reverse: bool,
+    ) -> Box<dyn FieldComparator>;
+}
+
+static COMPARATOR_SOURCES: std::sync::RwLock<Vec<Arc<dyn FieldComparatorSource>>> =
+    std::sync::RwLock::new(Vec::new());
+
+/// Registers a comparator source for [`SortType::Custom`] keys; the source
+/// lives for the process (Java's `SortField` holds its source by reference).
+pub fn register_comparator_source(source: Arc<dyn FieldComparatorSource>) -> CustomSortId {
+    let mut all = COMPARATOR_SOURCES
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
+    all.push(source);
+    CustomSortId(u32::try_from(all.len() - 1).unwrap_or(u32::MAX))
+}
+
+/// The comparator a custom key sorts with.
+pub(crate) fn custom_comparator(
+    id: CustomSortId,
+    f: &SortField,
+    num_hits: usize,
+) -> Result<Box<dyn FieldComparator>> {
+    let all = COMPARATOR_SOURCES.read().unwrap_or_else(|e| e.into_inner());
+    let source = usize::try_from(id.0)
+        .ok()
+        .and_then(|i| all.get(i))
+        .ok_or(SortError::UnknownComparatorSource(id.0))?;
+    Ok(source.new_comparator(&f.field, num_hits, f.reverse))
+}
+
+/// Whether a key reads the score: the score itself, or a custom comparator
+/// that says so.
+fn key_needs_scores(f: &SortField) -> bool {
+    match f.ty {
+        SortType::Score => true,
+        SortType::Custom(id) => custom_comparator(id, f, 1).is_ok_and(|c| c.needs_scores()),
+        _ => false,
+    }
+}
+
+/// A custom key's value as a hit carries it.
+fn sort_value_parts(v: &SortValue) -> (i64, Option<Vec<u8>>) {
+    match v {
+        SortValue::Long(l) => (*l, None),
+        SortValue::Bytes(b) => (0, b.clone()),
+    }
+}
+
+/// A hit's custom value back from its parts.
+fn sort_value_of(bytes: bool, value: i64, term: Option<&Vec<u8>>) -> SortValue {
+    if bytes {
+        SortValue::Bytes(term.cloned())
+    } else {
+        SortValue::Long(value)
+    }
 }
 
 /// Which of a document's values it sorts by: `SortedNumericSelector.Type`
@@ -129,6 +251,28 @@ pub enum Selector {
     Avg,
     /// `MultiValueMode.MEDIAN`.
     Median,
+    /// `SortedSetSelector.Type.MIDDLE_MIN`: the middle ordinal, the lower of
+    /// the two middle ones for an even count (`ords[(n - 1) / 2]`). Also the
+    /// middle value of a numeric key's sorted values.
+    MiddleMin,
+    /// `SortedSetSelector.Type.MIDDLE_MAX`: the middle ordinal, the upper of
+    /// the two middle ones for an even count (`ords[n / 2]`).
+    MiddleMax,
+}
+
+impl Selector {
+    /// `SortedSetSelector`'s choice among a document's ascending ordinals
+    /// (`MIN`, `MAX`, `MIDDLE_MIN`, `MIDDLE_MAX`); the numeric modes pick
+    /// the least, as a keyword key sorts only by those four.
+    pub fn pick_ord(self, ords: &[i64]) -> Option<i64> {
+        let n = ords.len();
+        match self {
+            Selector::Max => ords.last().copied(),
+            Selector::MiddleMin => ords.get(n.checked_sub(1)? / 2).copied(),
+            Selector::MiddleMax => ords.get(n / 2).copied(),
+            _ => ords.first().copied(),
+        }
+    }
 }
 
 impl Selector {
@@ -144,6 +288,8 @@ impl Selector {
         Some(match (self, ty) {
             (Selector::Min, _) => first,
             (Selector::Max, _) => last,
+            (Selector::MiddleMin, _) => values[mid],
+            (Selector::MiddleMax, _) => values[n / 2],
             (_, SortType::Double | SortType::Float) => {
                 let float = ty == SortType::Float;
                 let d = |v: i64| {
@@ -296,8 +442,45 @@ impl SortField {
         match self.ty {
             SortType::Long | SortType::Double => Some(8),
             SortType::Int | SortType::Float => Some(4),
-            SortType::Score | SortType::Doc | SortType::String => None,
+            SortType::Score
+            | SortType::Doc
+            | SortType::String
+            | SortType::StringVal
+            | SortType::Custom(_) => None,
         }
+    }
+
+    /// `new SortField(field, SortField.Type.STRING_VAL, reverse)`: by a
+    /// `BINARY` column's bytes, missing first.
+    pub fn string_val(field: &str, reverse: bool) -> Self {
+        Self {
+            field: field.to_string(),
+            ty: SortType::StringVal,
+            reverse,
+            selector: Selector::Min,
+            missing: 0,
+            nested: None,
+        }
+    }
+
+    /// `new SortField(field, comparatorSource, reverse)`: a `CUSTOM` key.
+    pub fn custom(field: &str, source: CustomSortId, reverse: bool) -> Self {
+        Self {
+            field: field.to_string(),
+            ty: SortType::Custom(source),
+            reverse,
+            selector: Selector::Min,
+            missing: 0,
+            nested: None,
+        }
+    }
+
+    /// `new BinarySortField(field, reverse, missingValue)` at search time:
+    /// [`Self::string_val`] with `STRING_LAST` when `missing_last`.
+    pub fn binary(field: &str, reverse: bool, missing_last: bool) -> Self {
+        let mut f = Self::string_val(field, reverse);
+        f.missing = i64::from(missing_last);
+        f
     }
 
     /// A keyword key on `field` (`SortedSetSortField`, `MIN`), missing first.
@@ -373,6 +556,12 @@ pub enum SortError {
     /// fewer indexed terms than doc-values ones.
     #[error("doc-values term {0:?} and the terms index disagree")]
     TermsIndex(Vec<u8>),
+    /// `DocValues.getBinary`: a `STRING_VAL` key over another doc-values type.
+    #[error("field {0} has doc values of a type that cannot be sorted by bytes")]
+    BinaryType(String),
+    /// A [`SortType::Custom`] key naming no registered source.
+    #[error("no comparator source is registered as {0}")]
+    UnknownComparatorSource(u32),
 }
 
 /// `NumericUtils.floatToSortableInt`, over `Float.floatToIntBits` (one NaN).
@@ -431,6 +620,39 @@ struct Comparator {
     queue_full: bool,
     /// A keyword key's `TermOrdValComparator` state.
     strs: Option<Box<StrSlots>>,
+    /// A `STRING_VAL` key's `TermValComparator` state.
+    vals: Option<Box<ValSlots>>,
+    /// A `CUSTOM` key's comparator and slots.
+    custom: Option<Box<CustomSlots>>,
+}
+
+/// A custom key's comparator, slots, bottom and top.
+struct CustomSlots {
+    cmp: Box<dyn FieldComparator>,
+    values: Vec<SortValue>,
+    bottom: SortValue,
+    top: Option<SortValue>,
+}
+
+/// `FieldComparator.TermValComparator`'s slots, bottom and top.
+struct ValSlots {
+    values: Vec<Option<Vec<u8>>>,
+    bottom: Option<Vec<u8>>,
+    top: Option<Vec<u8>>,
+    /// `missingSortCmp`.
+    missing_cmp: i32,
+}
+
+impl ValSlots {
+    /// `compareValues`: missing before (or, `STRING_LAST`, after) any value.
+    fn compare_values(&self, a: Option<&[u8]>, b: Option<&[u8]>) -> i32 {
+        match (a, b) {
+            (None, None) => 0,
+            (None, Some(_)) => self.missing_cmp,
+            (Some(_), None) => -self.missing_cmp,
+            (Some(x), Some(y)) => x.cmp(y) as i32,
+        }
+    }
 }
 
 /// `TermOrdValComparator`'s reader-wide state: each slot's ordinal, term and
@@ -473,6 +695,12 @@ impl StrSlots {
 
 impl Comparator {
     fn compare(&self, a: usize, b: usize) -> i32 {
+        if let Some(c) = &self.custom {
+            return self.mul * c.cmp.compare_values(&c.values[a], &c.values[b]) as i32;
+        }
+        if let Some(v) = &self.vals {
+            return self.mul * v.compare_values(v.values[a].as_deref(), v.values[b].as_deref());
+        }
         match &self.strs {
             None => self.mul * cmp(self.values[a], self.values[b]),
             Some(st) => {
@@ -622,7 +850,33 @@ impl TopField {
                         old_slots: 0,
                     })
                 });
+                let vals = (f.ty == SortType::StringVal).then(|| {
+                    Box::new(ValSlots {
+                        values: vec![None; num_hits],
+                        bottom: None,
+                        top: None,
+                        missing_cmp: if f.missing != 0 { 1 } else { -1 },
+                    })
+                });
+                let custom = match f.ty {
+                    SortType::Custom(id) => custom_comparator(id, f, num_hits).ok().map(|cmp| {
+                        let empty = if cmp.values_are_bytes() {
+                            SortValue::Bytes(None)
+                        } else {
+                            SortValue::Long(0)
+                        };
+                        Box::new(CustomSlots {
+                            values: vec![empty.clone(); num_hits],
+                            bottom: empty,
+                            top: None,
+                            cmp,
+                        })
+                    }),
+                    _ => None,
+                };
                 Comparator {
+                    custom,
+                    vals,
                     field: f.clone(),
                     mul: if f.reverse { -1 } else { 1 },
                     values: vec![0; num_hits],
@@ -637,7 +891,7 @@ impl TopField {
                 }
             })
             .collect();
-        let needs_scores = sort.iter().any(|f| f.ty == SortType::Score);
+        let needs_scores = sort.iter().any(key_needs_scores);
         let threshold = threshold.max(num_hits as u64);
         let can_set_min_score =
             sort[0].ty == SortType::Score && !sort[0].reverse && threshold != u64::MAX;
@@ -674,6 +928,16 @@ impl TopField {
                     if let Some(st) = c.strs.as_mut() {
                         st.top = a.terms.get(i).cloned().flatten();
                     }
+                    if let Some(v) = c.vals.as_mut() {
+                        v.top = a.terms.get(i).cloned().flatten();
+                    }
+                    if let Some(cs) = c.custom.as_mut() {
+                        cs.top = Some(sort_value_of(
+                            cs.cmp.values_are_bytes(),
+                            v,
+                            a.terms.get(i).and_then(Option::as_ref),
+                        ));
+                    }
                 }
             }
         }
@@ -705,16 +969,25 @@ impl TopField {
     /// `populateResults`/`newTopDocs`.
     fn top_docs(mut self) -> TopFieldDocs {
         let mut hits = Vec::with_capacity(self.queue.heap.len());
-        let any_terms = self.comps.iter().any(|c| c.strs.is_some());
+        let any_terms = self.comps.iter().any(|c| {
+            c.strs.is_some()
+                || c.vals.is_some()
+                || c.custom
+                    .as_ref()
+                    .is_some_and(|cs| cs.cmp.values_are_bytes())
+        });
         while let Some(e) = self.queue.pop(&self.comps) {
             let values = self
                 .comps
                 .iter()
                 .map(|c| {
                     let v = c.values[e.slot];
+                    if let Some(cs) = &c.custom {
+                        return sort_value_parts(&cs.values[e.slot]).0;
+                    }
                     match c.field.ty {
                         SortType::Score => i64::from(sortable_int_to_float(-v).to_bits()),
-                        SortType::String => 0,
+                        SortType::String | SortType::StringVal => 0,
                         _ => v,
                     }
                 })
@@ -722,7 +995,12 @@ impl TopField {
             let terms = if any_terms {
                 self.comps
                     .iter()
-                    .map(|c| c.strs.as_ref().and_then(|st| st.values[e.slot].clone()))
+                    .map(|c| match (&c.strs, &c.vals, &c.custom) {
+                        (Some(st), _, _) => st.values[e.slot].clone(),
+                        (_, Some(v), _) => v.values[e.slot].clone(),
+                        (_, _, Some(cs)) => sort_value_parts(&cs.values[e.slot]).1,
+                        _ => None,
+                    })
                     .collect()
             } else {
                 Vec::new()
@@ -1695,6 +1973,51 @@ enum LeafKey<'a> {
     Doc,
     Numeric(Box<LeafNumeric<'a>>),
     Str(Box<LeafStr<'a>>),
+    /// A `STRING_VAL` key's `BINARY` column (`None`: `DocValues.emptyBinary`).
+    Bytes(Option<lucene_codecs::doc_values::BinaryReader<'a>>),
+    /// A `CUSTOM` key's leaf comparator.
+    Custom(Box<dyn LeafFieldComparator + 'a>),
+}
+
+/// `TermValComparator.getValueForDoc`.
+fn binary_value(
+    column: &mut Option<lucene_codecs::doc_values::BinaryReader<'_>>,
+    doc: i32,
+) -> Result<Option<Vec<u8>>> {
+    Ok(match column {
+        Some(r) => r.value(doc)?.map(<[u8]>::to_vec),
+        None => None,
+    })
+}
+
+/// `DocValues.getBinary(reader, field)`: the field's `BINARY` column, `None`
+/// for a segment without one; another doc-values type is refused.
+fn open_binary<'a>(
+    reader: &'a SegmentReader,
+    f: &SortField,
+) -> Result<Option<lucene_codecs::doc_values::BinaryReader<'a>>> {
+    let Some(info) = reader
+        .field_infos()
+        .fields
+        .iter()
+        .find(|i| i.name == f.field)
+    else {
+        return Ok(None);
+    };
+    let Some((meta, data)) = reader.doc_values_for_field(info.number) else {
+        return Ok(None);
+    };
+    if let Some(e) = meta.binary_entry(info.number) {
+        return Ok(Some(lucene_codecs::doc_values::BinaryReader::new(data, e)));
+    }
+    if meta.numeric_entry(info.number).is_some()
+        || meta.sorted_numeric_entry(info.number).is_some()
+        || meta.sorted_entry(info.number).is_some()
+        || meta.sorted_set_entry(info.number).is_some()
+    {
+        return Err(SortError::BinaryType(f.field.clone()).into());
+    }
+    Ok(None)
 }
 
 /// A keyword column as `SortedDocValues`: a `SORTED` column, or a
@@ -1822,12 +2145,9 @@ impl OrdColumn<'_> {
             OrdColumn::Single(r) => r.value(doc).map_err(crate::Error::from)?,
             OrdColumn::Multi(r, buf, selector) => {
                 r.values(doc, buf).map_err(crate::Error::from)?;
-                // `SortedSetSelector`: a keyword key sorts by its least or
-                // greatest ordinal only (the sort blob sends no other).
-                match selector {
-                    Selector::Max => buf.last().copied(),
-                    _ => buf.first().copied(),
-                }
+                // `SortedSetSelector.wrap`: the least, greatest or a middle
+                // ordinal.
+                selector.pick_ord(buf)
             }
         };
         Ok(match v {
@@ -2337,6 +2657,17 @@ fn open_leaf<'a>(
             SortType::Score => LeafKey::Score,
             SortType::Doc => LeafKey::Doc,
             SortType::String => LeafKey::Str(Box::new(open_str(reader, seg, c)?)),
+            SortType::StringVal => LeafKey::Bytes(open_binary(reader, f)?),
+            SortType::Custom(id) => {
+                let cs = c
+                    .custom
+                    .as_ref()
+                    .ok_or(SortError::UnknownComparatorSource(id.0))?;
+                LeafKey::Custom(cs.cmp.leaf(LeafCtx {
+                    reader,
+                    doc_base: seg.doc_base,
+                })?)
+            }
             _ => {
                 let info = reader
                     .field_infos()
@@ -2537,9 +2868,31 @@ impl<'a> Leaf<'a> {
             }
             LeafKey::Doc => i64::from(self.doc_base + doc),
             LeafKey::Numeric(n) => n.value(doc)?,
-            // A keyword key compares by ordinal in `compare_*`, never here.
-            LeafKey::Str(_) => 0,
+            // A keyword key compares by ordinal in `compare_*`, never here;
+            // a bytes key by its bytes.
+            LeafKey::Str(_) | LeafKey::Bytes(_) | LeafKey::Custom(_) => 0,
         })
+    }
+
+    /// The score of `doc` for a custom key (read once per document, as for
+    /// a score key).
+    fn score_of(&mut self, doc: i32, scorer: &mut Sc<'_>) -> Result<f32> {
+        if let Some(s) = scorer.as_deref_mut() {
+            if self.score_doc != doc {
+                self.score = s.score()?;
+                self.score_doc = doc;
+            }
+        }
+        Ok(self.score)
+    }
+
+    /// Key `i`'s custom value for `doc`.
+    fn custom_value(&mut self, i: usize, doc: i32, scorer: &mut Sc<'_>) -> Result<SortValue> {
+        let score = self.score_of(doc, scorer)?;
+        match &mut self.keys[i] {
+            LeafKey::Custom(k) => k.value(doc, score),
+            _ => Ok(SortValue::Long(0)),
+        }
     }
 
     #[inline]
@@ -2558,6 +2911,16 @@ impl<'a> Leaf<'a> {
         for (i, c) in tf.comps.iter().enumerate().skip(first) {
             let r = match &mut self.keys[i] {
                 LeafKey::Str(k) => c.mul * k.compare_bottom(doc)?,
+                LeafKey::Bytes(col) => {
+                    let v = binary_value(col, doc)?;
+                    let vals = c.vals.as_ref().ok_or(SortError::NoKeys)?;
+                    c.mul * vals.compare_values(vals.bottom.as_deref(), v.as_deref())
+                }
+                LeafKey::Custom(_) => {
+                    let v = self.custom_value(i, doc, scorer)?;
+                    let cs = c.custom.as_ref().ok_or(SortError::NoKeys)?;
+                    c.mul * cs.cmp.compare_values(&cs.bottom, &v) as i32
+                }
                 _ => c.mul * cmp(c.bottom, self.value(i, doc, scorer)?),
             };
             if r != 0 {
@@ -2571,6 +2934,19 @@ impl<'a> Leaf<'a> {
         for (i, c) in tf.comps.iter().enumerate() {
             let r = match &mut self.keys[i] {
                 LeafKey::Str(k) => c.mul * k.compare_top(doc)?,
+                LeafKey::Bytes(col) => {
+                    let v = binary_value(col, doc)?;
+                    let vals = c.vals.as_ref().ok_or(SortError::NoKeys)?;
+                    c.mul * vals.compare_values(vals.top.as_deref(), v.as_deref())
+                }
+                LeafKey::Custom(_) => {
+                    let v = self.custom_value(i, doc, scorer)?;
+                    let cs = c.custom.as_ref().ok_or(SortError::NoKeys)?;
+                    match &cs.top {
+                        Some(top) => c.mul * cs.cmp.compare_values(top, &v) as i32,
+                        None => 0,
+                    }
+                }
                 _ => c.mul * cmp(c.top, self.value(i, doc, scorer)?),
             };
             if r != 0 {
@@ -2592,6 +2968,17 @@ impl<'a> Leaf<'a> {
                 k.copy(st, slot, doc)?;
                 continue;
             }
+            if let (LeafKey::Bytes(col), Some(v)) = (&mut self.keys[i], tf.comps[i].vals.as_mut()) {
+                v.values[slot] = binary_value(col, doc)?;
+                continue;
+            }
+            if matches!(self.keys[i], LeafKey::Custom(_)) {
+                let v = self.custom_value(i, doc, scorer)?;
+                if let Some(cs) = tf.comps[i].custom.as_mut() {
+                    cs.values[slot] = v;
+                }
+                continue;
+            }
             let v = self.value(i, doc, scorer)?;
             tf.comps[i].values[slot] = v;
             if let LeafKey::Numeric(n) = &mut self.keys[i] {
@@ -2607,6 +2994,14 @@ impl<'a> Leaf<'a> {
         for i in 0..tf.comps.len() {
             let c = &mut tf.comps[i];
             c.bottom = c.values[slot];
+            if let Some(v) = c.vals.as_mut() {
+                v.bottom = v.values[slot].clone();
+                continue;
+            }
+            if let Some(cs) = c.custom.as_mut() {
+                cs.bottom = cs.values[slot].clone();
+                continue;
+            }
             if let (LeafKey::Str(k), Some(st)) = (&mut self.keys[i], c.strs.as_mut()) {
                 k.set_bottom(st, slot)?;
                 k.update_competitive(c)?;
@@ -3277,6 +3672,13 @@ fn merge_top_docs(sort: &[SortField], top_n: usize, parts: Vec<TopFieldDocs>) ->
 /// Two hits in the sort's order (`FieldComparator.compareValues` times
 /// `reverseMul`, key by key), then by document.
 fn compare_hits(sort: &[SortField], a: &FieldDoc, b: &FieldDoc) -> std::cmp::Ordering {
+    compare_keys(sort, a, b).then(a.doc.cmp(&b.doc))
+}
+
+/// Two hits by the sort's keys alone: `FieldComparator.compareValues` times
+/// `reverseMul`, key by key (`TopDocs.MergeSortQueue.lessThan` before its
+/// tie-breaker).
+pub(crate) fn compare_keys(sort: &[SortField], a: &FieldDoc, b: &FieldDoc) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     for (k, key) in sort.iter().enumerate() {
         let (x, y) = (
@@ -3288,7 +3690,16 @@ fn compare_hits(sort: &[SortField], a: &FieldDoc, b: &FieldDoc) -> std::cmp::Ord
             SortType::Score => {
                 score_value(f32::from_bits(x as u32)).cmp(&score_value(f32::from_bits(y as u32)))
             }
-            SortType::String => {
+            SortType::Custom(id) => {
+                let Ok(c) = custom_comparator(id, key, 1) else {
+                    return Ordering::Equal;
+                };
+                let bytes = c.values_are_bytes();
+                let va = sort_value_of(bytes, x, a.terms.get(k).and_then(Option::as_ref));
+                let vb = sort_value_of(bytes, y, b.terms.get(k).and_then(Option::as_ref));
+                c.compare_values(&va, &vb)
+            }
+            SortType::String | SortType::StringVal => {
                 let missing_cmp = if key.missing != 0 {
                     Ordering::Greater
                 } else {
@@ -3311,7 +3722,7 @@ fn compare_hits(sort: &[SortField], a: &FieldDoc, b: &FieldDoc) -> std::cmp::Ord
             return ord;
         }
     }
-    a.doc.cmp(&b.doc)
+    Ordering::Equal
 }
 
 /// The statistics a scored sort needs, index-wide.
@@ -3321,7 +3732,7 @@ fn global_stats(
     sort: &[SortField],
     track: bool,
 ) -> Result<Option<crate::GlobalStats>> {
-    if track || sort.iter().any(|f| f.ty == SortType::Score) {
+    if track || sort.iter().any(key_needs_scores) {
         Ok(Some(crate::multi_segment::global_boolean_stats(
             segments, query,
         )?))
@@ -4477,6 +4888,8 @@ mod tests {
             hits_threshold_reached: false,
             queue_full: false,
             strs: None,
+            vals: None,
+            custom: None,
         }
     }
 

@@ -1,0 +1,404 @@
+//! `IndexSearcher` as an object: the segments of one reader, their norms, a
+//! similarity and a slicing, with `search`/`count`/`explain` and the
+//! collector-driven entry points (`search(Query, Collector)`,
+//! `search(Query, CollectorManager)`).
+//!
+//! Every method is a thin front over the free functions this crate already
+//! had ([`crate::multi_segment`], [`crate::explain`]); what the object adds is
+//! Lucene's shape -- the state `IndexSearcher` carries between calls, which
+//! the rescorers ([`crate::rescorer`]), values sources
+//! ([`crate::values_source`]) and reference managers
+//! ([`crate::reference_manager`]) are written against.
+//!
+//! A collector is driven the way `IndexSearcher.search(List<LeafReaderContext>,
+//! Weight, Collector)` drives one: the leaves in doc-base order, each document
+//! shifted to its global id ([`LeafCollector`]), statistics reader-wide
+//! (`IndexSearcher.collectionStatistics`/`termStatistics`).
+
+use std::collections::HashMap;
+
+use crate::collector::{LeafCollector, ScoreMode, ScoringCollector, TotalHits};
+use crate::collectors::CollectorManager;
+use crate::explain::{explain_clause, Explanation};
+use crate::field_norms::FieldNorms;
+use crate::multi_segment::{
+    global_boolean_stats, rewrite_points_ranges,
+    search_boolean_query_multi_segment_maxscore_counting,
+    search_boolean_query_multi_segment_with_similarity, OpenSegment,
+};
+use crate::query::{BooleanQuery, Clause};
+use crate::similarities::Similarity;
+use crate::top_docs::{ShardScoreDoc, TopDocs};
+use crate::{Error, Result};
+
+/// `IndexSearcher.TOTAL_HITS_THRESHOLD`: `search(query, n)` counts hits
+/// exactly up to this many.
+pub const TOTAL_HITS_THRESHOLD: u64 = 1000;
+
+/// Per-segment norms, as the multi-segment functions take them.
+pub type SegmentNorms<'s, 'a> = Option<&'s HashMap<String, FieldNorms<'a>>>;
+
+/// `IndexSearcher` over already-opened segments.
+pub struct IndexSearcher<'s, 'a> {
+    segments: &'s [OpenSegment<'a>],
+    norms: &'s [SegmentNorms<'s, 'a>],
+    similarity: Option<&'s dyn Similarity>,
+    slices: Vec<Vec<usize>>,
+}
+
+impl<'s, 'a> IndexSearcher<'s, 'a> {
+    /// `new IndexSearcher(reader)`: every segment in one slice (no executor),
+    /// the default BM25 similarity. `norms` has one entry per segment.
+    ///
+    /// # Errors
+    /// [`Error::IllegalArgument`] when `norms` does not have one entry per
+    /// segment.
+    pub fn new(segments: &'s [OpenSegment<'a>], norms: &'s [SegmentNorms<'s, 'a>]) -> Result<Self> {
+        if segments.len() != norms.len() {
+            return Err(Error::IllegalArgument(format!(
+                "{} segments but {} norms entries",
+                segments.len(),
+                norms.len()
+            )));
+        }
+        Ok(Self {
+            segments,
+            norms,
+            similarity: None,
+            slices: vec![(0..segments.len()).collect()],
+        })
+    }
+
+    /// `setSimilarity(similarity)`.
+    pub fn set_similarity(&mut self, similarity: &'s dyn Similarity) {
+        self.similarity = Some(similarity);
+    }
+
+    /// `getSimilarity()`: `None` is the default BM25.
+    pub fn similarity(&self) -> Option<&'s dyn Similarity> {
+        self.similarity
+    }
+
+    /// The slices a [`CollectorManager`] search runs (`getSlices()`): each a
+    /// list of segment indices. Java builds them from its executor; here the
+    /// caller does.
+    ///
+    /// # Errors
+    /// [`Error::SliceOutOfRange`] for a segment index the searcher lacks.
+    pub fn set_slices(&mut self, slices: Vec<Vec<usize>>) -> Result<()> {
+        for &s in slices.iter().flatten() {
+            if s >= self.segments.len() {
+                return Err(Error::SliceOutOfRange {
+                    segment: s,
+                    segments: self.segments.len(),
+                });
+            }
+        }
+        self.slices = slices;
+        Ok(())
+    }
+
+    /// `getSlices()`.
+    pub fn slices(&self) -> &[Vec<usize>] {
+        &self.slices
+    }
+
+    /// `getIndexReader().leaves()`.
+    pub fn segments(&self) -> &'s [OpenSegment<'a>] {
+        self.segments
+    }
+
+    /// The norms of segment `i`.
+    pub fn norms(&self, i: usize) -> SegmentNorms<'s, 'a> {
+        self.norms.get(i).copied().flatten()
+    }
+
+    /// `getIndexReader().maxDoc()`: the last segment's doc base plus its
+    /// `maxDoc`, `0` when a segment's `maxDoc` is unknown.
+    pub fn max_doc(&self) -> i32 {
+        self.segments
+            .iter()
+            .map(|s| s.doc_base.saturating_add(s.max_doc.unwrap_or(0)))
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// `ReaderUtil.subIndex(doc, leaves)`: the segment holding global `doc`.
+    pub fn segment_of(&self, doc: i32) -> Option<usize> {
+        let mut best: Option<usize> = None;
+        for (i, s) in self.segments.iter().enumerate() {
+            if s.doc_base <= doc && best.is_none_or(|b| self.segments[b].doc_base <= s.doc_base) {
+                best = Some(i);
+            }
+        }
+        best.filter(|&i| {
+            let s = &self.segments[i];
+            s.max_doc.is_none_or(|m| doc - s.doc_base < m)
+        })
+    }
+
+    /// `search(query, n)`: the top `n` by score, counted exactly up to
+    /// [`TOTAL_HITS_THRESHOLD`] (`TopScoreDocCollectorManager(n, 1000)`).
+    /// Under a similarity other than the default the count is not tracked
+    /// and reported as the hits returned, a lower bound.
+    pub fn search(&self, query: &BooleanQuery, n: usize) -> Result<TopDocs> {
+        let (hits, total_hits) = match self.similarity {
+            Some(sim) if !sim.is_default_bm25() => {
+                let hits = search_boolean_query_multi_segment_with_similarity(
+                    self.segments,
+                    query,
+                    self.norms,
+                    n,
+                    sim,
+                )?;
+                let total = TotalHits {
+                    value: hits.len() as u64,
+                    relation: crate::collector::TotalHitsRelation::GreaterThanOrEqualTo,
+                };
+                (hits, total)
+            }
+            _ => search_boolean_query_multi_segment_maxscore_counting(
+                self.segments,
+                query,
+                self.norms,
+                n,
+                TOTAL_HITS_THRESHOLD,
+            )?,
+        };
+        Ok(TopDocs {
+            total_hits,
+            score_docs: hits
+                .into_iter()
+                .map(|h| ShardScoreDoc::new(h.doc_id, h.score))
+                .collect(),
+        })
+    }
+
+    /// `search(query, collector)`: every segment, in doc-base order, into
+    /// one collector, which sees global document ids.
+    pub fn search_collector<C: ScoringCollector + ?Sized>(
+        &self,
+        query: &BooleanQuery,
+        collector: &mut C,
+    ) -> Result<()> {
+        let order: Vec<usize> = (0..self.segments.len()).collect();
+        self.search_leaves(query, &order, collector)
+    }
+
+    /// The query rewritten against the reader and its reader-wide statistics.
+    fn prepare(&self, query: &BooleanQuery) -> Result<(Option<BooleanQuery>, crate::GlobalStats)> {
+        let rewritten = rewrite_points_ranges(query, self.segments);
+        let global = global_boolean_stats(self.segments, rewritten.as_ref().unwrap_or(query))?;
+        Ok((rewritten, global))
+    }
+
+    /// `search(leaves, weight, collector)` over the segments `order` names.
+    fn search_leaves<C: ScoringCollector + ?Sized>(
+        &self,
+        query: &BooleanQuery,
+        order: &[usize],
+        collector: &mut C,
+    ) -> Result<()> {
+        let (rewritten, global) = self.prepare(query)?;
+        self.search_prepared(
+            rewritten.as_ref().unwrap_or(query),
+            &global,
+            order,
+            collector,
+        )
+    }
+
+    fn search_prepared<C: ScoringCollector + ?Sized>(
+        &self,
+        query: &BooleanQuery,
+        global: &crate::GlobalStats,
+        order: &[usize],
+        collector: &mut C,
+    ) -> Result<()> {
+        let sim = self.similarity.filter(|s| !s.is_default_bm25());
+        if sim.is_some() {
+            crate::check_similarity_supported(query)?;
+        }
+        let mut order = order.to_vec();
+        order.sort_by_key(|&i| self.segments[i].doc_base);
+        for i in order {
+            let seg = &self.segments[i];
+            let norms = self.norms(i);
+            let mut leaf = LeafCollector::new(&mut *collector, seg.doc_base);
+            match sim {
+                Some(sim) => crate::search_boolean_query_scored_segment_with_similarity(
+                    seg, query, norms, global, sim, &mut leaf,
+                )?,
+                None => crate::search_boolean_query_scored_segment(
+                    seg,
+                    query,
+                    norms,
+                    Some(global),
+                    &mut leaf,
+                )?,
+            }
+        }
+        Ok(())
+    }
+
+    /// `search(query, collectorManager)`: a collector per slice, the slices
+    /// concurrently when there are several, then `reduce` over the
+    /// collectors in slice order.
+    pub fn search_manager<M: CollectorManager>(
+        &self,
+        query: &BooleanQuery,
+        manager: &M,
+    ) -> Result<M::Output> {
+        let (rewritten, global) = self.prepare(query)?;
+        let query = rewritten.as_ref().unwrap_or(query);
+        let parallel = self.slices.len() > 1;
+        let run = |slice: &[usize]| -> Result<M::Collector> {
+            let mut c = manager.new_collector()?;
+            self.search_prepared(query, &global, slice, &mut c)?;
+            Ok(c)
+        };
+        let collectors = if self.slices.is_empty() {
+            vec![manager.new_collector()?]
+        } else {
+            crate::slices::run_slices_if(parallel, &self.slices, run)
+                .into_iter()
+                .collect::<Result<Vec<_>>>()?
+        };
+        manager.reduce(collectors)
+    }
+
+    /// `count(query)`: the number of live matches.
+    pub fn count(&self, query: &BooleanQuery) -> Result<u64> {
+        struct Count(u64);
+        impl ScoringCollector for Count {
+            fn collect(&mut self, _doc: i32, _score: f32) {
+                self.0 += 1;
+            }
+            fn score_mode(&self) -> ScoreMode {
+                ScoreMode::CompleteNoScores
+            }
+            fn add_hits(&mut self, n: u64) -> bool {
+                self.0 += n;
+                true
+            }
+        }
+        let mut c = Count(0);
+        self.search_collector(query, &mut c)?;
+        Ok(c.0)
+    }
+
+    /// `explain(query, doc)` for a global document id, over a one-segment
+    /// searcher: [`explain_clause`] scores with the segment's own statistics,
+    /// which are the reader's only when there is one segment.
+    ///
+    /// # Errors
+    /// [`Error::IllegalArgument`] for a searcher of several segments (an
+    /// explanation from reader-wide statistics is not ported) or a document
+    /// outside the segment, and whatever [`explain_clause`] reports.
+    pub fn explain(&self, query: &BooleanQuery, doc: i32) -> Result<Explanation> {
+        if self.segments.len() != 1 {
+            return Err(Error::IllegalArgument(
+                "explain over several segments needs reader-wide statistics, which \
+                 explain_clause does not take"
+                    .to_string(),
+            ));
+        }
+        let i = self
+            .segment_of(doc)
+            .ok_or_else(|| Error::IllegalArgument(format!("doc {doc} is in no segment")))?;
+        let seg = &self.segments[i];
+        explain_clause(
+            seg.fields,
+            seg.doc_in,
+            seg.pos_in,
+            seg.pay_in,
+            seg.live_docs,
+            &Clause::Boolean(Box::new(query.clone())),
+            doc - seg.doc_base,
+            self.norms(i),
+        )
+    }
+
+    /// `weight.scorer(leaf)` run to the end: every document of segment
+    /// `leaf` that `query` matches, leaf-local and ascending, with its score
+    /// (`ScoreMode.COMPLETE`, reader-wide statistics). With
+    /// `include_deleted`, deleted documents are scored too, as a `Scorer`
+    /// (which never reads live docs) reports them.
+    pub fn leaf_scores(
+        &self,
+        query: &BooleanQuery,
+        leaf: usize,
+        include_deleted: bool,
+    ) -> Result<Vec<(i32, f32)>> {
+        struct All(Vec<(i32, f32)>);
+        impl ScoringCollector for All {
+            fn collect(&mut self, doc: i32, score: f32) {
+                self.0.push((doc, score));
+            }
+        }
+        let seg = self.segments.get(leaf).ok_or(Error::SliceOutOfRange {
+            segment: leaf,
+            segments: self.segments.len(),
+        })?;
+        let (rewritten, global) = self.prepare(query)?;
+        let query = rewritten.as_ref().unwrap_or(query);
+        let sim = self.similarity.filter(|s| !s.is_default_bm25());
+        if sim.is_some() {
+            crate::check_similarity_supported(query)?;
+        }
+        let one = OpenSegment {
+            live_docs: if include_deleted { None } else { seg.live_docs },
+            ..*seg
+        };
+        let mut all = All(Vec::new());
+        match sim {
+            Some(sim) => crate::search_boolean_query_scored_segment_with_similarity(
+                &one,
+                query,
+                self.norms(leaf),
+                &global,
+                sim,
+                &mut all,
+            )?,
+            None => crate::search_boolean_query_scored_segment(
+                &one,
+                query,
+                self.norms(leaf),
+                Some(&global),
+                &mut all,
+            )?,
+        }
+        all.0.sort_by_key(|&(d, _)| d);
+        Ok(all.0)
+    }
+
+    /// The score `query` gives each of `docs` (global ids, any order) that it
+    /// matches: what a `Weight`'s scorer, advanced to each, would report --
+    /// the per-document scores `QueryRescorer` and a query-backed values
+    /// source read. A document the query does not match is absent.
+    pub fn scores_of(&self, query: &BooleanQuery, docs: &[i32]) -> Result<HashMap<i32, f32>> {
+        struct Pick<'w> {
+            wanted: &'w std::collections::HashSet<i32>,
+            out: HashMap<i32, f32>,
+        }
+        impl ScoringCollector for Pick<'_> {
+            fn collect(&mut self, doc: i32, score: f32) {
+                if self.wanted.contains(&doc) {
+                    self.out.insert(doc, score);
+                }
+            }
+        }
+        let wanted: std::collections::HashSet<i32> = docs.iter().copied().collect();
+        let mut segs: Vec<usize> = docs.iter().filter_map(|&d| self.segment_of(d)).collect();
+        segs.sort_unstable();
+        segs.dedup();
+        let mut pick = Pick {
+            wanted: &wanted,
+            out: HashMap::new(),
+        };
+        if !segs.is_empty() {
+            self.search_leaves(query, &segs, &mut pick)?;
+        }
+        Ok(pick.out)
+    }
+}
