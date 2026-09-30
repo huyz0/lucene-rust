@@ -178,17 +178,24 @@ What someone needs to run this who did not build it:
       where the field arrived by an update.
 - [ ] [M1](m1-performance-gate.md)'s performance bar is still met on the final
       build, measured by the nightly job rather than by hand.
-- [ ] The nightly performance job fails the build when the ratio drops below
-      the M1 bar (verified with a deliberate negative control).
-- [ ] A **rollback from the Rust engine to the Java engine** is executed
+- [x] The nightly performance job fails the build when a query is slower
+      than Lucene or regresses more than 10% against its recorded baseline,
+      verified with a deliberate negative control
+      ([`perf-gate.md`](../benchmarks/perf-gate.md)). It gates on those rather
+      than on M1's 1.5x bar on purpose: a gate on an unmet bar would be red
+      every night and ignored; the 1.5x bar is the criterion above.
+- [x] A **rollback from the Rust engine to the Java engine** is executed
       successfully on a test cluster with real data, and the procedure is
-      documented with timings.
-- [ ] `docs/parity.md` is complete for the supported matrix, with every
-      remaining gap stated precisely.
-- [ ] An operator-facing feature matrix is published, in OpenSearch's
-      vocabulary.
-- [ ] `LICENSE` and `NOTICE` are correct; every dependency licence is audited
-      and recorded.
+      documented with timings (`scripts/verify-rollback.sh`, three nodes;
+      [`operations.md`](../operations.md), "Timings").
+- [x] `docs/parity.md` is complete for the supported matrix, with every
+      remaining gap stated precisely (the T6.3 sweep's "Supported matrix"
+      section; per class, `docs/inventory/lucene-core.tsv` since M7 T7.1).
+- [x] An operator-facing feature matrix is published, in OpenSearch's
+      vocabulary ([`feature-matrix.md`](../feature-matrix.md)).
+- [x] `LICENSE` and `NOTICE` are correct; every dependency licence is audited
+      and recorded ([`licences.md`](../licences.md), `scripts/check-licences.py`
+      in the gate).
 
 ---
 
