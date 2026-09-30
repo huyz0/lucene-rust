@@ -2554,22 +2554,11 @@ fn compare_heads(
 }
 
 /// The comparators `sort_fields` induces, in priority order -- the merge's
-/// twin of `segment_writer`'s own, and it panics for the same reason: a
-/// `BinarySortField` has no single-`i64` key, `IndexWriter::set_index_sort`
-/// refuses one, and merging by "always equal" would produce a segment whose
-/// `.si` claims an order its bytes do not have.
+/// twin of `segment_writer`'s own.
 fn merge_comparators(sort_fields: &[MergeSortKeySpec<'_>]) -> Vec<SortKeyComparator> {
     sort_fields
         .iter()
-        .map(|spec| {
-            SortKeyComparator::new(spec.sort).unwrap_or_else(|| {
-                panic!(
-                    "sort field {:?} has no single-i64 comparator; \
-                     IndexWriter::set_index_sort must refuse it before a merge sees it",
-                    spec.sort.field
-                )
-            })
-        })
+        .map(|spec| SortKeyComparator::new(spec.sort))
         .collect()
 }
 
@@ -8849,14 +8838,10 @@ mod tests {
         assert_eq!(sort[0], IndexSortField::long("num", false, Some(i64::MAX)));
     }
 
-    /// `merge_comparators`' guard, the merge twin of `segment_writer`'s: a
-    /// `BinarySortField` has no single-`i64` key, so merging by "always
-    /// equal" would concatenate the sources while the merged `.si` claimed a
-    /// sort. `IndexWriter::set_index_sort` refuses such a sort, so this is
-    /// unreachable in practice and loud if that ever stops being true.
+    /// A byte-keyed tier merges by its (global) rank key, and a tie on
+    /// every tier goes to the earlier source -- `MultiSorter`'s tie-break.
     #[test]
-    #[should_panic(expected = "has no single-i64 comparator")]
-    fn a_merge_sort_with_no_comparator_panics_rather_than_concatenating() {
+    fn a_binary_sort_tier_merges_by_rank_ties_to_the_earlier_source() {
         let sort = IndexSortField {
             field: "bytes".to_string(),
             reverse: false,
@@ -8864,14 +8849,18 @@ mod tests {
                 crate::segment_info::StringMissingValue::Last,
             ),
         };
-        let keys: Vec<Option<i64>> = vec![Some(1), Some(0)];
-        let per_source: Vec<&[Option<i64>]> = vec![&keys];
-        sorted_doc_order(
-            &[MergeSortKeySpec {
-                sort: &sort,
-                per_source_keys: &per_source,
-            }],
-            &[vec![0, 1]],
+        let a: Vec<Option<i64>> = vec![Some(0), Some(2), None];
+        let b: Vec<Option<i64>> = vec![Some(0), Some(1)];
+        let per_source: Vec<&[Option<i64>]> = vec![&a, &b];
+        assert_eq!(
+            sorted_doc_order(
+                &[MergeSortKeySpec {
+                    sort: &sort,
+                    per_source_keys: &per_source,
+                }],
+                &[vec![0, 1, 2], vec![0, 1]],
+            ),
+            vec![(0, 0), (1, 0), (1, 1), (0, 1), (0, 2)]
         );
     }
 

@@ -1452,10 +1452,27 @@ fn sorting_edges() {
         reverse: false,
         kind: IndexSortKind::Binary(StringMissingValue::None),
     }];
-    assert!(matches!(
-        sort_doc_map(&*s0, &binary),
-        Err(Error::Unsupported(_))
-    ));
+    // Binary: bytes order, missing first, ties by doc id.
+    let mut expected: Vec<(Option<Vec<u8>>, i32)> = Vec::new();
+    let mut bin = s0.binary_doc_values("bin").unwrap().unwrap();
+    for d in 0..s0.max_doc() {
+        let v = if bin.advance_exact(d).unwrap() {
+            Some(bin.binary_value().to_vec())
+        } else {
+            None
+        };
+        expected.push((v, d));
+    }
+    drop(bin);
+    expected.sort();
+    let got = sort_doc_map(&*s0, &binary).unwrap();
+    let new_to_old: Vec<i32> = (0..s0.max_doc())
+        .map(|d| got.as_ref().map_or(d, |m| m.new_to_old(d)))
+        .collect();
+    assert_eq!(
+        new_to_old,
+        expected.iter().map(|&(_, d)| d).collect::<Vec<_>>()
+    );
     // Absent sort fields sort nothing.
     let absent = vec![IndexSortField::long("nope", false, None)];
     assert!(sort_doc_map(&*s0, &absent).unwrap().is_none());

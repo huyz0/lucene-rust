@@ -167,9 +167,13 @@ use lucene_store::data_output::DataOutput;
 use lucene_store::directory::Directory;
 use lucene_util::fixed_bit_set::FixedBitSet;
 
+mod add_indexes;
 mod explicit;
+mod lifecycle;
 mod pluggable_merge;
+mod try_modify;
 pub use explicit::{ExplicitDocument, ExplicitFields, InvertedField, InvertedTerm};
+pub use lifecycle::MergedSegmentWarmer;
 
 pub use crate::merge_policy::MergePolicyConfig;
 pub use crate::update_document::SegmentDeleteSource as DeleteSource;
@@ -538,23 +542,15 @@ pub enum Error {
     UnknownIndexSortField(String),
     /// `IndexingChain.validateIndexSortDVType`: Java refuses a sort field
     /// whose `DocValuesType` is not the one the `SortField.Type` reads
-    /// (`"SortField <..> expected field [x] to be NUMERIC but it is [BINARY]"`).
-    /// This port's `.si` encoder emits a single-valued `LONG` sort
-    /// (`segment_info::write_sort_field`), which real Lucene resolves through
-    /// `DocValues.getNumeric`, so the field must be NUMERIC.
+    /// (`"SortField <..> expected field [x] to be NUMERIC but it is [BINARY]"`):
+    /// NUMERIC for a numeric `SortField`, SORTED_NUMERIC for a
+    /// `SortedNumericSortField`, SORTED for a `STRING` one, SORTED_SET for a
+    /// `SortedSetSortField` and BINARY for a `BinarySortField`.
     #[error(
-        "set_index_sort: sort field {0:?} is declared with doc_values_type {1:?}; an index sort \
-         field must be NUMERIC (this port's .si encodes a single-valued LONG sort, which real \
-         Lucene reads through DocValues.getNumeric)"
+        "set_index_sort: sort field {0:?} is declared with doc_values_type {1:?}, which is not \
+         the doc-values type its kind of sort reads"
     )]
     UnsupportedIndexSortField(String, DocValuesType),
-    #[error(
-        "set_index_sort: sort field {0:?} sorts by term ordinal or by raw bytes; this writer \
-         assigns ordinals after it permutes the buffer, so the key would not exist when the \
-         sort runs, and a BinarySortField has no single-i64 key at all. Such a sort can be \
-         read (segment_info parses every SortFieldProvider encoding) but not produced"
-    )]
-    UnsupportedIndexSortKind(String),
     /// A sort field with no doc values written for it makes every
     /// sort-order check downstream vacuous: real Lucene's
     /// `DocValues.getNumeric` returns an all-missing instance rather than
@@ -617,6 +613,19 @@ pub enum Error {
          writer's index sort ({sort})"
     )]
     DocValuesUpdateOnIndexSortField { field: String, sort: String },
+    /// `IndexWriter.addIndexes`' `IllegalArgumentException`: a field of an
+    /// incoming segment whose schema conflicts with this writer's.
+    #[error("add_indexes: {0}")]
+    AddIndexes(String),
+    /// `ConcurrentMergeScheduler.setMaxMergesAndThreads`'
+    /// `IllegalArgumentException`.
+    #[error("merge scheduler: {0}")]
+    InvalidMergeScheduler(String),
+    /// A merge run on a merge thread panicked; the scheduler caught it and
+    /// reports it as this merge's failure (Java: an uncaught `Throwable`
+    /// wrapped in `MergePolicy.MergeException`).
+    #[error("a merge thread panicked: {0}")]
+    MergeThreadPanicked(String),
     /// `add_doc_values_field` twice for the same field, the doc-values
     /// analogue of [`Error::DuplicatePostingsField`]/
     /// [`Error::DuplicateVectorField`].
@@ -641,6 +650,38 @@ impl DeleteNode {
     /// `TermArrayNode`, each term shared by every buffer it reaches.
     pub(crate) fn terms(terms: Vec<Term>) -> Self {
         DeleteNode::Terms(terms.into_iter().map(std::sync::Arc::new).collect())
+    }
+
+    /// The RAM this delete adds to a buffer it is recorded in -- each entry
+    /// with its `docIDUpto` -- what the flush policy weighs as
+    /// `getDeleteBytesUsed()`. A sum of live allocation sizes, as
+    /// [`document_ram_bytes`] is, where Java's `BufferedUpdates` counts its
+    /// byte-block pools and per-entry constants.
+    pub(crate) fn ram_bytes(&self) -> usize {
+        let limit = std::mem::size_of::<i32>();
+        let entries = match self {
+            DeleteNode::Terms(terms) => terms
+                .iter()
+                .map(|t| {
+                    // The shared allocation: the term and its two counts.
+                    let shared = t
+                        .ram_bytes()
+                        .saturating_add(std::mem::size_of::<[usize; 2]>());
+                    shared
+                        .saturating_add(std::mem::size_of::<std::sync::Arc<Term>>())
+                        .saturating_add(limit)
+                })
+                .fold(0usize, usize::saturating_add),
+            DeleteNode::Queries(queries) => queries
+                .iter()
+                .map(|q| q.ram_bytes().saturating_add(limit))
+                .fold(0usize, usize::saturating_add),
+            DeleteNode::DocValuesUpdates(updates) => updates
+                .iter()
+                .map(DocValuesUpdate::ram_bytes)
+                .fold(0usize, usize::saturating_add),
+        };
+        std::mem::size_of::<Self>().saturating_add(entries)
     }
 }
 
@@ -734,6 +775,13 @@ impl FlushDeletes<'_> {
 /// `FieldInfos.Builder` and `LiveIndexWriterConfig`).
 #[derive(Clone)]
 pub(crate) struct IndexingConfig {
+    /// `LiveIndexWriterConfig.getMergedSegmentWarmer()`; see
+    /// [`IndexWriter::set_merged_segment_warmer`].
+    merged_segment_warmer: Option<std::sync::Arc<dyn MergedSegmentWarmer>>,
+    /// `IndexWriter.readerPool`: segments opened for delete resolution, kept
+    /// for the next round (see [`crate::reader_pool`]). Shared, not copied,
+    /// when the configuration is.
+    reader_pool: std::sync::Arc<crate::reader_pool::ReaderPool>,
     fields: Vec<FieldInfo>,
     codec_name: String,
     lucene_version: LuceneVersion,
@@ -1217,6 +1265,27 @@ impl IndexingConfig {
             &format_for,
             segment_id,
         )?)
+    }
+
+    /// [`Self::run_merge`], with every output written through `limiter` when
+    /// a merge scheduler supplies one (`MergeScheduler.wrapForMerge`) instead
+    /// of the writer's own configured rate.
+    pub(crate) fn run_merge_limited(
+        &self,
+        dir: &dyn Directory,
+        plan: &MergePlan,
+        limiter: Option<std::sync::Arc<crate::merge_rate_limiter::MergeRateLimiter>>,
+    ) -> Result<MergeOutcome> {
+        let Some(limiter) = limiter else {
+            return self.run_merge(dir, plan);
+        };
+        let progress = std::sync::Arc::clone(limiter.merge_progress());
+        let merge_dir = crate::merge_rate_limiter::MergeDirectory::new(dir, limiter);
+        let outcome = self.run_merge_unthrottled(&merge_dir, plan)?;
+        if progress.is_aborted() {
+            return Err(Error::MergeAborted);
+        }
+        Ok(outcome)
     }
 
     /// [`Self::run_merge`] with no rate limit.
@@ -2168,11 +2237,37 @@ impl IndexingConfig {
         // NUMERIC column the merged segment will carry -- so the order the
         // merge imposes and the column `CheckIndex.testSort` re-derives it
         // from are one fact, exactly as at flush time.
+        //
+        // A byte-keyed tier (`STRING`, `SortedSetSortField`,
+        // `BinarySortField`) is read as each document's bytes and ranked
+        // across **all** sources at once -- `StringSorter`'s `OrdinalMap`
+        // global ordinals, which is what makes one source's "b" compare
+        // equal to another's.
         let per_tier_keys: Vec<Vec<Vec<Option<i64>>>> = match &merge_sort {
             None => Vec::new(),
             Some(sort) => sort
                 .iter()
                 .map(|tier| {
+                    let byte_keyed = !matches!(
+                        tier.kind,
+                        segment_info::IndexSortKind::Numeric(_)
+                            | segment_info::IndexSortKind::SortedNumeric { .. }
+                    );
+                    if byte_keyed {
+                        let terms = opened
+                            .iter()
+                            .zip(readers.iter())
+                            .map(|(o, reader)| {
+                                IndexWriter::read_sort_terms(
+                                    &o.doc_values,
+                                    &o.field_infos,
+                                    tier,
+                                    reader.max_doc(),
+                                )
+                            })
+                            .collect::<Result<Vec<_>>>()?;
+                        return Ok(crate::index_sorter::rank_terms(&terms));
+                    }
                     opened
                         .iter()
                         .zip(readers.iter())
@@ -2216,11 +2311,125 @@ impl IndexingConfig {
             &self.codec_name,
             self.lucene_version,
         )?;
+        // `mergeMiddle`: `mergedSegmentWarmer.warm(reader)` before
+        // `commitMerge`, outside the writer's lock.
+        if let Some(warmer) = &self.merged_segment_warmer {
+            warmer.warm(dir, &merged.info)?;
+        }
 
         Ok(MergeOutcome::Merged {
             source_live: opened.iter().map(|o| o.live_docs.clone()).collect(),
             merged: Box::new(merged),
         })
+    }
+
+    /// One sort tier's key for every buffered document, in buffer order --
+    /// what `IndexingChain.maybeSortSegment` gets from each field's
+    /// `DocValuesWriter.getDocComparator`.
+    ///
+    /// The numeric kinds read the document's value(s) directly; the three
+    /// byte-keyed kinds (`STRING`, `SortedSetSortField`, `BinarySortField`)
+    /// collect each document's bytes exactly as the column builder will
+    /// ([`IndexWriter::collect_binary_values`]/[`IndexWriter::collect_sorted_set_values`])
+    /// and rank them ([`crate::index_sorter::rank_terms`]) -- the ordinals
+    /// `SortedDocValuesWriter`'s sorted `BytesRefHash` hands Java's
+    /// comparator, so the key and the column are one fact.
+    fn buffer_sort_keys(
+        &self,
+        docs: &[Document],
+        sf: &segment_info::IndexSortField,
+    ) -> Result<Vec<Option<i64>>> {
+        let field_number = self
+            .fields
+            .iter()
+            .find(|f| f.name == sf.field)
+            .map(|f| f.number)
+            .expect("set_index_sort resolved every sort field against this fixed list");
+        let selector = match &sf.kind {
+            segment_info::IndexSortKind::SortedNumeric { selector, .. } => Some(*selector),
+            segment_info::IndexSortKind::Numeric(_) => None,
+            segment_info::IndexSortKind::String(_)
+            | segment_info::IndexSortKind::SortedSet { .. }
+            | segment_info::IndexSortKind::Binary(_) => {
+                return self.buffer_term_sort_keys(docs, sf, field_number);
+            }
+        };
+        Ok(docs
+            .iter()
+            .map(|doc| {
+                // A SORTED_NUMERIC column is "repeat the field on the
+                // document" here (see
+                // `build_sorted_numeric_doc_values_output`), and the
+                // values are stored **sorted**
+                // (`SortedNumericDocValuesWriter.finishCurrentDoc`),
+                // so the selector has to be applied to the sorted
+                // form -- `SortedNumericSelector.MIN`/`MAX` are the
+                // first and the last *stored* value, not the first
+                // and last the caller happened to write. Sorting
+                // here rather than reading the column keeps the sort
+                // key and the column one fact, which is what stops
+                // the two from drifting.
+                let mut values: Vec<i64> = doc
+                    .fields
+                    .iter()
+                    .filter(|f| f.field_number == field_number)
+                    .filter_map(|f| match &f.value {
+                        FieldValue::Int(v) => Some(*v as i64),
+                        FieldValue::Long(v) => Some(*v),
+                        // Not numeric: `build_doc_values_output` is
+                        // about to fail the whole flush with
+                        // `NonNumericDocValue` naming the document, a
+                        // better message than anything this could
+                        // raise. Treated as missing until then.
+                        _ => None,
+                    })
+                    .collect();
+                match selector {
+                    // Single-valued NUMERIC: the document's one value.
+                    None => values.into_iter().next(),
+                    Some(segment_info::SortedNumericSelector::Min) => {
+                        values.sort_unstable();
+                        values.into_iter().next()
+                    }
+                    Some(segment_info::SortedNumericSelector::Max) => {
+                        values.sort_unstable();
+                        values.into_iter().last()
+                    }
+                }
+            })
+            .collect())
+    }
+
+    /// [`Self::buffer_sort_keys`] for the byte-keyed kinds.
+    fn buffer_term_sort_keys(
+        &self,
+        docs: &[Document],
+        sf: &segment_info::IndexSortField,
+        field_number: i32,
+    ) -> Result<Vec<Option<i64>>> {
+        let config = self
+            .doc_values_fields
+            .iter()
+            .find(|c| c.field_number == field_number)
+            .ok_or_else(|| Error::IndexSortFieldWithoutDocValues(sf.field.clone()))?;
+        let mut terms: Vec<Option<Vec<u8>>> = vec![None; docs.len()];
+        if let segment_info::IndexSortKind::SortedSet { selector, .. } = &sf.kind {
+            for (doc, mut values) in IndexWriter::collect_sorted_set_values(docs, config)? {
+                // `SortedSetDocValuesWriter` stores a document's values
+                // deduplicated and ascending; the selector picks among those.
+                values.sort_unstable();
+                values.dedup();
+                terms[doc as usize] =
+                    crate::index_sorter::select_sorted_set(&values, *selector).cloned();
+            }
+        } else {
+            for (doc, value) in IndexWriter::collect_binary_values(docs, config)? {
+                terms[doc as usize] = Some(value);
+            }
+        }
+        Ok(crate::index_sorter::rank_terms(&[terms])
+            .pop()
+            .unwrap_or_default())
     }
 
     /// Puts one document buffer into index-sort order and returns the
@@ -2244,65 +2453,8 @@ impl IndexingConfig {
 
         let keys: Vec<Vec<Option<i64>>> = sort
             .iter()
-            .map(|sf| {
-                let field_number = self
-                    .fields
-                    .iter()
-                    .find(|f| f.name == sf.field)
-                    .map(|f| f.number)
-                    .expect("set_index_sort resolved every sort field against this fixed list");
-                let selector = match &sf.kind {
-                    segment_info::IndexSortKind::SortedNumeric { selector, .. } => Some(*selector),
-                    // Single-valued NUMERIC: the first (and only) value.
-                    // `set_index_sort` has already refused every kind that
-                    // is neither of these two.
-                    _ => None,
-                };
-                docs.iter()
-                    .map(|doc| {
-                        // A SORTED_NUMERIC column is "repeat the field on the
-                        // document" here (see
-                        // `build_sorted_numeric_doc_values_output`), and the
-                        // values are stored **sorted**
-                        // (`SortedNumericDocValuesWriter.finishCurrentDoc`),
-                        // so the selector has to be applied to the sorted
-                        // form -- `SortedNumericSelector.MIN`/`MAX` are the
-                        // first and the last *stored* value, not the first
-                        // and last the caller happened to write. Sorting
-                        // here rather than reading the column keeps the sort
-                        // key and the column one fact, which is what stops
-                        // the two from drifting.
-                        let mut values: Vec<i64> = doc
-                            .fields
-                            .iter()
-                            .filter(|f| f.field_number == field_number)
-                            .filter_map(|f| match &f.value {
-                                FieldValue::Int(v) => Some(*v as i64),
-                                FieldValue::Long(v) => Some(*v),
-                                // Not numeric: `build_doc_values_output` is
-                                // about to fail the whole flush with
-                                // `NonNumericDocValue` naming the document, a
-                                // better message than anything this could
-                                // raise. Treated as missing until then.
-                                _ => None,
-                            })
-                            .collect();
-                        match selector {
-                            // Single-valued NUMERIC: the document's one value.
-                            None => values.into_iter().next(),
-                            Some(segment_info::SortedNumericSelector::Min) => {
-                                values.sort_unstable();
-                                values.into_iter().next()
-                            }
-                            Some(segment_info::SortedNumericSelector::Max) => {
-                                values.sort_unstable();
-                                values.into_iter().last()
-                            }
-                        }
-                    })
-                    .collect()
-            })
-            .collect();
+            .map(|sf| self.buffer_sort_keys(docs, sf))
+            .collect::<Result<_>>()?;
 
         let specs: Vec<segment_writer::SortKeySpec<'_>> = sort
             .iter()
@@ -2999,6 +3151,8 @@ pub struct IndexWriter<'d> {
     pluggable_merge_policy: Option<std::sync::Arc<dyn merge_policy::MergePolicy>>,
     /// See [`IndexWriter::set_merges_by_caller`].
     merges_by_caller: bool,
+    /// `IndexWriterConfig.getCommitOnClose()`; see [`IndexWriter::close`].
+    commit_on_close: bool,
 
     /// Per-pending-doc explicit `(term, custom_freq)` pairs for
     /// [`IndexingConfig::custom_freq_postings_field`], aligned 1:1 by index with
@@ -3045,6 +3199,9 @@ pub struct IndexWriter<'d> {
     /// against segments, each stamped with the generation that decides which
     /// segments it may touch.
     updates_stream: BufferedUpdatesStream,
+    /// Near-real-time snapshots handed out and not yet returned, and their
+    /// version -- see [`crate::nrt`].
+    pub(crate) nrt: crate::nrt::NrtState,
     /// `IndexWriter.rollbackSegments`: the segment list of the last *durable*
     /// commit, captured at [`IndexWriter::open`] and refreshed every time a
     /// commit is installed. [`IndexWriter::rollback`] restores it
@@ -3719,6 +3876,19 @@ impl<'d> IndexWriter<'d> {
         self.cfg.merge_mb_per_sec
     }
 
+    /// `IndexWriterConfig.setReaderPooling(on)`: whether a segment opened to
+    /// resolve deletes is kept for the next round ([`crate::reader_pool`]).
+    /// On by default; turning it off drops what is pooled.
+    pub fn set_reader_pooling(&mut self, on: bool) {
+        self.cfg.reader_pool.set_enabled(on);
+    }
+
+    /// The writer's reader pool (`IndexWriter.getReaderPool`, for tests and
+    /// diagnostics).
+    pub fn reader_pool(&self) -> &crate::reader_pool::ReaderPool {
+        &self.cfg.reader_pool
+    }
+
     fn cfg_mut(&mut self) -> &mut IndexingConfig {
         std::sync::Arc::make_mut(&mut self.cfg)
     }
@@ -3847,12 +4017,41 @@ impl<'d> IndexWriter<'d> {
         config: &MergePolicyConfig,
         merging: &std::collections::HashSet<String>,
     ) -> Result<Option<Vec<String>>> {
+        Ok(self
+            .next_merge_sized(config, merging)?
+            .map(|(names, _)| names))
+    }
+
+    /// [`Self::next_merge`], with the merge's `OneMerge.estimatedMergeBytes`:
+    /// the sources' sizes pro-rated by their live documents, as
+    /// `IndexWriter.registerMerge` estimates it.
+    pub(crate) fn next_merge_sized(
+        &self,
+        config: &MergePolicyConfig,
+        merging: &std::collections::HashSet<String>,
+    ) -> Result<Option<(Vec<String>, u64)>> {
         let stats: Vec<merge_policy::SegmentStat> = self
             .segment_stats()?
             .into_iter()
             .filter(|s| !merging.contains(&s.name))
             .collect();
-        Ok(merge_policy::find_merges(&stats, config).into_iter().next())
+        let Some(names) = merge_policy::find_merges(&stats, config).into_iter().next() else {
+            return Ok(None);
+        };
+        let estimated = stats
+            .iter()
+            .filter(|s| names.contains(&s.name))
+            .map(|s| {
+                let live = f64::from(s.doc_count.saturating_sub(s.del_count).max(0));
+                let ratio = if s.doc_count > 0 {
+                    live / f64::from(s.doc_count)
+                } else {
+                    0.0
+                };
+                (s.size_bytes as f64 * ratio) as u64
+            })
+            .fold(0u64, u64::saturating_add);
+        Ok(Some((names, estimated)))
     }
 
     /// The configuration every segment is built with, shared.
@@ -3992,6 +4191,8 @@ impl<'d> IndexWriter<'d> {
                 similarity: None,
                 use_compound_file: false,
                 postings_formats: Vec::new(),
+                reader_pool: std::sync::Arc::default(),
+                merged_segment_warmer: None,
             }),
             segment_infos,
             pending_docs: Vec::new(),
@@ -4003,11 +4204,13 @@ impl<'d> IndexWriter<'d> {
             merge_policy: None,
             pluggable_merge_policy: None,
             merges_by_caller: false,
+            commit_on_close: true,
             pending_custom_freq_terms: Vec::new(),
             pending_sort_map: None,
             prepared_commit: None,
             delete_queue: DeleteQueue::new(),
             updates_stream: BufferedUpdatesStream::new(),
+            nrt: crate::nrt::NrtState::new(),
             rollback_segments,
             pending_vectors: Vec::new(),
             pending_explicit: Vec::new(),
@@ -4541,18 +4744,12 @@ impl<'d> IndexWriter<'d> {
     ///   `IndexingChain.validateIndexSortDVType`, which asks the
     ///   `SortField`'s own `IndexSorter` which column it reads: a numeric
     ///   `SortField` needs NUMERIC, a `SortedNumericSortField` needs
-    ///   SORTED_NUMERIC.
-    /// - **The kind of sort is one this writer can produce**
-    ///   ([`Error::UnsupportedIndexSortKind`]). `segment_info` can now *read*
-    ///   every sort `SortFieldProvider` round-trips, which is what lets this
-    ///   port open an index someone else wrote; producing one is narrower.
-    ///   A `SortField.Type.STRING` or `SortedSetSortField` sorts by **term
-    ///   ordinal**, and this writer assigns ordinals inside
-    ///   `build_sorted_doc_values_output` *after* the buffer is permuted, so
-    ///   the key the sort needs does not exist when the sort runs; a
-    ///   `BinarySortField` has no single-`i64` key at all
-    ///   ([`segment_info::IndexSortField::key_comparison`]). Both are
-    ///   refused here rather than mis-ordered.
+    ///   SORTED_NUMERIC, a `STRING` `SortField` needs SORTED, a
+    ///   `SortedSetSortField` needs SORTED_SET and a `BinarySortField`
+    ///   needs BINARY. The byte-keyed three sort by the rank of the
+    ///   document's value ([`crate::index_sorter`]), which the flush computes
+    ///   from the buffer before it permutes it -- the same ordinals Java's
+    ///   `SortedDocValuesWriter` hands its comparator.
     ///
     ///   A `FLOAT`/`DOUBLE` sort *is* supported: Lucene's own
     ///   `FloatDocValuesField`/`DoubleDocValuesField` store
@@ -4611,11 +4808,9 @@ impl<'d> IndexWriter<'d> {
             let wanted = match &sf.kind {
                 segment_info::IndexSortKind::Numeric(_) => DocValuesType::Numeric,
                 segment_info::IndexSortKind::SortedNumeric { .. } => DocValuesType::SortedNumeric,
-                segment_info::IndexSortKind::String(_)
-                | segment_info::IndexSortKind::SortedSet { .. }
-                | segment_info::IndexSortKind::Binary(_) => {
-                    return Err(Error::UnsupportedIndexSortKind(sf.field.clone()))
-                }
+                segment_info::IndexSortKind::String(_) => DocValuesType::Sorted,
+                segment_info::IndexSortKind::SortedSet { .. } => DocValuesType::SortedSet,
+                segment_info::IndexSortKind::Binary(_) => DocValuesType::Binary,
             };
             if info.doc_values_type != wanted {
                 return Err(Error::UnsupportedIndexSortField(
@@ -5238,6 +5433,7 @@ impl<'d> IndexWriter<'d> {
     /// global (already-written segments) buffers, and returns its sequence
     /// number -- `DocumentsWriterDeleteQueue.add(Node, DeleteSlice)`.
     fn buffer_delete_node(&mut self, node: DeleteNode, doc_id_upto: i32) -> SeqNo {
+        self.delete_queue.add_global_bytes(node.ram_bytes());
         match node {
             DeleteNode::Terms(terms) => self
                 .delete_queue
@@ -5407,6 +5603,7 @@ impl<'d> IndexWriter<'d> {
     /// silently -- use it when you want a failure to reclaim disk space to
     /// surface as an error rather than be ignored.
     pub fn delete_unused_files(&mut self) -> Result<()> {
+        self.release_nrt_holds()?;
         self.deleter.revisit_policy()?;
         let live = self.live_infos();
         self.deleter.checkpoint(&live, false)?;
@@ -5414,7 +5611,47 @@ impl<'d> IndexWriter<'d> {
         Ok(())
     }
 
-    /// `FlushByRamOrCountsPolicy.onChange`: document count first, then RAM,
+    /// The RAM buffer in bytes, `None` when flushing by RAM is off. The
+    /// setter guarantees the value is either the sentinel (negative) or
+    /// strictly positive, so `> 0.0` is the enabled test without a float
+    /// equality comparison.
+    fn ram_buffer_bytes(&self) -> Option<usize> {
+        (self.ram_buffer_size_mb > 0.0)
+            .then_some((self.ram_buffer_size_mb * 1024.0 * 1024.0) as usize)
+    }
+
+    /// `FlushByRamOrCountsPolicy.onChange(control, null)` after a buffered
+    /// delete (`DocumentsWriterFlushControl.doOnDelete`), then
+    /// `DocumentsWriter.applyAllDeletes`: once the buffered deletes alone
+    /// reach the RAM buffer they are applied to the segments already written
+    /// and stop counting. Deferred while a commit is prepared, as
+    /// [`Self::maybe_flush`] is.
+    fn maybe_apply_deletes(&mut self) -> Result<()> {
+        if self.prepared_commit.is_some() {
+            return Ok(());
+        }
+        if self
+            .ram_buffer_bytes()
+            .is_some_and(|limit| self.delete_queue.global_ram_bytes() >= limit)
+        {
+            self.apply_deletes_now()?;
+        }
+        Ok(())
+    }
+
+    /// `DocumentsWriter.applyAllDeletes`: freezes the deletes buffered for
+    /// the written segments and applies them now, checkpointing the files
+    /// that writes -- what a flush of an empty buffer does.
+    fn apply_deletes_now(&mut self) -> Result<()> {
+        self.ensure_write_lock_valid()?;
+        self.apply_all_deletes_and_updates()?;
+        let live = self.live_infos();
+        self.deleter.checkpoint(&live, false)?;
+        Ok(())
+    }
+
+    /// `FlushByRamOrCountsPolicy.onChange`: document count first, then RAM
+    /// -- the buffered documents and the buffered deletes together --
     /// exactly Java's precedence.
     fn maybe_flush(&mut self) -> Result<()> {
         // **Never while a commit is prepared.** [`IndexWriter::finish_commit`]
@@ -5438,12 +5675,15 @@ impl<'d> IndexWriter<'d> {
         {
             return self.flush();
         }
-        // The setter guarantees the value is either the sentinel (negative) or
-        // strictly positive, so `> 0.0` is the enabled test without a float
-        // equality comparison.
-        if self.ram_buffer_size_mb > 0.0 {
-            let limit = (self.ram_buffer_size_mb * 1024.0 * 1024.0) as usize;
-            if self.ram_bytes_used >= limit {
+        if let Some(limit) = self.ram_buffer_bytes() {
+            let active = self.ram_bytes_used;
+            let deletes = self.delete_queue.global_ram_bytes();
+            // Both over: Java applies the deletes and flushes the buffer; the
+            // flush freezes and applies them itself.
+            if deletes >= limit && active < limit {
+                return self.apply_deletes_now();
+            }
+            if active.saturating_add(deletes) >= limit {
                 return self.flush();
             }
         }
@@ -5575,7 +5815,9 @@ impl<'d> IndexWriter<'d> {
     /// generation across segments).
     pub fn delete_documents_by_term(&mut self, terms: &[Term]) -> Result<SeqNo> {
         let doc_id_upto = self.pending_doc_id_upto();
-        Ok(self.buffer_delete_node(DeleteNode::terms(terms.to_vec()), doc_id_upto))
+        let seq_no = self.buffer_delete_node(DeleteNode::terms(terms.to_vec()), doc_id_upto);
+        self.maybe_apply_deletes()?;
+        Ok(seq_no)
     }
 
     /// `IndexWriter.deleteDocuments(Query...)`.
@@ -5595,7 +5837,9 @@ impl<'d> IndexWriter<'d> {
             return Ok(seq_no);
         }
         let doc_id_upto = self.pending_doc_id_upto();
-        Ok(self.buffer_delete_node(DeleteNode::Queries(queries.to_vec()), doc_id_upto))
+        let seq_no = self.buffer_delete_node(DeleteNode::Queries(queries.to_vec()), doc_id_upto);
+        self.maybe_apply_deletes()?;
+        Ok(seq_no)
     }
 
     /// `IndexWriter.softUpdateDocument(Term, doc, Field... softDeletes)`:
@@ -5670,7 +5914,9 @@ impl<'d> IndexWriter<'d> {
             retargeted.push(retarget_update(update, &term));
         }
         let doc_id_upto = self.pending_doc_id_upto();
-        Ok(self.buffer_delete_node(DeleteNode::DocValuesUpdates(retargeted), doc_id_upto))
+        let seq_no = self.buffer_delete_node(DeleteNode::DocValuesUpdates(retargeted), doc_id_upto);
+        self.maybe_apply_deletes()?;
+        Ok(seq_no)
     }
 
     /// `IndexWriter.updateNumericDocValue(Term, String, long)`.
@@ -5835,6 +6081,13 @@ impl<'d> IndexWriter<'d> {
             new_segment_infos.generation += 1;
             new_segment_infos.version += 1;
         }
+        // Above every version an NRT snapshot was given, so `getVersion`
+        // stays monotonic across snapshots and commits (see `crate::nrt`).
+        // Never used with NRT readers, `max_version` is -1 and this is a
+        // no-op.
+        new_segment_infos.version = new_segment_infos
+            .version
+            .max(self.nrt.max_version.saturating_add(1));
         new_segment_infos.id = generate_segment_id(new_segment_infos.generation);
         new_segment_infos.segments = updated_segments;
         self.stamp_min_segment_version(&mut new_segment_infos)?;
@@ -6094,6 +6347,13 @@ impl<'d> IndexWriter<'d> {
             new_segment_infos.generation += 1;
             new_segment_infos.version += 1;
         }
+        // Above every version an NRT snapshot was given, so `getVersion`
+        // stays monotonic across snapshots and commits (see `crate::nrt`).
+        // Never used with NRT readers, `max_version` is -1 and this is a
+        // no-op.
+        new_segment_infos.version = new_segment_infos
+            .version
+            .max(self.nrt.max_version.saturating_add(1));
         // Java writes a fresh `StringHelper.randomId()` into every
         // `segments_N` header it produces, so two commits of the same index are
         // never confusable by id; cloning the previous commit's id would make
@@ -6146,6 +6406,7 @@ impl<'d> IndexWriter<'d> {
             return Err(Error::PreparedCommitPending("flush"));
         }
         self.ensure_write_lock_valid()?;
+        self.release_nrt_holds()?;
         if self.pending_docs.is_empty() {
             // Deletes issued while the document buffer was empty still have to
             // be resolved -- Java's `applyAllDeletes` is not conditional on a
@@ -8520,11 +8781,16 @@ impl<'d> IndexWriter<'d> {
     /// Returns whether the merge was published (`false`: abandoned).
     pub(crate) fn finish_merge(&mut self, plan: MergePlan, outcome: MergeOutcome) -> Result<bool> {
         let held = plan.held.clone();
+        let retired = plan.names.clone();
         let result = self.finish_merge_holding(plan, outcome);
         // After the merge is published (or abandoned): released last, so the
         // sources' files go only once nothing else references them.
         let released = self.deleter.release_files(&held);
         let published = result?;
+        if published {
+            // `ReaderPool.drop` for each merged-away source.
+            self.cfg.reader_pool.drop_segments(&retired);
+        }
         released?;
         Ok(published)
     }
@@ -8672,9 +8938,8 @@ impl<'d> IndexWriter<'d> {
                     })
                     .collect()
             }
-            // Everything else `set_index_sort` allows reads a single-valued
-            // NUMERIC column; the ordinal and byte kinds it refuses cannot
-            // reach a merge this writer runs.
+            // A single-valued NUMERIC column; the byte-keyed kinds are read
+            // by `read_sort_terms` and never reach here.
             _ => {
                 let entry = meta.numeric_entry(field_number).ok_or_else(missing)?;
                 // One `NumericReader` for the whole column, not a
@@ -8687,6 +8952,35 @@ impl<'d> IndexWriter<'d> {
                 (0..max_doc).map(|doc| Ok(reader.value(doc)?)).collect()
             }
         }
+    }
+
+    /// [`Self::read_sort_keys`] for a byte-keyed sort tier: each document's
+    /// bytes out of the source's current SORTED / SORTED_SET (through the
+    /// tier's selector) / BINARY column, to be ranked across every source
+    /// by [`crate::index_sorter::rank_terms`]. A missing column is the same
+    /// error as for a numeric tier.
+    fn read_sort_terms(
+        columns: &SourceDocValueColumns,
+        fields: &[FieldInfo],
+        sort: &segment_info::IndexSortField,
+        max_doc: i32,
+    ) -> Result<Vec<Option<Vec<u8>>>> {
+        let field_name = sort.field.as_str();
+        let field_number = fields
+            .iter()
+            .find(|f| f.name == field_name)
+            .map(|f| f.number)
+            .ok_or_else(|| Error::UnknownSortField(field_name.to_string()))?;
+        let missing = || Error::MergeSortColumnMissing(field_name.to_string());
+        let at = columns
+            .per_field
+            .iter()
+            .find(|(n, _)| *n == field_number)
+            .map(|&(_, at)| at)
+            .ok_or_else(missing)?;
+        let (meta, dvd) = &columns.columns[at];
+        crate::index_sorter::read_segment_terms(dvd, meta, sort, field_number, max_doc)?
+            .ok_or_else(missing)
     }
 
     /// `IndexWriter.applyAllDeletesAndUpdates()`: freeze whatever the global
@@ -8759,6 +9053,16 @@ impl<'d> IndexWriter<'d> {
         self.flushed_segments = flushed;
 
         self.drop_fully_deleted_segments(&committed_fully_deleted, &flushed_fully_deleted);
+        // `ReaderPool.drop` for what this round (or anything since the last
+        // one) took out of the index -- a segment it left fully deleted
+        // included.
+        let live = self.live_infos();
+        let names: std::collections::HashSet<&str> = live
+            .segments
+            .iter()
+            .map(|s| s.segment_name.as_str())
+            .collect();
+        self.cfg.reader_pool.retain(&names);
         Ok(())
     }
 
@@ -8999,6 +9303,24 @@ impl<'d> IndexWriter<'d> {
         self.pending_docs.len()
     }
 
+    /// Documents or deletes buffered and not yet in a segment's files --
+    /// what `IndexWriter.nrtIsCurrent` checks beside the segment list
+    /// (`docWriter.anyChanges()`, `bufferedUpdatesStream.any()`).
+    pub(crate) fn has_buffered_changes(&self) -> bool {
+        !self.pending_docs.is_empty()
+            || self.delete_queue.any_changes()
+            || self.updates_stream.any()
+    }
+
+    /// Pins `segments`' files in the deleter until
+    /// [`IndexWriter::release_files`] -- what an NRT reader holds.
+    pub(crate) fn pin_segment_files(
+        &mut self,
+        segments: &[SegmentCommitInfo],
+    ) -> Result<Vec<String>> {
+        Ok(self.deleter.hold_segment_files(segments)?)
+    }
+
     /// `IndexWriter.hasUncommittedChanges()`: whether the next commit would
     /// publish anything -- buffered documents, buffered deletes or updates, a
     /// segment flushed since the last commit, or deletes already applied to a
@@ -9105,6 +9427,9 @@ impl<'d> IndexWriter<'d> {
     /// immediately afterward -- the same choice this facade already made for
     /// having no `close()` method at all.
     pub fn rollback(&mut self) {
+        // `ReaderPool.dropAll()`: nothing opened for the discarded changes
+        // survives the rollback.
+        self.cfg.reader_pool.clear();
         self.pending_docs.clear();
         self.pending_custom_freq_terms.clear();
         self.pending_vectors.clear();
@@ -9177,6 +9502,7 @@ impl<'d> IndexWriter<'d> {
     /// Refused while a [`IndexWriter::prepare_commit`] is outstanding, for the
     /// same reason [`IndexWriter::delete_documents_by_term`] is.
     pub fn delete_all(&mut self) -> Result<()> {
+        self.cfg.reader_pool.clear();
         if self.prepared_commit.is_some() {
             return Err(Error::PreparedCommitPending("delete_all"));
         }
@@ -9322,6 +9648,13 @@ impl<'d> IndexWriter<'d> {
             new_segment_infos.generation += 1;
             new_segment_infos.version += 1;
         }
+        // Above every version an NRT snapshot was given, so `getVersion`
+        // stays monotonic across snapshots and commits (see `crate::nrt`).
+        // Never used with NRT readers, `max_version` is -1 and this is a
+        // no-op.
+        new_segment_infos.version = new_segment_infos
+            .version
+            .max(self.nrt.max_version.saturating_add(1));
         new_segment_infos.id = generate_segment_id(new_segment_infos.generation);
         apply_merge_changes(
             &mut new_segment_infos.segments,
@@ -9381,19 +9714,14 @@ impl<'d> IndexWriter<'d> {
 struct OpenedDeleteSegment {
     max_doc: usize,
     live_docs: Option<FixedBitSet>,
-    fields: lucene_codecs::blocktree::BlockTreeFields,
-    /// The `.doc` file's bytes, held as the `Input` the directory handed over
-    /// rather than copied into a `Vec`. On an `MmapDirectory` that `Input` *is*
-    /// the mapping, so a `to_vec()` here would heap-copy the whole postings
-    /// file on every buffered-delete round; `DocInput::open` only needs to
-    /// borrow it. `None` when the segment has no postings.
-    doc_input: Option<lucene_store::directory::Input>,
+    /// The term dictionary and the `.doc` file's bytes -- the latter held as
+    /// the `Input` the directory handed over rather than copied into a `Vec`
+    /// (on an `MmapDirectory` that `Input` *is* the mapping, so a `to_vec()`
+    /// would heap-copy the whole postings file on every buffered-delete
+    /// round). Pooled across rounds ([`crate::reader_pool`]).
+    postings: std::sync::Arc<crate::reader_pool::PooledPostings>,
     segment_id: [u8; ID_LENGTH],
     suffix: String,
-    /// `doc_input` is the concatenation of a multi-format segment's groups'
-    /// `.doc` files, each already validated by
-    /// [`per_field_postings::open_groups`].
-    combined: bool,
 }
 
 impl IndexingConfig {
@@ -9667,6 +9995,28 @@ impl IndexingConfig {
             None
         };
 
+        let postings = self.reader_pool.get_or_open(sci, || {
+            Self::open_postings_for_deletes(dir, sci, &si, max_doc)
+        })?;
+        let suffix = postings.suffix.clone();
+        Ok(OpenedDeleteSegment {
+            max_doc,
+            live_docs,
+            postings,
+            segment_id: sci.segment_id,
+            suffix,
+        })
+    }
+
+    /// The part of [`Self::open_segment_for_deletes`] that does not change
+    /// between delete rounds, and so is pooled: the segment's term dictionary
+    /// and `.doc` input, from `.cfs` for a compound segment.
+    fn open_postings_for_deletes(
+        dir: &dyn Directory,
+        sci: &SegmentCommitInfo,
+        si: &segment_info::SegmentInfo,
+        max_doc: usize,
+    ) -> Result<crate::reader_pool::PooledPostings> {
         // A compound segment -- one real Lucene flushed -- keeps its term
         // dictionary inside `.cfs`, and its `.si` lists no `.tim` at all:
         // testing `si.files` alone would report "no postings" and every
@@ -9694,12 +10044,9 @@ impl IndexingConfig {
         // writer's.
         let (seg, suffix) = postings_file_base(&seg_files, &sci.segment_name);
         if !seg_files.iter().any(|f| f.ends_with(".tim")) {
-            return Ok(OpenedDeleteSegment {
-                max_doc,
-                live_docs,
+            return Ok(crate::reader_pool::PooledPostings {
                 fields: lucene_codecs::blocktree::BlockTreeFields::empty(),
                 doc_input: None,
-                segment_id: sci.segment_id,
                 suffix,
                 combined: false,
             });
@@ -9755,12 +10102,9 @@ impl IndexingConfig {
                 &sci.segment_id,
                 max_doc as i32,
             )?;
-            return Ok(OpenedDeleteSegment {
-                max_doc,
-                live_docs,
+            return Ok(crate::reader_pool::PooledPostings {
                 fields: combined.fields,
                 doc_input: Some(lucene_store::directory::Input::Owned(combined.doc)),
-                segment_id: sci.segment_id,
                 suffix,
                 combined: true,
             });
@@ -9769,8 +10113,7 @@ impl IndexingConfig {
         // `MmapDirectory`), not copied: `blocktree::open` builds its own
         // structures from these and does not retain the slices, and the `.doc`
         // `Input` is kept alive in the returned struct for `DocInput` to
-        // borrow. Copying them was heap-copying an entire segment's postings
-        // per buffered-delete round.
+        // borrow.
         let tim = seg_dir.open(&format!("{seg}.tim"))?;
         let tip = seg_dir.open(&format!("{seg}.tip"))?;
         let tmd = seg_dir.open(&format!("{seg}.tmd"))?;
@@ -9784,12 +10127,9 @@ impl IndexingConfig {
             &suffix,
             max_doc as i32,
         )?;
-        Ok(OpenedDeleteSegment {
-            max_doc,
-            live_docs,
+        Ok(crate::reader_pool::PooledPostings {
             fields,
             doc_input: Some(doc_input),
-            segment_id: sci.segment_id,
             suffix,
             combined: false,
         })
@@ -9798,8 +10138,8 @@ impl IndexingConfig {
 
 impl OpenedDeleteSegment {
     fn view(&self) -> Result<DeleteSegmentView<'_>> {
-        let doc_in = match &self.doc_input {
-            Some(bytes) if self.combined => {
+        let doc_in = match &self.postings.doc_input {
+            Some(bytes) if self.postings.combined => {
                 Some(lucene_codecs::postings::DocInput::validated(bytes))
             }
             Some(bytes) => Some(lucene_codecs::postings::DocInput::open(
@@ -9812,7 +10152,7 @@ impl OpenedDeleteSegment {
         Ok(DeleteSegmentView {
             max_doc: self.max_doc,
             live_docs: self.live_docs.as_ref(),
-            fields: &self.fields,
+            fields: &self.postings.fields,
             doc_in,
         })
     }
@@ -9996,7 +10336,7 @@ fn field_value_kind(value: &FieldValue) -> &'static str {
     }
 }
 
-fn generate_segment_id(salt: i64) -> [u8; ID_LENGTH] {
+pub(crate) fn generate_segment_id(salt: i64) -> [u8; ID_LENGTH] {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -15759,6 +16099,68 @@ pub(crate) mod tests {
         assert_eq!(writer.ram_bytes_used(), 0, "a flush resets the counter");
     }
 
+    /// `FlushByRamOrCountsPolicy` with buffered deletes: deletes alone at the
+    /// RAM buffer are applied at once (their `.liv` written with no flush),
+    /// and deletes count toward the buffer with the documents.
+    #[test]
+    fn buffered_deletes_are_weighed_against_the_ram_buffer() {
+        let tmp = tempdir("delete-ram");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![FieldInfo {
+            index_options: lucene_codecs::field_infos::IndexOptions::Docs,
+            omit_norms: true,
+            ..FieldInfo::new("id", 0)
+        }];
+        let mut w = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        w.set_postings_field(Some("id")).unwrap();
+        for k in 0..10 {
+            w.add_document(doc(&format!("d{k}"))).unwrap();
+        }
+        w.commit().unwrap();
+        let mb = |bytes: usize| bytes as f64 / (1024.0 * 1024.0);
+        let nb = DeleteNode::terms(vec![Term::new("id", "d0")]).ram_bytes();
+        w.set_ram_buffer_size_mb(mb(nb * 3)).unwrap();
+        let liv = || dir.list_all().unwrap().iter().any(|f| f.ends_with(".liv"));
+        w.delete_documents_by_term(&[Term::new("id", "d0")])
+            .unwrap();
+        w.delete_documents_by_term(&[Term::new("id", "d1")])
+            .unwrap();
+        assert!(!liv());
+        assert_eq!(w.delete_queue.global_ram_bytes(), nb * 2);
+        w.delete_documents_by_term(&[Term::new("id", "d2")])
+            .unwrap();
+        assert!(
+            liv(),
+            "the third delete reached the buffer and applied all three"
+        );
+        assert_eq!(w.delete_queue.global_ram_bytes(), 0);
+
+        // One document under the buffer, two deletes under it: the second
+        // document is under it alone but not with the deletes.
+        let d = document_ram_bytes(&doc("n0"));
+        assert!(d < nb * 2, "the deletes decide: {d} vs {nb}");
+        w.set_ram_buffer_size_mb(mb(d + nb * 2)).unwrap();
+        w.add_document(doc("n0")).unwrap();
+        w.delete_documents_by_term(&[Term::new("id", "d3")])
+            .unwrap();
+        w.delete_documents_by_term(&[Term::new("id", "d4")])
+            .unwrap();
+        assert_eq!(w.pending_docs.len(), 1);
+        w.add_document(doc("n1")).unwrap();
+        assert!(w.pending_docs.is_empty(), "documents and deletes filled it");
+        assert_eq!(w.delete_queue.global_ram_bytes(), 0);
+        w.commit().unwrap();
+        assert_eq!(
+            crate::segment_infos::read_latest(&dir)
+                .unwrap()
+                .segments
+                .iter()
+                .map(|s| s.del_count)
+                .sum::<i32>(),
+            5
+        );
+    }
+
     #[test]
     fn max_buffered_docs_flushes_a_segment_without_committing_it() {
         let tmp = tempdir("max-buffered-docs");
@@ -19943,46 +20345,66 @@ pub(crate) mod tests {
         }
     }
 
-    /// `set_index_sort` accepts every kind whose key this writer can produce
-    /// and names the ones it cannot, rather than mis-ordering them. Reading
-    /// them is a separate question -- `segment_info::parse` handles all four
-    /// providers, which is what lets this port open an index Lucene wrote.
+    /// `set_index_sort` accepts the byte-keyed kinds over the doc-values type
+    /// each reads (`validateIndexSortDVType`) and refuses them over any
+    /// other -- a `STRING` sort over a SORTED_SET column is not quietly read
+    /// as its first value.
     #[test]
-    fn set_index_sort_refuses_the_ordinal_and_byte_sort_kinds() {
+    fn set_index_sort_matches_each_byte_kind_to_its_doc_values_type() {
         use crate::segment_info::{IndexSortKind, SortedSetSelector, StringMissingValue};
         let tmp = tempdir("sort-kind-gate");
         let dir = FsDirectory::open(&tmp);
+        let mut tags = sorted_field("tags", 3);
+        tags.doc_values_type = DocValuesType::SortedSet;
+        let mut blob = sorted_field("blob", 4);
+        blob.doc_values_type = DocValuesType::Binary;
         let fields = vec![
             stored_only_field("id", 0),
             numeric_field("rank", 1),
             sorted_field("name", 2),
+            tags,
+            blob,
         ];
         let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
         writer.set_doc_values_field(Some("name")).unwrap();
-        for kind in [
-            IndexSortKind::String(StringMissingValue::First),
-            IndexSortKind::SortedSet {
-                selector: SortedSetSelector::Min,
-                missing: StringMissingValue::None,
-            },
-            IndexSortKind::Binary(StringMissingValue::Last),
+        writer.add_doc_values_field("tags").unwrap();
+        writer.add_doc_values_field("blob").unwrap();
+        let string = IndexSortKind::String(StringMissingValue::First);
+        let set = IndexSortKind::SortedSet {
+            selector: SortedSetSelector::Min,
+            missing: StringMissingValue::None,
+        };
+        let binary = IndexSortKind::Binary(StringMissingValue::Last);
+        for (field, kind) in [("name", &string), ("tags", &set), ("blob", &binary)] {
+            let sf = IndexSortField {
+                field: field.to_string(),
+                reverse: false,
+                kind: kind.clone(),
+            };
+            writer.set_index_sort(Some(&[sf])).unwrap();
+        }
+        for (field, kind, dv) in [
+            ("tags", &string, DocValuesType::SortedSet),
+            ("name", &set, DocValuesType::Sorted),
+            ("name", &binary, DocValuesType::Sorted),
         ] {
             let sf = IndexSortField {
-                field: "name".to_string(),
+                field: field.to_string(),
                 reverse: false,
                 kind: kind.clone(),
             };
             assert!(
                 matches!(
                     writer.set_index_sort(Some(&[sf])),
-                    Err(Error::UnsupportedIndexSortKind(f)) if f == "name"
+                    Err(Error::UnsupportedIndexSortField(f, t)) if f == field && t == dv
                 ),
-                "{kind:?}"
+                "{kind:?} over {field}"
             );
         }
         // And the doc-values type still has to match the kind: a
         // SortedNumeric sort over a NUMERIC column is refused by
         // `validateIndexSortDVType`'s rule, not silently read as NUMERIC.
+        writer.set_index_sort(None).unwrap();
         writer.set_doc_values_field(Some("rank")).unwrap();
         let sf = IndexSortField {
             field: "rank".to_string(),

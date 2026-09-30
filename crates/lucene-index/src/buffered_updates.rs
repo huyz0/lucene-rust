@@ -109,6 +109,18 @@ impl Term {
             bytes: bytes.into(),
         }
     }
+
+    /// The heap this term holds: the struct and both buffers' capacity.
+    pub fn ram_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            .saturating_add(self.field.capacity())
+            .saturating_add(self.bytes.capacity())
+    }
+}
+
+/// Sums RAM estimates without overflowing.
+fn sum_bytes(parts: impl IntoIterator<Item = usize>) -> usize {
+    parts.into_iter().fold(0usize, usize::saturating_add)
 }
 
 /// The query shapes `deleteDocuments(Query...)` can carry in this port — see
@@ -143,6 +155,36 @@ pub enum DeleteQuery {
     Not(Box<DeleteQuery>),
 }
 
+impl DeleteQuery {
+    /// The heap this query holds, its sub-queries included -- what a
+    /// buffered delete by query costs (Java's `BYTES_PER_DEL_QUERY` is a
+    /// fixed per-entry figure because its queries are opaque objects).
+    pub fn ram_bytes(&self) -> usize {
+        let heap = match self {
+            DeleteQuery::Term(t) => t.ram_bytes(),
+            DeleteQuery::Prefix { field, prefix } => {
+                field.capacity().saturating_add(prefix.capacity())
+            }
+            DeleteQuery::TermRange {
+                field,
+                lower,
+                upper,
+                ..
+            } => sum_bytes([
+                field.capacity(),
+                lower.as_ref().map_or(0, Vec::capacity),
+                upper.as_ref().map_or(0, Vec::capacity),
+            ]),
+            DeleteQuery::MatchAll => 0,
+            DeleteQuery::Any(qs) | DeleteQuery::All(qs) => {
+                sum_bytes(qs.iter().map(Self::ram_bytes))
+            }
+            DeleteQuery::Not(q) => q.ram_bytes(),
+        };
+        std::mem::size_of::<Self>().saturating_add(heap)
+    }
+}
+
 /// `DocValuesUpdate.NumericDocValuesUpdate` / `BinaryDocValuesUpdate`: "set
 /// every document matching `term`'s `field` doc-values value to `value`".
 ///
@@ -166,6 +208,23 @@ pub enum DocValuesUpdate {
 }
 
 impl DocValuesUpdate {
+    /// The heap one buffered update holds: its entry, term, field name and
+    /// binary value.
+    pub fn ram_bytes(&self) -> usize {
+        let (term, field, value) = match self {
+            DocValuesUpdate::Numeric { term, field, .. } => (term, field, 0),
+            DocValuesUpdate::Binary { term, field, value } => {
+                (term, field, value.as_ref().map_or(0, Vec::capacity))
+            }
+        };
+        sum_bytes([
+            std::mem::size_of::<BufferedUpdate>(),
+            term.ram_bytes(),
+            field.capacity(),
+            value,
+        ])
+    }
+
     /// `DocValuesUpdate.term`.
     pub fn term(&self) -> &Term {
         match self {
@@ -584,6 +643,10 @@ pub struct DeleteQueue {
     /// currently being buffered must have applied to it, each entry limited
     /// to the buffer position the delete was issued at.
     private: BufferedUpdates,
+    /// The RAM `global` holds, as the writer counted it when buffering
+    /// ([`Self::add_global_bytes`]) -- `ramBytesUsed()`, what the flush
+    /// policy weighs as `getDeleteBytesUsed()`.
+    global_bytes: usize,
 }
 
 impl Default for DeleteQueue {
@@ -598,7 +661,19 @@ impl DeleteQueue {
             next_seq_no: FIRST_SEQ_NO,
             global: BufferedUpdates::default(),
             private: BufferedUpdates::default(),
+            global_bytes: 0,
         }
+    }
+
+    /// Counts `bytes` more held by the global buffer.
+    pub(crate) fn add_global_bytes(&mut self, bytes: usize) {
+        self.global_bytes = self.global_bytes.saturating_add(bytes);
+    }
+
+    /// `DocumentsWriterDeleteQueue.ramBytesUsed()`: what the global buffer
+    /// holds, `0` once it is frozen.
+    pub fn global_ram_bytes(&self) -> usize {
+        self.global_bytes
     }
 
     /// `DocumentsWriterDeleteQueue.getNextSequenceNumber()`.
@@ -712,6 +787,7 @@ impl DeleteQueue {
     /// it over as an unstamped packet, leaving the global buffer empty.
     /// `None` when there is nothing to freeze (Java returns `null`).
     pub fn freeze_global_buffer(&mut self) -> Option<FrozenBufferedUpdates> {
+        self.global_bytes = 0;
         if !self.global.any() {
             return None;
         }
@@ -764,6 +840,7 @@ impl DeleteQueue {
     pub fn clear(&mut self) {
         self.global.clear();
         self.private.clear();
+        self.global_bytes = 0;
     }
 }
 

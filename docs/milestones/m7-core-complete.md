@@ -145,6 +145,45 @@ the skipper path, range relations, feature, distance feature) in
 
 - Delivered 2026-09-30: compound segments -- flushes honour `useCompoundFile` (this writer defaults it to `false`), merges `MergePolicy.useCompoundFile` (`noCFSRatio`, `maxCFSSegmentSizeMB`).
 
+
+Delivered (ported, not yet benchmarked): `STRING`, `SortedSetSortField` and
+`BinarySortField` index sorts in the flush and the sort-preserving merge
+(`lucene-index/src/index_sorter.rs`), and `CheckIndex.testSort` for every
+kind; differential against `GenStringSortedIndex` and, Rust-written, against
+Lucene's own `IndexWriter` (`VerifyStringSortedIndex`).
+
+Delivered (ported, not yet benchmarked): the `MergeScheduler` API --
+`SerialMergeScheduler`, `NoMergeScheduler`, `ConcurrentMergeScheduler` (merge
+thread pool, `maxThreadCount`/`maxMergeCount`, producer stalls, pausing big
+merges, the auto IO throttle through `MergeRateLimiter`) and
+`MultiIndexMergeScheduler` -- in `lucene-index/src/merge_scheduler.rs`, driven
+by `ConcurrentIndexWriter::with_merge_scheduler`.
+
+Delivered (ported, not yet benchmarked): near-real-time readers from a live
+writer -- `DirectoryReader::open_from_writer`/`open_nrt`/`open_if_changed_nrt`
+over `lucene-index/src/nrt.rs`'s `NrtSource` (both writers), with the
+snapshot's files pinned until the reader drops -- `SearcherManager`'s and
+`ReaderManager`'s writer constructors, and a `ReaderPool` keeping segments opened for delete
+resolution between rounds.
+
+Delivered (ported, not yet benchmarked): the rest of `IndexWriter`'s
+operations -- `tryDeleteDocument`/`tryUpdateDocValue` by NRT doc id,
+`addIndexes` (copying segments as they are, and merging them into one),
+`maybeMerge`, `flushNextBuffer`, `close` under `commitOnClose`, the
+merged-segment warmer -- and a reader's leaf sorter.
+
+Delivered (ported, not yet benchmarked): the flush policy --
+`FlushPolicy`/`FlushByRamOrCountsPolicy` over `DocumentsWriterFlushControl`'s
+accounting (`lucene-index/src/flush_policy.rs`): the concurrent writer's slots
+share one RAM buffer and the largest is flushed, marked slots are flushed by
+whichever thread checks (`checkPendingFlushOnUpdate`), and buffered deletes
+count toward the buffer and are applied on their own once they fill it, in
+both writers -- and `deleteAll` on the concurrent writer.
+
+Delivered (ported, not yet benchmarked): `CheckIndex`'s `checkImpacts` and
+`checkDocIDRuns` over the lazy postings cursor, checked against every
+Java-written fixture, and the `-exorcise` repair (`check_index::exorcise`).
+
 ### T7.8 — `StandardTokenizer` and the attribute model · delivered 2026-09-30
 
 `crates/lucene-analysis` is now Lucene's streaming model: `TokenStream`/

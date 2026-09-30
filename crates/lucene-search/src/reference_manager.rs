@@ -18,14 +18,16 @@
 //! new searcher and setting its similarity -- into whatever the caller
 //! searches with.
 //!
-//! [`SearcherManager`] refreshes from the directory's commits
+//! [`SearcherManager`] refreshes either from the directory's commits
 //! (`SearcherManager(Directory, SearcherFactory)`,
-//! `DirectoryReader.openIfChanged`): an NRT reader straight from an
-//! `IndexWriter`'s unflushed buffers does not exist in this port (the writer
-//! publishes segments through commits). [`ControlledRealTimeReopenThread`]
-//! therefore takes its generations from a caller-supplied source -- the
-//! writer's last committed sequence number, for a commit-refreshed manager --
-//! where Java reads `IndexWriter.getMaxCompletedSequenceNumber`.
+//! `DirectoryReader.openIfChanged`) or, near-real-time, from a writer
+//! (`SearcherManager(IndexWriter, applyAllDeletes, writeAllDeletes,
+//! SearcherFactory)`, `DirectoryReader.openIfChanged(reader, writer)` --
+//! [`SearcherManager::from_writer`], over any
+//! [`lucene_index::nrt::NrtSource`]). [`ControlledRealTimeReopenThread`]
+//! takes its generations from a caller-supplied source -- the writer's last
+//! committed (or flushed) sequence number -- where Java reads
+//! `IndexWriter.getMaxCompletedSequenceNumber`.
 //!
 //! [`IndexSearcher`]: crate::index_searcher::IndexSearcher
 
@@ -334,18 +336,56 @@ impl<F: SearcherFactory> Refresher<F::Searcher> for SearcherRefresher<F> {
     }
 }
 
+/// `SearcherManager`'s `refreshIfNeeded` for a manager opened from a writer:
+/// `DirectoryReader.openIfChanged(reader, writer, applyAllDeletes,
+/// writeAllDeletes)`.
+struct NrtSearcherRefresher<F> {
+    writer: Arc<dyn lucene_index::nrt::NrtSource>,
+    factory: Arc<F>,
+    apply_all_deletes: bool,
+    write_all_deletes: bool,
+}
+
+impl<F: SearcherFactory> Refresher<F::Searcher> for NrtSearcherRefresher<F> {
+    fn refresh_if_needed(&self, current: &Arc<F::Searcher>) -> Result<Option<Arc<F::Searcher>>> {
+        let reader = self.factory.reader(current);
+        match reader.open_if_changed_nrt_with(
+            self.writer.as_ref(),
+            self.apply_all_deletes,
+            self.write_all_deletes,
+        )? {
+            None => Ok(None),
+            Some(r) => Ok(Some(Arc::new(self.factory.new_searcher(r, Some(current))?))),
+        }
+    }
+}
+
+/// Where a [`SearcherManager`] refreshes from.
+enum ManagedSource {
+    /// The directory's latest commit.
+    Directory(Arc<dyn Directory>),
+    /// A writer, near-real-time.
+    Writer(Arc<dyn lucene_index::nrt::NrtSource>),
+}
+
 /// `SearcherManager`: a [`ReferenceManager`] over searchers of a directory's
-/// commits.
+/// commits, or of a writer's near-real-time view.
 pub struct SearcherManager<F: SearcherFactory = DefaultSearcherFactory> {
     manager: Arc<ReferenceManager<F::Searcher>>,
     factory: Arc<F>,
-    dir: Arc<dyn Directory>,
+    source: ManagedSource,
 }
 
 impl SearcherManager<DefaultSearcherFactory> {
     /// `new SearcherManager(dir, null)`.
     pub fn open(dir: Arc<dyn Directory>) -> Result<Self> {
         Self::with_factory(dir, DefaultSearcherFactory)
+    }
+
+    /// `new SearcherManager(writer, null)`: near-real-time searchers of
+    /// `writer`, every buffered delete applied.
+    pub fn open_from_writer(writer: Arc<dyn lucene_index::nrt::NrtSource>) -> Result<Self> {
+        Self::from_writer(writer, true, false, DefaultSearcherFactory)
     }
 }
 
@@ -373,7 +413,35 @@ impl<F: SearcherFactory + 'static> SearcherManager<F> {
         Ok(Self {
             manager: Arc::new(ReferenceManager::new(first, Box::new(refresher))),
             factory,
-            dir,
+            source: ManagedSource::Directory(dir),
+        })
+    }
+
+    /// `new SearcherManager(writer, applyAllDeletes, writeAllDeletes,
+    /// searcherFactory)`: the first searcher is `DirectoryReader.open(writer,
+    /// applyAllDeletes, writeAllDeletes)`, and every refresh is
+    /// `openIfChanged(reader, writer, ...)` -- documents the writer has
+    /// indexed become searchable without a commit.
+    pub fn from_writer(
+        writer: Arc<dyn lucene_index::nrt::NrtSource>,
+        apply_all_deletes: bool,
+        write_all_deletes: bool,
+        factory: F,
+    ) -> Result<Self> {
+        let reader =
+            DirectoryReader::open_nrt(writer.as_ref(), apply_all_deletes, write_all_deletes)?;
+        let factory = Arc::new(factory);
+        let first = Arc::new(factory.new_searcher(reader, None)?);
+        let refresher = NrtSearcherRefresher {
+            writer: Arc::clone(&writer),
+            factory: Arc::clone(&factory),
+            apply_all_deletes,
+            write_all_deletes,
+        };
+        Ok(Self {
+            manager: Arc::new(ReferenceManager::new(first, Box::new(refresher))),
+            factory,
+            source: ManagedSource::Writer(writer),
         })
     }
 
@@ -420,12 +488,19 @@ impl<F: SearcherFactory + 'static> SearcherManager<F> {
     }
 
     /// `isSearcherCurrent()`: whether the searcher sees the directory's latest
-    /// commit (`DirectoryReader.isCurrent`).
+    /// commit (`DirectoryReader.isCurrent`) -- or, for a manager opened from a
+    /// writer, everything the writer has indexed.
     pub fn is_searcher_current(&self) -> Result<bool> {
         let s = self.acquire()?;
-        let latest = segment_infos::read_latest(self.dir.as_ref())
-            .map_err(crate::directory_reader::Error::from)?;
-        Ok(latest.generation == self.factory.reader(&s).segment_infos.generation)
+        let reader = self.factory.reader(&s);
+        match &self.source {
+            ManagedSource::Directory(dir) => {
+                let latest = segment_infos::read_latest(dir.as_ref())
+                    .map_err(crate::directory_reader::Error::from)?;
+                Ok(latest.generation == reader.segment_infos.generation)
+            }
+            ManagedSource::Writer(writer) => Ok(reader.is_current_nrt(writer.as_ref())?),
+        }
     }
 }
 
@@ -1183,5 +1258,63 @@ mod tests {
         })
         .unwrap();
         assert_eq!(got, 2);
+    }
+
+    /// `new SearcherManager(writer, ...)`: a refresh makes what the writer
+    /// indexed searchable without a commit, and `isSearcherCurrent` follows
+    /// the writer rather than the directory's commits.
+    #[test]
+    fn a_searcher_manager_from_a_writer_refreshes_near_real_time() {
+        use lucene_codecs::field_infos::{FieldInfo, IndexOptions};
+        use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
+        use lucene_index::concurrent_writer::ConcurrentIndexWriter;
+        use lucene_index::index_writer::IndexWriter;
+        use lucene_index::segment_info::LuceneVersion;
+
+        let tmp = lucene_util::test_support::TempDir::new("searcher-manager-nrt");
+        let dir: &'static lucene_store::FsDirectory =
+            Box::leak(Box::new(lucene_store::FsDirectory::open(&tmp)));
+        let fields = vec![FieldInfo {
+            index_options: IndexOptions::Docs,
+            omit_norms: true,
+            ..FieldInfo::new("id", 0)
+        }];
+        let mut w = IndexWriter::open(
+            dir,
+            fields,
+            "Lucene104",
+            LuceneVersion {
+                major: 10,
+                minor: 5,
+                bugfix: 0,
+            },
+        )
+        .unwrap();
+        w.set_postings_field(Some("id")).unwrap();
+        let writer = Arc::new(ConcurrentIndexWriter::new(w, 2).unwrap());
+        let doc = |id: &str| Document {
+            fields: vec![StoredField {
+                field_number: 0,
+                value: FieldValue::String(id.to_string()),
+            }],
+        };
+        writer.add_document(doc("a")).unwrap();
+        let manager = SearcherManager::open_from_writer(Arc::clone(&writer) as _).unwrap();
+        assert_eq!(manager.acquire().unwrap().num_docs(), 1);
+        assert!(manager.is_searcher_current().unwrap());
+
+        writer.add_document(doc("b")).unwrap();
+        writer.add_document(doc("c")).unwrap();
+        assert!(!manager.is_searcher_current().unwrap());
+        assert!(manager.maybe_refresh().unwrap());
+        let s = manager.acquire().unwrap();
+        assert_eq!(s.num_docs(), 3);
+        assert!(s.is_nrt());
+        assert!(manager.is_searcher_current().unwrap());
+        // Nothing was committed.
+        assert!(lucene_index::segment_infos::read_latest(dir).is_err());
+        assert!(manager.maybe_refresh().unwrap());
+        assert_eq!(manager.acquire().unwrap().num_docs(), 3);
+        manager.close().unwrap();
     }
 }
