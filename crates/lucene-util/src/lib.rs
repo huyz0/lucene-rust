@@ -16,6 +16,7 @@ pub mod packed_longs;
 pub mod quantization;
 pub mod simd;
 pub mod small_float;
+pub mod sorter;
 pub mod sparse_fixed_bit_set;
 pub mod splittable_random;
 pub mod string_helper;
