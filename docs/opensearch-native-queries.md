@@ -53,8 +53,15 @@ A request runs native when **all** of these hold:
   over fields that score with the default BM25 (`k1 = 1.2`, `b = 0.75`), with
   every `TermQuery` scoring from the reader's own statistics (not blended
   `TermStates`, as `multi_match` `cross_fields` builds);
-- every field in the index uses Lucene 10.5.0's default postings format
-  (`Lucene104`). An index with a `completion` field does not.
+- every field in the index uses a default postings format some Lucene
+  9.0-10.5 wrote (`Lucene90`, `Lucene99`, `Lucene912`, `Lucene101`,
+  `Lucene103`, `Lucene104`; M8 T8.5) -- so an index an OpenSearch 2.x node
+  wrote is served natively after the upgrade to 3.8.0
+  (`scripts/verify-opensearch-upgrade.sh`). An index with a `completion`
+  field does not, and neither does one the k-NN plugin wrote with
+  `index.knn: true`: its segments carry the plugin's own codec
+  (`KNN9120Codec` from 2.19), which the native reader does not open
+  (`native_open_failed`, once per reader).
 
 Totals follow OpenSearch's own shortcut (`shortcutTotalHitCount`): a
 `match_all` reports the reader's `numDocs`, and a `term` its document
