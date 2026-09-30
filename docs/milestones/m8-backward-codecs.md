@@ -147,7 +147,44 @@ five.
   block skipping and no impacts (the skip data, trailing or inline, is
   stepped over); the FST-to-trie conversion is an open-time pass over each
   field's index. No benchmark against Lucene exists yet for either.
-### T8.4 — Merge old into new
+### T8.4 — Merge old into new · delivered 2026-09-30
+
+This port's `IndexWriter` merges segments any 9.0-10.4 release wrote into
+`Lucene104` ones, by `force_merge` and by an ordinary policy merge at commit,
+and applies buffered deletes to them. What had to change was only where the
+writer finds an old segment's files: its postings are named (and their headers
+suffixed) after the segment's own format (`_0_Lucene90_0.tim`), read off the
+segment's `.tim` (`index_writer.rs::postings_file_base`), and its vectors sit
+in a retired format's `.vem`/`.vec`/`.vex` triple
+(`index_writer.rs::retired_vector_files`), served by
+`RetiredHnswVectorsReader`. The merged graph is built from scratch over a
+retired source's vectors, as 10.5.0's `IncrementalHnswGraphMerger` does for a
+reader that is not an `HnswGraphProvider`.
+
+**Verification.** `scripts/verify-bwc-merge.sh` (Java 10.5.0 +
+backward-codecs; 20 of 20 pass): for every fixture version, (1) the old index
+alone through `force_merge(1)`, and (2) the old index plus three segments Lucene
+10.5.0 appends to it (`fixtures/bwc/BwcAppend.java`, with deletes against the
+old segments) through an ordinary `TieredMergePolicy` merge that takes old and
+new segments together. `fixtures/bwc/BwcMergeCheck.java` then requires
+`CheckIndex` clean, every segment the merge wrote to be `Lucene104` (postings
+`Lucene104`, vectors `Lucene99HnswVectorsFormat`), and every live input
+document in the output with all its content: per-field SHA-256 digests over
+postings (positions, offsets, payloads), norms, the five doc-values types,
+points, stored fields, term vectors and vectors, with documents matched by
+their stored fields (a merge may order its sources either way). Seen to fail:
+one extra delete, and one changed numeric doc value, in a merged copy. On the
+Rust side, `bwc_fixtures.rs::every_version_force_merges_into_lucene104`
+deletes a document of an old segment by term, force-merges, and requires one
+`Lucene104` segment, a clean `CheckIndex` and every query of the 34-query set
+matching as many documents as before; with the delete path reverted to
+`Lucene104` file names it fails (`NotFound`).
+
+**Divergence found, not fixed here:** `IndexWriter::force_merge` merges the
+smallest segments first and concatenates them in that order, where 10.5.0's
+`TieredMergePolicy.findForcedMerges` merges everything in size-descending
+order in its single-segment case -- so the merged segment numbers its
+documents in a different order than Lucene's would (contents equal).
 ### T8.5 — Plugin: drop the `postings_format` fallback for supported versions
 
 ---
@@ -156,8 +193,9 @@ five.
 
 - [ ] Every fixture index from T8.1 opens, passes this port's `CheckIndex`,
       and returns the same hits and scores as the Lucene version that wrote it.
-- [ ] Merging a mixed-version index yields `Lucene104` segments that real
-      Lucene 10.5.0 reads and `CheckIndex` passes.
+- [x] Merging a mixed-version index yields `Lucene104` segments that real
+      Lucene 10.5.0 reads and `CheckIndex` passes. (`scripts/verify-bwc-merge.sh`,
+      T8.4.)
 - [ ] A cluster upgraded from OpenSearch 2.x serves its old index natively,
       verified by `verify-opensearch.sh` against a snapshot restored from 2.x.
 - [ ] Reading an old format is no slower than Lucene reading it.
