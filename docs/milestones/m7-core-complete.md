@@ -124,6 +124,13 @@ Delivered (ported, not yet benchmarked): `STRING`, `SortedSetSortField` and
 (`lucene-index/src/index_sorter.rs`), and `CheckIndex.testSort` for every
 kind; differential against `GenStringSortedIndex` and, Rust-written, against
 Lucene's own `IndexWriter` (`VerifyStringSortedIndex`).
+
+Delivered (ported, not yet benchmarked): the `MergeScheduler` API --
+`SerialMergeScheduler`, `NoMergeScheduler`, `ConcurrentMergeScheduler` (merge
+thread pool, `maxThreadCount`/`maxMergeCount`, producer stalls, pausing big
+merges, the auto IO throttle through `MergeRateLimiter`) and
+`MultiIndexMergeScheduler` -- in `lucene-index/src/merge_scheduler.rs`, driven
+by `ConcurrentIndexWriter::with_merge_scheduler`.
 ### T7.8 — `StandardTokenizer` and the attribute model · delivered 2026-09-30, two rows partial
 
 `crates/lucene-analysis` is now Lucene's streaming model: `TokenStream`/
