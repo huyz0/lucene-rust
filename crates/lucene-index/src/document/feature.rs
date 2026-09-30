@@ -141,6 +141,7 @@ impl IndexableField for FeatureField {
             tokens: vec![token],
             final_position_increment: 0,
             final_offset: 0,
+            end_attributes: None,
         }))
     }
 }

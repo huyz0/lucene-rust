@@ -658,9 +658,10 @@ impl IndexableField for BinaryColumnAdapter {
     fn token_stream(&self, analyzer: &Analyzer) -> Result<Option<FieldTokens>> {
         match &self.value {
             CellValue::Tokens(t) => Ok(Some(t.clone())),
-            _ if self.field_type.tokenized() => {
-                Ok(self.decoded().map(|s| analyzer.analyze_stream(&s).into()))
-            }
+            _ if self.field_type.tokenized() => self
+                .decoded()
+                .map(|s| super::analyze_field(analyzer, self.name(), &s))
+                .transpose(),
             _ => Ok(None),
         }
     }

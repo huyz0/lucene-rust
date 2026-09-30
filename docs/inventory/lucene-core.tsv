@@ -358,7 +358,7 @@ index/EmptyDocValuesProducer	not-needed	abstract convenience base for a DocValue
 index/ExitableDirectoryReader	ported	crates/lucene-search/src/reader/exitable.rs::ExitableDirectoryReader
 index/FieldInfo	ported	crates/lucene-codecs/src/field_infos.rs::FieldInfo
 index/FieldInfos	ported	crates/lucene-codecs/src/field_infos.rs::FieldInfos
-index/FieldInvertState	partial	crates/lucene-index/src/similarity.rs::FieldInvertState -- M7: carries what `Similarity.computeNorm` reads (length, numOverlap, uniqueTermCount, DOCS index options), counted by crates/lucene-index/src/inverter.rs::invert_state; no maxTermFrequency, position, offset or attribute source
+index/FieldInvertState	ported	crates/lucene-index/src/similarity.rs::FieldInvertState
 index/FieldTermIterator	not-needed	iterator abstraction over PrefixCodedTerms for delete packets; Rust iterates the sorted Vec in FrozenBufferedUpdates.
 index/FieldUpdatesBuffer	ported	crates/lucene-index/src/buffered_updates.rs::FieldUpdatesBuffer
 index/Fields	ported	crates/lucene-codecs/src/blocktree.rs::BlockTreeFields
@@ -400,7 +400,7 @@ index/IndexWriterConfig	ported	crates/lucene-index/src/index_writer.rs::set_code
 index/IndexWriterEventListener	not-needed	callback hook for merge begin/end events used for metrics and tests; no effect on the index.
 index/IndexableField	ported	crates/lucene-index/src/document/mod.rs::IndexableField
 index/IndexableFieldType	ported	crates/lucene-index/src/document/mod.rs::FieldType
-index/IndexingChain	partial	crates/lucene-index/src/indexing_chain.rs::invert_documents -- M7: a PayloadAttribute or TermFrequencyAttribute a TokenFilter sets is not read by the inverter (payloads still come from BoxedPayloadSource, custom frequencies from add_document_with_custom_freq_terms)
+index/IndexingChain	ported	crates/lucene-index/src/document/indexing.rs::invert_fields_document
 index/KeepLastNCommitsDeletionPolicy	ported	crates/lucene-index/src/deletion_policy.rs::KeepLastNCommitsDeletionPolicy
 index/KeepOnlyLastCommitDeletionPolicy	ported	crates/lucene-index/src/deletion_policy.rs::KeepOnlyLastCommitDeletionPolicy
 index/KnnVectorValues	ported	crates/lucene-codecs/src/vectors.rs::FloatVectorValues

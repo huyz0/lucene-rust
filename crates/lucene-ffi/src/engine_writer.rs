@@ -263,6 +263,7 @@ fn inverted_field(c: &mut Cursor<'_>) -> Result<InvertedField, FfiStatus> {
             freq,
             positions,
             offsets,
+            payloads: Vec::new(),
         });
     }
     Ok(InvertedField {

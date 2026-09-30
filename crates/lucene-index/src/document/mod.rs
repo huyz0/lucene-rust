@@ -544,7 +544,8 @@ pub(crate) fn index_options_subsumes(this: IndexOptions, other: IndexOptions) ->
 
 /// One token of a field's token stream: the attributes `IndexingChain`
 /// reads (`TermToBytesRefAttribute`, `OffsetAttribute`,
-/// `PositionIncrementAttribute`, `TermFrequencyAttribute`).
+/// `PositionIncrementAttribute`, `TermFrequencyAttribute`,
+/// `PayloadAttribute`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldToken {
     pub term: Vec<u8>,
@@ -552,6 +553,9 @@ pub struct FieldToken {
     pub end_offset: i32,
     pub position_increment: i32,
     pub term_frequency: i32,
+    /// `PayloadAttribute.getPayload()`: an empty payload is no payload, as
+    /// `FreqProxTermsWriterPerField.writeProx` reads it.
+    pub payload: Option<Vec<u8>>,
 }
 
 impl FieldToken {
@@ -563,6 +567,7 @@ impl FieldToken {
             end_offset,
             position_increment: 1,
             term_frequency: 1,
+            payload: None,
         }
     }
 }
@@ -574,6 +579,55 @@ pub struct FieldTokens {
     pub tokens: Vec<FieldToken>,
     pub final_position_increment: i32,
     pub final_offset: i32,
+    /// Every attribute as `end()` left it -- `FieldInvertState`'s
+    /// `getAttributeSource()` after this value. `None` for a stream built
+    /// by hand, whose `end()` is taken to be `TokenStream.end()` plus the
+    /// two final values ([`crate::similarity::end_attributes`]).
+    pub end_attributes: Option<lucene_analysis::AttributeSource>,
+}
+
+impl FieldTokens {
+    /// [`Self::end_attributes`], or the plain `end()` state of the two final
+    /// values.
+    pub fn attributes_at_end(&self) -> lucene_analysis::AttributeSource {
+        self.end_attributes.clone().unwrap_or_else(|| {
+            crate::similarity::end_attributes(self.final_position_increment, self.final_offset)
+        })
+    }
+}
+
+/// `analyzer.tokenStream(field, text)` as `IndexingChain.invertTokenStream`
+/// consumes it: `reset()`, every token's term bytes, offsets, increment,
+/// `TermFrequencyAttribute` and `PayloadAttribute` -- whatever a
+/// `TokenFilter` in the analyzer's chain set -- then `end()`'s attributes and
+/// `close()`. An analysis error refuses the document, as Java's exception
+/// does.
+pub(crate) fn analyze_field(analyzer: &Analyzer, field: &str, text: &str) -> Result<FieldTokens> {
+    use lucene_analysis::TokenStream;
+    let analysis = |e: lucene_analysis::AnalysisError| illegal(e.to_string());
+    let mut ts = analyzer.token_stream(field, text).map_err(analysis)?;
+    ts.reset().map_err(analysis)?;
+    let mut tokens = Vec::new();
+    while ts.increment_token().map_err(analysis)? {
+        let a = ts.attributes();
+        tokens.push(FieldToken {
+            term: a.term_bytes().to_vec(),
+            start_offset: a.start_offset(),
+            end_offset: a.end_offset(),
+            position_increment: a.position_increment(),
+            term_frequency: a.term_frequency(),
+            payload: a.payload().map(<[u8]>::to_vec),
+        });
+    }
+    ts.end().map_err(analysis)?;
+    let end = ts.attributes().clone();
+    ts.close().map_err(analysis)?;
+    Ok(FieldTokens {
+        tokens,
+        final_position_increment: end.position_increment(),
+        final_offset: end.end_offset(),
+        end_attributes: Some(end),
+    })
 }
 
 impl From<lucene_analysis::AnalyzedTokens> for FieldTokens {
@@ -588,10 +642,12 @@ impl From<lucene_analysis::AnalyzedTokens> for FieldTokens {
                     end_offset: t.end_offset,
                     position_increment: t.position_increment,
                     term_frequency: 1,
+                    payload: None,
                 })
                 .collect(),
             final_position_increment: stream.final_position_increment,
             final_offset: stream.final_offset,
+            end_attributes: None,
         }
     }
 }
@@ -928,6 +984,7 @@ impl IndexableField for Field {
                     tokens: vec![FieldToken::new(b.into_owned(), 0, 0)],
                     final_position_increment: 0,
                     final_offset: 0,
+                    end_attributes: None,
                 }));
             }
             return Err(illegal("Non-Tokenized Fields must have a String value"));
@@ -935,10 +992,10 @@ impl IndexableField for Field {
         match &self.data {
             FieldData::TokenStream(t) => Ok(Some(t.clone())),
             FieldData::Reader(text) | FieldData::String(text) => {
-                Ok(Some(analyzer.analyze_stream(text).into()))
+                analyze_field(analyzer, &self.name, text).map(Some)
             }
             _ => match self.string_value() {
-                Some(s) => Ok(Some(analyzer.analyze_stream(&s).into())),
+                Some(s) => analyze_field(analyzer, &self.name, &s).map(Some),
                 None => Err(illegal(format!(
                     "Field must have either TokenStream, String, Reader or Number value; got {}",
                     self.name
@@ -956,6 +1013,7 @@ pub(crate) fn string_token_stream(value: &str) -> FieldTokens {
         tokens: vec![FieldToken::new(value.as_bytes().to_vec(), 0, len)],
         final_position_increment: 0,
         final_offset: len,
+        end_attributes: None,
     }
 }
 
@@ -1163,6 +1221,7 @@ impl IndexableField for StringField {
                 tokens: vec![FieldToken::new(self.binary.clone(), 0, 0)],
                 final_position_increment: 0,
                 final_offset: 0,
+                end_attributes: None,
             },
         }))
     }

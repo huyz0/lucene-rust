@@ -616,10 +616,12 @@ fn tokens(toks: Vec<(&str, i32, i32, i32, i32)>) -> FieldTokens {
                 end_offset: e,
                 position_increment: inc,
                 term_frequency: f,
+                payload: None,
             })
             .collect(),
         final_position_increment: 0,
         final_offset: 0,
+        end_attributes: None,
     }
 }
 
@@ -867,4 +869,83 @@ fn default_accessors_and_value_type_names() {
     }
     let mut ok = FieldType::new();
     ok.set_dimensions_with_index(0, 0, 0).unwrap();
+}
+
+/// An analyzer whose chain fails refuses the document, as Java's
+/// `IOException` out of `invertTokenStream` does; `None` returns to the
+/// standard analyzer.
+#[test]
+fn a_failing_analyzer_refuses_the_document() {
+    struct Broken;
+    impl lucene_analysis::AnalyzerDefinition for Broken {
+        fn create_components(
+            &self,
+            _field: &str,
+        ) -> std::result::Result<
+            lucene_analysis::TokenStreamComponents,
+            lucene_analysis::AnalysisError,
+        > {
+            Err(lucene_analysis::AnalysisError::IllegalState(
+                "broken".into(),
+            ))
+        }
+    }
+    let tmp = TempDir::new("document-broken-analyzer");
+    let dir = FsDirectory::open(tmp.path());
+    let mut w = writer(&dir);
+    w.set_analyzer(Some(std::sync::Arc::new(lucene_analysis::Analyzer::new(
+        Broken,
+    ))));
+    let d = doc(vec![Box::new(TextField::new("t", "a b", Store::No))]);
+    let e = w.add_fields_document(&d).unwrap_err().to_string();
+    assert!(e.contains("broken"), "{e}");
+    w.set_analyzer(None);
+    w.add_fields_document(&d).unwrap();
+}
+
+/// The state `computeNorm` is handed: the position and offset after the
+/// trailing gaps, the largest frequency, `end()`'s attributes -- and for a
+/// `DOCS` field a `maxTermFrequency` of 1 only while a term is new to the
+/// buffered segment.
+#[test]
+fn the_invert_state_carries_what_java_hands_compute_norm() {
+    #[derive(Debug, Default)]
+    struct Record(std::sync::Mutex<Vec<(String, FieldInvertState)>>);
+    impl NormSimilarity for Record {
+        fn compute_norm(&self, field: &str, state: &FieldInvertState) -> i64 {
+            self.0
+                .lock()
+                .unwrap()
+                .push((field.to_string(), state.clone()));
+            1
+        }
+    }
+    let tmp = TempDir::new("document-invert-state");
+    let dir = FsDirectory::open(tmp.path());
+    let mut w = writer(&dir);
+    let sim = std::sync::Arc::new(Record::default());
+    w.set_similarity(Some(sim.clone()));
+    w.set_position_increment_gap(10);
+    let mut docs_only = FieldType::new();
+    docs_only.set_index_options(IndexOptions::Docs).unwrap();
+    for _ in 0..2 {
+        let d = doc(vec![
+            Box::new(TextField::new("t", "a b a", Store::No)),
+            Box::new(TextField::new("t", "c ", Store::No)),
+            Box::new(Field::from_string("d", "x x", docs_only.clone()).unwrap()),
+        ]);
+        w.add_fields_document(&d).unwrap();
+    }
+    let states = sim.0.lock().unwrap();
+    let t = &states[0].1;
+    assert_eq!(states[0].0, "t");
+    // "a b a" at 0..2, gap 10, "c" at 13, gap 10.
+    assert_eq!((t.position, t.max_term_frequency, t.length), (23, 2, 4));
+    // Offsets: 5 + 1 + 2 + 1.
+    assert_eq!(t.offset, 9);
+    let end = t.attribute_source.as_ref().unwrap();
+    assert_eq!((end.end_offset(), end.position_increment()), (2, 0));
+    assert_eq!(states[1].0, "d");
+    assert_eq!(states[1].1.max_term_frequency, 1, "x is new to the segment");
+    assert_eq!(states[3].1.max_term_frequency, 0, "x is not any more");
 }

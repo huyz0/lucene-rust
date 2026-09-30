@@ -802,6 +802,10 @@ pub(crate) struct IndexingConfig {
     /// `Analyzer.getOffsetGap(String)` -- see
     /// [`IndexWriter::set_offset_gap`]. Java's default, `1`.
     offset_gap: i32,
+    /// `IndexWriterConfig.getAnalyzer()` for the document API -- see
+    /// [`IndexWriter::set_analyzer`]. `None` is the standard analyzer with
+    /// the two gaps above.
+    document_analyzer: Option<std::sync::Arc<Analyzer>>,
     /// The token-payload supplier for the `store_payloads` fields among
     /// [`Self::postings_fields`] -- this port's stand-in for the
     /// `PayloadAttribute` a real Lucene `TokenFilter` sets, see
@@ -1575,6 +1579,12 @@ impl IndexingConfig {
                         },
                         None => f.clone(),
                     };
+                    // How this segment's postings decode is its own `.fnm`'s
+                    // business: a document-API segment stores payloads for a
+                    // field exactly when one of its documents gave one
+                    // (`FreqProxTermsWriterPerField.sawPayloads`), whatever
+                    // the writer's schema says.
+                    info.store_payloads = f.store_payloads;
                     info.doc_values_gen = -1;
                     info
                 })
@@ -2833,7 +2843,7 @@ impl IndexingConfig {
     /// order the caller declared the fields.
     /// The similarity norms are computed with: the configured one, or
     /// Lucene's default (`BM25Similarity`'s `computeNorm`).
-    fn norm_similarity(&self) -> &dyn NormSimilarity {
+    pub(crate) fn norm_similarity(&self) -> &dyn NormSimilarity {
         match &self.similarity {
             Some(s) => s.as_ref(),
             None => &crate::similarity::DefaultNormSimilarity,
@@ -3394,6 +3404,12 @@ pub struct IndexWriter<'d> {
     /// `pending_docs` like [`Self::pending_vectors`]; empty for a document
     /// added through a native [`Document`] entry point.
     pending_explicit: Vec<ExplicitFields>,
+    /// The terms the pending documents gave each `DOCS` field that has
+    /// norms: the buffered segment's term hash, which decides a `DOCS`
+    /// field's `FieldInvertState.maxTermFrequency` (`newTerm` sets it to 1,
+    /// `addTerm` for a term the segment already holds leaves it at 0).
+    /// Cleared with the buffer.
+    pending_docs_terms: std::collections::HashMap<i32, std::collections::HashSet<Vec<u8>>>,
     /// `SegmentCommitInfo.softDelCount` as last computed, per segment, keyed by
     /// the `(del_gen, doc_values_gen, field_infos_gen)` it was computed at --
     /// see [`IndexWriter::stamp_soft_delete_counts`].
@@ -4055,13 +4071,51 @@ fn quantized_vector_files(
 
 impl<'d> IndexWriter<'d> {
     /// `IndexWriterConfig.getAnalyzer()` for the document API.
-    pub(crate) fn writer_analyzer(&self) -> Analyzer {
-        self.cfg.analyzer()
+    pub(crate) fn writer_analyzer(&self) -> std::sync::Arc<Analyzer> {
+        match &self.cfg.document_analyzer {
+            Some(a) => std::sync::Arc::clone(a),
+            None => std::sync::Arc::new(self.cfg.analyzer()),
+        }
     }
 
-    /// `IndexWriterConfig.getSimilarity()`'s norm half, for the document API.
-    pub(crate) fn writer_norm_similarity(&self) -> &dyn NormSimilarity {
-        self.cfg.norm_similarity()
+    /// `new IndexWriterConfig(analyzer)`: the analyzer the document API
+    /// ([`crate::document`]) runs every tokenized text field through --
+    /// `analyzer.tokenStream(field, text)`, with the analyzer's own
+    /// per-field position-increment and offset gaps. Every attribute its
+    /// chain sets is read as `IndexingChain` reads it: a `TokenFilter`'s
+    /// `PayloadAttribute` becomes the occurrence's payload (and the
+    /// segment's field `storePayloads`), its `TermFrequencyAttribute` the
+    /// custom frequency. `None` returns to the standard analyzer with
+    /// [`IndexWriter::set_position_increment_gap`]'s and
+    /// [`IndexWriter::set_offset_gap`]'s gaps, which only that default
+    /// reads. The native stored-text path keeps the standard analyzer.
+    pub fn set_analyzer(&mut self, analyzer: Option<std::sync::Arc<Analyzer>>) {
+        self.cfg_mut().document_analyzer = analyzer;
+    }
+
+    /// The configuration as it stands, shared: what the document API reads
+    /// the similarity from while it updates the writer's term hash.
+    pub(crate) fn config_snapshot(&self) -> std::sync::Arc<IndexingConfig> {
+        std::sync::Arc::clone(&self.cfg)
+    }
+
+    /// Records `terms` in the buffered segment's term hash of `DOCS` field
+    /// `field`; whether one of them was new to it -- `newTerm`, which is
+    /// what sets such a field's `FieldInvertState.maxTermFrequency` (to 1).
+    pub(crate) fn note_docs_terms<'t>(
+        &mut self,
+        field: i32,
+        terms: impl Iterator<Item = &'t Vec<u8>>,
+    ) -> bool {
+        let seen = self.pending_docs_terms.entry(field).or_default();
+        let mut new = false;
+        for term in terms {
+            if !seen.contains(term) {
+                seen.insert(term.clone());
+                new = true;
+            }
+        }
+        new
     }
 
     /// The configuration, to change it: copied first if a
@@ -4457,6 +4511,7 @@ impl<'d> IndexWriter<'d> {
                 postings_fields: Vec::new(),
                 position_increment_gap: 0,
                 offset_gap: 1,
+                document_analyzer: None,
                 payload_source: None,
                 custom_freq_postings_field: None,
                 term_vector_fields: Vec::new(),
@@ -4498,6 +4553,7 @@ impl<'d> IndexWriter<'d> {
             rollback_segments,
             pending_vectors: Vec::new(),
             pending_explicit: Vec::new(),
+            pending_docs_terms: std::collections::HashMap::new(),
             soft_delete_counts,
             soft_deletes_retention: None,
             max_docs: MAX_DOCS,
@@ -6803,6 +6859,7 @@ impl<'d> IndexWriter<'d> {
         self.pending_custom_freq_terms.clear();
         self.pending_vectors.clear();
         self.pending_explicit.clear();
+        self.pending_docs_terms.clear();
         self.ram_bytes_used = 0;
         self.pending_has_blocks = false;
         let private = self.delete_queue.freeze_private_buffer(&segment_name);
@@ -7404,12 +7461,12 @@ impl<'d> IndexWriter<'d> {
                         if !first_is_string {
                             return Ok(None);
                         }
+                        // No inverter: no tokens, so `norm_value`'s `0`
+                        // without reading the rest.
                         let state = inverter.and_then(|inv| inv.invert_state(doc_id)).unwrap_or(
                             FieldInvertState {
                                 docs_only: config.docs_only,
-                                length: 0,
-                                num_overlap: 0,
-                                unique_term_count: 0,
+                                ..FieldInvertState::default()
                             },
                         );
                         norm_value(similarity, &config.name, &state).map(Some)
@@ -7649,17 +7706,17 @@ impl<'d> IndexWriter<'d> {
                 // `None` == this doc does not carry the field at all, so it
                 // gets no norm; `Some(0)` == it carries it but produced no
                 // tokens, which is Java's explicit zero.
-                // `(length, uniqueTermCount)` per document that carries the
-                // field. The analyzer never emits a token at a position
-                // increment of 0, so `numOverlap` is 0 on this path.
-                let mut counts: Vec<Option<(u32, u32)>> = docs
+                // `(length, uniqueTermCount, maxTermFrequency)` per document
+                // that carries the field; the rest of its `FieldInvertState`
+                // is the inversion's [`crate::indexing_chain::FieldEnd`].
+                let mut counts: Vec<Option<(u32, u32, u32)>> = docs
                     .iter()
                     .map(|doc| {
                         doc.fields
                             .iter()
                             .find(|f| f.field_number == config.field_number)
                             .and_then(|f| match &f.value {
-                                FieldValue::String(_) => Some((0u32, 0u32)),
+                                FieldValue::String(_) => Some((0u32, 0u32, 0u32)),
                                 _ => None,
                             })
                     })
@@ -7669,29 +7726,51 @@ impl<'d> IndexWriter<'d> {
                     if field != &config.name {
                         continue;
                     }
-                    for entry in entries {
+                    for (i, entry) in entries.iter().enumerate() {
                         // `entry.doc_id` is an index into `docs` that this
                         // writer's own inversion produced, so it addresses
                         // `counts` (which is `docs.len()` long) by
                         // construction -- and only ever for a doc whose
                         // presence test above already said `Some`. One entry
                         // per `(term, doc)`: each is a distinct term.
-                        if let Some((length, unique)) = counts[entry.doc_id as usize].as_mut() {
+                        if let Some((length, unique, max_freq)) =
+                            counts[entry.doc_id as usize].as_mut()
+                        {
                             *length = accumulate_field_length(*length, entry.term_freq());
                             *unique = unique.saturating_add(1);
+                            // Without frequencies only `newTerm` -- the
+                            // term's first document in the segment -- sets
+                            // it, to 1.
+                            let freq = if config.docs_only {
+                                u32::from(i == 0)
+                            } else {
+                                u32::try_from(entry.term_freq()).unwrap_or(0)
+                            };
+                            *max_freq = (*max_freq).max(freq);
                         }
                     }
                 }
                 let values: Vec<Option<i64>> = counts
                     .into_iter()
-                    .map(|c| {
-                        c.map(|(length, unique)| {
+                    .enumerate()
+                    .map(|(doc, c)| {
+                        c.map(|(length, unique, max_freq)| {
                             let clamp = |n: u32| i32::try_from(n).unwrap_or(i32::MAX);
+                            let end = inverted
+                                .field_end(&config.name, doc as i32)
+                                .unwrap_or_default();
                             let state = FieldInvertState {
                                 docs_only: config.docs_only,
+                                position: end.position,
                                 length: clamp(length),
-                                num_overlap: 0,
+                                num_overlap: end.num_overlap,
+                                offset: end.offset,
+                                max_term_frequency: clamp(max_freq),
                                 unique_term_count: clamp(unique),
+                                attribute_source: Some(crate::similarity::end_attributes(
+                                    end.final_increment,
+                                    end.final_offset,
+                                )),
                             };
                             norm_value(similarity, &config.name, &state)
                         })
@@ -9812,6 +9891,7 @@ impl<'d> IndexWriter<'d> {
         self.pending_custom_freq_terms.clear();
         self.pending_vectors.clear();
         self.pending_explicit.clear();
+        self.pending_docs_terms.clear();
         self.ram_bytes_used = 0;
         // Only ever `Some` inside `flush()`, and cleared at its end -- but a
         // `flush()` that fails *after* publishing the segment (in
@@ -9888,6 +9968,7 @@ impl<'d> IndexWriter<'d> {
         self.pending_custom_freq_terms.clear();
         self.pending_vectors.clear();
         self.pending_explicit.clear();
+        self.pending_docs_terms.clear();
         self.ram_bytes_used = 0;
         self.pending_has_blocks = false;
         // Java's `deleteAll`: `docWriter.lockAndAbortAll()` (which clears the

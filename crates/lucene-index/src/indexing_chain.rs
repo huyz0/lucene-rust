@@ -281,6 +281,36 @@ pub type TermKey = (String, String);
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InMemoryInvertedIndex {
     pub terms: BTreeMap<TermKey, TermPostingList>,
+    /// Per field, every inverted document's [`FieldEnd`], ascending by
+    /// document: the part of `FieldInvertState` the postings cannot
+    /// reconstruct.
+    pub field_ends: BTreeMap<String, Vec<(i32, FieldEnd)>>,
+}
+
+/// Where `IndexingChain.PerField.invert` left one document's field: the
+/// `FieldInvertState` values a posting list does not carry.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FieldEnd {
+    /// `getPosition()`: after the last value's final increment and gap.
+    pub position: i32,
+    /// `getOffset()`: after the last value's final offset and gap.
+    pub offset: i32,
+    /// `getNumOverlap()`: tokens at a position increment of `0`.
+    pub num_overlap: i32,
+    /// The last value's `end()` increment and offset: its attribute source,
+    /// every other attribute cleared by the standard chain's `end()`.
+    pub final_increment: i32,
+    pub final_offset: i32,
+}
+
+impl InMemoryInvertedIndex {
+    /// `field`'s [`FieldEnd`] for `doc`, if it inverted that document.
+    pub fn field_end(&self, field: &str, doc: i32) -> Option<FieldEnd> {
+        let ends = self.field_ends.get(field)?;
+        ends.binary_search_by_key(&doc, |(d, _)| *d)
+            .ok()
+            .map(|i| ends[i].1)
+    }
 }
 
 impl InMemoryInvertedIndex {
@@ -342,6 +372,9 @@ impl InMemoryInvertedIndex {
             for entry in &postings.entries {
                 bytes += entry.occurrences.capacity() * std::mem::size_of::<Occurrence>();
             }
+        }
+        for (field, ends) in &self.field_ends {
+            bytes += field.capacity() + ends.capacity() * std::mem::size_of::<(i32, FieldEnd)>();
         }
         bytes
     }
@@ -495,6 +528,7 @@ pub fn invert_documents_with_payloads(
     // of thousands of documents times a handful of fields, so a linear
     // first-appearance search would be quadratic in the batch. The `Vec` is
     // what keeps first-appearance order, which a `HashMap` alone would lose.
+    let mut field_ends: BTreeMap<String, Vec<(i32, FieldEnd)>> = BTreeMap::new();
     let mut group_keys: Vec<(i32, &str)> = Vec::new();
     let mut groups: Vec<Vec<usize>> = Vec::new();
     let mut group_of: HashMap<(i32, &str), usize> = HashMap::new();
@@ -520,10 +554,14 @@ pub fn invert_documents_with_payloads(
         // `FieldInvertState.reset()`: `position = -1`, `offset = 0`.
         let mut position = -1i32;
         let mut offset = 0i32;
+        let mut end = FieldEnd::default();
         for &index in group {
             let text = docs[index].2;
             let stream = analyzer.analyze_stream(text);
             for token in stream.tokens {
+                if token.position_increment == 0 {
+                    end.num_overlap = end.num_overlap.saturating_add(1);
+                }
                 position = advance_position(position, token.position_increment);
                 let occurrence = Occurrence {
                     position,
@@ -565,6 +603,17 @@ pub fn invert_documents_with_payloads(
             offset = offset.saturating_add(stream.final_offset);
             position = advance_position(position, analyzer.position_increment_gap());
             offset = offset.saturating_add(analyzer.offset_gap());
+            end.final_increment = stream.final_position_increment;
+            end.final_offset = stream.final_offset;
+        }
+        end.position = position;
+        end.offset = offset;
+        // Looked up before inserting, so a field's name is allocated once.
+        match field_ends.get_mut(field) {
+            Some(ends) => ends.push((doc_id, end)),
+            None => {
+                field_ends.insert(field.to_string(), vec![(doc_id, end)]);
+            }
         }
 
         for (term, (occurrences, payload_bytes, payload_lengths)) in per_term.drain() {
@@ -594,10 +643,14 @@ pub fn invert_documents_with_payloads(
     }
     entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
 
+    for ends in field_ends.values_mut() {
+        ends.sort_by_key(|(doc, _)| *doc);
+    }
     InMemoryInvertedIndex {
         // `BTreeMap::from_iter` over already-sorted, deduplicated pairs builds
         // the tree bottom-up in O(n) rather than n O(log n) insertions.
         terms: entries.into_iter().collect(),
+        field_ends,
     }
 }
 
