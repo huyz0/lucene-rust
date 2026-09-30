@@ -117,9 +117,29 @@ fn corrupt(msg: String) -> lucene_store::Error {
     lucene_store::Error::Corrupted(msg)
 }
 
+/// `1` in the low bit of every `primitive`-bit lane of a `word_bits`-bit
+/// value: multiplying a `bits <= primitive` mask by it replicates the mask
+/// into every lane without carries -- [`lane_mask`] in one multiply.
+fn lane_ones(primitive: u32, word_bits: u32) -> u64 {
+    match (primitive, word_bits) {
+        (8, 64) => 0x0101_0101_0101_0101,
+        (16, 64) => 0x0001_0001_0001_0001,
+        (32, 64) => 0x0000_0001_0000_0001,
+        (8, 32) => 0x0101_0101,
+        (16, 32) => 0x0001_0001,
+        _ => 1,
+    }
+}
+
 /// Decodes one block of 128 values packed with `bits_per_value` bits each,
 /// in `word`-sized words, using the primitive size `primitives` assigns that
 /// width: `ForUtil.decode` (`decodeSlow` plus the matching `expandN`).
+///
+/// The packed words are read in one call (`in.readLongs(tmp, 0, numLongs)`)
+/// and every lane mask is one multiply of a precomputed replication constant
+/// (`lane_ones`), where the first cut read word by word and rebuilt each
+/// mask lane by lane inside the tail loop. Same bits either way; see
+/// `for_decode_matches_encode_for_every_width` and the `bwc` fixtures.
 pub fn for_decode<R: DataInput>(
     r: &mut R,
     bits_per_value: u32,
@@ -142,17 +162,36 @@ pub fn for_decode<R: DataInput>(
         BLOCK_SIZE * primitive as usize / word_bits as usize,
         bits_per_value as usize * BLOCK_SIZE / word_bits as usize,
     );
+    // `in.readLongs(tmp, 0, numWordsPerShift)` (or `readInts`): one read of
+    // `num_bytes(bits_per_value)` bytes, at most 512.
+    let mut bytes = [0u8; 4 * BLOCK_SIZE];
+    let packed = &mut bytes[..num_bytes(bits_per_value)];
+    r.read_bytes(packed)?;
     let mut tmp = [0u64; BLOCK_SIZE];
-    for t in tmp.iter_mut().take(num_words_per_shift) {
-        *t = match word {
-            Word::Long => r.read_i64()? as u64,
-            Word::Int => u64::from(r.read_i32()? as u32),
-        };
+    match word {
+        Word::Long => {
+            for (t, b) in tmp.iter_mut().zip(packed.chunks_exact(8)) {
+                *t = u64::from_le_bytes(b.try_into().expect("8 bytes"));
+            }
+        }
+        Word::Int => {
+            for (t, b) in tmp.iter_mut().zip(packed.chunks_exact(4)) {
+                *t = u64::from(u32::from_le_bytes(b.try_into().expect("4 bytes")));
+            }
+        }
     }
+    let tmp = &tmp[..num_words_per_shift];
+
+    let ones = lane_ones(primitive, word_bits);
+    // `maskN(bits)` in every lane, for `bits <= primitive`.
+    // ARITH: `bits <= primitive <= 32`, so `1 << bits` fits a `u64`, and a
+    // lane's mask times the lane-ones constant cannot carry across lanes.
+    #[allow(clippy::arithmetic_side_effects)]
+    let mask = |bits: u32| ((1u64 << bits) - 1) * ones;
 
     // `decodeSlow`, over `collapsed` words of `word_bits / primitive` lanes.
     let mut collapsed = [0u64; BLOCK_SIZE];
-    let value_mask = lane_mask(bits_per_value, primitive, word_bits);
+    let value_mask = mask(bits_per_value);
     let mut idx = 0usize;
     // ARITH: `shift` starts at `primitive - bits_per_value >= 0` and steps
     // down by `bits_per_value` while it stays non-negative; `idx` advances by
@@ -162,10 +201,13 @@ pub fn for_decode<R: DataInput>(
     let remaining_bits_per_word = {
         let mut shift = primitive as i32 - bits_per_value as i32;
         while shift >= 0 {
-            for t in tmp.iter().take(num_words_per_shift) {
-                collapsed[idx] = (t >> shift) & value_mask;
-                idx += 1;
+            for (c, t) in collapsed[idx..idx + num_words_per_shift]
+                .iter_mut()
+                .zip(tmp)
+            {
+                *c = (t >> shift) & value_mask;
             }
+            idx += num_words_per_shift;
             shift -= bits_per_value as i32;
         }
         (shift + bits_per_value as i32) as u32
@@ -183,28 +225,26 @@ pub fn for_decode<R: DataInput>(
     {
         if idx < num_words {
             let rbw = remaining_bits_per_word;
-            let rbw_mask = lane_mask(rbw, primitive, word_bits);
+            let rbw_mask = mask(rbw);
             let mut tmp_idx = 0usize;
             let mut rbv = bits_per_value;
             while idx < num_words {
-                if tmp_idx >= num_words_per_shift {
+                let Some(&t) = tmp.get(tmp_idx) else {
                     return Err(corrupt("ForUtil: packed block ran out of words".into()));
-                }
+                };
                 if rbv >= rbw {
                     rbv -= rbw;
-                    collapsed[idx] |= (tmp[tmp_idx] & rbw_mask) << rbv;
+                    collapsed[idx] |= (t & rbw_mask) << rbv;
                     tmp_idx += 1;
                     if rbv == 0 {
                         idx += 1;
                         rbv = bits_per_value;
                     }
                 } else {
-                    collapsed[idx] |=
-                        (tmp[tmp_idx] >> (rbw - rbv)) & lane_mask(rbv, primitive, word_bits);
+                    collapsed[idx] |= (t >> (rbw - rbv)) & mask(rbv);
                     idx += 1;
                     let next = bits_per_value - rbw + rbv;
-                    collapsed[idx] |=
-                        (tmp[tmp_idx] & lane_mask(rbw - rbv, primitive, word_bits)) << next;
+                    collapsed[idx] |= (t & mask(rbw - rbv)) << next;
                     tmp_idx += 1;
                     rbv = next;
                 }
@@ -219,10 +259,10 @@ pub fn for_decode<R: DataInput>(
     // primitive`, so `primitive * (k + 1) <= word_bits` and the shift is in
     // `0..word_bits`; `k * num_words + i < lanes * num_words = 128`.
     #[allow(clippy::arithmetic_side_effects)]
-    for k in 0..(word_bits / primitive) as usize {
+    for (k, lane) in out.chunks_exact_mut(num_words).enumerate() {
         let shift = word_bits - primitive * (k as u32 + 1);
-        for i in 0..num_words {
-            out[k * num_words + i] = (collapsed[i] >> shift) & prim_mask;
+        for (o, c) in lane.iter_mut().zip(&collapsed[..num_words]) {
+            *o = (c >> shift) & prim_mask;
         }
     }
     Ok(())
