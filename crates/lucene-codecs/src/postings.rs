@@ -261,8 +261,18 @@ impl PostingsFormat {
 
     /// The generation a postings file's header names: the codec name up to
     /// `PostingsWriter`. `None` for a file of no postings format.
+    ///
+    /// Read in place, without allocating: [`DocInput::validated`] calls this
+    /// on every search's open of a segment. A codec name is ASCII shorter
+    /// than 128 bytes (`CodecUtil.writeHeader`), so its length is one byte.
     fn of_header(buf: &[u8]) -> Option<PostingsFormat> {
-        let name = codec_util::peek_codec_name(buf)?;
+        let magic = buf.get(..4)?;
+        if magic != codec_util::CODEC_MAGIC.to_be_bytes() {
+            return None;
+        }
+        let len = usize::from(*buf.get(4)?);
+        let name = buf.get(5..5usize.checked_add(len)?)?;
+        let name = std::str::from_utf8(name).ok()?;
         let prefix = name.split("PostingsWriter").next()?;
         Self::from_name(prefix)
     }
