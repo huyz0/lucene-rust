@@ -414,7 +414,7 @@ index/LogDocMergePolicy	ported	crates/lucene-index/src/merge_policy/log.rs::LogD
 index/LogMergePolicy	ported	crates/lucene-index/src/merge_policy/log.rs::LogMergePolicy
 index/MappedMultiFields	ported	crates/lucene-index/src/merge.rs::merge_postings
 index/MappingMultiPostingsEnum	ported	crates/lucene-index/src/merge.rs::merge_postings
-index/MergePolicy	partial	crates/lucene-index/src/merge_policy/api.rs::MergePolicy -- M7: `OneMerge.reorder`/`wrapForMerge` exist only as the reader-side `crates/lucene-search/src/reader/merge_readers.rs::MergeReaderHooks` (they take `CodecReader`s, which lucene-index cannot see); the lucene-index merge does not read through them (writer side), and `OneMerge` itself carries neither (a `OneMergeWrappingMergePolicy` wrapper rewrites the merge itself), and no `infoStream` messages
+index/MergePolicy	ported	crates/lucene-index/src/merge_policy/api.rs::MergePolicy
 index/MergeRateLimiter	ported	crates/lucene-index/src/merge_rate_limiter.rs::MergeRateLimiter
 index/MergeScheduler	ported	crates/lucene-index/src/merge_scheduler.rs::MergeScheduler
 index/MergeState	ported	crates/lucene-index/src/merge.rs::build_doc_id_maps

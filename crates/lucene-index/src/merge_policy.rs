@@ -100,8 +100,8 @@ pub mod temporal;
 pub mod upgrade;
 
 pub use api::{
-    BasicMergeContext, CompoundFileSettings, MergeContext, MergePolicy, MergeSegment,
-    MergeSpecification, MergeTrigger, NoMergePolicy, OneMerge, TieredMergePolicy,
+    BasicMergeContext, CompoundFileSettings, MergeContext, MergeHooks, MergePolicy, MergeSegment,
+    MergeSpecification, MergeTrigger, NoMergePolicy, OneMerge, PreparedMerge, TieredMergePolicy,
 };
 use lucene_store::directory::Directory;
 

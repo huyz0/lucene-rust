@@ -12,8 +12,16 @@
 //! with the per-input doc maps `mergeMiddle` keeps as `reorderDocMaps`.
 //!
 //! `hasBlocksButNoParentField` (no reorder of an index with document blocks
-//! but no parent field) is not checked: this layer's leaves do not expose
-//! `LeafMetaData.hasBlocks`.
+//! but no parent field) is not checked by [`prepare_merge_readers`]: this
+//! layer's leaves do not expose `LeafMetaData.hasBlocks`. The writer's own
+//! merge checks it before it asks [`SegmentMergeHooks`].
+//!
+//! [`SegmentMergeHooks`] is how the writer's merge (which reads segment
+//! files, below this crate) runs these hooks: it implements
+//! `lucene_index::merge_policy::MergeHooks` -- the trait a
+//! `lucene_index::merge_policy::OneMerge` carries -- by opening the merge's
+//! sources as readers, applying the hooks, and handing back the wrapped
+//! readers' live documents and the reorder's `newToOld`.
 
 use std::sync::Arc;
 
@@ -97,4 +105,83 @@ pub fn prepare_merge_readers(
         readers: vec![Arc::new(sorted)],
         reorder_doc_maps: Some(maps),
     })
+}
+
+/// A `OneMerge` subclass's hooks as the writer runs them: see the module
+/// doc. Attach with `OneMerge::with_hooks(Arc::new(SegmentMergeHooks::new(..)))`.
+pub struct SegmentMergeHooks {
+    hooks: Arc<dyn MergeReaderHooks>,
+}
+
+impl SegmentMergeHooks {
+    pub fn new(hooks: Arc<dyn MergeReaderHooks>) -> Self {
+        SegmentMergeHooks { hooks }
+    }
+}
+
+impl std::fmt::Debug for SegmentMergeHooks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SegmentMergeHooks")
+    }
+}
+
+impl lucene_index::merge_policy::MergeHooks for SegmentMergeHooks {
+    fn prepare(
+        &self,
+        dir: &dyn lucene_store::Directory,
+        sources: &lucene_index::segment_infos::SegmentInfos,
+        may_reorder: bool,
+    ) -> std::result::Result<lucene_index::merge_policy::PreparedMerge, String> {
+        let run = || -> Result<lucene_index::merge_policy::PreparedMerge> {
+            let reader = crate::directory_reader::DirectoryReader::open_at(dir, sources.clone())?;
+            let readers: Vec<Arc<dyn CodecReader>> = reader
+                .segment_readers()
+                .iter()
+                .map(|r| Arc::new(r.clone()) as Arc<dyn CodecReader>)
+                .collect();
+            if readers.len() != sources.segments.len() {
+                return Err(crate::Error::IllegalState(format!(
+                    "opened {} readers for {} merge sources",
+                    readers.len(),
+                    sources.segments.len()
+                )));
+            }
+            let merge = prepare_merge_readers(self.hooks.as_ref(), readers.clone(), !may_reorder)?;
+            // The wrapped readers' live documents: with a reorder, the one
+            // sorted view hides them, so they are taken from the wrapped
+            // inputs again (wrapping is expected to be deterministic).
+            let wrapped: Vec<Arc<dyn CodecReader>> = if merge.reorder_doc_maps.is_some() {
+                readers
+                    .into_iter()
+                    .map(|r| self.hooks.wrap_for_merge(r))
+                    .collect::<Result<_>>()?
+            } else {
+                merge.readers
+            };
+            let live_docs = wrapped.iter().map(|r| r.live_docs().cloned()).collect();
+            let new_to_old = merge.reorder_doc_maps.map(|maps| {
+                // `maps[i][d]` is input `i`'s document `d`'s new id.
+                let total: usize = maps.iter().map(Vec::len).sum();
+                let mut new_to_old = vec![0i32; total];
+                let mut base = 0i32;
+                for map in &maps {
+                    for (d, &new) in map.iter().enumerate() {
+                        if let Some(slot) = usize::try_from(new)
+                            .ok()
+                            .and_then(|n| new_to_old.get_mut(n))
+                        {
+                            *slot = base + d as i32;
+                        }
+                    }
+                    base += map.len() as i32;
+                }
+                new_to_old
+            });
+            Ok(lucene_index::merge_policy::PreparedMerge {
+                live_docs,
+                new_to_old,
+            })
+        };
+        run().map_err(|e| e.to_string())
+    }
 }
