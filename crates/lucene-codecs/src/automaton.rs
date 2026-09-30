@@ -515,6 +515,52 @@ pub trait TermAutomaton {
     fn utf8_total(&self, state: u32) -> bool;
 }
 
+/// A `CompiledAutomaton`'s byte automaton (`getByteRunnable()`: the
+/// determinized `ByteRunAutomaton`, or the `NFARunAutomaton`) as a
+/// [`TermAutomaton`], for `Terms.intersect(compiled, null)` --
+/// `IntersectTermsEnum` stepping `compiled.runAutomaton`. `-1` (a byte that
+/// leads nowhere) is [`DEAD`].
+pub struct RunnableTermAutomaton<'a>(pub &'a dyn lucene_util::automaton::ByteRunnable);
+
+impl RunnableTermAutomaton<'_> {
+    fn step_byte(&self, state: u32, byte: u32) -> u32 {
+        if state == DEAD {
+            return DEAD;
+        }
+        let next = self.0.step(state as i32, byte as i32);
+        u32::try_from(next).unwrap_or(DEAD)
+    }
+}
+
+impl TermAutomaton for RunnableTermAutomaton<'_> {
+    fn start(&self) -> u32 {
+        0
+    }
+    fn step(&mut self, state: u32, byte: u8) -> Option<u32> {
+        Some(self.step_byte(state, u32::from(byte)))
+    }
+    fn is_accept(&self, state: u32) -> bool {
+        state != DEAD && self.0.is_accept(state as i32)
+    }
+    fn last_live_byte(&mut self, state: u32) -> Option<Option<u8>> {
+        Some(
+            (0..=255u8)
+                .rev()
+                .find(|&b| self.step_byte(state, u32::from(b)) != DEAD),
+        )
+    }
+    fn first_live_from(&mut self, state: u32, from: u32) -> Option<Option<u8>> {
+        Some(
+            (from..=255)
+                .find(|&b| self.step_byte(state, b) != DEAD)
+                .map(|b| b as u8),
+        )
+    }
+    fn utf8_total(&self, _state: u32) -> bool {
+        false
+    }
+}
+
 impl TermAutomaton for std::sync::Arc<CompiledDfa> {
     #[inline]
     fn start(&self) -> u32 {
