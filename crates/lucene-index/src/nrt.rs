@@ -160,6 +160,11 @@ impl IndexWriter<'_> {
     ) -> Result<NrtSnapshot> {
         self.release_nrt_holds()?;
         self.flush()?;
+        // `getReader`'s point-in-time merges (`GET_READER`).
+        self.merge_on_full_flush(
+            crate::merge_policy::MergeTrigger::GetReader,
+            &std::collections::HashSet::new(),
+        )?;
         self.nrt_snapshot_of_live_view()
     }
 
