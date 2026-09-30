@@ -23,7 +23,7 @@ The writer side works like this:
 
 | Concern | How |
 |---|---|
-| Documents | Inverted in Java by `DocumentEncoder`, a port of `IndexingChain` / `FreqProxTermsWriterPerField` / `FieldInvertState`, including norms through the index's `Similarity`. The inverted fields cross JNI as one blob per operation, and Rust writes them as explicit documents (`lucene-index/src/index_writer/explicit.rs`). |
+| Documents | Inverted in Java by `DocumentEncoder`, a port of `IndexingChain` / `FreqProxTermsWriterPerField` / `FieldInvertState`, including payloads, and norms through the index's `Similarity`. The inverted fields cross JNI as one blob per operation, and Rust writes them as explicit documents (`lucene-index/src/index_writer/explicit.rs`). |
 | Updates and deletes | `softUpdateDocuments`: the new document (or delete tombstone) is added, and every earlier document with the `_id` gets `__soft_deletes`, atomically. |
 | Refresh | A Rust **commit**, carrying the live commit data. That data is evaluated under the writer's lock, as `IndexWriter` evaluates it inside `commit`. The engine's readers are Java `StandardDirectoryReader`s opened on those commits and reuse every unchanged segment reader. `SoftDeletesReader` applies soft deletes the way `IndexWriter`'s NRT readers do, and keeps fully soft-deleted segments for the history they hold. |
 | File lifetime | OpenSearch's `CombinedDeletionPolicy` runs in Java and names the commits to drop, and Rust deletes them. A reader pins its commit's files until it closes (`hold_commit` / `release_files`). |
@@ -63,7 +63,6 @@ false` on such indices, or add their fields to the creation mapping:
 - term vectors
 - vector fields
 - completion fields (their postings format)
-- payloads
 - custom term frequencies
 - any per-field postings or doc-values format other than Lucene104 / Lucene90
 

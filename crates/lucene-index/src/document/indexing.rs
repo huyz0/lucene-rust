@@ -732,6 +732,7 @@ impl IndexWriter<'_> {
                         freq: acc.freq,
                         positions: acc.positions,
                         offsets: acc.offsets,
+                        payloads: Vec::new(),
                     })
                     .collect(),
                 norm,
