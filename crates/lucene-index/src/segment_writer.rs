@@ -581,6 +581,71 @@ pub fn permute_in_place<T>(items: &mut [T], new_to_old: &[usize]) {
     }
 }
 
+/// `IndexWriter.createCompoundFile`: packs every file of the segment but its
+/// `.si` into `<segment>.cfs`/`.cfe` with [`compound_format::write`] (each
+/// entry named by `IndexFileNames.stripSegmentName`: `.fdt`,
+/// `_Lucene104_0.doc`, ...), deletes the loose files, and records the new
+/// layout in `info` (`setFiles`, `setUseCompoundFile(true)`) -- the step both
+/// `DocumentsWriterPerThread.sealFlushedSegment` and `IndexWriter.mergeMiddle`
+/// take before the `.si` is written. Returns the two new files, for syncing.
+///
+/// `.liv` and doc-values/field-infos update files are never packed: they are
+/// written after the `.si`, per generation, outside `info.files`.
+pub fn create_compound_file(
+    dir: &dyn Directory,
+    segment_name: &str,
+    info: &mut SegmentInfo,
+) -> Result<Vec<String>> {
+    let si_name = format!("{segment_name}.si");
+    let mut sub_files = Vec::with_capacity(info.files.len());
+    let mut packed = Vec::with_capacity(info.files.len());
+    for file in &info.files {
+        if *file == si_name {
+            continue;
+        }
+        let bytes = dir.open(file)?.to_vec();
+        let entry = file.strip_prefix(segment_name).unwrap_or(file).to_string();
+        sub_files.push((entry, bytes));
+        packed.push(file.clone());
+    }
+    let (cfs, cfe) = compound_format::write(&info.id, &sub_files)?;
+    let cfs_name = format!("{segment_name}.cfs");
+    let cfe_name = format!("{segment_name}.cfe");
+    write_file(dir, &cfs_name, &cfs)?;
+    write_file(dir, &cfe_name, &cfe)?;
+    for file in &packed {
+        dir.delete_file(file)?;
+    }
+    let lists_si = info.files.contains(&si_name);
+    info.files = vec![cfs_name.clone(), cfe_name.clone()];
+    if lists_si {
+        info.files.push(si_name);
+    }
+    info.is_compound_file = true;
+    Ok(vec![cfs_name, cfe_name])
+}
+
+/// [`create_compound_file`] for a segment whose `.si` is already on disk (a
+/// merge writes it before the writer's `useCompoundFile` decision): packs,
+/// then rewrites and syncs the `.si` so it records the compound layout --
+/// the same bytes Java's single, later `.si` write produces. Returns the
+/// segment's new file list.
+pub fn convert_to_compound(
+    dir: &dyn Directory,
+    segment_name: &str,
+    segment_id: &[u8; ID_LENGTH],
+) -> Result<Vec<String>> {
+    let si_name = format!("{segment_name}.si");
+    let si_bytes = dir.open(&si_name)?.to_vec();
+    let mut info = segment_info::parse(&si_bytes, segment_id)?;
+    let mut sync = create_compound_file(dir, segment_name, &mut info)?;
+    dir.delete_file(&si_name)?;
+    write_file(dir, &si_name, &segment_info::write(&info, ""))?;
+    sync.push(si_name);
+    dir.sync(&sync)?;
+    Ok(info.files)
+}
+
 fn write_file(dir: &dyn Directory, name: &str, bytes: &[u8]) -> Result<()> {
     let mut out = dir.create_output(name)?;
     out.write_bytes(bytes);

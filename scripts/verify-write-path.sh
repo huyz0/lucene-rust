@@ -213,6 +213,13 @@ CASES=(
   # CheckIndex. Until M4 IndexWriter wrote no points at all, and the merge
   # remap for points had only hand-built tests.
   "lucene-index|write_points_segment_fixture|points-segment|VerifyPointsSegment"
+  # Compound segments through IndexWriter (M7): three flushed with
+  # useCompoundFile, and the three merged into one by a policy whose
+  # useCompoundFile says yes. Lucene must open each through its own
+  # Lucene90CompoundFormat reader -- stored fields, postings with positions,
+  # norms and doc values all live inside the archive -- list no loose file in
+  # any .si, and pass CheckIndex.
+  "lucene-index|write_compound_segment_fixture|compound-segments|VerifyCompoundSegments"
 )
 
 echo "verify-write-path: compiling verifiers"

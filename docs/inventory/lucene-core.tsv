@@ -138,7 +138,7 @@ codecs/lucene104/PostingsUtil	ported	crates/lucene-codecs/src/postings.rs::read_
 codecs/lucene90/DeflateWithPresetDictCompressionMode	ported	crates/lucene-codecs/src/deflater.rs::Deflater
 codecs/lucene90/IndexedDISI	ported	crates/lucene-codecs/src/indexed_disi.rs::DisiCursor
 codecs/lucene90/LZ4WithPresetDictCompressionMode	ported	crates/lucene-codecs/src/stored_fields.rs::decompress_unit
-codecs/lucene90/Lucene90CompoundFormat	partial	crates/lucene-codecs/src/compound_format.rs::write -- M7: "the writer is ported and verified, but `IndexWriter` never calls it: every flush and merge writes loose files" (parity)
+codecs/lucene90/Lucene90CompoundFormat	ported	crates/lucene-codecs/src/compound_format.rs::write
 codecs/lucene90/Lucene90CompoundReader	ported	crates/lucene-index/src/compound_reader.rs::CompoundReader
 codecs/lucene90/Lucene90DocValuesConsumer	ported	crates/lucene-codecs/src/doc_values.rs::write_fields_with_skip_indexes
 codecs/lucene90/Lucene90DocValuesFormat	ported	crates/lucene-codecs/src/doc_values.rs::parse_meta
