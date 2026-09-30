@@ -41,22 +41,23 @@
 //! [`lucene_store::directory::Directory::delete_file`] is therefore a real
 //! error here, exactly as it is for Java on a non-Windows platform.
 //!
-//! **No `SnapshotDeletionPolicy`.** [`DeletionPolicy`] is an enum over Lucene's
-//! two *stateless* built-in policies rather than a trait with one
-//! implementation; a snapshotting policy needs a handle type this port has no
-//! caller for yet. See [`DeletionPolicy`].
-//!
-//! **No `IndexCommit` object.** Java's `CommitPoint` extends the public
-//! `IndexCommit` so a deletion policy (and `DirectoryReader.listCommits`) can
-//! inspect a commit's user data and segment count. [`CommitPoint`] here carries
-//! only what the refcounting needs -- generation, file list, and the
-//! `segments_N` name -- because nothing in this port consumes an `IndexCommit`.
+//! **Two ways to choose a policy.** [`DeletionPolicy`] is an enum over Lucene's
+//! two *stateless* built-ins, the fast path every existing caller uses. A
+//! pluggable `IndexDeletionPolicy` ([`crate::deletion_policy`]:
+//! `KeepLastNCommits`, `Snapshot`, `PersistentSnapshot`, or a caller's own) is
+//! installed with [`IndexFileDeleter::open_with_policy`] or
+//! [`IndexFileDeleter::set_custom_policy`] and then decides instead; each
+//! commit point is handed to it as an [`IndexCommit`] carrying its
+//! generation, files, segment count and user data, as Java's `CommitPoint`
+//! does.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use lucene_store::codec_util::ID_LENGTH;
 use lucene_store::directory::Directory;
 
+use crate::deletion_policy::{self, IndexCommit, IndexDeletionPolicy};
 use crate::segment_info;
 use crate::segment_infos::{self, SegmentCommitInfo, SegmentInfos};
 
@@ -68,6 +69,9 @@ pub enum Error {
     SegmentInfo(#[from] segment_info::Error),
     #[error(transparent)]
     SegmentInfos(#[from] segment_infos::Error),
+    /// A pluggable [`IndexDeletionPolicy`] failed.
+    #[error(transparent)]
+    Policy(#[from] deletion_policy::Error),
     /// Java's `IllegalStateException("file \"...\" has refCount=0, which should
     /// never happen on init")`: a `segments_N` found in the directory that no
     /// commit-point scan claimed. Since the scan loads *every* `segments*` file
@@ -94,12 +98,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// `IndexWriterConfig.setIndexDeletionPolicy(NoDeletionPolicy.INSTANCE)` and by
 /// replication setups that manage commit lifetime themselves).
 ///
-/// `SnapshotDeletionPolicy` and `PersistentSnapshotDeletionPolicy` are *not*
-/// modelled: both hand the caller a `IndexCommit` snapshot handle that pins a
-/// commit until released, which is a lifecycle this port has no caller for. An
-/// enum with the two stateless policies is honest about what exists; a trait
-/// with a single implementation would be a transliteration of a Java extension
-/// point nothing here extends.
+/// Every other policy -- `KeepLastNCommitsDeletionPolicy`,
+/// `SnapshotDeletionPolicy`, `PersistentSnapshotDeletionPolicy`, a caller's
+/// own -- is a [`crate::deletion_policy::IndexDeletionPolicy`], installed with
+/// [`IndexFileDeleter::open_with_policy`]/[`IndexFileDeleter::set_custom_policy`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DeletionPolicy {
     /// `KeepOnlyLastCommitDeletionPolicy`, Lucene's default: after each commit,
@@ -114,13 +116,17 @@ pub enum DeletionPolicy {
     KeepAll,
 }
 
-/// Java's `IndexFileDeleter.CommitPoint`, minus the `IndexCommit` surface (see
-/// the module doc comment).
+/// Java's `IndexFileDeleter.CommitPoint`; [`IndexFileDeleter::index_commits`]
+/// hands it to a policy as an [`IndexCommit`].
 #[derive(Debug, Clone)]
 struct CommitPoint {
     generation: i64,
     segments_file_name: String,
     files: Vec<String>,
+    /// `IndexCommit.getSegmentCount()`, for a pluggable policy.
+    segment_count: usize,
+    /// `IndexCommit.getUserData()`, for a pluggable policy.
+    user_data: Vec<(String, String)>,
 }
 
 /// Port of `IndexFileDeleter` + `org.apache.lucene.util.FileDeleter`.
@@ -132,6 +138,9 @@ struct CommitPoint {
 pub struct IndexFileDeleter<'d> {
     dir: &'d dyn Directory,
     policy: DeletionPolicy,
+    /// A pluggable `IndexDeletionPolicy` ([`crate::deletion_policy`]); when
+    /// set it decides instead of [`Self::policy`].
+    custom: Option<Arc<dyn IndexDeletionPolicy>>,
     /// `FileDeleter.refCounts`. A name present with count 0 is Java's
     /// `initRefCount` state: "this file exists and the deleter knows about it,
     /// but nothing references it" -- the set `getUnrefedFiles` returns.
@@ -184,9 +193,36 @@ impl<'d> IndexFileDeleter<'d> {
         current: &SegmentInfos,
         policy: DeletionPolicy,
     ) -> Result<Self> {
+        Self::open_inner(dir, current, policy, None)
+    }
+
+    /// [`Self::open`] under a pluggable [`IndexDeletionPolicy`]: its
+    /// `on_init` sees every commit found on disk, and its `on_commit` every
+    /// live commit after each new one -- `IndexWriterConfig
+    /// .setIndexDeletionPolicy` with a policy of the caller's own.
+    pub fn open_with_policy(
+        dir: &'d dyn Directory,
+        current: &SegmentInfos,
+        policy: Arc<dyn IndexDeletionPolicy>,
+    ) -> Result<Self> {
+        Self::open_inner(
+            dir,
+            current,
+            DeletionPolicy::KeepOnlyLastCommit,
+            Some(policy),
+        )
+    }
+
+    fn open_inner(
+        dir: &'d dyn Directory,
+        current: &SegmentInfos,
+        policy: DeletionPolicy,
+        custom: Option<Arc<dyn IndexDeletionPolicy>>,
+    ) -> Result<Self> {
         let mut deleter = IndexFileDeleter {
             dir,
             policy,
+            custom,
             ref_counts: HashMap::new(),
             commits: Vec::new(),
             last_files: Vec::new(),
@@ -218,6 +254,8 @@ impl<'d> IndexFileDeleter<'d> {
                 generation,
                 segments_file_name: file_name.clone(),
                 files: commit_files,
+                segment_count: sis.segments.len(),
+                user_data: sis.user_data.clone(),
             });
         }
 
@@ -236,7 +274,7 @@ impl<'d> IndexFileDeleter<'d> {
         deleter.delete_files(&unrefed)?;
 
         // `policy.onInit(commits)` then `deleteCommits()`.
-        deleter.apply_policy()?;
+        deleter.apply_policy(true)?;
 
         // "Always protect the incoming segmentInfos since sometimes it may not
         // be the most recent commit."
@@ -372,9 +410,11 @@ impl<'d> IndexFileDeleter<'d> {
                 generation,
                 segments_file_name,
                 files,
+                segment_count: infos.segments.len(),
+                user_data: infos.user_data.clone(),
             });
             self.commits.sort_by_key(|c| c.generation);
-            self.apply_policy()?;
+            self.apply_policy(false)?;
         } else {
             let previous = std::mem::take(&mut self.last_files);
             self.dec_ref_all(&previous)?;
@@ -405,7 +445,49 @@ impl<'d> IndexFileDeleter<'d> {
     /// being held rather than waiting for the next one.
     pub fn set_policy(&mut self, policy: DeletionPolicy) -> Result<()> {
         self.policy = policy;
-        self.apply_policy()
+        self.custom = None;
+        self.apply_policy(false)
+    }
+
+    /// [`Self::set_policy`] with a pluggable [`IndexDeletionPolicy`]:
+    /// `revisitPolicy()` runs its `on_commit` over the live commits at once.
+    pub fn set_custom_policy(&mut self, policy: Arc<dyn IndexDeletionPolicy>) -> Result<()> {
+        self.custom = Some(policy);
+        if self.commits.is_empty() {
+            return Ok(());
+        }
+        self.apply_policy(false)
+    }
+
+    /// `IndexFileDeleter.revisitPolicy()`: run the policy's `on_commit` over
+    /// the live commits again -- what `IndexWriter.deleteUnusedFiles` does, so
+    /// a commit a released snapshot no longer holds is dropped without waiting
+    /// for the next commit.
+    pub fn revisit_policy(&mut self) -> Result<()> {
+        if self.commits.is_empty() {
+            return Ok(());
+        }
+        self.apply_policy(false)?;
+        self.forget_dead_segments();
+        Ok(())
+    }
+
+    /// An `IndexCommit` for every live commit point, oldest first -- what a
+    /// deletion policy is handed, and `DirectoryReader.listCommits` over the
+    /// writer's directory.
+    pub fn index_commits(&self) -> Vec<IndexCommit> {
+        self.commits
+            .iter()
+            .map(|c| {
+                IndexCommit::new(
+                    c.generation,
+                    c.segments_file_name.clone(),
+                    c.files.clone(),
+                    c.segment_count,
+                    c.user_data.clone(),
+                )
+            })
+            .collect()
     }
 
     /// `IndexCommit.delete()` from a caller-run deletion policy -- how
@@ -607,7 +689,7 @@ impl<'d> IndexFileDeleter<'d> {
     /// `.si` itself before encoding, so a correctly written `.si` already lists
     /// itself. Older segments this port wrote did not; adding it here keeps the
     /// deleter from reclaiming the file that names all the others.
-    fn with_self_listing(segment_name: &str, mut files: Vec<String>) -> Vec<String> {
+    pub(crate) fn with_self_listing(segment_name: &str, mut files: Vec<String>) -> Vec<String> {
         let name = format!("{segment_name}.si");
         if !files.iter().any(|f| f == &name) {
             files.push(name);
@@ -703,7 +785,32 @@ impl<'d> IndexFileDeleter<'d> {
     /// `KeepOnlyLastCommitDeletionPolicy.onCommit` + `deleteCommits()`:
     /// everything except the newest commit point dies, and its files are
     /// decRef'd.
-    fn apply_policy(&mut self) -> Result<()> {
+    fn apply_policy(&mut self, init: bool) -> Result<()> {
+        if let Some(policy) = self.custom.clone() {
+            // `policy.onInit`/`onCommit(commits)`, then `deleteCommits()`:
+            // every commit the policy called `delete()` on is dropped and its
+            // files decRef'd. The current view stays protected by the last
+            // non-commit checkpoint's references, as in Java.
+            let mut list = self.index_commits();
+            if init {
+                policy.on_init(&mut list)?;
+            } else {
+                policy.on_commit(&mut list)?;
+            }
+            let commits = std::mem::take(&mut self.commits);
+            let mut doomed = Vec::new();
+            for (commit, decided) in commits.into_iter().zip(&list) {
+                if decided.is_deleted() {
+                    doomed.push(commit);
+                } else {
+                    self.commits.push(commit);
+                }
+            }
+            for commit in doomed {
+                self.dec_ref_all(&commit.files)?;
+            }
+            return Ok(());
+        }
         if self.policy == DeletionPolicy::KeepAll || self.commits.len() < 2 {
             return Ok(());
         }
@@ -867,6 +974,71 @@ pub(crate) fn parse_segment_name(file_name: &str) -> &str {
         .map(|i| i + 1)
         .unwrap_or(file_name.len());
     &file_name[..idx]
+}
+
+/// `SegmentInfos.files(true)` read off disk: the commit's `segments_N`, then
+/// every file each segment's `.si` names (the `.si` included), then its
+/// `.liv`, field-infos and doc-values-update files.
+fn commit_file_names(dir: &dyn Directory, infos: &SegmentInfos) -> Result<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    if let Some(name) = lucene_store::directory::segments_file_name(infos.generation) {
+        out.push(name);
+    }
+    for sci in &infos.segments {
+        let bytes = dir.open(&format!("{}.si", sci.segment_name))?.to_vec();
+        let si = segment_info::parse(&bytes, &sci.segment_id)?;
+        let si_files = IndexFileDeleter::with_self_listing(&sci.segment_name, si.files);
+        for f in sci.files(&si_files) {
+            if !out.contains(&f) {
+                out.push(f);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// `DirectoryReader.listCommits(dir)`: an [`IndexCommit`] for every commit
+/// point in `dir`, oldest first -- the latest commit, plus every older
+/// `segments_N` still present. As in Java, an older `segments_N` the listing
+/// names but that is gone by the time it is opened (a concurrent writer
+/// deleted it) is skipped; any other failure to read one is an error, as is
+/// an unparsable `segments*` name and a directory with no commit at all.
+pub fn list_commits(dir: &dyn Directory) -> Result<Vec<IndexCommit>> {
+    let files = dir.list_all()?;
+    let latest = segment_infos::read_latest(dir)?;
+    let mut all = vec![latest];
+    let current = all[0].generation;
+    for name in &files {
+        // Java's test is `startsWith(SEGMENTS)` alone, so an unparsable
+        // `segments*` name (`segments.gen` included) is an error, not skipped.
+        if !name.starts_with("segments") {
+            continue;
+        }
+        let generation = lucene_store::directory::generation_from_segments_file_name(name)?;
+        if generation >= current {
+            continue;
+        }
+        let bytes = match dir.open(name) {
+            Ok(b) => b,
+            Err(e) if e.is_no_such_file() => continue,
+            Err(e) => return Err(e.into()),
+        };
+        all.push(segment_infos::parse(&bytes, generation)?);
+    }
+    all.sort_by_key(|infos| infos.generation);
+    let mut commits = Vec::with_capacity(all.len());
+    for infos in &all {
+        let segments_file =
+            lucene_store::directory::segments_file_name(infos.generation).unwrap_or_default();
+        commits.push(IndexCommit::new(
+            infos.generation,
+            segments_file,
+            commit_file_names(dir, infos)?,
+            infos.segments.len(),
+            infos.user_data.clone(),
+        ));
+    }
+    Ok(commits)
 }
 
 #[cfg(test)]

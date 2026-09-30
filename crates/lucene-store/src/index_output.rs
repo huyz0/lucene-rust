@@ -25,9 +25,11 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::data_output::DataOutput;
 use crate::error::{Error, Result};
+use crate::rate_limiter::RateLimiter;
 
 /// Write-side counterpart of Lucene's `IndexOutput`: `getName()`,
 /// `getFilePointer()`, `getChecksum()`.
@@ -62,6 +64,27 @@ enum Sink {
     Memory { publish: Option<PublishFn> },
 }
 
+/// `RateLimitedIndexOutput`'s state, when an output is throttled: see
+/// [`FsIndexOutput::set_rate_limiter`].
+struct RateLimit {
+    limiter: Arc<dyn RateLimiter>,
+    bytes_since_last_pause: u64,
+    current_min_pause_check_bytes: u64,
+}
+
+impl RateLimit {
+    /// `RateLimitedIndexOutput.checkRate()`, run before each write as Java's
+    /// `writeByte`/`writeBytes` do.
+    fn check_rate(&mut self, bytes: usize) {
+        self.bytes_since_last_pause = self.bytes_since_last_pause.saturating_add(bytes as u64);
+        if self.bytes_since_last_pause > self.current_min_pause_check_bytes {
+            self.limiter.pause(self.bytes_since_last_pause);
+            self.bytes_since_last_pause = 0;
+            self.current_min_pause_check_bytes = self.limiter.min_pause_check_bytes();
+        }
+    }
+}
+
 /// The output every [`crate::Directory`] hands out.
 ///
 /// Despite the name, not always a file: [`crate::ByteBuffersDirectory`]'s
@@ -78,6 +101,8 @@ pub struct FsIndexOutput {
     bytes_written: u64,
     crc: crc32fast::Hasher,
     pending_err: Option<std::io::Error>,
+    /// `Some` once [`FsIndexOutput::set_rate_limiter`] throttled this output.
+    rate_limit: Option<Box<RateLimit>>,
 }
 
 impl FsIndexOutput {
@@ -115,6 +140,7 @@ impl FsIndexOutput {
             bytes_written: 0,
             crc: crc32fast::Hasher::new(),
             pending_err: None,
+            rate_limit: None,
         }
     }
 
@@ -130,6 +156,7 @@ impl FsIndexOutput {
             bytes_written: 0,
             crc: crc32fast::Hasher::new(),
             pending_err: None,
+            rate_limit: None,
         }
     }
 
@@ -158,6 +185,22 @@ impl FsIndexOutput {
             }
         }
         Ok(checksum)
+    }
+
+    /// `new RateLimitedIndexOutput(limiter, this)`, in place: from here on
+    /// every write first lets `limiter` pause the caller, so the bytes written
+    /// stay within its rate. `IndexWriter` throttles a merge's outputs this
+    /// way (its merge directory's `createOutput`).
+    ///
+    /// In place rather than a wrapper type because every
+    /// [`crate::Directory`] hands out this one concrete type, which is what
+    /// lets a directory wrapper throttle the outputs a codec writer creates.
+    pub fn set_rate_limiter(&mut self, limiter: Arc<dyn RateLimiter>) {
+        self.rate_limit = Some(Box::new(RateLimit {
+            current_min_pause_check_bytes: limiter.min_pause_check_bytes(),
+            limiter,
+            bytes_since_last_pause: 0,
+        }));
     }
 
     /// The on-disk path this output writes to, or `None` for an in-memory
@@ -206,6 +249,27 @@ impl DataOutput for FsIndexOutput {
     }
 
     fn write_bytes(&mut self, b: &[u8]) {
+        if self.rate_limit.is_none() {
+            self.write_unlimited(b);
+            return;
+        }
+        // Java's writers stream through small buffers, so a rate check per
+        // `writeBytes` call is a check every few KiB. Several writers here
+        // hand over a whole file in one call instead (`merge.rs`'s
+        // `write_file`); one check for it would let the first such file
+        // through unthrottled (`lastNS` starts in the past) and throttle the
+        // rest in lumps. A check per `CHUNK_SIZE` keeps Java's granularity.
+        for chunk in b.chunks(CHUNK_SIZE) {
+            if let Some(rate_limit) = self.rate_limit.as_deref_mut() {
+                rate_limit.check_rate(chunk.len());
+            }
+            self.write_unlimited(chunk);
+        }
+    }
+}
+
+impl FsIndexOutput {
+    fn write_unlimited(&mut self, b: &[u8]) {
         if self.pending_err.is_some() || !self.write_through(b) {
             return;
         }
@@ -435,5 +499,72 @@ mod tests {
         let result = sync(&dir, &["does-not-exist".to_string()]);
         assert!(matches!(result, Err(Error::Io(_))));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A [`RateLimiter`] that records each pause instead of sleeping.
+    struct Recording {
+        pauses: std::sync::Mutex<Vec<u64>>,
+        check: u64,
+    }
+
+    impl RateLimiter for Recording {
+        fn set_mb_per_sec(&self, _mb_per_sec: f64) {}
+        fn mb_per_sec(&self) -> f64 {
+            1.0
+        }
+        fn pause(&self, bytes: u64) -> u64 {
+            self.pauses.lock().unwrap().push(bytes);
+            0
+        }
+        fn min_pause_check_bytes(&self) -> u64 {
+            self.check
+        }
+    }
+
+    /// `set_rate_limiter` behaves as `RateLimitedIndexOutput` does -- a check
+    /// before each write, a pause once more than `minPauseCheckBytes` built
+    /// up -- and changes nothing about the bytes, for a file and in memory.
+    #[test]
+    fn a_rate_limited_output_pauses_and_writes_the_same_bytes() {
+        let dir = tempdir();
+        let mem = crate::ByteBuffersDirectory::new();
+        for mut out in [
+            FsIndexOutput::create(&dir, "limited").unwrap(),
+            crate::Directory::create_output(&mem, "limited").unwrap(),
+        ] {
+            let limiter = Arc::new(Recording {
+                pauses: std::sync::Mutex::new(Vec::new()),
+                check: 10,
+            });
+            out.set_rate_limiter(limiter.clone());
+            for _ in 0..10 {
+                out.write_byte(7);
+            }
+            assert!(limiter.pauses.lock().unwrap().is_empty());
+            out.write_byte(7); // 11 > 10
+            out.write_bytes(&[1u8; 100]);
+            assert_eq!(*limiter.pauses.lock().unwrap(), vec![11, 100]);
+            // A write larger than `CHUNK_SIZE` is checked per chunk.
+            out.write_bytes(&[2u8; CHUNK_SIZE * 2 + 5]);
+            assert_eq!(
+                *limiter.pauses.lock().unwrap(),
+                vec![11, 100, CHUNK_SIZE as u64, CHUNK_SIZE as u64]
+            );
+            assert_eq!(out.file_pointer(), 111 + CHUNK_SIZE as u64 * 2 + 5);
+            let mut expected = vec![7u8; 11];
+            expected.extend_from_slice(&[1u8; 100]);
+            expected.extend_from_slice(&[2u8; CHUNK_SIZE * 2 + 5]);
+            let mut crc = crc32fast::Hasher::new();
+            crc.update(&expected);
+            assert_eq!(out.close().unwrap(), u64::from(crc.finalize()));
+        }
+        assert_eq!(
+            std::fs::read(dir.join("limited")).unwrap().len(),
+            111 + CHUNK_SIZE * 2 + 5
+        );
+        assert_eq!(
+            crate::Directory::file_length(&mem, "limited").unwrap(),
+            111 + CHUNK_SIZE as u64 * 2 + 5
+        );
     }
 }
