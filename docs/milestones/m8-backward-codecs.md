@@ -9,7 +9,7 @@
 | **Effort** | XL |
 | **Depends on** | [M7](m7-core-complete.md) (per-field formats, the inventory gate) |
 | **Unblocks** | adopting the Rust engine on existing indices without a rewrite |
-| **Status** | in progress: T8.1, T8.2, T8.4 delivered; T8.3 delivered bar the quantized vector formats and one benchmark query; T8.5's native half delivered |
+| **Status** | T8.1-T8.4 delivered (the quantized vector formats and `IndexUpgrader` included, no `deferred:M8` row left in either inventory); T8.5's native half delivered; acceptance criteria 1-2 met, 3 unverified here (needs a running Docker daemon), 4 met for queries, not for the open-time FST conversion |
 
 ---
 
@@ -66,6 +66,26 @@ content as an FNV-1a digest over a canonical byte stream with its counts
 (postings with positions/offsets/payloads, norms, doc values, points, stored
 fields, term vectors, vectors), plus a 10-nearest KNN result per vector
 field. The Rust side reproduces each digest from its own readers.
+
+Query-level lines (M8 close-out): for every vector field `BwcDump` also runs,
+through an `IndexSearcher` over the one segment, a filtered KNN query
+(`knnf`, `doc % 3 == 0`), one whose filter is small enough to go exact
+(`knne`, `doc % 89 == 0`, k = 20), `PatienceKnnVectorQuery` (saturation 0.5,
+patience 2) and `*VectorSimilarityQuery` unfiltered and filtered (`vsim`,
+`vsimf`, the fifth KNN hit's score as threshold). `gen-bwc-fixtures.sh --dump
+<dir>` rewrote only `expected.txt` for every version (the indexes are
+untouched, every earlier line came back byte for byte).
+
+Quantized vectors (M8 close-out): `fixtures/bwc/BwcQuantized.java` writes
+`fixtures/data/bwc-quantized/<version>/` with each release's own jar
+(`gen-bwc-fixtures.sh --quantized <version>`), two segments of 1,000 and 200
+documents, every 13th deleted, per-field formats through a `FilterCodec`
+under the default codec's name: 9.9.2 (`Lucene99ScalarQuantizedVectorsFormat`
+metadata version 0, 7 bits, every similarity, plus a `BYTE` field), 9.12.2
+(version 1: 7 and 4 bits, 4-bit compressed, dynamic confidence interval, the
+flat format per field) and 10.2.2 (all of that plus
+`Lucene102(Hnsw)BinaryQuantizedVectorsFormat`, every similarity, dense and
+sparse). 5.1 MB in all.
 
 One version per codec era: 9.0.0 (`Lucene90`), 9.1.0 (`Lucene91`), 9.3.0
 (`Lucene92`), 9.4.2 (`Lucene94`), 9.8.0 (`Lucene95`), 9.11.1 (`Lucene99`),
@@ -136,13 +156,37 @@ including 10.5.0's `Lucene90` quirk of reporting vector ordinals as doc ids.
 The KNN query layer (`vector_query::GraphReader`) and `CheckIndex` serve all
 five.
 
-**Open, precisely:**
+**Quantized vectors (M8 close-out).** `Lucene99ScalarQuantizedVectorsFormat`
+(`backward_codecs/scalar_quantized_vectors.rs`: both `.vemq` versions, 7/4-bit
+and compressed codes, the legacy `ScalarQuantizer`, and both scorers core
+ships for it) and `Lucene102BinaryQuantizedVectorsFormat`
+(`backward_codecs/binary_quantized_vectors.rs`: one-bit codes, the four-bit
+query, its own score clamps), with their HNSW wrappers, as one per-field
+reader (`backward_codecs/quantized_vectors.rs`) that the KNN layer serves as
+`vector_query::GraphReader::Quantized`: float queries are scored on the codes
+wherever Java scores them (graph walk, exhaustive branch, exact fallback,
+vector similarity), and each format searches its own way -- the flat scalar
+format collects nothing (`FlatVectorsReader.search`), the flat binary one
+scores every ordinal. Every quantized fixture line (`vec`, `knn`, `knnf`,
+`knne`, `patience`, `vsim`, `vsimf`, with score bits) matches Lucene 10.5.0 +
+backward-codecs (`bwc_fixtures.rs`). Seen to fail: dropping the scalar
+format's per-vector correction constant fails every dot-product/cosine/MIP
+line; a `1/16` query scale for the binary format fails every binary line. Not
+caught by the fixtures: the position of the binary format's Euclidean clamp
+(its scores never go negative there).
 
-- `Lucene99ScalarQuantizedVectorsFormat`/`Lucene99HnswScalarQuantizedVectorsFormat`
-  and `Lucene102(Hnsw)BinaryQuantizedVectorsFormat`: not ported (inventory
-  `deferred:M8`). No default codec wrote them -- they are per-field opt-ins --
-  and no fixture holds one yet.
-- One query in the benchmark below, on one corpus (q89 on 9.0).
+**Retired graphs take any collector (M8 close-out).** The 9.x readers' search
+takes a `KnnCollect` (`RetiredHnswVectorsReader::search_with`), so
+`AbstractVectorSimilarityQuery` walks a retired graph with its own
+`VectorSimilarityCollector` (it used to refuse with `InvalidKnnQuery`), and
+`PatienceKnnVectorQuery`'s saturation collector and a deadline wrap a retired
+leaf's collector as they wrap a `Lucene99` one (they used to be skipped). On
+9.0 the similarity query inherits `Lucene90`'s ordinals-as-documents quirk,
+and an ordinal that names a deleted document is dropped at collection, after
+the top `k` was cut, as `IndexSearcher` drops it (Java returns nine hits for
+9.0's `_1` patience query). The `knnf`/`knne`/`patience`/`vsim`/`vsimf` lines
+of every bwc version match. Seen to fail: skipping the collector wrap fails
+`patience` on 9.1-9.8; translating `Lucene90` ordinals fails 9.0's `vsim`.
 
 **Performance (port-workflow stages 2-3).** The lazy cursors
 (`postings.rs::{LazyDocsCursor,PositionsCursor}`) now serve every retired
@@ -167,16 +211,32 @@ query returns Java's hits, top set and top score on both corpora.
 | whole-term decode (first cut) | 47 of 87 (term query q01 at 0.33x) | 42 of 87 |
 | skip data + impacts | 2 (q80, q89) | 7 (q34, q58, q59, q60, q77, q80, q89) |
 | the losers again, 1 s warm-up, 3 s measured, three rounds | q89 in 3 of 3 (0.68-0.94x) | none in a majority of rounds |
+| `for_decode` in one read, masks by multiply (M8 close-out); all 87, 1 s warm-up, 2 s measured, one pass at load 6 | none (lowest q47 1.00x, q89 1.19x) | not re-run |
 
 Single runs of the whole set move by up to 2x on this host (Java's q80 read
 311 qps in one run and 1,087 in the next), which is why the losers were run
-again rather than taken as measured. **Still open: q89 on the 9.0 corpus**, a
-`t1` term query sorted by a keyword doc value then score, at 0.68-0.94x,
-where the same query sorted by a numeric doc value (q80) wins and q89 itself
-wins on 9.12 (0.99-1.23x) and on the current format (about 1.6x, going by
-`docs/benchmarks/perf-gate.md`'s negative control). Both old corpora carry the same
-doc values format (`Lucene90DocValuesMetadata` version 0), so format alone
-does not explain it; not yet profiled.
+again rather than taken as measured.
+
+**q89 on the 9.0 corpus, closed (M8 close-out).** q89 is a `t1` term query
+sorted by a keyword doc value then score. Profiled (`perf record`, the bench
+runner's release build, q89 alone over the 9.0 corpus rebuilt by `GenCorpus`
+against `lucene-core-9.0.0`): 20% of the time was
+`backward_codecs::for_util::for_decode`, the `decodeSlow` port every retired
+generation's blocks decode through (here the `t1` term's `Lucene90` doc
+blocks, under the scorer's `advance`) -- which read
+the packed block one long at a time and rebuilt every lane mask lane by lane
+inside its tail loop. One `read_bytes` of the block and a multiply by a
+per-primitive replication constant bring it to 7% (plus 3% zeroing its
+scratch), same bits. The rest of the profile is format-independent (the
+postings cursor's `advance`, the keyword comparator's `quick_reject`/
+`quick_compare_bottom`, the collection loop). Measured on the same 4-core
+host at load 4-9, five interleaved rounds of 1 s warm-up and 3 s measured:
+q89 88-102 qps against 75-94 before the change and 64-79 for Java (every
+round above Java; best of the day's runs 101.9 against 92.8, 1.10x). A
+second attempt, decoding in place into the output block to save the zeroing,
+measured slower (`for_decode` back to 20% of the profile) and was dropped. `Lucene912`'s blocks decode through the same
+function, so the 9.12 corpus (where q89 already won) runs the same code; it was not
+rebuilt and re-measured here.
 
 Skip data is verified on `fixtures/data/bwc-big/<version>/`
 (`fixtures/bwc/BwcBig.java`, `gen-bwc-fixtures.sh --big`): one 20,000-document
@@ -204,6 +264,24 @@ pays a few milliseconds per retired-format segment per open, once, where
 Lucene does not; it is not a per-query cost. A lazy per-field conversion
 would remove it; not done.
 ### T8.4 — Merge old into new · delivered 2026-09-30
+
+**Quantized groups and `IndexUpgrader` (M8 close-out).** A segment with
+per-field quantized formats holds one vector file set per
+`PerFieldKnnVectorsFormat` suffix; the writer finds each by its
+`.vemq`/`.vemb` (`index_writer.rs::quantized_vector_files`) and
+`merge::SourceVectors` carries every group of a source, each field served by
+the group that has it; the merged field is plain `Lucene99HnswVectorsFormat`
+over the raw vectors. `CheckIndex` opens every quantized group
+(`vectors.quantized:<field>`: checksum, one code per raw vector, same
+documents). `UpgradeIndexMergePolicy` (only segments whose version is not
+10.5.0 are offered to the wrapped policy, the rest it leaves out merged into
+one more) and `IndexUpgrader` are ported; the upgrader's tests found three
+read paths that parsed an old `.si` without its codec
+(`index_file_deleter::list_commits`, the pluggable-policy segment view,
+`TemporalMergePolicy`'s date ranges), now fixed. `verify-bwc-merge.sh` covers
+every bwc and bwc-quantized version three ways -- force merge, ordinary
+merge with three Lucene 10.5.0 segments appended, and `IndexUpgrader` over
+that mixed index: 39 of 39 pass.
 
 This port's `IndexWriter` merges segments any 9.0-10.4 release wrote into
 `Lucene104` ones, by `force_merge` and by an ordinary policy merge at commit,
@@ -256,8 +334,11 @@ entry point (`ffi_open_jvm_reader`, with `segments_N` bytes, `maxDoc`s and
 live-docs words as the JVM passes them) and requires term and boolean queries
 to return the 10.4.0 fixture's hits, scores and totals.
 
-**Not verified here** (they need Docker or a JDK 25 toolchain, which this
-environment's run did not use): `scripts/verify-opensearch.sh` on a node
+**Not verified here** (they need Docker or a JDK 25 toolchain; the M8
+close-out's host has a JDK 25 and Gradle but no running Docker daemon -- the
+CLI is installed, `docker info` cannot reach the daemon -- and the run did not
+start one; the Gradle check, which needs no Docker once the OpenSearch jars
+are extracted, was not run in the close-out either): `scripts/verify-opensearch.sh` on a node
 holding an old index, the JVM-side `gradle -p opensearch-plugin check`
 (`NativeSelfTest`), and the acceptance criterion's cluster upgraded from
 OpenSearch 2.x.
@@ -268,16 +349,27 @@ OpenSearch 2.x.
 
 - [x] Every fixture index from T8.1 opens, passes this port's `CheckIndex`,
       and returns the same hits and scores as the Lucene version that wrote it.
-      (`bwc_fixtures.rs`, no expected failures left; the reference is Lucene
-      10.5.0 + backward-codecs reading each index, `BwcDump`.)
+      (`bwc_fixtures.rs`, no expected failures left, now over the 10 bwc and
+      3 bwc-quantized fixtures and the query-level `knnf`/`knne`/`patience`/
+      `vsim`/`vsimf` lines too; the reference is Lucene 10.5.0 +
+      backward-codecs reading each index, `BwcDump`.)
 - [x] Merging a mixed-version index yields `Lucene104` segments that real
       Lucene 10.5.0 reads and `CheckIndex` passes. (`scripts/verify-bwc-merge.sh`,
-      T8.4.)
+      T8.4: 39 of 39, quantized fixtures and `IndexUpgrader` included.)
 - [ ] A cluster upgraded from OpenSearch 2.x serves its old index natively,
       verified by `verify-opensearch.sh` against a snapshot restored from 2.x.
-- [ ] Reading an old format is no slower than Lucene reading it. (86 of 87
-      queries on 1M-document 9.0 and 9.12 indexes; q89 on 9.0 open, and
-      3-6 ms of FST-to-trie conversion per segment at open. T8.3.)
+      **Not verified**: it needs a running Docker daemon (and an OpenSearch
+      2.x image to snapshot from), which this host does not have running; no
+      such run exists in the repository either.
+- [ ] Reading an old format is no slower than Lucene reading it. **Queries:
+      met** -- q89, the last query slower than Java on the 9.0 corpus, now
+      wins every round (T8.3), and a full pass over all 87 queries on the 9.0
+      corpus after the change (1 s warm-up, 2 s measured, load 6) found none
+      slower than Java and no recall mismatch (lowest q47 1.00x, q48 1.09x,
+      q69 1.11x, q89 1.19x). The 9.12 corpus was not re-run. **Open: the FST-to-trie
+      conversion at open** (3-6 ms per retired-format segment, once, where
+      Lucene opens the FST in place; T8.3), so the criterion as written is
+      not met.
 
 ## Risks and unknowns
 

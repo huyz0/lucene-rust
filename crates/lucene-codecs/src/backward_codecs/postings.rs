@@ -19,11 +19,14 @@
 //! Frequencies of a full block are always one `PForUtil` block right after
 //! the doc deltas, when the field indexes them.
 //!
-//! This module decodes a term **front to back**, the way
-//! `BlockDocsEnum.nextDoc`/`BlockPostingsEnum.nextDoc` visit it: the skip
-//! data is stepped over (inline) or never touched (trailing), never used to
-//! jump. The lazy cursors of `crate::postings` serve these formats from the
-//! decoded lists -- see that module's `PostingsFormat` for the seam.
+//! This module decodes a term's blocks **front to back**, the way
+//! `BlockDocsEnum.nextDoc`/`BlockPostingsEnum.nextDoc` visit them: here the
+//! skip data is stepped over (inline) or not touched (trailing). Jumping is
+//! the lazy cursors' job: `crate::postings::LazyDocsCursor` reads these
+//! formats block by block and advances through each one's own skip data --
+//! the trailing multi-level list of `Lucene90`/`Lucene99`
+//! ([`super::skip_list`]) or the inline levels of `Lucene912`/`Lucene101` --
+//! and serves its impacts. See that module's `PostingsFormat` for the seam.
 
 use lucene_store::data_input::{DataInput, SliceInput};
 

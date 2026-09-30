@@ -21,6 +21,7 @@ pub mod field_updates;
 pub mod flush_policy;
 pub mod index_file_deleter;
 pub mod index_sorter;
+pub mod index_upgrader;
 pub mod index_writer;
 pub mod indexing_chain;
 pub mod inverter;
