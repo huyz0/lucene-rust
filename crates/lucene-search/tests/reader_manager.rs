@@ -11,7 +11,8 @@ use lucene_codecs::field_infos::FieldInfo;
 use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
 use lucene_index::index_writer::IndexWriter;
 use lucene_index::segment_info::LuceneVersion;
-use lucene_search::reader_manager::{Error, ReaderManager};
+use lucene_search::reader_manager::ReaderManager;
+use lucene_search::Error;
 use lucene_store::FsDirectory;
 use lucene_util::test_support::TempDir;
 
@@ -27,18 +28,18 @@ fn doc(id: &str) -> Document {
 #[test]
 fn reader_manager_follows_commits() {
     let tmp = TempDir::new("reader-manager");
-    let dir = FsDirectory::open(tmp.path());
+    let dir = Arc::new(FsDirectory::open(tmp.path()));
     let version = LuceneVersion {
         major: 10,
         minor: 5,
         bugfix: 0,
     };
     let mut w =
-        IndexWriter::open(&dir, vec![FieldInfo::new("id", 0)], "Lucene104", version).unwrap();
+        IndexWriter::open(&*dir, vec![FieldInfo::new("id", 0)], "Lucene104", version).unwrap();
     w.add_document(doc("a")).unwrap();
     w.commit().unwrap();
 
-    let manager = ReaderManager::open(&dir).unwrap();
+    let manager = ReaderManager::open(dir.clone()).unwrap();
     let first = manager.acquire().unwrap();
     assert_eq!(first.num_docs(), 1);
     assert!(manager.maybe_refresh().unwrap());
@@ -68,6 +69,14 @@ fn reader_manager_follows_commits() {
     manager.release(first);
     manager.release(second);
 
-    manager.close();
-    assert!(matches!(manager.acquire(), Err(Error::AlreadyClosed)));
+    manager.close().unwrap();
+    assert!(matches!(manager.acquire(), Err(Error::AlreadyClosed(_))));
+
+    // `ReaderManager(DirectoryReader)`: starts from the given reader.
+    let from = ReaderManager::from_reader(
+        dir.clone(),
+        lucene_search::directory_reader::DirectoryReader::open(&*dir).unwrap(),
+    );
+    assert_eq!(from.acquire().unwrap().num_docs(), 3);
+    assert!(from.maybe_refresh().unwrap());
 }

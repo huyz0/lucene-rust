@@ -99,7 +99,7 @@ the hook, the container and this table cannot drift apart:
 | Coverage report, per file | `cargo llvm-cov --workspace --summary-only` |
 | `lucene-search`'s tests in release (bit-for-bit float fixtures under the profile the plugin ships) | `cargo test --release -p lucene-search` |
 | Regenerate Java fixtures | `scripts/gen-fixtures.sh --only <Gen…>` (a full run rewrites every index with fresh segment ids — see [`fixtures/README.md`](fixtures/README.md)) |
-| Check fixtures are still Java-produced | `scripts/gen-fixtures.sh --check` |
+| Check fixtures are still Java-produced | `scripts/gen-fixtures.sh --check` and `scripts/gen-bwc-fixtures.sh --check` |
 | Verify the write path (Lucene reads Rust bytes) | `scripts/verify-write-path.sh` |
 | Interop matrix (both engines write, append, merge, delete one index) | `scripts/verify-interop.sh` |
 | Crash fuzzing (power loss, kill -9, concurrent power loss; fixed seeds) | `scripts/crash-fuzz.sh` |

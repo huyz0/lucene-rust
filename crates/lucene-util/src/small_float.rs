@@ -15,10 +15,44 @@
 //! not re-encoded, exact) low values below `NUM_FREE_VALUES = 255 -
 //! longToInt4(Integer.MAX_VALUE) = 24`.
 
-/// `SmallFloat.longToInt4(long)`-equivalent (kept `pub(crate)` since only
-/// [`int_to_byte4`] needs it — real Lucene doesn't expose either as a public
-/// standalone API on their own, only through the `*4` byte pair).
-fn long_to_int4(i: u64) -> u32 {
+/// `SmallFloat.floatToByte(f, numMantissaBits, zeroExp)`: a float with
+/// `num_mantissa_bits` of mantissa and exponent bias `zero_exp` in one byte.
+/// Negative values and zero map to 0, underflow to 1, overflow to 255.
+pub fn float_to_byte(f: f32, num_mantissa_bits: u32, zero_exp: i32) -> u8 {
+    let fzero = (63 - zero_exp) << num_mantissa_bits;
+    let bits = f.to_bits() as i32;
+    let smallfloat = bits >> (24 - num_mantissa_bits);
+    if smallfloat <= fzero {
+        u8::from(bits > 0)
+    } else if smallfloat >= fzero + 0x100 {
+        0xff
+    } else {
+        (smallfloat - fzero) as u8
+    }
+}
+
+/// `SmallFloat.byteToFloat(b, numMantissaBits, zeroExp)`.
+pub fn byte_to_float(b: u8, num_mantissa_bits: u32, zero_exp: i32) -> f32 {
+    if b == 0 {
+        return 0.0;
+    }
+    let bits = ((b as i32) << (24 - num_mantissa_bits)) + ((63 - zero_exp) << 24);
+    f32::from_bits(bits as u32)
+}
+
+/// `SmallFloat.floatToByte315`: `floatToByte(f, 3, 15)`.
+pub fn float_to_byte315(f: f32) -> u8 {
+    float_to_byte(f, 3, 15)
+}
+
+/// `SmallFloat.byte315ToFloat`: `byteToFloat(b, 3, 15)`.
+pub fn byte315_to_float(b: u8) -> f32 {
+    byte_to_float(b, 3, 15)
+}
+
+/// `SmallFloat.longToInt4`: the top 4 significant bits of a non-negative
+/// value plus a shift.
+pub fn long_to_int4(i: u64) -> u32 {
     let num_bits = 64 - i.leading_zeros();
     if num_bits < 4 {
         // Subnormal: exact for small values, no encoding needed.
@@ -32,8 +66,8 @@ fn long_to_int4(i: u64) -> u32 {
     }
 }
 
-/// `SmallFloat.int4ToLong(int)`-equivalent.
-fn int4_to_long(i: u32) -> u64 {
+/// `SmallFloat.int4ToLong`.
+pub fn int4_to_long(i: u32) -> u64 {
     let bits = (i & 0x07) as u64;
     let shift = i >> 3;
     if shift == 0 {
@@ -100,6 +134,25 @@ pub fn byte4_to_int(b: u8) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn float_byte_encodings() {
+        assert_eq!(float_to_byte315(0.0), 0);
+        assert_eq!(float_to_byte315(-3.0), 0);
+        assert_eq!(float_to_byte315(1e-30), 1);
+        assert_eq!(float_to_byte315(1e30), 0xff);
+        assert_eq!(float_to_byte315(1.0), 124);
+        assert_eq!(byte315_to_float(124), 1.0);
+        assert_eq!(byte315_to_float(0), 0.0);
+        for b in 1..=255u8 {
+            assert_eq!(float_to_byte315(byte315_to_float(b)), b, "byte {b}");
+            assert_eq!(float_to_byte(byte_to_float(b, 5, 2), 5, 2), b, "byte {b}");
+        }
+        assert_eq!(long_to_int4(9), 9);
+        assert_eq!(long_to_int4(40), 26);
+        assert_eq!(int4_to_long(26), 40);
+        assert_eq!(int4_to_long(9), 9);
+    }
 
     #[test]
     fn num_free_values_is_24() {

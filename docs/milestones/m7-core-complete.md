@@ -103,6 +103,19 @@ deletion policies, lock factories and the remaining directories, the
 `document/column` API, the public automaton API, the in-memory packed-ints
 family, offline sorting, and the analysis attribute model.
 
+Delivered from that list (ported, not yet benchmarked): the reader side of
+`index/` -- the `IndexReader`/`LeafReader`/`CodecReader`/`CompositeReader`
+trait layer in `lucene-search/src/reader/` (implemented by `SegmentReader`,
+which now also opens term vectors and flat KNN vectors, and `DirectoryReader`),
+the `Filter*` readers and doc values, `ExitableDirectoryReader`/`QueryTimeout`,
+`MultiReader`, `MultiDocValues`, `ParallelLeafReader`/`ParallelCompositeReader`,
+the slow codec-reader wrappers, `SortingCodecReader`, `FilteredTermsEnum`,
+`MultiTerms.intersect` and positions across leaves, `OneMerge`'s reader hooks,
+and `ReaderManager` folded onto the one `ReferenceManager`; differential
+against `GenReaderApi`. Left open, writer side: NRT readers from a live
+`IndexWriter` (`DirectoryReader`, `StandardDirectoryReader`, `ReaderManager`
+rows) and wiring the merge hooks into `lucene-index`'s merge.
+
 ### T7.2 — `document` field types
 
 Delivered (ported, not yet benchmarked): every M7 row of `document` and

@@ -430,7 +430,11 @@ impl VectorFiles {
                 KnnSegment {
                     vectors: VectorsInput {
                         flat: FlatVectorsReader::open(vemf, vec, &id, SUFFIX).unwrap(),
-                        hnsw: Some(HnswVectorsReader::open(vem, vex, &id, SUFFIX).unwrap()),
+                        hnsw: Some(
+                            HnswVectorsReader::open(vem, vex, &id, SUFFIX)
+                                .unwrap()
+                                .into(),
+                        ),
                         field_infos: seg.field_infos(),
                         live_docs: seg.live_docs(),
                         filter: filters.map(|f| &f[i]),

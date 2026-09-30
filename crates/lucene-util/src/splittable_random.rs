@@ -47,6 +47,63 @@ impl SplittableRandom {
     pub fn next_double(&mut self) -> f64 {
         (self.next_long() >> 11) as f64 * (1.0 / (1u64 << 53) as f64)
     }
+
+    /// `SplittableRandom.mix32`.
+    fn mix32(z: u64) -> i32 {
+        let z = (z ^ (z >> 33)).wrapping_mul(0x62a9_d9ed_7997_05f5);
+        ((z ^ (z >> 28)).wrapping_mul(0xcb24_d0a5_c88c_35b3) >> 32) as u32 as i32
+    }
+
+    /// `SplittableRandom.nextInt()`: `mix32(nextSeed())`.
+    pub fn next_int(&mut self) -> i32 {
+        self.seed = self.seed.wrapping_add(Self::GOLDEN_GAMMA);
+        Self::mix32(self.seed)
+    }
+
+    /// `SplittableRandom.nextInt(origin, bound)` (`RandomSupport.
+    /// boundedNextInt`): uniform in `origin..bound`; `origin` itself when the
+    /// range is empty.
+    pub fn next_int_range(&mut self, origin: i32, bound: i32) -> i32 {
+        let mut r = self.next_int();
+        if origin < bound {
+            let n = bound.wrapping_sub(origin);
+            let m = n.wrapping_sub(1);
+            if n & m == 0 {
+                r = (r & m).wrapping_add(origin);
+            } else if n > 0 {
+                let mut u = ((r as u32) >> 1) as i32;
+                loop {
+                    r = u % n;
+                    if u.wrapping_add(m).wrapping_sub(r) >= 0 {
+                        break;
+                    }
+                    u = ((self.next_int() as u32) >> 1) as i32;
+                }
+                r = r.wrapping_add(origin);
+            } else {
+                while r < origin || r >= bound {
+                    r = self.next_int();
+                }
+            }
+        }
+        r
+    }
+
+    /// `SplittableRandom.nextInt(bound)`, i.e. JDK 17+'s
+    /// `RandomSupport.boundedNextInt` (the same algorithm JDK 8 inlined):
+    /// mask for a power of two, otherwise reject the over-represented top of
+    /// the range. `Lucene90HnswVectorsReader` draws its random entry points
+    /// from this, so a search over a Lucene 9.0 graph starts where Java's does
+    /// only if this is the same stream. The same stream as
+    /// [`Self::next_int_range`]`(0, bound)`.
+    ///
+    /// # Panics
+    ///
+    /// If `bound <= 0`, as Java throws `IllegalArgumentException`.
+    pub fn next_int_bounded(&mut self, bound: i32) -> i32 {
+        assert!(bound > 0, "bound must be positive");
+        self.next_int_range(0, bound)
+    }
 }
 
 #[cfg(test)]
@@ -76,6 +133,26 @@ mod tests {
         assert_ne!(r2.next_long(), 0);
     }
 
+    #[test]
+    fn bounded_ints_stay_in_range() {
+        let mut r = SplittableRandom::new(9);
+        for (o, b) in [
+            (0, 1),
+            (3, 11),
+            (0, 16),
+            (-5, 5),
+            (i32::MIN, i32::MAX),
+            (7, 7),
+        ] {
+            for _ in 0..200 {
+                let v = r.next_int_range(o, b);
+                if o < b {
+                    assert!(v >= o && v < b, "{v} not in {o}..{b}");
+                }
+            }
+        }
+    }
+
     /// `nextDouble` is `(nextLong() >>> 11) * 0x1.0p-53`, so it is always in
     /// `[0, 1)` -- the HNSW level draw takes `-ln(u)`, undefined at 0.
     #[test]
@@ -85,6 +162,50 @@ mod tests {
             let u = random.next_double();
             assert!((0.0..1.0).contains(&u), "{u} outside [0, 1)");
         }
+    }
+
+    /// `nextInt()` and `nextInt(bound)` as the JDK (25) printed them: a
+    /// non-power-of-two bound, a power of two, one, and a bound just past
+    /// 2^30, where the rejection loop can reject.
+    #[test]
+    fn next_int_reproduces_the_jdk_stream() {
+        let mut r = SplittableRandom::new(-3_141_592_653_589_793_238i64 as u64);
+        let got: Vec<i32> = [
+            1500,
+            200,
+            1024,
+            7,
+            1,
+            1500,
+            1_073_741_825,
+            1_073_741_825,
+            1_073_741_825,
+        ]
+        .iter()
+        .map(|&b| r.next_int_bounded(b))
+        .collect();
+        assert_eq!(
+            got,
+            [
+                437,
+                144,
+                789,
+                1,
+                0,
+                454,
+                161_817_036,
+                718_760_587,
+                697_655_645
+            ]
+        );
+        let mut q = SplittableRandom::new(99);
+        assert_eq!([q.next_int(), q.next_int()], [-801_679_754, -1_217_134_426]);
+    }
+
+    #[test]
+    #[should_panic(expected = "bound must be positive")]
+    fn next_int_rejects_a_non_positive_bound() {
+        SplittableRandom::new(1).next_int_bounded(0);
     }
 
     /// The stream is a pure function of the seed: same seed replays, different

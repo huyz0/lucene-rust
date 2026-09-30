@@ -1,126 +1,117 @@
-//! Port of the composite term views over a multi-segment reader:
-//! `org.apache.lucene.index.MultiFields` (the indexed field names),
-//! `MultiTerms` (one field's terms across segments, with summed statistics),
+//! Port of the composite term views over a multi-leaf reader:
+//! `FieldInfos.getIndexedFields` (the indexed field names), `MultiTerms`
+//! (one field's terms across leaves, with summed statistics),
 //! `MultiTermsEnum` (their union, in term order) and `MultiPostingsEnum` (a
-//! term's postings across segments, in top-level doc ids).
+//! term's postings across leaves, in top-level doc ids, with positions,
+//! offsets and payloads when asked for).
 //!
-//! Built over the segments [`crate::directory_reader::DirectoryReader::open_segments`]
-//! opens ([`OpenSegment`]): each segment's term dictionary, `.doc` input and
-//! doc base.
+//! Built over the [`crate::reader`] layer, so the leaves may be segments or
+//! any view over them.
 //!
 //! # What differs from Java
 //!
 //! - `MultiTermsEnum` keeps its subs in a priority queue; here the smallest
 //!   current term is found by a scan of the subs -- the same answers, and a
-//!   reader has few segments.
-//! - [`MultiPostingsEnum`] carries docs and freqs. Positions, offsets and
-//!   payloads (`nextPosition`, `startOffset`, ...) are not offered; a caller
-//!   needing them reads the segment's own positions.
+//!   reader has few leaves.
+//! - [`MultiPostingsEnum`] is filled from each leaf's postings when it is
+//!   created rather than stepping through them lazily; it answers the same.
 //! - Like Java's, the postings and statistics include deleted documents:
 //!   `PostingsEnum` never filters live docs (see [`crate::multi_bits`]).
-//! - `ord()`/`seekExact(long)` are unsupported in Java too; `intersect` and
-//!   `impacts` are not offered.
+//! - `ord()`/`seekExact(long)` are unsupported, and `impacts()` is a
+//!   [`SlowImpactsEnum`], both as in Java.
 
-use lucene_codecs::blocktree::{FieldTerms, SeekStatus, TermsEnum};
-use lucene_codecs::postings::DocInput;
+use lucene_codecs::automaton::ByteDfa;
+use lucene_codecs::blocktree::SeekStatus;
 
-use crate::multi_segment::OpenSegment;
+use crate::reader::{
+    DocIdSetIterator, ImpactsEnum, IndexReader, MaterializedPostings, Position, PostingsEnum,
+    PostingsFlags, SlowImpactsEnum, Terms, TermsEnum,
+};
 use crate::Result;
 
-/// `DocIdSetIterator.NO_MORE_DOCS`.
-pub const NO_MORE_DOCS: i32 = i32::MAX;
+pub use crate::reader::NO_MORE_DOCS;
 
-/// `MultiFields`' field iteration: the names of the fields with terms in
-/// any of `segments`, sorted, each once.
-pub fn indexed_fields(segments: &[OpenSegment<'_>]) -> Vec<String> {
-    let mut names: Vec<String> = segments
+/// `FieldInfos.getIndexedFields(reader)`: the names of the fields any leaf
+/// indexes, sorted, each once.
+pub fn indexed_fields<R: IndexReader + ?Sized>(reader: &R) -> Vec<String> {
+    let mut names: Vec<String> = reader
+        .leaves()
         .iter()
-        .flat_map(|s| s.fields.iter_fields().map(|(name, _)| name.to_string()))
+        .flat_map(|l| {
+            l.reader
+                .field_infos()
+                .fields
+                .iter()
+                .filter(|f| f.index_options != lucene_codecs::field_infos::IndexOptions::None)
+                .map(|f| f.name.clone())
+                .collect::<Vec<_>>()
+        })
         .collect();
     names.sort();
     names.dedup();
     names
 }
 
-/// `MultiTerms`: one field's terms across the segments that have it.
+/// `MultiTerms`: one field's terms across the leaves that have it.
 pub struct MultiTerms<'a> {
-    /// Each segment holding the field: its terms, `.doc` input and doc base
-    /// (`subs` with their `ReaderSlice`s).
-    subs: Vec<(&'a FieldTerms, Option<&'a DocInput<'a>>, i32)>,
+    /// Each leaf's terms, with that leaf's doc base (`subSlices`).
+    subs: Vec<(Box<dyn Terms + 'a>, i32)>,
+    has_freqs: bool,
+    has_offsets: bool,
+    has_positions: bool,
+    has_payloads: bool,
 }
 
 impl<'a> MultiTerms<'a> {
-    /// `MultiTerms.getTerms(reader, field)`: `None` when no segment has
-    /// terms for `field`.
-    pub fn get_terms(segments: &'a [OpenSegment<'a>], field: &str) -> Option<Self> {
-        let subs: Vec<_> = segments
-            .iter()
-            .filter_map(|s| {
-                s.fields
-                    .field(field)
-                    .map(|terms| (terms, s.doc_in, s.doc_base))
-            })
-            .collect();
-        (!subs.is_empty()).then_some(MultiTerms { subs })
+    /// `new MultiTerms(subs, subSlices)`.
+    pub fn new(subs: Vec<(Box<dyn Terms + 'a>, i32)>) -> Self {
+        let has_freqs = subs.iter().all(|(t, _)| t.has_freqs());
+        let has_offsets = subs.iter().all(|(t, _)| t.has_offsets());
+        let has_positions = subs.iter().all(|(t, _)| t.has_positions());
+        // "if all subs have pos, and at least one has payloads".
+        let has_payloads = has_positions && subs.iter().any(|(t, _)| t.has_payloads());
+        Self {
+            subs,
+            has_freqs,
+            has_offsets,
+            has_positions,
+            has_payloads,
+        }
     }
 
-    /// `getSumTotalTermFreq()`.
-    pub fn sum_total_term_freq(&self) -> i64 {
-        self.subs.iter().fold(0i64, |acc, (t, _, _)| {
-            acc.saturating_add(t.sum_total_term_freq)
+    /// `MultiTerms.getTerms(reader, field)`: `None` when no leaf has terms
+    /// for `field`; a single leaf's own terms when the reader has one leaf.
+    ///
+    /// # Errors
+    /// A leaf's terms fail to open.
+    pub fn get_terms<R: IndexReader + ?Sized>(
+        reader: &'a R,
+        field: &str,
+    ) -> Result<Option<Box<dyn Terms + 'a>>> {
+        let leaves = reader.leaves();
+        if leaves.len() == 1 {
+            return leaves[0].reader.terms(field);
+        }
+        let mut subs = Vec::new();
+        for leaf in leaves {
+            if let Some(t) = leaf.reader.terms(field)? {
+                subs.push((t, leaf.doc_base));
+            }
+        }
+        Ok(if subs.is_empty() {
+            None
+        } else {
+            Some(Box::new(MultiTerms::new(subs)))
         })
     }
 
-    /// `getSumDocFreq()`.
-    pub fn sum_doc_freq(&self) -> i64 {
-        self.subs
-            .iter()
-            .fold(0i64, |acc, (t, _, _)| acc.saturating_add(t.sum_doc_freq))
-    }
-
-    /// `getDocCount()`.
-    pub fn doc_count(&self) -> i32 {
-        self.subs
-            .iter()
-            .fold(0i32, |acc, (t, _, _)| acc.saturating_add(t.doc_count))
-    }
-
-    /// `getMin()`: the smallest term of any segment.
-    pub fn min(&self) -> &[u8] {
-        self.subs
-            .iter()
-            .map(|(t, _, _)| t.min_term.as_slice())
-            .min()
-            .unwrap_or_default()
-    }
-
-    /// `getMax()`: the largest term of any segment.
-    pub fn max(&self) -> &[u8] {
-        self.subs
-            .iter()
-            .map(|(t, _, _)| t.max_term.as_slice())
-            .max()
-            .unwrap_or_default()
-    }
-
-    /// `size()`: unknown (`-1`), as in Java -- terms shared by segments are
-    /// counted once, which only a full enumeration can tell.
-    // SENTINEL: `-1` = unknown, Java's `Terms.size()` contract; no caller
-    // indexes with it.
-    pub fn size(&self) -> i64 {
-        -1
-    }
-
-    /// `iterator()`: every term of the field, in byte order, each once.
-    pub fn iterator(&self) -> MultiTermsEnum<'a> {
+    fn enum_over(subs: Vec<(Box<dyn TermsEnum + '_>, i32)>) -> MultiTermsEnum<'_> {
         MultiTermsEnum {
-            subs: self
-                .subs
-                .iter()
-                .map(|&(terms, doc_in, doc_base)| Sub {
-                    te: terms.iter(),
+            subs: subs
+                .into_iter()
+                .map(|(te, doc_base)| Sub {
+                    te,
                     term: None,
-                    doc_in,
                     doc_base,
                 })
                 .collect(),
@@ -131,17 +122,107 @@ impl<'a> MultiTerms<'a> {
     }
 }
 
+impl Terms for MultiTerms<'_> {
+    fn iterator(&self) -> Result<Box<dyn TermsEnum + '_>> {
+        let subs = self
+            .subs
+            .iter()
+            .map(|(t, base)| Ok((t.iterator()?, *base)))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Box::new(Self::enum_over(subs)))
+    }
+
+    /// `intersect(compiled, startTerm)`: each leaf intersects its own terms,
+    /// and the results are merged as `iterator()`'s are.
+    fn intersect<'s>(
+        &'s self,
+        dfa: &'s ByteDfa,
+        start_term: Option<&[u8]>,
+    ) -> Result<Box<dyn TermsEnum + 's>> {
+        let subs = self
+            .subs
+            .iter()
+            .map(|(t, base)| Ok((t.intersect(dfa, start_term)?, *base)))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Box::new(Self::enum_over(subs)))
+    }
+
+    /// `size()`: unknown (`-1`), as in Java -- terms shared by leaves are
+    /// counted once, which only a full enumeration can tell.
+    // SENTINEL: `-1` = unknown, Java's `Terms.size()` contract; no caller
+    // indexes with it.
+    fn size(&self) -> i64 {
+        -1
+    }
+
+    fn sum_total_term_freq(&self) -> i64 {
+        self.subs.iter().fold(0i64, |acc, (t, _)| {
+            acc.saturating_add(t.sum_total_term_freq())
+        })
+    }
+
+    fn sum_doc_freq(&self) -> i64 {
+        self.subs
+            .iter()
+            .fold(0i64, |acc, (t, _)| acc.saturating_add(t.sum_doc_freq()))
+    }
+
+    fn doc_count(&self) -> i32 {
+        self.subs
+            .iter()
+            .fold(0i32, |acc, (t, _)| acc.saturating_add(t.doc_count()))
+    }
+
+    fn has_freqs(&self) -> bool {
+        self.has_freqs
+    }
+    fn has_offsets(&self) -> bool {
+        self.has_offsets
+    }
+    fn has_positions(&self) -> bool {
+        self.has_positions
+    }
+    fn has_payloads(&self) -> bool {
+        self.has_payloads
+    }
+
+    /// `getMin()`: the smallest term of any leaf.
+    fn min(&self) -> Result<Option<Vec<u8>>> {
+        let mut out: Option<Vec<u8>> = None;
+        for (t, _) in &self.subs {
+            if let Some(m) = t.min()? {
+                if out.as_ref().is_none_or(|o| m < *o) {
+                    out = Some(m);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// `getMax()`: the largest term of any leaf.
+    fn max(&self) -> Result<Option<Vec<u8>>> {
+        let mut out: Option<Vec<u8>> = None;
+        for (t, _) in &self.subs {
+            if let Some(m) = t.max()? {
+                if out.as_ref().is_none_or(|o| m > *o) {
+                    out = Some(m);
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
 struct Sub<'a> {
-    te: TermsEnum<'a>,
+    te: Box<dyn TermsEnum + 'a>,
     /// The sub's current term; `None` before it starts and once exhausted.
     term: Option<Vec<u8>>,
-    doc_in: Option<&'a DocInput<'a>>,
     doc_base: i32,
 }
 
 impl Sub<'_> {
     fn advance(&mut self) -> Result<()> {
-        self.term = self.te.try_next_term()?.map(<[u8]>::to_vec);
+        self.term = self.te.next()?.map(<[u8]>::to_vec);
         Ok(())
     }
 
@@ -159,7 +240,7 @@ pub struct MultiTermsEnum<'a> {
     subs: Vec<Sub<'a>>,
     /// `current`: the term the enum stands on.
     current: Option<Vec<u8>>,
-    /// `top`: the subs standing on `current`, ascending (segment order).
+    /// `top`: the subs standing on `current`, ascending (leaf order).
     top: Vec<usize>,
     started: bool,
 }
@@ -181,9 +262,10 @@ impl MultiTermsEnum<'_> {
         };
         self.current = min;
     }
+}
 
-    /// `next()`: the next term, or `None` past the last.
-    pub fn try_next(&mut self) -> Result<Option<&[u8]>> {
+impl TermsEnum for MultiTermsEnum<'_> {
+    fn next(&mut self) -> Result<Option<&[u8]>> {
         if !self.started {
             self.started = true;
             for sub in &mut self.subs {
@@ -201,7 +283,7 @@ impl MultiTermsEnum<'_> {
 
     /// `seekCeil(target)`: positions every sub at its smallest term `>=
     /// target`, and the enum on the smallest of those.
-    pub fn try_seek_ceil(&mut self, target: &[u8]) -> Result<SeekStatus> {
+    fn try_seek_ceil(&mut self, target: &[u8]) -> Result<SeekStatus> {
         self.started = true;
         for sub in &mut self.subs {
             sub.try_seek_ceil(target)?;
@@ -214,137 +296,118 @@ impl MultiTermsEnum<'_> {
         })
     }
 
-    /// `seekExact(term)`: whether `term` exists in any segment; the enum is
-    /// positioned on it when it does.
-    pub fn try_seek_exact(&mut self, term: &[u8]) -> Result<bool> {
-        Ok(self.try_seek_ceil(term)? == SeekStatus::Found)
-    }
-
-    /// `term()`: the current term.
-    pub fn term(&self) -> Option<&[u8]> {
+    fn term(&self) -> Option<&[u8]> {
         self.current.as_deref()
     }
 
-    /// `docFreq()`: summed over the segments holding the current term.
-    pub fn doc_freq(&mut self) -> Result<i32> {
+    /// `docFreq()`: summed over the leaves holding the current term.
+    fn doc_freq(&mut self) -> Result<i32> {
         let mut sum = 0i32;
         for &i in &self.top {
-            let stats = self.subs[i].te.try_stats()?.map_or(0, |s| s.doc_freq);
-            sum = sum.saturating_add(stats);
+            sum = sum.saturating_add(self.subs[i].te.doc_freq()?);
         }
         Ok(sum)
     }
 
-    /// `totalTermFreq()`: summed over the segments holding the current term.
-    pub fn total_term_freq(&mut self) -> Result<i64> {
+    /// `totalTermFreq()`: summed over the leaves holding the current term.
+    fn total_term_freq(&mut self) -> Result<i64> {
         let mut sum = 0i64;
         for &i in &self.top {
-            let stats = self.subs[i]
-                .te
-                .try_stats()?
-                .map_or(0, |s| s.total_term_freq);
-            sum = sum.saturating_add(stats);
+            sum = sum.saturating_add(self.subs[i].te.total_term_freq()?);
         }
         Ok(sum)
     }
 
-    /// `postings(null, FREQS)`: the current term's documents across the
-    /// segments holding it, in top-level doc ids, with their freqs.
-    pub fn postings(&mut self) -> Result<MultiPostingsEnum> {
+    /// `postings(null, flags)`: the current term's documents across the
+    /// leaves holding it, in top-level doc ids.
+    fn postings(&mut self, flags: PostingsFlags) -> Result<Box<dyn PostingsEnum>> {
         let mut docs = Vec::new();
         let mut freqs = Vec::new();
+        let mut positions: Option<Vec<Vec<Position>>> = flags.wants_positions().then(Vec::new);
         for &i in &self.top {
             let sub = &mut self.subs[i];
-            let Some(postings) = sub.te.try_current_postings(sub.doc_in)? else {
-                continue;
-            };
-            for (k, &doc) in postings.docs.iter().enumerate() {
-                docs.push(doc.saturating_add(sub.doc_base));
-                // A field indexed without freqs reads as freq 1 (Java's
-                // `PostingsEnum.freq()` for DOCS postings).
-                freqs.push(postings.freqs.get(k).copied().unwrap_or(1));
+            let pe = sub.te.postings(flags)?;
+            drain_into(pe, sub.doc_base, &mut docs, &mut freqs, positions.as_mut())?;
+        }
+        Ok(Box::new(MultiPostingsEnum(MaterializedPostings::new(
+            docs, freqs, positions,
+        )?)))
+    }
+
+    /// `impacts(flags)`: a `SlowImpactsEnum`, "implemented to not fail
+    /// CheckIndex, but you shouldn't be using impacts on a slow reader".
+    fn impacts(&mut self, flags: PostingsFlags) -> Result<Box<dyn ImpactsEnum>> {
+        Ok(Box::new(SlowImpactsEnum::new(self.postings(flags)?)))
+    }
+}
+
+/// Reads every document (and, when `positions` is given, every position with
+/// its offsets and payload) out of `pe`, shifting doc ids by `doc_base`.
+pub(crate) fn drain_into(
+    mut pe: Box<dyn PostingsEnum>,
+    doc_base: i32,
+    docs: &mut Vec<i32>,
+    freqs: &mut Vec<i32>,
+    mut positions: Option<&mut Vec<Vec<Position>>>,
+) -> Result<()> {
+    loop {
+        let doc = pe.next_doc()?;
+        if doc == NO_MORE_DOCS {
+            return Ok(());
+        }
+        let freq = pe.freq();
+        docs.push(doc.saturating_add(doc_base));
+        freqs.push(freq);
+        if let Some(all) = positions.as_deref_mut() {
+            let mut list = Vec::with_capacity(usize::try_from(freq).unwrap_or(0));
+            for _ in 0..freq {
+                let position = pe.next_position()?;
+                list.push(Position {
+                    position,
+                    start_offset: pe.start_offset(),
+                    end_offset: pe.end_offset(),
+                    payload: pe.payload().map(<[u8]>::to_vec).unwrap_or_default(),
+                });
             }
+            all.push(list);
         }
-        Ok(MultiPostingsEnum {
-            docs,
-            freqs,
-            upto: None,
-        })
     }
 }
 
-/// `MultiPostingsEnum`, docs and freqs.
+/// `MultiPostingsEnum`: a term's postings across leaves, in top-level doc
+/// ids.
 #[derive(Debug, Clone)]
-pub struct MultiPostingsEnum {
-    docs: Vec<i32>,
-    freqs: Vec<i32>,
-    /// The current position; `None` before the first doc.
-    upto: Option<usize>,
-}
+pub struct MultiPostingsEnum(MaterializedPostings);
 
-impl MultiPostingsEnum {
-    /// `docID()`: `-1` before the first doc, [`NO_MORE_DOCS`] past the last.
-    // SENTINEL: `-1` = unpositioned, `DocIdSetIterator.docID()`'s contract.
-    pub fn doc_id(&self) -> i32 {
-        match self.upto {
-            None => -1,
-            Some(i) => self.docs.get(i).copied().unwrap_or(NO_MORE_DOCS),
-        }
+impl DocIdSetIterator for MultiPostingsEnum {
+    fn doc_id(&self) -> i32 {
+        self.0.doc_id()
     }
-
-    /// `freq()` of the current doc (`0` when unpositioned or exhausted).
-    pub fn freq(&self) -> i32 {
-        self.upto
-            .and_then(|i| self.freqs.get(i))
-            .copied()
-            .unwrap_or(0)
+    fn next_doc(&mut self) -> Result<i32> {
+        self.0.next_doc()
     }
-
-    /// `nextDoc()`.
-    pub fn next_doc(&mut self) -> i32 {
-        let next = self.upto.map_or(0, |i| i.saturating_add(1));
-        self.upto = Some(next.min(self.docs.len()));
-        self.doc_id()
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.0.advance(target)
     }
-
-    /// `advance(target)`: the first doc `>= target` from the next one on.
-    pub fn advance(&mut self, target: i32) -> i32 {
-        let from = self
-            .upto
-            .map_or(0, |i| i.saturating_add(1))
-            .min(self.docs.len());
-        let offset = self.docs[from..].partition_point(|&d| d < target);
-        self.upto = Some(from.saturating_add(offset));
-        self.doc_id()
-    }
-
-    /// `cost()`: how many docs it holds.
-    pub fn cost(&self) -> usize {
-        self.docs.len()
+    fn cost(&self) -> i64 {
+        self.0.cost()
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn postings_iterate_and_advance() {
-        let mut p = MultiPostingsEnum {
-            docs: vec![1, 4, 9],
-            freqs: vec![2, 1, 3],
-            upto: None,
-        };
-        assert_eq!(p.doc_id(), -1);
-        assert_eq!(p.freq(), 0);
-        assert_eq!(p.cost(), 3);
-        assert_eq!(p.next_doc(), 1);
-        assert_eq!(p.freq(), 2);
-        assert_eq!(p.advance(5), 9);
-        assert_eq!(p.freq(), 3);
-        assert_eq!(p.next_doc(), NO_MORE_DOCS);
-        assert_eq!(p.next_doc(), NO_MORE_DOCS);
-        assert_eq!(p.advance(100), NO_MORE_DOCS);
-        assert_eq!(p.freq(), 0);
+impl PostingsEnum for MultiPostingsEnum {
+    fn freq(&self) -> i32 {
+        self.0.freq()
+    }
+    fn next_position(&mut self) -> Result<i32> {
+        self.0.next_position()
+    }
+    fn start_offset(&self) -> i32 {
+        self.0.start_offset()
+    }
+    fn end_offset(&self) -> i32 {
+        self.0.end_offset()
+    }
+    fn payload(&self) -> Option<&[u8]> {
+        self.0.payload()
     }
 }

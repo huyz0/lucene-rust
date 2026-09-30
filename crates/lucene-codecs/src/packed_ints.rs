@@ -139,6 +139,350 @@ pub(crate) fn encode(values: &[i64], bits_per_value: u32) -> Vec<u8> {
     out
 }
 
+// ---------------------------------------------------------------------------
+// The streaming serialized forms: `PackedWriter`, `PackedReaderIterator` and
+// `DirectPacked64SingleBlockReader`, for both `PackedInts.Format`s. The bit
+// layouts are `lucene_util::packed::BulkOperation`'s; this half moves bytes.
+// ---------------------------------------------------------------------------
+
+use lucene_store::data_input::DataInput;
+use lucene_store::data_output::DataOutput;
+use lucene_util::packed::{BulkOperation, Format, VERSION_CURRENT};
+
+fn corrupt<T>(msg: impl Into<String>) -> Result<T> {
+    Err(lucene_store::Error::Corrupted(msg.into()))
+}
+
+/// Port of `PackedInts.Writer`/`PackedWriter` (`PackedInts.getWriterNoHeader`):
+/// buffers values and flushes them through the format's byte encoder. The
+/// stream carries no header; the reader must be told the format, count and
+/// width.
+#[derive(Debug)]
+pub struct PackedWriter<'o, O: DataOutput> {
+    out: &'o mut O,
+    format: Format,
+    /// `None` is Java's `-1`: an unknown number of values.
+    value_count: Option<usize>,
+    bits_per_value: u32,
+    encoder: BulkOperation,
+    next_blocks: Vec<u8>,
+    next_values: Vec<i64>,
+    iterations: usize,
+    off: usize,
+    written: usize,
+    finished: bool,
+}
+
+impl<'o, O: DataOutput> PackedWriter<'o, O> {
+    /// `PackedInts.getWriterNoHeader(out, format, valueCount, bitsPerValue, mem)`.
+    /// `mem` bounds the buffer; it does not change the bytes written.
+    pub fn new(
+        out: &'o mut O,
+        format: Format,
+        value_count: Option<usize>,
+        bits_per_value: u32,
+        mem: usize,
+    ) -> Self {
+        let encoder = BulkOperation::of(format, bits_per_value);
+        let iterations = encoder.compute_iterations(value_count.unwrap_or(i32::MAX as usize), mem);
+        // ARITH: `iterations` is at most `mem / (block + 8 * value)` or
+        // `ceil(value_count / byte_value_count)`, and the block and value
+        // counts are at most 64 -- a writer-side geometry, not a disk value.
+        #[allow(clippy::arithmetic_side_effects)]
+        let (blocks_len, values_len) = (
+            iterations * encoder.byte_block_count(),
+            iterations * encoder.byte_value_count(),
+        );
+        PackedWriter {
+            out,
+            format,
+            value_count,
+            bits_per_value,
+            encoder,
+            next_blocks: vec![0u8; blocks_len],
+            next_values: vec![0i64; values_len],
+            iterations,
+            off: 0,
+            written: 0,
+            finished: false,
+        }
+    }
+
+    /// `Writer.bitsPerValue()`.
+    pub fn bits_per_value(&self) -> u32 {
+        self.bits_per_value
+    }
+
+    /// `Writer.getFormat()`.
+    pub fn format(&self) -> Format {
+        self.format
+    }
+
+    /// `add(long)`. Writing past a known value count is Java's `EOFException`.
+    pub fn add(&mut self, v: i64) -> Result<()> {
+        debug_assert!(lucene_util::packed::unsigned_bits_required(v as u64) <= self.bits_per_value);
+        debug_assert!(!self.finished);
+        if let Some(count) = self.value_count {
+            if self.written >= count {
+                return Err(lucene_store::Error::Eof {
+                    offset: self.written,
+                });
+            }
+        }
+        self.next_values[self.off] = v;
+        // ARITH: `off < next_values.len()` (it is reset to 0 on reaching it),
+        // and `written` counts calls, bounded by `value_count` or by memory.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            self.off += 1;
+            if self.off == self.next_values.len() {
+                self.flush();
+            }
+            self.written += 1;
+        }
+        Ok(())
+    }
+
+    /// `finish()`: pads a known count with zeros, then flushes.
+    pub fn finish(&mut self) -> Result<()> {
+        debug_assert!(!self.finished);
+        if let Some(count) = self.value_count {
+            while self.written < count {
+                self.add(0)?;
+            }
+        }
+        self.flush();
+        self.finished = true;
+        Ok(())
+    }
+
+    fn flush(&mut self) {
+        self.encoder
+            .encode_bytes(&self.next_values, &mut self.next_blocks, self.iterations);
+        let block_count =
+            self.format
+                .byte_count(VERSION_CURRENT, self.off, self.bits_per_value) as usize;
+        self.out.write_bytes(&self.next_blocks[..block_count]);
+        self.next_values.fill(0);
+        self.off = 0;
+    }
+
+    /// `ord()`: values written so far, minus one (`-1` before the first).
+    pub fn ord(&self) -> i64 {
+        // ARITH: `written` fits an `i64` (it is bounded by memory), and
+        // subtracting 1 from a non-negative `i64` cannot overflow.
+        #[allow(clippy::arithmetic_side_effects)]
+        let ord = self.written as i64 - 1;
+        ord
+    }
+}
+
+/// Port of `PackedReaderIterator` (`PackedInts.getReaderIteratorNoHeader`):
+/// decodes a headerless stream a buffer at a time.
+#[derive(Debug)]
+pub struct PackedReaderIterator<'i, I: DataInput> {
+    input: &'i mut I,
+    format: Format,
+    value_count: usize,
+    bits_per_value: u32,
+    bulk_operation: BulkOperation,
+    next_blocks: Vec<u8>,
+    next_values: Vec<i64>,
+    /// `nextValues.offset` / `.length`.
+    values_offset: usize,
+    values_length: usize,
+    iterations: usize,
+    /// `position`: the last value returned, `-1` before the first.
+    position: i64,
+}
+
+impl<'i, I: DataInput> PackedReaderIterator<'i, I> {
+    /// `PackedInts.getReaderIteratorNoHeader(in, format, version, valueCount,
+    /// bitsPerValue, mem)`. The format, width and count come from the
+    /// caller's metadata, so they are validated here.
+    pub fn new(
+        input: &'i mut I,
+        format: Format,
+        version: i32,
+        value_count: usize,
+        bits_per_value: u32,
+        mem: usize,
+    ) -> Result<Self> {
+        lucene_util::packed::check_version(version)
+            .map_err(|e| lucene_store::Error::Corrupted(e.to_string()))?;
+        if !format.is_supported(bits_per_value) {
+            return corrupt(format!(
+                "unsupported bitsPerValue {bits_per_value} for {format:?}"
+            ));
+        }
+        // Not in Java, which trusts its caller: a count off disk must not size
+        // a buffer the input cannot fill.
+        let needed = format.byte_count(version, value_count, bits_per_value);
+        if needed > input.remaining() as u64 {
+            return Err(lucene_store::Error::Eof {
+                offset: input.remaining(),
+            });
+        }
+        let bulk_operation = BulkOperation::of(format, bits_per_value);
+        let iterations = bulk_operation.compute_iterations(value_count, mem);
+        // ARITH: `compute_iterations` returns at most `ceil(value_count /
+        // byte_value_count)` or `mem / (block + 8 * value)`, so the products
+        // are at most about `value_count * 8 + mem`; a count off disk that
+        // large is refused by the input length before anything is read.
+        #[allow(clippy::arithmetic_side_effects)]
+        let (blocks_len, values_len) = (
+            iterations * bulk_operation.byte_block_count(),
+            iterations * bulk_operation.byte_value_count(),
+        );
+        Ok(PackedReaderIterator {
+            input,
+            format,
+            value_count,
+            bits_per_value,
+            bulk_operation,
+            next_blocks: vec![0u8; blocks_len],
+            next_values: vec![0i64; values_len],
+            values_offset: values_len,
+            values_length: 0,
+            iterations,
+            position: -1,
+        })
+    }
+
+    /// `getBitsPerValue()`.
+    pub fn bits_per_value(&self) -> u32 {
+        self.bits_per_value
+    }
+
+    /// `size()`.
+    pub fn size(&self) -> usize {
+        self.value_count
+    }
+
+    /// `ord()`: the index of the last value returned (`-1` before the first).
+    pub fn ord(&self) -> i64 {
+        self.position
+    }
+
+    /// `next(int count)`: at least one and at most `count` next values;
+    /// reading past the end is Java's `EOFException`.
+    pub fn next_values(&mut self, count: usize) -> Result<&[i64]> {
+        debug_assert!(count > 0);
+        // ARITH: `values_offset + values_length <= next_values.len()` holds by
+        // construction below; `position` is in `-1..value_count`, so
+        // `value_count - position - 1` is in `0..=value_count`.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            self.values_offset += self.values_length;
+            let remaining = self.value_count as i64 - self.position - 1;
+            if remaining <= 0 {
+                return Err(lucene_store::Error::Eof {
+                    offset: self.value_count,
+                });
+            }
+            let remaining = remaining as usize;
+            let count = remaining.min(count);
+            if self.values_offset == self.next_values.len() {
+                let remaining_blocks =
+                    self.format
+                        .byte_count(VERSION_CURRENT, remaining, self.bits_per_value);
+                let blocks_to_read = (remaining_blocks as usize).min(self.next_blocks.len());
+                self.input
+                    .read_bytes(&mut self.next_blocks[..blocks_to_read])?;
+                self.next_blocks[blocks_to_read..].fill(0);
+                self.bulk_operation.decode_bytes(
+                    &self.next_blocks,
+                    &mut self.next_values,
+                    self.iterations,
+                );
+                self.values_offset = 0;
+            }
+            self.values_length = (self.next_values.len() - self.values_offset).min(count);
+            self.position += self.values_length as i64;
+            Ok(&self.next_values[self.values_offset..self.values_offset + self.values_length])
+        }
+    }
+
+    /// `next()`: the next value.
+    pub fn next_value(&mut self) -> Result<i64> {
+        let v = self.next_values(1)?[0];
+        // Java's `ReaderIteratorImpl.next` consumes the one value from the ref.
+        // ARITH: `next_values(1)` just returned one value, so `values_length`
+        // is 1 and `values_offset < next_values.len()`.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            self.values_offset += 1;
+            self.values_length -= 1;
+        }
+        Ok(v)
+    }
+}
+
+/// Port of `DirectPacked64SingleBlockReader`: random access to a
+/// `PACKED_SINGLE_BLOCK` stream left on disk, one `readLong` (little-endian,
+/// as every Lucene 9+ `DataInput.readLong` is) per lookup.
+#[derive(Debug, Clone, Copy)]
+pub struct DirectPacked64SingleBlockReader<'a> {
+    data: &'a [u8],
+    value_count: usize,
+    bits_per_value: u32,
+    values_per_block: usize,
+    mask: u64,
+}
+
+impl<'a> DirectPacked64SingleBlockReader<'a> {
+    /// `new DirectPacked64SingleBlockReader(bitsPerValue, valueCount, in)`,
+    /// with `data` starting at the stream's first block.
+    pub fn new(bits_per_value: u32, value_count: usize, data: &'a [u8]) -> Result<Self> {
+        if !Format::PackedSingleBlock.is_supported(bits_per_value) {
+            return corrupt(format!(
+                "unsupported PACKED_SINGLE_BLOCK bitsPerValue {bits_per_value}"
+            ));
+        }
+        // ARITH: `bits_per_value` is one of the supported widths (1..=32).
+        #[allow(clippy::arithmetic_side_effects)]
+        let values_per_block = 64 / bits_per_value as usize;
+        Ok(DirectPacked64SingleBlockReader {
+            data,
+            value_count,
+            bits_per_value,
+            values_per_block,
+            mask: !(u64::MAX << bits_per_value),
+        })
+    }
+
+    /// `size()`.
+    pub fn size(&self) -> usize {
+        self.value_count
+    }
+
+    /// `get(int)`.
+    pub fn get(&self, index: usize) -> Result<i64> {
+        // ARITH: `values_per_block >= 2`; `block_offset * 8` is checked;
+        // `offset_in_block < values_per_block`, so the shift is below 64.
+        #[allow(clippy::arithmetic_side_effects)]
+        let (skip, shift) = {
+            let block_offset = index / self.values_per_block;
+            let skip = block_offset
+                .checked_mul(8)
+                .ok_or(lucene_store::Error::Eof { offset: usize::MAX })?;
+            (
+                skip,
+                (index % self.values_per_block) as u32 * self.bits_per_value,
+            )
+        };
+        let end = skip
+            .checked_add(8)
+            .ok_or(lucene_store::Error::Eof { offset: skip })?;
+        let bytes = self
+            .data
+            .get(skip..end)
+            .ok_or(lucene_store::Error::Eof { offset: skip })?;
+        let block = u64::from_le_bytes(bytes.try_into().expect("8 bytes"));
+        Ok(((block >> shift) & self.mask) as i64)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // The arithmetic gate is about values read off disk; a test's `i + 1` is
