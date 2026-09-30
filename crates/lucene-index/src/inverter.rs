@@ -178,6 +178,10 @@ pub struct FieldInverter {
     /// Field length (tokens) of every document inverted so far, `None` for a
     /// document with no value in this field: the norms input.
     lengths: Vec<Option<u32>>,
+    /// Parallel to `lengths`: `FieldInvertState`'s `numOverlap` (tokens at a
+    /// position increment of 0) and `uniqueTermCount` (distinct terms), the
+    /// rest of what `Similarity.computeNorm` reads.
+    overlaps_and_unique: Vec<(u32, u32)>,
 }
 
 impl FieldInverter {
@@ -188,6 +192,7 @@ impl FieldInverter {
             postings: Vec::new(),
             doc_count: 0,
             lengths: Vec::new(),
+            overlaps_and_unique: Vec::new(),
         }
     }
 
@@ -213,6 +218,7 @@ impl FieldInverter {
         debug_assert_eq!(doc as usize, self.lengths.len());
         if values.is_empty() {
             self.lengths.push(None);
+            self.overlaps_and_unique.push((0, 0));
             return;
         }
         let with_positions = self.has_positions();
@@ -220,6 +226,8 @@ impl FieldInverter {
         let mut position = -1i32;
         let mut offset = 0i32;
         let mut length = 0u32;
+        let mut num_overlap = 0u32;
+        let mut unique = 0u32;
         let gap = analyzer.position_increment_gap();
         let offset_gap = analyzer.offset_gap();
         for (i, text) in values.iter().enumerate() {
@@ -232,6 +240,8 @@ impl FieldInverter {
                 analyzer.for_each_token(text, |term, start, end, pos_inc| {
                     position = advance_position(position, pos_inc);
                     length = length.saturating_add(1);
+                    // `IndexingChain.invert`: `if (posIncr == 0) numOverlap++`.
+                    num_overlap = num_overlap.saturating_add(u32::from(pos_inc == 0));
                     let (id, is_new) = self.terms.add(term.as_bytes());
                     if is_new {
                         self.postings.push(TermPostingsBuf::default());
@@ -239,7 +249,11 @@ impl FieldInverter {
                     let p = &mut self.postings[id as usize];
                     match p.docs.last_mut() {
                         Some((d, f)) if *d == doc => *f = f.saturating_add(1),
-                        _ => p.docs.push((doc, 1)),
+                        _ => {
+                            // The term's first occurrence in this document.
+                            unique = unique.saturating_add(1);
+                            p.docs.push((doc, 1));
+                        }
                     }
                     if with_positions {
                         p.positions.push(position);
@@ -258,6 +272,7 @@ impl FieldInverter {
             self.doc_count = self.doc_count.saturating_add(1);
         }
         self.lengths.push(Some(length));
+        self.overlaps_and_unique.push((num_overlap, unique));
     }
 
     /// Documents with at least one token in this field.
@@ -268,6 +283,20 @@ impl FieldInverter {
     /// Per-document token counts (`None`: no value), for norms.
     pub fn lengths(&self) -> &[Option<u32>] {
         &self.lengths
+    }
+
+    /// The `FieldInvertState` `Similarity.computeNorm` reads for document
+    /// `doc`, or `None` when it has no value in this field.
+    pub fn invert_state(&self, doc: usize) -> Option<crate::similarity::FieldInvertState> {
+        let length = self.lengths.get(doc).copied().flatten()?;
+        let (num_overlap, unique) = self.overlaps_and_unique.get(doc).copied()?;
+        let clamp = |n: u32| i32::try_from(n).unwrap_or(i32::MAX);
+        Some(crate::similarity::FieldInvertState {
+            docs_only: self.index_options == IndexOptions::Docs,
+            length: clamp(length),
+            num_overlap: clamp(num_overlap),
+            unique_term_count: clamp(unique),
+        })
     }
 
     /// Number of distinct terms buffered.
@@ -293,6 +322,7 @@ impl FieldInverter {
             + self.postings.capacity() * std::mem::size_of::<TermPostingsBuf>()
             + per_term
             + self.lengths.capacity() * 8
+            + self.overlaps_and_unique.capacity() * 8
     }
 
     /// The buffered terms as the postings writer takes them, sorted by term
@@ -349,6 +379,24 @@ mod tests {
 
     use super::*;
     use crate::indexing_chain::invert_documents;
+
+    /// `FieldInvertState` as `computeNorm` reads it: tokens across every
+    /// value, distinct terms, the `DOCS` flag; `None` without a value.
+    #[test]
+    fn invert_state_counts_length_and_distinct_terms() {
+        let analyzer = Analyzer::standard(None);
+        let mut inv = FieldInverter::new(IndexOptions::Docs);
+        inv.add_document(0, &["a a b", "b c"], &analyzer);
+        inv.add_document(1, &[], &analyzer);
+        inv.add_document(2, &["..."], &analyzer);
+        let s = inv.invert_state(0).unwrap();
+        assert!(s.docs_only);
+        assert_eq!((s.length, s.num_overlap, s.unique_term_count), (5, 0, 3));
+        assert_eq!(inv.invert_state(1), None);
+        let empty = inv.invert_state(2).unwrap();
+        assert_eq!((empty.length, empty.unique_term_count), (0, 0));
+        assert_eq!(inv.invert_state(3), None);
+    }
 
     /// The flush trigger's inputs: the term count and the heap estimate, which
     /// grows with what is buffered; and positions clamp at `MAX_POSITION`
