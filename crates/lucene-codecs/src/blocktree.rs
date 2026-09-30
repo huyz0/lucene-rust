@@ -96,9 +96,9 @@
 //! `CompressionAlgorithm::LZ4` (reusing `crate::lz4::decompress`) and
 //! `LowercaseAscii` (a standalone port of
 //! `LowercaseAsciiCompression.decompress`, see [`decompress_lowercase_ascii`])
-//! are both decoded, alongside `NO_COMPRESSION`. This port's own blocktree
-//! *writer* only ever emits `NO_COMPRESSION`; the other two exist to read
-//! real Lucene-written segments. Only code `3` (never assigned to a
+//! are both decoded, alongside `NO_COMPRESSION`, and this port's own
+//! blocktree writer emits all three exactly where Java does
+//! (`crate::blocktree_writer`). Only code `3` (never assigned to a
 //! `CompressionAlgorithm` constant) is rejected, as `Error::Store(Corrupted)`,
 //! matching `CompressionAlgorithm.byCode`'s own `IllegalArgumentException`.
 

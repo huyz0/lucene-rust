@@ -10,10 +10,11 @@
 //! child pointer, the singleton run-length form of a block's stats, the
 //! suffix-length shortcut. This test pins all of them.
 //!
-//! The port deviates from Java in exactly two places (suffix compression and
-//! `encodeTerm`'s zigzag singleton branch; see `blocktree_writer`'s module
-//! doc), and the generator builds a term set on which Java takes neither --
-//! so any difference here is a defect, not a documented deviation.
+//! A second fixture, `fixtures/data/blocktree_suffix_compression_index/`
+//! (`GenBlockTreeSuffixCompression`), covers the two choices the first one
+//! avoids: `.tim` suffix compression (blocks Java writes as `LZ4`, as
+//! `LOWERCASE_ASCII` and uncompressed) and `encodeTerm`'s zigzag
+//! singleton-doc-delta branch (runs of ID-like terms in one document each).
 // Test-support code opts out of the arithmetic gate at the file boundary:
 // see `docs/arithmetic-gate.md`.
 #![allow(clippy::arithmetic_side_effects)]
@@ -22,15 +23,19 @@ use lucene_codecs::field_infos::{self, IndexOptions};
 use lucene_codecs::postings_writer::{self, FieldPostingsInput, TermPostings};
 
 fn dir() -> String {
-    concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../fixtures/data/blocktree_byte_identity_index/"
-    )
-    .to_string()
+    fixture_dir("blocktree_byte_identity_index")
+}
+
+fn fixture_dir(name: &str) -> String {
+    format!("{}/../../fixtures/data/{name}/", env!("CARGO_MANIFEST_DIR"))
 }
 
 fn manifest() -> Vec<(String, String)> {
-    std::fs::read_to_string(format!("{}manifest.properties", dir()))
+    manifest_in(&dir())
+}
+
+fn manifest_in(dir: &str) -> Vec<(String, String)> {
+    std::fs::read_to_string(format!("{dir}manifest.properties"))
         .expect("run the fixtures generator first (GenBlockTreeByteIdentity)")
         .lines()
         .filter_map(|l| l.split_once('='))
@@ -46,8 +51,12 @@ fn get<'m>(m: &'m [(String, String)], key: &str) -> &'m str {
 }
 
 fn raw(m: &[(String, String)], ext: &str) -> Vec<u8> {
+    raw_in(&dir(), m, ext)
+}
+
+fn raw_in(dir: &str, m: &[(String, String)], ext: &str) -> Vec<u8> {
     let name = get(m, &format!("{ext}_file_name"));
-    std::fs::read(format!("{}{name}.raw", dir())).unwrap_or_else(|_| panic!("missing {name}.raw"))
+    std::fs::read(format!("{dir}{name}.raw")).unwrap_or_else(|_| panic!("missing {name}.raw"))
 }
 
 fn id_from_hex(hex: &str) -> [u8; 16] {
@@ -122,4 +131,62 @@ fn term_dictionary_and_postings_are_byte_identical_to_lucene() {
     assert_same_bytes("tip", &out.tip, &raw(&m, "tip"));
     assert_same_bytes("tmd", &out.tmd, &raw(&m, "tmd"));
     assert_same_bytes("psm", &out.psm, &raw(&m, "psm"));
+}
+
+/// `GenBlockTreeSuffixCompression`: URL-like terms (Java compresses their
+/// blocks with `LZ4`), random lowercase words (`LOWERCASE_ASCII`), upper-case
+/// and punctuation (left uncompressed), and ID-like singleton terms whose
+/// metadata takes the zigzag branch -- all byte for byte.
+#[test]
+fn compressed_suffixes_and_singleton_runs_are_byte_identical_to_lucene() {
+    let dir = fixture_dir("blocktree_suffix_compression_index");
+    let m = manifest_in(&dir);
+    let id = id_from_hex(get(&m, "id_hex"));
+    let suffix = get(&m, "segment_suffix");
+    let infos = field_infos::parse(&raw_in(&dir, &m, "fnm"), &id, "").expect("parse .fnm");
+    let field = infos
+        .fields
+        .iter()
+        .find(|f| f.name == "t")
+        .expect("field t");
+    assert_eq!(field.index_options, IndexOptions::Docs);
+
+    let text = std::fs::read_to_string(format!("{dir}terms.txt")).expect("terms.txt");
+    let terms: Vec<TermPostings> = text
+        .lines()
+        .map(|line| {
+            let (term, docs) = line.split_once('\t').expect("term<TAB>docs");
+            TermPostings {
+                term: term.as_bytes().to_vec(),
+                docs: docs.split(',').map(|d| (d.parse().unwrap(), 1)).collect(),
+                ..Default::default()
+            }
+        })
+        .collect();
+    assert_eq!(terms.len(), get(&m, "num_terms").parse::<usize>().unwrap());
+    let singletons = terms.iter().filter(|t| t.docs.len() == 1).count();
+    assert!(
+        singletons > 1000,
+        "the fixture must have long singleton runs"
+    );
+    let doc_count = terms
+        .iter()
+        .flat_map(|t| t.docs.iter().map(|d| d.0))
+        .collect::<std::collections::BTreeSet<_>>()
+        .len() as i32;
+
+    let input = FieldPostingsInput {
+        field_number: field.number,
+        index_options: IndexOptions::Docs,
+        doc_count,
+        has_payloads: false,
+        terms: &terms,
+    };
+    let out = postings_writer::write_fields(&[input], &id, suffix).expect("write");
+
+    assert_same_bytes("doc", &out.doc, &raw_in(&dir, &m, "doc"));
+    assert_same_bytes("tim", &out.tim, &raw_in(&dir, &m, "tim"));
+    assert_same_bytes("tip", &out.tip, &raw_in(&dir, &m, "tip"));
+    assert_same_bytes("tmd", &out.tmd, &raw_in(&dir, &m, "tmd"));
+    assert_same_bytes("psm", &out.psm, &raw_in(&dir, &m, "psm"));
 }

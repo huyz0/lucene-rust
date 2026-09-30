@@ -34,8 +34,9 @@ import java.util.TreeSet;
  * {@code .tim}, {@code .tip}, {@code .tmd} and {@code .doc} it produces to be
  * these files, byte for byte.
  *
- * <p>The port deviates from Java in exactly two places, and this term set is
- * built so Java takes neither path:
+ * <p>This term set is built so Java takes neither of the two paths below;
+ * {@code GenBlockTreeSuffixCompression} is the fixture that takes both (the
+ * port used to deviate from Java on exactly these two):
  *
  * <ul>
  *   <li><b>Suffix compression.</b> Java only tries LZ4/LOWERCASE_ASCII when a

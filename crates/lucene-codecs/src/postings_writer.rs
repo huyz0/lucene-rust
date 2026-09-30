@@ -34,15 +34,13 @@
 //! - **`docFreq == 1` is pulsed into the term dictionary**: no `.doc` bytes for
 //!   a singleton term.
 //!
-//! # Where the bytes differ from Java's, deliberately
+//! # Byte identity
 //!
-//! Real Lucene reads both choices; neither changes what a reader returns.
-//!
-//! - `.tim` suffix bytes are always `NO_COMPRESSION`; Java tries `LZ4` and
-//!   `LOWERCASE_ASCII` per block.
-//! - Term metadata always takes `encodeTerm`'s plain `docStartFP`-delta branch,
-//!   never the zigzag singleton-doc-delta branch Java uses for runs of
-//!   singleton terms ([`write_term_metadata`]).
+//! `.tim` suffixes are compressed (`LZ4`, `LOWERCASE_ASCII`) exactly when
+//! Java compresses them, and term metadata takes `encodeTerm`'s zigzag
+//! singleton-doc-delta branch exactly when Java does
+//! ([`write_term_metadata`]); `tests/blocktree_byte_identity_fixture.rs`
+//! holds both to Lucene's bytes.
 //!
 //! # Caller obligations (checked where cheap)
 //!
@@ -806,10 +804,14 @@ pub fn write_fields_with_norms(
         // (never read for singletons, see `postings::singleton_postings`).
         let mut doc_start_fp = vec![0u64; input.terms.len()];
         for (i, t) in input.terms.iter().enumerate() {
+            // `startTerm` samples `docOut.getFilePointer()` for every term,
+            // singletons included: a singleton writes no `.doc` bytes, so its
+            // `docStartFP` equals the next term's, and `encodeTerm` keys the
+            // zigzag singleton branch off that equality.
+            doc_start_fp[i] = doc.len() as u64;
             if t.docs.len() == 1 {
                 continue;
             }
-            doc_start_fp[i] = doc.len() as u64;
 
             // Zero or more full 256-doc `ForUtil`/`PForUtil` blocks
             // (`write_full_block`) followed by at most one group-varint tail
@@ -2079,10 +2081,11 @@ fn write_full_payload_length_block(out: &mut Vec<u8>, lengths: &[u32], bytes: &[
 /// writer's own scope: `payStartFP` only appears when the field indexes
 /// offsets or stores payloads; `lastPosBlockOffset` carries the real offset
 /// of the vint position tail, exactly when `decode_term_metadata`'s own
-/// `total_term_freq > BLOCK_SIZE` gate requires it). Always takes the
-/// bit-clear ("absolute-ish
-/// `docStartFP` delta") branch, never the zigzag-singleton-delta branch —
-/// this writer has no need for that alternate encoding's extra compactness.
+/// `total_term_freq > BLOCK_SIZE` gate requires it). Takes the same branch
+/// `Lucene104PostingsWriter.encodeTerm` takes for every term: the zigzag
+/// singleton-doc-delta branch (bit 0 set) between two consecutive singleton
+/// terms that share a `docStartFP`, the plain `docStartFP`-delta branch
+/// otherwise.
 ///
 /// `doc_start_fp`/`pos_start_fp`/`pay_start_fp` deltas are threaded exactly
 /// like `SegmentTermsEnumFrame.metaDataUpto`/`absolute` on the read side: the
@@ -2107,26 +2110,32 @@ fn write_term_metadata(
     index_has_positions: bool,
     index_has_offsets_or_payloads: bool,
 ) {
+    // `lastState`, reset to `EMPTY_STATE` for the block's first term
+    // (`absolute`): no singleton, every pointer 0.
     let mut base_doc_start_fp = 0u64;
+    let mut base_singleton: i32 = -1;
     let mut base_pos_start_fp = 0u64;
     let mut base_pay_start_fp = 0u64;
     for &i in indices {
         let t = &terms[i];
-        let doc_freq = t.docs.len();
-        // Singleton terms never advance `doc_start_fp` (no `.doc` bytes are
-        // written for them, see `write_single_field`), so their delta is 0
-        // and the running base is left unchanged for the next term.
-        let this_fp = if doc_freq == 1 {
-            base_doc_start_fp
+        let singleton = if t.docs.len() == 1 { t.docs[0].0 } else { -1 };
+        let this_fp = doc_start_fp[i];
+        if base_singleton != -1 && singleton != -1 && this_fp == base_doc_start_fp {
+            // Runs of rare terms (IDs) share a `.doc` pointer; the doc id is
+            // written as a zigzag delta from the previous singleton's.
+            // Two `i32` doc ids: the difference always fits an `i64`.
+            let delta = i64::from(singleton).wrapping_sub(i64::from(base_singleton));
+            let zigzag = ((delta << 1) ^ (delta >> 63)) as u64;
+            out.write_vlong(((zigzag << 1) | 1) as i64);
         } else {
-            doc_start_fp[i]
-        };
-        let delta = this_fp.wrapping_sub(base_doc_start_fp);
-        out.write_vlong(((delta << 1) as i64) & !1); // bit 0 clear: absolute-ish delta branch
-        if doc_freq == 1 {
-            out.write_vint(t.docs[0].0);
+            let delta = this_fp.wrapping_sub(base_doc_start_fp);
+            out.write_vlong((delta << 1) as i64);
+            if singleton != -1 {
+                out.write_vint(singleton);
+            }
         }
         base_doc_start_fp = this_fp;
+        base_singleton = singleton;
 
         if index_has_positions {
             let this_pos_fp = pos_start_fp[i];
