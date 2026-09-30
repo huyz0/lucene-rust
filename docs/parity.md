@@ -196,7 +196,11 @@ commit, segment and field infos in full, and FNV-1a digests over the postings
 (with positions, offsets and payloads), norms, doc values, points, stored
 fields, term vectors and vectors, plus KNN hits -- is reproduced exactly. Lines
 this port cannot read yet are listed in the test's `EXPECTED_FAILURES`, which
-fails when an entry starts passing. The per-class status is
+fails when an entry starts passing. The same file opens every fixture through
+`DirectoryReader` and runs 34 queries (every query shape the engine serves,
+exact and block-max pruned): each version returns the current-codec 10.4.0
+fixture's hits, scores and totals bit for bit; and this port's `CheckIndex`
+passes on every fixture bar the retired HNSW vectors. The per-class status is
 `docs/inventory/lucene-backward-codecs.tsv`.
 
 | Java | Rust | Status |
