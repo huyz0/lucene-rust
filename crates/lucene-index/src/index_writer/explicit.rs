@@ -58,6 +58,7 @@ use crate::segment_infos::SegmentCommitInfo;
 use crate::segment_writer;
 use lucene_codecs::field_infos::{DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions};
 use lucene_codecs::norms;
+use lucene_codecs::per_field_doc_values;
 use lucene_codecs::postings_writer::{self, FieldPostingsInput, TermPostings};
 use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
 use lucene_store::codec_util::ID_LENGTH;
@@ -504,11 +505,24 @@ impl IndexingConfig {
         let doc_values_output = if dv_configs.is_empty() {
             None
         } else {
-            Some(IndexWriter::build_doc_values_output(
+            let names: Vec<&str> = self
+                .fields
+                .iter()
+                .filter(|f| present.contains(&f.number))
+                .map(|f| f.name.as_str())
+                .collect();
+            Some(self.build_doc_values_groups(
                 &synthetic(|f| &f.doc_values),
                 &dv_configs,
+                &names,
                 &segment_id,
             )?)
+        };
+        let dv_suffix = |number: i32| {
+            doc_values_output
+                .as_deref()
+                .and_then(|groups| groups.iter().find(|g| g.field_numbers.contains(&number)))
+                .map(|g| g.suffix)
         };
         let point_configs: Vec<PointsFieldConfig> = self
             .fields
@@ -587,14 +601,14 @@ impl IndexingConfig {
                         suffix.to_string(),
                     ));
                 }
-                if f.doc_values_type != DocValuesType::None {
+                if let Some(suffix) = dv_suffix(f.number) {
                     f.attributes.push((
-                        "PerFieldDocValuesFormat.format".to_string(),
+                        per_field_doc_values::PER_FIELD_FORMAT_KEY.to_string(),
                         DOC_VALUES_FORMAT_NAME.to_string(),
                     ));
                     f.attributes.push((
-                        "PerFieldDocValuesFormat.suffix".to_string(),
-                        PER_FIELD_SUFFIX.to_string(),
+                        per_field_doc_values::PER_FIELD_SUFFIX_KEY.to_string(),
+                        suffix.to_string(),
                     ));
                 }
                 if vector_fields_written.contains(f.name.as_str()) {
@@ -633,13 +647,11 @@ impl IndexingConfig {
                 &output,
             )?);
         }
-        if let Some((dvm, dvd, dvs)) = doc_values_output {
+        for group in doc_values_output.iter().flatten() {
             record(IndexWriter::write_doc_values_files(
                 dir,
                 segment_name,
-                &dvm,
-                &dvd,
-                &dvs,
+                group,
             )?);
         }
         if let Some((nvm, nvd)) = norms_output {

@@ -1,0 +1,12 @@
+segment _0 files _0_Lucene90_0.dvd _0_Lucene90_0.dvm _0_Lucene90_0.dvs _0_Lucene90_1.dvd _0_Lucene90_1.dvm _0_Lucene90_1.dvs
+field _0 d_num 0 Lucene90 1
+field _0 s_key 1 Lucene90 0
+field _0 d_set 2 Lucene90 1
+field _0 s_bin 3 Lucene90 0
+field _0 s_num 4 Lucene90 0
+segment _1 files _1_Lucene90_0.dvd _1_Lucene90_0.dvm _1_Lucene90_0.dvs _1_Lucene90_1.dvd _1_Lucene90_1.dvm _1_Lucene90_1.dvs
+field _1 d_num 0 Lucene90 1
+field _1 s_key 1 Lucene90 0
+field _1 d_set 2 Lucene90 1
+field _1 s_bin 3 Lucene90 0
+field _1 s_num 4 Lucene90 0

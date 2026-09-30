@@ -175,7 +175,7 @@ codecs/lucene99/Lucene99HnswVectorsReader	ported	crates/lucene-codecs/src/hnsw_v
 codecs/lucene99/Lucene99HnswVectorsWriter	ported	crates/lucene-codecs/src/hnsw_vectors.rs::write_hnsw_vectors
 codecs/lucene99/Lucene99ScalarQuantizedVectorScorer	ported	crates/lucene-codecs/src/backward_codecs/scalar_quantized_vectors.rs::{Lucene99ScalarQuantizedScorer, Lucene99ScalarQuantizedOrdScorer}
 codecs/lucene99/Lucene99SegmentInfoFormat	ported	crates/lucene-index/src/segment_info.rs::write
-codecs/perfield/PerFieldDocValuesFormat	partial	crates/lucene-index/src/index_writer.rs::per_field_codec_suffix -- M7: segments with several doc-values formats are read and merged (GenPerFieldFormats); the writer routes every doc-values field to one Lucene90DocValuesFormat() (suffix 0) -- no per-field skipIndexIntervalSize
+codecs/perfield/PerFieldDocValuesFormat	ported	crates/lucene-codecs/src/per_field_doc_values.rs::group_fields
 codecs/perfield/PerFieldKnnVectorsFormat	partial	crates/lucene-index/src/index_writer.rs::KNN_VECTORS_FORMAT_NAME -- M7: writes/merges the PerFieldKnnVectorsFormat.format/.suffix attributes for Lucene99HnswVectorsFormat only; no routing of fields to other KNN formats
 codecs/perfield/PerFieldMergeState	ported	crates/lucene-codecs/src/per_field_postings.rs::field_suffixes
 codecs/perfield/PerFieldPostingsFormat	ported	crates/lucene-codecs/src/per_field_postings.rs::write
