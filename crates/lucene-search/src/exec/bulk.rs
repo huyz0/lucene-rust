@@ -18,7 +18,9 @@
 
 use lucene_util::fixed_bit_set::FixedBitSet;
 
-use super::build::{boost_chain, child, compose, term_leg, Child, LeafContext, TermForm};
+use super::build::{
+    boost_chain, build_clauses, child, compose, term_leg, Child, LeafContext, TermForm,
+};
 use super::conjunction::ConjunctionScorer;
 use super::disjunction::{Combine, DisjunctionScorer};
 use super::leaf::ZeroScorer;
@@ -613,32 +615,12 @@ pub(crate) fn bulk_boolean<'a>(
     }
 
     let child_top_level = q.must.len() + q.should.len() == 1;
-    let mut must = Vec::with_capacity(q.must.len());
-    for c in &q.must {
-        match child(ctx, c, boost, mode, child_top_level)? {
-            Some(s) => must.push((s, c)),
-            None => return Ok(None),
-        }
-    }
-    let mut filter = Vec::with_capacity(q.filter.len());
-    for c in &q.filter {
-        match child(ctx, c, boost, Mode::NoScores, false)? {
-            Some(s) => filter.push((s, c)),
-            None => return Ok(None),
-        }
-    }
-    let mut should = Vec::with_capacity(q.should.len());
-    for c in &q.should {
-        if let Some(s) = child(ctx, c, boost, mode, child_top_level)? {
-            should.push((s, c));
-        }
-    }
-    let mut must_not = Vec::with_capacity(q.must_not.len());
-    for c in &q.must_not {
-        if let Some(s) = child(ctx, c, boost, Mode::NoScores, false)? {
-            must_not.push(s);
-        }
-    }
+    let Some((mut must, mut filter, mut should, must_not)) =
+        build_clauses(ctx, q, boost, mode, child_top_level)?
+    else {
+        return Ok(None);
+    };
+    let must_not: Vec<Child<'a>> = must_not.into_iter().map(|(c, _)| c).collect();
 
     // `BooleanWeight.scorerSupplier`'s per-segment adjustments.
     let mut msm = q.minimum_should_match;

@@ -516,6 +516,48 @@ pub(crate) fn point_range<'a>(
     Ok(doc_set(docs, max_doc, boost, mode))
 }
 
+/// `PointRangeQuery`'s `ScorerSupplier.cost()` without building its scorer:
+/// `maxDoc` when every document has a value inside the box (`allDocsMatch`),
+/// else `PointValues.estimateDocCount` of its visitor. `Absent` when the
+/// segment has no points for the field.
+pub(crate) fn point_range_cost(
+    ctx: &LeafContext<'_>,
+    q: &PointRangeQuery,
+) -> Result<super::extended::Supplier> {
+    use super::extended::Supplier;
+    let Some((points, number, max_doc)) = points_field(ctx, &q.field, q.num_dims, q.bytes_per_dim)?
+    else {
+        return Ok(Supplier::Absent);
+    };
+    let Some(info) = points.reader.field(number) else {
+        return Ok(Supplier::Absent);
+    };
+    if info.doc_count == max_doc {
+        let bpd = q.bytes_per_dim;
+        let all = (0..q.num_dims).all(|d| {
+            let r = d * bpd..(d + 1) * bpd;
+            match (
+                q.lower.get(r.clone()),
+                q.upper.get(r.clone()),
+                info.min_packed_value.get(r.clone()),
+                info.max_packed_value.get(r),
+            ) {
+                (Some(lo), Some(hi), Some(min), Some(max)) => lo <= min && hi >= max,
+                _ => false,
+            }
+        });
+        if all {
+            return Ok(Supplier::Present(Some(i64::from(max_doc))));
+        }
+    }
+    let points_estimate = points
+        .reader
+        .estimate_range_point_count(number, &q.lower, &q.upper)?;
+    Ok(Supplier::Present(Some(
+        crate::points_query::estimate_doc_count(points_estimate, info.point_count, info.doc_count),
+    )))
+}
+
 /// `PointInSetQuery`: every document with a point equal to one of the set.
 pub(crate) fn point_in_set<'a>(
     ctx: &LeafContext<'a>,
