@@ -60,4 +60,11 @@ RUSTDOCFLAGS="-D warnings -A rustdoc::private_intra_doc_links" \
 echo "gate: cargo llvm-cov (tests + >=95% line coverage)"
 cargo llvm-cov --workspace --fail-under-lines 95
 
+# The plugin ships the release build, and the optimiser may change what debug
+# arithmetic promised -- a NaN's bits, for one. lucene-search's fixtures compare
+# doubles bit for bit, so they run in release too. See
+# `docs/mechanical-gates.md#release-profile`.
+echo "gate: lucene-search tests in release"
+cargo test --release -p lucene-search
+
 echo "gate: ok"

@@ -1626,7 +1626,7 @@ fn collect(
 /// `Double.doubleToLongBits`: every `NaN` is the canonical one.
 fn java_double_bits(d: f64) -> i64 {
     if d.is_nan() {
-        f64::NAN.to_bits() as i64
+        crate::aggs::JAVA_NAN.to_bits() as i64
     } else {
         d.to_bits() as i64
     }
