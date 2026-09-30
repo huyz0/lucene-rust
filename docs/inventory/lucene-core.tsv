@@ -463,7 +463,7 @@ index/SegmentDocValuesProducer	ported	crates/lucene-search/src/directory_reader.
 index/SegmentInfo	ported	crates/lucene-index/src/segment_info.rs::SegmentInfo
 index/SegmentInfos	ported	crates/lucene-index/src/segment_infos.rs::SegmentInfos
 index/SegmentMerger	ported	crates/lucene-index/src/merge.rs::merge_segments
-index/SegmentOrder	todo:M7	re-ordering an IndexReader's segments to help early termination
+index/SegmentOrder	ported	crates/lucene-search/src/segment_order.rs::SegmentOrder
 index/SegmentReadState	not-needed	parameter bundle passed to codec readers; Rust passes the directory, segment info and field infos directly.
 index/SegmentReader	partial	crates/lucene-search/src/directory_reader.rs::SegmentReader -- M7: does not open term vectors or KNN vectors (lucene-search/src/term_vectors_query.rs and vector_query.rs take their own readers); no reader-closed listeners / CacheHelper
 index/SegmentWriteState	not-needed	parameter bundle passed to codec writers; Rust passes segment name, suffix and field infos directly.
