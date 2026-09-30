@@ -29,7 +29,9 @@
 //!   each: the values are the same.
 //! * `hashCode`/`equals` are not ported; `toString` is [`std::fmt::Display`]
 //!   through [`DoubleValuesSource::describe`].
-//! * Sorting by a source (`getSortField`) is not ported here.
+//! * Sorting by a source ([`double_sort_field`], [`long_sort_field`]) reads
+//!   each segment through [`ValuesContext::for_reader`]: a source that needs
+//!   the searcher (a query's scores) or opened vectors cannot sort.
 
 use std::sync::Arc;
 
@@ -93,19 +95,45 @@ pub type BoxLongValues<'c> = Box<dyn LongValues + 'c>;
 
 /// What a source reads a leaf through: the searcher, and each segment's
 /// opened vectors (parallel to `searcher.segments()`; empty when no vector
-/// source is used).
+/// source is used) -- or, for a sort's comparator, one segment's reader
+/// alone ([`Self::for_reader`], its leaf `0`), which serves every source that
+/// reads only the segment (fields, vectors, late interaction, constants).
 #[derive(Clone, Copy)]
 pub struct ValuesContext<'c> {
-    pub searcher: &'c IndexSearcher<'c, 'c>,
-    pub vectors: &'c [Option<&'c VectorsInput<'c>>],
+    searcher: Option<&'c IndexSearcher<'c, 'c>>,
+    reader: Option<&'c crate::directory_reader::SegmentReader>,
+    vectors: &'c [Option<&'c VectorsInput<'c>>],
 }
 
 impl<'c> ValuesContext<'c> {
     pub fn new(searcher: &'c IndexSearcher<'c, 'c>) -> Self {
         Self {
-            searcher,
+            searcher: Some(searcher),
+            reader: None,
             vectors: &[],
         }
+    }
+
+    /// One segment's reader as leaf `0`, without a searcher: what a sort's
+    /// comparator has (`getLeafComparator(context)`).
+    pub fn for_reader(reader: &'c crate::directory_reader::SegmentReader) -> Self {
+        Self {
+            searcher: None,
+            reader: Some(reader),
+            vectors: &[],
+        }
+    }
+
+    /// The searcher, which a query-backed source needs.
+    ///
+    /// # Errors
+    /// [`Error::IllegalState`] for a context of one reader.
+    pub fn searcher(&self) -> Result<&'c IndexSearcher<'c, 'c>> {
+        self.searcher.ok_or_else(|| {
+            Error::IllegalState(
+                "this values source needs a searcher (it reads the whole index)".to_string(),
+            )
+        })
     }
 
     pub fn with_vectors(mut self, vectors: &'c [Option<&'c VectorsInput<'c>>]) -> Self {
@@ -114,15 +142,16 @@ impl<'c> ValuesContext<'c> {
     }
 
     fn reader(&self, leaf: usize) -> Result<&'c crate::directory_reader::SegmentReader> {
-        self.searcher
-            .segments()
-            .get(leaf)
-            .and_then(|s| s.reader)
-            .ok_or_else(|| {
-                Error::IllegalState(format!(
-                    "leaf {leaf}: a values source needs the segment's reader"
-                ))
-            })
+        let found = match (self.searcher, self.reader) {
+            (Some(s), _) => s.segments().get(leaf).and_then(|s| s.reader),
+            (None, Some(r)) if leaf == 0 => Some(r),
+            _ => None,
+        };
+        found.ok_or_else(|| {
+            Error::IllegalState(format!(
+                "leaf {leaf}: a values source needs the segment's reader"
+            ))
+        })
     }
 
     fn vectors(&self, leaf: usize) -> Result<&'c VectorsInput<'c>> {
@@ -512,7 +541,7 @@ impl DoubleValuesSource for QuerySource {
         leaf: usize,
         _scores: Option<BoxDoubleValues<'c>>,
     ) -> Result<BoxDoubleValues<'c>> {
-        let hits = ctx.searcher.leaf_scores(&self.0, leaf, true)?;
+        let hits = ctx.searcher()?.leaf_scores(&self.0, leaf, true)?;
         let (docs, scores) = hits.into_iter().unzip();
         Ok(Box::new(SortedScores {
             docs,
@@ -1264,6 +1293,172 @@ impl DoubleValuesSource for LateInteractionFloatValuesSource {
             self.field, self.function, self.query
         )
     }
+}
+
+// ---------------------------------------------------------------------------
+// Sorting by a values source
+// ---------------------------------------------------------------------------
+
+/// The score a sort's comparator hands a source that needs scores
+/// (`DoubleValuesSource.fromScorer(scorer)`).
+struct ScoreCell(std::rc::Rc<std::cell::Cell<f32>>);
+
+impl DoubleValues for ScoreCell {
+    fn advance_exact(&mut self, _doc: i32) -> Result<bool> {
+        Ok(true)
+    }
+    fn double_value(&mut self) -> Result<f64> {
+        Ok(f64::from(self.0.get()))
+    }
+}
+
+/// `DoubleValuesComparatorSource`/`LongValuesComparatorSource`: a sort key
+/// over a values source, compared as Java's `DoubleComparator`
+/// (`Double.compare`, over `doubleToSortableLong`) or `LongComparator`, with
+/// `missing` for a document without a value.
+struct ValuesSortSource {
+    source: ValuesSortKind,
+    missing: i64,
+}
+
+#[derive(Clone)]
+enum ValuesSortKind {
+    Double(Arc<dyn DoubleValuesSource>),
+    Long(Arc<dyn LongValuesSource>),
+}
+
+impl crate::top_field::FieldComparatorSource for ValuesSortSource {
+    fn new_comparator(
+        &self,
+        _field: &str,
+        _num_hits: usize,
+        _reverse: bool,
+    ) -> Box<dyn crate::top_field::FieldComparator> {
+        Box::new(ValuesSortComparator {
+            source: self.source.clone(),
+            missing: self.missing,
+        })
+    }
+}
+
+struct ValuesSortComparator {
+    source: ValuesSortKind,
+    missing: i64,
+}
+
+struct ValuesSortLeaf<'a> {
+    score: std::rc::Rc<std::cell::Cell<f32>>,
+    values: ValuesSortLeafValues<'a>,
+    missing: i64,
+}
+
+enum ValuesSortLeafValues<'a> {
+    Double(BoxDoubleValues<'a>),
+    Long(BoxLongValues<'a>),
+}
+
+impl crate::top_field::FieldComparator for ValuesSortComparator {
+    fn leaf<'a>(
+        &self,
+        ctx: crate::top_field::LeafCtx<'a>,
+    ) -> Result<Box<dyn crate::top_field::LeafFieldComparator + 'a>> {
+        let vctx = ValuesContext::for_reader(ctx.reader);
+        let score = std::rc::Rc::new(std::cell::Cell::new(0f32));
+        let scores = || -> Option<BoxDoubleValues<'a>> {
+            Some(Box::new(ScoreCell(std::rc::Rc::clone(&score))))
+        };
+        let values = match &self.source {
+            ValuesSortKind::Double(s) => ValuesSortLeafValues::Double(s.get_values(
+                &vctx,
+                0,
+                s.needs_scores().then(scores).flatten(),
+            )?),
+            ValuesSortKind::Long(s) => ValuesSortLeafValues::Long(s.get_values(
+                &vctx,
+                0,
+                s.needs_scores().then(scores).flatten(),
+            )?),
+        };
+        Ok(Box::new(ValuesSortLeaf {
+            score,
+            values,
+            missing: self.missing,
+        }))
+    }
+
+    fn compare_values(
+        &self,
+        a: &crate::top_field::SortValue,
+        b: &crate::top_field::SortValue,
+    ) -> std::cmp::Ordering {
+        match (a, b) {
+            (crate::top_field::SortValue::Long(x), crate::top_field::SortValue::Long(y)) => {
+                x.cmp(y)
+            }
+            _ => std::cmp::Ordering::Equal,
+        }
+    }
+
+    fn needs_scores(&self) -> bool {
+        match &self.source {
+            ValuesSortKind::Double(s) => s.needs_scores(),
+            ValuesSortKind::Long(s) => s.needs_scores(),
+        }
+    }
+}
+
+impl crate::top_field::LeafFieldComparator for ValuesSortLeaf<'_> {
+    fn value(&mut self, doc: i32, score: f32) -> Result<crate::top_field::SortValue> {
+        self.score.set(score);
+        let v = match &mut self.values {
+            ValuesSortLeafValues::Double(v) => {
+                if v.advance_exact(doc)? {
+                    double_to_sortable_long(v.double_value()?)
+                } else {
+                    self.missing
+                }
+            }
+            ValuesSortLeafValues::Long(v) => {
+                if v.advance_exact(doc)? {
+                    v.long_value()?
+                } else {
+                    self.missing
+                }
+            }
+        };
+        Ok(crate::top_field::SortValue::Long(v))
+    }
+}
+
+/// `DoubleValuesSource.getSortField(reverse, missingValue)`: a sort key over
+/// the source's values (a hit's value is `doubleToSortableLong` of it). The
+/// source must read only the segment -- a query-backed source
+/// ([`from_query`]) needs a searcher, which a comparator does not have.
+pub fn double_sort_field(
+    source: Arc<dyn DoubleValuesSource>,
+    reverse: bool,
+    missing: f64,
+) -> crate::top_field::SortField {
+    let field = source.describe();
+    let id = crate::top_field::register_comparator_source(Arc::new(ValuesSortSource {
+        source: ValuesSortKind::Double(source),
+        missing: double_to_sortable_long(missing),
+    }));
+    crate::top_field::SortField::custom(&field, id, reverse)
+}
+
+/// `LongValuesSource.getSortField(reverse, missingValue)`.
+pub fn long_sort_field(
+    source: Arc<dyn LongValuesSource>,
+    reverse: bool,
+    missing: i64,
+) -> crate::top_field::SortField {
+    let field = source.describe();
+    let id = crate::top_field::register_comparator_source(Arc::new(ValuesSortSource {
+        source: ValuesSortKind::Long(source),
+        missing,
+    }));
+    crate::top_field::SortField::custom(&field, id, reverse)
 }
 
 // ---------------------------------------------------------------------------

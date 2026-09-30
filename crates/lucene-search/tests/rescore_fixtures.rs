@@ -123,7 +123,7 @@ fn double_values(
 ) -> Vec<(i32, i64)> {
     let mut out = Vec::new();
     for (leaf, &max_doc) in max_docs.iter().enumerate() {
-        let base = ctx.searcher.segments()[leaf].doc_base;
+        let base = ctx.searcher().unwrap().segments()[leaf].doc_base;
         let mut v = source.get_values(ctx, leaf, None).unwrap();
         for doc in 0..max_doc {
             if v.advance_exact(doc).unwrap() {
@@ -141,7 +141,7 @@ fn long_values(
 ) -> Vec<(i32, i64)> {
     let mut out = Vec::new();
     for (leaf, &max_doc) in max_docs.iter().enumerate() {
-        let base = ctx.searcher.segments()[leaf].doc_base;
+        let base = ctx.searcher().unwrap().segments()[leaf].doc_base;
         let mut v = source.get_values(ctx, leaf, None).unwrap();
         for doc in 0..max_doc {
             if v.advance_exact(doc).unwrap() {
@@ -365,6 +365,64 @@ fn values_sources_and_rescorers_match_real_lucene() {
     assert!(doubles[0].1.is_cacheable(&ctx, 0));
     assert!(!doubles[5].1.is_cacheable(&ctx, 0));
     assert!(doubles[8].1.is_cacheable(&ctx, 1));
+
+    // Sorting by a values source (`getSortField`).
+    let readers = reader.segment_readers();
+    let late = || -> Arc<dyn DoubleValuesSource> {
+        Arc::new(
+            LateInteractionFloatValuesSource::with_function(
+                "li",
+                qmv(),
+                VectorSimilarityFunction::Cosine,
+            )
+            .unwrap(),
+        )
+    };
+    let vsorts: usize = m.get("vsort_count").parse().unwrap();
+    for i in 0..vsorts {
+        let k = |f: &str| m.get(&format!("vsort.{i}.{f}")).to_string();
+        let sort = match k("sort").as_str() {
+            "float" => vec![vs::double_sort_field(vs::from_float_field("f"), false, 0.0)],
+            "double_rev" => vec![vs::double_sort_field(
+                vs::from_double_field("d"),
+                true,
+                -1.5,
+            )],
+            "long" => vec![vs::long_sort_field(vs::long_from_long_field("n"), false, 0)],
+            "long_rev" => vec![vs::long_sort_field(vs::long_from_long_field("n"), true, 42)],
+            "scores" => vec![vs::double_sort_field(vs::scores(), true, 0.0)],
+            "late" => vec![vs::double_sort_field(late(), true, 0.0)],
+            _ => vec![
+                vs::double_sort_field(vs::from_float_field("f"), true, 0.0),
+                vs::double_sort_field(vs::scores(), false, 0.0),
+            ],
+        };
+        let got = lucene_search::top_field::search_sorted(
+            &segments,
+            readers,
+            &GRAMMAR.query(&k("query")),
+            &norms,
+            &sort,
+            15,
+            u64::MAX,
+            None,
+        )
+        .unwrap();
+        let want = hits(&k("hits"));
+        assert_eq!(got.hits.len(), want.len(), "vsort.{i}");
+        assert_eq!(got.total.value, k("total").parse::<u64>().unwrap());
+        for (g, w) in got.hits.iter().zip(&want) {
+            let what = format!("vsort.{i} {} doc {}", k("sort"), w[0]);
+            assert_eq!(g.doc.to_string(), w[0], "{what}");
+            for (j, raw) in w[1..].iter().enumerate() {
+                let v = match raw.as_bytes()[0] {
+                    b'd' => sortable(raw[1..].parse().unwrap()),
+                    _ => raw[1..].parse().unwrap(),
+                };
+                assert_eq!(g.values[j], v, "{what}");
+            }
+        }
+    }
 
     // NumericFieldStats.
     for f in ["r", "ip", "rs", "n", "missing"] {
