@@ -133,6 +133,14 @@ CASES=(
   # through its own doc map. Every one of those can go wrong while leaving a
   # segment that decodes cleanly and passes every checksum.
   "lucene-index|write_sorted_merged_segment_fixture|sorted-merged-segment|VerifySortedSegment|53"
+  # And the byte-keyed index sorts (M7): STRING over SORTED, SortedSetSortField
+  # (every selector) over SORTED_SET and BinarySortField over BINARY, eight
+  # configurations flushed (three segments) and force-merged with deletions.
+  # The verifier re-indexes the documents it reads out of the Rust index with
+  # Lucene's own IndexWriter, under the sort it reads out of the Rust .si, and
+  # requires the same physical order in every segment, then runs CheckIndex.
+  # Measured: a MIDDLE_MAX selector off by one fails CheckIndex's testSort.
+  "lucene-index|write_string_sorted_segment_fixture|string-sorted|VerifyStringSortedIndex"
   # And a segment whose postings carry positions, offsets and payloads. Until
   # c23 the only whole-index case above (`write_full_segment_fixture`) indexed
   # DOCS_AND_FREQS, so no `.pos` or `.pay` file this port wrote had ever been
