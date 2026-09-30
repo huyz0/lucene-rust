@@ -3616,6 +3616,14 @@ const MAX_INLINE_PHRASE_TERMS: usize = 32;
 /// finding as M1.6's `next_doc`/`advance` binary searches, in the function
 /// those two never reached (b12 finding F-21).
 fn phrase_freq_exact_impl(term_positions: &[&[i32]], stop_at_first: bool) -> i32 {
+    if let [first, second] = term_positions {
+        return phrase_freq_exact_two(first, second, stop_at_first);
+    }
+    phrase_freq_exact_general(term_positions, stop_at_first)
+}
+
+/// [`phrase_freq_exact_impl`] for any number of terms.
+fn phrase_freq_exact_general(term_positions: &[&[i32]], stop_at_first: bool) -> i32 {
     let Some((first, rest)) = term_positions.split_first() else {
         return 0;
     };
@@ -3653,6 +3661,33 @@ fn phrase_freq_exact_impl(term_positions: &[&[i32]], stop_at_first: bool) -> i32
         if stop_at_first {
             break;
         }
+    }
+    freq
+}
+
+/// [`phrase_freq_exact_impl`] for a two-term phrase -- every phrase in the M1
+/// mix, and the common case: one merge of two ascending lists, counting each
+/// `p` of `first` whose `p + 1` is in `second`. The general loop's cursor
+/// table, slice-of-slices indexing and per-term bookkeeping were two thirds
+/// of its cost on `"t0 t1"`, whose documents hold a handful of positions each.
+fn phrase_freq_exact_two(first: &[i32], second: &[i32], stop_at_first: bool) -> i32 {
+    let (mut i, mut j, mut freq) = (0, 0, 0);
+    while let (Some(&p0), Some(&p1)) = (first.get(i), second.get(j)) {
+        // The same `p0 + 1` the general loop aligns on.
+        let target = p0 + 1;
+        if p1 < target {
+            j += 1;
+            continue;
+        }
+        if p1 == target {
+            freq += 1;
+            if stop_at_first {
+                break;
+            }
+        }
+        // `j` stays: a multi-phrase position list is a union and may repeat
+        // a position, and the next `p0` may equal this one.
+        i += 1;
     }
     freq
 }
@@ -7652,6 +7687,43 @@ mod tests {
                     sloppy_freq(&refs, slop) > 0.0,
                     sloppy_matches(&refs, slop),
                     "slop={slop} shape={shape:?}"
+                );
+            }
+        }
+    }
+
+    /// **The two-term merge counts what the general loop counts**, stopping
+    /// at the first match or not: random non-decreasing position lists of
+    /// every small length, dense and sparse, with and without alignments,
+    /// and with the repeated positions a multi-phrase union produces.
+    #[test]
+    fn the_two_term_phrase_merge_agrees_with_the_general_loop() {
+        let mut s = 0x1234_5678_9ABC_DEF1u64;
+        let mut next = move || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        for _ in 0..20_000 {
+            let spread = 1 + next() % 12;
+            let (na, nb) = (next() % 9, next() % 9);
+            let mut list = |n: u64| {
+                let mut p = (next() % 4) as i32;
+                (0..n)
+                    .map(|_| {
+                        // A step of 0 repeats a position, as a union does.
+                        p += (next() % (spread + 1)) as i32;
+                        p
+                    })
+                    .collect::<Vec<i32>>()
+            };
+            let (a, b) = (list(na), list(nb));
+            for stop in [false, true] {
+                assert_eq!(
+                    phrase_freq_exact_two(&a, &b, stop),
+                    phrase_freq_exact_general(&[&a, &b], stop),
+                    "{a:?} {b:?} stop={stop}"
                 );
             }
         }
