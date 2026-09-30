@@ -22,6 +22,7 @@ pub mod bkd_writer;
 pub mod block_packed;
 pub mod blocktree;
 mod blocktree_writer;
+pub mod codec;
 pub mod codecs;
 pub mod compound_format;
 mod deflate;

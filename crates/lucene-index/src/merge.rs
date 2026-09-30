@@ -3623,6 +3623,9 @@ pub struct MergeOptions {
     /// `Lucene99HnswVectorsFormat(hnsw_m, hnsw_beam_width)`
     /// ([`crate::index_writer::IndexWriter::set_knn_vectors_format_for_field`]).
     pub knn_vectors_formats: Vec<(String, per_field_knn_vectors::KnnVectorsFormat)>,
+    /// The writer's codec ([`crate::index_writer::IndexWriter::set_codec`]),
+    /// consulted for a field the lists above do not route.
+    pub codec: Option<std::sync::Arc<dyn lucene_codecs::codec::Lucene104Codec>>,
 }
 
 impl MergeOptions {
@@ -3632,6 +3635,11 @@ impl MergeOptions {
             .iter()
             .find(|(name, _)| name == field)
             .map(|(_, format)| *format)
+            .or_else(|| {
+                self.codec
+                    .as_ref()
+                    .map(|c| c.knn_vectors_format_for_field(field))
+            })
             .unwrap_or(per_field_knn_vectors::KnnVectorsFormat::Hnsw {
                 max_conn: self.hnsw_m,
                 beam_width: self.hnsw_beam_width,
@@ -3644,6 +3652,11 @@ impl MergeOptions {
             .iter()
             .find(|(name, _)| name == field)
             .map(|(_, format)| *format)
+            .or_else(|| {
+                self.codec
+                    .as_ref()
+                    .map(|c| c.doc_values_format_for_field(field))
+            })
             .unwrap_or_default()
     }
 
@@ -3653,6 +3666,11 @@ impl MergeOptions {
             .iter()
             .find(|(name, _)| name == field)
             .map(|(_, format)| *format)
+            .or_else(|| {
+                self.codec
+                    .as_ref()
+                    .map(|c| c.postings_format_for_field(field))
+            })
             .unwrap_or_default()
     }
 }
@@ -3665,6 +3683,7 @@ impl Default for MergeOptions {
             postings_formats: Vec::new(),
             doc_values_formats: Vec::new(),
             knn_vectors_formats: Vec::new(),
+            codec: None,
         }
     }
 }

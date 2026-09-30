@@ -13,6 +13,7 @@
 // see `docs/arithmetic-gate.md`.
 #![allow(clippy::arithmetic_side_effects)]
 
+use lucene_codecs::codec::Lucene104Codec;
 use lucene_codecs::per_field_doc_values::Lucene90DocValuesFormat;
 use lucene_index::check_index;
 use lucene_index::document::{
@@ -62,19 +63,37 @@ fn doc(i: usize) -> Document {
     d
 }
 
-fn write(dir: &FsDirectory, merge: bool) {
+/// `GenPerFieldDocValues`' codec, as an `IndexWriterConfig.setCodec` codec.
+#[derive(Debug)]
+struct Codec;
+
+impl Lucene104Codec for Codec {
+    fn doc_values_format_for_field(&self, field: &str) -> Lucene90DocValuesFormat {
+        if field.starts_with("s_") {
+            Lucene90DocValuesFormat::new(16).unwrap()
+        } else {
+            Lucene90DocValuesFormat::default()
+        }
+    }
+}
+
+fn write(dir: &FsDirectory, merge: bool, codec: bool) {
     let version = LuceneVersion {
         major: 10,
         minor: 5,
         bugfix: 0,
     };
     let mut w = IndexWriter::open(dir, Vec::new(), "Lucene104", version).unwrap();
-    let small = Lucene90DocValuesFormat::new(16).unwrap();
-    for field in ["s_key", "s_num", "s_bin"] {
-        w.set_doc_values_format_for_field(field, small);
+    if codec {
+        w.set_codec(Some(Arc::new(Codec))).unwrap();
+    } else {
+        let small = Lucene90DocValuesFormat::new(16).unwrap();
+        for field in ["s_key", "s_num", "s_bin"] {
+            w.set_doc_values_format_for_field(field, small);
+        }
+        // Re-routing replaces, never duplicates.
+        w.set_doc_values_format_for_field("s_bin", small);
     }
-    // Re-routing replaces, never duplicates.
-    w.set_doc_values_format_for_field("s_bin", small);
     // The generator's writer: `TieredMergePolicy` (loose merged segments),
     // no merge-on-commit.
     w.set_max_full_flush_merge_wait_millis(0);
@@ -159,10 +178,10 @@ fn with_segment_id(ours: &[u8], our_id: &[u8; 16], id: &[u8; 16]) -> Vec<u8> {
     bytes
 }
 
-fn check(which: &str, merge: bool) {
+fn check(which: &str, merge: bool, codec: bool) {
     let tmp = TempDir::new("per-field-doc-values");
     let dir = FsDirectory::open(&tmp);
-    write(&dir, merge);
+    write(&dir, merge, codec);
     let java = FsDirectory::open(fixture(which));
     let expected: Vec<String> = std::fs::read_to_string(format!("{}/manifest.txt", fixture(which)))
         .unwrap()
@@ -203,10 +222,17 @@ fn check(which: &str, merge: bool) {
 
 #[test]
 fn flushed_segments_route_doc_values_as_java_does() {
-    check("flushed", false);
+    check("flushed", false, false);
+}
+
+/// The same routing through `IndexWriterConfig.setCodec`.
+#[test]
+fn a_codec_routes_doc_values_as_java_does() {
+    check("flushed", false, true);
+    check("merged", true, true);
 }
 
 #[test]
 fn a_merge_regroups_doc_values_in_field_number_order_as_java_does() {
-    check("merged", true);
+    check("merged", true, false);
 }

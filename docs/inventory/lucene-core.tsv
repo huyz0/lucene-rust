@@ -396,7 +396,7 @@ index/IndexReaderContext	ported	crates/lucene-search/src/multi_segment.rs::OpenS
 index/IndexSorter	ported	crates/lucene-index/src/index_sorter.rs::read_segment_terms
 index/IndexUpgrader	ported	crates/lucene-index/src/index_upgrader.rs::IndexUpgrader
 index/IndexWriter	ported	crates/lucene-index/src/index_writer.rs::IndexWriter
-index/IndexWriterConfig	partial	crates/lucene-index/src/index_writer.rs::set_index_sort -- M7: settings are writer setters (`setSimilarity` is `IndexWriter::set_similarity`, norms via `NormSimilarity`); missing codec and per-field format choice (T7.5). `IndexWriterEventListener` and `infoStream` are not needed (rows `index/IndexWriterEventListener`, `util/InfoStream`); `leafSorter` is `DirectoryReader::with_leaf_sorter`, `commitOnClose` is `IndexWriter::set_commit_on_close`
+index/IndexWriterConfig	ported	crates/lucene-index/src/index_writer.rs::set_codec
 index/IndexWriterEventListener	not-needed	callback hook for merge begin/end events used for metrics and tests; no effect on the index.
 index/IndexableField	ported	crates/lucene-index/src/document/mod.rs::IndexableField
 index/IndexableFieldType	ported	crates/lucene-index/src/document/mod.rs::FieldType
