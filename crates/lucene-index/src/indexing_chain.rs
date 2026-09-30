@@ -601,8 +601,84 @@ pub fn invert_documents_with_payloads(
     }
 }
 
+/// Java's `String.hashCode()`: `s[0]*31^(n-1) + ... + s[n-1]` over the
+/// UTF-16 code units, wrapping.
+pub(crate) fn java_string_hash(s: &str) -> i32 {
+    s.encode_utf16().fold(0i32, |h, unit| {
+        h.wrapping_mul(31).wrapping_add(i32::from(unit))
+    })
+}
+
+/// The order `IndexingChain`'s flush loops (`writeDocValues`, `writePoints`)
+/// visit fields in: its `fieldHash`, walked bucket by bucket, each bucket's
+/// chain from its head. `names` are the fields in the order the chain first
+/// saw them (`getOrAddPerField`); the result lists their indexes in walk
+/// order.
+///
+/// `fieldHash` starts with 2 buckets; a new field is put at the head of
+/// bucket `hashCode() & hashMask`, and once there are at least half as many
+/// fields as buckets the table doubles (`rehash`, which moves each old
+/// bucket's chain, head first, onto the heads of the new buckets).
+pub(crate) fn field_hash_order(names: &[&str]) -> Vec<usize> {
+    let mut buckets: Vec<Vec<usize>> = vec![Vec::new(); 2];
+    for (i, name) in names.iter().enumerate() {
+        let mask = buckets.len().saturating_sub(1);
+        // `hashCode() & hashMask`: the mask is below the table size, so the
+        // `as` keeps exactly the bits Java keeps.
+        #[allow(clippy::cast_sign_loss)]
+        let pos = (java_string_hash(name) as u32 as usize) & mask;
+        buckets[pos].insert(0, i);
+        if i.saturating_add(1) >= buckets.len() / 2 {
+            let doubled = buckets.len().saturating_mul(2);
+            let mut rehashed: Vec<Vec<usize>> = vec![Vec::new(); doubled];
+            for chain in &buckets {
+                for &field in chain {
+                    #[allow(clippy::cast_sign_loss)]
+                    let pos = (java_string_hash(names[field]) as u32 as usize)
+                        & doubled.saturating_sub(1);
+                    rehashed[pos].insert(0, field);
+                }
+            }
+            buckets = rehashed;
+        }
+    }
+    buckets.into_iter().flatten().collect()
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// Checked against Java: the first `GenPerFieldFormats` segment's
+    /// doc-values fields reach `PerFieldDocValuesFormat` as `dva_num` (4),
+    /// then the two `dvb_` fields, which is why `dva_num` is `Lucene90_0`.
+    #[test]
+    fn field_hash_order_walks_javas_table() {
+        assert_eq!(super::java_string_hash(""), 0);
+        assert_eq!(super::java_string_hash("a"), 97);
+        // "hello".hashCode() == 99162322, "polygenelubricants" wraps negative.
+        assert_eq!(super::java_string_hash("hello"), 99_162_322);
+        assert_eq!(super::java_string_hash("polygenelubricants"), i32::MIN);
+        let names = [
+            "a_id",
+            "a_text",
+            "b_id",
+            "b_tag",
+            "dva_num",
+            "dvb_num",
+            "dvb_sorted",
+        ];
+        let order = super::field_hash_order(&names);
+        let mut sorted = order.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, (0..names.len()).collect::<Vec<_>>());
+        let dv: Vec<&str> = order
+            .iter()
+            .map(|&i| names[i])
+            .filter(|n| n.starts_with("dv"))
+            .collect();
+        assert_eq!(dv[0], "dva_num", "{order:?}");
+        assert!(super::field_hash_order(&[]).is_empty());
+    }
     use super::*;
     use std::collections::HashSet;
 

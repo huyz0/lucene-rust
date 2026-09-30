@@ -129,7 +129,7 @@ the skipper path, range relations, feature, distance feature) in
 ### T7.3 — Similarities, bit-for-bit
 ### T7.4 — The remaining core queries and comparators, in the scorer tree
 ### T7.5 — Per-field formats, read and write
-- Delivered 2026-09-30: `PerFieldPostingsFormat` routing -- `IndexWriter::set_postings_format_for_field` sends fields to their own `Lucene104PostingsFormat(min, max)` files; flush, merge (`PerFieldMergeState`), buffered deletes and `check_index` read multi-format segments (`GenPerFieldFormats`, `VerifyPerFieldFormats`). Doc-values write routing is still single-format.
+- Delivered 2026-09-30: `PerFieldPostingsFormat` routing -- `IndexWriter::set_postings_format_for_field` sends fields to their own `Lucene104PostingsFormat(min, max)` files; flush, merge (`PerFieldMergeState`), buffered deletes and `check_index` read multi-format segments (`GenPerFieldFormats`, `VerifyPerFieldFormats`). Doc-values write routing followed (below).
 
 ### T7.6 — Scalar-quantized vectors
 ### T7.7 — Writer gaps: compound segments, string index sorts, write lock
@@ -216,6 +216,7 @@ frequency attributes (on `index/IndexingChain`'s row).
 ### Writer, codec-routing and check gaps · delivered 2026-09-30
 
 - Merge-on-commit and merge-on-refresh (`maxFullFlushMergeWaitMillis`, default 500 ms, `findFullFlushMerges`) in both writers (`GenMergeOnCommit`); the OpenSearch engine and C-ABI writers set it to 0 explicitly, as OpenSearch does, and the engine sets `useCompoundFile(false)` explicitly.
+- `PerFieldDocValuesFormat` routing (`IndexWriter::set_doc_values_format_for_field`, `Lucene90DocValuesFormat(skipIndexIntervalSize)`): flush in `IndexingChain`'s field-hash order, merge in field-number order, byte-identical to `GenPerFieldDocValues`; Lucene reads it (`VerifyPerFieldDocValues`).
 - `CheckIndex.testDocValues` decodes doc-values update generations and every `PerFieldDocValuesFormat` instance's column, not just the first `.dvm` (`GenDocValuesUpdates`; re-signed generation corruptions caught).
 
 Each follows [`port-workflow`](../porting-workflow.md): the closest-to-Java

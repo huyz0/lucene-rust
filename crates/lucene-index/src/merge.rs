@@ -358,6 +358,7 @@ use lucene_codecs::doc_values::{
 };
 use lucene_codecs::field_infos::{self, FieldInfo, IndexOptions, VectorEncoding};
 use lucene_codecs::norms::{self, NormsEntry};
+use lucene_codecs::per_field_doc_values;
 use lucene_codecs::per_field_postings;
 use lucene_codecs::points;
 use lucene_codecs::postings::DocInput;
@@ -1451,7 +1452,7 @@ fn concat_doc_order(per_source_live_ids: &[Vec<i32>]) -> Vec<(usize, i32)> {
 fn describe_written_files(
     merged_fields: &mut [FieldInfo],
     postings_suffixes: &[(i32, u32)],
-    doc_values_field_numbers: &[i32],
+    doc_values_suffixes: &[(i32, u32)],
     wrote_term_vectors: bool,
     vector_field_numbers: &[i32],
     points_field_numbers: &[i32],
@@ -1475,14 +1476,14 @@ fn describe_written_files(
                 suffix.to_string(),
             ));
         }
-        if doc_values_field_numbers.contains(&f.number) {
+        if let Some((_, suffix)) = doc_values_suffixes.iter().find(|(n, _)| *n == f.number) {
             f.attributes.push((
                 "PerFieldDocValuesFormat.format".to_string(),
                 DOC_VALUES_FORMAT_NAME.to_string(),
             ));
             f.attributes.push((
                 "PerFieldDocValuesFormat.suffix".to_string(),
-                PER_FIELD_SUFFIX.to_string(),
+                suffix.to_string(),
             ));
         } else {
             // A `.fnm` claiming a `DocValuesType` the merged `.dvm` has no
@@ -2139,8 +2140,30 @@ pub fn merge_segments_mapped(
         .collect();
     let format_for = |name: &str| options.postings_format_for(name);
     let postings_suffixes = per_field_postings::field_suffixes(&postings_field_names, &format_for);
-    let doc_values_field_numbers: Vec<i32> =
-        merged_doc_values.iter().map(|f| f.field_number()).collect();
+    // `PerFieldDocValuesFormat.FieldsWriter.merge`: the merged `FieldInfos`
+    // in field-number order, each field to the instance of the format it is
+    // routed to now (`getInstance(fi, true)` ignores the sources' routing).
+    let doc_values_groups = {
+        let mut fields: Vec<(i32, String)> = merged_doc_values
+            .iter()
+            .map(|f| {
+                let number = f.field_number();
+                let name = merged_fields
+                    .iter()
+                    .find(|m| m.number == number)
+                    .map_or_else(|| number.to_string(), |m| m.name.clone());
+                (number, name)
+            })
+            .collect();
+        fields.sort_by_key(|(number, _)| *number);
+        let fields: Vec<(i32, &str)> = fields.iter().map(|(n, s)| (*n, s.as_str())).collect();
+        let format_for = |name: &str| options.doc_values_format_for(name);
+        per_field_doc_values::group_fields(&fields, &format_for)
+    };
+    let doc_values_suffixes: Vec<(i32, u32)> = doc_values_groups
+        .iter()
+        .flat_map(|g| g.field_numbers.iter().map(move |&n| (n, g.suffix)))
+        .collect();
     let vector_field_numbers: Vec<i32> = merged_vectors
         .as_ref()
         .map(|v| v.field_numbers.clone())
@@ -2169,7 +2192,7 @@ pub fn merge_segments_mapped(
     describe_written_files(
         &mut merged_fields,
         &postings_suffixes,
-        &doc_values_field_numbers,
+        &doc_values_suffixes,
         wrote_term_vectors,
         &vector_field_numbers,
         &points_field_numbers,
@@ -2181,9 +2204,11 @@ pub fn merge_segments_mapped(
     // Every doc-values field of the merged segment shares one
     // `.dvm`/`.dvd`/`.dvs` triple, which is what a real multi-field
     // `Lucene90DocValuesFormat` segment looks like.
-    if !merged_doc_values.is_empty() {
-        let dense_fields: Vec<doc_values::DenseField<'_>> = merged_doc_values
+    for group in &doc_values_groups {
+        let dense_fields: Vec<doc_values::DenseField<'_>> = group
+            .field_numbers
             .iter()
+            .filter_map(|&n| merged_doc_values.iter().find(|f| f.field_number() == n))
             .map(|f| f.as_dense_field())
             .collect();
         // `addNumericField` & co. write a skip index for every field whose
@@ -2191,23 +2216,23 @@ pub fn merge_segments_mapped(
         let skip_indexes: Vec<i32> = merged_fields
             .iter()
             .filter(|f| {
-                f.doc_values_skip_index_type
-                    != lucene_codecs::field_infos::DocValuesSkipIndexType::None
+                group.field_numbers.contains(&f.number)
+                    && f.doc_values_skip_index_type
+                        != lucene_codecs::field_infos::DocValuesSkipIndexType::None
             })
             .map(|f| f.number)
             .collect();
-        let (dvm, dvd, dvs) = doc_values::write_fields_with_skip_indexes(
+        let codec_suffix = per_field_doc_values::codec_suffix(group.suffix);
+        let (dvm, dvd, dvs) = doc_values::write_fields_with_format(
             &dense_fields,
             &skip_indexes,
             doc_count,
             &merged_segment_id,
-            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+            &codec_suffix,
+            group.format,
         )?;
         for (ext, bytes) in [("dvm", &dvm), ("dvd", &dvd), ("dvs", &dvs)] {
-            let name = format!(
-                "{}.{ext}",
-                per_field_segment(merged_segment_name, DOC_VALUES_FORMAT_NAME)
-            );
+            let name = format!("{merged_segment_name}_{codec_suffix}.{ext}");
             write_file(dir, &name, bytes)?;
             files.push(name);
         }
@@ -3592,9 +3617,22 @@ pub struct MergeOptions {
     pub hnsw_m: i32,
     pub hnsw_beam_width: i32,
     pub postings_formats: Vec<(String, per_field_postings::Lucene104PostingsFormat)>,
+    /// The fields routed to a non-default doc-values format
+    /// ([`crate::index_writer::IndexWriter::set_doc_values_format_for_field`]);
+    /// regrouped on write like `postings_formats`.
+    pub doc_values_formats: Vec<(String, per_field_doc_values::Lucene90DocValuesFormat)>,
 }
 
 impl MergeOptions {
+    /// The doc-values format `field` is routed to.
+    fn doc_values_format_for(&self, field: &str) -> per_field_doc_values::Lucene90DocValuesFormat {
+        self.doc_values_formats
+            .iter()
+            .find(|(name, _)| name == field)
+            .map(|(_, format)| *format)
+            .unwrap_or_default()
+    }
+
     /// The postings format `field` is routed to.
     fn postings_format_for(&self, field: &str) -> per_field_postings::Lucene104PostingsFormat {
         self.postings_formats
@@ -3611,6 +3649,7 @@ impl Default for MergeOptions {
             hnsw_m: hnsw::DEFAULT_MAX_CONN,
             hnsw_beam_width: hnsw::DEFAULT_BEAM_WIDTH,
             postings_formats: Vec::new(),
+            doc_values_formats: Vec::new(),
         }
     }
 }
@@ -14460,7 +14499,7 @@ mod tests {
     fn a_merged_doc_values_field_gets_its_per_field_format_attributes() {
         let mut fields = vec![field("score", 0)];
         fields[0].doc_values_type = DocValuesType::Numeric;
-        describe_written_files(&mut fields, &[], &[0], false, &[], &[]);
+        describe_written_files(&mut fields, &[], &[(0, 0)], false, &[], &[]);
         assert!(fields[0].attributes.contains(&(
             "PerFieldDocValuesFormat.format".to_string(),
             DOC_VALUES_FORMAT_NAME.to_string()

@@ -157,6 +157,7 @@ use lucene_codecs::field_infos::{
 use lucene_codecs::hnsw;
 use lucene_codecs::hnsw_vectors::{self, HnswVectorsField};
 use lucene_codecs::norms;
+use lucene_codecs::per_field_doc_values;
 use lucene_codecs::per_field_postings;
 use lucene_codecs::postings_writer::{self, FieldPostingsInput, TermPostings};
 use lucene_codecs::stored_fields::{self, Document, FieldValue};
@@ -878,6 +879,21 @@ pub(crate) struct IndexingConfig {
     /// to a postings format other than the default `Lucene104PostingsFormat()`
     /// -- see [`IndexWriter::set_postings_format_for_field`].
     postings_formats: Vec<(String, per_field_postings::Lucene104PostingsFormat)>,
+    /// `PerFieldDocValuesFormat.getDocValuesFormatForField`: the fields routed
+    /// to a doc-values format other than the default
+    /// `Lucene90DocValuesFormat()` -- see
+    /// [`IndexWriter::set_doc_values_format_for_field`].
+    doc_values_formats: Vec<(String, per_field_doc_values::Lucene90DocValuesFormat)>,
+}
+
+/// One `PerFieldDocValuesFormat` instance's files for a flushed segment:
+/// its suffix number, its fields, and its `.dvm`/`.dvd`/`.dvs`.
+pub(crate) struct DocValuesGroupOutput {
+    pub(crate) suffix: u32,
+    pub(crate) field_numbers: Vec<i32>,
+    pub(crate) dvm: Vec<u8>,
+    pub(crate) dvd: Vec<u8>,
+    pub(crate) dvs: Vec<u8>,
 }
 
 /// [`IndexWriter::begin_merge`]'s snapshot: the sources as the merge reads
@@ -2305,6 +2321,7 @@ impl IndexingConfig {
                 hnsw_m: self.hnsw_m,
                 hnsw_beam_width: self.hnsw_beam_width,
                 postings_formats: self.postings_formats.clone(),
+                doc_values_formats: self.doc_values_formats.clone(),
             },
             &plan.merged_name,
             plan.merged_id,
@@ -2508,6 +2525,74 @@ impl IndexingConfig {
             })
     }
 
+    /// `getDocValuesFormatForField(name)`: the format
+    /// [`IndexWriter::set_doc_values_format_for_field`] routed `name` to, or
+    /// the default `Lucene90DocValuesFormat()`.
+    pub(crate) fn doc_values_format_for(
+        &self,
+        name: &str,
+    ) -> per_field_doc_values::Lucene90DocValuesFormat {
+        self.doc_values_formats
+            .iter()
+            .find(|(field, _)| field == name)
+            .map(|(_, format)| *format)
+            .unwrap_or_default()
+    }
+
+    /// `IndexingChain.writeDocValues` through `PerFieldDocValuesFormat`: the
+    /// fields of `configs`, visited in `IndexingChain`'s field-hash order
+    /// ([`crate::indexing_chain::field_hash_order`] over `segment_fields`,
+    /// the segment's fields in field-number order -- the order a writer whose
+    /// documents share one field order first sees them), each go to the
+    /// instance of the format they are routed to, instances numbered in
+    /// that order; each instance's fields are written, in that order, into
+    /// its own `.dvm`/`.dvd`/`.dvs`.
+    fn build_doc_values_groups(
+        &self,
+        docs: &[Document],
+        configs: &[DocValuesFieldConfig],
+        segment_fields: &[&str],
+        segment_id: &[u8; ID_LENGTH],
+    ) -> Result<Vec<DocValuesGroupOutput>> {
+        let walk = crate::indexing_chain::field_hash_order(segment_fields);
+        let rank = |name: &str| {
+            walk.iter()
+                .position(|&i| segment_fields[i] == name)
+                .unwrap_or(usize::MAX)
+        };
+        let mut ordered: Vec<&DocValuesFieldConfig> = configs.iter().collect();
+        ordered.sort_by_key(|c| rank(&c.name));
+        let fields: Vec<(i32, &str)> = ordered
+            .iter()
+            .map(|c| (c.field_number, c.name.as_str()))
+            .collect();
+        let format_for = |name: &str| self.doc_values_format_for(name);
+        per_field_doc_values::group_fields(&fields, &format_for)
+            .into_iter()
+            .map(|group| {
+                let group_configs: Vec<DocValuesFieldConfig> = ordered
+                    .iter()
+                    .filter(|c| group.field_numbers.contains(&c.field_number))
+                    .map(|c| (*c).clone())
+                    .collect();
+                let (dvm, dvd, dvs) = IndexWriter::build_doc_values_output(
+                    docs,
+                    &group_configs,
+                    segment_id,
+                    group.suffix,
+                    group.format,
+                )?;
+                Ok(DocValuesGroupOutput {
+                    suffix: group.suffix,
+                    field_numbers: group.field_numbers,
+                    dvm,
+                    dvd,
+                    dvs,
+                })
+            })
+            .collect()
+    }
+
     /// Stamp the `PerField*Format` attributes real Lucene's codec writes at
     /// flush time onto the fields this commit actually produced files for, so
     /// the `.fnm` points at the suffixed names
@@ -2522,7 +2607,7 @@ impl IndexingConfig {
     fn fields_with_per_field_attributes(
         &self,
         postings: Option<&PostingsGroups>,
-        wrote_doc_values: bool,
+        doc_values: Option<&[DocValuesGroupOutput]>,
         wrote_norms: bool,
         vector_fields_written: &[String],
         points_fields_written: &[String],
@@ -2533,13 +2618,11 @@ impl IndexingConfig {
                 .find(|g| g.field_numbers.contains(&number))
                 .map(|g| g.suffix)
         };
-        let dv_names: Vec<&str> = if wrote_doc_values {
-            self.doc_values_fields
+        let dv_suffix = |number: i32| -> Option<u32> {
+            doc_values?
                 .iter()
-                .map(|c| c.name.as_str())
-                .collect()
-        } else {
-            Vec::new()
+                .find(|g| g.field_numbers.contains(&number))
+                .map(|g| g.suffix)
         };
 
         self.fields
@@ -2598,7 +2681,7 @@ impl IndexingConfig {
                 // the state: `IndexingChain` creates a `DocValuesWriter` for
                 // every field whose `FieldType` declares a type, so the
                 // `.fnm` and the `.dvm` are written from one fact.
-                if !dv_names.contains(&f.name.as_str()) {
+                if dv_suffix(f.number).is_none() {
                     f.doc_values_type = DocValuesType::None;
                     f.doc_values_skip_index_type =
                         lucene_codecs::field_infos::DocValuesSkipIndexType::None;
@@ -2625,14 +2708,14 @@ impl IndexingConfig {
                     f.point_index_dimension_count = 0;
                     f.point_num_bytes = 0;
                 }
-                if dv_names.contains(&f.name.as_str()) {
+                if let Some(suffix) = dv_suffix(f.number) {
                     f.attributes.push((
-                        "PerFieldDocValuesFormat.format".to_string(),
+                        per_field_doc_values::PER_FIELD_FORMAT_KEY.to_string(),
                         DOC_VALUES_FORMAT_NAME.to_string(),
                     ));
                     f.attributes.push((
-                        "PerFieldDocValuesFormat.suffix".to_string(),
-                        PER_FIELD_SUFFIX.to_string(),
+                        per_field_doc_values::PER_FIELD_SUFFIX_KEY.to_string(),
+                        suffix.to_string(),
                     ));
                 }
                 f
@@ -2746,9 +2829,11 @@ impl IndexingConfig {
         let doc_values_output = if self.doc_values_fields.is_empty() {
             None
         } else {
-            Some(IndexWriter::build_doc_values_output(
+            let names: Vec<&str> = self.fields.iter().map(|f| f.name.as_str()).collect();
+            Some(self.build_doc_values_groups(
                 buf.docs,
                 &self.doc_values_fields,
+                &names,
                 &segment_id,
             )?)
         };
@@ -2875,7 +2960,7 @@ impl IndexingConfig {
 
         let fnm_fields = self.fields_with_per_field_attributes(
             postings_output.as_ref(),
-            doc_values_output.is_some(),
+            doc_values_output.as_deref(),
             norms_output.is_some(),
             vectors_output
                 .as_ref()
@@ -2937,13 +3022,11 @@ impl IndexingConfig {
                 &tvm,
             )?);
         }
-        if let Some((dvm, dvd, dvs)) = doc_values_output {
+        for group in doc_values_output.iter().flatten() {
             record(IndexWriter::write_doc_values_files(
                 dir,
                 segment_name,
-                &dvm,
-                &dvd,
-                &dvs,
+                group,
             )?);
         }
         if let Some((nvm, nvd, _)) = norms_output {
@@ -3936,6 +4019,26 @@ impl<'d> IndexWriter<'d> {
         formats.push((field.to_string(), format));
     }
 
+    /// `PerFieldDocValuesFormat.getDocValuesFormatForField` for one field:
+    /// from the next flush and merge on, `field`'s doc values go to
+    /// `format`'s files. Every field on an equal format shares one set,
+    /// numbered `Lucene90_<n>` in the order the flush (`IndexingChain`'s
+    /// field hash) or the merge (field-number order) first reaches a field
+    /// of it, which each field's `.fnm` attributes record; every other field
+    /// stays on the default `Lucene90DocValuesFormat()`. A doc-values update
+    /// is written as Java writes it: with the format its field's attribute
+    /// names, looked up by name (the default instance), under its own
+    /// suffix.
+    pub fn set_doc_values_format_for_field(
+        &mut self,
+        field: &str,
+        format: per_field_doc_values::Lucene90DocValuesFormat,
+    ) {
+        let formats = &mut self.cfg_mut().doc_values_formats;
+        formats.retain(|(name, _)| name != field);
+        formats.push((field.to_string(), format));
+    }
+
     /// Buffers `node` for the segments already published only -- a
     /// [`crate::concurrent_writer::ConcurrentIndexWriter`] keeps each
     /// in-RAM buffer's own share of it with that buffer.
@@ -4198,6 +4301,7 @@ impl<'d> IndexWriter<'d> {
                 similarity: None,
                 use_compound_file: false,
                 postings_formats: Vec::new(),
+                doc_values_formats: Vec::new(),
                 reader_pool: std::sync::Arc::default(),
                 merged_segment_warmer: None,
             }),
@@ -7655,13 +7759,16 @@ impl<'d> IndexWriter<'d> {
         docs: &[Document],
         configs: &[DocValuesFieldConfig],
         segment_id: &[u8; ID_LENGTH],
+        suffix: u32,
+        format: per_field_doc_values::Lucene90DocValuesFormat,
     ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
         let skip_indexes: Vec<i32> = configs
             .iter()
             .filter(|c| c.skip_index)
             .map(|c| c.field_number)
             .collect();
-        if configs.len() == 1 && skip_indexes.is_empty() {
+        // The one-field builders write the first instance's suffix.
+        if configs.len() == 1 && skip_indexes.is_empty() && suffix == 0 {
             let config = &configs[0];
             return match config.doc_values_type {
                 DocValuesType::Binary => {
@@ -7686,12 +7793,13 @@ impl<'d> IndexWriter<'d> {
             .collect::<Result<Vec<_>>>()?;
         let fields: Vec<doc_values::DenseField<'_>> =
             columns.iter().map(DenseColumn::as_dense_field).collect();
-        Ok(doc_values::write_fields_with_skip_indexes(
+        Ok(doc_values::write_fields_with_format(
             &fields,
             &skip_indexes,
             docs.len() as i32,
             segment_id,
-            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+            &per_field_doc_values::codec_suffix(suffix),
+            format,
         )?)
     }
 
@@ -8373,17 +8481,18 @@ impl<'d> IndexWriter<'d> {
     fn write_doc_values_files(
         dir: &dyn Directory,
         segment_name: &str,
-        dvm: &[u8],
-        dvd: &[u8],
-        dvs: &[u8],
+        group: &DocValuesGroupOutput,
     ) -> Result<Vec<String>> {
-        let seg = per_field_segment(segment_name, DOC_VALUES_FORMAT_NAME);
+        let seg = format!(
+            "{segment_name}_{}",
+            per_field_doc_values::codec_suffix(group.suffix)
+        );
         let names = vec![
             format!("{seg}.dvm"),
             format!("{seg}.dvd"),
             format!("{seg}.dvs"),
         ];
-        for (name, bytes) in names.iter().zip([dvm, dvd, dvs]) {
+        for (name, bytes) in names.iter().zip([&group.dvm, &group.dvd, &group.dvs]) {
             write_file(dir, name, bytes)?;
         }
         Ok(names)

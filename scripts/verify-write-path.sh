@@ -234,6 +234,12 @@ CASES=(
   # must find each field in its own group's files under the suffix its .fnm
   # records, see exactly the deleted documents gone, and pass CheckIndex.
   "lucene-index|write_per_field_formats_fixture|per-field-formats|VerifyPerFieldFormats"
+  # PerFieldDocValuesFormat through IndexWriter (M7): the s_ fields routed to
+  # Lucene90DocValuesFormat(16), two flushed segments and a force-merge, whose
+  # instances are numbered in opposite orders. Lucene must read every value
+  # from its own instance's files, find the routed skip indexes' 16-document
+  # intervals, and pass CheckIndex.
+  "lucene-index|write_per_field_doc_values_fixture|per-field-doc-values|VerifyPerFieldDocValues"
 )
 
 echo "verify-write-path: compiling verifiers"
