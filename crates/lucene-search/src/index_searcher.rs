@@ -19,7 +19,7 @@ use std::collections::HashMap;
 
 use crate::collector::{LeafCollector, ScoreMode, ScoringCollector, TotalHits};
 use crate::collectors::CollectorManager;
-use crate::explain::{explain_clause, Explanation};
+use crate::explain::{explain_clause_with_stats, Explanation};
 use crate::field_norms::FieldNorms;
 use crate::multi_segment::{
     global_boolean_stats, rewrite_points_ranges,
@@ -176,6 +176,30 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
         })
     }
 
+    /// `searchAfter(after, query, n)`: the top `n` below `after` (a global
+    /// document id and its score; a hit ties it only with a larger id), counted
+    /// as [`Self::search`] counts (`TopScoreDocCollectorManager(n, after,
+    /// 1000)`).
+    pub fn search_after(
+        &self,
+        after: crate::collector::ScoreDoc,
+        query: &BooleanQuery,
+        n: usize,
+    ) -> Result<TopDocs> {
+        let mut c =
+            crate::collector::TopDocsCollector::with_total_hits_threshold(n, TOTAL_HITS_THRESHOLD)
+                .with_after(after);
+        self.search_collector(query, &mut c)?;
+        Ok(TopDocs {
+            total_hits: c.total_hits(),
+            score_docs: c
+                .top_docs()
+                .iter()
+                .map(|h| ShardScoreDoc::new(h.doc_id, h.score))
+                .collect(),
+        })
+    }
+
     /// `search(query, collector)`: every segment, in doc-base order, into
     /// one collector, which sees global document ids.
     pub fn search_collector<C: ScoringCollector + ?Sized>(
@@ -303,35 +327,41 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
         Ok(c.0)
     }
 
-    /// `explain(query, doc)` for a global document id, over a one-segment
-    /// searcher: [`explain_clause`] scores with the segment's own statistics,
-    /// which are the reader's only when there is one segment.
+    /// `explain(query, doc)` for a global document id: the query rewritten
+    /// and its reader-wide statistics gathered as for a search
+    /// (`createWeight` over the whole reader), then the document explained in
+    /// its segment (`ReaderUtil.subIndex`, `weight.explain(leaf, doc -
+    /// docBase)`) by [`explain_clause_with_stats`] -- so a term's `n` and `N`
+    /// are the reader's, and the value is the score a search gives the
+    /// document.
     ///
     /// # Errors
-    /// [`Error::IllegalArgument`] for a searcher of several segments (an
-    /// explanation from reader-wide statistics is not ported) or a document
-    /// outside the segment, and whatever [`explain_clause`] reports.
+    /// [`Error::IllegalArgument`] for a document outside every segment, and
+    /// whatever [`explain_clause_with_stats`] reports.
     pub fn explain(&self, query: &BooleanQuery, doc: i32) -> Result<Explanation> {
-        if self.segments.len() != 1 {
-            return Err(Error::IllegalArgument(
-                "explain over several segments needs reader-wide statistics, which \
-                 explain_clause does not take"
-                    .to_string(),
-            ));
-        }
         let i = self
             .segment_of(doc)
             .ok_or_else(|| Error::IllegalArgument(format!("doc {doc} is in no segment")))?;
+        let (rewritten, global) = self.prepare(query)?;
+        let query = rewritten.as_ref().unwrap_or(query);
         let seg = &self.segments[i];
-        explain_clause(
+        // `IndexSearcher.explain` explains `rewrite(query)`: a one-clause
+        // boolean is its clause.
+        let mut clause = Clause::Boolean(Box::new(query.clone())).rewrite();
+        if let Some(max_doc) = seg.max_doc {
+            set_match_all_max_doc(&mut clause, max_doc);
+        }
+        explain_clause_with_stats(
             seg.fields,
             seg.doc_in,
             seg.pos_in,
             seg.pay_in,
             seg.live_docs,
-            &Clause::Boolean(Box::new(query.clone())),
+            seg.points,
+            &clause,
             doc - seg.doc_base,
             self.norms(i),
+            Some(&global),
         )
     }
 
@@ -416,5 +446,66 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
             self.search_leaves(query, &segs, &mut pick)?;
         }
         Ok(pick.out)
+    }
+}
+
+/// A `MatchAllDocsQuery` built without a `maxDoc` (a query parsed once for
+/// the whole reader) matches every document of the leaf it is explained in,
+/// as its scorer does (`DocIdSetIterator.all(context.reader().maxDoc())`).
+fn set_match_all_max_doc(clause: &mut Clause, max_doc: i32) {
+    match clause {
+        Clause::MatchAllDocs(m) => m.max_doc = max_doc,
+        Clause::Boolean(b) => {
+            for c in b
+                .must
+                .iter_mut()
+                .chain(b.should.iter_mut())
+                .chain(b.filter.iter_mut())
+                .chain(b.must_not.iter_mut())
+            {
+                set_match_all_max_doc(c, max_doc);
+            }
+        }
+        Clause::DisjunctionMax(d) => {
+            for c in &mut d.disjuncts {
+                set_match_all_max_doc(c, max_doc);
+            }
+        }
+        Clause::ConstantScore(c) => set_match_all_max_doc(&mut c.inner, max_doc),
+        Clause::Boost(b) => set_match_all_max_doc(&mut b.inner, max_doc),
+        _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::set_match_all_max_doc;
+    use crate::query::{
+        BoostQuery, ConstantScoreQuery, DisjunctionMaxQuery, MatchAllDocsQuery, TermQuery,
+    };
+    use crate::{BooleanQuery, Clause};
+
+    #[test]
+    fn a_match_all_takes_the_leafs_max_doc_wherever_it_is_nested() {
+        let all = || Clause::MatchAllDocs(MatchAllDocsQuery::new(0));
+        let mut b = BooleanQuery::new();
+        b.must.push(all());
+        b.should
+            .push(Clause::DisjunctionMax(Box::new(DisjunctionMaxQuery::new(
+                vec![all(), Clause::Term(TermQuery::new("f", "t"))],
+                0.0,
+            ))));
+        b.filter
+            .push(Clause::ConstantScore(Box::new(ConstantScoreQuery::new(
+                all(),
+                1.0,
+            ))));
+        b.must_not
+            .push(Clause::Boost(Box::new(BoostQuery::new(all(), 2.0))));
+        let mut clause = Clause::Boolean(Box::new(b));
+        set_match_all_max_doc(&mut clause, 7);
+        let text = format!("{clause:?}");
+        assert_eq!(text.matches("max_doc: 7").count(), 4, "{text}");
+        assert!(!text.contains("max_doc: 0"), "{text}");
     }
 }

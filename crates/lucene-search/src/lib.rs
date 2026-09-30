@@ -357,8 +357,9 @@ pub enum Error {
     /// opened resource this call didn't provide" shape as
     /// [`Error::MissingPosInput`] for a multi-term [`PhraseQuery`], not a
     /// permanent gap: [`crate::explain::explain_clause`] never has a
-    /// `PointsInput` to pass (see that module's own scope note) and so always
-    /// surfaces this for a `Clause::PointsRange`, but
+    /// `PointsInput` to pass and so always surfaces this for a
+    /// `Clause::PointsRange` (`explain_clause_with_stats`, which
+    /// `IndexSearcher::explain` calls, takes the segment's), but
     /// [`search_boolean_query`]/[`search_boolean_query_scored`]/
     /// [`search_disjunction_max_query`]/[`search_disjunction_max_query_scored`]
     /// resolve it against a real segment's BKD points data
