@@ -394,11 +394,10 @@ impl PointsRangeQuery {
 /// [`crate::phrase_matches_in_doc`]/[`crate::sloppy_phrase`]
 /// already use for `PhraseQuery` — an honestly-scoped MVP: does a doc contain
 /// a valid span for this query, and what are its matching span ranges,
-/// computed eagerly rather than via a lazy iterator. Scoring is likewise flat
-/// (`1.0` per matching doc, via [`crate::clause_scores`]'s `Clause::Span`
-/// arm), matching this crate's existing `Wildcard`/`Prefix`/`Fuzzy`/`Regexp`
-/// precedent — real span-aware scoring (`SpanWeight`/`SpanScorer`) is its own
-/// separate, unscoped problem.
+/// computed eagerly rather than via a lazy iterator. Scoring is Lucene's
+/// `SpanWeight`/`SpanScorer` (`sum(1 / (1 + width))` over the document's
+/// spans, through the searcher's similarity), in the scorer tree: see
+/// `exec::span`.
 ///
 /// **Variants**:
 /// - `SpanTerm { field, term }`: a leaf matching a single term — its spans are
@@ -680,8 +679,7 @@ pub enum Clause {
     Regexp(RegexpQuery),
     /// A `SpanQuery` (task #55's addition, `SpanTerm`/`SpanNear`/`SpanOr`) --
     /// matches every doc with at least one non-empty span (see
-    /// [`crate::span_matches_in_doc`]), unscored (flat `1.0` per match, same
-    /// convention as `Wildcard`/`Prefix`/`Fuzzy`/`Regexp` above); see
+    /// [`crate::span_matches_in_doc`]), scored as `SpanScorer` scores it; see
     /// [`SpanQuery`]'s doc comment for the exact span-matching semantics and
     /// this port's scope decision.
     Span(SpanQuery),
