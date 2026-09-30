@@ -208,6 +208,33 @@ fn main() {
         })
     };
     push("blocktree::open_shared (mappings held)", open_shared_only);
+    // Not a phase of the open (so not in the sum): what the first lookup in
+    // every field costs on top of it. A retired (FST) terms index is turned
+    // into a trie on its field's first use (M8), so this is where that cost
+    // went; for a current trie it is one seek per field.
+    {
+        let a: Arc<Input> = Arc::new(dir.open(&tim).expect(".tim"));
+        let b: Arc<Input> = Arc::new(dir.open(&tip).expect(".tip"));
+        let c = dir.open(&tmd).expect(".tmd");
+        push(
+            "  [open_shared + first seek in every field]",
+            best(reps, || {
+                let f = blocktree::open_shared(
+                    Arc::clone(&a) as blocktree::SharedBytes,
+                    Arc::clone(&b) as blocktree::SharedBytes,
+                    &c,
+                    &fi,
+                    &id,
+                    &postings_suffix,
+                    si.doc_count,
+                )
+                .expect("open_shared");
+                f.iter_fields()
+                    .map(|(_, t)| t.try_seek_exact(&t.max_term).expect("seek").is_some() as u64)
+                    .sum()
+            }),
+        );
+    }
 
     for ext in [".doc", ".pos", ".pay", ".kdm", ".kdi", ".kdd"] {
         let Some(f) = file(ext) else { continue };
