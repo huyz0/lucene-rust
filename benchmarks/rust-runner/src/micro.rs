@@ -901,6 +901,30 @@ fn bench_quantized(w: Duration, m: Duration) {
     }
 }
 
+/// `FSTCompiler` over 50k sorted decimal keys (`i * 7919 % 1000003`, as
+/// bytes) with `PositiveIntOutputs`: one op is one key added, the compile
+/// included. Mirrors `SweepMicro.fstBuild`.
+fn bench_fst_build(w: Duration, m: Duration) {
+    use lucene_codecs::fst::{InputType, PositiveIntOutputs};
+    use lucene_codecs::fst_compiler::FstCompilerBuilder;
+    let mut keys: Vec<(Vec<u8>, i64)> = (0..50_000i64)
+        .map(|i| {
+            let v = i * 7919 % 1_000_003;
+            (v.to_string().into_bytes(), v)
+        })
+        .collect();
+    keys.sort();
+    keys.dedup_by(|a, b| a.0 == b.0);
+    measure("fst_build_50k", w, m, || {
+        let mut c = FstCompilerBuilder::new(InputType::Byte1).build::<PositiveIntOutputs>();
+        for (k, v) in &keys {
+            c.add_bytes(k, *v).unwrap();
+        }
+        black_box(c.compile().map(|f| f.bytes.len()));
+        keys.len() as u64
+    });
+}
+
 /// Opens the corpus and hands the first segment's pieces to `f`.
 fn with_segment(
     index: &str,
@@ -1808,6 +1832,7 @@ fn main() {
         "analysis" => bench_analysis(warmup, measure),
         "vectors" => bench_vectors(warmup, measure),
         "quantized" => bench_quantized(warmup, measure),
+        "fst_build" => bench_fst_build(warmup, measure),
         "term_dict_write" => bench_term_dict_write(warmup, measure),
         "dv_merge" => bench_dv_merge(warmup, measure),
         "points_write" => bench_points_write(warmup, measure),

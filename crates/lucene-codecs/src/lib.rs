@@ -30,6 +30,8 @@ pub mod field_infos;
 pub mod filtered_hnsw_searcher;
 pub mod for_util;
 pub mod fst;
+pub mod fst_compiler;
+pub mod fst_util;
 pub mod fuzzy;
 pub mod hnsw;
 pub mod hnsw_util;
