@@ -992,7 +992,7 @@ util/NamedSPILoader	not-needed	JVM ServiceLoader-based SPI lookup; Rust codecs a
 util/NamedThreadFactory	not-needed	named thread factory; Rust std::thread::Builder::name
 util/NotDocIdSet	ported	crates/lucene-util/src/bits.rs::NotDocIdSetIter
 util/NumericUtils	ported	crates/lucene-util/src/numeric_utils.rs::big_int_to_sortable_bytes
-util/OfflineSorter	todo:M7	external (temp-file) merge sort of byte sequences
+util/OfflineSorter	ported	crates/lucene-codecs/src/offline_sorter.rs::OfflineSorter
 util/PagedBytes	not-needed	paged byte arena for buffering writers; Rust writers buffer in Vec<u8>
 util/PrintStreamInfoStream	not-needed	InfoStream over a PrintStream
 util/PriorityQueue	not-needed	generic binary heap; Rust std BinaryHeap, with Lucene's heap re-implemented where its tie order matters (top_field.rs HitQueue)
