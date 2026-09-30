@@ -3926,9 +3926,9 @@ fn compute_gcd(values: &[i64]) -> i64 {
 /// `numValues`, the constant/table/GCD-delta encoding choice, and the
 /// bit-packed (or absent, for the constant case) value array itself.
 ///
-/// Port of `Lucene90DocValuesConsumer.writeValues`'s encoding-choice logic
-/// (minus its `doBlocks` varying-bits-per-value split, still deferred -- see
-/// `docs/parity.md`): computes a running GCD of every value's difference
+/// Port of `Lucene90DocValuesConsumer.writeValues`'s encoding-choice logic,
+/// including its `doBlocks` varying-bits-per-value split
+/// ([`write_values_multiple_blocks`]): computes a running GCD of every value's difference
 /// from the first value (mirrors `MathUtil.gcd` accumulation, including
 /// Java's overflow guard: values outside `[i64::MIN/2, i64::MAX/2]` abandon
 /// GCD tracking for the rest of the scan rather than risk `v - firstValue`
@@ -4022,10 +4022,24 @@ fn write_numeric_values_body(meta: &mut Vec<u8>, data: &mut Vec<u8>, values: &[i
         && unique.len() > 1
         && direct_reader::unsigned_bits_required(unique.len() as i64 - 1) < range_bits;
 
+    // `doBlocks`: per-16384-value blocks, each packed at its own width, when
+    // that appears to save 10% or more over one width for the whole column.
+    let do_blocks = !use_table && {
+        let whole = space_in_bits(values);
+        let blocks: i64 = values
+            .chunks(NUMERIC_BLOCK_SIZE)
+            .map(space_in_bits)
+            .fold(0i64, i64::wrapping_add);
+        whole > 0 && blocks as f64 / whole as f64 <= 0.9
+    };
+
     let (bits_per_value, min, gcd, table): (u8, i64, i64, Option<Vec<i64>>) = if use_table {
         let sorted_unique: Vec<i64> = unique.into_iter().collect();
         let bpv = direct_reader::unsigned_bits_required(sorted_unique.len() as i64 - 1);
         (bpv, 0, 1, Some(sorted_unique))
+    } else if do_blocks {
+        // `numBitsPerValue = 0xFF`; `min` is the column's own, never zeroed.
+        (0xFF, min, gcd, None)
     } else {
         let mut bpv = range_bits;
         let mut min = min;
@@ -4045,6 +4059,7 @@ fn write_numeric_values_body(meta: &mut Vec<u8>, data: &mut Vec<u8>, values: &[i
                 meta.write_i64(v);
             }
         }
+        None if do_blocks => meta.write_i32(-2 - NUMERIC_BLOCK_SHIFT as i32),
         None => meta.write_i32(-1),
     }
     meta.push(bits_per_value);
@@ -4054,6 +4069,12 @@ fn write_numeric_values_body(meta: &mut Vec<u8>, data: &mut Vec<u8>, values: &[i
     let start_offset = data.len() as i64;
     meta.write_i64(start_offset);
 
+    if do_blocks {
+        let jump_table_offset = write_values_multiple_blocks(data, values, gcd);
+        meta.write_i64(data.len() as i64 - start_offset); // valuesLength
+        meta.write_i64(jump_table_offset);
+        return;
+    }
     if bits_per_value != 0 {
         let raw: Vec<i64> = match &table {
             Some(t) => values
@@ -4077,6 +4098,75 @@ fn write_numeric_values_body(meta: &mut Vec<u8>, data: &mut Vec<u8>, values: &[i
 
     meta.write_i64(data.len() as i64 - start_offset); // valuesLength
     meta.write_i64(-1); // valueJumpTableOffset: no varying-bpv blocks
+}
+
+/// `Lucene90DocValuesFormat.NUMERIC_BLOCK_SHIFT`.
+const NUMERIC_BLOCK_SHIFT: u32 = 14;
+/// `Lucene90DocValuesFormat.NUMERIC_BLOCK_SIZE`.
+const NUMERIC_BLOCK_SIZE: usize = 1 << NUMERIC_BLOCK_SHIFT;
+
+/// `MinMaxTracker.finish`'s `spaceInBits` for one run of values: the bits
+/// one uniform width over `[min, max]` needs, 0 for a constant run.
+// ARITH: `max - min` wraps exactly as Java's `long` subtraction does for a
+// pathological range; a width of at most 64 times a slice length cannot
+// overflow an `i64`.
+#[allow(clippy::arithmetic_side_effects)]
+fn space_in_bits(values: &[i64]) -> i64 {
+    let (Some(&min), Some(&max)) = (values.iter().min(), values.iter().max()) else {
+        return 0;
+    };
+    if max > min {
+        i64::from(direct_reader::unsigned_bits_required(max.wrapping_sub(min)))
+            * values.len() as i64
+    } else {
+        0
+    }
+}
+
+/// `Lucene90DocValuesConsumer.writeValuesMultipleBlocks`: every
+/// `NUMERIC_BLOCK_SIZE` values as one `writeBlock`, then the jump table (each
+/// block's absolute `.dvd` offset, then the table's own offset). Returns the
+/// jump table's offset.
+fn write_values_multiple_blocks(data: &mut Vec<u8>, values: &[i64], gcd: i64) -> i64 {
+    let mut offsets = Vec::with_capacity(values.len().div_ceil(NUMERIC_BLOCK_SIZE));
+    for block in values.chunks(NUMERIC_BLOCK_SIZE) {
+        offsets.push(data.len() as i64);
+        write_numeric_block(data, block, gcd);
+    }
+    let origo = data.len() as i64;
+    for offset in offsets {
+        data.write_i64(offset);
+    }
+    data.write_i64(origo);
+    origo
+}
+
+/// `Lucene90DocValuesConsumer.writeBlock`: a constant block as `0u8` and its
+/// value; otherwise its width, its own min, the packed length and the
+/// `DirectWriter`-packed `(v - min) / gcd`.
+// ARITH: `gcd` divides every `v - min` of the column (it is the column's
+// GCD, never 0 or -1 on this path: the column is not constant); the
+// subtraction wraps as Java's does; the packed length is an in-memory size.
+#[allow(clippy::arithmetic_side_effects)]
+fn write_numeric_block(data: &mut Vec<u8>, block: &[i64], gcd: i64) {
+    let min = block.iter().copied().min().unwrap_or(0);
+    let max = block.iter().copied().max().unwrap_or(0);
+    if min == max {
+        data.push(0);
+        data.write_i64(min);
+        return;
+    }
+    let bits_per_value = direct_reader::unsigned_bits_required(max.wrapping_sub(min) / gcd);
+    let raw: Vec<i64> = block.iter().map(|&v| v.wrapping_sub(min) / gcd).collect();
+    let mut packed = direct_reader::encode(&raw, bits_per_value);
+    packed.extend(std::iter::repeat_n(
+        0u8,
+        direct_reader::padding_bytes_needed(bits_per_value),
+    ));
+    data.push(bits_per_value);
+    data.write_i64(min);
+    data.write_i32(packed.len() as i32);
+    data.extend_from_slice(&packed);
 }
 
 fn new_meta_output(segment_id: &[u8; ID_LENGTH], segment_suffix: &str) -> Vec<u8> {
@@ -4127,19 +4217,16 @@ fn finish_field_list_and_footers(
 
 /// Port of `Lucene90DocValuesConsumer`, scoped to exactly one shape: **a
 /// single NUMERIC field, DENSE** (every doc from `0` to `max_doc - 1` has a
-/// value) -- the `numDocsWithValue == maxDoc` branch of `writeValues`,
-/// followed by its `doBlocks == false` (no varying-bits-per-value blocks)
-/// branch, feeding `writeValuesSingleBlock`. The per-value encoding itself
-/// (plain delta, GCD-delta, or table compression) is chosen by
+/// value) -- the `numDocsWithValue == maxDoc` branch of `writeValues`.
+/// The per-value encoding itself (plain delta, GCD-delta, table
+/// compression, or varying-bits-per-value blocks) is chosen by
 /// [`write_numeric_values_body`] exactly like real Lucene's own
 /// `uniqueValues`/`gcd` logic -- see that function's doc comment.
 ///
 /// Sparse NUMERIC fields are handled by the sibling
 /// [`write_single_sparse_numeric_field`], not here.
 ///
-/// Deliberately not attempted here, all deferred to future slices (see
-/// `docs/parity.md`): the varying-bits-per-value block split. Skip indexes
-/// and multiple fields in one `.dvm`/`.dvd`/`.dvs` triple are
+/// Skip indexes and multiple fields in one `.dvm`/`.dvd`/`.dvs` triple are
 /// [`write_fields_with_skip_indexes`]'s. BINARY ([`write_single_dense_binary_field`]), SORTED_NUMERIC
 /// ([`write_single_dense_sorted_numeric_field`]), SORTED
 /// ([`write_single_dense_sorted_field`]), and SORTED_SET
@@ -7651,6 +7738,57 @@ mod tests {
                 vec![7, 7]
             );
         }
+    }
+
+    /// `doBlocks` on a SORTED_NUMERIC column's flat values: a constant
+    /// block (`0u8` + value), a narrow block and a wide one, all multiples of
+    /// the column's GCD, plus a partial trailing block -- read back value
+    /// for value, and the meta says blocks (`tableSize = -16`, width 0xFF).
+    #[test]
+    fn sorted_numeric_values_split_into_varying_width_blocks() {
+        let id = [15u8; ID_LENGTH];
+        let block = NUMERIC_BLOCK_SIZE;
+        // Two values per document, so the three full blocks plus a tail
+        // cover 1.5 * `block` + 100 documents.
+        let flat: Vec<i64> = (0..3 * block + 200)
+            .map(|i| match i / block {
+                0 => 42 * 3,
+                1 => (i % 4) as i64 * 3,
+                _ => (i as i64 * 7919 % 1_000_003) * 3 * 1_000_000,
+            })
+            .collect();
+        let values: Vec<Vec<i64>> = flat
+            .chunks(2)
+            .map(|c| {
+                let mut v = c.to_vec();
+                v.sort_unstable();
+                v
+            })
+            .collect();
+        let (meta_bytes, data_bytes, _skip) =
+            write_single_dense_sorted_numeric_field(0, &values, &id, "").unwrap();
+        let fis = sorted_numeric_field_infos();
+        let (_, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
+        let entry = meta.sorted_numeric_entry(0).unwrap();
+        assert_eq!(entry.numeric.block_shift, Some(NUMERIC_BLOCK_SHIFT));
+        assert_eq!(entry.numeric.bits_per_value, 0xFF);
+        assert_eq!(entry.numeric.gcd, 3);
+        for (doc, want) in values.iter().enumerate() {
+            assert_eq!(
+                sorted_numeric_values(&data_bytes, entry, doc as i32).unwrap(),
+                *want,
+                "doc {doc}"
+            );
+        }
+        // Blocks that do not save 10%: one uniform width.
+        let uniform: Vec<i64> = (0..2 * block as i64).map(|i| i % 1000).collect();
+        let mut meta = Vec::new();
+        let mut data = Vec::new();
+        write_numeric_values_body(&mut meta, &mut data, &uniform);
+        assert_eq!(&meta[8..12], &(-1i32).to_be_bytes());
+        assert_eq!(space_in_bits(&[]), 0);
+        assert_eq!(space_in_bits(&[5, 5]), 0);
+        assert_eq!(space_in_bits(&[0, 3]), 4);
     }
 
     #[test]

@@ -140,7 +140,7 @@ codecs/lucene90/IndexedDISI	ported	crates/lucene-codecs/src/indexed_disi.rs::Dis
 codecs/lucene90/LZ4WithPresetDictCompressionMode	ported	crates/lucene-codecs/src/stored_fields.rs::decompress_unit
 codecs/lucene90/Lucene90CompoundFormat	partial	crates/lucene-codecs/src/compound_format.rs::write -- M7: "the writer is ported and verified, but `IndexWriter` never calls it: every flush and merge writes loose files" (parity)
 codecs/lucene90/Lucene90CompoundReader	ported	crates/lucene-index/src/compound_reader.rs::CompoundReader
-codecs/lucene90/Lucene90DocValuesConsumer	partial	crates/lucene-codecs/src/doc_values.rs::write_fields_with_skip_indexes -- M7: "Not ported: `writeValues`' `doBlocks` split (a NUMERIC column is always packed at one width, never in per-16384-value blocks)" (parity; size only)
+codecs/lucene90/Lucene90DocValuesConsumer	ported	crates/lucene-codecs/src/doc_values.rs::write_fields_with_skip_indexes
 codecs/lucene90/Lucene90DocValuesFormat	ported	crates/lucene-codecs/src/doc_values.rs::parse_meta
 codecs/lucene90/Lucene90DocValuesProducer	ported	crates/lucene-codecs/src/doc_values.rs::DocValuesMeta
 codecs/lucene90/Lucene90LiveDocsFormat	ported	crates/lucene-codecs/src/live_docs.rs::parse
