@@ -5,7 +5,7 @@ analysis/AbstractAnalysisFactory	not-needed	Base class of the SPI name-based fac
 analysis/AnalysisSPILoader	not-needed	JVM ServiceLoader lookup of analysis factories by name; no Rust equivalent needed.
 analysis/Analyzer	ported	crates/lucene-analysis/src/analyzer.rs::Analyzer
 analysis/AnalyzerWrapper	ported	crates/lucene-analysis/src/analyzer.rs::AnalyzerWrapper
-analysis/AutomatonToTokenStream	partial	crates/lucene-analysis/src/automaton.rs::automaton_to_token_stream -- M7: converts to/from this crate's minimal Automaton (states, accept bits, canonical sorted transitions, differential-tested state for state against Java), not util/automaton's Automaton, which lucene-util is porting alongside; switch the type when that lands
+analysis/AutomatonToTokenStream	ported	crates/lucene-analysis/src/automaton.rs::automaton_to_token_stream
 analysis/CachingTokenFilter	ported	crates/lucene-analysis/src/token_stream.rs::CachingTokenFilter
 analysis/CharArrayMap	not-needed	char[]-keyed map that exists to avoid String allocation on the JVM; its only core use is backing CharArraySet, and Rust's HashMap<String,_> covers it.
 analysis/CharArraySet	ported	crates/lucene-analysis/src/char_array_set.rs::CharArraySet
@@ -22,7 +22,7 @@ analysis/StopwordAnalyzerBase	ported	crates/lucene-analysis/src/stopword_analyze
 analysis/TokenFilter	ported	crates/lucene-analysis/src/token_stream.rs::TokenFilter
 analysis/TokenFilterFactory	not-needed	SPI name-based factory plumbing for TokenFilters; no behaviour beyond construction by name.
 analysis/TokenStream	ported	crates/lucene-analysis/src/token_stream.rs::TokenStream
-analysis/TokenStreamToAutomaton	partial	crates/lucene-analysis/src/automaton.rs::TokenStreamToAutomaton -- M7: converts to/from this crate's minimal Automaton (states, accept bits, canonical sorted transitions, differential-tested state for state against Java), not util/automaton's Automaton, which lucene-util is porting alongside; switch the type when that lands
+analysis/TokenStreamToAutomaton	ported	crates/lucene-analysis/src/automaton.rs::TokenStreamToAutomaton
 analysis/Tokenizer	ported	crates/lucene-analysis/src/token_stream.rs::Tokenizer
 analysis/TokenizerFactory	not-needed	SPI name-based factory plumbing for Tokenizers; no behaviour beyond construction by name.
 analysis/WordlistLoader	ported	crates/lucene-analysis/src/wordlist_loader.rs::get_word_set

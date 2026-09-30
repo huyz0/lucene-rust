@@ -29,8 +29,9 @@
 //! is kept for the workspace's callers and now runs on the streaming model.
 //!
 //! This crate sits below both `lucene-index` and `lucene-search` in the
-//! workspace's downward dependency graph (it depends on nothing else in the
-//! workspace), so either can depend on it without creating a cycle.
+//! workspace's downward dependency graph (its only workspace dependency is
+//! `lucene-util`, for the automaton type the graph converters build), so
+//! either can depend on it without creating a cycle.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
