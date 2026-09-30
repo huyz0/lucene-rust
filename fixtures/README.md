@@ -929,7 +929,8 @@ outright.
   five `uax29_*` cases (task #207: bare `StandardTokenizer`, no filters,
   over combining-mark, CJK-ideograph, precomposed-Hangul,
   conjoining-Jamo-Hangul, and mixed-CJK/Latin text) checking
-  `lucene-analysis`'s `unicode-segmentation`-backed `tokenize()`. Batch c33
+  `lucene-analysis`'s `tokenize()` (since M7 the JFlex scanner port; see
+  `GenStandardTokenizer`). Batch c33
   added twelve `utf16_*` cases recording the **offset unit**: every string
   mixes an ASCII word, a Latin-1 accented letter (1 `char`, 2 UTF-8 bytes), a
   CJK ideograph (1, 3), a decomposed combining mark (2, 3) and/or a
@@ -943,6 +944,24 @@ outright.
   generator is fully deterministic: `scripts/gen-fixtures.sh --only
   GenAnalysis --out <scratch>` reproduces `analysis/manifest.properties`
   byte for byte.
+- `GenStandardTokenizer.java` — M7's analysis port (`standard_tokenizer/`):
+  `StandardTokenizerImpl.zzCMap` (by reflection) for every code point,
+  run-length encoded (`cmap_runs.txt`); real `StandardTokenizer` (maxTokenLength
+  1-5, 254-256, 255, 1024), `StandardAnalyzer` (255, 5, with stopwords), a
+  custom core-API chain (a `CharFilter`, a `TokenFilter`, a
+  `FilteringTokenFilter`, a case-insensitive `StopFilter`) and
+  `Analyzer.normalize` over a corpus of Unicode's own conformance inputs
+  (`src/uax29-inputs.txt`: the 5,843 strings of Lucene's test-framework
+  `WordBreakTestUnicode_12_1_0`/`EmojiTokenizationTestUnicode_12_1`,
+  extracted by `crates/lucene-analysis/tools/extract_uax29_inputs.py` --
+  inputs only, the tokens are what Java produces here), multilingual texts,
+  class pairs and triples, seeded random strings and a long document
+  (`cases.txt`: term, offsets, increment, length and type of every token, and
+  the `end()` values); a `GraphTokenFilter` subclass and both automaton
+  converters over canned token graphs (`graph.txt`). Deterministic (fixed
+  seeds). Consumed by `crates/lucene-analysis/tests/standard_tokenizer_fixtures.rs`
+  and `standard::tokenizer_impl::tests::cmap_matches_java_for_every_code_point`.
+  Runs from the repository root (it reads `src/uax29-inputs.txt`).
 - `GenDisiJumpTable.java` — the only Java-written `IndexedDISI` **block jump
   table** in this tree (`disi_jump_table_index/`). `IndexedDISI.writeBitSet`
   emits `jumpTableEntryCount = 0` below two logical 65 536-document blocks, and
