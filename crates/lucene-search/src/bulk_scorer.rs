@@ -690,14 +690,19 @@ impl<'a> TermLeg<'a> {
             if out.docs.is_empty() {
                 break;
             }
+            // Branch-free compaction, as `filterCompetitiveHits`: every
+            // document is written and the write position moves on only past
+            // a kept one. A filter such as a cached range keeps a third of a
+            // block's documents at random, so a branch on it mispredicted
+            // over half of `+term #range`'s time. Deleted documents still
+            // short-circuit, so `accept` sees each live document once.
             let mut n = 0;
             for i in 0..out.docs.len() {
                 let d = out.docs[i];
-                if live_docs.is_none_or(|l| l.get_doc(d)) && accept(d)? {
-                    out.docs[n] = d;
-                    self.freqs[n] = self.freqs[i];
-                    n += 1;
-                }
+                let keep = live_docs.is_none_or(|l| l.get_doc(d)) && accept(d)?;
+                out.docs[n] = d;
+                self.freqs[n] = self.freqs[i];
+                n += usize::from(keep);
             }
             out.docs.truncate(n);
             self.freqs.truncate(n);
