@@ -421,14 +421,14 @@ index/MergeState	ported	crates/lucene-index/src/merge.rs::build_doc_id_maps
 index/MergeTrigger	ported	crates/lucene-index/src/merge_policy/api.rs::MergeTrigger
 index/MultiBits	ported	crates/lucene-search/src/multi_bits.rs::MultiBits
 index/MultiDocValues	partial	crates/lucene-search/src/ordinal_map.rs::OrdinalMap -- M7: only the SortedSet/Sorted ordinal mapping (`OrdinalMap`) exists; no composite `getNumericValues`/`getBinaryValues`/`getNormValues`/`getSortedValues`/`getSortedSetValues` views over a reader
-index/MultiFields	partial	crates/lucene-index/src/merge.rs::merge_postings -- M7: the field union across segments exists only inside merging; no top-level `Fields` view over a composite reader
+index/MultiFields	ported	crates/lucene-search/src/multi_terms.rs::indexed_fields
 index/MultiIndexMergeScheduler	todo:M7	merge scheduling shared across several indexes (multi-tenant)
 index/MultiLeafReader	todo:M7	leaf-style helpers over a composite reader (merged FieldInfos, live docs, terms, postings)
-index/MultiPostingsEnum	todo:M7	PostingsEnum concatenated across a composite reader's leaves
+index/MultiPostingsEnum	partial	crates/lucene-search/src/multi_terms.rs::MultiPostingsEnum -- M7: docs and freqs only; no `nextPosition`/offsets/payloads across segments
 index/MultiReader	todo:M7	composite reader over several independent readers/indexes
 index/MultiSorter	ported	crates/lucene-index/src/merge.rs::sorted_doc_order
-index/MultiTerms	partial	crates/lucene-index/src/merge.rs::merge_postings -- M7: merged term dictionary exists only inside merging; no public `MultiTerms.getTerms(reader, field)` view (parity.md: "No `MultiTerms`/composite leaf view")
-index/MultiTermsEnum	partial	crates/lucene-index/src/merge.rs::merge_postings -- M7: k-way term merge exists only inside merging (and `OrdinalMap::build`); no public merged `TermsEnum` over a reader
+index/MultiTerms	partial	crates/lucene-search/src/multi_terms.rs::MultiTerms -- M7: no `intersect(CompiledAutomaton)` over the merged view (each segment intersects its own terms)
+index/MultiTermsEnum	partial	crates/lucene-search/src/multi_terms.rs::MultiTermsEnum -- M7: no `impacts()`; `ord()`/`seekExact(long)` unsupported as in Java
 index/NoDeletionPolicy	ported	crates/lucene-index/src/deletion_policy.rs::NoDeletionPolicy
 index/NoMergePolicy	ported	crates/lucene-index/src/merge_policy/api.rs::NoMergePolicy
 index/NoMergeScheduler	ported	crates/lucene-index/src/index_writer.rs::set_merge_policy
