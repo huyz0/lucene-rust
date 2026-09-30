@@ -3,13 +3,19 @@
 pub mod base36;
 pub mod doc_id_sort;
 pub mod fixed_bit_set;
+pub mod float_heap;
+pub mod java_random;
 pub mod numeric_utils;
+pub mod packed;
 pub mod packed_longs;
+pub mod quantization;
 pub mod simd;
 pub mod small_float;
+pub mod sparse_fixed_bit_set;
 pub mod splittable_random;
 pub mod term_interner;
 pub mod ternary_long_heap;
+pub mod vector_util;
 // Shared test scratch directories (see the module docs). Compiled only for this
 // crate's own tests and for consumers that opt in via the `test-support`
 // feature on a `[dev-dependencies]` edge -- never in a production build.

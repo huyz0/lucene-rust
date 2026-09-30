@@ -179,7 +179,7 @@ impl FixedBitSet {
     #[inline]
     pub fn get_doc(&self, doc: i32) -> bool {
         match usize::try_from(doc) {
-            Ok(index) => index < self.num_bits && self.get(index),
+            Ok(index) => index < self.len() && self.get(index),
             Err(_) => false,
         }
     }
@@ -363,8 +363,598 @@ impl FixedBitSet {
     }
 }
 
+/// The rest of `FixedBitSet`'s API: ranges, flips, the counting helpers, the
+/// `BitSet` operations (`prevSetBit`, `getAndSet`, `approximateCardinality`)
+/// and capacity management. Word-level algorithms are Java's; Java's shifts
+/// are mod 64, which the masks below spell out where it matters.
+impl FixedBitSet {
+    #[inline]
+    fn check(&self, index: usize) {
+        if index >= self.num_bits {
+            out_of_range(index, self.num_bits);
+        }
+    }
+
+    /// Java's `-1L << startIndex` / `-1L >>> -endIndex`: the masks of the
+    /// first and last word of `start..end` (`end > start`).
+    #[inline]
+    fn range_masks(start: usize, end: usize) -> (u64, u64) {
+        let startmask = u64::MAX << (start & 63);
+        // `-1L >>> -endIndex`: the low `end % 64` bits, or all 64 when `end`
+        // is a multiple of 64.
+        let endmask = u64::MAX >> ((64 - (end & 63)) & 63);
+        (startmask, endmask)
+    }
+
+    /// `FixedBitSet.getAndSet(index)`.
+    #[inline]
+    pub fn get_and_set(&mut self, index: usize) -> bool {
+        self.check(index);
+        let mask = 1u64 << (index & 63);
+        let word = &mut self.words[index >> 6];
+        let was = *word & mask != 0;
+        *word |= mask;
+        was
+    }
+
+    /// `FixedBitSet.getAndClear(index)`.
+    #[inline]
+    pub fn get_and_clear(&mut self, index: usize) -> bool {
+        self.check(index);
+        let mask = 1u64 << (index & 63);
+        let word = &mut self.words[index >> 6];
+        let was = *word & mask != 0;
+        *word &= !mask;
+        was
+    }
+
+    /// `FixedBitSet.flip(index)`.
+    #[inline]
+    pub fn flip(&mut self, index: usize) {
+        self.check(index);
+        self.words[index >> 6] ^= 1u64 << (index & 63);
+    }
+
+    /// `FixedBitSet.flip(startIndex, endIndex)`.
+    pub fn flip_range(&mut self, start: usize, end: usize) {
+        if end <= start {
+            return;
+        }
+        assert!(
+            end <= self.num_bits,
+            "endIndex={end}, numBits={}",
+            self.num_bits
+        );
+        let (sw, ew) = (start >> 6, (end - 1) >> 6);
+        let (startmask, endmask) = Self::range_masks(start, end);
+        if sw == ew {
+            self.words[sw] ^= startmask & endmask;
+            return;
+        }
+        self.words[sw] ^= startmask;
+        for w in &mut self.words[sw + 1..ew] {
+            *w = !*w;
+        }
+        self.words[ew] ^= endmask;
+    }
+
+    /// `FixedBitSet.set(startIndex, endIndex)`.
+    pub fn set_range(&mut self, start: usize, end: usize) {
+        if end <= start {
+            return;
+        }
+        assert!(
+            end <= self.num_bits,
+            "endIndex={end}, numBits={}",
+            self.num_bits
+        );
+        let (sw, ew) = (start >> 6, (end - 1) >> 6);
+        let (startmask, endmask) = Self::range_masks(start, end);
+        if sw == ew {
+            self.words[sw] |= startmask & endmask;
+            return;
+        }
+        self.words[sw] |= startmask;
+        self.words[sw + 1..ew].fill(u64::MAX);
+        self.words[ew] |= endmask;
+    }
+
+    /// `FixedBitSet.clear(startIndex, endIndex)`.
+    pub fn clear_range(&mut self, start: usize, end: usize) {
+        if end <= start {
+            return;
+        }
+        assert!(
+            end <= self.num_bits,
+            "endIndex={end}, numBits={}",
+            self.num_bits
+        );
+        let (sw, ew) = (start >> 6, (end - 1) >> 6);
+        let (startmask, endmask) = Self::range_masks(start, end);
+        let (startmask, endmask) = (!startmask, !endmask);
+        if sw == ew {
+            self.words[sw] &= startmask | endmask;
+            return;
+        }
+        self.words[sw] &= startmask;
+        self.words[sw + 1..ew].fill(0);
+        self.words[ew] &= endmask;
+    }
+
+    /// `FixedBitSet.prevSetBit(index)`: the last set bit at or before
+    /// `index`, `None` for Java's `-1`.
+    pub fn prev_set_bit(&self, index: usize) -> Option<usize> {
+        self.check(index);
+        let mut i = index >> 6;
+        let sub = index & 63;
+        let word = self.words[i] << (63 - sub);
+        if word != 0 {
+            return Some((i << 6) + sub - word.leading_zeros() as usize);
+        }
+        while i > 0 {
+            i -= 1;
+            let word = self.words[i];
+            if word != 0 {
+                return Some((i << 6) + 63 - word.leading_zeros() as usize);
+            }
+        }
+        None
+    }
+
+    /// `FixedBitSet.nextSetBit(start, upperBound)`: `None` when the first set
+    /// bit is at or past `upper_bound`.
+    pub fn next_set_bit_in_range(&self, start: usize, upper_bound: usize) -> Option<usize> {
+        self.next_set_bit(start).filter(|&b| b < upper_bound)
+    }
+
+    /// `FixedBitSet.nextClearBit(index)`: `None` for Java's `NO_MORE_DOCS`.
+    pub fn next_clear_bit(&self, index: usize) -> Option<usize> {
+        self.next_clear_bit_in_range(index, self.num_bits)
+    }
+
+    /// `FixedBitSet.nextClearBit(start, upperBound)`.
+    pub fn next_clear_bit_in_range(&self, start: usize, upper_bound: usize) -> Option<usize> {
+        if start >= upper_bound.min(self.num_bits) {
+            return None;
+        }
+        let b = next_clear_bit_in_words(&self.words, start);
+        (b < upper_bound.min(self.num_bits)).then_some(b)
+    }
+
+    /// `FixedBitSet.cardinality(from, to)`: set bits in `from..to`.
+    pub fn cardinality_range(&self, from: usize, to: usize) -> usize {
+        assert!(
+            from <= to && to <= self.num_bits,
+            "range {from}..{to} of {}",
+            self.num_bits
+        );
+        let mut count = 0usize;
+        let mut i = from;
+        while i < to {
+            let w = i >> 6;
+            let lo = i & 63;
+            let span = (to - i).min(64 - lo);
+            let mask = if span == 64 {
+                u64::MAX
+            } else {
+                ((1u64 << span) - 1) << lo
+            };
+            count += (self.words[w] & mask).count_ones() as usize;
+            i += span;
+        }
+        count
+    }
+
+    /// `FixedBitSet.approximateCardinality()`: exact up to 1024 words, else
+    /// the popcount of the first 16 words of every 1024, scaled.
+    pub fn approximate_cardinality(&self) -> usize {
+        const RANGE: usize = 16;
+        const INTERVAL: usize = 1024;
+        let num_words = self.words.len();
+        if num_words <= INTERVAL {
+            return self.cardinality();
+        }
+        let mut pop: i64 = 0;
+        let mut max_word = 0usize;
+        while max_word + INTERVAL < num_words {
+            for i in 0..RANGE {
+                pop += self.words[max_word + i].count_ones() as i64;
+            }
+            max_word += INTERVAL;
+        }
+        // Java: popCount *= (interval / rangeLength) * numWords / maxWord, in
+        // int arithmetic on the right-hand side.
+        pop *= ((INTERVAL / RANGE) as i64 * num_words as i64) / max_word as i64;
+        pop as i32 as usize
+    }
+
+    /// `FixedBitSet.unionCount(a, b)`.
+    pub fn union_count(a: &FixedBitSet, b: &FixedBitSet) -> usize {
+        let n = a.words.len().min(b.words.len());
+        let mut tot: usize = (0..n)
+            .map(|i| (a.words[i] | b.words[i]).count_ones() as usize)
+            .sum();
+        tot += a.words[n..]
+            .iter()
+            .map(|w| w.count_ones() as usize)
+            .sum::<usize>();
+        tot += b.words[n..]
+            .iter()
+            .map(|w| w.count_ones() as usize)
+            .sum::<usize>();
+        tot
+    }
+
+    /// `FixedBitSet.andNotCount(a, b)`.
+    pub fn and_not_count(a: &FixedBitSet, b: &FixedBitSet) -> usize {
+        let n = a.words.len().min(b.words.len());
+        let mut tot: usize = (0..n)
+            .map(|i| (a.words[i] & !b.words[i]).count_ones() as usize)
+            .sum();
+        tot += a.words[n..]
+            .iter()
+            .map(|w| w.count_ones() as usize)
+            .sum::<usize>();
+        tot
+    }
+
+    /// `FixedBitSet.xor(FixedBitSet)`: `other` no longer than `self`.
+    pub fn xor(&mut self, other: &FixedBitSet) {
+        assert!(
+            other.words.len() <= self.words.len(),
+            "xor with a longer bitset"
+        );
+        for (a, b) in self.words.iter_mut().zip(&other.words) {
+            *a ^= *b;
+        }
+    }
+
+    /// `FixedBitSet.intersects(other)`.
+    pub fn intersects(&self, other: &FixedBitSet) -> bool {
+        self.words.iter().zip(&other.words).any(|(a, b)| a & b != 0)
+    }
+
+    /// `FixedBitSet.scanIsEmpty()`.
+    pub fn scan_is_empty(&self) -> bool {
+        self.words.iter().all(|&w| w == 0)
+    }
+
+    /// `FixedBitSet.orMask(startBit, mask, maskLen)`: ORs `mask`'s low
+    /// `mask_len` bits in at `start_bit`.
+    pub fn or_mask(&mut self, start_bit: usize, mask: u64, mask_len: usize) {
+        assert!(
+            start_bit + mask_len <= self.num_bits,
+            "startBit={start_bit}, maskLen={mask_len}"
+        );
+        let w = start_bit >> 6;
+        let off = start_bit & 63;
+        self.words[w] |= mask << off;
+        if off + mask_len > 64 {
+            self.words[w + 1] |= mask >> (64 - off);
+        }
+    }
+
+    /// `FixedBitSet.orRange(source, sourceFrom, dest, destFrom, length)`.
+    pub fn or_range(
+        source: &FixedBitSet,
+        source_from: usize,
+        dest: &mut FixedBitSet,
+        dest_from: usize,
+        length: usize,
+    ) {
+        assert!(source_from + length <= source.len() && dest_from + length <= dest.len());
+        for i in 0..length {
+            if source.get(source_from + i) {
+                dest.set(dest_from + i);
+            }
+        }
+    }
+
+    /// `FixedBitSet.andRange(source, sourceFrom, dest, destFrom, length)`:
+    /// clears the bits of `dest[dest_from..+length]` whose source bit is clear.
+    pub fn and_range(
+        source: &FixedBitSet,
+        source_from: usize,
+        dest: &mut FixedBitSet,
+        dest_from: usize,
+        length: usize,
+    ) {
+        assert!(source_from + length <= source.len() && dest_from + length <= dest.len());
+        for i in 0..length {
+            if !source.get(source_from + i) {
+                dest.clear(dest_from + i);
+            }
+        }
+    }
+
+    /// `FixedBitSet.ensureCapacity(bits, desiredBit)`: `bits` itself when it
+    /// can hold `desired_bit`, else a larger copy (Java's growth policy:
+    /// `ArrayUtil.grow` to at least `bits2words(desiredBit) + 1` words).
+    pub fn ensure_capacity(bits: FixedBitSet, desired_bit: usize) -> FixedBitSet {
+        Self::ensure_capacity_internal(bits, desired_bit, true)
+    }
+
+    /// `FixedBitSet.ensureCapacityAndClear(bits, desiredBit)`.
+    pub fn ensure_capacity_and_clear(bits: FixedBitSet, desired_bit: usize) -> FixedBitSet {
+        Self::ensure_capacity_internal(bits, desired_bit, false)
+    }
+
+    fn ensure_capacity_internal(
+        mut bits: FixedBitSet,
+        desired_bit: usize,
+        preserve: bool,
+    ) -> FixedBitSet {
+        if desired_bit < bits.num_bits {
+            if !preserve {
+                bits.clear_all();
+            }
+            return bits;
+        }
+        let num_words = bits2words(desired_bit);
+        let mut words = if preserve { bits.words } else { Vec::new() };
+        if num_words >= words.len() {
+            // ArrayUtil.oversize(numWords + 1, 8): grow by 1/8, at least 3.
+            let min = num_words + 1;
+            let extra = (min >> 3).max(3);
+            words.resize(min + extra, 0);
+        }
+        let num_bits = words.len() << 6;
+        FixedBitSet { words, num_bits }
+    }
+
+    /// `FixedBitSet.hashCode()`: Java's rotate-and-xor over the words.
+    pub fn java_hash_code(&self) -> i32 {
+        let mut h: i64 = 0;
+        for &w in self.words.iter().rev() {
+            h ^= w as i64;
+            h = h.rotate_left(1);
+        }
+        (((h >> 32) ^ h) as i32).wrapping_add(0x98761234u32 as i32)
+    }
+
+    /// `FixedBitSet.intoArray(from, to, base, array)`: the set bits of
+    /// `from..to`, plus `base`, into `array`; returns how many.
+    pub fn into_array(&self, from: usize, to: usize, base: i32, array: &mut [i32]) -> usize {
+        assert!(from <= to && to <= self.num_bits);
+        let mut n = 0;
+        let mut i = self.next_set_bit(from);
+        while let Some(b) = i.filter(|&b| b < to) {
+            array[n] = base + b as i32;
+            n += 1;
+            i = self.next_set_bit(b + 1);
+        }
+        n
+    }
+
+    /// `FixedBitSet.forEach(from, to, base, consumer)`.
+    pub fn for_each_in_range(&self, from: usize, to: usize, base: i32, mut f: impl FnMut(i32)) {
+        assert!(from <= to && to <= self.num_bits);
+        let mut i = self.next_set_bit(from);
+        while let Some(b) = i.filter(|&b| b < to) {
+            f(base + b as i32);
+            i = self.next_set_bit(b + 1);
+        }
+    }
+
+    /// `FixedBitSet.applyMask(bitSet, offset)`: clears every bit of `bit_set`
+    /// whose counterpart at `offset + i` here is clear. `Err` when `bit_set`
+    /// has bits set past this bitset's end (Java's `IllegalArgumentException`).
+    pub fn apply_mask(&self, bit_set: &mut FixedBitSet, offset: usize) -> Result<(), String> {
+        let length = bit_set.num_bits.min(self.num_bits.saturating_sub(offset));
+        if offset <= self.num_bits {
+            Self::and_range(self, offset, bit_set, 0, length);
+        }
+        if length < bit_set.num_bits && bit_set.next_set_bit(length).is_some() {
+            return Err("Some bits are set beyond the end of live docs".into());
+        }
+        Ok(())
+    }
+
+    /// `FixedBitSet.copyOf(Bits)` over any bit source of `len` bits.
+    pub fn copy_of(len: usize, get: impl Fn(usize) -> bool) -> FixedBitSet {
+        let mut out = FixedBitSet::new(len);
+        for i in 0..out.len() {
+            if get(i) {
+                out.set(i);
+            }
+        }
+        out
+    }
+}
+
+impl PartialEq for FixedBitSet {
+    /// `FixedBitSet.equals`: same length, same words.
+    fn eq(&self, other: &Self) -> bool {
+        self.num_bits == other.num_bits && self.words == other.words
+    }
+}
+
+impl Eq for FixedBitSet {}
+
+#[cfg(test)]
+mod ext_tests {
+    #![allow(clippy::needless_range_loop)]
+
+    use super::*;
+
+    fn model(n: usize, seed: u64) -> (FixedBitSet, Vec<bool>) {
+        let mut s = seed;
+        let mut b = FixedBitSet::new(n);
+        let mut m = vec![false; n];
+        for i in 0..n {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            if (s >> 60) & 1 == 1 {
+                b.set(i);
+                m[i] = true;
+            }
+        }
+        (b, m)
+    }
+
+    fn check(b: &FixedBitSet, m: &[bool]) {
+        for (i, &v) in m.iter().enumerate() {
+            assert_eq!(b.get(i), v, "bit {i}");
+        }
+        assert_eq!(b.cardinality(), m.iter().filter(|&&v| v).count());
+    }
+
+    #[test]
+    fn ranges_flip_set_clear_match_a_model() {
+        for n in [1usize, 63, 64, 65, 200, 1000] {
+            for (from, to) in [
+                (0usize, n),
+                (0, 0),
+                (1, n.min(3)),
+                (n / 3, n - n / 5),
+                (n.saturating_sub(1), n),
+            ] {
+                if from > to {
+                    continue;
+                }
+                let (mut b, mut m) = model(n, n as u64 + from as u64);
+                b.flip_range(from, to);
+                for v in &mut m[from..to] {
+                    *v = !*v;
+                }
+                check(&b, &m);
+                b.set_range(from, to);
+                m[from..to].fill(true);
+                check(&b, &m);
+                b.clear_range(from, to);
+                m[from..to].fill(false);
+                check(&b, &m);
+                let (b2, m2) = model(n, 7);
+                assert_eq!(
+                    b2.cardinality_range(from, to),
+                    m2[from..to].iter().filter(|&&v| v).count()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn single_bit_ops_and_navigation() {
+        let (mut b, m) = model(300, 3);
+        for i in (0..300).step_by(7) {
+            let prev = m[..=i].iter().rposition(|&v| v);
+            assert_eq!(b.prev_set_bit(i), prev, "prev {i}");
+            let next_clear = m[i..].iter().position(|&v| !v).map(|p| p + i);
+            assert_eq!(b.next_clear_bit(i), next_clear);
+            assert_eq!(
+                b.next_set_bit_in_range(i, i + 3),
+                m[i..(i + 3).min(300)]
+                    .iter()
+                    .position(|&v| v)
+                    .map(|p| p + i)
+            );
+        }
+        let was = b.get(5);
+        assert_eq!(b.get_and_set(5), was);
+        assert!(b.get(5));
+        assert!(b.get_and_clear(5));
+        assert!(!b.get(5));
+        b.flip(5);
+        assert!(b.get(5));
+        let mut full = FixedBitSet::new(130);
+        full.set_range(0, 130);
+        assert_eq!(full.next_clear_bit(0), None);
+        assert_eq!(full.next_clear_bit_in_range(0, 64), None);
+        assert_eq!(FixedBitSet::new(10).prev_set_bit(9), None);
+    }
+
+    #[test]
+    fn counts_and_set_algebra() {
+        let (a, ma) = model(500, 11);
+        let (b, mb) = model(300, 12);
+        let union = (0..500).filter(|&i| ma[i] || (i < 300 && mb[i])).count();
+        let andnot = (0..500).filter(|&i| ma[i] && !(i < 300 && mb[i])).count();
+        assert_eq!(FixedBitSet::union_count(&a, &b), union);
+        assert_eq!(FixedBitSet::and_not_count(&a, &b), andnot);
+        assert!(a.intersects(&b));
+        let mut x = a.clone();
+        x.xor(&b);
+        for i in 0..500 {
+            assert_eq!(x.get(i), ma[i] ^ (i < 300 && mb[i]));
+        }
+        assert!(!FixedBitSet::new(10).intersects(&FixedBitSet::new(10)));
+        assert!(FixedBitSet::new(100).scan_is_empty());
+        assert!(!a.scan_is_empty());
+        assert_eq!(a.approximate_cardinality(), a.cardinality());
+        // Big enough to sample: 2048 words.
+        let mut big = FixedBitSet::new(2048 * 64);
+        big.set_range(0, 2048 * 64);
+        let approx = big.approximate_cardinality();
+        assert_eq!(approx, 2048 * 64);
+        let mut arr = vec![0i32; 500];
+        let n = a.into_array(10, 400, 1000, &mut arr);
+        let want: Vec<i32> = (10..400)
+            .filter(|&i| ma[i])
+            .map(|i| 1000 + i as i32)
+            .collect();
+        assert_eq!(&arr[..n], &want[..]);
+        let mut seen = Vec::new();
+        a.for_each_in_range(10, 400, 1000, |d| seen.push(d));
+        assert_eq!(seen, want);
+        assert_eq!(a, a.clone());
+        assert_ne!(a, b);
+        assert_eq!(a.java_hash_code(), a.clone().java_hash_code());
+    }
+
+    #[test]
+    fn masks_ranges_and_capacity() {
+        let mut b = FixedBitSet::new(200);
+        b.or_mask(60, 0b1111, 4);
+        assert!(b.get(60) && b.get(63) && b.get(62) && !b.get(64));
+        b.or_mask(62, 0b1111, 4);
+        assert!(b.get(65) && !b.get(66));
+        let (src, ms) = model(300, 5);
+        let mut dst = FixedBitSet::new(300);
+        FixedBitSet::or_range(&src, 17, &mut dst, 3, 250);
+        for i in 0..250 {
+            assert_eq!(dst.get(3 + i), ms[17 + i]);
+        }
+        let mut all = FixedBitSet::new(300);
+        all.set_range(0, 300);
+        FixedBitSet::and_range(&src, 17, &mut all, 3, 250);
+        for i in 0..250 {
+            assert_eq!(all.get(3 + i), ms[17 + i]);
+        }
+        assert!(all.get(0) && all.get(299));
+
+        let grown = FixedBitSet::ensure_capacity(src.clone(), 1000);
+        assert!(grown.len() > 1000);
+        for i in 0..300 {
+            assert_eq!(grown.get(i), ms[i]);
+        }
+        let same = FixedBitSet::ensure_capacity(src.clone(), 10);
+        assert_eq!(same.len(), 300);
+        let cleared = FixedBitSet::ensure_capacity_and_clear(src.clone(), 10);
+        assert!(cleared.scan_is_empty());
+        let fresh = FixedBitSet::ensure_capacity_and_clear(src.clone(), 5000);
+        assert!(fresh.len() > 5000 && fresh.scan_is_empty());
+
+        let live = FixedBitSet::copy_of(100, |i| i % 3 != 0);
+        let mut docs = FixedBitSet::new(50);
+        docs.set_range(0, 50);
+        live.apply_mask(&mut docs, 10).unwrap();
+        for i in 0..50 {
+            assert_eq!(docs.get(i), (i + 10) % 3 != 0);
+        }
+        let mut past = FixedBitSet::new(50);
+        past.set(49);
+        assert!(live.apply_mask(&mut past, 80).is_err());
+        let mut ok = FixedBitSet::new(50);
+        ok.set(1);
+        assert!(live.apply_mask(&mut ok, 60).is_ok());
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::needless_range_loop, clippy::identity_op)]
+
     use super::*;
 
     #[test]

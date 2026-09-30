@@ -17,7 +17,7 @@
 // which silently breaks every intra-doc link the module writes to its own
 // items. See `docs/rustdoc-gate.md`.
 pub mod automaton;
-mod block_packed;
+pub mod block_packed;
 pub mod blocktree;
 mod blocktree_writer;
 pub mod compound_format;
@@ -27,20 +27,25 @@ pub mod direct_reader;
 pub mod doc_values;
 pub mod doc_values_updates;
 pub mod field_infos;
+pub mod filtered_hnsw_searcher;
 pub mod for_util;
 pub mod fst;
 pub mod fuzzy;
 pub mod hnsw;
+pub mod hnsw_util;
 pub mod hnsw_vectors;
 pub mod indexed_disi;
 pub mod live_docs;
 pub mod lz4;
+pub mod monotonic_block_packed;
 pub mod norms;
-mod packed_ints;
+pub mod packed_data;
+pub mod packed_ints;
 pub mod points;
 pub mod postings;
 pub mod postings_writer;
 pub mod regexp;
+pub mod scalar_quantized_vectors;
 pub mod stored_fields;
 pub mod suggest;
 pub mod term_ngram;
