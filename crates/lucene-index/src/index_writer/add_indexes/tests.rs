@@ -227,3 +227,130 @@ fn add_indexes_refuses_incompatible_sources() {
     assert_eq!(rename("_3_1.liv", "_3", "_9"), "_9_1.liv");
     assert_eq!(rename("_30.fdt", "_3", "_9"), "_30.fdt");
 }
+
+/// Every schema difference `schema_conflict` refuses, and the ones it lets
+/// through (a side that does not set doc values or index options, a field
+/// without points or vectors in the incoming segment).
+#[test]
+fn schema_conflicts_are_the_ones_java_refuses() {
+    use lucene_codecs::field_infos::{VectorEncoding, VectorSimilarityFunction};
+    let base = FieldInfo::new("f", 0);
+    assert_eq!(IndexWriter::schema_conflict(&base, &base), None);
+    let dv = |t| {
+        base.clone()
+            .with_doc_values(t, DocValuesSkipIndexType::None, -1)
+    };
+    assert_eq!(
+        IndexWriter::schema_conflict(&dv(DocValuesType::Numeric), &dv(DocValuesType::Sorted)),
+        Some("doc values type")
+    );
+    assert_eq!(
+        IndexWriter::schema_conflict(&base, &dv(DocValuesType::Sorted)),
+        None,
+        "a side without doc values"
+    );
+    let io = |o| base.clone().with_index_options(o);
+    assert_eq!(
+        IndexWriter::schema_conflict(&io(IndexOptions::Docs), &io(IndexOptions::DocsAndFreqs)),
+        Some("index options")
+    );
+    assert_eq!(
+        IndexWriter::schema_conflict(&io(IndexOptions::None), &io(IndexOptions::Docs)),
+        None
+    );
+    let points = base.clone().with_points(1, 1, 8);
+    assert_eq!(
+        IndexWriter::schema_conflict(&base, &points),
+        Some("point dimensions")
+    );
+    assert_eq!(
+        IndexWriter::schema_conflict(&base.clone().with_points(2, 2, 8), &points),
+        Some("point dimensions")
+    );
+    assert_eq!(IndexWriter::schema_conflict(&points, &points), None);
+    assert_eq!(
+        IndexWriter::schema_conflict(&points, &base),
+        None,
+        "no incoming points"
+    );
+    let vectors = |d| {
+        base.clone()
+            .with_vectors(d, VectorEncoding::Float32, VectorSimilarityFunction::Cosine)
+    };
+    assert_eq!(
+        IndexWriter::schema_conflict(&vectors(4), &vectors(8)),
+        Some("vector")
+    );
+    assert_eq!(IndexWriter::schema_conflict(&vectors(4), &vectors(4)), None);
+    assert_eq!(
+        IndexWriter::schema_conflict(&base, &base.clone().with_soft_deletes_field(true)),
+        Some("soft-deletes")
+    );
+}
+
+/// `addIndexes` refuses to run between `prepareCommit` and its finish, and
+/// past `maxDocs`; a source whose segment carries doc-values updates is
+/// copied with its update generation, and a field this writer does not know
+/// comes along as it is.
+#[test]
+fn add_indexes_limits_and_generations() {
+    let src_tmp = TempDir::new("add-limits-src");
+    let src = source(&src_tmp);
+
+    let tmp = TempDir::new("add-limits");
+    let dir = FsDirectory::open(&tmp);
+    let mut w = writer(&dir, DocValuesType::Numeric);
+    w.add_document(doc("own", 1)).unwrap();
+    w.prepare_commit().unwrap();
+    assert!(matches!(
+        w.add_indexes(&[&src]),
+        Err(Error::PreparedCommitPending("add_indexes"))
+    ));
+    w.finish_commit().unwrap();
+    w.set_max_docs(3);
+    assert!(matches!(w.add_indexes(&[&src]), Err(Error::TooManyDocs(3))));
+    assert_eq!(w.segment_infos().segments.len(), 1);
+
+    // A source with a doc-values update on a committed segment.
+    let upd_tmp = TempDir::new("add-limits-upd");
+    let upd = FsDirectory::open(&upd_tmp);
+    let mut u = writer(&upd, DocValuesType::Numeric);
+    u.add_document(doc("u0", 1)).unwrap();
+    u.add_document(doc("u1", 2)).unwrap();
+    u.commit().unwrap();
+    u.update_numeric_doc_value(Term::new("id", "u1"), "rank", 7)
+        .unwrap();
+    u.commit().unwrap();
+    drop(u);
+    assert!(!segment_infos::read_latest(&upd).unwrap().segments[0]
+        .dv_update_files
+        .is_empty());
+
+    // Into a writer that knows only `id`.
+    let only_tmp = TempDir::new("add-limits-only-id");
+    let only = FsDirectory::open(&only_tmp);
+    let mut o = IndexWriter::open(
+        &only,
+        vec![FieldInfo::new("id", 0)
+            .with_index_options(IndexOptions::Docs)
+            .with_omit_norms(true)],
+        "Lucene104",
+        LuceneVersion {
+            major: 10,
+            minor: 5,
+            bugfix: 0,
+        },
+    )
+    .unwrap();
+    o.add_indexes(&[&upd]).unwrap();
+    o.commit().unwrap();
+    let added = &segment_infos::read_latest(&only).unwrap().segments[0];
+    assert!(!added.dv_update_files.is_empty());
+    assert!(added
+        .dv_update_files
+        .iter()
+        .flat_map(|(_, f)| f)
+        .all(|f| f.starts_with(&format!("{}_", added.segment_name))));
+    assert_eq!(committed_ids(&only), ["u0", "u1"]);
+    assert_clean(&only);
+}
