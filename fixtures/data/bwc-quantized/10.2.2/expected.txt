@@ -1,0 +1,253 @@
+commit gen=1 version=10.2.2 created=10 min=10.2.2
+seg _0 codec=Lucene101 maxDoc=1000 delCount=77 softDel=0 version=10.2.2 minVersion=10.2.2 compound=false files=[_0.fdm, _0.fdt, _0.fdx, _0.fnm, _0.si, _0_1.liv, _0_Lucene101_0.doc, _0_Lucene101_0.psm, _0_Lucene101_0.tim, _0_Lucene101_0.tip, _0_Lucene101_0.tmd, _0_Lucene102BinaryQuantizedVectorsFormat_0.veb, _0_Lucene102BinaryQuantizedVectorsFormat_0.vec, _0_Lucene102BinaryQuantizedVectorsFormat_0.vemb, _0_Lucene102BinaryQuantizedVectorsFormat_0.vemf, _0_Lucene102BinaryQuantizedVectorsFormat_1.veb, _0_Lucene102BinaryQuantizedVectorsFormat_1.vec, _0_Lucene102BinaryQuantizedVectorsFormat_1.vemb, _0_Lucene102BinaryQuantizedVectorsFormat_1.vemf, _0_Lucene102HnswBinaryQuantizedVectorsFormat_0.veb, _0_Lucene102HnswBinaryQuantizedVectorsFormat_0.vec, _0_Lucene102HnswBinaryQuantizedVectorsFormat_0.vem, _0_Lucene102HnswBinaryQuantizedVectorsFormat_0.vemb, _0_Lucene102HnswBinaryQuantizedVectorsFormat_0.vemf, _0_Lucene102HnswBinaryQuantizedVectorsFormat_0.vex, _0_Lucene102HnswBinaryQuantizedVectorsFormat_1.veb, _0_Lucene102HnswBinaryQuantizedVectorsFormat_1.vec, _0_Lucene102HnswBinaryQuantizedVectorsFormat_1.vem, _0_Lucene102HnswBinaryQuantizedVectorsFormat_1.vemb, _0_Lucene102HnswBinaryQuantizedVectorsFormat_1.vemf, _0_Lucene102HnswBinaryQuantizedVectorsFormat_1.vex, _0_Lucene102HnswBinaryQuantizedVectorsFormat_2.veb, _0_Lucene102HnswBinaryQuantizedVectorsFormat_2.vec, _0_Lucene102HnswBinaryQuantizedVectorsFormat_2.vem, _0_Lucene102HnswBinaryQuantizedVectorsFormat_2.vemb, _0_Lucene102HnswBinaryQuantizedVectorsFormat_2.vemf, _0_Lucene102HnswBinaryQuantizedVectorsFormat_2.vex, _0_Lucene102HnswBinaryQuantizedVectorsFormat_3.veb, _0_Lucene102HnswBinaryQuantizedVectorsFormat_3.vec, _0_Lucene102HnswBinaryQuantizedVectorsFormat_3.vem, _0_Lucene102HnswBinaryQuantizedVectorsFormat_3.vemb, _0_Lucene102HnswBinaryQuantizedVectorsFormat_3.vemf, _0_Lucene102HnswBinaryQuantizedVectorsFormat_3.vex, _0_Lucene99HnswScalarQuantizedVectorsFormat_0.vec, _0_Lucene99HnswScalarQuantizedVectorsFormat_0.vem, _0_Lucene99HnswScalarQuantizedVectorsFormat_0.vemf, _0_Lucene99HnswScalarQuantizedVectorsFormat_0.vemq, _0_Lucene99HnswScalarQuantizedVectorsFormat_0.veq, _0_Lucene99HnswScalarQuantizedVectorsFormat_0.vex, _0_Lucene99HnswScalarQuantizedVectorsFormat_1.vec, _0_Lucene99HnswScalarQuantizedVectorsFormat_1.vem, _0_Lucene99HnswScalarQuantizedVectorsFormat_1.vemf, _0_Lucene99HnswScalarQuantizedVectorsFormat_1.vemq, _0_Lucene99HnswScalarQuantizedVectorsFormat_1.veq, _0_Lucene99HnswScalarQuantizedVectorsFormat_1.vex, _0_Lucene99HnswScalarQuantizedVectorsFormat_2.vec, _0_Lucene99HnswScalarQuantizedVectorsFormat_2.vem, _0_Lucene99HnswScalarQuantizedVectorsFormat_2.vemf, _0_Lucene99HnswScalarQuantizedVectorsFormat_2.vemq, _0_Lucene99HnswScalarQuantizedVectorsFormat_2.veq, _0_Lucene99HnswScalarQuantizedVectorsFormat_2.vex, _0_Lucene99HnswScalarQuantizedVectorsFormat_3.vec, _0_Lucene99HnswScalarQuantizedVectorsFormat_3.vem, _0_Lucene99HnswScalarQuantizedVectorsFormat_3.vemf, _0_Lucene99HnswScalarQuantizedVectorsFormat_3.vemq, _0_Lucene99HnswScalarQuantizedVectorsFormat_3.veq, _0_Lucene99HnswScalarQuantizedVectorsFormat_3.vex, _0_Lucene99HnswScalarQuantizedVectorsFormat_4.vec, _0_Lucene99HnswScalarQuantizedVectorsFormat_4.vem, _0_Lucene99HnswScalarQuantizedVectorsFormat_4.vemf, _0_Lucene99HnswScalarQuantizedVectorsFormat_4.vemq, _0_Lucene99HnswScalarQuantizedVectorsFormat_4.veq, _0_Lucene99HnswScalarQuantizedVectorsFormat_4.vex, _0_Lucene99HnswScalarQuantizedVectorsFormat_5.vec, _0_Lucene99HnswScalarQuantizedVectorsFormat_5.vem, _0_Lucene99HnswScalarQuantizedVectorsFormat_5.vemf, _0_Lucene99HnswScalarQuantizedVectorsFormat_5.vemq, _0_Lucene99HnswScalarQuantizedVectorsFormat_5.veq, _0_Lucene99HnswScalarQuantizedVectorsFormat_5.vex, _0_Lucene99HnswScalarQuantizedVectorsFormat_6.vec, _0_Lucene99HnswScalarQuantizedVectorsFormat_6.vem, _0_Lucene99HnswScalarQuantizedVectorsFormat_6.vemf, _0_Lucene99HnswScalarQuantizedVectorsFormat_6.vemq, _0_Lucene99HnswScalarQuantizedVectorsFormat_6.veq, _0_Lucene99HnswScalarQuantizedVectorsFormat_6.vex, _0_Lucene99HnswScalarQuantizedVectorsFormat_7.vec, _0_Lucene99HnswScalarQuantizedVectorsFormat_7.vem, _0_Lucene99HnswScalarQuantizedVectorsFormat_7.vemf, _0_Lucene99HnswScalarQuantizedVectorsFormat_7.vemq, _0_Lucene99HnswScalarQuantizedVectorsFormat_7.veq, _0_Lucene99HnswScalarQuantizedVectorsFormat_7.vex, _0_Lucene99ScalarQuantizedVectorsFormat_0.vec, _0_Lucene99ScalarQuantizedVectorsFormat_0.vemf, _0_Lucene99ScalarQuantizedVectorsFormat_0.vemq, _0_Lucene99ScalarQuantizedVectorsFormat_0.veq]
+seg _1 codec=Lucene101 maxDoc=200 delCount=16 softDel=0 version=10.2.2 minVersion=10.2.2 compound=false files=[_1.fdm, _1.fdt, _1.fdx, _1.fnm, _1.si, _1_1.liv, _1_Lucene101_0.doc, _1_Lucene101_0.psm, _1_Lucene101_0.tim, _1_Lucene101_0.tip, _1_Lucene101_0.tmd, _1_Lucene102BinaryQuantizedVectorsFormat_0.veb, _1_Lucene102BinaryQuantizedVectorsFormat_0.vec, _1_Lucene102BinaryQuantizedVectorsFormat_0.vemb, _1_Lucene102BinaryQuantizedVectorsFormat_0.vemf, _1_Lucene102BinaryQuantizedVectorsFormat_1.veb, _1_Lucene102BinaryQuantizedVectorsFormat_1.vec, _1_Lucene102BinaryQuantizedVectorsFormat_1.vemb, _1_Lucene102BinaryQuantizedVectorsFormat_1.vemf, _1_Lucene102HnswBinaryQuantizedVectorsFormat_0.veb, _1_Lucene102HnswBinaryQuantizedVectorsFormat_0.vec, _1_Lucene102HnswBinaryQuantizedVectorsFormat_0.vem, _1_Lucene102HnswBinaryQuantizedVectorsFormat_0.vemb, _1_Lucene102HnswBinaryQuantizedVectorsFormat_0.vemf, _1_Lucene102HnswBinaryQuantizedVectorsFormat_0.vex, _1_Lucene102HnswBinaryQuantizedVectorsFormat_1.veb, _1_Lucene102HnswBinaryQuantizedVectorsFormat_1.vec, _1_Lucene102HnswBinaryQuantizedVectorsFormat_1.vem, _1_Lucene102HnswBinaryQuantizedVectorsFormat_1.vemb, _1_Lucene102HnswBinaryQuantizedVectorsFormat_1.vemf, _1_Lucene102HnswBinaryQuantizedVectorsFormat_1.vex, _1_Lucene102HnswBinaryQuantizedVectorsFormat_2.veb, _1_Lucene102HnswBinaryQuantizedVectorsFormat_2.vec, _1_Lucene102HnswBinaryQuantizedVectorsFormat_2.vem, _1_Lucene102HnswBinaryQuantizedVectorsFormat_2.vemb, _1_Lucene102HnswBinaryQuantizedVectorsFormat_2.vemf, _1_Lucene102HnswBinaryQuantizedVectorsFormat_2.vex, _1_Lucene102HnswBinaryQuantizedVectorsFormat_3.veb, _1_Lucene102HnswBinaryQuantizedVectorsFormat_3.vec, _1_Lucene102HnswBinaryQuantizedVectorsFormat_3.vem, _1_Lucene102HnswBinaryQuantizedVectorsFormat_3.vemb, _1_Lucene102HnswBinaryQuantizedVectorsFormat_3.vemf, _1_Lucene102HnswBinaryQuantizedVectorsFormat_3.vex, _1_Lucene99HnswScalarQuantizedVectorsFormat_0.vec, _1_Lucene99HnswScalarQuantizedVectorsFormat_0.vem, _1_Lucene99HnswScalarQuantizedVectorsFormat_0.vemf, _1_Lucene99HnswScalarQuantizedVectorsFormat_0.vemq, _1_Lucene99HnswScalarQuantizedVectorsFormat_0.veq, _1_Lucene99HnswScalarQuantizedVectorsFormat_0.vex, _1_Lucene99HnswScalarQuantizedVectorsFormat_1.vec, _1_Lucene99HnswScalarQuantizedVectorsFormat_1.vem, _1_Lucene99HnswScalarQuantizedVectorsFormat_1.vemf, _1_Lucene99HnswScalarQuantizedVectorsFormat_1.vemq, _1_Lucene99HnswScalarQuantizedVectorsFormat_1.veq, _1_Lucene99HnswScalarQuantizedVectorsFormat_1.vex, _1_Lucene99HnswScalarQuantizedVectorsFormat_2.vec, _1_Lucene99HnswScalarQuantizedVectorsFormat_2.vem, _1_Lucene99HnswScalarQuantizedVectorsFormat_2.vemf, _1_Lucene99HnswScalarQuantizedVectorsFormat_2.vemq, _1_Lucene99HnswScalarQuantizedVectorsFormat_2.veq, _1_Lucene99HnswScalarQuantizedVectorsFormat_2.vex, _1_Lucene99HnswScalarQuantizedVectorsFormat_3.vec, _1_Lucene99HnswScalarQuantizedVectorsFormat_3.vem, _1_Lucene99HnswScalarQuantizedVectorsFormat_3.vemf, _1_Lucene99HnswScalarQuantizedVectorsFormat_3.vemq, _1_Lucene99HnswScalarQuantizedVectorsFormat_3.veq, _1_Lucene99HnswScalarQuantizedVectorsFormat_3.vex, _1_Lucene99HnswScalarQuantizedVectorsFormat_4.vec, _1_Lucene99HnswScalarQuantizedVectorsFormat_4.vem, _1_Lucene99HnswScalarQuantizedVectorsFormat_4.vemf, _1_Lucene99HnswScalarQuantizedVectorsFormat_4.vemq, _1_Lucene99HnswScalarQuantizedVectorsFormat_4.veq, _1_Lucene99HnswScalarQuantizedVectorsFormat_4.vex, _1_Lucene99HnswScalarQuantizedVectorsFormat_5.vec, _1_Lucene99HnswScalarQuantizedVectorsFormat_5.vem, _1_Lucene99HnswScalarQuantizedVectorsFormat_5.vemf, _1_Lucene99HnswScalarQuantizedVectorsFormat_5.vemq, _1_Lucene99HnswScalarQuantizedVectorsFormat_5.veq, _1_Lucene99HnswScalarQuantizedVectorsFormat_5.vex, _1_Lucene99HnswScalarQuantizedVectorsFormat_6.vec, _1_Lucene99HnswScalarQuantizedVectorsFormat_6.vem, _1_Lucene99HnswScalarQuantizedVectorsFormat_6.vemf, _1_Lucene99HnswScalarQuantizedVectorsFormat_6.vemq, _1_Lucene99HnswScalarQuantizedVectorsFormat_6.veq, _1_Lucene99HnswScalarQuantizedVectorsFormat_6.vex, _1_Lucene99HnswScalarQuantizedVectorsFormat_7.vec, _1_Lucene99HnswScalarQuantizedVectorsFormat_7.vem, _1_Lucene99HnswScalarQuantizedVectorsFormat_7.vemf, _1_Lucene99HnswScalarQuantizedVectorsFormat_7.vemq, _1_Lucene99HnswScalarQuantizedVectorsFormat_7.veq, _1_Lucene99HnswScalarQuantizedVectorsFormat_7.vex, _1_Lucene99ScalarQuantizedVectorsFormat_0.vec, _1_Lucene99ScalarQuantizedVectorsFormat_0.vemf, _1_Lucene99ScalarQuantizedVectorsFormat_0.vemq, _1_Lucene99ScalarQuantizedVectorsFormat_0.veq]
+field _0 id num=0 index=DOCS tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=0,FLOAT32,EUCLIDEAN attrs={PerFieldPostingsFormat.format=Lucene101, PerFieldPostingsFormat.suffix=0}
+field _0 sq7_dot num=1 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=16,FLOAT32,DOT_PRODUCT attrs={PerFieldKnnVectorsFormat.format=Lucene99HnswScalarQuantizedVectorsFormat, PerFieldKnnVectorsFormat.suffix=0}
+field _0 sq7_cos num=2 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=16,FLOAT32,COSINE attrs={PerFieldKnnVectorsFormat.format=Lucene99HnswScalarQuantizedVectorsFormat, PerFieldKnnVectorsFormat.suffix=1}
+field _0 sq7_mip num=3 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=16,FLOAT32,MAXIMUM_INNER_PRODUCT attrs={PerFieldKnnVectorsFormat.format=Lucene99HnswScalarQuantizedVectorsFormat, PerFieldKnnVectorsFormat.suffix=2}
+field _0 sq4c_dot num=4 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=16,FLOAT32,DOT_PRODUCT attrs={PerFieldKnnVectorsFormat.format=Lucene99HnswScalarQuantizedVectorsFormat, PerFieldKnnVectorsFormat.suffix=3}
+field _0 sq4c_mip num=5 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=16,FLOAT32,MAXIMUM_INNER_PRODUCT attrs={PerFieldKnnVectorsFormat.format=Lucene99HnswScalarQuantizedVectorsFormat, PerFieldKnnVectorsFormat.suffix=4}
+field _0 sqbyte num=6 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=16,BYTE,EUCLIDEAN attrs={PerFieldKnnVectorsFormat.format=Lucene99HnswScalarQuantizedVectorsFormat, PerFieldKnnVectorsFormat.suffix=5}
+field _0 bq_cos num=7 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=40,FLOAT32,COSINE attrs={PerFieldKnnVectorsFormat.format=Lucene102HnswBinaryQuantizedVectorsFormat, PerFieldKnnVectorsFormat.suffix=0}
+field _0 bq_dot num=8 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=40,FLOAT32,DOT_PRODUCT attrs={PerFieldKnnVectorsFormat.format=Lucene102HnswBinaryQuantizedVectorsFormat, PerFieldKnnVectorsFormat.suffix=1}
+field _0 bq_mip num=9 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=40,FLOAT32,MAXIMUM_INNER_PRODUCT attrs={PerFieldKnnVectorsFormat.format=Lucene102HnswBinaryQuantizedVectorsFormat, PerFieldKnnVectorsFormat.suffix=2}
+field _0 bqflat_dot num=10 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=40,FLOAT32,DOT_PRODUCT attrs={PerFieldKnnVectorsFormat.format=Lucene102BinaryQuantizedVectorsFormat, PerFieldKnnVectorsFormat.suffix=0}
+field _0 sq7_l2 num=11 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=16,FLOAT32,EUCLIDEAN attrs={PerFieldKnnVectorsFormat.format=Lucene99HnswScalarQuantizedVectorsFormat, PerFieldKnnVectorsFormat.suffix=6}
+field _0 sq4_l2 num=12 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=16,FLOAT32,EUCLIDEAN attrs={PerFieldKnnVectorsFormat.format=Lucene99HnswScalarQuantizedVectorsFormat, PerFieldKnnVectorsFormat.suffix=7}
+field _0 sqflat_l2 num=13 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=16,FLOAT32,EUCLIDEAN attrs={PerFieldKnnVectorsFormat.format=Lucene99ScalarQuantizedVectorsFormat, PerFieldKnnVectorsFormat.suffix=0}
+field _0 bq_l2 num=14 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=40,FLOAT32,EUCLIDEAN attrs={PerFieldKnnVectorsFormat.format=Lucene102HnswBinaryQuantizedVectorsFormat, PerFieldKnnVectorsFormat.suffix=3}
+field _0 bqflat_l2 num=15 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=40,FLOAT32,EUCLIDEAN attrs={PerFieldKnnVectorsFormat.format=Lucene102BinaryQuantizedVectorsFormat, PerFieldKnnVectorsFormat.suffix=1}
+live _0 n=923 9b986f7bd9858664
+postings _0 id terms=1000 sumDocFreq=1000 sumTTF=1000 docCount=1000 min=0 max=999 32e15f00bdd6910b
+knn _0 sq7_dot 901:3ffe5914,337:3ff8d0f8,781:3ff3ea88,146:3ff0c502,796:3fef015d,15:3fee66aa,318:3febb42a,6:3feb4a92,263:3feb2824,785:3fead578
+knnf _0 sq7_dot 15:3fee66aa,318:3febb42a,6:3feb4a92,243:3fe4c348,729:3fe31d24,120:3fe0fb8e,93:3fdf2b0a,621:3fdd6911,225:3fdc6b40,942:3fdc05c2
+knne _0 sq7_dot 89:3fe13fc0,267:3fcbe4e7,445:3fc6c4c8,534:3fb9b2fd,890:3fb465f7,178:3facc9d3,801:3fa66b57,979:3fa0c512,623:3f9eae6e,712:3f9730ee,356:3f8b608b
+patience _0 sq7_dot 901:3ffe5914,337:3ff8d0f8,781:3ff3ea88,146:3ff0c502,796:3fef015d,15:3fee66aa,6:3feb4a92,263:3feb2824,785:3fead578,197:3fe96c7c
+vsim _0 sq7_dot thr=3fef015d 146:3ff0c502,337:3ff8d0f8,781:3ff3ea88,796:3fef015d,901:3ffe5914
+vsimf _0 sq7_dot thr=3fef015d 
+vec _0 sq7_dot n=1000 5179f1e5f71efbeb
+knn _0 sq7_cos 308:3f50a4c9,328:3f4f74f3,695:3f4f4050,779:3f4eedce,750:3f4e0576,168:3f4df669,569:3f4d2929,379:3f4cb70e,163:3f4c9748,365:3f471f3a
+knnf _0 sq7_cos 750:3f4e0576,168:3f4df669,912:3f4a14ef,684:3f49900c,609:3f4675eb,348:3f45f12a,813:3f3d0ba8,966:3f383986,408:3f36f1a6,354:3f36c310
+knne _0 sq7_cos 534:3f330291,445:3f227b7d,623:3f20963c,890:3f113f34,178:3ee1cd0a,267:3edd6e3b,712:3ed1904e,89:3ecf7f44,356:3ecf2af6,801:3ec76cf2,979:3e850f56
+patience _0 sq7_cos 308:3f50a4c9,328:3f4f74f3,695:3f4f4050,168:3f4df669,569:3f4d2929,379:3f4cb70e,163:3f4c9748,518:3f46e88c,348:3f45f12a,971:3f45b88c
+vsim _0 sq7_cos thr=3f4e0576 308:3f50a4c9,328:3f4f74f3,695:3f4f4050,750:3f4e0576,779:3f4eedce
+vsimf _0 sq7_cos thr=3f4e0576 750:3f4e0576
+vec _0 sq7_cos n=1000 2ef6c0392a7938d0
+knn _0 sq7_mip 376:40c534b6,978:40bb0a05,562:40b12ffc,100:40aa08f4,225:40a9e1e4,556:40a6031a,443:409b53b4,792:409a016c,439:4096a371,454:40939882
+knnf _0 sq7_mip 978:40bb0a05,225:40a9e1e4,792:409a016c,801:408e13ee,270:408dbef8,537:40871505,573:408390a2,774:408293e4,45:40822c49,879:407983b4
+knne _0 sq7_mip 801:408e13ee,890:402898d4,623:4007fa30,445:3fd497e0,356:3fb42a70,178:3f2ec019,89:3f1d672a,712:3f00b94d,534:3ed41929,979:3ecfc803,267:3ea2638b
+patience _0 sq7_mip 376:40c534b6,978:40bb0a05,562:40b12ffc,100:40aa08f4,225:40a9e1e4,439:4096a371,55:40907d71,196:408ff2cc,254:408f0acc,801:408e13ee
+vsim _0 sq7_mip thr=40a9e1e4 100:40aa08f4,225:40a9e1e4,376:40c534b6,562:40b12ffc,978:40bb0a05
+vsimf _0 sq7_mip thr=40a9e1e4 225:40a9e1e4,978:40bb0a05
+vec _0 sq7_mip n=1000 93e1adb09a187f82
+knn _0 sq4c_dot 496:3ffa914c,261:3ff81376,11:3ff58902,167:3ff10382,983:3ff006de,608:3fedbd27,229:3fed16da,575:3fecb2ba,700:3febbf5a,995:3fe9c786
+knnf _0 sq4c_dot 261:3ff81376,708:3fe7cd0a,735:3fe64051,696:3fe5d564,324:3fe3d98d,222:3fe262f4,933:3fe1f590,564:3fe1b488,159:3fe10221,879:3fe077ca
+knne _0 sq4c_dot 712:3fd3fd24,267:3fc3a4d4,801:3fc1d96c,89:3fc06b44,178:3fba8854,356:3fb2714a,979:3fafa3f4,445:3fadb23c,534:3f9f1216,623:3f9db712,890:3f8b8788
+patience _0 sq4c_dot 496:3ffa914c,261:3ff81376,11:3ff58902,167:3ff10382,983:3ff006de,608:3fedbd27,229:3fed16da,575:3fecb2ba,700:3febbf5a,995:3fe9c786
+vsim _0 sq4c_dot thr=3ff006de 11:3ff58902,167:3ff10382,261:3ff81376,496:3ffa914c,983:3ff006de
+vsimf _0 sq4c_dot thr=3ff006de 261:3ff81376
+vec _0 sq4c_dot n=1000 f638d148acd1b826
+knn _0 sq4c_mip 441:40b7e078,994:40b7b900,446:40abd281,701:40ab66dc,76:40aa5db4,486:40aa4c82,202:40a94732,748:40a3f54f,973:40a0b27e,862:409cd8b3
+knnf _0 sq4c_mip 441:40b7e078,486:40aa4c82,918:40986003,339:408f3309,510:4086e412,516:40868c66,414:4084cce1,261:4082f4ff,876:4080fa70,549:407735e0
+knne _0 sq4c_mip 178:40551f48,801:401afa6c,712:400eed7a,267:4001ed60,534:3ffbfed8,356:3fd4b430,890:3fc7c290,445:3f8a4d08,623:3f1b1b58,89:3eaa1d44,979:3e827dc3
+patience _0 sq4c_mip 446:40abd281,701:40ab66dc,486:40aa4c82,748:40a3f54f,973:40a0b27e,862:409cd8b3,604:409899b2,339:408f3309,149:408ebe12,301:408d908e
+vsim _0 sq4c_mip thr=40aa5db4 76:40aa5db4,441:40b7e078,446:40abd281,701:40ab66dc,994:40b7b900
+vsimf _0 sq4c_mip thr=40aa5db4 441:40b7e078
+vec _0 sq4c_mip n=1000 3aef12cfe44c67b5
+knn _0 sqbyte 673:37b44aa7,27:37acfa94,408:379db99e,53:3788e05d,161:3787e967,722:3785208d,590:37843328,32:3783c73b,49:37793197,61:3778b0fc
+knnf _0 sqbyte 27:37acfa94,408:379db99e,927:377853b2,582:37726909,249:375c4fed,213:375994ac,939:37393f18,12:37392dd2,666:373251dd,642:372ff165
+knne _0 sqbyte 979:36f004e5,890:36e193d9,712:36d39519,267:36c810d7,178:36aa37dc,623:36a68d91,445:368d9bf2,801:3689fb12,89:3683adf2,534:3679a8f7,356:36710f84
+patience _0 sqbyte 408:379db99e,53:3788e05d,161:3787e967,722:3785208d,590:37843328,32:3783c73b,49:37793197,223:3777b422,86:3773f615,582:37726909
+vsim _0 sqbyte thr=3787e967 27:37acfa94,53:3788e05d,161:3787e967,408:379db99e,673:37b44aa7
+vsimf _0 sqbyte thr=3787e967 27:37acfa94,408:379db99e
+vec _0 sqbyte n=1000 a4e12290a2d35036
+knn _0 bq_cos 965:3f5478c6,181:3f410b08,139:3f3fa7e1,709:3f3d417e,883:3f3cbf96,705:3f3c77c2,888:3f3b56fe,951:3f3a4982,141:3f3029d0,72:3f2dc33a
+knnf _0 bq_cos 705:3f3c77c2,888:3f3b56fe,951:3f3a4982,141:3f3029d0,969:3f2f1be7,963:3f2e428a,72:3f2dc33a,846:3f2c1b86,876:3f2a85a4,654:3f29d0f9
+knne _0 bq_cos 890:3f03a065,534:3efc3d54,712:3ef031d8,801:3edfb40a,623:3ece1f7a,445:3ec2af68,178:3eb1eb34,356:3eae5dee,979:3ea2e70c,89:3e9eeb1c,267:3dc1bcf0
+patience _0 bq_cos 965:3f5478c6,883:3f3cbf96,888:3f3b56fe,951:3f3a4982,141:3f3029d0,72:3f2dc33a,920:3f2d9e90,846:3f2c1b86,580:3f2a23ba,654:3f29d0f9
+vsim _0 bq_cos thr=3f3cbf96 139:3f3fa7e1,181:3f410b08,658:3f4038c5,709:3f3d417e,883:3f3cbf96,965:3f5478c6
+vsimf _0 bq_cos thr=3f3cbf96 
+vec _0 bq_cos n=1000 52466cc4c79b78c5
+knn _0 bq_dot 37:3fd12c74,252:3fc2ecc0,666:3fc29f4a,681:3fbca9ed,145:3fbc49c6,137:3fb72b57,411:3fb6f15e,449:3fb56332,406:3fb4bb97,795:3fb40130
+knnf _0 bq_dot 252:3fc2ecc0,666:3fc29f4a,681:3fbca9ed,411:3fb6f15e,795:3fb40130,522:3fb1a98c,258:3fac0ab2,618:3fa86720,987:3fa6023f,75:3fa11f1f
+knne _0 bq_dot 801:3f89056a,89:3f68449b,890:3f3a7160,267:3f3779a1,445:3f1c0837,979:3eaa43ca,356:3e99e2f6,623:3e28a300,712:3ddec6a4,178:3dd0e5d0,534:0
+patience _0 bq_dot 681:3fbca9ed,145:3fbc49c6,137:3fb72b57,449:3fb56332,406:3fb4bb97,522:3fb1a98c,851:3fadbdda,339:3f91b567,63:3f8f1872,547:3f8a71f5
+vsim _0 bq_dot thr=3fbc49c6 37:3fd12c74,145:3fbc49c6,252:3fc2ecc0,666:3fc29f4a,681:3fbca9ed
+vsimf _0 bq_dot thr=3fbc49c6 252:3fc2ecc0,666:3fc29f4a,681:3fbca9ed
+vec _0 bq_dot n=1000 851b457e101bb887
+knn _0 bq_mip 594:412f3dcb,890:411e288c,422:411315d3,870:410da08e,562:410841de,185:410394d4,420:4100547d,775:40ff0ae5,928:40fc1324,137:40fa7cd0
+knnf _0 bq_mip 594:412f3dcb,870:410da08e,420:4100547d,942:40ff0423,435:40f1b4d0,750:40eaad1a,147:40e56186,582:40e05479,489:40dbddcb,987:40db56af
+knne _0 bq_mip 890:411e288c,712:406dfd34,356:40146b20,89:40007960,445:3fbd0657,534:3f98f4b7,267:3f98d9df,801:3f74bb2d,178:3eac82bc,979:3e9649f3,623:3e872c85
+patience _0 bq_mip 594:412f3dcb,422:411315d3,562:410841de,420:4100547d,775:40ff0ae5,928:40fc1324,435:40f1b4d0,308:40eb6c07,631:40e5f9a6,32:40e5c030
+vsim _0 bq_mip thr=410841de 422:411315d3,562:410841de,594:412f3dcb,870:410da08e,890:411e288c
+vsimf _0 bq_mip thr=410841de 594:412f3dcb,870:410da08e
+vec _0 bq_mip n=1000 5e7307fa1f9bd6ad
+knn _0 bqflat_dot 426:3fcd4caf,870:3fc3fb04,71:3fc190c2,935:3fb71a80,397:3fb3ff34,930:3fb39dfa,275:3fb22744,525:3fb0ed51,924:3faf392c,307:3fadf82e
+knnf _0 bqflat_dot 426:3fcd4caf,870:3fc3fb04,930:3fb39dfa,525:3fb0ed51,924:3faf392c,738:3faac3d8,744:3fa7c6a5,357:3fa53dc2,813:3fa49350,318:3fa3da66
+knne _0 bqflat_dot 356:3f8ddb4e,623:3f32e28c,89:3f2295d1,801:3f0281f2,979:3edf6d6d,445:3e343f12,712:3e29cb2c,178:3e05f0ee,267:3cb379a0,534:0,890:0
+patience _0 bqflat_dot 426:3fcd4caf,870:3fc3fb04,71:3fc190c2,935:3fb71a80,397:3fb3ff34,930:3fb39dfa,275:3fb22744,525:3fb0ed51,924:3faf392c,307:3fadf82e
+vsim _0 bqflat_dot thr=3fb3ff34 71:3fc190c2,397:3fb3ff34,426:3fcd4caf,870:3fc3fb04,935:3fb71a80
+vsimf _0 bqflat_dot thr=3fb3ff34 426:3fcd4caf,870:3fc3fb04
+vec _0 bqflat_dot n=1000 6e535280677f68e1
+knn _0 sq7_l2 634:3e731bc5,441:3e62ae0a,271:3e5ef36c,549:3e46d687,458:3e31e0b1,831:3e30a95d,335:3e1e51f7,522:3e1d341a,462:3e1a74ee,350:3e195051
+knnf _0 sq7_l2 441:3e62ae0a,549:3e46d687,831:3e30a95d,522:3e1d341a,462:3e1a74ee,105:3e11390b,198:3e0b2d09,675:3e02de56,138:3e0105e6,711:3dff75bb
+knne _0 sq7_l2 89:3dd5caa8,801:3dbe89ea,623:3d9914ab,267:3d83fa17,979:3d82e07d,445:3d756b8e,890:3d743400,178:3d642899,534:3d571899
+patience _0 sq7_l2 634:3e731bc5,441:3e62ae0a,271:3e5ef36c,549:3e46d687,458:3e31e0b1,831:3e30a95d,335:3e1e51f7,522:3e1d341a,462:3e1a74ee,350:3e195051
+vsim _0 sq7_l2 thr=3e31e0b1 271:3e5ef36c,441:3e62ae0a,458:3e31e0b1,549:3e46d687,634:3e731bc5
+vsimf _0 sq7_l2 thr=3e31e0b1 441:3e62ae0a,549:3e46d687
+vec _0 sq7_l2 n=750 da97f052428392da
+knn _0 sq4_l2 674:3e62096a,353:3e42e618,913:3e39041c,503:3e2c26db,709:3e265e33,771:3e1be490,147:3e197a1a,906:3e13986a,55:3e12595b,69:3e0feb23
+knnf _0 sq4_l2 771:3e1be490,147:3e197a1a,906:3e13986a,69:3e0feb23,747:3df5f757,303:3df219cf,678:3def9739,729:3de4e91d,519:3de019cc,870:3ddf04f6
+knne _0 sq4_l2 801:3dd8be79,979:3dd5147c,623:3daeb08e,534:3da64eea,445:3d94d0b7,267:3d93643b,890:3d8e400a,178:3d814122,89:3d6f875f
+patience _0 sq4_l2 674:3e62096a,353:3e42e618,913:3e39041c,503:3e2c26db,709:3e265e33,906:3e13986a,69:3e0feb23,814:3e0cfdd7,766:3e039f5b,634:3dfe8bbc
+vsim _0 sq4_l2 thr=3e265e33 353:3e42e618,503:3e2c26db,674:3e62096a,709:3e265e33,913:3e39041c
+vsimf _0 sq4_l2 thr=3e265e33 
+vec _0 sq4_l2 n=750 735dfe68bcdcdd90
+knn _0 sqflat_l2 
+knnf _0 sqflat_l2 939:3e3b809f,882:3e37c243,966:3e1bc776,993:3e1ad252,42:3e12f309,246:3e0f5244,534:3e05a3cc,873:3e0433f6,327:3e042d47,915:3e011785
+knne _0 sqflat_l2 534:3e05a3cc,801:3dadf271,445:3da432c3,623:3da3d4af,890:3d8ee019,89:3d89f3ee,979:3d89382e,178:3d7a8fa1,267:3d6f5747
+patience _0 sqflat_l2 
+vsim _0 sqflat_l2 thr=0 
+vsimf _0 sqflat_l2 thr=0 
+vec _0 sqflat_l2 n=750 1760e4b3e6f80c05
+knn _0 bq_l2 197:3d51e17d,538:3d4e7380,534:3d4b9259,882:3d48374c,630:3d40975c,170:3d3ce7b6,334:3d3a2be0,57:3d38d145,946:3d382084,210:3d36b2c4
+knnf _0 bq_l2 867:3d6255eb,534:3d4b9259,882:3d48374c,126:3d445e88,846:3d44225b,630:3d40975c,57:3d38d145,81:3d36ec76,210:3d36b2c4,102:3d2faf46
+knne _0 bq_l2 534:3d4b9259,178:3d255d8c,623:3d187919,89:3d135d34,267:3d06f1d5,890:3d0631b3,445:3d00f5ba,979:3d006547,801:3cd91a41
+patience _0 bq_l2 534:3d4b9259,421:3d307e99,933:3d2f9b6b,551:3d276525,927:3d264d7d,907:3d200e86,497:3d1f12dd,279:3d1cdc37,591:3d1bb2ce,187:3d17abbd
+vsim _0 bq_l2 thr=3d40975c 197:3d51e17d,534:3d4b9259,538:3d4e7380,630:3d40975c,882:3d48374c
+vsimf _0 bq_l2 thr=3d40975c 126:3d445e88,534:3d4b9259,630:3d40975c,846:3d44225b,867:3d6255eb,882:3d48374c
+vec _0 bq_l2 n=750 f6548b0efd2e3132
+knn _0 bqflat_l2 371:3d5d873e,853:3d531ebc,566:3d42670f,963:3d3fbd80,657:3d3e2723,334:3d3d19e9,665:3d377a9b,295:3d362e60,573:3d321593,677:3d31b741
+knnf _0 bqflat_l2 963:3d3fbd80,657:3d3e2723,573:3d321593,306:3d307f83,906:3d297186,114:3d26b093,489:3d25a0e0,81:3d21eefa,786:3d1fb3c3,210:3d1f5112
+knne _0 bqflat_l2 445:3d1aa7f9,534:3d03cdd2,890:3d017178,623:3d0112be,979:3cea004e,801:3ce14b15,89:3cdd60f0,267:3cb88516,178:3cb2c67c
+patience _0 bqflat_l2 371:3d5d873e,853:3d531ebc,566:3d42670f,963:3d3fbd80,657:3d3e2723,334:3d3d19e9,665:3d377a9b,295:3d362e60,573:3d321593,677:3d31b741
+vsim _0 bqflat_l2 thr=3d3e2723 371:3d5d873e,566:3d42670f,657:3d3e2723,853:3d531ebc,963:3d3fbd80
+vsimf _0 bqflat_l2 thr=3d3e2723 657:3d3e2723,963:3d3fbd80
+vec _0 bqflat_l2 n=750 2d48098961a6d9a8
+stored _0 99e8df4f130cc225
+tv _0 3d09e1f422b310e5
+field _1 id num=0 index=DOCS tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=0,FLOAT32,EUCLIDEAN attrs={PerFieldPostingsFormat.format=Lucene101, PerFieldPostingsFormat.suffix=0}
+field _1 sq7_dot num=1 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=16,FLOAT32,DOT_PRODUCT attrs={PerFieldKnnVectorsFormat.format=Lucene99HnswScalarQuantizedVectorsFormat, PerFieldKnnVectorsFormat.suffix=0}
+field _1 sq7_cos num=2 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=16,FLOAT32,COSINE attrs={PerFieldKnnVectorsFormat.format=Lucene99HnswScalarQuantizedVectorsFormat, PerFieldKnnVectorsFormat.suffix=1}
+field _1 sq7_mip num=3 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=16,FLOAT32,MAXIMUM_INNER_PRODUCT attrs={PerFieldKnnVectorsFormat.format=Lucene99HnswScalarQuantizedVectorsFormat, PerFieldKnnVectorsFormat.suffix=2}
+field _1 sq4c_dot num=4 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=16,FLOAT32,DOT_PRODUCT attrs={PerFieldKnnVectorsFormat.format=Lucene99HnswScalarQuantizedVectorsFormat, PerFieldKnnVectorsFormat.suffix=3}
+field _1 sq4c_mip num=5 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=16,FLOAT32,MAXIMUM_INNER_PRODUCT attrs={PerFieldKnnVectorsFormat.format=Lucene99HnswScalarQuantizedVectorsFormat, PerFieldKnnVectorsFormat.suffix=4}
+field _1 sqbyte num=6 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=16,BYTE,EUCLIDEAN attrs={PerFieldKnnVectorsFormat.format=Lucene99HnswScalarQuantizedVectorsFormat, PerFieldKnnVectorsFormat.suffix=5}
+field _1 bq_cos num=7 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=40,FLOAT32,COSINE attrs={PerFieldKnnVectorsFormat.format=Lucene102HnswBinaryQuantizedVectorsFormat, PerFieldKnnVectorsFormat.suffix=0}
+field _1 bq_dot num=8 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=40,FLOAT32,DOT_PRODUCT attrs={PerFieldKnnVectorsFormat.format=Lucene102HnswBinaryQuantizedVectorsFormat, PerFieldKnnVectorsFormat.suffix=1}
+field _1 bq_mip num=9 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=40,FLOAT32,MAXIMUM_INNER_PRODUCT attrs={PerFieldKnnVectorsFormat.format=Lucene102HnswBinaryQuantizedVectorsFormat, PerFieldKnnVectorsFormat.suffix=2}
+field _1 bqflat_dot num=10 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=40,FLOAT32,DOT_PRODUCT attrs={PerFieldKnnVectorsFormat.format=Lucene102BinaryQuantizedVectorsFormat, PerFieldKnnVectorsFormat.suffix=0}
+field _1 sq7_l2 num=11 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=16,FLOAT32,EUCLIDEAN attrs={PerFieldKnnVectorsFormat.format=Lucene99HnswScalarQuantizedVectorsFormat, PerFieldKnnVectorsFormat.suffix=6}
+field _1 sq4_l2 num=12 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=16,FLOAT32,EUCLIDEAN attrs={PerFieldKnnVectorsFormat.format=Lucene99HnswScalarQuantizedVectorsFormat, PerFieldKnnVectorsFormat.suffix=7}
+field _1 sqflat_l2 num=13 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=16,FLOAT32,EUCLIDEAN attrs={PerFieldKnnVectorsFormat.format=Lucene99ScalarQuantizedVectorsFormat, PerFieldKnnVectorsFormat.suffix=0}
+field _1 bq_l2 num=14 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=40,FLOAT32,EUCLIDEAN attrs={PerFieldKnnVectorsFormat.format=Lucene102HnswBinaryQuantizedVectorsFormat, PerFieldKnnVectorsFormat.suffix=3}
+field _1 bqflat_l2 num=15 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=40,FLOAT32,EUCLIDEAN attrs={PerFieldKnnVectorsFormat.format=Lucene102BinaryQuantizedVectorsFormat, PerFieldKnnVectorsFormat.suffix=1}
+live _1 n=184 9c00dab8f5275aa5
+postings _1 id terms=200 sumDocFreq=200 sumTTF=200 docCount=200 min=1000 max=1199 45db705fea16289d
+knn _1 sq7_dot 108:3ff36a1a,155:3fe5eb1c,103:3fdca32d,16:3fdb561a,153:3fdac2df,52:3fd9c65a,197:3fd92a4c,80:3fd82ea4,154:3fd7c1a5,57:3fd720da
+knnf _1 sq7_dot 108:3ff36a1a,153:3fdac2df,87:3fd95078,57:3fd720da,69:3fd5bc9c,186:3fd55f35,48:3fd411b6,0:3fd22e74,162:3fd11b1a,9:3fcdc028
+knne _1 sq7_dot 0:3fd22e74,89:3fafc922,178:3f9c3181
+patience _1 sq7_dot 103:3fdca32d,16:3fdb561a,153:3fdac2df,52:3fd9c65a,80:3fd82ea4,57:3fd720da,69:3fd5bc9c,48:3fd411b6,58:3fd0aad1,169:3fce7e84
+vsim _1 sq7_dot thr=3fdac2df 16:3fdb561a,103:3fdca32d,108:3ff36a1a,153:3fdac2df,155:3fe5eb1c,191:3fde3871
+vsimf _1 sq7_dot thr=3fdac2df 108:3ff36a1a,153:3fdac2df
+vec _1 sq7_dot n=200 196536e0eaa745dd
+knn _1 sq7_cos 189:3f557425,46:3f4eeb58,61:3f4a7654,33:3f464e39,68:3f41e94a,153:3f404ee1,167:3f3ef999,20:3f3d50e5,17:3f391fae,126:3f37a21c
+knnf _1 sq7_cos 189:3f557425,33:3f464e39,153:3f404ee1,126:3f37a21c,102:3f36f7f5,39:3f304208,84:3f29a9e6,42:3f29556a,51:3f283866,3:3f25a142
+knne _1 sq7_cos 178:3efa975e,89:3ef85f98,0:3ed659e4
+patience _1 sq7_cos 189:3f557425,61:3f4a7654,33:3f464e39,20:3f3d50e5,17:3f391fae,126:3f37a21c,91:3f34939d,107:3f2f4cb3,85:3f299932,42:3f29556a
+vsim _1 sq7_cos thr=3f41e94a 33:3f464e39,46:3f4eeb58,61:3f4a7654,68:3f41e94a,189:3f557425
+vsimf _1 sq7_cos thr=3f41e94a 33:3f464e39,189:3f557425
+vec _1 sq7_cos n=200 0107baca4448f555
+knn _1 sq7_mip 108:409b34ae,12:4090b7f8,165:408a94ac,93:407f0894,190:4077e908,20:4071bda0,61:406cef1c,184:406beec4,173:4065ed74,154:4064ce4c
+knnf _1 sq7_mip 108:409b34ae,12:4090b7f8,165:408a94ac,93:407f0894,132:4061a964,24:405580f8,177:4052bca0,153:4042edec,186:4041e928,9:40347666
+knne _1 sq7_mip 0:3fdb2598,178:3f51319b,89:3eb65094
+patience _1 sq7_mip 108:409b34ae,12:4090b7f8,93:407f0894,190:4077e908,20:4071bda0,61:406cef1c,184:406beec4,173:4065ed74,71:4062de26,132:4061a964
+vsim _1 sq7_mip thr=4077e908 12:4090b7f8,59:407d0028,93:407f0894,108:409b34ae,165:408a94ac,190:4077e908
+vsimf _1 sq7_mip thr=4077e908 12:4090b7f8,93:407f0894,108:409b34ae,165:408a94ac
+vec _1 sq7_mip n=200 515d5dee5d4ab083
+knn _1 sq4c_dot 149:3ff24c8e,73:3fe929e6,171:3fe83b6c,52:3fe5869b,55:3fe38890,151:3fe0bbf4,75:3fddb529,70:3fdc9fb9,187:3fdb3834,54:3fd94b87
+knnf _1 sq4c_dot 171:3fe83b6c,75:3fddb529,54:3fd94b87,189:3fd678b3,177:3fd57452,123:3fd560f3,87:3fd271de,33:3fd1e626,117:3fd0ce28,129:3fcfbefb
+knne _1 sq4c_dot 178:3fac7308,89:3f9dca7f,0:3f8eeae9
+patience _1 sq4c_dot 149:3ff24c8e,171:3fe83b6c,52:3fe5869b,55:3fe38890,151:3fe0bbf4,75:3fddb529,187:3fdb3834,54:3fd94b87,20:3fd7b1c4,177:3fd57452
+vsim _1 sq4c_dot thr=3fe38890 52:3fe5869b,55:3fe38890,73:3fe929e6,149:3ff24c8e,171:3fe83b6c
+vsimf _1 sq4c_dot thr=3fe38890 171:3fe83b6c
+vec _1 sq4c_dot n=200 3fe6b9bc87152262
+knn _1 sq4c_mip 146:40c6b942,20:40c5d70f,52:40c51434,25:40a3a850,15:409332f2,89:408e7dc0,187:408c9628,48:40882844,31:408814f8,140:40876768
+knnf _1 sq4c_mip 15:409332f2,48:40882844,192:40863e4c,54:406ffcc0,51:406be550,96:406057a0,87:405fbf30,9:40471eba,186:404676fa,3:403977b0
+knne _1 sq4c_mip 89:408e7dc0,178:3fbadf0a,0:3f615740
+patience _1 sq4c_mip 146:40c6b942,20:40c5d70f,52:40c51434,25:40a3a850,15:409332f2,89:408e7dc0,187:408c9628,48:40882844,31:408814f8,140:40876768
+vsim _1 sq4c_mip thr=409332f2 15:409332f2,20:40c5d70f,25:40a3a850,52:40c51434,146:40c6b942
+vsimf _1 sq4c_mip thr=409332f2 15:409332f2
+vec _1 sq4c_mip n=200 0f0352b71e2d6907
+knn _1 sqbyte 65:3775e54b,124:376b3dec,143:374b6fc7,25:37446a59,137:373f7e08,91:373aac3b,185:373a5dab,111:373990eb,161:372f4f06,55:372d0848
+knnf _1 sqbyte 111:373990eb,57:372afad0,9:3729d34a,0:372310ea,150:37226c6e,54:371d3593,156:371c73eb,108:371a853e,147:37108956,63:370f529f
+knne _1 sqbyte 0:372310ea,178:36f592d4,89:36bbae2c
+patience _1 sqbyte 65:3775e54b,124:376b3dec,143:374b6fc7,25:37446a59,137:373f7e08,91:373aac3b,185:373a5dab,55:372d0848,57:372afad0,0:372310ea
+vsim _1 sqbyte thr=373f7e08 25:37446a59,65:3775e54b,124:376b3dec,137:373f7e08,143:374b6fc7
+vsimf _1 sqbyte thr=373f7e08 
+vec _1 sqbyte n=200 acea257502273584
+knn _1 bq_cos 4:3f34d844,75:3f314110,143:3f2d9955,81:3f28cf96,103:3f23b1f4,164:3f22ba6c,2:3f21ab12,35:3f1ef5f4,6:3f1c9eff,127:3f1c6878
+knnf _1 bq_cos 75:3f314110,81:3f28cf96,6:3f1c9eff,18:3f116395,147:3f11447e,84:3f0ef870,78:3f0ecb33,69:3f0ead7a,132:3f0d3293,198:3f0a05b8
+knne _1 bq_cos 178:3edf358a,89:3ebc4bfa,0:3e870ea3
+patience _1 bq_cos 4:3f34d844,75:3f314110,143:3f2d9955,81:3f28cf96,103:3f23b1f4,2:3f21ab12,35:3f1ef5f4,6:3f1c9eff,151:3f184ed9,43:3f181e57
+vsim _1 bq_cos thr=3f23b1f4 4:3f34d844,75:3f314110,81:3f28cf96,103:3f23b1f4,143:3f2d9955
+vsimf _1 bq_cos thr=3f23b1f4 75:3f314110,81:3f28cf96
+vec _1 bq_cos n=200 0b75f4b3f88a1dde
+knn _1 bq_dot 65:3ff11d32,128:3fc7af18,104:3fc1ac71,35:3fbeaa38,162:3fb5f969,164:3fabd44d,48:3fab3f28,120:3fa7708a,127:3f9e206a,67:3f99e26e
+knnf _1 bq_dot 162:3fb5f969,48:3fab3f28,120:3fa7708a,198:3f95a5ce,36:3f902728,57:3f8e6394,135:3f870fb7,63:3f845932,9:3f81f908,153:3f7f43a6
+knne _1 bq_dot 0:3f46d46a,178:3f3fee4e,89:3f29488c
+patience _1 bq_dot 65:3ff11d32,128:3fc7af18,104:3fc1ac71,48:3fab3f28,120:3fa7708a,127:3f9e206a,67:3f99e26e,198:3f95a5ce,36:3f902728,63:3f845932
+vsim _1 bq_dot thr=3fb5f969 35:3fbeaa38,65:3ff11d32,104:3fc1ac71,128:3fc7af18,162:3fb5f969
+vsimf _1 bq_dot thr=3fb5f969 162:3fb5f969
+vec _1 bq_dot n=200 de8a0ab5bbc9b52a
+knn _1 bq_mip 75:410d1386,21:40df885a,36:40d1ad03,60:40ce5a04,70:40cc7b92,31:40c713cd,0:40c3d093,89:40b45ea0,174:40b1dfc8,114:40a9871e
+knnf _1 bq_mip 75:410d1386,21:40df885a,36:40d1ad03,60:40ce5a04,0:40c3d093,174:40b1dfc8,114:40a9871e,195:40a84ce2,165:40a0aff5,15:40975e70
+knne _1 bq_mip 0:40c3d093,89:40b45ea0,178:408244a0
+patience _1 bq_mip 60:40ce5a04,31:40c713cd,114:40a9871e,165:40a0aff5,4:409b8c9e,47:408f7248,32:408c1ef0,26:4089ac68,106:4080efc6,55:4080c84c
+vsim _1 bq_mip thr=40cc7b92 21:40df885a,36:40d1ad03,60:40ce5a04,70:40cc7b92,75:410d1386
+vsimf _1 bq_mip thr=40cc7b92 21:40df885a,36:40d1ad03,60:40ce5a04,75:410d1386
+vec _1 bq_mip n=200 44018926fcca8e4d
+knn _1 bqflat_dot 139:3fb54f88,11:3fa635c4,59:3f9e8c86,8:3f988164,61:3f9281a6,23:3f8ef348,10:3f894465,197:3f873b6b,39:3f86b398,48:3f8537e7
+knnf _1 bqflat_dot 39:3f86b398,48:3f8537e7,51:3f70f50e,159:3f6c14f3,198:3f6b61dc,189:3f66df5a,0:3f663c8c,81:3f62d534,21:3f616110,72:3f5f3ea2
+knne _1 bqflat_dot 178:3f802910,0:3f663c8c,89:3ee7766f
+patience _1 bqflat_dot 139:3fb54f88,11:3fa635c4,59:3f9e8c86,8:3f988164,61:3f9281a6,23:3f8ef348,10:3f894465,197:3f873b6b,39:3f86b398,48:3f8537e7
+vsim _1 bqflat_dot thr=3f9281a6 8:3f988164,11:3fa635c4,59:3f9e8c86,61:3f9281a6,139:3fb54f88
+vsimf _1 bqflat_dot thr=3f9281a6 
+vec _1 bqflat_dot n=200 3706db5c7e7e9512
+knn _1 sq7_l2 149:3e5059ac,154:3e43410f,81:3e3c2b84,94:3e37e83e,49:3e10bd8c,25:3e03a548,113:3e014dc7,35:3dfa569f,45:3df86252,5:3de39f62
+knnf _1 sq7_l2 81:3e3c2b84,45:3df86252,150:3de27b7d,93:3dcd613b,33:3dc5578e,54:3dbec2c1,6:3db9e2de,3:3db921e1,165:3db6ac74,135:3db290db
+knne _1 sq7_l2 89:3da7ae7a,178:3da5e8c3
+patience _1 sq7_l2 149:3e5059ac,154:3e43410f,81:3e3c2b84,94:3e37e83e,49:3e10bd8c,25:3e03a548,113:3e014dc7,35:3dfa569f,45:3df86252,5:3de39f62
+vsim _1 sq7_l2 thr=3e10bd8c 49:3e10bd8c,81:3e3c2b84,94:3e37e83e,149:3e5059ac,154:3e43410f
+vsimf _1 sq7_l2 thr=3e10bd8c 81:3e3c2b84
+vec _1 sq7_l2 n=150 acb93797445c9b37
+knn _1 sq4_l2 81:3e11a7ab,113:3e02a7d3,163:3df4ac15,97:3df04cea,103:3def71de,23:3dee985e,165:3de73635,182:3de2eba1,2:3ddd51ab,47:3dd9087a
+knnf _1 sq4_l2 81:3e11a7ab,18:3df19871,165:3de73635,42:3dcaa4ec,54:3dc6c045,126:3dc62a55,51:3dc4b750,9:3dc30132,189:3dc30132,93:3dbe954f
+knne _1 sq4_l2 178:3d9d8abb,89:3d6e1a4a
+patience _1 sq4_l2 113:3e02a7d3,163:3df4ac15,97:3df04cea,23:3dee985e,165:3de73635,182:3de2eba1,47:3dd9087a,10:3dd8aef6,25:3dd855bc,115:3dd7a422
+vsim _1 sq4_l2 thr=3def71de 18:3df19871,81:3e11a7ab,97:3df04cea,103:3def71de,113:3e02a7d3,163:3df4ac15
+vsimf _1 sq4_l2 thr=3def71de 18:3df19871,81:3e11a7ab
+vec _1 sq4_l2 n=150 0d23a639293b5ed1
+knn _1 sqflat_l2 
+knnf _1 sqflat_l2 81:3e0be169,165:3dfb261d,99:3dc31574,6:3dc2e247,33:3dbcfacc,153:3db7f91d,171:3db70e22,177:3db07aad,102:3dafffcf,150:3daf2dc5
+knne _1 sqflat_l2 178:3dc330a6,89:3d97e81c
+patience _1 sqflat_l2 
+vsim _1 sqflat_l2 thr=0 
+vsimf _1 sqflat_l2 thr=0 
+vec _1 sqflat_l2 n=150 59c1dfeb574cb761
+knn _1 bq_l2 45:3d4b7e8e,15:3d472053,93:3d3d079b,135:3d39f186,119:3d35080c,198:3d2646fc,51:3d21d875,2:3d213987,39:3d204407,126:3d1b6130
+knnf _1 bq_l2 45:3d4b7e8e,15:3d472053,93:3d3d079b,135:3d39f186,198:3d2646fc,51:3d21d875,39:3d204407,126:3d1b6130,162:3d1a9303,117:3d0b4743
+knne _1 bq_l2 178:3cdbbe4c,89:3ca569ff
+patience _1 bq_l2 45:3d4b7e8e,15:3d472053,93:3d3d079b,135:3d39f186,119:3d35080c,198:3d2646fc,2:3d213987,39:3d204407,126:3d1b6130,199:3d161419
+vsim _1 bq_l2 thr=3d35080c 15:3d472053,45:3d4b7e8e,93:3d3d079b,119:3d35080c,135:3d39f186
+vsimf _1 bq_l2 thr=3d35080c 15:3d472053,45:3d4b7e8e,93:3d3d079b,135:3d39f186
+vec _1 bq_l2 n=150 bcb54bbb83a1326c
+knn _1 bqflat_l2 149:3d54137f,90:3d509a04,75:3d4df5f6,107:3d3705b5,193:3d321721,122:3d31df62,154:3d31084b,126:3d2db26a,43:3d2bedfe,41:3d2a3276
+knnf _1 bqflat_l2 90:3d509a04,75:3d4df5f6,126:3d2db26a,93:3d188e74,186:3d16f19f,18:3d11419e,33:3d0cbe01,45:3d0badd4,198:3d0aef80,42:3d07b928
+knne _1 bqflat_l2 89:3d01160e,178:3ceb2193
+patience _1 bqflat_l2 149:3d54137f,90:3d509a04,75:3d4df5f6,107:3d3705b5,193:3d321721,122:3d31df62,154:3d31084b,126:3d2db26a,43:3d2bedfe,41:3d2a3276
+vsim _1 bqflat_l2 thr=3d321721 75:3d4df5f6,90:3d509a04,107:3d3705b5,149:3d54137f,193:3d321721
+vsimf _1 bqflat_l2 thr=3d321721 75:3d4df5f6,90:3d509a04
+vec _1 bqflat_l2 n=150 2549b877000fc21d
+stored _1 019fa7a2cb567a2d
+tv _1 62b839addbbefbe5

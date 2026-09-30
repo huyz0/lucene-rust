@@ -33,6 +33,8 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
+use crate::segment_info::LuceneVersion;
+
 use super::{
     find_forced_delete_merges_excluding, find_merges_excluding, forced_merges_full,
     MergePolicyConfig, SegmentStat, UNLIMITED_SEGMENT_COUNT,
@@ -78,6 +80,9 @@ pub struct MergeSegment {
     pub size_in_bytes: i64,
     /// `SegmentInfo.getUseCompoundFile()`.
     pub use_compound_file: bool,
+    /// `SegmentInfo.getVersion()`: the Lucene that wrote the segment, when
+    /// the caller knows it (`UpgradeIndexMergePolicy` reads it).
+    pub version: Option<LuceneVersion>,
 }
 
 impl MergeSegment {
@@ -88,7 +93,14 @@ impl MergeSegment {
             del_count,
             size_in_bytes,
             use_compound_file: false,
+            version: None,
         }
+    }
+
+    /// Sets [`Self::version`].
+    pub fn with_version(mut self, version: LuceneVersion) -> Self {
+        self.version = Some(version);
+        self
     }
 
     /// Sets [`Self::use_compound_file`].

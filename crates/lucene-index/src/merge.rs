@@ -1024,7 +1024,11 @@ impl SegmentFormat {
             SegmentFormat::DocValues => &["dvd", "dvm", "dvs"],
             SegmentFormat::Norms => &["nvd", "nvm"],
             SegmentFormat::Points => &["kdd", "kdi", "kdm"],
-            SegmentFormat::KnnVectors => &["vec", "vemf", "vem", "vex"],
+            // `.vemq`/`.veq` and `.vemb`/`.veb`: the retired quantized formats' codes
+            // (Lucene 9.9-10.3), which a merge reads past to the raw `.vec`.
+            SegmentFormat::KnnVectors => {
+                &["vec", "vemf", "vem", "vex", "vemq", "veq", "vemb", "veb"]
+            }
         }
     }
 
@@ -3527,8 +3531,42 @@ fn write_merged_term_vectors(
 /// [`SourcePoints`], which name one field each because their readers are
 /// opened per field.
 pub struct SourceVectors<'a> {
+    /// One per `PerFieldKnnVectorsFormat` group the source holds (a segment
+    /// an older Lucene wrote with per-field quantized formats has several,
+    /// each under its own suffix); a field is served by the group whose flat
+    /// reader has it.
+    pub groups: Vec<VectorGroup<'a>>,
+}
+
+/// One per-field vector group of a source: its raw vectors and, when it has
+/// one, its `Lucene99HnswVectorsFormat` graph.
+#[derive(Clone, Copy)]
+pub struct VectorGroup<'a> {
     pub flat: &'a vectors::FlatVectorsReader<'a>,
     pub graph: Option<&'a hnsw_vectors::HnswVectorsReader<'a>>,
+}
+
+impl<'a> SourceVectors<'a> {
+    /// A source with one group.
+    pub fn single(
+        flat: &'a vectors::FlatVectorsReader<'a>,
+        graph: Option<&'a hnsw_vectors::HnswVectorsReader<'a>>,
+    ) -> Self {
+        SourceVectors {
+            groups: vec![VectorGroup { flat, graph }],
+        }
+    }
+
+    /// The group that holds `field_number` (the first, for a field no group
+    /// has -- its lookups then fail as they always did).
+    fn group_of(&self, field_number: i32) -> VectorGroup<'a> {
+        self.groups
+            .iter()
+            .find(|g| g.flat.field(field_number).is_some())
+            .or(self.groups.first())
+            .copied()
+            .expect("a SourceVectors has at least one group")
+    }
 }
 
 /// Per-merge settings that are not derivable from the sources.
@@ -3648,7 +3686,7 @@ fn merge_vectors(
                 continue;
             }
             let ord_to_doc = source_ord_to_doc(
-                source_vectors.flat,
+                source_vectors.group_of(original_number).flat,
                 original_number,
                 merged_field.vector_encoding,
             )?;
@@ -3692,16 +3730,13 @@ fn merge_vectors(
             let source_vectors = sources[fs.source_index]
                 .vectors
                 .expect("only sources with a flat reader are planned");
+            let group = source_vectors.group_of(fs.original_field_number);
             let values = match encoding {
                 VectorEncoding::Float32 => vectors::MergeSourceValues::Float32(
-                    source_vectors
-                        .flat
-                        .float_vector_values(fs.original_field_number)?,
+                    group.flat.float_vector_values(fs.original_field_number)?,
                 ),
                 VectorEncoding::Byte => vectors::MergeSourceValues::Byte(
-                    source_vectors
-                        .flat
-                        .byte_vector_values(fs.original_field_number)?,
+                    group.flat.byte_vector_values(fs.original_field_number)?,
                 ),
             };
             flat_sources.push(vectors::FlatVectorMergeSource {
@@ -3739,7 +3774,7 @@ fn merge_vectors(
             let source_vectors = sources[fs.source_index]
                 .vectors
                 .expect("only sources with a flat reader are planned");
-            let graph = match source_vectors.graph {
+            let graph = match source_vectors.group_of(fs.original_field_number).graph {
                 Some(reader) if reader.field(fs.original_field_number).is_some() => {
                     reader.graph(fs.original_field_number)?
                 }

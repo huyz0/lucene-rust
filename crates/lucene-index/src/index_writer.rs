@@ -147,6 +147,9 @@ use crate::update_document::{self, SegmentDeleteSource};
 
 use lucene_analysis::Analyzer;
 use lucene_codecs::backward_codecs::hnsw_vectors::{RetiredHnswFormat, RetiredHnswVectorsReader};
+use lucene_codecs::backward_codecs::quantized_vectors::{
+    QuantizedFiles, QuantizedFormat, QuantizedVectorsReader,
+};
 use lucene_codecs::doc_values;
 use lucene_codecs::field_infos::{
     DocValuesType, FieldInfo, IndexOptions, VectorEncoding, VectorSimilarityFunction,
@@ -1221,6 +1224,20 @@ impl IndexingConfig {
         /// A retired (9.0-9.8) HNSW format's `.vem`/`.vec`/`.vex` triple,
         /// with the format and codec suffix it was written under.
         type RawRetiredVectorFiles = Option<(RetiredHnswFormat, String, Vec<u8>, Vec<u8>, Vec<u8>)>;
+        /// One retired quantized per-field group (Lucene 9.9-10.3's
+        /// `Lucene99(Hnsw)ScalarQuantizedVectorsFormat`,
+        /// `Lucene102(Hnsw)BinaryQuantizedVectorsFormat`): format, codec
+        /// suffix, `.vemf`, `.vec`, the quantized meta and data, and the
+        /// `.vem`/`.vex` graph of an HNSW wrapper.
+        struct RawQuantizedVectorFiles {
+            format: QuantizedFormat,
+            suffix: String,
+            vemf: Vec<u8>,
+            vec: Vec<u8>,
+            quantized_meta: Vec<u8>,
+            quantized_data: Vec<u8>,
+            graph: Option<(Vec<u8>, Vec<u8>)>,
+        }
 
         struct OpenedSegment {
             sci: SegmentCommitInfo,
@@ -1240,6 +1257,7 @@ impl IndexingConfig {
             norms: RawNormsFiles,
             vectors: RawVectorFiles,
             retired_vectors: RawRetiredVectorFiles,
+            quantized_vectors: Vec<RawQuantizedVectorFiles>,
             /// Raw `.kdm`/`.kdi`/`.kdd`, when the segment has points.
             points: Option<(Vec<u8>, Vec<u8>, Vec<u8>)>,
             /// This source's fields under **its own numbers** -- see where it
@@ -1468,28 +1486,53 @@ impl IndexingConfig {
                 }
                 None => None,
             };
-            let vectors =
-                if retired_vectors.is_none() && seg_files.iter().any(|f| f.ends_with(".vec")) {
-                    let seg = per_field_segment(name, KNN_VECTORS_FORMAT_NAME);
-                    let vec_bytes = seg_dir.open(&format!("{seg}.vec"))?.to_vec();
-                    let vemf = seg_dir.open(&format!("{seg}.vemf"))?.to_vec();
-                    // A segment can legitimately have the flat pair and no graph
-                    // files at all if it was written below
-                    // `HNSW_GRAPH_THRESHOLD`; this writer always writes the
-                    // `.vem`/`.vex` pair (with `numLevels = 0` in that case), so
-                    // the absence is tolerated rather than assumed.
-                    let graph = if seg_files.iter().any(|f| f.ends_with(".vem")) {
-                        Some((
-                            seg_dir.open(&format!("{seg}.vem"))?.to_vec(),
-                            seg_dir.open(&format!("{seg}.vex"))?.to_vec(),
-                        ))
-                    } else {
-                        None
-                    };
-                    Some((vec_bytes, vemf, graph))
+            // Every per-field group a retired quantized format wrote, each
+            // under its own suffix -- beside each other and beside the
+            // current format's group in the same segment.
+            let mut quantized_vectors = Vec::new();
+            for (format, suffix) in quantized_vector_files(&seg_files, name) {
+                let seg = format!("{name}_{suffix}");
+                let (meta_ext, data_ext) = format.quantized_extensions();
+                let graph = if format.has_graph() {
+                    Some((
+                        seg_dir.open(&format!("{seg}.vem"))?.to_vec(),
+                        seg_dir.open(&format!("{seg}.vex"))?.to_vec(),
+                    ))
                 } else {
                     None
                 };
+                quantized_vectors.push(RawQuantizedVectorFiles {
+                    format,
+                    suffix,
+                    vemf: seg_dir.open(&format!("{seg}.vemf"))?.to_vec(),
+                    vec: seg_dir.open(&format!("{seg}.vec"))?.to_vec(),
+                    quantized_meta: seg_dir.open(&format!("{seg}.{meta_ext}"))?.to_vec(),
+                    quantized_data: seg_dir.open(&format!("{seg}.{data_ext}"))?.to_vec(),
+                    graph,
+                });
+            }
+            let current_vec = format!("{}.vec", per_field_segment(name, KNN_VECTORS_FORMAT_NAME));
+            let vectors = if retired_vectors.is_none() && seg_files.contains(&current_vec) {
+                let seg = per_field_segment(name, KNN_VECTORS_FORMAT_NAME);
+                let vec_bytes = seg_dir.open(&format!("{seg}.vec"))?.to_vec();
+                let vemf = seg_dir.open(&format!("{seg}.vemf"))?.to_vec();
+                // A segment can legitimately have the flat pair and no graph
+                // files at all if it was written below
+                // `HNSW_GRAPH_THRESHOLD`; this writer always writes the
+                // `.vem`/`.vex` pair (with `numLevels = 0` in that case), so
+                // the absence is tolerated rather than assumed.
+                let graph = if seg_files.contains(&format!("{seg}.vem")) {
+                    Some((
+                        seg_dir.open(&format!("{seg}.vem"))?.to_vec(),
+                        seg_dir.open(&format!("{seg}.vex"))?.to_vec(),
+                    ))
+                } else {
+                    None
+                };
+                Some((vec_bytes, vemf, graph))
+            } else {
+                None
+            };
 
             let points = if seg_files.iter().any(|f| f.ends_with(".kdd")) {
                 Some((
@@ -1538,6 +1581,7 @@ impl IndexingConfig {
                 norms,
                 vectors,
                 retired_vectors,
+                quantized_vectors,
                 points,
                 field_infos: own_field_infos,
                 index_sort: si.index_sort.clone(),
@@ -1891,19 +1935,60 @@ impl IndexingConfig {
                 None => Ok(None),
             })
             .collect::<std::result::Result<Vec<_>, Error>>()?;
+        // A retired quantized group contributes its raw vectors (the
+        // `.vec`/`.vemf` beside the codes) and its graph, which is a
+        // `Lucene99HnswVectorsFormat` one: Java's merger may start from it as
+        // it would from any `HnswGraphProvider`'s.
+        let opened_quantized_vectors: Vec<Vec<QuantizedVectorsReader>> = opened
+            .iter()
+            .map(|o| {
+                let infos = lucene_codecs::field_infos::FieldInfos::new(o.field_infos.clone())?;
+                o.quantized_vectors
+                    .iter()
+                    .map(|q| {
+                        Ok::<_, Error>(QuantizedVectorsReader::open(
+                            q.format,
+                            QuantizedFiles {
+                                vemf: &q.vemf,
+                                vec: &q.vec,
+                                quantized_meta: &q.quantized_meta,
+                                quantized_data: &q.quantized_data,
+                                graph: q.graph.as_ref().map(|(m, x)| (&m[..], &x[..])),
+                            },
+                            &infos,
+                            &o.sci.segment_id,
+                            &q.suffix,
+                        )?)
+                    })
+                    .collect::<std::result::Result<Vec<_>, Error>>()
+            })
+            .collect::<std::result::Result<Vec<_>, Error>>()?;
         let per_source_vectors: Vec<Option<merge::SourceVectors>> = opened_flat_vectors
             .iter()
             .zip(&opened_vector_graphs)
             .zip(&opened_retired_vectors)
-            .map(|((flat, graph), retired)| match retired {
-                Some(r) => Some(merge::SourceVectors {
-                    flat: r.flat(),
-                    graph: None,
-                }),
-                None => flat.as_ref().map(|flat| merge::SourceVectors {
-                    flat,
-                    graph: graph.as_ref(),
-                }),
+            .zip(&opened_quantized_vectors)
+            .map(|(((flat, graph), retired), quantized)| {
+                let mut groups: Vec<merge::VectorGroup> = Vec::new();
+                match retired {
+                    Some(r) => groups.push(merge::VectorGroup {
+                        flat: r.flat(),
+                        graph: None,
+                    }),
+                    None => {
+                        if let Some(flat) = flat.as_ref() {
+                            groups.push(merge::VectorGroup {
+                                flat,
+                                graph: graph.as_ref(),
+                            });
+                        }
+                    }
+                }
+                groups.extend(quantized.iter().map(|q| merge::VectorGroup {
+                    flat: q.flat(),
+                    graph: q.graph(),
+                }));
+                (!groups.is_empty()).then_some(merge::SourceVectors { groups })
             })
             .collect();
 
@@ -3554,6 +3639,31 @@ fn retired_vector_files(
         let (format, _) = suffix.rsplit_once('_')?;
         Some((RetiredHnswFormat::for_name(format)?, suffix.to_string()))
     })
+}
+
+/// Every per-field group a retired quantized vector format wrote in a
+/// segment, with its codec suffix, read off the quantized metadata files
+/// (`_0_Lucene99HnswScalarQuantizedVectorsFormat_0.vemq` ->
+/// `Lucene99HnswScalarQuantizedVectorsFormat`,
+/// `Lucene99HnswScalarQuantizedVectorsFormat_0`), in file-name order.
+fn quantized_vector_files(
+    seg_files: &[String],
+    segment_name: &str,
+) -> Vec<(QuantizedFormat, String)> {
+    let prefix = format!("{segment_name}_");
+    let mut out: Vec<(QuantizedFormat, String)> = seg_files
+        .iter()
+        .filter_map(|f| {
+            let stem = f
+                .strip_suffix(".vemq")
+                .or_else(|| f.strip_suffix(".vemb"))?;
+            let suffix = stem.strip_prefix(&prefix)?;
+            let (format, _) = suffix.rsplit_once('_')?;
+            Some((QuantizedFormat::for_name(format)?, suffix.to_string()))
+        })
+        .collect();
+    out.sort_by(|a, b| a.1.cmp(&b.1));
+    out
 }
 
 impl<'d> IndexWriter<'d> {
@@ -10032,6 +10142,30 @@ pub(crate) mod tests {
         assert_eq!(retired_vector_files(&current, "_1"), None);
         // Another segment's files are not this one's.
         assert_eq!(retired_vector_files(&files, "_1"), None);
+        // Quantized groups, each under its own suffix, by their metadata
+        // files; the current format's and another segment's are not theirs.
+        let quantized: Vec<String> = vec![
+            "_0_Lucene99HnswScalarQuantizedVectorsFormat_1.vemq".into(),
+            "_0_Lucene102BinaryQuantizedVectorsFormat_0.vemb".into(),
+            "_0_Lucene99HnswScalarQuantizedVectorsFormat_1.veq".into(),
+            "_0_Lucene99HnswVectorsFormat_0.vemf".into(),
+            "_1_Lucene99ScalarQuantizedVectorsFormat_0.vemq".into(),
+            "_0_SomethingElse_0.vemq".into(),
+        ];
+        assert_eq!(
+            quantized_vector_files(&quantized, "_0"),
+            vec![
+                (
+                    QuantizedFormat::Lucene102BinaryQuantized,
+                    "Lucene102BinaryQuantizedVectorsFormat_0".to_string()
+                ),
+                (
+                    QuantizedFormat::Lucene99HnswScalarQuantized,
+                    "Lucene99HnswScalarQuantizedVectorsFormat_1".to_string()
+                ),
+            ]
+        );
+        assert!(quantized_vector_files(&current, "_1").is_empty());
     }
     use lucene_codecs::stored_fields::{self, FieldValue, StoredField};
     use lucene_store::directory::FsDirectory;

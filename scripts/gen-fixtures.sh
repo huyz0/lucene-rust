@@ -271,11 +271,11 @@ done < <(cd "$TMP_A" && find . -type f | sed 's|^\./||' | sort)
 # Files committed under fixtures/data that no Java generator produces. These are
 # written by Rust examples (see scripts/verify-write-path.sh) and are expected.
 RUST_WRITTEN='^sparse_numeric_doc_values/'
-# bwc/ and bwc-big/ are written by old Lucene jars through
-# scripts/gen-bwc-fixtures.sh (bwc/ is verified by its own --check; bwc-big/
+# bwc/, bwc-big/ and bwc-quantized/ are written by old Lucene jars through
+# scripts/gen-bwc-fixtures.sh (bwc/ and bwc-quantized/ are verified by its own --check; bwc-big/
 # has no dump, its tests read the index directly); the segment ids of both are
 # in the baseline below.
-BWC_OWNED='^bwc(-big)?/'
+BWC_OWNED='^bwc(-big|-quantized)?/'
 while IFS= read -r rel; do
   [ -e "$TMP_A/$rel" ] && continue
   if [[ "$rel" =~ $GENERATED_NOISE ]]; then continue; fi
