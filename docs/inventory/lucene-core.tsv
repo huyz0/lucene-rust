@@ -639,7 +639,7 @@ search/DocScoreEncoder	ported	crates/lucene-search/src/collector.rs::doc_score_e
 search/DocValuesRangeIterator	ported	crates/lucene-search/src/exec/ranges.rs::SkipBlockRange
 search/DocValuesRewriteMethod	ported	crates/lucene-search/src/exec/ranges.rs::doc_values_rewrite
 search/DoubleValues	ported	crates/lucene-search/src/values_source.rs::DoubleValues
-search/DoubleValuesSource	partial	crates/lucene-search/src/values_source.rs::DoubleValuesSource -- M7: getSortField (double_sort_field) serves sources that read one segment; a query-backed or vector source cannot sort (a comparator has neither the searcher nor the opened vectors)
+search/DoubleValuesSource	ported	crates/lucene-search/src/values_source.rs::DoubleValuesSource
 search/DoubleValuesSourceRescorer	ported	crates/lucene-search/src/rescorer.rs::DoubleValuesSourceRescorer
 search/ExactPhraseMatcher	ported	crates/lucene-search/src/exec/phrase.rs::PhraseScorer
 search/Explanation	ported	crates/lucene-search/src/explain.rs::Explanation
@@ -686,7 +686,7 @@ search/LiveFieldValues	ported	crates/lucene-search/src/reference_manager.rs::Liv
 search/LogOddsFusionQuery	ported	crates/lucene-search/src/extended_query.rs::LogOddsFusionQuery
 search/LogOddsFusionScorer	ported	crates/lucene-search/src/exec/extended.rs::LogOddsScorer
 search/LongValues	ported	crates/lucene-search/src/values_source.rs::LongValues
-search/LongValuesSource	partial	crates/lucene-search/src/values_source.rs::LongValuesSource -- M7: getSortField (long_sort_field) serves sources that read one segment; one wrapping a query-backed or vector double source cannot sort
+search/LongValuesSource	ported	crates/lucene-search/src/values_source.rs::LongValuesSource
 search/MatchAllDocsQuery	ported	crates/lucene-search/src/query.rs::MatchAllDocsQuery
 search/MatchNoDocsQuery	ported	crates/lucene-search/src/query.rs::MatchNoDocsQuery
 search/Matches	ported	crates/lucene-search/src/matches.rs::Matches
@@ -735,7 +735,7 @@ search/RegexpQuery	ported	crates/lucene-search/src/query.rs::RegexpQuery
 search/ReqExclBulkScorer	ported	crates/lucene-search/src/exec/bulk.rs::Bulk
 search/ReqExclScorer	ported	crates/lucene-search/src/exec/req.rs::ReqExclScorer
 search/ReqOptSumScorer	ported	crates/lucene-search/src/exec/req.rs::ReqOptSumScorer
-search/RescoreTopNQuery	partial	crates/lucene-search/src/rescorer.rs::RescoreTopNQuery -- M7: rewrite yields DocAndScores and search runs it standalone; not a Clause (cannot nest in a BooleanQuery until DocAndScoreQuery is a scorer-tree node)
+search/RescoreTopNQuery	ported	crates/lucene-search/src/rescorer.rs::RescoreTopNQuery
 search/Rescorer	ported	crates/lucene-search/src/rescorer.rs::Rescorer
 search/Scorable	ported	crates/lucene-search/src/exec/mod.rs::Scorer
 search/ScoreCachingWrappingScorer	ported	crates/lucene-search/src/top_field.rs::ScoreAt

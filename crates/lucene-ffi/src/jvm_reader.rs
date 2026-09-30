@@ -758,6 +758,7 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<DecodedSort, FfiStatus> {
             selector,
             missing,
             nested,
+            rewritten: None,
         });
     }
     let after = match c.u8()? {

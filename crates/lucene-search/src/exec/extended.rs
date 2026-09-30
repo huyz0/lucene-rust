@@ -203,6 +203,13 @@ pub(crate) fn build<'a>(
         ExtendedQuery::IndexOrDocValues(q) => {
             index_or_doc_values(ctx, q, boost, mode, top_level, None)
         }
+        // `RescoreTopNQuery` has no weight of its own: `rewrite(searcher)`
+        // turns it into a `DocAndScoreQuery` first.
+        ExtendedQuery::RescoreTopN(_) => Err(crate::Error::IllegalState(
+            "RescoreTopNQuery must be rewritten against the searcher \
+             (rescorer::rewrite_rescore_clauses) before it is searched"
+                .into(),
+        )),
     }
 }
 

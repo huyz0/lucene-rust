@@ -196,6 +196,7 @@ pub fn sort(spec: &str) -> Vec<lucene_search::top_field::SortField> {
                 };
                 SortField {
                     nested: None,
+                    rewritten: None,
                     field: p[0].to_string(),
                     ty,
                     reverse,

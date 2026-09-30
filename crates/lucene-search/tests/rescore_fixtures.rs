@@ -34,6 +34,7 @@ use lucene_codecs::vectors::FlatVectorsReader;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::index_searcher::IndexSearcher;
+use lucene_search::query::{BooleanQuery, Clause, TermQuery};
 use lucene_search::rescorer::{
     late_interaction_rescorer, late_interaction_rescorer_with_fallback, DoubleValuesSourceRescorer,
     QueryRescorer, RescoreTopNQuery, Rescorer, SortRescorer,
@@ -392,11 +393,34 @@ fn values_sources_and_rescorers_match_real_lucene() {
             "long_rev" => vec![vs::long_sort_field(vs::long_from_long_field("n"), true, 42)],
             "scores" => vec![vs::double_sort_field(vs::scores(), true, 0.0)],
             "late" => vec![vs::double_sort_field(late(), true, 0.0)],
-            _ => vec![
+            // Sources that need the searcher or the vectors: the sort is
+            // rewritten against them (`Sort.rewrite(searcher)`).
+            "query" => vec![vs::double_sort_field(vs::from_query(q(1)), false, 0.0)],
+            "query_rev" => vec![
+                vs::double_sort_field(vs::from_query(q(0)), true, 0.0),
+                vs::double_sort_field(vs::scores(), true, 0.0),
+            ],
+            "full" => vec![vs::double_sort_field(
+                vs::full_precision_float_vector_similarity(
+                    "veu",
+                    QEU.to_vec(),
+                    Some(VectorSimilarityFunction::MaximumInnerProduct),
+                ),
+                true,
+                0.0,
+            )],
+            "query_long" => vec![vs::long_sort_field(
+                vs::to_long_values_source(vs::from_query(q(2))),
+                true,
+                0,
+            )],
+            "float_scores" => vec![
                 vs::double_sort_field(vs::from_float_field("f"), true, 0.0),
                 vs::double_sort_field(vs::scores(), false, 0.0),
             ],
+            other => panic!("vsort {other}"),
         };
+        let sort = lucene_search::top_field::rewrite_sort(&sort, &ctx).unwrap();
         let got = lucene_search::top_field::search_sorted(
             &segments,
             readers,
@@ -587,6 +611,28 @@ fn values_sources_and_rescorers_match_real_lucene() {
             got.total_hits.value,
             k("total").parse::<u64>().unwrap(),
             "rtn.{i} total"
+        );
+    }
+
+    // `RescoreTopNQuery` as a clause of a boolean, searched through the
+    // searcher (which rewrites it to a `DocAndScoreQuery` first).
+    assert!(count("rtnb") > 0);
+    for i in 0..count("rtnb") {
+        let k = |f: &str| m.get(&format!("rtnb.{i}.{f}")).to_string();
+        let fpi = k("fp").parse::<usize>().unwrap();
+        let inner = GRAMMAR.query(m.get(&format!("fp.{fpi}.query")));
+        let n: usize = k("n").parse().unwrap();
+        let rtn = RescoreTopNQuery::new(inner, vs::from_float_field("f"), n).unwrap();
+        let mut q = BooleanQuery::new();
+        q.must.push(Clause::from(rtn));
+        q.should
+            .push(Clause::Term(TermQuery::new("body", b"w1".to_vec())));
+        let got = searcher.search(&q, 20).unwrap();
+        assert_hits(&format!("rtnb.{i}"), &got, &k("hits"), false);
+        assert_eq!(
+            got.total_hits.value,
+            k("total").parse::<u64>().unwrap(),
+            "rtnb.{i} total"
         );
     }
 }
