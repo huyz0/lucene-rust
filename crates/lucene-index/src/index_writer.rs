@@ -146,6 +146,7 @@ use crate::term_delete;
 use crate::update_document::{self, SegmentDeleteSource};
 
 use lucene_analysis::Analyzer;
+use lucene_codecs::backward_codecs::hnsw_vectors::{RetiredHnswFormat, RetiredHnswVectorsReader};
 use lucene_codecs::doc_values;
 use lucene_codecs::field_infos::{
     DocValuesType, FieldInfo, IndexOptions, VectorEncoding, VectorSimilarityFunction,
@@ -1135,6 +1136,10 @@ impl IndexingConfig {
             doc: Vec<u8>,
             pos: Option<Vec<u8>>,
             pay: Option<Vec<u8>>,
+            /// The codec suffix the files were written under -- the
+            /// segment's own postings format, which for a segment an older
+            /// Lucene wrote is not this writer's (`Lucene90_0`, ...).
+            suffix: String,
         }
         /// Raw `.tvd`/`.tvx`/`.tvm` bytes for a source that has term vectors
         /// -- `None` when that source's `.si` lists no `.tvd` file.
@@ -1144,6 +1149,9 @@ impl IndexingConfig {
         /// Raw `.vec`/`.vemf` and, when the segment has a graph,
         /// `.vem`/`.vex` bytes.
         type RawVectorFiles = Option<(Vec<u8>, Vec<u8>, Option<(Vec<u8>, Vec<u8>)>)>;
+        /// A retired (9.0-9.8) HNSW format's `.vem`/`.vec`/`.vex` triple,
+        /// with the format and codec suffix it was written under.
+        type RawRetiredVectorFiles = Option<(RetiredHnswFormat, String, Vec<u8>, Vec<u8>, Vec<u8>)>;
 
         struct OpenedSegment {
             sci: SegmentCommitInfo,
@@ -1162,6 +1170,7 @@ impl IndexingConfig {
             doc_values: SourceDocValueColumns,
             norms: RawNormsFiles,
             vectors: RawVectorFiles,
+            retired_vectors: RawRetiredVectorFiles,
             /// Raw `.kdm`/`.kdi`/`.kdd`, when the segment has points.
             points: Option<(Vec<u8>, Vec<u8>, Vec<u8>)>,
             /// This source's fields under **its own numbers** -- see where it
@@ -1256,7 +1265,7 @@ impl IndexingConfig {
                 None
             };
             let postings = if seg_files.iter().any(|f| f.ends_with(".tim")) {
-                let seg = per_field_segment(name, POSTINGS_FORMAT_NAME);
+                let (seg, suffix) = postings_file_base(&seg_files, name);
                 let read_optional = |ext: &str| -> Result<Option<Vec<u8>>> {
                     let file = format!("{seg}.{ext}");
                     Ok(if seg_files.contains(&file) {
@@ -1272,6 +1281,7 @@ impl IndexingConfig {
                     doc: seg_dir.open(&format!("{seg}.doc"))?.to_vec(),
                     pos: read_optional("pos")?,
                     pay: read_optional("pay")?,
+                    suffix,
                 })
             } else {
                 None
@@ -1374,27 +1384,43 @@ impl IndexingConfig {
                 None
             };
 
-            let vectors = if seg_files.iter().any(|f| f.ends_with(".vec")) {
-                let seg = per_field_segment(name, KNN_VECTORS_FORMAT_NAME);
-                let vec_bytes = seg_dir.open(&format!("{seg}.vec"))?.to_vec();
-                let vemf = seg_dir.open(&format!("{seg}.vemf"))?.to_vec();
-                // A segment can legitimately have the flat pair and no graph
-                // files at all if it was written below
-                // `HNSW_GRAPH_THRESHOLD`; this writer always writes the
-                // `.vem`/`.vex` pair (with `numLevels = 0` in that case), so
-                // the absence is tolerated rather than assumed.
-                let graph = if seg_files.iter().any(|f| f.ends_with(".vem")) {
+            // A segment Lucene 9.0-9.8 wrote keeps its vectors in a retired
+            // format's `.vem`/`.vec`/`.vex` triple and has no `.vemf`.
+            let retired_vectors = match retired_vector_files(&seg_files, name) {
+                Some((format, suffix)) => {
+                    let seg = format!("{name}_{suffix}");
                     Some((
+                        format,
+                        suffix,
                         seg_dir.open(&format!("{seg}.vem"))?.to_vec(),
+                        seg_dir.open(&format!("{seg}.vec"))?.to_vec(),
                         seg_dir.open(&format!("{seg}.vex"))?.to_vec(),
                     ))
+                }
+                None => None,
+            };
+            let vectors =
+                if retired_vectors.is_none() && seg_files.iter().any(|f| f.ends_with(".vec")) {
+                    let seg = per_field_segment(name, KNN_VECTORS_FORMAT_NAME);
+                    let vec_bytes = seg_dir.open(&format!("{seg}.vec"))?.to_vec();
+                    let vemf = seg_dir.open(&format!("{seg}.vemf"))?.to_vec();
+                    // A segment can legitimately have the flat pair and no graph
+                    // files at all if it was written below
+                    // `HNSW_GRAPH_THRESHOLD`; this writer always writes the
+                    // `.vem`/`.vex` pair (with `numLevels = 0` in that case), so
+                    // the absence is tolerated rather than assumed.
+                    let graph = if seg_files.iter().any(|f| f.ends_with(".vem")) {
+                        Some((
+                            seg_dir.open(&format!("{seg}.vem"))?.to_vec(),
+                            seg_dir.open(&format!("{seg}.vex"))?.to_vec(),
+                        ))
+                    } else {
+                        None
+                    };
+                    Some((vec_bytes, vemf, graph))
                 } else {
                     None
                 };
-                Some((vec_bytes, vemf, graph))
-            } else {
-                None
-            };
 
             let points = if seg_files.iter().any(|f| f.ends_with(".kdd")) {
                 Some((
@@ -1442,6 +1468,7 @@ impl IndexingConfig {
                 doc_values,
                 norms,
                 vectors,
+                retired_vectors,
                 points,
                 field_infos: own_field_infos,
                 index_sort: si.index_sort.clone(),
@@ -1557,13 +1584,13 @@ impl IndexingConfig {
                         &raw.tmd,
                         postings_field_infos,
                         &o.sci.segment_id,
-                        &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+                        &raw.suffix,
                         reader.max_doc(),
                     )?;
                     let doc_in = lucene_codecs::postings::DocInput::open(
                         &raw.doc,
                         &o.sci.segment_id,
-                        &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+                        &raw.suffix,
                     )?;
                     let pos_in = raw
                         .pos
@@ -1572,7 +1599,7 @@ impl IndexingConfig {
                             lucene_codecs::postings::PosInput::open(
                                 pos,
                                 &o.sci.segment_id,
-                                &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+                                &raw.suffix,
                             )
                         })
                         .transpose()?;
@@ -1583,7 +1610,7 @@ impl IndexingConfig {
                             lucene_codecs::postings::PayInput::open(
                                 pay,
                                 &o.sci.segment_id,
-                                &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+                                &raw.suffix,
                             )
                         })
                         .transpose()?;
@@ -1775,14 +1802,39 @@ impl IndexingConfig {
                 _ => Ok(None),
             })
             .collect::<std::result::Result<Vec<_>, Error>>()?;
+        // A retired-format source contributes its vectors only: 10.5.0's
+        // `IncrementalHnswGraphMerger` reuses a source graph only from an
+        // `HnswGraphProvider`, which the 9.x readers are not, so the merged
+        // graph is built from scratch over them.
+        let opened_retired_vectors: Vec<Option<RetiredHnswVectorsReader>> = opened
+            .iter()
+            .map(|o| match &o.retired_vectors {
+                Some((format, suffix, vem, vec_bytes, vex)) => {
+                    Ok::<_, Error>(Some(RetiredHnswVectorsReader::open(
+                        *format,
+                        vem,
+                        vec_bytes,
+                        vex,
+                        &o.sci.segment_id,
+                        suffix,
+                    )?))
+                }
+                None => Ok(None),
+            })
+            .collect::<std::result::Result<Vec<_>, Error>>()?;
         let per_source_vectors: Vec<Option<merge::SourceVectors>> = opened_flat_vectors
             .iter()
             .zip(&opened_vector_graphs)
-            .map(|(flat, graph)| {
-                flat.as_ref().map(|flat| merge::SourceVectors {
+            .zip(&opened_retired_vectors)
+            .map(|((flat, graph), retired)| match retired {
+                Some(r) => Some(merge::SourceVectors {
+                    flat: r.flat(),
+                    graph: None,
+                }),
+                None => flat.as_ref().map(|flat| merge::SourceVectors {
                     flat,
                     graph: graph.as_ref(),
-                })
+                }),
             })
             .collect();
 
@@ -3305,6 +3357,46 @@ pub fn per_field_codec_suffix(format: &str) -> String {
 /// The suffixed segment name a per-field format's files are written under.
 pub fn per_field_segment(segment_name: &str, format: &str) -> String {
     format!("{segment_name}_{}", per_field_codec_suffix(format))
+}
+
+/// The per-field segment name and codec suffix a segment's postings files
+/// carry, read off its own `.tim`: `_0_Lucene90_0.tim` -> (`_0_Lucene90_0`,
+/// `Lucene90_0`). A segment an older Lucene wrote names them after *its*
+/// default postings format (M8), which is also the suffix inside every
+/// header; this writer's own segments give `Lucene104_0`. Falls back to that
+/// when the segment lists no `.tim` at all.
+fn postings_file_base(seg_files: &[String], segment_name: &str) -> (String, String) {
+    let prefix = format!("{segment_name}_");
+    seg_files
+        .iter()
+        .filter_map(|f| f.strip_suffix(".tim"))
+        .find_map(|stem| {
+            stem.strip_prefix(&prefix)
+                .map(|suffix| (stem.to_string(), suffix.to_string()))
+        })
+        .unwrap_or_else(|| {
+            (
+                per_field_segment(segment_name, POSTINGS_FORMAT_NAME),
+                per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+            )
+        })
+}
+
+/// The retired 9.0-9.8 HNSW format a segment's vectors were written with,
+/// and the codec suffix of its files, read off its `.vem` name
+/// (`_0_lucene92HnswVectorsFormat_0.vem` -> `lucene92HnswVectorsFormat`,
+/// `lucene92HnswVectorsFormat_0`); `None` for a current-format segment (it
+/// has a `.vemf`) or one without vectors.
+fn retired_vector_files(
+    seg_files: &[String],
+    segment_name: &str,
+) -> Option<(RetiredHnswFormat, String)> {
+    let prefix = format!("{segment_name}_");
+    seg_files.iter().find_map(|f| {
+        let suffix = f.strip_suffix(".vem")?.strip_prefix(&prefix)?;
+        let (format, _) = suffix.rsplit_once('_')?;
+        Some((RetiredHnswFormat::for_name(format)?, suffix.to_string()))
+    })
 }
 
 impl<'d> IndexWriter<'d> {
@@ -9203,7 +9295,6 @@ impl IndexingConfig {
         dir: &dyn Directory,
         sci: &SegmentCommitInfo,
     ) -> Result<OpenedDeleteSegment> {
-        let suffix = per_field_codec_suffix(POSTINGS_FORMAT_NAME);
         let si_bytes = dir.open(&format!("{}.si", sci.segment_name))?;
         let si = segment_info::parse_for_codec(&si_bytes, &sci.segment_id, &sci.codec_name)?;
         let max_doc = si.doc_count as usize;
@@ -9243,6 +9334,10 @@ impl IndexingConfig {
             None => si.files.clone(),
         };
 
+        // The segment's own postings format: an older Lucene's segment names
+        // its files (and frames their headers) after it, not after this
+        // writer's.
+        let (seg, suffix) = postings_file_base(&seg_files, &sci.segment_name);
         if !seg_files.iter().any(|f| f.ends_with(".tim")) {
             return Ok(OpenedDeleteSegment {
                 max_doc,
@@ -9268,7 +9363,6 @@ impl IndexingConfig {
                 .filter(|f| f.index_options != IndexOptions::None)
                 .collect(),
         };
-        let seg = per_field_segment(&sci.segment_name, POSTINGS_FORMAT_NAME);
         // Borrowed from the directory's `Input` (a mapping, under
         // `MmapDirectory`), not copied: `blocktree::open` builds its own
         // structures from these and does not retain the slices, and the `.doc`
@@ -9559,6 +9653,39 @@ pub(crate) mod tests {
     };
     use lucene_codecs::hnsw::HnswGraphView;
     use lucene_codecs::postings::DocInput;
+
+    /// An older Lucene's segment names its postings and vector files after
+    /// *its* formats; a merge and a buffered delete must find them by that
+    /// name (M8 T8.4).
+    #[test]
+    fn old_segments_name_their_postings_and_vectors_after_their_own_formats() {
+        let files: Vec<String> = vec![
+            "_0.si".into(),
+            "_0_Lucene90_0.tim".into(),
+            "_0_lucene92HnswVectorsFormat_0.vem".into(),
+        ];
+        assert_eq!(
+            postings_file_base(&files, "_0"),
+            ("_0_Lucene90_0".to_string(), "Lucene90_0".to_string())
+        );
+        assert_eq!(
+            retired_vector_files(&files, "_0"),
+            Some((
+                RetiredHnswFormat::Lucene92,
+                "lucene92HnswVectorsFormat_0".to_string()
+            ))
+        );
+        // This writer's own segment: no `.tim` of another format, and a
+        // current-format `.vem`.
+        let current: Vec<String> = vec!["_1_Lucene99HnswVectorsFormat_0.vem".into()];
+        assert_eq!(
+            postings_file_base(&current, "_1"),
+            ("_1_Lucene104_0".to_string(), "Lucene104_0".to_string())
+        );
+        assert_eq!(retired_vector_files(&current, "_1"), None);
+        // Another segment's files are not this one's.
+        assert_eq!(retired_vector_files(&files, "_1"), None);
+    }
     use lucene_codecs::stored_fields::{self, FieldValue, StoredField};
     use lucene_store::directory::FsDirectory;
 

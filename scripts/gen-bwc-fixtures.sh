@@ -12,6 +12,13 @@
 # 101 (10.2), 104 (10.4 -- the current codec already, a cross-check).
 #
 # Usage: scripts/gen-bwc-fixtures.sh [--only <version>]
+#        scripts/gen-bwc-fixtures.sh --big <version>
+#
+# --big writes fixtures/data/bwc-big/<version>/ instead: fixtures/bwc/BwcBig.java,
+# one 20,000-document segment whose terms need every level of the retired
+# postings formats' skip data (trailing multi-level lists, inline level 1),
+# which the 3,000-document corpus never reaches. Versions: 9.0.0 (Lucene90),
+# 9.11.1 (Lucene99), 9.12.2 (Lucene912), 10.2.2 (Lucene101).
 #
 # A regenerated index differs from the committed one byte for byte (segment
 # ids are random), and so do its digests of file-level content; regenerate
@@ -21,13 +28,28 @@ cd "$(git rev-parse --show-toplevel)"
 
 VERSIONS=(9.0.0 9.1.0 9.3.0 9.4.2 9.8.0 9.11.1 9.12.2 10.0.0 10.2.2 10.4.0)
 ONLY=""
+BIG=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --only) ONLY="$2"; shift 2 ;;
-    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    --big) BIG="$2"; shift 2 ;;
+    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "gen-bwc-fixtures: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+if [ -n "$BIG" ]; then
+  JARS="$PWD/fixtures/.jars"
+  jar="$JARS/bwc/lucene-core-$BIG.jar"
+  [ -s "$jar" ] || { echo "gen-bwc-fixtures: no $jar (run --only $BIG once first)" >&2; exit 2; }
+  WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
+  out="fixtures/data/bwc-big/$BIG"
+  rm -rf "${out:?}"
+  javac -nowarn -proc:none -cp "$jar" -d "$WORK/big" fixtures/bwc/BwcBig.java
+  java -cp "$WORK/big:$jar" BwcBig "$out" 2>/dev/null
+  rm -f "$out/write.lock"
+  echo "gen-bwc-fixtures: $BIG -> $out"
+  exit 0
+fi
 if [ -z "$ONLY" ]; then
   echo "gen-bwc-fixtures: refusing to regenerate every version; pass --only <version> (one of ${VERSIONS[*]})" >&2
   exit 2
