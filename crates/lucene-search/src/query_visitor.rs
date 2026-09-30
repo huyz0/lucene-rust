@@ -146,6 +146,23 @@ fn visit_automaton(
         visitor.visit_leaf(query);
         return;
     };
+    visit_compiled(&c, visitor, query, field);
+}
+
+/// `CompiledAutomaton.visit(visitor, parent, field)`: when the visitor
+/// accepts `field`, by the automaton's type nothing (`NONE`), the one term
+/// (`SINGLE`, `consumeTerms`), or a matcher over the terms it accepts
+/// (`ALL`, `NORMAL`: `consumeTermsMatching`). The terms enumeration half,
+/// `getTermsEnum`, is `lucene_codecs::blocktree::FieldTerms::compiled_terms`.
+pub fn visit_compiled(
+    c: &CompiledAutomaton,
+    visitor: &mut dyn QueryVisitor,
+    query: &Clause,
+    field: &str,
+) {
+    if !visitor.accept_field(field) {
+        return;
+    }
     match c.automaton_type {
         AutomatonType::NONE => {}
         AutomatonType::SINGLE => {
@@ -154,10 +171,7 @@ fn visit_automaton(
         }
         AutomatonType::ALL => visitor.consume_terms_matching(query, field, &|_: &[u8]| true),
         AutomatonType::NORMAL => {
-            let run = |t: &[u8]| {
-                use lucene_util::automaton::ByteRunnable;
-                c.run_automaton.as_ref().is_some_and(|r| r.run(t))
-            };
+            let run = |t: &[u8]| c.get_byte_runnable().is_some_and(|r| r.run(t));
             visitor.consume_terms_matching(query, field, &run);
         }
     }
@@ -441,5 +455,61 @@ mod tests {
         let all =
             CompiledAutomaton::with_options(&prefix_automaton(b""), false, true, true).unwrap();
         assert_eq!(all.automaton_type, AutomatonType::ALL);
+    }
+
+    /// `CompiledAutomaton.visit`: a field the visitor rejects sees nothing;
+    /// `NONE` nothing; `SINGLE` its term; `NORMAL` -- determinized or not --
+    /// a matcher over the accepted terms.
+    #[test]
+    fn a_compiled_automaton_visits_by_its_type() {
+        #[derive(Default)]
+        struct Seen {
+            terms: Vec<Term>,
+            matched: Vec<bool>,
+            reject: bool,
+        }
+        impl QueryVisitor for Seen {
+            fn consume_terms(&mut self, _q: &Clause, terms: &[Term]) {
+                self.terms.extend_from_slice(terms);
+            }
+            fn consume_terms_matching(&mut self, _q: &Clause, _f: &str, m: &dyn TermMatcher) {
+                self.matched = vec![m.matches(b"ab"), m.matches(b"ac"), m.matches(b"b")];
+            }
+            fn accept_field(&self, _field: &str) -> bool {
+                !self.reject
+            }
+        }
+        let q = Clause::Term(TermQuery::new("f", b"x".to_vec()));
+        // a(b|c), non-deterministic: two `a` transitions.
+        let mut nfa = automaton::Automaton::new();
+        let (s0, s1, s2, s3) = (
+            nfa.create_state(),
+            nfa.create_state(),
+            nfa.create_state(),
+            nfa.create_state(),
+        );
+        nfa.add_transition(s0, s1, i32::from(b'a'), i32::from(b'a'));
+        nfa.add_transition(s0, s2, i32::from(b'a'), i32::from(b'a'));
+        nfa.add_transition(s1, s3, i32::from(b'b'), i32::from(b'b'));
+        nfa.add_transition(s2, s3, i32::from(b'c'), i32::from(b'c'));
+        nfa.set_accept(s3, true);
+        nfa.finish_state();
+        let c = CompiledAutomaton::with_options(&nfa, false, false, true).unwrap();
+        assert_eq!(c.automaton_type, AutomatonType::NORMAL);
+        let mut seen = Seen::default();
+        visit_compiled(&c, &mut seen, &q, "f");
+        assert_eq!(seen.matched, vec![true, true, false]);
+        let mut rejecting = Seen {
+            reject: true,
+            ..Seen::default()
+        };
+        visit_compiled(&c, &mut rejecting, &q, "f");
+        assert!(rejecting.matched.is_empty());
+        let none = CompiledAutomaton::with_options(&automaton::Automaton::new(), false, true, true)
+            .unwrap();
+        assert_eq!(none.automaton_type, AutomatonType::NONE);
+        let mut seen = Seen::default();
+        visit_compiled(&none, &mut seen, &q, "f");
+        assert!(seen.terms.is_empty() && seen.matched.is_empty());
     }
 }

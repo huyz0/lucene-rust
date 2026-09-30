@@ -6,9 +6,10 @@
 //! (which pair the point query with a doc-values one, and sort by their
 //! `SORTED_NUMERIC` values).
 //!
-//! The BKD walk is [`crate::points_query`]'s (`PointValues.intersect` with
-//! Java's cell relations); this module adds the per-field checks and the
-//! typed encodings.
+//! `PointRangeQuery` and `PointInSetQuery` are the scorer tree's own
+//! ([`crate::extended_query`]); as document-package queries they check the
+//! field's point shape with Java's messages and run the tree's scorer
+//! (`exec::ranges`). This module adds those checks and the typed encodings.
 
 use std::net::IpAddr;
 
@@ -19,61 +20,16 @@ use lucene_index::document::{
 
 use super::doc_values_queries::{SortedNumericDocValuesRangeQuery, SortedNumericDocValuesSetQuery};
 use super::{field_info, reader, Boosted, DocumentQuery, MatchNoDocs};
-use crate::collector::{ScoringCollector, VecCollector};
+use crate::collector::ScoringCollector;
+use crate::exec::{self, BoxScorer, Bulk, LeafContext, Mode};
+pub use crate::extended_query::{PointInSetQuery, PointRangeQuery};
 use crate::multi_segment::OpenSegment;
-use crate::points_query::{search_points_in_set, search_points_range};
+use crate::points_query::PointsInput;
 use crate::top_field::{Selector, SortField, SortType};
 use crate::{Error, Result};
 
 fn illegal(message: impl Into<String>) -> Error {
     Error::DocumentQuery(message.into())
-}
-
-/// `PointRangeQuery`: every document with a point inside the box
-/// `[lower_point, upper_point]` (inclusive in every dimension), at a constant
-/// score.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PointRangeQuery {
-    pub field: String,
-    pub lower_point: Vec<u8>,
-    pub upper_point: Vec<u8>,
-    pub num_dims: usize,
-    pub bytes_per_dim: usize,
-}
-
-impl PointRangeQuery {
-    /// `PointRangeQuery(field, lowerPoint, upperPoint, numDims)`.
-    pub fn new(
-        field: impl Into<String>,
-        lower_point: Vec<u8>,
-        upper_point: Vec<u8>,
-        num_dims: usize,
-    ) -> Result<Self> {
-        if num_dims == 0 {
-            return Err(illegal("numDims must be positive, got 0"));
-        }
-        if lower_point.is_empty() {
-            return Err(illegal("lowerPoint has length of zero"));
-        }
-        if lower_point.len().checked_rem(num_dims) != Some(0) {
-            return Err(illegal("lowerPoint is not a fixed multiple of numDims"));
-        }
-        if lower_point.len() != upper_point.len() {
-            return Err(illegal(format!(
-                "lowerPoint has length={} but upperPoint has different length={}",
-                lower_point.len(),
-                upper_point.len()
-            )));
-        }
-        let bytes_per_dim = lower_point.len() / num_dims;
-        Ok(PointRangeQuery {
-            field: field.into(),
-            lower_point,
-            upper_point,
-            num_dims,
-            bytes_per_dim,
-        })
-    }
 }
 
 /// `PointRangeQuery.checkValidPointValues` and `PointInSetQuery`'s twin: the
@@ -108,6 +64,34 @@ fn check_point_field(
     Ok(Some(info.number))
 }
 
+/// Runs a scorer the tree builds over `leaf`'s points into `collector`,
+/// live documents only: the `DocumentQuery` face of the scorer tree's point
+/// queries.
+fn score_points_leaf(
+    leaf: &OpenSegment<'_>,
+    collector: &mut dyn ScoringCollector,
+    build: impl for<'c> FnOnce(&LeafContext<'c>, Mode) -> Result<Option<BoxScorer<'c>>>,
+) -> Result<()> {
+    let r = reader(leaf)?;
+    let input = PointsInput {
+        reader: r.points_reader()?,
+        field_infos: r.field_infos(),
+    };
+    let ctx = LeafContext {
+        points: Some(&input),
+        max_doc: Some(r.max_doc),
+        ..crate::aggs::plain_context(leaf)
+    };
+    let mode = Mode::of(&*collector);
+    if let Some(scorer) = build(&ctx, mode)? {
+        exec::score_segment(&mut Bulk::scorer(scorer), mode, leaf.live_docs, collector)?;
+    }
+    Ok(())
+}
+
+/// `PointRangeQuery` as a document-package query: the field's shape checked
+/// with Java's messages, then the scorer tree's `PointRangeQuery`
+/// ([`crate::extended_query::PointRangeQuery`], which this is).
 impl DocumentQuery for PointRangeQuery {
     fn score_leaf(
         &self,
@@ -115,83 +99,24 @@ impl DocumentQuery for PointRangeQuery {
         boost: f32,
         collector: &mut dyn ScoringCollector,
     ) -> Result<()> {
-        let Some(number) = check_point_field(
+        if check_point_field(
             leaf,
             &self.field,
             self.num_dims,
             self.bytes_per_dim,
             "numIndexDimensions",
         )?
-        else {
+        .is_none()
+        {
             return Ok(());
-        };
-        let r = reader(leaf)?;
-        let points = r.points_reader()?;
-        let mut docs = VecCollector::default();
-        search_points_range(
-            &points,
-            leaf.live_docs,
-            number,
-            &self.lower_point,
-            &self.upper_point,
-            &mut docs,
-        )?;
-        for doc in docs.docs {
-            collector.collect(doc, boost);
         }
-        Ok(())
-    }
-}
-
-/// `PointInSetQuery`: every document with a point equal to one of
-/// `points` (each `num_dims * bytes_per_dim` packed bytes), at a constant
-/// score.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PointInSetQuery {
-    pub field: String,
-    pub num_dims: usize,
-    pub bytes_per_dim: usize,
-    /// Sorted, deduplicated (`PrefixCodedTerms`).
-    pub points: Vec<Vec<u8>>,
-}
-
-impl PointInSetQuery {
-    /// `PointInSetQuery(field, numDims, bytesPerDim, packedPoints)`.
-    pub fn new(
-        field: impl Into<String>,
-        num_dims: usize,
-        bytes_per_dim: usize,
-        points: Vec<Vec<u8>>,
-    ) -> Result<Self> {
-        if !(1..=16).contains(&bytes_per_dim) {
-            return Err(illegal(format!(
-                "bytesPerDim must be > 0 and <= 16; got {bytes_per_dim}"
-            )));
-        }
-        if !(1..=8).contains(&num_dims) {
-            return Err(illegal(format!(
-                "numDims must be > 0 and <= 8; got {num_dims}"
-            )));
-        }
-        let want = num_dims.saturating_mul(bytes_per_dim);
-        if let Some(bad) = points.iter().find(|p| p.len() != want) {
-            return Err(illegal(format!(
-                "packed point length should be {want} but got {}",
-                bad.len()
-            )));
-        }
-        let mut points = points;
-        points.sort_unstable();
-        points.dedup();
-        Ok(PointInSetQuery {
-            field: field.into(),
-            num_dims,
-            bytes_per_dim,
-            points,
+        score_points_leaf(leaf, collector, |ctx, mode| {
+            exec::ranges::point_range(ctx, self, boost, mode)
         })
     }
 }
 
+/// `PointInSetQuery` as a document-package query, as [`PointRangeQuery`].
 impl DocumentQuery for PointInSetQuery {
     fn score_leaf(
         &self,
@@ -199,24 +124,20 @@ impl DocumentQuery for PointInSetQuery {
         boost: f32,
         collector: &mut dyn ScoringCollector,
     ) -> Result<()> {
-        let Some(number) = check_point_field(
+        if check_point_field(
             leaf,
             &self.field,
             self.num_dims,
             self.bytes_per_dim,
             "numIndexDims",
         )?
-        else {
+        .is_none()
+        {
             return Ok(());
-        };
-        let r = reader(leaf)?;
-        let points = r.points_reader()?;
-        let mut docs = VecCollector::default();
-        search_points_in_set(&points, leaf.live_docs, number, &self.points, &mut docs)?;
-        for doc in docs.docs {
-            collector.collect(doc, boost);
         }
-        Ok(())
+        score_points_leaf(leaf, collector, |ctx, mode| {
+            exec::ranges::point_in_set(ctx, self, boost, mode)
+        })
     }
 }
 
@@ -305,7 +226,7 @@ macro_rules! numeric_point_factories {
                 check_same_len(lower, upper)?;
                 let lo = $point::pack(lower).map_err(|e| illegal(e.to_string()))?;
                 let hi = $point::pack(upper).map_err(|e| illegal(e.to_string()))?;
-                PointRangeQuery::new(field, lo, hi, lower.len())
+                PointRangeQuery::new(field, lower.len(), lo, hi)
             }
 
             /// `newSetQuery(field, values...)`.
@@ -319,7 +240,7 @@ macro_rules! numeric_point_factories {
                     sorted
                         .into_iter()
                         .map(|v| $point::encode_dimension(v).to_vec())
-                        .collect(),
+                        .collect::<Vec<Vec<u8>>>(),
                 )
             }
         }
@@ -366,7 +287,7 @@ pub mod binary_point {
     ) -> Result<PointRangeQuery> {
         let lo = BinaryPoint::pack(lower).map_err(|e| illegal(e.to_string()))?;
         let hi = BinaryPoint::pack(upper).map_err(|e| illegal(e.to_string()))?;
-        PointRangeQuery::new(field, lo, hi, lower.len())
+        PointRangeQuery::new(field, lower.len(), lo, hi)
     }
 
     /// `newSetQuery(field, values...)`: one-dimension values of one width; an
@@ -386,7 +307,7 @@ pub mod binary_point {
             field,
             1,
             first.len(),
-            values.iter().map(|v| v.to_vec()).collect(),
+            values.iter().map(|v| v.to_vec()).collect::<Vec<Vec<u8>>>(),
         )?))
     }
 }
@@ -416,9 +337,9 @@ pub mod inet_address_point {
     pub fn new_range_query(field: &str, lower: IpAddr, upper: IpAddr) -> Result<PointRangeQuery> {
         PointRangeQuery::new(
             field,
+            1,
             InetAddressPoint::encode(lower).to_vec(),
             InetAddressPoint::encode(upper).to_vec(),
-            1,
         )
     }
 
@@ -431,7 +352,7 @@ pub mod inet_address_point {
             values
                 .iter()
                 .map(|v| InetAddressPoint::encode(*v).to_vec())
-                .collect(),
+                .collect::<Vec<Vec<u8>>>(),
         )
     }
 }

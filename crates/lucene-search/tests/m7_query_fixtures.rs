@@ -317,6 +317,17 @@ fn parse(
                 .unwrap()
                 .into()
         }
+        "LR" => {
+            let field = next();
+            let (lo, hi) = (i(next()), i(next()));
+            PointRangeQuery::long_range(field, &[lo], &[hi])
+                .unwrap()
+                .into()
+        }
+        "IODV" => {
+            let index = parse(tok, ctx)?;
+            IndexOrDocValuesQuery::new(index, parse(tok, ctx)?).into()
+        }
         "I1S" | "LS" | "IPS" => {
             let field = next();
             let mut vals = Vec::new();

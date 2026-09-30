@@ -3,8 +3,8 @@
 //! to UTF-8 and tabulated, with its common suffix precomputed.
 //!
 //! `getTermsEnum` and `visit` need `Terms`/`QueryVisitor`, which live above
-//! this crate; callers dispatch on [`CompiledAutomaton::automaton_type`]
-//! themselves.
+//! this crate: they are `lucene_codecs::blocktree::FieldTerms::compiled_terms`
+//! and `lucene_search::query_visitor::visit_compiled`.
 
 use super::automaton::{Automaton, Transition, TransitionAccessor};
 use super::code_points_to_utf8;

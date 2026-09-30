@@ -85,6 +85,11 @@ pub struct ExplicitFields {
     pub doc_values: Vec<StoredField>,
     /// `FieldValue::Binary`, `numDims * bytesPerDim` packed bytes.
     pub points: Vec<StoredField>,
+    /// Registered fields this document puts in its segment's `FieldInfos`
+    /// without a value: `IndexingChain.processBatch` initializes every
+    /// column's `FieldInfo` before reading a cell, so a batch column that
+    /// yields nothing is still a field of the segment.
+    pub registered: Vec<i32>,
 }
 
 /// One document's inverted occurrence of one field.
@@ -353,6 +358,7 @@ impl IndexingConfig {
             present.extend(fields.inverted.iter().map(|f| f.field_number));
             present.extend(fields.doc_values.iter().map(|f| f.field_number));
             present.extend(fields.points.iter().map(|f| f.field_number));
+            present.extend(fields.registered.iter().copied());
         }
 
         // Postings: one term dictionary per field, terms in byte order.
@@ -995,6 +1001,7 @@ mod tests {
                 },
             ],
             points: Vec::new(),
+            registered: Vec::new(),
         };
         if i % 3 != 0 {
             fields.doc_values.push(StoredField {
@@ -2021,6 +2028,7 @@ mod tests {
                 }],
                 doc_values: Vec::new(),
                 points: Vec::new(),
+                registered: Vec::new(),
             },
         };
         w.add_explicit_documents(vec![one("a")]).unwrap();
