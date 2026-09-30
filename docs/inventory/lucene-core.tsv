@@ -727,7 +727,7 @@ search/Query	ported	crates/lucene-search/src/query.rs::Clause
 search/QueryCache	ported	crates/lucene-search/src/exec/cache.rs::SegmentQueryCache
 search/QueryCachingPolicy	ported	crates/lucene-search/src/query_cache.rs::QueryCachingPolicy
 search/QueryRescorer	ported	crates/lucene-search/src/rescorer.rs::QueryRescorer
-search/QueryVisitor	partial	crates/lucene-search/src/query.rs::Clause -- M7: no visitor API (Query.visit, QueryVisitor.termCollector, per-field filtering); callers match the public Clause enum directly
+search/QueryVisitor	ported	crates/lucene-search/src/query_visitor.rs::QueryVisitor
 search/RangeDocIdStream	ported	crates/lucene-search/src/exec/mod.rs::doc_id_run_end
 search/ReferenceManager	ported	crates/lucene-search/src/reference_manager.rs::ReferenceManager
 search/RefreshCommitSupplier	ported	crates/lucene-search/src/reference_manager.rs::RefreshCommitSupplier

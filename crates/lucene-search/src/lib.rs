@@ -220,6 +220,7 @@ pub mod points_query;
 pub mod query;
 pub mod query_cache;
 pub mod query_parser;
+pub mod query_visitor;
 pub mod reference_manager;
 pub mod rescorer;
 pub mod similarities;
