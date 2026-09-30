@@ -429,10 +429,21 @@ struct Frame {
     fp_end: usize,
 
     /// Position in the field's `.tip` slice of this node's floor data
-    /// (`numFollowFloorBlocks`), for `rewind`.
+    /// (`numFollowFloorBlocks`), for `rewind` -- or in [`Self::floor_buf`]
+    /// when [`Self::floor_owned`].
     rewind_pos: usize,
-    /// Position in the field's `.tip` slice of the next unread floor record.
+    /// Position in the field's `.tip` slice of the next unread floor record
+    /// (in [`Self::floor_buf`] when [`Self::floor_owned`]).
     floor_data_pos: usize,
+    /// The frame's own copy of its index output, for a frame pushed from a
+    /// retired FST index: there the floor data is the tail of an output the
+    /// arcs along the path assemble (`SegmentTermsEnum.pushFrame(arc,
+    /// frameData, length)`'s `frameData`), not a region of `.tip`.
+    /// A high-water-mark buffer like the block regions below.
+    floor_buf: Vec<u8>,
+    /// Floor data is read from [`Self::floor_buf`] rather than the field's
+    /// `.tip` slice.
+    floor_owned: bool,
     num_follow_floor_blocks: i32,
     /// `256` once the last floor block has been selected, so no target label
     /// can be `>=` it (Java uses the same sentinel).
@@ -506,6 +517,18 @@ impl Frame {
     /// here and each following one at the end of a `scan_to_floor_frame`
     /// step, exactly as Java splits it.
     fn set_floor_data(&mut self, index: &[u8], floor_data_fp: usize) -> Result<()> {
+        if self.floor_owned {
+            let buf = std::mem::take(&mut self.floor_buf);
+            let r = self.set_floor_data_in(&buf, floor_data_fp);
+            self.floor_buf = buf;
+            return r;
+        }
+        self.set_floor_data_in(index, floor_data_fp)
+    }
+
+    /// [`Self::set_floor_data`] over the bytes that hold this frame's floor
+    /// data.
+    fn set_floor_data_in(&mut self, index: &[u8], floor_data_fp: usize) -> Result<()> {
         self.rewind_pos = floor_data_fp;
         let mut pos = floor_data_fp;
         self.num_follow_floor_blocks = read_vint_at(index, &mut pos, "floor data")?;
@@ -729,7 +752,18 @@ impl Frame {
             // Already on the correct block.
             return Ok(());
         }
+        if self.floor_owned {
+            let buf = std::mem::take(&mut self.floor_buf);
+            let r = self.scan_floor_records(&buf, target_label);
+            self.floor_buf = buf;
+            return r;
+        }
+        self.scan_floor_records(index, target_label)
+    }
 
+    /// [`Self::scan_to_floor_label`]'s walk over the floor records, in the
+    /// bytes that hold them.
+    fn scan_floor_records(&mut self, index: &[u8], target_label: u32) -> Result<()> {
         let mut new_fp;
         let mut pos = self.floor_data_pos;
         loop {
@@ -1415,11 +1449,11 @@ impl<'a> SegmentTermsEnum<'a> {
     }
 
     /// The field's own trie: its `[indexStart, indexEnd)` region of `.tip`.
-    /// Empty if a deferred trie failed to build, which [`Self::root`] --
-    /// where every walk starts -- reports as the error it was.
+    /// Empty for a retired FST index, whose frames carry their floor data
+    /// themselves ([`Frame::floor_buf`]).
     #[inline]
     fn index(&self) -> &'a [u8] {
-        self.field.index.bytes_or_empty()
+        self.field.index.trie_bytes()
     }
 
     #[inline]
@@ -1463,19 +1497,44 @@ impl<'a> SegmentTermsEnum<'a> {
         }
     }
 
-    /// `SegmentTermsEnum.pushFrame(node, length)`.
-    fn push_frame_node(&mut self, node: &TrieNode, length: usize) -> Result<()> {
+    /// `SegmentTermsEnum.pushFrame(node, length)` -- or, for a retired FST
+    /// index, `Lucene90`'s `pushFrame(arc, frameData, length)`, which decodes
+    /// the same three facts (block fp, `hasTerms`, floor data) from the
+    /// output the arcs to `node` assembled.
+    fn push_frame_node(&mut self, node: &IndexNode, length: usize) -> Result<()> {
         let ord = self.next_ord()?;
         self.ensure_frame(ord);
         let index = self.index();
+        let field = self.field;
         let f = &mut self.st.stack[ord];
-        f.has_terms = node.has_terms;
-        f.has_terms_orig = node.has_terms;
-        f.is_floor = node.floor_data_fp.is_some();
-        if let Some(fdp) = node.floor_data_fp {
-            f.set_floor_data(index, fdp)?;
-        }
-        let fp = node.output_fp.unwrap_or_default() as usize;
+        let fp = match node {
+            IndexNode::Trie(node) => {
+                f.floor_owned = false;
+                f.has_terms = node.has_terms;
+                f.has_terms_orig = node.has_terms;
+                f.is_floor = node.floor_data_fp.is_some();
+                if let Some(fdp) = node.floor_data_fp {
+                    f.set_floor_data(index, fdp)?;
+                }
+                node.output_fp.unwrap_or_default()
+            }
+            IndexNode::Fst(node) => {
+                let block = field.index.fst()?.block(node, &mut f.floor_buf)?;
+                f.floor_owned = true;
+                f.has_terms = block.has_terms;
+                f.has_terms_orig = block.has_terms;
+                f.is_floor = block.floor_start.is_some();
+                if let Some(start) = block.floor_start {
+                    f.set_floor_data(index, start)?;
+                }
+                block.fp
+            }
+        };
+        let fp = usize::try_from(fp).map_err(|_| {
+            Error::Store(lucene_store::Error::Corrupted(format!(
+                "terms block fp {fp} out of range"
+            )))
+        })?;
         self.push_frame_fp(fp, length)
     }
 
@@ -1540,9 +1599,8 @@ impl<'a> SegmentTermsEnum<'a> {
         self.st.eof = false;
     }
 
-    fn root(&self) -> Result<TrieNode> {
-        let trie = self.field.index.resolve()?;
-        load_node(trie.bytes(), trie.root_fp)
+    fn root(&self) -> Result<IndexNode> {
+        self.field.index.root()
     }
 
     /// `SegmentTermsEnum.seekExact(BytesRef)`.
@@ -1570,7 +1628,7 @@ impl<'a> SegmentTermsEnum<'a> {
 
         while target_upto < target.len() {
             let target_label = target[target_upto];
-            match lookup_child(index, &node, target_label)? {
+            match self.field.index.child(index, &node, target_label)? {
                 None => {
                     // The index is exhausted: this frame's block is the only
                     // one that could hold the target.
@@ -1587,7 +1645,7 @@ impl<'a> SegmentTermsEnum<'a> {
                     self.st.term.set_byte_at(target_upto, target_label);
                     node = next_node;
                     target_upto += 1;
-                    if node.output_fp.is_some() {
+                    if node.has_output() {
                         self.push_frame_node(&node, target_upto)?;
                     }
                 }
@@ -1632,7 +1690,7 @@ impl<'a> SegmentTermsEnum<'a> {
 
         while target_upto < target.len() {
             let target_label = target[target_upto];
-            match lookup_child(index, &node, target_label)? {
+            match self.field.index.child(index, &node, target_label)? {
                 None => {
                     self.cur().scan_to_floor_frame(index, target)?;
                     return self.load_and_scan_ceil(target);
@@ -1641,7 +1699,7 @@ impl<'a> SegmentTermsEnum<'a> {
                     self.st.term.set_byte_at(target_upto, target_label);
                     node = next_node;
                     target_upto += 1;
-                    if node.output_fp.is_some() {
+                    if node.has_output() {
                         self.push_frame_node(&node, target_upto)?;
                     }
                 }
@@ -2080,11 +2138,11 @@ pub type SharedBytes = Arc<dyn AsRef<[u8]> + Send + Sync>;
 
 /// A field's trie: `[start, end)` of `bytes`, rooted at `root_fp`.
 #[derive(Clone)]
-pub(crate) struct TrieSlice {
-    pub(crate) bytes: SharedBytes,
-    pub(crate) start: usize,
-    pub(crate) root_fp: usize,
-    pub(crate) end: usize,
+struct TrieSlice {
+    bytes: SharedBytes,
+    start: usize,
+    root_fp: usize,
+    end: usize,
 }
 
 impl TrieSlice {
@@ -2093,46 +2151,91 @@ impl TrieSlice {
     }
 }
 
-/// Makes a field's trie on first use; see [`FieldTerms::from_parts`].
-pub(crate) type TrieBuild = Box<dyn Fn() -> Result<TrieSlice> + Send + Sync>;
+/// A retired format's FST terms index, walked in place
+/// (`crate::backward_codecs::blocktree`).
+pub(crate) use crate::backward_codecs::blocktree::{FstNode, FstTermsIndex};
 
-/// A trie built once, by the first walk that needs it. The outcome is kept
-/// either way: a build that failed fails every later walk with the same
-/// message rather than being retried.
-pub(crate) struct DeferredTrie {
-    built: std::sync::OnceLock<std::result::Result<TrieSlice, String>>,
-    build: TrieBuild,
+/// A node of a field's terms index: a trie node, or -- for a retired FST
+/// index -- the arc reaching a prefix plus the output its path assembled.
+/// [`SegmentTermsEnum`] steps through either the same way: a child per
+/// target byte, a frame pushed wherever the node carries a block.
+#[derive(Debug, Clone)]
+pub(crate) enum IndexNode {
+    Trie(TrieNode),
+    Fst(FstNode),
 }
 
-/// Where a field's trie comes from.
+impl IndexNode {
+    /// `Node.hasOutput()` / `Arc.isFinal()`: the prefix names a block.
+    #[inline]
+    fn has_output(&self) -> bool {
+        match self {
+            IndexNode::Trie(n) => n.output_fp.is_some(),
+            IndexNode::Fst(n) => n.has_block(),
+        }
+    }
+}
+
+/// Where a field's terms index lives.
 #[derive(Clone)]
 enum TermsIndex {
-    /// `.tip` read in place (`Lucene103BlockTreeTermsReader`).
+    /// `.tip`'s trie, read in place (`Lucene103BlockTreeTermsReader`).
     InPlace(TrieSlice),
-    /// Built from a retired format's FST the first time the field is walked
-    /// (`Lucene90BlockTreeTermsReader`; `crate::backward_codecs::blocktree`),
-    /// so that opening a segment costs what Lucene's in-place FST costs.
-    Deferred(Arc<DeferredTrie>),
+    /// A retired format's FST in `.tip`, read in place
+    /// (`Lucene90BlockTreeTermsReader`'s `FieldReader.index`).
+    Fst(Arc<FstTermsIndex>),
 }
 
 impl TermsIndex {
-    /// The trie, building it now if it is deferred and not yet built.
-    fn resolve(&self) -> Result<&TrieSlice> {
+    /// The trie's bytes, which trie nodes and their floor data index into;
+    /// empty for an FST index, whose frames own their floor data.
+    #[inline]
+    fn trie_bytes(&self) -> &[u8] {
         match self {
-            TermsIndex::InPlace(trie) => Ok(trie),
-            TermsIndex::Deferred(d) => d
-                .built
-                .get_or_init(|| (d.build)().map_err(|e| e.to_string()))
-                .as_ref()
-                .map_err(|msg| Error::Store(lucene_store::Error::Corrupted(msg.clone()))),
+            TermsIndex::InPlace(t) => t.bytes(),
+            TermsIndex::Fst(_) => &[],
         }
     }
 
-    /// [`Self::resolve`]'s bytes, or none if the build failed.
-    #[inline]
-    fn bytes_or_empty(&self) -> &[u8] {
-        self.resolve().map_or(&[], TrieSlice::bytes)
+    /// The FST index, for a node that came from one.
+    fn fst(&self) -> Result<&FstTermsIndex> {
+        match self {
+            TermsIndex::Fst(f) => Ok(f),
+            TermsIndex::InPlace(_) => Err(wrong_index_kind()),
+        }
     }
+
+    /// The root node (`TrieReader.root` / `FST.getFirstArc`).
+    fn root(&self) -> Result<IndexNode> {
+        match self {
+            TermsIndex::InPlace(t) => Ok(IndexNode::Trie(load_node(t.bytes(), t.root_fp)?)),
+            TermsIndex::Fst(f) => Ok(IndexNode::Fst(f.root())),
+        }
+    }
+
+    /// `TrieReader.lookupChild` / `FST.findTargetArc`; `trie` is
+    /// [`Self::trie_bytes`], hoisted by the caller.
+    #[inline]
+    fn child(&self, trie: &[u8], node: &IndexNode, label: u8) -> Result<Option<IndexNode>> {
+        match node {
+            IndexNode::Trie(n) => Ok(lookup_child(trie, n, label)?.map(IndexNode::Trie)),
+            IndexNode::Fst(n) => Ok(self.fst()?.child(n, label)?.map(IndexNode::Fst)),
+        }
+    }
+
+    /// The block `node` names, if any.
+    fn block_fp(&self, node: &IndexNode) -> Result<Option<u64>> {
+        match node {
+            IndexNode::Trie(n) => Ok(n.output_fp),
+            IndexNode::Fst(n) => self.fst()?.block_fp(n),
+        }
+    }
+}
+
+fn wrong_index_kind() -> Error {
+    Error::Store(lucene_store::Error::Corrupted(
+        "terms index node of the wrong kind for its field".into(),
+    ))
 }
 
 impl std::fmt::Debug for TermsIndex {
@@ -2141,11 +2244,7 @@ impl std::fmt::Debug for TermsIndex {
             TermsIndex::InPlace(t) => {
                 write!(f, "InPlace({}..{}, root {})", t.start, t.end, t.root_fp)
             }
-            TermsIndex::Deferred(d) => match d.built.get() {
-                None => write!(f, "Deferred(not built)"),
-                Some(Ok(t)) => write!(f, "Deferred({}..{}, root {})", t.start, t.end, t.root_fp),
-                Some(Err(e)) => write!(f, "Deferred(failed: {e})"),
-            },
+            TermsIndex::Fst(i) => write!(f, "Fst({i:?})"),
         }
     }
 }
@@ -2165,8 +2264,8 @@ pub struct FieldTerms {
     postings_format: postings::PostingsFormat,
     /// The whole segment's `.tim`, shared by every field.
     tim: SharedBytes,
-    /// The field's terms index: its trie, read in place from `.tip`, or --
-    /// for a retired FST index -- built the first time the field is used.
+    /// The field's terms index, read in place from `.tip`: a trie, or a
+    /// retired format's FST.
     index: TermsIndex,
     /// One pooled [`EnumState`] so the `&self` lookups
     /// ([`Self::seek_exact`], [`Self::postings`], ...) keep the last-loaded
@@ -2894,10 +2993,9 @@ impl BlockTreeFields {
 }
 
 impl FieldTerms {
-    /// One field's dictionary over a `.tim` and a trie that `build` makes
-    /// the first time the field is walked -- what [`open_shared`] builds per
-    /// `.tmd` record, for a reader that obtains the trie some other way
-    /// (`crate::backward_codecs::blocktree`, from a retired FST index).
+    /// One field's dictionary over a `.tim` and a retired FST terms index
+    /// read in place -- what [`open_shared`] builds per `.tmd` record, for
+    /// `crate::backward_codecs::blocktree`.
     pub(crate) fn from_parts(
         stats: (i64, i64, i64, i32),
         min_term: Vec<u8>,
@@ -2905,7 +3003,7 @@ impl FieldTerms {
         field_info: &crate::field_infos::FieldInfo,
         postings_format: postings::PostingsFormat,
         tim: SharedBytes,
-        build: TrieBuild,
+        index: FstTermsIndex,
     ) -> Self {
         let (num_terms, sum_total_term_freq, sum_doc_freq, doc_count) = stats;
         FieldTerms {
@@ -2919,10 +3017,7 @@ impl FieldTerms {
             has_payloads: field_info.store_payloads,
             postings_format,
             tim,
-            index: TermsIndex::Deferred(Arc::new(DeferredTrie {
-                built: std::sync::OnceLock::new(),
-                build,
-            })),
+            index: TermsIndex::Fst(Arc::new(index)),
             scratch: Mutex::new(EnumState {
                 current: -1,
                 ..EnumState::default()
@@ -3444,7 +3539,7 @@ pub struct DfaIntersect<'a, A: TermAutomaton> {
     /// walk found it -- the source of the frame's floor data, which is what
     /// lets a floor block whose lead bytes the automaton cannot take be
     /// skipped without loading it.
-    nodes: Vec<Option<TrieNode>>,
+    nodes: Vec<Option<IndexNode>>,
     /// `rest_dead[ord]`: an entry of frame `ord` sorted past every byte its
     /// state can take, so the rest of the frame -- this block and its later
     /// floor blocks -- is skipped.
@@ -3500,7 +3595,7 @@ impl<'a, A: TermAutomaton> DfaIntersect<'a, A> {
         Ok(())
     }
 
-    fn set_state(&mut self, ord: usize, state: u32, node: Option<TrieNode>) {
+    fn set_state(&mut self, ord: usize, state: u32, node: Option<IndexNode>) {
         if self.states.len() <= ord {
             self.states.resize(ord.saturating_add(1), DEAD);
             self.nodes.resize(ord.saturating_add(1), None);
@@ -3525,7 +3620,7 @@ impl<'a, A: TermAutomaton> DfaIntersect<'a, A> {
     }
 
     fn seek_live_floor_unbudgeted(&mut self, ord: usize, from: u32) -> Result<bool> {
-        let index = self.field.index.bytes_or_empty();
+        let index = self.field.index.trie_bytes();
         let tim: &[u8] = self.field.tim.as_ref().as_ref();
         let s = self.states[ord];
         let f = &mut self.st.stack[ord];
@@ -3655,15 +3750,19 @@ impl<'a, A: TermAutomaton> DfaIntersect<'a, A> {
                 // The child's trie node, reached from this frame's by the
                 // entry's suffix bytes: it carries the floor data. Accepted
                 // only when it names the very block the entry points at.
-                let index = self.field.index.bytes_or_empty();
+                let terms_index = &self.field.index;
+                let index = terms_index.trie_bytes();
                 let mut node = self.nodes.get(ord).cloned().flatten();
                 for &b in &self.st.term.get()[self.st.stack[ord].prefix_length..] {
                     node = match node {
-                        Some(n) => lookup_child(index, &n, b)?,
+                        Some(n) => terms_index.child(index, &n, b)?,
                         None => None,
                     };
                 }
-                let node = node.filter(|n| n.output_fp == Some(sub_fp as u64));
+                let node = match node {
+                    Some(n) if terms_index.block_fp(&n)? == Some(sub_fp as u64) => Some(n),
+                    _ => None,
+                };
                 let mut ste = self.ste();
                 match &node {
                     Some(n) => ste.push_frame_node(n, length)?,

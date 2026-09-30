@@ -154,6 +154,48 @@ pub fn for_decode<R: DataInput>(
     }
     let word_bits = word.bits();
     let primitive = primitives.for_bits(bits_per_value);
+    // `ForUtil.decode`'s `switch (bitsPerValue)`: Java's generated `ForUtil`
+    // has a `decodeN` per width with every shift and count a constant; the
+    // same here, by instantiating [`decode_packed`] per (width, primitive,
+    // word) a generation uses -- the widths the three `Primitives` tables
+    // send to each primitive -- and falling back to the general body.
+    macro_rules! dispatch {
+        ($(($wb:literal, $prim:literal) => [$($w:literal),*]),*) => {
+            match (word_bits, primitive, bits_per_value) {
+                $($(($wb, $prim, $w) => return decode_const::<$w, $prim, $wb, R>(r, out),)*)*
+                _ => {}
+            }
+        };
+    }
+    dispatch!(
+        (64, 8) => [1, 2, 3, 4, 5, 6, 7, 8],
+        (32, 8) => [1, 2, 3, 4, 5, 6, 7, 8],
+        (64, 16) => [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+        (32, 16) => [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+        (64, 32) => [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32],
+        (32, 32) => [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+    );
+    decode_packed(r, bits_per_value, word_bits, primitive, out)
+}
+
+/// [`decode_packed`] with its width, primitive and word size constant.
+fn decode_const<const BITS: u32, const PRIMITIVE: u32, const WORD_BITS: u32, R: DataInput>(
+    r: &mut R,
+    out: &mut [u64; BLOCK_SIZE],
+) -> Result<()> {
+    decode_packed(r, BITS, WORD_BITS, PRIMITIVE, out)
+}
+
+/// The body of [`for_decode`], for a validated `bits_per_value` in `1..=32`
+/// and the primitive its generation packs that width with.
+#[inline(always)]
+fn decode_packed<R: DataInput>(
+    r: &mut R,
+    bits_per_value: u32,
+    word_bits: u32,
+    primitive: u32,
+    out: &mut [u64; BLOCK_SIZE],
+) -> Result<()> {
     // ARITH: `bits_per_value <= 32`, `word_bits` is 32 or 64 and `primitive`
     // 8, 16 or 32, so every product and quotient is a small positive number;
     // `num_words_per_shift = bits_per_value * 128 / word_bits` is at most 128.
@@ -168,16 +210,14 @@ pub fn for_decode<R: DataInput>(
     let packed = &mut bytes[..num_bytes(bits_per_value)];
     r.read_bytes(packed)?;
     let mut tmp = [0u64; BLOCK_SIZE];
-    match word {
-        Word::Long => {
-            for (t, b) in tmp.iter_mut().zip(packed.chunks_exact(8)) {
-                *t = u64::from_le_bytes(b.try_into().expect("8 bytes"));
-            }
+    // `Word::Long` (`readLongs`) or `Word::Int` (`readInts`).
+    if word_bits == 64 {
+        for (t, b) in tmp.iter_mut().zip(packed.chunks_exact(8)) {
+            *t = u64::from_le_bytes(b.try_into().expect("8 bytes"));
         }
-        Word::Int => {
-            for (t, b) in tmp.iter_mut().zip(packed.chunks_exact(4)) {
-                *t = u64::from(u32::from_le_bytes(b.try_into().expect("4 bytes")));
-            }
+    } else {
+        for (t, b) in tmp.iter_mut().zip(packed.chunks_exact(4)) {
+            *t = u64::from(u32::from_le_bytes(b.try_into().expect("4 bytes")));
         }
     }
     let tmp = &tmp[..num_words_per_shift];
