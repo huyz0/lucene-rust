@@ -118,6 +118,8 @@ the skipper path, range relations, feature, distance feature) in
 ### T7.5 — Per-field formats, read and write
 ### T7.6 — Scalar-quantized vectors
 ### T7.7 — Writer gaps: compound segments, string index sorts, write lock
+- Delivered 2026-09-30: the term-dictionary writer is byte-identical to Lucene -- `.tim` suffix compression (LZ4, LOWERCASE_ASCII) and `encodeTerm`'s zigzag singleton delta (`GenBlockTreeSuffixCompression`).
+
 ### T7.8 — `StandardTokenizer` and the attribute model · delivered 2026-09-30, two rows partial
 
 `crates/lucene-analysis` is now Lucene's streaming model: `TokenStream`/

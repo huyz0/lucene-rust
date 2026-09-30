@@ -114,7 +114,7 @@ codecs/lucene103/blocktree/FieldReader	ported	crates/lucene-codecs/src/blocktree
 codecs/lucene103/blocktree/IntersectTermsEnum	ported	crates/lucene-codecs/src/blocktree.rs::DfaIntersect
 codecs/lucene103/blocktree/IntersectTermsEnumFrame	ported	crates/lucene-codecs/src/blocktree.rs::DfaIntersect
 codecs/lucene103/blocktree/Lucene103BlockTreeTermsReader	ported	crates/lucene-codecs/src/blocktree.rs::BlockTreeFields
-codecs/lucene103/blocktree/Lucene103BlockTreeTermsWriter	partial	crates/lucene-codecs/src/blocktree_writer.rs::write_field_terms -- M7: "writer: `.tim` suffixes never compressed, no zigzag singleton delta (size only)" (parity supported matrix); LZ4/LOWERCASE_ASCII suffix compression is read but never written
+codecs/lucene103/blocktree/Lucene103BlockTreeTermsWriter	ported	crates/lucene-codecs/src/blocktree_writer.rs::write_field_terms
 codecs/lucene103/blocktree/SegmentTermsEnum	ported	crates/lucene-codecs/src/blocktree.rs::SegmentTermsEnum
 codecs/lucene103/blocktree/SegmentTermsEnumFrame	ported	crates/lucene-codecs/src/blocktree.rs::Frame
 codecs/lucene103/blocktree/Stats	not-needed	Diagnostic block statistics (FieldReader.getStats, printed by CheckIndex -verbose); no read or write path depends on it.
