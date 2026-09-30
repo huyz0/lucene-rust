@@ -25,6 +25,7 @@ mod blocktree_writer;
 pub mod codecs;
 pub mod compound_format;
 mod deflate;
+pub(crate) mod deflater;
 pub mod direct_monotonic;
 pub mod direct_reader;
 pub mod doc_values;

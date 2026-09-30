@@ -124,6 +124,8 @@ the skipper path, range relations, feature, distance feature) in
 
 - Delivered 2026-09-30: doc-values `writeValues`' `doBlocks` split (per-16384-value widths), byte-identical on `GenDocValuesVaryingBpv`.
 
+- Delivered 2026-09-30: `BEST_COMPRESSION` stored fields byte-identical to Lucene -- a port of zlib's `deflate` with the preset dictionary (`deflater.rs`, `GenStoredFieldsDeflate`).
+
 ### T7.8 — `StandardTokenizer` and the attribute model · delivered 2026-09-30, two rows partial
 
 `crates/lucene-analysis` is now Lucene's streaming model: `TokenStream`/

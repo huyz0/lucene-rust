@@ -1,5 +1,6 @@
 //! Port of the decode half of `org.apache.lucene.codecs.lucene90.
-//! DeflateWithPresetDictCompressionMode` -- raw DEFLATE (no zlib header, no
+//! DeflateWithPresetDictCompressionMode` (the encode half is
+//! [`crate::deflater`], a port of the zlib `deflate` Java's `Deflater` runs) -- raw DEFLATE (no zlib header, no
 //! Adler-32 trailer, matching Java's `Inflater(true)`), used by
 //! [`crate::stored_fields`]'s `Mode.BEST_COMPRESSION`. Structurally the same
 //! preset-dictionary scheme as [`crate::lz4`] (a dictionary unit, then
@@ -22,36 +23,9 @@
 
 use lucene_store::data_input::DataInput;
 use lucene_store::{Error, Result};
-use miniz_oxide::deflate::compress_to_vec;
 use miniz_oxide::inflate::core::inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF;
 use miniz_oxide::inflate::core::{decompress as tinfl_decompress, DecompressorOxide};
 use miniz_oxide::inflate::TINFLStatus;
-
-/// Compresses `input` into a raw DEFLATE stream (no zlib header/trailer),
-/// decodable by [`decompress`]. Real Lucene's `Deflater` at
-/// `BEST_COMPRESSION` uses zlib's own DEFLATE implementation; this port does
-/// not need byte-identical compressed output (compression is an internal
-/// implementation detail invisible to a reader that only sees the
-/// decompressed result), only a *correctly decodable* real DEFLATE stream --
-/// so this reuses `miniz_oxide::deflate::compress_to_vec`, which is already a
-/// dependency of this module's decode side (see [`decompress`]'s doc
-/// comment) and exposes exactly this: a real, already-vetted DEFLATE encoder
-/// with no zlib wrapper to strip (the sibling `compress_to_vec_zlib` is the
-/// wrapped variant; plain `compress_to_vec` omits it). Hand-writing a DEFLATE
-/// encoder (Huffman coding + LZ77) from scratch, the way [`crate::lz4`] does
-/// for LZ4's simpler byte-token scheme, would be substantially more work for
-/// no wire-format benefit here.
-///
-/// Level 6 is exactly what Lucene itself uses:
-/// `DeflateWithPresetDictCompressionMode.newCompressor()` constructs
-/// `new DeflateWithPresetDictCompressor(6)`, with the comment "3 is the
-/// highest level that doesn't have lazy match evaluation / 6 is the default,
-/// higher than that is just a waste of cpu". Only the *decompressed* bytes
-/// are part of the wire contract, so the level would be a free choice
-/// either way -- but there is no reason to pick a different one.
-pub(crate) fn compress(input: &[u8]) -> Vec<u8> {
-    compress_to_vec(input, 6)
-}
 
 /// Decompresses `compressed_len` raw-DEFLATE bytes from `input` into
 /// `dest[d_off..d_off+decompressed_len]`. Back-references may reach earlier
@@ -82,7 +56,7 @@ pub(crate) fn decompress(
     // Even when `decompressed_len == 0`, `compressed_len` bytes were still
     // written to `input` by the writer (a real DEFLATE stream always emits
     // at least a final-block marker, even for zero-length content -- see
-    // `deflate::compress`'s doc comment) and MUST still be consumed here:
+    // `crate::deflater`'s `deflate_slow`) and MUST still be consumed here:
     // `input` is shared across every unit in a chunk ([`crate::stored_fields
     // ::decompress_unit`] decodes a dictionary then several sub-blocks off
     // the same reader), so skipping these bytes would desync every unit
@@ -113,6 +87,12 @@ pub(crate) fn decompress(
 mod tests {
     use super::*;
     use lucene_store::data_input::SliceInput;
+
+    fn compress(block: &[u8]) -> Vec<u8> {
+        let mut compressed = Vec::new();
+        crate::deflater::Deflater::new().compress(block, &mut compressed);
+        compressed
+    }
 
     fn encode_unit(block: &[u8]) -> (Vec<u8>, usize) {
         let compressed = compress(block);

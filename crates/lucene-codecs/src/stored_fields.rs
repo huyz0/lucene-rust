@@ -37,6 +37,7 @@ use lucene_store::data_input::{DataInput, SliceInput};
 use lucene_store::data_output::DataOutput;
 
 use crate::deflate;
+use crate::deflater::Deflater;
 use crate::direct_monotonic;
 use crate::lz4;
 
@@ -1285,6 +1286,10 @@ struct UnitScratch {
     buffer: Vec<u8>,
     compressed: Vec<u8>,
     lengths: Vec<usize>,
+    /// `DeflateWithPresetDictCompressor.compressor`, created with the first
+    /// `BEST_COMPRESSION` chunk and kept for the writer's life: zlib's window
+    /// and chain state survive `reset()`, and the bytes depend on them.
+    deflater: Option<Box<Deflater>>,
 }
 
 /// Appends one self-contained compression unit for `payload` -- the only
@@ -1373,12 +1378,26 @@ fn write_unit(mode: Mode, scratch: &mut UnitScratch, out: &mut Vec<u8>, payload:
             out.write_vint(dict_length as i32);
             out.write_vint(block_length as i32);
 
-            write_deflate_unit(out, &payload[..dict_length]);
+            // `DeflateWithPresetDictCompressor.compress`: the dictionary on
+            // its own, then every sub-block with the dictionary preset.
+            let deflater = scratch
+                .deflater
+                .get_or_insert_with(|| Box::new(Deflater::new()));
+            let dict = &payload[..dict_length];
+            deflater.reset();
+            write_deflate_unit(deflater, &mut scratch.compressed, out, dict);
 
             let mut start = dict_length;
             while start < len {
                 let this_block = block_length.min(len - start);
-                write_deflate_unit(out, &payload[start..start + this_block]);
+                deflater.reset();
+                deflater.set_dictionary(dict);
+                write_deflate_unit(
+                    deflater,
+                    &mut scratch.compressed,
+                    out,
+                    &payload[start..start + this_block],
+                );
                 start += this_block;
             }
         }
@@ -1954,18 +1973,9 @@ fn write_index_and_meta(
 /// length immediately before that unit's bytes, where LZ4 batches all of
 /// them up front (see [`decompress_unit`]).
 ///
-/// Each sub-block (and the dictionary prefix) is compressed independently
-/// via [`deflate::compress`] with **no** preset-dictionary back-referencing
-/// into the dictionary's plaintext: `miniz_oxide`'s `compress_to_vec`
-/// has no preset-dictionary API (see `deflate.rs`'s module doc comment), so
-/// each unit is a fully self-contained DEFLATE stream. This is still valid
-/// per the wire format [`decompress_unit`] reads -- a sub-block's compressed
-/// bytes decompress into `buffer[dict_length..]`, and the dictionary bytes
-/// sitting in `buffer[..dict_length]` are available for a *decoder's*
-/// back-references to reach into, but nothing requires the *encoder* to
-/// have actually produced any cross-unit back-references. The cost is a
-/// smaller compression ratio than real Lucene's writer (which does use the
-/// dictionary to compress each block), not a correctness gap.
+/// Each sub-block is compressed with the chunk's dictionary preset
+/// (`Deflater.setDictionary`), through [`Deflater`] -- a port of the zlib
+/// `deflate` Java's `Deflater` runs -- so the `.fdt` bytes are Lucene's.
 pub fn write_best_compression(
     docs: &[Document],
     segment_id: &[u8; ID_LENGTH],
@@ -1988,14 +1998,20 @@ pub fn write_best_compression(
 /// empty DEFLATE stream, which Java's reader does in fact still accept
 /// (verified against Lucene 10.5.0 via `VerifyStoredFields`, segment `_3`) --
 /// so this is a framing-fidelity and size fix, not a corruption fix.
-fn write_deflate_unit(out: &mut Vec<u8>, plain: &[u8]) {
+fn write_deflate_unit(
+    deflater: &mut Deflater,
+    compressed: &mut Vec<u8>,
+    out: &mut Vec<u8>,
+    plain: &[u8],
+) {
     if plain.is_empty() {
         out.write_vint(0);
         return;
     }
-    let compressed = deflate::compress(plain);
+    compressed.clear();
+    deflater.compress(plain, compressed);
     out.write_vint(compressed.len() as i32);
-    out.write_bytes(&compressed);
+    out.write_bytes(compressed);
 }
 
 /// Port of `StoredFieldsInts`'s bulk per-doc array encode, the exact inverse
