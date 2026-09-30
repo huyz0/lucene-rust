@@ -401,7 +401,7 @@ index/IndexWriterEventListener	not-needed	callback hook for merge begin/end even
 index/IndexableField	partial	crates/lucene-index/src/index_writer/explicit.rs::ExplicitDocument -- M7: no `IndexableField` abstraction: fields are configured per writer (`set_*_field`/`add_*_field`) or arrive pre-inverted; the document field-type API is M7 T7.2
 index/IndexableFieldType	partial	crates/lucene-codecs/src/field_infos.rs::FieldInfo -- M7: field properties exist only as the writer's per-field `FieldInfo` schema; no per-field-instance type descriptor of the document API (M7 T7.2)
 index/IndexingChain	partial	crates/lucene-index/src/indexing_chain.rs::invert_documents -- M7: `maybeSortSegment` handles only NUMERIC/SORTED_NUMERIC index sorts (`STRING`/`SortedSet`/`Binary` refused with `Error::UnsupportedIndexSortKind`); a PayloadAttribute or TermFrequencyAttribute a TokenFilter sets is not read by the inverter (payloads still come from BoxedPayloadSource, custom frequencies from add_document_with_custom_freq_terms)
-index/KeepLastNCommitsDeletionPolicy	todo:M7	deletion policy keeping the last N commits
+index/KeepLastNCommitsDeletionPolicy	ported	crates/lucene-index/src/deletion_policy.rs::KeepLastNCommitsDeletionPolicy
 index/KeepOnlyLastCommitDeletionPolicy	ported	crates/lucene-index/src/deletion_policy.rs::KeepOnlyLastCommitDeletionPolicy
 index/KnnVectorValues	ported	crates/lucene-codecs/src/vectors.rs::FloatVectorValues
 index/LeafMetaData	ported	crates/lucene-index/src/segment_info.rs::SegmentInfo
