@@ -131,6 +131,13 @@ thread pool, `maxThreadCount`/`maxMergeCount`, producer stalls, pausing big
 merges, the auto IO throttle through `MergeRateLimiter`) and
 `MultiIndexMergeScheduler` -- in `lucene-index/src/merge_scheduler.rs`, driven
 by `ConcurrentIndexWriter::with_merge_scheduler`.
+
+Delivered (ported, not yet benchmarked): near-real-time readers from a live
+writer -- `DirectoryReader::open_from_writer`/`open_nrt`/`open_if_changed_nrt`
+over `lucene-index/src/nrt.rs`'s `NrtSource` (both writers), with the
+snapshot's files pinned until the reader drops -- `SearcherManager`'s writer
+constructors, and a `ReaderPool` keeping segments opened for delete
+resolution between rounds.
 ### T7.8 — `StandardTokenizer` and the attribute model · delivered 2026-09-30, two rows partial
 
 `crates/lucene-analysis` is now Lucene's streaming model: `TokenStream`/
