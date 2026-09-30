@@ -38,10 +38,13 @@ pub(crate) mod build;
 mod bulk;
 pub(crate) mod cache;
 mod conjunction;
+mod disi_approx;
 mod disjunction;
+pub(crate) mod extended;
 mod leaf;
 pub(crate) mod multi_term;
 mod phrase;
+pub(crate) mod ranges;
 mod req;
 mod term_dismax;
 mod wand;
@@ -146,6 +149,16 @@ pub(crate) trait Scorer {
     /// iterators by membership (`BitSetConjunctionDISI`).
     fn contains(&self, _doc: i32) -> Option<bool> {
         None
+    }
+    /// `IndriScorer.getBoost()` for a scorer that is an `IndriScorer`
+    /// (`IndriAndScorer`); `None` for every other scorer, which
+    /// `IndriAndScorer.scoreDoc`'s `instanceof` check skips.
+    fn indri_boost(&self) -> Option<f32> {
+        None
+    }
+    /// `Scorable.smoothingScore(docId)`: `0` unless overridden.
+    fn smoothing_score(&mut self, _doc: i32) -> Result<f32> {
+        Ok(0.0)
     }
     /// `Scorer.nextDocsAndScores`: up to 64 matches from the current document
     /// on, below `up_to`, live ones only, over the *exact* iterator; leaves
