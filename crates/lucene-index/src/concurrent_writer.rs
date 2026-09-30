@@ -1038,6 +1038,64 @@ impl<'d> ConcurrentIndexWriter<'d> {
         Ok(writer)
     }
 
+    /// `IndexWriter.tryDeleteDocument(reader, docID)`: see
+    /// [`IndexWriter::try_delete_document`]. Numbered from this writer's
+    /// log; `None` when the reader's segment is no longer in the writer.
+    pub fn try_delete_document(
+        &self,
+        reader_infos: &crate::segment_infos::SegmentInfos,
+        doc_id: i32,
+    ) -> Result<Option<SeqNo>> {
+        let done = lock(&self.core)
+            .writer
+            .try_delete_resolved(reader_infos, doc_id)?;
+        Ok(done.then(|| lock(&self.log).take_seq()))
+    }
+
+    /// `IndexWriter.tryUpdateDocValue(reader, docID, fields...)`: see
+    /// [`IndexWriter::try_update_doc_value`].
+    pub fn try_update_doc_value(
+        &self,
+        reader_infos: &crate::segment_infos::SegmentInfos,
+        doc_id: i32,
+        updates: &[DocValuesUpdate],
+    ) -> Result<Option<SeqNo>> {
+        let done = lock(&self.core)
+            .writer
+            .try_update_resolved(reader_infos, doc_id, updates)?;
+        Ok(done.then(|| lock(&self.log).take_seq()))
+    }
+
+    /// `IndexWriter.flushNextBuffer()`: flushes the slot holding the most
+    /// buffered RAM (by document count when RAM is not tracked) into a
+    /// segment, returning whether there was one to flush.
+    pub fn flush_next_buffer(&self) -> Result<bool> {
+        let largest = self
+            .slots
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let d = lock(s);
+                (i, (d.ram_bytes, d.docs.len()))
+            })
+            .filter(|(_, (_, docs))| *docs > 0)
+            .max_by_key(|(_, size)| *size)
+            .map(|(i, _)| i);
+        let Some(i) = largest else {
+            return Ok(false);
+        };
+        let batch = {
+            let mut dwpt = lock(&self.slots[i]);
+            self.begin_flush(i, &mut dwpt)
+        };
+        let Some(batch) = batch else {
+            return Ok(false);
+        };
+        self.complete_flush(batch)?;
+        self.schedule_merges(MergeTrigger::SegmentFlush)?;
+        Ok(true)
+    }
+
     /// Documents buffered in every slot, not yet in a segment.
     pub fn pending_doc_count(&self) -> usize {
         self.slots.iter().map(|s| lock(s).docs.len()).sum()
@@ -2216,5 +2274,46 @@ mod tests {
         let dir2 = FsDirectory::open(&tmp2);
         let plain = ConcurrentIndexWriter::new(writer(&dir2, 5), 1).unwrap();
         plain.close_merges().unwrap();
+    }
+
+    /// `flushNextBuffer` takes the fullest slot; `tryDeleteDocument` and
+    /// `tryUpdateDocValue` act on a snapshot's doc ids and are numbered from
+    /// this writer's log.
+    #[test]
+    fn flush_next_buffer_and_try_delete_by_doc_id() {
+        use crate::nrt::NrtSource;
+        let tmp = TempDir::new("concurrent-try");
+        let dir = FsDirectory::open(&tmp);
+        let w = ConcurrentIndexWriter::new(writer(&dir, 1000), 2).unwrap();
+        assert!(!w.flush_next_buffer().unwrap());
+        for i in 0..3 {
+            w.add_document(doc(&format!("a{i}"), 0)).unwrap();
+        }
+        // Round-robin over two slots: the fuller one (two documents) goes
+        // first, then the other.
+        assert!(w.flush_next_buffer().unwrap());
+        assert_eq!(w.pending_doc_count(), 1);
+        assert!(w.flush_next_buffer().unwrap());
+        assert_eq!(w.pending_doc_count(), 0);
+        let snap = w.nrt_snapshot(true, false).unwrap();
+        let before = lock(&w.log).next_seq;
+        let seq = w.try_delete_document(&snap.segment_infos, 1).unwrap();
+        assert_eq!(seq, Some(before));
+        let update = DocValuesUpdate::Numeric {
+            term: Term::new("", ""),
+            field: "id".into(),
+            value: Some(1),
+        };
+        // `id` has no doc values: refused before anything is written.
+        assert!(w
+            .try_update_doc_value(&snap.segment_infos, 0, &[update])
+            .is_err());
+        w.commit().unwrap();
+        let (docs, _) = live_documents(&dir);
+        assert_eq!(docs.len(), 2);
+        // Doc 1 of the snapshot is the second of the first segment flushed,
+        // which (round-robin, fuller slot first) holds a0 and a2.
+        assert!(!docs.contains_key("a2"), "{docs:?}");
+        assert_clean(&dir);
     }
 }

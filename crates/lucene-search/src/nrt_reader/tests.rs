@@ -168,3 +168,34 @@ fn an_nrt_reader_of_a_concurrent_writer_survives_merges() {
         "released files were not reclaimed"
     );
 }
+
+/// `setLeafSorter`: the segments of a writer's reader in the sorter's order,
+/// doc bases recomputed, the documents themselves unchanged.
+#[test]
+fn a_leaf_sorter_orders_the_segments_of_a_reader() {
+    let tmp = TempDir::new("nrt-leaf-sorter");
+    let dir = FsDirectory::open(&tmp);
+    let w = Mutex::new(writer(&dir));
+    for (n, prefix) in [(1, "a"), (3, "b"), (2, "c")] {
+        for i in 0..n {
+            w.lock()
+                .unwrap()
+                .add_document(doc(&format!("{prefix}{i}")))
+                .unwrap();
+        }
+        w.lock().unwrap().flush().unwrap();
+    }
+    let reader = DirectoryReader::open_from_writer(&w).unwrap();
+    let sorted = reader.with_leaf_sorter(|a, b| b.max_doc.cmp(&a.max_doc));
+    let sizes: Vec<i32> = sorted.segment_readers().iter().map(|s| s.max_doc).collect();
+    assert_eq!(sizes, [3, 2, 1]);
+    let bases: Vec<i32> = sorted
+        .segment_readers()
+        .iter()
+        .map(|s| s.doc_base)
+        .collect();
+    assert_eq!(bases, [0, 3, 5]);
+    assert_eq!(ids(&sorted), ["b0", "b1", "b2", "c0", "c1", "a0"]);
+    assert!(sorted.is_nrt());
+    assert_eq!(sorted.num_docs(), reader.num_docs());
+}
