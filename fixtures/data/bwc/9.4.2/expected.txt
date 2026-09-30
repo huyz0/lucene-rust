@@ -1,0 +1,85 @@
+commit gen=1 version=9.4.2 created=9 min=9.4.2
+seg _0 codec=Lucene94 maxDoc=3000 delCount=177 softDel=0 version=9.4.2 minVersion=9.4.2 compound=false files=[_0.fdm, _0.fdt, _0.fdx, _0.fnm, _0.kdd, _0.kdi, _0.kdm, _0.nvd, _0.nvm, _0.si, _0.tvd, _0.tvm, _0.tvx, _0_1.liv, _0_Lucene90_0.doc, _0_Lucene90_0.dvd, _0_Lucene90_0.dvm, _0_Lucene90_0.pay, _0_Lucene90_0.pos, _0_Lucene90_0.tim, _0_Lucene90_0.tip, _0_Lucene90_0.tmd, _0_Lucene94HnswVectorsFormat_0.vec, _0_Lucene94HnswVectorsFormat_0.vem, _0_Lucene94HnswVectorsFormat_0.vex]
+seg _1 codec=Lucene94 maxDoc=400 delCount=23 softDel=0 version=9.4.2 minVersion=9.4.2 compound=false files=[_1.fdm, _1.fdt, _1.fdx, _1.fnm, _1.kdd, _1.kdi, _1.kdm, _1.nvd, _1.nvm, _1.si, _1.tvd, _1.tvm, _1.tvx, _1_1.liv, _1_Lucene90_0.doc, _1_Lucene90_0.dvd, _1_Lucene90_0.dvm, _1_Lucene90_0.pay, _1_Lucene90_0.pos, _1_Lucene90_0.tim, _1_Lucene90_0.tip, _1_Lucene90_0.tmd, _1_Lucene94HnswVectorsFormat_0.vec, _1_Lucene94HnswVectorsFormat_0.vem, _1_Lucene94HnswVectorsFormat_0.vex]
+field _0 id num=0 index=DOCS tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=0,FLOAT32,EUCLIDEAN attrs={PerFieldPostingsFormat.format=Lucene90, PerFieldPostingsFormat.suffix=0}
+field _0 body num=1 index=DOCS_AND_FREQS_AND_POSITIONS tv=false norms=true payloads=false dv=NONE points=0,0,0 vec=0,FLOAT32,EUCLIDEAN attrs={PerFieldPostingsFormat.format=Lucene90, PerFieldPostingsFormat.suffix=0}
+field _0 title num=2 index=DOCS_AND_FREQS_AND_POSITIONS tv=true norms=true payloads=false dv=NONE points=0,0,0 vec=0,FLOAT32,EUCLIDEAN attrs={PerFieldPostingsFormat.format=Lucene90, PerFieldPostingsFormat.suffix=0}
+field _0 off num=3 index=DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS tv=false norms=true payloads=false dv=NONE points=0,0,0 vec=0,FLOAT32,EUCLIDEAN attrs={PerFieldPostingsFormat.format=Lucene90, PerFieldPostingsFormat.suffix=0}
+field _0 pay num=4 index=DOCS_AND_FREQS_AND_POSITIONS tv=false norms=true payloads=true dv=NONE points=0,0,0 vec=0,FLOAT32,EUCLIDEAN attrs={PerFieldPostingsFormat.format=Lucene90, PerFieldPostingsFormat.suffix=0}
+field _0 docs num=5 index=DOCS tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=0,FLOAT32,EUCLIDEAN attrs={PerFieldPostingsFormat.format=Lucene90, PerFieldPostingsFormat.suffix=0}
+field _0 freqs num=6 index=DOCS_AND_FREQS tv=false norms=true payloads=false dv=NONE points=0,0,0 vec=0,FLOAT32,EUCLIDEAN attrs={PerFieldPostingsFormat.format=Lucene90, PerFieldPostingsFormat.suffix=0}
+field _0 num num=7 index=NONE tv=false norms=false payloads=false dv=NUMERIC points=0,0,0 vec=0,FLOAT32,EUCLIDEAN attrs={PerFieldDocValuesFormat.format=Lucene90, PerFieldDocValuesFormat.suffix=0}
+field _0 sorted num=8 index=NONE tv=false norms=false payloads=false dv=SORTED points=0,0,0 vec=0,FLOAT32,EUCLIDEAN attrs={PerFieldDocValuesFormat.format=Lucene90, PerFieldDocValuesFormat.suffix=0}
+field _0 sset num=9 index=NONE tv=false norms=false payloads=false dv=SORTED_SET points=0,0,0 vec=0,FLOAT32,EUCLIDEAN attrs={PerFieldDocValuesFormat.format=Lucene90, PerFieldDocValuesFormat.suffix=0}
+field _0 snum num=10 index=NONE tv=false norms=false payloads=false dv=SORTED_NUMERIC points=0,0,0 vec=0,FLOAT32,EUCLIDEAN attrs={PerFieldDocValuesFormat.format=Lucene90, PerFieldDocValuesFormat.suffix=0}
+field _0 ipt num=11 index=NONE tv=false norms=false payloads=false dv=NONE points=1,1,4 vec=0,FLOAT32,EUCLIDEAN attrs={}
+field _0 lpt num=12 index=NONE tv=false norms=false payloads=false dv=NONE points=1,1,8 vec=0,FLOAT32,EUCLIDEAN attrs={}
+field _0 pt2 num=13 index=NONE tv=false norms=false payloads=false dv=NONE points=2,2,4 vec=0,FLOAT32,EUCLIDEAN attrs={}
+field _0 fvec num=14 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=8,FLOAT32,EUCLIDEAN attrs={PerFieldKnnVectorsFormat.format=Lucene94HnswVectorsFormat, PerFieldKnnVectorsFormat.suffix=0}
+field _0 bin num=15 index=NONE tv=false norms=false payloads=false dv=BINARY points=0,0,0 vec=0,FLOAT32,EUCLIDEAN attrs={PerFieldDocValuesFormat.format=Lucene90, PerFieldDocValuesFormat.suffix=0}
+live _0 n=2823 90aa051750d58da4
+postings _0 id terms=3000 sumDocFreq=3000 sumTTF=3000 docCount=3000 min=0 max=999 9bac21c65d81eb7b
+postings _0 body terms=20 sumDocFreq=25045 sumTTF=67260 docCount=3000 min=alpha max=zeta e99911aba8ded6ce
+norms _0 body d86e5e65d3faad46
+postings _0 title terms=18 sumDocFreq=2902 sumTTF=3448 docCount=1000 min=alpha max=zeta ef717d482fa52bbd
+norms _0 title 1749a6b2191b6819
+postings _0 off terms=20 sumDocFreq=13791 sumTTF=19386 docCount=3000 min=alpha max=zeta 947f5c46e774b780
+norms _0 off 25441719d174254d
+postings _0 pay terms=20 sumDocFreq=13774 sumTTF=19357 docCount=3000 min=alpha max=zeta 1f59fb8b46275a0e
+norms _0 pay 14525610b8d4987e
+postings _0 docs terms=20 sumDocFreq=7718 sumTTF=7718 docCount=3000 min=alpha max=zeta 0caa7f9429ffafa6
+postings _0 freqs terms=20 sumDocFreq=10672 sumTTF=13680 docCount=3000 min=alpha max=zeta b5dff4925d14fd34
+norms _0 freqs 382f2fc871043d43
+dv _0 num NUMERIC 9962bb990db26afb
+dv _0 sorted SORTED 631053e3b3360276
+dv _0 sset SORTED_SET ba352760e36d395a
+dv _0 snum SORTED_NUMERIC 6480a6530a18bf93
+points _0 ipt size=3000 docCount=3000 min=7fffd8f4 max=80002706 06358af3c48ee949
+points _0 lpt size=3000 docCount=3000 min=7f8002bfe6850d66 max=807fefb12aa47f63 29f181f8d86f6461
+points _0 pt2 size=3000 docCount=3000 min=8000000080000000 max=800003e7800003e7 047306041b3119e1
+knn _0 fvec 304:3f1a55f0,1362:3f0b3a69,1876:3edf2d38,1988:3ede5ece,930:3ed8160e,538:3ed551e2,2640:3ecfe594,2520:3ecb4367,164:3ec937cb,2832:3ec311b0
+vec _0 fvec n=1500 d89caadb06ef46d2
+dv _0 bin BINARY 7011f07e1ebf1418
+stored _0 5e6dcb9b5a2f365e
+tv _0 f1b2bf111f05f459
+field _1 id num=0 index=DOCS tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=0,FLOAT32,EUCLIDEAN attrs={PerFieldPostingsFormat.format=Lucene90, PerFieldPostingsFormat.suffix=0}
+field _1 body num=1 index=DOCS_AND_FREQS_AND_POSITIONS tv=false norms=true payloads=false dv=NONE points=0,0,0 vec=0,FLOAT32,EUCLIDEAN attrs={PerFieldPostingsFormat.format=Lucene90, PerFieldPostingsFormat.suffix=0}
+field _1 title num=2 index=DOCS_AND_FREQS_AND_POSITIONS tv=true norms=true payloads=false dv=NONE points=0,0,0 vec=0,FLOAT32,EUCLIDEAN attrs={PerFieldPostingsFormat.format=Lucene90, PerFieldPostingsFormat.suffix=0}
+field _1 off num=3 index=DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS tv=false norms=true payloads=false dv=NONE points=0,0,0 vec=0,FLOAT32,EUCLIDEAN attrs={PerFieldPostingsFormat.format=Lucene90, PerFieldPostingsFormat.suffix=0}
+field _1 pay num=4 index=DOCS_AND_FREQS_AND_POSITIONS tv=false norms=true payloads=true dv=NONE points=0,0,0 vec=0,FLOAT32,EUCLIDEAN attrs={PerFieldPostingsFormat.format=Lucene90, PerFieldPostingsFormat.suffix=0}
+field _1 docs num=5 index=DOCS tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=0,FLOAT32,EUCLIDEAN attrs={PerFieldPostingsFormat.format=Lucene90, PerFieldPostingsFormat.suffix=0}
+field _1 freqs num=6 index=DOCS_AND_FREQS tv=false norms=true payloads=false dv=NONE points=0,0,0 vec=0,FLOAT32,EUCLIDEAN attrs={PerFieldPostingsFormat.format=Lucene90, PerFieldPostingsFormat.suffix=0}
+field _1 num num=7 index=NONE tv=false norms=false payloads=false dv=NUMERIC points=0,0,0 vec=0,FLOAT32,EUCLIDEAN attrs={PerFieldDocValuesFormat.format=Lucene90, PerFieldDocValuesFormat.suffix=0}
+field _1 sorted num=8 index=NONE tv=false norms=false payloads=false dv=SORTED points=0,0,0 vec=0,FLOAT32,EUCLIDEAN attrs={PerFieldDocValuesFormat.format=Lucene90, PerFieldDocValuesFormat.suffix=0}
+field _1 sset num=9 index=NONE tv=false norms=false payloads=false dv=SORTED_SET points=0,0,0 vec=0,FLOAT32,EUCLIDEAN attrs={PerFieldDocValuesFormat.format=Lucene90, PerFieldDocValuesFormat.suffix=0}
+field _1 snum num=10 index=NONE tv=false norms=false payloads=false dv=SORTED_NUMERIC points=0,0,0 vec=0,FLOAT32,EUCLIDEAN attrs={PerFieldDocValuesFormat.format=Lucene90, PerFieldDocValuesFormat.suffix=0}
+field _1 ipt num=11 index=NONE tv=false norms=false payloads=false dv=NONE points=1,1,4 vec=0,FLOAT32,EUCLIDEAN attrs={}
+field _1 lpt num=12 index=NONE tv=false norms=false payloads=false dv=NONE points=1,1,8 vec=0,FLOAT32,EUCLIDEAN attrs={}
+field _1 pt2 num=13 index=NONE tv=false norms=false payloads=false dv=NONE points=2,2,4 vec=0,FLOAT32,EUCLIDEAN attrs={}
+field _1 fvec num=14 index=NONE tv=false norms=false payloads=false dv=NONE points=0,0,0 vec=8,FLOAT32,EUCLIDEAN attrs={PerFieldKnnVectorsFormat.format=Lucene94HnswVectorsFormat, PerFieldKnnVectorsFormat.suffix=0}
+field _1 bin num=15 index=NONE tv=false norms=false payloads=false dv=BINARY points=0,0,0 vec=0,FLOAT32,EUCLIDEAN attrs={PerFieldDocValuesFormat.format=Lucene90, PerFieldDocValuesFormat.suffix=0}
+live _1 n=377 425d7f3767b3eaa4
+postings _1 id terms=400 sumDocFreq=400 sumTTF=400 docCount=400 min=3000 max=3399 45c1cf437a66daa9
+postings _1 body terms=20 sumDocFreq=3352 sumTTF=8874 docCount=400 min=alpha max=zeta 10da59ac43e6ef47
+norms _1 body 3ba8b24b383ee694
+postings _1 title terms=15 sumDocFreq=366 sumTTF=440 docCount=134 min=alpha max=zeta 42dbce436d385bac
+norms _1 title 53a63c74e5e845d4
+postings _1 off terms=19 sumDocFreq=1821 sumTTF=2570 docCount=400 min=alpha max=zeta 1c7358f628d5459e
+norms _1 off 088909a70ac60e63
+postings _1 pay terms=20 sumDocFreq=1894 sumTTF=2699 docCount=400 min=alpha max=zeta d8f858574a5f7f80
+norms _1 pay a2d88e3b1ad40440
+postings _1 docs terms=17 sumDocFreq=1083 sumTTF=1083 docCount=400 min=alpha max=zeta f4334752ec607e52
+postings _1 freqs terms=15 sumDocFreq=1366 sumTTF=1775 docCount=400 min=alpha max=zeta ba45eb6b420951a4
+norms _1 freqs 87fd14ea9ec0f264
+dv _1 num NUMERIC 1a61c24f5b6d9c07
+dv _1 sorted SORTED bdd7ebc80da0f036
+dv _1 sset SORTED_SET 7ecd272d213b0945
+dv _1 snum SORTED_NUMERIC beaed3d80f1bca92
+points _1 ipt size=400 docCount=400 min=7fffd8f2 max=800026d8 064879ab974bb8b8
+points _1 lpt size=400 docCount=400 min=7f80f0642a8277a2 max=807f3f28d3cf067f 9796a99b67f4bb7a
+points _1 pt2 size=400 docCount=400 min=8000000080000003 max=800003e7800003e0 7388badf413fe116
+knn _1 fvec 156:3ea37559,216:3e9040d6,184:3e896430,262:3e876649,356:3e6e9be9,126:3e69a625,316:3e6643fb,290:3e5a2a99,374:3e54c79c,338:3e5224b5
+vec _1 fvec n=200 2c66918a5182fa2e
+dv _1 bin BINARY afdf98ae34b8989b
+stored _1 b5550d48fb78f5ec
+tv _1 f11df07762470ed4
