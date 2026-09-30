@@ -890,6 +890,10 @@ pub(crate) struct IndexingConfig {
     /// `Lucene99HnswVectorsFormat(hnsw_m, hnsw_beam_width)` -- see
     /// [`IndexWriter::set_knn_vectors_format_for_field`].
     knn_vectors_formats: Vec<(String, per_field_knn_vectors::KnnVectorsFormat)>,
+    /// `IndexWriterConfig.setCodec`: the per-field routing every field
+    /// without a per-field setting of its own follows -- see
+    /// [`IndexWriter::set_codec`]. `None` is `Lucene104Codec()`.
+    codec: Option<std::sync::Arc<dyn lucene_codecs::codec::Lucene104Codec>>,
 }
 
 /// One `PerFieldDocValuesFormat` instance's files for a flushed segment:
@@ -1262,6 +1266,11 @@ impl IndexingConfig {
             .iter()
             .find(|(name, _)| name == field)
             .map(|(_, format)| *format)
+            .or_else(|| {
+                self.codec
+                    .as_ref()
+                    .map(|c| c.postings_format_for_field(field))
+            })
             .unwrap_or_default()
     }
 
@@ -2367,6 +2376,7 @@ impl IndexingConfig {
                 postings_formats: self.postings_formats.clone(),
                 doc_values_formats: self.doc_values_formats.clone(),
                 knn_vectors_formats: self.knn_vectors_formats.clone(),
+                codec: self.codec.clone(),
             },
             &plan.merged_name,
             plan.merged_id,
@@ -2583,6 +2593,11 @@ impl IndexingConfig {
             .iter()
             .find(|(field, _)| field == name)
             .map(|(_, format)| *format)
+            .or_else(|| {
+                self.codec
+                    .as_ref()
+                    .map(|c| c.knn_vectors_format_for_field(name))
+            })
             .unwrap_or(per_field_knn_vectors::KnnVectorsFormat::Hnsw {
                 max_conn: self.hnsw_m,
                 beam_width: self.hnsw_beam_width,
@@ -2597,6 +2612,11 @@ impl IndexingConfig {
             .iter()
             .find(|(field, _)| field == name)
             .map(|(_, format)| *format)
+            .or_else(|| {
+                self.codec
+                    .as_ref()
+                    .map(|c| c.doc_values_format_for_field(name))
+            })
             .unwrap_or_default()
     }
 
@@ -4141,6 +4161,34 @@ impl<'d> IndexWriter<'d> {
     /// Every other field stays on the default instance,
     /// `Lucene99HnswVectorsFormat` with [`IndexWriter::set_hnsw_parameters`]'
     /// graph parameters.
+    /// `IndexWriterConfig.setCodec(codec)`: from the next flush and merge on,
+    /// every field's postings, doc-values and KNN vectors format is the one
+    /// `codec` answers (`Lucene104Codec`'s `get*FormatForField`), unless a
+    /// per-field setter ([`IndexWriter::set_postings_format_for_field`],
+    /// [`IndexWriter::set_doc_values_format_for_field`],
+    /// [`IndexWriter::set_knn_vectors_format_for_field`]) routed that field,
+    /// which wins. `None` returns to `Lucene104Codec()`'s defaults (with
+    /// [`IndexWriter::set_hnsw_parameters`]' graph for vectors).
+    ///
+    /// The codec's name must be the one this port writes (`Lucene104`);
+    /// anything else is refused, as this writer has no other codec's formats.
+    pub fn set_codec(
+        &mut self,
+        codec: Option<std::sync::Arc<dyn lucene_codecs::codec::Lucene104Codec>>,
+    ) -> Result<()> {
+        if let Some(c) = &codec {
+            if c.name() != self.cfg.codec_name {
+                return Err(Error::Explicit(format!(
+                    "codec {:?} is not the codec this writer writes ({:?})",
+                    c.name(),
+                    self.cfg.codec_name
+                )));
+            }
+        }
+        self.cfg_mut().codec = codec;
+        Ok(())
+    }
+
     pub fn set_knn_vectors_format_for_field(
         &mut self,
         field: &str,
@@ -4425,6 +4473,7 @@ impl<'d> IndexWriter<'d> {
                 postings_formats: Vec::new(),
                 doc_values_formats: Vec::new(),
                 knn_vectors_formats: Vec::new(),
+                codec: None,
                 reader_pool: std::sync::Arc::default(),
                 merged_segment_warmer: None,
             }),

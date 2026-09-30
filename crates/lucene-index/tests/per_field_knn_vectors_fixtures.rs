@@ -17,6 +17,7 @@
 
 use std::sync::Arc;
 
+use lucene_codecs::codec::Lucene104Codec;
 use lucene_codecs::field_infos::VectorSimilarityFunction;
 use lucene_codecs::per_field_knn_vectors::KnnVectorsFormat;
 use lucene_index::buffered_updates::Term;
@@ -90,13 +91,49 @@ fn doc(i: usize) -> Document {
     d
 }
 
-fn write(dir: &FsDirectory, merge: bool) {
+/// `GenPerFieldKnnVectors`' codec, as an `IndexWriterConfig.setCodec` codec.
+#[derive(Debug)]
+struct Codec;
+
+impl Lucene104Codec for Codec {
+    fn knn_vectors_format_for_field(&self, field: &str) -> KnnVectorsFormat {
+        match field {
+            "v_small" | "v_bytes" => KnnVectorsFormat::hnsw(8, 40).unwrap(),
+            "v_sq" => {
+                KnnVectorsFormat::hnsw_scalar_quantized(ScalarEncoding::UnsignedByte, 16, 100)
+                    .unwrap()
+            }
+            "v_flat" => KnnVectorsFormat::scalar_quantized(ScalarEncoding::SevenBit),
+            _ => KnnVectorsFormat::default(),
+        }
+    }
+}
+
+fn write_with(dir: &FsDirectory, merge: bool, codec: bool) {
     let version = LuceneVersion {
         major: 10,
         minor: 5,
         bugfix: 0,
     };
     let mut w = IndexWriter::open(dir, Vec::new(), "Lucene104", version).unwrap();
+    if codec {
+        w.set_codec(Some(Arc::new(Codec))).unwrap();
+    } else {
+        route(&mut w);
+    }
+    w.set_max_full_flush_merge_wait_millis(0);
+    if merge {
+        let mut tmp = TieredMergePolicy::default();
+        tmp.compound_file_settings_mut()
+            .set_no_cfs_ratio(0.0)
+            .unwrap();
+        w.set_pluggable_merge_policy(Some(Arc::new(tmp)));
+    }
+    add_documents(&mut w, merge);
+}
+
+/// The per-field setters' routing.
+fn route(w: &mut IndexWriter<'_>) {
     let small = KnnVectorsFormat::hnsw(8, 40).unwrap();
     w.set_knn_vectors_format_for_field("v_small", small);
     w.set_knn_vectors_format_for_field("v_bytes", small);
@@ -108,14 +145,9 @@ fn write(dir: &FsDirectory, merge: bool) {
         "v_flat",
         KnnVectorsFormat::scalar_quantized(ScalarEncoding::SevenBit),
     );
-    w.set_max_full_flush_merge_wait_millis(0);
-    if merge {
-        let mut tmp = TieredMergePolicy::default();
-        tmp.compound_file_settings_mut()
-            .set_no_cfs_ratio(0.0)
-            .unwrap();
-        w.set_pluggable_merge_policy(Some(Arc::new(tmp)));
-    }
+}
+
+fn add_documents(w: &mut IndexWriter<'_>, merge: bool) {
     for seg in 0..2 {
         for i in seg * PER_SEGMENT..(seg + 1) * PER_SEGMENT {
             w.add_fields_document(&doc(i)).unwrap();
@@ -192,9 +224,13 @@ fn with_segment_id(ours: &[u8], our_id: &[u8; 16], id: &[u8; 16]) -> Vec<u8> {
 }
 
 fn check(which: &str, merge: bool) {
+    check_with(which, merge, false);
+}
+
+fn check_with(which: &str, merge: bool, codec: bool) {
     let tmp = TempDir::new("per-field-knn-vectors");
     let dir = FsDirectory::open(&tmp);
-    write(&dir, merge);
+    write_with(&dir, merge, codec);
     let java = FsDirectory::open(fixture(which));
     let expected: Vec<String> = std::fs::read_to_string(format!("{}/manifest.txt", fixture(which)))
         .unwrap()
@@ -235,6 +271,13 @@ fn check(which: &str, merge: bool) {
         results.iter().all(|r| r.failures().is_empty()),
         "{results:?}"
     );
+}
+
+/// The same routing through `IndexWriterConfig.setCodec` alone.
+#[test]
+fn a_codec_routes_vectors_as_java_does() {
+    check_with("flushed", false, true);
+    check_with("merged", true, true);
 }
 
 #[test]
