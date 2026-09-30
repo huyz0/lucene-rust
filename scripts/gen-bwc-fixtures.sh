@@ -13,12 +13,25 @@
 #
 # Usage: scripts/gen-bwc-fixtures.sh [--only <version>]
 #        scripts/gen-bwc-fixtures.sh --big <version>
+#        scripts/gen-bwc-fixtures.sh --quantized <version>
+#        scripts/gen-bwc-fixtures.sh --dump <fixture dir>
 #
 # --big writes fixtures/data/bwc-big/<version>/ instead: fixtures/bwc/BwcBig.java,
 # one 20,000-document segment whose terms need every level of the retired
 # postings formats' skip data (trailing multi-level lists, inline level 1),
 # which the 3,000-document corpus never reaches. Versions: 9.0.0 (Lucene90),
 # 9.11.1 (Lucene99), 9.12.2 (Lucene912), 10.2.2 (Lucene101).
+#
+# --quantized writes fixtures/data/bwc-quantized/<version>/ instead:
+# fixtures/bwc/BwcQuantized.java, per-field quantized vector fields --
+# Lucene99(Hnsw)ScalarQuantizedVectorsFormat and, from 10.2,
+# Lucene102(Hnsw)BinaryQuantizedVectorsFormat -- then BwcDump. Versions:
+# 9.9.2 (the scalar format's version 0), 9.12.2 (version 1: 4-bit, compressed,
+# flat), 10.2.2 (all of it plus the binary formats).
+#
+# --dump re-runs only BwcDump over an existing fixture directory, rewriting
+# its expected.txt and nothing else (the index is not touched, so every line
+# BwcDump already wrote comes back byte for byte) -- for a new line kind.
 #
 # A regenerated index differs from the committed one byte for byte (segment
 # ids are random), and so do its digests of file-level content; regenerate
@@ -27,12 +40,17 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 VERSIONS=(9.0.0 9.1.0 9.3.0 9.4.2 9.8.0 9.11.1 9.12.2 10.0.0 10.2.2 10.4.0)
+QUANTIZED_VERSIONS=(9.9.2 9.12.2 10.2.2)
 ONLY=""
 BIG=""
+QUANTIZED=""
+DUMP=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --only) ONLY="$2"; shift 2 ;;
     --big) BIG="$2"; shift 2 ;;
+    --quantized) QUANTIZED="$2"; shift 2 ;;
+    --dump) DUMP="$2"; shift 2 ;;
     -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "gen-bwc-fixtures: unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -48,6 +66,33 @@ if [ -n "$BIG" ]; then
   java -cp "$WORK/big:$jar" BwcBig "$out" 2>/dev/null
   rm -f "$out/write.lock"
   echo "gen-bwc-fixtures: $BIG -> $out"
+  exit 0
+fi
+if [ -n "$DUMP" ] || [ -n "$QUANTIZED" ]; then
+  JARS="$PWD/fixtures/.jars"
+  # shellcheck source=scripts/lib-lucene-jars.sh
+  source "$(dirname "$0")/lib-lucene-jars.sh"
+  DUMP_CP=$(lucene_classpath lucene-core lucene-backward-codecs)
+  WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
+  javac -nowarn -proc:none -cp "$DUMP_CP" -d "$WORK/dump" fixtures/bwc/BwcDump.java
+  if [ -n "$QUANTIZED" ]; then
+    case " ${QUANTIZED_VERSIONS[*]} " in
+      *" $QUANTIZED "*) ;;
+      *) echo "gen-bwc-fixtures: --quantized takes one of ${QUANTIZED_VERSIONS[*]}" >&2; exit 2 ;;
+    esac
+    jar="$JARS/bwc/lucene-core-$QUANTIZED.jar"
+    if [ ! -s "$jar" ]; then
+      mkdir -p "$JARS/bwc"
+      curl -fsSL --retry 5 -o "$jar" "$MAVEN_BASE/lucene-core/$QUANTIZED/lucene-core-$QUANTIZED.jar"
+    fi
+    DUMP="fixtures/data/bwc-quantized/$QUANTIZED"
+    rm -rf "${DUMP:?}"
+    javac -nowarn -proc:none -cp "$jar" -d "$WORK/q" fixtures/bwc/BwcQuantized.java
+    java -cp "$WORK/q:$jar" BwcQuantized "$DUMP" 2>/dev/null
+    rm -f "$DUMP/write.lock"
+  fi
+  java -cp "$WORK/dump:$DUMP_CP" BwcDump "$DUMP" 2>/dev/null
+  echo "gen-bwc-fixtures: $DUMP ($(wc -l < "$DUMP/expected.txt") lines)"
   exit 0
 fi
 if [ -z "$ONLY" ]; then

@@ -52,7 +52,9 @@ use lucene_util::fixed_bit_set::FixedBitSet;
 use lucene_util::splittable_random::SplittableRandom;
 
 use crate::field_infos::{VectorEncoding, VectorSimilarityFunction};
-use crate::hnsw::{HnswGraphSearcher, HnswGraphView, KnnCollector, NeighborQueue, VectorScorer};
+use crate::hnsw::{
+    HnswGraphSearcher, HnswGraphView, KnnCollect, KnnCollector, NeighborQueue, VectorScorer,
+};
 use crate::hnsw_vectors::{
     read_graph_meta, GraphMetaHead, HnswFieldEntry, HnswVectorsReader, OffHeapHnswGraph,
 };
@@ -382,11 +384,31 @@ impl<'a> RetiredHnswVectorsReader<'a> {
         accept_ords: Option<&FixedBitSet>,
         seed_ords: Option<&[i32]>,
     ) -> Result<(Vec<(i32, f32)>, bool)> {
+        let mut collector = KnnCollector::new(k, visit_limit);
+        self.search_with(field_number, scorer, &mut collector, accept_ords, seed_ords)?;
+        let early = collector.early_terminated();
+        Ok((collector.top_docs(), early))
+    }
+
+    /// [`Self::search`] into any [`KnnCollect`]or -- whatever collector
+    /// Java's `search(field, target, knnCollector, acceptDocs)` is handed
+    /// (`VectorSimilarityCollector`, `HnswQueueSaturationCollector`,
+    /// `TimeLimitingKnnCollector`, ...). The walk reads its `k()` and
+    /// `visitLimit()`; the results stay in the collector.
+    pub fn search_with<S: VectorScorer, C: KnnCollect + ?Sized>(
+        &self,
+        field_number: i32,
+        scorer: &mut S,
+        collector: &mut C,
+        accept_ords: Option<&FixedBitSet>,
+        seed_ords: Option<&[i32]>,
+    ) -> Result<()> {
         let graph = self.graph(field_number)?;
         let size = scorer.max_ord();
+        let k = collector.k();
         // `if (fieldEntry.size() == 0 || knnCollector.k() == 0) return;`
         if size <= 0 || k == 0 {
-            return Ok((Vec::new(), false));
+            return Ok(());
         }
         if let Some(bits) = accept_ords {
             if bits.len() < size as usize || bits.len() < graph.size().max(0) as usize {
@@ -396,37 +418,23 @@ impl<'a> RetiredHnswVectorsReader<'a> {
                 )));
             }
         }
-        let mut collector = KnnCollector::new(k, visit_limit);
         match &graph {
             RetiredGraph::Lucene90(g) => {
                 let mut random = SplittableRandom::new(self.checksum_seed);
-                lucene90_search(
-                    scorer,
-                    g,
-                    k,
-                    visit_limit,
-                    accept_ords,
-                    &mut random,
-                    &mut collector,
-                )?;
+                lucene90_search(scorer, g, accept_ords, &mut random, collector)?;
             }
             RetiredGraph::Empty => {}
             _ => {
                 let mut searcher = HnswGraphSearcher::new(k, graph.size());
                 match seed_ords {
-                    Some(seeds) => searcher.search_seeded(
-                        &mut collector,
-                        scorer,
-                        &graph,
-                        accept_ords,
-                        seeds,
-                    )?,
-                    None => searcher.search(&mut collector, scorer, &graph, accept_ords)?,
+                    Some(seeds) => {
+                        searcher.search_seeded(collector, scorer, &graph, accept_ords, seeds)?
+                    }
+                    None => searcher.search(collector, scorer, &graph, accept_ords)?,
                 }
             }
         }
-        let early = collector.early_terminated();
-        Ok((collector.top_docs(), early))
+        Ok(())
     }
 }
 
@@ -893,15 +901,17 @@ impl HnswGraphView for RetiredGraph<'_> {
 // ARITH: `num_visited` counts distinct ordinals of a `size`-node graph, so it
 // is at most `size <= i32::MAX`.
 #[allow(clippy::arithmetic_side_effects)]
-fn lucene90_search<S: VectorScorer>(
+fn lucene90_search<S: VectorScorer, C: KnnCollect + ?Sized>(
     scorer: &mut S,
     graph: &Lucene90Graph<'_>,
-    k: usize,
-    visited_limit: u64,
     accept_ords: Option<&FixedBitSet>,
     random: &mut SplittableRandom,
-    collector: &mut KnnCollector,
+    collector: &mut C,
 ) -> Result<()> {
+    // `Lucene90OnHeapHnswGraph.search(target, knnCollector.k(),
+    // knnCollector.k(), ..., knnCollector.visitLimit(), random)`.
+    let k = collector.k();
+    let visited_limit = collector.visit_limit();
     let size = graph.size();
     let mut results = NeighborQueue::new(k, false);
     let mut candidates = NeighborQueue::new(k, true);

@@ -32,13 +32,28 @@ import org.apache.lucene.index.Terms;
 import org.apache.lucene.index.TermsEnum;
 import org.apache.lucene.index.VectorEncoding;
 import org.apache.lucene.search.AcceptDocs;
+import org.apache.lucene.search.ByteVectorSimilarityQuery;
+import org.apache.lucene.search.ConstantScoreScorer;
+import org.apache.lucene.search.ConstantScoreWeight;
 import org.apache.lucene.search.DocIdSetIterator;
+import org.apache.lucene.search.FloatVectorSimilarityQuery;
+import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.KnnByteVectorQuery;
+import org.apache.lucene.search.KnnFloatVectorQuery;
+import org.apache.lucene.search.PatienceKnnVectorQuery;
+import org.apache.lucene.search.Query;
+import org.apache.lucene.search.QueryVisitor;
 import org.apache.lucene.search.ScoreDoc;
+import org.apache.lucene.search.ScoreMode;
+import org.apache.lucene.search.ScorerSupplier;
 import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.Weight;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.BitSetIterator;
+import org.apache.lucene.util.FixedBitSet;
 
 /**
  * Records, with Lucene 10.5.0 and backward-codecs, what an index written by an older Lucene
@@ -69,9 +84,108 @@ import org.apache.lucene.util.BytesRef;
  *   <li>vec: float {@code L(doc)} then {@code L(floatBits)} per dimension; byte {@code L(doc) B(v)}.
  * </ul>
  *
- * <p>{@code knn} lines give the ten nearest live documents to a fixed query vector, with score bits.
+ * <p>{@code knn} lines give the ten nearest live documents to a fixed query vector, with score bits
+ * ({@code LeafReader.searchNearestVectors}). The query-level lines run through an {@code
+ * IndexSearcher} over the one segment, so they take {@code AbstractKnnVectorQuery}'s and {@code
+ * AbstractVectorSimilarityQuery}'s own paths (filter cost heuristics, exact fallbacks):
+ *
+ * <ul>
+ *   <li>{@code knnf}: the ten nearest among documents {@code doc % 3 == 0} ({@link ModQuery}).
+ *   <li>{@code knne}: the twenty nearest among {@code doc % 89 == 0} -- few enough that the search
+ *       is exact, or falls back to exact.
+ *   <li>{@code patience}: {@code PatienceKnnVectorQuery} (saturation 0.5, patience 2) of the ten
+ *       nearest.
+ *   <li>{@code vsim}/{@code vsimf}: {@code *VectorSimilarityQuery} with the fifth {@code knn} hit's
+ *       score as {@code resultSimilarity} ({@code thr=}, float bits), unfiltered and filtered by
+ *       {@code doc % 3 == 0}, every hit sorted by doc.
+ * </ul>
  */
 public class BwcDump {
+  /** Matches the documents {@code doc % mod == 0} of each leaf (deleted ones included). */
+  static final class ModQuery extends Query {
+    final int mod;
+
+    ModQuery(int mod) {
+      this.mod = mod;
+    }
+
+    @Override
+    public Weight createWeight(IndexSearcher searcher, ScoreMode scoreMode, float boost) {
+      return new ConstantScoreWeight(this, boost) {
+        @Override
+        public ScorerSupplier scorerSupplier(LeafReaderContext ctx) {
+          int maxDoc = ctx.reader().maxDoc();
+          FixedBitSet bits = new FixedBitSet(maxDoc);
+          for (int d = 0; d < maxDoc; d += mod) bits.set(d);
+          return new DefaultScorerSupplier(
+              new ConstantScoreScorer(score(), scoreMode, new BitSetIterator(bits, bits.cardinality())));
+        }
+
+        @Override
+        public boolean isCacheable(LeafReaderContext ctx) {
+          return false;
+        }
+      };
+    }
+
+    @Override
+    public void visit(QueryVisitor visitor) {
+      visitor.visitLeaf(this);
+    }
+
+    @Override
+    public String toString(String field) {
+      return "mod(" + mod + ")";
+    }
+
+    @Override
+    public boolean equals(Object o) {
+      return o instanceof ModQuery m && m.mod == mod;
+    }
+
+    @Override
+    public int hashCode() {
+      return mod;
+    }
+  }
+
+  static String byDoc(TopDocs td) {
+    ScoreDoc[] sd = td.scoreDocs.clone();
+    Arrays.sort(sd, (a, b) -> Integer.compare(a.doc, b.doc));
+    return hits(new TopDocs(td.totalHits, sd));
+  }
+
+  static void queryLines(StringBuilder out, LeafReader r, String seg, String field, Object q, TopDocs knn)
+      throws IOException {
+    IndexSearcher s = new IndexSearcher(r);
+    s.setQueryCache(null);
+    boolean isFloat = q instanceof float[];
+    Query knnf = isFloat
+        ? new KnnFloatVectorQuery(field, (float[]) q, 10, new ModQuery(3))
+        : new KnnByteVectorQuery(field, (byte[]) q, 10, new ModQuery(3));
+    Query knne = isFloat
+        ? new KnnFloatVectorQuery(field, (float[]) q, 20, new ModQuery(89))
+        : new KnnByteVectorQuery(field, (byte[]) q, 20, new ModQuery(89));
+    Query patience = isFloat
+        ? PatienceKnnVectorQuery.fromFloatQuery(new KnnFloatVectorQuery(field, (float[]) q, 10), 0.5, 2)
+        : PatienceKnnVectorQuery.fromByteQuery(new KnnByteVectorQuery(field, (byte[]) q, 10), 0.5, 2);
+    out.append("knnf ").append(seg).append(' ').append(field).append(' ').append(hits(s.search(knnf, 10))).append('\n');
+    out.append("knne ").append(seg).append(' ').append(field).append(' ').append(hits(s.search(knne, 20))).append('\n');
+    out.append("patience ").append(seg).append(' ').append(field).append(' ').append(hits(s.search(patience, 10))).append('\n');
+    ScoreDoc[] sd = knn.scoreDocs;
+    float thr = sd.length == 0 ? 0f : sd[Math.min(4, sd.length - 1)].score;
+    int n = Math.max(1, r.maxDoc());
+    for (boolean filtered : new boolean[] {false, true}) {
+      Query filter = filtered ? new ModQuery(3) : null;
+      Query vsim = isFloat
+          ? new FloatVectorSimilarityQuery(field, (float[]) q, thr, filter)
+          : new ByteVectorSimilarityQuery(field, (byte[]) q, thr, filter);
+      out.append(filtered ? "vsimf " : "vsim ").append(seg).append(' ').append(field)
+          .append(" thr=").append(Integer.toHexString(Float.floatToRawIntBits(thr))).append(' ')
+          .append(byDoc(s.search(vsim, n))).append('\n');
+    }
+  }
+
   static final class Fnv {
     long h = 0xcbf29ce484222325L;
     long n;
@@ -308,6 +422,7 @@ public class BwcDump {
                 for (int k = 0; k < q.length; k++) q[k] = (float) Math.sin(k + 1);
                 TopDocs td = r.searchNearestVectors(field, q, 10, AcceptDocs.fromLiveDocs(live, maxDoc), Integer.MAX_VALUE);
                 out.append("knn ").append(seg).append(' ').append(field).append(' ').append(hits(td)).append('\n');
+                queryLines(out, r, seg, field, q, td);
               } else {
                 ByteVectorValues v = r.getByteVectorValues(field);
                 KnnVectorValues.DocIndexIterator it = v.iterator();
@@ -320,6 +435,7 @@ public class BwcDump {
                 for (int k = 0; k < q.length; k++) q[k] = (byte) (k * 37 - 100);
                 TopDocs td = r.searchNearestVectors(field, q, 10, AcceptDocs.fromLiveDocs(live, maxDoc), Integer.MAX_VALUE);
                 out.append("knn ").append(seg).append(' ').append(field).append(' ').append(hits(td)).append('\n');
+                queryLines(out, r, seg, field, q, td);
               }
               out.append("vec ").append(seg).append(' ').append(field).append(" n=").append(count)
                   .append(' ').append(f.hex()).append('\n');
