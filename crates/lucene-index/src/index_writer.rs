@@ -176,6 +176,10 @@ pub enum Error {
     /// accept -- see `index_writer/explicit.rs`.
     #[error("explicit document: {0}")]
     Explicit(String),
+    /// A [`crate::document::Document`] the document API refuses -- Java's
+    /// `IllegalArgumentException` from `IndexingChain` or a field.
+    #[error("document: {0}")]
+    Document(#[from] crate::document::Error),
     /// `IndexingChain.PerField.finish`'s `IllegalStateException`: the
     /// configured similarity's `computeNorm` returned `0` for a field that
     /// has tokens, a value only an empty field may carry.
@@ -3264,6 +3268,16 @@ pub fn per_field_segment(segment_name: &str, format: &str) -> String {
 }
 
 impl<'d> IndexWriter<'d> {
+    /// `IndexWriterConfig.getAnalyzer()` for the document API.
+    pub(crate) fn writer_analyzer(&self) -> Analyzer {
+        self.cfg.analyzer()
+    }
+
+    /// `IndexWriterConfig.getSimilarity()`'s norm half, for the document API.
+    pub(crate) fn writer_norm_similarity(&self) -> &dyn NormSimilarity {
+        self.cfg.norm_similarity()
+    }
+
     /// The configuration, to change it: copied first if a
     /// [`crate::concurrent_writer::ConcurrentIndexWriter`] shares it, so a
     /// change never reaches a segment already being built with the old one.

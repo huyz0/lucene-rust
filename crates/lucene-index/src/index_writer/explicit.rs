@@ -41,9 +41,12 @@
 //! [`IndexWriter::build_points_output`] over one synthetic value list per
 //! document.
 //!
-//! Not supported, and refused when a field is registered: term vectors,
-//! payloads, KNN vectors, doc-values skip indexes. Index sorting is refused
-//! when explicit documents are enabled.
+//! KNN vectors ride alongside (the document API's vector fields,
+//! [`crate::document`]), one [`super::DocumentVector`] per field and document,
+//! written by the same flat/HNSW writers the native path uses.
+//!
+//! Not supported, and refused when a field is registered: term vectors and
+//! payloads. Index sorting is refused when explicit documents are enabled.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -143,6 +146,51 @@ fn explicit_error(message: impl Into<String>) -> Error {
 }
 
 impl IndexingConfig {
+    /// The registered vector field named `name`.
+    fn explicit_vector_field(&self, name: &str) -> Result<&FieldInfo> {
+        self.fields
+            .iter()
+            .find(|f| f.name == name && f.vector_dimension > 0)
+            .ok_or_else(|| {
+                explicit_error(format!("field {name:?} is not a registered vector field"))
+            })
+    }
+
+    /// One document's vectors against the registered schema: a known vector
+    /// field, its encoding and dimension, at most once per document.
+    pub(crate) fn validate_explicit_vectors(
+        &self,
+        vectors: &[super::DocumentVector],
+    ) -> Result<()> {
+        for (i, v) in vectors.iter().enumerate() {
+            let f = self.explicit_vector_field(&v.field_name)?;
+            if v.value.encoding() != f.vector_encoding {
+                return Err(explicit_error(format!(
+                    "field {:?}: vector encoding {:?} does not match the field's {:?}",
+                    f.name,
+                    v.value.encoding(),
+                    f.vector_encoding
+                )));
+            }
+            if i32::try_from(v.value.len()).ok() != Some(f.vector_dimension) {
+                return Err(explicit_error(format!(
+                    "field {:?}: vector of dimension {} does not match the field's {}",
+                    f.name,
+                    v.value.len(),
+                    f.vector_dimension
+                )));
+            }
+            if vectors[..i].iter().any(|w| w.field_name == v.field_name) {
+                return Err(explicit_error(format!(
+                    "VectorValuesField \"{}\" appears more than once in this document (only one \
+                     value is allowed per field)",
+                    f.name
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// The registered field with number `n`.
     fn explicit_field(&self, n: i32) -> Result<&FieldInfo> {
         self.fields
@@ -296,6 +344,11 @@ impl IndexingConfig {
 
         // The fields this segment carries, in any role.
         let mut present: BTreeSet<i32> = BTreeSet::new();
+        for doc_vectors in buf.vectors {
+            for v in doc_vectors {
+                present.insert(self.explicit_vector_field(&v.field_name)?.number);
+            }
+        }
         for (doc, fields) in buf.docs.iter().zip(explicit) {
             present.extend(doc.fields.iter().map(|f| f.field_number));
             present.extend(fields.inverted.iter().map(|f| f.field_number));
@@ -479,6 +532,35 @@ impl IndexingConfig {
             )?
         };
 
+        let vector_configs: Vec<super::VectorFieldConfig> = self
+            .fields
+            .iter()
+            .filter(|f| present.contains(&f.number) && f.vector_dimension > 0)
+            .map(|f| super::VectorFieldConfig {
+                name: f.name.clone(),
+                field_number: f.number,
+                dimension: f.vector_dimension,
+                encoding: f.vector_encoding,
+                similarity: f.vector_similarity_function,
+            })
+            .collect();
+        let vectors_output = if vector_configs.is_empty() {
+            None
+        } else {
+            IndexWriter::build_vectors_output(
+                buf.vectors,
+                &vector_configs,
+                i32::try_from(max_doc).map_err(|_| explicit_error("too many documents"))?,
+                self.hnsw_m,
+                self.hnsw_beam_width,
+                &segment_id,
+            )?
+        };
+        let vector_fields_written: BTreeSet<&str> = vectors_output
+            .as_ref()
+            .map(|o| o.written_fields.iter().map(String::as_str).collect())
+            .unwrap_or_default();
+
         // This segment's FieldInfos: the present fields, full schema, and the
         // per-field format attributes for what was written.
         let fnm_fields: Vec<FieldInfo> = self
@@ -505,6 +587,16 @@ impl IndexingConfig {
                     ));
                     f.attributes.push((
                         "PerFieldDocValuesFormat.suffix".to_string(),
+                        PER_FIELD_SUFFIX.to_string(),
+                    ));
+                }
+                if vector_fields_written.contains(f.name.as_str()) {
+                    f.attributes.push((
+                        "PerFieldKnnVectorsFormat.format".to_string(),
+                        super::KNN_VECTORS_FORMAT_NAME.to_string(),
+                    ));
+                    f.attributes.push((
+                        "PerFieldKnnVectorsFormat.suffix".to_string(),
                         PER_FIELD_SUFFIX.to_string(),
                     ));
                 }
@@ -554,6 +646,9 @@ impl IndexingConfig {
         if let Some(output) = &points_output {
             record(IndexWriter::write_points_files(dir, segment_name, output)?);
         }
+        if let Some(output) = &vectors_output {
+            record(IndexWriter::write_vector_files(dir, segment_name, output)?);
+        }
         segment_writer::seal_flushed_segment(dir, segment_name, flushed).map_err(Error::from)
     }
 }
@@ -590,9 +685,9 @@ impl<'d> IndexWriter<'d> {
                 "register_field needs explicit documents enabled",
             ));
         }
-        if info.store_term_vectors || info.store_payloads || info.vector_dimension != 0 {
+        if info.store_term_vectors || info.store_payloads {
             return Err(explicit_error(format!(
-                "field {:?}: term vectors, payloads and vectors are not supported",
+                "field {:?}: term vectors and payloads are not supported",
                 info.name
             )));
         }
@@ -619,6 +714,9 @@ impl<'d> IndexWriter<'d> {
                 && a.point_dimension_count == b.point_dimension_count
                 && a.point_index_dimension_count == b.point_index_dimension_count
                 && a.point_num_bytes == b.point_num_bytes
+                && a.vector_dimension == b.vector_dimension
+                && a.vector_encoding == b.vector_encoding
+                && a.vector_similarity_function == b.vector_similarity_function
                 && a.soft_deletes_field == b.soft_deletes_field
                 && a.parent_field == b.parent_field
         };
@@ -657,7 +755,7 @@ impl<'d> IndexWriter<'d> {
     /// block of one).
     pub fn add_explicit_documents(&mut self, docs: Vec<ExplicitDocument>) -> Result<super::SeqNo> {
         self.explicit_documents_check(&docs)?;
-        self.add_explicit_with_delete(None, docs)
+        self.add_explicit_with_delete(None, docs, None)
     }
 
     /// `IndexWriter.updateDocuments(term, docs)` for explicit documents.
@@ -670,6 +768,7 @@ impl<'d> IndexWriter<'d> {
         self.add_explicit_with_delete(
             Some(super::DeleteNode::Terms(vec![std::sync::Arc::new(term)])),
             docs,
+            None,
         )
     }
 
@@ -695,13 +794,38 @@ impl<'d> IndexWriter<'d> {
             .iter()
             .map(|u| super::retarget_update(u, &term))
             .collect();
-        self.add_explicit_with_delete(Some(super::DeleteNode::DocValuesUpdates(updates)), docs)
+        self.add_explicit_with_delete(
+            Some(super::DeleteNode::DocValuesUpdates(updates)),
+            docs,
+            None,
+        )
+    }
+
+    /// Adds explicit documents with their KNN vectors (one list per
+    /// document, aligned with `docs`) -- the document API's entry point, where
+    /// a vector is one of the document's fields.
+    pub(crate) fn add_explicit_documents_with_vectors(
+        &mut self,
+        delete: Option<super::Term>,
+        docs: Vec<ExplicitDocument>,
+        vectors: Vec<Vec<super::DocumentVector>>,
+    ) -> Result<super::SeqNo> {
+        self.explicit_documents_check(&docs)?;
+        if vectors.len() != docs.len() {
+            return Err(explicit_error("one vector list per document"));
+        }
+        for doc_vectors in &vectors {
+            self.cfg.validate_explicit_vectors(doc_vectors)?;
+        }
+        let delete = delete.map(|term| super::DeleteNode::Terms(vec![std::sync::Arc::new(term)]));
+        self.add_explicit_with_delete(delete, docs, Some(vectors))
     }
 
     fn add_explicit_with_delete(
         &mut self,
         delete: Option<super::DeleteNode>,
         docs: Vec<ExplicitDocument>,
+        vectors: Option<Vec<Vec<super::DocumentVector>>>,
     ) -> Result<super::SeqNo> {
         self.reserve_docs(docs.len())?;
         let doc_id_upto = self.pending_doc_id_upto();
@@ -712,13 +836,24 @@ impl<'d> IndexWriter<'d> {
         if docs.len() > 1 {
             self.pending_has_blocks = true;
         }
+        let mut vectors = vectors.map(Vec::into_iter);
         for doc in docs {
-            let extra = doc.fields.ram_bytes();
+            let mut extra = doc.fields.ram_bytes();
             self.buffer_document(Document { fields: doc.stored });
             *self
                 .pending_explicit
                 .last_mut()
                 .expect("buffer_document pushed an entry") = doc.fields;
+            if let Some(doc_vectors) = vectors.as_mut().and_then(Iterator::next) {
+                extra = doc_vectors
+                    .iter()
+                    .map(super::DocumentVector::ram_bytes)
+                    .fold(extra, usize::saturating_add);
+                *self
+                    .pending_vectors
+                    .last_mut()
+                    .expect("buffer_document pushed an entry") = doc_vectors;
+            }
             self.ram_bytes_used = self.ram_bytes_used.saturating_add(extra);
         }
         self.maybe_flush()?;
