@@ -1,0 +1,8 @@
+var_min_2 120000 false 524288 2 t_sort_c.tmp 13 6 120000 2991508 935266161 t_sort_0.tmp:18583,t_sort_1.tmp:18579,t_sort_2.tmp:37162,t_sort_3.tmp:18578,t_sort_4.tmp:18578,t_sort_5.tmp:37156,t_sort_6.tmp:74318,t_sort_7.tmp:18578,t_sort_8.tmp:18577,t_sort_9.tmp:37155,t_sort_a.tmp:8527,t_sort_b.tmp:45682,t_sort_c.tmp:120000
+var_min_3 120000 false 524288 3 t_sort_9.tmp 10 3 120000 2991508 935266161 t_sort_0.tmp:18583,t_sort_1.tmp:18579,t_sort_2.tmp:18578,t_sort_3.tmp:55740,t_sort_4.tmp:18578,t_sort_5.tmp:18578,t_sort_6.tmp:18577,t_sort_7.tmp:55733,t_sort_8.tmp:8527,t_sort_9.tmp:120000
+var_min_10 120000 false 524288 10 t_sort_7.tmp 8 1 120000 2991508 935266161 t_sort_0.tmp:18583,t_sort_1.tmp:18579,t_sort_2.tmp:18578,t_sort_3.tmp:18578,t_sort_4.tmp:18578,t_sort_5.tmp:18577,t_sort_6.tmp:8527,t_sort_7.tmp:120000
+var_1mb_2 120000 false 1048576 2 t_sort_6.tmp 7 3 120000 2991508 935266161 t_sort_0.tmp:38587,t_sort_1.tmp:38587,t_sort_2.tmp:77174,t_sort_3.tmp:38586,t_sort_4.tmp:4240,t_sort_5.tmp:42826,t_sort_6.tmp:120000
+var_small 5000 false 524288 10 t_sort_0.tmp 1 0 5000 124590 527453815 t_sort_0.tmp:5000
+var_empty 0 false 524288 10 t_sort_0.tmp 0 0 0 16 1619003222 -
+fixed_min_2 400000 true 524288 2 t_sort_6.tmp 7 3 400000 2400016 2285560402 t_sort_0.tmp:131072,t_sort_1.tmp:131072,t_sort_2.tmp:262144,t_sort_3.tmp:131072,t_sort_4.tmp:6784,t_sort_5.tmp:137856,t_sort_6.tmp:400000
+fixed_min_10 400000 true 524288 10 t_sort_4.tmp 5 1 400000 2400016 2285560402 t_sort_0.tmp:131072,t_sort_1.tmp:131072,t_sort_2.tmp:131072,t_sort_3.tmp:6784,t_sort_4.tmp:400000

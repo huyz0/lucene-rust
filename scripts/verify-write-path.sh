@@ -66,6 +66,12 @@ CASES=(
   # measures its recall against the exact top-k. A graph that decodes cleanly
   # but is built wrong passes every structural check and fails the recall one.
   "lucene-codecs|write_vectors_fixture|vectors|VerifyVectors"
+  # Scalar-quantized vectors (M7 T7.6): one Lucene104HnswScalarQuantizedVectorsFormat
+  # file set per ScalarEncoding -- raw .vec/.vemf, quantized .veq/.vemq and the
+  # .vem/.vex graph, all written by this port -- read by real Lucene's format,
+  # which must return for every query the exact top-10 (documents and score
+  # bits) this port's reader computed over the same bytes.
+  "lucene-codecs|write_scalar_quantized_fixture|scalar-quantized|VerifyScalarQuantized"
   # Last, and unlike every case above: a whole index written by the real
   # IndexWriter, opened by DirectoryReader and run through CheckIndex. The
   # cases above each hand Lucene one codec file with a hand-built

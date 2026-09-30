@@ -995,6 +995,147 @@ fn bench_vectors(w: Duration, m: Duration) {
     }
 }
 
+/// The scalar-quantized vector kernels (M7 T7.6) -- see
+/// `SweepMicro.quantized`: the per-candidate distance of each
+/// `ScalarEncoding` over 1024 stored vectors, and the per-vector
+/// `OptimizedScalarQuantizer.scalarQuantize` the writer and every query run.
+fn bench_quantized(w: Duration, m: Duration) {
+    use lucene_util::quantization::{OptimizedScalarQuantizer, VectorSimilarityFunction};
+    use lucene_util::vector_util;
+    for dim in [128usize, 768] {
+        let bdocs = byte_vectors(1024, dim, 0xB17E + dim as u64);
+        let bq = &byte_vectors(1, dim, 0xB0B + dim as u64)[0];
+        measure(&format!("uint8_dot_{dim}"), w, m, || {
+            let mut s = 0i64;
+            for d in &bdocs {
+                s += vector_util::uint8_dot_product(black_box(bq), d) as i64;
+            }
+            black_box(s);
+            bdocs.len() as u64
+        });
+        // 4-bit: an unpacked query (one nibble per byte) against a packed doc.
+        let q4: Vec<u8> = bq.iter().map(|b| b & 0x0f).collect();
+        let packed: Vec<Vec<u8>> = bdocs.iter().map(|d| d[..dim / 2].to_vec()).collect();
+        measure(&format!("int4_packed_dot_{dim}"), w, m, || {
+            let mut s = 0i64;
+            for d in &packed {
+                s += vector_util::int4_dot_product_single_packed(black_box(&q4), d) as i64;
+            }
+            black_box(s);
+            packed.len() as u64
+        });
+        // 1-bit docs against a 4-bit transposed query (4 bit planes).
+        let tq = &bq[..dim / 2];
+        let bits: Vec<Vec<u8>> = bdocs.iter().map(|d| d[..dim / 8].to_vec()).collect();
+        measure(&format!("int4_bit_dot_{dim}"), w, m, || {
+            let mut s = 0i64;
+            for d in &bits {
+                s += vector_util::int4_bit_dot_product(black_box(tq), d);
+            }
+            black_box(s);
+            bits.len() as u64
+        });
+        let dibits: Vec<Vec<u8>> = bdocs.iter().map(|d| d[..dim / 4].to_vec()).collect();
+        measure(&format!("int4_dibit_dot_{dim}"), w, m, || {
+            let mut s = 0i64;
+            for d in &dibits {
+                s += vector_util::int4_dibit_dot_product(black_box(tq), d);
+            }
+            black_box(s);
+            dibits.len() as u64
+        });
+        let fdocs = float_vectors(64, dim, 0xF00D + dim as u64);
+        let centroid = &float_vectors(1, dim, 0xCE17 + dim as u64)[0];
+        let q = OptimizedScalarQuantizer::new(VectorSimilarityFunction::Euclidean);
+        let mut dest = vec![0u8; dim];
+        let mut scratch = vec![0f32; dim];
+        measure(&format!("osq_quantize4_{dim}"), w, m, || {
+            let mut s = 0i64;
+            for d in &fdocs {
+                scratch.copy_from_slice(d);
+                s += q
+                    .scalar_quantize(&mut scratch, &mut dest, 4, black_box(centroid))
+                    .quantized_component_sum as i64;
+            }
+            black_box(s);
+            fdocs.len() as u64
+        });
+    }
+}
+
+/// `BytesRefHash`: 200k adds of decimal terms drawn from 50k distinct ones
+/// (`(i * 7919) % 50000`), then `sort()`. One op is one add (the sort is
+/// amortised in). Mirrors `SweepMicro.bytesRefHash`.
+fn bench_bytes_ref_hash(w: Duration, m: Duration) {
+    use lucene_util::bytes_ref_hash::BytesRefHash;
+    let terms: Vec<Vec<u8>> = (0..200_000u64)
+        .map(|i| ((i * 7919) % 50_000).to_string().into_bytes())
+        .collect();
+    measure("bytes_ref_hash_add_sort_200k", w, m, || {
+        let mut h = BytesRefHash::with_capacity(16, 17).unwrap();
+        for t in &terms {
+            black_box(h.add(t).unwrap());
+        }
+        black_box(h.sort()[0]);
+        terms.len() as u64
+    });
+}
+
+/// `FSTCompiler` over 50k sorted decimal keys (`i * 7919 % 1000003`, as
+/// bytes) with `PositiveIntOutputs`: one op is one key added, the compile
+/// included. Mirrors `SweepMicro.fstBuild`.
+fn bench_fst_build(w: Duration, m: Duration) {
+    use lucene_codecs::fst::{InputType, PositiveIntOutputs};
+    use lucene_codecs::fst_compiler::FstCompilerBuilder;
+    let mut keys: Vec<(Vec<u8>, i64)> = (0..50_000i64)
+        .map(|i| {
+            let v = i * 7919 % 1_000_003;
+            (v.to_string().into_bytes(), v)
+        })
+        .collect();
+    keys.sort();
+    keys.dedup_by(|a, b| a.0 == b.0);
+    measure("fst_build_50k", w, m, || {
+        let mut c = FstCompilerBuilder::new(InputType::Byte1).build::<PositiveIntOutputs>();
+        for (k, v) in &keys {
+            c.add_bytes(k, *v).unwrap();
+        }
+        black_box(c.compile().map(|f| f.bytes.len()));
+        keys.len() as u64
+    });
+}
+
+/// `BKDWriter.writeField` (the flush path) plus `writeIndex` over 200k
+/// points of one and of two 4-byte dimensions (dim `d` of point `i` is
+/// `(i * 7919 + d * 104729) % 1000003`, big-endian; doc `i`), 512 points per
+/// leaf. One op is one point. Mirrors `SweepMicro.bkdBuild`.
+fn bench_bkd_build(w: Duration, m: Duration) {
+    use lucene_codecs::bkd_writer::{BkdConfig, BkdWriter, MutablePointTree, VERSION_CURRENT};
+    const N: usize = 200_000;
+    for dims in [1usize, 2] {
+        let config = BkdConfig::new(dims, dims, 4, 512).unwrap();
+        let mut tree = MutablePointTree::new(config.packed_bytes_length());
+        let mut v = vec![0u8; config.packed_bytes_length()];
+        for i in 0..N {
+            for d in 0..dims {
+                let x = ((i * 7919 + d * 104_729) % 1_000_003) as u32;
+                v[d * 4..d * 4 + 4].copy_from_slice(&x.to_be_bytes());
+            }
+            tree.push(&v, i as i32);
+        }
+        measure(&format!("bkd_flush_{dims}d_200k"), w, m, || {
+            let mut t = tree.clone();
+            let mut bw =
+                BkdWriter::new(N, None, "_0", config, 16.0, N as u64, VERSION_CURRENT).unwrap();
+            let (mut meta, mut index, mut data) = (Vec::new(), Vec::new(), Vec::new());
+            let plan = bw.write_field(&mut data, &mut t).unwrap().unwrap();
+            bw.write_index(&mut meta, &mut index, &plan);
+            black_box((meta.len(), index.len(), data.len()));
+            N as u64
+        });
+    }
+}
+
 /// Opens the corpus and hands the first segment's pieces to `f`.
 fn with_segment(
     index: &str,
@@ -1902,6 +2043,10 @@ fn main() {
         "analysis" => bench_analysis(warmup, measure),
         "vectors" => bench_vectors(warmup, measure),
         "automaton" => bench_automaton(warmup, measure),
+        "quantized" => bench_quantized(warmup, measure),
+        "fst_build" => bench_fst_build(warmup, measure),
+        "bytes_ref_hash" => bench_bytes_ref_hash(warmup, measure),
+        "bkd_build" => bench_bkd_build(warmup, measure),
         "term_dict_write" => bench_term_dict_write(warmup, measure),
         "dv_merge" => bench_dv_merge(warmup, measure),
         "points_write" => bench_points_write(warmup, measure),

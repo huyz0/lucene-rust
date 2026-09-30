@@ -122,16 +122,16 @@ codecs/lucene103/blocktree/TrieBuilder	ported	crates/lucene-codecs/src/blocktree
 codecs/lucene103/blocktree/TrieReader	ported	crates/lucene-codecs/src/blocktree.rs::load_node
 codecs/lucene104/ForUtil	ported	crates/lucene-codecs/src/for_util.rs::ForUtil
 codecs/lucene104/Lucene104Codec	ported	crates/lucene-index/src/index_writer.rs::POSTINGS_FORMAT_NAME
-codecs/lucene104/Lucene104HnswScalarQuantizedVectorsFormat	todo:M7	HNSW over scalar-quantized vectors (not ported)
+codecs/lucene104/Lucene104HnswScalarQuantizedVectorsFormat	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::HNSW_NAME
 codecs/lucene104/Lucene104PostingsFormat	ported	crates/lucene-codecs/src/postings.rs::DocInput
 codecs/lucene104/Lucene104PostingsReader	partial	crates/lucene-codecs/src/postings.rs::LazyDocsCursor -- M7: "a term whose `totalTermFreq` exceeds `u32::MAX` cannot have its positions walked (`Error::Unsupported`)" (parity)
 codecs/lucene104/Lucene104PostingsWriter	ported	crates/lucene-codecs/src/postings_writer.rs::write_fields
-codecs/lucene104/Lucene104ScalarQuantizedVectorScorer	todo:M7	scalar-quantized vector scoring (not ported)
-codecs/lucene104/Lucene104ScalarQuantizedVectorsFormat	todo:M7	scalar-quantized vectors format (not ported)
-codecs/lucene104/Lucene104ScalarQuantizedVectorsReader	todo:M7	scalar-quantized vectors reader (not ported)
-codecs/lucene104/Lucene104ScalarQuantizedVectorsWriter	todo:M7	scalar-quantized vectors writer (not ported)
-codecs/lucene104/OffHeapScalarQuantizedFloatVectorValues	todo:M7	off-heap scalar-quantized float vector values (not ported)
-codecs/lucene104/OffHeapScalarQuantizedVectorValues	todo:M7	off-heap scalar-quantized vector values (not ported)
+codecs/lucene104/Lucene104ScalarQuantizedVectorScorer	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::quantized_score
+codecs/lucene104/Lucene104ScalarQuantizedVectorsFormat	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::NAME
+codecs/lucene104/Lucene104ScalarQuantizedVectorsReader	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::ScalarQuantizedVectorsReader
+codecs/lucene104/Lucene104ScalarQuantizedVectorsWriter	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::ScalarQuantizedVectorsWriter
+codecs/lucene104/OffHeapScalarQuantizedFloatVectorValues	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::dequantized
+codecs/lucene104/OffHeapScalarQuantizedVectorValues	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::QuantizedVectorValues
 codecs/lucene104/PForUtil	ported	crates/lucene-codecs/src/for_util.rs::pfor_decode
 codecs/lucene104/PostingIndexInput	ported	crates/lucene-codecs/src/for_util.rs::ForUtil
 codecs/lucene104/PostingsUtil	ported	crates/lucene-codecs/src/postings.rs::read_tail_block
@@ -149,7 +149,7 @@ codecs/lucene90/Lucene90NormsFormat	ported	crates/lucene-codecs/src/norms.rs::pa
 codecs/lucene90/Lucene90NormsProducer	ported	crates/lucene-codecs/src/norms.rs::NormsReader
 codecs/lucene90/Lucene90PointsFormat	ported	crates/lucene-codecs/src/points.rs::PointsReader
 codecs/lucene90/Lucene90PointsReader	ported	crates/lucene-codecs/src/points.rs::PointsReader
-codecs/lucene90/Lucene90PointsWriter	partial	crates/lucene-codecs/src/points.rs::write -- M7: "every leaf uses common prefix 0, `compressedDim = -2`, run length 1 and doc ids as `CONTINUOUS_IDS`/`BPV_32` only (Java also picks its bitset, delta-16 and 21/24-bit doc-id encodings)"; `widest_dim` omits `parentSplits` fairness (parity; size only)
+codecs/lucene90/Lucene90PointsWriter	partial	crates/lucene-codecs/src/points.rs::write -- M7: segment flush and merge still write through points.rs::write_packed (Lucene-readable, not Java's bytes: common prefix 0, `compressedDim = -2`, doc ids `CONTINUOUS_IDS`/`BPV_32` only, `widest_dim` without `parentSplits`). The byte-identical writer exists (bkd_writer.rs::BkdWriter, 17 Java fixtures); routing needs the segment's maxDoc plumbed from lucene-index (Java's radix keys are `bitsRequired(maxDoc - 1)` wide) and N-dim merges through `add`/`finish` as Java does, deferred to avoid colliding with concurrent index/merge work
 codecs/lucene90/Lucene90StoredFieldsFormat	ported	crates/lucene-codecs/src/stored_fields.rs::StoredFieldsReader
 codecs/lucene90/Lucene90TermVectorsFormat	ported	crates/lucene-codecs/src/term_vectors.rs::TermVectorsReader
 codecs/lucene90/compressing/FieldsIndex	ported	crates/lucene-codecs/src/stored_fields.rs::ChunkIndexEntry
@@ -552,7 +552,7 @@ internal/tests/SegmentReaderAccess	not-needed	Test-framework access hook into pa
 internal/tests/TestSecrets	not-needed	Test-framework access hook into package-private internals; Rust tests use crate-internal visibility.
 internal/vectorization/DefaultDocValuesBulkDecodeSupport	ported	crates/lucene-util/src/packed_longs.rs::decode_range
 internal/vectorization/DefaultDocValuesRangeSupport	ported	crates/lucene-search/src/doc_value_query.rs::search_numeric_range
-internal/vectorization/DefaultVectorUtilSupport	partial	crates/lucene-util/src/simd.rs::dot_f32 -- M7: VectorUtilSupport kernels for the scalar-quantized formats are absent: int4*/uint8* dot products and square distances, int4BitDotProduct/int4DibitDotProduct, minMaxScalarQuantize/recalculateScalarQuantizationOffset
+internal/vectorization/DefaultVectorUtilSupport	ported	crates/lucene-util/src/vector_util.rs::uint8_dot_product_scalar
 internal/vectorization/DefaultVectorizationProvider	not-needed	Runtime provider selection between scalar and Panama implementations; the port selects SIMD kernels at compile time (lucene-util simd.rs).
 internal/vectorization/DocValuesBulkDecodeSupport	ported	crates/lucene-util/src/packed_longs.rs::decode_range
 internal/vectorization/DocValuesRangeSupport	ported	crates/lucene-search/src/doc_value_query.rs::search_numeric_range
@@ -567,10 +567,10 @@ internal/vectorization/MemorySegmentPostingDecodingUtil	ported	crates/lucene-cod
 internal/vectorization/PanamaDocValuesBulkDecodeSupport	ported	crates/lucene-util/src/packed_longs.rs::decode_range
 internal/vectorization/PanamaDocValuesRangeSupport	ported	crates/lucene-search/src/doc_value_query.rs::search_numeric_range
 internal/vectorization/PanamaVectorConstants	not-needed	Panama Vector API species/lane-width constants; lucene-util simd.rs fixes its lane widths per compile target.
-internal/vectorization/PanamaVectorUtilSupport	partial	crates/lucene-util/src/simd.rs::dot_f32 -- M7: VectorUtilSupport kernels for the scalar-quantized formats are absent: int4*/uint8* dot products and square distances, int4BitDotProduct/int4DibitDotProduct, minMaxScalarQuantize/recalculateScalarQuantizationOffset
+internal/vectorization/PanamaVectorUtilSupport	ported	crates/lucene-util/src/vector_util.rs::uint8_dot_product
 internal/vectorization/PanamaVectorizationProvider	not-needed	Runtime Panama provider bootstrap; the port selects SIMD kernels at compile time (lucene-util simd.rs).
 internal/vectorization/PostingDecodingUtil	ported	crates/lucene-codecs/src/for_util.rs::ForUtil
-internal/vectorization/VectorUtilSupport	partial	crates/lucene-util/src/simd.rs::dot_f32 -- M7: VectorUtilSupport kernels for the scalar-quantized formats are absent: int4*/uint8* dot products and square distances, int4BitDotProduct/int4DibitDotProduct, minMaxScalarQuantize/recalculateScalarQuantizationOffset
+internal/vectorization/VectorUtilSupport	ported	crates/lucene-util/src/vector_util.rs::int4_bit_dot_product
 internal/vectorization/VectorizationProvider	not-needed	Runtime vectorization provider lookup (JDK/Panama detection); the port selects SIMD kernels at compile time (lucene-util simd.rs).
 search/AbstractDocIdSetIterator	not-needed	Java base class that caches docID to cut call-site polymorphism; every Rust Scorer tracks its own doc_id.
 search/AbstractKnnCollector	ported	crates/lucene-codecs/src/hnsw.rs::KnnCollector
@@ -927,17 +927,17 @@ util/AttributeImpl	ported	crates/lucene-analysis/src/attributes.rs::AttributeSou
 util/AttributeReflector	not-needed	reflection-style attribute introspection callback (toString/debugging); Rust uses Debug
 util/AttributeSource	ported	crates/lucene-analysis/src/attributes.rs::AttributeSource
 util/BitDocIdSet	ported	crates/lucene-search/src/docid_set.rs::CachedDocIdSet
-util/BitSet	partial	crates/lucene-util/src/fixed_bit_set.rs::FixedBitSet -- M7: no abstract BitSet over dense/sparse implementations; BitSet.of(iterator), or(DocIdSetIterator), prevSetBit, approximateCardinality missing
+util/BitSet	ported	crates/lucene-util/src/bits.rs::BitSet
 util/BitSetIterator	ported	crates/lucene-util/src/fixed_bit_set.rs::next_set_bit
-util/BitUtil	partial	crates/lucene-util/src/zigzag.rs::encode -- M7: zigZag encode/decode only; interleave/deinterleave (Morton), flipFlop, nextHighestPowerOfTwo, isZeroOrPowerOfTwo not shared helpers (VarHandle LE access replaced by from_le_bytes)
-util/Bits	partial	crates/lucene-util/src/fixed_bit_set.rs::get_doc -- M7: no Bits trait (MatchAllBits/MatchNoBits, applyMask); membership is always a concrete FixedBitSet or None for all-live
+util/BitUtil	ported	crates/lucene-util/src/bit_util.rs::interleave
+util/Bits	ported	crates/lucene-util/src/bits.rs::Bits
 util/ByteBlockPool	not-needed	byte arena/block allocator for the JVM heap; the Rust inverter buffers term bytes in Vec arenas (lucene-index inverter.rs TermHash)
 util/BytesRef	not-needed	byte-slice reference; Rust &[u8]/Vec<u8>, whose Ord is the same unsigned-byte order
 util/BytesRefArray	not-needed	append-only byte-string list; Rust Vec<Vec<u8>> / flat Vec<u8> with offsets
-util/BytesRefBlockPool	not-needed	ByteBlockPool-backed term storage for BytesRefHash; Rust stores term bytes in a Vec<u8> arena (inverter.rs TermHash)
+util/BytesRefBlockPool	ported	crates/lucene-util/src/bytes_ref_hash.rs::BytesRefBlockPool
 util/BytesRefBuilder	not-needed	growable byte buffer; Rust Vec<u8>
 util/BytesRefComparator	not-needed	BytesRef comparator with radix-sort byteAt hook; Rust slice Ord and std sort
-util/BytesRefHash	partial	crates/lucene-index/src/inverter.rs::TermHash -- M7: private open-addressing term hash (add, term, sorted_ids = sort); no public BytesRefHash API (find without add, compact, clear/reinit, addByPoolOffset)
+util/BytesRefHash	ported	crates/lucene-util/src/bytes_ref_hash.rs::BytesRefHash
 util/BytesRefIterator	not-needed	pull iterator over BytesRefs; Rust Iterator<Item=&[u8]>
 util/CharsRef	not-needed	char-array reference; Rust &str/String
 util/CharsRefBuilder	not-needed	growable char buffer; Rust String
@@ -948,13 +948,13 @@ util/CollectionUtil	not-needed	in-place List sorting helpers; Rust slice::sort (
 util/CommandLineUtil	not-needed	reflection loading of Directory/FSDirectory classes by name for CLI tools
 util/Constants	not-needed	JVM/OS detection constants; Rust cfg!/std::env::consts
 util/Counter	not-needed	mutable long counter (optionally atomic); Rust i64/AtomicI64
-util/DenseLiveDocs	partial	crates/lucene-codecs/src/live_docs.rs::parse -- M7: dense live docs are a bare FixedBitSet; no LiveDocs wrapper with cached deletedCount, liveDocsIterator/deletedDocsIterator
+util/DenseLiveDocs	ported	crates/lucene-util/src/live_docs.rs::DenseLiveDocs
 util/DocBaseBitSetIterator	ported	crates/lucene-codecs/src/points.rs::read_bitset_ids
 util/DocIdSetBuilder	ported	crates/lucene-util/src/doc_id_sort.rs::sort_dedup_doc_ids
 util/FileDeleter	ported	crates/lucene-index/src/index_file_deleter.rs::IndexFileDeleter
 util/FilterIterator	not-needed	filtering iterator adapter; Rust Iterator::filter
 util/FilteredDocIdSetIterator	not-needed	0..maxDoc iterator filtered by an IntPredicate; Rust (0..max_doc).filter(..)
-util/FixedBitSet	partial	crates/lucene-util/src/fixed_bit_set.rs::FixedBitSet -- M7: get/set/clear/cardinality/nextSetBit/or/and/andNot/intersectionCount ported; prevSetBit, flip, getAndSet/getAndClear, xor, intersects, range set/clear, unionCount/andNotCount, ensureCapacity, cardinality(from,to) missing
+util/FixedBitSet	ported	crates/lucene-util/src/fixed_bit_set.rs::prev_set_bit
 util/FixedBits	not-needed	read-only Bits view of a FixedBitSet; Rust shares &FixedBitSet
 util/FixedLengthBytesRefArray	not-needed	fixed-width value buffer for BKDWriter/OfflineSorter; the Rust points writer holds packed values in one Vec<u8>
 util/FloatToFloatFunction	not-needed	functional interface; Rust Fn(f32) -> f32
@@ -972,32 +972,32 @@ util/InPlaceMergeSorter	not-needed	generic sorting framework; the port sorts wit
 util/InfoStream	not-needed	IndexWriter debug-message sink with no effect on results; the port has no diagnostics channel (Rust would use log/tracing)
 util/IntArrayDocIdSet	not-needed	sparse DocIdSetBuilder result; Rust uses a sorted Vec<i32>
 util/IntBlockPool	not-needed	int arena for posting slices; the Rust inverter uses per-term Vec buffers
-util/IntroSelector	not-needed	generic introselect framework; Rust slice::select_nth_unstable(_by)
-util/IntroSorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
+util/IntroSelector	ported	crates/lucene-util/src/sorter.rs::intro_select
+util/IntroSorter	ported	crates/lucene-util/src/sorter.rs::intro_sort
 util/IntsRef	not-needed	int-slice reference; Rust &[i32]/Vec<i32> (e.g. FST label keys)
 util/IntsRefBuilder	not-needed	growable int buffer; Rust Vec<i32>
 util/JavaLoggingInfoStream	not-needed	InfoStream over java.util.logging
 util/LSBRadixSorter	ported	crates/lucene-util/src/doc_id_sort.rs::sort_dedup_doc_ids
-util/LiveDocs	partial	crates/lucene-codecs/src/live_docs.rs::parse -- M7: live docs are a bare FixedBitSet; no LiveDocs abstraction (liveDocsIterator, deletedDocsIterator, deletedCount)
+util/LiveDocs	ported	crates/lucene-util/src/live_docs.rs::LiveDocs
 util/LongBitSet	not-needed	long-indexed FixedBitSet; the Rust FixedBitSet is usize-indexed, which subsumes it
 util/LongHeap	not-needed	generic long min-heap; Rust std BinaryHeap (TernaryLongHeap ported separately where Lucene's order matters)
 util/LongValues	not-needed	index->long accessor interface; readers expose get() directly (e.g. direct_reader.rs DirectReader::get)
 util/LongsRef	not-needed	long-slice reference; Rust &[i64]/Vec<i64>
-util/MSBRadixSorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
+util/MSBRadixSorter	ported	crates/lucene-util/src/sorter.rs::msb_radix_sort
 util/MapOfSets	not-needed	map of sets helper; Rust HashMap<K, HashSet<V>>
-util/MathUtil	partial	crates/lucene-search/src/bulk_scorer.rs::sum_upper_bound -- M7: sumUpperBound/sumRelativeErrorBound here and a private gcd in doc_values.rs; no shared log(x, base) integer log (inlined in points.rs), asinh/acosh/atanh are std f64 methods
+util/MathUtil	ported	crates/lucene-util/src/math_util.rs::gcd
 util/MergedIterator	not-needed	k-way merge of sorted iterators with dedup; Rust BTreeSet/merge loops
 util/ModuleResourceLoader	not-needed	JVM module resource loading
 util/NamedSPILoader	not-needed	JVM ServiceLoader-based SPI lookup; Rust codecs are selected statically
 util/NamedThreadFactory	not-needed	named thread factory; Rust std::thread::Builder::name
-util/NotDocIdSet	partial	crates/lucene-search/src/docid_set.rs::InverseSparse -- M7: only as RoaringDocIdSet's complemented-block encoding; no general complement DocIdSet
-util/NumericUtils	partial	crates/lucene-util/src/numeric_utils.rs::float_to_sortable_int -- M7: float half shared; double/long halves are private copies (segment_info.rs, facets.rs, top_field.rs, aggs.rs); int/long/bigIntToSortableBytes, sortableBytesToX, add/subtract not shared helpers
-util/OfflineSorter	todo:M7	external (temp-file) merge sort of byte sequences
+util/NotDocIdSet	ported	crates/lucene-util/src/bits.rs::NotDocIdSetIter
+util/NumericUtils	ported	crates/lucene-util/src/numeric_utils.rs::big_int_to_sortable_bytes
+util/OfflineSorter	ported	crates/lucene-codecs/src/offline_sorter.rs::OfflineSorter
 util/PagedBytes	not-needed	paged byte arena for buffering writers; Rust writers buffer in Vec<u8>
 util/PrintStreamInfoStream	not-needed	InfoStream over a PrintStream
 util/PriorityQueue	not-needed	generic binary heap; Rust std BinaryHeap, with Lucene's heap re-implemented where its tie order matters (top_field.rs HitQueue)
 util/QueryBuilder	todo:M7	analyzer-driven query construction (createBooleanQuery/createPhraseQuery, graph token streams)
-util/RadixSelector	not-needed	generic radix select; Rust select_nth_unstable_by (points.rs compute_leaf_plan)
+util/RadixSelector	ported	crates/lucene-util/src/sorter.rs::radix_select
 util/RamUsageEstimator	not-needed	JVM object-size estimation
 util/RecyclingByteBlockAllocator	not-needed	ByteBlockPool block recycling; no block pools in the port
 util/RecyclingIntBlockAllocator	not-needed	IntBlockPool block recycling; no block pools in the port
@@ -1011,15 +1011,15 @@ util/Selector	not-needed	generic selection framework; Rust slice::select_nth_uns
 util/SentinelIntSet	not-needed	open-addressing int set; Rust HashSet<i32>
 util/SetOnce	not-needed	write-once holder; Rust std::sync::OnceLock
 util/SloppyMath	deferred:M9	fast approximate trig/haversin distance for geo
-util/SmallFloat	partial	crates/lucene-util/src/small_float.rs::int_to_byte4 -- M7: intToByte4/byte4ToInt (with long4/int4) only; floatToByte/byteToFloat and floatToByte315/byte315ToFloat missing
+util/SmallFloat	ported	crates/lucene-util/src/small_float.rs::float_to_byte315
 util/SortableBytesRefArray	not-needed	internal interface over BytesRefArray/FixedLengthBytesRefArray
-util/Sorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
-util/SparseFixedBitSet	todo:M7	sparse bitset (the port always uses a dense FixedBitSet)
-util/SparseLiveDocs	todo:M7	sparse live-docs representation (dense FixedBitSet always)
+util/Sorter	ported	crates/lucene-util/src/sorter.rs::heap_sort
+util/SparseFixedBitSet	ported	crates/lucene-util/src/sparse_fixed_bit_set.rs::SparseFixedBitSet
+util/SparseLiveDocs	ported	crates/lucene-util/src/live_docs.rs::SparseLiveDocs
 util/StableMSBRadixSorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
 util/StableStringSorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
 util/StrictStringTokenizer	not-needed	string splitter for Version parsing; Rust str::split
-util/StringHelper	partial	crates/lucene-index/src/index_writer.rs::generate_segment_id -- M7: randomId role only (not the xorshift128 stream); bytesDifference is a private copy in doc_values.rs; murmurhash3_x86_32, sortKeyLength, startsWith/endsWith, idToString missing
+util/StringHelper	ported	crates/lucene-util/src/string_helper.rs::murmurhash3_x86_32
 util/StringSorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
 util/SuppressForbidden	not-needed	forbidden-apis annotation
 util/TermAndVector	not-needed	(term, vector) record; a Rust tuple
@@ -1029,8 +1029,8 @@ util/TimSorter	not-needed	generic sorting framework; the port sorts with std sli
 util/ToStringUtils	not-needed	toString helpers; Rust Display/Debug
 util/UnicodeUtil	not-needed	UTF-8/UTF-16/UTF-32 conversion and counting; Rust std str/char (from_utf8, encode_utf16, chars().count())
 util/Unwrappable	not-needed	wrapper-unwrapping interface
-util/VectorUtil	partial	crates/lucene-util/src/simd.rs::dot_f32 -- M7: float dot/squareDistance/cosine, findNextGEQ here; byte-vector similarities, scaleMaxInnerProductScore, normalizeToUnitInterval, checkFinite in vectors.rs, filterByScore in bulk_scorer.rs; l2normalize, isUnitVector/isZeroVector, add, int4*/uint8* quantized kernels, int4BitDotProduct/int4DibitDotProduct, xorBitCount, minMaxScalarQuantize/recalculateOffset missing
-util/Version	partial	crates/lucene-index/src/segment_infos.rs::LuceneVersion -- M7: major/minor/bugfix with fromBits range checks; no Version.parse/parseLeniently, named constants or onOrAfter API
+util/VectorUtil	ported	crates/lucene-util/src/vector_util.rs::l2normalize
+util/Version	ported	crates/lucene-util/src/version.rs::Version
 util/VirtualMethod	not-needed	reflection-based override detection
 util/WeakIdentityMap	not-needed	JVM weak-reference identity map
 util/automaton/Automata	ported	crates/lucene-util/src/automaton/automata.rs::make_binary_interval
@@ -1062,36 +1062,36 @@ util/automaton/Transition	ported	crates/lucene-util/src/automaton/automaton.rs::
 util/automaton/TransitionAccessor	ported	crates/lucene-util/src/automaton/automaton.rs::TransitionAccessor
 util/automaton/UTF32ToUTF8	ported	crates/lucene-util/src/automaton/utf32_to_utf8.rs::Utf32ToUtf8
 util/bkd/BKDConfig	ported	crates/lucene-codecs/src/points.rs::check_config
-util/bkd/BKDRadixSelector	partial	crates/lucene-codecs/src/points.rs::compute_leaf_plan -- M7: in-heap selection only; no offline (temp-file) radix selection for point sets larger than heap
+util/bkd/BKDRadixSelector	ported	crates/lucene-codecs/src/bkd_writer.rs::offline_partition
 util/bkd/BKDReader	ported	crates/lucene-codecs/src/points.rs::PointsReader
 util/bkd/BKDUtil	not-needed	fixed-width byte comparator/equality specialisations; Rust compares byte slices (points.rs cmp_unsigned)
-util/bkd/BKDWriter	partial	crates/lucene-codecs/src/points.rs::write -- M7: readable-by-Lucene bytes, not Java's: common prefix always 0, no run-length/low-cardinality leaf compression, doc ids only CONTINUOUS/BPV_32, widest_dim without parentSplits fairness, no offline spill
-util/bkd/DocIdsWriter	partial	crates/lucene-codecs/src/points.rs::read_doc_ids_into -- M7: every encoding read; write side emits only CONTINUOUS_IDS/BPV_32 (no BITSET/DELTA_BPV_16/BPV_21/BPV_24)
-util/bkd/HeapPointReader	not-needed	BKDWriter heap scratch reader; the Rust writer holds points in a Vec<u8>
-util/bkd/HeapPointWriter	not-needed	BKDWriter heap scratch buffer; the Rust writer holds points in a Vec<u8>
+util/bkd/BKDWriter	ported	crates/lucene-codecs/src/bkd_writer.rs::BkdWriter
+util/bkd/DocIdsWriter	ported	crates/lucene-codecs/src/bkd_writer.rs::write_doc_ids
+util/bkd/HeapPointReader	ported	crates/lucene-codecs/src/bkd_writer.rs::HeapPoints
+util/bkd/HeapPointWriter	ported	crates/lucene-codecs/src/bkd_writer.rs::HeapPoints
 util/bkd/MutablePointTreeReaderUtils	ported	crates/lucene-codecs/src/points.rs::compute_leaf_plan
-util/bkd/OfflinePointReader	todo:M7	temp-file point spill for BKD builds larger than heap
-util/bkd/OfflinePointWriter	todo:M7	temp-file point spill for BKD builds larger than heap
+util/bkd/OfflinePointReader	ported	crates/lucene-codecs/src/bkd_writer.rs::OfflinePoints
+util/bkd/OfflinePointWriter	ported	crates/lucene-codecs/src/bkd_writer.rs::OfflinePoints
 util/bkd/PointReader	not-needed	interface over heap/offline point buffers
 util/bkd/PointValue	ported	crates/lucene-codecs/src/points.rs::Point
 util/bkd/PointWriter	not-needed	interface over heap/offline point buffers
 util/compress/LZ4	ported	crates/lucene-codecs/src/lz4.rs::decompress
-util/compress/LowercaseAsciiCompression	partial	crates/lucene-codecs/src/blocktree.rs::decompress_lowercase_ascii -- M7: decompress only; no compress (the blocktree writer emits NO_COMPRESSION)
+util/compress/LowercaseAsciiCompression	ported	crates/lucene-codecs/src/lowercase_ascii.rs::compress
 util/fst/BitTableUtil	ported	crates/lucene-codecs/src/fst.rs::bit_table_count_bits
-util/fst/ByteBlockPoolReverseBytesReader	not-needed	FSTCompiler in-progress byte-pool reader; the Rust builder serialises a finished trie into a Vec<u8>
+util/fst/ByteBlockPoolReverseBytesReader	not-needed	NodeHash's reader over its copied node bytes; the Rust NodeHash keys its tables on the node's arcs (which nodes are shared does not depend on how the copy is read back), so there is no byte-pool copy to read
 util/fst/ByteSequenceOutputs	ported	crates/lucene-codecs/src/fst.rs::ByteSequenceOutputs
 util/fst/BytesRefFSTEnum	ported	crates/lucene-codecs/src/fst.rs::FstEnum
-util/fst/CharSequenceOutputs	todo:M7	char-sequence FST outputs
+util/fst/CharSequenceOutputs	ported	crates/lucene-codecs/src/fst_compiler.rs::CharSequenceOutputs
 util/fst/FST	ported	crates/lucene-codecs/src/fst.rs::Fst
-util/fst/FSTCompiler	partial	crates/lucene-codecs/src/fst.rs::build_fst -- M7: whole-trie build, not incremental/streaming; no output pushing, fixed-length arc nodes or BIT_TARGET_NEXT on write, single-byte labels only; bytes differ from Java's
+util/fst/FSTCompiler	ported	crates/lucene-codecs/src/fst_compiler.rs::FstCompiler
 util/fst/FSTEnum	ported	crates/lucene-codecs/src/fst.rs::FstEnum
 util/fst/FSTReader	not-needed	FST body store interface; Rust Fst holds owned or borrowed bytes
 util/fst/ForwardBytesReader	not-needed	forward byte cursor over a byte[]; Rust reads the slice directly
-util/fst/GrowableByteArrayDataOutput	not-needed	FSTCompiler growable output; Rust Vec<u8>
-util/fst/IntSequenceOutputs	todo:M7	int-sequence FST outputs
+util/fst/GrowableByteArrayDataOutput	not-needed	FSTCompiler scratch buffer; fst_compiler.rs keeps it as a Vec<u8> with the same lifetime (never cleared between nodes, which fixed-length arc padding depends on)
+util/fst/IntSequenceOutputs	ported	crates/lucene-codecs/src/fst_compiler.rs::IntSequenceOutputs
 util/fst/IntsRefFSTEnum	ported	crates/lucene-codecs/src/fst.rs::IntsRefFstEnum
-util/fst/NoOutputs	partial	crates/lucene-codecs/src/fst.rs::read_fst_metadata_prefix -- M7: FSTs written with NoOutputs are read; no NoOutputs Outputs impl for typed building
-util/fst/NodeHash	partial	crates/lucene-codecs/src/fst.rs::NodeHash -- M7: whole-trie hash-consing; no RAM-bounded (suffixRAMLimitMB) LRU table, so sharing can differ from Java on large inputs
+util/fst/NoOutputs	ported	crates/lucene-codecs/src/fst_compiler.rs::NoOutputs
+util/fst/NodeHash	ported	crates/lucene-codecs/src/fst_compiler.rs::dedup_add
 util/fst/OffHeapFSTStore	ported	crates/lucene-codecs/src/fst.rs::read_borrowed
 util/fst/OnHeapFSTStore	ported	crates/lucene-codecs/src/fst.rs::read
 util/fst/Outputs	ported	crates/lucene-codecs/src/fst.rs::Outputs
@@ -1100,23 +1100,23 @@ util/fst/PositiveIntOutputs	ported	crates/lucene-codecs/src/fst.rs::PositiveIntO
 util/fst/ReadWriteDataOutput	not-needed	FSTCompiler output readable while writing; Rust Vec<u8>
 util/fst/ReverseBytesReader	ported	crates/lucene-codecs/src/fst.rs::BytesReader
 util/fst/ReverseRandomAccessReader	ported	crates/lucene-codecs/src/fst.rs::BytesReader
-util/fst/Util	partial	crates/lucene-codecs/src/fst.rs::get -- M7: Util.get/binarySearch only (plus the suggester's own top-N in suggest.rs); no general shortestPaths/TopNSearcher, getByOutput, readCeilArc, toDot
+util/fst/Util	ported	crates/lucene-codecs/src/fst_util.rs::shortest_paths
 util/graph/GraphTokenStreamFiniteStrings	todo:M7	finite-path enumeration of graph token streams for QueryBuilder
 util/hnsw/AbstractHnswGraphSearcher	ported	crates/lucene-codecs/src/hnsw.rs::HnswGraphSearcher
-util/hnsw/BlockingFloatHeap	ported	crates/lucene-search/src/knn_collectors.rs::BlockingFloatHeap
+util/hnsw/BlockingFloatHeap	ported	crates/lucene-util/src/float_heap.rs::BlockingFloatHeap
 util/hnsw/CloseableRandomVectorScorerSupplier	not-needed	closeable supplier over a merge temp file; Rust lifetimes/Drop
-util/hnsw/ConcurrentHnswMerger	todo:M7	multi-threaded HNSW graph merge (numMergeWorkers > 1)
+util/hnsw/ConcurrentHnswMerger	ported	crates/lucene-codecs/src/hnsw_vectors.rs::merge_one_field_concurrent
 util/hnsw/FilteredHnswGraphSearcher	ported	crates/lucene-codecs/src/hnsw.rs::search_filtered
-util/hnsw/FloatHeap	ported	crates/lucene-search/src/knn_collectors.rs::FloatHeap
+util/hnsw/FloatHeap	ported	crates/lucene-util/src/float_heap.rs::FloatHeap
 util/hnsw/HasKnnVectorValues	not-needed	accessor interface for vector values
 util/hnsw/HnswBuilder	ported	crates/lucene-codecs/src/hnsw.rs::HnswGraphBuilder
-util/hnsw/HnswConcurrentMergeBuilder	todo:M7	multi-threaded HNSW graph merge builder
+util/hnsw/HnswConcurrentMergeBuilder	ported	crates/lucene-codecs/src/hnsw_concurrent.rs::build_concurrent
 util/hnsw/HnswGraph	ported	crates/lucene-codecs/src/hnsw.rs::HnswGraphView
 util/hnsw/HnswGraphBuilder	ported	crates/lucene-codecs/src/hnsw.rs::HnswGraphBuilder
 util/hnsw/HnswGraphMerger	ported	crates/lucene-codecs/src/hnsw.rs::merge_graphs
 util/hnsw/HnswGraphSearcher	ported	crates/lucene-codecs/src/hnsw.rs::HnswGraphSearcher
-util/hnsw/HnswLock	not-needed	per-node locks for concurrent graph building; the Rust builder is single-threaded
-util/hnsw/HnswUtil	todo:M7	graph connectivity diagnostics (graphIsRooted, componentSizes, components)
+util/hnsw/HnswLock	ported	crates/lucene-codecs/src/hnsw_concurrent.rs::ConcurrentHnswGraph
+util/hnsw/HnswUtil	ported	crates/lucene-codecs/src/hnsw_util.rs::components
 util/hnsw/IncrementalHnswGraphMerger	ported	crates/lucene-codecs/src/hnsw_vectors.rs::merge_one_field
 util/hnsw/InitializedHnswGraphBuilder	ported	crates/lucene-codecs/src/hnsw.rs::init_graph
 util/hnsw/IntToIntFunction	not-needed	functional interface; Rust Fn(i32) -> i32 / slices
@@ -1139,10 +1139,10 @@ util/mutable/MutableValueInt	not-needed	mutable boxed value holder for function-
 util/mutable/MutableValueLong	not-needed	mutable boxed value holder for function-query/grouping value filling; Rust uses plain Option<T>/enum values
 util/mutable/MutableValueStr	not-needed	mutable boxed value holder for function-query/grouping value filling; Rust uses plain Option<T>/enum values
 util/packed/AbstractBlockPackedWriter	ported	crates/lucene-codecs/src/block_packed.rs::encode_all
-util/packed/AbstractPagedMutable	todo:M7	paged in-memory packed mutable arrays
-util/packed/BlockPackedReaderIterator	partial	crates/lucene-codecs/src/block_packed.rs::decode_all -- M7: decode-all only; no streaming next/skip iterator
+util/packed/AbstractPagedMutable	ported	crates/lucene-util/src/packed/paged_mutable.rs::AbstractPagedMutable
+util/packed/BlockPackedReaderIterator	ported	crates/lucene-codecs/src/block_packed.rs::BlockPackedReaderIterator
 util/packed/BlockPackedWriter	ported	crates/lucene-codecs/src/block_packed.rs::encode_all
-util/packed/BulkOperation	partial	crates/lucene-codecs/src/packed_ints.rs::get -- M7: PACKED format only (no PACKED_SINGLE_BLOCK); no block-wise long[]/byte[] bulk encode/decode API
+util/packed/BulkOperation	ported	crates/lucene-util/src/packed/bulk_operation.rs::BulkOperation
 util/packed/BulkOperationPacked	ported	crates/lucene-codecs/src/packed_ints.rs::encode
 util/packed/BulkOperationPacked1	ported	crates/lucene-codecs/src/packed_ints.rs::get
 util/packed/BulkOperationPacked10	ported	crates/lucene-codecs/src/packed_ints.rs::get
@@ -1168,32 +1168,32 @@ util/packed/BulkOperationPacked6	ported	crates/lucene-codecs/src/packed_ints.rs:
 util/packed/BulkOperationPacked7	ported	crates/lucene-codecs/src/packed_ints.rs::get
 util/packed/BulkOperationPacked8	ported	crates/lucene-codecs/src/packed_ints.rs::get
 util/packed/BulkOperationPacked9	ported	crates/lucene-codecs/src/packed_ints.rs::get
-util/packed/BulkOperationPackedSingleBlock	todo:M7	PACKED_SINGLE_BLOCK bulk encoding
-util/packed/DeltaPackedLongValues	todo:M7	delta-packed in-memory long buffer (port uses Vec<i64>)
+util/packed/BulkOperationPackedSingleBlock	ported	crates/lucene-util/src/packed/bulk_operation.rs::PackedSingleBlock
+util/packed/DeltaPackedLongValues	ported	crates/lucene-util/src/packed/packed_long_values.rs::DeltaPacked
 util/packed/DirectMonotonicReader	ported	crates/lucene-codecs/src/direct_monotonic.rs::get
 util/packed/DirectMonotonicWriter	ported	crates/lucene-codecs/src/direct_monotonic.rs::write
-util/packed/DirectPacked64SingleBlockReader	todo:M7	direct reader for PACKED_SINGLE_BLOCK
+util/packed/DirectPacked64SingleBlockReader	ported	crates/lucene-codecs/src/packed_ints.rs::DirectPacked64SingleBlockReader
 util/packed/DirectPackedReader	ported	crates/lucene-codecs/src/packed_ints.rs::get
 util/packed/DirectReader	ported	crates/lucene-codecs/src/direct_reader.rs::DirectReader
 util/packed/DirectWriter	ported	crates/lucene-codecs/src/direct_reader.rs::encode
-util/packed/GrowableWriter	todo:M7	growable in-memory packed mutable
-util/packed/MonotonicBlockPackedReader	todo:M7	monotonic block-packed reader
-util/packed/MonotonicBlockPackedWriter	todo:M7	monotonic block-packed writer
-util/packed/MonotonicLongValues	todo:M7	monotonic in-memory long buffer (port uses Vec<i64>)
-util/packed/Packed64	todo:M7	in-memory PackedInts.Mutable (PACKED layout)
-util/packed/Packed64SingleBlock	todo:M7	in-memory PackedInts.Mutable (single-block layout)
-util/packed/PackedDataInput	todo:M7	bit-level packed value stream reader
-util/packed/PackedDataOutput	todo:M7	bit-level packed value stream writer
-util/packed/PackedInts	partial	crates/lucene-codecs/src/packed_ints.rs::get -- M7: PACKED no-header read/write and byteCount only; no Mutable/Reader factories (getMutable, getReader, getReaderIterator), PACKED_SINGLE_BLOCK, fastestFormatAndBits
-util/packed/PackedLongValues	todo:M7	packed in-memory long buffer (port uses Vec<i64>, e.g. OrdinalMap)
-util/packed/PackedReaderIterator	ported	crates/lucene-codecs/src/packed_ints.rs::get
-util/packed/PackedWriter	ported	crates/lucene-codecs/src/packed_ints.rs::encode
-util/packed/PagedGrowableWriter	todo:M7	paged growable packed mutable
-util/packed/PagedMutable	todo:M7	paged packed mutable
-util/quantization/BaseQuantizedByteVectorValues	todo:M7	scalar vector quantization (M7 T7.6)
-util/quantization/LegacyQuantizedByteVectorValues	todo:M7	scalar vector quantization (M7 T7.6)
-util/quantization/OptimizedScalarQuantizer	todo:M7	scalar vector quantization (M7 T7.6)
-util/quantization/QuantizedByteVectorValues	todo:M7	scalar vector quantization (M7 T7.6)
-util/quantization/QuantizedVectorsReader	todo:M7	scalar vector quantization (M7 T7.6)
-util/quantization/ScalarQuantizedVectorSimilarity	todo:M7	scalar vector quantization (M7 T7.6)
-util/quantization/ScalarQuantizer	todo:M7	scalar vector quantization (M7 T7.6)
+util/packed/GrowableWriter	ported	crates/lucene-util/src/packed/growable_writer.rs::GrowableWriter
+util/packed/MonotonicBlockPackedReader	ported	crates/lucene-codecs/src/monotonic_block_packed.rs::MonotonicBlockPackedReader
+util/packed/MonotonicBlockPackedWriter	ported	crates/lucene-codecs/src/monotonic_block_packed.rs::MonotonicBlockPackedWriter
+util/packed/MonotonicLongValues	ported	crates/lucene-util/src/packed/packed_long_values.rs::Monotonic
+util/packed/Packed64	ported	crates/lucene-util/src/packed/packed64.rs::Packed64
+util/packed/Packed64SingleBlock	ported	crates/lucene-util/src/packed/packed64_single_block.rs::Packed64SingleBlock
+util/packed/PackedDataInput	ported	crates/lucene-codecs/src/packed_data.rs::PackedDataInput
+util/packed/PackedDataOutput	ported	crates/lucene-codecs/src/packed_data.rs::PackedDataOutput
+util/packed/PackedInts	ported	crates/lucene-util/src/packed/mod.rs::get_mutable
+util/packed/PackedLongValues	ported	crates/lucene-util/src/packed/packed_long_values.rs::PackedLongValues
+util/packed/PackedReaderIterator	ported	crates/lucene-codecs/src/packed_ints.rs::PackedReaderIterator
+util/packed/PackedWriter	ported	crates/lucene-codecs/src/packed_ints.rs::PackedWriter
+util/packed/PagedGrowableWriter	ported	crates/lucene-util/src/packed/paged_mutable.rs::PagedGrowableWriter
+util/packed/PagedMutable	ported	crates/lucene-util/src/packed/paged_mutable.rs::PagedMutable
+util/quantization/BaseQuantizedByteVectorValues	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::QuantizedVectorValues
+util/quantization/LegacyQuantizedByteVectorValues	deferred:M8	abstract values base of the backward-codecs Lucene99ScalarQuantizedVectorsFormat (read in M8); its quantizer, ScalarQuantizer, is ported in crates/lucene-util/src/quantization.rs
+util/quantization/OptimizedScalarQuantizer	ported	crates/lucene-util/src/quantization.rs::OptimizedScalarQuantizer
+util/quantization/QuantizedByteVectorValues	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::QuantizedVectorValues
+util/quantization/QuantizedVectorsReader	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::merge_scorer_supplier
+util/quantization/ScalarQuantizedVectorSimilarity	ported	crates/lucene-util/src/quantization.rs::ScalarQuantizedVectorSimilarity
+util/quantization/ScalarQuantizer	ported	crates/lucene-util/src/quantization.rs::ScalarQuantizer

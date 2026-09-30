@@ -310,50 +310,7 @@ pub fn merge_one_field<G: HnswGraphView, S: UpdateableVectorScorer>(
     }
 
     // `IncrementalHnswGraphMerger.addReader`, once per source.
-    let mut usable: Vec<usize> = Vec::new();
-    let mut largest: Option<usize> = None;
-    let mut largest_graph_size = -1i32;
-    for (i, source) in sources.iter().enumerate() {
-        let Some(graph) = source.graph else { continue };
-        let graph_size = graph.size();
-        if graph_size == 0 {
-            continue;
-        }
-        // `!=` against `Ok(graph_size)`, not `len() as i32 != graph_size`: a
-        // source with more than `i32::MAX` vectors would otherwise truncate
-        // into agreement with a small `graph_size`, and `new_ord_mapping`
-        // would then index `old_to_new` with a wrapped-negative ordinal.
-        if i32::try_from(source.ord_to_doc.len()) != Ok(graph_size) {
-            return Err(Error::InvalidGraphParameter(format!(
-                "source {i}: graph has {graph_size} nodes but {} vectors",
-                source.ord_to_doc.len()
-            )));
-        }
-        let live = count_live_vectors(source)?;
-        // ARITH: `live` counts a subset of `ord_to_doc`, whose length was just
-        // checked to equal `graph_size`, so `0 <= live <= graph_size`, and
-        // `graph_size > 0` was checked above. Java's
-        // `((graphSize - candidateVectorCount) * 100) / graphSize` is `int`
-        // arithmetic that silently wraps once `graphSize` passes ~21.5M
-        // vectors -- a segment size this port can reach -- so the product is
-        // taken in `i64` here, where `i32::MAX * 100` is three orders of
-        // magnitude short of overflow.
-        #[allow(clippy::arithmetic_side_effects)]
-        let delete_pct = (i64::from(graph_size) - live) * 100 / i64::from(graph_size);
-        // Java compares the candidate's *live* count against the incumbent's
-        // *total* size, not against its live count. Kept as-is: this only ever
-        // picks a base graph, and at equal size a graph with deletions is the
-        // worse base, which is what the asymmetry expresses.
-        if delete_pct <= i64::from(DELETE_PCT_THRESHOLD)
-            && (largest.is_none() || live > i64::from(largest_graph_size))
-        {
-            largest = Some(i);
-            largest_graph_size = graph_size;
-        }
-        if live == i64::from(graph_size) {
-            usable.push(i);
-        }
-    }
+    let (usable, largest) = add_readers(sources)?;
 
     let Some(largest) = largest else {
         // `HnswGraphBuilder.create(scorerSupplier, M, beamWidth, randSeed, maxOrd)`:
@@ -411,6 +368,136 @@ pub fn merge_one_field<G: HnswGraphView, S: UpdateableVectorScorer>(
         total_vector_count,
         initialized.as_ref(),
     )?))
+}
+
+/// Port of `ConcurrentHnswMerger` (`Lucene99HnswVectorsFormat` with
+/// `numMergeWorkers > 1`): the same source selection as [`merge_one_field`],
+/// but only the base graph is reused -- copied into the merged ordinal space
+/// by `InitializedHnswGraphBuilder.initGraph` -- and every other merged
+/// ordinal is inserted by `num_workers` threads
+/// through [`crate::hnsw_concurrent::build_concurrent`], each with its own
+/// scorer from `new_scorer` (Java's `scorerSupplier.copy()`).
+///
+/// With no usable base graph the whole graph is built concurrently. The
+/// result depends on thread scheduling, as in Java.
+#[allow(clippy::too_many_arguments)]
+pub fn merge_one_field_concurrent<G, S, F>(
+    new_scorer: F,
+    m: i32,
+    beam_width: i32,
+    seed: u64,
+    merged_ord_to_doc: &[i32],
+    sources: &[GraphMergeSource<'_, G>],
+    num_workers: usize,
+    batch_size: i32,
+) -> Result<Option<OnHeapHnswGraph>>
+where
+    G: HnswGraphView,
+    S: UpdateableVectorScorer + Send,
+    F: Fn() -> Result<S>,
+{
+    let Ok(total_vector_count) = i32::try_from(merged_ord_to_doc.len()) else {
+        return Err(Error::InvalidGraphParameter(format!(
+            "{} merged vectors is more than an ordinal can name",
+            merged_ord_to_doc.len()
+        )));
+    };
+    if total_vector_count == 0
+        || !hnsw::should_create_graph(hnsw::HNSW_GRAPH_THRESHOLD, total_vector_count)
+    {
+        return Ok(None);
+    }
+    if !(1..=hnsw::MAXIMUM_MAX_CONN).contains(&m) || num_workers == 0 {
+        return Err(Error::InvalidGraphParameter(format!(
+            "M must be in 1..={} and at least one worker is needed (M {m}, {num_workers} workers)",
+            hnsw::MAXIMUM_MAX_CONN
+        )));
+    }
+    let (_, largest) = add_readers(sources)?;
+    let (graph, initialized) = match largest {
+        None => (OnHeapHnswGraph::with_size(m, total_vector_count), None),
+        Some(largest) => {
+            // `ConcurrentHnswMerger.getNewOrdMapping`: the base graph only.
+            let mut bits = FixedBitSet::new(total_vector_count as usize);
+            let maps = new_ord_mapping(&[largest], sources, merged_ord_to_doc, Some(&mut bits))?;
+            let base = sources[largest].graph.expect("add_readers picks graphs");
+            let graph = hnsw::HnswGraphBuilder::init_graph(
+                new_scorer()?,
+                beam_width,
+                seed,
+                base,
+                &maps[0],
+                total_vector_count,
+            )?;
+            (graph, Some(bits))
+        }
+    };
+    let scorers = (0..num_workers)
+        .map(|_| new_scorer())
+        .collect::<Result<Vec<S>>>()?;
+    Ok(Some(crate::hnsw_concurrent::build_concurrent(
+        scorers,
+        m,
+        beam_width,
+        seed,
+        graph,
+        initialized.as_ref(),
+        total_vector_count,
+        batch_size,
+    )?))
+}
+
+/// `IncrementalHnswGraphMerger.addReader` over every source: the sources
+/// whose graphs are usable as they are (no deletions), and the one chosen as
+/// the base graph (`largestGraphReader`), if any qualifies.
+fn add_readers<G: HnswGraphView>(
+    sources: &[GraphMergeSource<'_, G>],
+) -> Result<(Vec<usize>, Option<usize>)> {
+    let mut usable: Vec<usize> = Vec::new();
+    let mut largest: Option<usize> = None;
+    let mut largest_graph_size = -1i32;
+    for (i, source) in sources.iter().enumerate() {
+        let Some(graph) = source.graph else { continue };
+        let graph_size = graph.size();
+        if graph_size == 0 {
+            continue;
+        }
+        // `!=` against `Ok(graph_size)`, not `len() as i32 != graph_size`: a
+        // source with more than `i32::MAX` vectors would otherwise truncate
+        // into agreement with a small `graph_size`, and `new_ord_mapping`
+        // would then index `old_to_new` with a wrapped-negative ordinal.
+        if i32::try_from(source.ord_to_doc.len()) != Ok(graph_size) {
+            return Err(Error::InvalidGraphParameter(format!(
+                "source {i}: graph has {graph_size} nodes but {} vectors",
+                source.ord_to_doc.len()
+            )));
+        }
+        let live = count_live_vectors(source)?;
+        // ARITH: `live` counts a subset of `ord_to_doc`, whose length was just
+        // checked to equal `graph_size`, so `0 <= live <= graph_size`, and
+        // `graph_size > 0` was checked above. Java's
+        // `((graphSize - candidateVectorCount) * 100) / graphSize` is `int`
+        // arithmetic that silently wraps once `graphSize` passes ~21.5M
+        // vectors -- a segment size this port can reach -- so the product is
+        // taken in `i64` here, where `i32::MAX * 100` is three orders of
+        // magnitude short of overflow.
+        #[allow(clippy::arithmetic_side_effects)]
+        let delete_pct = (i64::from(graph_size) - live) * 100 / i64::from(graph_size);
+        // Java compares the candidate's *live* count against the incumbent's
+        // *total* size, not against its live count. Kept as-is: this only ever
+        // picks a base graph, and at equal size a graph with deletions is the
+        // worse base, which is what the asymmetry expresses.
+        if delete_pct <= i64::from(DELETE_PCT_THRESHOLD)
+            && (largest.is_none() || live > i64::from(largest_graph_size))
+        {
+            largest = Some(i);
+            largest_graph_size = graph_size;
+        }
+        if live == i64::from(graph_size) {
+            usable.push(i);
+        }
+    }
+    Ok((usable, largest))
 }
 
 /// `IncrementalHnswGraphMerger.countLiveVectors`.
@@ -2673,5 +2760,89 @@ mod tests {
             recall >= 0.9,
             "search over the merged, serialized graph recalled {recall}"
         );
+
+        // `ConcurrentHnswMerger`: the base graph copied, everything else
+        // inserted by four workers in small batches so they interleave. The
+        // result depends on scheduling (as in Java), so it is held to the same
+        // recall bar as the sequential merge, not to its arcs.
+        let concurrent = merge_one_field_concurrent(
+            || Ok(merged_values.ord_scorer()),
+            8,
+            32,
+            crate::hnsw::DEFAULT_RAND_SEED,
+            &merged_ord_to_doc,
+            &graph_sources,
+            4,
+            64,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(concurrent.size(), 1600);
+        let mut hits = 0usize;
+        let mut total = 0usize;
+        for q in 0..10 {
+            let query: Vec<f32> = (0..DIM)
+                .map(|d| q as f32 * 137.0 + d as f32 * 0.01)
+                .collect();
+            let exact: Vec<i32> = merged_values
+                .exhaustive_search(&query, 10)
+                .unwrap()
+                .into_iter()
+                .map(|(d, _)| d)
+                .collect();
+            let mut scorer = merged_values.scorer(&query).unwrap();
+            let approx: Vec<i32> = search(&mut scorer, Some(&concurrent), 10, u64::MAX, opts())
+                .unwrap()
+                .0
+                .into_iter()
+                .map(|(ord, _)| merged_values.ord_to_doc(ord).unwrap())
+                .collect();
+            total += exact.len();
+            hits += approx.iter().filter(|d| exact.contains(d)).count();
+        }
+        let recall = hits as f64 / total as f64;
+        assert!(
+            recall >= 0.9,
+            "the concurrently merged graph recalled {recall}"
+        );
+        // No usable base graph (every source dropped): the whole graph is
+        // built concurrently.
+        let none: [GraphMergeSource<'_, OnHeapHnswGraph>; 0] = [];
+        let rebuilt = merge_one_field_concurrent(
+            || Ok(merged_values.ord_scorer()),
+            8,
+            32,
+            crate::hnsw::DEFAULT_RAND_SEED,
+            &merged_ord_to_doc,
+            &none,
+            3,
+            100,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(rebuilt.size(), 1600);
+        assert!(merge_one_field_concurrent(
+            || Ok(merged_values.ord_scorer()),
+            8,
+            32,
+            1,
+            &merged_ord_to_doc,
+            &none,
+            0,
+            100,
+        )
+        .is_err());
+        assert!(merge_one_field_concurrent(
+            || Ok(merged_values.ord_scorer()),
+            8,
+            32,
+            1,
+            &[],
+            &none,
+            2,
+            100,
+        )
+        .unwrap()
+        .is_none());
     }
 }

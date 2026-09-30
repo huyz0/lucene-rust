@@ -178,8 +178,14 @@ pub(crate) fn decode_all(input: &mut impl DataInput, total_value_count: i64) -> 
 /// Writes nothing for an empty slice, matching the decoder reading nothing for
 /// `total_value_count == 0`.
 pub(crate) fn encode_all(values: &[i64]) -> Vec<u8> {
+    encode_all_with_block_size(values, BLOCK_SIZE as usize)
+}
+
+/// [`encode_all`] for any `BlockPackedWriter` block size (a power of two in
+/// `64..=2^27`; the caller's choice, never a disk value).
+pub fn encode_all_with_block_size(values: &[i64], block_size: usize) -> Vec<u8> {
     let mut out = Vec::new();
-    for block in values.chunks(BLOCK_SIZE as usize) {
+    for block in values.chunks(block_size) {
         let mut min = *block.iter().min().unwrap();
         let max = *block.iter().max().unwrap();
 
@@ -211,6 +217,204 @@ pub(crate) fn encode_all(values: &[i64]) -> Vec<u8> {
         }
     }
     out
+}
+
+/// Port of `BlockPackedReaderIterator`: the streaming reader of a
+/// `BlockPackedWriter` stream of any block size, with `next`, `next(count)`
+/// and `skip`. [`decode_all`] is the decode-everything shortcut term vectors
+/// uses; this is the general form.
+#[derive(Debug)]
+pub struct BlockPackedReaderIterator<'i, I: DataInput> {
+    input: &'i mut I,
+    value_count: u64,
+    block_size: usize,
+    values: Vec<i64>,
+    blocks: Vec<u8>,
+    off: usize,
+    ord: u64,
+}
+
+impl<'i, I: DataInput> BlockPackedReaderIterator<'i, I> {
+    /// `new BlockPackedReaderIterator(in, packedIntsVersion, blockSize, valueCount)`.
+    pub fn new(
+        input: &'i mut I,
+        packed_ints_version: i32,
+        block_size: usize,
+        value_count: u64,
+    ) -> Result<Self> {
+        lucene_util::packed::check_version(packed_ints_version)
+            .map_err(|e| lucene_store::Error::Corrupted(e.to_string()))?;
+        lucene_util::packed::check_block_size(block_size, 64, 1 << 27)
+            .map_err(|e| lucene_store::Error::Corrupted(e.to_string()))?;
+        Ok(BlockPackedReaderIterator {
+            input,
+            value_count,
+            block_size,
+            values: vec![0i64; block_size],
+            blocks: Vec::new(),
+            off: block_size,
+            ord: 0,
+        })
+    }
+
+    /// `ord()`: values consumed so far.
+    pub fn ord(&self) -> u64 {
+        self.ord
+    }
+
+    /// `reset(in, valueCount)` without swapping the input: start over on a
+    /// new stream of `value_count` values at the input's position.
+    pub fn reset(&mut self, value_count: u64) {
+        self.value_count = value_count;
+        self.off = self.block_size;
+        self.ord = 0;
+    }
+
+    /// `skip(count)`.
+    pub fn skip(&mut self, mut count: u64) -> Result<()> {
+        let target = self.ord.checked_add(count);
+        if target.is_none_or(|t| t > self.value_count) {
+            return Err(lucene_store::Error::Eof {
+                offset: self.input.remaining(),
+            });
+        }
+        // 1. skip buffered values
+        // ARITH: `off <= block_size`; `skip_buffer <= count` and `ord + count
+        // <= value_count` was checked above, so nothing overflows.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            let skip_buffer = count.min((self.block_size - self.off) as u64) as usize;
+            self.off += skip_buffer;
+            self.ord += skip_buffer as u64;
+            count -= skip_buffer as u64;
+        }
+        if count == 0 {
+            return Ok(());
+        }
+        // 2. skip as many blocks as necessary
+        while count >= self.block_size as u64 {
+            let token = self.input.read_byte()? as u32;
+            let bits_per_value = token >> 1;
+            if bits_per_value > 64 {
+                return Err(lucene_store::Error::Corrupted("Corrupted".into()));
+            }
+            if token & MIN_VALUE_EQUALS_0 == 0 {
+                read_min_value_vlong(self.input)?;
+            }
+            let block_bytes = packed_ints::byte_count(self.block_size as u64, bits_per_value);
+            self.input.skip(block_bytes)?;
+            // ARITH: `count >= block_size` is the loop condition, and `ord +
+            // count <= value_count` still holds.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                self.ord += self.block_size as u64;
+                count -= self.block_size as u64;
+            }
+        }
+        if count == 0 {
+            return Ok(());
+        }
+        // 3. skip the last values
+        self.refill()?;
+        // ARITH: `count < block_size` and `off == 0` after `refill`.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            self.ord += count;
+            self.off += count as usize;
+        }
+        Ok(())
+    }
+
+    /// `next()`.
+    pub fn next_value(&mut self) -> Result<i64> {
+        if self.ord == self.value_count {
+            return Err(lucene_store::Error::Eof {
+                offset: self.input.remaining(),
+            });
+        }
+        if self.off == self.block_size {
+            self.refill()?;
+        }
+        let value = self.values[self.off];
+        // ARITH: `off < block_size` after the refill; `ord < value_count`.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            self.off += 1;
+            self.ord += 1;
+        }
+        Ok(value)
+    }
+
+    /// `next(count)`: at least one and at most `count` values, never crossing
+    /// a block.
+    pub fn next_values(&mut self, count: usize) -> Result<&[i64]> {
+        debug_assert!(count > 0);
+        if self.ord == self.value_count {
+            return Err(lucene_store::Error::Eof {
+                offset: self.input.remaining(),
+            });
+        }
+        if self.off == self.block_size {
+            self.refill()?;
+        }
+        // ARITH: `off < block_size` and `ord < value_count` here.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            let count = count.min(self.block_size - self.off);
+            let count = (count as u64).min(self.value_count - self.ord) as usize;
+            let start = self.off;
+            self.off += count;
+            self.ord += count as u64;
+            Ok(&self.values[start..start + count])
+        }
+    }
+
+    /// `refill()`: decode the next block into `values`.
+    fn refill(&mut self) -> Result<()> {
+        let token = self.input.read_byte()? as u32;
+        let min_equals_0 = token & MIN_VALUE_EQUALS_0 != 0;
+        let bits_per_value = token >> 1;
+        if bits_per_value > 64 {
+            return Err(lucene_store::Error::Corrupted("Corrupted".into()));
+        }
+        let min_value = if min_equals_0 {
+            0
+        } else {
+            lucene_util::zigzag::decode(1u64.wrapping_add(read_min_value_vlong(self.input)? as u64))
+        };
+        if bits_per_value == 0 {
+            self.values.fill(min_value);
+        } else {
+            let decoder = lucene_util::packed::BulkOperation::of(
+                lucene_util::packed::Format::Packed,
+                bits_per_value,
+            );
+            // ARITH: the block size is at most 2^27 and the decoder's counts
+            // at most 64; `ord < value_count` whenever a block is refilled.
+            #[allow(clippy::arithmetic_side_effects)]
+            let (iterations, blocks_size, value_count) = {
+                let iterations = self.block_size / decoder.byte_value_count();
+                (
+                    iterations,
+                    iterations * decoder.byte_block_count(),
+                    (self.value_count - self.ord).min(self.block_size as u64) as usize,
+                )
+            };
+            if self.blocks.len() < blocks_size {
+                self.blocks.resize(blocks_size, 0);
+            }
+            let blocks_count = packed_ints::byte_count(value_count as u64, bits_per_value);
+            self.input.read_bytes(&mut self.blocks[..blocks_count])?;
+            decoder.decode_bytes(&self.blocks, &mut self.values, iterations);
+            if min_value != 0 {
+                for v in &mut self.values[..value_count] {
+                    *v = v.wrapping_add(min_value);
+                }
+            }
+        }
+        self.off = 0;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -426,5 +630,75 @@ mod tests {
         let values = vec![0i64; 64];
         let encoded = encode_all(&values);
         assert_eq!(encoded, vec![1u8]); // token: bits=0, min_equals_0=1
+    }
+    #[test]
+    fn streaming_iterator_next_skip_and_bulk_agree_with_decode_all() {
+        let values: Vec<i64> = (0..1000i64)
+            .map(|i| (i * 7919) % 1013 - 300 + if i % 97 == 0 { i64::MIN / 3 } else { 0 })
+            .collect();
+        for block_size in [64usize, 128, 256] {
+            let bytes = encode_all_with_block_size(&values, block_size);
+            let mut input = SliceInput::new(&bytes);
+            let mut it =
+                BlockPackedReaderIterator::new(&mut input, 2, block_size, values.len() as u64)
+                    .unwrap();
+            for &v in &values {
+                assert_eq!(it.next_value().unwrap(), v);
+            }
+            assert!(it.next_value().is_err());
+            assert!(it.next_values(3).is_err());
+            for (skip, take) in [
+                (3u64, 5usize),
+                (10, 300),
+                (64, 1),
+                (700, 1000),
+                (999, 1),
+                (1000, 0),
+            ] {
+                let mut input = SliceInput::new(&bytes);
+                let mut it =
+                    BlockPackedReaderIterator::new(&mut input, 2, block_size, values.len() as u64)
+                        .unwrap();
+                it.skip(3).unwrap();
+                it.skip(skip - 3).unwrap();
+                let start = skip as usize;
+                assert_eq!(it.ord(), skip);
+                let mut got = Vec::new();
+                while got.len() < take && it.ord() < values.len() as u64 {
+                    let chunk = it.next_values(take - got.len()).unwrap();
+                    assert!(!chunk.is_empty() && chunk.len() <= block_size);
+                    got.extend_from_slice(chunk);
+                }
+                let end = (start + take).min(values.len());
+                assert_eq!(
+                    got,
+                    &values[start..end],
+                    "block_size={block_size} skip={skip}"
+                );
+            }
+            let mut input = SliceInput::new(&bytes);
+            let mut it =
+                BlockPackedReaderIterator::new(&mut input, 2, block_size, values.len() as u64)
+                    .unwrap();
+            assert!(it.skip(1001).is_err());
+            it.skip(1000).unwrap();
+            it.reset(0);
+            assert_eq!(it.ord(), 0);
+        }
+    }
+
+    #[test]
+    fn streaming_iterator_rejects_bad_parameters_and_widths() {
+        let bytes = [0xffu8, 0, 0];
+        let mut input = SliceInput::new(&bytes);
+        assert!(BlockPackedReaderIterator::new(&mut input, 1, 64, 1).is_err());
+        let mut input = SliceInput::new(&bytes);
+        assert!(BlockPackedReaderIterator::new(&mut input, 2, 100, 1).is_err());
+        let mut input = SliceInput::new(&bytes);
+        let mut it = BlockPackedReaderIterator::new(&mut input, 2, 64, 200).unwrap();
+        assert!(it.next_value().is_err()); // token 0xff: width 127
+        let mut input = SliceInput::new(&bytes);
+        let mut it = BlockPackedReaderIterator::new(&mut input, 2, 64, 200).unwrap();
+        assert!(it.skip(100).is_err());
     }
 }
