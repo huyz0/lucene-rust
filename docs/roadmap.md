@@ -362,17 +362,49 @@ it changes M5's scope materially.
 
 ---
 
-## Explicitly deferred beyond this roadmap
+## The full port: M7–M14
 
-Carried from `PLAN.md`'s non-goals, restated so the boundary stays visible:
+M0–M6 port what OpenSearch's read and write paths need. Lucene 10.5.0 is more
+than that: 34 modules, about 620,000 lines of Java code by the sources jars
+(`lucene-core` 176k, `lucene-analysis-common` 109k, `backward-codecs` 42k,
+`test-framework` 61k, the rest 2-19k each). Measured on 2026-09-30, 27 of
+core's 55 concrete query classes are ported, and `document`, `geo`,
+per-field codecs, most similarities, quantization and the standard tokenizer
+have no ledger rows at all; most non-core modules are not started.
 
-- **Backward-codecs.** Old segments stay on the Java engine until force-merged.
-- **HNSW / native k-NN.** See the M4 scope decision.
-- **Native aggregations.** Fed from FFI doc-value cursors; the framework stays on the JVM.
-- **Join, grouping, taxonomy facets.** OpenSearch reimplements these as aggregations.
-- **`luke`, `benchmark`, `demo`, `monitor`, `replicator`, `expressions`, `classification`,
-  `spatial3d`, `spatial-extras`.**
-- **Scoring pluggability** beyond BM25, constant score, and the similarity trait.
+Eight milestones take the port the rest of the way, each on the same terms as
+the first seven (closest-to-Java port, Java-fixture differential tests, a
+benchmark against Lucene, `parity.md` updated in the same commit):
+
+| | Milestone | Delivers | Effort |
+|---|---|---|---|
+| M7 | [`lucene-core` complete](milestones/m7-core-complete.md) | the rest of core -- `document`, similarities, the remaining queries, per-field and quantized formats, writer gaps, `StandardTokenizer` -- and `check-port-inventory.py`, the gate that makes "fully ported" checkable | XL |
+| M8 | [Backward codecs](milestones/m8-backward-codecs.md) | reading and merging Lucene 9.x-10.4 segments: existing OpenSearch indices on the Rust engine without a reindex | XL |
+| M9 | [Geo and spatial](milestones/m9-geo-and-spatial.md) | `geo_point`/`geo_shape` natively; `spatial3d`, `spatial-extras` | L |
+| M10 | [Joins, grouping, `queries`](milestones/m10-joins-grouping-queries.md) | `nested`, `has_child`, `collapse`, `function_score`, `intervals` natively | L |
+| M11 | [Text analysis](milestones/m11-analysis-common.md) | all of `analysis-common`: indexing text without a JVM | XL |
+| M12 | [Language analysis](milestones/m12-language-analysis.md) | ICU, Japanese, Korean, Chinese, Polish, phonetic, OpenNLP | L |
+| M13 | [Search-application modules](milestones/m13-search-application-modules.md) | query parsers, highlighting, suggesters, taxonomy facets, `memory`, `monitor` | XL |
+| M14 | [Remaining modules and tooling](milestones/m14-remaining-modules-and-tooling.md) | non-default codecs, expressions, classification, replicator, `misc`, `sandbox`; test framework and tool equivalents; an empty inventory allowlist | L |
+
+"Fully ported" is defined by M14's last criterion: every class of the 10.5.0
+distribution is `ported` or `not needed` with a reason in `parity.md`, and
+`check-port-inventory.py` passes with nothing allowlisted.
+
+## Deferred, and why
+
+These stay deferred *within* M0-M6; M7-M14 schedule each of them:
+
+- **Backward codecs** (M8). Until then, old segments stay on the Java engine
+  until force-merged.
+- **Join, grouping, taxonomy facets** (M10, M13).
+- **`luke`, `benchmark`, `demo`, `monitor`, `replicator`, `expressions`,
+  `classification`, `spatial3d`, `spatial-extras`** (M9, M13, M14).
+- **Similarities beyond BM25** (M7).
+
+Two items this list used to carry are no longer deferred: HNSW vectors are
+read and written (`Lucene99HnswVectorsFormat`, `parity.md`), and
+OpenSearch's shard-side aggregations run natively (M5.6).
 
 ---
 
