@@ -149,7 +149,7 @@ codecs/lucene90/Lucene90NormsFormat	ported	crates/lucene-codecs/src/norms.rs::pa
 codecs/lucene90/Lucene90NormsProducer	ported	crates/lucene-codecs/src/norms.rs::NormsReader
 codecs/lucene90/Lucene90PointsFormat	ported	crates/lucene-codecs/src/points.rs::PointsReader
 codecs/lucene90/Lucene90PointsReader	ported	crates/lucene-codecs/src/points.rs::PointsReader
-codecs/lucene90/Lucene90PointsWriter	partial	crates/lucene-codecs/src/points.rs::write -- M7: "every leaf uses common prefix 0, `compressedDim = -2`, run length 1 and doc ids as `CONTINUOUS_IDS`/`BPV_32` only (Java also picks its bitset, delta-16 and 21/24-bit doc-id encodings)"; `widest_dim` omits `parentSplits` fairness (parity; size only)
+codecs/lucene90/Lucene90PointsWriter	partial	crates/lucene-codecs/src/points.rs::write -- M7: segment flush and merge still write through points.rs::write_packed (Lucene-readable, not Java's bytes: common prefix 0, `compressedDim = -2`, doc ids `CONTINUOUS_IDS`/`BPV_32` only, `widest_dim` without `parentSplits`). The byte-identical writer exists (bkd_writer.rs::BkdWriter, 17 Java fixtures); routing needs the segment's maxDoc plumbed from lucene-index (Java's radix keys are `bitsRequired(maxDoc - 1)` wide) and N-dim merges through `add`/`finish` as Java does, deferred to avoid colliding with concurrent index/merge work
 codecs/lucene90/Lucene90StoredFieldsFormat	ported	crates/lucene-codecs/src/stored_fields.rs::StoredFieldsReader
 codecs/lucene90/Lucene90TermVectorsFormat	ported	crates/lucene-codecs/src/term_vectors.rs::TermVectorsReader
 codecs/lucene90/compressing/FieldsIndex	ported	crates/lucene-codecs/src/stored_fields.rs::ChunkIndexEntry
@@ -972,8 +972,8 @@ util/InPlaceMergeSorter	not-needed	generic sorting framework; the port sorts wit
 util/InfoStream	not-needed	IndexWriter debug-message sink with no effect on results; the port has no diagnostics channel (Rust would use log/tracing)
 util/IntArrayDocIdSet	not-needed	sparse DocIdSetBuilder result; Rust uses a sorted Vec<i32>
 util/IntBlockPool	not-needed	int arena for posting slices; the Rust inverter uses per-term Vec buffers
-util/IntroSelector	not-needed	generic introselect framework; Rust slice::select_nth_unstable(_by)
-util/IntroSorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
+util/IntroSelector	ported	crates/lucene-util/src/sorter.rs::intro_select
+util/IntroSorter	ported	crates/lucene-util/src/sorter.rs::intro_sort
 util/IntsRef	not-needed	int-slice reference; Rust &[i32]/Vec<i32> (e.g. FST label keys)
 util/IntsRefBuilder	not-needed	growable int buffer; Rust Vec<i32>
 util/JavaLoggingInfoStream	not-needed	InfoStream over java.util.logging
@@ -983,7 +983,7 @@ util/LongBitSet	not-needed	long-indexed FixedBitSet; the Rust FixedBitSet is usi
 util/LongHeap	not-needed	generic long min-heap; Rust std BinaryHeap (TernaryLongHeap ported separately where Lucene's order matters)
 util/LongValues	not-needed	index->long accessor interface; readers expose get() directly (e.g. direct_reader.rs DirectReader::get)
 util/LongsRef	not-needed	long-slice reference; Rust &[i64]/Vec<i64>
-util/MSBRadixSorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
+util/MSBRadixSorter	ported	crates/lucene-util/src/sorter.rs::msb_radix_sort
 util/MapOfSets	not-needed	map of sets helper; Rust HashMap<K, HashSet<V>>
 util/MathUtil	ported	crates/lucene-util/src/math_util.rs::gcd
 util/MergedIterator	not-needed	k-way merge of sorted iterators with dedup; Rust BTreeSet/merge loops
@@ -997,7 +997,7 @@ util/PagedBytes	not-needed	paged byte arena for buffering writers; Rust writers 
 util/PrintStreamInfoStream	not-needed	InfoStream over a PrintStream
 util/PriorityQueue	not-needed	generic binary heap; Rust std BinaryHeap, with Lucene's heap re-implemented where its tie order matters (top_field.rs HitQueue)
 util/QueryBuilder	todo:M7	analyzer-driven query construction (createBooleanQuery/createPhraseQuery, graph token streams)
-util/RadixSelector	not-needed	generic radix select; Rust select_nth_unstable_by (points.rs compute_leaf_plan)
+util/RadixSelector	ported	crates/lucene-util/src/sorter.rs::radix_select
 util/RamUsageEstimator	not-needed	JVM object-size estimation
 util/RecyclingByteBlockAllocator	not-needed	ByteBlockPool block recycling; no block pools in the port
 util/RecyclingIntBlockAllocator	not-needed	IntBlockPool block recycling; no block pools in the port
@@ -1013,7 +1013,7 @@ util/SetOnce	not-needed	write-once holder; Rust std::sync::OnceLock
 util/SloppyMath	deferred:M9	fast approximate trig/haversin distance for geo
 util/SmallFloat	ported	crates/lucene-util/src/small_float.rs::float_to_byte315
 util/SortableBytesRefArray	not-needed	internal interface over BytesRefArray/FixedLengthBytesRefArray
-util/Sorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
+util/Sorter	ported	crates/lucene-util/src/sorter.rs::heap_sort
 util/SparseFixedBitSet	ported	crates/lucene-util/src/sparse_fixed_bit_set.rs::SparseFixedBitSet
 util/SparseLiveDocs	ported	crates/lucene-util/src/live_docs.rs::SparseLiveDocs
 util/StableMSBRadixSorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
@@ -1062,16 +1062,16 @@ util/automaton/Transition	not-needed	(min, max, dest) holder; ByteDfa::transitio
 util/automaton/TransitionAccessor	not-needed	transition-iteration interface over Automaton
 util/automaton/UTF32ToUTF8	ported	crates/lucene-codecs/src/automaton.rs::utf8_sequences
 util/bkd/BKDConfig	ported	crates/lucene-codecs/src/points.rs::check_config
-util/bkd/BKDRadixSelector	partial	crates/lucene-codecs/src/points.rs::compute_leaf_plan -- M7: in-heap selection only; no offline (temp-file) radix selection for point sets larger than heap
+util/bkd/BKDRadixSelector	ported	crates/lucene-codecs/src/bkd_writer.rs::offline_partition
 util/bkd/BKDReader	ported	crates/lucene-codecs/src/points.rs::PointsReader
 util/bkd/BKDUtil	not-needed	fixed-width byte comparator/equality specialisations; Rust compares byte slices (points.rs cmp_unsigned)
-util/bkd/BKDWriter	partial	crates/lucene-codecs/src/points.rs::write -- M7: readable-by-Lucene bytes, not Java's: common prefix always 0, no run-length/low-cardinality leaf compression, doc ids only CONTINUOUS/BPV_32, widest_dim without parentSplits fairness, no offline spill
-util/bkd/DocIdsWriter	partial	crates/lucene-codecs/src/points.rs::read_doc_ids_into -- M7: every encoding read; write side emits only CONTINUOUS_IDS/BPV_32 (no BITSET/DELTA_BPV_16/BPV_21/BPV_24)
-util/bkd/HeapPointReader	not-needed	BKDWriter heap scratch reader; the Rust writer holds points in a Vec<u8>
-util/bkd/HeapPointWriter	not-needed	BKDWriter heap scratch buffer; the Rust writer holds points in a Vec<u8>
+util/bkd/BKDWriter	ported	crates/lucene-codecs/src/bkd_writer.rs::BkdWriter
+util/bkd/DocIdsWriter	ported	crates/lucene-codecs/src/bkd_writer.rs::write_doc_ids
+util/bkd/HeapPointReader	ported	crates/lucene-codecs/src/bkd_writer.rs::HeapPoints
+util/bkd/HeapPointWriter	ported	crates/lucene-codecs/src/bkd_writer.rs::HeapPoints
 util/bkd/MutablePointTreeReaderUtils	ported	crates/lucene-codecs/src/points.rs::compute_leaf_plan
-util/bkd/OfflinePointReader	todo:M7	temp-file point spill for BKD builds larger than heap
-util/bkd/OfflinePointWriter	todo:M7	temp-file point spill for BKD builds larger than heap
+util/bkd/OfflinePointReader	ported	crates/lucene-codecs/src/bkd_writer.rs::OfflinePoints
+util/bkd/OfflinePointWriter	ported	crates/lucene-codecs/src/bkd_writer.rs::OfflinePoints
 util/bkd/PointReader	not-needed	interface over heap/offline point buffers
 util/bkd/PointValue	ported	crates/lucene-codecs/src/points.rs::Point
 util/bkd/PointWriter	not-needed	interface over heap/offline point buffers
