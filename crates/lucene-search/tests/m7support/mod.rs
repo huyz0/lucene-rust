@@ -73,6 +73,19 @@ impl Grammar {
         let q = match op.as_str() {
             "all" => Clause::MatchAllDocs(MatchAllDocsQuery::new(0)),
             "t" => Clause::Term(TermQuery::new(field, next(at).into_bytes())),
+            "tf" => {
+                let f = next(at);
+                Clause::Term(TermQuery::new(f, next(at).into_bytes()))
+            }
+            "pf" => {
+                let f = next(at);
+                let slop = next(at).parse().unwrap();
+                let mut words = Vec::new();
+                while toks[*at] != ")" {
+                    words.push(next(at));
+                }
+                Clause::Phrase(PhraseQuery::new(f, words).with_slop(slop))
+            }
             "pre" => Clause::Prefix(PrefixQuery::new(field, next(at).into_bytes())),
             "wc" => Clause::Wildcard(WildcardQuery::new(field, next(at).into_bytes())),
             "re" => Clause::Regexp(RegexpQuery::new(field, next(at))),
