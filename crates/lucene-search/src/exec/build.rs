@@ -188,6 +188,11 @@ pub(crate) fn build<'a>(
         Clause::MatchNoDocs(_) => Ok(None),
         Clause::PointsRange(q) => points_range(ctx, q, boost, mode),
         Clause::Exists(q) => exists(ctx, q, boost, mode),
+        Clause::Extended(q) => super::extended::build(ctx, q, boost, mode, top_level),
+        Clause::MultiPhrase(m) => super::extended::multi_phrase(ctx, m, boost, mode),
+        Clause::Phrase(p) if !p.has_implicit_positions() => {
+            super::extended::positional_phrase(ctx, p, boost, mode)
+        }
         Clause::Phrase(p) => match phrase(ctx, p, boost, mode)? {
             PhraseForm::Scorer(s) => Ok(Some(s)),
             PhraseForm::Absent => Ok(None),

@@ -363,6 +363,7 @@ fn dump(path: &Path) -> Result<String, String> {
                 field: "body".to_string(),
                 terms: vec![a.as_bytes().to_vec(), b.as_bytes().to_vec()],
                 slop: 0,
+                positions: Vec::new(),
             })],
             ..Default::default()
         };

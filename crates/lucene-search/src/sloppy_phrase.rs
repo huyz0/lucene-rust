@@ -70,7 +70,7 @@ pub struct PhraseRepeats {
     /// repeats nothing.
     groups: Vec<i32>,
     /// `SloppyPhraseMatcher.hasRpts` -- some term occurs in two or more slots.
-    has_rpts: bool,
+    pub(crate) has_rpts: bool,
     /// `SloppyPhraseMatcher.hasMultiTermRpts` -- some *repeating* slot accepts
     /// more than one term, which only a `MultiPhraseQuery` can produce.
     has_multi_term_rpts: bool,
@@ -302,7 +302,13 @@ impl<'a> SloppyMatcher<'a> {
     /// `repeats.groups` must have one entry per slot -- it is
     /// [`PhraseRepeats::detect`]'s output for the same phrase.
     fn new(term_positions: &'a [&'a [i32]], repeats: &PhraseRepeats, slop: u32) -> Self {
-        Self::new_in(term_positions, repeats, slop, SloppyScratch::default())
+        Self::new_in(
+            term_positions,
+            repeats,
+            slop,
+            SloppyScratch::default(),
+            None,
+        )
     }
 
     /// [`Self::new`] reusing `scratch`'s buffers, so a matcher per document
@@ -312,6 +318,7 @@ impl<'a> SloppyMatcher<'a> {
         repeats: &PhraseRepeats,
         slop: u32,
         scratch: SloppyScratch,
+        offsets: Option<&[i32]>,
     ) -> Self {
         let SloppyScratch {
             mut pps,
@@ -352,7 +359,7 @@ impl<'a> SloppyMatcher<'a> {
         pps.clear();
         pps.extend((0..term_positions.len()).map(|i| Pp {
             idx: 0,
-            offset: i as i32,
+            offset: offsets.map_or(i as i32, |o| o[i]),
             ord: i,
             position: 0,
             rpt_group: repeats.groups[i],
@@ -746,7 +753,41 @@ pub(crate) fn sloppy_phrase_freq_in(
         }
         Degenerate::No => {
             let mut m =
-                SloppyMatcher::new_in(term_positions, repeats, slop, std::mem::take(scratch));
+                SloppyMatcher::new_in(term_positions, repeats, slop, std::mem::take(scratch), None);
+            let mut freq = 0.0f32;
+            if m.next_match() {
+                freq = m.sloppy_weight();
+                while m.next_match() {
+                    freq += m.sloppy_weight();
+                }
+            }
+            *scratch = m.into_scratch();
+            freq
+        }
+    }
+}
+
+/// [`sloppy_phrase_freq_in`] for a phrase with explicit positions
+/// (`PhraseQuery.Builder.add(term, position)`): `offsets[i]` is slot `i`'s
+/// `PhrasePositions.offset`, non-decreasing, where the other entry points use
+/// the slot index. `term_positions` are the raw document positions.
+pub(crate) fn sloppy_phrase_freq_offsets_in(
+    scratch: &mut SloppyScratch,
+    term_positions: &[&[i32]],
+    repeats: &PhraseRepeats,
+    slop: u32,
+    offsets: &[i32],
+) -> f32 {
+    match degenerate(term_positions) {
+        Degenerate::Yes(freq) => freq,
+        Degenerate::No => {
+            let mut m = SloppyMatcher::new_in(
+                term_positions,
+                repeats,
+                slop,
+                std::mem::take(scratch),
+                Some(offsets),
+            );
             let mut freq = 0.0f32;
             if m.next_match() {
                 freq = m.sloppy_weight();
