@@ -59,6 +59,10 @@ least 1.0× took these changes:
 - a specialised scorer handles a cached required set plus one optional term
   (`+terms ?term` 1.0× → 2.4×).
 
+Where the remaining quarter goes -- per-block costs in term and boolean
+top-k, position decoding in phrases, term expansion in regexps -- is measured
+in [`slow-tail-2026-09.md`](slow-tail-2026-09.md).
+
 The first two gate runs on the new build each failed one query, q68 and then
 q64, both at 0.92–1.00× after three passes. Those were the last two fixes.
 
