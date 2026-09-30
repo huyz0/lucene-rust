@@ -7707,8 +7707,14 @@ impl<'d> IndexWriter<'d> {
         }
         // `Lucene90PointsWriter` writes fields in `FieldInfos` order.
         fields.sort_by_key(|f| f.field_number);
-        let (kdm, kdi, kdd) =
-            lucene_codecs::points::write_packed(&fields, MAX_POINTS_IN_LEAF_NODE, segment_id, "")?;
+        // The segment's `maxDoc`: `BKDWriter` sizes its doc-id keys from it.
+        let (kdm, kdi, kdd) = lucene_codecs::points::write_packed(
+            fields,
+            MAX_POINTS_IN_LEAF_NODE,
+            docs.len() as i32,
+            segment_id,
+            "",
+        )?;
         Ok(Some(PointsOutput {
             kdm,
             kdi,

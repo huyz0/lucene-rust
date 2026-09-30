@@ -126,6 +126,8 @@ the skipper path, range relations, feature, distance feature) in
 
 - Delivered 2026-09-30: `BEST_COMPRESSION` stored fields byte-identical to Lucene -- a port of zlib's `deflate` with the preset dictionary (`deflater.rs`, `GenStoredFieldsDeflate`).
 
+- Delivered 2026-09-30: points flush and merge through the byte-identical `BkdWriter` (real `maxDoc`, N-dimension merges via `add`/`finish`); `GenPoints`' flush reproduced byte for byte.
+
 ### T7.8 — `StandardTokenizer` and the attribute model · delivered 2026-09-30, two rows partial
 
 `crates/lucene-analysis` is now Lucene's streaming model: `TokenStream`/
