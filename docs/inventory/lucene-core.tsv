@@ -1105,17 +1105,17 @@ util/graph/GraphTokenStreamFiniteStrings	todo:M7	finite-path enumeration of grap
 util/hnsw/AbstractHnswGraphSearcher	ported	crates/lucene-codecs/src/hnsw.rs::HnswGraphSearcher
 util/hnsw/BlockingFloatHeap	ported	crates/lucene-util/src/float_heap.rs::BlockingFloatHeap
 util/hnsw/CloseableRandomVectorScorerSupplier	not-needed	closeable supplier over a merge temp file; Rust lifetimes/Drop
-util/hnsw/ConcurrentHnswMerger	todo:M7	multi-threaded HNSW graph merge (numMergeWorkers > 1)
+util/hnsw/ConcurrentHnswMerger	ported	crates/lucene-codecs/src/hnsw_vectors.rs::merge_one_field_concurrent
 util/hnsw/FilteredHnswGraphSearcher	ported	crates/lucene-codecs/src/filtered_hnsw_searcher.rs::FilteredHnswGraphSearcher
 util/hnsw/FloatHeap	ported	crates/lucene-util/src/float_heap.rs::FloatHeap
 util/hnsw/HasKnnVectorValues	not-needed	accessor interface for vector values
 util/hnsw/HnswBuilder	ported	crates/lucene-codecs/src/hnsw.rs::HnswGraphBuilder
-util/hnsw/HnswConcurrentMergeBuilder	todo:M7	multi-threaded HNSW graph merge builder
+util/hnsw/HnswConcurrentMergeBuilder	ported	crates/lucene-codecs/src/hnsw_concurrent.rs::build_concurrent
 util/hnsw/HnswGraph	ported	crates/lucene-codecs/src/hnsw.rs::HnswGraphView
 util/hnsw/HnswGraphBuilder	ported	crates/lucene-codecs/src/hnsw.rs::HnswGraphBuilder
 util/hnsw/HnswGraphMerger	ported	crates/lucene-codecs/src/hnsw.rs::merge_graphs
 util/hnsw/HnswGraphSearcher	ported	crates/lucene-codecs/src/hnsw.rs::HnswGraphSearcher
-util/hnsw/HnswLock	not-needed	per-node locks for concurrent graph building; the Rust builder is single-threaded
+util/hnsw/HnswLock	ported	crates/lucene-codecs/src/hnsw_concurrent.rs::ConcurrentHnswGraph
 util/hnsw/HnswUtil	ported	crates/lucene-codecs/src/hnsw_util.rs::components
 util/hnsw/IncrementalHnswGraphMerger	ported	crates/lucene-codecs/src/hnsw_vectors.rs::merge_one_field
 util/hnsw/InitializedHnswGraphBuilder	ported	crates/lucene-codecs/src/hnsw.rs::init_graph

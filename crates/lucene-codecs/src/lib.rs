@@ -34,6 +34,7 @@ pub mod fst_compiler;
 pub mod fst_util;
 pub mod fuzzy;
 pub mod hnsw;
+pub mod hnsw_concurrent;
 pub mod hnsw_util;
 pub mod hnsw_vectors;
 pub mod indexed_disi;
