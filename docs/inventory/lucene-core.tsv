@@ -3,57 +3,57 @@
 # class	status	detail
 analysis/AbstractAnalysisFactory	not-needed	Base class of the SPI name-based factory plumbing (Solr/CustomAnalyzer configuration); Rust composes analyzers directly in code.
 analysis/AnalysisSPILoader	not-needed	JVM ServiceLoader lookup of analysis factories by name; no Rust equivalent needed.
-analysis/Analyzer	partial	crates/lucene-analysis/src/lib.rs::Analyzer -- M7: fixed built-in chains only (standard/keyword + opt-in filters): no user-defined createComponents/TokenStreamComponents, no normalize() for query terms, no ReuseStrategy, no initReader CharFilter hook
-analysis/AnalyzerWrapper	todo:M7	per-field analyzer wrapping (base of PerFieldAnalyzerWrapper) not ported
-analysis/AutomatonToTokenStream	todo:M7	automaton-to-token-graph conversion not ported
-analysis/CachingTokenFilter	ported	crates/lucene-analysis/src/lib.rs::TokenStream
+analysis/Analyzer	ported	crates/lucene-analysis/src/analyzer.rs::Analyzer
+analysis/AnalyzerWrapper	ported	crates/lucene-analysis/src/analyzer.rs::AnalyzerWrapper
+analysis/AutomatonToTokenStream	partial	crates/lucene-analysis/src/automaton.rs::automaton_to_token_stream -- M7: converts to/from this crate's minimal Automaton (states, accept bits, canonical sorted transitions, differential-tested state for state against Java), not util/automaton's Automaton, which lucene-util is porting alongside; switch the type when that lands
+analysis/CachingTokenFilter	ported	crates/lucene-analysis/src/token_stream.rs::CachingTokenFilter
 analysis/CharArrayMap	not-needed	char[]-keyed map that exists to avoid String allocation on the JVM; its only core use is backing CharArraySet, and Rust's HashMap<String,_> covers it.
-analysis/CharArraySet	partial	crates/lucene-analysis/src/lib.rs::StopFilter -- M7: stop sets are a plain case-sensitive HashSet<String>; the ignoreCase=true mode and copy/unmodifiableSet helpers are missing
-analysis/CharFilter	todo:M7	CharFilter abstraction (pre-tokenizer text rewrite with offset correction) not ported
+analysis/CharArraySet	ported	crates/lucene-analysis/src/char_array_set.rs::CharArraySet
+analysis/CharFilter	ported	crates/lucene-analysis/src/reader.rs::CharFilter
 analysis/CharFilterFactory	not-needed	SPI name-based factory plumbing for CharFilters; no behaviour beyond construction by name.
 analysis/CharacterUtils	not-needed	JVM char[]/codepoint buffer helpers; the one behavioural piece (simple toLowerCase) lives in lucene-analysis::simple_to_lowercase.
-analysis/DelegatingAnalyzerWrapper	todo:M7	delegating per-field analyzer wrapper not ported
-analysis/FilteringTokenFilter	partial	crates/lucene-analysis/src/lib.rs::StopFilter -- M7: skipped-position carry and end() increment exist only inside StopFilter::apply_to_stream; no generic accept()-predicate filtering filter
-analysis/GraphTokenFilter	todo:M7	token-graph lookahead base filter not ported
+analysis/DelegatingAnalyzerWrapper	ported	crates/lucene-analysis/src/analyzer.rs::DelegatingAnalyzerWrapper
+analysis/FilteringTokenFilter	ported	crates/lucene-analysis/src/token_stream.rs::FilteringTokenFilter
+analysis/GraphTokenFilter	ported	crates/lucene-analysis/src/graph_token_filter.rs::GraphTokenFilter
 analysis/LowerCaseFilter	ported	crates/lucene-analysis/src/lib.rs::LowerCaseFilter
-analysis/ReusableStringReader	not-needed	JVM Reader reuse to avoid allocation when analyzing a String; Rust analyzes &str directly.
+analysis/ReusableStringReader	ported	crates/lucene-analysis/src/reader.rs::StrReader
 analysis/StopFilter	ported	crates/lucene-analysis/src/lib.rs::StopFilter
-analysis/StopwordAnalyzerBase	partial	crates/lucene-analysis/src/lib.rs::Analyzer -- M7: an Analyzer can carry a stop set (Analyzer::standard(Some(..))); loadStopwordSet from a file/resource/Reader is missing
-analysis/TokenFilter	partial	crates/lucene-analysis/src/lib.rs::TokenStream -- M7: filters are concrete Vec<Token>/TokenStream functions; no TokenFilter trait a caller can implement and chain into an Analyzer, no incremental reset/incrementToken/end/close lifecycle
+analysis/StopwordAnalyzerBase	ported	crates/lucene-analysis/src/stopword_analyzer_base.rs::StopwordAnalyzerBase
+analysis/TokenFilter	ported	crates/lucene-analysis/src/token_stream.rs::TokenFilter
 analysis/TokenFilterFactory	not-needed	SPI name-based factory plumbing for TokenFilters; no behaviour beyond construction by name.
-analysis/TokenStream	partial	crates/lucene-analysis/src/lib.rs::TokenStream -- M7: materialised token list plus end() values (final position increment/offset); no incremental incrementToken/reset/close lifecycle and no AttributeSource (only term/offset/posInc/posLen carried)
-analysis/TokenStreamToAutomaton	todo:M7	token-graph to automaton conversion not ported
-analysis/Tokenizer	partial	crates/lucene-analysis/src/lib.rs::tokenize -- M7: one built-in tokenizer function (plus keyword short-circuit); no Tokenizer abstraction with setReader/correctOffset for CharFilters
+analysis/TokenStream	ported	crates/lucene-analysis/src/token_stream.rs::TokenStream
+analysis/TokenStreamToAutomaton	partial	crates/lucene-analysis/src/automaton.rs::TokenStreamToAutomaton -- M7: converts to/from this crate's minimal Automaton (states, accept bits, canonical sorted transitions, differential-tested state for state against Java), not util/automaton's Automaton, which lucene-util is porting alongside; switch the type when that lands
+analysis/Tokenizer	ported	crates/lucene-analysis/src/token_stream.rs::Tokenizer
 analysis/TokenizerFactory	not-needed	SPI name-based factory plumbing for Tokenizers; no behaviour beyond construction by name.
-analysis/WordlistLoader	todo:M7	stopword/wordlist file loaders (getWordSet, getSnowballWordSet, getStemDict, getLines) not ported
-analysis/standard/StandardAnalyzer	partial	crates/lucene-analysis/src/lib.rs::Analyzer -- M7: Analyzer::standard composes tokenize+LowerCaseFilter+StopFilter, but no maxTokenLength (255) handling and it inherits StandardTokenizer gaps (token types, emoji)
-analysis/standard/StandardTokenizer	partial	crates/lucene-analysis/src/lib.rs::tokenize -- M7: UAX#29 word segmentation via unicode-segmentation; missing maxTokenLength split, token types (<ALPHANUM>/<NUM>/<EMOJI>/...), emoji tokens (emoji yield no token), Unicode-version parity with the JFlex grammar unverified beyond fixtures
+analysis/WordlistLoader	ported	crates/lucene-analysis/src/wordlist_loader.rs::get_word_set
+analysis/standard/StandardAnalyzer	ported	crates/lucene-analysis/src/standard/mod.rs::StandardAnalyzer
+analysis/standard/StandardTokenizer	ported	crates/lucene-analysis/src/standard/mod.rs::StandardTokenizer
 analysis/standard/StandardTokenizerFactory	not-needed	SPI name-based factory for StandardTokenizer; construction plumbing only.
-analysis/standard/StandardTokenizerImpl	partial	crates/lucene-analysis/src/lib.rs::tokenize -- M7: JFlex scanner replaced by unicode_word_indices; no token-type classification, no emoji/southeast-asian/hiragana type rules, no buffer-size/maxTokenLength handling
-analysis/tokenattributes/BytesTermAttribute	todo:M7	binary (BytesRef) token terms in the analysis model not ported
-analysis/tokenattributes/BytesTermAttributeImpl	todo:M7	binary (BytesRef) token terms in the analysis model not ported
-analysis/tokenattributes/CharTermAttribute	ported	crates/lucene-analysis/src/lib.rs::Token
-analysis/tokenattributes/CharTermAttributeImpl	ported	crates/lucene-analysis/src/lib.rs::Token
-analysis/tokenattributes/FlagsAttribute	todo:M7	token flags attribute not ported
-analysis/tokenattributes/FlagsAttributeImpl	todo:M7	token flags attribute not ported
-analysis/tokenattributes/KeywordAttribute	todo:M7	keyword marking (protect token from stemming) not ported
-analysis/tokenattributes/KeywordAttributeImpl	todo:M7	keyword marking (protect token from stemming) not ported
-analysis/tokenattributes/OffsetAttribute	ported	crates/lucene-analysis/src/lib.rs::Token
-analysis/tokenattributes/OffsetAttributeImpl	ported	crates/lucene-analysis/src/lib.rs::Token
-analysis/tokenattributes/PackedTokenAttributeImpl	partial	crates/lucene-analysis/src/lib.rs::Token -- M7: term, offsets, position increment and length are carried; type and termFrequency are not
-analysis/tokenattributes/PayloadAttribute	partial	crates/lucene-index/src/index_writer.rs::BoxedPayloadSource -- M7: payloads come from a writer-level per-occurrence callback, not a token attribute a TokenFilter sets
-analysis/tokenattributes/PayloadAttributeImpl	partial	crates/lucene-index/src/index_writer.rs::BoxedPayloadSource -- M7: payloads come from a writer-level per-occurrence callback, not a token attribute a TokenFilter sets
-analysis/tokenattributes/PositionIncrementAttribute	ported	crates/lucene-analysis/src/lib.rs::Token
-analysis/tokenattributes/PositionIncrementAttributeImpl	ported	crates/lucene-analysis/src/lib.rs::Token
-analysis/tokenattributes/PositionLengthAttribute	ported	crates/lucene-analysis/src/lib.rs::Token
-analysis/tokenattributes/PositionLengthAttributeImpl	ported	crates/lucene-analysis/src/lib.rs::Token
-analysis/tokenattributes/SentenceAttribute	todo:M7	sentence-index token attribute not ported
-analysis/tokenattributes/SentenceAttributeImpl	todo:M7	sentence-index token attribute not ported
-analysis/tokenattributes/TermFrequencyAttribute	partial	crates/lucene-index/src/index_writer.rs::add_document_with_custom_freq_terms -- M7: custom term freqs are supplied as (term, freq) pairs outside analysis, not as a token attribute; that path is exclusive with analyzed postings per writer
-analysis/tokenattributes/TermFrequencyAttributeImpl	partial	crates/lucene-index/src/index_writer.rs::add_document_with_custom_freq_terms -- M7: custom term freqs are supplied as (term, freq) pairs outside analysis, not as a token attribute; that path is exclusive with analyzed postings per writer
-analysis/tokenattributes/TermToBytesRefAttribute	ported	crates/lucene-analysis/src/lib.rs::Token
-analysis/tokenattributes/TypeAttribute	todo:M7	token type attribute not ported (Token has no type)
-analysis/tokenattributes/TypeAttributeImpl	todo:M7	token type attribute not ported (Token has no type)
+analysis/standard/StandardTokenizerImpl	ported	crates/lucene-analysis/src/standard/tokenizer_impl.rs::StandardTokenizerImpl
+analysis/tokenattributes/BytesTermAttribute	ported	crates/lucene-analysis/src/attributes.rs::set_bytes_term
+analysis/tokenattributes/BytesTermAttributeImpl	ported	crates/lucene-analysis/src/attributes.rs::set_bytes_term
+analysis/tokenattributes/CharTermAttribute	ported	crates/lucene-analysis/src/attributes.rs::set_term
+analysis/tokenattributes/CharTermAttributeImpl	ported	crates/lucene-analysis/src/attributes.rs::set_term
+analysis/tokenattributes/FlagsAttribute	ported	crates/lucene-analysis/src/attributes.rs::set_flags
+analysis/tokenattributes/FlagsAttributeImpl	ported	crates/lucene-analysis/src/attributes.rs::set_flags
+analysis/tokenattributes/KeywordAttribute	ported	crates/lucene-analysis/src/attributes.rs::set_keyword
+analysis/tokenattributes/KeywordAttributeImpl	ported	crates/lucene-analysis/src/attributes.rs::set_keyword
+analysis/tokenattributes/OffsetAttribute	ported	crates/lucene-analysis/src/attributes.rs::set_offset
+analysis/tokenattributes/OffsetAttributeImpl	ported	crates/lucene-analysis/src/attributes.rs::set_offset
+analysis/tokenattributes/PackedTokenAttributeImpl	ported	crates/lucene-analysis/src/attributes.rs::AttributeSource
+analysis/tokenattributes/PayloadAttribute	ported	crates/lucene-analysis/src/attributes.rs::set_payload
+analysis/tokenattributes/PayloadAttributeImpl	ported	crates/lucene-analysis/src/attributes.rs::set_payload
+analysis/tokenattributes/PositionIncrementAttribute	ported	crates/lucene-analysis/src/attributes.rs::set_position_increment
+analysis/tokenattributes/PositionIncrementAttributeImpl	ported	crates/lucene-analysis/src/attributes.rs::set_position_increment
+analysis/tokenattributes/PositionLengthAttribute	ported	crates/lucene-analysis/src/attributes.rs::set_position_length
+analysis/tokenattributes/PositionLengthAttributeImpl	ported	crates/lucene-analysis/src/attributes.rs::set_position_length
+analysis/tokenattributes/SentenceAttribute	ported	crates/lucene-analysis/src/attributes.rs::set_sentence_index
+analysis/tokenattributes/SentenceAttributeImpl	ported	crates/lucene-analysis/src/attributes.rs::set_sentence_index
+analysis/tokenattributes/TermFrequencyAttribute	ported	crates/lucene-analysis/src/attributes.rs::set_term_frequency
+analysis/tokenattributes/TermFrequencyAttributeImpl	ported	crates/lucene-analysis/src/attributes.rs::set_term_frequency
+analysis/tokenattributes/TermToBytesRefAttribute	ported	crates/lucene-analysis/src/attributes.rs::term_bytes
+analysis/tokenattributes/TypeAttribute	ported	crates/lucene-analysis/src/attributes.rs::set_token_type
+analysis/tokenattributes/TypeAttributeImpl	ported	crates/lucene-analysis/src/attributes.rs::set_token_type
 codecs/BlockTermState	ported	crates/lucene-codecs/src/blocktree.rs::SeekedTerm
 codecs/BufferingKnnVectorsWriter	not-needed	Abstract heap-buffering KnnVectorsWriter base that no lucene-core format extends (only SimpleText/test codecs); the port buffers vectors in IndexWriter (DocumentVector) for its one vectors format.
 codecs/Codec	not-needed	NamedSPILoader codec registry/lookup-by-name; the port hard-wires the Lucene104 format set and rejects any other codec name at the CodecUtil header check.
@@ -400,7 +400,7 @@ index/IndexWriterConfig	partial	crates/lucene-index/src/index_writer.rs::set_ind
 index/IndexWriterEventListener	not-needed	callback hook for merge begin/end events used for metrics and tests; no effect on the index.
 index/IndexableField	partial	crates/lucene-index/src/index_writer/explicit.rs::ExplicitDocument -- M7: no `IndexableField` abstraction: fields are configured per writer (`set_*_field`/`add_*_field`) or arrive pre-inverted; the document field-type API is M7 T7.2
 index/IndexableFieldType	partial	crates/lucene-codecs/src/field_infos.rs::FieldInfo -- M7: field properties exist only as the writer's per-field `FieldInfo` schema; no per-field-instance type descriptor of the document API (M7 T7.2)
-index/IndexingChain	partial	crates/lucene-index/src/indexing_chain.rs::invert_documents -- M7: `maybeSortSegment` handles only NUMERIC/SORTED_NUMERIC index sorts (`STRING`/`SortedSet`/`Binary` refused with `Error::UnsupportedIndexSortKind`)
+index/IndexingChain	partial	crates/lucene-index/src/indexing_chain.rs::invert_documents -- M7: `maybeSortSegment` handles only NUMERIC/SORTED_NUMERIC index sorts (`STRING`/`SortedSet`/`Binary` refused with `Error::UnsupportedIndexSortKind`); a PayloadAttribute or TermFrequencyAttribute a TokenFilter sets is not read by the inverter (payloads still come from BoxedPayloadSource, custom frequencies from add_document_with_custom_freq_terms)
 index/KeepLastNCommitsDeletionPolicy	todo:M7	deletion policy keeping the last N commits
 index/KeepOnlyLastCommitDeletionPolicy	ported	crates/lucene-index/src/index_file_deleter.rs::DeletionPolicy
 index/KnnVectorValues	ported	crates/lucene-codecs/src/vectors.rs::FloatVectorValues
@@ -921,11 +921,11 @@ util/ArrayInPlaceMergeSorter	not-needed	generic sorting framework; the port sort
 util/ArrayIntroSorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
 util/ArrayTimSorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
 util/ArrayUtil	not-needed	array growth/oversize/copy/compare helpers; Rust uses Vec growth, slice copy and slice Ord
-util/Attribute	todo:M7	token attribute model (M7 T7.8)
+util/Attribute	ported	crates/lucene-analysis/src/attributes.rs::AttributeSource
 util/AttributeFactory	not-needed	reflection-based AttributeImpl instantiation; Rust constructs attribute values directly
-util/AttributeImpl	todo:M7	token attribute model (M7 T7.8)
+util/AttributeImpl	ported	crates/lucene-analysis/src/attributes.rs::AttributeSource
 util/AttributeReflector	not-needed	reflection-style attribute introspection callback (toString/debugging); Rust uses Debug
-util/AttributeSource	partial	crates/lucene-analysis/src/lib.rs::Token -- M7: a fixed attribute set (term, offsets, position increment/length) as struct fields; no pluggable AttributeSource (addAttribute, captureState/restoreState, cloneAttributes) -- M7 T7.8
+util/AttributeSource	ported	crates/lucene-analysis/src/attributes.rs::AttributeSource
 util/BitDocIdSet	ported	crates/lucene-search/src/docid_set.rs::CachedDocIdSet
 util/BitSet	partial	crates/lucene-util/src/fixed_bit_set.rs::FixedBitSet -- M7: no abstract BitSet over dense/sparse implementations; BitSet.of(iterator), or(DocIdSetIterator), prevSetBit, approximateCardinality missing
 util/BitSetIterator	ported	crates/lucene-util/src/fixed_bit_set.rs::next_set_bit
