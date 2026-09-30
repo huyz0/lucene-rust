@@ -755,19 +755,92 @@ fn analysis_docs() -> Vec<String> {
     docs
 }
 
-fn bench_analysis(w: Duration, m: Duration) {
-    let docs = analysis_docs();
-    let analyzer = lucene_analysis::Analyzer::standard(None);
-    measure("standard", w, m, || {
-        let mut tokens = 0u64;
-        for text in &docs {
-            for t in analyzer.analyze(black_box(text)) {
-                tokens += 1;
-                black_box(t.term.len());
+/// `SweepMicro.MULTI`.
+const MULTI: [&str; 16] = [
+    "日本語",
+    "テキスト",
+    "ひらがな",
+    "한국어",
+    "ภาษาไทย",
+    "Москва",
+    "naïve",
+    "😀",
+    "👨\u{200d}👩\u{200d}👧",
+    "3.14",
+    "e-mail",
+    "user@example.com",
+    "中国人",
+    "العربية",
+    "Straße",
+    "1,000",
+];
+
+/// `SweepMicro.multilingualDocs`, character for character.
+fn multilingual_docs() -> Vec<String> {
+    let mut r = Rng(0x1357_9BDF_2468_ACE0);
+    let mut docs = Vec::new();
+    for _ in 0..1000 {
+        let words = 40 + (r.next() % 120) as usize;
+        let mut s = String::new();
+        for wi in 0..words {
+            if wi > 0 {
+                s.push(' ');
+            }
+            let x = r.next();
+            if x & 1 == 0 {
+                s.push_str(MULTI[((x >> 8) % MULTI.len() as u64) as usize]);
+            } else {
+                s.push('t');
+                s.push_str(&lucene_util::base36::to_base36(((x >> 8) % 50000) as i64));
             }
         }
-        tokens
-    });
+        docs.push(s);
+    }
+    docs
+}
+
+/// `SweepMicro.consume`: reset, every token (its UTF-8 term bytes, as
+/// `IndexingChain` reads them), end, close.
+fn consume_stream(ts: &mut dyn lucene_analysis::TokenStream) -> u64 {
+    let mut tokens = 0u64;
+    ts.reset().unwrap();
+    while ts.increment_token().unwrap() {
+        tokens += 1;
+        black_box(ts.attributes().term_bytes().len());
+    }
+    ts.end().unwrap();
+    ts.close().unwrap();
+    tokens
+}
+
+fn bench_analysis(w: Duration, m: Duration) {
+    use lucene_analysis::{Analyzer, StandardAnalyzer, StandardTokenizer, StrReader, Tokenizer};
+    let docs = analysis_docs();
+    let multi = multilingual_docs();
+    let analyzer = Analyzer::new(StandardAnalyzer::new());
+    for (name, corpus) in [("standard", &docs), ("standard_multilingual", &multi)] {
+        measure(name, w, m, || {
+            let mut tokens = 0u64;
+            for text in corpus {
+                let mut ts = analyzer.token_stream("body", black_box(text)).unwrap();
+                tokens += consume_stream(&mut ts);
+            }
+            tokens
+        });
+    }
+    // The bare tokenizer, reused as Analyzer reuses it.
+    let mut tok = StandardTokenizer::new();
+    for (name, corpus) in [("tokenizer", &docs), ("tokenizer_multilingual", &multi)] {
+        measure(name, w, m, || {
+            let mut tokens = 0u64;
+            for text in corpus {
+                tok.set_reader(Box::new(StrReader::new(black_box(text.as_str()))))
+                    .unwrap();
+                tokens += consume_stream(&mut tok);
+            }
+            tokens
+        });
+    }
 }
 
 /// `SweepMicro.AUTOMATON_PATTERNS`.
