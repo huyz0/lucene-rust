@@ -665,7 +665,7 @@ search/FuzzyTermsEnum	ported	crates/lucene-codecs/src/blocktree.rs::fuzzy_inters
 search/HitQueue	ported	crates/lucene-search/src/collector.rs::TopDocsCollector
 search/HnswQueueSaturationCollector	ported	crates/lucene-search/src/knn_collectors.rs::HnswQueueSaturationCollector
 search/ImpactsDISI	ported	crates/lucene-search/src/bulk_scorer.rs::TermLeg
-search/IndexOrDocValuesQuery	partial	crates/lucene-search/src/doc_value_query.rs::plan_index_or_doc_values -- M7: planner exists but has no caller; the doc-values side never runs in the scorer tree (only the points side is sent)
+search/IndexOrDocValuesQuery	ported	crates/lucene-search/src/extended_query.rs::IndexOrDocValuesQuery
 search/IndexSearcher	partial	crates/lucene-search/src/index_searcher.rs::IndexSearcher -- M7: explain is per segment (a multi-segment IndexSearcher refuses it: explain_clause takes no reader-wide statistics) and only for term, phrase and flat term-only boolean (parity row 300); searchAfter, search(query, n, sort), timeouts and the query cache policy are not methods of the object (free functions in multi_segment.rs/top_field.rs); fuzzy/span/multi-phrase scoring clauses refused under a non-default similarity; Fuzzy/MultiPhrase/span/KNN run outside the tree
 search/IndexSortSortedNumericDocValuesRangeQuery	ported	crates/lucene-search/src/extended_query.rs::IndexSortSortedNumericDocValuesRangeQuery
 search/IndriAndQuery	ported	crates/lucene-search/src/extended_query.rs::IndriAndQuery

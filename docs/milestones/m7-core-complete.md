@@ -140,6 +140,7 @@ frequency attributes (on `index/IndexingChain`'s row).
   (`GenDocumentColumns` gained three empty columns).
 - `NRTCachingDirectory`: `IndexWriter` passes its flush and merge size estimates (`Directory::create_output_with_estimate`, `EstimatedWrites`), so small segments are cached.
 - One point range/set query: the document package runs the scorer tree's `PointRangeQuery`/`PointInSetQuery` (hits and scores unchanged against `GenDocumentFields`).
+- `IndexOrDocValuesQuery` in the scorer tree, choosing points or doc values by the boolean's lead cost (`GenM7Queries` gained seven searches).
 
 Each follows [`port-workflow`](../porting-workflow.md): the closest-to-Java
 port with a Java-fixture differential test, a `bench-micro` pair against
