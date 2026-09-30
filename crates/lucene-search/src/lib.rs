@@ -220,6 +220,7 @@ pub mod points_query;
 pub mod query;
 pub mod query_cache;
 pub mod query_parser;
+pub mod segment_order;
 pub mod similarities;
 pub mod similarity;
 mod slices;

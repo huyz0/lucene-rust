@@ -1088,6 +1088,17 @@ impl SegmentReader {
     /// scan could still produce. Every other reader of this segment's points
     /// still reports the corruption.
     fn points_doc_count(&self, field_number: i32) -> Option<i32> {
+        self.points_field(field_number).map(|f| f.doc_count)
+    }
+
+    /// One field's BKD metadata (`PointValues`' doc count and min/max packed
+    /// values), `None` when this segment has no points for it -- or a `.kdm`
+    /// that does not decode (see [`Self::points_doc_count`] for why that is
+    /// not an error for these callers).
+    pub(crate) fn points_field(
+        &self,
+        field_number: i32,
+    ) -> Option<&lucene_codecs::points::PointsField> {
         // The metadata `open_points` parses once per segment core, parsed
         // here on first use if no search has yet: a count is answered per
         // request, and parsing `.kdm` each time was most of it.
@@ -1103,7 +1114,7 @@ impl SegmentReader {
             .get()?
             .iter()
             .find(|(number, _)| *number == field_number)
-            .map(|(_, f)| f.doc_count)
+            .map(|(_, f)| f)
     }
 }
 
@@ -1463,6 +1474,32 @@ impl DirectoryReader {
     /// Every opened segment's own reader, in commit order.
     pub fn segment_readers(&self) -> &[SegmentReader] {
         &self.segments
+    }
+
+    /// A view of this reader with its segments in `order` (a permutation of
+    /// `0..segment_readers().len()`) and doc bases recomputed to match --
+    /// `BaseCompositeReader(subReaders, subReadersSorter)`, which
+    /// [`crate::segment_order::SegmentOrder`] builds. The segments are
+    /// shared, not reopened; the per-reader caches start empty.
+    pub(crate) fn with_segment_order(&self, order: &[usize]) -> Self {
+        debug_assert_eq!(order.len(), self.segments.len());
+        let mut doc_base = 0i32;
+        let segments = order
+            .iter()
+            .map(|&i| {
+                let mut reader = self.segments[i].clone_reader();
+                reader.doc_base = doc_base;
+                doc_base = doc_base.saturating_add(reader.max_doc);
+                reader
+            })
+            .collect();
+        DirectoryReader {
+            segment_infos: self.segment_infos.clone(),
+            segments,
+            global_ords: std::sync::Mutex::default(),
+            norm_tables: std::sync::Mutex::default(),
+            norms_plans: std::sync::Mutex::default(),
+        }
     }
 
     /// `IndexReader.maxDoc()`: every segment's `maxDoc`, summed. Java's
