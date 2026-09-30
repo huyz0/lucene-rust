@@ -17,7 +17,7 @@ mod m7support;
 
 use std::collections::HashMap;
 
-use lucene_search::collector::{ScoreDoc, TopDocsCollector};
+use lucene_search::collector::{ScoreDoc, TopDocsCollector, TotalHitsRelation};
 use lucene_search::collectors::{
     BoxCollector, CachingCollector, CollectorManager, MultiCollector, MultiCollectorManager,
     PositiveScoresOnlyCollector,
@@ -87,6 +87,7 @@ fn index_searcher_and_collectors_match_real_lucene() {
 
     let runs: usize = m.get("run_count").parse().unwrap();
     let mut checked = 0;
+    let mut explained = 0;
     for r in 0..runs {
         let k = format!("run.{r}");
         if m.get(&format!("{k}.min")) != "0" || m.get(&format!("{k}.threshold")) != "max" {
@@ -163,9 +164,67 @@ fn index_searcher_and_collectors_match_real_lucene() {
         }
 
         assert_eq!(searcher.count(&q).unwrap(), total, "{text}: count");
+
+        // explain(query, doc) over three segments: reader-wide statistics,
+        // so each hit's explanation is Lucene's score for it, bit for bit.
+        for &(doc, score) in &want {
+            let e = searcher.explain(&q, doc).unwrap();
+            assert!(e.matched, "{text}: explain {doc}");
+            assert_eq!(e.value.to_bits(), score, "{text}: explain {doc}\n{e}");
+        }
+        explained += want.len();
     }
-    // Explanations score with the segment's own statistics, not the
-    // reader's: refused over several segments.
+    assert!(explained >= 30, "hits explained: {explained}");
+
+    // Lucene's own `IndexSearcher.explain` text for each query's top hit, and
+    // `searchAfter(fourth hit, query, 10)`.
+    let queries: usize = m.get("query_count").parse().unwrap();
+    let (mut texts, mut pages) = (0, 0);
+    for i in 0..queries {
+        let k = format!("q.{i}");
+        let text = m.get(&format!("{k}.query"));
+        let q = grammar.query(text);
+        if let Some(want) = m.0.get(&format!("{k}.explain")) {
+            let doc: i32 = m.get(&format!("{k}.explain_doc")).parse().unwrap();
+            let got = searcher.explain(&q, doc).unwrap().to_string();
+            assert_eq!(got.replace('\n', "\\n"), *want, "{text}: explain {doc}");
+            texts += 1;
+        }
+        if let Some(after) = m.0.get(&format!("{k}.after")) {
+            let (doc, score) = scored_hits(after)[0];
+            let after = ScoreDoc {
+                doc_id: doc,
+                score: f32::from_bits(score),
+            };
+            let td = searcher.search_after(after, &q, 10).unwrap();
+            let got: Vec<(i32, u32)> = td
+                .score_docs
+                .iter()
+                .map(|h| (h.doc, h.score.to_bits()))
+                .collect();
+            assert_eq!(
+                got,
+                scored_hits(m.get(&format!("{k}.after_hits"))),
+                "{text}: after"
+            );
+            // Exact below the threshold; past it, a lower bound whose value
+            // depends on where each engine's scorer starts skipping (as for
+            // `search(query, 10)` above).
+            let want_total: u64 = m.get(&format!("{k}.after_total")).parse().unwrap();
+            assert_eq!(
+                td.total_hits.value.min(1000),
+                want_total.min(1000),
+                "{text}: after total"
+            );
+            let relation = match td.total_hits.relation {
+                TotalHitsRelation::EqualTo => "eq",
+                TotalHitsRelation::GreaterThanOrEqualTo => "gte",
+            };
+            assert_eq!(relation, m.get(&format!("{k}.after_relation")), "{text}");
+            pages += 1;
+        }
+    }
+    assert!(texts >= 8 && pages >= 7, "explained {texts}, paged {pages}");
     assert!(searcher.explain(&grammar.query("(t w0)"), 9000).is_err());
     assert!(checked >= 9, "one run per query: {checked}");
 }
