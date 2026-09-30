@@ -71,7 +71,7 @@ case "$BENCH" in
     JAR_MODULES="lucene-core lucene-analysis-common"
     RUST_BIN=index-bench ;;
   # The per-area sweep: one Java class, the bench name as its first argument.
-  vint|bitset|lz4|direct_monotonic|checksum|analysis|vectors)
+  vint|bitset|lz4|direct_monotonic|checksum|analysis|vectors|automaton)
     MAIN=SweepMicro
     SRC=benchmarks/micro/java/SweepMicro.java
     JAVA_ARGS=("$BENCH") ;;

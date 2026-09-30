@@ -1033,34 +1033,34 @@ util/VectorUtil	partial	crates/lucene-util/src/simd.rs::dot_f32 -- M7: float dot
 util/Version	partial	crates/lucene-index/src/segment_infos.rs::LuceneVersion -- M7: major/minor/bugfix with fromBits range checks; no Version.parse/parseLeniently, named constants or onOrAfter API
 util/VirtualMethod	not-needed	reflection-based override detection
 util/WeakIdentityMap	not-needed	JVM weak-reference identity map
-util/automaton/Automata	partial	crates/lucene-codecs/src/automaton.rs::Nfa -- M7: construction helpers (bytes, code-point ranges, any char, digit intervals) exist only inside the NFA builder for regexp/wildcard/fuzzy; no public Automata factory (makeString, makeStringUnion, makeBinaryInterval, makeDecimalInterval as Automaton)
-util/automaton/Automaton	partial	crates/lucene-codecs/src/automaton.rs::Nfa -- M7: byte-level NFA/DFA for term intersection only; no general code-point-labelled Automaton API (createState/addTransition/finishState, Builder, getNumTransitions, toDot)
-util/automaton/AutomatonProvider	partial	crates/lucene-codecs/src/regexp.rs::NamedAutomatonNotFound -- M7: <name> parses and always fails as with RegexpQuery's DEFAULT_PROVIDER; no pluggable provider
-util/automaton/ByteRunAutomaton	ported	crates/lucene-codecs/src/automaton.rs::ByteDfa
-util/automaton/ByteRunnable	ported	crates/lucene-codecs/src/automaton.rs::TermAutomaton
-util/automaton/CaseFolding	todo:M7	Unicode case folding for RegExp CASE_INSENSITIVE matching
-util/automaton/CharacterRunAutomaton	todo:M7	char (code point) run automaton
-util/automaton/CompiledAutomaton	partial	crates/lucene-codecs/src/automaton.rs::CompiledDfa -- M7: AUTOMATON_TYPE.ALL swap and UTF-8-total states only; no NONE/SINGLE classification, commonSuffixRef, floor(), getTermsEnum; built only for regexp/wildcard/prefix/fuzzy
-util/automaton/FiniteStringsIterator	todo:M7	enumerate an automaton's finite accepted strings
-util/automaton/FrozenIntSet	not-needed	state-set key for determinize; automaton.rs keys subsets by Vec<u32> in a HashMap
-util/automaton/IntSet	not-needed	state-set key abstraction for determinize; automaton.rs uses Vec<u32> keys
-util/automaton/Lev1ParametricDescription	not-needed	precomputed Levenshtein transition tables; the port builds the same edit-distance-1 language by DP and subset construction (fuzzy.rs FuzzyMatch::to_dfa)
-util/automaton/Lev1TParametricDescription	not-needed	precomputed Levenshtein (transposition) tables; the port builds the same language by DP and subset construction (fuzzy.rs FuzzyMatch::to_dfa)
-util/automaton/Lev2ParametricDescription	not-needed	precomputed Levenshtein transition tables; the port builds the same edit-distance-2 language by DP and subset construction (fuzzy.rs FuzzyMatch::to_dfa)
-util/automaton/Lev2TParametricDescription	not-needed	precomputed Levenshtein (transposition) tables; the port builds the same language by DP and subset construction (fuzzy.rs FuzzyMatch::to_dfa)
-util/automaton/LevenshteinAutomata	partial	crates/lucene-codecs/src/fuzzy.rs::FuzzyMatch -- M7: same accepted language via banded DP plus a byte DFA (to_dfa); no public LevenshteinAutomata/toAutomaton(n, prefix) API or custom alphabet
-util/automaton/LimitedFiniteStringsIterator	todo:M7	finite-strings enumeration with a limit
-util/automaton/NFARunAutomaton	ported	crates/lucene-codecs/src/automaton.rs::LazyDfa
-util/automaton/Operations	partial	crates/lucene-codecs/src/automaton.rs::determinize -- M7: determinize (bounded), product intersection (ByteDfa::intersect), pruning; no union/concatenate/repeat/complement/minus/minimize/isEmpty/sameLanguage/subsetOf/getCommonPrefix public API
-util/automaton/RegExp	partial	crates/lucene-codecs/src/regexp.rs::RegexpPattern -- M7: whole RegExp.ALL syntax; no CASE_INSENSITIVE/CASE_INSENSITIVE_RANGE match flags, no DEPRECATED_COMPLEMENT, no toAutomaton() returning an Automaton
-util/automaton/RunAutomaton	ported	crates/lucene-codecs/src/automaton.rs::ByteDfa
-util/automaton/StatePair	not-needed	(state, state) tuple for product constructions; Rust tuples
-util/automaton/StateSet	not-needed	mutable state-set for determinize; automaton.rs uses Vec<u32> subsets
-util/automaton/StringsToAutomaton	todo:M7	minimal automaton from sorted strings (Daciuk-Mihov), makeStringUnion
-util/automaton/TooComplexToDeterminizeException	partial	crates/lucene-codecs/src/blocktree.rs::too_complex -- M7: raised only when the lazy DFA exceeds its state budget, not at Lucene's determinizeWorkLimit; patterns Java rejects run here via LazyDfa
-util/automaton/Transition	not-needed	(min, max, dest) holder; ByteDfa::transitions returns tuples
-util/automaton/TransitionAccessor	not-needed	transition-iteration interface over Automaton
-util/automaton/UTF32ToUTF8	ported	crates/lucene-codecs/src/automaton.rs::utf8_sequences
+util/automaton/Automata	ported	crates/lucene-util/src/automaton/automata.rs::make_binary_interval
+util/automaton/Automaton	ported	crates/lucene-util/src/automaton/automaton.rs::Automaton
+util/automaton/AutomatonProvider	ported	crates/lucene-util/src/automaton/regexp.rs::AutomatonProvider
+util/automaton/ByteRunAutomaton	ported	crates/lucene-util/src/automaton/run_automaton.rs::ByteRunAutomaton
+util/automaton/ByteRunnable	ported	crates/lucene-util/src/automaton/run_automaton.rs::ByteRunnable
+util/automaton/CaseFolding	ported	crates/lucene-util/src/automaton/case_folding.rs::expand
+util/automaton/CharacterRunAutomaton	ported	crates/lucene-util/src/automaton/run_automaton.rs::CharacterRunAutomaton
+util/automaton/CompiledAutomaton	partial	crates/lucene-util/src/automaton/compiled_automaton.rs::CompiledAutomaton -- M7: getTermsEnum/visit need Terms and QueryVisitor (lucene-search) and are not ported; the codecs term intersection still runs on lucene-codecs/src/automaton.rs::CompiledDfa, not on this type
+util/automaton/FiniteStringsIterator	ported	crates/lucene-util/src/automaton/finite_strings.rs::FiniteStringsIterator
+util/automaton/FrozenIntSet	ported	crates/lucene-util/src/automaton/state_set.rs::FrozenIntSet
+util/automaton/IntSet	ported	crates/lucene-util/src/automaton/state_set.rs::IntSet
+util/automaton/Lev1ParametricDescription	ported	crates/lucene-util/src/automaton/lev_tables.rs::LEV1
+util/automaton/Lev1TParametricDescription	ported	crates/lucene-util/src/automaton/lev_tables.rs::LEV1T
+util/automaton/Lev2ParametricDescription	ported	crates/lucene-util/src/automaton/lev_tables.rs::LEV2
+util/automaton/Lev2TParametricDescription	ported	crates/lucene-util/src/automaton/lev_tables.rs::LEV2T
+util/automaton/LevenshteinAutomata	ported	crates/lucene-util/src/automaton/levenshtein.rs::LevenshteinAutomata
+util/automaton/LimitedFiniteStringsIterator	ported	crates/lucene-util/src/automaton/finite_strings.rs::LimitedFiniteStringsIterator
+util/automaton/NFARunAutomaton	ported	crates/lucene-util/src/automaton/nfa_run_automaton.rs::NfaRunAutomaton
+util/automaton/Operations	ported	crates/lucene-util/src/automaton/operations.rs::determinize
+util/automaton/RegExp	ported	crates/lucene-util/src/automaton/regexp.rs::RegExp
+util/automaton/RunAutomaton	ported	crates/lucene-util/src/automaton/run_automaton.rs::RunAutomaton
+util/automaton/StatePair	ported	crates/lucene-util/src/automaton/automaton.rs::StatePair
+util/automaton/StateSet	ported	crates/lucene-util/src/automaton/state_set.rs::StateSet
+util/automaton/StringsToAutomaton	ported	crates/lucene-util/src/automaton/strings_to_automaton.rs::build
+util/automaton/TooComplexToDeterminizeException	ported	crates/lucene-util/src/automaton/error.rs::TooComplexToDeterminize
+util/automaton/Transition	ported	crates/lucene-util/src/automaton/automaton.rs::Transition
+util/automaton/TransitionAccessor	ported	crates/lucene-util/src/automaton/automaton.rs::TransitionAccessor
+util/automaton/UTF32ToUTF8	ported	crates/lucene-util/src/automaton/utf32_to_utf8.rs::Utf32ToUtf8
 util/bkd/BKDConfig	ported	crates/lucene-codecs/src/points.rs::check_config
 util/bkd/BKDRadixSelector	partial	crates/lucene-codecs/src/points.rs::compute_leaf_plan -- M7: in-heap selection only; no offline (temp-file) radix selection for point sets larger than heap
 util/bkd/BKDReader	ported	crates/lucene-codecs/src/points.rs::PointsReader

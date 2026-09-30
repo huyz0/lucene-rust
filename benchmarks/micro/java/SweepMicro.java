@@ -29,6 +29,13 @@ import org.apache.lucene.store.RandomAccessInput;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.FixedBitSet;
 import org.apache.lucene.util.GroupVIntUtil;
+import org.apache.lucene.util.automaton.Automata;
+import org.apache.lucene.util.automaton.Automaton;
+import org.apache.lucene.util.automaton.ByteRunAutomaton;
+import org.apache.lucene.util.automaton.CompiledAutomaton;
+import org.apache.lucene.util.automaton.LevenshteinAutomata;
+import org.apache.lucene.util.automaton.Operations;
+import org.apache.lucene.util.automaton.RegExp;
 import org.apache.lucene.util.compress.LZ4;
 import org.apache.lucene.util.packed.DirectMonotonicReader;
 import org.apache.lucene.util.packed.DirectMonotonicWriter;
@@ -109,6 +116,7 @@ public final class SweepMicro {
       case "checksum" -> checksum();
       case "analysis" -> analysis();
       case "vectors" -> vectors();
+      case "automaton" -> automaton();
       case "postings_adv" -> withLeaf(index, SweepMicro::postingsAdvance);
       case "postings_freq" -> withLeaf(index, SweepMicro::postingsFreq);
       case "positions" -> withLeaf(index, SweepMicro::positions);
@@ -450,6 +458,91 @@ public final class SweepMicro {
             return tokens;
           });
     }
+  }
+
+  /** Patterns of {@link #automaton}, the same list on the Rust side. */
+  static final String[] AUTOMATON_PATTERNS = {
+    "t[0-9a-f]+", "t.*9", "(ta|tb|tc)[a-z0-9]{2,4}", "t[^0-4]*[5-9]", ".*ab.*", "t<10-999>",
+    "(t1|t2)?[a-z]+(x|y|z)*", "[a-z]{3}&t.*", "t\\d+\\w?", "tq?u?i?c?k?", "(a|b)*a(a|b){6}",
+    "été|[日-本]+"
+  };
+
+  /** {@link #analysisDocs}' word shape: {@code "t" + base36(min(a, b))} over a 50k vocabulary. */
+  static List<String> automatonTerms(int n) {
+    Rng r = new Rng(0x1357_9BDF_2468_ACE0L);
+    List<String> out = new ArrayList<>();
+    for (int i = 0; i < n; i++) {
+      long x = r.next();
+      long a = Long.remainderUnsigned(x, 50000), b = Long.remainderUnsigned(x >>> 20, 50000);
+      out.add("t" + Long.toString(Math.min(a, b), 36));
+    }
+    return out;
+  }
+
+  /**
+   * The public automaton API ({@code org.apache.lucene.util.automaton}): regexp parsing plus
+   * determinization, Levenshtein construction, CompiledAutomaton (UTF-8 conversion and
+   * tabulation), byte stepping over terms, and the sorted-strings union.
+   */
+  static void automaton() throws IOException {
+    List<String> terms = automatonTerms(20000);
+    measure(
+        "regexp_build",
+        () -> {
+          for (String p : AUTOMATON_PATTERNS) {
+            Automaton a =
+                Operations.determinize(
+                    new RegExp(p).toAutomaton(), Operations.DEFAULT_DETERMINIZE_WORK_LIMIT);
+            sink += a.getNumStates();
+          }
+          return AUTOMATON_PATTERNS.length;
+        });
+    List<String> words = terms.subList(0, 64);
+    measure(
+        "lev2t_build",
+        () -> {
+          for (String w : words) {
+            sink += new LevenshteinAutomata(w, true).toAutomaton(2).getNumStates();
+          }
+          return words.size();
+        });
+    List<Automaton> dets = new ArrayList<>();
+    for (String p : AUTOMATON_PATTERNS) {
+      dets.add(
+          Operations.determinize(
+              new RegExp(p).toAutomaton(), Operations.DEFAULT_DETERMINIZE_WORK_LIMIT));
+    }
+    measure(
+        "compile",
+        () -> {
+          for (Automaton a : dets) {
+            CompiledAutomaton c = new CompiledAutomaton(a);
+            sink += c.type.ordinal();
+          }
+          return dets.size();
+        });
+    ByteRunAutomaton run = new ByteRunAutomaton(dets.get(3));
+    List<byte[]> termBytes = new ArrayList<>();
+    for (String t : terms) termBytes.add(t.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    measure(
+        "run_bytes",
+        () -> {
+          long hits = 0;
+          for (byte[] t : termBytes) {
+            if (run.run(t, 0, t.length)) hits++;
+          }
+          sink += hits;
+          return termBytes.size();
+        });
+    java.util.TreeSet<String> sorted = new java.util.TreeSet<>(terms);
+    List<BytesRef> union = new ArrayList<>();
+    for (String t : sorted) union.add(new BytesRef(t));
+    measure(
+        "string_union",
+        () -> {
+          sink += Automata.makeStringUnion(union).getNumStates();
+          return union.size();
+        });
   }
 
   /** Deterministic vectors in [-0.5, 0.5), the same on both sides. */
