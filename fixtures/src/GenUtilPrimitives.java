@@ -83,6 +83,11 @@ public class GenUtilPrimitives {
     }
   }
 
+  static String enc(byte[] b) {
+    if (b.length > 2000) return "*" + String.format("%02x", b[0] & 0xff) + "x" + b.length;
+    return hex(b);
+  }
+
   public static void main(String[] args) throws Exception {
     System.setProperty("tests.seed", TESTS_SEED);
     Path out = Path.of(args[0], "util_primitives");
@@ -368,6 +373,63 @@ public class GenUtilPrimitives {
       la.append("in ").append(hex(in)).append(' ').append(ok ? hex(o.toArrayCopy()) : "REJECT").append('\n');
     }
     Files.writeString(out.resolve("lowercase_ascii.txt"), la.toString());
+
+    // --- BytesRefHash: an op script with Lucene's answers ---
+    StringBuilder bh = new StringBuilder();
+    for (int t = 0; t < 6; t++) {
+      // Not 1: hashHalfSize is then 0, the table never grows, and the second
+      // distinct add probes a full table forever (a Java bug the port rejects).
+      int capacity = 2 << r.nextInt(5);
+      org.apache.lucene.util.BytesRefHash h =
+          new org.apache.lucene.util.BytesRefHash(
+              new org.apache.lucene.util.ByteBlockPool(
+                  new org.apache.lucene.util.ByteBlockPool.DirectAllocator()),
+              capacity,
+              new org.apache.lucene.util.BytesRefHash.DirectBytesStartArray(capacity));
+      bh.append("new ").append(capacity).append('\n');
+      java.util.List<byte[]> added = new java.util.ArrayList<>();
+      for (int round = 0; round < 3; round++) {
+        int n = 50 + r.nextInt(t < 3 ? 400 : 1500);
+        for (int i = 0; i < n; i++) {
+          byte[] term;
+          if (!added.isEmpty() && r.nextInt(5) == 0) {
+            term = added.get(r.nextInt(added.size()));
+          } else {
+            int len = r.nextInt(40) == 0 ? 100 + r.nextInt(300) : r.nextInt(12);
+            term = new byte[len];
+            for (int j = 0; j < len; j++) term[j] = (byte) ('a' + r.nextInt(r.nextBoolean() ? 3 : 26));
+            if (r.nextInt(300) == 0) {
+              // Near the 32766-byte limit (one past it is rejected): one repeated
+              // letter, written as `*<letter hex>x<length>` to keep the file small.
+              term = new byte[32766 - r.nextInt(2)];
+              java.util.Arrays.fill(term, (byte) ('a' + r.nextInt(3)));
+            }
+          }
+          int id = h.add(new BytesRef(term));
+          if (id >= 0) added.add(term);
+          int abs = id >= 0 ? id : -id - 1;
+          bh.append("add ").append(enc(term)).append(' ').append(id).append(' ').append(h.byteStart(abs)).append('\n');
+          if (r.nextInt(10) == 0) {
+            byte[] q = r.nextBoolean() ? added.get(r.nextInt(added.size())) : new byte[] {'z', 'z', (byte) r.nextInt(256)};
+            bh.append("find ").append(enc(q)).append(' ').append(h.find(new BytesRef(q))).append('\n');
+          }
+        }
+        if (round == 2) {
+          int[] sorted = h.sort();
+          bh.append("sort ").append(sorted.length);
+          for (int i = 0; i < h.size(); i++) bh.append(i == 0 ? ' ' : ',').append(sorted[i]);
+          bh.append('\n');
+        } else {
+          bh.append("compact ").append(h.compact().length).append('\n');
+          boolean reset = r.nextBoolean();
+          h.clear(reset);
+          h.reinit();
+          added.clear();
+          bh.append("clear ").append(reset).append('\n');
+        }
+      }
+    }
+    Files.writeString(out.resolve("bytes_ref_hash.txt"), bh.toString());
   }
 
   static String join(int[] a, int n) {
