@@ -358,6 +358,7 @@ use lucene_codecs::doc_values::{
 };
 use lucene_codecs::field_infos::{self, FieldInfo, IndexOptions, VectorEncoding};
 use lucene_codecs::norms::{self, NormsEntry};
+use lucene_codecs::per_field_postings;
 use lucene_codecs::points;
 use lucene_codecs::postings::DocInput;
 use lucene_codecs::postings_writer::{self, FieldPostingsInput, TermPostings};
@@ -1445,7 +1446,7 @@ fn concat_doc_order(per_source_live_ids: &[Vec<i32>]) -> Vec<(usize, i32)> {
 ///
 fn describe_written_files(
     merged_fields: &mut [FieldInfo],
-    postings_field_numbers: &[i32],
+    postings_suffixes: &[(i32, u32)],
     doc_values_field_numbers: &[i32],
     wrote_term_vectors: bool,
     vector_field_numbers: &[i32],
@@ -1460,14 +1461,14 @@ fn describe_written_files(
                 && key != "PerFieldKnnVectorsFormat.format"
                 && key != "PerFieldKnnVectorsFormat.suffix"
         });
-        if postings_field_numbers.contains(&f.number) {
+        if let Some((_, suffix)) = postings_suffixes.iter().find(|(n, _)| *n == f.number) {
             f.attributes.push((
                 "PerFieldPostingsFormat.format".to_string(),
                 POSTINGS_FORMAT_NAME.to_string(),
             ));
             f.attributes.push((
                 "PerFieldPostingsFormat.suffix".to_string(),
-                PER_FIELD_SUFFIX.to_string(),
+                suffix.to_string(),
             ));
         }
         if doc_values_field_numbers.contains(&f.number) {
@@ -2122,10 +2123,18 @@ pub fn merge_segments_mapped(
 
     // What the merged `.fnm` is allowed to claim, captured before the values
     // below are consumed by their writers (see `describe_written_files`).
-    let postings_field_numbers: Vec<i32> = merged_postings_fields
+    let postings_field_names: Vec<(i32, String)> = merged_postings_fields
         .iter()
-        .map(|f| f.field_number)
+        .map(|f| {
+            let name = merged_fields
+                .iter()
+                .find(|m| m.number == f.field_number)
+                .map_or_else(|| f.field_number.to_string(), |m| m.name.clone());
+            (f.field_number, name)
+        })
         .collect();
+    let format_for = |name: &str| options.postings_format_for(name);
+    let postings_suffixes = per_field_postings::field_suffixes(&postings_field_names, &format_for);
     let doc_values_field_numbers: Vec<i32> =
         merged_doc_values.iter().map(|f| f.field_number()).collect();
     let vector_field_numbers: Vec<i32> = merged_vectors
@@ -2155,7 +2164,7 @@ pub fn merge_segments_mapped(
     let mut merged_fields = merged_fields;
     describe_written_files(
         &mut merged_fields,
-        &postings_field_numbers,
+        &postings_suffixes,
         &doc_values_field_numbers,
         wrote_term_vectors,
         &vector_field_numbers,
@@ -2295,32 +2304,40 @@ pub fn merge_segments_mapped(
                 values,
             })
             .collect();
-        let output = postings_writer::write_fields_with_norms(
+        let name_of = |n: i32| {
+            postings_field_names
+                .iter()
+                .find(|(number, _)| *number == n)
+                .map(|(_, name)| name.clone())
+        };
+        let groups = per_field_postings::write(
             &inputs,
             &norms_for_impacts,
+            &name_of,
+            &format_for,
             &merged_segment_id,
-            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
         )?;
-        let mut exts: Vec<(&str, &[u8])> = vec![
-            ("doc", &output.doc),
-            ("psm", &output.psm),
-            ("tim", &output.tim),
-            ("tip", &output.tip),
-            ("tmd", &output.tmd),
-        ];
-        if !output.pos.is_empty() {
-            exts.push(("pos", &output.pos));
-        }
-        if !output.pay.is_empty() {
-            exts.push(("pay", &output.pay));
-        }
-        for (ext, bytes) in exts {
-            let name = format!(
-                "{}.{ext}",
-                per_field_segment(merged_segment_name, POSTINGS_FORMAT_NAME)
-            );
-            write_file(dir, &name, bytes)?;
-            files.push(name);
+        for group in &groups {
+            let output = &group.output;
+            let mut exts: Vec<(&str, &[u8])> = vec![
+                ("doc", &output.doc),
+                ("psm", &output.psm),
+                ("tim", &output.tim),
+                ("tip", &output.tip),
+                ("tmd", &output.tmd),
+            ];
+            if !output.pos.is_empty() {
+                exts.push(("pos", &output.pos));
+            }
+            if !output.pay.is_empty() {
+                exts.push(("pay", &output.pay));
+            }
+            let suffix = per_field_postings::codec_suffix(POSTINGS_FORMAT_NAME, group.suffix);
+            for (ext, bytes) in exts {
+                let name = format!("{merged_segment_name}_{suffix}.{ext}");
+                write_file(dir, &name, bytes)?;
+                files.push(name);
+            }
         }
     }
 
@@ -3538,10 +3555,27 @@ pub struct SourceVectors<'a> {
 /// [`lucene_codecs::hnsw_vectors::merge_one_field`]: when a source graph is
 /// reused as the base, the merged graph inherits **its** `maxConn`, exactly
 /// as `IncrementalHnswGraphMerger` does.
-#[derive(Debug, Clone, Copy)]
+///
+/// `postings_formats` is `PerFieldMergeState`'s view of the *merged*
+/// segment's codec: the fields routed to a non-default postings format, as
+/// [`crate::index_writer::IndexWriter::set_postings_format_for_field`] set
+/// them. The sources' own routing is irrelevant -- Java re-groups on write.
+#[derive(Debug, Clone)]
 pub struct MergeOptions {
     pub hnsw_m: i32,
     pub hnsw_beam_width: i32,
+    pub postings_formats: Vec<(String, per_field_postings::Lucene104PostingsFormat)>,
+}
+
+impl MergeOptions {
+    /// The postings format `field` is routed to.
+    fn postings_format_for(&self, field: &str) -> per_field_postings::Lucene104PostingsFormat {
+        self.postings_formats
+            .iter()
+            .find(|(name, _)| name == field)
+            .map(|(_, format)| *format)
+            .unwrap_or_default()
+    }
 }
 
 impl Default for MergeOptions {
@@ -3549,6 +3583,7 @@ impl Default for MergeOptions {
         MergeOptions {
             hnsw_m: hnsw::DEFAULT_MAX_CONN,
             hnsw_beam_width: hnsw::DEFAULT_BEAM_WIDTH,
+            postings_formats: Vec::new(),
         }
     }
 }
@@ -14329,7 +14364,7 @@ mod tests {
         fields[0]
             .attributes
             .push(("keep".to_string(), "me".to_string()));
-        describe_written_files(&mut fields, &[0], &[], false, &[], &[]);
+        describe_written_files(&mut fields, &[(0, 0)], &[], false, &[], &[]);
         assert!(fields[0]
             .attributes
             .contains(&("keep".to_string(), "me".to_string())));
@@ -14377,7 +14412,7 @@ mod tests {
             f.omit_norms = false;
         }
         fields[1].omit_norms = true;
-        describe_written_files(&mut fields, &[0, 1], &[], false, &[], &[]);
+        describe_written_files(&mut fields, &[(0, 0), (1, 0)], &[], false, &[], &[]);
         assert!(!fields[0].omit_norms, "an indexed field keeps its norms");
         assert!(fields[1].omit_norms, "an opted-out field keeps its opt-out");
     }

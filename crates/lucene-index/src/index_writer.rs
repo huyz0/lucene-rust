@@ -154,6 +154,7 @@ use lucene_codecs::field_infos::{
 use lucene_codecs::hnsw;
 use lucene_codecs::hnsw_vectors::{self, HnswVectorsField};
 use lucene_codecs::norms;
+use lucene_codecs::per_field_postings;
 use lucene_codecs::postings_writer::{self, FieldPostingsInput, TermPostings};
 use lucene_codecs::stored_fields::{self, Document, FieldValue};
 use lucene_codecs::term_vectors::{self, TermVectorField, TermVectorTerm, TermVectorsDocument};
@@ -822,6 +823,10 @@ pub(crate) struct IndexingConfig {
     /// (`computeNorm`): `None` is Lucene's default, `BM25Similarity`. See
     /// [`IndexWriter::set_similarity`].
     similarity: Option<std::sync::Arc<dyn NormSimilarity>>,
+    /// `PerFieldPostingsFormat.getPostingsFormatForField`: the fields routed
+    /// to a postings format other than the default `Lucene104PostingsFormat()`
+    /// -- see [`IndexWriter::set_postings_format_for_field`].
+    postings_formats: Vec<(String, per_field_postings::Lucene104PostingsFormat)>,
 }
 
 /// [`IndexWriter::begin_merge`]'s snapshot: the sources as the merge reads
@@ -1123,6 +1128,42 @@ impl IndexingConfig {
         Ok(outcome)
     }
 
+    /// The postings format `field` is routed to.
+    pub(crate) fn postings_format_for(
+        &self,
+        field: &str,
+    ) -> per_field_postings::Lucene104PostingsFormat {
+        self.postings_formats
+            .iter()
+            .find(|(name, _)| name == field)
+            .map(|(_, format)| *format)
+            .unwrap_or_default()
+    }
+
+    /// `PerFieldPostingsFormat.FieldsWriter.write`: this segment's postings,
+    /// one set of files per postings format its fields are routed to.
+    pub(crate) fn write_postings_groups(
+        &self,
+        inputs: &[FieldPostingsInput<'_>],
+        norms: &[postings_writer::FieldNorms<'_>],
+        segment_id: &[u8; ID_LENGTH],
+    ) -> Result<PostingsGroups> {
+        let name_of = |n: i32| {
+            self.fields
+                .iter()
+                .find(|f| f.number == n)
+                .map(|f| f.name.clone())
+        };
+        let format_for = |name: &str| self.postings_format_for(name);
+        Ok(per_field_postings::write(
+            inputs,
+            norms,
+            &name_of,
+            &format_for,
+            segment_id,
+        )?)
+    }
+
     /// [`Self::run_merge`] with no rate limit.
     fn run_merge_unthrottled(&self, dir: &dyn Directory, plan: &MergePlan) -> Result<MergeOutcome> {
         /// Raw `.tim`/`.tip`/`.tmd`/`.doc` bytes for a source that has
@@ -1144,6 +1185,10 @@ impl IndexingConfig {
             /// segment's own postings format, which for a segment an older
             /// Lucene wrote is not this writer's (`Lucene90_0`, ...).
             suffix: String,
+            /// `PerFieldPostingsFormat`: the segment's further postings
+            /// formats, when its fields were routed to more than one. Empty
+            /// for the usual segment.
+            other_groups: Vec<RawPostings>,
         }
         /// Raw `.tvd`/`.tvx`/`.tvm` bytes for a source that has term vectors
         /// -- `None` when that source's `.si` lists no `.tvd` file.
@@ -1269,24 +1314,39 @@ impl IndexingConfig {
                 None
             };
             let postings = if seg_files.iter().any(|f| f.ends_with(".tim")) {
-                let (seg, suffix) = postings_file_base(&seg_files, name);
-                let read_optional = |ext: &str| -> Result<Option<Vec<u8>>> {
-                    let file = format!("{seg}.{ext}");
-                    Ok(if seg_files.contains(&file) {
-                        Some(seg_dir.open(&file)?.to_vec())
-                    } else {
-                        None
+                let read_group = |seg: &str, suffix: String| -> Result<RawPostings> {
+                    let read_optional = |ext: &str| -> Result<Option<Vec<u8>>> {
+                        let file = format!("{seg}.{ext}");
+                        Ok(if seg_files.contains(&file) {
+                            Some(seg_dir.open(&file)?.to_vec())
+                        } else {
+                            None
+                        })
+                    };
+                    Ok(RawPostings {
+                        tim: seg_dir.open(&format!("{seg}.tim"))?.to_vec(),
+                        tip: seg_dir.open(&format!("{seg}.tip"))?.to_vec(),
+                        tmd: seg_dir.open(&format!("{seg}.tmd"))?.to_vec(),
+                        doc: seg_dir.open(&format!("{seg}.doc"))?.to_vec(),
+                        pos: read_optional("pos")?,
+                        pay: read_optional("pay")?,
+                        suffix,
+                        other_groups: Vec::new(),
                     })
                 };
-                Some(RawPostings {
-                    tim: seg_dir.open(&format!("{seg}.tim"))?.to_vec(),
-                    tip: seg_dir.open(&format!("{seg}.tip"))?.to_vec(),
-                    tmd: seg_dir.open(&format!("{seg}.tmd"))?.to_vec(),
-                    doc: seg_dir.open(&format!("{seg}.doc"))?.to_vec(),
-                    pos: read_optional("pos")?,
-                    pay: read_optional("pay")?,
-                    suffix,
-                })
+                let suffixes = per_field_postings::group_suffixes(&seg_files, name);
+                if suffixes.len() > 1 {
+                    let mut groups = suffixes
+                        .into_iter()
+                        .map(|suffix| read_group(&format!("{name}_{suffix}"), suffix))
+                        .collect::<Result<Vec<_>>>()?;
+                    let mut first = groups.remove(0);
+                    first.other_groups = groups;
+                    Some(first)
+                } else {
+                    let (seg, suffix) = postings_file_base(&seg_files, name);
+                    Some(read_group(&seg, suffix)?)
+                }
             } else {
                 None
             };
@@ -1576,52 +1636,94 @@ impl IndexingConfig {
             Option<lucene_codecs::postings::PosInput<'a>>,
             Option<lucene_codecs::postings::PayInput<'a>>,
         )>;
-        let opened_postings: Vec<OpenedPostings> = opened
+        // A multi-format source's groups, combined once
+        // (`PerFieldPostingsFormat.FieldsReader`) into one dictionary over
+        // concatenated `.doc`/`.pos`/`.pay` the inputs below borrow.
+        let combined_postings: Vec<Option<per_field_postings::CombinedPostings>> = opened
             .iter()
             .zip(readers.iter())
             .zip(&postings_field_infos)
             .map(|((o, reader), postings_field_infos)| match &o.postings {
-                Some(raw) => {
-                    let fields = lucene_codecs::blocktree::open(
-                        &raw.tim,
-                        &raw.tip,
-                        &raw.tmd,
+                Some(raw) if !raw.other_groups.is_empty() => {
+                    let groups: Vec<per_field_postings::GroupFiles<'_>> = std::iter::once(raw)
+                        .chain(&raw.other_groups)
+                        .map(|g| per_field_postings::GroupFiles {
+                            suffix: &g.suffix,
+                            tim: &g.tim,
+                            tip: &g.tip,
+                            tmd: &g.tmd,
+                            doc: Some(&g.doc),
+                            pos: g.pos.as_deref(),
+                            pay: g.pay.as_deref(),
+                        })
+                        .collect();
+                    Ok::<_, Error>(Some(per_field_postings::open_groups(
+                        &groups,
                         postings_field_infos,
                         &o.sci.segment_id,
-                        &raw.suffix,
                         reader.max_doc(),
-                    )?;
-                    let doc_in = lucene_codecs::postings::DocInput::open(
-                        &raw.doc,
-                        &o.sci.segment_id,
-                        &raw.suffix,
-                    )?;
-                    let pos_in = raw
-                        .pos
-                        .as_ref()
-                        .map(|pos| {
-                            lucene_codecs::postings::PosInput::open(
-                                pos,
-                                &o.sci.segment_id,
-                                &raw.suffix,
-                            )
-                        })
-                        .transpose()?;
-                    let pay_in = raw
-                        .pay
-                        .as_ref()
-                        .map(|pay| {
-                            lucene_codecs::postings::PayInput::open(
-                                pay,
-                                &o.sci.segment_id,
-                                &raw.suffix,
-                            )
-                        })
-                        .transpose()?;
-                    Ok::<_, Error>(Some((fields, doc_in, pos_in, pay_in)))
+                    )?))
                 }
-                None => Ok(None),
+                _ => Ok(None),
             })
+            .collect::<std::result::Result<Vec<_>, Error>>()?;
+        let opened_postings: Vec<OpenedPostings> = opened
+            .iter()
+            .zip(readers.iter())
+            .zip(&postings_field_infos)
+            .zip(&combined_postings)
+            .map(
+                |(((o, reader), postings_field_infos), combined)| match (&o.postings, combined) {
+                    (_, Some(c)) => Ok(Some((
+                        c.fields.clone(),
+                        lucene_codecs::postings::DocInput::validated(&c.doc),
+                        (!c.pos.is_empty())
+                            .then(|| lucene_codecs::postings::PosInput::validated(&c.pos)),
+                        (!c.pay.is_empty())
+                            .then(|| lucene_codecs::postings::PayInput::validated(&c.pay)),
+                    ))),
+                    (Some(raw), None) => {
+                        let fields = lucene_codecs::blocktree::open(
+                            &raw.tim,
+                            &raw.tip,
+                            &raw.tmd,
+                            postings_field_infos,
+                            &o.sci.segment_id,
+                            &raw.suffix,
+                            reader.max_doc(),
+                        )?;
+                        let doc_in = lucene_codecs::postings::DocInput::open(
+                            &raw.doc,
+                            &o.sci.segment_id,
+                            &raw.suffix,
+                        )?;
+                        let pos_in = raw
+                            .pos
+                            .as_ref()
+                            .map(|pos| {
+                                lucene_codecs::postings::PosInput::open(
+                                    pos,
+                                    &o.sci.segment_id,
+                                    &raw.suffix,
+                                )
+                            })
+                            .transpose()?;
+                        let pay_in = raw
+                            .pay
+                            .as_ref()
+                            .map(|pay| {
+                                lucene_codecs::postings::PayInput::open(
+                                    pay,
+                                    &o.sci.segment_id,
+                                    &raw.suffix,
+                                )
+                            })
+                            .transpose()?;
+                        Ok::<_, Error>(Some((fields, doc_in, pos_in, pay_in)))
+                    }
+                    (None, None) => Ok(None),
+                },
+            )
             .collect::<std::result::Result<Vec<_>, Error>>()?;
 
         // One `Vec<SourcePostings>` per source, holding every
@@ -1970,6 +2072,7 @@ impl IndexingConfig {
             &merge::MergeOptions {
                 hnsw_m: self.hnsw_m,
                 hnsw_beam_width: self.hnsw_beam_width,
+                postings_formats: self.postings_formats.clone(),
             },
             &plan.merged_name,
             plan.merged_id,
@@ -2129,19 +2232,17 @@ impl IndexingConfig {
     /// would send a reader looking for a file that does not exist.
     fn fields_with_per_field_attributes(
         &self,
-        wrote_postings: bool,
+        postings: Option<&PostingsGroups>,
         wrote_doc_values: bool,
         wrote_norms: bool,
         vector_fields_written: &[String],
         points_fields_written: &[String],
     ) -> Vec<FieldInfo> {
-        let postings_names: Vec<&str> = if wrote_postings {
-            self.postings_fields
+        let postings_suffix = |number: i32| -> Option<u32> {
+            postings?
                 .iter()
-                .map(|c| c.name.as_str())
-                .collect()
-        } else {
-            Vec::new()
+                .find(|g| g.field_numbers.contains(&number))
+                .map(|g| g.suffix)
         };
         let dv_names: Vec<&str> = if wrote_doc_values {
             self.doc_values_fields
@@ -2173,14 +2274,14 @@ impl IndexingConfig {
                         || self.norms_field_configs().iter().any(|c| c.name == f.name),
                     "every indexed non-omitNorms field must have a norm column"
                 );
-                if postings_names.contains(&f.name.as_str()) {
+                if let Some(suffix) = postings_suffix(f.number) {
                     f.attributes.push((
-                        "PerFieldPostingsFormat.format".to_string(),
+                        per_field_postings::PER_FIELD_FORMAT_KEY.to_string(),
                         POSTINGS_FORMAT_NAME.to_string(),
                     ));
                     f.attributes.push((
-                        "PerFieldPostingsFormat.suffix".to_string(),
-                        PER_FIELD_SUFFIX.to_string(),
+                        per_field_postings::PER_FIELD_SUFFIX_KEY.to_string(),
+                        suffix.to_string(),
                     ));
                 }
                 // Same rule as norms: a `.fnm` must not claim what the
@@ -2384,6 +2485,7 @@ impl IndexingConfig {
                 .map(|(_, _, columns)| columns.as_slice())
                 .unwrap_or(&[]);
             postings_output = IndexWriter::build_postings_output_fast(
+                self,
                 &self.postings_fields,
                 inverters,
                 impact_norms,
@@ -2436,6 +2538,7 @@ impl IndexingConfig {
             };
             postings_output = if !self.postings_fields.is_empty() {
                 IndexWriter::build_postings_output(
+                    self,
                     &self.postings_fields,
                     inverted,
                     impact_norms,
@@ -2445,6 +2548,7 @@ impl IndexingConfig {
                 drop(inverted);
                 match &self.custom_freq_postings_field {
                     Some(cfg) => IndexWriter::build_custom_freq_postings_output(
+                        self,
                         buf.docs,
                         buf.custom_freq_terms,
                         cfg,
@@ -2475,7 +2579,7 @@ impl IndexingConfig {
         };
 
         let fnm_fields = self.fields_with_per_field_attributes(
-            postings_output.is_some(),
+            postings_output.as_ref(),
             doc_values_output.is_some(),
             norms_output.is_some(),
             vectors_output
@@ -3355,6 +3459,10 @@ pub const KNN_VECTORS_FORMAT_NAME: &str = "Lucene99HnswVectorsFormat";
 /// suffix each *file* carries is the wider [`per_field_codec_suffix`].
 pub const PER_FIELD_SUFFIX: &str = "0";
 
+/// A flush's postings: one written group per postings format
+/// ([`per_field_postings::write`]).
+pub(crate) type PostingsGroups = Vec<per_field_postings::GroupOutput>;
+
 /// `PerFieldPostingsFormat.getSuffix`: the segment suffix a per-field format's
 /// files are actually written with -- the format name and the suffix joined,
 /// not the suffix alone. It appears both in the file name and, because Lucene
@@ -3466,6 +3574,21 @@ impl<'d> IndexWriter<'d> {
     /// `IndexWriterConfig.getUseCompoundFile`.
     pub fn use_compound_file(&self) -> bool {
         self.cfg.use_compound_file
+    }
+
+    /// `PerFieldPostingsFormat.getPostingsFormatForField` for one field: from
+    /// the next flush and merge on, `field`'s postings go to `format`'s files
+    /// (every field on the same format shares one set, under the suffix
+    /// `Lucene104_<n>` its fields' `.fnm` attributes record); every other
+    /// field stays on the default `Lucene104PostingsFormat()`.
+    pub fn set_postings_format_for_field(
+        &mut self,
+        field: &str,
+        format: per_field_postings::Lucene104PostingsFormat,
+    ) {
+        let formats = &mut self.cfg_mut().postings_formats;
+        formats.retain(|(name, _)| name != field);
+        formats.push((field.to_string(), format));
     }
 
     /// Buffers `node` for the segments already published only -- a
@@ -3700,6 +3823,7 @@ impl<'d> IndexWriter<'d> {
                 merge_mb_per_sec: None,
                 similarity: None,
                 use_compound_file: false,
+                postings_formats: Vec::new(),
             }),
             segment_infos,
             pending_docs: Vec::new(),
@@ -6324,11 +6448,12 @@ impl<'d> IndexWriter<'d> {
     /// range, never that they index the stored text. The unit is pinned where
     /// it is produced, in `crates/lucene-analysis/tests/analysis_fixtures.rs`.
     fn build_postings_output(
+        routing: &IndexingConfig,
         configs: &[PostingsFieldConfig],
         inverted: InMemoryInvertedIndex,
         norms: &[(i32, Vec<i64>)],
         segment_id: &[u8; ID_LENGTH],
-    ) -> Result<Option<postings_writer::Output>> {
+    ) -> Result<Option<PostingsGroups>> {
         struct FieldData {
             config: PostingsFieldConfig,
             doc_ids: std::collections::BTreeSet<i32>,
@@ -6489,12 +6614,7 @@ impl<'d> IndexWriter<'d> {
                 values,
             })
             .collect();
-        let output = postings_writer::write_fields_with_norms(
-            &inputs,
-            &norms_for_impacts,
-            segment_id,
-            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
-        )?;
+        let output = routing.write_postings_groups(&inputs, &norms_for_impacts, segment_id)?;
         Ok(Some(output))
     }
 
@@ -6593,12 +6713,13 @@ impl<'d> IndexWriter<'d> {
     /// [`Self::build_postings_output`] over the inverters' terms, already in
     /// the postings writer's shape.
     fn build_postings_output_fast(
+        routing: &IndexingConfig,
         configs: &[PostingsFieldConfig],
         inverters: Vec<(i32, crate::inverter::FieldInverter)>,
         norms: &[(i32, Vec<i64>)],
         segment_id: &[u8; ID_LENGTH],
         mut flush_deletes: Option<&mut FlushDeletes<'_>>,
-    ) -> Result<Option<postings_writer::Output>> {
+    ) -> Result<Option<PostingsGroups>> {
         let mut per_field: Vec<(PostingsFieldConfig, i32, Vec<TermPostings>)> = Vec::new();
         for (config, (field_number, inverter)) in configs.iter().zip(inverters) {
             debug_assert_eq!(config.field_number, field_number);
@@ -6634,11 +6755,10 @@ impl<'d> IndexWriter<'d> {
                 values,
             })
             .collect();
-        Ok(Some(postings_writer::write_fields_with_norms(
+        Ok(Some(routing.write_postings_groups(
             &inputs,
             &norms_for_impacts,
             segment_id,
-            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
         )?))
     }
 
@@ -6678,11 +6798,12 @@ impl<'d> IndexWriter<'d> {
     /// rejection (see [`IndexWriter::add_document_with_custom_freq_terms`]'s
     /// doc comment).
     fn build_custom_freq_postings_output(
+        routing: &IndexingConfig,
         docs: &[Document],
         custom_freq_terms: &[Vec<(String, i32)>],
         config: &CustomFreqPostingsFieldConfig,
         segment_id: &[u8; ID_LENGTH],
-    ) -> Result<Option<postings_writer::Output>> {
+    ) -> Result<Option<PostingsGroups>> {
         let mut per_term: std::collections::BTreeMap<Vec<u8>, Vec<(i32, i32)>> =
             std::collections::BTreeMap::new();
         for doc_id in 0..docs.len() {
@@ -6723,11 +6844,7 @@ impl<'d> IndexWriter<'d> {
             has_payloads: false,
             terms: &terms,
         }];
-        let output = postings_writer::write_fields(
-            &inputs,
-            segment_id,
-            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
-        )?;
+        let output = routing.write_postings_groups(&inputs, &[], segment_id)?;
         Ok(Some(output))
     }
 
@@ -7866,9 +7983,26 @@ impl<'d> IndexWriter<'d> {
     fn write_postings_files(
         dir: &dyn Directory,
         segment_name: &str,
+        groups: &PostingsGroups,
+    ) -> Result<Vec<String>> {
+        let mut names = Vec::new();
+        for group in groups {
+            let suffix = per_field_postings::codec_suffix(POSTINGS_FORMAT_NAME, group.suffix);
+            names.extend(Self::write_postings_group_files(
+                dir,
+                &format!("{segment_name}_{suffix}"),
+                &group.output,
+            )?);
+        }
+        Ok(names)
+    }
+
+    /// One postings format's files, under `seg` (`_0_Lucene104_0`).
+    fn write_postings_group_files(
+        dir: &dyn Directory,
+        seg: &str,
         output: &postings_writer::Output,
     ) -> Result<Vec<String>> {
-        let seg = per_field_segment(segment_name, POSTINGS_FORMAT_NAME);
         let doc_name = format!("{seg}.doc");
         let tim_name = format!("{seg}.tim");
         let tip_name = format!("{seg}.tip");
@@ -9088,6 +9222,10 @@ struct OpenedDeleteSegment {
     doc_input: Option<lucene_store::directory::Input>,
     segment_id: [u8; ID_LENGTH],
     suffix: String,
+    /// `doc_input` is the concatenation of a multi-format segment's groups'
+    /// `.doc` files, each already validated by
+    /// [`per_field_postings::open_groups`].
+    combined: bool,
 }
 
 impl IndexingConfig {
@@ -9395,6 +9533,7 @@ impl IndexingConfig {
                 doc_input: None,
                 segment_id: sci.segment_id,
                 suffix,
+                combined: false,
             });
         }
 
@@ -9412,6 +9551,52 @@ impl IndexingConfig {
                 .filter(|f| f.index_options != IndexOptions::None)
                 .collect(),
         };
+        // `PerFieldPostingsFormat` with more than one format: every group,
+        // combined into one dictionary over one concatenated `.doc`.
+        let suffixes = per_field_postings::group_suffixes(&seg_files, &sci.segment_name);
+        if suffixes.len() > 1 {
+            let mut opened = Vec::with_capacity(suffixes.len());
+            for suffix in &suffixes {
+                let seg = format!("{}_{suffix}", sci.segment_name);
+                let open = |ext: &str| seg_dir.open(&format!("{seg}.{ext}"));
+                opened.push((
+                    suffix,
+                    open("tim")?,
+                    open("tip")?,
+                    open("tmd")?,
+                    open("doc")?,
+                ));
+            }
+            let groups: Vec<per_field_postings::GroupFiles<'_>> = opened
+                .iter()
+                .map(
+                    |(suffix, tim, tip, tmd, doc)| per_field_postings::GroupFiles {
+                        suffix,
+                        tim,
+                        tip,
+                        tmd,
+                        doc: Some(doc),
+                        pos: None,
+                        pay: None,
+                    },
+                )
+                .collect();
+            let combined = per_field_postings::open_groups(
+                &groups,
+                &field_infos,
+                &sci.segment_id,
+                max_doc as i32,
+            )?;
+            return Ok(OpenedDeleteSegment {
+                max_doc,
+                live_docs,
+                fields: combined.fields,
+                doc_input: Some(lucene_store::directory::Input::Owned(combined.doc)),
+                segment_id: sci.segment_id,
+                suffix,
+                combined: true,
+            });
+        }
         // Borrowed from the directory's `Input` (a mapping, under
         // `MmapDirectory`), not copied: `blocktree::open` builds its own
         // structures from these and does not retain the slices, and the `.doc`
@@ -9438,6 +9623,7 @@ impl IndexingConfig {
             doc_input: Some(doc_input),
             segment_id: sci.segment_id,
             suffix,
+            combined: false,
         })
     }
 }
@@ -9445,6 +9631,9 @@ impl IndexingConfig {
 impl OpenedDeleteSegment {
     fn view(&self) -> Result<DeleteSegmentView<'_>> {
         let doc_in = match &self.doc_input {
+            Some(bytes) if self.combined => {
+                Some(lucene_codecs::postings::DocInput::validated(bytes))
+            }
             Some(bytes) => Some(lucene_codecs::postings::DocInput::open(
                 bytes,
                 &self.segment_id,

@@ -116,6 +116,8 @@ the skipper path, range relations, feature, distance feature) in
 ### T7.3 — Similarities, bit-for-bit
 ### T7.4 — The remaining core queries and comparators, in the scorer tree
 ### T7.5 — Per-field formats, read and write
+- Delivered 2026-09-30: `PerFieldPostingsFormat` routing -- `IndexWriter::set_postings_format_for_field` sends fields to their own `Lucene104PostingsFormat(min, max)` files; flush, merge (`PerFieldMergeState`), buffered deletes and `check_index` read multi-format segments (`GenPerFieldFormats`, `VerifyPerFieldFormats`). Doc-values write routing is still single-format.
+
 ### T7.6 — Scalar-quantized vectors
 ### T7.7 — Writer gaps: compound segments, string index sorts, write lock
 - Delivered 2026-09-30: the term-dictionary writer is byte-identical to Lucene -- `.tim` suffix compression (LZ4, LOWERCASE_ASCII) and `encodeTerm`'s zigzag singleton delta (`GenBlockTreeSuffixCompression`).
