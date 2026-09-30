@@ -409,7 +409,7 @@ pub enum OrdToDoc {
 /// *passes*, and the slice then panics with `start > end`. c30 reached it
 /// from `check_index`'s side with a re-signed `.vemf` overwrite -- and this
 /// decoder is on the query path, so through the FFI that is a dead JVM.
-fn file_region(file: &[u8], offset: i64, length: i64) -> Option<&[u8]> {
+pub(crate) fn file_region(file: &[u8], offset: i64, length: i64) -> Option<&[u8]> {
     let start = usize::try_from(offset).ok()?;
     let end = start.checked_add(usize::try_from(length).ok()?)?;
     file.get(start..end)
@@ -417,7 +417,7 @@ fn file_region(file: &[u8], offset: i64, length: i64) -> Option<&[u8]> {
 
 impl OrdToDoc {
     /// Port of `OrdToDocDISIReaderConfiguration.fromStoredMeta`.
-    fn from_stored_meta(input: &mut SliceInput<'_>, size: i32) -> Result<Self> {
+    pub(crate) fn from_stored_meta(input: &mut SliceInput<'_>, size: i32) -> Result<Self> {
         let docs_with_field_offset = input.read_i64()?;
         let docs_with_field_length = input.read_i64()?;
         let jump_table_entry_count = input.read_i16()?;
@@ -466,7 +466,12 @@ impl OrdToDoc {
 /// four/eight metadata fields to `meta`.
 ///
 /// `docs` must be strictly ascending; `count` is `docs.len()`.
-fn write_stored_meta(meta: &mut Vec<u8>, data: &mut Vec<u8>, docs: &[i32], max_doc: i32) {
+pub(crate) fn write_stored_meta(
+    meta: &mut Vec<u8>,
+    data: &mut Vec<u8>,
+    docs: &[i32],
+    max_doc: i32,
+) {
     let count = docs.len() as i32;
     if count == 0 {
         meta.write_i64(-2); // docsWithFieldOffset
