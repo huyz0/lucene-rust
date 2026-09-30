@@ -2912,4 +2912,97 @@ mod tests {
         .unwrap()
         .is_none());
     }
+
+    /// A graph over 2-d-ish points on a line for the filtered-search tests
+    /// (moved from the retired second port, `filtered_hnsw_searcher.rs`).
+    fn filtered_graph(n: usize) -> (crate::hnsw::OnHeapHnswGraph, Vec<f32>) {
+        let points: Vec<f32> = (0..n).map(|i| ((i * 7919) % 1000) as f32 / 10.0).collect();
+        let g = HnswGraphBuilder::new(
+            Line {
+                values: points.clone(),
+                query: 0.0,
+            },
+            8,
+            50,
+            crate::hnsw::DEFAULT_RAND_SEED,
+        )
+        .unwrap()
+        .build(n as i32)
+        .unwrap();
+        (g, points)
+    }
+
+    /// `KnnSearchStrategy.Hnsw(60)` with a filter passing 5%: the
+    /// `FilteredHnswGraphSearcher` walk collects only accepted nodes and
+    /// finds the exact best among them; threshold 0 (Lucene's default) and
+    /// no filter take the ordinary walk.
+    #[test]
+    fn filtered_strategy_finds_accepted_neighbours() {
+        let n = 2000;
+        let (g, points) = filtered_graph(n);
+        let mut accept = FixedBitSet::new(n);
+        for i in (0..n).step_by(20) {
+            accept.set(i);
+        }
+        let mut scorer = Line {
+            values: points.clone(),
+            query: 50.0,
+        };
+        let with = |threshold: i32| SearchOptions {
+            accept_ords: Some(&accept),
+            filtered_doc_count: Some(100),
+            seed_ords: None,
+            filtered_search_threshold: threshold,
+        };
+        let (hits, _) = search(&mut scorer, Some(&g), 5, u64::MAX, with(60)).unwrap();
+        // A filtered walk may collect fewer than k (Lucene then falls back to
+        // an exact search in `AbstractKnnVectorQuery`).
+        assert!(!hits.is_empty() && hits.len() <= 5, "{hits:?}");
+        assert!(hits.iter().all(|&(o, _)| o % 20 == 0));
+        let mut exact: Vec<(i32, f32)> = (0..n)
+            .step_by(20)
+            .map(|i| (i as i32, scorer.clone().score(i as i32).unwrap()))
+            .collect();
+        exact.sort_by(|a, b| b.1.total_cmp(&a.1));
+        assert!(
+            hits[0].1 >= exact[0].1 * 0.99,
+            "{:?} vs {:?}",
+            hits[0],
+            exact[0]
+        );
+        let (plain, _) = search(&mut scorer, Some(&g), 5, u64::MAX, with(0)).unwrap();
+        assert!(plain.iter().all(|&(o, _)| o % 20 == 0));
+        let (all, _) = search(&mut scorer, Some(&g), 5, u64::MAX, opts()).unwrap();
+        assert_eq!(all.len(), 5);
+    }
+
+    /// `FilteredHnswGraphSearcher.create`'s `0 < filterSize < graph size`
+    /// check, and the accept-set bound.
+    #[test]
+    fn filtered_searcher_validates_filter_size_and_accept_set() {
+        let (g, points) = filtered_graph(300);
+        let mut scorer = Line {
+            values: points,
+            query: 5.0,
+        };
+        let accept = FixedBitSet::new(300);
+        for size in [0, 300] {
+            let mut searcher = HnswGraphSearcher::new(5, g.size());
+            let mut collector = KnnCollector::new(5, u64::MAX);
+            assert!(searcher
+                .search_filtered(&mut collector, &mut scorer, &g, &accept, size, None)
+                .is_err());
+        }
+        let mut searcher = HnswGraphSearcher::new(5, g.size());
+        let mut collector = KnnCollector::new(5, u64::MAX);
+        let short = FixedBitSet::new(10);
+        assert!(searcher
+            .search_filtered(&mut collector, &mut scorer, &g, &short, 5, None)
+            .is_err());
+        let mut searcher = HnswGraphSearcher::new(5, g.size());
+        let mut collector = KnnCollector::new(5, u64::MAX);
+        assert!(searcher
+            .search_filtered(&mut collector, &mut scorer, &g, &accept, 30, Some(&[]))
+            .is_err());
+    }
 }
