@@ -749,7 +749,7 @@ search/SearcherFactory	ported	crates/lucene-search/src/reference_manager.rs::Sea
 search/SearcherLifetimeManager	ported	crates/lucene-search/src/reference_manager.rs::SearcherLifetimeManager
 search/SearcherManager	partial	crates/lucene-search/src/reference_manager.rs::SearcherManager -- M7: the IndexWriter constructors (DirectoryReader.open(writer, applyAllDeletes, writeAllDeletes)) are not ported: this port's IndexWriter has no NRT reader, so a SearcherManager refreshes from the directory's commits
 search/SeededKnnVectorQuery	partial	crates/lucene-codecs/src/hnsw.rs::search_seeded -- M7: seeded graph walk exists (used by the re-entry pass), but the query that turns a seed Query's hits into entry points is not ported
-search/SegmentCacheable	partial	crates/lucene-search/src/exec/cache.rs::SegmentQueryCache -- M7: cacheability decided per clause kind; no per-leaf isCacheable check (e.g. DocValues.isCacheable for fields with doc-values updates)
+search/SegmentCacheable	ported	crates/lucene-search/src/segment_cacheable.rs::is_cacheable
 search/SimpleCollector	ported	crates/lucene-search/src/collector.rs::ScoringCollector
 search/SimpleFieldComparator	not-needed	Java convenience base merging FieldComparator and LeafFieldComparator; Rust comparators are the closed top_field.rs types.
 search/SimpleScorable	not-needed	mutable score holder handed to collectors; Rust passes the score as an argument of ScoringCollector::collect.

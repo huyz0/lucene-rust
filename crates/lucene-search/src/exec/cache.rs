@@ -203,6 +203,20 @@ impl SegmentQueryCache {
         max_doc: i32,
         uncached: impl FnOnce() -> Result<Option<BoxScorer<'a>>>,
     ) -> Result<Option<CacheResult>> {
+        self.scorer_if_cacheable(clause, max_doc, true, uncached)
+    }
+
+    /// [`Self::scorer`] for a clause whose weight says whether it may be
+    /// cached against this segment (`SegmentCacheable.isCacheable`): the use
+    /// is still counted, but an uncacheable clause is neither looked up nor
+    /// stored (`CachingWrapperWeight.scorerSupplier`'s short-circuit).
+    pub(crate) fn scorer_if_cacheable<'a>(
+        &self,
+        clause: &Clause,
+        max_doc: i32,
+        cacheable: bool,
+        uncached: impl FnOnce() -> Result<Option<BoxScorer<'a>>>,
+    ) -> Result<Option<CacheResult>> {
         let (costly, composite, never) = shape(clause);
         if never || max_doc < MIN_SEGMENT_SIZE {
             return Ok(None);
@@ -219,6 +233,9 @@ impl SegmentQueryCache {
             inner.clock += 1;
             let now = inner.clock;
             inner.policy.on_use(&policy_key);
+            if !cacheable {
+                return Ok(None);
+            }
             if let Some(entry) = inner.entries.get_mut(&key) {
                 entry.last_used = now;
                 return Ok(Some(CacheResult::Hit(Arc::clone(&entry.set))));
@@ -606,6 +623,30 @@ mod tests {
             assert_eq!(scorer.max_score(NO_MORE_DOCS).unwrap(), 0.0);
             assert_eq!(scorer.next_doc().unwrap(), NO_MORE_DOCS);
         }
+    }
+
+    #[test]
+    fn an_uncacheable_clause_is_counted_but_never_cached() {
+        // `CachingWrapperWeight`: `onUse` first, then the `isCacheable`
+        // short-circuit, so the uses still count once it becomes cacheable
+        // (a reopened segment without the doc-values update).
+        let cache = SegmentQueryCache::default();
+        let phrase = Clause::Phrase(PhraseQuery::new("f", ["a", "b"]));
+        for _ in 0..6 {
+            let r = cache
+                .scorer_if_cacheable(&phrase, 20_000, false, || panic!("never built"))
+                .unwrap();
+            assert!(r.is_none());
+        }
+        assert_eq!(cache.stats().0, 0);
+        let _ = hit(cache
+            .scorer_if_cacheable(&phrase, 20_000, true, || list(vec![5]))
+            .unwrap());
+        assert_eq!(cache.stats().0, 1);
+        assert!(cache
+            .scorer_if_cacheable(&phrase, 20_000, false, || panic!("not served either"))
+            .unwrap()
+            .is_none());
     }
 
     #[test]

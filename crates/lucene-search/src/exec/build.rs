@@ -670,7 +670,8 @@ pub(crate) fn child<'a>(
                 cache: None,
                 ..*ctx
             };
-            match cache.scorer(clause, max_doc, || {
+            let cacheable = crate::segment_cacheable::is_cacheable(clause, ctx.reader);
+            match cache.scorer_if_cacheable(clause, max_doc, cacheable, || {
                 build(&core, clause, boost, mode, top_level)
             })? {
                 Some(super::cache::CacheResult::Hit(set)) => {
