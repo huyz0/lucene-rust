@@ -39,7 +39,7 @@ including the Java 21 multi-release variants. If no jar can be found the
 jar-membership check is skipped and said so; the rest still runs.
 
 Usage:
-  scripts/check-port-inventory.py [--module core] [--milestone M7] [--summary]
+  scripts/check-port-inventory.py [--module core|backward-codecs] [--milestone M7] [--summary]
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ ROOT = Path(__file__).resolve().parent.parent
 STATUS = re.compile(r"^(ported|partial|not-needed|todo:M\d+|deferred:M\d+)$")
 PARTIAL_GAP = re.compile(r" -- (M\d+): \S")
 LOCATION = re.compile(r"^(crates/[\w-]+/src/[\w/]+\.rs)(?:::([\w:]+))?")
-MODULES = {"core": "lucene-core"}
+MODULES = {"core": "lucene-core", "backward-codecs": "lucene-backward-codecs"}
 
 
 def jar_classes(module: str) -> set[str] | None:

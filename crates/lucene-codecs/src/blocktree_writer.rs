@@ -94,23 +94,23 @@ pub(crate) struct TrieLocation {
 
 /// `TrieBuilder.Output`: the block a trie node points to.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct TrieOutput {
+pub(crate) struct TrieOutput {
     /// Absolute `.tim` offset of the block.
-    fp: u64,
+    pub(crate) fp: u64,
     /// `false` when the block holds only sub-block entries.
-    has_terms: bool,
+    pub(crate) has_terms: bool,
     /// Present when the prefix's entries were split into floor blocks:
     /// `vInt(count - 1)` then, per follow-on block, its lead byte and
     /// `vLong((fp - first fp) << 1 | hasTerms)`.
-    floor_data: Option<Vec<u8>>,
+    pub(crate) floor_data: Option<Vec<u8>>,
 }
 
 /// `TrieBuilder`, as an ordered list of (non-empty key, output) entries
 /// plus the empty key's output.
 #[derive(Debug, Default)]
-struct TrieBuilder {
-    empty_output: Option<TrieOutput>,
-    entries: Vec<(Vec<u8>, TrieOutput)>,
+pub(crate) struct TrieBuilder {
+    pub(crate) empty_output: Option<TrieOutput>,
+    pub(crate) entries: Vec<(Vec<u8>, TrieOutput)>,
 }
 
 impl TrieBuilder {
@@ -152,7 +152,7 @@ impl TrieBuilder {
     /// each node as soon as no later key can add a child to it -- children
     /// always before their parent, which is what lets a parent store its
     /// children as backward deltas.
-    fn save(&self, tip: &mut Vec<u8>) -> TrieLocation {
+    pub(crate) fn save(&self, tip: &mut Vec<u8>) -> TrieLocation {
         let index_start = tip.len() as u64;
         let max_depth = self.entries.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
         let mut frontier: Vec<FrontierNode<'_>> =

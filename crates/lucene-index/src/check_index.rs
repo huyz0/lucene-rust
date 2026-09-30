@@ -943,7 +943,8 @@ fn open_si(dir: &dyn Directory, commit: &SegmentCommitInfo) -> Result<SegmentInf
     let bytes = dir
         .open(&format!("{}.si", commit.segment_name))
         .map_err(|e| e.to_string())?;
-    segment_info::parse(&bytes, &commit.segment_id).map_err(|e| e.to_string())
+    segment_info::parse_for_codec(&bytes, &commit.segment_id, &commit.codec_name)
+        .map_err(|e| e.to_string())
 }
 
 fn open_fnm(
