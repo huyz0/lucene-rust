@@ -299,7 +299,6 @@ pub(crate) fn map_writer_error(context: &str, e: index_writer::Error) -> FfiStat
         | index_writer::Error::EmptyIndexSort
         | index_writer::Error::UnknownIndexSortField(_)
         | index_writer::Error::UnsupportedIndexSortField(_, _)
-        | index_writer::Error::UnsupportedIndexSortKind(_)
         | index_writer::Error::IndexSortFieldWithoutDocValues(_)
         | index_writer::Error::IncongruentIndexSort { .. }
         | index_writer::Error::IndexSortChangedMidBuffer(_)
@@ -314,8 +313,12 @@ pub(crate) fn map_writer_error(context: &str, e: index_writer::Error) -> FfiStat
         // contain. Retrying either is futile, so `Io` would be actively
         // misleading to a Java caller.
         | index_writer::Error::MergeSortDisagreement { .. }
-        // `MergeRateLimiter.setMBPerSec`'s `IllegalArgumentException`.
+        // `MergeRateLimiter.setMBPerSec`'s `IllegalArgumentException`, and
+        // `ConcurrentMergeScheduler.setMaxMergesAndThreads`'.
         | index_writer::Error::InvalidMergeRate(_)
+        | index_writer::Error::InvalidMergeScheduler(_)
+        // `addIndexes`' conflicting-schema `IllegalArgumentException`.
+        | index_writer::Error::AddIndexes(_)
         | index_writer::Error::UnknownSortField(_) => FfiStatus::InvalidArgument,
         // Everything left is a genuine I/O or decode failure of the index
         // itself. Enumerated rather than left to a `_` arm so that the next
@@ -325,6 +328,9 @@ pub(crate) fn map_writer_error(context: &str, e: index_writer::Error) -> FfiStat
         // is broken" -- which is exactly how the whole list above came to be
         // misclassified in the first place.
         index_writer::Error::Store(_)
+        // A merge that panicked on a merge thread: the index is intact (the
+        // merge's output is never published), but the merge failed.
+        | index_writer::Error::MergeThreadPanicked(_)
         | index_writer::Error::SegmentWriter(_)
         | index_writer::Error::SegmentInfos(_)
         | index_writer::Error::UpdateDocument(_)

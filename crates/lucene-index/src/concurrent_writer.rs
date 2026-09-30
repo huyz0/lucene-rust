@@ -81,9 +81,10 @@
 //! control lock too.
 
 use std::collections::{HashSet, VecDeque};
+use std::ops::DerefMut;
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
 use lucene_codecs::stored_fields::Document;
@@ -93,11 +94,14 @@ use crate::buffered_updates::{
     BufferedUpdates, DeleteQuery, DocValuesUpdate, FrozenBufferedUpdates, SeqNo, Term,
 };
 use crate::deletes;
+use crate::flush_policy::{FlushByRamOrCountsPolicy, FlushControl, FlushPolicy};
 use crate::index_writer::{
-    buffer_node, document_ram_bytes, DeleteNode, DocumentBuffer, Error, ExplicitFields,
-    FlushDeletes, IndexWriter, IndexingConfig, Result, SegmentTicket, DISABLE_AUTO_FLUSH,
+    buffer_node, document_ram_bytes, DeleteNode, DocumentBuffer, ExplicitFields, FlushDeletes,
+    IndexWriter, IndexingConfig, Result, SegmentTicket, DISABLE_AUTO_FLUSH,
 };
-use crate::merge_policy::MergePolicyConfig;
+use crate::merge_policy::{MergePolicyConfig, MergeTrigger};
+use crate::merge_rate_limiter::MergeRateLimiter;
+use crate::merge_scheduler::{MergeScheduler, MergeSource, PendingMerges, ScheduledMerge};
 use crate::segment_infos::SegmentCommitInfo;
 use crate::stall_control::DocumentsWriterStallControl;
 
@@ -138,6 +142,10 @@ struct DeleteLog {
     /// the numbers follow the log's order (`DocumentsWriterDeleteQueue`'s
     /// `nextSeqNo`, taken inside its `add` and `updateSlice`).
     next_seq: SeqNo,
+    /// The RAM of the entries the control plane has not taken yet -- what
+    /// the published segments' next packet will hold, the delete queue's
+    /// `ramBytesUsed()` the flush policy weighs (`getDeleteBytesUsed`).
+    unhanded_bytes: usize,
 }
 
 impl DeleteLog {
@@ -188,20 +196,17 @@ struct FlushBatch {
     ram_bytes: usize,
 }
 
-/// `DocumentsWriterFlushControl`'s `activeBytes`/`flushBytes`: RAM in the
-/// slots, and RAM in buffers being built into segments.
-#[derive(Debug, Default)]
-struct RamAccounting {
-    active_bytes: usize,
-    flush_bytes: usize,
-}
-
 /// What [`ConcurrentIndexWriter::build`] hands to the publish.
 struct Built {
     sci: SegmentCommitInfo,
     si_files: Vec<String>,
     fully_deleted: bool,
 }
+
+/// `IndexWriterConfig.getRAMPerThreadHardLimitMB()`'s default (1945 MB) in
+/// bytes: a slot holding more is marked for flushing whatever the policy
+/// says (`DocumentsWriterFlushControl.hardMaxBytesPerDWPT`).
+const HARD_MAX_BYTES_PER_SLOT: usize = 1945 * 1024 * 1024;
 
 /// A slot's advertised slice while it holds no document: it has nothing a
 /// log entry could reach, so it holds back no trimming, and its next add
@@ -228,11 +233,34 @@ pub struct ConcurrentIndexWriter<'d> {
     max_buffered_docs: Option<usize>,
     ram_buffer_bytes: Option<usize>,
     merge_policy: Option<MergePolicyConfig>,
-    /// Updated together with the stall decision, as Java's
-    /// `DocumentsWriterFlushControl` does under its monitor.
-    ram: Mutex<RamAccounting>,
+    /// `DocumentsWriterFlushControl`'s accounting -- RAM in the slots and in
+    /// buffers being built, each slot's `flushPending` -- updated together
+    /// with the flush policy's decision and the stall decision, as Java's is
+    /// under its monitor. Kept only with a RAM buffer (see
+    /// [`Self::update_ram`]).
+    ram: Mutex<FlushControl>,
+    /// `FlushByRamOrCountsPolicy`.
+    policy: FlushByRamOrCountsPolicy,
+    /// Each slot's `flushPending`, readable without the accounting lock --
+    /// how an indexing thread finds a marked buffer to help flush.
+    pending: Vec<AtomicBool>,
+    /// `LiveIndexWriterConfig.checkPendingFlushOnUpdate`.
+    check_pending_flush_on_update: AtomicBool,
     /// `DocumentsWriterFlushControl.stallControl`.
     stall: DocumentsWriterStallControl,
+    /// `IndexWriter.pendingMerges`: merges registered for a scheduler and
+    /// not yet taken by it. Their segments are in `Core::merging`.
+    pending_merges: PendingMerges,
+    /// `IndexWriterConfig.getMergeScheduler()`, when one was given
+    /// ([`ConcurrentIndexWriter::with_merge_scheduler`]).
+    scheduler: Option<SchedulerHook>,
+}
+
+/// The scheduler this writer hands its pending merges to, and the writer
+/// itself as the `MergeSource` the scheduler's threads call back into.
+struct SchedulerHook {
+    scheduler: Arc<dyn MergeScheduler>,
+    source: Weak<dyn MergeSource>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -292,9 +320,113 @@ impl<'d> ConcurrentIndexWriter<'d> {
             max_buffered_docs,
             ram_buffer_bytes,
             merge_policy,
-            ram: Mutex::new(RamAccounting::default()),
+            ram: Mutex::new(FlushControl::new(slots)),
+            policy: FlushByRamOrCountsPolicy {
+                max_buffered_docs,
+                ram_buffer_bytes,
+            },
+            pending: (0..slots).map(|_| AtomicBool::new(false)).collect(),
+            check_pending_flush_on_update: AtomicBool::new(true),
             stall: DocumentsWriterStallControl::new(),
+            pending_merges: PendingMerges::new(),
+            scheduler: None,
         })
+    }
+
+    /// `IndexWriter.updatePendingMerges`: registers every merge the policy
+    /// proposes among segments not already merging -- claiming their
+    /// segments -- for the scheduler to take. Nothing without a policy.
+    fn register_merges(&self, core: &mut Core<'_>) -> Result<()> {
+        let Some(policy) = &self.merge_policy else {
+            return Ok(());
+        };
+        while let Some((names, estimated)) = core.writer.next_merge_sized(policy, &core.merging)? {
+            core.merging.extend(names.iter().cloned());
+            self.pending_merges
+                .push(Arc::new(ScheduledMerge::new(names, estimated)));
+        }
+        Ok(())
+    }
+
+    /// `IndexWriter.maybeMerge(trigger)`: registers what the policy wants and
+    /// hands it to the scheduler. A no-op for a writer without one, whose
+    /// caller runs merges itself ([`Self::maybe_merge`], [`Self::run_merges`]).
+    fn schedule_merges(&self, trigger: MergeTrigger) -> Result<()> {
+        let Some(hook) = &self.scheduler else {
+            return Ok(());
+        };
+        let Some(source) = hook.source.upgrade() else {
+            return Ok(());
+        };
+        self.register_merges(&mut lock(&self.core))?;
+        hook.scheduler.merge(&source, trigger)
+    }
+
+    /// Runs one scheduled merge on the calling (merge) thread, every output
+    /// through `limiter` -- `IndexWriter.merge(OneMerge)`: `mergeInit`, the
+    /// merge without the control lock, `commitMerge`, `mergeFinish`, then
+    /// `updatePendingMerges(MERGE_FINISHED)` so a cascade of merges is
+    /// registered for the scheduler's next round.
+    fn run_scheduled_merge(
+        &self,
+        merge: &ScheduledMerge,
+        limiter: Option<Arc<MergeRateLimiter>>,
+    ) -> Result<()> {
+        let release = |core: &mut Core<'_>| {
+            for name in &merge.segments {
+                core.merging.remove(name);
+            }
+        };
+        let plan = {
+            let mut core = lock(&self.core);
+            match core.writer.begin_merge(&merge.segments) {
+                Ok(plan) => plan,
+                Err(e) => {
+                    release(&mut core);
+                    return Err(e);
+                }
+            }
+        };
+        let tracking = TrackingDirectory::new(self.dir);
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            self.cfg.run_merge_limited(&tracking, &plan, limiter)
+        }));
+        let mut core = lock(&self.core);
+        release(&mut core);
+        let result = match outcome {
+            Ok(Ok(outcome)) => core
+                .writer
+                .finish_merge(plan, outcome)
+                .and_then(|_| self.register_merges(&mut core)),
+            Ok(Err(e)) => {
+                let _ = core.writer.abort_merge(plan);
+                let _ = core.writer.delete_new_files(&tracking.created());
+                Err(e)
+            }
+            Err(panic) => {
+                let _ = core.writer.abort_merge(plan);
+                let _ = core.writer.delete_new_files(&tracking.created());
+                drop(core);
+                self.changed.notify_all();
+                resume_unwind(panic);
+            }
+        };
+        drop(core);
+        self.changed.notify_all();
+        result
+    }
+
+    /// `IndexWriter.close()`'s merge half: registers what the policy still
+    /// wants, lets the scheduler run it with throttling lifted
+    /// (`MergeTrigger.CLOSING`), and waits for every merge the scheduler
+    /// started -- returning the first merge failure. A no-op without a
+    /// scheduler.
+    pub fn close_merges(&self) -> Result<()> {
+        let Some(hook) = &self.scheduler else {
+            return Ok(());
+        };
+        self.schedule_merges(MergeTrigger::Closing)?;
+        hook.scheduler.close()
     }
 
     /// `DocumentsWriterFlushControl.updateStallState`, after `change` has
@@ -309,25 +441,106 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// with every indexing thread waiting on it. With no RAM buffer
     /// (`stallLimitBytes` is `Long.MAX_VALUE`) indexing can never stall, so
     /// nothing is counted and no lock is taken.
-    fn update_ram(&self, change: impl FnOnce(&mut RamAccounting)) {
+    fn update_ram<T: Default>(&self, change: impl FnOnce(&mut FlushControl) -> T) -> T {
         let Some(buffer) = self.ram_buffer_bytes else {
-            return;
+            return T::default();
         };
         let mut ram = lock(&self.ram);
-        change(&mut ram);
+        let out = change(&mut ram);
+        for (i, flag) in self.pending.iter().enumerate() {
+            flag.store(ram.is_flush_pending(i), Ordering::Release);
+        }
         let limit = buffer.saturating_mul(2);
-        let stall =
-            ram.active_bytes.saturating_add(ram.flush_bytes) > limit && ram.active_bytes < limit;
+        let (active, flushing) = (ram.active_bytes(), ram.flush_bytes());
+        let stall = active.saturating_add(flushing) > limit && active < limit;
         self.stall.update_stalled(stall);
+        out
     }
 
-    /// `DocumentsWriter.preUpdate`: waits while indexing is stalled. The
-    /// flushes that lift a stall run on the threads that started them, so
-    /// there is no queued flush for a waiting thread to help with.
-    fn wait_while_stalled(&self) {
-        while self.stall.any_stalled_threads() {
+    /// `LiveIndexWriterConfig.setCheckPendingFlushUpdate`: whether indexing
+    /// threads flush buffers the flush policy marked in other slots (on by
+    /// default). Off, a marked buffer is flushed by the next thread to index
+    /// into it, by [`Self::flush_next_buffer`], or by a full flush -- and by
+    /// indexing threads anyway while indexing is stalled.
+    pub fn set_check_pending_flush_on_update(&self, check: bool) {
+        self.check_pending_flush_on_update
+            .store(check, Ordering::Relaxed);
+    }
+
+    /// `DocumentsWriterFlushControl.nextPendingFlush` + `doFlush`: takes one
+    /// buffer the flush policy marked, whose slot is free, and flushes it on
+    /// this thread. Returns whether it flushed one.
+    fn flush_one_pending(&self) -> Result<bool> {
+        for (j, flag) in self.pending.iter().enumerate() {
+            if !flag.load(Ordering::Acquire) {
+                continue;
+            }
+            let Ok(mut dwpt) = self.slots[j].try_lock() else {
+                continue;
+            };
+            if !self.pending[j].load(Ordering::Acquire) {
+                continue;
+            }
+            let batch = self.begin_flush(j, &mut dwpt);
+            drop(dwpt);
+            if let Some(batch) = batch {
+                self.complete_flush(batch)?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Whether any slot is marked for flushing (`numQueuedFlushes() > 0`).
+    fn any_pending(&self) -> bool {
+        self.pending.iter().any(|p| p.load(Ordering::Acquire))
+    }
+
+    /// `DocumentsWriter.applyAllDeletes`: once the flush policy found the
+    /// buffered deletes over the RAM buffer, freezes them into a packet of
+    /// their own and applies it to the published segments -- a ticket that
+    /// publishes in order with the segments before it, as Java's
+    /// `ticketQueue.addTicket(maybeFreezeGlobalBuffer)`. Never during a full
+    /// flush (the flag waits for the next chance), as Java's.
+    fn maybe_apply_all_deletes(&self) -> Result<bool> {
+        let Ok(_full_flush) = self.full_flush.try_lock() else {
+            return Ok(false);
+        };
+        if !self.update_ram(FlushControl::get_and_reset_apply_all_deletes) {
+            return Ok(false);
+        }
+        let (ticket_no, packet) = {
+            let mut core = lock(&self.core);
+            let nodes = Self::take_unhanded(&mut lock(&self.log));
+            Self::hand_over(&mut core, &nodes);
+            let packet = core.writer.begin_deletes_ticket();
+            let ticket_no = core.next_ticket;
+            core.next_ticket = ticket_no.saturating_add(1);
+            (ticket_no, packet)
+        };
+        self.update_ram(|c| c.set_delete_bytes_used(0));
+        self.complete_cut(ticket_no, packet)?;
+        Ok(true)
+    }
+
+    /// `DocumentsWriter.preUpdate`: while indexing is stalled, or while a
+    /// marked buffer waits and `checkPendingFlushOnUpdate` is on, helps
+    /// flush marked buffers, then waits while indexing is still stalled.
+    fn pre_update(&self) -> Result<bool> {
+        let mut flushed = false;
+        while self.stall.any_stalled_threads()
+            || (self.check_pending_flush_on_update.load(Ordering::Relaxed) && self.any_pending())
+        {
+            let helped = self.flush_one_pending()?;
+            flushed |= helped;
+            if !helped && !self.stall.any_stalled_threads() {
+                // Every marked buffer is being indexed into or flushed by
+                // another thread, which will flush it.
+                break;
+            }
             self.stall.wait_if_stalled();
         }
+        Ok(flushed)
     }
 
     /// The stall control, for tests (`DocumentsWriterFlushControl`'s
@@ -355,23 +568,71 @@ impl<'d> ConcurrentIndexWriter<'d> {
 
     /// `IndexWriter.deleteDocuments(Term...)`.
     pub fn delete_documents_by_term(&self, terms: &[Term]) -> Result<SeqNo> {
-        Ok(self.buffer_delete(DeleteNode::terms(terms.to_vec())))
+        self.buffer_delete(DeleteNode::terms(terms.to_vec()))
     }
 
     /// `IndexWriter.deleteDocuments(Query...)`, for the query shapes
-    /// [`DeleteQuery`] covers. `MatchAll` is `deleteAll`, which this writer
-    /// does not offer concurrently.
+    /// [`DeleteQuery`] covers. `MatchAll` anywhere is [`Self::delete_all`]
+    /// (LUCENE-6379), as in [`IndexWriter::delete_documents_by_query`].
     pub fn delete_documents_by_query(&self, queries: &[DeleteQuery]) -> Result<SeqNo> {
         if queries.iter().any(|q| matches!(q, DeleteQuery::MatchAll)) {
-            return Err(Error::ConcurrentUnsupported("deleteAll"));
+            return self.delete_all();
         }
-        Ok(self.buffer_delete(DeleteNode::Queries(queries.to_vec())))
+        self.buffer_delete(DeleteNode::Queries(queries.to_vec()))
+    }
+
+    /// `IndexWriter.deleteAll()`: drops every buffered document and every
+    /// segment, as [`IndexWriter::delete_all`] -- not durable until the next
+    /// [`Self::commit`]. Under the full-flush lock with every slot held
+    /// (`DocumentsWriter.lockAndAbortAll`): the slots' buffers and their
+    /// deletes are discarded, every flush already ticketed publishes first
+    /// (`waitForFlush`), merges not yet started are dropped and running ones
+    /// finish first (`abortMerges` waits for them too), and every delete
+    /// buffered so far is cleared. Returns the operation's sequence number.
+    pub fn delete_all(&self) -> Result<SeqNo> {
+        let _full_flush = lock(&self.full_flush);
+        let mut slots: Vec<MutexGuard<'_, Dwpt>> = self.slots.iter().map(lock).collect();
+        for (i, dwpt) in slots.iter_mut().enumerate() {
+            *dwpt.deref_mut() = Dwpt::default();
+            self.update_ram(|c| {
+                let bytes = c.checkout_for_flush(i);
+                c.flush_done(bytes);
+            });
+            self.slices[i].store(EMPTY_SLOT, Ordering::Release);
+        }
+        let mut core = lock(&self.core);
+        while let Some(merge) = self.pending_merges.pop() {
+            for name in &merge.segments {
+                core.merging.remove(name);
+            }
+        }
+        while core.next_publish != core.next_ticket || !core.merging.is_empty() {
+            core = self
+                .changed
+                .wait(core)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        let seq_no = {
+            let mut log = lock(&self.log);
+            let end = log.end();
+            log.nodes.clear();
+            log.base = end;
+            log.handed = end;
+            log.unhanded_bytes = 0;
+            log.take_seq()
+        };
+        self.update_ram(|c| c.set_delete_bytes_used(0));
+        core.writer.delete_all()?;
+        drop(core);
+        drop(slots);
+        self.changed.notify_all();
+        Ok(seq_no)
     }
 
     /// `IndexWriter.updateDocValues(Term, Field...)`.
     pub fn update_doc_values(&self, term: Term, updates: &[DocValuesUpdate]) -> Result<SeqNo> {
         let node = self.cfg.doc_values_update_node(&term, updates)?;
-        Ok(self.buffer_delete(node))
+        self.buffer_delete(node)
     }
 
     /// `IndexWriter.updateNumericDocValue(Term, String, long)`.
@@ -389,12 +650,23 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// while it applies the published segments' share of the deletes, and a
     /// delete must not queue behind it. The sequence number is taken in the
     /// same step, so numbers follow the log's order.
-    fn buffer_delete(&self, node: DeleteNode) -> SeqNo {
-        let mut log = lock(&self.log);
-        log.nodes.push_back(Arc::new(node));
-        let seq_no = log.take_seq();
-        self.trim(&mut log);
-        seq_no
+    fn buffer_delete(&self, node: DeleteNode) -> Result<SeqNo> {
+        let bytes = node.ram_bytes();
+        let (seq_no, delete_bytes) = {
+            let mut log = lock(&self.log);
+            log.nodes.push_back(Arc::new(node));
+            log.unhanded_bytes = log.unhanded_bytes.saturating_add(bytes);
+            let seq_no = log.take_seq();
+            self.trim(&mut log);
+            (seq_no, log.unhanded_bytes)
+        };
+        // `DocumentsWriterFlushControl.doOnDelete`.
+        self.update_ram(|c| {
+            c.set_delete_bytes_used(delete_bytes);
+            self.policy.on_change(c, None);
+        });
+        self.maybe_apply_all_deletes()?;
+        Ok(seq_no)
     }
 
     /// Drops the entries every slot has applied and the control plane has
@@ -421,6 +693,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
     fn take_unhanded(log: &mut DeleteLog) -> Vec<Arc<DeleteNode>> {
         let nodes = log.since(log.handed);
         log.handed = log.end();
+        log.unhanded_bytes = 0;
         nodes
     }
 
@@ -478,7 +751,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// and the delete and the document are never apart: a commit locks every
     /// slot to take its cut, and sees both or neither.
     fn add(&self, delete: Option<DeleteNode>, docs: Vec<Document>) -> Result<SeqNo> {
-        self.wait_while_stalled();
+        let mut flushed = self.pre_update()?;
         let (seq_no, batch) = {
             let (i, mut dwpt) = self.acquire_slot();
             let before = dwpt.docs.len();
@@ -491,10 +764,10 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 dwpt.docs.push(doc);
             }
             dwpt.ram_bytes = dwpt.ram_bytes.saturating_add(added);
-            self.update_ram(|ram| ram.active_bytes = ram.active_bytes.saturating_add(added));
-            let (nodes, end, seq_no) = {
+            let (nodes, end, seq_no, delete_bytes) = {
                 let mut log = lock(&self.log);
                 if let Some(node) = delete {
+                    log.unhanded_bytes = log.unhanded_bytes.saturating_add(node.ram_bytes());
                     log.nodes.push_back(Arc::new(node));
                 }
                 let seq_no = log.take_seq();
@@ -506,11 +779,30 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 };
                 let end = log.end();
                 self.trim(&mut log);
-                (nodes, end, seq_no)
+                (nodes, end, seq_no, log.unhanded_bytes)
             };
             self.apply_slice(i, &mut dwpt, &nodes, end, before);
-            let full = self.max_buffered_docs.is_some_and(|m| dwpt.docs.len() >= m)
-                || self.ram_buffer_bytes.is_some_and(|m| dwpt.ram_bytes >= m);
+            // `DocumentsWriterFlushControl.doAfterDocument`: the policy runs
+            // unless the slot is already marked (its growth then counts as
+            // flushing), then a marked slot is flushed by this thread. Without
+            // a RAM buffer only the document count can mark it, so it is
+            // checked here without the accounting lock.
+            let full = if self.ram_buffer_bytes.is_some() {
+                let (num_docs, ram_bytes) = (dwpt.docs.len(), dwpt.ram_bytes);
+                self.update_ram(|c| {
+                    c.commit_slot_bytes(i, num_docs, ram_bytes);
+                    c.set_delete_bytes_used(delete_bytes);
+                    if !c.is_flush_pending(i) {
+                        self.policy.on_change(c, Some(i));
+                        if !c.is_flush_pending(i) && ram_bytes > HARD_MAX_BYTES_PER_SLOT {
+                            c.set_flush_pending(i);
+                        }
+                    }
+                    c.is_flush_pending(i)
+                })
+            } else {
+                self.max_buffered_docs.is_some_and(|m| dwpt.docs.len() >= m)
+            };
             let batch = if full {
                 self.begin_flush(i, &mut dwpt)
             } else {
@@ -518,8 +810,19 @@ impl<'d> ConcurrentIndexWriter<'d> {
             };
             (seq_no, batch)
         };
+        // `DocumentsWriter.postUpdate`. The deletes are applied after this
+        // thread's own flush publishes: their ticket comes after its ticket,
+        // and Java's ticket queue does not make the applying thread wait for
+        // earlier tickets the way publishing in turn here does.
         if let Some(batch) = batch {
             self.complete_flush(batch)?;
+            flushed = true;
+        } else if self.check_pending_flush_on_update.load(Ordering::Relaxed) {
+            flushed |= self.flush_one_pending()?;
+        }
+        self.maybe_apply_all_deletes()?;
+        if flushed {
+            self.schedule_merges(MergeTrigger::SegmentFlush)?;
         }
         Ok(seq_no)
     }
@@ -556,11 +859,8 @@ impl<'d> ConcurrentIndexWriter<'d> {
             private: std::mem::take(&mut dwpt.private),
             ram_bytes: dwpt.ram_bytes,
         };
-        let moved = std::mem::take(&mut dwpt.ram_bytes);
-        self.update_ram(|ram| {
-            ram.active_bytes = ram.active_bytes.saturating_sub(moved);
-            ram.flush_bytes = ram.flush_bytes.saturating_add(moved);
-        });
+        dwpt.ram_bytes = 0;
+        self.update_ram(|c| c.checkout_for_flush(i));
         self.slices[i].store(EMPTY_SLOT, Ordering::Release);
         Some(batch)
     }
@@ -708,7 +1008,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         self.retire(core);
         // Published or abandoned, its buffer is gone either way
         // (`doAfterFlush`), panics included.
-        self.update_ram(|ram| ram.flush_bytes = ram.flush_bytes.saturating_sub(ram_bytes));
+        self.update_ram(|c| c.flush_done(ram_bytes));
         match outcome {
             Ok(Ok(result)) => result,
             Ok(Err(panic)) | Err(panic) => resume_unwind(panic),
@@ -791,8 +1091,11 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// Flushes every slot's buffer to a segment and waits until every segment
     /// ticketed so far is published -- `DocumentsWriter.flushAllThreads`.
     pub fn flush(&self) -> Result<()> {
-        let _full_flush = lock(&self.full_flush);
-        self.flush_all(false).map(|_| ())
+        {
+            let _full_flush = lock(&self.full_flush);
+            self.flush_all(false)?;
+        }
+        self.schedule_merges(MergeTrigger::FullFlush)
     }
 
     /// `IndexWriter.commit`: flushes every buffer, applies every delete issued
@@ -807,11 +1110,15 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// Java's does: every operation numbered at or below it is in, every one
     /// above it is not.
     pub fn commit(&self) -> Result<SeqNo> {
-        let _full_flush = lock(&self.full_flush);
-        let _barrier = BarrierGuard(self);
-        let last_seq = self.flush_all(true)?;
-        let mut core = lock(&self.core);
-        core.writer.commit()?;
+        let last_seq = {
+            let _full_flush = lock(&self.full_flush);
+            let _barrier = BarrierGuard(self);
+            let last_seq = self.flush_all(true)?;
+            let mut core = lock(&self.core);
+            core.writer.commit()?;
+            last_seq
+        };
+        self.schedule_merges(MergeTrigger::FullFlush)?;
         Ok(last_seq)
     }
 
@@ -822,7 +1129,15 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// a merged segment becomes durable with the next [`Self::commit`]. A
     /// merge abandoned because a source changed under it ends the round: it
     /// is proposed again next time, not straight away.
+    ///
+    /// With a merge scheduler ([`Self::with_merge_scheduler`]) the merges are
+    /// registered and handed to it instead, and `0` is returned: they run on
+    /// the scheduler's threads.
     pub fn maybe_merge(&self) -> Result<usize> {
+        if self.scheduler.is_some() {
+            self.schedule_merges(MergeTrigger::Explicit)?;
+            return Ok(0);
+        }
         let Some(policy) = &self.merge_policy else {
             return Ok(0);
         };
@@ -909,9 +1224,156 @@ impl<'d> ConcurrentIndexWriter<'d> {
         Ok(writer)
     }
 
+    /// `IndexWriter.tryDeleteDocument(reader, docID)`: see
+    /// [`IndexWriter::try_delete_document`]. Numbered from this writer's
+    /// log; `None` when the reader's segment is no longer in the writer.
+    pub fn try_delete_document(
+        &self,
+        reader_infos: &crate::segment_infos::SegmentInfos,
+        doc_id: i32,
+    ) -> Result<Option<SeqNo>> {
+        let done = lock(&self.core)
+            .writer
+            .try_delete_resolved(reader_infos, doc_id)?;
+        Ok(done.then(|| lock(&self.log).take_seq()))
+    }
+
+    /// `IndexWriter.tryUpdateDocValue(reader, docID, fields...)`: see
+    /// [`IndexWriter::try_update_doc_value`].
+    pub fn try_update_doc_value(
+        &self,
+        reader_infos: &crate::segment_infos::SegmentInfos,
+        doc_id: i32,
+        updates: &[DocValuesUpdate],
+    ) -> Result<Option<SeqNo>> {
+        let done = lock(&self.core)
+            .writer
+            .try_update_resolved(reader_infos, doc_id, updates)?;
+        Ok(done.then(|| lock(&self.log).take_seq()))
+    }
+
+    /// `IndexWriter.flushNextBuffer()`: flushes the slot holding the most
+    /// buffered RAM (by document count when RAM is not tracked) into a
+    /// segment, returning whether there was one to flush.
+    pub fn flush_next_buffer(&self) -> Result<bool> {
+        let largest = self
+            .slots
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let d = lock(s);
+                (i, (d.ram_bytes, d.docs.len()))
+            })
+            .filter(|(_, (_, docs))| *docs > 0)
+            .max_by_key(|(_, size)| *size)
+            .map(|(i, _)| i);
+        let Some(i) = largest else {
+            return Ok(false);
+        };
+        let batch = {
+            let mut dwpt = lock(&self.slots[i]);
+            self.begin_flush(i, &mut dwpt)
+        };
+        let Some(batch) = batch else {
+            return Ok(false);
+        };
+        self.complete_flush(batch)?;
+        self.schedule_merges(MergeTrigger::SegmentFlush)?;
+        Ok(true)
+    }
+
     /// Documents buffered in every slot, not yet in a segment.
     pub fn pending_doc_count(&self) -> usize {
         self.slots.iter().map(|s| lock(s).docs.len()).sum()
+    }
+}
+
+impl ConcurrentIndexWriter<'static> {
+    /// [`ConcurrentIndexWriter::new`] with `IndexWriterConfig.setMergeScheduler`:
+    /// merges are registered after every flush and commit (and by
+    /// [`Self::maybe_merge`]) and run as `scheduler` decides -- on the
+    /// indexing thread for a [`crate::merge_scheduler::SerialMergeScheduler`],
+    /// on a pool of merge threads, stalling indexing threads when merging
+    /// falls behind, for a [`crate::merge_scheduler::ConcurrentMergeScheduler`].
+    ///
+    /// The writer is returned in an `Arc` because the scheduler's threads
+    /// hold it while they merge, which is also why the directory must be
+    /// `'static`. [`Self::close_merges`] waits for them; after it,
+    /// `Arc::try_unwrap` gives the writer back for [`Self::into_writer`].
+    pub fn with_merge_scheduler(
+        writer: IndexWriter<'static>,
+        slots: usize,
+        scheduler: Arc<dyn MergeScheduler>,
+    ) -> Result<Arc<Self>> {
+        let mut w = Self::new(writer, slots)?;
+        Ok(Arc::new_cyclic(|me: &Weak<Self>| {
+            let source: Weak<dyn MergeSource> = me.clone();
+            w.scheduler = Some(SchedulerHook { scheduler, source });
+            w
+        }))
+    }
+}
+
+/// `DirectoryReader.open(IndexWriter)` over a concurrent writer: a full flush
+/// (every slot's buffer to a segment, every delete issued before it applied)
+/// and then the live segment list, pinned -- `IndexWriter.getReader`, which
+/// also flushes all threads and then `maybeMerge(GET_READER)`.
+impl<'d> crate::nrt::NrtSource for ConcurrentIndexWriter<'d> {
+    fn directory(&self) -> &dyn Directory {
+        self.dir
+    }
+
+    fn nrt_snapshot(
+        &self,
+        _apply_all_deletes: bool,
+        _write_all_deletes: bool,
+    ) -> Result<crate::nrt::NrtSnapshot> {
+        let snapshot = {
+            let _full_flush = lock(&self.full_flush);
+            self.flush_all(false)?;
+            lock(&self.core).writer.nrt_snapshot_of_live_view()?
+        };
+        self.schedule_merges(MergeTrigger::GetReader)?;
+        Ok(snapshot)
+    }
+
+    fn nrt_is_current(&self, infos: &crate::segment_infos::SegmentInfos) -> Result<bool> {
+        if self.pending_doc_count() > 0 {
+            return Ok(false);
+        }
+        {
+            let log = lock(&self.log);
+            if log.handed < log.end() {
+                return Ok(false);
+            }
+        }
+        Ok(lock(&self.core).writer.nrt_is_current(infos))
+    }
+}
+
+/// The writer as its scheduler sees it: `IndexWriter`'s own `MergeSource`.
+impl MergeSource for ConcurrentIndexWriter<'static> {
+    fn next_merge(&self) -> Option<Arc<ScheduledMerge>> {
+        self.pending_merges.pop()
+    }
+
+    fn on_merge_finished(&self, merge: &Arc<ScheduledMerge>) {
+        let mut core = lock(&self.core);
+        for name in &merge.segments {
+            core.merging.remove(name);
+        }
+    }
+
+    fn has_pending_merges(&self) -> bool {
+        !self.pending_merges.is_empty()
+    }
+
+    fn merge(
+        &self,
+        merge: &Arc<ScheduledMerge>,
+        limiter: Option<Arc<MergeRateLimiter>>,
+    ) -> Result<()> {
+        self.run_scheduled_merge(merge, limiter)
     }
 }
 
@@ -1008,6 +1470,7 @@ mod tests {
     use lucene_util::test_support::TempDir;
 
     use super::*;
+    use crate::index_writer::Error;
     use crate::segment_info::LuceneVersion;
     use crate::{deletes, segment_info, segment_infos};
 
@@ -1645,10 +2108,16 @@ mod tests {
     }
 
     /// `DocumentsWriterFlushControl.updateStallState` +
-    /// `DocumentsWriter.preUpdate`: while a flush is held mid-build and the
+    /// `DocumentsWriter.preUpdate`: while flushes are held mid-build and the
     /// slots keep filling, RAM in slots and flushes passes twice the buffer
-    /// and indexing stalls; another thread's add waits, and goes on once the
-    /// flush completes and lifts the stall. No document is lost.
+    /// and indexing stalls; the other threads' adds wait, and go on once the
+    /// flushes complete and lift the stall. No document is lost.
+    ///
+    /// Each flush is taken by the thread whose add reached the RAM buffer
+    /// (the largest slot, `FlushByRamOrCountsPolicy`) and holds that thread
+    /// at the gate, so three held flushes of about four documents each plus
+    /// nine documents in the slots pass the twenty-document stall limit
+    /// while the slots alone stay under it.
     #[test]
     fn indexing_stalls_while_flushing_falls_behind() {
         let tmp = TempDir::new("concurrent-stall");
@@ -1686,31 +2155,167 @@ mod tests {
         }
         std::thread::scope(|scope| {
             let _open = OpenOnDrop(&gated);
-            // One thread fills the slots in turn until one flushes -- and
-            // holds, the gate shut -- with the other two nearly full.
-            let filler = scope.spawn(|| {
-                for k in 0..28 {
-                    w.add_document(doc(&format!("t1x{k:02}"), 0)).unwrap();
-                }
-            });
-            eventually("the held flush stalls indexing", || {
+            let fillers: Vec<_> = (0..4)
+                .map(|t| {
+                    let w = &w;
+                    scope.spawn(move || {
+                        for k in 0..30 {
+                            w.add_document(doc(&format!("t{t}x{k:02}"), 0)).unwrap();
+                        }
+                    })
+                })
+                .collect();
+            eventually("the held flushes stall indexing", || {
                 w.stall_control().any_stalled_threads()
             });
-            let late = scope.spawn(|| w.add_document(doc("late", 0)).unwrap());
             eventually("a thread waits on the stall", || {
                 w.stall_control().has_blocked()
             });
-            assert!(!late.is_finished());
+            assert!(fillers.iter().any(|f| !f.is_finished()));
             gated.set_open(true);
-            late.join().unwrap();
-            filler.join().unwrap();
+            for f in fillers {
+                f.join().unwrap();
+            }
         });
         assert!(w.stall_control().was_stalled());
-        assert!(w.stall_control().is_healthy(), "the flush lifted the stall");
+        assert!(
+            w.stall_control().is_healthy(),
+            "the flushes lifted the stall"
+        );
         w.commit().unwrap();
         let (docs, _) = live_documents(&fs);
-        assert_eq!(docs.len(), 29);
-        assert!(docs.contains_key("late"));
+        assert_eq!(docs.len(), 120);
+    }
+
+    /// A concurrent writer flushing by RAM over three slots, the buffer
+    /// `docs` documents of `doc("t1x00", 0)`'s size, and no document limit.
+    fn ram_writer(dir: &FsDirectory, docs: usize) -> ConcurrentIndexWriter<'_> {
+        let mut single = writer(dir, 1_000_000);
+        let doc_bytes = document_ram_bytes(&doc("t1x00", 0));
+        single
+            .set_ram_buffer_size_mb((doc_bytes * docs) as f64 / (1024.0 * 1024.0))
+            .unwrap();
+        single.set_max_buffered_docs(DISABLE_AUTO_FLUSH).unwrap();
+        ConcurrentIndexWriter::new(single, 3).unwrap()
+    }
+
+    /// `FlushByRamOrCountsPolicy.markLargestWriterPending`: the RAM buffer
+    /// bounds every slot together, and reaching it flushes the slot holding
+    /// the most, not the one the last document went into. One thread fills
+    /// the slots in turn (4, 3, 3 documents): the tenth document fills the
+    /// buffer and the first slot, the largest, is flushed.
+    #[test]
+    fn the_ram_buffer_bounds_all_slots_and_flushes_the_largest() {
+        let tmp = TempDir::new("concurrent-largest");
+        let dir = FsDirectory::open(&tmp);
+        let w = ram_writer(&dir, 10);
+        for k in 0..9 {
+            w.add_document(doc(&format!("t1x{k:02}"), 0)).unwrap();
+        }
+        assert_eq!(w.pending_doc_count(), 9);
+        w.add_document(doc("t1x09", 0)).unwrap();
+        assert_eq!(w.pending_doc_count(), 6, "the four-document slot flushed");
+        let counts: Vec<usize> = w.slots.iter().map(|s| lock(s).docs.len()).collect();
+        assert_eq!(counts, [0, 3, 3]);
+        let ram = lock(&w.ram);
+        assert_eq!(ram.flush_bytes(), 0, "the flush is done");
+        assert_eq!(ram.num_pending(), 0);
+    }
+
+    /// `FlushByRamOrCountsPolicy`: a marked slot the add did not go into is
+    /// flushed by the adding thread (`postUpdate`'s `maybeFlush`) while
+    /// `checkPendingFlushOnUpdate` is on; with it off the slot stays marked
+    /// until a thread indexes into it.
+    #[test]
+    fn a_marked_slot_is_flushed_by_whoever_checks_pending_flushes() {
+        for check in [true, false] {
+            let tmp = TempDir::new("concurrent-pending");
+            let dir = FsDirectory::open(&tmp);
+            let w = ram_writer(&dir, 10);
+            w.set_check_pending_flush_on_update(check);
+            let big = Document {
+                fields: vec![
+                    StoredField {
+                        field_number: 0,
+                        value: FieldValue::String("big".into()),
+                    },
+                    StoredField {
+                        field_number: 1,
+                        value: FieldValue::String(
+                            "x".repeat(document_ram_bytes(&doc("t1x00", 0)) * 15 / 2),
+                        ),
+                    },
+                ],
+            };
+            // Slots 0, 1, 2 in turn; the big document (about 8.5 small ones)
+            // is the largest, and the buffer fills on the third add, into
+            // slot 2.
+            w.add_document(doc("a", 0)).unwrap();
+            w.add_document(big.clone()).unwrap();
+            w.add_document(doc("c", 0)).unwrap();
+            let counts: Vec<usize> = w.slots.iter().map(|s| lock(s).docs.len()).collect();
+            if check {
+                assert_eq!(counts, [1, 0, 1], "the adding thread flushed slot 1");
+                assert!(!w.any_pending());
+            } else {
+                assert_eq!(counts, [1, 1, 1], "slot 1 waits, marked");
+                assert!(w.pending[1].load(Ordering::Acquire));
+                // Slot 0 next: the marked RAM no longer counts, so nothing
+                // more is marked, and slot 1 still waits.
+                w.add_document(doc("d", 0)).unwrap();
+                let counts: Vec<usize> = w.slots.iter().map(|s| lock(s).docs.len()).collect();
+                assert_eq!(counts, [2, 1, 1]);
+                assert!(w.pending[1].load(Ordering::Acquire));
+                // Into slot 1: the thread indexing there flushes it.
+                w.add_document(doc("e", 0)).unwrap();
+                let counts: Vec<usize> = w.slots.iter().map(|s| lock(s).docs.len()).collect();
+                assert_eq!(counts, [2, 0, 1]);
+                assert!(!w.any_pending());
+            }
+            w.commit().unwrap();
+            let (docs, _) = live_documents(&dir);
+            assert_eq!(docs.len(), if check { 3 } else { 5 });
+        }
+    }
+
+    /// `FlushByRamOrCountsPolicy.flushDeletes` + `DocumentsWriter
+    /// .applyAllDeletes`: once buffered deletes alone reach the RAM buffer
+    /// they are applied to the published segments at once -- their `.liv`
+    /// written before any flush or commit -- and stop counting.
+    #[test]
+    fn deletes_over_the_ram_buffer_are_applied_without_a_flush() {
+        let tmp = TempDir::new("concurrent-delete-ram");
+        let dir = FsDirectory::open(&tmp);
+        let mut single = writer(&dir, 1_000_000);
+        for k in 0..20 {
+            single.add_document(doc(&format!("d{k:02}"), 0)).unwrap();
+        }
+        single.commit().unwrap();
+        let node = DeleteNode::terms(vec![Term::new("id", "d00")]);
+        // Three one-term deletes fill the buffer.
+        single
+            .set_ram_buffer_size_mb((node.ram_bytes() * 3) as f64 / (1024.0 * 1024.0))
+            .unwrap();
+        single.set_max_buffered_docs(DISABLE_AUTO_FLUSH).unwrap();
+        let w = ConcurrentIndexWriter::new(single, 2).unwrap();
+        let liv = || dir.list_all().unwrap().iter().any(|f| f.ends_with(".liv"));
+        w.delete_documents_by_term(&[Term::new("id", "d00")])
+            .unwrap();
+        w.delete_documents_by_term(&[Term::new("id", "d01")])
+            .unwrap();
+        assert!(!liv(), "two deletes are under the buffer");
+        assert_eq!(lock(&w.log).unhanded_bytes, node.ram_bytes() * 2);
+        w.delete_documents_by_term(&[Term::new("id", "d02")])
+            .unwrap();
+        assert!(liv(), "the third applied all three");
+        assert_eq!(lock(&w.log).unhanded_bytes, 0);
+        assert_eq!(lock(&w.ram).delete_bytes_used(), 0);
+        w.delete_documents_by_term(&[Term::new("id", "d03")])
+            .unwrap();
+        w.commit().unwrap();
+        let (docs, _) = live_documents(&dir);
+        assert_eq!(docs.len(), 16);
+        assert!(!docs.contains_key("d02") && docs.contains_key("d04"));
     }
 
     /// With no RAM buffer (flushing by document count) nothing ever stalls.
@@ -1793,6 +2398,55 @@ mod tests {
         assert_clean(&dir);
     }
 
+    /// `IndexWriter.deleteAll()` on the concurrent writer: committed,
+    /// flushed and buffered documents all go, deletes buffered before it
+    /// reach nothing added after it, a `MatchAllDocsQuery` delete is the
+    /// same operation, and a merge the scheduler had not started is dropped.
+    #[test]
+    fn delete_all_drops_every_segment_buffer_and_delete() {
+        let tmp = TempDir::new("concurrent-delete-all");
+        let dir = FsDirectory::open(&tmp);
+        let w = ConcurrentIndexWriter::new(writer(&dir, 3), 2).unwrap();
+        for k in 0..10 {
+            w.add_document(doc(&format!("a{k}"), 0)).unwrap();
+        }
+        w.commit().unwrap();
+        for k in 0..5 {
+            w.add_document(doc(&format!("b{k}"), 0)).unwrap();
+        }
+        w.delete_documents_by_term(&[Term::new("id", "c0")])
+            .unwrap();
+        assert!(w.pending_doc_count() > 0);
+        let before = w.add_document(doc("gone", 0)).unwrap();
+        let seq = w.delete_all().unwrap();
+        assert!(seq > before);
+        assert_eq!(w.pending_doc_count(), 0);
+        assert_eq!(lock(&w.log).nodes.len(), 0);
+        // Not durable yet.
+        assert_eq!(live_documents(&dir).0.len(), 10);
+        // "c0" was deleted before the delete-all: the new one survives.
+        w.add_document(doc("c0", 0)).unwrap();
+        w.add_document(doc("c1", 0)).unwrap();
+        w.commit().unwrap();
+        let (docs, _) = live_documents(&dir);
+        assert_eq!(docs.keys().collect::<Vec<_>>(), ["c0", "c1"]);
+        assert_clean(&dir);
+
+        // A merge registered for a scheduler but not taken is dropped.
+        lock(&w.core).merging.insert("_zz".into());
+        w.pending_merges
+            .push(Arc::new(ScheduledMerge::new(vec!["_zz".into()], 0)));
+        let seq2 = w
+            .delete_documents_by_query(&[DeleteQuery::MatchAll])
+            .unwrap();
+        assert!(seq2 > seq);
+        assert!(w.pending_merges.is_empty());
+        assert!(lock(&w.core).merging.is_empty());
+        w.commit().unwrap();
+        assert!(live_documents(&dir).0.is_empty());
+        assert_clean(&dir);
+    }
+
     /// Handing the writer back: pending work, a delete not yet applied, and
     /// sequence numbers that keep climbing across both hand-overs.
     #[test]
@@ -1807,10 +2461,6 @@ mod tests {
         w.delete_documents_by_term(&[Term::new("id", b"q".to_vec())])
             .unwrap();
         assert_eq!(w.pending_doc_count(), 1);
-        assert!(matches!(
-            w.delete_documents_by_query(&[DeleteQuery::MatchAll]),
-            Err(Error::ConcurrentUnsupported(_))
-        ));
         let mut single = w.into_writer().unwrap();
         let after = single.add_document(doc("r", 0)).unwrap();
         assert!(after > during + 1, "{after} after {during} and a delete");
@@ -1873,6 +2523,183 @@ mod tests {
         }
         assert!(merges > 50, "the policy must have merged: {merges}");
         w.commit().unwrap();
+        assert_clean(&dir);
+    }
+
+    /// A directory that lives for the rest of the test process -- what a
+    /// merge scheduler's threads need to hold the writer (the directory
+    /// itself is removed by its `TempDir` guard).
+    fn static_dir(tmp: &TempDir) -> &'static FsDirectory {
+        Box::leak(Box::new(FsDirectory::open(tmp)))
+    }
+
+    /// `ConcurrentMergeScheduler` behind the writer: merges are registered
+    /// after flushes and commits and run on merge threads while four threads
+    /// index; nothing here runs a merge itself. After `close_merges` the
+    /// writer can be taken back out of its `Arc`.
+    #[test]
+    fn a_concurrent_merge_scheduler_merges_while_threads_index() {
+        let tmp = TempDir::new("concurrent-cms");
+        let dir = static_dir(&tmp);
+        let cms = crate::merge_scheduler::ConcurrentMergeScheduler::new();
+        cms.set_max_merges_and_threads(3, 2).unwrap();
+        let w =
+            ConcurrentIndexWriter::with_merge_scheduler(writer(dir, 7), 4, Arc::new(cms.clone()))
+                .unwrap();
+        std::thread::scope(|scope| {
+            for t in 0..4 {
+                let w = &w;
+                scope.spawn(move || {
+                    for i in 0..400 {
+                        w.add_document(doc(&format!("t{t}x{i}"), 0)).unwrap();
+                        if i % 61 == 0 {
+                            w.commit().unwrap();
+                        }
+                    }
+                });
+            }
+        });
+        w.commit().unwrap();
+        assert_eq!(w.maybe_merge().unwrap(), 0, "merges are the scheduler's");
+        w.close_merges().unwrap();
+        assert_eq!(cms.merge_thread_count(), 0);
+        w.commit().unwrap();
+        let (docs, segments) = live_documents(dir);
+        assert_eq!(docs.len(), 1600);
+        assert!(
+            segments < 1600 / 7 / 2,
+            "{segments} segments: the scheduler merged too little"
+        );
+        assert_clean(dir);
+        let w = Arc::try_unwrap(w)
+            .ok()
+            .expect("no merge thread still holds the writer");
+        let mut single = w.into_writer().unwrap();
+        single.commit().unwrap();
+    }
+
+    /// `SerialMergeScheduler` behind the writer: a commit's merges run on the
+    /// committing thread before `commit` returns.
+    #[test]
+    fn a_serial_merge_scheduler_merges_on_the_committing_thread() {
+        let tmp = TempDir::new("concurrent-serial");
+        let dir = static_dir(&tmp);
+        let w = ConcurrentIndexWriter::with_merge_scheduler(
+            writer(dir, 5),
+            1,
+            Arc::new(crate::merge_scheduler::SerialMergeScheduler::new()),
+        )
+        .unwrap();
+        for i in 0..60 {
+            w.add_document(doc(&format!("d{i}"), 0)).unwrap();
+            if i % 5 == 4 {
+                w.commit().unwrap();
+            }
+        }
+        // Twelve flushed segments, merged by the commits themselves.
+        let merged = lock(&w.core).writer.segment_infos().segments.len();
+        assert!(merged < 12, "{merged} segments: nothing was merged");
+        w.close_merges().unwrap();
+        w.commit().unwrap();
+        assert_eq!(live_documents(dir).0.len(), 60);
+        assert_clean(dir);
+
+        // Without a policy, a scheduler has nothing to do.
+        let tmp2 = TempDir::new("concurrent-serial-nopolicy");
+        let dir2 = static_dir(&tmp2);
+        let mut plain = writer(dir2, 5);
+        plain.set_merge_policy(None);
+        let w = ConcurrentIndexWriter::with_merge_scheduler(
+            plain,
+            1,
+            Arc::new(crate::merge_scheduler::SerialMergeScheduler::new()),
+        )
+        .unwrap();
+        for i in 0..20 {
+            w.add_document(doc(&format!("d{i}"), 0)).unwrap();
+        }
+        w.commit().unwrap();
+        w.flush().unwrap();
+        assert_eq!(w.maybe_merge().unwrap(), 0);
+        w.close_merges().unwrap();
+        assert_eq!(lock(&w.core).writer.segment_infos().segments.len(), 4);
+    }
+
+    /// `onMergeFinished` releases a merge the scheduler took but will not
+    /// run, and a writer with no scheduler has nothing to close.
+    #[test]
+    fn a_merge_the_scheduler_gives_back_releases_its_segments() {
+        let tmp = TempDir::new("concurrent-sched-release");
+        let dir = static_dir(&tmp);
+        let w = ConcurrentIndexWriter::with_merge_scheduler(
+            writer(dir, 5),
+            1,
+            Arc::new(crate::merge_scheduler::NoMergeScheduler),
+        )
+        .unwrap();
+        for i in 0..40 {
+            w.add_document(doc(&format!("d{i}"), 0)).unwrap();
+            if i % 5 == 4 {
+                w.commit().unwrap();
+            }
+        }
+        // `NoMergeScheduler` leaves what the commits registered pending.
+        assert!(w.has_pending_merges());
+        let merge = w.next_merge().expect("a registered merge");
+        assert!(merge
+            .segments
+            .iter()
+            .all(|n| lock(&w.core).merging.contains(n)));
+        w.on_merge_finished(&merge);
+        assert!(merge
+            .segments
+            .iter()
+            .all(|n| !lock(&w.core).merging.contains(n)));
+
+        let tmp2 = TempDir::new("concurrent-no-sched");
+        let dir2 = FsDirectory::open(&tmp2);
+        let plain = ConcurrentIndexWriter::new(writer(&dir2, 5), 1).unwrap();
+        plain.close_merges().unwrap();
+    }
+
+    /// `flushNextBuffer` takes the fullest slot; `tryDeleteDocument` and
+    /// `tryUpdateDocValue` act on a snapshot's doc ids and are numbered from
+    /// this writer's log.
+    #[test]
+    fn flush_next_buffer_and_try_delete_by_doc_id() {
+        use crate::nrt::NrtSource;
+        let tmp = TempDir::new("concurrent-try");
+        let dir = FsDirectory::open(&tmp);
+        let w = ConcurrentIndexWriter::new(writer(&dir, 1000), 2).unwrap();
+        assert!(!w.flush_next_buffer().unwrap());
+        for i in 0..3 {
+            w.add_document(doc(&format!("a{i}"), 0)).unwrap();
+        }
+        // Round-robin over two slots: the fuller one (two documents) goes
+        // first, then the other.
+        assert!(w.flush_next_buffer().unwrap());
+        assert_eq!(w.pending_doc_count(), 1);
+        assert!(w.flush_next_buffer().unwrap());
+        assert_eq!(w.pending_doc_count(), 0);
+        let snap = w.nrt_snapshot(true, false).unwrap();
+        let before = lock(&w.log).next_seq;
+        let seq = w.try_delete_document(&snap.segment_infos, 1).unwrap();
+        assert_eq!(seq, Some(before));
+        let update = DocValuesUpdate::Numeric {
+            term: Term::new("", ""),
+            field: "id".into(),
+            value: Some(1),
+        };
+        // `id` has no doc values: refused before anything is written.
+        assert!(w
+            .try_update_doc_value(&snap.segment_infos, 0, &[update])
+            .is_err());
+        w.commit().unwrap();
+        let (docs, _) = live_documents(&dir);
+        assert_eq!(docs.len(), 2);
+        // Doc 1 of the snapshot is the second of the first segment flushed,
+        // which (round-robin, fuller slot first) holds a0 and a2.
+        assert!(!docs.contains_key("a2"), "{docs:?}");
         assert_clean(&dir);
     }
 }

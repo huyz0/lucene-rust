@@ -234,10 +234,7 @@ fn our_comparator_reproduces_lucenes_order_from_lucenes_own_columns() {
         .collect();
 
     let columns = [&ranks, &multi, &name_ords];
-    let cmps: Vec<SortKeyComparator> = sort
-        .iter()
-        .map(|sf| SortKeyComparator::new(sf).expect("every tier here has a single-i64 key"))
-        .collect();
+    let cmps: Vec<SortKeyComparator> = sort.iter().map(SortKeyComparator::new).collect();
 
     for doc in 1..max_doc {
         let mut ordering = std::cmp::Ordering::Equal;

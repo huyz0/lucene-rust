@@ -328,14 +328,14 @@ index/ByteSlicePool	ported	crates/lucene-index/src/inverter.rs::FieldInverter
 index/ByteSliceReader	ported	crates/lucene-index/src/inverter.rs::FieldInverter
 index/ByteVectorValues	ported	crates/lucene-codecs/src/vectors.rs::ByteVectorValues
 index/CachingMergeContext	not-needed	memoizes MergeContext.numDeletesToMerge during one merge selection; a pure caching wrapper with no behaviour of its own.
-index/CheckIndex	partial	crates/lucene-index/src/check_index.rs::check_directory -- M7: per parity.md: `checkImpacts` and `checkDocIDRuns` not written; doc-values generation columns of an updated segment are checksummed but their contents not decoded (except the soft-deletes field); no `-exorcise` repair mode
+index/CheckIndex	partial	crates/lucene-index/src/check_index.rs::check_directory -- M7: per parity.md: doc-values generation columns of an updated segment are checksummed but their contents not decoded (except the soft-deletes field)
 index/CodecReader	ported	crates/lucene-search/src/reader/mod.rs::CodecReader
 index/CompositeReader	ported	crates/lucene-search/src/reader/mod.rs::CompositeReader
 index/CompositeReaderContext	ported	crates/lucene-search/src/directory_reader.rs::segment_readers
 index/ConcurrentApproximatePriorityQueue	not-needed	lock-striped variant of ApproximatePriorityQueue inside the DWPT pool; Rust slot selection needs no such queue (no user-visible behaviour).
-index/ConcurrentMergeScheduler	partial	crates/lucene-index/src/concurrent_writer.rs::run_merges -- M7: merges run on the caller thread (`run_merges`) or inside `commit`; no merge thread pool (maxThreadCount/maxMergeCount), no merge stalling, no auto IO throttle, no intra-merge executor
+index/ConcurrentMergeScheduler	ported	crates/lucene-index/src/merge_scheduler.rs::ConcurrentMergeScheduler
 index/CorruptIndexException	ported	crates/lucene-store/src/error.rs::Corrupted
-index/DirectoryReader	partial	crates/lucene-search/src/directory_reader.rs::DirectoryReader -- M7: writer side: no NRT open from a live Rust `IndexWriter` (`DirectoryReader.open(writer)`, `openIfChanged(reader, writer)`; uncommitted segments invisible until `commit`)
+index/DirectoryReader	ported	crates/lucene-search/src/directory_reader.rs::DirectoryReader
 index/DocIDMerger	ported	crates/lucene-index/src/merge.rs::merge_segments
 index/DocValues	ported	crates/lucene-search/src/directory_reader.rs::doc_values_for_field
 index/DocValuesFieldUpdates	ported	crates/lucene-index/src/field_updates.rs::write_field_updates
@@ -347,9 +347,9 @@ index/DocValuesType	ported	crates/lucene-codecs/src/field_infos.rs::DocValuesTyp
 index/DocValuesUpdate	ported	crates/lucene-index/src/buffered_updates.rs::DocValuesUpdate
 index/DocValuesWriter	ported	crates/lucene-index/src/index_writer.rs::build_doc_values_output
 index/DocsWithFieldSet	not-needed	internal doc-id set the per-field in-RAM writers use to remember which docs had a value; the Rust build_*_output functions track presence inline.
-index/DocumentsWriter	partial	crates/lucene-index/src/concurrent_writer.rs::ConcurrentIndexWriter -- M7: per parity.md: not ported `deleteAll`, vectors and custom-frequency postings on the concurrent path (use `into_writer`), flushing on delete RAM
+index/DocumentsWriter	partial	crates/lucene-index/src/concurrent_writer.rs::ConcurrentIndexWriter -- M7: per parity.md: not ported vectors and custom-frequency postings on the concurrent path (use `into_writer`)
 index/DocumentsWriterDeleteQueue	ported	crates/lucene-index/src/buffered_updates.rs::DeleteQueue
-index/DocumentsWriterFlushControl	partial	crates/lucene-index/src/concurrent_writer.rs::ConcurrentIndexWriter -- M7: per parity.md: no flush-by-RAM across slots (`FlushByRamOrCountsPolicy` picking the largest DWPT), no flushing on delete RAM
+index/DocumentsWriterFlushControl	ported	crates/lucene-index/src/flush_policy.rs::FlushControl
 index/DocumentsWriterFlushQueue	ported	crates/lucene-index/src/index_writer.rs::SegmentTicket
 index/DocumentsWriterPerThread	ported	crates/lucene-index/src/index_writer.rs::DocumentBuffer
 index/DocumentsWriterPerThreadPool	ported	crates/lucene-index/src/concurrent_writer.rs::ConcurrentIndexWriter
@@ -373,8 +373,8 @@ index/FilterSortedNumericDocValues	ported	crates/lucene-search/src/reader/filter
 index/FilterSortedSetDocValues	ported	crates/lucene-search/src/reader/filter.rs::FilterSortedSetDocValues
 index/FilteredTermsEnum	ported	crates/lucene-search/src/reader/filtered_terms_enum.rs::FilteredTermsEnum
 index/FloatVectorValues	ported	crates/lucene-codecs/src/vectors.rs::FloatVectorValues
-index/FlushByRamOrCountsPolicy	partial	crates/lucene-index/src/index_writer.rs::set_ram_buffer_size_mb -- M7: per parity.md: each concurrent slot flushes on its own count or RAM; no flush of the largest DWPT across slots, no flush on delete RAM
-index/FlushPolicy	partial	crates/lucene-index/src/index_writer.rs::set_ram_buffer_size_mb -- M7: only the RAM/doc-count policy exists; no pluggable flush policy, no cross-slot or delete-RAM flushing
+index/FlushByRamOrCountsPolicy	ported	crates/lucene-index/src/flush_policy.rs::FlushByRamOrCountsPolicy
+index/FlushPolicy	ported	crates/lucene-index/src/flush_policy.rs::FlushPolicy
 index/FreqAndNormBuffer	ported	crates/lucene-codecs/src/postings.rs::decode_impacts_into
 index/FreqProxFields	ported	crates/lucene-index/src/inverter.rs::into_term_postings
 index/FreqProxTermsWriter	ported	crates/lucene-index/src/inverter.rs::FieldInverter
@@ -393,21 +393,21 @@ index/IndexNotFoundException	ported	crates/lucene-store/src/directory.rs::read_l
 index/IndexOptions	ported	crates/lucene-codecs/src/field_infos.rs::IndexOptions
 index/IndexReader	ported	crates/lucene-search/src/reader/mod.rs::IndexReader
 index/IndexReaderContext	ported	crates/lucene-search/src/multi_segment.rs::OpenSegment
-index/IndexSorter	partial	crates/lucene-index/src/segment_info.rs::SortKeyComparator -- M7: per parity.md: the writer sorts only NUMERIC/SORTED_NUMERIC keys; `STRING`/`SortedSetSortField`/`BinarySortField` index sorts are refused with `Error::UnsupportedIndexSortKind`
+index/IndexSorter	ported	crates/lucene-index/src/index_sorter.rs::read_segment_terms
 index/IndexUpgrader	ported	crates/lucene-index/src/index_upgrader.rs::IndexUpgrader
-index/IndexWriter	partial	crates/lucene-index/src/index_writer.rs::IndexWriter -- M7: per parity.md: not ported `tryDeleteDocument`, `tryUpdateDocValue`, `addIndexes` (both overloads), `addBatch`/`ColumnBatch` updates, NRT readers from the writer (`DirectoryReader.open(writer)`), `maybeMerge` and a merge scheduler, `flushNextBuffer`, `infoStream`, writing compound segments
-index/IndexWriterConfig	partial	crates/lucene-index/src/index_writer.rs::set_index_sort -- M7: settings are writer setters (`setSimilarity` is `IndexWriter::set_similarity`, norms via `NormSimilarity`); missing `STRING`/`SortedSet`/`Binary` index sorts, `setUseCompoundFile` (compound segments not written), codec/per-field format choice, `MergeScheduler`, `IndexWriterEventListener`, `infoStream`, `leafSorter`, `commitOnClose`
+index/IndexWriter	partial	crates/lucene-index/src/index_writer.rs::IndexWriter -- M7: writing compound segments comes with the codec writers' change (row `codecs/lucene90/Lucene90CompoundFormat`); every other operation is ported (parity.md)
+index/IndexWriterConfig	partial	crates/lucene-index/src/index_writer.rs::set_index_sort -- M7: settings are writer setters (`setSimilarity` is `IndexWriter::set_similarity`, norms via `NormSimilarity`); missing codec and per-field format choice (T7.5). `IndexWriterEventListener` and `infoStream` are not needed (rows `index/IndexWriterEventListener`, `util/InfoStream`); `leafSorter` is `DirectoryReader::with_leaf_sorter`, `commitOnClose` is `IndexWriter::set_commit_on_close`
 index/IndexWriterEventListener	not-needed	callback hook for merge begin/end events used for metrics and tests; no effect on the index.
-index/IndexableField	partial	crates/lucene-index/src/index_writer/explicit.rs::ExplicitDocument -- M7: no `IndexableField` abstraction: fields are configured per writer (`set_*_field`/`add_*_field`) or arrive pre-inverted; the document field-type API is M7 T7.2
-index/IndexableFieldType	partial	crates/lucene-codecs/src/field_infos.rs::FieldInfo -- M7: field properties exist only as the writer's per-field `FieldInfo` schema; no per-field-instance type descriptor of the document API (M7 T7.2)
-index/IndexingChain	partial	crates/lucene-index/src/indexing_chain.rs::invert_documents -- M7: `maybeSortSegment` handles only NUMERIC/SORTED_NUMERIC index sorts (`STRING`/`SortedSet`/`Binary` refused with `Error::UnsupportedIndexSortKind`); a PayloadAttribute or TermFrequencyAttribute a TokenFilter sets is not read by the inverter (payloads still come from BoxedPayloadSource, custom frequencies from add_document_with_custom_freq_terms)
+index/IndexableField	ported	crates/lucene-index/src/document/mod.rs::IndexableField
+index/IndexableFieldType	ported	crates/lucene-index/src/document/mod.rs::FieldType
+index/IndexingChain	partial	crates/lucene-index/src/indexing_chain.rs::invert_documents -- M7: a PayloadAttribute or TermFrequencyAttribute a TokenFilter sets is not read by the inverter (payloads still come from BoxedPayloadSource, custom frequencies from add_document_with_custom_freq_terms)
 index/KeepLastNCommitsDeletionPolicy	ported	crates/lucene-index/src/deletion_policy.rs::KeepLastNCommitsDeletionPolicy
 index/KeepOnlyLastCommitDeletionPolicy	ported	crates/lucene-index/src/deletion_policy.rs::KeepOnlyLastCommitDeletionPolicy
 index/KnnVectorValues	ported	crates/lucene-codecs/src/vectors.rs::FloatVectorValues
 index/LeafMetaData	ported	crates/lucene-index/src/segment_info.rs::SegmentInfo
 index/LeafReader	ported	crates/lucene-search/src/reader/mod.rs::LeafReader
 index/LeafReaderContext	ported	crates/lucene-search/src/reader/mod.rs::LeafReaderContext
-index/LiveIndexWriterConfig	partial	crates/lucene-index/src/index_writer.rs::set_ram_buffer_size_mb -- M7: RAM buffer, max buffered docs and merge policy are live-settable; no `setUseCompoundFile`, merged-segment warmer, `maxFullFlushMergeWaitMillis` (merge-on-commit) or `checkPendingFlushOnUpdate`
+index/LiveIndexWriterConfig	partial	crates/lucene-index/src/index_writer.rs::set_ram_buffer_size_mb -- M7: RAM buffer, max buffered docs, merge policy and the merged-segment warmer are live-settable; no `setUseCompoundFile` (compound segments come with the codec writers' change), or `maxFullFlushMergeWaitMillis` (merge-on-commit); `checkPendingFlushOnUpdate` is `ConcurrentIndexWriter::set_check_pending_flush_on_update`
 index/LockableConcurrentApproximatePriorityQueue	not-needed	lock-holding queue of idle DWPTs inside DocumentsWriterPerThreadPool; Rust slots are Mutex-guarded buffers (no user-visible behaviour).
 index/LogByteSizeMergePolicy	ported	crates/lucene-index/src/merge_policy/log.rs::LogByteSizeMergePolicy
 index/LogDocMergePolicy	ported	crates/lucene-index/src/merge_policy/log.rs::LogDocMergePolicy
@@ -416,13 +416,13 @@ index/MappedMultiFields	ported	crates/lucene-index/src/merge.rs::merge_postings
 index/MappingMultiPostingsEnum	ported	crates/lucene-index/src/merge.rs::merge_postings
 index/MergePolicy	partial	crates/lucene-index/src/merge_policy/api.rs::MergePolicy -- M7: `OneMerge.reorder`/`wrapForMerge` exist only as the reader-side `crates/lucene-search/src/reader/merge_readers.rs::MergeReaderHooks` (they take `CodecReader`s, which lucene-index cannot see); the lucene-index merge does not read through them (writer side), and `OneMerge` itself carries neither (a `OneMergeWrappingMergePolicy` wrapper rewrites the merge itself), and no `infoStream` messages
 index/MergeRateLimiter	ported	crates/lucene-index/src/merge_rate_limiter.rs::MergeRateLimiter
-index/MergeScheduler	partial	crates/lucene-index/src/concurrent_writer.rs::run_merges -- M7: no pluggable scheduler: merges run synchronously inside `commit`/`force_merge` or on the thread calling `run_merges`
+index/MergeScheduler	ported	crates/lucene-index/src/merge_scheduler.rs::MergeScheduler
 index/MergeState	ported	crates/lucene-index/src/merge.rs::build_doc_id_maps
 index/MergeTrigger	ported	crates/lucene-index/src/merge_policy/api.rs::MergeTrigger
 index/MultiBits	ported	crates/lucene-search/src/multi_bits.rs::MultiBits
 index/MultiDocValues	ported	crates/lucene-search/src/reader/multi_doc_values.rs::MultiSortedSetDocValues
 index/MultiFields	ported	crates/lucene-search/src/multi_terms.rs::indexed_fields
-index/MultiIndexMergeScheduler	todo:M7	merge scheduling shared across several indexes (multi-tenant)
+index/MultiIndexMergeScheduler	ported	crates/lucene-index/src/merge_scheduler.rs::MultiIndexMergeScheduler
 index/MultiLeafReader	not-needed	an empty class in 10.5.0 (private constructor, no members); the leaf-style helpers over a composite are FieldInfos.getMergedFieldInfos, MultiBits, MultiTerms and MultiDocValues, ported as lucene-search reader::merged_field_infos, multi_bits, multi_terms and reader::multi_doc_values.
 index/MultiPostingsEnum	ported	crates/lucene-search/src/multi_terms.rs::MultiPostingsEnum
 index/MultiReader	ported	crates/lucene-search/src/reader/multi_reader.rs::MultiReader
@@ -431,7 +431,7 @@ index/MultiTerms	ported	crates/lucene-search/src/multi_terms.rs::MultiTerms
 index/MultiTermsEnum	ported	crates/lucene-search/src/multi_terms.rs::MultiTermsEnum
 index/NoDeletionPolicy	ported	crates/lucene-index/src/deletion_policy.rs::NoDeletionPolicy
 index/NoMergePolicy	ported	crates/lucene-index/src/merge_policy/api.rs::NoMergePolicy
-index/NoMergeScheduler	ported	crates/lucene-index/src/index_writer.rs::set_merge_policy
+index/NoMergeScheduler	ported	crates/lucene-index/src/merge_scheduler.rs::NoMergeScheduler
 index/NormValuesWriter	ported	crates/lucene-index/src/index_writer.rs::build_norms_output
 index/NumericDocValues	ported	crates/lucene-codecs/src/doc_values.rs::NumericReader
 index/NumericDocValuesFieldUpdates	ported	crates/lucene-index/src/field_updates.rs::NumericFieldUpdates
@@ -451,8 +451,8 @@ index/PostingsEnum	ported	crates/lucene-codecs/src/postings.rs::LazyDocsCursor
 index/PrefixCodedTerms	ported	crates/lucene-index/src/buffered_updates.rs::FrozenBufferedUpdates
 index/QueryTimeout	ported	crates/lucene-search/src/reader/exitable.rs::QueryTimeout
 index/QueryTimeoutImpl	ported	crates/lucene-search/src/reader/exitable.rs::QueryTimeoutImpl
-index/ReaderManager	partial	crates/lucene-search/src/reader_manager.rs::ReaderManager -- M7: writer side: no `ReaderManager(IndexWriter)` (no NRT reader over a live writer)
-index/ReaderPool	partial	crates/lucene-index/src/index_writer.rs::open_segment_for_deletes -- M7: segments are opened per delete/update application; no pooled `ReadersAndUpdates` shared with NRT readers (`DirectoryReader.open(writer)` not ported)
+index/ReaderManager	ported	crates/lucene-search/src/reader_manager.rs::ReaderManager
+index/ReaderPool	ported	crates/lucene-index/src/reader_pool.rs::ReaderPool
 index/ReaderSlice	not-needed	plain (start, length, readerIndex) record for composite-reader plumbing; Rust carries a doc_base per segment (multi_segment::OpenSegment).
 index/ReaderUtil	not-needed	@lucene.internal helpers for walking IndexReaderContext trees (subIndex, getTopLevelContext); Rust addresses segments by index with an explicit doc_base.
 index/ReadersAndUpdates	ported	crates/lucene-index/src/field_updates.rs::write_field_updates
@@ -467,7 +467,7 @@ index/SegmentOrder	ported	crates/lucene-search/src/segment_order.rs::SegmentOrde
 index/SegmentReadState	not-needed	parameter bundle passed to codec readers; Rust passes the directory, segment info and field infos directly.
 index/SegmentReader	ported	crates/lucene-search/src/directory_reader.rs::SegmentReader
 index/SegmentWriteState	not-needed	parameter bundle passed to codec writers; Rust passes segment name, suffix and field infos directly.
-index/SerialMergeScheduler	ported	crates/lucene-index/src/index_writer.rs::run_merge
+index/SerialMergeScheduler	ported	crates/lucene-index/src/merge_scheduler.rs::SerialMergeScheduler
 index/SharedIndexingScratch	not-needed	lazily allocated scratch buffers shared by IndexingChain's per-field writers; allocation detail only.
 index/SimpleMergedSegmentWarmer	not-needed	NRT merged-segment warmer that only touches data structures to prime caches; no effect on results (and no NRT-from-writer here).
 index/SingleTermsEnum	ported	crates/lucene-codecs/src/blocktree.rs::seek_exact
@@ -479,7 +479,7 @@ index/SlowImpactsEnum	ported	crates/lucene-search/src/reader/mod.rs::SlowImpacts
 index/SnapshotDeletionPolicy	ported	crates/lucene-index/src/deletion_policy.rs::SnapshotDeletionPolicy
 index/SoftDeletesDirectoryReaderWrapper	ported	crates/lucene-search/src/soft_deletes.rs::effective_live_docs
 index/SoftDeletesRetentionMergePolicy	ported	crates/lucene-index/src/index_writer.rs::SoftDeletesRetention
-index/SortFieldProvider	partial	crates/lucene-index/src/segment_info.rs::read_sort_field -- M7: all four providers are read; the writer emits only provider `SortField` with type `LONG` (numeric index sorts)
+index/SortFieldProvider	ported	crates/lucene-index/src/segment_info.rs::read_sort_field
 index/SortedDocValues	ported	crates/lucene-codecs/src/doc_values.rs::sorted_ord
 index/SortedDocValuesTermsEnum	ported	crates/lucene-codecs/src/terms_dict.rs::TermsCursor
 index/SortedDocValuesWriter	ported	crates/lucene-index/src/index_writer.rs::build_sorted_doc_values_output
@@ -488,11 +488,11 @@ index/SortedNumericDocValuesWriter	ported	crates/lucene-index/src/index_writer.r
 index/SortedSetDocValues	ported	crates/lucene-codecs/src/doc_values.rs::SortedSetEntry
 index/SortedSetDocValuesTermsEnum	ported	crates/lucene-codecs/src/terms_dict.rs::TermsCursor
 index/SortedSetDocValuesWriter	ported	crates/lucene-index/src/index_writer.rs::build_sorted_set_doc_values_output
-index/Sorter	partial	crates/lucene-index/src/segment_writer.rs::sort_permutation -- M7: `Sorter.DocMap` over NUMERIC/SORTED_NUMERIC keys only; `STRING`/`SortedSet`/`Binary` index sorts refused (`Error::UnsupportedIndexSortKind`)
+index/Sorter	ported	crates/lucene-index/src/segment_writer.rs::sort_permutation
 index/SortingCodecReader	ported	crates/lucene-search/src/reader/sorting.rs::SortingCodecReader
 index/SortingStoredFieldsConsumer	ported	crates/lucene-index/src/segment_writer.rs::permute_in_place
 index/SortingTermVectorsConsumer	ported	crates/lucene-index/src/segment_writer.rs::permute_in_place
-index/StandardDirectoryReader	partial	crates/lucene-search/src/directory_reader.rs::reopen_at -- M7: writer side: no NRT reader from a live Rust `IndexWriter`; no `ReaderPool`-wide sharing of segment readers between readers (parity.md)
+index/StandardDirectoryReader	ported	crates/lucene-search/src/nrt_reader.rs::open_nrt
 index/StoredFieldDataInput	not-needed	lazy DataInput view handed to a StoredFieldVisitor; Rust visitors receive the decoded bytes.
 index/StoredFieldVisitor	ported	crates/lucene-codecs/src/stored_fields.rs::StoredFieldVisitor
 index/StoredFields	ported	crates/lucene-search/src/directory_reader.rs::stored_document
@@ -582,7 +582,7 @@ search/AutomatonQuery	ported	crates/lucene-search/src/extended_query.rs::Automat
 search/BatchScoreBulkScorer	ported	crates/lucene-search/src/bulk_scorer.rs::score_term
 search/BayesianScoreEstimator	ported	crates/lucene-search/src/bayesian_estimator.rs::estimate
 search/BayesianScoreQuery	ported	crates/lucene-search/src/extended_query.rs::BayesianScoreQuery
-search/BinarySortField	partial	crates/lucene-search/src/top_field.rs::SortField -- M7: search-time sort ported (SortField::binary, TermValComparator); the writer applies numeric index sorts only (IndexSorter.BinarySorter), and index-sort (de)serialization lives in crates/lucene-index/src/segment_info.rs::PROVIDER_BINARY
+search/BinarySortField	ported	crates/lucene-search/src/top_field.rs::SortField
 search/BitSetDocIdStream	ported	crates/lucene-search/src/exec/mod.rs::constant_bits
 search/BlendedTermQuery	ported	crates/lucene-search/src/extended_query.rs::BlendedTermQuery
 search/BlockMaxConjunctionBulkScorer	ported	crates/lucene-search/src/bulk_scorer.rs::ConjunctionBulk
@@ -747,7 +747,7 @@ search/ScorerUtil	ported	crates/lucene-search/src/exec/wand.rs::cost_with_min_sh
 search/ScoringRewrite	ported	crates/lucene-search/src/exec/extended.rs::rewrite_multi_term
 search/SearcherFactory	ported	crates/lucene-search/src/reference_manager.rs::SearcherFactory
 search/SearcherLifetimeManager	ported	crates/lucene-search/src/reference_manager.rs::SearcherLifetimeManager
-search/SearcherManager	partial	crates/lucene-search/src/reference_manager.rs::SearcherManager -- M7: the IndexWriter constructors (DirectoryReader.open(writer, applyAllDeletes, writeAllDeletes)) are not ported: this port's IndexWriter has no NRT reader, so a SearcherManager refreshes from the directory's commits
+search/SearcherManager	ported	crates/lucene-search/src/reference_manager.rs::SearcherManager
 search/SeededKnnVectorQuery	ported	crates/lucene-search/src/vector_query.rs::search_seeded_knn_float_vector_query_multi_segment
 search/SegmentCacheable	ported	crates/lucene-search/src/segment_cacheable.rs::is_cacheable
 search/SimpleCollector	ported	crates/lucene-search/src/collector.rs::ScoringCollector

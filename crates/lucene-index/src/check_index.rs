@@ -261,9 +261,10 @@
 //! - **`testTermVectors` never cross-checked a vector against the inverted
 //!   index** (`term_vectors.self_consistent`, `.match_postings`).
 //!
-//! **Still out of scope**: `checkImpacts`/`checkDocIDRuns` (this port has no
-//! separate `ImpactsEnum` and no `docIDRunEnd` for the postings enum to
-//! disagree with -- see [`check_postings`]). Compound (`.cfs`) segments,
+//! `checkImpacts` and `checkDocIDRuns` run over the lazy postings cursor's
+//! `advance_shallow`, per-level impacts and `doc_id_run_end`
+//! (`postings.impacts:<f>`, `postings.doc_id_runs:<f>`), against the term's
+//! fully decoded doc list. Compound (`.cfs`) segments,
 //! which this module used to skip, are checked through
 //! [`crate::compound_reader::CompoundReader`] like any other (M4 T4.6).
 //! A previous version of this list also named the `Float16` vector encoding:
@@ -873,6 +874,78 @@ pub fn check_directory(dir: &dyn Directory) -> segment_infos::Result<Vec<CheckRe
             .push(Check::pass("commit.total_max_doc_within_bounds"));
     }
     Ok(results)
+}
+
+/// `CheckIndex.exorciseIndex(status)` (`-exorcise`): writes the next
+/// `segments_N` holding only the segments `results` -- a
+/// [`check_directory`] of `dir`'s latest commit -- found sound, so every
+/// document of a broken segment is lost and the rest of the index opens.
+/// Returns the new commit's file name, or `None` when no segment is broken
+/// and nothing is written (Java's "No problems were detected").
+///
+/// As Java's: under the index's write lock (`CheckIndex` holds it for its
+/// whole life), the commit is the latest one read again, its version bumped
+/// (`changed()`), and its segment counter moved past every remaining name
+/// when the check found it behind (`newSegments.counter = maxSegmentName +
+/// 1`). The dropped segments' files are left for the next writer's deleter.
+///
+/// # Errors
+/// `results` does not describe `dir`'s latest commit (a different
+/// commit, or a subset -- Java's "can only exorcise an index that was fully
+/// checked"), the lock is held, or the read or write fails.
+pub fn exorcise(
+    dir: &dyn Directory,
+    results: &[CheckResult],
+) -> segment_infos::Result<Option<String>> {
+    let _lock = dir.obtain_lock("write.lock")?;
+    let mut infos = segment_infos::read_latest(dir)?;
+    let commit_name = lucene_store::directory::segments_file_name(infos.generation);
+    let segment_results = results.get(1..).unwrap_or_default();
+    let covers = results.first().map(|r| Some(&r.segment_name)) == Some(commit_name.as_ref())
+        && segment_results.len() == infos.segments.len()
+        && segment_results
+            .iter()
+            .zip(&infos.segments)
+            .all(|(r, s)| r.segment_name == s.segment_name);
+    if !covers {
+        return Err(segment_infos::Error::Store(lucene_store::Error::Io(
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "can only exorcise an index that was fully checked (these results are not a check \
+             of every segment of the latest commit)",
+            ),
+        )));
+    }
+    if segment_results.iter().all(CheckResult::all_passed) {
+        return Ok(None);
+    }
+    let mut kept = Vec::with_capacity(infos.segments.len());
+    for (result, segment) in segment_results
+        .iter()
+        .zip(std::mem::take(&mut infos.segments))
+    {
+        if result.all_passed() {
+            kept.push(segment);
+        }
+    }
+    infos.segments = kept;
+    let max_segment_name = infos
+        .segments
+        .iter()
+        .filter_map(|c| {
+            c.segment_name
+                .strip_prefix('_')
+                .and_then(|n| i64::from_str_radix(n, 36).ok())
+        })
+        .max()
+        .unwrap_or(-1);
+    if infos.counter <= max_segment_name {
+        infos.counter = max_segment_name.saturating_add(1);
+    }
+    infos.generation = infos.generation.saturating_add(1);
+    infos.version = infos.version.saturating_add(1);
+    infos.id = crate::index_writer::generate_segment_id(infos.generation);
+    segment_infos::write(&infos, dir).map(Some)
 }
 
 /// The `segments_N`-level invariants: no two segments share a name, and
@@ -2114,6 +2187,286 @@ impl PostingsFileBytes {
     }
 }
 
+/// A term's fully decoded postings: the reference the cursor walks are
+/// checked against. `freqs` is empty for a field without frequencies (every
+/// frequency is then `1`).
+struct TermDocs<'a> {
+    docs: &'a [i32],
+    freqs: &'a [i32],
+}
+
+impl TermDocs<'_> {
+    /// The index of the first document `>= target`.
+    fn first_at_or_after(&self, target: i32) -> usize {
+        self.docs.partition_point(|&d| d < target)
+    }
+
+    fn doc(&self, i: usize) -> i32 {
+        self.docs.get(i).copied().unwrap_or(postings::NO_MORE_DOCS)
+    }
+
+    fn freq(&self, i: usize) -> i32 {
+        self.freqs.get(i).copied().unwrap_or(1)
+    }
+}
+
+/// `CheckIndex.checkDocIDRuns`: every document in `[doc, docIDRunEnd())`
+/// must be the next ones returned, and the runs end at the last document.
+fn check_doc_id_runs(cursor: &mut postings::LazyDocsCursor<'_>) -> Result<(), String> {
+    let mut prev_doc = -1i32;
+    let mut run_end = 0i32;
+    loop {
+        let doc = cursor.next_doc().map_err(|e| e.to_string())?;
+        if doc == postings::NO_MORE_DOCS {
+            break;
+        }
+        let next = prev_doc.saturating_add(1);
+        if next < run_end && doc != next {
+            return Err(format!(
+                "Run end is {run_end} but next doc after {prev_doc} is {doc}"
+            ));
+        }
+        let new_run_end = cursor.doc_id_run_end();
+        if new_run_end <= doc {
+            return Err(format!("Run end {new_run_end} is <= doc ID {doc}"));
+        }
+        run_end = run_end.max(new_run_end);
+        prev_doc = doc;
+    }
+    if run_end != prev_doc.saturating_add(1) {
+        return Err(format!("Run end is {run_end} but last doc is {prev_doc}"));
+    }
+    Ok(())
+}
+
+/// `ImpactsEnum.getImpacts()` of the Lucene104 `BlockImpactsEnum`, as
+/// `(getDocIdUpTo(level), getImpacts(level))` per level: level 0 is the
+/// current block's (a tail block, whose extent is unknown, answers
+/// `(MAX_VALUE, 1)`), level 1 the current level-1 span's when the term has
+/// one; a field without frequencies has the one level `(1, 1)` up to
+/// `NO_MORE_DOCS`.
+fn impacts_levels(
+    cursor: &mut postings::LazyDocsCursor<'_>,
+    has_freqs: bool,
+) -> Vec<(i32, Vec<postings::Impact>)> {
+    let dummy = |freq| vec![postings::Impact { freq, norm: 1 }];
+    if !has_freqs {
+        return vec![(postings::NO_MORE_DOCS, dummy(1))];
+    }
+    let level0_up_to = cursor.level0_last_doc_id();
+    let level0 = if level0_up_to == postings::NO_MORE_DOCS {
+        dummy(i32::MAX)
+    } else {
+        cursor.level0_impacts().to_vec()
+    };
+    let mut levels = vec![(level0_up_to, level0)];
+    let level1_up_to = cursor.level1_last_doc_id();
+    if level1_up_to != postings::NO_MORE_DOCS {
+        levels.push((level1_up_to, cursor.level1_impacts().to_vec()));
+    }
+    levels
+}
+
+/// `CheckIndex.checkImpacts(impacts, lastTarget)`, over [`impacts_levels`].
+///
+/// Ported as written, including that the within-level ordering loop never
+/// advances its "previous" impact, so it compares every impact with the
+/// first one rather than with its predecessor.
+fn check_impacts(levels: &[(i32, Vec<postings::Impact>)], last_target: i32) -> Result<(), String> {
+    let Some((doc_id_up_to0, _)) = levels.first() else {
+        return Err("The number of impact levels must be >= 1, got 0".to_string());
+    };
+    if *doc_id_up_to0 < last_target {
+        return Err(format!(
+            "getDocIdUpTo returned {doc_id_up_to0} on level 0, which is less than the target \
+             {last_target}"
+        ));
+    }
+    for pair in levels.windows(2) {
+        if let [(previous, _), (up_to, _)] = pair {
+            if up_to < previous {
+                return Err(format!(
+                    "Decreasing return for getDocIdUpTo: {previous} then {up_to} for target \
+                     {last_target}"
+                ));
+            }
+        }
+    }
+    for (level, (_, impacts)) in levels.iter().enumerate() {
+        let Some(first) = impacts.first() else {
+            return Err(format!("Got empty list of impacts on level {level}"));
+        };
+        if first.freq < 1 {
+            return Err(format!("First impact had a freq <= 0: {}", first.freq));
+        }
+        if first.norm == 0 {
+            return Err(format!("First impact had a norm == 0: {}", first.norm));
+        }
+        let (prev_freq, prev_norm) = (first.freq, first.norm as u64);
+        for impact in impacts.iter().skip(1) {
+            if impact.freq <= prev_freq || (impact.norm as u64) <= prev_norm {
+                return Err(format!(
+                    "Impacts are not ordered or contain dups, got ({prev_freq},{prev_norm}) \
+                     then ({},{})",
+                    impact.freq, impact.norm
+                ));
+            }
+        }
+        if level > 0 {
+            // Every impact of the level below must be matched by one of this
+            // level's that scores at least as well.
+            let prev = &levels[level.saturating_sub(1)].1;
+            let mut index = 1usize;
+            let (mut freq, mut norm) = (first.freq, first.norm as u64);
+            for p in prev {
+                if p.freq <= freq && (p.norm as u64) >= norm {
+                    continue;
+                }
+                let Some(next) = impacts.get(index) else {
+                    return Err(format!(
+                        "Found impact ({},{}) on level {} but no impact on level {level} \
+                         triggers a better score",
+                        p.freq,
+                        p.norm,
+                        level.saturating_sub(1)
+                    ));
+                };
+                (freq, norm) = (next.freq, next.norm as u64);
+                index = index.saturating_add(1);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The largest frequency the impacts allow up to `max`: that of the first
+/// level reaching it, `MAX_VALUE` when none does.
+fn max_freq_up_to(levels: &[(i32, Vec<postings::Impact>)], max: i32) -> i32 {
+    levels
+        .iter()
+        .find(|(up_to, _)| *up_to >= max)
+        .and_then(|(_, impacts)| impacts.last())
+        .map_or(i32::MAX, |i| i.freq)
+}
+
+/// `String.hashCode()`, which Java's impacts walk derives its targets from.
+fn java_string_hash(s: &str) -> i32 {
+    s.encode_utf16()
+        .fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(i32::from(c)))
+}
+
+/// `checkFields`' impacts walks for one term, each against `reference`: the
+/// slow level's walk of every document (`nextDoc`, then `advanceShallow` and
+/// [`check_impacts`] whenever the document passes the last level-0 extent,
+/// no frequency above the block's largest), and the walk that alternates
+/// `nextDoc` and `advance` to targets hashed from the field name, calling
+/// `advanceShallow` ahead of the cursor. `open` gives a fresh cursor.
+fn check_term_impacts<'d>(
+    field: &str,
+    has_freqs: bool,
+    reference: &TermDocs<'_>,
+    mut open: impl FnMut() -> Result<postings::LazyDocsCursor<'d>, String>,
+) -> Result<(), String> {
+    const NO_MORE: i32 = postings::NO_MORE_DOCS;
+    let freq_of = |c: &postings::LazyDocsCursor<'_>| c.freq().unwrap_or(1);
+
+    let mut cursor = open()?;
+    let (mut max, mut max_freq) = (-1i32, 0i32);
+    for i in 0usize.. {
+        let doc = cursor.next_doc().map_err(|e| e.to_string())?;
+        if doc != reference.doc(i) {
+            return Err(format!(
+                "Wrong next doc: {doc}, expected {}",
+                reference.doc(i)
+            ));
+        }
+        if doc == NO_MORE {
+            break;
+        }
+        if freq_of(&cursor) != reference.freq(i) {
+            return Err(format!(
+                "Wrong freq, expected {}, but got {}",
+                reference.freq(i),
+                freq_of(&cursor)
+            ));
+        }
+        if doc > max {
+            cursor.advance_shallow(doc).map_err(|e| e.to_string())?;
+            let levels = impacts_levels(&mut cursor, has_freqs);
+            check_impacts(&levels, doc)?;
+            max = levels[0].0;
+            max_freq = levels[0].1.last().map_or(0, |i| i.freq);
+        }
+        if freq_of(&cursor) > max_freq {
+            return Err(format!(
+                "freq {} is greater than the max freq according to impacts {max_freq}",
+                freq_of(&cursor)
+            ));
+        }
+    }
+
+    let hash = java_string_hash(field);
+    let mut cursor = open()?;
+    let (mut max, mut max_freq) = (-1i32, 0i32);
+    let mut doc = -1i32;
+    loop {
+        let (advance, target) = if hash.wrapping_add(doc) & 1 == 1 {
+            (false, doc.wrapping_add(1))
+        } else {
+            let hashed = hash.wrapping_mul(31).wrapping_add(doc) & 0x1ff;
+            let delta = hashed.wrapping_add(1).min(NO_MORE.wrapping_sub(doc));
+            (true, doc.wrapping_add(delta))
+        };
+        if target > max && target.rem_euclid(2) == 1 {
+            let hashed = hash.wrapping_mul(31).wrapping_add(target) & 0x1ff;
+            max = target.wrapping_add(hashed.min(NO_MORE.wrapping_sub(target)));
+            cursor.advance_shallow(target).map_err(|e| e.to_string())?;
+            let levels = impacts_levels(&mut cursor, has_freqs);
+            check_impacts(&levels, doc)?;
+            max_freq = max_freq_up_to(&levels, max);
+        }
+        doc = if advance {
+            cursor.advance(target)
+        } else {
+            cursor.next_doc()
+        }
+        .map_err(|e| e.to_string())?;
+        let i = reference.first_at_or_after(target);
+        if doc != reference.doc(i) {
+            return Err(format!(
+                "Impacts do not advance to the same document as postings for target {target}, \
+                 postings: {}, impacts: {doc}",
+                reference.doc(i)
+            ));
+        }
+        if doc == NO_MORE {
+            break;
+        }
+        if freq_of(&cursor) != reference.freq(i) {
+            return Err(format!(
+                "Wrong freq, expected {}, but got {}",
+                reference.freq(i),
+                freq_of(&cursor)
+            ));
+        }
+        if doc >= max {
+            let hashed = hash.wrapping_mul(31).wrapping_add(target) & 0x1ff;
+            max = doc.wrapping_add(hashed.min(NO_MORE.wrapping_sub(doc)));
+            cursor.advance_shallow(doc).map_err(|e| e.to_string())?;
+            let levels = impacts_levels(&mut cursor, has_freqs);
+            check_impacts(&levels, doc)?;
+            max_freq = max_freq_up_to(&levels, max);
+        }
+        if freq_of(&cursor) > max_freq {
+            return Err(format!(
+                "Term frequency {} is greater than the max freq according to impacts {max_freq}",
+                freq_of(&cursor)
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// `CheckIndex.testPostings` -> `checkFields(fields, liveDocs, maxDoc,
 /// fieldInfos, normsProducer, true, false, ...)`, the deepest single check
 /// real `CheckIndex` performs.
@@ -2133,6 +2486,8 @@ impl PostingsFileBytes {
 /// | `postings.positions_valid:<f>` | `pos < 0`, `pos > MAX_POSITION`, `pos < lastPos` |
 /// | `postings.offsets_valid:<f>` | `startOffset < 0`, `startOffset < lastOffset`, `endOffset < 0`, `endOffset < startOffset` |
 /// | `postings.advance_agrees:<f>` | the `Test skipping` block's seven `advance(maxDoc*i/8)` probes |
+/// | `postings.doc_id_runs:<f>` | `checkDocIDRuns`, over docs-only and freqs cursors |
+/// | `postings.impacts:<f>` | the slow level's impacts walk and the hashed `advance`/`advanceShallow` walk, each step through `checkImpacts` |
 /// | `postings.seek_agrees:<f>` | `Test seeking by ord` / `seek to last term` / `seek to existing term ... failed` |
 /// | `postings.intersect_agrees:<f>` | `checkTermsIntersect` |
 /// | `postings.field_summary:<f>` | `sumDocFreq`/`sumTotalTermFreq`/`docCount`/`termCount`/`minTerm`/`maxTerm` vs recomputed |
@@ -2184,12 +2539,12 @@ impl PostingsFileBytes {
 ///   outright. Same `x == x` shape.
 /// - *`impacts`/`checkImpacts`/`checkDocIDRuns`.* Java's slow level
 ///   cross-checks the `ImpactsEnum` against the `PostingsEnum` and the
-///   `docIDRunEnd` API. This port's `PostingsCursor`/`LazyDocsCursor` expose
-///   impacts (`level0_impacts`/`level1_impacts`) but have no `docIDRunEnd`
-///   and no separate impacts enum to disagree with the postings enum: the
-///   impacts come off the same decoded block. `postings.advance_agrees`
-///   covers the part that *does* have two independent implementations here
-///   -- the skip-list-driven `advance` versus the fully decoded doc list.
+///   `docIDRunEnd` API. Here the lazy cursor (`advance_shallow`, the level-0
+///   and level-1 impacts, `doc_id_run_end`) is walked the same two ways and
+///   compared against the term's fully decoded doc list, which is the
+///   independent copy (`postings.impacts`, `postings.doc_id_runs`, see
+///   [`check_term_impacts`]). Java runs them at the slow level or on long or
+///   every 1024th term; this module always runs its slow checks.
 fn check_postings(
     si: &SegmentInfo,
     field_infos: &FieldInfos,
@@ -2310,6 +2665,12 @@ fn check_postings(
         let mut position_problems: Vec<String> = Vec::new();
         let mut offset_problems: Vec<String> = Vec::new();
         let mut advance_problems: Vec<String> = Vec::new();
+        let mut run_problems: Vec<String> = Vec::new();
+        let mut impact_problems: Vec<String> = Vec::new();
+        let has_freqs = !matches!(
+            index_options,
+            field_infos::IndexOptions::None | field_infos::IndexOptions::Docs
+        );
         let mut needs_doc_file = false;
         let mut prev_term: Option<Vec<u8>> = None;
         let mut first_term: Option<Vec<u8>> = None;
@@ -2576,6 +2937,52 @@ fn check_postings(
                         )),
                     }
                 }
+                // A single-document term has no `.doc` postings to walk (it is
+                // inlined in the term dictionary), as for the probes above.
+                if claimed.doc_freq > 1 && (run_problems.is_empty() || impact_problems.is_empty()) {
+                    let freqs: Vec<i32> = if has_freqs {
+                        postings_of_term.freqs.clone()
+                    } else {
+                        Vec::new()
+                    };
+                    let reference = TermDocs {
+                        docs: &postings_of_term.docs,
+                        freqs: &freqs,
+                    };
+                    let flags = [
+                        postings::PostingsFlags::DocsOnly,
+                        postings::PostingsFlags::FreqsNoImpacts,
+                    ];
+                    for flags in flags {
+                        if !run_problems.is_empty() {
+                            break;
+                        }
+                        let cursor = field_terms.lazy_postings_with_flags(term, doc_in, flags);
+                        if let Err(e) = cursor
+                            .map_err(|e| e.to_string())
+                            .and_then(|c| c.ok_or_else(|| "the re-seek found nothing".to_string()))
+                            .and_then(|mut c| check_doc_id_runs(&mut c))
+                        {
+                            run_problems.push(format!(
+                                "field {field_name:?} term {term:?} ({flags:?}): {e}"
+                            ));
+                        }
+                    }
+                    if impact_problems.is_empty() {
+                        if let Err(e) =
+                            check_term_impacts(field_name, has_freqs, &reference, || {
+                                match field_terms.lazy_postings(term, doc_in) {
+                                    Ok(Some(c)) => Ok(c),
+                                    Ok(None) => Err("the re-seek found nothing".to_string()),
+                                    Err(e) => Err(e.to_string()),
+                                }
+                            })
+                        {
+                            impact_problems
+                                .push(format!("field {field_name:?} term {term:?}: {e}"));
+                        }
+                    }
+                }
             }
         }
 
@@ -2695,6 +3102,8 @@ fn check_postings(
             ("postings.doc_freq_positive", &doc_freq_problems),
             ("postings.term_stats", &term_stat_problems),
             ("postings.advance_agrees", &advance_problems),
+            ("postings.doc_id_runs", &run_problems),
+            ("postings.impacts", &impact_problems),
         ] {
             checks.push(named_field_check(
                 &format!("{name}:{field_name}"),
@@ -3610,12 +4019,11 @@ fn doc_values_presence(
 /// and yields the **term ordinal** (`IndexSorter.StringSorter` compares ords,
 /// not bytes). `Err` names the combination rather than guessing.
 ///
-/// Deliberately not supported, and reported as such rather than silently
-/// mis-verified: a `SortedSetSortField` (its per-document reduction is
-/// `SortedSetSelector`, which needs a SORTED_SET ordinal reader this port's
-/// `doc_values` module does not expose) and a `BinarySortField` (whose keys
-/// are raw bytes, so there is no `Option<i64>` to return at all -- see
-/// [`segment_info::IndexSortField::key_comparison`]).
+/// A `SortedSetSortField` reads SORTED_SET and applies its
+/// `SortedSetSelector`, and a `BinarySortField` reads BINARY; both, like
+/// STRING, reduce to the rank of the chosen value among the segment's values
+/// ([`crate::index_sorter`]) -- for a SORTED_SET that is its ordinal, for
+/// BINARY the order `BytesRef.compareTo` gives.
 fn sort_key_values(
     dvd: &[u8],
     meta: &doc_values::DocValuesMeta,
@@ -3665,18 +4073,20 @@ fn sort_key_values(
                 keys.push(doc_values::sorted_ord(dvd, entry, doc).map_err(|e| e.to_string())?);
             }
         }
-        (IndexSortKind::SortedSet { .. }, _) => {
-            return Err(
-                "a SortedSetSortField's per-document ordinal needs a SORTED_SET selector \
-                 reader this port does not expose"
-                    .to_string(),
-            )
-        }
-        (IndexSortKind::Binary(_), _) => {
-            return Err(
-                "a BinarySortField compares raw bytes, which is not a single-i64 sort key"
-                    .to_string(),
-            )
+        (IndexSortKind::SortedSet { .. }, field_infos::DocValuesType::SortedSet)
+        | (IndexSortKind::Binary(_), field_infos::DocValuesType::Binary) => {
+            let terms = crate::index_sorter::read_segment_terms(dvd, meta, sf, fi.number, max_doc)
+                .map_err(|e| e.to_string())?
+                .ok_or(
+                    if fi.doc_values_type == field_infos::DocValuesType::Binary {
+                        "no BINARY doc-values entry"
+                    } else {
+                        "no SORTED_SET doc-values entry"
+                    },
+                )?;
+            keys = crate::index_sorter::rank_terms(&[terms])
+                .pop()
+                .unwrap_or_default();
         }
         (kind, dv) => {
             return Err(format!(
@@ -3695,13 +4105,12 @@ fn sort_key_values(
 /// sort-on-flush writer and the sort-preserving merge use to *produce* the
 /// order, applied in reverse as a verifier.
 ///
-/// Skipped (not failed) for an unsorted segment, a segment with no
-/// doc-values files, or a sort this port can read but not
-/// compare (a `SortedSetSortField` or a `BinarySortField` -- see
-/// [`sort_key_values`]). "Skipped" is deliberate for the last of those: the
-/// index is openable and everything else about it is checked, but this one
-/// property is unverified and saying so is the difference between a check
-/// that passed and one that never ran.
+/// Not run for an unsorted segment, and skipped (not failed) for a segment
+/// with no doc-values files -- the index is openable and everything else
+/// about it is checked, but this one property is unverified and saying so is
+/// the difference between a check that passed and one that never ran. Every
+/// sort kind is verified, the byte-keyed ones through
+/// [`crate::index_sorter`].
 fn check_index_sort(
     dir: &dyn Directory,
     commit: &SegmentCommitInfo,
@@ -3712,32 +4121,6 @@ fn check_index_sort(
     let Some(sort_fields) = &si.index_sort else {
         return;
     };
-    // A sort kind this port can read but not *verify* is unverifiable before
-    // any file is opened, and reporting it as a failure would call a
-    // perfectly good real-Lucene index corrupt. Skipped, with the reason and
-    // the field, so it is visible that the check did not run.
-    if let Some(sf) = sort_fields.iter().find(|sf| {
-        matches!(
-            sf.kind,
-            segment_info::IndexSortKind::SortedSet { .. } | segment_info::IndexSortKind::Binary(_)
-        )
-    }) {
-        checks.push(Check::skipped(
-            "sort.docs_in_index_sort_order",
-            &format!(
-                "a comparator for sort field {:?}, a {},",
-                sf.field,
-                match sf.kind {
-                    segment_info::IndexSortKind::Binary(_) =>
-                        "BinarySortField whose keys are raw bytes rather than one i64",
-                    _ =>
-                        "SortedSetSortField whose per-document ordinal needs a SORTED_SET \
-                          selector reader this port does not expose",
-                }
-            ),
-        ));
-        return;
-    }
     let Some(opened) = open_doc_values(dir, commit, si, field_infos) else {
         // The sharpest of the skip cases, and the reason this is modelled at
         // all: a segment that *declares* an index sort but carries no
@@ -3764,8 +4147,7 @@ fn check_index_sort(
                 .iter()
                 .find(|f| f.name == sf.field)
                 .ok_or_else(|| format!("sort field {:?} is not in .fnm", sf.field))?;
-            let cmp = segment_info::SortKeyComparator::new(sf)
-                .expect("the unsupported kinds returned above");
+            let cmp = segment_info::SortKeyComparator::new(sf);
             per_field.push((
                 sort_key_values(&dvd, &meta, sf, fi, si.doc_count)
                     .map_err(|e| format!("sort field {:?}: {e}", sf.field))?,
@@ -5795,6 +6177,166 @@ mod tests {
 
         let dir = FsDirectory::open(&dst);
         assert!(check_segment(&dir, &commit).all_passed());
+    }
+
+    fn impact(freq: i32, norm: i64) -> postings::Impact {
+        postings::Impact { freq, norm }
+    }
+
+    /// `checkImpacts`' rules, one failing input each, and inputs that pass.
+    #[test]
+    fn check_impacts_rejects_each_malformed_shape() {
+        let ok = vec![
+            (300, vec![impact(1, 5), impact(3, 7)]),
+            (9000, vec![impact(2, 5), impact(4, 9)]),
+        ];
+        assert_eq!(check_impacts(&ok, 10), Ok(()));
+        assert_eq!(check_impacts(&ok[..1], 300), Ok(()));
+        let err = |levels: &[(i32, Vec<postings::Impact>)], target| {
+            check_impacts(levels, target).unwrap_err()
+        };
+        assert!(err(&[], 0).contains("must be >= 1"));
+        assert!(err(&ok, 301).contains("less than the target"));
+        assert!(
+            err(&[(300, vec![impact(1, 1)]), (200, vec![impact(1, 1)])], 0).contains("Decreasing")
+        );
+        assert!(err(&[(300, vec![])], 0).contains("empty list"));
+        assert!(err(&[(300, vec![impact(0, 1)])], 0).contains("freq <= 0"));
+        assert!(err(&[(300, vec![impact(1, 0)])], 0).contains("norm == 0"));
+        assert!(err(&[(300, vec![impact(2, 5), impact(2, 7)])], 0).contains("not ordered"));
+        assert!(err(&[(300, vec![impact(2, 5), impact(3, 5)])], 0).contains("not ordered"));
+        // Norms compare unsigned: a negative norm is the largest.
+        assert_eq!(
+            check_impacts(&[(300, vec![impact(1, 5), impact(2, -1)])], 0),
+            Ok(())
+        );
+        // Level 1 must dominate level 0: (6, 2) on level 0 scores better
+        // than anything level 1 has left.
+        assert!(err(
+            &[
+                (300, vec![impact(5, 1), impact(6, 2)]),
+                (9000, vec![impact(1, 1), impact(2, 3)])
+            ],
+            0
+        )
+        .contains("triggers a better score"));
+    }
+
+    /// `postings.impacts` and `postings.doc_id_runs` run on every term of a
+    /// real `.doc` (1000 documents: three full blocks with level-0 impacts and
+    /// a tail) and pass; a sweep of re-signed single-bit `.doc` flips shows
+    /// the impacts check catching corruptions of its own.
+    #[test]
+    fn impacts_and_doc_id_run_checks_run_and_catch_impact_corruption() {
+        let dst = tempdir();
+        let commit = write_many_doc_postings_fixture(&dst, 1000);
+        let dir = FsDirectory::open(&dst);
+        let clean = check_segment(&dir, &commit);
+        for name in ["postings.impacts:body", "postings.doc_id_runs:body"] {
+            let check = clean.checks.iter().find(|c| c.name == name).expect(name);
+            assert!(check.passed(), "{name}: {}", check.message);
+        }
+        let doc_path = dst.join(format!("_0_{POSTINGS_SUFFIX}.doc"));
+        let original = std::fs::read(&doc_path).unwrap();
+        let body_end = original.len() - lucene_store::codec_util::FOOTER_LENGTH;
+        let mut caught_by_impacts = 0usize;
+        for off in 48..body_end {
+            let mut bytes = original.clone();
+            bytes[off] ^= 0x01;
+            repair_checksum(&mut bytes);
+            std::fs::write(&doc_path, &bytes).unwrap();
+            let result = check_segment(&FsDirectory::open(&dst), &commit);
+            if result
+                .failures()
+                .iter()
+                .any(|c| c.name == "postings.impacts:body")
+            {
+                caught_by_impacts += 1;
+            }
+        }
+        std::fs::write(&doc_path, &original).unwrap();
+        assert!(
+            caught_by_impacts >= 1,
+            "no re-signed .doc bit flip was caught by postings.impacts"
+        );
+    }
+
+    /// `-exorcise`: a segment whose `.fdt` fails its checksum is dropped
+    /// from a new commit, the other segment's documents survive, and the
+    /// result checks clean. Results of another commit are refused, and a
+    /// clean index writes nothing.
+    #[test]
+    fn exorcise_drops_the_broken_segment_in_a_new_commit() {
+        use crate::index_writer::IndexWriter;
+        let dst = tempdir();
+        let dir = FsDirectory::open(&dst);
+        let version = segment_info::LuceneVersion {
+            major: 10,
+            minor: 5,
+            bugfix: 0,
+        };
+        let mut w = IndexWriter::open(
+            &dir,
+            vec![field_infos::FieldInfo::new("id", 0)],
+            "Lucene104",
+            version,
+        )
+        .unwrap();
+        let doc = |id: &str| stored_fields::Document {
+            fields: vec![stored_fields::StoredField {
+                field_number: 0,
+                value: stored_fields::FieldValue::String(id.to_string()),
+            }],
+        };
+        w.add_document(doc("a")).unwrap();
+        w.commit().unwrap();
+        w.add_document(doc("b")).unwrap();
+        w.add_document(doc("c")).unwrap();
+        w.commit().unwrap();
+        drop(w);
+        let results = check_directory(&dir).unwrap();
+        assert_eq!(exorcise(&dir, &results).unwrap(), None, "a clean index");
+
+        let before = segment_infos::read_latest(&dir).unwrap();
+        let broken = &before.segments[1];
+        let fdt = dir
+            .list_all()
+            .unwrap()
+            .into_iter()
+            .find(|f| *f == format!("{}.fdt", broken.segment_name))
+            .expect("the second segment's .fdt");
+        let path = dst.join(&fdt);
+        let mut bytes = std::fs::read(&path).unwrap();
+        let mid = bytes.len() / 2;
+        bytes[mid] ^= 0x40;
+        std::fs::write(&path, &bytes).unwrap();
+        let results = check_directory(&dir).unwrap();
+        assert!(!results[2].all_passed());
+        assert!(results[1].all_passed());
+        assert!(
+            exorcise(&dir, &results[..2]).is_err(),
+            "a partial check is refused"
+        );
+
+        let written = exorcise(&dir, &results).unwrap().expect("a new commit");
+        let after = segment_infos::read_latest(&dir).unwrap();
+        assert_eq!(
+            Some(written),
+            lucene_store::directory::segments_file_name(after.generation)
+        );
+        assert_eq!(after.generation, before.generation + 1);
+        assert!(after.version > before.version);
+        assert_eq!(after.segments.len(), 1);
+        assert_eq!(
+            after.segments[0].segment_name,
+            before.segments[0].segment_name
+        );
+        assert!(check_directory(&dir)
+            .unwrap()
+            .iter()
+            .all(CheckResult::all_passed));
+        // The old results no longer describe the latest commit.
+        assert!(exorcise(&dir, &results).is_err());
     }
 
     /// Negative control for `postings.seek_agrees`: the `.tip` trie is the
@@ -12707,12 +13249,10 @@ mod tests {
     /// `soft_deletes.count_matches`. Every failure arm of both was unfired:
     /// the only segments that reached them were healthy ones.
     ///
-    /// 1. A `SortedSetSortField` sort. `segment_info` can *read* it (that is
-    ///    what lets this port open an index Lucene wrote with one), but
-    ///    reducing a SORTED_SET column by a `SortedSetSelector` needs an
-    ///    ordinal reader `doc_values` does not expose -- so the check must
-    ///    report itself **skipped**, naming the field. Failing it would call
-    ///    a healthy real-Lucene index corrupt.
+    /// 1. A `SortedSetSortField` sort is verified, not skipped: the column
+    ///    is reduced by its `SortedSetSelector` and compared by ordinal, so
+    ///    a segment in order passes and a declared descending order over the
+    ///    same ascending column fails.
     /// 2. A sort whose *kind* disagrees with the field's doc-values type --
     ///    a numeric `SortField` over a SORTED_SET column, which is what
     ///    `DocValues.getNumeric` throws on in Java. A `.si` and a `.fnm`
@@ -12763,18 +13303,21 @@ mod tests {
                 std::fs::write(&si_path, segment_info::write(&si, "")).unwrap();
             };
 
-        // (1) A SORTED_SET sort: skipped, not failed, and it says which field.
+        // (1) A SORTED_SET sort is verified: in order passes, and the same
+        // column declared descending fails.
         let dst = tempdir();
         let commit = write_single_valued_sorted_set_fixture(&dst, &[b"a", b"b"]);
         restamp_sort(&dst, &commit, sorted_set_sort_on_tags());
         let dir = FsDirectory::open(&dst);
         let sort = sort_check(&dir, &commit);
-        assert!(
-            sort.was_skipped(),
-            "a real-Lucene SortedSetSortField index must not be called corrupt: {sort:?}"
-        );
-        assert!(sort.message.contains("SortedSetSortField"), "{sort:?}");
-        assert!(sort.message.contains("\"tags\""), "{sort:?}");
+        assert!(sort.passed(), "{sort:?}");
+        let mut descending = sorted_set_sort_on_tags();
+        descending.as_mut().unwrap()[0].reverse = true;
+        restamp_sort(&dst, &commit, descending);
+        let dir = FsDirectory::open(&dst);
+        let sort = sort_check(&dir, &commit);
+        assert!(!sort.passed() && !sort.was_skipped(), "{sort:?}");
+        assert!(sort.message.contains("sorts after"), "{sort:?}");
 
         // (2) A numeric sort over the same SORTED_SET column: a real
         // `.si`/`.fnm` disagreement, and a failure.
