@@ -24,3 +24,6 @@ D	cat	DENSE	sorted_dv	726564,677265656e,626c7565,6379616e,6d6167656e7461,79656c6
 D	tags	SPARSE	sorted_set_dv	726564,677265656e,626c7565,6379616e,6d6167656e7461,79656c6c6f77	0:1	0:4	3:4	4:1	5:1	6:2	7:0	8:2	11:5	12:3	13:3	13:2	15:2	15:3	16:5	16:5	17:0	18:4	19:5	22:4	23:3	23:2	24:0	26:4	29:1	29:2	30:4	31:0	32:4	32:4
 T	ts	SPARSE	text_offsets	-	0:green_yellow_green_blue	1:blue_green	4:blue	6:red_blue	9:red_green_red	12:blue_magenta_blue	14:magenta_blue_blue_red	15:blue_yellow	17:cyan_yellow	18:yellow_cyan_blue_blue_red	20:cyan_red_red_cyan	23:yellow_cyan_red	24:magenta	25:green_yellow_yellow_cyan_green	26:red_yellow_yellow_cyan	27:blue_yellow_red	29:cyan	30:cyan_cyan_green_magenta	32:red_magenta_green	33:magenta_magenta	34:magenta
 V	vec	SPARSE	vector3	-	0:-2.5,0.0,-2.5	1:-0.5,5.0,0.5	2:2.5,2.0,5.0	3:5.0,4.0,-2.0	4:3.0,-3.5,-1.0	5:0.0,0.5,1.5	6:-2.5,3.0,-2.0	7:-1.0,0.0,1.0	8:1.5,3.0,2.0	9:-4.5,1.0,4.5	12:0.5,4.0,-3.0	13:3.5,1.0,4.5	14:-2.0,-3.5,4.0	15:4.5,-0.5,1.5	17:-4.5,-1.5,4.5	19:3.0,-4.5,2.0	20:4.5,-4.5,5.0	23:0.0,-3.5,-4.5	25:-3.5,-5.0,-0.5	26:-2.0,-4.0,-2.0	27:-4.5,-3.5,-3.5	28:2.5,-1.0,0.0	29:-4.0,4.0,0.5	30:3.5,-4.5,4.0	31:1.5,-1.5,-5.0	32:-0.5,1.0,-5.0	33:-1.5,-4.5,4.0	34:0.0,-2.0,-3.0
+L	none_l	SPARSE	numeric_dv_skip	LONG
+B	none_kw	SPARSE	keyword_stored	STRING
+T	none_ts	SPARSE	text_offsets	-

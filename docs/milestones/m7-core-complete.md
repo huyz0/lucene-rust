@@ -134,6 +134,11 @@ converters. `TokenStreamToAutomaton`/`AutomatonToTokenStream` now build and
 read `lucene-util`'s `Automaton` (delivered 2026-09-30). Not in this task: the inverter reading a filter's payload and term
 frequency attributes (on `index/IndexingChain`'s row).
 
+### Search, analysis and document gaps · delivered 2026-09-30
+
+- `ColumnBatch`: an empty column registers its `FieldInfo` as Java's does
+  (`GenDocumentColumns` gained three empty columns).
+
 Each follows [`port-workflow`](../porting-workflow.md): the closest-to-Java
 port with a Java-fixture differential test, a `bench-micro` pair against
 Lucene, then optimisation to a ratio of at least 1.0.

@@ -326,6 +326,7 @@ fn document(c: &mut Cursor<'_>) -> Result<ExplicitDocument, FfiStatus> {
             inverted,
             doc_values,
             points,
+            registered: Vec::new(),
         },
     })
 }

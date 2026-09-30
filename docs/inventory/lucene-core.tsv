@@ -274,7 +274,7 @@ document/column/BinaryColumn	ported	crates/lucene-index/src/document/column.rs::
 document/column/BinaryColumnAdapter	ported	crates/lucene-index/src/document/column.rs::BinaryColumnAdapter -- M7: fixture GenDocumentColumns
 document/column/BytesRefValuesCursor	ported	crates/lucene-index/src/document/column.rs::BytesRefValuesCursor -- M7: fixture GenDocumentColumns
 document/column/Column	ported	crates/lucene-index/src/document/column.rs::Column -- M7: fixture GenDocumentColumns
-document/column/ColumnBatch	partial	crates/lucene-index/src/document/column.rs::ColumnBatch -- M7: a column that yields no value in a batch registers no FieldInfo, where Java registers one (field infos differ); otherwise IndexWriter::add_batch/update_batch match fixture GenDocumentColumns
+document/column/ColumnBatch	ported	crates/lucene-index/src/document/column.rs::ColumnBatch
 document/column/ColumnFieldAdapter	ported	crates/lucene-index/src/document/column.rs::batch_documents -- M7: the adapter views are LongColumnAdapter/BinaryColumnAdapter, walked into documents here; fixture GenDocumentColumns
 document/column/ColumnValidation	ported	crates/lucene-index/src/document/column.rs::ColumnValidation -- M7: processBatch validation; fixture GenDocumentColumns + unit tests
 document/column/DictionaryColumn	ported	crates/lucene-index/src/document/column.rs::DictionaryColumn -- M7: fixture GenDocumentColumns
