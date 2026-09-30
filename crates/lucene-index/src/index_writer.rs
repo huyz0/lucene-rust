@@ -1521,6 +1521,14 @@ impl IndexingConfig {
             // not read as a schema disagreement. A field this writer does not
             // declare keeps the source's `FieldInfo` whole. Generations are
             // folded away: the merged column is a base one.
+            //
+            // `store_payloads` is the source's too. It is not schema but a
+            // fact about one segment's bytes (`FieldInfo.setStorePayloads`,
+            // set by the first payload a segment's documents give the field),
+            // and it decides how that segment's `.pos` is decoded: reading a
+            // segment with payloads as one without, or the reverse, decodes
+            // garbage positions. The merged field ORs it across the sources
+            // (`merge::reconcile_field_numbers`), as Java's does.
             let own_field_infos: Vec<FieldInfo> = current_infos
                 .fields
                 .iter()
@@ -1528,6 +1536,7 @@ impl IndexingConfig {
                     let mut info = match self.fields.iter().find(|w| w.name == f.name) {
                         Some(declared) => FieldInfo {
                             number: f.number,
+                            store_payloads: f.store_payloads,
                             ..declared.clone()
                         },
                         None => f.clone(),
@@ -12694,7 +12703,7 @@ pub(crate) mod tests {
     /// `.doc`, `.pos` and (when present) `.pay` from a committed segment and
     /// returns each document's occurrences for one term of one field, read
     /// through the same path a query layer would take.
-    fn read_occurrences(
+    pub(crate) fn read_occurrences(
         dir: &FsDirectory,
         sci: &SegmentCommitInfo,
         field_infos: &fi::FieldInfos,
