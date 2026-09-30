@@ -245,6 +245,12 @@ CASES=(
   # merged. Lucene must read every vector from its field's instance, run a
   # KNN query over each field, and pass CheckIndex.
   "lucene-index|write_per_field_knn_vectors_fixture|per-field-knn-vectors|VerifyPerFieldKnnVectors"
+  # IndexingChain reading a TokenFilter's PayloadAttribute and
+  # TermFrequencyAttribute through the document API (M7): payloads on a
+  # positional field, custom frequencies on a DOCS_AND_FREQS field, flushed
+  # and merged over a source without payloads. Lucene must read every
+  # payload and frequency back as the filter set them, and pass CheckIndex.
+  "lucene-index|write_token_attributes_fixture|token-attributes|VerifyTokenAttributes"
 )
 
 echo "verify-write-path: compiling verifiers"
