@@ -107,3 +107,162 @@ fn parses_real_best_compression_stored_fields_and_matches_lucene_values() {
         assert_eq!(got_values, want_values, "doc {doc_id} values");
     }
 }
+
+/// `GenStoredFieldsDeflate`'s documents, rebuilt from its LCG.
+struct DeflateDocs {
+    seed: u64,
+}
+
+impl DeflateDocs {
+    const WORDS: [&'static str; 28] = [
+        "the",
+        "quick",
+        "brown",
+        "fox",
+        "jumps",
+        "over",
+        "lazy",
+        "dog",
+        "lorem",
+        "ipsum",
+        "dolor",
+        "sit",
+        "amet",
+        "consectetur",
+        "adipiscing",
+        "elit",
+        "sed",
+        "do",
+        "eiusmod",
+        "tempor",
+        "incididunt",
+        "labore",
+        "magna",
+        "aliqua",
+        "lucene",
+        "rust",
+        "segment",
+        "merge",
+    ];
+
+    fn next(&mut self, bound: u64) -> u64 {
+        self.seed = self
+            .seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (self.seed >> 33) % bound
+    }
+
+    fn doc(&mut self, i: usize, number: &dyn Fn(&str) -> i32) -> stored_fields::Document {
+        let mut fields = Vec::new();
+        let kind = if i >= 497 { 0 } else { self.next(10) };
+        let words = if kind == 0 {
+            1 + self.next(3)
+        } else if i.is_multiple_of(83) {
+            5000 + self.next(2000)
+        } else {
+            20 + self.next(400)
+        };
+        let mut text = String::new();
+        for _ in 0..words {
+            text.push_str(Self::WORDS[self.next(Self::WORDS.len() as u64) as usize]);
+            text.push_str(if self.next(5) == 0 { ". " } else { " " });
+        }
+        fields.push(stored_fields::StoredField {
+            field_number: number("text"),
+            value: FieldValue::String(text),
+        });
+        let blob_len = if i % 101 == 50 {
+            20_000 + self.next(5000)
+        } else {
+            self.next(if kind == 1 { 1200 } else { 40 })
+        };
+        let blob: Vec<u8> = (0..blob_len).map(|_| self.next(256) as u8).collect();
+        fields.push(stored_fields::StoredField {
+            field_number: number("blob"),
+            value: FieldValue::Binary(blob),
+        });
+        if kind == 2 {
+            let len = self.next(2000) as usize;
+            let byte = b'a' + self.next(3) as u8;
+            fields.push(stored_fields::StoredField {
+                field_number: number("run"),
+                value: FieldValue::Binary(vec![byte; len]),
+            });
+        }
+        fields.push(stored_fields::StoredField {
+            field_number: number("num"),
+            value: FieldValue::Int(self.next(1_000_000) as i32 - 500_000),
+        });
+        if i == 496 {
+            let sentences: Vec<String> = (0..40)
+                .map(|_| {
+                    let mut s = String::new();
+                    for _ in 0..12 {
+                        s.push_str(Self::WORDS[self.next(Self::WORDS.len() as u64) as usize]);
+                        s.push(' ');
+                    }
+                    s.push_str(". ");
+                    s
+                })
+                .collect();
+            let mut big = String::new();
+            for _ in 0..9000 {
+                big.push_str(&sentences[self.next(40) as usize]);
+            }
+            fields.push(stored_fields::StoredField {
+                field_number: number("big"),
+                value: FieldValue::String(big),
+            });
+        }
+        stored_fields::Document { fields }
+    }
+}
+
+/// The write side, byte for byte: `GenStoredFieldsDeflate`'s documents --
+/// text, random bytes, runs, tiny and window-sliding documents over several
+/// chunks -- written with `BEST_COMPRESSION` produce Lucene's `.fdt`, `.fdx`
+/// and `.fdm`. Every DEFLATE unit is the zlib output Java's `Deflater`
+/// produced, preset dictionary included.
+#[test]
+fn best_compression_is_written_byte_identical_to_lucene() {
+    let base = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/data/stored_fields_deflate_index/"
+    );
+    let manifest = std::fs::read_to_string(format!("{base}manifest.properties"))
+        .expect("run the fixtures generator first (GenStoredFieldsDeflate)");
+    let get = |key: &str| -> String {
+        manifest
+            .lines()
+            .find_map(|l| l.strip_prefix(&format!("{key}=")))
+            .unwrap_or_else(|| panic!("manifest key {key} missing"))
+            .to_string()
+    };
+    let hex = get("id_hex");
+    let mut id = [0u8; 16];
+    for (i, b) in id.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap();
+    }
+    let number = |name: &str| -> i32 { get(&format!("field.{name}")).parse().unwrap() };
+    let num_docs: usize = get("num_docs").parse().unwrap();
+    let mut gen = DeflateDocs { seed: 20_260_930 };
+    let docs: Vec<stored_fields::Document> = (0..num_docs).map(|i| gen.doc(i, &number)).collect();
+
+    let (fdt, fdx, fdm) = stored_fields::write_best_compression(&docs, &id, "");
+    let raw = |key: &str| std::fs::read(format!("{base}{}.raw", get(key))).unwrap();
+    let want_fdt = raw("fdt_file_name");
+    let at = fdt
+        .iter()
+        .zip(&want_fdt)
+        .position(|(a, b)| a != b)
+        .unwrap_or(fdt.len().min(want_fdt.len()));
+    assert!(
+        fdt == want_fdt,
+        ".fdt differs at byte {at} (port {} bytes, Lucene {})",
+        fdt.len(),
+        want_fdt.len()
+    );
+    assert_eq!(fdx, raw("fdx_file_name"), ".fdx");
+    assert_eq!(fdm, raw("fdm_file_name"), ".fdm");
+}
