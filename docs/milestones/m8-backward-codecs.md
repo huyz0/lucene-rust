@@ -9,7 +9,7 @@
 | **Effort** | XL |
 | **Depends on** | [M7](m7-core-complete.md) (per-field formats, the inventory gate) |
 | **Unblocks** | adopting the Rust engine on existing indices without a rewrite |
-| **Status** | in progress: T8.1 fixture corpus delivered |
+| **Status** | in progress: T8.1 delivered; T8.2 and T8.3 delivered for every non-vector format |
 
 ---
 
@@ -77,13 +77,64 @@ files `lucene92HnswVectorsFormat` (lower-case `l`), a quirk the file
 resolution must reproduce. Content digests are reproducible on
 regeneration; only segment ids and file names change.
 
-### T8.2 — Version-dispatching readers
+### T8.2 — Version-dispatching readers · delivered 2026-09-30 (non-vector)
 
 `CodecUtil` header dispatch per format to the matching decoder generation;
 each retired format ported as close to Java as possible, reusing the current
 decoder wherever the wire format did not change.
 
-### T8.3 — Old BKD, old HNSW, old postings
+Delivered. `crates/lucene-codecs/src/codecs.rs` records what each codec
+(`Lucene90`..`Lucene104`) composes; the one component whose header cannot
+tell its generations apart, `.si` (`Lucene90SegmentInfoFormat` has no
+`hasBlocks` byte), is chosen by codec name at every production read site
+(`segment_info::parse_for_codec`). Everything else dispatches on the file:
+`.fnm` on its codec name (`Lucene90FieldInfos`), `.kdm` on its BKD version,
+`.doc`/`.pos`/`.pay` on `<name>PostingsWriter*` (`postings::PostingsFormat`),
+the term dictionary on the postings terms header inside `.tmd`
+(`Lucene90PostingsWriterTerms` = `Lucene90BlockTreeTermsReader`), and
+`decodeTerm` on each field's `PerFieldPostingsFormat.format`. The per-class
+record is `docs/inventory/lucene-backward-codecs.tsv`
+(`check-port-inventory.py --module backward-codecs`, in the gate and CI).
+
+**Verification** (`crates/lucene-search/tests/bwc_fixtures.rs`):
+
+- `bwc_fixtures_match_lucene` reproduces every line of every
+  `expected.txt` from this port's readers. 10.4.0 passed before any M8 change
+  (the current readers were already exact); 9.11.1, 9.12.2, 10.0.0 and 10.2.2
+  pass in full; 9.0.0-9.8.0 pass every line but `vec`/`knn`, the retired HNSW
+  formats, which the test's `EXPECTED_FAILURES` table lists and which fails
+  when an entry starts passing.
+- `every_version_searches_like_the_current_codec` opens every fixture with
+  `DirectoryReader` and runs 34 queries (term, prefix, wildcard, regexp,
+  term-in-set, exact and sloppy phrase on positions/offsets/payloads fields,
+  points range, dismax, boolean with filter and exclusion), top 20 exact and
+  block-max pruned: every version returns 10.4.0's hits, scores (bit for bit)
+  and totals.
+- `every_version_passes_check_index`: this port's `CheckIndex` finds nothing
+  on any fixture, bar the retired HNSW vector families of 9.0-9.8.
+- Seen to fail: shifting the retired postings' first-document delta base by
+  one fails all three.
+
+### T8.3 — Old BKD, old HNSW, old postings · delivered 2026-09-30 except HNSW
+
+Old BKD: version 9 (every index before 10.2) and its scalar `BPV_24` doc-id
+layout. Old postings: `Lucene90`, `Lucene99`, `Lucene912`, `Lucene101` (and
+`Lucene103`) `.doc` framing and `ForUtil`/`PForUtil` generations
+(`backward_codecs/{postings,for_util}.rs`), and `Lucene90BlockTreeTermsReader`,
+whose FST index is converted at open into the trie the current dictionary
+navigates (`backward_codecs/blocktree.rs`; the `.tim` blocks are unchanged).
+
+**Open, precisely:**
+
+- HNSW `Lucene90`..`Lucene95` (9.0-9.8 fixtures), `Lucene99` scalar
+  quantization, `Lucene102` binary quantization: not ported. The seam is the
+  vector reader's header check (`hnsw_vectors.rs`/`vectors.rs`); the fixture
+  lines are `EXPECTED_FAILURES`.
+- Performance (port-workflow stages 2-3): a retired-format term is decoded
+  whole when its cursor opens and served through the tail-block path, with no
+  block skipping and no impacts (the skip data, trailing or inline, is
+  stepped over); the FST-to-trie conversion is an open-time pass over each
+  field's index. No benchmark against Lucene exists yet for either.
 ### T8.4 — Merge old into new
 ### T8.5 — Plugin: drop the `postings_format` fallback for supported versions
 

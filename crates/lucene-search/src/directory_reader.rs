@@ -295,7 +295,10 @@ impl SegmentReader {
         let segment_id = commit.segment_id;
 
         let si_bytes = dir.open(&format!("{segment_name}.si"))?;
-        let si: SegmentInfo = segment_info::parse(&si_bytes, &segment_id)?;
+        // `Codec.forName(codecName).segmentInfoFormat().read(..)`: a segment
+        // written by a `Lucene90`..`Lucene95` codec has no `hasBlocks` byte.
+        let si: SegmentInfo =
+            segment_info::parse_for_codec(&si_bytes, &segment_id, &commit.codec_name)?;
 
         // Compound-file segments (`.cfs`/`.cfe`) pack every other codec file
         // into one archive -- see `open_segment_file`'s doc comment for how

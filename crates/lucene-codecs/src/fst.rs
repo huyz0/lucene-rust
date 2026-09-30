@@ -857,6 +857,37 @@ impl<'a> Fst<'a> {
         })
     }
 
+    /// `FST.fromFSTReader(FST.readMetadata(metaIn, ..), new
+    /// OffHeapFSTStore(indexIn, offset, metadata))`: the metadata read from
+    /// one stream, the body borrowed from another file at `offset` --
+    /// the split `Lucene90BlockTreeTermsReader` stores a field's term index
+    /// in (metadata in `.tmd`, body in `.tip`).
+    pub fn read_split(meta: &mut SliceInput, body_file: &'a [u8], offset: u64) -> Result<Fst<'a>> {
+        let m = read_fst_metadata_prefix(meta)?;
+        let start = usize::try_from(offset)
+            .map_err(|_| Error::Corrupt(format!("FST offset {offset} out of range")))?;
+        let bytes = start
+            .checked_add(m.num_bytes as usize)
+            .and_then(|end| body_file.get(start..end))
+            .ok_or_else(|| {
+                Error::Corrupt(format!(
+                    "FST body [{start}, +{}) outside a {} byte file",
+                    m.num_bytes,
+                    body_file.len()
+                ))
+            })?;
+        Ok(Fst {
+            metadata: FstMetadata {
+                input_type: m.input_type,
+                empty_output: m.empty_output,
+                start_node: m.start_node,
+                version: m.version,
+                num_bytes: m.num_bytes,
+            },
+            bytes: FstBytes::Borrowed(bytes),
+        })
+    }
+
     pub fn metadata(&self) -> &FstMetadata {
         &self.metadata
     }

@@ -93,6 +93,7 @@
 //! a `BinarySortField` sorts on raw bytes and has none. See `docs/parity.md`
 //! for which consumer honours which.
 
+pub use lucene_codecs::codecs::SegmentInfoFormat;
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
 use lucene_store::data_output::DataOutput;
@@ -124,6 +125,8 @@ pub enum Error {
     UnsupportedSortField { field: String, reason: String },
     #[error("illegal {which} version: {value}")]
     IllegalVersion { which: &'static str, value: i32 },
+    #[error("unknown codec: {0:?}")]
+    UnknownCodec(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -537,6 +540,34 @@ const PROVIDER_BINARY: &str = "BinarySortField";
 /// and checksum. `segment_id` is the id Lucene stores alongside the segment in
 /// `segments_N` and must match the id embedded in the `.si` file's index header.
 pub fn parse(buf: &[u8], segment_id: &[u8; ID_LENGTH]) -> Result<SegmentInfo> {
+    parse_with_format(buf, segment_id, SegmentInfoFormat::Lucene99)
+}
+
+/// [`parse`] for a segment written by codec `codec_name` (the name its
+/// `segments_N` entry records): `Lucene90`..`Lucene95` read the `.si` with
+/// `Lucene90SegmentInfoFormat`, which has no `HasBlocks` byte, and everything
+/// from `Lucene99` on with `Lucene99SegmentInfoFormat` -- under the same
+/// codec name and version, so only the codec can tell them apart (see
+/// [`lucene_codecs::codecs`]). An unknown codec is
+/// [`Error::UnknownCodec`], as `Codec.forName` throws.
+pub fn parse_for_codec(
+    buf: &[u8],
+    segment_id: &[u8; ID_LENGTH],
+    codec_name: &str,
+) -> Result<SegmentInfo> {
+    let codec = lucene_codecs::codecs::for_name(codec_name)
+        .ok_or_else(|| Error::UnknownCodec(codec_name.to_string()))?;
+    parse_with_format(buf, segment_id, codec.segment_info)
+}
+
+/// [`parse`] with an explicit `.si` format generation: the only difference
+/// is whether `HasBlocks` is on the wire (`Lucene90SegmentInfoFormat` reads
+/// every segment as `hasBlocks == false`).
+pub fn parse_with_format(
+    buf: &[u8],
+    segment_id: &[u8; ID_LENGTH],
+    format: SegmentInfoFormat,
+) -> Result<SegmentInfo> {
     let mut input = SliceInput::new(buf);
 
     codec_util::check_index_header(
@@ -563,7 +594,10 @@ pub fn parse(buf: &[u8], segment_id: &[u8; ID_LENGTH]) -> Result<SegmentInfo> {
     }
 
     let is_compound_file = input.read_byte()? == 1;
-    let has_blocks = input.read_byte()? == 1;
+    let has_blocks = match format {
+        SegmentInfoFormat::Lucene90 => false,
+        SegmentInfoFormat::Lucene99 => input.read_byte()? == 1,
+    };
 
     let diagnostics = input.read_map_of_strings()?;
     let files = input.read_set_of_strings()?;
@@ -1229,6 +1263,38 @@ fn read_version(input: &mut SliceInput) -> Result<LuceneVersion> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A 9.0.0 segment (`Lucene90` codec, `Lucene90SegmentInfoFormat`) reads
+    /// only by its codec: the same bytes through `Lucene99SegmentInfoFormat`
+    /// take the first diagnostics byte for `hasBlocks` and misread the rest.
+    #[test]
+    fn a_lucene90_si_is_read_by_its_codec_name() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/data/bwc/9.0.0/_0.si");
+        let bytes = std::fs::read(path).unwrap();
+        // The id the index header carries, after magic, name and version.
+        let name_len = bytes[4] as usize;
+        let mut id = [0u8; ID_LENGTH];
+        id.copy_from_slice(&bytes[9 + name_len..9 + name_len + ID_LENGTH]);
+        let si = parse_for_codec(&bytes, &id, "Lucene90").unwrap();
+        assert_eq!(si.doc_count, 3000);
+        assert!(!si.has_blocks);
+        assert!(si.files.iter().any(|f| f == "_0.fnm"));
+        assert_eq!(
+            si.version,
+            LuceneVersion {
+                major: 9,
+                minor: 0,
+                bugfix: 0
+            }
+        );
+        let misread = parse_for_codec(&bytes, &id, "Lucene99");
+        assert!(!misread.is_ok_and(|s| s.files == si.files));
+        assert!(matches!(
+            parse_for_codec(&bytes, &id, "Lucene87"),
+            Err(Error::UnknownCodec(n)) if n == "Lucene87"
+        ));
+    }
 
     /// Test-only `.si` byte builder: independent of the Java fixtures under
     /// `tests/segment_info_fixtures.rs` (which exercise real Lucene-written
