@@ -212,6 +212,7 @@ frequency attributes (on `index/IndexingChain`'s row).
 - `CompiledAutomaton.getTermsEnum` (`FieldTerms::compiled_terms`, fixture-verified against `GenRegexpIntersect`) and `visit` (`query_visitor::visit_compiled`).
 - `QueryBuilder` and `GraphTokenStreamFiniteStrings` over the streaming analysis model (`GenQueryBuilder`: 29 cases, `toString` and hits/scores bit for bit).
 - `IndexSearcher.explain` over several segments with reader-wide statistics (and `searchAfter`), each top hit's explanation Lucene's `toString` verbatim (`GenMinScore`); counts print as Java longs, scientific notation as Java's.
+- `IndexSearcher` closed (`search/IndexSearcher` now `ported`): `setTimeout`/`timedOut` through `TimeLimitingBulkScorer` per leaf (a counting timeout's checks, partial hits and totals Lucene's: `GenSimilaritySearch`'s `similarity_timeout_index`); span queries scored by `SpanWeight`/`SpanScorer` in the scorer tree, and span, fuzzy and multi-phrase clauses under every similarity (`GenSimilaritySearch`, bit for bit), with a fuzzy `SHOULD` clause flattened into its boolean and an unscored one expanded reader-wide as Lucene's rewrite does.
 
 Each follows [`port-workflow`](../porting-workflow.md): the closest-to-Java
 port with a Java-fixture differential test, a `bench-micro` pair against
