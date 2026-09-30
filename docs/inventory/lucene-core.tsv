@@ -108,7 +108,7 @@ codecs/hnsw/FlatVectorsScorer	ported	crates/lucene-codecs/src/vectors.rs::FloatV
 codecs/hnsw/FlatVectorsWriter	ported	crates/lucene-codecs/src/vectors.rs::FlatVectorsWriter
 codecs/hnsw/HnswGraphProvider	ported	crates/lucene-codecs/src/hnsw_vectors.rs::HnswVectorsReader
 codecs/hnsw/PrefetchableFlatVectorScorer	not-needed	Performance-only wrapper that issues IndexInput.prefetch for off-heap vectors before delegating; scores are unchanged.
-codecs/hnsw/ScalarQuantizedVectorScorer	deferred:M8	Scores the Lucene99 scalar-quantized format (ScalarQuantizer), whose format lives in backward-codecs in 10.5.0; its only core caller is Lucene99ScalarQuantizedVectorScorer.
+codecs/hnsw/ScalarQuantizedVectorScorer	ported	crates/lucene-codecs/src/backward_codecs/scalar_quantized_vectors.rs::{ScalarQuantizedVectorScorer, quantize_query}
 codecs/lucene103/blocktree/CompressionAlgorithm	ported	crates/lucene-codecs/src/blocktree.rs::load_block
 codecs/lucene103/blocktree/FieldReader	ported	crates/lucene-codecs/src/blocktree.rs::FieldTerms
 codecs/lucene103/blocktree/IntersectTermsEnum	ported	crates/lucene-codecs/src/blocktree.rs::DfaIntersect
@@ -173,7 +173,7 @@ codecs/lucene99/Lucene99FlatVectorsWriter	ported	crates/lucene-codecs/src/vector
 codecs/lucene99/Lucene99HnswVectorsFormat	ported	crates/lucene-codecs/src/hnsw_vectors.rs::HnswVectorsReader
 codecs/lucene99/Lucene99HnswVectorsReader	ported	crates/lucene-codecs/src/hnsw_vectors.rs::HnswVectorsReader
 codecs/lucene99/Lucene99HnswVectorsWriter	ported	crates/lucene-codecs/src/hnsw_vectors.rs::write_hnsw_vectors
-codecs/lucene99/Lucene99ScalarQuantizedVectorScorer	deferred:M8	Scorer for the Lucene99 scalar-quantized vectors format, which 10.5.0 ships only in backward-codecs (superseded by Lucene104ScalarQuantizedVectorsFormat).
+codecs/lucene99/Lucene99ScalarQuantizedVectorScorer	ported	crates/lucene-codecs/src/backward_codecs/scalar_quantized_vectors.rs::{Lucene99ScalarQuantizedScorer, Lucene99ScalarQuantizedOrdScorer}
 codecs/lucene99/Lucene99SegmentInfoFormat	ported	crates/lucene-index/src/segment_info.rs::write
 codecs/perfield/PerFieldDocValuesFormat	partial	crates/lucene-index/src/index_writer.rs::per_field_codec_suffix -- M7: per-field routing is single-format only: every field goes to one fixed format with suffix "0"; parity: "any per-field postings or doc-values format other than `Lucene104`/`Lucene90`" is out of scope
 codecs/perfield/PerFieldKnnVectorsFormat	partial	crates/lucene-index/src/index_writer.rs::KNN_VECTORS_FORMAT_NAME -- M7: writes/merges the PerFieldKnnVectorsFormat.format/.suffix attributes for Lucene99HnswVectorsFormat only; no routing of fields to other KNN formats
@@ -394,7 +394,7 @@ index/IndexOptions	ported	crates/lucene-codecs/src/field_infos.rs::IndexOptions
 index/IndexReader	ported	crates/lucene-search/src/reader/mod.rs::IndexReader
 index/IndexReaderContext	ported	crates/lucene-search/src/multi_segment.rs::OpenSegment
 index/IndexSorter	partial	crates/lucene-index/src/segment_info.rs::SortKeyComparator -- M7: per parity.md: the writer sorts only NUMERIC/SORTED_NUMERIC keys; `STRING`/`SortedSetSortField`/`BinarySortField` index sorts are refused with `Error::UnsupportedIndexSortKind`
-index/IndexUpgrader	deferred:M8	command-line tool rewriting older-format segments into the current format
+index/IndexUpgrader	ported	crates/lucene-index/src/index_upgrader.rs::IndexUpgrader
 index/IndexWriter	partial	crates/lucene-index/src/index_writer.rs::IndexWriter -- M7: per parity.md: not ported `tryDeleteDocument`, `tryUpdateDocValue`, `addIndexes` (both overloads), `addBatch`/`ColumnBatch` updates, NRT readers from the writer (`DirectoryReader.open(writer)`), `maybeMerge` and a merge scheduler, `flushNextBuffer`, `infoStream`, writing compound segments
 index/IndexWriterConfig	partial	crates/lucene-index/src/index_writer.rs::set_index_sort -- M7: settings are writer setters (`setSimilarity` is `IndexWriter::set_similarity`, norms via `NormSimilarity`); missing `STRING`/`SortedSet`/`Binary` index sorts, `setUseCompoundFile` (compound segments not written), codec/per-field format choice, `MergeScheduler`, `IndexWriterEventListener`, `infoStream`, `leafSorter`, `commitOnClose`
 index/IndexWriterEventListener	not-needed	callback hook for merge begin/end events used for metrics and tests; no effect on the index.
@@ -513,7 +513,7 @@ index/TieredMergePolicy	ported	crates/lucene-index/src/merge_policy.rs::find_mer
 index/TrackingTmpOutputDirectoryWrapper	not-needed	tracks temp files for the sort-by-rewrite flush of Java's Sorting*Consumer; Rust permutes the buffer before writing (segment_writer::permute_in_place).
 index/TwoPhaseCommit	ported	crates/lucene-index/src/index_writer.rs::prepare_commit
 index/TwoPhaseCommitTool	not-needed	generic loop calling prepareCommit/commit/rollback across several TwoPhaseCommit objects; composed directly from IndexWriter::prepare_commit/finish_commit/rollback.
-index/UpgradeIndexMergePolicy	deferred:M8	merge policy rewriting older-format segments on forceMerge
+index/UpgradeIndexMergePolicy	ported	crates/lucene-index/src/merge_policy/upgrade.rs::UpgradeIndexMergePolicy
 index/VectorEncoding	ported	crates/lucene-codecs/src/field_infos.rs::VectorEncoding
 index/VectorSimilarityFunction	ported	crates/lucene-codecs/src/field_infos.rs::VectorSimilarityFunction
 index/VectorValuesConsumer	ported	crates/lucene-index/src/index_writer.rs::build_vectors_output
@@ -561,7 +561,7 @@ internal/vectorization/Lucene99MemorySegmentByteVectorScorerSupplier	ported	crat
 internal/vectorization/Lucene99MemorySegmentFlatVectorsScorer	ported	crates/lucene-codecs/src/vectors.rs::FloatVectorScorer
 internal/vectorization/Lucene99MemorySegmentFloatVectorScorer	ported	crates/lucene-codecs/src/vectors.rs::FloatVectorScorer
 internal/vectorization/Lucene99MemorySegmentFloatVectorScorerSupplier	ported	crates/lucene-codecs/src/vectors.rs::FloatVectorScorer
-internal/vectorization/Lucene99MemorySegmentScalarQuantizedVectorScorer	deferred:M8	Panama scorer for the Lucene99 scalar-quantized format, which 10.5.0 ships only in backward-codecs.
+internal/vectorization/Lucene99MemorySegmentScalarQuantizedVectorScorer	ported	crates/lucene-codecs/src/backward_codecs/scalar_quantized_vectors.rs::Lucene99ScalarQuantizedScorer
 internal/vectorization/MemorySegmentBulkVectorOps	ported	crates/lucene-util/src/simd.rs::dot_f32
 internal/vectorization/MemorySegmentPostingDecodingUtil	ported	crates/lucene-codecs/src/for_util.rs::ForUtil
 internal/vectorization/PanamaDocValuesBulkDecodeSupport	ported	crates/lucene-util/src/packed_longs.rs::decode_range
@@ -1191,7 +1191,7 @@ util/packed/PackedWriter	ported	crates/lucene-codecs/src/packed_ints.rs::PackedW
 util/packed/PagedGrowableWriter	ported	crates/lucene-util/src/packed/paged_mutable.rs::PagedGrowableWriter
 util/packed/PagedMutable	ported	crates/lucene-util/src/packed/paged_mutable.rs::PagedMutable
 util/quantization/BaseQuantizedByteVectorValues	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::QuantizedVectorValues
-util/quantization/LegacyQuantizedByteVectorValues	deferred:M8	abstract values base of the backward-codecs Lucene99ScalarQuantizedVectorsFormat (read in M8); its quantizer, ScalarQuantizer, is ported in crates/lucene-util/src/quantization.rs
+util/quantization/LegacyQuantizedByteVectorValues	ported	crates/lucene-codecs/src/backward_codecs/scalar_quantized_vectors.rs::LegacyQuantizedVectorValues
 util/quantization/OptimizedScalarQuantizer	ported	crates/lucene-util/src/quantization.rs::OptimizedScalarQuantizer
 util/quantization/QuantizedByteVectorValues	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::QuantizedVectorValues
 util/quantization/QuantizedVectorsReader	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::merge_scorer_supplier
