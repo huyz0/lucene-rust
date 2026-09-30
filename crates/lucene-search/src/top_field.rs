@@ -3277,6 +3277,13 @@ fn merge_top_docs(sort: &[SortField], top_n: usize, parts: Vec<TopFieldDocs>) ->
 /// Two hits in the sort's order (`FieldComparator.compareValues` times
 /// `reverseMul`, key by key), then by document.
 fn compare_hits(sort: &[SortField], a: &FieldDoc, b: &FieldDoc) -> std::cmp::Ordering {
+    compare_keys(sort, a, b).then(a.doc.cmp(&b.doc))
+}
+
+/// Two hits by the sort's keys alone: `FieldComparator.compareValues` times
+/// `reverseMul`, key by key (`TopDocs.MergeSortQueue.lessThan` before its
+/// tie-breaker).
+pub(crate) fn compare_keys(sort: &[SortField], a: &FieldDoc, b: &FieldDoc) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     for (k, key) in sort.iter().enumerate() {
         let (x, y) = (
@@ -3311,7 +3318,7 @@ fn compare_hits(sort: &[SortField], a: &FieldDoc, b: &FieldDoc) -> std::cmp::Ord
             return ord;
         }
     }
-    a.doc.cmp(&b.doc)
+    Ordering::Equal
 }
 
 /// The statistics a scored sort needs, index-wide.
