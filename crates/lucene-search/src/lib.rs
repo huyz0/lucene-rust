@@ -223,6 +223,7 @@ pub mod query_parser;
 pub mod query_visitor;
 pub mod reference_manager;
 pub mod rescorer;
+pub mod segment_cacheable;
 pub mod similarities;
 pub mod similarity;
 mod slices;
