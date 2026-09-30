@@ -9,7 +9,7 @@
 | **Effort** | XL |
 | **Depends on** | [M7](m7-core-complete.md) (per-field formats, the inventory gate) |
 | **Unblocks** | adopting the Rust engine on existing indices without a rewrite |
-| **Status** | T8.1-T8.5 delivered (the quantized vector formats and `IndexUpgrader` included, no `deferred:M8` row left in either inventory; T8.5's JVM half and a real 2.19-to-3.8.0 upgrade verified); acceptance criteria 1-3 met; 4 met for opening and for queries, open for the first lookup in each field of a retired segment (its FST-to-trie conversion, now deferred to that lookup) |
+| **Status** | Delivered 2026-09-30: T8.1-T8.5 (the quantized vector formats and `IndexUpgrader` included, no `deferred:M8` row left in either inventory; T8.5's JVM half and a real 2.19-to-3.8.0 upgrade verified, the latter in CI); acceptance criteria 1-4 met (4 since the retired terms index is read in place) |
 
 ---
 
@@ -141,8 +141,8 @@ Old BKD: version 9 (every index before 10.2) and its scalar `BPV_24` doc-id
 layout. Old postings: `Lucene90`, `Lucene99`, `Lucene912`, `Lucene101` (and
 `Lucene103`) `.doc` framing and `ForUtil`/`PForUtil` generations
 (`backward_codecs/{postings,for_util}.rs`), and `Lucene90BlockTreeTermsReader`,
-whose FST index is converted at open into the trie the current dictionary
-navigates (`backward_codecs/blocktree.rs`; the `.tim` blocks are unchanged).
+whose FST index the current dictionary's enum walks in place (`backward_codecs/blocktree.rs`;
+the `.tim` blocks are unchanged; see the close-out note below).
 
 Old HNSW: `Lucene90`, `Lucene91`, `lucene92`, `Lucene94` and `Lucene95`
 (`backward_codecs/hnsw_vectors.rs::RetiredHnswVectorsReader`): each `.vem`
@@ -298,6 +298,65 @@ FST in place (a `SegmentTermsEnum` over FST arcs, floor data read from the
 arc outputs instead of from the trie); not done. The profile of the conversion
 is flat -- the FST enumeration and one allocation per key, output and floor
 record -- so a cheaper conversion would not close a 50x gap either.
+**Terms index read in place (M8 close-out, superseding the conversion
+above).** No path needed the trie: `crate::blocktree`'s `SegmentTermsEnum`
+(seeks, `next`, the automaton intersection) now steps through the retired
+FST itself (`backward_codecs/blocktree.rs::FstTermsIndex`), as `Lucene90`'s
+`SegmentTermsEnum` does -- an arc per target byte (`FST.findTargetArc`), the
+arcs' outputs accumulated, a frame pushed on every final arc with
+`output + nextFinalOutput` decoded into block fp, `hasTerms` and floor data
+(`pushFrame(arc, frameData, length)`). A frame keeps that floor data in its
+own buffer (`Frame::floor_buf`) where a trie frame points into `.tip`; the
+root frame reads `rootCode`. The conversion (`FstIndex::to_trie`,
+`TermsIndex::Deferred`) is gone. Tests: `every_term_is_found_by_walking_the_fst`
+(every term of the 9.0 fixture by `seek_exact`, `seek_ceil` on itself and just
+past it), `a_corrupt_fst_body_is_met_by_the_lookups_that_reach_it` (three fill
+patterns: errors naming the terms index or misses, no panic); `bwc_fixtures.rs`
+5 of 5, `lucene-codecs` (with `bwc_postings`) all, `verify-bwc-merge.sh` and
+`gen-bwc-fixtures.sh --check` unchanged. Seen to fail: ignoring the floor flag,
+or dropping the arcs' outputs from the accumulated frame data, fails four of
+`bwc_fixtures.rs`'s five tests (the digest test enumerates, so it does not
+notice), and the latter fails the new unit test.
+
+Measured on the same 4-core host at load 7-9 (other jobs running), five
+interleaved rounds; each figure the best round. Rust: `reader_open_profile`,
+minimum of 30 repetitions, before (the deferred conversion) and after binaries
+side by side. Java: Lucene 10.5.0 + backward-codecs, minimum of 300
+`DirectoryReader.open`s, and of 300 opens followed by `seekExact` of each
+field's max term, after 300 of each as warm-up; the first-lookup figure is the
+difference of those two minima, so it is noisy (median over rounds in
+brackets).
+
+| | 9.0 corpus | 9.12 corpus | `bwc-big/9.0.0` | `bwc-big/9.12.2` |
+|---|---|---|---|---|
+| first lookup in every field, before (the conversion) | 3,411 us | 3,478 us | 3.0 us | 3.0 us |
+| first lookup in every field, after (in place) | 7.8 us | 7.8 us | 1.7 us | 1.7 us |
+| Java, first `seekExact` in every field | 32 us (44) | 7 us (37) | ~0 us (22) | 38 us (44) |
+| `DirectoryReader::open`, after | 105 us | 106 us | 69 us | 69 us |
+| Java `DirectoryReader.open` | 391 us | 426 us | 285 us | 286 us |
+
+`blocktree::open_shared` is unchanged at 1.2-1.6 us.
+
+**Queries after the change.** The 87-query set over both 1M-document corpora
+(1 s warm-up, 2 s measured, load 5-7), every query with Java's hits, top set
+and top score: on 9.12 (its first full pass since T8.3) one query below Java,
+q80 at 0.98x; on 9.0 one, q17 at 0.82x. Both again, three interleaved rounds
+of 1 s warm-up and 3 s measured against the before binary and Java: q17 on
+9.0 wins every round (10.0-10.5 qps against 8.9-9.5); q80 on 9.12 wins two
+of three (1,014/880/969 qps against 1,013/981/928, 0.90-1.04x; the before
+binary 826/930/937). q80 (a `t1` term sorted by a long doc value) spends its
+time in the competitive points iterator and the retired `Lucene912` postings,
+not the terms index. Two changes came out of profiling it: `for_decode` is
+instantiated per (width, primitive, word) as Java's generated `ForUtil` has a
+`decodeN` per width (the decode went from 10.0% of q80's profile plus 4.8%
+zeroing to 6.6% plus 1.7%), and BKD version 9's scalar `BPV_24` doc ids read
+straight from the mapped bytes. What remains of q80's cost is
+format-independent: `CompetitiveVisitor::upgrade` allocates a `maxDoc`-bit set
+per query, ~27 page faults a query on this segment -- the old conversion's
+large free had hidden it by raising glibc's mmap threshold (957 faults per run
+against 165,908 without it). Left as a follow-up (reuse the set across
+queries).
+
 ### T8.4 — Merge old into new · delivered 2026-09-30
 
 **Quantized groups and `IndexUpgrader` (M8 close-out).** A segment with
@@ -430,21 +489,21 @@ through `NativeReaders` and answer its term, boolean, sorted, aggregated,
       name its own codec (`KNN9120Codec`), which the native reader does not
       open (`native_open_failed`, once per reader, answers still equal). The
       3.8.0 nodes keep the bundled k-NN plugin (the mapping needs it) and drop
-      the other bundled plugins, as the 2.19 node does. Not in CI (it pulls a
-      2.x image and runs three nodes); run locally.
-- [ ] Reading an old format is no slower than Lucene reading it. **Queries:
-      met** -- q89, the last query slower than Java on the 9.0 corpus, now
-      wins every round (T8.3), and a full pass over all 87 queries on the 9.0
-      corpus after the change (1 s warm-up, 2 s measured, load 6) found none
-      slower than Java and no recall mismatch (lowest q47 1.00x, q48 1.09x,
-      q69 1.11x, q89 1.19x). The 9.12 corpus was not re-run. **Opening: met**
-      (M8 close-out) -- the FST-to-trie conversion no longer runs at open:
-      `DirectoryReader::open` of the 1M-document 9.0 segment takes 0.11 ms
-      against Lucene's 0.65 ms (T8.3's table). **Open: the first lookup in each
-      field of a retired segment**, which now pays that field's conversion (all
-      fields together 3.3 ms on that segment, once per reader; Lucene's first
-      seeks cost 0.04-0.06 ms). Only walking the FST in place would remove it
-      (T8.3), so the criterion as written is not met.
+      the other bundled plugins, as the 2.19 node does. In CI since the M8
+      close-out (`ci.yml`'s `opensearch-upgrade` job).
+- [x] Reading an old format is no slower than Lucene reading it. Measured
+      on the 1M-document segments `GenCorpus` writes with Lucene 9.0.0 and
+      9.12.2 (T8.3), 4-core host at load 5-9, against Lucene 10.5.0 +
+      backward-codecs. **Opening:** `DirectoryReader::open` 105/106 us
+      against Java's 391/426 us. **First lookup in each field** (the terms
+      index now read in place, T8.3's close-out): every field of the segment
+      together 7.8 us against Java's 7-70 us (median 37-44 us); it was
+      3.4 ms while the FST was converted to a trie. **Queries:** all 87, each
+      with Java's hits, top set and top score; on 9.0 none slower than Java
+      in a majority of rounds (q17, 0.82x in one full pass, wins 3 of 3
+      re-runs), on 9.12 likewise (q80, 0.98x in the full pass, 0.90-1.04x
+      in three re-runs, above Java in two) -- q80's remaining cost is a
+      format-independent bit-set allocation, noted in T8.3.
 
 ## Risks and unknowns
 

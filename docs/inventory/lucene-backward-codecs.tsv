@@ -99,7 +99,7 @@ backward_codecs/lucene90/Lucene90SkipReader	ported	crates/lucene-codecs/src/back
 backward_codecs/lucene90/Lucene90SkipWriter	not-needed	writes a retired format; backward-codecs keeps it for tests only and M8 reads, never writes, old formats
 backward_codecs/lucene90/PForUtil	ported	crates/lucene-codecs/src/backward_codecs/for_util.rs::pfor_decode
 backward_codecs/lucene90/blocktree/CompressionAlgorithm	ported	crates/lucene-codecs/src/blocktree.rs::load_block
-backward_codecs/lucene90/blocktree/FieldReader	ported	crates/lucene-codecs/src/backward_codecs/blocktree.rs::decode_output
+backward_codecs/lucene90/blocktree/FieldReader	ported	crates/lucene-codecs/src/backward_codecs/blocktree.rs::FstTermsIndex
 backward_codecs/lucene90/blocktree/IntersectTermsEnum	ported	crates/lucene-codecs/src/blocktree.rs::DfaIntersect
 backward_codecs/lucene90/blocktree/IntersectTermsEnumFrame	ported	crates/lucene-codecs/src/blocktree.rs::DfaIntersect
 backward_codecs/lucene90/blocktree/Lucene90BlockTreeTermsReader	ported	crates/lucene-codecs/src/backward_codecs/blocktree.rs::open
