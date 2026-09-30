@@ -7,9 +7,11 @@
 //!
 //! Whether a write is cached depends on the size estimate Java reads off the
 //! `IOContext` (`mergeInfo.estimatedMergeBytes` or
-//! `flushInfo.estimatedSegmentSize`). This port's [`Directory::create_output`]
-//! carries no context, which Java treats as "don't cache"; callers that know
-//! the size use [`NrtCachingDirectory::create_output_with_estimate`].
+//! `flushInfo.estimatedSegmentSize`), which is
+//! [`Directory::create_output_with_estimate`]'s argument here. A plain
+//! [`Directory::create_output`] carries none, which Java treats as "don't
+//! cache". `IndexWriter` passes its flush and merge estimates through
+//! [`crate::directory::EstimatedWrites`].
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -87,75 +89,6 @@ impl<D: Directory> NrtCachingDirectory<D> {
         };
         bytes <= self.max_merge_size_bytes
             && bytes.saturating_add(self.ram_bytes_used()) <= self.max_cached_bytes
-    }
-
-    /// `createOutput(name, context)` with the context's size estimate:
-    /// cached when [`Self::do_cache_write`] says so, else the delegate's.
-    pub fn create_output_with_estimate(
-        &self,
-        name: &str,
-        estimated_bytes: Option<u64>,
-    ) -> Result<FsIndexOutput> {
-        if self.do_cache_write(name, estimated_bytes) {
-            self.cache.create_output(name)
-        } else {
-            self.inner.create_output(name)
-        }
-    }
-
-    /// `createTempOutput(prefix, suffix, context)` with the context's size
-    /// estimate: creates in the preferred directory, retrying until the name
-    /// is free in the other one too, and removes the rejected attempts.
-    pub fn create_temp_output_with_estimate(
-        &self,
-        prefix: &str,
-        suffix: &str,
-        estimated_bytes: Option<u64>,
-    ) -> Result<FsIndexOutput> {
-        let (first, second): (&dyn Directory, &dyn Directory) =
-            if self.do_cache_write(prefix, estimated_bytes) {
-                (&self.cache, &self.inner)
-            } else {
-                (&self.inner, &self.cache)
-            };
-        let mut to_delete = Vec::new();
-        let result = loop {
-            let out = match first.create_temp_output(prefix, suffix) {
-                Ok(out) => out,
-                Err(e) => break Err(e),
-            };
-            let name = out.name().to_string();
-            match slow_file_exists(second, &name) {
-                Ok(true) => {
-                    to_delete.push(name);
-                    if let Err(e) = out.close() {
-                        break Err(e);
-                    }
-                }
-                Ok(false) => break Ok(out),
-                Err(e) => {
-                    to_delete.push(name);
-                    drop(out);
-                    break Err(e);
-                }
-            }
-        };
-        match result {
-            // `IOUtils.deleteFiles(first, toDelete)`.
-            Ok(out) => {
-                for name in &to_delete {
-                    first.delete_file(name)?;
-                }
-                Ok(out)
-            }
-            // `IOUtils.deleteFilesIgnoringExceptions(first, toDelete)`.
-            Err(e) => {
-                for name in &to_delete {
-                    let _ = first.delete_file(name);
-                }
-                Err(e)
-            }
-        }
     }
 
     /// `unCache(fileName)`: moves a cached file to the delegate.
@@ -238,6 +171,76 @@ impl<D: Directory> Directory for NrtCachingDirectory<D> {
 
     fn create_temp_output(&self, prefix: &str, suffix: &str) -> Result<FsIndexOutput> {
         self.create_temp_output_with_estimate(prefix, suffix, None)
+    }
+
+    /// `createOutput(name, context)` with the context's size estimate:
+    /// cached when [`Self::do_cache_write`] says so, else the delegate's.
+    fn create_output_with_estimate(
+        &self,
+        name: &str,
+        estimated_bytes: Option<u64>,
+    ) -> Result<FsIndexOutput> {
+        if self.do_cache_write(name, estimated_bytes) {
+            self.cache.create_output(name)
+        } else {
+            self.inner
+                .create_output_with_estimate(name, estimated_bytes)
+        }
+    }
+
+    /// `createTempOutput(prefix, suffix, context)` with the context's size
+    /// estimate: creates in the preferred directory, retrying until the name
+    /// is free in the other one too, and removes the rejected attempts.
+    fn create_temp_output_with_estimate(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        estimated_bytes: Option<u64>,
+    ) -> Result<FsIndexOutput> {
+        let (first, second): (&dyn Directory, &dyn Directory) =
+            if self.do_cache_write(prefix, estimated_bytes) {
+                (&self.cache, &self.inner)
+            } else {
+                (&self.inner, &self.cache)
+            };
+        let mut to_delete = Vec::new();
+        let result = loop {
+            let out = match first.create_temp_output(prefix, suffix) {
+                Ok(out) => out,
+                Err(e) => break Err(e),
+            };
+            let name = out.name().to_string();
+            match slow_file_exists(second, &name) {
+                Ok(true) => {
+                    to_delete.push(name);
+                    if let Err(e) = out.close() {
+                        break Err(e);
+                    }
+                }
+                Ok(false) => break Ok(out),
+                Err(e) => {
+                    to_delete.push(name);
+                    drop(out);
+                    break Err(e);
+                }
+            }
+        };
+        match result {
+            // `IOUtils.deleteFiles(first, toDelete)`.
+            Ok(out) => {
+                for name in &to_delete {
+                    first.delete_file(name)?;
+                }
+                Ok(out)
+            }
+            // `IOUtils.deleteFilesIgnoringExceptions(first, toDelete)`.
+            Err(e) => {
+                for name in &to_delete {
+                    let _ = first.delete_file(name);
+                }
+                Err(e)
+            }
+        }
     }
 
     /// Moves every named file out of the cache, then syncs the delegate.
@@ -328,6 +331,66 @@ mod tests {
         assert_eq!(dir.open("_0.fdt").unwrap().len(), 100);
         // Listing still shows each file once.
         assert_eq!(dir.list_all().unwrap(), vec!["_0.fdt", "_0.fdx"]);
+    }
+
+    /// The estimate reaches the cache through [`crate::EstimatedWrites`]
+    /// and every forwarding wrapper, as Java's `IOContext` reaches it through
+    /// `FilterDirectory`s: an `IndexWriter` flush of a small segment is
+    /// cached, a large merge is not, a plain write is not.
+    #[test]
+    fn estimates_reach_the_cache_through_wrappers() {
+        use crate::{
+            EstimatedWrites, LockFactory, LockValidatingDirectoryWrapper, NoLockFactory,
+            SleepingLockWrapper,
+        };
+        let root = TempDir::new("nrt-estimated");
+        let nrt = NrtCachingDirectory::new(FsDirectory::open(&root), 1.0, 2.0);
+        let sleeping = SleepingLockWrapper::new(&nrt, 0).unwrap();
+        let lock: Arc<dyn Lock> = Arc::from(NoLockFactory.obtain_lock(&nrt, "write.lock").unwrap());
+        let validating = LockValidatingDirectoryWrapper::new(&sleeping, lock);
+        let arc: Arc<dyn Directory + '_> = Arc::new(&validating);
+        let flush = EstimatedWrites::new(&arc, 1000);
+        assert_eq!(flush.estimated_bytes(), 1000);
+        for name in ["_0.fdt", "_0.fdx"] {
+            let mut out = flush.create_output(name).unwrap();
+            out.write_bytes(b"abc");
+            out.close().unwrap();
+        }
+        let mut out = flush.create_temp_output("_0", "sort").unwrap();
+        out.write_bytes(b"t");
+        let temp = out.name().to_string();
+        out.close().unwrap();
+        assert_eq!(
+            nrt.list_cached_files(),
+            vec!["_0.fdt".to_string(), "_0.fdx".to_string(), temp.clone()]
+        );
+        assert_eq!(flush.file_length("_0.fdt").unwrap(), 3);
+        assert_eq!(flush.open("_0.fdx").unwrap().len(), 3);
+        assert!(flush.list_all().unwrap().contains(&temp));
+        flush.delete_file(&temp).unwrap();
+        // An explicit estimate on the wrapper wins over its own.
+        let mut out = flush
+            .create_output_with_estimate("_big.fdt", Some(1 << 30))
+            .unwrap();
+        out.write_bytes(b"x");
+        out.close().unwrap();
+        let out = flush
+            .create_temp_output_with_estimate("_big", "s", None)
+            .unwrap();
+        out.close().unwrap();
+        assert!(root.join("_big.fdt").exists());
+        // A large merge goes to the delegate.
+        let merge = EstimatedWrites::new(&nrt, 64 * 1024 * 1024);
+        let out = merge.create_output("_1.fdt").unwrap();
+        out.close().unwrap();
+        assert!(root.join("_1.fdt").exists());
+        merge.sync(&["_0.fdt".to_string()]).unwrap();
+        merge.sync_meta_data().unwrap();
+        assert!(root.join("_0.fdt").exists());
+        merge.rename("_0.fdt", "_2.fdt").unwrap();
+        assert!(merge.pending_deletions().unwrap().is_empty());
+        assert!(merge.fs_directory_path().is_none());
+        assert!(merge.obtain_lock("x.lock").is_ok());
     }
 
     #[test]

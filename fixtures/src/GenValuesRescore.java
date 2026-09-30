@@ -23,6 +23,8 @@ import org.apache.lucene.index.SegmentCommitInfo;
 import org.apache.lucene.index.SegmentInfos;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.index.VectorSimilarityFunction;
+import org.apache.lucene.search.BooleanClause;
+import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.DoubleValues;
 import org.apache.lucene.search.DoubleValuesSource;
 import org.apache.lucene.search.DoubleValuesSourceRescorer;
@@ -234,7 +236,10 @@ public class GenValuesRescore {
         }
 
         // Sorting by a values source (`getSortField`).
-        String[] vsorts = {"float", "double_rev", "long", "long_rev", "scores", "late", "float_scores"};
+        String[] vsorts = {
+          "float", "double_rev", "long", "long_rev", "scores", "late", "float_scores", "query",
+          "query_rev", "full", "query_long",
+        };
         int vsort = 0;
         for (String qs : new String[] {"(t w0)", "(all)"}) {
           for (String vs : vsorts) {
@@ -246,6 +251,23 @@ public class GenValuesRescore {
                   case "long_rev" -> new SortField[] {LongValuesSource.fromLongField("n").getSortField(true, 42)};
                   case "scores" -> new SortField[] {DoubleValuesSource.SCORES.getSortField(true)};
                   case "late" -> new SortField[] {new LateInteractionFloatValuesSource("li", QMV).getSortField(true)};
+                  case "query" -> new SortField[] {
+                    DoubleValuesSource.fromQuery(query(QUERY_SOURCES[1])).getSortField(false)
+                  };
+                  case "query_rev" -> new SortField[] {
+                    DoubleValuesSource.fromQuery(query(QUERY_SOURCES[0])).getSortField(true),
+                    DoubleValuesSource.SCORES.getSortField(true)
+                  };
+                  case "full" -> new SortField[] {
+                    new FullPrecisionFloatVectorSimilarityValuesSource(
+                            QEU, "veu", VectorSimilarityFunction.MAXIMUM_INNER_PRODUCT)
+                        .getSortField(true)
+                  };
+                  case "query_long" -> new SortField[] {
+                    DoubleValuesSource.fromQuery(query(QUERY_SOURCES[2]))
+                        .toLongValuesSource()
+                        .getSortField(true)
+                  };
                   default -> new SortField[] {
                     DoubleValuesSource.fromFloatField("f").getSortField(true),
                     DoubleValuesSource.SCORES.getSortField(false)
@@ -276,7 +298,7 @@ public class GenValuesRescore {
         m.append("vsort_count=").append(vsort).append('\n');
 
         // Rescorers.
-        int qr = 0, dvr = 0, late = 0, sort = 0, rtn = 0;
+        int qr = 0, dvr = 0, late = 0, sort = 0, rtn = 0, rtnb = 0;
         for (int f = 0; f < FIRST_PASS.length; f++) {
           TopDocs first = searcher.search(query(FIRST_PASS[f]), 40);
           m.append("fp.").append(f).append(".query=").append(FIRST_PASS[f]).append('\n');
@@ -381,7 +403,26 @@ public class GenValuesRescore {
               m.append(k).append(".total=").append(r.totalHits.value()).append('\n');
             }
           }
+
+          // RescoreTopNQuery as a clause: required, next to an optional term.
+          for (int n : new int[] {5, 30}) {
+            Query q =
+                new BooleanQuery.Builder()
+                    .add(
+                        new RescoreTopNQuery(
+                            query(FIRST_PASS[f]), DoubleValuesSource.fromFloatField("f"), n),
+                        BooleanClause.Occur.MUST)
+                    .add(query("(t w1)"), BooleanClause.Occur.SHOULD)
+                    .build();
+            TopDocs r = searcher.search(q, 20);
+            String k = "rtnb." + rtnb++;
+            m.append(k).append(".fp=").append(f).append('\n');
+            m.append(k).append(".n=").append(n).append('\n');
+            m.append(k).append(".hits=").append(hits(r, null)).append('\n');
+            m.append(k).append(".total=").append(r.totalHits.value()).append('\n');
+          }
         }
+        m.append("rtnb_count=").append(rtnb).append('\n');
         m.append("qr_count=").append(qr).append('\n');
         m.append("dvr_count=").append(dvr).append('\n');
         m.append("late_count=").append(late).append('\n');

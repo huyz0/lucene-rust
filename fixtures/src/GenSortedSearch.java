@@ -68,6 +68,8 @@ import java.util.stream.Stream;
  *   m   long, SortedNumeric + LongPoint, 0-3 values per document (MIN and MAX selectors)
  *   s   long, NUMERIC (single-valued column) + LongPoint
  *   np  long, SortedNumeric without points (no skipping)
+ *   k   long, SortedNumeric with a doc-values skip index and no points, clustered by position
+ *       (skipping by the skip index)
  * </pre>
  *
  * <p>Every run is a query (the S-expression grammar of GenMixedBooleanScoring, plus {@code
@@ -110,6 +112,9 @@ public class GenSortedSearch {
     "i:int:min:asc:last,score",
     "score,i:int:min:desc:last",
     "l:long:min:asc:none",
+    "k:long:min:asc:last",
+    "k:long:min:desc:last",
+    "k:long:min:asc:last,score",
     "score!,l:long:min:asc:last",
     "i:int:min:asc:last,score!",
   };
@@ -167,6 +172,9 @@ public class GenSortedSearch {
             doc.add(new NumericDocValuesField("s", s));
             doc.add(new LongPoint("s", s));
             doc.add(new SortedNumericDocValuesField("np", random.nextInt(3000)));
+            // Clustered by position, with a doc-values skip index and no points:
+            // NumericComparator's DVSkipperCompetitiveDISIBuilder.
+            doc.add(SortedNumericDocValuesField.indexedField("k", i / 50 + (i % 7 == 0 ? 3 : 0)));
             w.addDocument(doc);
           }
           w.commit();

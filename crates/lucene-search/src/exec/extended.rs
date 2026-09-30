@@ -200,7 +200,109 @@ pub(crate) fn build<'a>(
         }
         ExtendedQuery::PointRange(r) => super::ranges::point_range(ctx, r, boost, mode),
         ExtendedQuery::PointInSet(r) => super::ranges::point_in_set(ctx, r, boost, mode),
+        ExtendedQuery::IndexOrDocValues(q) => {
+            index_or_doc_values(ctx, q, boost, mode, top_level, None)
+        }
+        // `RescoreTopNQuery` has no weight of its own: `rewrite(searcher)`
+        // turns it into a `DocAndScoreQuery` first.
+        ExtendedQuery::RescoreTopN(_) => Err(crate::Error::IllegalState(
+            "RescoreTopNQuery must be rewritten against the searcher \
+             (rescorer::rewrite_rescore_clauses) before it is searched"
+                .into(),
+        )),
     }
+}
+
+// ---------------------------------------------------------------------------
+// IndexOrDocValuesQuery
+// ---------------------------------------------------------------------------
+
+/// Whether a side of an `IndexOrDocValuesQuery` has a `ScorerSupplier` in this
+/// segment -- `Weight.scorerSupplier` returning `null` for a field the segment
+/// does not index that way -- and, for the index side, its `cost()`.
+pub(crate) enum Supplier {
+    /// No scorer supplier: the whole query matches nothing here.
+    Absent,
+    /// A supplier; its cost when it can be had without building the scorer
+    /// (`PointRangeQuery`'s `estimateDocCount`), `None` otherwise.
+    Present(Option<i64>),
+}
+
+/// The index side's supplier and `cost()`.
+pub(crate) fn index_side(ctx: &LeafContext<'_>, clause: &Clause) -> Result<Supplier> {
+    let Clause::Extended(e) = clause else {
+        return Ok(Supplier::Present(None));
+    };
+    match e.as_ref() {
+        ExtendedQuery::PointRange(q) => super::ranges::point_range_cost(ctx, q),
+        ExtendedQuery::PointInSet(q) => Ok(match ctx.points {
+            Some(p)
+                if p.field_number(&q.field)
+                    .and_then(|n| p.reader.field(n))
+                    .is_some() =>
+            {
+                Supplier::Present(None)
+            }
+            _ => Supplier::Absent,
+        }),
+        _ => Ok(Supplier::Present(None)),
+    }
+}
+
+/// Whether the doc-values side has a supplier: a doc-values query over a
+/// field this segment has no doc values for has none.
+fn dv_side_present(ctx: &LeafContext<'_>, clause: &Clause) -> Result<bool> {
+    let field = match clause {
+        Clause::Extended(e) => match e.as_ref() {
+            ExtendedQuery::NumericDocValuesRange(q) => &q.field,
+            _ => return Ok(true),
+        },
+        _ => return Ok(true),
+    };
+    let Some(reader) = ctx.reader else {
+        return Err(crate::Error::MissingSegmentReader(field.to_string()));
+    };
+    Ok(reader
+        .field_infos()
+        .field_by_name(field)
+        .is_some_and(|fi| fi.doc_values_type != lucene_codecs::field_infos::DocValuesType::None))
+}
+
+/// `IndexOrDocValuesQuery`'s `ScorerSupplier`: `get(leadCost)` with the lead
+/// cost of the boolean it is a clause of, or -- `lead_cost` `None`, the query
+/// run alone -- `bulkScorer()`, which always takes the index side.
+pub(crate) fn index_or_doc_values<'a>(
+    ctx: &LeafContext<'a>,
+    q: &IndexOrDocValuesQuery,
+    boost: f32,
+    mode: Mode,
+    top_level: bool,
+    lead_cost: Option<i64>,
+) -> Result<Option<BoxScorer<'a>>> {
+    let Supplier::Present(cost) = index_side(ctx, &q.index_query)? else {
+        return Ok(None);
+    };
+    if !dv_side_present(ctx, &q.dv_query)? {
+        return Ok(None);
+    }
+    let plan = match lead_cost {
+        None => crate::doc_value_query::IndexOrDocValuesPlan::Index,
+        Some(lead) => crate::doc_value_query::plan_index_or_doc_values(cost, lead),
+    };
+    let side = match plan {
+        crate::doc_value_query::IndexOrDocValuesPlan::Index => &q.index_query,
+        crate::doc_value_query::IndexOrDocValuesPlan::DocValues => &q.dv_query,
+    };
+    #[cfg(test)]
+    IODV_PLANS.with(|p| p.borrow_mut().push(plan));
+    build::build(ctx, side, boost, mode, top_level)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Every side [`index_or_doc_values`] chose on this thread, for tests.
+    pub(crate) static IODV_PLANS: std::cell::RefCell<Vec<crate::doc_value_query::IndexOrDocValuesPlan>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 // ---------------------------------------------------------------------------

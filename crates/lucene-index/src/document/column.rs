@@ -939,12 +939,15 @@ impl IndexWriter<'_> {
     /// given column-wise. See the module doc.
     pub fn add_batch(&mut self, batch: &dyn ColumnBatch) -> crate::index_writer::Result<SeqNo> {
         let docs = batch_documents(batch)?;
-        self.register_batch(batch)?;
-        self.add_fields_documents_with_vectors(&docs, None)
+        let registered = self.register_batch(batch)?;
+        self.add_fields_documents_registering(&docs, None, registered)
     }
 
-    /// The batch's fields, numbered in column order.
-    fn register_batch(&mut self, batch: &dyn ColumnBatch) -> crate::index_writer::Result<()> {
+    /// The batch's fields, numbered in column order: the numbers of every
+    /// column's field, which the segment's `FieldInfos` carries whether or
+    /// not the column yields a value (`processBatch` initializes each
+    /// column's `FieldInfo` before reading its cells).
+    fn register_batch(&mut self, batch: &dyn ColumnBatch) -> crate::index_writer::Result<Vec<i32>> {
         let columns = batch.columns();
         let types: Vec<(&str, &FieldType)> = columns
             .iter()
@@ -960,8 +963,8 @@ impl IndexWriter<'_> {
         batch: &dyn ColumnBatch,
     ) -> crate::index_writer::Result<SeqNo> {
         let docs = batch_documents(batch)?;
-        self.register_batch(batch)?;
-        self.add_fields_documents_with_vectors(&docs, Some(term))
+        let registered = self.register_batch(batch)?;
+        self.add_fields_documents_registering(&docs, Some(term), registered)
     }
 }
 

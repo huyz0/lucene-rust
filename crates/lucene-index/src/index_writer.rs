@@ -1038,7 +1038,52 @@ pub(crate) struct DocumentBuffer<'b> {
     pub(crate) has_blocks: bool,
 }
 
+impl DocumentBuffer<'_> {
+    /// `FlushInfo.estimatedSegmentSize`: the buffered documents' heap bytes
+    /// (Java passes the flushing `DocumentsWriterPerThread`'s `bytesUsed`).
+    pub(crate) fn estimated_bytes(&self) -> u64 {
+        let docs = self
+            .docs
+            .iter()
+            .map(document_ram_bytes)
+            .chain(self.explicit.iter().map(ExplicitFields::ram_bytes))
+            .fold(0usize, usize::saturating_add);
+        u64::try_from(docs).unwrap_or(u64::MAX)
+    }
+}
+
 impl IndexingConfig {
+    /// `IndexWriter._mergeInit`'s `estimatedMergeBytes`: each source's
+    /// `sizeInBytes()` pro-rated by its live documents, the size estimate of
+    /// the merge's `IOContext(MergeInfo)`. A source whose `.si` cannot be
+    /// read counts as empty; the merge itself reports that failure.
+    pub(crate) fn estimated_merge_bytes(dir: &dyn Directory, plan: &MergePlan) -> u64 {
+        let mut total = 0u64;
+        for sci in &plan.sources {
+            let Ok(si_bytes) = dir.open(&format!("{}.si", sci.segment_name)) else {
+                continue;
+            };
+            let Ok(si) = segment_info::parse_for_codec(&si_bytes, &sci.segment_id, &sci.codec_name)
+            else {
+                continue;
+            };
+            if si.doc_count <= 0 {
+                continue;
+            }
+            let size = sci
+                .files(&si.files)
+                .iter()
+                .filter_map(|f| dir.file_length(f).ok())
+                .fold(0u64, u64::saturating_add);
+            let del_ratio = f64::from(sci.del_count) / f64::from(si.doc_count);
+            // `(long) (info.sizeInBytes() * (1.0 - delRatio))`: `as` saturates
+            // as Java's cast does.
+            let live = (size as f64 * (1.0 - del_ratio)) as u64;
+            total = total.saturating_add(live);
+        }
+        total
+    }
+
     /// Java's `globalFieldNumberMap.verifyOrCreateDvOnlyField(field, dvType,
     /// …)`, against this port's fixed field list: the field must exist and its
     /// declared `DocValuesType` must match the update's kind. Java can *create*
@@ -1115,8 +1160,12 @@ impl IndexingConfig {
     /// held to that rate, as `IndexWriter.mergeMiddle` writes through its
     /// rate-limited merge directory.
     pub(crate) fn run_merge(&self, dir: &dyn Directory, plan: &MergePlan) -> Result<MergeOutcome> {
+        // Every file of the merge is written under one
+        // `IOContext(merge.getStoreMergeInfo())`.
+        let estimate = Self::estimated_merge_bytes(dir, plan);
         let Some(mb_per_sec) = self.merge_mb_per_sec else {
-            return self.run_merge_unthrottled(dir, plan);
+            return self
+                .run_merge_unthrottled(&lucene_store::EstimatedWrites::new(dir, estimate), plan);
         };
         let progress = std::sync::Arc::new(crate::merge_rate_limiter::OneMergeProgress::new());
         let limiter = std::sync::Arc::new(crate::merge_rate_limiter::MergeRateLimiter::new(
@@ -1124,7 +1173,10 @@ impl IndexingConfig {
         ));
         lucene_store::RateLimiter::set_mb_per_sec(&*limiter, mb_per_sec);
         let merge_dir = crate::merge_rate_limiter::MergeDirectory::new(dir, limiter);
-        let outcome = self.run_merge_unthrottled(&merge_dir, plan)?;
+        let outcome = self.run_merge_unthrottled(
+            &lucene_store::EstimatedWrites::new(&merge_dir, estimate),
+            plan,
+        )?;
         if progress.is_aborted() {
             return Err(Error::MergeAborted);
         }
@@ -2526,6 +2578,12 @@ impl IndexingConfig {
         segment_id: [u8; ID_LENGTH],
         flush_deletes: Option<&mut FlushDeletes<'_>>,
     ) -> Result<(SegmentCommitInfo, Vec<String>)> {
+        // `DocumentsWriterPerThread.flush`: every file of the segment is
+        // written under one `IOContext(new FlushInfo(numDocs, bytesUsed))`,
+        // whose size estimate an `NRTCachingDirectory` caches small segments
+        // by.
+        let flush_dir = lucene_store::EstimatedWrites::new(dir, buf.estimated_bytes());
+        let dir: &dyn Directory = &flush_dir;
         if self.explicit {
             return self.build_and_write_explicit_segment(dir, buf, segment_name, segment_id);
         }

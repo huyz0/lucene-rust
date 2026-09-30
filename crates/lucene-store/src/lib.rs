@@ -19,7 +19,7 @@ pub mod rate_limiter;
 pub use byte_buffers_directory::ByteBuffersDirectory;
 pub use data_input::{DataInput, SliceInput};
 pub use data_output::{DataOutput, VecDataOutput};
-pub use directory::{BaseDirectory, Directory, FsDirectory, Input, MmapDirectory};
+pub use directory::{BaseDirectory, Directory, EstimatedWrites, FsDirectory, Input, MmapDirectory};
 pub use error::{Error, Result};
 pub use file_switch_directory::FileSwitchDirectory;
 pub use fs_lock_factory::{FsLockFactory, NativeFsLockFactory, SimpleFsLockFactory};

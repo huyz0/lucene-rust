@@ -2335,6 +2335,33 @@ impl FieldTerms {
         )
     }
 
+    /// `CompiledAutomaton.getTermsEnum(terms)`: by the automaton's type,
+    /// nothing (`NONE`), every term (`ALL`), the one term (`SINGLE`, a
+    /// `SingleTermsEnum`), or `Terms.intersect(compiled, null)` (`NORMAL`:
+    /// the block-tree walk stepping the compiled byte automaton, the
+    /// `IntersectTermsEnum`'s place). Every term in order, with its stats
+    /// and postings pointers.
+    pub fn compiled_terms<'a>(
+        &'a self,
+        compiled: &'a lucene_util::automaton::CompiledAutomaton,
+    ) -> CompiledTermsEnum<'a> {
+        use lucene_util::automaton::AutomatonType;
+        match compiled.automaton_type {
+            AutomatonType::NONE => CompiledTermsEnum::Empty,
+            AutomatonType::ALL => CompiledTermsEnum::All(self.iter()),
+            AutomatonType::SINGLE => {
+                CompiledTermsEnum::Single(compiled.term.as_deref().map(|t| (self, t)))
+            }
+            AutomatonType::NORMAL => match compiled.get_byte_runnable() {
+                Some(run) => CompiledTermsEnum::Normal(Box::new(DfaIntersect::new(
+                    self,
+                    crate::automaton::RunnableTermAutomaton(run),
+                ))),
+                None => CompiledTermsEnum::Empty,
+            },
+        }
+    }
+
     /// `FuzzyQuery`-equivalent term matching: every term within `pattern`'s
     /// edit-distance budget, in sorted order, with its stats. Same shape as
     /// [`Self::intersect`], with `pattern`'s required `prefixLength`-byte
@@ -3344,7 +3371,7 @@ impl<M: TermMatcher> Iterator for Intersect<'_, M> {
 /// This replaces [`Intersect`]'s forward scan for regexp, which fed every
 /// term (all of its bytes, found by comparing it with the previous one)
 /// through a [`DfaWalker`] and could only skip by re-seeking from the root.
-struct DfaIntersect<'a, A: TermAutomaton> {
+pub struct DfaIntersect<'a, A: TermAutomaton> {
     field: &'a FieldTerms,
     st: EnumState,
     compiled: A,
@@ -3597,6 +3624,54 @@ impl<'a, A: TermAutomaton> DfaIntersect<'a, A> {
                 self.st.term.get().to_vec(),
                 SeekedTerm { stats, meta },
             )));
+        }
+    }
+}
+
+/// What [`FieldTerms::compiled_terms`] returns: `TermsEnum.EMPTY`, the
+/// field's own `TermsEnum`, a `SingleTermsEnum`, or the automaton walk.
+pub enum CompiledTermsEnum<'a> {
+    Empty,
+    All(TermsEnum<'a>),
+    /// The field and the one term, until it is looked up.
+    Single(Option<(&'a FieldTerms, &'a [u8])>),
+    Normal(Box<DfaIntersect<'a, crate::automaton::RunnableTermAutomaton<'a>>>),
+}
+
+impl Iterator for CompiledTermsEnum<'_> {
+    /// A corrupt block ends the enumeration with an error.
+    type Item = Result<(Vec<u8>, SeekedTerm)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            CompiledTermsEnum::Empty => None,
+            CompiledTermsEnum::All(te) => {
+                let term = match te.try_next_term() {
+                    Ok(Some(t)) => t.to_vec(),
+                    Ok(None) => return None,
+                    Err(e) => {
+                        *self = CompiledTermsEnum::Empty;
+                        return Some(Err(e));
+                    }
+                };
+                match te.try_seeked_term() {
+                    Ok(Some(s)) => Some(Ok((term, s))),
+                    Ok(None) => None,
+                    Err(e) => {
+                        *self = CompiledTermsEnum::Empty;
+                        Some(Err(e))
+                    }
+                }
+            }
+            CompiledTermsEnum::Single(pending) => {
+                let (field, term) = pending.take()?;
+                match field.seek_term_state(term) {
+                    Ok(Some(s)) => Some(Ok((term.to_vec(), s))),
+                    Ok(None) => None,
+                    Err(e) => Some(Err(e)),
+                }
+            }
+            CompiledTermsEnum::Normal(walk) => walk.next(),
         }
     }
 }

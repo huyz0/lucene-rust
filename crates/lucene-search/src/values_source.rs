@@ -33,6 +33,7 @@
 //!   each segment through [`ValuesContext::for_reader`]: a source that needs
 //!   the searcher (a query's scores) or opened vectors cannot sort.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use lucene_codecs::doc_values::NumericReader;
@@ -177,6 +178,14 @@ pub trait DoubleValuesSource: Send + Sync {
     /// `needsScores()`.
     fn needs_scores(&self) -> bool;
 
+    /// Whether the values need more than the leaf's reader -- the searcher
+    /// (a query-backed source) or the opened vectors of a [`ValuesContext`]
+    /// -- which a sort's comparator only has once the sort is rewritten
+    /// ([`crate::top_field::rewrite_sort`], Java's `rewrite(searcher)`).
+    fn needs_searcher(&self) -> bool {
+        false
+    }
+
     /// `SegmentCacheable.isCacheable(ctx)`.
     fn is_cacheable(&self, ctx: &ValuesContext<'_>, leaf: usize) -> bool;
 
@@ -214,6 +223,10 @@ pub trait LongValuesSource: Send + Sync {
         scores: Option<BoxDoubleValues<'c>>,
     ) -> Result<BoxLongValues<'c>>;
     fn needs_scores(&self) -> bool;
+    /// As [`DoubleValuesSource::needs_searcher`].
+    fn needs_searcher(&self) -> bool {
+        false
+    }
     fn is_cacheable(&self, ctx: &ValuesContext<'_>, leaf: usize) -> bool;
     fn describe(&self) -> String;
 }
@@ -552,6 +565,9 @@ impl DoubleValuesSource for QuerySource {
     fn needs_scores(&self) -> bool {
         false
     }
+    fn needs_searcher(&self) -> bool {
+        true
+    }
     fn is_cacheable(&self, _ctx: &ValuesContext<'_>, _leaf: usize) -> bool {
         false
     }
@@ -704,6 +720,9 @@ impl LongValuesSource for DoubleAsLongSource {
     fn needs_scores(&self) -> bool {
         self.inner.needs_scores()
     }
+    fn needs_searcher(&self) -> bool {
+        self.inner.needs_searcher()
+    }
     fn is_cacheable(&self, ctx: &ValuesContext<'_>, leaf: usize) -> bool {
         match self.how {
             DoubleToLong::Cast => self.inner.is_cacheable(ctx, leaf),
@@ -763,6 +782,9 @@ impl DoubleValuesSource for LongAsDoubleSource {
     }
     fn needs_scores(&self) -> bool {
         self.0.needs_scores()
+    }
+    fn needs_searcher(&self) -> bool {
+        self.0.needs_searcher()
     }
     fn is_cacheable(&self, ctx: &ValuesContext<'_>, leaf: usize) -> bool {
         self.0.is_cacheable(ctx, leaf)
@@ -867,6 +889,9 @@ impl DoubleValuesSource for FloatVectorSource {
     fn needs_scores(&self) -> bool {
         false
     }
+    fn needs_searcher(&self) -> bool {
+        true
+    }
     fn is_cacheable(&self, _ctx: &ValuesContext<'_>, _leaf: usize) -> bool {
         true
     }
@@ -955,6 +980,9 @@ impl DoubleValuesSource for ByteVectorSource {
     fn needs_scores(&self) -> bool {
         false
     }
+    fn needs_searcher(&self) -> bool {
+        true
+    }
     fn is_cacheable(&self, _ctx: &ValuesContext<'_>, _leaf: usize) -> bool {
         true
     }
@@ -1005,6 +1033,9 @@ impl DoubleValuesSource for FullPrecisionSource {
     }
     fn needs_scores(&self) -> bool {
         false
+    }
+    fn needs_searcher(&self) -> bool {
+        true
     }
     fn is_cacheable(&self, _ctx: &ValuesContext<'_>, _leaf: usize) -> bool {
         true
@@ -1339,6 +1370,122 @@ impl crate::top_field::FieldComparatorSource for ValuesSortSource {
             missing: self.missing,
         })
     }
+
+    /// `DoubleValuesSortField.rewrite(searcher)` (and the long one's): a
+    /// source that needs the searcher or the opened vectors
+    /// ([`DoubleValuesSource::needs_searcher`]) is rewritten against `ctx`
+    /// -- Java binds a query-backed source to its `Weight` there -- here by
+    /// reading each leaf's values once, so the comparator needs only the
+    /// document's leaf. A source that also needs the scores is left as it is
+    /// (its values depend on each hit's score).
+    fn rewrite(
+        &self,
+        ctx: &ValuesContext<'_>,
+    ) -> Result<Option<Arc<dyn crate::top_field::FieldComparatorSource>>> {
+        let (needs_searcher, needs_scores) = match &self.source {
+            ValuesSortKind::Double(s) => (s.needs_searcher(), s.needs_scores()),
+            ValuesSortKind::Long(s) => (s.needs_searcher(), s.needs_scores()),
+        };
+        if !needs_searcher || needs_scores {
+            return Ok(None);
+        }
+        let searcher = ctx.searcher()?;
+        let mut leaves = HashMap::new();
+        for (leaf, seg) in searcher.segments().iter().enumerate() {
+            let max_doc = ctx.reader(leaf)?.max_doc;
+            let mut values = vec![None; usize::try_from(max_doc).unwrap_or(0)];
+            match &self.source {
+                ValuesSortKind::Double(s) => {
+                    let mut v = s.get_values(ctx, leaf, None)?;
+                    for (doc, slot) in (0..max_doc).zip(values.iter_mut()) {
+                        if v.advance_exact(doc)? {
+                            *slot = Some(double_to_sortable_long(v.double_value()?));
+                        }
+                    }
+                }
+                ValuesSortKind::Long(s) => {
+                    let mut v = s.get_values(ctx, leaf, None)?;
+                    for (doc, slot) in (0..max_doc).zip(values.iter_mut()) {
+                        if v.advance_exact(doc)? {
+                            *slot = Some(v.long_value()?);
+                        }
+                    }
+                }
+            }
+            leaves.insert(seg.doc_base, Arc::new(values));
+        }
+        Ok(Some(Arc::new(RewrittenValuesSortSource {
+            leaves: Arc::new(leaves),
+            missing: self.missing,
+        })))
+    }
+}
+
+/// A values-source sort key rewritten against a searcher: each leaf's
+/// values (the comparable long a hit carries), by the leaf's `docBase`.
+struct RewrittenValuesSortSource {
+    leaves: Arc<HashMap<i32, Arc<Vec<Option<i64>>>>>,
+    missing: i64,
+}
+
+impl crate::top_field::FieldComparatorSource for RewrittenValuesSortSource {
+    fn new_comparator(
+        &self,
+        _field: &str,
+        _num_hits: usize,
+        _reverse: bool,
+    ) -> Box<dyn crate::top_field::FieldComparator> {
+        Box::new(RewrittenValuesSortSource {
+            leaves: Arc::clone(&self.leaves),
+            missing: self.missing,
+        })
+    }
+}
+
+impl crate::top_field::FieldComparator for RewrittenValuesSortSource {
+    fn leaf<'a>(
+        &self,
+        ctx: crate::top_field::LeafCtx<'a>,
+    ) -> Result<Box<dyn crate::top_field::LeafFieldComparator + 'a>> {
+        let values = self.leaves.get(&ctx.doc_base).cloned().ok_or_else(|| {
+            Error::IllegalState(format!(
+                "the sort was rewritten against another reader: no leaf at docBase {}",
+                ctx.doc_base
+            ))
+        })?;
+        Ok(Box::new(RewrittenValuesLeaf {
+            values,
+            missing: self.missing,
+        }))
+    }
+
+    fn compare_values(
+        &self,
+        a: &crate::top_field::SortValue,
+        b: &crate::top_field::SortValue,
+    ) -> std::cmp::Ordering {
+        match (a, b) {
+            (crate::top_field::SortValue::Long(x), crate::top_field::SortValue::Long(y)) => {
+                x.cmp(y)
+            }
+            _ => std::cmp::Ordering::Equal,
+        }
+    }
+}
+
+struct RewrittenValuesLeaf {
+    values: Arc<Vec<Option<i64>>>,
+    missing: i64,
+}
+
+impl crate::top_field::LeafFieldComparator for RewrittenValuesLeaf {
+    fn value(&mut self, doc: i32, _score: f32) -> Result<crate::top_field::SortValue> {
+        let v = usize::try_from(doc)
+            .ok()
+            .and_then(|d| self.values.get(d).copied().flatten())
+            .unwrap_or(self.missing);
+        Ok(crate::top_field::SortValue::Long(v))
+    }
 }
 
 struct ValuesSortComparator {
@@ -1431,9 +1578,11 @@ impl crate::top_field::LeafFieldComparator for ValuesSortLeaf<'_> {
 }
 
 /// `DoubleValuesSource.getSortField(reverse, missingValue)`: a sort key over
-/// the source's values (a hit's value is `doubleToSortableLong` of it). The
-/// source must read only the segment -- a query-backed source
-/// ([`from_query`]) needs a searcher, which a comparator does not have.
+/// the source's values (a hit's value is `doubleToSortableLong` of it). A
+/// source that needs the searcher or the vectors (a query-backed or vector
+/// source, [`DoubleValuesSource::needs_searcher`]) sorts once the sort is
+/// rewritten against them ([`crate::top_field::rewrite_sort`], which
+/// `IndexSearcher.search(query, n, sort)` does in Java).
 pub fn double_sort_field(
     source: Arc<dyn DoubleValuesSource>,
     reverse: bool,

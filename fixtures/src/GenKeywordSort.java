@@ -54,6 +54,7 @@ import java.util.stream.Stream;
  *   km  SORTED_SET, 0-3 values per document (MIN and MAX selectors); indexed
  *   kd  SORTED, one value in every document; indexed
  *   kn  SORTED_SET, one value, doc values only (no postings)
+ *   ks  SORTED_SET, one value, doc values only with a skip index, clustered by position
  *   i   int, SortedNumeric (a numeric key beside a keyword one)
  * </pre>
  *
@@ -89,6 +90,9 @@ public class GenKeywordSort {
     "i,k:desc:first",
     "score,k:asc:last",
     "k:asc:first,doc",
+    "ks:asc:last",
+    "ks:desc:last",
+    "ks:asc:first,i",
   };
 
   static String hex(BytesRef b) {
@@ -144,6 +148,11 @@ public class GenKeywordSort {
               doc.add(new SortedSetDocValuesField("kn", new BytesRef(term(random))));
             }
             doc.add(new SortedNumericDocValuesField("i", random.nextInt(50)));
+            // Doc values only, with a skip index, clustered by position:
+            // TermOrdValComparator's SkipperBasedCompetitiveState.
+            doc.add(
+                SortedSetDocValuesField.indexedField(
+                    "ks", new BytesRef(String.format("s%05d", i / 40 + (i % 11 == 0 ? 2 : 0)))));
             w.addDocument(doc);
           }
           w.commit();

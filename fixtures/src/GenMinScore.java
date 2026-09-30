@@ -53,6 +53,10 @@ import java.util.stream.Stream;
  * fifth hit's score exactly (a tie at the boundary passes). Each run records the top 10 under
  * two total-hits thresholds (hits as {@code doc:scoreBits}, the total and its relation), and, over
  * a {@code COMPLETE} search, the passing documents' count and the sum of their {@code v}.
+ *
+ * <p>Per query too ({@code q.<i>}), for crates/lucene-search/tests/index_searcher_fixtures.rs:
+ * {@code IndexSearcher.explain} of the top hit over the three segments (reader-wide statistics),
+ * and {@code searchAfter(fourth hit, query, 10)}.
  */
 public class GenMinScore {
   static final int DOCS_PER_SEGMENT = 3_000;
@@ -114,12 +118,43 @@ public class GenMinScore {
         throw new AssertionError("expected " + SEGMENTS + " segments, got " + sis.size());
       }
       int run = 0;
+      int qi = 0;
       try (DirectoryReader reader = DirectoryReader.open(dir)) {
         IndexSearcher searcher = new IndexSearcher(reader);
         searcher.setQueryCache(null);
         for (String qs : QUERIES) {
           Query q = GenSortedSearch.parse(new GenMixedBooleanScoring.Tokens(qs));
           TopDocs top = searcher.search(q, 5);
+          // IndexSearcher.explain for the top hit (its toString, newlines as \\n), and
+          // searchAfter(the fourth hit, q, 10): both over the three segments.
+          String qk = "q." + qi;
+          m.append(qk).append(".query=").append(qs).append('\n');
+          if (top.scoreDocs.length > 0) {
+            int doc = top.scoreDocs[0].doc;
+            m.append(qk).append(".explain_doc=").append(doc).append('\n');
+            m.append(qk).append(".explain=")
+                .append(searcher.explain(q, doc).toString().replace("\n", "\\n"))
+                .append('\n');
+          }
+          if (top.scoreDocs.length >= 4) {
+            ScoreDoc after = top.scoreDocs[3];
+            TopDocs page = searcher.searchAfter(after, q, 10);
+            StringBuilder hits = new StringBuilder();
+            for (ScoreDoc sd : page.scoreDocs) {
+              if (hits.length() > 0) {
+                hits.append(',');
+              }
+              hits.append(sd.doc).append(':').append(Float.floatToIntBits(sd.score));
+            }
+            m.append(qk).append(".after=").append(after.doc).append(':')
+                .append(Float.floatToIntBits(after.score)).append('\n');
+            m.append(qk).append(".after_hits=").append(hits).append('\n');
+            m.append(qk).append(".after_total=").append(page.totalHits.value()).append('\n');
+            m.append(qk).append(".after_relation=")
+                .append(page.totalHits.relation() == TotalHits.Relation.EQUAL_TO ? "eq" : "gte")
+                .append('\n');
+          }
+          qi++;
           TreeSet<Float> mins = new TreeSet<>();
           float best = top.scoreDocs.length == 0 ? 1f : top.scoreDocs[0].score;
           for (double f : FRACTIONS) {
@@ -159,7 +194,7 @@ public class GenMinScore {
           }
         }
       }
-      m.insert(0, "run_count=" + run + "\n");
+      m.insert(0, "run_count=" + run + "\nquery_count=" + qi + "\n");
     }
     Files.writeString(out.resolve("manifest.properties"), m.toString());
     System.out.println("wrote " + out);

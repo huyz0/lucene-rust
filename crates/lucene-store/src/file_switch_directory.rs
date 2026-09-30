@@ -157,6 +157,26 @@ impl<P: Directory, S: Directory> Directory for FileSwitchDirectory<P, S> {
         self.directory(name).create_output(name)
     }
 
+    fn create_output_with_estimate(
+        &self,
+        name: &str,
+        estimated_bytes: Option<u64>,
+    ) -> Result<FsIndexOutput> {
+        self.directory(name)
+            .create_output_with_estimate(name, estimated_bytes)
+    }
+
+    fn create_temp_output_with_estimate(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        estimated_bytes: Option<u64>,
+    ) -> Result<FsIndexOutput> {
+        let tmp_file_name = temp_file_name(prefix, suffix, 0);
+        self.directory(&tmp_file_name)
+            .create_temp_output_with_estimate(prefix, suffix, estimated_bytes)
+    }
+
     /// Best effort, as Java's: the side is chosen from a representative temp
     /// name, since the real one is only known once created.
     fn create_temp_output(&self, prefix: &str, suffix: &str) -> Result<FsIndexOutput> {
@@ -242,6 +262,23 @@ mod tests {
         assert_eq!(get_extension("_0_sort_1.tmp"), "tmp");
         assert_eq!(get_extension(".1.tmp"), "tmp");
         assert_eq!(get_extension("x.1a.tim.tmp"), "tim");
+    }
+
+    /// A size estimate reaches the side a file routes to (Java passes the
+    /// `IOContext` through), here an `NrtCachingDirectory` that caches it.
+    #[test]
+    fn estimates_route_with_the_file() {
+        let nrt = crate::NrtCachingDirectory::new(ByteBuffersDirectory::new(), 1.0, 2.0);
+        let dir =
+            FileSwitchDirectory::new(exts(&["fdt"]), &nrt, ByteBuffersDirectory::new()).unwrap();
+        let out = dir.create_output_with_estimate("_0.fdt", Some(10)).unwrap();
+        out.close().unwrap();
+        let out = dir
+            .create_temp_output_with_estimate("_0.fdt", "sort", Some(10))
+            .unwrap();
+        let temp = out.name().to_string();
+        out.close().unwrap();
+        assert_eq!(nrt.list_cached_files(), vec!["_0.fdt".to_string(), temp]);
     }
 
     #[test]

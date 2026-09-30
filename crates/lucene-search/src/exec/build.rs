@@ -679,6 +679,171 @@ pub(crate) fn child<'a>(
     mode: Mode,
     top_level: bool,
 ) -> Result<Option<Child<'a>>> {
+    child_led(ctx, clause, boost, mode, top_level, None)
+}
+
+/// The `IndexOrDocValuesQuery` a clause is, if it is one.
+fn index_or_doc_values_of(
+    clause: &Clause,
+) -> Option<&crate::extended_query::IndexOrDocValuesQuery> {
+    match clause {
+        Clause::Extended(e) => match e.as_ref() {
+            crate::extended_query::ExtendedQuery::IndexOrDocValues(q) => Some(q),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// [`build`], an `IndexOrDocValuesQuery` with the lead cost its boolean
+/// hands its `ScorerSupplier.get(leadCost)`.
+fn build_led<'a>(
+    ctx: &LeafContext<'a>,
+    clause: &Clause,
+    boost: f32,
+    mode: Mode,
+    top_level: bool,
+    lead_cost: Option<i64>,
+) -> Result<Option<BoxScorer<'a>>> {
+    match index_or_doc_values_of(clause) {
+        Some(q) if lead_cost.is_some() => {
+            super::extended::index_or_doc_values(ctx, q, boost, mode, top_level, lead_cost)
+        }
+        _ => build(ctx, clause, boost, mode, top_level),
+    }
+}
+
+/// A boolean's clauses built, as `BooleanWeight.scorerSupplier` gathers
+/// their `ScorerSupplier`s and `BooleanScorerSupplier.get(leadCost)` asks
+/// each for its scorer, each with the clause it came from. `None` when a
+/// required clause has no scorer in this segment.
+///
+/// Every clause but an `IndexOrDocValuesQuery` is built first; their costs,
+/// with each `IndexOrDocValuesQuery`'s index-side cost, give the boolean's
+/// `cost()` (`computeCost`: the cheapest required clause, or what
+/// `minimum_should_match` optional ones cost) -- the lead cost the
+/// `IndexOrDocValuesQuery`s are then built with, choosing points or doc
+/// values as `IndexOrDocValuesQuery`'s `get(leadCost)` does. A boolean nested
+/// in another uses its own cost (Java passes the smaller of it and its
+/// parent's lead cost).
+#[allow(clippy::type_complexity)]
+pub(crate) fn build_clauses<'a, 'q>(
+    ctx: &LeafContext<'a>,
+    q: &'q BooleanQuery,
+    boost: f32,
+    mode: Mode,
+    child_top_level: bool,
+) -> Result<
+    Option<(
+        Vec<(Child<'a>, &'q Clause)>,
+        Vec<(Child<'a>, &'q Clause)>,
+        Vec<(Child<'a>, &'q Clause)>,
+        Vec<(Child<'a>, &'q Clause)>,
+    )>,
+> {
+    use super::extended::{index_side, Supplier};
+    // (clause, mode, top level, required) per group, in order.
+    let groups: [(&'q [Clause], Mode, bool, bool); 4] = [
+        (&q.must, mode, child_top_level, true),
+        (&q.filter, Mode::NoScores, false, true),
+        (&q.should, mode, child_top_level, false),
+        (&q.must_not, Mode::NoScores, false, false),
+    ];
+    let deferred = groups
+        .iter()
+        .any(|(cs, ..)| cs.iter().any(|c| index_or_doc_values_of(c).is_some()));
+    let mut built: [Vec<Option<Child<'a>>>; 4] = Default::default();
+    // The index-side cost of each deferred clause, by group and position.
+    let mut costs: [Vec<Option<i64>>; 4] = Default::default();
+    for (g, (clauses, m, top, required)) in groups.iter().enumerate() {
+        for c in clauses.iter() {
+            if deferred && index_or_doc_values_of(c).is_some() {
+                let q = index_or_doc_values_of(c).expect("checked");
+                match index_side(ctx, &q.index_query)? {
+                    Supplier::Absent if *required => return Ok(None),
+                    Supplier::Absent => {
+                        built[g].push(None);
+                        costs[g].push(None);
+                    }
+                    Supplier::Present(cost) => {
+                        built[g].push(None);
+                        costs[g].push(Some(cost.unwrap_or(i64::MAX)));
+                    }
+                }
+                continue;
+            }
+            let child = child(ctx, c, boost, *m, *top)?;
+            if child.is_none() && *required {
+                return Ok(None);
+            }
+            costs[g].push(child.as_ref().map(Child::cost));
+            built[g].push(child);
+        }
+    }
+    if deferred {
+        // `BooleanWeight.scorerSupplier`: exactly `msm` optional clauses
+        // present are all required.
+        let present_should = costs[2].iter().filter(|c| c.is_some()).count();
+        let mut msm = q.minimum_should_match;
+        let mut required: Vec<i64> = costs[0]
+            .iter()
+            .chain(&costs[1])
+            .flatten()
+            .copied()
+            .collect();
+        let mut optional: Vec<i64> = costs[2].iter().flatten().copied().collect();
+        if present_should == msm {
+            required.append(&mut optional);
+            msm = 0;
+        }
+        let min_required = required.iter().copied().min();
+        let lead = match min_required {
+            Some(c) if msm == 0 => c,
+            _ => min_required
+                .unwrap_or(i64::MAX)
+                .min(super::wand::cost_with_min_should_match(&optional, msm)),
+        };
+        for (g, (clauses, m, top, required)) in groups.iter().enumerate() {
+            for (i, c) in clauses.iter().enumerate() {
+                if built[g][i].is_some() || costs[g][i].is_none() {
+                    continue;
+                }
+                if index_or_doc_values_of(c).is_none() {
+                    continue;
+                }
+                let child = child_led(ctx, c, boost, *m, *top, Some(lead))?;
+                if child.is_none() && *required {
+                    return Ok(None);
+                }
+                built[g][i] = child;
+            }
+        }
+    }
+    let [must, filter, should, must_not] = built;
+    let pair = |v: Vec<Option<Child<'a>>>, cs: &'q [Clause]| -> Vec<(Child<'a>, &'q Clause)> {
+        v.into_iter()
+            .zip(cs)
+            .filter_map(|(c, clause)| c.map(|c| (c, clause)))
+            .collect()
+    };
+    Ok(Some((
+        pair(must, &q.must),
+        pair(filter, &q.filter),
+        pair(should, &q.should),
+        pair(must_not, &q.must_not),
+    )))
+}
+
+/// [`child`] with the lead cost an `IndexOrDocValuesQuery` clause is built
+/// with (see [`build_clauses`]).
+fn child_led<'a>(
+    ctx: &LeafContext<'a>,
+    clause: &Clause,
+    boost: f32,
+    mode: Mode,
+    top_level: bool,
+    lead_cost: Option<i64>,
+) -> Result<Option<Child<'a>>> {
     // `CachingWrapperWeight`: a clause built without scores asks the
     // segment's query cache first.
     if mode == Mode::NoScores {
@@ -693,7 +858,7 @@ pub(crate) fn child<'a>(
             };
             let cacheable = crate::segment_cacheable::is_cacheable(clause, ctx.reader);
             match cache.scorer_if_cacheable(clause, max_doc, cacheable, || {
-                build(&core, clause, boost, mode, top_level)
+                build_led(&core, clause, boost, mode, top_level, lead_cost)
             })? {
                 Some(super::cache::CacheResult::Hit(set)) => {
                     return Ok(Some(Child::Scorer(Box::new(
@@ -708,7 +873,9 @@ pub(crate) fn child<'a>(
     Ok(match term_leg(ctx, clause, boost, mode)? {
         TermForm::Leg(leg) => Some(Child::Leg(leg)),
         TermForm::Absent => None,
-        TermForm::Other => build(ctx, clause, boost, mode, top_level)?.map(Child::Scorer),
+        TermForm::Other => {
+            build_led(ctx, clause, boost, mode, top_level, lead_cost)?.map(Child::Scorer)
+        }
     })
 }
 
@@ -767,32 +934,16 @@ pub(crate) fn build_boolean<'a>(
 ) -> Result<Option<BoxScorer<'a>>> {
     // `setTopLevelScoringClause` passes through to a lone scoring clause.
     let child_top_level = top_level && q.must.len() + q.should.len() == 1;
-    let mut must = Vec::with_capacity(q.must.len());
-    for c in &q.must {
-        match child(ctx, c, boost, mode, child_top_level)? {
-            Some(s) => must.push(s),
-            None => return Ok(None),
-        }
-    }
-    let mut filter = Vec::with_capacity(q.filter.len());
-    for c in &q.filter {
-        match child(ctx, c, boost, Mode::NoScores, false)? {
-            Some(s) => filter.push(s),
-            None => return Ok(None),
-        }
-    }
-    let mut should = Vec::with_capacity(q.should.len());
-    for c in &q.should {
-        if let Some(s) = child(ctx, c, boost, mode, child_top_level)? {
-            should.push(s);
-        }
-    }
-    let mut must_not = Vec::with_capacity(q.must_not.len());
-    for c in &q.must_not {
-        if let Some(s) = child(ctx, c, boost, Mode::NoScores, false)? {
-            must_not.push(s);
-        }
-    }
+    let Some((must, filter, should, must_not)) =
+        build_clauses(ctx, q, boost, mode, child_top_level)?
+    else {
+        return Ok(None);
+    };
+    let strip = |v: Vec<(Child<'a>, &Clause)>| -> Vec<Child<'a>> {
+        v.into_iter().map(|(c, _)| c).collect()
+    };
+    let (must, filter, should, must_not) =
+        (strip(must), strip(filter), strip(should), strip(must_not));
 
     compose(
         must,

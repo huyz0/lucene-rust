@@ -18,6 +18,7 @@ use std::collections::HashMap;
 
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
+use lucene_search::index_searcher::IndexSearcher;
 use lucene_search::query::{MatchAllDocsQuery, PointsRangeQuery};
 use lucene_search::top_field::{
     search_sorted_sliced, search_sorted_tracking, FieldDoc, Selector, SortField, SortType,
@@ -77,6 +78,7 @@ fn sort(spec: &str) -> Vec<SortField> {
             let p: Vec<&str> = k.split(':').collect();
             SortField {
                 nested: None,
+                rewritten: None,
                 field: p[0].to_string(),
                 ty: match p[1] {
                     "score" => SortType::Score,
@@ -189,6 +191,9 @@ fn sorted_searches_match_real_lucene() {
     let mut pruned = 0;
     let mut tracked = 0;
     let mut sliced_runs = 0;
+    let mut doc_led_exact = 0;
+    let mut searcher_runs = 0;
+    let searcher = IndexSearcher::new(&segments, &norms).unwrap();
     for r in 0..runs {
         let k = format!("run.{r}");
         let text = m.get(&format!("{k}.query"));
@@ -228,6 +233,15 @@ fn sorted_searches_match_real_lucene() {
             // Beside a MaxScoreCollector nothing is skipped on either side:
             // the count is the same, bound or not.
             got_gte == gte && got.total.value == total
+        } else if gte && spec.starts_with(":doc:") && !text.starts_with("(b 0 (?") {
+            // Led by the document id, both stop at the same hit
+            // (`DocComparator`'s competitive iterator empties once the top
+            // hits are in, skipping every later segment whole) -- except
+            // under a pure disjunction, whose `BooleanScorer` Lucene runs a
+            // 2048-document window at a time, consulting the iterator per
+            // window.
+            doc_led_exact += 1;
+            got_gte && got.total.value == total
         } else if gte {
             got_gte && got.total.value > threshold
         } else {
@@ -245,6 +259,39 @@ fn sorted_searches_match_real_lucene() {
                 got.max_score.to_bits(),
                 m.get(&format!("{k}.max_score"))
             ));
+        }
+        // The same through `IndexSearcher::search_sorted`, whose threshold
+        // is `IndexSearcher`'s 1000: the same hits; Lucene's exact count
+        // when it is at most 1000, a bound past 1000 otherwise.
+        if !track {
+            let td = searcher
+                .search_sorted(
+                    reader.segment_readers(),
+                    &query(text),
+                    top_n,
+                    &sort(spec),
+                    after.as_ref(),
+                )
+                .unwrap_or_else(|e| panic!("{text} by {spec}, IndexSearcher: {e}"));
+            let td_gte = td.total.relation
+                == lucene_search::collector::TotalHitsRelation::GreaterThanOrEqualTo;
+            // Lucene's bound under its own lower threshold says nothing
+            // about a count to 1000.
+            let td_total_ok = if gte {
+                true
+            } else if total <= 1000 {
+                !td_gte && td.total.value == total
+            } else {
+                td_gte && td.total.value > 1000
+            };
+            searcher_runs += 1;
+            if td.hits != want || !td_total_ok {
+                failures.push(format!(
+                    "run {r}: {text} by {spec}, IndexSearcher: {:?} total {} gte {td_gte}, Lucene total {total} gte {gte}",
+                    td.hits.iter().take(4).collect::<Vec<_>>(),
+                    td.total.value,
+                ));
+            }
         }
         // As a concurrent search runs it: slices of the segments, each its
         // own collector, the hits merged.
@@ -293,7 +340,9 @@ fn sorted_searches_match_real_lucene() {
         }
     }
     assert!(pruned > 100, "the threshold runs must prune: {pruned}");
+    assert!(searcher_runs > 1000, "IndexSearcher runs: {searcher_runs}");
     assert!(sliced_runs > 1000, "sliced runs: {sliced_runs}");
+    assert!(doc_led_exact >= 20, "doc-led pruned runs: {doc_led_exact}");
     assert!(tracked > 200, "tracked max-score runs: {tracked}");
     assert!(
         failures.is_empty(),
