@@ -16,18 +16,57 @@ use std::fmt;
 
 use lucene_util::small_float;
 
-/// The part of `FieldInvertState` `Similarity.computeNorm` reads: one
-/// document's value(s) of one field, as the inverter counted them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// `FieldInvertState`: one document's value(s) of one field, as the inverter
+/// counted them -- what `Similarity.computeNorm` reads.
+///
+/// Every getter Java's has is a field here. `getName()` is `compute_norm`'s
+/// `field` argument, `getIndexOptions()` is reduced to the one question the
+/// norms ask of it ([`Self::docs_only`]), and `getIndexCreatedVersionMajor()`
+/// is always this port's (10).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FieldInvertState {
     /// The field's `IndexOptions` is `DOCS`.
     pub docs_only: bool,
+    /// The position after the last value (`getPosition`): the last token's,
+    /// plus `end()`'s final increment and the analyzer's position-increment
+    /// gap after every tokenized value, as `IndexingChain.PerField.invert`
+    /// leaves it.
+    pub position: i32,
     /// Tokens, positions counted (`getLength`).
     pub length: i32,
     /// Tokens at a position increment of 0 (`getNumOverlap`).
     pub num_overlap: i32,
+    /// The offset after the last value (`getOffset`): every value's `end()`
+    /// final offset plus the analyzer's offset gap after every tokenized
+    /// value.
+    pub offset: i32,
+    /// The largest frequency of any term in this document's field
+    /// (`getMaxTermFrequency`): `1` for a field without frequencies that has
+    /// a term, `0` without one.
+    pub max_term_frequency: i32,
     /// Distinct terms (`getUniqueTermCount`).
     pub unique_term_count: i32,
+    /// The last value's token stream's attributes, as its `end()` left them
+    /// (`getAttributeSource`); `None` when the last value was a binary term
+    /// (`invertTerm`, which sets it to `null`).
+    pub attribute_source: Option<lucene_analysis::AttributeSource>,
+}
+
+/// `end()`'s attributes for a stream whose `end()` is `TokenStream.end()`
+/// plus the final offset and increment set, the way `StandardTokenizer`,
+/// `Field.StringTokenStream` and every built-in chain end: every attribute
+/// cleared, the increment `final_position_increment`, both offsets
+/// `final_offset`.
+pub fn end_attributes(
+    final_position_increment: i32,
+    final_offset: i32,
+) -> lucene_analysis::AttributeSource {
+    let mut a = lucene_analysis::AttributeSource::new();
+    a.end_attributes();
+    // Neither setter can refuse these: they are what a stream reported.
+    let _ = a.set_position_increment(final_position_increment.max(0));
+    let _ = a.set_offset(final_offset.max(0), final_offset.max(0));
+    a
 }
 
 /// `Similarity.computeNorm`: the norm the writer stores for a document's
@@ -79,6 +118,7 @@ mod tests {
             length,
             num_overlap,
             unique_term_count: unique,
+            ..FieldInvertState::default()
         }
     }
 

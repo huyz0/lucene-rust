@@ -116,6 +116,12 @@ pub struct InvertedTerm {
     /// Parallel to `positions`, when the field indexes offsets; empty
     /// otherwise.
     pub offsets: Vec<(i32, i32)>,
+    /// Parallel to `positions`: each occurrence's payload (`PayloadAttribute`),
+    /// empty for none; or empty altogether when no occurrence has one. A
+    /// segment whose documents give a field a non-empty payload records the
+    /// field `storePayloads`, as `FreqProxTermsWriterPerField.finish` does
+    /// when it `sawPayloads`.
+    pub payloads: Vec<Vec<u8>>,
 }
 
 impl ExplicitFields {
@@ -280,6 +286,12 @@ impl IndexingConfig {
                         f.name
                     )));
                 }
+                if !t.payloads.is_empty() && t.payloads.len() != t.positions.len() {
+                    return Err(explicit_error(format!(
+                        "field {:?}: payloads must be one per position (or none)",
+                        f.name
+                    )));
+                }
             }
         }
         let mut single = BTreeSet::new();
@@ -368,6 +380,17 @@ impl IndexingConfig {
             docs: usize,
         }
         let mut postings: BTreeMap<i32, Building> = BTreeMap::new();
+        // Fields some occurrence gave a non-empty payload: `sawPayloads`.
+        let payload_fields: BTreeSet<i32> = explicit
+            .iter()
+            .flat_map(|f| &f.inverted)
+            .filter(|inv| {
+                inv.terms
+                    .iter()
+                    .any(|t| t.payloads.iter().any(|p| !p.is_empty()))
+            })
+            .map(|inv| inv.field_number)
+            .collect();
         let mut norm_values: BTreeMap<i32, Vec<Option<i64>>> = BTreeMap::new();
         for (doc_id, fields) in explicit.iter().enumerate() {
             for inv in &fields.inverted {
@@ -401,6 +424,14 @@ impl IndexingConfig {
                     tp.docs.push((doc_id as i32, t.freq));
                     tp.positions.push(t.positions.clone());
                     tp.offsets.push(t.offsets.clone());
+                    if payload_fields.contains(&inv.field_number) {
+                        // One length per occurrence, `0` where it had none.
+                        for i in 0..t.positions.len() {
+                            let p = t.payloads.get(i).map_or(&[][..], Vec::as_slice);
+                            tp.payload_bytes.extend_from_slice(p);
+                            tp.payload_lengths.push(p.len() as u32);
+                        }
+                    }
                 }
             }
         }
@@ -428,7 +459,7 @@ impl IndexingConfig {
                     field_number: *n,
                     index_options: *options,
                     doc_count: *docs,
-                    has_payloads: false,
+                    has_payloads: payload_fields.contains(n),
                     terms,
                 })
                 .collect();
@@ -583,6 +614,9 @@ impl IndexingConfig {
             .map(|f| {
                 let mut f = f.clone();
                 f.attributes.retain(|(k, _)| !k.starts_with("PerField"));
+                if payload_fields.contains(&f.number) {
+                    f.store_payloads = true;
+                }
                 let postings_suffix = postings_output.as_ref().and_then(|groups| {
                     groups
                         .iter()
@@ -969,6 +1003,7 @@ mod tests {
             freq: positions.len() as i32,
             positions: positions.to_vec(),
             offsets: positions.iter().map(|&p| (p * 6, p * 6 + 5)).collect(),
+            payloads: Vec::new(),
         }
     }
 
@@ -1045,6 +1080,7 @@ mod tests {
             freq: 1,
             positions: Vec::new(),
             offsets: Vec::new(),
+            payloads: Vec::new(),
         }
     }
 
@@ -1250,6 +1286,9 @@ mod tests {
         let mut d = base();
         d.fields.points[0].value = FieldValue::Binary(vec![0; 3]);
         cases.push(("short point", d));
+        let mut d = base();
+        d.fields.inverted[1].terms[0].payloads = vec![vec![1]; 7];
+        cases.push(("payloads out of step with positions", d));
         for (what, d) in cases {
             let err = w.add_explicit_documents(vec![d]).expect_err(what);
             assert!(matches!(err, Error::Explicit(_)), "{what}: {err}");

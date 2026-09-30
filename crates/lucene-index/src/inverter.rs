@@ -182,6 +182,24 @@ pub struct FieldInverter {
     /// position increment of 0) and `uniqueTermCount` (distinct terms), the
     /// rest of what `Similarity.computeNorm` reads.
     overlaps_and_unique: Vec<(u32, u32)>,
+    /// Parallel to `lengths`: the rest of `FieldInvertState` as the
+    /// document's last value left it.
+    ends: Vec<DocEnd>,
+}
+
+/// The part of one document's `FieldInvertState` the counts above do not
+/// hold: where `PerField.invert` left `position` and `offset`, the
+/// `maxTermFrequency` `FreqProxTermsWriterPerField` kept, and the last
+/// value's `end()` increment and offset -- all its attribute source differs
+/// by, since every value goes through the same standard chain, whose `end()`
+/// clears every other attribute.
+#[derive(Debug, Clone, Copy, Default)]
+struct DocEnd {
+    position: i32,
+    offset: i32,
+    max_term_frequency: u32,
+    final_increment: i32,
+    final_offset: i32,
 }
 
 impl FieldInverter {
@@ -193,6 +211,7 @@ impl FieldInverter {
             doc_count: 0,
             lengths: Vec::new(),
             overlaps_and_unique: Vec::new(),
+            ends: Vec::new(),
         }
     }
 
@@ -211,14 +230,16 @@ impl FieldInverter {
     /// Inverts one document's values of this field. `doc` must be the next
     /// document id (ascending, no gaps: a document without the field passes
     /// no values). Positions and offsets across a multi-valued field follow
-    /// `IndexingChain.PerField.invert`: the analyzer's position-increment and
-    /// offset gaps between values, the stream's final increment/offset after
-    /// each.
+    /// `IndexingChain.PerField.invert`: after each value, the stream's final
+    /// increment/offset, then the analyzer's position-increment and offset
+    /// gaps (after the last value too: `FieldInvertState.getPosition()`
+    /// counts them).
     pub fn add_document(&mut self, doc: i32, values: &[&str], analyzer: &Analyzer) {
         debug_assert_eq!(doc as usize, self.lengths.len());
         if values.is_empty() {
             self.lengths.push(None);
             self.overlaps_and_unique.push((0, 0));
+            self.ends.push(DocEnd::default());
             return;
         }
         let with_positions = self.has_positions();
@@ -228,13 +249,12 @@ impl FieldInverter {
         let mut length = 0u32;
         let mut num_overlap = 0u32;
         let mut unique = 0u32;
+        let mut max_freq = 0u32;
+        let mut saw_new_term = false;
+        let mut end = DocEnd::default();
         let gap = analyzer.position_increment_gap();
         let offset_gap = analyzer.offset_gap();
-        for (i, text) in values.iter().enumerate() {
-            if i > 0 {
-                position = advance_position(position, gap);
-                offset = offset.saturating_add(offset_gap);
-            }
+        for text in values {
             let base_offset = offset;
             let (final_inc, final_offset) =
                 analyzer.for_each_token(text, |term, start, end, pos_inc| {
@@ -243,15 +263,20 @@ impl FieldInverter {
                     // `IndexingChain.invert`: `if (posIncr == 0) numOverlap++`.
                     num_overlap = num_overlap.saturating_add(u32::from(pos_inc == 0));
                     let (id, is_new) = self.terms.add(term.as_bytes());
+                    saw_new_term |= is_new;
                     if is_new {
                         self.postings.push(TermPostingsBuf::default());
                     }
                     let p = &mut self.postings[id as usize];
                     match p.docs.last_mut() {
-                        Some((d, f)) if *d == doc => *f = f.saturating_add(1),
+                        Some((d, f)) if *d == doc => {
+                            *f = f.saturating_add(1);
+                            max_freq = max_freq.max(*f as u32);
+                        }
                         _ => {
                             // The term's first occurrence in this document.
                             unique = unique.saturating_add(1);
+                            max_freq = max_freq.max(1);
                             p.docs.push((doc, 1));
                         }
                     }
@@ -267,12 +292,26 @@ impl FieldInverter {
                 });
             position = advance_position(position, final_inc);
             offset = offset.saturating_add(final_offset);
+            position = advance_position(position, gap);
+            offset = offset.saturating_add(offset_gap);
+            end.final_increment = final_inc;
+            end.final_offset = final_offset;
         }
         if length > 0 {
             self.doc_count = self.doc_count.saturating_add(1);
         }
+        end.position = position;
+        end.offset = offset;
+        // Without frequencies only `newTerm` -- a term new to the segment --
+        // sets it, to 1.
+        end.max_term_frequency = if self.index_options == IndexOptions::Docs {
+            u32::from(saw_new_term)
+        } else {
+            max_freq
+        };
         self.lengths.push(Some(length));
         self.overlaps_and_unique.push((num_overlap, unique));
+        self.ends.push(end);
     }
 
     /// Documents with at least one token in this field.
@@ -290,12 +329,20 @@ impl FieldInverter {
     pub fn invert_state(&self, doc: usize) -> Option<crate::similarity::FieldInvertState> {
         let length = self.lengths.get(doc).copied().flatten()?;
         let (num_overlap, unique) = self.overlaps_and_unique.get(doc).copied()?;
+        let end = self.ends.get(doc).copied()?;
         let clamp = |n: u32| i32::try_from(n).unwrap_or(i32::MAX);
         Some(crate::similarity::FieldInvertState {
             docs_only: self.index_options == IndexOptions::Docs,
+            position: end.position,
             length: clamp(length),
             num_overlap: clamp(num_overlap),
+            offset: end.offset,
+            max_term_frequency: clamp(end.max_term_frequency),
             unique_term_count: clamp(unique),
+            attribute_source: Some(crate::similarity::end_attributes(
+                end.final_increment,
+                end.final_offset,
+            )),
         })
     }
 
@@ -323,6 +370,7 @@ impl FieldInverter {
             + per_term
             + self.lengths.capacity() * 8
             + self.overlaps_and_unique.capacity() * 8
+            + self.ends.capacity() * std::mem::size_of::<DocEnd>()
     }
 
     /// The buffered terms as the postings writer takes them, sorted by term
@@ -396,6 +444,27 @@ mod tests {
         let empty = inv.invert_state(2).unwrap();
         assert_eq!((empty.length, empty.unique_term_count), (0, 0));
         assert_eq!(inv.invert_state(3), None);
+    }
+
+    /// The rest of `FieldInvertState`: the position and offset after every
+    /// value's gap, the largest frequency (for `DOCS`, 1 only while a term is
+    /// new to the segment) and `end()`'s attributes.
+    #[test]
+    fn invert_state_positions_offsets_and_max_frequency() {
+        let analyzer = Analyzer::standard(None)
+            .with_position_increment_gap(10)
+            .with_offset_gap(3);
+        let mut inv = FieldInverter::new(IndexOptions::DocsAndFreqsAndPositions);
+        inv.add_document(0, &["a b a", "c "], &analyzer);
+        let s = inv.invert_state(0).unwrap();
+        assert_eq!((s.position, s.offset, s.max_term_frequency), (23, 13, 2));
+        let end = s.attribute_source.unwrap();
+        assert_eq!((end.end_offset(), end.position_increment()), (2, 0));
+        let mut docs = FieldInverter::new(IndexOptions::Docs);
+        docs.add_document(0, &["x x"], &analyzer);
+        docs.add_document(1, &["x"], &analyzer);
+        assert_eq!(docs.invert_state(0).unwrap().max_term_frequency, 1);
+        assert_eq!(docs.invert_state(1).unwrap().max_term_frequency, 0);
     }
 
     /// The flush trigger's inputs: the term count and the heap estimate, which

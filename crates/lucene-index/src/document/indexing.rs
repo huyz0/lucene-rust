@@ -252,6 +252,9 @@ struct TermAcc {
     freq: i32,
     positions: Vec<i32>,
     offsets: Vec<(i32, i32)>,
+    /// Parallel to `positions`: each occurrence's `PayloadAttribute`, empty
+    /// for none.
+    payloads: Vec<Vec<u8>>,
 }
 
 /// `FieldInvertState` plus the per-document half of `TermsHashPerField`.
@@ -265,6 +268,13 @@ struct InvertState {
     last_start_offset: i32,
     last_position: i32,
     unique_term_count: i32,
+    max_term_frequency: i32,
+    /// `FreqProxTermsWriterPerField.sawPayloads`: some occurrence carried a
+    /// non-empty payload.
+    saw_payloads: bool,
+    /// `setAttributeSource`: the last value's stream, as its `end()` left
+    /// it; `None` after a binary term.
+    attribute_source: Option<lucene_analysis::AttributeSource>,
     terms: BTreeMap<Vec<u8>, TermAcc>,
 }
 
@@ -280,8 +290,21 @@ impl InvertState {
             last_start_offset: 0,
             last_position: 0,
             unique_term_count: 0,
+            max_term_frequency: 0,
+            saw_payloads: false,
+            attribute_source: None,
             terms: BTreeMap::new(),
         }
+    }
+
+    /// `writeProx`'s payload half: an occurrence's payload, recorded when
+    /// the field indexes positions. Empty is none.
+    fn push_payload(saw: &mut bool, acc: &mut TermAcc, payload: Option<&[u8]>) {
+        let payload = payload.unwrap_or_default();
+        if !payload.is_empty() {
+            *saw = true;
+        }
+        acc.payloads.push(payload.to_vec());
     }
 
     fn has_freq(&self) -> bool {
@@ -311,13 +334,15 @@ impl InvertState {
         Ok(freq)
     }
 
-    /// `TermsHashPerField.add` -> `newTerm`/`addTerm` for this document.
+    /// `TermsHashPerField.add` -> `newTerm`/`addTerm` for this document,
+    /// `maxTermFrequency` kept as they keep it.
     fn add(
         &mut self,
         field: &str,
         term: &[u8],
         freq: i32,
         offsets: (i32, i32),
+        payload: Option<&[u8]>,
     ) -> super::Result<()> {
         if term.len() > MAX_TERM_LENGTH {
             return Err(illegal(format!(
@@ -344,10 +369,14 @@ impl InvertState {
                 };
                 if has_prox {
                     acc.positions.push(position);
+                    Self::push_payload(&mut self.saw_payloads, &mut acc, payload);
                     if has_offsets {
                         acc.offsets.push(offsets);
                     }
                 }
+                // `newTerm`: `max(1, ...)` without frequencies, the term's
+                // frequency with them.
+                self.max_term_frequency = self.max_term_frequency.max(acc.freq);
                 self.terms.insert(term.to_vec(), acc);
                 self.unique_term_count = self.unique_term_count.saturating_add(1);
             }
@@ -375,8 +404,10 @@ impl InvertState {
                         .freq
                         .checked_add(freq)
                         .ok_or_else(|| illegal("integer overflow"))?;
+                    self.max_term_frequency = self.max_term_frequency.max(acc.freq);
                     if has_prox {
                         acc.positions.push(position);
+                        Self::push_payload(&mut self.saw_payloads, acc, payload);
                         if has_offsets {
                             acc.offsets.push(offsets);
                         }
@@ -445,8 +476,15 @@ impl InvertState {
                 .length
                 .checked_add(add)
                 .ok_or_else(|| illegal(format!("too many tokens for field \"{field}\"")))?;
-            self.add(field, &tok.term, tok.term_frequency, (start, end))?;
+            self.add(
+                field,
+                &tok.term,
+                tok.term_frequency,
+                (start, end),
+                tok.payload.as_deref(),
+            )?;
         }
+        self.attribute_source = Some(tokens.attributes_at_end());
         self.position = self.position.wrapping_add(tokens.final_position_increment);
         self.offset = self.offset.wrapping_add(tokens.final_offset);
         if analyzed {
@@ -478,12 +516,13 @@ impl InvertState {
                  TokenStream, but {name} did not"
             )));
         }
+        self.attribute_source = None;
         self.position = self.position.wrapping_add(1);
         self.length = self
             .length
             .checked_add(2)
             .ok_or_else(|| illegal(format!("too many tokens for field \"{name}\"")))?;
-        self.add(name, &value, 1, (0, 0))
+        self.add(name, &value, 1, (0, 0), None)
     }
 }
 
@@ -600,7 +639,6 @@ impl IndexWriter<'_> {
         let schemas: Vec<FieldSchema> = schemas.into_iter().map(|(s, _)| s).collect();
         // 3. Invert, store, doc values, points -- in document order.
         let analyzer = self.writer_analyzer();
-        let gaps = (analyzer.position_increment_gap(), analyzer.offset_gap());
         let mut out = ExplicitDocument::default();
         let mut inverted: Vec<(i32, InvertState)> = Vec::new();
         let mut single_dv: Vec<i32> = Vec::new();
@@ -630,6 +668,11 @@ impl IndexWriter<'_> {
                                 )))
                             })?;
                         let analyzed = ft.tokenized();
+                        // `analyzer.getPositionIncrementGap(fieldInfo.name)`.
+                        let gaps = (
+                            analyzer.position_increment_gap_for_field(name),
+                            analyzer.offset_gap_for_field(name),
+                        );
                         state
                             .invert_tokens(name, &tokens, analyzed, gaps)
                             .map_err(doc_error)?;
@@ -691,8 +734,10 @@ impl IndexWriter<'_> {
                 });
             }
         }
-        // 4. `PerField.finish`: norms.
-        let similarity = self.writer_norm_similarity();
+        // 4. `PerField.finish`: norms. The similarity is shared, so it is
+        // held apart from the writer the `DOCS` term hash below mutates.
+        let cfg = self.config_snapshot();
+        let similarity = cfg.norm_similarity();
         for (number, state) in inverted {
             let (name, omit_norms) = numbers
                 .iter()
@@ -705,16 +750,27 @@ impl IndexWriter<'_> {
                     (name.clone(), omit)
                 })
                 .expect("every inverted field was registered");
+            let docs_only = state.index_options == IndexOptions::Docs;
+            let mut max_term_frequency = state.max_term_frequency;
+            if docs_only && !omit_norms {
+                // Without frequencies only `newTerm` -- a term new to the
+                // buffered segment -- sets it (to 1).
+                max_term_frequency = i32::from(self.note_docs_terms(number, state.terms.keys()));
+            }
             let norm = if omit_norms {
                 None
             } else if state.length == 0 {
                 Some(0)
             } else {
                 let invert_state = FieldInvertState {
-                    docs_only: state.index_options == IndexOptions::Docs,
+                    docs_only,
+                    position: state.position,
                     length: state.length,
                     num_overlap: state.num_overlap,
+                    offset: state.offset,
+                    max_term_frequency,
                     unique_term_count: state.unique_term_count,
+                    attribute_source: state.attribute_source.clone(),
                 };
                 let norm = similarity.compute_norm(&name, &invert_state);
                 if norm == 0 {
@@ -732,6 +788,11 @@ impl IndexWriter<'_> {
                         freq: acc.freq,
                         positions: acc.positions,
                         offsets: acc.offsets,
+                        payloads: if state.saw_payloads {
+                            acc.payloads
+                        } else {
+                            Vec::new()
+                        },
                     })
                     .collect(),
                 norm,
