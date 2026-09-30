@@ -415,7 +415,7 @@ index/LogMergePolicy	ported	crates/lucene-index/src/merge_policy/log.rs::LogMerg
 index/MappedMultiFields	ported	crates/lucene-index/src/merge.rs::merge_postings
 index/MappingMultiPostingsEnum	ported	crates/lucene-index/src/merge.rs::merge_postings
 index/MergePolicy	partial	crates/lucene-index/src/merge_policy/api.rs::MergePolicy -- M7: `OneMerge` carries no `reorder`/`wrapForMerge` hooks (a `OneMergeWrappingMergePolicy` wrapper rewrites the merge itself), and no `infoStream` messages
-index/MergeRateLimiter	todo:M7	per-merge IO rate limiting (ConcurrentMergeScheduler auto-throttle)
+index/MergeRateLimiter	ported	crates/lucene-index/src/merge_rate_limiter.rs::MergeRateLimiter
 index/MergeScheduler	partial	crates/lucene-index/src/concurrent_writer.rs::run_merges -- M7: no pluggable scheduler: merges run synchronously inside `commit`/`force_merge` or on the thread calling `run_merges`
 index/MergeState	ported	crates/lucene-index/src/merge.rs::build_doc_id_maps
 index/MergeTrigger	ported	crates/lucene-index/src/merge_policy/api.rs::MergeTrigger
