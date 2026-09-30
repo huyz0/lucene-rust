@@ -996,7 +996,7 @@ util/OfflineSorter	ported	crates/lucene-codecs/src/offline_sorter.rs::OfflineSor
 util/PagedBytes	not-needed	paged byte arena for buffering writers; Rust writers buffer in Vec<u8>
 util/PrintStreamInfoStream	not-needed	InfoStream over a PrintStream
 util/PriorityQueue	not-needed	generic binary heap; Rust std BinaryHeap, with Lucene's heap re-implemented where its tie order matters (top_field.rs HitQueue)
-util/QueryBuilder	todo:M7	analyzer-driven query construction (createBooleanQuery/createPhraseQuery, graph token streams)
+util/QueryBuilder	ported	crates/lucene-search/src/query_builder.rs::QueryBuilder
 util/RadixSelector	ported	crates/lucene-util/src/sorter.rs::radix_select
 util/RamUsageEstimator	not-needed	JVM object-size estimation
 util/RecyclingByteBlockAllocator	not-needed	ByteBlockPool block recycling; no block pools in the port
@@ -1101,7 +1101,7 @@ util/fst/ReadWriteDataOutput	not-needed	FSTCompiler output readable while writin
 util/fst/ReverseBytesReader	ported	crates/lucene-codecs/src/fst.rs::BytesReader
 util/fst/ReverseRandomAccessReader	ported	crates/lucene-codecs/src/fst.rs::BytesReader
 util/fst/Util	ported	crates/lucene-codecs/src/fst_util.rs::shortest_paths
-util/graph/GraphTokenStreamFiniteStrings	todo:M7	finite-path enumeration of graph token streams for QueryBuilder
+util/graph/GraphTokenStreamFiniteStrings	ported	crates/lucene-analysis/src/graph_finite_strings.rs::GraphTokenStreamFiniteStrings
 util/hnsw/AbstractHnswGraphSearcher	ported	crates/lucene-codecs/src/hnsw.rs::HnswGraphSearcher
 util/hnsw/BlockingFloatHeap	ported	crates/lucene-util/src/float_heap.rs::BlockingFloatHeap
 util/hnsw/CloseableRandomVectorScorerSupplier	not-needed	closeable supplier over a merge temp file; Rust lifetimes/Drop

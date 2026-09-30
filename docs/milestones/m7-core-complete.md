@@ -144,6 +144,7 @@ frequency attributes (on `index/IndexingChain`'s row).
 - `RescoreTopNQuery` as a clause (rewritten to a `DocAndScoreQuery` by the searcher), and values-source sorts over query-backed and vector sources (`rewrite_sort`); `GenValuesRescore` gained both.
 - Comparator skipping: `DocComparator`'s competitive iterator (Lucene's exact lower bound), `NumericComparator`'s `DVSkipperCompetitiveDISIBuilder` and `TermOrdValComparator`'s `SkipperBasedCompetitiveState` (skip-index sorts added to `GenSortedSearch`/`GenKeywordSort`).
 - `CompiledAutomaton.getTermsEnum` (`FieldTerms::compiled_terms`, fixture-verified against `GenRegexpIntersect`) and `visit` (`query_visitor::visit_compiled`).
+- `QueryBuilder` and `GraphTokenStreamFiniteStrings` over the streaming analysis model (`GenQueryBuilder`: 29 cases, `toString` and hits/scores bit for bit).
 
 Each follows [`port-workflow`](../porting-workflow.md): the closest-to-Java
 port with a Java-fixture differential test, a `bench-micro` pair against

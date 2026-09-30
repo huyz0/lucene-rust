@@ -224,6 +224,7 @@ pub mod ordinal_map;
 mod phrase_scorer;
 pub mod points_query;
 pub mod query;
+pub mod query_builder;
 pub mod query_cache;
 pub mod query_parser;
 pub mod query_visitor;

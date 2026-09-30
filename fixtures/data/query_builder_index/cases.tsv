@@ -1,0 +1,29 @@
+B		null	-	0
+B	Fox	fox	162:3f594154,261:3f594154,120:3f57ee5e,52:3f52f646,226:3f464b1e,1:3f4304df,97:3f4304df,186:3f4304df,224:3f4304df,155:3f3e8340	92
+B	quick brown fox	quick brown fox	169:3fcbb3b7,280:3fc8a2ce,201:3fbd2de9,207:3fb9d62d,46:3fb7c739,284:3fb58b62,93:3fb508b6,98:3faf35b3,44:3fadd154,226:3fad9f74	196
+BM	quick brown fox	+quick +brown +fox	169:3fcbb3b7,280:3fc8a2ce,207:3fb9d62d,46:3fb7c739,98:3faf35b3,278:3fa76798,16:3fa043ea	7
+B	The Quick-Brown fox's	the quick brown fox's	198:3fd5d6ce,201:3fbd2de9,93:3fb508b6,37:3fb43c40,262:3fb2c736,240:3fae667c,155:3fabd12e,56:3fa93424,183:3fa505ca,24:3fa4afea	194
+P0	quick brown	"quick brown"	271:3f89e7f5,21:3f82d0ab,86:3f62aa64	3
+P0	brown fox jumps	"brown fox jumps"	-	0
+P2	quick fox	"quick fox"~2	226:3f9445c1,258:3f8bc64b,247:3f6e892a,257:3f55603c,83:3f50045e,60:3f35995a,155:3f35995a,282:3f35995a,169:3f290390,144:3f1e0f5c	17
+M0.5	quick brown fox dog	(quick brown fox dog)~2	169:40094566,269:4008b574,44:400674fe,46:3ff7b08a,16:3ff347ba,207:3ff19232,118:3fe41808,278:3fe19f36,285:3fdf5992,248:3fd46111	104
+M0.34	red blue lazy	(red blue lazy)~1	250:4006e3ff,4:3ff0b585,141:3fda78c6,188:3fd68211,263:3fd64b40,145:3fcd8854,121:3fcb326e,229:3fc44bb0,27:3fc36fa0,51:3fb796c3	174
+M1.0	quick fox	+quick +fox	226:3fad9f74,258:3fa5b364,155:3fa576ce,279:3fa576ce,127:3f9ddedc,257:3f9ddedc,144:3f975008,121:3f9445c1,212:3f9445c1,80:3f915eaa	30
+M0.5	fox	fox	162:3f594154,261:3f594154,120:3f57ee5e,52:3f52f646,226:3f464b1e,1:3f4304df,97:3f4304df,186:3f4304df,224:3f4304df,155:3f3e8340	92
+CB	fast:1:1,wi:1:1,wifi:0:2,fi:1:1,network:1:1	fast ((+wi +fi) wifi) network	225:401e80a4,79:3fea46a4,12:3fe96f70,217:3fe276db,66:3fe1e170,189:3fe1e0f0,86:3fe196f3,237:3fd9eb87,35:3fd5fd10,106:3fd1b78b	210
+CBM	fast:1:1,wi:1:1,wifi:0:2,fi:1:1,network:1:1	+fast +((+wi +fi) wifi) +network	225:401e80a3,79:3fea46a4,12:3fe96f70,217:3fe276db,117:3fd12815,25:3fc8204c,193:3fc28ad5,235:3fabd2e7,98:3fa065df,62:3f9940ae	11
+CBA	fast:1:1,wi:1:1,wifi:0:2,fi:1:1,network:1:1	fast ("wi fi" wifi) network	225:40113e3c,79:3fea46a4,117:3fd12815,25:3fc8204c,193:3fc28ad5,237:3fbf097f,181:3fb80cc2,109:3fb36f10,235:3fabd2e7,291:3faa8a18	208
+CP0	fast:1:1,wi:1:1,wifi:0:2,fi:1:1,network:1:1	"fast wi fi network" "fast wifi network"	-	0
+CP1	fast:1:1,wi:1:1,wifi:0:2,fi:1:1,network:1:1	"fast wi fi network"~1 "fast wifi network"~1	62:3f3aab3c	1
+CBG	fast:1:1,wi:1:1,wifi:0:2,fi:1:1,network:1:1	fast Synonym(wi wifi) fi network	225:400d7e61,98:40028a6c,291:3ffc0e7e,63:3ff11f4e,227:3feb52d8,43:3fea46a4,79:3fea46a4,117:3fe9281c,159:3fe5d32c,12:3fe2b598	244
+CB	new:1:1,ny:0:2,york:1:1,city:1:1	((+new +york) ny) city	32:400bf79f,104:4005c072,197:3ffa0f79,68:3fefe34d,272:3fe8defd,55:3fe6109a,230:3fdabde0,184:3fdab692,180:3fcf72a8,82:3fcd2fb2	161
+CBM	fast:1:1,wi:1:1,wifi:0:2,fi:1:1,new:1:1,ny:0:2,york:1:1	+fast +((+wi +fi) wifi) +((+new +york) ny)	55:40271397,54:400cfbae,35:400607ba,71:4003f8d1,25:40026c1e,64:3fffad1c,248:3fe6f452,217:3fe2fae3,191:3fd3913c,241:3fc8b1e8	17
+CP0	new:1:1,ny:0:2,york:1:1,city:1:1	"new york city" "ny city"	167:3fb48478,209:3fb48478,206:3f9397b7,29:3f839783,36:3f839783,90:3f79a6ae,221:3f6d712c,108:3f584992,32:3f4f1034,54:3f4f1034	12
+CB	quick:1:1,fast:0:1,fox:1:1	Synonym(fast quick) fox	257:3fab4168,85:3fab2fbe,162:3fab00ac,204:3fa784ca,226:3fa55060,236:3fa4638c,212:3fa2b178,227:3fa2b178,132:3fa1a347,195:3f9f5693	205
+CBM	quick:1:1,fast:0:1,fox:1:1	+Synonym(fast quick) +fox	257:3fab4168,85:3fab2fbe,162:3fab00ac,204:3fa784ca,226:3fa55060,236:3fa4638c,212:3fa2b178,227:3fa2b178,132:3fa1a347,195:3f9f5693	48
+CB	dog:1:1,canine:0:1	Synonym(canine dog)	15:3f75a80f,119:3f734e63,138:3f734e63,26:3f687c48,14:3f5e9613,21:3f5cbdc0,147:3f5cbdc0,16:3f5bd483,50:3f56b27a,151:3f56b27a	147
+CP0	quick:1:1,fast:0:1,brown:1:1	"(quick fast) brown"	169:3fc4e667,191:3fc4e667,271:3fc4e667,21:3fbac690,71:3fb1a43a,183:3fa95bf4,86:3fa1d090,96:3fa1d090,248:3fa1d090,32:3f9ae9ea	12
+CP0I	quick:1:1,fast:0:1,brown:2:1	"(quick fast) brown"	169:3fc4e667,191:3fc4e667,271:3fc4e667,21:3fbac690,71:3fb1a43a,183:3fa95bf4,86:3fa1d090,96:3fa1d090,248:3fa1d090,32:3f9ae9ea	12
+CP0	quick:1:1,brown:2:1	"quick ? brown"	93:3f89e7f5,21:3f82d0ab	2
+CP0I	quick:1:1,brown:2:1	"quick brown"	271:3f89e7f5,21:3f82d0ab,86:3f62aa64	3
+CM0.5	quick:1:1,fast:0:1,fox:1:1,dog:1:1,canine:0:1	(Synonym(fast quick) fox Synonym(canine dog))~1	257:3fffda48,162:3ff5e71e,118:3ff4cd3a,204:3feab763,279:3fe88814,60:3fe5e033,258:3fe5e033,169:3fdad1ee,292:3fd91660,252:3fd4ab4e	240
