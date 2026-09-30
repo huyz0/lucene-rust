@@ -770,6 +770,95 @@ fn bench_analysis(w: Duration, m: Duration) {
     });
 }
 
+/// `SweepMicro.AUTOMATON_PATTERNS`.
+const AUTOMATON_PATTERNS: [&str; 12] = [
+    "t[0-9a-f]+",
+    "t.*9",
+    "(ta|tb|tc)[a-z0-9]{2,4}",
+    "t[^0-4]*[5-9]",
+    ".*ab.*",
+    "t<10-999>",
+    "(t1|t2)?[a-z]+(x|y|z)*",
+    "[a-z]{3}&t.*",
+    "t\\d+\\w?",
+    "tq?u?i?c?k?",
+    "(a|b)*a(a|b){6}",
+    "\u{e9}t\u{e9}|[\u{65e5}-\u{672c}]+",
+];
+
+/// `SweepMicro.automatonTerms`, identical words.
+fn automaton_terms(n: usize) -> Vec<String> {
+    let mut r = Rng(0x1357_9BDF_2468_ACE0);
+    (0..n)
+        .map(|_| {
+            let x = r.next();
+            let a = x % 50000;
+            let b = (x >> 20) % 50000;
+            format!("t{}", lucene_util::base36::to_base36(a.min(b) as i64))
+        })
+        .collect()
+}
+
+/// `SweepMicro.automaton`: the public automaton API
+/// (`lucene_util::automaton`) over the same patterns and terms.
+fn bench_automaton(w: Duration, m: Duration) {
+    use lucene_util::automaton::{
+        automata, operations, ByteRunAutomaton, ByteRunnable, CompiledAutomaton,
+        LevenshteinAutomata, RegExp, DEFAULT_DETERMINIZE_WORK_LIMIT,
+    };
+    let det = |p: &str| {
+        operations::determinize(
+            &RegExp::new(p).unwrap().to_automaton().unwrap(),
+            DEFAULT_DETERMINIZE_WORK_LIMIT,
+        )
+        .unwrap()
+    };
+    let terms = automaton_terms(20000);
+    measure("regexp_build", w, m, || {
+        for p in AUTOMATON_PATTERNS {
+            black_box(det(black_box(p)).get_num_states());
+        }
+        AUTOMATON_PATTERNS.len() as u64
+    });
+    let words = &terms[..64];
+    measure("lev2t_build", w, m, || {
+        for word in words {
+            let a = LevenshteinAutomata::new(black_box(word), true)
+                .to_automaton(2)
+                .unwrap();
+            black_box(a.get_num_states());
+        }
+        words.len() as u64
+    });
+    let dets: Vec<_> = AUTOMATON_PATTERNS.iter().map(|p| det(p)).collect();
+    measure("compile", w, m, || {
+        for a in &dets {
+            let c = CompiledAutomaton::new(black_box(a)).unwrap();
+            black_box(c.automaton_type);
+        }
+        dets.len() as u64
+    });
+    let run = ByteRunAutomaton::new(&dets[3], false).unwrap();
+    measure("run_bytes", w, m, || {
+        let mut hits = 0u64;
+        for t in &terms {
+            if run.run(black_box(t.as_bytes())) {
+                hits += 1;
+            }
+        }
+        black_box(hits);
+        terms.len() as u64
+    });
+    let mut sorted: Vec<&str> = terms.iter().map(String::as_str).collect();
+    sorted.sort_unstable();
+    sorted.dedup();
+    measure("string_union", w, m, || {
+        let a = automata::make_string_union(sorted.iter().map(|s| s.as_bytes())).unwrap();
+        black_box(a.get_num_states());
+        sorted.len() as u64
+    });
+}
+
 /// `SweepMicro.floatVectors`, bit for bit.
 fn float_vectors(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
     let mut r = Rng(seed);
@@ -1739,6 +1828,7 @@ fn main() {
         "checksum" => bench_checksum(warmup, measure),
         "analysis" => bench_analysis(warmup, measure),
         "vectors" => bench_vectors(warmup, measure),
+        "automaton" => bench_automaton(warmup, measure),
         "term_dict_write" => bench_term_dict_write(warmup, measure),
         "dv_merge" => bench_dv_merge(warmup, measure),
         "points_write" => bench_points_write(warmup, measure),
