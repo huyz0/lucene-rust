@@ -200,6 +200,34 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
         })
     }
 
+    /// `search(query, n, sort)` / `searchAfter(after, query, n, sort)`: the
+    /// top `n` by `sort`, counted exactly up to [`TOTAL_HITS_THRESHOLD`]
+    /// (`TopFieldCollectorManager(sort, n, after, 1000)`). `readers[i]` is
+    /// the segment reader segment `i` was opened from (its doc values and
+    /// field infos), which this object does not hold; see
+    /// [`crate::top_field::search_sorted`].
+    pub fn search_sorted(
+        &self,
+        readers: &[crate::directory_reader::SegmentReader],
+        query: &BooleanQuery,
+        n: usize,
+        sort: &[crate::top_field::SortField],
+        after: Option<&crate::top_field::FieldDoc>,
+    ) -> Result<crate::top_field::TopFieldDocs> {
+        let norms: Vec<SegmentNorms<'s, 'a>> =
+            (0..self.segments.len()).map(|i| self.norms(i)).collect();
+        crate::top_field::search_sorted(
+            self.segments,
+            readers,
+            query,
+            &norms,
+            sort,
+            n,
+            TOTAL_HITS_THRESHOLD,
+            after,
+        )
+    }
+
     /// `search(query, collector)`: every segment, in doc-base order, into
     /// one collector, which sees global document ids.
     pub fn search_collector<C: ScoringCollector + ?Sized>(
