@@ -145,10 +145,15 @@ pub(crate) fn build<'a>(
                     return Ok(match terms.len() {
                         0 => None,
                         1 => terms.pop().map(|t| -> super::BoxScorer<'a> { Box::new(t) }),
-                        _ => Some(Box::new(super::term_dismax::TermDisMaxScorer::new(
-                            terms,
-                            d.tie_breaker,
-                        ))),
+                        _ => {
+                            let scorer =
+                                super::term_dismax::TermDisMaxScorer::new(terms, d.tie_breaker);
+                            Some(Box::new(if mode == Mode::TopScores {
+                                scorer.with_block_propagator()?
+                            } else {
+                                scorer
+                            }))
+                        }
                     });
                 }
             }
@@ -161,11 +166,18 @@ pub(crate) fn build<'a>(
             Ok(match subs.len() {
                 0 => None,
                 1 => subs.pop(),
-                _ => Some(Box::new(DisjunctionScorer::new(
-                    subs,
-                    Combine::Max(d.tie_breaker),
-                    mode.needs_scores(),
-                ))),
+                _ => {
+                    let scorer = DisjunctionScorer::new(
+                        subs,
+                        Combine::Max(d.tie_breaker),
+                        mode.needs_scores(),
+                    );
+                    Some(Box::new(if mode == Mode::TopScores {
+                        scorer.with_block_propagator()?
+                    } else {
+                        scorer
+                    }))
+                }
             })
         }
         Clause::MatchAllDocs(m) => {
@@ -679,7 +691,8 @@ pub(crate) fn child<'a>(
                 cache: None,
                 ..*ctx
             };
-            match cache.scorer(clause, max_doc, || {
+            let cacheable = crate::segment_cacheable::is_cacheable(clause, ctx.reader);
+            match cache.scorer_if_cacheable(clause, max_doc, cacheable, || {
                 build(&core, clause, boost, mode, top_level)
             })? {
                 Some(super::cache::CacheResult::Hit(set)) => {

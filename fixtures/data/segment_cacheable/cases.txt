@@ -1,0 +1,15 @@
+q.exists_val=0
+q.exists_tag=0
+q.exists_keep=1
+q.term=1
+q.bool_filter_val=0
+q.bool_filter_keep=1
+q.bool_17=0
+q.dismax_17=0
+q.dismax_tag=0
+q.const_val=0
+q.boost_keep=1
+vs.val=000
+vs.tag=000
+vs.keep=111
+vs.missing=111

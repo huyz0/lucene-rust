@@ -20,6 +20,7 @@
 
 use lucene_util::fixed_bit_set::FixedBitSet;
 
+use super::disjunction::{BlockBoundaryPropagator, Clause};
 use super::leaf::TermScorer;
 use super::{Scorer, NO_MORE_DOCS};
 use crate::bulk_scorer::{sum_relative_error_bound, DocScores};
@@ -40,6 +41,14 @@ pub(crate) struct TermDisMaxScorer<'a> {
     max: Vec<f32>,
     others: Vec<f64>,
     buf: DocScores,
+    /// `DisjunctionMaxScorer.disjunctionBlockPropagator` (`TOP_SCORES` only).
+    propagator: Option<BlockBoundaryPropagator>,
+}
+
+impl Clause for TermScorer<'_> {
+    fn scorer(&mut self) -> &mut dyn Scorer {
+        self
+    }
 }
 
 impl<'a> TermDisMaxScorer<'a> {
@@ -61,7 +70,15 @@ impl<'a> TermDisMaxScorer<'a> {
             max: vec![0.0; WINDOW as usize],
             others: vec![0.0; WINDOW as usize],
             buf: DocScores::default(),
+            propagator: None,
         }
+    }
+
+    /// Installs the [`BlockBoundaryPropagator`], as `DisjunctionMaxScorer`
+    /// does under `ScoreMode.TOP_SCORES`.
+    pub(crate) fn with_block_propagator(mut self) -> Result<Self> {
+        self.propagator = Some(BlockBoundaryPropagator::new(&mut self.subs)?);
+        Ok(self)
     }
 
     fn min_doc(&self) -> i32 {
@@ -124,6 +141,9 @@ impl Scorer for TermDisMaxScorer<'_> {
     }
 
     fn advance_shallow(&mut self, target: i32) -> Result<i32> {
+        if let Some(p) = &self.propagator {
+            return p.advance_shallow(&mut self.subs, target);
+        }
         let mut min = NO_MORE_DOCS;
         for s in &mut self.subs {
             if s.doc_id() <= target {
@@ -167,6 +187,9 @@ impl Scorer for TermDisMaxScorer<'_> {
 
     /// A dismax with no tie-breaker is bounded by its best clause alone.
     fn set_min_competitive_score(&mut self, min: f32) -> Result<()> {
+        if let Some(p) = &mut self.propagator {
+            p.set_min_competitive_score(min);
+        }
         if self.tie == 0.0 {
             for s in &mut self.subs {
                 s.set_min_competitive_score(min)?;
