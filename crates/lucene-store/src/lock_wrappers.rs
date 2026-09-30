@@ -79,6 +79,12 @@ impl<D: Directory> Directory for SleepingLockWrapper<D> {
         file_length(name: &str) -> Result<u64>;
         create_output(name: &str) -> Result<FsIndexOutput>;
         create_temp_output(prefix: &str, suffix: &str) -> Result<FsIndexOutput>;
+        create_output_with_estimate(name: &str, estimated_bytes: Option<u64>) -> Result<FsIndexOutput>;
+        create_temp_output_with_estimate(
+            prefix: &str,
+            suffix: &str,
+            estimated_bytes: Option<u64>
+        ) -> Result<FsIndexOutput>;
         sync(names: &[String]) -> Result<()>;
         rename(source: &str, dest: &str) -> Result<()>;
         delete_file(name: &str) -> Result<()>;
@@ -154,6 +160,11 @@ impl<D: Directory> Directory for LockValidatingDirectoryWrapper<D> {
         open(name: &str) -> Result<Input>;
         file_length(name: &str) -> Result<u64>;
         create_temp_output(prefix: &str, suffix: &str) -> Result<FsIndexOutput>;
+        create_temp_output_with_estimate(
+            prefix: &str,
+            suffix: &str,
+            estimated_bytes: Option<u64>
+        ) -> Result<FsIndexOutput>;
         obtain_lock(name: &str) -> Result<Box<dyn Lock>>;
         pending_deletions() -> Result<BTreeSet<String>>;
     }
@@ -166,6 +177,16 @@ impl<D: Directory> Directory for LockValidatingDirectoryWrapper<D> {
     fn create_output(&self, name: &str) -> Result<FsIndexOutput> {
         self.write_lock.ensure_valid()?;
         self.inner.create_output(name)
+    }
+
+    fn create_output_with_estimate(
+        &self,
+        name: &str,
+        estimated_bytes: Option<u64>,
+    ) -> Result<FsIndexOutput> {
+        self.write_lock.ensure_valid()?;
+        self.inner
+            .create_output_with_estimate(name, estimated_bytes)
     }
 
     fn copy_from(&self, from: &dyn Directory, src: &str, dest: &str) -> Result<()> {

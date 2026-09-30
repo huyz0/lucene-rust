@@ -138,6 +138,58 @@ fn regexp_walk_matches_real_lucene_intersect_terms_enum() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// `CompiledAutomaton.getTermsEnum(terms)` itself, over `lucene-util`'s
+/// `CompiledAutomaton` built as `RegexpQuery` builds it (`RegExp.ALL`
+/// syntax, `Operations.determinize`, `new CompiledAutomaton(a, false, true,
+/// false)`): every pattern's enumeration is the one Lucene recorded --
+/// `NONE`, `ALL`, `SINGLE` and `NORMAL` automata alike.
+#[test]
+fn compiled_automaton_terms_enum_matches_real_lucene() {
+    use lucene_util::automaton::{operations, CompiledAutomaton, RegExp};
+    let m = manifest();
+    let fields = {
+        let read = |key: &str| std::fs::read(format!("{}{}", dir(), m[key])).unwrap();
+        open_with(&read("tip_file_name"), &read("tim_file_name")).unwrap()
+    };
+    let field = fields.field("body").unwrap();
+    let cases = std::fs::read_to_string(format!("{}cases.tsv", dir())).unwrap();
+    let mut failures = Vec::new();
+    let mut types = std::collections::BTreeSet::new();
+    for line in cases.lines() {
+        let cols: Vec<&str> = line.split('\t').collect();
+        let pattern = cols[0];
+        let a = RegExp::with_flags(pattern, RegExp::ALL, 0)
+            .expect("parse")
+            .to_automaton()
+            .expect("automaton");
+        let a = operations::determinize(&a, operations::DEFAULT_DETERMINIZE_WORK_LIMIT)
+            .expect("determinize");
+        let compiled = CompiledAutomaton::with_options(&a, false, true, false).expect("compile");
+        types.insert(format!("{:?}", compiled.automaton_type));
+        let mut h = 0xcbf29ce484222325u64;
+        let (mut n, mut dfs) = (0u64, 0i64);
+        let (mut first, mut last) = ("-".to_string(), "-".to_string());
+        for r in field.compiled_terms(&compiled) {
+            let (term, seeked) = r.expect("walk");
+            h = fnv(h, &(term.len() as u32).to_le_bytes());
+            h = fnv(h, &term);
+            if n == 0 {
+                first = hex(&term);
+            }
+            last = hex(&term);
+            n += 1;
+            dfs += i64::from(seeked.stats.doc_freq);
+        }
+        let got = format!("{n}\t{h:x}\t{dfs}\t{first}\t{last}");
+        let want = cols[1..6].join("\t");
+        if got != want {
+            failures.push(format!("{pattern:?}: got {got}, Lucene {want}"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    assert_eq!(types.len(), 4, "every automaton type: {types:?}");
+}
+
 /// The fixture's segment opened from the given `.tip`/`.tim` bytes.
 fn open_with(tip: &[u8], tim: &[u8]) -> Result<blocktree::BlockTreeFields, blocktree::Error> {
     let m = manifest();

@@ -38,6 +38,10 @@ pub enum ExtendedQuery {
     IndexSortRange(IndexSortSortedNumericDocValuesRangeQuery),
     PointRange(PointRangeQuery),
     PointInSet(PointInSetQuery),
+    IndexOrDocValues(IndexOrDocValuesQuery),
+    /// Searched only once [`crate::rescorer::rewrite_rescore_clauses`] (which
+    /// `IndexSearcher`'s searches run) has made it a [`DocAndScoreQuery`].
+    RescoreTopN(crate::rescorer::RescoreTopNQuery),
 }
 
 macro_rules! into_clause {
@@ -66,6 +70,13 @@ into_clause! {
     IndexSortSortedNumericDocValuesRangeQuery => IndexSortRange,
     PointRangeQuery => PointRange,
     PointInSetQuery => PointInSet,
+    IndexOrDocValuesQuery => IndexOrDocValues,
+}
+
+impl From<crate::rescorer::RescoreTopNQuery> for Clause {
+    fn from(q: crate::rescorer::RescoreTopNQuery) -> Self {
+        Clause::Extended(Box::new(ExtendedQuery::RescoreTopN(q)))
+    }
 }
 
 impl ExtendedQuery {
@@ -85,6 +96,8 @@ impl ExtendedQuery {
             ExtendedQuery::IndexSortRange(_) => "IndexSortSortedNumericDocValuesRangeQuery",
             ExtendedQuery::PointRange(_) => "PointRangeQuery",
             ExtendedQuery::PointInSet(_) => "PointInSetQuery",
+            ExtendedQuery::IndexOrDocValues(_) => "IndexOrDocValuesQuery",
+            ExtendedQuery::RescoreTopN(_) => "RescoreTopNQuery",
         }
     }
 
@@ -95,6 +108,7 @@ impl ExtendedQuery {
             ExtendedQuery::LogOddsFusion(q) => q.clauses.iter().collect(),
             ExtendedQuery::BayesianScore(q) => vec![q.query.as_ref()],
             ExtendedQuery::IndexSortRange(q) => vec![q.fallback.as_ref()],
+            ExtendedQuery::IndexOrDocValues(q) => vec![q.index_query.as_ref(), q.dv_query.as_ref()],
             _ => Vec::new(),
         }
     }
@@ -684,17 +698,34 @@ pub struct PointRangeQuery {
 }
 
 impl PointRangeQuery {
-    /// The corners must be `num_dims * bytes_per_dim` bytes each.
+    /// `new PointRangeQuery(field, lowerPoint, upperPoint, numDims)`, with
+    /// `PointRangeQuery.checkArgs`' checks and messages: the corners must be
+    /// `num_dims * bytes_per_dim` bytes each.
     pub fn new(
         field: impl Into<String>,
         num_dims: usize,
         lower: Vec<u8>,
         upper: Vec<u8>,
     ) -> Result<Self> {
-        if num_dims == 0 || lower.len() != upper.len() || !lower.len().is_multiple_of(num_dims) {
+        if num_dims == 0 {
             return Err(Error::InvalidQuery(
-                "lowerPoint and upperPoint must be num_dims * bytesPerDim bytes".into(),
+                "numDims must be positive, got 0".into(),
             ));
+        }
+        if lower.is_empty() {
+            return Err(Error::InvalidQuery("lowerPoint has length of zero".into()));
+        }
+        if !lower.len().is_multiple_of(num_dims) {
+            return Err(Error::InvalidQuery(
+                "lowerPoint is not a fixed multiple of numDims".into(),
+            ));
+        }
+        if lower.len() != upper.len() {
+            return Err(Error::InvalidQuery(format!(
+                "lowerPoint has length={} but upperPoint has different length={}",
+                lower.len(),
+                upper.len()
+            )));
         }
         Ok(Self {
             field: field.into(),
@@ -745,20 +776,31 @@ pub struct PointInSetQuery {
 }
 
 impl PointInSetQuery {
+    /// `new PointInSetQuery(field, numDims, bytesPerDim, packedPoints)`, with
+    /// its checks and messages.
     pub fn new(
         field: impl Into<String>,
         num_dims: usize,
         bytes_per_dim: usize,
         points: impl IntoIterator<Item = Vec<u8>>,
     ) -> Result<Self> {
+        if !(1..=16).contains(&bytes_per_dim) {
+            return Err(Error::InvalidQuery(format!(
+                "bytesPerDim must be > 0 and <= 16; got {bytes_per_dim}"
+            )));
+        }
+        if !(1..=8).contains(&num_dims) {
+            return Err(Error::InvalidQuery(format!(
+                "numDims must be > 0 and <= 8; got {num_dims}"
+            )));
+        }
         let mut points: Vec<Vec<u8>> = points.into_iter().collect();
-        if points
-            .iter()
-            .any(|p| p.len() != num_dims.saturating_mul(bytes_per_dim))
-        {
-            return Err(Error::InvalidQuery(
-                "every point must be num_dims * bytesPerDim bytes".into(),
-            ));
+        let want = num_dims.saturating_mul(bytes_per_dim);
+        if let Some(bad) = points.iter().find(|p| p.len() != want) {
+            return Err(Error::InvalidQuery(format!(
+                "packed point length should be {want} but got {}",
+                bad.len()
+            )));
         }
         points.sort();
         points.dedup();
@@ -783,6 +825,33 @@ impl PointInSetQuery {
     /// `InetAddressPoint.newSetQuery`.
     pub fn inet_set(field: impl Into<String>, values: &[std::net::IpAddr]) -> Result<Self> {
         Self::new(field, 1, 16, values.iter().map(|&v| inet_bytes(v).to_vec()))
+    }
+}
+
+/// `IndexOrDocValuesQuery`: one set of matches two ways -- `index_query`
+/// (points or terms: costly to set up, a good lead iterator) and `dv_query`
+/// (doc values: cheap to start, good at verifying documents another clause
+/// leads). Both must match the same documents with the same constant score.
+///
+/// Per segment, as `IndexOrDocValuesQuery.createWeight`'s `ScorerSupplier`
+/// decides: nothing when either side has no scorer supplier (the segment lacks
+/// the points or the doc values); run alone (`bulkScorer`) the index side;
+/// inside a boolean, [`crate::doc_value_query::plan_index_or_doc_values`] over
+/// the index side's `cost()` and the boolean's lead cost
+/// (`ScorerSupplier.get(leadCost)`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct IndexOrDocValuesQuery {
+    pub index_query: Box<Clause>,
+    pub dv_query: Box<Clause>,
+}
+
+impl IndexOrDocValuesQuery {
+    /// `new IndexOrDocValuesQuery(indexQuery, dvQuery)`.
+    pub fn new(index_query: impl Into<Clause>, dv_query: impl Into<Clause>) -> Self {
+        Self {
+            index_query: Box::new(index_query.into()),
+            dv_query: Box::new(dv_query.into()),
+        }
     }
 }
 

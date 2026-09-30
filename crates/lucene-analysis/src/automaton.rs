@@ -1,137 +1,22 @@
-//! `TokenStreamToAutomaton` and `AutomatonToTokenStream`, over a minimal
-//! automaton.
+//! `TokenStreamToAutomaton` and `AutomatonToTokenStream`.
 //!
-//! Java builds and reads `org.apache.lucene.util.automaton.Automaton`. That
-//! API is not in this workspace yet (it is being ported into `lucene-util`),
-//! and this crate depends on nothing in the workspace, so the two converters
-//! run over [`Automaton`] here: the part of Java's class they use -- states,
-//! accept bits, and per-state transitions in Java's canonical form (adjacent
-//! ranges to the same destination merged, sorted by min, max, dest, exactly
-//! what `Automaton.Builder.finish()` + `finishState()` produce). The
-//! differential fixture compares that form state for state with Java's
-//! `getSortedTransitions()`.
+//! Both convert to and from `org.apache.lucene.util.automaton.Automaton`,
+//! which is [`lucene_util::automaton::Automaton`] here (the full port; this
+//! crate's only workspace dependency). Java's `Automaton.Builder` is
+//! [`AutomatonBuilder`]; its `finish()` sorts and merges each state's
+//! transitions exactly as Java's does, and the differential fixture compares
+//! the result state for state with Java's `getSortedTransitions()`.
 
 use crate::attributes::AttributeSource;
 use crate::token_stream::TokenStream;
 use crate::AnalysisError;
+pub use lucene_util::automaton::{Automaton, Builder as AutomatonBuilder, Transition};
 
 /// `TokenStreamToAutomaton.POS_SEP`: the label between positions.
 pub const POS_SEP: i32 = 0x001f;
 
 /// `TokenStreamToAutomaton.HOLE`: the label of a position no token covers.
 pub const HOLE: i32 = 0x001e;
-
-/// `org.apache.lucene.util.automaton.Transition`: `min..=max` to `dest`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Transition {
-    pub dest: usize,
-    pub min: i32,
-    pub max: i32,
-}
-
-/// The finished automaton (see the module docs).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Automaton {
-    accept: Vec<bool>,
-    transitions: Vec<Vec<Transition>>,
-}
-
-impl Automaton {
-    /// `getNumStates()`.
-    pub fn num_states(&self) -> usize {
-        self.accept.len()
-    }
-
-    /// `isAccept(int)`.
-    pub fn is_accept(&self, state: usize) -> bool {
-        self.accept[state]
-    }
-
-    /// `getNumTransitions()`.
-    pub fn num_transitions(&self) -> usize {
-        self.transitions.iter().map(Vec::len).sum()
-    }
-
-    /// The transitions leaving `state`, sorted by min, max, dest
-    /// (`getSortedTransitions()[state]`).
-    pub fn transitions(&self, state: usize) -> &[Transition] {
-        &self.transitions[state]
-    }
-}
-
-/// `Automaton.Builder`.
-#[derive(Debug, Clone, Default)]
-pub struct AutomatonBuilder {
-    accept: Vec<bool>,
-    /// (source, dest, min, max).
-    transitions: Vec<(usize, usize, i32, i32)>,
-}
-
-impl AutomatonBuilder {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// `createState()`.
-    pub fn create_state(&mut self) -> usize {
-        self.accept.push(false);
-        self.accept.len() - 1
-    }
-
-    /// `setAccept(int, boolean)`.
-    pub fn set_accept(&mut self, state: usize, accept: bool) {
-        self.accept[state] = accept;
-    }
-
-    /// `isAccept(int)`.
-    pub fn is_accept(&self, state: usize) -> bool {
-        self.accept[state]
-    }
-
-    /// `getNumStates()`.
-    pub fn num_states(&self) -> usize {
-        self.accept.len()
-    }
-
-    /// `addTransition(int source, int dest, int label)`.
-    pub fn add_transition(&mut self, source: usize, dest: usize, label: i32) {
-        self.add_transition_range(source, dest, label, label);
-    }
-
-    /// `addTransition(int source, int dest, int min, int max)`.
-    pub fn add_transition_range(&mut self, source: usize, dest: usize, min: i32, max: i32) {
-        self.transitions.push((source, dest, min, max));
-    }
-
-    /// `finish()`: per state, `finishCurrentState()`'s merge of adjacent or
-    /// overlapping ranges to one destination, then the min/max/dest order.
-    pub fn finish(self) -> Automaton {
-        let mut per_state: Vec<Vec<Transition>> = vec![Vec::new(); self.accept.len()];
-        for (src, dest, min, max) in self.transitions {
-            per_state[src].push(Transition { dest, min, max });
-        }
-        for ts in &mut per_state {
-            // destMinMaxSorter
-            ts.sort_by_key(|t| (t.dest, t.min, t.max));
-            let mut merged: Vec<Transition> = Vec::with_capacity(ts.len());
-            for t in ts.iter() {
-                match merged.last_mut() {
-                    Some(last) if last.dest == t.dest && t.min <= last.max.saturating_add(1) => {
-                        last.max = last.max.max(t.max);
-                    }
-                    _ => merged.push(*t),
-                }
-            }
-            // minMaxDestSorter
-            merged.sort_by_key(|t| (t.min, t.max, t.dest));
-            *ts = merged;
-        }
-        Automaton {
-            accept: self.accept,
-            transitions: per_state,
-        }
-    }
-}
 
 /// `TokenStreamToAutomaton.Position`.
 #[derive(Clone, Copy)]
@@ -257,13 +142,13 @@ impl TokenStreamToAutomaton {
                         positions.get(pos).leaving = 0;
                     } else {
                         // This means there's a hole (eg, StopFilter does this):
-                        positions.get(pos).leaving = builder.create_state() as i64;
+                        positions.get(pos).leaving = i64::from(builder.create_state());
                         add_holes(&mut builder, &mut positions, pos);
                     }
                 } else {
                     let leaving = builder.create_state();
-                    positions.get(pos).leaving = leaving as i64;
-                    builder.add_transition(arriving as usize, leaving, POS_SEP);
+                    positions.get(pos).leaving = i64::from(leaving);
+                    builder.add_transition_label(arriving as i32, leaving, POS_SEP);
                     if pos_inc > 1 {
                         // A token spanned over a hole; add holes "under" it:
                         add_holes(&mut builder, &mut positions, pos);
@@ -285,9 +170,9 @@ impl TokenStreamToAutomaton {
             let end_arriving = {
                 let end_pos_data = positions.get(end_pos);
                 if end_pos_data.arriving == -1 {
-                    end_pos_data.arriving = builder.create_state() as i64;
+                    end_pos_data.arriving = i64::from(builder.create_state());
                 }
-                end_pos_data.arriving as usize
+                end_pos_data.arriving as i32
             };
 
             let labels: Vec<i32> = if self.unicode_arcs {
@@ -300,7 +185,7 @@ impl TokenStreamToAutomaton {
                 term_utf8.iter().map(|&b| b as i32).collect()
             };
 
-            let mut state = leaving_state as usize;
+            let mut state = leaving_state as i32;
             let term_len = labels.len();
             for (i, &c) in labels.iter().enumerate() {
                 let next_state = if i == term_len - 1 {
@@ -308,7 +193,7 @@ impl TokenStreamToAutomaton {
                 } else {
                     builder.create_state()
                 };
-                builder.add_transition(state, next_state, c);
+                builder.add_transition_label(state, next_state, c);
                 state = next_state;
             }
 
@@ -333,14 +218,14 @@ impl TokenStreamToAutomaton {
             let mut last_state = end_state;
             loop {
                 let state1 = builder.create_state();
-                builder.add_transition(last_state, state1, HOLE);
+                builder.add_transition_label(last_state, state1, HOLE);
                 end_pos_inc -= 1;
                 if end_pos_inc == 0 {
                     builder.set_accept(state1, true);
                     break;
                 }
                 let state2 = builder.create_state();
-                builder.add_transition(state1, state2, POS_SEP);
+                builder.add_transition_label(state1, state2, POS_SEP);
                 last_state = state2;
             }
             Some(end_state)
@@ -354,9 +239,9 @@ impl TokenStreamToAutomaton {
             if arriving != -1 {
                 match end_state {
                     Some(end_state) => {
-                        builder.add_transition(arriving as usize, end_state, POS_SEP)
+                        builder.add_transition_label(arriving as i32, end_state, POS_SEP)
                     }
-                    None => builder.set_accept(arriving as usize, true),
+                    None => builder.set_accept(arriving as i32, true),
                 }
             }
             pos += 1;
@@ -376,19 +261,19 @@ fn add_holes(builder: &mut AutomatonBuilder, positions: &mut Positions, mut pos:
         }
         if pos_data.arriving == -1 {
             let arriving = builder.create_state();
-            positions.get(pos).arriving = arriving as i64;
-            builder.add_transition(arriving, pos_data.leaving as usize, POS_SEP);
+            positions.get(pos).arriving = i64::from(arriving);
+            builder.add_transition_label(arriving, pos_data.leaving as i32, POS_SEP);
         }
         if prev.leaving == -1 {
             let leaving = if pos == 1 { 0 } else { builder.create_state() };
-            positions.get(pos - 1).leaving = leaving as i64;
+            positions.get(pos - 1).leaving = i64::from(leaving);
             if prev.arriving != -1 {
-                builder.add_transition(prev.arriving as usize, leaving, POS_SEP);
+                builder.add_transition_label(prev.arriving as i32, leaving, POS_SEP);
             }
         }
-        let from = positions.get(pos - 1).leaving as usize;
-        let to = positions.get(pos).arriving as usize;
-        builder.add_transition(from, to, HOLE);
+        let from = positions.get(pos - 1).leaving as i32;
+        let to = positions.get(pos).arriving as i32;
+        builder.add_transition_label(from, to, HOLE);
         pos -= 1;
         if pos <= 0 {
             break;
@@ -405,13 +290,14 @@ pub fn token_stream_to_automaton(input: &mut dyn TokenStream) -> Result<Automato
 /// as a token graph, one single-`char` token per transition label, each
 /// state's topological layer its position (offsets are layer numbers).
 pub fn automaton_to_token_stream(automaton: &Automaton) -> Result<TopoTokenStream, AnalysisError> {
-    let n = automaton.num_states();
+    let n = usize::try_from(automaton.get_num_states()).unwrap_or(0);
+    let transitions: Vec<Vec<Transition>> = automaton.get_sorted_transitions();
     let mut position_nodes: Vec<Vec<usize>> = Vec::new();
 
     let mut indegree = vec![0i64; n];
-    for s in 0..n {
-        for t in automaton.transitions(s) {
-            indegree[t.dest] += 1;
+    for ts in &transitions {
+        for t in ts {
+            indegree[t.dest as usize] += 1;
         }
     }
     if indegree.first().copied().unwrap_or(0) != 0 {
@@ -427,10 +313,11 @@ pub fn automaton_to_token_stream(automaton: &Automaton) -> Result<TopoTokenStrea
         no_incoming_edges.push_back((0usize, 0usize));
     }
     while let Some((id, pos)) = no_incoming_edges.pop_front() {
-        for t in automaton.transitions(id) {
-            indegree[t.dest] -= 1;
-            if indegree[t.dest] == 0 {
-                no_incoming_edges.push_back((t.dest, pos + 1));
+        for t in &transitions[id] {
+            let dest = t.dest as usize;
+            indegree[dest] -= 1;
+            if indegree[dest] == 0 {
+                no_incoming_edges.push_back((dest, pos + 1));
             }
         }
         if position_nodes.len() == pos {
@@ -452,11 +339,11 @@ pub fn automaton_to_token_stream(automaton: &Automaton) -> Result<TopoTokenStrea
     for layer in &position_nodes {
         let mut edges = Vec::new();
         for &state in layer {
-            for t in automaton.transitions(state) {
+            for t in &transitions[state] {
                 // each edge in the token stream can only be one value,
                 // though a transition takes a range.
                 for val in t.min..=t.max {
-                    let dest_layer = id_to_pos[t.dest];
+                    let dest_layer = id_to_pos[t.dest as usize];
                     edges.push((dest_layer, val));
                     // If there's an intermediate accept state, add an edge
                     // to the terminal state.
@@ -593,11 +480,11 @@ mod tests {
 
     /// Every accepted string, labels as chars (small acyclic automata only).
     fn strings(a: &Automaton) -> Vec<String> {
-        fn walk(a: &Automaton, s: usize, cur: &mut String, out: &mut Vec<String>) {
+        fn walk(a: &Automaton, s: i32, cur: &mut String, out: &mut Vec<String>) {
             if a.is_accept(s) {
                 out.push(cur.clone());
             }
-            for t in a.transitions(s) {
+            for t in &a.get_sorted_transitions()[s as usize] {
                 for l in t.min..=t.max {
                     let c = match l {
                         POS_SEP => '|',
@@ -649,7 +536,7 @@ mod tests {
         let mut ts = canned(vec![("é", 1, 1, 1)], (0, 5));
         let a = token_stream_to_automaton(&mut ts).unwrap();
         // two UTF-8 byte arcs
-        assert_eq!(a.num_states(), 3);
+        assert_eq!(a.get_num_states(), 3);
         let mut conv = TokenStreamToAutomaton::new();
         conv.set_unicode_arcs(true);
         conv.set_final_offset_gap_as_hole(true);
@@ -670,36 +557,21 @@ mod tests {
         let s0 = b.create_state();
         let s1 = b.create_state();
         let s2 = b.create_state();
-        b.add_transition(s0, s1, b'c' as i32);
-        b.add_transition(s0, s1, b'a' as i32);
-        b.add_transition(s0, s1, b'b' as i32);
-        b.add_transition(s0, s2, b'a' as i32);
-        b.add_transition_range(s0, s1, b'x' as i32, b'z' as i32);
+        b.add_transition_label(s0, s1, b'c' as i32);
+        b.add_transition_label(s0, s1, b'a' as i32);
+        b.add_transition_label(s0, s1, b'b' as i32);
+        b.add_transition_label(s0, s2, b'a' as i32);
+        b.add_transition(s0, s1, b'x' as i32, b'z' as i32);
         b.set_accept(s1, true);
         assert!(b.is_accept(s1));
-        assert_eq!(b.num_states(), 3);
+        assert_eq!(b.get_num_states(), 3);
         let a = b.finish();
-        assert_eq!(
-            a.transitions(s0),
-            &[
-                Transition {
-                    dest: 2,
-                    min: 97,
-                    max: 97
-                },
-                Transition {
-                    dest: 1,
-                    min: 97,
-                    max: 99
-                },
-                Transition {
-                    dest: 1,
-                    min: 120,
-                    max: 122
-                },
-            ]
-        );
-        assert_eq!(a.num_transitions(), 3);
+        let got: Vec<(i32, i32, i32)> = a.get_sorted_transitions()[s0 as usize]
+            .iter()
+            .map(|t| (t.dest, t.min, t.max))
+            .collect();
+        assert_eq!(got, vec![(2, 97, 97), (1, 97, 99), (1, 120, 122)]);
+        assert_eq!(a.get_total_num_transitions(), 3);
     }
 
     #[test]
@@ -709,9 +581,9 @@ mod tests {
         for _ in 0..3 {
             b.create_state();
         }
-        b.add_transition(0, 1, b'a' as i32);
-        b.add_transition(1, 2, b'b' as i32);
-        b.add_transition(0, 2, b'c' as i32);
+        b.add_transition_label(0, 1, b'a' as i32);
+        b.add_transition_label(1, 2, b'b' as i32);
+        b.add_transition_label(0, 2, b'c' as i32);
         b.set_accept(2, true);
         let a = b.finish();
         let mut ts = automaton_to_token_stream(&a).unwrap();
@@ -742,17 +614,17 @@ mod tests {
         let mut b = AutomatonBuilder::new();
         b.create_state();
         b.create_state();
-        b.add_transition(0, 1, 1);
-        b.add_transition(1, 0, 1);
+        b.add_transition_label(0, 1, 1);
+        b.add_transition_label(1, 0, 1);
         let err = automaton_to_token_stream(&b.finish()).err().unwrap();
         assert!(err.to_string().contains("Start node has incoming edges"));
         let mut b = AutomatonBuilder::new();
         for _ in 0..3 {
             b.create_state();
         }
-        b.add_transition(0, 1, 1);
-        b.add_transition(1, 2, 1);
-        b.add_transition(2, 1, 1);
+        b.add_transition_label(0, 1, 1);
+        b.add_transition_label(1, 2, 1);
+        b.add_transition_label(2, 1, 1);
         let err = automaton_to_token_stream(&b.finish()).err().unwrap();
         assert!(err.to_string().contains("Cycle found"));
         // intermediate accept adds an edge to the terminal layer
@@ -760,8 +632,8 @@ mod tests {
         for _ in 0..3 {
             b.create_state();
         }
-        b.add_transition(0, 1, b'a' as i32);
-        b.add_transition(1, 2, b'b' as i32);
+        b.add_transition_label(0, 1, b'a' as i32);
+        b.add_transition_label(1, 2, b'b' as i32);
         b.set_accept(1, true);
         b.set_accept(2, true);
         let mut ts = automaton_to_token_stream(&b.finish()).unwrap();

@@ -31,6 +31,7 @@ import org.apache.lucene.search.DisjunctionMaxQuery;
 import org.apache.lucene.search.FloatVectorSimilarityQuery;
 import org.apache.lucene.search.FuzzyQuery;
 import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.IndexOrDocValuesQuery;
 import org.apache.lucene.search.IndexSortSortedNumericDocValuesRangeQuery;
 import org.apache.lucene.search.IndriAndQuery;
 import org.apache.lucene.search.KnnByteVectorQuery;
@@ -215,6 +216,15 @@ public class GenM7Queries {
     "IPR ip 10.0.0.0 10.0.0.60",
     "IPS ip 10.0.0.3 10.0.0.9 10.0.0.77 10.0.1.1",
     "B 1 0 0 T body t2 F2 P2R p2 -30 -30 30 30",
+    // IndexOrDocValuesQuery: alone (the points side), and behind a selective term (the doc-values
+    // side, by cost), as a filter, a scoring clause and an optional one
+    "IODV LR num -20 40 NR num -20 40",
+    "B 1 0 0 T body t7 F2 IODV LR num 0 100 NR num 0 100",
+    "B 2 0 0 T body t9 IODV LR num -100 1000 NR num -100 1000",
+    "B 1 1 0 T body t3 IODV LR num 5 30 NR num 5 30",
+    "B 0 2 0 T body t2 IODV LR num 5 30 NR num 5 30",
+    "B 1 0 1 T body t1 IODV LR num 0 50 NR num 0 50",
+    "B 1 0 0 B 0 5 0 T id 1 T id 2 T id 3 T id 4 T id 5 F2 IODV LR num -1000 1000 NR num -1000 1000",
     // Vector similarity thresholds
     "VSF vec 0.05",
     "VSF vec 0.2",
@@ -486,6 +496,15 @@ public class GenM7Queries {
         List<Integer> vs = new ArrayList<>();
         while (pos < tok.length && !tok[pos].equals("F2")) vs.add(i(tok));
         return IntPoint.newSetQuery(field, vs.stream().mapToInt(Integer::intValue).toArray());
+      }
+      case "LR": {
+        String field = tok[pos++];
+        long lo = Long.parseLong(tok[pos++]), hi = Long.parseLong(tok[pos++]);
+        return LongPoint.newRangeQuery(field, lo, hi);
+      }
+      case "IODV": {
+        Query index = parse(tok);
+        return new IndexOrDocValuesQuery(index, parse(tok));
       }
       case "LS": {
         String field = tok[pos++];

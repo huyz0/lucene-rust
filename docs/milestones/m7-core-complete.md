@@ -145,7 +145,7 @@ the skipper path, range relations, feature, distance feature) in
 
 - Delivered 2026-09-30: compound segments -- flushes honour `useCompoundFile` (this writer defaults it to `false`), merges `MergePolicy.useCompoundFile` (`noCFSRatio`, `maxCFSSegmentSizeMB`).
 
-### T7.8 — `StandardTokenizer` and the attribute model · delivered 2026-09-30, two rows partial
+### T7.8 — `StandardTokenizer` and the attribute model · delivered 2026-09-30
 
 `crates/lucene-analysis` is now Lucene's streaming model: `TokenStream`/
 `Tokenizer`/`TokenFilter`/`FilteringTokenFilter`/`CachingTokenFilter`/
@@ -157,10 +157,22 @@ the 10.5.0 class. `GenStandardTokenizer` checks `zzCMap` for every code point
 and 17,073 analyses (Unicode's word-break and emoji conformance inputs from
 Lucene's test framework, the tokenizer, `StandardAnalyzer`, a custom chain
 with a char filter) token for token, plus the graph filter and both automaton
-converters. Still partial: `TokenStreamToAutomaton`/`AutomatonToTokenStream`
-build this crate's minimal automaton until `lucene-util`'s automaton API
-lands. Not in this task: the inverter reading a filter's payload and term
+converters. `TokenStreamToAutomaton`/`AutomatonToTokenStream` now build and
+read `lucene-util`'s `Automaton` (delivered 2026-09-30). Not in this task: the inverter reading a filter's payload and term
 frequency attributes (on `index/IndexingChain`'s row).
+
+### Search, analysis and document gaps · delivered 2026-09-30
+
+- `ColumnBatch`: an empty column registers its `FieldInfo` as Java's does
+  (`GenDocumentColumns` gained three empty columns).
+- `NRTCachingDirectory`: `IndexWriter` passes its flush and merge size estimates (`Directory::create_output_with_estimate`, `EstimatedWrites`), so small segments are cached.
+- One point range/set query: the document package runs the scorer tree's `PointRangeQuery`/`PointInSetQuery` (hits and scores unchanged against `GenDocumentFields`).
+- `IndexOrDocValuesQuery` in the scorer tree, choosing points or doc values by the boolean's lead cost (`GenM7Queries` gained seven searches).
+- `RescoreTopNQuery` as a clause (rewritten to a `DocAndScoreQuery` by the searcher), and values-source sorts over query-backed and vector sources (`rewrite_sort`); `GenValuesRescore` gained both.
+- Comparator skipping: `DocComparator`'s competitive iterator (Lucene's exact lower bound), `NumericComparator`'s `DVSkipperCompetitiveDISIBuilder` and `TermOrdValComparator`'s `SkipperBasedCompetitiveState` (skip-index sorts added to `GenSortedSearch`/`GenKeywordSort`).
+- `CompiledAutomaton.getTermsEnum` (`FieldTerms::compiled_terms`, fixture-verified against `GenRegexpIntersect`) and `visit` (`query_visitor::visit_compiled`).
+- `QueryBuilder` and `GraphTokenStreamFiniteStrings` over the streaming analysis model (`GenQueryBuilder`: 29 cases, `toString` and hits/scores bit for bit).
+- `IndexSearcher.explain` over several segments with reader-wide statistics (and `searchAfter`), each top hit's explanation Lucene's `toString` verbatim (`GenMinScore`); counts print as Java longs, scientific notation as Java's.
 
 Each follows [`port-workflow`](../porting-workflow.md): the closest-to-Java
 port with a Java-fixture differential test, a `bench-micro` pair against

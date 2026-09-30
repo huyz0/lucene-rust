@@ -60,10 +60,10 @@ fn ip(s: &str) -> IpAddr {
 
 #[test]
 fn point_queries_check_their_arguments_and_the_fields_shape() {
-    assert!(PointRangeQuery::new("f", vec![1], vec![2], 0).is_err());
-    assert!(PointRangeQuery::new("f", vec![], vec![], 1).is_err());
-    assert!(PointRangeQuery::new("f", vec![1, 2, 3], vec![1, 2, 3], 2).is_err());
-    assert!(PointRangeQuery::new("f", vec![1, 2], vec![1], 1).is_err());
+    assert!(PointRangeQuery::new("f", 0, vec![1], vec![2]).is_err());
+    assert!(PointRangeQuery::new("f", 1, vec![], vec![]).is_err());
+    assert!(PointRangeQuery::new("f", 2, vec![1, 2, 3], vec![1, 2, 3]).is_err());
+    assert!(PointRangeQuery::new("f", 1, vec![1, 2], vec![1]).is_err());
     assert!(PointInSetQuery::new("f", 1, 0, vec![]).is_err());
     assert!(PointInSetQuery::new("f", 1, 17, vec![]).is_err());
     assert!(PointInSetQuery::new("f", 0, 4, vec![]).is_err());
