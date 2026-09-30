@@ -76,6 +76,7 @@ decode it, and is freed with the segment).
 | `src/test/…/NativeBench` | `gradle nativeBench`: the downcall's crossing cost and in-process latency |
 | `src/yamlRestTest/…/LuceneRustYamlIT` | OpenSearch's REST YAML suites, for `verify-opensearch.sh --yaml` |
 | `e2e/verify_opensearch.py` | the node-level harness `scripts/verify-opensearch.sh` runs |
+| `e2e/verify_upgrade.py` | `scripts/verify-opensearch-upgrade.sh` (M8): an index OpenSearch 2.19 wrote, opened in place and restored from its snapshot by 3.8.0 with this plugin, answered as a stock 3.8.0 node answers it, natively, before and after a force merge |
 | `docker/Dockerfile` | the test node: the pinned image, bundled plugins removed, this one installed |
 
 The Rust side is plain C ABI, unit-tested without a JVM:
