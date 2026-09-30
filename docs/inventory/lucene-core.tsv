@@ -451,7 +451,7 @@ index/PostingsEnum	ported	crates/lucene-codecs/src/postings.rs::LazyDocsCursor
 index/PrefixCodedTerms	ported	crates/lucene-index/src/buffered_updates.rs::FrozenBufferedUpdates
 index/QueryTimeout	ported	crates/lucene-search/src/reader/exitable.rs::QueryTimeout
 index/QueryTimeoutImpl	ported	crates/lucene-search/src/reader/exitable.rs::QueryTimeoutImpl
-index/ReaderManager	partial	crates/lucene-search/src/reader_manager.rs::ReaderManager -- M7: writer side: no `ReaderManager(IndexWriter)` (no NRT reader over a live writer)
+index/ReaderManager	ported	crates/lucene-search/src/reader_manager.rs::ReaderManager
 index/ReaderPool	ported	crates/lucene-index/src/reader_pool.rs::ReaderPool
 index/ReaderSlice	not-needed	plain (start, length, readerIndex) record for composite-reader plumbing; Rust carries a doc_base per segment (multi_segment::OpenSegment).
 index/ReaderUtil	not-needed	@lucene.internal helpers for walking IndexReaderContext trees (subIndex, getTopLevelContext); Rust addresses segments by index with an explicit doc_base.
