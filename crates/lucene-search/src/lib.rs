@@ -219,6 +219,7 @@ pub mod points_query;
 pub mod query;
 pub mod query_cache;
 pub mod query_parser;
+pub mod rescorer;
 pub mod similarities;
 pub mod similarity;
 mod slices;
@@ -229,6 +230,7 @@ pub mod terminate;
 pub mod terms_agg;
 pub mod top_docs;
 pub mod top_field;
+pub mod values_source;
 pub mod vector_query;
 pub mod weight_count;
 

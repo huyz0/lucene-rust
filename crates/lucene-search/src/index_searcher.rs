@@ -319,6 +319,59 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
         )
     }
 
+    /// `weight.scorer(leaf)` run to the end: every document of segment
+    /// `leaf` that `query` matches, leaf-local and ascending, with its score
+    /// (`ScoreMode.COMPLETE`, reader-wide statistics). With
+    /// `include_deleted`, deleted documents are scored too, as a `Scorer`
+    /// (which never reads live docs) reports them.
+    pub fn leaf_scores(
+        &self,
+        query: &BooleanQuery,
+        leaf: usize,
+        include_deleted: bool,
+    ) -> Result<Vec<(i32, f32)>> {
+        struct All(Vec<(i32, f32)>);
+        impl ScoringCollector for All {
+            fn collect(&mut self, doc: i32, score: f32) {
+                self.0.push((doc, score));
+            }
+        }
+        let seg = self.segments.get(leaf).ok_or(Error::SliceOutOfRange {
+            segment: leaf,
+            segments: self.segments.len(),
+        })?;
+        let (rewritten, global) = self.prepare(query)?;
+        let query = rewritten.as_ref().unwrap_or(query);
+        let sim = self.similarity.filter(|s| !s.is_default_bm25());
+        if sim.is_some() {
+            crate::check_similarity_supported(query)?;
+        }
+        let one = OpenSegment {
+            live_docs: if include_deleted { None } else { seg.live_docs },
+            ..*seg
+        };
+        let mut all = All(Vec::new());
+        match sim {
+            Some(sim) => crate::search_boolean_query_scored_segment_with_similarity(
+                &one,
+                query,
+                self.norms(leaf),
+                &global,
+                sim,
+                &mut all,
+            )?,
+            None => crate::search_boolean_query_scored_segment(
+                &one,
+                query,
+                self.norms(leaf),
+                Some(&global),
+                &mut all,
+            )?,
+        }
+        all.0.sort_by_key(|&(d, _)| d);
+        Ok(all.0)
+    }
+
     /// The score `query` gives each of `docs` (global ids, any order) that it
     /// matches: what a `Weight`'s scorer, advanced to each, would report --
     /// the per-document scores `QueryRescorer` and a query-backed values

@@ -129,6 +129,28 @@ pub enum Selector {
     Avg,
     /// `MultiValueMode.MEDIAN`.
     Median,
+    /// `SortedSetSelector.Type.MIDDLE_MIN`: the middle ordinal, the lower of
+    /// the two middle ones for an even count (`ords[(n - 1) / 2]`). Also the
+    /// middle value of a numeric key's sorted values.
+    MiddleMin,
+    /// `SortedSetSelector.Type.MIDDLE_MAX`: the middle ordinal, the upper of
+    /// the two middle ones for an even count (`ords[n / 2]`).
+    MiddleMax,
+}
+
+impl Selector {
+    /// `SortedSetSelector`'s choice among a document's ascending ordinals
+    /// (`MIN`, `MAX`, `MIDDLE_MIN`, `MIDDLE_MAX`); the numeric modes pick
+    /// the least, as a keyword key sorts only by those four.
+    pub fn pick_ord(self, ords: &[i64]) -> Option<i64> {
+        let n = ords.len();
+        match self {
+            Selector::Max => ords.last().copied(),
+            Selector::MiddleMin => ords.get(n.checked_sub(1)? / 2).copied(),
+            Selector::MiddleMax => ords.get(n / 2).copied(),
+            _ => ords.first().copied(),
+        }
+    }
 }
 
 impl Selector {
@@ -144,6 +166,8 @@ impl Selector {
         Some(match (self, ty) {
             (Selector::Min, _) => first,
             (Selector::Max, _) => last,
+            (Selector::MiddleMin, _) => values[mid],
+            (Selector::MiddleMax, _) => values[n / 2],
             (_, SortType::Double | SortType::Float) => {
                 let float = ty == SortType::Float;
                 let d = |v: i64| {
@@ -1822,12 +1846,9 @@ impl OrdColumn<'_> {
             OrdColumn::Single(r) => r.value(doc).map_err(crate::Error::from)?,
             OrdColumn::Multi(r, buf, selector) => {
                 r.values(doc, buf).map_err(crate::Error::from)?;
-                // `SortedSetSelector`: a keyword key sorts by its least or
-                // greatest ordinal only (the sort blob sends no other).
-                match selector {
-                    Selector::Max => buf.last().copied(),
-                    _ => buf.first().copied(),
-                }
+                // `SortedSetSelector.wrap`: the least, greatest or a middle
+                // ordinal.
+                selector.pick_ord(buf)
             }
         };
         Ok(match v {
