@@ -2844,10 +2844,16 @@ mod tests {
     #[test]
     fn open_writer_at_nonexistent_parent_path_is_io_error() {
         // FsDirectory::open itself is infallible; the failure surfaces from
-        // IndexWriter::open's dir.list_all() call. Every other path-based
+        // IndexWriter::open's first directory call. Every other path-based
         // test in this module uses a real tempdir, so this closes the one
         // reachable-but-untested error branch through ffi_open_writer.
-        let bogus = std::path::Path::new("/nonexistent/definitely/not/a/real/path/xyz123");
+        //
+        // Beneath a regular file rather than merely missing: taking
+        // `write.lock` creates a missing index directory, as Java's
+        // `FSDirectory` does, so only a path no one can create still fails.
+        let tmp = TempDir::new("ffi-writer-bad-path");
+        std::fs::write(tmp.join("file"), b"").unwrap();
+        let bogus = tmp.join("file").join("index");
         let path_str = bogus.to_str().unwrap();
         let name = "id";
         let name_lens = [name.len()];
