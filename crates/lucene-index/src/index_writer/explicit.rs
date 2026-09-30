@@ -52,7 +52,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
     DocValuesFieldConfig, DocumentBuffer, Error, IndexWriter, IndexingConfig, PointsFieldConfig,
-    Result, DOC_VALUES_FORMAT_NAME, PER_FIELD_SUFFIX, POSTINGS_FORMAT_NAME,
+    Result, DOC_VALUES_FORMAT_NAME, POSTINGS_FORMAT_NAME,
 };
 use crate::segment_infos::SegmentCommitInfo;
 use crate::segment_writer;
@@ -565,14 +565,13 @@ impl IndexingConfig {
                 buf.vectors,
                 &vector_configs,
                 i32::try_from(max_doc).map_err(|_| explicit_error("too many documents"))?,
-                self.hnsw_m,
-                self.hnsw_beam_width,
+                &|name: &str| self.knn_vectors_format_for(name),
                 &segment_id,
             )?
         };
-        let vector_fields_written: BTreeSet<&str> = vectors_output
+        let vector_fields_written: Vec<super::WrittenVectorField> = vectors_output
             .as_ref()
-            .map(|o| o.written_fields.iter().map(String::as_str).collect())
+            .map(|o| o.written.clone())
             .unwrap_or_default();
 
         // This segment's FieldInfos: the present fields, full schema, and the
@@ -611,14 +610,14 @@ impl IndexingConfig {
                         suffix.to_string(),
                     ));
                 }
-                if vector_fields_written.contains(f.name.as_str()) {
+                if let Some(written) = vector_fields_written.iter().find(|w| w.name == f.name) {
                     f.attributes.push((
                         "PerFieldKnnVectorsFormat.format".to_string(),
-                        super::KNN_VECTORS_FORMAT_NAME.to_string(),
+                        written.format.to_string(),
                     ));
                     f.attributes.push((
                         "PerFieldKnnVectorsFormat.suffix".to_string(),
-                        PER_FIELD_SUFFIX.to_string(),
+                        written.suffix.to_string(),
                     ));
                 }
                 f
