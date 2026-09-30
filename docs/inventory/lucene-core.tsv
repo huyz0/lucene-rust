@@ -135,7 +135,7 @@ codecs/lucene104/OffHeapScalarQuantizedVectorValues	ported	crates/lucene-codecs/
 codecs/lucene104/PForUtil	ported	crates/lucene-codecs/src/for_util.rs::pfor_decode
 codecs/lucene104/PostingIndexInput	ported	crates/lucene-codecs/src/for_util.rs::ForUtil
 codecs/lucene104/PostingsUtil	ported	crates/lucene-codecs/src/postings.rs::read_tail_block
-codecs/lucene90/DeflateWithPresetDictCompressionMode	partial	crates/lucene-codecs/src/deflate.rs::compress -- M7: "`BEST_COMPRESSION` writes each DEFLATE sub-block without the preset dictionary (ratio only)" (parity); decode side with the dictionary is complete
+codecs/lucene90/DeflateWithPresetDictCompressionMode	ported	crates/lucene-codecs/src/deflater.rs::Deflater
 codecs/lucene90/IndexedDISI	ported	crates/lucene-codecs/src/indexed_disi.rs::DisiCursor
 codecs/lucene90/LZ4WithPresetDictCompressionMode	ported	crates/lucene-codecs/src/stored_fields.rs::decompress_unit
 codecs/lucene90/Lucene90CompoundFormat	partial	crates/lucene-codecs/src/compound_format.rs::write -- M7: "the writer is ported and verified, but `IndexWriter` never calls it: every flush and merge writes loose files" (parity)
@@ -157,7 +157,7 @@ codecs/lucene90/compressing/FieldsIndexReader	ported	crates/lucene-codecs/src/st
 codecs/lucene90/compressing/FieldsIndexWriter	ported	crates/lucene-codecs/src/stored_fields.rs::write_index_and_meta
 codecs/lucene90/compressing/Lucene90CompressingStoredFieldsFormat	ported	crates/lucene-codecs/src/stored_fields.rs::StoredFieldsReader
 codecs/lucene90/compressing/Lucene90CompressingStoredFieldsReader	ported	crates/lucene-codecs/src/stored_fields.rs::StoredFieldsReader
-codecs/lucene90/compressing/Lucene90CompressingStoredFieldsWriter	partial	crates/lucene-codecs/src/stored_fields.rs::StoredFieldsWriter -- M7: "`BEST_COMPRESSION` writes each DEFLATE sub-block without the preset dictionary (ratio only)" (parity)
+codecs/lucene90/compressing/Lucene90CompressingStoredFieldsWriter	ported	crates/lucene-codecs/src/stored_fields.rs::StoredFieldsWriter
 codecs/lucene90/compressing/Lucene90CompressingTermVectorsFormat	ported	crates/lucene-codecs/src/term_vectors.rs::TermVectorsReader
 codecs/lucene90/compressing/Lucene90CompressingTermVectorsReader	ported	crates/lucene-codecs/src/term_vectors.rs::TermVectorsReader
 codecs/lucene90/compressing/Lucene90CompressingTermVectorsWriter	ported	crates/lucene-codecs/src/term_vectors.rs::TermVectorsWriter
