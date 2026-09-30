@@ -55,8 +55,9 @@ use lucene_codecs::blocktree::BlockTreeFields;
 use lucene_codecs::postings::{DocInput, PayInput, PosInput};
 use lucene_util::fixed_bit_set::FixedBitSet;
 
+use crate::points_query::PointsInput;
 use crate::query::{BoostQuery, ConstantScoreQuery, DisjunctionMaxQuery, PhraseQuery, TermQuery};
-use crate::{similarity, BooleanQuery, Clause, FieldNorms, Result};
+use crate::{similarity, BooleanQuery, Clause, FieldNorms, GlobalStats, Result};
 
 /// The Rust analogue of real Lucene's `Explanation` — see this module's doc
 /// comment for the exact shape and factory-method correspondence.
@@ -73,6 +74,9 @@ pub struct Explanation {
     pub description: String,
     /// Child explanations `value` was derived from — empty for a leaf node.
     pub details: Vec<Explanation>,
+    /// The value as the `long` Java's `Explanation` holds for a count (a
+    /// term's `n`, a field's `N`), which prints with no decimal point.
+    long_value: Option<i64>,
 }
 
 impl Explanation {
@@ -85,6 +89,17 @@ impl Explanation {
             value,
             description: description.into(),
             details: Vec::new(),
+            long_value: None,
+        }
+    }
+
+    /// `Explanation.match(long, description)`: a count, printed as Java
+    /// prints a `Long` (`7991`, not `7991.0`); [`Self::value`] holds it as a
+    /// float.
+    pub fn match_long(value: i64, description: impl Into<String>) -> Self {
+        Self {
+            long_value: Some(value),
+            ..Self::match_(value as f32, description)
         }
     }
 
@@ -97,6 +112,7 @@ impl Explanation {
             value: 0.0,
             description: description.into(),
             details: Vec::new(),
+            long_value: None,
         }
     }
 
@@ -123,7 +139,10 @@ impl Explanation {
         for _ in 0..depth {
             f.write_str("  ")?;
         }
-        writeln!(f, "{} = {}", java_float(self.value), self.description)?;
+        match self.long_value {
+            Some(v) => writeln!(f, "{v} = {}", self.description)?,
+            None => writeln!(f, "{} = {}", java_float(self.value), self.description)?,
+        }
         for detail in &self.details {
             detail.fmt_at_depth(f, depth + 1)?;
         }
@@ -138,8 +157,30 @@ impl Explanation {
 /// description in this module differ from real Lucene's by one character;
 /// `{:?}` keeps it, and matches Java's shortest-round-trip choice for every
 /// value a score/idf/tf can take.
+///
+/// Outside `[1e-3, 1e7)` Java switches to computerized scientific notation
+/// (`1.0E-4`, `1.2345678E7`), the mantissa again always with a decimal point.
 fn java_float(v: f32) -> String {
-    format!("{v:?}")
+    let a = v.abs();
+    if !v.is_finite() {
+        return if v.is_nan() {
+            "NaN".to_string()
+        } else if v > 0.0 {
+            "Infinity".to_string()
+        } else {
+            "-Infinity".to_string()
+        };
+    }
+    if a == 0.0 || (1e-3..1e7).contains(&a) {
+        return format!("{v:?}");
+    }
+    let sci = format!("{v:e}");
+    let (mantissa, exp) = sci.split_once('e').unwrap_or((&sci, "0"));
+    if mantissa.contains('.') {
+        format!("{mantissa}E{exp}")
+    } else {
+        format!("{mantissa}.0E{exp}")
+    }
 }
 
 /// Renders `clause` the way real Lucene's `Query.toString()` does for the
@@ -311,12 +352,40 @@ pub fn explain_clause(
     doc: i32,
     norms: Option<&HashMap<String, FieldNorms<'_>>>,
 ) -> Result<Explanation> {
+    explain_clause_with_stats(
+        fields, doc_in, pos_in, pay_in, live_docs, None, clause, doc, norms, None,
+    )
+}
+
+/// [`explain_clause`] with reader-wide statistics (`IndexSearcher.explain`
+/// over several segments): a term's `n` and `N`, a phrase's per-term `idf`s
+/// and a multi-term or extended query's scorer all read `global` where it
+/// holds the term, as the scored search does, so the explanation's value is
+/// the score the multi-segment search gives the document. `None` is the
+/// segment's own statistics. `points` is the segment's BKD points, which a
+/// [`Clause::PointsRange`] needs (without them it reports
+/// [`crate::Error::MissingPointsInput`], as [`explain_clause`] always does).
+/// A matching boolean's value is its scorer's score for the document, as
+/// `BooleanWeight.explain` pulls one: the clauses' sum rounds differently.
+#[allow(clippy::too_many_arguments)]
+pub fn explain_clause_with_stats(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    pos_in: Option<&PosInput<'_>>,
+    pay_in: Option<&PayInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    points: Option<&PointsInput<'_>>,
+    clause: &Clause,
+    doc: i32,
+    norms: Option<&HashMap<String, FieldNorms<'_>>>,
+    global: Option<&GlobalStats>,
+) -> Result<Explanation> {
     match clause {
         Clause::Exists(q) => Err(crate::Error::MissingSegmentReader(q.field.clone())),
         // The score the scorer tree gives the document, as one match.
         Clause::Extended(q) => {
             let hits = crate::exec::extended::resolve(
-                fields, doc_in, pos_in, pay_in, live_docs, None, norms, None, q, true,
+                fields, doc_in, pos_in, pay_in, live_docs, points, norms, global, q, true,
             )?;
             Ok(match hits.iter().find(|(d, _)| *d == doc) {
                 Some(&(_, score)) => {
@@ -327,7 +396,7 @@ pub fn explain_clause(
         }
         Clause::Term(query) => {
             let clause_norms = norms.and_then(|m| m.get(&query.field));
-            explain_term(fields, doc_in, live_docs, query, doc, clause_norms)
+            explain_term(fields, doc_in, live_docs, query, doc, clause_norms, global)
         }
         Clause::Phrase(query) => {
             let clause_norms = norms.and_then(|m| m.get(&query.field));
@@ -340,19 +409,20 @@ pub fn explain_clause(
                 query,
                 doc,
                 clause_norms,
+                global,
             )
         }
         Clause::Boolean(nested) => explain_boolean(
-            fields, doc_in, pos_in, pay_in, live_docs, nested, doc, norms,
+            fields, doc_in, pos_in, pay_in, live_docs, points, nested, doc, norms, global,
         ),
         Clause::DisjunctionMax(nested) => explain_dismax(
-            fields, doc_in, pos_in, pay_in, live_docs, nested, doc, norms,
+            fields, doc_in, pos_in, pay_in, live_docs, points, nested, doc, norms, global,
         ),
-        Clause::ConstantScore(nested) => {
-            explain_constant_score(fields, doc_in, pos_in, pay_in, live_docs, nested, doc)
-        }
+        Clause::ConstantScore(nested) => explain_constant_score(
+            fields, doc_in, pos_in, pay_in, live_docs, points, nested, doc,
+        ),
         Clause::Boost(nested) => explain_boost(
-            fields, doc_in, pos_in, pay_in, live_docs, nested, doc, norms,
+            fields, doc_in, pos_in, pay_in, live_docs, points, nested, doc, norms, global,
         ),
         Clause::Wildcard(query) => {
             let matched = crate::wildcard_doc_ids(fields, doc_in, live_docs, query)?.contains(&doc);
@@ -375,7 +445,10 @@ pub fn explain_clause(
                 .contains(&doc);
             Ok(explain_flat_match(matched, clause, doc))
         }
-        Clause::PointsRange(query) => Err(crate::Error::MissingPointsInput(query.field.clone())),
+        Clause::PointsRange(query) => {
+            let matched = crate::points_range_doc_ids(points, live_docs, query)?.contains(&doc);
+            Ok(explain_flat_match(matched, clause, doc))
+        }
         Clause::MatchAllDocs(query) => {
             let matched = crate::match_all_doc_ids(live_docs, query.max_doc).contains(&doc);
             Ok(explain_flat_match(matched, clause, doc))
@@ -402,7 +475,7 @@ pub fn explain_clause(
                 }
             }
             let mut pick = Pick { doc, out: &mut hit };
-            crate::search_multi_phrase_query_scored(
+            crate::search_multi_phrase_query_scored_with_stats(
                 fields,
                 doc_in,
                 pos_in,
@@ -410,6 +483,7 @@ pub fn explain_clause(
                 live_docs,
                 query,
                 norms.and_then(|m| m.get(&query.field)),
+                global,
                 &mut pick,
             )?;
             Ok(match hit {
@@ -459,17 +533,19 @@ fn explain_flat_match(matched: bool, clause: &Clause, doc: i32) -> Explanation {
 /// Whether `clause` matches `doc` at all — used by [`explain_boolean`]/
 /// [`explain_dismax`]/[`explain_constant_score`] to decide "does this
 /// sub-clause participate" without needing its full score breakdown.
+#[allow(clippy::too_many_arguments)]
 fn clause_matches(
     fields: &BlockTreeFields,
     doc_in: Option<&DocInput<'_>>,
     pos_in: Option<&PosInput<'_>>,
     pay_in: Option<&PayInput<'_>>,
     live_docs: Option<&FixedBitSet>,
+    points: Option<&PointsInput<'_>>,
     clause: &Clause,
     doc: i32,
 ) -> Result<bool> {
     Ok(
-        crate::resolve_clause_docs(fields, doc_in, pos_in, pay_in, live_docs, None, clause)?
+        crate::resolve_clause_docs(fields, doc_in, pos_in, pay_in, live_docs, points, clause)?
             .contains(&doc),
     )
 }
@@ -490,6 +566,7 @@ fn explain_term(
     query: &TermQuery,
     doc: i32,
     norms: Option<&FieldNorms<'_>>,
+    global: Option<&GlobalStats>,
 ) -> Result<Explanation> {
     let Some(field_terms) = fields.field(&query.field) else {
         return Ok(Explanation::no_match("no matching term"));
@@ -502,7 +579,12 @@ fn explain_term(
         return Ok(Explanation::no_match("no matching term"));
     };
 
-    let doc_count = field_terms.doc_count as i64;
+    // `TermWeight` takes `searcher.collectionStatistics`/`termStatistics`:
+    // reader-wide when the caller gathered them.
+    let (doc_freq, doc_count) = match global.and_then(|g| g.term(&query.field, &query.term)) {
+        Some(g) => (g.doc_freq, g.doc_count),
+        None => (stats.doc_freq as i64, field_terms.doc_count as i64),
+    };
     let (field_length, avg_field_length) = match norms {
         Some(fn_) => (fn_.field_length(doc)?, fn_.avg_field_length),
         None => (
@@ -510,7 +592,7 @@ fn explain_term(
             similarity::UNNORMED_FIELD_LENGTH,
         ),
     };
-    let idf = similarity::idf(stats.doc_freq as i64, doc_count);
+    let idf = similarity::idf(doc_freq, doc_count);
     // `BM25Scorer.explain`/`explainTF` verbatim: the reported score is
     // `weight - weight / (1 + freq * normInverse)` -- the *same* expression the
     // scorer evaluates, which is why this stays bit-identical to
@@ -527,7 +609,7 @@ fn explain_term(
     let tf_norm = 1.0 - 1.0 / (1.0 + freq as f32 * norm_inverse);
     let value = similarity::do_score(idf, freq as f32, norm_inverse);
 
-    let idf_explanation = idf_explanation(idf, stats.doc_freq as i64, doc_count);
+    let idf_explanation = idf_explanation(idf, doc_freq, doc_count);
 
     let tf_explanation = Explanation::match_(
         tf_norm,
@@ -569,8 +651,8 @@ fn idf_explanation(idf: f32, doc_freq: i64, doc_count: i64) -> Explanation {
         "idf, computed as log(1 + (N - n + 0.5) / (n + 0.5)) from:",
     )
     .with_details(vec![
-        Explanation::match_(doc_freq as f32, "n, number of documents containing term"),
-        Explanation::match_(doc_count as f32, "N, total number of documents with field"),
+        Explanation::match_long(doc_freq, "n, number of documents containing term"),
+        Explanation::match_long(doc_count, "N, total number of documents with field"),
     ])
 }
 
@@ -606,6 +688,7 @@ fn explain_phrase(
     query: &PhraseQuery,
     doc: i32,
     norms: Option<&FieldNorms<'_>>,
+    global: Option<&GlobalStats>,
 ) -> Result<Explanation> {
     if query.terms.is_empty() {
         return Ok(Explanation::no_match(
@@ -614,7 +697,7 @@ fn explain_phrase(
     }
     if query.terms.len() == 1 {
         let term_query = TermQuery::new(query.field.clone(), query.terms[0].clone());
-        return explain_term(fields, doc_in, live_docs, &term_query, doc, norms);
+        return explain_term(fields, doc_in, live_docs, &term_query, doc, norms, global);
     }
     let Some(pos_in) = pos_in else {
         return Err(crate::Error::MissingPosInput);
@@ -624,7 +707,6 @@ fn explain_phrase(
         return Ok(Explanation::no_match("no matching terms"));
     };
 
-    let doc_count = field_terms.doc_count as i64;
     // `BM25Similarity.idfExplain(TermStatistics[])` sums in a double and
     // casts once: an `f32` sum of three or more idfs can be an ulp off.
     let mut idf_acc = 0.0f64;
@@ -633,9 +715,13 @@ fn explain_phrase(
         let Some(stats) = field_terms.try_seek_exact(term)? else {
             return Ok(Explanation::no_match("no matching terms"));
         };
-        let term_idf = similarity::idf(stats.doc_freq as i64, doc_count);
+        let (doc_freq, doc_count) = match global.and_then(|g| g.term(&query.field, term)) {
+            Some(g) => (g.doc_freq, g.doc_count),
+            None => (stats.doc_freq as i64, field_terms.doc_count as i64),
+        };
+        let term_idf = similarity::idf(doc_freq, doc_count);
         idf_acc += f64::from(term_idf);
-        idf_details.push(idf_explanation(term_idf, stats.doc_freq as i64, doc_count));
+        idf_details.push(idf_explanation(term_idf, doc_freq, doc_count));
     }
     let idf_sum = idf_acc as f32;
 
@@ -775,9 +861,11 @@ fn explain_boolean(
     pos_in: Option<&PosInput<'_>>,
     pay_in: Option<&PayInput<'_>>,
     live_docs: Option<&FixedBitSet>,
+    points: Option<&PointsInput<'_>>,
     query: &BooleanQuery,
     doc: i32,
     norms: Option<&HashMap<String, FieldNorms<'_>>>,
+    global: Option<&GlobalStats>,
 ) -> Result<Explanation> {
     // `BooleanWeight.explain`'s exact control flow: build every clause's own
     // explanation first, tracking `fail` (a required clause that didn't match,
@@ -791,8 +879,8 @@ fn explain_boolean(
     let mut total = 0.0f32;
 
     for clause in &query.must {
-        let e = explain_clause(
-            fields, doc_in, pos_in, pay_in, live_docs, clause, doc, norms,
+        let e = explain_clause_with_stats(
+            fields, doc_in, pos_in, pay_in, live_docs, points, clause, doc, norms, global,
         )?;
         if e.matched {
             match_count += 1;
@@ -820,8 +908,8 @@ fn explain_boolean(
     // value is not what the parent adds up. `matchCount` counts it (Java
     // increments for every non-prohibited match); `shouldMatchCount` does not.
     for clause in &query.filter {
-        let e = explain_clause(
-            fields, doc_in, pos_in, pay_in, live_docs, clause, doc, norms,
+        let e = explain_clause_with_stats(
+            fields, doc_in, pos_in, pay_in, live_docs, points, clause, doc, norms, global,
         )?;
         if e.matched {
             match_count += 1;
@@ -841,8 +929,8 @@ fn explain_boolean(
         }
     }
     for clause in &query.should {
-        let e = explain_clause(
-            fields, doc_in, pos_in, pay_in, live_docs, clause, doc, norms,
+        let e = explain_clause_with_stats(
+            fields, doc_in, pos_in, pay_in, live_docs, points, clause, doc, norms, global,
         )?;
         if e.matched {
             match_count += 1;
@@ -860,8 +948,8 @@ fn explain_boolean(
         }
     }
     for clause in &query.must_not {
-        let e = explain_clause(
-            fields, doc_in, pos_in, pay_in, live_docs, clause, doc, norms,
+        let e = explain_clause_with_stats(
+            fields, doc_in, pos_in, pay_in, live_docs, points, clause, doc, norms, global,
         )?;
         if e.matched {
             fail = true;
@@ -893,7 +981,55 @@ fn explain_boolean(
         ))
         .with_details(details));
     }
-    Ok(Explanation::match_(total, "sum of:").with_details(details))
+    // `BooleanWeight.explain`: "in order to make sure that explanations have
+    // the same value as the score, we pull a scorer and use it to compute the
+    // score" -- the sum above rounds differently from the scorer's.
+    let clause = Clause::Boolean(Box::new(query.clone()));
+    let value = scorer_score(
+        fields, doc_in, pos_in, pay_in, live_docs, points, norms, global, &clause, doc,
+    )?
+    .unwrap_or(total);
+    Ok(Explanation::match_(value, "sum of:").with_details(details))
+}
+
+/// `weight.scorer(context)` advanced to `doc`: its score, `None` when the
+/// scorer does not match it.
+#[allow(clippy::too_many_arguments)]
+fn scorer_score(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    pos_in: Option<&PosInput<'_>>,
+    pay_in: Option<&PayInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    points: Option<&PointsInput<'_>>,
+    norms: Option<&HashMap<String, FieldNorms<'_>>>,
+    global: Option<&GlobalStats>,
+    clause: &Clause,
+    doc: i32,
+) -> Result<Option<f32>> {
+    let ctx = crate::exec::LeafContext {
+        fields,
+        doc_in,
+        pos_in,
+        pay_in,
+        live_docs,
+        points,
+        norms,
+        global,
+        max_doc: None,
+        cache: None,
+        reader: None,
+        similarity: None,
+    };
+    let Some(mut s) =
+        crate::exec::build::build(&ctx, clause, 1.0, crate::exec::Mode::Complete, false)?
+    else {
+        return Ok(None);
+    };
+    if crate::exec::exact_advance(&mut *s, doc)? != doc {
+        return Ok(None);
+    }
+    Ok(Some(s.score()?))
 }
 
 /// [`Clause::DisjunctionMax`]'s explanation: mirrors real
@@ -911,17 +1047,19 @@ fn explain_dismax(
     pos_in: Option<&PosInput<'_>>,
     pay_in: Option<&PayInput<'_>>,
     live_docs: Option<&FixedBitSet>,
+    points: Option<&PointsInput<'_>>,
     query: &DisjunctionMaxQuery,
     doc: i32,
     norms: Option<&HashMap<String, FieldNorms<'_>>>,
+    global: Option<&GlobalStats>,
 ) -> Result<Explanation> {
     // `DisjunctionMaxWeight.explain`: sub-explanations of every *matching*
     // disjunct on a match, of every non-matching one on a no-match.
     let mut subs_on_match = Vec::new();
     let mut subs_on_no_match = Vec::new();
     for clause in &query.disjuncts {
-        let e = explain_clause(
-            fields, doc_in, pos_in, pay_in, live_docs, clause, doc, norms,
+        let e = explain_clause_with_stats(
+            fields, doc_in, pos_in, pay_in, live_docs, points, clause, doc, norms, global,
         )?;
         if e.matched {
             subs_on_match.push(e);
@@ -961,12 +1099,14 @@ fn explain_dismax(
 /// (its own score discarded entirely), always scoring exactly
 /// `nested.score`, same as [`crate::clause_scores`]'s `Clause::ConstantScore`
 /// arm.
+#[allow(clippy::too_many_arguments)]
 fn explain_constant_score(
     fields: &BlockTreeFields,
     doc_in: Option<&DocInput<'_>>,
     pos_in: Option<&PosInput<'_>>,
     pay_in: Option<&PayInput<'_>>,
     live_docs: Option<&FixedBitSet>,
+    points: Option<&PointsInput<'_>>,
     nested: &ConstantScoreQuery,
     doc: i32,
 ) -> Result<Explanation> {
@@ -976,6 +1116,7 @@ fn explain_constant_score(
         pos_in,
         pay_in,
         live_docs,
+        points,
         &nested.inner,
         doc,
     )? {
@@ -1007,19 +1148,23 @@ fn explain_boost(
     pos_in: Option<&PosInput<'_>>,
     pay_in: Option<&PayInput<'_>>,
     live_docs: Option<&FixedBitSet>,
+    points: Option<&PointsInput<'_>>,
     nested: &BoostQuery,
     doc: i32,
     norms: Option<&HashMap<String, FieldNorms<'_>>>,
+    global: Option<&GlobalStats>,
 ) -> Result<Explanation> {
-    let inner = explain_clause(
+    let inner = explain_clause_with_stats(
         fields,
         doc_in,
         pos_in,
         pay_in,
         live_docs,
+        points,
         &nested.inner,
         doc,
         norms,
+        global,
     )?;
     if !inner.matched {
         return Ok(Explanation::no_match(format!(
@@ -1692,6 +1837,37 @@ mod tests {
         assert_eq!(java_float(2.0), "2.0");
         assert_eq!(java_float(0.5), "0.5");
         assert_eq!(java_float(1.2), "1.2");
+    }
+
+    #[test]
+    fn java_float_switches_to_scientific_notation_where_java_does() {
+        // `Float.toString` under JDK 21, one by one.
+        for (v, java) in [
+            (1.0E-4_f32, "1.0E-4"),
+            (12_345_678.0, "1.2345678E7"),
+            (0.001, "0.001"),
+            (1e7, "1.0E7"),
+            (9_999_999.0, "9999999.0"),
+            (-3.5e-5, "-3.5E-5"),
+            (0.000_999_99, "9.9999E-4"),
+            (0.0, "0.0"),
+            (-0.0, "-0.0"),
+            (f32::NAN, "NaN"),
+            (f32::INFINITY, "Infinity"),
+            (f32::NEG_INFINITY, "-Infinity"),
+        ] {
+            assert_eq!(java_float(v), java, "{v:?}");
+        }
+    }
+
+    #[test]
+    fn a_count_prints_as_a_java_long() {
+        let e = Explanation::match_long(7991, "n, number of documents containing term");
+        assert_eq!(e.value, 7991.0);
+        assert_eq!(
+            e.to_string(),
+            "7991 = n, number of documents containing term\n"
+        );
     }
 
     #[test]
