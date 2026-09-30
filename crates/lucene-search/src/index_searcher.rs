@@ -142,6 +142,8 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
     /// Under a similarity other than the default the count is not tracked
     /// and reported as the hits returned, a lower bound.
     pub fn search(&self, query: &BooleanQuery, n: usize) -> Result<TopDocs> {
+        let rescored = self.rewrite_rescore(query)?;
+        let query = rescored.as_ref().unwrap_or(query);
         let (hits, total_hits) = match self.similarity {
             Some(sim) if !sim.is_default_bm25() => {
                 let hits = search_boolean_query_multi_segment_with_similarity(
@@ -186,8 +188,22 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
     }
 
     /// The query rewritten against the reader and its reader-wide statistics.
+    /// `RescoreTopNQuery.rewrite(searcher)` for a query holding one (see
+    /// [`crate::rescorer::rewrite_rescore_clauses`]; a vector-backed source
+    /// needs the vectors, so such a query is rewritten by the caller with
+    /// them first).
+    fn rewrite_rescore(&self, query: &BooleanQuery) -> Result<Option<BooleanQuery>> {
+        if !crate::rescorer::has_rescore_clauses(query) {
+            return Ok(None);
+        }
+        let ctx = crate::values_source::ValuesContext::new(self);
+        crate::rescorer::rewrite_rescore_clauses(query, &ctx)
+    }
+
     fn prepare(&self, query: &BooleanQuery) -> Result<(Option<BooleanQuery>, crate::GlobalStats)> {
-        let rewritten = rewrite_points_ranges(query, self.segments);
+        let rescored = self.rewrite_rescore(query)?;
+        let query = rescored.as_ref().unwrap_or(query);
+        let rewritten = rewrite_points_ranges(query, self.segments).or(rescored.clone());
         let global = global_boolean_stats(self.segments, rewritten.as_ref().unwrap_or(query))?;
         Ok((rewritten, global))
     }

@@ -39,6 +39,9 @@ pub enum ExtendedQuery {
     PointRange(PointRangeQuery),
     PointInSet(PointInSetQuery),
     IndexOrDocValues(IndexOrDocValuesQuery),
+    /// Searched only once [`crate::rescorer::rewrite_rescore_clauses`] (which
+    /// `IndexSearcher`'s searches run) has made it a [`DocAndScoreQuery`].
+    RescoreTopN(crate::rescorer::RescoreTopNQuery),
 }
 
 macro_rules! into_clause {
@@ -70,6 +73,12 @@ into_clause! {
     IndexOrDocValuesQuery => IndexOrDocValues,
 }
 
+impl From<crate::rescorer::RescoreTopNQuery> for Clause {
+    fn from(q: crate::rescorer::RescoreTopNQuery) -> Self {
+        Clause::Extended(Box::new(ExtendedQuery::RescoreTopN(q)))
+    }
+}
+
 impl ExtendedQuery {
     /// `Query.toString`-like name, for explanations and errors.
     pub fn name(&self) -> &'static str {
@@ -88,6 +97,7 @@ impl ExtendedQuery {
             ExtendedQuery::PointRange(_) => "PointRangeQuery",
             ExtendedQuery::PointInSet(_) => "PointInSetQuery",
             ExtendedQuery::IndexOrDocValues(_) => "IndexOrDocValuesQuery",
+            ExtendedQuery::RescoreTopN(_) => "RescoreTopNQuery",
         }
     }
 
