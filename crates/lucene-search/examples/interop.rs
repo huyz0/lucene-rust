@@ -436,6 +436,7 @@ fn verify(path: &str, num_docs: i64, deleted: Option<i64>) -> usize {
                 field: "body".to_string(),
                 terms: terms.iter().map(|t| t.as_bytes().to_vec()).collect(),
                 slop: 0,
+                positions: Vec::new(),
             })],
             ..Default::default()
         };

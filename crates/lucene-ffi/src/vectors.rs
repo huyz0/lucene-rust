@@ -436,6 +436,7 @@ pub unsafe extern "C" fn ffi_knn_float_vector_search(
             ef_search,
             visited_limit,
             similarity,
+            filtered_search_threshold: 0,
         };
         let hits =
             vector_query::search_knn_float_vector_query(&input, &query).map_err(map_knn_error)?;
@@ -510,6 +511,7 @@ pub unsafe extern "C" fn ffi_knn_byte_vector_search(
             ef_search,
             visited_limit,
             similarity,
+            filtered_search_threshold: 0,
         };
         let hits =
             vector_query::search_knn_byte_vector_query(&input, &query).map_err(map_knn_error)?;
@@ -747,6 +749,7 @@ pub unsafe extern "C" fn ffi_knn_float_vector_search_filtered(
             ef_search,
             visited_limit,
             similarity,
+            filtered_search_threshold: 0,
         };
         let hits =
             vector_query::search_knn_float_vector_query(&input, &query).map_err(map_knn_error)?;
@@ -841,6 +844,7 @@ pub unsafe extern "C" fn ffi_knn_byte_vector_search_filtered(
             ef_search,
             visited_limit,
             similarity,
+            filtered_search_threshold: 0,
         };
         let hits =
             vector_query::search_knn_byte_vector_query(&input, &query).map_err(map_knn_error)?;

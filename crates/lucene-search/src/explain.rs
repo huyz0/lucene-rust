@@ -157,6 +157,7 @@ fn describe_clause(clause: &Clause) -> String {
     match clause {
         // `FieldExistsQuery.toString`.
         Clause::Exists(q) => format!("FieldExistsQuery [field={}]", q.field),
+        Clause::Extended(q) => q.name().to_string(),
         Clause::Term(q) => format!("{}:{}", q.field, term(&q.term)),
         Clause::Phrase(q) => {
             let body = q
@@ -312,6 +313,18 @@ pub fn explain_clause(
 ) -> Result<Explanation> {
     match clause {
         Clause::Exists(q) => Err(crate::Error::MissingSegmentReader(q.field.clone())),
+        // The score the scorer tree gives the document, as one match.
+        Clause::Extended(q) => {
+            let hits = crate::exec::extended::resolve(
+                fields, doc_in, pos_in, pay_in, live_docs, None, norms, None, q, true,
+            )?;
+            Ok(match hits.iter().find(|(d, _)| *d == doc) {
+                Some(&(_, score)) => {
+                    Explanation::match_(score, format!("{}, result of:", q.name()))
+                }
+                None => Explanation::no_match(format!("no match on {}", q.name())),
+            })
+        }
         Clause::Term(query) => {
             let clause_norms = norms.and_then(|m| m.get(&query.field));
             explain_term(fields, doc_in, live_docs, query, doc, clause_norms)

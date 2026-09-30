@@ -55,7 +55,7 @@
 //! the best one.
 
 use lucene_codecs::field_infos::{FieldInfos, VectorEncoding, VectorSimilarityFunction};
-use lucene_codecs::hnsw::{HnswGraphView, KnnCollector, VectorScorer};
+use lucene_codecs::hnsw::{HnswGraphView, KnnCollect, KnnCollector, VectorScorer};
 use lucene_codecs::hnsw_vectors::{self, HnswVectorsReader, SearchOptions};
 use lucene_codecs::vectors::{FlatFieldEntry, FlatVectorsReader};
 use lucene_util::fixed_bit_set::FixedBitSet;
@@ -180,6 +180,10 @@ pub struct KnnFloatVectorQuery {
     /// walking it under another one silently degrades recall with no error at
     /// all.
     pub similarity: Option<VectorSimilarityFunction>,
+    /// `KnnSearchStrategy.Hnsw(filteredSearchThreshold)`: a filtered leaf
+    /// passing fewer than this percentage of its graph walks level 0 with
+    /// `FilteredHnswGraphSearcher`. `0`, Lucene's default, never does.
+    pub filtered_search_threshold: i32,
 }
 
 /// `KnnByteVectorQuery`: [`KnnFloatVectorQuery`] over a BYTE-encoded field.
@@ -198,6 +202,10 @@ pub struct KnnByteVectorQuery {
     pub visited_limit: u64,
     /// See [`KnnFloatVectorQuery::similarity`].
     pub similarity: Option<VectorSimilarityFunction>,
+    /// `KnnSearchStrategy.Hnsw(filteredSearchThreshold)`: a filtered leaf
+    /// passing fewer than this percentage of its graph walks level 0 with
+    /// `FilteredHnswGraphSearcher`. `0`, Lucene's default, never does.
+    pub filtered_search_threshold: i32,
 }
 
 macro_rules! knn_query_impl {
@@ -214,6 +222,7 @@ macro_rules! knn_query_impl {
                     ef_search: 0,
                     visited_limit: 0,
                     similarity: None,
+                    filtered_search_threshold: 0,
                 })
             }
 
@@ -232,6 +241,12 @@ macro_rules! knn_query_impl {
             /// See [`KnnFloatVectorQuery::similarity`].
             pub fn with_similarity(mut self, similarity: VectorSimilarityFunction) -> Self {
                 self.similarity = Some(similarity);
+                self
+            }
+
+            /// See [`KnnFloatVectorQuery::filtered_search_threshold`].
+            pub fn with_filtered_search_threshold(mut self, threshold: i32) -> Self {
+                self.filtered_search_threshold = threshold;
                 self
             }
         }
@@ -257,6 +272,9 @@ macro_rules! knn_query_impl {
             fn similarity(&self) -> Option<VectorSimilarityFunction> {
                 self.similarity
             }
+            fn filtered_search_threshold(&self) -> i32 {
+                self.filtered_search_threshold
+            }
         }
     };
 }
@@ -275,6 +293,7 @@ trait KnnQuery {
     fn ef_search(&self) -> usize;
     fn visited_limit(&self) -> u64;
     fn similarity(&self) -> Option<VectorSimilarityFunction>;
+    fn filtered_search_threshold(&self) -> i32;
 }
 
 #[derive(Clone, Copy)]
@@ -547,6 +566,81 @@ struct LeafPlan {
     visited_limit: u64,
     /// Java's `filterWeight != null`.
     filtered: bool,
+    /// The collector decorators beyond `TopKnnCollector`.
+    extras: LeafExtras,
+}
+
+/// What wraps a leaf's `TopKnnCollector`: `PatienceKnnVectorQuery`'s
+/// `HnswQueueSaturationCollector` and `TimeLimitingKnnCollectorManager`'s
+/// deadline.
+#[derive(Debug, Clone, Copy, Default)]
+struct LeafExtras {
+    /// `(saturationThreshold, patience)`.
+    patience: Option<(f64, usize)>,
+    deadline: Option<std::time::Instant>,
+    /// `KnnSearchStrategy.Hnsw.filteredSearchThreshold`.
+    filtered_search_threshold: i32,
+}
+
+impl LeafExtras {
+    fn timed_out(&self) -> bool {
+        self.deadline
+            .is_some_and(|d| std::time::Instant::now() >= d)
+    }
+}
+
+/// `searchNearestVectors` into the leaf's collector chain: plain
+/// [`hnsw_vectors::search`] for a `TopKnnCollector`, the decorated one
+/// otherwise. Returns the hits, best first, and whether they are partial
+/// (`TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO`).
+fn approximate<S: VectorScorer, G: HnswGraphView>(
+    scorer: &mut S,
+    graph: Option<&G>,
+    k: usize,
+    limit: u64,
+    options: SearchOptions<'_>,
+    extras: &LeafExtras,
+) -> Result<(Vec<(i32, f32)>, bool)> {
+    use crate::knn_collectors::{HnswQueueSaturationCollector, TimeLimitingKnnCollector};
+    if extras.patience.is_none() && extras.deadline.is_none() {
+        return Ok(hnsw_vectors::search(scorer, graph, k, limit, options)?);
+    }
+    if scorer.max_ord() == 0 || k == 0 {
+        return Ok((Vec::new(), false));
+    }
+    let top = KnnCollector::new(k, limit);
+    let (top, partial) = match (extras.patience, extras.deadline) {
+        (Some((threshold, patience)), deadline) => {
+            let patient = HnswQueueSaturationCollector::new(top, threshold, patience);
+            let patient = match deadline {
+                Some(d) => {
+                    let mut c = TimeLimitingKnnCollector::new(patient, d);
+                    hnsw_vectors::search_with(scorer, graph, &mut c, options)?;
+                    let timed_out = c.timed_out();
+                    let p = c.into_inner();
+                    let partial = p.partial() || timed_out;
+                    return Ok((p.into_inner().top_docs(), partial));
+                }
+                None => {
+                    let mut c = patient;
+                    hnsw_vectors::search_with(scorer, graph, &mut c, options)?;
+                    c
+                }
+            };
+            let partial = patient.partial();
+            (patient.into_inner(), partial)
+        }
+        (None, Some(d)) => {
+            let mut c = TimeLimitingKnnCollector::new(top, d);
+            hnsw_vectors::search_with(scorer, graph, &mut c, options)?;
+            let timed_out = c.timed_out();
+            let inner = c.into_inner();
+            let partial = KnnCollect::early_terminated(&inner) || timed_out;
+            (inner, partial)
+        }
+        (None, None) => unreachable!("handled above"),
+    };
+    Ok((top.top_docs(), partial))
 }
 
 /// One leaf's phase-1 output: the hits a caller wants, plus the ordinals a
@@ -598,7 +692,7 @@ fn leaf_results<S: VectorScorer, G: HnswGraphView>(
         // `filteredDocCount` is `min(maxDoc, graphSize)` here even on a
         // segment with deletions -- see [`SearchOptions::filtered_doc_count`]
         // for why that is not the bug it looks like.
-        hnsw_vectors::search(
+        approximate(
             scorer,
             graph,
             collector_k,
@@ -607,7 +701,9 @@ fn leaf_results<S: VectorScorer, G: HnswGraphView>(
                 accept_ords: accept_bits,
                 filtered_doc_count: Some(max_doc),
                 seed_ords,
+                filtered_search_threshold: plan.extras.filtered_search_threshold,
             },
+            &plan.extras,
         )?
     } else {
         let bits = accept_bits.expect("a filtered leaf always has an accept set");
@@ -625,7 +721,7 @@ fn leaf_results<S: VectorScorer, G: HnswGraphView>(
             // "We pass cost + 1 here to account for the edge case when we
             // explore exactly cost vectors."
             let limit = plan.visited_limit.min(cost as u64 + 1);
-            let (hits, early) = hnsw_vectors::search(
+            let (hits, early) = approximate(
                 scorer,
                 graph,
                 collector_k,
@@ -634,9 +730,11 @@ fn leaf_results<S: VectorScorer, G: HnswGraphView>(
                     accept_ords: Some(bits),
                     filtered_doc_count: Some(cost as i32),
                     seed_ords,
+                    filtered_search_threshold: plan.extras.filtered_search_threshold,
                 },
+                &plan.extras,
             )?;
-            if !early && hits.len() >= per_leaf_top_k {
+            if (!early && hits.len() >= per_leaf_top_k) || plan.extras.timed_out() {
                 (hits, early)
             } else {
                 // "We stopped the kNN search because it visited too many
@@ -757,6 +855,10 @@ fn search_one_segment<Q: KnnQuery>(input: &VectorsInput<'_>, query: &Q) -> Resul
         collector_k: query.k().max(query.ef_search()),
         visited_limit: visit_limit(query),
         filtered: input.filter.is_some(),
+        extras: LeafExtras {
+            filtered_search_threshold: query.filtered_search_threshold(),
+            ..LeafExtras::default()
+        },
     };
     let (mut leaf, _) = search_leaf(input, &resolved, query.target(), &plan, None)?;
     leaf.hits.truncate(query.k());
@@ -864,6 +966,7 @@ pub fn search_knn_byte_vector_query_multi_segment_concurrent(
 fn plan_leaves<Q: KnnQuery>(
     segments: &[KnnSegment<'_>],
     query: &Q,
+    extras: LeafExtras,
 ) -> Result<(Vec<ResolvedField>, Vec<LeafPlan>)> {
     check_k(query.k())?;
     // `ctx.parent.reader().maxDoc()`: the whole index's document count.
@@ -884,6 +987,10 @@ fn plan_leaves<Q: KnnQuery>(
             collector_k: leaf_top_k.max(query.ef_search()),
             visited_limit: visit_limit(query),
             filtered: seg.vectors.filter.is_some(),
+            extras: LeafExtras {
+                filtered_search_threshold: query.filtered_search_threshold(),
+                ..extras
+            },
         });
     }
     Ok((resolved, plans))
@@ -948,8 +1055,21 @@ fn knn_multi_segment<Q: KnnQuery + Sync>(
     query: &Q,
     concurrent: bool,
 ) -> Result<Vec<ScoreDoc>> {
+    knn_multi_segment_with(segments, query, concurrent, LeafExtras::default(), None)
+}
+
+/// [`knn_multi_segment`] with its collectors decorated (`extras`) and phase 1
+/// seeded per leaf (`SeededKnnVectorQuery`'s seed hits, as ordinals; an
+/// empty leaf entry is unseeded).
+fn knn_multi_segment_with<Q: KnnQuery + Sync>(
+    segments: &[KnnSegment<'_>],
+    query: &Q,
+    concurrent: bool,
+    extras: LeafExtras,
+    phase1_seeds: Option<&[Vec<i32>]>,
+) -> Result<Vec<ScoreDoc>> {
     let k = query.k();
-    let (resolved, plans) = plan_leaves(segments, query)?;
+    let (resolved, plans) = plan_leaves(segments, query, extras)?;
 
     let phase1 = run_leaves(
         segments,
@@ -957,7 +1077,7 @@ fn knn_multi_segment<Q: KnnQuery + Sync>(
         query,
         &(0..segments.len()).collect::<Vec<_>>(),
         &plans,
-        None,
+        phase1_seeds,
         concurrent,
     )?;
     let mut early = false;
@@ -1067,6 +1187,535 @@ fn run_leaves<Q: KnnQuery + Sync>(
                 )
             })
             .collect()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// KNN as a query clause, patience, seeds, timeouts, similarity thresholds
+// ---------------------------------------------------------------------------
+
+/// `DocAndScoreQuery.createDocAndScoreQuery`: KNN hits (global doc ids, as
+/// the multi-segment searches return them) as a clause that can sit in a
+/// boolean like any other -- `AbstractKnnVectorQuery.rewrite`'s result. No
+/// hit is `MatchNoDocsQuery`.
+pub fn knn_hits_to_clause(segments: &[KnnSegment<'_>], hits: &[ScoreDoc]) -> crate::query::Clause {
+    if hits.is_empty() {
+        return crate::query::Clause::MatchNoDocs(crate::query::MatchNoDocsQuery::new());
+    }
+    let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
+    crate::extended_query::DocAndScoreQuery::new(
+        hits.iter().map(|h| (h.doc_id, h.score)).collect(),
+        &doc_bases,
+    )
+    .into()
+}
+
+/// `IndexSearcher.setTimeout`: the KNN search of `query` with each leaf's
+/// collector wrapped by `TimeLimitingKnnCollectorManager` -- past
+/// `deadline`, walks stop and what they found stands.
+pub fn search_knn_float_vector_query_multi_segment_with_deadline(
+    segments: &[KnnSegment<'_>],
+    query: &KnnFloatVectorQuery,
+    deadline: std::time::Instant,
+) -> Result<Vec<ScoreDoc>> {
+    let extras = LeafExtras {
+        deadline: Some(deadline),
+        ..LeafExtras::default()
+    };
+    knn_multi_segment_with(segments, query, false, extras, None)
+}
+
+/// `KnnByteVectorQuery`'s equivalent of
+/// [`search_knn_float_vector_query_multi_segment_with_deadline`].
+pub fn search_knn_byte_vector_query_multi_segment_with_deadline(
+    segments: &[KnnSegment<'_>],
+    query: &KnnByteVectorQuery,
+    deadline: std::time::Instant,
+) -> Result<Vec<ScoreDoc>> {
+    let extras = LeafExtras {
+        deadline: Some(deadline),
+        ..LeafExtras::default()
+    };
+    knn_multi_segment_with(segments, query, false, extras, None)
+}
+
+/// `PatienceKnnVectorQuery`: a KNN query whose graph walks stop once the
+/// result queue saturates (`HnswQueueSaturationCollector`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PatienceKnnVectorQuery<Q> {
+    pub query: Q,
+    pub saturation_threshold: f64,
+    pub patience: usize,
+}
+
+impl<Q> PatienceKnnVectorQuery<Q> {
+    /// `DEFAULT_SATURATION_THRESHOLD`.
+    pub const DEFAULT_SATURATION_THRESHOLD: f64 = 0.995;
+
+    pub fn new(query: Q, saturation_threshold: f64, patience: usize) -> Self {
+        Self {
+            query,
+            saturation_threshold,
+            patience,
+        }
+    }
+
+    /// `defaultPatience`: `max(7, (int) (k * 0.3))`.
+    fn default_patience(k: usize) -> usize {
+        7usize.max((k as f64 * 0.3) as usize)
+    }
+}
+
+impl PatienceKnnVectorQuery<KnnFloatVectorQuery> {
+    /// `fromFloatQuery(knnQuery)`.
+    pub fn from_float_query(query: KnnFloatVectorQuery) -> Self {
+        let patience = Self::default_patience(query.k);
+        Self::new(query, Self::DEFAULT_SATURATION_THRESHOLD, patience)
+    }
+}
+
+impl PatienceKnnVectorQuery<KnnByteVectorQuery> {
+    /// `fromByteQuery(knnQuery)`.
+    pub fn from_byte_query(query: KnnByteVectorQuery) -> Self {
+        let patience = Self::default_patience(query.k);
+        Self::new(query, Self::DEFAULT_SATURATION_THRESHOLD, patience)
+    }
+}
+
+/// `IndexSearcher.search(PatienceKnnVectorQuery, k)` over a multi-segment
+/// index: [`search_knn_float_vector_query_multi_segment`] with every leaf's
+/// collector (both passes) a `HnswQueueSaturationCollector`.
+pub fn search_patience_knn_float_vector_query_multi_segment(
+    segments: &[KnnSegment<'_>],
+    query: &PatienceKnnVectorQuery<KnnFloatVectorQuery>,
+) -> Result<Vec<ScoreDoc>> {
+    let extras = LeafExtras {
+        patience: Some((query.saturation_threshold, query.patience)),
+        ..LeafExtras::default()
+    };
+    knn_multi_segment_with(segments, &query.query, false, extras, None)
+}
+
+/// The byte-vector twin of
+/// [`search_patience_knn_float_vector_query_multi_segment`].
+pub fn search_patience_knn_byte_vector_query_multi_segment(
+    segments: &[KnnSegment<'_>],
+    query: &PatienceKnnVectorQuery<KnnByteVectorQuery>,
+) -> Result<Vec<ScoreDoc>> {
+    let extras = LeafExtras {
+        patience: Some((query.saturation_threshold, query.patience)),
+        ..LeafExtras::default()
+    };
+    knn_multi_segment_with(segments, &query.query, false, extras, None)
+}
+
+/// `SeededKnnVectorQuery`'s first pass: each leaf's walk starts from the
+/// vectors of `seed_docs[i]` (that leaf's local doc ids, the seed query's
+/// top `k` there -- [`knn_seed_docs`]) instead of the graph's entry node. A
+/// leaf with no seed walks as usual; the second pass is the plain query's.
+pub fn search_seeded_knn_float_vector_query_multi_segment(
+    segments: &[KnnSegment<'_>],
+    query: &KnnFloatVectorQuery,
+    seed_docs: &[Vec<i32>],
+) -> Result<Vec<ScoreDoc>> {
+    let seeds = seed_ords(segments, query, seed_docs)?;
+    knn_multi_segment_with(segments, query, false, LeafExtras::default(), Some(&seeds))
+}
+
+/// The byte-vector twin of
+/// [`search_seeded_knn_float_vector_query_multi_segment`].
+pub fn search_seeded_knn_byte_vector_query_multi_segment(
+    segments: &[KnnSegment<'_>],
+    query: &KnnByteVectorQuery,
+    seed_docs: &[Vec<i32>],
+) -> Result<Vec<ScoreDoc>> {
+    let seeds = seed_ords(segments, query, seed_docs)?;
+    knn_multi_segment_with(segments, query, false, LeafExtras::default(), Some(&seeds))
+}
+
+/// `SeededKnnVectorQuery.MappedDISI` over `TopDocsDISI`: each seed doc
+/// (sorted) to the ordinal of the first vector at or after it.
+fn seed_ords<Q: KnnQuery>(
+    segments: &[KnnSegment<'_>],
+    query: &Q,
+    seed_docs: &[Vec<i32>],
+) -> Result<Vec<Vec<i32>>> {
+    let mut out = Vec::with_capacity(segments.len());
+    for (i, seg) in segments.iter().enumerate() {
+        let mut docs = seed_docs.get(i).cloned().unwrap_or_default();
+        docs.sort_unstable();
+        if docs.is_empty() {
+            out.push(Vec::new());
+            continue;
+        }
+        let resolved = resolve_field(&seg.vectors, query)?;
+        let size = resolved.entry.size;
+        let ord_to_doc = |ord: i32| -> Result<i32> {
+            Ok(match Q::ENCODING {
+                VectorEncoding::Float32 => seg
+                    .vectors
+                    .flat
+                    .float_vector_values(resolved.field_number)?
+                    .ord_to_doc(ord)?,
+                VectorEncoding::Byte => seg
+                    .vectors
+                    .flat
+                    .byte_vector_values(resolved.field_number)?
+                    .ord_to_doc(ord)?,
+            })
+        };
+        let mut ords = Vec::with_capacity(docs.len());
+        for doc in docs {
+            // The first ordinal whose document is at or after `doc`.
+            let (mut lo, mut hi) = (0i32, size);
+            while lo < hi {
+                let mid = lo + (hi - lo) / 2;
+                if ord_to_doc(mid)? < doc {
+                    lo = mid + 1;
+                } else {
+                    hi = mid;
+                }
+            }
+            if lo < size {
+                ords.push(lo);
+            }
+        }
+        out.push(ords);
+    }
+    Ok(out)
+}
+
+/// `filterWeight.scorer(ctx)` for every leaf: the documents `filter`
+/// matches in each segment (deletions not applied, as a scorer's iterator
+/// does not apply them), as the bitset [`VectorsInput::filter`] takes.
+pub fn filter_bitsets(
+    segments: &[crate::multi_segment::OpenSegment<'_>],
+    filter: &crate::query::Clause,
+) -> Result<Vec<FixedBitSet>> {
+    segments
+        .iter()
+        .map(|seg| {
+            let docs = crate::exec::extended::segment_matches(seg, filter)?;
+            Ok(accept_bitset(docs, seg.max_doc.unwrap_or(0)))
+        })
+        .collect()
+}
+
+/// `SeededKnnVectorQuery.SeededCollectorManager`'s seed search: per leaf,
+/// the top `k` live documents of `seed` that have a vector for `field` (the
+/// `FieldExistsQuery` filter) and pass `filter`, scored with reader-wide
+/// statistics -- `TopScoreDocCollector` over `seedWeight`. `open` and
+/// `knn` are the same segments in the same order.
+pub fn knn_seed_docs(
+    open: &[crate::multi_segment::OpenSegment<'_>],
+    norms: &[Option<&std::collections::HashMap<String, crate::FieldNorms<'_>>>],
+    knn: &[KnnSegment<'_>],
+    field: &str,
+    seed: &crate::query::Clause,
+    filter: Option<&[FixedBitSet]>,
+    k: usize,
+) -> Result<Vec<Vec<i32>>> {
+    struct All(Vec<(i32, f32)>);
+    impl ScoringCollector for All {
+        fn collect(&mut self, doc_id: i32, score: f32) {
+            self.0.push((doc_id, score));
+        }
+    }
+    let q = crate::query::BooleanQuery::new().with_must([seed.clone()]);
+    let global = crate::multi_segment::global_boolean_stats(open, &q)?;
+    let mut out = Vec::with_capacity(open.len());
+    for (i, seg) in open.iter().enumerate() {
+        let mut all = All(Vec::new());
+        crate::search_boolean_query_scored_segment(
+            seg,
+            &q,
+            norms.get(i).copied().flatten(),
+            Some(&global),
+            &mut all,
+        )?;
+        let has_vector = knn
+            .get(i)
+            .map(|s| vector_docs(&s.vectors, field))
+            .transpose()?;
+        let mut hits: Vec<(i32, f32)> = all
+            .0
+            .into_iter()
+            .filter(|&(d, _)| {
+                seg.live_docs.is_none_or(|l| l.get_doc(d))
+                    && has_vector.as_ref().is_none_or(|b| b.get_doc(d))
+                    && filter.and_then(|f| f.get(i)).is_none_or(|b| b.get_doc(d))
+            })
+            .collect();
+        hits.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        hits.truncate(k);
+        out.push(hits.into_iter().map(|(d, _)| d).collect());
+    }
+    Ok(out)
+}
+
+/// The documents with a vector for `field` in one segment.
+fn vector_docs(input: &VectorsInput<'_>, field: &str) -> Result<FixedBitSet> {
+    let mut bits = FixedBitSet::new(input.max_doc.max(0) as usize);
+    let Some(info) = input.field_infos.field_by_name(field) else {
+        return Ok(bits);
+    };
+    let Some(entry) = input.flat.field(info.number) else {
+        return Ok(bits);
+    };
+    for ord in 0..entry.size {
+        let doc = match entry.encoding {
+            VectorEncoding::Float32 => input
+                .flat
+                .float_vector_values(info.number)?
+                .ord_to_doc(ord)?,
+            VectorEncoding::Byte => input
+                .flat
+                .byte_vector_values(info.number)?
+                .ord_to_doc(ord)?,
+        };
+        if doc >= 0 && (doc as usize) < bits.len() {
+            // FBS: bounded by the check above.
+            bits.set(doc as usize);
+        }
+    }
+    Ok(bits)
+}
+
+/// `FloatVectorSimilarityQuery`/`ByteVectorSimilarityQuery`
+/// (`AbstractVectorSimilarityQuery`): every vector whose similarity to the
+/// target is at least `result_similarity`, found by a graph walk whose
+/// traversal bound decays by `decay` (`VectorSimilarityCollector`), or
+/// exhaustively at `decay == 1` or when a filtered walk runs out of visits.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VectorSimilarityQuery<T> {
+    pub field: String,
+    pub target: Vec<T>,
+    pub result_similarity: f32,
+    pub decay: f32,
+}
+
+/// `FloatVectorSimilarityQuery`.
+pub type FloatVectorSimilarityQuery = VectorSimilarityQuery<f32>;
+/// `ByteVectorSimilarityQuery`.
+pub type ByteVectorSimilarityQuery = VectorSimilarityQuery<u8>;
+
+impl<T> VectorSimilarityQuery<T> {
+    /// `AbstractVectorSimilarityQuery.DEFAULT_DECAY`.
+    pub const DEFAULT_DECAY: f32 = 0.5;
+
+    /// The constructor's checks: a similarity that is a number, a decay in
+    /// `[0, 1]`.
+    pub fn new(
+        field: impl Into<String>,
+        target: Vec<T>,
+        result_similarity: f32,
+        decay: f32,
+    ) -> Result<Self> {
+        if result_similarity.is_nan() {
+            return Err(Error::InvalidKnnQuery(format!(
+                "resultSimilarity must have a valid value; got {result_similarity}"
+            )));
+        }
+        if decay.is_nan() || !(0.0..=1.0).contains(&decay) {
+            return Err(Error::InvalidKnnQuery(format!(
+                "decay must lie in range [DECAY_MAX_APPROXIMATION = 0, DECAY_MAX_QUALITY = 1]; got {decay}"
+            )));
+        }
+        Ok(Self {
+            field: field.into(),
+            target,
+            result_similarity,
+            decay,
+        })
+    }
+}
+
+/// `AbstractVectorSimilarityQuery`'s scorer over every leaf, as the clause
+/// it scores like: each matching vector's document with its similarity. A
+/// leaf's filter is its [`VectorsInput::filter`].
+pub fn float_vector_similarity_clause(
+    segments: &[KnnSegment<'_>],
+    query: &FloatVectorSimilarityQuery,
+) -> Result<crate::query::Clause> {
+    vector_similarity_clause(
+        segments,
+        query,
+        Target::Float(&query.target),
+        VectorEncoding::Float32,
+    )
+}
+
+/// The byte-vector twin of [`float_vector_similarity_clause`].
+pub fn byte_vector_similarity_clause(
+    segments: &[KnnSegment<'_>],
+    query: &ByteVectorSimilarityQuery,
+) -> Result<crate::query::Clause> {
+    vector_similarity_clause(
+        segments,
+        query,
+        Target::Byte(&query.target),
+        VectorEncoding::Byte,
+    )
+}
+
+fn vector_similarity_clause<T>(
+    segments: &[KnnSegment<'_>],
+    query: &VectorSimilarityQuery<T>,
+    target: Target<'_>,
+    encoding: VectorEncoding,
+) -> Result<crate::query::Clause> {
+    let mut hits = Vec::new();
+    for seg in segments {
+        for (doc, score) in similarity_leaf(&seg.vectors, query, target, encoding)? {
+            hits.push(ScoreDoc {
+                doc_id: doc + seg.doc_base,
+                score,
+            });
+        }
+    }
+    Ok(knn_hits_to_clause(segments, &hits))
+}
+
+/// One leaf of [`vector_similarity_clause`]: `(local doc, similarity)`.
+fn similarity_leaf<T>(
+    input: &VectorsInput<'_>,
+    query: &VectorSimilarityQuery<T>,
+    target: Target<'_>,
+    encoding: VectorEncoding,
+) -> Result<Vec<(i32, f32)>> {
+    let Some(info) = input.field_infos.field_by_name(&query.field) else {
+        return Ok(Vec::new());
+    };
+    let Some(entry) = input.flat.field(info.number) else {
+        return Ok(Vec::new());
+    };
+    if entry.encoding != encoding {
+        return Err(Error::InvalidKnnQuery(format!(
+            "field {:?} is {:?}-encoded, but this query searches {encoding:?} vectors",
+            query.field, entry.encoding
+        )));
+    }
+    let resolved = ResolvedField {
+        field_number: info.number,
+        entry: entry.clone(),
+    };
+    // `acceptDocs.cost()`: in document space, the filter's live documents
+    // (with or without a vector) -- or every document without a filter.
+    let cardinality: usize = match input.filter {
+        Some(f) => (0..input.max_doc)
+            .filter(|&d| f.get_doc(d) && input.live_docs.is_none_or(|l| l.get_doc(d)))
+            .count(),
+        None => input.max_doc.max(0) as usize,
+    };
+    if input.filter.is_some() && cardinality == 0 {
+        return Ok(Vec::new());
+    }
+    let graph = match &input.hnsw {
+        None => None,
+        Some(reader) => reader.graph(resolved.field_number)?,
+    };
+    let leaf = SimilarityLeaf {
+        input,
+        resolved: &resolved,
+        result_similarity: query.result_similarity,
+        decay: query.decay,
+        cardinality,
+    };
+    match target {
+        Target::Float(t) => {
+            let values = input.flat.float_vector_values(resolved.field_number)?;
+            let ord_to_doc = |ord: i32| -> Result<i32> { Ok(values.ord_to_doc(ord)?) };
+            let mut scorer = values.scorer(t)?;
+            leaf.run(&mut scorer, graph.as_ref(), &ord_to_doc)
+        }
+        Target::Byte(t) => {
+            let values = input.flat.byte_vector_values(resolved.field_number)?;
+            let ord_to_doc = |ord: i32| -> Result<i32> { Ok(values.ord_to_doc(ord)?) };
+            let mut scorer = values.scorer(t)?;
+            leaf.run(&mut scorer, graph.as_ref(), &ord_to_doc)
+        }
+    }
+}
+
+/// `AbstractVectorSimilarityQuery.scorerSupplier` for one leaf, once its
+/// scorer and graph are open.
+struct SimilarityLeaf<'q, 'd> {
+    input: &'q VectorsInput<'d>,
+    resolved: &'q ResolvedField,
+    result_similarity: f32,
+    decay: f32,
+    /// `acceptDocs.cost()`.
+    cardinality: usize,
+}
+
+impl SimilarityLeaf<'_, '_> {
+    fn run<S: VectorScorer, G: HnswGraphView>(
+        &self,
+        scorer: &mut S,
+        graph: Option<&G>,
+        ord_to_doc: &impl Fn(i32) -> Result<i32>,
+    ) -> Result<Vec<(i32, f32)>> {
+        use crate::knn_collectors::{VectorSimilarityCollector, DECAY_MAX_QUALITY};
+        let accept = accept_ords(self.input, self.resolved, ord_to_doc)?;
+        let accept_bits = accept.as_ref().map(|a| a.bits());
+        let filtered = self.input.filter.is_some();
+        let hits = if self.decay == DECAY_MAX_QUALITY {
+            self.exact(scorer, accept_bits)?
+        } else {
+            // `approximateSearch(context, acceptDocs, visitLimit, ...)`:
+            // unlimited without a filter, the filter's cardinality with one.
+            let limit = if filtered {
+                self.cardinality as u64
+            } else {
+                i32::MAX as u64
+            };
+            let mut collector =
+                VectorSimilarityCollector::new(self.result_similarity, self.decay, limit);
+            hnsw_vectors::search_with(
+                scorer,
+                graph,
+                &mut collector,
+                SearchOptions {
+                    accept_ords: accept_bits,
+                    filtered_doc_count: Some(i32::try_from(self.cardinality).unwrap_or(i32::MAX)),
+                    seed_ords: None,
+                    // `AbstractVectorSimilarityQuery.DEFAULT_STRATEGY`: `Hnsw(0)`.
+                    filtered_search_threshold: 0,
+                },
+            )?;
+            let (hits, early) = collector.into_hits();
+            if filtered && early {
+                // The walk ran out of visits: `fromAcceptDocs`, exhaustive.
+                self.exact(scorer, accept_bits)?
+            } else {
+                hits
+            }
+        };
+        let mut out = Vec::with_capacity(hits.len());
+        for (ord, score) in hits {
+            out.push((ord_to_doc(ord)?, score));
+        }
+        Ok(out)
+    }
+
+    /// `VectorSimilarityScorerSupplier.fromAcceptDocs`: every accepted vector
+    /// at or above the threshold.
+    fn exact<S: VectorScorer>(
+        &self,
+        scorer: &mut S,
+        accept: Option<&FixedBitSet>,
+    ) -> Result<Vec<(i32, f32)>> {
+        let mut out = Vec::new();
+        for ord in 0..scorer.max_ord() {
+            if accept.is_some_and(|a| !a.get_doc(ord)) {
+                continue;
+            }
+            let score = scorer.score(ord)?;
+            if score >= self.result_similarity {
+                out.push((ord, score));
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -1311,6 +1960,7 @@ mod tests {
             collector_k: 24,
             visited_limit: 99,
             filtered: true,
+            extras: LeafExtras::default(),
         };
         let phase2 = reentry_plan(&phase1, 0);
         assert_eq!(phase2.collector_k, 10);

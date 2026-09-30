@@ -73,6 +73,11 @@ pub(crate) struct PhraseScorer<'a> {
     /// Per slot, for the first-occurrence check: the current position minus
     /// the slot, and the occurrences not yet read.
     lazy: Vec<(i32, i32)>,
+    /// `PhraseQuery.getPositions()` when they are not the implicit `0..n`
+    /// (`Builder.add(term, position)`), rebased so the first is `0`.
+    offsets: Option<Vec<i32>>,
+    /// Scratch for rebasing positions onto slots.
+    shifted: Vec<Vec<i32>>,
 }
 
 impl<'a> PhraseScorer<'a> {
@@ -107,6 +112,29 @@ impl<'a> PhraseScorer<'a> {
             match_cost,
             sim: None,
             lazy: vec![(0, 0); n],
+            offsets: None,
+            shifted: Vec::new(),
+        }
+    }
+
+    /// Explicit per-slot positions (`PhraseQuery.Builder.add(term,
+    /// position)`), one per slot in phrase order.
+    pub(crate) fn with_offsets(mut self, offsets: Vec<i32>) -> Self {
+        let identity = offsets
+            .iter()
+            .enumerate()
+            .all(|(i, &o)| i64::from(o) == i as i64);
+        if !identity {
+            self.offsets = Some(offsets);
+        }
+        self
+    }
+
+    /// Slot `slot`'s offset in the phrase.
+    fn offset(&self, slot: usize) -> i32 {
+        match &self.offsets {
+            Some(o) => o[slot],
+            None => slot as i32,
         }
     }
 
@@ -134,9 +162,10 @@ impl<'a> PhraseScorer<'a> {
     /// the search needs. The rest are left for the cursor to skip.
     fn exact_occurs(&mut self) -> Result<bool> {
         let pe = |e| -> crate::Error { blocktree::Error::Postings(e).into() };
+        let offsets: Vec<i32> = (0..self.terms.len()).map(|s| self.offset(s)).collect();
         for t in self.terms.iter_mut() {
             let first = t.cursor.next_position().map_err(pe)?;
-            self.lazy[t.slot] = (first - t.slot as i32, t.cursor.freq() - 1);
+            self.lazy[t.slot] = (first - offsets[t.slot], t.cursor.freq() - 1);
         }
         loop {
             // Every term must sit at the same phrase start.
@@ -149,7 +178,7 @@ impl<'a> PhraseScorer<'a> {
                         return Ok(false);
                     }
                     *left -= 1;
-                    *rel = t.cursor.next_position().map_err(pe)? - t.slot as i32;
+                    *rel = t.cursor.next_position().map_err(pe)? - offsets[t.slot];
                 }
                 aligned &= *rel == target;
             }
@@ -259,6 +288,17 @@ impl Scorer for PhraseScorer<'_> {
             let buf = &mut self.positions[t.slot];
             buf.clear();
             t.cursor.positions_into(buf).map_err(pe)?;
+        }
+        if let Some(offsets) = &self.offsets {
+            self.freq = super::extended::phrase_freq_at(
+                &self.positions,
+                offsets,
+                &self.repeats,
+                self.slop,
+                &mut self.scratch,
+                &mut self.shifted,
+            );
+            return Ok(self.freq > 0.0);
         }
         // A stack array for any ordinary phrase, a `Vec` only past eight terms.
         let mut inline: [&[i32]; 8] = [&[]; 8];

@@ -574,17 +574,17 @@ internal/vectorization/VectorUtilSupport	partial	crates/lucene-util/src/simd.rs:
 internal/vectorization/VectorizationProvider	not-needed	Runtime vectorization provider lookup (JDK/Panama detection); the port selects SIMD kernels at compile time (lucene-util simd.rs).
 search/AbstractDocIdSetIterator	not-needed	Java base class that caches docID to cut call-site polymorphism; every Rust Scorer tracks its own doc_id.
 search/AbstractKnnCollector	ported	crates/lucene-codecs/src/hnsw.rs::KnnCollector
-search/AbstractKnnVectorQuery	partial	crates/lucene-search/src/vector_query.rs::search_knn_float_vector_query_multi_segment -- M7: standalone functions, not a Clause (cannot nest in BooleanQuery/scorer tree, no query-blob node); filter is a pre-resolved per-segment bitset; no query timeout (TimeLimitingKnnCollectorManager)
+search/AbstractKnnVectorQuery	ported	crates/lucene-search/src/vector_query.rs::knn_hits_to_clause
 search/AbstractMultiTermQueryConstantScoreWrapper	ported	crates/lucene-search/src/exec/multi_term.rs::multi_term
-search/AbstractVectorSimilarityQuery	todo:M7	vector similarity-threshold (radius) query base
+search/AbstractVectorSimilarityQuery	ported	crates/lucene-search/src/vector_query.rs::VectorSimilarityQuery
 search/AcceptDocs	ported	crates/lucene-search/src/vector_query.rs::accept_bitset
-search/AutomatonQuery	partial	crates/lucene-codecs/src/automaton.rs::CompiledDfa -- M7: automaton engine exists and backs Prefix/Wildcard/Regexp queries, but there is no user-facing AutomatonQuery over an arbitrary automaton
+search/AutomatonQuery	ported	crates/lucene-search/src/extended_query.rs::AutomatonQuery
 search/BatchScoreBulkScorer	ported	crates/lucene-search/src/bulk_scorer.rs::score_term
-search/BayesianScoreEstimator	todo:M7	Bayesian BM25 parameter estimator
-search/BayesianScoreQuery	todo:M7	Bayesian BM25 sigmoid-calibrated score query
+search/BayesianScoreEstimator	ported	crates/lucene-search/src/bayesian_estimator.rs::estimate
+search/BayesianScoreQuery	ported	crates/lucene-search/src/extended_query.rs::BayesianScoreQuery
 search/BinarySortField	partial	crates/lucene-index/src/segment_info.rs::PROVIDER_BINARY -- M7: index-sort (de)serialization only; no search-time sort by BINARY doc values in top_field.rs, and the writer applies numeric index sorts only
 search/BitSetDocIdStream	ported	crates/lucene-search/src/exec/mod.rs::constant_bits
-search/BlendedTermQuery	partial	crates/lucene-search/src/lib.rs::FuzzyExpansion -- M7: only the max-docFreq blend inside FuzzyQuery's TopTermsBlendedFreqScoringRewrite; no standalone BlendedTermQuery (user terms, totalTermFreq blending, BOOLEAN/DISJUNCTION_MAX rewrite methods)
+search/BlendedTermQuery	ported	crates/lucene-search/src/extended_query.rs::BlendedTermQuery
 search/BlockMaxConjunctionBulkScorer	ported	crates/lucene-search/src/bulk_scorer.rs::ConjunctionBulk
 search/BlockMaxConjunctionScorer	ported	crates/lucene-search/src/exec/conjunction.rs::BlockMaxConjunctionScorer
 search/BooleanClause	ported	crates/lucene-search/src/query.rs::BooleanQuery
@@ -596,7 +596,7 @@ search/BoostAttribute	ported	crates/lucene-search/src/lib.rs::ExpandedTerm
 search/BoostAttributeImpl	not-needed	AttributeImpl plumbing behind BoostAttribute; Rust carries the per-term boost as a plain field.
 search/BoostQuery	ported	crates/lucene-search/src/query.rs::BoostQuery
 search/BulkScorer	ported	crates/lucene-search/src/exec/bulk.rs::Bulk
-search/ByteVectorSimilarityQuery	todo:M7	byte-vector similarity-threshold query
+search/ByteVectorSimilarityQuery	ported	crates/lucene-search/src/vector_query.rs::ByteVectorSimilarityQuery
 search/ByteVectorSimilarityValuesSource	todo:M7	byte-vector similarity DoubleValuesSource
 search/CachingCollector	todo:M7	caching/replaying collector
 search/CheckedIntConsumer	not-needed	Java functional interface existing only to let a lambda throw checked exceptions.
@@ -604,7 +604,7 @@ search/CollectionStatistics	ported	crates/lucene-search/src/similarities.rs::Col
 search/CollectionTerminatedException	not-needed	Java control-flow exception for early termination; Rust collection paths stop by return value (weight_count.rs, terminate.rs).
 search/Collector	ported	crates/lucene-search/src/collector.rs::ScoringCollector
 search/CollectorManager	ported	crates/lucene-search/src/slices.rs::run_slices
-search/CombinedFieldQuery	todo:M7	BM25F multi-field query
+search/CombinedFieldQuery	ported	crates/lucene-search/src/extended_query.rs::CombinedFieldQuery
 search/ConjunctionBulkScorer	ported	crates/lucene-search/src/bulk_scorer.rs::ConjunctionBulk
 search/ConjunctionDISI	ported	crates/lucene-search/src/exec/conjunction.rs::ConjunctionScorer
 search/ConjunctionScorer	ported	crates/lucene-search/src/exec/conjunction.rs::ConjunctionScorer
@@ -630,14 +630,14 @@ search/DisjunctionScorer	ported	crates/lucene-search/src/exec/disjunction.rs::Di
 search/DisjunctionSumScorer	ported	crates/lucene-search/src/exec/disjunction.rs::DisjunctionScorer
 search/DocAndFloatFeatureBuffer	ported	crates/lucene-search/src/bulk_scorer.rs::DocScores
 search/DocAndScoreAccBuffer	ported	crates/lucene-search/src/bulk_scorer.rs::DocScoreAcc
-search/DocAndScoreQuery	partial	crates/lucene-search/src/exec/leaf.rs::DocList -- M7: a precomputed docs+scores scorer exists, but KNN results are never rewritten into a query-tree node as AbstractKnnVectorQuery.rewrite does
+search/DocAndScoreQuery	ported	crates/lucene-search/src/extended_query.rs::DocAndScoreQuery
 search/DocIdSet	ported	crates/lucene-search/src/docid_set.rs::CachedDocIdSet
 search/DocIdSetBulkIterator	ported	crates/lucene-search/src/exec/bulk.rs::score_segment_below
 search/DocIdSetIterator	ported	crates/lucene-search/src/exec/mod.rs::Scorer
 search/DocIdStream	ported	crates/lucene-search/src/exec/mod.rs::constant_bits
 search/DocScoreEncoder	ported	crates/lucene-search/src/collector.rs::doc_score_encoder
-search/DocValuesRangeIterator	partial	crates/lucene-search/src/doc_value_query.rs::search_numeric_range_with_skip_index -- M7: skip-index range pruning for NUMERIC only, as a standalone single-segment scan, not a TwoPhaseIterator in the scorer tree
-search/DocValuesRewriteMethod	todo:M7	MultiTermQuery rewrite over SORTED_SET doc values
+search/DocValuesRangeIterator	ported	crates/lucene-search/src/exec/ranges.rs::SkipBlockRange
+search/DocValuesRewriteMethod	ported	crates/lucene-search/src/exec/ranges.rs::doc_values_rewrite
 search/DoubleValues	todo:M7	per-document double values (function/values-source API)
 search/DoubleValuesSource	todo:M7	double values-source API (function scoring, rescoring)
 search/DoubleValuesSourceRescorer	todo:M7	rescorer over a DoubleValuesSource
@@ -656,35 +656,35 @@ search/FilterScorable	not-needed	Java delegating base class; Rust passes scores 
 search/FilterScorer	not-needed	Java delegating base class; Rust wraps a BoxScorer directly (e.g. exec/leaf.rs ZeroScorer).
 search/FilterWeight	not-needed	Java delegating base class for the Weight hierarchy, which Rust collapses into exec/build.rs.
 search/FilteredDocIdSetIterator	not-needed	Java predicate-filtering base class; Rust iterators filter with Iterator::filter or a two-phase Scorer.
-search/FloatVectorSimilarityQuery	todo:M7	float-vector similarity-threshold query
+search/FloatVectorSimilarityQuery	ported	crates/lucene-search/src/vector_query.rs::FloatVectorSimilarityQuery
 search/FloatVectorSimilarityValuesSource	todo:M7	float-vector similarity DoubleValuesSource
 search/FullPrecisionFloatVectorSimilarityValuesSource	todo:M7	full-precision float-vector similarity values source
 search/FuzzyAutomatonBuilder	ported	crates/lucene-codecs/src/fuzzy.rs::FuzzyMatch
-search/FuzzyQuery	partial	crates/lucene-search/src/query.rs::FuzzyQuery -- M7: not a scorer-tree leaf (standalone/eager path only; M7 T7.4), not in the plugin query blob; no LevenshteinAutomata (banded DP with the same accept decision)
+search/FuzzyQuery	ported	crates/lucene-search/src/exec/extended.rs::fuzzy_sim
 search/FuzzyTermsEnum	ported	crates/lucene-codecs/src/blocktree.rs::fuzzy_intersect
 search/HitQueue	ported	crates/lucene-search/src/collector.rs::TopDocsCollector
-search/HnswQueueSaturationCollector	todo:M7	patience-based early-exit KNN collector
+search/HnswQueueSaturationCollector	ported	crates/lucene-search/src/knn_collectors.rs::HnswQueueSaturationCollector
 search/ImpactsDISI	ported	crates/lucene-search/src/bulk_scorer.rs::TermLeg
 search/IndexOrDocValuesQuery	partial	crates/lucene-search/src/doc_value_query.rs::plan_index_or_doc_values -- M7: planner exists but has no caller; the doc-values side never runs in the scorer tree (only the points side is sent)
 search/IndexSearcher	partial	crates/lucene-search/src/multi_segment.rs::search_boolean_query_multi_segment_maxscore -- M7: no IndexSearcher object: search/count/explain are free functions over OpenSegment; explain only for term, phrase and flat term-only boolean (parity row 300); `setSimilarity` is search_boolean_query_multi_segment_with_similarity (term, phrase, boolean; fuzzy/span/multi-phrase scoring clauses refused under a non-default similarity), not the FFI; Fuzzy/MultiPhrase/span/KNN run outside the tree
-search/IndexSortSortedNumericDocValuesRangeQuery	todo:M7	range query exploiting index sort
-search/IndriAndQuery	todo:M7	Indri AND query
-search/IndriAndScorer	todo:M7	Indri AND scorer
-search/IndriAndWeight	todo:M7	Indri AND weight
-search/IndriDisjunctionScorer	todo:M7	Indri disjunction scorer
-search/IndriQuery	todo:M7	Indri query base
-search/IndriScorer	todo:M7	Indri scorer base
-search/KnnByteVectorQuery	partial	crates/lucene-search/src/vector_query.rs::KnnByteVectorQuery -- M7: standalone search functions, not a Clause (cannot nest in a BooleanQuery/scorer tree, no query-blob node); filter passed as a pre-resolved bitset
+search/IndexSortSortedNumericDocValuesRangeQuery	ported	crates/lucene-search/src/extended_query.rs::IndexSortSortedNumericDocValuesRangeQuery
+search/IndriAndQuery	ported	crates/lucene-search/src/extended_query.rs::IndriAndQuery
+search/IndriAndScorer	ported	crates/lucene-search/src/exec/extended.rs::IndriAndScorer
+search/IndriAndWeight	ported	crates/lucene-search/src/exec/extended.rs::indri_and
+search/IndriDisjunctionScorer	ported	crates/lucene-search/src/exec/extended.rs::IndriAndScorer
+search/IndriQuery	ported	crates/lucene-search/src/extended_query.rs::IndriAndQuery
+search/IndriScorer	ported	crates/lucene-search/src/exec/mod.rs::smoothing_score
+search/KnnByteVectorQuery	ported	crates/lucene-search/src/vector_query.rs::KnnByteVectorQuery
 search/KnnCollector	ported	crates/lucene-codecs/src/hnsw.rs::KnnCollector
-search/KnnFloatVectorQuery	partial	crates/lucene-search/src/vector_query.rs::KnnFloatVectorQuery -- M7: standalone search functions, not a Clause (cannot nest in a BooleanQuery/scorer tree, no query-blob node); filter passed as a pre-resolved bitset
+search/KnnFloatVectorQuery	ported	crates/lucene-search/src/vector_query.rs::KnnFloatVectorQuery
 search/LRUQueryCache	ported	crates/lucene-search/src/exec/cache.rs::SegmentQueryCache
 search/LateInteractionFloatValuesSource	todo:M7	multi-vector late-interaction values source
 search/LateInteractionRescorer	todo:M7	late-interaction multi-vector rescorer
 search/LeafCollector	ported	crates/lucene-search/src/collector.rs::LeafCollector
 search/LeafFieldComparator	ported	crates/lucene-search/src/top_field.rs::LeafKey
 search/LiveFieldValues	todo:M7	NRT live field-value cache over ReferenceManager
-search/LogOddsFusionQuery	todo:M7	log-odds probability fusion query
-search/LogOddsFusionScorer	todo:M7	log-odds probability fusion scorer
+search/LogOddsFusionQuery	ported	crates/lucene-search/src/extended_query.rs::LogOddsFusionQuery
+search/LogOddsFusionScorer	ported	crates/lucene-search/src/exec/extended.rs::LogOddsScorer
 search/LongValues	todo:M7	per-document long values (values-source API)
 search/LongValuesSource	todo:M7	long values-source API
 search/MatchAllDocsQuery	ported	crates/lucene-search/src/query.rs::MatchAllDocsQuery
@@ -700,26 +700,26 @@ search/MaxScoreCache	ported	crates/lucene-search/src/bulk_scorer.rs::TermLeg
 search/MultiCollector	todo:M7	generic fan-out over several collectors
 search/MultiCollectorManager	todo:M7	collector manager over several managers
 search/MultiLeafFieldComparator	ported	crates/lucene-search/src/top_field.rs::Leaf
-search/MultiNormsLeafSimScorer	todo:M7	multi-field norms scorer for CombinedFieldQuery
-search/MultiPhraseQuery	partial	crates/lucene-search/src/query.rs::MultiPhraseQuery -- M7: no explicit positions (Builder.add(Term[], int position)); not a scorer-tree leaf (standalone path only, M7 T7.4), not in the plugin query blob
-search/MultiTermQuery	partial	crates/lucene-search/src/exec/multi_term.rs::multi_term -- M7: only the default CONSTANT_SCORE_BLENDED_REWRITE (and FuzzyQuery's TopTermsBlendedFreqScoringRewrite); no selectable RewriteMethod (CONSTANT_SCORE_REWRITE, SCORING_BOOLEAN_REWRITE, CONSTANT_SCORE_BOOLEAN_REWRITE, TopTermsScoringBooleanQueryRewrite, TopTermsBoostOnlyBooleanQueryRewrite)
+search/MultiNormsLeafSimScorer	ported	crates/lucene-search/src/exec/extended.rs::FreqSumScorer
+search/MultiPhraseQuery	ported	crates/lucene-search/src/exec/extended.rs::multi_phrase
+search/MultiTermQuery	ported	crates/lucene-search/src/extended_query.rs::MultiTermQuery
 search/MultiTermQueryConstantScoreBlendedWrapper	ported	crates/lucene-search/src/exec/multi_term.rs::TermUnion
-search/MultiTermQueryConstantScoreWrapper	todo:M7	CONSTANT_SCORE_REWRITE (non-blended) multi-term rewrite
+search/MultiTermQueryConstantScoreWrapper	ported	crates/lucene-search/src/exec/multi_term.rs::constant_score_terms
 search/MultiVectorSimilarity	todo:M7	multi-vector similarity interface
 search/Multiset	not-needed	lucene.internal generic collection used for BooleanQuery clause equality; Rust uses std collections.
-search/NGramPhraseQuery	todo:M7	n-gram phrase query
+search/NGramPhraseQuery	ported	crates/lucene-search/src/extended_query.rs::NGramPhraseQuery
 search/NamedMatches	todo:M7	Matches API (named sub-query matches)
-search/NumericDocValuesRangeQuery	partial	crates/lucene-search/src/doc_value_query.rs::search_numeric_range -- M7: standalone single-segment function, not a Clause/scorer-tree leaf and not in the query blob
+search/NumericDocValuesRangeQuery	ported	crates/lucene-search/src/extended_query.rs::NumericDocValuesRangeQuery
 search/NumericFieldStats	todo:M7	global numeric min/max from points or skipper
-search/PatienceKnnVectorQuery	todo:M7	KNN query with patience-based early exit
+search/PatienceKnnVectorQuery	ported	crates/lucene-search/src/vector_query.rs::PatienceKnnVectorQuery
 search/PhraseMatcher	ported	crates/lucene-search/src/exec/phrase.rs::PhraseScorer
 search/PhrasePositions	ported	crates/lucene-search/src/sloppy_phrase.rs::Pp
-search/PhraseQuery	partial	crates/lucene-search/src/query.rs::PhraseQuery -- M7: no explicit per-term positions (PhraseQuery.Builder.add(Term, int position)); terms are implicitly at 0..n
+search/PhraseQuery	ported	crates/lucene-search/src/exec/extended.rs::positional_phrase
 search/PhraseQueue	ported	crates/lucene-search/src/sloppy_phrase.rs::SloppyMatcher
 search/PhraseScorer	ported	crates/lucene-search/src/exec/phrase.rs::PhraseScorer
 search/PhraseWeight	ported	crates/lucene-search/src/exec/phrase.rs::PhraseScorer
-search/PointInSetQuery	partial	crates/lucene-search/src/points_query.rs::search_points_in_set -- M7: single-segment standalone function, one dimension only; not a Clause/scorer-tree leaf
-search/PointRangeQuery	partial	crates/lucene-search/src/exec/build.rs::points_range -- M7: one-dimensional 8-byte (long) ranges only; multi-dimensional and other point widths not ported
+search/PointInSetQuery	ported	crates/lucene-search/src/extended_query.rs::PointInSetQuery
+search/PointRangeQuery	ported	crates/lucene-search/src/extended_query.rs::PointRangeQuery
 search/PositiveScoresOnlyCollector	todo:M7	collector dropping non-positive scores
 search/PrefixQuery	ported	crates/lucene-search/src/query.rs::PrefixQuery
 search/Pruning	ported	crates/lucene-search/src/top_field.rs::Pruning
@@ -744,16 +744,16 @@ search/ScoreMode	ported	crates/lucene-search/src/collector.rs::ScoreMode
 search/Scorer	ported	crates/lucene-search/src/exec/mod.rs::Scorer
 search/ScorerSupplier	ported	crates/lucene-search/src/exec/build.rs::Child
 search/ScorerUtil	ported	crates/lucene-search/src/exec/wand.rs::cost_with_min_should_match
-search/ScoringRewrite	todo:M7	SCORING_BOOLEAN_REWRITE / CONSTANT_SCORE_BOOLEAN_REWRITE
+search/ScoringRewrite	ported	crates/lucene-search/src/exec/extended.rs::rewrite_multi_term
 search/SearcherFactory	todo:M7	searcher factory/warm-up hook for managers
 search/SearcherLifetimeManager	todo:M7	versioned searcher lease manager
 search/SearcherManager	todo:M7	NRT searcher refresh/acquire/release manager
-search/SeededKnnVectorQuery	partial	crates/lucene-codecs/src/hnsw.rs::search_seeded -- M7: seeded graph walk exists (used by the re-entry pass), but the query that turns a seed Query's hits into entry points is not ported
+search/SeededKnnVectorQuery	ported	crates/lucene-search/src/vector_query.rs::search_seeded_knn_float_vector_query_multi_segment
 search/SegmentCacheable	partial	crates/lucene-search/src/exec/cache.rs::SegmentQueryCache -- M7: cacheability decided per clause kind; no per-leaf isCacheable check (e.g. DocValues.isCacheable for fields with doc-values updates)
 search/SimpleCollector	ported	crates/lucene-search/src/collector.rs::ScoringCollector
 search/SimpleFieldComparator	not-needed	Java convenience base merging FieldComparator and LeafFieldComparator; Rust comparators are the closed top_field.rs types.
 search/SimpleScorable	not-needed	mutable score holder handed to collectors; Rust passes the score as an argument of ScoringCollector::collect.
-search/SkipBlockRangeIterator	partial	crates/lucene-search/src/doc_value_query.rs::search_numeric_range_with_skip_index -- M7: skip-block range walk for NUMERIC only, standalone single-segment scan, not a DocIdSetIterator in the scorer tree
+search/SkipBlockRangeIterator	ported	crates/lucene-search/src/exec/ranges.rs::SkipBlockRange
 search/SloppyPhraseMatcher	ported	crates/lucene-search/src/sloppy_phrase.rs::SloppyMatcher
 search/Sort	ported	crates/lucene-search/src/top_field.rs::search_sorted
 search/SortField	partial	crates/lucene-search/src/top_field.rs::SortField -- M7: SCORE, DOC, LONG/INT/DOUBLE/FLOAT and STRING only; STRING_VAL and CUSTOM (FieldComparatorSource) not ported
@@ -762,17 +762,17 @@ search/SortedNumericSelector	ported	crates/lucene-search/src/top_field.rs::Selec
 search/SortedNumericSortField	ported	crates/lucene-search/src/top_field.rs::SortField
 search/SortedSetSelector	partial	crates/lucene-search/src/top_field.rs::Selector -- M7: MIN/MAX only; "MIDDLE_MIN/MIDDLE_MAX are ported nowhere" (parity)
 search/SortedSetSortField	partial	crates/lucene-search/src/top_field.rs::SortField -- M7: MIN/MAX selectors only; MIDDLE_MIN/MIDDLE_MAX not ported
-search/SynonymQuery	todo:M7	synonym query with blended term stats
+search/SynonymQuery	ported	crates/lucene-search/src/extended_query.rs::SynonymQuery
 search/TaskExecutor	ported	crates/lucene-search/src/slices.rs::run_slices
 search/TermCollectingRewrite	ported	crates/lucene-search/src/lib.rs::fuzzy_expansion_across_leaves
 search/TermInSetQuery	ported	crates/lucene-search/src/query.rs::TermInSetQuery
 search/TermMatchesIterator	todo:M7	Matches API (term matches iterator)
 search/TermQuery	ported	crates/lucene-search/src/query.rs::TermQuery
-search/TermRangeQuery	partial	crates/lucene-index/src/buffered_updates.rs::DeleteQuery -- M7: only as a delete-by-query in the writer; no search-side TermRangeQuery (not a Clause, not in the scorer tree)
+search/TermRangeQuery	ported	crates/lucene-search/src/extended_query.rs::TermRangeQuery
 search/TermScorer	ported	crates/lucene-search/src/exec/leaf.rs::TermScorer
 search/TermStatistics	ported	crates/lucene-search/src/similarities.rs::TermStatistics
-search/TimeLimitingBulkScorer	partial	crates/lucene-search/src/multi_segment.rs::merge_multi_segment_scored_with_deadline -- M7: deadline checked between segments only (an in-flight segment is not interrupted), and only on the term/boolean fan-out paths
-search/TimeLimitingKnnCollectorManager	todo:M7	query timeout for KNN collection
+search/TimeLimitingBulkScorer	ported	crates/lucene-search/src/exec/bulk.rs::score_segment_with_deadline
+search/TimeLimitingKnnCollectorManager	ported	crates/lucene-search/src/knn_collectors.rs::TimeLimitingKnnCollector
 search/TopDocs	partial	crates/lucene-search/src/multi_segment.rs::merge_multi_segment_scored -- M7: merge ported (no shardIndex); TopDocs.rrf (reciprocal rank fusion) not ported
 search/TopDocsCollector	ported	crates/lucene-search/src/collector.rs::TopDocsCollector
 search/TopFieldCollector	ported	crates/lucene-search/src/top_field.rs::search_sorted
@@ -781,14 +781,14 @@ search/TopFieldDocs	ported	crates/lucene-search/src/top_field.rs::TopFieldDocs
 search/TopKnnCollector	ported	crates/lucene-codecs/src/hnsw.rs::KnnCollector
 search/TopScoreDocCollector	ported	crates/lucene-search/src/collector.rs::TopDocsCollector
 search/TopScoreDocCollectorManager	ported	crates/lucene-search/src/multi_segment.rs::search_leaves_shared_counting
-search/TopTermsRewrite	partial	crates/lucene-search/src/lib.rs::FuzzyTopTerms -- M7: only TopTermsBlendedFreqScoringRewrite for FuzzyQuery; TopTermsScoringBooleanQueryRewrite/TopTermsBoostOnlyBooleanQueryRewrite and top-terms rewrites of other multi-term queries not ported
+search/TopTermsRewrite	ported	crates/lucene-search/src/exec/extended.rs::rewrite_multi_term
 search/TotalHitCountCollector	ported	crates/lucene-search/src/collector.rs::CountCollector
 search/TotalHitCountCollectorManager	ported	crates/lucene-search/src/collector.rs::CountCollector
 search/TotalHits	ported	crates/lucene-search/src/collector.rs::TotalHits
 search/TwoPhaseIterator	ported	crates/lucene-search/src/exec/mod.rs::Scorer
 search/UsageTrackingQueryCachingPolicy	ported	crates/lucene-search/src/query_cache.rs::UsageTrackingPolicy
 search/VectorScorer	ported	crates/lucene-codecs/src/hnsw.rs::VectorScorer
-search/VectorSimilarityCollector	todo:M7	similarity-threshold graph-search collector
+search/VectorSimilarityCollector	ported	crates/lucene-search/src/knn_collectors.rs::VectorSimilarityCollector
 search/VectorSimilarityValuesSource	todo:M7	vector similarity values source base
 search/WANDScorer	ported	crates/lucene-search/src/exec/wand.rs::WandScorer
 search/Weight	ported	crates/lucene-search/src/exec/build.rs::build
@@ -802,8 +802,8 @@ search/comparators/NumericComparator	partial	crates/lucene-search/src/top_field.
 search/comparators/TermOrdValComparator	partial	crates/lucene-search/src/top_field.rs::StrSlots -- M7: postings-based competitive state ported; SkipperBasedCompetitiveState not ported
 search/comparators/UpdateableDocIdSetIterator	ported	crates/lucene-search/src/top_field.rs::Iter
 search/knn/KnnCollectorManager	ported	crates/lucene-search/src/vector_query.rs::per_leaf_top_k
-search/knn/KnnSearchStrategy	partial	crates/lucene-codecs/src/hnsw_vectors.rs::SearchOptions -- M7: default Hnsw strategy and Seeded entry points ported; a non-zero filteredSearchThreshold (FilteredHnswGraphSearcher) is not
-search/knn/MultiLeafKnnCollector	todo:M7	cross-leaf shared-threshold KNN collector
+search/knn/KnnSearchStrategy	ported	crates/lucene-codecs/src/hnsw_vectors.rs::SearchOptions
+search/knn/MultiLeafKnnCollector	ported	crates/lucene-search/src/knn_collectors.rs::MultiLeafKnnCollector
 search/knn/TopKnnCollectorManager	ported	crates/lucene-search/src/vector_query.rs::per_leaf_top_k
 search/similarities/AfterEffect	ported	crates/lucene-search/src/similarities.rs::AfterEffect
 search/similarities/AfterEffectB	ported	crates/lucene-search/src/similarities.rs::AfterEffect
@@ -1103,11 +1103,11 @@ util/fst/ReverseRandomAccessReader	ported	crates/lucene-codecs/src/fst.rs::Bytes
 util/fst/Util	partial	crates/lucene-codecs/src/fst.rs::get -- M7: Util.get/binarySearch only (plus the suggester's own top-N in suggest.rs); no general shortestPaths/TopNSearcher, getByOutput, readCeilArc, toDot
 util/graph/GraphTokenStreamFiniteStrings	todo:M7	finite-path enumeration of graph token streams for QueryBuilder
 util/hnsw/AbstractHnswGraphSearcher	ported	crates/lucene-codecs/src/hnsw.rs::HnswGraphSearcher
-util/hnsw/BlockingFloatHeap	todo:M7	thread-safe bounded float heap backing MultiLeafKnnCollector (unported)
+util/hnsw/BlockingFloatHeap	ported	crates/lucene-search/src/knn_collectors.rs::BlockingFloatHeap
 util/hnsw/CloseableRandomVectorScorerSupplier	not-needed	closeable supplier over a merge temp file; Rust lifetimes/Drop
 util/hnsw/ConcurrentHnswMerger	todo:M7	multi-threaded HNSW graph merge (numMergeWorkers > 1)
-util/hnsw/FilteredHnswGraphSearcher	todo:M7	filtered (ACORN-style) graph search via KnnSearchStrategy.Hnsw with a non-zero threshold
-util/hnsw/FloatHeap	todo:M7	bounded float heap backing MultiLeafKnnCollector (unported)
+util/hnsw/FilteredHnswGraphSearcher	ported	crates/lucene-codecs/src/hnsw.rs::search_filtered
+util/hnsw/FloatHeap	ported	crates/lucene-search/src/knn_collectors.rs::FloatHeap
 util/hnsw/HasKnnVectorValues	not-needed	accessor interface for vector values
 util/hnsw/HnswBuilder	ported	crates/lucene-codecs/src/hnsw.rs::HnswGraphBuilder
 util/hnsw/HnswConcurrentMergeBuilder	todo:M7	multi-threaded HNSW graph merge builder
