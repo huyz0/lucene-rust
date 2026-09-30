@@ -130,6 +130,9 @@ pub struct SegmentReader {
     pub segment_name: String,
     pub max_doc: i32,
     pub doc_base: i32,
+    /// `SegmentInfo.getIndexSort()`: the sort this segment's documents are
+    /// in, `None` for an unsorted segment.
+    index_sort: Option<Arc<Vec<lucene_index::segment_info::IndexSortField>>>,
     segment_id: [u8; ID_LENGTH],
     /// The generation of this segment's deletions at the time this reader
     /// was opened (`-1` if it has none) -- used by
@@ -549,6 +552,7 @@ impl SegmentReader {
         Ok(SegmentReader {
             query_cache: Arc::default(),
             segment_name,
+            index_sort: si.index_sort.clone().map(Arc::new),
             max_doc: si.doc_count,
             doc_base,
             segment_id,
@@ -721,6 +725,12 @@ impl SegmentReader {
             (Some(meta), Some(data)) => Some((meta, &***data)),
             _ => None,
         }
+    }
+
+    /// `LeafReader.getMetaData().sort()`: the index sort, primary field
+    /// first, or `None` when the segment is not sorted.
+    pub fn index_sort(&self) -> Option<&[lucene_index::segment_info::IndexSortField]> {
+        self.index_sort.as_deref().map(Vec::as_slice)
     }
 
     /// This segment's hard-deletions bitset (`.liv`), or `None` when it has no
