@@ -189,7 +189,8 @@ pub(crate) fn build<'a>(
         Clause::PointsRange(q) => points_range(ctx, q, boost, mode),
         Clause::Exists(q) => exists(ctx, q, boost, mode),
         Clause::Extended(q) => super::extended::build(ctx, q, boost, mode, top_level),
-        Clause::Fuzzy(f) if ctx.similarity.is_some() && mode.needs_scores() => {
+        // `FuzzyQuery`'s `TopTermsBlendedFreqScoringRewrite`, streamed.
+        Clause::Fuzzy(f) if mode.needs_scores() => {
             super::extended::fuzzy_sim(ctx, f, boost, mode, top_level)
         }
         Clause::MultiPhrase(m) => super::extended::multi_phrase(ctx, m, boost, mode),
