@@ -741,10 +741,6 @@ pub(crate) struct IndexingConfig {
     /// `LiveIndexWriterConfig.getMergedSegmentWarmer()`; see
     /// [`IndexWriter::set_merged_segment_warmer`].
     merged_segment_warmer: Option<std::sync::Arc<dyn MergedSegmentWarmer>>,
-    /// `IndexWriterConfig.getUseCompoundFile()`: pack every flushed
-    /// segment's files into one `.cfs`/`.cfe` pair. See
-    /// [`IndexWriter::set_use_compound_file`].
-    use_compound_file: bool,
     /// `IndexWriter.readerPool`: segments opened for delete resolution, kept
     /// for the next round (see [`crate::reader_pool`]). Shared, not copied,
     /// when the configuration is.
@@ -851,15 +847,7 @@ pub(crate) struct MergePlan {
     /// Which soft-deleted documents survive this merge -- see
     /// [`IndexWriter::set_soft_deletes_retention`]. `None` keeps them all.
     retention: Option<SoftDeletesRetention>,
-    /// `MergePolicy.useCompoundFile(segmentInfos, mergedInfo, writer)`, asked
-    /// once the merged segment's size is known; `None` never packs.
-    compound: Option<CompoundRule>,
 }
-
-/// A merge policy's `useCompoundFile`, closed over the segment list and
-/// merge context it was asked with, applied to the merged segment.
-pub(crate) type CompoundRule =
-    std::sync::Arc<dyn Fn(&merge_policy::MergeSegment) -> Result<bool> + Send + Sync>;
 
 /// `SoftDeletesRetentionMergePolicy` with OpenSearch's retention query,
 /// `LongPoint.newRangeQuery("_seq_no", minRetainedSeqNo, Long.MAX_VALUE)`
@@ -1995,7 +1983,6 @@ impl IndexingConfig {
             &self.codec_name,
             self.lucene_version,
         )?;
-        let merged = Self::maybe_compound_merged(dir, plan, merged)?;
         // `mergeMiddle`: `mergedSegmentWarmer.warm(reader)` before
         // `commitMerge`, outside the writer's lock.
         if let Some(warmer) = &self.merged_segment_warmer {
@@ -2006,50 +1993,6 @@ impl IndexingConfig {
             source_live: opened.iter().map(|o| o.live_docs.clone()).collect(),
             merged: Box::new(merged),
         })
-    }
-
-    /// `IndexWriter.mergeMiddle`'s compound step: asks the merge policy
-    /// ([`MergePlan::compound`]) about the finished merged segment and, if it
-    /// says so, packs its files into `.cfs`/`.cfe` and rewrites its `.si`
-    /// to record the compound layout (Java builds the compound file before
-    /// writing the `.si` at all; this port's merge writes the `.si` itself,
-    /// so it is written again).
-    fn maybe_compound_merged(
-        dir: &dyn Directory,
-        plan: &MergePlan,
-        mut merged: merge::MergedSegment,
-    ) -> Result<merge::MergedSegment> {
-        let Some(rule) = &plan.compound else {
-            return Ok(merged);
-        };
-        let si_name = format!("{}.si", plan.merged_name);
-        let mut si = segment_info::parse(&dir.open(&si_name)?, &plan.merged_id)?;
-        let size = merged
-            .files
-            .iter()
-            .map(|f| dir.file_length(f))
-            .try_fold(0u64, |acc, len| len.map(|l| acc.saturating_add(l)))?;
-        let candidate = merge_policy::MergeSegment::new(
-            plan.merged_name.clone(),
-            si.doc_count,
-            0,
-            i64::try_from(size).unwrap_or(i64::MAX),
-        );
-        if !rule(&candidate)? {
-            return Ok(merged);
-        }
-        let packed = segment_writer::pack_compound_file(
-            dir,
-            &plan.merged_name,
-            &plan.merged_id,
-            &merged.files,
-        )?;
-        si.is_compound_file = true;
-        si.files = packed.clone();
-        write_file(dir, &si_name, &segment_info::write(&si, ""))?;
-        dir.sync(&packed)?;
-        merged.files = packed;
-        Ok(merged)
     }
 
     /// One sort tier's key for every buffered document, in buffer order --
@@ -2688,24 +2631,6 @@ impl IndexingConfig {
         // as the file names, so it costs nothing extra.
         if let Some(sort) = &self.index_sort {
             flushed.info.index_sort = Some(sort.clone());
-        }
-        // `DocumentsWriterPerThread.sealFlushedSegment`: the compound file is
-        // built after every format is written and before the `.si`, so the
-        // `.si` is not packed and records the compound layout.
-        if self.use_compound_file {
-            let packed = segment_writer::pack_compound_file(
-                dir,
-                segment_name,
-                &flushed.info.id,
-                &flushed.info.files,
-            )?;
-            flushed.pending_sync = packed
-                .iter()
-                .filter(|f| !f.ends_with(".si"))
-                .cloned()
-                .collect();
-            flushed.info.files = packed;
-            flushed.info.is_compound_file = true;
         }
         segment_writer::seal_flushed_segment(dir, segment_name, flushed).map_err(Error::from)
     }
@@ -3541,27 +3466,6 @@ impl<'d> IndexWriter<'d> {
         self.cfg.merge_mb_per_sec
     }
 
-    /// `IndexWriterConfig.setUseCompoundFile(on)` (live-settable, as in
-    /// `LiveIndexWriterConfig`): whether each segment this writer **flushes**
-    /// packs its files into one `.cfs`/`.cfe` pair
-    /// (`Lucene90CompoundFormat`). A merged segment is packed when the merge
-    /// policy's `useCompoundFile` says so: a pluggable policy's
-    /// ([`IndexWriter::set_pluggable_merge_policy`]) always decides; the
-    /// built-in [`MergePolicyConfig`] is `TieredMergePolicy`'s, whose
-    /// `noCFSRatio` of 0.1 applies once this is on.
-    ///
-    /// **Default `false`**, where Java's is `true`: this port wrote no
-    /// compound segments before M7, and every caller's segments keep the
-    /// layout they had unless it asks.
-    pub fn set_use_compound_file(&mut self, on: bool) {
-        self.cfg_mut().use_compound_file = on;
-    }
-
-    /// `getUseCompoundFile()`.
-    pub fn use_compound_file(&self) -> bool {
-        self.cfg.use_compound_file
-    }
-
     /// `IndexWriterConfig.setReaderPooling(on)`: whether a segment opened to
     /// resolve deletes is kept for the next round ([`crate::reader_pool`]).
     /// On by default; turning it off drops what is pooled.
@@ -3840,7 +3744,6 @@ impl<'d> IndexWriter<'d> {
                 merge_mb_per_sec: None,
                 similarity: None,
                 reader_pool: std::sync::Arc::default(),
-                use_compound_file: false,
                 merged_segment_warmer: None,
             }),
             segment_infos,
@@ -8327,7 +8230,6 @@ impl<'d> IndexWriter<'d> {
                     .clone()
             })
             .collect::<Vec<SegmentCommitInfo>>();
-        let compound = self.merge_compound_rule()?;
         let held = self.deleter.hold_segment_files(&sources)?;
         Ok(MergePlan {
             names: names.to_vec(),
@@ -8336,7 +8238,6 @@ impl<'d> IndexWriter<'d> {
             merged_id,
             held,
             retention: self.soft_deletes_retention.clone(),
-            compound,
         })
     }
 

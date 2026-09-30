@@ -87,27 +87,6 @@ impl IndexWriter<'_> {
         ))
     }
 
-    /// The merge policy's `useCompoundFile`, closed over the current segments
-    /// and context, for a merge about to start: the pluggable policy's when
-    /// one is set; otherwise `TieredMergePolicy`'s (the built-in
-    /// [`super::MergePolicyConfig`]) when compound files are on; otherwise
-    /// none -- the layout this writer's merges had before compound files.
-    pub(super) fn merge_compound_rule(&self) -> Result<Option<super::CompoundRule>> {
-        let policy: Arc<dyn MergePolicy> = match &self.pluggable_merge_policy {
-            Some(policy) => Arc::clone(policy),
-            None if self.use_compound_file() => Arc::new(merge_policy::TieredMergePolicy::new(
-                self.merge_policy.clone().unwrap_or_default(),
-            )),
-            None => return Ok(None),
-        };
-        let (infos, ctx) = self.merge_inputs()?;
-        Ok(Some(Arc::new(move |merged: &MergeSegment| {
-            policy
-                .use_compound_file(&infos, merged, &ctx)
-                .map_err(policy_error)
-        })))
-    }
-
     /// `IndexWriter.maybeMerge(FULL_FLUSH)` under a pluggable policy: runs
     /// every merge it specifies, then asks again, until it specifies none.
     /// Stops as well when a round merged nothing new (a policy proposing a
