@@ -9,7 +9,7 @@
 | **Effort** | XL |
 | **Depends on** | [M7](m7-core-complete.md) (per-field formats, the inventory gate) |
 | **Unblocks** | adopting the Rust engine on existing indices without a rewrite |
-| **Status** | T8.1-T8.4 delivered (the quantized vector formats and `IndexUpgrader` included, no `deferred:M8` row left in either inventory); T8.5's native half delivered; acceptance criteria 1-2 met, 3 unverified here (needs a running Docker daemon), 4 met for queries, not for the open-time FST conversion |
+| **Status** | T8.1-T8.5 delivered (the quantized vector formats and `IndexUpgrader` included, no `deferred:M8` row left in either inventory; T8.5's JVM half and a real 2.19-to-3.8.0 upgrade verified); acceptance criteria 1-3 met; 4 met for opening and for queries, open for the first lookup in each field of a retired segment (its FST-to-trie conversion, now deferred to that lookup) |
 
 ---
 
@@ -253,16 +253,51 @@ is what separates the levels; the first version of the fixture, without it,
 passed that mutation). Not caught: a norm-side error in an impact, since the
 tests check frequencies only.
 
-**FST-to-trie conversion at open.** `examples/reader_open_profile` (now
-parsing a `.si` by its codec) over the same corpora gives
+**FST-to-trie conversion, deferred to each field's first use (M8
+close-out).** `examples/reader_open_profile` over the same corpora gave
 `blocktree::open_shared` a minimum of 6.0 ms on the 9.0 segment (88 KB `.tip`)
 and 3.3 ms on the 9.12 one (77 KB), against 1 us for the current format's
-trie, which is read in place. Lucene opens a `Lucene90BlockTreeTermsReader`
-FST in place (`FieldReader`: `new OffHeapFSTStore(indexIn, ...)`), at a cost that
-does not grow with the index. So the port
-pays a few milliseconds per retired-format segment per open, once, where
-Lucene does not; it is not a per-query cost. A lazy per-field conversion
-would remove it; not done.
+trie, which is read in place; Lucene opens a `Lucene90BlockTreeTermsReader`
+FST in place (`FieldReader`: `new OffHeapFSTStore(indexIn, ...)`). Now `open`
+reads each field's `.tmd` record and FST metadata (checking the body's extent
+in `.tip`) and keeps a `backward_codecs/blocktree.rs::FstIndex`; the field's
+first walk converts it (`blocktree.rs::TermsIndex::Deferred`, a `OnceLock`
+shared by clones; a failed conversion fails every later walk with the same
+message instead of retrying). A corrupt FST body is therefore found by the
+field's first lookup rather than at open -- as Lucene's off-heap FST finds it
+at its first seek. Unit tests: `the_fst_index_is_converted_on_first_use_not_at_open`,
+`a_corrupt_fst_body_fails_the_first_walk_and_every_later_one`; the
+differential suites (`bwc_fixtures.rs`, 5 of 5; `lucene-codecs` with
+`bwc_postings`, all; `verify-bwc-merge.sh`, 39 of 39) pass unchanged.
+
+Measured on the 4-core host at load 5-6 (other jobs running), minimum of five
+interleaved rounds of 30 repetitions each, before and after binaries of
+`reader_open_profile` side by side; Java is Lucene 10.5.0 + backward-codecs,
+minimum of 300 `DirectoryReader.open`s after 300 of warm-up, on the same
+directories (1M-document corpora rebuilt by `GenCorpus` against
+`lucene-core-9.0.0`/`9.12.2`, force-merged to one segment):
+
+| | 9.0 corpus | 9.12 corpus | `bwc-big/9.0.0` | `bwc-big/9.12.2` |
+|---|---|---|---|---|
+| `blocktree::open_shared`, before | 3,418 us | 3,422 us | 1.9 us | 1.9 us |
+| `blocktree::open_shared`, after | 1.6 us | 1.6 us | 1.2 us | 1.2 us |
+| `DirectoryReader::open`, before | 3,605 us | 3,585 us | 68 us | 68 us |
+| `DirectoryReader::open`, after | 106 us | 106 us | 66 us | 66 us |
+| Java `DirectoryReader.open` | 652 us | 716 us | 459 us | 515 us |
+| after: `open_shared` + the first lookup in every field | 3,322 us | 3,335 us | 4.1 us | 4.1 us |
+| Java: open + the first `seekExact` in every field, minus the open | 42 us | 60 us | 104 us | 84 us |
+
+So opening a retired segment is now cheaper than Lucene's (0.11 ms against
+0.65-0.72 ms on the 1M-document segments). What is left is the conversion
+itself, moved from the open to the first lookup in each field: a query's first
+visit to a field of a retired segment pays that field's share of the 3.3 ms
+the 1M-document segment's fields cost together, once per segment for the life
+of the reader (the plugin's reader reuse across refreshes keeps it), where
+Lucene's first seek costs tens of microseconds. Removing it means walking the
+FST in place (a `SegmentTermsEnum` over FST arcs, floor data read from the
+arc outputs instead of from the trie); not done. The profile of the conversion
+is flat -- the FST enumeration and one allocation per key, output and floor
+record -- so a cheaper conversion would not close a 50x gap either.
 ### T8.4 — Merge old into new · delivered 2026-09-30
 
 **Quantized groups and `IndexUpgrader` (M8 close-out).** A segment with
@@ -319,7 +354,7 @@ smallest segments first and concatenates them in that order, where 10.5.0's
 `TieredMergePolicy.findForcedMerges` merges everything in size-descending
 order in its single-segment case -- so the merged segment numbers its
 documents in a different order than Lucene's would (contents equal).
-### T8.5 — Plugin: drop the `postings_format` fallback for supported versions · native half delivered 2026-09-30
+### T8.5 — Plugin: drop the `postings_format` fallback for supported versions · delivered 2026-09-30
 
 `NativeReaders` falls back with `postings_format` only for a postings format
 outside `SUPPORTED_POSTINGS_FORMATS` (`Lucene90`, `Lucene99`, `Lucene912`,
@@ -334,14 +369,21 @@ entry point (`ffi_open_jvm_reader`, with `segments_N` bytes, `maxDoc`s and
 live-docs words as the JVM passes them) and requires term and boolean queries
 to return the 10.4.0 fixture's hits, scores and totals.
 
-**Not verified here** (they need Docker or a JDK 25 toolchain; the M8
-close-out's host has a JDK 25 and Gradle but no running Docker daemon -- the
-CLI is installed, `docker info` cannot reach the daemon -- and the run did not
-start one; the Gradle check, which needs no Docker once the OpenSearch jars
-are extracted, was not run in the close-out either): `scripts/verify-opensearch.sh` on a node
-holding an old index, the JVM-side `gradle -p opensearch-plugin check`
-(`NativeSelfTest`), and the acceptance criterion's cluster upgraded from
-OpenSearch 2.x.
+**JVM half, verified (M8 close-out).** `scripts/opensearch-dist.sh && gradle
+-p opensearch-plugin check` (JDK 25, Gradle 8.14.3) passes: `NativeSelfTest`
+260,316 checks and 0 failures as it stood, 451,812 checks and 0 failures with
+the change below (every compared score bit-exact); `EngineWriterDiffTest`
+2,708 checks, 0 failures. `NativeSelfTest` used to take only the fixture
+directories one level under `fixtures/data`, so no old-format index reached the
+JVM path; it now also takes `bwc/<version>`, `bwc-big/<version>` and
+`bwc-quantized/<version>` (17 indexes) and requires every one to open natively
+through `NativeReaders` and answer its term, boolean, sorted, aggregated,
+`terminate_after` and `min_score` searches as Lucene 10.5.0 + backward-codecs'
+`IndexSearcher` does: 17 of 17. Seen to fail: dropping `Lucene90` from
+`SUPPORTED_POSTINGS_FORMATS` fails the six 9.0-9.8 indexes (11 of 17).
+
+**A real upgrade, verified (M8 close-out).** `scripts/verify-opensearch-upgrade.sh`
+(`opensearch-plugin/e2e/verify_upgrade.py`) -- acceptance criterion 3 below.
 
 ---
 
@@ -356,20 +398,53 @@ OpenSearch 2.x.
 - [x] Merging a mixed-version index yields `Lucene104` segments that real
       Lucene 10.5.0 reads and `CheckIndex` passes. (`scripts/verify-bwc-merge.sh`,
       T8.4: 39 of 39, quantized fixtures and `IndexUpgrader` included.)
-- [ ] A cluster upgraded from OpenSearch 2.x serves its old index natively,
-      verified by `verify-opensearch.sh` against a snapshot restored from 2.x.
-      **Not verified**: it needs a running Docker daemon (and an OpenSearch
-      2.x image to snapshot from), which this host does not have running; no
-      such run exists in the repository either.
+- [x] A cluster upgraded from OpenSearch 2.x serves its old index natively.
+      `scripts/verify-opensearch-upgrade.sh`, run twice on 2026-09-30 (Docker
+      29.3.1; 5 min 14 s, and 3 min 42 s with T8.3's deferred FST conversion in
+      the plugin's library, same results): an OpenSearch 2.19.6 node (Lucene 9.12.3) indexes
+      `single` (1 shard) and `multi` (3 shards) -- `verify_opensearch.py`'s
+      text, keyword, numeric, date and multi-valued fields with deletes and
+      updates, plus a `knn_vector` field (the k-NN plugin's, `index.knn` off)
+      -- `nest` (nested documents) and `knn` (`index.knn: true`, a Lucene HNSW
+      field), 22,756 documents in all, snapshots them to an fs repository and
+      flushes. The node stops; OpenSearch 3.8.0 with the plugin opens its data
+      directory in place, and a stock 3.8.0 node (same image, no plugin) opens
+      a copy. Every index is green on both, every segment still `9.12.3`, and
+      `verify_opensearch.py`'s 198-request matrix (aggregations, sorts, paging, highlighting,
+      fallback rows) on `single`/`multi`, its
+      19 nested-sort rows on `nest`, and vector requests (`knn_score`
+      scripts, `knn` queries) give the plugin node the stock node's hits,
+      scores (1e-5), totals and aggregations, with the plugin's counters
+      showing every native row native on every shard: 723 shard queries over
+      the 9.12 segments. The same over the 2.19 snapshot restored into both
+      nodes (723), and after `_forcemerge?max_num_segments=1` on both nodes
+      rewrote every segment as `10.5.0` (707; after the merge the nested sorts
+      may fall back as `sort_nested`, by design, once no deletions remain).
+      3,879 checks, 0 failures, `native_errors` 0. One request the stock node
+      itself cannot answer after the merge (`nested avg desc`, an
+      `unsupported_operation_exception` from OpenSearch) is reported, not
+      compared. Seen to fail: without `Lucene912` in
+      `SUPPORTED_POSTINGS_FORMATS` the run reports 760 failures (0 shard
+      queries native before the merge). **Not native, by design, and outside
+      M8:** the `knn` index -- the k-NN plugin's `index.knn: true` segments
+      name its own codec (`KNN9120Codec`), which the native reader does not
+      open (`native_open_failed`, once per reader, answers still equal). The
+      3.8.0 nodes keep the bundled k-NN plugin (the mapping needs it) and drop
+      the other bundled plugins, as the 2.19 node does. Not in CI (it pulls a
+      2.x image and runs three nodes); run locally.
 - [ ] Reading an old format is no slower than Lucene reading it. **Queries:
       met** -- q89, the last query slower than Java on the 9.0 corpus, now
       wins every round (T8.3), and a full pass over all 87 queries on the 9.0
       corpus after the change (1 s warm-up, 2 s measured, load 6) found none
       slower than Java and no recall mismatch (lowest q47 1.00x, q48 1.09x,
-      q69 1.11x, q89 1.19x). The 9.12 corpus was not re-run. **Open: the FST-to-trie
-      conversion at open** (3-6 ms per retired-format segment, once, where
-      Lucene opens the FST in place; T8.3), so the criterion as written is
-      not met.
+      q69 1.11x, q89 1.19x). The 9.12 corpus was not re-run. **Opening: met**
+      (M8 close-out) -- the FST-to-trie conversion no longer runs at open:
+      `DirectoryReader::open` of the 1M-document 9.0 segment takes 0.11 ms
+      against Lucene's 0.65 ms (T8.3's table). **Open: the first lookup in each
+      field of a retired segment**, which now pays that field's conversion (all
+      fields together 3.3 ms on that segment, once per reader; Lucene's first
+      seeks cost 0.04-0.06 ms). Only walking the FST in place would remove it
+      (T8.3), so the criterion as written is not met.
 
 ## Risks and unknowns
 
