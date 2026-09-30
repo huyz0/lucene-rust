@@ -54,6 +54,11 @@ works on a machine with no `~/.gradle`. `lucene-queries` is required because
 `GenBlockTree` uses `org.apache.lucene.queries.spans`; `lucene-analysis-common`
 because `GenAnalysis` exercises real `StandardAnalyzer`/`StopFilter`.
 
+`ReaderApiAccess.java` is the one source file not in the default package: it
+declares `package org.apache.lucene.index` to reach the package-private
+`SlowCompositeCodecReaderWrapper` for `GenReaderApi` (compiled with the rest,
+on the class path, where the split package is allowed).
+
 `GenRegexp.java` is the odd one out among the generators: it writes no index at
 all. It runs real `RegExp` + `Operations.determinize` + `ByteRunAutomaton` over a
 pattern/term matrix and records the accept/reject decision as two plain text
