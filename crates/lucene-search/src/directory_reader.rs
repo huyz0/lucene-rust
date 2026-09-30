@@ -233,6 +233,11 @@ pub struct SegmentReader {
     /// segment's `NormsProducer` in exactly the same place.
     norms_meta: Option<Arc<Norms>>,
     norms_data: Option<Arc<Input>>,
+    /// The `.dvs` doc-values skip index file and the doc-values codec suffix
+    /// its header carries, when the segment has one.
+    dvs: Option<(Arc<Input>, String)>,
+    /// `SegmentInfo.getIndexSort()`.
+    index_sort: Option<Arc<[segment_info::IndexSortField]>>,
 }
 
 /// One field's doc-values **update generation** -- the rewritten column
@@ -462,6 +467,7 @@ impl SegmentReader {
         let kdd_buf = open_segment_file(dir, compound.as_ref(), &si.files, ".kdd")?;
         let dvm_bytes = open_segment_file(dir, compound.as_ref(), &si.files, ".dvm")?;
         let dvd_bytes = open_segment_file(dir, compound.as_ref(), &si.files, ".dvd")?;
+        let mut dv_suffix_of_segment = None;
         let (dv_meta, dv_data) = match (dvm_bytes, dvd_bytes) {
             (Some(dvm), Some(dvd)) => {
                 let dvm_file_name = find_segment_file_name(&si.files, compound.as_ref(), ".dvm")
@@ -474,6 +480,7 @@ impl SegmentReader {
                 let dv_suffix = codec_suffix_of(&dvm_file_name, &segment_name, ".dvm");
                 let (_, meta) =
                     doc_values::parse_meta(&dvm, &segment_id, &dv_suffix, &field_infos)?;
+                dv_suffix_of_segment = Some(dv_suffix);
                 (Some(Arc::new(meta)), Some(dvd))
             }
             _ => (None, None),
@@ -549,7 +556,17 @@ impl SegmentReader {
             }
         };
 
+        let dvs = match (
+            open_segment_file(dir, compound.as_ref(), &si.files, ".dvs")?,
+            dv_suffix_of_segment,
+        ) {
+            (Some(bytes), Some(suffix)) => Some((bytes, suffix)),
+            _ => None,
+        };
+        let index_sort = si.index_sort.clone().map(Arc::from);
         Ok(SegmentReader {
+            dvs,
+            index_sort,
             query_cache: Arc::default(),
             segment_name,
             max_doc: si.doc_count,
@@ -615,6 +632,63 @@ impl SegmentReader {
     /// The segment's `.fnm`-derived field metadata (field name/number
     /// mapping, doc-values type, etc.) -- callers use this to resolve a field
     /// name to the number [`Self::doc_values_meta`]'s entries are keyed by.
+    /// `SegmentInfo.getIndexSort()`: the segment's sort, `None` when unsorted.
+    pub fn index_sort(&self) -> Option<&[segment_info::IndexSortField]> {
+        self.index_sort.as_deref()
+    }
+
+    /// `LeafReader.getDocValuesSkipper(field)`'s index: the field's decoded
+    /// `.dvs` skip index, `None` when the field has none (no skip index, no
+    /// `.dvs`, or doc values updated since the segment was written -- a
+    /// generation carries no skip index).
+    ///
+    /// # Errors
+    /// A `.dvs` that does not decode.
+    pub fn doc_values_skip_index(
+        &self,
+        field_number: i32,
+    ) -> crate::Result<Option<doc_values::DocValuesSkipIndex>> {
+        if self
+            .dv_generations
+            .iter()
+            .any(|g| g.field_number == field_number)
+        {
+            return Ok(None);
+        }
+        let (Some(meta), Some((dvs, suffix))) = (&self.dv_meta, &self.dvs) else {
+            return Ok(None);
+        };
+        let Some(skipper) = meta.skipper_meta(field_number) else {
+            return Ok(None);
+        };
+        Ok(Some(doc_values::parse_skip_index(
+            dvs,
+            &self.segment_id,
+            suffix,
+            skipper,
+        )?))
+    }
+
+    /// `LeafReader.getPointValues`'s reader over every points field of this
+    /// segment (an empty one when it has none), its `.kdm` parsed once and
+    /// shared with [`OpenedSegments::open_points`].
+    ///
+    /// # Errors
+    /// Points files that do not decode.
+    pub fn points_reader(&self) -> crate::Result<lucene_codecs::points::PointsReader<'_>> {
+        let Some((kdm, kdi, kdd)) = self.points_files() else {
+            return Ok(lucene_codecs::points::PointsReader::empty());
+        };
+        if self.points_meta.get().is_none() {
+            let parsed = lucene_codecs::points::open_meta(kdm, kdi, kdd, &self.segment_id, "")?;
+            let _ = self.points_meta.set(parsed);
+        }
+        let meta = self.points_meta.get_or_init(Vec::new);
+        Ok(lucene_codecs::points::PointsReader::with_meta(
+            kdi, kdd, meta,
+        ))
+    }
+
     /// The segment's `.kdm`/`.kdi`/`.kdd` bytes, or `None` when it indexes no
     /// points. All three are present together or not at all.
     pub fn points_files(&self) -> Option<(&[u8], &[u8], &[u8])> {
