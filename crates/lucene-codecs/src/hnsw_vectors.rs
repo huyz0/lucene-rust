@@ -1176,6 +1176,12 @@ pub struct SearchOptions<'a> {
     /// Ignored when the search takes the exhaustive branch, as Java's is
     /// (nothing consults the strategy there).
     pub seed_ords: Option<&'a [i32]>,
+    /// `KnnSearchStrategy.Hnsw.filteredSearchThreshold`: with an accept set
+    /// passing fewer than this percentage of the graph, level 0 is walked by
+    /// [`crate::hnsw::HnswGraphSearcher::search_filtered`]
+    /// (`FilteredHnswGraphSearcher`). `0` -- Lucene 10.5.0's
+    /// `DEFAULT_FILTERED_SEARCH_THRESHOLD` -- never does.
+    pub filtered_search_threshold: i32,
 }
 
 /// Port of `Lucene99HnswVectorsReader.search(FieldEntry, KnnCollector,
@@ -1276,9 +1282,33 @@ pub fn search_with<G: HnswGraphView, S: VectorScorer, C: KnnCollect + ?Sized>(
     if do_hnsw {
         let graph = graph.expect("graph_size > 0 implies a graph");
         let mut searcher = HnswGraphSearcher::new(k, graph.size());
-        match options.seed_ords {
-            Some(seeds) => searcher.search_seeded(collector, scorer, graph, accept_ords, seeds)?,
-            None => searcher.search(collector, scorer, graph, accept_ords)?,
+        // `HnswGraphSearcher.search`: the filtered searcher when the
+        // strategy's threshold exceeds the share of the graph the filter
+        // passes (`useFilteredSearch`: `ratio * 100 < threshold`).
+        let filtered = match accept_ords {
+            Some(bits)
+                if graph.max_conn() != -1
+                    && filtered_doc_count > 0
+                    && (filtered_doc_count as f32 / graph.size() as f32) * 100.0
+                        < options.filtered_search_threshold as f32 =>
+            {
+                Some(bits)
+            }
+            _ => None,
+        };
+        match (filtered, options.seed_ords) {
+            (Some(bits), seeds) => searcher.search_filtered(
+                collector,
+                scorer,
+                graph,
+                bits,
+                filtered_doc_count,
+                seeds.filter(|s| !s.is_empty()),
+            )?,
+            (None, Some(seeds)) => {
+                searcher.search_seeded(collector, scorer, graph, accept_ords, seeds)?
+            }
+            (None, None) => searcher.search(collector, scorer, graph, accept_ords)?,
         }
     } else {
         // Java's bulk-scored exhaustive branch, 64 ordinals at a time.
