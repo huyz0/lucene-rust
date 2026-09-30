@@ -70,6 +70,54 @@ queries sit between 1.40x and 1.50x, and a run moves each by about +-9%
 (q02 1.52x -> 1.49x, q76 1.37x -> 1.15x, neither touched by the change). A
 count at a threshold is a noisy measure of a distribution sitting on it.
 
+## Round two
+
+Four more, each profiled first and kept only on an interleaved A/B of the
+Rust side (same corpus, pinned, three alternations):
+
+3. **Block bounds from the norm-inverse table** (`2c1e1d7`). `TermLeg` scored
+   every `(freq, norm)` impact of a block from scratch -- norm decode, a
+   norm-inverse division, a score division -- where Lucene's
+   `MaxScoreCache` reads `BM25Scorer`'s `cache[]`. The bound now reads the
+   table the documents are scored with and scores only the largest
+   `freq * normInverse` (the same bits: BM25 is monotone in it). Kept out of
+   line: inlined, it grew the per-block scoring loop and cost q12 7%.
+   q02 +12%, q10 +10%, q45 +10%, q03 +8%, q13 +6%.
+4. **Two-term exact phrases merge two lists** (`d5144a2`). The general
+   N-term loop's cursor table was two thirds of `phrase_freq_exact`'s time.
+   A first version advanced the second list on a match and failed
+   `multi_phrase_query_scores_match_real_lucene_bit_for_bit`: a
+   multi-phrase union repeats positions. q56 +14%, q58 +13%, q17 +10%,
+   q16 +6%.
+5. **Branch-free compaction of a filtered term's block** (`eda59fc`). A
+   cached range keeps a third of a block's documents at random; the
+   branch on it was over half of `+t1 #num:[100000 TO 400000]`. q68 +45%.
+
+Also tried in this round and rejected on the numbers: an AVX2
+compaction kernel for `filterCompetitiveHits` (no gain; the scalar loop's
+samples were stalls on scores just written, not its dependency chain), and
+a comparison sort below 1,024 or 4,096 ids in `sort_dedup_doc_ids` (q71
++2-4%, inside the noise).
+
+| | start | after round one | after round two |
+|---|---|---|---|
+| `merged` >=1.5x | 60/87 (69%) | 60/87 (69%) | **61/87 (70%)** |
+| `merged` median | 1.80x | 1.81x | **1.83x** |
+| `segmented` >=1.5x | 61/87 (70%) | 64/87 (74%) | **68/87 (78%)** |
+| `segmented` median | 2.20x | 2.21x | **2.37x** |
+
+Nothing slower than Lucene and no recall mismatch in any run. Per query
+(merged, start -> now): q68 1.59x -> 2.54x, q03 1.36x -> 1.72x, q07 1.21x
+-> 1.50x, q16 1.25x -> 1.41x, q17 1.29x -> 1.41x, q02 1.52x -> 1.61x.
+
+Still under 1.5x on `merged`, lowest first: the sorted queries (q76 1.13x,
+q80 1.16x, q79 1.28x), regexp q34 (1.18x), then a band of disjunctions,
+phrases and filters between 1.30x and 1.49x. The sorted queries spend their
+time in points-based competitive pruning and the numeric reads behind it
+(`CompetitiveVisitor`, `quick_value`, `search_segments`), which already
+compare as integers; regexp in the automaton-by-dictionary walk and the
+tail-block reads of the terms it expands, which match what Lucene reads.
+
 ## Tried and rejected
 
 - **Memoising a block's bound by its encoded impacts** (for the OR group,
