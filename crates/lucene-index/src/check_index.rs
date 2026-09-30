@@ -5110,36 +5110,66 @@ fn check_vectors(
     if with_vectors.is_empty() {
         return;
     }
-    // The current format's group: not one a quantized format wrote beside it.
-    let is_current_group = |f: &&String, ext: &str| {
-        f.strip_suffix(ext)
-            .and_then(|stem| stem.strip_prefix(&format!("{}_", commit.segment_name)))
-            .and_then(|suffix| suffix.rsplit_once('_'))
-            .is_none_or(|(format, _)| QuantizedFormat::for_name(format).is_none())
-    };
-    let vec_name = si
-        .files
-        .iter()
-        .find(|f| f.ends_with(".vec") && is_current_group(f, ".vec"));
-    let vemf_name = si
-        .files
-        .iter()
-        .find(|f| f.ends_with(".vemf") && is_current_group(f, ".vemf"));
-    let (Some(vec_name), Some(vemf_name)) = (vec_name, vemf_name) else {
+    // The current formats' groups (`Lucene99HnswVectorsFormat`,
+    // `Lucene104HnswScalarQuantizedVectorsFormat`,
+    // `Lucene104ScalarQuantizedVectorsFormat`): each field is read through
+    // the instance its `PerFieldKnnVectorsFormat` attributes name, as
+    // `FieldsReader` opens one reader per suffix. A field without the
+    // attributes is read through the first current group the segment has.
+    let listed_groups =
+        crate::index_writer::current_vector_suffixes(&si.files, &commit.segment_name);
+    let mut groups: Vec<(String, Vec<&field_infos::FieldInfo>)> = Vec::new();
+    for fi in with_vectors {
+        let attr = |key: &str| {
+            fi.attributes
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.as_str())
+        };
+        let suffix = match (
+            attr("PerFieldKnnVectorsFormat.format"),
+            attr("PerFieldKnnVectorsFormat.suffix"),
+        ) {
+            (Some(format), Some(n)) => format!("{format}_{n}"),
+            _ => listed_groups.first().cloned().unwrap_or_default(),
+        };
+        match groups.iter_mut().find(|(s, _)| *s == suffix) {
+            Some((_, fields)) => fields.push(fi),
+            None => groups.push((suffix, vec![fi])),
+        }
+    }
+    for (suffix, fields) in groups {
+        check_current_vector_group(dir, commit, si, &fields, &suffix, stats, checks);
+    }
+}
+
+/// [`check_vectors`] for one current-format `PerFieldKnnVectorsFormat`
+/// instance: the flat checks over its raw vectors, `vectors.quantized:<f>`
+/// for a scalar-quantized one (codes for exactly the raw vectors' ordinals,
+/// each mapped to the same document), and the graph checks when it has a
+/// graph.
+fn check_current_vector_group(
+    dir: &dyn Directory,
+    commit: &SegmentCommitInfo,
+    si: &SegmentInfo,
+    fields: &[&field_infos::FieldInfo],
+    suffix: &str,
+    stats: &mut CheckStats,
+    checks: &mut Vec<Check>,
+) {
+    let name = |ext: &str| format!("{}_{suffix}.{ext}", commit.segment_name);
+    let (vec_name, vemf_name) = (name("vec"), name("vemf"));
+    if suffix.is_empty() || !si.files.contains(&vec_name) || !si.files.contains(&vemf_name) {
         checks.push(Check::fail(
             "vectors.open",
-            "a field declares vector values but the segment has no .vec/.vemf files",
+            format!(
+                "a field declares vector values but the segment has no .vec/.vemf files for \
+                 {suffix:?}"
+            ),
         ));
         skip_families(checks, VECTOR_FAMILIES, "vectors.open");
         return;
-    };
-    // `_0_Lucene99HnswVectorsFormat_0.vec` -> `Lucene99HnswVectorsFormat_0`.
-    let suffix = vec_name
-        .strip_prefix(&format!("{}_", commit.segment_name))
-        .and_then(|s| s.strip_suffix(".vec"))
-        .unwrap_or_default()
-        .to_string();
-
+    }
     let opened = (|| -> Result<
         (
             lucene_store::directory::Input,
@@ -5147,8 +5177,8 @@ fn check_vectors(
         ),
         String,
     > {
-        let vemf = dir.open(vemf_name).map_err(|e| e.to_string())?;
-        let vec = dir.open(vec_name).map_err(|e| e.to_string())?;
+        let vemf = dir.open(&vemf_name).map_err(|e| e.to_string())?;
+        let vec = dir.open(&vec_name).map_err(|e| e.to_string())?;
         Ok((vemf, vec))
     })();
     let (vemf, vec) = match opened {
@@ -5159,7 +5189,7 @@ fn check_vectors(
             return;
         }
     };
-    let flat = match vectors::FlatVectorsReader::open(&vemf, &vec, &commit.segment_id, &suffix) {
+    let flat = match vectors::FlatVectorsReader::open(&vemf, &vec, &commit.segment_id, suffix) {
         Ok(r) => r,
         Err(e) => {
             checks.push(Check::fail("vectors.open", e.to_string()));
@@ -5168,9 +5198,86 @@ fn check_vectors(
         }
     };
 
-    check_flat_vector_fields(&flat, &with_vectors, si, stats, checks);
+    check_flat_vector_fields(&flat, fields, si, stats, checks);
 
-    check_hnsw_graphs(dir, commit, si, &with_vectors, &suffix, checks);
+    if si.files.contains(&name("vemq")) {
+        check_current_quantized(dir, commit, &flat, fields, suffix, &name, checks);
+    }
+
+    check_hnsw_graphs(dir, commit, si, fields, suffix, checks);
+}
+
+/// `vectors.quantized:<field>` for a `Lucene104` scalar-quantized instance:
+/// the `.vemq`/`.veq` open, and every `FLOAT32` field has codes for exactly
+/// the raw vectors' ordinals, each readable and mapped to the same document.
+fn check_current_quantized(
+    dir: &dyn Directory,
+    commit: &SegmentCommitInfo,
+    flat: &vectors::FlatVectorsReader<'_>,
+    fields: &[&field_infos::FieldInfo],
+    suffix: &str,
+    name: &dyn Fn(&str) -> String,
+    checks: &mut Vec<Check>,
+) {
+    let opened = dir
+        .open(&name("vemq"))
+        .and_then(|vemq| Ok((vemq, dir.open(&name("veq"))?)))
+        .map_err(|e| e.to_string());
+    let reader = opened
+        .as_ref()
+        .map_err(Clone::clone)
+        .and_then(|(vemq, veq)| {
+            lucene_codecs::scalar_quantized_vectors::ScalarQuantizedVectorsReader::open(
+                vemq,
+                veq,
+                &commit.segment_id,
+                suffix,
+            )
+            .map_err(|e| e.to_string())
+        });
+    for fi in fields
+        .iter()
+        .filter(|f| f.vector_encoding == field_infos::VectorEncoding::Float32)
+    {
+        let mut size = 0i64;
+        let result = reader.as_ref().map_err(Clone::clone).and_then(|q| {
+            let codes = q
+                .quantized_vector_values(fi.number)
+                .map_err(|e| e.to_string())?;
+            let raw = flat
+                .float_vector_values(fi.number)
+                .map_err(|e| e.to_string())?;
+            size = i64::from(codes.size());
+            if codes.size() != raw.size() {
+                return Err(format!(
+                    ".vemq holds {} codes but .vemf {} vectors",
+                    codes.size(),
+                    raw.size()
+                ));
+            }
+            for ord in 0..codes.size() {
+                codes.vector(ord).map_err(|e| format!("ord={ord}: {e}"))?;
+                codes
+                    .corrective_terms(ord)
+                    .map_err(|e| format!("ord={ord}: {e}"))?;
+                let a = codes.ord_to_doc(ord).map_err(|e| e.to_string())?;
+                let b = raw.ord_to_doc(ord).map_err(|e| e.to_string())?;
+                if a != b {
+                    return Err(format!(
+                        "ord={ord}: codes map to doc {a}, raw vectors to doc {b}"
+                    ));
+                }
+            }
+            Ok(())
+        });
+        let problems: Vec<String> = result.err().into_iter().collect();
+        checks.push(named_field_check(
+            &format!("vectors.quantized:{}", fi.name),
+            &problems,
+            size,
+            "vectors",
+        ));
+    }
 }
 
 /// The per-field half of [`check_vectors`], over whichever reader serves the
@@ -5637,10 +5744,13 @@ fn check_hnsw_graphs(
     suffix: &str,
     checks: &mut Vec<Check>,
 ) {
-    let vem_name = si.files.iter().find(|f| f.ends_with(".vem"));
-    let vex_name = si.files.iter().find(|f| f.ends_with(".vex"));
-    // No graph files at all is the flat (exhaustive-search) format, not a
-    // defect.
+    // This instance's graph files; none is a flat (exhaustive-search)
+    // format, not a defect.
+    let own = |ext: &str| {
+        let want = format!("{}_{suffix}.{ext}", commit.segment_name);
+        si.files.iter().find(|f| **f == want)
+    };
+    let (vem_name, vex_name) = (own("vem"), own("vex"));
     let (Some(vem_name), Some(vex_name)) = (vem_name, vex_name) else {
         return;
     };

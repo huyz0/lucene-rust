@@ -50,6 +50,7 @@ pub mod offline_sorter;
 pub mod packed_data;
 pub mod packed_ints;
 pub mod per_field_doc_values;
+pub mod per_field_knn_vectors;
 pub mod per_field_postings;
 pub mod points;
 pub mod postings;

@@ -806,10 +806,7 @@ impl LeafReader for SegmentReader {
         {
             return Ok(None);
         }
-        let Some(flat) = self
-            .flat_vectors_reader()?
-            .filter(|f| f.field(fi.number).is_some())
-        else {
+        let Some(flat) = self.flat_vectors_reader_for(fi.number)? else {
             return Ok(None);
         };
         Ok(Some(Box::new(SegFloatVectors(
@@ -826,10 +823,7 @@ impl LeafReader for SegmentReader {
         {
             return Ok(None);
         }
-        let Some(flat) = self
-            .flat_vectors_reader()?
-            .filter(|f| f.field(fi.number).is_some())
-        else {
+        let Some(flat) = self.flat_vectors_reader_for(fi.number)? else {
             return Ok(None);
         };
         Ok(Some(Box::new(SegByteVectors(
