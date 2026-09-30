@@ -141,6 +141,13 @@ CASES=(
   # requires the same physical order in every segment, then runs CheckIndex.
   # Measured: a MIDDLE_MAX selector off by one fails CheckIndex's testSort.
   "lucene-index|write_string_sorted_segment_fixture|string-sorted|VerifyStringSortedIndex"
+  # Compound segments written by IndexWriter (M7): three flushed segments
+  # packed into .cfs/.cfe with deletes beside them, and a merged one the merge
+  # policy packed. Every format -- stored fields, postings with positions,
+  # norms, term vectors, all five doc-values types, points, HNSW vectors --
+  # is read back through Lucene's own compound reader, document by document,
+  # then CheckIndex. Measured: entry names that keep the segment prefix fail.
+  "lucene-index|write_compound_segment_fixture|compound-segment|VerifyCompoundSegment"
   # And a segment whose postings carry positions, offsets and payloads. Until
   # c23 the only whole-index case above (`write_full_segment_fixture`) indexed
   # DOCS_AND_FREQS, so no `.pos` or `.pay` file this port wrote had ever been

@@ -380,6 +380,47 @@ pub fn seal_flushed_segment(
     Ok((commit, info.files))
 }
 
+/// `IndexWriter.createCompoundFile` + `Lucene90CompoundFormat.write`: packs
+/// every file of `files` except the segment's own `.si` into
+/// `<segment_name>.cfs`/`.cfe`, deletes the originals, and returns the
+/// segment's new file set -- the compound pair, plus the `.si` when `files`
+/// listed it. Each entry is named with the segment name stripped
+/// (`IndexFileNames.stripSegmentName`: `_3.fdt` becomes `.fdt`,
+/// `_3_Lucene104_0.doc` becomes `_Lucene104_0.doc`), in ascending size order
+/// ([`compound_format::write`]).
+///
+/// The originals were written by the caller's own flush or merge and are
+/// referenced by nothing yet -- Java deletes them through
+/// `deleteNewFiles` for the same reason -- so they go at once. Called before
+/// the `.si` is written, so the `.si` is never packed and records the
+/// compound layout (`SegmentInfo.setUseCompoundFile(true)`).
+pub fn pack_compound_file(
+    dir: &dyn Directory,
+    segment_name: &str,
+    segment_id: &[u8; ID_LENGTH],
+    files: &[String],
+) -> Result<Vec<String>> {
+    let si_name = format!("{segment_name}.si");
+    let mut sub_files = Vec::with_capacity(files.len());
+    for name in files.iter().filter(|f| **f != si_name) {
+        let entry = name.strip_prefix(segment_name).unwrap_or(name).to_string();
+        sub_files.push((entry, dir.open(name)?.to_vec()));
+    }
+    let (cfs, cfe) = compound_format::write(segment_id, &sub_files)?;
+    let cfs_name = format!("{segment_name}.cfs");
+    let cfe_name = format!("{segment_name}.cfe");
+    write_file(dir, &cfs_name, &cfs)?;
+    write_file(dir, &cfe_name, &cfe)?;
+    for name in files.iter().filter(|f| **f != si_name) {
+        dir.delete_file(name)?;
+    }
+    let mut packed = vec![cfs_name, cfe_name];
+    if files.contains(&si_name) {
+        packed.push(si_name);
+    }
+    Ok(packed)
+}
+
 /// `StringHelper.randomId()`'s role for a freshly created
 /// [`SegmentCommitInfo`]: an id that distinguishes this segment-commit from
 /// every other one. Java draws 16 random bytes; this derives them from the
