@@ -205,7 +205,7 @@ generate_into() {
   local -a classes=("$@")
   mkdir -p "$dest"
   for cls in "${classes[@]}"; do
-    java --enable-native-access=ALL-UNNAMED -cp "$CLASSES:$CP" "$cls" "$dest" >/dev/null
+    java --enable-native-access=ALL-UNNAMED "${LUCENE_FIXTURE_JVM_OPTS[@]}" -cp "$CLASSES:$CP" "$cls" "$dest" >/dev/null
   done
   # IndexWriter leaves a zero-byte write.lock behind in every index it creates.
   # It is a lock artifact, not a fixture, and nothing in crates/ reads it --
@@ -271,10 +271,16 @@ done < <(cd "$TMP_A" && find . -type f | sed 's|^\./||' | sort)
 # Files committed under fixtures/data that no Java generator produces. These are
 # written by Rust examples (see scripts/verify-write-path.sh) and are expected.
 RUST_WRITTEN='^sparse_numeric_doc_values/'
+# bwc/ and bwc-big/ are written by old Lucene jars through
+# scripts/gen-bwc-fixtures.sh (bwc/ is verified by its own --check; bwc-big/
+# has no dump, its tests read the index directly); the segment ids of both are
+# in the baseline below.
+BWC_OWNED='^bwc(-big)?/'
 while IFS= read -r rel; do
   [ -e "$TMP_A/$rel" ] && continue
   if [[ "$rel" =~ $GENERATED_NOISE ]]; then continue; fi
   if [[ "$rel" =~ $RUST_WRITTEN ]]; then continue; fi
+  if [[ "$rel" =~ $BWC_OWNED ]]; then continue; fi
   echo "  EXTRA in committed fixtures, produced by no generator: $rel"
   extra=$((extra+1)); status=1
 done < <(cd "$OUT" && find . -type f | sed 's|^\./||' | sort)

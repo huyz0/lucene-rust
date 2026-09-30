@@ -11,6 +11,18 @@
 LUCENE_VERSION="${LUCENE_VERSION:-10.5.0}"
 MAVEN_BASE="https://repo1.maven.org/maven2/org/apache/lucene"
 
+# JVM flags every fixture-writing `java` passes. Lucene's scalar float kernels
+# (DefaultVectorUtilSupport: dotProduct, squareDistance, cosine) fuse
+# multiply-add only where Constants.HAS_FAST_SCALAR_FMA guesses it is fast --
+# on for Intel and arm64 Linux, off for an AMD CPU below AVX-512 -- so the
+# same generator writes different vector score bits on different machines.
+# That is how m7_*_index/searches.tsv failed `gen-fixtures.sh --check` on a CI
+# runner while regenerating byte for byte locally. The committed fixtures are
+# the FMA kernel's (crates/lucene-codecs/tests/vectors_fixtures.rs says so), so
+# pin it on. It takes effect wherever the CPU has FMA at all (HotSpot UseFMA),
+# which every x86-64-v3 and arm64 machine this project runs on does.
+LUCENE_FIXTURE_JVM_OPTS=(-Dlucene.useScalarFMA=true -Dlucene.useVectorFMA=true)
+
 lucene_resolve_jar() {
   local module="$1"
   local jar="$module-$LUCENE_VERSION.jar"

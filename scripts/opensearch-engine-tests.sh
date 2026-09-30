@@ -11,6 +11,8 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 gradle --no-daemon -q -p opensearch-plugin engineTestClasspath
+# The JDK 25 the classes were compiled for, not whatever `java` is on PATH.
+java_bin=$(cat opensearch-plugin/build/java-launcher.txt)
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 cp -r opensearch-plugin/build/engine-test-classpath "$stage/cp"
@@ -19,7 +21,7 @@ chmod -R a+rwX "$stage"
 as=()
 [[ $(id -u) == 0 ]] && as=(runuser -u nobody --)
 cd "$stage/tmp"
-"${as[@]}" java -ea -Xmx2g --add-opens=java.base/java.nio=ALL-UNNAMED \
+"${as[@]}" "$java_bin" -ea -Xmx2g --add-opens=java.base/java.nio=ALL-UNNAMED \
     -Dtests.security.manager=false -Djava.io.tmpdir="$stage/tmp" \
     -Dlucene_rust.library.path="$stage/cp/liblucene_ffi.so" \
     "$@" -cp "$stage/cp:$stage/cp/*" \

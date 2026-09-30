@@ -139,7 +139,7 @@ Each is a counter under `fallbacks` in `GET /_plugins/lucene_rust/stats`.
 | `time_series_order` | is on a time-series shard that visits segments out of order |
 | `timeout`, `cancelled` | had already timed out, or was cancelled, before the native call |
 | `collector_spec` | runs where another plugin replaces the top-docs collector |
-| `postings_format` | is on an index with a non-`Lucene104` postings field (e.g. `completion`) |
+| `postings_format` | is on an index with a postings field in a format the Rust reader does not decode (e.g. `completion`'s `Completion104`); every default format Lucene 9.0-10.5 wrote (`Lucene90`, `Lucene99`, `Lucene912`, `Lucene101`, `Lucene103`, `Lucene104`) is served natively since M8 T8.5 |
 | `intra_segment` | uses intra-segment concurrent search slices |
 | `reader_*`, `directory_*` | is on a remote-store or wrapped reader the plugin cannot see through |
 | `native_open_failed`, `native_error` | hit a native refusal or error; the node log has the message, and the request re-ran on OpenSearch's path |

@@ -42,6 +42,9 @@ pub(crate) struct PooledPostings {
     pub(crate) fields: BlockTreeFields,
     /// The `.doc` bytes, `None` when the segment has no postings.
     pub(crate) doc_input: Option<Input>,
+    /// The postings format's per-field suffix the segment's files are framed
+    /// with (its own format's, which an older segment's need not share).
+    pub(crate) suffix: String,
 }
 
 /// Which segment state an entry was opened from.

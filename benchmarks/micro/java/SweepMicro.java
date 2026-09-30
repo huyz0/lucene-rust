@@ -117,6 +117,10 @@ public final class SweepMicro {
       case "analysis" -> analysis();
       case "vectors" -> vectors();
       case "automaton" -> automaton();
+      case "quantized" -> quantized();
+      case "fst_build" -> fstBuild();
+      case "bytes_ref_hash" -> bytesRefHash();
+      case "bkd_build" -> bkdBuild();
       case "postings_adv" -> withLeaf(index, SweepMicro::postingsAdvance);
       case "postings_freq" -> withLeaf(index, SweepMicro::postingsFreq);
       case "positions" -> withLeaf(index, SweepMicro::positions);
@@ -632,6 +636,249 @@ public final class SweepMicro {
       for (int i = 0; i < dim; i++) row[i] = (byte) (r.next() >>> 56);
     }
     return v;
+  }
+
+  /**
+   * The scalar-quantized distance kernels (one per {@code ScalarEncoding}) over 1024 stored
+   * vectors against one query, and {@code OptimizedScalarQuantizer.scalarQuantize} -- the
+   * port's {@code bench_quantized}.
+   */
+  static void quantized() throws IOException {
+    for (int dim : new int[] {128, 768}) {
+      byte[][] bdocs = byteVectors(1024, dim, 0xB17E + dim);
+      byte[] bq = byteVectors(1, dim, 0xB0B + dim)[0];
+      measure(
+          "uint8_dot_" + dim,
+          () -> {
+            long s = 0;
+            for (byte[] d : bdocs) s += org.apache.lucene.util.VectorUtil.uint8DotProduct(bq, d);
+            sink += s;
+            return bdocs.length;
+          });
+      byte[] q4 = new byte[dim];
+      for (int i = 0; i < dim; i++) q4[i] = (byte) (bq[i] & 0x0f);
+      byte[][] packed = new byte[1024][];
+      byte[][] bits = new byte[1024][];
+      byte[][] dibits = new byte[1024][];
+      for (int i = 0; i < 1024; i++) {
+        packed[i] = java.util.Arrays.copyOf(bdocs[i], dim / 2);
+        bits[i] = java.util.Arrays.copyOf(bdocs[i], dim / 8);
+        dibits[i] = java.util.Arrays.copyOf(bdocs[i], dim / 4);
+      }
+      byte[] tq = java.util.Arrays.copyOf(bq, dim / 2);
+      measure(
+          "int4_packed_dot_" + dim,
+          () -> {
+            long s = 0;
+            for (byte[] d : packed) {
+              s += org.apache.lucene.util.VectorUtil.int4DotProductSinglePacked(q4, d);
+            }
+            sink += s;
+            return packed.length;
+          });
+      measure(
+          "int4_bit_dot_" + dim,
+          () -> {
+            long s = 0;
+            for (byte[] d : bits) s += org.apache.lucene.util.VectorUtil.int4BitDotProduct(tq, d);
+            sink += s;
+            return bits.length;
+          });
+      measure(
+          "int4_dibit_dot_" + dim,
+          () -> {
+            long s = 0;
+            for (byte[] d : dibits) s += org.apache.lucene.util.VectorUtil.int4DibitDotProduct(tq, d);
+            sink += s;
+            return dibits.length;
+          });
+      float[][] fdocs = floatVectors(64, dim, 0xF00D + dim);
+      float[] centroid = floatVectors(1, dim, 0xCE17 + dim)[0];
+      org.apache.lucene.util.quantization.OptimizedScalarQuantizer q =
+          new org.apache.lucene.util.quantization.OptimizedScalarQuantizer(
+              org.apache.lucene.index.VectorSimilarityFunction.EUCLIDEAN);
+      byte[] dest = new byte[dim];
+      float[] scratch = new float[dim];
+      measure(
+          "osq_quantize4_" + dim,
+          () -> {
+            long s = 0;
+            for (float[] d : fdocs) {
+              System.arraycopy(d, 0, scratch, 0, d.length);
+              s += q.scalarQuantize(scratch, dest, (byte) 4, centroid).quantizedComponentSum();
+            }
+            sink += s;
+            return fdocs.length;
+          });
+    }
+  }
+
+  /**
+   * {@code BytesRefHash}: 200k adds of decimal terms drawn from 50k distinct ones ({@code (i *
+   * 7919) % 50000}), then {@code sort()}. One op is one add. Mirrors the port's {@code
+   * bench_bytes_ref_hash}.
+   */
+  static void bytesRefHash() throws IOException {
+    org.apache.lucene.util.BytesRef[] terms = new org.apache.lucene.util.BytesRef[200_000];
+    for (int i = 0; i < terms.length; i++) {
+      terms[i] = new org.apache.lucene.util.BytesRef(Long.toString((i * 7919L) % 50_000));
+    }
+    measure(
+        "bytes_ref_hash_add_sort_200k",
+        () -> {
+          org.apache.lucene.util.BytesRefHash h = new org.apache.lucene.util.BytesRefHash();
+          long s = 0;
+          for (org.apache.lucene.util.BytesRef t : terms) s += h.add(t);
+          s += h.sort()[0];
+          sink += s;
+          return terms.length;
+        });
+  }
+
+  /**
+   * {@code BKDWriter.writeField} (the flush path) plus {@code writeIndex} over 200k points of one
+   * and of two 4-byte dimensions (dim {@code d} of point {@code i} is {@code (i * 7919 + d *
+   * 104729) % 1000003}, big-endian; doc {@code i}), 512 points per leaf. One op is one point.
+   * Mirrors the port's {@code bench_bkd_build}.
+   */
+  static void bkdBuild() throws IOException {
+    final int n = 200_000;
+    for (int dims = 1; dims <= 2; dims++) {
+      final org.apache.lucene.util.bkd.BKDConfig config =
+          new org.apache.lucene.util.bkd.BKDConfig(dims, dims, 4, 512);
+      final int stride = dims * 4;
+      final byte[] values = new byte[n * stride];
+      final int[] docs = new int[n];
+      for (int i = 0; i < n; i++) {
+        docs[i] = i;
+        for (int d = 0; d < dims; d++) {
+          int x = (int) ((i * 7919L + d * 104729L) % 1_000_003);
+          int o = i * stride + d * 4;
+          values[o] = (byte) (x >>> 24);
+          values[o + 1] = (byte) (x >>> 16);
+          values[o + 2] = (byte) (x >>> 8);
+          values[o + 3] = (byte) x;
+        }
+      }
+      measure(
+          "bkd_flush_" + dims + "d_200k",
+          () -> {
+            ByteBuffersDataOutput meta = new ByteBuffersDataOutput();
+            ByteBuffersDataOutput index = new ByteBuffersDataOutput();
+            ByteBuffersDataOutput data = new ByteBuffersDataOutput();
+            try (org.apache.lucene.util.bkd.BKDWriter w =
+                new org.apache.lucene.util.bkd.BKDWriter(n, null, "_0", config, 16.0, n)) {
+              org.apache.lucene.util.IORunnable fin =
+                  w.writeField(
+                      new org.apache.lucene.store.ByteBuffersIndexOutput(meta, "m", "m"),
+                      new org.apache.lucene.store.ByteBuffersIndexOutput(index, "i", "i"),
+                      new org.apache.lucene.store.ByteBuffersIndexOutput(data, "d", "d"),
+                      "f",
+                      new BkdArrayTree(docs, values.clone(), stride));
+              fin.run();
+            }
+            sink += meta.size() + index.size() + data.size();
+            return n;
+          });
+    }
+  }
+
+  /**
+   * {@code PointValuesWriter}'s shape of {@code MutablePointTree}: an ordinal array over flat
+   * points.
+   */
+  static final class BkdArrayTree extends org.apache.lucene.codecs.MutablePointTree {
+    final int[] docs;
+    final byte[] values;
+    final int stride;
+    final int[] ords;
+    final int[] temp;
+
+    BkdArrayTree(int[] docs, byte[] values, int stride) {
+      this.docs = docs;
+      this.values = values;
+      this.stride = stride;
+      this.ords = new int[docs.length];
+      for (int i = 0; i < ords.length; i++) ords[i] = i;
+      this.temp = new int[docs.length];
+    }
+
+    @Override
+    public void getValue(int i, BytesRef packedValue) {
+      packedValue.bytes = values;
+      packedValue.offset = ords[i] * stride;
+      packedValue.length = stride;
+    }
+
+    @Override
+    public byte getByteAt(int i, int k) {
+      return values[ords[i] * stride + k];
+    }
+
+    @Override
+    public int getDocID(int i) {
+      return docs[ords[i]];
+    }
+
+    @Override
+    public void swap(int i, int j) {
+      int t = ords[i];
+      ords[i] = ords[j];
+      ords[j] = t;
+    }
+
+    @Override
+    public void save(int i, int j) {
+      temp[j] = ords[i];
+    }
+
+    @Override
+    public void restore(int i, int j) {
+      System.arraycopy(temp, i, ords, i, j - i);
+    }
+
+    @Override
+    public long size() {
+      return docs.length;
+    }
+
+    @Override
+    public void visitDocValues(PointValues.IntersectVisitor visitor) throws IOException {
+      byte[] v = new byte[stride];
+      for (int i = 0; i < docs.length; i++) {
+        System.arraycopy(values, ords[i] * stride, v, 0, stride);
+        visitor.visit(docs[ords[i]], v);
+      }
+    }
+  }
+
+  /**
+   * {@code FSTCompiler} over 50k sorted decimal keys ({@code i * 7919 % 1000003}) with {@code
+   * PositiveIntOutputs}: one op is one key added, the compile included. Mirrors the port's {@code
+   * bench_fst_build}.
+   */
+  static void fstBuild() throws IOException {
+    java.util.TreeMap<org.apache.lucene.util.BytesRef, Long> sorted = new java.util.TreeMap<>();
+    for (long i = 0; i < 50_000; i++) {
+      long v = i * 7919 % 1_000_003;
+      sorted.put(new org.apache.lucene.util.BytesRef(Long.toString(v)), v);
+    }
+    org.apache.lucene.util.IntsRefBuilder scratch = new org.apache.lucene.util.IntsRefBuilder();
+    measure(
+        "fst_build_50k",
+        () -> {
+          org.apache.lucene.util.fst.FSTCompiler<Long> c =
+              new org.apache.lucene.util.fst.FSTCompiler.Builder<>(
+                      org.apache.lucene.util.fst.FST.INPUT_TYPE.BYTE1,
+                      org.apache.lucene.util.fst.PositiveIntOutputs.getSingleton())
+                  .build();
+          for (java.util.Map.Entry<org.apache.lucene.util.BytesRef, Long> e : sorted.entrySet()) {
+            c.add(org.apache.lucene.util.fst.Util.toIntsRef(e.getKey(), scratch), e.getValue());
+          }
+          c.compile();
+          sink += c.fstSizeInBytes();
+          return sorted.size();
+        });
   }
 
   /**

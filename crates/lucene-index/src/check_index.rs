@@ -283,6 +283,7 @@ use crate::compound_reader::CompoundReader;
 use crate::deletes::liv_file_name;
 use crate::segment_info::{self, SegmentInfo};
 use crate::segment_infos::{self, SegmentCommitInfo, SegmentInfos};
+use lucene_codecs::backward_codecs::hnsw_vectors::{RetiredHnswFormat, RetiredHnswVectorsReader};
 use lucene_codecs::blocktree;
 use lucene_codecs::doc_values;
 use lucene_codecs::field_infos::{self, FieldInfos};
@@ -4384,6 +4385,31 @@ fn check_vectors(
     if with_vectors.is_empty() {
         return;
     }
+    // Fields a retired 9.0-9.8 HNSW format wrote (`PerFieldKnnVectorsFormat`
+    // names it) keep their vectors in a `.vem`/`.vec`/`.vex` triple of their
+    // own; each (format, suffix) group is checked through its own reader.
+    let (retired, with_vectors): (Vec<_>, Vec<_>) = with_vectors
+        .into_iter()
+        .partition(|fi| retired_vectors_format(fi).is_some());
+    let mut groups: Vec<(RetiredHnswFormat, String)> = Vec::new();
+    for fi in &retired {
+        if let Some(group) = retired_vectors_format(fi) {
+            if !groups.contains(&group) {
+                groups.push(group);
+            }
+        }
+    }
+    for (format, suffix) in groups {
+        let fields: Vec<&field_infos::FieldInfo> = retired
+            .iter()
+            .copied()
+            .filter(|fi| retired_vectors_format(fi).is_some_and(|g| g == (format, suffix.clone())))
+            .collect();
+        check_retired_vectors(dir, commit, si, &fields, format, &suffix, stats, checks);
+    }
+    if with_vectors.is_empty() {
+        return;
+    }
     let vec_name = si.files.iter().find(|f| f.ends_with(".vec"));
     let vemf_name = si.files.iter().find(|f| f.ends_with(".vemf"));
     let (Some(vec_name), Some(vemf_name)) = (vec_name, vemf_name) else {
@@ -4429,7 +4455,22 @@ fn check_vectors(
         }
     };
 
-    for fi in &with_vectors {
+    check_flat_vector_fields(&flat, &with_vectors, si, stats, checks);
+
+    check_hnsw_graphs(dir, commit, si, &with_vectors, &suffix, checks);
+}
+
+/// The per-field half of [`check_vectors`], over whichever reader serves the
+/// fields' vectors: `vectors.field_entry_matches_fnm`,
+/// `vectors.values_decode` and `vectors.ord_to_doc`.
+fn check_flat_vector_fields(
+    flat: &vectors::FlatVectorsReader<'_>,
+    with_vectors: &[&field_infos::FieldInfo],
+    si: &SegmentInfo,
+    stats: &mut CheckStats,
+    checks: &mut Vec<Check>,
+) {
+    for fi in with_vectors {
         let name = &fi.name;
         // Java's `dimension <= 0` guard is deliberately *not* reproduced here.
         // It is unfalsifiable in this port and, on inspection, in Java too:
@@ -4570,8 +4611,81 @@ fn check_vectors(
             "vectors",
         ));
     }
+}
 
-    check_hnsw_graphs(dir, commit, si, &with_vectors, &suffix, checks);
+/// The retired HNSW format and file suffix a vector field was written with,
+/// from its `PerFieldKnnVectorsFormat` attributes; `None` for any other
+/// format (or a field without the attributes).
+fn retired_vectors_format(fi: &field_infos::FieldInfo) -> Option<(RetiredHnswFormat, String)> {
+    let attr = |key: &str| {
+        fi.attributes
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    };
+    let format = RetiredHnswFormat::for_name(attr("PerFieldKnnVectorsFormat.format")?)?;
+    Some((format, attr("PerFieldKnnVectorsFormat.suffix")?.to_string()))
+}
+
+/// [`check_vectors`] for fields a retired `Lucene90`..`Lucene95` HNSW format
+/// wrote: the same flat checks over the vectors its `.vem` describes, and the
+/// same graph checks over its `.vex`.
+#[allow(clippy::too_many_arguments)]
+fn check_retired_vectors(
+    dir: &dyn Directory,
+    commit: &SegmentCommitInfo,
+    si: &SegmentInfo,
+    fields: &[&field_infos::FieldInfo],
+    format: RetiredHnswFormat,
+    suffix: &str,
+    stats: &mut CheckStats,
+    checks: &mut Vec<Check>,
+) {
+    let segment_suffix = format!("{}_{suffix}", format.name());
+    let name = |ext: &str| format!("{}_{segment_suffix}.{ext}", commit.segment_name);
+    let opened = (|| -> Result<
+        (
+            lucene_store::directory::Input,
+            lucene_store::directory::Input,
+            lucene_store::directory::Input,
+        ),
+        String,
+    > {
+        let vem = dir.open(&name("vem")).map_err(|e| e.to_string())?;
+        let vec = dir.open(&name("vec")).map_err(|e| e.to_string())?;
+        let vex = dir.open(&name("vex")).map_err(|e| e.to_string())?;
+        Ok((vem, vec, vex))
+    })();
+    let (vem, vec, vex) = match opened {
+        Ok(v) => v,
+        Err(e) => {
+            checks.push(Check::fail("vectors.open", e));
+            skip_families(checks, VECTOR_FAMILIES, "vectors.open");
+            return;
+        }
+    };
+    let reader = match RetiredHnswVectorsReader::open(
+        format,
+        &vem,
+        &vec,
+        &vex,
+        &commit.segment_id,
+        &segment_suffix,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            checks.push(Check::fail("vectors.open", e.to_string()));
+            skip_families(checks, VECTOR_FAMILIES, "vectors.open");
+            return;
+        }
+    };
+    check_flat_vector_fields(reader.flat(), fields, si, stats, checks);
+    for fi in fields {
+        match reader.graph(fi.number) {
+            Ok(graph) => check_one_graph(&graph, &fi.name, format.neighbors_sorted(), checks),
+            Err(e) => checks.push(Check::fail(format!("hnsw.open:{}", fi.name), e.to_string())),
+        }
+    }
 }
 
 /// The per-field families a failed `vectors.open` takes down. The graph
@@ -4714,131 +4828,143 @@ fn check_hnsw_graphs(
                 continue;
             }
         };
-        let size = graph.size();
-        let mut level_problems: Vec<String> = Vec::new();
-        let mut order_problems: Vec<String> = Vec::new();
-        let mut reachable = String::new();
-        let mut degenerate: Vec<String> = Vec::new();
-        let mut neighbors: Vec<i32> = Vec::new();
+        check_one_graph(&graph, name, true, checks);
+    }
+}
 
-        for level in (0..graph.num_levels()).rev() {
-            // Same class as `check_vectors`' `Err` arms above: unreachable
-            // (this loop's bound is `graph.num_levels()`, and
-            // `read_field_entry` sizes `nodes_by_level` to exactly that), but
-            // kept because it is error handling rather than a claimed check.
-            let nodes = match graph.sorted_nodes_on_level(level) {
-                Ok(n) => n,
-                Err(e) => {
-                    level_problems.push(format!("level {level}: {e}"));
-                    continue;
-                }
-            };
-            let mut on_this_level =
-                lucene_util::fixed_bit_set::FixedBitSet::new(size.max(0) as usize);
-            for &n in &nodes {
-                // Java's `node < 0 || node > size - 1` guard is not repeated
-                // here: `read_field_entry` already rejects an out-of-range
-                // level-node ordinal while parsing `.vem` (this port
-                // validates on the way in where Java validates on the way
-                // out), and level 0's node set is the implicit `0..size`.
-                // The guard that *can* fire is the neighbour one below.
-                // FBS: `on_this_level` is `FixedBitSet::new(size.max(0))` a few
-                // lines above, so `size` is its `len()`.
-                if n >= 0 && n < size {
-                    on_this_level.set(n as usize);
-                }
-            }
-            for &node in &nodes {
-                // No `node < 0 || node >= size` guard. Level 0's node set is
-                // literally `0..size`, and `read_field_entry` validates an
-                // upper level's first node, its deltas and its last node
-                // against `size` while parsing `.vem` -- modulo the plain
-                // `i32` accumulator it builds them with, which a release
-                // build lets wrap, so an *interior* node is validated only
-                // transitively. Either way the guard was the wrong response:
-                // a node that turns out to be unusable is reported by
-                // `neighbors_into` below (which range-checks it again), where
-                // the guard silently skipped it and reported nothing.
-                if let Err(e) = graph.neighbors_into(level, node, &mut neighbors) {
-                    level_problems.push(format!("field {name:?} node {node} level {level}: {e}"));
-                    continue;
-                }
-                let mut last = -1i32;
-                for &nbr in &neighbors {
-                    // FBS: `on_this_level` is `FixedBitSet::new(size.max(0))`
-                    // in this same function, so `size` is its `len()`.
-                    if nbr < 0 || nbr >= size || !on_this_level.get(nbr as usize) {
-                        level_problems.push(format!(
-                            "field {name:?} has node {node} with a neighbor {nbr} which is not \
-                             on its level ({level})"
-                        ));
-                    }
-                    // Java rejects both out-of-order and repeated neighbours.
-                    // Only the repeat is falsifiable here: `neighbors_into`
-                    // decodes a neighbour list as a running sum of
-                    // *unsigned* deltas, so the list it hands back is
-                    // non-decreasing by construction and `nbr < last` cannot
-                    // happen. A zero delta still can, and that is the repeat.
-                    if nbr == last {
-                        order_problems.push(format!(
-                            "field {name:?} has repeated neighbors of node {node} with value \
-                             {nbr}"
-                        ));
-                    }
-                    last = nbr;
-                }
-            }
+/// The graph checks for one field's graph, whatever format it came from.
+/// `sorted` says whether the format's writer sorted each neighbour list:
+/// `Lucene99`/`Lucene95`/`Lucene90` store deltas and did; `Lucene91`..`94`
+/// stored a node's `NeighborArray` in score order, so for those a repeat is
+/// looked for in a sorted copy instead.
+fn check_one_graph<G: HnswGraphView>(graph: &G, name: &str, sorted: bool, checks: &mut Vec<Check>) {
+    let size = graph.size();
+    let mut level_problems: Vec<String> = Vec::new();
+    let mut order_problems: Vec<String> = Vec::new();
+    let mut reachable = String::new();
+    let mut degenerate: Vec<String> = Vec::new();
+    let mut neighbors: Vec<i32> = Vec::new();
 
-            // Connectedness from the entry point, Java's
-            // `getConnectedNodesOnLevel`. Java computes it per level because
-            // it *prints* one line per level; this reports level 0 only, so
-            // the walk runs only there.
-            if level == 0 {
-                let connected = connected_nodes_on_level(&graph, level, size);
-                reachable = format!("{connected}/{} nodes reachable on level 0", nodes.len());
-                // Java never fails on connectedness (it tolerates
-                // historically-disconnected graphs) and neither do we, with
-                // one exception: an entry point that reaches nothing *but
-                // itself* on a level with more than one node is a graph
-                // whose search can only ever return one document. That is a
-                // corrupt or empty neighbour list, not a quality issue.
-                if connected <= 1 && nodes.len() > 1 {
-                    degenerate.push(format!(
-                        "field {name:?}: the level-0 entry point {} reaches {connected} of {} \
-                         nodes -- no search of this graph can return more than that",
-                        graph.entry_node(),
-                        nodes.len()
+    for level in (0..graph.num_levels()).rev() {
+        // Same class as `check_vectors`' `Err` arms above: unreachable
+        // (this loop's bound is `graph.num_levels()`, and
+        // `read_field_entry` sizes `nodes_by_level` to exactly that), but
+        // kept because it is error handling rather than a claimed check.
+        let nodes = match graph.sorted_nodes_on_level(level) {
+            Ok(n) => n,
+            Err(e) => {
+                level_problems.push(format!("level {level}: {e}"));
+                continue;
+            }
+        };
+        let mut on_this_level = lucene_util::fixed_bit_set::FixedBitSet::new(size.max(0) as usize);
+        for &n in &nodes {
+            // Java's `node < 0 || node > size - 1` guard is not repeated
+            // here: `read_field_entry` already rejects an out-of-range
+            // level-node ordinal while parsing `.vem` (this port
+            // validates on the way in where Java validates on the way
+            // out), and level 0's node set is the implicit `0..size`.
+            // The guard that *can* fire is the neighbour one below.
+            // FBS: `on_this_level` is `FixedBitSet::new(size.max(0))` a few
+            // lines above, so `size` is its `len()`.
+            if n >= 0 && n < size {
+                on_this_level.set(n as usize);
+            }
+        }
+        for &node in &nodes {
+            // No `node < 0 || node >= size` guard. Level 0's node set is
+            // literally `0..size`, and `read_field_entry` validates an
+            // upper level's first node, its deltas and its last node
+            // against `size` while parsing `.vem` -- modulo the plain
+            // `i32` accumulator it builds them with, which a release
+            // build lets wrap, so an *interior* node is validated only
+            // transitively. Either way the guard was the wrong response:
+            // a node that turns out to be unusable is reported by
+            // `neighbors_into` below (which range-checks it again), where
+            // the guard silently skipped it and reported nothing.
+            if let Err(e) = graph.neighbors_into(level, node, &mut neighbors) {
+                level_problems.push(format!("field {name:?} node {node} level {level}: {e}"));
+                continue;
+            }
+            if !sorted {
+                // Score order on disk: look for the repeat in ordinal order.
+                neighbors.sort_unstable();
+            }
+            let mut last = -1i32;
+            for &nbr in &neighbors {
+                // FBS: `on_this_level` is `FixedBitSet::new(size.max(0))`
+                // in this same function, so `size` is its `len()`.
+                if nbr < 0 || nbr >= size || !on_this_level.get(nbr as usize) {
+                    level_problems.push(format!(
+                        "field {name:?} has node {node} with a neighbor {nbr} which is not \
+                         on its level ({level})"
                     ));
                 }
+                // Java rejects both out-of-order and repeated neighbours.
+                // Only the repeat is falsifiable here: `neighbors_into`
+                // decodes a neighbour list as a running sum of
+                // *unsigned* deltas, so the list it hands back is
+                // non-decreasing by construction and `nbr < last` cannot
+                // happen. A zero delta still can, and that is the repeat.
+                if nbr == last {
+                    order_problems.push(format!(
+                        "field {name:?} has repeated neighbors of node {node} with value \
+                         {nbr}"
+                    ));
+                }
+                last = nbr;
             }
         }
 
-        checks.push(named_field_check(
-            &format!("hnsw.neighbors_on_level:{name}"),
-            &level_problems,
-            size as i64,
-            "nodes",
-        ));
-        checks.push(named_field_check(
-            &format!("hnsw.neighbors_sorted:{name}"),
-            &order_problems,
-            size as i64,
-            "nodes",
-        ));
-        if degenerate.is_empty() {
-            checks.push(Check {
-                name: format!("hnsw.entry_point_reachable:{name}"),
-                outcome: Outcome::Passed,
-                message: reachable,
-            });
-        } else {
-            checks.push(named_field_check(
-                &format!("hnsw.entry_point_reachable:{name}"),
-                &degenerate,
-                size as i64,
-                "nodes",
-            ));
+        // Connectedness from the entry point, Java's
+        // `getConnectedNodesOnLevel`. Java computes it per level because
+        // it *prints* one line per level; this reports level 0 only, so
+        // the walk runs only there.
+        if level == 0 {
+            let connected = connected_nodes_on_level(graph, level, size);
+            reachable = format!("{connected}/{} nodes reachable on level 0", nodes.len());
+            // Java never fails on connectedness (it tolerates
+            // historically-disconnected graphs) and neither do we, with
+            // one exception: an entry point that reaches nothing *but
+            // itself* on a level with more than one node is a graph
+            // whose search can only ever return one document. That is a
+            // corrupt or empty neighbour list, not a quality issue.
+            if connected <= 1 && nodes.len() > 1 {
+                degenerate.push(format!(
+                    "field {name:?}: the level-0 entry point {} reaches {connected} of {} \
+                     nodes -- no search of this graph can return more than that",
+                    graph.entry_node(),
+                    nodes.len()
+                ));
+            }
         }
+    }
+
+    checks.push(named_field_check(
+        &format!("hnsw.neighbors_on_level:{name}"),
+        &level_problems,
+        size as i64,
+        "nodes",
+    ));
+    checks.push(named_field_check(
+        &format!("hnsw.neighbors_sorted:{name}"),
+        &order_problems,
+        size as i64,
+        "nodes",
+    ));
+    if degenerate.is_empty() {
+        checks.push(Check {
+            name: format!("hnsw.entry_point_reachable:{name}"),
+            outcome: Outcome::Passed,
+            message: reachable,
+        });
+    } else {
+        checks.push(named_field_check(
+            &format!("hnsw.entry_point_reachable:{name}"),
+            &degenerate,
+            size as i64,
+            "nodes",
+        ));
     }
 }
 
@@ -4864,11 +4990,7 @@ const HNSW_FAMILIES: &[&str] = &[
 /// needs `0 < numNodesOnLevel <= size` on its upper level, so `size >= 1`.
 /// The loop below still range-checks every node it pops, which is what keeps
 /// the walk total.
-fn connected_nodes_on_level(
-    graph: &hnsw_vectors::OffHeapHnswGraph<'_>,
-    level: i32,
-    size: i32,
-) -> usize {
+fn connected_nodes_on_level<G: HnswGraphView>(graph: &G, level: i32, size: i32) -> usize {
     let entry = graph.entry_node();
     let mut seen = lucene_util::fixed_bit_set::FixedBitSet::new(size.max(0) as usize);
     let mut stack = vec![entry];

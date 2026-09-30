@@ -54,9 +54,10 @@
 //! cannot be substituted: the differential fixture pins Lucene's answer, not
 //! the best one.
 
+use lucene_codecs::backward_codecs::hnsw_vectors::RetiredHnswVectorsReader;
 use lucene_codecs::field_infos::{FieldInfos, VectorEncoding, VectorSimilarityFunction};
 use lucene_codecs::hnsw::{HnswGraphView, KnnCollect, KnnCollector, VectorScorer};
-use lucene_codecs::hnsw_vectors::{self, HnswVectorsReader, SearchOptions};
+use lucene_codecs::hnsw_vectors::{self, HnswVectorsReader, OffHeapHnswGraph, SearchOptions};
 use lucene_codecs::vectors::{FlatFieldEntry, FlatVectorsReader};
 use lucene_util::fixed_bit_set::FixedBitSet;
 
@@ -114,10 +115,11 @@ pub fn per_leaf_top_k(k: usize, leaf_proportion: f32) -> usize {
 pub struct VectorsInput<'d> {
     /// `Lucene99FlatVectorsReader` over this segment's `.vemf`/`.vec`.
     pub flat: FlatVectorsReader<'d>,
-    /// `Lucene99HnswVectorsReader` over this segment's `.vem`/`.vex`, or
-    /// `None` when the caller opened no graph. `None` makes every search the
-    /// exhaustive scan Java also falls back to -- exact, just `O(size)`.
-    pub hnsw: Option<HnswVectorsReader<'d>>,
+    /// `Lucene99HnswVectorsReader` over this segment's `.vem`/`.vex` (or a
+    /// retired 9.x reader, see [`GraphReader`]), or `None` when the caller
+    /// opened no graph. `None` makes every search the exhaustive scan Java
+    /// also falls back to -- exact, just `O(size)`.
+    pub hnsw: Option<GraphReader<'d>>,
     /// The segment's `.fnm`: the only place a field *name* maps to the field
     /// *number* the vector formats key everything by.
     pub field_infos: &'d FieldInfos,
@@ -132,6 +134,77 @@ pub struct VectorsInput<'d> {
     pub filter: Option<&'d FixedBitSet>,
     /// `SegmentInfo.maxDoc()`.
     pub max_doc: i32,
+}
+
+/// The KNN reader a segment's vector fields were written with, as far as the
+/// graph walk is concerned: `PerFieldKnnVectorsFormat`'s per-field delegate.
+///
+/// A retired (`Lucene90`..`Lucene95`) reader also owns its flat vectors --
+/// [`RetiredHnswVectorsReader::flat`] is what [`VectorsInput::flat`] should
+/// be for such a segment.
+#[derive(Debug, Clone)]
+pub enum GraphReader<'d> {
+    /// `Lucene99HnswVectorsReader`.
+    Lucene99(HnswVectorsReader<'d>),
+    /// `Lucene9{0,1,2,4,5}HnswVectorsReader`: no exhaustive-scan branch, and
+    /// `Lucene90` walks its own single-level graph.
+    Retired(RetiredHnswVectorsReader<'d>),
+}
+
+impl<'d> From<HnswVectorsReader<'d>> for GraphReader<'d> {
+    fn from(r: HnswVectorsReader<'d>) -> Self {
+        GraphReader::Lucene99(r)
+    }
+}
+
+impl<'d> From<RetiredHnswVectorsReader<'d>> for GraphReader<'d> {
+    fn from(r: RetiredHnswVectorsReader<'d>) -> Self {
+        GraphReader::Retired(r)
+    }
+}
+
+/// One leaf field's graph, resolved: what [`leaf_results`] walks.
+enum LeafGraph<'a, 'd> {
+    /// `Lucene99HnswVectorsReader.search`: the graph (or `None` for none),
+    /// with its own graph-versus-scan choice.
+    Lucene99(Option<OffHeapHnswGraph<'d>>),
+    /// A retired reader's `search`, for `field_number`.
+    Retired(&'a RetiredHnswVectorsReader<'d>, i32),
+}
+
+impl LeafGraph<'_, '_> {
+    /// The reader's `search(field, target, collector, acceptDocs)`.
+    fn search<S: VectorScorer>(
+        &self,
+        scorer: &mut S,
+        k: usize,
+        visit_limit: u64,
+        options: SearchOptions<'_>,
+        extras: &LeafExtras,
+    ) -> Result<(Vec<(i32, f32)>, bool)> {
+        Ok(match self {
+            // Patience and deadlines wrap the collector; see [`approximate`].
+            LeafGraph::Lucene99(graph) => {
+                approximate(scorer, graph.as_ref(), k, visit_limit, options, extras)?
+            }
+            // A retired (Lucene 9.x) graph is walked by its own reader, whose
+            // collector is fixed: patience and deadlines are not applied.
+            LeafGraph::Retired(reader, field) => reader.search(
+                *field,
+                scorer,
+                k,
+                visit_limit,
+                options.accept_ords,
+                options.seed_ords,
+            )?,
+        })
+    }
+
+    /// `Lucene90HnswVectorsReader.search` collects ordinals as documents; see
+    /// [`RetiredHnswVectorsReader::hits_are_ordinals`].
+    fn hits_are_ordinals(&self) -> bool {
+        matches!(self, LeafGraph::Retired(r, _) if r.hits_are_ordinals())
+    }
 }
 
 /// Turns a doc-id list -- e.g. straight out of
@@ -665,9 +738,9 @@ struct LeafHits {
 /// is already built. Returns local-doc-space hits, best first, and whether
 /// the search early-terminated.
 #[allow(clippy::too_many_arguments)]
-fn leaf_results<S: VectorScorer, G: HnswGraphView>(
+fn leaf_results<S: VectorScorer>(
     scorer: &mut S,
-    graph: Option<&G>,
+    graph: &LeafGraph<'_, '_>,
     accept: Option<&AcceptOrds<'_>>,
     ord_to_doc: &impl Fn(i32) -> Result<i32>,
     max_doc: i32,
@@ -686,15 +759,17 @@ fn leaf_results<S: VectorScorer, G: HnswGraphView>(
     let per_leaf_top_k = plan.per_leaf_top_k.min(size);
     let accept_bits = accept.map(|a| a.bits());
 
-    let (hits, early) = if !plan.filtered {
+    // `from_graph`: whether the hits came out of the reader's `search` (and
+    // so, for `Lucene90`, are ordinals standing in for documents) rather than
+    // out of `exactSearch`, which always reports real documents.
+    let (hits, early, from_graph) = if !plan.filtered {
         // Java's `filterWeight == null` branch: `AcceptDocs.fromLiveDocs`,
         // `visitedLimit = Integer.MAX_VALUE`, and no cost heuristic.
         // `filteredDocCount` is `min(maxDoc, graphSize)` here even on a
         // segment with deletions -- see [`SearchOptions::filtered_doc_count`]
         // for why that is not the bug it looks like.
-        approximate(
+        let hits = graph.search(
             scorer,
-            graph,
             collector_k,
             plan.visited_limit,
             SearchOptions {
@@ -704,7 +779,8 @@ fn leaf_results<S: VectorScorer, G: HnswGraphView>(
                 filtered_search_threshold: plan.extras.filtered_search_threshold,
             },
             &plan.extras,
-        )?
+        )?;
+        (hits.0, hits.1, true)
     } else {
         let bits = accept_bits.expect("a filtered leaf always has an accept set");
         let cost = bits.cardinality();
@@ -716,14 +792,13 @@ fn leaf_results<S: VectorScorer, G: HnswGraphView>(
             // Seeding does not reach here, exactly as in Java: the search
             // strategy is read by `HnswGraphSearcher.search`, and this branch
             // never calls it.
-            (exact_search(scorer, bits, cost, plan.k)?, false)
+            (exact_search(scorer, bits, cost, plan.k)?, false, false)
         } else {
             // "We pass cost + 1 here to account for the edge case when we
             // explore exactly cost vectors."
             let limit = plan.visited_limit.min(cost as u64 + 1);
-            let (hits, early) = approximate(
+            let (hits, early) = graph.search(
                 scorer,
-                graph,
                 collector_k,
                 limit,
                 SearchOptions {
@@ -735,11 +810,11 @@ fn leaf_results<S: VectorScorer, G: HnswGraphView>(
                 &plan.extras,
             )?;
             if (!early && hits.len() >= per_leaf_top_k) || plan.extras.timed_out() {
-                (hits, early)
+                (hits, early, true)
             } else {
                 // "We stopped the kNN search because it visited too many
                 // nodes, so fall back to exact search."
-                (exact_search(scorer, bits, cost, plan.k)?, false)
+                (exact_search(scorer, bits, cost, plan.k)?, false, false)
             }
         }
     };
@@ -749,12 +824,17 @@ fn leaf_results<S: VectorScorer, G: HnswGraphView>(
     // the hits' local doc ids ascending and `MappedDISI` turns each into its
     // ordinal, and ordinals ascend with doc ids by construction -- so the
     // seed list is this hit set's ordinals, ascending.
+    let ordinals_as_docs = from_graph && graph.hits_are_ordinals();
     let mut out = Vec::with_capacity(hits.len());
     let mut ords = Vec::with_capacity(hits.len());
     for (ord, score) in hits {
         ords.push(ord);
         out.push(ScoreDoc {
-            doc_id: ord_to_doc(ord)?,
+            doc_id: if ordinals_as_docs {
+                ord
+            } else {
+                ord_to_doc(ord)?
+            },
             score,
         });
     }
@@ -776,19 +856,25 @@ fn search_leaf(
     // documents carries none even when they were opened. Both mean the same
     // thing -- take the exhaustive branch.
     let graph = match &input.hnsw {
-        None => None,
-        Some(reader) => reader.graph(resolved.field_number).map_err(|e| match e {
-            // A field the `.vemf` has and the `.vem` does not is a caller
-            // mistake, not a damaged index -- Java's `getFieldEntryOrThrow`
-            // raises `IllegalArgumentException` for it. Unreachable with
-            // Lucene-written files (both metas list every vector field), but
-            // the two must not be confused: `lucene-ffi` turns a decode error
-            // into "this index is corrupt".
-            lucene_codecs::vectors::Error::UnknownField(number) => Error::InvalidKnnQuery(format!(
-                "field number {number} has vectors but no HNSW graph entry in this segment's .vem"
-            )),
-            other => Error::Vectors(other),
-        })?,
+        None => LeafGraph::Lucene99(None),
+        Some(GraphReader::Retired(reader)) => LeafGraph::Retired(reader, resolved.field_number),
+        Some(GraphReader::Lucene99(reader)) => {
+            LeafGraph::Lucene99(reader.graph(resolved.field_number).map_err(|e| match e {
+                // A field the `.vemf` has and the `.vem` does not is a caller
+                // mistake, not a damaged index -- Java's `getFieldEntryOrThrow`
+                // raises `IllegalArgumentException` for it. Unreachable with
+                // Lucene-written files (both metas list every vector field),
+                // but the two must not be confused: `lucene-ffi` turns a decode
+                // error into "this index is corrupt".
+                lucene_codecs::vectors::Error::UnknownField(number) => {
+                    Error::InvalidKnnQuery(format!(
+                        "field number {number} has vectors but no HNSW graph entry in this \
+                         segment's .vem"
+                    ))
+                }
+                other => Error::Vectors(other),
+            })?)
+        }
     };
     match target {
         Target::Float(t) => {
@@ -798,7 +884,7 @@ fn search_leaf(
             let mut scorer = values.scorer(t)?;
             leaf_results(
                 &mut scorer,
-                graph.as_ref(),
+                &graph,
                 accept.as_ref(),
                 &ord_to_doc,
                 input.max_doc,
@@ -813,7 +899,7 @@ fn search_leaf(
             let mut scorer = values.scorer(t)?;
             leaf_results(
                 &mut scorer,
-                graph.as_ref(),
+                &graph,
                 accept.as_ref(),
                 &ord_to_doc,
                 input.max_doc,
@@ -1612,7 +1698,17 @@ fn similarity_leaf<T>(
     }
     let graph = match &input.hnsw {
         None => None,
-        Some(reader) => reader.graph(resolved.field_number)?,
+        Some(GraphReader::Lucene99(reader)) => reader.graph(resolved.field_number)?,
+        // `AbstractVectorSimilarityQuery` walks the graph with its own
+        // collector, which the retired readers' fixed search cannot take. An
+        // exhaustive scan instead would return a different hit set from
+        // Java's graph walk, so refuse rather than answer differently.
+        Some(GraphReader::Retired(_)) => {
+            return Err(Error::InvalidKnnQuery(
+                "a vector similarity query over a Lucene 9.x HNSW graph is not supported yet"
+                    .into(),
+            ))
+        }
     };
     let leaf = SimilarityLeaf {
         input,

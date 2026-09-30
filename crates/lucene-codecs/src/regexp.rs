@@ -416,7 +416,7 @@ impl RegexpPattern {
     /// as a digit automaton, as Lucene's `RegExp.toAutomaton` builds them.
     /// `None` when the pattern is too large to determinize, and then
     /// [`Self::matches`] answers alone.
-    pub(crate) fn to_dfa(&self) -> Option<crate::automaton::ByteDfa> {
+    pub fn to_dfa(&self) -> Option<crate::automaton::ByteDfa> {
         let (nfa, start, end) = self.to_nfa()?;
         nfa.determinize(start, end)
     }

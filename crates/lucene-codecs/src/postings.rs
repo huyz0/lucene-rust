@@ -326,7 +326,7 @@ pub fn decode_term_metadata_for(
     total_term_freq: i64,
 ) -> Result<TermMetadata> {
     let block = format.block_size() as i64;
-    let meta = decode_term_metadata_with_block(
+    let mut meta = decode_term_metadata_with_block(
         r,
         doc_freq,
         absolute,
@@ -339,7 +339,7 @@ pub fn decode_term_metadata_for(
     if matches!(format, PostingsFormat::Lucene90 | PostingsFormat::Lucene99)
         && i64::from(doc_freq) > block
     {
-        r.read_vlong()?;
+        meta.skip_offset = r.read_vlong()?;
     }
     Ok(meta)
 }
@@ -393,6 +393,11 @@ pub struct TermMetadata {
     /// full blocks at all and everything is the vint tail, or the term ends
     /// exactly on a full-block boundary and there is no tail at all).
     pub last_pos_block_offset: i64,
+    /// `IntBlockTermState.skipOffset` of the trailing-skip generations
+    /// (`Lucene90`, `Lucene99`): where the term's skip list starts, relative
+    /// to `doc_start_fp`, or `-1` when `docFreq <= 128` and it has none.
+    /// Always `-1` for every other generation, whose skip data is inline.
+    pub skip_offset: i64,
 }
 
 impl Default for TermMetadata {
@@ -411,6 +416,7 @@ impl TermMetadata {
         pos_start_fp: 0,
         pay_start_fp: 0,
         last_pos_block_offset: -1,
+        skip_offset: -1,
     };
 }
 
@@ -513,6 +519,7 @@ fn decode_term_metadata_with_block(
         pos_start_fp,
         pay_start_fp,
         last_pos_block_offset,
+        skip_offset: -1,
     })
 }
 
@@ -1119,27 +1126,33 @@ impl<'a> DocInput<'a> {
                 "IndexOptions::None is not supported in this slice",
             ));
         }
-        let old = if self.format != PostingsFormat::Lucene104 && doc_freq > 1 {
-            let p = crate::backward_codecs::postings::read_postings(
+        let trailing = matches!(
+            self.format,
+            PostingsFormat::Lucene90 | PostingsFormat::Lucene99
+        );
+        // `BlockImpactsDocsEnum`'s `skipper.init(docStartFP + skipOffset,
+        // docStartFP, posStartFP, payStartFP, docFreq)`: only a term with more
+        // than one block has a skip list at all.
+        let skip = if trailing && meta.skip_offset >= 0 && doc_freq > 1 {
+            let fields = crate::backward_codecs::skip_list::SkipFields {
+                has_pos: index_options.subsumes_positions(),
+                has_offsets: index_options.subsumes_offsets(),
+                has_payloads,
+            };
+            Some(Box::new(crate::backward_codecs::skip_list::SkipList::new(
                 self.buf,
-                self.format,
-                meta,
+                fields,
+                (meta.doc_start_fp as i64).wrapping_add(meta.skip_offset),
+                meta.doc_start_fp as i64,
+                meta.pos_start_fp as i64,
+                meta.pay_start_fp as i64,
                 doc_freq,
-                index_options,
-            )?;
-            Some(Box::new(OldPostings {
-                docs: p.docs,
-                freqs: p.freqs,
-                next: 0,
-                window_start: 0,
-            }))
+            )?))
         } else {
             None
         };
         let mut r = SliceInput::new(self.buf);
-        if old.is_none() {
-            r.seek(meta.doc_start_fp as usize)?;
-        }
+        r.seek(meta.doc_start_fp as usize)?;
 
         // Mirror `Lucene104PostingsReader.BlockPostingsEnum.reset`'s level-1
         // setup (`Lucene104PostingsReader.java:559-568`): below
@@ -1148,7 +1161,11 @@ impl<'a> DocInput<'a> {
         // path entirely (`target > NO_MORE_DOCS` is never true). At or above
         // it, start the running last-doc at `-1` with `level1_doc_end_fp`
         // pointing at the first level-1 entry (which sits at `docStartFP`).
-        let level1_last_doc_id = if doc_freq < LEVEL1_NUM_DOCS || old.is_some() {
+        let bs = self.format.block_size() as i32;
+        // ARITH: `block_size()` is 128 or 256.
+        #[allow(clippy::arithmetic_side_effects)]
+        let level1_docs = bs * 32;
+        let level1_last_doc_id = if doc_freq < level1_docs || trailing {
             NO_MORE_DOCS
         } else {
             -1
@@ -1163,7 +1180,9 @@ impl<'a> DocInput<'a> {
             index_has_pos: index_options.subsumes_positions(),
             index_has_offsets_or_payloads: index_options.subsumes_offsets() || has_payloads,
             doc_freq,
-            prev_doc_id: -1,
+            // `Lucene90`/`Lucene99` code a term's first document as its own id
+            // (`accum = 0`); every later generation as one past `-1`.
+            prev_doc_id: if trailing { 0 } else { -1 },
             doc_count_left: doc_freq,
             level1_last_doc_id,
             level1_doc_end_fp: meta.doc_start_fp as usize,
@@ -1203,7 +1222,10 @@ impl<'a> DocInput<'a> {
                 pos_buffer_upto: 0,
             },
             block_gen: 0,
-            old,
+            format: self.format,
+            bs,
+            level1_docs,
+            skip,
         })
     }
 }
@@ -2053,7 +2075,14 @@ fn refill_last_position_block(
 /// that tells a full block from the tail -- exactly the role it has in
 /// `refillPositions`.
 fn last_pos_block_fp(meta: TermMetadata, total_term_freq: i64) -> Option<u64> {
-    match total_term_freq.cmp(&(BLOCK_SIZE as i64)) {
+    last_pos_block_fp_for(meta, total_term_freq, BLOCK_SIZE as i64)
+}
+
+/// [`last_pos_block_fp`] for a generation of block size `bs` (128 for every
+/// retired one): the vint tail's start, `None` when the positions end on a
+/// block boundary.
+fn last_pos_block_fp_for(meta: TermMetadata, total_term_freq: i64, bs: i64) -> Option<u64> {
+    match total_term_freq.cmp(&bs) {
         std::cmp::Ordering::Less => Some(meta.pos_start_fp),
         std::cmp::Ordering::Equal => None,
         std::cmp::Ordering::Greater => Some(
@@ -4010,27 +4039,22 @@ pub struct LazyDocsCursor<'a> {
     /// `advance`: the next one expands the block instead. See
     /// [`Self::next_doc`].
     bits_stepped: bool,
-    /// A term of a retired [`PostingsFormat`]: its postings decoded whole at
-    /// open, served through the tail-block path a window of up to
-    /// `BLOCK_SIZE` documents at a time ([`Self::load_old_window`]). `None`
-    /// for `Lucene104`, which never takes this branch.
-    old: Option<Box<OldPostings>>,
-}
-
-/// A retired-format term's decoded postings, behind a [`LazyDocsCursor`].
-///
-/// These formats' skip data is not navigated (see [`PostingsFormat`]), so the
-/// cursor presents the term as if it were all tail blocks: no headers, no
-/// impacts, no level-1 spans -- the shape every caller already handles for a
-/// `Lucene104` term's last block.
-#[derive(Debug)]
-struct OldPostings {
-    docs: Vec<i32>,
-    freqs: Vec<i32>,
-    /// Index of the first document not yet copied into the cursor's block.
-    next: usize,
-    /// Index of the document in `block_docs[0]`.
-    window_start: usize,
+    /// The generation that wrote the term. `Lucene912`/`Lucene101`/`Lucene103`
+    /// share `Lucene104`'s `.doc` layout -- the same level-0 headers, level-1
+    /// entries and group-varint tail -- at half the block size, and differ only
+    /// in how a block body is packed (`refill`).
+    format: PostingsFormat,
+    /// `ForUtil.BLOCK_SIZE` of [`Self::format`]: 256, or 128 for a retired
+    /// generation. The block arrays are always 256 wide; a 128-document
+    /// block fills their front half.
+    bs: i32,
+    /// `LEVEL1_NUM_DOCS` of [`Self::format`]: 32 blocks.
+    level1_docs: i32,
+    /// The trailing multi-level skip list of a `Lucene90`/`Lucene99` term
+    /// with more than one block: where the level-0 headers of the inline
+    /// generations come from for these ([`Self::advance_shallow`]). `None`
+    /// for every other term.
+    skip: Option<Box<crate::backward_codecs::skip_list::SkipList<'a>>>,
 }
 
 /// A running `.pos`/`.pay` position: the absolute file pointers plus how many
@@ -4262,6 +4286,7 @@ impl<'a> LazyDocsCursor<'a> {
     /// `ReqExclBulkScorer` over a nearly dense excluded term then jumps each
     /// run once instead of stepping through it a document at a time.
     pub fn doc_id_run_end(&self) -> i32 {
+        // Only a `Lucene104` block is ever kept as bits (`refill`).
         const DENSE_WORDS: usize = (BLOCK_SIZE as usize) / 64;
         let doc = self.doc_id;
         if doc < 0 || doc == NO_MORE_DOCS || self.pending.is_some() {
@@ -4782,7 +4807,13 @@ impl<'a> LazyDocsCursor<'a> {
             // Counted rather than scanned: the landing is anywhere in a fresh
             // block, so an early-exit scan ends on a branch it cannot predict
             // (`lucene_util::simd::count_less_than`).
-            let offset = lucene_util::simd::count_less_than(&self.block_docs, target);
+            let offset = if self.block_len == BLOCK_SIZE as usize {
+                lucene_util::simd::count_less_than(&self.block_docs, target)
+            } else {
+                // A retired generation's 128-document block: the back half
+                // of the array is stale.
+                find_next_geq(&self.block_docs[..self.block_len], target)
+            };
             // `advance_shallow` only stops on a block whose header claims
             // `last_doc_id >= target`, so a well-formed block always has a
             // match. A corrupt `.doc` can claim one and then decode a body
@@ -4791,6 +4822,13 @@ impl<'a> LazyDocsCursor<'a> {
             // indexing at `BLOCK_SIZE` would panic instead of surfacing that.
             // A body that does not ascend can make the count land short of
             // `target`, which is the same corruption seen from the other side.
+            if offset >= self.block_len && self.level0_last_doc_id == NO_MORE_DOCS {
+                // A block of unknown extent (see `trailing_advance_shallow`)
+                // that ends before `target`: it was the term's last.
+                self.block_pos = self.block_len;
+                self.doc_id = NO_MORE_DOCS;
+                return Ok(NO_MORE_DOCS);
+            }
             if offset >= self.block_len || self.block_docs[offset] < target {
                 return Err(corrupted(
                     "full block's decoded doc IDs do not reach the last doc ID its level-0 \
@@ -4808,9 +4846,6 @@ impl<'a> LazyDocsCursor<'a> {
             self.doc_id = NO_MORE_DOCS;
             return Ok(NO_MORE_DOCS);
         }
-        if self.old.is_some() {
-            return Ok(self.load_old_window(target));
-        }
 
         // The tail block: no skip data on the wire at all, so there is nothing
         // to decide from and it must be decoded.
@@ -4821,21 +4856,31 @@ impl<'a> LazyDocsCursor<'a> {
         // term's `docFreq`, which is read off disk, so a corrupt `.tim` can
         // leave a remainder at or past `BLOCK_SIZE` and slicing the fixed-size
         // block array by it panics instead of reporting the corruption.
-        if self.doc_count_left < 0 || self.doc_count_left >= BLOCK_SIZE {
+        if self.doc_count_left < 0 || self.doc_count_left >= self.bs {
             return Err(Error::Store(lucene_store::Error::Corrupted(format!(
-                "tail block claims {} remaining documents, which is not in 0..{BLOCK_SIZE}",
-                self.doc_count_left
+                "tail block claims {} remaining documents, which is not in 0..{}",
+                self.doc_count_left, self.bs
             ))));
         }
         let count = self.doc_count_left as usize;
-        read_tail_block(
-            &mut self.r,
-            self.prev_doc_id,
-            self.index_has_freq,
-            self.needs_freq,
-            &mut self.block_docs[..count],
-            &mut self.block_freqs[..count],
-        )?;
+        if self.format == PostingsFormat::Lucene90 {
+            crate::backward_codecs::postings::read_tail_block_90(
+                &mut self.r,
+                self.prev_doc_id,
+                self.index_has_freq,
+                &mut self.block_docs[..count],
+                &mut self.block_freqs[..count],
+            )?;
+        } else {
+            read_tail_block(
+                &mut self.r,
+                self.prev_doc_id,
+                self.index_has_freq,
+                self.needs_freq,
+                &mut self.block_docs[..count],
+                &mut self.block_freqs[..count],
+            )?;
+        }
         self.block_len = count;
         self.bits = None;
         self.doc_count_left = 0;
@@ -4884,13 +4929,6 @@ impl<'a> LazyDocsCursor<'a> {
         if target <= self.level0_last_doc_id {
             return Ok(self.level0_last_doc_id);
         }
-        // A retired format has no headers to walk: every window is a tail.
-        if self.old.is_some() {
-            self.level0_impacts.clear();
-            self.level0_impacts_stale = false;
-            self.level0_last_doc_id = NO_MORE_DOCS;
-            return Ok(NO_MORE_DOCS);
-        }
 
         // A shallow block that `target` has moved past: skip it without ever
         // decoding it. This is the case that saves the work.
@@ -4904,8 +4942,8 @@ impl<'a> LazyDocsCursor<'a> {
             // same `pending`), so the counter is still `>= BLOCK_SIZE` here.
             #[allow(clippy::arithmetic_side_effects)]
             {
-                debug_assert!(self.doc_count_left >= BLOCK_SIZE);
-                self.doc_count_left -= BLOCK_SIZE;
+                debug_assert!(self.doc_count_left >= self.bs);
+                self.doc_count_left -= self.bs;
             }
         }
 
@@ -4913,7 +4951,9 @@ impl<'a> LazyDocsCursor<'a> {
             // Level-1 skip: jump past whole 32-block spans that are entirely
             // behind `target` before looking at any level-0 header, exactly as
             // `doAdvanceShallow` does.
-            if target > self.level1_last_doc_id {
+            // A trailing-skip term has no inline level-1 entries: its
+            // `level1_*` describe skip-list level 1 (`trailing_advance_shallow`).
+            if target > self.level1_last_doc_id && self.skip.is_none() {
                 self.skip_level1_to(target)?;
             }
 
@@ -4930,14 +4970,21 @@ impl<'a> LazyDocsCursor<'a> {
             // the loop is about to look at.
             let origin = self.level0_pos;
 
-            if self.doc_count_left >= BLOCK_SIZE && !self.needs_pos {
+            if matches!(
+                self.format,
+                PostingsFormat::Lucene90 | PostingsFormat::Lucene99
+            ) {
+                return self.trailing_advance_shallow(target);
+            }
+
+            if self.doc_count_left >= self.bs && !self.needs_pos {
                 if let Some(last) = self.skip_level0_headers(target)? {
                     return Ok(last);
                 }
                 continue;
             }
 
-            if self.doc_count_left >= BLOCK_SIZE {
+            if self.doc_count_left >= self.bs {
                 let header = read_full_block_header(
                     &mut self.r,
                     self.prev_doc_id,
@@ -4956,10 +5003,10 @@ impl<'a> LazyDocsCursor<'a> {
                     self.r.seek(header.body_end)?;
                     self.prev_doc_id = header.last_doc_id;
                     // ARITH: guarded by the enclosing
-                    // `if self.doc_count_left >= BLOCK_SIZE`.
+                    // `if self.doc_count_left >= self.bs`.
                     #[allow(clippy::arithmetic_side_effects)]
                     {
-                        self.doc_count_left -= BLOCK_SIZE;
+                        self.doc_count_left -= self.bs;
                     }
                     continue;
                 }
@@ -5062,13 +5109,13 @@ impl<'a> LazyDocsCursor<'a> {
             // the loop only goes round again while that still holds.
             #[allow(clippy::arithmetic_side_effects)]
             {
-                left -= BLOCK_SIZE;
+                left -= self.bs;
             }
             // No level-1 test: `advance_shallow` ran `skip_level1_to` first,
             // so the span in hand reaches `target` and the walk cannot run
             // into the next level-1 entry before finding it.
             debug_assert!(target <= self.level1_last_doc_id);
-            if left < BLOCK_SIZE {
+            if left < self.bs {
                 break None;
             }
         };
@@ -5094,62 +5141,129 @@ impl<'a> LazyDocsCursor<'a> {
         Ok(Some(last))
     }
 
-    /// The next window of a retired-format term ([`OldPostings`]): the up to
-    /// `BLOCK_SIZE` documents from the first one `>= target`, copied into the
-    /// block as a tail block would be decoded into it, the cursor on its
-    /// first document. Windows wholly behind `target` are skipped by a binary
-    /// search over the decoded list rather than copied.
-    fn load_old_window(&mut self, target: i32) -> i32 {
-        let Some(old) = self.old.as_mut() else {
-            return self.doc_id;
+    /// [`Self::advance_shallow`] for a `Lucene90`/`Lucene99` term: its block
+    /// headers are the entries of the trailing skip list, so this is
+    /// `BlockImpactsDocsEnum.advanceShallow` -- `skipTo(target)` when the
+    /// target is past the block the skip list describes, jumping as many
+    /// blocks (and levels) as it can, then the entry it stopped on gives the
+    /// block's last document, its end and its impacts. The one full block
+    /// with no entry, the last of a term that ends on a block boundary, is
+    /// positioned with an unknown extent, like a tail.
+    ///
+    /// Called with documents left and no pending block.
+    fn trailing_advance_shallow(&mut self, target: i32) -> Result<i32> {
+        let Some(skip) = self.skip.as_mut() else {
+            // `docFreq <= 128`: one block (or a tail alone) and no skip list,
+            // so no extent, and its occurrences start where the term's do.
+            self.block_pos_origin = self.level0_pos;
+            self.level0_impacts.clear();
+            self.level0_impacts_stale = false;
+            self.level0_last_doc_id = NO_MORE_DOCS;
+            if self.doc_count_left < self.bs {
+                return Ok(NO_MORE_DOCS);
+            }
+            self.level0_impacts.clear();
+            self.level0_impacts_stale = false;
+            self.level0_last_doc_id = NO_MORE_DOCS;
+            self.pending = Some(PendingBlock {
+                base_doc_id: self.prev_doc_id,
+                last_doc_id: NO_MORE_DOCS,
+                body_start: self.r.position(),
+                body_end: usize::MAX,
+            });
+            return Ok(NO_MORE_DOCS);
         };
-        let rest = &old.docs[old.next..];
-        // ARITH: `partition_point` returns at most `rest.len()`, so the sum is
-        // at most `docs.len()`.
-        #[allow(clippy::arithmetic_side_effects)]
-        let start = old.next + rest.partition_point(|&d| d < target);
-        let end = start
-            .saturating_add(BLOCK_SIZE as usize)
-            .min(old.docs.len());
-        // ARITH: `start <= end <= docs.len()`, and the window is at most
-        // `BLOCK_SIZE` long, the size of both block arrays.
-        #[allow(clippy::arithmetic_side_effects)]
-        let n = end - start;
-        self.block_docs[..n].copy_from_slice(&old.docs[start..end]);
-        if self.needs_freq {
-            self.block_freqs[..n].copy_from_slice(&old.freqs[start..end]);
+        // SENTINEL-OK: an unpositioned list's `-1` is below every target
+        // (`advance_shallow` takes only `target >= 0`), so it always skips --
+        // `BlockImpactsDocsEnum.nextSkipDoc`'s own initial `-1`.
+        if target > skip.next_skip_doc() {
+            // `newDocUpto = skipper.skipTo(target) + 1`: the documents before
+            // the block that can hold `target`.
+            // A target of 0 (the first `nextDoc`) is read as 1: the reader
+            // starts with `skipDoc[0] == 0`, so `skipTo(0)` would load no
+            // entry at all and leave the first block without its extent.
+            let new_doc_upto = skip.skip_to(target.max(1))?.wrapping_add(1);
+            let consumed = i64::from(self.doc_freq.wrapping_sub(self.doc_count_left));
+            if new_doc_upto >= consumed {
+                let left = i64::from(self.doc_freq).wrapping_sub(new_doc_upto);
+                self.doc_count_left = i32::try_from(left)
+                    .ok()
+                    .filter(|&l| l >= 0)
+                    .ok_or_else(|| corrupted(format!("skip list skipped {new_doc_upto} docs")))?;
+                self.prev_doc_id = skip.last_doc();
+                let at = usize::try_from(skip.doc_pointer())
+                    .map_err(|_| corrupted("negative skip doc pointer"))?;
+                self.r.seek(at)?;
+                // `getImpacts()` level 1: the skip list's level-1 entry that
+                // covers `target` -- eight blocks' merged impacts, which is
+                // what lets a scorer skip more than one block per decision.
+                match skip.level1() {
+                    Some((last, bytes)) if self.needs_impacts => {
+                        if last != self.level1_last_doc_id
+                            && decode_impacts_into(bytes, &mut self.level1_impacts).is_err()
+                        {
+                            self.level1_impacts.clear();
+                        }
+                        self.level1_last_doc_id = last;
+                    }
+                    _ => {
+                        self.level1_impacts.clear();
+                        self.level1_last_doc_id = NO_MORE_DOCS;
+                    }
+                }
+                // `seekPosData`'s arguments: where this block's occurrences
+                // start. A block reached sequentially keeps the origin the
+                // previous skip left, which the entry just read replaces.
+                let (pos_fp, pos_upto, pay_fp) = skip.pos_state();
+                self.block_pos_origin = PosCursorState {
+                    pos_fp: pos_fp as u64,
+                    pay_fp: pay_fp as u64,
+                    pos_buffer_upto: u8::try_from(pos_upto)
+                        .map_err(|_| corrupted(format!("posBufferUpto {pos_upto}")))?,
+                };
+            }
         }
-        old.window_start = start;
-        old.next = end;
-        // ARITH: `end <= docs.len()`.
-        #[allow(clippy::arithmetic_side_effects)]
-        let left = old.docs.len() - end;
-        self.doc_count_left = i32::try_from(left).unwrap_or(i32::MAX);
-        self.block_len = n;
-        self.block_pos = 0;
-        self.bits = None;
-        self.block_gen = self.block_gen.wrapping_add(1);
+        let body_start = self.r.position();
+        if self.doc_count_left < self.bs {
+            // The skip landed in the tail.
+            self.level0_impacts.clear();
+            self.level0_impacts_stale = false;
+            self.level0_last_doc_id = NO_MORE_DOCS;
+            return Ok(NO_MORE_DOCS);
+        }
+        // SENTINEL-OK: `skip_to` ran above (every `target >= 0` passes the
+        // `-1` test), so the list is positioned and this is a document or
+        // `i32::MAX`, never `-1`.
+        let last = skip.next_skip_doc();
+        if last == i32::MAX {
+            self.level0_impacts.clear();
+            self.level0_impacts_stale = false;
+            self.level0_last_doc_id = NO_MORE_DOCS;
+            self.pending = Some(PendingBlock {
+                base_doc_id: self.prev_doc_id,
+                last_doc_id: NO_MORE_DOCS,
+                body_start,
+                body_end: usize::MAX,
+            });
+            return Ok(NO_MORE_DOCS);
+        }
+        let body_end = usize::try_from(skip.next_doc_pointer())
+            .map_err(|_| corrupted("negative skip doc pointer"))?;
+        self.level0_impact_bytes = if self.needs_impacts {
+            skip.level0_impacts()
+        } else {
+            &[]
+        };
         self.level0_impacts.clear();
-        self.level0_impacts_stale = false;
-        if n == 0 {
-            self.doc_count_left = 0;
-            self.doc_id = NO_MORE_DOCS;
-            return NO_MORE_DOCS;
-        }
-        // ARITH: `n >= 1`.
-        #[allow(clippy::arithmetic_side_effects)]
-        {
-            self.prev_doc_id = self.block_docs[n - 1];
-        }
-        self.doc_id = self.block_docs[0];
-        self.doc_id
-    }
-
-    /// For a retired-format cursor, the index in the term's doc list of the
-    /// document the cursor is on; `None` for `Lucene104`.
-    fn old_doc_index(&self) -> Option<usize> {
-        let old = self.old.as_ref()?;
-        Some(old.window_start.saturating_add(self.block_pos))
+        self.level0_impacts_stale = self.needs_impacts;
+        self.level0_last_doc_id = last;
+        self.pending = Some(PendingBlock {
+            base_doc_id: self.prev_doc_id,
+            last_doc_id: last,
+            body_start,
+            body_end,
+        });
+        Ok(last)
     }
 
     /// `Lucene104PostingsReader.refillDocs`: unpack the block
@@ -5160,22 +5274,45 @@ impl<'a> LazyDocsCursor<'a> {
             return Ok(());
         };
         self.r.seek(p.body_start)?;
-        let shape = decode_full_block_body(
-            &mut self.r,
-            p.base_doc_id,
-            self.index_has_freq,
-            self.needs_freq,
-            &mut self.scratch,
-            &mut self.block_docs,
-            &mut self.block_freqs,
-            true,
-            !self.needs_freq,
-        )?;
-        check_wire_position(self.r.position(), p.body_end, "full block body")?;
-        self.block_len = BLOCK_SIZE as usize;
+        let shape = if self.format == PostingsFormat::Lucene104 {
+            decode_full_block_body(
+                &mut self.r,
+                p.base_doc_id,
+                self.index_has_freq,
+                self.needs_freq,
+                &mut self.scratch,
+                &mut self.block_docs,
+                &mut self.block_freqs,
+                true,
+                !self.needs_freq,
+            )?
+        } else {
+            // A retired generation's 128 documents, bit-set blocks expanded.
+            crate::backward_codecs::postings::decode_block_body(
+                &mut self.r,
+                self.format,
+                p.base_doc_id,
+                self.index_has_freq,
+                self.needs_freq,
+                &mut self.block_docs,
+                &mut self.block_freqs,
+            )?;
+            BodyShape::Docs
+        };
+        if p.body_end != usize::MAX {
+            check_wire_position(self.r.position(), p.body_end, "full block body")?;
+        }
+        self.block_len = self.bs as usize;
         self.block_gen = self.block_gen.wrapping_add(1);
         self.block_pos = 0;
-        self.prev_doc_id = p.last_doc_id;
+        self.prev_doc_id = if p.last_doc_id == NO_MORE_DOCS {
+            // No header gave the extent: the block itself does.
+            // ARITH: `bs` is 128 or 256.
+            #[allow(clippy::arithmetic_side_effects)]
+            self.block_docs[self.bs as usize - 1]
+        } else {
+            p.last_doc_id
+        };
         self.bits = match shape {
             BodyShape::Bits { base, words } => {
                 // Only a cursor that tracks ranks (for its frequencies) needs
@@ -5204,8 +5341,8 @@ impl<'a> LazyDocsCursor<'a> {
         // other place that consumes one.
         #[allow(clippy::arithmetic_side_effects)]
         {
-            debug_assert!(self.doc_count_left >= BLOCK_SIZE);
-            self.doc_count_left -= BLOCK_SIZE;
+            debug_assert!(self.doc_count_left >= self.bs);
+            self.doc_count_left -= self.bs;
         }
         Ok(())
     }
@@ -5336,9 +5473,9 @@ impl<'a> LazyDocsCursor<'a> {
             // `wrapping_*`, so a corrupt one produces a wrong (and then
             // rejected) span rather than a debug-build panic.
             self.doc_count_left = self.doc_freq.wrapping_sub(self.level1_doc_count_upto);
-            self.level1_doc_count_upto = self.level1_doc_count_upto.wrapping_add(LEVEL1_NUM_DOCS);
+            self.level1_doc_count_upto = self.level1_doc_count_upto.wrapping_add(self.level1_docs);
 
-            if self.doc_count_left < LEVEL1_NUM_DOCS {
+            if self.doc_count_left < self.level1_docs {
                 // Fewer than a full span remains: no level-1 entry precedes it.
                 // `r` is now at the first of the trailing level-0 blocks.
                 self.level1_last_doc_id = NO_MORE_DOCS;
@@ -5444,21 +5581,10 @@ pub struct PositionsCursor<'a> {
     /// position, and most of what a positions walk cost.
     doc_left: u64,
     position: i32,
-    /// A retired [`PostingsFormat`]'s term: every position delta decoded at
-    /// open and the offset of each document's first one, walked in step with
-    /// the document cursor's [`LazyDocsCursor::old_doc_index`] instead of
-    /// `.pos` skip data. `None` for `Lucene104`.
-    old: Option<Box<OldPositions>>,
-}
-
-/// A retired-format term's position deltas, behind a [`PositionsCursor`].
-#[derive(Debug)]
-struct OldPositions {
-    deltas: Vec<i32>,
-    /// `starts[i]..starts[i + 1]` are document `i`'s deltas.
-    starts: Vec<usize>,
-    /// Next delta of the current document.
-    upto: usize,
+    /// The generation that wrote `.pos`: `Lucene104` packs 256 occurrences a
+    /// block, every retired generation 128 with its own `PForUtil` -- the
+    /// layout is otherwise the same, down to the vint tail.
+    format: PostingsFormat,
 }
 
 impl<'a> PositionsCursor<'a> {
@@ -5472,45 +5598,11 @@ impl<'a> PositionsCursor<'a> {
         has_offsets: bool,
         has_payloads: bool,
     ) -> Result<Self> {
-        let old = if pos.format != PostingsFormat::Lucene104 {
-            let deltas = crate::backward_codecs::postings::read_position_deltas(
-                pos.buf,
-                pos.format,
-                meta,
-                total_term_freq,
-                has_offsets,
-                has_payloads,
-            )?;
-            let singleton = [i32::try_from(total_term_freq).unwrap_or(i32::MAX)];
-            let freqs: &[i32] = match &docs.old {
-                Some(o) => &o.freqs,
-                None => &singleton,
-            };
-            let mut starts = Vec::with_capacity(freqs.len().saturating_add(1));
-            let mut at = 0usize;
-            for &f in freqs {
-                starts.push(at);
-                at = at.saturating_add(usize::try_from(f).unwrap_or(0));
-            }
-            starts.push(at);
-            if at != deltas.len() {
-                return Err(corrupted(format!(
-                    "document frequencies sum to {at} but the term has {} positions",
-                    deltas.len()
-                )));
-            }
-            Some(Box::new(OldPositions {
-                deltas,
-                starts,
-                upto: 0,
-            }))
-        } else {
-            None
-        };
         let mut docs = docs;
         docs.track_positions();
+        let bs = pos.format.block_size() as i64;
         // `total_term_freq % BLOCK_SIZE`, which is in `0..256`.
-        let tail_count = total_term_freq.rem_euclid(BLOCK_SIZE as i64) as usize;
+        let tail_count = total_term_freq.rem_euclid(bs) as usize;
         Ok(PositionsCursor {
             docs,
             pos_r: SliceInput::new(pos.buf),
@@ -5518,7 +5610,7 @@ impl<'a> PositionsCursor<'a> {
             block: PositionBlock::new(),
             buf_upto: 0,
             buf_fp: u64::MAX,
-            last_pos_block_fp: last_pos_block_fp(meta, total_term_freq),
+            last_pos_block_fp: last_pos_block_fp_for(meta, total_term_freq, bs),
             tail_count,
             // Offsets and payloads are never read here, but in the vint tail
             // they are interleaved with the positions in `.pos` and must be
@@ -5536,53 +5628,8 @@ impl<'a> PositionsCursor<'a> {
             pos_doc: -1,
             doc_left: 0,
             position: 0,
-            old,
+            format: pos.format,
         })
-    }
-
-    /// [`Self::start_doc`] for a retired-format term: the current document's
-    /// deltas in the decoded list.
-    fn start_old_doc(&mut self) -> Result<()> {
-        let doc = self.docs.doc_id;
-        if doc < 0 || doc == NO_MORE_DOCS {
-            return Err(Error::Unsupported(
-                "next_position needs the cursor positioned on a decoded document",
-            ));
-        }
-        let idx = self.docs.old_doc_index().unwrap_or(0);
-        let Some(old) = self.old.as_mut() else {
-            return Ok(());
-        };
-        let (start, end) = match (old.starts.get(idx), old.starts.get(idx.saturating_add(1))) {
-            (Some(&a), Some(&b)) => (a, b),
-            _ => return Err(corrupted("document index past the term's positions")),
-        };
-        old.upto = start;
-        // ARITH: `starts` ascends.
-        #[allow(clippy::arithmetic_side_effects)]
-        {
-            self.doc_left = (end - start) as u64;
-        }
-        self.position = 0;
-        self.pos_doc = doc;
-        Ok(())
-    }
-
-    /// The next position of a retired-format term's current document.
-    fn next_old_position(&mut self) -> Result<i32> {
-        let Some(old) = self.old.as_mut() else {
-            return Err(positions_overrun());
-        };
-        let d = *old.deltas.get(old.upto).ok_or_else(positions_overrun)?;
-        // ARITH: `upto < deltas.len()`; `doc_left > 0` was checked by the
-        // caller; positions wrap as Java's `int` sum does.
-        #[allow(clippy::arithmetic_side_effects)]
-        {
-            old.upto += 1;
-            self.doc_left -= 1;
-        }
-        self.position = self.position.wrapping_add(d);
-        Ok(self.position)
     }
 
     /// The underlying document cursor, for everything that is not a position:
@@ -5624,19 +5671,12 @@ impl<'a> PositionsCursor<'a> {
     #[inline]
     pub fn next_position(&mut self) -> Result<i32> {
         if self.docs.doc_id != self.pos_doc {
-            if self.old.is_some() {
-                self.start_old_doc()?;
-            } else {
-                self.start_doc()?;
-            }
+            self.start_doc()?;
         }
         if self.doc_left == 0 {
             return Err(Error::Unsupported(
                 "next_position called more times than the document's frequency",
             ));
-        }
-        if self.old.is_some() {
-            return self.next_old_position();
         }
         if self.buf_upto >= self.block.len {
             self.refill()?;
@@ -5663,16 +5703,6 @@ impl<'a> PositionsCursor<'a> {
     /// checks made once per positions block instead of once per position. A
     /// phrase scorer reads each term's positions whole before matching them.
     pub fn positions_into(&mut self, out: &mut Vec<i32>) -> Result<()> {
-        if self.old.is_some() {
-            if self.docs.doc_id != self.pos_doc {
-                self.start_old_doc()?;
-            }
-            while self.doc_left > 0 {
-                let p = self.next_old_position()?;
-                out.push(p);
-            }
-            return Ok(());
-        }
         if self.docs.doc_id != self.pos_doc {
             self.start_doc()?;
         }
@@ -5785,17 +5815,22 @@ impl<'a> PositionsCursor<'a> {
         #[allow(clippy::arithmetic_side_effects)]
         let mut n = n - left;
         self.buf_upto = self.block.len;
-        while n >= BLOCK_SIZE as u64 {
+        let bs = self.format.block_size() as u64;
+        while n >= bs {
             if Some(self.pos_r.position() as u64) == self.last_pos_block_fp {
                 return Err(corrupted(
                     "skipping positions ran into the vint tail with a full block left to skip",
                 ));
             }
-            skip_position_block(&mut self.pos_r, None, false, false)?;
+            if self.format == PostingsFormat::Lucene104 {
+                skip_position_block(&mut self.pos_r, None, false, false)?;
+            } else {
+                crate::backward_codecs::for_util::pfor_skip(&mut self.pos_r, self.format.word())?;
+            }
             // ARITH: guarded by the loop condition.
             #[allow(clippy::arithmetic_side_effects)]
             {
-                n -= BLOCK_SIZE as u64;
+                n -= bs;
             }
         }
         if n > 0 {
@@ -5819,10 +5854,22 @@ impl<'a> PositionsCursor<'a> {
                 self.tail_count,
                 &mut self.block,
             )?;
-        } else {
+        } else if self.format == PostingsFormat::Lucene104 {
             self.for_util
                 .pfor_decode(&mut self.pos_r, &mut self.block.pos_deltas)?;
             self.block.len = for_util::BLOCK_SIZE;
+        } else {
+            // A retired generation's 128 deltas, in the front of the buffer.
+            let mut words = [0u64; crate::backward_codecs::for_util::BLOCK_SIZE];
+            crate::backward_codecs::for_util::pfor_decode(
+                &mut self.pos_r,
+                self.format.word(),
+                &mut words,
+            )?;
+            for (d, &w) in self.block.pos_deltas.iter_mut().zip(words.iter()) {
+                *d = w as u32;
+            }
+            self.block.len = crate::backward_codecs::for_util::BLOCK_SIZE;
         }
         self.buf_fp = fp;
         self.buf_upto = 0;
@@ -7889,6 +7936,7 @@ mod tests {
             pay_start_fp: 3000,
             singleton_doc_id: -1,
             last_pos_block_offset: -1,
+            skip_offset: -1,
         };
         let decoded = decode_term_metadata(
             &mut r,
@@ -8860,6 +8908,7 @@ mod tests {
             pos_start_fp,
             pay_start_fp,
             last_pos_block_offset: pos_blocks_len as i64,
+            skip_offset: -1,
         };
         let opts = IndexOptions::DocsAndFreqsAndPositions;
         let pos_in = PosInput::open(&pos, &id, "").unwrap();

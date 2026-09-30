@@ -109,7 +109,7 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-const FILE_FORMAT_NAME: &str = "FST";
+pub(crate) const FILE_FORMAT_NAME: &str = "FST";
 const VERSION_START: i32 = 6;
 /// `FST.VERSION_LITTLE_ENDIAN`: from this version on, `BYTE2` labels
 /// (`FST.readLabel`'s `readShort()` branch) are stored little-endian and read
@@ -117,23 +117,23 @@ const VERSION_START: i32 = 6;
 /// Lucene's short-lived big-endian `DataOutput`/`DataInput` era). Needed here
 /// because this port's supported version range (`VERSION_START..=
 /// VERSION_CURRENT`, i.e. 6..=9) straddles this boundary.
-const VERSION_LITTLE_ENDIAN: i32 = 8;
-const VERSION_CONTINUOUS_ARCS: i32 = 9;
-const VERSION_CURRENT: i32 = VERSION_CONTINUOUS_ARCS;
+pub(crate) const VERSION_LITTLE_ENDIAN: i32 = 8;
+pub(crate) const VERSION_CONTINUOUS_ARCS: i32 = 9;
+pub(crate) const VERSION_CURRENT: i32 = VERSION_CONTINUOUS_ARCS;
 
-const BIT_FINAL_ARC: u8 = 1 << 0;
-const BIT_LAST_ARC: u8 = 1 << 1;
-const BIT_TARGET_NEXT: u8 = 1 << 2;
-const BIT_STOP_NODE: u8 = 1 << 3;
-const BIT_ARC_HAS_OUTPUT: u8 = 1 << 4;
-const BIT_ARC_HAS_FINAL_OUTPUT: u8 = 1 << 5;
+pub(crate) const BIT_FINAL_ARC: u8 = 1 << 0;
+pub(crate) const BIT_LAST_ARC: u8 = 1 << 1;
+pub(crate) const BIT_TARGET_NEXT: u8 = 1 << 2;
+pub(crate) const BIT_STOP_NODE: u8 = 1 << 3;
+pub(crate) const BIT_ARC_HAS_OUTPUT: u8 = 1 << 4;
+pub(crate) const BIT_ARC_HAS_FINAL_OUTPUT: u8 = 1 << 5;
 
-const ARCS_FOR_BINARY_SEARCH: u8 = BIT_ARC_HAS_FINAL_OUTPUT;
-const ARCS_FOR_DIRECT_ADDRESSING: u8 = 1 << 6;
-const ARCS_FOR_CONTINUOUS: u8 = ARCS_FOR_DIRECT_ADDRESSING + ARCS_FOR_BINARY_SEARCH;
+pub(crate) const ARCS_FOR_BINARY_SEARCH: u8 = BIT_ARC_HAS_FINAL_OUTPUT;
+pub(crate) const ARCS_FOR_DIRECT_ADDRESSING: u8 = 1 << 6;
+pub(crate) const ARCS_FOR_CONTINUOUS: u8 = ARCS_FOR_DIRECT_ADDRESSING + ARCS_FOR_BINARY_SEARCH;
 
-const FINAL_END_NODE: i64 = -1;
-const NON_FINAL_END_NODE: i64 = 0;
+pub(crate) const FINAL_END_NODE: i64 = -1;
+pub(crate) const NON_FINAL_END_NODE: i64 = 0;
 
 /// `FST.END_LABEL`: the label of the "fake" virtual arc `read_first_target_arc`
 /// inserts to represent a node's own acceptance, before falling through to
@@ -3621,7 +3621,7 @@ impl Outputs for ByteSequenceOutputs {
 
 /// Port of `PairOutputs.Pair<A, B>`: a value combining two independent
 /// component output values.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Pair<A, B> {
     pub first: A,
     pub second: B,

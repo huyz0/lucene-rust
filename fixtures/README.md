@@ -54,6 +54,11 @@ works on a machine with no `~/.gradle`. `lucene-queries` is required because
 `GenBlockTree` uses `org.apache.lucene.queries.spans`; `lucene-analysis-common`
 because `GenAnalysis` exercises real `StandardAnalyzer`/`StopFilter`.
 
+`ReaderApiAccess.java` is the one source file not in the default package: it
+declares `package org.apache.lucene.index` to reach the package-private
+`SlowCompositeCodecReaderWrapper` for `GenReaderApi` (compiled with the rest,
+on the class path, where the split package is allowed).
+
 `GenRegexp.java` is the odd one out among the generators: it writes no index at
 all. It runs real `RegExp` + `Operations.determinize` + `ByteRunAutomaton` over a
 pattern/term matrix and records the accept/reject decision as two plain text
@@ -101,6 +106,21 @@ committed `blocktree_index` segment ID, so a regeneration breaks those tests,
 and the baseline is where that coupling is now written down.
 
 CI runs `--check` on every change (`.github/workflows/ci.yml`, job `fixtures`).
+
+`data/bwc/` is not any generator's here: `scripts/gen-bwc-fixtures.sh` writes
+it with each old release's own jar, so the tree comparison above skips it.
+`scripts/gen-bwc-fixtures.sh --check` covers it instead (re-reads every
+committed version with 10.5.0 + backward-codecs and byte-compares
+`expected.txt`), and its segment ids are in `segment-ids.txt` like every other
+index. CI runs both.
+
+Every fixture `java` runs with `-Dlucene.useScalarFMA=true
+-Dlucene.useVectorFMA=true` (`LUCENE_FIXTURE_JVM_OPTS` in
+`scripts/lib-lucene-jars.sh`). Lucene decides whether its float vector kernels
+fuse multiply-add from a CPU heuristic (`Constants.HAS_FAST_SCALAR_FMA`: on for
+Intel and arm64 Linux, off for most AMD), so without the pin a vector score's
+last bits depend on the machine -- `m7_*_index/searches.tsv` regenerated
+byte for byte locally and differed on an AMD CI runner.
 
 ## Verifying the write path (reverse direction)
 
