@@ -1238,15 +1238,13 @@ impl HnswGraphSearcher {
                 * (max_exploration_multiplier as f32).min(1.0 / (1.0 - filtered_amount)))
                 as usize;
             let max_additional_to_explore = cap.saturating_sub(1);
-            let mut total_explored = to_score.len() + to_explore.len();
+            // Both are bounded by `cap`, far from `usize::MAX`.
+            let mut total_explored = to_score.len().saturating_add(to_explore.len());
             if to_score.len() < max_to_score_count && filtered_amount > EXPANDED_EXPLORATION_LAMBDA
             {
-                loop {
-                    // `toExplore.poll()` first, then the other two tests.
-                    let Some(&explore_friend) = to_explore.get(explore_at) else {
-                        break;
-                    };
-                    explore_at += 1;
+                // `toExplore.poll()` first, then the other two tests.
+                while let Some(&explore_friend) = to_explore.get(explore_at) {
+                    explore_at = explore_at.saturating_add(1);
                     if !(total_explored < max_additional_to_explore
                         && to_score.len() < max_to_score_count)
                     {
@@ -1262,7 +1260,7 @@ impl HnswGraphSearcher {
                             continue;
                         }
                         self.visited.set(fof as usize);
-                        total_explored += 1;
+                        total_explored = total_explored.saturating_add(1);
                         if accept_ords.get_doc(fof) {
                             if to_score.len() < cap {
                                 to_score.push(fof);
@@ -1287,10 +1285,8 @@ impl HnswGraphSearcher {
             };
             results.inc_visited_count(n);
             if max_score > min_accepted {
-                for i in 0..n {
-                    let sim = self.bulk_scores[i];
+                for (&ord, &sim) in to_score.iter().zip(&self.bulk_scores[..n]) {
                     if sim > min_accepted {
-                        let ord = to_score[i];
                         self.candidates.add(ord, sim);
                         if results.collect(ord, sim) {
                             min_accepted = next_up(results.min_competitive_similarity());
