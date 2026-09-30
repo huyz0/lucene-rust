@@ -2473,20 +2473,32 @@ fn read_scalar_bpv24(input: &mut SliceInput, count: usize, out: &mut Vec<i32>) -
         .saturating_add(tail.saturating_mul(3));
     require_bytes(input, needed, "scalar BPV_24 doc ids")?;
     out.reserve(count);
-    for _ in 0..blocks {
-        let l1 = input.read_i64()? as u64;
-        let l2 = input.read_i64()? as u64;
-        let l3 = input.read_i64()? as u64;
+    // The `3 * blocks` longs (`readLong`, little-endian) straight from the
+    // mapped bytes, eight ids per three longs.
+    let longs = take_bytes(
+        input,
+        blocks.saturating_mul(24),
+        "scalar BPV_24 doc id longs",
+    )?;
+    let long_at = |c: &[u8], i: usize| -> u64 {
+        let mut b = [0u8; 8];
+        b.copy_from_slice(&c[i..i + 8]);
+        u64::from_le_bytes(b)
+    };
+    for c in longs.chunks_exact(24) {
+        let (l1, l2, l3) = (long_at(c, 0), long_at(c, 8), long_at(c, 16));
         // Every value is masked (or shifted) down to at most 24 bits before
         // the narrowing cast, so none of these can change sign.
-        out.push((l1 >> 40) as i32);
-        out.push(((l1 >> 16) & 0xff_ffff) as i32);
-        out.push((((l1 & 0xffff) << 8) | (l2 >> 56)) as i32);
-        out.push(((l2 >> 32) & 0xff_ffff) as i32);
-        out.push(((l2 >> 8) & 0xff_ffff) as i32);
-        out.push((((l2 & 0xff) << 16) | (l3 >> 48)) as i32);
-        out.push(((l3 >> 24) & 0xff_ffff) as i32);
-        out.push((l3 & 0xff_ffff) as i32);
+        out.extend_from_slice(&[
+            (l1 >> 40) as i32,
+            ((l1 >> 16) & 0xff_ffff) as i32,
+            (((l1 & 0xffff) << 8) | (l2 >> 56)) as i32,
+            ((l2 >> 32) & 0xff_ffff) as i32,
+            ((l2 >> 8) & 0xff_ffff) as i32,
+            (((l2 & 0xff) << 16) | (l3 >> 48)) as i32,
+            ((l3 >> 24) & 0xff_ffff) as i32,
+            (l3 & 0xff_ffff) as i32,
+        ]);
     }
     for _ in 0..tail {
         let hi = i32::from(input.read_u16()?);

@@ -209,9 +209,9 @@ fn main() {
     };
     push("blocktree::open_shared (mappings held)", open_shared_only);
     // Not a phase of the open (so not in the sum): what the first lookup in
-    // every field costs on top of it. A retired (FST) terms index is turned
-    // into a trie on its field's first use (M8), so this is where that cost
-    // went; for a current trie it is one seek per field.
+    // every field costs on top of it: one seek per field, through the trie
+    // or, for a retired format, the FST read in place (M8; until the M8
+    // close-out this is where the FST-to-trie conversion's cost landed).
     {
         let a: Arc<Input> = Arc::new(dir.open(&tim).expect(".tim"));
         let b: Arc<Input> = Arc::new(dir.open(&tip).expect(".tip"));
