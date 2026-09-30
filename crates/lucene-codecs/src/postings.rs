@@ -1570,7 +1570,7 @@ pub fn read_positions_flat(
             }
         }
     }
-    doc_starts.push(positions.len() as u32);
+    doc_starts.push(stream_len(positions.len())?);
     if idx != n {
         return Err(Error::Store(lucene_store::Error::Corrupted(
             "sum of per-doc freqs is less than total_term_freq".into(),
@@ -1785,9 +1785,9 @@ fn wanted_ranges(wanted: &[usize], freqs: &[i32], n: usize) -> Result<Vec<Occurr
         if freq < 0 {
             return Err(corrupted(format!("negative per-doc frequency {freq}")));
         }
-        // ARITH: on entry `*acc <= n <= u32::MAX` (the check below returned
+        // ARITH: on entry `*acc <= n <= i64::MAX` (the check below returned
         // otherwise, and `n` came through `wire_count`), and `freq` is a
-        // non-negative `i32`, so the sum is under 2^33.
+        // non-negative `i32`, so the sum is under 2^64.
         #[allow(clippy::arithmetic_side_effects)]
         {
             *acc += freq as u64;
@@ -1817,9 +1817,9 @@ fn wanted_ranges(wanted: &[usize], freqs: &[i32], n: usize) -> Result<Vec<Occurr
             }
             // `acc + freq` is where this document's occurrences end. It is
             // checked against `n` here rather than only later, when the
-            // running sum reaches `freqs[d]` -- both because a `usize` on a
-            // 32-bit target has no room to spare above `n` (`wire_count` caps
-            // `n` at `u32::MAX`, which is `usize::MAX` there), and because a
+            // running sum reaches `freqs[d]` -- both because a `usize` has no
+            // room to spare above `n` when `n` is `usize::MAX` (`wire_count`
+            // lets through any non-negative count that fits), and because a
             // wrapped end is a silently wrong occurrence range rather than a
             // crash.
             let from = acc as usize;
@@ -2531,7 +2531,7 @@ pub fn read_positions_for_docs(
                 positions.push(p);
             }
         }
-        doc_starts.push(positions.len() as u32);
+        doc_starts.push(stream_len(positions.len())?);
         return Ok((positions, doc_starts));
     }
     // ARITH: `wanted` is a live slice, so `wanted.len() <= isize::MAX` and
@@ -2554,7 +2554,7 @@ pub fn read_positions_for_docs(
         wanted,
         &mut sink,
     )?;
-    sink.doc_starts.push(sink.positions.len() as u32);
+    sink.doc_starts.push(stream_len(sink.positions.len())?);
     Ok((sink.positions, sink.doc_starts))
 }
 
@@ -2605,7 +2605,7 @@ pub fn read_occurrences_for_docs(
             doc_starts.push(occurrences.len() as u32);
             occurrences.extend_from_slice(flat.get(a..b).unwrap_or(&[]));
         }
-        doc_starts.push(occurrences.len() as u32);
+        doc_starts.push(stream_len(occurrences.len())?);
         return Ok((occurrences, doc_starts));
     }
     // ARITH: `wanted` is a live slice, so `wanted.len() <= isize::MAX` and
@@ -2628,7 +2628,7 @@ pub fn read_occurrences_for_docs(
         wanted,
         &mut sink,
     )?;
-    sink.doc_starts.push(sink.occurrences.len() as u32);
+    sink.doc_starts.push(stream_len(sink.occurrences.len())?);
     Ok((sink.occurrences, sink.doc_starts))
 }
 
@@ -3332,24 +3332,38 @@ fn add_wire_offset(base: usize, len: usize) -> Result<usize> {
 /// A count of documents or occurrences read off disk, as a `usize` that is
 /// safe to compare, divide and size with.
 ///
-/// The two rejections are different in kind and are reported as such. A
-/// negative count is corruption: no writer emits one. A count above
-/// `u32::MAX` is merely past **this port's** ceiling -- `totalTermFreq` is a
-/// `long` in Lucene, and a stop-word in a segment of hundreds of millions of
-/// documents really can exceed 2^32 occurrences -- because the flat position
-/// streams here index with `u32`. That is a limitation to name, not a damaged
-/// file to report.
+/// A negative count is corruption: no writer emits one. Any other value is a
+/// real one -- `totalTermFreq` is a `long` in Lucene, and a stop-word in a
+/// segment of hundreds of millions of documents really can exceed 2^32
+/// occurrences (`IndexWriter.MAX_DOCS` documents, each with an `int`
+/// frequency) -- and every walk here counts occurrences in `usize`, so only a
+/// 32-bit target, whose `usize` cannot hold such a count, refuses it. The
+/// whole-term readers that *materialise* a stream still index it with `u32`
+/// ([`stream_len`]); the per-document and wanted-documents walks and
+/// [`PositionsCursor`] never hold more than the documents asked for.
 fn wire_count(value: i64, what: &str) -> Result<usize> {
     if value < 0 {
         return Err(corrupted(format!("{what}: negative count {value}")));
     }
-    if value > u32::MAX as i64 {
-        return Err(Error::Unsupported(
-            "total_term_freq exceeds u32::MAX: this port's flat position streams are indexed \
-             with u32, so a term with more than 2^32 occurrences cannot be walked",
-        ));
-    }
-    Ok(value as usize)
+    usize::try_from(value).map_err(|_| {
+        Error::Unsupported(
+            "total_term_freq exceeds this platform's usize: a term with more occurrences              than a 32-bit target can count cannot be walked there",
+        )
+    })
+}
+
+/// The `u32` end offset of a materialised occurrence stream: the flat
+/// readers ([`read_positions_flat`], [`read_positions_for_docs`],
+/// [`read_occurrences_for_docs`]) address their output with `u32` document
+/// starts, so a stream longer than `u32::MAX` entries -- 16 GiB of positions
+/// held in memory at once -- is refused rather than truncated. Checked once,
+/// on the final length: every earlier start is at most it.
+fn stream_len(len: usize) -> Result<u32> {
+    u32::try_from(len).map_err(|_| {
+        Error::Unsupported(
+            "a materialised position stream past u32::MAX entries: walk the term with              PositionsCursor or per document instead",
+        )
+    })
 }
 
 /// Splits `n` occurrences into whole 256-wide `PForUtil` blocks plus the
@@ -7401,12 +7415,13 @@ mod tests {
         );
     }
 
-    /// A `total_term_freq` that no file could hold is rejected before it sizes
-    /// or divides anything -- and the two rejections are different in kind:
-    /// negative is a corrupt term dictionary, while above `u32::MAX` is a
-    /// real value this port's `u32`-indexed flat streams cannot address.
+    /// A negative `total_term_freq` is a corrupt term dictionary, rejected
+    /// before it sizes or divides anything. A count past `u32::MAX` is a real
+    /// value (Lucene's `totalTermFreq` is a `long`): it is walked like any
+    /// other, so here -- one position on disk -- it is the frequency
+    /// cross-check that rejects it, never a blanket `u32` ceiling.
     #[test]
-    fn an_impossible_total_term_freq_is_rejected() {
+    fn total_term_freq_is_checked_for_sign_not_capped_at_u32() {
         let id = [74u8; ID_LENGTH];
         let (mut pos, pos_footer) = pos_header_and_footer(&id);
         let pos_start_fp = pos.len() as u64;
@@ -7429,19 +7444,17 @@ mod tests {
                 &[0],
             )
             .unwrap_err();
-            if total_term_freq < 0 {
-                assert!(
-                    matches!(err, Error::Store(lucene_store::Error::Corrupted(_)))
-                        && format!("{err}").contains("negative count"),
-                    "a negative total_term_freq is corruption, got {err:?}"
-                );
+            let want = if total_term_freq < 0 {
+                "negative count"
             } else {
-                assert!(
-                    matches!(err, Error::Unsupported(_)) && format!("{err}").contains("u32::MAX"),
-                    "a total_term_freq past this port's ceiling is unsupported, not \
-                     corrupt, got {err:?}"
-                );
-            }
+                "disagrees with total_term_freq"
+            };
+            assert!(
+                matches!(err, Error::Store(lucene_store::Error::Corrupted(_)))
+                    && format!("{err}").contains(want),
+                "total_term_freq {total_term_freq}: expected {want:?}, got {err:?}"
+            );
+            assert!(!matches!(err, Error::Unsupported(_)));
             // The whole-term reader guards the same value the same way.
             assert!(read_positions(
                 &pos_in,
@@ -7454,6 +7467,12 @@ mod tests {
             )
             .is_err());
         }
+        assert_eq!(wire_count(u32::MAX as i64 + 1, "t").unwrap(), 1usize << 32);
+        assert_eq!(stream_len(7).unwrap(), 7);
+        assert!(matches!(
+            stream_len(u32::MAX as usize + 1),
+            Err(Error::Unsupported(_))
+        ));
     }
 
     /// A tail payload whose length runs past the end of `.pos` must be a
