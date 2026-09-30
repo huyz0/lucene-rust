@@ -124,7 +124,7 @@ codecs/lucene104/ForUtil	ported	crates/lucene-codecs/src/for_util.rs::ForUtil
 codecs/lucene104/Lucene104Codec	ported	crates/lucene-index/src/index_writer.rs::POSTINGS_FORMAT_NAME
 codecs/lucene104/Lucene104HnswScalarQuantizedVectorsFormat	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::HNSW_NAME
 codecs/lucene104/Lucene104PostingsFormat	ported	crates/lucene-codecs/src/postings.rs::DocInput
-codecs/lucene104/Lucene104PostingsReader	partial	crates/lucene-codecs/src/postings.rs::LazyDocsCursor -- M7: "a term whose `totalTermFreq` exceeds `u32::MAX` cannot have its positions walked (`Error::Unsupported`)" (parity)
+codecs/lucene104/Lucene104PostingsReader	ported	crates/lucene-codecs/src/postings.rs::LazyDocsCursor
 codecs/lucene104/Lucene104PostingsWriter	ported	crates/lucene-codecs/src/postings_writer.rs::write_fields
 codecs/lucene104/Lucene104ScalarQuantizedVectorScorer	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::quantized_score
 codecs/lucene104/Lucene104ScalarQuantizedVectorsFormat	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::NAME
