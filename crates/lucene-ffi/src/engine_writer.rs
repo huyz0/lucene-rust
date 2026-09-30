@@ -233,6 +233,9 @@ fn inverted_field(c: &mut Cursor<'_>) -> Result<InvertedField, FfiStatus> {
         let term = c.bytes("term")?.to_vec();
         let freq = c.i32("freq")?;
         let flags = c.u8("term flags")?;
+        if flags & !7 != 0 {
+            return Err(decode_error("term flags"));
+        }
         let occurrences = usize::try_from(freq).map_err(|_| decode_error("freq"))?;
         let positions = if flags & 1 != 0 {
             if occurrences.saturating_mul(4) > c.remaining() {
@@ -258,11 +261,25 @@ fn inverted_field(c: &mut Cursor<'_>) -> Result<InvertedField, FfiStatus> {
         } else {
             Vec::new()
         };
+        let payloads = if flags & 4 != 0 {
+            // Each payload is at least its length.
+            if occurrences.saturating_mul(4) > c.remaining() {
+                return Err(decode_error("payloads"));
+            }
+            let mut p = try_with_capacity(occurrences)?;
+            for _ in 0..occurrences {
+                p.push(c.bytes("payload")?.to_vec());
+            }
+            p
+        } else {
+            Vec::new()
+        };
         terms.push(InvertedTerm {
             term,
             freq,
             positions,
             offsets,
+            payloads,
         });
     }
     Ok(InvertedField {
@@ -278,8 +295,10 @@ fn inverted_field(c: &mut Cursor<'_>) -> Result<InvertedField, FfiStatus> {
 /// - stored: `i32 field, u8 kind (0 string, 1 binary, 2 int, 3 long,
 ///   4 float, 5 double), i32 len, bytes`
 /// - inverted: `i32 field, u8 has_norm, [i64 norm], i32 terms`, then per term
-///   `i32 len, bytes, i32 freq, u8 flags (1 positions, 2 offsets),
-///   [freq x i32 position], [freq x (i32 start, i32 end)]`
+///   `i32 len, bytes, i32 freq, u8 flags (1 positions, 2 offsets,
+///   4 payloads), [freq x i32 position], [freq x (i32 start, i32 end)],
+///   [freq x (i32 len, bytes) payload]` -- a zero-length payload is an
+///   occurrence without one
 /// - doc values: `i32 field, u8 kind (0 long, 1 bytes), i64 | (i32 len, bytes)`
 /// - points: `i32 field, i32 len, packed bytes`
 fn document(c: &mut Cursor<'_>) -> Result<ExplicitDocument, FfiStatus> {
@@ -1095,6 +1114,92 @@ mod tests {
         assert_eq!(stats(h)[STAT_SEGMENTS], 1);
         ffi_engine_writer_close(h);
         check(&tmp);
+    }
+
+    /// A document whose analyzer gave `body` payloads -- Lucene's
+    /// `MockAnalyzer` does so on some seeds, which OpenSearch's engine tests
+    /// draw -- is indexed with them (term flag 4, one length-prefixed payload
+    /// per occurrence, empty for none), and its segment stores payloads for
+    /// that field alone. A term flag this layout does not define is refused.
+    #[test]
+    fn a_document_with_payloads_is_indexed_with_them() {
+        let tmp = empty_index("engine-writer-payloads");
+        let h = open(&tmp, 0);
+        let f = setup(h);
+        let words: [(&str, &[u8]); 2] = [("x", b"px"), ("y", b"")];
+        let doc_with = |flags: u8| {
+            let mut b = Blob::default()
+                .u8(OP_ADD)
+                .i32(1)
+                .i32(1)
+                .i32(f.id)
+                .u8(1)
+                .bytes(b"a")
+                .i32(2)
+                .i32(f.id)
+                .u8(0)
+                .i32(1)
+                .bytes(b"a")
+                .i32(1)
+                .u8(0)
+                .i32(f.body)
+                .u8(1)
+                .i64(2)
+                .i32(2);
+            for (p, (w, payload)) in words.iter().enumerate() {
+                b = b
+                    .bytes(w.as_bytes())
+                    .i32(1)
+                    .u8(flags)
+                    .i32(p as i32)
+                    .i32(p as i32 * 2)
+                    .i32(p as i32 * 2 + 1)
+                    .bytes(payload);
+            }
+            b.i32(1).i32(f.seq).u8(0).i64(0).i32(0)
+        };
+        assert_eq!(apply(h, &doc_with(3 | 8).0), FfiStatus::Decode.code());
+        assert!(crate::error::last_error().contains("term flags"));
+        assert_eq!(
+            apply(h, &doc_with(3 | 4).0),
+            0,
+            "{}",
+            crate::error::last_error()
+        );
+        commit(h, &[]);
+        ffi_engine_writer_close(h);
+        check(&tmp);
+
+        let dir = FsDirectory::open(tmp.path());
+        let infos = lucene_index::segment_infos::read_latest(&dir).unwrap();
+        let sci = &infos.segments[0];
+        let fnm = dir.open(&format!("{}.fnm", sci.segment_name)).unwrap();
+        let fields = lucene_codecs::field_infos::parse(&fnm, &sci.segment_id, "").unwrap();
+        let stores = |name: &str| {
+            fields
+                .fields
+                .iter()
+                .find(|fi| fi.name == name)
+                .unwrap()
+                .store_payloads
+        };
+        assert!(stores("body"));
+        assert!(!stores("_id"));
+
+        // Payloads that cannot fit in what is left of the blob.
+        let short: Vec<u8> = Blob::default()
+            .u8(OP_ADD)
+            .i32(1)
+            .i32(0)
+            .i32(1)
+            .i32(0)
+            .u8(0)
+            .i32(1)
+            .bytes(b"t")
+            .i32(1000)
+            .u8(4)
+            .0;
+        assert!(matches!(decode_op(&short), Err(FfiStatus::Decode)));
     }
 
     #[test]
