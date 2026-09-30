@@ -63,12 +63,12 @@ engine (`lucene-index/src/index_writer/explicit.rs`; M5 section).
 
 **Deliberately out of scope**, and what a caller sees:
 
-- **Retired vector formats and Lucene 8.** Since M8 (see "lucene-codecs --
-  backward codecs (M8)" below) every non-vector format Lucene 9.0-10.4 wrote
-  is read; the retired KNN formats (`Lucene90`..`Lucene95` HNSW, `Lucene99`
-  scalar and `Lucene102` binary quantization) still fail their header check,
-  and Lucene 8 formats are not read at all (neither Lucene 10 nor OpenSearch
-  3.x opens an index created by Lucene 8). The OpenSearch plugin still falls
+- **Quantized retired vector formats and Lucene 8.** Since M8 (see
+  "lucene-codecs -- backward codecs (M8)" below) every format Lucene 9.0-10.4
+  wrote by default is read, the retired `Lucene90`..`Lucene95` HNSW vector
+  formats included; the opt-in `Lucene99` scalar and `Lucene102` binary
+  quantized KNN formats are not, and Lucene 8 formats are not read at all
+  (neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8). The OpenSearch plugin still falls
   back to Lucene for any index with a non-`Lucene104` postings field
   (`postings_format`) until M8 T8.5.
 - **Other codecs and per-field formats**: `SimpleText`, the scalar-quantized
@@ -200,13 +200,14 @@ written by that release's own jars) is read with this port's readers and every
 line of the `expected.txt` Lucene 10.5.0 with backward-codecs wrote for it --
 commit, segment and field infos in full, and FNV-1a digests over the postings
 (with positions, offsets and payloads), norms, doc values, points, stored
-fields, term vectors and vectors, plus KNN hits -- is reproduced exactly. Lines
-this port cannot read yet are listed in the test's `EXPECTED_FAILURES`, which
-fails when an entry starts passing. The same file opens every fixture through
+fields, term vectors and vectors, plus KNN hits -- is reproduced exactly, for
+every version (the test's `EXPECTED_FAILURES` table is empty; it fails when a
+listed entry starts passing). The same file opens every fixture through
 `DirectoryReader` and runs 34 queries (every query shape the engine serves,
 exact and block-max pruned): each version returns the current-codec 10.4.0
 fixture's hits, scores and totals bit for bit; and this port's `CheckIndex`
-passes on every fixture bar the retired HNSW vectors. The per-class status is
+passes on every fixture, with its vector and graph families required to have
+run. The per-class status is
 `docs/inventory/lucene-backward-codecs.tsv`.
 
 | Java | Rust | Status |
@@ -221,6 +222,7 @@ passes on every fixture bar the retired HNSW vectors. The per-class status is
 | `.pos`/`.pay` of every retired postings format | `lucene-codecs/src/postings.rs::read_positions` | **widened (M8).** The same layout as `Lucene104` at a 128-occurrence block, decoded with the generation's `PForUtil` (`postings.rs::PostingsFormat`, from the file's own header). Positions-only readers of a retired term use `backward_codecs/postings.rs::read_position_deltas`, which never opens `.pay`. |
 | *(no Lucene counterpart)* the backward-codecs module root | `lucene-codecs/src/backward_codecs/mod.rs` | Module docs only: which retired components needed a module and which were widened in their current reader instead. |
 | `PostingsFormat` dispatch (`PerFieldPostingsFormat` on the read side) | `lucene-codecs/src/postings.rs::PostingsFormat` | **ported (M8).** `DocInput`/`PosInput`/`PayInput` learn their generation from their header (`<name>PostingsWriterDoc`/`Pos`/`Pay`) and check it against that generation's version range; the term dictionary learns it from each field's `PerFieldPostingsFormat.format` attribute. |
+| `backward_codecs/lucene90/Lucene90HnswVectorsReader` (+ `Lucene90OnHeapHnswGraph.search`, `Lucene90BoundsChecker`), `lucene91/Lucene91HnswVectorsReader`, `lucene92/Lucene92HnswVectorsReader` (+ `OffHeapFloatVectorValues`), `lucene94/Lucene94HnswVectorsReader` (+ `OffHeap{Float,Byte}VectorValues`), `lucene95/Lucene95HnswVectorsReader` (`.vem`/`.vec`/`.vex`) | `lucene-codecs/src/backward_codecs/hnsw_vectors.rs::RetiredHnswVectorsReader` | **ported (M8 T8.3).** Each format's `.vem` field entry is read into the current `FlatFieldEntry` (the vector bytes never changed; `Lucene90`/`91`'s in-`.vem` `int[] ordToDoc` became `vectors.rs::OrdToDoc::Explicit`, `92`+'s `IndexedDISI`/`DirectMonotonic` reuse `OrdToDoc::Sparse`) plus a graph: `Lucene90`'s single level of `vint` deltas behind per-node offsets, `91`/`92`/`94`'s fixed `(1+M)*4`-byte slots (`(1+2M)*4` on level 0 from 9.2), and `95`'s, which is `Lucene99HnswVectorsFormat` version 0 (`hnsw_vectors.rs::read_graph_meta`, shared). Search is the reader's own: `91`-`95` call the current `HnswGraphSearcher` with no exhaustive-scan branch; `Lucene90` ports 9.0's random-entry-point search, seeded from `new SplittableRandom(<.vex footer checksum>)` (`lucene-util/src/splittable_random.rs::next_int_bounded`, the JDK's `boundedNextInt` over `mix32`). **Java quirk kept:** `Lucene90HnswVectorsReader.search` collects vector *ordinals* as doc ids, so a KNN query on a 9.0 segment whose vector field is sparse reports ordinal `n` as document `n` -- 10.5.0 does, the fixture's `knn` lines pin it, and `lucene-search/src/vector_query.rs::LeafGraph::hits_are_ordinals` reproduces it (its `exactSearch` fallback reports real documents, as Java's). Verified by `bwc_fixtures.rs`: every `vec`/`knn` line of 9.0.0-9.8.0, and `CheckIndex`'s vector and graph families (the neighbour-order check sorts a copy for `91`-`94`, whose writers stored neighbours in score order). Seen to fail: a wrong `mix32` constant pair reproduced 9.0.0's `_0` hits by convergence and failed `_1`'s. Unit tests: every retired fixture's `.vem` byte-flip-swept (re-signed) and walked. Writers (`Lucene9{0,1}HnswGraphBuilder`, `OnHeapHnswGraph`, `NeighborArray`) are not needed: 10.5.0 only reads these formats. |
 
 ## lucene-index
 

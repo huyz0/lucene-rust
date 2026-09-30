@@ -19,10 +19,13 @@
 //!
 //! What is here is what did change: the postings `.doc` framing and bit
 //! packing ([`postings`], [`for_util`]) and the FST terms index of
-//! `Lucene90BlockTreeTermsReader` ([`blocktree`]). Vector formats
-//! (`Lucene90`..`Lucene95` HNSW, `Lucene99` scalar quantization, `Lucene102`
-//! binary quantization) are a separate part of M8 and not ported yet.
+//! `Lucene90BlockTreeTermsReader` ([`blocktree`]), and the retired
+//! `Lucene90`..`Lucene95` HNSW vector formats' metadata, graphs and searches
+//! ([`hnsw_vectors`]), whose vectors the current flat reader serves. The
+//! opt-in quantized formats (`Lucene99` scalar, `Lucene102` binary) are not
+//! ported yet.
 
 pub mod blocktree;
 pub mod for_util;
+pub mod hnsw_vectors;
 pub mod postings;

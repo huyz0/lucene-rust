@@ -25,6 +25,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use lucene_codecs::backward_codecs::hnsw_vectors::{RetiredHnswFormat, RetiredHnswVectorsReader};
 use lucene_codecs::blocktree;
 use lucene_codecs::doc_values::{self, SortedSetKind};
 use lucene_codecs::field_infos::{
@@ -42,6 +43,7 @@ use lucene_codecs::vectors::{FlatVectorsReader, MergeSourceValues};
 use lucene_index::deletes::liv_file_name;
 use lucene_index::segment_info::{self, SegmentInfo};
 use lucene_index::segment_infos::{self, SegmentCommitInfo};
+use lucene_search::vector_query::GraphReader;
 use lucene_store::directory::{Directory, FsDirectory, Input};
 use lucene_util::fixed_bit_set::FixedBitSet;
 
@@ -54,20 +56,10 @@ const VERSIONS: &[&str] = &[
 /// `field` is the field name for per-field lines and `*` matches every field
 /// (or the segment-level line) of that kind in both segments.
 ///
-/// Vectors (`vec`/`knn`) before 9.11 need the retired `Lucene90`..`Lucene95`
-/// HNSW readers, which M8 ports separately from everything else here.
-const EXPECTED_FAILURES: &[(&str, &str, &str)] = &[
-    ("9.0.0", "vec", "*"),
-    ("9.0.0", "knn", "*"),
-    ("9.1.0", "vec", "*"),
-    ("9.1.0", "knn", "*"),
-    ("9.3.0", "vec", "*"),
-    ("9.3.0", "knn", "*"),
-    ("9.4.2", "vec", "*"),
-    ("9.4.2", "knn", "*"),
-    ("9.8.0", "vec", "*"),
-    ("9.8.0", "knn", "*"),
-];
+/// Empty since the retired `Lucene90`..`Lucene95` HNSW readers landed (the
+/// last `vec`/`knn` lines of 9.0-9.8); kept so a future fixture version can
+/// record a known gap without weakening the whole-file comparison.
+const EXPECTED_FAILURES: &[(&str, &str, &str)] = &[];
 
 fn fixture_dir(version: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -768,9 +760,6 @@ fn vec_lines(dir: &dyn Directory, seg: &Segment, fi: &FieldInfo, out: &mut Lines
     let knn_key = format!("knn {} {}", seg.name(), fi.name);
     let result = (|| -> Result<(String, String), String> {
         let vec_name = seg.file_with(".vec").ok_or("no .vec")?;
-        let vemf = dir
-            .open(seg.file_with(".vemf").ok_or("no .vemf")?)
-            .map_err(err)?;
         let vec = dir.open(vec_name).map_err(err)?;
         let vem = dir
             .open(seg.file_with(".vem").ok_or("no .vem")?)
@@ -780,9 +769,37 @@ fn vec_lines(dir: &dyn Directory, seg: &Segment, fi: &FieldInfo, out: &mut Lines
             .map_err(err)?;
         let suffix = seg.suffix_of(vec_name, ".vec");
         let id = &seg.commit.segment_id;
-        let flat = FlatVectorsReader::open(&vemf, &vec, id, &suffix).map_err(err)?;
-        let hnsw = lucene_codecs::hnsw_vectors::HnswVectorsReader::open(&vem, &vex, id, &suffix)
-            .map_err(err)?;
+        // `PerFieldKnnVectorsFormat.format`: a retired 9.0-9.8 format keeps
+        // its vectors in the `.vem`/`.vec`/`.vex` triple; the current one
+        // adds a `.vemf` for them.
+        let format = fi
+            .attributes
+            .iter()
+            .find(|(k, _)| k == "PerFieldKnnVectorsFormat.format")
+            .map(|(_, v)| v.as_str())
+            .unwrap_or_default();
+        let vemf;
+        let (flat, hnsw): (FlatVectorsReader<'_>, GraphReader<'_>) =
+            match RetiredHnswFormat::for_name(format) {
+                Some(retired) => {
+                    let r = RetiredHnswVectorsReader::open(retired, &vem, &vec, &vex, id, &suffix)
+                        .map_err(err)?;
+                    (r.flat().clone(), r.into())
+                }
+                None => {
+                    vemf = dir
+                        .open(seg.file_with(".vemf").ok_or("no .vemf")?)
+                        .map_err(err)?;
+                    (
+                        FlatVectorsReader::open(&vemf, &vec, id, &suffix).map_err(err)?,
+                        lucene_codecs::hnsw_vectors::HnswVectorsReader::open(
+                            &vem, &vex, id, &suffix,
+                        )
+                        .map_err(err)?
+                        .into(),
+                    )
+                }
+            };
         let mut f = Fnv::new();
         let (values, count) = match fi.vector_encoding {
             VectorEncoding::Float32 => {
@@ -1249,16 +1266,26 @@ fn every_version_passes_check_index() {
                     r.segment_name, c.name, c.message
                 ));
             }
+            // A pass is only worth something if the vector families ran:
+            // every segment has an `fvec` field whose vectors must have been
+            // read, whichever format wrote them, and `_0` (3,000 documents)
+            // always carries a graph -- 10.4's `_1` is under
+            // `HNSW_GRAPH_THRESHOLD` and has none.
+            if r.segment_name.starts_with('_') {
+                let mut families = vec!["vectors.values_decode:fvec"];
+                if r.segment_name == "_0" {
+                    families.push("hnsw.neighbors_on_level:fvec");
+                }
+                for family in families {
+                    if !r.checks.iter().any(|c| c.name == family && c.passed()) {
+                        failures.push(format!(
+                            "{version} {}: {family} did not run",
+                            r.segment_name
+                        ));
+                    }
+                }
+            }
         }
     }
-    // The retired HNSW formats (9.0-9.8) are not read yet, so CheckIndex's
-    // vector families cannot open them; everything else must pass. Shrinks
-    // with EXPECTED_FAILURES' `vec`/`knn` entries.
-    failures.retain(|f| {
-        let retired_vectors = EXPECTED_FAILURES
-            .iter()
-            .any(|&(v, k, _)| k == "vec" && f.starts_with(&format!("{v} ")));
-        !(retired_vectors && (f.contains(": vectors.") || f.contains(": hnsw.")))
-    });
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
