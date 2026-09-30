@@ -55,6 +55,7 @@ import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.TermRangeQuery;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.WildcardQuery;
+import org.apache.lucene.search.knn.KnnSearchStrategy;
 import org.apache.lucene.search.similarities.AfterEffectB;
 import org.apache.lucene.search.similarities.BM25Similarity;
 import org.apache.lucene.search.similarities.BasicModelIn;
@@ -227,10 +228,15 @@ public class GenM7Queries {
     "B 0 2 0 KF vec 5 T body t1",
     "B 1 1 0 T body t2 KF vec 30",
     "PKF vec 10",
+    // KnnSearchStrategy.Hnsw(threshold): FilteredHnswGraphSearcher under a filter
+    "KFS vec 3 60 T body t2",
+    "KFS vec 2 90 T body t5",
+    "KFS vec 4 100 T title t1",
+    "KFS vec 3 100 B 0 2 0 T body t9 T body t12",
     "SKF vec 7 T title t1",
   };
 
-  static final float[] QVEC = {0.5f, -0.25f, 0.75f, 0.1f};
+  static float[] QVEC = {0.5f, -0.25f, 0.75f, 0.1f};
   static final byte[] QBVEC = {12, -7, 30, 1};
 
   static int pos;
@@ -519,6 +525,12 @@ public class GenM7Queries {
         int k = i(tok);
         return new KnnFloatVectorQuery(field, QVEC, k, parse(tok));
       }
+      case "KFS": {
+        String field = tok[pos++];
+        int k = i(tok), threshold = i(tok);
+        return new KnnFloatVectorQuery(
+            field, QVEC, k, parse(tok), new KnnSearchStrategy.Hnsw(threshold));
+      }
       case "KB": {
         String field = tok[pos++];
         return new KnnByteVectorQuery(field, QBVEC, i(tok));
@@ -687,5 +699,88 @@ public class GenM7Queries {
       Files.writeString(out.resolve("searches.tsv"), sb);
       Files.writeString(out.resolve("estimator.tsv"), est);
     }
+    writeKnnIndex(root);
   }
+
+  /** Vector queries over graphs large enough that filtered, patient and seeded walks happen. */
+  static final String[] KNN = {
+    "KF vec 10",
+    "KF vec 50",
+    "KFF vec 10 T color c1",
+    "KFF vec 10 T color c0",
+    "KFS vec 10 60 T color c1",
+    "KFS vec 10 60 T color c3",
+    "KFS vec 5 90 T color c0",
+    "KFS vec 20 100 B 0 2 0 T color c2 T color c4",
+    "PKF vec 10",
+    "PKF vec 40",
+    "SKF vec 10 T color c1",
+    "SKF vec 25 T color c5",
+    "VSF vec 0.35",
+    "VSF vec 0.5",
+    "VSFF vec 0.3 T color c2",
+    "B 1 1 0 T color c0 KF vec 20",
+  };
+
+  /**
+   * {@code m7_knn_index}: two segments of 8-d EUCLIDEAN vectors (1500 and 1000 documents, a few
+   * deleted) with a skewed keyword {@code color}, searched with {@link #KNN} (the same prefix
+   * syntax) into {@code searches.tsv}. The target is {@link #QVEC8}.
+   */
+  static void writeKnnIndex(Path root) throws IOException {
+    Path out = root.resolve("m7_knn_index");
+    deleteRecursive(out);
+    Files.createDirectories(out);
+    Random r = new Random(20261002L);
+    try (Directory dir = FSDirectory.open(out)) {
+      IndexWriterConfig cfg = new IndexWriterConfig(new StandardAnalyzer());
+      cfg.setUseCompoundFile(false);
+      cfg.setMergePolicy(NoMergePolicy.INSTANCE);
+      cfg.setRAMBufferSizeMB(64);
+      int id = 0;
+      try (IndexWriter w = new IndexWriter(dir, cfg)) {
+        for (int size : new int[] {1500, 1000}) {
+          for (int k = 0; k < size; k++) {
+            Document doc = new Document();
+            doc.add(new StringField("id", Integer.toString(id++), Field.Store.NO));
+            double x = r.nextDouble();
+            doc.add(new StringField("color", "c" + (int) (10 * x * x), Field.Store.NO));
+            if (r.nextInt(20) != 0) {
+              float[] v = new float[8];
+              for (int j = 0; j < 8; j++) v[j] = r.nextFloat() * 2 - 1;
+              doc.add(new KnnFloatVectorField("vec", v, VectorSimilarityFunction.EUCLIDEAN));
+            }
+            w.addDocument(doc);
+          }
+          w.commit();
+        }
+        for (int d = 7; d < 2500; d += 97) {
+          w.deleteDocuments(new Term("id", Integer.toString(d)));
+        }
+        w.commit();
+      }
+      StringBuilder sb = new StringBuilder();
+      try (DirectoryReader reader = DirectoryReader.open(dir)) {
+        if (reader.leaves().size() != 2) {
+          throw new AssertionError("expected two segments, got " + reader.leaves().size());
+        }
+        IndexSearcher searcher = new IndexSearcher(reader);
+        searcher.setQueryCache(null);
+        float[] saved = QVEC;
+        QVEC = QVEC8;
+        for (String q : KNN) {
+          pos = 0;
+          String[] tok = q.split(" ");
+          Query query = parse(tok);
+          if (pos != tok.length) throw new AssertionError("trailing tokens in " + q);
+          TopDocs td = searcher.search(query, 50);
+          sb.append("bm25").append('\t').append(q).append('\t').append(hits(td)).append('\n');
+        }
+        QVEC = saved;
+      }
+      Files.writeString(out.resolve("searches.tsv"), sb);
+    }
+  }
+
+  static final float[] QVEC8 = {0.1f, -0.3f, 0.25f, 0.6f, -0.05f, 0.4f, -0.2f, 0.15f};
 }

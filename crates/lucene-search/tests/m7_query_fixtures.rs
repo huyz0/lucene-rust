@@ -352,6 +352,13 @@ fn parse(
             let filter = parse(tok, ctx)?;
             (ctx.knn)(op, field, arg, Some(filter))?
         }
+        "KFS" => {
+            let field = next();
+            let k = next();
+            let threshold = next();
+            let filter = parse(tok, ctx)?;
+            (ctx.knn)(op, field, &format!("{k}:{threshold}"), Some(filter))?
+        }
         other => panic!("query op {other}"),
     })
 }
@@ -436,11 +443,29 @@ fn want(hits: &str) -> Vec<(i32, u32)> {
 
 #[test]
 fn m7_queries_match_lucene_bit_for_bit() {
-    let dir = data("m7_queries_index");
+    let cases = check_fixture("m7_queries_index", &QVEC, 20, true);
+    assert!(cases >= 200, "{cases} searches");
+}
+
+/// The vector queries over graphs large enough for filtered
+/// (`FilteredHnswGraphSearcher`), patient and seeded walks to happen.
+#[test]
+fn m7_knn_queries_match_lucene_bit_for_bit() {
+    let cases = check_fixture("m7_knn_index", &QVEC8, 50, false);
+    assert!(cases >= 16, "{cases} searches");
+}
+
+/// `GenM7Queries.QVEC8`.
+const QVEC8: [f32; 8] = [0.1, -0.3, 0.25, 0.6, -0.05, 0.4, -0.2, 0.15];
+
+/// Runs every search `name`'s `searches.tsv` records and fails on the first
+/// difference from Lucene's hits; returns how many ran.
+fn check_fixture(name: &str, qvec: &[f32], top: usize, estimator: bool) -> usize {
+    let dir = data(name);
     let text = std::fs::read_to_string(dir.join("searches.tsv"))
         .expect("run scripts/gen-fixtures.sh --only GenM7Queries");
     let reader = DirectoryReader::open(&FsDirectory::open(&dir)).unwrap();
-    assert_eq!(reader.segment_readers().len(), 3);
+    assert!(reader.segment_readers().len() >= 2);
     assert!(
         reader
             .segment_readers()
@@ -458,14 +483,22 @@ fn m7_queries_match_lucene_bit_for_bit() {
     let vectors = VectorFiles::read(&dir, &reader);
     let knn = |op: &str, field: &str, arg: &str, clause: Option<Clause>| -> Option<Clause> {
         let filters = match (op, &clause) {
-            ("KFF" | "VSFF", Some(f)) => Some(filter_bitsets(&segments, f).unwrap()),
+            ("KFF" | "VSFF" | "KFS", Some(f)) => Some(filter_bitsets(&segments, f).unwrap()),
             _ => None,
         };
         let knn_segments = vectors.segments(&reader, filters.as_deref());
-        let float = || QVEC.to_vec();
+        let float = || qvec.to_vec();
         Some(match op {
             "KF" | "KFF" => {
                 let q = KnnFloatVectorQuery::new(field, float(), arg.parse().unwrap()).unwrap();
+                let hits = search_knn_float_vector_query_multi_segment(&knn_segments, &q).unwrap();
+                knn_hits_to_clause(&knn_segments, &hits)
+            }
+            "KFS" => {
+                let (k, threshold) = arg.split_once(':').unwrap();
+                let q = KnnFloatVectorQuery::new(field, float(), k.parse().unwrap())
+                    .unwrap()
+                    .with_filtered_search_threshold(threshold.parse().unwrap());
                 let hits = search_knn_float_vector_query_multi_segment(&knn_segments, &q).unwrap();
                 knn_hits_to_clause(&knn_segments, &hits)
             }
@@ -527,7 +560,7 @@ fn m7_queries_match_lucene_bit_for_bit() {
             &segments,
             &bq,
             &norms,
-            20,
+            top,
             similarity.as_ref(),
         ) {
             Ok(got) => got,
@@ -547,7 +580,7 @@ fn m7_queries_match_lucene_bit_for_bit() {
             // nothing; one already past stops before the first window.
             let far = std::time::Instant::now() + std::time::Duration::from_secs(3600);
             let (timed, cut) =
-                search_boolean_query_multi_segment_with_deadline(&segments, &bq, &norms, 20, far)
+                search_boolean_query_multi_segment_with_deadline(&segments, &bq, &norms, top, far)
                     .unwrap();
             let timed: Vec<(i32, u32)> = timed
                 .iter()
@@ -560,13 +593,17 @@ fn m7_queries_match_lucene_bit_for_bit() {
             }
             let past = std::time::Instant::now();
             let (none, cut) =
-                search_boolean_query_multi_segment_with_deadline(&segments, &bq, &norms, 20, past)
+                search_boolean_query_multi_segment_with_deadline(&segments, &bq, &norms, top, past)
                     .unwrap();
             assert!(none.is_empty() && cut, "an expired deadline scores nothing");
         }
     }
     // `BayesianScoreEstimator.estimate` over `body`.
-    let est = std::fs::read_to_string(dir.join("estimator.tsv")).unwrap();
+    let est = if estimator {
+        std::fs::read_to_string(dir.join("estimator.tsv")).unwrap()
+    } else {
+        String::new()
+    };
     let mut estimates = 0;
     for line in est.lines() {
         let f: Vec<&str> = line.split('\t').collect();
@@ -588,14 +625,14 @@ fn m7_queries_match_lucene_bit_for_bit() {
         }
         estimates += 1;
     }
-    assert_eq!(estimates, 3);
+    assert_eq!(estimates, if estimator { 3 } else { 0 });
     eprintln!("{cases} searches compared, {skipped} skipped");
     assert_eq!(skipped, 0, "every recorded search runs");
-    assert!(cases >= 200, "{cases} searches");
     assert!(
         failures.is_empty(),
         "{} searches differ:\n{}",
         failures.len(),
         failures.join("\n")
     );
+    cases
 }
