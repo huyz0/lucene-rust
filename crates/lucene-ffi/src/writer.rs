@@ -311,6 +311,8 @@ pub(crate) fn map_writer_error(context: &str, e: index_writer::Error) -> FfiStat
         // contain. Retrying either is futile, so `Io` would be actively
         // misleading to a Java caller.
         | index_writer::Error::MergeSortDisagreement { .. }
+        // `MergeRateLimiter.setMBPerSec`'s `IllegalArgumentException`.
+        | index_writer::Error::InvalidMergeRate(_)
         | index_writer::Error::UnknownSortField(_) => FfiStatus::InvalidArgument,
         // Everything left is a genuine I/O or decode failure of the index
         // itself. Enumerated rather than left to a `_` arm so that the next
@@ -354,6 +356,8 @@ pub(crate) fn map_writer_error(context: &str, e: index_writer::Error) -> FfiStat
         // contradicts itself and no caller argument would make the merge
         // succeed.
         | index_writer::Error::SegmentDocCountMismatch { .. }
+        // `MergePolicy.MergeAbortedException` is an `IOException` in Java.
+        | index_writer::Error::MergeAborted
         | index_writer::Error::UnreadableSegmentPostings { .. } => FfiStatus::Io,
     };
     set_last_error(format!("{context}: {e}"));
