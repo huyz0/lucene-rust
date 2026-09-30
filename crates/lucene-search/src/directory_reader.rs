@@ -627,9 +627,26 @@ impl SegmentReader {
         Ok(reader)
     }
 
-    /// The segment's `.fnm`-derived field metadata (field name/number
-    /// mapping, doc-values type, etc.) -- callers use this to resolve a field
-    /// name to the number [`Self::doc_values_meta`]'s entries are keyed by.
+    /// `LeafReader.getPointValues`'s reader over every points field of this
+    /// segment (an empty one when it has none), its `.kdm` parsed once and
+    /// shared with [`OpenedSegments::open_points`].
+    ///
+    /// # Errors
+    /// Points files that do not decode.
+    pub fn points_reader(&self) -> crate::Result<lucene_codecs::points::PointsReader<'_>> {
+        let Some((kdm, kdi, kdd)) = self.points_files() else {
+            return Ok(lucene_codecs::points::PointsReader::empty());
+        };
+        if self.points_meta.get().is_none() {
+            let parsed = lucene_codecs::points::open_meta(kdm, kdi, kdd, &self.segment_id, "")?;
+            let _ = self.points_meta.set(parsed);
+        }
+        let meta = self.points_meta.get_or_init(Vec::new);
+        Ok(lucene_codecs::points::PointsReader::with_meta(
+            kdi, kdd, meta,
+        ))
+    }
+
     /// The segment's `.kdm`/`.kdi`/`.kdd` bytes, or `None` when it indexes no
     /// points. All three are present together or not at all.
     pub fn points_files(&self) -> Option<(&[u8], &[u8], &[u8])> {
@@ -698,6 +715,9 @@ impl SegmentReader {
         self.segment_id
     }
 
+    /// The segment's `.fnm`-derived field metadata (field name/number
+    /// mapping, doc-values type, etc.) -- callers use this to resolve a field
+    /// name to the number [`Self::doc_values_meta`]'s entries are keyed by.
     pub fn field_infos(&self) -> &FieldInfos {
         &self.field_infos
     }
