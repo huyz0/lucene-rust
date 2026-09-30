@@ -214,6 +214,7 @@ pub mod highlighter;
 pub mod knn_collectors;
 pub mod multi_bits;
 pub mod multi_segment;
+pub mod multi_terms;
 pub mod near_spans;
 pub mod ordinal_map;
 mod phrase_scorer;
