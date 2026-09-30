@@ -77,6 +77,10 @@ use crate::postings::{
 pub enum Error {
     #[error("write_single_field: terms must be non-empty")]
     EmptyTerms,
+    /// `Lucene103BlockTreeTermsWriter.validateSettings`'s
+    /// `IllegalArgumentException` ([`WriteOptions::validate`]).
+    #[error("{0}")]
+    InvalidBlockSizes(String),
     #[error("write_single_field: terms out of order or duplicated at index {0}")]
     TermsNotSorted(usize),
     #[error("write_single_field: term at index {0} has no postings (docFreq == 0)")]
@@ -536,6 +540,7 @@ pub struct FieldNorms<'a> {
 
 /// Input to [`write_single_field`]: one field's whole term dictionary,
 /// already fully materialized and sorted.
+#[derive(Clone, Copy)]
 pub struct FieldPostingsInput<'a> {
     pub field_number: i32,
     pub index_options: IndexOptions,
@@ -647,6 +652,83 @@ pub fn write_fields_with_norms(
     segment_id: &[u8; ID_LENGTH],
     segment_suffix: &str,
 ) -> Result<Output> {
+    write_fields_with_options(
+        inputs,
+        norms,
+        &WriteOptions::default(),
+        segment_id,
+        segment_suffix,
+    )
+}
+
+/// What distinguishes one `Lucene104PostingsFormat` instance's files from
+/// another's, beyond the fields it is handed: the block-tree block sizes of
+/// its constructor, and which of `.pos`/`.pay` exist, which Java decides
+/// from the whole segment's `FieldInfos` (`hasProx`, `hasPayloads ||
+/// hasOffsets`) rather than from the fields a per-field format was given --
+/// so the second format of a segment with positions anywhere has an empty
+/// `.pos` of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WriteOptions {
+    /// `minTermBlockSize`, `DEFAULT_MIN_BLOCK_SIZE` (25) by default.
+    pub min_items_in_block: usize,
+    /// `maxTermBlockSize`, `DEFAULT_MAX_BLOCK_SIZE` (48) by default.
+    pub max_items_in_block: usize,
+    /// Force a `.pos` (`Some(true)`) or none (`Some(false)`); `None` writes
+    /// one when some input field indexes positions.
+    pub has_prox: Option<bool>,
+    /// The same for `.pay`: `None` writes one when some input field has
+    /// offsets or payloads.
+    pub has_payloads_or_offsets: Option<bool>,
+}
+
+impl Default for WriteOptions {
+    fn default() -> Self {
+        WriteOptions {
+            min_items_in_block: blocktree_writer::MIN_ITEMS_IN_BLOCK,
+            max_items_in_block: blocktree_writer::MAX_ITEMS_IN_BLOCK,
+            has_prox: None,
+            has_payloads_or_offsets: None,
+        }
+    }
+}
+
+impl WriteOptions {
+    /// `Lucene103BlockTreeTermsWriter.validateSettings`.
+    // ARITH: `min_items_in_block >= 2` is checked before `- 1`, and a block
+    // size is a constructor argument, far from `usize::MAX / 2`.
+    #[allow(clippy::arithmetic_side_effects)]
+    pub fn validate(&self) -> Result<()> {
+        let (min, max) = (self.min_items_in_block, self.max_items_in_block);
+        if min <= 1 {
+            return Err(Error::InvalidBlockSizes(format!(
+                "minItemsInBlock must be >= 2; got {min}"
+            )));
+        }
+        if min > max {
+            return Err(Error::InvalidBlockSizes(format!(
+                "maxItemsInBlock must be >= minItemsInBlock; got maxItemsInBlock={max} minItemsInBlock={min}"
+            )));
+        }
+        if 2 * (min - 1) > max {
+            return Err(Error::InvalidBlockSizes(format!(
+                "maxItemsInBlock must be at least 2*(minItemsInBlock-1); got maxItemsInBlock={max} minItemsInBlock={min}"
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// [`write_fields_with_norms`] for one `Lucene104PostingsFormat` instance
+/// of a segment -- see [`WriteOptions`].
+pub fn write_fields_with_options(
+    inputs: &[FieldPostingsInput<'_>],
+    norms: &[FieldNorms<'_>],
+    options: &WriteOptions,
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+) -> Result<Output> {
+    options.validate()?;
     if inputs.is_empty() {
         return Err(Error::EmptyTerms);
     }
@@ -668,9 +750,11 @@ pub fn write_fields_with_norms(
     // ---- .pos ----
     // Only written at all if at least one field indexes positions, exactly
     // like a real segment has no `.pos` file when no field needs one.
-    let any_positions = inputs
-        .iter()
-        .any(|input| input.index_options.subsumes_positions());
+    let any_positions = options.has_prox.unwrap_or_else(|| {
+        inputs
+            .iter()
+            .any(|input| input.index_options.subsumes_positions())
+    });
     let mut pos = Vec::new();
     if any_positions {
         codec_util::write_index_header(
@@ -685,10 +769,14 @@ pub fn write_fields_with_norms(
     // ---- .pay ----
     // Only written at all if at least one field indexes offsets and/or has
     // payloads, same "no file needed" convention as `.pos`.
-    let any_offsets = inputs
-        .iter()
-        .any(|input| input.index_options.subsumes_offsets());
-    let any_payloads = inputs.iter().any(|input| input.has_payloads);
+    let any_offsets = options.has_payloads_or_offsets.unwrap_or_else(|| {
+        inputs
+            .iter()
+            .any(|input| input.index_options.subsumes_offsets())
+    });
+    let any_payloads = options
+        .has_payloads_or_offsets
+        .unwrap_or_else(|| inputs.iter().any(|input| input.has_payloads));
     let mut pay = Vec::new();
     if any_offsets || any_payloads {
         codec_util::write_index_header(
@@ -889,6 +977,7 @@ pub fn write_fields_with_norms(
             &mut tim,
             &mut tip,
             &block_terms,
+            (options.min_items_in_block, options.max_items_in_block),
             input.index_options != IndexOptions::Docs,
             |meta, indices| {
                 write_term_metadata(

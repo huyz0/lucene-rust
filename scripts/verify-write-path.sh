@@ -220,6 +220,12 @@ CASES=(
   # norms and doc values all live inside the archive -- list no loose file in
   # any .si, and pass CheckIndex.
   "lucene-index|write_compound_segment_fixture|compound-segments|VerifyCompoundSegments"
+  # PerFieldPostingsFormat through IndexWriter (M7): `key`/`tag` routed to a
+  # second Lucene104PostingsFormat(10, 20), flushed (three segments, two
+  # compound), a delete by a routed field's term, and a force-merge. Lucene
+  # must find each field in its own group's files under the suffix its .fnm
+  # records, see exactly the deleted documents gone, and pass CheckIndex.
+  "lucene-index|write_per_field_formats_fixture|per-field-formats|VerifyPerFieldFormats"
 )
 
 echo "verify-write-path: compiling verifiers"

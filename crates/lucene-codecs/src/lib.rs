@@ -49,6 +49,7 @@ pub mod norms;
 pub mod offline_sorter;
 pub mod packed_data;
 pub mod packed_ints;
+pub mod per_field_postings;
 pub mod points;
 pub mod postings;
 pub mod postings_writer;
