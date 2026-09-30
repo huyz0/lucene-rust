@@ -10,7 +10,7 @@ name: ci
 
 on:
   push:
-    branches: [main, m8-final-wip]
+    branches: [main]
   pull_request:
 
 concurrency:
