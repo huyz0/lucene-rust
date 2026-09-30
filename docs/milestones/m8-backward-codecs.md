@@ -9,7 +9,7 @@
 | **Effort** | XL |
 | **Depends on** | [M7](m7-core-complete.md) (per-field formats, the inventory gate) |
 | **Unblocks** | adopting the Rust engine on existing indices without a rewrite |
-| **Status** | in progress: T8.1 delivered; T8.2 and T8.3 delivered for every non-vector format |
+| **Status** | in progress: T8.1, T8.2, T8.4 delivered; T8.3 delivered bar the quantized vector formats and one benchmark query; T8.5's native half delivered |
 
 ---
 
@@ -100,10 +100,9 @@ record is `docs/inventory/lucene-backward-codecs.tsv`
 
 - `bwc_fixtures_match_lucene` reproduces every line of every
   `expected.txt` from this port's readers. 10.4.0 passed before any M8 change
-  (the current readers were already exact); 9.11.1, 9.12.2, 10.0.0 and 10.2.2
-  pass in full; 9.0.0-9.8.0 pass every line but `vec`/`knn`, the retired HNSW
-  formats, which the test's `EXPECTED_FAILURES` table lists and which fails
-  when an entry starts passing.
+  (the current readers were already exact); every other version passes in
+  full since the retired HNSW readers landed (T8.3), so the test's
+  `EXPECTED_FAILURES` table is empty.
 - `every_version_searches_like_the_current_codec` opens every fixture with
   `DirectoryReader` and runs 34 queries (term, prefix, wildcard, regexp,
   term-in-set, exact and sloppy phrase on positions/offsets/payloads fields,
@@ -111,11 +110,12 @@ record is `docs/inventory/lucene-backward-codecs.tsv`
   block-max pruned: every version returns 10.4.0's hits, scores (bit for bit)
   and totals.
 - `every_version_passes_check_index`: this port's `CheckIndex` finds nothing
-  on any fixture, bar the retired HNSW vector families of 9.0-9.8.
+  on any fixture, and its vector (and, on `_0`, graph) families must have
+  run.
 - Seen to fail: shifting the retired postings' first-document delta base by
   one fails all three.
 
-### T8.3 — Old BKD, old HNSW, old postings · delivered 2026-09-30 except HNSW
+### T8.3 — Old BKD, old HNSW, old postings · delivered 2026-09-30 (quantized vectors open)
 
 Old BKD: version 9 (every index before 10.2) and its scalar `BPV_24` doc-id
 layout. Old postings: `Lucene90`, `Lucene99`, `Lucene912`, `Lucene101` (and
@@ -124,31 +124,160 @@ layout. Old postings: `Lucene90`, `Lucene99`, `Lucene912`, `Lucene101` (and
 whose FST index is converted at open into the trie the current dictionary
 navigates (`backward_codecs/blocktree.rs`; the `.tim` blocks are unchanged).
 
+Old HNSW: `Lucene90`, `Lucene91`, `lucene92`, `Lucene94` and `Lucene95`
+(`backward_codecs/hnsw_vectors.rs::RetiredHnswVectorsReader`): each `.vem`
+entry becomes the current flat reader's `FlatFieldEntry` plus a graph view
+(`Lucene90`'s single level, the fixed-slot graphs of 9.1-9.4, and 9.5's, which
+is `Lucene99` version 0). Search is each reader's own: the current
+`HnswGraphSearcher` without an exhaustive branch for 9.1-9.8, and 9.0's
+random-entry-point search seeded from the `.vex` checksum through a
+bit-exact `SplittableRandom.nextInt(bound)`. KNN hits match Java's exactly,
+including 10.5.0's `Lucene90` quirk of reporting vector ordinals as doc ids.
+The KNN query layer (`vector_query::GraphReader`) and `CheckIndex` serve all
+five.
+
 **Open, precisely:**
 
-- HNSW `Lucene90`..`Lucene95` (9.0-9.8 fixtures), `Lucene99` scalar
-  quantization, `Lucene102` binary quantization: not ported. The seam is the
-  vector reader's header check (`hnsw_vectors.rs`/`vectors.rs`); the fixture
-  lines are `EXPECTED_FAILURES`.
-- Performance (port-workflow stages 2-3): a retired-format term is decoded
-  whole when its cursor opens and served through the tail-block path, with no
-  block skipping and no impacts (the skip data, trailing or inline, is
-  stepped over); the FST-to-trie conversion is an open-time pass over each
-  field's index. No benchmark against Lucene exists yet for either.
-### T8.4 — Merge old into new
-### T8.5 — Plugin: drop the `postings_format` fallback for supported versions
+- `Lucene99ScalarQuantizedVectorsFormat`/`Lucene99HnswScalarQuantizedVectorsFormat`
+  and `Lucene102(Hnsw)BinaryQuantizedVectorsFormat`: not ported (inventory
+  `deferred:M8`). No default codec wrote them -- they are per-field opt-ins --
+  and no fixture holds one yet.
+- One query in the benchmark below, on one corpus (q89 on 9.0).
+
+**Performance (port-workflow stages 2-3).** The lazy cursors
+(`postings.rs::{LazyDocsCursor,PositionsCursor}`) now serve every retired
+generation block by block, as they serve `Lucene104`, at the generation's own
+128-document block: `Lucene912`/`Lucene101`/`Lucene103` through their inline
+level-0 and level-1 (every 4,096 documents) headers, and `Lucene90`/`Lucene99`
+through the trailing multi-level skip list
+(`backward_codecs/skip_list.rs::SkipList`, a port of
+`MultiLevelSkipListReader` + `Lucene90ScoreSkipReader`), whose level-0 and
+level-1 entries give `advance_shallow` each block's extent and impacts without
+decoding it. The first cut had decoded a whole term at open and stepped over
+its skip data.
+
+Benchmark: `benchmarks/queries.tsv` (87 queries) over a 1M-document index
+written by `GenCorpus` compiled against Lucene 9.0.0 and against 9.12.2 (one
+segment each), with the M1 bench-runner against Java's `BenchRunner` on 10.5.0
+plus backward-codecs, on a 4-core host other jobs kept at load 8-12. Every
+query returns Java's hits, top set and top score on both corpora.
+
+| | queries slower than Java, 9.0 corpus | 9.12 corpus |
+|---|---|---|
+| whole-term decode (first cut) | 47 of 87 (term query q01 at 0.33x) | 42 of 87 |
+| skip data + impacts | 2 (q80, q89) | 7 (q34, q58, q59, q60, q77, q80, q89) |
+| the losers again, 1 s warm-up, 3 s measured, three rounds | q89 in 3 of 3 (0.68-0.94x) | none in a majority of rounds |
+
+Single runs of the whole set move by up to 2x on this host (Java's q80 read
+311 qps in one run and 1,087 in the next), which is why the losers were run
+again rather than taken as measured. **Still open: q89 on the 9.0 corpus**, a
+`t1` term query sorted by a keyword doc value then score, at 0.68-0.94x,
+where the same query sorted by a numeric doc value (q80) wins and q89 itself
+wins on 9.12 (0.99-1.23x) and on the current format (about 1.6x, going by
+`docs/benchmarks/perf-gate.md`'s negative control). Both old corpora carry the same
+doc values format (`Lucene90DocValuesMetadata` version 0), so format alone
+does not explain it; not yet profiled.
+
+Skip data is verified on `fixtures/data/bwc-big/<version>/`
+(`fixtures/bwc/BwcBig.java`, `gen-bwc-fixtures.sh --big`): one 20,000-document
+segment per generation whose terms reach every level of both kinds of skip
+data. `tests/bwc_postings.rs::*_skip_data_at_every_level` checks the lazy
+cursor's `next_doc` and `advance` at strides from 1 to 8,193 against the eager
+decode, and that the level-0 and level-1 impacts `advance_shallow` exposes
+bound every frequency in their span. `skip_list.rs`'s unit tests check
+`skip_to` against a port of the writer at up to four levels, and truncated or
+bit-flipped skip data. Seen to fail: `SkipList::level1` handing back the
+level-0 entry's impacts fails both unit tests and the `Lucene90`/`Lucene99`
+fixture tests (on the `peak` term, whose one high-frequency document in 1,500
+is what separates the levels; the first version of the fixture, without it,
+passed that mutation). Not caught: a norm-side error in an impact, since the
+tests check frequencies only.
+
+**FST-to-trie conversion at open.** `examples/reader_open_profile` (now
+parsing a `.si` by its codec) over the same corpora gives
+`blocktree::open_shared` a minimum of 6.0 ms on the 9.0 segment (88 KB `.tip`)
+and 3.3 ms on the 9.12 one (77 KB), against 1 us for the current format's
+trie, which is read in place. Lucene opens a `Lucene90BlockTreeTermsReader`
+FST in place (`FieldReader`: `new OffHeapFSTStore(indexIn, ...)`), at a cost that
+does not grow with the index. So the port
+pays a few milliseconds per retired-format segment per open, once, where
+Lucene does not; it is not a per-query cost. A lazy per-field conversion
+would remove it; not done.
+### T8.4 — Merge old into new · delivered 2026-09-30
+
+This port's `IndexWriter` merges segments any 9.0-10.4 release wrote into
+`Lucene104` ones, by `force_merge` and by an ordinary policy merge at commit,
+and applies buffered deletes to them. What had to change was only where the
+writer finds an old segment's files: its postings are named (and their headers
+suffixed) after the segment's own format (`_0_Lucene90_0.tim`), read off the
+segment's `.tim` (`index_writer.rs::postings_file_base`), and its vectors sit
+in a retired format's `.vem`/`.vec`/`.vex` triple
+(`index_writer.rs::retired_vector_files`), served by
+`RetiredHnswVectorsReader`. The merged graph is built from scratch over a
+retired source's vectors, as 10.5.0's `IncrementalHnswGraphMerger` does for a
+reader that is not an `HnswGraphProvider`.
+
+**Verification.** `scripts/verify-bwc-merge.sh` (Java 10.5.0 +
+backward-codecs; 20 of 20 pass): for every fixture version, (1) the old index
+alone through `force_merge(1)`, and (2) the old index plus three segments Lucene
+10.5.0 appends to it (`fixtures/bwc/BwcAppend.java`, with deletes against the
+old segments) through an ordinary `TieredMergePolicy` merge that takes old and
+new segments together. `fixtures/bwc/BwcMergeCheck.java` then requires
+`CheckIndex` clean, every segment the merge wrote to be `Lucene104` (postings
+`Lucene104`, vectors `Lucene99HnswVectorsFormat`), and every live input
+document in the output with all its content: per-field SHA-256 digests over
+postings (positions, offsets, payloads), norms, the five doc-values types,
+points, stored fields, term vectors and vectors, with documents matched by
+their stored fields (a merge may order its sources either way). Seen to fail:
+one extra delete, and one changed numeric doc value, in a merged copy. On the
+Rust side, `bwc_fixtures.rs::every_version_force_merges_into_lucene104`
+deletes a document of an old segment by term, force-merges, and requires one
+`Lucene104` segment, a clean `CheckIndex` and every query of the 34-query set
+matching as many documents as before; with the delete path reverted to
+`Lucene104` file names it fails (`NotFound`).
+
+**Divergence found, not fixed here:** `IndexWriter::force_merge` merges the
+smallest segments first and concatenates them in that order, where 10.5.0's
+`TieredMergePolicy.findForcedMerges` merges everything in size-descending
+order in its single-segment case -- so the merged segment numbers its
+documents in a different order than Lucene's would (contents equal).
+### T8.5 — Plugin: drop the `postings_format` fallback for supported versions · native half delivered 2026-09-30
+
+`NativeReaders` falls back with `postings_format` only for a postings format
+outside `SUPPORTED_POSTINGS_FORMATS` (`Lucene90`, `Lucene99`, `Lucene912`,
+`Lucene101`, `Lucene103`, `Lucene104`) -- a `completion` field's
+`Completion104`, say -- instead of for anything but `Lucene104`.
+`feature-matrix.md` and `opensearch-native-queries.md` say so.
+
+**Verified:** `lucene-ffi`'s
+`jvm_reader.rs::every_bwc_version_is_served_natively_like_the_current_codec`
+opens every T8.1 fixture version (9.0.0 to 10.2.2) through the plugin's own
+entry point (`ffi_open_jvm_reader`, with `segments_N` bytes, `maxDoc`s and
+live-docs words as the JVM passes them) and requires term and boolean queries
+to return the 10.4.0 fixture's hits, scores and totals.
+
+**Not verified here** (they need Docker or a JDK 25 toolchain, which this
+environment's run did not use): `scripts/verify-opensearch.sh` on a node
+holding an old index, the JVM-side `gradle -p opensearch-plugin check`
+(`NativeSelfTest`), and the acceptance criterion's cluster upgraded from
+OpenSearch 2.x.
 
 ---
 
 ## Acceptance criteria
 
-- [ ] Every fixture index from T8.1 opens, passes this port's `CheckIndex`,
+- [x] Every fixture index from T8.1 opens, passes this port's `CheckIndex`,
       and returns the same hits and scores as the Lucene version that wrote it.
-- [ ] Merging a mixed-version index yields `Lucene104` segments that real
-      Lucene 10.5.0 reads and `CheckIndex` passes.
+      (`bwc_fixtures.rs`, no expected failures left; the reference is Lucene
+      10.5.0 + backward-codecs reading each index, `BwcDump`.)
+- [x] Merging a mixed-version index yields `Lucene104` segments that real
+      Lucene 10.5.0 reads and `CheckIndex` passes. (`scripts/verify-bwc-merge.sh`,
+      T8.4.)
 - [ ] A cluster upgraded from OpenSearch 2.x serves its old index natively,
       verified by `verify-opensearch.sh` against a snapshot restored from 2.x.
-- [ ] Reading an old format is no slower than Lucene reading it.
+- [ ] Reading an old format is no slower than Lucene reading it. (86 of 87
+      queries on 1M-document 9.0 and 9.12 indexes; q89 on 9.0 open, and
+      3-6 ms of FST-to-trie conversion per segment at open. T8.3.)
 
 ## Risks and unknowns
 
@@ -160,6 +289,6 @@ navigates (`backward_codecs/blocktree.rs`; the `.tim` blocks are unchanged).
 
 ## Exit artifacts
 
-- `fixtures/data/backward/<version>/` indices and their generator
+- `fixtures/data/bwc/<version>/` and `fixtures/data/bwc-big/<version>/` indices and their generators
 - `docs/parity.md` rows for every `lucene-backward-codecs` class
 - The plugin's fallback table in `feature-matrix.md` updated

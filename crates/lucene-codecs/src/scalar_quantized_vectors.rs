@@ -809,6 +809,12 @@ impl<'a> QuantizedVectorValues<'a> {
         }
         match &self.ord_to_doc {
             OrdToDoc::Empty | OrdToDoc::Dense => Ok(ord),
+            // `ord < size` above; `get`, so a table shorter than `size` is an
+            // error rather than a panic.
+            OrdToDoc::Explicit(docs) => match docs.get(ord as usize) {
+                Some(&doc) => Ok(doc),
+                None => Err(Error::OrdOutOfRange(ord, self.size)),
+            },
             OrdToDoc::Sparse {
                 addresses_offset,
                 addresses_length,
@@ -829,6 +835,11 @@ impl<'a> QuantizedVectorValues<'a> {
         match &self.ord_to_doc {
             OrdToDoc::Empty => Ok(DocToOrdCursor::Empty),
             OrdToDoc::Dense => Ok(DocToOrdCursor::Dense { size: self.size }),
+            // Only the retired Lucene90/91 HNSW readers build an explicit
+            // table; no scalar-quantized field entry carries one.
+            OrdToDoc::Explicit(_) => Err(Error::CorruptMeta(
+                "explicit ordToDoc table in a scalar-quantized field".into(),
+            )),
             OrdToDoc::Sparse {
                 docs_with_field_offset,
                 docs_with_field_length,

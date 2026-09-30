@@ -843,6 +843,19 @@ impl<'a> HnswVectorsReader<'a> {
         })
     }
 
+    /// A reader over entries another format's `.vem` described: the retired
+    /// `Lucene95HnswVectorsFormat` wrote its graph exactly as
+    /// `Lucene99HnswVectorsFormat` version 0 does (plain-vint neighbour
+    /// deltas, `DirectMonotonic` node offsets), only framed in a different
+    /// metadata file.
+    pub(crate) fn from_entries(index: &'a [u8], version: i32, fields: Vec<HnswFieldEntry>) -> Self {
+        HnswVectorsReader {
+            index,
+            version,
+            fields,
+        }
+    }
+
     pub fn version(&self) -> i32 {
         self.version
     }
@@ -880,6 +893,53 @@ fn read_field_entry(
     let vector_index_length = meta.read_vlong()?;
     let dimension = meta.read_vint()?;
     let size = meta.read_i32()?;
+    read_graph_meta(
+        meta,
+        GraphMetaHead {
+            field_number,
+            encoding,
+            similarity,
+            vector_index_offset,
+            vector_index_length,
+            dimension,
+            size,
+        },
+        index_len,
+    )
+}
+
+/// What a `.vem` field entry says before its graph parameters: shared by
+/// `Lucene99HnswVectorsReader` and the retired `Lucene95HnswVectorsReader`,
+/// whose entries differ only in what sits between this head and `M` (the
+/// latter keeps its vectors' own offsets and `ordToDoc` there).
+pub(crate) struct GraphMetaHead {
+    pub field_number: i32,
+    pub encoding: VectorEncoding,
+    pub similarity: VectorSimilarityFunction,
+    pub vector_index_offset: i64,
+    pub vector_index_length: i64,
+    pub dimension: i32,
+    pub size: i32,
+}
+
+/// The rest of a `Lucene99HnswVectorsReader.FieldEntry` (and of
+/// `Lucene95HnswVectorsReader.FieldEntry`, whose tail is the same bytes): `M`,
+/// the level count, the upper levels' node lists and the node-offsets
+/// `DirectMonotonic` meta.
+pub(crate) fn read_graph_meta(
+    meta: &mut SliceInput<'_>,
+    head: GraphMetaHead,
+    index_len: usize,
+) -> Result<HnswFieldEntry> {
+    let GraphMetaHead {
+        field_number,
+        encoding,
+        similarity,
+        vector_index_offset,
+        vector_index_length,
+        dimension,
+        size,
+    } = head;
     let m = meta.read_vint()?;
     let num_levels = meta.read_vint()?;
     if dimension <= 0 {
@@ -1135,6 +1195,13 @@ impl HnswGraphView for OffHeapHnswGraph<'_> {
     fn neighbors_into(&self, level: i32, node: i32, out: &mut Vec<i32>) -> Result<()> {
         out.clear();
         let target_index = if level == 0 {
+            // Java `assert`s nothing here: an ordinal past `size` would read
+            // the first upper-level node's offset and decode *its* list as
+            // this node's. Every caller in this crate passes a checked
+            // ordinal, but the method is public.
+            if node < 0 || node >= self.size {
+                return corrupt(format!("seek level=0 target={node} out of range"));
+            }
             node as i64
         } else {
             let nodes = self

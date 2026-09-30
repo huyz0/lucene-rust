@@ -103,7 +103,9 @@ impl SegmentBytes {
         VectorsInput {
             flat: FlatVectorsReader::open(&self.vemf, &self.vec, &self.id, &self.suffix).unwrap(),
             hnsw: Some(
-                HnswVectorsReader::open(&self.vem, &self.vex, &self.id, &self.suffix).unwrap(),
+                HnswVectorsReader::open(&self.vem, &self.vex, &self.id, &self.suffix)
+                    .unwrap()
+                    .into(),
             ),
             field_infos: infos,
             live_docs: None,
