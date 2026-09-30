@@ -395,8 +395,10 @@ distribution is `ported` or `not needed` with a reason in `parity.md`, and
 
 These stay deferred *within* M0-M6; M7-M14 schedule each of them:
 
-- **Backward codecs** (M8). Until then, old segments stay on the Java engine
-  until force-merged.
+- **Backward codecs** (M8). Reading, merging and native serving of Lucene
+  9.0-10.4 segments are delivered (an index upgraded from OpenSearch 2.19 is
+  served natively, `scripts/verify-opensearch-upgrade.sh`); the milestone's
+  open acceptance item is in its own page.
 - **Join, grouping, taxonomy facets** (M10, M13).
 - **`luke`, `benchmark`, `demo`, `monitor`, `replicator`, `expressions`,
   `classification`, `spatial3d`, `spatial-extras`** (M9, M13, M14).
