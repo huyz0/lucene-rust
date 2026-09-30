@@ -2181,7 +2181,7 @@ fn require_bytes(input: &SliceInput, needed: usize, what: &str) -> Result<()> {
 
 /// [`read_doc_ids_into`] into a fresh `Vec`, for tests.
 #[cfg(test)]
-fn read_doc_ids(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
+pub(crate) fn read_doc_ids(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
     let mut out = Vec::new();
     read_doc_ids_into(input, count, &mut out, BKD_VERSION_CURRENT)?;
     Ok(out)
