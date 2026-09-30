@@ -180,6 +180,10 @@ pub struct KnnFloatVectorQuery {
     /// walking it under another one silently degrades recall with no error at
     /// all.
     pub similarity: Option<VectorSimilarityFunction>,
+    /// `KnnSearchStrategy.Hnsw(filteredSearchThreshold)`: a filtered leaf
+    /// passing fewer than this percentage of its graph walks level 0 with
+    /// `FilteredHnswGraphSearcher`. `0`, Lucene's default, never does.
+    pub filtered_search_threshold: i32,
 }
 
 /// `KnnByteVectorQuery`: [`KnnFloatVectorQuery`] over a BYTE-encoded field.
@@ -198,6 +202,10 @@ pub struct KnnByteVectorQuery {
     pub visited_limit: u64,
     /// See [`KnnFloatVectorQuery::similarity`].
     pub similarity: Option<VectorSimilarityFunction>,
+    /// `KnnSearchStrategy.Hnsw(filteredSearchThreshold)`: a filtered leaf
+    /// passing fewer than this percentage of its graph walks level 0 with
+    /// `FilteredHnswGraphSearcher`. `0`, Lucene's default, never does.
+    pub filtered_search_threshold: i32,
 }
 
 macro_rules! knn_query_impl {
@@ -214,6 +222,7 @@ macro_rules! knn_query_impl {
                     ef_search: 0,
                     visited_limit: 0,
                     similarity: None,
+                    filtered_search_threshold: 0,
                 })
             }
 
@@ -232,6 +241,12 @@ macro_rules! knn_query_impl {
             /// See [`KnnFloatVectorQuery::similarity`].
             pub fn with_similarity(mut self, similarity: VectorSimilarityFunction) -> Self {
                 self.similarity = Some(similarity);
+                self
+            }
+
+            /// See [`KnnFloatVectorQuery::filtered_search_threshold`].
+            pub fn with_filtered_search_threshold(mut self, threshold: i32) -> Self {
+                self.filtered_search_threshold = threshold;
                 self
             }
         }
@@ -257,6 +272,9 @@ macro_rules! knn_query_impl {
             fn similarity(&self) -> Option<VectorSimilarityFunction> {
                 self.similarity
             }
+            fn filtered_search_threshold(&self) -> i32 {
+                self.filtered_search_threshold
+            }
         }
     };
 }
@@ -275,6 +293,7 @@ trait KnnQuery {
     fn ef_search(&self) -> usize;
     fn visited_limit(&self) -> u64;
     fn similarity(&self) -> Option<VectorSimilarityFunction>;
+    fn filtered_search_threshold(&self) -> i32;
 }
 
 #[derive(Clone, Copy)]
@@ -559,6 +578,8 @@ struct LeafExtras {
     /// `(saturationThreshold, patience)`.
     patience: Option<(f64, usize)>,
     deadline: Option<std::time::Instant>,
+    /// `KnnSearchStrategy.Hnsw.filteredSearchThreshold`.
+    filtered_search_threshold: i32,
 }
 
 impl LeafExtras {
@@ -680,6 +701,7 @@ fn leaf_results<S: VectorScorer, G: HnswGraphView>(
                 accept_ords: accept_bits,
                 filtered_doc_count: Some(max_doc),
                 seed_ords,
+                filtered_search_threshold: plan.extras.filtered_search_threshold,
             },
             &plan.extras,
         )?
@@ -708,6 +730,7 @@ fn leaf_results<S: VectorScorer, G: HnswGraphView>(
                     accept_ords: Some(bits),
                     filtered_doc_count: Some(cost as i32),
                     seed_ords,
+                    filtered_search_threshold: plan.extras.filtered_search_threshold,
                 },
                 &plan.extras,
             )?;
@@ -832,7 +855,10 @@ fn search_one_segment<Q: KnnQuery>(input: &VectorsInput<'_>, query: &Q) -> Resul
         collector_k: query.k().max(query.ef_search()),
         visited_limit: visit_limit(query),
         filtered: input.filter.is_some(),
-        extras: LeafExtras::default(),
+        extras: LeafExtras {
+            filtered_search_threshold: query.filtered_search_threshold(),
+            ..LeafExtras::default()
+        },
     };
     let (mut leaf, _) = search_leaf(input, &resolved, query.target(), &plan, None)?;
     leaf.hits.truncate(query.k());
@@ -961,7 +987,10 @@ fn plan_leaves<Q: KnnQuery>(
             collector_k: leaf_top_k.max(query.ef_search()),
             visited_limit: visit_limit(query),
             filtered: seg.vectors.filter.is_some(),
-            extras,
+            extras: LeafExtras {
+                filtered_search_threshold: query.filtered_search_threshold(),
+                ..extras
+            },
         });
     }
     Ok((resolved, plans))
@@ -1650,6 +1679,8 @@ impl SimilarityLeaf<'_, '_> {
                     accept_ords: accept_bits,
                     filtered_doc_count: Some(i32::try_from(self.cardinality).unwrap_or(i32::MAX)),
                     seed_ords: None,
+                    // `AbstractVectorSimilarityQuery.DEFAULT_STRATEGY`: `Hnsw(0)`.
+                    filtered_search_threshold: 0,
                 },
             )?;
             let (hits, early) = collector.into_hits();

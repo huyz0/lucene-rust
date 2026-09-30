@@ -1085,6 +1085,224 @@ impl HnswGraphSearcher {
         self.search_level(results, scorer, 0, seed_ords, graph, accept_ords)
     }
 
+    /// Port of `org.apache.lucene.util.hnsw.FilteredHnswGraphSearcher`
+    /// (ACORN-style): the same descent to level 0, then a level-0 walk that
+    /// scores only accepted neighbours and, when too many of a candidate's
+    /// neighbours are filtered out, looks through them to their own
+    /// neighbours. `HnswGraphSearcher.search` picks it for a
+    /// `KnnSearchStrategy.Hnsw` whose `filteredSearchThreshold` exceeds the
+    /// percentage of the graph that passes the filter.
+    ///
+    /// `filter_size` is `filteredDocCount`: `> 0` and below the graph's
+    /// ordinal space (`FilteredHnswGraphSearcher.create`'s own check).
+    /// `seed_ords`, when given, replace the descent as in
+    /// [`Self::search_seeded`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn search_filtered<G: HnswGraphView, S: VectorScorer, C: KnnCollect + ?Sized>(
+        &mut self,
+        results: &mut C,
+        scorer: &mut S,
+        graph: &G,
+        accept_ords: &FixedBitSet,
+        filter_size: i32,
+        seed_ords: Option<&[i32]>,
+    ) -> Result<()> {
+        let capacity = Self::graph_capacity(graph);
+        if filter_size <= 0 || filter_size as usize >= capacity {
+            return Err(Error::InvalidGraphParameter(format!(
+                "filterSize must be > 0 and < graph size, got {filter_size} of {capacity}"
+            )));
+        }
+        let max_conn = graph.max_conn();
+        let filter_ratio = filter_size as f32 / graph.size() as f32;
+        // `Math.round(Math.min(1 / filterRatio, graph.maxConn() / 2.0))`.
+        let max_exploration_multiplier = f64::from(1.0 / filter_ratio)
+            .min(f64::from(max_conn) / 2.0)
+            .round() as i32;
+        // `Math.round(Math.min(Math.max(0, 1.0 / filterRatio - 2.0 * maxConn), maxConn))`.
+        let min_to_score = (1.0 / f64::from(filter_ratio) - 2.0 * f64::from(max_conn))
+            .max(0.0)
+            .min(f64::from(max_conn))
+            .round() as i32;
+        let eps: Vec<i32> = match seed_ords {
+            Some(seeds) => {
+                if seeds.is_empty() {
+                    return Err(Error::InvalidGraphParameter(
+                        "the number of seeded entry points must be > 0".to_string(),
+                    ));
+                }
+                seeds.to_vec()
+            }
+            None => {
+                let ep = self.find_best_entry_point(scorer, graph, results)?;
+                if ep == -1 {
+                    return Ok(());
+                }
+                vec![ep]
+            }
+        };
+        self.search_level_filtered(
+            results,
+            scorer,
+            &eps,
+            graph,
+            accept_ords,
+            max_exploration_multiplier.max(1),
+            min_to_score,
+        )
+    }
+
+    /// `FilteredHnswGraphSearcher.searchLevel` (level 0 only).
+    #[allow(clippy::too_many_arguments)]
+    fn search_level_filtered<G: HnswGraphView, S: VectorScorer, C: KnnCollect + ?Sized>(
+        &mut self,
+        results: &mut C,
+        scorer: &mut S,
+        eps: &[i32],
+        graph: &G,
+        accept_ords: &FixedBitSet,
+        max_exploration_multiplier: i32,
+        min_to_score: i32,
+    ) -> Result<()> {
+        const EXPANDED_EXPLORATION_LAMBDA: f32 = 0.10;
+        let size = Self::graph_capacity(graph);
+        self.prepare_scratch_state(size, Self::bulk_width(graph));
+        let visited_len = self.visited.len();
+        check_neighbors(eps, visited_len, usize::MAX)?;
+        if accept_ords.len() < visited_len {
+            return Err(Error::InvalidGraphParameter(format!(
+                "the accept-ordinal set covers {} ordinals, short of the {visited_len} this \
+                 graph can name",
+                accept_ords.len()
+            )));
+        }
+        if self.bulk_scores.len() < eps.len() {
+            self.bulk_nodes.resize(eps.len(), 0);
+            self.bulk_scores.resize(eps.len(), 0.0);
+        }
+        if results.early_terminated() {
+            return Ok(());
+        }
+        // `scoreEntryPoints`.
+        scorer.bulk_score(eps, &mut self.bulk_scores[..eps.len()])?;
+        results.inc_visited_count(eps.len());
+        for (i, &ep) in eps.iter().enumerate() {
+            let score = self.bulk_scores[i];
+            self.visited.set(ep as usize);
+            self.candidates.add(ep, score);
+            if accept_ords.get_doc(ep) {
+                results.collect(ep, score);
+            }
+        }
+        if results.early_terminated() {
+            return Ok(());
+        }
+        // `IntArrayQueue`s of `maxConn * 2 * maxExplorationMultiplier`.
+        let cap = usize::try_from(
+            i64::from(graph.max_conn())
+                .saturating_mul(2)
+                .saturating_mul(i64::from(max_exploration_multiplier)),
+        )
+        .unwrap_or(0);
+        let mut to_score: Vec<i32> = Vec::with_capacity(cap);
+        let mut to_explore: Vec<i32> = Vec::with_capacity(cap);
+        let mut friends: Vec<i32> = Vec::new();
+        let mut min_accepted = next_up(results.min_competitive_similarity());
+        while self.candidates.size() > 0 && !results.early_terminated() {
+            if min_accepted > self.candidates.top_score() {
+                break;
+            }
+            let top = self.candidates.pop();
+            graph.neighbors_into(0, top, &mut self.neighbor_scratch)?;
+            check_neighbors(&self.neighbor_scratch, visited_len, usize::MAX)?;
+            let neighbor_count = self.neighbor_scratch.len();
+            to_score.clear();
+            to_explore.clear();
+            let mut explore_at = 0usize;
+            for &friend in &self.neighbor_scratch {
+                if to_score.len() >= cap {
+                    break;
+                }
+                if self.visited.get(friend as usize) {
+                    continue;
+                }
+                self.visited.set(friend as usize);
+                if accept_ords.get_doc(friend) {
+                    to_score.push(friend);
+                } else if to_explore.len() < cap {
+                    to_explore.push(friend);
+                }
+            }
+            let filtered_amount = to_explore.len() as f32 / neighbor_count as f32;
+            let max_to_score_count = (neighbor_count as f32
+                * (max_exploration_multiplier as f32).min(1.0 / (1.0 - filtered_amount)))
+                as usize;
+            let max_additional_to_explore = cap.saturating_sub(1);
+            let mut total_explored = to_score.len() + to_explore.len();
+            if to_score.len() < max_to_score_count && filtered_amount > EXPANDED_EXPLORATION_LAMBDA
+            {
+                loop {
+                    // `toExplore.poll()` first, then the other two tests.
+                    let Some(&explore_friend) = to_explore.get(explore_at) else {
+                        break;
+                    };
+                    explore_at += 1;
+                    if !(total_explored < max_additional_to_explore
+                        && to_score.len() < max_to_score_count)
+                    {
+                        break;
+                    }
+                    graph.neighbors_into(0, explore_friend, &mut friends)?;
+                    check_neighbors(&friends, visited_len, usize::MAX)?;
+                    for &fof in &friends {
+                        if to_score.len() >= max_to_score_count {
+                            break;
+                        }
+                        if self.visited.get(fof as usize) {
+                            continue;
+                        }
+                        self.visited.set(fof as usize);
+                        total_explored += 1;
+                        if accept_ords.get_doc(fof) {
+                            if to_score.len() < cap {
+                                to_score.push(fof);
+                            }
+                        } else if total_explored < max_additional_to_explore
+                            && (to_score.len() as i64) < i64::from(min_to_score)
+                            && to_explore.len() < cap
+                        {
+                            to_explore.push(fof);
+                        }
+                    }
+                }
+            }
+            let n = to_score.len();
+            if self.bulk_scores.len() < n {
+                self.bulk_scores.resize(n, 0.0);
+            }
+            let max_score = if n > 0 {
+                scorer.bulk_score(&to_score, &mut self.bulk_scores[..n])?
+            } else {
+                f32::NEG_INFINITY
+            };
+            results.inc_visited_count(n);
+            if max_score > min_accepted {
+                for i in 0..n {
+                    let sim = self.bulk_scores[i];
+                    if sim > min_accepted {
+                        let ord = to_score[i];
+                        self.candidates.add(ord, sim);
+                        if results.collect(ord, sim) {
+                            min_accepted = next_up(results.min_competitive_similarity());
+                        }
+                    }
+                }
+            }
+            results.next_vectors_block();
+        }
+        Ok(())
+    }
+
     /// `HnswGraphSearcher.getGraphSize(graph)` -- `maxNodeId() + 1`, not
     /// `size()`; see [`HnswGraphView::max_node_id`]. Widened to `i64` because
     /// `max_node_id()` is a trait method: an implementation returning
