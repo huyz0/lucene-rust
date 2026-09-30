@@ -1070,6 +1070,39 @@ pub(crate) fn score_segment<C: ScoringCollector + ?Sized>(
     Ok(())
 }
 
+/// `TimeLimitingBulkScorer.INTERVAL`: the first window's width in documents.
+const TIME_LIMIT_INTERVAL: i32 = 100;
+
+/// `TimeLimitingBulkScorer.score`: [`score_segment`] a window of documents
+/// at a time, the window growing by half each step, the deadline checked
+/// before each one. Returns `true` when the deadline stopped it
+/// (`TimeExceededException`, which `IndexSearcher` turns into partial
+/// results); what was collected before that stands.
+pub(crate) fn score_segment_with_deadline<C: ScoringCollector + ?Sized>(
+    bulk: &mut Bulk<'_>,
+    mode: Mode,
+    live_docs: Option<&FixedBitSet>,
+    collector: &mut C,
+    deadline: std::time::Instant,
+) -> Result<bool> {
+    let (mut min, max) = (0i32, NO_MORE_DOCS);
+    let mut interval = TIME_LIMIT_INTERVAL;
+    while min < max {
+        // `MathUtil.unsignedMin(min + interval, max)`: an overflowing sum
+        // is a huge unsigned value, so `max` wins.
+        let new_max = min.checked_add(interval).map_or(max, |m| m.min(max));
+        let grown = interval.saturating_add(interval >> 1);
+        if interval < grown {
+            interval = grown;
+        }
+        if std::time::Instant::now() >= deadline {
+            return Ok(true);
+        }
+        min = bulk.score(mode, live_docs, collector, min, new_max)?;
+    }
+    Ok(false)
+}
+
 /// [`score_segment`] over the documents below `end` only.
 pub(crate) fn score_segment_below<C: ScoringCollector + ?Sized>(
     bulk: &mut Bulk<'_>,

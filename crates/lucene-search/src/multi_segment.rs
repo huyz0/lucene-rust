@@ -789,6 +789,9 @@ pub(crate) fn global_boolean_stats(
             map.insert_fuzzy(fuzzy, stats);
         }
     }
+    // The expanded terms' own statistics, which the blended rewrite scores
+    // each term from (`totalTermFreq`, the field's sums).
+    crate::exec::extended::add_fuzzy_term_stats(&mut map, segments)?;
     Ok(map)
 }
 
@@ -1137,8 +1140,7 @@ pub fn search_boolean_query_multi_segment_with_similarity(
     crate::check_similarity_supported(query)?;
     let rewritten = rewrite_points_ranges(query, segments);
     let query = rewritten.as_ref().unwrap_or(query);
-    let mut global = global_boolean_stats(segments, query)?;
-    crate::exec::extended::add_fuzzy_term_stats(&mut global, segments)?;
+    let global = global_boolean_stats(segments, query)?;
     let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
     search_leaves_shared(&doc_bases, top_n, |i, local| {
         let seg = &segments[i];
@@ -1147,6 +1149,56 @@ pub fn search_boolean_query_multi_segment_with_similarity(
             seg, query, seg_norms, &global, similarity, local,
         )
     })
+}
+
+/// `IndexSearcher.setTimeout(queryTimeout)` then `search(query, topN)`:
+/// every segment's bulk scorer is a `TimeLimitingBulkScorer`, which checks
+/// `deadline` before each window of documents (100, growing by half), so a
+/// long segment stops mid-way rather than only between segments. Returns
+/// the hits collected before the deadline and whether it cut the search
+/// short (`TopDocs.totalHits` becoming a lower bound, `partialResult`).
+pub fn search_boolean_query_multi_segment_with_deadline(
+    segments: &[OpenSegment<'_>],
+    query: &BooleanQuery,
+    norms: &[Option<&HashMap<String, FieldNorms<'_>>>],
+    top_n: usize,
+    deadline: Instant,
+) -> Result<(Vec<ScoreDoc>, bool)> {
+    let rewritten = rewrite_points_ranges(query, segments);
+    let query = rewritten.as_ref().unwrap_or(query);
+    let global = global_boolean_stats(segments, query)?;
+    let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
+    let mut timed_out = false;
+    let (hits, skipped) =
+        merge_multi_segment_scored_with_deadline(&doc_bases, top_n, Some(deadline), |i, local| {
+            let seg = &segments[i];
+            let ctx = crate::exec::LeafContext {
+                fields: seg.fields,
+                doc_in: seg.doc_in,
+                pos_in: seg.pos_in,
+                pay_in: seg.pay_in,
+                live_docs: seg.live_docs,
+                points: seg.points,
+                norms: norms.get(i).copied().flatten(),
+                global: Some(&global),
+                max_doc: seg.max_doc,
+                cache: seg.cache,
+                reader: seg.reader,
+                similarity: None,
+            };
+            let mode = crate::exec::Mode::of(local);
+            if let Some(mut bulk) = crate::exec::bulk_boolean(&ctx, query, 1.0, mode)? {
+                timed_out |= crate::exec::score_segment_with_deadline(
+                    &mut bulk,
+                    mode,
+                    seg.live_docs,
+                    local,
+                    deadline,
+                )?;
+            }
+            Ok(())
+        })?;
+    Ok((hits, timed_out || skipped))
 }
 
 /// The term a boolean of one scoring term clause rewrites to

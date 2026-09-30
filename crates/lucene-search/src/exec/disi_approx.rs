@@ -38,7 +38,6 @@ pub(crate) struct DisiApprox<S> {
     pub(crate) subs: Vec<S>,
     /// `DisiWrapper.doc`, per member.
     docs: Vec<i32>,
-    costs: Vec<i64>,
     /// `leadIterators`: `DisiPriorityQueue2` (`two`) or the `N` heap.
     lead: Vec<usize>,
     two: bool,
@@ -93,7 +92,6 @@ impl<S: DisiSub> DisiApprox<S> {
         let mut out = Self {
             subs,
             docs,
-            costs,
             lead: Vec::with_capacity(lead_members.len()),
             two,
             others,
@@ -288,17 +286,6 @@ impl<S: DisiSub> DisiApprox<S> {
             }
         }
     }
-
-    /// Member `i`'s `DisiWrapper.cost`.
-    #[allow(dead_code)]
-    pub(crate) fn member_cost(&self, i: usize) -> i64 {
-        self.costs[i]
-    }
-
-    /// Member `i`'s document as the approximation last saw it.
-    pub(crate) fn member_doc(&self, i: usize) -> i32 {
-        self.docs[i]
-    }
 }
 
 fn left(i: usize) -> usize {
@@ -381,9 +368,11 @@ mod tests {
     }
 
     #[test]
-    fn two_member_queue_links_the_second_first() {
+    fn two_member_queue_links_top2_before_top() {
+        // The second member moved last, so it is `top` and the first is
+        // `top2`; `topList` links `top2` ahead of `top`.
         let got = walk(&[&[2, 4], &[2, 4]], i64::MAX);
-        assert_eq!(got[0], (2, vec![1, 0]));
+        assert_eq!(got[0], (2, vec![0, 1]));
     }
 
     #[test]
@@ -394,13 +383,12 @@ mod tests {
         let refs: Vec<&[i32]> = lists.iter().map(|l| l.as_slice()).collect();
         let subs: Vec<V> = refs.iter().map(|l| V::new(l)).collect();
         let mut d = DisiApprox::new(subs, i64::MAX);
-        assert_eq!(d.advance(7).unwrap(), 8);
+        assert_eq!(d.advance(8).unwrap(), 8);
         let mut list = Vec::new();
         d.top_list(&mut list);
         list.sort_unstable();
         assert_eq!(list, vec![0, 2, 6]);
         assert_eq!(d.doc_id(), 8);
         assert!(d.cost() > 0);
-        assert_eq!(d.member_doc(0), 8);
     }
 }

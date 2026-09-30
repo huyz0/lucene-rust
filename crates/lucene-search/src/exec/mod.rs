@@ -52,7 +52,9 @@ mod wand;
 pub(crate) use build::LeafContext;
 #[cfg(test)]
 pub(crate) use bulk::Bulk;
-pub(crate) use bulk::{bulk_boolean, score_segment, score_segment_below};
+pub(crate) use bulk::{
+    bulk_boolean, score_segment, score_segment_below, score_segment_with_deadline,
+};
 
 use lucene_util::fixed_bit_set::FixedBitSet;
 
