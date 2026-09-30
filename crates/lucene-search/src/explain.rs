@@ -47,7 +47,9 @@
 //!   match" — these clauses have no single term's frequency/idf to break
 //!   down further, see each query type's own doc comment in `query.rs` for
 //!   why they're unscored): `Clause::Wildcard`, `Clause::Prefix`,
-//!   `Clause::Fuzzy`, `Clause::Regexp`, `Clause::Span`.
+//!   `Clause::Fuzzy`, `Clause::Regexp`.
+//! - **The scorer's value, one level** (`SpanWeight.explain`'s value without
+//!   its per-term breakdown): `Clause::Span`, `Clause::MultiPhrase`.
 
 use std::collections::HashMap;
 
@@ -440,10 +442,22 @@ pub fn explain_clause_with_stats(
             let matched = crate::regexp_doc_ids(fields, doc_in, live_docs, query)?.contains(&doc);
             Ok(explain_flat_match(matched, clause, doc))
         }
+        // `SpanWeight.explain`: the score the scorer gives the document (no
+        // per-term breakdown yet), or `"no matching term"`.
         Clause::Span(query) => {
-            let matched = crate::span_doc_ids(fields, doc_in, pos_in, pay_in, live_docs, query)?
-                .contains(&doc);
-            Ok(explain_flat_match(matched, clause, doc))
+            let hits = crate::exec::span::resolve_span(
+                fields, doc_in, pos_in, pay_in, live_docs, norms, global, query,
+            )?;
+            Ok(match hits.iter().find(|(d, _)| *d == doc) {
+                Some(&(_, score)) => Explanation::match_(
+                    score,
+                    format!(
+                        "weight({} in {doc}) [BM25Similarity], result of:",
+                        describe_clause(clause)
+                    ),
+                ),
+                None => Explanation::no_match("no matching term"),
+            })
         }
         Clause::PointsRange(query) => {
             let matched = crate::points_range_doc_ids(points, live_docs, query)?.contains(&doc);
@@ -508,7 +522,7 @@ pub fn explain_clause_with_stats(
 }
 
 /// A leaf clause with no per-term breakdown (`Wildcard`/`Prefix`/`Fuzzy`/
-/// `Regexp`/`Span` — see this module's doc comment): matches score exactly
+/// `Regexp` — see this module's doc comment): matches score exactly
 /// `1.0` (same flat constant every `clause_scores` arm for these variants
 /// already reports), non-matches are a clean `no_match` at `0.0`.
 ///
@@ -2723,13 +2737,66 @@ mod tests {
             Some(&pos_in),
             Some(&pay_in),
             None,
-            &Clause::Span(query),
+            &Clause::Span(query.clone()),
             matched[0],
             None,
         )
         .unwrap();
         assert!(hit.matched);
-        assert_eq!(hit.value, 1.0);
+        // `SpanWeight.explain`'s value is the score the scorer gives the
+        // document, not a flat constant.
+        let scored = crate::exec::span::resolve_span(
+            &fields,
+            Some(&doc_in),
+            Some(&pos_in),
+            Some(&pay_in),
+            None,
+            None,
+            None,
+            &query,
+        )
+        .unwrap();
+        assert_eq!(scored[0], (matched[0], hit.value));
+        assert_ne!(hit.value, 1.0);
+        // Unscored, the same documents; nothing for a query with no leaf, no
+        // leaf in the index, or leaves that never meet.
+        let ctx = crate::exec::LeafContext {
+            fields: &fields,
+            doc_in: Some(&doc_in),
+            pos_in: Some(&pos_in),
+            pay_in: Some(&pay_in),
+            live_docs: None,
+            points: None,
+            norms: None,
+            global: None,
+            max_doc: None,
+            cache: None,
+            reader: None,
+            similarity: None,
+        };
+        let (docs, scores) = crate::exec::span::span_doc_scores(&ctx, &query, 1.0, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(docs, matched);
+        assert!(scores.is_empty());
+        for nothing in [
+            crate::SpanQuery::span_or(std::iter::empty()),
+            crate::SpanQuery::span_term("pos", "zzz-missing"),
+            crate::SpanQuery::span_near(
+                [
+                    crate::SpanQuery::span_term("pos", "alpha"),
+                    crate::SpanQuery::span_term("pos", "zzz-missing"),
+                ],
+                0,
+                true,
+            ),
+        ] {
+            assert!(
+                crate::exec::span::span_doc_scores(&ctx, &nothing, 1.0, true)
+                    .unwrap()
+                    .is_none()
+            );
+        }
 
         let miss_query = crate::SpanQuery::span_term("pos", "zzz-missing");
         let miss = explain_clause(
