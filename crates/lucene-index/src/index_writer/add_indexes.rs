@@ -33,6 +33,7 @@
 //!   either method: Java sorts such a reader during the merge
 //!   (`MergeState.maybeSortReaders`), which this port's merge does not do.
 
+use lucene_codecs::field_infos::FieldInfo;
 use lucene_store::directory::Directory;
 
 use super::{Error, IndexWriter, Result, SeqNo, WRITE_LOCK_NAME};
@@ -159,33 +160,7 @@ impl IndexWriter<'_> {
             let Some(ours) = self.cfg.fields.iter().find(|f| f.name == theirs.name) else {
                 continue;
             };
-            let conflict = [
-                (ours.doc_values_type != theirs.doc_values_type
-                    && ours.doc_values_type != lucene_codecs::field_infos::DocValuesType::None
-                    && theirs.doc_values_type != lucene_codecs::field_infos::DocValuesType::None)
-                    .then_some("doc values type"),
-                (ours.index_options != theirs.index_options
-                    && ours.index_options != lucene_codecs::field_infos::IndexOptions::None
-                    && theirs.index_options != lucene_codecs::field_infos::IndexOptions::None)
-                    .then_some("index options"),
-                (theirs.point_dimension_count != 0
-                    && (ours.point_dimension_count, ours.point_num_bytes)
-                        != (theirs.point_dimension_count, theirs.point_num_bytes))
-                    .then_some("point dimensions"),
-                (theirs.vector_dimension != 0
-                    && (
-                        ours.vector_dimension,
-                        ours.vector_encoding,
-                        ours.vector_similarity_function,
-                    ) != (
-                        theirs.vector_dimension,
-                        theirs.vector_encoding,
-                        theirs.vector_similarity_function,
-                    ))
-                    .then_some("vector"),
-                (ours.soft_deletes_field != theirs.soft_deletes_field).then_some("soft-deletes"),
-            ];
-            if let Some(what) = conflict.into_iter().flatten().next() {
+            if let Some(what) = Self::schema_conflict(ours, theirs) {
                 return Err(Error::AddIndexes(format!(
                     "cannot change field {:?} from this index's {what} to segment {}'s",
                     theirs.name, sci.segment_name
@@ -193,6 +168,43 @@ impl IndexWriter<'_> {
             }
         }
         Ok(())
+    }
+
+    /// What an incoming segment's field would change in this writer's field of
+    /// the same name -- `FieldInfos.FieldNumbers.verifyFieldInfo` /
+    /// `verifySameSchema`: a doc-values type or index options both sides set
+    /// differently, point or vector shape, the soft-deletes role.
+    fn schema_conflict(ours: &FieldInfo, theirs: &FieldInfo) -> Option<&'static str> {
+        use lucene_codecs::field_infos::{DocValuesType, IndexOptions};
+        [
+            (ours.doc_values_type != theirs.doc_values_type
+                && ours.doc_values_type != DocValuesType::None
+                && theirs.doc_values_type != DocValuesType::None)
+                .then_some("doc values type"),
+            (ours.index_options != theirs.index_options
+                && ours.index_options != IndexOptions::None
+                && theirs.index_options != IndexOptions::None)
+                .then_some("index options"),
+            (theirs.point_dimension_count != 0
+                && (ours.point_dimension_count, ours.point_num_bytes)
+                    != (theirs.point_dimension_count, theirs.point_num_bytes))
+                .then_some("point dimensions"),
+            (theirs.vector_dimension != 0
+                && (
+                    ours.vector_dimension,
+                    ours.vector_encoding,
+                    ours.vector_similarity_function,
+                ) != (
+                    theirs.vector_dimension,
+                    theirs.vector_encoding,
+                    theirs.vector_similarity_function,
+                ))
+                .then_some("vector"),
+            (ours.soft_deletes_field != theirs.soft_deletes_field).then_some("soft-deletes"),
+        ]
+        .into_iter()
+        .flatten()
+        .next()
     }
 
     /// `IndexWriter.copySegmentAsIs`.
