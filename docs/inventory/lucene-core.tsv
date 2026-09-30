@@ -1076,7 +1076,7 @@ util/bkd/PointReader	not-needed	interface over heap/offline point buffers
 util/bkd/PointValue	ported	crates/lucene-codecs/src/points.rs::Point
 util/bkd/PointWriter	not-needed	interface over heap/offline point buffers
 util/compress/LZ4	ported	crates/lucene-codecs/src/lz4.rs::decompress
-util/compress/LowercaseAsciiCompression	partial	crates/lucene-codecs/src/blocktree.rs::decompress_lowercase_ascii -- M7: decompress only; no compress (the blocktree writer emits NO_COMPRESSION)
+util/compress/LowercaseAsciiCompression	ported	crates/lucene-codecs/src/lowercase_ascii.rs::compress
 util/fst/BitTableUtil	ported	crates/lucene-codecs/src/fst.rs::bit_table_count_bits
 util/fst/ByteBlockPoolReverseBytesReader	not-needed	NodeHash's reader over its copied node bytes; the Rust NodeHash keys its tables on the node's arcs (which nodes are shared does not depend on how the copy is read back), so there is no byte-pool copy to read
 util/fst/ByteSequenceOutputs	ported	crates/lucene-codecs/src/fst.rs::ByteSequenceOutputs
