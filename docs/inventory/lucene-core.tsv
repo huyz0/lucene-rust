@@ -122,16 +122,16 @@ codecs/lucene103/blocktree/TrieBuilder	ported	crates/lucene-codecs/src/blocktree
 codecs/lucene103/blocktree/TrieReader	ported	crates/lucene-codecs/src/blocktree.rs::load_node
 codecs/lucene104/ForUtil	ported	crates/lucene-codecs/src/for_util.rs::ForUtil
 codecs/lucene104/Lucene104Codec	ported	crates/lucene-index/src/index_writer.rs::POSTINGS_FORMAT_NAME
-codecs/lucene104/Lucene104HnswScalarQuantizedVectorsFormat	todo:M7	HNSW over scalar-quantized vectors (not ported)
+codecs/lucene104/Lucene104HnswScalarQuantizedVectorsFormat	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::HNSW_NAME
 codecs/lucene104/Lucene104PostingsFormat	ported	crates/lucene-codecs/src/postings.rs::DocInput
 codecs/lucene104/Lucene104PostingsReader	partial	crates/lucene-codecs/src/postings.rs::LazyDocsCursor -- M7: "a term whose `totalTermFreq` exceeds `u32::MAX` cannot have its positions walked (`Error::Unsupported`)" (parity)
 codecs/lucene104/Lucene104PostingsWriter	ported	crates/lucene-codecs/src/postings_writer.rs::write_fields
-codecs/lucene104/Lucene104ScalarQuantizedVectorScorer	todo:M7	scalar-quantized vector scoring (not ported)
-codecs/lucene104/Lucene104ScalarQuantizedVectorsFormat	todo:M7	scalar-quantized vectors format (not ported)
-codecs/lucene104/Lucene104ScalarQuantizedVectorsReader	todo:M7	scalar-quantized vectors reader (not ported)
-codecs/lucene104/Lucene104ScalarQuantizedVectorsWriter	todo:M7	scalar-quantized vectors writer (not ported)
-codecs/lucene104/OffHeapScalarQuantizedFloatVectorValues	todo:M7	off-heap scalar-quantized float vector values (not ported)
-codecs/lucene104/OffHeapScalarQuantizedVectorValues	todo:M7	off-heap scalar-quantized vector values (not ported)
+codecs/lucene104/Lucene104ScalarQuantizedVectorScorer	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::quantized_score
+codecs/lucene104/Lucene104ScalarQuantizedVectorsFormat	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::NAME
+codecs/lucene104/Lucene104ScalarQuantizedVectorsReader	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::ScalarQuantizedVectorsReader
+codecs/lucene104/Lucene104ScalarQuantizedVectorsWriter	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::ScalarQuantizedVectorsWriter
+codecs/lucene104/OffHeapScalarQuantizedFloatVectorValues	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::dequantized
+codecs/lucene104/OffHeapScalarQuantizedVectorValues	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::QuantizedVectorValues
 codecs/lucene104/PForUtil	ported	crates/lucene-codecs/src/for_util.rs::pfor_decode
 codecs/lucene104/PostingIndexInput	ported	crates/lucene-codecs/src/for_util.rs::ForUtil
 codecs/lucene104/PostingsUtil	ported	crates/lucene-codecs/src/postings.rs::read_tail_block
@@ -552,7 +552,7 @@ internal/tests/SegmentReaderAccess	not-needed	Test-framework access hook into pa
 internal/tests/TestSecrets	not-needed	Test-framework access hook into package-private internals; Rust tests use crate-internal visibility.
 internal/vectorization/DefaultDocValuesBulkDecodeSupport	ported	crates/lucene-util/src/packed_longs.rs::decode_range
 internal/vectorization/DefaultDocValuesRangeSupport	ported	crates/lucene-search/src/doc_value_query.rs::search_numeric_range
-internal/vectorization/DefaultVectorUtilSupport	partial	crates/lucene-util/src/simd.rs::dot_f32 -- M7: VectorUtilSupport kernels for the scalar-quantized formats are absent: int4*/uint8* dot products and square distances, int4BitDotProduct/int4DibitDotProduct, minMaxScalarQuantize/recalculateScalarQuantizationOffset
+internal/vectorization/DefaultVectorUtilSupport	ported	crates/lucene-util/src/vector_util.rs::uint8_dot_product_scalar
 internal/vectorization/DefaultVectorizationProvider	not-needed	Runtime provider selection between scalar and Panama implementations; the port selects SIMD kernels at compile time (lucene-util simd.rs).
 internal/vectorization/DocValuesBulkDecodeSupport	ported	crates/lucene-util/src/packed_longs.rs::decode_range
 internal/vectorization/DocValuesRangeSupport	ported	crates/lucene-search/src/doc_value_query.rs::search_numeric_range
@@ -567,10 +567,10 @@ internal/vectorization/MemorySegmentPostingDecodingUtil	ported	crates/lucene-cod
 internal/vectorization/PanamaDocValuesBulkDecodeSupport	ported	crates/lucene-util/src/packed_longs.rs::decode_range
 internal/vectorization/PanamaDocValuesRangeSupport	ported	crates/lucene-search/src/doc_value_query.rs::search_numeric_range
 internal/vectorization/PanamaVectorConstants	not-needed	Panama Vector API species/lane-width constants; lucene-util simd.rs fixes its lane widths per compile target.
-internal/vectorization/PanamaVectorUtilSupport	partial	crates/lucene-util/src/simd.rs::dot_f32 -- M7: VectorUtilSupport kernels for the scalar-quantized formats are absent: int4*/uint8* dot products and square distances, int4BitDotProduct/int4DibitDotProduct, minMaxScalarQuantize/recalculateScalarQuantizationOffset
+internal/vectorization/PanamaVectorUtilSupport	ported	crates/lucene-util/src/vector_util.rs::uint8_dot_product
 internal/vectorization/PanamaVectorizationProvider	not-needed	Runtime Panama provider bootstrap; the port selects SIMD kernels at compile time (lucene-util simd.rs).
 internal/vectorization/PostingDecodingUtil	ported	crates/lucene-codecs/src/for_util.rs::ForUtil
-internal/vectorization/VectorUtilSupport	partial	crates/lucene-util/src/simd.rs::dot_f32 -- M7: VectorUtilSupport kernels for the scalar-quantized formats are absent: int4*/uint8* dot products and square distances, int4BitDotProduct/int4DibitDotProduct, minMaxScalarQuantize/recalculateScalarQuantizationOffset
+internal/vectorization/VectorUtilSupport	ported	crates/lucene-util/src/vector_util.rs::int4_bit_dot_product
 internal/vectorization/VectorizationProvider	not-needed	Runtime vectorization provider lookup (JDK/Panama detection); the port selects SIMD kernels at compile time (lucene-util simd.rs).
 search/AbstractDocIdSetIterator	not-needed	Java base class that caches docID to cut call-site polymorphism; every Rust Scorer tracks its own doc_id.
 search/AbstractKnnCollector	ported	crates/lucene-codecs/src/hnsw.rs::KnnCollector
@@ -1029,7 +1029,7 @@ util/TimSorter	not-needed	generic sorting framework; the port sorts with std sli
 util/ToStringUtils	not-needed	toString helpers; Rust Display/Debug
 util/UnicodeUtil	not-needed	UTF-8/UTF-16/UTF-32 conversion and counting; Rust std str/char (from_utf8, encode_utf16, chars().count())
 util/Unwrappable	not-needed	wrapper-unwrapping interface
-util/VectorUtil	partial	crates/lucene-util/src/simd.rs::dot_f32 -- M7: float dot/squareDistance/cosine, findNextGEQ here; byte-vector similarities, scaleMaxInnerProductScore, normalizeToUnitInterval, checkFinite in vectors.rs, filterByScore in bulk_scorer.rs; l2normalize, isUnitVector/isZeroVector, add, int4*/uint8* quantized kernels, int4BitDotProduct/int4DibitDotProduct, xorBitCount, minMaxScalarQuantize/recalculateOffset missing
+util/VectorUtil	ported	crates/lucene-util/src/vector_util.rs::l2normalize
 util/Version	partial	crates/lucene-index/src/segment_infos.rs::LuceneVersion -- M7: major/minor/bugfix with fromBits range checks; no Version.parse/parseLeniently, named constants or onOrAfter API
 util/VirtualMethod	not-needed	reflection-based override detection
 util/WeakIdentityMap	not-needed	JVM weak-reference identity map
@@ -1106,7 +1106,7 @@ util/hnsw/AbstractHnswGraphSearcher	ported	crates/lucene-codecs/src/hnsw.rs::Hns
 util/hnsw/BlockingFloatHeap	ported	crates/lucene-util/src/float_heap.rs::BlockingFloatHeap
 util/hnsw/CloseableRandomVectorScorerSupplier	not-needed	closeable supplier over a merge temp file; Rust lifetimes/Drop
 util/hnsw/ConcurrentHnswMerger	todo:M7	multi-threaded HNSW graph merge (numMergeWorkers > 1)
-util/hnsw/FilteredHnswGraphSearcher	todo:M7	filtered (ACORN-style) graph search via KnnSearchStrategy.Hnsw with a non-zero threshold
+util/hnsw/FilteredHnswGraphSearcher	ported	crates/lucene-codecs/src/filtered_hnsw_searcher.rs::FilteredHnswGraphSearcher
 util/hnsw/FloatHeap	ported	crates/lucene-util/src/float_heap.rs::FloatHeap
 util/hnsw/HasKnnVectorValues	not-needed	accessor interface for vector values
 util/hnsw/HnswBuilder	ported	crates/lucene-codecs/src/hnsw.rs::HnswGraphBuilder
@@ -1190,10 +1190,10 @@ util/packed/PackedReaderIterator	ported	crates/lucene-codecs/src/packed_ints.rs:
 util/packed/PackedWriter	ported	crates/lucene-codecs/src/packed_ints.rs::PackedWriter
 util/packed/PagedGrowableWriter	ported	crates/lucene-util/src/packed/paged_mutable.rs::PagedGrowableWriter
 util/packed/PagedMutable	ported	crates/lucene-util/src/packed/paged_mutable.rs::PagedMutable
-util/quantization/BaseQuantizedByteVectorValues	todo:M7	scalar vector quantization (M7 T7.6)
-util/quantization/LegacyQuantizedByteVectorValues	todo:M7	scalar vector quantization (M7 T7.6)
-util/quantization/OptimizedScalarQuantizer	todo:M7	scalar vector quantization (M7 T7.6)
-util/quantization/QuantizedByteVectorValues	todo:M7	scalar vector quantization (M7 T7.6)
-util/quantization/QuantizedVectorsReader	todo:M7	scalar vector quantization (M7 T7.6)
-util/quantization/ScalarQuantizedVectorSimilarity	todo:M7	scalar vector quantization (M7 T7.6)
-util/quantization/ScalarQuantizer	todo:M7	scalar vector quantization (M7 T7.6)
+util/quantization/BaseQuantizedByteVectorValues	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::QuantizedVectorValues
+util/quantization/LegacyQuantizedByteVectorValues	deferred:M8	abstract values base of the backward-codecs Lucene99ScalarQuantizedVectorsFormat (read in M8); its quantizer, ScalarQuantizer, is ported in crates/lucene-util/src/quantization.rs
+util/quantization/OptimizedScalarQuantizer	ported	crates/lucene-util/src/quantization.rs::OptimizedScalarQuantizer
+util/quantization/QuantizedByteVectorValues	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::QuantizedVectorValues
+util/quantization/QuantizedVectorsReader	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::merge_scorer_supplier
+util/quantization/ScalarQuantizedVectorSimilarity	ported	crates/lucene-util/src/quantization.rs::ScalarQuantizedVectorSimilarity
+util/quantization/ScalarQuantizer	ported	crates/lucene-util/src/quantization.rs::ScalarQuantizer

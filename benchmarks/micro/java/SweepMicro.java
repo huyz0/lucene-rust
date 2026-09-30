@@ -109,6 +109,7 @@ public final class SweepMicro {
       case "checksum" -> checksum();
       case "analysis" -> analysis();
       case "vectors" -> vectors();
+      case "quantized" -> quantized();
       case "postings_adv" -> withLeaf(index, SweepMicro::postingsAdvance);
       case "postings_freq" -> withLeaf(index, SweepMicro::postingsFreq);
       case "positions" -> withLeaf(index, SweepMicro::positions);
@@ -471,6 +472,81 @@ public final class SweepMicro {
       for (int i = 0; i < dim; i++) row[i] = (byte) (r.next() >>> 56);
     }
     return v;
+  }
+
+  /**
+   * The scalar-quantized distance kernels (one per {@code ScalarEncoding}) over 1024 stored
+   * vectors against one query, and {@code OptimizedScalarQuantizer.scalarQuantize} -- the
+   * port's {@code bench_quantized}.
+   */
+  static void quantized() throws IOException {
+    for (int dim : new int[] {128, 768}) {
+      byte[][] bdocs = byteVectors(1024, dim, 0xB17E + dim);
+      byte[] bq = byteVectors(1, dim, 0xB0B + dim)[0];
+      measure(
+          "uint8_dot_" + dim,
+          () -> {
+            long s = 0;
+            for (byte[] d : bdocs) s += org.apache.lucene.util.VectorUtil.uint8DotProduct(bq, d);
+            sink += s;
+            return bdocs.length;
+          });
+      byte[] q4 = new byte[dim];
+      for (int i = 0; i < dim; i++) q4[i] = (byte) (bq[i] & 0x0f);
+      byte[][] packed = new byte[1024][];
+      byte[][] bits = new byte[1024][];
+      byte[][] dibits = new byte[1024][];
+      for (int i = 0; i < 1024; i++) {
+        packed[i] = java.util.Arrays.copyOf(bdocs[i], dim / 2);
+        bits[i] = java.util.Arrays.copyOf(bdocs[i], dim / 8);
+        dibits[i] = java.util.Arrays.copyOf(bdocs[i], dim / 4);
+      }
+      byte[] tq = java.util.Arrays.copyOf(bq, dim / 2);
+      measure(
+          "int4_packed_dot_" + dim,
+          () -> {
+            long s = 0;
+            for (byte[] d : packed) {
+              s += org.apache.lucene.util.VectorUtil.int4DotProductSinglePacked(q4, d);
+            }
+            sink += s;
+            return packed.length;
+          });
+      measure(
+          "int4_bit_dot_" + dim,
+          () -> {
+            long s = 0;
+            for (byte[] d : bits) s += org.apache.lucene.util.VectorUtil.int4BitDotProduct(tq, d);
+            sink += s;
+            return bits.length;
+          });
+      measure(
+          "int4_dibit_dot_" + dim,
+          () -> {
+            long s = 0;
+            for (byte[] d : dibits) s += org.apache.lucene.util.VectorUtil.int4DibitDotProduct(tq, d);
+            sink += s;
+            return dibits.length;
+          });
+      float[][] fdocs = floatVectors(64, dim, 0xF00D + dim);
+      float[] centroid = floatVectors(1, dim, 0xCE17 + dim)[0];
+      org.apache.lucene.util.quantization.OptimizedScalarQuantizer q =
+          new org.apache.lucene.util.quantization.OptimizedScalarQuantizer(
+              org.apache.lucene.index.VectorSimilarityFunction.EUCLIDEAN);
+      byte[] dest = new byte[dim];
+      float[] scratch = new float[dim];
+      measure(
+          "osq_quantize4_" + dim,
+          () -> {
+            long s = 0;
+            for (float[] d : fdocs) {
+              System.arraycopy(d, 0, scratch, 0, d.length);
+              s += q.scalarQuantize(scratch, dest, (byte) 4, centroid).quantizedComponentSum();
+            }
+            sink += s;
+            return fdocs.length;
+          });
+    }
   }
 
   /**

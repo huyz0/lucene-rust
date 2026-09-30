@@ -123,13 +123,65 @@ pub fn int4_dot_product_single_packed(unpacked: &[u8], packed: &[u8]) -> i32 {
     }
     let n = packed.len();
     let (lo, hi) = unpacked.split_at(n);
+    // Java indexes `unpacked[i + packed.length]` for every `i`, so an odd
+    // `unpacked` (one short) throws there; slicing `hi` to `n` panics the same.
+    let hi = &hi[..n];
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    {
+        // SAFETY: AVX2 is enabled for this whole build; `lo`, `hi` and
+        // `packed` are all exactly `n` bytes, and the kernel reads whole
+        // 32-byte chunks strictly inside `0..n`.
+        unsafe { int4_single_packed_avx2(lo, hi, packed) }
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+    int4_single_packed_scalar(lo, hi, packed)
+}
+
+/// The specification [`int4_dot_product_single_packed`] matches:
+/// `DefaultVectorUtilSupport.int4DotProductSinglePacked` over the split
+/// halves of `unpacked`.
+pub fn int4_single_packed_scalar(lo: &[u8], hi: &[u8], packed: &[u8]) -> i32 {
     let mut total = 0i32;
-    for i in 0..n {
-        let p = packed[i] as i32;
-        total = total.wrapping_add((p & 0x0F) * hi[i] as i8 as i32);
-        total = total.wrapping_add((p >> 4) * lo[i] as i8 as i32);
+    for ((&p, &l), &h) in packed.iter().zip(lo).zip(hi) {
+        let p = p as i32;
+        total = total.wrapping_add((p & 0x0F) * h as i8 as i32);
+        total = total.wrapping_add((p >> 4) * l as i8 as i32);
     }
     total
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[target_feature(enable = "avx2")]
+unsafe fn int4_single_packed_avx2(lo: &[u8], hi: &[u8], packed: &[u8]) -> i32 {
+    use std::arch::x86_64::*;
+    let n = packed.len();
+    let nibble = _mm256_set1_epi8(0x0f);
+    let ones = _mm256_set1_epi16(1);
+    let mut acc = _mm256_setzero_si256();
+    let mut i = 0;
+    while i + 32 <= n {
+        // SAFETY: `i + 32 <= n`, and all three slices hold `n` bytes.
+        let (p, l, h) = unsafe {
+            (
+                _mm256_loadu_si256(packed.as_ptr().add(i) as *const __m256i),
+                _mm256_loadu_si256(lo.as_ptr().add(i) as *const __m256i),
+                _mm256_loadu_si256(hi.as_ptr().add(i) as *const __m256i),
+            )
+        };
+        let low = _mm256_and_si256(p, nibble);
+        let high = _mm256_and_si256(_mm256_srli_epi16::<4>(p), nibble);
+        // Unsigned nibble (0..=15) times signed byte, adjacent pairs summed
+        // into i16: at most 2 * 15 * 128 in magnitude per product pair, and
+        // the two pairs' sum at most 7680 -- no saturation.
+        let t = _mm256_add_epi16(_mm256_maddubs_epi16(low, h), _mm256_maddubs_epi16(high, l));
+        acc = _mm256_add_epi32(acc, _mm256_madd_epi16(t, ones));
+        i += 32;
+    }
+    let mut lanes = [0i32; 8];
+    // SAFETY: `lanes` is 32 bytes.
+    unsafe { _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, acc) };
+    let head = lanes.iter().fold(0i32, |s, &v| s.wrapping_add(v));
+    head.wrapping_add(int4_single_packed_scalar(&lo[i..], &hi[i..], &packed[i..]))
 }
 
 /// `VectorUtil.int4DotProductBothPacked`.
@@ -208,24 +260,35 @@ pub fn uint8_square_distance(a: &[u8], b: &[u8]) -> i32 {
 /// popcounts weighted by plane.
 #[inline]
 fn int4_bit_dot_stripe(q: &[u8], d: &[u8], stripe: usize) -> i64 {
+    // One pass over `d`, each word ANDed with the same word of all four
+    // planes -- the four popcount chains run side by side instead of four
+    // passes re-reading `d` (Java's loop order; the sums are the same).
     let d = &d[..stripe];
-    let mut ret = 0i64;
-    for plane in 0..4 {
-        let qp = &q[plane * stripe..(plane + 1) * stripe];
-        let mut sub = 0i64;
-        let mut qc = qp.chunks_exact(8);
-        let mut dc = d.chunks_exact(8);
-        for (x, y) in (&mut qc).zip(&mut dc) {
-            let x = u64::from_ne_bytes(x.try_into().expect("8 bytes"));
-            let y = u64::from_ne_bytes(y.try_into().expect("8 bytes"));
-            sub += (x & y).count_ones() as i64;
-        }
-        for (&x, &y) in qc.remainder().iter().zip(dc.remainder()) {
-            sub += (x & y).count_ones() as i64;
-        }
-        ret += sub << plane;
+    let (q0, rest) = q.split_at(stripe);
+    let (q1, rest) = rest.split_at(stripe);
+    let (q2, rest) = rest.split_at(stripe);
+    let q3 = &rest[..stripe];
+    let word = |b: &[u8], at: usize| u64::from_ne_bytes(b[at..at + 8].try_into().expect("8 bytes"));
+    let (mut s0, mut s1, mut s2, mut s3) = (0u64, 0u64, 0u64, 0u64);
+    let whole = stripe & !7;
+    let mut r = 0;
+    while r < whole {
+        let w = word(d, r);
+        s0 += (word(q0, r) & w).count_ones() as u64;
+        s1 += (word(q1, r) & w).count_ones() as u64;
+        s2 += (word(q2, r) & w).count_ones() as u64;
+        s3 += (word(q3, r) & w).count_ones() as u64;
+        r += 8;
     }
-    ret
+    while r < stripe {
+        let w = d[r];
+        s0 += (q0[r] & w).count_ones() as u64;
+        s1 += (q1[r] & w).count_ones() as u64;
+        s2 += (q2[r] & w).count_ones() as u64;
+        s3 += (q3[r] & w).count_ones() as u64;
+        r += 1;
+    }
+    (s0 + (s1 << 1) + (s2 << 2) + (s3 << 3)) as i64
 }
 
 /// `VectorUtil.int4BitDotProduct`: a 4-bit query transposed into four bit
@@ -332,9 +395,7 @@ pub fn is_zero_vector_bytes(v: &[u8]) -> bool {
 /// infinity, NaN to 0, saturating at the `int` range.
 #[inline]
 pub fn java_round_f32(x: f32) -> i32 {
-    if x.is_nan() {
-        return 0;
-    }
+    // NaN: as in `java_round_f64`, the saturating `as` answers 0.
     let f = x.floor();
     // `x - floor(x)` is exact for every float (the fractional part of a
     // float is representable), so this is a true tie test, unlike
@@ -347,9 +408,8 @@ pub fn java_round_f32(x: f32) -> i32 {
 /// `long` range.
 #[inline]
 pub fn java_round_f64(x: f64) -> i64 {
-    if x.is_nan() {
-        return 0;
-    }
+    // A NaN falls through: `floor` keeps it, the comparison is false, and
+    // Rust's saturating `as` maps NaN to 0 -- Java's answer.
     let f = x.floor();
     let r = if x - f >= 0.5 { f + 1.0 } else { f };
     r as i64
@@ -512,6 +572,20 @@ mod tests {
             assert_eq!(
                 int4_square_distance_both_packed(&pa, &pb),
                 int4_square_distance(&a, &b)
+            );
+        }
+    }
+
+    #[test]
+    fn int4_single_packed_simd_matches_scalar_for_signed_bytes() {
+        for n in [1usize, 31, 32, 33, 64, 100, 384] {
+            let unpacked = bytes(2 * n, 17, 0xff);
+            let packed = bytes(n, 18, 0xff);
+            let (lo, hi) = unpacked.split_at(n);
+            assert_eq!(
+                int4_dot_product_single_packed(&unpacked, &packed),
+                int4_single_packed_scalar(lo, hi, &packed),
+                "n={n}"
             );
         }
     }

@@ -221,44 +221,64 @@ fn clamp(x: f64, a: f64, b: f64) -> f64 {
     java_min_f64(java_max_f64(x, a), b)
 }
 
+/// `Math.max(double, double)`: NaN wins, and `max(-0.0, 0.0)` is `0.0`. On
+/// equal operands the sign bits are ANDed, which picks `+0.0` for a
+/// mixed-sign zero pair and is the identity otherwise -- one compare pair and
+/// no data-dependent branch on the common path.
 #[inline]
 fn java_max_f64(a: f64, b: f64) -> f64 {
-    if a.is_nan() || b.is_nan() {
-        f64::NAN
-    } else if a == 0.0 && b == 0.0 {
-        if a.is_sign_negative() {
-            b
-        } else {
-            a
-        }
+    if a > b {
+        a
+    } else if b > a {
+        b
+    } else if a == b {
+        f64::from_bits(a.to_bits() & b.to_bits())
     } else {
-        a.max(b)
+        f64::NAN
     }
 }
 
+/// `Math.min(double, double)`: NaN wins, and `min(-0.0, 0.0)` is `-0.0`
+/// (the sign bits ORed on a tie).
 #[inline]
 fn java_min_f64(a: f64, b: f64) -> f64 {
-    if a.is_nan() || b.is_nan() {
-        f64::NAN
-    } else if a == 0.0 && b == 0.0 {
-        if a.is_sign_negative() {
-            a
-        } else {
-            b
-        }
+    if a < b {
+        a
+    } else if b < a {
+        b
+    } else if a == b {
+        f64::from_bits(a.to_bits() | b.to_bits())
     } else {
-        a.min(b)
+        f64::NAN
     }
 }
 
+/// `Math.max(float, float)`.
 #[inline]
 fn java_max_f32(a: f32, b: f32) -> f32 {
-    java_max_f64(a as f64, b as f64) as f32
+    if a > b {
+        a
+    } else if b > a {
+        b
+    } else if a == b {
+        f32::from_bits(a.to_bits() & b.to_bits())
+    } else {
+        f32::NAN
+    }
 }
 
+/// `Math.min(float, float)`.
 #[inline]
 fn java_min_f32(a: f32, b: f32) -> f32 {
-    java_min_f64(a as f64, b as f64) as f32
+    if a < b {
+        a
+    } else if b < a {
+        b
+    } else if a == b {
+        f32::from_bits(a.to_bits() | b.to_bits())
+    } else {
+        f32::NAN
+    }
 }
 
 /// `OptimizedScalarQuantizer`.
