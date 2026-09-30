@@ -358,7 +358,7 @@ index/EmptyDocValuesProducer	not-needed	abstract convenience base for a DocValue
 index/ExitableDirectoryReader	todo:M7	reader wrapper that aborts term/points/doc-values enumeration on a QueryTimeout
 index/FieldInfo	ported	crates/lucene-codecs/src/field_infos.rs::FieldInfo
 index/FieldInfos	ported	crates/lucene-codecs/src/field_infos.rs::FieldInfos
-index/FieldInvertState	partial	crates/lucene-index/src/inverter.rs::lengths -- M7: only the field length for BM25 norms is tracked; no numOverlap/maxTermFrequency/uniqueTermCount/position/offset state handed to a `Similarity.computeNorm` (needed by the non-BM25 similarities)
+index/FieldInvertState	partial	crates/lucene-index/src/similarity.rs::FieldInvertState -- M7: carries what `Similarity.computeNorm` reads (length, numOverlap, uniqueTermCount, DOCS index options), counted by crates/lucene-index/src/inverter.rs::invert_state; no maxTermFrequency, position, offset or attribute source
 index/FieldTermIterator	not-needed	iterator abstraction over PrefixCodedTerms for delete packets; Rust iterates the sorted Vec in FrozenBufferedUpdates.
 index/FieldUpdatesBuffer	ported	crates/lucene-index/src/buffered_updates.rs::FieldUpdatesBuffer
 index/Fields	ported	crates/lucene-codecs/src/blocktree.rs::BlockTreeFields
@@ -396,7 +396,7 @@ index/IndexReaderContext	ported	crates/lucene-search/src/multi_segment.rs::OpenS
 index/IndexSorter	partial	crates/lucene-index/src/segment_info.rs::SortKeyComparator -- M7: per parity.md: the writer sorts only NUMERIC/SORTED_NUMERIC keys; `STRING`/`SortedSetSortField`/`BinarySortField` index sorts are refused with `Error::UnsupportedIndexSortKind`
 index/IndexUpgrader	deferred:M8	command-line tool rewriting older-format segments into the current format
 index/IndexWriter	partial	crates/lucene-index/src/index_writer.rs::IndexWriter -- M7: per parity.md: not ported `tryDeleteDocument`, `tryUpdateDocValue`, `addIndexes` (both overloads), `addBatch`/`ColumnBatch` updates, NRT readers from the writer (`DirectoryReader.open(writer)`), `maybeMerge` and a merge scheduler, `flushNextBuffer`, `infoStream`, writing compound segments, the write lock (`NativeFSLockFactory`)
-index/IndexWriterConfig	partial	crates/lucene-index/src/index_writer.rs::set_index_sort -- M7: settings are writer setters; missing `STRING`/`SortedSet`/`Binary` index sorts, `setUseCompoundFile` (compound segments not written), codec/per-field format choice, `Similarity`, `MergeScheduler`, `IndexWriterEventListener`, `infoStream`, `leafSorter`, `commitOnClose`
+index/IndexWriterConfig	partial	crates/lucene-index/src/index_writer.rs::set_index_sort -- M7: settings are writer setters (`setSimilarity` is `IndexWriter::set_similarity`, norms via `NormSimilarity`); missing `STRING`/`SortedSet`/`Binary` index sorts, `setUseCompoundFile` (compound segments not written), codec/per-field format choice, `MergeScheduler`, `IndexWriterEventListener`, `infoStream`, `leafSorter`, `commitOnClose`
 index/IndexWriterEventListener	not-needed	callback hook for merge begin/end events used for metrics and tests; no effect on the index.
 index/IndexableField	partial	crates/lucene-index/src/index_writer/explicit.rs::ExplicitDocument -- M7: no `IndexableField` abstraction: fields are configured per writer (`set_*_field`/`add_*_field`) or arrive pre-inverted; the document field-type API is M7 T7.2
 index/IndexableFieldType	partial	crates/lucene-codecs/src/field_infos.rs::FieldInfo -- M7: field properties exist only as the writer's per-field `FieldInfo` schema; no per-field-instance type descriptor of the document API (M7 T7.2)
@@ -600,7 +600,7 @@ search/ByteVectorSimilarityQuery	todo:M7	byte-vector similarity-threshold query
 search/ByteVectorSimilarityValuesSource	todo:M7	byte-vector similarity DoubleValuesSource
 search/CachingCollector	todo:M7	caching/replaying collector
 search/CheckedIntConsumer	not-needed	Java functional interface existing only to let a lambda throw checked exceptions.
-search/CollectionStatistics	ported	crates/lucene-search/src/lib.rs::CollectionStats
+search/CollectionStatistics	ported	crates/lucene-search/src/similarities.rs::CollectionStatistics
 search/CollectionTerminatedException	not-needed	Java control-flow exception for early termination; Rust collection paths stop by return value (weight_count.rs, terminate.rs).
 search/Collector	ported	crates/lucene-search/src/collector.rs::ScoringCollector
 search/CollectorManager	ported	crates/lucene-search/src/slices.rs::run_slices
@@ -666,7 +666,7 @@ search/HitQueue	ported	crates/lucene-search/src/collector.rs::TopDocsCollector
 search/HnswQueueSaturationCollector	todo:M7	patience-based early-exit KNN collector
 search/ImpactsDISI	ported	crates/lucene-search/src/bulk_scorer.rs::TermLeg
 search/IndexOrDocValuesQuery	partial	crates/lucene-search/src/doc_value_query.rs::plan_index_or_doc_values -- M7: planner exists but has no caller; the doc-values side never runs in the scorer tree (only the points side is sent)
-search/IndexSearcher	partial	crates/lucene-search/src/multi_segment.rs::search_boolean_query_multi_segment_maxscore -- M7: no IndexSearcher object: search/count/explain are free functions over OpenSegment; explain only for term, phrase and flat term-only boolean (parity row 300); BM25 only, no setSimilarity; Fuzzy/MultiPhrase/span/KNN run outside the tree
+search/IndexSearcher	partial	crates/lucene-search/src/multi_segment.rs::search_boolean_query_multi_segment_maxscore -- M7: no IndexSearcher object: search/count/explain are free functions over OpenSegment; explain only for term, phrase and flat term-only boolean (parity row 300); `setSimilarity` is search_boolean_query_multi_segment_with_similarity (term, phrase, boolean; fuzzy/span/multi-phrase scoring clauses refused under a non-default similarity), not the FFI; Fuzzy/MultiPhrase/span/KNN run outside the tree
 search/IndexSortSortedNumericDocValuesRangeQuery	todo:M7	range query exploiting index sort
 search/IndriAndQuery	todo:M7	Indri AND query
 search/IndriAndScorer	todo:M7	Indri AND scorer
@@ -770,7 +770,7 @@ search/TermMatchesIterator	todo:M7	Matches API (term matches iterator)
 search/TermQuery	ported	crates/lucene-search/src/query.rs::TermQuery
 search/TermRangeQuery	partial	crates/lucene-index/src/buffered_updates.rs::DeleteQuery -- M7: only as a delete-by-query in the writer; no search-side TermRangeQuery (not a Clause, not in the scorer tree)
 search/TermScorer	ported	crates/lucene-search/src/exec/leaf.rs::TermScorer
-search/TermStatistics	ported	crates/lucene-search/src/lib.rs::CollectionStats
+search/TermStatistics	ported	crates/lucene-search/src/similarities.rs::TermStatistics
 search/TimeLimitingBulkScorer	partial	crates/lucene-search/src/multi_segment.rs::merge_multi_segment_scored_with_deadline -- M7: deadline checked between segments only (an in-flight segment is not interrupted), and only on the term/boolean fan-out paths
 search/TimeLimitingKnnCollectorManager	todo:M7	query timeout for KNN collection
 search/TopDocs	partial	crates/lucene-search/src/multi_segment.rs::merge_multi_segment_scored -- M7: merge ported (no shardIndex); TopDocs.rrf (reciprocal rank fusion) not ported
@@ -849,7 +849,7 @@ search/similarities/NormalizationH3	ported	crates/lucene-search/src/similarities
 search/similarities/NormalizationZ	ported	crates/lucene-search/src/similarities.rs::Normalization
 search/similarities/PerFieldSimilarityWrapper	ported	crates/lucene-search/src/similarities.rs::PerFieldSimilarity
 search/similarities/RawTFSimilarity	ported	crates/lucene-search/src/similarities.rs::RawTfSimilarity
-search/similarities/Similarity	partial	crates/lucene-search/src/similarities.rs::Similarity -- M7: the scorer tree scores default BM25 only; a Similarity is not yet accepted by search (IndexSearcher.setSimilarity) or by IndexWriterConfig
+search/similarities/Similarity	ported	crates/lucene-search/src/similarities.rs::Similarity
 search/similarities/SimilarityBase	ported	crates/lucene-search/src/similarities.rs::base_scorer
 search/similarities/TFIDFSimilarity	ported	crates/lucene-search/src/similarities.rs::ClassicSimilarity
 store/AlreadyClosedException	not-needed	Use-after-close exception; Rust ownership makes use-after-close unrepresentable, and the FFI reports a closed handle as FfiStatus::InvalidHandle.

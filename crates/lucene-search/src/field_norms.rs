@@ -495,6 +495,68 @@ impl FieldNormsCursor<'_, '_> {
         Ok(norms::norm_value(self.norms.data, &self.norms.entry, doc)?.map(|n| n as u8))
     }
 
+    /// This doc's norm as `NumericDocValues.longValue()` reads it -- a
+    /// stored byte sign-extended, a wider norm as stored -- or `None` when the
+    /// field has no norm for it: what a `SimScorer` other than the default
+    /// BM25 fast path scores with ([`crate::similarities::SimScorer::score`]).
+    ///
+    /// [`Self::norm_byte`]'s three shapes, kept separate from it so the BM25
+    /// path's lookup stays exactly what it was.
+    pub fn norm_long(&mut self, doc: i32) -> norms::Result<Option<i64>> {
+        if let Some(bytes) = self.norms.dense_norm_bytes {
+            if let Some(&b) = bytes.get(doc as usize) {
+                return Ok(Some(i64::from(b as i8)));
+            }
+        }
+        let entry = &self.norms.entry;
+        if entry.bytes_per_norm == 0
+            && entry.is_dense()
+            && (0..entry.num_docs_with_field).contains(&doc)
+        {
+            return Ok(Some(entry.norms_offset));
+        }
+        if let Some(disi) = self.disi.as_mut() {
+            if doc < 0 {
+                return Err(norms::Error::DocOutOfRange(
+                    doc,
+                    self.norms.entry.num_docs_with_field,
+                ));
+            }
+            if doc < disi.doc_id() {
+                disi.reset();
+            }
+            return Ok(match disi.advance_exact(doc)? {
+                Some(ordinal) => Some(norms::read_value_at_ordinal(
+                    self.norms.data,
+                    &self.norms.entry,
+                    ordinal as i64,
+                )?),
+                None => None,
+            });
+        }
+        norms::norm_value(self.norms.data, &self.norms.entry, doc)
+    }
+
+    /// [`Self::norm_long`] for an ascending batch, a missing norm read as `1`
+    /// (`TermScorer`'s `norms.advanceExact(doc) == false` fallback, and the
+    /// value a field without norms scores with).
+    pub fn norm_long_batch(&mut self, docs: &[i32], out: &mut Vec<i64>) -> norms::Result<()> {
+        out.clear();
+        if let (Some(bytes), Some(&first), Some(&last)) =
+            (self.norms.dense_norm_bytes, docs.first(), docs.last())
+        {
+            if first >= 0 && (last as usize) < bytes.len() {
+                out.extend(docs.iter().map(|&d| i64::from(bytes[d as usize] as i8)));
+                return Ok(());
+            }
+        }
+        out.reserve(docs.len());
+        for &d in docs {
+            out.push(self.norm_long(d)?.unwrap_or(1));
+        }
+        Ok(())
+    }
+
     /// Whether `doc` has a norm for this field at all -- "would
     /// `LeafReader.getNormValues(field)`'s iterator land on this document".
     ///

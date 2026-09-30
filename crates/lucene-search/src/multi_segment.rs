@@ -534,23 +534,49 @@ pub(crate) fn global_term_stats(
     field: &str,
     term: &[u8],
 ) -> crate::Result<Option<crate::CollectionStats>> {
-    let mut doc_freq = 0i64;
-    let mut doc_count = 0i64;
+    let mut stats = FieldSums::default();
     let mut seen = false;
     for seg in segments {
+        stats.add_segment(seg);
         let Some(ft) = seg.fields.field(field) else {
             continue;
         };
         seen = true;
-        doc_count += ft.doc_count as i64;
-        if let Some(stats) = ft.try_seek_exact(term)? {
-            doc_freq += stats.doc_freq as i64;
+        stats.add_field(ft);
+        if let Some(term) = ft.try_seek_exact(term)? {
+            stats.add_term(term.doc_freq, term.total_term_freq);
         }
     }
-    Ok(seen.then_some(crate::CollectionStats {
-        doc_freq,
-        doc_count,
-    }))
+    Ok(seen.then_some(stats.0))
+}
+
+/// The running sums behind [`crate::CollectionStats`]: `IndexSearcher`'s
+/// `collectionStatistics` over every leaf, and `TermStates`' per-term ones.
+#[derive(Default)]
+struct FieldSums(crate::CollectionStats);
+
+impl FieldSums {
+    /// `IndexReader.maxDoc()` counts every leaf, with the field or without.
+    /// A segment opened without its `maxDoc` known adds nothing; no
+    /// similarity reads `maxDoc`, and the sum is clamped to `docCount` when
+    /// one is built from it.
+    fn add_segment(&mut self, seg: &OpenSegment<'_>) {
+        let max_doc = seg.max_doc.or(seg.reader.map(|r| r.max_doc)).unwrap_or(0);
+        self.0.max_doc = self.0.max_doc.saturating_add(i64::from(max_doc.max(0)));
+    }
+
+    fn add_field(&mut self, ft: &lucene_codecs::blocktree::FieldTerms) {
+        let s = &mut self.0;
+        s.doc_count = s.doc_count.saturating_add(i64::from(ft.doc_count));
+        s.sum_total_term_freq = s.sum_total_term_freq.saturating_add(ft.sum_total_term_freq);
+        s.sum_doc_freq = s.sum_doc_freq.saturating_add(ft.sum_doc_freq);
+    }
+
+    fn add_term(&mut self, doc_freq: i32, total_term_freq: i64) {
+        let s = &mut self.0;
+        s.doc_freq = s.doc_freq.saturating_add(i64::from(doc_freq));
+        s.total_term_freq = s.total_term_freq.saturating_add(total_term_freq);
+    }
 }
 
 /// Where each segment's seek found a term, by the segment's fields' address.
@@ -564,29 +590,23 @@ pub(crate) fn global_term_stats_states(
     field: &str,
     term: &[u8],
 ) -> crate::Result<Option<(crate::CollectionStats, TermStates)>> {
-    let mut doc_freq = 0i64;
-    let mut doc_count = 0i64;
+    let mut stats = FieldSums::default();
     let mut seen = false;
     let mut states = Vec::with_capacity(segments.len());
     for seg in segments {
+        stats.add_segment(seg);
         let Some(ft) = seg.fields.field(field) else {
             continue;
         };
         seen = true;
-        doc_count += ft.doc_count as i64;
+        stats.add_field(ft);
         let state = ft.seek_term_state(term)?;
         if let Some(s) = &state {
-            doc_freq += s.stats.doc_freq as i64;
+            stats.add_term(s.stats.doc_freq, s.stats.total_term_freq);
         }
         states.push((std::ptr::from_ref(seg.fields).addr(), state));
     }
-    Ok(seen.then_some((
-        crate::CollectionStats {
-            doc_freq,
-            doc_count,
-        },
-        states,
-    )))
+    Ok(seen.then_some((stats.0, states)))
 }
 
 /// Sum `sumTotalTermFreq` and `docCount` for one field across every segment and
@@ -1044,6 +1064,53 @@ pub fn search_boolean_query_multi_segment_maxscore_counting(
         let seg = &segments[i];
         let seg_norms = norms.get(i).copied().flatten();
         crate::search_boolean_query_scored_segment(seg, query, seg_norms, Some(&global), local)
+    })
+}
+
+/// [`search_boolean_query_multi_segment_maxscore`] under `similarity` --
+/// `IndexSearcher.setSimilarity(similarity)` then `search(query, topN)`.
+///
+/// Term and phrase clauses score through `similarity.scorer(field, boost,
+/// collectionStatistics, termStatistics...)` as `TermWeight`/`PhraseWeight`
+/// build it, from statistics summed across every segment
+/// (`IndexSearcher.collectionStatistics`/`termStatistics`), each document by
+/// `SimScorer.score(freq, norm)` with the field's stored norm, and the
+/// scorer tree prunes with `MaxScoreCache`'s bounds for that scorer. The
+/// norms must be each segment's stored ones for every scored field
+/// (`DirectoryReader::field_norms_by_field`); a field absent from a
+/// segment's map scores with the norm `1`, Java's value for a field without
+/// norms.
+///
+/// A default [`crate::similarities::Bm25Similarity`] (and a per-field
+/// wrapper that is one everywhere) runs the BM25 fast path unchanged. Under
+/// any other, a scoring clause that only scores BM25 -- fuzzy, span,
+/// multi-phrase -- is refused ([`crate::Error::SimilarityUnsupported`]).
+pub fn search_boolean_query_multi_segment_with_similarity(
+    segments: &[OpenSegment<'_>],
+    query: &BooleanQuery,
+    norms: &[Option<&HashMap<String, FieldNorms<'_>>>],
+    top_n: usize,
+    similarity: &dyn crate::similarities::Similarity,
+) -> Result<Vec<ScoreDoc>> {
+    if similarity.is_default_bm25() {
+        return search_boolean_query_multi_segment_maxscore(segments, query, norms, top_n);
+    }
+    debug_assert_eq!(
+        segments.len(),
+        norms.len(),
+        "one norms entry per segment expected"
+    );
+    crate::check_similarity_supported(query)?;
+    let rewritten = rewrite_points_ranges(query, segments);
+    let query = rewritten.as_ref().unwrap_or(query);
+    let global = global_boolean_stats(segments, query)?;
+    let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
+    search_leaves_shared(&doc_bases, top_n, |i, local| {
+        let seg = &segments[i];
+        let seg_norms = norms.get(i).copied().flatten();
+        crate::search_boolean_query_scored_segment_with_similarity(
+            seg, query, seg_norms, &global, similarity, local,
+        )
     })
 }
 
@@ -3219,6 +3286,7 @@ mod tests {
             let global = crate::CollectionStats {
                 doc_freq: 1,
                 doc_count: 1_000_000,
+                ..Default::default()
             };
             let expected = |freq: f32| {
                 crate::similarity::score(
