@@ -14,10 +14,13 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
 
+use lucene_codecs::hnsw_vectors::HnswVectorsReader;
+use lucene_codecs::vectors::FlatVectorsReader;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::extended_query::*;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::multi_segment::{
+    search_boolean_query_multi_segment_with_deadline,
     search_boolean_query_multi_segment_with_similarity, OpenSegment,
 };
 use lucene_search::query::{
@@ -25,6 +28,15 @@ use lucene_search::query::{
     RegexpQuery, TermQuery, WildcardQuery,
 };
 use lucene_search::similarities::*;
+use lucene_search::vector_query::{
+    byte_vector_similarity_clause, filter_bitsets, float_vector_similarity_clause,
+    knn_hits_to_clause, knn_seed_docs, search_knn_byte_vector_query_multi_segment,
+    search_knn_float_vector_query_multi_segment,
+    search_patience_knn_float_vector_query_multi_segment,
+    search_seeded_knn_float_vector_query_multi_segment, ByteVectorSimilarityQuery,
+    FloatVectorSimilarityQuery, KnnByteVectorQuery, KnnFloatVectorQuery, KnnSegment,
+    PatienceKnnVectorQuery, VectorsInput,
+};
 use lucene_store::FsDirectory;
 
 fn data(path: &str) -> std::path::PathBuf {
@@ -48,7 +60,9 @@ fn sim(name: &str) -> Arc<dyn Similarity> {
 /// What the parser needs besides the tokens: the segments a KNN or vector
 /// query is rewritten against.
 struct Ctx<'a> {
-    knn: &'a dyn Fn(&str, &[&str]) -> Option<Clause>,
+    /// `(op, field, argument, the filter or seed clause)` to the rewritten
+    /// clause.
+    knn: &'a dyn Fn(&str, &str, &str, Option<Clause>) -> Option<Clause>,
 }
 
 fn rewrite(m: &str) -> RewriteMethod {
@@ -330,14 +344,13 @@ fn parse(
         "VSF" | "VSB" | "KF" | "KB" | "PKF" => {
             let field = next();
             let arg = next();
-            (ctx.knn)(op, &[field, arg])?
+            (ctx.knn)(op, field, arg, None)?
         }
         "VSFF" | "KFF" | "SKF" => {
             let field = next();
             let arg = next();
             let filter = parse(tok, ctx)?;
-            let _ = filter;
-            (ctx.knn)(op, &[field, arg])?
+            (ctx.knn)(op, field, arg, Some(filter))?
         }
         other => panic!("query op {other}"),
     })
@@ -352,6 +365,63 @@ fn query(text: &str, ctx: &Ctx<'_>) -> Option<BooleanQuery> {
         Clause::Boolean(b) => *b,
         other => BooleanQuery::new().with_must([other]),
     })
+}
+
+/// `GenM7Queries.QVEC`/`QBVEC`.
+const QVEC: [f32; 4] = [0.5, -0.25, 0.75, 0.1];
+const QBVEC: [u8; 4] = [12, (-7i8) as u8, 30, 1];
+
+/// Each segment's `Lucene99HnswVectorsFormat` files, read once.
+struct VectorFiles {
+    per_segment: Vec<[Vec<u8>; 4]>,
+}
+
+impl VectorFiles {
+    fn read(dir: &std::path::Path, reader: &DirectoryReader) -> Self {
+        let per_segment = reader
+            .segment_readers()
+            .iter()
+            .map(|seg| {
+                let file = |ext: &str| {
+                    std::fs::read(dir.join(format!(
+                        "{}_Lucene99HnswVectorsFormat_0.{ext}",
+                        seg.segment_name
+                    )))
+                    .unwrap()
+                };
+                [file("vemf"), file("vec"), file("vem"), file("vex")]
+            })
+            .collect();
+        Self { per_segment }
+    }
+
+    fn segments<'a>(
+        &'a self,
+        reader: &'a DirectoryReader,
+        filters: Option<&'a [lucene_util::fixed_bit_set::FixedBitSet]>,
+    ) -> Vec<KnnSegment<'a>> {
+        const SUFFIX: &str = "Lucene99HnswVectorsFormat_0";
+        reader
+            .segment_readers()
+            .iter()
+            .zip(&self.per_segment)
+            .enumerate()
+            .map(|(i, (seg, [vemf, vec, vem, vex]))| {
+                let id = seg.segment_id();
+                KnnSegment {
+                    vectors: VectorsInput {
+                        flat: FlatVectorsReader::open(vemf, vec, &id, SUFFIX).unwrap(),
+                        hnsw: Some(HnswVectorsReader::open(vem, vex, &id, SUFFIX).unwrap()),
+                        field_infos: seg.field_infos(),
+                        live_docs: seg.live_docs(),
+                        filter: filters.map(|f| &f[i]),
+                        max_doc: seg.max_doc,
+                    },
+                    doc_base: seg.doc_base,
+                }
+            })
+            .collect()
+    }
 }
 
 fn want(hits: &str) -> Vec<(i32, u32)> {
@@ -385,7 +455,62 @@ fn m7_queries_match_lucene_bit_for_bit() {
     let owned =
         reader.field_norms_by_field(&["body".to_string(), "title".to_string(), "gram".to_string()]);
     let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
-    let knn = |_op: &str, _args: &[&str]| -> Option<Clause> { None };
+    let vectors = VectorFiles::read(&dir, &reader);
+    let knn = |op: &str, field: &str, arg: &str, clause: Option<Clause>| -> Option<Clause> {
+        let filters = match (op, &clause) {
+            ("KFF" | "VSFF", Some(f)) => Some(filter_bitsets(&segments, f).unwrap()),
+            _ => None,
+        };
+        let knn_segments = vectors.segments(&reader, filters.as_deref());
+        let float = || QVEC.to_vec();
+        Some(match op {
+            "KF" | "KFF" => {
+                let q = KnnFloatVectorQuery::new(field, float(), arg.parse().unwrap()).unwrap();
+                let hits = search_knn_float_vector_query_multi_segment(&knn_segments, &q).unwrap();
+                knn_hits_to_clause(&knn_segments, &hits)
+            }
+            "KB" => {
+                let q =
+                    KnnByteVectorQuery::new(field, QBVEC.to_vec(), arg.parse().unwrap()).unwrap();
+                let hits = search_knn_byte_vector_query_multi_segment(&knn_segments, &q).unwrap();
+                knn_hits_to_clause(&knn_segments, &hits)
+            }
+            "PKF" => {
+                let q = KnnFloatVectorQuery::new(field, float(), arg.parse().unwrap()).unwrap();
+                let q = PatienceKnnVectorQuery::from_float_query(q);
+                let hits = search_patience_knn_float_vector_query_multi_segment(&knn_segments, &q)
+                    .unwrap();
+                knn_hits_to_clause(&knn_segments, &hits)
+            }
+            "SKF" => {
+                let k: usize = arg.parse().unwrap();
+                let q = KnnFloatVectorQuery::new(field, float(), k).unwrap();
+                let seed = clause.expect("a seed query");
+                let seeds =
+                    knn_seed_docs(&segments, &norms, &knn_segments, field, &seed, None, k).unwrap();
+                let hits =
+                    search_seeded_knn_float_vector_query_multi_segment(&knn_segments, &q, &seeds)
+                        .unwrap();
+                knn_hits_to_clause(&knn_segments, &hits)
+            }
+            "VSF" | "VSFF" => {
+                let q = FloatVectorSimilarityQuery::new(field, float(), arg.parse().unwrap(), 0.5)
+                    .unwrap();
+                float_vector_similarity_clause(&knn_segments, &q).unwrap()
+            }
+            "VSB" => {
+                let q = ByteVectorSimilarityQuery::new(
+                    field,
+                    QBVEC.to_vec(),
+                    arg.parse().unwrap(),
+                    0.5,
+                )
+                .unwrap();
+                byte_vector_similarity_clause(&knn_segments, &q).unwrap()
+            }
+            other => panic!("vector op {other}"),
+        })
+    };
     let ctx = Ctx { knn: &knn };
 
     let (mut cases, mut skipped, mut failures) = (0, 0, Vec::new());
@@ -417,8 +542,56 @@ fn m7_queries_match_lucene_bit_for_bit() {
         if got != want {
             failures.push(format!("{name} [{q}]\n  rust {got:x?}\n  java {want:x?}"));
         }
+        if name == "bm25" {
+            // `TimeLimitingBulkScorer`: a deadline that never comes changes
+            // nothing; one already past stops before the first window.
+            let far = std::time::Instant::now() + std::time::Duration::from_secs(3600);
+            let (timed, cut) =
+                search_boolean_query_multi_segment_with_deadline(&segments, &bq, &norms, 20, far)
+                    .unwrap();
+            let timed: Vec<(i32, u32)> = timed
+                .iter()
+                .map(|h| (h.doc_id, h.score.to_bits()))
+                .collect();
+            if timed != want || cut {
+                failures.push(format!(
+                    "deadline [{q}]\n  rust {timed:x?}\n  java {want:x?}"
+                ));
+            }
+            let past = std::time::Instant::now();
+            let (none, cut) =
+                search_boolean_query_multi_segment_with_deadline(&segments, &bq, &norms, 20, past)
+                    .unwrap();
+            assert!(none.is_empty() && cut, "an expired deadline scores nothing");
+        }
     }
+    // `BayesianScoreEstimator.estimate` over `body`.
+    let est = std::fs::read_to_string(dir.join("estimator.tsv")).unwrap();
+    let mut estimates = 0;
+    for line in est.lines() {
+        let f: Vec<&str> = line.split('\t').collect();
+        let (n, tokens, seed) = (
+            f[0].parse().unwrap(),
+            f[1].parse().unwrap(),
+            f[2].parse().unwrap(),
+        );
+        let p =
+            lucene_search::bayesian_estimator::estimate(&segments, &norms, "body", n, tokens, seed)
+                .unwrap();
+        let bits = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let got = (p.alpha.to_bits(), p.beta.to_bits(), p.base_rate.to_bits());
+        let want = (bits(f[3]), bits(f[4]), bits(f[5]));
+        if got != want {
+            failures.push(format!(
+                "estimate {line}\n  rust {got:x?}\n  java {want:x?}"
+            ));
+        }
+        estimates += 1;
+    }
+    assert_eq!(estimates, 3);
     eprintln!("{cases} searches compared, {skipped} skipped");
+    assert_eq!(skipped, 0, "every recorded search runs");
+    assert!(cases >= 200, "{cases} searches");
     assert!(
         failures.is_empty(),
         "{} searches differ:\n{}",

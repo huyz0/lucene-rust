@@ -78,8 +78,8 @@ use lucene_util::fixed_bit_set::FixedBitSet;
 use crate::direct_monotonic;
 use crate::field_infos::{VectorEncoding, VectorSimilarityFunction};
 use crate::hnsw::{
-    self, expected_visited_nodes, HnswGraphSearcher, HnswGraphView, KnnCollector, OnHeapHnswGraph,
-    UpdateableVectorScorer, VectorScorer,
+    self, expected_visited_nodes, HnswGraphSearcher, HnswGraphView, KnnCollect, KnnCollector,
+    OnHeapHnswGraph, UpdateableVectorScorer, VectorScorer,
 };
 use crate::vectors::{
     encoding_ordinal, read_similarity_function, read_vector_encoding, similarity_ordinal, Error,
@@ -1240,6 +1240,27 @@ pub fn search<G: HnswGraphView, S: VectorScorer>(
         return Ok((Vec::new(), false));
     }
     let mut collector = KnnCollector::new(k, visit_limit);
+    search_with(scorer, graph, &mut collector, options)?;
+    let early = collector.early_terminated();
+    Ok((collector.top_docs(), early))
+}
+
+/// [`search`] into any [`KnnCollect`]or: `Lucene99HnswVectorsReader.search`'s
+/// graph-walk-or-scan choice made with `collector.k()`, the results left in
+/// the collector. The argument checks are [`search`]'s; this one assumes a
+/// caller that made them (or passes no accept set).
+pub fn search_with<G: HnswGraphView, S: VectorScorer, C: KnnCollect + ?Sized>(
+    scorer: &mut S,
+    graph: Option<&G>,
+    collector: &mut C,
+    options: SearchOptions<'_>,
+) -> Result<()> {
+    let num_vectors = scorer.max_ord();
+    let accept_ords = options.accept_ords;
+    let k = collector.k();
+    if num_vectors == 0 || k == 0 {
+        return Ok(());
+    }
     let graph_size = graph.map_or(0, |g| g.size());
     let mut do_hnsw = k < num_vectors as usize;
     // `int filteredDocCount = Math.min(acceptDocs.cost(), graphSize);`
@@ -1256,10 +1277,8 @@ pub fn search<G: HnswGraphView, S: VectorScorer>(
         let graph = graph.expect("graph_size > 0 implies a graph");
         let mut searcher = HnswGraphSearcher::new(k, graph.size());
         match options.seed_ords {
-            Some(seeds) => {
-                searcher.search_seeded(&mut collector, scorer, graph, accept_ords, seeds)?
-            }
-            None => searcher.search(&mut collector, scorer, graph, accept_ords)?,
+            Some(seeds) => searcher.search_seeded(collector, scorer, graph, accept_ords, seeds)?,
+            None => searcher.search(collector, scorer, graph, accept_ords)?,
         }
     } else {
         // Java's bulk-scored exhaustive branch, 64 ordinals at a time.
@@ -1284,20 +1303,19 @@ pub fn search<G: HnswGraphView, S: VectorScorer>(
                 num_ords += 1;
             }
             if num_ords == EXHAUSTIVE_BULK_SCORE_ORDS {
-                flush_bulk(&mut collector, scorer, &ords, &mut scores, num_ords)?;
+                flush_bulk(collector, scorer, &ords, &mut scores, num_ords)?;
                 num_ords = 0;
             }
         }
         if num_ords > 0 {
-            flush_bulk(&mut collector, scorer, &ords, &mut scores, num_ords)?;
+            flush_bulk(collector, scorer, &ords, &mut scores, num_ords)?;
         }
     }
-    let early = collector.early_terminated();
-    Ok((collector.top_docs(), early))
+    Ok(())
 }
 
-fn flush_bulk<S: VectorScorer>(
-    collector: &mut KnnCollector,
+fn flush_bulk<S: VectorScorer, C: KnnCollect + ?Sized>(
+    collector: &mut C,
     scorer: &mut S,
     ords: &[i32],
     scores: &mut [f32],

@@ -1741,6 +1741,38 @@ pub(crate) fn resolve(
     Ok(out)
 }
 
+/// Every document `clause` matches in one segment, deletions not applied:
+/// its scorer's iterator (`Weight.scorer(ctx).iterator()`).
+pub(crate) fn segment_matches(
+    seg: &crate::multi_segment::OpenSegment<'_>,
+    clause: &Clause,
+) -> Result<Vec<i32>> {
+    let ctx = LeafContext {
+        fields: seg.fields,
+        doc_in: seg.doc_in,
+        pos_in: seg.pos_in,
+        pay_in: seg.pay_in,
+        live_docs: None,
+        points: seg.points,
+        norms: None,
+        global: None,
+        max_doc: seg.max_doc,
+        cache: None,
+        reader: seg.reader,
+        similarity: None,
+    };
+    let Some(mut s) = build::build(&ctx, clause, 1.0, Mode::NoScores, false)? else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    let mut doc = super::exact_next(&mut *s)?;
+    while doc != NO_MORE_DOCS {
+        out.push(doc);
+        doc = super::exact_next(&mut *s)?;
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

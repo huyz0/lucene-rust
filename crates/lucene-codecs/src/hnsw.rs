@@ -350,6 +350,58 @@ impl KnnCollector {
     }
 }
 
+/// Port of the `KnnCollector` interface as `HnswGraphSearcher` and
+/// `Lucene99HnswVectorsReader.search` drive it: what a graph walk (or the
+/// exhaustive scan) asks of whatever collects its results. [`KnnCollector`]
+/// is `TopKnnCollector`; the search package's other collectors
+/// (`VectorSimilarityCollector`, `HnswQueueSaturationCollector`,
+/// `MultiLeafKnnCollector`, the time-limited one) implement it too.
+pub trait KnnCollect {
+    /// `k()`: how many results the collector wants, which sizes the walk's
+    /// candidate queue and decides the graph walk against the scan.
+    fn k(&self) -> usize;
+    /// `earlyTerminated()`.
+    fn early_terminated(&self) -> bool;
+    /// `incVisitedCount(count)`.
+    fn inc_visited_count(&mut self, count: usize);
+    /// `visitedCount()`.
+    fn visited_count(&self) -> u64;
+    /// `visitLimit()`.
+    fn visit_limit(&self) -> u64;
+    /// `collect(docId, similarity)`: whether the collector's competitive
+    /// bound may have moved.
+    fn collect(&mut self, node: i32, similarity: f32) -> bool;
+    /// `minCompetitiveSimilarity()`.
+    fn min_competitive_similarity(&self) -> f32;
+    /// `getSearchStrategy().nextVectorsBlock()`, called once per expanded
+    /// candidate; `KnnSearchStrategy.Patience` forwards it to its collector.
+    fn next_vectors_block(&mut self) {}
+}
+
+impl KnnCollect for KnnCollector {
+    fn k(&self) -> usize {
+        self.k
+    }
+    fn early_terminated(&self) -> bool {
+        KnnCollector::early_terminated(self)
+    }
+    fn inc_visited_count(&mut self, count: usize) {
+        KnnCollector::inc_visited_count(self, count)
+    }
+    fn visited_count(&self) -> u64 {
+        self.visited_count
+    }
+    fn visit_limit(&self) -> u64 {
+        self.visit_limit
+    }
+    fn collect(&mut self, node: i32, similarity: f32) -> bool {
+        KnnCollector::collect(self, node, similarity)
+    }
+    fn min_competitive_similarity(&self) -> f32 {
+        KnnCollector::min_competitive_similarity(self)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // NeighborArray
 // ---------------------------------------------------------------------------
@@ -959,9 +1011,9 @@ impl HnswGraphSearcher {
 
     /// `AbstractHnswGraphSearcher.search`: descend to the best entry point,
     /// then beam-search level 0.
-    pub fn search<G: HnswGraphView, S: VectorScorer>(
+    pub fn search<G: HnswGraphView, S: VectorScorer, C: KnnCollect + ?Sized>(
         &mut self,
-        results: &mut KnnCollector,
+        results: &mut C,
         scorer: &mut S,
         graph: &G,
         accept_ords: Option<&FixedBitSet>,
@@ -1008,9 +1060,9 @@ impl HnswGraphSearcher {
     /// `IllegalArgumentException`/`assert` pair, because an out-of-range
     /// ordinal indexes the `visited` bitset and Java's check for that is an
     /// `assert`, i.e. absent in production.
-    pub fn search_seeded<G: HnswGraphView, S: VectorScorer>(
+    pub fn search_seeded<G: HnswGraphView, S: VectorScorer, C: KnnCollect + ?Sized>(
         &mut self,
-        results: &mut KnnCollector,
+        results: &mut C,
         scorer: &mut S,
         graph: &G,
         accept_ords: Option<&FixedBitSet>,
@@ -1074,11 +1126,11 @@ impl HnswGraphSearcher {
     // SENTINEL: `-1` = Java's `UNK_EP`. Outside the domain of a node ordinal,
     // and it reaches a `FixedBitSet` index one call away, so every call site
     // has to test it.
-    pub fn find_best_entry_point<G: HnswGraphView, S: VectorScorer>(
+    pub fn find_best_entry_point<G: HnswGraphView, S: VectorScorer, C: KnnCollect + ?Sized>(
         &mut self,
         scorer: &mut S,
         graph: &G,
-        collector: &mut KnnCollector,
+        collector: &mut C,
     ) -> Result<i32> {
         let mut current_ep = graph.entry_node();
         if current_ep == -1 || graph.num_levels() == 1 {
@@ -1168,9 +1220,9 @@ impl HnswGraphSearcher {
     }
 
     /// `HnswGraphSearcher.searchLevel`: beam search from `eps` on one level.
-    pub fn search_level<G: HnswGraphView, S: VectorScorer>(
+    pub fn search_level<G: HnswGraphView, S: VectorScorer, C: KnnCollect + ?Sized>(
         &mut self,
-        results: &mut KnnCollector,
+        results: &mut C,
         scorer: &mut S,
         level: i32,
         eps: &[i32],
@@ -1303,6 +1355,7 @@ impl HnswGraphSearcher {
                     }
                 }
             }
+            results.next_vectors_block();
         }
         Ok(())
     }

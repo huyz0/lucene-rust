@@ -197,6 +197,7 @@
 //! port doesn't parse doc-values skip indexes) are both deliberately deferred.
 
 pub mod aggs;
+pub mod bayesian_estimator;
 pub mod bucket_aggs;
 mod bulk_scorer;
 pub mod cardinality_sketch;
@@ -210,6 +211,7 @@ pub mod extended_query;
 pub mod facets;
 pub mod field_norms;
 pub mod highlighter;
+pub mod knn_collectors;
 pub mod multi_segment;
 pub mod near_spans;
 pub mod ordinal_map;
