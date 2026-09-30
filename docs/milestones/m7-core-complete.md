@@ -120,6 +120,8 @@ the skipper path, range relations, feature, distance feature) in
 ### T7.7 — Writer gaps: compound segments, string index sorts, write lock
 - Delivered 2026-09-30: the term-dictionary writer is byte-identical to Lucene -- `.tim` suffix compression (LZ4, LOWERCASE_ASCII) and `encodeTerm`'s zigzag singleton delta (`GenBlockTreeSuffixCompression`).
 
+- Delivered 2026-09-30: a term with more than `u32::MAX` occurrences is walked like any other (`wire_count` no longer caps it); only whole-term materialising readers refuse a stream past `u32::MAX` entries.
+
 ### T7.8 — `StandardTokenizer` and the attribute model · delivered 2026-09-30, two rows partial
 
 `crates/lucene-analysis` is now Lucene's streaming model: `TokenStream`/
