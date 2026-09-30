@@ -38,6 +38,7 @@ pub mod hnsw_util;
 pub mod hnsw_vectors;
 pub mod indexed_disi;
 pub mod live_docs;
+pub mod lowercase_ascii;
 pub mod lz4;
 pub mod monotonic_block_packed;
 pub mod norms;

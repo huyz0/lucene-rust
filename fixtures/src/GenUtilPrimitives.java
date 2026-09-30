@@ -11,6 +11,7 @@ import org.apache.lucene.util.NumericUtils;
 import org.apache.lucene.util.SmallFloat;
 import org.apache.lucene.util.StringHelper;
 import org.apache.lucene.util.Version;
+import org.apache.lucene.util.compress.LowercaseAsciiCompression;
 
 /**
  * Differential fixtures for the `org.apache.lucene.util` primitives: BitUtil, MathUtil,
@@ -341,6 +342,32 @@ public class GenUtilPrimitives {
     }
 
     Files.writeString(out.resolve("cases.txt"), OUT.toString());
+
+    // --- LowercaseAsciiCompression.compress: `in <hex> <compressed hex | REJECT>` ---
+    StringBuilder la = new StringBuilder();
+    for (int t = 0; t < 400; t++) {
+      int len = t < 20 ? t : r.nextInt(t < 300 ? 120 : 1500);
+      byte[] in = new byte[len];
+      int exceptionRate = r.nextInt(4) == 0 ? 0 : 1 + r.nextInt(400);
+      for (int i = 0; i < len; i++) {
+        if (exceptionRate != 0 && r.nextInt(exceptionRate) == 0) {
+          in[i] = (byte) r.nextInt(256);
+        } else {
+          String alphabet = "abcdefghijklmnopqrstuvwxyz0123456789.-_";
+          in[i] = (byte) alphabet.charAt(r.nextInt(alphabet.length()));
+        }
+      }
+      if (t % 50 == 49 && len > 600) {
+        // Two exceptions more than 255 bytes apart: bridging entries.
+        java.util.Arrays.fill(in, (byte) 'q');
+        in[1] = 'A';
+        in[len - 2] = 'Z';
+      }
+      org.apache.lucene.store.ByteBuffersDataOutput o = new org.apache.lucene.store.ByteBuffersDataOutput();
+      boolean ok = LowercaseAsciiCompression.compress(in, len, new byte[len], o);
+      la.append("in ").append(hex(in)).append(' ').append(ok ? hex(o.toArrayCopy()) : "REJECT").append('\n');
+    }
+    Files.writeString(out.resolve("lowercase_ascii.txt"), la.toString());
   }
 
   static String join(int[] a, int n) {
