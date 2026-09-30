@@ -160,8 +160,14 @@ pub struct QuantizedVectorsField<'a> {
 /// One segment being merged, for one field.
 #[derive(Debug, Clone)]
 pub struct QuantizedMergeSource<'a> {
-    /// The source segment's quantized centroid, `None` when it has no
-    /// quantized entry for the field (another format wrote it).
+    /// The source segment's quantized centroid as Java's `getCentroid` sees
+    /// it. `None` when the source has no quantized entry for the field -- and
+    /// **always `None` under `Lucene104HnswScalarQuantizedVectorsFormat`**:
+    /// `getCentroid` unwraps the per-field reader to the field's reader, a
+    /// `Lucene99HnswVectorsReader` wrapping the quantized one, and only
+    /// recognises a bare `Lucene104ScalarQuantizedVectorsReader`, so the
+    /// merged centroid is recomputed from every source vector
+    /// (`tests/scalar_quantized_fixtures.rs` pins this against Lucene).
     pub centroid: Option<&'a [f32]>,
     /// Every vector the source holds for the field, deleted ones included,
     /// in its ordinal order (Java's `calculateCentroid` iterates them all).
