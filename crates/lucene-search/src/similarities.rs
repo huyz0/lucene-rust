@@ -4,7 +4,7 @@
 //! [`crate::similarity`] is BM25 as the scorer tree's fast path computes it
 //! (a weight, a norm-inverse table, block bounds over impacts). This module
 //! is the general contract that path specialises: a [`Similarity`] computes
-//! a document's norm at index time ([`Similarity::compute_norm`]) and, per
+//! a document's norm at index time ([`NormSimilarity::compute_norm`]) and, per
 //! query term, a [`SimScorer`] from the collection and term statistics
 //! ([`Similarity::scorer`]) that scores a `(freq, norm)` pair. Any scorer
 //! Lucene accepts must not decrease as `freq` grows nor increase as the
@@ -28,6 +28,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
+pub use lucene_index::similarity::{default_compute_norm, FieldInvertState, NormSimilarity};
 use lucene_util::small_float;
 
 /// `CollectionStatistics`: a field's reader-wide statistics.
@@ -105,19 +106,6 @@ impl TermStatistics {
     }
 }
 
-/// The part of `FieldInvertState` `Similarity.computeNorm` reads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FieldInvertState {
-    /// The field's `IndexOptions` is `DOCS`.
-    pub docs_only: bool,
-    /// Tokens, positions counted (`getLength`).
-    pub length: i32,
-    /// Tokens at a position increment of 0 (`getNumOverlap`).
-    pub num_overlap: i32,
-    /// Distinct terms (`getUniqueTermCount`).
-    pub unique_term_count: i32,
-}
-
 /// `Similarity.SimScorer`: a term's (or a phrase's) score for one document.
 pub trait SimScorer: Send + Sync {
     /// `score(float freq, long norm)`: `norm` as the field's `NumericDocValues`
@@ -132,19 +120,11 @@ pub trait SimScorer: Send + Sync {
     }
 }
 
-/// `Similarity`: the index-time norm and the query-time scorer.
-pub trait Similarity: Send + Sync + fmt::Debug {
-    /// `Similarity.computeNorm`.
-    fn compute_norm(&self, field: &str, state: &FieldInvertState) -> i64 {
-        let _ = field;
-        default_compute_norm(self.discount_overlaps(), state)
-    }
-
-    /// `Similarity.getDiscountOverlaps`.
-    fn discount_overlaps(&self) -> bool {
-        true
-    }
-
+/// `Similarity`: the index-time norm ([`NormSimilarity`], which lives in
+/// `lucene-index` because the writer computes norms and that crate sits below
+/// this one) and the query-time scorer. An `Arc<dyn Similarity>` upcasts to
+/// the `Arc<dyn NormSimilarity>` `IndexWriter::set_similarity` takes.
+pub trait Similarity: NormSimilarity {
     /// `Similarity.scorer(boost, collectionStats, termStats...)`. `field` is
     /// `collectionStats.field()`.
     fn scorer(
@@ -160,21 +140,6 @@ pub trait Similarity: Send + Sync + fmt::Debug {
     fn is_default_bm25(&self) -> bool {
         false
     }
-}
-
-/// `Similarity.computeNorm`'s default body.
-pub fn default_compute_norm(discount_overlaps: bool, state: &FieldInvertState) -> i64 {
-    let num_terms = if state.docs_only {
-        state.unique_term_count
-    } else if discount_overlaps {
-        state.length.wrapping_sub(state.num_overlap)
-    } else {
-        state.length
-    };
-    // `SmallFloat.intToByte4` returns a `byte`, widened to `long`. A
-    // negative count (Java throws) cannot arise: overlaps are a subset of
-    // the length.
-    i64::from(small_float::int_to_byte4(num_terms.max(0) as u32) as i8)
 }
 
 /// `SmallFloat.byte4ToInt((byte) i)` for every norm byte, as a float
@@ -279,11 +244,13 @@ fn summed_idf(idf: impl Fn(&TermStatistics) -> f32, terms: &[TermStatistics]) ->
     }
 }
 
-impl Similarity for Bm25Similarity {
+impl NormSimilarity for Bm25Similarity {
     fn discount_overlaps(&self) -> bool {
         self.discount_overlaps
     }
+}
 
+impl Similarity for Bm25Similarity {
     fn scorer(
         &self,
         _field: &str,
@@ -359,11 +326,13 @@ impl SimScorer for TfIdfScorer {
     }
 }
 
-impl Similarity for ClassicSimilarity {
+impl NormSimilarity for ClassicSimilarity {
     fn discount_overlaps(&self) -> bool {
         self.discount_overlaps
     }
+}
 
+impl Similarity for ClassicSimilarity {
     fn scorer(
         &self,
         _field: &str,
@@ -397,6 +366,8 @@ impl SimScorer for ConstantSimScorer {
         self.0
     }
 }
+
+impl NormSimilarity for BooleanSimilarity {}
 
 impl Similarity for BooleanSimilarity {
     fn scorer(
@@ -438,11 +409,13 @@ impl SimScorer for RawTfScorer {
     }
 }
 
-impl Similarity for RawTfSimilarity {
+impl NormSimilarity for RawTfSimilarity {
     fn discount_overlaps(&self) -> bool {
         self.discount_overlaps
     }
+}
 
+impl Similarity for RawTfSimilarity {
     fn scorer(
         &self,
         _field: &str,
@@ -1142,11 +1115,13 @@ impl BaseModel for AxiomaticSimilarity {
 
 macro_rules! base_similarity {
     ($($t:ty),*) => {$(
-        impl Similarity for $t {
+        impl NormSimilarity for $t {
             fn discount_overlaps(&self) -> bool {
                 self.discount_overlaps
             }
+        }
 
+        impl Similarity for $t {
             fn scorer(
                 &self,
                 _field: &str,
@@ -1191,11 +1166,13 @@ impl MultiSimilarity {
     }
 }
 
-impl Similarity for MultiSimilarity {
+impl NormSimilarity for MultiSimilarity {
     fn compute_norm(&self, field: &str, state: &FieldInvertState) -> i64 {
         self.sims[0].compute_norm(field, state)
     }
+}
 
+impl Similarity for MultiSimilarity {
     fn scorer(
         &self,
         field: &str,
@@ -1240,11 +1217,13 @@ impl PerFieldSimilarity {
     }
 }
 
-impl Similarity for PerFieldSimilarity {
+impl NormSimilarity for PerFieldSimilarity {
     fn compute_norm(&self, field: &str, state: &FieldInvertState) -> i64 {
         self.get(field).compute_norm(field, state)
     }
+}
 
+impl Similarity for PerFieldSimilarity {
     fn scorer(
         &self,
         field: &str,
