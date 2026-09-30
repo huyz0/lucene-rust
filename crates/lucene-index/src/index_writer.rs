@@ -3917,7 +3917,7 @@ impl DocumentVector {
     /// ARITH: as [`VectorValue::ram_bytes`] -- a sum of live allocation
     /// sizes, bounded by the address space.
     #[allow(clippy::arithmetic_side_effects)]
-    fn ram_bytes(&self) -> usize {
+    pub(crate) fn ram_bytes(&self) -> usize {
         std::mem::size_of::<Self>() + self.field_name.capacity() + self.value.ram_bytes()
     }
 }
@@ -5647,10 +5647,35 @@ impl<'d> IndexWriter<'d> {
         doc: Document,
         vectors: Vec<DocumentVector>,
     ) -> Result<SeqNo> {
-        let doc_index = self.pending_docs.len();
-        for v in &vectors {
+        self.cfg
+            .validate_document_vectors(self.pending_docs.len(), &vectors)?;
+        let seq_no = self.delete_queue.next_sequence_number();
+        // ARITH: see [`VectorValue::ram_bytes`].
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            self.ram_bytes_used += document_ram_bytes(&doc)
+                + vectors.iter().map(DocumentVector::ram_bytes).sum::<usize>();
+        }
+        self.pending_docs.push(doc);
+        self.pending_custom_freq_terms.push(Vec::new());
+        self.pending_vectors.push(vectors);
+        self.pending_explicit.push(ExplicitFields::default());
+        self.maybe_flush()?;
+        Ok(seq_no)
+    }
+}
+
+impl IndexingConfig {
+    /// [`IndexWriter::add_document_with_vectors`]' checks of one document's
+    /// vectors (document `doc_index` of its buffer): every field registered
+    /// with its encoding and dimension, and named once.
+    pub(crate) fn validate_document_vectors(
+        &self,
+        doc_index: usize,
+        vectors: &[DocumentVector],
+    ) -> Result<()> {
+        for v in vectors {
             let config = self
-                .cfg
                 .vector_fields
                 .iter()
                 .find(|c| c.name == v.field_name)
@@ -5681,22 +5706,11 @@ impl<'d> IndexWriter<'d> {
                 return Err(Error::DuplicateVectorField(v.field_name.clone()));
             }
         }
-
-        let seq_no = self.delete_queue.next_sequence_number();
-        // ARITH: see [`VectorValue::ram_bytes`].
-        #[allow(clippy::arithmetic_side_effects)]
-        {
-            self.ram_bytes_used += document_ram_bytes(&doc)
-                + vectors.iter().map(DocumentVector::ram_bytes).sum::<usize>();
-        }
-        self.pending_docs.push(doc);
-        self.pending_custom_freq_terms.push(Vec::new());
-        self.pending_vectors.push(vectors);
-        self.pending_explicit.push(ExplicitFields::default());
-        self.maybe_flush()?;
-        Ok(seq_no)
+        Ok(())
     }
+}
 
+impl IndexWriter<'_> {
     /// `IndexWriter.addDocuments(Iterable<Iterable<IndexableField>>)`: adds
     /// `docs` as one **document block** -- a run guaranteed to occupy
     /// contiguous, ascending doc IDs in the segment it lands in, which is what
@@ -10769,7 +10783,7 @@ fn accumulate_field_length(so_far: u32, term_freq: i32) -> u32 {
 /// [`IndexWriter::add_document_with_custom_freq_terms`] term list.
 /// ARITH: as [`VectorValue::ram_bytes`] -- a sum of live allocation sizes.
 #[allow(clippy::arithmetic_side_effects)]
-fn custom_freq_terms_ram_bytes(terms: &[(String, i32)]) -> usize {
+pub(crate) fn custom_freq_terms_ram_bytes(terms: &[(String, i32)]) -> usize {
     std::mem::size_of::<Vec<(String, i32)>>()
         + std::mem::size_of_val(terms)
         + terms.iter().map(|(t, _)| t.capacity()).sum::<usize>()

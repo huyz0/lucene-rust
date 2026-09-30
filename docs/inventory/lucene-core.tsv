@@ -347,7 +347,7 @@ index/DocValuesType	ported	crates/lucene-codecs/src/field_infos.rs::DocValuesTyp
 index/DocValuesUpdate	ported	crates/lucene-index/src/buffered_updates.rs::DocValuesUpdate
 index/DocValuesWriter	ported	crates/lucene-index/src/index_writer.rs::build_doc_values_output
 index/DocsWithFieldSet	not-needed	internal doc-id set the per-field in-RAM writers use to remember which docs had a value; the Rust build_*_output functions track presence inline.
-index/DocumentsWriter	partial	crates/lucene-index/src/concurrent_writer.rs::ConcurrentIndexWriter -- M7: per parity.md: not ported vectors and custom-frequency postings on the concurrent path (use `into_writer`)
+index/DocumentsWriter	ported	crates/lucene-index/src/concurrent_writer.rs::ConcurrentIndexWriter
 index/DocumentsWriterDeleteQueue	ported	crates/lucene-index/src/buffered_updates.rs::DeleteQueue
 index/DocumentsWriterFlushControl	ported	crates/lucene-index/src/flush_policy.rs::FlushControl
 index/DocumentsWriterFlushQueue	ported	crates/lucene-index/src/index_writer.rs::SegmentTicket
