@@ -17,7 +17,6 @@
 #![allow(clippy::arithmetic_side_effects)]
 
 use lucene_codecs::field_infos::VectorSimilarityFunction;
-use lucene_codecs::filtered_hnsw_searcher::search_with_strategy;
 use lucene_codecs::hnsw_vectors::{self, HnswVectorsReader};
 use lucene_codecs::scalar_quantized_vectors::{
     exhaustive_search, QuantizedMergeSource, QuantizedQueryScorer, QuantizedVectorsField,
@@ -412,10 +411,12 @@ fn check_search(
                 accept_ords: Some(&accept),
                 filtered_doc_count: Some(cost),
                 seed_ords: None,
-                filtered_search_threshold: 0,
+                // `KnnSearchStrategy.Hnsw(60)`: the filter passes 10%, so
+                // the `FilteredHnswGraphSearcher` walk answers.
+                filtered_search_threshold: 60,
             };
             let (hits, early) =
-                search_with_strategy(&mut scorer, graph.as_ref(), 10, cost as u64 + 1, opts, 60)
+                hnsw_vectors::search(&mut scorer, graph.as_ref(), 10, cost as u64 + 1, opts)
                     .unwrap();
             if early || hits.len() < 10 {
                 exhaustive_search(&values, f.sim, &q.vector, 10, Some(&accept)).unwrap()

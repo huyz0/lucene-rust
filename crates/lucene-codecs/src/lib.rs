@@ -30,7 +30,6 @@ pub mod direct_reader;
 pub mod doc_values;
 pub mod doc_values_updates;
 pub mod field_infos;
-pub mod filtered_hnsw_searcher;
 pub mod for_util;
 pub mod fst;
 pub mod fst_compiler;
