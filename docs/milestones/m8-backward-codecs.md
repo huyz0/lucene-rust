@@ -9,7 +9,7 @@
 | **Effort** | XL |
 | **Depends on** | [M7](m7-core-complete.md) (per-field formats, the inventory gate) |
 | **Unblocks** | adopting the Rust engine on existing indices without a rewrite |
-| **Status** | in progress: T8.1 delivered; T8.2 and T8.3 delivered for every non-vector format |
+| **Status** | in progress: T8.1, T8.2, T8.4 delivered; T8.3 delivered bar the quantized vector formats and one benchmark query; T8.5's native half delivered |
 
 ---
 
@@ -142,11 +142,67 @@ five.
   and `Lucene102(Hnsw)BinaryQuantizedVectorsFormat`: not ported (inventory
   `deferred:M8`). No default codec wrote them -- they are per-field opt-ins --
   and no fixture holds one yet.
-- Performance (port-workflow stages 2-3): a retired-format term is decoded
-  whole when its cursor opens and served through the tail-block path, with no
-  block skipping and no impacts (the skip data, trailing or inline, is
-  stepped over); the FST-to-trie conversion is an open-time pass over each
-  field's index. No benchmark against Lucene exists yet for either.
+- One query in the benchmark below, on one corpus (q89 on 9.0).
+
+**Performance (port-workflow stages 2-3).** The lazy cursors
+(`postings.rs::{LazyDocsCursor,PositionsCursor}`) now serve every retired
+generation block by block, as they serve `Lucene104`, at the generation's own
+128-document block: `Lucene912`/`Lucene101`/`Lucene103` through their inline
+level-0 and level-1 (every 4,096 documents) headers, and `Lucene90`/`Lucene99`
+through the trailing multi-level skip list
+(`backward_codecs/skip_list.rs::SkipList`, a port of
+`MultiLevelSkipListReader` + `Lucene90ScoreSkipReader`), whose level-0 and
+level-1 entries give `advance_shallow` each block's extent and impacts without
+decoding it. The first cut had decoded a whole term at open and stepped over
+its skip data.
+
+Benchmark: `benchmarks/queries.tsv` (87 queries) over a 1M-document index
+written by `GenCorpus` compiled against Lucene 9.0.0 and against 9.12.2 (one
+segment each), with the M1 bench-runner against Java's `BenchRunner` on 10.5.0
+plus backward-codecs, on a 4-core host other jobs kept at load 8-12. Every
+query returns Java's hits, top set and top score on both corpora.
+
+| | queries slower than Java, 9.0 corpus | 9.12 corpus |
+|---|---|---|
+| whole-term decode (first cut) | 47 of 87 (term query q01 at 0.33x) | 42 of 87 |
+| skip data + impacts | 2 (q80, q89) | 7 (q34, q58, q59, q60, q77, q80, q89) |
+| the losers again, 1 s warm-up, 3 s measured, three rounds | q89 in 3 of 3 (0.68-0.94x) | none in a majority of rounds |
+
+Single runs of the whole set move by up to 2x on this host (Java's q80 read
+311 qps in one run and 1,087 in the next), which is why the losers were run
+again rather than taken as measured. **Still open: q89 on the 9.0 corpus**, a
+`t1` term query sorted by a keyword doc value then score, at 0.68-0.94x,
+where the same query sorted by a numeric doc value (q80) wins and q89 itself
+wins on 9.12 (0.99-1.23x) and on the current format (about 1.6x, going by
+`docs/benchmarks/perf-gate.md`'s negative control). Both old corpora carry the same
+doc values format (`Lucene90DocValuesMetadata` version 0), so format alone
+does not explain it; not yet profiled.
+
+Skip data is verified on `fixtures/data/bwc-big/<version>/`
+(`fixtures/bwc/BwcBig.java`, `gen-bwc-fixtures.sh --big`): one 20,000-document
+segment per generation whose terms reach every level of both kinds of skip
+data. `tests/bwc_postings.rs::*_skip_data_at_every_level` checks the lazy
+cursor's `next_doc` and `advance` at strides from 1 to 8,193 against the eager
+decode, and that the level-0 and level-1 impacts `advance_shallow` exposes
+bound every frequency in their span. `skip_list.rs`'s unit tests check
+`skip_to` against a port of the writer at up to four levels, and truncated or
+bit-flipped skip data. Seen to fail: `SkipList::level1` handing back the
+level-0 entry's impacts fails both unit tests and the `Lucene90`/`Lucene99`
+fixture tests (on the `peak` term, whose one high-frequency document in 1,500
+is what separates the levels; the first version of the fixture, without it,
+passed that mutation). Not caught: a norm-side error in an impact, since the
+tests check frequencies only.
+
+**FST-to-trie conversion at open.** `examples/reader_open_profile` (now
+parsing a `.si` by its codec) over the same corpora gives
+`blocktree::open_shared` a minimum of 6.0 ms on the 9.0 segment (88 KB `.tip`)
+and 3.3 ms on the 9.12 one (77 KB), against 1 us for the current format's
+trie, which is read in place. Lucene opens a `Lucene90BlockTreeTermsReader`
+FST in place (`FieldReader`: `new OffHeapFSTStore(indexIn, ...)`), at a cost that
+does not grow with the index. So the port
+pays a few milliseconds per retired-format segment per open, once, where
+Lucene does not; it is not a per-query cost. A lazy per-field conversion
+would remove it; not done.
 ### T8.4 — Merge old into new · delivered 2026-09-30
 
 This port's `IndexWriter` merges segments any 9.0-10.4 release wrote into
@@ -185,7 +241,26 @@ smallest segments first and concatenates them in that order, where 10.5.0's
 `TieredMergePolicy.findForcedMerges` merges everything in size-descending
 order in its single-segment case -- so the merged segment numbers its
 documents in a different order than Lucene's would (contents equal).
-### T8.5 — Plugin: drop the `postings_format` fallback for supported versions
+### T8.5 — Plugin: drop the `postings_format` fallback for supported versions · native half delivered 2026-09-30
+
+`NativeReaders` falls back with `postings_format` only for a postings format
+outside `SUPPORTED_POSTINGS_FORMATS` (`Lucene90`, `Lucene99`, `Lucene912`,
+`Lucene101`, `Lucene103`, `Lucene104`) -- a `completion` field's
+`Completion104`, say -- instead of for anything but `Lucene104`.
+`feature-matrix.md` and `opensearch-native-queries.md` say so.
+
+**Verified:** `lucene-ffi`'s
+`jvm_reader.rs::every_bwc_version_is_served_natively_like_the_current_codec`
+opens every T8.1 fixture version (9.0.0 to 10.2.2) through the plugin's own
+entry point (`ffi_open_jvm_reader`, with `segments_N` bytes, `maxDoc`s and
+live-docs words as the JVM passes them) and requires term and boolean queries
+to return the 10.4.0 fixture's hits, scores and totals.
+
+**Not verified here** (they need Docker or a JDK 25 toolchain, which this
+environment's run did not use): `scripts/verify-opensearch.sh` on a node
+holding an old index, the JVM-side `gradle -p opensearch-plugin check`
+(`NativeSelfTest`), and the acceptance criterion's cluster upgraded from
+OpenSearch 2.x.
 
 ---
 
