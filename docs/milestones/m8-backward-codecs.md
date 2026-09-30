@@ -9,7 +9,7 @@
 | **Effort** | XL |
 | **Depends on** | [M7](m7-core-complete.md) (per-field formats, the inventory gate) |
 | **Unblocks** | adopting the Rust engine on existing indices without a rewrite |
-| **Status** | not started |
+| **Status** | in progress: T8.1 fixture corpus delivered |
 
 ---
 
@@ -51,11 +51,31 @@ at earlier versions.
 
 ## Tasks
 
-### T8.1 — Fixture corpus from every supported version
+### T8.1 — Fixture corpus from every supported version · delivered 2026-09-30
 
-A generator run against each Lucene release OpenSearch 2.x and 3.x shipped
-(9.x through 10.4), producing one index per version with every field type;
-checked in like today's fixtures, so the differential tests need no network.
+`scripts/gen-bwc-fixtures.sh --only <version>` compiles
+`fixtures/bwc/BwcWrite.java` against that release's own `lucene-core` jar
+and writes `fixtures/data/bwc/<version>/`: two segments (3,000 and 400
+documents, deletions in both) with every field kind -- text with positions,
+offsets and payloads, term vectors, `DOCS`/`DOCS_AND_FREQS` fields, all five
+doc-values types, norms, 1-D int/long and 2-D int points, float vectors, and
+byte vectors from 9.5. `fixtures/bwc/BwcDump.java`, on 10.5.0 with
+backward-codecs, then writes `expected.txt`: segment and field infos in full
+(codec names, per-field format attributes, file lists), and every kind of
+content as an FNV-1a digest over a canonical byte stream with its counts
+(postings with positions/offsets/payloads, norms, doc values, points, stored
+fields, term vectors, vectors), plus a 10-nearest KNN result per vector
+field. The Rust side reproduces each digest from its own readers.
+
+One version per codec era: 9.0.0 (`Lucene90`), 9.1.0 (`Lucene91`), 9.3.0
+(`Lucene92`), 9.4.2 (`Lucene94`), 9.8.0 (`Lucene95`), 9.11.1 (`Lucene99`),
+9.12.2 (`Lucene912`), 10.0.0 (`Lucene100`), 10.2.2 (`Lucene101`) and 10.4.0
+(already `Lucene104`: a cross-check of the current reader). Postings formats
+across them: `Lucene90`, `Lucene99`, `Lucene912`, `Lucene101`; vectors:
+`Lucene90`/`91`/`92`/`94`/`95`/`99` HNSW -- 9.2 and 9.3 name their vector
+files `lucene92HnswVectorsFormat` (lower-case `l`), a quirk the file
+resolution must reproduce. Content digests are reproducible on
+regeneration; only segment ids and file names change.
 
 ### T8.2 — Version-dispatching readers
 
