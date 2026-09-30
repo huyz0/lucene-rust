@@ -1605,3 +1605,176 @@ fn every_version_force_merges_into_lucene104() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// Per vector field, how many live documents of the index in `dir` carry a
+/// vector: each field read through its own per-field group's raw vectors.
+fn live_vector_counts(dir: &FsDirectory) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for commit in segment_infos::read_latest(dir).unwrap().segments {
+        let seg = open_segment(dir, &commit).unwrap();
+        for fi in seg
+            .field_infos
+            .fields
+            .iter()
+            .filter(|f| f.vector_dimension > 0)
+        {
+            let (format, suffix, files) = vector_files(dir, &seg, fi).unwrap();
+            assert!(
+                RetiredHnswFormat::for_name(&format).is_none(),
+                "{format}: not a group this helper reads"
+            );
+            let flat = FlatVectorsReader::open(
+                &files["vemf"],
+                &files["vec"],
+                &seg.commit.segment_id,
+                &suffix,
+            )
+            .unwrap();
+            let n = match fi.vector_encoding {
+                VectorEncoding::Float32 => {
+                    let v = flat.float_vector_values(fi.number).unwrap();
+                    (0..v.size())
+                        .filter(|&o| seg.is_live(v.ord_to_doc(o).unwrap()))
+                        .count()
+                }
+                VectorEncoding::Byte => {
+                    let v = flat.byte_vector_values(fi.number).unwrap();
+                    (0..v.size())
+                        .filter(|&o| seg.is_live(v.ord_to_doc(o).unwrap()))
+                        .count()
+                }
+            };
+            *counts.entry(fi.name.clone()).or_insert(0) += n;
+        }
+    }
+    counts
+}
+
+/// The quantized fixtures through this port's `CheckIndex` and `IndexWriter`:
+/// every group opens and checks clean (the quantized codes included), and a
+/// force merge turns them into one `Lucene104` segment whose vector fields are
+/// all `Lucene99HnswVectorsFormat` and hold every live vector. Real Lucene's
+/// verdict on the same merges is `scripts/verify-bwc-merge.sh`.
+#[test]
+fn quantized_fixtures_check_clean_and_force_merge_into_lucene104() {
+    use lucene_index::index_writer::IndexWriter;
+    use lucene_index::segment_info::LuceneVersion;
+    let mut failures = Vec::new();
+    for version in QUANTIZED_VERSIONS {
+        let src = FsDirectory::open(quantized_fixture_dir(version));
+        for r in lucene_index::check_index::check_directory(&src).unwrap() {
+            for c in r.failures() {
+                failures.push(format!(
+                    "{version} {}: {} {}",
+                    r.segment_name, c.name, c.message
+                ));
+            }
+            if !r.segment_name.starts_with('_') {
+                continue;
+            }
+            let seg = open_segment(
+                &src,
+                &segment_infos::read_latest(&src)
+                    .unwrap()
+                    .segments
+                    .into_iter()
+                    .find(|s| s.segment_name == r.segment_name)
+                    .unwrap(),
+            )
+            .unwrap();
+            for fi in seg
+                .field_infos
+                .fields
+                .iter()
+                .filter(|f| f.vector_dimension > 0)
+            {
+                let mut families = vec![format!("vectors.values_decode:{}", fi.name)];
+                if fi.vector_encoding == VectorEncoding::Float32 {
+                    families.push(format!("vectors.quantized:{}", fi.name));
+                }
+                for family in families {
+                    if !r.checks.iter().any(|c| c.name == family && c.passed()) {
+                        failures.push(format!(
+                            "{version} {}: {family} did not run",
+                            r.segment_name
+                        ));
+                    }
+                }
+            }
+            if r.segment_name == "_0"
+                && !r
+                    .checks
+                    .iter()
+                    .any(|c| c.name.starts_with("hnsw.neighbors_on_level:") && c.passed())
+            {
+                failures.push(format!("{version} _0: no graph was checked"));
+            }
+        }
+        let before = live_vector_counts(&src);
+
+        let tmp = lucene_util::test_support::TempDir::new(&format!("bwc-q-merge-{version}"));
+        for entry in std::fs::read_dir(quantized_fixture_dir(version)).unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !name.ends_with(".txt") {
+                std::fs::copy(entry.path(), tmp.path().join(&name)).unwrap();
+            }
+        }
+        let dir = FsDirectory::open(tmp.path());
+        {
+            let mut w = IndexWriter::open(
+                &dir,
+                Vec::new(),
+                "Lucene104",
+                LuceneVersion {
+                    major: 10,
+                    minor: 5,
+                    bugfix: 0,
+                },
+            )
+            .unwrap();
+            w.force_merge(1)
+                .unwrap_or_else(|e| panic!("{version}: force_merge: {e}"));
+            w.commit().unwrap();
+        }
+        let infos = segment_infos::read_latest(&dir).unwrap();
+        if infos.segments.len() != 1 || infos.segments[0].codec_name != "Lucene104" {
+            failures.push(format!(
+                "{version}: merged into {} segments",
+                infos.segments.len()
+            ));
+            continue;
+        }
+        let seg = open_segment(&dir, &infos.segments[0]).unwrap();
+        for fi in seg
+            .field_infos
+            .fields
+            .iter()
+            .filter(|f| f.vector_dimension > 0)
+        {
+            let format = fi
+                .attributes
+                .iter()
+                .find(|(k, _)| k == "PerFieldKnnVectorsFormat.format")
+                .map(|(_, v)| v.as_str());
+            if format != Some("Lucene99HnswVectorsFormat") {
+                failures.push(format!("{version}: {} merged as {format:?}", fi.name));
+            }
+        }
+        for r in lucene_index::check_index::check_directory(&dir).unwrap() {
+            for c in r.failures() {
+                failures.push(format!(
+                    "{version}: merged CheckIndex {} {}",
+                    c.name, c.message
+                ));
+            }
+        }
+        let after = live_vector_counts(&dir);
+        if before != after {
+            failures.push(format!(
+                "{version}: live vectors {before:?} before, {after:?} after"
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
