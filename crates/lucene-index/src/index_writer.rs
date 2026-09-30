@@ -9937,7 +9937,7 @@ fn field_value_kind(value: &FieldValue) -> &'static str {
     }
 }
 
-fn generate_segment_id(salt: i64) -> [u8; ID_LENGTH] {
+pub(crate) fn generate_segment_id(salt: i64) -> [u8; ID_LENGTH] {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     use std::time::{SystemTime, UNIX_EPOCH};

@@ -328,7 +328,7 @@ index/ByteSlicePool	ported	crates/lucene-index/src/inverter.rs::FieldInverter
 index/ByteSliceReader	ported	crates/lucene-index/src/inverter.rs::FieldInverter
 index/ByteVectorValues	ported	crates/lucene-codecs/src/vectors.rs::ByteVectorValues
 index/CachingMergeContext	not-needed	memoizes MergeContext.numDeletesToMerge during one merge selection; a pure caching wrapper with no behaviour of its own.
-index/CheckIndex	partial	crates/lucene-index/src/check_index.rs::check_directory -- M7: per parity.md: `checkImpacts` and `checkDocIDRuns` not written; doc-values generation columns of an updated segment are checksummed but their contents not decoded (except the soft-deletes field); no `-exorcise` repair mode
+index/CheckIndex	partial	crates/lucene-index/src/check_index.rs::check_directory -- M7: per parity.md: doc-values generation columns of an updated segment are checksummed but their contents not decoded (except the soft-deletes field)
 index/CodecReader	ported	crates/lucene-search/src/reader/mod.rs::CodecReader
 index/CompositeReader	ported	crates/lucene-search/src/reader/mod.rs::CompositeReader
 index/CompositeReaderContext	ported	crates/lucene-search/src/directory_reader.rs::segment_readers
@@ -398,8 +398,8 @@ index/IndexUpgrader	deferred:M8	command-line tool rewriting older-format segment
 index/IndexWriter	partial	crates/lucene-index/src/index_writer.rs::IndexWriter -- M7: writing compound segments comes with the codec writers' change (row `codecs/lucene90/Lucene90CompoundFormat`); every other operation is ported (parity.md)
 index/IndexWriterConfig	partial	crates/lucene-index/src/index_writer.rs::set_index_sort -- M7: settings are writer setters (`setSimilarity` is `IndexWriter::set_similarity`, norms via `NormSimilarity`); missing codec and per-field format choice (T7.5). `IndexWriterEventListener` and `infoStream` are not needed (rows `index/IndexWriterEventListener`, `util/InfoStream`); `leafSorter` is `DirectoryReader::with_leaf_sorter`, `commitOnClose` is `IndexWriter::set_commit_on_close`
 index/IndexWriterEventListener	not-needed	callback hook for merge begin/end events used for metrics and tests; no effect on the index.
-index/IndexableField	partial	crates/lucene-index/src/index_writer/explicit.rs::ExplicitDocument -- M7: no `IndexableField` abstraction: fields are configured per writer (`set_*_field`/`add_*_field`) or arrive pre-inverted; the document field-type API is M7 T7.2
-index/IndexableFieldType	partial	crates/lucene-codecs/src/field_infos.rs::FieldInfo -- M7: field properties exist only as the writer's per-field `FieldInfo` schema; no per-field-instance type descriptor of the document API (M7 T7.2)
+index/IndexableField	ported	crates/lucene-index/src/document/mod.rs::IndexableField
+index/IndexableFieldType	ported	crates/lucene-index/src/document/mod.rs::FieldType
 index/IndexingChain	partial	crates/lucene-index/src/indexing_chain.rs::invert_documents -- M7: a PayloadAttribute or TermFrequencyAttribute a TokenFilter sets is not read by the inverter (payloads still come from BoxedPayloadSource, custom frequencies from add_document_with_custom_freq_terms)
 index/KeepLastNCommitsDeletionPolicy	ported	crates/lucene-index/src/deletion_policy.rs::KeepLastNCommitsDeletionPolicy
 index/KeepOnlyLastCommitDeletionPolicy	ported	crates/lucene-index/src/deletion_policy.rs::KeepOnlyLastCommitDeletionPolicy
