@@ -34,15 +34,13 @@
 //! - **`docFreq == 1` is pulsed into the term dictionary**: no `.doc` bytes for
 //!   a singleton term.
 //!
-//! # Where the bytes differ from Java's, deliberately
+//! # Byte identity
 //!
-//! Real Lucene reads both choices; neither changes what a reader returns.
-//!
-//! - `.tim` suffix bytes are always `NO_COMPRESSION`; Java tries `LZ4` and
-//!   `LOWERCASE_ASCII` per block.
-//! - Term metadata always takes `encodeTerm`'s plain `docStartFP`-delta branch,
-//!   never the zigzag singleton-doc-delta branch Java uses for runs of
-//!   singleton terms ([`write_term_metadata`]).
+//! `.tim` suffixes are compressed (`LZ4`, `LOWERCASE_ASCII`) exactly when
+//! Java compresses them, and term metadata takes `encodeTerm`'s zigzag
+//! singleton-doc-delta branch exactly when Java does
+//! ([`write_term_metadata`]); `tests/blocktree_byte_identity_fixture.rs`
+//! holds both to Lucene's bytes.
 //!
 //! # Caller obligations (checked where cheap)
 //!
@@ -79,6 +77,10 @@ use crate::postings::{
 pub enum Error {
     #[error("write_single_field: terms must be non-empty")]
     EmptyTerms,
+    /// `Lucene103BlockTreeTermsWriter.validateSettings`'s
+    /// `IllegalArgumentException` ([`WriteOptions::validate`]).
+    #[error("{0}")]
+    InvalidBlockSizes(String),
     #[error("write_single_field: terms out of order or duplicated at index {0}")]
     TermsNotSorted(usize),
     #[error("write_single_field: term at index {0} has no postings (docFreq == 0)")]
@@ -538,6 +540,7 @@ pub struct FieldNorms<'a> {
 
 /// Input to [`write_single_field`]: one field's whole term dictionary,
 /// already fully materialized and sorted.
+#[derive(Clone, Copy)]
 pub struct FieldPostingsInput<'a> {
     pub field_number: i32,
     pub index_options: IndexOptions,
@@ -649,6 +652,83 @@ pub fn write_fields_with_norms(
     segment_id: &[u8; ID_LENGTH],
     segment_suffix: &str,
 ) -> Result<Output> {
+    write_fields_with_options(
+        inputs,
+        norms,
+        &WriteOptions::default(),
+        segment_id,
+        segment_suffix,
+    )
+}
+
+/// What distinguishes one `Lucene104PostingsFormat` instance's files from
+/// another's, beyond the fields it is handed: the block-tree block sizes of
+/// its constructor, and which of `.pos`/`.pay` exist, which Java decides
+/// from the whole segment's `FieldInfos` (`hasProx`, `hasPayloads ||
+/// hasOffsets`) rather than from the fields a per-field format was given --
+/// so the second format of a segment with positions anywhere has an empty
+/// `.pos` of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WriteOptions {
+    /// `minTermBlockSize`, `DEFAULT_MIN_BLOCK_SIZE` (25) by default.
+    pub min_items_in_block: usize,
+    /// `maxTermBlockSize`, `DEFAULT_MAX_BLOCK_SIZE` (48) by default.
+    pub max_items_in_block: usize,
+    /// Force a `.pos` (`Some(true)`) or none (`Some(false)`); `None` writes
+    /// one when some input field indexes positions.
+    pub has_prox: Option<bool>,
+    /// The same for `.pay`: `None` writes one when some input field has
+    /// offsets or payloads.
+    pub has_payloads_or_offsets: Option<bool>,
+}
+
+impl Default for WriteOptions {
+    fn default() -> Self {
+        WriteOptions {
+            min_items_in_block: blocktree_writer::MIN_ITEMS_IN_BLOCK,
+            max_items_in_block: blocktree_writer::MAX_ITEMS_IN_BLOCK,
+            has_prox: None,
+            has_payloads_or_offsets: None,
+        }
+    }
+}
+
+impl WriteOptions {
+    /// `Lucene103BlockTreeTermsWriter.validateSettings`.
+    // ARITH: `min_items_in_block >= 2` is checked before `- 1`, and a block
+    // size is a constructor argument, far from `usize::MAX / 2`.
+    #[allow(clippy::arithmetic_side_effects)]
+    pub fn validate(&self) -> Result<()> {
+        let (min, max) = (self.min_items_in_block, self.max_items_in_block);
+        if min <= 1 {
+            return Err(Error::InvalidBlockSizes(format!(
+                "minItemsInBlock must be >= 2; got {min}"
+            )));
+        }
+        if min > max {
+            return Err(Error::InvalidBlockSizes(format!(
+                "maxItemsInBlock must be >= minItemsInBlock; got maxItemsInBlock={max} minItemsInBlock={min}"
+            )));
+        }
+        if 2 * (min - 1) > max {
+            return Err(Error::InvalidBlockSizes(format!(
+                "maxItemsInBlock must be at least 2*(minItemsInBlock-1); got maxItemsInBlock={max} minItemsInBlock={min}"
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// [`write_fields_with_norms`] for one `Lucene104PostingsFormat` instance
+/// of a segment -- see [`WriteOptions`].
+pub fn write_fields_with_options(
+    inputs: &[FieldPostingsInput<'_>],
+    norms: &[FieldNorms<'_>],
+    options: &WriteOptions,
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+) -> Result<Output> {
+    options.validate()?;
     if inputs.is_empty() {
         return Err(Error::EmptyTerms);
     }
@@ -670,9 +750,11 @@ pub fn write_fields_with_norms(
     // ---- .pos ----
     // Only written at all if at least one field indexes positions, exactly
     // like a real segment has no `.pos` file when no field needs one.
-    let any_positions = inputs
-        .iter()
-        .any(|input| input.index_options.subsumes_positions());
+    let any_positions = options.has_prox.unwrap_or_else(|| {
+        inputs
+            .iter()
+            .any(|input| input.index_options.subsumes_positions())
+    });
     let mut pos = Vec::new();
     if any_positions {
         codec_util::write_index_header(
@@ -687,10 +769,14 @@ pub fn write_fields_with_norms(
     // ---- .pay ----
     // Only written at all if at least one field indexes offsets and/or has
     // payloads, same "no file needed" convention as `.pos`.
-    let any_offsets = inputs
-        .iter()
-        .any(|input| input.index_options.subsumes_offsets());
-    let any_payloads = inputs.iter().any(|input| input.has_payloads);
+    let any_offsets = options.has_payloads_or_offsets.unwrap_or_else(|| {
+        inputs
+            .iter()
+            .any(|input| input.index_options.subsumes_offsets())
+    });
+    let any_payloads = options
+        .has_payloads_or_offsets
+        .unwrap_or_else(|| inputs.iter().any(|input| input.has_payloads));
     let mut pay = Vec::new();
     if any_offsets || any_payloads {
         codec_util::write_index_header(
@@ -806,10 +892,14 @@ pub fn write_fields_with_norms(
         // (never read for singletons, see `postings::singleton_postings`).
         let mut doc_start_fp = vec![0u64; input.terms.len()];
         for (i, t) in input.terms.iter().enumerate() {
+            // `startTerm` samples `docOut.getFilePointer()` for every term,
+            // singletons included: a singleton writes no `.doc` bytes, so its
+            // `docStartFP` equals the next term's, and `encodeTerm` keys the
+            // zigzag singleton branch off that equality.
+            doc_start_fp[i] = doc.len() as u64;
             if t.docs.len() == 1 {
                 continue;
             }
-            doc_start_fp[i] = doc.len() as u64;
 
             // Zero or more full 256-doc `ForUtil`/`PForUtil` blocks
             // (`write_full_block`) followed by at most one group-varint tail
@@ -887,6 +977,7 @@ pub fn write_fields_with_norms(
             &mut tim,
             &mut tip,
             &block_terms,
+            (options.min_items_in_block, options.max_items_in_block),
             input.index_options != IndexOptions::Docs,
             |meta, indices| {
                 write_term_metadata(
@@ -2079,10 +2170,11 @@ fn write_full_payload_length_block(out: &mut Vec<u8>, lengths: &[u32], bytes: &[
 /// writer's own scope: `payStartFP` only appears when the field indexes
 /// offsets or stores payloads; `lastPosBlockOffset` carries the real offset
 /// of the vint position tail, exactly when `decode_term_metadata`'s own
-/// `total_term_freq > BLOCK_SIZE` gate requires it). Always takes the
-/// bit-clear ("absolute-ish
-/// `docStartFP` delta") branch, never the zigzag-singleton-delta branch —
-/// this writer has no need for that alternate encoding's extra compactness.
+/// `total_term_freq > BLOCK_SIZE` gate requires it). Takes the same branch
+/// `Lucene104PostingsWriter.encodeTerm` takes for every term: the zigzag
+/// singleton-doc-delta branch (bit 0 set) between two consecutive singleton
+/// terms that share a `docStartFP`, the plain `docStartFP`-delta branch
+/// otherwise.
 ///
 /// `doc_start_fp`/`pos_start_fp`/`pay_start_fp` deltas are threaded exactly
 /// like `SegmentTermsEnumFrame.metaDataUpto`/`absolute` on the read side: the
@@ -2107,26 +2199,32 @@ fn write_term_metadata(
     index_has_positions: bool,
     index_has_offsets_or_payloads: bool,
 ) {
+    // `lastState`, reset to `EMPTY_STATE` for the block's first term
+    // (`absolute`): no singleton, every pointer 0.
     let mut base_doc_start_fp = 0u64;
+    let mut base_singleton: i32 = -1;
     let mut base_pos_start_fp = 0u64;
     let mut base_pay_start_fp = 0u64;
     for &i in indices {
         let t = &terms[i];
-        let doc_freq = t.docs.len();
-        // Singleton terms never advance `doc_start_fp` (no `.doc` bytes are
-        // written for them, see `write_single_field`), so their delta is 0
-        // and the running base is left unchanged for the next term.
-        let this_fp = if doc_freq == 1 {
-            base_doc_start_fp
+        let singleton = if t.docs.len() == 1 { t.docs[0].0 } else { -1 };
+        let this_fp = doc_start_fp[i];
+        if base_singleton != -1 && singleton != -1 && this_fp == base_doc_start_fp {
+            // Runs of rare terms (IDs) share a `.doc` pointer; the doc id is
+            // written as a zigzag delta from the previous singleton's.
+            // Two `i32` doc ids: the difference always fits an `i64`.
+            let delta = i64::from(singleton).wrapping_sub(i64::from(base_singleton));
+            let zigzag = ((delta << 1) ^ (delta >> 63)) as u64;
+            out.write_vlong(((zigzag << 1) | 1) as i64);
         } else {
-            doc_start_fp[i]
-        };
-        let delta = this_fp.wrapping_sub(base_doc_start_fp);
-        out.write_vlong(((delta << 1) as i64) & !1); // bit 0 clear: absolute-ish delta branch
-        if doc_freq == 1 {
-            out.write_vint(t.docs[0].0);
+            let delta = this_fp.wrapping_sub(base_doc_start_fp);
+            out.write_vlong((delta << 1) as i64);
+            if singleton != -1 {
+                out.write_vint(singleton);
+            }
         }
         base_doc_start_fp = this_fp;
+        base_singleton = singleton;
 
         if index_has_positions {
             let this_pos_fp = pos_start_fp[i];

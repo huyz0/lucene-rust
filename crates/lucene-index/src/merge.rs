@@ -274,12 +274,11 @@
 //! logic was written for this merge), drops non-live docs and remaps
 //! surviving doc ids to the merged id space (reusing
 //! [`build_doc_id_maps`], the same mechanism [`merge_postings`] uses), and
-//! combines the sources: a field with one index dimension is k-way merged by
-//! value, as `BKDWriter.merge` does ([`merge_point_streams`]); any other is
-//! concatenated and re-indexed, as `mergeOneField` does.
-//! [`lucene_codecs::points::write_packed`] already accepts any number of fields per
-//! call, so, like postings and unlike doc-values/norms, there is no
-//! single-field-per-merge-call limit for points.
+//! hands the per-source streams to [`lucene_codecs::points::write_merged`]:
+//! a one-dimensional field is k-way merged by value there, as
+//! `BKDWriter.merge` does, and any other is added source by source and
+//! re-indexed, as `PointsWriter.mergeOneField` does -- both through the
+//! byte-identical `BKDWriter` port, with the merged segment's `maxDoc`.
 //!
 //! A source whose own `FieldInfos` never saw the points field simply
 //! contributes no points, matching `PointsWriter.merge`'s `if
@@ -359,6 +358,7 @@ use lucene_codecs::doc_values::{
 };
 use lucene_codecs::field_infos::{self, FieldInfo, IndexOptions, VectorEncoding};
 use lucene_codecs::norms::{self, NormsEntry};
+use lucene_codecs::per_field_postings;
 use lucene_codecs::points;
 use lucene_codecs::postings::DocInput;
 use lucene_codecs::postings_writer::{self, FieldPostingsInput, TermPostings};
@@ -1450,7 +1450,7 @@ fn concat_doc_order(per_source_live_ids: &[Vec<i32>]) -> Vec<(usize, i32)> {
 ///
 fn describe_written_files(
     merged_fields: &mut [FieldInfo],
-    postings_field_numbers: &[i32],
+    postings_suffixes: &[(i32, u32)],
     doc_values_field_numbers: &[i32],
     wrote_term_vectors: bool,
     vector_field_numbers: &[i32],
@@ -1465,14 +1465,14 @@ fn describe_written_files(
                 && key != "PerFieldKnnVectorsFormat.format"
                 && key != "PerFieldKnnVectorsFormat.suffix"
         });
-        if postings_field_numbers.contains(&f.number) {
+        if let Some((_, suffix)) = postings_suffixes.iter().find(|(n, _)| *n == f.number) {
             f.attributes.push((
                 "PerFieldPostingsFormat.format".to_string(),
                 POSTINGS_FORMAT_NAME.to_string(),
             ));
             f.attributes.push((
                 "PerFieldPostingsFormat.suffix".to_string(),
-                PER_FIELD_SUFFIX.to_string(),
+                suffix.to_string(),
             ));
         }
         if doc_values_field_numbers.contains(&f.number) {
@@ -2127,10 +2127,18 @@ pub fn merge_segments_mapped(
 
     // What the merged `.fnm` is allowed to claim, captured before the values
     // below are consumed by their writers (see `describe_written_files`).
-    let postings_field_numbers: Vec<i32> = merged_postings_fields
+    let postings_field_names: Vec<(i32, String)> = merged_postings_fields
         .iter()
-        .map(|f| f.field_number)
+        .map(|f| {
+            let name = merged_fields
+                .iter()
+                .find(|m| m.number == f.field_number)
+                .map_or_else(|| f.field_number.to_string(), |m| m.name.clone());
+            (f.field_number, name)
+        })
         .collect();
+    let format_for = |name: &str| options.postings_format_for(name);
+    let postings_suffixes = per_field_postings::field_suffixes(&postings_field_names, &format_for);
     let doc_values_field_numbers: Vec<i32> =
         merged_doc_values.iter().map(|f| f.field_number()).collect();
     let vector_field_numbers: Vec<i32> = merged_vectors
@@ -2140,7 +2148,7 @@ pub fn merge_segments_mapped(
     let wrote_term_vectors = tv_files.is_some();
     let points_field_numbers: Vec<i32> = merged_points_fields
         .iter()
-        .filter(|f| !f.points.docs.is_empty())
+        .filter(|f| f.sources.iter().any(|s| !s.docs.is_empty()))
         .map(|f| f.field_number)
         .collect();
 
@@ -2160,7 +2168,7 @@ pub fn merge_segments_mapped(
     let mut merged_fields = merged_fields;
     describe_written_files(
         &mut merged_fields,
-        &postings_field_numbers,
+        &postings_suffixes,
         &doc_values_field_numbers,
         wrote_term_vectors,
         &vector_field_numbers,
@@ -2300,59 +2308,57 @@ pub fn merge_segments_mapped(
                 values,
             })
             .collect();
-        let output = postings_writer::write_fields_with_norms(
+        let name_of = |n: i32| {
+            postings_field_names
+                .iter()
+                .find(|(number, _)| *number == n)
+                .map(|(_, name)| name.clone())
+        };
+        let groups = per_field_postings::write(
             &inputs,
             &norms_for_impacts,
+            &name_of,
+            &format_for,
             &merged_segment_id,
-            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
         )?;
-        let mut exts: Vec<(&str, &[u8])> = vec![
-            ("doc", &output.doc),
-            ("psm", &output.psm),
-            ("tim", &output.tim),
-            ("tip", &output.tip),
-            ("tmd", &output.tmd),
-        ];
-        if !output.pos.is_empty() {
-            exts.push(("pos", &output.pos));
-        }
-        if !output.pay.is_empty() {
-            exts.push(("pay", &output.pay));
-        }
-        for (ext, bytes) in exts {
-            let name = format!(
-                "{}.{ext}",
-                per_field_segment(merged_segment_name, POSTINGS_FORMAT_NAME)
-            );
-            write_file(dir, &name, bytes)?;
-            files.push(name);
+        for group in &groups {
+            let output = &group.output;
+            let mut exts: Vec<(&str, &[u8])> = vec![
+                ("doc", &output.doc),
+                ("psm", &output.psm),
+                ("tim", &output.tim),
+                ("tip", &output.tip),
+                ("tmd", &output.tmd),
+            ];
+            if !output.pos.is_empty() {
+                exts.push(("pos", &output.pos));
+            }
+            if !output.pay.is_empty() {
+                exts.push(("pay", &output.pay));
+            }
+            let suffix = per_field_postings::codec_suffix(POSTINGS_FORMAT_NAME, group.suffix);
+            for (ext, bytes) in exts {
+                let name = format!("{merged_segment_name}_{suffix}.{ext}");
+                write_file(dir, &name, bytes)?;
+                files.push(name);
+            }
         }
     }
 
     // A merged field with zero surviving points (every contributing live
-    // doc happened to have none) is simply omitted -- `points::write_packed`
-    // doesn't support empty fields (see its own doc comment), and this
-    // matches real Lucene's `finish()` returning `null`/omitting the field
-    // entirely in that case.
-    //
-    // `points` is *moved* into the `PackedPointsField`, not cloned: the
-    // merged doc ids and value buffer go to the writer as they are.
-    let inputs: Vec<points::PackedPointsField> = merged_points_fields
+    // doc happened to have none) is omitted, as Java's `finish()` returns no
+    // finalizer for it; so are the files when no field has any.
+    let inputs: Vec<points::MergePointsField> = merged_points_fields
         .into_iter()
-        .filter(|f| !f.points.docs.is_empty())
-        .map(|f| points::PackedPointsField {
-            field_number: f.field_number,
-            num_dims: f.num_dims,
-            num_index_dims: f.num_index_dims,
-            bytes_per_dim: f.bytes_per_dim,
-            docs: f.points.docs,
-            values: f.points.values,
-        })
+        .filter(|f| f.sources.iter().any(|s| !s.docs.is_empty()))
         .collect();
     if !inputs.is_empty() {
-        let (kdm, kdi, kdd) = points::write_packed(
-            &inputs,
+        let (kdm, kdi, kdd) = points::write_merged(
+            inputs,
             points::DEFAULT_MAX_POINTS_IN_LEAF_NODE,
+            doc_count,
+            dir,
+            merged_segment_name,
             &merged_segment_id,
             "",
         )?;
@@ -3587,10 +3593,27 @@ impl<'a> SourceVectors<'a> {
 /// [`lucene_codecs::hnsw_vectors::merge_one_field`]: when a source graph is
 /// reused as the base, the merged graph inherits **its** `maxConn`, exactly
 /// as `IncrementalHnswGraphMerger` does.
-#[derive(Debug, Clone, Copy)]
+///
+/// `postings_formats` is `PerFieldMergeState`'s view of the *merged*
+/// segment's codec: the fields routed to a non-default postings format, as
+/// [`crate::index_writer::IndexWriter::set_postings_format_for_field`] set
+/// them. The sources' own routing is irrelevant -- Java re-groups on write.
+#[derive(Debug, Clone)]
 pub struct MergeOptions {
     pub hnsw_m: i32,
     pub hnsw_beam_width: i32,
+    pub postings_formats: Vec<(String, per_field_postings::Lucene104PostingsFormat)>,
+}
+
+impl MergeOptions {
+    /// The postings format `field` is routed to.
+    fn postings_format_for(&self, field: &str) -> per_field_postings::Lucene104PostingsFormat {
+        self.postings_formats
+            .iter()
+            .find(|(name, _)| name == field)
+            .map(|(_, format)| *format)
+            .unwrap_or_default()
+    }
 }
 
 impl Default for MergeOptions {
@@ -3598,6 +3621,7 @@ impl Default for MergeOptions {
         MergeOptions {
             hnsw_m: hnsw::DEFAULT_MAX_CONN,
             hnsw_beam_width: hnsw::DEFAULT_BEAM_WIDTH,
+            postings_formats: Vec::new(),
         }
     }
 }
@@ -4387,103 +4411,6 @@ fn merge_postings(
     Ok(result)
 }
 
-/// Port of `BKDWriter.merge`'s priority-queue loop: combines each source's
-/// already-sorted point stream into one globally sorted stream, so
-/// [`points::write_packed`] never has to sort at all (see its `presorted_leaf_plan`).
-///
-/// Java only does this for `numDims == 1`, because that is the only case where
-/// a segment's points come off disk in a single, well-defined sort order --
-/// with more index dimensions the BKD tree's leaf order is not a total order
-/// on values, so there is nothing to merge and `mergeOneField` re-indexes
-/// instead. Same rule here, keyed on `num_index_dims` (the trailing data-only
-/// dimensions never participate in a split, so they cannot make the order
-/// ambiguous).
-///
-/// Java's `mergeComparator` orders by the packed value's bytes and then by
-/// document id, "sorting smaller docIDs earlier"; this reproduces both. The
-/// source index acts as an implicit final tiebreak -- the scan below only lets
-/// a *strictly* smaller head displace the incumbent, so on a full tie the
-/// lower-numbered source wins -- which makes the order total without a third
-/// comparison key. (That tie is unreachable anyway: merged doc ids are
-/// globally unique, whichever order the merge produced them in.)
-///
-/// Falls back to plain concatenation whenever the one-pass conditions do not
-/// hold -- more than one index dimension, or a source whose stream is not
-/// actually sorted (a hand-built `MergeSource`, or a segment some other writer
-/// produced). `points::write_packed` sorts in that case, exactly as before, so this
-/// is a cost choice, never a correctness one.
-fn merge_point_streams(
-    per_source: Vec<PointStream>,
-    stride: usize,
-    num_index_dims: usize,
-    bytes_per_dim: usize,
-) -> PointStream {
-    let total: usize = per_source.iter().map(|s| s.docs.len()).sum();
-    // `get(..)`, not `[..]`: a stream built by hand need not hold `stride`
-    // bytes per point. A point whose key cannot be read is treated as "not
-    // sorted", which falls through to plain concatenation -- `points::write_packed`
-    // sorts (and `write_field` length-checks) in that case, so this is a cost
-    // choice, never a correctness one, and never a panic in the middle of a
-    // merge.
-    fn key(stream: &PointStream, i: usize, stride: usize, bytes_per_dim: usize) -> Option<&[u8]> {
-        let start = i.checked_mul(stride)?;
-        stream.values.get(start..start.checked_add(bytes_per_dim)?)
-    }
-    let key = |stream, i| key(stream, i, stride, bytes_per_dim);
-    let mergeable = num_index_dims == 1
-        && stride >= bytes_per_dim
-        && per_source.iter().all(|s| {
-            s.values.len() == s.docs.len().saturating_mul(stride)
-                && (1..s.docs.len()).all(|i| match (key(s, i.wrapping_sub(1)), key(s, i)) {
-                    (Some(a), Some(b)) => a <= b,
-                    _ => false,
-                })
-        });
-    let mut out = PointStream {
-        docs: Vec::with_capacity(total),
-        values: Vec::with_capacity(total.saturating_mul(stride)),
-    };
-    if !mergeable {
-        for stream in per_source {
-            out.docs.extend(stream.docs);
-            out.values.extend(stream.values);
-        }
-        return out;
-    }
-
-    // A linear scan over the (few) source heads per step rather than a
-    // priority queue: this port merges `max_merge_at_once` segments at a time,
-    // which defaults to 10 -- the same reasoning `sorted_doc_order`
-    // records for its own k-way merge.
-    let mut cursors = vec![0usize; per_source.len()];
-    loop {
-        let mut best: Option<(usize, &[u8], i32)> = None;
-        for (i, stream) in per_source.iter().enumerate() {
-            let c = cursors[i];
-            let (Some(&doc), Some(head)) = (stream.docs.get(c), key(stream, c)) else {
-                continue;
-            };
-            if best.is_none_or(|(_, v, d)| (head, doc) < (v, d)) {
-                best = Some((i, head, doc));
-            }
-        }
-        let Some((i, _, doc)) = best else { break };
-        let c = cursors[i];
-        // ARITH: `mergeable` established `values.len() == docs.len() *
-        // stride` for every stream, and `c < docs.len()` (its doc resolved
-        // just above), so `(c + 1) * stride <= values.len()`; the cursor
-        // increment lands at most at `docs.len()`.
-        #[allow(clippy::arithmetic_side_effects)]
-        {
-            out.values
-                .extend_from_slice(&per_source[i].values[c * stride..(c + 1) * stride]);
-            cursors[i] += 1;
-        }
-        out.docs.push(doc);
-    }
-    out
-}
-
 /// One source's (or the merged) points for one field, laid out flat: point
 /// `i` is `docs[i]` with packed value `values[i * stride .. (i + 1) *
 /// stride]` -- what [`points::PackedPointsField`] takes, with no allocation
@@ -4530,19 +4457,8 @@ impl points::IntersectVisitor for CollectPoints<'_> {
     }
 }
 
-/// One merged field's BKD points, ready to hand to
-/// [`lucene_codecs::points::write_packed`] (via a
-/// [`points::PackedPointsField`] built from `points`).
-pub(crate) struct MergedPointsField {
-    field_number: i32,
-    num_dims: i32,
-    num_index_dims: i32,
-    bytes_per_dim: i32,
-    points: PointStream,
-}
-
 /// Merges BKD points (`.kdm`/`.kdi`/`.kdd`) data across `sources` for every
-/// field any source declares points for, returning one [`MergedPointsField`]
+/// field any source declares points for, returning one [`points::MergePointsField`]
 /// per distinct merged field number that has points data in at least one
 /// source -- or an empty `Vec` if no source supplied any points data at all.
 ///
@@ -4557,7 +4473,7 @@ pub(crate) struct MergedPointsField {
 /// drops non-live docs and remaps surviving doc ids to the
 /// merged id space via [`build_doc_id_maps`] (same mechanism
 /// [`merge_postings`] uses), and combines the sources' streams
-/// ([`merge_point_streams`]). [`lucene_codecs::points::write_packed`] rebuilds the merged BKD
+/// ([`points::write_merged`]). The BKD writer rebuilds the merged BKD
 /// tree (leaf plan, packed index, bounding boxes) from this flat list
 /// itself, so there is no tree-merging logic to get wrong here, and -- like
 /// postings, unlike doc-values/norms -- `write` already supports any number
@@ -4595,7 +4511,7 @@ pub(crate) fn merge_points(
     per_source_live_ids: &[Vec<i32>],
     doc_id_maps: &[Vec<i32>],
     merged_fields: &[FieldInfo],
-) -> Result<Vec<MergedPointsField>> {
+) -> Result<Vec<points::MergePointsField>> {
     let mut candidates: Vec<i32> = Vec::new();
     for ((source, map), live_ids) in sources.iter().zip(per_source_maps).zip(per_source_live_ids) {
         if live_ids.is_empty() {
@@ -4637,7 +4553,11 @@ pub(crate) fn merge_points(
         // single-index-dimension field can be k-way merged below instead of
         // concatenated and re-sorted -- `BKDWriter.merge` versus
         // `PointsWriter.mergeOneField`.
-        let mut per_source_points: Vec<PointStream> = Vec::new();
+        let mut per_source_points: Vec<points::PointsMergeSource> = Vec::new();
+        // `totMaxSize`: every contributing source's `size()`, deleted
+        // documents' points included -- `BKDWriter` sizes its heap buffer
+        // (or decides to spill) from it.
+        let mut max_point_count = 0u64;
         for (src_idx, ((source, reverse), live_ids)) in sources
             .iter()
             .zip(&reverse_maps)
@@ -4695,6 +4615,8 @@ pub(crate) fn merge_points(
                 stream: PointStream::default(),
                 bad_length: None,
             };
+            max_point_count =
+                max_point_count.saturating_add(u64::try_from(field_meta.point_count).unwrap_or(0));
             sp.reader.intersect(original_number, &mut collect)?;
             if let Some(actual) = collect.bad_length {
                 return Err(Error::PointValueLength {
@@ -4703,22 +4625,19 @@ pub(crate) fn merge_points(
                     actual,
                 });
             }
-            per_source_points.push(collect.stream);
+            per_source_points.push(points::PointsMergeSource {
+                docs: collect.stream.docs,
+                values: collect.stream.values,
+            });
         }
 
-        let points = merge_point_streams(
-            per_source_points,
-            stride,
-            merged_num_index_dims as usize,
-            merged_bytes_per_dim as usize,
-        );
-
-        result.push(MergedPointsField {
+        result.push(points::MergePointsField {
             field_number: merged_field_number,
             num_dims: merged_num_dims,
             num_index_dims: merged_num_index_dims,
             bytes_per_dim: merged_bytes_per_dim,
-            points,
+            sources: per_source_points,
+            max_point_count,
         });
     }
 
@@ -14480,7 +14399,7 @@ mod tests {
         fields[0]
             .attributes
             .push(("keep".to_string(), "me".to_string()));
-        describe_written_files(&mut fields, &[0], &[], false, &[], &[]);
+        describe_written_files(&mut fields, &[(0, 0)], &[], false, &[], &[]);
         assert!(fields[0]
             .attributes
             .contains(&("keep".to_string(), "me".to_string())));
@@ -14528,7 +14447,7 @@ mod tests {
             f.omit_norms = false;
         }
         fields[1].omit_norms = true;
-        describe_written_files(&mut fields, &[0, 1], &[], false, &[], &[]);
+        describe_written_files(&mut fields, &[(0, 0), (1, 0)], &[], false, &[], &[]);
         assert!(!fields[0].omit_norms, "an indexed field keeps its norms");
         assert!(fields[1].omit_norms, "an opted-out field keeps its opt-out");
     }
@@ -14563,119 +14482,5 @@ mod tests {
         )));
         // A non-indexed field never gains an `omit_norms` rewrite.
         assert!(!fields[0].omit_norms);
-    }
-
-    // --- BKDWriter.merge's k-way point merge ---
-
-    /// [`merge_point_streams`] over `(doc, value)` pairs, every value
-    /// `stride` bytes long.
-    fn merge_pairs(
-        streams: Vec<Vec<(i32, Vec<u8>)>>,
-        num_index_dims: usize,
-        bytes_per_dim: usize,
-    ) -> Vec<(i32, Vec<u8>)> {
-        let stride = streams
-            .iter()
-            .flatten()
-            .next()
-            .map_or(bytes_per_dim, |p| p.1.len());
-        let streams = streams
-            .into_iter()
-            .map(|s| PointStream {
-                docs: s.iter().map(|p| p.0).collect(),
-                values: s.iter().flat_map(|p| p.1.iter().copied()).collect(),
-            })
-            .collect();
-        let merged = merge_point_streams(streams, stride, num_index_dims, bytes_per_dim);
-        merged
-            .docs
-            .iter()
-            .zip(merged.values.chunks(stride))
-            .map(|(&d, v)| (d, v.to_vec()))
-            .collect()
-    }
-
-    #[test]
-    fn a_stream_whose_values_do_not_fill_its_points_is_concatenated() {
-        // Two points but five bytes of 4-byte values: no key can be trusted,
-        // so the one-pass merge is refused rather than indexing past the end.
-        let short = PointStream {
-            docs: vec![0, 1],
-            values: vec![0, 0, 0, 1, 2],
-        };
-        let other = PointStream {
-            docs: vec![2],
-            values: vec![0, 0, 0, 0],
-        };
-        let merged = merge_point_streams(vec![short, other], 4, 1, 4);
-        assert_eq!(merged.docs, vec![0, 1, 2]);
-        assert_eq!(merged.values.len(), 9);
-    }
-
-    fn pt(doc: i32, v: u32) -> (i32, Vec<u8>) {
-        (doc, v.to_be_bytes().to_vec())
-    }
-
-    #[test]
-    fn one_dimension_point_streams_are_k_way_merged_into_one_sorted_stream() {
-        // Three sorted sources, disjoint merged doc-id ranges (as
-        // `build_doc_id_maps` guarantees), interleaved values.
-        let a = vec![pt(0, 1), pt(1, 4), pt(2, 9)];
-        let b = vec![pt(3, 2), pt(4, 5)];
-        let c = vec![pt(5, 0), pt(6, 3), pt(7, 100)];
-        let merged = merge_pairs(vec![a, b, c], 1, 4);
-        let values: Vec<u32> = merged
-            .iter()
-            .map(|(_, v)| u32::from_be_bytes(v[..4].try_into().unwrap()))
-            .collect();
-        assert_eq!(values, vec![0, 1, 2, 3, 4, 5, 9, 100]);
-        assert_eq!(
-            merged.iter().map(|(d, _)| *d).collect::<Vec<i32>>(),
-            vec![5, 0, 3, 6, 1, 4, 2, 7]
-        );
-    }
-
-    #[test]
-    fn equal_point_values_are_ordered_by_document_id() {
-        // `mergeComparator`'s `thenComparingInt(mr -> mr.docID)`.
-        let a = vec![pt(7, 5)];
-        let b = vec![pt(2, 5)];
-        let c = vec![pt(4, 5)];
-        let merged = merge_pairs(vec![a, b, c], 1, 4);
-        assert_eq!(
-            merged.iter().map(|(d, _)| *d).collect::<Vec<i32>>(),
-            vec![2, 4, 7]
-        );
-    }
-
-    #[test]
-    fn a_multi_index_dimension_field_is_concatenated_not_merged() {
-        // No total order on values, so Java re-indexes -- and so does this.
-        let a = vec![(0, vec![9, 9]), (1, vec![0, 0])];
-        let b = vec![(2, vec![5, 5])];
-        let merged = merge_pairs(vec![a.clone(), b.clone()], 2, 1);
-        assert_eq!(merged, [a, b].concat());
-    }
-
-    #[test]
-    fn an_unsorted_source_stream_falls_back_to_concatenation() {
-        // A hand-built `MergeSource`, or a segment some other writer produced:
-        // the one-pass path's precondition is *checked*, never assumed, and
-        // `points::write` sorts whatever it is handed.
-        let a = vec![pt(0, 9), pt(1, 1)];
-        let b = vec![pt(2, 5)];
-        let merged = merge_pairs(vec![a.clone(), b.clone()], 1, 4);
-        assert_eq!(merged, [a, b].concat());
-    }
-
-    #[test]
-    fn merging_empty_and_single_point_streams_is_well_defined() {
-        assert!(merge_pairs(Vec::new(), 1, 4).is_empty());
-        assert!(merge_pairs(vec![Vec::new(), Vec::new()], 1, 4).is_empty());
-        let only = vec![pt(3, 7)];
-        assert_eq!(
-            merge_pairs(vec![Vec::new(), only.clone(), Vec::new()], 1, 4),
-            only
-        );
     }
 }

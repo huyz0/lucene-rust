@@ -34,13 +34,13 @@
 //! requires every dictionary of its 120 000-document index to be cut exactly
 //! as Lucene's own writer cuts the same terms.
 //!
-//! The bytes differ from Java's in one deliberate way, avoided by the
-//! byte-identity fixture: suffixes are always written `NO_COMPRESSION`, where
-//! Java tries `LZ4` and `LOWERCASE_ASCII` on blocks whose prefix is longer
-//! than two bytes and keeps whichever saves space. Every reader accepts all
-//! three codes per block, so this changes the dictionary's size, never its
-//! meaning -- but it moves block file pointers, so the `.tip` bytes that
-//! encode them differ too. Recorded in `docs/parity.md`.
+//! Suffix compression is Java's too: on a block whose prefix is longer than
+//! two bytes and whose suffixes average more than two bytes, `LZ4` (with a
+//! `HighCompressionHashTable` kept for the whole field, as Java keeps it per
+//! `TermsWriter`) is tried when they average more than six and kept if it
+//! saves 25%, else `LOWERCASE_ASCII`, else nothing. The second fixture of
+//! `tests/blocktree_byte_identity_fixture.rs` (`GenBlockTreeSuffixCompression`)
+//! has blocks of all three kinds.
 //!
 //! # The `.tim` block this writes
 //!
@@ -61,6 +61,8 @@
 //! it passes. The serialised output does not depend on the representation.
 
 use lucene_store::data_output::DataOutput;
+
+use crate::{lowercase_ascii, lz4};
 
 use crate::blocktree::{
     CHILD_STRATEGY_ARRAY, CHILD_STRATEGY_BITS, CHILD_STRATEGY_REVERSE_ARRAY, LEAF_NODE_HAS_FLOOR,
@@ -446,7 +448,16 @@ struct BlockScratch {
     stats: StatsWriter,
     term_indices: Vec<usize>,
     meta: Vec<u8>,
+    /// `spareWriter`: the compressed suffixes, when compression pays.
+    spare: Vec<u8>,
 }
+
+/// `CompressionAlgorithm.NO_COMPRESSION.code`.
+const COMPRESSION_NONE: u64 = 0x00;
+/// `CompressionAlgorithm.LOWERCASE_ASCII.code`.
+const COMPRESSION_LOWERCASE_ASCII: u64 = 0x01;
+/// `CompressionAlgorithm.LZ4.code`.
+const COMPRESSION_LZ4: u64 = 0x02;
 
 /// `StatsWriter`: `docFreq`/`totalTermFreq` per term, with runs of terms
 /// that occur once (`docFreq == 1`, and `totalTermFreq == 1` when freqs are
@@ -496,6 +507,15 @@ struct TermsWriter<'t, 'o, F> {
     prefix_starts: Vec<usize>,
     last_term: Vec<u8>,
     scratch: BlockScratch,
+    /// `compressionHashTable`: created on first use and kept for the rest of
+    /// the field, as Java keeps it per `TermsWriter`. The table is not
+    /// cleared between blocks (`reset` only range-limits it), so sharing it
+    /// is part of what makes the LZ4 output Java's.
+    compression_table: Option<Box<lz4::HighCompressionHashTable>>,
+    /// `minItemsInBlock`/`maxItemsInBlock`: [`MIN_ITEMS_IN_BLOCK`] and
+    /// [`MAX_ITEMS_IN_BLOCK`] unless the format was built with others.
+    min_items_in_block: usize,
+    max_items_in_block: usize,
 }
 
 /// Writes one field's terms into `.tim` blocks and its trie into `.tip`,
@@ -511,6 +531,7 @@ pub(crate) fn write_field_terms<F>(
     tim: &mut Vec<u8>,
     tip: &mut Vec<u8>,
     terms: &[BlockTerm<'_>],
+    (min_items_in_block, max_items_in_block): (usize, usize),
     has_freqs: bool,
     encode_meta: F,
 ) -> TrieLocation
@@ -527,6 +548,9 @@ where
         prefix_starts: Vec::new(),
         last_term: Vec::new(),
         scratch: BlockScratch::default(),
+        compression_table: None,
+        min_items_in_block,
+        max_items_in_block,
     };
     for (i, term) in terms.iter().enumerate() {
         w.push_term(term.bytes);
@@ -563,7 +587,7 @@ where
         let prefix_length = common_prefix_len(&self.last_term, text);
         for i in (prefix_length..self.last_term.len()).rev() {
             let top = self.pending.len() - self.prefix_starts[i];
-            if top >= MIN_ITEMS_IN_BLOCK {
+            if top >= self.min_items_in_block {
                 self.write_blocks(i + 1, top);
                 // Java follows this with `prefixStarts[i] -= prefixTopSize -
                 // 1`, which can go negative and is never read: every slot
@@ -612,7 +636,9 @@ where
             let lead = self.suffix_lead_label(&self.pending[i], prefix_length);
             if last_lead != Some(lead) {
                 let items = i - next_block_start;
-                if items >= MIN_ITEMS_IN_BLOCK && end - next_block_start > MAX_ITEMS_IN_BLOCK {
+                if items >= self.min_items_in_block
+                    && end - next_block_start > self.max_items_in_block
+                {
                     let is_floor = items < count;
                     new_blocks.push(self.write_block(
                         prefix_length,
@@ -657,7 +683,9 @@ where
     /// moved into the returned block's `sub_indices`.
     // ARITH: `end > start`; a suffix is `len - prefix_length` of an entry that
     // extends the prefix, and a sub-block was written before this block, so
-    // `start_fp - block.fp > 0`; lengths are in-memory buffer sizes.
+    // `start_fp - block.fp > 0`; lengths are in-memory buffer sizes, and the
+    // compression thresholds multiply a block's entry count (at most a few
+    // dozen) by 2 or 6 and subtract a quarter of a length from itself.
     #[allow(clippy::arithmetic_side_effects, clippy::too_many_arguments)]
     fn write_block(
         &mut self,
@@ -685,6 +713,7 @@ where
             stats,
             term_indices,
             meta,
+            spare,
         } = &mut scratch;
         suffixes.clear();
         suffix_lengths.clear();
@@ -724,10 +753,39 @@ where
         }
         stats.finish();
 
-        // Suffix bytes, always `NO_COMPRESSION` (code 0): see the module doc.
-        let token = ((suffixes.len() as u64) << 3) | if is_leaf { 0x04 } else { 0 };
+        // Suffix bytes: uncompressed, `LZ4` or `LOWERCASE_ASCII`, chosen
+        // exactly as Java chooses. Suffixes of two bytes or less per term are
+        // not worth compressing (dense IDs), and blocks whose prefix is one
+        // or two bytes long are all visited by a two-edit fuzzy query anyway.
+        let mut compression = COMPRESSION_NONE;
+        spare.clear();
+        if suffixes.len() > 2 * num_entries && prefix_length > 2 {
+            // LZ4 only finds repeats of four bytes or more, so it is tried
+            // only when the average suffix is longer than six.
+            if suffixes.len() > 6 * num_entries {
+                let table = self
+                    .compression_table
+                    .get_or_insert_with(|| Box::new(lz4::HighCompressionHashTable::new()));
+                lz4::compress_into(suffixes, spare, table.as_mut());
+                // LZ4 saved more than 25%.
+                if spare.len() < suffixes.len() - (suffixes.len() >> 2) {
+                    compression = COMPRESSION_LZ4;
+                }
+            }
+            if compression == COMPRESSION_NONE {
+                spare.clear();
+                if lowercase_ascii::compress(suffixes, spare) {
+                    compression = COMPRESSION_LOWERCASE_ASCII;
+                }
+            }
+        }
+        let token = ((suffixes.len() as u64) << 3) | if is_leaf { 0x04 } else { 0 } | compression;
         self.tim.write_vlong(token as i64);
-        self.tim.write_bytes(suffixes);
+        if compression == COMPRESSION_NONE {
+            self.tim.write_bytes(suffixes);
+        } else {
+            self.tim.write_bytes(spare);
+        }
 
         let n = suffix_lengths.len();
         if suffix_lengths[1..].iter().all(|&b| b == suffix_lengths[0]) {

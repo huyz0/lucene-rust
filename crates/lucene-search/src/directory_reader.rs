@@ -68,6 +68,7 @@ use lucene_codecs::doc_values::{self, DocValuesMeta};
 use lucene_codecs::field_infos::{self, FieldInfos};
 use lucene_codecs::live_docs;
 use lucene_codecs::norms::{self, Norms, NormsEntry};
+use lucene_codecs::per_field_postings;
 use lucene_codecs::postings::{self, DocInput, PayInput, PosInput};
 use lucene_index::deletes::liv_file_name;
 use lucene_index::deletion_policy::IndexCommit;
@@ -373,8 +374,29 @@ impl SegmentReader {
             .iter()
             .filter(|f| f.is_some())
             .count();
+        // `PerFieldPostingsFormat`: a segment whose fields were routed to
+        // more than one postings format has one `.tim`/`.tip`/`.tmd` (and
+        // `.doc`/`.pos`/`.pay`) per format and suffix.
+        let postings_suffixes = per_field_postings::group_suffixes(
+            &compound.as_ref().map_or_else(
+                || si.files.clone(),
+                |c| c.entries.names().map(str::to_string).collect(),
+            ),
+            &segment_name,
+        );
+        let multi_format = postings_suffixes.len() > 1;
 
-        let (fields, segment_suffix, doc_buf, pos_buf, pay_buf) = if found == 3 {
+        let (fields, segment_suffix, doc_buf, pos_buf, pay_buf) = if multi_format {
+            open_per_field_postings(
+                dir,
+                compound.as_ref(),
+                &si.files,
+                &postings_suffixes,
+                &field_infos,
+                &segment_id,
+                si.doc_count,
+            )?
+        } else if found == 3 {
             // Suffix is embedded in the sub-file's own name: strip the
             // `<segment_name>_` prefix (loose files, e.g.
             // `_0_Lucene104_0.tim` -> `Lucene104_0`) or the leading `_`
@@ -495,13 +517,23 @@ impl SegmentReader {
         let kdm_buf = open_segment_file(dir, compound.as_ref(), &si.files, ".kdm")?;
         let kdi_buf = open_segment_file(dir, compound.as_ref(), &si.files, ".kdi")?;
         let kdd_buf = open_segment_file(dir, compound.as_ref(), &si.files, ".kdd")?;
-        let dvm_bytes = open_segment_file(dir, compound.as_ref(), &si.files, ".dvm")?;
-        let dvd_bytes = open_segment_file(dir, compound.as_ref(), &si.files, ".dvd")?;
+        // The first doc-values format's pair (by suffix); a `.dvd` found on its
+        // own by extension could belong to another format's `.dvm`.
+        let dv_suffixes =
+            segment_codec_suffixes(&si.files, compound.as_ref(), &segment_name, ".dvm");
+        let dv_ext = |ext: &str| match dv_suffixes.first() {
+            Some(suffix) if !suffix.is_empty() => format!("_{suffix}{ext}"),
+            _ => ext.to_string(),
+        };
+        let dvm_bytes = open_segment_file(dir, compound.as_ref(), &si.files, &dv_ext(".dvm"))?;
+        let dvd_bytes = open_segment_file(dir, compound.as_ref(), &si.files, &dv_ext(".dvd"))?;
         let mut dvs = None;
+        let mut base_dv_suffix = None;
         let (dv_meta, dv_data) = match (dvm_bytes, dvd_bytes) {
             (Some(dvm), Some(dvd)) => {
-                let dvm_file_name = find_segment_file_name(&si.files, compound.as_ref(), ".dvm")
-                    .expect("dvm_bytes.is_some() implies a .dvm entry exists");
+                let dvm_file_name =
+                    find_segment_file_name(&si.files, compound.as_ref(), &dv_ext(".dvm"))
+                        .expect("dvm_bytes.is_some() implies a .dvm entry exists");
                 // No-codec-suffix case first (this port's own writer, e.g.
                 // loose `_0.dvm`): the generic strip-and-derive logic below
                 // would otherwise misparse the segment name's own trailing
@@ -510,9 +542,12 @@ impl SegmentReader {
                 let dv_suffix = codec_suffix_of(&dvm_file_name, &segment_name, ".dvm");
                 let (_, meta) =
                     doc_values::parse_meta(&dvm, &segment_id, &dv_suffix, &field_infos)?;
-                if let Some(bytes) = open_segment_file(dir, compound.as_ref(), &si.files, ".dvs")? {
+                if let Some(bytes) =
+                    open_segment_file(dir, compound.as_ref(), &si.files, &dv_ext(".dvs"))?
+                {
                     dvs = Some((bytes, dv_suffix.clone()));
                 }
+                base_dv_suffix = Some(dv_suffix);
                 (Some(Arc::new(meta)), Some(dvd))
             }
             _ => (None, None),
@@ -523,6 +558,39 @@ impl SegmentReader {
         // generation's `.dvm` describes exactly that field, so handing it the
         // whole list would accept a `.dvm` naming a field it is not for.
         let mut dv_generations: Vec<DocValuesGeneration> = Vec::new();
+        // `PerFieldDocValuesFormat.FieldsReader`: a segment whose doc-values
+        // fields were routed to more than one format has a `.dvm`/`.dvd` per
+        // format and suffix. The first is the base pair above; every field of
+        // another format is served from that format's own pair, through the
+        // same per-field routing a doc-values update uses.
+        for suffix in &dv_suffixes {
+            if Some(suffix) == base_dv_suffix.as_ref() {
+                continue;
+            }
+            let open = |ext: &str| {
+                open_segment_file(
+                    dir,
+                    compound.as_ref(),
+                    &si.files,
+                    &format!("_{suffix}{ext}"),
+                )
+            };
+            let (Some(meta_bytes), Some(data)) = (open(".dvm")?, open(".dvd")?) else {
+                continue;
+            };
+            let (_, meta) = doc_values::parse_meta(&meta_bytes, &segment_id, suffix, &field_infos)?;
+            let meta = Arc::new(meta);
+            for field in &field_infos.fields {
+                if field.doc_values_gen == -1 && dv_per_field_suffix(field).as_ref() == Some(suffix)
+                {
+                    dv_generations.push(DocValuesGeneration {
+                        field_number: field.number,
+                        meta: Arc::clone(&meta),
+                        data: Arc::clone(&data),
+                    });
+                }
+            }
+        }
         for field in &field_infos.fields {
             if field.doc_values_gen == -1 {
                 continue;
@@ -666,7 +734,9 @@ impl SegmentReader {
             kdd_buf,
             stored,
             points_meta: Arc::default(),
-            postings_validated: Arc::default(),
+            // A multi-format segment's postings were validated format by
+            // format as they were opened and concatenated.
+            postings_validated: Arc::new(std::sync::atomic::AtomicBool::new(multi_format)),
             dv_meta,
             dv_generations,
             norms_meta,
@@ -1381,6 +1451,98 @@ fn codec_suffix_of(file_name: &str, segment_name: &str, ext: &str) -> String {
         .and_then(|s| s.strip_suffix(ext))
         .unwrap_or_default()
         .to_string()
+}
+
+/// The codec suffixes of every file of the segment ending in `ext`, sorted:
+/// one per postings (or doc-values) format a `PerField*Format` routed fields
+/// to.
+fn segment_codec_suffixes(
+    files: &[String],
+    compound: Option<&CompoundArchive>,
+    segment_name: &str,
+    ext: &str,
+) -> Vec<String> {
+    let names: Vec<String> = match compound {
+        Some(archive) => archive.entries.names().map(str::to_string).collect(),
+        None => files.to_vec(),
+    };
+    let mut suffixes: Vec<String> = names
+        .iter()
+        .filter(|n| n.ends_with(ext))
+        .map(|n| codec_suffix_of(n, segment_name, ext))
+        .collect();
+    suffixes.sort();
+    suffixes.dedup();
+    suffixes
+}
+
+/// The postings of one segment's fields, however many postings formats
+/// they were routed to.
+type PostingsFiles = (
+    Arc<BlockTreeFields>,
+    String,
+    Option<Arc<Input>>,
+    Option<Arc<Input>>,
+    Option<Arc<Input>>,
+);
+
+/// `PerFieldPostingsFormat.FieldsReader` for a segment with more than one
+/// postings format ([`per_field_postings::open_groups`]): every format's
+/// dictionary as one, and every format's `.doc`/`.pos`/`.pay` concatenated
+/// -- so the one `DocInput` every consumer of a segment holds serves every
+/// field. The copy is paid only by multi-format segments.
+fn open_per_field_postings(
+    dir: &dyn Directory,
+    compound: Option<&CompoundArchive>,
+    files: &[String],
+    suffixes: &[String],
+    field_infos: &FieldInfos,
+    segment_id: &[u8; ID_LENGTH],
+    doc_count: i32,
+) -> Result<PostingsFiles> {
+    let mut opened = Vec::with_capacity(suffixes.len());
+    for suffix in suffixes {
+        let open = |ext: &str| open_segment_file(dir, compound, files, &format!("_{suffix}{ext}"));
+        let (Some(tim), Some(tip), Some(tmd)) = (open(".tim")?, open(".tip")?, open(".tmd")?)
+        else {
+            return Err(Error::PartialBlockTreeFiles {
+                segment: format!("{suffix} of a per-field segment"),
+                found: 1,
+            });
+        };
+        opened.push((
+            suffix,
+            tim,
+            tip,
+            tmd,
+            open(".doc")?,
+            open(".pos")?,
+            open(".pay")?,
+        ));
+    }
+    let groups: Vec<per_field_postings::GroupFiles<'_>> = opened
+        .iter()
+        .map(
+            |(suffix, tim, tip, tmd, doc, pos, pay)| per_field_postings::GroupFiles {
+                suffix,
+                tim,
+                tip,
+                tmd,
+                doc: doc.as_deref().map(|d| &**d),
+                pos: pos.as_deref().map(|d| &**d),
+                pay: pay.as_deref().map(|d| &**d),
+            },
+        )
+        .collect();
+    let combined = per_field_postings::open_groups(&groups, field_infos, segment_id, doc_count)?;
+    let owned = |bytes: Vec<u8>| (!bytes.is_empty()).then(|| Arc::new(Input::Owned(bytes)));
+    Ok((
+        Arc::new(combined.fields),
+        suffixes[0].clone(),
+        owned(combined.doc),
+        owned(combined.pos),
+        owned(combined.pay),
+    ))
 }
 
 fn find_file_ending(files: &[String], ext: &str) -> Option<String> {

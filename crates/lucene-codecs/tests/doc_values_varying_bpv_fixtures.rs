@@ -231,3 +231,47 @@ fn windows_of_varying_bpv_values_are_lucenes_values() {
         assert!(checked > max_doc as usize, "{field}: {checked}");
     }
 }
+
+/// The write side: handed the fixture's two columns, the segment id and the
+/// per-field suffix, this port's writer produces Lucene's `.dvm` and `.dvd`
+/// byte for byte -- `writeValues`' `doBlocks` split included (both fields
+/// take it; see the reader tests above).
+#[test]
+fn varying_bpv_columns_are_written_byte_identical_to_lucene() {
+    let manifest = Manifest::load();
+    let id = id_from_hex(manifest.get("id_hex"));
+    let max_doc: i32 = manifest.get("max_doc").parse().unwrap();
+    let parse = |field: &str| -> Vec<Option<i64>> {
+        manifest
+            .get(&format!("field.{field}.values"))
+            .split(',')
+            .map(|s| (s != "NONE").then(|| s.parse().unwrap()))
+            .collect()
+    };
+    let dense: Vec<i64> = parse("varying_bpv")
+        .into_iter()
+        .map(Option::unwrap)
+        .collect();
+    let sparse: Vec<(i32, i64)> = parse("sparse_varying_bpv")
+        .into_iter()
+        .enumerate()
+        .filter_map(|(doc, v)| v.map(|v| (doc as i32, v)))
+        .collect();
+    let (meta, data, _) = ndv::write_dense_fields(
+        &[
+            ndv::DenseField::Numeric(field_number(&manifest, "varying_bpv"), &dense),
+            ndv::DenseField::SparseNumeric(field_number(&manifest, "sparse_varying_bpv"), &sparse),
+        ],
+        max_doc,
+        &id,
+        &dv_suffix(&manifest),
+    )
+    .unwrap();
+    let want_meta =
+        std::fs::read(format!("{}{}.raw", dir(), manifest.get("dvm_file_name"))).unwrap();
+    let want_data =
+        std::fs::read(format!("{}{}.raw", dir(), manifest.get("dvd_file_name"))).unwrap();
+    assert_eq!(meta, want_meta, ".dvm");
+    assert_eq!(data.len(), want_data.len(), ".dvd length");
+    assert!(data == want_data, ".dvd bytes differ");
+}
