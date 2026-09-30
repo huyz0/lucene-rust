@@ -57,22 +57,21 @@
 //!
 //! # Deliberate scope boundaries (documented, not silently missing)
 //!
-//! - **No `MergeContext`.** Real Lucene consults a live writer for
-//!   `numDeletesToMerge` (soft deletes!) and `getMergingSegments`. This port
-//!   takes `del_count` straight off [`SegmentStat`], and the
-//!   currently-merging set is an explicit argument
-//!   ([`find_merges_excluding`]) rather than an ambient context -- this port
-//!   has no background merging, so [`find_merges`] passes an empty set.
-//! - **No `findFullFlushMerges`.** That entry point is `findMerges` filtered
-//!   to merges whose every input is below `maxFullFlushMergeSize()`
-//!   (`floorSegmentBytes` for this policy); it only matters with a
-//!   concurrent merge scheduler, which this port does not have.
-//! - **`segmentsToMerge`'s "original" flag** in `findForcedMerges` is not
-//!   modelled: this port treats every supplied segment as original (which is
-//!   what `IndexWriter.forceMerge` passes on the first pass anyway).
-//! - **`isMerged`/compound-file awareness.** This port never writes compound
-//!   files, so `findForcedMerges`' `maxSegmentCount == 1` "already merged"
-//!   bail-out reduces to "exactly one segment, no deletes".
+//! - **The free functions take no `MergeContext`.** They read `del_count`
+//!   straight off [`SegmentStat`] and take the currently-merging set as an
+//!   argument ([`find_merges_excluding`]). The [`MergePolicy`] trait
+//!   ([`api`]) is the context-driven form: [`TieredMergePolicy`] fills each
+//!   stat's `del_count` from `MergeContext.numDeletesToMerge`, and adds
+//!   `findFullFlushMerges` (inputs below `floorSegmentBytes`),
+//!   `useCompoundFile` (`noCFSRatio` 0.1) and `isMerged`, which
+//!   `findForcedMerges`' "already merged" bail-out consults through
+//!   [`forced_merges_full`] together with Java's `segmentsToMerge` "original"
+//!   flags. [`find_forced_merges`] keeps the old shape: every segment
+//!   original, none merging, a delete-free segment merged.
+//! - **Other policies** live beside this one: [`log`] (`LogMergePolicy`,
+//!   `LogByteSizeMergePolicy`, `LogDocMergePolicy`), [`temporal`]
+//!   (`TemporalMergePolicy`) and [`filter`] (`FilterMergePolicy`,
+//!   `OneMergeWrappingMergePolicy`).
 //! - **`segmentsPerTier` is an integer here**, not a `double`. Real Lucene
 //!   validates `>= 2.0`; this port clamps to 2 for the same reason (the
 //!   level walk below cannot terminate otherwise).
@@ -93,6 +92,16 @@
 use std::collections::HashSet;
 
 use crate::segment_info::SegmentInfo;
+
+pub mod api;
+pub mod filter;
+pub mod log;
+pub mod temporal;
+
+pub use api::{
+    BasicMergeContext, CompoundFileSettings, MergeContext, MergePolicy, MergeSegment,
+    MergeSpecification, MergeTrigger, NoMergePolicy, OneMerge, TieredMergePolicy,
+};
 use lucene_store::directory::Directory;
 
 /// The stats [`find_merges`] needs about one segment -- the port of Java's
@@ -901,16 +910,59 @@ pub const UNLIMITED_SEGMENT_COUNT: usize = usize::MAX;
 ///   soon as the projected surviving segment count reaches
 ///   `max_segment_count`.
 ///
-/// This port does not model Java's `segmentsToMerge` "original" flag (every
-/// supplied segment is treated as original) nor a concurrently running force
-/// merge (`forceMergeRunning` is always false) -- see the module doc.
+/// Every supplied segment is treated as "original" and none as merging;
+/// [`forced_merges_full`] (reached through [`TieredMergePolicy`]) takes Java's
+/// `segmentsToMerge` and `getMergingSegments()` as given.
 pub fn find_forced_merges(
     segments: &[SegmentStat],
     max_segment_count: usize,
     config: &MergePolicyConfig,
 ) -> Vec<Vec<String>> {
+    let all_original: std::collections::HashMap<String, bool> =
+        segments.iter().map(|s| (s.name.clone(), true)).collect();
+    let merged: HashSet<String> = segments
+        .iter()
+        .filter(|s| s.del_count == 0)
+        .map(|s| s.name.clone())
+        .collect();
+    forced_merges_full(
+        segments,
+        max_segment_count,
+        &all_original,
+        &HashSet::new(),
+        &merged,
+        config,
+    )
+}
+
+/// The whole of `TieredMergePolicy.findForcedMerges`, which
+/// [`find_forced_merges`] calls with every segment "original" and nothing
+/// merging: `segments_to_merge` is Java's `segmentsToMerge` (name -> "is
+/// original"; a segment absent from it is not merged), `merging` is
+/// `getMergingSegments()` (any of them among the segments to merge means a
+/// forced merge is already running, and nothing new is proposed), and
+/// `merged` names the segments `isMerged(infos, info, ctx)` holds for.
+pub(crate) fn forced_merges_full(
+    segments: &[SegmentStat],
+    max_segment_count: usize,
+    segments_to_merge: &std::collections::HashMap<String, bool>,
+    merging: &HashSet<String>,
+    merged: &HashSet<String>,
+    config: &MergePolicyConfig,
+) -> Vec<Vec<String>> {
     let max_segment_count = max_segment_count.max(1);
     let mut sorted = sorted_by_segment_size(segments);
+    let mut force_merge_running = false;
+    sorted.retain(|e| {
+        if !segments_to_merge.contains_key(e.name()) {
+            return false;
+        }
+        if merging.contains(e.name()) {
+            force_merge_running = true;
+            return false;
+        }
+        true
+    });
     if sorted.is_empty() {
         return Vec::new();
     }
@@ -948,10 +1000,16 @@ pub fn find_forced_merges(
 
     let mut found_deletes = false;
     sorted.retain(|entry| {
+        let is_original = segments_to_merge.get(entry.name()).copied();
         if entry.del_count() != 0 {
             // This is forceMerge: every segment with deleted docs is merged.
-            found_deletes = true;
+            if is_original == Some(true) {
+                found_deletes = true;
+            }
             return true;
+        }
+        if max_segment_count == UNLIMITED_SEGMENT_COUNT && is_original == Some(false) {
+            return false;
         }
         // Don't try to merge a delete-free segment that's over the max size.
         !(max_segment_count != UNLIMITED_SEGMENT_COUNT && entry.size_i64() >= max_merge_bytes)
@@ -963,15 +1021,20 @@ pub fn find_forced_merges(
 
     // We only bail if there are no deletions.
     if !found_deletes {
+        let info_zero = sorted[0].name();
         let already_merged = (max_segment_count != UNLIMITED_SEGMENT_COUNT
             && max_segment_count > 1
             && sorted.len() <= max_segment_count)
-            // This port never writes compound files, so Java's
-            // `isMerged` check reduces to "one delete-free segment".
-            || (max_segment_count == 1 && sorted.len() == 1);
+            || (max_segment_count == 1
+                && sorted.len() == 1
+                && (segments_to_merge.contains_key(info_zero) || merged.contains(info_zero)));
         if already_merged {
             return Vec::new();
         }
+    }
+
+    if force_merge_running {
+        return Vec::new();
     }
 
     let starting_segment_count = sorted.len();

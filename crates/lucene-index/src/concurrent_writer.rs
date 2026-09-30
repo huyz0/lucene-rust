@@ -99,6 +99,7 @@ use crate::index_writer::{
 };
 use crate::merge_policy::MergePolicyConfig;
 use crate::segment_infos::SegmentCommitInfo;
+use crate::stall_control::DocumentsWriterStallControl;
 
 /// One indexing slot's buffer -- `DocumentsWriterPerThread`, before its flush.
 #[derive(Default)]
@@ -182,6 +183,17 @@ struct FlushBatch {
     docs: Vec<Document>,
     has_blocks: bool,
     private: BufferedUpdates,
+    /// The slot's `ram_bytes` when it was taken: what this flush counts
+    /// toward `flushBytes` until it is published.
+    ram_bytes: usize,
+}
+
+/// `DocumentsWriterFlushControl`'s `activeBytes`/`flushBytes`: RAM in the
+/// slots, and RAM in buffers being built into segments.
+#[derive(Debug, Default)]
+struct RamAccounting {
+    active_bytes: usize,
+    flush_bytes: usize,
 }
 
 /// What [`ConcurrentIndexWriter::build`] hands to the publish.
@@ -216,6 +228,11 @@ pub struct ConcurrentIndexWriter<'d> {
     max_buffered_docs: Option<usize>,
     ram_buffer_bytes: Option<usize>,
     merge_policy: Option<MergePolicyConfig>,
+    /// Updated together with the stall decision, as Java's
+    /// `DocumentsWriterFlushControl` does under its monitor.
+    ram: Mutex<RamAccounting>,
+    /// `DocumentsWriterFlushControl.stallControl`.
+    stall: DocumentsWriterStallControl,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -275,7 +292,49 @@ impl<'d> ConcurrentIndexWriter<'d> {
             max_buffered_docs,
             ram_buffer_bytes,
             merge_policy,
+            ram: Mutex::new(RamAccounting::default()),
+            stall: DocumentsWriterStallControl::new(),
         })
+    }
+
+    /// `DocumentsWriterFlushControl.updateStallState`, after `change` has
+    /// updated the accounting: indexing stalls while the RAM in slots and in
+    /// flushes together exceeds twice the RAM buffer (`stallLimitBytes`) --
+    /// flushing is falling behind -- but not when the slots alone do, since
+    /// then no flush in progress could free enough to lift it.
+    ///
+    /// The decision and the flag change together under one lock, as Java's
+    /// monitor makes them: two threads deciding from different snapshots
+    /// could otherwise leave the flag stalled after the condition cleared,
+    /// with every indexing thread waiting on it. With no RAM buffer
+    /// (`stallLimitBytes` is `Long.MAX_VALUE`) indexing can never stall, so
+    /// nothing is counted and no lock is taken.
+    fn update_ram(&self, change: impl FnOnce(&mut RamAccounting)) {
+        let Some(buffer) = self.ram_buffer_bytes else {
+            return;
+        };
+        let mut ram = lock(&self.ram);
+        change(&mut ram);
+        let limit = buffer.saturating_mul(2);
+        let stall =
+            ram.active_bytes.saturating_add(ram.flush_bytes) > limit && ram.active_bytes < limit;
+        self.stall.update_stalled(stall);
+    }
+
+    /// `DocumentsWriter.preUpdate`: waits while indexing is stalled. The
+    /// flushes that lift a stall run on the threads that started them, so
+    /// there is no queued flush for a waiting thread to help with.
+    fn wait_while_stalled(&self) {
+        while self.stall.any_stalled_threads() {
+            self.stall.wait_if_stalled();
+        }
+    }
+
+    /// The stall control, for tests (`DocumentsWriterFlushControl`'s
+    /// package-private `stallControl`).
+    #[cfg(test)]
+    fn stall_control(&self) -> &DocumentsWriterStallControl {
+        &self.stall
     }
 
     /// `IndexWriter.addDocument`, from any thread.
@@ -419,16 +478,20 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// and the delete and the document are never apart: a commit locks every
     /// slot to take its cut, and sees both or neither.
     fn add(&self, delete: Option<DeleteNode>, docs: Vec<Document>) -> Result<SeqNo> {
+        self.wait_while_stalled();
         let (seq_no, batch) = {
             let (i, mut dwpt) = self.acquire_slot();
             let before = dwpt.docs.len();
             if docs.len() > 1 {
                 dwpt.has_blocks = true;
             }
+            let mut added = 0usize;
             for doc in docs {
-                dwpt.ram_bytes = dwpt.ram_bytes.saturating_add(document_ram_bytes(&doc));
+                added = added.saturating_add(document_ram_bytes(&doc));
                 dwpt.docs.push(doc);
             }
+            dwpt.ram_bytes = dwpt.ram_bytes.saturating_add(added);
+            self.update_ram(|ram| ram.active_bytes = ram.active_bytes.saturating_add(added));
             let (nodes, end, seq_no) = {
                 let mut log = lock(&self.log);
                 if let Some(node) = delete {
@@ -491,8 +554,13 @@ impl<'d> ConcurrentIndexWriter<'d> {
             docs: std::mem::take(&mut dwpt.docs),
             has_blocks: std::mem::take(&mut dwpt.has_blocks),
             private: std::mem::take(&mut dwpt.private),
+            ram_bytes: dwpt.ram_bytes,
         };
-        dwpt.ram_bytes = 0;
+        let moved = std::mem::take(&mut dwpt.ram_bytes);
+        self.update_ram(|ram| {
+            ram.active_bytes = ram.active_bytes.saturating_sub(moved);
+            ram.flush_bytes = ram.flush_bytes.saturating_add(moved);
+        });
         self.slices[i].store(EMPTY_SLOT, Ordering::Release);
         Some(batch)
     }
@@ -607,6 +675,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             docs,
             has_blocks,
             private,
+            ram_bytes,
         } = batch;
         let tracking = TrackingDirectory::new(self.dir);
         let built = catch_unwind(AssertUnwindSafe(|| {
@@ -637,6 +706,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
             }
         }));
         self.retire(core);
+        // Published or abandoned, its buffer is gone either way
+        // (`doAfterFlush`), panics included.
+        self.update_ram(|ram| ram.flush_bytes = ram.flush_bytes.saturating_sub(ram_bytes));
         match outcome {
             Ok(Ok(result)) => result,
             Ok(Err(panic)) | Err(panic) => resume_unwind(panic),
@@ -1499,6 +1571,147 @@ mod tests {
         let (docs, _) = live_documents(&dir);
         assert_eq!(docs.keys().collect::<Vec<_>>(), ["also", "kept", "r"]);
         assert_clean(&dir);
+    }
+
+    /// A directory whose `create_output` waits while its gate is shut: holds
+    /// a flush in the middle of its build.
+    struct GatedDirectory<'a> {
+        inner: &'a FsDirectory,
+        open: Mutex<bool>,
+        opened: Condvar,
+    }
+
+    impl GatedDirectory<'_> {
+        fn set_open(&self, open: bool) {
+            *lock(&self.open) = open;
+            self.opened.notify_all();
+        }
+    }
+
+    impl Directory for GatedDirectory<'_> {
+        fn list_all(&self) -> lucene_store::Result<Vec<String>> {
+            self.inner.list_all()
+        }
+        fn open(&self, name: &str) -> lucene_store::Result<Input> {
+            self.inner.open(name)
+        }
+        fn create_output(&self, name: &str) -> lucene_store::Result<FsIndexOutput> {
+            let mut open = lock(&self.open);
+            while !*open {
+                open = self.opened.wait(open).unwrap();
+            }
+            drop(open);
+            self.inner.create_output(name)
+        }
+        fn sync(&self, names: &[String]) -> lucene_store::Result<()> {
+            self.inner.sync(names)
+        }
+        fn rename(&self, source: &str, dest: &str) -> lucene_store::Result<()> {
+            self.inner.rename(source, dest)
+        }
+        fn delete_file(&self, name: &str) -> lucene_store::Result<()> {
+            self.inner.delete_file(name)
+        }
+        fn sync_meta_data(&self) -> lucene_store::Result<()> {
+            self.inner.sync_meta_data()
+        }
+        fn obtain_lock(&self, name: &str) -> lucene_store::Result<Box<dyn lucene_store::Lock>> {
+            self.inner.obtain_lock(name)
+        }
+    }
+
+    /// Waits (bounded) until `cond` holds.
+    fn eventually(what: &str, cond: impl Fn() -> bool) {
+        let start = std::time::Instant::now();
+        while !cond() {
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(20),
+                "never: {what}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    /// `DocumentsWriterFlushControl.updateStallState` +
+    /// `DocumentsWriter.preUpdate`: while a flush is held mid-build and the
+    /// slots keep filling, RAM in slots and flushes passes twice the buffer
+    /// and indexing stalls; another thread's add waits, and goes on once the
+    /// flush completes and lifts the stall. No document is lost.
+    #[test]
+    fn indexing_stalls_while_flushing_falls_behind() {
+        let tmp = TempDir::new("concurrent-stall");
+        let fs = FsDirectory::open(&tmp);
+        let gated = GatedDirectory {
+            inner: &fs,
+            open: Mutex::new(true),
+            opened: Condvar::new(),
+        };
+        let version = LuceneVersion {
+            major: 10,
+            minor: 5,
+            bugfix: 0,
+        };
+        let mut single = IndexWriter::open(&gated, fields(), "Lucene104", version).unwrap();
+        single.set_postings_field(Some("id")).unwrap();
+        single.add_postings_field("body").unwrap();
+        single.set_max_buffered_docs(DISABLE_AUTO_FLUSH).unwrap();
+        // Ten documents fill a slot.
+        let doc_bytes = document_ram_bytes(&doc("t1x00", 0));
+        let mb = (doc_bytes * 10) as f64 / (1024.0 * 1024.0);
+        single.set_ram_buffer_size_mb(mb).unwrap();
+        let w = ConcurrentIndexWriter::new(single, 3).unwrap();
+        assert!(w.stall_control().is_healthy());
+
+        gated.set_open(false);
+        /// Opens the gate however the scope ends: a failed assertion must
+        /// not leave a thread blocked in `create_output` for the scope to
+        /// wait on forever.
+        struct OpenOnDrop<'a, 'b>(&'a GatedDirectory<'b>);
+        impl Drop for OpenOnDrop<'_, '_> {
+            fn drop(&mut self) {
+                self.0.set_open(true);
+            }
+        }
+        std::thread::scope(|scope| {
+            let _open = OpenOnDrop(&gated);
+            // One thread fills the slots in turn until one flushes -- and
+            // holds, the gate shut -- with the other two nearly full.
+            let filler = scope.spawn(|| {
+                for k in 0..28 {
+                    w.add_document(doc(&format!("t1x{k:02}"), 0)).unwrap();
+                }
+            });
+            eventually("the held flush stalls indexing", || {
+                w.stall_control().any_stalled_threads()
+            });
+            let late = scope.spawn(|| w.add_document(doc("late", 0)).unwrap());
+            eventually("a thread waits on the stall", || {
+                w.stall_control().has_blocked()
+            });
+            assert!(!late.is_finished());
+            gated.set_open(true);
+            late.join().unwrap();
+            filler.join().unwrap();
+        });
+        assert!(w.stall_control().was_stalled());
+        assert!(w.stall_control().is_healthy(), "the flush lifted the stall");
+        w.commit().unwrap();
+        let (docs, _) = live_documents(&fs);
+        assert_eq!(docs.len(), 29);
+        assert!(docs.contains_key("late"));
+    }
+
+    /// With no RAM buffer (flushing by document count) nothing ever stalls.
+    #[test]
+    fn indexing_never_stalls_without_a_ram_buffer() {
+        let tmp = TempDir::new("concurrent-no-stall");
+        let dir = FsDirectory::open(&tmp);
+        let w = ConcurrentIndexWriter::new(writer(&dir, 2), 2).unwrap();
+        for k in 0..20 {
+            w.add_document(doc(&format!("n{k}"), 0)).unwrap();
+        }
+        w.commit().unwrap();
+        assert!(!w.stall_control().was_stalled());
     }
 
     /// `DocumentsWriterPerThread.flush`: a buffer its own deletes leave empty

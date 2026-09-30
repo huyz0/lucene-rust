@@ -70,6 +70,7 @@ use lucene_codecs::live_docs;
 use lucene_codecs::norms::{self, Norms, NormsEntry};
 use lucene_codecs::postings::{self, DocInput, PayInput, PosInput};
 use lucene_index::deletes::liv_file_name;
+use lucene_index::deletion_policy::IndexCommit;
 use lucene_index::field_updates;
 use lucene_index::segment_info::{self, SegmentInfo};
 use lucene_index::segment_infos::{self, SegmentInfos};
@@ -1107,6 +1108,17 @@ impl SegmentReader {
     /// scan could still produce. Every other reader of this segment's points
     /// still reports the corruption.
     fn points_doc_count(&self, field_number: i32) -> Option<i32> {
+        self.points_field(field_number).map(|f| f.doc_count)
+    }
+
+    /// One field's BKD metadata (`PointValues`' doc count and min/max packed
+    /// values), `None` when this segment has no points for it -- or a `.kdm`
+    /// that does not decode (see [`Self::points_doc_count`] for why that is
+    /// not an error for these callers).
+    pub(crate) fn points_field(
+        &self,
+        field_number: i32,
+    ) -> Option<&lucene_codecs::points::PointsField> {
         // The metadata `open_points` parses once per segment core, parsed
         // here on first use if no search has yet: a count is answered per
         // request, and parsing `.kdm` each time was most of it.
@@ -1122,7 +1134,7 @@ impl SegmentReader {
             .get()?
             .iter()
             .find(|(number, _)| *number == field_number)
-            .map(|(_, f)| f.doc_count)
+            .map(|(_, f)| f)
     }
 }
 
@@ -1317,6 +1329,23 @@ impl DirectoryReader {
         Self::open_at(dir, segment_infos)
     }
 
+    /// `DirectoryReader.listCommits(dir)`: every commit point in `dir`,
+    /// oldest first. See [`lucene_index::index_file_deleter::list_commits`].
+    pub fn list_commits(
+        dir: &dyn Directory,
+    ) -> lucene_index::index_file_deleter::Result<Vec<IndexCommit>> {
+        lucene_index::index_file_deleter::list_commits(dir)
+    }
+
+    /// `DirectoryReader.open(IndexCommit)`: the index as of `commit` -- its
+    /// own `segments_N` read and every segment it lists opened, whatever
+    /// commits came after it.
+    pub fn open_commit(dir: &dyn Directory, commit: &IndexCommit) -> Result<Self> {
+        let bytes = dir.open(commit.segments_file_name())?.to_vec();
+        let segment_infos = segment_infos::parse(&bytes, commit.generation())?;
+        Self::open_at(dir, segment_infos)
+    }
+
     /// Opens every segment listed in an already-parsed [`SegmentInfos`] --
     /// useful for tests that build a commit by hand rather than reading one
     /// off disk (see this module's unit tests).
@@ -1465,6 +1494,49 @@ impl DirectoryReader {
     /// Every opened segment's own reader, in commit order.
     pub fn segment_readers(&self) -> &[SegmentReader] {
         &self.segments
+    }
+
+    /// A view of this reader with its segments in `order` (a permutation of
+    /// `0..segment_readers().len()`) and doc bases recomputed to match --
+    /// `BaseCompositeReader(subReaders, subReadersSorter)`, which
+    /// [`crate::segment_order::SegmentOrder`] builds. The segments are
+    /// shared, not reopened; the per-reader caches start empty.
+    pub(crate) fn with_segment_order(&self, order: &[usize]) -> Self {
+        debug_assert_eq!(order.len(), self.segments.len());
+        let mut doc_base = 0i32;
+        let segments = order
+            .iter()
+            .map(|&i| {
+                let mut reader = self.segments[i].clone_reader();
+                reader.doc_base = doc_base;
+                doc_base = doc_base.saturating_add(reader.max_doc);
+                reader
+            })
+            .collect();
+        DirectoryReader {
+            segment_infos: self.segment_infos.clone(),
+            segments,
+            global_ords: std::sync::Mutex::default(),
+            norm_tables: std::sync::Mutex::default(),
+            norms_plans: std::sync::Mutex::default(),
+        }
+    }
+
+    /// `IndexReader.maxDoc()`: every segment's `maxDoc`, summed. Java's
+    /// `BaseCompositeReader` refuses a total above `IndexWriter.MAX_DOCS`, far
+    /// below `i32::MAX`, so the saturating sum never saturates on an index
+    /// either engine wrote.
+    pub fn max_doc(&self) -> i32 {
+        self.segments
+            .iter()
+            .fold(0i32, |acc, s| acc.saturating_add(s.max_doc))
+    }
+
+    /// `IndexReader.numDocs()`: every segment's live documents, summed.
+    pub fn num_docs(&self) -> i32 {
+        self.segments
+            .iter()
+            .fold(0i32, |acc, s| acc.saturating_add(s.num_docs()))
     }
 
     /// Java's `IndexSearcher.fieldStats(field)`: `sumTotalTermFreq` and
