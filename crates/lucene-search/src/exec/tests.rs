@@ -751,6 +751,7 @@ fn multi_term_edges_and_the_term_union() {
         max_doc: seg.max_doc,
         cache: None,
         reader: None,
+        similarity: None,
     };
     fn mt<'a>(c: &Clause, ctx: &super::build::LeafContext<'a>) -> Option<Option<BoxScorer<'a>>> {
         super::multi_term::multi_term(ctx, c, 1.0, Mode::Complete).unwrap()
@@ -872,6 +873,7 @@ fn conjunction_membership_fallback_and_leg_thresholds() {
         max_doc: seg.max_doc,
         cache: None,
         reader: None,
+        similarity: None,
     };
     let mut b = BooleanQuery::new();
     b.must.push(Clause::Term(TermQuery::new("body", "w0")));
@@ -913,6 +915,7 @@ fn a_phrase_without_norms_scores_unnormed() {
         max_doc: seg.max_doc,
         cache: None,
         reader: None,
+        similarity: None,
     };
     let phrase = Clause::Phrase(PhraseQuery::new("body", ["w0", "w1"]));
     let s = super::build::build(&ctx, &phrase, 1.0, Mode::Complete, true)
@@ -946,6 +949,7 @@ fn a_match_all_needs_some_max_doc() {
         max_doc: None,
         cache: None,
         reader: None,
+        similarity: None,
     };
     let unknown = Clause::MatchAllDocs(MatchAllDocsQuery::new(i32::MAX));
     assert!(matches!(
@@ -1240,6 +1244,7 @@ mod fixture {
                     max_doc: None,
                     cache: None,
                     reader: None,
+                    similarity: None,
                 };
                 for mode in [Mode::TopScores, Mode::Complete] {
                     if let Some(b) = bulk_boolean(&ctx, &q, 1.0, mode).unwrap() {
@@ -1316,6 +1321,7 @@ mod fixture {
             max_doc: None,
             cache: None,
             reader: None,
+            similarity: None,
         };
         let leg = |t: &str| -> TermLeg<'_> {
             match term_leg(
@@ -1417,6 +1423,7 @@ mod fixture {
             max_doc: None,
             cache: None,
             reader: None,
+            similarity: None,
         };
         let mut checked = 0usize;
         for tie in [0.0f32, 0.3] {
@@ -1776,4 +1783,63 @@ fn a_docs_only_field_with_norms_ends_its_scan_as_lucene_does() {
     }
     // `kw:a` and `kw:b` at both finite thresholds, boosted or not.
     assert_eq!(ended_early, 8, "the scans a full queue ends");
+}
+
+/// Pruning under a similarity other than BM25 is sound: on an index whose
+/// terms span many full postings blocks (so `MaxScoreCache`'s per-level
+/// bounds, not just the global one, decide what is skipped), the top 10 a
+/// pruned search keeps are the first 10 of an unpruned one -- a queue too
+/// large to fill never publishes a threshold -- and blocks really are skipped.
+#[test]
+fn similarity_bounds_prune_soundly() {
+    use crate::directory_reader::DirectoryReader;
+    use crate::multi_segment::search_boolean_query_multi_segment_with_similarity as search;
+    use crate::query::{BooleanQuery, Clause, PhraseQuery, TermQuery};
+    use crate::similarities::*;
+    use std::sync::Arc;
+    let base = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/data/mixed_boolean_scoring_index"
+    );
+    let reader = DirectoryReader::open(&lucene_store::FsDirectory::open(base)).unwrap();
+    let opened = reader.open_segments().unwrap();
+    let segments = opened.as_open_segments();
+    let owned = reader.field_norms_by_field(&["body".to_string()]);
+    let norms: Vec<_> = owned.iter().map(Some).collect();
+    let t = |w: &str| Clause::Term(TermQuery::new("body", w));
+    let queries = [
+        BooleanQuery::new().with_must([t("w0")]),
+        BooleanQuery::new().with_must([t("w3")]),
+        BooleanQuery::new().with_should([t("w0"), t("w1"), t("w2")]),
+        BooleanQuery::new()
+            .with_must([t("w0")])
+            .with_should([t("w3")]),
+        BooleanQuery::new().with_must([t("w1"), t("w2")]),
+        BooleanQuery::new().with_must([Clause::Phrase(PhraseQuery::new("body", ["w0", "w1"]))]),
+        BooleanQuery::new().with_should([
+            Clause::Phrase(PhraseQuery::new("body", ["w1", "w0"]).with_slop(2)),
+            t("w4"),
+        ]),
+    ];
+    let sims: [Arc<dyn Similarity>; 4] = [
+        Arc::new(ClassicSimilarity::default()),
+        Arc::new(
+            DfrSimilarity::new(BasicModel::G, AfterEffect::L, Normalization::H1_DEFAULT).unwrap(),
+        ),
+        Arc::new(LmDirichletSimilarity::default()),
+        Arc::new(Bm25Similarity::new(2.0, 0.3, true).unwrap()),
+    ];
+    crate::test_only_maxscore_block_skip_counter::reset();
+    for sim in &sims {
+        for q in &queries {
+            let pruned = search(&segments, q, &norms, 10, sim.as_ref()).unwrap();
+            let all = search(&segments, q, &norms, 30_000, sim.as_ref()).unwrap();
+            assert_eq!(pruned.len(), 10, "{sim:?} {q:?}");
+            assert_eq!(pruned, all[..10], "{sim:?} {q:?}");
+        }
+    }
+    assert!(
+        crate::test_only_maxscore_block_skip_counter::count() > 0,
+        "the bounds skipped nothing: the test proves nothing about them"
+    );
 }

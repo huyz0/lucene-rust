@@ -141,6 +141,7 @@ use crate::merge_policy;
 use crate::segment_info::{self, LuceneVersion};
 use crate::segment_infos::{self, SegmentCommitInfo, SegmentInfos};
 use crate::segment_writer::{self};
+use crate::similarity::{FieldInvertState, NormSimilarity};
 use crate::term_delete;
 use crate::update_document::{self, SegmentDeleteSource};
 
@@ -160,7 +161,6 @@ use lucene_store::codec_util::ID_LENGTH;
 use lucene_store::data_output::DataOutput;
 use lucene_store::directory::Directory;
 use lucene_util::fixed_bit_set::FixedBitSet;
-use lucene_util::small_float;
 
 mod explicit;
 pub use explicit::{ExplicitDocument, ExplicitFields, InvertedField, InvertedTerm};
@@ -176,6 +176,11 @@ pub enum Error {
     /// accept -- see `index_writer/explicit.rs`.
     #[error("explicit document: {0}")]
     Explicit(String),
+    /// `IndexingChain.PerField.finish`'s `IllegalStateException`: the
+    /// configured similarity's `computeNorm` returned `0` for a field that
+    /// has tokens, a value only an empty field may carry.
+    #[error("the similarity returned a norm of 0 for non-empty field {0:?}")]
+    ZeroNorm(String),
     #[error(transparent)]
     SegmentWriter(#[from] segment_writer::Error),
     #[error(transparent)]
@@ -790,6 +795,10 @@ pub(crate) struct IndexingConfig {
     /// Lucene's own ([`hnsw::DEFAULT_MAX_CONN`] / [`hnsw::DEFAULT_BEAM_WIDTH`]).
     hnsw_m: i32,
     hnsw_beam_width: i32,
+    /// `IndexWriterConfig.getSimilarity()`, as far as the writer reads it
+    /// (`computeNorm`): `None` is Lucene's default, `BM25Similarity`. See
+    /// [`IndexWriter::set_similarity`].
+    similarity: Option<std::sync::Arc<dyn NormSimilarity>>,
 }
 
 /// [`IndexWriter::begin_merge`]'s snapshot: the sources as the merge reads
@@ -2171,6 +2180,15 @@ impl IndexingConfig {
     /// [`lucene_codecs::norms::write_fields`] wants its meta entries in and
     /// it makes the `.nvm` a function of the schema rather than of the
     /// order the caller declared the fields.
+    /// The similarity norms are computed with: the configured one, or
+    /// Lucene's default (`BM25Similarity`'s `computeNorm`).
+    fn norm_similarity(&self) -> &dyn NormSimilarity {
+        match &self.similarity {
+            Some(s) => s.as_ref(),
+            None => &crate::similarity::DefaultNormSimilarity,
+        }
+    }
+
     fn norms_field_configs(&self) -> Vec<NormsFieldConfig> {
         let mut configs: Vec<NormsFieldConfig> = self
             .fields
@@ -2179,6 +2197,7 @@ impl IndexingConfig {
             .map(|f| NormsFieldConfig {
                 name: f.name.clone(),
                 field_number: f.number,
+                docs_only: f.index_options == IndexOptions::Docs,
             })
             .collect();
         configs.sort_by_key(|c| c.field_number);
@@ -2258,6 +2277,7 @@ impl IndexingConfig {
                     buf.docs,
                     &norms_configs,
                     &inverters,
+                    self.norm_similarity(),
                     &segment_id,
                 )?)
             };
@@ -2296,6 +2316,7 @@ impl IndexingConfig {
                     buf.docs,
                     &norms_configs,
                     &inverted,
+                    self.norm_similarity(),
                     &segment_id,
                 )?)
             };
@@ -2870,6 +2891,9 @@ struct SourceDocValueColumns {
 struct NormsFieldConfig {
     name: String,
     field_number: i32,
+    /// `FieldInvertState`'s index options: a `DOCS` field's norm counts
+    /// distinct terms, not tokens.
+    docs_only: bool,
 }
 
 /// One field's finished norm column, in whichever of
@@ -2895,6 +2919,48 @@ struct NormsColumn {
     /// `Some` only when at least one doc is absent -- the sparse `.nvd` shape,
     /// which lists just the present docs.
     sparse: Option<Vec<(i32, i64)>>,
+}
+
+impl NormsColumn {
+    /// The column for one field's per-document norms (`None`: the document
+    /// has no value for the field).
+    fn from_values(values: Vec<Option<i64>>) -> Self {
+        let sparse = (!values.iter().all(Option::is_some)).then(|| {
+            values
+                .iter()
+                .enumerate()
+                .filter_map(|(doc, v)| v.map(|v| (doc as i32, v)))
+                .collect()
+        });
+        NormsColumn {
+            // The filler is the norm `1`, **not** `norm(0)`: an absent doc
+            // has no norm at all, and `norm(0) == 0` is the one value
+            // `CheckIndex.checkImpacts` rejects outright ("First impact had a
+            // norm == 0"). A present-but-empty doc still gets its legitimate
+            // explicit `0`, which is what Lucene writes for it.
+            //
+            // The filler never fires for a column with no absent doc, so the
+            // `Dense` arm writes exactly the values computed.
+            dense: values.into_iter().map(|v| v.unwrap_or(1)).collect(),
+            sparse,
+        }
+    }
+}
+
+/// `IndexingChain.PerField.finish`'s norm: `0` for a field present without
+/// tokens, `Similarity.computeNorm` otherwise -- which must not be `0` there.
+fn norm_value(
+    similarity: &dyn NormSimilarity,
+    field: &str,
+    state: &FieldInvertState,
+) -> Result<i64> {
+    if state.length == 0 {
+        return Ok(0);
+    }
+    match similarity.compute_norm(field, state) {
+        0 => Err(Error::ZeroNorm(field.to_string())),
+        norm => Ok(norm),
+    }
 }
 
 /// One points field, resolved once by [`IndexWriter::add_points_field`] from
@@ -3377,6 +3443,7 @@ impl<'d> IndexWriter<'d> {
                 points_fields: Vec::new(),
                 hnsw_m: hnsw::DEFAULT_MAX_CONN,
                 hnsw_beam_width: hnsw::DEFAULT_BEAM_WIDTH,
+                similarity: None,
             }),
             segment_infos,
             pending_docs: Vec::new(),
@@ -3453,6 +3520,21 @@ impl<'d> IndexWriter<'d> {
             Some(name) => vec![Self::resolve_postings_field(&self.cfg.fields, name)?],
         };
         Ok(())
+    }
+
+    /// `IndexWriterConfig.setSimilarity`: the similarity every segment this
+    /// writer flushes computes its norms with (`Similarity.computeNorm`, per
+    /// document and field, in `IndexingChain.PerField.finish`). `None`
+    /// restores Lucene's default, `BM25Similarity`.
+    ///
+    /// Takes the index-time half of the contract
+    /// ([`crate::similarity::NormSimilarity`]); every
+    /// `lucene_search::similarities::Similarity` is one, so the object a
+    /// searcher scores with configures the writer too. Merges copy norms
+    /// as they are, as Lucene's do: a similarity applies to the documents
+    /// flushed after it is set.
+    pub fn set_similarity(&mut self, similarity: Option<std::sync::Arc<dyn NormSimilarity>>) {
+        self.cfg_mut().similarity = similarity;
     }
 
     /// `Analyzer.getPositionIncrementGap(String)` for every field this writer
@@ -6153,17 +6235,17 @@ impl<'d> IndexWriter<'d> {
         docs: &[Document],
         configs: &[NormsFieldConfig],
         inverters: &[(i32, crate::inverter::FieldInverter)],
+        similarity: &dyn NormSimilarity,
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<NormsOutput> {
         let columns: Vec<NormsColumn> = configs
             .iter()
             .map(|config| {
-                let counted = inverters
+                let inverter = inverters
                     .iter()
                     .find(|(n, _)| *n == config.field_number)
-                    .map(|(_, inv)| inv.lengths())
-                    .unwrap_or(&[]);
-                let lengths: Vec<Option<u32>> = docs
+                    .map(|(_, inv)| inv);
+                let values: Vec<Option<i64>> = docs
                     .iter()
                     .enumerate()
                     .map(|(doc_id, doc)| {
@@ -6172,33 +6254,23 @@ impl<'d> IndexWriter<'d> {
                             .iter()
                             .find(|f| f.field_number == config.field_number)
                             .is_some_and(|f| matches!(f.value, FieldValue::String(_)));
-                        first_is_string.then(|| {
-                            counted
-                                .get(doc_id)
-                                .copied()
-                                .flatten()
-                                .unwrap_or(0)
-                                .min(i32::MAX as u32)
-                        })
+                        if !first_is_string {
+                            return Ok(None);
+                        }
+                        let state = inverter.and_then(|inv| inv.invert_state(doc_id)).unwrap_or(
+                            FieldInvertState {
+                                docs_only: config.docs_only,
+                                length: 0,
+                                num_overlap: 0,
+                                unique_term_count: 0,
+                            },
+                        );
+                        norm_value(similarity, &config.name, &state).map(Some)
                     })
-                    .collect();
-                let norm = |len: u32| small_float::int_to_byte4(len) as i8 as i64;
-                let sparse = (!lengths.iter().all(|l| l.is_some())).then(|| {
-                    lengths
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(doc, len)| len.map(|len| (doc as i32, norm(len))))
-                        .collect()
-                });
-                NormsColumn {
-                    dense: lengths
-                        .into_iter()
-                        .map(|l| l.map(norm).unwrap_or(1))
-                        .collect(),
-                    sparse,
-                }
+                    .collect::<Result<_>>()?;
+                Ok(NormsColumn::from_values(values))
             })
-            .collect();
+            .collect::<Result<_>>()?;
 
         let fields: Vec<norms::NormsField<'_>> = configs
             .iter()
@@ -6397,11 +6469,13 @@ impl<'d> IndexWriter<'d> {
     /// A doc's length is the sum of every matching term's occurrence count
     /// (real Lucene's `FieldInvertState.length` -- total indexed token
     /// count, *not* distinct-term count: "fox fox fox" has length 3, one
-    /// distinct term), encoded into a single norm byte via
-    /// [`small_float::int_to_byte4`] and sign-extended into an `i64` the same
-    /// way `norms::norm_value`'s read side sign-extends a stored byte back
-    /// (`byte as i8 as i64`) -- the exact inverse transformation
-    /// `lucene_search::similarity::decode_norm` undoes.
+    /// distinct term), handed with the distinct-term count to the configured
+    /// similarity's `computeNorm` ([`IndexWriter::set_similarity`]; by
+    /// default BM25's: [`lucene_util::small_float::int_to_byte4`] of the
+    /// length -- of the distinct terms for a `DOCS` field -- sign-extended
+    /// into an `i64` the same way `norms::norm_value`'s read side
+    /// sign-extends a stored byte back, the exact inverse transformation
+    /// `lucene_search::similarity::decode_norm` undoes).
     /// Returns `(.nvm, .nvd, per-field norm columns)`. The third element is
     /// the same per-document norm each column encodes, kept dense and
     /// addressed by doc id, because [`Self::build_postings_output`] needs it:
@@ -6416,6 +6490,7 @@ impl<'d> IndexWriter<'d> {
         docs: &[Document],
         configs: &[NormsFieldConfig],
         inverted: &InMemoryInvertedIndex,
+        similarity: &dyn NormSimilarity,
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<NormsOutput> {
         // One column per configured field, all into the same `.nvm`/`.nvd`
@@ -6430,14 +6505,17 @@ impl<'d> IndexWriter<'d> {
                 // `None` == this doc does not carry the field at all, so it
                 // gets no norm; `Some(0)` == it carries it but produced no
                 // tokens, which is Java's explicit zero.
-                let mut lengths: Vec<Option<u32>> = docs
+                // `(length, uniqueTermCount)` per document that carries the
+                // field. The analyzer never emits a token at a position
+                // increment of 0, so `numOverlap` is 0 on this path.
+                let mut counts: Vec<Option<(u32, u32)>> = docs
                     .iter()
                     .map(|doc| {
                         doc.fields
                             .iter()
                             .find(|f| f.field_number == config.field_number)
                             .and_then(|f| match &f.value {
-                                FieldValue::String(_) => Some(0u32),
+                                FieldValue::String(_) => Some((0u32, 0u32)),
                                 _ => None,
                             })
                     })
@@ -6450,41 +6528,35 @@ impl<'d> IndexWriter<'d> {
                     for entry in entries {
                         // `entry.doc_id` is an index into `docs` that this
                         // writer's own inversion produced, so it addresses
-                        // `lengths` (which is `docs.len()` long) by
+                        // `counts` (which is `docs.len()` long) by
                         // construction -- and only ever for a doc whose
-                        // presence test above already said `Some`.
-                        if let Some(slot) = lengths[entry.doc_id as usize].as_mut() {
-                            *slot = accumulate_field_length(*slot, entry.term_freq());
+                        // presence test above already said `Some`. One entry
+                        // per `(term, doc)`: each is a distinct term.
+                        if let Some((length, unique)) = counts[entry.doc_id as usize].as_mut() {
+                            *length = accumulate_field_length(*length, entry.term_freq());
+                            *unique = unique.saturating_add(1);
                         }
                     }
                 }
-                let norm = |len: u32| small_float::int_to_byte4(len) as i8 as i64;
-                let sparse = (!lengths.iter().all(|l| l.is_some())).then(|| {
-                    lengths
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(doc, len)| len.map(|len| (doc as i32, norm(len))))
-                        .collect()
-                });
-                NormsColumn {
-                    // The filler is the norm `1`, **not** `norm(0)`: an
-                    // absent doc has no norm at all, and `norm(0) == 0` is the
-                    // one value `CheckIndex.checkImpacts` rejects outright
-                    // ("First impact had a norm == 0"). A present-but-empty
-                    // doc still gets its legitimate explicit `norm(0)`, which
-                    // is what Lucene writes for it.
-                    //
-                    // The filler never fires for a column with no absent doc,
-                    // so the `Dense` arm below writes exactly the bytes it
-                    // wrote before this column grew its second reader.
-                    dense: lengths
-                        .into_iter()
-                        .map(|l| l.map(norm).unwrap_or(1))
-                        .collect(),
-                    sparse,
-                }
+                let values: Vec<Option<i64>> = counts
+                    .into_iter()
+                    .map(|c| {
+                        c.map(|(length, unique)| {
+                            let clamp = |n: u32| i32::try_from(n).unwrap_or(i32::MAX);
+                            let state = FieldInvertState {
+                                docs_only: config.docs_only,
+                                length: clamp(length),
+                                num_overlap: 0,
+                                unique_term_count: clamp(unique),
+                            };
+                            norm_value(similarity, &config.name, &state)
+                        })
+                        .transpose()
+                    })
+                    .collect::<Result<_>>()?;
+                Ok(NormsColumn::from_values(values))
             })
-            .collect();
+            .collect::<Result<_>>()?;
 
         let fields: Vec<norms::NormsField<'_>> = configs
             .iter()
@@ -9192,7 +9264,7 @@ pub(crate) fn document_ram_bytes(doc: &Document) -> usize {
 /// wrapped length encodes to a *small* norm -- the longest document in the
 /// index would then score as one of the shortest, silently, in every BM25
 /// query that reads the field. It also trips
-/// [`small_float::int_to_byte4`]'s own `debug_assert` on the way past
+/// [`lucene_util::small_float::int_to_byte4`]'s own `debug_assert` on the way past
 /// `i32::MAX`.
 ///
 /// Saturating at `i32::MAX` is the closest honest analogue of Java's throw:
@@ -9331,6 +9403,7 @@ pub(crate) mod tests {
         }
     }
 
+    use lucene_util::small_float;
     use lucene_util::test_support::TempDir;
 
     /// A scratch directory that removes itself when the test ends -- unless
