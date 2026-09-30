@@ -33,6 +33,8 @@ W = written by `IndexWriter`; "verified" means real Lucene reads the Rust bytes
 | `SegmentInfos` | `segments_N`, `pending_segments_N` | yes | yes, two-phase commit | -- (rows `index/SegmentInfos`, `index/SegmentInfos.write`) |
 | `Lucene99HnswVectorsFormat` + `Lucene99FlatVectorsFormat` | `.vec` `.vemf` `.vem` `.vex` | yes | yes, verified | `FLOAT32` and `BYTE` (all of 10.5.0's encodings); no scalar-quantized formats; refused by the OpenSearch engine (rows `codecs/lucene99/...`) |
 
+**M7 writer benchmarks** (`scripts/bench-micro.sh`, 2026-09-30, after the byte-identity work above; host load ~9 on 4 CPUs, so `BENCH_MAX_LOAD` overridden and the noise floors are wide): `term_dict_write` (suffix compression and zigzag singletons now on) 0.92x on `ids_1m` and 0.74x on `words_200k`, both inside the run's 1.53x noise floor -- to be re-measured on a quiet host before the area counts as done; `points_write` (flush/merge through `BkdWriter`) 6.27x/3.76x (noise 2.49x); `dv_merge` (with `doBlocks`) 3.02x (inside a 4.28x noise floor). The zlib port (`BEST_COMPRESSION` writes) has no write-side micro benchmark yet.
+
 **Search (Lucene level).** The scorer tree (R1) runs `TermQuery`,
 `BooleanQuery` (every occur, nesting, `minimumNumberShouldMatch`),
 `ConstantScoreQuery`, `BoostQuery`, `DisjunctionMaxQuery`, match-all/none,
