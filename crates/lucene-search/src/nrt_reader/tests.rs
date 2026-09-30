@@ -129,6 +129,8 @@ fn an_nrt_reader_of_a_concurrent_writer_survives_merges() {
         floor_segment_size: 1 << 30,
         ..MergePolicyConfig::default()
     }));
+    // The merge below is the caller's; merge-on-commit would run it first.
+    single.set_max_full_flush_merge_wait_millis(0);
     let w = ConcurrentIndexWriter::new(single, 2).unwrap();
     for i in 0..4 {
         w.add_document(doc(&format!("a{i}"))).unwrap();

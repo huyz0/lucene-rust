@@ -395,7 +395,7 @@ index/IndexReader	ported	crates/lucene-search/src/reader/mod.rs::IndexReader
 index/IndexReaderContext	ported	crates/lucene-search/src/multi_segment.rs::OpenSegment
 index/IndexSorter	ported	crates/lucene-index/src/index_sorter.rs::read_segment_terms
 index/IndexUpgrader	ported	crates/lucene-index/src/index_upgrader.rs::IndexUpgrader
-index/IndexWriter	partial	crates/lucene-index/src/index_writer.rs::IndexWriter -- M7: writing compound segments comes with the codec writers' change (row `codecs/lucene90/Lucene90CompoundFormat`); every other operation is ported (parity.md)
+index/IndexWriter	ported	crates/lucene-index/src/index_writer.rs::IndexWriter
 index/IndexWriterConfig	partial	crates/lucene-index/src/index_writer.rs::set_index_sort -- M7: settings are writer setters (`setSimilarity` is `IndexWriter::set_similarity`, norms via `NormSimilarity`); missing codec and per-field format choice (T7.5). `IndexWriterEventListener` and `infoStream` are not needed (rows `index/IndexWriterEventListener`, `util/InfoStream`); `leafSorter` is `DirectoryReader::with_leaf_sorter`, `commitOnClose` is `IndexWriter::set_commit_on_close`
 index/IndexWriterEventListener	not-needed	callback hook for merge begin/end events used for metrics and tests; no effect on the index.
 index/IndexableField	ported	crates/lucene-index/src/document/mod.rs::IndexableField
@@ -407,7 +407,7 @@ index/KnnVectorValues	ported	crates/lucene-codecs/src/vectors.rs::FloatVectorVal
 index/LeafMetaData	ported	crates/lucene-index/src/segment_info.rs::SegmentInfo
 index/LeafReader	ported	crates/lucene-search/src/reader/mod.rs::LeafReader
 index/LeafReaderContext	ported	crates/lucene-search/src/reader/mod.rs::LeafReaderContext
-index/LiveIndexWriterConfig	partial	crates/lucene-index/src/index_writer.rs::set_ram_buffer_size_mb -- M7: RAM buffer, max buffered docs, merge policy and the merged-segment warmer are live-settable; no `setUseCompoundFile` (compound segments come with the codec writers' change), or `maxFullFlushMergeWaitMillis` (merge-on-commit); `checkPendingFlushOnUpdate` is `ConcurrentIndexWriter::set_check_pending_flush_on_update`
+index/LiveIndexWriterConfig	ported	crates/lucene-index/src/index_writer/pluggable_merge.rs::set_max_full_flush_merge_wait_millis
 index/LockableConcurrentApproximatePriorityQueue	not-needed	lock-holding queue of idle DWPTs inside DocumentsWriterPerThreadPool; Rust slots are Mutex-guarded buffers (no user-visible behaviour).
 index/LogByteSizeMergePolicy	ported	crates/lucene-index/src/merge_policy/log.rs::LogByteSizeMergePolicy
 index/LogDocMergePolicy	ported	crates/lucene-index/src/merge_policy/log.rs::LogDocMergePolicy

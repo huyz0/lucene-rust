@@ -1115,7 +1115,13 @@ impl<'d> ConcurrentIndexWriter<'d> {
             let _barrier = BarrierGuard(self);
             let last_seq = self.flush_all(true)?;
             let mut core = lock(&self.core);
-            core.writer.commit()?;
+            // Merge-on-commit leaves the segments this writer's merge
+            // threads hold alone (`registerMerge` rejects those merges).
+            let Core {
+                writer, merging, ..
+            } = &mut *core;
+            writer.prepare_commit_excluding(merging)?;
+            writer.finish_commit()?;
             last_seq
         };
         self.schedule_merges(MergeTrigger::FullFlush)?;
@@ -1331,7 +1337,12 @@ impl<'d> crate::nrt::NrtSource for ConcurrentIndexWriter<'d> {
         let snapshot = {
             let _full_flush = lock(&self.full_flush);
             self.flush_all(false)?;
-            lock(&self.core).writer.nrt_snapshot_of_live_view()?
+            let mut core = lock(&self.core);
+            let Core {
+                writer, merging, ..
+            } = &mut *core;
+            writer.merge_on_full_flush(MergeTrigger::GetReader, merging)?;
+            writer.nrt_snapshot_of_live_view()?
         };
         self.schedule_merges(MergeTrigger::GetReader)?;
         Ok(snapshot)
@@ -1525,10 +1536,12 @@ mod tests {
             floor_segment_size: 1 << 30,
             ..MergePolicyConfig::default()
         }));
+        // These tests drive merges themselves; merge-on-commit has its own.
+        w.set_max_full_flush_merge_wait_millis(0);
         w
     }
 
-    use crate::index_writer::DISABLE_AUTO_FLUSH_MB;
+    use crate::index_writer::{DEFAULT_MAX_FULL_FLUSH_MERGE_WAIT_MILLIS, DISABLE_AUTO_FLUSH_MB};
 
     /// id -> body of every live document of the latest commit, read through
     /// the stored fields and `.liv` files -- plus the segment count.
@@ -1814,6 +1827,7 @@ mod tests {
             floor_segment_size: 1 << 30,
             ..MergePolicyConfig::default()
         }));
+        single.set_max_full_flush_merge_wait_millis(0);
         let w = ConcurrentIndexWriter::new(single, 1).unwrap();
         for (id, rank) in [("m0", 1), ("m1", 2)] {
             w.add_document(ranked(id, 0, rank)).unwrap();
@@ -2660,6 +2674,61 @@ mod tests {
         let dir2 = FsDirectory::open(&tmp2);
         let plain = ConcurrentIndexWriter::new(writer(&dir2, 5), 1).unwrap();
         plain.close_merges().unwrap();
+    }
+
+    /// Merge-on-commit (`maxFullFlushMergeWaitMillis`) leaves the segments
+    /// a scheduled merge holds alone -- `registerMerge` rejects a merge over
+    /// them -- and merges the rest into the commit.
+    #[test]
+    fn merge_on_commit_skips_segments_a_scheduled_merge_holds() {
+        let tmp = TempDir::new("concurrent-merge-on-commit");
+        let dir = static_dir(&tmp);
+        let w = ConcurrentIndexWriter::with_merge_scheduler(
+            writer(dir, 5),
+            1,
+            Arc::new(crate::merge_scheduler::NoMergeScheduler),
+        )
+        .unwrap();
+        for i in 0..20 {
+            w.add_document(doc(&format!("d{i}"), 0)).unwrap();
+            if i % 5 == 4 {
+                w.commit().unwrap();
+            }
+        }
+        let held: HashSet<String> = lock(&w.core).merging.clone();
+        assert!(!held.is_empty(), "the commits registered a merge");
+        lock(&w.core)
+            .writer
+            .set_max_full_flush_merge_wait_millis(DEFAULT_MAX_FULL_FLUSH_MERGE_WAIT_MILLIS);
+        for i in 20..40 {
+            w.add_document(doc(&format!("d{i}"), 0)).unwrap();
+            if i % 5 == 4 {
+                w.flush().unwrap();
+            }
+        }
+        let before: Vec<String> = lock(&w.core)
+            .writer
+            .live_infos()
+            .segments
+            .iter()
+            .map(|s| s.segment_name.clone())
+            .collect();
+        w.commit().unwrap();
+        let committed: Vec<String> = crate::segment_infos::read_latest(dir)
+            .unwrap()
+            .segments
+            .iter()
+            .map(|s| s.segment_name.clone())
+            .collect();
+        assert!(
+            held.iter().all(|n| committed.contains(n)),
+            "{held:?} {committed:?}"
+        );
+        assert!(
+            committed.len() < before.len(),
+            "the free segments were merged into the commit: {before:?} -> {committed:?}"
+        );
+        assert!(committed.iter().any(|n| !before.contains(n)));
     }
 
     /// `flushNextBuffer` takes the fullest slot; `tryDeleteDocument` and

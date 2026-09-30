@@ -215,6 +215,7 @@ frequency attributes (on `index/IndexingChain`'s row).
 
 ### Writer, codec-routing and check gaps · delivered 2026-09-30
 
+- Merge-on-commit and merge-on-refresh (`maxFullFlushMergeWaitMillis`, default 500 ms, `findFullFlushMerges`) in both writers (`GenMergeOnCommit`); the OpenSearch engine and C-ABI writers set it to 0 explicitly, as OpenSearch does, and the engine sets `useCompoundFile(false)` explicitly.
 - `CheckIndex.testDocValues` decodes doc-values update generations and every `PerFieldDocValuesFormat` instance's column, not just the first `.dvm` (`GenDocValuesUpdates`; re-signed generation corruptions caught).
 
 Each follows [`port-workflow`](../porting-workflow.md): the closest-to-Java
