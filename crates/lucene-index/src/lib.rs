@@ -19,6 +19,7 @@ pub mod deletion_policy;
 pub mod document;
 pub mod field_updates;
 pub mod index_file_deleter;
+pub mod index_upgrader;
 pub mod index_writer;
 pub mod indexing_chain;
 pub mod inverter;

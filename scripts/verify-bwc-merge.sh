@@ -11,6 +11,8 @@
 #           (fixtures/bwc/BwcAppend.java: an upgraded shard), merged by an
 #           ordinary TieredMergePolicy merge at commit that takes old and new
 #           segments together
+#   upgrade the same mixed index through IndexUpgrader, which rewrites only
+#           the segments the older Lucene wrote and keeps the new ones
 #
 # The same two merges run over every fixtures/data/bwc-quantized/<version>
 # index (9.9.2, 9.12.2, 10.2.2: per-field Lucene99 scalar- and Lucene102
@@ -91,6 +93,9 @@ for run in "${runs[@]}"; do
   java -cp "$WORK/classes:$CP" BwcAppend "$WORK/$v-mixed" 3 2>/dev/null
   "$MERGE" "$WORK/$v-mixed" "$WORK/$v-mixed-merged" policy > /dev/null
   check "$v + 3 Lucene 10.5.0 segments, ordinary merge" "$WORK/$v-mixed" "$WORK/$v-mixed-merged"
+
+  "$MERGE" "$WORK/$v-mixed" "$WORK/$v-mixed-upgraded" upgrade > /dev/null
+  check "$v + 3 Lucene 10.5.0 segments, IndexUpgrader" "$WORK/$v-mixed" "$WORK/$v-mixed-upgraded"
 done
 
 echo "verify-bwc-merge: $passed passed, $failed failed"

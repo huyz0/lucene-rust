@@ -3,7 +3,7 @@
 //! to hand to real Lucene 10.5.0.
 //!
 //! ```text
-//! bwc_merge <src-index> <dst-dir> [force|policy]
+//! bwc_merge <src-index> <dst-dir> [force|policy|upgrade]
 //! ```
 //!
 //! Copies `<src-index>` into `<dst-dir>` (which must not exist), opens an
@@ -11,11 +11,13 @@
 //! field keeps its own `FieldInfo`, as `SegmentMerger` keeps the sources' --
 //! and merges every segment into one: `force` through
 //! `IndexWriter::force_merge(1)`, `policy` through an ordinary commit under a
-//! merge policy that wants a single segment. Then commits and prints the
-//! resulting segments.
+//! merge policy that wants a single segment, `upgrade` through
+//! `IndexUpgrader` (only the segments an older Lucene wrote are rewritten).
+//! Then commits and prints the resulting segments.
 
 use std::path::Path;
 
+use lucene_index::index_upgrader::IndexUpgrader;
 use lucene_index::index_writer::{IndexWriter, MergePolicyConfig};
 use lucene_index::segment_info::LuceneVersion;
 use lucene_store::directory::FsDirectory;
@@ -23,7 +25,7 @@ use lucene_store::directory::FsDirectory;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 3 {
-        eprintln!("usage: bwc_merge <src-index> <dst-dir> [force|policy]");
+        eprintln!("usage: bwc_merge <src-index> <dst-dir> [force|policy|upgrade]");
         std::process::exit(2);
     }
     let (src, dst) = (Path::new(&args[1]), Path::new(&args[2]));
@@ -40,6 +42,9 @@ fn main() {
         std::fs::copy(entry.path(), dst.join(&*name)).expect("copy");
     }
     let dir = FsDirectory::open(dst);
+    if mode == "upgrade" {
+        IndexUpgrader::new(&dir, false).upgrade().expect("upgrade");
+    }
     let mut writer = IndexWriter::open(
         &dir,
         Vec::new(),
@@ -66,6 +71,7 @@ fn main() {
             deletes_pct_allowed: 5.0,
             ..MergePolicyConfig::default()
         })),
+        "upgrade" => {}
         other => panic!("unknown mode {other}"),
     }
     writer.commit().expect("commit");
