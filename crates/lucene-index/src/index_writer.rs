@@ -3151,6 +3151,9 @@ pub struct IndexWriter<'d> {
     pluggable_merge_policy: Option<std::sync::Arc<dyn merge_policy::MergePolicy>>,
     /// See [`IndexWriter::set_merges_by_caller`].
     merges_by_caller: bool,
+    /// `LiveIndexWriterConfig.maxFullFlushMergeWaitMillis` -- see
+    /// [`IndexWriter::set_max_full_flush_merge_wait_millis`].
+    max_full_flush_merge_wait_millis: i64,
     /// `IndexWriterConfig.getCommitOnClose()`; see [`IndexWriter::close`].
     commit_on_close: bool,
 
@@ -3746,6 +3749,10 @@ pub const DEFAULT_RAM_BUFFER_SIZE_MB: f64 = 16.0;
 /// `IndexWriterConfig.DEFAULT_MAX_BUFFERED_DOCS` ([`DISABLE_AUTO_FLUSH`]):
 /// Lucene flushes on RAM by default, not on document count.
 pub const DEFAULT_MAX_BUFFERED_DOCS: i32 = DISABLE_AUTO_FLUSH;
+/// `IndexWriterConfig.DEFAULT_MAX_FULL_FLUSH_MERGE_WAIT_MILLIS` (500): how
+/// long a commit or a near-real-time reader waits for merge-on-commit/refresh
+/// merges -- see [`IndexWriter::set_max_full_flush_merge_wait_millis`].
+pub const DEFAULT_MAX_FULL_FLUSH_MERGE_WAIT_MILLIS: i64 = 500;
 
 pub const POSTINGS_FORMAT_NAME: &str = "Lucene104";
 pub const DOC_VALUES_FORMAT_NAME: &str = "Lucene90";
@@ -4204,6 +4211,7 @@ impl<'d> IndexWriter<'d> {
             merge_policy: None,
             pluggable_merge_policy: None,
             merges_by_caller: false,
+            max_full_flush_merge_wait_millis: DEFAULT_MAX_FULL_FLUSH_MERGE_WAIT_MILLIS,
             commit_on_close: true,
             pending_custom_freq_terms: Vec::new(),
             pending_sort_map: None,
@@ -6318,6 +6326,16 @@ impl<'d> IndexWriter<'d> {
     /// `finish_commit()` to activate it or [`IndexWriter::rollback`] to
     /// discard it (which also deletes the pending file) first.
     pub fn prepare_commit(&mut self) -> Result<()> {
+        self.prepare_commit_excluding(&std::collections::HashSet::new())
+    }
+
+    /// [`IndexWriter::prepare_commit`], with merge-on-commit leaving alone
+    /// the segments in `merging` -- merges a
+    /// [`crate::concurrent_writer::ConcurrentIndexWriter`] is running.
+    pub(crate) fn prepare_commit_excluding(
+        &mut self,
+        merging: &std::collections::HashSet<String>,
+    ) -> Result<()> {
         // Real `prepareCommitInternal` refuses re-entry outright
         // (`IllegalStateException("prepareCommit was already called with no
         // corresponding call to commit")`). This used to *replace* the pending
@@ -6334,6 +6352,10 @@ impl<'d> IndexWriter<'d> {
         // Everything still buffered becomes one last segment; segments an
         // automatic flush already wrote are folded in below.
         self.flush()?;
+        // `prepareCommitInternal`'s point-in-time merges
+        // (`maxFullFlushMergeWaitMillis > 0`): the commit names the merged
+        // segments.
+        self.merge_on_full_flush(merge_policy::MergeTrigger::Commit, merging)?;
 
         let mut new_segment_infos = self.segment_infos.clone();
         // ARITH: `segment_infos::parse` rejects any generation, version or

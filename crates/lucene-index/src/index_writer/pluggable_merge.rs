@@ -19,7 +19,7 @@ use crate::segment_info;
 
 /// The writer's answers to a policy's `MergeContext` questions, computed once
 /// per consultation.
-struct WriterContext {
+pub(super) struct WriterContext {
     deletes_to_merge: HashMap<String, i32>,
     merging: HashSet<String>,
 }
@@ -62,7 +62,7 @@ impl IndexWriter<'_> {
 
     /// The committed segments as a policy sees them, and the context that
     /// answers for them.
-    fn merge_inputs(&self) -> Result<(Vec<MergeSegment>, WriterContext)> {
+    pub(super) fn merge_inputs(&self) -> Result<(Vec<MergeSegment>, WriterContext)> {
         let mut infos = Vec::with_capacity(self.segment_infos.segments.len());
         let mut deletes_to_merge = HashMap::new();
         for sci in &self.segment_infos.segments {
@@ -149,6 +149,101 @@ impl IndexWriter<'_> {
             }
             last = Some(groups);
         }
+    }
+
+    /// `IndexWriterConfig.setMaxFullFlushMergeWaitMillis`: how long a commit
+    /// ([`IndexWriter::commit`], [`IndexWriter::prepare_commit`]) or a
+    /// near-real-time reader (`getReader`) waits for the merges
+    /// `MergePolicy.findFullFlushMerges` asks for on the segments it is about
+    /// to publish. `0` (or less) turns merge-on-commit/refresh off.
+    ///
+    /// The default is Java's, [`super::DEFAULT_MAX_FULL_FLUSH_MERGE_WAIT_MILLIS`]
+    /// (500 ms): with a merge policy installed, a commit's point-in-time
+    /// segments are the merged ones whenever `TieredMergePolicy` (below its
+    /// floor size) or the installed policy asks for a merge.
+    pub fn set_max_full_flush_merge_wait_millis(&mut self, millis: i64) {
+        self.max_full_flush_merge_wait_millis = millis;
+    }
+
+    /// `LiveIndexWriterConfig.getMaxFullFlushMergeWaitMillis`.
+    pub fn max_full_flush_merge_wait_millis(&self) -> i64 {
+        self.max_full_flush_merge_wait_millis
+    }
+
+    /// `IndexWriter.preparePointInTimeMerge` for a `COMMIT` or `GET_READER`
+    /// trigger, run to completion: the policy's `findFullFlushMerges` over
+    /// every segment the commit or reader is about to see -- those this call's
+    /// flush just wrote included -- then each merge it asks for, published in
+    /// memory (`commitMerge`), so the `segments_N` or reader built next holds
+    /// the merged segment in place of its sources. Returns how many merges
+    /// ran.
+    ///
+    /// The policy is the installed pluggable one, or -- with only a
+    /// [`super::MergePolicyConfig`] -- `TieredMergePolicy` over that
+    /// configuration, whose `maxFullFlushMergeSize` is its floor segment
+    /// size. With neither, or a wait of `0`, nothing happens.
+    ///
+    /// A merge including a segment in `merging` (merges another thread is
+    /// running, [`crate::concurrent_writer::ConcurrentIndexWriter`]) is
+    /// skipped, as `registerMerge` rejects it.
+    ///
+    /// **The wait**: Java starts every merge on the merge scheduler and waits
+    /// up to `maxFullFlushMergeWaitMillis` for them; one finishing later still
+    /// lands in the writer, only not in this commit. This writer merges on
+    /// the calling thread, so a merge it starts always finishes inside the
+    /// commit; once the wait has elapsed it starts no further one, and those
+    /// are left to the merges after the commit (`maybeMerge`).
+    pub(crate) fn merge_on_full_flush(
+        &mut self,
+        trigger: MergeTrigger,
+        merging: &HashSet<String>,
+    ) -> Result<usize> {
+        let wait = self.max_full_flush_merge_wait_millis;
+        if wait <= 0 {
+            return Ok(0);
+        }
+        let policy: Arc<dyn MergePolicy> = match (&self.pluggable_merge_policy, &self.merge_policy)
+        {
+            (Some(policy), _) => Arc::clone(policy),
+            (None, Some(config)) => Arc::new(merge_policy::TieredMergePolicy::new(config.clone())),
+            (None, None) => return Ok(0),
+        };
+        let start = std::time::Instant::now();
+        let deadline = std::time::Duration::from_millis(u64::try_from(wait).unwrap_or(0));
+        // Java's `segmentInfos` already holds every flushed segment; this
+        // writer keeps them apart until a commit folds them in, so fold them
+        // in now -- in memory, as the merges below are published.
+        if !self.flushed_segments.is_empty() {
+            let flushed = std::mem::take(&mut self.flushed_segments);
+            self.segment_infos.segments.extend(flushed);
+        }
+        let (infos, mut ctx) = self.merge_inputs()?;
+        ctx.merging = merging.clone();
+        let Some(spec) = policy
+            .find_full_flush_merges(trigger, &infos, &ctx)
+            .map_err(policy_error)?
+        else {
+            return Ok(0);
+        };
+        let by_caller = self.merges_by_caller;
+        self.merges_by_caller = true;
+        let mut ran = 0usize;
+        let mut result = Ok(());
+        for group in spec.groups() {
+            if group.iter().any(|name| merging.contains(name)) {
+                continue;
+            }
+            if start.elapsed() >= deadline {
+                break;
+            }
+            result = self.execute_merge(&group);
+            if result.is_err() {
+                break;
+            }
+            ran = ran.saturating_add(1);
+        }
+        self.merges_by_caller = by_caller;
+        result.map(|()| ran)
     }
 
     /// `IndexWriter.forceMergeDeletes()` under a pluggable policy: one round
