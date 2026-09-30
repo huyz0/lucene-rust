@@ -149,7 +149,7 @@ codecs/lucene90/Lucene90NormsFormat	ported	crates/lucene-codecs/src/norms.rs::pa
 codecs/lucene90/Lucene90NormsProducer	ported	crates/lucene-codecs/src/norms.rs::NormsReader
 codecs/lucene90/Lucene90PointsFormat	ported	crates/lucene-codecs/src/points.rs::PointsReader
 codecs/lucene90/Lucene90PointsReader	ported	crates/lucene-codecs/src/points.rs::PointsReader
-codecs/lucene90/Lucene90PointsWriter	partial	crates/lucene-codecs/src/points.rs::write -- M7: segment flush and merge still write through points.rs::write_packed (Lucene-readable, not Java's bytes: common prefix 0, `compressedDim = -2`, doc ids `CONTINUOUS_IDS`/`BPV_32` only, `widest_dim` without `parentSplits`). The byte-identical writer exists (bkd_writer.rs::BkdWriter, 17 Java fixtures); routing needs the segment's maxDoc plumbed from lucene-index (Java's radix keys are `bitsRequired(maxDoc - 1)` wide) and N-dim merges through `add`/`finish` as Java does, deferred to avoid colliding with concurrent index/merge work
+codecs/lucene90/Lucene90PointsWriter	ported	crates/lucene-codecs/src/points.rs::write_packed
 codecs/lucene90/Lucene90StoredFieldsFormat	ported	crates/lucene-codecs/src/stored_fields.rs::StoredFieldsReader
 codecs/lucene90/Lucene90TermVectorsFormat	ported	crates/lucene-codecs/src/term_vectors.rs::TermVectorsReader
 codecs/lucene90/compressing/FieldsIndex	ported	crates/lucene-codecs/src/stored_fields.rs::ChunkIndexEntry
