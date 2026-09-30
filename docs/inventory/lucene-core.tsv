@@ -335,7 +335,7 @@ index/CompositeReaderContext	ported	crates/lucene-search/src/directory_reader.rs
 index/ConcurrentApproximatePriorityQueue	not-needed	lock-striped variant of ApproximatePriorityQueue inside the DWPT pool; Rust slot selection needs no such queue (no user-visible behaviour).
 index/ConcurrentMergeScheduler	partial	crates/lucene-index/src/concurrent_writer.rs::run_merges -- M7: merges run on the caller thread (`run_merges`) or inside `commit`; no merge thread pool (maxThreadCount/maxMergeCount), no merge stalling, no auto IO throttle, no intra-merge executor
 index/CorruptIndexException	ported	crates/lucene-store/src/error.rs::Corrupted
-index/DirectoryReader	partial	crates/lucene-search/src/directory_reader.rs::DirectoryReader -- M7: per parity.md: no NRT open from a live Rust `IndexWriter` (uncommitted segments invisible until `commit`), no `openIfChanged(reader, IndexCommit)`, no `listCommits`, no reader-closed listeners; term vectors and KNN vectors are not opened by the reader
+index/DirectoryReader	partial	crates/lucene-search/src/directory_reader.rs::DirectoryReader -- M7: per parity.md: no NRT open from a live Rust `IndexWriter` (uncommitted segments invisible until `commit`), no `openIfChanged(reader, IndexCommit)`, no reader-closed listeners; term vectors and KNN vectors are not opened by the reader
 index/DocIDMerger	ported	crates/lucene-index/src/merge.rs::merge_segments
 index/DocValues	ported	crates/lucene-search/src/directory_reader.rs::doc_values_for_field
 index/DocValuesFieldUpdates	ported	crates/lucene-index/src/field_updates.rs::write_field_updates
@@ -383,7 +383,7 @@ index/FrozenBufferedUpdates	ported	crates/lucene-index/src/buffered_updates.rs::
 index/Impacts	ported	crates/lucene-codecs/src/postings.rs::Impacts
 index/ImpactsEnum	ported	crates/lucene-codecs/src/postings.rs::LazyDocsCursor
 index/ImpactsSource	ported	crates/lucene-codecs/src/postings.rs::LazyDocsCursor
-index/IndexCommit	partial	crates/lucene-index/src/deletion_policy.rs::IndexCommit -- M7: the commit a deletion policy is handed (generation, segments file, file names, segment count, user data); no `DirectoryReader.listCommits`/open-at-commit
+index/IndexCommit	ported	crates/lucene-index/src/deletion_policy.rs::IndexCommit
 index/IndexDeletionPolicy	ported	crates/lucene-index/src/deletion_policy.rs::IndexDeletionPolicy
 index/IndexFileDeleter	ported	crates/lucene-index/src/index_file_deleter.rs::IndexFileDeleter
 index/IndexFileNames	ported	crates/lucene-index/src/index_file_deleter.rs::is_index_file_name

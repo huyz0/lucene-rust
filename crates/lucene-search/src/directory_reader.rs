@@ -70,6 +70,7 @@ use lucene_codecs::live_docs;
 use lucene_codecs::norms::{self, Norms, NormsEntry};
 use lucene_codecs::postings::{self, DocInput, PayInput, PosInput};
 use lucene_index::deletes::liv_file_name;
+use lucene_index::deletion_policy::IndexCommit;
 use lucene_index::field_updates;
 use lucene_index::segment_info::{self, SegmentInfo};
 use lucene_index::segment_infos::{self, SegmentInfos};
@@ -1297,6 +1298,23 @@ impl DirectoryReader {
         Self::open_at(dir, segment_infos)
     }
 
+    /// `DirectoryReader.listCommits(dir)`: every commit point in `dir`,
+    /// oldest first. See [`lucene_index::index_file_deleter::list_commits`].
+    pub fn list_commits(
+        dir: &dyn Directory,
+    ) -> lucene_index::index_file_deleter::Result<Vec<IndexCommit>> {
+        lucene_index::index_file_deleter::list_commits(dir)
+    }
+
+    /// `DirectoryReader.open(IndexCommit)`: the index as of `commit` -- its
+    /// own `segments_N` read and every segment it lists opened, whatever
+    /// commits came after it.
+    pub fn open_commit(dir: &dyn Directory, commit: &IndexCommit) -> Result<Self> {
+        let bytes = dir.open(commit.segments_file_name())?.to_vec();
+        let segment_infos = segment_infos::parse(&bytes, commit.generation())?;
+        Self::open_at(dir, segment_infos)
+    }
+
     /// Opens every segment listed in an already-parsed [`SegmentInfos`] --
     /// useful for tests that build a commit by hand rather than reading one
     /// off disk (see this module's unit tests).
@@ -1445,6 +1463,23 @@ impl DirectoryReader {
     /// Every opened segment's own reader, in commit order.
     pub fn segment_readers(&self) -> &[SegmentReader] {
         &self.segments
+    }
+
+    /// `IndexReader.maxDoc()`: every segment's `maxDoc`, summed. Java's
+    /// `BaseCompositeReader` refuses a total above `IndexWriter.MAX_DOCS`, far
+    /// below `i32::MAX`, so the saturating sum never saturates on an index
+    /// either engine wrote.
+    pub fn max_doc(&self) -> i32 {
+        self.segments
+            .iter()
+            .fold(0i32, |acc, s| acc.saturating_add(s.max_doc))
+    }
+
+    /// `IndexReader.numDocs()`: every segment's live documents, summed.
+    pub fn num_docs(&self) -> i32 {
+        self.segments
+            .iter()
+            .fold(0i32, |acc, s| acc.saturating_add(s.num_docs()))
     }
 
     /// Java's `IndexSearcher.fieldStats(field)`: `sumTotalTermFreq` and
