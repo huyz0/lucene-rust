@@ -689,7 +689,7 @@ impl<'d> IndexFileDeleter<'d> {
     /// `.si` itself before encoding, so a correctly written `.si` already lists
     /// itself. Older segments this port wrote did not; adding it here keeps the
     /// deleter from reclaiming the file that names all the others.
-    fn with_self_listing(segment_name: &str, mut files: Vec<String>) -> Vec<String> {
+    pub(crate) fn with_self_listing(segment_name: &str, mut files: Vec<String>) -> Vec<String> {
         let name = format!("{segment_name}.si");
         if !files.iter().any(|f| f == &name) {
             files.push(name);
@@ -974,6 +974,71 @@ pub(crate) fn parse_segment_name(file_name: &str) -> &str {
         .map(|i| i + 1)
         .unwrap_or(file_name.len());
     &file_name[..idx]
+}
+
+/// `SegmentInfos.files(true)` read off disk: the commit's `segments_N`, then
+/// every file each segment's `.si` names (the `.si` included), then its
+/// `.liv`, field-infos and doc-values-update files.
+fn commit_file_names(dir: &dyn Directory, infos: &SegmentInfos) -> Result<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    if let Some(name) = lucene_store::directory::segments_file_name(infos.generation) {
+        out.push(name);
+    }
+    for sci in &infos.segments {
+        let bytes = dir.open(&format!("{}.si", sci.segment_name))?.to_vec();
+        let si = segment_info::parse(&bytes, &sci.segment_id)?;
+        let si_files = IndexFileDeleter::with_self_listing(&sci.segment_name, si.files);
+        for f in sci.files(&si_files) {
+            if !out.contains(&f) {
+                out.push(f);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// `DirectoryReader.listCommits(dir)`: an [`IndexCommit`] for every commit
+/// point in `dir`, oldest first -- the latest commit, plus every older
+/// `segments_N` still present. As in Java, an older `segments_N` the listing
+/// names but that is gone by the time it is opened (a concurrent writer
+/// deleted it) is skipped; any other failure to read one is an error, as is
+/// an unparsable `segments*` name and a directory with no commit at all.
+pub fn list_commits(dir: &dyn Directory) -> Result<Vec<IndexCommit>> {
+    let files = dir.list_all()?;
+    let latest = segment_infos::read_latest(dir)?;
+    let mut all = vec![latest];
+    let current = all[0].generation;
+    for name in &files {
+        // Java's test is `startsWith(SEGMENTS)` alone, so an unparsable
+        // `segments*` name (`segments.gen` included) is an error, not skipped.
+        if !name.starts_with("segments") {
+            continue;
+        }
+        let generation = lucene_store::directory::generation_from_segments_file_name(name)?;
+        if generation >= current {
+            continue;
+        }
+        let bytes = match dir.open(name) {
+            Ok(b) => b,
+            Err(e) if e.is_no_such_file() => continue,
+            Err(e) => return Err(e.into()),
+        };
+        all.push(segment_infos::parse(&bytes, generation)?);
+    }
+    all.sort_by_key(|infos| infos.generation);
+    let mut commits = Vec::with_capacity(all.len());
+    for infos in &all {
+        let segments_file =
+            lucene_store::directory::segments_file_name(infos.generation).unwrap_or_default();
+        commits.push(IndexCommit::new(
+            infos.generation,
+            segments_file,
+            commit_file_names(dir, infos)?,
+            infos.segments.len(),
+            infos.user_data.clone(),
+        ));
+    }
+    Ok(commits)
 }
 
 #[cfg(test)]
