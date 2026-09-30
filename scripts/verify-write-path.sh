@@ -240,6 +240,11 @@ CASES=(
   # from its own instance's files, find the routed skip indexes' 16-document
   # intervals, and pass CheckIndex.
   "lucene-index|write_per_field_doc_values_fixture|per-field-doc-values|VerifyPerFieldDocValues"
+  # PerFieldKnnVectorsFormat through IndexWriter (M7): two HNSW instances,
+  # an HNSW scalar-quantized and a flat scalar-quantized one, flushed and
+  # merged. Lucene must read every vector from its field's instance, run a
+  # KNN query over each field, and pass CheckIndex.
+  "lucene-index|write_per_field_knn_vectors_fixture|per-field-knn-vectors|VerifyPerFieldKnnVectors"
 )
 
 echo "verify-write-path: compiling verifiers"

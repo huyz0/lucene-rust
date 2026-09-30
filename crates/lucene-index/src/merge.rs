@@ -346,10 +346,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::index_writer::{
-    per_field_codec_suffix, per_field_segment, DOC_VALUES_FORMAT_NAME, PER_FIELD_SUFFIX,
-    POSTINGS_FORMAT_NAME,
-};
+use crate::index_writer::{DOC_VALUES_FORMAT_NAME, POSTINGS_FORMAT_NAME};
 use crate::segment_info::{self, IndexSortField, LuceneVersion, SegmentInfo, SortKeyComparator};
 use crate::segment_infos::SegmentCommitInfo;
 use lucene_codecs::blocktree::{self, FieldTerms};
@@ -359,10 +356,12 @@ use lucene_codecs::doc_values::{
 use lucene_codecs::field_infos::{self, FieldInfo, IndexOptions, VectorEncoding};
 use lucene_codecs::norms::{self, NormsEntry};
 use lucene_codecs::per_field_doc_values;
+use lucene_codecs::per_field_knn_vectors;
 use lucene_codecs::per_field_postings;
 use lucene_codecs::points;
 use lucene_codecs::postings::DocInput;
 use lucene_codecs::postings_writer::{self, FieldPostingsInput, TermPostings};
+use lucene_codecs::scalar_quantized_vectors;
 use lucene_codecs::stored_fields;
 use lucene_codecs::term_vectors::{self, TermVectorsDocument, TermVectorsReader};
 use lucene_codecs::terms_dict;
@@ -1454,7 +1453,7 @@ fn describe_written_files(
     postings_suffixes: &[(i32, u32)],
     doc_values_suffixes: &[(i32, u32)],
     wrote_term_vectors: bool,
-    vector_field_numbers: &[i32],
+    vector_fields: &[(i32, &'static str, u32)],
     points_field_numbers: &[i32],
 ) {
     for f in merged_fields.iter_mut() {
@@ -1499,14 +1498,14 @@ fn describe_written_files(
         if !wrote_term_vectors {
             f.store_term_vectors = false;
         }
-        if vector_field_numbers.contains(&f.number) {
+        if let Some((_, format, suffix)) = vector_fields.iter().find(|(n, _, _)| *n == f.number) {
             f.attributes.push((
-                "PerFieldKnnVectorsFormat.format".to_string(),
-                crate::index_writer::KNN_VECTORS_FORMAT_NAME.to_string(),
+                per_field_knn_vectors::PER_FIELD_FORMAT_KEY.to_string(),
+                format.to_string(),
             ));
             f.attributes.push((
-                "PerFieldKnnVectorsFormat.suffix".to_string(),
-                PER_FIELD_SUFFIX.to_string(),
+                per_field_knn_vectors::PER_FIELD_SUFFIX_KEY.to_string(),
+                suffix.to_string(),
             ));
         } else {
             // The vectors twin of the doc-values rule above, and it tolerates
@@ -2164,9 +2163,9 @@ pub fn merge_segments_mapped(
         .iter()
         .flat_map(|g| g.field_numbers.iter().map(move |&n| (n, g.suffix)))
         .collect();
-    let vector_field_numbers: Vec<i32> = merged_vectors
+    let vector_field_numbers: Vec<(i32, &'static str, u32)> = merged_vectors
         .as_ref()
-        .map(|v| v.field_numbers.clone())
+        .map(|v| v.written.clone())
         .unwrap_or_default();
     let wrote_term_vectors = tv_files.is_some();
     let points_field_numbers: Vec<i32> = merged_points_fields
@@ -2395,21 +2394,12 @@ pub fn merge_segments_mapped(
     }
 
     if let Some(vector_files) = merged_vectors {
-        for (ext, bytes) in [
-            ("vec", &vector_files.vec),
-            ("vemf", &vector_files.vemf),
-            ("vem", &vector_files.vem),
-            ("vex", &vector_files.vex),
-        ] {
-            let name = format!(
-                "{}.{ext}",
-                per_field_segment(
-                    merged_segment_name,
-                    crate::index_writer::KNN_VECTORS_FORMAT_NAME
-                )
-            );
-            write_file(dir, &name, bytes)?;
-            files.push(name);
+        for (suffix, group_files) in &vector_files.groups {
+            for (ext, bytes) in group_files {
+                let name = format!("{merged_segment_name}_{suffix}.{ext}");
+                write_file(dir, &name, bytes)?;
+                files.push(name);
+            }
         }
     }
 
@@ -3575,6 +3565,10 @@ pub struct SourceVectors<'a> {
 pub struct VectorGroup<'a> {
     pub flat: &'a vectors::FlatVectorsReader<'a>,
     pub graph: Option<&'a hnsw_vectors::HnswVectorsReader<'a>>,
+    /// The quantized codes of a `Lucene104ScalarQuantizedVectorsFormat`
+    /// group -- the one reader `Lucene104ScalarQuantizedVectorsWriter
+    /// .getCentroid` recognises, so the only centroids a merge reuses.
+    pub flat_quantized: Option<&'a scalar_quantized_vectors::ScalarQuantizedVectorsReader<'a>>,
 }
 
 impl<'a> SourceVectors<'a> {
@@ -3584,7 +3578,11 @@ impl<'a> SourceVectors<'a> {
         graph: Option<&'a hnsw_vectors::HnswVectorsReader<'a>>,
     ) -> Self {
         SourceVectors {
-            groups: vec![VectorGroup { flat, graph }],
+            groups: vec![VectorGroup {
+                flat,
+                graph,
+                flat_quantized: None,
+            }],
         }
     }
 
@@ -3621,9 +3619,25 @@ pub struct MergeOptions {
     /// ([`crate::index_writer::IndexWriter::set_doc_values_format_for_field`]);
     /// regrouped on write like `postings_formats`.
     pub doc_values_formats: Vec<(String, per_field_doc_values::Lucene90DocValuesFormat)>,
+    /// The fields routed to a KNN vectors format other than the default
+    /// `Lucene99HnswVectorsFormat(hnsw_m, hnsw_beam_width)`
+    /// ([`crate::index_writer::IndexWriter::set_knn_vectors_format_for_field`]).
+    pub knn_vectors_formats: Vec<(String, per_field_knn_vectors::KnnVectorsFormat)>,
 }
 
 impl MergeOptions {
+    /// The KNN vectors format `field` is routed to.
+    fn knn_vectors_format_for(&self, field: &str) -> per_field_knn_vectors::KnnVectorsFormat {
+        self.knn_vectors_formats
+            .iter()
+            .find(|(name, _)| name == field)
+            .map(|(_, format)| *format)
+            .unwrap_or(per_field_knn_vectors::KnnVectorsFormat::Hnsw {
+                max_conn: self.hnsw_m,
+                beam_width: self.hnsw_beam_width,
+            })
+    }
+
     /// The doc-values format `field` is routed to.
     fn doc_values_format_for(&self, field: &str) -> per_field_doc_values::Lucene90DocValuesFormat {
         self.doc_values_formats
@@ -3650,6 +3664,7 @@ impl Default for MergeOptions {
             hnsw_beam_width: hnsw::DEFAULT_BEAM_WIDTH,
             postings_formats: Vec::new(),
             doc_values_formats: Vec::new(),
+            knn_vectors_formats: Vec::new(),
         }
     }
 }
@@ -3658,11 +3673,11 @@ impl Default for MergeOptions {
 /// actually ended up with vectors (which is what the merged `.fnm` may claim
 /// -- see [`describe_written_files`]).
 struct MergedVectorFiles {
-    vec: Vec<u8>,
-    vemf: Vec<u8>,
-    vem: Vec<u8>,
-    vex: Vec<u8>,
-    field_numbers: Vec<i32>,
+    /// One per `PerFieldKnnVectorsFormat` instance: its codec suffix and its
+    /// files by extension.
+    groups: Vec<(String, GroupFiles)>,
+    /// Every field written: `(number, format name, suffix number)`.
+    written: Vec<(i32, &'static str, u32)>,
 }
 
 /// Merges KNN vectors across `sources` -- the port of `SegmentMerger`'s
@@ -3709,20 +3724,7 @@ fn merge_vectors(
     if sources.iter().all(|s| s.vectors.is_none()) {
         return Ok(None);
     }
-    let suffix = per_field_codec_suffix(crate::index_writer::KNN_VECTORS_FORMAT_NAME);
     let reverse_maps = invert_field_number_maps(per_source_maps);
-
-    /// One source's contribution to one field, resolved once and reused by
-    /// both halves so the flat merge and the graph merge cannot disagree
-    /// about which sources took part or in what order. `ord_to_doc` is that
-    /// source's own ordinal -> its own doc id, materialised here because both
-    /// halves need it (the flat merge to place each vector, the graph merge
-    /// to build `IncrementalHnswGraphMerger`'s ordinal maps).
-    struct FieldSource {
-        source_index: usize,
-        original_field_number: i32,
-        ord_to_doc: Vec<i32>,
-    }
 
     let mut plan: Vec<(&FieldInfo, Vec<FieldSource>)> = Vec::new();
     for merged_field in merged_fields {
@@ -3782,10 +3784,86 @@ fn merge_vectors(
         return Ok(None);
     }
 
+    // `PerFieldKnnVectorsFormat.FieldsWriter.mergeOneField`: every merged
+    // field, in field-number order, to the instance of the format it is
+    // routed to now (the sources' routing is not consulted).
+    let names: Vec<(i32, &str)> = plan
+        .iter()
+        .map(|(f, _)| (f.number, f.name.as_str()))
+        .collect();
+    let format_for = |name: &str| options.knn_vectors_format_for(name);
+    let groups = per_field_knn_vectors::group_fields(&names, &format_for);
+    let mut out = MergedVectorFiles {
+        groups: Vec::with_capacity(groups.len()),
+        written: Vec::new(),
+    };
+    for group in &groups {
+        let suffix = group.codec_suffix();
+        let group_plan: Vec<&(&FieldInfo, Vec<FieldSource>)> = group
+            .field_numbers
+            .iter()
+            .filter_map(|n| plan.iter().find(|(f, _)| f.number == *n))
+            .collect();
+        let files = merge_vector_group(
+            sources,
+            doc_id_maps,
+            &group_plan,
+            group.format,
+            merged_max_doc,
+            merged_segment_id,
+            &suffix,
+        )?;
+        for n in &group.field_numbers {
+            out.written.push((*n, group.format.name(), group.suffix));
+        }
+        out.groups.push((suffix, files));
+    }
+    Ok(Some(out))
+}
+
+/// One KNN format instance's files, by extension.
+type GroupFiles = Vec<(&'static str, Vec<u8>)>;
+
+/// One source's centroid (when visible), every vector it holds for a field,
+/// and whether it has deletions -- a [`scalar_quantized_vectors::QuantizedMergeSource`]'s
+/// owned parts.
+type OwnedQuantizedSource<'a> = (Option<&'a [f32]>, Vec<f32>, bool);
+
+/// One source's contribution to one merged vector field, resolved once and
+/// reused by both halves of [`merge_vector_group`] so the flat merge and the
+/// graph merge cannot disagree about which sources took part or in what
+/// order. `ord_to_doc` is that source's own ordinal -> its own doc id,
+/// materialised because both halves need it (the flat merge to place each
+/// vector, the graph merge to build `IncrementalHnswGraphMerger`'s ordinal
+/// maps).
+struct FieldSource {
+    source_index: usize,
+    original_field_number: i32,
+    ord_to_doc: Vec<i32>,
+}
+
+/// One `PerFieldKnnVectorsFormat` instance's merge
+/// (`Lucene99HnswVectorsWriter.mergeOneField` or a flat format's
+/// `mergeOneFlatVectorField`): the raw vectors, the quantized codes when the
+/// format quantizes (`Lucene104ScalarQuantizedVectorsWriter
+/// .mergeOneFlatVectorField`, centroids from `mergeAndRecalculateCentroids`),
+/// then -- for a format with a graph -- the graphs, over the vectors just
+/// written, scored with the quantized scorer for a quantized `FLOAT32` field
+/// (`getRandomVectorScorerSupplierForMerge`) and the raw one otherwise.
+/// Returns the instance's files by extension.
+#[allow(clippy::too_many_arguments)]
+fn merge_vector_group(
+    sources: &[MergeSource],
+    doc_id_maps: &[Vec<i32>],
+    plan: &[&(&FieldInfo, Vec<FieldSource>)],
+    format: per_field_knn_vectors::KnnVectorsFormat,
+    merged_max_doc: i32,
+    merged_segment_id: &[u8; ID_LENGTH],
+    suffix: &str,
+) -> Result<GroupFiles> {
     let mut flat_writer =
-        vectors::FlatVectorsWriter::new(merged_max_doc, merged_segment_id, &suffix);
-    let mut written: Vec<&FieldInfo> = Vec::new();
-    for (merged_field, field_sources) in &plan {
+        vectors::FlatVectorsWriter::new(merged_max_doc, merged_segment_id, suffix);
+    for (merged_field, field_sources) in plan.iter().map(|p| (&p.0, &p.1)) {
         let encoding = merged_field.vector_encoding;
         let mut flat_sources: Vec<vectors::FlatVectorMergeSource<'_>> =
             Vec::with_capacity(field_sources.len());
@@ -3814,107 +3892,220 @@ fn merge_vectors(
             dimension: merged_field.vector_dimension,
             sources: &flat_sources,
         })?;
-        written.push(merged_field);
     }
     let (vec_bytes, vemf_bytes) = flat_writer.finish();
 
-    // Reopen exactly the bytes just written and build every graph over
-    // *those*, so the graph's ordinals and the flat store's ordinals are the
-    // same fact rather than two derivations of it.
+    // Reopen exactly the bytes just written and build everything else over
+    // *those*, so the graph's ordinals, the codes' ordinals and the flat
+    // store's ordinals are the same fact rather than three derivations of it.
     let flat =
-        vectors::FlatVectorsReader::open(&vemf_bytes, &vec_bytes, merged_segment_id, &suffix)?;
-    let mut hnsw_fields: Vec<hnsw_vectors::HnswVectorsField<'_>> = Vec::new();
-    let mut graphs: Vec<Option<hnsw::OnHeapHnswGraph>> = Vec::with_capacity(written.len());
-    let mut counts: Vec<i32> = Vec::with_capacity(written.len());
-    for (merged_field, field_sources) in &plan {
-        // Every source's own graph for this field, in the same order the flat
-        // merge consumed them. A source with the flat pair and no graph
-        // (`numLevels = 0`, i.e. below `HNSW_GRAPH_THRESHOLD` when it was
-        // written) still contributes vectors -- they are simply inserted.
-        let mut source_graphs: Vec<Option<hnsw_vectors::OffHeapHnswGraph<'_>>> =
-            Vec::with_capacity(field_sources.len());
-        for fs in field_sources {
-            let source_vectors = sources[fs.source_index]
-                .vectors
-                .expect("only sources with a flat reader are planned");
-            let graph = match source_vectors.group_of(fs.original_field_number).graph {
-                Some(reader) if reader.field(fs.original_field_number).is_some() => {
-                    reader.graph(fs.original_field_number)?
+        vectors::FlatVectorsReader::open(&vemf_bytes, &vec_bytes, merged_segment_id, suffix)?;
+    let mut files: Vec<(&'static str, Vec<u8>)> = Vec::new();
+
+    if let Some(encoding) = format.quantization() {
+        let mut writer = scalar_quantized_vectors::ScalarQuantizedVectorsWriter::new(
+            encoding,
+            merged_max_doc,
+            merged_segment_id,
+            suffix,
+        );
+        for (merged_field, field_sources) in plan.iter().map(|p| (&p.0, &p.1)) {
+            if merged_field.vector_encoding != VectorEncoding::Float32 {
+                continue;
+            }
+            // Every source's vectors for the field, deleted ones included,
+            // in its ordinal order -- what `calculateCentroid` iterates.
+            let mut owned: Vec<OwnedQuantizedSource<'_>> = Vec::new();
+            for fs in field_sources {
+                let source = &sources[fs.source_index];
+                let group = source
+                    .vectors
+                    .expect("only sources with a flat reader are planned")
+                    .group_of(fs.original_field_number);
+                let values = group.flat.float_vector_values(fs.original_field_number)?;
+                let mut all = Vec::new();
+                for ord in 0..values.size() {
+                    all.extend(values.vector(ord)?);
                 }
-                _ => None,
-            };
-            source_graphs.push(graph);
+                owned.push((
+                    group
+                        .flat_quantized
+                        .and_then(|q| q.centroid(fs.original_field_number)),
+                    all,
+                    source.live_docs.is_some(),
+                ));
+            }
+            let merge_sources: Vec<scalar_quantized_vectors::QuantizedMergeSource<'_>> = owned
+                .iter()
+                .map(|(centroid, vectors, has_deletions)| {
+                    scalar_quantized_vectors::QuantizedMergeSource {
+                        centroid: *centroid,
+                        vectors,
+                        has_deletions: *has_deletions,
+                    }
+                })
+                .collect();
+            let values = flat.float_vector_values(merged_field.number)?;
+            let mut docs = Vec::with_capacity(usize::try_from(values.size()).unwrap_or(0));
+            let mut merged = Vec::new();
+            for ord in 0..values.size() {
+                docs.push(values.ord_to_doc(ord)?);
+                merged.extend(values.vector(ord)?);
+            }
+            writer.merge_field(
+                merged_field.number,
+                merged_field.vector_similarity_function,
+                merged_field.vector_dimension,
+                &merge_sources,
+                &docs,
+                &merged,
+            )?;
         }
-        let graph_sources: Vec<
-            hnsw_vectors::GraphMergeSource<'_, hnsw_vectors::OffHeapHnswGraph<'_>>,
-        > = field_sources
-            .iter()
-            .zip(&source_graphs)
-            .map(|(fs, graph)| hnsw_vectors::GraphMergeSource {
-                graph: graph.as_ref(),
-                ord_to_doc: &fs.ord_to_doc,
-                doc_map: &doc_id_maps[fs.source_index],
-            })
-            .collect();
+        let (veq, vemq) = writer.finish();
+        files.push(("veq", veq));
+        files.push(("vemq", vemq));
+    }
 
-        let (count, merged_ord_to_doc, graph) = match merged_field.vector_encoding {
-            VectorEncoding::Float32 => {
-                let values = flat.float_vector_values(merged_field.number)?;
-                let merged_ord_to_doc: Vec<i32> = (0..values.size())
-                    .map(|ord| values.ord_to_doc(ord))
-                    .collect::<std::result::Result<Vec<i32>, _>>()?;
-                let graph = hnsw_vectors::merge_one_field(
-                    values.ord_scorer(),
-                    options.hnsw_m,
-                    options.hnsw_beam_width,
-                    hnsw::DEFAULT_RAND_SEED,
-                    &merged_ord_to_doc,
-                    &graph_sources,
-                )?;
-                (values.size(), merged_ord_to_doc, graph)
+    if let Some((m, beam_width)) = format.graph() {
+        let quantized = match files.iter().find(|(e, _)| *e == "vemq") {
+            Some((_, vemq)) => {
+                let veq = &files
+                    .iter()
+                    .find(|(e, _)| *e == "veq")
+                    .expect("written with the .vemq")
+                    .1;
+                Some(
+                    scalar_quantized_vectors::ScalarQuantizedVectorsReader::open(
+                        vemq,
+                        veq,
+                        merged_segment_id,
+                        suffix,
+                    )?,
+                )
             }
-            VectorEncoding::Byte => {
-                let values = flat.byte_vector_values(merged_field.number)?;
-                let merged_ord_to_doc: Vec<i32> = (0..values.size())
-                    .map(|ord| values.ord_to_doc(ord))
-                    .collect::<std::result::Result<Vec<i32>, _>>()?;
-                let graph = hnsw_vectors::merge_one_field(
-                    values.ord_scorer(),
-                    options.hnsw_m,
-                    options.hnsw_beam_width,
-                    hnsw::DEFAULT_RAND_SEED,
-                    &merged_ord_to_doc,
-                    &graph_sources,
-                )?;
-                (values.size(), merged_ord_to_doc, graph)
-            }
+            None => None,
         };
-        debug_assert_eq!(merged_ord_to_doc.len() as i32, count);
-        counts.push(count);
-        graphs.push(graph);
-    }
+        let mut hnsw_fields: Vec<hnsw_vectors::HnswVectorsField<'_>> = Vec::new();
+        let mut graphs: Vec<Option<hnsw::OnHeapHnswGraph>> = Vec::with_capacity(plan.len());
+        let mut counts: Vec<i32> = Vec::with_capacity(plan.len());
+        for (merged_field, field_sources) in plan.iter().map(|p| (&p.0, &p.1)) {
+            // Every source's own graph for this field, in the same order the
+            // flat merge consumed them. A source with the flat pair and no
+            // graph still contributes vectors -- they are simply inserted.
+            let mut source_graphs: Vec<Option<hnsw_vectors::OffHeapHnswGraph<'_>>> =
+                Vec::with_capacity(field_sources.len());
+            for fs in field_sources {
+                let source_vectors = sources[fs.source_index]
+                    .vectors
+                    .expect("only sources with a flat reader are planned");
+                let graph = match source_vectors.group_of(fs.original_field_number).graph {
+                    Some(reader) if reader.field(fs.original_field_number).is_some() => {
+                        reader.graph(fs.original_field_number)?
+                    }
+                    _ => None,
+                };
+                source_graphs.push(graph);
+            }
+            let graph_sources: Vec<
+                hnsw_vectors::GraphMergeSource<'_, hnsw_vectors::OffHeapHnswGraph<'_>>,
+            > = field_sources
+                .iter()
+                .zip(&source_graphs)
+                .map(|(fs, graph)| hnsw_vectors::GraphMergeSource {
+                    graph: graph.as_ref(),
+                    ord_to_doc: &fs.ord_to_doc,
+                    doc_map: &doc_id_maps[fs.source_index],
+                })
+                .collect();
 
-    for ((merged_field, _), (graph, count)) in plan.iter().zip(graphs.iter().zip(&counts)) {
-        hnsw_fields.push(hnsw_vectors::HnswVectorsField {
-            field_number: merged_field.number,
-            encoding: merged_field.vector_encoding,
-            similarity: merged_field.vector_similarity_function,
-            dimension: merged_field.vector_dimension,
-            count: *count,
-            graph: graph.as_ref(),
-            m: options.hnsw_m,
-        });
+            let (count, graph) = match merged_field.vector_encoding {
+                VectorEncoding::Float32 => {
+                    let values = flat.float_vector_values(merged_field.number)?;
+                    let merged_ord_to_doc: Vec<i32> = (0..values.size())
+                        .map(|ord| values.ord_to_doc(ord))
+                        .collect::<std::result::Result<Vec<i32>, _>>()?;
+                    let graph = match &quantized {
+                        Some(reader) if values.size() > 0 => {
+                            let qv = reader.quantized_vector_values(merged_field.number)?;
+                            let similarity = merged_field.vector_similarity_function;
+                            let query_side = if qv.encoding().is_asymmetric() {
+                                let mut raw = Vec::new();
+                                for ord in 0..values.size() {
+                                    raw.extend(values.vector(ord)?);
+                                }
+                                Some(scalar_quantized_vectors::binarized_query_data(
+                                    &qv, similarity, &raw,
+                                )?)
+                            } else {
+                                None
+                            };
+                            let scorer = scalar_quantized_vectors::merge_scorer_supplier(
+                                &qv,
+                                similarity,
+                                query_side.as_deref(),
+                            )?;
+                            hnsw_vectors::merge_one_field(
+                                scorer,
+                                m,
+                                beam_width,
+                                hnsw::DEFAULT_RAND_SEED,
+                                &merged_ord_to_doc,
+                                &graph_sources,
+                            )?
+                        }
+                        _ => hnsw_vectors::merge_one_field(
+                            values.ord_scorer(),
+                            m,
+                            beam_width,
+                            hnsw::DEFAULT_RAND_SEED,
+                            &merged_ord_to_doc,
+                            &graph_sources,
+                        )?,
+                    };
+                    (values.size(), graph)
+                }
+                VectorEncoding::Byte => {
+                    let values = flat.byte_vector_values(merged_field.number)?;
+                    let merged_ord_to_doc: Vec<i32> = (0..values.size())
+                        .map(|ord| values.ord_to_doc(ord))
+                        .collect::<std::result::Result<Vec<i32>, _>>()?;
+                    let graph = hnsw_vectors::merge_one_field(
+                        values.ord_scorer(),
+                        m,
+                        beam_width,
+                        hnsw::DEFAULT_RAND_SEED,
+                        &merged_ord_to_doc,
+                        &graph_sources,
+                    )?;
+                    (values.size(), graph)
+                }
+            };
+            counts.push(count);
+            graphs.push(graph);
+        }
+        for ((merged_field, _), (graph, count)) in plan
+            .iter()
+            .map(|p| (&p.0, &p.1))
+            .zip(graphs.iter().zip(&counts))
+        {
+            hnsw_fields.push(hnsw_vectors::HnswVectorsField {
+                field_number: merged_field.number,
+                encoding: merged_field.vector_encoding,
+                similarity: merged_field.vector_similarity_function,
+                dimension: merged_field.vector_dimension,
+                count: *count,
+                graph: graph.as_ref(),
+                m,
+            });
+        }
+        let (vex_bytes, vem_bytes) =
+            hnsw_vectors::write_hnsw_vectors(&hnsw_fields, merged_segment_id, suffix)?;
+        files.push(("vex", vex_bytes));
+        files.push(("vem", vem_bytes));
     }
-    let (vex_bytes, vem_bytes) =
-        hnsw_vectors::write_hnsw_vectors(&hnsw_fields, merged_segment_id, &suffix)?;
-
-    Ok(Some(MergedVectorFiles {
-        vec: vec_bytes,
-        vemf: vemf_bytes,
-        vem: vem_bytes,
-        vex: vex_bytes,
-        field_numbers: written.iter().map(|f| f.number).collect(),
-    }))
+    files.insert(0, ("vemf", vemf_bytes));
+    files.insert(0, ("vec", vec_bytes));
+    Ok(files)
 }
 
 /// One source field's ordinal -> its own doc id, materialised from the flat
@@ -4679,6 +4870,7 @@ mod tests {
     #![allow(clippy::arithmetic_side_effects)]
 
     use super::*;
+    use crate::index_writer::{per_field_codec_suffix, per_field_segment, PER_FIELD_SUFFIX};
     use crate::segment_writer;
     use lucene_codecs::field_infos::{
         DocValuesSkipIndexType, DocValuesType, IndexOptions, VectorEncoding,
