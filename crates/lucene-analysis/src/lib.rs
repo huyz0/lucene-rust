@@ -41,6 +41,7 @@ mod analyzer;
 pub mod attributes;
 mod automaton;
 mod char_array_set;
+pub mod graph_finite_strings;
 mod graph_token_filter;
 mod keyword_tokenizer;
 mod legacy;
@@ -60,6 +61,7 @@ pub use automaton::{
     TokenStreamToAutomaton, Transition, HOLE, POS_SEP,
 };
 pub use char_array_set::CharArraySet;
+pub use graph_finite_strings::{FiniteStringsTokenStream, GraphTokenStreamFiniteStrings};
 pub use graph_token_filter::{GraphTokenFilter, MAX_GRAPH_STACK_SIZE, MAX_TOKEN_CACHE_SIZE};
 pub use keyword_tokenizer::KeywordTokenizer;
 pub use reader::{CharFilter, CharReader, StrReader};
