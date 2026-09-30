@@ -888,6 +888,26 @@ impl<'a> Fst<'a> {
         })
     }
 
+    /// An FST over metadata already read and a body already located -- what
+    /// `Lucene90BlockTreeTermsReader`'s `FieldReader` holds after its
+    /// constructor, rebuilt per walk by
+    /// the retired terms index's `FstTermsIndex` (a struct copy: the
+    /// metadata it keeps has no empty output to clone).
+    pub(crate) fn from_parts(metadata: FstMetadata, body: &'a [u8]) -> Fst<'a> {
+        Fst {
+            metadata,
+            bytes: FstBytes::Borrowed(body),
+        }
+    }
+
+    /// `FST.findTargetArc(label, follow, arc, in)` for one byte label over a
+    /// fresh reader: the arc leaving `follow`'s target node with `label`,
+    /// if any.
+    pub(crate) fn find_target_arc_byte(&self, label: u8, follow: &Arc) -> Result<Option<Arc>> {
+        let mut r = self.reader();
+        self.find_target_arc(i32::from(label), follow, &mut r)
+    }
+
     pub fn metadata(&self) -> &FstMetadata {
         &self.metadata
     }
