@@ -647,6 +647,38 @@ impl DeleteNode {
     pub(crate) fn terms(terms: Vec<Term>) -> Self {
         DeleteNode::Terms(terms.into_iter().map(std::sync::Arc::new).collect())
     }
+
+    /// The RAM this delete adds to a buffer it is recorded in -- each entry
+    /// with its `docIDUpto` -- what the flush policy weighs as
+    /// `getDeleteBytesUsed()`. A sum of live allocation sizes, as
+    /// [`document_ram_bytes`] is, where Java's `BufferedUpdates` counts its
+    /// byte-block pools and per-entry constants.
+    pub(crate) fn ram_bytes(&self) -> usize {
+        let limit = std::mem::size_of::<i32>();
+        let entries = match self {
+            DeleteNode::Terms(terms) => terms
+                .iter()
+                .map(|t| {
+                    // The shared allocation: the term and its two counts.
+                    let shared = t
+                        .ram_bytes()
+                        .saturating_add(std::mem::size_of::<[usize; 2]>());
+                    shared
+                        .saturating_add(std::mem::size_of::<std::sync::Arc<Term>>())
+                        .saturating_add(limit)
+                })
+                .fold(0usize, usize::saturating_add),
+            DeleteNode::Queries(queries) => queries
+                .iter()
+                .map(|q| q.ram_bytes().saturating_add(limit))
+                .fold(0usize, usize::saturating_add),
+            DeleteNode::DocValuesUpdates(updates) => updates
+                .iter()
+                .map(DocValuesUpdate::ram_bytes)
+                .fold(0usize, usize::saturating_add),
+        };
+        std::mem::size_of::<Self>().saturating_add(entries)
+    }
 }
 
 /// Records `node` in `buffer`, reaching the documents below `doc_id_upto` --
@@ -5077,6 +5109,7 @@ impl<'d> IndexWriter<'d> {
     /// global (already-written segments) buffers, and returns its sequence
     /// number -- `DocumentsWriterDeleteQueue.add(Node, DeleteSlice)`.
     fn buffer_delete_node(&mut self, node: DeleteNode, doc_id_upto: i32) -> SeqNo {
+        self.delete_queue.add_global_bytes(node.ram_bytes());
         match node {
             DeleteNode::Terms(terms) => self
                 .delete_queue
@@ -5254,7 +5287,47 @@ impl<'d> IndexWriter<'d> {
         Ok(())
     }
 
-    /// `FlushByRamOrCountsPolicy.onChange`: document count first, then RAM,
+    /// The RAM buffer in bytes, `None` when flushing by RAM is off. The
+    /// setter guarantees the value is either the sentinel (negative) or
+    /// strictly positive, so `> 0.0` is the enabled test without a float
+    /// equality comparison.
+    fn ram_buffer_bytes(&self) -> Option<usize> {
+        (self.ram_buffer_size_mb > 0.0)
+            .then_some((self.ram_buffer_size_mb * 1024.0 * 1024.0) as usize)
+    }
+
+    /// `FlushByRamOrCountsPolicy.onChange(control, null)` after a buffered
+    /// delete (`DocumentsWriterFlushControl.doOnDelete`), then
+    /// `DocumentsWriter.applyAllDeletes`: once the buffered deletes alone
+    /// reach the RAM buffer they are applied to the segments already written
+    /// and stop counting. Deferred while a commit is prepared, as
+    /// [`Self::maybe_flush`] is.
+    fn maybe_apply_deletes(&mut self) -> Result<()> {
+        if self.prepared_commit.is_some() {
+            return Ok(());
+        }
+        if self
+            .ram_buffer_bytes()
+            .is_some_and(|limit| self.delete_queue.global_ram_bytes() >= limit)
+        {
+            self.apply_deletes_now()?;
+        }
+        Ok(())
+    }
+
+    /// `DocumentsWriter.applyAllDeletes`: freezes the deletes buffered for
+    /// the written segments and applies them now, checkpointing the files
+    /// that writes -- what a flush of an empty buffer does.
+    fn apply_deletes_now(&mut self) -> Result<()> {
+        self.ensure_write_lock_valid()?;
+        self.apply_all_deletes_and_updates()?;
+        let live = self.live_infos();
+        self.deleter.checkpoint(&live, false)?;
+        Ok(())
+    }
+
+    /// `FlushByRamOrCountsPolicy.onChange`: document count first, then RAM
+    /// -- the buffered documents and the buffered deletes together --
     /// exactly Java's precedence.
     fn maybe_flush(&mut self) -> Result<()> {
         // **Never while a commit is prepared.** [`IndexWriter::finish_commit`]
@@ -5278,12 +5351,15 @@ impl<'d> IndexWriter<'d> {
         {
             return self.flush();
         }
-        // The setter guarantees the value is either the sentinel (negative) or
-        // strictly positive, so `> 0.0` is the enabled test without a float
-        // equality comparison.
-        if self.ram_buffer_size_mb > 0.0 {
-            let limit = (self.ram_buffer_size_mb * 1024.0 * 1024.0) as usize;
-            if self.ram_bytes_used >= limit {
+        if let Some(limit) = self.ram_buffer_bytes() {
+            let active = self.ram_bytes_used;
+            let deletes = self.delete_queue.global_ram_bytes();
+            // Both over: Java applies the deletes and flushes the buffer; the
+            // flush freezes and applies them itself.
+            if deletes >= limit && active < limit {
+                return self.apply_deletes_now();
+            }
+            if active.saturating_add(deletes) >= limit {
                 return self.flush();
             }
         }
@@ -5415,7 +5491,9 @@ impl<'d> IndexWriter<'d> {
     /// generation across segments).
     pub fn delete_documents_by_term(&mut self, terms: &[Term]) -> Result<SeqNo> {
         let doc_id_upto = self.pending_doc_id_upto();
-        Ok(self.buffer_delete_node(DeleteNode::terms(terms.to_vec()), doc_id_upto))
+        let seq_no = self.buffer_delete_node(DeleteNode::terms(terms.to_vec()), doc_id_upto);
+        self.maybe_apply_deletes()?;
+        Ok(seq_no)
     }
 
     /// `IndexWriter.deleteDocuments(Query...)`.
@@ -5435,7 +5513,9 @@ impl<'d> IndexWriter<'d> {
             return Ok(seq_no);
         }
         let doc_id_upto = self.pending_doc_id_upto();
-        Ok(self.buffer_delete_node(DeleteNode::Queries(queries.to_vec()), doc_id_upto))
+        let seq_no = self.buffer_delete_node(DeleteNode::Queries(queries.to_vec()), doc_id_upto);
+        self.maybe_apply_deletes()?;
+        Ok(seq_no)
     }
 
     /// `IndexWriter.softUpdateDocument(Term, doc, Field... softDeletes)`:
@@ -5510,7 +5590,9 @@ impl<'d> IndexWriter<'d> {
             retargeted.push(retarget_update(update, &term));
         }
         let doc_id_upto = self.pending_doc_id_upto();
-        Ok(self.buffer_delete_node(DeleteNode::DocValuesUpdates(retargeted), doc_id_upto))
+        let seq_no = self.buffer_delete_node(DeleteNode::DocValuesUpdates(retargeted), doc_id_upto);
+        self.maybe_apply_deletes()?;
+        Ok(seq_no)
     }
 
     /// `IndexWriter.updateNumericDocValue(Term, String, long)`.
@@ -15592,6 +15674,68 @@ pub(crate) mod tests {
 
         writer.commit().unwrap();
         assert_eq!(writer.ram_bytes_used(), 0, "a flush resets the counter");
+    }
+
+    /// `FlushByRamOrCountsPolicy` with buffered deletes: deletes alone at the
+    /// RAM buffer are applied at once (their `.liv` written with no flush),
+    /// and deletes count toward the buffer with the documents.
+    #[test]
+    fn buffered_deletes_are_weighed_against_the_ram_buffer() {
+        let tmp = tempdir("delete-ram");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![FieldInfo {
+            index_options: lucene_codecs::field_infos::IndexOptions::Docs,
+            omit_norms: true,
+            ..FieldInfo::new("id", 0)
+        }];
+        let mut w = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        w.set_postings_field(Some("id")).unwrap();
+        for k in 0..10 {
+            w.add_document(doc(&format!("d{k}"))).unwrap();
+        }
+        w.commit().unwrap();
+        let mb = |bytes: usize| bytes as f64 / (1024.0 * 1024.0);
+        let nb = DeleteNode::terms(vec![Term::new("id", "d0")]).ram_bytes();
+        w.set_ram_buffer_size_mb(mb(nb * 3)).unwrap();
+        let liv = || dir.list_all().unwrap().iter().any(|f| f.ends_with(".liv"));
+        w.delete_documents_by_term(&[Term::new("id", "d0")])
+            .unwrap();
+        w.delete_documents_by_term(&[Term::new("id", "d1")])
+            .unwrap();
+        assert!(!liv());
+        assert_eq!(w.delete_queue.global_ram_bytes(), nb * 2);
+        w.delete_documents_by_term(&[Term::new("id", "d2")])
+            .unwrap();
+        assert!(
+            liv(),
+            "the third delete reached the buffer and applied all three"
+        );
+        assert_eq!(w.delete_queue.global_ram_bytes(), 0);
+
+        // One document under the buffer, two deletes under it: the second
+        // document is under it alone but not with the deletes.
+        let d = document_ram_bytes(&doc("n0"));
+        assert!(d < nb * 2, "the deletes decide: {d} vs {nb}");
+        w.set_ram_buffer_size_mb(mb(d + nb * 2)).unwrap();
+        w.add_document(doc("n0")).unwrap();
+        w.delete_documents_by_term(&[Term::new("id", "d3")])
+            .unwrap();
+        w.delete_documents_by_term(&[Term::new("id", "d4")])
+            .unwrap();
+        assert_eq!(w.pending_docs.len(), 1);
+        w.add_document(doc("n1")).unwrap();
+        assert!(w.pending_docs.is_empty(), "documents and deletes filled it");
+        assert_eq!(w.delete_queue.global_ram_bytes(), 0);
+        w.commit().unwrap();
+        assert_eq!(
+            crate::segment_infos::read_latest(&dir)
+                .unwrap()
+                .segments
+                .iter()
+                .map(|s| s.del_count)
+                .sum::<i32>(),
+            5
+        );
     }
 
     #[test]

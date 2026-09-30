@@ -18,6 +18,7 @@ pub mod deletes;
 pub mod deletion_policy;
 pub mod document;
 pub mod field_updates;
+pub mod flush_policy;
 pub mod index_file_deleter;
 pub mod index_sorter;
 pub mod index_writer;

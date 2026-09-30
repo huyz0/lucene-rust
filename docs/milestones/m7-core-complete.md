@@ -157,6 +157,14 @@ operations -- `tryDeleteDocument`/`tryUpdateDocValue` by NRT doc id,
 `addIndexes` (copying segments as they are, and merging them into one),
 `maybeMerge`, `flushNextBuffer`, `close` under `commitOnClose`, the
 merged-segment warmer -- and a reader's leaf sorter.
+
+Delivered (ported, not yet benchmarked): the flush policy --
+`FlushPolicy`/`FlushByRamOrCountsPolicy` over `DocumentsWriterFlushControl`'s
+accounting (`lucene-index/src/flush_policy.rs`): the concurrent writer's slots
+share one RAM buffer and the largest is flushed, marked slots are flushed by
+whichever thread checks (`checkPendingFlushOnUpdate`), and buffered deletes
+count toward the buffer and are applied on their own once they fill it, in
+both writers -- and `deleteAll` on the concurrent writer.
 ### T7.8 — `StandardTokenizer` and the attribute model · delivered 2026-09-30, two rows partial
 
 `crates/lucene-analysis` is now Lucene's streaming model: `TokenStream`/
