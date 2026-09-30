@@ -181,41 +181,41 @@ codecs/perfield/PerFieldMergeState	todo:M7	per-format FieldInfos filtering for m
 codecs/perfield/PerFieldPostingsFormat	partial	crates/lucene-index/src/index_writer.rs::per_field_codec_suffix -- M7: per-field routing is single-format only: every field goes to one fixed format with suffix "0"; parity: "any per-field postings or doc-values format other than `Lucene104`/`Lucene90`" is out of scope
 document/BaseShapeDocValuesQuery	deferred:M9	base query over shape doc values (geo)
 document/BinaryDocValuesField	ported	crates/lucene-index/src/index_writer/explicit.rs::ExplicitFields
-document/BinaryPoint	partial	crates/lucene-index/src/index_writer/explicit.rs::ExplicitFields -- M7: packed bytes indexable via ExplicitFields.points and queryable via points_query::search_points_range/search_points_in_set, but no BinaryPoint type or newExactQuery/newRangeQuery/newSetQuery factories
-document/BinaryRangeDocValues	todo:M7	binary-encoded range doc values reader not ported
-document/BinaryRangeDocValuesField	todo:M7	range-field doc values encoding not ported
-document/BinaryRangeFieldRangeQuery	todo:M7	doc-values range-field relation query not ported
-document/DateTools	todo:M7	date <-> sortable string/resolution helpers not ported
-document/DocValuesLongHashSet	todo:M7	long hash set backing SortedNumeric/Numeric newSlowSetQuery not ported
-document/Document	partial	crates/lucene-codecs/src/stored_fields.rs::Document -- M7: the native Document is a list of stored values (indexing decided by writer config) and ExplicitDocument is pre-inverted; no IndexableField list with per-field FieldType, no get/getValues/removeField by name
+document/BinaryPoint	ported	crates/lucene-index/src/document/numeric.rs::BinaryPoint -- M7: packed N-dimension bytes; queries in crates/lucene-search/src/document/point_queries.rs (binary_point); fixture GenDocumentFields
+document/BinaryRangeDocValues	ported	crates/lucene-search/src/document/range_queries.rs::BinaryRangeDocValues -- M7: BINARY range boxes read per document; fixture GenDocumentFields
+document/BinaryRangeDocValuesField	ported	crates/lucene-index/src/document/range.rs::BinaryRangeDocValuesField -- M7: range box as a BINARY doc value; fixture GenDocumentFields
+document/BinaryRangeFieldRangeQuery	ported	crates/lucene-search/src/document/range_queries.rs::BinaryRangeFieldRangeQuery -- M7: INTERSECTS-only two-phase doc-values range query; fixture GenDocumentFields
+document/DateTools	ported	crates/lucene-index/src/document/date_tools.rs::DateTools -- M7: GregorianCalendar semantics (Julian before 1582, lenient parse); fixture GenDocumentFields dates.tsv
+document/DocValuesLongHashSet	ported	crates/lucene-search/src/document/doc_values_queries.rs::DocValuesLongHashSet -- M7: backs newSlowSetQuery; fixture GenDocumentFields
+document/Document	ported	crates/lucene-index/src/document/mod.rs::Document -- M7: document of IndexableFields indexed by IndexWriter::add_fields_document; fixture GenDocumentFields (index written through the API equals Lucene's)
 document/DocumentStoredFieldVisitor	ported	crates/lucene-codecs/src/stored_fields.rs::DocumentVisitor
 document/DoubleDocValuesField	ported	crates/lucene-index/src/index_writer/explicit.rs::ExplicitFields
-document/DoubleField	partial	crates/lucene-index/src/index_writer/explicit.rs::ExplicitFields -- M7: point + SORTED_NUMERIC doc value indexable only by hand-encoding sortable bytes/longs; no DoubleField type, no typed newExactQuery/newRangeQuery/newSetQuery/newSortField (search has only an i64 PointsRangeQuery and byte-level points functions)
-document/DoublePoint	partial	crates/lucene-index/src/index_writer/explicit.rs::ExplicitFields -- M7: packed point indexable (native path via FieldValue::Double also stores it); no public double sortable-bytes pack/unpack, nextUp/nextDown, or typed newExactQuery/newRangeQuery/newSetQuery
-document/DoubleRange	todo:M7	double range field (intersects/within/contains/crosses) not ported
-document/DoubleRangeDocValuesField	todo:M7	double range doc-values field not ported
-document/DoubleRangeSlowRangeQuery	todo:M7	double range doc-values slow query not ported
-document/FeatureDoubleValuesSource	todo:M7	feature-field DoubleValuesSource not ported
-document/FeatureField	partial	crates/lucene-index/src/index_writer.rs::add_document_with_custom_freq_terms -- M7: a feature term with a custom freq can be indexed, but the feature-value->freq encoding (float bits >>> 15) and all query factories (saturation/log/sigmoid/linear, newFeatureSort, newDoubleValues) are missing
-document/FeatureQuery	todo:M7	feature-field scoring query not ported
-document/FeatureSortField	todo:M7	feature-field sort not ported
-document/Field	partial	crates/lucene-index/src/index_writer/explicit.rs::ExplicitDocument -- M7: no generic Field(value, FieldType): stored values, pre-inverted terms, doc values and points are separate entries; per-field analyzer/TokenStream/Reader values are not supported (native path re-analyses stored text with one writer-wide Analyzer)
-document/FieldType	partial	crates/lucene-codecs/src/field_infos.rs::FieldInfo -- M7: index options, norms, doc-values type/skip index, point and vector shape are carried; stored/tokenized/storeTermVectorPositions/Offsets/Payloads flags and InvertableType are not, and term vectors are refused on the explicit path
+document/DoubleField	ported	crates/lucene-index/src/document/numeric.rs::DoubleField -- M7: point + SORTED_NUMERIC; queries/sort in crates/lucene-search/src/document/point_queries.rs (double_field); fixture GenDocumentFields
+document/DoublePoint	ported	crates/lucene-index/src/document/numeric.rs::DoublePoint -- M7: sortable encoding, nextUp/nextDown; queries in crates/lucene-search/src/document/point_queries.rs (double_point); fixture GenDocumentFields
+document/DoubleRange	ported	crates/lucene-index/src/document/range.rs::DoubleRange -- M7: relation queries in crates/lucene-search/src/document/range_queries.rs (range_factories); fixture GenDocumentFields
+document/DoubleRangeDocValuesField	ported	crates/lucene-index/src/document/range.rs::DoubleRangeDocValuesField -- M7: fixture GenDocumentFields
+document/DoubleRangeSlowRangeQuery	ported	crates/lucene-search/src/document/range_queries.rs::BinaryRangeFieldRangeQuery -- M7: double_range_doc_values_field::new_slow_intersects_query builds the shared BinaryRangeFieldRangeQuery; fixture GenDocumentFields
+document/FeatureDoubleValuesSource	ported	crates/lucene-search/src/document/feature.rs::FeatureDoubleValuesSource -- M7: fixture GenDocumentFields values.tsv
+document/FeatureField	ported	crates/lucene-index/src/document/feature.rs::FeatureField -- M7: encoding; queries/sort/values in crates/lucene-search/src/document/feature.rs (feature_field); fixture GenDocumentFields
+document/FeatureQuery	ported	crates/lucene-search/src/document/feature.rs::FeatureQuery -- M7: linear/log/saturation/sigmoid scores bit for bit; fixture GenDocumentFields
+document/FeatureSortField	ported	crates/lucene-search/src/document/feature.rs::FeatureSortField -- M7: fixture GenDocumentFields sorts.tsv
+document/Field	ported	crates/lucene-index/src/document/mod.rs::Field -- M7: generic Field(value, FieldType) of the document API; fixture GenDocumentFields
+document/FieldType	ported	crates/lucene-index/src/document/mod.rs::FieldType -- M7: every setter, freeze, checks; fixture GenDocumentFields facets.tsv
 document/FloatDocValuesField	ported	crates/lucene-index/src/index_writer/explicit.rs::ExplicitFields
-document/FloatField	partial	crates/lucene-index/src/index_writer/explicit.rs::ExplicitFields -- M7: point + SORTED_NUMERIC doc value indexable only by hand-encoding sortable bytes/longs; no FloatField type, no typed newExactQuery/newRangeQuery/newSetQuery/newSortField
-document/FloatPoint	partial	crates/lucene-index/src/index_writer/explicit.rs::ExplicitFields -- M7: packed point indexable (native path via FieldValue::Float also stores it); no public float sortable-bytes pack/unpack, nextUp/nextDown, or typed newExactQuery/newRangeQuery/newSetQuery
-document/FloatRange	todo:M7	float range field (intersects/within/contains/crosses) not ported
-document/FloatRangeDocValuesField	todo:M7	float range doc-values field not ported
-document/FloatRangeSlowRangeQuery	todo:M7	float range doc-values slow query not ported
-document/InetAddressPoint	todo:M7	IP address point field (16-byte encoding, prefix/range/set queries) not ported
-document/InetAddressRange	todo:M7	IP address range field not ported
-document/IntField	partial	crates/lucene-index/src/index_writer/explicit.rs::ExplicitFields -- M7: point + SORTED_NUMERIC doc value indexable only by hand-encoding sortable bytes; no IntField type, no typed newExactQuery/newRangeQuery/newSetQuery/newSortField
-document/IntPoint	partial	crates/lucene-index/src/index_writer/explicit.rs::ExplicitFields -- M7: packed point indexable (native path via FieldValue::Int also stores it); no public int sortable-bytes pack/unpack or typed newExactQuery/newRangeQuery/newSetQuery (search has only i64 PointsRangeQuery)
-document/IntRange	todo:M7	int range field (intersects/within/contains/crosses) not ported
-document/IntRangeDocValuesField	todo:M7	int range doc-values field not ported
-document/IntRangeSlowRangeQuery	todo:M7	int range doc-values slow query not ported
-document/InvertableType	partial	crates/lucene-index/src/index_writer/explicit.rs::InvertedTerm -- M7: a single binary term can be supplied pre-inverted; no field-type TERM/BINARY switch in the writer
-document/KeywordField	partial	crates/lucene-index/src/index_writer/explicit.rs::ExplicitFields -- M7: term + SORTED_SET doc value indexable by hand-building an ExplicitDocument; no KeywordField type, and newExactQuery/newSetQuery lack their doc-values halves (no SortedSet slow exact/set query); newSortField via top_field keyword keys
+document/FloatField	ported	crates/lucene-index/src/document/numeric.rs::FloatField -- M7: point + SORTED_NUMERIC; queries/sort in crates/lucene-search/src/document/point_queries.rs (float_field); fixture GenDocumentFields
+document/FloatPoint	ported	crates/lucene-index/src/document/numeric.rs::FloatPoint -- M7: sortable encoding, nextUp/nextDown; queries in crates/lucene-search/src/document/point_queries.rs (float_point); fixture GenDocumentFields
+document/FloatRange	ported	crates/lucene-index/src/document/range.rs::FloatRange -- M7: relation queries in crates/lucene-search/src/document/range_queries.rs (range_factories); fixture GenDocumentFields
+document/FloatRangeDocValuesField	ported	crates/lucene-index/src/document/range.rs::FloatRangeDocValuesField -- M7: fixture GenDocumentFields
+document/FloatRangeSlowRangeQuery	ported	crates/lucene-search/src/document/range_queries.rs::BinaryRangeFieldRangeQuery -- M7: float_range_doc_values_field::new_slow_intersects_query builds the shared BinaryRangeFieldRangeQuery; fixture GenDocumentFields
+document/InetAddressPoint	ported	crates/lucene-index/src/document/inet_address.rs::InetAddressPoint -- M7: IpAddr as 16 bytes; queries in crates/lucene-search/src/document/point_queries.rs (inet_address_point); fixture GenDocumentFields
+document/InetAddressRange	ported	crates/lucene-index/src/document/range.rs::InetAddressRange -- M7: queries in crates/lucene-search/src/document/range_queries.rs (inet_address_range); fixture GenDocumentFields
+document/IntField	ported	crates/lucene-index/src/document/numeric.rs::IntField -- M7: point + SORTED_NUMERIC; queries/sort in crates/lucene-search/src/document/point_queries.rs (int_field); fixture GenDocumentFields
+document/IntPoint	ported	crates/lucene-index/src/document/numeric.rs::IntPoint -- M7: queries in crates/lucene-search/src/document/point_queries.rs (int_point); fixture GenDocumentFields
+document/IntRange	ported	crates/lucene-index/src/document/range.rs::IntRange -- M7: relation queries in crates/lucene-search/src/document/range_queries.rs (range_factories); fixture GenDocumentFields
+document/IntRangeDocValuesField	ported	crates/lucene-index/src/document/range.rs::IntRangeDocValuesField -- M7: generated by numeric_range; fixture GenDocumentFields
+document/IntRangeSlowRangeQuery	ported	crates/lucene-search/src/document/range_queries.rs::BinaryRangeFieldRangeQuery -- M7: int_range_doc_values_field::new_slow_intersects_query builds the shared BinaryRangeFieldRangeQuery; fixture GenDocumentFields
+document/InvertableType	ported	crates/lucene-index/src/document/mod.rs::InvertableType -- M7: TOKEN_STREAM/BINARY switch in the indexing chain; fixture GenDocumentFields
+document/KeywordField	ported	crates/lucene-index/src/document/doc_values.rs::KeywordField -- M7: term + SORTED_SET; queries/sort in crates/lucene-search/src/document/doc_values_queries.rs (keyword_field); fixture GenDocumentFields
 document/KnnByteVectorField	ported	crates/lucene-index/src/index_writer.rs::DocumentVector
 document/KnnFloatVectorField	ported	crates/lucene-index/src/index_writer.rs::DocumentVector
 document/LatLonDocValuesBoxQuery	deferred:M9	lat/lon geo doc values box query (geo)
@@ -233,32 +233,32 @@ document/LatLonShapeDocValues	deferred:M9	lat/lon geo shape doc values (geo)
 document/LatLonShapeDocValuesField	deferred:M9	lat/lon geo shape doc values field (geo)
 document/LatLonShapeDocValuesQuery	deferred:M9	lat/lon geo shape doc values query (geo)
 document/LatLonShapeQuery	deferred:M9	lat/lon geo shape query (geo)
-document/LateInteractionField	todo:M7	multi-vector late-interaction binary field (encode/decode) not ported
-document/LongDistanceFeatureQuery	todo:M7	long distance-feature scoring query not ported
-document/LongField	partial	crates/lucene-index/src/index_writer/explicit.rs::ExplicitFields -- M7: point + SORTED_NUMERIC doc value indexable by hand (pack_i64 exists in points_query); no LongField type, no typed newExactQuery/newSetQuery/newSortField/newDistanceFeatureQuery; range only as 1-D PointsRangeQuery without the doc-values IndexOrDocValues half wired
-document/LongPoint	partial	crates/lucene-search/src/query.rs::PointsRangeQuery -- M7: indexing via add_points_field (FieldValue::Long, also stored) or ExplicitFields packed bytes; 1-D range via PointsRangeQuery and set via search_points_in_set; missing multi-dimensional range factories, typed newSetQuery/newExactQuery, newDistanceFeatureQuery, unpack helpers
-document/LongRange	todo:M7	long range field (intersects/within/contains/crosses) not ported
-document/LongRangeDocValuesField	todo:M7	long range doc-values field not ported
-document/LongRangeSlowRangeQuery	todo:M7	long range doc-values slow query not ported
+document/LateInteractionField	ported	crates/lucene-index/src/document/late_interaction.rs::LateInteractionField -- M7: multi-vector BINARY encode/decode; fixture GenDocumentFields
+document/LongDistanceFeatureQuery	ported	crates/lucene-search/src/document/distance_feature.rs::LongDistanceFeatureQuery -- M7: scores and pruning; fixture GenDocumentFields
+document/LongField	ported	crates/lucene-index/src/document/numeric.rs::LongField -- M7: point + SORTED_NUMERIC; queries/sort in crates/lucene-search/src/document/point_queries.rs (long_field); fixture GenDocumentFields
+document/LongPoint	ported	crates/lucene-index/src/document/numeric.rs::LongPoint -- M7: queries in crates/lucene-search/src/document/point_queries.rs (long_point); fixture GenDocumentFields
+document/LongRange	ported	crates/lucene-index/src/document/range.rs::LongRange -- M7: relation queries in crates/lucene-search/src/document/range_queries.rs (range_factories); fixture GenDocumentFields
+document/LongRangeDocValuesField	ported	crates/lucene-index/src/document/range.rs::LongRangeDocValuesField -- M7: generated by numeric_range; fixture GenDocumentFields
+document/LongRangeSlowRangeQuery	ported	crates/lucene-search/src/document/range_queries.rs::BinaryRangeFieldRangeQuery -- M7: long_range_doc_values_field::new_slow_intersects_query builds the shared BinaryRangeFieldRangeQuery; fixture GenDocumentFields
 document/NearestNeighbor	deferred:M9	lat/lon nearest-neighbour search over the BKD tree (geo)
-document/NumericDocValuesField	partial	crates/lucene-search/src/doc_value_query.rs::search_numeric_range -- M7: indexing via ExplicitFields/add_doc_values_field; newSlowRangeQuery/newSlowExactQuery via search_numeric_range(_with_skip_index); newSlowSetQuery missing
-document/RangeBulkScorer	todo:M7	doc-id-interval bulk scorer (collectRange) not ported
-document/RangeFieldQuery	todo:M7	range-field relation query (intersects/within/contains/crosses) not ported
+document/NumericDocValuesField	ported	crates/lucene-index/src/document/doc_values.rs::NumericDocValuesField -- M7: incl. indexedField; slow queries in crates/lucene-search/src/document/doc_values_queries.rs (numeric_dv_factories); fixture GenDocumentFields
+document/RangeBulkScorer	ported	crates/lucene-search/src/document/doc_values_queries.rs::RangeBulkScorer -- M7: doc-id interval collection; fixture GenDocumentFields (sorted twins)
+document/RangeFieldQuery	ported	crates/lucene-search/src/document/range_queries.rs::RangeFieldQuery -- M7: BKD walk with QueryType compare/matches; fixture GenDocumentFields
 document/ShapeDocValues	deferred:M9	shape doc-values encoding (geo)
 document/ShapeDocValuesField	deferred:M9	shape doc-values field (geo)
 document/ShapeField	deferred:M9	triangle-encoded shape field (geo)
-document/SortedDocValuesField	partial	crates/lucene-search/src/doc_value_query.rs::search_sorted_ord_range -- M7: indexing via ExplicitFields/add_doc_values_field; slow range only over ordinals (no BytesRef-bound lookup), no newSlowExactQuery/newSlowSetQuery
-document/SortedNumericDocValuesField	partial	crates/lucene-search/src/doc_value_query.rs::search_sorted_numeric_range -- M7: indexing via ExplicitFields/add_doc_values_field; newSlowRangeQuery/newSlowExactQuery via search_sorted_numeric_range; newSlowSetQuery missing
-document/SortedNumericDocValuesRangeQuery	partial	crates/lucene-search/src/doc_value_query.rs::search_sorted_numeric_range -- M7: no skip-index or index-sort doc-range fast path for SORTED_NUMERIC, no rewrite to FieldExistsQuery/MatchNoDocs, not a scorer-tree Query
-document/SortedNumericDocValuesSetQuery	todo:M7	doc-values numeric set query not ported
-document/SortedSetDocValuesField	partial	crates/lucene-search/src/doc_value_query.rs::search_multi_valued_range -- M7: indexing via ExplicitFields/add_doc_values_field; no any-value SORTED_SET range query (search_multi_valued_range is min/max-selector only), no newSlowExactQuery/newSlowSetQuery
-document/SortedSetDocValuesRangeQuery	todo:M7	any-value SORTED_SET doc-values range query not ported
-document/SortedSkipperScorerSupplier	todo:M7	skipper + index-sort aligned doc-range scorer supplier not ported
+document/SortedDocValuesField	ported	crates/lucene-index/src/document/doc_values.rs::SortedDocValuesField -- M7: incl. indexedField; slow queries in crates/lucene-search/src/document/doc_values_queries.rs (ords_dv_factories); fixture GenDocumentFields
+document/SortedNumericDocValuesField	ported	crates/lucene-index/src/document/doc_values.rs::SortedNumericDocValuesField -- M7: incl. indexedField; slow queries in crates/lucene-search/src/document/doc_values_queries.rs (numeric_dv_factories); fixture GenDocumentFields
+document/SortedNumericDocValuesRangeQuery	ported	crates/lucene-search/src/document/doc_values_queries.rs::SortedNumericDocValuesRangeQuery -- M7: rewrites, skip-index shortcuts and the index-sorted skipper path; fixture GenDocumentFields (sorted twins)
+document/SortedNumericDocValuesSetQuery	ported	crates/lucene-search/src/document/doc_values_queries.rs::SortedNumericDocValuesSetQuery -- M7: fixture GenDocumentFields
+document/SortedSetDocValuesField	ported	crates/lucene-index/src/document/doc_values.rs::SortedSetDocValuesField -- M7: incl. indexedField; slow queries in crates/lucene-search/src/document/doc_values_queries.rs (ords_dv_factories); fixture GenDocumentFields
+document/SortedSetDocValuesRangeQuery	ported	crates/lucene-search/src/document/doc_values_queries.rs::SortedSetDocValuesRangeQuery -- M7: any-value ordinal range incl. skipper path; fixture GenDocumentFields
+document/SortedSkipperScorerSupplier	ported	crates/lucene-search/src/document/doc_values_queries.rs::SortedSkipperScorerSupplier -- M7: doc-id run from skipper + values; fixture GenDocumentFields sorted twins (reverse-flag mutation fails)
 document/SpatialQuery	deferred:M9	base class of geo shape/point spatial queries (geo)
 document/StoredField	ported	crates/lucene-codecs/src/stored_fields.rs::StoredField
 document/StoredValue	ported	crates/lucene-codecs/src/stored_fields.rs::FieldValue
 document/StringField	ported	crates/lucene-index/src/index_writer/explicit.rs::InvertedField
-document/TextField	partial	crates/lucene-index/src/index_writer.rs::add_postings_field -- M7: native path analyses a stored text with one writer-wide Analyzer (text is always stored); a non-stored or custom-analyzed TextField needs caller-side analysis + norm into ExplicitDocument; no Reader/TokenStream values
+document/TextField	ported	crates/lucene-index/src/document/mod.rs::TextField -- M7: stored or not, from String/Reader/TokenStream; fixture GenDocumentFields
 document/XYDocValuesField	deferred:M9	cartesian x/y point doc values field (geo)
 document/XYDocValuesPointInGeometryQuery	deferred:M9	cartesian doc-values point-in-geometry query (geo)
 document/XYPointDistanceComparator	deferred:M9	cartesian point distance sort comparator (geo)
@@ -270,23 +270,23 @@ document/XYShapeDocValues	deferred:M9	cartesian shape doc values (geo)
 document/XYShapeDocValuesField	deferred:M9	cartesian shape doc values field (geo)
 document/XYShapeDocValuesQuery	deferred:M9	cartesian shape doc values query (geo)
 document/XYShapeQuery	deferred:M9	cartesian shape query (geo)
-document/column/BinaryColumn	todo:M7	binary column of the columnar addBatch API not ported
-document/column/BinaryColumnAdapter	todo:M7	binary column IndexableField adapter of the columnar addBatch API not ported
-document/column/BytesRefValuesCursor	todo:M7	dense binary cursor of the columnar addBatch API not ported
-document/column/Column	todo:M7	column abstraction of the columnar addBatch API not ported
-document/column/ColumnBatch	todo:M7	columnar batch indexing (IndexWriter.addBatch) not ported
-document/column/ColumnFieldAdapter	todo:M7	column-to-IndexableField adapter of the columnar addBatch API not ported
-document/column/ColumnValidation	todo:M7	validation of the columnar addBatch API not ported
-document/column/DictionaryColumn	todo:M7	dictionary+ordinals column of the columnar addBatch API not ported
-document/column/LongColumn	todo:M7	long column of the columnar addBatch API not ported
-document/column/LongColumnAdapter	todo:M7	long column IndexableField adapter of the columnar addBatch API not ported
-document/column/LongTupleCursor	todo:M7	long tuple cursor of the columnar addBatch API not ported
-document/column/LongValuesCursor	todo:M7	dense long cursor of the columnar addBatch API not ported
-document/column/ObjectTupleCursor	todo:M7	object tuple cursor of the columnar addBatch API not ported
-document/column/OrdinalsCursor	todo:M7	dense ordinals cursor of the columnar addBatch API not ported
-document/column/OrdinalsTupleCursor	todo:M7	ordinals tuple cursor of the columnar addBatch API not ported
-document/column/TokenStreamColumn	todo:M7	token-stream column of the columnar addBatch API not ported
-document/column/VectorColumn	todo:M7	vector column of the columnar addBatch API not ported
+document/column/BinaryColumn	ported	crates/lucene-index/src/document/column.rs::BinaryColumn -- M7: fixture GenDocumentColumns
+document/column/BinaryColumnAdapter	ported	crates/lucene-index/src/document/column.rs::BinaryColumnAdapter -- M7: fixture GenDocumentColumns
+document/column/BytesRefValuesCursor	ported	crates/lucene-index/src/document/column.rs::BytesRefValuesCursor -- M7: fixture GenDocumentColumns
+document/column/Column	ported	crates/lucene-index/src/document/column.rs::Column -- M7: fixture GenDocumentColumns
+document/column/ColumnBatch	partial	crates/lucene-index/src/document/column.rs::ColumnBatch -- M7: a column that yields no value in a batch registers no FieldInfo, where Java registers one (field infos differ); otherwise IndexWriter::add_batch/update_batch match fixture GenDocumentColumns
+document/column/ColumnFieldAdapter	ported	crates/lucene-index/src/document/column.rs::batch_documents -- M7: the adapter views are LongColumnAdapter/BinaryColumnAdapter, walked into documents here; fixture GenDocumentColumns
+document/column/ColumnValidation	ported	crates/lucene-index/src/document/column.rs::ColumnValidation -- M7: processBatch validation; fixture GenDocumentColumns + unit tests
+document/column/DictionaryColumn	ported	crates/lucene-index/src/document/column.rs::DictionaryColumn -- M7: fixture GenDocumentColumns
+document/column/LongColumn	ported	crates/lucene-index/src/document/column.rs::LongColumn -- M7: fixture GenDocumentColumns
+document/column/LongColumnAdapter	ported	crates/lucene-index/src/document/column.rs::LongColumnAdapter -- M7: fixture GenDocumentColumns
+document/column/LongTupleCursor	ported	crates/lucene-index/src/document/column.rs::LongTupleCursor -- M7: fixture GenDocumentColumns
+document/column/LongValuesCursor	ported	crates/lucene-index/src/document/column.rs::LongValuesCursor -- M7: fixture GenDocumentColumns
+document/column/ObjectTupleCursor	ported	crates/lucene-index/src/document/column.rs::ObjectTupleCursor -- M7: fixture GenDocumentColumns
+document/column/OrdinalsCursor	ported	crates/lucene-index/src/document/column.rs::OrdinalsCursor -- M7: fixture GenDocumentColumns
+document/column/OrdinalsTupleCursor	ported	crates/lucene-index/src/document/column.rs::OrdinalsTupleCursor -- M7: fixture GenDocumentColumns
+document/column/TokenStreamColumn	ported	crates/lucene-index/src/document/column.rs::TokenStreamColumn -- M7: fixture GenDocumentColumns
+document/column/VectorColumn	ported	crates/lucene-index/src/document/column.rs::VectorColumn -- M7: fixture GenDocumentColumns
 geo/Circle	deferred:M9	lat/lon circle geometry
 geo/Circle2D	deferred:M9	2D circle component for relations
 geo/Component2D	deferred:M9	2D geometry relation interface

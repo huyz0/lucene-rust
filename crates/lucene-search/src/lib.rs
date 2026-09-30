@@ -205,6 +205,7 @@ pub mod collector;
 pub mod directory_reader;
 pub mod doc_value_query;
 pub mod docid_set;
+pub mod document;
 mod exec;
 pub mod explain;
 pub mod extended_query;
@@ -408,6 +409,11 @@ pub enum Error {
     /// A `terms` aggregation's field has doc values but not keyword ones.
     #[error("terms aggregation field {0} has non-keyword doc values")]
     TermsAggType(String),
+    /// A `lucene_search::document` query refused its input -- Java's
+    /// `IllegalArgumentException`/`IllegalStateException` from the document
+    /// package.
+    #[error("document query: {0}")]
+    DocumentQuery(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

@@ -104,6 +104,15 @@ deletion policies, lock factories and the remaining directories, the
 family, offline sorting, and the analysis attribute model.
 
 ### T7.2 — `document` field types
+
+Delivered (ported, not yet benchmarked): every M7 row of `document` and
+`document/column` (67) -- the `Document`/`Field`/`FieldType` API indexed by
+`IndexWriter::add_fields_document` and `add_batch`, the point, range,
+doc-values, feature, date and late-interaction fields in
+`lucene-index/src/document/`, and their queries (points, slow doc values with
+the skipper path, range relations, feature, distance feature) in
+`lucene-search/src/document/`; differential against `GenDocumentFields` and
+`GenDocumentColumns`.
 ### T7.3 — Similarities, bit-for-bit
 ### T7.4 — The remaining core queries and comparators, in the scorer tree
 ### T7.5 — Per-field formats, read and write

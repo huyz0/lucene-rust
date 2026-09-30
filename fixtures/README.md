@@ -991,6 +991,20 @@ outright.
   committed segment count, every segment's `(maxDoc, delCount)` and the visible
   ids. Consumed by `index_writer::tests::
   a_fully_deleted_segment_is_dropped_exactly_where_real_lucene_drops_it`.
+- `GenDocumentFields.java` — the `document` field API through a real
+  `IndexWriter` (`document_fields/`: 900 documents, three segments, deletions):
+  what the indexing chain reads from every field (`facets.tsv`), the stored
+  documents (`docs.tsv`), 112 field-level queries with every hit and score bit
+  (`queries.tsv`), sort fields (`sorts.tsv`), feature values (`values.tsv`) and
+  `DateTools` round trips (`dates.tsv`); plus two index-sorted twins with
+  skip-indexed doc values (`document_fields_sorted_num/`,
+  `document_fields_sorted_kw/`) for the skipper query path. Consumed by
+  `crates/lucene-search/tests/document_fields_fixtures.rs`, which also rewrites
+  the index through the Rust API and requires it to equal Lucene's.
+- `GenDocumentColumns.java` — two `IndexWriter.addBatch` column batches of
+  every column kind (`document_columns/`, with `columns.tsv` describing them);
+  the same test rebuilds the batches, writes them with `add_batch`, and requires
+  an identical index.
 
 ## Manifest appenders
 
