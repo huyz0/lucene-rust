@@ -147,7 +147,7 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `cancelled` | the task was cancelled before the native call |
 | `boost_invalid` | a negative or non-finite boost |
 | `slower_shape` | a correct native shape routed to Lucene by measurement; none since read path R1 |
-| `postings_format` | some field of the index uses a postings format other than `Lucene104` |
+| `postings_format` | some field of the index uses a postings format outside `Lucene90`/`Lucene99`/`Lucene912`/`Lucene101`/`Lucene103`/`Lucene104` (M8 T8.5: the retired defaults are read natively) |
 | `reader_*`, `directory_*` | the searcher's reader or directory is not a local, standard one (remote store, a wrapped reader the plugin cannot see through) |
 | `native_open_failed`, `native_error` | the native side refused the reader or the query; the node log has the message. Never a failed search: the query re-runs on Lucene |
 
