@@ -10,13 +10,22 @@
 //! either way.
 //!
 //! Deviations from Lucene, neither of which changes a hit or a score: the
-//! block-max bound is the similarity's global one (`weight`) rather than
+//! block-max bound is the similarity's global one (`weight` for BM25,
+//! `score(Float.MAX_VALUE, 1)` for any other) rather than
 //! `ExactPhraseMatcher`'s merged impacts, which only means less pruning.
+//!
+//! A similarity other than the default BM25 scores through its
+//! [`SimScorer`] (`PhraseScorer.score`'s `simScorer.score(freq, norm)`, the
+//! norm as stored, `1` without one); BM25 keeps its weight and norm-inverse
+//! table.
 
 use lucene_codecs::postings::PositionsCursor;
 
+use std::sync::Arc;
+
 use super::{Scorer, NO_MORE_DOCS};
 use crate::field_norms::FieldNormsCursor;
+use crate::similarities::SimScorer;
 use crate::{blocktree, similarity, sloppy_phrase, Result};
 
 /// `PhraseQuery.TERM_POSNS_SEEK_OPS_PER_DOC`.
@@ -59,6 +68,8 @@ pub(crate) struct PhraseScorer<'a> {
     needs_scores: bool,
     min_competitive: f32,
     match_cost: f32,
+    /// A similarity other than the default BM25, and its global bound.
+    sim: Option<(Arc<dyn SimScorer>, f32)>,
     /// Per slot, for the first-occurrence check: the current position minus
     /// the slot, and the occurrences not yet read.
     lazy: Vec<(i32, i32)>,
@@ -94,8 +105,28 @@ impl<'a> PhraseScorer<'a> {
             needs_scores,
             min_competitive: 0.0,
             match_cost,
+            sim: None,
             lazy: vec![(0, 0); n],
         }
+    }
+
+    /// Scores through `scorer` instead of BM25's weight: a phrase under a
+    /// similarity other than the default.
+    pub(crate) fn with_sim_scorer(mut self, scorer: Arc<dyn SimScorer>) -> Self {
+        let max = crate::bulk_scorer::sim_global_max(scorer.as_ref(), f32::MAX);
+        self.sim = Some((scorer, max));
+        self
+    }
+
+    /// `simScorer.score(freq, norm)` for the current document, under a
+    /// similarity other than the default BM25.
+    fn sim_score(&mut self, freq: f32) -> Result<f32> {
+        let doc = self.doc_id();
+        let norm = match self.norms.as_mut() {
+            Some(n) => n.norm_long(doc)?.unwrap_or(1),
+            None => 1,
+        };
+        Ok(self.sim.as_ref().map_or(0.0, |(s, _)| s.score(freq, norm)))
     }
 
     /// `ExactPhraseMatcher.nextMatch` from the start of the document: whether
@@ -210,8 +241,13 @@ impl Scorer for PhraseScorer<'_> {
                     .iter()
                     .fold(0.0f32, |sum, t| sum + t.cursor.freq() as f32)
             };
-            let norm_inverse = self.norm_inverse(doc)?;
-            if similarity::do_score(self.weight, max_freq, norm_inverse) < self.min_competitive {
+            let bound = if self.sim.is_none() {
+                let norm_inverse = self.norm_inverse(doc)?;
+                similarity::do_score(self.weight, max_freq, norm_inverse)
+            } else {
+                self.sim_score(max_freq)?
+            };
+            if bound < self.min_competitive {
                 return Ok(false);
             }
         }
@@ -254,6 +290,9 @@ impl Scorer for PhraseScorer<'_> {
     }
 
     fn score(&mut self) -> Result<f32> {
+        if self.sim.is_some() {
+            return self.sim_score(self.freq);
+        }
         let doc = self.doc_id();
         let norm_inverse = self.norm_inverse(doc)?;
         Ok(similarity::do_score(self.weight, self.freq, norm_inverse))
@@ -264,9 +303,12 @@ impl Scorer for PhraseScorer<'_> {
     }
 
     /// BM25's `weight - weight / (1 + freq * normInverse)` never reaches
-    /// `weight`.
+    /// `weight`; any other similarity's `MaxScoreCache.globalMaxScore`.
     fn max_score(&mut self, _up_to: i32) -> Result<f32> {
-        Ok(self.weight)
+        Ok(match &self.sim {
+            None => self.weight,
+            Some((_, max)) => *max,
+        })
     }
 
     fn set_min_competitive_score(&mut self, min: f32) -> Result<()> {

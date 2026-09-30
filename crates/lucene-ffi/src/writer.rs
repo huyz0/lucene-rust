@@ -229,6 +229,9 @@ pub(crate) fn map_writer_error(context: &str, e: index_writer::Error) -> FfiStat
         // The explicit-documents mode's refusals and `forceMerge(0)`: both
         // Java's `IllegalArgumentException`.
         | index_writer::Error::Explicit(_)
+        // A configured similarity returning a 0 norm for a non-empty field:
+        // a caller-supplied object misbehaving, not the disk.
+        | index_writer::Error::ZeroNorm(_)
         | index_writer::Error::InvalidMaxNumSegments(_)
         | index_writer::Error::UnknownPostingsField(_)
         | index_writer::Error::UnsupportedPostingsIndexOptions(_, _)

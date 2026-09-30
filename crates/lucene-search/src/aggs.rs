@@ -706,6 +706,7 @@ fn slice_states(
             max_doc: seg.max_doc,
             cache: seg.cache,
             reader: seg.reader,
+            similarity: None,
         };
         // The points shortcut first (AggregatorBase.getLeafCollector asks
         // tryPrecomputeAggregationForLeaf before collecting): a field it
@@ -913,6 +914,7 @@ pub(crate) fn plain_context<'s>(seg: &'s OpenSegment<'_>) -> exec::LeafContext<'
         max_doc: seg.max_doc,
         cache: seg.cache,
         reader: seg.reader,
+        similarity: None,
     }
 }
 

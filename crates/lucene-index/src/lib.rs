@@ -26,5 +26,6 @@ pub mod points_delete;
 pub mod segment_info;
 pub mod segment_infos;
 pub mod segment_writer;
+pub mod similarity;
 pub mod term_delete;
 pub mod update_document;

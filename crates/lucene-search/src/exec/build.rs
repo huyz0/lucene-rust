@@ -40,6 +40,41 @@ pub(crate) struct LeafContext<'a> {
     pub(crate) cache: Option<&'a super::cache::SegmentQueryCache>,
     /// The segment's reader, if any: its norms and doc values.
     pub(crate) reader: Option<&'a crate::directory_reader::SegmentReader>,
+    /// `IndexSearcher.getSimilarity()` when it is **not** the default BM25:
+    /// term and phrase clauses then score through its
+    /// [`crate::similarities::SimScorer`] (`TermWeight`/`PhraseWeight`), from
+    /// the reader-wide statistics in `global`. `None` -- every caller but
+    /// [`crate::multi_segment::search_boolean_query_multi_segment_with_similarity`],
+    /// which maps a default BM25 to `None` too -- is the BM25 fast path.
+    pub(crate) similarity: Option<&'a dyn crate::similarities::Similarity>,
+}
+
+/// `IndexSearcher.collectionStatistics(field)` and
+/// `termStatistics(term, ...)` for one term: the reader-wide ones the
+/// statistics pass gathered, else this segment's own (a single-segment
+/// search, where they are the same).
+fn sim_stats(
+    ctx: &LeafContext<'_>,
+    field: &str,
+    term: &[u8],
+    field_terms: &lucene_codecs::blocktree::FieldTerms,
+    stats: lucene_codecs::blocktree::TermStats,
+) -> (
+    crate::similarities::CollectionStatistics,
+    crate::similarities::TermStatistics,
+) {
+    let g = match ctx.global.and_then(|g| g.term(field, term)) {
+        Some(g) => *g,
+        None => crate::CollectionStats {
+            doc_freq: i64::from(stats.doc_freq),
+            doc_count: i64::from(field_terms.doc_count),
+            total_term_freq: stats.total_term_freq,
+            max_doc: i64::from(ctx.max_doc.unwrap_or(0)),
+            sum_total_term_freq: field_terms.sum_total_term_freq,
+            sum_doc_freq: field_terms.sum_doc_freq,
+        },
+    };
+    (g.collection_statistics(), g.term_statistics())
 }
 
 /// The scorer for `clause`, or `None` when it matches nothing in this
@@ -279,8 +314,23 @@ fn phrase<'a>(
 ) -> Result<PhraseForm<'a>> {
     if p.terms.len() < 2 {
         // Empty matches nothing and one term is a term query, as
-        // `PhraseQuery.rewrite` has it; both are the up-front path's.
+        // `PhraseQuery.rewrite` has it; both are the up-front path's -- but
+        // that path scores BM25, so under another similarity the one term
+        // runs as the `TermQuery` it rewrites to.
+        if let ([only], Some(_)) = (p.terms.as_slice(), ctx.similarity) {
+            let t = TermQuery::new(p.field.clone(), only.clone());
+            return Ok(match term(ctx, &t, None, boost, mode)? {
+                TermForm::Leg(leg) => {
+                    PhraseForm::Scorer(Box::new(TermScorer::new(*leg, mode == Mode::TopScores)))
+                }
+                TermForm::Absent => PhraseForm::Absent,
+                TermForm::Other => PhraseForm::Other,
+            });
+        }
         return Ok(PhraseForm::Other);
+    }
+    if ctx.similarity.is_some() {
+        return sim_phrase(ctx, p, boost, mode);
     }
     let (Some(doc_in), Some(pos_in)) = (ctx.doc_in, ctx.pos_in) else {
         return Ok(PhraseForm::Other);
@@ -328,6 +378,100 @@ fn phrase<'a>(
         mode == Mode::TopScores,
         mode.needs_scores(),
     ))))
+}
+
+/// [`phrase`] under a similarity other than the default BM25:
+/// `PhraseWeight.getStats`' `similarity.scorer(boost, collectionStats,
+/// termStats[])` over every term, then the same [`PhraseScorer`] scoring
+/// through it. A phrase with a pulsed-singleton term (no `.doc` stream for a
+/// lazy cursor) is resolved eagerly ([`crate::phrase_doc_freqs`]) and scored
+/// through the same `SimScorer`.
+fn sim_phrase<'a>(
+    ctx: &LeafContext<'a>,
+    p: &PhraseQuery,
+    boost: f32,
+    mode: Mode,
+) -> Result<PhraseForm<'a>> {
+    let Some(sim) = ctx.similarity else {
+        return Ok(PhraseForm::Other);
+    };
+    let Some(field_terms) = ctx.fields.field(&p.field) else {
+        return Ok(PhraseForm::Absent);
+    };
+    let mut found = Vec::with_capacity(p.terms.len());
+    let mut term_stats = Vec::with_capacity(p.terms.len());
+    let mut collection = None;
+    for term in &p.terms {
+        let Some(stats) = field_terms.try_seek_exact(term)? else {
+            return Ok(PhraseForm::Absent);
+        };
+        let (c, t) = sim_stats(ctx, &p.field, term, field_terms, stats);
+        collection.get_or_insert(c);
+        term_stats.push(t);
+        found.push(stats);
+    }
+    let Some(collection) = collection else {
+        return Ok(PhraseForm::Absent);
+    };
+    let scorer = sim.scorer(&p.field, boost, &collection, &term_stats);
+    let Some(pos_in) = ctx.pos_in else {
+        return Err(crate::Error::MissingPosInput);
+    };
+    let field_norms = ctx.norms.and_then(|m| m.get(&p.field));
+    let lazy = ctx.doc_in.filter(|_| found.iter().all(|s| s.doc_freq > 1));
+    let Some(doc_in) = lazy else {
+        let matched = crate::phrase_doc_freqs(
+            field_terms,
+            ctx.doc_in,
+            pos_in,
+            ctx.pay_in,
+            ctx.live_docs,
+            p,
+        )?;
+        if matched.is_empty() {
+            return Ok(PhraseForm::Absent);
+        }
+        let mut norms = field_norms.map(|n| n.cursor());
+        let mut docs = Vec::with_capacity(matched.len());
+        let mut scores = Vec::with_capacity(matched.len());
+        for (doc, freq) in matched {
+            let norm = match norms.as_mut() {
+                Some(n) => n.norm_long(doc)?.unwrap_or(1),
+                None => 1,
+            };
+            docs.push(doc);
+            if mode.needs_scores() {
+                scores.push(scorer.score(freq, norm));
+            }
+        }
+        return Ok(PhraseForm::Scorer(Box::new(DocList::new(docs, scores))));
+    };
+    let mut match_cost = 0.0f32;
+    let mut terms = Vec::with_capacity(p.terms.len());
+    for (slot, (term, stats)) in p.terms.iter().zip(&found).enumerate() {
+        match_cost += term_positions_cost(stats.doc_freq as i64, stats.total_term_freq);
+        let Some(cursor) = field_terms.lazy_positions(term, doc_in, pos_in)? else {
+            return Ok(PhraseForm::Absent);
+        };
+        terms.push(PhraseTerm {
+            cursor,
+            slot,
+            cost: stats.doc_freq as i64,
+        });
+    }
+    Ok(PhraseForm::Scorer(Box::new(
+        PhraseScorer::new(
+            terms,
+            0.0,
+            p.slop,
+            sloppy_phrase::PhraseRepeats::for_phrase(&p.terms),
+            field_norms.map(|n| n.cursor()),
+            match_cost,
+            mode == Mode::TopScores,
+            mode.needs_scores(),
+        )
+        .with_sim_scorer(scorer),
+    )))
 }
 
 /// A chain of nested `BoostQuery`s as `BoostQuery.rewrite` collapses it --
@@ -446,6 +590,18 @@ fn term<'a>(
         PostingsFlags::FreqsNoImpacts
     };
     let cursor = field_terms.lazy_postings_for(&seeked, doc_in, flags)?;
+    if let Some(sim) = ctx.similarity {
+        // `TermWeight`: `similarity.scorer(boost, collectionStats, termStats)`.
+        let (collection, term_stats) = sim_stats(ctx, &t.field, &t.term, field_terms, stats);
+        let scorer = sim.scorer(&t.field, boost, &collection, &[term_stats]);
+        let field_norms = ctx.norms.and_then(|m| m.get(&t.field));
+        return Ok(TermForm::Leg(Box::new(TermLeg::scoring_sim(
+            cursor,
+            scorer,
+            field_norms.map(|n| n.cursor()),
+            cost,
+        ))));
+    }
     let (doc_freq, doc_count) = match ctx.global.and_then(|g| g.term(&t.field, &t.term)) {
         Some(g) => (g.doc_freq, g.doc_count),
         None => (cost, field_terms.doc_count as i64),

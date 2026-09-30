@@ -78,6 +78,7 @@ pub fn terminate_after(segments: &[OpenSegment<'_>], query: &BooleanQuery, n: u6
             max_doc: seg.max_doc,
             cache: seg.cache,
             reader: seg.reader,
+            similarity: None,
         };
         let Some(mut scorer) = exec::build::build_boolean(&ctx, query, 1.0, Mode::NoScores, true)?
         else {
@@ -316,6 +317,7 @@ pub fn count_terminates(
                 max_doc: seg.max_doc,
                 cache: seg.cache,
                 reader: seg.reader,
+                similarity: None,
             };
             let Some(mut scorer) = exec::build::build_boolean(&ctx, query, 1.0, mode, true)? else {
                 continue;
