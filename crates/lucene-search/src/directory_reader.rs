@@ -769,10 +769,7 @@ impl SegmentReader {
         }
         // A race loses nothing: both parsed the same bytes.
         let _ = self.skip_indexes.set(map);
-        Ok(self
-            .skip_indexes
-            .get()
-            .and_then(|m| m.get(&field_number)))
+        Ok(self.skip_indexes.get().and_then(|m| m.get(&field_number)))
     }
 
     /// `LeafReader.getMetaData().sort()`: the index sort, primary field

@@ -619,8 +619,11 @@ pub(crate) fn doc_values_rewrite<'a>(
     ))
 }
 
+/// A predicate over a term's bytes.
+type TermPredicate = Box<dyn Fn(&[u8]) -> bool>;
+
 /// Whether a term is one `source` enumerates.
-fn term_matcher(source: &MultiTermSource) -> Result<Box<dyn Fn(&[u8]) -> bool>> {
+fn term_matcher(source: &MultiTermSource) -> Result<TermPredicate> {
     Ok(match source {
         MultiTermSource::Prefix(p) => {
             let prefix = p.prefix.clone();

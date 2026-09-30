@@ -62,8 +62,10 @@ fn sim(name: &str) -> Arc<dyn Similarity> {
 struct Ctx<'a> {
     /// `(op, field, argument, the filter or seed clause)` to the rewritten
     /// clause.
-    knn: &'a dyn Fn(&str, &str, &str, Option<Clause>) -> Option<Clause>,
+    knn: &'a KnnRewrite<'a>,
 }
+
+type KnnRewrite<'a> = dyn Fn(&str, &str, &str, Option<Clause>) -> Option<Clause> + 'a;
 
 fn rewrite(m: &str) -> RewriteMethod {
     match m {
@@ -387,8 +389,13 @@ struct VectorFiles {
 impl VectorFiles {
     fn read(dir: &std::path::Path, reader: &DirectoryReader) -> Self {
         let first = &reader.segment_readers()[0].segment_name;
-        if !dir.join(format!("{first}_Lucene99HnswVectorsFormat_0.vem")).exists() {
-            return Self { per_segment: Vec::new() };
+        if !dir
+            .join(format!("{first}_Lucene99HnswVectorsFormat_0.vem"))
+            .exists()
+        {
+            return Self {
+                per_segment: Vec::new(),
+            };
         }
         let per_segment = reader
             .segment_readers()
@@ -465,11 +472,14 @@ fn m7_knn_queries_match_lucene_bit_for_bit() {
 #[test]
 fn m7_doc_values_skip_ranges_match_lucene_bit_for_bit() {
     // The ranges must run on the skip-index path, not the plain-column one.
-    let reader = DirectoryReader::open(&FsDirectory::open(&data("m7_dv_index"))).unwrap();
+    let reader = DirectoryReader::open(&FsDirectory::open(data("m7_dv_index"))).unwrap();
     for seg in reader.segment_readers() {
         for field in ["sk", "msk"] {
             let number = seg.field_infos().field_by_name(field).unwrap().number;
-            assert!(seg.doc_values_skip_index(number).unwrap().is_some(), "{field}");
+            assert!(
+                seg.doc_values_skip_index(number).unwrap().is_some(),
+                "{field}"
+            );
         }
         let body = seg.field_infos().field_by_name("body").unwrap().number;
         assert!(seg.doc_values_skip_index(body).unwrap().is_none());

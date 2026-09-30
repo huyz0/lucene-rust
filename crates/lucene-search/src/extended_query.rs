@@ -524,6 +524,9 @@ pub struct BayesianScoreQuery {
 impl BayesianScoreQuery {
     /// The constructor's checks: `alpha` positive and finite, `beta` finite,
     /// `baseRate` in `[0, 1)`.
+    // `Range::contains` would reject a NaN `baseRate`, which Java's two
+    // comparisons let through.
+    #[allow(clippy::manual_range_contains)]
     pub fn new(query: impl Into<Clause>, alpha: f32, beta: f32, base_rate: f32) -> Result<Self> {
         if !alpha.is_finite() || alpha <= 0.0 {
             return Err(Error::InvalidQuery(format!(
@@ -688,7 +691,7 @@ impl PointRangeQuery {
         lower: Vec<u8>,
         upper: Vec<u8>,
     ) -> Result<Self> {
-        if num_dims == 0 || lower.len() != upper.len() || lower.len() % num_dims != 0 {
+        if num_dims == 0 || lower.len() != upper.len() || !lower.len().is_multiple_of(num_dims) {
             return Err(Error::InvalidQuery(
                 "lowerPoint and upperPoint must be num_dims * bytesPerDim bytes".into(),
             ));
