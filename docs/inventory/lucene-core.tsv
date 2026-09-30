@@ -175,10 +175,10 @@ codecs/lucene99/Lucene99HnswVectorsReader	ported	crates/lucene-codecs/src/hnsw_v
 codecs/lucene99/Lucene99HnswVectorsWriter	ported	crates/lucene-codecs/src/hnsw_vectors.rs::write_hnsw_vectors
 codecs/lucene99/Lucene99ScalarQuantizedVectorScorer	deferred:M8	Scorer for the Lucene99 scalar-quantized vectors format, which 10.5.0 ships only in backward-codecs (superseded by Lucene104ScalarQuantizedVectorsFormat).
 codecs/lucene99/Lucene99SegmentInfoFormat	ported	crates/lucene-index/src/segment_info.rs::write
-codecs/perfield/PerFieldDocValuesFormat	partial	crates/lucene-index/src/index_writer.rs::per_field_codec_suffix -- M7: per-field routing is single-format only: every field goes to one fixed format with suffix "0"; parity: "any per-field postings or doc-values format other than `Lucene104`/`Lucene90`" is out of scope
+codecs/perfield/PerFieldDocValuesFormat	partial	crates/lucene-index/src/index_writer.rs::per_field_codec_suffix -- M7: segments with several doc-values formats are read and merged (GenPerFieldFormats); the writer routes every doc-values field to one Lucene90DocValuesFormat() (suffix 0) -- no per-field skipIndexIntervalSize
 codecs/perfield/PerFieldKnnVectorsFormat	partial	crates/lucene-index/src/index_writer.rs::KNN_VECTORS_FORMAT_NAME -- M7: writes/merges the PerFieldKnnVectorsFormat.format/.suffix attributes for Lucene99HnswVectorsFormat only; no routing of fields to other KNN formats
-codecs/perfield/PerFieldMergeState	todo:M7	per-format FieldInfos filtering for multi-format merges
-codecs/perfield/PerFieldPostingsFormat	partial	crates/lucene-index/src/index_writer.rs::per_field_codec_suffix -- M7: per-field routing is single-format only: every field goes to one fixed format with suffix "0"; parity: "any per-field postings or doc-values format other than `Lucene104`/`Lucene90`" is out of scope
+codecs/perfield/PerFieldMergeState	ported	crates/lucene-codecs/src/per_field_postings.rs::field_suffixes
+codecs/perfield/PerFieldPostingsFormat	ported	crates/lucene-codecs/src/per_field_postings.rs::write
 document/BaseShapeDocValuesQuery	deferred:M9	base query over shape doc values (geo)
 document/BinaryDocValuesField	ported	crates/lucene-index/src/index_writer/explicit.rs::ExplicitFields
 document/BinaryPoint	ported	crates/lucene-index/src/document/numeric.rs::BinaryPoint -- M7: packed N-dimension bytes; queries in crates/lucene-search/src/document/point_queries.rs (binary_point); fixture GenDocumentFields

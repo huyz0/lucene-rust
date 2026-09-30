@@ -1269,6 +1269,7 @@ impl Frame {
         index_options: IndexOptions,
         has_payloads: bool,
         format: postings::PostingsFormat,
+        postings_base: [u64; 3],
     ) -> Result<()> {
         let limit = self.term_block_ord();
         if limit == 0 {
@@ -1338,6 +1339,14 @@ impl Frame {
                 has_payloads,
                 total_term_freq,
             )?;
+            if absolute {
+                // A block's first term is absolute and every later one a
+                // delta from it, so shifting the first shifts them all: into
+                // this field's format's part of the reader's buffers.
+                meta.doc_start_fp = meta.doc_start_fp.saturating_add(postings_base[0]);
+                meta.pos_start_fp = meta.pos_start_fp.saturating_add(postings_base[1]);
+                meta.pay_start_fp = meta.pay_start_fp.saturating_add(postings_base[2]);
+            }
             *meta_pos = r.position();
 
             self.meta_data_upto += 1;
@@ -1786,13 +1795,14 @@ impl<'a> SegmentTermsEnum<'a> {
 
     /// `SegmentTermsEnum.docFreq()`/`totalTermFreq()`.
     fn stats(&mut self) -> Result<TermStats> {
-        let (index_options, has_payloads, format) = (
+        let (index_options, has_payloads, format, base) = (
             self.field.index_options,
             self.field.has_payloads,
             self.field.postings_format,
+            self.field.postings_base,
         );
         let f = self.cur();
-        f.decode_meta_data(index_options, has_payloads, format)?;
+        f.decode_meta_data(index_options, has_payloads, format, base)?;
         Ok(TermStats {
             doc_freq: f.doc_freq,
             total_term_freq: f.total_term_freq,
@@ -1802,13 +1812,14 @@ impl<'a> SegmentTermsEnum<'a> {
     /// `SegmentTermsEnum.postings()`'s half of `decodeMetaData`: the postings
     /// file pointers for the term the enum is parked on.
     fn stats_and_meta(&mut self) -> Result<(TermStats, TermMetadata)> {
-        let (index_options, has_payloads, format) = (
+        let (index_options, has_payloads, format, base) = (
             self.field.index_options,
             self.field.has_payloads,
             self.field.postings_format,
+            self.field.postings_base,
         );
         let f = self.cur();
-        f.decode_meta_data(index_options, has_payloads, format)?;
+        f.decode_meta_data(index_options, has_payloads, format, base)?;
         Ok((
             TermStats {
                 doc_freq: f.doc_freq,
@@ -2097,6 +2108,13 @@ pub struct FieldTerms {
     /// never pays for one.
     ngram: std::sync::OnceLock<Option<Arc<crate::term_ngram::TermNgramIndex>>>,
     wide_walks: std::sync::atomic::AtomicU32,
+    /// Where this field's `.doc`, `.pos` and `.pay` begin inside the buffers
+    /// the segment's reader hands the postings decoder: `[0; 3]` for a
+    /// segment with one postings format, and each format's offset into the
+    /// concatenation for a segment `PerFieldPostingsFormat` split across
+    /// several ([`BlockTreeFields::combine`]). Added to every term's decoded
+    /// file pointers.
+    postings_base: [u64; 3],
 }
 
 impl std::fmt::Debug for FieldTerms {
@@ -2148,6 +2166,7 @@ impl Clone for FieldTerms {
             wide_walks: std::sync::atomic::AtomicU32::new(
                 self.wide_walks.load(std::sync::atomic::Ordering::Relaxed),
             ),
+            postings_base: self.postings_base,
         }
     }
 }
@@ -2754,6 +2773,26 @@ impl BlockTreeFields {
     pub(crate) fn from_fields(fields: Vec<(String, FieldTerms)>) -> Self {
         BlockTreeFields { fields }
     }
+
+    /// `PerFieldPostingsFormat.FieldsReader`: one dictionary over the
+    /// dictionaries of every postings format a segment's fields were routed
+    /// to (one `.tim`/`.tip`/`.tmd` per format and suffix), each group's
+    /// fields decoding their postings at `base` -- where that group's
+    /// `.doc`/`.pos`/`.pay` begin in the buffers the caller concatenated.
+    /// A field named by two groups is corrupt ([`Error::DuplicateField`]).
+    pub fn combine(groups: Vec<(BlockTreeFields, [u64; 3])>) -> Result<Self> {
+        let mut fields: Vec<(String, FieldTerms)> = Vec::new();
+        for (group, base) in groups {
+            for (name, mut terms) in group.fields {
+                if fields.iter().any(|(n, _)| *n == name) {
+                    return Err(Error::DuplicateField(name));
+                }
+                terms.postings_base = base;
+                fields.push((name, terms));
+            }
+        }
+        Ok(BlockTreeFields { fields })
+    }
 }
 
 impl FieldTerms {
@@ -2795,6 +2834,7 @@ impl FieldTerms {
             }),
             ngram: std::sync::OnceLock::new(),
             wide_walks: std::sync::atomic::AtomicU32::new(0),
+            postings_base: [0; 3],
         }
     }
 
@@ -4322,6 +4362,7 @@ fn decode_block_at_depth(
             index_options,
             has_payloads,
             postings::PostingsFormat::Lucene104,
+            [0; 3],
         )?;
         out.push((
             term.get().to_vec(),
@@ -4555,6 +4596,7 @@ pub fn open_shared(
                 }),
                 ngram: std::sync::OnceLock::new(),
                 wide_walks: std::sync::atomic::AtomicU32::new(0),
+                postings_base: [0; 3],
             },
         ));
     }

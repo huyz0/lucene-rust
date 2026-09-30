@@ -512,6 +512,10 @@ struct TermsWriter<'t, 'o, F> {
     /// cleared between blocks (`reset` only range-limits it), so sharing it
     /// is part of what makes the LZ4 output Java's.
     compression_table: Option<Box<lz4::HighCompressionHashTable>>,
+    /// `minItemsInBlock`/`maxItemsInBlock`: [`MIN_ITEMS_IN_BLOCK`] and
+    /// [`MAX_ITEMS_IN_BLOCK`] unless the format was built with others.
+    min_items_in_block: usize,
+    max_items_in_block: usize,
 }
 
 /// Writes one field's terms into `.tim` blocks and its trie into `.tip`,
@@ -527,6 +531,7 @@ pub(crate) fn write_field_terms<F>(
     tim: &mut Vec<u8>,
     tip: &mut Vec<u8>,
     terms: &[BlockTerm<'_>],
+    (min_items_in_block, max_items_in_block): (usize, usize),
     has_freqs: bool,
     encode_meta: F,
 ) -> TrieLocation
@@ -544,6 +549,8 @@ where
         last_term: Vec::new(),
         scratch: BlockScratch::default(),
         compression_table: None,
+        min_items_in_block,
+        max_items_in_block,
     };
     for (i, term) in terms.iter().enumerate() {
         w.push_term(term.bytes);
@@ -580,7 +587,7 @@ where
         let prefix_length = common_prefix_len(&self.last_term, text);
         for i in (prefix_length..self.last_term.len()).rev() {
             let top = self.pending.len() - self.prefix_starts[i];
-            if top >= MIN_ITEMS_IN_BLOCK {
+            if top >= self.min_items_in_block {
                 self.write_blocks(i + 1, top);
                 // Java follows this with `prefixStarts[i] -= prefixTopSize -
                 // 1`, which can go negative and is never read: every slot
@@ -629,7 +636,9 @@ where
             let lead = self.suffix_lead_label(&self.pending[i], prefix_length);
             if last_lead != Some(lead) {
                 let items = i - next_block_start;
-                if items >= MIN_ITEMS_IN_BLOCK && end - next_block_start > MAX_ITEMS_IN_BLOCK {
+                if items >= self.min_items_in_block
+                    && end - next_block_start > self.max_items_in_block
+                {
                     let is_floor = items < count;
                     new_blocks.push(self.write_block(
                         prefix_length,
