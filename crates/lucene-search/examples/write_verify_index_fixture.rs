@@ -547,6 +547,7 @@ fn scored(
                 field: f.to_string(),
                 terms: a[1..].iter().map(|t| t.as_bytes().to_vec()).collect(),
                 slop: a[0].parse().expect("slop"),
+                positions: Vec::new(),
             })],
             ..Default::default()
         },

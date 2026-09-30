@@ -197,6 +197,7 @@
 //! port doesn't parse doc-values skip indexes) are both deliberately deferred.
 
 pub mod aggs;
+pub mod bayesian_estimator;
 pub mod bucket_aggs;
 mod bulk_scorer;
 pub mod cardinality_sketch;
@@ -206,9 +207,11 @@ pub mod doc_value_query;
 pub mod docid_set;
 mod exec;
 pub mod explain;
+pub mod extended_query;
 pub mod facets;
 pub mod field_norms;
 pub mod highlighter;
+pub mod knn_collectors;
 pub mod multi_segment;
 pub mod near_spans;
 pub mod ordinal_map;
@@ -377,6 +380,11 @@ pub enum Error {
     /// message. Never a sign of a damaged index.
     #[error("{0}")]
     InvalidKnnQuery(String),
+    /// A query built with arguments its Java constructor rejects
+    /// (`IllegalArgumentException`), or that expands past
+    /// `IndexSearcher.getMaxClauseCount()` (`TooManyClauses`).
+    #[error("{0}")]
+    InvalidQuery(String),
     /// [`query_cache::search_term_query_cached`] was handed a `num_docs` the
     /// segment's own postings disagree with: a term's `.doc` file produced a
     /// doc id at or past the bitset that `num_docs` sizes. Java has no
@@ -1942,6 +1950,12 @@ fn resolve_clause_docs(
 ) -> Result<Vec<i32>> {
     match clause {
         Clause::Exists(q) => Err(crate::Error::MissingSegmentReader(q.field.clone())),
+        Clause::Extended(q) => Ok(exec::extended::resolve(
+            fields, doc_in, pos_in, pay_in, live_docs, points, None, None, q, false,
+        )?
+        .into_iter()
+        .map(|(d, _)| d)
+        .collect()),
         Clause::Term(query) => term_doc_ids(fields, doc_in, live_docs, query),
         Clause::Phrase(query) => {
             let mut collector = collector::VecCollector::default();
@@ -2705,6 +2719,11 @@ fn clause_scores(
 ) -> Result<HashMap<i32, f32>> {
     match clause {
         Clause::Exists(q) => Err(crate::Error::MissingSegmentReader(q.field.clone())),
+        Clause::Extended(q) => Ok(exec::extended::resolve(
+            fields, doc_in, pos_in, pay_in, live_docs, points, norms, global, q, true,
+        )?
+        .into_iter()
+        .collect()),
         Clause::Term(query) => {
             let clause_norms = norms.and_then(|m| m.get(&query.field));
             let mut scores = HashMap::new();
@@ -3070,6 +3089,10 @@ pub struct GlobalStats {
     /// them found the term in each segment.
     terms: HashMap<String, HashMap<Vec<u8>, TermEntry>>,
     fuzzy: HashMap<FuzzyQuery, FuzzyCollectionStats>,
+    /// A multi-term query's reader-wide rewrite (`TermCollectingRewrite`),
+    /// keyed by the query's `Debug` form; see
+    /// [`crate::exec::extended::rewrite_multi_term`].
+    extended: HashMap<String, Clause>,
 }
 
 impl GlobalStats {
@@ -3136,6 +3159,23 @@ impl GlobalStats {
     /// gather them (in which case the segment's own are already right).
     pub fn term(&self, field: &str, term: &[u8]) -> Option<&CollectionStats> {
         self.terms.get(field)?.get(term).map(|e| &e.stats)
+    }
+
+    /// Every fuzzy clause's recorded expansion.
+    pub(crate) fn fuzzy_entries(
+        &self,
+    ) -> impl Iterator<Item = (&FuzzyQuery, &FuzzyCollectionStats)> {
+        self.fuzzy.iter()
+    }
+
+    /// Records a multi-term query's reader-wide rewrite under `key`.
+    pub(crate) fn insert_extended_rewrite(&mut self, key: String, rewritten: Clause) {
+        self.extended.insert(key, rewritten);
+    }
+
+    /// The reader-wide rewrite recorded under `key`, if any.
+    pub(crate) fn extended_rewrite(&self, key: &str) -> Option<&Clause> {
+        self.extended.get(key)
     }
 
     /// Records one fuzzy clause's reader-wide expansion.
@@ -3268,9 +3308,12 @@ pub(crate) fn check_similarity_supported(query: &BooleanQuery) -> Result<()> {
             Clause::Boolean(b) => check_similarity_supported(b),
             Clause::Boost(b) => clause(&b.inner),
             Clause::DisjunctionMax(d) => d.disjuncts.iter().try_for_each(clause),
-            Clause::Fuzzy(_) => Err(Error::SimilarityUnsupported("FuzzyQuery")),
+            // Scored through the similarity as its blended rewrite.
+            Clause::Fuzzy(_) => Ok(()),
             Clause::Span(_) => Err(Error::SimilarityUnsupported("a span query")),
-            Clause::MultiPhrase(_) => Err(Error::SimilarityUnsupported("MultiPhraseQuery")),
+            // Scored through the similarity by the scorer tree.
+            Clause::MultiPhrase(_) => Ok(()),
+            Clause::Extended(e) => e.children().into_iter().try_for_each(clause),
             Clause::Term(_)
             | Clause::Phrase(_)
             | Clause::ConstantScore(_)
@@ -3440,6 +3483,8 @@ fn search_boolean_query_scored_impl<C: ScoringCollector>(
         && query.should.is_empty()
         && query.must_not.is_empty()
         && query.minimum_should_match == 0
+        // A phrase with explicit positions takes the scorer tree.
+        && !matches!(&query.must[0], Clause::Phrase(p) if !p.has_implicit_positions())
         && matches!(
             query.must[0],
             Clause::Phrase(_)
@@ -4671,7 +4716,7 @@ pub(crate) fn phrase_doc_freqs(
 /// candidate list, for the same reason `search_phrase_query_scored_with_stats`
 /// does (`positions_for_docs` indexes the wire stream by a running frequency
 /// sum that must total the term's `totalTermFreq`).
-fn multi_phrase_slot_docs(
+pub(crate) fn multi_phrase_slot_docs(
     field_terms: &blocktree::FieldTerms,
     doc_in: Option<&DocInput<'_>>,
     terms: &[Vec<u8>],
@@ -4692,7 +4737,7 @@ fn multi_phrase_slot_docs(
 /// `candidates` (which must be ascending). Returns `(positions, starts)` with
 /// `starts.len() == candidates.len() + 1`, the same flat shape
 /// `FieldTerms::positions_for_docs` returns for a single term.
-fn multi_phrase_slot_positions(
+pub(crate) fn multi_phrase_slot_positions(
     field_terms: &blocktree::FieldTerms,
     doc_in: Option<&DocInput<'_>>,
     pos_in: &PosInput<'_>,

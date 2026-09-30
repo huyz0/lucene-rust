@@ -708,6 +708,10 @@ pub enum Clause {
     /// (its norms, else its doc values), constant-scored; see
     /// [`FieldExistsQuery`]'s doc comment.
     Exists(FieldExistsQuery),
+    /// The queries M7 brings into the scorer tree -- synonyms, BM25F, the
+    /// multi-term rewrite methods, the fusion queries, doc-values and point
+    /// ranges, KNN results; see [`crate::extended_query`].
+    Extended(Box<crate::extended_query::ExtendedQuery>),
 }
 
 impl Clause {
@@ -1622,6 +1626,10 @@ pub struct PhraseQuery {
     /// default via [`Self::new`]/`Default`) means exact adjacent matching; see this
     /// struct's doc comment for `slop > 0`'s semantics.
     pub slop: u32,
+    /// `PhraseQuery.Builder.add(term, position)`: each term's position in the
+    /// phrase, non-decreasing. Empty means the implicit `0..terms.len()`; see
+    /// [`Self::positions`].
+    pub positions: Vec<i32>,
 }
 
 impl PhraseQuery {
@@ -1638,6 +1646,7 @@ impl PhraseQuery {
             field: field.into(),
             terms: terms.into_iter().map(Into::into).collect(),
             slop: 0,
+            positions: Vec::new(),
         }
     }
 
@@ -1646,6 +1655,54 @@ impl PhraseQuery {
     pub fn with_slop(mut self, slop: u32) -> Self {
         self.slop = slop;
         self
+    }
+
+    /// `PhraseQuery.Builder.add(term, position)` for every term: `(term,
+    /// position)` pairs in phrase order. Positions must be non-negative and
+    /// non-decreasing (`"Positions must be added in order"`).
+    pub fn with_positions(
+        field: impl Into<String>,
+        terms: impl IntoIterator<Item = (impl Into<Vec<u8>>, i32)>,
+    ) -> crate::Result<Self> {
+        let mut out = Self::new(field, Vec::<Vec<u8>>::new());
+        for (term, position) in terms {
+            if position < 0 {
+                return Err(crate::Error::InvalidQuery(format!(
+                    "Positions must be >= 0, got {position}"
+                )));
+            }
+            if out.positions.last().is_some_and(|&last| position < last) {
+                return Err(crate::Error::InvalidQuery(format!(
+                    "Positions must be added in order, got {position} after {}",
+                    out.positions.last().copied().unwrap_or(0)
+                )));
+            }
+            out.terms.push(term.into());
+            out.positions.push(position);
+        }
+        Ok(out)
+    }
+
+    /// `getPositions()`: the explicit positions, or `0..terms.len()`.
+    pub fn positions(&self) -> Vec<i32> {
+        if self.positions.len() == self.terms.len() {
+            self.positions.clone()
+        } else {
+            (0..self.terms.len())
+                .map(|i| i32::try_from(i).unwrap_or(i32::MAX))
+                .collect()
+        }
+    }
+
+    /// Whether the positions are the implicit `0, 1, 2, ...` -- the shape
+    /// every matcher in this crate was written for. `PhraseQuery.rewrite`
+    /// shifts the first position to `0`, so `[3, 4]` is that shape too.
+    pub fn has_implicit_positions(&self) -> bool {
+        let p = self.positions();
+        let first = p.first().copied().unwrap_or(0);
+        p.iter()
+            .enumerate()
+            .all(|(i, &pos)| i64::from(pos) - i64::from(first) == i as i64)
     }
 }
 
@@ -1690,6 +1747,9 @@ pub struct MultiPhraseQuery {
     pub term_arrays: Vec<Vec<Vec<u8>>>,
     /// Sloppy-matching budget -- see [`PhraseQuery::slop`].
     pub slop: u32,
+    /// `MultiPhraseQuery.Builder.add(terms, position)`: each entry's position,
+    /// non-decreasing. Empty means the implicit `0..term_arrays.len()`.
+    pub positions: Vec<i32>,
 }
 
 impl MultiPhraseQuery {
@@ -1706,6 +1766,38 @@ impl MultiPhraseQuery {
                 .map(|alts| alts.into_iter().map(Into::into).collect())
                 .collect(),
             slop: 0,
+            positions: Vec::new(),
+        }
+    }
+
+    /// `MultiPhraseQuery.Builder.add(terms, position)` for every entry, in
+    /// order; positions must be non-negative and non-decreasing.
+    pub fn with_positions(
+        field: impl Into<String>,
+        term_arrays: impl IntoIterator<Item = (impl IntoIterator<Item = impl Into<Vec<u8>>>, i32)>,
+    ) -> crate::Result<Self> {
+        let mut out = Self::new(field, Vec::<Vec<Vec<u8>>>::new());
+        for (alts, position) in term_arrays {
+            if position < 0 || out.positions.last().is_some_and(|&last| position < last) {
+                return Err(crate::Error::InvalidQuery(format!(
+                    "Positions must be added in order and be >= 0, got {position}"
+                )));
+            }
+            out.term_arrays
+                .push(alts.into_iter().map(Into::into).collect());
+            out.positions.push(position);
+        }
+        Ok(out)
+    }
+
+    /// `getPositions()`: the explicit positions, or `0..term_arrays.len()`.
+    pub fn positions(&self) -> Vec<i32> {
+        if self.positions.len() == self.term_arrays.len() {
+            self.positions.clone()
+        } else {
+            (0..self.term_arrays.len())
+                .map(|i| i32::try_from(i).unwrap_or(i32::MAX))
+                .collect()
         }
     }
 

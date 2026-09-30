@@ -210,8 +210,11 @@ fn bm25_only_clauses_are_refused_under_another_similarity() {
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
     let norms = vec![None; segments.len()];
-    let fuzzy = BooleanQuery::new()
-        .with_should([Clause::Fuzzy(lucene_search::FuzzyQuery::new("body", "t10"))]);
+    // A span query scores BM25 only; a fuzzy one scores through the
+    // similarity (`m7_query_fixtures`).
+    let fuzzy = BooleanQuery::new().with_should([Clause::Span(
+        lucene_search::SpanQuery::span_term("body", "t10"),
+    )]);
     let classic = ClassicSimilarity::default();
     let err =
         search_boolean_query_multi_segment_with_similarity(&segments, &fuzzy, &norms, 5, &classic)
