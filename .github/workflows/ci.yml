@@ -95,8 +95,12 @@ jobs:
 
       # M6's licence audit, kept true: a dependency the shipped library links
       # must be under a licence recorded in docs/licences.md.
+      # `cargo metadata` resolves every target's packages, but the build steps
+      # above only download this host's: without a full fetch, a cache miss
+      # leaves wasm-only crates (criterion's plotters) missing and the check's
+      # `--offline` metadata call fails.
       - name: Dependency licences
-        run: python3 scripts/check-licences.py
+        run: cargo fetch --locked && python3 scripts/check-licences.py
 
       # Every class of the Lucene 10.5.0 jar has a status in docs/inventory/
       # and every "ported" row names Rust code that exists. The jar is fetched
