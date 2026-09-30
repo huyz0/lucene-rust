@@ -356,6 +356,12 @@ pub enum Error {
     /// the scorer tree ([`exec`]) runs it with the segment's reader.
     #[error("Clause::Exists needs the segment's reader to execute (field {0:?})")]
     MissingSegmentReader(String),
+    /// A scoring clause of a kind that scores BM25 only, in a search run
+    /// under another similarity
+    /// ([`multi_segment::search_boolean_query_multi_segment_with_similarity`]):
+    /// refused rather than scored with the wrong formula.
+    #[error("{0} is scored with BM25 only; it cannot be scored under a different similarity")]
+    SimilarityUnsupported(&'static str),
     /// Surfaced by [`vector_query`] when the underlying `.vemf`/`.vec`/
     /// `.vem`/`.vex` decode fails -- the vector analog of [`Error::Points`].
     /// A *caller* mistake (an unknown field, a wrong-length query vector, a
@@ -2965,12 +2971,54 @@ fn dismax_scores(
 /// of the 20 benchmark queries disagreed with Java on its hit set. It is
 /// invisible on a single segment, which is why the merged corpus agreed exactly
 /// and no fixture caught it: every fixture is one segment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Beside the two numbers BM25 reads, it carries the rest of what
+/// `IndexSearcher.termStatistics`/`collectionStatistics` hand any
+/// [`similarities::Similarity`]: the term's `totalTermFreq` and the field's
+/// `maxDoc`, `sumTotalTermFreq` and `sumDocFreq`, each summed the same way.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CollectionStats {
     /// Number of documents containing the term, summed across every segment.
     pub doc_freq: i64,
     /// Number of documents that have the field, summed across every segment.
     pub doc_count: i64,
+    /// The term's occurrences, summed across every segment
+    /// (`TermStates.totalTermFreq`).
+    pub total_term_freq: i64,
+    /// `IndexReader.maxDoc()`: every segment's `maxDoc`, deleted documents
+    /// included.
+    pub max_doc: i64,
+    /// The field's tokens (`Terms.getSumTotalTermFreq`), summed.
+    pub sum_total_term_freq: i64,
+    /// The field's postings (`Terms.getSumDocFreq`), summed.
+    pub sum_doc_freq: i64,
+}
+
+impl CollectionStats {
+    /// `IndexSearcher.collectionStatistics(field)`, as a similarity takes it.
+    /// The counts come from a valid index, so `CollectionStatistics`' own
+    /// invariants hold; they are clamped rather than checked so a statistic
+    /// a caller built by hand with only `doc_freq`/`doc_count` still scores.
+    pub fn collection_statistics(&self) -> similarities::CollectionStatistics {
+        let doc_count = self.doc_count.max(1);
+        let sum_doc_freq = self.sum_doc_freq.max(doc_count);
+        similarities::CollectionStatistics {
+            max_doc: self.max_doc.max(doc_count),
+            doc_count,
+            sum_total_term_freq: self.sum_total_term_freq.max(sum_doc_freq),
+            sum_doc_freq,
+        }
+    }
+
+    /// `IndexSearcher.termStatistics(term, docFreq, totalTermFreq)`, clamped
+    /// like [`Self::collection_statistics`].
+    pub fn term_statistics(&self) -> similarities::TermStatistics {
+        let doc_freq = self.doc_freq.max(1);
+        similarities::TermStatistics {
+            doc_freq,
+            total_term_freq: self.total_term_freq.max(doc_freq),
+        }
+    }
 }
 
 /// Reader-wide statistics for one [`FuzzyQuery`] clause: the expansion
@@ -3174,6 +3222,71 @@ pub(crate) fn search_boolean_query_scored_segment<C: ScoringCollector>(
     )
 }
 
+/// [`search_boolean_query_scored_segment`] under a similarity other than the
+/// default BM25 (`IndexSearcher.setSimilarity`): straight to the scorer tree,
+/// whose term and phrase clauses score through `similarity`'s
+/// [`similarities::SimScorer`]s from the reader-wide statistics in `global`.
+/// None of the single-shape shortcuts above it apply: each scores BM25.
+pub(crate) fn search_boolean_query_scored_segment_with_similarity<C: ScoringCollector>(
+    seg: &multi_segment::OpenSegment<'_>,
+    query: &BooleanQuery,
+    norms: Option<&HashMap<String, FieldNorms<'_>>>,
+    global: &GlobalStats,
+    similarity: &dyn similarities::Similarity,
+    collector: &mut C,
+) -> Result<()> {
+    let ctx = exec::LeafContext {
+        fields: seg.fields,
+        doc_in: seg.doc_in,
+        pos_in: seg.pos_in,
+        pay_in: seg.pay_in,
+        live_docs: seg.live_docs,
+        points: seg.points,
+        norms,
+        global: Some(global),
+        max_doc: seg.max_doc,
+        cache: seg.cache,
+        reader: seg.reader,
+        similarity: Some(similarity),
+    };
+    let mode = exec::Mode::of(collector);
+    if let Some(mut bulk) = exec::bulk_boolean(&ctx, query, 1.0, mode)? {
+        exec::score_segment(&mut bulk, mode, seg.live_docs, collector)?;
+    }
+    Ok(())
+}
+
+/// Refuses a query with a scoring clause that only scores BM25 -- a fuzzy,
+/// span or multi-phrase clause where its score counts (a `MUST`, `SHOULD`,
+/// dis-max or boosted position) -- before a search under another similarity
+/// scores it with the wrong formula. Term, phrase and boolean clauses score
+/// through the similarity; constant-scored ones (`constant_score`, filters,
+/// ranges, the wildcard family, `exists`, match-all) do not depend on it.
+pub(crate) fn check_similarity_supported(query: &BooleanQuery) -> Result<()> {
+    fn clause(c: &Clause) -> Result<()> {
+        match c {
+            Clause::Boolean(b) => check_similarity_supported(b),
+            Clause::Boost(b) => clause(&b.inner),
+            Clause::DisjunctionMax(d) => d.disjuncts.iter().try_for_each(clause),
+            Clause::Fuzzy(_) => Err(Error::SimilarityUnsupported("FuzzyQuery")),
+            Clause::Span(_) => Err(Error::SimilarityUnsupported("a span query")),
+            Clause::MultiPhrase(_) => Err(Error::SimilarityUnsupported("MultiPhraseQuery")),
+            Clause::Term(_)
+            | Clause::Phrase(_)
+            | Clause::ConstantScore(_)
+            | Clause::Wildcard(_)
+            | Clause::Prefix(_)
+            | Clause::Regexp(_)
+            | Clause::PointsRange(_)
+            | Clause::MatchAllDocs(_)
+            | Clause::MatchNoDocs(_)
+            | Clause::TermInSet(_)
+            | Clause::Exists(_) => Ok(()),
+        }
+    }
+    query.must.iter().chain(&query.should).try_for_each(clause)
+}
+
 /// `Weight.count`-free counting: how many live documents of one segment
 /// `query` matches, run on the same scorer tree and bulk scorers as the
 /// scored search, in `COMPLETE_NO_SCORES` -- frequencies never decoded, no
@@ -3207,6 +3320,7 @@ pub fn count_boolean_query_segment(
         max_doc: seg.max_doc,
         cache: seg.cache,
         reader: seg.reader,
+        similarity: None,
     };
     // `BooleanWeight.count` of a lone required clause is that clause's
     // `Weight.count`: an `exists` is answered from the index statistics
@@ -3444,6 +3558,7 @@ fn search_boolean_query_scored_impl<C: ScoringCollector>(
         max_doc,
         cache,
         reader,
+        similarity: None,
     };
     let mode = exec::Mode::of(collector);
     if let Some(mut bulk) = exec::bulk_boolean(&ctx, query, 1.0, mode)? {
@@ -4397,6 +4512,49 @@ pub fn search_phrase_query_scored_with_stats<C: ScoringCollector>(
         }
     }
 
+    let matched = phrase_doc_freqs(field_terms, doc_in, pos_in, pay_in, live_docs, query)?;
+    // One norms cursor for this scan; the matches ascend, so a sparse
+    // field's `IndexedDISI` region is walked once, not once per document.
+    let mut norms_cursor = norms.map(|n| n.cursor());
+    for (doc_id, phrase_freq) in matched {
+        let (field_length, avg_field_length) = match norms_cursor.as_mut() {
+            Some(nc) => (nc.field_length(doc_id)?, nc.avg_field_length()),
+            None => (
+                similarity::UNNORMED_FIELD_LENGTH,
+                similarity::UNNORMED_FIELD_LENGTH,
+            ),
+        };
+        collector.collect(
+            doc_id,
+            similarity::do_score(
+                idf_sum,
+                phrase_freq,
+                similarity::norm_inverse(
+                    field_length,
+                    avg_field_length,
+                    similarity::DEFAULT_K1,
+                    similarity::DEFAULT_B,
+                ),
+            ),
+        );
+    }
+    Ok(())
+}
+
+/// The eager phrase path: every live document `query` matches in this
+/// segment, ascending, with its phrase frequency (`ExactPhraseMatcher`'s
+/// count, or `SloppyPhraseMatcher`'s summed weights). What a phrase whose
+/// term is a pulsed singleton -- no `.doc` stream for a lazy cursor -- is
+/// scored from, by BM25 below and by any other similarity in the scorer
+/// tree. `field_terms` holds every one of the phrase's terms.
+pub(crate) fn phrase_doc_freqs(
+    field_terms: &blocktree::FieldTerms,
+    doc_in: Option<&DocInput<'_>>,
+    pos_in: &PosInput<'_>,
+    pay_in: Option<&PayInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &PhraseQuery,
+) -> Result<Vec<(i32, f32)>> {
     // Documents first, positions second.
     //
     // A phrase can only match where every term does, so positions are needed
@@ -4419,7 +4577,7 @@ pub fn search_phrase_query_scored_with_stats<C: ScoringCollector>(
     let mut per_term_freqs: Vec<Vec<i32>> = Vec::with_capacity(query.terms.len());
     for term in &query.terms {
         let Some(postings) = field_terms.postings(term, doc_in)? else {
-            return Ok(());
+            return Ok(Vec::new());
         };
         per_term_docs.push(postings.docs.clone());
         per_term_freqs.push(postings.freqs.clone());
@@ -4435,7 +4593,7 @@ pub fn search_phrase_query_scored_with_stats<C: ScoringCollector>(
     .filter(|&doc_id| live_docs.is_none_or(|bits| bits.get_doc(doc_id)))
     .collect();
     if candidate_docs.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     // Each term's own indices for the candidates, ascending -- one walk per
@@ -4475,15 +4633,12 @@ pub fn search_phrase_query_scored_with_stats<C: ScoringCollector>(
     // One cursor per term, advanced in step with the ascending candidate order,
     // so each doc's positions are found without hashing and without cloning.
     // Candidate `k` sits at index `k` in every term's positions, because
-    // `wanted` was built from the same candidate list for each term. No
-    // per-document cursor bookkeeping is left.
+    // `wanted` was built from the same candidate list for each term.
     let mut term_positions: Vec<&[i32]> = Vec::with_capacity(per_term_positions.len());
     // `SloppyPhraseMatcher`'s `rptGroups`, computed once per query -- see
     // `search_phrase_query`. Unused at `slop == 0`.
     let repeats = sloppy_phrase::PhraseRepeats::for_phrase(&query.terms);
-    // One norms cursor for this scan; `candidate_docs` ascends, so a sparse
-    // field's `IndexedDISI` region is walked once, not once per document.
-    let mut norms_cursor = norms.map(|n| n.cursor());
+    let mut out = Vec::with_capacity(candidate_docs.len());
     for (k, &doc_id) in candidate_docs.iter().enumerate() {
         term_positions.clear();
         for t in 0..per_term_positions.len() {
@@ -4500,31 +4655,11 @@ pub fn search_phrase_query_scored_with_stats<C: ScoringCollector>(
         } else {
             sloppy_phrase::sloppy_phrase_freq(&term_positions, &repeats, query.slop)
         };
-        if phrase_freq == 0.0 {
-            continue;
+        if phrase_freq != 0.0 {
+            out.push((doc_id, phrase_freq));
         }
-        let (field_length, avg_field_length) = match norms_cursor.as_mut() {
-            Some(nc) => (nc.field_length(doc_id)?, nc.avg_field_length()),
-            None => (
-                similarity::UNNORMED_FIELD_LENGTH,
-                similarity::UNNORMED_FIELD_LENGTH,
-            ),
-        };
-        collector.collect(
-            doc_id,
-            similarity::do_score(
-                idf_sum,
-                phrase_freq,
-                similarity::norm_inverse(
-                    field_length,
-                    avg_field_length,
-                    similarity::DEFAULT_K1,
-                    similarity::DEFAULT_B,
-                ),
-            ),
-        );
     }
-    Ok(())
+    Ok(out)
 }
 
 /// The documents containing at least one of `terms`, ascending -- one
@@ -5779,6 +5914,7 @@ mod tests {
             max_doc: None,
             cache: None,
             reader: None,
+            similarity: None,
         };
         exec::bulk_boolean(&ctx, q, 1.0, exec::Mode::Complete)
             .unwrap()

@@ -336,6 +336,57 @@ pub(crate) struct TermLeg<'a> {
     max_window_score: f32,
     freqs: Vec<i32>,
     norm_inv: Vec<f32>,
+    /// A term scored by a similarity other than the default BM25: `Some`
+    /// only for such a leg, whose `scoring` is then `false` so every BM25
+    /// branch above stays exactly as it was; the non-BM25 branches consult
+    /// this before falling back to [`Self::constant`].
+    sim: Option<Box<SimLeg<'a>>>,
+}
+
+/// A [`TermLeg`]'s scoring state under a general
+/// [`crate::similarities::SimScorer`] -- `TermScorer`'s `SimScorer` and
+/// norms, and `MaxScoreCache`'s bounds for it.
+struct SimLeg<'a> {
+    scorer: std::sync::Arc<dyn crate::similarities::SimScorer>,
+    /// The field's norms; `None` scores every document with the norm `1`,
+    /// Java's value for a field without norms.
+    norms: Option<FieldNormsCursor<'a, 'a>>,
+    /// Scratch for a batch's frequencies and norms.
+    freqs: Vec<f32>,
+    norms_buf: Vec<i64>,
+}
+
+impl SimLeg<'_> {
+    /// `MaxScoreCache.computeMaxScore`: the largest score any impact of a
+    /// level allows, `0` at least. Without norms every document scores with
+    /// the norm `1`, so the impacts' norms are read as `1` too.
+    fn bound(&self, impacts: &[Impact]) -> f32 {
+        let with_norms = self.norms.is_some();
+        impacts.iter().fold(0.0f32, |max, impact| {
+            let norm = if with_norms { impact.norm } else { 1 };
+            max.max(self.scorer.score(impact.freq as f32, norm))
+        })
+    }
+
+    fn norm(&mut self, doc: i32) -> Result<i64> {
+        Ok(match self.norms.as_mut() {
+            Some(n) => n.norm_long(doc)?.unwrap_or(1),
+            None => 1,
+        })
+    }
+}
+
+/// `MaxScoreCache.globalMaxScore`, `score(Float.MAX_VALUE, 1)`, as a bound
+/// the pruning can compare against: a `NaN` (a similarity whose formula
+/// overflows there) bounds nothing, so it becomes `+inf`, which only means
+/// no pruning.
+pub(crate) fn sim_global_max(scorer: &dyn crate::similarities::SimScorer, max_freq: f32) -> f32 {
+    let max = scorer.score(max_freq, 1);
+    if max.is_nan() {
+        f32::INFINITY
+    } else {
+        max
+    }
 }
 
 /// The largest score `impacts` allow for a term of `weight` -- the same float
@@ -381,6 +432,29 @@ impl<'a> TermLeg<'a> {
         leg
     }
 
+    /// A scoring clause under a similarity other than the default BM25:
+    /// `TermScorer` over `scorer`, with `MaxScoreCache`'s bounds for it --
+    /// `score(Float.MAX_VALUE, 1)` globally, the largest score of a level's
+    /// impacts per block. A field without frequencies has one impact,
+    /// `(1, 1)`, for everything (see [`Self::scoring`]).
+    pub(crate) fn scoring_sim(
+        cursor: LazyDocsCursor<'a>,
+        scorer: std::sync::Arc<dyn crate::similarities::SimScorer>,
+        norms: Option<FieldNormsCursor<'a, 'a>>,
+        cost: i64,
+    ) -> Self {
+        let max_freq = if cursor.has_freqs() { f32::MAX } else { 1.0 };
+        let global_max = sim_global_max(scorer.as_ref(), max_freq);
+        let mut leg = Self::new(cursor, 0.0, false, None, cost, global_max);
+        leg.sim = Some(Box::new(SimLeg {
+            scorer,
+            norms,
+            freqs: Vec::new(),
+            norms_buf: Vec::new(),
+        }));
+        leg
+    }
+
     /// A `FILTER` clause: matches gate the conjunction and contribute `0`.
     pub(crate) fn filter(cursor: LazyDocsCursor<'a>, cost: i64) -> Self {
         Self::new(cursor, 0.0, false, None, cost, 0.0)
@@ -421,6 +495,7 @@ impl<'a> TermLeg<'a> {
             max_window_score: 0.0,
             freqs: Vec::with_capacity(lucene_codecs::postings::BLOCK_SIZE as usize + 1),
             norm_inv: Vec::with_capacity(lucene_codecs::postings::BLOCK_SIZE as usize + 1),
+            sim: None,
         }
     }
 
@@ -469,7 +544,7 @@ impl<'a> TermLeg<'a> {
     /// `weight`.
     fn level0_max(&mut self) -> f32 {
         if !self.scoring {
-            return self.constant;
+            return self.other_level_max(0);
         }
         let key = self.cursor.level0_last_doc_id();
         if key != self.l0_key {
@@ -496,6 +571,40 @@ impl<'a> TermLeg<'a> {
         self.l0_key = key;
     }
 
+    /// [`Self::level0_max`]/[`Self::level1_max`] for a leg that is not the
+    /// BM25 fast form: a constant's score, or `MaxScoreCache` over a general
+    /// similarity's impacts (an empty level bounded by the global maximum).
+    #[inline(never)]
+    fn other_level_max(&mut self, level: usize) -> f32 {
+        let Some(sim) = self.sim.as_deref() else {
+            return self.constant;
+        };
+        let (key, cached) = if level == 0 {
+            (self.cursor.level0_last_doc_id(), (self.l0_key, self.l0_max))
+        } else {
+            (self.cursor.level1_last_doc_id(), (self.l1_key, self.l1_max))
+        };
+        if key == cached.0 {
+            return cached.1;
+        }
+        let impacts = if level == 0 {
+            self.cursor.level0_impacts()
+        } else {
+            self.cursor.level1_impacts()
+        };
+        let max = if impacts.is_empty() {
+            self.global_max
+        } else {
+            sim.bound(impacts)
+        };
+        if level == 0 {
+            (self.l0_key, self.l0_max) = (key, max);
+        } else {
+            (self.l1_key, self.l1_max) = (key, max);
+        }
+        max
+    }
+
     /// Whether a level-1 span with impacts is available -- Lucene's
     /// `Impacts.numLevels() == 2`.
     fn has_level1(&self) -> bool {
@@ -504,7 +613,7 @@ impl<'a> TermLeg<'a> {
 
     fn level1_max(&mut self) -> f32 {
         if !self.scoring {
-            return self.constant;
+            return self.other_level_max(1);
         }
         let key = self.cursor.level1_last_doc_id();
         if key != self.l1_key {
@@ -520,7 +629,7 @@ impl<'a> TermLeg<'a> {
     /// every score of this clause up to and including `up_to`, from the first
     /// impacts level that covers it.
     pub(crate) fn max_score(&mut self, up_to: i32) -> f32 {
-        if !self.scoring {
+        if !self.scoring && self.sim.is_none() {
             return self.constant;
         }
         if up_to <= self.cursor.level0_last_doc_id() {
@@ -614,7 +723,7 @@ impl<'a> TermLeg<'a> {
 
     /// A `FILTER` leg: matches only, every score `0`.
     pub(crate) fn is_filter(&self) -> bool {
-        !self.scoring && self.constant == 0.0
+        !self.scoring && self.constant == 0.0 && self.sim.is_none()
     }
 
     /// `PostingsEnum.docIDRunEnd()`.
@@ -646,7 +755,7 @@ impl<'a> TermLeg<'a> {
     #[inline]
     pub(crate) fn score(&mut self) -> Result<f32> {
         if !self.scoring {
-            return Ok(self.constant);
+            return self.other_score();
         }
         let doc = self.cursor.doc_id();
         let freq = self.cursor.freq().unwrap_or(1) as f32;
@@ -655,6 +764,20 @@ impl<'a> TermLeg<'a> {
             None => similarity::UNNORMED_NORM_INVERSE,
         };
         Ok(similarity::do_score(self.weight, freq, norm_inverse))
+    }
+
+    /// [`Self::score`] for a leg that is not the BM25 fast form:
+    /// `simScorer.score(freq, norm)` under a general similarity, the
+    /// constant otherwise.
+    #[inline(never)]
+    fn other_score(&mut self) -> Result<f32> {
+        let doc = self.cursor.doc_id();
+        let freq = self.cursor.freq().unwrap_or(1) as f32;
+        let Some(sim) = self.sim.as_deref_mut() else {
+            return Ok(self.constant);
+        };
+        let norm = sim.norm(doc)?;
+        Ok(sim.scorer.score(freq, norm))
     }
 
     /// `TermScorer.nextDocsAndScores`: the rest of the current postings block
@@ -714,6 +837,22 @@ impl<'a> TermLeg<'a> {
         }
         out.scores.clear();
         if !self.scoring {
+            if let Some(sim) = self.sim.as_deref_mut() {
+                // `TermScorer.nextDocsAndScores`: the norms in bulk, then
+                // `BulkSimScorer.score` over the batch.
+                match sim.norms.as_mut() {
+                    Some(n) => n.norm_long_batch(&out.docs, &mut sim.norms_buf)?,
+                    None => {
+                        sim.norms_buf.clear();
+                        sim.norms_buf.resize(out.docs.len(), 1);
+                    }
+                }
+                sim.freqs.clear();
+                sim.freqs.extend(self.freqs.iter().map(|&f| f as f32));
+                sim.scorer
+                    .score_bulk(&sim.freqs, &sim.norms_buf, &mut out.scores);
+                return Ok(());
+            }
             out.scores.resize(out.docs.len(), self.constant);
             return Ok(());
         }

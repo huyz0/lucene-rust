@@ -150,6 +150,7 @@ fn multi_segment_merge_matches_real_lucene_scores_from_two_real_segment_copies()
             .doc_freq as i64
             * 2,
         doc_count: field_stats.doc_count as i64 * 2,
+        ..Default::default()
     };
     let mut local0 = TopDocsCollector::new(top_n);
     lucene_search::search_term_query_scored_maxscore_with_stats(
