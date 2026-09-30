@@ -2603,6 +2603,11 @@ pub const MAX_DOCS: usize = i32::MAX as usize - 128;
 /// documents can be reclaimed.
 pub const FORCE_MERGE_DELETES_PCT_ALLOWED: i64 = 10;
 
+/// `IndexWriter.WRITE_LOCK_NAME`: the lock every writer holds for as long as
+/// it is open, so no two writers -- in this process, another Rust process,
+/// or a Java `IndexWriter` -- ever modify one index at once.
+pub const WRITE_LOCK_NAME: &str = "write.lock";
+
 pub struct IndexWriter<'d> {
     dir: &'d dyn Directory,
     /// What every segment this writer builds is built with -- see
@@ -2737,6 +2742,20 @@ pub struct IndexWriter<'d> {
     /// once -- what [`IndexWriter::stamp_min_segment_version`] takes the
     /// minimum of.
     segment_versions: std::collections::HashMap<String, segment_infos::LuceneVersion>,
+    /// `IndexWriter.writeLock`, obtained first thing in [`IndexWriter::open`]
+    /// and held until the writer is dropped (Java's `close()`/`rollback()`
+    /// release it). Declared last, so it is released after every other
+    /// field -- the deleter included -- has been dropped, as Java releases it
+    /// last in `rollbackInternal`.
+    ///
+    /// Java also wraps the directory in a `LockValidatingDirectoryWrapper`
+    /// so every write checks the lock first. This writer borrows its
+    /// directory (`&'d dyn Directory`, shared with its deleter), so it cannot
+    /// own a wrapper around it; it checks at the points that make changes
+    /// visible instead -- [`IndexWriter::flush`] and
+    /// [`IndexWriter::prepare_commit`]/[`IndexWriter::finish_commit`] -- see
+    /// [`IndexWriter::ensure_write_lock_valid`].
+    write_lock: Box<dyn lucene_store::Lock>,
 }
 
 /// One field this writer has been opted into also indexing real postings
@@ -3379,6 +3398,13 @@ impl<'d> IndexWriter<'d> {
         codec_name: impl Into<String>,
         lucene_version: LuceneVersion,
     ) -> Result<Self> {
+        // `writeLock = d.obtainLock(WRITE_LOCK_NAME)`: before anything reads
+        // the index, and held by the writer from here on. A held lock is
+        // `LockObtainFailedException` (`lucene_store::Error::LockObtainFailed`).
+        // Every early return below drops it, which releases it -- Java's
+        // `IOUtils.closeWhileHandlingException(writeLock)` on a failed
+        // constructor.
+        let write_lock = dir.obtain_lock(WRITE_LOCK_NAME)?;
         // `FieldInfos(FieldInfo[])` over `FieldInfo`'s own constructor: every
         // field is coerced (the three indexed-only flags off a non-indexed
         // field) and then checked, per field and across fields, before this
@@ -3469,7 +3495,19 @@ impl<'d> IndexWriter<'d> {
             segment_docs_total: None,
             pending_has_blocks: false,
             segment_versions: std::collections::HashMap::new(),
+            write_lock,
         })
+    }
+
+    /// `writeLock.ensureValid()`: fails with
+    /// [`lucene_store::Error::AlreadyClosed`] once this writer's
+    /// `write.lock` has been lost (its file deleted or replaced, or the lock
+    /// released behind the writer's back). Checked before every flush and
+    /// commit step, so a writer that lost its lock stops before it
+    /// publishes anything into an index another writer may now own.
+    pub fn ensure_write_lock_valid(&self) -> Result<()> {
+        self.write_lock.ensure_valid()?;
+        Ok(())
     }
 
     /// Opts this writer into also building and writing real postings
@@ -5494,6 +5532,7 @@ impl<'d> IndexWriter<'d> {
         if self.prepared_commit.is_some() {
             return Err(Error::PrepareCommitAlreadyCalled);
         }
+        self.ensure_write_lock_valid()?;
 
         // Everything still buffered becomes one last segment; segments an
         // automatic flush already wrote are folded in below.
@@ -5562,6 +5601,7 @@ impl<'d> IndexWriter<'d> {
         if self.prepared_commit.is_some() {
             return Err(Error::PreparedCommitPending("flush"));
         }
+        self.ensure_write_lock_valid()?;
         if self.pending_docs.is_empty() {
             // Deletes issued while the document buffer was empty still have to
             // be resolved -- Java's `applyAllDeletes` is not conditional on a
@@ -5811,6 +5851,12 @@ impl<'d> IndexWriter<'d> {
     /// no-op, since silently succeeding here could hide a caller bug (calling
     /// `finish_commit()` twice, or before ever calling `prepare_commit()`).
     pub fn finish_commit(&mut self) -> Result<&SegmentInfos> {
+        if self.prepared_commit.is_none() {
+            return Err(Error::NoPreparedCommit);
+        }
+        // The last check before the publish: a lost lock leaves the prepared
+        // commit in place for `rollback()`, as any other failure here does.
+        self.ensure_write_lock_valid()?;
         let new_segment_infos = self.prepared_commit.take().ok_or(Error::NoPreparedCommit)?;
 
         // The single atomic publish: rename `pending_segments_N` onto
@@ -8470,13 +8516,12 @@ impl<'d> IndexWriter<'d> {
     /// `IndexWriter.rollback()` also closes the writer and permanently
     /// releases its write lock, so the `IndexWriter` instance itself becomes
     /// unusable afterward (any further call throws
-    /// `AlreadyClosedException`). This facade has no open/close lifecycle or
-    /// write-lock concept at all (see module doc comment: "one caller, one
-    /// `Directory`, sequential calls" -- there is no `IndexWriterConfig`-style
-    /// closeable object here to begin with), so this `rollback()` leaves the
-    /// writer fully usable for further [`IndexWriter::add_document`]/
-    /// [`IndexWriter::commit`] calls immediately afterward -- the same choice
-    /// this facade already made for having no `close()` method at all.
+    /// `AlreadyClosedException`). This facade's only close is drop -- which is
+    /// what releases its `write.lock` ([`WRITE_LOCK_NAME`]) -- so this
+    /// `rollback()` keeps the lock and leaves the writer fully usable for
+    /// further [`IndexWriter::add_document`]/[`IndexWriter::commit`] calls
+    /// immediately afterward -- the same choice this facade already made for
+    /// having no `close()` method at all.
     pub fn rollback(&mut self) {
         self.pending_docs.clear();
         self.pending_custom_freq_terms.clear();
@@ -9465,6 +9510,69 @@ pub(crate) mod tests {
         assert_eq!(writer.pending_doc_count(), 0);
     }
 
+    /// `IndexWriter`'s constructor takes `write.lock` first: a second writer
+    /// on the same directory -- through any `Directory` instance over the
+    /// path -- fails with `LockObtainFailedException` until the first is
+    /// closed (dropped), and a failed open does not keep the lock.
+    #[test]
+    fn a_second_writer_on_one_directory_fails_to_obtain_the_write_lock() {
+        let tmp = tempdir("write-lock");
+        let dir = FsDirectory::open(&tmp);
+        let fields = || vec![stored_only_field("id", 0)];
+        let mut first = IndexWriter::open(&dir, fields(), "Lucene104", version()).unwrap();
+        assert!(tmp.join(WRITE_LOCK_NAME).is_file());
+        first.ensure_write_lock_valid().unwrap();
+
+        let other = FsDirectory::open(&tmp);
+        let err = IndexWriter::open(&other, fields(), "Lucene104", version())
+            .err()
+            .expect("the lock is held");
+        assert!(
+            matches!(err, Error::Store(lucene_store::Error::LockObtainFailed(_))),
+            "{err}"
+        );
+        // The holder is unaffected, and commits.
+        first.add_document(doc("1")).unwrap();
+        first.commit().unwrap();
+        drop(first);
+
+        // Released on drop; `write.lock` is not an index file the deleter
+        // touches, and a reader-side listing still sees one commit.
+        let mut second = IndexWriter::open(&other, fields(), "Lucene104", version()).unwrap();
+        assert_eq!(second.segment_infos().segments.len(), 1);
+        second.rollback();
+        drop(second);
+
+        // A failed open (bad field list) releases the lock it took.
+        let bad = FieldInfo::new("body", 0)
+            .with_index_options(IndexOptions::DocsAndFreqs)
+            .with_store_payloads(true);
+        assert!(IndexWriter::open(&dir, vec![bad], "Lucene104", version()).is_err());
+        IndexWriter::open(&dir, fields(), "Lucene104", version()).unwrap();
+    }
+
+    /// A writer whose `write.lock` was lost (here: deleted and recreated
+    /// behind its back) refuses to flush or commit rather than publish into
+    /// an index another writer may now own.
+    #[test]
+    fn a_writer_that_lost_its_lock_refuses_to_commit() {
+        let tmp = tempdir("write-lock-lost");
+        let dir = FsDirectory::open(&tmp);
+        let mut writer = IndexWriter::open(
+            &dir,
+            vec![stored_only_field("id", 0)],
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+        writer.add_document(doc("1")).unwrap();
+        std::fs::remove_file(tmp.join(WRITE_LOCK_NAME)).unwrap();
+        assert!(writer.ensure_write_lock_valid().is_err());
+        assert!(writer.flush().is_err());
+        assert!(writer.commit().is_err());
+        assert!(crate::segment_infos::read_latest(&dir).is_err());
+    }
+
     /// `IndexWriter::open` is the port's caller-facing door for a hand-built
     /// field list, and Java's is the one place a `FieldInfo` can come from --
     /// its constructor, which throws. Before this, an inconsistent field was
@@ -9950,7 +10058,9 @@ pub(crate) mod tests {
         );
 
         // ...and a writer resumed on that directory reports it back, then
-        // carries it into its own next commit unless replaced.
+        // carries it into its own next commit unless replaced. (Closed
+        // first: the resumed writer needs `write.lock`.)
+        drop(writer);
         let mut resumed = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
         assert_eq!(
             resumed.live_commit_data(),
@@ -10436,7 +10546,8 @@ pub(crate) mod tests {
         );
 
         // A fresh writer over the same directory must not hand out `new_name`
-        // again.
+        // again. (The first one closes first: `write.lock`.)
+        drop(writer);
         let mut resumed = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
         assert_ne!(
             resumed.new_segment_name(),
@@ -10767,7 +10878,8 @@ pub(crate) mod tests {
         // Reopen the writer against this on-disk state (one segment with a
         // real deletion already applied), enable the merge policy, and cross
         // its threshold so the deleted segment gets folded into an automatic
-        // merge.
+        // merge. The first writer closes first: `write.lock`.
+        drop(writer);
         let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
         writer.set_merge_policy(Some(tight_merge_policy()));
         writer.add_document(doc("c")).unwrap();
@@ -10840,6 +10952,9 @@ pub(crate) mod tests {
         }
         fn sync_meta_data(&self) -> lucene_store::Result<()> {
             self.inner.sync_meta_data()
+        }
+        fn obtain_lock(&self, name: &str) -> lucene_store::Result<Box<dyn lucene_store::Lock>> {
+            self.inner.obtain_lock(name)
         }
     }
 
@@ -10982,6 +11097,7 @@ pub(crate) mod tests {
         infos.version += 1;
         segment_infos::write(&infos, &dir).unwrap();
 
+        drop(writer);
         let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
         writer.set_merge_policy(Some(tight_merge_policy()));
         writer.commit().unwrap();

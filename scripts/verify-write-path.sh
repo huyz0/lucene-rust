@@ -231,10 +231,28 @@ for case in "${CASES[@]}"; do
   fi
 done
 
+# Not a file format but the same contract: the Rust writer's write.lock and
+# Lucene's NativeFSLockFactory must exclude each other on one directory, or a
+# Rust and a Java IndexWriter could both open an index. The Rust test drives
+# fixtures/src/VerifyNativeLock.java; without the jar it would skip, so it is
+# handed the one resolved above.
+total=$(( ${#CASES[@]} + 1 ))
+if LUCENE_CORE_JAR=$(lucene_resolve_jar lucene-core) \
+    cargo test --quiet -p lucene-store --test native_lock_interop -- --nocapture 2>&1 \
+    | tee "$WORK/native-lock.log" | grep -q "skipped"; then
+  echo "  FAIL (skipped)      native_lock_interop"; failed=$((failed+1))
+elif grep -q "test result: ok" "$WORK/native-lock.log"; then
+  echo "  ok                  NativeFSLockFactory <-> NativeFsLockFactory"
+else
+  echo "  FAIL                native_lock_interop"
+  tail -15 "$WORK/native-lock.log" | sed 's/^/      /'
+  failed=$((failed+1))
+fi
+
 echo
 if [ "$failed" -eq 0 ]; then
-  echo "verify-write-path: ok (${#CASES[@]}/${#CASES[@]} passed)"
+  echo "verify-write-path: ok ($total/$total passed)"
 else
-  echo "verify-write-path: FAILED ($failed of ${#CASES[@]} cases)"
+  echo "verify-write-path: FAILED ($failed of $total cases)"
 fi
 exit "$failed"
