@@ -1067,6 +1067,24 @@ pub(crate) fn score_segment_with_deadline<C: ScoringCollector + ?Sized>(
     collector: &mut C,
     deadline: std::time::Instant,
 ) -> Result<bool> {
+    score_segment_time_limited(bulk, mode, live_docs, collector, || {
+        std::time::Instant::now() >= deadline
+    })
+}
+
+/// `TimeLimitingBulkScorer.score` over the whole segment with any
+/// `QueryTimeout.shouldExit`: asked once before each window, the first
+/// window [`TIME_LIMIT_INTERVAL`] documents wide and each next one half as
+/// wide again, starting where the wrapped bulk scorer said the last one
+/// ended. Returns `true` when `should_exit` stopped it
+/// (`TimeExceededException`); what was collected before that stands.
+pub(crate) fn score_segment_time_limited<C: ScoringCollector + ?Sized>(
+    bulk: &mut Bulk<'_>,
+    mode: Mode,
+    live_docs: Option<&FixedBitSet>,
+    collector: &mut C,
+    mut should_exit: impl FnMut() -> bool,
+) -> Result<bool> {
     let (mut min, max) = (0i32, NO_MORE_DOCS);
     let mut interval = TIME_LIMIT_INTERVAL;
     while min < max {
@@ -1077,7 +1095,7 @@ pub(crate) fn score_segment_with_deadline<C: ScoringCollector + ?Sized>(
         if interval < grown {
             interval = grown;
         }
-        if std::time::Instant::now() >= deadline {
+        if should_exit() {
             return Ok(true);
         }
         min = bulk.score(mode, live_docs, collector, min, new_max)?;
