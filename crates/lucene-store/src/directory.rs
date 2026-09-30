@@ -127,6 +127,21 @@ pub trait Directory: Send + Sync {
     /// writing.
     fn create_output(&self, name: &str) -> Result<FsIndexOutput>;
 
+    /// Port of `Directory.createOutput(name, context)` for a context that
+    /// carries a flush or merge size estimate (`FlushInfo`'s
+    /// `estimatedSegmentSize`, `MergeInfo`'s `estimatedMergeBytes`), the only
+    /// part of `IOContext` a directory's *results* can depend on
+    /// ([`crate::NrtCachingDirectory`] caches small segments in memory). The
+    /// default ignores the estimate; a wrapper forwards it.
+    fn create_output_with_estimate(
+        &self,
+        name: &str,
+        estimated_bytes: Option<u64>,
+    ) -> Result<FsIndexOutput> {
+        let _ = estimated_bytes;
+        self.create_output(name)
+    }
+
     /// Port of `Directory.createTempOutput(prefix, suffix, context)`: a new
     /// output under a fresh name built by [`temp_file_name`], never
     /// clobbering an existing file.
@@ -137,6 +152,18 @@ pub trait Directory: Send + Sync {
     fn create_temp_output(&self, prefix: &str, suffix: &str) -> Result<FsIndexOutput> {
         let _ = (prefix, suffix);
         Err(unsupported("createTempOutput"))
+    }
+
+    /// [`Directory::create_temp_output`] with a context's size estimate, as
+    /// [`Directory::create_output_with_estimate`].
+    fn create_temp_output_with_estimate(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        estimated_bytes: Option<u64>,
+    ) -> Result<FsIndexOutput> {
+        let _ = estimated_bytes;
+        self.create_temp_output(prefix, suffix)
     }
 
     /// Port of `Directory.sync(Collection<String>)`: fsyncs every named
@@ -230,6 +257,21 @@ macro_rules! forward_directory {
             fn create_temp_output(&self, prefix: &str, suffix: &str) -> Result<FsIndexOutput> {
                 (**self).create_temp_output(prefix, suffix)
             }
+            fn create_output_with_estimate(
+                &self,
+                name: &str,
+                estimated_bytes: Option<u64>,
+            ) -> Result<FsIndexOutput> {
+                (**self).create_output_with_estimate(name, estimated_bytes)
+            }
+            fn create_temp_output_with_estimate(
+                &self,
+                prefix: &str,
+                suffix: &str,
+                estimated_bytes: Option<u64>,
+            ) -> Result<FsIndexOutput> {
+                (**self).create_temp_output_with_estimate(prefix, suffix, estimated_bytes)
+            }
             fn sync(&self, names: &[String]) -> Result<()> {
                 (**self).sync(names)
             }
@@ -259,6 +301,89 @@ macro_rules! forward_directory {
 }
 
 forward_directory!(&T, Arc<T>);
+
+/// A directory every output of which is created with one size estimate:
+/// the Rust shape of the single `IOContext` (`new IOContext(flushInfo)` or
+/// `new IOContext(mergeInfo)`) Java's `IndexWriter` passes to every
+/// `createOutput` of one flush or one merge. Everything else forwards.
+pub struct EstimatedWrites<'a> {
+    inner: &'a dyn Directory,
+    estimated_bytes: u64,
+}
+
+impl<'a> EstimatedWrites<'a> {
+    /// `inner`, with `estimated_bytes` (`FlushInfo.estimatedSegmentSize` or
+    /// `MergeInfo.estimatedMergeBytes`) on every output it creates.
+    pub fn new(inner: &'a dyn Directory, estimated_bytes: u64) -> Self {
+        EstimatedWrites {
+            inner,
+            estimated_bytes,
+        }
+    }
+
+    /// The estimate every output carries.
+    pub fn estimated_bytes(&self) -> u64 {
+        self.estimated_bytes
+    }
+}
+
+impl Directory for EstimatedWrites<'_> {
+    fn list_all(&self) -> Result<Vec<String>> {
+        self.inner.list_all()
+    }
+    fn open(&self, name: &str) -> Result<Input> {
+        self.inner.open(name)
+    }
+    fn file_length(&self, name: &str) -> Result<u64> {
+        self.inner.file_length(name)
+    }
+    fn create_output(&self, name: &str) -> Result<FsIndexOutput> {
+        self.inner
+            .create_output_with_estimate(name, Some(self.estimated_bytes))
+    }
+    fn create_output_with_estimate(
+        &self,
+        name: &str,
+        estimated_bytes: Option<u64>,
+    ) -> Result<FsIndexOutput> {
+        self.inner
+            .create_output_with_estimate(name, estimated_bytes)
+    }
+    fn create_temp_output(&self, prefix: &str, suffix: &str) -> Result<FsIndexOutput> {
+        self.inner
+            .create_temp_output_with_estimate(prefix, suffix, Some(self.estimated_bytes))
+    }
+    fn create_temp_output_with_estimate(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        estimated_bytes: Option<u64>,
+    ) -> Result<FsIndexOutput> {
+        self.inner
+            .create_temp_output_with_estimate(prefix, suffix, estimated_bytes)
+    }
+    fn sync(&self, names: &[String]) -> Result<()> {
+        self.inner.sync(names)
+    }
+    fn rename(&self, source: &str, dest: &str) -> Result<()> {
+        self.inner.rename(source, dest)
+    }
+    fn delete_file(&self, name: &str) -> Result<()> {
+        self.inner.delete_file(name)
+    }
+    fn sync_meta_data(&self) -> Result<()> {
+        self.inner.sync_meta_data()
+    }
+    fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
+        self.inner.obtain_lock(name)
+    }
+    fn pending_deletions(&self) -> Result<BTreeSet<String>> {
+        self.inner.pending_deletions()
+    }
+    fn fs_directory_path(&self) -> Option<&Path> {
+        self.inner.fs_directory_path()
+    }
+}
 
 /// Port of `Directory.getTempFileName(prefix, suffix, counter)`:
 /// `IndexFileNames.segmentFileName(prefix, suffix + "_" + base36(counter),
