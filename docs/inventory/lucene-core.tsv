@@ -927,17 +927,17 @@ util/AttributeImpl	todo:M7	token attribute model (M7 T7.8)
 util/AttributeReflector	not-needed	reflection-style attribute introspection callback (toString/debugging); Rust uses Debug
 util/AttributeSource	partial	crates/lucene-analysis/src/lib.rs::Token -- M7: a fixed attribute set (term, offsets, position increment/length) as struct fields; no pluggable AttributeSource (addAttribute, captureState/restoreState, cloneAttributes) -- M7 T7.8
 util/BitDocIdSet	ported	crates/lucene-search/src/docid_set.rs::CachedDocIdSet
-util/BitSet	partial	crates/lucene-util/src/fixed_bit_set.rs::FixedBitSet -- M7: no abstract BitSet over dense/sparse implementations; BitSet.of(iterator), or(DocIdSetIterator), prevSetBit, approximateCardinality missing
+util/BitSet	ported	crates/lucene-util/src/bits.rs::BitSet
 util/BitSetIterator	ported	crates/lucene-util/src/fixed_bit_set.rs::next_set_bit
 util/BitUtil	ported	crates/lucene-util/src/bit_util.rs::interleave
-util/Bits	partial	crates/lucene-util/src/fixed_bit_set.rs::get_doc -- M7: no Bits trait (MatchAllBits/MatchNoBits, applyMask); membership is always a concrete FixedBitSet or None for all-live
+util/Bits	ported	crates/lucene-util/src/bits.rs::Bits
 util/ByteBlockPool	not-needed	byte arena/block allocator for the JVM heap; the Rust inverter buffers term bytes in Vec arenas (lucene-index inverter.rs TermHash)
 util/BytesRef	not-needed	byte-slice reference; Rust &[u8]/Vec<u8>, whose Ord is the same unsigned-byte order
 util/BytesRefArray	not-needed	append-only byte-string list; Rust Vec<Vec<u8>> / flat Vec<u8> with offsets
-util/BytesRefBlockPool	not-needed	ByteBlockPool-backed term storage for BytesRefHash; Rust stores term bytes in a Vec<u8> arena (inverter.rs TermHash)
+util/BytesRefBlockPool	ported	crates/lucene-util/src/bytes_ref_hash.rs::BytesRefBlockPool
 util/BytesRefBuilder	not-needed	growable byte buffer; Rust Vec<u8>
 util/BytesRefComparator	not-needed	BytesRef comparator with radix-sort byteAt hook; Rust slice Ord and std sort
-util/BytesRefHash	partial	crates/lucene-index/src/inverter.rs::TermHash -- M7: private open-addressing term hash (add, term, sorted_ids = sort); no public BytesRefHash API (find without add, compact, clear/reinit, addByPoolOffset)
+util/BytesRefHash	ported	crates/lucene-util/src/bytes_ref_hash.rs::BytesRefHash
 util/BytesRefIterator	not-needed	pull iterator over BytesRefs; Rust Iterator<Item=&[u8]>
 util/CharsRef	not-needed	char-array reference; Rust &str/String
 util/CharsRefBuilder	not-needed	growable char buffer; Rust String
@@ -948,7 +948,7 @@ util/CollectionUtil	not-needed	in-place List sorting helpers; Rust slice::sort (
 util/CommandLineUtil	not-needed	reflection loading of Directory/FSDirectory classes by name for CLI tools
 util/Constants	not-needed	JVM/OS detection constants; Rust cfg!/std::env::consts
 util/Counter	not-needed	mutable long counter (optionally atomic); Rust i64/AtomicI64
-util/DenseLiveDocs	partial	crates/lucene-codecs/src/live_docs.rs::parse -- M7: dense live docs are a bare FixedBitSet; no LiveDocs wrapper with cached deletedCount, liveDocsIterator/deletedDocsIterator
+util/DenseLiveDocs	ported	crates/lucene-util/src/live_docs.rs::DenseLiveDocs
 util/DocBaseBitSetIterator	ported	crates/lucene-codecs/src/points.rs::read_bitset_ids
 util/DocIdSetBuilder	ported	crates/lucene-util/src/doc_id_sort.rs::sort_dedup_doc_ids
 util/FileDeleter	ported	crates/lucene-index/src/index_file_deleter.rs::IndexFileDeleter
@@ -978,7 +978,7 @@ util/IntsRef	not-needed	int-slice reference; Rust &[i32]/Vec<i32> (e.g. FST labe
 util/IntsRefBuilder	not-needed	growable int buffer; Rust Vec<i32>
 util/JavaLoggingInfoStream	not-needed	InfoStream over java.util.logging
 util/LSBRadixSorter	ported	crates/lucene-util/src/doc_id_sort.rs::sort_dedup_doc_ids
-util/LiveDocs	partial	crates/lucene-codecs/src/live_docs.rs::parse -- M7: live docs are a bare FixedBitSet; no LiveDocs abstraction (liveDocsIterator, deletedDocsIterator, deletedCount)
+util/LiveDocs	ported	crates/lucene-util/src/live_docs.rs::LiveDocs
 util/LongBitSet	not-needed	long-indexed FixedBitSet; the Rust FixedBitSet is usize-indexed, which subsumes it
 util/LongHeap	not-needed	generic long min-heap; Rust std BinaryHeap (TernaryLongHeap ported separately where Lucene's order matters)
 util/LongValues	not-needed	index->long accessor interface; readers expose get() directly (e.g. direct_reader.rs DirectReader::get)
@@ -990,7 +990,7 @@ util/MergedIterator	not-needed	k-way merge of sorted iterators with dedup; Rust 
 util/ModuleResourceLoader	not-needed	JVM module resource loading
 util/NamedSPILoader	not-needed	JVM ServiceLoader-based SPI lookup; Rust codecs are selected statically
 util/NamedThreadFactory	not-needed	named thread factory; Rust std::thread::Builder::name
-util/NotDocIdSet	partial	crates/lucene-search/src/docid_set.rs::InverseSparse -- M7: only as RoaringDocIdSet's complemented-block encoding; no general complement DocIdSet
+util/NotDocIdSet	ported	crates/lucene-util/src/bits.rs::NotDocIdSetIter
 util/NumericUtils	ported	crates/lucene-util/src/numeric_utils.rs::big_int_to_sortable_bytes
 util/OfflineSorter	todo:M7	external (temp-file) merge sort of byte sequences
 util/PagedBytes	not-needed	paged byte arena for buffering writers; Rust writers buffer in Vec<u8>
@@ -1015,7 +1015,7 @@ util/SmallFloat	ported	crates/lucene-util/src/small_float.rs::float_to_byte315
 util/SortableBytesRefArray	not-needed	internal interface over BytesRefArray/FixedLengthBytesRefArray
 util/Sorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
 util/SparseFixedBitSet	ported	crates/lucene-util/src/sparse_fixed_bit_set.rs::SparseFixedBitSet
-util/SparseLiveDocs	todo:M7	sparse live-docs representation (dense FixedBitSet always)
+util/SparseLiveDocs	ported	crates/lucene-util/src/live_docs.rs::SparseLiveDocs
 util/StableMSBRadixSorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
 util/StableStringSorter	not-needed	generic sorting framework; the port sorts with std slice::sort/sort_unstable(_by)
 util/StrictStringTokenizer	not-needed	string splitter for Version parsing; Rust str::split

@@ -111,6 +111,7 @@ public final class SweepMicro {
       case "vectors" -> vectors();
       case "quantized" -> quantized();
       case "fst_build" -> fstBuild();
+      case "bytes_ref_hash" -> bytesRefHash();
       case "postings_adv" -> withLeaf(index, SweepMicro::postingsAdvance);
       case "postings_freq" -> withLeaf(index, SweepMicro::postingsFreq);
       case "positions" -> withLeaf(index, SweepMicro::positions);
@@ -548,6 +549,28 @@ public final class SweepMicro {
             return fdocs.length;
           });
     }
+  }
+
+  /**
+   * {@code BytesRefHash}: 200k adds of decimal terms drawn from 50k distinct ones ({@code (i *
+   * 7919) % 50000}), then {@code sort()}. One op is one add. Mirrors the port's {@code
+   * bench_bytes_ref_hash}.
+   */
+  static void bytesRefHash() throws IOException {
+    org.apache.lucene.util.BytesRef[] terms = new org.apache.lucene.util.BytesRef[200_000];
+    for (int i = 0; i < terms.length; i++) {
+      terms[i] = new org.apache.lucene.util.BytesRef(Long.toString((i * 7919L) % 50_000));
+    }
+    measure(
+        "bytes_ref_hash_add_sort_200k",
+        () -> {
+          org.apache.lucene.util.BytesRefHash h = new org.apache.lucene.util.BytesRefHash();
+          long s = 0;
+          for (org.apache.lucene.util.BytesRef t : terms) s += h.add(t);
+          s += h.sort()[0];
+          sink += s;
+          return terms.length;
+        });
   }
 
   /**

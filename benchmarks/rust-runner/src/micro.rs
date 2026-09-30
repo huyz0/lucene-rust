@@ -901,6 +901,24 @@ fn bench_quantized(w: Duration, m: Duration) {
     }
 }
 
+/// `BytesRefHash`: 200k adds of decimal terms drawn from 50k distinct ones
+/// (`(i * 7919) % 50000`), then `sort()`. One op is one add (the sort is
+/// amortised in). Mirrors `SweepMicro.bytesRefHash`.
+fn bench_bytes_ref_hash(w: Duration, m: Duration) {
+    use lucene_util::bytes_ref_hash::BytesRefHash;
+    let terms: Vec<Vec<u8>> = (0..200_000u64)
+        .map(|i| ((i * 7919) % 50_000).to_string().into_bytes())
+        .collect();
+    measure("bytes_ref_hash_add_sort_200k", w, m, || {
+        let mut h = BytesRefHash::with_capacity(16, 17).unwrap();
+        for t in &terms {
+            black_box(h.add(t).unwrap());
+        }
+        black_box(h.sort()[0]);
+        terms.len() as u64
+    });
+}
+
 /// `FSTCompiler` over 50k sorted decimal keys (`i * 7919 % 1000003`, as
 /// bytes) with `PositiveIntOutputs`: one op is one key added, the compile
 /// included. Mirrors `SweepMicro.fstBuild`.
@@ -1833,6 +1851,7 @@ fn main() {
         "vectors" => bench_vectors(warmup, measure),
         "quantized" => bench_quantized(warmup, measure),
         "fst_build" => bench_fst_build(warmup, measure),
+        "bytes_ref_hash" => bench_bytes_ref_hash(warmup, measure),
         "term_dict_write" => bench_term_dict_write(warmup, measure),
         "dv_merge" => bench_dv_merge(warmup, measure),
         "points_write" => bench_points_write(warmup, measure),
