@@ -730,6 +730,10 @@ impl FlushDeletes<'_> {
 /// `FieldInfos.Builder` and `LiveIndexWriterConfig`).
 #[derive(Clone)]
 pub(crate) struct IndexingConfig {
+    /// `IndexWriter.readerPool`: segments opened for delete resolution, kept
+    /// for the next round (see [`crate::reader_pool`]). Shared, not copied,
+    /// when the configuration is.
+    reader_pool: std::sync::Arc<crate::reader_pool::ReaderPool>,
     fields: Vec<FieldInfo>,
     codec_name: String,
     lucene_version: LuceneVersion,
@@ -2836,6 +2840,9 @@ pub struct IndexWriter<'d> {
     /// against segments, each stamped with the generation that decides which
     /// segments it may touch.
     updates_stream: BufferedUpdatesStream,
+    /// Near-real-time snapshots handed out and not yet returned, and their
+    /// version -- see [`crate::nrt`].
+    pub(crate) nrt: crate::nrt::NrtState,
     /// `IndexWriter.rollbackSegments`: the segment list of the last *durable*
     /// commit, captured at [`IndexWriter::open`] and refreshed every time a
     /// commit is installed. [`IndexWriter::rollback`] restores it
@@ -3441,6 +3448,19 @@ impl<'d> IndexWriter<'d> {
         self.cfg.merge_mb_per_sec
     }
 
+    /// `IndexWriterConfig.setReaderPooling(on)`: whether a segment opened to
+    /// resolve deletes is kept for the next round ([`crate::reader_pool`]).
+    /// On by default; turning it off drops what is pooled.
+    pub fn set_reader_pooling(&mut self, on: bool) {
+        self.cfg.reader_pool.set_enabled(on);
+    }
+
+    /// The writer's reader pool (`IndexWriter.getReaderPool`, for tests and
+    /// diagnostics).
+    pub fn reader_pool(&self) -> &crate::reader_pool::ReaderPool {
+        &self.cfg.reader_pool
+    }
+
     fn cfg_mut(&mut self) -> &mut IndexingConfig {
         std::sync::Arc::make_mut(&mut self.cfg)
     }
@@ -3705,6 +3725,7 @@ impl<'d> IndexWriter<'d> {
                 hnsw_beam_width: hnsw::DEFAULT_BEAM_WIDTH,
                 merge_mb_per_sec: None,
                 similarity: None,
+                reader_pool: std::sync::Arc::default(),
             }),
             segment_infos,
             pending_docs: Vec::new(),
@@ -3721,6 +3742,7 @@ impl<'d> IndexWriter<'d> {
             prepared_commit: None,
             delete_queue: DeleteQueue::new(),
             updates_stream: BufferedUpdatesStream::new(),
+            nrt: crate::nrt::NrtState::new(),
             rollback_segments,
             pending_vectors: Vec::new(),
             pending_explicit: Vec::new(),
@@ -5112,6 +5134,7 @@ impl<'d> IndexWriter<'d> {
     /// silently -- use it when you want a failure to reclaim disk space to
     /// surface as an error rather than be ignored.
     pub fn delete_unused_files(&mut self) -> Result<()> {
+        self.release_nrt_holds()?;
         self.deleter.revisit_policy()?;
         let live = self.live_infos();
         self.deleter.checkpoint(&live, false)?;
@@ -5540,6 +5563,13 @@ impl<'d> IndexWriter<'d> {
             new_segment_infos.generation += 1;
             new_segment_infos.version += 1;
         }
+        // Above every version an NRT snapshot was given, so `getVersion`
+        // stays monotonic across snapshots and commits (see `crate::nrt`).
+        // Never used with NRT readers, `max_version` is -1 and this is a
+        // no-op.
+        new_segment_infos.version = new_segment_infos
+            .version
+            .max(self.nrt.max_version.saturating_add(1));
         new_segment_infos.id = generate_segment_id(new_segment_infos.generation);
         new_segment_infos.segments = updated_segments;
         self.stamp_min_segment_version(&mut new_segment_infos)?;
@@ -5799,6 +5829,13 @@ impl<'d> IndexWriter<'d> {
             new_segment_infos.generation += 1;
             new_segment_infos.version += 1;
         }
+        // Above every version an NRT snapshot was given, so `getVersion`
+        // stays monotonic across snapshots and commits (see `crate::nrt`).
+        // Never used with NRT readers, `max_version` is -1 and this is a
+        // no-op.
+        new_segment_infos.version = new_segment_infos
+            .version
+            .max(self.nrt.max_version.saturating_add(1));
         // Java writes a fresh `StringHelper.randomId()` into every
         // `segments_N` header it produces, so two commits of the same index are
         // never confusable by id; cloning the previous commit's id would make
@@ -5851,6 +5888,7 @@ impl<'d> IndexWriter<'d> {
             return Err(Error::PreparedCommitPending("flush"));
         }
         self.ensure_write_lock_valid()?;
+        self.release_nrt_holds()?;
         if self.pending_docs.is_empty() {
             // Deletes issued while the document buffer was empty still have to
             // be resolved -- Java's `applyAllDeletes` is not conditional on a
@@ -8209,11 +8247,16 @@ impl<'d> IndexWriter<'d> {
     /// Returns whether the merge was published (`false`: abandoned).
     pub(crate) fn finish_merge(&mut self, plan: MergePlan, outcome: MergeOutcome) -> Result<bool> {
         let held = plan.held.clone();
+        let retired = plan.names.clone();
         let result = self.finish_merge_holding(plan, outcome);
         // After the merge is published (or abandoned): released last, so the
         // sources' files go only once nothing else references them.
         let released = self.deleter.release_files(&held);
         let published = result?;
+        if published {
+            // `ReaderPool.drop` for each merged-away source.
+            self.cfg.reader_pool.drop_segments(&retired);
+        }
         released?;
         Ok(published)
     }
@@ -8465,6 +8508,16 @@ impl<'d> IndexWriter<'d> {
         self.flushed_segments = flushed;
 
         self.drop_fully_deleted_segments(&committed_fully_deleted, &flushed_fully_deleted);
+        // `ReaderPool.drop` for what this round (or anything since the last
+        // one) took out of the index -- a segment it left fully deleted
+        // included.
+        let live = self.live_infos();
+        let names: std::collections::HashSet<&str> = live
+            .segments
+            .iter()
+            .map(|s| s.segment_name.as_str())
+            .collect();
+        self.cfg.reader_pool.retain(&names);
         Ok(())
     }
 
@@ -8705,6 +8758,24 @@ impl<'d> IndexWriter<'d> {
         self.pending_docs.len()
     }
 
+    /// Documents or deletes buffered and not yet in a segment's files --
+    /// what `IndexWriter.nrtIsCurrent` checks beside the segment list
+    /// (`docWriter.anyChanges()`, `bufferedUpdatesStream.any()`).
+    pub(crate) fn has_buffered_changes(&self) -> bool {
+        !self.pending_docs.is_empty()
+            || self.delete_queue.any_changes()
+            || self.updates_stream.any()
+    }
+
+    /// Pins `segments`' files in the deleter until
+    /// [`IndexWriter::release_files`] -- what an NRT reader holds.
+    pub(crate) fn pin_segment_files(
+        &mut self,
+        segments: &[SegmentCommitInfo],
+    ) -> Result<Vec<String>> {
+        Ok(self.deleter.hold_segment_files(segments)?)
+    }
+
     /// `IndexWriter.hasUncommittedChanges()`: whether the next commit would
     /// publish anything -- buffered documents, buffered deletes or updates, a
     /// segment flushed since the last commit, or deletes already applied to a
@@ -8811,6 +8882,9 @@ impl<'d> IndexWriter<'d> {
     /// immediately afterward -- the same choice this facade already made for
     /// having no `close()` method at all.
     pub fn rollback(&mut self) {
+        // `ReaderPool.dropAll()`: nothing opened for the discarded changes
+        // survives the rollback.
+        self.cfg.reader_pool.clear();
         self.pending_docs.clear();
         self.pending_custom_freq_terms.clear();
         self.pending_vectors.clear();
@@ -8883,6 +8957,7 @@ impl<'d> IndexWriter<'d> {
     /// Refused while a [`IndexWriter::prepare_commit`] is outstanding, for the
     /// same reason [`IndexWriter::delete_documents_by_term`] is.
     pub fn delete_all(&mut self) -> Result<()> {
+        self.cfg.reader_pool.clear();
         if self.prepared_commit.is_some() {
             return Err(Error::PreparedCommitPending("delete_all"));
         }
@@ -9028,6 +9103,13 @@ impl<'d> IndexWriter<'d> {
             new_segment_infos.generation += 1;
             new_segment_infos.version += 1;
         }
+        // Above every version an NRT snapshot was given, so `getVersion`
+        // stays monotonic across snapshots and commits (see `crate::nrt`).
+        // Never used with NRT readers, `max_version` is -1 and this is a
+        // no-op.
+        new_segment_infos.version = new_segment_infos
+            .version
+            .max(self.nrt.max_version.saturating_add(1));
         new_segment_infos.id = generate_segment_id(new_segment_infos.generation);
         apply_merge_changes(
             &mut new_segment_infos.segments,
@@ -9087,13 +9169,12 @@ impl<'d> IndexWriter<'d> {
 struct OpenedDeleteSegment {
     max_doc: usize,
     live_docs: Option<FixedBitSet>,
-    fields: lucene_codecs::blocktree::BlockTreeFields,
-    /// The `.doc` file's bytes, held as the `Input` the directory handed over
-    /// rather than copied into a `Vec`. On an `MmapDirectory` that `Input` *is*
-    /// the mapping, so a `to_vec()` here would heap-copy the whole postings
-    /// file on every buffered-delete round; `DocInput::open` only needs to
-    /// borrow it. `None` when the segment has no postings.
-    doc_input: Option<lucene_store::directory::Input>,
+    /// The term dictionary and the `.doc` file's bytes -- the latter held as
+    /// the `Input` the directory handed over rather than copied into a `Vec`
+    /// (on an `MmapDirectory` that `Input` *is* the mapping, so a `to_vec()`
+    /// would heap-copy the whole postings file on every buffered-delete
+    /// round). Pooled across rounds ([`crate::reader_pool`]).
+    postings: std::sync::Arc<crate::reader_pool::PooledPostings>,
     segment_id: [u8; ID_LENGTH],
     suffix: String,
 }
@@ -9370,6 +9451,28 @@ impl IndexingConfig {
             None
         };
 
+        let postings = self.reader_pool.get_or_open(sci, || {
+            Self::open_postings_for_deletes(dir, sci, &si, max_doc)
+        })?;
+        Ok(OpenedDeleteSegment {
+            max_doc,
+            live_docs,
+            postings,
+            segment_id: sci.segment_id,
+            suffix,
+        })
+    }
+
+    /// The part of [`Self::open_segment_for_deletes`] that does not change
+    /// between delete rounds, and so is pooled: the segment's term dictionary
+    /// and `.doc` input, from `.cfs` for a compound segment.
+    fn open_postings_for_deletes(
+        dir: &dyn Directory,
+        sci: &SegmentCommitInfo,
+        si: &segment_info::SegmentInfo,
+        max_doc: usize,
+    ) -> Result<crate::reader_pool::PooledPostings> {
+        let suffix = per_field_codec_suffix(POSTINGS_FORMAT_NAME);
         // A compound segment -- one real Lucene flushed -- keeps its term
         // dictionary inside `.cfs`, and its `.si` lists no `.tim` at all:
         // testing `si.files` alone would report "no postings" and every
@@ -9393,13 +9496,9 @@ impl IndexingConfig {
         };
 
         if !seg_files.iter().any(|f| f.ends_with(".tim")) {
-            return Ok(OpenedDeleteSegment {
-                max_doc,
-                live_docs,
+            return Ok(crate::reader_pool::PooledPostings {
                 fields: lucene_codecs::blocktree::BlockTreeFields::empty(),
                 doc_input: None,
-                segment_id: sci.segment_id,
-                suffix,
             });
         }
 
@@ -9422,8 +9521,7 @@ impl IndexingConfig {
         // `MmapDirectory`), not copied: `blocktree::open` builds its own
         // structures from these and does not retain the slices, and the `.doc`
         // `Input` is kept alive in the returned struct for `DocInput` to
-        // borrow. Copying them was heap-copying an entire segment's postings
-        // per buffered-delete round.
+        // borrow.
         let tim = seg_dir.open(&format!("{seg}.tim"))?;
         let tip = seg_dir.open(&format!("{seg}.tip"))?;
         let tmd = seg_dir.open(&format!("{seg}.tmd"))?;
@@ -9437,20 +9535,16 @@ impl IndexingConfig {
             &suffix,
             max_doc as i32,
         )?;
-        Ok(OpenedDeleteSegment {
-            max_doc,
-            live_docs,
+        Ok(crate::reader_pool::PooledPostings {
             fields,
             doc_input: Some(doc_input),
-            segment_id: sci.segment_id,
-            suffix,
         })
     }
 }
 
 impl OpenedDeleteSegment {
     fn view(&self) -> Result<DeleteSegmentView<'_>> {
-        let doc_in = match &self.doc_input {
+        let doc_in = match &self.postings.doc_input {
             Some(bytes) => Some(lucene_codecs::postings::DocInput::open(
                 bytes,
                 &self.segment_id,
@@ -9461,7 +9555,7 @@ impl OpenedDeleteSegment {
         Ok(DeleteSegmentView {
             max_doc: self.max_doc,
             live_docs: self.live_docs.as_ref(),
-            fields: &self.fields,
+            fields: &self.postings.fields,
             doc_in,
         })
     }

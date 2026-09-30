@@ -220,6 +220,7 @@ pub mod multi_bits;
 pub mod multi_segment;
 pub mod multi_terms;
 pub mod near_spans;
+pub mod nrt_reader;
 pub mod ordinal_map;
 mod phrase_scorer;
 pub mod points_query;
