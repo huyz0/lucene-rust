@@ -293,6 +293,12 @@ struct SloppyMatcher<'a> {
     positioned: bool,
     /// `SloppyPhraseMatcher.matchLength`.
     match_length: i64,
+    /// `captureLeadMatch`: record the lead of each match (the Matches API).
+    capture_lead: bool,
+    /// `leadOrd`, `leadPosition` (the raw position), and the lead's current
+    /// occurrence (slot, index into its list) for `leadOffset`/
+    /// `leadEndOffset`.
+    lead: (usize, i64, usize),
 }
 
 impl<'a> SloppyMatcher<'a> {
@@ -389,9 +395,25 @@ impl<'a> SloppyMatcher<'a> {
             slop: i64::from(slop),
             positioned: false,
             match_length: i64::MAX,
+            capture_lead: false,
+            lead: (0, i64::MAX, 0),
         };
         m.positioned = m.init_phrase_positions();
         m
+    }
+
+    /// `captureLead(pp)`.
+    fn capture_lead(&mut self, pp: usize) {
+        if self.capture_lead {
+            let idx = self.pps[pp].idx.saturating_sub(1);
+            self.lead = (self.pps[pp].ord, self.tp_pos(pp), idx);
+        }
+    }
+
+    /// The current occurrence index of every slot: the one its enum last read
+    /// (it stays on its last position once exhausted).
+    fn current(&self, slot: usize) -> usize {
+        self.pps[slot].idx.saturating_sub(1)
     }
 
     /// The buffers back, for the next document's matcher.
@@ -636,6 +658,7 @@ impl<'a> SloppyMatcher<'a> {
             return false;
         }
         let mut pp = self.pq_pop();
+        self.capture_lead(pp);
         self.match_length = self.end.saturating_sub(self.pps[pp].position);
         let mut next = self.pps[self.pq[0]].position;
         while self.advance_pp(pp) {
@@ -657,6 +680,7 @@ impl<'a> SloppyMatcher<'a> {
                     self.match_length = ml2;
                 }
             }
+            self.capture_lead(pp);
         }
         self.positioned = false;
         self.match_length <= self.slop
@@ -758,6 +782,61 @@ pub(crate) fn sloppy_phrase_freq_in(
             freq
         }
     }
+}
+
+/// `SloppyPhraseMatcher` with `captureLeadMatch` (`PhraseWeight.matches`):
+/// every match of the sloppy phrase in one document as `[startPosition,
+/// endPosition, startOffset, endOffset]`, computed as Java's
+/// `startPosition()`/`endPosition()`/`startOffset()`/`endOffset()` do -- the
+/// captured lead against every slot's current occurrence.
+///
+/// `term_offsets[i][j]` is slot `i`'s `j`-th occurrence's `(startOffset,
+/// endOffset)`, parallel to `term_positions`. A phrase of fewer than two
+/// slots, or with a slot absent from the document, has no matches here (a
+/// one-term phrase is a `TermQuery` after `rewrite`).
+pub(crate) fn sloppy_phrase_match_spans(
+    term_positions: &[&[i32]],
+    term_offsets: &[&[(i32, i32)]],
+    repeats: &PhraseRepeats,
+    slop: u32,
+) -> Vec<[i32; 4]> {
+    if let Degenerate::Yes(_) = degenerate(term_positions) {
+        return Vec::new();
+    }
+    if term_positions.len() < 2 {
+        return Vec::new();
+    }
+    let mut m = SloppyMatcher::new(term_positions, repeats, slop);
+    m.capture_lead = true;
+    let off = |slot: usize, idx: usize| -> (i32, i32) {
+        term_offsets
+            .get(slot)
+            .and_then(|o| o.get(idx))
+            .copied()
+            .unwrap_or((-1, -1))
+    };
+    let mut out = Vec::new();
+    while m.next_match() {
+        let (lead_ord, lead_pos, lead_idx) = m.lead;
+        let (lead_start, lead_end) = off(lead_ord, lead_idx);
+        let mut start = lead_pos;
+        let mut end = lead_pos;
+        let mut start_offset = lead_start;
+        let mut end_offset = lead_end;
+        for slot in 0..m.pps.len() {
+            let tp = m.tp_pos(slot);
+            let (so, eo) = off(slot, m.current(slot));
+            start = start.min(tp);
+            start_offset = start_offset.min(so);
+            if m.pps[slot].ord != lead_ord {
+                end = end.max(tp);
+                end_offset = end_offset.max(eo);
+            }
+        }
+        let clamp = |v: i64| i32::try_from(v).unwrap_or(if v < 0 { i32::MIN } else { i32::MAX });
+        out.push([clamp(start), clamp(end), start_offset, end_offset]);
+    }
+    out
 }
 
 /// [`sloppy_phrase_freq_in`] for the common phrase: two slots holding

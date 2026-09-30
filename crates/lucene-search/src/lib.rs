@@ -211,6 +211,7 @@ pub mod facets;
 pub mod field_norms;
 pub mod highlighter;
 pub mod index_searcher;
+pub mod matches;
 pub mod multi_segment;
 pub mod near_spans;
 pub mod ordinal_map;
