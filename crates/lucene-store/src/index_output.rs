@@ -1,7 +1,8 @@
 //! Port of `org.apache.lucene.store.IndexOutput` / `OutputStreamIndexOutput` —
 //! the write-side counterpart of [`crate::directory::Input`]/`IndexInput`,
 //! backed by a real `std::fs::File` so a Rust program can write files that
-//! Java's `FSDirectory.open(path)` opens directly.
+//! Java's `FSDirectory.open(path)` opens directly -- or, for
+//! `ByteBuffersDirectory`, by memory (`ByteBuffersIndexOutput`).
 //!
 //! Scope of this slice (see PLAN.md Phase 5 / docs/parity.md): a single-file
 //! sequential output plus `Directory::sync` for the fsync-before-durable
@@ -22,7 +23,7 @@
 //! flush error would otherwise silently lose data.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufWriter, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::data_output::DataOutput;
@@ -42,12 +43,38 @@ pub trait IndexOutput: DataOutput {
     fn checksum(&self) -> u64;
 }
 
-/// A single output file backed by a real `std::fs::File`, buffered
-/// (`BufWriter`) so small `write_byte` calls don't each incur a syscall.
+/// `FSDirectory.FSIndexOutput.CHUNK_SIZE`, which is also the buffer size
+/// `OutputStreamIndexOutput` is built with: bytes reach the file in writes of
+/// at most this size, and a write at least this large bypasses the buffer.
+pub const CHUNK_SIZE: usize = 8192;
+
+/// A callback that receives an in-memory output's bytes when it is closed:
+/// `ByteBuffersIndexOutput`'s `onClose`.
+pub(crate) type PublishFn = Box<dyn FnOnce(Vec<u8>) + Send>;
+
+/// Where an [`FsIndexOutput`]'s bytes go.
+enum Sink {
+    /// A real file: `FSDirectory.FSIndexOutput`.
+    File { file: File, path: PathBuf },
+    /// Kept in memory and handed over on close: `ByteBuffersIndexOutput`,
+    /// which is what `ByteBuffersDirectory` (and through it
+    /// `NRTCachingDirectory`'s cache) hands out.
+    Memory { publish: Option<PublishFn> },
+}
+
+/// The output every [`crate::Directory`] hands out.
+///
+/// Despite the name, not always a file: [`crate::ByteBuffersDirectory`]'s
+/// outputs are memory-backed. The name is kept because it is the type every
+/// codec writer in the workspace already names; what differs between the two
+/// is only where [`FsIndexOutput::close`] delivers the bytes.
+///
+/// File-backed outputs are buffered in [`CHUNK_SIZE`] pieces so small
+/// `write_byte` calls don't each incur a syscall.
 pub struct FsIndexOutput {
     name: String,
-    path: PathBuf,
-    writer: BufWriter<File>,
+    sink: Sink,
+    buf: Vec<u8>,
     bytes_written: u64,
     crc: crc32fast::Hasher,
     pending_err: Option<std::io::Error>,
@@ -55,23 +82,60 @@ pub struct FsIndexOutput {
 
 impl FsIndexOutput {
     /// Port of `Directory.createOutput(name, context)`: creates (truncating
-    /// any existing file of the same name, matching Java's semantics) a new
-    /// file at `root/name` for writing.
+    /// any existing file of the same name) a new file at `root/name` for
+    /// writing.
+    ///
+    /// Java's `FSDirectory.createOutput` opens with `CREATE_NEW` and so
+    /// refuses an existing name; this port has always truncated, and every
+    /// writer here only ever creates fresh names, so the difference is never
+    /// reached. [`FsIndexOutput::create_new`] is the `CREATE_NEW` form, which
+    /// `createTempOutput` depends on.
     pub fn create(root: &Path, name: &str) -> Result<Self> {
         let path = root.join(name);
         let file = File::create(&path)?;
-        Ok(Self {
+        Ok(Self::over_file(name, file, path))
+    }
+
+    /// `FSIndexOutput(name, WRITE, CREATE_NEW)`: fails with
+    /// `ErrorKind::AlreadyExists` when `root/name` exists.
+    pub fn create_new(root: &Path, name: &str) -> Result<Self> {
+        let path = root.join(name);
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        Ok(Self::over_file(name, file, path))
+    }
+
+    fn over_file(name: &str, file: File, path: PathBuf) -> Self {
+        Self {
             name: name.to_string(),
-            path,
-            writer: BufWriter::new(file),
+            sink: Sink::File { file, path },
+            buf: Vec::with_capacity(CHUNK_SIZE),
             bytes_written: 0,
             crc: crc32fast::Hasher::new(),
             pending_err: None,
-        })
+        }
     }
 
-    /// Port of `IndexOutput.close()`: flushes buffered bytes to the OS and
-    /// returns the final CRC32 checksum. Does **not** fsync — Lucene's own
+    /// `ByteBuffersIndexOutput`: every byte stays in memory until
+    /// [`FsIndexOutput::close`] hands the whole content to `publish`.
+    pub(crate) fn in_memory(name: &str, publish: PublishFn) -> Self {
+        Self {
+            name: name.to_string(),
+            sink: Sink::Memory {
+                publish: Some(publish),
+            },
+            buf: Vec::new(),
+            bytes_written: 0,
+            crc: crc32fast::Hasher::new(),
+            pending_err: None,
+        }
+    }
+
+    /// Port of `IndexOutput.close()`: flushes buffered bytes to the OS (or,
+    /// for an in-memory output, publishes them to its directory) and returns
+    /// the final CRC32 checksum. Does **not** fsync -- Lucene's own
     /// durability contract is that `IndexOutput.close()` merely hands bytes
     /// to the OS; a segment is only durable once its writer calls
     /// `Directory.sync(names)` on every file, which this crate exposes as
@@ -81,13 +145,57 @@ impl FsIndexOutput {
         if let Some(e) = self.pending_err.take() {
             return Err(Error::Io(e));
         }
-        self.writer.flush()?;
-        Ok(self.checksum())
+        let checksum = self.checksum();
+        match self.sink {
+            Sink::File { mut file, .. } => {
+                file.write_all(&self.buf)?;
+                file.flush()?;
+            }
+            Sink::Memory { publish } => {
+                if let Some(publish) = publish {
+                    publish(std::mem::take(&mut self.buf));
+                }
+            }
+        }
+        Ok(checksum)
     }
 
-    /// The on-disk path this output writes to (used by `Directory::sync`).
-    pub fn path(&self) -> &Path {
-        &self.path
+    /// The on-disk path this output writes to, or `None` for an in-memory
+    /// output.
+    pub fn path(&self) -> Option<&Path> {
+        match &self.sink {
+            Sink::File { path, .. } => Some(path),
+            Sink::Memory { .. } => None,
+        }
+    }
+
+    /// Hands `b` to the sink, latching the first error. `false` when the
+    /// write failed.
+    fn write_through(&mut self, b: &[u8]) -> bool {
+        let Sink::File { file, .. } = &mut self.sink else {
+            self.buf.extend_from_slice(b);
+            return true;
+        };
+        if self.buf.len().saturating_add(b.len()) > CHUNK_SIZE && !self.buf.is_empty() {
+            if let Err(e) = file.write_all(&self.buf) {
+                self.pending_err = Some(e);
+                return false;
+            }
+            self.buf.clear();
+        }
+        if b.len() >= CHUNK_SIZE {
+            // `FSIndexOutput`'s `FilterOutputStream.write` loop: never more
+            // than `CHUNK_SIZE` bytes per underlying write.
+            for chunk in b.chunks(CHUNK_SIZE) {
+                if let Err(e) = file.write_all(chunk) {
+                    self.pending_err = Some(e);
+                    return false;
+                }
+            }
+        } else {
+            self.buf.extend_from_slice(b);
+        }
+        true
     }
 }
 
@@ -98,11 +206,7 @@ impl DataOutput for FsIndexOutput {
     }
 
     fn write_bytes(&mut self, b: &[u8]) {
-        if self.pending_err.is_some() {
-            return;
-        }
-        if let Err(e) = self.writer.write_all(b) {
-            self.pending_err = Some(e);
+        if self.pending_err.is_some() || !self.write_through(b) {
             return;
         }
         self.crc.update(b);
@@ -110,6 +214,16 @@ impl DataOutput for FsIndexOutput {
         // alone writable; saturating keeps the counter monotone rather than
         // panicking if one somehow were.
         self.bytes_written = self.bytes_written.saturating_add(b.len() as u64);
+    }
+}
+
+impl std::fmt::Debug for FsIndexOutput {
+    /// `OutputStreamIndexOutput.toString()`'s resource description.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.sink {
+            Sink::File { path, .. } => write!(f, "FSIndexOutput(path=\"{}\")", path.display()),
+            Sink::Memory { .. } => write!(f, "ByteBuffersIndexOutput(file={})", self.name),
+        }
     }
 }
 
@@ -164,12 +278,6 @@ pub(crate) fn sync(root: &Path, names: &[String]) -> Result<()> {
 /// [`sync_meta_data`] runs, which is why Lucene calls that immediately after.
 pub(crate) fn rename(root: &Path, source: &str, dest: &str) -> Result<()> {
     fs::rename(root.join(source), root.join(dest))?;
-    Ok(())
-}
-
-/// Port of `FSDirectory.deleteFile(name)`.
-pub(crate) fn delete_file(root: &Path, name: &str) -> Result<()> {
-    fs::remove_file(root.join(name))?;
     Ok(())
 }
 
@@ -237,6 +345,40 @@ mod tests {
     }
 
     #[test]
+    fn debug_names_the_sink_and_create_new_refuses_an_existing_file() {
+        let dir = tempdir();
+        let out = FsIndexOutput::create_new(&dir, "_0.test").unwrap();
+        assert!(format!("{out:?}").starts_with("FSIndexOutput(path="));
+        assert_eq!(out.path(), Some(dir.join("_0.test").as_path()));
+        out.close().unwrap();
+        let err = FsIndexOutput::create_new(&dir, "_0.test").unwrap_err();
+        assert!(matches!(&err, Error::Io(e) if e.kind() == std::io::ErrorKind::AlreadyExists));
+        let mem = FsIndexOutput::in_memory("m", Box::new(|_| {}));
+        assert_eq!(format!("{mem:?}"), "ByteBuffersIndexOutput(file=m)");
+        assert_eq!(mem.path(), None);
+    }
+
+    #[test]
+    fn large_and_small_writes_interleave_in_order() {
+        let dir = tempdir();
+        let mut out = FsIndexOutput::create(&dir, "_0.test").unwrap();
+        let big: Vec<u8> = (0..20_000u32).map(|i| i as u8).collect();
+        out.write_bytes(b"head");
+        out.write_bytes(&big);
+        out.write_bytes(&vec![9u8; CHUNK_SIZE - 1]);
+        out.write_bytes(&[8u8; 10]);
+        out.write_byte(7);
+        let checksum = out.close().unwrap();
+        let mut want = b"head".to_vec();
+        want.extend_from_slice(&big);
+        want.extend(std::iter::repeat_n(9u8, CHUNK_SIZE - 1));
+        want.extend(std::iter::repeat_n(8u8, 10));
+        want.push(7);
+        assert_eq!(std::fs::read(dir.join("_0.test")).unwrap(), want);
+        assert_eq!(checksum, crc32fast::hash(&want) as u64);
+    }
+
+    #[test]
     fn create_truncates_existing_file() {
         let dir = tempdir();
         write_all_bytes(&dir, "_0.test", b"0123456789").unwrap();
@@ -263,18 +405,10 @@ mod tests {
         // first `write_all` fails with a real OS error (bad file descriptor
         // for writing).
         let ro_file = OpenOptions::new().read(true).open(&path).unwrap();
-        let mut out = FsIndexOutput {
-            name: "_0.test".to_string(),
-            path: path.clone(),
-            writer: BufWriter::new(ro_file),
-            bytes_written: 0,
-            crc: crc32fast::Hasher::new(),
-            pending_err: None,
-        };
-        // `BufWriter`'s default capacity is 8KB; writing past it forces an
-        // internal flush (a real `write(2)` syscall), which fails on a
-        // read-only fd -- a single `write_byte` would just sit in the
-        // buffer and never touch the OS.
+        let mut out = FsIndexOutput::over_file("_0.test", ro_file, path.clone());
+        // Writing at least `CHUNK_SIZE` bytes goes straight to the file (a
+        // real `write(2)` syscall), which fails on a read-only fd -- a single
+        // `write_byte` would just sit in the buffer and never touch the OS.
         out.write_bytes(&vec![0u8; 9000]);
         assert!(out.pending_err.is_some());
         let fp_before = out.file_pointer();

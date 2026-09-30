@@ -6,21 +6,30 @@
 //! Two backends, one trait:
 //! - [`FsDirectory`]: `std::fs::read` — safe, no `unsafe`, always correct. Default.
 //! - [`MmapDirectory`]: `memmap2` — zero-copy reads matching Lucene's own default
-//!   (`MMapDirectory`) for real workloads. Contains this crate's only `unsafe`
-//!   (documented on the call site): mapping a file is only sound if nothing else
+//!   (`MMapDirectory`) for real workloads. Contains one of this crate's two
+//!   `unsafe` sites (the other is `fs_lock_factory`'s `fcntl`), documented on
+//!   the call site: mapping a file is only sound if nothing else
 //!   truncates/mutates it concurrently, same caveat Lucene's own Javadoc carries.
 //!
 //! Both return an [`Input`] — an owned-or-mapped byte buffer that `Deref`s to
 //! `&[u8]`, so callers (codec_util, segment_info, segment_infos) are unchanged
 //! regardless of backend.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::Read;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
+use crate::data_output::DataOutput;
 use crate::error::{Error, Result};
+use crate::fs_lock_factory::default_fs_lock_factory;
+#[cfg(doc)]
+use crate::fs_lock_factory::NativeFsLockFactory;
 use crate::index_output::{self, FsIndexOutput};
+use crate::lock::{Lock, LockFactory};
 
 /// The `segments` file-name prefix (`IndexFileNames.SEGMENTS`). Excludes the
 /// pre-4.0 `segments.gen` pointer file, which is not a valid commit file name.
@@ -37,6 +46,10 @@ const PENDING_SEGMENTS_PREFIX: &str = "pending_segments";
 pub enum Input {
     Owned(Vec<u8>),
     Mapped(memmap2::Mmap),
+    /// Shared with the directory that holds them in memory
+    /// ([`crate::ByteBuffersDirectory`]): opening costs a reference count,
+    /// not a copy -- Java's `IndexInput.clone()` of the stored content.
+    Shared(Arc<[u8]>),
 }
 
 impl std::fmt::Debug for Input {
@@ -46,6 +59,7 @@ impl std::fmt::Debug for Input {
         let kind = match self {
             Input::Owned(_) => "Owned",
             Input::Mapped(_) => "Mapped",
+            Input::Shared(_) => "Shared",
         };
         write!(f, "Input::{kind}({} bytes)", self.len())
     }
@@ -58,6 +72,7 @@ impl Deref for Input {
         match self {
             Input::Owned(v) => v,
             Input::Mapped(m) => m,
+            Input::Shared(s) => s,
         }
     }
 }
@@ -80,28 +95,49 @@ impl AsRef<[u8]> for Input {
 }
 
 /// Directory abstraction covering both Lucene's read path (`listAll`, `open`
-/// a whole file's bytes) and the write-path primitives this crate now
-/// supports: `createOutput` (a real on-disk [`FsIndexOutput`]), `sync` (the
-/// fsync-before-durable contract), and `rename`/`deleteFile`/`syncMetaData`
-/// (what `SegmentInfos.prepareCommit`/`finishCommit`/`rollbackCommit` need to
-/// publish a commit atomically). Locking (`NativeFSLockFactory`) and file
-/// reference-counting (`IndexFileDeleter`) are still deferred — see
-/// `docs/parity.md`.
+/// a whole file's bytes) and the write path: `createOutput`/`createTempOutput`
+/// (an [`FsIndexOutput`]), `sync` (the fsync-before-durable contract),
+/// `rename`/`deleteFile`/`syncMetaData` (what `SegmentInfos.prepareCommit`/
+/// `finishCommit`/`rollbackCommit` need to publish a commit atomically),
+/// `obtainLock` (the `write.lock` an `IndexWriter` holds) and
+/// `getPendingDeletions`.
+///
 /// `Send + Sync`, as Java's `Directory` is by contract: a writer's indexing
 /// threads flush segments into it concurrently while its merge thread reads
 /// sources out of it (M4's T4.3). Every implementation here is either
 /// stateless over the filesystem or guards its own state.
+///
+/// Java's `close()` is `Drop`: [`FsDirectory`] retries its pending deletes
+/// when dropped, as `FSDirectory.close` does.
 pub trait Directory: Send + Sync {
     /// Port of `Directory.listAll()`: every file name in the directory, sorted.
     fn list_all(&self) -> Result<Vec<String>>;
 
-    /// Reads a whole file's bytes.
+    /// Reads a whole file's bytes (`Directory.openInput`).
     fn open(&self, name: &str) -> Result<Input>;
+
+    /// Port of `Directory.fileLength(name)`. The default reads the file,
+    /// which is correct for any implementation; the real ones override it.
+    fn file_length(&self, name: &str) -> Result<u64> {
+        Ok(self.open(name)?.len() as u64)
+    }
 
     /// Port of `Directory.createOutput(name, context)`: creates (truncating
     /// any existing file of the same name) a new file for sequential
-    /// writing, backed by a real `std::fs::File`.
+    /// writing.
     fn create_output(&self, name: &str) -> Result<FsIndexOutput>;
+
+    /// Port of `Directory.createTempOutput(prefix, suffix, context)`: a new
+    /// output under a fresh name built by [`temp_file_name`], never
+    /// clobbering an existing file.
+    ///
+    /// Java declares it abstract; the default here refuses (as a read-only
+    /// directory such as a compound file does), so a test double need not
+    /// implement it. Every real directory in this crate does.
+    fn create_temp_output(&self, prefix: &str, suffix: &str) -> Result<FsIndexOutput> {
+        let _ = (prefix, suffix);
+        Err(unsupported("createTempOutput"))
+    }
 
     /// Port of `Directory.sync(Collection<String>)`: fsyncs every named
     /// file's contents (and, best-effort, the directory entry) to disk.
@@ -124,47 +160,436 @@ pub trait Directory: Send + Sync {
     /// rename/create of a *name* (not just a file's contents) survives a
     /// crash. Lucene calls this on both sides of the commit rename.
     fn sync_meta_data(&self) -> Result<()>;
+
+    /// Port of `Directory.obtainLock(name)`: acquires the named lock
+    /// (`write.lock`) through this directory's [`LockFactory`], failing with
+    /// [`Error::LockObtainFailed`] when it is held elsewhere.
+    fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>>;
+
+    /// Port of `Directory.getPendingDeletions()`: files a delete was
+    /// requested for but could not yet be removed. Only a filesystem
+    /// directory ever has any.
+    fn pending_deletions(&self) -> Result<BTreeSet<String>> {
+        Ok(BTreeSet::new())
+    }
+
+    /// `dir instanceof FSDirectory ? dir.getDirectory() : null`: the
+    /// filesystem path a [`crate::fs_lock_factory::FsLockFactory`] puts its
+    /// lock file in. `None` for anything that is not a filesystem directory.
+    fn fs_directory_path(&self) -> Option<&Path> {
+        None
+    }
+
+    /// Port of `Directory.copyFrom(from, src, dest, context)`: copies a file
+    /// from another directory, deleting the partial `dest` on failure.
+    fn copy_from(&self, from: &dyn Directory, src: &str, dest: &str) -> Result<()> {
+        let copied = from.open(src).and_then(|bytes| {
+            let mut out = self.create_output(dest)?;
+            out.write_bytes(&bytes);
+            out.close()
+        });
+        match copied {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                // `IOUtils.deleteFilesIgnoringExceptions(this, dest)`.
+                let _ = self.delete_file(dest);
+                Err(e)
+            }
+        }
+    }
 }
 
-/// Safe, copying backend (`std::fs::read`). No `unsafe` anywhere in this crate
-/// when used exclusively.
-pub struct FsDirectory {
+/// `UnsupportedOperationException` from a directory that cannot perform
+/// `what`.
+pub(crate) fn unsupported(what: &str) -> Error {
+    Error::Io(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        format!("{what} is not supported by this directory"),
+    ))
+}
+
+/// Forwards every [`Directory`] method through a pointer type, so a
+/// reference or an `Arc` to a directory is a directory too -- which is what
+/// lets the wrappers ([`crate::NrtCachingDirectory`],
+/// [`crate::FileSwitchDirectory`], ...) own either.
+macro_rules! forward_directory {
+    ($($ty:ty),*) => {$(
+        impl<T: Directory + ?Sized> Directory for $ty {
+            fn list_all(&self) -> Result<Vec<String>> {
+                (**self).list_all()
+            }
+            fn open(&self, name: &str) -> Result<Input> {
+                (**self).open(name)
+            }
+            fn file_length(&self, name: &str) -> Result<u64> {
+                (**self).file_length(name)
+            }
+            fn create_output(&self, name: &str) -> Result<FsIndexOutput> {
+                (**self).create_output(name)
+            }
+            fn create_temp_output(&self, prefix: &str, suffix: &str) -> Result<FsIndexOutput> {
+                (**self).create_temp_output(prefix, suffix)
+            }
+            fn sync(&self, names: &[String]) -> Result<()> {
+                (**self).sync(names)
+            }
+            fn rename(&self, source: &str, dest: &str) -> Result<()> {
+                (**self).rename(source, dest)
+            }
+            fn delete_file(&self, name: &str) -> Result<()> {
+                (**self).delete_file(name)
+            }
+            fn sync_meta_data(&self) -> Result<()> {
+                (**self).sync_meta_data()
+            }
+            fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
+                (**self).obtain_lock(name)
+            }
+            fn pending_deletions(&self) -> Result<BTreeSet<String>> {
+                (**self).pending_deletions()
+            }
+            fn fs_directory_path(&self) -> Option<&Path> {
+                (**self).fs_directory_path()
+            }
+            fn copy_from(&self, from: &dyn Directory, src: &str, dest: &str) -> Result<()> {
+                (**self).copy_from(from, src, dest)
+            }
+        }
+    )*};
+}
+
+forward_directory!(&T, Arc<T>);
+
+/// Port of `Directory.getTempFileName(prefix, suffix, counter)`:
+/// `IndexFileNames.segmentFileName(prefix, suffix + "_" + base36(counter),
+/// "tmp")`, i.e. `{prefix}_{suffix}_{counter}.tmp`.
+pub fn temp_file_name(prefix: &str, suffix: &str, counter: u64) -> String {
+    let counter = lucene_util::base36::to_base36(i64::try_from(counter).unwrap_or(i64::MAX));
+    format!("{prefix}_{suffix}_{counter}.tmp")
+}
+
+/// Port of `BaseDirectory`: the part of a directory that holds its
+/// [`LockFactory`] and implements `obtainLock` through it. Java's abstract
+/// base class becomes a field the concrete directories
+/// ([`FsDirectory`], [`MmapDirectory`], [`crate::ByteBuffersDirectory`])
+/// embed.
+#[derive(Debug, Clone)]
+pub struct BaseDirectory {
+    lock_factory: Arc<dyn LockFactory>,
+}
+
+impl BaseDirectory {
+    /// `BaseDirectory(lockFactory)`.
+    pub fn new(lock_factory: Arc<dyn LockFactory>) -> Self {
+        Self { lock_factory }
+    }
+
+    /// `BaseDirectory.lockFactory`.
+    pub fn lock_factory(&self) -> &Arc<dyn LockFactory> {
+        &self.lock_factory
+    }
+
+    /// `BaseDirectory.obtainLock(name)`: `lockFactory.obtainLock(this,
+    /// name)`, with `this` passed explicitly.
+    pub fn obtain_lock(&self, dir: &dyn Directory, name: &str) -> Result<Box<dyn Lock>> {
+        self.lock_factory.obtain_lock(dir, name)
+    }
+}
+
+/// The state `FSDirectory` keeps over a filesystem path, shared by both
+/// backends: the lock factory, the pending deletes, and the temp-file
+/// counter. Only reads differ between [`FsDirectory`] and [`MmapDirectory`].
+struct FsCore {
     root: PathBuf,
+    base: BaseDirectory,
+    /// `FSDirectory.pendingDeletes`: files whose delete failed with an error
+    /// other than "no such file" (on Windows, a file still open elsewhere),
+    /// hidden from listings and retried later.
+    pending_deletes: Mutex<BTreeSet<String>>,
+    /// `FSDirectory.opsSinceLastDelete`.
+    ops_since_last_delete: AtomicUsize,
+    /// `FSDirectory.nextTempFileCounter`.
+    next_temp_file_counter: AtomicU64,
+}
+
+impl FsCore {
+    fn new(root: PathBuf, lock_factory: Arc<dyn LockFactory>) -> Self {
+        Self {
+            root,
+            base: BaseDirectory::new(lock_factory),
+            pending_deletes: Mutex::new(BTreeSet::new()),
+            ops_since_last_delete: AtomicUsize::new(0),
+            next_temp_file_counter: AtomicU64::new(0),
+        }
+    }
+
+    fn pending(&self) -> std::sync::MutexGuard<'_, BTreeSet<String>> {
+        crate::lock::lock_ignoring_poison(&self.pending_deletes)
+    }
+
+    fn is_pending(&self, name: &str) -> bool {
+        self.pending().contains(name)
+    }
+
+    /// `FSDirectory.listAll()`: the listing, minus pending deletes.
+    fn list_all(&self) -> Result<Vec<String>> {
+        let mut names = list_all(&self.root)?;
+        let pending = self.pending();
+        if !pending.is_empty() {
+            names.retain(|n| !pending.contains(n));
+        }
+        Ok(names)
+    }
+
+    /// `FSDirectory.fileLength(name)`.
+    fn file_length(&self, name: &str) -> Result<u64> {
+        if self.is_pending(name) {
+            return Err(Error::no_such_file(format!(
+                "file \"{name}\" is pending delete"
+            )));
+        }
+        Ok(fs::metadata(self.root.join(name))?.len())
+    }
+
+    /// `FSDirectory.ensureCanRead(name)`.
+    fn ensure_can_read(&self, name: &str) -> Result<()> {
+        if self.is_pending(name) {
+            return Err(Error::no_such_file(format!(
+                "file \"{name}\" is pending delete and cannot be opened for read"
+            )));
+        }
+        Ok(())
+    }
+
+    /// `FSDirectory.createOutput(name, context)`.
+    fn create_output(&self, name: &str) -> Result<FsIndexOutput> {
+        self.maybe_delete_pending_files()?;
+        // If this file was pending delete, we are now bringing it back to
+        // life.
+        if self.pending().remove(name) {
+            // Try again to delete it -- this is the best effort.
+            self.private_delete_file(name, true)?;
+            // If the delete failed it went back in; take it out again.
+            self.pending().remove(name);
+        }
+        index_output::create_output(&self.root, name)
+    }
+
+    /// `FSDirectory.createTempOutput(prefix, suffix, context)`.
+    fn create_temp_output(&self, prefix: &str, suffix: &str) -> Result<FsIndexOutput> {
+        self.maybe_delete_pending_files()?;
+        loop {
+            let counter = self.next_temp_file_counter.fetch_add(1, Ordering::Relaxed);
+            let name = temp_file_name(prefix, suffix, counter);
+            if self.is_pending(&name) {
+                continue;
+            }
+            match FsIndexOutput::create_new(&self.root, &name) {
+                Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                other => return other,
+            }
+        }
+    }
+
+    /// `FSDirectory.sync(names)`.
+    fn sync(&self, names: &[String]) -> Result<()> {
+        index_output::sync(&self.root, names)?;
+        self.maybe_delete_pending_files()
+    }
+
+    /// `FSDirectory.rename(source, dest)`.
+    fn rename(&self, source: &str, dest: &str) -> Result<()> {
+        if self.is_pending(source) {
+            return Err(Error::no_such_file(format!(
+                "file \"{source}\" is pending delete and cannot be moved"
+            )));
+        }
+        self.maybe_delete_pending_files()?;
+        if self.pending().remove(dest) {
+            self.private_delete_file(dest, true)?;
+            self.pending().remove(dest);
+        }
+        index_output::rename(&self.root, source, dest)
+    }
+
+    /// `FSDirectory.syncMetaData()`.
+    fn sync_meta_data(&self) -> Result<()> {
+        index_output::sync_meta_data(&self.root)?;
+        self.maybe_delete_pending_files()
+    }
+
+    /// `FSDirectory.deleteFile(name)`.
+    fn delete_file(&self, name: &str) -> Result<()> {
+        if self.is_pending(name) {
+            return Err(Error::no_such_file(format!(
+                "file \"{name}\" is already pending delete"
+            )));
+        }
+        self.private_delete_file(name, false)?;
+        self.maybe_delete_pending_files()
+    }
+
+    /// `FSDirectory.deletePendingFiles()`: retries every pending delete.
+    fn delete_pending_files(&self) -> Result<()> {
+        // Clone the set, since `private_delete_file` mutates it.
+        let pending: Vec<String> = self.pending().iter().cloned().collect();
+        for name in pending {
+            self.private_delete_file(&name, true)?;
+        }
+        Ok(())
+    }
+
+    /// `FSDirectory.maybeDeletePendingFiles()`: retries the pending deletes
+    /// once every `pendingDeletes.size()` operations -- "a silly heuristic to
+    /// try to avoid O(N^2) behaviour on Windows".
+    fn maybe_delete_pending_files(&self) -> Result<()> {
+        let pending = self.pending().len();
+        if pending == 0 {
+            return Ok(());
+        }
+        let count = self
+            .ops_since_last_delete
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        if count >= pending {
+            self.ops_since_last_delete
+                .fetch_sub(count, Ordering::AcqRel);
+            self.delete_pending_files()?;
+        }
+        Ok(())
+    }
+
+    /// `FSDirectory.privateDeleteFile(name, isPendingDelete)`.
+    fn private_delete_file(&self, name: &str, is_pending_delete: bool) -> Result<()> {
+        match fs::remove_file(self.root.join(name)) {
+            Ok(()) => {
+                self.pending().remove(name);
+                Ok(())
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // We were asked to delete a non-existent file.
+                self.pending().remove(name);
+                if is_pending_delete && cfg!(windows) {
+                    // LUCENE-6684: a file can sit in a "pending delete" state
+                    // on Windows, failing the first attempt with access
+                    // denied and then this one with no-such-file.
+                    Ok(())
+                } else {
+                    Err(Error::Io(e))
+                }
+            }
+            Err(_) => {
+                // On Windows a delete can fail while a handle is still open
+                // against the file: record it and try again later. (Java
+                // does this for every other error, on every platform -- a
+                // CIFS mount on Linux can behave the same way.)
+                self.pending().insert(name.to_string());
+                Ok(())
+            }
+        }
+    }
+
+    /// `FSDirectory.getPendingDeletions()`: retries first, then reports what
+    /// is still pending.
+    fn pending_deletions(&self) -> Result<BTreeSet<String>> {
+        self.delete_pending_files()?;
+        Ok(self.pending().clone())
+    }
+}
+
+impl Drop for FsCore {
+    /// `FSDirectory.close()`: a last attempt at the pending deletes.
+    fn drop(&mut self) {
+        let _ = self.delete_pending_files();
+    }
+}
+
+/// Safe, copying backend (`std::fs::read`) -- Java's `NIOFSDirectory` in
+/// role. No `unsafe` on its read path.
+pub struct FsDirectory {
+    core: FsCore,
 }
 
 impl FsDirectory {
+    /// `FSDirectory.open(path)`: locks with [`NativeFsLockFactory`]
+    /// (`FSLockFactory.getDefault()`). Neither creates nor canonicalises the
+    /// path up front, unlike Java's constructor -- the lock factory creates
+    /// the directory when a writer first locks it.
     pub fn open(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self::with_lock_factory(root, default_fs_lock_factory())
+    }
+
+    /// `FSDirectory.open(path, lockFactory)`.
+    pub fn with_lock_factory(root: impl Into<PathBuf>, lock_factory: Arc<dyn LockFactory>) -> Self {
+        Self {
+            core: FsCore::new(root.into(), lock_factory),
+        }
+    }
+
+    /// `FSDirectory.getDirectory()`.
+    pub fn directory(&self) -> &Path {
+        &self.core.root
+    }
+
+    /// `BaseDirectory.lockFactory`.
+    pub fn lock_factory(&self) -> &Arc<dyn LockFactory> {
+        self.core.base.lock_factory()
+    }
+
+    /// `FSDirectory.deletePendingFiles()`.
+    pub fn delete_pending_files(&self) -> Result<()> {
+        self.core.delete_pending_files()
     }
 }
 
 impl Directory for FsDirectory {
     fn list_all(&self) -> Result<Vec<String>> {
-        list_all(&self.root)
+        self.core.list_all()
     }
 
     fn open(&self, name: &str) -> Result<Input> {
-        Ok(Input::Owned(fs::read(self.root.join(name))?))
+        self.core.ensure_can_read(name)?;
+        Ok(Input::Owned(fs::read(self.core.root.join(name))?))
+    }
+
+    fn file_length(&self, name: &str) -> Result<u64> {
+        self.core.file_length(name)
     }
 
     fn create_output(&self, name: &str) -> Result<FsIndexOutput> {
-        index_output::create_output(&self.root, name)
+        self.core.create_output(name)
+    }
+
+    fn create_temp_output(&self, prefix: &str, suffix: &str) -> Result<FsIndexOutput> {
+        self.core.create_temp_output(prefix, suffix)
     }
 
     fn sync(&self, names: &[String]) -> Result<()> {
-        index_output::sync(&self.root, names)
+        self.core.sync(names)
     }
 
     fn rename(&self, source: &str, dest: &str) -> Result<()> {
-        index_output::rename(&self.root, source, dest)
+        self.core.rename(source, dest)
     }
 
     fn delete_file(&self, name: &str) -> Result<()> {
-        index_output::delete_file(&self.root, name)
+        self.core.delete_file(name)
     }
 
     fn sync_meta_data(&self) -> Result<()> {
-        index_output::sync_meta_data(&self.root)
+        self.core.sync_meta_data()
+    }
+
+    fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
+        self.core.base.obtain_lock(self, name)
+    }
+
+    fn pending_deletions(&self) -> Result<BTreeSet<String>> {
+        self.core.pending_deletions()
+    }
+
+    fn fs_directory_path(&self) -> Option<&Path> {
+        Some(&self.core.root)
     }
 }
 
@@ -193,7 +618,7 @@ pub const SMALL_FILE_READ_THRESHOLD: u64 = 16 * 1024;
 
 /// Zero-copy backend (`memmap2`), matching Lucene's default `MMapDirectory`.
 pub struct MmapDirectory {
-    root: PathBuf,
+    core: FsCore,
     /// Files of at most this many bytes are read rather than mapped -- see
     /// [`SMALL_FILE_READ_THRESHOLD`]. `0` maps everything, which is what
     /// this backend did before and what
@@ -202,11 +627,9 @@ pub struct MmapDirectory {
 }
 
 impl MmapDirectory {
+    /// `new MMapDirectory(path)`, locking with [`NativeFsLockFactory`].
     pub fn open(root: impl Into<PathBuf>) -> Self {
-        Self {
-            root: root.into(),
-            read_threshold: SMALL_FILE_READ_THRESHOLD,
-        }
+        Self::with_read_threshold(root, SMALL_FILE_READ_THRESHOLD)
     }
 
     /// [`Self::open`] with an explicit small-file threshold: files of at most
@@ -221,19 +644,38 @@ impl MmapDirectory {
     /// turn it off.
     pub fn with_read_threshold(root: impl Into<PathBuf>, read_threshold: u64) -> Self {
         Self {
-            root: root.into(),
+            core: FsCore::new(root.into(), default_fs_lock_factory()),
             read_threshold,
         }
+    }
+
+    /// `new MMapDirectory(path, lockFactory)`.
+    pub fn with_lock_factory(root: impl Into<PathBuf>, lock_factory: Arc<dyn LockFactory>) -> Self {
+        Self {
+            core: FsCore::new(root.into(), lock_factory),
+            read_threshold: SMALL_FILE_READ_THRESHOLD,
+        }
+    }
+
+    /// `FSDirectory.getDirectory()`.
+    pub fn directory(&self) -> &Path {
+        &self.core.root
+    }
+
+    /// `FSDirectory.deletePendingFiles()`.
+    pub fn delete_pending_files(&self) -> Result<()> {
+        self.core.delete_pending_files()
     }
 }
 
 impl Directory for MmapDirectory {
     fn list_all(&self) -> Result<Vec<String>> {
-        list_all(&self.root)
+        self.core.list_all()
     }
 
     fn open(&self, name: &str) -> Result<Input> {
-        let mut file = fs::File::open(self.root.join(name))?;
+        self.core.ensure_can_read(name)?;
+        let mut file = fs::File::open(self.core.root.join(name))?;
         // A small file is read, not mapped: see `SMALL_FILE_READ_THRESHOLD`.
         // The `metadata` call is one `fstat` on an already-open descriptor,
         // which is cheaper than the `munmap` it avoids.
@@ -253,30 +695,50 @@ impl Directory for MmapDirectory {
         // SAFETY: mapping is only unsound if another process truncates or
         // mutates this file while it's mapped, which we do not do ourselves and
         // which Lucene's own `MMapDirectory` accepts the same risk for (see its
-        // Javadoc). The directory is opened read-only and outlives no writer in
-        // the read-only phase this crate currently implements (PLAN.md Phase 2).
+        // Javadoc). Lucene never rewrites a file once written, so a mapped
+        // index file is immutable for as long as anyone reads it.
         let mmap = unsafe { memmap2::Mmap::map(&file)? };
         Ok(Input::Mapped(mmap))
     }
 
+    fn file_length(&self, name: &str) -> Result<u64> {
+        self.core.file_length(name)
+    }
+
     fn create_output(&self, name: &str) -> Result<FsIndexOutput> {
-        index_output::create_output(&self.root, name)
+        self.core.create_output(name)
+    }
+
+    fn create_temp_output(&self, prefix: &str, suffix: &str) -> Result<FsIndexOutput> {
+        self.core.create_temp_output(prefix, suffix)
     }
 
     fn sync(&self, names: &[String]) -> Result<()> {
-        index_output::sync(&self.root, names)
+        self.core.sync(names)
     }
 
     fn rename(&self, source: &str, dest: &str) -> Result<()> {
-        index_output::rename(&self.root, source, dest)
+        self.core.rename(source, dest)
     }
 
     fn delete_file(&self, name: &str) -> Result<()> {
-        index_output::delete_file(&self.root, name)
+        self.core.delete_file(name)
     }
 
     fn sync_meta_data(&self) -> Result<()> {
-        index_output::sync_meta_data(&self.root)
+        self.core.sync_meta_data()
+    }
+
+    fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
+        self.core.base.obtain_lock(self, name)
+    }
+
+    fn pending_deletions(&self) -> Result<BTreeSet<String>> {
+        self.core.pending_deletions()
+    }
+
+    fn fs_directory_path(&self) -> Option<&Path> {
+        Some(&self.core.root)
     }
 }
 
@@ -462,6 +924,9 @@ mod tests {
         }
         fn sync_meta_data(&self) -> Result<()> {
             panic!("sync_meta_data() is not part of the read path under test")
+        }
+        fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
+            panic!("obtain_lock({name}) is not part of the read path under test")
         }
     }
 
@@ -780,5 +1245,232 @@ mod tests {
             read_latest_commit(&ListingOnlyDir(vec!["_0.si".to_string()])),
             Err(Error::Corrupted(_))
         ));
+    }
+
+    /// Deletes that fail with anything but "no such file" become pending, as
+    /// on Windows: hidden from listings and reads, retried later, and
+    /// resurrected by a create or a rename onto the name. Here the failure
+    /// is `EISDIR` -- `remove_file` on a directory -- which is portable to
+    /// every Unix and needs no permissions trickery (tests run as root).
+    #[test]
+    fn a_failed_delete_becomes_pending_until_it_can_be_retried() {
+        for backend in 0..2 {
+            let root = tempdir();
+            let dir: Box<dyn Directory> = if backend == 0 {
+                Box::new(FsDirectory::open(&root))
+            } else {
+                Box::new(MmapDirectory::open(&root))
+            };
+            fs::create_dir(root.join("_0.cfs")).unwrap();
+            index_output::write_all_bytes(&root, "_1.si", b"x").unwrap();
+            dir.delete_file("_0.cfs").unwrap();
+            assert_eq!(dir.list_all().unwrap(), vec!["_1.si".to_string()]);
+            assert!(dir.open("_0.cfs").unwrap_err().is_no_such_file());
+            assert!(dir.file_length("_0.cfs").unwrap_err().is_no_such_file());
+            assert!(dir.delete_file("_0.cfs").unwrap_err().is_no_such_file());
+            assert!(dir.rename("_0.cfs", "x").unwrap_err().is_no_such_file());
+            // Still undeletable: still pending.
+            assert_eq!(
+                dir.pending_deletions().unwrap(),
+                BTreeSet::from(["_0.cfs".to_string()])
+            );
+            // Once deletable, the next retry takes it.
+            replace_dir_with_file(&root, "_0.cfs");
+            assert!(dir.pending_deletions().unwrap().is_empty());
+            assert!(!root.join("_0.cfs").exists());
+            assert_eq!(dir.file_length("_1.si").unwrap(), 1);
+        }
+    }
+
+    /// Makes a directory that failed to delete deletable.
+    fn replace_dir_with_file(root: &Path, name: &str) {
+        fs::remove_dir(root.join(name)).unwrap();
+        fs::write(root.join(name), b"old").unwrap();
+    }
+
+    /// Leaves `name` pending in `dir`, deletable at the next retry.
+    fn make_pending(dir: &FsDirectory, root: &Path, name: &str) {
+        fs::create_dir(root.join(name)).unwrap();
+        dir.delete_file(name).unwrap();
+        assert!(dir.core.is_pending(name));
+        replace_dir_with_file(root, name);
+    }
+
+    #[test]
+    fn pending_deletes_are_retried_by_later_operations_and_on_drop() {
+        let root = tempdir();
+        let dir = FsDirectory::open(&root);
+        // One pending file: the very next mutating op retries it.
+        make_pending(&dir, &root, "a");
+        dir.sync_meta_data().unwrap();
+        assert!(!root.join("a").exists());
+
+        make_pending(&dir, &root, "e");
+        index_output::write_all_bytes(&root, "s", b"s").unwrap();
+        dir.sync(&["s".to_string()]).unwrap();
+        assert!(!root.join("e").exists());
+
+        // Creating over a pending name brings it back to life.
+        make_pending(&dir, &root, "b");
+        let mut out = dir.create_output("b").unwrap();
+        out.write_bytes(b"new");
+        out.close().unwrap();
+        assert_eq!(&*dir.open("b").unwrap(), b"new");
+        assert!(dir.pending_deletions().unwrap().is_empty());
+
+        // So does a rename onto it.
+        make_pending(&dir, &root, "c");
+        dir.rename("b", "c").unwrap();
+        assert_eq!(&*dir.open("c").unwrap(), b"new");
+
+        // A resurrection whose retry still fails leaves the name to the
+        // create, which then fails on it -- and it is no longer pending.
+        fs::create_dir(root.join("d")).unwrap();
+        dir.delete_file("d").unwrap();
+        assert!(dir.create_output("d").is_err());
+        assert!(dir.pending_deletions().unwrap().is_empty());
+        fs::remove_dir(root.join("d")).unwrap();
+
+        // A pending file that vanished on its own is an error on retry
+        // outside Windows (Java's `NoSuchFileException`), and is forgotten.
+        fs::create_dir(root.join("g")).unwrap();
+        dir.delete_file("g").unwrap();
+        fs::remove_dir(root.join("g")).unwrap();
+        assert!(dir.delete_pending_files().unwrap_err().is_no_such_file());
+        assert!(dir.pending_deletions().unwrap().is_empty());
+
+        // Drop is `close()`: a last retry.
+        make_pending(&dir, &root, "f");
+        drop(dir);
+        assert!(!root.join("f").exists());
+    }
+
+    #[test]
+    fn create_temp_output_never_clobbers() {
+        let root = tempdir();
+        let dir = MmapDirectory::open(&root);
+        index_output::write_all_bytes(&root, "_0_sort_0.tmp", b"taken").unwrap();
+        let out = dir.create_temp_output("_0", "sort").unwrap();
+        assert_eq!(crate::IndexOutput::name(&out), "_0_sort_1.tmp");
+        out.close().unwrap();
+        assert_eq!(&*dir.open("_0_sort_0.tmp").unwrap(), b"taken");
+        let fs_dir = FsDirectory::open(&root);
+        let out = fs_dir.create_temp_output("_0", "sort").unwrap();
+        assert_eq!(crate::IndexOutput::name(&out), "_0_sort_2.tmp");
+        // A missing directory is an error, not an endless retry.
+        assert!(FsDirectory::open(root.join("missing"))
+            .create_temp_output("_0", "x")
+            .is_err());
+        assert_eq!(temp_file_name("_5", "fdt", 35), "_5_fdt_z.tmp");
+        assert_eq!(
+            temp_file_name("p", "s", u64::MAX),
+            temp_file_name("p", "s", i64::MAX as u64)
+        );
+    }
+
+    #[test]
+    fn fs_directories_expose_their_path_and_lock_factory() {
+        let root = tempdir();
+        let dir = FsDirectory::with_lock_factory(&root, Arc::new(crate::NoLockFactory));
+        assert_eq!(dir.directory(), root.path());
+        assert_eq!(dir.fs_directory_path(), Some(root.path()));
+        assert!(format!("{:?}", dir.lock_factory()).contains("NoLockFactory"));
+        let _a = dir.obtain_lock("write.lock").unwrap();
+        let _b = dir.obtain_lock("write.lock").unwrap();
+
+        let mmap = MmapDirectory::with_lock_factory(&root, Arc::new(crate::NoLockFactory));
+        assert_eq!(mmap.directory(), root.path());
+        assert_eq!(mmap.fs_directory_path(), Some(root.path()));
+        mmap.delete_pending_files().unwrap();
+        let native = MmapDirectory::open(&root);
+        let held = native.obtain_lock("write.lock").unwrap();
+        assert!(matches!(
+            FsDirectory::open(&root).obtain_lock("write.lock"),
+            Err(Error::LockObtainFailed(_))
+        ));
+        drop(held);
+        let base = BaseDirectory::new(Arc::new(crate::NoLockFactory));
+        assert!(format!("{base:?}").contains("NoLockFactory"));
+        base.obtain_lock(&native, "x").unwrap();
+    }
+
+    #[test]
+    fn references_and_arcs_are_directories() {
+        let root = tempdir();
+        let dir = Arc::new(FsDirectory::open(&root));
+        let by_ref = &*dir;
+        let as_ref: &dyn Directory = &by_ref;
+        let shared: &dyn Directory = &dir;
+        for d in [as_ref, shared] {
+            let mut out = d.create_output("a").unwrap();
+            out.write_bytes(b"1");
+            out.close().unwrap();
+            assert_eq!(d.file_length("a").unwrap(), 1);
+            assert_eq!(&*d.open("a").unwrap(), b"1");
+            d.sync(&["a".to_string()]).unwrap();
+            d.rename("a", "b").unwrap();
+            d.copy_from(&*dir, "b", "c").unwrap();
+            d.delete_file("b").unwrap();
+            d.delete_file("c").unwrap();
+            d.sync_meta_data().unwrap();
+            d.create_temp_output("t", "s").unwrap().close().unwrap();
+            assert!(d.pending_deletions().unwrap().is_empty());
+            assert_eq!(d.fs_directory_path(), Some(root.path()));
+            let lock = d.obtain_lock("write.lock").unwrap();
+            lock.close().unwrap();
+            assert!(!d.list_all().unwrap().is_empty());
+        }
+    }
+
+    /// A directory that implements only the required methods, over an
+    /// in-memory one: exercises the trait's defaults.
+    struct RequiredOnly<'a>(&'a crate::ByteBuffersDirectory);
+
+    impl Directory for RequiredOnly<'_> {
+        fn list_all(&self) -> Result<Vec<String>> {
+            self.0.list_all()
+        }
+        fn open(&self, name: &str) -> Result<Input> {
+            self.0.open(name)
+        }
+        fn create_output(&self, name: &str) -> Result<FsIndexOutput> {
+            self.0.create_output(name)
+        }
+        fn sync(&self, names: &[String]) -> Result<()> {
+            self.0.sync(names)
+        }
+        fn rename(&self, source: &str, dest: &str) -> Result<()> {
+            self.0.rename(source, dest)
+        }
+        fn delete_file(&self, name: &str) -> Result<()> {
+            self.0.delete_file(name)
+        }
+        fn sync_meta_data(&self) -> Result<()> {
+            self.0.sync_meta_data()
+        }
+        fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
+            self.0.obtain_lock(name)
+        }
+    }
+
+    #[test]
+    fn trait_defaults_read_the_file_and_refuse_temp_outputs() {
+        let bb = crate::ByteBuffersDirectory::new();
+        let only = RequiredOnly(&bb);
+        let err = only.create_temp_output("a", "b").unwrap_err();
+        assert!(matches!(&err, Error::Io(e) if e.kind() == std::io::ErrorKind::Unsupported));
+        assert!(only.pending_deletions().unwrap().is_empty());
+        assert!(only.fs_directory_path().is_none());
+        let mut out = only.create_output("f").unwrap();
+        out.write_bytes(b"four");
+        out.close().unwrap();
+        assert_eq!(only.file_length("f").unwrap(), 4);
+        assert_eq!(only.list_all().unwrap(), vec!["f"]);
+        only.sync(&[]).unwrap();
+        only.sync_meta_data().unwrap();
+        only.copy_from(&bb, "f", "g").unwrap();
+        only.rename("g", "h").unwrap();
+        only.delete_file("h").unwrap();
+        only.obtain_lock("l").unwrap();
     }
 }

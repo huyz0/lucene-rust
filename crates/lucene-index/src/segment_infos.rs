@@ -1600,6 +1600,9 @@ mod tests {
             }
             self.inner.sync_meta_data()
         }
+        fn obtain_lock(&self, name: &str) -> lucene_store::Result<Box<dyn lucene_store::Lock>> {
+            self.inner.obtain_lock(name)
+        }
     }
 
     #[test]

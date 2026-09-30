@@ -48,6 +48,7 @@ use std::sync::Mutex;
 
 use crate::directory::{Directory, FsDirectory, Input};
 use crate::index_output::FsIndexOutput;
+use crate::lock::Lock;
 use crate::{Error, Result};
 
 /// A file's bytes as they were before an operation replaced or removed it,
@@ -411,6 +412,12 @@ impl Directory for CrashingDirectory {
         state.events.clear();
         Ok(())
     }
+
+    /// Outside the crash model: a power loss releases an OS lock with
+    /// everything else, and the lock file holds no data to damage.
+    fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
+        self.inner.obtain_lock(name)
+    }
 }
 
 #[cfg(test)]
@@ -553,7 +560,7 @@ mod tests {
         let root = tempdir("create-existing");
         fs::write(root.join("_0.si"), b"durable").unwrap();
         let dir = CrashingDirectory::new(&root, 1);
-        let err = dir.create_output("_0.si").err().expect("refused");
+        let err = dir.create_output("_0.si").expect_err("refused");
         assert!(matches!(err, Error::Io(e) if e.kind() == std::io::ErrorKind::AlreadyExists));
         assert_eq!(fs::read(root.join("_0.si")).unwrap(), b"durable");
         fs::remove_dir_all(root).unwrap();
