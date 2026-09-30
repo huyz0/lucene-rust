@@ -162,9 +162,13 @@ use lucene_store::data_output::DataOutput;
 use lucene_store::directory::Directory;
 use lucene_util::fixed_bit_set::FixedBitSet;
 
+mod add_indexes;
 mod explicit;
+mod lifecycle;
 mod pluggable_merge;
+mod try_modify;
 pub use explicit::{ExplicitDocument, ExplicitFields, InvertedField, InvertedTerm};
+pub use lifecycle::MergedSegmentWarmer;
 
 pub use crate::merge_policy::MergePolicyConfig;
 pub use crate::update_document::SegmentDeleteSource as DeleteSource;
@@ -604,6 +608,10 @@ pub enum Error {
          writer's index sort ({sort})"
     )]
     DocValuesUpdateOnIndexSortField { field: String, sort: String },
+    /// `IndexWriter.addIndexes`' `IllegalArgumentException`: a field of an
+    /// incoming segment whose schema conflicts with this writer's.
+    #[error("add_indexes: {0}")]
+    AddIndexes(String),
     /// `ConcurrentMergeScheduler.setMaxMergesAndThreads`'
     /// `IllegalArgumentException`.
     #[error("merge scheduler: {0}")]
@@ -730,6 +738,9 @@ impl FlushDeletes<'_> {
 /// `FieldInfos.Builder` and `LiveIndexWriterConfig`).
 #[derive(Clone)]
 pub(crate) struct IndexingConfig {
+    /// `LiveIndexWriterConfig.getMergedSegmentWarmer()`; see
+    /// [`IndexWriter::set_merged_segment_warmer`].
+    merged_segment_warmer: Option<std::sync::Arc<dyn MergedSegmentWarmer>>,
     /// `IndexWriterConfig.getUseCompoundFile()`: pack every flushed
     /// segment's files into one `.cfs`/`.cfe` pair. See
     /// [`IndexWriter::set_use_compound_file`].
@@ -1985,6 +1996,11 @@ impl IndexingConfig {
             self.lucene_version,
         )?;
         let merged = Self::maybe_compound_merged(dir, plan, merged)?;
+        // `mergeMiddle`: `mergedSegmentWarmer.warm(reader)` before
+        // `commitMerge`, outside the writer's lock.
+        if let Some(warmer) = &self.merged_segment_warmer {
+            warmer.warm(dir, &merged.info)?;
+        }
 
         Ok(MergeOutcome::Merged {
             source_live: opened.iter().map(|o| o.live_docs.clone()).collect(),
@@ -2869,6 +2885,8 @@ pub struct IndexWriter<'d> {
     pluggable_merge_policy: Option<std::sync::Arc<dyn merge_policy::MergePolicy>>,
     /// See [`IndexWriter::set_merges_by_caller`].
     merges_by_caller: bool,
+    /// `IndexWriterConfig.getCommitOnClose()`; see [`IndexWriter::close`].
+    commit_on_close: bool,
 
     /// Per-pending-doc explicit `(term, custom_freq)` pairs for
     /// [`IndexingConfig::custom_freq_postings_field`], aligned 1:1 by index with
@@ -3823,6 +3841,7 @@ impl<'d> IndexWriter<'d> {
                 similarity: None,
                 reader_pool: std::sync::Arc::default(),
                 use_compound_file: false,
+                merged_segment_warmer: None,
             }),
             segment_infos,
             pending_docs: Vec::new(),
@@ -3834,6 +3853,7 @@ impl<'d> IndexWriter<'d> {
             merge_policy: None,
             pluggable_merge_policy: None,
             merges_by_caller: false,
+            commit_on_close: true,
             pending_custom_freq_terms: Vec::new(),
             pending_sort_map: None,
             prepared_commit: None,
