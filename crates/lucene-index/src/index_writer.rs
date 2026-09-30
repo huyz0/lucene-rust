@@ -814,6 +814,10 @@ pub(crate) struct IndexingConfig {
     /// (`ConcurrentMergeScheduler`'s per-merge `MergeRateLimiter`); `None`,
     /// the default, is unthrottled. See [`IndexWriter::set_merge_mb_per_sec`].
     merge_mb_per_sec: Option<f64>,
+    /// `LiveIndexWriterConfig.useCompoundFile`: whether a flushed segment is
+    /// packed into `.cfs`/`.cfe`. See [`IndexWriter::set_use_compound_file`]
+    /// for why this writer's default is `false` where Java's is `true`.
+    use_compound_file: bool,
     /// `IndexWriterConfig.getSimilarity()`, as far as the writer reads it
     /// (`computeNorm`): `None` is Lucene's default, `BM25Similarity`. See
     /// [`IndexWriter::set_similarity`].
@@ -2564,6 +2568,12 @@ impl IndexingConfig {
         if let Some(sort) = &self.index_sort {
             flushed.info.index_sort = Some(sort.clone());
         }
+        if self.use_compound_file {
+            // Before the `.si`, so the `.si` records the compound layout and
+            // is not itself packed.
+            flushed.pending_sync =
+                segment_writer::create_compound_file(dir, segment_name, &mut flushed.info)?;
+        }
         segment_writer::seal_flushed_segment(dir, segment_name, flushed).map_err(Error::from)
     }
 }
@@ -3437,6 +3447,27 @@ impl<'d> IndexWriter<'d> {
         std::sync::Arc::make_mut(&mut self.cfg)
     }
 
+    /// `IndexWriterConfig.setUseCompoundFile`: whether segments flushed from
+    /// here on are packed into a compound file (`IndexWriter.createCompoundFile`
+    /// in `DocumentsWriterPerThread.sealFlushedSegment`).
+    ///
+    /// **Default `false`, where Java's is `true`**: every caller of this
+    /// writer so far (the OpenSearch engine, the tools, the tests) was built
+    /// against loose per-format files, and flipping the default silently
+    /// would change the layout under all of them; a caller that wants Java's
+    /// behaviour says so. A merged segment is compound when the merge
+    /// policy's `useCompoundFile` says so (`noCFSRatio`,
+    /// `maxCFSSegmentSizeMB`) -- the installed pluggable policy's, or, with
+    /// none installed and this flag on, `TieredMergePolicy`'s defaults.
+    pub fn set_use_compound_file(&mut self, use_compound_file: bool) {
+        self.cfg_mut().use_compound_file = use_compound_file;
+    }
+
+    /// `IndexWriterConfig.getUseCompoundFile`.
+    pub fn use_compound_file(&self) -> bool {
+        self.cfg.use_compound_file
+    }
+
     /// Buffers `node` for the segments already published only -- a
     /// [`crate::concurrent_writer::ConcurrentIndexWriter`] keeps each
     /// in-RAM buffer's own share of it with that buffer.
@@ -3668,6 +3699,7 @@ impl<'d> IndexWriter<'d> {
                 hnsw_beam_width: hnsw::DEFAULT_BEAM_WIDTH,
                 merge_mb_per_sec: None,
                 similarity: None,
+                use_compound_file: false,
             }),
             segment_infos,
             pending_docs: Vec::new(),
@@ -8207,6 +8239,17 @@ impl<'d> IndexWriter<'d> {
                 source_live,
             } => (*merged, source_live),
         };
+        let mut merged = merged;
+        // `IndexWriter.mergeMiddle`: `mergePolicy.useCompoundFile(segmentInfos,
+        // merge.info, this)`, then `createCompoundFile` -- before deletes that
+        // arrived during the merge are carried over, as there.
+        if self.merged_segment_uses_compound_file(&merged)? {
+            merged.files = segment_writer::convert_to_compound(
+                self.dir,
+                &merged.info.segment_name,
+                &merged.info.segment_id,
+            )?;
+        }
         let mut info = merged.info;
         let merged_max_doc = merged
             .doc_id_maps
