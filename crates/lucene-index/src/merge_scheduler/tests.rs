@@ -159,9 +159,9 @@ fn no_merge_scheduler_leaves_merges_pending() {
 
 #[test]
 fn max_merges_and_threads_are_validated_as_java_does() {
-    let cms = ConcurrentMergeScheduler::new();
+    let cms = ConcurrentMergeScheduler::default();
     assert_eq!(cms.max_thread_count(), AUTO_DETECT_MERGES_AND_THREADS);
-    for (merges, threads) in [(-1, 2), (2, -1), (3, 0), (0, 0), (2, 3)] {
+    for (merges, threads) in [(-1, 2), (2, -1), (3, 0), (0, 0), (0, 1), (2, 3)] {
         assert!(
             matches!(
                 cms.set_max_merges_and_threads(merges, threads),
