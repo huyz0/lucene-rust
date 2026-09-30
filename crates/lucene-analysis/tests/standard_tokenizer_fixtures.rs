@@ -424,13 +424,13 @@ impl<I: TokenStream> TokenFilter for PathsFilter<I> {
 
 /// `GenStandardTokenizer.dump`.
 fn dump(a: &Automaton) -> String {
-    let mut s = a.num_states().to_string();
-    for st in 0..a.num_states() {
+    let mut s = a.get_num_states().to_string();
+    for (st, ts) in a.get_sorted_transitions().iter().enumerate() {
         s.push(';');
-        if a.is_accept(st) {
+        if a.is_accept(st as i32) {
             s.push('A');
         }
-        for t in a.transitions(st) {
+        for t in ts {
             s.push_str(&format!(" {}:{}-{}", t.dest, t.min, t.max));
         }
     }
