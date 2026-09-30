@@ -9,7 +9,7 @@
 | **Effort** | XL |
 | **Depends on** | [M5.6](m5-6-native-read.md); can run alongside [M6](m6-production-candidate.md) |
 | **Unblocks** | [M8](m8-backward-codecs.md), [M9](m9-geo-and-spatial.md), [M10](m10-joins-grouping-queries.md), [M11](m11-analysis-common.md) |
-| **Status** | not started |
+| **Status** | in progress: T7.1 inventory gate delivered; T7.3 similarities ported (not yet wired into search) |
 
 ---
 
@@ -80,14 +80,28 @@ closes against a list rather than against memory.
 
 ## Tasks
 
-### T7.1 — The inventory gate
+### T7.1 — The inventory gate · delivered 2026-09-30
 
-`scripts/check-port-inventory.py`: reads the 10.5.0 sources jars (fetched by
-`scripts/lib-lucene-jars.sh`), lists every top-level class, and fails when one
-has no `parity.md` row. Starts as a report with a checked-in allowlist of
-today's gaps, each tagged with the milestone that closes it; each milestone
-shrinks the allowlist, and the gate fails if the list grows. Negative
-control: delete a ported row and watch it fail.
+`scripts/check-port-inventory.py` over `docs/inventory/lucene-core.tsv`: one
+row per top-level class of the compiled 10.5.0 jar (1,196 with the Java 21
+multi-release variants), each `ported` (a Rust file and symbol, checked to
+exist), `partial` (the same, plus ` -- M<n>: ` and the gap), `not-needed`
+(a reason), `todo:M<n>` or `deferred:M<n>`. It runs in the gate and in CI;
+`--milestone M7` is this milestone's "done", `--summary` its progress. Seen to
+fail on a deleted row, a missing symbol and an untagged partial
+([`mechanical-gates.md`](../mechanical-gates.md#port-inventory)).
+
+The first classification (five parallel passes, each row checked against the
+Java source and the Rust tree) measured M7's real size, which is larger than
+the scope list below: **475 ported, 227 not needed, 7 deferred to M8, 60 to
+M9 (geo), and 381 open for M7** -- 226 `todo:M7` and 155 `partial`. The open
+ones beyond the scope list include the `Matches` API, rescorers and value
+sources, the NRT managers (`SearcherManager`, `ReaderManager`), reader
+wrappers (`Filter*Reader`, `MultiReader`, `ParallelLeafReader`,
+`ExitableDirectoryReader`, `SortingCodecReader`), the other merge and
+deletion policies, lock factories and the remaining directories, the
+`document/column` API, the public automaton API, the in-memory packed-ints
+family, offline sorting, and the analysis attribute model.
 
 ### T7.2 — `document` field types
 ### T7.3 — Similarities, bit-for-bit
@@ -105,8 +119,9 @@ Lucene, then optimisation to a ratio of at least 1.0.
 
 ## Acceptance criteria
 
-- [ ] `check-port-inventory.py` runs in the gate and has been seen to fail.
-- [ ] Its allowlist holds no `lucene-core` class.
+- [x] `check-port-inventory.py` runs in the gate and has been seen to fail.
+- [ ] `check-port-inventory.py --milestone M7` passes: no `lucene-core` class
+      is `todo:M7` or `partial` with an M7 gap (geo is M9's, older formats M8's).
 - [ ] Every new query and similarity matches Lucene's hits and scores
       bit for bit on a generated fixture, and is no slower than Lucene on its
       benchmark.
