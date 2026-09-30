@@ -110,6 +110,7 @@ public final class SweepMicro {
       case "analysis" -> analysis();
       case "vectors" -> vectors();
       case "quantized" -> quantized();
+      case "fst_build" -> fstBuild();
       case "postings_adv" -> withLeaf(index, SweepMicro::postingsAdvance);
       case "postings_freq" -> withLeaf(index, SweepMicro::postingsFreq);
       case "positions" -> withLeaf(index, SweepMicro::positions);
@@ -547,6 +548,35 @@ public final class SweepMicro {
             return fdocs.length;
           });
     }
+  }
+
+  /**
+   * {@code FSTCompiler} over 50k sorted decimal keys ({@code i * 7919 % 1000003}) with {@code
+   * PositiveIntOutputs}: one op is one key added, the compile included. Mirrors the port's {@code
+   * bench_fst_build}.
+   */
+  static void fstBuild() throws IOException {
+    java.util.TreeMap<org.apache.lucene.util.BytesRef, Long> sorted = new java.util.TreeMap<>();
+    for (long i = 0; i < 50_000; i++) {
+      long v = i * 7919 % 1_000_003;
+      sorted.put(new org.apache.lucene.util.BytesRef(Long.toString(v)), v);
+    }
+    org.apache.lucene.util.IntsRefBuilder scratch = new org.apache.lucene.util.IntsRefBuilder();
+    measure(
+        "fst_build_50k",
+        () -> {
+          org.apache.lucene.util.fst.FSTCompiler<Long> c =
+              new org.apache.lucene.util.fst.FSTCompiler.Builder<>(
+                      org.apache.lucene.util.fst.FST.INPUT_TYPE.BYTE1,
+                      org.apache.lucene.util.fst.PositiveIntOutputs.getSingleton())
+                  .build();
+          for (java.util.Map.Entry<org.apache.lucene.util.BytesRef, Long> e : sorted.entrySet()) {
+            c.add(org.apache.lucene.util.fst.Util.toIntsRef(e.getKey(), scratch), e.getValue());
+          }
+          c.compile();
+          sink += c.fstSizeInBytes();
+          return sorted.size();
+        });
   }
 
   /**
