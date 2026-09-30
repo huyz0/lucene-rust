@@ -1902,3 +1902,94 @@ fn block_boundary_propagator_follows_the_lead_clause() {
     assert_eq!(p.advance_shallow(&mut subs, 24).unwrap(), 31);
     assert_eq!(subs[0].shallow, 30);
 }
+
+/// `IndexOrDocValuesQuery` in the tree: run alone it takes the points side
+/// (`bulkScorer`), behind a selective term the doc-values side
+/// (`get(leadCost)` with the term's cost), and either way it matches what
+/// each side matches alone.
+#[test]
+fn index_or_doc_values_picks_its_side_by_the_lead_cost() {
+    use super::extended::IODV_PLANS;
+    use crate::directory_reader::DirectoryReader;
+    use crate::doc_value_query::IndexOrDocValuesPlan;
+    use crate::extended_query::{
+        IndexOrDocValuesQuery, NumericDocValuesRangeQuery, PointRangeQuery,
+    };
+    use crate::index_searcher::IndexSearcher;
+    use crate::query::{BooleanQuery, Clause, TermQuery};
+    let dir = lucene_store::FsDirectory::open(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/data/m7_queries_index"
+    ));
+    let reader = DirectoryReader::open(&dir).unwrap();
+    let mut opened = reader.open_segments().unwrap();
+    opened.open_points().unwrap();
+    let segments = opened.as_open_segments();
+    let norms = vec![None; segments.len()];
+    let searcher = IndexSearcher::new(&segments, &norms).unwrap();
+    let points = || Clause::from(PointRangeQuery::long_range("num", &[-1000], &[1000]).unwrap());
+    let dv = || Clause::from(NumericDocValuesRangeQuery::new("num", -1000, 1000));
+    let iodv = || Clause::from(IndexOrDocValuesQuery::new(points(), dv()));
+    let hits = |filter: Clause, lead: bool| {
+        let mut q = BooleanQuery::new();
+        if lead {
+            // Five documents' ids: a lead cost of 5.
+            let mut ids = BooleanQuery::new();
+            for id in ["1", "2", "3", "4", "5"] {
+                ids.should
+                    .push(Clause::Term(TermQuery::new("id", id.as_bytes().to_vec())));
+            }
+            q.must.push(Clause::Boolean(Box::new(ids)));
+        }
+        q.filter.push(filter);
+        IODV_PLANS.with(|p| p.borrow_mut().clear());
+        let top = searcher.search(&q, 1000).unwrap();
+        let plans = IODV_PLANS.with(|p| p.borrow().clone());
+        let docs: Vec<(i32, u32)> = top
+            .score_docs
+            .iter()
+            .map(|h| (h.doc, h.score.to_bits()))
+            .collect();
+        (docs, plans)
+    };
+    for lead in [false, true] {
+        let (by_points, none) = hits(points(), lead);
+        assert!(none.is_empty());
+        let (by_dv, _) = hits(dv(), lead);
+        let (either, plans) = hits(iodv(), lead);
+        assert!(!either.is_empty());
+        assert_eq!(either, by_points);
+        assert_eq!(either, by_dv);
+        let want = if lead {
+            IndexOrDocValuesPlan::DocValues
+        } else {
+            IndexOrDocValuesPlan::Index
+        };
+        assert!(!plans.is_empty());
+        assert!(plans.iter().all(|&p| p == want), "lead {lead}: {plans:?}");
+    }
+    // A segment without the field's doc values (or points): no scorer, as
+    // Java's `null` supplier.
+    let no_dv = Clause::from(IndexOrDocValuesQuery::new(
+        points(),
+        NumericDocValuesRangeQuery::new("nope", 0, 100),
+    ));
+    assert!(hits(no_dv, true).0.is_empty());
+    let no_points = Clause::from(IndexOrDocValuesQuery::new(
+        PointRangeQuery::long_range("nope", &[0], &[100]).unwrap(),
+        dv(),
+    ));
+    assert!(hits(no_points, true).0.is_empty());
+    assert!(!hits(no_points_optional(), false).0.is_empty());
+
+    fn no_points_optional() -> Clause {
+        let mut q = BooleanQuery::new();
+        q.should.push(Clause::from(IndexOrDocValuesQuery::new(
+            PointRangeQuery::long_range("nope", &[0], &[100]).unwrap(),
+            NumericDocValuesRangeQuery::new("num", 0, 100),
+        )));
+        q.should
+            .push(Clause::Term(TermQuery::new("body", b"t7".to_vec())));
+        Clause::Boolean(Box::new(q))
+    }
+}

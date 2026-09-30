@@ -38,6 +38,7 @@ pub enum ExtendedQuery {
     IndexSortRange(IndexSortSortedNumericDocValuesRangeQuery),
     PointRange(PointRangeQuery),
     PointInSet(PointInSetQuery),
+    IndexOrDocValues(IndexOrDocValuesQuery),
 }
 
 macro_rules! into_clause {
@@ -66,6 +67,7 @@ into_clause! {
     IndexSortSortedNumericDocValuesRangeQuery => IndexSortRange,
     PointRangeQuery => PointRange,
     PointInSetQuery => PointInSet,
+    IndexOrDocValuesQuery => IndexOrDocValues,
 }
 
 impl ExtendedQuery {
@@ -85,6 +87,7 @@ impl ExtendedQuery {
             ExtendedQuery::IndexSortRange(_) => "IndexSortSortedNumericDocValuesRangeQuery",
             ExtendedQuery::PointRange(_) => "PointRangeQuery",
             ExtendedQuery::PointInSet(_) => "PointInSetQuery",
+            ExtendedQuery::IndexOrDocValues(_) => "IndexOrDocValuesQuery",
         }
     }
 
@@ -95,6 +98,7 @@ impl ExtendedQuery {
             ExtendedQuery::LogOddsFusion(q) => q.clauses.iter().collect(),
             ExtendedQuery::BayesianScore(q) => vec![q.query.as_ref()],
             ExtendedQuery::IndexSortRange(q) => vec![q.fallback.as_ref()],
+            ExtendedQuery::IndexOrDocValues(q) => vec![q.index_query.as_ref(), q.dv_query.as_ref()],
             _ => Vec::new(),
         }
     }
@@ -811,6 +815,33 @@ impl PointInSetQuery {
     /// `InetAddressPoint.newSetQuery`.
     pub fn inet_set(field: impl Into<String>, values: &[std::net::IpAddr]) -> Result<Self> {
         Self::new(field, 1, 16, values.iter().map(|&v| inet_bytes(v).to_vec()))
+    }
+}
+
+/// `IndexOrDocValuesQuery`: one set of matches two ways -- `index_query`
+/// (points or terms: costly to set up, a good lead iterator) and `dv_query`
+/// (doc values: cheap to start, good at verifying documents another clause
+/// leads). Both must match the same documents with the same constant score.
+///
+/// Per segment, as `IndexOrDocValuesQuery.createWeight`'s `ScorerSupplier`
+/// decides: nothing when either side has no scorer supplier (the segment lacks
+/// the points or the doc values); run alone (`bulkScorer`) the index side;
+/// inside a boolean, [`crate::doc_value_query::plan_index_or_doc_values`] over
+/// the index side's `cost()` and the boolean's lead cost
+/// (`ScorerSupplier.get(leadCost)`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct IndexOrDocValuesQuery {
+    pub index_query: Box<Clause>,
+    pub dv_query: Box<Clause>,
+}
+
+impl IndexOrDocValuesQuery {
+    /// `new IndexOrDocValuesQuery(indexQuery, dvQuery)`.
+    pub fn new(index_query: impl Into<Clause>, dv_query: impl Into<Clause>) -> Self {
+        Self {
+            index_query: Box::new(index_query.into()),
+            dv_query: Box::new(dv_query.into()),
+        }
     }
 }
 
