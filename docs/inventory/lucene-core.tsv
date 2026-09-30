@@ -582,7 +582,7 @@ search/AutomatonQuery	partial	crates/lucene-codecs/src/automaton.rs::CompiledDfa
 search/BatchScoreBulkScorer	ported	crates/lucene-search/src/bulk_scorer.rs::score_term
 search/BayesianScoreEstimator	todo:M7	Bayesian BM25 parameter estimator
 search/BayesianScoreQuery	todo:M7	Bayesian BM25 sigmoid-calibrated score query
-search/BinarySortField	partial	crates/lucene-index/src/segment_info.rs::PROVIDER_BINARY -- M7: index-sort (de)serialization only; no search-time sort by BINARY doc values in top_field.rs, and the writer applies numeric index sorts only
+search/BinarySortField	partial	crates/lucene-search/src/top_field.rs::SortField -- M7: search-time sort ported (SortField::binary, TermValComparator); the writer applies numeric index sorts only (IndexSorter.BinarySorter), and index-sort (de)serialization lives in crates/lucene-index/src/segment_info.rs::PROVIDER_BINARY
 search/BitSetDocIdStream	ported	crates/lucene-search/src/exec/mod.rs::constant_bits
 search/BlendedTermQuery	partial	crates/lucene-search/src/lib.rs::FuzzyExpansion -- M7: only the max-docFreq blend inside FuzzyQuery's TopTermsBlendedFreqScoringRewrite; no standalone BlendedTermQuery (user terms, totalTermFreq blending, BOOLEAN/DISJUNCTION_MAX rewrite methods)
 search/BlockMaxConjunctionBulkScorer	ported	crates/lucene-search/src/bulk_scorer.rs::ConjunctionBulk
@@ -639,12 +639,12 @@ search/DocScoreEncoder	ported	crates/lucene-search/src/collector.rs::doc_score_e
 search/DocValuesRangeIterator	partial	crates/lucene-search/src/doc_value_query.rs::search_numeric_range_with_skip_index -- M7: skip-index range pruning for NUMERIC only, as a standalone single-segment scan, not a TwoPhaseIterator in the scorer tree
 search/DocValuesRewriteMethod	todo:M7	MultiTermQuery rewrite over SORTED_SET doc values
 search/DoubleValues	ported	crates/lucene-search/src/values_source.rs::DoubleValues
-search/DoubleValuesSource	partial	crates/lucene-search/src/values_source.rs::DoubleValuesSource -- M7: getSortField (DoubleValuesSortField/DoubleValuesComparatorSource) not ported
+search/DoubleValuesSource	partial	crates/lucene-search/src/values_source.rs::DoubleValuesSource -- M7: getSortField (double_sort_field) serves sources that read one segment; a query-backed or vector source cannot sort (a comparator has neither the searcher nor the opened vectors)
 search/DoubleValuesSourceRescorer	ported	crates/lucene-search/src/rescorer.rs::DoubleValuesSourceRescorer
 search/ExactPhraseMatcher	ported	crates/lucene-search/src/exec/phrase.rs::PhraseScorer
 search/Explanation	ported	crates/lucene-search/src/explain.rs::Explanation
-search/FieldComparator	partial	crates/lucene-search/src/top_field.rs::Comparator -- M7: relevance, doc, numeric and TermOrdVal comparators only; inner TermValComparator (SortField.Type.STRING_VAL) not ported, no user-pluggable comparator
-search/FieldComparatorSource	todo:M7	custom comparator source (SortField.Type.CUSTOM)
+search/FieldComparator	ported	crates/lucene-search/src/top_field.rs::FieldComparator
+search/FieldComparatorSource	ported	crates/lucene-search/src/top_field.rs::FieldComparatorSource
 search/FieldDoc	ported	crates/lucene-search/src/top_field.rs::FieldDoc
 search/FieldExistsQuery	ported	crates/lucene-search/src/query.rs::FieldExistsQuery
 search/FieldValueHitQueue	ported	crates/lucene-search/src/top_field.rs::HitQueue
@@ -686,7 +686,7 @@ search/LiveFieldValues	ported	crates/lucene-search/src/reference_manager.rs::Liv
 search/LogOddsFusionQuery	todo:M7	log-odds probability fusion query
 search/LogOddsFusionScorer	todo:M7	log-odds probability fusion scorer
 search/LongValues	ported	crates/lucene-search/src/values_source.rs::LongValues
-search/LongValuesSource	partial	crates/lucene-search/src/values_source.rs::LongValuesSource -- M7: getSortField (LongValuesSortField) not ported
+search/LongValuesSource	partial	crates/lucene-search/src/values_source.rs::LongValuesSource -- M7: getSortField (long_sort_field) serves sources that read one segment; one wrapping a query-backed or vector double source cannot sort
 search/MatchAllDocsQuery	ported	crates/lucene-search/src/query.rs::MatchAllDocsQuery
 search/MatchNoDocsQuery	ported	crates/lucene-search/src/query.rs::MatchNoDocsQuery
 search/Matches	ported	crates/lucene-search/src/matches.rs::Matches
@@ -756,12 +756,12 @@ search/SimpleScorable	not-needed	mutable score holder handed to collectors; Rust
 search/SkipBlockRangeIterator	partial	crates/lucene-search/src/doc_value_query.rs::search_numeric_range_with_skip_index -- M7: skip-block range walk for NUMERIC only, standalone single-segment scan, not a DocIdSetIterator in the scorer tree
 search/SloppyPhraseMatcher	ported	crates/lucene-search/src/sloppy_phrase.rs::SloppyMatcher
 search/Sort	ported	crates/lucene-search/src/top_field.rs::search_sorted
-search/SortField	partial	crates/lucene-search/src/top_field.rs::SortField -- M7: SCORE, DOC, LONG/INT/DOUBLE/FLOAT and STRING only; STRING_VAL and CUSTOM (FieldComparatorSource) not ported
+search/SortField	ported	crates/lucene-search/src/top_field.rs::SortField
 search/SortRescorer	ported	crates/lucene-search/src/rescorer.rs::SortRescorer
 search/SortedNumericSelector	ported	crates/lucene-search/src/top_field.rs::Selector
 search/SortedNumericSortField	ported	crates/lucene-search/src/top_field.rs::SortField
-search/SortedSetSelector	partial	crates/lucene-search/src/top_field.rs::Selector -- M7: MIN/MAX only; "MIDDLE_MIN/MIDDLE_MAX are ported nowhere" (parity)
-search/SortedSetSortField	partial	crates/lucene-search/src/top_field.rs::SortField -- M7: MIN/MAX selectors only; MIDDLE_MIN/MIDDLE_MAX not ported
+search/SortedSetSelector	ported	crates/lucene-search/src/top_field.rs::Selector
+search/SortedSetSortField	ported	crates/lucene-search/src/top_field.rs::SortField
 search/SynonymQuery	todo:M7	synonym query with blended term stats
 search/TaskExecutor	ported	crates/lucene-search/src/slices.rs::run_slices
 search/TermCollectingRewrite	ported	crates/lucene-search/src/lib.rs::fuzzy_expansion_across_leaves
