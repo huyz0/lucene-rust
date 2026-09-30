@@ -625,7 +625,7 @@ search/DisjunctionMatchesIterator	ported	crates/lucene-search/src/matches.rs::Di
 search/DisjunctionMaxBulkScorer	ported	crates/lucene-search/src/bulk_scorer.rs::DisMaxBulk
 search/DisjunctionMaxQuery	ported	crates/lucene-search/src/query.rs::DisjunctionMaxQuery
 search/DisjunctionMaxScorer	ported	crates/lucene-search/src/exec/disjunction.rs::DisjunctionScorer
-search/DisjunctionScoreBlockBoundaryPropagator	partial	crates/lucene-search/src/exec/disjunction.rs::DisjunctionScorer -- M7: not ported as such: DisjunctionMaxScorer.advanceShallow uses the sub-scorers' minimum boundary instead of the propagator (parity row R1), which changes pruning granularity only
+search/DisjunctionScoreBlockBoundaryPropagator	ported	crates/lucene-search/src/exec/disjunction.rs::BlockBoundaryPropagator
 search/DisjunctionScorer	ported	crates/lucene-search/src/exec/disjunction.rs::DisjunctionScorer
 search/DisjunctionSumScorer	ported	crates/lucene-search/src/exec/disjunction.rs::DisjunctionScorer
 search/DocAndFloatFeatureBuffer	ported	crates/lucene-search/src/bulk_scorer.rs::DocScores
