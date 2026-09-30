@@ -666,7 +666,7 @@ search/HitQueue	ported	crates/lucene-search/src/collector.rs::TopDocsCollector
 search/HnswQueueSaturationCollector	ported	crates/lucene-search/src/knn_collectors.rs::HnswQueueSaturationCollector
 search/ImpactsDISI	ported	crates/lucene-search/src/bulk_scorer.rs::TermLeg
 search/IndexOrDocValuesQuery	ported	crates/lucene-search/src/extended_query.rs::IndexOrDocValuesQuery
-search/IndexSearcher	partial	crates/lucene-search/src/index_searcher.rs::IndexSearcher -- M7: explain over several segments with reader-wide statistics and searchAfter are ported (GenMinScore: explain text verbatim, page hits). Still open: search(query, n, sort) and timeouts are not methods of the object (free functions top_field::search_sorted, which needs the segment readers this object does not hold, and the timeout collectors); fuzzy/span/multi-phrase scoring clauses refused under a non-default similarity; Fuzzy/MultiPhrase/span/KNN run outside the tree
+search/IndexSearcher	partial	crates/lucene-search/src/index_searcher.rs::IndexSearcher -- M7: explain over several segments with reader-wide statistics, searchAfter and search(query, n, sort) (search_sorted, readers passed in) are ported (GenMinScore: explain text verbatim, pages; GenSortedSearch: sorted hits). Still open: timeouts are not a method (index/QueryTimeout is partial); fuzzy/span/multi-phrase scoring clauses refused under a non-default similarity; Fuzzy/MultiPhrase/span/KNN run outside the tree
 search/IndexSortSortedNumericDocValuesRangeQuery	ported	crates/lucene-search/src/extended_query.rs::IndexSortSortedNumericDocValuesRangeQuery
 search/IndriAndQuery	ported	crates/lucene-search/src/extended_query.rs::IndriAndQuery
 search/IndriAndScorer	ported	crates/lucene-search/src/exec/extended.rs::IndriAndScorer
