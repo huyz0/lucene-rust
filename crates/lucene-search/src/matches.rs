@@ -303,7 +303,7 @@ impl ListMatchesIterator {
         }
     }
 
-    fn current(&self) -> [i32; 4] {
+    fn span(&self) -> [i32; 4] {
         self.at
             .checked_sub(1)
             .and_then(|i| self.intervals.get(i))
@@ -322,16 +322,16 @@ impl MatchesIterator for ListMatchesIterator {
         }
     }
     fn start_position(&self) -> i32 {
-        self.current()[0]
+        self.span()[0]
     }
     fn end_position(&self) -> i32 {
-        self.current()[1]
+        self.span()[1]
     }
     fn start_offset(&self) -> i32 {
-        self.current()[2]
+        self.span()[2]
     }
     fn end_offset(&self) -> i32 {
-        self.current()[3]
+        self.span()[3]
     }
     fn query(&self) -> &Clause {
         &self.query
