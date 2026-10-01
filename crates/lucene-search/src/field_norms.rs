@@ -431,7 +431,7 @@ impl<'a> FieldNorms<'a> {
     }
 }
 
-impl FieldNormsCursor<'_, '_> {
+impl<'a> FieldNormsCursor<'_, 'a> {
     /// This doc's raw norm byte, or `None` when the field legitimately has no
     /// norm for it.
     ///
@@ -493,6 +493,15 @@ impl FieldNormsCursor<'_, '_> {
             });
         }
         Ok(norms::norm_value(self.norms.data, &self.norms.entry, doc)?.map(|n| n as u8))
+    }
+
+    /// The field's norms as one byte per document, indexed by document, when
+    /// it is the dense one-byte shape every ordinary analyzed field has --
+    /// what [`Self::norm_long`] reads first (sign-extended). `None` for any
+    /// other shape, which only [`Self::norm_long`] answers.
+    #[inline]
+    pub fn dense_bytes(&self) -> Option<&'a [u8]> {
+        self.norms.dense_norm_bytes
     }
 
     /// This doc's norm as `NumericDocValues.longValue()` reads it -- a
