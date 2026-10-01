@@ -818,8 +818,74 @@ enum Norms<'a> {
     /// The field's own norm, `1` without one.
     One(Option<FieldNormsCursor<'a, 'a>>),
     /// `MultiNormsLeafSimScorer`: the weighted sum of every field's decoded
-    /// length, re-encoded.
-    Multi(Vec<(FieldNormsCursor<'a, 'a>, f32)>),
+    /// length, re-encoded -- with [`DenseMemo`] when the fields allow it.
+    Multi(
+        Vec<(FieldNormsCursor<'a, 'a>, f32)>,
+        Option<Box<DenseMemo<'a>>>,
+    ),
+}
+
+/// [`Norms::Multi`] over one or two fields whose norms are dense, one byte
+/// per document: the combined norm is then a function of the fields' norm
+/// bytes alone, so it is computed once per distinct pair of bytes and
+/// remembered, instead of decoding, weighting, rounding and re-encoding per
+/// document (`MultiNormsLeafSimScorer`'s per-document work). The value
+/// remembered is exactly what [`Norms::norm`]'s arithmetic gives for that
+/// pair, under `advanceExact`'s rule (`batch == false`).
+struct DenseMemo<'a> {
+    bytes: [&'a [u8]; 2],
+    weights: [f32; 2],
+    two: bool,
+    /// Per `a | b << 8`: the combined norm byte, or [`DenseMemo::UNSET`].
+    memo: Box<[u16]>,
+}
+
+impl<'a> DenseMemo<'a> {
+    const UNSET: u16 = u16::MAX;
+
+    fn new(fields: &[(FieldNormsCursor<'a, 'a>, f32)]) -> Option<Box<Self>> {
+        let (first, second) = match fields {
+            [a] => (a, None),
+            [a, b] => (a, Some(b)),
+            _ => return None,
+        };
+        let a = first.0.dense_bytes()?;
+        let b = match second {
+            Some(f) => Some(f.0.dense_bytes()?),
+            None => None,
+        };
+        Some(Box::new(DenseMemo {
+            bytes: [a, b.unwrap_or(&[])],
+            weights: [first.1, second.map_or(0.0, |f| f.1)],
+            two: b.is_some(),
+            memo: vec![Self::UNSET; if b.is_some() { 1 << 16 } else { 1 << 8 }].into_boxed_slice(),
+        }))
+    }
+
+    /// The combined norm of `doc`, or `None` when some field's byte array
+    /// does not cover it (the general path answers).
+    #[inline]
+    fn norm(&mut self, doc: i32) -> Option<i64> {
+        let a = *self.bytes[0].get(doc as usize)?;
+        let key = if self.two {
+            let b = *self.bytes[1].get(doc as usize)?;
+            usize::from(a) | usize::from(b) << 8
+        } else {
+            usize::from(a)
+        };
+        // `key < 1 << 16` (or `1 << 8` for one field): the memo's length.
+        let slot = &mut self.memo[key];
+        if *slot == Self::UNSET {
+            let table = length_table();
+            let mut acc = 0.0f32;
+            acc += self.weights[0] * table[usize::from(a)];
+            if self.two {
+                acc += self.weights[1] * table[key >> 8];
+            }
+            *slot = u16::from(encode_multi_norm(acc, false) as u8);
+        }
+        Some(i64::from(*slot as u8 as i8))
+    }
 }
 
 /// `SmallFloat.byte4ToInt` for every norm byte (`LENGTH_TABLE`).
@@ -840,7 +906,12 @@ impl Norms<'_> {
                 Some(n) => n.norm_long(doc)?.unwrap_or(1),
                 None => 1,
             }),
-            Norms::Multi(fields) => {
+            Norms::Multi(fields, memo) => {
+                if !batch {
+                    if let Some(norm) = memo.as_mut().and_then(|m| m.norm(doc)) {
+                        return Ok(norm);
+                    }
+                }
                 if fields.is_empty() {
                     return Ok(1);
                 }
@@ -851,19 +922,25 @@ impl Norms<'_> {
                         acc += *weight * table[usize::from(norm as u8)];
                     }
                 }
-                if batch && acc == 0.0 {
-                    return Ok(1);
-                }
-                // `SmallFloat.intToByte4(Math.round(normValue))`, read back
-                // as the sign-extended byte `longValue()` returns.
-                let rounded = acc.round() as i64;
-                let byte = lucene_util::small_float::int_to_byte4(
-                    u32::try_from(rounded.clamp(0, i64::from(i32::MAX))).unwrap_or(0),
-                );
-                Ok(i64::from(byte as i8))
+                Ok(encode_multi_norm(acc, batch))
             }
         }
     }
+}
+
+/// `MultiFieldNormValues`' value for a document whose weighted, decoded
+/// lengths sum to `acc`: `SmallFloat.intToByte4(Math.round(acc))`, read back
+/// as the sign-extended byte `longValue()` returns -- or `1` under `batch`
+/// (`longValues`' rule) when nothing was summed.
+fn encode_multi_norm(acc: f32, batch: bool) -> i64 {
+    if batch && acc == 0.0 {
+        return 1;
+    }
+    let rounded = acc.round() as i64;
+    let byte = lucene_util::small_float::int_to_byte4(
+        u32::try_from(rounded.clamp(0, i64::from(i32::MAX))).unwrap_or(0),
+    );
+    i64::from(byte as i8)
 }
 
 /// `SynonymScorer` and `CombinedFieldScorer`: a disjunction of postings whose
@@ -1116,6 +1193,27 @@ fn combined_field<'a>(
         let b = Clause::Boolean(Box::new(BooleanQuery::new().with_should(should)));
         return build::build(ctx, &b, boost, mode, false);
     }
+    Ok(combined_parts(ctx, q, boost)?.map(|p| -> BoxScorer<'a> {
+        Box::new(FreqSumScorer::new(
+            p.members, p.weights, p.scorer, p.norms, true,
+        ))
+    }))
+}
+
+/// What a scored `CombinedFieldQuery` is built from in one segment.
+struct CombinedParts<'a> {
+    members: Vec<Member<'a>>,
+    weights: Vec<f32>,
+    scorer: Arc<dyn SimScorer>,
+    norms: Norms<'a>,
+}
+
+/// `CombinedFieldWeight.scorer`'s pieces; `None` when nothing matches here.
+fn combined_parts<'a>(
+    ctx: &LeafContext<'a>,
+    q: &CombinedFieldQuery,
+    boost: f32,
+) -> Result<Option<CombinedParts<'a>>> {
     // `CombinedFieldWeight`: docFreq the largest, totalTermFreq the
     // weighted sum (`long += double`, a truncating cast each step).
     let mut doc_freq = 0i64;
@@ -1177,11 +1275,205 @@ fn combined_field<'a>(
     let norms = if norms.is_empty() {
         Norms::One(None)
     } else {
-        Norms::Multi(norms)
+        let memo = DenseMemo::new(&norms);
+        Norms::Multi(norms, memo)
     };
-    Ok(Some(Box::new(FreqSumScorer::new(
-        members, weights, scorer, norms, true,
-    ))))
+    Ok(Some(CombinedParts {
+        members,
+        weights,
+        scorer,
+        norms,
+    }))
+}
+
+/// A scored top-level `CombinedFieldQuery` whose term is in at most two of
+/// its fields, as its own bulk scorer ([`CombinedWindow`]): `None` for any
+/// other shape (the scorer tree runs it, [`FreqSumScorer`]), `Some(None)`
+/// when nothing matches here. With three or more members the frequencies
+/// are summed in `topList()` order, which the window does not keep.
+pub(crate) fn combined_field_bulk<'a>(
+    ctx: &LeafContext<'a>,
+    q: &CombinedFieldQuery,
+    boost: f32,
+    mode: Mode,
+) -> Result<Option<Option<Box<CombinedWindow<'a>>>>> {
+    if q.fields.is_empty() || !mode.needs_scores() {
+        return Ok(None);
+    }
+    Ok(match combined_parts(ctx, q, boost)? {
+        None => Some(None),
+        Some(parts) if parts.members.len() <= 2 => Some(Some(Box::new(CombinedWindow::new(parts)))),
+        Some(_) => None,
+    })
+}
+
+/// The documents [`CombinedWindow`] gathers at once.
+const COMBINED_WINDOW: usize = 4096;
+
+/// `DefaultBulkScorer` over `CombinedFieldScorer` with one or two members,
+/// computed a window of documents at a time instead of a document at a time.
+///
+/// Lucene's `CombinedFieldScorer` has no impacts and ignores the minimum
+/// competitive score, so its bulk scorer visits, scores and collects every
+/// document either field's postings hold. This does the same, in this
+/// order per window of [`COMBINED_WINDOW`] documents: each member's postings
+/// a decoded block at a time (`nextPostings`), its `freq * weight` added into
+/// the document's slot; then the window's documents in order, with their
+/// combined norms ([`Norms::norm`], the `advanceExact` rule `score()` reads);
+/// then the BM25 scores of the whole batch (`BM25Scorer.score`'s arithmetic,
+/// with no call per document, so it vectorizes); then the collector, every
+/// live document in order.
+///
+/// The same values as the scorer tree, bit for bit: a document's frequency
+/// is `t0`, `t1` or `t0 + t1` (`float` addition commutes, so the order
+/// `topList()` would sum two in does not matter -- why this is limited to
+/// two), the norm and score are the same functions, and every live document
+/// is collected in ascending order, as `DefaultBulkScorer` would.
+pub(crate) struct CombinedWindow<'a> {
+    members: Vec<(Member<'a>, f32)>,
+    scorer: Arc<dyn SimScorer>,
+    norms: Norms<'a>,
+    /// Per window slot: the summed `freq * weight` (zero between windows).
+    acc: Box<[f32]>,
+    /// Which window slots some member has a document in.
+    bits: Box<[u64]>,
+    block_docs: Vec<i32>,
+    block_freqs: Vec<i32>,
+    docs: Vec<i32>,
+    freqs: Vec<f32>,
+    norm_values: Vec<i64>,
+    inverses: Vec<f32>,
+    scores: Vec<f32>,
+}
+
+impl<'a> CombinedWindow<'a> {
+    fn new(parts: CombinedParts<'a>) -> Self {
+        Self {
+            members: parts.members.into_iter().zip(parts.weights).collect(),
+            scorer: parts.scorer,
+            norms: parts.norms,
+            acc: vec![0.0; COMBINED_WINDOW].into_boxed_slice(),
+            bits: vec![0; COMBINED_WINDOW / 64].into_boxed_slice(),
+            block_docs: Vec::new(),
+            block_freqs: Vec::new(),
+            docs: Vec::with_capacity(COMBINED_WINDOW),
+            freqs: Vec::with_capacity(COMBINED_WINDOW),
+            norm_values: Vec::with_capacity(COMBINED_WINDOW),
+            inverses: Vec::with_capacity(COMBINED_WINDOW),
+            scores: Vec::with_capacity(COMBINED_WINDOW),
+        }
+    }
+
+    pub(crate) fn score<C: crate::collector::ScoringCollector + ?Sized>(
+        &mut self,
+        live_docs: Option<&lucene_util::fixed_bit_set::FixedBitSet>,
+        collector: &mut C,
+        min: i32,
+        max: i32,
+    ) -> Result<i32> {
+        for (m, _) in self.members.iter_mut() {
+            if m.doc_id() < min {
+                m.advance(min)?;
+            }
+        }
+        loop {
+            let base = self
+                .members
+                .iter()
+                .map(|(m, _)| m.doc_id())
+                .min()
+                .unwrap_or(NO_MORE_DOCS);
+            if base >= max {
+                return Ok(base);
+            }
+            // ARITH: saturating; `end - base <= COMBINED_WINDOW`.
+            let end = base.saturating_add(COMBINED_WINDOW as i32).min(max);
+            self.fill(base, end)?;
+            self.gather(base, live_docs)?;
+            self.compute_scores();
+            for (&doc, &score) in self.docs.iter().zip(&self.scores) {
+                collector.collect(doc, score);
+            }
+        }
+    }
+
+    /// Every member's documents in `[base, end)` into the window: the slot's
+    /// bit set, `freq * weight` added to its frequency.
+    fn fill(&mut self, base: i32, end: i32) -> Result<()> {
+        for (m, weight) in self.members.iter_mut() {
+            while m.cursor.doc_id() < end {
+                m.cursor
+                    .next_postings(end, &mut self.block_docs, &mut self.block_freqs)
+                    .map_err(pe)?;
+                if self.block_docs.is_empty() {
+                    break;
+                }
+                for (&doc, &freq) in self.block_docs.iter().zip(&self.block_freqs) {
+                    // ARITH: `base <= doc < end <= base + COMBINED_WINDOW`.
+                    let i = (doc - base) as usize;
+                    // `postingsEnum.freq() * weight`, summed.
+                    self.acc[i] += freq as f32 * *weight;
+                    self.bits[i >> 6] |= 1u64 << (i & 63);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The window's live documents in order, with their frequencies, and
+    /// the window cleared for the next.
+    fn gather(
+        &mut self,
+        base: i32,
+        live_docs: Option<&lucene_util::fixed_bit_set::FixedBitSet>,
+    ) -> Result<()> {
+        self.docs.clear();
+        self.freqs.clear();
+        for (w, word) in self.bits.iter_mut().enumerate() {
+            let mut bits = std::mem::take(word);
+            while bits != 0 {
+                let i = w * 64 + bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                // ARITH: `i < COMBINED_WINDOW`, and the slot is a document.
+                let doc = base + i as i32;
+                let freq = std::mem::take(&mut self.acc[i]);
+                if live_docs.is_none_or(|l| l.get_doc(doc)) {
+                    self.docs.push(doc);
+                    self.freqs.push(freq);
+                }
+            }
+        }
+        self.norm_values.clear();
+        for &doc in &self.docs {
+            self.norm_values.push(self.norms.norm(doc, false)?);
+        }
+        Ok(())
+    }
+
+    /// `simScorer.score(freq, norm)` for the gathered batch.
+    fn compute_scores(&mut self) {
+        self.scores.clear();
+        match self.scorer.bm25_parts() {
+            Some((weight, cache)) => {
+                self.inverses.clear();
+                self.inverses.extend(
+                    self.norm_values
+                        .iter()
+                        .map(|&n| cache[usize::from(n as u8)]),
+                );
+                // `BM25Scorer.score`, term for term.
+                self.scores.extend(
+                    self.freqs
+                        .iter()
+                        .zip(&self.inverses)
+                        .map(|(&freq, &inv)| weight - weight / (1.0 + freq * inv)),
+                );
+            }
+            None => self
+                .scorer
+                .score_bulk(&self.freqs, &self.norm_values, &mut self.scores),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2323,9 +2615,81 @@ mod tests {
 
     #[test]
     fn multi_norms_reencode_the_weighted_length() {
-        let mut none = Norms::Multi(Vec::new());
+        let mut none = Norms::Multi(Vec::new(), None);
         assert_eq!(none.norm(3, false).unwrap(), 1);
         let mut one = Norms::One(None);
         assert_eq!(one.norm(3, true).unwrap(), 1);
+    }
+
+    /// Dense one-byte norms, as `Lucene90NormsConsumer` writes them for an
+    /// ordinary analyzed field: `bytes[doc]` is the document's norm.
+    fn dense_norms(bytes: &[u8]) -> crate::field_norms::FieldNorms<'_> {
+        let entry = lucene_codecs::norms::NormsEntry {
+            field_number: 0,
+            docs_with_field_offset: -1,
+            docs_with_field_length: 0,
+            jump_table_entry_count: -1,
+            dense_rank_power: 0xFF,
+            num_docs_with_field: bytes.len() as i32,
+            bytes_per_norm: 1,
+            norms_offset: 0,
+        };
+        crate::field_norms::FieldNorms::from_field_stats(bytes, entry, 100, 10)
+    }
+
+    /// [`DenseMemo`] is a cache of [`Norms::norm`]'s own arithmetic (which
+    /// the `CombinedFieldQuery` fixtures verify against Lucene): it must give
+    /// exactly the general path's value for every pair of norm bytes -- the
+    /// ones that decode as negative `i8` included -- for one field and two,
+    /// whatever the weights, on a first (computed) and a second (remembered)
+    /// lookup, and step aside for a document its arrays do not cover.
+    #[test]
+    fn dense_memo_is_the_general_multi_norm_for_every_byte_pair() {
+        let n = 1usize << 16;
+        let low: Vec<u8> = (0..n).map(|d| (d & 0xFF) as u8).collect();
+        let high: Vec<u8> = (0..n).map(|d| (d >> 8) as u8).collect();
+        let (a, b) = (dense_norms(&low), dense_norms(&high));
+        for (wa, wb) in [(1.0f32, 1.0f32), (2.5, 3.0), (1.0, 7.25), (13.0, 1.5)] {
+            let fields = vec![(a.cursor(), wa), (b.cursor(), wb)];
+            let mut memo = DenseMemo::new(&fields).expect("both fields are dense");
+            let mut general = Norms::Multi(fields, None);
+            for pass in 0..2 {
+                for doc in 0..n as i32 {
+                    let want = general.norm(doc, false).unwrap();
+                    assert_eq!(
+                        memo.norm(doc),
+                        Some(want),
+                        "{wa}/{wb} doc {doc} pass {pass}"
+                    );
+                }
+            }
+            assert_eq!(memo.norm(n as i32), None);
+            assert_eq!(memo.norm(-1), None);
+        }
+        let fields = vec![(a.cursor(), 3.5f32)];
+        let mut memo = DenseMemo::new(&fields).expect("one dense field");
+        let mut general = Norms::Multi(fields, None);
+        for doc in 0..256 {
+            assert_eq!(memo.norm(doc), Some(general.norm(doc, false).unwrap()));
+        }
+        // Three fields, or a field that is not dense one-byte, have none.
+        let three = vec![(a.cursor(), 1.0), (b.cursor(), 1.0), (a.cursor(), 1.0)];
+        assert!(DenseMemo::new(&three).is_none());
+        let unnormed = crate::field_norms::FieldNorms::unnormed(10, 1.0);
+        assert!(DenseMemo::new(&[(unnormed.cursor(), 1.0)]).is_none());
+        // `Norms::norm` answers from the memo under `advanceExact`'s rule
+        // only; `longValues`' rule reads the fields.
+        let fields = vec![(a.cursor(), 1.0f32), (b.cursor(), 1.0f32)];
+        let memo = DenseMemo::new(&fields);
+        let mut with_memo = Norms::Multi(fields, memo);
+        let mut without = Norms::Multi(vec![(a.cursor(), 1.0), (b.cursor(), 1.0)], None);
+        for doc in [0, 1, 255, 256, 40_000] {
+            for batch in [false, true] {
+                assert_eq!(
+                    with_memo.norm(doc, batch).unwrap(),
+                    without.norm(doc, batch).unwrap()
+                );
+            }
+        }
     }
 }
