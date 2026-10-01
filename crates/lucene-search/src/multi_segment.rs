@@ -711,6 +711,13 @@ pub(crate) fn global_boolean_stats(
                 }
             }
             Clause::Boost(b) => walk_clause(&b.inner, out),
+            // `SpanWeight.buildSimWeight`: every leaf term's statistics.
+            Clause::Span(s) => {
+                let mut leaves = Vec::new();
+                crate::collect_span_leaves(s, &mut leaves);
+                out.terms
+                    .extend(leaves.into_iter().map(|(f, t)| (f, t, None)));
+            }
             Clause::MultiPhrase(m) => {
                 let mut terms = Vec::new();
                 crate::exec::extended::collect_multi_phrase_terms(m, &mut terms);
@@ -734,8 +741,42 @@ pub(crate) fn global_boolean_stats(
             // Everything else either does not score from term statistics
             // (`ConstantScore`, points, doc-values ranges) or expands to terms
             // and scores a flat `1.0` per match (`Wildcard`, `Prefix`,
-            // `Regexp`, `Span`), where a reader-wide statistic would have
-            // nothing to change.
+            // `Regexp`), where a reader-wide statistic would have nothing to
+            // change.
+            _ => {}
+        }
+    }
+
+    // `FuzzyQuery.rewrite` expands across the whole reader whether or not
+    // the clause scores: one under a filter or a `constant_score` matches the
+    // reader-wide expansion too.
+    fn walk_unscored_fuzzy(c: &crate::query::Clause, out: &mut Vec<crate::FuzzyQuery>) {
+        use crate::query::Clause;
+        match c {
+            Clause::Fuzzy(f) => out.push(f.clone()),
+            Clause::Boolean(b) => {
+                for inner in b
+                    .must
+                    .iter()
+                    .chain(&b.should)
+                    .chain(&b.filter)
+                    .chain(&b.must_not)
+                {
+                    walk_unscored_fuzzy(inner, out);
+                }
+            }
+            Clause::DisjunctionMax(d) => {
+                for inner in &d.disjuncts {
+                    walk_unscored_fuzzy(inner, out);
+                }
+            }
+            Clause::Boost(b) => walk_unscored_fuzzy(&b.inner, out),
+            Clause::ConstantScore(c) => walk_unscored_fuzzy(&c.inner, out),
+            Clause::Extended(e) => {
+                for child in e.children() {
+                    walk_unscored_fuzzy(child, out);
+                }
+            }
             _ => {}
         }
     }
@@ -759,6 +800,21 @@ pub(crate) fn global_boolean_stats(
     }
     let mut collected = Collected::default();
     walk(query, &mut collected);
+    let mut all_fuzzy = Vec::new();
+    for c in query
+        .must
+        .iter()
+        .chain(&query.should)
+        .chain(&query.filter)
+        .chain(&query.must_not)
+    {
+        walk_unscored_fuzzy(c, &mut all_fuzzy);
+    }
+    for f in all_fuzzy {
+        if !collected.fuzzy.contains(&f) {
+            collected.fuzzy.push(f);
+        }
+    }
     let mut map = crate::GlobalStats::new();
     // `TermCollectingRewrite.collectTerms` across every leaf, then the
     // rewritten query's own terms.
@@ -1119,9 +1175,9 @@ pub fn search_boolean_query_multi_segment_maxscore_counting(
 /// norms.
 ///
 /// A default [`crate::similarities::Bm25Similarity`] (and a per-field
-/// wrapper that is one everywhere) runs the BM25 fast path unchanged. Under
-/// any other, a scoring clause that only scores BM25 -- fuzzy, span,
-/// multi-phrase -- is refused ([`crate::Error::SimilarityUnsupported`]).
+/// wrapper that is one everywhere) runs the BM25 fast path unchanged. Every
+/// scoring clause scores through the similarity: term, phrase, multi-phrase,
+/// span, fuzzy (its blended rewrite) and the extended queries.
 pub fn search_boolean_query_multi_segment_with_similarity(
     segments: &[OpenSegment<'_>],
     query: &BooleanQuery,
@@ -1137,7 +1193,6 @@ pub fn search_boolean_query_multi_segment_with_similarity(
         norms.len(),
         "one norms entry per segment expected"
     );
-    crate::check_similarity_supported(query)?;
     let rewritten = rewrite_points_ranges(query, segments);
     let query = rewritten.as_ref().unwrap_or(query);
     let global = global_boolean_stats(segments, query)?;
