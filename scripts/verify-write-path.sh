@@ -251,6 +251,12 @@ CASES=(
   # and merged over a source without payloads. Lucene must read every
   # payload and frequency back as the filter set them, and pass CheckIndex.
   "lucene-index|write_token_attributes_fixture|token-attributes|VerifyTokenAttributes"
+  # A DOCS_AND_CUSTOM_FREQS field that keeps its norms, through
+  # add_document_with_custom_freq_terms, flushed and merged. Lucene indexes
+  # the same (term, freq) pairs itself; every norm and posting must match
+  # (each pair is one token: the norm counts terms, not frequencies), and
+  # CheckIndex must pass.
+  "lucene-index|write_custom_freq_norms_fixture|custom-freq-norms|VerifyCustomFreqNorms"
   # OneMerge.wrapForMerge/reorder in the writer's merge (M7): three segments
   # with deletes force-merged by a policy whose merges hide every rank
   # multiple of 11 and order by rank descending. Lucene must find exactly the
