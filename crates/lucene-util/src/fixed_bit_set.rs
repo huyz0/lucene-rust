@@ -968,9 +968,9 @@ mod tests {
         let mut b = FixedBitSet::new(130);
         b.set(0);
         b.set(129);
-        let words = b.clone().into_words();
-        assert_eq!(words.len(), bits2words(130));
-        assert_eq!(FixedBitSet::from_words(words, 130), b);
+        let backing = b.clone().into_words();
+        assert_eq!(backing.len(), bits2words(130));
+        assert_eq!(FixedBitSet::from_words(backing, 130), b);
     }
 
     #[test]
