@@ -35,6 +35,18 @@ def load(path):
     return out
 
 
+def load_checks(path):
+    """`#check<TAB>case<TAB>digest<TAB>n` lines: a digest of what the case
+    computed (hits and score bits, written bytes), so the two engines can be
+    shown to have done the same work before their times are divided."""
+    out = {}
+    for line in path.read_text().splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 3 and parts[0] == "#check":
+            out[parts[1]] = "\t".join(parts[2:])
+    return out
+
+
 def spread(values):
     """Max/min, the factor by which repetitions of one engine disagreed."""
     lo, hi = min(values), max(values)
@@ -51,6 +63,22 @@ def main():
         print("bench-micro: no cases joined -- the harnesses disagree on case names",
               file=sys.stderr)
         return 1
+
+    # Results first: a case whose engines disagree is timing different work,
+    # and its ratio is not a result. Every repetition is checked.
+    mismatched = set()
+    for r in range(1, reps + 1):
+        rc = load_checks(out_dir / f"rust.{r}.tsv")
+        jc = load_checks(out_dir / f"java.{r}.tsv")
+        for case in sorted(set(rc) & set(jc)):
+            if rc[case] != jc[case] and case not in mismatched:
+                mismatched.add(case)
+                print(f"bench-micro: RESULT MISMATCH in {case} (rep {r}): "
+                      f"rust {rc[case]} java {jc[case]}", file=sys.stderr)
+        for case in sorted(set(rc) ^ set(jc)):
+            if case not in mismatched:
+                mismatched.add(case)
+                print(f"bench-micro: {case} checked by one engine only", file=sys.stderr)
 
     rows, ratios, noises = [], [], []
     for case in cases:
@@ -74,7 +102,8 @@ def main():
         # Inside the noise floor in either direction: not a result.
         resolvable = ratio > floor or ratio < 1.0 / floor
         mark = f"{ratio:7.2f}x" if resolvable else f"{ratio:7.2f}~"
-        print(f"{case:<10} {r:12.3f} {j:12.3f} {mark} {noise:7.2f}x")
+        bad = "  MISMATCH" if case in mismatched else ""
+        print(f"{case:<10} {r:12.3f} {j:12.3f} {mark} {noise:7.2f}x{bad}")
 
     med = st.median(ratios)
     unresolved = sum(1 for r in ratios if not (r > floor or r < 1.0 / floor))
@@ -85,6 +114,10 @@ def main():
         print(f"{unresolved} case(s) marked ~ : difference is inside the noise floor, "
               f"so this run cannot tell them apart.")
     print("ratio > 1 means Rust is faster than Lucene on this case.")
+    if mismatched:
+        print(f"{len(mismatched)} case(s) computed different results on the two engines "
+              f"(MISMATCH): their ratios are not comparable.")
+        return 1
     return 0
 
 

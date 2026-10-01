@@ -194,6 +194,11 @@ fi
 # shellcheck source=scripts/lib-lucene-jars.sh
 source "$(dirname "$0")/lib-lucene-jars.sh"
 CP=$(lucene_classpath "${LUCENE_MODULES[@]}")
+# Read as data, never put on the classpath (its SPI registrations name codecs
+# from modules the generators do not load): GenStandardTokenizerCorpus takes
+# its text from this jar's europarl.lines.txt.gz.
+LUCENE_TEST_FRAMEWORK_JAR=$(lucene_resolve_jar lucene-test-framework)
+export LUCENE_TEST_FRAMEWORK_JAR
 
 # --- compile -----------------------------------------------------------------
 CLASSES=$(mktemp -d)

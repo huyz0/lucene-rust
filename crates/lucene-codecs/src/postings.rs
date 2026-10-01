@@ -1104,16 +1104,17 @@ impl<'a> DocInput<'a> {
         Ok(cursor)
     }
 
-    /// The shared body of [`Self::lazy_cursor_with_flags`] and
-    /// [`Self::singleton_cursor`], past their `docFreq` checks.
-    fn lazy_cursor_for(
+    /// What a cursor over `meta`'s postings starts from: the `.doc` reader
+    /// at the term's start, the backward codecs' skip list, and the level-1
+    /// setup -- the half of [`Self::lazy_cursor_for`] that
+    /// [`Self::reset_lazy_cursor`] shares.
+    fn cursor_prelude(
         &self,
         meta: TermMetadata,
         doc_freq: i32,
         index_options: IndexOptions,
         has_payloads: bool,
-        flags: PostingsFlags,
-    ) -> Result<LazyDocsCursor<'a>> {
+    ) -> Result<CursorPrelude<'a>> {
         if !matches!(
             index_options,
             IndexOptions::Docs
@@ -1170,6 +1171,108 @@ impl<'a> DocInput<'a> {
         } else {
             -1
         };
+        Ok(CursorPrelude {
+            r,
+            skip,
+            trailing,
+            bs,
+            level1_docs,
+            level1_last_doc_id,
+        })
+    }
+
+    /// `termsEnum.postings(reuse, flags)` with `reuse` a cursor this `.doc`
+    /// handed out for another term of the same field: `cursor` re-pointed at
+    /// `meta`'s postings as [`Self::lazy_cursor_with_flags`] would open them,
+    /// its block buffers kept rather than built again. Those are kilobytes,
+    /// and a multi-term query's bit-set union opens a cursor per term --
+    /// thousands for a short prefix -- which is why Lucene's `TermsEnum`
+    /// takes a `reuse` at all.
+    pub fn reset_lazy_cursor(
+        &self,
+        cursor: &mut LazyDocsCursor<'a>,
+        meta: TermMetadata,
+        doc_freq: i32,
+        index_options: IndexOptions,
+        has_payloads: bool,
+        flags: PostingsFlags,
+    ) -> Result<()> {
+        if doc_freq <= 1 {
+            return Err(Error::Unsupported(
+                "docFreq <= 1: use singleton_postings instead (no .doc bytes are written)",
+            ));
+        }
+        let CursorPrelude {
+            r,
+            skip,
+            trailing,
+            bs,
+            level1_docs,
+            level1_last_doc_id,
+        } = self.cursor_prelude(meta, doc_freq, index_options, has_payloads)?;
+        let c = cursor;
+        if !flags.needs_freq() && (c.needs_freq || c.block_freqs[0] != 1) {
+            // A cursor that never decodes frequencies reads all ones.
+            c.block_freqs = [1; BLOCK_SIZE as usize];
+        }
+        c.r = r;
+        c.index_has_freq = index_options != IndexOptions::Docs;
+        c.needs_freq = flags.needs_freq();
+        c.needs_impacts = flags.needs_impacts();
+        c.needs_pos = false;
+        c.index_has_pos = index_options.subsumes_positions();
+        c.index_has_offsets_or_payloads = index_options.subsumes_offsets() || has_payloads;
+        c.doc_freq = doc_freq;
+        c.prev_doc_id = if trailing { 0 } else { -1 };
+        c.doc_count_left = doc_freq;
+        c.level1_last_doc_id = level1_last_doc_id;
+        c.level1_doc_end_fp = meta.doc_start_fp as usize;
+        c.level1_doc_count_upto = 0;
+        c.block_len = 0;
+        c.block_pos = 0;
+        c.doc_id = -1;
+        c.bits = None;
+        c.bits_stepped = false;
+        c.pending = None;
+        c.level0_last_doc_id = -1;
+        c.level0_impacts = Impacts::new();
+        c.level0_impact_bytes = &[];
+        c.level0_impacts_stale = false;
+        c.level1_impacts = Impacts::new();
+        let start = PosCursorState {
+            pos_fp: meta.pos_start_fp,
+            pay_fp: meta.pay_start_fp,
+            pos_buffer_upto: 0,
+        };
+        c.level0_pos = start;
+        c.level1_pos = start;
+        c.block_pos_origin = start;
+        c.block_gen = 0;
+        c.format = self.format;
+        c.bs = bs;
+        c.level1_docs = level1_docs;
+        c.skip = skip;
+        Ok(())
+    }
+
+    /// The shared body of [`Self::lazy_cursor_with_flags`] and
+    /// [`Self::singleton_cursor`], past their `docFreq` checks.
+    fn lazy_cursor_for(
+        &self,
+        meta: TermMetadata,
+        doc_freq: i32,
+        index_options: IndexOptions,
+        has_payloads: bool,
+        flags: PostingsFlags,
+    ) -> Result<LazyDocsCursor<'a>> {
+        let CursorPrelude {
+            r,
+            skip,
+            trailing,
+            bs,
+            level1_docs,
+            level1_last_doc_id,
+        } = self.cursor_prelude(meta, doc_freq, index_options, has_payloads)?;
 
         Ok(LazyDocsCursor {
             r,
@@ -1228,6 +1331,16 @@ impl<'a> DocInput<'a> {
             skip,
         })
     }
+}
+
+/// [`DocInput::cursor_prelude`]'s result.
+struct CursorPrelude<'a> {
+    r: SliceInput<'a>,
+    skip: Option<Box<crate::backward_codecs::skip_list::SkipList<'a>>>,
+    trailing: bool,
+    bs: i32,
+    level1_docs: i32,
+    level1_last_doc_id: i32,
 }
 
 /// `Lucene104PostingsFormat.POS_CODEC`.
@@ -4743,6 +4856,51 @@ impl<'a> LazyDocsCursor<'a> {
                     self.doc_id = bbase.wrapping_add(bit as i32);
                     return Ok(self.doc_id);
                 }
+            }
+            // An array block already decoded: the rest of it below `end` in
+            // one pass over the buffer, as `intoBitSet` loops over its
+            // `docBuffer`, rather than a `next_doc` round trip per document.
+            if self.pending.is_none()
+                && self.bits.is_none()
+                && self.block_pos < self.block_len
+                && doc >= base
+            {
+                let start = self.block_pos;
+                let block = &self.block_docs[start..self.block_len];
+                let mut k = 0usize;
+                if block.last().is_some_and(|&last| last < end) {
+                    // The whole rest of the block is in the window: no
+                    // per-document bound test.
+                    for &d in block {
+                        // ARITH: `base <= doc <= d < end`, as below.
+                        let i = d.wrapping_sub(base) as u32 as usize;
+                        if let Some(w) = words.get_mut(i >> 6) {
+                            *w |= 1u64 << (i & 63);
+                        }
+                    }
+                    k = block.len();
+                }
+                while k < block.len() && block[k] < end {
+                    // ARITH: `base <= doc <= block[k] < end`, so the offset is
+                    // non-negative and below the window's length.
+                    let i = block[k].wrapping_sub(base) as u32 as usize;
+                    if let Some(w) = words.get_mut(i >> 6) {
+                        *w |= 1u64 << (i & 63);
+                    }
+                    k = k.saturating_add(1);
+                }
+                if let Some(&next) = block.get(k) {
+                    self.block_pos = start.saturating_add(k);
+                    self.doc_id = next;
+                    return Ok(next);
+                }
+                // The whole block is in the window: stand on its last document
+                // (the `block_docs[block_pos] == doc_id` invariant) and step
+                // into the next block.
+                self.block_pos = self.block_len.saturating_sub(1);
+                self.doc_id = self.block_docs[self.block_pos];
+                doc = self.next_doc()?;
+                continue;
             }
             if doc >= base {
                 // ARITH: `base <= doc < end`, so the offset is non-negative and

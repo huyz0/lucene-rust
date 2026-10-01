@@ -613,13 +613,37 @@ pub(crate) fn doc_values_rewrite<'a>(
     };
     let accepts = term_matcher(&q.source)?;
     let store = |e| crate::Error::from(lucene_codecs::blocktree::Error::Store(e));
-    let mut cursor = lucene_codecs::terms_dict::TermsCursor::open(data, terms).map_err(store)?;
-    let mut accepted = Vec::new();
+    // `query.getTermsEnum(values.termsEnum())`: the dictionary from the
+    // first term the source can match (`seekCeil`), until it can match no
+    // later one -- not every ordinal of the field.
+    let (from, within) = term_range(&q.source)?;
+    let mut dict = lucene_codecs::terms_dict::TermsDict::open(data, terms).map_err(store)?;
+    let size = dict.size();
+    // `TermsDict::seek_ceil`, spelled out: the doc-values dictionary's own,
+    // already fallible -- not the block tree's retired infallible one.
+    let mut ord = match &from {
+        Some(lo) => {
+            match lucene_codecs::terms_dict::TermsDict::seek_ceil(&mut dict, lo).map_err(store)? {
+                lucene_codecs::terms_dict::SeekStatus::End => size,
+                _ => dict.ord(),
+            }
+        }
+        None => 0,
+    };
+    let mut accepted = vec![false; usize::try_from(size).unwrap_or(0)];
     let mut any = false;
-    while let Some(term) = cursor.next_term().map_err(store)? {
-        let yes = accepts(term);
-        any |= yes;
-        accepted.push(yes);
+    while ord < size {
+        let term = dict.seek_ord(ord).map_err(store)?;
+        if !within(term) {
+            break;
+        }
+        if accepts(term) {
+            if let Some(slot) = usize::try_from(ord).ok().and_then(|i| accepted.get_mut(i)) {
+                *slot = true;
+                any = true;
+            }
+        }
+        ord = ord.saturating_add(1);
     }
     if !any {
         return Ok(None);
@@ -663,6 +687,42 @@ pub(crate) fn doc_values_rewrite<'a>(
 
 /// A predicate over a term's bytes.
 type TermPredicate = Box<dyn Fn(&[u8]) -> bool>;
+
+/// Where in sorted term order `source` can match: the term to seek to
+/// (`None`: the first), and while a term is still in range -- the source's
+/// literal prefix, or a range's upper bound. A source without either reads
+/// to the end.
+fn term_range(source: &MultiTermSource) -> Result<(Option<Vec<u8>>, TermPredicate)> {
+    let prefix = |p: Vec<u8>| -> (Option<Vec<u8>>, TermPredicate) {
+        if p.is_empty() {
+            (None, Box::new(|_: &[u8]| true))
+        } else {
+            (Some(p.clone()), Box::new(move |t: &[u8]| t.starts_with(&p)))
+        }
+    };
+    Ok(match source {
+        MultiTermSource::Prefix(p) => prefix(p.prefix.clone()),
+        MultiTermSource::Wildcard(w) => {
+            prefix(lucene_codecs::wildcard::WildcardPattern::new(&w.pattern).literal_prefix())
+        }
+        MultiTermSource::Regexp(r) => prefix(
+            lucene_codecs::regexp::RegexpPattern::new(r.pattern.as_bytes())?.literal_prefix(),
+        ),
+        MultiTermSource::TermRange(r) => {
+            let upper = r.upper.clone();
+            let include_upper = r.include_upper;
+            (
+                r.lower.clone(),
+                Box::new(move |t: &[u8]| match &upper {
+                    None => true,
+                    Some(hi) if include_upper => t <= hi.as_slice(),
+                    Some(hi) => t < hi.as_slice(),
+                }),
+            )
+        }
+        MultiTermSource::Automaton(_) => (None, Box::new(|_: &[u8]| true)),
+    })
+}
 
 /// Whether a term is one `source` enumerates.
 fn term_matcher(source: &MultiTermSource) -> Result<TermPredicate> {

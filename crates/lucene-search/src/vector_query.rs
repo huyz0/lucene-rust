@@ -629,10 +629,10 @@ impl AcceptOrds<'_> {
 ///
 /// `None` means everything is accepted (no deletions, no filter), which is
 /// Java's `null` `Bits` and the fastest graph walk.
-fn accept_ords<'a>(
+fn accept_ords<'a, 'v>(
     input: &VectorsInput<'a>,
     resolved: &ResolvedField,
-    ord_to_doc: &impl Fn(i32) -> Result<i32>,
+    values: &OrdDocMaps<'_, 'v>,
 ) -> Result<Option<AcceptOrds<'a>>> {
     let size = resolved.entry.size;
     if input.live_docs.is_none() && input.filter.is_none() {
@@ -649,9 +649,26 @@ fn accept_ords<'a>(
             }
         }
     }
+    if !identity {
+        if let Some(bits) = accept_ords_from_docs(input, size, values)? {
+            return Ok(Some(AcceptOrds::Owned(bits)));
+        }
+    }
     let mut bits = FixedBitSet::new(size.max(0) as usize);
+    // Every ordinal's document, decoded in one bulk pass (`ordToDoc` per
+    // ordinal is a `DirectMonotonicReader` lookup each).
+    let mut docs = Vec::new();
+    if !identity {
+        (values.ord_to_docs)(&mut docs)?;
+    }
     for ord in 0..size {
-        let doc = if identity { ord } else { ord_to_doc(ord)? };
+        let doc = if identity {
+            ord
+        } else {
+            // `ord_to_docs` yields exactly `size` documents; a short list
+            // would only leave the rest unaccepted.
+            docs.get(ord as usize).copied().unwrap_or(-1)
+        };
         if doc < 0 {
             continue;
         }
@@ -668,6 +685,86 @@ fn accept_ords<'a>(
         }
     }
     Ok(Some(AcceptOrds::Owned(bits)))
+}
+
+/// A leaf's two directions between ordinals and documents, as
+/// [`accept_ords`] uses them.
+struct OrdDocMaps<'f, 'v> {
+    /// `ordToDoc`.
+    ord_to_doc: &'f dyn Fn(i32) -> Result<i32>,
+    /// `ordToDoc` for every ordinal, in order.
+    ord_to_docs: &'f dyn Fn(&mut Vec<i32>) -> Result<()>,
+    /// The doc -> ordinal iterator (`KnnVectorValues.iterator()`).
+    doc_to_ord: &'f dyn Fn() -> Result<lucene_codecs::vectors::DocToOrdCursor<'v>>,
+}
+
+/// [`accept_ords`] for a sparse field, from the **document** side: the
+/// filter's documents (or, with no filter, the deleted ones) looked up in the
+/// field's doc -> ordinal iterator, rather than every ordinal translated to
+/// its document. The same set: an ordinal is accepted exactly when its
+/// document is live and passes the filter. Java answers the same question
+/// lazily (`getAcceptOrds` tests a node's document when the walk visits it);
+/// this touches only the documents that can change the answer, where the
+/// ordinal-side loop decodes the whole `ordToDoc` map per query. `None`
+/// when the field's last document lies past the live-docs bitset (a
+/// mismatched reader), which the ordinal-side loop handles.
+fn accept_ords_from_docs(
+    input: &VectorsInput<'_>,
+    size: i32,
+    values: &OrdDocMaps<'_, '_>,
+) -> Result<Option<FixedBitSet>> {
+    let ords = size.max(0) as usize;
+    if ords == 0 {
+        return Ok(None);
+    }
+    let mut cursor = (values.doc_to_ord)()?;
+    // ARITH: `ords >= 1` above.
+    #[allow(clippy::arithmetic_side_effects)]
+    let last_doc = (values.ord_to_doc)(size - 1)?;
+    let mut bits = FixedBitSet::new(ords);
+    match (input.filter, input.live_docs) {
+        (Some(filter), live) => {
+            let mut next = filter.next_set_bit(0);
+            while let Some(doc) = next {
+                let doc_id = i32::try_from(doc).unwrap_or(i32::MAX);
+                if live.is_none_or(|l| l.get_doc(doc_id)) {
+                    if let Some(ord) = cursor.ordinal(doc_id)? {
+                        if (ord as usize) < ords {
+                            // FBS: bounded by the check above.
+                            bits.set(ord as usize);
+                        }
+                    }
+                }
+                next = doc
+                    .checked_add(1)
+                    .and_then(|from| filter.next_set_bit(from));
+            }
+        }
+        (None, Some(live)) => {
+            if usize::try_from(last_doc).map_or(true, |d| d >= live.len()) {
+                return Ok(None);
+            }
+            bits.set_range(0, ords);
+            let mut next = live.next_clear_bit(0);
+            while let Some(doc) = next {
+                // Every document the field has is below `live.len()`.
+                if doc > last_doc as usize {
+                    break;
+                }
+                if let Some(ord) = cursor.ordinal(doc as i32)? {
+                    if (ord as usize) < ords {
+                        // FBS: bounded by the check above.
+                        bits.clear(ord as usize);
+                    }
+                }
+                next = doc
+                    .checked_add(1)
+                    .and_then(|from| live.next_clear_bit(from));
+            }
+        }
+        (None, None) => return Ok(None),
+    }
+    Ok(Some(bits))
 }
 
 fn flush_bulk<S: VectorScorer>(
@@ -987,7 +1084,14 @@ fn search_leaf(
         Target::Float(t) => {
             let values = input.flat.float_vector_values(resolved.field_number)?;
             let ord_to_doc = |ord: i32| Ok(values.ord_to_doc(ord)?);
-            let accept = accept_ords(input, resolved, &ord_to_doc)?;
+            let ord_to_docs = |out: &mut Vec<i32>| Ok(values.ord_to_docs(out)?);
+            let doc_to_ord = || Ok(values.doc_to_ord()?);
+            let maps = OrdDocMaps {
+                ord_to_doc: &ord_to_doc,
+                ord_to_docs: &ord_to_docs,
+                doc_to_ord: &doc_to_ord,
+            };
+            let accept = accept_ords(input, resolved, &maps)?;
             if let Some(GraphReader::Quantized(reader)) = &input.hnsw {
                 // `getRandomVectorScorer(field, target)` of the quantized
                 // flat reader -- which is also `FloatVectorValues.scorer`, so
@@ -1017,7 +1121,14 @@ fn search_leaf(
         Target::Byte(t) => {
             let values = input.flat.byte_vector_values(resolved.field_number)?;
             let ord_to_doc = |ord: i32| Ok(values.ord_to_doc(ord)?);
-            let accept = accept_ords(input, resolved, &ord_to_doc)?;
+            let ord_to_docs = |out: &mut Vec<i32>| Ok(values.ord_to_docs(out)?);
+            let doc_to_ord = || Ok(values.doc_to_ord()?);
+            let maps = OrdDocMaps {
+                ord_to_doc: &ord_to_doc,
+                ord_to_docs: &ord_to_docs,
+                doc_to_ord: &doc_to_ord,
+            };
+            let accept = accept_ords(input, resolved, &maps)?;
             let mut scorer = values.scorer(t)?;
             leaf_results(
                 &mut scorer,
@@ -1577,35 +1688,29 @@ fn seed_ords<Q: KnnQuery>(
             continue;
         }
         let resolved = resolve_field(&seg.vectors, query)?;
-        let size = resolved.entry.size;
-        let ord_to_doc = |ord: i32| -> Result<i32> {
-            Ok(match Q::ENCODING {
-                VectorEncoding::Float32 => seg
-                    .vectors
-                    .flat
-                    .float_vector_values(resolved.field_number)?
-                    .ord_to_doc(ord)?,
-                VectorEncoding::Byte => seg
-                    .vectors
-                    .flat
-                    .byte_vector_values(resolved.field_number)?
-                    .ord_to_doc(ord)?,
-            })
-        };
+        // Every ordinal's document, decoded once: the vector values are
+        // opened once per leaf, not per probe of the search below.
+        let mut ord_docs = Vec::new();
+        match Q::ENCODING {
+            VectorEncoding::Float32 => seg
+                .vectors
+                .flat
+                .float_vector_values(resolved.field_number)?
+                .ord_to_docs(&mut ord_docs)?,
+            VectorEncoding::Byte => seg
+                .vectors
+                .flat
+                .byte_vector_values(resolved.field_number)?
+                .ord_to_docs(&mut ord_docs)?,
+        }
         let mut ords = Vec::with_capacity(docs.len());
         for doc in docs {
-            // The first ordinal whose document is at or after `doc`.
-            let (mut lo, mut hi) = (0i32, size);
-            while lo < hi {
-                let mid = lo + (hi - lo) / 2;
-                if ord_to_doc(mid)? < doc {
-                    lo = mid + 1;
-                } else {
-                    hi = mid;
-                }
-            }
-            if lo < size {
-                ords.push(lo);
+            // The first ordinal whose document is at or after `doc`
+            // (`advance(doc)` on the vector iterator, then `index()`).
+            let ord = ord_docs.partition_point(|&d| d < doc);
+            if ord < ord_docs.len() {
+                // An ordinal indexes an `i32`-sized field.
+                ords.push(ord as i32);
             }
         }
         out.push(ords);
@@ -1661,19 +1766,21 @@ pub fn knn_seed_docs(
             Some(&global),
             &mut all,
         )?;
-        let has_vector = knn
-            .get(i)
-            .map(|s| vector_docs(&s.vectors, field))
-            .transpose()?;
         let mut hits: Vec<(i32, f32)> = all
             .0
             .into_iter()
             .filter(|&(d, _)| {
                 seg.live_docs.is_none_or(|l| l.get_doc(d))
-                    && has_vector.as_ref().is_none_or(|b| b.get_doc(d))
                     && filter.and_then(|f| f.get(i)).is_none_or(|b| b.get_doc(d))
             })
             .collect();
+        if let Some(s) = knn.get(i) {
+            // The `FieldExistsQuery` clause, as Java's conjunction runs it:
+            // each hit looked up in the field's doc -> ord iterator, forward
+            // in doc order.
+            hits.sort_unstable_by_key(|&(d, _)| d);
+            retain_vector_docs(&s.vectors, field, &mut hits)?;
+        }
         hits.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
         hits.truncate(k);
         out.push(hits.into_iter().map(|(d, _)| d).collect());
@@ -1681,32 +1788,51 @@ pub fn knn_seed_docs(
     Ok(out)
 }
 
-/// The documents with a vector for `field` in one segment.
-fn vector_docs(input: &VectorsInput<'_>, field: &str) -> Result<FixedBitSet> {
-    let mut bits = FixedBitSet::new(input.max_doc.max(0) as usize);
-    let Some(info) = input.field_infos.field_by_name(field) else {
-        return Ok(bits);
+/// Keeps the `hits` (ascending doc ids) that have a vector for `field` in one
+/// segment.
+fn retain_vector_docs(
+    input: &VectorsInput<'_>,
+    field: &str,
+    hits: &mut Vec<(i32, f32)>,
+) -> Result<()> {
+    let entry = input
+        .field_infos
+        .field_by_name(field)
+        .and_then(|info| Some((info.number, input.flat.field(info.number)?)));
+    let Some((number, entry)) = entry else {
+        hits.clear();
+        return Ok(());
     };
-    let Some(entry) = input.flat.field(info.number) else {
-        return Ok(bits);
-    };
-    for ord in 0..entry.size {
-        let doc = match entry.encoding {
-            VectorEncoding::Float32 => input
-                .flat
-                .float_vector_values(info.number)?
-                .ord_to_doc(ord)?,
-            VectorEncoding::Byte => input
-                .flat
-                .byte_vector_values(info.number)?
-                .ord_to_doc(ord)?,
-        };
-        if doc >= 0 && (doc as usize) < bits.len() {
-            // FBS: bounded by the check above.
-            bits.set(doc as usize);
+    match entry.encoding {
+        VectorEncoding::Float32 => {
+            let values = input.flat.float_vector_values(number)?;
+            retain_with_ordinal(values.doc_to_ord()?, hits)
+        }
+        VectorEncoding::Byte => {
+            let values = input.flat.byte_vector_values(number)?;
+            retain_with_ordinal(values.doc_to_ord()?, hits)
         }
     }
-    Ok(bits)
+}
+
+/// [`retain_vector_docs`]' filter: one forward pass of the cursor.
+fn retain_with_ordinal(
+    mut cursor: lucene_codecs::vectors::DocToOrdCursor<'_>,
+    hits: &mut Vec<(i32, f32)>,
+) -> Result<()> {
+    let mut kept = 0;
+    for i in 0..hits.len() {
+        if cursor.ordinal(hits[i].0)?.is_some() {
+            hits.swap(kept, i);
+            // ARITH: `kept <= i < hits.len()`.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                kept += 1;
+            }
+        }
+    }
+    hits.truncate(kept);
+    Ok(())
 }
 
 /// `FloatVectorSimilarityQuery`/`ByteVectorSimilarityQuery`
@@ -1898,20 +2024,34 @@ fn similarity_leaf<T>(
         Target::Float(t) => {
             let values = input.flat.float_vector_values(resolved.field_number)?;
             let ord_to_doc = |ord: i32| -> Result<i32> { Ok(values.ord_to_doc(ord)?) };
+            let ord_to_docs = |out: &mut Vec<i32>| -> Result<()> { Ok(values.ord_to_docs(out)?) };
+            let doc_to_ord = || Ok(values.doc_to_ord()?);
+            let ord_to_docs = OrdDocMaps {
+                ord_to_doc: &ord_to_doc,
+                ord_to_docs: &ord_to_docs,
+                doc_to_ord: &doc_to_ord,
+            };
             // `createVectorScorer`: `FloatVectorValues.scorer(target)`, which a
             // quantized format answers on its codes.
             if let Some(GraphReader::Quantized(reader)) = &input.hnsw {
                 let mut scorer = reader.float_scorer(resolved.field_number, t)?;
-                return leaf.run(&mut scorer, &graph, &ord_to_doc);
+                return leaf.run(&mut scorer, &graph, &ord_to_doc, &ord_to_docs);
             }
             let mut scorer = values.scorer(t)?;
-            leaf.run(&mut scorer, &graph, &ord_to_doc)
+            leaf.run(&mut scorer, &graph, &ord_to_doc, &ord_to_docs)
         }
         Target::Byte(t) => {
             let values = input.flat.byte_vector_values(resolved.field_number)?;
             let ord_to_doc = |ord: i32| -> Result<i32> { Ok(values.ord_to_doc(ord)?) };
+            let ord_to_docs = |out: &mut Vec<i32>| -> Result<()> { Ok(values.ord_to_docs(out)?) };
+            let doc_to_ord = || Ok(values.doc_to_ord()?);
+            let ord_to_docs = OrdDocMaps {
+                ord_to_doc: &ord_to_doc,
+                ord_to_docs: &ord_to_docs,
+                doc_to_ord: &doc_to_ord,
+            };
             let mut scorer = values.scorer(t)?;
-            leaf.run(&mut scorer, &graph, &ord_to_doc)
+            leaf.run(&mut scorer, &graph, &ord_to_doc, &ord_to_docs)
         }
     }
 }
@@ -1933,9 +2073,10 @@ impl SimilarityLeaf<'_, '_> {
         scorer: &mut S,
         graph: &LeafGraph<'_, '_>,
         ord_to_doc: &impl Fn(i32) -> Result<i32>,
+        ord_to_docs: &OrdDocMaps<'_, '_>,
     ) -> Result<Vec<(i32, f32)>> {
         use crate::knn_collectors::{VectorSimilarityCollector, DECAY_MAX_QUALITY};
-        let accept = accept_ords(self.input, self.resolved, ord_to_doc)?;
+        let accept = accept_ords(self.input, self.resolved, ord_to_docs)?;
         let accept_bits = accept.as_ref().map(|a| a.bits());
         let filtered = self.input.filter.is_some();
         // Whether the hits are the reader's `search` output (and so, for

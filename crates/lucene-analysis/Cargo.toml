@@ -7,3 +7,8 @@ license.workspace = true
 [dependencies]
 lucene-util = { path = "../lucene-util" }
 thiserror.workspace = true
+
+[dev-dependencies]
+# The corpus test inflates its text out of the Lucene jars (zip entries and a
+# gzip member) with the same crate lucene-codecs decodes DEFLATE with.
+miniz_oxide.workspace = true

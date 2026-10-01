@@ -993,6 +993,21 @@ outright.
   seeds). Consumed by `crates/lucene-analysis/tests/standard_tokenizer_fixtures.rs`
   and `standard::tokenizer_impl::tests::cmap_matches_java_for_every_code_point`.
   Runs from the repository root (it reads `src/uax29-inputs.txt`).
+- `GenStandardTokenizerCorpus.java` — M7's corpus-scale check of the same
+  tokenizer (`standard_tokenizer_corpus/manifest.tsv`, 249 KB): real
+  `StandardTokenizer` and `StandardAnalyzer` over 4.89 MB of text **read
+  from the Lucene jars, not committed** -- the first 4,000 lines of
+  `lucene-test-framework`'s `europarl.lines.txt.gz` (taken through
+  `LUCENE_TEST_FRAMEWORK_JAR`, which `gen-fixtures.sh` resolves but keeps off
+  the classpath) and the 40 stopword lists of `lucene-analysis-common` --
+  each 100-line chunk's terms, offsets, increments and types digested
+  (FNV-1a 64). `--dump <source> <line> <config>` prints Lucene's tokens for
+  one line, which is what the Rust test's failure message tells you to run.
+  Deterministic. Consumed by
+  `crates/lucene-analysis/tests/standard_tokenizer_corpus.rs`, which finds
+  the same jars (`LUCENE_TEST_FRAMEWORK_JAR`/`LUCENE_ANALYSIS_COMMON_JAR`,
+  `fixtures/.jars`, the Gradle cache) and prints `skipped` without them;
+  `scripts/verify-write-path.sh` runs it with the jars and fails on a skip.
 - `GenDisiJumpTable.java` — the only Java-written `IndexedDISI` **block jump
   table** in this tree (`disi_jump_table_index/`). `IndexedDISI.writeBitSet`
   emits `jumpTableEntryCount = 0` below two logical 65 536-document blocks, and
