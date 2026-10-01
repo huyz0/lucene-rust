@@ -12,6 +12,7 @@
 //! bitset is what keeps a clause with thousands of rare terms from carrying
 //! thousands of iterators.
 
+use lucene_codecs::blocktree::SeekedTerm;
 use lucene_codecs::postings::PostingsFlags;
 use lucene_util::fixed_bit_set::FixedBitSet;
 
@@ -44,26 +45,311 @@ pub(crate) fn multi_term<'a>(
     if ctx.doc_in.is_none() {
         return Ok(None);
     }
-    let Some((field, terms, _)) = crate::expanded_terms(ctx.fields, clause)? else {
-        // The field is not in this segment.
-        return Ok(Some(None));
+    // The prefix, wildcard and regexp clauses stream their terms, as
+    // `MultiTermQueryConstantScoreBlendedWrapper` does off its `TermsEnum`;
+    // a term set is already a list.
+    let streamed = match clause {
+        Clause::Prefix(q) => ctx.fields.field(&q.field).map(|ft| {
+            let pattern = lucene_codecs::wildcard::WildcardPattern::prefix(&q.prefix);
+            blended_stream(ctx, &q.field, ft.intersect_states(&pattern), boost, mode)
+        }),
+        Clause::Wildcard(q) => ctx.fields.field(&q.field).map(|ft| {
+            let pattern = lucene_codecs::wildcard::WildcardPattern::new(&q.pattern);
+            blended_stream(ctx, &q.field, ft.intersect_states(&pattern), boost, mode)
+        }),
+        Clause::Regexp(q) => match ctx.fields.field(&q.field) {
+            Some(ft) => {
+                let pattern = lucene_codecs::regexp::RegexpPattern::new(q.pattern.as_bytes())?;
+                Some(blended_stream(
+                    ctx,
+                    &q.field,
+                    ft.regexp_intersect_states(&pattern),
+                    boost,
+                    mode,
+                ))
+            }
+            None => None,
+        },
+        _ => {
+            let Some((field, terms, _)) = crate::expanded_terms(ctx.fields, clause)? else {
+                // The field is not in this segment.
+                return Ok(Some(None));
+            };
+            let mut stream = StreamedTerms::new(ctx, &field, true);
+            for (term, seeked) in terms {
+                stream.push(term, seeked)?;
+                if stream.settled() {
+                    break;
+                }
+            }
+            return stream.finish(ctx, &field, boost, mode).map(Some);
+        }
     };
-    constant_score_terms(ctx, &field, terms, boost, mode, true).map(Some)
+    // `None`: the field is not in this segment.
+    streamed.transpose().map(Option::flatten).map(Some)
+}
+
+/// [`constant_score_terms`] (blended) over a clause's `terms` as its
+/// `TermsEnum` yields them; see [`StreamedTerms`].
+fn blended_stream<'a, I>(
+    ctx: &LeafContext<'a>,
+    field: &str,
+    terms: I,
+    boost: f32,
+    mode: Mode,
+) -> Result<Option<BoxScorer<'a>>>
+where
+    I: Iterator<Item = lucene_codecs::blocktree::Result<(Vec<u8>, SeekedTerm)>>,
+{
+    let mut stream = StreamedTerms::new(ctx, field, true);
+    for t in terms {
+        let (term, seeked) = t?;
+        stream.push(term, seeked)?;
+        if stream.settled() {
+            break;
+        }
+    }
+    stream.finish(ctx, field, boost, mode)
+}
+
+/// [`constant_score_terms`] fed one term at a time, in term order, without
+/// holding them all, as the wrappers consume their `TermsEnum`. A short
+/// prefix expands to tens of thousands of terms; collecting them first (term
+/// bytes, metadata, then a selection over the lot) was a fifth of
+/// `mtq_csb`'s time.
+///
+/// - Up to 16 terms take [`constant_score_terms`]' boolean rewrite
+///   (`collectTerms`, `rewriteAsBooleanQuery`), as does a segment without the
+///   inputs the union needs.
+/// - Past that, `MultiTermQueryConstantScoreBlendedWrapper` adds a term with
+///   `docFreq <= 512` (`POSTINGS_PRE_PROCESS_THRESHOLD`) straight into its
+///   `DocIdSetBuilder` and offers the others to a 16-entry priority queue by
+///   `docFreq` (`insertWithOverflow`: an earlier term keeps its place on a
+///   tie), whatever the queue drops going into the set as well.
+///   `MultiTermQueryConstantScoreWrapper` adds every term to the set.
+/// - A term whose `docFreq` is the field's `docCount` matches every document
+///   the others can, so both wrappers drop the rest and run that term alone
+///   ([`Self::settled`] tells a caller it can stop walking the terms).
+///
+/// None of this decides which documents match, only what it costs: the
+/// score is a constant.
+pub(crate) struct StreamedTerms<'a> {
+    blended: bool,
+    /// The terms so far, while there are at most 16 (or all of them, when
+    /// the union cannot be built here).
+    head: Vec<(Vec<u8>, SeekedTerm)>,
+    /// The field and `.doc` input every term's postings come from, and the
+    /// segment's `maxDoc`: `None` when the segment lacks one.
+    inputs: Option<Inputs<'a>>,
+    /// Past 16 terms: the union and the kept terms.
+    stream: Option<Stream<'a>>,
+    /// Terms seen so far.
+    seen: usize,
+    /// The field's `docCount`, when the field is in the segment.
+    field_doc_count: Option<i32>,
+    /// A term matching every document with the field, once one is pushed.
+    dense: Option<(Vec<u8>, SeekedTerm)>,
+}
+
+/// `MultiTermQueryConstantScoreBlendedWrapper.POSTINGS_PRE_PROCESS_THRESHOLD`:
+/// a term this rare goes into the set without being offered to the queue.
+const POSTINGS_PRE_PROCESS_THRESHOLD: i32 = 512;
+
+type Inputs<'a> = (
+    &'a lucene_codecs::blocktree::FieldTerms,
+    &'a lucene_codecs::postings::DocInput<'a>,
+    i32,
+);
+
+struct Stream<'a> {
+    union: UnionBuilder<'a>,
+    /// The kept terms as `(docFreq, position, term)`; blended only.
+    top: Vec<(i32, usize, SeekedTerm)>,
+    /// The position in `top` of its lowest-ranked term.
+    lowest: usize,
+}
+
+/// Whether the term at `(docFreq, position)` `a` ranks above `b`: a higher
+/// `docFreq`, then an earlier position.
+fn ranks_above(a: (i32, usize), b: (i32, usize)) -> bool {
+    a.0 > b.0 || (a.0 == b.0 && a.1 < b.1)
+}
+
+impl<'a> StreamedTerms<'a> {
+    /// Ready for `field`'s terms in `ctx`'s segment; `blended` picks the
+    /// blended rewrite over the plain constant-score one.
+    pub(crate) fn new(ctx: &LeafContext<'a>, field: &str, blended: bool) -> Self {
+        let max_doc = ctx.max_doc.or(ctx.reader.map(|r| r.max_doc));
+        let inputs = match (ctx.fields.field(field), ctx.doc_in, max_doc) {
+            (Some(ft), Some(doc_in), Some(max_doc)) => Some((ft, doc_in, max_doc)),
+            _ => None,
+        };
+        Self {
+            blended,
+            head: Vec::with_capacity(BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD + 1),
+            inputs,
+            stream: None,
+            seen: 0,
+            field_doc_count: ctx.fields.field(field).map(|ft| ft.doc_count),
+            dense: None,
+        }
+    }
+
+    /// Whether a term already pushed decides the clause, so the rest need
+    /// not be walked (`if (fieldDocCount == docFreq)`).
+    pub(crate) fn settled(&self) -> bool {
+        self.dense.is_some()
+    }
+
+    /// The next term, in term order.
+    pub(crate) fn push(&mut self, term: Vec<u8>, seeked: SeekedTerm) -> Result<()> {
+        if self.dense.is_some() {
+            return Ok(());
+        }
+        if self.field_doc_count == Some(seeked.stats.doc_freq) {
+            self.dense = Some((term, seeked));
+            return Ok(());
+        }
+        let at = self.seen;
+        self.seen = self.seen.saturating_add(1);
+        let Some((ft, doc_in, max_doc)) = self.inputs else {
+            self.head.push((term, seeked));
+            return Ok(());
+        };
+        let Some(stream) = self.stream.as_mut() else {
+            self.head.push((term, seeked));
+            if self.head.len() > BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD {
+                // Past the boolean rewrite: replay the head into a stream.
+                let mut stream = Stream {
+                    union: UnionBuilder::new(max_doc),
+                    top: Vec::with_capacity(BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD),
+                    lowest: 0,
+                };
+                for (i, (_, seeked)) in std::mem::take(&mut self.head).into_iter().enumerate() {
+                    stream.add(self.blended, ft, doc_in, i, seeked)?;
+                }
+                self.stream = Some(stream);
+            }
+            return Ok(());
+        };
+        stream.add(self.blended, ft, doc_in, at, seeked)
+    }
+
+    /// The clause's scorer over every term pushed.
+    pub(crate) fn finish(
+        self,
+        ctx: &LeafContext<'a>,
+        field: &str,
+        boost: f32,
+        mode: Mode,
+    ) -> Result<Option<BoxScorer<'a>>> {
+        if let Some(dense) = self.dense {
+            // `new ConstantScoreQuery(new TermQuery(term))`.
+            return constant_score_terms(ctx, field, vec![dense], boost, mode);
+        }
+        let (Some(mut stream), Some((ft, doc_in, _))) = (self.stream, self.inputs) else {
+            return constant_score_terms(ctx, field, self.head, boost, mode);
+        };
+        stream
+            .top
+            .sort_unstable_by(|a, b| match ranks_above((a.0, a.1), (b.0, b.1)) {
+                true => std::cmp::Ordering::Less,
+                false => std::cmp::Ordering::Greater,
+            });
+        let mut legs = Vec::with_capacity(stream.top.len());
+        for (_, _, seeked) in &stream.top {
+            let cursor = ft.lazy_postings_for(seeked, doc_in, PostingsFlags::DocsOnly)?;
+            legs.push(TermLeg::filter(cursor, seeked.stats.doc_freq as i64));
+        }
+        let bits: Option<BoxScorer<'a>> = stream
+            .union
+            .build()
+            .map(|set| Box::new(CachedScorer::new(std::sync::Arc::new(set))) as BoxScorer<'a>);
+        let inner: BoxScorer<'a> = match (bits, legs.is_empty()) {
+            (None, true) => return Ok(None),
+            // `MultiTermQueryConstantScoreWrapper`: the set alone.
+            (Some(bits), true) => bits,
+            (bits, false) => Box::new(TermUnion::new(legs, bits)),
+        };
+        Ok(Some(Box::new(ConstantScorer::new(
+            inner,
+            boost,
+            mode == Mode::TopScores,
+        ))))
+    }
+}
+
+impl<'a> Stream<'a> {
+    /// Term `at` (its position in term order): kept as an iterator if it is
+    /// past [`POSTINGS_PRE_PROCESS_THRESHOLD`] and among the 16
+    /// highest-ranked so far (blended), else into the union -- along with
+    /// whichever kept term it displaces.
+    fn add(
+        &mut self,
+        blended: bool,
+        ft: &'a lucene_codecs::blocktree::FieldTerms,
+        doc_in: &'a lucene_codecs::postings::DocInput<'a>,
+        at: usize,
+        seeked: SeekedTerm,
+    ) -> Result<()> {
+        if !blended || seeked.stats.doc_freq <= POSTINGS_PRE_PROCESS_THRESHOLD {
+            return self.union.add(ft, doc_in, &seeked);
+        }
+        let key = (seeked.stats.doc_freq, at);
+        match offer(&mut self.top, &mut self.lowest, key, seeked) {
+            Some(out) => self.union.add(ft, doc_in, &out),
+            None => Ok(()),
+        }
+    }
+}
+
+/// `PriorityQueue.insertWithOverflow` over the 16 kept terms, as
+/// `(docFreq, position, term)`: `item` is kept while there is room, or in
+/// place of the lowest-ranked kept term if it ranks above it. Returns
+/// whichever term is not kept -- `item` itself, or the one it displaced.
+/// `lowest` tracks the position of the lowest-ranked kept term.
+fn offer<T>(
+    top: &mut Vec<(i32, usize, T)>,
+    lowest: &mut usize,
+    key: (i32, usize),
+    item: T,
+) -> Option<T> {
+    if top.len() < BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD {
+        top.push((key.0, key.1, item));
+        *lowest = lowest_rank(top);
+        return None;
+    }
+    let low = &top[*lowest];
+    if !ranks_above(key, (low.0, low.1)) {
+        return Some(item);
+    }
+    let evicted = std::mem::replace(&mut top[*lowest], (key.0, key.1, item));
+    *lowest = lowest_rank(top);
+    Some(evicted.2)
+}
+
+/// The position in `top` of its lowest-ranked term.
+fn lowest_rank<T>(top: &[(i32, usize, T)]) -> usize {
+    let mut low = 0;
+    for (i, t) in top.iter().enumerate().skip(1) {
+        if ranks_above((top[low].0, top[low].1), (t.0, t.1)) {
+            low = i;
+        }
+    }
+    low
 }
 
 /// `AbstractMultiTermQueryConstantScoreWrapper` over one segment's expanded
-/// `terms` (term order): up to 16 terms are a constant-scored boolean of
-/// them; past that, `blended` (`MultiTermQueryConstantScoreBlendedWrapper`)
-/// keeps the 16 highest-`docFreq` terms as iterators and ORs the rest into a
-/// bitset, and the plain wrapper (`MultiTermQueryConstantScoreWrapper`, the
-/// `CONSTANT_SCORE_REWRITE`) ORs every term into it.
+/// `terms` (term order) that [`StreamedTerms`] did not stream: up to 16
+/// terms are a constant-scored boolean of them (`rewriteAsBooleanQuery`),
+/// and more, on a segment with no `maxDoc` for the union's set, a
+/// constant-scored disjunction of all of them.
 pub(crate) fn constant_score_terms<'a>(
     ctx: &LeafContext<'a>,
     field: &str,
-    mut terms: Vec<(Vec<u8>, lucene_codecs::blocktree::SeekedTerm)>,
+    terms: Vec<(Vec<u8>, lucene_codecs::blocktree::SeekedTerm)>,
     boost: f32,
     mode: Mode,
-    blended: bool,
 ) -> Result<Option<BoxScorer<'a>>> {
     let field = field.to_string();
     let Some(doc_in) = ctx.doc_in else {
@@ -112,133 +398,117 @@ pub(crate) fn constant_score_terms<'a>(
             ))));
         }
     }
-    let mut scorers: Vec<BoxScorer<'a>> = Vec::new();
-    let max_doc = ctx.max_doc.or(ctx.reader.map(|r| r.max_doc));
-    if let (false, Some(max_doc), true) = (
-        blended,
-        max_doc,
-        terms.len() > BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD,
-    ) {
-        // `MultiTermQueryConstantScoreWrapper`: every term's documents into
-        // one `DocIdSetBuilder`.
-        let Some(set) = union_set(field_terms, doc_in, &terms, max_doc)? else {
-            return Ok(None);
-        };
-        let inner: BoxScorer<'a> = Box::new(CachedScorer::new(std::sync::Arc::new(set)));
-        return Ok(Some(Box::new(ConstantScorer::new(
-            inner,
-            boost,
-            mode == Mode::TopScores,
-        ))));
-    }
-    if terms.len() > BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD {
-        let Some(max_doc) = max_doc else {
-            return Ok(Some(Box::new(ConstantScorer::new(
-                term_union(field_terms, doc_in, &terms)?,
-                boost,
-                mode == Mode::TopScores,
-            ))));
-        };
-        // Highest `docFreq` first, ties in term order: the first 16 stay
-        // iterators, the rest go into one bitset.
-        // Only which 16 matters, not the order of the rest: a selection by
-        // `(docFreq desc, term order)` on indices, where a full stable sort
-        // moved every expanded term (thousands, for a short prefix) around.
-        let mut order: Vec<usize> = (0..terms.len()).collect();
-        let key = |i: &usize| (std::cmp::Reverse(terms[*i].1.stats.doc_freq), *i);
-        order.select_nth_unstable_by_key(BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD, key);
-        order[..BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD].sort_unstable_by_key(key);
-        let mut keep = vec![false; terms.len()];
-        for &i in &order[..BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD] {
-            keep[i] = true;
-        }
-        let mut top = Vec::with_capacity(BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD);
-        let mut rest = Vec::with_capacity(terms.len() - BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD);
-        let mut slots: Vec<Option<_>> = terms.drain(..).map(Some).collect();
-        for &i in &order[..BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD] {
-            top.extend(slots[i].take());
-        }
-        for (i, slot) in slots.into_iter().enumerate() {
-            if !keep[i] {
-                rest.extend(slot);
-            }
-        }
-        terms = top;
-        // `DocIdSetBuilder` over the rest -- see [`union_set`].
-        if let Some(set) = union_set(field_terms, doc_in, &rest, max_doc)? {
-            scorers.push(Box::new(CachedScorer::new(std::sync::Arc::new(set))));
-        }
-    }
-    let mut legs = Vec::with_capacity(terms.len());
-    for (_, seeked) in &terms {
-        let cursor = field_terms.lazy_postings_for(seeked, doc_in, PostingsFlags::DocsOnly)?;
-        legs.push(TermLeg::filter(cursor, seeked.stats.doc_freq as i64));
-    }
-    let inner: BoxScorer<'a> = match (scorers.pop(), legs.len()) {
-        (None, 1) => Box::new(TermScorer::new(legs.pop().expect("one leg"), false)),
-        (bits, _) => Box::new(TermUnion::new(legs, bits)),
-    };
-    // `ConstantScoreQuery`'s score: the boost.
+    // No `maxDoc` to size a set by (only a caller without a reader passes
+    // none; [`StreamedTerms`] builds the union whenever it can): a
+    // constant-scored disjunction of every term.
     Ok(Some(Box::new(ConstantScorer::new(
-        inner,
+        term_union(field_terms, doc_in, &terms)?,
         boost,
         mode == Mode::TopScores,
     ))))
 }
 
-/// The union of `terms`' postings, documents only.
-/// `DocIdSetBuilder` over `terms`' documents in `[0, max_doc)`, or `None`
-/// when they have none.
+/// `DocIdSetBuilder`: the documents in `[0, max_doc)` of the terms added to
+/// it, built into a [`CachedSet`].
 ///
 /// Java's builder starts sparse -- a growing array of ids -- and upgrades to
-/// a bit set only once more than `maxDoc >> 7` ids have been added. Here the
-/// terms' summed `docFreq` bounds the ids up front: under that threshold the
-/// ids are collected into a sorted, deduplicated list, so a clause whose
-/// remaining terms are rare never touches a `maxDoc`-bit set (128 KiB of
+/// a bit set once more than `maxDoc >> 7` ids would be held. Here a term's
+/// `docFreq` says up front whether adding it crosses that line: below it the
+/// ids are collected into a list, sorted and deduplicated at the end, so a
+/// clause whose terms are rare never touches a `maxDoc`-bit set (128 KiB of
 /// fresh pages per query on a 1M-document segment, which is what held
 /// `mtq_csb` under Lucene); past it, every term's postings are ORed into one
 /// bit set a block at a time (`intoBitSet`), one [`crate::bit_set_pool`]
 /// hands back once the set is dropped. Either way the set holds exactly the
 /// same documents.
-fn union_set<'d>(
-    field_terms: &lucene_codecs::blocktree::FieldTerms,
-    doc_in: &lucene_codecs::postings::DocInput<'d>,
-    terms: &[(Vec<u8>, lucene_codecs::blocktree::SeekedTerm)],
+struct UnionBuilder<'d> {
     max_doc: i32,
-) -> Result<Option<CachedSet>> {
-    let len = usize::try_from(max_doc).unwrap_or(0);
-    let bound = terms.iter().fold(0usize, |n, (_, t)| {
-        n.saturating_add(usize::try_from(t.stats.doc_freq).unwrap_or(usize::MAX))
-    });
-    if bound <= (len >> 7).max(1) {
-        let mut docs = Vec::with_capacity(bound);
-        for (_, seeked) in terms {
-            let mut cursor =
-                field_terms.lazy_postings_for(seeked, doc_in, PostingsFlags::DocsOnly)?;
-            let mut doc = cursor.next_doc()?;
-            while doc != lucene_codecs::postings::NO_MORE_DOCS {
-                if (0..max_doc).contains(&doc) {
-                    docs.push(doc);
+    /// The most ids the sparse list holds before the set upgrades.
+    threshold: usize,
+    docs: Vec<i32>,
+    words: Option<Vec<u64>>,
+    /// One cursor reset for every term ORed into `words`.
+    reuse: Option<lucene_codecs::postings::LazyDocsCursor<'d>>,
+}
+
+impl<'d> UnionBuilder<'d> {
+    fn new(max_doc: i32) -> Self {
+        let len = usize::try_from(max_doc).unwrap_or(0);
+        Self {
+            max_doc,
+            threshold: (len >> 7).max(1),
+            docs: Vec::new(),
+            words: None,
+            reuse: None,
+        }
+    }
+
+    fn len(&self) -> usize {
+        usize::try_from(self.max_doc).unwrap_or(0)
+    }
+
+    fn add(
+        &mut self,
+        field_terms: &lucene_codecs::blocktree::FieldTerms,
+        doc_in: &lucene_codecs::postings::DocInput<'d>,
+        term: &SeekedTerm,
+    ) -> Result<()> {
+        let df = usize::try_from(term.stats.doc_freq).unwrap_or(usize::MAX);
+        if self.words.is_none() && self.docs.len().saturating_add(df) > self.threshold {
+            // A cleared set this thread has spare, or a fresh one: the
+            // `DocIdSetBuilder` allocation Lucene makes per query on a warm
+            // heap.
+            let len = self.len();
+            let mut words = crate::bit_set_pool::take(len).map_or_else(
+                || vec![0u64; lucene_util::fixed_bit_set::bits2words(len)],
+                FixedBitSet::into_words,
+            );
+            for &doc in &self.docs {
+                // ARITH: every listed id is in `[0, max_doc)`.
+                let i = doc as u32 as usize;
+                if let Some(w) = words.get_mut(i >> 6) {
+                    *w |= 1u64 << (i & 63);
                 }
-                doc = cursor.next_doc()?;
+            }
+            self.docs = Vec::new();
+            self.words = Some(words);
+        }
+        if let Some(words) = self.words.as_mut() {
+            return Ok(field_terms.or_docs_into(
+                term,
+                doc_in,
+                self.max_doc,
+                words,
+                &mut self.reuse,
+            )?);
+        }
+        let mut cursor = field_terms.lazy_postings_for(term, doc_in, PostingsFlags::DocsOnly)?;
+        let mut doc = cursor.next_doc()?;
+        while doc != lucene_codecs::postings::NO_MORE_DOCS {
+            if (0..self.max_doc).contains(&doc) {
+                self.docs.push(doc);
+            }
+            doc = cursor.next_doc()?;
+        }
+        Ok(())
+    }
+
+    /// The set, or `None` when no document was added.
+    fn build(self) -> Option<CachedSet> {
+        let len = self.len();
+        match self.words {
+            Some(words) => {
+                let bits = FixedBitSet::from_words(words, len);
+                let cardinality = bits.cardinality() as i64;
+                (cardinality > 0).then_some(CachedSet::Bits { bits, cardinality })
+            }
+            None => {
+                let mut docs = self.docs;
+                lucene_util::doc_id_sort::sort_dedup_doc_ids(&mut docs);
+                (!docs.is_empty()).then_some(CachedSet::Docs(docs))
             }
         }
-        lucene_util::doc_id_sort::sort_dedup_doc_ids(&mut docs);
-        return Ok((!docs.is_empty()).then_some(CachedSet::Docs(docs)));
     }
-    // A cleared set this thread has spare, or a fresh one: the
-    // `DocIdSetBuilder` allocation Lucene makes per query on a warm heap.
-    let mut words = crate::bit_set_pool::take(len).map_or_else(
-        || vec![0u64; lucene_util::fixed_bit_set::bits2words(len)],
-        FixedBitSet::into_words,
-    );
-    let mut reuse = None;
-    for (_, seeked) in terms {
-        field_terms.or_docs_into(seeked, doc_in, max_doc, &mut words, &mut reuse)?;
-    }
-    let bits = FixedBitSet::from_words(words, len);
-    let cardinality = bits.cardinality() as i64;
-    Ok((cardinality > 0).then_some(CachedSet::Bits { bits, cardinality }))
 }
 
 fn term_union<'a>(
@@ -250,6 +520,11 @@ fn term_union<'a>(
     for (_, seeked) in terms {
         let cursor = field_terms.lazy_postings_for(seeked, doc_in, PostingsFlags::DocsOnly)?;
         legs.push(TermLeg::filter(cursor, seeked.stats.doc_freq as i64));
+    }
+    // One term needs no disjunction around it.
+    if legs.len() == 1 {
+        let leg = legs.pop().expect("one leg");
+        return Ok(Box::new(TermScorer::new(leg, false)));
     }
     Ok(Box::new(TermUnion::new(legs, None)))
 }
@@ -335,5 +610,40 @@ impl Scorer for TermUnion<'_> {
 
     fn max_score(&mut self, _up_to: i32) -> Result<f32> {
         Ok(0.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The queue keeps exactly the 16 highest `(docFreq desc, position asc)`
+    /// keys of any sequence -- ties included, where the earlier term stays
+    /// -- and hands back every other key once.
+    #[test]
+    fn the_queue_keeps_the_sixteen_highest_ranked_terms() {
+        // Few distinct `docFreq`s, so ties are everywhere, in a scrambled order.
+        let dfs: Vec<i32> = (0..200u32)
+            .map(|i| ((i * 37 + 11) % 23) as i32 * 100)
+            .collect();
+        let mut top = Vec::new();
+        let mut lowest = 0;
+        let mut out = Vec::new();
+        for (at, &df) in dfs.iter().enumerate() {
+            out.extend(offer(&mut top, &mut lowest, (df, at), at));
+        }
+        let mut kept: Vec<usize> = top.iter().map(|t| t.2).collect();
+        kept.sort_unstable();
+        let mut want: Vec<usize> = (0..dfs.len()).collect();
+        want.sort_by_key(|&i| (std::cmp::Reverse(dfs[i]), i));
+        want.truncate(BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD);
+        want.sort_unstable();
+        assert_eq!(kept, want);
+        out.sort_unstable();
+        let rest: Vec<usize> = (0..dfs.len()).filter(|i| !want.contains(i)).collect();
+        assert_eq!(out, rest, "every term not kept goes to the union, once");
+        assert!(ranks_above((5, 9), (4, 0)));
+        assert!(ranks_above((5, 1), (5, 2)), "a tie keeps the earlier term");
+        assert!(!ranks_above((5, 2), (5, 2)));
     }
 }

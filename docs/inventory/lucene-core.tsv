@@ -703,8 +703,8 @@ search/MultiLeafFieldComparator	ported	crates/lucene-search/src/top_field.rs::Le
 search/MultiNormsLeafSimScorer	ported	crates/lucene-search/src/exec/extended.rs::FreqSumScorer
 search/MultiPhraseQuery	ported	crates/lucene-search/src/exec/extended.rs::multi_phrase
 search/MultiTermQuery	ported	crates/lucene-search/src/extended_query.rs::MultiTermQuery
-search/MultiTermQueryConstantScoreBlendedWrapper	ported	crates/lucene-search/src/exec/multi_term.rs::TermUnion
-search/MultiTermQueryConstantScoreWrapper	ported	crates/lucene-search/src/exec/multi_term.rs::constant_score_terms
+search/MultiTermQueryConstantScoreBlendedWrapper	ported	crates/lucene-search/src/exec/multi_term.rs::StreamedTerms
+search/MultiTermQueryConstantScoreWrapper	ported	crates/lucene-search/src/exec/multi_term.rs::StreamedTerms
 search/MultiVectorSimilarity	ported	crates/lucene-search/src/values_source.rs::MultiVectorSimilarity
 search/Multiset	not-needed	lucene.internal generic collection used for BooleanQuery clause equality; Rust uses std collections.
 search/NGramPhraseQuery	ported	crates/lucene-search/src/extended_query.rs::NGramPhraseQuery
@@ -950,7 +950,7 @@ util/Constants	not-needed	JVM/OS detection constants; Rust cfg!/std::env::consts
 util/Counter	not-needed	mutable long counter (optionally atomic); Rust i64/AtomicI64
 util/DenseLiveDocs	ported	crates/lucene-util/src/live_docs.rs::DenseLiveDocs
 util/DocBaseBitSetIterator	ported	crates/lucene-codecs/src/points.rs::read_bitset_ids
-util/DocIdSetBuilder	ported	crates/lucene-util/src/doc_id_sort.rs::sort_dedup_doc_ids
+util/DocIdSetBuilder	ported	crates/lucene-search/src/exec/multi_term.rs::UnionBuilder
 util/FileDeleter	ported	crates/lucene-index/src/index_file_deleter.rs::IndexFileDeleter
 util/FilterIterator	not-needed	filtering iterator adapter; Rust Iterator::filter
 util/FilteredDocIdSetIterator	not-needed	0..maxDoc iterator filtered by an IntPredicate; Rust (0..max_doc).filter(..)
