@@ -973,6 +973,52 @@ fn a_reused_postings_cursor_reads_each_term_like_a_fresh_one() {
     }
 }
 
+/// A tail-only term's first document, read from its first delta alone, is
+/// the one its cursor lands on first -- for a field with frequencies (the
+/// delta's low bit is the freq flag) and a docs-only one, with fewer than four
+/// documents (plain vints) and more (group varints) -- and every other term
+/// gets no answer.
+#[test]
+fn a_tail_only_terms_first_doc_matches_its_cursor() {
+    use crate::directory_reader::DirectoryReader;
+    use lucene_codecs::postings::PostingsFlags;
+    let dir = lucene_store::FsDirectory::open(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/data/m7_queries_index"
+    ));
+    let reader = DirectoryReader::open(&dir).unwrap();
+    let opened = reader.open_segments().unwrap();
+    let (mut answered, mut few, mut docs_only) = (0, 0, 0);
+    for seg in opened.as_open_segments() {
+        let doc_in = seg.doc_in.unwrap();
+        for name in ["body", "title", "tag"] {
+            let Some(field) = seg.fields.field(name) else {
+                continue;
+            };
+            let mut it = field.iter();
+            while it.try_next_term().unwrap().is_some() {
+                let t = it.try_seeked_term().unwrap().unwrap();
+                let got = field.tail_only_first_doc(&t, doc_in).unwrap();
+                if t.stats.doc_freq <= 1 || t.stats.doc_freq >= 256 {
+                    assert_eq!(got, None);
+                    continue;
+                }
+                let mut c = field
+                    .lazy_postings_for(&t, doc_in, PostingsFlags::DocsOnly)
+                    .unwrap();
+                assert_eq!(got, Some(c.next_doc().unwrap()), "{name}");
+                answered += 1;
+                few += usize::from(t.stats.doc_freq < 4);
+                docs_only += usize::from(name == "tag");
+            }
+        }
+    }
+    assert!(
+        answered > 0 && few > 0 && docs_only > 0,
+        "{answered} {few} {docs_only}"
+    );
+}
+
 /// The multi-term builder's edges, and its union scorer driven directly.
 #[test]
 fn multi_term_edges_and_the_term_union() {

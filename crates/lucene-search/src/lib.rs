@@ -958,6 +958,14 @@ fn cutoff_constant_score_union<C: ScoringCollector>(
             }
             continue;
         }
+        // A rare term starting past the cutoff has nothing to add: learn
+        // that from its first delta instead of decoding the whole block.
+        if field_terms
+            .tail_only_first_doc(seeked, doc_in)?
+            .is_some_and(|first| first >= cutoff)
+        {
+            continue;
+        }
         // Opened from the state the expansion walk already decoded: no
         // second dictionary seek per term.
         let cursor = field_terms.reuse_postings_for(

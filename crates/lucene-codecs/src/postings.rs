@@ -1152,6 +1152,52 @@ impl<'a> DocInput<'a> {
     /// at the term's start, the backward codecs' skip list, and the level-1
     /// setup -- the half of [`Self::lazy_cursor_for`] that
     /// [`Self::reset_lazy_cursor`] shares.
+    /// The first document of a term whose postings are a single tail block
+    /// (`1 < docFreq < BLOCK_SIZE`, in a format that writes them from
+    /// `docStartFP` against a previous document of `-1`), read from the
+    /// block's first group-varint value alone; `None` for any other term.
+    ///
+    /// A walk that only wants a term's documents below some cutoff learns
+    /// from this alone that a rare term starts past it, without decoding
+    /// the up to 255 deltas [`read_tail_block`] would.
+    pub fn tail_only_first_doc(
+        &self,
+        meta: TermMetadata,
+        doc_freq: i32,
+        index_options: IndexOptions,
+    ) -> Result<Option<i32>> {
+        let trailing = matches!(
+            self.format,
+            PostingsFormat::Lucene90 | PostingsFormat::Lucene99
+        );
+        let bs = self.format.block_size() as i32;
+        if trailing || doc_freq <= 1 || doc_freq >= bs || index_options == IndexOptions::None {
+            return Ok(None);
+        }
+        let mut r = SliceInput::new(self.buf);
+        r.seek(meta.doc_start_fp as usize)?;
+        // `GroupVIntUtil.readGroupVInts`: full groups of four first (a flag
+        // byte, then each value's 1-4 little-endian bytes), plain vints for
+        // a remainder -- so the first value leads a group when there are at
+        // least four.
+        let raw = if doc_freq >= 4 {
+            let flag = r.read_byte()?;
+            let mut word = [0u8; 4];
+            r.read_bytes(&mut word[..usize::from(flag >> 6) + 1])?;
+            u32::from_le_bytes(word)
+        } else {
+            r.read_vint()? as u32
+        };
+        // As `read_tail_block`: the low bit is the freq-is-one flag when the
+        // field has frequencies.
+        let delta = if index_options == IndexOptions::Docs {
+            raw
+        } else {
+            raw >> 1
+        };
+        Ok(Some((-1i32).wrapping_add(delta as i32)))
+    }
+
     fn cursor_prelude(
         &self,
         meta: TermMetadata,
