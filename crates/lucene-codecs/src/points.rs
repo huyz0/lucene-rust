@@ -1297,8 +1297,10 @@ impl InnerNode {
     /// `BKDPointTree.pop`'s half that is not a cell bound.
     fn restore(&self, ctx: &mut IntersectCtx) {
         ctx.negative_deltas[self.split_dim] = self.saved_negative_delta;
-        ctx.split_values[self.dim_prefix_pos..self.dim_end]
-            .copy_from_slice(&ctx.stack[self.level].saved_split_tail);
+        copy_dim(
+            &mut ctx.split_values[self.dim_prefix_pos..self.dim_end],
+            &ctx.stack[self.level].saved_split_tail,
+        );
     }
 }
 
@@ -1315,9 +1317,44 @@ fn clamp_bound(
     range: std::ops::Range<usize>,
     reuse: bool,
 ) {
-    reset(&mut scratch.saved_bound, reuse);
-    scratch.saved_bound.extend_from_slice(&bound[range.clone()]);
-    bound[range].copy_from_slice(&scratch.split_value);
+    refill(&mut scratch.saved_bound, &bound[range.clone()], reuse);
+    copy_dim(&mut bound[range], &scratch.split_value);
+}
+
+/// `dst.copy_from_slice(src)` for one dimension's bytes. The walk copies a
+/// split value or a cell bound several times per node, and a slice copy of a
+/// length only known at run time is a libc `memmove` call each time -- 7% of
+/// a numeric sort's competitive-iterator rebuilds. An `int`, `float`, `long`
+/// or `double` point (4 or 8 bytes) moves as one word instead.
+#[inline(always)]
+fn copy_dim(dst: &mut [u8], src: &[u8]) {
+    if let (Ok(d), Ok(s)) = (
+        <&mut [u8; 8]>::try_from(&mut *dst),
+        <&[u8; 8]>::try_from(src),
+    ) {
+        *d = *s;
+    } else if let (Ok(d), Ok(s)) = (
+        <&mut [u8; 4]>::try_from(&mut *dst),
+        <&[u8; 4]>::try_from(src),
+    ) {
+        *d = *s;
+    } else {
+        dst.copy_from_slice(src);
+    }
+}
+
+/// `buf` holding exactly `src`: in place when it already has that length
+/// (a field's dimensions are all `bytes_per_dim` long, so after the first
+/// node it usually does), else emptied and refilled. The measurement arm
+/// (`reuse == false`) always takes the refill, which allocates.
+#[inline(always)]
+fn refill(buf: &mut Vec<u8>, src: &[u8], reuse: bool) {
+    if reuse && buf.len() == src.len() {
+        copy_dim(buf, src);
+    } else {
+        reset(buf, reuse);
+        buf.extend_from_slice(src);
+    }
 }
 
 /// Empties `buf` for reuse, or -- in the measurement arm -- throws it away so
@@ -1332,7 +1369,7 @@ fn reset(buf: &mut Vec<u8>, reuse: bool) {
 
 /// Undoes [`clamp_bound`] -- `BKDPointTree.pop`'s cell-bound half.
 fn restore_bound(bound: &mut [u8], scratch: &LevelScratch, range: std::ops::Range<usize>) {
-    bound[range].copy_from_slice(&scratch.saved_bound);
+    copy_dim(&mut bound[range], &scratch.saved_bound);
 }
 
 /// `BKDReader.readNodeData`: decode one inner node's split descriptor into
@@ -1371,10 +1408,11 @@ fn read_inner_node(
     debug_assert!(dim_prefix_pos <= dim_end && dim_end <= ctx.split_values.len());
     let reuse = ctx.reuse_scratch;
     let scratch = &mut ctx.stack[level];
-    reset(&mut scratch.saved_split_tail, reuse);
-    scratch
-        .saved_split_tail
-        .extend_from_slice(&ctx.split_values[dim_prefix_pos..dim_end]);
+    refill(
+        &mut scratch.saved_split_tail,
+        &ctx.split_values[dim_prefix_pos..dim_end],
+        reuse,
+    );
     if suffix > 0 {
         // ARITH: `first_diff_byte_delta >= 0` (`read_split_descriptor`
         // rejects a negative `code`), so the negation cannot overflow -- only
@@ -1423,10 +1461,11 @@ fn read_inner_node(
         )));
     };
     let scratch = &mut ctx.stack[level];
-    reset(&mut scratch.split_value, reuse);
-    scratch
-        .split_value
-        .extend_from_slice(&ctx.split_values[dim_pos..dim_end]);
+    refill(
+        &mut scratch.split_value,
+        &ctx.split_values[dim_pos..dim_end],
+        reuse,
+    );
     Ok(InnerNode {
         split_dim,
         dim_pos,
@@ -2960,6 +2999,27 @@ mod tests {
     #![allow(clippy::arithmetic_side_effects)]
 
     use super::*;
+
+    #[test]
+    fn copy_dim_and_refill_copy_every_width() {
+        for len in [1usize, 3, 4, 8, 16] {
+            let src: Vec<u8> = (1..=len as u8).collect();
+            let mut dst = vec![0u8; len];
+            copy_dim(&mut dst, &src);
+            assert_eq!(dst, src, "copy_dim, {len} bytes");
+            // In place once the length matches; refilled when it does not, or
+            // when the measurement arm asks for a fresh allocation.
+            for (start, reuse) in [
+                (vec![9u8; len], true),
+                (vec![9u8; len + 1], true),
+                (vec![9u8; len], false),
+            ] {
+                let mut buf = start;
+                refill(&mut buf, &src, reuse);
+                assert_eq!(buf, src, "refill, {len} bytes, reuse {reuse}");
+            }
+        }
+    }
 
     fn write_vint(out: &mut Vec<u8>, mut v: i32) {
         loop {
