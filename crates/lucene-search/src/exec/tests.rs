@@ -730,6 +730,182 @@ fn a_cached_term_set_is_walked_as_a_bit_set() {
     }
 }
 
+/// `StreamedTerms` matches exactly the union of every term it was fed:
+/// blended (16 iterators, the rest in the set) and plain (all in the set),
+/// sparse and dense, and through the collected fallback when the segment
+/// gives it no `maxDoc` -- whichever terms the priority queue keeps.
+#[test]
+fn streamed_terms_match_the_union_of_their_postings() {
+    use crate::directory_reader::DirectoryReader;
+    use crate::query::{Clause, PrefixQuery};
+    let dir = lucene_store::FsDirectory::open(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/data/mixed_boolean_scoring_index"
+    ));
+    let reader = DirectoryReader::open(&dir).unwrap();
+    let opened = reader.open_segments().unwrap();
+    let seg = &opened.as_open_segments()[0];
+    let ctx = super::build::LeafContext {
+        fields: seg.fields,
+        doc_in: seg.doc_in,
+        pos_in: seg.pos_in,
+        pay_in: seg.pay_in,
+        live_docs: None,
+        points: None,
+        norms: None,
+        global: None,
+        max_doc: seg.max_doc,
+        cache: None,
+        reader: None,
+        similarity: None,
+    };
+    let no_max_doc = super::build::LeafContext {
+        max_doc: None,
+        ..ctx
+    };
+    let field = ctx.fields.field("body").unwrap();
+    let mut streamed_some = false;
+    for prefix in ["w", "w1", "w2", "w12"] {
+        let clause = Clause::Prefix(PrefixQuery::new("body", prefix));
+        let terms = crate::expanded_terms(ctx.fields, &clause)
+            .unwrap()
+            .unwrap()
+            .1;
+        // Reversed as well: the queue then sees its highest `docFreq`s last
+        // and has to evict.
+        let orders: [Vec<_>; 2] = [terms.clone(), terms.iter().rev().cloned().collect()];
+        let mut want: Vec<i32> = Vec::new();
+        for (_, t) in &terms {
+            let mut c = field
+                .lazy_postings_for(
+                    t,
+                    ctx.doc_in.unwrap(),
+                    lucene_codecs::postings::PostingsFlags::DocsOnly,
+                )
+                .unwrap();
+            let mut d = c.next_doc().unwrap();
+            while d != NO_MORE_DOCS {
+                want.push(d);
+                d = c.next_doc().unwrap();
+            }
+        }
+        want.sort_unstable();
+        want.dedup();
+        streamed_some |= terms.len() > super::multi_term::BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD;
+        // A `maxDoc` large enough that the union stays a sparse list, and one
+        // whose `maxDoc >> 7` falls inside the terms' summed `docFreq`, so the
+        // list upgrades to the bit set part way through.
+        let sum_df: i32 = terms.iter().map(|(_, t)| t.stats.doc_freq).sum();
+        let sparse = super::build::LeafContext {
+            max_doc: Some(1 << 24),
+            ..ctx
+        };
+        let upgrading = super::build::LeafContext {
+            max_doc: Some((128 * (sum_df / 2)).max(ctx.max_doc.unwrap())),
+            ..ctx
+        };
+        for c in [&ctx, &no_max_doc, &sparse, &upgrading] {
+            for blended in [true, false] {
+                for order in &orders {
+                    let mut stream = super::multi_term::StreamedTerms::new(c, "body", blended);
+                    for (term, seeked) in order.clone() {
+                        stream.push(term, seeked).unwrap();
+                    }
+                    let mut got = Vec::new();
+                    if let Some(mut s) = stream.finish(c, "body", 1.0, Mode::Complete).unwrap() {
+                        let mut d = s.next_doc().unwrap();
+                        while d != NO_MORE_DOCS {
+                            assert_eq!(s.score().unwrap(), 1.0, "constant-scored");
+                            got.push(d);
+                            d = s.next_doc().unwrap();
+                        }
+                    }
+                    assert_eq!(got, want, "prefix {prefix} blended {blended}");
+                }
+            }
+        }
+    }
+    assert!(
+        streamed_some,
+        "some prefix must expand past the boolean rewrite"
+    );
+
+    let clause = Clause::Prefix(PrefixQuery::new("body", "w"));
+    let terms = crate::expanded_terms(ctx.fields, &clause)
+        .unwrap()
+        .unwrap()
+        .1;
+    let first_doc = |c: &super::build::LeafContext<'_>, field: &str, blended: bool, n: usize| {
+        let mut stream = super::multi_term::StreamedTerms::new(c, field, blended);
+        for (term, seeked) in terms.iter().take(n).cloned() {
+            stream.push(term, seeked).unwrap();
+        }
+        stream
+            .finish(c, field, 1.0, Mode::Complete)
+            .unwrap()
+            .map(|mut s| s.next_doc().unwrap())
+    };
+    // Every document past a `maxDoc` of 1: the plain union holds document 0
+    // at most, and nothing if no term has it.
+    let tiny = super::build::LeafContext {
+        max_doc: Some(1),
+        ..ctx
+    };
+    assert_eq!(
+        first_doc(&tiny, "body", false, terms.len()),
+        first_doc(&ctx, "body", false, terms.len()).filter(|&d| d == 0)
+    );
+    // No terms, a field this segment lacks, no `.doc` input: nothing.
+    assert!(first_doc(&ctx, "body", true, 0).is_none());
+    assert!(first_doc(&ctx, "nosuchfield", true, 1).is_none());
+    let no_docs = super::build::LeafContext {
+        doc_in: None,
+        ..ctx
+    };
+    assert!(first_doc(&no_docs, "body", true, 1).is_none());
+    // A clause on a field the segment lacks matches nothing in it.
+    for absent in [
+        Clause::Regexp(crate::query::RegexpQuery::new("nosuchfield", "w.*")),
+        Clause::TermInSet(crate::query::TermInSetQuery::new("nosuchfield", ["w1"])),
+    ] {
+        assert!(matches!(
+            super::multi_term::multi_term(&ctx, &absent, 1.0, Mode::Complete).unwrap(),
+            Some(None)
+        ));
+    }
+    // `advance` over a blended union steps its set as well as its terms, and
+    // lands where stepping one document at a time does.
+    let union = || {
+        let mut stream = super::multi_term::StreamedTerms::new(&ctx, "body", true);
+        for (term, seeked) in terms.iter().cloned() {
+            stream.push(term, seeked).unwrap();
+        }
+        stream
+            .finish(&ctx, "body", 1.0, Mode::Complete)
+            .unwrap()
+            .unwrap()
+    };
+    let mut all = Vec::new();
+    let mut s = union();
+    let mut d = s.next_doc().unwrap();
+    while d != NO_MORE_DOCS {
+        all.push(d);
+        d = s.next_doc().unwrap();
+    }
+    let mut s = union();
+    let mut d = s.next_doc().unwrap();
+    while d != NO_MORE_DOCS {
+        let target = d + 3;
+        d = s.advance(target).unwrap();
+        let want = all
+            .iter()
+            .copied()
+            .find(|&x| x >= target)
+            .unwrap_or(NO_MORE_DOCS);
+        assert_eq!(d, want, "advance({target})");
+    }
+}
+
 /// The multi-term builder's edges, and its union scorer driven directly.
 #[test]
 fn multi_term_edges_and_the_term_union() {

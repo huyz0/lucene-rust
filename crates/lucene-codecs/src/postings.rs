@@ -3728,16 +3728,15 @@ fn read_tail_block(
             "tail block must hold fewer than BLOCK_SIZE docs".into(),
         )));
     }
-    // On the stack, not the heap: a tail block is by definition shorter than
-    // `BLOCK_SIZE`, and this is the only decode a `docFreq < BLOCK_SIZE` term
-    // ever does, so a per-call allocation here is a per-*term* allocation.
-    // Lucene reads group-varints straight into its long-lived `docBuffer`.
-    let mut raw = [0u64; BLOCK_SIZE as usize];
-    let raw = &mut raw[..count];
-    r.read_group_vints(raw)?;
+    // Straight into the doc buffer, as Lucene reads group-varints into its
+    // long-lived `docBuffer`: this is the only decode a `docFreq <
+    // BLOCK_SIZE` term ever does, so a staging buffer zeroed here is zeroed
+    // once per *term*.
+    r.read_group_vints_i32(docs)?;
 
     if index_has_freq && needs_freq {
-        for ((d, f), &v) in docs.iter_mut().zip(freqs.iter_mut()).zip(raw.iter()) {
+        for (d, f) in docs.iter_mut().zip(freqs.iter_mut()) {
+            let v = *d as u32;
             *f = (v & 1) as i32;
             *d = (v >> 1) as i32;
         }
@@ -3751,16 +3750,14 @@ fn read_tail_block(
         // low bit is still the freq flag, so the doc deltas need shifting,
         // but the trailing freq-exception vints are never read. Safe because
         // the tail block is the last thing a term writes to `.doc`.
-        for (d, &v) in docs.iter_mut().zip(raw.iter()) {
-            *d = (v >> 1) as i32;
+        for d in docs.iter_mut() {
+            *d = ((*d as u32) >> 1) as i32;
         }
         freqs.fill(1);
     } else {
-        for (d, &v) in docs.iter_mut().zip(raw.iter()) {
-            *d = v as i32;
-        }
-        // A field without freqs scores every occurrence as 1, same as
-        // `decode_full_block_body`'s own no-freq branch.
+        // The deltas as written. A field without freqs scores every
+        // occurrence as 1, same as `decode_full_block_body`'s own no-freq
+        // branch.
         freqs.fill(1);
     }
 
