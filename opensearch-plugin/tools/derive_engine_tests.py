@@ -162,10 +162,47 @@ def reach_line(text: str) -> str:
     return text
 
 
+# Oracles that model when the engine commits. InternalEngine commits on flush only; the Rust
+# engine also commits on every refresh that has something to show ("Refresh is a commit",
+# RustIndexWriter), and such a commit is a recovery point like any other: on restart,
+# trimUnsafeCommits rolls back to the newest commit whose max_seq_no is at or below the global
+# checkpoint, refresh commits included. A test that lists the commits it made must list those
+# too, or it expects the restart to land on an older commit than the engine's (seed
+# B86ED099065D7184: four deletes refreshed before any flush, all below the global checkpoint).
+# Test name -> (code in its body, what replaces it).
+COMMIT_MODEL: dict[str, tuple[str, str]] = {
+    "testRebuildLocalCheckpointTrackerAndVersionMap": (
+        """                    if (randomInt(100) < 10) {
+                        engine.refresh("test");
+                    }
+""",
+        """                    if (randomInt(100) < 10) {
+                        engine.refresh("test");
+                        // A Rust refresh is a commit (derive_engine_tests.py, COMMIT_MODEL).
+                        flushedOperations.sort(Comparator.comparing(Engine.Operation::seqNo));
+                        commits.add(new ArrayList<>(flushedOperations));
+                    }
+""",
+    ),
+}
+
+
+def patch_method(text: str, name: str, old: str, new: str) -> str:
+    """Replaces `old` with `new` once, inside test `name`'s body only."""
+    start = text.index(f"    public void {name}(")
+    end = text.index("\n    }\n", start)
+    body = text[start:end]
+    if body.count(old) != 1:
+        raise SystemExit(f"{name}: expected the patched code exactly once, found {body.count(old)}")
+    return text[:start] + body.replace(old, new) + text[end:]
+
+
 def derive_tests(src: str) -> str:
     p = Patcher(filesystem_stores(reach_package_private(rename(relocate(src)))))
     for name, reason in SKIPPED.items():
         p.sub(f"    public void {name}(", f'    @org.junit.Ignore("{reason}")\n    public void {name}(')
+    for name, (old, new) in COMMIT_MODEL.items():
+        p.text = patch_method(p.text, name, old, new)
     return NOTICE + p.text
 
 
