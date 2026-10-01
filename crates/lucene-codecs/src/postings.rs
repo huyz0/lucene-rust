@@ -640,25 +640,69 @@ pub fn decode_impacts(bytes: &[u8]) -> Result<Impacts> {
 /// does the same, decoding `level0SerializedImpacts` into a reusable
 /// `FreqAndNormBuffer` (`Lucene104PostingsReader.readImpacts`).
 pub fn decode_impacts_into(bytes: &[u8], impacts: &mut Impacts) -> Result<()> {
-    let mut r = SliceInput::new(bytes);
+    impacts.clear();
+    for_each_impact(bytes, |freq, norm| impacts.push(Impact { freq, norm }))
+}
+
+/// [`decode_impacts_into`]'s walk, handing each `(freq, norm)` to `f` as it is
+/// decoded instead of storing it: a block-max bound folds the pairs straight
+/// into its maximum, with no list written and read back. One-byte varints --
+/// nearly every delta, since both accumulate from the previous pair -- are
+/// read off the slice directly; a longer one, or a truncated one, goes through
+/// [`SliceInput`], so values and errors are [`decode_impacts`]'.
+// ARITH: `at` only steps over bytes of `bytes` (`at < bytes.len()` on the fast
+// path, `+ position()` of a reader over `bytes[at..]` on the slow one); `freq`
+// and `norm` accumulate with wrapping arithmetic, as Java's `int`/`long` do.
+#[allow(clippy::arithmetic_side_effects)]
+#[inline]
+pub fn for_each_impact(bytes: &[u8], mut f: impl FnMut(i32, i64)) -> Result<()> {
+    let mut at = 0usize;
     let mut freq: i32 = 0;
     let mut norm: i64 = 0;
-    impacts.clear();
-    while r.position() < bytes.len() {
-        let freq_delta = r.read_vint()?;
+    while let Some(&b) = bytes.get(at) {
+        let freq_delta = if b < 0x80 {
+            at += 1;
+            i32::from(b)
+        } else {
+            let mut r = SliceInput::new(&bytes[at..]);
+            let v = r.read_vint()?;
+            at += r.position();
+            v
+        };
         // `1 + (freqDelta >>> 1)` is `int` arithmetic in Java's `readImpacts`
         // and wraps; `(freq_delta as u32) >> 1` reaches `i32::MAX` from a
         // five-byte varint with the sign bit set, so the `1 +` itself is an
         // overflow on a corrupt `.doc` before the accumulator even sees it.
         freq = freq.wrapping_add(1i32.wrapping_add(((freq_delta as u32) >> 1) as i32));
         if freq_delta & 1 != 0 {
-            norm = norm.wrapping_add(1i64.wrapping_add(r.read_zlong()?));
+            let delta = match bytes.get(at) {
+                Some(&z) if z < 0x80 => {
+                    at += 1;
+                    i64::from(z >> 1) ^ -i64::from(z & 1)
+                }
+                _ => {
+                    let mut r = SliceInput::new(&bytes[at..]);
+                    let v = r.read_zlong()?;
+                    at += r.position();
+                    v
+                }
+            };
+            norm = norm.wrapping_add(1i64.wrapping_add(delta));
         } else {
             norm = norm.wrapping_add(1);
         }
-        impacts.push(Impact { freq, norm });
+        f(freq, norm);
     }
     Ok(())
+}
+
+/// The current block's level-0 impacts as a cursor holds them: still encoded
+/// (not asked for since the block changed), or already decoded.
+pub enum Level0Impacts<'b> {
+    /// The serialized run, for [`for_each_impact`]; may be empty.
+    Encoded(&'b [u8]),
+    /// The decoded list, empty for a block with no impacts.
+    Decoded(&'b [Impact]),
 }
 
 /// The part of `PostingsEnum`'s feature-flag mask a `.doc` decoder can act
@@ -4309,6 +4353,17 @@ impl<'a> LazyDocsCursor<'a> {
         }
     }
 
+    /// [`Self::level0_impacts`] without decoding: a caller that only folds
+    /// the pairs (a block-max bound) walks the bytes once with
+    /// [`for_each_impact`] and leaves the list undecoded for anyone else.
+    pub fn level0_impacts_view(&self) -> Level0Impacts<'_> {
+        if self.level0_impacts_stale {
+            Level0Impacts::Encoded(self.level0_impact_bytes)
+        } else {
+            Level0Impacts::Decoded(&self.level0_impacts)
+        }
+    }
+
     /// `ImpactsEnum.getImpacts()`'s level-0 result, conceptually: the
     /// competitive `(freq, norm)` pairs for the level-0 block the cursor is
     /// currently positioned in (i.e. covering `doc_id`). Empty before the
@@ -6192,6 +6247,62 @@ mod tests {
         let mut bytes = Vec::new();
         write_impacts(&mut bytes, &impacts);
         assert_eq!(decode_impacts(&bytes).unwrap(), impacts);
+    }
+
+    /// The pre-visitor decoder, every varint through `SliceInput`: the
+    /// reference [`for_each_impact`]'s one-byte fast paths must agree with.
+    fn decode_impacts_reference(bytes: &[u8]) -> Result<Impacts> {
+        let mut r = SliceInput::new(bytes);
+        let (mut freq, mut norm, mut out) = (0i32, 0i64, Vec::new());
+        while r.position() < bytes.len() {
+            let freq_delta = r.read_vint()?;
+            freq = freq.wrapping_add(1i32.wrapping_add(((freq_delta as u32) >> 1) as i32));
+            norm = if freq_delta & 1 != 0 {
+                norm.wrapping_add(1i64.wrapping_add(r.read_zlong()?))
+            } else {
+                norm.wrapping_add(1)
+            };
+            out.push(Impact { freq, norm });
+        }
+        Ok(out)
+    }
+
+    #[test]
+    fn for_each_impact_agrees_with_the_reference_decoder() {
+        // Deltas of one byte and several, negative and positive norm deltas,
+        // and every truncation of each run.
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for _ in 0..400 {
+            let mut bytes = Vec::new();
+            for _ in 0..(next() % 12) {
+                let freq_delta = (next() % 3) as u32;
+                let freq_delta = [freq_delta, 40 + freq_delta * 50, 70_000][(next() % 3) as usize];
+                let explicit = next() % 2 == 1;
+                bytes.write_vint(((freq_delta << 1) | u32::from(explicit)) as i32);
+                if explicit {
+                    let deltas = [0i64, 3, -2, 63, -64, 64, -65, 1 << 40];
+                    bytes.write_zlong(deltas[(next() % deltas.len() as u64) as usize]);
+                }
+            }
+            for cut in 0..=bytes.len() {
+                let run = &bytes[..cut];
+                let mut got = Vec::new();
+                let visited = for_each_impact(run, |freq, norm| got.push(Impact { freq, norm }));
+                match decode_impacts_reference(run) {
+                    Ok(want) => {
+                        assert!(visited.is_ok(), "{run:?}");
+                        assert_eq!(got, want, "{run:?}");
+                    }
+                    Err(_) => assert!(visited.is_err(), "{run:?}"),
+                }
+            }
+        }
     }
 
     #[test]
