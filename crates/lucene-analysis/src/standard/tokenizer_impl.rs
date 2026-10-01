@@ -164,6 +164,13 @@ pub(crate) struct StandardTokenizerImpl {
     zz_at_eof: bool,
     zz_final_high_surrogate: usize,
     yychar: i64,
+    /// Scanning a whole UTF-8 text ([`Self::get_next_token_utf8`]) rather
+    /// than the reader's UTF-16 buffer: `zz_start_read`/`zz_marked_pos` are
+    /// then absolute code-unit positions in the text, and these their byte
+    /// positions.
+    utf8: bool,
+    utf8_start: usize,
+    utf8_marked: usize,
 }
 
 impl StandardTokenizerImpl {
@@ -180,7 +187,26 @@ impl StandardTokenizerImpl {
             zz_at_eof: false,
             zz_final_high_surrogate: 0,
             yychar: 0,
+            utf8: false,
+            utf8_start: 0,
+            utf8_marked: 0,
         }
+    }
+
+    /// Scan the whole text handed to [`Self::get_next_token_utf8`] from now
+    /// until the next [`Self::yyreset`].
+    pub(crate) fn set_utf8(&mut self) {
+        self.utf8 = true;
+    }
+
+    /// Whether this scan reads a UTF-8 text ([`Self::set_utf8`]).
+    pub(crate) fn is_utf8(&self) -> bool {
+        self.utf8
+    }
+
+    /// The matched text of a UTF-8 scan over `text`.
+    pub(crate) fn text_utf8<'t>(&self, text: &'t str) -> &'t str {
+        &text[self.utf8_start..self.utf8_marked]
     }
 
     /// `yychar()`: code units processed before the current match.
@@ -220,6 +246,9 @@ impl StandardTokenizerImpl {
         self.zz_final_high_surrogate = 0;
         self.yychar = 0;
         self.zz_lexical_state = 0;
+        self.utf8 = false;
+        self.utf8_start = 0;
+        self.utf8_marked = 0;
         if self.zz_buffer.len() > self.zz_buffersize {
             self.zz_buffer = vec![0; self.zz_buffersize];
         }
@@ -356,30 +385,142 @@ impl StandardTokenizerImpl {
                 self.zz_at_eof = true;
                 return Ok(YYEOF);
             }
-            let action = if zz_action < 0 {
-                zz_action
-            } else {
-                ZZ_ACTION[zz_action as usize] as i32
-            };
-            match action {
-                // Not numeric, word, ideographic, hiragana, emoji or SE Asian -- ignore it.
-                1 => {}
-                2 => return Ok(NUMERIC_TYPE),
-                3 => return Ok(WORD_TYPE),
-                4 => return Ok(EMOJI_TYPE),
-                5 => return Ok(SOUTH_EAST_ASIAN_TYPE),
-                6 => return Ok(HANGUL_TYPE),
-                7 => return Ok(IDEOGRAPHIC_TYPE),
-                8 => return Ok(KATAKANA_TYPE),
-                9 => return Ok(HIRAGANA_TYPE),
-                _ => {
-                    return Err(AnalysisError::IllegalState(
-                        "Error: could not match input".to_string(),
-                    ))
-                }
+            if let Some(token_type) = action_type(zz_action)? {
+                return Ok(token_type);
             }
         }
     }
+}
+
+impl StandardTokenizerImpl {
+    /// [`Self::get_next_token`] over a whole text held as UTF-8, without
+    /// reading it as UTF-16 code units: the same DFA walked over the same
+    /// code points, with every position kept in code units (Java's `char`s)
+    /// beside its byte position, so the token types, `yychar`, `yylength`
+    /// and the matched text are exactly what reading the text through
+    /// `zzRefill` would have produced.
+    ///
+    /// The one thing `zzRefill` adds over a plain walk of the text is its
+    /// buffer of `ZZ_BUFFERSIZE` code units: a match is shifted to the start
+    /// of the buffer when the scanner runs off its end, and once the match
+    /// fills the whole buffer the refill reports end of input (`requested ==
+    /// 0`), so a run longer than the buffer is cut. A supplementary
+    /// character whose high surrogate would be the buffer's last unit is
+    /// held back (`zzFinalHighSurrogate`), so the buffer then ends before
+    /// it. Both are the same rule from the match's start: the scanner sees
+    /// the code points that fit whole in `ZZ_BUFFERSIZE` units from where the
+    /// match began, and anything past them reads as end of input -- which
+    /// is what this applies. (A `&str` has no unpaired surrogates, so
+    /// `zzRefill`'s read of a trailing low surrogate always succeeds.)
+    pub(crate) fn get_next_token_utf8(&mut self, text: &str) -> Result<i32, AnalysisError> {
+        let bytes = text.as_bytes();
+        let dfa = dfa();
+        loop {
+            self.yychar += (self.zz_marked_pos - self.zz_start_read) as i64;
+            let start_u = self.zz_marked_pos;
+            let start_b = self.utf8_marked;
+            self.zz_start_read = start_u;
+            self.utf8_start = start_b;
+            // ARITH: a buffer size is at most `MAX_TOKEN_LENGTH_LIMIT`, and a
+            // position at most the text's length.
+            let limit_u = start_u + self.zz_buffersize;
+
+            let mut zz_state = ZZ_LEXSTATE[self.zz_lexical_state] as usize;
+            let mut zz_action: i32 = -1;
+            if (dfa.attribute[zz_state & 63] & 1) == 1 {
+                zz_action = zz_state as i32;
+            }
+            let (mut cur_u, mut cur_b) = (start_u, start_b);
+            let (mut marked_u, mut marked_b) = (start_u, start_b);
+            let mut eof = self.zz_at_eof;
+            while !eof {
+                let Some(&b0) = bytes.get(cur_b) else {
+                    eof = true;
+                    break;
+                };
+                // `text` is valid UTF-8: the lead byte gives the length and
+                // every continuation byte is present.
+                let (cp, len_b, len_u) = if b0 < 0x80 {
+                    (i32::from(b0), 1, 1)
+                } else {
+                    let cont = |k: usize| i32::from(bytes[cur_b + k] & 0x3F);
+                    let b0 = i32::from(b0);
+                    if b0 < 0xE0 {
+                        (((b0 & 0x1F) << 6) | cont(1), 2, 1)
+                    } else if b0 < 0xF0 {
+                        (((b0 & 0x0F) << 12) | (cont(1) << 6) | cont(2), 3, 1)
+                    } else {
+                        (
+                            ((b0 & 0x07) << 18) | (cont(1) << 12) | (cont(2) << 6) | cont(3),
+                            4,
+                            2,
+                        )
+                    }
+                };
+                if cur_u + len_u > limit_u {
+                    // The buffer is full: `zzRefill` reports end of input.
+                    eof = true;
+                    break;
+                }
+                cur_u += len_u;
+                cur_b += len_b;
+                let zz_next = dfa.next[zz_state & 63][zz_cmap(cp) & 31];
+                if zz_next == DEAD {
+                    break;
+                }
+                zz_state = usize::from(zz_next & 0x3F);
+                if zz_next & ACCEPTING != 0 {
+                    zz_action = zz_state as i32;
+                    marked_u = cur_u;
+                    marked_b = cur_b;
+                    if zz_next & FINAL != 0 {
+                        break;
+                    }
+                }
+            }
+
+            self.zz_marked_pos = marked_u;
+            self.utf8_marked = marked_b;
+            self.zz_current_pos = cur_u;
+            self.zz_state = zz_state;
+
+            if eof && cur_u == start_u {
+                self.zz_at_eof = true;
+                return Ok(YYEOF);
+            }
+            if let Some(token_type) = action_type(zz_action)? {
+                return Ok(token_type);
+            }
+        }
+    }
+}
+
+/// `getNextToken`'s action switch: the token type `zzAction` returns, or
+/// `None` for the rule that ignores what it matched.
+#[inline]
+fn action_type(zz_action: i32) -> Result<Option<i32>, AnalysisError> {
+    let action = if zz_action < 0 {
+        zz_action
+    } else {
+        ZZ_ACTION[zz_action as usize] as i32
+    };
+    Ok(Some(match action {
+        // Not numeric, word, ideographic, hiragana, emoji or SE Asian -- ignore it.
+        1 => return Ok(None),
+        2 => NUMERIC_TYPE,
+        3 => WORD_TYPE,
+        4 => EMOJI_TYPE,
+        5 => SOUTH_EAST_ASIAN_TYPE,
+        6 => HANGUL_TYPE,
+        7 => IDEOGRAPHIC_TYPE,
+        8 => KATAKANA_TYPE,
+        9 => HIRAGANA_TYPE,
+        _ => {
+            return Err(AnalysisError::IllegalState(
+                "Error: could not match input".to_string(),
+            ))
+        }
+    }))
 }
 
 #[cfg(test)]
