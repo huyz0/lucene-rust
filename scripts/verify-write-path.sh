@@ -234,6 +234,28 @@ CASES=(
   # must find each field in its own group's files under the suffix its .fnm
   # records, see exactly the deleted documents gone, and pass CheckIndex.
   "lucene-index|write_per_field_formats_fixture|per-field-formats|VerifyPerFieldFormats"
+  # PerFieldDocValuesFormat through IndexWriter (M7): the s_ fields routed to
+  # Lucene90DocValuesFormat(16), two flushed segments and a force-merge, whose
+  # instances are numbered in opposite orders. Lucene must read every value
+  # from its own instance's files, find the routed skip indexes' 16-document
+  # intervals, and pass CheckIndex.
+  "lucene-index|write_per_field_doc_values_fixture|per-field-doc-values|VerifyPerFieldDocValues"
+  # PerFieldKnnVectorsFormat through IndexWriter (M7): two HNSW instances,
+  # an HNSW scalar-quantized and a flat scalar-quantized one, flushed and
+  # merged. Lucene must read every vector from its field's instance, run a
+  # KNN query over each field, and pass CheckIndex.
+  "lucene-index|write_per_field_knn_vectors_fixture|per-field-knn-vectors|VerifyPerFieldKnnVectors"
+  # IndexingChain reading a TokenFilter's PayloadAttribute and
+  # TermFrequencyAttribute through the document API (M7): payloads on a
+  # positional field, custom frequencies on a DOCS_AND_FREQS field, flushed
+  # and merged over a source without payloads. Lucene must read every
+  # payload and frequency back as the filter set them, and pass CheckIndex.
+  "lucene-index|write_token_attributes_fixture|token-attributes|VerifyTokenAttributes"
+  # OneMerge.wrapForMerge/reorder in the writer's merge (M7): three segments
+  # with deletes force-merged by a policy whose merges hide every rank
+  # multiple of 11 and order by rank descending. Lucene must find exactly the
+  # carried-over documents, in that order, and pass CheckIndex.
+  "lucene-search|write_merge_reorder_fixture|merge-reorder|VerifyMergeReorder"
 )
 
 echo "verify-write-path: compiling verifiers"

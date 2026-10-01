@@ -252,10 +252,10 @@ pub struct SegmentReader {
     /// The segment's term vectors (`.tvd`/`.tvx`/`.tvm`) and their codec
     /// suffix, when it has any -- `SegmentCoreReaders.termVectorsReaderOrig`.
     term_vectors: Option<Arc<CodecFiles>>,
-    /// The segment's flat KNN vectors (`.vec` data, `.vemf` metadata) and
-    /// their per-field-format suffix, when it has any -- the flat half of
-    /// `SegmentCoreReaders.knnVectorsReader`.
-    vectors: Option<Arc<CodecFiles>>,
+    /// The segment's flat KNN vectors (`.vec` data, `.vemf` metadata), one
+    /// per `PerFieldKnnVectorsFormat` instance with its codec suffix, sorted
+    /// by suffix -- the flat half of `SegmentCoreReaders.knnVectorsReader`.
+    vectors: Vec<Arc<CodecFiles>>,
     /// `getCoreCacheHelper()`: shared by every reader over this segment core,
     /// across reopens that keep it.
     core_cache: crate::reader::CacheHelper,
@@ -689,25 +689,29 @@ impl SegmentReader {
         };
         // `.vec`/`.vemf`: the flat vectors every HNSW field stores beside its
         // graph (`.vex`/`.vem`, read by `crate::vector_query`'s own callers).
-        let vectors = match (
-            open_segment_file(dir, compound.as_ref(), &si.files, ".vec")?,
-            open_segment_file(dir, compound.as_ref(), &si.files, ".vemf")?,
-        ) {
-            (Some(data), Some(meta)) => {
-                let name = find_segment_file_name(&si.files, compound.as_ref(), ".vec")
-                    .expect("an opened .vec has an entry");
-                Some(Arc::new(CodecFiles {
+        // One pair per `PerFieldKnnVectorsFormat` instance
+        // (`FieldsReader` opens a reader per suffix the fields name). A
+        // `.vec` without `.vemf` is a pre-`Lucene99` vectors format (`.vec` +
+        // `.vem` only), read through the backward codecs, not this reader.
+        let mut vectors = Vec::new();
+        for suffix in segment_codec_suffixes(&si.files, compound.as_ref(), &segment_name, ".vemf") {
+            let open = |ext: &str| {
+                open_segment_file(
+                    dir,
+                    compound.as_ref(),
+                    &si.files,
+                    &format!("_{suffix}{ext}"),
+                )
+            };
+            if let (Some(data), Some(meta)) = (open(".vec")?, open(".vemf")?) {
+                vectors.push(Arc::new(CodecFiles {
                     data,
                     index: None,
                     meta,
-                    suffix: codec_suffix_of(&name, &segment_name, ".vec"),
-                }))
+                    suffix,
+                }));
             }
-            // A `.vec` without `.vemf` is a pre-`Lucene99` vectors format
-            // (`.vec` + `.vem` only), read through the backward codecs, not
-            // this reader.
-            _ => None,
-        };
+        }
 
         Ok(SegmentReader {
             term_vectors,
@@ -832,7 +836,7 @@ impl SegmentReader {
     pub fn flat_vectors_reader(
         &self,
     ) -> crate::Result<Option<lucene_codecs::vectors::FlatVectorsReader<'_>>> {
-        let Some(f) = self.vectors.as_deref() else {
+        let Some(f) = self.vectors.first() else {
             return Ok(None);
         };
         Ok(Some(lucene_codecs::vectors::FlatVectorsReader::open(
@@ -841,6 +845,55 @@ impl SegmentReader {
             &self.segment_id,
             &f.suffix,
         )?))
+    }
+
+    /// `PerFieldKnnVectorsFormat.FieldsReader.getFieldReader`'s flat half:
+    /// the reader of the instance field `field_number` was written with --
+    /// the one its `PerFieldKnnVectorsFormat.format`/`.suffix` attributes
+    /// name, or, for a field without them, the first that has an entry for
+    /// it. `None` when no instance holds the field.
+    ///
+    /// # Errors
+    /// Vector files that do not decode.
+    pub fn flat_vectors_reader_for(
+        &self,
+        field_number: i32,
+    ) -> crate::Result<Option<lucene_codecs::vectors::FlatVectorsReader<'_>>> {
+        let named = self
+            .field_infos
+            .fields
+            .iter()
+            .find(|f| f.number == field_number)
+            .and_then(|f| {
+                let attr = |key: &str| {
+                    f.attributes
+                        .iter()
+                        .find(|(k, _)| k == key)
+                        .map(|(_, v)| v.clone())
+                };
+                Some(format!(
+                    "{}_{}",
+                    attr("PerFieldKnnVectorsFormat.format")?,
+                    attr("PerFieldKnnVectorsFormat.suffix")?
+                ))
+            });
+        let ordered = self
+            .vectors
+            .iter()
+            .filter(|f| named.as_deref().is_none_or(|n| n == f.suffix))
+            .chain(self.vectors.iter());
+        for f in ordered {
+            let reader = lucene_codecs::vectors::FlatVectorsReader::open(
+                &f.meta,
+                &f.data,
+                &self.segment_id,
+                &f.suffix,
+            )?;
+            if reader.field(field_number).is_some() {
+                return Ok(Some(reader));
+            }
+        }
+        Ok(None)
     }
 
     /// `getCoreCacheHelper()`: this segment core's cache key and
@@ -882,7 +935,7 @@ impl SegmentReader {
         if let Some(s) = self.stored.as_deref() {
             files.extend([&**s.fdt, &**s.fdx]);
         }
-        for c in [&self.term_vectors, &self.vectors].into_iter().flatten() {
+        for c in self.term_vectors.iter().chain(&self.vectors) {
             files.push(&c.data);
             if let Some(i) = &c.index {
                 files.push(i);

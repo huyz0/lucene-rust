@@ -67,11 +67,11 @@
 //!
 //! # Not (yet) here
 //!
-//! Vectors and custom-frequency postings are single-writer features for now
-//! ([`IndexWriter::add_document_with_vectors`],
-//! [`IndexWriter::add_document_with_custom_freq_terms`]); soft deletes,
-//! `deleteAll` and two-phase commit too -- [`ConcurrentIndexWriter::into_writer`]
-//! hands the writer back for them. A merge whose source takes a doc-values
+//! Soft deletes and two-phase commit are single-writer features for now --
+//! [`ConcurrentIndexWriter::into_writer`] hands the writer back for them.
+//! (Vectors and custom-frequency postings ride in each slot's buffer with
+//! their documents: [`ConcurrentIndexWriter::add_document_with_vectors`],
+//! [`ConcurrentIndexWriter::add_document_with_custom_freq_terms`].) A merge whose source takes a doc-values
 //! update while it runs is abandoned and retried later rather than carried --
 //! see [`IndexWriter::finish_merge`]. Each ticket's frozen packet is applied to
 //! every published segment under the control lock, where Java applies
@@ -96,8 +96,9 @@ use crate::buffered_updates::{
 use crate::deletes;
 use crate::flush_policy::{FlushByRamOrCountsPolicy, FlushControl, FlushPolicy};
 use crate::index_writer::{
-    buffer_node, document_ram_bytes, DeleteNode, DocumentBuffer, ExplicitFields, FlushDeletes,
-    IndexWriter, IndexingConfig, Result, SegmentTicket, DISABLE_AUTO_FLUSH,
+    buffer_node, custom_freq_terms_ram_bytes, document_ram_bytes, DeleteNode, DocumentBuffer,
+    DocumentVector, ExplicitFields, FlushDeletes, IndexWriter, IndexingConfig, Result,
+    SegmentTicket, DISABLE_AUTO_FLUSH,
 };
 use crate::merge_policy::{MergePolicyConfig, MergeTrigger};
 use crate::merge_rate_limiter::MergeRateLimiter;
@@ -109,6 +110,12 @@ use crate::stall_control::DocumentsWriterStallControl;
 #[derive(Default)]
 struct Dwpt {
     docs: Vec<Document>,
+    /// Parallel to `docs`: each document's custom-frequency terms
+    /// ([`ConcurrentIndexWriter::add_document_with_custom_freq_terms`]).
+    custom_freq_terms: Vec<Vec<(String, i32)>>,
+    /// Parallel to `docs`: each document's vectors
+    /// ([`ConcurrentIndexWriter::add_document_with_vectors`]).
+    vectors: Vec<Vec<DocumentVector>>,
     has_blocks: bool,
     ram_bytes: usize,
     /// This buffer's share of every delete issued since it last flushed, each
@@ -184,11 +191,24 @@ struct Core<'d> {
     merging: HashSet<String>,
 }
 
+/// One document a thread adds, with what rides alongside it.
+struct Entry {
+    doc: Document,
+    custom_freq_terms: Vec<(String, i32)>,
+    vectors: Vec<DocumentVector>,
+}
+
+/// A buffer's per-document custom-frequency terms and vectors, parallel to
+/// its documents.
+type Buffered = (Vec<Vec<(String, i32)>>, Vec<Vec<DocumentVector>>);
+
 /// A buffer that filled (or was flushed): everything its segment is built from.
 struct FlushBatch {
     ticket: SegmentTicket,
     ticket_no: u64,
     docs: Vec<Document>,
+    custom_freq_terms: Vec<Vec<(String, i32)>>,
+    vectors: Vec<Vec<DocumentVector>>,
     has_blocks: bool,
     private: BufferedUpdates,
     /// The slot's `ram_bytes` when it was taken: what this flush counts
@@ -555,6 +575,42 @@ impl<'d> ConcurrentIndexWriter<'d> {
         self.add(None, vec![doc])
     }
 
+    /// [`IndexWriter::add_document_with_vectors`], from any thread: the
+    /// document and its KNN vectors go into this thread's buffer together,
+    /// and its segment writes them (`IndexingChain` per
+    /// `DocumentsWriterPerThread`).
+    pub fn add_document_with_vectors(
+        &self,
+        doc: Document,
+        vectors: Vec<DocumentVector>,
+    ) -> Result<SeqNo> {
+        self.add_entries(
+            None,
+            vec![Entry {
+                doc,
+                custom_freq_terms: Vec::new(),
+                vectors,
+            }],
+        )
+    }
+
+    /// [`IndexWriter::add_document_with_custom_freq_terms`], from any
+    /// thread.
+    pub fn add_document_with_custom_freq_terms(
+        &self,
+        doc: Document,
+        terms: Vec<(String, i32)>,
+    ) -> Result<SeqNo> {
+        self.add_entries(
+            None,
+            vec![Entry {
+                doc,
+                custom_freq_terms: terms,
+                vectors: Vec::new(),
+            }],
+        )
+    }
+
     /// `IndexWriter.addDocuments`: a block, kept contiguous in one segment.
     pub fn add_documents(&self, docs: Vec<Document>) -> Result<SeqNo> {
         self.add(None, docs)
@@ -751,17 +807,51 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// and the delete and the document are never apart: a commit locks every
     /// slot to take its cut, and sees both or neither.
     fn add(&self, delete: Option<DeleteNode>, docs: Vec<Document>) -> Result<SeqNo> {
+        let entries = docs
+            .into_iter()
+            .map(|doc| Entry {
+                doc,
+                custom_freq_terms: Vec::new(),
+                vectors: Vec::new(),
+            })
+            .collect();
+        self.add_entries(delete, entries)
+    }
+
+    fn add_entries(&self, delete: Option<DeleteNode>, docs: Vec<Entry>) -> Result<SeqNo> {
         let mut flushed = self.pre_update()?;
         let (seq_no, batch) = {
             let (i, mut dwpt) = self.acquire_slot();
             let before = dwpt.docs.len();
+            for (k, entry) in docs.iter().enumerate() {
+                self.cfg
+                    .validate_document_vectors(before.saturating_add(k), &entry.vectors)?;
+            }
             if docs.len() > 1 {
                 dwpt.has_blocks = true;
             }
             let mut added = 0usize;
-            for doc in docs {
-                added = added.saturating_add(document_ram_bytes(&doc));
-                dwpt.docs.push(doc);
+            for entry in docs {
+                // A plain document is charged its stored fields only, as
+                // before; the extras only when it carries them.
+                let custom = if entry.custom_freq_terms.is_empty() {
+                    0
+                } else {
+                    custom_freq_terms_ram_bytes(&entry.custom_freq_terms)
+                };
+                added = added
+                    .saturating_add(document_ram_bytes(&entry.doc))
+                    .saturating_add(custom)
+                    .saturating_add(
+                        entry
+                            .vectors
+                            .iter()
+                            .map(DocumentVector::ram_bytes)
+                            .fold(0usize, usize::saturating_add),
+                    );
+                dwpt.docs.push(entry.doc);
+                dwpt.custom_freq_terms.push(entry.custom_freq_terms);
+                dwpt.vectors.push(entry.vectors);
             }
             dwpt.ram_bytes = dwpt.ram_bytes.saturating_add(added);
             let (nodes, end, seq_no, delete_bytes) = {
@@ -855,6 +945,8 @@ impl<'d> ConcurrentIndexWriter<'d> {
             ticket,
             ticket_no,
             docs: std::mem::take(&mut dwpt.docs),
+            custom_freq_terms: std::mem::take(&mut dwpt.custom_freq_terms),
+            vectors: std::mem::take(&mut dwpt.vectors),
             has_blocks: std::mem::take(&mut dwpt.has_blocks),
             private: std::mem::take(&mut dwpt.private),
             ram_bytes: dwpt.ram_bytes,
@@ -891,12 +983,11 @@ impl<'d> ConcurrentIndexWriter<'d> {
         &self,
         ticket: &SegmentTicket,
         mut docs: Vec<Document>,
+        (mut custom_freq_terms, mut vectors): Buffered,
         has_blocks: bool,
         mut private: BufferedUpdates,
         tracking: &TrackingDirectory<'_>,
     ) -> Result<Built> {
-        let mut custom_freq_terms = vec![Vec::new(); docs.len()];
-        let mut vectors = vec![Vec::new(); docs.len()];
         let sort_map =
             self.cfg
                 .sort_buffer(&mut docs, &mut custom_freq_terms, &mut vectors, has_blocks)?;
@@ -973,13 +1064,22 @@ impl<'d> ConcurrentIndexWriter<'d> {
             ticket,
             ticket_no,
             docs,
+            custom_freq_terms,
+            vectors,
             has_blocks,
             private,
             ram_bytes,
         } = batch;
         let tracking = TrackingDirectory::new(self.dir);
         let built = catch_unwind(AssertUnwindSafe(|| {
-            self.build(&ticket, docs, has_blocks, private, &tracking)
+            self.build(
+                &ticket,
+                docs,
+                (custom_freq_terms, vectors),
+                has_blocks,
+                private,
+                &tracking,
+            )
         }));
         let mut core = self.wait_turn(ticket_no);
         let outcome = catch_unwind(AssertUnwindSafe(|| match built {
@@ -1115,7 +1215,13 @@ impl<'d> ConcurrentIndexWriter<'d> {
             let _barrier = BarrierGuard(self);
             let last_seq = self.flush_all(true)?;
             let mut core = lock(&self.core);
-            core.writer.commit()?;
+            // Merge-on-commit leaves the segments this writer's merge
+            // threads hold alone (`registerMerge` rejects those merges).
+            let Core {
+                writer, merging, ..
+            } = &mut *core;
+            writer.prepare_commit_excluding(merging)?;
+            writer.finish_commit()?;
             last_seq
         };
         self.schedule_merges(MergeTrigger::FullFlush)?;
@@ -1202,8 +1308,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
     }
 
     /// Flushes every buffer and hands the single-threaded writer back, merging
-    /// on commit again, for what only it does (two-phase commit, rollback,
-    /// vectors). Segments flushed and not yet committed stay pending in it,
+    /// on commit again, for what only it does (two-phase commit, rollback). Segments flushed and not yet committed stay pending in it,
     /// and so do deletes not yet applied; its sequence numbers continue from
     /// this writer's.
     pub fn into_writer(self) -> Result<IndexWriter<'d>> {
@@ -1331,7 +1436,12 @@ impl<'d> crate::nrt::NrtSource for ConcurrentIndexWriter<'d> {
         let snapshot = {
             let _full_flush = lock(&self.full_flush);
             self.flush_all(false)?;
-            lock(&self.core).writer.nrt_snapshot_of_live_view()?
+            let mut core = lock(&self.core);
+            let Core {
+                writer, merging, ..
+            } = &mut *core;
+            writer.merge_on_full_flush(MergeTrigger::GetReader, merging)?;
+            writer.nrt_snapshot_of_live_view()?
         };
         self.schedule_merges(MergeTrigger::GetReader)?;
         Ok(snapshot)
@@ -1525,10 +1635,12 @@ mod tests {
             floor_segment_size: 1 << 30,
             ..MergePolicyConfig::default()
         }));
+        // These tests drive merges themselves; merge-on-commit has its own.
+        w.set_max_full_flush_merge_wait_millis(0);
         w
     }
 
-    use crate::index_writer::DISABLE_AUTO_FLUSH_MB;
+    use crate::index_writer::{DEFAULT_MAX_FULL_FLUSH_MERGE_WAIT_MILLIS, DISABLE_AUTO_FLUSH_MB};
 
     /// id -> body of every live document of the latest commit, read through
     /// the stored fields and `.liv` files -- plus the segment count.
@@ -1814,6 +1926,7 @@ mod tests {
             floor_segment_size: 1 << 30,
             ..MergePolicyConfig::default()
         }));
+        single.set_max_full_flush_merge_wait_millis(0);
         let w = ConcurrentIndexWriter::new(single, 1).unwrap();
         for (id, rank) in [("m0", 1), ("m1", 2)] {
             w.add_document(ranked(id, 0, rank)).unwrap();
@@ -2660,6 +2773,61 @@ mod tests {
         let dir2 = FsDirectory::open(&tmp2);
         let plain = ConcurrentIndexWriter::new(writer(&dir2, 5), 1).unwrap();
         plain.close_merges().unwrap();
+    }
+
+    /// Merge-on-commit (`maxFullFlushMergeWaitMillis`) leaves the segments
+    /// a scheduled merge holds alone -- `registerMerge` rejects a merge over
+    /// them -- and merges the rest into the commit.
+    #[test]
+    fn merge_on_commit_skips_segments_a_scheduled_merge_holds() {
+        let tmp = TempDir::new("concurrent-merge-on-commit");
+        let dir = static_dir(&tmp);
+        let w = ConcurrentIndexWriter::with_merge_scheduler(
+            writer(dir, 5),
+            1,
+            Arc::new(crate::merge_scheduler::NoMergeScheduler),
+        )
+        .unwrap();
+        for i in 0..20 {
+            w.add_document(doc(&format!("d{i}"), 0)).unwrap();
+            if i % 5 == 4 {
+                w.commit().unwrap();
+            }
+        }
+        let held: HashSet<String> = lock(&w.core).merging.clone();
+        assert!(!held.is_empty(), "the commits registered a merge");
+        lock(&w.core)
+            .writer
+            .set_max_full_flush_merge_wait_millis(DEFAULT_MAX_FULL_FLUSH_MERGE_WAIT_MILLIS);
+        for i in 20..40 {
+            w.add_document(doc(&format!("d{i}"), 0)).unwrap();
+            if i % 5 == 4 {
+                w.flush().unwrap();
+            }
+        }
+        let before: Vec<String> = lock(&w.core)
+            .writer
+            .live_infos()
+            .segments
+            .iter()
+            .map(|s| s.segment_name.clone())
+            .collect();
+        w.commit().unwrap();
+        let committed: Vec<String> = crate::segment_infos::read_latest(dir)
+            .unwrap()
+            .segments
+            .iter()
+            .map(|s| s.segment_name.clone())
+            .collect();
+        assert!(
+            held.iter().all(|n| committed.contains(n)),
+            "{held:?} {committed:?}"
+        );
+        assert!(
+            committed.len() < before.len(),
+            "the free segments were merged into the commit: {before:?} -> {committed:?}"
+        );
+        assert!(committed.iter().any(|n| !before.contains(n)));
     }
 
     /// `flushNextBuffer` takes the fullest slot; `tryDeleteDocument` and

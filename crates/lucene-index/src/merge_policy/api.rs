@@ -157,6 +157,51 @@ impl MergeContext for BasicMergeContext {
     }
 }
 
+/// What a merge reads after `OneMerge.wrapForMerge` and `OneMerge.reorder`
+/// ran over its sources ([`MergeHooks::prepare`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PreparedMerge {
+    /// Per source, in merge order, the live documents of the reader
+    /// `wrapForMerge` returned: the documents the merge carries over. `None`
+    /// for every document live.
+    pub live_docs: Vec<Option<lucene_util::fixed_bit_set::FixedBitSet>>,
+    /// `reorder`'s `Sorter.DocMap`, as `newToOld` over the merged view's
+    /// documents -- every source's `maxDoc` documents, concatenated in merge
+    /// order, deleted ones included. `None` keeps the sources' order.
+    pub new_to_old: Option<Vec<i32>>,
+}
+
+/// `OneMerge.wrapForMerge` and `OneMerge.reorder`: the two hooks a
+/// `OneMerge` subclass overrides. They read the sources as `CodecReader`s,
+/// which live above this crate, so a merge hands its sources over as the
+/// segment infos they are opened from, and gets back what the merge must
+/// honour: the wrapped readers' live documents and the new document order.
+/// `lucene_search::reader::merge_readers::SegmentMergeHooks` implements it
+/// over any `MergeReaderHooks`.
+///
+/// A wrapped reader can change only which documents are live, as far as
+/// this writer's merge sees: the merge reads the sources' own files, so a
+/// wrapper that rewrites field values (rather than hiding documents) has no
+/// effect here.
+pub trait MergeHooks: Send + Sync + fmt::Debug {
+    /// Runs `wrapForMerge` on every segment of `sources` (read from `dir`),
+    /// then -- when `may_reorder` (no index sort, and blocks identifiable)
+    /// -- `reorder` over their merged view.
+    ///
+    /// # Errors
+    /// The hooks' own, as a message.
+    fn prepare(
+        &self,
+        dir: &dyn lucene_store::Directory,
+        sources: &crate::segment_infos::SegmentInfos,
+        may_reorder: bool,
+    ) -> std::result::Result<PreparedMerge, String>;
+}
+
+/// A merge as a writer runs it: the segment names and the `OneMerge`'s
+/// hooks.
+pub type RunnableMerge = (Vec<String>, Option<std::sync::Arc<dyn MergeHooks>>);
+
 /// `MergePolicy.OneMerge`: the segments one merge combines.
 #[derive(Debug, Clone, Default)]
 pub struct OneMerge {
@@ -167,6 +212,9 @@ pub struct OneMerge {
     /// For `OneMerge(CodecReader...)` (`addIndexes`): how many readers the
     /// merge combines. `0` for a segment merge.
     pub reader_count: usize,
+    /// The subclass's `wrapForMerge`/`reorder` ([`MergeHooks`]); `None` is
+    /// `OneMerge`'s own (the readers as they are, no reordering).
+    pub hooks: Option<std::sync::Arc<dyn MergeHooks>>,
 }
 
 impl OneMerge {
@@ -179,7 +227,15 @@ impl OneMerge {
             segments,
             total_max_doc,
             reader_count: 0,
+            hooks: None,
         }
+    }
+
+    /// This merge with `hooks` as its `wrapForMerge`/`reorder` -- a
+    /// `OneMerge` subclass.
+    pub fn with_hooks(mut self, hooks: std::sync::Arc<dyn MergeHooks>) -> Self {
+        self.hooks = Some(hooks);
+        self
     }
 
     /// `new OneMerge(CodecReader...)`: a merge of `addIndexes` readers,
@@ -189,6 +245,7 @@ impl OneMerge {
             segments: Vec::new(),
             total_max_doc,
             reader_count,
+            hooks: None,
         }
     }
 
@@ -217,6 +274,15 @@ impl MergeSpecification {
     /// Every merge as its segment names -- what the differential tests compare.
     pub fn groups(&self) -> Vec<Vec<String>> {
         self.merges.iter().map(OneMerge::segment_names).collect()
+    }
+
+    /// Every merge as its segment names with its hooks -- what a writer
+    /// runs.
+    pub fn runnable(&self) -> Vec<RunnableMerge> {
+        self.merges
+            .iter()
+            .map(|m| (m.segment_names(), m.hooks.clone()))
+            .collect()
     }
 }
 
