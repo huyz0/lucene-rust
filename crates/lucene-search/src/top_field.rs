@@ -1699,7 +1699,7 @@ impl Union<'_> {
 /// in on first touch (about 27 faults per query on q80). Lucene allocates the
 /// same set per query but its heap is already warm; reusing a cleared set is
 /// what gets Rust the same effect. Bounded per thread by
-/// [`SPARE_BIT_SET_LIMIT_BYTES`], and keyed by length because a set is only
+/// [`spare_bit_sets::SPARE_BIT_SET_LIMIT_BYTES`], and keyed by length because a set is only
 /// reusable for a segment of exactly its `max_doc`.
 mod spare_bit_sets {
     use std::cell::RefCell;
