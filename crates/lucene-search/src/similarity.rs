@@ -423,6 +423,25 @@ pub fn max_score_for_impacts_table(
     max_x.map_or(0.0, |x| (weight - weight / (1.0 + x)).max(0.0))
 }
 
+/// [`max_score_for_impacts_table`] over a level's still-encoded impacts,
+/// folded as [`lucene_codecs::postings::for_each_impact`] decodes them: the
+/// same maximum of `freq * normInverse`, then the same one BM25 evaluation,
+/// so the same float. `None` for an empty run or one that does not decode --
+/// the "no bound" a decoded list that is empty gives.
+pub fn max_score_for_encoded_impacts_table(
+    bytes: &[u8],
+    weight: f32,
+    norm_inverse_table: &[f32; 256],
+) -> Option<f32> {
+    let mut max_x = None::<f32>;
+    lucene_codecs::postings::for_each_impact(bytes, |freq, norm| {
+        let x = freq as f32 * norm_inverse_table[norm as u8 as usize];
+        max_x = Some(max_x.map_or(x, |m| m.max(x)));
+    })
+    .ok()?;
+    max_x.map(|x| (weight - weight / (1.0 + x)).max(0.0))
+}
+
 /// [`max_score_for_impacts`]'s sibling for the `norms == None` scoring path.
 ///
 /// When a search runs without opened norms every document is scored with
@@ -587,6 +606,48 @@ mod tests {
     // read directly off `BM25Similarity.java`) expected values -- see the
     // `test-coverage` skill's rule against "coverage theater": these assert
     // pre-computed numbers, not "whatever the code currently produces".
+
+    #[test]
+    fn the_encoded_impacts_bound_is_the_decoded_one_bit_for_bit() {
+        use lucene_codecs::postings::{decode_impacts, Impact};
+        use lucene_store::DataOutput;
+        let mut table = [0.0f32; 256];
+        for (i, t) in table.iter_mut().enumerate() {
+            *t = 1.0 / (1.0 + i as f32 * 0.37);
+        }
+        let pairs: [&[(i32, i64)]; 3] = [
+            &[(1, 1), (3, 2), (4, 9), (40, 200), (90, 255)],
+            &[(2, 7)],
+            &[(1, 1), (300, 2), (301, 130)],
+        ];
+        for list in pairs {
+            // Encode as `Lucene104PostingsWriter.writeImpacts` does.
+            let mut bytes = Vec::new();
+            let mut prev = Impact { freq: 0, norm: 0 };
+            for &(freq, norm) in list {
+                let freq_delta = (freq - prev.freq - 1) as u32;
+                let norm_delta = norm - prev.norm - 1;
+                if norm_delta == 0 {
+                    bytes.write_vint((freq_delta << 1) as i32);
+                } else {
+                    bytes.write_vint(((freq_delta << 1) | 1) as i32);
+                    bytes.write_zlong(norm_delta);
+                }
+                prev = Impact { freq, norm };
+            }
+            let decoded = decode_impacts(&bytes).unwrap();
+            assert_eq!(decoded.len(), list.len());
+            let want = max_score_for_impacts_table(&decoded, 2.5, &table);
+            let got = max_score_for_encoded_impacts_table(&bytes, 2.5, &table).unwrap();
+            assert_eq!(got.to_bits(), want.to_bits());
+        }
+        // Nothing to bound, or nothing that decodes: no bound.
+        assert_eq!(max_score_for_encoded_impacts_table(&[], 2.5, &table), None);
+        assert_eq!(
+            max_score_for_encoded_impacts_table(&[0x80], 2.5, &table),
+            None
+        );
+    }
 
     #[test]
     fn idf_matches_hand_computed_value() {

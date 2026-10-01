@@ -40,7 +40,7 @@
 //! `TopScoreDocCollector` publishes `Math.nextUp(bottom)`, so
 //! [`min_competitive_score`] is `next_up` of what the collector reports.
 
-use lucene_codecs::postings::{Impact, LazyDocsCursor, NO_MORE_DOCS};
+use lucene_codecs::postings::{Impact, LazyDocsCursor, Level0Impacts, NO_MORE_DOCS};
 use lucene_util::fixed_bit_set::FixedBitSet;
 
 use crate::collector::ScoringCollector;
@@ -562,12 +562,19 @@ impl<'a> TermLeg<'a> {
             .norms
             .as_ref()
             .map(FieldNormsCursor::norm_inverse_table);
-        let impacts = self.cursor.level0_impacts();
-        self.l0_max = if impacts.is_empty() {
-            self.global_max
-        } else {
-            bound(table, self.weight, impacts).min(self.global_max)
+        // Still encoded (the usual case: the bound is the first thing to ask
+        // for a new block's impacts): folded straight off the bytes.
+        let folded = match (table, self.cursor.level0_impacts_view()) {
+            (Some(table), Level0Impacts::Encoded(bytes)) => Some(
+                similarity::max_score_for_encoded_impacts_table(bytes, self.weight, table),
+            ),
+            _ => None,
         };
+        let max = folded.unwrap_or_else(|| {
+            let impacts = self.cursor.level0_impacts();
+            (!impacts.is_empty()).then(|| bound(table, self.weight, impacts))
+        });
+        self.l0_max = max.map_or(self.global_max, |m| m.min(self.global_max));
         self.l0_key = key;
     }
 
