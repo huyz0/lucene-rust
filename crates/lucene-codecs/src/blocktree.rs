@@ -2482,6 +2482,15 @@ impl FieldTerms {
         Ok(())
     }
 
+    /// [`DocInput::tail_only_first_doc`] for a term found on this field.
+    pub fn tail_only_first_doc(
+        &self,
+        term: &SeekedTerm,
+        doc_in: &DocInput<'_>,
+    ) -> Result<Option<i32>> {
+        Ok(doc_in.tail_only_first_doc(term.meta, term.stats.doc_freq, self.index_options)?)
+    }
+
     /// `TermsEnum.postings(reuse, flags)`: [`Self::lazy_postings_for`] into
     /// the cursor in `reuse`, reset in place, or a new one there when it is
     /// empty. A cursor is kilobytes of block buffers; a walk over thousands of
