@@ -306,6 +306,53 @@ fn every_case_matches_lucene() {
     );
 }
 
+/// A plain string reader that hides its text ([`CharReader::whole_text`]),
+/// so the tokenizer reads it as UTF-16 code units through `zzRefill`.
+struct Utf16Only(StrReader);
+
+impl CharReader for Utf16Only {
+    fn read(&mut self, buf: &mut [u16]) -> Result<usize, AnalysisError> {
+        self.0.read(buf)
+    }
+}
+
+/// The UTF-8 scan of a plain string and the UTF-16 scan the port of
+/// `zzRefill` does agree on every fixture text, at every buffer size the
+/// buffer's edge cases live at (a supplementary character split by it, a
+/// run cut by it) -- not only at the sizes the Java fixture records.
+#[test]
+fn utf8_scan_matches_the_utf16_scan() {
+    let cases = read("cases.txt");
+    let mut texts: Vec<String> = cases
+        .lines()
+        .filter_map(|l| l.strip_prefix("T|"))
+        .map(|l| String::from_utf8(unhex(l.split_once('|').unwrap().1)).unwrap())
+        .collect();
+    texts.push("😀😀a😀".repeat(5));
+    texts.push(String::new());
+    let mut utf8 = StandardTokenizer::new();
+    let mut utf16 = StandardTokenizer::new();
+    let mut checked = 0;
+    for max in [1, 2, 3, 4, 5, 7, 255] {
+        utf8.set_max_token_length(max).unwrap();
+        utf16.set_max_token_length(max).unwrap();
+        for text in &texts {
+            utf8.set_reader(Box::new(StrReader::new(text.as_str())))
+                .unwrap();
+            utf16
+                .set_reader(Box::new(Utf16Only(StrReader::new(text.as_str()))))
+                .unwrap();
+            let a = tokens_of(&mut utf8, None);
+            let b = tokens_of(&mut utf16, None);
+            utf8.close().unwrap();
+            utf16.close().unwrap();
+            assert_eq!(a, b, "max {max}, text {text:?}");
+            checked += 1;
+        }
+    }
+    assert!(checked > 5000, "only {checked} texts");
+}
+
 // ----------------------------------------------------------------- graphs
 
 /// `GenStandardTokenizer.CannedStream`.

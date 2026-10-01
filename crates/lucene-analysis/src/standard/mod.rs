@@ -127,7 +127,10 @@ impl TokenStream for StandardTokenizer {
         self.skipped_positions = 0;
 
         loop {
-            let token_type = self.scanner.get_next_token(self.input.reader()?)?;
+            let token_type = match self.input.whole_text() {
+                Some(text) if self.scanner.is_utf8() => self.scanner.get_next_token_utf8(text)?,
+                _ => self.scanner.get_next_token(self.input.reader()?)?,
+            };
 
             if token_type == YYEOF {
                 return Ok(false);
@@ -136,7 +139,12 @@ impl TokenStream for StandardTokenizer {
             if self.scanner.yylength() <= self.max_token_length as usize {
                 self.atts
                     .set_position_increment(self.skipped_positions.saturating_add(1))?;
-                self.atts.set_term_utf16(self.scanner.text());
+                match self.input.whole_text() {
+                    Some(text) if self.scanner.is_utf8() => {
+                        self.atts.set_term(self.scanner.text_utf8(text))
+                    }
+                    _ => self.atts.set_term_utf16(self.scanner.text()),
+                }
                 let start = self.scanner.yychar();
                 let end = start.saturating_add(self.scanner.yylength() as i32);
                 self.atts.set_offset(
@@ -172,6 +180,12 @@ impl TokenStream for StandardTokenizer {
     fn reset(&mut self) -> Result<(), AnalysisError> {
         self.input.reset();
         self.scanner.yyreset();
+        // A plain string input is scanned as UTF-8, where it lies, rather
+        // than transcoded to UTF-16 a buffer at a time: the same tokens,
+        // offsets and types (`StandardTokenizerImpl::get_next_token_utf8`).
+        if self.input.whole_text().is_some() {
+            self.scanner.set_utf8();
+        }
         self.skipped_positions = 0;
         Ok(())
     }
@@ -358,5 +372,17 @@ mod tests {
         tok.reset().unwrap();
         tok.reset().unwrap();
         assert!(tok.increment_token().is_err());
+    }
+
+    #[test]
+    fn analyzer_settings_read_back() {
+        let a = StandardAnalyzer::default();
+        assert_eq!(a.max_token_length(), DEFAULT_MAX_TOKEN_LENGTH);
+        assert!(a.stopword_set().is_empty());
+        let a = StandardAnalyzer::from_stopword_reader("the\nan\n".as_bytes())
+            .unwrap()
+            .with_max_token_length(7);
+        assert_eq!(a.max_token_length(), 7);
+        assert!(a.stopword_set().contains("an"));
     }
 }
