@@ -955,6 +955,37 @@ impl RawVectorValues<'_> {
             }
         }
     }
+
+    /// [`ord_to_doc`](Self::ord_to_doc) for every ordinal, in order, into
+    /// `out` (cleared first): a sparse field's addresses decoded a block run
+    /// at a time rather than one lookup per ordinal.
+    fn ord_to_docs(&self, out: &mut Vec<i32>) -> Result<()> {
+        out.clear();
+        let size = self.size.max(0);
+        match &self.ord_to_doc {
+            OrdToDoc::Empty | OrdToDoc::Dense => out.extend(0..size),
+            OrdToDoc::Explicit(docs) => out.extend(docs.iter().take(size as usize)),
+            OrdToDoc::Sparse {
+                addresses_offset,
+                addresses_length,
+                meta,
+                ..
+            } => {
+                let Some(region) = file_region(self.file, *addresses_offset, *addresses_length)
+                else {
+                    return corrupt(format!(
+                        "ordToDoc addresses region [{addresses_offset}, +{addresses_length}) is \
+                         not inside a {} byte .vec file",
+                        self.file.len()
+                    ));
+                };
+                let mut wide = vec![0i64; size as usize];
+                direct_monotonic::fill(region, meta, 0, &mut wide)?;
+                out.extend(wide.iter().map(|&d| d as i32));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A cursor resolving **doc id -> ordinal**, the inverse of
@@ -1018,6 +1049,12 @@ macro_rules! vector_values_common {
             /// `KnnVectorValues.ordToDoc(ord)`.
             pub fn ord_to_doc(&self, ord: i32) -> Result<i32> {
                 self.values.ord_to_doc(ord)
+            }
+
+            /// [`ord_to_doc`](Self::ord_to_doc) for every ordinal, in order,
+            /// into `out` (cleared first), decoded in bulk.
+            pub fn ord_to_docs(&self, out: &mut Vec<i32>) -> Result<()> {
+                self.values.ord_to_docs(out)
             }
 
             /// Opens the doc -> ordinal direction. Cheap: no allocation for a
@@ -2335,6 +2372,34 @@ mod tests {
             values.ord_to_doc(5),
             Err(Error::OrdOutOfRange(5, 2))
         ));
+    }
+
+    #[test]
+    fn bulk_ord_to_docs_matches_one_lookup_per_ordinal() {
+        for (docs, max_doc) in [(vec![0, 1, 2], 3), (vec![1, 4, 5, 9], 12)] {
+            let (data, meta) = write(&[float_field(0, 2, docs.clone())], max_doc);
+            let reader = FlatVectorsReader::open(&meta, &data, &ID, "").unwrap();
+            let values = reader.float_vector_values(0).unwrap();
+            let mut out = vec![-7];
+            values.ord_to_docs(&mut out).unwrap();
+            let one_by_one: Vec<i32> = (0..values.size())
+                .map(|ord| values.ord_to_doc(ord).unwrap())
+                .collect();
+            assert_eq!(out, one_by_one);
+            assert_eq!(out, docs);
+        }
+        let explicit = RawVectorValues {
+            slice: &[],
+            file: &[],
+            dimension: 1,
+            vector_bytes: 4,
+            size: 3,
+            similarity: VectorSimilarityFunction::Euclidean,
+            ord_to_doc: OrdToDoc::Explicit(std::sync::Arc::from(vec![2, 5, 9])),
+        };
+        let mut out = Vec::new();
+        explicit.ord_to_docs(&mut out).unwrap();
+        assert_eq!(out, [2, 5, 9]);
     }
 
     // ---------------- write-side validation ----------------

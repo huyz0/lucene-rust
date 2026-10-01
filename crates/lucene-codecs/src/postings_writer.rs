@@ -732,8 +732,11 @@ pub fn write_fields_with_options(
     if inputs.is_empty() {
         return Err(Error::EmptyTerms);
     }
+    // Each field's per-term statistics come out of its validation pass, the
+    // one walk over every term's `docs` (see [`FieldStats`]).
+    let mut field_stats = Vec::with_capacity(inputs.len());
     for input in inputs {
-        validate_field(input)?;
+        field_stats.push(validate_field(input)?);
     }
 
     // ---- .doc ----
@@ -825,7 +828,11 @@ pub fn write_fields_with_options(
     tmd.write_vint(POSTINGS_BLOCK_SIZE);
     tmd.write_vint(inputs.len() as i32); // numFields
 
-    for input in inputs {
+    for (input, stats) in inputs.iter().zip(field_stats) {
+        let FieldStats {
+            block_terms,
+            singletons,
+        } = stats;
         let index_has_positions = input.index_options.subsumes_positions();
         let index_has_freq = input.index_options != IndexOptions::Docs;
         // `Lucene104PostingsWriter.setField`'s `fieldHasNorms`: this field's
@@ -861,7 +868,10 @@ pub fn write_fields_with_options(
         // [`write_term_metadata`]), but computed for every term because
         // [`write_position_tail`] is the only place that knows it.
         let mut last_pos_block_offset = vec![0i64; input.terms.len()];
-        let mut layouts: Vec<Option<PositionLayout>> = Vec::new();
+        // One layout per term when the field indexes positions, none at all
+        // otherwise: a `Vec<Option<_>>` of `None`s would cost a 80-byte slot
+        // per term (80 MB for a million-term field) for nothing.
+        let mut layouts: Vec<PositionLayout> = Vec::new();
         if index_has_positions {
             for (i, t) in input.terms.iter().enumerate() {
                 pos_start_fp[i] = pos.len() as u64;
@@ -879,10 +889,8 @@ pub fn write_fields_with_options(
                     index_has_payloads,
                 );
                 last_pos_block_offset[i] = layout.last_pos_block_offset as i64;
-                layouts.push(Some(layout));
+                layouts.push(layout);
             }
-        } else {
-            layouts.resize_with(input.terms.len(), || None);
         }
 
         // `doc_start_fp[i]` is term `i`'s byte offset into the *shared* `.doc`
@@ -897,7 +905,7 @@ pub fn write_fields_with_options(
             // `docStartFP` equals the next term's, and `encodeTerm` keys the
             // zigzag singleton branch off that equality.
             doc_start_fp[i] = doc.len() as u64;
-            if t.docs.len() == 1 {
+            if singletons[i] != -1 {
                 continue;
             }
 
@@ -912,7 +920,7 @@ pub fn write_fields_with_options(
             // The running `.pos`/`.pay` pointers this term's skip records
             // carry (`Lucene104PostingsWriter`'s `level0LastPosFP` and
             // friends, reset per term at `startTerm`).
-            let mut skip = PosSkipWriter::new(layouts[i].as_ref(), index_has_offsets_or_payloads);
+            let mut skip = PosSkipWriter::new(layouts.get(i), index_has_offsets_or_payloads);
             // `docFreq >= LEVEL1_NUM_DOCS` (8192): emit a level-1 skip entry
             // before every complete span of `LEVEL1_FACTOR` (32) full
             // level-0 blocks, mirroring `DocInput::read_postings`'s own
@@ -964,15 +972,6 @@ pub fn write_fields_with_options(
         // `Lucene103BlockTreeTermsWriter`'s block splitting and `TrieBuilder`,
         // in `crate::blocktree_writer`; each block's term metadata is encoded
         // here, against this field's per-term file pointers.
-        let block_terms: Vec<blocktree_writer::BlockTerm<'_>> = input
-            .terms
-            .iter()
-            .map(|t| blocktree_writer::BlockTerm {
-                bytes: &t.term,
-                doc_freq: t.docs.len() as i32,
-                total_term_freq: t.docs.iter().map(|&(_, f)| i64::from(f)).sum(),
-            })
-            .collect();
         let trie = blocktree_writer::write_field_terms(
             &mut tim,
             &mut tip,
@@ -982,7 +981,8 @@ pub fn write_fields_with_options(
             |meta, indices| {
                 write_term_metadata(
                     meta,
-                    input.terms,
+                    &block_terms,
+                    &singletons,
                     indices,
                     &doc_start_fp,
                     &pos_start_fp,
@@ -998,16 +998,11 @@ pub fn write_fields_with_options(
         tmd.write_vint(input.field_number);
         let num_terms = input.terms.len() as i64;
         tmd.write_vlong(num_terms);
-        let sum_doc_freq: i64 = input.terms.iter().map(|t| t.docs.len() as i64).sum();
+        let sum_doc_freq: i64 = block_terms.iter().map(|t| i64::from(t.doc_freq)).sum();
         let sum_total_term_freq: i64 = if input.index_options == IndexOptions::Docs {
             sum_doc_freq
         } else {
-            input
-                .terms
-                .iter()
-                .flat_map(|t| t.docs.iter())
-                .map(|&(_, f)| f as i64)
-                .sum()
+            block_terms.iter().map(|t| t.total_term_freq).sum()
         };
         if input.index_options != IndexOptions::Docs {
             tmd.write_vlong(sum_total_term_freq);
@@ -1086,7 +1081,7 @@ pub fn write_fields_with_options(
 /// `totalTermFreq` bounds, positions shape) — the exact same checks
 /// `write_single_field` ran inline before this became a per-field helper
 /// shared by [`write_fields`]'s loop.
-fn validate_field(input: &FieldPostingsInput<'_>) -> Result<()> {
+fn validate_field<'a>(input: &FieldPostingsInput<'a>) -> Result<FieldStats<'a>> {
     if !matches!(
         input.index_options,
         IndexOptions::Docs
@@ -1110,10 +1105,23 @@ fn validate_field(input: &FieldPostingsInput<'_>) -> Result<()> {
     }
     let index_has_positions = input.index_options.subsumes_positions();
     let index_has_offsets = input.index_options.subsumes_offsets();
+    let mut stats = FieldStats {
+        block_terms: Vec::with_capacity(input.terms.len()),
+        singletons: Vec::with_capacity(input.terms.len()),
+    };
     for (i, t) in input.terms.iter().enumerate() {
         if t.docs.is_empty() {
             return Err(Error::EmptyPostings(i));
         }
+        stats.block_terms.push(blocktree_writer::BlockTerm {
+            bytes: &t.term,
+            doc_freq: t.docs.len() as i32,
+            total_term_freq: t.docs.iter().map(|&(_, f)| i64::from(f)).sum(),
+        });
+        stats.singletons.push(match t.docs.as_slice() {
+            [(only, _)] => *only,
+            _ => -1,
+        });
         // Checked on the first doc only: the ascending check below carries it
         // to the rest. This is what bounds every `docID - lastDocID` delta
         // below to `1..=i32::MAX`, and it is the same rejection
@@ -1237,7 +1245,19 @@ fn validate_field(input: &FieldPostingsInput<'_>) -> Result<()> {
             }
         }
     }
-    Ok(())
+    Ok(stats)
+}
+
+/// One field's per-term statistics, gathered by [`validate_field`] in the
+/// pass that already reads every term's `docs`: the block tree, `encodeTerm`
+/// and the `.tmd` sums read these compact arrays instead of walking each
+/// term's `docs` again -- for a million-term field every such walk is a
+/// million cache misses, where Java streams each term once.
+struct FieldStats<'a> {
+    /// `docFreq`/`totalTermFreq` per term, with its bytes.
+    block_terms: Vec<blocktree_writer::BlockTerm<'a>>,
+    /// The term's only doc id, or `-1` when it has more than one document.
+    singletons: Vec<i32>,
 }
 
 /// `Lucene104PostingsWriter.writeVInt15`'s write-side companion to
@@ -2190,7 +2210,8 @@ fn write_full_payload_length_block(out: &mut Vec<u8>, lengths: &[u32], bytes: &[
 #[allow(clippy::too_many_arguments)]
 fn write_term_metadata(
     out: &mut Vec<u8>,
-    terms: &[TermPostings],
+    terms: &[blocktree_writer::BlockTerm<'_>],
+    singletons: &[i32],
     indices: &[usize],
     doc_start_fp: &[u64],
     pos_start_fp: &[u64],
@@ -2206,8 +2227,7 @@ fn write_term_metadata(
     let mut base_pos_start_fp = 0u64;
     let mut base_pay_start_fp = 0u64;
     for &i in indices {
-        let t = &terms[i];
-        let singleton = if t.docs.len() == 1 { t.docs[0].0 } else { -1 };
+        let singleton = singletons[i];
         let this_fp = doc_start_fp[i];
         if base_singleton != -1 && singleton != -1 && this_fp == base_doc_start_fp {
             // Runs of rare terms (IDs) share a `.doc` pointer; the doc id is
@@ -2266,8 +2286,7 @@ fn write_term_metadata(
             // tail. It was unreachable from this port's own round-trip tests
             // when b5 fixed it; c20's skip-driven walk makes it reachable
             // (`postings_skip_pointers.rs`).
-            let total_term_freq: i64 = t.docs.iter().map(|&(_, f)| f as i64).sum();
-            if total_term_freq > BLOCK_SIZE as i64 {
+            if terms[i].total_term_freq > BLOCK_SIZE as i64 {
                 out.write_vlong(last_pos_block_offset[i]);
             }
         }

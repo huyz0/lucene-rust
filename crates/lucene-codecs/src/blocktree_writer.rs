@@ -505,7 +505,7 @@ struct TermsWriter<'t, 'o, F> {
     encode_meta: F,
     pending: Vec<PendingEntry>,
     prefix_starts: Vec<usize>,
-    last_term: Vec<u8>,
+    last_term: &'t [u8],
     scratch: BlockScratch,
     /// `compressionHashTable`: created on first use and kept for the rest of
     /// the field, as Java keeps it per `TermsWriter`. The table is not
@@ -546,7 +546,7 @@ where
         encode_meta,
         pending: Vec::new(),
         prefix_starts: Vec::new(),
-        last_term: Vec::new(),
+        last_term: &[],
         scratch: BlockScratch::default(),
         compression_table: None,
         min_items_in_block,
@@ -571,7 +571,7 @@ where
         .save(tip)
 }
 
-impl<F> TermsWriter<'_, '_, F>
+impl<'t, F> TermsWriter<'t, '_, F>
 where
     F: FnMut(&mut Vec<u8>, &[usize]),
 {
@@ -583,8 +583,8 @@ where
     // `write_blocks` for a longer prefix replaces entries past its own start
     // with one), so `pending.len() - prefix_starts[i]` is non-negative.
     #[allow(clippy::arithmetic_side_effects)]
-    fn push_term(&mut self, text: &[u8]) {
-        let prefix_length = common_prefix_len(&self.last_term, text);
+    fn push_term(&mut self, text: &'t [u8]) {
+        let prefix_length = common_prefix_len(self.last_term, text);
         for i in (prefix_length..self.last_term.len()).rev() {
             let top = self.pending.len() - self.prefix_starts[i];
             if top >= self.min_items_in_block {
@@ -602,8 +602,7 @@ where
         for start in &mut self.prefix_starts[prefix_length..text.len()] {
             *start = self.pending.len();
         }
-        self.last_term.clear();
-        self.last_term.extend_from_slice(text);
+        self.last_term = text;
     }
 
     /// The byte after `prefix_length` of an entry, or `None` for the term

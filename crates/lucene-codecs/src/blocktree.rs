@@ -2431,6 +2431,57 @@ impl FieldTerms {
             .map(|(stats, meta)| SeekedTerm { stats, meta }))
     }
 
+    /// `postings.intoBitSet(maxDoc, bitSet, 0)` for a term already found by
+    /// [`Self::seek_term_state`]: every document of `term` below `end` set
+    /// in `words` (bit `i` is document `i`), as `DocIdSetBuilder` gathers a
+    /// multi-term query's terms. A pulsed singleton sets its one bit from the
+    /// term metadata; a real posting list is read through `reuse`, the
+    /// cursor of the term before (`termsEnum.postings(reuse, NONE)`), built
+    /// on the first one -- it is kilobytes of block buffers, and a short
+    /// prefix has thousands of terms.
+    pub fn or_docs_into<'d>(
+        &self,
+        term: &SeekedTerm,
+        doc_in: &DocInput<'d>,
+        end: i32,
+        words: &mut [u64],
+        reuse: &mut Option<postings::LazyDocsCursor<'d>>,
+    ) -> Result<()> {
+        if term.stats.doc_freq == 1 {
+            let doc = term.meta.singleton_doc_id;
+            if (0..end).contains(&doc) {
+                let i = doc as u32 as usize;
+                if let Some(w) = words.get_mut(i >> 6) {
+                    *w |= 1u64 << (i & 63);
+                }
+            }
+            return Ok(());
+        }
+        let cursor = match reuse {
+            Some(cursor) => {
+                doc_in.reset_lazy_cursor(
+                    cursor,
+                    term.meta,
+                    term.stats.doc_freq,
+                    self.index_options,
+                    self.has_payloads,
+                    postings::PostingsFlags::DocsOnly,
+                )?;
+                cursor
+            }
+            None => reuse.insert(doc_in.lazy_cursor_with_flags(
+                term.meta,
+                term.stats.doc_freq,
+                self.index_options,
+                self.has_payloads,
+                postings::PostingsFlags::DocsOnly,
+            )?),
+        };
+        cursor.next_doc()?;
+        cursor.into_window(0, end, words)?;
+        Ok(())
+    }
+
     /// `TermsEnum.postings(null, flags)` on a term already found by
     /// [`Self::seek_term_state`] on this same field: no second seek.
     pub fn lazy_postings_for<'d>(
@@ -2532,20 +2583,33 @@ impl FieldTerms {
     /// [`Self::intersect`], with `pattern`'s required `prefixLength`-byte
     /// exact prefix as the seek target.
     pub fn fuzzy_intersect<'a>(&'a self, pattern: &'a FuzzyMatch<'a>) -> FuzzyIntersect<'a> {
+        let matcher = FuzzyMatcher {
+            pattern,
+            max_edits: pattern.max_edits(),
+            last_edits: 0,
+        };
+        // `FuzzyTermsEnum`'s `terms.intersect(compiled, lastTerm)`: the
+        // block-tree walk stepping the Levenshtein automaton, which skips
+        // every block whose prefix it proves dead. The exact distance still
+        // confirms each term (the budget can fall mid-walk).
+        if let Some(compiled) = pattern.cached_compiled_dfa() {
+            return FuzzyIntersect {
+                walk: FuzzyWalk::Dfa(Box::new(DfaIntersect::new(self, compiled)), matcher),
+                field: self,
+                last_term: Vec::new(),
+                resume_after: None,
+            };
+        }
         let prefix = pattern.literal_prefix().to_vec();
         FuzzyIntersect {
-            inner: Intersect::new(
+            walk: FuzzyWalk::Scan(Intersect::new(
                 self,
-                DfaFiltered::new(
-                    FuzzyMatcher {
-                        pattern,
-                        max_edits: pattern.max_edits(),
-                        last_edits: 0,
-                    },
-                    pattern.cached_dfa(),
-                ),
+                DfaFiltered::new(matcher, None),
                 prefix,
-            ),
+            )),
+            field: self,
+            last_term: Vec::new(),
+            resume_after: None,
         }
     }
 
@@ -3150,31 +3214,73 @@ impl TermMatcher for FuzzyMatcher<'_, '_> {
 /// ```
 ///
 /// -- then swaps in `automata[maxEdits]`, seeked back to where it was
-/// (`getAutomatonEnum(maxEdits, lastTerm)`). This walk needs no re-seek: it is
-/// a forward scan over one sorted range, so tightening the predicate takes
-/// effect on the next term and the position is already correct. What it buys
-/// is the same thing Java's automaton swap buys -- every remaining term is
-/// tested against a narrower band, and the length filter rejects far more of
-/// them outright.
+/// (`getAutomatonEnum(maxEdits, lastTerm)`). The block-tree walk does the
+/// same: it restarts over the smaller automaton, which prunes far more of
+/// the dictionary, and passes over the terms up to the last one it yielded
+/// (`resume_after`) -- a restart from the root standing in for the seek,
+/// which a smaller automaton keeps cheap. The forward scan (no automaton)
+/// needs no swap: tightening the exact test takes effect on the next term
+/// and the position is already correct.
 pub struct FuzzyIntersect<'a> {
-    inner: Intersect<'a, DfaFiltered<FuzzyMatcher<'a, 'a>>>,
+    walk: FuzzyWalk<'a>,
+    field: &'a FieldTerms,
+    /// The term this walk last yielded: `lastTerm`.
+    last_term: Vec<u8>,
+    /// After an automaton swap, the terms at or before this one were already
+    /// walked under the larger automaton and are passed over.
+    resume_after: Option<Vec<u8>>,
 }
 
-impl FuzzyIntersect<'_> {
+/// How a [`FuzzyIntersect`] finds its candidates.
+enum FuzzyWalk<'a> {
+    /// The block-tree intersection with the Levenshtein DFA, each term it
+    /// accepts confirmed by the exact matcher.
+    Dfa(
+        Box<DfaIntersect<'a, std::sync::Arc<crate::automaton::CompiledDfa>>>,
+        FuzzyMatcher<'a, 'a>,
+    ),
+    /// A pattern too large for a DFA: the forward scan, every term tested.
+    Scan(Intersect<'a, DfaFiltered<FuzzyMatcher<'a, 'a>>>),
+}
+
+impl<'a> FuzzyIntersect<'a> {
+    fn matcher(&self) -> &FuzzyMatcher<'a, 'a> {
+        match &self.walk {
+            FuzzyWalk::Dfa(_, m) => m,
+            FuzzyWalk::Scan(scan) => &scan.matcher.inner,
+        }
+    }
+
+    fn matcher_mut(&mut self) -> &mut FuzzyMatcher<'a, 'a> {
+        match &mut self.walk {
+            FuzzyWalk::Dfa(_, m) => m,
+            FuzzyWalk::Scan(scan) => &mut scan.matcher.inner,
+        }
+    }
+
     /// `bottomChanged`'s `actualEnum = getAutomatonEnum(maxEdits, lastTerm)`.
     ///
     /// Only ever lowers: a budget at or above the one in force is ignored,
     /// because widening mid-scan would make the walk yield terms it had
     /// already rejected further back, which no caller could interpret.
     pub fn set_max_edits(&mut self, max_edits: u8) {
-        if max_edits < self.inner.matcher.inner.max_edits {
-            self.inner.matcher.inner.max_edits = max_edits;
+        let m = self.matcher_mut();
+        if max_edits >= m.max_edits {
+            return;
+        }
+        m.max_edits = max_edits;
+        let pattern = m.pattern;
+        if let FuzzyWalk::Dfa(walk, _) = &mut self.walk {
+            if let Some(compiled) = pattern.cached_compiled_dfa_within(max_edits) {
+                **walk = DfaIntersect::new(self.field, compiled);
+                self.resume_after = Some(self.last_term.clone());
+            }
         }
     }
 
     /// The budget currently in force.
     pub fn max_edits(&self) -> u8 {
-        self.inner.matcher.inner.max_edits
+        self.matcher().max_edits
     }
 
     /// The exact edit distance of the term this walk last yielded -- what
@@ -3186,7 +3292,7 @@ impl FuzzyIntersect<'_> {
     /// a legitimate distance), which is why it is not an `Option`: every
     /// caller reads it immediately after a `Some` from [`Iterator::next`].
     pub fn last_edits(&self) -> usize {
-        self.inner.matcher.inner.last_edits
+        self.matcher().last_edits
     }
 }
 
@@ -3194,7 +3300,27 @@ impl Iterator for FuzzyIntersect<'_> {
     type Item = Result<(Vec<u8>, TermStats)>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next().map(|r| r.map(|(t, s)| (t, s.stats)))
+        match &mut self.walk {
+            FuzzyWalk::Dfa(walk, matcher) => loop {
+                match walk.next()? {
+                    Ok((term, seeked)) => {
+                        if let Some(after) = &self.resume_after {
+                            if term.as_slice() <= after.as_slice() {
+                                continue;
+                            }
+                            self.resume_after = None;
+                        }
+                        if matcher.matches(&term) {
+                            self.last_term.clear();
+                            self.last_term.extend_from_slice(&term);
+                            return Some(Ok((term, seeked.stats)));
+                        }
+                    }
+                    Err(e) => return Some(Err(e)),
+                }
+            },
+            FuzzyWalk::Scan(scan) => scan.next().map(|r| r.map(|(t, s)| (t, s.stats))),
+        }
     }
 }
 
