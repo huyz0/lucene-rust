@@ -108,6 +108,25 @@ impl DocScoreAcc {
         self.scores.extend(src.scores.iter().map(|&s| s as f64));
     }
 
+    /// [`Self::copy_from`] then [`filter_competitive_hits`]'s compaction at
+    /// `min`, in one pass: every pair is written, and the write position
+    /// moves on only past a kept one, so a batch is read once rather than
+    /// copied and then read again to be filtered.
+    fn copy_from_filtered(&mut self, src: &DocScores, min: f64) {
+        let len = src.docs.len().min(src.scores.len());
+        self.docs.resize(len, 0);
+        self.scores.resize(len, 0.0);
+        let mut n = 0;
+        for (&d, &s) in src.docs[..len].iter().zip(&src.scores[..len]) {
+            let s = s as f64;
+            // `n <= i < len`: in bounds, and written before it is read again.
+            self.docs[n] = d;
+            self.scores[n] = s;
+            n += usize::from(s >= min);
+        }
+        self.truncate(n);
+    }
+
     fn truncate(&mut self, n: usize) {
         self.docs.truncate(n);
         self.scores.truncate(n);
@@ -2006,8 +2025,24 @@ impl MaxScore {
             if self.single.docs.is_empty() {
                 break;
             }
-            self.acc.copy_from(&self.single);
-            self.score_non_essential(legs, collector)?;
+            // The first non-essential clause's filter, folded into the copy.
+            let candidates = self.single.docs.len();
+            let prefiltered = self.first_essential > 0;
+            if prefiltered {
+                let min_required = min_required_score(
+                    self.max_score_sums[self.first_essential - 1],
+                    self.min_competitive,
+                    legs.len(),
+                );
+                if min_required > 0.0 {
+                    self.acc.copy_from_filtered(&self.single, min_required);
+                } else {
+                    self.acc.copy_from(&self.single);
+                }
+            } else {
+                self.acc.copy_from(&self.single);
+            }
+            self.score_non_essential_from(legs, collector, candidates, prefiltered)?;
         }
         legs[top].set_cur(legs[top].doc_id());
         self.docs[top] = legs[top].cur();
@@ -2069,16 +2104,32 @@ impl MaxScore {
         legs: &mut [L],
         collector: &mut C,
     ) -> Result<()> {
-        self.num_candidates += self.acc.docs.len() as i64;
+        let candidates = self.acc.docs.len();
+        self.score_non_essential_from(legs, collector, candidates, false)
+    }
+
+    /// `scoreNonEssentialClauses` over the buffered `candidates`, the first
+    /// filter already applied when `prefiltered` (it is idempotent: the same
+    /// threshold over the same hits keeps the same ones).
+    fn score_non_essential_from<L: MaxScoreLeg, C: ScoringCollector + ?Sized>(
+        &mut self,
+        legs: &mut [L],
+        collector: &mut C,
+        candidates: usize,
+        prefiltered: bool,
+    ) -> Result<()> {
+        self.num_candidates += candidates as i64;
         let n = legs.len();
         for k in (0..self.first_essential).rev() {
             let i = self.order[k];
-            filter_competitive_hits(
-                &mut self.acc,
-                self.max_score_sums[k],
-                self.min_competitive,
-                n,
-            );
+            if !(prefiltered && k + 1 == self.first_essential) {
+                filter_competitive_hits(
+                    &mut self.acc,
+                    self.max_score_sums[k],
+                    self.min_competitive,
+                    n,
+                );
+            }
             if k >= self.first_required {
                 apply_required_clause(&mut self.acc, &mut legs[i])?;
             } else {
@@ -2600,5 +2651,33 @@ mod compact_tests {
         let (mut d, mut s) = (vec![7], vec![0.1]);
         assert_eq!(compact_by_score(&mut d, &mut s, 1.0), 0);
         assert_eq!(compact_by_score(&mut [], &mut [], 0.0), 0);
+    }
+
+    /// The fused copy keeps exactly what copying then compacting keeps, in
+    /// order, whatever the accumulator held before -- longer, shorter or
+    /// empty.
+    #[test]
+    fn copy_from_filtered_is_copy_then_compact() {
+        use crate::bulk_scorer::{DocScoreAcc, DocScores};
+        let src = DocScores {
+            docs: vec![3, 8, 9, 15, 40, 41],
+            scores: vec![1.5, 0.25, 2.0, 1.0, 0.999, 7.0],
+        };
+        for min in [0.0, 1.0, 1.5, 8.0] {
+            for prior in [0usize, 2, 10] {
+                let mut fused = DocScoreAcc {
+                    docs: vec![-1; prior],
+                    scores: vec![-1.0; prior],
+                    ..DocScoreAcc::default()
+                };
+                fused.copy_from_filtered(&src, min);
+                let mut plain = DocScoreAcc::default();
+                plain.copy_from(&src);
+                let n = compact_by_score(&mut plain.docs, &mut plain.scores, min);
+                plain.truncate(n);
+                assert_eq!(fused.docs, plain.docs, "min {min}, prior {prior}");
+                assert_eq!(fused.scores, plain.scores, "min {min}, prior {prior}");
+            }
+        }
     }
 }
