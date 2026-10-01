@@ -45,8 +45,15 @@
 //! [`crate::document`]), one [`super::DocumentVector`] per field and document,
 //! written by the same flat/HNSW writers the native path uses.
 //!
-//! Not supported, and refused when a field is registered: term vectors and
-//! payloads. Index sorting is refused when explicit documents are enabled.
+//! **Payloads** are per occurrence, as `PayloadAttribute` hands them to
+//! `FreqProxTermsWriterPerField.writeProx`, and only on a field that indexes
+//! positions. As in Lucene, a field stores payloads in a segment
+//! (`FieldInfo.setStorePayloads`) exactly when one of the segment's
+//! documents gave it a non-empty payload; the registered schema never
+//! carries the flag, since Lucene's global `FieldNumbers` does not either.
+//!
+//! Not supported, and refused when a field is registered: term vectors.
+//! Index sorting is refused when explicit documents are enabled.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -117,10 +124,11 @@ pub struct InvertedTerm {
     /// otherwise.
     pub offsets: Vec<(i32, i32)>,
     /// Parallel to `positions`: each occurrence's payload (`PayloadAttribute`),
-    /// empty for none; or empty altogether when no occurrence has one. A
-    /// segment whose documents give a field a non-empty payload records the
-    /// field `storePayloads`, as `FreqProxTermsWriterPerField.finish` does
-    /// when it `sawPayloads`.
+    /// empty for an occurrence without one. Empty altogether when no
+    /// occurrence has one; only a field that indexes positions may carry
+    /// payloads. A segment whose documents give a field a non-empty payload
+    /// records the field `storePayloads`, as `FreqProxTermsWriterPerField.finish`
+    /// does when it `sawPayloads`.
     pub payloads: Vec<Vec<u8>>,
 }
 
@@ -135,6 +143,15 @@ impl ExplicitFields {
                     .capacity()
                     .saturating_add(t.positions.capacity().saturating_mul(4))
                     .saturating_add(t.offsets.capacity().saturating_mul(8))
+                    .saturating_add(
+                        t.payloads
+                            .iter()
+                            .map(|p| p.capacity().saturating_add(24))
+                            .fold(
+                                t.payloads.capacity().saturating_mul(24),
+                                usize::saturating_add,
+                            ),
+                    )
                     .saturating_add(48)
             })
             .fold(0usize, usize::saturating_add);
@@ -286,11 +303,21 @@ impl IndexingConfig {
                         f.name
                     )));
                 }
-                if !t.payloads.is_empty() && t.payloads.len() != t.positions.len() {
-                    return Err(explicit_error(format!(
-                        "field {:?}: payloads must be one per position (or none)",
-                        f.name
-                    )));
+                if !t.payloads.is_empty() {
+                    if !positions {
+                        return Err(explicit_error(format!(
+                            "field {:?} does not index positions, so it cannot store payloads",
+                            f.name
+                        )));
+                    }
+                    if t.payloads.len() != t.freq as usize {
+                        return Err(explicit_error(format!(
+                            "field {:?}: payloads must be one per occurrence (freq {}), got {}",
+                            f.name,
+                            t.freq,
+                            t.payloads.len()
+                        )));
+                    }
                 }
             }
         }
@@ -374,16 +401,13 @@ impl IndexingConfig {
             present.extend(fields.registered.iter().copied());
         }
 
-        // Postings: one term dictionary per field, terms in byte order.
-        struct Building {
-            terms: BTreeMap<Vec<u8>, TermPostings>,
-            docs: usize,
-        }
-        let mut postings: BTreeMap<i32, Building> = BTreeMap::new();
-        // Fields some occurrence gave a non-empty payload: `sawPayloads`.
+        // `FieldInfo.setStorePayloads`: the fields a document of this segment
+        // gave a non-empty payload. Every occurrence of such a field then
+        // carries a payload length, zero where it has none -- what
+        // `FreqProxTermsWriterPerField.writeProx` records once the flag is on.
         let payload_fields: BTreeSet<i32> = explicit
             .iter()
-            .flat_map(|f| &f.inverted)
+            .flat_map(|fields| &fields.inverted)
             .filter(|inv| {
                 inv.terms
                     .iter()
@@ -391,6 +415,13 @@ impl IndexingConfig {
             })
             .map(|inv| inv.field_number)
             .collect();
+
+        // Postings: one term dictionary per field, terms in byte order.
+        struct Building {
+            terms: BTreeMap<Vec<u8>, TermPostings>,
+            docs: usize,
+        }
+        let mut postings: BTreeMap<i32, Building> = BTreeMap::new();
         let mut norm_values: BTreeMap<i32, Vec<Option<i64>>> = BTreeMap::new();
         for (doc_id, fields) in explicit.iter().enumerate() {
             for inv in &fields.inverted {
@@ -425,11 +456,15 @@ impl IndexingConfig {
                     tp.positions.push(t.positions.clone());
                     tp.offsets.push(t.offsets.clone());
                     if payload_fields.contains(&inv.field_number) {
-                        // One length per occurrence, `0` where it had none.
+                        // Doc-major, one length per occurrence: the run
+                        // `Lucene104PostingsWriter` accumulates.
                         for i in 0..t.positions.len() {
-                            let p = t.payloads.get(i).map_or(&[][..], Vec::as_slice);
-                            tp.payload_bytes.extend_from_slice(p);
-                            tp.payload_lengths.push(p.len() as u32);
+                            let payload = t.payloads.get(i).map_or(&[][..], Vec::as_slice);
+                            tp.payload_bytes.extend_from_slice(payload);
+                            tp.payload_lengths
+                                .push(u32::try_from(payload.len()).map_err(|_| {
+                                    explicit_error("a payload longer than u32::MAX bytes")
+                                })?);
                         }
                     }
                 }
@@ -614,9 +649,7 @@ impl IndexingConfig {
             .map(|f| {
                 let mut f = f.clone();
                 f.attributes.retain(|(k, _)| !k.starts_with("PerField"));
-                if payload_fields.contains(&f.number) {
-                    f.store_payloads = true;
-                }
+                f.store_payloads = payload_fields.contains(&f.number);
                 let postings_suffix = postings_output.as_ref().and_then(|groups| {
                     groups
                         .iter()
@@ -2119,5 +2152,142 @@ mod tests {
         let soft: i32 = infos.segments.iter().map(|s| s.soft_del_count).sum();
         assert_eq!(soft, 1, "the buffered version is soft-deleted");
         check(&dir);
+    }
+
+    /// Document `i` of [`doc`] whose `body` term "beta" (positions 1 and 3)
+    /// carries a payload at its first occurrence and none at its second --
+    /// what a payload-producing analyzer such as Lucene's `MockAnalyzer`
+    /// hands `PayloadAttribute`.
+    fn doc_with_payload(f: &Fields, i: i64) -> ExplicitDocument {
+        let mut d = doc(f, i);
+        let body = d
+            .fields
+            .inverted
+            .iter_mut()
+            .find(|inv| inv.field_number == f.body)
+            .unwrap();
+        let beta = body.terms.iter_mut().find(|t| t.term == b"beta").unwrap();
+        beta.payloads = vec![format!("p{i}").into_bytes(), Vec::new()];
+        d
+    }
+
+    /// The payloads of `body:beta`, occurrence by occurrence, in every
+    /// document of `sci` that has it.
+    fn beta_payloads(dir: &FsDirectory, sci: &SegmentCommitInfo, max_doc: i32) -> Vec<Vec<u8>> {
+        let fnm = dir.open(&format!("{}.fnm", sci.segment_name)).unwrap();
+        let infos = lucene_codecs::field_infos::parse(&fnm, &sci.segment_id, "").unwrap();
+        crate::index_writer::tests::read_occurrences(dir, sci, &infos, "body", b"beta", max_doc)
+            .into_iter()
+            .flat_map(|occurrences| occurrences.into_iter().map(|o| o.payload))
+            .collect()
+    }
+
+    fn stores_payloads(dir: &FsDirectory, sci: &SegmentCommitInfo, name: &str) -> bool {
+        segment_fields(dir, sci)
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap()
+            .store_payloads
+    }
+
+    /// A document whose analyzer produced payloads is indexed with them. The
+    /// OpenSearch engine used to refuse it, and OpenSearch then records a
+    /// refused primary operation as a no-op tombstone -- so on a seed whose
+    /// `MockAnalyzer` put payloads on the `value` field, the engine tests
+    /// lost almost every document (`testAppendConcurrently`: `expected:<1024>
+    /// but was:<6>`, the six whose random payloads happened to be empty). The
+    /// field stores payloads in exactly the segments one of whose documents
+    /// gave it one, as `FieldInfo.setStorePayloads` does, the bytes read back
+    /// through the postings, and a merge keeps them.
+    #[test]
+    fn explicit_payloads_flush_merge_and_read_back() {
+        let tmp = TempDir::new("explicit-payloads");
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        let f = register(&mut w);
+        // Documents 0 and 2 carry payloads, 1 does not.
+        for i in 0..3 {
+            let d = if i % 2 == 0 {
+                doc_with_payload(&f, i)
+            } else {
+                doc(&f, i)
+            };
+            w.add_explicit_documents(vec![d]).unwrap();
+        }
+        w.commit().unwrap();
+        // A segment none of whose documents has a payload.
+        for i in 3..5 {
+            w.add_explicit_documents(vec![doc(&f, i)]).unwrap();
+        }
+        let infos = w.commit().unwrap().clone();
+        assert_eq!(infos.segments.len(), 2);
+        check(&dir);
+
+        let (with, without) = (&infos.segments[0], &infos.segments[1]);
+        assert!(stores_payloads(&dir, with, "body"));
+        assert!(
+            !stores_payloads(&dir, with, "_id"),
+            "only the field with one"
+        );
+        assert!(!stores_payloads(&dir, without, "body"));
+        let none = Vec::new();
+        assert_eq!(
+            beta_payloads(&dir, with, 3),
+            [
+                b"p0".to_vec(),
+                none.clone(),
+                none.clone(),
+                none.clone(),
+                b"p2".to_vec(),
+                none.clone()
+            ]
+        );
+
+        w.force_merge(1).unwrap();
+        assert_eq!(w.segment_infos().segments.len(), 1);
+        let merged = w.segment_infos().segments[0].clone();
+        check(&dir);
+        assert!(stores_payloads(&dir, &merged, "body"));
+        let mut payloads = beta_payloads(&dir, &merged, 5);
+        payloads.retain(|p| !p.is_empty());
+        payloads.sort();
+        assert_eq!(payloads, [b"p0".to_vec(), b"p2".to_vec()]);
+    }
+
+    /// Payloads are one per occurrence, and only on a field with positions --
+    /// a malformed document is refused whole, before it is buffered.
+    #[test]
+    fn explicit_payloads_are_validated() {
+        let tmp = TempDir::new("explicit-payloads-invalid");
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        let f = register(&mut w);
+
+        let mut short = doc_with_payload(&f, 0);
+        for inv in &mut short.fields.inverted {
+            for t in &mut inv.terms {
+                if t.term == b"beta" {
+                    t.payloads.pop();
+                }
+            }
+        }
+        let err = w
+            .add_explicit_documents(vec![short])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("one per occurrence"), "{err}");
+
+        let mut no_positions = doc(&f, 1);
+        for inv in &mut no_positions.fields.inverted {
+            if inv.field_number == f.id {
+                inv.terms[0].payloads = vec![b"x".to_vec()];
+            }
+        }
+        let err = w
+            .add_explicit_documents(vec![no_positions])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("cannot store payloads"), "{err}");
+        assert_eq!(w.pending_doc_count(), 0);
     }
 }
