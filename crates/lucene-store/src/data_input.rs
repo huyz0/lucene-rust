@@ -163,46 +163,8 @@ pub trait DataInput {
     /// Lucene group-varint (`GroupVIntUtil.readGroupVInts`): full groups of 4
     /// values (1 flag byte + 1..4 LE bytes each), then a plain-vint tail.
     /// Values are unsigned 32-bit, widened to u64 like Lucene's `long[]` variant.
-    // ARITH: `i` walks `dst`'s own indices in steps of 4 under `i + 4 <=
-    // limit` / `i < limit`, and `n_minus_1` is a 2-bit field, so `i + j`,
-    // `i += 4` and `n_minus_1 + 1` are all bounded by `dst.len()` or by 4.
-    // Nothing here is sized by a value read off disk.
-    #[allow(clippy::arithmetic_side_effects)]
     fn read_group_vints(&mut self, dst: &mut [u64]) -> Result<()> {
-        const MASKS: [u32; 4] = [0xFF, 0xFFFF, 0xFF_FFFF, u32::MAX];
-        let limit = dst.len();
-        let mut i = 0;
-        while i + 4 <= limit {
-            let flag = self.read_byte()? as usize;
-            let lens = [(flag >> 6) & 3, (flag >> 4) & 3, (flag >> 2) & 3, flag & 3];
-            // Java decides once per group, not once per value: the branchless
-            // path over-reads up to 4 bytes for each of the four values, and
-            // the last one starts at most 12 bytes into the group, so
-            // `length - pos >= 4 * Integer.BYTES` is the single precondition
-            // that makes all four safe (`GroupVIntUtil.readGroupVInt`). Only
-            // the very last group of a file can fail it. A backend that
-            // cannot peek at all (no `RandomAccessInput` in Java's terms)
-            // falls back the same way.
-            if self.remaining() >= 16 && self.peek_u32_le().is_ok() {
-                for (j, &n_minus_1) in lens.iter().enumerate() {
-                    let v = self.peek_u32_le()? & MASKS[n_minus_1];
-                    self.skip(n_minus_1 + 1)?;
-                    dst[i + j] = v as u64;
-                }
-            } else {
-                for (j, &n_minus_1) in lens.iter().enumerate() {
-                    let mut b = [0u8; 4];
-                    self.read_bytes(&mut b[..n_minus_1 + 1])?;
-                    dst[i + j] = u32::from_le_bytes(b) as u64;
-                }
-            }
-            i += 4;
-        }
-        while i < limit {
-            dst[i] = self.read_vint()? as u32 as u64;
-            i += 1;
-        }
-        Ok(())
+        group_vints_default(self, dst)
     }
 
     /// Peek 4 LE bytes without advancing. Backends that can't peek may return
@@ -606,6 +568,80 @@ impl DataInput for SliceInput<'_> {
         self.pos += n;
         Ok(())
     }
+
+    /// Straight off the slice, as [`Self::read_vint`] is: a group whose flag
+    /// and sixteen bytes are in view is decoded without a `Result` per
+    /// value. The first group closer to the end than that, and everything
+    /// after it, takes [`DataInput::read_group_vints`]' own path -- which is
+    /// where Java's `length - pos >= 4 * Integer.BYTES` test sends it too --
+    /// so values, errors and their offsets are the default's.
+    fn read_group_vints(&mut self, dst: &mut [u64]) -> Result<()> {
+        const MASKS: [u32; 4] = [0xFF, 0xFFFF, 0xFF_FFFF, u32::MAX];
+        let mut done = 0;
+        for group in dst.chunks_exact_mut(4) {
+            // `pos <= buf.len()`, so `pos + 17` cannot overflow a `usize`.
+            let Some(bytes) = self.buf.get(self.pos..self.pos + 17) else {
+                break;
+            };
+            let flag = bytes[0];
+            let mut at = 1;
+            for (j, slot) in group.iter_mut().enumerate() {
+                // ARITH: `j < 4`, so the shift is at most 6; `at <= 13` and
+                // the 2-bit length adds at most 4, inside the 17 bytes.
+                let n_minus_1 = usize::from((flag >> (6 - 2 * j)) & 3);
+                let word: [u8; 4] = bytes[at..at + 4].try_into().expect("four bytes");
+                *slot = u64::from(u32::from_le_bytes(word) & MASKS[n_minus_1]);
+                at += n_minus_1 + 1;
+            }
+            self.pos += at;
+            done += 4;
+        }
+        group_vints_default(self, &mut dst[done..])
+    }
+}
+
+/// [`DataInput::read_group_vints`]' body, which an implementation that
+/// overrides it (`SliceInput`) falls back to.
+///
+/// Java decides once per group, not once per value: the branchless path
+/// over-reads up to 4 bytes for each of the four values, and the last one
+/// starts at most 12 bytes into the group, so `length - pos >= 4 *
+/// Integer.BYTES` is the single precondition that makes all four safe
+/// (`GroupVIntUtil.readGroupVInt`). Only the very last group of a file can
+/// fail it. A backend that cannot peek at all (no `RandomAccessInput` in
+/// Java's terms) falls back the same way.
+// ARITH: `i` walks `dst`'s own indices in steps of 4 under `i + 4 <=
+// limit` / `i < limit`, and `n_minus_1` is a 2-bit field, so `i + j`,
+// `i += 4` and `n_minus_1 + 1` are all bounded by `dst.len()` or by 4.
+// Nothing here is sized by a value read off disk.
+#[allow(clippy::arithmetic_side_effects)]
+fn group_vints_default<D: DataInput + ?Sized>(input: &mut D, dst: &mut [u64]) -> Result<()> {
+    const MASKS: [u32; 4] = [0xFF, 0xFFFF, 0xFF_FFFF, u32::MAX];
+    let limit = dst.len();
+    let mut i = 0;
+    while i + 4 <= limit {
+        let flag = input.read_byte()? as usize;
+        let lens = [(flag >> 6) & 3, (flag >> 4) & 3, (flag >> 2) & 3, flag & 3];
+        if input.remaining() >= 16 && input.peek_u32_le().is_ok() {
+            for (j, &n_minus_1) in lens.iter().enumerate() {
+                let v = input.peek_u32_le()? & MASKS[n_minus_1];
+                input.skip(n_minus_1 + 1)?;
+                dst[i + j] = v as u64;
+            }
+        } else {
+            for (j, &n_minus_1) in lens.iter().enumerate() {
+                let mut b = [0u8; 4];
+                input.read_bytes(&mut b[..n_minus_1 + 1])?;
+                dst[i + j] = u32::from_le_bytes(b) as u64;
+            }
+        }
+        i += 4;
+    }
+    while i < limit {
+        dst[i] = input.read_vint()? as u32 as u64;
+        i += 1;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -667,6 +703,60 @@ mod tests {
             self.pos += n;
             Ok(())
         }
+    }
+
+    /// `SliceInput`'s group-varint fast path decodes exactly what the
+    /// trait's own path does, value for value and to the same position, for
+    /// every value width and with the last groups close enough to the end to
+    /// fall back -- and truncated input fails at the same offset.
+    #[test]
+    fn read_group_vints_matches_the_default_implementation() {
+        let widths = [0u32, 0x7F, 0xFF, 0x1234, 0xFF_FF, 0x12_3456, 0xFFFF_FFFF, 1];
+        let mut bytes = Vec::new();
+        let mut want = Vec::new();
+        for g in 0..9 {
+            let vals: Vec<u32> = (0..4).map(|j| widths[(g * 3 + j) % widths.len()]).collect();
+            let mut flag = 0u8;
+            let mut body = Vec::new();
+            for (j, &v) in vals.iter().enumerate() {
+                let n = (4 - v.leading_zeros() / 8).max(1);
+                flag |= ((n - 1) as u8) << (6 - 2 * j);
+                body.extend_from_slice(&v.to_le_bytes()[..n as usize]);
+            }
+            bytes.push(flag);
+            bytes.extend(body);
+            want.extend(vals.iter().map(|&v| u64::from(v)));
+        }
+        // A plain-vint tail of three values.
+        for v in [5u32, 300, 70_000] {
+            let mut x = v;
+            while x >= 0x80 {
+                bytes.push((x as u8) | 0x80);
+                x >>= 7;
+            }
+            bytes.push(x as u8);
+            want.push(u64::from(v));
+        }
+        let n = want.len();
+        let mut fast = vec![0u64; n];
+        let mut slice = SliceInput::new(&bytes);
+        slice.read_group_vints(&mut fast).unwrap();
+        let mut slow = vec![0u64; n];
+        let mut plain = PlainInput {
+            buf: &bytes,
+            pos: 0,
+        };
+        plain.read_group_vints(&mut slow).unwrap();
+        assert_eq!(fast, want);
+        assert_eq!(slow, want);
+        assert_eq!(slice.position(), plain.pos);
+        assert_eq!(slice.position(), bytes.len());
+        let cut = &bytes[..bytes.len() - 2];
+        let mut short = vec![0u64; n];
+        let fast_err = SliceInput::new(cut).read_group_vints(&mut short);
+        let slow_err = PlainInput { buf: cut, pos: 0 }.read_group_vints(&mut short);
+        assert!(fast_err.is_err());
+        assert_eq!(format!("{fast_err:?}"), format!("{slow_err:?}"));
     }
 
     #[test]
