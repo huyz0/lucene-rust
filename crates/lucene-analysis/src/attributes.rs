@@ -172,6 +172,19 @@ impl AttributeSource {
     /// units; an unpaired surrogate becomes U+FFFD (see the module docs).
     pub fn set_term_utf16(&mut self, units: &[u16]) {
         self.term.clear();
+        // The common case, a short ASCII term: narrow it on the stack and
+        // copy it in one go rather than pushing one `char` at a time.
+        const ASCII_STACK: usize = 64;
+        if units.len() <= ASCII_STACK && units.iter().fold(0u16, |acc, &u| acc | u) < 0x80 {
+            let mut narrow = [0u8; ASCII_STACK];
+            for (d, &u) in narrow.iter_mut().zip(units) {
+                *d = u as u8;
+            }
+            if let Ok(ascii) = std::str::from_utf8(&narrow[..units.len()]) {
+                self.term.push_str(ascii);
+                return;
+            }
+        }
         // At most 3 UTF-8 bytes per UTF-16 unit (a pair is 4 bytes for 2).
         self.term.reserve(units.len() * 3);
         let mut i = 0;
