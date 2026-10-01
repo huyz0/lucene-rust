@@ -3057,6 +3057,9 @@ impl IndexingConfig {
                     buf.docs,
                     &norms_configs,
                     &inverted,
+                    self.custom_freq_postings_field
+                        .as_ref()
+                        .map(|cfg| (cfg.field_number, buf.custom_freq_terms)),
                     self.norm_similarity(),
                     &segment_id,
                 )?)
@@ -3732,6 +3735,41 @@ impl NormsColumn {
 
 /// `IndexingChain.PerField.finish`'s norm: `0` for a field present without
 /// tokens, `Similarity.computeNorm` otherwise -- which must not be `0` there.
+/// A custom-frequency field's number and every buffered document's
+/// `(term, custom_freq)` pairs, aligned by doc id.
+type CustomFreqTerms<'a> = (i32, &'a [Vec<(String, i32)>]);
+
+/// The `FieldInvertState` `IndexingChain.invert` leaves for a
+/// `DOCS_AND_CUSTOM_FREQS` field fed one document's `(term, custom_freq)`
+/// pairs, or `None` when the document supplies no term (it then has no such
+/// field, so no norm).
+///
+/// Such a field is a "term-doc field" (`FieldInfo.isTermDocField`): each
+/// token adds 1 to the length -- the custom frequency is *not* added, as it
+/// is for a `TermFrequencyAttribute` on an ordinary field -- and a term may
+/// appear once per document (`DuplicateTermException` otherwise), so the
+/// length and the unique-term count are both the number of pairs, and
+/// `maxTermFrequency` is the largest frequency. The pairs carry no
+/// positions or offsets: each token is taken at an increment of 1 from
+/// offset 0, so nothing overlaps, the last position is `pairs - 1` and the
+/// offset stays 0.
+fn custom_freq_invert_state(terms: &[(String, i32)]) -> Option<FieldInvertState> {
+    if terms.is_empty() {
+        return None;
+    }
+    let count = i32::try_from(terms.len()).unwrap_or(i32::MAX);
+    Some(FieldInvertState {
+        docs_only: false,
+        position: count.saturating_sub(1),
+        length: count,
+        num_overlap: 0,
+        offset: 0,
+        max_term_frequency: terms.iter().map(|(_, f)| *f).max().unwrap_or(0),
+        unique_term_count: count,
+        attribute_source: Some(crate::similarity::end_attributes(0, 0)),
+    })
+}
+
 fn norm_value(
     similarity: &dyn NormSimilarity,
     field: &str,
@@ -7772,10 +7810,16 @@ impl IndexWriter<'_> {
     /// `1`, Java's own `advanceExact == false` fallback; it is unreachable
     /// through a posting, since a document with an occurrence of the field
     /// has a norm for it.
+    ///
+    /// `custom_freq` is the writer's [`IndexWriter::set_custom_freq_postings_field`]
+    /// field and every document's `(term, custom_freq)` pairs: that field's
+    /// postings come from the pairs, not from `inverted`, so its norms must too
+    /// (see [`custom_freq_invert_state`]).
     fn build_norms_output(
         docs: &[Document],
         configs: &[NormsFieldConfig],
         inverted: &InMemoryInvertedIndex,
+        custom_freq: Option<CustomFreqTerms<'_>>,
         similarity: &dyn NormSimilarity,
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<NormsOutput> {
@@ -7788,6 +7832,18 @@ impl IndexWriter<'_> {
         let columns: Vec<NormsColumn> = configs
             .iter()
             .map(|config| {
+                if let Some((_, terms)) =
+                    custom_freq.filter(|(number, _)| *number == config.field_number)
+                {
+                    let values: Vec<Option<i64>> = (0..docs.len())
+                        .map(|doc| {
+                            custom_freq_invert_state(terms.get(doc).map_or(&[][..], Vec::as_slice))
+                                .map(|state| norm_value(similarity, &config.name, &state))
+                                .transpose()
+                        })
+                        .collect::<Result<_>>()?;
+                    return Ok(NormsColumn::from_values(values));
+                }
                 // `None` == this doc does not carry the field at all, so it
                 // gets no norm; `Some(0)` == it carries it but produced no
                 // tokens, which is Java's explicit zero.
@@ -14080,6 +14136,48 @@ pub(crate) mod tests {
         // Atomic failure: nothing committed, pending state untouched.
         assert!(writer.segment_infos.segments.is_empty());
         assert_eq!(writer.pending_doc_count(), 1);
+    }
+
+    /// `IndexingChain.invert` counts a `DOCS_AND_CUSTOM_FREQS` field's tokens
+    /// once each (`isTermDocField`: `length += 1`, the custom frequency is
+    /// not added), so a document's norm is the encoded number of its terms --
+    /// and a document that supplies no term has no such field, so no norm.
+    #[test]
+    fn a_custom_freq_field_with_norms_gets_the_norm_of_its_own_terms() {
+        let tmp = tempdir("custom-freq-norms");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), custom_freq_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer
+            .set_custom_freq_postings_field(Some("score"))
+            .unwrap();
+        writer
+            .add_document_with_custom_freq_terms(
+                doc("a"),
+                vec![
+                    ("alpha".to_string(), 7),
+                    ("beta".to_string(), 3),
+                    ("gamma".to_string(), 90),
+                ],
+            )
+            .unwrap();
+        writer
+            .add_document_with_custom_freq_terms(doc("b"), vec![("alpha".to_string(), 42)])
+            .unwrap();
+        writer
+            .add_document_with_custom_freq_terms(doc("c"), Vec::new())
+            .unwrap();
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        let nvm = dir.open(&format!("{}.nvm", sci.segment_name)).unwrap();
+        let nvd = dir.open(&format!("{}.nvd", sci.segment_name)).unwrap();
+        let (_v, meta) = norms::parse_meta(&nvm, &sci.segment_id, "").unwrap();
+        let entry = meta.entry(1).expect("the custom-freq field keeps norms");
+        let encoded = |terms: u32| i64::from(small_float::int_to_byte4(terms) as i8);
+        assert_eq!(norms::norm_value(&nvd, entry, 0).unwrap(), Some(encoded(3)));
+        assert_eq!(norms::norm_value(&nvd, entry, 1).unwrap(), Some(encoded(1)));
+        assert_eq!(norms::norm_value(&nvd, entry, 2).unwrap(), None);
     }
 
     #[test]
