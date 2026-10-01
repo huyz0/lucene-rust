@@ -285,7 +285,7 @@ done
 # Rust and a Java IndexWriter could both open an index. The Rust test drives
 # fixtures/src/VerifyNativeLock.java; without the jar it would skip, so it is
 # handed the one resolved above.
-total=$(( ${#CASES[@]} + 1 ))
+total=$(( ${#CASES[@]} + 2 ))
 if LUCENE_CORE_JAR=$(lucene_resolve_jar lucene-core) \
     cargo test --quiet -p lucene-store --test native_lock_interop -- --nocapture 2>&1 \
     | tee "$WORK/native-lock.log" | grep -q "skipped"; then
@@ -295,6 +295,22 @@ elif grep -q "test result: ok" "$WORK/native-lock.log"; then
 else
   echo "  FAIL                native_lock_interop"
   tail -15 "$WORK/native-lock.log" | sed 's/^/      /'
+  failed=$((failed+1))
+fi
+
+# Not the write path either, but the job that has the jars: the
+# StandardTokenizer corpus test reads its text out of them (the fixture holds
+# only digests), and passes vacuously without them -- so here a skip fails.
+if LUCENE_TEST_FRAMEWORK_JAR=$(lucene_resolve_jar lucene-test-framework) \
+   LUCENE_ANALYSIS_COMMON_JAR=$(lucene_resolve_jar lucene-analysis-common) \
+    cargo test --quiet -p lucene-analysis --test standard_tokenizer_corpus -- --nocapture 2>&1 \
+    | tee "$WORK/tokenizer-corpus.log" | grep -q "skipped"; then
+  echo "  FAIL (skipped)      standard_tokenizer_corpus"; failed=$((failed+1))
+elif grep -q "test result: ok" "$WORK/tokenizer-corpus.log"; then
+  echo "  ok                  StandardTokenizer over the europarl + stopword corpus"
+else
+  echo "  FAIL                standard_tokenizer_corpus"
+  tail -15 "$WORK/tokenizer-corpus.log" | sed 's/^/      /'
   failed=$((failed+1))
 fi
 

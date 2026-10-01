@@ -12,8 +12,8 @@
 
 use std::sync::Arc;
 
-use lucene_codecs::blocktree::{BlockTreeFields, FieldTerms, SeekedTerm};
-use lucene_codecs::postings::{LazyDocsCursor, PostingsFlags};
+use lucene_codecs::blocktree::{BlockTreeFields, SeekedTerm};
+use lucene_codecs::postings::{Impact, LazyDocsCursor, PostingsFlags};
 
 use super::build::{self, Child, LeafContext};
 use super::disi_approx::{DisiApprox, DisiSub};
@@ -327,16 +327,34 @@ pub(crate) fn phrase_freq_at(
     scratch: &mut sloppy_phrase::SloppyScratch,
     shifted: &mut Vec<Vec<i32>>,
 ) -> f32 {
+    // The slots' position lists as slices: on the stack for an ordinary
+    // phrase, so a document's match allocates nothing.
+    const STACK: usize = 8;
+    let mut on_stack: [&[i32]; STACK] = [&[]; STACK];
+    let on_heap: Vec<&[i32]>;
     if slop > 0 && repeats.has_rpts {
-        let slices: Vec<&[i32]> = positions.iter().map(Vec::as_slice).collect();
+        let slices: &[&[i32]] = if positions.len() <= STACK {
+            for (slot, p) in on_stack.iter_mut().zip(positions) {
+                *slot = p.as_slice();
+            }
+            &on_stack[..positions.len()]
+        } else {
+            on_heap = positions.iter().map(Vec::as_slice).collect();
+            &on_heap
+        };
         return sloppy_phrase::sloppy_phrase_freq_offsets_in(
-            scratch, &slices, repeats, slop, offsets,
+            scratch, slices, repeats, slop, offsets,
         );
     }
+    // Each slot's positions moved by its offset; a slot already at its own
+    // index (the usual case) is read in place.
     shifted.resize_with(positions.len(), Vec::new);
     for (slot, (src, dst)) in positions.iter().zip(shifted.iter_mut()).enumerate() {
         dst.clear();
         let delta = slot as i64 - i64::from(offsets[slot]);
+        if delta == 0 {
+            continue;
+        }
         dst.extend(src.iter().map(|&p| {
             i32::try_from(i64::from(p) + delta).unwrap_or(if delta < 0 {
                 i32::MIN
@@ -345,11 +363,32 @@ pub(crate) fn phrase_freq_at(
             })
         }));
     }
-    let slices: Vec<&[i32]> = shifted.iter().map(Vec::as_slice).collect();
-    if slop == 0 {
-        crate::phrase_freq_exact(&slices) as f32
+    let in_place = |slot: usize| slot as i64 == i64::from(offsets[slot]);
+    let slices: &[&[i32]] = if positions.len() <= STACK {
+        for (slot, s) in on_stack.iter_mut().enumerate().take(positions.len()) {
+            *s = if in_place(slot) {
+                positions[slot].as_slice()
+            } else {
+                shifted[slot].as_slice()
+            };
+        }
+        &on_stack[..positions.len()]
     } else {
-        sloppy_phrase::sloppy_phrase_freq_in(scratch, &slices, repeats, slop)
+        on_heap = (0..positions.len())
+            .map(|slot| {
+                if in_place(slot) {
+                    positions[slot].as_slice()
+                } else {
+                    shifted[slot].as_slice()
+                }
+            })
+            .collect();
+        &on_heap
+    };
+    if slop == 0 {
+        crate::phrase_freq_exact(slices) as f32
+    } else {
+        sloppy_phrase::sloppy_phrase_freq_in(scratch, slices, repeats, slop)
     }
 }
 
@@ -432,16 +471,7 @@ pub(crate) fn positional_phrase<'a>(
         )));
     }
     eager_phrase(
-        ctx,
-        field_terms,
-        pos_in,
-        &p.field,
-        &slots,
-        &offsets,
-        &repeats,
-        p.slop,
-        &scorer,
-        mode,
+        ctx, pos_in, &p.field, &slots, &offsets, &repeats, p.slop, &scorer, mode,
     )
 }
 
@@ -450,8 +480,7 @@ pub(crate) fn positional_phrase<'a>(
 #[allow(clippy::too_many_arguments)]
 fn eager_phrase<'a>(
     ctx: &LeafContext<'a>,
-    field_terms: &FieldTerms,
-    pos_in: &lucene_codecs::postings::PosInput<'_>,
+    pos_in: &lucene_codecs::postings::PosInput<'a>,
     field: &str,
     slots: &[Vec<Vec<u8>>],
     offsets: &[i32],
@@ -460,78 +489,121 @@ fn eager_phrase<'a>(
     scorer: &Arc<dyn SimScorer>,
     mode: Mode,
 ) -> Result<Option<BoxScorer<'a>>> {
-    let mut slot_docs = Vec::with_capacity(slots.len());
+    // `UnionPostingsEnum` per position over its alternatives' lazy
+    // positions, the phrase's conjunction over those as its approximation:
+    // only documents every position has are visited, and only their
+    // positions decoded.
+    let mut sources: Vec<Vec<super::span::LeafPositions<'a>>> = Vec::with_capacity(slots.len());
     for alts in slots {
-        let docs = crate::multi_phrase_slot_docs(field_terms, ctx.doc_in, alts)?;
-        if docs.is_empty() {
-            return Ok(None);
+        let mut slot = Vec::with_capacity(alts.len());
+        for t in alts {
+            slot.push(super::span::LeafPositions::open(ctx, pos_in, field, t)?);
         }
-        slot_docs.push(docs);
-    }
-    // The documents every slot has, live ones only.
-    let mut candidates = slot_docs[0].clone();
-    for other in &slot_docs[1..] {
-        let mut keep = Vec::with_capacity(candidates.len());
-        let mut j = 0;
-        for &d in &candidates {
-            while j < other.len() && other[j] < d {
-                j += 1;
-            }
-            if j < other.len() && other[j] == d {
-                keep.push(d);
-            }
-        }
-        candidates = keep;
-    }
-    candidates.retain(|&d| ctx.live_docs.is_none_or(|l| l.get_doc(d)));
-    if candidates.is_empty() {
-        return Ok(None);
-    }
-    let mut per_slot = Vec::with_capacity(slots.len());
-    for alts in slots {
-        per_slot.push(crate::multi_phrase_slot_positions(
-            field_terms,
-            ctx.doc_in,
-            pos_in,
-            ctx.pay_in,
-            alts,
-            &candidates,
-        )?);
+        sources.push(slot);
     }
     let mut norms = norms_cursor(ctx, field);
     let mut scratch = sloppy_phrase::SloppyScratch::default();
     let mut shifted = Vec::new();
+    let mut merged = Vec::new();
     let mut positions: Vec<Vec<i32>> = vec![Vec::new(); slots.len()];
     let (mut docs, mut scores) = (Vec::new(), Vec::new());
-    for (k, &doc) in candidates.iter().enumerate() {
-        for (t, (flat, starts)) in per_slot.iter().enumerate() {
-            positions[t].clear();
-            positions[t].extend_from_slice(&flat[starts[k] as usize..starts[k + 1] as usize]);
+    let mut doc = phrase_approximation(&mut sources, 0)?;
+    while doc != NO_MORE_DOCS {
+        if ctx.live_docs.is_none_or(|l| l.get_doc(doc)) {
+            for (buf, slot) in positions.iter_mut().zip(&mut sources) {
+                buf.clear();
+                let mut split = 0;
+                for (k, alt) in slot.iter_mut().enumerate() {
+                    if k == 1 {
+                        split = buf.len();
+                    }
+                    alt.positions_at(doc, buf)?;
+                }
+                // Sorted and **not** deduplicated, as `UnionPostingsEnum`'s
+                // `PositionsQueue` yields them (see
+                // `crate::multi_phrase_slot_positions`): two alternatives'
+                // ascending runs merged, more sorted.
+                match slot.len() {
+                    0 | 1 => {}
+                    2 => merge_runs(buf, split, &mut merged),
+                    _ => buf.sort_unstable(),
+                }
+            }
+            let freq = phrase_freq_at(
+                &positions,
+                offsets,
+                repeats,
+                slop,
+                &mut scratch,
+                &mut shifted,
+            );
+            if freq != 0.0 {
+                docs.push(doc);
+                if mode.needs_scores() {
+                    let norm = match norms.as_mut() {
+                        Some(n) => n.norm_long(doc)?.unwrap_or(1),
+                        None => 1,
+                    };
+                    scores.push(scorer.score(freq, norm));
+                }
+            }
         }
-        let freq = phrase_freq_at(
-            &positions,
-            offsets,
-            repeats,
-            slop,
-            &mut scratch,
-            &mut shifted,
-        );
-        if freq == 0.0 {
-            continue;
-        }
-        docs.push(doc);
-        if mode.needs_scores() {
-            let norm = match norms.as_mut() {
-                Some(n) => n.norm_long(doc)?.unwrap_or(1),
-                None => 1,
-            };
-            scores.push(scorer.score(freq, norm));
-        }
+        doc = phrase_approximation(&mut sources, doc.saturating_add(1))?;
     }
     if docs.is_empty() {
         return Ok(None);
     }
     Ok(Some(Box::new(DocList::new(docs, scores))))
+}
+
+/// `buf[..split]` and `buf[split..]`, each ascending, merged into one
+/// ascending run, duplicates kept (`scratch` is reused across calls).
+fn merge_runs(buf: &mut Vec<i32>, split: usize, scratch: &mut Vec<i32>) {
+    let (a, b) = buf.split_at(split);
+    if a.is_empty() || b.is_empty() || a[a.len() - 1] <= b[0] {
+        return;
+    }
+    scratch.clear();
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < b.len() {
+        if b[j] < a[i] {
+            scratch.push(b[j]);
+            j += 1;
+        } else {
+            scratch.push(a[i]);
+            i += 1;
+        }
+    }
+    scratch.extend_from_slice(&a[i..]);
+    scratch.extend_from_slice(&b[j..]);
+    std::mem::swap(buf, scratch);
+}
+
+/// The phrase's approximation advanced to `target`: the first document at
+/// or after it on which some alternative of every position is
+/// (`ConjunctionDISI` over `UnionPostingsEnum`s).
+fn phrase_approximation(
+    slots: &mut [Vec<super::span::LeafPositions<'_>>],
+    target: i32,
+) -> Result<i32> {
+    let mut target = target;
+    loop {
+        let mut max = target;
+        for slot in slots.iter_mut() {
+            let mut min = NO_MORE_DOCS;
+            for alt in slot.iter_mut() {
+                min = min.min(alt.advance(target)?);
+            }
+            if min == NO_MORE_DOCS {
+                return Ok(NO_MORE_DOCS);
+            }
+            max = max.max(min);
+        }
+        if max == target {
+            return Ok(target);
+        }
+        target = max;
+    }
 }
 
 /// `MultiPhraseQuery`'s weight: one position rewrites to a `BooleanQuery` of
@@ -571,7 +643,7 @@ pub(crate) fn multi_phrase<'a>(
     let Some(collection) = collection else {
         return Ok(None);
     };
-    let Some(field_terms) = ctx.fields.field(&q.field) else {
+    let Some(_) = ctx.fields.field(&q.field) else {
         return Ok(None);
     };
     let Some(pos_in) = ctx.pos_in else {
@@ -582,7 +654,6 @@ pub(crate) fn multi_phrase<'a>(
     let offsets = q.positions();
     eager_phrase(
         ctx,
-        field_terms,
         pos_in,
         &q.field,
         &q.term_arrays,
@@ -684,13 +755,62 @@ fn synonym<'a>(
     if members.is_empty() {
         return Ok(None);
     }
-    Ok(Some(Box::new(FreqSumScorer::new(
-        members,
-        boosts,
-        scorer,
-        Norms::One(norms_cursor(ctx, &q.field)),
-        false,
-    ))))
+    Ok(Some(Box::new(
+        FreqSumScorer::new(
+            members,
+            boosts,
+            scorer,
+            Norms::One(norms_cursor(ctx, &q.field)),
+            false,
+        )
+        .with_impacts(mode == Mode::TopScores),
+    )))
+}
+
+/// `SynonymQuery.mergeImpacts`' merge of several terms' competitive
+/// impacts, each ascending by norm (as `Long.compareUnsigned` orders them)
+/// with rising frequencies: walking the norms in order, the running sum of
+/// every list's frequency so far -- which also covers the norms a list leaves
+/// implicit -- kept wherever it rises. `None` for no list.
+fn merge_impacts(lists: &[Vec<Impact>]) -> Option<Vec<Impact>> {
+    match lists {
+        [] => None,
+        [only] => Some(only.clone()),
+        _ => {
+            // Per list: next index, the frequency already counted.
+            let mut at = vec![0usize; lists.len()];
+            let mut previous = vec![0i64; lists.len()];
+            let mut sum_tf = 0i64;
+            let mut merged: Vec<Impact> = Vec::new();
+            loop {
+                // The least norm among the lists' current impacts.
+                let norm = lists
+                    .iter()
+                    .zip(&at)
+                    .filter_map(|(l, &i)| l.get(i).map(|imp| imp.norm as u64))
+                    .min();
+                let Some(norm) = norm else {
+                    return Some(merged);
+                };
+                for ((l, i), prev) in lists.iter().zip(at.iter_mut()).zip(previous.iter_mut()) {
+                    if let Some(imp) = l.get(*i) {
+                        if imp.norm as u64 == norm {
+                            sum_tf = sum_tf.saturating_add(i64::from(imp.freq) - *prev);
+                            *prev = i64::from(imp.freq);
+                            *i = i.saturating_add(1);
+                        }
+                    }
+                }
+                let freq = sum_tf.min(i64::from(i32::MAX)) as i32;
+                if merged.last().is_none_or(|last| freq > last.freq) {
+                    merged.push(Impact {
+                        freq,
+                        norm: norm as i64,
+                    });
+                }
+            }
+        }
+    }
 }
 
 /// How a [`FreqSumScorer`] reads a document's norm.
@@ -759,6 +879,13 @@ struct FreqSumScorer<'a> {
     combined: bool,
     max: f32,
     list: Vec<usize>,
+    /// `SynonymWeight`'s `ImpactsDISI` (`TOP_SCORES` only): the members'
+    /// impacts bound each block, and blocks that cannot reach the minimum
+    /// competitive score are skipped.
+    impacts: bool,
+    min_competitive: f32,
+    /// The last document the current shallow bound covers.
+    up_to: i32,
 }
 
 impl<'a> FreqSumScorer<'a> {
@@ -788,6 +915,94 @@ impl<'a> FreqSumScorer<'a> {
             combined,
             max,
             list: Vec::new(),
+            impacts: false,
+            min_competitive: 0.0,
+            up_to: -1,
+        }
+    }
+
+    /// Prune on the members' impacts, as `SynonymWeight` does in
+    /// `TOP_SCORES`.
+    fn with_impacts(mut self, on: bool) -> Self {
+        self.impacts = on;
+        self
+    }
+
+    /// `Impacts.getDocIdUpTo(0)` of `SynonymQuery.mergeImpacts`' lead: the
+    /// smallest block boundary at or after `target` among the members.
+    fn shallow(&mut self, target: i32) -> Result<i32> {
+        let mut up_to = NO_MORE_DOCS;
+        for m in &mut self.approx.subs {
+            up_to = up_to.min(m.cursor.advance_shallow(target).map_err(pe)?);
+        }
+        Ok(up_to)
+    }
+
+    /// `MaxScoreCache.getMaxScore` over `SynonymQuery.mergeImpacts`' merged
+    /// impacts for the window ending at `up_to`: the largest score any
+    /// `(freq, norm)` pair of the merge allows, or `None` when some member
+    /// that can have a document there has no impacts reaching `up_to`
+    /// (`mergeImpacts`' "impacts that trigger the maximum score").
+    fn impact_bound(&mut self, up_to: i32) -> Option<f32> {
+        let mut lists: Vec<Vec<Impact>> = Vec::new();
+        for (m, &w) in self.approx.subs.iter_mut().zip(&self.weights) {
+            if m.cursor.doc_id() > up_to {
+                continue;
+            }
+            // `getLevel(impacts[i], docIdUpTo)`.
+            let l0 = m.cursor.level0_last_doc_id();
+            let l1 = m.cursor.level1_last_doc_id();
+            let impacts: &[Impact] = if l0 != NO_MORE_DOCS && l0 >= up_to {
+                m.cursor.level0_impacts()
+            } else if l1 != NO_MORE_DOCS && l1 >= up_to {
+                m.cursor.level1_impacts()
+            } else {
+                return None;
+            };
+            if impacts.is_empty() {
+                return None;
+            }
+            lists.push(if w != 1.0 {
+                impacts
+                    .iter()
+                    .map(|i| Impact {
+                        freq: (i.freq as f32 * w).ceil() as i32,
+                        norm: i.norm,
+                    })
+                    .collect()
+            } else {
+                impacts.to_vec()
+            });
+        }
+        let merged = merge_impacts(&lists)?;
+        let mut max = 0.0f32;
+        for i in &merged {
+            let s = self.scorer.score(i.freq as f32, i.norm);
+            if s.is_nan() {
+                return None;
+            }
+            max = max.max(s);
+        }
+        Some(max)
+    }
+
+    /// `ImpactsDISI.advanceTarget`: from `target`, past every block whose
+    /// bound is below the minimum competitive score.
+    fn competitive_target(&mut self, mut target: i32) -> Result<i32> {
+        if !self.impacts || self.min_competitive <= 0.0 || target <= self.up_to {
+            return Ok(target);
+        }
+        loop {
+            self.up_to = self.shallow(target)?;
+            if self.up_to == NO_MORE_DOCS {
+                return Ok(target);
+            }
+            match self.impact_bound(self.up_to) {
+                Some(bound) if bound < self.min_competitive => {
+                    target = self.up_to.saturating_add(1);
+                }
+                _ => return Ok(target),
+            }
         }
     }
 
@@ -818,10 +1033,25 @@ impl Scorer for FreqSumScorer<'_> {
         self.approx.doc_id()
     }
     fn next_doc(&mut self) -> Result<i32> {
+        if self.impacts && self.min_competitive > 0.0 {
+            let target = self.competitive_target(self.doc_id().saturating_add(1))?;
+            return self.approx.advance(target);
+        }
         self.approx.next_doc()
     }
     fn advance(&mut self, target: i32) -> Result<i32> {
+        let target = self.competitive_target(target)?;
         self.approx.advance(target)
+    }
+    fn advance_shallow(&mut self, target: i32) -> Result<i32> {
+        if !self.impacts {
+            return Ok(NO_MORE_DOCS);
+        }
+        self.shallow(target)
+    }
+    fn set_min_competitive_score(&mut self, min: f32) -> Result<()> {
+        self.min_competitive = min;
+        Ok(())
     }
     fn cost(&self) -> i64 {
         self.approx.cost()
@@ -832,7 +1062,12 @@ impl Scorer for FreqSumScorer<'_> {
         let norm = self.norms.norm(doc, false)?;
         Ok(self.scorer.score(freq, norm))
     }
-    fn max_score(&mut self, _up_to: i32) -> Result<f32> {
+    fn max_score(&mut self, up_to: i32) -> Result<f32> {
+        if self.impacts && up_to != NO_MORE_DOCS {
+            if let Some(bound) = self.impact_bound(up_to) {
+                return Ok(bound.min(self.max));
+            }
+        }
         Ok(self.max)
     }
     /// `CombinedFieldScorer.nextDocsAndScores`: the batch reads norms with
@@ -1089,6 +1324,53 @@ fn fuzzy_blended(ctx: &LeafContext<'_>, q: &crate::FuzzyQuery) -> Result<Option<
     )?))
 }
 
+/// What a top-level clause rewrites to when that is a boolean, so
+/// `bulk_clause` can hand it `BooleanWeight.bulkScorer` (Lucene rewrites
+/// these queries before it creates a weight, and a pure disjunction of terms
+/// is then scored by `MaxScoreBulkScorer`, not a `WANDScorer`).
+pub(crate) enum BulkRewrite<'a> {
+    /// The rewritten query, to be bulk-scored as any clause is.
+    Clause(Clause),
+    /// `BlendedTermQuery`'s `BOOLEAN_REWRITE`: its term clauses, already
+    /// built over the blended statistics.
+    Legs(Vec<Child<'a>>),
+}
+
+/// [`BulkRewrite`] for `clause`, when it is a scoring multi-term rewrite, a
+/// blended query with the boolean rewrite or a fuzzy query; `None` for every
+/// other clause (and when nothing reads a score).
+pub(crate) fn bulk_rewrite<'a>(
+    ctx: &LeafContext<'a>,
+    clause: &Clause,
+    boost: f32,
+    mode: Mode,
+) -> Result<Option<BulkRewrite<'a>>> {
+    if !mode.needs_scores() {
+        return Ok(None);
+    }
+    Ok(match clause {
+        Clause::Extended(e) => match e.as_ref() {
+            ExtendedQuery::MultiTerm(q)
+                if matches!(
+                    q.rewrite,
+                    RewriteMethod::ScoringBoolean
+                        | RewriteMethod::TopTermsScoringBoolean(_)
+                        | RewriteMethod::TopTermsBoostOnlyBoolean(_)
+                        | RewriteMethod::TopTermsBlendedFreqScoring(_)
+                ) =>
+            {
+                rewritten(ctx, q)?.map(BulkRewrite::Clause)
+            }
+            ExtendedQuery::Blended(b) if b.rewrite == BlendedRewrite::Boolean => {
+                Some(BulkRewrite::Legs(blended_children(ctx, b, boost, mode)?))
+            }
+            _ => None,
+        },
+        Clause::Fuzzy(f) => Some(BulkRewrite::Legs(fuzzy_children(ctx, f, boost, mode)?)),
+        _ => None,
+    })
+}
+
 /// `FuzzyQuery`'s scorer, under any similarity and score mode: its rewrite
 /// ([`fuzzy_blended`]).
 pub(crate) fn fuzzy_sim<'a>(
@@ -1157,21 +1439,53 @@ pub(crate) fn add_fuzzy_term_stats(
 // MultiTermQuery rewrite methods
 // ---------------------------------------------------------------------------
 
-/// The terms `source` enumerates in one segment, in term order, with their
-/// states (`MultiTermQuery.getTermsEnum`).
+/// The terms `source` matches in one segment, in term order, each with its
+/// stats and postings pointers -- at most `limit` of them (the first, which
+/// are the smallest), `None` for every one.
+///
+/// `limit` is `TopTermsRewrite`'s queue under a constant boost: once the
+/// queue is full, every later term of the segment sorts after its last and
+/// is uncompetitive (`collect` returns before `termState()`), so the walk
+/// stops there instead of decoding every remaining term's metadata.
 pub(crate) fn expand_terms(
     fields: &BlockTreeFields,
     source: &MultiTermSource,
+    limit: Option<usize>,
 ) -> Result<Vec<(Vec<u8>, SeekedTerm)>> {
-    let classic = |c: Clause| -> Result<Vec<(Vec<u8>, SeekedTerm)>> {
-        Ok(crate::expanded_terms(fields, &c)?
-            .map(|(_, terms, _)| terms)
-            .unwrap_or_default())
+    let limit = limit.unwrap_or(usize::MAX);
+    let take = |it: &mut dyn Iterator<
+        Item = lucene_codecs::blocktree::Result<(Vec<u8>, SeekedTerm)>,
+    >|
+     -> Result<Vec<(Vec<u8>, SeekedTerm)>> {
+        Ok(it
+            .take(limit)
+            .collect::<lucene_codecs::blocktree::Result<Vec<_>>>()?)
     };
     match source {
-        MultiTermSource::Prefix(p) => classic(Clause::Prefix(p.clone())),
-        MultiTermSource::Wildcard(w) => classic(Clause::Wildcard(w.clone())),
-        MultiTermSource::Regexp(r) => classic(Clause::Regexp(r.clone())),
+        MultiTermSource::Prefix(p) => {
+            let Some(ft) = fields.field(&p.field) else {
+                return Ok(Vec::new());
+            };
+            let pattern = lucene_codecs::wildcard::WildcardPattern::prefix(&p.prefix);
+            let mut it = ft.intersect_states(&pattern);
+            take(&mut it)
+        }
+        MultiTermSource::Wildcard(w) => {
+            let Some(ft) = fields.field(&w.field) else {
+                return Ok(Vec::new());
+            };
+            let pattern = lucene_codecs::wildcard::WildcardPattern::new(&w.pattern);
+            let mut it = ft.intersect_states(&pattern);
+            take(&mut it)
+        }
+        MultiTermSource::Regexp(r) => {
+            let Some(ft) = fields.field(&r.field) else {
+                return Ok(Vec::new());
+            };
+            let pattern = lucene_codecs::regexp::RegexpPattern::new(r.pattern.as_bytes())?;
+            let mut it = ft.regexp_intersect_states(&pattern);
+            take(&mut it)
+        }
         MultiTermSource::TermRange(r) => {
             let Some(ft) = fields.field(&r.field) else {
                 return Ok(Vec::new());
@@ -1185,7 +1499,7 @@ pub(crate) fn expand_terms(
                 ),
                 None => it.try_next_term()?.is_some(),
             };
-            while on {
+            while on && out.len() < limit {
                 let term = it.term().map(<[u8]>::to_vec).unwrap_or_default();
                 let past = match &r.upper {
                     None => false,
@@ -1204,41 +1518,17 @@ pub(crate) fn expand_terms(
             }
             Ok(out)
         }
+        // `CompiledAutomaton.getTermsEnum`: `Terms.intersect` over the
+        // compiled byte automaton, skipping every block it proves dead.
         MultiTermSource::Automaton(a) => {
-            use lucene_util::automaton::{AutomatonType, CompiledAutomaton};
+            use lucene_util::automaton::CompiledAutomaton;
             let Some(ft) = fields.field(&a.field) else {
                 return Ok(Vec::new());
             };
             let compiled = CompiledAutomaton::with_options(&a.automaton, false, true, a.binary)
                 .map_err(|e| crate::Error::InvalidQuery(format!("automaton: {e:?}")))?;
-            let mut out = Vec::new();
-            match compiled.automaton_type {
-                AutomatonType::NONE => {}
-                AutomatonType::SINGLE => {
-                    if let Some(t) = &compiled.term {
-                        if let Some(seeked) = ft.seek_term_state(t)? {
-                            out.push((t.clone(), seeked));
-                        }
-                    }
-                }
-                AutomatonType::ALL | AutomatonType::NORMAL => {
-                    let run = compiled.get_byte_runnable();
-                    let mut it = ft.iter();
-                    while let Some(term) = it.try_next_term()? {
-                        let accepted = match run {
-                            Some(r) => r.run(term),
-                            None => true,
-                        };
-                        if accepted {
-                            let term = term.to_vec();
-                            if let Some(seeked) = it.try_seeked_term()? {
-                                out.push((term, seeked));
-                            }
-                        }
-                    }
-                }
-            }
-            Ok(out)
+            let mut it = ft.compiled_terms(&compiled);
+            take(&mut it)
         }
     }
 }
@@ -1265,7 +1555,7 @@ pub(crate) fn rewrite_multi_term(
     // Term -> (docFreq, totalTermFreq) summed over the segments that have it.
     let mut terms: std::collections::BTreeMap<Vec<u8>, (i64, i64)> = Default::default();
     for fields in segments {
-        for (term, seeked) in expand_terms(fields, &q.source)? {
+        for (term, seeked) in expand_terms(fields, &q.source, top)? {
             if let Some(limit) = top {
                 // `TopTermsRewrite`'s queue with every boost `1`: a term is
                 // kept when it is among the `size` smallest seen so far.
@@ -1368,8 +1658,17 @@ fn multi_term<'a>(
                     return build::build(ctx, &c, boost, mode, top_level);
                 }
             }
-            let terms = expand_terms(ctx.fields, &q.source)?;
+            let terms = expand_terms(ctx.fields, &q.source, None)?;
             super::multi_term::constant_score_terms(ctx, q.field(), terms, boost, mode, blended)
+        }
+        // `DocValuesRewriteMethod.rewrite`: `new ConstantScoreQuery(new
+        // MultiTermQueryDocValuesWrapper(query))`. The wrapper's weight is
+        // created without scores, so the segment's query cache sees it as
+        // Lucene's `LRUQueryCache` does.
+        RewriteMethod::DocValues if mode.needs_scores() => {
+            let wrapper = Clause::Extended(Box::new(ExtendedQuery::MultiTerm(q.clone())));
+            let constant = Clause::ConstantScore(Box::new(ConstantScoreQuery::new(wrapper, 1.0)));
+            build::build(ctx, &constant, boost, mode, top_level)
         }
         RewriteMethod::DocValues => super::ranges::doc_values_rewrite(ctx, q, boost, mode),
         _ => match rewritten(ctx, q)? {
@@ -1391,16 +1690,33 @@ fn multi_term<'a>(
 struct IndriAndScorer<'a> {
     approx: DisiApprox<BoxScorer<'a>>,
     boost: f32,
+    /// The sub-scorers that are `IndriScorer`s, with their boosts: fixed
+    /// when the scorer is built, so the per-document `instanceof` walk visits
+    /// only these (none, for an Indri query of plain terms, whose every
+    /// document then scores `0`).
+    indri: Vec<(usize, f32)>,
 }
 
-impl IndriAndScorer<'_> {
+impl<'a> IndriAndScorer<'a> {
+    fn new(subs: Vec<BoxScorer<'a>>, boost: f32) -> Self {
+        let indri = subs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| s.indri_boost().map(|b| (i, b)))
+            .collect();
+        IndriAndScorer {
+            approx: DisiApprox::new(subs, i64::MAX),
+            boost,
+            indri,
+        }
+    }
+
     /// `scoreDoc(subScorers, docId)`.
     fn score_doc(&mut self, doc: i32) -> Result<f32> {
         let mut score = 0.0f64;
         let mut boost_sum = 0.0f64;
-        for i in 0..self.approx.subs.len() {
+        for &(i, b) in &self.indri {
             let sub = &mut self.approx.subs[i];
-            let Some(b) = sub.indri_boost() else { continue };
             // `score()` on the document, `smoothingScore(docId)` otherwise;
             // both are `scoreDoc` for a composite.
             let s = sub.smoothing_score(doc)?;
@@ -1462,10 +1778,7 @@ fn indri_and<'a>(
     Ok(match subs.len() {
         0 => None,
         1 => subs.pop(),
-        _ => Some(Box::new(IndriAndScorer {
-            approx: DisiApprox::new(subs, i64::MAX),
-            boost,
-        })),
+        _ => Some(Box::new(IndriAndScorer::new(subs, boost))),
     })
 }
 
@@ -1920,6 +2233,40 @@ pub(crate) fn segment_matches(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn imp(freq: i32, norm: i64) -> Impact {
+        Impact { freq, norm }
+    }
+
+    /// `SynonymQuery.mergeImpacts`: the implicit impacts between a list's
+    /// own norms are counted (`{2, 10}` still bounds a document of norm 11),
+    /// equal norms sum, a sum that does not rise is dropped, and norms order
+    /// unsigned (a sign-extended byte norm sorts after every positive one).
+    #[test]
+    fn merged_impacts_sum_frequencies_by_norm_as_lucene_does() {
+        assert!(merge_impacts(&[]).is_none());
+        let one = vec![imp(2, 10), imp(4, 12)];
+        assert_eq!(merge_impacts(std::slice::from_ref(&one)), Some(one.clone()));
+        let other = vec![imp(1, 11), imp(3, 13)];
+        assert_eq!(
+            merge_impacts(&[one.clone(), other]),
+            Some(vec![imp(2, 10), imp(3, 11), imp(5, 12), imp(7, 13)])
+        );
+        assert_eq!(
+            merge_impacts(&[one, vec![imp(3, 10)]]),
+            Some(vec![imp(5, 10), imp(7, 12)])
+        );
+        // Norm -1 is the largest unsigned: it comes last, and a frequency
+        // that does not rise past the running maximum adds no impact.
+        assert_eq!(
+            merge_impacts(&[vec![imp(1, 5), imp(9, -1)], vec![imp(1, 3)]]),
+            Some(vec![imp(1, 3), imp(2, 5), imp(10, -1)])
+        );
+        assert_eq!(
+            merge_impacts(&[vec![imp(4, 1)], vec![imp(1, 2)], vec![imp(1, 1)]]),
+            Some(vec![imp(5, 1), imp(6, 2)])
+        );
+    }
 
     #[test]
     fn logit_sigmoid_softplus_follow_java() {
