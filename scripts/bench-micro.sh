@@ -102,6 +102,15 @@ case "$BENCH" in
     MAIN=ConcurrentIndexMicro
     SRC=benchmarks/micro/java/ConcurrentIndexMicro.java
     JAR_MODULES="lucene-core lucene-analysis-common" ;;
+  # M7's pairs (M7Micro.java): the queries parse with the fixture generators'
+  # own grammars, so those sources compile alongside; spans need lucene-queries.
+  m7_fixture|query_builder|stored_fields_write|m7_corpus|similarity|sort_pruning)
+    MAIN=M7Micro
+    SRC=benchmarks/micro/java/M7Micro.java
+    EXTRA_SRC="fixtures/src/GenM7Queries.java fixtures/src/GenSimilaritySearch.java fixtures/src/GenStoredFieldsDeflate.java benchmarks/java-runner/src/BenchRunner.java"
+    JAR_MODULES="lucene-core lucene-queries"
+    JAVA_ARGS=("$BENCH")
+    case "$BENCH" in m7_corpus|similarity|sort_pruning) NEEDS_INDEX=1 ;; esac ;;
   pfor_decode)
     MAIN=org.apache.lucene.codecs.lucene104.PForUtilMicro
     SRC=benchmarks/micro/java/org/apache/lucene/codecs/lucene104/PForUtilMicro.java ;;
@@ -136,7 +145,8 @@ echo "bench-micro: building" >&2
 # found it doing exactly that, reporting a figure identical to three digits
 # across a change that moved the operation by 20%.
 RUST_TARGET_DIR="${CARGO_TARGET_DIR:-benchmarks/rust-runner/target}"
-javac -nowarn -cp "$CP" -d "$OUT/classes" "$SRC"
+# shellcheck disable=SC2086  # EXTRA_SRC is a deliberate word list
+javac -nowarn -cp "$CP" -d "$OUT/classes" "$SRC" ${EXTRA_SRC:-}
 
 # Every case but `index` measures a read path out of the shared `micro` binary,
 # selected by name and pointed at a prebuilt index; `index` has its own binary
