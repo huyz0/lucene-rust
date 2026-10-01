@@ -80,6 +80,64 @@ fn char_count(cp: i32) -> usize {
     }
 }
 
+/// No transition: `ZZ_TRANS`' `-1` (state 63 does not exist).
+const DEAD: u8 = 0x3F;
+/// Packed into a transition: the target state is accepting
+/// (`ZZ_ATTRIBUTE & 1`).
+const ACCEPTING: u8 = 0x40;
+/// Packed into a transition: the target state ends the match
+/// (`ZZ_ATTRIBUTE & 8`).
+const FINAL: u8 = 0x80;
+
+/// `ZZ_TRANS` read through `ZZ_ROWMAP` and `ZZ_ATTRIBUTE`, laid out as one
+/// row of 32 classes per state (the scanner has 59 states and 29 classes),
+/// so the scan loop's lookup per character indexes a fixed-size array by
+/// masked values: no row offset to add and no bounds to check. Each entry is
+/// the target state with its `ZZ_ATTRIBUTE` bits packed above it
+/// ([`ACCEPTING`], [`FINAL`]), saving the dependent attribute load per
+/// character. The same transitions; only the layout differs.
+struct Dfa {
+    next: [[u8; 32]; 64],
+    attribute: [u8; 64],
+}
+
+fn dfa() -> &'static Dfa {
+    static DFA: std::sync::OnceLock<Dfa> = std::sync::OnceLock::new();
+    DFA.get_or_init(|| {
+        let mut d = Dfa {
+            next: [[DEAD; 32]; 64],
+            attribute: [0; 64],
+        };
+        for (state, &row) in ZZ_ROWMAP.iter().enumerate() {
+            d.attribute[state] = ZZ_ATTRIBUTE[state];
+            for class in 0..32usize {
+                if let Some(&next) = ZZ_TRANS.get(usize::from(row) + class) {
+                    if class <= MAX_CLASS {
+                        d.next[state][class] = match u8::try_from(next) {
+                            Ok(t) => {
+                                let attr = ZZ_ATTRIBUTE[usize::from(t)];
+                                let mut packed = t;
+                                if attr & 1 == 1 {
+                                    packed |= ACCEPTING;
+                                }
+                                if attr & 8 == 8 {
+                                    packed |= FINAL;
+                                }
+                                packed
+                            }
+                            Err(_) => DEAD,
+                        };
+                    }
+                }
+            }
+        }
+        d
+    })
+}
+
+/// The largest character class `zzCMap` yields.
+const MAX_CLASS: usize = 28;
+
 /// `zzCMap`: raw input code point to DFA character class.
 #[inline]
 fn zz_cmap(input: i32) -> usize {
@@ -229,6 +287,7 @@ impl StandardTokenizerImpl {
         let mut zz_current_pos_l: usize;
         let mut zz_marked_pos_l: usize;
         let mut zz_end_read_l = self.zz_end_read;
+        let dfa = dfa();
 
         loop {
             zz_marked_pos_l = self.zz_marked_pos;
@@ -245,7 +304,7 @@ impl StandardTokenizerImpl {
             let mut zz_state = ZZ_LEXSTATE[self.zz_lexical_state] as usize;
 
             // set up zzAction for empty match case:
-            let mut zz_attributes = ZZ_ATTRIBUTE[zz_state];
+            let zz_attributes = dfa.attribute[zz_state & 63];
             if (zz_attributes & 1) == 1 {
                 zz_action = zz_state as i32;
             }
@@ -274,17 +333,16 @@ impl StandardTokenizerImpl {
                     zz_input = code_point_at(&self.zz_buffer, zz_current_pos_l, zz_end_read_l);
                     zz_current_pos_l += char_count(zz_input);
                 }
-                let zz_next = ZZ_TRANS[ZZ_ROWMAP[zz_state] as usize + zz_cmap(zz_input)];
-                if zz_next == -1 {
+                let zz_next = dfa.next[zz_state & 63][zz_cmap(zz_input) & 31];
+                if zz_next == DEAD {
                     break;
                 }
-                zz_state = zz_next as usize;
+                zz_state = usize::from(zz_next & 0x3F);
 
-                zz_attributes = ZZ_ATTRIBUTE[zz_state];
-                if (zz_attributes & 1) == 1 {
+                if zz_next & ACCEPTING != 0 {
                     zz_action = zz_state as i32;
                     zz_marked_pos_l = zz_current_pos_l;
-                    if (zz_attributes & 8) == 8 {
+                    if zz_next & FINAL != 0 {
                         break;
                     }
                 }
@@ -371,6 +429,9 @@ mod tests {
         assert_eq!(ZZ_CMAP_TOP.len(), 0x110000 >> 8);
         assert_eq!(ZZ_ACTION.len(), ZZ_ROWMAP.len());
         assert_eq!(ZZ_ATTRIBUTE.len(), ZZ_ROWMAP.len());
+        // `Dfa` packs a state into six bits, with `DEAD` the one left over.
+        assert!(ZZ_ROWMAP.len() < usize::from(DEAD));
+        assert!(ZZ_ATTRIBUTE.iter().all(|&a| a & !9 == 0));
         // every transition target is a state or -1
         assert!(ZZ_TRANS
             .iter()
