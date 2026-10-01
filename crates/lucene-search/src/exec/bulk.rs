@@ -82,6 +82,9 @@ pub(crate) enum Bulk<'a> {
     /// OR-ed into a window's bits, as `DenseConjunctionBulkScorer` unions a
     /// dense `COMPLETE_NO_SCORES` disjunction. See [`union_score`].
     Union(Vec<TermLeg<'a>>),
+    /// A scored `CombinedFieldQuery` of one or two members, a window at a
+    /// time. See [`super::extended::CombinedWindow`].
+    Combined(Box<super::extended::CombinedWindow<'a>>),
 }
 
 impl<'a> Bulk<'a> {
@@ -108,6 +111,7 @@ impl<'a> Bulk<'a> {
             Bulk::ReqExcl(..) => "req_excl",
             Bulk::DisMax(..) => "dismax",
             Bulk::Union(..) => "union",
+            Bulk::Combined(..) => "combined",
         }
     }
 
@@ -162,6 +166,7 @@ impl<'a> Bulk<'a> {
             ),
             Bulk::DisMax(legs, state) => state.score(legs, live_docs, collector, min, max),
             Bulk::Union(legs) => union_score(legs, live_docs, collector, min, max),
+            Bulk::Combined(c) => c.score(live_docs, collector, min, max),
             Bulk::MinShouldMatch(legs, state) => state.score(legs, live_docs, collector, min, max),
             Bulk::Filtered(inner, filter) => {
                 let mut fc = FilterCollector {
@@ -523,6 +528,18 @@ pub(crate) fn bulk_clause<'a>(
             return Ok(bulk);
         }
     }
+    if let Clause::Extended(e) = inner {
+        if let crate::extended_query::ExtendedQuery::CombinedField(c) = e.as_ref() {
+            if let Some(bulk) = super::extended::combined_field_bulk(ctx, c, dismax_boost, mode)? {
+                return Ok(bulk.map(Bulk::Combined));
+            }
+        }
+        if let crate::extended_query::ExtendedQuery::IndriAnd(q) = e.as_ref() {
+            if let Some(bulk) = bulk_indri_terms(ctx, q, mode)? {
+                return Ok(Some(bulk));
+            }
+        }
+    }
     match super::extended::bulk_rewrite(ctx, inner, dismax_boost, mode)? {
         Some(super::extended::BulkRewrite::Clause(rewritten)) => {
             return bulk_clause(ctx, &rewritten, dismax_boost, mode);
@@ -551,6 +568,36 @@ pub(crate) fn bulk_clause<'a>(
         Some(Child::Scorer(s)) => Some(Bulk::scorer(s)),
         None => None,
     })
+}
+
+/// An `IndriAndQuery` of plain terms, two or more of them present here, as
+/// a [`Bulk::Union`] of their documents; `None` for any other shape.
+///
+/// `IndriAndScorer.scoreDoc` folds only sub-scorers that are `IndriScorer`s,
+/// and a term's `TermScorer` is not one, so every document such a query
+/// matches scores exactly `0` -- and `IndriDisjunctionScorer` ignores the
+/// minimum competitive score, so `DefaultBulkScorer` collects every live
+/// document of the union, in order, at `0`. That is [`union_score`], over
+/// docs-only cursors: no frequency is decoded and no term score computed,
+/// because none is ever read. With one term present the query is that term
+/// (`IndriAndWeight`'s single scorer), scored normally, so it is declined.
+fn bulk_indri_terms<'a>(
+    ctx: &LeafContext<'a>,
+    q: &crate::extended_query::IndriAndQuery,
+    mode: Mode,
+) -> Result<Option<Bulk<'a>>> {
+    if !mode.needs_scores() || !q.clauses.iter().all(|c| matches!(c, Clause::Term(_))) {
+        return Ok(None);
+    }
+    let mut legs = Vec::with_capacity(q.clauses.len());
+    for c in &q.clauses {
+        match term_leg(ctx, c, 1.0, Mode::NoScores)? {
+            TermForm::Leg(leg) => legs.push(*leg),
+            TermForm::Absent => {}
+            TermForm::Other => return Ok(None),
+        }
+    }
+    Ok((legs.len() >= 2).then_some(Bulk::Union(legs)))
 }
 
 /// A scored dismax whose disjuncts are all terms, as [`DisMaxBulk`]; `None`
