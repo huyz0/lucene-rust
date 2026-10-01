@@ -19,7 +19,7 @@ use crate::segment_info;
 
 /// The writer's answers to a policy's `MergeContext` questions, computed once
 /// per consultation.
-struct WriterContext {
+pub(super) struct WriterContext {
     deletes_to_merge: HashMap<String, i32>,
     merging: HashSet<String>,
 }
@@ -62,7 +62,7 @@ impl IndexWriter<'_> {
 
     /// The committed segments as a policy sees them, and the context that
     /// answers for them.
-    fn merge_inputs(&self) -> Result<(Vec<MergeSegment>, WriterContext)> {
+    pub(super) fn merge_inputs(&self) -> Result<(Vec<MergeSegment>, WriterContext)> {
         let mut infos = Vec::with_capacity(self.segment_infos.segments.len());
         let mut deletes_to_merge = HashMap::new();
         for sci in &self.segment_infos.segments {
@@ -144,11 +144,106 @@ impl IndexWriter<'_> {
             if groups.is_empty() || last.as_ref() == Some(&groups) {
                 return Ok(());
             }
-            for group in &groups {
-                self.execute_merge(group)?;
+            for (group, hooks) in spec.runnable() {
+                self.execute_merge_hooked(&group, hooks)?;
             }
             last = Some(groups);
         }
+    }
+
+    /// `IndexWriterConfig.setMaxFullFlushMergeWaitMillis`: how long a commit
+    /// ([`IndexWriter::commit`], [`IndexWriter::prepare_commit`]) or a
+    /// near-real-time reader (`getReader`) waits for the merges
+    /// `MergePolicy.findFullFlushMerges` asks for on the segments it is about
+    /// to publish. `0` (or less) turns merge-on-commit/refresh off.
+    ///
+    /// The default is Java's, [`super::DEFAULT_MAX_FULL_FLUSH_MERGE_WAIT_MILLIS`]
+    /// (500 ms): with a merge policy installed, a commit's point-in-time
+    /// segments are the merged ones whenever `TieredMergePolicy` (below its
+    /// floor size) or the installed policy asks for a merge.
+    pub fn set_max_full_flush_merge_wait_millis(&mut self, millis: i64) {
+        self.max_full_flush_merge_wait_millis = millis;
+    }
+
+    /// `LiveIndexWriterConfig.getMaxFullFlushMergeWaitMillis`.
+    pub fn max_full_flush_merge_wait_millis(&self) -> i64 {
+        self.max_full_flush_merge_wait_millis
+    }
+
+    /// `IndexWriter.preparePointInTimeMerge` for a `COMMIT` or `GET_READER`
+    /// trigger, run to completion: the policy's `findFullFlushMerges` over
+    /// every segment the commit or reader is about to see -- those this call's
+    /// flush just wrote included -- then each merge it asks for, published in
+    /// memory (`commitMerge`), so the `segments_N` or reader built next holds
+    /// the merged segment in place of its sources. Returns how many merges
+    /// ran.
+    ///
+    /// The policy is the installed pluggable one, or -- with only a
+    /// [`super::MergePolicyConfig`] -- `TieredMergePolicy` over that
+    /// configuration, whose `maxFullFlushMergeSize` is its floor segment
+    /// size. With neither, or a wait of `0`, nothing happens.
+    ///
+    /// A merge including a segment in `merging` (merges another thread is
+    /// running, [`crate::concurrent_writer::ConcurrentIndexWriter`]) is
+    /// skipped, as `registerMerge` rejects it.
+    ///
+    /// **The wait**: Java starts every merge on the merge scheduler and waits
+    /// up to `maxFullFlushMergeWaitMillis` for them; one finishing later still
+    /// lands in the writer, only not in this commit. This writer merges on
+    /// the calling thread, so a merge it starts always finishes inside the
+    /// commit; once the wait has elapsed it starts no further one, and those
+    /// are left to the merges after the commit (`maybeMerge`).
+    pub(crate) fn merge_on_full_flush(
+        &mut self,
+        trigger: MergeTrigger,
+        merging: &HashSet<String>,
+    ) -> Result<usize> {
+        let wait = self.max_full_flush_merge_wait_millis;
+        if wait <= 0 {
+            return Ok(0);
+        }
+        let policy: Arc<dyn MergePolicy> = match (&self.pluggable_merge_policy, &self.merge_policy)
+        {
+            (Some(policy), _) => Arc::clone(policy),
+            (None, Some(config)) => Arc::new(merge_policy::TieredMergePolicy::new(config.clone())),
+            (None, None) => return Ok(0),
+        };
+        let start = std::time::Instant::now();
+        let deadline = std::time::Duration::from_millis(u64::try_from(wait).unwrap_or(0));
+        // Java's `segmentInfos` already holds every flushed segment; this
+        // writer keeps them apart until a commit folds them in, so fold them
+        // in now -- in memory, as the merges below are published.
+        if !self.flushed_segments.is_empty() {
+            let flushed = std::mem::take(&mut self.flushed_segments);
+            self.segment_infos.segments.extend(flushed);
+        }
+        let (infos, mut ctx) = self.merge_inputs()?;
+        ctx.merging = merging.clone();
+        let Some(spec) = policy
+            .find_full_flush_merges(trigger, &infos, &ctx)
+            .map_err(policy_error)?
+        else {
+            return Ok(0);
+        };
+        let by_caller = self.merges_by_caller;
+        self.merges_by_caller = true;
+        let mut ran = 0usize;
+        let mut result = Ok(());
+        for (group, hooks) in spec.runnable() {
+            if group.iter().any(|name| merging.contains(name)) {
+                continue;
+            }
+            if start.elapsed() >= deadline {
+                break;
+            }
+            result = self.execute_merge_hooked(&group, hooks);
+            if result.is_err() {
+                break;
+            }
+            ran = ran.saturating_add(1);
+        }
+        self.merges_by_caller = by_caller;
+        result.map(|()| ran)
     }
 
     /// `IndexWriter.forceMergeDeletes()` under a pluggable policy: one round
@@ -164,8 +259,8 @@ impl IndexWriter<'_> {
         else {
             return Ok(());
         };
-        for group in spec.groups() {
-            self.execute_merge(&group)?;
+        for (group, hooks) in spec.runnable() {
+            self.execute_merge_hooked(&group, hooks)?;
         }
         Ok(())
     }
@@ -199,8 +294,8 @@ impl IndexWriter<'_> {
                 return Ok(());
             }
             let before: HashSet<String> = infos.into_iter().map(|i| i.name).collect();
-            for group in &groups {
-                self.execute_merge(group)?;
+            for (group, hooks) in spec.runnable() {
+                self.execute_merge_hooked(&group, hooks)?;
             }
             // `IndexWriter.updatePendingMerges`: a merged segment replaces its
             // sources in `segmentsToMerge`, marked "not original".
@@ -305,6 +400,96 @@ mod tests {
             }
         }
         (ids, compound)
+    }
+
+    /// What a fake `OneMerge` subclass answers: see [`hooked_merges`].
+    #[derive(Debug)]
+    enum Answer {
+        Fail,
+        Readers(usize),
+        Order(Vec<i32>),
+        HideFirst,
+    }
+
+    impl crate::merge_policy::MergeHooks for Answer {
+        fn prepare(
+            &self,
+            _dir: &dyn lucene_store::Directory,
+            sources: &crate::segment_infos::SegmentInfos,
+            may_reorder: bool,
+        ) -> std::result::Result<crate::merge_policy::PreparedMerge, String> {
+            assert!(may_reorder);
+            let n = sources.segments.len();
+            match self {
+                Answer::Fail => Err("no".to_string()),
+                Answer::Readers(k) => Ok(crate::merge_policy::PreparedMerge {
+                    live_docs: vec![None; *k],
+                    new_to_old: None,
+                }),
+                Answer::Order(o) => Ok(crate::merge_policy::PreparedMerge {
+                    live_docs: vec![None; n],
+                    new_to_old: Some(o.clone()),
+                }),
+                Answer::HideFirst => {
+                    let mut live = lucene_util::fixed_bit_set::FixedBitSet::new(1);
+                    let mut all = vec![None; n];
+                    // Every source here holds one document; the first is
+                    // hidden.
+                    all[0] = Some(live.clone());
+                    live.set(0);
+                    all[1] = Some(live);
+                    Ok(crate::merge_policy::PreparedMerge {
+                        live_docs: all,
+                        new_to_old: Some((0..n as i32).rev().collect()),
+                    })
+                }
+            }
+        }
+    }
+
+    /// A `OneMerge` with hooks: the writer honours the wrapped readers' live
+    /// documents and the reorder's document order, and refuses a hook that
+    /// fails, answers for the wrong number of sources, or maps documents
+    /// that are not a permutation of the merged view.
+    #[test]
+    fn hooked_merges() {
+        let run = |answer: Answer| {
+            let tmp = TempDir::new("pluggable-merge-hooks");
+            let dir = FsDirectory::open(&tmp);
+            let mut w = IndexWriter::open(&dir, vec![field()], "Lucene104", version()).unwrap();
+            for id in ["a", "b", "c"] {
+                w.add_document(doc(id)).unwrap();
+                w.commit().unwrap();
+            }
+            let names: Vec<String> = w
+                .segment_infos()
+                .segments
+                .iter()
+                .map(|s| s.segment_name.clone())
+                .collect();
+            let result = w.execute_merge_hooked(&names, Some(Arc::new(answer)));
+            let ids = result.as_ref().ok().map(|()| {
+                w.commit().unwrap();
+                stored_ids(&dir).0
+            });
+            (result.map_err(|e| e.to_string()), ids)
+        };
+        let (r, ids) = run(Answer::Order(vec![2, 0, 1]));
+        assert!(r.is_ok(), "{r:?}");
+        assert_eq!(ids.unwrap(), ["c", "a", "b"]);
+        let (_, ids) = run(Answer::HideFirst);
+        assert_eq!(ids.unwrap(), ["c", "b"]);
+        for (answer, want) in [
+            (Answer::Fail, "merge hooks: no"),
+            (Answer::Readers(2), "2 readers for 3 sources"),
+            (Answer::Order(vec![0, 1]), "covers 2 documents"),
+            (Answer::Order(vec![0, 1, 7]), "outside the merged view"),
+            (Answer::Order(vec![0, 1, 1]), "appears twice"),
+        ] {
+            let (r, _) = run(answer);
+            let e = r.unwrap_err();
+            assert!(e.contains(want), "{e}");
+        }
     }
 
     /// `useCompoundFile`: a flushed segment is packed, `.si` outside the

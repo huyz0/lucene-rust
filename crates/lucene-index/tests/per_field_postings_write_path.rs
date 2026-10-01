@@ -50,7 +50,35 @@ fn field(name: &str, number: i32, index_options: IndexOptions) -> FieldInfo {
     }
 }
 
+/// The same routing as an `IndexWriterConfig.setCodec` codec.
+#[derive(Debug)]
+struct Codec;
+
+impl lucene_codecs::codec::Lucene104Codec for Codec {
+    fn postings_format_for_field(&self, field: &str) -> Lucene104PostingsFormat {
+        if field == "tag" || field == "key" {
+            Lucene104PostingsFormat::new(10, 20).unwrap()
+        } else {
+            Lucene104PostingsFormat::default()
+        }
+    }
+}
+
+/// A codec of another name is refused: this writer writes `Lucene104`.
+#[derive(Debug)]
+struct Foreign;
+
+impl lucene_codecs::codec::Lucene104Codec for Foreign {
+    fn name(&self) -> &str {
+        "Asserting"
+    }
+}
+
 fn write(dir: &FsDirectory, merge: bool) {
+    write_with(dir, merge, false);
+}
+
+fn write_with(dir: &FsDirectory, merge: bool, codec: bool) {
     let fields = vec![
         field("id", 0, IndexOptions::None),
         field("body", 1, IndexOptions::DocsAndFreqsAndPositions),
@@ -66,11 +94,18 @@ fn write(dir: &FsDirectory, merge: bool) {
     for name in ["body", "tag", "key"] {
         writer.add_postings_field(name).unwrap();
     }
-    let small = Lucene104PostingsFormat::new(10, 20).unwrap();
-    writer.set_postings_format_for_field("tag", small);
-    writer.set_postings_format_for_field("key", small);
-    // Re-routing replaces, never duplicates.
-    writer.set_postings_format_for_field("key", small);
+    assert!(writer
+        .set_codec(Some(std::sync::Arc::new(Foreign)))
+        .is_err());
+    if codec {
+        writer.set_codec(Some(std::sync::Arc::new(Codec))).unwrap();
+    } else {
+        let small = Lucene104PostingsFormat::new(10, 20).unwrap();
+        writer.set_postings_format_for_field("tag", small);
+        writer.set_postings_format_for_field("key", small);
+        // Re-routing replaces, never duplicates.
+        writer.set_postings_format_for_field("key", small);
+    }
     for i in 0..PER_SEGMENT * SEGMENTS {
         let text = |field_number: i32, s: String| StoredField {
             field_number,
@@ -183,5 +218,12 @@ fn flushed_segments_route_fields_to_their_postings_format() {
 fn a_merge_reads_and_writes_both_postings_formats() {
     let path = TempDir::new("per-field-merged");
     write(&FsDirectory::open(&path), true);
+    assert_index(&path, 1);
+}
+
+#[test]
+fn a_codec_routes_postings_as_the_per_field_setters_do() {
+    let path = TempDir::new("per-field-codec");
+    write_with(&FsDirectory::open(&path), true, true);
     assert_index(&path, 1);
 }

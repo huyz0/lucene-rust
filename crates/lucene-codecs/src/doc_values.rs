@@ -2609,6 +2609,9 @@ pub enum WriteError {
     DocIdOutOfRange(i32, i32),
     #[error("write_dense_fields requires at least one field")]
     EmptyFieldList,
+    /// `Lucene90DocValuesFormat(int)`'s argument check.
+    #[error("skipIndexIntervalSize must be > 1, got [{0}]")]
+    InvalidSkipIndexIntervalSize(i32),
     #[error(
         "write_dense_fields requires distinct field numbers; field {0} appears more than once"
     )]
@@ -2897,6 +2900,75 @@ pub fn write_fields_with_skip_indexes(
     segment_id: &[u8; ID_LENGTH],
     segment_suffix: &str,
 ) -> WriteResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    write_fields_with_format(
+        fields,
+        skip_index_fields,
+        max_doc,
+        segment_id,
+        segment_suffix,
+        Lucene90DocValuesFormat::default(),
+    )
+}
+
+/// `Lucene90DocValuesFormat(skipIndexIntervalSize)`: the doc-values format a
+/// field is routed to (`PerFieldDocValuesFormat`). Its one setting is the
+/// number of documents a skip-index interval holds before it may close;
+/// [`Default`] is `Lucene90DocValuesFormat()`,
+/// [`Self::DEFAULT_SKIP_INDEX_INTERVAL_SIZE`].
+///
+/// Java groups fields by format *instance*; this port compares formats by
+/// value, so two equal instances share one set of files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Lucene90DocValuesFormat {
+    skip_index_interval_size: i32,
+}
+
+impl Lucene90DocValuesFormat {
+    /// `Lucene90DocValuesFormat.DEFAULT_SKIP_INDEX_INTERVAL_SIZE`.
+    pub const DEFAULT_SKIP_INDEX_INTERVAL_SIZE: i32 = 4096;
+    /// `Lucene90DocValuesFormat.getName()`.
+    pub const NAME: &'static str = "Lucene90";
+
+    /// `new Lucene90DocValuesFormat(skipIndexIntervalSize)`; below 2 is
+    /// Java's `IllegalArgumentException`.
+    pub fn new(skip_index_interval_size: i32) -> WriteResult<Self> {
+        if skip_index_interval_size < 2 {
+            return Err(WriteError::InvalidSkipIndexIntervalSize(
+                skip_index_interval_size,
+            ));
+        }
+        Ok(Lucene90DocValuesFormat {
+            skip_index_interval_size,
+        })
+    }
+
+    /// The interval size this format writes skip indexes with.
+    pub fn skip_index_interval_size(&self) -> i32 {
+        self.skip_index_interval_size
+    }
+}
+
+impl Default for Lucene90DocValuesFormat {
+    fn default() -> Self {
+        Lucene90DocValuesFormat {
+            skip_index_interval_size: Self::DEFAULT_SKIP_INDEX_INTERVAL_SIZE,
+        }
+    }
+}
+
+/// [`write_fields_with_skip_indexes`] as `format` writes it -- its skip
+/// indexes close an interval after `format`'s `skipIndexIntervalSize`
+/// documents.
+// ARITH: as `write_dense_fields`.
+#[allow(clippy::arithmetic_side_effects)]
+pub fn write_fields_with_format(
+    fields: &[DenseField<'_>],
+    skip_index_fields: &[i32],
+    max_doc: i32,
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+    format: Lucene90DocValuesFormat,
+) -> WriteResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
     if fields.is_empty() {
         return Err(WriteError::EmptyFieldList);
     }
@@ -2954,7 +3026,12 @@ pub fn write_fields_with_skip_indexes(
             let mut entry = Vec::new();
             write_field_entry(&mut entry, &mut data, field, max_doc)?;
             meta.push(entry[0]);
-            write_skip_index(&mut meta, &mut skip_index, &stream);
+            write_skip_index(
+                &mut meta,
+                &mut skip_index,
+                &stream,
+                format.skip_index_interval_size,
+            );
             meta.extend_from_slice(&entry[1..]);
         } else {
             write_field_entry(&mut meta, &mut data, field, max_doc)?;
@@ -3127,9 +3204,6 @@ fn write_field_entry(
     Ok(())
 }
 
-/// `Lucene90DocValuesFormat.DEFAULT_SKIP_INDEX_INTERVAL_SIZE`.
-const SKIP_INDEX_INTERVAL_SIZE: i32 = 4096;
-
 /// `Lucene90DocValuesConsumer.SkipAccumulator`.
 #[derive(Clone, Copy)]
 struct SkipAccumulator {
@@ -3153,11 +3227,11 @@ impl SkipAccumulator {
         }
     }
 
-    /// `isDone`: an interval closes once it holds `SKIP_INDEX_INTERVAL_SIZE`
+    /// `isDone`: an interval closes once it holds `skipIndexIntervalSize`
     /// documents, unless the next document keeps it a dense run of one
     /// single value.
-    fn is_done(&self, value_count: usize, next_value: i64, next_doc: i32) -> bool {
-        if self.doc_count < SKIP_INDEX_INTERVAL_SIZE {
+    fn is_done(&self, interval: i32, value_count: usize, next_value: i64, next_doc: i32) -> bool {
+        if self.doc_count < interval {
             return false;
         }
         value_count > 1
@@ -3190,12 +3264,17 @@ impl SkipAccumulator {
 }
 
 /// Port of `Lucene90DocValuesConsumer.writeSkipIndex`: intervals of about
-/// `SKIP_INDEX_INTERVAL_SIZE` documents with their doc-id and value ranges,
+/// `interval` (`skipIndexIntervalSize`) documents with their doc-id and value ranges,
 /// grouped into up to `SKIP_INDEX_MAX_LEVEL` levels of `2^LEVEL_SHIFT`, into
 /// `skip_index`; the field's summary into `meta`.
 // ARITH: counters and offsets over in-memory data; `skip_index` only grows.
 #[allow(clippy::arithmetic_side_effects)]
-fn write_skip_index(meta: &mut Vec<u8>, skip_index: &mut Vec<u8>, stream: &SortedNumericColumn) {
+fn write_skip_index(
+    meta: &mut Vec<u8>,
+    skip_index: &mut Vec<u8>,
+    stream: &SortedNumericColumn,
+    interval: i32,
+) {
     let start = skip_index.len() as i64;
     let mut global_max_value = i64::MIN;
     let mut global_min_value = i64::MAX;
@@ -3216,7 +3295,7 @@ fn write_skip_index(meta: &mut Vec<u8>, skip_index: &mut Vec<u8>, stream: &Sorte
         };
         global_max_value_count = global_max_value_count.max(value_count as i32);
         if let Some(acc) = current {
-            if acc.is_done(value_count, first_value, doc) {
+            if acc.is_done(interval, value_count, first_value, doc) {
                 global_max_value = global_max_value.max(acc.max_value);
                 global_min_value = global_min_value.min(acc.min_value);
                 global_doc_count += acc.doc_count;

@@ -157,6 +157,8 @@ use lucene_codecs::field_infos::{
 use lucene_codecs::hnsw;
 use lucene_codecs::hnsw_vectors::{self, HnswVectorsField};
 use lucene_codecs::norms;
+use lucene_codecs::per_field_doc_values;
+use lucene_codecs::per_field_knn_vectors;
 use lucene_codecs::per_field_postings;
 use lucene_codecs::postings_writer::{self, FieldPostingsInput, TermPostings};
 use lucene_codecs::stored_fields::{self, Document, FieldValue};
@@ -195,6 +197,11 @@ pub enum Error {
     /// has tokens, a value only an empty field may carry.
     #[error("the similarity returned a norm of 0 for non-empty field {0:?}")]
     ZeroNorm(String),
+    /// A `OneMerge`'s `wrapForMerge`/`reorder`
+    /// ([`crate::merge_policy::MergeHooks`]) failed, or answered something
+    /// the merge cannot honour.
+    #[error("merge hooks: {0}")]
+    MergeHook(String),
     #[error(transparent)]
     SegmentWriter(#[from] segment_writer::Error),
     #[error(transparent)]
@@ -800,6 +807,10 @@ pub(crate) struct IndexingConfig {
     /// `Analyzer.getOffsetGap(String)` -- see
     /// [`IndexWriter::set_offset_gap`]. Java's default, `1`.
     offset_gap: i32,
+    /// `IndexWriterConfig.getAnalyzer()` for the document API -- see
+    /// [`IndexWriter::set_analyzer`]. `None` is the standard analyzer with
+    /// the two gaps above.
+    document_analyzer: Option<std::sync::Arc<Analyzer>>,
     /// The token-payload supplier for the `store_payloads` fields among
     /// [`Self::postings_fields`] -- this port's stand-in for the
     /// `PayloadAttribute` a real Lucene `TokenFilter` sets, see
@@ -878,6 +889,30 @@ pub(crate) struct IndexingConfig {
     /// to a postings format other than the default `Lucene104PostingsFormat()`
     /// -- see [`IndexWriter::set_postings_format_for_field`].
     postings_formats: Vec<(String, per_field_postings::Lucene104PostingsFormat)>,
+    /// `PerFieldDocValuesFormat.getDocValuesFormatForField`: the fields routed
+    /// to a doc-values format other than the default
+    /// `Lucene90DocValuesFormat()` -- see
+    /// [`IndexWriter::set_doc_values_format_for_field`].
+    doc_values_formats: Vec<(String, per_field_doc_values::Lucene90DocValuesFormat)>,
+    /// `PerFieldKnnVectorsFormat.getKnnVectorsFormatForField`: the fields
+    /// routed to a KNN format other than the default
+    /// `Lucene99HnswVectorsFormat(hnsw_m, hnsw_beam_width)` -- see
+    /// [`IndexWriter::set_knn_vectors_format_for_field`].
+    knn_vectors_formats: Vec<(String, per_field_knn_vectors::KnnVectorsFormat)>,
+    /// `IndexWriterConfig.setCodec`: the per-field routing every field
+    /// without a per-field setting of its own follows -- see
+    /// [`IndexWriter::set_codec`]. `None` is `Lucene104Codec()`.
+    codec: Option<std::sync::Arc<dyn lucene_codecs::codec::Lucene104Codec>>,
+}
+
+/// One `PerFieldDocValuesFormat` instance's files for a flushed segment:
+/// its suffix number, its fields, and its `.dvm`/`.dvd`/`.dvs`.
+pub(crate) struct DocValuesGroupOutput {
+    pub(crate) suffix: u32,
+    pub(crate) field_numbers: Vec<i32>,
+    pub(crate) dvm: Vec<u8>,
+    pub(crate) dvd: Vec<u8>,
+    pub(crate) dvs: Vec<u8>,
 }
 
 /// [`IndexWriter::begin_merge`]'s snapshot: the sources as the merge reads
@@ -892,6 +927,12 @@ pub(crate) struct MergePlan {
     /// Which soft-deleted documents survive this merge -- see
     /// [`IndexWriter::set_soft_deletes_retention`]. `None` keeps them all.
     retention: Option<SoftDeletesRetention>,
+    /// The `OneMerge`'s `wrapForMerge`/`reorder`, with the sources as the
+    /// segment infos the hooks open them from.
+    hooks: Option<(
+        std::sync::Arc<dyn crate::merge_policy::MergeHooks>,
+        crate::segment_infos::SegmentInfos,
+    )>,
 }
 
 /// `SoftDeletesRetentionMergePolicy` with OpenSearch's retention query,
@@ -1240,6 +1281,11 @@ impl IndexingConfig {
             .iter()
             .find(|(name, _)| name == field)
             .map(|(_, format)| *format)
+            .or_else(|| {
+                self.codec
+                    .as_ref()
+                    .map(|c| c.postings_format_for_field(field))
+            })
             .unwrap_or_default()
     }
 
@@ -1319,9 +1365,21 @@ impl IndexingConfig {
         type RawTermVectorFiles = Option<(Vec<u8>, Vec<u8>, Vec<u8>)>;
         /// Raw `.nvm`/`.nvd` bytes for a source that has norms.
         type RawNormsFiles = Option<(Vec<u8>, Vec<u8>)>;
-        /// Raw `.vec`/`.vemf` and, when the segment has a graph,
-        /// `.vem`/`.vex` bytes.
-        type RawVectorFiles = Option<(Vec<u8>, Vec<u8>, Option<(Vec<u8>, Vec<u8>)>)>;
+        /// One current-format `PerFieldKnnVectorsFormat` instance of a
+        /// source: its raw `.vec`/`.vemf`, its `.vem`/`.vex` graph when it
+        /// has one, and its `.vemq`/`.veq` codes when it is a
+        /// scalar-quantized one.
+        struct RawVectorGroup {
+            suffix: String,
+            /// `Lucene104ScalarQuantizedVectorsFormat`: the one format whose
+            /// centroid a merge sees (`getCentroid`).
+            flat_quantized: bool,
+            vec: Vec<u8>,
+            vemf: Vec<u8>,
+            graph: Option<(Vec<u8>, Vec<u8>)>,
+            quantized: Option<(Vec<u8>, Vec<u8>)>,
+        }
+        type RawVectorFiles = Vec<RawVectorGroup>;
         /// A retired (9.0-9.8) HNSW format's `.vem`/`.vec`/`.vex` triple,
         /// with the format and codec suffix it was written under.
         type RawRetiredVectorFiles = Option<(RetiredHnswFormat, String, Vec<u8>, Vec<u8>, Vec<u8>)>;
@@ -1636,28 +1694,38 @@ impl IndexingConfig {
                     graph,
                 });
             }
-            let current_vec = format!("{}.vec", per_field_segment(name, KNN_VECTORS_FORMAT_NAME));
-            let vectors = if retired_vectors.is_none() && seg_files.contains(&current_vec) {
-                let seg = per_field_segment(name, KNN_VECTORS_FORMAT_NAME);
-                let vec_bytes = seg_dir.open(&format!("{seg}.vec"))?.to_vec();
-                let vemf = seg_dir.open(&format!("{seg}.vemf"))?.to_vec();
-                // A segment can legitimately have the flat pair and no graph
-                // files at all if it was written below
-                // `HNSW_GRAPH_THRESHOLD`; this writer always writes the
-                // `.vem`/`.vex` pair (with `numLevels = 0` in that case), so
-                // the absence is tolerated rather than assumed.
-                let graph = if seg_files.contains(&format!("{seg}.vem")) {
-                    Some((
-                        seg_dir.open(&format!("{seg}.vem"))?.to_vec(),
-                        seg_dir.open(&format!("{seg}.vex"))?.to_vec(),
-                    ))
-                } else {
-                    None
-                };
-                Some((vec_bytes, vemf, graph))
-            } else {
-                None
-            };
+            // Every current-format `PerFieldKnnVectorsFormat` instance
+            // (`FieldsReader` opens one reader per suffix the `.fnm` names).
+            let mut vectors: RawVectorFiles = Vec::new();
+            if retired_vectors.is_none() {
+                for suffix in current_vector_suffixes(&seg_files, name) {
+                    let seg = format!("{name}_{suffix}");
+                    let listed = |ext: &str| seg_files.contains(&format!("{seg}.{ext}"));
+                    let pair = |a: &str, b: &str| -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+                        Ok(if listed(a) {
+                            Some((
+                                seg_dir.open(&format!("{seg}.{a}"))?.to_vec(),
+                                seg_dir.open(&format!("{seg}.{b}"))?.to_vec(),
+                            ))
+                        } else {
+                            None
+                        })
+                    };
+                    // A segment can legitimately have the flat pair and no
+                    // graph files at all (a graph-less format); this writer's
+                    // HNSW formats always write `.vem`/`.vex` (with
+                    // `numLevels = 0` below `HNSW_GRAPH_THRESHOLD`).
+                    vectors.push(RawVectorGroup {
+                        flat_quantized: suffix.rsplit_once('_').map(|(f, _)| f)
+                            == Some(lucene_codecs::scalar_quantized_vectors::NAME),
+                        vec: seg_dir.open(&format!("{seg}.vec"))?.to_vec(),
+                        vemf: seg_dir.open(&format!("{seg}.vemf"))?.to_vec(),
+                        graph: pair("vem", "vex")?,
+                        quantized: pair("vemq", "veq")?,
+                        suffix,
+                    });
+                }
+            }
 
             let points = if seg_files.iter().any(|f| f.ends_with(".kdd")) {
                 Some((
@@ -1725,6 +1793,42 @@ impl IndexingConfig {
         // merge of segments that disagree is refused rather than silently
         // producing an unsorted segment (or one whose `.si` lies).
         let merge_sort = opened.first().and_then(|o| o.index_sort.clone());
+
+        // `mergeMiddle`: `merge.wrapForMerge(reader)` on every source, then
+        // `merge.reorder(mergedView)` -- unless an index sort is configured,
+        // or blocks cannot be identified by a parent field.
+        let mut reorder: Option<Vec<i32>> = None;
+        if let Some((hooks, infos)) = &plan.hooks {
+            let blocks_without_parent = opened.iter().any(|o| o.has_blocks)
+                && opened
+                    .iter()
+                    .any(|o| !o.field_infos.iter().any(|f| f.parent_field));
+            let may_reorder =
+                self.index_sort.is_none() && merge_sort.is_none() && !blocks_without_parent;
+            let prepared = hooks
+                .prepare(dir, infos, may_reorder)
+                .map_err(Error::MergeHook)?;
+            if prepared.live_docs.len() != opened.len() {
+                return Err(Error::MergeHook(format!(
+                    "wrapForMerge returned {} readers for {} sources",
+                    prepared.live_docs.len(),
+                    opened.len()
+                )));
+            }
+            // A live-docs length other than the source's `maxDoc` is caught
+            // by the merge itself (`LiveDocsLengthMismatch`).
+            for (o, live) in opened.iter_mut().zip(prepared.live_docs) {
+                if let (Some(postings_live), Some(bits)) = (o.postings_live.as_mut(), &live) {
+                    for doc in 0..bits.len().min(postings_live.len()) {
+                        if !bits.get(doc) {
+                            postings_live.clear(doc);
+                        }
+                    }
+                }
+                o.live_docs = live;
+            }
+            reorder = may_reorder.then_some(prepared.new_to_old).flatten();
+        }
         if let Some(bad) = opened
             .iter()
             .find(|o| o.index_sort.as_deref() != merge_sort.as_deref())
@@ -1795,6 +1899,10 @@ impl IndexingConfig {
                             f.index_options,
                             IndexOptions::Docs
                                 | IndexOptions::DocsAndFreqs
+                                // A custom-frequency field's terms live in
+                                // the same dictionary; left out, a source
+                                // holding them fails to open.
+                                | IndexOptions::DocsAndCustomFreqs
                                 | IndexOptions::DocsAndFreqsAndPositions
                                 | IndexOptions::DocsAndFreqsAndPositionsAndOffsets
                         )
@@ -2054,32 +2162,48 @@ impl IndexingConfig {
         // Vectors. The flat store and the graph are opened separately
         // because a segment may legitimately have the first and not the
         // second.
-        let opened_flat_vectors: Vec<Option<vectors::FlatVectorsReader>> = opened
+        type OpenedVectorGroup<'a> = (
+            vectors::FlatVectorsReader<'a>,
+            Option<hnsw_vectors::HnswVectorsReader<'a>>,
+            Option<lucene_codecs::scalar_quantized_vectors::ScalarQuantizedVectorsReader<'a>>,
+        );
+        let opened_vector_groups: Vec<Vec<OpenedVectorGroup>> = opened
             .iter()
-            .map(|o| match &o.vectors {
-                Some((vec_bytes, vemf, _)) => {
-                    Ok::<_, Error>(Some(vectors::FlatVectorsReader::open(
-                        vemf,
-                        vec_bytes,
-                        &o.sci.segment_id,
-                        &per_field_codec_suffix(KNN_VECTORS_FORMAT_NAME),
-                    )?))
-                }
-                None => Ok(None),
-            })
-            .collect::<std::result::Result<Vec<_>, Error>>()?;
-        let opened_vector_graphs: Vec<Option<hnsw_vectors::HnswVectorsReader>> = opened
-            .iter()
-            .map(|o| match &o.vectors {
-                Some((_, _, Some((vem, vex)))) => {
-                    Ok::<_, Error>(Some(hnsw_vectors::HnswVectorsReader::open(
-                        vem,
-                        vex,
-                        &o.sci.segment_id,
-                        &per_field_codec_suffix(KNN_VECTORS_FORMAT_NAME),
-                    )?))
-                }
-                _ => Ok(None),
+            .map(|o| {
+                o.vectors
+                    .iter()
+                    .map(|g| {
+                        let flat = vectors::FlatVectorsReader::open(
+                            &g.vemf,
+                            &g.vec,
+                            &o.sci.segment_id,
+                            &g.suffix,
+                        )?;
+                        let graph = match &g.graph {
+                            Some((vem, vex)) => Some(hnsw_vectors::HnswVectorsReader::open(
+                                vem,
+                                vex,
+                                &o.sci.segment_id,
+                                &g.suffix,
+                            )?),
+                            None => None,
+                        };
+                        // Only the graph-less quantized format's centroid is
+                        // visible to a merge (`getCentroid`).
+                        let quantized = match (&g.quantized, g.flat_quantized) {
+                            (Some((vemq, veq)), true) => Some(
+                                lucene_codecs::scalar_quantized_vectors::ScalarQuantizedVectorsReader::open(
+                                    vemq,
+                                    veq,
+                                    &o.sci.segment_id,
+                                    &g.suffix,
+                                )?,
+                            ),
+                            _ => None,
+                        };
+                        Ok::<_, Error>((flat, graph, quantized))
+                    })
+                    .collect::<std::result::Result<Vec<_>, Error>>()
             })
             .collect::<std::result::Result<Vec<_>, Error>>()?;
         // A retired-format source contributes its vectors only: 10.5.0's
@@ -2130,30 +2254,30 @@ impl IndexingConfig {
                     .collect::<std::result::Result<Vec<_>, Error>>()
             })
             .collect::<std::result::Result<Vec<_>, Error>>()?;
-        let per_source_vectors: Vec<Option<merge::SourceVectors>> = opened_flat_vectors
+        let per_source_vectors: Vec<Option<merge::SourceVectors>> = opened_vector_groups
             .iter()
-            .zip(&opened_vector_graphs)
             .zip(&opened_retired_vectors)
             .zip(&opened_quantized_vectors)
-            .map(|(((flat, graph), retired), quantized)| {
+            .map(|((current, retired), quantized)| {
                 let mut groups: Vec<merge::VectorGroup> = Vec::new();
                 match retired {
                     Some(r) => groups.push(merge::VectorGroup {
                         flat: r.flat(),
                         graph: None,
+                        flat_quantized: None,
                     }),
                     None => {
-                        if let Some(flat) = flat.as_ref() {
-                            groups.push(merge::VectorGroup {
-                                flat,
-                                graph: graph.as_ref(),
-                            });
-                        }
+                        groups.extend(current.iter().map(|(flat, graph, q)| merge::VectorGroup {
+                            flat,
+                            graph: graph.as_ref(),
+                            flat_quantized: q.as_ref(),
+                        }))
                     }
                 }
                 groups.extend(quantized.iter().map(|q| merge::VectorGroup {
                     flat: q.flat(),
                     graph: q.graph(),
+                    flat_quantized: None,
                 }));
                 (!groups.is_empty()).then_some(merge::SourceVectors { groups })
             })
@@ -2314,6 +2438,10 @@ impl IndexingConfig {
                 hnsw_m: self.hnsw_m,
                 hnsw_beam_width: self.hnsw_beam_width,
                 postings_formats: self.postings_formats.clone(),
+                doc_values_formats: self.doc_values_formats.clone(),
+                knn_vectors_formats: self.knn_vectors_formats.clone(),
+                codec: self.codec.clone(),
+                reorder,
             },
             &plan.merged_name,
             plan.merged_id,
@@ -2517,6 +2645,100 @@ impl IndexingConfig {
             })
     }
 
+    /// `getDocValuesFormatForField(name)`: the format
+    /// [`IndexWriter::set_doc_values_format_for_field`] routed `name` to, or
+    /// the default `Lucene90DocValuesFormat()`.
+    /// `getKnnVectorsFormatForField(name)`: the routed format, or the
+    /// default `Lucene99HnswVectorsFormat(hnsw_m, hnsw_beam_width)`.
+    pub(crate) fn knn_vectors_format_for(
+        &self,
+        name: &str,
+    ) -> per_field_knn_vectors::KnnVectorsFormat {
+        self.knn_vectors_formats
+            .iter()
+            .find(|(field, _)| field == name)
+            .map(|(_, format)| *format)
+            .or_else(|| {
+                self.codec
+                    .as_ref()
+                    .map(|c| c.knn_vectors_format_for_field(name))
+            })
+            .unwrap_or(per_field_knn_vectors::KnnVectorsFormat::Hnsw {
+                max_conn: self.hnsw_m,
+                beam_width: self.hnsw_beam_width,
+            })
+    }
+
+    pub(crate) fn doc_values_format_for(
+        &self,
+        name: &str,
+    ) -> per_field_doc_values::Lucene90DocValuesFormat {
+        self.doc_values_formats
+            .iter()
+            .find(|(field, _)| field == name)
+            .map(|(_, format)| *format)
+            .or_else(|| {
+                self.codec
+                    .as_ref()
+                    .map(|c| c.doc_values_format_for_field(name))
+            })
+            .unwrap_or_default()
+    }
+
+    /// `IndexingChain.writeDocValues` through `PerFieldDocValuesFormat`: the
+    /// fields of `configs`, visited in `IndexingChain`'s field-hash order
+    /// ([`crate::indexing_chain::field_hash_order`] over `segment_fields`,
+    /// the segment's fields in field-number order -- the order a writer whose
+    /// documents share one field order first sees them), each go to the
+    /// instance of the format they are routed to, instances numbered in
+    /// that order; each instance's fields are written, in that order, into
+    /// its own `.dvm`/`.dvd`/`.dvs`.
+    fn build_doc_values_groups(
+        &self,
+        docs: &[Document],
+        configs: &[DocValuesFieldConfig],
+        segment_fields: &[&str],
+        segment_id: &[u8; ID_LENGTH],
+    ) -> Result<Vec<DocValuesGroupOutput>> {
+        let walk = crate::indexing_chain::field_hash_order(segment_fields);
+        let rank = |name: &str| {
+            walk.iter()
+                .position(|&i| segment_fields[i] == name)
+                .unwrap_or(usize::MAX)
+        };
+        let mut ordered: Vec<&DocValuesFieldConfig> = configs.iter().collect();
+        ordered.sort_by_key(|c| rank(&c.name));
+        let fields: Vec<(i32, &str)> = ordered
+            .iter()
+            .map(|c| (c.field_number, c.name.as_str()))
+            .collect();
+        let format_for = |name: &str| self.doc_values_format_for(name);
+        per_field_doc_values::group_fields(&fields, &format_for)
+            .into_iter()
+            .map(|group| {
+                let group_configs: Vec<DocValuesFieldConfig> = ordered
+                    .iter()
+                    .filter(|c| group.field_numbers.contains(&c.field_number))
+                    .map(|c| (*c).clone())
+                    .collect();
+                let (dvm, dvd, dvs) = IndexWriter::build_doc_values_output(
+                    docs,
+                    &group_configs,
+                    segment_id,
+                    group.suffix,
+                    group.format,
+                )?;
+                Ok(DocValuesGroupOutput {
+                    suffix: group.suffix,
+                    field_numbers: group.field_numbers,
+                    dvm,
+                    dvd,
+                    dvs,
+                })
+            })
+            .collect()
+    }
+
     /// Stamp the `PerField*Format` attributes real Lucene's codec writes at
     /// flush time onto the fields this commit actually produced files for, so
     /// the `.fnm` points at the suffixed names
@@ -2531,9 +2753,9 @@ impl IndexingConfig {
     fn fields_with_per_field_attributes(
         &self,
         postings: Option<&PostingsGroups>,
-        wrote_doc_values: bool,
+        doc_values: Option<&[DocValuesGroupOutput]>,
         wrote_norms: bool,
-        vector_fields_written: &[String],
+        vector_fields_written: &[WrittenVectorField],
         points_fields_written: &[String],
     ) -> Vec<FieldInfo> {
         let postings_suffix = |number: i32| -> Option<u32> {
@@ -2542,13 +2764,11 @@ impl IndexingConfig {
                 .find(|g| g.field_numbers.contains(&number))
                 .map(|g| g.suffix)
         };
-        let dv_names: Vec<&str> = if wrote_doc_values {
-            self.doc_values_fields
+        let dv_suffix = |number: i32| -> Option<u32> {
+            doc_values?
                 .iter()
-                .map(|c| c.name.as_str())
-                .collect()
-        } else {
-            Vec::new()
+                .find(|g| g.field_numbers.contains(&number))
+                .map(|g| g.suffix)
         };
 
         self.fields
@@ -2572,6 +2792,22 @@ impl IndexingConfig {
                         || self.norms_field_configs().iter().any(|c| c.name == f.name),
                     "every indexed non-omitNorms field must have a norm column"
                 );
+                // The custom-frequency field is a field of a document only
+                // when the document gave it terms
+                // (`add_document_with_custom_freq_terms`): a segment none of
+                // whose documents did -- a thread's buffer of other documents
+                // -- must not claim it indexed without a term dictionary, as
+                // Java's segment would not list it. (With norms its column
+                // is written regardless, so the claim stays.)
+                if f.omit_norms
+                    && postings_suffix(f.number).is_none()
+                    && self
+                        .custom_freq_postings_field
+                        .as_ref()
+                        .is_some_and(|c| c.field_number == f.number)
+                {
+                    f.index_options = IndexOptions::None;
+                }
                 if let Some(suffix) = postings_suffix(f.number) {
                     f.attributes.push((
                         per_field_postings::PER_FIELD_FORMAT_KEY.to_string(),
@@ -2607,19 +2843,19 @@ impl IndexingConfig {
                 // the state: `IndexingChain` creates a `DocValuesWriter` for
                 // every field whose `FieldType` declares a type, so the
                 // `.fnm` and the `.dvm` are written from one fact.
-                if !dv_names.contains(&f.name.as_str()) {
+                if dv_suffix(f.number).is_none() {
                     f.doc_values_type = DocValuesType::None;
                     f.doc_values_skip_index_type =
                         lucene_codecs::field_infos::DocValuesSkipIndexType::None;
                 }
-                if vector_fields_written.iter().any(|n| n == &f.name) {
+                if let Some(written) = vector_fields_written.iter().find(|w| w.name == f.name) {
                     f.attributes.push((
-                        "PerFieldKnnVectorsFormat.format".to_string(),
-                        KNN_VECTORS_FORMAT_NAME.to_string(),
+                        per_field_knn_vectors::PER_FIELD_FORMAT_KEY.to_string(),
+                        written.format.to_string(),
                     ));
                     f.attributes.push((
-                        "PerFieldKnnVectorsFormat.suffix".to_string(),
-                        PER_FIELD_SUFFIX.to_string(),
+                        per_field_knn_vectors::PER_FIELD_SUFFIX_KEY.to_string(),
+                        written.suffix.to_string(),
                     ));
                 } else {
                     f.vector_dimension = 0;
@@ -2634,14 +2870,14 @@ impl IndexingConfig {
                     f.point_index_dimension_count = 0;
                     f.point_num_bytes = 0;
                 }
-                if dv_names.contains(&f.name.as_str()) {
+                if let Some(suffix) = dv_suffix(f.number) {
                     f.attributes.push((
-                        "PerFieldDocValuesFormat.format".to_string(),
+                        per_field_doc_values::PER_FIELD_FORMAT_KEY.to_string(),
                         DOC_VALUES_FORMAT_NAME.to_string(),
                     ));
                     f.attributes.push((
-                        "PerFieldDocValuesFormat.suffix".to_string(),
-                        PER_FIELD_SUFFIX.to_string(),
+                        per_field_doc_values::PER_FIELD_SUFFIX_KEY.to_string(),
+                        suffix.to_string(),
                     ));
                 }
                 f
@@ -2678,7 +2914,7 @@ impl IndexingConfig {
     /// order the caller declared the fields.
     /// The similarity norms are computed with: the configured one, or
     /// Lucene's default (`BM25Similarity`'s `computeNorm`).
-    fn norm_similarity(&self) -> &dyn NormSimilarity {
+    pub(crate) fn norm_similarity(&self) -> &dyn NormSimilarity {
         match &self.similarity {
             Some(s) => s.as_ref(),
             None => &crate::similarity::DefaultNormSimilarity,
@@ -2755,9 +2991,11 @@ impl IndexingConfig {
         let doc_values_output = if self.doc_values_fields.is_empty() {
             None
         } else {
-            Some(IndexWriter::build_doc_values_output(
+            let names: Vec<&str> = self.fields.iter().map(|f| f.name.as_str()).collect();
+            Some(self.build_doc_values_groups(
                 buf.docs,
                 &self.doc_values_fields,
+                &names,
                 &segment_id,
             )?)
         };
@@ -2870,8 +3108,7 @@ impl IndexingConfig {
                 buf.vectors,
                 &self.vector_fields,
                 buf.docs.len() as i32,
-                self.hnsw_m,
-                self.hnsw_beam_width,
+                &|name: &str| self.knn_vectors_format_for(name),
                 &segment_id,
             )?
         };
@@ -2884,11 +3121,11 @@ impl IndexingConfig {
 
         let fnm_fields = self.fields_with_per_field_attributes(
             postings_output.as_ref(),
-            doc_values_output.is_some(),
+            doc_values_output.as_deref(),
             norms_output.is_some(),
             vectors_output
                 .as_ref()
-                .map(|o| o.written_fields.as_slice())
+                .map(|o| o.written.as_slice())
                 .unwrap_or(&[]),
             points_output
                 .as_ref()
@@ -2946,13 +3183,11 @@ impl IndexingConfig {
                 &tvm,
             )?);
         }
-        if let Some((dvm, dvd, dvs)) = doc_values_output {
+        for group in doc_values_output.iter().flatten() {
             record(IndexWriter::write_doc_values_files(
                 dir,
                 segment_name,
-                &dvm,
-                &dvd,
-                &dvs,
+                group,
             )?);
         }
         if let Some((nvm, nvd, _)) = norms_output {
@@ -3160,6 +3395,9 @@ pub struct IndexWriter<'d> {
     pluggable_merge_policy: Option<std::sync::Arc<dyn merge_policy::MergePolicy>>,
     /// See [`IndexWriter::set_merges_by_caller`].
     merges_by_caller: bool,
+    /// `LiveIndexWriterConfig.maxFullFlushMergeWaitMillis` -- see
+    /// [`IndexWriter::set_max_full_flush_merge_wait_millis`].
+    max_full_flush_merge_wait_millis: i64,
     /// `IndexWriterConfig.getCommitOnClose()`; see [`IndexWriter::close`].
     commit_on_close: bool,
 
@@ -3237,6 +3475,12 @@ pub struct IndexWriter<'d> {
     /// `pending_docs` like [`Self::pending_vectors`]; empty for a document
     /// added through a native [`Document`] entry point.
     pending_explicit: Vec<ExplicitFields>,
+    /// The terms the pending documents gave each `DOCS` field that has
+    /// norms: the buffered segment's term hash, which decides a `DOCS`
+    /// field's `FieldInvertState.maxTermFrequency` (`newTerm` sets it to 1,
+    /// `addTerm` for a term the segment already holds leaves it at 0).
+    /// Cleared with the buffer.
+    pending_docs_terms: std::collections::HashMap<i32, std::collections::HashSet<Vec<u8>>>,
     /// `SegmentCommitInfo.softDelCount` as last computed, per segment, keyed by
     /// the `(del_gen, doc_values_gen, field_infos_gen)` it was computed at --
     /// see [`IndexWriter::stamp_soft_delete_counts`].
@@ -3609,11 +3853,27 @@ fn encode_point(
 /// [`IndexingConfig::fields_with_per_field_attributes`] stamps, and what the rest
 /// must have their `.fnm` `vector_dimension` zeroed for).
 struct VectorsOutput {
-    vec: Vec<u8>,
-    vemf: Vec<u8>,
-    vex: Vec<u8>,
-    vem: Vec<u8>,
-    written_fields: Vec<String>,
+    /// One per `PerFieldKnnVectorsFormat` instance: its codec suffix and its
+    /// files, by extension.
+    groups: Vec<VectorGroupFiles>,
+    /// Every field that got vectors, with the instance it went to.
+    written: Vec<WrittenVectorField>,
+}
+
+/// One KNN format instance's files for a flushed segment.
+struct VectorGroupFiles {
+    /// `<formatName>_<n>`.
+    suffix: String,
+    files: Vec<(&'static str, Vec<u8>)>,
+}
+
+/// A field a flush wrote vectors for, and the `PerFieldKnnVectorsFormat`
+/// attributes its `.fnm` entry records.
+#[derive(Debug, Clone)]
+pub(crate) struct WrittenVectorField {
+    pub(crate) name: String,
+    pub(crate) format: &'static str,
+    pub(crate) suffix: u32,
 }
 
 /// One doc-values field's whole dense column, owned, so the multi-field
@@ -3728,7 +3988,7 @@ impl DocumentVector {
     /// ARITH: as [`VectorValue::ram_bytes`] -- a sum of live allocation
     /// sizes, bounded by the address space.
     #[allow(clippy::arithmetic_side_effects)]
-    fn ram_bytes(&self) -> usize {
+    pub(crate) fn ram_bytes(&self) -> usize {
         std::mem::size_of::<Self>() + self.field_name.capacity() + self.value.ram_bytes()
     }
 }
@@ -3755,6 +4015,10 @@ pub const DEFAULT_RAM_BUFFER_SIZE_MB: f64 = 16.0;
 /// `IndexWriterConfig.DEFAULT_MAX_BUFFERED_DOCS` ([`DISABLE_AUTO_FLUSH`]):
 /// Lucene flushes on RAM by default, not on document count.
 pub const DEFAULT_MAX_BUFFERED_DOCS: i32 = DISABLE_AUTO_FLUSH;
+/// `IndexWriterConfig.DEFAULT_MAX_FULL_FLUSH_MERGE_WAIT_MILLIS` (500): how
+/// long a commit or a near-real-time reader waits for merge-on-commit/refresh
+/// merges -- see [`IndexWriter::set_max_full_flush_merge_wait_millis`].
+pub const DEFAULT_MAX_FULL_FLUSH_MERGE_WAIT_MILLIS: i64 = 500;
 
 pub const POSTINGS_FORMAT_NAME: &str = "Lucene104";
 pub const DOC_VALUES_FORMAT_NAME: &str = "Lucene90";
@@ -3809,6 +4073,31 @@ fn postings_file_base(seg_files: &[String], segment_name: &str) -> (String, Stri
         })
 }
 
+/// The codec suffixes of every current-format `PerFieldKnnVectorsFormat`
+/// instance a segment holds, read off its `.vemf` files
+/// (`_0_Lucene99HnswVectorsFormat_1.vemf` -> `Lucene99HnswVectorsFormat_1`),
+/// in file-name order: `Lucene99HnswVectorsFormat`,
+/// `Lucene104HnswScalarQuantizedVectorsFormat` and
+/// `Lucene104ScalarQuantizedVectorsFormat` instances.
+pub(crate) fn current_vector_suffixes(seg_files: &[String], segment_name: &str) -> Vec<String> {
+    let prefix = format!("{segment_name}_");
+    let mut out: Vec<String> = seg_files
+        .iter()
+        .filter_map(|f| {
+            let suffix = f.strip_suffix(".vemf")?.strip_prefix(&prefix)?;
+            let (format, n) = suffix.rsplit_once('_')?;
+            let current = [
+                per_field_knn_vectors::HNSW_NAME,
+                lucene_codecs::scalar_quantized_vectors::HNSW_NAME,
+                lucene_codecs::scalar_quantized_vectors::NAME,
+            ];
+            (current.contains(&format) && n.parse::<u32>().is_ok()).then(|| suffix.to_string())
+        })
+        .collect();
+    out.sort();
+    out
+}
+
 /// The retired 9.0-9.8 HNSW format a segment's vectors were written with,
 /// and the codec suffix of its files, read off its `.vem` name
 /// (`_0_lucene92HnswVectorsFormat_0.vem` -> `lucene92HnswVectorsFormat`,
@@ -3853,13 +4142,51 @@ fn quantized_vector_files(
 
 impl<'d> IndexWriter<'d> {
     /// `IndexWriterConfig.getAnalyzer()` for the document API.
-    pub(crate) fn writer_analyzer(&self) -> Analyzer {
-        self.cfg.analyzer()
+    pub(crate) fn writer_analyzer(&self) -> std::sync::Arc<Analyzer> {
+        match &self.cfg.document_analyzer {
+            Some(a) => std::sync::Arc::clone(a),
+            None => std::sync::Arc::new(self.cfg.analyzer()),
+        }
     }
 
-    /// `IndexWriterConfig.getSimilarity()`'s norm half, for the document API.
-    pub(crate) fn writer_norm_similarity(&self) -> &dyn NormSimilarity {
-        self.cfg.norm_similarity()
+    /// `new IndexWriterConfig(analyzer)`: the analyzer the document API
+    /// ([`crate::document`]) runs every tokenized text field through --
+    /// `analyzer.tokenStream(field, text)`, with the analyzer's own
+    /// per-field position-increment and offset gaps. Every attribute its
+    /// chain sets is read as `IndexingChain` reads it: a `TokenFilter`'s
+    /// `PayloadAttribute` becomes the occurrence's payload (and the
+    /// segment's field `storePayloads`), its `TermFrequencyAttribute` the
+    /// custom frequency. `None` returns to the standard analyzer with
+    /// [`IndexWriter::set_position_increment_gap`]'s and
+    /// [`IndexWriter::set_offset_gap`]'s gaps, which only that default
+    /// reads. The native stored-text path keeps the standard analyzer.
+    pub fn set_analyzer(&mut self, analyzer: Option<std::sync::Arc<Analyzer>>) {
+        self.cfg_mut().document_analyzer = analyzer;
+    }
+
+    /// The configuration as it stands, shared: what the document API reads
+    /// the similarity from while it updates the writer's term hash.
+    pub(crate) fn config_snapshot(&self) -> std::sync::Arc<IndexingConfig> {
+        std::sync::Arc::clone(&self.cfg)
+    }
+
+    /// Records `terms` in the buffered segment's term hash of `DOCS` field
+    /// `field`; whether one of them was new to it -- `newTerm`, which is
+    /// what sets such a field's `FieldInvertState.maxTermFrequency` (to 1).
+    pub(crate) fn note_docs_terms<'t>(
+        &mut self,
+        field: i32,
+        terms: impl Iterator<Item = &'t Vec<u8>>,
+    ) -> bool {
+        let seen = self.pending_docs_terms.entry(field).or_default();
+        let mut new = false;
+        for term in terms {
+            if !seen.contains(term) {
+                seen.insert(term.clone());
+                new = true;
+            }
+        }
+        new
     }
 
     /// The configuration, to change it: copied first if a
@@ -3934,6 +4261,75 @@ impl<'d> IndexWriter<'d> {
         format: per_field_postings::Lucene104PostingsFormat,
     ) {
         let formats = &mut self.cfg_mut().postings_formats;
+        formats.retain(|(name, _)| name != field);
+        formats.push((field.to_string(), format));
+    }
+
+    /// `PerFieldDocValuesFormat.getDocValuesFormatForField` for one field:
+    /// from the next flush and merge on, `field`'s doc values go to
+    /// `format`'s files. Every field on an equal format shares one set,
+    /// numbered `Lucene90_<n>` in the order the flush (`IndexingChain`'s
+    /// field hash) or the merge (field-number order) first reaches a field
+    /// of it, which each field's `.fnm` attributes record; every other field
+    /// stays on the default `Lucene90DocValuesFormat()`. A doc-values update
+    /// is written as Java writes it: with the format its field's attribute
+    /// names, looked up by name (the default instance), under its own
+    /// suffix.
+    /// `PerFieldKnnVectorsFormat.getKnnVectorsFormatForField` for one field:
+    /// from the next flush and merge on, `field`'s vectors go to `format`'s
+    /// files -- another `Lucene99HnswVectorsFormat(maxConn, beamWidth)`, a
+    /// `Lucene104HnswScalarQuantizedVectorsFormat` or the graph-less
+    /// `Lucene104ScalarQuantizedVectorsFormat`. Every field on an equal
+    /// format shares one set, numbered `<formatName>_<n>` per format name in
+    /// the order a flush's documents first carry a field of it (a merge: in
+    /// field-number order), which each field's `.fnm` attributes record.
+    /// Every other field stays on the default instance,
+    /// `Lucene99HnswVectorsFormat` with [`IndexWriter::set_hnsw_parameters`]'
+    /// graph parameters.
+    /// `IndexWriterConfig.setCodec(codec)`: from the next flush and merge on,
+    /// every field's postings, doc-values and KNN vectors format is the one
+    /// `codec` answers (`Lucene104Codec`'s `get*FormatForField`), unless a
+    /// per-field setter ([`IndexWriter::set_postings_format_for_field`],
+    /// [`IndexWriter::set_doc_values_format_for_field`],
+    /// [`IndexWriter::set_knn_vectors_format_for_field`]) routed that field,
+    /// which wins. `None` returns to `Lucene104Codec()`'s defaults (with
+    /// [`IndexWriter::set_hnsw_parameters`]' graph for vectors).
+    ///
+    /// The codec's name must be the one this port writes (`Lucene104`);
+    /// anything else is refused, as this writer has no other codec's formats.
+    pub fn set_codec(
+        &mut self,
+        codec: Option<std::sync::Arc<dyn lucene_codecs::codec::Lucene104Codec>>,
+    ) -> Result<()> {
+        if let Some(c) = &codec {
+            if c.name() != self.cfg.codec_name {
+                return Err(Error::Explicit(format!(
+                    "codec {:?} is not the codec this writer writes ({:?})",
+                    c.name(),
+                    self.cfg.codec_name
+                )));
+            }
+        }
+        self.cfg_mut().codec = codec;
+        Ok(())
+    }
+
+    pub fn set_knn_vectors_format_for_field(
+        &mut self,
+        field: &str,
+        format: per_field_knn_vectors::KnnVectorsFormat,
+    ) {
+        let formats = &mut self.cfg_mut().knn_vectors_formats;
+        formats.retain(|(name, _)| name != field);
+        formats.push((field.to_string(), format));
+    }
+
+    pub fn set_doc_values_format_for_field(
+        &mut self,
+        field: &str,
+        format: per_field_doc_values::Lucene90DocValuesFormat,
+    ) {
+        let formats = &mut self.cfg_mut().doc_values_formats;
         formats.retain(|(name, _)| name != field);
         formats.push((field.to_string(), format));
     }
@@ -4186,6 +4582,7 @@ impl<'d> IndexWriter<'d> {
                 postings_fields: Vec::new(),
                 position_increment_gap: 0,
                 offset_gap: 1,
+                document_analyzer: None,
                 payload_source: None,
                 custom_freq_postings_field: None,
                 term_vector_fields: Vec::new(),
@@ -4200,6 +4597,9 @@ impl<'d> IndexWriter<'d> {
                 similarity: None,
                 use_compound_file: false,
                 postings_formats: Vec::new(),
+                doc_values_formats: Vec::new(),
+                knn_vectors_formats: Vec::new(),
+                codec: None,
                 reader_pool: std::sync::Arc::default(),
                 merged_segment_warmer: None,
             }),
@@ -4213,6 +4613,7 @@ impl<'d> IndexWriter<'d> {
             merge_policy: None,
             pluggable_merge_policy: None,
             merges_by_caller: false,
+            max_full_flush_merge_wait_millis: DEFAULT_MAX_FULL_FLUSH_MERGE_WAIT_MILLIS,
             commit_on_close: true,
             pending_custom_freq_terms: Vec::new(),
             pending_sort_map: None,
@@ -4223,6 +4624,7 @@ impl<'d> IndexWriter<'d> {
             rollback_segments,
             pending_vectors: Vec::new(),
             pending_explicit: Vec::new(),
+            pending_docs_terms: std::collections::HashMap::new(),
             soft_delete_counts,
             soft_deletes_retention: None,
             max_docs: MAX_DOCS,
@@ -5316,10 +5718,35 @@ impl<'d> IndexWriter<'d> {
         doc: Document,
         vectors: Vec<DocumentVector>,
     ) -> Result<SeqNo> {
-        let doc_index = self.pending_docs.len();
-        for v in &vectors {
+        self.cfg
+            .validate_document_vectors(self.pending_docs.len(), &vectors)?;
+        let seq_no = self.delete_queue.next_sequence_number();
+        // ARITH: see [`VectorValue::ram_bytes`].
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            self.ram_bytes_used += document_ram_bytes(&doc)
+                + vectors.iter().map(DocumentVector::ram_bytes).sum::<usize>();
+        }
+        self.pending_docs.push(doc);
+        self.pending_custom_freq_terms.push(Vec::new());
+        self.pending_vectors.push(vectors);
+        self.pending_explicit.push(ExplicitFields::default());
+        self.maybe_flush()?;
+        Ok(seq_no)
+    }
+}
+
+impl IndexingConfig {
+    /// [`IndexWriter::add_document_with_vectors`]' checks of one document's
+    /// vectors (document `doc_index` of its buffer): every field registered
+    /// with its encoding and dimension, and named once.
+    pub(crate) fn validate_document_vectors(
+        &self,
+        doc_index: usize,
+        vectors: &[DocumentVector],
+    ) -> Result<()> {
+        for v in vectors {
             let config = self
-                .cfg
                 .vector_fields
                 .iter()
                 .find(|c| c.name == v.field_name)
@@ -5350,22 +5777,11 @@ impl<'d> IndexWriter<'d> {
                 return Err(Error::DuplicateVectorField(v.field_name.clone()));
             }
         }
-
-        let seq_no = self.delete_queue.next_sequence_number();
-        // ARITH: see [`VectorValue::ram_bytes`].
-        #[allow(clippy::arithmetic_side_effects)]
-        {
-            self.ram_bytes_used += document_ram_bytes(&doc)
-                + vectors.iter().map(DocumentVector::ram_bytes).sum::<usize>();
-        }
-        self.pending_docs.push(doc);
-        self.pending_custom_freq_terms.push(Vec::new());
-        self.pending_vectors.push(vectors);
-        self.pending_explicit.push(ExplicitFields::default());
-        self.maybe_flush()?;
-        Ok(seq_no)
+        Ok(())
     }
+}
 
+impl IndexWriter<'_> {
     /// `IndexWriter.addDocuments(Iterable<Iterable<IndexableField>>)`: adds
     /// `docs` as one **document block** -- a run guaranteed to occupy
     /// contiguous, ascending doc IDs in the segment it lands in, which is what
@@ -6327,6 +6743,16 @@ impl<'d> IndexWriter<'d> {
     /// `finish_commit()` to activate it or [`IndexWriter::rollback`] to
     /// discard it (which also deletes the pending file) first.
     pub fn prepare_commit(&mut self) -> Result<()> {
+        self.prepare_commit_excluding(&std::collections::HashSet::new())
+    }
+
+    /// [`IndexWriter::prepare_commit`], with merge-on-commit leaving alone
+    /// the segments in `merging` -- merges a
+    /// [`crate::concurrent_writer::ConcurrentIndexWriter`] is running.
+    pub(crate) fn prepare_commit_excluding(
+        &mut self,
+        merging: &std::collections::HashSet<String>,
+    ) -> Result<()> {
         // Real `prepareCommitInternal` refuses re-entry outright
         // (`IllegalStateException("prepareCommit was already called with no
         // corresponding call to commit")`). This used to *replace* the pending
@@ -6343,6 +6769,10 @@ impl<'d> IndexWriter<'d> {
         // Everything still buffered becomes one last segment; segments an
         // automatic flush already wrote are folded in below.
         self.flush()?;
+        // `prepareCommitInternal`'s point-in-time merges
+        // (`maxFullFlushMergeWaitMillis > 0`): the commit names the merged
+        // segments.
+        self.merge_on_full_flush(merge_policy::MergeTrigger::Commit, merging)?;
 
         let mut new_segment_infos = self.segment_infos.clone();
         // ARITH: `segment_infos::parse` rejects any generation, version or
@@ -6514,6 +6944,7 @@ impl<'d> IndexWriter<'d> {
         self.pending_custom_freq_terms.clear();
         self.pending_vectors.clear();
         self.pending_explicit.clear();
+        self.pending_docs_terms.clear();
         self.ram_bytes_used = 0;
         self.pending_has_blocks = false;
         let private = self.delete_queue.freeze_private_buffer(&segment_name);
@@ -7115,12 +7546,12 @@ impl<'d> IndexWriter<'d> {
                         if !first_is_string {
                             return Ok(None);
                         }
+                        // No inverter: no tokens, so `norm_value`'s `0`
+                        // without reading the rest.
                         let state = inverter.and_then(|inv| inv.invert_state(doc_id)).unwrap_or(
                             FieldInvertState {
                                 docs_only: config.docs_only,
-                                length: 0,
-                                num_overlap: 0,
-                                unique_term_count: 0,
+                                ..FieldInvertState::default()
                             },
                         );
                         norm_value(similarity, &config.name, &state).map(Some)
@@ -7360,17 +7791,17 @@ impl<'d> IndexWriter<'d> {
                 // `None` == this doc does not carry the field at all, so it
                 // gets no norm; `Some(0)` == it carries it but produced no
                 // tokens, which is Java's explicit zero.
-                // `(length, uniqueTermCount)` per document that carries the
-                // field. The analyzer never emits a token at a position
-                // increment of 0, so `numOverlap` is 0 on this path.
-                let mut counts: Vec<Option<(u32, u32)>> = docs
+                // `(length, uniqueTermCount, maxTermFrequency)` per document
+                // that carries the field; the rest of its `FieldInvertState`
+                // is the inversion's [`crate::indexing_chain::FieldEnd`].
+                let mut counts: Vec<Option<(u32, u32, u32)>> = docs
                     .iter()
                     .map(|doc| {
                         doc.fields
                             .iter()
                             .find(|f| f.field_number == config.field_number)
                             .and_then(|f| match &f.value {
-                                FieldValue::String(_) => Some((0u32, 0u32)),
+                                FieldValue::String(_) => Some((0u32, 0u32, 0u32)),
                                 _ => None,
                             })
                     })
@@ -7380,29 +7811,51 @@ impl<'d> IndexWriter<'d> {
                     if field != &config.name {
                         continue;
                     }
-                    for entry in entries {
+                    for (i, entry) in entries.iter().enumerate() {
                         // `entry.doc_id` is an index into `docs` that this
                         // writer's own inversion produced, so it addresses
                         // `counts` (which is `docs.len()` long) by
                         // construction -- and only ever for a doc whose
                         // presence test above already said `Some`. One entry
                         // per `(term, doc)`: each is a distinct term.
-                        if let Some((length, unique)) = counts[entry.doc_id as usize].as_mut() {
+                        if let Some((length, unique, max_freq)) =
+                            counts[entry.doc_id as usize].as_mut()
+                        {
                             *length = accumulate_field_length(*length, entry.term_freq());
                             *unique = unique.saturating_add(1);
+                            // Without frequencies only `newTerm` -- the
+                            // term's first document in the segment -- sets
+                            // it, to 1.
+                            let freq = if config.docs_only {
+                                u32::from(i == 0)
+                            } else {
+                                u32::try_from(entry.term_freq()).unwrap_or(0)
+                            };
+                            *max_freq = (*max_freq).max(freq);
                         }
                     }
                 }
                 let values: Vec<Option<i64>> = counts
                     .into_iter()
-                    .map(|c| {
-                        c.map(|(length, unique)| {
+                    .enumerate()
+                    .map(|(doc, c)| {
+                        c.map(|(length, unique, max_freq)| {
                             let clamp = |n: u32| i32::try_from(n).unwrap_or(i32::MAX);
+                            let end = inverted
+                                .field_end(&config.name, doc as i32)
+                                .unwrap_or_default();
                             let state = FieldInvertState {
                                 docs_only: config.docs_only,
+                                position: end.position,
                                 length: clamp(length),
-                                num_overlap: 0,
+                                num_overlap: end.num_overlap,
+                                offset: end.offset,
+                                max_term_frequency: clamp(max_freq),
                                 unique_term_count: clamp(unique),
+                                attribute_source: Some(crate::similarity::end_attributes(
+                                    end.final_increment,
+                                    end.final_offset,
+                                )),
                             };
                             norm_value(similarity, &config.name, &state)
                         })
@@ -7642,13 +8095,16 @@ impl<'d> IndexWriter<'d> {
         docs: &[Document],
         configs: &[DocValuesFieldConfig],
         segment_id: &[u8; ID_LENGTH],
+        suffix: u32,
+        format: per_field_doc_values::Lucene90DocValuesFormat,
     ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
         let skip_indexes: Vec<i32> = configs
             .iter()
             .filter(|c| c.skip_index)
             .map(|c| c.field_number)
             .collect();
-        if configs.len() == 1 && skip_indexes.is_empty() {
+        // The one-field builders write the first instance's suffix.
+        if configs.len() == 1 && skip_indexes.is_empty() && suffix == 0 {
             let config = &configs[0];
             return match config.doc_values_type {
                 DocValuesType::Binary => {
@@ -7673,12 +8129,13 @@ impl<'d> IndexWriter<'d> {
             .collect::<Result<Vec<_>>>()?;
         let fields: Vec<doc_values::DenseField<'_>> =
             columns.iter().map(DenseColumn::as_dense_field).collect();
-        Ok(doc_values::write_fields_with_skip_indexes(
+        Ok(doc_values::write_fields_with_format(
             &fields,
             &skip_indexes,
             docs.len() as i32,
             segment_id,
-            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+            &per_field_doc_values::codec_suffix(suffix),
+            format,
         )?)
     }
 
@@ -8111,8 +8568,7 @@ impl<'d> IndexWriter<'d> {
         pending_vectors: &[Vec<DocumentVector>],
         configs: &[VectorFieldConfig],
         max_doc: i32,
-        m: i32,
-        beam_width: i32,
+        format_for: &dyn Fn(&str) -> per_field_knn_vectors::KnnVectorsFormat,
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<Option<VectorsOutput>> {
         debug_assert_eq!(
@@ -8120,11 +8576,30 @@ impl<'d> IndexWriter<'d> {
             max_doc,
             "pending_vectors must stay aligned 1:1 with pending_docs"
         );
-        let suffix = per_field_codec_suffix(KNN_VECTORS_FORMAT_NAME);
+        // `IndexingChain` calls `KnnVectorsWriter.addField` the first time a
+        // document of the flush carries a field, and
+        // `PerFieldKnnVectorsFormat.FieldsWriter.getInstance` numbers the
+        // format instances -- and every writer lists its fields -- in that
+        // order.
+        let mut first_seen: Vec<&str> = Vec::new();
+        for doc_vectors in pending_vectors {
+            for v in doc_vectors {
+                if !first_seen.contains(&v.field_name.as_str()) {
+                    first_seen.push(v.field_name.as_str());
+                }
+            }
+        }
+        let mut ordered: Vec<&VectorFieldConfig> = configs.iter().collect();
+        ordered.sort_by_key(|c| {
+            first_seen
+                .iter()
+                .position(|n| *n == c.name)
+                .unwrap_or(usize::MAX)
+        });
 
         let mut flat_fields: Vec<FlatVectorsField> = Vec::new();
-        let mut written_fields: Vec<String> = Vec::new();
-        for config in configs {
+        let mut names: Vec<(i32, String)> = Vec::new();
+        for config in ordered {
             let mut docs: Vec<i32> = Vec::new();
             let mut floats: Vec<f32> = Vec::new();
             let mut bytes: Vec<u8> = Vec::new();
@@ -8152,16 +8627,10 @@ impl<'d> IndexWriter<'d> {
                 config.name
             );
             let values = match config.encoding {
-                VectorEncoding::Float32 => {
-                    debug_assert!(bytes.is_empty());
-                    FieldVectorData::Float32(floats)
-                }
-                VectorEncoding::Byte => {
-                    debug_assert!(floats.is_empty());
-                    FieldVectorData::Byte(bytes)
-                }
+                VectorEncoding::Float32 => FieldVectorData::Float32(floats),
+                VectorEncoding::Byte => FieldVectorData::Byte(bytes),
             };
-            written_fields.push(config.name.clone());
+            names.push((config.field_number, config.name.clone()));
             flat_fields.push(FlatVectorsField {
                 field_number: config.field_number,
                 similarity: config.similarity,
@@ -8173,75 +8642,141 @@ impl<'d> IndexWriter<'d> {
         if flat_fields.is_empty() {
             return Ok(None);
         }
+        let name_refs: Vec<(i32, &str)> = names.iter().map(|(n, s)| (*n, s.as_str())).collect();
+        let groups = per_field_knn_vectors::group_fields(&name_refs, format_for);
 
-        let (vec_bytes, vemf_bytes) =
-            vectors::write_flat_vectors(&flat_fields, max_doc, segment_id, &suffix)?;
-
-        // Reopen exactly the bytes just written, and build every graph over
-        // *those* -- see this method's doc comment.
-        let graphs: Vec<Option<hnsw::OnHeapHnswGraph>> = {
-            let flat =
-                vectors::FlatVectorsReader::open(&vemf_bytes, &vec_bytes, segment_id, &suffix)?;
-            let mut graphs = Vec::with_capacity(flat_fields.len());
-            for field in &flat_fields {
-                let count = field.docs.len() as i32;
-                // `Lucene99HnswVectorsWriter.shouldCreateGraph`: a segment too
-                // small for a graph to beat an exhaustive scan gets none, and
-                // its `.vem` records `numLevels = 0`.
-                if !hnsw::should_create_graph(hnsw::HNSW_GRAPH_THRESHOLD, count) {
-                    graphs.push(None);
-                    continue;
-                }
-                let graph = match field.values.encoding() {
-                    VectorEncoding::Float32 => {
-                        let values = flat.float_vector_values(field.field_number)?;
-                        hnsw::HnswGraphBuilder::new(
-                            values.ord_scorer(),
-                            m,
-                            beam_width,
-                            hnsw::DEFAULT_RAND_SEED,
-                        )?
-                        .build(count)?
-                    }
-                    VectorEncoding::Byte => {
-                        let values = flat.byte_vector_values(field.field_number)?;
-                        hnsw::HnswGraphBuilder::new(
-                            values.ord_scorer(),
-                            m,
-                            beam_width,
-                            hnsw::DEFAULT_RAND_SEED,
-                        )?
-                        .build(count)?
-                    }
-                };
-                graphs.push(Some(graph));
-            }
-            graphs
+        let mut output = VectorsOutput {
+            groups: Vec::with_capacity(groups.len()),
+            written: Vec::with_capacity(names.len()),
         };
+        for group in &groups {
+            let suffix = group.codec_suffix();
+            let fields: Vec<FlatVectorsField> = group
+                .field_numbers
+                .iter()
+                .filter_map(|n| flat_fields.iter().find(|f| f.field_number == *n))
+                .cloned()
+                .collect();
+            let files =
+                Self::build_vector_group(&fields, group.format, max_doc, segment_id, &suffix)?;
+            for (number, name) in &names {
+                if group.field_numbers.contains(number) {
+                    output.written.push(WrittenVectorField {
+                        name: name.clone(),
+                        format: group.format.name(),
+                        suffix: group.suffix,
+                    });
+                }
+            }
+            output.groups.push(VectorGroupFiles { suffix, files });
+        }
+        Ok(Some(output))
+    }
 
-        let hnsw_fields: Vec<HnswVectorsField<'_>> = flat_fields
-            .iter()
-            .zip(&graphs)
-            .map(|(field, graph)| HnswVectorsField {
-                field_number: field.field_number,
-                encoding: field.values.encoding(),
-                similarity: field.similarity,
-                dimension: field.dimension,
-                count: field.docs.len() as i32,
-                graph: graph.as_ref(),
-                m,
-            })
-            .collect();
-        let (vex_bytes, vem_bytes) =
-            hnsw_vectors::write_hnsw_vectors(&hnsw_fields, segment_id, &suffix)?;
+    /// One `PerFieldKnnVectorsFormat` instance's flush: the raw vectors
+    /// (`Lucene99FlatVectorsWriter`, `.vec`/`.vemf`), the scalar-quantized
+    /// codes of its `FLOAT32` fields when the format quantizes
+    /// (`Lucene104ScalarQuantizedVectorsWriter.flush`, `.veq`/`.vemq`), and
+    /// the graph when it has one (`Lucene99HnswVectorsWriter`, `.vem`/`.vex`)
+    /// -- built on the raw vectors, which is what Java's quantized format
+    /// hands the graph at flush too.
+    fn build_vector_group(
+        flat_fields: &[FlatVectorsField],
+        format: per_field_knn_vectors::KnnVectorsFormat,
+        max_doc: i32,
+        segment_id: &[u8; ID_LENGTH],
+        suffix: &str,
+    ) -> Result<Vec<(&'static str, Vec<u8>)>> {
+        let (vec_bytes, vemf_bytes) =
+            vectors::write_flat_vectors(flat_fields, max_doc, segment_id, suffix)?;
+        let mut files: Vec<(&'static str, Vec<u8>)> = Vec::new();
 
-        Ok(Some(VectorsOutput {
-            vec: vec_bytes,
-            vemf: vemf_bytes,
-            vex: vex_bytes,
-            vem: vem_bytes,
-            written_fields,
-        }))
+        if let Some(encoding) = format.quantization() {
+            let mut writer =
+                lucene_codecs::scalar_quantized_vectors::ScalarQuantizedVectorsWriter::new(
+                    encoding, max_doc, segment_id, suffix,
+                );
+            for field in flat_fields {
+                if let FieldVectorData::Float32(values) = &field.values {
+                    writer.write_field(
+                        &lucene_codecs::scalar_quantized_vectors::QuantizedVectorsField {
+                            field_number: field.field_number,
+                            similarity: field.similarity,
+                            dimension: field.dimension,
+                            docs: &field.docs,
+                            vectors: values,
+                        },
+                    )?;
+                }
+            }
+            let (veq, vemq) = writer.finish();
+            files.push(("veq", veq));
+            files.push(("vemq", vemq));
+        }
+
+        if let Some((m, beam_width)) = format.graph() {
+            // Reopen exactly the bytes just written, and build every graph
+            // over *those* -- see this method's doc comment.
+            let graphs: Vec<Option<hnsw::OnHeapHnswGraph>> = {
+                let flat =
+                    vectors::FlatVectorsReader::open(&vemf_bytes, &vec_bytes, segment_id, suffix)?;
+                let mut graphs = Vec::with_capacity(flat_fields.len());
+                for field in flat_fields {
+                    let count = field.docs.len() as i32;
+                    // `Lucene99HnswVectorsWriter.shouldCreateGraph`: a segment
+                    // too small for a graph to beat an exhaustive scan gets
+                    // none, and its `.vem` records `numLevels = 0`.
+                    if !hnsw::should_create_graph(hnsw::HNSW_GRAPH_THRESHOLD, count) {
+                        graphs.push(None);
+                        continue;
+                    }
+                    let graph = match field.values.encoding() {
+                        VectorEncoding::Float32 => {
+                            let values = flat.float_vector_values(field.field_number)?;
+                            hnsw::HnswGraphBuilder::new(
+                                values.ord_scorer(),
+                                m,
+                                beam_width,
+                                hnsw::DEFAULT_RAND_SEED,
+                            )?
+                            .build(count)?
+                        }
+                        VectorEncoding::Byte => {
+                            let values = flat.byte_vector_values(field.field_number)?;
+                            hnsw::HnswGraphBuilder::new(
+                                values.ord_scorer(),
+                                m,
+                                beam_width,
+                                hnsw::DEFAULT_RAND_SEED,
+                            )?
+                            .build(count)?
+                        }
+                    };
+                    graphs.push(Some(graph));
+                }
+                graphs
+            };
+            let hnsw_fields: Vec<HnswVectorsField<'_>> = flat_fields
+                .iter()
+                .zip(&graphs)
+                .map(|(field, graph)| HnswVectorsField {
+                    field_number: field.field_number,
+                    encoding: field.values.encoding(),
+                    similarity: field.similarity,
+                    dimension: field.dimension,
+                    count: field.docs.len() as i32,
+                    graph: graph.as_ref(),
+                    m,
+                })
+                .collect();
+            let (vex_bytes, vem_bytes) =
+                hnsw_vectors::write_hnsw_vectors(&hnsw_fields, segment_id, suffix)?;
+            files.push(("vex", vex_bytes));
+            files.push(("vem", vem_bytes));
+        }
+        files.insert(0, ("vemf", vemf_bytes));
+        files.insert(0, ("vec", vec_bytes));
+        Ok(files)
     }
 
     /// Builds this flush's `.kdm`/`.kdi`/`.kdd` for every points field any
@@ -8340,16 +8875,13 @@ impl<'d> IndexWriter<'d> {
         segment_name: &str,
         output: &VectorsOutput,
     ) -> Result<Vec<String>> {
-        let seg = per_field_segment(segment_name, KNN_VECTORS_FORMAT_NAME);
-        let names = vec![
-            format!("{seg}.vec"),
-            format!("{seg}.vemf"),
-            format!("{seg}.vex"),
-            format!("{seg}.vem"),
-        ];
-        let bytes = [&output.vec, &output.vemf, &output.vex, &output.vem];
-        for (name, data) in names.iter().zip(bytes) {
-            write_file(dir, name, data)?;
+        let mut names = Vec::new();
+        for group in &output.groups {
+            for (ext, data) in &group.files {
+                let name = format!("{segment_name}_{}.{ext}", group.suffix);
+                write_file(dir, &name, data)?;
+                names.push(name);
+            }
         }
         Ok(names)
     }
@@ -8360,17 +8892,18 @@ impl<'d> IndexWriter<'d> {
     fn write_doc_values_files(
         dir: &dyn Directory,
         segment_name: &str,
-        dvm: &[u8],
-        dvd: &[u8],
-        dvs: &[u8],
+        group: &DocValuesGroupOutput,
     ) -> Result<Vec<String>> {
-        let seg = per_field_segment(segment_name, DOC_VALUES_FORMAT_NAME);
+        let seg = format!(
+            "{segment_name}_{}",
+            per_field_doc_values::codec_suffix(group.suffix)
+        );
         let names = vec![
             format!("{seg}.dvm"),
             format!("{seg}.dvd"),
             format!("{seg}.dvs"),
         ];
-        for (name, bytes) in names.iter().zip([dvm, dvd, dvs]) {
+        for (name, bytes) in names.iter().zip([&group.dvm, &group.dvd, &group.dvs]) {
             write_file(dir, name, bytes)?;
         }
         Ok(names)
@@ -8623,7 +9156,22 @@ impl<'d> IndexWriter<'d> {
     /// [`crate::merge::SourcePoints`] per field, and
     /// [`crate::merge::merge_points`] remaps and rebuilds the trees.
     fn execute_merge(&mut self, names: &[String]) -> Result<()> {
-        let plan = self.begin_merge(names)?;
+        self.execute_merge_hooked(names, None)
+    }
+
+    /// [`Self::execute_merge`] of a `OneMerge` whose `wrapForMerge` and
+    /// `reorder` are `hooks` (see [`crate::merge_policy::MergeHooks`]).
+    pub(crate) fn execute_merge_hooked(
+        &mut self,
+        names: &[String],
+        hooks: Option<std::sync::Arc<dyn crate::merge_policy::MergeHooks>>,
+    ) -> Result<()> {
+        let mut plan = self.begin_merge(names)?;
+        if let Some(hooks) = hooks {
+            let mut infos = self.segment_infos.clone();
+            infos.segments = plan.sources.clone();
+            plan.hooks = Some((hooks, infos));
+        }
         let cfg = std::sync::Arc::clone(&self.cfg);
         match cfg.run_merge(self.dir, &plan) {
             Ok(outcome) => self.finish_merge(plan, outcome).map(|_| ()),
@@ -8761,6 +9309,7 @@ impl<'d> IndexWriter<'d> {
             merged_id,
             held,
             retention: self.soft_deletes_retention.clone(),
+            hooks: None,
         })
     }
 
@@ -9443,6 +9992,7 @@ impl<'d> IndexWriter<'d> {
         self.pending_custom_freq_terms.clear();
         self.pending_vectors.clear();
         self.pending_explicit.clear();
+        self.pending_docs_terms.clear();
         self.ram_bytes_used = 0;
         // Only ever `Some` inside `flush()`, and cleared at its end -- but a
         // `flush()` that fails *after* publishing the segment (in
@@ -9519,6 +10069,7 @@ impl<'d> IndexWriter<'d> {
         self.pending_custom_freq_terms.clear();
         self.pending_vectors.clear();
         self.pending_explicit.clear();
+        self.pending_docs_terms.clear();
         self.ram_bytes_used = 0;
         self.pending_has_blocks = false;
         // Java's `deleteAll`: `docWriter.lockAndAbortAll()` (which clears the
@@ -10319,7 +10870,7 @@ fn accumulate_field_length(so_far: u32, term_freq: i32) -> u32 {
 /// [`IndexWriter::add_document_with_custom_freq_terms`] term list.
 /// ARITH: as [`VectorValue::ram_bytes`] -- a sum of live allocation sizes.
 #[allow(clippy::arithmetic_side_effects)]
-fn custom_freq_terms_ram_bytes(terms: &[(String, i32)]) -> usize {
+pub(crate) fn custom_freq_terms_ram_bytes(terms: &[(String, i32)]) -> usize {
     std::mem::size_of::<Vec<(String, i32)>>()
         + std::mem::size_of_val(terms)
         + terms.iter().map(|(t, _)| t.capacity()).sum::<usize>()
