@@ -88,6 +88,11 @@ pub const MAX_NFA_STATES: usize = 20_000;
 /// 10 MiB.
 pub const MAX_DFA_STATES: usize = 10_000;
 
+/// NFAs up to this many states determinize over bitset subsets
+/// ([`Nfa::determinize_bitsets`]): 16 words a subset, and a closure table of
+/// at most 128 KiB.
+const BITSET_NFA_STATES: usize = 1024;
+
 /// The largest Unicode scalar value.
 const MAX_CODE_POINT: u32 = 0x10_FFFF;
 
@@ -487,6 +492,16 @@ pub struct CompiledDfa {
 }
 
 impl CompiledDfa {
+    /// A DFA whose language is finite -- a Levenshtein automaton's, every
+    /// string within a fixed number of edits of one term -- has no state
+    /// accepting every suffix, so [`ByteDfa::utf8_total_states`]' product
+    /// walk (most of the cost of building a fuzzy query's automaton) is
+    /// skipped and every state is marked not total, which is its answer.
+    pub fn finite(dfa: ByteDfa) -> Self {
+        let utf8_total = vec![false; dfa.num_states()];
+        CompiledDfa { dfa, utf8_total }
+    }
+
     pub fn new(dfa: ByteDfa) -> Self {
         let utf8_total = dfa.utf8_total_states();
         if dfa.start() != DEAD && utf8_total[dfa.start() as usize] {
@@ -956,6 +971,52 @@ impl Nfa {
         Some(())
     }
 
+    /// [`Self::lenient_char`] whose continuation states are **shared by every
+    /// edge into the same `to`**: they depend only on `to` (a lead byte, then
+    /// up to three bytes, then `to`), so the language is the same, but an NFA
+    /// with many lenient edges into one state -- the Levenshtein grid's
+    /// substitution and insertion edges -- gets one set of continuation
+    /// states rather than one per edge, and its subset construction far
+    /// fewer distinct subsets. `shared` maps `to` to its three lead states.
+    pub fn lenient_char_shared(
+        &mut self,
+        from: u32,
+        to: u32,
+        shared: &mut std::collections::HashMap<u32, [u32; 3]>,
+    ) -> Option<()> {
+        let leads = match shared.get(&to) {
+            Some(&leads) => leads,
+            None => {
+                let mut leads = [0u32; 3];
+                for (slot, extra) in leads.iter_mut().zip([1usize, 2, 3]) {
+                    let mut s = self.state()?;
+                    *slot = s;
+                    self.epsilon(s, to);
+                    for i in 1..=extra {
+                        let t = if i == extra { to } else { self.state()? };
+                        self.range(s, 0x00, 0xFF, t);
+                        if t != to {
+                            self.epsilon(t, to);
+                        }
+                        s = t;
+                    }
+                }
+                shared.insert(to, leads);
+                leads
+            }
+        };
+        self.range(from, 0x00, 0x7F, to);
+        self.range(from, 0x80, 0xBF, to);
+        self.range(from, 0xF8, 0xFF, to);
+        for ((lo, hi), lead) in [(0xC0u8, 0xDFu8), (0xE0, 0xEF), (0xF0, 0xF7)]
+            .into_iter()
+            .zip(leads)
+        {
+            self.range(from, lo, hi, lead);
+        }
+        Some(())
+    }
+
     /// A path `from -> to` spelling exactly `bytes`.
     pub fn bytes_to(&mut self, from: u32, bytes: &[u8], to: u32) -> Option<()> {
         match bytes.split_last() {
@@ -1004,6 +1065,9 @@ impl Nfa {
     // `next += 1` stops at `sets.len()`.
     #[allow(clippy::arithmetic_side_effects)]
     pub fn determinize(&self, start: u32, accept: u32) -> Option<ByteDfa> {
+        if self.ranges.len() <= BITSET_NFA_STATES {
+            return self.determinize_bitsets(start, accept);
+        }
         let mut x = Expander::new(self);
         let mut sets: Vec<Vec<u32>> = Vec::new();
         let mut ids = SetMap::default();
@@ -1044,6 +1108,108 @@ impl Nfa {
             .iter()
             .map(|s| s.binary_search(&accept).is_ok())
             .collect();
+        Some(prune(&trans, accepting))
+    }
+
+    /// [`Self::determinize`] for an NFA of at most [`BITSET_NFA_STATES`]
+    /// states: the same subset construction -- the same subsets, discovered
+    /// and numbered in the same order, so the same DFA -- with each subset a
+    /// fixed-width bitset and every NFA state's epsilon closure computed once
+    /// up front. A target subset is then the union of its edges' closures (a
+    /// few word ORs) rather than a closure walk, a sort and a dedup per byte
+    /// range, and looking it up hashes a few words. A Levenshtein automaton
+    /// at two edits, built per fuzzy query, spends most of its construction
+    /// there.
+    // ARITH: every state id is below `n = ranges.len() <= BITSET_NFA_STATES`,
+    // so `s * w + (t >> 6)` is below `n * w`, the closure table's length, and
+    // `next * w + w <= sets.len()`; byte bounds are `u8`s widened to `u16`
+    // (`hi + 1 <= 256`), and `cuts` holds 0 and 256, so `w[1] - 1` fits a
+    // `u8`; `count < MAX_DFA_STATES` fits a `u32`.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn determinize_bitsets(&self, start: u32, accept: u32) -> Option<ByteDfa> {
+        let n = self.ranges.len();
+        let w = n.div_ceil(64).max(1);
+        let mut x = Expander::new(self);
+        let mut closures = vec![0u64; n * w];
+        let mut set = Vec::new();
+        for s in 0..n {
+            set.clear();
+            set.push(s as u32);
+            self.closure(&mut set, &mut x.stack, &mut x.seen);
+            for &t in &set {
+                closures[s * w + (t as usize >> 6)] |= 1 << (t & 63);
+            }
+        }
+        let closure = |s: u32| &closures[s as usize * w..][..w];
+
+        // `sets[id * w..][..w]`: DFA state `id`'s subset.
+        let mut sets: Vec<u64> = closure(start).to_vec();
+        let mut ids: HashMap<Vec<u64>, u32, BuildHasherDefault<SetHasher>> = HashMap::default();
+        ids.insert(sets.clone(), 0);
+        let mut trans: Vec<(u32, u8, u8, u32)> = Vec::new();
+        let mut target = vec![0u64; w];
+        let mut next = 0usize;
+        while next * w < sets.len() {
+            x.edges.clear();
+            for (word_index, &word) in sets[next * w..][..w].iter().enumerate() {
+                let mut bits = word;
+                while bits != 0 {
+                    let s = word_index * 64 + bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
+                    x.edges.extend_from_slice(&self.ranges[s]);
+                }
+            }
+            // The cuts as a 257-bit set, read back in order: no sort.
+            let mut cut_bits = [0u64; 5];
+            cut_bits[0] |= 1;
+            cut_bits[4] |= 1;
+            for &(lo, hi, _) in &x.edges {
+                cut_bits[lo as usize >> 6] |= 1 << (lo & 63);
+                let end = hi as usize + 1;
+                cut_bits[end >> 6] |= 1 << (end & 63);
+            }
+            x.cuts.clear();
+            for (word_index, &word) in cut_bits.iter().enumerate() {
+                let mut bits = word;
+                while bits != 0 {
+                    x.cuts
+                        .push((word_index * 64) as u16 + bits.trailing_zeros() as u16);
+                    bits &= bits - 1;
+                }
+            }
+            for i in 1..x.cuts.len() {
+                let (a, b) = (x.cuts[i - 1], x.cuts[i] - 1);
+                target.fill(0);
+                let mut any = false;
+                for &(lo, hi, t) in &x.edges {
+                    if lo as u16 <= a && b <= hi as u16 {
+                        any = true;
+                        for (d, &c) in target.iter_mut().zip(closure(t)) {
+                            *d |= c;
+                        }
+                    }
+                }
+                if !any {
+                    continue;
+                }
+                let id = match ids.get(target.as_slice()) {
+                    Some(&id) => id,
+                    None => {
+                        let id = sets.len() / w;
+                        if id >= MAX_DFA_STATES {
+                            return None;
+                        }
+                        ids.insert(target.clone(), id as u32);
+                        sets.extend_from_slice(&target);
+                        id as u32
+                    }
+                };
+                trans.push((next as u32, a as u8, b as u8, id));
+            }
+            next += 1;
+        }
+        let (aw, abit) = (accept as usize >> 6, 1u64 << (accept & 63));
+        let accepting: Vec<bool> = sets.chunks_exact(w).map(|s| s[aw] & abit != 0).collect();
         Some(prune(&trans, accepting))
     }
 
@@ -1236,7 +1402,22 @@ fn byte_classes(dense: &[u32], states: usize) -> (Vec<u32>, Box<[u8; 256]>, usiz
     let mut classes = Box::new([0u8; 256]);
     let mut reps: Vec<usize> = Vec::new();
     let mut ids: HashMap<Vec<u32>, u8, BuildHasherDefault<SetHasher>> = HashMap::default();
+    // `starts[b]`: some state sends `b` somewhere other than `b - 1`. Bytes
+    // between two such starts have equal columns, so only a run's first byte
+    // needs its column built and hashed -- a row-order scan rather than 256
+    // strided column gathers.
+    let mut starts = [false; 256];
+    starts[0] = true;
+    for row in dense.chunks_exact(256).take(states) {
+        for (b, pair) in row.windows(2).enumerate() {
+            starts[b + 1] |= pair[0] != pair[1];
+        }
+    }
     for b in 0..256usize {
+        if !starts[b] {
+            classes[b] = classes[b - 1];
+            continue;
+        }
         let column: Vec<u32> = (0..states).map(|s| dense[s << 8 | b]).collect();
         let next = reps.len();
         let id = *ids.entry(column).or_insert_with(|| {

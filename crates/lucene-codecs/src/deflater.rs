@@ -252,9 +252,9 @@ impl Tree {
 /// `deflate_state` for one `Deflater`.
 pub(crate) struct Deflater {
     tables: StaticTables,
-    window: Vec<u8>,
-    prev: Vec<u16>,
-    head: Vec<u16>,
+    window: Box<[u8; WINDOW_SIZE]>,
+    prev: Box<[u16; W_SIZE]>,
+    head: Box<[u16; HASH_SIZE]>,
     high_water: usize,
     ins_h: usize,
     strstart: usize,
@@ -295,13 +295,34 @@ pub(crate) struct Deflater {
 // (`opt_len`, `static_len`) use `wrapping_*` explicitly.
 #[allow(clippy::arithmetic_side_effects)]
 impl Deflater {
+    /// How many leading bytes `a` and `b` share, eight at a time: the first
+    /// differing byte of a word is its lowest set byte of the XOR (little
+    /// endian). At most `min(a.len(), b.len())`.
+    fn common_prefix(a: &[u8], b: &[u8]) -> usize {
+        let n = a.len().min(b.len());
+        let mut i = 0;
+        while let (Some(x), Some(y)) = (a.get(i..i + 8), b.get(i..i + 8)) {
+            let x = u64::from_le_bytes(x.try_into().expect("eight bytes"));
+            let y = u64::from_le_bytes(y.try_into().expect("eight bytes"));
+            let diff = x ^ y;
+            if diff != 0 {
+                return i + (diff.trailing_zeros() / 8) as usize;
+            }
+            i += 8;
+        }
+        while i < n && a[i] == b[i] {
+            i += 1;
+        }
+        i.min(n)
+    }
+
     /// `new Deflater(6, true)`: `deflateInit2(level 6, -15, memLevel 8)`.
     pub(crate) fn new() -> Self {
         let mut d = Deflater {
             tables: StaticTables::new(),
-            window: vec![0; WINDOW_SIZE],
-            prev: vec![0; W_SIZE],
-            head: vec![0; HASH_SIZE],
+            window: Box::new([0; WINDOW_SIZE]),
+            prev: Box::new([0; W_SIZE]),
+            head: Box::new([0; HASH_SIZE]),
             high_water: 0,
             ins_h: 0,
             strstart: 0,
@@ -537,21 +558,31 @@ impl Deflater {
                 || w[m] != w[scan]
                 || w[m + 1] != w[scan + 1];
             if !skip {
-                let mut s = scan + 2;
-                let mut mm = m + 2;
-                'outer: loop {
-                    for _ in 0..8 {
-                        s += 1;
-                        mm += 1;
-                        if w[s] != w[mm] {
-                            break 'outer;
+                // zlib's unrolled `*++scan == *++match` run from byte 3
+                // (byte 2 is equal by the hash) to `strend`, eight bytes a
+                // step: it compares bytes `3..=MAX_MATCH` and stops at the
+                // first difference, so the match is 3 plus their common
+                // prefix, at most `MAX_MATCH`. Compared a word at a time.
+                let len = match (w.get(scan + 3..=strend), w.get(m + 3..=m + MAX_MATCH)) {
+                    (Some(a), Some(b)) => 3 + Self::common_prefix(a, b).min(MAX_MATCH - 3),
+                    _ => {
+                        let mut s = scan + 2;
+                        let mut mm = m + 2;
+                        'outer: loop {
+                            for _ in 0..8 {
+                                s += 1;
+                                mm += 1;
+                                if w[s] != w[mm] {
+                                    break 'outer;
+                                }
+                            }
+                            if s >= strend {
+                                break;
+                            }
                         }
+                        s - scan
                     }
-                    if s >= strend {
-                        break;
-                    }
-                }
-                let len = s - scan;
+                };
                 if len > best_len {
                     self.match_start = cur_match;
                     best_len = len;
