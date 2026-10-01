@@ -121,22 +121,10 @@ pub(crate) fn constant_score_terms<'a>(
     ) {
         // `MultiTermQueryConstantScoreWrapper`: every term's documents into
         // one `DocIdSetBuilder`.
-        let len = usize::try_from(max_doc).unwrap_or(0);
-        let mut words = vec![0u64; lucene_util::fixed_bit_set::bits2words(len)];
-        let mut reuse = None;
-        for (_, seeked) in &terms {
-            field_terms.or_docs_into(seeked, doc_in, max_doc, &mut words, &mut reuse)?;
-        }
-        let bits = FixedBitSet::from_words(words, len);
-        let cardinality = bits.cardinality() as i64;
-        if cardinality == 0 {
+        let Some(set) = union_set(field_terms, doc_in, &terms, max_doc)? else {
             return Ok(None);
-        }
-        let inner: BoxScorer<'a> =
-            Box::new(CachedScorer::new(std::sync::Arc::new(CachedSet::Bits {
-                bits,
-                cardinality,
-            })));
+        };
+        let inner: BoxScorer<'a> = Box::new(CachedScorer::new(std::sync::Arc::new(set)));
         return Ok(Some(Box::new(ConstantScorer::new(
             inner,
             boost,
@@ -176,20 +164,9 @@ pub(crate) fn constant_score_terms<'a>(
             }
         }
         terms = top;
-        // `DocIdSetBuilder` over the rest, each term's postings ORed in --
-        // a bit-set block a word at a time (`intoBitSet`).
-        let len = usize::try_from(max_doc).unwrap_or(0);
-        let mut words = vec![0u64; lucene_util::fixed_bit_set::bits2words(len)];
-        let mut reuse = None;
-        for (_, seeked) in &rest {
-            field_terms.or_docs_into(seeked, doc_in, max_doc, &mut words, &mut reuse)?;
-        }
-        let bits = FixedBitSet::from_words(words, len);
-        let cardinality = bits.cardinality() as i64;
-        if cardinality > 0 {
-            scorers.push(Box::new(CachedScorer::new(std::sync::Arc::new(
-                CachedSet::Bits { bits, cardinality },
-            ))));
+        // `DocIdSetBuilder` over the rest -- see [`union_set`].
+        if let Some(set) = union_set(field_terms, doc_in, &rest, max_doc)? {
+            scorers.push(Box::new(CachedScorer::new(std::sync::Arc::new(set))));
         }
     }
     let mut legs = Vec::with_capacity(terms.len());
@@ -210,6 +187,54 @@ pub(crate) fn constant_score_terms<'a>(
 }
 
 /// The union of `terms`' postings, documents only.
+/// `DocIdSetBuilder` over `terms`' documents in `[0, max_doc)`, or `None`
+/// when they have none.
+///
+/// Java's builder starts sparse -- a growing array of ids -- and upgrades to
+/// a bit set only once more than `maxDoc >> 7` ids have been added. Here the
+/// terms' summed `docFreq` bounds the ids up front: under that threshold the
+/// ids are collected into a sorted, deduplicated list, so a clause whose
+/// remaining terms are rare never touches a `maxDoc`-bit set (128 KiB of
+/// fresh pages per query on a 1M-document segment, which is what held
+/// `mtq_csb` under Lucene); past it, every term's postings are ORed into one
+/// bit set a block at a time (`intoBitSet`). Either way the set holds exactly
+/// the same documents.
+fn union_set<'d>(
+    field_terms: &lucene_codecs::blocktree::FieldTerms,
+    doc_in: &lucene_codecs::postings::DocInput<'d>,
+    terms: &[(Vec<u8>, lucene_codecs::blocktree::SeekedTerm)],
+    max_doc: i32,
+) -> Result<Option<CachedSet>> {
+    let len = usize::try_from(max_doc).unwrap_or(0);
+    let bound = terms.iter().fold(0usize, |n, (_, t)| {
+        n.saturating_add(usize::try_from(t.stats.doc_freq).unwrap_or(usize::MAX))
+    });
+    if bound <= (len >> 7).max(1) {
+        let mut docs = Vec::with_capacity(bound);
+        for (_, seeked) in terms {
+            let mut cursor =
+                field_terms.lazy_postings_for(seeked, doc_in, PostingsFlags::DocsOnly)?;
+            let mut doc = cursor.next_doc()?;
+            while doc != lucene_codecs::postings::NO_MORE_DOCS {
+                if (0..max_doc).contains(&doc) {
+                    docs.push(doc);
+                }
+                doc = cursor.next_doc()?;
+            }
+        }
+        lucene_util::doc_id_sort::sort_dedup_doc_ids(&mut docs);
+        return Ok((!docs.is_empty()).then_some(CachedSet::Docs(docs)));
+    }
+    let mut words = vec![0u64; lucene_util::fixed_bit_set::bits2words(len)];
+    let mut reuse = None;
+    for (_, seeked) in terms {
+        field_terms.or_docs_into(seeked, doc_in, max_doc, &mut words, &mut reuse)?;
+    }
+    let bits = FixedBitSet::from_words(words, len);
+    let cardinality = bits.cardinality() as i64;
+    Ok((cardinality > 0).then_some(CachedSet::Bits { bits, cardinality }))
+}
+
 fn term_union<'a>(
     field_terms: &'a lucene_codecs::blocktree::FieldTerms,
     doc_in: &'a lucene_codecs::postings::DocInput<'a>,
