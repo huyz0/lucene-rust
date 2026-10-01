@@ -21,7 +21,7 @@ use super::leaf::{ConstantScorer, TermScorer};
 use super::{BoxScorer, Mode, Scorer, NO_MORE_DOCS};
 use crate::bulk_scorer::TermLeg;
 use crate::query::{BooleanQuery, Clause, TermQuery};
-use crate::{blocktree, Result};
+use crate::Result;
 
 /// `AbstractMultiTermQueryConstantScoreWrapper.BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD`.
 pub(crate) const BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD: usize = 16;
@@ -75,7 +75,6 @@ pub(crate) fn constant_score_terms<'a>(
     let Some(field_terms) = ctx.fields.field(&field) else {
         return Ok(None);
     };
-    let pe = |e| -> crate::Error { blocktree::Error::Postings(e).into() };
     // `rewriteAsBooleanQuery`: up to 16 terms become `ConstantScoreQuery`
     // around a `BooleanQuery` of `SHOULD` term queries, whose weight
     // `ConstantScoreQuery` creates without scores -- so `IndexSearcher`
@@ -124,11 +123,9 @@ pub(crate) fn constant_score_terms<'a>(
         // one `DocIdSetBuilder`.
         let len = usize::try_from(max_doc).unwrap_or(0);
         let mut words = vec![0u64; lucene_util::fixed_bit_set::bits2words(len)];
+        let mut reuse = None;
         for (_, seeked) in &terms {
-            let mut cursor =
-                field_terms.lazy_postings_for(seeked, doc_in, PostingsFlags::DocsOnly)?;
-            cursor.next_doc().map_err(pe)?;
-            cursor.into_window(0, max_doc, &mut words).map_err(pe)?;
+            field_terms.or_docs_into(seeked, doc_in, max_doc, &mut words, &mut reuse)?;
         }
         let bits = FixedBitSet::from_words(words, len);
         let cardinality = bits.cardinality() as i64;
@@ -183,11 +180,9 @@ pub(crate) fn constant_score_terms<'a>(
         // a bit-set block a word at a time (`intoBitSet`).
         let len = usize::try_from(max_doc).unwrap_or(0);
         let mut words = vec![0u64; lucene_util::fixed_bit_set::bits2words(len)];
+        let mut reuse = None;
         for (_, seeked) in &rest {
-            let mut cursor =
-                field_terms.lazy_postings_for(seeked, doc_in, PostingsFlags::DocsOnly)?;
-            cursor.next_doc().map_err(pe)?;
-            cursor.into_window(0, max_doc, &mut words).map_err(pe)?;
+            field_terms.or_docs_into(seeked, doc_in, max_doc, &mut words, &mut reuse)?;
         }
         let bits = FixedBitSet::from_words(words, len);
         let cardinality = bits.cardinality() as i64;

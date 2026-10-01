@@ -4302,7 +4302,7 @@ pub fn search_span_query<C: Collector>(
 /// roughly five million allocations for a phrase query on a high-frequency term
 /// -- and about half of such a query's runtime was in `malloc`/`free`/`memcpy`.
 /// Lucene's `ExactPhraseMatcher` allocates nothing per document at all.
-type TermDocPositions = (Vec<i32>, Vec<i32>, Vec<(u32, u32)>);
+pub(crate) type TermDocPositions = (Vec<i32>, Vec<i32>, Vec<(u32, u32)>);
 
 fn term_doc_positions(
     fields: &BlockTreeFields,
