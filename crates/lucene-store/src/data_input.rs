@@ -329,6 +329,89 @@ impl<'a> SliceInput<'a> {
         self.pos
     }
 
+    /// [`DataInput::read_group_vints`] into `i32`s, each holding its value's
+    /// 32 bits: what a postings tail block decodes into its doc buffer
+    /// (`GroupVIntUtil.readGroupVInts(in, int[], limit)`), with no `u64`
+    /// staging buffer to zero and copy out of per block. Values, errors and
+    /// their offsets are [`DataInput::read_group_vints`]'.
+    // ARITH: as `read_group_vints` in `impl DataInput for SliceInput`: `pos
+    // <= buf.len()`, so `pos + 17` cannot overflow; every other sum is
+    // bounded by the 17-byte group or by `dst.len()`. Nothing is sized by a
+    // value read off disk.
+    #[allow(clippy::arithmetic_side_effects)]
+    pub fn read_group_vints_i32(&mut self, dst: &mut [i32]) -> Result<()> {
+        const MASKS: [u32; 4] = [0xFF, 0xFFFF, 0xFF_FFFF, u32::MAX];
+        let mut done = 0;
+        for group in dst.chunks_exact_mut(4) {
+            // `pos <= buf.len()`, so `pos + 17` cannot overflow a `usize`.
+            let Some(bytes) = self.buf.get(self.pos..self.pos + 17) else {
+                break;
+            };
+            let flag = bytes[0];
+            let mut at = 1;
+            for (j, slot) in group.iter_mut().enumerate() {
+                // ARITH: `j < 4`, so the shift is at most 6; `at <= 13` and
+                // the 2-bit length adds at most 4, inside the 17 bytes.
+                let n_minus_1 = usize::from((flag >> (6 - 2 * j)) & 3);
+                let word: [u8; 4] = bytes[at..at + 4].try_into().expect("four bytes");
+                *slot = (u32::from_le_bytes(word) & MASKS[n_minus_1]) as i32;
+                at += n_minus_1 + 1;
+            }
+            self.pos += at;
+            done += 4;
+        }
+        if done < dst.len() {
+            self.group_vints_i32_tail(&mut dst[done..])?;
+        }
+        Ok(())
+    }
+
+    /// [`Self::read_group_vints_i32`] for the groups too close to the end of
+    /// the buffer for its 17-byte window -- a postings tail block's last
+    /// group or two when the slice ends with the term, so once per rare term:
+    /// not cold. A group whose own bytes are all there is decoded from them
+    /// directly; the first that is cut short, and the plain-vint remainder,
+    /// take the default decoder a group at a time, so errors and their
+    /// offsets are its.
+    #[inline(never)]
+    // ARITH: `pos <= buf.len()` and a group spans at most 17 bytes, so `pos +
+    // need` cannot overflow; `done` steps by 4 under `done + 4 <= dst.len()`.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn group_vints_i32_tail(&mut self, dst: &mut [i32]) -> Result<()> {
+        let mut done = 0;
+        while done + 4 <= dst.len() {
+            let Some(&flag) = self.buf.get(self.pos) else {
+                break;
+            };
+            let lens =
+                [flag >> 6, (flag >> 4) & 3, (flag >> 2) & 3, flag & 3].map(|l| usize::from(l) + 1);
+            let need = 1 + lens.iter().sum::<usize>();
+            let Some(bytes) = self.buf.get(self.pos..self.pos + need) else {
+                break;
+            };
+            let mut at = 1;
+            for (slot, &n) in dst[done..done + 4].iter_mut().zip(&lens) {
+                let mut word = [0u8; 4];
+                word[..n].copy_from_slice(&bytes[at..at + n]);
+                *slot = u32::from_le_bytes(word) as i32;
+                at += n;
+            }
+            self.pos += need;
+            done += 4;
+        }
+        // Group-aligned: each chunk is a whole group, or the remainder of
+        // fewer than four plain vints.
+        let mut tmp = [0u64; 4];
+        for chunk in dst[done..].chunks_mut(4) {
+            let staged = &mut tmp[..chunk.len()];
+            group_vints_default(self, staged)?;
+            for (d, &v) in chunk.iter_mut().zip(staged.iter()) {
+                *d = v as u32 as i32;
+            }
+        }
+        Ok(())
+    }
+
     pub fn len(&self) -> usize {
         self.buf.len()
     }
@@ -757,6 +840,95 @@ mod tests {
         let slow_err = PlainInput { buf: cut, pos: 0 }.read_group_vints(&mut short);
         assert!(fast_err.is_err());
         assert_eq!(format!("{fast_err:?}"), format!("{slow_err:?}"));
+    }
+
+    #[test]
+    fn read_group_vints_i32_matches_the_u64_decoder() {
+        // 40 groups then a 3-value vint tail: the fast path, and -- the last
+        // group and the tail, closer to the end than 17 bytes -- the
+        // near-end path.
+        let widths = [0u32, 0x7F, 0xFF, 0x1234, 0xFF_FF, 0x12_3456, 0xFFFF_FFFF, 1];
+        let mut bytes = Vec::new();
+        let mut want = Vec::new();
+        for g in 0..40 {
+            let vals: Vec<u32> = (0..4).map(|j| widths[(g * 5 + j) % widths.len()]).collect();
+            let mut flag = 0u8;
+            let mut body = Vec::new();
+            for (j, &v) in vals.iter().enumerate() {
+                let n = (4 - v.leading_zeros() / 8).max(1);
+                flag |= ((n - 1) as u8) << (6 - 2 * j);
+                body.extend_from_slice(&v.to_le_bytes()[..n as usize]);
+            }
+            bytes.push(flag);
+            bytes.extend(body);
+            want.extend(vals);
+        }
+        for v in [5u32, 300, 70_000] {
+            let mut x = v;
+            while x >= 0x80 {
+                bytes.push((x as u8) | 0x80);
+                x >>= 7;
+            }
+            bytes.push(x as u8);
+            want.push(v);
+        }
+        let n = want.len();
+        let mut got = vec![0i32; n];
+        let mut input = SliceInput::new(&bytes);
+        input.read_group_vints_i32(&mut got).unwrap();
+        assert_eq!(input.position(), bytes.len());
+        assert!(got.iter().zip(&want).all(|(&g, &w)| g as u32 == w));
+        // Only the near-end path: a buffer too short for any fast group.
+        let last = &bytes[bytes.len() - 17..];
+        let mut wide = vec![0u64; 3];
+        let mut narrow = vec![0i32; 3];
+        let tail_at = last.len() - 1 - 2 - 3;
+        SliceInput::new(&last[tail_at..])
+            .read_group_vints(&mut wide)
+            .unwrap();
+        SliceInput::new(&last[tail_at..])
+            .read_group_vints_i32(&mut narrow)
+            .unwrap();
+        assert!(narrow
+            .iter()
+            .zip(&wide)
+            .all(|(&a, &b)| u64::from(a as u32) == b));
+        // Groups with no slack after them -- each its own bytes and nothing
+        // more -- decode on the near-end path, and one cut short fails there
+        // exactly as the `u64` decoder does.
+        let mut at = 0;
+        for _ in 0..8 {
+            let flag = bytes[at];
+            let need = 1
+                + (0..4)
+                    .map(|j| usize::from((flag >> (6 - 2 * j)) & 3) + 1)
+                    .sum::<usize>();
+            let group = &bytes[at..at + need];
+            let mut wide = [0u64; 4];
+            let mut narrow = [0i32; 4];
+            SliceInput::new(group).read_group_vints(&mut wide).unwrap();
+            let mut input = SliceInput::new(group);
+            input.read_group_vints_i32(&mut narrow).unwrap();
+            assert_eq!(input.position(), need);
+            assert!(narrow
+                .iter()
+                .zip(&wide)
+                .all(|(&a, &b)| u64::from(a as u32) == b));
+            let short = &group[..need - 1];
+            let wide_err = SliceInput::new(short).read_group_vints(&mut wide);
+            let narrow_err = SliceInput::new(short).read_group_vints_i32(&mut narrow);
+            assert!(narrow_err.is_err());
+            assert_eq!(format!("{narrow_err:?}"), format!("{wide_err:?}"));
+            at += need;
+        }
+        // A truncated buffer fails as the `u64` decoder does, at the same offset.
+        let cut = &bytes[..bytes.len() - 2];
+        let mut a = vec![0u64; n];
+        let mut b = vec![0i32; n];
+        let wide_err = SliceInput::new(cut).read_group_vints(&mut a);
+        let narrow_err = SliceInput::new(cut).read_group_vints_i32(&mut b);
+        assert!(narrow_err.is_err());
+        assert_eq!(format!("{narrow_err:?}"), format!("{wide_err:?}"));
     }
 
     #[test]

@@ -1744,19 +1744,37 @@ pub(crate) fn expand_terms(
     source: &MultiTermSource,
     limit: Option<usize>,
 ) -> Result<Vec<(Vec<u8>, SeekedTerm)>> {
+    let mut out = Vec::new();
+    visit_terms(fields, source, limit, &mut |term, seeked| {
+        out.push((term, seeked));
+        Ok(())
+    })?;
+    Ok(out)
+}
+
+/// [`expand_terms`], handing each term to `sink` as the walk reaches it
+/// rather than collecting them.
+pub(crate) fn visit_terms(
+    fields: &BlockTreeFields,
+    source: &MultiTermSource,
+    limit: Option<usize>,
+    sink: &mut dyn FnMut(Vec<u8>, SeekedTerm) -> Result<()>,
+) -> Result<()> {
     let limit = limit.unwrap_or(usize::MAX);
-    let take = |it: &mut dyn Iterator<
+    let mut take = |it: &mut dyn Iterator<
         Item = lucene_codecs::blocktree::Result<(Vec<u8>, SeekedTerm)>,
     >|
-     -> Result<Vec<(Vec<u8>, SeekedTerm)>> {
-        Ok(it
-            .take(limit)
-            .collect::<lucene_codecs::blocktree::Result<Vec<_>>>()?)
+     -> Result<()> {
+        for t in it.take(limit) {
+            let (term, seeked) = t?;
+            sink(term, seeked)?;
+        }
+        Ok(())
     };
     match source {
         MultiTermSource::Prefix(p) => {
             let Some(ft) = fields.field(&p.field) else {
-                return Ok(Vec::new());
+                return Ok(());
             };
             let pattern = lucene_codecs::wildcard::WildcardPattern::prefix(&p.prefix);
             let mut it = ft.intersect_states(&pattern);
@@ -1764,7 +1782,7 @@ pub(crate) fn expand_terms(
         }
         MultiTermSource::Wildcard(w) => {
             let Some(ft) = fields.field(&w.field) else {
-                return Ok(Vec::new());
+                return Ok(());
             };
             let pattern = lucene_codecs::wildcard::WildcardPattern::new(&w.pattern);
             let mut it = ft.intersect_states(&pattern);
@@ -1772,7 +1790,7 @@ pub(crate) fn expand_terms(
         }
         MultiTermSource::Regexp(r) => {
             let Some(ft) = fields.field(&r.field) else {
-                return Ok(Vec::new());
+                return Ok(());
             };
             let pattern = lucene_codecs::regexp::RegexpPattern::new(r.pattern.as_bytes())?;
             let mut it = ft.regexp_intersect_states(&pattern);
@@ -1780,9 +1798,8 @@ pub(crate) fn expand_terms(
         }
         MultiTermSource::TermRange(r) => {
             let Some(ft) = fields.field(&r.field) else {
-                return Ok(Vec::new());
+                return Ok(());
             };
-            let mut out = Vec::new();
             let mut it = ft.iter();
             let mut on = match &r.lower {
                 Some(lo) => !matches!(
@@ -1791,7 +1808,8 @@ pub(crate) fn expand_terms(
                 ),
                 None => it.try_next_term()?.is_some(),
             };
-            while on && out.len() < limit {
+            let mut taken = 0usize;
+            while on && taken < limit {
                 let term = it.term().map(<[u8]>::to_vec).unwrap_or_default();
                 let past = match &r.upper {
                     None => false,
@@ -1803,19 +1821,20 @@ pub(crate) fn expand_terms(
                 }
                 if r.accepts(&term) {
                     if let Some(seeked) = it.try_seeked_term()? {
-                        out.push((term, seeked));
+                        taken = taken.saturating_add(1);
+                        sink(term, seeked)?;
                     }
                 }
                 on = it.try_next_term()?.is_some();
             }
-            Ok(out)
+            Ok(())
         }
         // `CompiledAutomaton.getTermsEnum`: `Terms.intersect` over the
         // compiled byte automaton, skipping every block it proves dead.
         MultiTermSource::Automaton(a) => {
             use lucene_util::automaton::CompiledAutomaton;
             let Some(ft) = fields.field(&a.field) else {
-                return Ok(Vec::new());
+                return Ok(());
             };
             let compiled = CompiledAutomaton::with_options(&a.automaton, false, true, a.binary)
                 .map_err(|e| crate::Error::InvalidQuery(format!("automaton: {e:?}")))?;
@@ -1950,8 +1969,13 @@ fn multi_term<'a>(
                     return build::build(ctx, &c, boost, mode, top_level);
                 }
             }
-            let terms = expand_terms(ctx.fields, &q.source, None)?;
-            super::multi_term::constant_score_terms(ctx, q.field(), terms, boost, mode, blended)
+            // Streamed, as the wrappers consume their `TermsEnum`: a short
+            // automaton or range can match tens of thousands of terms.
+            let mut stream = super::multi_term::StreamedTerms::new(ctx, q.field(), blended);
+            visit_terms(ctx.fields, &q.source, None, &mut |term, seeked| {
+                stream.push(term, seeked)
+            })?;
+            stream.finish(ctx, q.field(), boost, mode)
         }
         // `DocValuesRewriteMethod.rewrite`: `new ConstantScoreQuery(new
         // MultiTermQueryDocValuesWrapper(query))`. The wrapper's weight is
