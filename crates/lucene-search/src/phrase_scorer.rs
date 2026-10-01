@@ -65,6 +65,9 @@ pub(crate) fn score_phrase<C: ScoringCollector>(
     let unnormed = similarity::UNNORMED_NORM_INVERSE;
 
     let pe = |e| -> crate::Error { blocktree::Error::Postings(e).into() };
+    // The collector's threshold the cached `min_x` was found for.
+    let mut min_x_for = f32::NAN.to_bits();
+    let mut min_x = None;
     let mut doc = legs[0].cursor.next_doc().map_err(pe)?;
     'outer: while doc != NO_MORE_DOCS {
         for i in 1..n {
@@ -83,6 +86,10 @@ pub(crate) fn score_phrase<C: ScoringCollector>(
                 None => unnormed,
             };
             let min_competitive = min_competitive_score(collector);
+            if min_competitive.to_bits() != min_x_for {
+                min_x_for = min_competitive.to_bits();
+                min_x = min_competitive_x(weight, min_competitive);
+            }
             // `PhraseScorer.matches`: if even `matcher.maxFreq()` cannot
             // compete, no position needs reading. An exact phrase occurs at
             // most as often as its rarest term; a sloppy one's frequency is at
@@ -95,15 +102,16 @@ pub(crate) fn score_phrase<C: ScoringCollector>(
                     legs.iter()
                         .fold(0.0f32, |sum, l| sum + l.cursor.freq() as f32)
                 };
-                similarity::do_score(weight, max_freq, norm_inverse) >= min_competitive
+                // `do_score(weight, max_freq, norm_inverse) >= min_competitive`,
+                // without its divide: see `min_competitive_x`.
+                min_x.is_some_and(|t| max_freq * norm_inverse >= t)
             };
             if competitive {
                 for leg in legs.iter_mut() {
                     let buf = &mut positions[leg.slot];
                     buf.clear();
-                    for _ in 0..leg.cursor.freq() {
-                        buf.push(leg.cursor.next_position().map_err(pe)?);
-                    }
+                    // The document's `freq` positions, checked once per block.
+                    leg.cursor.positions_into(buf).map_err(pe)?;
                 }
                 // Borrowed per candidate: a stack array for any ordinary phrase, a
                 // heap `Vec` only past eight terms.
@@ -134,10 +142,82 @@ pub(crate) fn score_phrase<C: ScoringCollector>(
     Ok(())
 }
 
+/// The smallest `x >= 0` with `weight - weight / (1 + x) >= min` --
+/// [`similarity::do_score`] with `x = freq * norm_inverse` -- or `None` when
+/// no `x` reaches `min`.
+///
+/// Every step of that expression rounds monotonically in `x` (the add, the
+/// divide and the subtract), so whether a document can compete is exactly
+/// whether its `x` is at least this threshold. It only changes when the
+/// collector's minimum does, so the binary search over the floats' bit
+/// patterns (ordered like the values for `x >= 0`) is paid per threshold
+/// rather than a divide per candidate document.
+fn min_competitive_x(weight: f32, min: f32) -> Option<f32> {
+    let score = |x: f32| weight - weight / (1.0 + x);
+    if score(0.0) >= min {
+        return Some(0.0);
+    }
+    let (mut lo, mut hi) = (0.0f32.to_bits(), f32::INFINITY.to_bits());
+    if score(f32::from_bits(hi)) < min {
+        return None;
+    }
+    // `score(lo) < min <= score(hi)`.
+    while hi - lo > 1 {
+        let mid = lo + (hi - lo) / 2;
+        if score(f32::from_bits(mid)) >= min {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    Some(f32::from_bits(hi))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::collector::TopDocsCollector;
+
+    /// The threshold answers exactly what computing the score does, across
+    /// weights, minima and `x` values on both sides of it -- including its
+    /// own bits and their neighbours.
+    #[test]
+    fn min_competitive_x_is_the_score_comparison() {
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let unit = |v: u64| (v >> 40) as f32 / (1u64 << 24) as f32;
+        for _ in 0..2_000 {
+            let weight = unit(next()) * 12.0 + 0.01;
+            let min = unit(next()) * weight * 1.1;
+            let t = min_competitive_x(weight, min);
+            let mut xs: Vec<f32> = (0..20).map(|_| unit(next()) * 50.0).collect();
+            if let Some(t) = t {
+                xs.extend([t, f32::from_bits(t.to_bits() + 1)]);
+                if t > 0.0 {
+                    xs.push(f32::from_bits(t.to_bits() - 1));
+                }
+            }
+            for x in xs {
+                let want = weight - weight / (1.0 + x) >= min;
+                assert_eq!(
+                    t.is_some_and(|t| x >= t),
+                    want,
+                    "w {weight} min {min} x {x}"
+                );
+            }
+        }
+        assert_eq!(
+            min_competitive_x(2.0, 3.0),
+            None,
+            "above the score's ceiling"
+        );
+        assert_eq!(min_competitive_x(2.0, 0.0), Some(0.0));
+    }
     use lucene_codecs::field_infos::{
         DocValuesSkipIndexType, DocValuesType, FieldInfo, FieldInfos, IndexOptions, VectorEncoding,
         VectorSimilarityFunction,
