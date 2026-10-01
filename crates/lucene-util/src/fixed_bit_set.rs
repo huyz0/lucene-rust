@@ -361,6 +361,13 @@ impl FixedBitSet {
     pub fn words(&self) -> &[u64] {
         &self.words
     }
+
+    /// The backing words, for a caller that fills them in bulk and hands
+    /// them back through [`Self::from_words`] (the inverse; the length is
+    /// `bits2words(len())`).
+    pub fn into_words(self) -> Vec<u64> {
+        self.words
+    }
 }
 
 /// The rest of `FixedBitSet`'s API: ranges, flips, the counting helpers, the
@@ -956,6 +963,15 @@ mod tests {
     #![allow(clippy::needless_range_loop, clippy::identity_op)]
 
     use super::*;
+    #[test]
+    fn into_words_is_the_inverse_of_from_words() {
+        let mut b = FixedBitSet::new(130);
+        b.set(0);
+        b.set(129);
+        let words = b.clone().into_words();
+        assert_eq!(words.len(), bits2words(130));
+        assert_eq!(FixedBitSet::from_words(words, 130), b);
+    }
 
     #[test]
     fn next_clear_bit_in_words_finds_the_first_gap() {
