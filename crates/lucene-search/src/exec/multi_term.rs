@@ -197,8 +197,9 @@ pub(crate) fn constant_score_terms<'a>(
 /// remaining terms are rare never touches a `maxDoc`-bit set (128 KiB of
 /// fresh pages per query on a 1M-document segment, which is what held
 /// `mtq_csb` under Lucene); past it, every term's postings are ORed into one
-/// bit set a block at a time (`intoBitSet`). Either way the set holds exactly
-/// the same documents.
+/// bit set a block at a time (`intoBitSet`), one [`crate::bit_set_pool`]
+/// hands back once the set is dropped. Either way the set holds exactly the
+/// same documents.
 fn union_set<'d>(
     field_terms: &lucene_codecs::blocktree::FieldTerms,
     doc_in: &lucene_codecs::postings::DocInput<'d>,
@@ -225,7 +226,12 @@ fn union_set<'d>(
         lucene_util::doc_id_sort::sort_dedup_doc_ids(&mut docs);
         return Ok((!docs.is_empty()).then_some(CachedSet::Docs(docs)));
     }
-    let mut words = vec![0u64; lucene_util::fixed_bit_set::bits2words(len)];
+    // A cleared set this thread has spare, or a fresh one: the
+    // `DocIdSetBuilder` allocation Lucene makes per query on a warm heap.
+    let mut words = crate::bit_set_pool::take(len).map_or_else(
+        || vec![0u64; lucene_util::fixed_bit_set::bits2words(len)],
+        FixedBitSet::into_words,
+    );
     let mut reuse = None;
     for (_, seeked) in terms {
         field_terms.or_docs_into(seeked, doc_in, max_doc, &mut words, &mut reuse)?;

@@ -52,6 +52,17 @@ pub(crate) enum CachedSet {
     Docs(Vec<i32>),
 }
 
+impl Drop for CachedSet {
+    /// A set's bits go back to [`crate::bit_set_pool`] for the next query's
+    /// set of the same segment, whether it was built for one query or
+    /// evicted from the cache.
+    fn drop(&mut self) {
+        if let CachedSet::Bits { bits, .. } = self {
+            crate::bit_set_pool::give(std::mem::replace(bits, FixedBitSet::new(0)));
+        }
+    }
+}
+
 impl CachedSet {
     fn ram_bytes(&self) -> usize {
         match self {
@@ -502,6 +513,26 @@ mod tests {
 
     #![allow(clippy::arithmetic_side_effects)]
     use super::*;
+
+    #[test]
+    fn a_dropped_bit_set_goes_back_to_the_pool_cleared() {
+        // Test threads are shared, so this keys on a length of its own.
+        const LEN: usize = 2_011;
+        let mut bits = FixedBitSet::new(LEN);
+        bits.set(3);
+        bits.set(LEN - 1);
+        let held = crate::bit_set_pool::held(LEN);
+        drop(Arc::new(CachedSet::Bits {
+            bits,
+            cardinality: 2,
+        }));
+        assert_eq!(crate::bit_set_pool::held(LEN), held + 1);
+        let back = crate::bit_set_pool::take(LEN).expect("pooled");
+        assert_eq!(back.cardinality(), 0, "handed back cleared");
+        // A doc list holds no bit set: nothing is pooled.
+        drop(CachedSet::Docs(vec![1, 2]));
+        assert_eq!(crate::bit_set_pool::held(LEN), held);
+    }
     use crate::exec::leaf::DocList;
     use crate::query::{
         BooleanQuery, DisjunctionMaxQuery, MatchAllDocsQuery, PhraseQuery, PrefixQuery, TermQuery,

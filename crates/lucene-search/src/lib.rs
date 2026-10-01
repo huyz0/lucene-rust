@@ -198,6 +198,7 @@
 
 pub mod aggs;
 pub mod bayesian_estimator;
+mod bit_set_pool;
 pub mod bucket_aggs;
 mod bulk_scorer;
 pub mod cardinality_sketch;
