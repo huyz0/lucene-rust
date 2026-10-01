@@ -117,8 +117,8 @@ pub type OneMergeWrapper = Arc<dyn Fn(OneMerge) -> OneMerge + Send + Sync>;
 /// `OneMergeWrappingMergePolicy`: the delegate's natural, forced,
 /// forced-deletes and full-flush specifications, each merge passed through
 /// `wrap`. Java's wrappers typically override `OneMerge.wrapForMerge`/
-/// `reorder`; this port's [`OneMerge`] carries no such hooks, so a wrapper
-/// here rewrites the merge itself (its segments, their order).
+/// `reorder`: here `wrap` returns the merge with its hooks
+/// ([`OneMerge::with_hooks`]), or rewrites the merge itself.
 pub struct OneMergeWrappingMergePolicy {
     filter: FilterMergePolicy,
     wrap: OneMergeWrapper,

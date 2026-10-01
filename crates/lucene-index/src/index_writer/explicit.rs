@@ -59,12 +59,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
     DocValuesFieldConfig, DocumentBuffer, Error, IndexWriter, IndexingConfig, PointsFieldConfig,
-    Result, DOC_VALUES_FORMAT_NAME, PER_FIELD_SUFFIX, POSTINGS_FORMAT_NAME,
+    Result, DOC_VALUES_FORMAT_NAME, POSTINGS_FORMAT_NAME,
 };
 use crate::segment_infos::SegmentCommitInfo;
 use crate::segment_writer;
 use lucene_codecs::field_infos::{DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions};
 use lucene_codecs::norms;
+use lucene_codecs::per_field_doc_values;
 use lucene_codecs::postings_writer::{self, FieldPostingsInput, TermPostings};
 use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
 use lucene_store::codec_util::ID_LENGTH;
@@ -122,9 +123,12 @@ pub struct InvertedTerm {
     /// Parallel to `positions`, when the field indexes offsets; empty
     /// otherwise.
     pub offsets: Vec<(i32, i32)>,
-    /// Parallel to `positions`: each occurrence's payload, empty for an
-    /// occurrence without one. Empty altogether when no occurrence has one;
-    /// only a field that indexes positions may carry payloads.
+    /// Parallel to `positions`: each occurrence's payload (`PayloadAttribute`),
+    /// empty for an occurrence without one. Empty altogether when no
+    /// occurrence has one; only a field that indexes positions may carry
+    /// payloads. A segment whose documents give a field a non-empty payload
+    /// records the field `storePayloads`, as `FreqProxTermsWriterPerField.finish`
+    /// does when it `sawPayloads`.
     pub payloads: Vec<Vec<u8>>,
 }
 
@@ -567,11 +571,24 @@ impl IndexingConfig {
         let doc_values_output = if dv_configs.is_empty() {
             None
         } else {
-            Some(IndexWriter::build_doc_values_output(
+            let names: Vec<&str> = self
+                .fields
+                .iter()
+                .filter(|f| present.contains(&f.number))
+                .map(|f| f.name.as_str())
+                .collect();
+            Some(self.build_doc_values_groups(
                 &synthetic(|f| &f.doc_values),
                 &dv_configs,
+                &names,
                 &segment_id,
             )?)
+        };
+        let dv_suffix = |number: i32| {
+            doc_values_output
+                .as_deref()
+                .and_then(|groups| groups.iter().find(|g| g.field_numbers.contains(&number)))
+                .map(|g| g.suffix)
         };
         let point_configs: Vec<PointsFieldConfig> = self
             .fields
@@ -614,14 +631,13 @@ impl IndexingConfig {
                 buf.vectors,
                 &vector_configs,
                 i32::try_from(max_doc).map_err(|_| explicit_error("too many documents"))?,
-                self.hnsw_m,
-                self.hnsw_beam_width,
+                &|name: &str| self.knn_vectors_format_for(name),
                 &segment_id,
             )?
         };
-        let vector_fields_written: BTreeSet<&str> = vectors_output
+        let vector_fields_written: Vec<super::WrittenVectorField> = vectors_output
             .as_ref()
-            .map(|o| o.written_fields.iter().map(String::as_str).collect())
+            .map(|o| o.written.clone())
             .unwrap_or_default();
 
         // This segment's FieldInfos: the present fields, full schema, and the
@@ -651,24 +667,24 @@ impl IndexingConfig {
                         suffix.to_string(),
                     ));
                 }
-                if f.doc_values_type != DocValuesType::None {
+                if let Some(suffix) = dv_suffix(f.number) {
                     f.attributes.push((
-                        "PerFieldDocValuesFormat.format".to_string(),
+                        per_field_doc_values::PER_FIELD_FORMAT_KEY.to_string(),
                         DOC_VALUES_FORMAT_NAME.to_string(),
                     ));
                     f.attributes.push((
-                        "PerFieldDocValuesFormat.suffix".to_string(),
-                        PER_FIELD_SUFFIX.to_string(),
+                        per_field_doc_values::PER_FIELD_SUFFIX_KEY.to_string(),
+                        suffix.to_string(),
                     ));
                 }
-                if vector_fields_written.contains(f.name.as_str()) {
+                if let Some(written) = vector_fields_written.iter().find(|w| w.name == f.name) {
                     f.attributes.push((
                         "PerFieldKnnVectorsFormat.format".to_string(),
-                        super::KNN_VECTORS_FORMAT_NAME.to_string(),
+                        written.format.to_string(),
                     ));
                     f.attributes.push((
                         "PerFieldKnnVectorsFormat.suffix".to_string(),
-                        PER_FIELD_SUFFIX.to_string(),
+                        written.suffix.to_string(),
                     ));
                 }
                 f
@@ -697,13 +713,11 @@ impl IndexingConfig {
                 &output,
             )?);
         }
-        if let Some((dvm, dvd, dvs)) = doc_values_output {
+        for group in doc_values_output.iter().flatten() {
             record(IndexWriter::write_doc_values_files(
                 dir,
                 segment_name,
-                &dvm,
-                &dvd,
-                &dvs,
+                group,
             )?);
         }
         if let Some((nvm, nvd)) = norms_output {
@@ -1305,6 +1319,9 @@ mod tests {
         let mut d = base();
         d.fields.points[0].value = FieldValue::Binary(vec![0; 3]);
         cases.push(("short point", d));
+        let mut d = base();
+        d.fields.inverted[1].terms[0].payloads = vec![vec![1]; 7];
+        cases.push(("payloads out of step with positions", d));
         for (what, d) in cases {
             let err = w.add_explicit_documents(vec![d]).expect_err(what);
             assert!(matches!(err, Error::Explicit(_)), "{what}: {err}");

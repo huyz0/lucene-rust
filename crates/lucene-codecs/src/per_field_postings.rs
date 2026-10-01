@@ -121,9 +121,10 @@ pub fn write(
     let groups = group(&named, format_for);
     let mut out = Vec::with_capacity(groups.len());
     for (suffix, (format, members)) in (0u32..).zip(groups) {
-        // Each group keeps its fields in the order the caller gave them.
-        let mut members = members;
-        members.sort_unstable();
+        // Each group keeps its fields in name order: `FreqProxFields` (the
+        // flush, `FreqProxTermsWriter.flush` sorts its fields by name) and
+        // `MultiFields` (a merge) both iterate that way, and the blocktree
+        // writes fields in iteration order.
         let group_inputs: Vec<FieldPostingsInput<'_>> =
             members.iter().map(|&i| inputs[i]).collect();
         let options = WriteOptions {
@@ -346,7 +347,8 @@ mod tests {
         .unwrap();
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].suffix, 0);
-        assert_eq!(groups[0].field_numbers, [1, 2]);
+        // Name order within a group too: `a_small` (2) before `b_small` (1).
+        assert_eq!(groups[0].field_numbers, [2, 1]);
         assert_eq!(groups[1].field_numbers, [0]);
         assert!(!groups[0].output.pos.is_empty(), "segment-level .pos");
         assert!(groups[0].output.pay.is_empty());

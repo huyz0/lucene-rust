@@ -572,6 +572,17 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
             writer.enable_explicit_documents()?;
             writer.set_deletion_policy(DeletionPolicy::KeepAll)?;
             writer.set_merge_policy(Some(MergePolicyConfig::default()));
+            // OpenSearch's `NativeLuceneIndexWriterFactory` turns
+            // merge-on-commit/refresh off (`setMaxFullFlushMergeWaitMillis(0)`)
+            // unless `index.merge_on_flush.enabled` is set, which this engine
+            // does not support; Lucene's own default (500 ms) would put
+            // merged segments into commits this engine has always written
+            // unmerged.
+            writer.set_max_full_flush_merge_wait_millis(0);
+            // Loose segment files, as this engine has always written them.
+            // OpenSearch's default is compound (`index.compound_format`);
+            // the setting is not wired through the engine yet.
+            writer.set_use_compound_file(false);
             writer.set_ram_buffer_size_mb(ram_buffer_mb)?;
             // The JVM's `IndexWriter.getActualMaxDocs()`, so a test lowering
             // Java's limit lowers this one too.
@@ -1114,6 +1125,22 @@ mod tests {
         assert_eq!(stats(h)[STAT_SEGMENTS], 1);
         ffi_engine_writer_close(h);
         check(&tmp);
+    }
+
+    /// The engine keeps the commits it has always written: merge-on-commit
+    /// off (as OpenSearch configures Lucene) and loose segment files, set
+    /// explicitly rather than inherited from `IndexWriter`'s defaults.
+    #[test]
+    fn the_engine_writer_turns_merge_on_commit_off_and_writes_loose_segments() {
+        let tmp = empty_index("engine-writer-config");
+        let h = open(&tmp, 0);
+        let engine = lookup(h).unwrap();
+        {
+            let engine = engine.lock().unwrap();
+            assert_eq!(engine.handle.writer.max_full_flush_merge_wait_millis(), 0);
+            assert!(!engine.handle.writer.use_compound_file());
+        }
+        ffi_engine_writer_close(h);
     }
 
     /// A document whose analyzer gave `body` payloads -- Lucene's

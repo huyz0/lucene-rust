@@ -175,8 +175,8 @@ codecs/lucene99/Lucene99HnswVectorsReader	ported	crates/lucene-codecs/src/hnsw_v
 codecs/lucene99/Lucene99HnswVectorsWriter	ported	crates/lucene-codecs/src/hnsw_vectors.rs::write_hnsw_vectors
 codecs/lucene99/Lucene99ScalarQuantizedVectorScorer	ported	crates/lucene-codecs/src/backward_codecs/scalar_quantized_vectors.rs::{Lucene99ScalarQuantizedScorer, Lucene99ScalarQuantizedOrdScorer}
 codecs/lucene99/Lucene99SegmentInfoFormat	ported	crates/lucene-index/src/segment_info.rs::write
-codecs/perfield/PerFieldDocValuesFormat	partial	crates/lucene-index/src/index_writer.rs::per_field_codec_suffix -- M7: segments with several doc-values formats are read and merged (GenPerFieldFormats); the writer routes every doc-values field to one Lucene90DocValuesFormat() (suffix 0) -- no per-field skipIndexIntervalSize
-codecs/perfield/PerFieldKnnVectorsFormat	partial	crates/lucene-index/src/index_writer.rs::KNN_VECTORS_FORMAT_NAME -- M7: writes/merges the PerFieldKnnVectorsFormat.format/.suffix attributes for Lucene99HnswVectorsFormat only; no routing of fields to other KNN formats
+codecs/perfield/PerFieldDocValuesFormat	ported	crates/lucene-codecs/src/per_field_doc_values.rs::group_fields
+codecs/perfield/PerFieldKnnVectorsFormat	ported	crates/lucene-codecs/src/per_field_knn_vectors.rs::group_fields
 codecs/perfield/PerFieldMergeState	ported	crates/lucene-codecs/src/per_field_postings.rs::field_suffixes
 codecs/perfield/PerFieldPostingsFormat	ported	crates/lucene-codecs/src/per_field_postings.rs::write
 document/BaseShapeDocValuesQuery	deferred:M9	base query over shape doc values (geo)
@@ -328,7 +328,7 @@ index/ByteSlicePool	ported	crates/lucene-index/src/inverter.rs::FieldInverter
 index/ByteSliceReader	ported	crates/lucene-index/src/inverter.rs::FieldInverter
 index/ByteVectorValues	ported	crates/lucene-codecs/src/vectors.rs::ByteVectorValues
 index/CachingMergeContext	not-needed	memoizes MergeContext.numDeletesToMerge during one merge selection; a pure caching wrapper with no behaviour of its own.
-index/CheckIndex	partial	crates/lucene-index/src/check_index.rs::check_directory -- M7: per parity.md: doc-values generation columns of an updated segment are checksummed but their contents not decoded (except the soft-deletes field)
+index/CheckIndex	ported	crates/lucene-index/src/check_index.rs::check_directory
 index/CodecReader	ported	crates/lucene-search/src/reader/mod.rs::CodecReader
 index/CompositeReader	ported	crates/lucene-search/src/reader/mod.rs::CompositeReader
 index/CompositeReaderContext	ported	crates/lucene-search/src/directory_reader.rs::segment_readers
@@ -347,7 +347,7 @@ index/DocValuesType	ported	crates/lucene-codecs/src/field_infos.rs::DocValuesTyp
 index/DocValuesUpdate	ported	crates/lucene-index/src/buffered_updates.rs::DocValuesUpdate
 index/DocValuesWriter	ported	crates/lucene-index/src/index_writer.rs::build_doc_values_output
 index/DocsWithFieldSet	not-needed	internal doc-id set the per-field in-RAM writers use to remember which docs had a value; the Rust build_*_output functions track presence inline.
-index/DocumentsWriter	partial	crates/lucene-index/src/concurrent_writer.rs::ConcurrentIndexWriter -- M7: per parity.md: not ported vectors and custom-frequency postings on the concurrent path (use `into_writer`)
+index/DocumentsWriter	ported	crates/lucene-index/src/concurrent_writer.rs::ConcurrentIndexWriter
 index/DocumentsWriterDeleteQueue	ported	crates/lucene-index/src/buffered_updates.rs::DeleteQueue
 index/DocumentsWriterFlushControl	ported	crates/lucene-index/src/flush_policy.rs::FlushControl
 index/DocumentsWriterFlushQueue	ported	crates/lucene-index/src/index_writer.rs::SegmentTicket
@@ -358,7 +358,7 @@ index/EmptyDocValuesProducer	not-needed	abstract convenience base for a DocValue
 index/ExitableDirectoryReader	ported	crates/lucene-search/src/reader/exitable.rs::ExitableDirectoryReader
 index/FieldInfo	ported	crates/lucene-codecs/src/field_infos.rs::FieldInfo
 index/FieldInfos	ported	crates/lucene-codecs/src/field_infos.rs::FieldInfos
-index/FieldInvertState	partial	crates/lucene-index/src/similarity.rs::FieldInvertState -- M7: carries what `Similarity.computeNorm` reads (length, numOverlap, uniqueTermCount, DOCS index options), counted by crates/lucene-index/src/inverter.rs::invert_state; no maxTermFrequency, position, offset or attribute source
+index/FieldInvertState	ported	crates/lucene-index/src/similarity.rs::FieldInvertState
 index/FieldTermIterator	not-needed	iterator abstraction over PrefixCodedTerms for delete packets; Rust iterates the sorted Vec in FrozenBufferedUpdates.
 index/FieldUpdatesBuffer	ported	crates/lucene-index/src/buffered_updates.rs::FieldUpdatesBuffer
 index/Fields	ported	crates/lucene-codecs/src/blocktree.rs::BlockTreeFields
@@ -395,26 +395,26 @@ index/IndexReader	ported	crates/lucene-search/src/reader/mod.rs::IndexReader
 index/IndexReaderContext	ported	crates/lucene-search/src/multi_segment.rs::OpenSegment
 index/IndexSorter	ported	crates/lucene-index/src/index_sorter.rs::read_segment_terms
 index/IndexUpgrader	ported	crates/lucene-index/src/index_upgrader.rs::IndexUpgrader
-index/IndexWriter	partial	crates/lucene-index/src/index_writer.rs::IndexWriter -- M7: writing compound segments comes with the codec writers' change (row `codecs/lucene90/Lucene90CompoundFormat`); every other operation is ported (parity.md)
-index/IndexWriterConfig	partial	crates/lucene-index/src/index_writer.rs::set_index_sort -- M7: settings are writer setters (`setSimilarity` is `IndexWriter::set_similarity`, norms via `NormSimilarity`); missing codec and per-field format choice (T7.5). `IndexWriterEventListener` and `infoStream` are not needed (rows `index/IndexWriterEventListener`, `util/InfoStream`); `leafSorter` is `DirectoryReader::with_leaf_sorter`, `commitOnClose` is `IndexWriter::set_commit_on_close`
+index/IndexWriter	ported	crates/lucene-index/src/index_writer.rs::IndexWriter
+index/IndexWriterConfig	ported	crates/lucene-index/src/index_writer.rs::set_codec
 index/IndexWriterEventListener	not-needed	callback hook for merge begin/end events used for metrics and tests; no effect on the index.
 index/IndexableField	ported	crates/lucene-index/src/document/mod.rs::IndexableField
 index/IndexableFieldType	ported	crates/lucene-index/src/document/mod.rs::FieldType
-index/IndexingChain	partial	crates/lucene-index/src/indexing_chain.rs::invert_documents -- M7: a PayloadAttribute or TermFrequencyAttribute a TokenFilter sets is not read by the inverter (payloads still come from BoxedPayloadSource, custom frequencies from add_document_with_custom_freq_terms)
+index/IndexingChain	ported	crates/lucene-index/src/document/indexing.rs::invert_fields_document
 index/KeepLastNCommitsDeletionPolicy	ported	crates/lucene-index/src/deletion_policy.rs::KeepLastNCommitsDeletionPolicy
 index/KeepOnlyLastCommitDeletionPolicy	ported	crates/lucene-index/src/deletion_policy.rs::KeepOnlyLastCommitDeletionPolicy
 index/KnnVectorValues	ported	crates/lucene-codecs/src/vectors.rs::FloatVectorValues
 index/LeafMetaData	ported	crates/lucene-index/src/segment_info.rs::SegmentInfo
 index/LeafReader	ported	crates/lucene-search/src/reader/mod.rs::LeafReader
 index/LeafReaderContext	ported	crates/lucene-search/src/reader/mod.rs::LeafReaderContext
-index/LiveIndexWriterConfig	partial	crates/lucene-index/src/index_writer.rs::set_ram_buffer_size_mb -- M7: RAM buffer, max buffered docs, merge policy and the merged-segment warmer are live-settable; no `setUseCompoundFile` (compound segments come with the codec writers' change), or `maxFullFlushMergeWaitMillis` (merge-on-commit); `checkPendingFlushOnUpdate` is `ConcurrentIndexWriter::set_check_pending_flush_on_update`
+index/LiveIndexWriterConfig	ported	crates/lucene-index/src/index_writer/pluggable_merge.rs::set_max_full_flush_merge_wait_millis
 index/LockableConcurrentApproximatePriorityQueue	not-needed	lock-holding queue of idle DWPTs inside DocumentsWriterPerThreadPool; Rust slots are Mutex-guarded buffers (no user-visible behaviour).
 index/LogByteSizeMergePolicy	ported	crates/lucene-index/src/merge_policy/log.rs::LogByteSizeMergePolicy
 index/LogDocMergePolicy	ported	crates/lucene-index/src/merge_policy/log.rs::LogDocMergePolicy
 index/LogMergePolicy	ported	crates/lucene-index/src/merge_policy/log.rs::LogMergePolicy
 index/MappedMultiFields	ported	crates/lucene-index/src/merge.rs::merge_postings
 index/MappingMultiPostingsEnum	ported	crates/lucene-index/src/merge.rs::merge_postings
-index/MergePolicy	partial	crates/lucene-index/src/merge_policy/api.rs::MergePolicy -- M7: `OneMerge.reorder`/`wrapForMerge` exist only as the reader-side `crates/lucene-search/src/reader/merge_readers.rs::MergeReaderHooks` (they take `CodecReader`s, which lucene-index cannot see); the lucene-index merge does not read through them (writer side), and `OneMerge` itself carries neither (a `OneMergeWrappingMergePolicy` wrapper rewrites the merge itself), and no `infoStream` messages
+index/MergePolicy	ported	crates/lucene-index/src/merge_policy/api.rs::MergePolicy
 index/MergeRateLimiter	ported	crates/lucene-index/src/merge_rate_limiter.rs::MergeRateLimiter
 index/MergeScheduler	ported	crates/lucene-index/src/merge_scheduler.rs::MergeScheduler
 index/MergeState	ported	crates/lucene-index/src/merge.rs::build_doc_id_maps

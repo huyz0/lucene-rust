@@ -145,7 +145,11 @@ fn open_writer_handle(
     let dir_ref: &dyn Directory = &*dir;
     // SAFETY: see this function's own doc comment and `WriterHandle`'s.
     let dir_ref: &'static dyn Directory = unsafe { std::mem::transmute(dir_ref) };
-    let writer = IndexWriter::open(dir_ref, fields, codec_name, version)?;
+    let mut writer = IndexWriter::open(dir_ref, fields, codec_name, version)?;
+    // The C ABI's commits carry what was flushed, as they always have:
+    // merge-on-commit (Lucene's default 500 ms wait) is off here, as
+    // OpenSearch turns it off.
+    writer.set_max_full_flush_merge_wait_millis(0);
     Ok(WriterHandle { writer, dir })
 }
 
@@ -235,6 +239,9 @@ pub(crate) fn map_writer_error(context: &str, e: index_writer::Error) -> FfiStat
         // A configured similarity returning a 0 norm for a non-empty field:
         // a caller-supplied object misbehaving, not the disk.
         | index_writer::Error::ZeroNorm(_)
+        // A `OneMerge`'s caller-supplied hooks failing or answering what the
+        // merge cannot honour: likewise the caller's object.
+        | index_writer::Error::MergeHook(_)
         | index_writer::Error::InvalidMaxNumSegments(_)
         | index_writer::Error::UnknownPostingsField(_)
         | index_writer::Error::UnsupportedPostingsIndexOptions(_, _)
@@ -2642,6 +2649,25 @@ mod tests {
             FfiStatus::NullPointer.code()
         );
         assert_eq!(ffi_close_writer(handle), FfiStatus::Ok.code());
+    }
+
+    /// The C ABI's writer commits what it flushed: merge-on-commit is off,
+    /// whatever `IndexWriter`'s (Java's) default.
+    #[test]
+    fn the_c_abi_writer_opens_with_merge_on_commit_off() {
+        let tmp = tempdir("merge-on-commit-off");
+        let handle = open_writer_handle(
+            tmp.to_str().unwrap(),
+            Vec::new(),
+            "Lucene104".to_string(),
+            LuceneVersion {
+                major: 10,
+                minor: 5,
+                bugfix: 0,
+            },
+        )
+        .unwrap();
+        assert_eq!(handle.writer.max_full_flush_merge_wait_millis(), 0);
     }
 
     /// The three merge-policy knobs this entry point gained in the M2 sweep

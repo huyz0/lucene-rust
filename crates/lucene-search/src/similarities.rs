@@ -1314,6 +1314,7 @@ mod tests {
             length: 10,
             num_overlap: 4,
             unique_term_count: 3,
+            ..FieldInvertState::default()
         };
         // Classic without discounting counts the overlaps; BM25 does not.
         assert_ne!(

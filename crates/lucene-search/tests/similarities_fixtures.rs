@@ -181,6 +181,7 @@ fn compute_norm_matches_lucene() {
             length: length.parse().unwrap(),
             num_overlap: overlap.parse().unwrap(),
             unique_term_count: unique.parse().unwrap(),
+            ..FieldInvertState::default()
         };
         assert_eq!(
             sim(name).compute_norm("f", &state),

@@ -36,6 +36,9 @@ lucene-util = { path = "../lucene-util", features = ["test-support"] }
 # `CrashingDirectory`, for `examples/crash_fuzz.rs` (M4 T4.4).
 lucene-store = { path = "../lucene-store", features = ["test-util"] }
 criterion.workspace = true
+# Re-signs a Rust-written file's footer after normalising its segment id, for
+# the byte-for-byte fixture comparisons (`tests/merge_reorder_fixtures.rs`).
+crc32fast.workspace = true
 
 # Settles b12 finding F-21 (`phrase_freq_exact`'s binary search vs
 # `ExactPhraseMatcher`'s merge walk) with a measurement rather than an
