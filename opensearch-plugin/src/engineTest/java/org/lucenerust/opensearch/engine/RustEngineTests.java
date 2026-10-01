@@ -7521,6 +7521,9 @@ public class RustEngineTests extends RustEngineTestCase {
                     }
                     if (randomInt(100) < 10) {
                         engine.refresh("test");
+                        // A Rust refresh is a commit (derive_engine_tests.py, COMMIT_MODEL).
+                        flushedOperations.sort(Comparator.comparing(Engine.Operation::seqNo));
+                        commits.add(new ArrayList<>(flushedOperations));
                     }
                     if (randomInt(100) < 5) {
                         engine.flush(true, true);
