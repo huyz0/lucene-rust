@@ -253,30 +253,9 @@ pub(crate) trait MaxScoreLeg: BulkLeg {
     /// `DisiWrapper.maxWindowScore`.
     fn window_max(&self) -> f32;
     fn set_window_max(&mut self, score: f32);
-    /// The next batch for a caller that filters it at `min`; returns the
-    /// live documents produced (see [`TermLeg::next_docs_and_scores_reaching`]).
-    fn next_docs_and_scores_reaching(
-        &mut self,
-        up_to: i32,
-        live_docs: Option<&FixedBitSet>,
-        _min: f64,
-        out: &mut DocScores,
-    ) -> Result<usize> {
-        self.next_docs_and_scores(up_to, live_docs, out)?;
-        Ok(out.docs.len())
-    }
 }
 
 impl MaxScoreLeg for TermLeg<'_> {
-    fn next_docs_and_scores_reaching(
-        &mut self,
-        up_to: i32,
-        live_docs: Option<&FixedBitSet>,
-        min: f64,
-        out: &mut DocScores,
-    ) -> Result<usize> {
-        TermLeg::next_docs_and_scores_reaching(self, up_to, live_docs, min, out)
-    }
     #[inline]
     fn cur(&self) -> i32 {
         self.doc
@@ -376,11 +355,6 @@ pub(crate) struct TermLeg<'a> {
     max_window_score: f32,
     freqs: Vec<i32>,
     norm_inv: Vec<f32>,
-    /// The largest norm inverse a document of this field can have: with
-    /// `weight` and a frequency, the best score that frequency can reach.
-    max_norm_inverse: f32,
-    /// [`Self::freq_floor`]'s answer and the threshold (`f64` bits) it is for.
-    freq_floor: (u64, i32),
     /// A term scored by a similarity other than the default BM25: `Some`
     /// only for such a leg, whose `scoring` is then `false` so every BM25
     /// branch above stays exactly as it was; the non-BM25 branches consult
@@ -463,7 +437,6 @@ impl<'a> TermLeg<'a> {
         let global_max = similarity::do_score(weight, max_freq, max_norm_inverse);
         let has_freqs = cursor.has_freqs();
         let mut leg = Self::new(cursor, weight, true, norms, cost, global_max);
-        leg.max_norm_inverse = max_norm_inverse;
         if !has_freqs {
             // `Lucene104PostingsReader`'s impacts for a field without
             // frequencies: one level up to `NO_MORE_DOCS` holding the impact
@@ -541,8 +514,6 @@ impl<'a> TermLeg<'a> {
             max_window_score: 0.0,
             freqs: Vec::with_capacity(lucene_codecs::postings::BLOCK_SIZE as usize + 1),
             norm_inv: Vec::with_capacity(lucene_codecs::postings::BLOCK_SIZE as usize + 1),
-            max_norm_inverse: f32::INFINITY,
-            freq_floor: (f64::NAN.to_bits(), 1),
             sim: None,
         }
     }
@@ -927,86 +898,6 @@ impl<'a> TermLeg<'a> {
         }
         similarity::do_score_batch(self.weight, &self.freqs, &self.norm_inv, &mut out.scores);
         Ok(())
-    }
-
-    /// The smallest frequency whose best possible score -- at this field's
-    /// largest norm inverse -- reaches `min` as the competitive filter
-    /// compares it (`f32` score widened to `f64`). `do_score` is monotone in
-    /// the frequency, so a document below it cannot pass that filter whatever
-    /// its norm. Cached per threshold.
-    fn freq_floor(&mut self, min: f64) -> i32 {
-        if self.freq_floor.0 == min.to_bits() {
-            return self.freq_floor.1;
-        }
-        let (weight, max_ni) = (self.weight, self.max_norm_inverse);
-        let reaches = |f: i32| f64::from(similarity::do_score(weight, f as f32, max_ni)) >= min;
-        let floor = if reaches(1) {
-            1
-        } else if !reaches(i32::MAX) {
-            // Nothing reaches it; the filter after scoring drops everything.
-            i32::MAX
-        } else {
-            // `reaches(lo)` is false and `reaches(hi)` true.
-            let (mut lo, mut hi) = (1i32, i32::MAX);
-            while hi - lo > 1 {
-                let mid = lo + (hi - lo) / 2;
-                if reaches(mid) {
-                    hi = mid;
-                } else {
-                    lo = mid;
-                }
-            }
-            hi
-        };
-        self.freq_floor = (min.to_bits(), floor);
-        floor
-    }
-
-    /// [`Self::next_docs_and_scores`] for a batch the caller will filter at
-    /// `min` (`filterCompetitiveHits`): a document whose frequency cannot
-    /// reach `min` at any norm is dropped before its norm is read or its
-    /// score computed -- the filter would drop it anyway, so the documents
-    /// it keeps are the same. Returns how many live documents the postings
-    /// produced, dropped ones included (MaxScore's candidate count), and as
-    /// with every batch, an empty one means there are no more below `up_to`.
-    pub(crate) fn next_docs_and_scores_reaching(
-        &mut self,
-        up_to: i32,
-        live_docs: Option<&FixedBitSet>,
-        min: f64,
-        out: &mut DocScores,
-    ) -> Result<usize> {
-        if !self.scoring || min <= 0.0 {
-            self.next_docs_and_scores(up_to, live_docs, out)?;
-            return Ok(out.docs.len());
-        }
-        let floor = self.freq_floor(min);
-        let mut produced = 0usize;
-        loop {
-            self.ensure_competitive()?;
-            self.cursor
-                .next_postings(up_to, &mut out.docs, &mut self.freqs)
-                .map_err(blocktree::Error::Postings)?;
-            if out.docs.is_empty() {
-                break;
-            }
-            let mut n = 0;
-            for i in 0..out.docs.len() {
-                let (d, f) = (out.docs[i], self.freqs[i]);
-                let live = live_docs.is_none_or(|l| l.get_doc(d));
-                produced += usize::from(live);
-                out.docs[n] = d;
-                self.freqs[n] = f;
-                n += usize::from(live && f >= floor);
-            }
-            out.docs.truncate(n);
-            self.freqs.truncate(n);
-            if n > 0 {
-                break;
-            }
-        }
-        self.score_batch(out)?;
-        Ok(produced)
     }
 }
 
@@ -2136,29 +2027,19 @@ impl MaxScore {
         up_to: i32,
     ) -> Result<()> {
         loop {
-            // The first non-essential clause's filter, folded into the batch:
-            // documents whose frequency cannot reach it are not scored, and
-            // the rest are filtered as they are copied.
-            let prefiltered = self.first_essential > 0;
-            let min_required = if prefiltered {
-                min_required_score(
-                    self.max_score_sums[self.first_essential - 1],
-                    self.min_competitive,
-                    legs.len(),
-                )
-            } else {
-                0.0
-            };
-            let candidates = legs[top].next_docs_and_scores_reaching(
-                up_to,
-                live_docs,
-                min_required,
-                &mut self.single,
-            )?;
+            legs[top].next_docs_and_scores(up_to, live_docs, &mut self.single)?;
             if self.single.docs.is_empty() {
                 break;
             }
+            // The first non-essential clause's filter, folded into the copy.
+            let candidates = self.single.docs.len();
+            let prefiltered = self.first_essential > 0;
             if prefiltered {
+                let min_required = min_required_score(
+                    self.max_score_sums[self.first_essential - 1],
+                    self.min_competitive,
+                    legs.len(),
+                );
                 if min_required > 0.0 {
                     self.acc.copy_from_filtered(&self.single, min_required);
                 } else {
