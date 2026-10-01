@@ -128,7 +128,11 @@ Remote-backed storage stays refused, because its upload listener asks for an
   bounded by the safe commit) releases history sooner. On update-heavy indices
   this means merges reclaim deleted documents on a different schedule than
   Java's, and BM25 statistics, so scores, can differ until a force merge.
-  Scores on insert-only indices match exactly.
+  Scores on insert-only indices match exactly. A restart also rolls back to
+  the newest safe commit, and that may be a refresh: the derived
+  `testRebuildLocalCheckpointTrackerAndVersionMap` records each refresh as a
+  commit point, where `InternalEngineTests` records only flushes
+  (`COMMIT_MODEL` in `opensearch-plugin/tools/derive_engine_tests.py`).
 - **Segment stats count only hard deletes.** `_segments` and `_cat/segments`
   read document counts off the unwrapped `SegmentReader`, which here does not
   have the soft deletes applied, as on `NRTReplicationEngine` replicas.
