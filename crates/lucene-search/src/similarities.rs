@@ -118,6 +118,15 @@ pub trait SimScorer: Send + Sync {
         scores.clear();
         scores.extend(freqs.iter().zip(norms).map(|(&f, &n)| self.score(f, n)));
     }
+
+    /// `BM25Scorer`'s `weight` and its `cache` of `normInverse` per norm byte,
+    /// when this is one: [`Self::score`] is then exactly `weight - weight /
+    /// (1 + freq * cache[norm as u8])`, which a scorer's per-document loop can
+    /// compute without a dynamic call per document (and over a batch at a
+    /// time). `None` for every other similarity.
+    fn bm25_parts(&self) -> Option<(f32, &[f32; 256])> {
+        None
+    }
 }
 
 /// `Similarity`: the index-time norm ([`NormSimilarity`], which lives in
@@ -232,6 +241,9 @@ impl SimScorer for Bm25Scorer {
     fn score(&self, freq: f32, norm: i64) -> f32 {
         let norm_inverse = self.cache[norm as u8 as usize];
         self.weight - self.weight / (1.0 + freq * norm_inverse)
+    }
+    fn bm25_parts(&self) -> Option<(f32, &[f32; 256])> {
+        Some((self.weight, &self.cache))
     }
 }
 

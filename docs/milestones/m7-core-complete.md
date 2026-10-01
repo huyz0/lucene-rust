@@ -9,7 +9,7 @@
 | **Effort** | XL |
 | **Depends on** | [M5.6](m5-6-native-read.md); can run alongside [M6](m6-production-candidate.md) |
 | **Unblocks** | [M8](m8-backward-codecs.md), [M9](m9-geo-and-spatial.md), [M10](m10-joins-grouping-queries.md), [M11](m11-analysis-common.md) |
-| **Status** | in progress, four of five acceptance criteria met (2026-10-01: the inventory passes `--milestone M7`, `StandardTokenizer` holds on a large corpus sample, and every query family has a benchmark pair; open: `CombinedFieldQuery` 0.78x and `IndriAndQuery` 0.85x on the million-document corpus, see [`m7-2026-10.md`](../benchmarks/m7-2026-10.md)) -- delivered: T7.1 inventory gate; T7.3 similarities ported and wired into search (`search_boolean_query_multi_segment_with_similarity`) and indexing (`IndexWriter::set_similarity`); the public `util/automaton` API (`lucene-util::automaton`, fixture-verified; term intersection still on the codecs byte DFA); `store` locks and directories. `scripts/check-port-inventory.py --milestone M7 --summary` is the live count |
+| **Status** | in progress, four of five acceptance criteria met (2026-10-01: the inventory passes `--milestone M7`, `StandardTokenizer` holds on a large corpus sample, and every query family has a benchmark pair; `CombinedFieldQuery` and `IndriAndQuery` now 2.09x / 2.87x on the million-document corpus; open: `mtq_csb` 0.84x on the replaced benchmark VM, see [`m7-2026-10.md`](../benchmarks/m7-2026-10.md)) -- delivered: T7.1 inventory gate; T7.3 similarities ported and wired into search (`search_boolean_query_multi_segment_with_similarity`) and indexing (`IndexWriter::set_similarity`); the public `util/automaton` API (`lucene-util::automaton`, fixture-verified; term intersection still on the codecs byte DFA); `store` locks and directories. `scripts/check-port-inventory.py --milestone M7 --summary` is the live count |
 
 ---
 
@@ -251,7 +251,12 @@ Lucene, then optimisation to a ratio of at least 1.0.
       except two: `CombinedFieldQuery` 0.78x and `IndriAndQuery` 0.85x (1.74x
       and 1.41x on the fixtures). Both walk every matching document in both
       engines; the profiles and what was tried are in the benchmark note.
-      Open until those two reach 1.0.*
+      Second pass (2026-10-01, on a replaced VM): `CombinedFieldQuery` 2.09x,
+      `IndriAndQuery` 2.87x, `StandardTokenizer` multilingual 1.41x, with
+      hits and scores unchanged. On the replaced VM, however, `mtq_csb`
+      (constant-score blended rewrite) reads 0.84x. The base-commit binary
+      times it the same, and one query at a time this port leads 1.11x in
+      total. Open until `mtq_csb` reaches 1.0 as a case.*
 - [x] Real Lucene reads a Rust-written index using two postings formats and a
       compound segment (`verify-write-path.sh`). *2026-09-30: the
       `per-field-formats` case (`VerifyPerFieldFormats`: two

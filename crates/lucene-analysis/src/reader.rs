@@ -31,6 +31,15 @@ pub trait CharReader: Send {
     fn correct_offset(&self, current_off: i32) -> i32 {
         current_off
     }
+
+    /// The whole input as a Rust string, for a reader that holds it as one
+    /// and has not been read from yet, with no offset correction (a
+    /// [`StrReader`]); `None` for every other reader. A tokenizer may then
+    /// scan the UTF-8 text directly instead of reading UTF-16 code units --
+    /// provided it reports exactly what reading them would have given.
+    fn whole_text(&self) -> Option<&str> {
+        None
+    }
 }
 
 impl CharReader for Box<dyn CharReader> {
@@ -44,6 +53,10 @@ impl CharReader for Box<dyn CharReader> {
 
     fn correct_offset(&self, current_off: i32) -> i32 {
         (**self).correct_offset(current_off)
+    }
+
+    fn whole_text(&self) -> Option<&str> {
+        (**self).whole_text()
     }
 }
 
@@ -83,6 +96,10 @@ impl StrReader {
 }
 
 impl CharReader for StrReader {
+    fn whole_text(&self) -> Option<&str> {
+        (self.pos == 0 && self.pending_low.is_none()).then_some(self.text.as_str())
+    }
+
     fn read(&mut self, buf: &mut [u16]) -> Result<usize, AnalysisError> {
         let mut n = 0;
         if buf.is_empty() {
@@ -221,8 +238,12 @@ mod tests {
         }
         let mut r = StrReader::new(text);
         assert_eq!(r.read(&mut []).unwrap(), 0);
+        assert_eq!(r.whole_text(), Some(text));
         r.set_value("zz");
+        assert_eq!(r.whole_text(), Some("zz"));
         assert_eq!(drain(&mut r, 3), vec![b'z' as u16; 2]);
+        // Once read from, the reader is no longer a whole text.
+        assert_eq!(r.whole_text(), None);
         r.close().unwrap();
         assert_eq!(r.correct_offset(7), 7);
     }
