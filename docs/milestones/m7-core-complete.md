@@ -9,7 +9,7 @@
 | **Effort** | XL |
 | **Depends on** | [M5.6](m5-6-native-read.md); can run alongside [M6](m6-production-candidate.md) |
 | **Unblocks** | [M8](m8-backward-codecs.md), [M9](m9-geo-and-spatial.md), [M10](m10-joins-grouping-queries.md), [M11](m11-analysis-common.md) |
-| **Status** | in progress -- delivered: T7.1 inventory gate; T7.3 similarities ported and wired into search (`search_boolean_query_multi_segment_with_similarity`) and indexing (`IndexWriter::set_similarity`); the public `util/automaton` API (`lucene-util::automaton`, fixture-verified; term intersection still on the codecs byte DFA); `store` locks and directories. `scripts/check-port-inventory.py --milestone M7 --summary` is the live count |
+| **Status** | in progress, four of five acceptance criteria met (2026-10-01: the inventory passes `--milestone M7`, `StandardTokenizer` holds on a large corpus sample, and every query family has a benchmark pair; open: `CombinedFieldQuery` 0.78x and `IndriAndQuery` 0.85x on the million-document corpus, see [`m7-2026-10.md`](../benchmarks/m7-2026-10.md)) -- delivered: T7.1 inventory gate; T7.3 similarities ported and wired into search (`search_boolean_query_multi_segment_with_similarity`) and indexing (`IndexWriter::set_similarity`); the public `util/automaton` API (`lucene-util::automaton`, fixture-verified; term intersection still on the codecs byte DFA); `store` locks and directories. `scripts/check-port-inventory.py --milestone M7 --summary` is the live count |
 
 ---
 
@@ -234,19 +234,41 @@ Lucene, then optimisation to a ratio of at least 1.0.
 ## Acceptance criteria
 
 - [x] `check-port-inventory.py` runs in the gate and has been seen to fail.
-- [ ] `check-port-inventory.py --milestone M7` passes: no `lucene-core` class
+- [x] `check-port-inventory.py --milestone M7` passes: no `lucene-core` class
       is `todo:M7` or `partial` with an M7 gap (geo is M9's, older formats M8's).
+      *2026-10-01: passes -- 929 `ported`, 207 `not-needed`, 60 `deferred:M9`,
+      none `todo:M7` or `partial`.*
 - [ ] Every new query and similarity matches Lucene's hits and scores
       bit for bit on a generated fixture, and is no slower than Lucene on its
-      benchmark.
+      benchmark. *2026-10-01: the fixtures hold (`GenM7Queries`,
+      `GenSimilaritySearch`, `GenSimilarities`, `GenQueryBuilder`,
+      `GenSortedSearch`/`GenKeywordSort`), and every family now has a
+      `bench-micro` pair whose hits and score bits are digested on both sides
+      (0 mismatches) -- [`m7-2026-10.md`](../benchmarks/m7-2026-10.md). Every
+      similarity (1.22x-4.03x), the span queries, field-sort pruning,
+      `QueryBuilder` and all 31 fixture cases are at or above 1.0 or inside
+      the noise floor; on the million-document corpus every family is too
+      except two: `CombinedFieldQuery` 0.78x and `IndriAndQuery` 0.85x (1.74x
+      and 1.41x on the fixtures). Both walk every matching document in both
+      engines; the profiles and what was tried are in the benchmark note.
+      Open until those two reach 1.0.*
 - [x] Real Lucene reads a Rust-written index using two postings formats and a
       compound segment (`verify-write-path.sh`). *2026-09-30: the
       `per-field-formats` case (`VerifyPerFieldFormats`: two
       `Lucene104PostingsFormat` instances in one segment) and the
       `compound-segments` case (`VerifyCompoundSegments`: flushed and merged
       `.cfs`) pass with Lucene 10.5.0's CheckIndex, 30/30 in all.*
-- [ ] `StandardTokenizer` agrees with Lucene token for token on the UAX#29
-      conformance tests and a large corpus sample.
+- [x] `StandardTokenizer` agrees with Lucene token for token on the UAX#29
+      conformance tests and a large corpus sample. *2026-10-01: the UAX#29
+      word-break and emoji conformance inputs through `GenStandardTokenizer`
+      (T7.8), and `tests/standard_tokenizer_corpus.rs`: 4.89 MB of real
+      multilingual text read from the 10.5.0 jars (europarl, 40 stopword
+      lists), 1,330,748 tokens in 294 digested chunks, through the tokenizer
+      and `StandardAnalyzer`, against a 249 KB manifest from
+      `GenStandardTokenizerCorpus`; a failure names the chunk's source line
+      and the command that dumps Lucene's tokens for it. Seen to fail on a
+      seeded defect; `verify-write-path.sh` runs it and treats a skip as a
+      failure.*
 
 ## Risks and unknowns
 
