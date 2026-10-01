@@ -1690,6 +1690,67 @@ impl Union<'_> {
     }
 }
 
+/// Bit sets a finished [`Competitive`] leaves behind, cleared, for the next
+/// query on this thread to fill instead of allocating.
+///
+/// A competitive iterator over a dense range builds a one-bit-per-document
+/// set (`DocIdSetBuilder`'s dense form), and every query used to allocate a
+/// fresh one: on a 1M-document segment that is 128 KiB of zero pages, faulted
+/// in on first touch (about 27 faults per query on q80). Lucene allocates the
+/// same set per query but its heap is already warm; reusing a cleared set is
+/// what gets Rust the same effect. Bounded per thread by
+/// [`SPARE_BIT_SET_LIMIT_BYTES`], and keyed by length because a set is only
+/// reusable for a segment of exactly its `max_doc`.
+mod spare_bit_sets {
+    use std::cell::RefCell;
+
+    use lucene_util::fixed_bit_set::FixedBitSet;
+
+    /// The most a thread keeps, in bytes of bit storage: four 1M-document
+    /// sets' worth several times over, and nothing near a large segment's
+    /// set, which is dropped rather than pinned.
+    pub(super) const SPARE_BIT_SET_LIMIT_BYTES: usize = 8 << 20;
+
+    thread_local! {
+        static SPARE: RefCell<Vec<FixedBitSet>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn bytes(b: &FixedBitSet) -> usize {
+        b.len().div_ceil(64) * 8
+    }
+
+    /// A cleared set of exactly `len` bits, if this thread has one spare.
+    pub(super) fn take(len: usize) -> Option<FixedBitSet> {
+        SPARE.with(|s| {
+            let mut s = s.borrow_mut();
+            let at = s.iter().position(|b| b.len() == len)?;
+            Some(s.swap_remove(at))
+        })
+    }
+
+    /// Clears `b` and keeps it for a later [`take`], unless the thread's
+    /// spares would pass the limit.
+    pub(super) fn give(mut b: FixedBitSet) {
+        if bytes(&b) > SPARE_BIT_SET_LIMIT_BYTES {
+            return;
+        }
+        SPARE.with(|s| {
+            let mut s = s.borrow_mut();
+            let held: usize = s.iter().map(bytes).sum();
+            if held + bytes(&b) <= SPARE_BIT_SET_LIMIT_BYTES {
+                b.clear_all();
+                s.push(b);
+            }
+        });
+    }
+
+    /// How many sets of `len` bits this thread holds (tests).
+    #[cfg(test)]
+    pub(super) fn held(len: usize) -> usize {
+        SPARE.with(|s| s.borrow().iter().filter(|b| b.len() == len).count())
+    }
+}
+
 /// `NumericComparator.PointsCompetitiveDISIBuilder`, or -- a segment without
 /// the field's points but with its doc-values skip index --
 /// `DVSkipperCompetitiveDISIBuilder` (`skipper` set, `points` unused).
@@ -1725,6 +1786,24 @@ struct Competitive<'a> {
     /// iterator was built for.
     missing_docs: Option<FixedBitSet>,
     missing_range: Option<(i64, i64)>,
+}
+
+impl Drop for Competitive<'_> {
+    /// Hands this segment's bit sets to [`spare_bit_sets`] for the next query.
+    fn drop(&mut self) {
+        if let Some(b) = self.spare_bits.take() {
+            spare_bit_sets::give(b);
+        }
+        if let Iter::Bits { bits, .. } = std::mem::replace(
+            &mut self.iter,
+            Iter::All {
+                max_doc: 0,
+                doc: -1,
+            },
+        ) {
+            spare_bit_sets::give(bits);
+        }
+    }
 }
 
 /// Where a column's docs-with-values set is: every document, or an
@@ -3099,7 +3178,7 @@ fn open_leaf<'a>(
                                         try_update_fail_count: 0,
                                         with_value,
                                         scratch: Vec::new(),
-                                        spare_bits: None,
+                                        spare_bits: spare_bit_sets::take(max_doc as usize),
                                         walk: PointsScratch::default(),
                                         missing_docs: None,
                                         missing_range: None,
@@ -3143,7 +3222,7 @@ fn open_leaf<'a>(
                             try_update_fail_count: 0,
                             with_value,
                             scratch: Vec::new(),
-                            spare_bits: None,
+                            spare_bits: spare_bit_sets::take(max_doc as usize),
                             walk: PointsScratch::default(),
                             missing_docs: None,
                             missing_range: None,
@@ -5394,6 +5473,54 @@ mod tests {
             missing_docs: None,
             missing_range: None,
         }
+    }
+
+    #[test]
+    fn a_finished_segment_leaves_its_bit_sets_cleared_for_the_next_query() {
+        // Test threads are shared, so each test keys on a length of its own.
+        const LEN: usize = 1_003;
+        let points = PointsReader::empty();
+        let mut comp = competitive(&points, 0, LEN as i32);
+        let mut used = FixedBitSet::new(LEN);
+        used.set(7);
+        used.set(LEN - 1);
+        comp.iter = Iter::Bits {
+            bits: used,
+            doc: -1,
+        };
+        comp.spare_bits = Some(FixedBitSet::new(LEN));
+        assert_eq!(spare_bit_sets::held(LEN), 0);
+        drop(comp);
+        // Both the live iterator's set and the spare come back.
+        assert_eq!(spare_bit_sets::held(LEN), 2);
+        for _ in 0..2 {
+            let b = spare_bit_sets::take(LEN).expect("a pooled set");
+            assert_eq!(b.len(), LEN);
+            assert_eq!(b.cardinality(), 0, "handed back cleared");
+        }
+        assert!(spare_bit_sets::take(LEN).is_none());
+        // A set is only reused for a segment of exactly its length.
+        spare_bit_sets::give(FixedBitSet::new(LEN));
+        assert!(spare_bit_sets::take(LEN + 1).is_none());
+        assert!(spare_bit_sets::take(LEN).is_some());
+        // An iterator that is not a bit set leaves nothing behind.
+        drop(competitive(&points, 0, LEN as i32));
+        assert_eq!(spare_bit_sets::held(LEN), 0);
+    }
+
+    #[test]
+    fn the_spare_bit_sets_stay_under_their_limit() {
+        let limit_bits = spare_bit_sets::SPARE_BIT_SET_LIMIT_BYTES * 8;
+        // Larger than the whole limit: dropped, not pinned.
+        spare_bit_sets::give(FixedBitSet::new(limit_bits + 64));
+        assert_eq!(spare_bit_sets::held(limit_bits + 64), 0);
+        // Three sets of a third of the limit (plus a word) fit only twice.
+        let third = limit_bits / 3 + 64;
+        for _ in 0..3 {
+            spare_bit_sets::give(FixedBitSet::new(third));
+        }
+        assert_eq!(spare_bit_sets::held(third), 2);
+        while spare_bit_sets::take(third).is_some() {}
     }
 
     #[test]
