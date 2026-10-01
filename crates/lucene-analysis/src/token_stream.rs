@@ -145,6 +145,11 @@ impl TokenizerInput {
         }
     }
 
+    /// [`CharReader::whole_text`] of the live input, `None` without one.
+    pub fn whole_text(&self) -> Option<&str> {
+        self.input.as_deref().and_then(|r| r.whole_text())
+    }
+
     /// The live input; reading it outside `reset()`..`close()` is Java's
     /// `ILLEGAL_STATE_READER` error.
     pub fn reader(&mut self) -> Result<&mut dyn CharReader, AnalysisError> {
