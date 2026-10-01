@@ -313,13 +313,8 @@ final class DocumentEncoder {
                 } catch (ArithmeticException ae) {
                     throw new IllegalArgumentException("too many tokens for field \"" + field.name() + "\"", ae);
                 }
-                if (payloadAtt != null) {
-                    BytesRef payload = payloadAtt.getPayload();
-                    if (payload != null && payload.length > 0) {
-                        throw new IllegalArgumentException("field [" + field.name() + "]: the Rust engine does not index payloads");
-                    }
-                }
-                inv.add(termAtt.getBytesRef(), termFreq, startOffset, endOffset, field.name());
+                BytesRef payload = payloadAtt == null ? null : payloadAtt.getPayload();
+                inv.add(termAtt.getBytesRef(), termFreq, startOffset, endOffset, payload, field.name());
             }
             stream.end();
             inv.position += posIncrAtt.getPositionIncrement();
@@ -354,7 +349,7 @@ final class DocumentEncoder {
         inv.position++;
         inv.length++;
         inv.length = Math.addExact(inv.length, 1);
-        inv.add(value, 1, 0, 0, field.name());
+        inv.add(value, 1, 0, 0, null, field.name());
     }
 
     /**
@@ -380,6 +375,16 @@ final class DocumentEncoder {
         int[] freqs = new int[8];
         /** Per term: positions, and (start, end) offsets interleaved after them, when indexed. */
         IntsRefBuilder[] prox = new IntsRefBuilder[8];
+        /**
+         * Per term: each occurrence's payload, empty for one without, from the first occurrence that
+         * has one on ({@code FreqProxTermsWriterPerField.writeProx}); null while none has.
+         */
+        Payloads[] payloads = new Payloads[8];
+
+        /** One term's payloads in this document. */
+        private static final class Payloads {
+            final List<BytesRef> list = new ArrayList<>();
+        }
 
         Inverted(String name, IndexOptions options) {
             this.name = name;
@@ -390,7 +395,7 @@ final class DocumentEncoder {
         }
 
         /** {@code TermsHashPerField.add}: {@code newTerm} or {@code addTerm} for this document. */
-        void add(BytesRef term, int termFreq, int startOffset, int endOffset, String fieldName) {
+        void add(BytesRef term, int termFreq, int startOffset, int endOffset, BytesRef payload, String fieldName) {
             if (term.length > IndexWriter.MAX_TERM_LENGTH) {
                 byte[] prefix = Arrays.copyOfRange(term.bytes, term.offset, term.offset + 30);
                 throw new IllegalArgumentException(
@@ -414,11 +419,13 @@ final class DocumentEncoder {
                 if (id >= freqs.length) {
                     freqs = org.apache.lucene.util.ArrayUtil.grow(freqs, id + 1);
                     prox = org.apache.lucene.util.ArrayUtil.grow(prox, id + 1);
+                    payloads = org.apache.lucene.util.ArrayUtil.grow(payloads, id + 1);
                 }
                 freqs[id] = hasFreq ? termFreq : 1;
                 maxTermFrequency = hasFreq ? Math.max(freqs[id], maxTermFrequency) : Math.max(1, maxTermFrequency);
                 uniqueTermCount++;
                 prox[id] = null;
+                payloads[id] = null;
             } else {
                 id = -id - 1;
                 if (hasFreq == false) {
@@ -436,10 +443,22 @@ final class DocumentEncoder {
                 if (prox[id] == null) {
                     prox[id] = new IntsRefBuilder();
                 }
+                int earlier = prox[id].length() / (hasOffsets ? 3 : 1);
                 prox[id].append(position);
                 if (hasOffsets) {
                     prox[id].append(startOffset);
                     prox[id].append(endOffset);
+                }
+                // Only a positional field stores payloads, as writeProx is only reached with prox.
+                boolean hasPayload = payload != null && payload.length > 0;
+                if (hasPayload && payloads[id] == null) {
+                    payloads[id] = new Payloads();
+                    for (int i = 0; i < earlier; i++) {
+                        payloads[id].list.add(new BytesRef());
+                    }
+                }
+                if (payloads[id] != null) {
+                    payloads[id].list.add(hasPayload ? BytesRef.deepCopyOf(payload) : new BytesRef());
                 }
             }
         }
@@ -479,7 +498,8 @@ final class DocumentEncoder {
                 b.bytes(terms.get(id, scratch));
                 int freq = freqs[id];
                 b.i32(freq);
-                b.u8((hasProx ? 1 : 0) | (hasOffsets ? 2 : 0));
+                Payloads termPayloads = hasProx ? payloads[id] : null;
+                b.u8((hasProx ? 1 : 0) | (hasOffsets ? 2 : 0) | (termPayloads != null ? 4 : 0));
                 if (hasProx) {
                     int[] p = prox[id].ints();
                     int stride = hasOffsets ? 3 : 1;
@@ -489,6 +509,11 @@ final class DocumentEncoder {
                     if (hasOffsets) {
                         for (int i = 0; i < freq; i++) {
                             b.i32(p[i * 3 + 1]).i32(p[i * 3 + 2]);
+                        }
+                    }
+                    if (termPayloads != null) {
+                        for (BytesRef payload : termPayloads.list) {
+                            b.bytes(payload);
                         }
                     }
                 }

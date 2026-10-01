@@ -12,6 +12,7 @@ import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.NoMergePolicy;
 import org.apache.lucene.index.NumericDocValues;
+import org.apache.lucene.index.QueryTimeout;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
@@ -19,7 +20,9 @@ import org.apache.lucene.search.BoostQuery;
 import org.apache.lucene.search.CollectionStatistics;
 import org.apache.lucene.search.ConstantScoreQuery;
 import org.apache.lucene.search.DisjunctionMaxQuery;
+import org.apache.lucene.search.FuzzyQuery;
 import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.MultiPhraseQuery;
 import org.apache.lucene.search.PhraseQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
@@ -44,6 +47,10 @@ import org.apache.lucene.search.similarities.MultiSimilarity;
 import org.apache.lucene.search.similarities.NormalizationH2;
 import org.apache.lucene.search.similarities.PerFieldSimilarityWrapper;
 import org.apache.lucene.search.similarities.Similarity;
+import org.apache.lucene.queries.spans.SpanNearQuery;
+import org.apache.lucene.queries.spans.SpanOrQuery;
+import org.apache.lucene.queries.spans.SpanQuery;
+import org.apache.lucene.queries.spans.SpanTermQuery;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
@@ -68,7 +75,8 @@ import java.util.stream.Stream;
  * documents, so its norms are sparse), words drawn skewed from {@code t0..t39} so some terms are
  * everywhere and some are pulsed singletons in a segment. {@code searches.tsv}: {@code sim  query
  * hits}, the query in the prefix syntax {@link #parse} reads (and the Rust test reads too), the
- * top 20 as {@code doc:scoreBitsHex} with global doc ids.
+ * top 20 as {@code doc:scoreBitsHex} with global doc ids. {@code similarity_timeout_index}: see
+ * {@link #writeTimeouts}.
  *
  * <p>{@code norms_docs.tsv} and {@code norms.tsv}: documents written with a per-field similarity
  * ({@code body}: {@code ClassicSimilarity(false)}; {@code title}: a similarity whose norm is
@@ -128,7 +136,10 @@ public class GenSimilaritySearch {
   /**
    * The queries, in a prefix syntax both sides parse: {@code T field term}, {@code P field slop n
    * term...}, {@code B nMust nShould nMustNot clause...}, {@code X boost clause}, {@code C score
-   * clause}, {@code D tie n clause...}.
+   * clause}, {@code D tie n clause...}, {@code S field term} (span term), {@code N slop inOrder n
+   * span...} (span near, {@code inOrder} 1 or 0), {@code O n span...} (span or), {@code F field term
+   * edits prefix maxExpansions}, {@code M field slop n (k term...)...} (multi-phrase, implicit
+   * positions), {@code G nMust nFilter clause...}.
    */
   static final String[] QUERIES = {
     "T body t0",
@@ -152,7 +163,70 @@ public class GenSimilaritySearch {
     "B 0 2 0 C 1.5 T body t2 T body t7",
     "B 0 1 0 D 0.3 2 T body t4 T title t4",
     "B 0 2 0 X 0.5 P body 1 2 t5 t6 T title t3",
+    // Span queries: SpanWeight/SpanScorer, freq = sum(1 / (1 + width)).
+    "S body t3",
+    "S title t1",
+    "N 0 1 2 S body t0 S body t1",
+    "N 3 0 2 S body t2 S body t0",
+    "N 2 1 3 S body t0 S body t1 S body t2",
+    "O 2 S body t5 S body t9",
+    "O 2 S body t0 S body zz",
+    "O 2 S body t1 S body t1",
+    "N 2 1 2 O 2 S body t0 S body t1 S body t2",
+    "N 4 0 2 S body t0 N 1 1 2 S body t1 S body t2",
+    "N 1 0 2 S title t1 S title t2",
+    "B 0 2 0 N 1 0 2 S body t4 S body t0 T body t2",
+    "B 1 1 0 X 2.5 N 2 1 2 S body t1 S body t0 T title t1",
+    "D 0.2 2 S title t1 N 1 0 2 S body t1 S body t3",
+    // Fuzzy (TopTermsBlendedFreqScoringRewrite) and multi-phrase queries.
+    "F body t1 1 0 50",
+    "F body t12 2 1 5",
+    "B 0 2 0 F title t3 1 0 50 T body t2",
+    "M body 0 2 2 t0 t1 1 t2",
+    "M body 2 2 1 t3 2 t0 t4",
+    // Unscored fuzzy clauses expand reader-wide, as the rewrite does: title:t7 is in two of
+    // the three segments, so a per-segment top-1 expansion picks t0 in the third.
+    "G 1 1 T body t0 F body t12 2 0 3",
+    "G 1 1 T body t2 C 1 F body t2 2 1 4",
+    "G 1 1 T body t1 F title t7 1 0 1",
+    "G 1 1 T body t0 C 1 F title t7 1 0 1",
   };
+
+  /**
+   * Queries searched under a {@link CountingTimeout}: {@code IndexSearcher.setTimeout} wraps every
+   * leaf's bulk scorer in a {@code TimeLimitingBulkScorer}.
+   */
+  static final String[] TIMEOUT_QUERIES = {
+    "T body t0",
+    "B 0 3 0 T body t1 T body t5 T title t2",
+    "B 2 0 0 T body t1 T body t2",
+    "P body 2 2 t0 t2",
+    "N 3 0 2 S body t2 S body t0",
+  };
+
+  /** The timeouts: {@code after:N} exits on every check past the N-th, {@code once:N} only on it. */
+  static final String[] TIMEOUTS = {
+    "after:0", "after:1", "after:3", "after:5", "after:9", "after:40", "once:1", "once:4", "once:8"
+  };
+
+  /** A deterministic {@link QueryTimeout}: counts its checks rather than reading a clock. */
+  static final class CountingTimeout implements QueryTimeout {
+    final boolean once;
+    final int limit;
+    int calls;
+
+    CountingTimeout(String spec) {
+      String[] kv = spec.split(":");
+      once = kv[0].equals("once");
+      limit = Integer.parseInt(kv[1]);
+    }
+
+    @Override
+    public boolean shouldExit() {
+      calls++;
+      return once ? calls == limit : calls > limit;
+    }
+  }
 
   static int pos;
 
@@ -194,9 +268,78 @@ public class GenSimilaritySearch {
         for (int i = 0; i < n; i++) qs.add(parse(tok));
         return new DisjunctionMaxQuery(qs, tie);
       }
+      case "S":
+      case "N":
+      case "O":
+        pos--;
+        return span(tok);
+      case "F": {
+        String field = tok[pos++];
+        String t = tok[pos++];
+        int edits = Integer.parseInt(tok[pos++]);
+        int prefix = Integer.parseInt(tok[pos++]);
+        int max = Integer.parseInt(tok[pos++]);
+        return new FuzzyQuery(new Term(field, t), edits, prefix, max, true);
+      }
+      case "M": {
+        String field = tok[pos++];
+        int slop = Integer.parseInt(tok[pos++]);
+        int n = Integer.parseInt(tok[pos++]);
+        MultiPhraseQuery.Builder b = new MultiPhraseQuery.Builder();
+        b.setSlop(slop);
+        for (int i = 0; i < n; i++) {
+          int k = Integer.parseInt(tok[pos++]);
+          Term[] terms = new Term[k];
+          for (int j = 0; j < k; j++) terms[j] = new Term(field, tok[pos++]);
+          b.add(terms);
+        }
+        return b.build();
+      }
+      case "G": {
+        int must = Integer.parseInt(tok[pos++]);
+        int filter = Integer.parseInt(tok[pos++]);
+        BooleanQuery.Builder b = new BooleanQuery.Builder();
+        for (int i = 0; i < must; i++) b.add(parse(tok), BooleanClause.Occur.MUST);
+        for (int i = 0; i < filter; i++) b.add(parse(tok), BooleanClause.Occur.FILTER);
+        return b.build();
+      }
       default:
         throw new IllegalArgumentException(op);
     }
+  }
+
+  static SpanQuery span(String[] tok) {
+    String op = tok[pos++];
+    switch (op) {
+      case "S":
+        return new SpanTermQuery(new Term(tok[pos++], tok[pos++]));
+      case "N": {
+        int slop = Integer.parseInt(tok[pos++]);
+        boolean inOrder = tok[pos++].equals("1");
+        int n = Integer.parseInt(tok[pos++]);
+        SpanQuery[] clauses = new SpanQuery[n];
+        for (int i = 0; i < n; i++) clauses[i] = span(tok);
+        return new SpanNearQuery(clauses, slop, inOrder);
+      }
+      case "O": {
+        int n = Integer.parseInt(tok[pos++]);
+        SpanQuery[] clauses = new SpanQuery[n];
+        for (int i = 0; i < n; i++) clauses[i] = span(tok);
+        return new SpanOrQuery(clauses);
+      }
+      default:
+        throw new IllegalArgumentException(op);
+    }
+  }
+
+  static String hits(TopDocs td) {
+    StringBuilder sb = new StringBuilder();
+    for (int i = 0; i < td.scoreDocs.length; i++) {
+      ScoreDoc sd = td.scoreDocs[i];
+      if (i > 0) sb.append(',');
+      sb.append(sd.doc).append(':').append(Integer.toHexString(Float.floatToRawIntBits(sd.score)));
+    }
+    return sb.toString();
   }
 
   static String words(Random r, int n, int vocab) {
@@ -263,13 +406,7 @@ public class GenSimilaritySearch {
             Query query = parse(tok);
             if (pos != tok.length) throw new AssertionError("trailing tokens in " + q);
             TopDocs td = searcher.search(query, TOP);
-            sb.append(e.getKey()).append('\t').append(q).append('\t');
-            for (int i = 0; i < td.scoreDocs.length; i++) {
-              ScoreDoc sd = td.scoreDocs[i];
-              if (i > 0) sb.append(',');
-              sb.append(sd.doc).append(':').append(Integer.toHexString(Float.floatToRawIntBits(sd.score)));
-            }
-            sb.append('\n');
+            sb.append(e.getKey()).append('\t').append(q).append('\t').append(hits(td)).append('\n');
           }
         }
       }
@@ -277,6 +414,74 @@ public class GenSimilaritySearch {
     }
 
     writeNorms(root, r);
+    writeTimeouts(root);
+  }
+
+  /**
+   * {@code similarity_timeout_index}: two segments of 1200 and 300 documents (the first with
+   * deletions), large enough that {@code TimeLimitingBulkScorer}'s windows (100 documents, growing
+   * by half) take several checks per leaf. {@code timeouts.tsv}: {@code sim  timeout  query
+   * timedOut  checks  totalHits  relation  hits}, each search run by a fresh {@code IndexSearcher}
+   * (its {@code timedOut()} never resets) whose {@code setTimeout} is a {@link CountingTimeout}.
+   */
+  static void writeTimeouts(Path root) throws IOException {
+    Path out = root.resolve("similarity_timeout_index");
+    deleteRecursive(out);
+    Files.createDirectories(out);
+    Random r = new Random(20260931L);
+    try (Directory dir = FSDirectory.open(out)) {
+      IndexWriterConfig cfg = new IndexWriterConfig(new StandardAnalyzer());
+      cfg.setUseCompoundFile(false);
+      cfg.setMergePolicy(NoMergePolicy.INSTANCE);
+      cfg.setMaxBufferedDocs(100000);
+      cfg.setRAMBufferSizeMB(256);
+      int id = 0;
+      try (IndexWriter w = new IndexWriter(dir, cfg)) {
+        for (int size : new int[] {1200, 300}) {
+          for (int i = 0; i < size; i++) {
+            Document doc = new Document();
+            doc.add(new StringField("id", Integer.toString(id++), Field.Store.NO));
+            doc.add(new TextField("body", words(r, 1 + r.nextInt(12), 40), Field.Store.NO));
+            if (r.nextInt(5) != 0) {
+              doc.add(new TextField("title", words(r, 1 + r.nextInt(5), 12), Field.Store.NO));
+            }
+            w.addDocument(doc);
+          }
+          w.commit();
+        }
+        for (String del : new String[] {"7", "450", "451", "1100"}) {
+          w.deleteDocuments(new Term("id", del));
+        }
+        w.commit();
+      }
+      StringBuilder timeouts = new StringBuilder();
+      try (DirectoryReader reader = DirectoryReader.open(dir)) {
+        if (reader.leaves().size() != 2) {
+          throw new AssertionError("expected two segments, got " + reader.leaves().size());
+        }
+        for (String simName : new String[] {"bm25", "classic"}) {
+          for (String q : TIMEOUT_QUERIES) {
+            for (String spec : TIMEOUTS) {
+              IndexSearcher searcher = new IndexSearcher(reader);
+              searcher.setQueryCache(null);
+              searcher.setSimilarity(sims().get(simName));
+              CountingTimeout timeout = new CountingTimeout(spec);
+              searcher.setTimeout(timeout);
+              pos = 0;
+              String[] tok = q.split(" ");
+              Query query = parse(tok);
+              if (pos != tok.length) throw new AssertionError("trailing tokens in " + q);
+              TopDocs td = searcher.search(query, TOP);
+              timeouts.append(simName).append('\t').append(spec).append('\t').append(q).append('\t')
+                  .append(searcher.timedOut()).append('\t').append(timeout.calls).append('\t')
+                  .append(td.totalHits.value()).append('\t').append(td.totalHits.relation()).append('\t')
+                  .append(hits(td)).append('\n');
+            }
+          }
+        }
+      }
+      Files.writeString(out.resolve("timeouts.tsv"), timeouts);
+    }
   }
 
   /** Norms written under {@code IndexWriterConfig.setSimilarity}, per document and field. */

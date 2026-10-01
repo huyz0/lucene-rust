@@ -185,3 +185,33 @@ fn every_thread_s_vectors_and_frequencies_stay_with_their_documents() {
         assert!(result.all_passed(), "{:?}", result.failures());
     }
 }
+
+/// A buffer none of whose documents gave the custom-frequency field terms
+/// -- a thread's buffer of other documents -- flushes a segment that does
+/// not claim the field indexed without a term dictionary.
+#[test]
+fn a_segment_without_custom_frequency_terms_does_not_claim_the_field() {
+    let tmp = TempDir::new("custom-freqs-absent");
+    let dir = FsDirectory::open(&tmp);
+    let mut w = IndexWriter::open(
+        &dir,
+        fields(),
+        "Lucene104",
+        LuceneVersion {
+            major: 10,
+            minor: 5,
+            bugfix: 0,
+        },
+    )
+    .unwrap();
+    w.set_custom_freq_postings_field(Some("score")).unwrap();
+    w.add_document(doc(1)).unwrap();
+    w.commit().unwrap();
+    w.add_document_with_custom_freq_terms(doc(2), vec![("k".to_string(), 3)])
+        .unwrap();
+    w.commit().unwrap();
+    w.force_merge(1).unwrap();
+    for result in lucene_index::check_index::check_directory(&dir).unwrap() {
+        assert!(result.all_passed(), "{:?}", result.failures());
+    }
+}

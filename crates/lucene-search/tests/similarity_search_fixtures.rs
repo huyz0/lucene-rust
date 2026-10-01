@@ -24,13 +24,16 @@ use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
 use lucene_index::index_writer::IndexWriter;
 use lucene_index::segment_info::LuceneVersion;
 use lucene_index::similarity::NormSimilarity;
+use lucene_search::collector::TotalHitsRelation;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
+use lucene_search::index_searcher::IndexSearcher;
 use lucene_search::multi_segment::search_boolean_query_multi_segment_with_similarity;
 use lucene_search::query::{
-    BooleanQuery, BoostQuery, Clause, ConstantScoreQuery, DisjunctionMaxQuery, PhraseQuery,
-    TermQuery,
+    BooleanQuery, BoostQuery, Clause, ConstantScoreQuery, DisjunctionMaxQuery, FuzzyQuery,
+    MultiPhraseQuery, PhraseQuery, SpanQuery, TermQuery,
 };
+use lucene_search::reader::exitable::QueryTimeout;
 use lucene_search::similarities::*;
 use lucene_store::FsDirectory;
 use lucene_util::test_support::TempDir;
@@ -81,7 +84,8 @@ fn sim(name: &str) -> Arc<dyn Similarity> {
 /// `GenSimilaritySearch.parse`: the queries' prefix syntax.
 fn parse(tok: &mut std::slice::Iter<'_, &str>) -> Clause {
     let mut next = || *tok.next().expect("truncated query");
-    match next() {
+    let op = next();
+    match op {
         "T" => {
             let field = next();
             Clause::Term(TermQuery::new(field, next()))
@@ -121,7 +125,71 @@ fn parse(tok: &mut std::slice::Iter<'_, &str>) -> Clause {
             let disjuncts: Vec<Clause> = (0..n).map(|_| parse(tok)).collect();
             Clause::DisjunctionMax(Box::new(DisjunctionMaxQuery::new(disjuncts, tie)))
         }
+        op @ ("S" | "N" | "O") => Clause::Span(parse_span_op(op, tok)),
+        "F" => {
+            let field = next();
+            let term = next();
+            let edits: u8 = next().parse().unwrap();
+            let prefix: usize = next().parse().unwrap();
+            let max: usize = next().parse().unwrap();
+            Clause::Fuzzy(
+                FuzzyQuery::new(field, term)
+                    .with_max_edits(edits)
+                    .with_prefix_length(prefix)
+                    .with_max_expansions(max),
+            )
+        }
+        "M" => {
+            let field = next();
+            let slop: u32 = next().parse().unwrap();
+            let n: usize = next().parse().unwrap();
+            let mut arrays: Vec<Vec<Vec<u8>>> = Vec::new();
+            for _ in 0..n {
+                let k: usize = next().parse().unwrap();
+                arrays.push((0..k).map(|_| next().as_bytes().to_vec()).collect());
+            }
+            Clause::MultiPhrase(MultiPhraseQuery::new(field, arrays).with_slop(slop))
+        }
+        "G" => {
+            let must: usize = next().parse().unwrap();
+            let filter: usize = next().parse().unwrap();
+            let must: Vec<Clause> = (0..must).map(|_| parse(tok)).collect();
+            let filter: Vec<Clause> = (0..filter).map(|_| parse(tok)).collect();
+            Clause::Boolean(Box::new(
+                BooleanQuery::new().with_must(must).with_filter(filter),
+            ))
+        }
         other => panic!("query op {other}"),
+    }
+}
+
+/// `GenSimilaritySearch.span`: `S field term`, `N slop inOrder n span...`,
+/// `O n span...`.
+fn parse_span(tok: &mut std::slice::Iter<'_, &str>) -> SpanQuery {
+    let op = *tok.next().expect("truncated span");
+    parse_span_op(op, tok)
+}
+
+fn parse_span_op(op: &str, tok: &mut std::slice::Iter<'_, &str>) -> SpanQuery {
+    let mut next = || *tok.next().expect("truncated span");
+    match op {
+        "S" => {
+            let field = next();
+            SpanQuery::span_term(field, next())
+        }
+        "N" => {
+            let slop: u32 = next().parse().unwrap();
+            let in_order = next() == "1";
+            let n: usize = next().parse().unwrap();
+            let clauses: Vec<SpanQuery> = (0..n).map(|_| parse_span(tok)).collect();
+            SpanQuery::span_near(clauses, slop, in_order)
+        }
+        "O" => {
+            let n: usize = next().parse().unwrap();
+            let clauses: Vec<SpanQuery> = (0..n).map(|_| parse_span(tok)).collect();
+            SpanQuery::span_or(clauses)
+        }
+        other => panic!("span op {other}"),
     }
 }
 
@@ -200,47 +268,41 @@ fn searches_under_every_similarity_match_lucene_bit_for_bit() {
     );
 }
 
-/// A scoring clause that scores BM25 only is refused under another
-/// similarity rather than scored with the wrong formula; a default BM25
-/// takes the fast path whatever the clause.
+/// Span, fuzzy and multi-phrase clauses score through the similarity (no
+/// longer refused under a non-default one), and a `constant_score` around
+/// one scores its constant whatever the similarity.
 #[test]
-fn bm25_only_clauses_are_refused_under_another_similarity() {
+fn every_scoring_clause_scores_through_the_similarity() {
     let dir = data("similarity_search_index");
     let reader = DirectoryReader::open(&FsDirectory::open(&dir)).unwrap();
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
-    let norms = vec![None; segments.len()];
-    // A span query scores BM25 only; a fuzzy one scores through the
-    // similarity (`m7_query_fixtures`).
-    let fuzzy = BooleanQuery::new().with_should([Clause::Span(
-        lucene_search::SpanQuery::span_term("body", "t10"),
-    )]);
-    let classic = ClassicSimilarity::default();
-    let err =
-        search_boolean_query_multi_segment_with_similarity(&segments, &fuzzy, &norms, 5, &classic)
-            .unwrap_err();
-    assert!(
-        matches!(err, lucene_search::Error::SimilarityUnsupported(_)),
-        "{err}"
-    );
-    // Under a constant score or a filter it does not score: accepted.
-    let wrapped = BooleanQuery::new()
-        .with_must([Clause::ConstantScore(Box::new(ConstantScoreQuery::new(
-            Clause::Fuzzy(lucene_search::FuzzyQuery::new("body", "t10")),
-            1.0,
-        )))])
-        .with_filter([Clause::Fuzzy(lucene_search::FuzzyQuery::new("body", "t1"))]);
-    search_boolean_query_multi_segment_with_similarity(&segments, &wrapped, &norms, 5, &classic)
-        .unwrap();
-    assert!(!search_boolean_query_multi_segment_with_similarity(
-        &segments,
-        &fuzzy,
-        &norms,
-        5,
-        &Bm25Similarity::default(),
-    )
-    .unwrap()
-    .is_empty());
+    let owned = reader.field_norms_by_field(&["body".to_string()]);
+    let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
+    let span = || {
+        Clause::Span(SpanQuery::span_near(
+            [
+                SpanQuery::span_term("body", "t2"),
+                SpanQuery::span_term("body", "t0"),
+            ],
+            3,
+            false,
+        ))
+    };
+    let run = |q: &BooleanQuery, s: &dyn Similarity| {
+        search_boolean_query_multi_segment_with_similarity(&segments, q, &norms, 5, s).unwrap()
+    };
+    let scored = BooleanQuery::new().with_should([span()]);
+    let bm25 = run(&scored, &Bm25Similarity::default());
+    let classic = run(&scored, &ClassicSimilarity::default());
+    assert!(!bm25.is_empty() && !classic.is_empty());
+    assert_ne!(bm25[0].score, classic[0].score);
+    assert!(bm25.iter().all(|h| h.score != 1.0), "{bm25:?}");
+    let constant = BooleanQuery::new().with_must([Clause::ConstantScore(Box::new(
+        ConstantScoreQuery::new(span(), 1.0),
+    ))]);
+    let hits = run(&constant, &ClassicSimilarity::default());
+    assert!(!hits.is_empty() && hits.iter().all(|h| h.score == 1.0));
 }
 
 fn field_info(number: i32, name: &str, index_options: IndexOptions, vectors: bool) -> FieldInfo {
@@ -396,4 +458,131 @@ fn norms_written_under_a_similarity_match_lucene() {
             diff.join("\n")
         );
     }
+}
+
+/// `GenSimilaritySearch.CountingTimeout`: `after:N` exits on every check past
+/// the `N`-th, `once:N` on the `N`-th only.
+#[derive(Debug)]
+struct CountingTimeout {
+    once: bool,
+    limit: usize,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl CountingTimeout {
+    fn new(spec: &str) -> Self {
+        let (kind, n) = spec.split_once(':').unwrap();
+        Self {
+            once: kind == "once",
+            limit: n.parse().unwrap(),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl QueryTimeout for CountingTimeout {
+    fn should_exit(&self) -> bool {
+        let calls = self
+            .calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        if self.once {
+            calls == self.limit
+        } else {
+            calls > self.limit
+        }
+    }
+}
+
+/// `IndexSearcher.setTimeout`: every leaf's bulk scorer asks the timeout
+/// before each window of documents (100, growing by half), a leaf it stops
+/// keeps what it collected and the next leaf is searched, and `timedOut()`
+/// reports it. Against Lucene, over a 1200 + 300 document index: the number
+/// of checks, the flag, the total and its relation, and every hit's score
+/// bits, under BM25 and Classic, for timeouts that fire on the first check,
+/// part-way, never, and on one check only.
+#[test]
+fn timeouts_stop_the_search_where_lucene_stops_it() {
+    let dir = data("similarity_timeout_index");
+    let text = std::fs::read_to_string(dir.join("timeouts.tsv"))
+        .expect("run scripts/gen-fixtures.sh --only GenSimilaritySearch");
+    let reader = DirectoryReader::open(&FsDirectory::open(&dir)).unwrap();
+    assert_eq!(reader.segment_readers().len(), 2);
+    let opened = reader.open_segments().unwrap();
+    let segments = opened.as_open_segments();
+    let owned = reader.field_norms_by_field(&["body".to_string(), "title".to_string()]);
+    let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
+
+    let (mut cases, mut partial, mut failures) = (0, 0, Vec::new());
+    for line in text.lines() {
+        let [name, spec, q, timed_out, checks, total, relation, want] =
+            line.split('\t').collect::<Vec<_>>()[..]
+        else {
+            panic!("bad line {line}");
+        };
+        let similarity = sim(name);
+        let mut searcher = IndexSearcher::new(&segments, &norms).unwrap();
+        if name != "bm25" {
+            searcher.set_similarity(similarity.as_ref());
+        }
+        let timeout = Arc::new(CountingTimeout::new(spec));
+        assert!(searcher.timeout().is_none() && !searcher.timed_out());
+        searcher.set_timeout(Some(timeout.clone()));
+        assert!(searcher.timeout().is_some());
+        let td = searcher.search(&query(q), 20).unwrap();
+        let got_hits: Vec<String> = td
+            .score_docs
+            .iter()
+            .map(|h| format!("{}:{:x}", h.doc, h.score.to_bits()))
+            .collect();
+        let got_relation = match td.total_hits.relation {
+            TotalHitsRelation::EqualTo => "EQUAL_TO",
+            TotalHitsRelation::GreaterThanOrEqualTo => "GREATER_THAN_OR_EQUAL_TO",
+        };
+        let got = format!(
+            "{}\t{}\t{}\t{}\t{}",
+            searcher.timed_out(),
+            timeout.calls(),
+            td.total_hits.value,
+            got_relation,
+            got_hits.join(",")
+        );
+        let want = format!("{timed_out}\t{checks}\t{total}\t{relation}\t{want}");
+        cases += 1;
+        partial += usize::from(timed_out == "true");
+        if got != want {
+            failures.push(format!("{name} {spec} [{q}]\n  rust {got}\n  java {want}"));
+        }
+    }
+    assert!(
+        cases == 2 * 5 * 9 && partial > cases / 2 && partial < cases,
+        "{cases} searches, {partial} partial"
+    );
+    // `partialResult` is never reset: a later search without a timeout
+    // leaves `timedOut()` set.
+    let mut searcher = IndexSearcher::new(&segments, &norms).unwrap();
+    searcher.set_timeout(Some(Arc::new(CountingTimeout::new("after:0"))));
+    assert!(searcher
+        .search(&query("T body t0"), 5)
+        .unwrap()
+        .score_docs
+        .is_empty());
+    assert!(searcher.timed_out());
+    searcher.set_timeout(None);
+    assert!(!searcher
+        .search(&query("T body t0"), 5)
+        .unwrap()
+        .score_docs
+        .is_empty());
+    assert!(searcher.timed_out());
+    assert!(
+        failures.is_empty(),
+        "{} of {cases} searches differ:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }

@@ -666,7 +666,7 @@ search/HitQueue	ported	crates/lucene-search/src/collector.rs::TopDocsCollector
 search/HnswQueueSaturationCollector	ported	crates/lucene-search/src/knn_collectors.rs::HnswQueueSaturationCollector
 search/ImpactsDISI	ported	crates/lucene-search/src/bulk_scorer.rs::TermLeg
 search/IndexOrDocValuesQuery	ported	crates/lucene-search/src/extended_query.rs::IndexOrDocValuesQuery
-search/IndexSearcher	partial	crates/lucene-search/src/index_searcher.rs::IndexSearcher -- M7: explain over several segments with reader-wide statistics, searchAfter and search(query, n, sort) (search_sorted, readers passed in) are ported (GenMinScore: explain text verbatim, pages; GenSortedSearch: sorted hits). Still open: timeouts are not a method (index/QueryTimeout is partial); fuzzy/span/multi-phrase scoring clauses refused under a non-default similarity; Fuzzy/MultiPhrase/span/KNN run outside the tree
+search/IndexSearcher	ported	crates/lucene-search/src/index_searcher.rs::IndexSearcher -- M7 closed: setTimeout/getTimeout/timedOut (TimeLimitingBulkScorer per leaf, GenSimilaritySearch timeouts.tsv), every scoring clause (span, fuzzy, multi-phrase) scored through any similarity in the scorer tree, KNN as its DocAndScoreQuery rewrite
 search/IndexSortSortedNumericDocValuesRangeQuery	ported	crates/lucene-search/src/extended_query.rs::IndexSortSortedNumericDocValuesRangeQuery
 search/IndriAndQuery	ported	crates/lucene-search/src/extended_query.rs::IndriAndQuery
 search/IndriAndScorer	ported	crates/lucene-search/src/exec/extended.rs::IndriAndScorer
@@ -771,7 +771,7 @@ search/TermQuery	ported	crates/lucene-search/src/query.rs::TermQuery
 search/TermRangeQuery	ported	crates/lucene-search/src/extended_query.rs::TermRangeQuery
 search/TermScorer	ported	crates/lucene-search/src/exec/leaf.rs::TermScorer
 search/TermStatistics	ported	crates/lucene-search/src/similarities.rs::TermStatistics
-search/TimeLimitingBulkScorer	ported	crates/lucene-search/src/exec/bulk.rs::score_segment_with_deadline
+search/TimeLimitingBulkScorer	ported	crates/lucene-search/src/exec/bulk.rs::score_segment_time_limited
 search/TimeLimitingKnnCollectorManager	ported	crates/lucene-search/src/knn_collectors.rs::TimeLimitingKnnCollector
 search/TopDocs	ported	crates/lucene-search/src/top_docs.rs::merge
 search/TopDocsCollector	ported	crates/lucene-search/src/collector.rs::TopDocsCollector

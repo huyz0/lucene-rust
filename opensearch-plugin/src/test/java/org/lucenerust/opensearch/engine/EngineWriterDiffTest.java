@@ -12,6 +12,7 @@ import org.apache.lucene.analysis.Tokenizer;
 import org.apache.lucene.analysis.en.EnglishAnalyzer;
 import org.apache.lucene.analysis.standard.StandardTokenizer;
 import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
+import org.apache.lucene.analysis.tokenattributes.PayloadAttribute;
 import org.apache.lucene.analysis.tokenattributes.PositionIncrementAttribute;
 import org.apache.lucene.document.BinaryDocValuesField;
 import org.apache.lucene.document.Field;
@@ -90,6 +91,8 @@ import java.util.stream.Stream;
 public final class EngineWriterDiffTest {
     private static int checks;
     private static int failures;
+    /** Payloads read back from either index, so the payload comparison cannot pass vacuously. */
+    private static int payloadsSeen;
 
     private static final String SOFT = "__soft_deletes";
     private static final String[] WORDS = ("the quick brown fox jumps over a lazy dog and cats run to their houses while birds sing "
@@ -100,6 +103,7 @@ public final class EngineWriterDiffTest {
         for (long seed : new long[] { 1, 2, 3 }) {
             run(seed, 1500);
         }
+        check(payloadsSeen > 0, "payloads were indexed and compared");
         refusals();
         mappingFallback();
         System.out.printf("EngineWriterDiffTest: %d checks, %d failures%n", checks, failures);
@@ -140,12 +144,20 @@ public final class EngineWriterDiffTest {
 
     /** Stop words, a synonym at position increment 0 for words ending in "s", and gaps. */
     static final class TestAnalyzer extends Analyzer {
+        /** Per field, since {@code body} and {@code freqs} analyze with an extra filter. */
+        TestAnalyzer() {
+            super(PER_FIELD_REUSE_STRATEGY);
+        }
+
         @Override
         protected TokenStreamComponents createComponents(String fieldName) {
             Tokenizer t = new StandardTokenizer();
             TokenStream s = new LowerCaseFilter(t);
             s = new StopFilter(s, EnglishAnalyzer.ENGLISH_STOP_WORDS_SET);
             s = new SynonymS(s);
+            if (fieldName.equals("body") || fieldName.equals("freqs")) {
+                s = new PayloadB(s);
+            }
             return new TokenStreamComponents(t, s);
         }
 
@@ -193,6 +205,31 @@ public final class EngineWriterDiffTest {
         public void reset() throws IOException {
             super.reset();
             pending = null;
+        }
+    }
+
+    /**
+     * A payload on every term starting with "b" and none on the rest, as a payload-producing analyzer
+     * (Lucene's {@code MockAnalyzer} on some seeds) gives them: {@code body} stores payloads in a
+     * segment exactly when one of its documents has such a term, and {@code freqs}, which indexes no
+     * positions, never does.
+     */
+    static final class PayloadB extends TokenFilter {
+        private final CharTermAttribute term = addAttribute(CharTermAttribute.class);
+        private final PayloadAttribute payload = addAttribute(PayloadAttribute.class);
+
+        PayloadB(TokenStream in) {
+            super(in);
+        }
+
+        @Override
+        public boolean incrementToken() throws IOException {
+            if (input.incrementToken() == false) {
+                return false;
+            }
+            boolean b = term.length() > 0 && term.charAt(0) == 'b';
+            payload.setPayload(b ? new BytesRef("P:" + term) : null);
+            return true;
         }
     }
 
@@ -572,6 +609,13 @@ public final class EngineWriterDiffTest {
                         b.append(' ').append(pe.nextPosition());
                         if (fi.getIndexOptions() == IndexOptions.DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS) {
                             b.append('[').append(pe.startOffset()).append(',').append(pe.endOffset()).append(']');
+                        }
+                        if (fi.hasPayloads()) {
+                            BytesRef p = pe.getPayload();
+                            if (p != null && p.length > 0) {
+                                payloadsSeen++;
+                            }
+                            b.append('{').append(p == null ? "" : p.utf8ToString()).append('}');
                         }
                     }
                 }
