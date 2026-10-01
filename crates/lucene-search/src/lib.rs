@@ -940,6 +940,8 @@ fn cutoff_constant_score_union<C: ScoringCollector>(
             *cutoff = set.shrink_to(need);
         }
     };
+    // One cursor, reset per term (`TermsEnum.postings(reuse, ...)`).
+    let mut reuse = None;
     for (term, seeked) in terms {
         if seeked.stats.doc_freq <= 1 {
             // Pulsed into the term dictionary: no `.doc` bytes to open lazily.
@@ -958,10 +960,11 @@ fn cutoff_constant_score_union<C: ScoringCollector>(
         }
         // Opened from the state the expansion walk already decoded: no
         // second dictionary seek per term.
-        let mut cursor = field_terms.lazy_postings_for(
+        let cursor = field_terms.reuse_postings_for(
             seeked,
             doc_in,
             lucene_codecs::postings::PostingsFlags::DocsOnly,
+            &mut reuse,
         )?;
         // `advance(doc + 1)`, not `next_doc`: this walk reads a term only up
         // to the cutoff -- a dozen documents once the set has filled -- and
