@@ -523,6 +523,29 @@ pub(crate) fn bulk_clause<'a>(
             return Ok(bulk);
         }
     }
+    match super::extended::bulk_rewrite(ctx, inner, dismax_boost, mode)? {
+        Some(super::extended::BulkRewrite::Clause(rewritten)) => {
+            return bulk_clause(ctx, &rewritten, dismax_boost, mode);
+        }
+        Some(super::extended::BulkRewrite::Legs(children))
+            if children.iter().all(Child::is_leg) =>
+        {
+            // `BooleanQuery.rewrite` of its `SHOULD` term clauses: one is that
+            // term; more are `MaxScoreBulkScorer`'s disjunction.
+            let mut legs: Vec<TermLeg<'a>> = children.into_iter().map(Child::into_leg).collect();
+            return Ok(match legs.len() {
+                0 => None,
+                1 => legs
+                    .pop()
+                    .map(|leg| Bulk::Term(Box::new(leg), DocScores::default())),
+                _ => {
+                    let state = MaxScore::new(&mut legs);
+                    Some(Bulk::Disjunction(legs, None, state))
+                }
+            });
+        }
+        _ => {}
+    }
     Ok(match child(ctx, clause, boost, mode, true)? {
         Some(Child::Leg(leg)) => Some(Bulk::Term(leg, DocScores::default())),
         Some(Child::Scorer(s)) => Some(Bulk::scorer(s)),

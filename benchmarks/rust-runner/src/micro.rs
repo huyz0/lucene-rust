@@ -22,6 +22,13 @@ use lucene_search::directory_reader::DirectoryReader;
 use lucene_store::data_input::SliceInput;
 use lucene_store::MmapDirectory;
 
+mod micro_m7;
+mod sexpr;
+#[path = "../../../crates/lucene-search/tests/m7grammar/mod.rs"]
+mod m7grammar;
+#[path = "../../../crates/lucene-search/tests/simgrammar/mod.rs"]
+mod simgrammar;
+
 /// Deterministic values in `[0, 2^bits)`, bit for bit identical to
 /// `ForUtilMicro.blockFor` on the Java side. Both harnesses must decode the
 /// same bytes or the comparison is between two different workloads.
@@ -2051,6 +2058,19 @@ fn main() {
         "dv_merge" => bench_dv_merge(warmup, measure),
         "points_write" => bench_points_write(warmup, measure),
         "concurrent_index" => bench_concurrent_index(warmup, measure),
+        "m7_fixture" => micro_m7::bench_m7_fixture(warmup, measure),
+        "query_builder" => micro_m7::bench_query_builder(warmup, measure),
+        "stored_fields_write" => micro_m7::bench_stored_fields_write(warmup, measure),
+        index_bench @ ("m7_corpus" | "similarity" | "sort_pruning") => {
+            let index = std::env::args()
+                .nth(2)
+                .unwrap_or_else(|| panic!("{index_bench} needs an index directory"));
+            match index_bench {
+                "m7_corpus" => micro_m7::bench_m7_corpus(warmup, measure, &index),
+                "similarity" => micro_m7::bench_similarity(warmup, measure, &index),
+                _ => micro_m7::bench_sort_pruning(warmup, measure, &index),
+            }
+        }
         corpus @ ("postings_adv" | "postings_freq" | "positions" | "term_seek" | "doc_values"
         | "norms" | "points" | "memory") => {
             let index = std::env::args()

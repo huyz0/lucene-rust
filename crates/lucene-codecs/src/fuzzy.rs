@@ -234,6 +234,13 @@ pub struct FuzzyMatch<'a> {
     /// query rather than once per leaf, as Lucene builds its automata once in
     /// `FuzzyQuery.getAutomata`.
     dfa: std::sync::OnceLock<Option<std::sync::Arc<crate::automaton::ByteDfa>>>,
+    /// The same DFA as a [`crate::automaton::CompiledDfa`], for the
+    /// block-tree intersection ([`crate::blocktree::FieldTerms::fuzzy_intersect`]).
+    compiled: std::sync::OnceLock<Option<std::sync::Arc<crate::automaton::CompiledDfa>>>,
+    /// The ladder below `max_edits` (`FuzzyQuery.getAutomata`'s
+    /// `automata[0..maxEdits]`), each built the first time a walk lowers its
+    /// budget to it -- see [`Self::cached_compiled_dfa_within`].
+    lower: [std::sync::OnceLock<Option<std::sync::Arc<crate::automaton::CompiledDfa>>>; 2],
 }
 
 impl<'a> FuzzyMatch<'a> {
@@ -252,6 +259,8 @@ impl<'a> FuzzyMatch<'a> {
             max_edits,
             transpositions,
             dfa: std::sync::OnceLock::new(),
+            compiled: std::sync::OnceLock::new(),
+            lower: [std::sync::OnceLock::new(), std::sync::OnceLock::new()],
         }
     }
 
@@ -260,6 +269,40 @@ impl<'a> FuzzyMatch<'a> {
     pub(crate) fn cached_dfa(&self) -> Option<std::sync::Arc<crate::automaton::ByteDfa>> {
         self.dfa
             .get_or_init(|| self.to_dfa(self.max_edits).map(std::sync::Arc::new))
+            .clone()
+    }
+
+    /// [`Self::cached_dfa`] as the automaton `Terms.intersect` walks, cached
+    /// alongside it.
+    pub(crate) fn cached_compiled_dfa(
+        &self,
+    ) -> Option<std::sync::Arc<crate::automaton::CompiledDfa>> {
+        self.compiled
+            .get_or_init(|| {
+                self.cached_dfa().map(|dfa| {
+                    std::sync::Arc::new(crate::automaton::CompiledDfa::finite((*dfa).clone()))
+                })
+            })
+            .clone()
+    }
+
+    /// [`Self::cached_compiled_dfa`] for a budget of `max_edits`: the
+    /// pattern's own automaton at or above its `max_edits`, else the smaller
+    /// one `FuzzyTermsEnum.bottomChanged` swaps in (`automata[maxEdits]`),
+    /// built once. `None` when no automaton can be built for it.
+    pub(crate) fn cached_compiled_dfa_within(
+        &self,
+        max_edits: u8,
+    ) -> Option<std::sync::Arc<crate::automaton::CompiledDfa>> {
+        if max_edits >= self.max_edits {
+            return self.cached_compiled_dfa();
+        }
+        self.lower
+            .get(usize::from(max_edits))?
+            .get_or_init(|| {
+                self.to_dfa(max_edits)
+                    .map(|dfa| std::sync::Arc::new(crate::automaton::CompiledDfa::finite(dfa)))
+            })
             .clone()
     }
 
@@ -366,6 +409,7 @@ impl<'a> FuzzyMatch<'a> {
         let accept = nfa.state()?;
         let mut buf = [0u8; 4];
         let mut buf2 = [0u8; 4];
+        let mut shared = std::collections::HashMap::new();
         // ARITH: `cells = (m + 1) * width` was computed checked and is at most
         // `MAX_NFA_STATES`. Every index below is `i2 * width + e2` with `i2 <=
         // m` (`i + 1` only under `i < m`, `i + 2` only under `i + 1 < m`) and
@@ -382,12 +426,12 @@ impl<'a> FuzzyMatch<'a> {
                 if e < k {
                     if i < m {
                         // Substitution.
-                        nfa.lenient_char(from, st[(i + 1) * width + e + 1])?;
+                        nfa.lenient_char_shared(from, st[(i + 1) * width + e + 1], &mut shared)?;
                         // Deletion (a pattern character the term lacks).
                         nfa.epsilon(from, st[(i + 1) * width + e + 1]);
                     }
                     // Insertion (a term character the pattern lacks).
-                    nfa.lenient_char(from, st[i * width + e + 1])?;
+                    nfa.lenient_char_shared(from, st[i * width + e + 1], &mut shared)?;
                     if self.transpositions && i + 1 < m {
                         // `p[i + 1] p[i]`, then two characters consumed for one
                         // edit.
