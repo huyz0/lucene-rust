@@ -259,16 +259,19 @@ impl<S: DisiSub> DisiApprox<S> {
             return;
         }
         // Built by prepending, as Java links it: collected in prepend order
-        // and reversed at the end.
-        let mut rev = vec![top];
+        // onto the end of `out` and that run reversed in place (a scorer
+        // asks for this list on every document it scores, so it allocates
+        // nothing).
+        let start = out.len();
+        out.push(top);
         let size = self.lead.len();
         if size >= 3 {
-            self.collect(&mut rev, size, 1, self.docs[top]);
-            self.collect(&mut rev, size, 2, self.docs[top]);
+            self.collect(out, size, 1, self.docs[top]);
+            self.collect(out, size, 2, self.docs[top]);
         } else if size == 2 && self.docs[self.lead[1]] == self.docs[top] {
-            rev.push(self.lead[1]);
+            out.push(self.lead[1]);
         }
-        out.extend(rev.into_iter().rev());
+        out[start..].reverse();
     }
 
     /// `DisiPriorityQueueN.topList(list, heap, size, i)`.

@@ -208,6 +208,27 @@ impl<'a> PhraseScorer<'a> {
         }
     }
 
+    /// `ImpactsDISI` once the threshold passes the bound: no document of
+    /// this phrase can score above [`Scorer::max_score`], so none reaches
+    /// `setMinCompetitiveScore`'s value (Java's own, `Math.nextUp` included
+    /// when ties lose) and the iterator ends.
+    fn cannot_compete(&self) -> bool {
+        self.top_scores
+            && self.min_competitive > 0.0
+            && match &self.sim {
+                None => self.weight,
+                Some((_, max)) => *max,
+            } < self.min_competitive
+    }
+
+    /// Moves the lead cursor past the last document: `NO_MORE_DOCS`.
+    fn exhaust(&mut self) -> Result<i32> {
+        self.terms[0]
+            .cursor
+            .advance(NO_MORE_DOCS)
+            .map_err(|e| crate::Error::from(blocktree::Error::Postings(e)))
+    }
+
     fn norm_inverse(&mut self, doc: i32) -> Result<f32> {
         if self.norm_doc != doc {
             self.norm_inverse = match self.norms.as_mut() {
@@ -226,6 +247,9 @@ impl Scorer for PhraseScorer<'_> {
     }
 
     fn next_doc(&mut self) -> Result<i32> {
+        if self.cannot_compete() {
+            return self.exhaust();
+        }
         let doc = self.terms[0]
             .cursor
             .next_doc()
@@ -234,6 +258,9 @@ impl Scorer for PhraseScorer<'_> {
     }
 
     fn advance(&mut self, target: i32) -> Result<i32> {
+        if self.cannot_compete() {
+            return self.exhaust();
+        }
         let doc = self.terms[0]
             .cursor
             .advance(target)

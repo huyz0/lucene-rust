@@ -68,6 +68,46 @@
 //! over an arrangement lattice that contains no match. It changes the extents,
 //! which a nested `SpanNear`-of-`SpanNear` consumes.
 
+/// Per-clause state for one document's walk: on the stack for up to
+/// [`INLINE`] clauses, so the walks allocate nothing per document (a span
+/// scorer runs one per candidate document), on the heap beyond.
+enum Small<T> {
+    Inline([T; INLINE], usize),
+    Heap(Vec<T>),
+}
+
+/// Clauses a [`Small`] holds without allocating.
+const INLINE: usize = 8;
+
+impl<T: Copy> Small<T> {
+    fn filled(n: usize, value: T) -> Self {
+        if n <= INLINE {
+            Small::Inline([value; INLINE], n)
+        } else {
+            Small::Heap(vec![value; n])
+        }
+    }
+}
+
+impl<T> std::ops::Deref for Small<T> {
+    type Target = [T];
+    fn deref(&self) -> &[T] {
+        match self {
+            Small::Inline(a, n) => &a[..*n],
+            Small::Heap(v) => v,
+        }
+    }
+}
+
+impl<T> std::ops::DerefMut for Small<T> {
+    fn deref_mut(&mut self) -> &mut [T] {
+        match self {
+            Small::Inline(a, n) => &mut a[..*n],
+            Small::Heap(v) => v,
+        }
+    }
+}
+
 /// One arrangement the walk visits: the span each clause is currently
 /// positioned on, in clause order.
 ///
@@ -112,60 +152,80 @@ pub fn for_each_ordered_match(
     slop: i64,
     mut on_match: impl FnMut(Arrangement<'_>, i32, i32),
 ) {
+    ordered_walk(clause_spans, slop, |arr, start, end, _| {
+        on_match(arr, start, end)
+    });
+}
+
+/// [`for_each_ordered_match`], also handing `on_match` the match's
+/// `NearSpansOrdered.width()` (`matchWidth`, the gaps `stretchToOrder`
+/// summed).
+///
+/// Each clause's cursor is the index of the span it is on. An unpositioned
+/// sub-span (`startPosition() == -1`) always moves onto its first span, since
+/// every end position is at least 1, so starting the cursors at 0 is the
+/// same walk.
+pub(crate) fn ordered_walk(
+    clause_spans: &[&[(i32, i32)]],
+    slop: i64,
+    mut on_match: impl FnMut(Arrangement<'_>, i32, i32, i64),
+) {
     let n = clause_spans.len();
     if n == 0 || clause_spans.iter().any(|s| s.is_empty()) {
         return;
     }
-    // `unpositioned()`: every sub-span at `startPosition() == -1`, which is
-    // below every real position, so the first `advancePosition` moves it onto
-    // its first span.
-    let mut cursor: Vec<Option<usize>> = vec![None; n];
-    let mut current: Vec<(i32, i32)> = vec![(0, 0); n];
-    loop {
-        // `subSpans[0].nextStartPosition() != NO_MORE_POSITIONS`.
-        let first = match cursor[0] {
-            None => 0,
-            Some(at) => at.saturating_add(1),
-        };
-        let Some(&(match_start, first_end)) = clause_spans[0].get(first) else {
-            return;
-        };
-        cursor[0] = Some(first);
+    if let [first, second] = clause_spans {
+        // The same walk for the common two-clause near, with the clause loop
+        // unrolled.
+        let mut at = 0usize;
+        for &(match_start, first_end) in *first {
+            while at < second.len() && second[at].0 < first_end {
+                at = at.saturating_add(1);
+            }
+            let Some(&span) = second.get(at) else {
+                return;
+            };
+            let width = i64::from(span.0) - i64::from(first_end);
+            if width <= slop {
+                on_match(
+                    &[(match_start, first_end), span],
+                    match_start,
+                    span.1,
+                    width,
+                );
+            }
+        }
+        return;
+    }
+    let mut cursor: Small<usize> = Small::filled(n, 0);
+    let mut current: Small<(i32, i32)> = Small::filled(n, (0, 0));
+    // `subSpans[0].nextStartPosition() != NO_MORE_POSITIONS`.
+    for &(match_start, first_end) in clause_spans[0] {
         current[0] = (match_start, first_end);
-
         // `stretchToOrder()`.
         let mut prev_end = first_end;
         let mut width: i64 = 0;
-        let mut exhausted = false;
         for i in 1..n {
             // `advancePosition(spans, prevSpans.endPosition())`:
             // `while (spans.startPosition() < position) spans.nextStartPosition();`
+            let spans = clause_spans[i];
             let mut at = cursor[i];
-            while at.map_or(-1, |c| clause_spans[i][c].0) < prev_end {
-                let next = at.map_or(0, |c| c.saturating_add(1));
-                if next >= clause_spans[i].len() {
-                    // `NO_MORE_POSITIONS`: `oneExhaustedInCurrentDoc = true`.
-                    exhausted = true;
-                    break;
-                }
-                at = Some(next);
+            while at < spans.len() && spans[at].0 < prev_end {
+                at = at.saturating_add(1);
             }
-            if exhausted {
-                break;
-            }
-            let span = clause_spans[i][at.expect("advanced onto a span")];
+            let Some(&span) = spans.get(at) else {
+                // `NO_MORE_POSITIONS`: `oneExhaustedInCurrentDoc = true`.
+                return;
+            };
             cursor[i] = at;
             current[i] = span;
             // `matchWidth += (spans.startPosition() - prevSpans.endPosition())`.
             width = width.saturating_add(i64::from(span.0) - i64::from(prev_end));
             prev_end = span.1;
         }
-        if exhausted {
-            return;
-        }
         // `matchEnd = subSpans[subSpans.length - 1].endPosition()`.
         if width <= slop {
-            on_match(&current, match_start, prev_end);
+            on_match(&current, match_start, prev_end, width);
         }
     }
 }
@@ -230,9 +290,16 @@ pub fn for_each_unordered_match(
     if n == 0 || clause_spans.iter().any(|s| s.is_empty()) {
         return;
     }
+    if let [a, b] = clause_spans {
+        two_clause_unordered(a, b, slop, on_match);
+        return;
+    }
     // `startDocument()`: every sub-span on its first position.
-    let mut cursor = vec![0usize; n];
-    let mut current: Vec<(i32, i32)> = clause_spans.iter().map(|s| s[0]).collect();
+    let mut cursor: Small<usize> = Small::filled(n, 0);
+    let mut current: Small<(i32, i32)> = Small::filled(n, (0, 0));
+    for (slot, spans) in current.iter_mut().zip(clause_spans) {
+        *slot = spans[0];
+    }
     let mut max_end: i32 = current
         .iter()
         .map(|&(_, end)| end)
@@ -245,7 +312,10 @@ pub fn for_each_unordered_match(
         .map(|&(start, end)| i64::from(end) - i64::from(start))
         .sum();
     // The queue, as clause indices sorted by `(start, end, clause)`.
-    let mut queue: Vec<usize> = (0..n).collect();
+    let mut queue: Small<usize> = Small::filled(n, 0);
+    for (i, slot) in queue.iter_mut().enumerate() {
+        *slot = i;
+    }
     queue.sort_by_key(|&i| (current[i].0, current[i].1, i));
 
     loop {
@@ -271,11 +341,57 @@ pub fn for_each_unordered_match(
             .saturating_sub(i64::from(old.1) - i64::from(old.0))
             .saturating_add(i64::from(next.1) - i64::from(next.0));
         max_end = max_end.max(next.1);
-        // `updateTop()`.
-        queue.remove(0);
+        // `updateTop()`: the advanced clause moves from the front to its
+        // place among the others, which stay sorted.
         let key = (next.0, next.1, top);
-        let at = queue.partition_point(|&j| (current[j].0, current[j].1, j) < key);
-        queue.insert(at, top);
+        let at = queue[1..].partition_point(|&j| (current[j].0, current[j].1, j) < key);
+        queue.copy_within(1..=at, 0);
+        queue[at] = top;
+    }
+}
+
+/// [`for_each_unordered_match`] for two clauses: the queue is the pair
+/// itself, its top the clause whose span is least by `(start, end)`, the
+/// first on a tie (the clause index breaking it, as the general walk does).
+fn two_clause_unordered(
+    a: &[(i32, i32)],
+    b: &[(i32, i32)],
+    slop: i64,
+    mut on_match: impl FnMut(Arrangement<'_>, i32, i32),
+) {
+    let (mut ia, mut ib) = (0usize, 0usize);
+    let mut current = [a[0], b[0]];
+    let mut max_end = current[0].1.max(current[1].1);
+    let width = |(start, end): (i32, i32)| i64::from(end) - i64::from(start);
+    let mut total_length = width(current[0]).saturating_add(width(current[1]));
+    loop {
+        let top = usize::from(current[1] < current[0]);
+        let start = current[top].0;
+        // `atMatch()`.
+        if i64::from(max_end)
+            .saturating_sub(i64::from(start))
+            .saturating_sub(total_length)
+            <= slop
+        {
+            on_match(&current, start, max_end);
+        }
+        // `nextPosition()` on the top span; one exhausted ends the document.
+        let old = current[top];
+        let next = if top == 0 {
+            ia = ia.saturating_add(1);
+            a.get(ia)
+        } else {
+            ib = ib.saturating_add(1);
+            b.get(ib)
+        };
+        let Some(&next) = next else {
+            return;
+        };
+        current[top] = next;
+        total_length = total_length
+            .saturating_sub(width(old))
+            .saturating_add(width(next));
+        max_end = max_end.max(next.1);
     }
 }
 

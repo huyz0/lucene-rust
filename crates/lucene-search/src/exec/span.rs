@@ -35,11 +35,13 @@ use std::collections::HashMap;
 use super::build::LeafContext;
 use super::extended::{collection_of, norms_cursor, sim_scorer, term_entry};
 use super::leaf::DocList;
-use super::{BoxScorer, Mode};
+use super::{BoxScorer, Mode, NO_MORE_DOCS};
 use crate::query::SpanQuery;
 use crate::Result;
 
-/// One leaf `(field, term)`'s positions in one document.
+/// One leaf `(field, term)`'s positions in one document (the tests'
+/// input shape).
+#[cfg(test)]
 type DocPositions = HashMap<crate::SpanLeafKey, Vec<i32>>;
 
 /// `SpanQuery.getField()`: a term's field, else the first clause's.
@@ -52,78 +54,327 @@ fn span_field(q: &SpanQuery) -> Option<&str> {
     }
 }
 
-/// The `Spans` of `q` over one document, walked to `NO_MORE_POSITIONS`: each
-/// emitted span's `(startPosition(), endPosition(), width())`, in emission
-/// order.
-pub(crate) fn emissions(q: &SpanQuery, doc: &DocPositions) -> Vec<(i32, i32, i64)> {
+/// A [`SpanQuery`] with each `SpanTerm` replaced by its index among the
+/// query's sorted, distinct leaves, so a document's positions are looked up
+/// by index rather than hashed by `(field, term)`.
+enum Compiled {
+    Term(usize),
+    Or(Vec<Compiled>),
+    Near {
+        clauses: Vec<Compiled>,
+        slop: i64,
+        in_order: bool,
+    },
+}
+
+/// `(startPosition(), endPosition(), width())` of one emitted span.
+type Emission = (i32, i32, i64);
+
+/// Where a leaf's positions come from, document by document.
+pub(super) enum LeafPositions<'a> {
+    /// The term is not in this segment.
+    Absent,
+    /// `TermsEnum.postings(POSITIONS)`: decoded only for the documents asked.
+    Lazy(Box<lucene_codecs::postings::PositionsCursor<'a>>),
+    /// A pulsed singleton's one posting (live documents only), decoded up
+    /// front, and the entry the leaf is on.
+    Flat(crate::TermDocPositions, usize),
+}
+
+impl<'a> LeafPositions<'a> {
+    /// `field:term`'s positions in this segment: a lazy cursor when the term
+    /// has a `.doc` stream, else its one (live) posting decoded.
+    pub(super) fn open(
+        ctx: &LeafContext<'a>,
+        pos_in: &lucene_codecs::postings::PosInput<'a>,
+        field: &str,
+        term: &[u8],
+    ) -> Result<Self> {
+        Ok(match (ctx.fields.field(field), ctx.doc_in) {
+            (Some(field_terms), Some(doc_in))
+                if field_terms
+                    .try_seek_exact(term)?
+                    .is_some_and(|stats| stats.doc_freq > 1) =>
+            {
+                field_terms
+                    .lazy_positions(term, doc_in, pos_in)?
+                    .map_or(LeafPositions::Absent, |c| LeafPositions::Lazy(Box::new(c)))
+            }
+            _ => crate::term_doc_positions(
+                ctx.fields,
+                ctx.doc_in,
+                pos_in,
+                ctx.pay_in,
+                ctx.live_docs,
+                field,
+                term,
+            )?
+            .map_or(LeafPositions::Absent, |flat| LeafPositions::Flat(flat, 0)),
+        })
+    }
+
+    /// `DocIdSetIterator.advance(target)` unless already there:
+    /// the leaf's first document at or after `target`.
+    pub(super) fn advance(&mut self, target: i32) -> Result<i32> {
+        Ok(match self {
+            LeafPositions::Absent => NO_MORE_DOCS,
+            LeafPositions::Lazy(cursor) => {
+                if cursor.doc_id() < target {
+                    cursor.advance(target)?
+                } else {
+                    cursor.doc_id()
+                }
+            }
+            LeafPositions::Flat((docs, _, _), at) => {
+                while *at < docs.len() && docs[*at] < target {
+                    *at = at.saturating_add(1);
+                }
+                docs.get(*at).copied().unwrap_or(NO_MORE_DOCS)
+            }
+        })
+    }
+
+    /// The leaf's frequency in `doc`: `0` when it is not on `doc`.
+    fn freq_at(&self, doc: i32) -> u64 {
+        match self {
+            LeafPositions::Absent => 0,
+            LeafPositions::Lazy(cursor) => {
+                if cursor.doc_id() == doc {
+                    u64::try_from(cursor.freq()).unwrap_or(0)
+                } else {
+                    0
+                }
+            }
+            LeafPositions::Flat((docs, _, ranges), at) => {
+                if docs.get(*at) == Some(&doc) {
+                    let (from, to) = ranges[*at];
+                    u64::from(to.saturating_sub(from))
+                } else {
+                    0
+                }
+            }
+        }
+    }
+
+    /// The leaf's positions in `doc`, appended to `out`; nothing when the
+    /// leaf is not on `doc`.
+    pub(super) fn positions_at(&mut self, doc: i32, out: &mut Vec<i32>) -> Result<()> {
+        match self {
+            LeafPositions::Absent => {}
+            LeafPositions::Lazy(cursor) => {
+                if cursor.doc_id() == doc {
+                    cursor.positions_into(out)?;
+                }
+            }
+            LeafPositions::Flat((docs, positions, ranges), at) => {
+                if docs.get(*at) == Some(&doc) {
+                    let (from, to) = ranges[*at];
+                    out.extend_from_slice(&positions[from as usize..to as usize]);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// How many times `c` names each leaf, when it is only terms and ors of
+/// terms (every span `width() == 0`); `None` when it has a near.
+fn term_counts(c: &Compiled, leaves: usize) -> Option<Vec<u64>> {
+    fn walk(c: &Compiled, counts: &mut [u64]) -> bool {
+        match c {
+            Compiled::Term(i) => {
+                counts[*i] = counts[*i].saturating_add(1);
+                true
+            }
+            Compiled::Or(clauses) => clauses.iter().all(|cl| walk(cl, counts)),
+            Compiled::Near { .. } => false,
+        }
+    }
+    let mut counts = vec![0u64; leaves];
+    walk(c, &mut counts).then_some(counts)
+}
+
+/// The span query's approximation advanced to `target`: the first document
+/// at or after it every clause of each near and some clause of each or is
+/// on (`ConjunctionDISI`/`DisjunctionDISIApproximation` over the term
+/// spans), leaving every leaf cursor at or after `target`.
+fn approximate(c: &Compiled, target: i32, sources: &mut [LeafPositions<'_>]) -> Result<i32> {
+    match c {
+        Compiled::Term(i) => sources[*i].advance(target),
+        Compiled::Or(clauses) => {
+            let mut min = NO_MORE_DOCS;
+            for cl in clauses {
+                min = min.min(approximate(cl, target, sources)?);
+            }
+            Ok(min)
+        }
+        Compiled::Near { clauses, .. } => {
+            if clauses.is_empty() {
+                return Ok(NO_MORE_DOCS);
+            }
+            let mut target = target;
+            loop {
+                let mut max = target;
+                for cl in clauses {
+                    let doc = approximate(cl, target, sources)?;
+                    if doc == NO_MORE_DOCS {
+                        return Ok(NO_MORE_DOCS);
+                    }
+                    max = max.max(doc);
+                }
+                if max == target {
+                    return Ok(target);
+                }
+                target = max;
+            }
+        }
+    }
+}
+
+fn compile(q: &SpanQuery, leaves: &[crate::SpanLeafKey]) -> Compiled {
     match q {
-        // `TermSpans`: one span per position, `width() == 0`.
-        SpanQuery::SpanTerm { field, term } => doc
-            .get(&(field.clone(), term.clone()))
-            .map(|ps| ps.iter().map(|&p| (p, p.saturating_add(1), 0)).collect())
-            .unwrap_or_default(),
-        // `SpanOrQuery`'s spans: every clause matching in the document, merged
-        // by `(start, end)` (`SpanPositionQueue`), repeats kept.
+        SpanQuery::SpanTerm { field, term } => Compiled::Term(
+            leaves
+                .binary_search_by(|(f, t)| {
+                    (f.as_str(), t.as_slice()).cmp(&(field.as_str(), term.as_slice()))
+                })
+                .expect("every leaf was collected"),
+        ),
         SpanQuery::SpanOr { clauses } => {
-            let mut all: Vec<(i32, i32, i64)> =
-                clauses.iter().flat_map(|c| emissions(c, doc)).collect();
-            all.sort_by_key(|&(s, e, _)| (s, e));
-            all
+            Compiled::Or(clauses.iter().map(|c| compile(c, leaves)).collect())
         }
         SpanQuery::SpanNear {
             clauses,
             slop,
             in_order,
+        } => Compiled::Near {
+            clauses: clauses.iter().map(|c| compile(c, leaves)).collect(),
+            slop: i64::from(*slop),
+            in_order: *in_order,
+        },
+    }
+}
+
+/// Buffers [`emit`] reuses from one document to the next.
+#[derive(Default)]
+struct Scratch {
+    emissions: Vec<Vec<Emission>>,
+    pairs: Vec<Vec<Vec<(i32, i32)>>>,
+}
+
+/// The `Spans` of `c` over one document (`pos[i]`: leaf `i`'s positions in
+/// it, empty when the leaf is not in it), walked to `NO_MORE_POSITIONS`,
+/// appended to `out` in emission order.
+fn emit(c: &Compiled, pos: &[Vec<i32>], out: &mut Vec<Emission>, scratch: &mut Scratch) {
+    match c {
+        // `TermSpans`: one span per position, `width() == 0`.
+        Compiled::Term(i) => {
+            out.extend(pos[*i].iter().map(|&p| (p, p.saturating_add(1), 0)));
+        }
+        // `SpanOrQuery`'s spans: every clause matching in the document, merged
+        // by `(start, end)` (`SpanPositionQueue`), repeats kept.
+        Compiled::Or(clauses) => {
+            let from = out.len();
+            for cl in clauses {
+                emit(cl, pos, out, scratch);
+            }
+            out[from..].sort_by_key(|&(s, e, _)| (s, e));
+        }
+        Compiled::Near {
+            clauses,
+            slop,
+            in_order,
         } => {
             if clauses.is_empty() {
-                return Vec::new();
+                return;
             }
-            let per: Vec<Vec<(i32, i32)>> = clauses
-                .iter()
-                .map(|c| {
-                    emissions(c, doc)
-                        .into_iter()
-                        .map(|(s, e, _)| (s, e))
-                        .collect()
-                })
-                .collect();
-            if per.iter().any(Vec::is_empty) {
-                return Vec::new();
+            let mut per = scratch.pairs.pop().unwrap_or_default();
+            per.resize_with(clauses.len(), Vec::new);
+            let mut tmp = scratch.emissions.pop().unwrap_or_default();
+            let mut all_match = true;
+            for (cl, spans) in clauses.iter().zip(per.iter_mut()) {
+                spans.clear();
+                if all_match {
+                    if let Compiled::Term(i) = cl {
+                        spans.extend(pos[*i].iter().map(|&p| (p, p.saturating_add(1))));
+                    } else {
+                        tmp.clear();
+                        emit(cl, pos, &mut tmp, scratch);
+                        spans.extend(tmp.iter().map(|&(s, e, _)| (s, e)));
+                    }
+                    all_match = !spans.is_empty();
+                }
             }
-            let slices: Vec<&[(i32, i32)]> = per.iter().map(Vec::as_slice).collect();
-            let slop = i64::from(*slop);
-            let mut out = Vec::new();
-            if *in_order {
-                // `NearSpansOrdered.width()`: `matchWidth`, the gaps
-                // `stretchToOrder` summed.
-                crate::near_spans::for_each_ordered_match(&slices, slop, |arr, start, end| {
-                    let width = arr
-                        .windows(2)
-                        .map(|w| i64::from(w[1].0) - i64::from(w[0].1))
-                        .fold(0i64, i64::saturating_add);
-                    out.push((start, end, width));
-                });
-            } else {
-                // `NearSpansUnordered.width()`:
-                // `maxEndPosition - top().startPosition()`.
-                crate::near_spans::for_each_unordered_match(&slices, slop, |_, start, end| {
-                    out.push((start, end, i64::from(end) - i64::from(start)));
-                });
+            scratch.emissions.push(tmp);
+            if all_match {
+                near(&per[..clauses.len()], *slop, *in_order, out);
             }
-            out
+            scratch.pairs.push(per);
         }
+    }
+}
+
+/// `NearSpansOrdered`/`NearSpansUnordered` over the clauses' spans in one
+/// document, each match appended to `out` with its `width()`.
+fn near(per: &[Vec<(i32, i32)>], slop: i64, in_order: bool, out: &mut Vec<Emission>) {
+    const STACK: usize = 8;
+    let mut on_stack: [&[(i32, i32)]; STACK] = [&[]; STACK];
+    let on_heap: Vec<&[(i32, i32)]>;
+    let slices: &[&[(i32, i32)]] = if per.len() <= STACK {
+        for (slot, spans) in on_stack.iter_mut().zip(per) {
+            *slot = spans.as_slice();
+        }
+        &on_stack[..per.len()]
+    } else {
+        on_heap = per.iter().map(Vec::as_slice).collect();
+        &on_heap
+    };
+    if in_order {
+        // `NearSpansOrdered.width()`: `matchWidth`, the gaps
+        // `stretchToOrder` summed.
+        crate::near_spans::ordered_walk(slices, slop, |_, start, end, width| {
+            out.push((start, end, width));
+        });
+    } else {
+        // `NearSpansUnordered.width()`:
+        // `maxEndPosition - top().startPosition()`.
+        crate::near_spans::for_each_unordered_match(slices, slop, |_, start, end| {
+            out.push((start, end, i64::from(end) - i64::from(start)));
+        });
     }
 }
 
 /// `SpanScorer.setFreqCurrentDoc`: `sum(1 / (1 + width))` over the
 /// document's spans, each step rounded to `float` as Java's compound
 /// assignment rounds it; `0` when it has none.
-pub(crate) fn sloppy_freq(q: &SpanQuery, doc: &DocPositions) -> f32 {
+fn freq_of(spans: &[Emission]) -> f32 {
     let mut freq = 0.0f32;
-    for (_, _, width) in emissions(q, doc) {
+    for &(_, _, width) in spans {
         freq = (f64::from(freq) + 1.0 / (1.0 + width as f64)) as f32;
     }
     freq
+}
+
+/// [`emit`] over a test's per-leaf positions.
+#[cfg(test)]
+fn emissions(q: &SpanQuery, doc: &DocPositions) -> Vec<Emission> {
+    let mut leaves = Vec::new();
+    crate::collect_span_leaves(q, &mut leaves);
+    leaves.sort_unstable();
+    leaves.dedup();
+    let compiled = compile(q, &leaves);
+    let pos: Vec<Vec<i32>> = leaves
+        .iter()
+        .map(|k| doc.get(k).cloned().unwrap_or_default())
+        .collect();
+    let mut out = Vec::new();
+    emit(&compiled, &pos, &mut out, &mut Scratch::default());
+    out
+}
+
+#[cfg(test)]
+fn sloppy_freq(q: &SpanQuery, doc: &DocPositions) -> f32 {
+    freq_of(&emissions(q, doc))
 }
 
 /// `SpanWeight.scorerSupplier(context)`: the documents of this segment `q`
@@ -186,39 +437,63 @@ pub(crate) fn span_doc_scores(
     } else {
         None
     };
-    let Some((candidates, per_leaf)) = crate::span_leaf_positions(
-        ctx.fields,
-        ctx.doc_in,
-        ctx.pos_in,
-        ctx.pay_in,
-        ctx.live_docs,
-        q,
-    )?
-    else {
-        return Ok(None);
+    // `SpanTermQuery`'s `TermSpans`: each distinct leaf's positions read per
+    // document from a lazy cursor (a pulsed singleton, with no `.doc` stream
+    // to walk, from its one decoded posting). The cursors themselves are the
+    // approximation (`SpanNearQuery`'s conjunction, `SpanOrQuery`'s
+    // disjunction), so only the documents the query can match are visited
+    // and only their positions are decoded.
+    let Some(pos_in) = ctx.pos_in else {
+        return Err(crate::Error::MissingPosInput);
     };
+    let mut sources = Vec::with_capacity(leaves.len());
+    for (f, t) in &leaves {
+        sources.push(LeafPositions::open(ctx, pos_in, f, t)?);
+    }
+    let compiled = compile(q, &leaves);
     let mut norms = norms_cursor(ctx, field);
     let (mut docs, mut scores) = (Vec::new(), Vec::new());
-    let mut doc_positions: DocPositions = HashMap::new();
-    for doc in candidates {
-        doc_positions.clear();
-        for (key, map) in &per_leaf {
-            if let Some(positions) = map.get(&doc) {
-                doc_positions.insert(key.clone(), positions.clone());
+    let mut pos: Vec<Vec<i32>> = vec![Vec::new(); sources.len()];
+    let mut spans = Vec::new();
+    let mut scratch = Scratch::default();
+    // A query of terms and ors of terms emits only width-0 spans.
+    let term_counts = term_counts(&compiled, sources.len());
+    let mut doc = approximate(&compiled, 0, &mut sources)?;
+    while doc != NO_MORE_DOCS {
+        if ctx.live_docs.is_none_or(|live| live.get_doc(doc)) {
+            let freq = match &term_counts {
+                // Every span is a term's, `width() == 0`: each adds exactly
+                // 1 to the float sum, which is then the number of spans --
+                // each leaf's frequency, times how often the query names it.
+                Some(counts) => {
+                    let mut n = 0u64;
+                    for (source, &times) in sources.iter().zip(counts) {
+                        n = n.saturating_add(source.freq_at(doc).saturating_mul(times));
+                    }
+                    n as f32
+                }
+                None => {
+                    for (buf, source) in pos.iter_mut().zip(&mut sources) {
+                        buf.clear();
+                        source.positions_at(doc, buf)?;
+                    }
+                    spans.clear();
+                    emit(&compiled, &pos, &mut spans, &mut scratch);
+                    freq_of(&spans)
+                }
+            };
+            if freq != 0.0 {
+                docs.push(doc);
+                if let Some(scorer) = &scorer {
+                    let norm = match norms.as_mut() {
+                        Some(n) => n.norm_long(doc)?.unwrap_or(1),
+                        None => 1,
+                    };
+                    scores.push(scorer.score(freq, norm));
+                }
             }
         }
-        let freq = sloppy_freq(q, &doc_positions);
-        if freq == 0.0 {
-            continue;
-        }
-        docs.push(doc);
-        if let Some(scorer) = &scorer {
-            let norm = match norms.as_mut() {
-                Some(n) => n.norm_long(doc)?.unwrap_or(1),
-                None => 1,
-            };
-            scores.push(scorer.score(freq, norm));
-        }
+        doc = approximate(&compiled, doc.saturating_add(1), &mut sources)?;
     }
     if docs.is_empty() {
         return Ok(None);
