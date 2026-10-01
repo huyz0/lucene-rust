@@ -2482,6 +2482,49 @@ impl FieldTerms {
         Ok(())
     }
 
+    /// `TermsEnum.postings(reuse, flags)`: [`Self::lazy_postings_for`] into
+    /// the cursor in `reuse`, reset in place, or a new one there when it is
+    /// empty. A cursor is kilobytes of block buffers; a walk over thousands of
+    /// expanded terms that opened one per term spent a third of its time
+    /// building and moving them. `term` must have `docFreq >= 2` -- a pulsed
+    /// term has no `.doc` bytes to reset onto (`Error::Unsupported`).
+    pub fn reuse_postings_for<'d, 'r>(
+        &self,
+        term: &SeekedTerm,
+        doc_in: &DocInput<'d>,
+        flags: postings::PostingsFlags,
+        reuse: &'r mut Option<postings::LazyDocsCursor<'d>>,
+    ) -> Result<&'r mut postings::LazyDocsCursor<'d>> {
+        match reuse {
+            Some(cursor) => {
+                doc_in.reset_lazy_cursor(
+                    cursor,
+                    term.meta,
+                    term.stats.doc_freq,
+                    self.index_options,
+                    self.has_payloads,
+                    flags,
+                )?;
+                Ok(cursor)
+            }
+            None => {
+                if term.stats.doc_freq <= 1 {
+                    return Err(postings::Error::Unsupported(
+                        "docFreq <= 1: a pulsed term has no .doc bytes to reuse a cursor on",
+                    )
+                    .into());
+                }
+                Ok(reuse.insert(doc_in.lazy_cursor_with_flags(
+                    term.meta,
+                    term.stats.doc_freq,
+                    self.index_options,
+                    self.has_payloads,
+                    flags,
+                )?))
+            }
+        }
+    }
+
     /// `TermsEnum.postings(null, flags)` on a term already found by
     /// [`Self::seek_term_state`] on this same field: no second seek.
     pub fn lazy_postings_for<'d>(

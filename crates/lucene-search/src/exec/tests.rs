@@ -906,6 +906,73 @@ fn streamed_terms_match_the_union_of_their_postings() {
     }
 }
 
+/// A cursor reset onto term after term (`TermsEnum.postings(reuse, ...)`)
+/// reads every term's postings exactly as a fresh cursor does, in either
+/// order -- no block, bit set or position left over from the term before --
+/// and refuses a pulsed term, which has no `.doc` bytes to reset onto.
+#[test]
+fn a_reused_postings_cursor_reads_each_term_like_a_fresh_one() {
+    use crate::directory_reader::DirectoryReader;
+    use crate::query::{Clause, PrefixQuery};
+    use lucene_codecs::postings::PostingsFlags;
+    let dir = lucene_store::FsDirectory::open(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/data/mixed_boolean_scoring_index"
+    ));
+    let reader = DirectoryReader::open(&dir).unwrap();
+    let opened = reader.open_segments().unwrap();
+    let seg = &opened.as_open_segments()[0];
+    let doc_in = seg.doc_in.unwrap();
+    let field = seg.fields.field("body").unwrap();
+    let clause = Clause::Prefix(PrefixQuery::new("body", "w"));
+    let terms = crate::expanded_terms(seg.fields, &clause)
+        .unwrap()
+        .unwrap()
+        .1;
+    let drain = |c: &mut lucene_codecs::postings::LazyDocsCursor<'_>| {
+        let mut docs = Vec::new();
+        let mut d = c.next_doc().unwrap();
+        while d != NO_MORE_DOCS {
+            docs.push(d);
+            d = c.next_doc().unwrap();
+        }
+        docs
+    };
+    let mut checked = 0;
+    for order in [false, true] {
+        let mut reuse = None;
+        let list: Vec<_> = if order {
+            terms.iter().rev().collect()
+        } else {
+            terms.iter().collect()
+        };
+        for (_, t) in list {
+            if t.stats.doc_freq <= 1 {
+                continue;
+            }
+            let mut fresh = field
+                .lazy_postings_for(t, doc_in, PostingsFlags::DocsOnly)
+                .unwrap();
+            let want = drain(&mut fresh);
+            let reused = field
+                .reuse_postings_for(t, doc_in, PostingsFlags::DocsOnly, &mut reuse)
+                .unwrap();
+            assert_eq!(drain(reused), want);
+            checked += 1;
+        }
+    }
+    assert!(
+        checked > 2,
+        "the prefix must reach several multi-document terms"
+    );
+    if let Some((_, pulsed)) = terms.iter().find(|(_, t)| t.stats.doc_freq == 1) {
+        let mut empty = None;
+        assert!(field
+            .reuse_postings_for(pulsed, doc_in, PostingsFlags::DocsOnly, &mut empty)
+            .is_err());
+    }
+}
+
 /// The multi-term builder's edges, and its union scorer driven directly.
 #[test]
 fn multi_term_edges_and_the_term_union() {
