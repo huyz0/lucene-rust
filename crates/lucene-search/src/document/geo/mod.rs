@@ -48,6 +48,7 @@
 
 mod distance_feature;
 mod doc_values;
+pub mod geo3d;
 mod nearest;
 mod point_queries;
 mod shape_queries;
@@ -68,13 +69,17 @@ pub use distance_feature::LatLonPointDistanceFeatureQuery;
 pub use doc_values::{
     LatLonDocValuesBoxQuery, LatLonDocValuesQuery, XYDocValuesPointInGeometryQuery,
 };
+pub use geo3d::PointInGeo3DShapeQuery;
 pub use nearest::{nearest, NearestHit, NearestHits};
 pub use point_queries::{LatLonPointDistanceQuery, LatLonPointQuery, XYPointInGeometryQuery};
 pub use shape_queries::{
     EncodedRectangle, LatLonShapeBoundingBoxQuery, LatLonShapeDocValuesQuery, LatLonShapeQuery,
     XYShapeDocValuesQuery, XYShapeQuery,
 };
-pub use sort::{LatLonPointSortField, SortedDistance, XYPointSortField};
+pub use sort::{
+    Geo3DPointOutsideSortField, Geo3DPointSortField, LatLonPointSortField, SortedDistance,
+    XYPointSortField,
+};
 
 fn illegal(message: impl Into<String>) -> Error {
     Error::DocumentQuery(message.into())

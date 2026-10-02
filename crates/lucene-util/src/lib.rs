@@ -22,6 +22,7 @@ pub mod sloppy_math;
 pub mod small_float;
 pub mod sorter;
 pub mod sparse_fixed_bit_set;
+pub mod spatial3d;
 pub mod splittable_random;
 pub mod strict_math;
 pub mod string_helper;

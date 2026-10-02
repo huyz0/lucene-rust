@@ -19,7 +19,7 @@
 # T3.1, see docs/milestones/m3-write-path-proven.md.
 set -euo pipefail
 
-LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries)
+LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-spatial3d)
 
 cd "$(git rev-parse --show-toplevel)"
 FIXTURES="$PWD/fixtures"
@@ -285,6 +285,17 @@ CASES=(
   # `every_triangle_and_doc_value_is_written_as_lucene_writes_it` compares
   # them byte for byte instead.
   "lucene-search|write_geo_shapes_fixture|geo-shapes|VerifyGeoShapes|fixtures/data/geo_shapes"
+  # The spatial3d fields (M9 T9.4): GenGeo3dPoints' corpus -- Geo3DPoint
+  # (three indexed four-byte dimensions) and Geo3DDocValuesField on WGS84 and
+  # the sphere, multi-valued, across four segments with deletes -- written by
+  # this port. Lucene runs CheckIndex, then answers every Geo3DPoint query
+  # and Geo3DDocValuesField sort of fixtures/data/geo3d_points/queries.tsv
+  # over this index and over its own, in one JVM, and they must agree (the
+  # recorded answers were made with the trig intrinsics off; this JVM may
+  # have them on). What it cannot catch: a point encoded wrongly in a way no
+  # answer reflects -- `every_geo3d_point_is_indexed_as_lucene_indexes_it`
+  # compares the packed points byte for byte instead.
+  "lucene-search|write_geo3d_points_fixture|geo3d-points|VerifyGeo3D|fixtures/data/geo3d_points"
 )
 
 echo "verify-write-path: compiling verifiers"

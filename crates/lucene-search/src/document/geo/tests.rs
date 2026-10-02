@@ -440,3 +440,53 @@ fn numeric_doc_values_read_as_a_singleton_and_other_types_are_refused() {
     );
     assert_eq!(QueryRelation::Within.to_string(), "WITHIN");
 }
+
+#[test]
+fn geo3d_query_schema_and_comparator_sources() {
+    use crate::top_field::{LeafCtx, SortValue};
+    use lucene_util::spatial3d::PlanetModel;
+    let pm = PlanetModel::wgs84();
+    let tmp = TempDir::new("geo3d-schema");
+    let g3 = |lat: f64, lon: f64| -> Vec<Box<dyn IndexableField>> {
+        let p = d::geo3d::from_degrees;
+        let point = lucene_util::spatial3d::GeoPoint::from_lat_lon(&pm, p(lat), p(lon)).unwrap();
+        vec![
+            Box::new(d::Geo3DPoint::new("p", lat, lon).unwrap()),
+            Box::new(d::Geo3DDocValuesField::new("p", &point, &pm).unwrap()),
+            Box::new(d::LatLonPoint::new("ll", lat, lon).unwrap()),
+        ]
+    };
+    let r = index(&tmp, vec![vec![g3(0.0, 0.0), g3(0.0, 1.0), vec![]]]);
+    let opened = r.open_segments().unwrap();
+    let leaves = opened.as_open_segments();
+    let q = geo3d::geo3d_point::new_distance_query("p", &pm, 0.0, 0.0, 50_000.0).unwrap();
+    assert_eq!(docs(&leaves, q.as_ref()), vec![0]);
+    // A field of two-dimension points is not a Geo3DPoint's.
+    let wrong = geo3d::geo3d_point::new_distance_query("ll", &pm, 0.0, 0.0, 50_000.0).unwrap();
+    let e = search_all(&leaves, wrong.as_ref()).unwrap_err();
+    assert!(e.to_string().contains("not a Geo3DPoint's"), "{e}");
+    // The comparator sources report each document's key; missing is last.
+    let ctx = || LeafCtx {
+        reader: &r.segment_readers()[0],
+        doc_base: 0,
+    };
+    let near = geo3d::geo3d_doc_values_field::new_distance_sort("p", 0.0, 0.0, 1e6, &pm)
+        .unwrap()
+        .comparator_source();
+    let outside = geo3d::geo3d_doc_values_field::new_outside_distance_sort("p", 0.0, 0.0, 1e4, &pm)
+        .unwrap()
+        .comparator_source();
+    let mut keys = Vec::new();
+    for src in [near, outside] {
+        let cmp = src.new_comparator("p", 3, false);
+        let mut leaf = cmp.leaf(ctx()).ok().unwrap();
+        for doc in 0..3 {
+            match leaf.value(doc, 0.0).unwrap() {
+                SortValue::Long(v) => keys.push(v),
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+    assert!(keys[0] < keys[1] && keys[1] < keys[2], "{keys:?}");
+    assert!(keys[3] < keys[4] && keys[4] < keys[5], "{keys:?}");
+}

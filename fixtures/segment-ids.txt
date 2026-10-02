@@ -102,6 +102,13 @@ facets_index/_2.si 2cda51e0c11deeb52d965d1ccb3c6077
 facets_index/segments_3 2cda51e0c11deeb52d965d1ccb3c607a
 field_infos_index/_0.si 53e5799ed991208fcb705d322ae3809d
 field_infos_index/segments_2 53e5799ed991208fcb705d322ae380a3
+geo3d_points/big/index/_0.si 295d5ec52a2ffd1ed9b4470536b458bc
+geo3d_points/big/index/segments_1 295d5ec52a2ffd1ed9b4470536b458bf
+geo3d_points/index/_0.si 295d5ec52a2ffd1ed9b4470536b458a9
+geo3d_points/index/_1.si 295d5ec52a2ffd1ed9b4470536b458ad
+geo3d_points/index/_2.si 295d5ec52a2ffd1ed9b4470536b458b1
+geo3d_points/index/_3.si 295d5ec52a2ffd1ed9b4470536b458b5
+geo3d_points/index/segments_5 295d5ec52a2ffd1ed9b4470536b458bb
 geo_points/big/index/_0.si 18dc102cdf7d348ed51e4e26b563be95
 geo_points/big/index/segments_1 18dc102cdf7d348ed51e4e26b563be98
 geo_points/index/_0.si 18dc102cdf7d348ed51e4e26b563be82

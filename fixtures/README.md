@@ -1125,6 +1125,44 @@ outright.
   every query for the generator) replays them through Lucene over the
   Rust-written index (`scripts/verify-write-path.sh`).
 
+- `GenGeo3d.java`, `GenGeo3dMath.java` (M9 T9.4) — no index: plain text
+  under `geo3d/` for `lucene-util`'s `spatial3d` (`geo3d_fixtures.rs`,
+  `geo3d_math_fixtures.rs`). `shapes.tsv`: five planet models (SPHERE, WGS84,
+  CLARKE_1866, a random oblate and a prolate ellipsoid), every factory's
+  shapes -- every `GeoBBoxFactory` branch, circles, exact circles, paths,
+  polygons (random, spiky, colinear runs, backtracks, near-parallel edges,
+  holes, rings over 100 points, `makeLargeGeoPolygon`, rings with a vertex on
+  the test point's travel planes), S2 cells, solids, `GeoAreaFactory` areas
+  -- each with its `writePlanetObject` bytes (or exception), bounds, edge
+  points, membership of probe points, distances per style, and relationships
+  against the others and against x/y/z solids. `math.tsv`: the primitives'
+  public API on random and degenerate inputs, and `StrictMath.tan/atan/atan2`.
+  Both run with `-XX:DisableIntrinsic=_dsin,_dcos,_dtan` (`gen-fixtures.sh`'s
+  `generator_jvm_opts`) so `Math.sin/cos/tan` are `StrictMath`'s and the
+  output is platform independent. `-Dgeo3d.seed=N` draws another corpus; the
+  tests read one from `GEO3D_FIXTURES=dir`.
+
+- `GenGeo3dPoints.java` (M9 T9.4) → `geo3d_points/`, for `lucene-search`'s
+  `geo3d_points_fixtures.rs`: `index/`, four segments (3 × 1500 documents
+  and one of 50) with 247 deletions, of `Geo3DPoint`s on WGS84 (`p`,
+  multi-valued, with the first point's `Geo3DDocValuesField` in `pd`) and
+  on the sphere (`s`, point and doc value) -- poles, the dateline, exact
+  duplicates, clusters, documents without the field; `docs.tsv`,
+  `deletes.tsv`, and `queries.tsv`: 260 queries of every `Geo3DPoint`
+  factory and every `Geo3DDocValuesField` sort (plain and box-filtered),
+  each with Lucene's hit bitset, sorted top-n with the raw sort values, or
+  exception. `big/`: one 12 000-point segment, latitude rising with the doc
+  id, so a sort from a pole updates its bottom past the comparator's
+  1024-update bounds sampling. The sorts read only the single-valued `pd`
+  and `s`: Lucene's two geo3d comparators re-read a multi-valued document's
+  values in `copy()` after `compareBottom()` consumed them (see
+  `docs/parity.md`). Run with the trig intrinsics off, like `GenGeo3d`.
+  The test also writes the same documents through this port's `IndexWriter`
+  and replays every query over that index; `write_geo3d_points_fixture` +
+  `VerifyGeo3D` (`scripts/verify-write-path.sh`) open the Rust-written index
+  with Lucene, run `CheckIndex`, and require every query to answer as over
+  Lucene's own `index/` in the same JVM.
+
 ## Manifest appenders
 
 `Append*Manifest` programs open an already-generated index **read-only** and

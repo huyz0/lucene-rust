@@ -23,6 +23,8 @@ use lucene_store::data_input::SliceInput;
 use lucene_store::MmapDirectory;
 
 mod micro_geo;
+mod micro_geo3d;
+mod micro_geo3d_points;
 mod micro_geo_points;
 mod micro_geo_shapes;
 mod micro_m7;
@@ -2062,6 +2064,13 @@ fn main() {
         "points_write" => bench_points_write(warmup, measure),
         "concurrent_index" => bench_concurrent_index(warmup, measure),
         "geo" => micro_geo::bench_geo(warmup, measure),
+        "geo3d" => micro_geo3d::bench_geo3d(warmup, measure),
+        "geo3d_points" => {
+            let index = std::env::args()
+                .nth(2)
+                .expect("geo3d_points needs the Geo3dPointsMicro index directory");
+            micro_geo3d_points::bench_geo3d_points(warmup, measure, &index);
+        }
         "geo_points" => {
             let index = std::env::args()
                 .nth(2)

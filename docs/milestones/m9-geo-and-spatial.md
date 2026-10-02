@@ -109,7 +109,32 @@ last within the milestone.
   `VerifyGeoShapes`. Benchmark pair `scripts/bench-micro.sh --bench
   geo_shapes`: every case above 1.0 (1.09x-1.76x); ratios and the stage-3
   changes in `docs/parity.md`.
-- **T9.4** — `spatial3d`.
+- **T9.4** — `spatial3d`. *Done (2026-10-02).* All 103 classes of
+  `lucene-spatial3d` (`docs/inventory/lucene-spatial3d.tsv`,
+  `check-port-inventory.py --module spatial3d`, in the gate). The `geom`
+  package (94 classes) is in `crates/lucene-util/src/spatial3d/` beside
+  `geo` (pure math); `Geo3DPoint`/`Geo3DDocValuesField` in
+  `lucene-index/src/document/geo3d.rs`; `Geo3DUtil`,
+  `PointInGeo3DShapeQuery` and its visitor in
+  `lucene-search/src/document/geo/geo3d.rs`; the two sort fields and
+  comparators in `lucene-search/src/document/geo/sort.rs`. Differential:
+  `GenGeo3d` -> `geo3d_fixtures.rs` (every shape kind on five planet
+  models: serialized bytes both ways, bounds, membership, distances,
+  relationships against shapes and x/y/z solids), `GenGeo3dMath` ->
+  `geo3d_math_fixtures.rs` (the primitives' public API, and
+  `StrictMath.tan/atan/atan2`, now in `strict_math.rs`), all bit for bit;
+  `GenGeo3dPoints` -> `geo3d_points_fixtures.rs` (every query factory and
+  every sort, over a four-segment index with deletions and a 12 000-point
+  segment, on Lucene's index and on this port's: same hits, same sort-value
+  bits), and `VerifyGeo3D` in `scripts/verify-write-path.sh` (Lucene reads
+  the Rust-written index: `CheckIndex`, then every query answered as over
+  its own). The generators run with HotSpot's trig intrinsics off; what
+  that changes against a stock JVM is measured in `docs/parity.md`. One
+  deliberate difference: Lucene's two geo3d comparators mis-read
+  multi-valued documents in `copy()` (a Lucene bug, `docs/parity.md`); the
+  port reads each document's own values. Benchmark pairs `--bench geo3d`
+  and `--bench geo3d_points`: every case at or above 1.0 (1.01x-1.75x;
+  two inside the noise floor), ratios in `docs/parity.md`.
 - **T9.5** — `spatial-extras` (prefix trees, `SpatialStrategy`s).
 - **T9.6** — Plugin wiring for OpenSearch's geo queries and sort.
 
