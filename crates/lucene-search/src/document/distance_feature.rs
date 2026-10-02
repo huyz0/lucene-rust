@@ -113,8 +113,9 @@ enum Values<'a> {
 enum Candidates {
     /// Every document with a value.
     All,
-    /// These, ascending, from this index on (`DocIdSetBuilder`'s set).
-    List(Vec<i32>, usize),
+    /// These, ascending, from this index on (`DocIdSetBuilder`'s set), and
+    /// that set's cost.
+    List(Vec<i32>, usize, i64),
 }
 
 /// The `IntersectVisitor` of `setMinCompetitiveScore`: documents after `doc`
@@ -124,6 +125,14 @@ struct NearVisitor {
     min: i64,
     max: i64,
     docs: Vec<i32>,
+    builder: BuilderCost,
+}
+
+impl NearVisitor {
+    fn add(&mut self, doc_id: i32) {
+        self.docs.push(doc_id);
+        self.builder.add();
+    }
 }
 
 impl IntersectVisitor for NearVisitor {
@@ -141,8 +150,12 @@ impl IntersectVisitor for NearVisitor {
 
     fn visit(&mut self, doc_id: i32) {
         if doc_id > self.doc {
-            self.docs.push(doc_id);
+            self.add(doc_id);
         }
+    }
+
+    fn grow(&mut self, count: usize) {
+        self.builder.grow(i64::try_from(count).unwrap_or(i64::MAX));
     }
 
     fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) {
@@ -151,7 +164,98 @@ impl IntersectVisitor for NearVisitor {
         }
         let v = sortable_bytes_to_long(packed_value);
         if v >= self.min && v <= self.max {
-            self.docs.push(doc_id);
+            self.add(doc_id);
+        }
+    }
+}
+
+/// `DocIdSetBuilder(maxDoc)`'s bookkeeping, as far as the cost of the set
+/// it builds: a buffer-backed set costs its distinct documents, a set that
+/// outgrew `maxDoc >>> 7` (counted in announced `grow`s, not documents) and
+/// became a bitset costs every `grow` announced since -- which then decides
+/// the next narrowing's threshold, so it is reproduced exactly.
+#[derive(Debug, Clone)]
+pub(crate) struct BuilderCost {
+    threshold: i64,
+    total_allocated: i64,
+    /// `(array.length, length)` per buffer.
+    buffers: Vec<(i64, i64)>,
+    bitset: bool,
+    counter: i64,
+}
+
+impl BuilderCost {
+    pub(crate) fn new(max_doc: i32) -> Self {
+        BuilderCost {
+            threshold: i64::from((max_doc as u32) >> 7),
+            total_allocated: 0,
+            buffers: Vec::new(),
+            bitset: false,
+            counter: -1,
+        }
+    }
+
+    /// `grow(numDocs)`.
+    pub(crate) fn grow(&mut self, num_docs: i64) {
+        if self.bitset {
+            self.counter = self.counter.saturating_add(num_docs);
+        } else if self.total_allocated.saturating_add(num_docs) <= self.threshold {
+            self.ensure_buffer_capacity(num_docs);
+        } else {
+            // `upgradeToBitSet`: the buffered documents, then this grow.
+            self.counter = self.buffers.iter().map(|b| b.1).sum::<i64>();
+            self.buffers.clear();
+            self.bitset = true;
+            self.counter = self.counter.saturating_add(num_docs);
+        }
+    }
+
+    fn ensure_buffer_capacity(&mut self, num_docs: i64) {
+        let Some(&(cap, len)) = self.buffers.last() else {
+            let c = self.additional_capacity(num_docs);
+            self.add_buffer(c);
+            return;
+        };
+        if cap.saturating_sub(len) >= num_docs {
+            return;
+        }
+        let c = self.additional_capacity(num_docs);
+        if len < cap.saturating_sub(cap >> 3) {
+            // `growBuffer`.
+            if let Some(last) = self.buffers.last_mut() {
+                last.0 = last.0.saturating_add(c);
+            }
+            self.total_allocated = self.total_allocated.saturating_add(c);
+        } else {
+            self.add_buffer(c);
+        }
+    }
+
+    fn additional_capacity(&self, num_docs: i64) -> i64 {
+        let c = self.total_allocated.max(num_docs.saturating_add(1)).max(32);
+        c.min(self.threshold.saturating_sub(self.total_allocated))
+    }
+
+    fn add_buffer(&mut self, len: i64) {
+        self.buffers.push((len, 0));
+        self.total_allocated = self.total_allocated.saturating_add(len);
+    }
+
+    /// `BulkAdder.add(doc)`.
+    pub(crate) fn add(&mut self) {
+        if !self.bitset {
+            if let Some(last) = self.buffers.last_mut() {
+                last.1 = last.1.saturating_add(1);
+            }
+        }
+    }
+
+    /// `build().iterator().cost()`, given the distinct documents added.
+    pub(crate) fn cost(&self, distinct: usize) -> i64 {
+        if self.bitset {
+            self.counter
+        } else {
+            i64::try_from(distinct).unwrap_or(i64::MAX)
         }
     }
 }
@@ -162,7 +266,8 @@ struct Pruning {
     current_skip_interval: i32,
     try_update_fail_count: i32,
     set_min_competitive_score_counter: i32,
-    last_min: Option<f32>,
+    /// The leaf collector's `minCompetitiveScore`: the last threshold pushed.
+    last_min: f32,
 }
 
 impl Pruning {
@@ -247,28 +352,99 @@ impl DocumentQuery for LongDistanceFeatureQuery {
             current_skip_interval: MIN_SKIP_INTERVAL,
             try_update_fail_count: 0,
             set_min_competitive_score_counter: 0,
-            last_min: None,
+            last_min: 0.0,
         };
         let mut all_at = 0usize;
+        // `docID()`: -1 before the first document.
+        let mut doc = -1;
         loop {
-            let doc = match &mut candidates {
-                Candidates::All => match with_value.get(all_at) {
-                    Some(&d) => {
-                        all_at = all_at.saturating_add(1);
-                        d
-                    }
-                    None => break,
-                },
-                Candidates::List(docs, at) => match docs.get(*at) {
-                    Some(&d) => {
-                        *at = at.saturating_add(1);
-                        d
-                    }
-                    None => break,
-                },
-            };
-            if !leaf.live_docs.is_none_or(|bits| bits.get_doc(doc)) {
-                continue;
+            // `TopScoreDocCollector.updateMinCompetitiveScore`, which runs when
+            // a leaf starts (`setScorer`) and after a collected document raises
+            // the queue's bar: `Math.nextUp` of the worst kept score (a tie
+            // loses to the earlier document), pushed only when it is above the
+            // leaf's last push -- 0 to start with.
+            'update: {
+                let min_score = crate::bulk_scorer::min_competitive_score(collector);
+                // Negated so a NaN threshold fails the test, as in Java.
+                #[allow(clippy::neg_cmp_op_on_partial_ord)]
+                if !(min_score > state.last_min) {
+                    break 'update;
+                }
+                state.last_min = min_score;
+                // `setMinCompetitiveScore(minScore)`.
+                if min_score > boost {
+                    // `it = DocIdSetIterator.empty()`.
+                    return Ok(());
+                }
+                state.set_min_competitive_score_counter =
+                    state.set_min_competitive_score_counter.saturating_add(1);
+                let interval = state.current_skip_interval;
+                if state.set_min_competitive_score_counter > 256
+                    && (state.set_min_competitive_score_counter & (interval - 1)) != interval - 1
+                {
+                    break 'update;
+                }
+                let previous = state.max_distance;
+                state.max_distance = self.compute_max_distance(boost, min_score, previous);
+                if state.max_distance == previous {
+                    break 'update;
+                }
+                let mut min_value = self.origin.wrapping_sub(state.max_distance);
+                if min_value > self.origin {
+                    min_value = i64::MIN;
+                }
+                let mut max_value = self.origin.wrapping_add(state.max_distance);
+                if max_value < self.origin {
+                    max_value = i64::MAX;
+                }
+                let mut visitor = NearVisitor {
+                    doc,
+                    min: min_value,
+                    max: max_value,
+                    docs: Vec::new(),
+                    builder: BuilderCost::new(r.max_doc),
+                };
+                let it_cost = match &candidates {
+                    Candidates::All => lead_cost,
+                    Candidates::List(_, _, cost) => *cost,
+                };
+                let threshold = lead_cost.min(it_cost) >> 3;
+                let estimate =
+                    points.estimate_point_count_bounded(info.number, &mut visitor, threshold)?;
+                if estimate >= threshold {
+                    state.update_skip_interval(false);
+                    break 'update;
+                }
+                points.intersect(info.number, &mut visitor)?;
+                let mut docs = visitor.docs;
+                docs.sort_unstable();
+                docs.dedup();
+                let cost = visitor.builder.cost(docs.len());
+                candidates = Candidates::List(docs, 0, cost);
+                state.update_skip_interval(true);
+            }
+            // `nextDoc()`, skipping deleted documents (`DefaultBulkScorer`
+            // with the live docs as accept bits).
+            loop {
+                doc = match &mut candidates {
+                    Candidates::All => match with_value.get(all_at) {
+                        Some(&d) => {
+                            all_at = all_at.saturating_add(1);
+                            d
+                        }
+                        None => return Ok(()),
+                    },
+                    Candidates::List(docs, at, _) => match docs.get(*at) {
+                        Some(&d) => {
+                            *at = at.saturating_add(1);
+                            d
+                        }
+                        None => return Ok(()),
+                    },
+                };
+                if leaf.live_docs.is_none_or(|bits| bits.get_doc(doc)) {
+                    break;
+                }
             }
             // `DistanceScorer.score()`: a candidate without a value scores 0.
             let score = match value_of(doc)? {
@@ -276,63 +452,7 @@ impl DocumentQuery for LongDistanceFeatureQuery {
                 None => 0.0,
             };
             collector.collect(doc, score);
-            let Some(min_score) = collector.pruning_threshold() else {
-                continue;
-            };
-            if state.last_min.is_some_and(|m| m >= min_score) {
-                continue;
-            }
-            state.last_min = Some(min_score);
-            // `setMinCompetitiveScore(minScore)`.
-            if min_score > boost {
-                break;
-            }
-            state.set_min_competitive_score_counter =
-                state.set_min_competitive_score_counter.saturating_add(1);
-            let interval = state.current_skip_interval;
-            if state.set_min_competitive_score_counter > 256
-                && (state.set_min_competitive_score_counter & (interval - 1)) != interval - 1
-            {
-                continue;
-            }
-            let previous = state.max_distance;
-            state.max_distance = self.compute_max_distance(boost, min_score, previous);
-            if state.max_distance == previous {
-                continue;
-            }
-            let mut min_value = self.origin.wrapping_sub(state.max_distance);
-            if min_value > self.origin {
-                min_value = i64::MIN;
-            }
-            let mut max_value = self.origin.wrapping_add(state.max_distance);
-            if max_value < self.origin {
-                max_value = i64::MAX;
-            }
-            let mut visitor = NearVisitor {
-                doc,
-                min: min_value,
-                max: max_value,
-                docs: Vec::new(),
-            };
-            let it_cost = match &candidates {
-                Candidates::All => lead_cost,
-                Candidates::List(docs, _) => docs.len() as i64,
-            };
-            let threshold = lead_cost.min(it_cost) >> 3;
-            let estimate =
-                points.estimate_point_count_bounded(info.number, &mut visitor, threshold)?;
-            if estimate >= threshold {
-                state.update_skip_interval(false);
-                continue;
-            }
-            points.intersect(info.number, &mut visitor)?;
-            let mut docs = visitor.docs;
-            docs.sort_unstable();
-            docs.dedup();
-            candidates = Candidates::List(docs, 0);
-            state.update_skip_interval(true);
         }
-        Ok(())
     }
 }
 
@@ -367,7 +487,7 @@ mod tests {
             current_skip_interval: 64,
             try_update_fail_count: 0,
             set_min_competitive_score_counter: 300,
-            last_min: None,
+            last_min: 0.0,
         };
         p.update_skip_interval(true);
         assert_eq!(p.current_skip_interval, 32);
@@ -380,6 +500,7 @@ mod tests {
             min: 0,
             max: 10,
             docs: Vec::new(),
+            builder: BuilderCost::new(1000),
         };
         let b = |x: i64| lucene_index::document::long_to_sortable_bytes(x);
         assert_eq!(v.compare(&b(11), &b(20)), Relation::CellOutsideQuery);
@@ -391,5 +512,47 @@ mod tests {
         v.visit_with_value(8, &b(30));
         v.visit_with_value(2, &b(3));
         assert_eq!(v.docs, vec![6, 7]);
+        // `grow` reaches the builder: past `maxDoc >>> 7` it is a bitset
+        // whose cost is the announced count.
+        v.grow(100);
+        assert!(v.builder.bitset);
+        assert_eq!(v.builder.cost(2), 100);
+    }
+
+    #[test]
+    fn builder_cost_follows_doc_id_set_builder() {
+        // 1000 docs: threshold 7. A small grow buffers (cost = distinct docs).
+        let mut b = BuilderCost::new(1000);
+        b.grow(2);
+        b.add();
+        b.add();
+        assert!(!b.bitset);
+        assert_eq!(b.total_allocated, 7, "max(32, 3) capped at the threshold");
+        assert_eq!(b.cost(2), 2);
+        b.grow(0);
+        assert!(!b.bitset, "fits the buffer");
+        // Past the threshold: a bitset counting the buffered documents and
+        // every grow announced from then on.
+        b.grow(3);
+        assert!(b.bitset);
+        assert_eq!(b.counter, 2 + 3);
+        b.grow(512);
+        b.add();
+        assert_eq!(b.cost(1), 517);
+        // A full buffer gets a second one; a roomy one grows.
+        let mut c = BuilderCost::new(100_000);
+        c.grow(10);
+        for _ in 0..32 {
+            c.add();
+        }
+        c.grow(5);
+        assert_eq!(c.buffers.len(), 2, "{:?}", c.buffers);
+        let mut g = BuilderCost::new(100_000);
+        g.grow(40);
+        g.add();
+        g.grow(100);
+        assert_eq!(g.buffers.len(), 1);
+        assert!(g.buffers[0].0 >= 141);
+        assert_eq!(g.cost(1), 1);
     }
 }

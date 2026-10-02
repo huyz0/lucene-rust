@@ -20,6 +20,7 @@ use lucene_util::sloppy_math;
 
 use super::{geo, illegal, sorted_numeric};
 use crate::collector::ScoringCollector;
+use crate::document::distance_feature::BuilderCost;
 use crate::document::{field_info, reader, DocumentQuery};
 use crate::multi_segment::OpenSegment;
 use crate::Result;
@@ -144,97 +145,6 @@ impl NearVisitor {
     }
 }
 
-/// `DocIdSetBuilder(maxDoc)`'s bookkeeping, as far as the cost of the set
-/// it builds: a buffer-backed set costs its distinct documents, a set that
-/// outgrew `maxDoc >>> 7` (counted in announced `grow`s, not documents) and
-/// became a bitset costs every `grow` announced since -- which then decides
-/// the next narrowing's threshold, so it is reproduced exactly.
-#[derive(Debug, Clone)]
-struct BuilderCost {
-    threshold: i64,
-    total_allocated: i64,
-    /// `(array.length, length)` per buffer.
-    buffers: Vec<(i64, i64)>,
-    bitset: bool,
-    counter: i64,
-}
-
-impl BuilderCost {
-    fn new(max_doc: i32) -> Self {
-        BuilderCost {
-            threshold: i64::from((max_doc as u32) >> 7),
-            total_allocated: 0,
-            buffers: Vec::new(),
-            bitset: false,
-            counter: -1,
-        }
-    }
-
-    /// `grow(numDocs)`.
-    fn grow(&mut self, num_docs: i64) {
-        if self.bitset {
-            self.counter = self.counter.saturating_add(num_docs);
-        } else if self.total_allocated.saturating_add(num_docs) <= self.threshold {
-            self.ensure_buffer_capacity(num_docs);
-        } else {
-            // `upgradeToBitSet`: the buffered documents, then this grow.
-            self.counter = self.buffers.iter().map(|b| b.1).sum::<i64>();
-            self.buffers.clear();
-            self.bitset = true;
-            self.counter = self.counter.saturating_add(num_docs);
-        }
-    }
-
-    fn ensure_buffer_capacity(&mut self, num_docs: i64) {
-        let Some(&(cap, len)) = self.buffers.last() else {
-            let c = self.additional_capacity(num_docs);
-            self.add_buffer(c);
-            return;
-        };
-        if cap.saturating_sub(len) >= num_docs {
-            return;
-        }
-        let c = self.additional_capacity(num_docs);
-        if len < cap.saturating_sub(cap >> 3) {
-            // `growBuffer`.
-            if let Some(last) = self.buffers.last_mut() {
-                last.0 = last.0.saturating_add(c);
-            }
-            self.total_allocated = self.total_allocated.saturating_add(c);
-        } else {
-            self.add_buffer(c);
-        }
-    }
-
-    fn additional_capacity(&self, num_docs: i64) -> i64 {
-        let c = self.total_allocated.max(num_docs.saturating_add(1)).max(32);
-        c.min(self.threshold.saturating_sub(self.total_allocated))
-    }
-
-    fn add_buffer(&mut self, len: i64) {
-        self.buffers.push((len, 0));
-        self.total_allocated = self.total_allocated.saturating_add(len);
-    }
-
-    /// `BulkAdder.add(doc)`.
-    fn add(&mut self) {
-        if !self.bitset {
-            if let Some(last) = self.buffers.last_mut() {
-                last.1 = last.1.saturating_add(1);
-            }
-        }
-    }
-
-    /// `build().iterator().cost()`, given the distinct documents added.
-    fn cost(&self, distinct: usize) -> i64 {
-        if self.bitset {
-            self.counter
-        } else {
-            i64::try_from(distinct).unwrap_or(i64::MAX)
-        }
-    }
-}
-
 impl IntersectVisitor for NearVisitor {
     fn compare(&mut self, min: &[u8], max: &[u8]) -> Relation {
         let lat_lo = sortable_bytes_to_int(min);
@@ -333,7 +243,8 @@ impl DocumentQuery for LatLonPointDistanceFeatureQuery {
         let mut candidates = Candidates::All;
         let mut max_distance = GeoUtils::EARTH_MEAN_RADIUS_METERS * std::f64::consts::PI;
         let mut counter = 0i32;
-        let mut last_min: Option<f32> = None;
+        // The leaf collector's `minCompetitiveScore`: the last push.
+        let mut last_min = 0.0f32;
         let mut all_at = 0usize;
         // The selected value of a candidate, found forward from `cursor`.
         let mut cursor = 0usize;
@@ -343,16 +254,18 @@ impl DocumentQuery for LatLonPointDistanceFeatureQuery {
             // `setMinCompetitiveScore(minScore)`, which `TopScoreDocCollector`
             // calls when a leaf starts (`setScorer`) and after a collected
             // document raises its bar: `Math.nextUp` of the worst kept score,
-            // since a tie loses to the earlier document.
+            // since a tie loses to the earlier document -- and only when that
+            // is above the leaf's last push, 0 to start with
+            // (`localMinScore > minCompetitiveScore`). So a NaN score (a NaN
+            // pivot) is never pushed and nothing is pruned.
             'update: {
-                let Some(threshold) = collector.pruning_threshold() else {
-                    break 'update;
-                };
-                let min_score = threshold.next_up();
-                if last_min.is_some_and(|m| m >= min_score) {
+                let min_score = crate::bulk_scorer::min_competitive_score(collector);
+                // Negated so a NaN threshold fails the test, as in Java.
+                #[allow(clippy::neg_cmp_op_on_partial_ord)]
+                if !(min_score > last_min) {
                     break 'update;
                 }
-                last_min = Some(min_score);
+                last_min = min_score;
                 if min_score > boost {
                     // `it = DocIdSetIterator.empty()`.
                     return Ok(());
@@ -463,43 +376,6 @@ mod tests {
         assert_eq!(q.select_value(&[far]), Some(far));
         assert_eq!(q.select_value(&[far, near]), Some(near));
         assert_eq!(q.select_value(&[near, far]), Some(near));
-    }
-
-    #[test]
-    fn builder_cost_follows_doc_id_set_builder() {
-        // 1000 docs: threshold 7. A small grow buffers (cost = distinct docs).
-        let mut b = BuilderCost::new(1000);
-        b.grow(2);
-        b.add();
-        b.add();
-        assert!(!b.bitset);
-        assert_eq!(b.total_allocated, 7, "max(32, 3) capped at the threshold");
-        assert_eq!(b.cost(2), 2);
-        b.grow(0);
-        assert!(!b.bitset, "fits the buffer");
-        // Past the threshold: a bitset counting the buffered documents and
-        // every grow announced from then on.
-        b.grow(3);
-        assert!(b.bitset);
-        assert_eq!(b.counter, 2 + 3);
-        b.grow(512);
-        b.add();
-        assert_eq!(b.cost(1), 517);
-        // A full buffer gets a second one; a roomy one grows.
-        let mut c = BuilderCost::new(100_000);
-        c.grow(10);
-        for _ in 0..32 {
-            c.add();
-        }
-        c.grow(5);
-        assert_eq!(c.buffers.len(), 2, "{:?}", c.buffers);
-        let mut g = BuilderCost::new(100_000);
-        g.grow(40);
-        g.add();
-        g.grow(100);
-        assert_eq!(g.buffers.len(), 1);
-        assert!(g.buffers[0].0 >= 141);
-        assert_eq!(g.cost(1), 1);
     }
 
     #[test]
