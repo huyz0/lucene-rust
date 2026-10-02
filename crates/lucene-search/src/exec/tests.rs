@@ -973,25 +973,33 @@ fn a_reused_postings_cursor_reads_each_term_like_a_fresh_one() {
     }
 }
 
-/// A tail-only term's first document, read from its first delta alone, is
-/// the one its cursor lands on first -- for a field with frequencies (the
-/// delta's low bit is the freq flag) and a docs-only one, with fewer than four
-/// documents (plain vints) and more (group varints) -- and every other term
-/// gets no answer.
-#[test]
-fn a_tail_only_terms_first_doc_matches_its_cursor() {
+/// Every term of `fields` in the index at `path` (relative to the fixtures
+/// directory), checked against [`FieldTerms::tail_only_first_doc`]: a term
+/// with `1 < docFreq < block` gets the first document its cursor lands on,
+/// every other term no answer. Returns how many were answered, how many of
+/// those had fewer than four documents (plain vints rather than a group
+/// varint), how many were in `docs_only`, and how many terms filled at
+/// least one full block (and so had to get no answer).
+///
+/// [`FieldTerms::tail_only_first_doc`]: lucene_codecs::blocktree::FieldTerms::tail_only_first_doc
+fn check_tail_only_first_doc(
+    path: &str,
+    fields: &[&str],
+    docs_only: &str,
+    block: i32,
+) -> (usize, usize, usize, usize) {
     use crate::directory_reader::DirectoryReader;
     use lucene_codecs::postings::PostingsFlags;
-    let dir = lucene_store::FsDirectory::open(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../fixtures/data/m7_queries_index"
+    let dir = lucene_store::FsDirectory::open(format!(
+        "{}/../../fixtures/data/{path}",
+        env!("CARGO_MANIFEST_DIR")
     ));
     let reader = DirectoryReader::open(&dir).unwrap();
     let opened = reader.open_segments().unwrap();
-    let (mut answered, mut few, mut docs_only) = (0, 0, 0);
+    let (mut answered, mut few, mut only, mut full) = (0, 0, 0, 0);
     for seg in opened.as_open_segments() {
         let doc_in = seg.doc_in.unwrap();
-        for name in ["body", "title", "tag"] {
+        for &name in fields {
             let Some(field) = seg.fields.field(name) else {
                 continue;
             };
@@ -999,24 +1007,109 @@ fn a_tail_only_terms_first_doc_matches_its_cursor() {
             while it.try_next_term().unwrap().is_some() {
                 let t = it.try_seeked_term().unwrap().unwrap();
                 let got = field.tail_only_first_doc(&t, doc_in).unwrap();
-                if t.stats.doc_freq <= 1 || t.stats.doc_freq >= 256 {
-                    assert_eq!(got, None);
+                if t.stats.doc_freq <= 1 || t.stats.doc_freq >= block {
+                    assert_eq!(got, None, "{path} {name} df={}", t.stats.doc_freq);
+                    full += usize::from(t.stats.doc_freq >= block);
                     continue;
                 }
                 let mut c = field
                     .lazy_postings_for(&t, doc_in, PostingsFlags::DocsOnly)
                     .unwrap();
-                assert_eq!(got, Some(c.next_doc().unwrap()), "{name}");
+                assert_eq!(got, Some(c.next_doc().unwrap()), "{path} {name}");
                 answered += 1;
                 few += usize::from(t.stats.doc_freq < 4);
-                docs_only += usize::from(name == "tag");
+                only += usize::from(name == docs_only);
             }
         }
     }
+    (answered, few, only, full)
+}
+
+/// A tail-only term's first document, read from its first delta alone, is
+/// the one its cursor lands on first -- for a field with frequencies (the
+/// delta's low bit is the freq flag) and a docs-only one, with fewer than four
+/// documents (plain vints) and more (group varints) -- and every other term
+/// gets no answer.
+#[test]
+fn a_tail_only_terms_first_doc_matches_its_cursor() {
+    let (answered, few, docs_only, _) =
+        check_tail_only_first_doc("m7_queries_index", &["body", "title", "tag"], "tag", 256);
     assert!(
         answered > 0 && few > 0 && docs_only > 0,
         "{answered} {few} {docs_only}"
     );
+}
+
+/// The same over indices the 9.12-10.3 postings formats wrote (`Lucene912`,
+/// `Lucene101`, blocks of 128 documents), each by that release's own jars: a
+/// term of 128 to 255 documents fills a block there, so it must get no
+/// answer -- the walk would otherwise skip it on a wrong first document.
+#[test]
+fn a_tail_only_terms_first_doc_matches_its_cursor_on_older_formats() {
+    let (mut answered, mut few, mut docs_only, mut full) = (0, 0, 0, 0);
+    for version in ["9.12.2", "10.0.0", "10.2.2"] {
+        for root in ["bwc", "bwc-big"] {
+            let path = format!("{root}/{version}");
+            if !std::path::Path::new(&format!(
+                "{}/../../fixtures/data/{path}",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .exists()
+            {
+                continue;
+            }
+            let (a, f, d, b) =
+                check_tail_only_first_doc(&path, &["body", "docs", "freqs", "f", "d"], "docs", 128);
+            answered += a;
+            few += f;
+            docs_only += d;
+            full += b;
+        }
+    }
+    assert!(
+        answered > 0 && few > 0 && docs_only > 0 && full > 0,
+        "{answered} {few} {docs_only} {full}"
+    );
+}
+
+/// A sink that breaks ends [`super::extended::visit_terms`]'s walk at that
+/// term, on the iterator path (a prefix) and the term-range loop alike.
+#[test]
+fn visit_terms_stops_where_the_sink_breaks() {
+    use crate::directory_reader::DirectoryReader;
+    use crate::extended_query::{MultiTermSource, TermRangeQuery};
+    use crate::query::PrefixQuery;
+    use std::ops::ControlFlow;
+    let dir = lucene_store::FsDirectory::open(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/data/m7_queries_index"
+    ));
+    let reader = DirectoryReader::open(&dir).unwrap();
+    let opened = reader.open_segments().unwrap();
+    let seg = &opened.as_open_segments()[0];
+    for source in [
+        MultiTermSource::Prefix(PrefixQuery::new("body", Vec::new())),
+        MultiTermSource::TermRange(TermRangeQuery::new("body", None, None, true, true)),
+    ] {
+        let mut all = 0usize;
+        super::extended::visit_terms(seg.fields, &source, None, &mut |_, _| {
+            all += 1;
+            Ok(ControlFlow::Continue(()))
+        })
+        .unwrap();
+        assert!(all > 3, "{all}");
+        let mut seen = 0usize;
+        super::extended::visit_terms(seg.fields, &source, None, &mut |_, _| {
+            seen += 1;
+            Ok(if seen == 3 {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            })
+        })
+        .unwrap();
+        assert_eq!(seen, 3);
+    }
 }
 
 /// The multi-term builder's edges, and its union scorer driven directly.
