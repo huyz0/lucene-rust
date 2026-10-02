@@ -352,7 +352,7 @@ now takes each angle's sine and cosine from one argument reduction
 
 ## lucene-util / lucene-search -- spatial-extras (M9 T9.5)
 
-**In progress.** Lucene's `lucene-spatial-extras` is built on two third-party
+**Ported** (every class of the jar, `docs/inventory/lucene-spatial-extras.tsv`). Lucene's `lucene-spatial-extras` is built on two third-party
 Java libraries with no Rust equivalent: **Spatial4j 0.8** (its whole shape
 model -- `SpatialContext`, `Shape`/`Point`/`Rectangle`/`Circle`,
 `SpatialRelation`, `DistanceCalculator`, the WKT reader, `BinaryCodec`) and
@@ -382,7 +382,7 @@ intrinsics off, as `GenGeo3d` is (`Math.sin`/`cos` are `StrictMath`'s here).
 
 | Java (third-party / Lucene) | Rust | Status |
 |---|---|---|
-| Spatial4j `context/SpatialContext`, `context/SpatialContextFactory`, Lucene `spatial4j/Geo3dSpatialContextFactory` | `lucene-util/src/spatial4j/context.rs::{SpatialContext, SpatialContextFactory, FactoryKind}` | **ported**: `makeSpatialContext(args)` with `geo`, `distCalculator` (all five plus `geo3d`), `worldBounds` (read as WKT), `normWrapLongitude`, `planetModel`, the class-name settings for the classes the factory uses; the world-bounds validation messages. The factory classes are a `FactoryKind`, not reflection. `toString` always prints the long form (Java prints `SpatialContext.GEO` for the singleton). |
+| Spatial4j `context/SpatialContext`, `context/SpatialContextFactory`, Lucene `spatial4j/Geo3dSpatialContextFactory` | `lucene-util/src/spatial4j/context.rs::{SpatialContext, SpatialContextFactory, FactoryKind}` | **ported**: `makeSpatialContext(args)` with `geo`, `distCalculator` (all five plus `geo3d`), `worldBounds` (read as WKT), `normWrapLongitude`, `planetModel`, the class-name settings for the classes the factory uses; the world-bounds validation messages. The factory classes are a `FactoryKind`, not reflection. `toString` is `SpatialContext.GEO` for the singleton (`geo_context()`), the long form otherwise, as Java's. |
 | Spatial4j `shape/Shape`, `Point`, `Rectangle`, `Circle`, `SpatialRelation`, `BaseShape`, `impl/PointImpl`, `impl/RectangleImpl`, `impl/CircleImpl`, `impl/GeoCircle`, `ShapeCollection`, `impl/BBoxCalculator`, `impl/InfBufLine`, `impl/BufferedLine`, `impl/BufferedLineString` | `lucene-util/src/spatial4j/shape.rs`, `lucene-util/src/spatial4j/point.rs`, `lucene-util/src/spatial4j/rectangle.rs`, `lucene-util/src/spatial4j/circle.rs`, `lucene-util/src/spatial4j/collection.rs`, `lucene-util/src/spatial4j/bbox_calculator.rs`, `lucene-util/src/spatial4j/buffered_line.rs` | **ported, bit-exact**: interfaces are traits over `Arc<dyn ...>`, `instanceof` is `as_point`/`as_rectangle`/`as_circle` or a downcast; `GeoCircle` is a `CircleImpl` carrying its inverse circle and horizontal axis. `reset`/"reuse" arguments are not ported (fresh shapes). `RectangleImpl.equals` casts the other rectangle to `RectangleImpl` (a `ClassCastException` against a Geo3D rectangle); here any rectangle's bounds are compared. `hashCode` is not ported (nothing hashes a shape). `GeoCircle.toString`'s `%.1f`/`%.2f` round half-up on the shortest decimal, as Java's `Formatter` does. |
 | Spatial4j `distance/DistanceUtils`, `DistanceCalculator`, `AbstractDistanceCalculator`, `GeodesicSphereDistCalc` (+ `Haversine`, `LawOfCosines`, `Vincenty`), `CartesianDistCalc` | `lucene-util/src/spatial4j/distance.rs` | **ported, bit-exact**; `toRadians` is `degrees * DEGREES_TO_RADIANS` as Spatial4j's own. The deprecated `vector*` helpers are not ported. |
 | Spatial4j `shape/ShapeFactory` (+ builders), `impl/ShapeFactoryImpl` | `lucene-util/src/spatial4j/shape_factory.rs` | **ported**: builders are traits; factory methods take the context (Java's factory holds it). |
@@ -409,7 +409,32 @@ lengths, 120+ ranges and 400 unit/span relations, `readCell` round trips;
 `SpatialArgsParser` and `SpatialOperation`: 4 534 records. Generated with
 the trig intrinsics off, as the Spatial4j fixture is.
 | (module roots and unit tests) | `lucene-util/src/spatial4j/mod.rs` (the `Error` type, `Double.compare`/`Double.toString`/`%.Nf` helpers), `lucene-util/src/spatial_extras/mod.rs`, `lucene-util/src/spatial4j/tests.rs`, `lucene-util/src/s2/tests.rs`, `lucene-util/src/spatial_extras/spatial4j_tests.rs` | no Java counterpart: module roots and the unit tests (factory settings and their errors, error formatting, builders, codec and WKT edges, mixed-context relations). |
-| the rest of `lucene-spatial-extras` (strategies, their queries, facets and value sources) | -- | **not yet ported** (T9.5 in progress); see `docs/inventory/lucene-spatial-extras.tsv`. |
+| `spatial/SpatialStrategy` (+ `makeRecipDistanceValueSource`) | `lucene-search/src/spatial/mod.rs` | **ported**: a trait over `Arc<dyn Shape>`; fields are `lucene_index` `IndexableField`s, queries `DocumentQuery`s, value sources `DoubleValuesSource`s. `as_prefix_tree` stands for Java's `(PrefixTreeStrategy)` cast. |
+| `spatial/prefix/PrefixTreeStrategy`, `RecursivePrefixTreeStrategy`, `TermQueryPrefixTreeStrategy`, `NumberRangePrefixTreeStrategy`, `CellToBytesRefIterator`, `BytesRefIteratorTokenStream` | `lucene-search/src/spatial/prefix/mod.rs` | **ported, byte-identical fields** (every token of every field, differential below). The cells become a pre-analyzed token stream (increment 1, offsets 0, `end()` at 0). RPT's `recursiveTraverseAndPrune` keeps Java's quirk that a points-only field indexing a non-point while pruning does not refuse it (only the unpruned path checks). Java's mutable setters are `&mut self` methods. `NumberRangePrefixTreeStrategy` is an RPT with Java's overrides as a flag. The TermQuery strategy's `TermInSetQuery` is a constant-score union of the terms' postings. |
+| `spatial/prefix/AbstractPrefixTreeQuery`, `AbstractVisitingPrefixTreeQuery`, `IntersectsPrefixTreeQuery`, `WithinPrefixTreeQuery`, `ContainsPrefixTreeQuery` (+ RPT's point `TermQuery`) | `lucene-search/src/spatial/prefix/query.rs` | **ported, same hits**: the `VisitorTemplate` traversal step for step (seekCeil leap-frogging, the scan level, visiting prefixes, leaves and scanned cells); Java's reused `VNode` is a stack of owned nodes; `SmallDocSet` is a sorted `Vec`. RPT's points-only point query is a `TermQuery` scored by BM25 bit for bit (the term's docFreq and the field's statistics summed over segments, freq 1, no norms). |
+| `spatial/prefix/PrefixTreeFacetCounter`, `HeatmapFacetCounter`, `NumberRangePrefixTreeStrategy.Facets` | `lucene-search/src/spatial/prefix/facets.rs` | **ported, same counts**: heatmaps (columns, rows, region, every count; dateline wrap, ancestors spread, `topAcceptDocs` or live docs) and date facets (`toString`). Java's `ClassCastException` for a tree whose cells are not rectangles (S2) or not units; `UnitNRShape.clone()` of the world (re-read from an empty term) is Java's `ArrayIndexOutOfBoundsException`. `topAcceptDocs` is a global `FixedBitSet` (Java's `Bits`). |
+| `spatial/bbox/BBoxStrategy`, `BBoxValueSource`, `BBoxSimilarityValueSource`, `BBoxOverlapRatioValueSource` | `lucene-search/src/spatial/bbox.rs` | **ported, same hits and bit-identical scores**: every operation's `BooleanQuery` (dateline-crossing queries and documents, the +-180 edges, the world) matched as Java's; the overlap ratio and its explanation (including Java's reuse of `targetRatio` in the query factor's detail). The box source builds an unnormalised `RectangleImpl` (Java's `reset`), whatever the context's factory. |
+| `spatial/vector/PointVectorStrategy`, `DistanceValueSource` | `lucene-search/src/spatial/vector.rs` | **ported**: boxes (two SHOULD ranges with `minimumNumberShouldMatch` across the dateline) and circles (`DistanceRangeQuery`: the box verified by distance); distances bit for bit. |
+| `spatial/serialized/SerializedDVStrategy` (+ `PredicateValueSourceQuery`, `ShapeDocValueSource`) | `lucene-search/src/spatial/serialized.rs` | **ported**: the codec's bytes byte-identical (Spatial4j's and Geo3D's), each live document verified (`DefaultBulkScorer` checks liveness first). `indexLastBufSize` is a buffer heuristic and is dropped. |
+| `spatial/composite/CompositeSpatialStrategy`, `CompositeVerifyQuery`, `IntersectsRPTVerifyQuery` | `lucene-search/src/spatial/composite.rs` | **ported**: optimized intersects (exact cells within the shape are not verified) and the general verify path. |
+| `spatial/ShapeValues`, `ShapeValuesSource`, `spatial/util/ShapeValuesPredicate`, `ShapeAreaValueSource`, `DistanceToShapeValueSource`, `ReciprocalDoubleValuesSource`, `CachingDoubleValueSource`, `ShapeFieldCache`, `ShapeFieldCacheProvider`, `ShapeFieldCacheDistanceValueSource`, `spatial/prefix/PointPrefixTreeFieldCacheProvider` | `lucene-search/src/spatial/util.rs` | **ported, values bit for bit**. Java's per-`IndexReader` field cache (`WeakHashMap`) is rebuilt per `get_values` call here: the same values, recomputed. |
+| (the boolean matcher, unit tests) | `lucene-search/src/spatial/bool_query.rs`, `lucene-search/src/spatial/tests.rs` | no Java counterpart: the `BooleanQuery` the BBox and point-vector strategies build, matched (MUST, SHOULD with `minimumNumberShouldMatch`, MUST_NOT); unit tests of errors, descriptions, explanations, buffering, heatmap arithmetic. |
+
+Strategies differential: `fixtures/src/GenSpatialStrategies.java` (with
+`SpatialExtrasCorpus.java`) -> `spatial_strategies/` ->
+`crates/lucene-search/tests/spatial_strategies_fixtures.rs` -- 400 documents
+through 15 strategies (RPT over geohash, quad pruned and not, packed quad, S2
+and a planar quad; RPT points-only; term-query; BBox geodetic and planar with
+stored values; point-vector; serialized doc values with Spatial4j's and
+Geo3D's codecs; composite; date ranges), multi-valued fields, four segments
+with deletions. Every field each shape makes (types, values, every token --
+byte for byte; over 24 tokens a count, the first three and an FNV hash),
+then 1 901 answers: every strategy x every operation x random and
+dateline-edge query shapes (hits, and BM25 scores for RPT's point term
+query), value sources over every document (distances, reciprocal, cached,
+areas, overlap ratios -- bit for bit), heatmaps (live docs and a mask), date
+facets, `toString`. Over Lucene's index and over the index this port writes
+from the same documents.
 
 
 ## lucene-analysis

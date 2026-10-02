@@ -473,10 +473,12 @@ impl SpatialContext {
 }
 
 impl fmt::Display for SpatialContext {
-    /// `toString()`. Java prints `SpatialContext.GEO` for the singleton;
-    /// that needs the `Arc` ([`SpatialContext::is_geo_singleton`]), so this
-    /// always prints the long form.
+    /// `toString()`: `SpatialContext.GEO` for the singleton
+    /// ([`SpatialContext::geo_context`]), the long form otherwise.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if GEO.get().is_some_and(|g| std::ptr::eq(&**g, self)) {
+            return f.write_str("SpatialContext.GEO");
+        }
         let [a, b, c, d] = self.world_bounds;
         write!(
             f,

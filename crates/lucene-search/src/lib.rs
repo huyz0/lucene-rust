@@ -241,6 +241,7 @@ pub mod similarity;
 mod slices;
 pub mod sloppy_phrase;
 pub mod soft_deletes;
+pub mod spatial;
 pub mod term_vectors_query;
 pub mod terminate;
 pub mod terms_agg;
@@ -461,6 +462,11 @@ pub enum Error {
     /// to seek, `ord()` on a dictionary without ordinals).
     #[error("{0}")]
     Unsupported(String),
+    /// A Spatial4j / spatial-extras exception (`lucene_util::spatial4j`):
+    /// what a spatial strategy, its queries and value sources throw, with
+    /// Java's class ([`lucene_util::spatial4j::Error::java_class`]).
+    #[error(transparent)]
+    Spatial(#[from] lucene_util::spatial4j::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

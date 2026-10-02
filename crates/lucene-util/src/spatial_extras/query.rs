@@ -109,10 +109,10 @@ impl SpatialOperation {
         })
     }
 
-    /// `UnsupportedSpatialOperation(op)`: `UnsupportedOperationException`
-    /// with the operation's name.
+    /// `new UnsupportedSpatialOperation(op)`: an
+    /// `UnsupportedOperationException` with the operation's name.
     pub fn unsupported(self) -> Error {
-        Error::UnsupportedOperation(Some(self.name().to_string()))
+        Error::UnsupportedSpatialOperation(self.name().to_string())
     }
 }
 
