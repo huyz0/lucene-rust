@@ -83,15 +83,22 @@ Lucene and there are no recall mismatches in any run below.
 | nightly job #3 (hosted runner), a573c67 | segmented | 64/87 (74%) | 2.11x |
 | nightly job #4 (hosted runner), f581c7a | merged | 69/87 (79%) | 2.07x |
 | nightly job #4 (hosted runner), f581c7a | segmented | 58/87 (67%) | 2.17x |
+| nightly job #5 (hosted runner), 32f39f5 | merged | **72/87 (83%)** | 2.47x |
+| nightly job #5 (hosted runner), 32f39f5 | segmented | **72/87 (83%)** | 2.22x |
 
-**M6's criterion -- the bar met on the nightly job -- is not met yet.** The
+**M6's criterion -- the bar met on the nightly job -- is met by run #5**
+([run](https://github.com/huyz0/lucene-rust/actions/runs/36948975124)), on
+both corpora, with nothing slower than Lucene (merged minimum 1.00x, q76) and
+no recall mismatch. The margin is thin, which is why the nightly gate stays on
+"not slower, not regressed" rather than on 1.5x. Before run #5 the
 hosted runner reads lower than the development VM, and it is noisy: between
 runs #3 and #4 the same queries moved 15-25% (q05 1.55x then 1.22x), with
 Lucene's own qps moving as much. The misses on the runner are the core
 AND/OR shapes (q04, q08, q09, q11, q12, q14, q15), the sorted queries
 (q74-q80), the phrase-bearing boolean expressions (q47, q49, q56-q60) and
 q69, q71, q89 -- most between 1.3x and 1.5x. Passing reliably there needs a
-margin over 1.5x on that band, not just a pass on a quiet machine.
+margin over 1.5x on that band, not just a pass on a quiet machine; run #5 is that pass, not
+yet that margin.
 
 ## Negative control
 
