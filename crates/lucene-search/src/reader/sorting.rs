@@ -785,6 +785,15 @@ impl IntersectVisitor for SortingVisitor<'_> {
         self.inner
             .visit_with_value(self.map.old_to_new(doc_id), packed_value);
     }
+    /// Forwarded. Java's `SortingIntersectVisitor` keeps the interface's
+    /// no-op `grow`, so a visitor that takes its `DocIdSetBuilder.BulkAdder`
+    /// from `grow` (`PointRangeQuery`'s, the distance feature queries')
+    /// would throw a `NullPointerException` at its first `visit` there --
+    /// Java only merges through this view. The count is the same documents'
+    /// under either numbering.
+    fn grow(&mut self, count: usize) {
+        self.inner.grow(count);
+    }
 }
 
 impl PointValues for SortingPoints<'_> {
