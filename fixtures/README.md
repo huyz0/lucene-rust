@@ -1071,6 +1071,25 @@ outright.
   rings for the morton path, and hand-built cases (holes sharing vertices,
   touching the shell, coinciding leftmost vertices, combs, a spiral).
   Deterministic: `--check` compares the files byte for byte.
+- `GenGeoPoints.java` (M9 T9.2) — `geo_points/`: a real index (four
+  segments, the last without `one`/`xy`, deletions in the first two) of
+  `LatLonPoint` + `LatLonDocValuesField` on `ll` (0-3 points, doc-local
+  duplicates) and `one` (exactly one per document), and `XYPointField` +
+  `XYDocValuesField` on `xy`; points at the poles, on +-180, near the
+  dateline, in tight clusters, exactly on encoded values and repeated across
+  documents. `docs.tsv`/`deletes.tsv` describe it; `queries.tsv` holds ~1100
+  queries with Lucene's answers: boxes (dateline, `minLat == 90`, `minLon ==
+  180`), distances (radius 0, sub-meter, past half the globe, an invalid
+  one), polygons with holes and multi-polygons, `newGeometryQuery` under all
+  four relations (circles, rectangles, lines, points, polygons, mixes), every
+  doc-values twin, the cartesian queries, distance-feature top-n with score
+  bits (with and without pruning), distance sorts with value bits (over
+  everything and under a filter, past the number of documents with a value)
+  and `LatLonPoint.nearest` with distance bits. Consumed by
+  `crates/lucene-search/tests/geo_points_fixtures.rs` over Lucene's index and
+  over one this port writes from `docs.tsv`; `VerifyGeoPoints.java` replays
+  the same queries through Lucene over the Rust-written index
+  (`scripts/verify-write-path.sh`).
 
 ## Manifest appenders
 
