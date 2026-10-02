@@ -434,7 +434,9 @@ dateline-edge query shapes (hits, and BM25 scores for RPT's point term
 query), value sources over every document (distances, reciprocal, cached,
 areas, overlap ratios -- bit for bit), heatmaps (live docs and a mask), date
 facets, `toString`. Over Lucene's index and over the index this port writes
-from the same documents.
+from the same documents; `VerifySpatialExtras` (`scripts/verify-write-path.sh`)
+has real Lucene run `CheckIndex` on that index and answer every question over
+it and over its own alike.
 
 
 ## lucene-analysis

@@ -305,6 +305,30 @@ It covers `lucene-core` only; other modules get their own file as their
 milestones start. Without a jar (offline, no Gradle cache) the membership
 check is skipped and says so; the per-row checks still run.
 
+## write-path verifiers of the geo modules (M9)
+
+`scripts/verify-write-path.sh` runs a Java verifier over an index this
+port's `IndexWriter` wrote; for the geo modules each verifier answers every
+recorded question over the Rust index and over Lucene's own (the committed
+fixture), in one JVM, and requires the answers equal.
+
+**`VerifySpatialExtras`** (T9.5, `write_spatial_strategies_fixture`): seen to
+fail with the prefix-tree strategies' token streams dropping every legacy
+leaf cell (`term.last() == Some(&b'+')`, skipped in `field_of`):
+`differs: q rgh Contains g:ENVELOPE(175.31..., -152.41..., ...)  lucene's
+index: C 9 ...  rust's index: C 0`. **`VerifyGeo3D`** (T9.4) was seen to
+fail the same way in T9.5: with `Geo3DPoint.encode_dimension` halving every
+encoded value divisible by three, `differs: dist p 9.27 179.90 5240816.28 --
+lucene's index: C 878 ...  rust's index: C 568 ...`.
+
+**Blind spots, observed.** A field written wrongly in a way no recorded
+answer reflects passes. Measured: `encode_dimension` adding one unit to every
+encoded value divisible by 97 left all 260 of `VerifyGeo3D`'s answers equal --
+while `every_geo3d_point_is_indexed_as_lucene_indexes_it` failed on it. The
+byte-level Rust tests (`every_geo3d_point_is_indexed_as_lucene_indexes_it`,
+`every_spatial_strategy_makes_the_fields_lucene_makes`) are what pin the
+encoding; the verifiers pin that Lucene reads the result and answers alike.
+
 ## rustdoc
 
 `rustdoc::broken_intra_doc_links` and its neighbours are warn-by-default and
