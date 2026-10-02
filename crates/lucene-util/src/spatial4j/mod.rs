@@ -110,6 +110,12 @@ pub enum Error {
     /// `NullPointerException` (Java dereferencing an unset value).
     #[error("{0}")]
     NullPointer(String),
+    /// `ArrayIndexOutOfBoundsException`.
+    #[error("{0}")]
+    ArrayIndexOutOfBounds(String),
+    /// `NumberFormatException` (`Double.valueOf`, `Integer.valueOf`).
+    #[error("{0}")]
+    NumberFormat(String),
     /// A geo3d (`spatial3d`) exception, passed through.
     #[error("{0}")]
     Spatial3d(crate::spatial3d::Error),
@@ -127,6 +133,8 @@ impl Error {
             Error::ClassCast(_) => "java.lang.ClassCastException",
             Error::Io(_) => "java.io.IOException",
             Error::NullPointer(_) => "java.lang.NullPointerException",
+            Error::ArrayIndexOutOfBounds(_) => "java.lang.ArrayIndexOutOfBoundsException",
+            Error::NumberFormat(_) => "java.lang.NumberFormatException",
             Error::Spatial3d(e) => e.java_class(),
         }
     }
