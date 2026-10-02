@@ -108,7 +108,16 @@ fn strict_math_matches_jdk() {
                     "acos" => strict_math::acos(x),
                     _ => panic!("{op}"),
                 };
-                assert_eq!(bits(got), f[2], "StrictMath.{op}({x:e})");
+                // fdlibm's out-of-domain result is `(x-x)/(x-x)`, whose NaN
+                // sign is the CPU's default (negative on x86-64, positive on
+                // aarch64) -- and Java leaves NaN bits unspecified -- so a NaN
+                // only has to be a NaN; every other value is bit for bit.
+                let want = u64::from_str_radix(f[2], 16).unwrap();
+                if f64::from_bits(want).is_nan() {
+                    assert!(got.is_nan(), "StrictMath.{op}({x:e}) = {got:e}, want NaN");
+                } else {
+                    assert_eq!(bits(got), f[2], "StrictMath.{op}({x:e})");
+                }
             }
         }
         n += 1;
