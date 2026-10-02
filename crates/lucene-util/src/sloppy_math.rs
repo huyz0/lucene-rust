@@ -127,6 +127,11 @@ fn tables() -> &'static Tables {
 
 /// `SloppyMath.haversinMeters(lat1, lon1, lat2, lon2)`: the haversine
 /// distance in meters between two points in decimal degrees.
+///
+/// `inline(always)`, as the three haversine entry points are: the JVM
+/// inlines them into the caller's loop, where independent distances overlap;
+/// as a call each one is a serial chain (measured 0.84x -> 1.1x of Lucene).
+#[inline(always)]
 pub fn haversin_meters(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     let t = tables();
     meters_with(t, sort_key_with(t, lat1, lon1, lat2, lon2))
@@ -134,6 +139,7 @@ pub fn haversin_meters(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 
 /// `SloppyMath.haversinMeters(sortKey)`: the distance for a value of
 /// [`haversin_sort_key`].
+#[inline(always)]
 pub fn haversin_meters_from_sort_key(sort_key: f64) -> f64 {
     meters_with(tables(), sort_key)
 }
@@ -147,6 +153,7 @@ fn meters_with(t: &Tables, sort_key: f64) -> f64 {
 }
 
 /// `SloppyMath.haversinSortKey`: compares like the distance, cheaper.
+#[inline(always)]
 pub fn haversin_sort_key(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     sort_key_with(tables(), lat1, lon1, lat2, lon2)
 }
@@ -172,15 +179,36 @@ pub fn cos(a: f64) -> f64 {
 #[inline(always)]
 fn cos_with(t: &Tables, a: f64) -> f64 {
     let a = if a < 0.0 { -a } else { a };
-    if a > SIN_COS_MAX_VALUE_FOR_INT_MODULO {
-        return libm_cos(a);
+    if a.is_nan() || a > SIN_COS_MAX_VALUE_FOR_INT_MODULO {
+        return cos_far(t, a);
     }
-    // Java's `(int)` cast: NaN -> 0, which the arithmetic below turns back
-    // into NaN through `delta`.
-    let mut index = (a * SIN_COS_INDEXER + 0.5) as i32;
+    // Java's `(int)` cast, which saturates; the argument is in range here, so
+    // the cast need not clamp -- a clamping `as` puts a `maxsd`/`minsd` pair
+    // on the critical path of all four `cos` calls of a haversine.
+    // SAFETY: `0 <= a <= SIN_COS_MAX_VALUE_FOR_INT_MODULO` (NaN fails the
+    // test above), so the operand is finite and below `(i32::MAX >> 9) + 1`.
+    let mut index = unsafe { (a * SIN_COS_INDEXER + 0.5).to_int_unchecked::<i32>() };
     let delta = (a - f64::from(index) * SIN_COS_DELTA_HI) - f64::from(index) * SIN_COS_DELTA_LO;
     index &= (SIN_COS_TABS_SIZE - 2) as i32;
     let [index_cos, index_sin] = t.sin_cos[index as usize & (SIN_COS_TABS_SIZE - 2)];
+    index_cos
+        + delta
+            * (-index_sin
+                + delta
+                    * (-index_cos * ONE_DIV_F2
+                        + delta * (index_sin * ONE_DIV_F3 + delta * index_cos * ONE_DIV_F4)))
+}
+
+/// `cos` of NaN or past the table's reach: `Math.cos`, or for NaN the table
+/// arithmetic at Java's `(int) NaN == 0`, which yields NaN through `delta`.
+#[cold]
+#[inline(never)]
+fn cos_far(t: &Tables, a: f64) -> f64 {
+    if a > SIN_COS_MAX_VALUE_FOR_INT_MODULO {
+        return libm_cos(a);
+    }
+    let delta = (a - 0.0 * SIN_COS_DELTA_HI) - 0.0 * SIN_COS_DELTA_LO;
+    let [index_cos, index_sin] = t.sin_cos[0];
     index_cos
         + delta
             * (-index_sin
@@ -210,9 +238,13 @@ pub fn asin(a: f64) -> f64 {
 fn asin_with(t: &Tables, a: f64) -> f64 {
     let (a, negate) = if a < 0.0 { (-a, true) } else { (a, false) };
     let result = if a <= t.asin_max_value_for_tabs {
-        let index = (a * t.asin_indexer + 0.5) as i32 as usize;
-        let delta = a - index as f64 * t.asin_delta;
-        let [v, d1, d2, d3, d4] = t.asin[index];
+        // SAFETY: `0 <= a <= asin_max_value_for_tabs` (NaN fails the test),
+        // so the operand is finite and at most `ASIN_TABS_SIZE - 0.5`.
+        let index = unsafe { (a * t.asin_indexer + 0.5).to_int_unchecked::<i32>() };
+        // `index * ASIN_DELTA` converts the `int` (`cvtsi2sd`); through a
+        // `usize` it would take the unsigned 64-bit conversion's longer path.
+        let delta = a - f64::from(index) * t.asin_delta;
+        let [v, d1, d2, d3, d4] = t.asin[index as usize];
         v + delta * (d1 + delta * (d2 + delta * (d3 + delta * d4)))
     } else if a < 1.0 {
         // derived from fdlibm
@@ -256,6 +288,22 @@ mod tests {
             haversin_meters_from_sort_key(4.0),
             haversin_meters_from_sort_key(2.0)
         );
+    }
+
+    #[test]
+    fn nan_and_far_arguments_take_the_cold_path() {
+        assert!(cos(f64::NAN).is_nan());
+        assert!(cos(-f64::NAN).is_nan());
+        assert!(sin(f64::NAN).is_nan());
+        assert!(haversin_sort_key(f64::NAN, 0.0, 0.0, 0.0).is_nan());
+        // Past the table's reach: `Math.cos`.
+        let far = 1e10;
+        assert_eq!(cos(far), far.cos());
+        assert_eq!(cos(-far), far.cos());
+        assert!(asin(f64::NAN).is_nan());
+        assert_eq!(asin(1.0), std::f64::consts::PI / 2.0);
+        assert!(asin(1.5).is_nan());
+        assert_eq!(asin(-0.5), -asin(0.5));
     }
 
     #[test]
