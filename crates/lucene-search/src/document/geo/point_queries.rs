@@ -13,7 +13,9 @@ use lucene_util::geo::{
     LatLonGeometry, Rectangle, WithinRelation, XYEncodingUtils, XYGeometry,
 };
 
-use super::{clear_doc, collect_bits, geo, get_doc, idx, illegal, set_doc, QueryRelation};
+use super::{
+    check_walk, clear_doc, collect_bits, geo, get_doc, idx, illegal, set_doc, QueryRelation,
+};
 use crate::collector::ScoringCollector;
 use crate::document::{field_info, reader, DocumentQuery};
 use crate::multi_segment::OpenSegment;
@@ -241,6 +243,8 @@ impl LatLonPointDistanceQuery {
 struct DistanceVisitor<'q> {
     q: &'q LatLonPointDistanceQuery,
     result: FixedBitSet,
+    /// The first doc id outside the segment (see [`set_doc`]).
+    bad: Option<i32>,
 }
 
 impl IntersectVisitor for DistanceVisitor<'_> {
@@ -248,11 +252,11 @@ impl IntersectVisitor for DistanceVisitor<'_> {
         self.q.relate(min, max)
     }
     fn visit(&mut self, doc_id: i32) {
-        set_doc(&mut self.result, doc_id);
+        set_doc(&mut self.result, doc_id, &mut self.bad);
     }
     fn visit_with_value(&mut self, doc_id: i32, packed: &[u8]) {
         if self.q.matches(packed) {
-            set_doc(&mut self.result, doc_id);
+            set_doc(&mut self.result, doc_id, &mut self.bad);
         }
     }
 }
@@ -262,6 +266,8 @@ impl IntersectVisitor for DistanceVisitor<'_> {
 struct InverseDistanceVisitor<'q> {
     q: &'q LatLonPointDistanceQuery,
     result: FixedBitSet,
+    /// The first doc id outside the segment (see [`clear_doc`]).
+    bad: Option<i32>,
 }
 
 impl IntersectVisitor for InverseDistanceVisitor<'_> {
@@ -269,11 +275,11 @@ impl IntersectVisitor for InverseDistanceVisitor<'_> {
         transpose(self.q.relate(min, max))
     }
     fn visit(&mut self, doc_id: i32) {
-        clear_doc(&mut self.result, doc_id);
+        clear_doc(&mut self.result, doc_id, &mut self.bad);
     }
     fn visit_with_value(&mut self, doc_id: i32, packed: &[u8]) {
         if !self.q.matches(packed) {
-            clear_doc(&mut self.result, doc_id);
+            clear_doc(&mut self.result, doc_id, &mut self.bad);
         }
     }
 }
@@ -298,6 +304,7 @@ impl DocumentQuery for LatLonPointDistanceQuery {
             let mut est = DistanceVisitor {
                 q: self,
                 result: FixedBitSet::new(0),
+                bad: None,
             };
             let cost = estimate_doc_count(
                 points.estimate_point_count(info.number, &mut est)?,
@@ -307,8 +314,13 @@ impl DocumentQuery for LatLonPointDistanceQuery {
             if cost > i64::from(max_doc / 2) {
                 let mut result = FixedBitSet::new(size);
                 result.set_range(0, size);
-                let mut v = InverseDistanceVisitor { q: self, result };
+                let mut v = InverseDistanceVisitor {
+                    q: self,
+                    result,
+                    bad: None,
+                };
                 points.intersect(info.number, &mut v)?;
+                check_walk(v.bad, &info.name, max_doc)?;
                 collect_bits(leaf, &v.result, boost, collector);
                 return Ok(());
             }
@@ -316,8 +328,10 @@ impl DocumentQuery for LatLonPointDistanceQuery {
         let mut v = DistanceVisitor {
             q: self,
             result: FixedBitSet::new(size),
+            bad: None,
         };
         points.intersect(info.number, &mut v)?;
+        check_walk(v.bad, &info.name, max_doc)?;
         collect_bits(leaf, &v.result, boost, collector);
         Ok(())
     }
@@ -395,6 +409,8 @@ struct SpatialWalk<'v, V: ?Sized> {
     found: bool,
     /// The first error a `contains` test raised (Java throws it).
     error: Option<GeoError>,
+    /// The first doc id outside the segment (see [`set_doc`]).
+    bad: Option<i32>,
 }
 
 impl<'v, V: SpatialVisitor + ?Sized> SpatialWalk<'v, V> {
@@ -417,6 +433,7 @@ impl<'v, V: SpatialVisitor + ?Sized> SpatialWalk<'v, V> {
             excluded,
             found: false,
             error: None,
+            bad: None,
         }
     }
 
@@ -454,9 +471,9 @@ impl<V: SpatialVisitor + ?Sized> IntersectVisitor for SpatialWalk<'_, V> {
         let d = doc_id;
         match self.walk {
             Walk::Estimate => {}
-            Walk::Forward | Walk::Dense => set_doc(&mut self.result, d),
-            Walk::Inverse | Walk::ShallowInverse => clear_doc(&mut self.result, d),
-            Walk::ContainsDense => set_doc(&mut self.excluded, d),
+            Walk::Forward | Walk::Dense => set_doc(&mut self.result, d, &mut self.bad),
+            Walk::Inverse | Walk::ShallowInverse => clear_doc(&mut self.result, d, &mut self.bad),
+            Walk::ContainsDense => set_doc(&mut self.excluded, d, &mut self.bad),
             Walk::AnyHits => self.found = true,
         }
     }
@@ -470,17 +487,17 @@ impl<V: SpatialVisitor + ?Sized> IntersectVisitor for SpatialWalk<'_, V> {
             Walk::Estimate => {}
             Walk::Forward | Walk::Dense => {
                 for &d in doc_ids {
-                    set_doc(&mut self.result, d);
+                    set_doc(&mut self.result, d, &mut self.bad);
                 }
             }
             Walk::Inverse | Walk::ShallowInverse => {
                 for &d in doc_ids {
-                    clear_doc(&mut self.result, d);
+                    clear_doc(&mut self.result, d, &mut self.bad);
                 }
             }
             Walk::ContainsDense => {
                 for &d in doc_ids {
-                    set_doc(&mut self.excluded, d);
+                    set_doc(&mut self.excluded, d, &mut self.bad);
                 }
             }
             Walk::AnyHits => self.found |= !doc_ids.is_empty(),
@@ -493,28 +510,32 @@ impl<V: SpatialVisitor + ?Sized> IntersectVisitor for SpatialWalk<'_, V> {
             Walk::Estimate | Walk::ShallowInverse => {}
             Walk::Forward => {
                 if !get_doc(&self.result, d) && self.leaf(packed) {
-                    set_doc(&mut self.result, d);
+                    set_doc(&mut self.result, d, &mut self.bad);
                 }
             }
             Walk::Inverse => {
                 if get_doc(&self.result, d) && !self.leaf(packed) {
-                    clear_doc(&mut self.result, d);
+                    clear_doc(&mut self.result, d, &mut self.bad);
                 }
             }
             Walk::Dense => {
                 if !get_doc(&self.excluded, d) {
                     if self.leaf(packed) {
-                        set_doc(&mut self.result, d);
+                        set_doc(&mut self.result, d, &mut self.bad);
                     } else {
-                        set_doc(&mut self.excluded, d);
+                        set_doc(&mut self.excluded, d, &mut self.bad);
                     }
                 }
             }
             Walk::ContainsDense => {
                 if !get_doc(&self.excluded, d) {
                     match self.v.contains(packed) {
-                        Ok(WithinRelation::Candidate) => set_doc(&mut self.result, d),
-                        Ok(WithinRelation::NotWithin) => set_doc(&mut self.excluded, d),
+                        Ok(WithinRelation::Candidate) => {
+                            set_doc(&mut self.result, d, &mut self.bad)
+                        }
+                        Ok(WithinRelation::NotWithin) => {
+                            set_doc(&mut self.excluded, d, &mut self.bad)
+                        }
                         Ok(WithinRelation::Disjoint) => {}
                         Err(e) => {
                             self.error.get_or_insert(e);
@@ -570,6 +591,7 @@ pub(crate) fn spatial_score_leaf<V: SpatialVisitor + ?Sized>(
         if let Some(e) = w.error.take() {
             return Err(geo(e));
         }
+        check_walk(w.bad, &info.name, max_doc)?;
         Ok(w)
     };
     if rel != QueryRelation::Intersects && rel != QueryRelation::Contains && !single {
@@ -794,6 +816,8 @@ impl XYPointInGeometryQuery {
 struct XYVisitor<'t> {
     tree: &'t dyn Component2D,
     result: FixedBitSet,
+    /// The first doc id outside the segment (see [`set_doc`]).
+    bad: Option<i32>,
 }
 
 impl XYVisitor<'_> {
@@ -813,12 +837,12 @@ impl IntersectVisitor for XYVisitor<'_> {
         self.tree.relate(min_x, max_x, min_y, max_y)
     }
     fn visit(&mut self, doc_id: i32) {
-        set_doc(&mut self.result, doc_id);
+        set_doc(&mut self.result, doc_id, &mut self.bad);
     }
     fn visit_with_value(&mut self, doc_id: i32, packed: &[u8]) {
         let (x, y) = Self::decode(packed);
         if self.tree.contains(x, y) {
-            set_doc(&mut self.result, doc_id);
+            set_doc(&mut self.result, doc_id, &mut self.bad);
         }
     }
 }
@@ -837,11 +861,14 @@ impl DocumentQuery for XYPointInGeometryQuery {
         if let Some(pf) = points.field(info.number) {
             check_points_shape(&info.name, pf)?;
         }
+        let max_doc = reader(leaf)?.max_doc;
         let mut v = XYVisitor {
             tree: self.tree.as_ref(),
-            result: FixedBitSet::new(idx(reader(leaf)?.max_doc)),
+            result: FixedBitSet::new(idx(max_doc)),
+            bad: None,
         };
         points.intersect(info.number, &mut v)?;
+        check_walk(v.bad, &info.name, max_doc)?;
         collect_bits(leaf, &v.result, boost, collector);
         Ok(())
     }
@@ -930,12 +957,26 @@ mod tests {
         w.visit_with_value(1, &p);
         w.visit(2);
         assert!(get_doc(&w.result, 1) && !get_doc(&w.result, 2));
-        // Out-of-segment doc ids from a corrupt tree are dropped.
+        // Out-of-segment doc ids from a corrupt tree set nothing; the first
+        // is remembered, and fails the walk.
         let mut w = SpatialWalk::new(&v, QueryRelation::Intersects, Walk::Forward, 8);
         w.visit(9);
         w.visit(-1);
         assert_eq!(w.result.cardinality(), 0);
-        clear_doc(&mut w.result, 99);
+        assert_eq!(w.bad, Some(9));
+        let e = check_walk(w.bad, "f", 8).unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("points of field f name document 9, outside the segment's 0..8"),
+            "{e}"
+        );
+        let mut w = SpatialWalk::new(&v, QueryRelation::Disjoint, Walk::Inverse, 8);
+        w.visit_many(&[3, 99]);
+        assert_eq!(w.bad, Some(99));
+        let mut w = SpatialWalk::new(&v, QueryRelation::Within, Walk::ContainsDense, 8);
+        w.visit_many(&[-5]);
+        assert_eq!(w.bad, Some(-5));
+        assert!(check_walk(None, "f", 8).is_ok());
     }
 
     #[test]

@@ -439,6 +439,13 @@ fn search_distance<D: Distance>(
     n: usize,
     distance: D,
 ) -> Result<SortedDistance> {
+    // `TopFieldCollectorManager`'s constructor, before anything is searched
+    // (`searchAfter` caps `n` at `max(1, maxDoc)` first, which leaves 0 at 0).
+    if n == 0 {
+        return Err(illegal(
+            "numHits must be > 0; please use TotalHitCountCollector if you just need the total hit count",
+        ));
+    }
     let rewritten = crate::document::rewrite(query, leaves)?;
     let query: &dyn DocumentQuery = rewritten.as_deref().unwrap_or(query);
     let mut top = DistanceTopN {
@@ -505,8 +512,8 @@ impl LatLonPointSortField {
     /// `IndexSearcher.search(query, n, new Sort(this))`.
     ///
     /// # Errors
-    /// The field's doc values are of another type, or the index does not
-    /// decode.
+    /// `n == 0` (Java's `numHits must be > 0`), the field's doc values are
+    /// of another type, or the index does not decode.
     pub fn search(
         &self,
         leaves: &[OpenSegment<'_>],
@@ -560,8 +567,8 @@ impl XYPointSortField {
     /// `IndexSearcher.search(query, n, new Sort(this))`.
     ///
     /// # Errors
-    /// The field's doc values are of another type, or the index does not
-    /// decode.
+    /// `n == 0` (Java's `numHits must be > 0`), the field's doc values are
+    /// of another type, or the index does not decode.
     pub fn search(
         &self,
         leaves: &[OpenSegment<'_>],

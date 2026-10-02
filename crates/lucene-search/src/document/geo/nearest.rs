@@ -137,7 +137,12 @@ impl Ord for Hit {
 
 /// `NearestNeighbor.NearestVisitor`.
 struct NearestVisitor<'l> {
+    /// The field walked, for the corruption error.
+    field: &'l str,
     cur_doc_base: i32,
+    /// The current segment's `maxDoc`: a leaf naming a document at or past
+    /// it (a corrupt `.kdd`) is an error, not a hit in another segment.
+    cur_max_doc: i32,
     cur_live_docs: Option<&'l FixedBitSet>,
     top_n: usize,
     hit_queue: std::collections::BinaryHeap<Hit>,
@@ -204,6 +209,11 @@ impl IntersectVisitor for NearestVisitor<'_> {
     fn visit(&mut self, _doc_id: i32) {}
 
     fn visit_with_value(&mut self, doc_id: i32, packed: &[u8]) {
+        if doc_id < 0 || doc_id >= self.cur_max_doc {
+            self.error
+                .get_or_insert(super::out_of_segment(self.field, doc_id, self.cur_max_doc));
+            return;
+        }
         if self.cur_live_docs.is_some_and(|b| !b.get_doc(doc_id)) {
             return;
         }
@@ -264,11 +274,13 @@ struct Segment<'a> {
     field_number: i32,
     live_docs: Option<&'a FixedBitSet>,
     doc_base: i32,
+    max_doc: i32,
 }
 
 /// `NearestNeighbor.nearest(pointLat, pointLon, readers, liveDocs,
 /// docBases, n)` over `leaves`: the hits, nearest first.
 fn nearest_hits(
+    field: &str,
     point_lat: f64,
     point_lon: f64,
     segments: &[Segment<'_>],
@@ -276,7 +288,9 @@ fn nearest_hits(
 ) -> Result<Vec<NearestHit>> {
     let mut cells = JavaPriorityQueue::default();
     let mut visitor = NearestVisitor {
+        field,
         cur_doc_base: 0,
+        cur_max_doc: 0,
         cur_live_docs: None,
         top_n: n,
         hit_queue: std::collections::BinaryHeap::with_capacity(n.min(1 << 16)),
@@ -314,6 +328,7 @@ fn nearest_hits(
         match s.points.point_tree_children(node)? {
             None => {
                 visitor.cur_doc_base = s.doc_base;
+                visitor.cur_max_doc = s.max_doc;
                 visitor.cur_live_docs = s.live_docs;
                 s.points.visit_leaf(node, &mut visitor)?;
                 if let Some(e) = visitor.error.take() {
@@ -375,10 +390,11 @@ pub fn nearest(
             field_number: info.number,
             live_docs: leaf.live_docs,
             doc_base: leaf.doc_base,
+            max_doc: reader(leaf)?.max_doc,
         });
     }
     let n = usize::try_from(n).unwrap_or(1);
-    let hits = nearest_hits(latitude, longitude, &segments, n)?;
+    let hits = nearest_hits(field, latitude, longitude, &segments, n)?;
     Ok(NearestHits {
         total_hits,
         hits: hits
@@ -464,7 +480,9 @@ mod tests {
         assert!(a < b);
         assert_eq!(a, a);
         let mut v = NearestVisitor {
+            field: "p",
             cur_doc_base: 0,
+            cur_max_doc: 10,
             cur_live_docs: None,
             top_n: 1,
             hit_queue: std::collections::BinaryHeap::new(),
@@ -496,5 +514,19 @@ mod tests {
         );
         v.visit_with_value(5, &enc(50.0, 0.0));
         assert_eq!(v.hit_queue.len(), 1);
+        // A leaf naming a document past this segment's `maxDoc` (a corrupt
+        // `.kdd`) is an error, not a hit at `docBase + doc` in a later
+        // segment; nor is a negative one.
+        assert!(v.error.is_none());
+        v.cur_doc_base = 100;
+        v.visit_with_value(10, &enc(0.0, -179.95));
+        v.visit_with_value(-1, &enc(0.0, -179.95));
+        assert_eq!(v.hit_queue.peek().unwrap().0.doc_id, 4, "nothing added");
+        let e = v.error.take().expect("recorded");
+        assert!(
+            e.to_string()
+                .contains("points of field p name document 10, outside the segment's 0..10"),
+            "{e}"
+        );
     }
 }
