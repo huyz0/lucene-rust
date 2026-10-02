@@ -611,11 +611,12 @@ fn segment_doc_values_positioning() {
     let mut seen = Recorded::default();
     pv.intersect(&mut seen).unwrap();
     assert_eq!(seen.0.len(), 6, "inside cells hand over doc ids only");
+    assert_eq!(seen.1, 6, "the walk's grow reaches the visitor");
 }
 
-/// Collects `visit`/`visit_many` doc ids.
+/// Collects `visit`/`visit_many` doc ids, and sums the `grow` hints.
 #[derive(Default)]
-struct Recorded(Vec<i32>);
+struct Recorded(Vec<i32>, usize);
 
 impl IntersectVisitor for Recorded {
     fn compare(&mut self, _: &[u8], _: &[u8]) -> Relation {
@@ -626,6 +627,9 @@ impl IntersectVisitor for Recorded {
     }
     fn visit_with_value(&mut self, doc: i32, _: &[u8]) {
         self.0.push(doc);
+    }
+    fn grow(&mut self, count: usize) {
+        self.1 += count;
     }
 }
 
@@ -886,6 +890,7 @@ fn exitable_points_vectors_and_terms() {
     let mut seen = Recorded::default();
     pv.intersect(&mut seen).unwrap();
     assert_eq!(seen.0.len(), 6);
+    assert_eq!(seen.1, 6, "grow is forwarded");
     assert_eq!(
         pv.estimate_point_count(&mut Recorded::default()).unwrap(),
         6
@@ -1318,6 +1323,13 @@ fn slow_composite_edges() {
     assert_eq!(
         pv.estimate_point_count(&mut Recorded::default()).unwrap(),
         15
+    );
+    let mut seen = Recorded::default();
+    pv.intersect(&mut seen).unwrap();
+    assert_eq!(
+        (seen.0.len(), seen.1),
+        (15, 15),
+        "grow is forwarded per sub"
     );
     struct Rel(Relation);
     impl IntersectVisitor for Rel {
@@ -1846,6 +1858,7 @@ fn composites_refuse_what_java_refuses() {
         .unwrap();
     inside.0.sort_unstable();
     assert_eq!(inside.0, [0, 1, 2, 3, 4, 5]);
+    assert_eq!(inside.1, 6, "grow is forwarded through the doc map");
     let by_min = vec![IndexSortField {
         field: "nums".into(),
         reverse: false,

@@ -311,11 +311,11 @@ fn nearest_hits(
         if visitor.compare(node.min_packed(), node.max_packed()) == Relation::CellOutsideQuery {
             continue;
         }
-        match s.points.point_tree_children(s.field_number, node)? {
+        match s.points.point_tree_children(node)? {
             None => {
                 visitor.cur_doc_base = s.doc_base;
                 visitor.cur_live_docs = s.live_docs;
-                s.points.visit_leaf(s.field_number, node, &mut visitor)?;
+                s.points.visit_leaf(node, &mut visitor)?;
                 if let Some(e) = visitor.error.take() {
                     return Err(e);
                 }
