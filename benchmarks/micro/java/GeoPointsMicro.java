@@ -8,7 +8,14 @@ import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.LatLonDocValuesField;
 import org.apache.lucene.document.LatLonPoint;
+import org.apache.lucene.document.ShapeField;
+import org.apache.lucene.document.XYPointField;
+import org.apache.lucene.geo.Circle;
+import org.apache.lucene.geo.LatLonGeometry;
+import org.apache.lucene.geo.Line;
+import org.apache.lucene.geo.Point;
 import org.apache.lucene.geo.Polygon;
+import org.apache.lucene.geo.XYPolygon;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
@@ -22,7 +29,9 @@ import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.Scorable;
 import org.apache.lucene.search.ScoreMode;
+import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.Sort;
+import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.TopFieldDocs;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
@@ -32,9 +41,14 @@ import org.apache.lucene.store.FSDirectory;
  * benchmarks/rust-runner/src/micro_geo_points.rs}, with the same case names. {@code build <dir>}
  * writes the corpus once -- one million documents with a {@code LatLonPoint} and a {@code
  * LatLonDocValuesField}, half uniform over the globe and half in twenty clusters, force-merged to
- * one segment -- and the query set ({@code geo-queries.tsv}) both engines replay: boxes (two across
+ * one segment -- and the query set ({@code geo-queries-v2.tsv}) both engines replay: boxes (two across
  * the dateline), distance queries, polygons, distance sorts (top 10 of every document) and
- * {@code LatLonPoint.nearest} (10). Every hit is collected by a plain counting collector, so
+ * {@code LatLonPoint.nearest} (10); then (T9.2 review) {@code newDistanceFeatureQuery} top 10
+ * through {@code IndexSearcher.search(query, 10)} (the collector's threshold drives the scorer's
+ * pruning), {@code newGeometryQuery} under the other relations -- polygons {@code WITHIN} and
+ * {@code DISJOINT}, points {@code CONTAINS}, lines, circles {@code WITHIN} -- and the cartesian
+ * box, distance and polygon queries over an {@code XYPointField} of the same points ({@code x =
+ * lon}, {@code y = lat}). Every hit of a filter is collected by a plain counting collector, so
  * neither engine can answer a query from a count shortcut; each case prints a {@code #check}
  * digest of its hit counts (or hit ids) that the report compares before it shows a ratio.
  */
@@ -101,6 +115,8 @@ public final class GeoPointsMicro {
     }
     IndexWriterConfig cfg = new IndexWriterConfig(new StandardAnalyzer());
     cfg.setRAMBufferSizeMB(512);
+    cfg.setOpenMode(IndexWriterConfig.OpenMode.CREATE);
+    double[][] some = new double[10][];
     try (Directory d = FSDirectory.open(dir);
         IndexWriter w = new IndexWriter(d, cfg)) {
       for (int i = 0; i < DOCS; i++) {
@@ -118,7 +134,9 @@ public final class GeoPointsMicro {
         Document doc = new Document();
         doc.add(new LatLonPoint("p", lat, lon));
         doc.add(new LatLonDocValuesField("p", lat, lon));
+        doc.add(new XYPointField("xy", (float) lon, (float) lat));
         w.addDocument(doc);
+        if (i < some.length) some[i] = new double[] {lat, lon};
       }
       w.forceMerge(1);
     }
@@ -157,7 +175,89 @@ public final class GeoPointsMicro {
     for (int i = 0; i < 20; i++) {
       q.append("nearest\t").append(r.nextDouble() * 160 - 80).append('\t').append(r.nextDouble() * 360 - 180).append('\n');
     }
-    Files.writeString(dir.resolve("geo-queries.tsv"), q.toString());
+    // T9.2 review: the feature query, the other geometry relations, the cartesian queries.
+    for (int i = 0; i < 20; i++) {
+      double[] c = i % 2 == 0 ? clusters[r.nextInt(clusters.length)] : new double[] {r.nextDouble() * 160 - 80, r.nextDouble() * 360 - 180};
+      q.append("feature\t").append(c[0]).append('\t').append(c[1]).append('\t')
+          .append(Math.pow(10, 2 + r.nextDouble() * 4)).append('\n');
+    }
+    for (String rel : new String[] {"WITHIN", "DISJOINT"}) {
+      for (int i = 0; i < 10; i++) {
+        double[] c = clusters[r.nextInt(clusters.length)];
+        q.append("gpoly\t").append(rel).append('\t')
+            .append(ringSpec(GeoStar.ring(r, c[0], c[1], 0.1 + r.nextDouble() * 4, 8 + r.nextInt(50)))).append('\n');
+      }
+    }
+    for (double[] pt : some) {
+      q.append("gpts\tCONTAINS\t").append(pt[0]).append(' ').append(pt[1]).append('\n');
+    }
+    for (int i = 0; i < 10; i++) {
+      double[] c = clusters[r.nextInt(clusters.length)];
+      int n = 2 + r.nextInt(8);
+      double[][] line = new double[2][n];
+      double lat = c[0], lon = c[1];
+      for (int k = 0; k < n; k++) {
+        line[0][k] = clampLat(lat);
+        line[1][k] = Math.max(-180, Math.min(180, lon));
+        lat += r.nextGaussian();
+        lon += r.nextGaussian();
+      }
+      q.append("gline\tINTERSECTS\t").append(ringSpec(line)).append('\n');
+    }
+    for (int i = 0; i < 10; i++) {
+      double[] c = clusters[r.nextInt(clusters.length)];
+      q.append("gcircle\tWITHIN\t").append(c[0] + r.nextGaussian()).append('\t')
+          .append(wrapLon(c[1] + r.nextGaussian())).append('\t')
+          .append(Math.pow(10, 3 + r.nextDouble() * 2.7)).append('\n');
+    }
+    for (int i = 0; i < 20; i++) {
+      double[] c = clusters[r.nextInt(clusters.length)];
+      float h = (float) (0.05 + r.nextDouble() * 5);
+      float w = (float) (0.05 + r.nextDouble() * 5);
+      q.append("xybox\t").append((float) c[1] - w).append('\t').append((float) c[1] + w).append('\t')
+          .append((float) c[0] - h).append('\t').append((float) c[0] + h).append('\n');
+    }
+    for (int i = 0; i < 20; i++) {
+      double[] c = clusters[r.nextInt(clusters.length)];
+      q.append("xydist\t").append((float) (c[1] + r.nextGaussian())).append('\t')
+          .append((float) (c[0] + r.nextGaussian())).append('\t').append((float) (0.1 + r.nextDouble() * 4)).append('\n');
+    }
+    for (int i = 0; i < 10; i++) {
+      double[] c = clusters[r.nextInt(clusters.length)];
+      double[][] ring = GeoStar.ring(r, c[0], c[1], 0.1 + r.nextDouble() * 4, 8 + r.nextInt(50));
+      // x = lon, y = lat, as floats
+      StringBuilder sb = new StringBuilder();
+      for (int k = 0; k < ring[0].length; k++) {
+        if (k > 0) sb.append(';');
+        sb.append((float) ring[1][k]).append(' ').append((float) ring[0][k]);
+      }
+      q.append("xypoly\t").append(sb).append('\n');
+    }
+    Files.writeString(dir.resolve(QUERIES), q.toString());
+  }
+
+  /** The query set's file; a corpus without it (or with an older one) is rebuilt. */
+  static final String QUERIES = "geo-queries-v2.tsv";
+
+  /** {@code lat lon;lat lon;...} of a ring or line. */
+  static String ringSpec(double[][] pts) {
+    StringBuilder sb = new StringBuilder();
+    for (int k = 0; k < pts[0].length; k++) {
+      if (k > 0) sb.append(';');
+      sb.append(pts[0][k]).append(' ').append(pts[1][k]);
+    }
+    return sb.toString();
+  }
+
+  static double[][] parsePts(String spec) {
+    String[] pts = spec.split(";");
+    double[][] out = new double[2][pts.length];
+    for (int i = 0; i < pts.length; i++) {
+      String[] p = pts[i].split(" ");
+      out[0][i] = d(p[0]);
+      out[1][i] = d(p[1]);
+    }
+    return out;
   }
 
   /** A star-shaped ring around a centre, closed; simple by construction. */
@@ -228,19 +328,28 @@ public final class GeoPointsMicro {
   public static void main(String[] args) throws IOException {
     if (args[0].equals("build")) {
       Path dir = Path.of(args[1]);
-      if (Files.exists(dir.resolve("geo-queries.tsv"))) return;
+      if (Files.exists(dir.resolve(QUERIES))) return;
       Files.createDirectories(dir);
       build(dir);
       return;
     }
     Path dir = Path.of(args[1]);
     List<String[]> lines = new ArrayList<>();
-    for (String l : Files.readAllLines(dir.resolve("geo-queries.tsv"))) lines.add(l.split("\t"));
+    for (String l : Files.readAllLines(dir.resolve(QUERIES))) lines.add(l.split("\t"));
     List<Query> boxes = new ArrayList<>();
     List<Query> dists = new ArrayList<>();
     List<Query> polys = new ArrayList<>();
     List<double[]> sorts = new ArrayList<>();
     List<double[]> nearest = new ArrayList<>();
+    List<Query> features = new ArrayList<>();
+    List<Query> polyWithin = new ArrayList<>();
+    List<Query> polyDisjoint = new ArrayList<>();
+    List<Query> ptsContains = new ArrayList<>();
+    List<Query> lineQs = new ArrayList<>();
+    List<Query> circleWithin = new ArrayList<>();
+    List<Query> xyBoxes = new ArrayList<>();
+    List<Query> xyDists = new ArrayList<>();
+    List<Query> xyPolys = new ArrayList<>();
     for (String[] a : lines) {
       switch (a[0]) {
         case "box" -> boxes.add(LatLonPoint.newBoxQuery("p", d(a[1]), d(a[2]), d(a[3]), d(a[4])));
@@ -258,6 +367,35 @@ public final class GeoPointsMicro {
         }
         case "sort" -> sorts.add(new double[] {d(a[1]), d(a[2])});
         case "nearest" -> nearest.add(new double[] {d(a[1]), d(a[2])});
+        case "feature" -> features.add(LatLonPoint.newDistanceFeatureQuery("p", 1f, d(a[1]), d(a[2]), d(a[3])));
+        case "gpoly" -> {
+          double[][] p = parsePts(a[2]);
+          Query gq = LatLonPoint.newGeometryQuery("p", ShapeField.QueryRelation.valueOf(a[1]), new Polygon(p[0], p[1]));
+          (a[1].equals("WITHIN") ? polyWithin : polyDisjoint).add(gq);
+        }
+        case "gpts" -> {
+          double[][] p = parsePts(a[2]);
+          LatLonGeometry[] g = new LatLonGeometry[p[0].length];
+          for (int i = 0; i < g.length; i++) g[i] = new Point(p[0][i], p[1][i]);
+          ptsContains.add(LatLonPoint.newGeometryQuery("p", ShapeField.QueryRelation.valueOf(a[1]), g));
+        }
+        case "gline" -> {
+          double[][] p = parsePts(a[2]);
+          lineQs.add(LatLonPoint.newGeometryQuery("p", ShapeField.QueryRelation.valueOf(a[1]), new Line(p[0], p[1])));
+        }
+        case "gcircle" -> circleWithin.add(LatLonPoint.newGeometryQuery("p", ShapeField.QueryRelation.valueOf(a[1]), new Circle(d(a[2]), d(a[3]), d(a[4]))));
+        case "xybox" -> xyBoxes.add(XYPointField.newBoxQuery("xy", (float) d(a[1]), (float) d(a[2]), (float) d(a[3]), (float) d(a[4])));
+        case "xydist" -> xyDists.add(XYPointField.newDistanceQuery("xy", (float) d(a[1]), (float) d(a[2]), (float) d(a[3])));
+        case "xypoly" -> {
+          double[][] p = parsePts(a[1]);
+          float[] x = new float[p[0].length];
+          float[] y = new float[p[0].length];
+          for (int i = 0; i < x.length; i++) {
+            x[i] = (float) p[0][i];
+            y[i] = (float) p[1][i];
+          }
+          xyPolys.add(XYPointField.newPolygonQuery("xy", new XYPolygon(x, y)));
+        }
         default -> throw new IllegalStateException(a[0]);
       }
     }
@@ -265,8 +403,14 @@ public final class GeoPointsMicro {
         DirectoryReader reader = DirectoryReader.open(d)) {
       IndexSearcher s = new IndexSearcher(reader);
       s.setQueryCache(null);
-      String[] names = {"geo_box", "geo_distance", "geo_polygon"};
-      List<List<Query>> sets = List.of(boxes, dists, polys);
+      String[] names = {
+        "geo_box", "geo_distance", "geo_polygon", "geo_polygon_within", "geo_polygon_disjoint",
+        "geo_points_contains", "geo_line", "geo_circle_within", "geo_xy_box", "geo_xy_distance",
+        "geo_xy_polygon"
+      };
+      List<List<Query>> sets =
+          List.of(boxes, dists, polys, polyWithin, polyDisjoint, ptsContains, lineQs, circleWithin,
+              xyBoxes, xyDists, xyPolys);
       for (int k = 0; k < names.length; k++) {
         List<Query> qs = sets.get(k);
         Fnv f = new Fnv();
@@ -279,6 +423,20 @@ public final class GeoPointsMicro {
           return qs.size();
         });
       }
+      Fnv ff = new Fnv();
+      for (Query q : features) {
+        TopDocs td = s.search(q, 10);
+        ff.add(td.totalHits.value());
+        for (ScoreDoc sd : td.scoreDocs) {
+          ff.add(sd.doc);
+          ff.add(Float.floatToRawIntBits(sd.score));
+        }
+      }
+      check("geo_distance_feature", ff, features.size());
+      measure("geo_distance_feature", () -> {
+        for (Query q : features) sink += s.search(q, 10).scoreDocs[0].doc;
+        return features.size();
+      });
       Fnv f = new Fnv();
       for (double[] o : sorts) {
         TopFieldDocs td = s.search(new MatchAllDocsQuery(), 10, new Sort(LatLonDocValuesField.newDistanceSort("p", o[0], o[1])));

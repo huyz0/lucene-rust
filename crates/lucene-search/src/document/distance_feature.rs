@@ -338,14 +338,12 @@ impl DocumentQuery for LongDistanceFeatureQuery {
             })
         };
         // `docValues.cost()`: the documents with a value -- the lead cost of
-        // a top-level query.
-        let mut with_value = Vec::new();
-        for doc in 0..r.max_doc {
-            if value_of(doc)?.is_some() {
-                with_value.push(doc);
-            }
-        }
-        let lead_cost = with_value.len() as i64;
+        // a top-level query. The values are read only for the documents the
+        // iterator reaches.
+        let lead_cost = match &values {
+            Values::Numeric(e) => e.num_values,
+            Values::Sorted(e) => i64::from(e.num_docs_with_field),
+        };
         let mut candidates = Candidates::All;
         let mut state = Pruning {
             max_distance: i64::MAX,
@@ -354,7 +352,8 @@ impl DocumentQuery for LongDistanceFeatureQuery {
             set_min_competitive_score_counter: 0,
             last_min: 0.0,
         };
-        let mut all_at = 0usize;
+        // `Candidates::All`'s next document to read.
+        let mut next_all = 0i32;
         // `docID()`: -1 before the first document.
         let mut doc = -1;
         loop {
@@ -425,15 +424,28 @@ impl DocumentQuery for LongDistanceFeatureQuery {
             }
             // `nextDoc()`, skipping deleted documents (`DefaultBulkScorer`
             // with the live docs as accept bits).
-            loop {
+            let selected = loop {
                 doc = match &mut candidates {
-                    Candidates::All => match with_value.get(all_at) {
-                        Some(&d) => {
-                            all_at = all_at.saturating_add(1);
-                            d
+                    Candidates::All => {
+                        // `docValues.nextDoc()`: the next document with a value.
+                        let mut found = None;
+                        while next_all < r.max_doc {
+                            let d = next_all;
+                            next_all = next_all.saturating_add(1);
+                            if let Some(v) = value_of(d)? {
+                                found = Some((d, v));
+                                break;
+                            }
                         }
-                        None => return Ok(()),
-                    },
+                        let Some((d, v)) = found else {
+                            return Ok(());
+                        };
+                        if leaf.live_docs.is_none_or(|bits| bits.get_doc(d)) {
+                            doc = d;
+                            break Some(v);
+                        }
+                        continue;
+                    }
                     Candidates::List(docs, at, _) => match docs.get(*at) {
                         Some(&d) => {
                             *at = at.saturating_add(1);
@@ -443,11 +455,11 @@ impl DocumentQuery for LongDistanceFeatureQuery {
                     },
                 };
                 if leaf.live_docs.is_none_or(|bits| bits.get_doc(doc)) {
-                    break;
+                    break value_of(doc)?;
                 }
-            }
+            };
             // `DistanceScorer.score()`: a candidate without a value scores 0.
-            let score = match value_of(doc)? {
+            let score = match selected {
                 Some(v) => self.score(boost, self.distance(v)),
                 None => 0.0,
             };

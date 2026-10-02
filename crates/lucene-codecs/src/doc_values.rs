@@ -1379,6 +1379,11 @@ impl<'a> NumericReader<'a> {
     /// The dense single-width lookup is this inlined function; every other
     /// shape is [`Self::value_slow`], kept out of line so this stays small
     /// enough to inline into a caller's loop.
+    /// The field's entry: `numValues` is the iterator's `cost()`.
+    pub fn entry(&self) -> &'a NumericEntry {
+        self.entry
+    }
+
     #[inline(always)]
     pub fn value(&mut self, doc: i32) -> Result<Option<i64>> {
         if let Some(v) = self.fast.as_ref().and_then(|f| f.get(doc)) {
@@ -2150,6 +2155,11 @@ impl<'a> SortedNumericReader<'a> {
             docs,
             fast,
         }
+    }
+
+    /// The field's entry: `numDocsWithField` is the iterator's `cost()`.
+    pub fn entry(&self) -> &'a SortedNumericEntry {
+        self.entry
     }
 
     /// Replaces `out` with document `doc`'s values, in stored (ascending)
