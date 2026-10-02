@@ -63,7 +63,7 @@ mod xy_polygon;
 mod xy_rectangle;
 
 pub use circle::Circle;
-pub use component2d::{Component2D, WithinRelation};
+pub use component2d::{point_in_triangle, Component2D, WithinRelation};
 pub use geo_encoding_utils::{Component2DPredicate, DistancePredicate, GeoEncodingUtils};
 pub use geo_utils::{GeoUtils, WindingOrder};
 pub use lat_lon_geometry::LatLonGeometry;

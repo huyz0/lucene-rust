@@ -1,4 +1,4 @@
-//! `java.lang.StrictMath`'s `sin`, `cos`, `asin` and `acos`: the fdlibm
+//! `java.lang.StrictMath`'s `sin`, `cos`, `asin`, `acos` and `hypot`: the fdlibm
 //! algorithms Java specifies bit for bit (`java.lang.FdLibm`).
 //!
 //! Lucene's geo code and `SloppyMath` depend on these exact bits: SloppyMath
@@ -334,9 +334,127 @@ pub fn acos(x: f64) -> f64 {
     }
 }
 
+/// `x` with its high word replaced by `hi` and its low word zero
+/// (`__HI(0.0, hi)`).
+#[inline]
+fn from_hi(hi: i32) -> f64 {
+    f64::from_bits(u64::from(hi as u32) << 32)
+}
+
+/// `StrictMath.hypot` (`FdLibm.Hypot`, fdlibm `e_hypot.c`); `Math.hypot`
+/// delegates to it. `sqrt(x^2 + y^2)` without undue overflow or underflow,
+/// within an ulp -- and, being fdlibm, not always the correctly rounded
+/// result a platform `hypot` returns, which is why `ShapeDocValues`' line
+/// lengths need this one.
+pub fn hypot(x: f64, y: f64) -> f64 {
+    const TWO_MINUS_600: f64 = f64::from_bits(0x1A70_0000_0000_0000);
+    const TWO_PLUS_600: f64 = f64::from_bits(0x6570_0000_0000_0000);
+    // `0x1.00000_ffff_ffffp500`.
+    const NEAR_TWO_500: f64 = f64::from_bits(0x5F30_0000_FFFF_FFFF);
+    const TWO_MINUS_500: f64 = f64::from_bits(0x20B0_0000_0000_0000);
+    const TWO_1022: f64 = f64::from_bits(0x7FD0_0000_0000_0000);
+    let mut a = x.abs();
+    let mut b = y.abs();
+    if !a.is_finite() || !b.is_finite() {
+        if a == f64::INFINITY || b == f64::INFINITY {
+            return f64::INFINITY;
+        }
+        // Propagate NaN significand bits.
+        return a + b;
+    }
+    if b > a {
+        std::mem::swap(&mut a, &mut b);
+    }
+    let mut ha = hi(a);
+    let mut hb = hi(b);
+    if ha.wrapping_sub(hb) > 0x03c0_0000 {
+        // x / y > 2**60
+        return a + b;
+    }
+    let mut k: i32 = 0;
+    if a > NEAR_TWO_500 {
+        // scale a and b by 2**-600
+        ha = ha.wrapping_sub(0x2580_0000);
+        hb = hb.wrapping_sub(0x2580_0000);
+        a *= TWO_MINUS_600;
+        b *= TWO_MINUS_600;
+        k += 600;
+    }
+    if b < TWO_MINUS_500 {
+        if b < f64::MIN_POSITIVE {
+            // subnormal b or 0
+            if b == 0.0 {
+                return a;
+            }
+            b *= TWO_1022;
+            a *= TWO_1022;
+            k -= 1022;
+        } else {
+            // scale a and b by 2^600
+            ha = ha.wrapping_add(0x2580_0000);
+            hb = hb.wrapping_add(0x2580_0000);
+            a *= TWO_PLUS_600;
+            b *= TWO_PLUS_600;
+            k -= 600;
+        }
+    }
+    // medium size a and b
+    let mut w = a - b;
+    if w > b {
+        let t1 = from_hi(ha);
+        let t2 = a - t1;
+        w = (t1 * t1 - (b * (-b) - t2 * (a + t1))).sqrt();
+    } else {
+        a = a + a;
+        let y1 = from_hi(hb);
+        let y2 = b - y1;
+        let t1 = from_hi(ha.wrapping_add(0x0010_0000));
+        let t2 = a - t1;
+        w = (t1 * y1 - (w * (-w) - (t1 * y2 + t2 * b))).sqrt();
+    }
+    if k != 0 {
+        // `Math.powerOfTwoD(k)`: k is one of 600, -422, -600, -1022 -- a
+        // normal power of two.
+        f64::from_bits(((i64::from(k) + 1023) as u64) << 52) * w
+    } else {
+        w
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hypot_matches_the_jdk_on_every_branch() {
+        // (x, y, Math.hypot(x, y)) as raw bits, from a JDK 21 / 25 run:
+        // the plain and the 2^60-ratio paths, both scalings, a subnormal
+        // `b`, both medium-size formulas, and two where libm's correctly
+        // rounded result is an ulp away from fdlibm's.
+        let cases: [(u64, u64, u64); 12] = [
+            (0x4008000000000000, 0x4010000000000000, 0x4014000000000000),
+            (0x7e37e43c8800759c, 0x7e37e43c8800759c, 0x7e40e4d50f99b211),
+            (0x01a56e1fc2f8f359, 0x01a56e1fc2f8f359, 0x01ae4e8d12762225),
+            (0x000012688b70e62b, 0x00003739a252b281, 0x00003a365ff2ea11),
+            (0x0000000000002788, 0x3ff0000000000000, 0x3ff0000000000000),
+            (0x7e37e43c8800759c, 0x01a56e1fc2f8f359, 0x7e37e43c8800759c),
+            (0x20a0000000000000, 0x20a8000000000000, 0x20acd82b446159f3),
+            (0x5f41000000000000, 0x5f30000000000000, 0x5f42c9cda6892035),
+            (0x405bc8e568280000, 0xc024da809e880000, 0x405be8215aac73bd),
+            (0x3fd42e57611fbfb0, 0x3fd42e57f34a0ac7, 0x3fdc8a4fc19867ce),
+            (0x3ff0000000000000, 0x3c670ef54646d497, 0x3ff0000000000000),
+            (0x000024d116e1cc56, 0x01a56e1fc2f8f359, 0x01a56e1fc2f8f359),
+        ];
+        for (x, y, want) in cases {
+            let (x, y) = (f64::from_bits(x), f64::from_bits(y));
+            assert_eq!(hypot(x, y).to_bits(), want, "hypot({x:e}, {y:e})");
+            assert_eq!(hypot(y, -x).to_bits(), want, "symmetric");
+        }
+        assert_eq!(hypot(0.0, 0.0), 0.0);
+        assert_eq!(hypot(f64::NAN, f64::INFINITY), f64::INFINITY);
+        assert_eq!(hypot(f64::NEG_INFINITY, 1.0), f64::INFINITY);
+        assert!(hypot(f64::NAN, 1.0).is_nan());
+    }
 
     #[test]
     fn special_values() {
