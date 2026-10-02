@@ -39,7 +39,7 @@ including the Java 21 multi-release variants. If no jar can be found the
 jar-membership check is skipped and said so; the rest still runs.
 
 Usage:
-  scripts/check-port-inventory.py [--module core|backward-codecs|spatial3d] [--milestone M7] [--summary]
+  scripts/check-port-inventory.py [--module core|backward-codecs|spatial3d|spatial-extras] [--milestone M7] [--summary]
 """
 
 from __future__ import annotations
@@ -61,6 +61,7 @@ MODULES = {
     "core": "lucene-core",
     "backward-codecs": "lucene-backward-codecs",
     "spatial3d": "lucene-spatial3d",
+    "spatial-extras": "lucene-spatial-extras",
 }
 
 

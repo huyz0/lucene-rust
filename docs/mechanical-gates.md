@@ -287,6 +287,17 @@ still owes; `--summary` counts by status and package.
 lucene-core.tsv`), a `ported` row naming a symbol its file lacks, and a
 `partial` row without its milestone tag.
 
+**`--module spatial-extras`** (M9 T9.5, `docs/inventory/lucene-spatial-extras.tsv`,
+the 65 top-level classes of `lucene-spatial-extras`) was seen to fail the
+same three ways before it joined `gate.sh` and CI: a deleted row
+(`spatial/vector/PointVectorStrategy: in the jar, not in
+lucene-spatial-extras.tsv`), a renamed symbol (`... spatial4j.rs has no
+`Geo3dBinaryCodecX``), and an extra row (`spatial/Bogus: in
+lucene-spatial-extras.tsv, not in the jar`); `--milestone M9` lists what T9.5
+still owes. It cannot see the third-party code the module is built on
+(Spatial4j, S2): those subsets are not Lucene classes, so `docs/parity.md`
+records them, and their correctness rests on `spatial4j_fixtures.rs` alone.
+
 **Blind spots.** It checks that a cited symbol *exists*, not that it does
 what the Java class does -- the classification is a judgement, made per class
 against the Java source and recorded in the row, and a wrong `ported` passes.

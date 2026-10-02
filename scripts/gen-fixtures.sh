@@ -84,7 +84,9 @@ set -euo pipefail
 # lucene-highlighter is required by AppendHighlightManifest, which records what
 # `UnifiedHighlighter`'s own PhraseHelper produces rather than re-deriving it.
 # lucene-spatial3d is required by GenGeo3d* (org.apache.lucene.spatial3d).
-LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-facet lucene-highlighter lucene-spatial3d)
+# lucene-spatial-extras (and its Spatial4j and S2 jars, SPATIAL_EXTRAS_DEPS in
+# lib-lucene-jars.sh) is required by GenSpatial* (org.apache.lucene.spatial).
+LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-facet lucene-highlighter lucene-spatial3d lucene-spatial-extras)
 
 cd "$(git rev-parse --show-toplevel)"
 FIXTURES="$PWD/fixtures"
@@ -194,7 +196,7 @@ fi
 # Prefer --jars, then the Gradle cache (fast, local), then Maven Central (CI).
 # shellcheck source=scripts/lib-lucene-jars.sh
 source "$(dirname "$0")/lib-lucene-jars.sh"
-CP=$(lucene_classpath "${LUCENE_MODULES[@]}")
+CP=$(lucene_classpath "${LUCENE_MODULES[@]}"):$(thirdparty_classpath "${SPATIAL_EXTRAS_DEPS[@]}")
 # Read as data, never put on the classpath (its SPI registrations name codecs
 # from modules the generators do not load): GenStandardTokenizerCorpus takes
 # its text from this jar's europarl.lines.txt.gz.
@@ -215,7 +217,7 @@ javac -nowarn -cp "$CP" -d "$CLASSES" "$FIXTURES"/src/*.java
 # computes. See crates/lucene-util/src/spatial3d/mod.rs ("Trigonometry").
 generator_jvm_opts() {
   case "$1" in
-    GenGeo3d*) echo "-XX:+UnlockDiagnosticVMOptions -XX:DisableIntrinsic=_dsin,_dcos,_dtan" ;;
+    GenGeo3d*|GenSpatial*) echo "-XX:+UnlockDiagnosticVMOptions -XX:DisableIntrinsic=_dsin,_dcos,_dtan" ;;
   esac
 }
 

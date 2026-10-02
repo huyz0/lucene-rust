@@ -110,6 +110,7 @@ jobs:
           python3 scripts/check-port-inventory.py
           python3 scripts/check-port-inventory.py --module backward-codecs
           python3 scripts/check-port-inventory.py --module spatial3d
+          python3 scripts/check-port-inventory.py --module spatial-extras
 
       - name: docs/parity.md consistency
         run: python3 scripts/check-parity.py
