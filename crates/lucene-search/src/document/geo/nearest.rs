@@ -367,14 +367,8 @@ pub fn nearest(
             continue;
         };
         // Java decodes whatever the field holds (and fails on a short
-        // value); a field that is not a `LatLonPoint` is refused up front.
-        if values.num_dims != 2 || values.bytes_per_dim != 4 {
-            return Err(illegal(format!(
-                "field=\"{field}\" was indexed with numDims={} and bytesPerDim={}, is the field \
-                 really a LatLonPoint?",
-                values.num_dims, values.bytes_per_dim
-            )));
-        }
+        // value); a field that is not a geo point's shape is refused.
+        super::point_queries::check_points_shape(field, values)?;
         total_hits = total_hits.saturating_add(i64::from(values.doc_count));
         segments.push(Segment {
             points,

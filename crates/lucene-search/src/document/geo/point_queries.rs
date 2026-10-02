@@ -43,6 +43,22 @@ fn check_compatible(info: &FieldInfo, kind: &str) -> Result<()> {
     )
 }
 
+/// The tree itself must hold two indexed four-byte dimensions, whatever the
+/// `FieldInfo` claims: every visitor here slices a packed value at byte 4.
+/// Java does not check (`SpatialQuery`, the feature query and `nearest` would
+/// throw decoding a short value); a corrupt or foreign field is an error
+/// here rather than a panic.
+pub(crate) fn check_points_shape(name: &str, pf: &PointsField) -> Result<()> {
+    if pf.num_dims != 2 || pf.num_index_dims != 2 || pf.bytes_per_dim != 4 {
+        return Err(illegal(format!(
+            "field=\"{name}\" holds points of {} dimensions ({} indexed) of {} bytes, not a \
+             geo point's two of four",
+            pf.num_dims, pf.num_index_dims, pf.bytes_per_dim
+        )));
+    }
+    Ok(())
+}
+
 fn check_shape(name: &str, dims: i32, bytes: i32, kind: &str) -> Result<()> {
     if dims != 0 && dims != 2 {
         return Err(illegal(format!(
@@ -274,6 +290,7 @@ impl DocumentQuery for LatLonPointDistanceQuery {
         };
         check_compatible(info, "LatLonPoint")?;
         let values = points.field(info.number).expect("checked by points_of");
+        check_points_shape(&info.name, values)?;
         let max_doc = reader(leaf)?.max_doc;
         let size = idx(max_doc);
         if values.doc_count == max_doc && i64::from(values.doc_count) == values.point_count {
@@ -689,6 +706,9 @@ impl DocumentQuery for LatLonPointQuery {
         let Some((info, points)) = points_of(leaf, &self.field)? else {
             return Ok(());
         };
+        if let Some(pf) = points.field(info.number) {
+            check_points_shape(&info.name, pf)?;
+        }
         spatial_score_leaf(
             leaf,
             info,
@@ -775,6 +795,9 @@ impl DocumentQuery for XYPointInGeometryQuery {
             return Ok(());
         };
         check_compatible(info, "XYPoint")?;
+        if let Some(pf) = points.field(info.number) {
+            check_points_shape(&info.name, pf)?;
+        }
         let mut v = XYVisitor {
             tree: self.tree.as_ref(),
             result: FixedBitSet::new(idx(reader(leaf)?.max_doc)),
