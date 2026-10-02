@@ -3895,6 +3895,9 @@ fn phrase_freq_exact_general(term_positions: &[&[i32]], stop_at_first: bool) -> 
 /// table, slice-of-slices indexing and per-term bookkeeping were two thirds
 /// of its cost on `"t0 t1"`, whose documents hold a handful of positions each.
 fn phrase_freq_exact_two(first: &[i32], second: &[i32], stop_at_first: bool) -> i32 {
+    if !stop_at_first {
+        return phrase_freq_exact_two_count(first, second);
+    }
     let (mut i, mut j, mut freq) = (0, 0, 0);
     while let (Some(&p0), Some(&p1)) = (first.get(i), second.get(j)) {
         // The same `p0 + 1` the general loop aligns on.
@@ -3912,6 +3915,26 @@ fn phrase_freq_exact_two(first: &[i32], second: &[i32], stop_at_first: bool) -> 
         // `j` stays: a multi-phrase position list is a union and may repeat
         // a position, and the next `p0` may equal this one.
         i += 1;
+    }
+    freq
+}
+
+/// [`phrase_freq_exact_two`]'s counting merge without a branch per step:
+/// whether `second` or `first` moves on, and whether the step counts, are
+/// both data, not control flow. A document holds a handful of positions per
+/// term, and which list moves next is close to a coin flip, so the branchy
+/// merge mispredicted most of its steps. The steps are the same: `j` moves
+/// past a `second` position below `p0 + 1`; otherwise `i` moves, counting
+/// when the position is exactly `p0 + 1` (and `j` stays, as there).
+fn phrase_freq_exact_two_count(first: &[i32], second: &[i32]) -> i32 {
+    let (mut i, mut j, mut freq) = (0usize, 0usize, 0i32);
+    while i < first.len() && j < second.len() {
+        let target = first[i] + 1;
+        let p1 = second[j];
+        let behind = p1 < target;
+        freq += i32::from(p1 == target);
+        j += usize::from(behind);
+        i += usize::from(!behind);
     }
     freq
 }
@@ -7773,6 +7796,35 @@ mod tests {
 
     // `phrase_freq_exact` unit tests (task #29): pure counting logic against
     // hand-built position lists, no fixture needed.
+
+    /// The branch-free two-term count is the brute-force one: each `p0` of
+    /// the first (strictly ascending) list whose `p0 + 1` is anywhere in the
+    /// second, which may repeat a position (a multi-phrase union).
+    #[test]
+    fn the_branch_free_two_term_count_matches_brute_force() {
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move |m: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % m
+        };
+        for _ in 0..3_000 {
+            let mut first: Vec<i32> = (0..next(12)).map(|_| next(40) as i32).collect();
+            first.sort_unstable();
+            first.dedup();
+            let mut second: Vec<i32> = (0..next(12)).map(|_| next(40) as i32).collect();
+            second.sort_unstable();
+            let want = first.iter().filter(|&&p| second.contains(&(p + 1))).count() as i32;
+            assert_eq!(
+                phrase_freq_exact_two_count(&first, &second),
+                want,
+                "{first:?} {second:?}"
+            );
+            assert_eq!(phrase_freq_exact_two(&first, &second, false), want);
+            assert_eq!(phrase_freq_exact_two(&first, &second, true), want.min(1));
+        }
+    }
 
     #[test]
     fn phrase_alignment_walk_handles_a_phrase_longer_than_the_inline_cursor_array() {
