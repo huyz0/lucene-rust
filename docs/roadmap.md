@@ -299,7 +299,7 @@ it changes M5's scope materially.
 
 ---
 
-## M5 — OpenSearch indexing from Rust
+## M5 — OpenSearch indexing from Rust  ·  delivered 2026-09-25
 
 > Full detail, task breakdown and risks: [`docs/milestones/m5-engine-integration.md`](milestones/m5-engine-integration.md)
 

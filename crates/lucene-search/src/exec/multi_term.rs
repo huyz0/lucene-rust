@@ -124,8 +124,10 @@ where
 /// - Past that, `MultiTermQueryConstantScoreBlendedWrapper` adds a term with
 ///   `docFreq <= 512` (`POSTINGS_PRE_PROCESS_THRESHOLD`) straight into its
 ///   `DocIdSetBuilder` and offers the others to a 16-entry priority queue by
-///   `docFreq` (`insertWithOverflow`: an earlier term keeps its place on a
-///   tie), whatever the queue drops going into the set as well.
+///   `docFreq` (`insertWithOverflow`: on an incoming tie the kept term stays;
+///   among kept ties the latest is evicted, where Java evicts whichever is
+///   the heap top -- only the iterator/bitset split differs, never the
+///   matches), whatever the queue drops going into the set as well.
 ///   `MultiTermQueryConstantScoreWrapper` adds every term to the set.
 /// - A term whose `docFreq` is the field's `docCount` matches every document
 ///   the others can, so both wrappers drop the rest and run that term alone
