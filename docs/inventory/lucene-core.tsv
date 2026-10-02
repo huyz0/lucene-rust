@@ -287,33 +287,33 @@ document/column/OrdinalsCursor	ported	crates/lucene-index/src/document/column.rs
 document/column/OrdinalsTupleCursor	ported	crates/lucene-index/src/document/column.rs::OrdinalsTupleCursor -- M7: fixture GenDocumentColumns
 document/column/TokenStreamColumn	ported	crates/lucene-index/src/document/column.rs::TokenStreamColumn -- M7: fixture GenDocumentColumns
 document/column/VectorColumn	ported	crates/lucene-index/src/document/column.rs::VectorColumn -- M7: fixture GenDocumentColumns
-geo/Circle	deferred:M9	lat/lon circle geometry
-geo/Circle2D	deferred:M9	2D circle component for relations
-geo/Component2D	deferred:M9	2D geometry relation interface
-geo/ComponentTree	deferred:M9	interval tree of 2D components
-geo/EdgeTree	deferred:M9	polygon/line edge tree
-geo/GeoEncodingUtils	deferred:M9	lat/lon integer encoding and distance/polygon predicates
-geo/GeoUtils	deferred:M9	geo math helpers
-geo/Geometry	deferred:M9	geometry base class
-geo/LatLonGeometry	deferred:M9	lat/lon geometry base class
-geo/Line	deferred:M9	lat/lon line geometry
-geo/Line2D	deferred:M9	2D line component
-geo/Point	deferred:M9	lat/lon point geometry
-geo/Point2D	deferred:M9	2D point component
-geo/Polygon	deferred:M9	lat/lon polygon geometry
-geo/Polygon2D	deferred:M9	2D polygon component
-geo/Rectangle	deferred:M9	lat/lon rectangle geometry
-geo/Rectangle2D	deferred:M9	2D rectangle component
-geo/SimpleGeoJSONPolygonParser	deferred:M9	GeoJSON polygon parser
-geo/SimpleWKTShapeParser	deferred:M9	WKT shape parser
-geo/Tessellator	deferred:M9	polygon tessellator
-geo/XYCircle	deferred:M9	cartesian circle geometry
-geo/XYEncodingUtils	deferred:M9	cartesian float encoding
-geo/XYGeometry	deferred:M9	cartesian geometry base class
-geo/XYLine	deferred:M9	cartesian line geometry
-geo/XYPoint	deferred:M9	cartesian point geometry
-geo/XYPolygon	deferred:M9	cartesian polygon geometry
-geo/XYRectangle	deferred:M9	cartesian rectangle geometry
+geo/Circle	ported	crates/lucene-util/src/geo/circle.rs::Circle
+geo/Circle2D	ported	crates/lucene-util/src/geo/circle2d.rs::Circle2D
+geo/Component2D	ported	crates/lucene-util/src/geo/component2d.rs::Component2D
+geo/ComponentTree	ported	crates/lucene-util/src/geo/component_tree.rs::ComponentTree
+geo/EdgeTree	ported	crates/lucene-util/src/geo/edge_tree.rs::EdgeTree
+geo/GeoEncodingUtils	ported	crates/lucene-util/src/geo/geo_encoding_utils.rs::GeoEncodingUtils
+geo/GeoUtils	ported	crates/lucene-util/src/geo/geo_utils.rs::GeoUtils
+geo/Geometry	ported	crates/lucene-util/src/geo/lat_lon_geometry.rs::to_component2d
+geo/LatLonGeometry	ported	crates/lucene-util/src/geo/lat_lon_geometry.rs::LatLonGeometry
+geo/Line	ported	crates/lucene-util/src/geo/line.rs::Line
+geo/Line2D	ported	crates/lucene-util/src/geo/line2d.rs::Line2D
+geo/Point	ported	crates/lucene-util/src/geo/point.rs::Point
+geo/Point2D	ported	crates/lucene-util/src/geo/point2d.rs::Point2D
+geo/Polygon	ported	crates/lucene-util/src/geo/polygon.rs::Polygon
+geo/Polygon2D	ported	crates/lucene-util/src/geo/polygon2d.rs::Polygon2D
+geo/Rectangle	ported	crates/lucene-util/src/geo/rectangle.rs::Rectangle
+geo/Rectangle2D	ported	crates/lucene-util/src/geo/rectangle2d.rs::Rectangle2D
+geo/SimpleGeoJSONPolygonParser	ported	crates/lucene-util/src/geo/simple_geojson_polygon_parser.rs::SimpleGeoJSONPolygonParser
+geo/SimpleWKTShapeParser	ported	crates/lucene-util/src/geo/simple_wkt_shape_parser.rs::parse_expected_type
+geo/Tessellator	ported	crates/lucene-util/src/geo/tessellator.rs::tessellate
+geo/XYCircle	ported	crates/lucene-util/src/geo/xy_circle.rs::XYCircle
+geo/XYEncodingUtils	ported	crates/lucene-util/src/geo/xy_encoding_utils.rs::XYEncodingUtils
+geo/XYGeometry	ported	crates/lucene-util/src/geo/xy_geometry.rs::XYGeometry
+geo/XYLine	ported	crates/lucene-util/src/geo/xy_line.rs::XYLine
+geo/XYPoint	ported	crates/lucene-util/src/geo/xy_point.rs::XYPoint
+geo/XYPolygon	ported	crates/lucene-util/src/geo/xy_polygon.rs::XYPolygon
+geo/XYRectangle	ported	crates/lucene-util/src/geo/xy_rectangle.rs::XYRectangle
 index/ApproximatePriorityQueue	not-needed	internal scheduling queue of DocumentsWriterPerThreadPool; the Rust ConcurrentIndexWriter assigns indexing slots without it (no user-visible behaviour).
 index/AutomatonTermsEnum	ported	crates/lucene-codecs/src/blocktree.rs::regexp_intersect
 index/BaseCompositeReader	ported	crates/lucene-search/src/directory_reader.rs::DirectoryReader
@@ -1010,7 +1010,7 @@ util/SameThreadExecutorService	not-needed	JVM ExecutorService running tasks inli
 util/Selector	not-needed	generic selection framework; Rust slice::select_nth_unstable(_by)
 util/SentinelIntSet	not-needed	open-addressing int set; Rust HashSet<i32>
 util/SetOnce	not-needed	write-once holder; Rust std::sync::OnceLock
-util/SloppyMath	deferred:M9	fast approximate trig/haversin distance for geo
+util/SloppyMath	ported	crates/lucene-util/src/sloppy_math.rs::haversin_sort_key
 util/SmallFloat	ported	crates/lucene-util/src/small_float.rs::float_to_byte315
 util/SortableBytesRefArray	not-needed	internal interface over BytesRefArray/FixedLengthBytesRefArray
 util/Sorter	ported	crates/lucene-util/src/sorter.rs::heap_sort

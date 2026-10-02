@@ -925,16 +925,9 @@ impl<'d> PointsReader<'d> {
     }
 }
 
-/// Port of `org.apache.lucene.index.PointValues.Relation`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Relation {
-    /// Every point in the cell matches -- no per-point check needed.
-    CellInsideQuery,
-    /// No point in the cell can match -- the whole subtree is skipped.
-    CellOutsideQuery,
-    /// The cell straddles the query boundary -- descend / check per point.
-    CellCrossesQuery,
-}
+/// Port of `org.apache.lucene.index.PointValues.Relation`, defined in
+/// `lucene-util` so the geo relations can answer in it too.
+pub use lucene_util::point_values_relation::Relation;
 
 /// Port of `org.apache.lucene.index.PointValues.IntersectVisitor`.
 ///

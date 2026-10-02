@@ -1052,6 +1052,26 @@ outright.
   the same test rebuilds the batches, writes them with `add_batch`, and requires
   an identical index.
 
+- `GenGeo.java`, `GenGeoTessellator.java`, `GenGeoParsers.java` (M9 T9.1) —
+  no index: plain-text ground truth under `geo/` for `lucene-util`'s `geo`,
+  `sloppy_math` and `strict_math` modules
+  (`crates/lucene-util/tests/geo_fixtures.rs`). `StrictMath.sin/cos/asin/acos`
+  bits and digests of SloppyMath's table sweeps; SloppyMath; the lat/lon and
+  cartesian encodings with their errors; `GeoUtils`, `Rectangle.fromPointDistance`,
+  `axisLat`, the distance predicate; every `Component2D` query over ~100 shapes
+  (polygons with holes, lines, circles, rectangles, points, multi-shapes) and
+  `createComponentPredicate`; the `Tessellator`'s triangles in order (or its
+  failure) for ~200 polygons, lat/lon and cartesian, with and without
+  `checkSelfIntersections`; and what `SimpleWKTShapeParser` and
+  `Polygon.fromGeoJSON` make of hand-written inputs and random mutations of
+  them, offsets included. The geometry corpus is `GeoCorpus.java` (no `Gen`
+  prefix, so compiled, never run): seeded star polygons around random centres
+  biased to the poles and the dateline, holes, self-intersections, coarse grids
+  (collinear and duplicate points), slivers, zero-area rings, past-80-vertex
+  rings for the morton path, and hand-built cases (holes sharing vertices,
+  touching the shell, coinciding leftmost vertices, combs, a spiral).
+  Deterministic: `--check` compares the files byte for byte.
+
 ## Manifest appenders
 
 `Append*Manifest` programs open an already-generated index **read-only** and
