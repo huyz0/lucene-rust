@@ -1090,6 +1090,29 @@ outright.
   over one this port writes from `docs.tsv`; `VerifyGeoPoints.java` replays
   the same queries through Lucene over the Rust-written index
   (`scripts/verify-write-path.sh`).
+- `GenGeoShapes.java` (M9 T9.3) — `geo_shapes/`: a real index (four
+  segments of 500/500/500/40 documents, deletions in the first two) of
+  `LatLonShape` triangles plus one `LatLonShapeDocValuesField` on `shape`
+  (0-3 shapes per document: points, lines, polygons with holes, shapes on
+  the poles and +-180, slivers, collinear runs, 80+-vertex polygons, values
+  exactly on the encoding, repeats; a multi-shape doc value built from the
+  triangle fields), `one` (one line or polygon in every document of the
+  first three segments), `pt` (one point there), and `XYShape` + doc value
+  on `xy`. `docs.tsv` (`id`, then `field<TAB>spec` pairs, `GeoCorpus` specs)
+  and `deletes.tsv` describe it; `queries.tsv` holds 1576 queries with
+  Lucene's hits and score bits -- `newGeometryQuery` under all four
+  relations (polygons, lines, points, circles, boxes, mixes), `newBoxQuery`
+  (dateline, poles, `minLon == 180`), every doc-values form (any geometry,
+  through `ShapeAccess.java`, which sits in Lucene's package to reach the
+  package-private constructors), and the cartesian twins.
+  `triangles.tsv`: `ShapeField.encodeTriangle`/`decodeTriangle` on 1500
+  random and degenerate triangles; `doc_values.tsv`: 140 shape doc values
+  (bytes, header, centroid, bounding box) and 700 `relate` answers. Consumed
+  by `crates/lucene-search/tests/geo_shapes_fixtures.rs` over Lucene's index
+  and over one this port writes from `docs.tsv` (triangles and doc values
+  compared byte for byte); `VerifyGeoShapes.java` (whose `run` also answers
+  every query for the generator) replays them through Lucene over the
+  Rust-written index (`scripts/verify-write-path.sh`).
 
 ## Manifest appenders
 
