@@ -183,6 +183,20 @@ came out of the first measurement: `nearest` first decoded every inner node
 of each tree up front (0.25x; now navigated lazily, as `BKDPointTree` is),
 and the distance sort read a single-valued `SORTED_NUMERIC` column through
 the full per-value decode (0.93x; now the resolved values array, one load).
+**T9.2 review (2026-10-02, 3 reps, noise floor 1.22x)**: the pair gained the
+distance feature query's top 10 (`IndexSearcher.search(query, 10)`, pruning
+live), `newGeometryQuery` under the other relations and shapes, and the
+cartesian queries over an `XYPointField` of the same points (query set
+`geo-queries-v2.tsv`). `geo_distance_feature` 0.08x -> 1.13x (inside the
+noise): the scorer decoded and selected every document's value up front;
+it now reads a value only for the documents its iterator reaches, as
+Java's `nextDoc`/`advanceExact` do, so a narrowed iterator skips the rest
+(the `long` twin was changed the same way). `geo_polygon_within` 2.94x,
+`geo_polygon_disjoint` 3.22x, `geo_points_contains` 2.20x, `geo_line`
+2.37x, `geo_circle_within` 3.95x, `geo_xy_box` 1.70x, `geo_xy_distance`
+1.42x, `geo_xy_polygon` 1.64x; the earlier cases in the same run: `geo_box`
+1.53x, `geo_distance` 3.36x, `geo_polygon` 3.45x, `geo_distance_sort` 0.98x
+and `geo_nearest` 1.18x (both inside the noise).
 
 | Java | Rust | Status |
 |---|---|---|

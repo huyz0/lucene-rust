@@ -226,28 +226,18 @@ impl DocumentQuery for LatLonPointDistanceFeatureQuery {
             // `DocValues.emptySortedNumeric()`: no document to score.
             return Ok(());
         };
-        // The documents with a value, and each one's selected value: the
-        // doc-values iterator and its `longValue()`.
-        let mut with_value = Vec::new();
-        let mut selected = Vec::new();
+        // `docValues.cost()`, also the lead cost of a top-level query. The
+        // values themselves are read only for the documents the iterator
+        // reaches, as `docValues.nextDoc()` / `advanceExact()` read them.
+        let lead_cost = values.cost();
         let mut buf = Vec::new();
-        for doc in 0..r.max_doc {
-            values.values(doc, &mut buf)?;
-            if let Some(v) = self.select_value(&buf) {
-                with_value.push(doc);
-                selected.push(v);
-            }
-        }
-        // `docValues.cost()`, also the lead cost of a top-level query.
-        let lead_cost = with_value.len() as i64;
         let mut candidates = Candidates::All;
         let mut max_distance = GeoUtils::EARTH_MEAN_RADIUS_METERS * std::f64::consts::PI;
         let mut counter = 0i32;
         // The leaf collector's `minCompetitiveScore`: the last push.
         let mut last_min = 0.0f32;
-        let mut all_at = 0usize;
-        // The selected value of a candidate, found forward from `cursor`.
-        let mut cursor = 0usize;
+        // `Candidates::All`'s next document to read.
+        let mut next_all = 0i32;
         // `docID()`: -1 before the first document.
         let mut doc = -1;
         loop {
@@ -311,16 +301,31 @@ impl DocumentQuery for LatLonPointDistanceFeatureQuery {
                 candidates = Candidates::List(docs, 0, cost);
             }
             // `nextDoc()`, skipping deleted documents (`DefaultBulkScorer`
-            // with the live docs as accept bits).
-            loop {
+            // with the live docs as accept bits). Every document is read at
+            // most once: the candidates ascend.
+            let selected = loop {
                 doc = match &mut candidates {
-                    Candidates::All => match with_value.get(all_at) {
-                        Some(&d) => {
-                            all_at = all_at.saturating_add(1);
-                            d
+                    Candidates::All => {
+                        // `docValues.nextDoc()`: the next document with a value.
+                        let mut found = None;
+                        while next_all < r.max_doc {
+                            let d = next_all;
+                            next_all = next_all.saturating_add(1);
+                            values.values(d, &mut buf)?;
+                            if let Some(v) = self.select_value(&buf) {
+                                found = Some((d, v));
+                                break;
+                            }
                         }
-                        None => return Ok(()),
-                    },
+                        let Some((d, v)) = found else {
+                            return Ok(());
+                        };
+                        if leaf.live_docs.is_none_or(|bits| bits.get_doc(d)) {
+                            doc = d;
+                            break Some(v);
+                        }
+                        continue;
+                    }
                     Candidates::List(docs, at, _) => match docs.get(*at) {
                         Some(&d) => {
                             *at = at.saturating_add(1);
@@ -330,20 +335,18 @@ impl DocumentQuery for LatLonPointDistanceFeatureQuery {
                     },
                 };
                 if leaf.live_docs.is_none_or(|bits| bits.get_doc(doc)) {
-                    break;
+                    // `score()`: `docValues.advanceExact(docID())`; a
+                    // candidate the points found without a doc value scores 0.
+                    values.values(doc, &mut buf)?;
+                    break self.select_value(&buf);
                 }
-            }
-            // `score()`: `docValues.advanceExact(docID())`; a candidate the
-            // points found without a doc value scores 0.
-            while with_value.get(cursor).is_some_and(|&d| d < doc) {
-                cursor = cursor.saturating_add(1);
-            }
-            let score = match (with_value.get(cursor), selected.get(cursor)) {
-                (Some(&d), Some(&v)) if d == doc => self.score(
+            };
+            let score = match selected {
+                Some(v) => self.score(
                     boost,
                     sloppy_math::haversin_meters_from_sort_key(self.distance_key(v)),
                 ),
-                _ => 0.0,
+                None => 0.0,
             };
             collector.collect(doc, score);
         }

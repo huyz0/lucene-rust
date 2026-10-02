@@ -119,6 +119,14 @@ pub(crate) enum GeoValues<'a> {
 }
 
 impl GeoValues<'_> {
+    /// `cost()`: the documents with a value.
+    pub(crate) fn cost(&self) -> i64 {
+        match self {
+            GeoValues::Numeric(r) => r.entry().num_values,
+            GeoValues::Sorted(r) => i64::from(r.entry().num_docs_with_field),
+        }
+    }
+
     /// Replaces `out` with `doc`'s values (ascending; empty without any).
     pub(crate) fn values(&mut self, doc: i32, out: &mut Vec<i64>) -> Result<()> {
         out.clear();
