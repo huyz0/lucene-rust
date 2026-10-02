@@ -1,20 +1,25 @@
 //! The geo point query benchmark pair (M9 T9.2), against
 //! `benchmarks/micro/java/GeoPointsMicro.java`: boxes, distances, polygons,
 //! distance sorts and `nearest` over the million-point index the Java side
-//! builds (`GeoPointsMicro build <dir>`), replaying its `geo-queries.tsv`.
-//! Every hit goes through a counting collector on both sides; each case
-//! prints a `#check` digest the report compares before it shows a ratio.
+//! builds (`GeoPointsMicro build <dir>`), replaying its `geo-queries-v2.tsv`:
+//! and (T9.2 review) the distance feature query's top 10, the geometry
+//! query under `WITHIN`/`DISJOINT`/`CONTAINS` and over lines and circles,
+//! and the cartesian box/distance/polygon queries. Every hit of a filter
+//! goes through a counting collector on both sides; each case prints a
+//! `#check` digest the report compares before it shows a ratio.
 
 use std::hint::black_box;
 use std::time::Duration;
 
 use lucene_search::collector::{ScoreMode, ScoringCollector};
 use lucene_search::directory_reader::DirectoryReader;
-use lucene_search::document::geo::{lat_lon_doc_values_field, lat_lon_point};
+use lucene_search::document::geo::{
+    lat_lon_doc_values_field, lat_lon_point, xy_point_field, QueryRelation,
+};
 use lucene_search::document::{self as dq, DocumentQuery};
 use lucene_search::multi_segment::OpenSegment;
 use lucene_store::FsDirectory;
-use lucene_util::geo::Polygon;
+use lucene_util::geo::{Circle, LatLonGeometry, Line, Point, Polygon, XYPolygon};
 
 use super::measure;
 
@@ -55,8 +60,28 @@ fn count(leaves: &[OpenSegment<'_>], q: &dyn DocumentQuery) -> i64 {
     c.0
 }
 
+/// `GeoPointsMicro.parsePts`: `a b;a b;...` as its two coordinate lists.
+fn pts(spec: &str) -> (Vec<f64>, Vec<f64>) {
+    spec.split(';')
+        .map(|p| {
+            let (x, y) = p.split_once(' ').unwrap();
+            (x.parse::<f64>().unwrap(), y.parse::<f64>().unwrap())
+        })
+        .unzip()
+}
+
+fn relation(s: &str) -> QueryRelation {
+    match s {
+        "WITHIN" => QueryRelation::Within,
+        "DISJOINT" => QueryRelation::Disjoint,
+        "CONTAINS" => QueryRelation::Contains,
+        "INTERSECTS" => QueryRelation::Intersects,
+        other => panic!("{other}"),
+    }
+}
+
 pub fn bench_geo_points(w: Duration, m: Duration, dir: &str) {
-    let text = std::fs::read_to_string(format!("{dir}/geo-queries.tsv"))
+    let text = std::fs::read_to_string(format!("{dir}/geo-queries-v2.tsv"))
         .expect("run GeoPointsMicro build first (scripts/bench-micro.sh --bench geo_points)");
     let d = |s: &str| s.parse::<f64>().unwrap();
     let mut boxes = Vec::new();
@@ -64,11 +89,22 @@ pub fn bench_geo_points(w: Duration, m: Duration, dir: &str) {
     let mut polys = Vec::new();
     let mut sorts = Vec::new();
     let mut nearest = Vec::new();
+    let mut features = Vec::new();
+    let mut poly_within = Vec::new();
+    let mut poly_disjoint = Vec::new();
+    let mut pts_contains = Vec::new();
+    let mut lines = Vec::new();
+    let mut circle_within = Vec::new();
+    let mut xy_boxes = Vec::new();
+    let mut xy_dists = Vec::new();
+    let mut xy_polys = Vec::new();
+    let f32_of = |s: &str| s.parse::<f64>().unwrap() as f32;
     for line in text.lines() {
         let a: Vec<&str> = line.split('\t').collect();
         match a[0] {
-            "box" => boxes
-                .push(lat_lon_point::new_box_query("p", d(a[1]), d(a[2]), d(a[3]), d(a[4])).unwrap()),
+            "box" => boxes.push(
+                lat_lon_point::new_box_query("p", d(a[1]), d(a[2]), d(a[3]), d(a[4])).unwrap(),
+            ),
             "dist" => dists
                 .push(lat_lon_point::new_distance_query("p", d(a[1]), d(a[2]), d(a[3])).unwrap()),
             "poly" => {
@@ -84,6 +120,68 @@ pub fn bench_geo_points(w: Duration, m: Duration, dir: &str) {
             }
             "sort" => sorts.push((d(a[1]), d(a[2]))),
             "nearest" => nearest.push((d(a[1]), d(a[2]))),
+            "feature" => features.push(
+                lat_lon_point::new_distance_feature_query("p", 1.0, d(a[1]), d(a[2]), d(a[3]))
+                    .unwrap(),
+            ),
+            "gpoly" => {
+                let (lats, lons) = pts(a[2]);
+                let g = [LatLonGeometry::Polygon(
+                    Polygon::new(&lats, &lons, vec![]).unwrap(),
+                )];
+                let q = lat_lon_point::new_geometry_query("p", relation(a[1]), &g).unwrap();
+                if a[1] == "WITHIN" {
+                    poly_within.push(q);
+                } else {
+                    poly_disjoint.push(q);
+                }
+            }
+            "gpts" => {
+                let (lats, lons) = pts(a[2]);
+                let g: Vec<LatLonGeometry> = lats
+                    .iter()
+                    .zip(&lons)
+                    .map(|(&la, &lo)| LatLonGeometry::Point(Point::new(la, lo).unwrap()))
+                    .collect();
+                pts_contains
+                    .push(lat_lon_point::new_geometry_query("p", relation(a[1]), &g).unwrap());
+            }
+            "gline" => {
+                let (lats, lons) = pts(a[2]);
+                let g = [LatLonGeometry::Line(Line::new(&lats, &lons).unwrap())];
+                lines.push(lat_lon_point::new_geometry_query("p", relation(a[1]), &g).unwrap());
+            }
+            "gcircle" => {
+                let g = [LatLonGeometry::Circle(
+                    Circle::new(d(a[2]), d(a[3]), d(a[4])).unwrap(),
+                )];
+                circle_within
+                    .push(lat_lon_point::new_geometry_query("p", relation(a[1]), &g).unwrap());
+            }
+            "xybox" => xy_boxes.push(Box::new(
+                xy_point_field::new_box_query(
+                    "xy",
+                    f32_of(a[1]),
+                    f32_of(a[2]),
+                    f32_of(a[3]),
+                    f32_of(a[4]),
+                )
+                .unwrap(),
+            ) as Box<dyn DocumentQuery>),
+            "xydist" => xy_dists.push(Box::new(
+                xy_point_field::new_distance_query("xy", f32_of(a[1]), f32_of(a[2]), f32_of(a[3]))
+                    .unwrap(),
+            ) as Box<dyn DocumentQuery>),
+            "xypoly" => {
+                let (x, y) = pts(a[1]);
+                let x: Vec<f32> = x.into_iter().map(|v| v as f32).collect();
+                let y: Vec<f32> = y.into_iter().map(|v| v as f32).collect();
+                let p = XYPolygon::new(&x, &y, vec![]).unwrap();
+                xy_polys.push(
+                    Box::new(xy_point_field::new_polygon_query("xy", &[p]).unwrap())
+                        as Box<dyn DocumentQuery>,
+                );
+            }
             other => panic!("{other}"),
         }
     }
@@ -94,6 +192,14 @@ pub fn bench_geo_points(w: Duration, m: Duration, dir: &str) {
         ("geo_box", &boxes),
         ("geo_distance", &dists),
         ("geo_polygon", &polys),
+        ("geo_polygon_within", &poly_within),
+        ("geo_polygon_disjoint", &poly_disjoint),
+        ("geo_points_contains", &pts_contains),
+        ("geo_line", &lines),
+        ("geo_circle_within", &circle_within),
+        ("geo_xy_box", &xy_boxes),
+        ("geo_xy_distance", &xy_dists),
+        ("geo_xy_polygon", &xy_polys),
     ] {
         let mut f = Fnv::new();
         for q in qs.iter() {
@@ -109,6 +215,27 @@ pub fn bench_geo_points(w: Duration, m: Duration, dir: &str) {
             qs.len() as u64
         });
     }
+    let mut f = Fnv::new();
+    for q in &features {
+        let td = dq::search_top_docs(&leaves, q.as_ref(), 10).unwrap();
+        f.add(td.total_hits.value as i64);
+        for h in &td.score_docs {
+            f.add(i64::from(h.doc_id));
+            f.add(i64::from(h.score.to_bits() as i32));
+        }
+    }
+    check("geo_distance_feature", &f, features.len() as u64);
+    measure("geo_distance_feature", w, m, || {
+        for q in black_box(&features) {
+            black_box(
+                dq::search_top_docs(&leaves, q.as_ref(), 10)
+                    .unwrap()
+                    .score_docs[0]
+                    .doc_id,
+            );
+        }
+        features.len() as u64
+    });
     let sort = |o: &(f64, f64)| {
         lat_lon_doc_values_field::new_distance_sort("p", o.0, o.1)
             .unwrap()
