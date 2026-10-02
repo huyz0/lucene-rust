@@ -1328,19 +1328,20 @@ fn clamp_bound(
 /// or `double` point (4 or 8 bytes) moves as one word instead.
 #[inline(always)]
 fn copy_dim(dst: &mut [u8], src: &[u8]) {
-    if let (Ok(d), Ok(s)) = (
-        <&mut [u8; 8]>::try_from(&mut *dst),
-        <&[u8; 8]>::try_from(src),
-    ) {
-        *d = *s;
-    } else if let (Ok(d), Ok(s)) = (
-        <&mut [u8; 4]>::try_from(&mut *dst),
-        <&[u8; 4]>::try_from(src),
-    ) {
-        *d = *s;
-    } else {
-        dst.copy_from_slice(src);
+    // A fixed-size move per length up to a `long`'s 8 bytes -- a split
+    // value's suffix can be any of them -- and a slice copy past that.
+    macro_rules! fixed {
+        ($($n:literal)*) => {
+            match (dst.len(), src.len()) {
+                $(($n, $n) => {
+                    let d: &mut [u8; $n] = (&mut *dst).try_into().expect("length matched");
+                    *d = src.try_into().expect("length matched");
+                })*
+                _ => dst.copy_from_slice(src),
+            }
+        };
     }
+    fixed!(1 2 3 4 5 6 7 8);
 }
 
 /// `buf` holding exactly `src`: in place when it already has that length
@@ -1436,7 +1437,12 @@ fn read_inner_node(
         // `dim_prefix_pos + 1 <= dim_end`.
         #[allow(clippy::arithmetic_side_effects)]
         let tail_start = dim_prefix_pos + 1;
-        input.read_bytes(&mut ctx.split_values[tail_start..dim_end])?;
+        // `readBytes` of the suffix, through `copy_dim`: a slice copy of a
+        // length only known at run time is a libc call, once per node.
+        let at = input.position();
+        let src = input.slice(at, at.saturating_add(dim_end.saturating_sub(tail_start)))?;
+        input.seek(at.saturating_add(src.len()))?;
+        copy_dim(&mut ctx.split_values[tail_start..dim_end], src);
     }
     // else: this node's split value is byte-identical to the last one seen in
     // this dimension (many duplicate values) -- nothing to read or change.
@@ -3002,7 +3008,7 @@ mod tests {
 
     #[test]
     fn copy_dim_and_refill_copy_every_width() {
-        for len in [1usize, 3, 4, 8, 16] {
+        for len in [1usize, 2, 3, 4, 5, 6, 7, 8, 16] {
             let src: Vec<u8> = (1..=len as u8).collect();
             let mut dst = vec![0u8; len];
             copy_dim(&mut dst, &src);
