@@ -36,7 +36,7 @@ use lucene_util::geo::{
 use super::point_queries::{points_of, spatial_score_leaf, SpatialVisitor};
 use super::{geo, illegal, QueryRelation};
 use crate::collector::ScoringCollector;
-use crate::document::{collect_live, field_info, reader, DocumentQuery};
+use crate::document::{field_info, reader, DocumentQuery};
 use crate::multi_segment::OpenSegment;
 use crate::Result;
 
@@ -999,6 +999,12 @@ impl ShapeDocValuesMatcher {
         };
         let mut values = BinaryReader::new(data, entry);
         for doc in 0..r.max_doc {
+            // `DefaultBulkScorer`: `acceptDocs.get(doc)` before the two-phase
+            // `matches()`, so a deleted document's value is never decoded --
+            // a corrupt one cannot fail the query, and costs no tree walk.
+            if !leaf.live_docs.is_none_or(|bits| bits.get_doc(doc)) {
+                continue;
+            }
             let Some(bytes) = values.value(doc)? else {
                 continue;
             };
@@ -1022,7 +1028,7 @@ impl ShapeDocValuesMatcher {
                 }
             };
             if dv {
-                collect_live(leaf, doc, boost, collector);
+                collector.collect(doc, boost);
             }
         }
         Ok(())
