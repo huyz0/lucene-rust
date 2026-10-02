@@ -314,7 +314,10 @@ impl DocumentQuery for ConstantScoreBoolean {
 /// A `BooleanQuery` of `MUST` constant-score clauses that is *not* wrapped
 /// in a `ConstantScoreQuery` -- what `LatLonShape.newBoxQuery` builds for a
 /// `CONTAINS` box across the dateline: every match scores the sum of its
-/// clauses' scores (`ConjunctionScorer`, summed in `double`).
+/// clauses' scores (`ConjunctionScorer`, summed in `double`). For that box
+/// no document matches in practice -- each half reaches +-180, which a
+/// shape's boundary cannot pass, and a boundary touching the box is
+/// `NOTWITHIN` -- so the sum is checked by unit tests, not against Lucene.
 #[derive(Debug)]
 pub struct MustConjunction {
     pub clauses: Vec<Box<dyn DocumentQuery>>,
@@ -772,7 +775,8 @@ pub mod lat_lon_shape {
     /// `newBoxQuery(field, queryRelation, minLatitude, maxLatitude,
     /// minLongitude, maxLongitude)`: a `CONTAINS` box across the dateline
     /// is the conjunction of its two halves (a plain `BooleanQuery`, so a
-    /// match scores twice the boost).
+    /// match would score twice the boost; see [`MustConjunction`] for why
+    /// none happens in practice).
     ///
     /// # Errors
     /// An invalid rectangle, with Java's message.

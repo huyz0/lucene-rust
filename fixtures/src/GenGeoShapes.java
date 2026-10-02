@@ -393,7 +393,8 @@ public class GenGeoShapes {
     StringBuilder sb = new StringBuilder().append(id);
     if (id == SEGMENTS * DOCS_PER_SEGMENT) {
       // two polygons either side of the dateline: a CONTAINS box across it
-      // is the conjunction of its halves, and this document matches both
+      // is the conjunction of its halves. Lucene matches neither half: each
+      // reaches +-180, which the polygons' boundaries touch (NOTWITHIN)
       sb.append("\tshape\tG:0.0 170.0;0.0 180.0;10.0 180.0;10.0 170.0;0.0 170.0");
       sb.append("\tshape\tG:0.0 -180.0;0.0 -170.0;10.0 -170.0;10.0 -180.0;0.0 -180.0");
       return sb.toString();
