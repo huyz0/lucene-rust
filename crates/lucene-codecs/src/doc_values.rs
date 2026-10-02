@@ -2177,7 +2177,17 @@ impl<'a> SortedNumericReader<'a> {
             }
         };
         match &self.entry.addresses {
-            None => out.push(decode_value(self.data, numeric, rank)?),
+            // A singleton: the value of rank `rank`, through the resolved
+            // values array when its shape allows (one load), as below.
+            None => {
+                let fast = i32::try_from(rank)
+                    .ok()
+                    .and_then(|i| self.fast.as_ref()?.get(i));
+                out.push(match fast {
+                    Some(v) => v,
+                    None => decode_value(self.data, numeric, rank)?,
+                });
+            }
             Some(addrs) => {
                 let addr_region = region(self.data, addrs.offset, addrs.length)?;
                 let start = direct_monotonic::get(addr_region, &addrs.meta, rank)?;
