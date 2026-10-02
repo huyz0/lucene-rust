@@ -308,9 +308,10 @@ impl DocumentQuery for LatLonPointDistanceFeatureQuery {
         }
         let r = reader(leaf)?;
         let points: PointsReader<'_> = r.points_reader()?;
-        if points.field(info.number).is_none() {
+        let Some(pf) = points.field(info.number) else {
             return Ok(());
-        }
+        };
+        super::point_queries::check_points_shape(&info.name, pf)?;
         let Some(mut values) = sorted_numeric(leaf, info)? else {
             // `DocValues.emptySortedNumeric()`: no document to score.
             return Ok(());

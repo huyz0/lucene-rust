@@ -110,7 +110,18 @@ fn wrong_schemas_are_errors_and_missing_fields_match_nothing() {
         .unwrap();
     assert_eq!(s.hits, vec![(0, f64::INFINITY)]);
     let e = lat_lon_point::nearest(&leaves, "int", 0.0, 0.0, 2).unwrap_err();
-    assert!(e.to_string().contains("really a LatLonPoint"), "{e}");
+    assert!(e.to_string().contains("not a geo point's"), "{e}");
+    // The spatial and feature queries refuse it too, where Java would fail
+    // decoding a four-byte value as two dimensions.
+    let poly = lat_lon_point::new_polygon_query(
+        "int",
+        &[Polygon::new(&[0.0, 0.0, 1.0, 0.0], &[0.0, 1.0, 1.0, 0.0], vec![]).unwrap()],
+    )
+    .unwrap();
+    let e = search_all(&leaves, poly.as_ref()).unwrap_err();
+    assert!(e.to_string().contains("not a geo point's"), "{e}");
+    let feature = LatLonPointDistanceFeatureQuery::new("int", 0.0, 0.0, 1.0).unwrap();
+    assert!(search_all(&leaves, &feature).is_err());
     let n = lat_lon_point::nearest(&leaves, "s", 0.0, 0.0, 2).unwrap();
     assert_eq!(n.total_hits, 0);
 }
