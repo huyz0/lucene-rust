@@ -1176,6 +1176,22 @@ outright.
   class, message and offset; `DistanceUtils`; geohashes; S2 cell ids,
   levels, tokens, child positions and cell vertices. Run with the trig
   intrinsics off, like `GenGeo3d`. Deterministic (seeded, no index).
+- `GenSpatialPrefixTree.java` (M9 T9.5) — no index:
+  `spatial_prefix_tree/trees.tsv` for `lucene-util`'s
+  `spatial_prefix_tree_fixtures.rs`. Same classpath and JVM flags as
+  `GenSpatial4j`. Fourteen trees (`makeSPT`'s geohash, quad, packed quad
+  with and without pruning, S2, defaults and `maxDistErr`, over planar and
+  Geo3D contexts; S2 at arity 2 and 3 by its constructor): the cells of 70
+  random shapes per tree at random detail levels (tokens, leaf flags,
+  relations), terms read back with their shapes, prefixes, order,
+  relations and children. Both `DateRangePrefixTree`s (Java's hybrid
+  calendar and `JAVA_UTIL_TIME_COMPAT_CAL`): parse/format round trips,
+  random instants at random levels, month sub-cell counts across the
+  Julian/Gregorian change, ranges with their cells, 400 unit/span relations
+  and `readCell` round trips. `SpatialArgsParser` and `SpatialOperation`
+  over the contexts. Exceptions are recorded as class and message.
+  Deterministic (seeded, no index; identity hashes stripped from
+  `toString`).
 
 ## Manifest appenders
 

@@ -27,28 +27,28 @@ spatial/prefix/PrefixTreeStrategy	todo:M9	T9.5, not ported yet
 spatial/prefix/RecursivePrefixTreeStrategy	todo:M9	T9.5, not ported yet
 spatial/prefix/TermQueryPrefixTreeStrategy	todo:M9	T9.5, not ported yet
 spatial/prefix/WithinPrefixTreeQuery	todo:M9	T9.5, not ported yet
-spatial/prefix/tree/Cell	todo:M9	T9.5, not ported yet
-spatial/prefix/tree/CellCanPrune	todo:M9	T9.5, not ported yet
-spatial/prefix/tree/CellIterator	todo:M9	T9.5, not ported yet
-spatial/prefix/tree/DateRangePrefixTree	todo:M9	T9.5, not ported yet
-spatial/prefix/tree/FilterCellIterator	todo:M9	T9.5, not ported yet
-spatial/prefix/tree/GeohashPrefixTree	todo:M9	T9.5, not ported yet
-spatial/prefix/tree/LegacyCell	todo:M9	T9.5, not ported yet
-spatial/prefix/tree/LegacyPrefixTree	todo:M9	T9.5, not ported yet
-spatial/prefix/tree/NumberRangePrefixTree	todo:M9	T9.5, not ported yet
-spatial/prefix/tree/PackedQuadPrefixTree	todo:M9	T9.5, not ported yet
-spatial/prefix/tree/QuadPrefixTree	todo:M9	T9.5, not ported yet
-spatial/prefix/tree/S2PrefixTree	todo:M9	T9.5, not ported yet
-spatial/prefix/tree/S2PrefixTreeCell	todo:M9	T9.5, not ported yet
+spatial/prefix/tree/Cell	ported	crates/lucene-util/src/spatial_extras/prefix_tree/mod.rs::Cell
+spatial/prefix/tree/CellCanPrune	ported	crates/lucene-util/src/spatial_extras/prefix_tree/mod.rs::sub_cells_size
+spatial/prefix/tree/CellIterator	ported	crates/lucene-util/src/spatial_extras/prefix_tree/mod.rs::CellIterator
+spatial/prefix/tree/DateRangePrefixTree	ported	crates/lucene-util/src/spatial_extras/prefix_tree/date_range.rs::DateRangePrefixTree
+spatial/prefix/tree/FilterCellIterator	ported	crates/lucene-util/src/spatial_extras/prefix_tree/mod.rs::FilterCellIterator
+spatial/prefix/tree/GeohashPrefixTree	ported	crates/lucene-util/src/spatial_extras/prefix_tree/geohash.rs::GeohashPrefixTree
+spatial/prefix/tree/LegacyCell	ported	crates/lucene-util/src/spatial_extras/prefix_tree/legacy.rs::LegacyCell
+spatial/prefix/tree/LegacyPrefixTree	ported	crates/lucene-util/src/spatial_extras/prefix_tree/legacy.rs::LegacyGrid
+spatial/prefix/tree/NumberRangePrefixTree	ported	crates/lucene-util/src/spatial_extras/prefix_tree/number_range.rs::NumberRangePrefixTree
+spatial/prefix/tree/PackedQuadPrefixTree	ported	crates/lucene-util/src/spatial_extras/prefix_tree/packed_quad.rs::PackedQuadPrefixTree
+spatial/prefix/tree/QuadPrefixTree	ported	crates/lucene-util/src/spatial_extras/prefix_tree/quad.rs::QuadPrefixTree
+spatial/prefix/tree/S2PrefixTree	ported	crates/lucene-util/src/spatial_extras/prefix_tree/s2.rs::S2PrefixTree
+spatial/prefix/tree/S2PrefixTreeCell	ported	crates/lucene-util/src/spatial_extras/prefix_tree/s2.rs::S2PrefixTreeCell
 spatial/prefix/tree/S2ShapeFactory	ported	crates/lucene-util/src/spatial_extras/prefix_tree/mod.rs::S2ShapeFactory
-spatial/prefix/tree/SingletonCellIterator	todo:M9	T9.5, not ported yet
-spatial/prefix/tree/SpatialPrefixTree	todo:M9	T9.5, not ported yet
-spatial/prefix/tree/SpatialPrefixTreeFactory	todo:M9	T9.5, not ported yet
-spatial/prefix/tree/TreeCellIterator	todo:M9	T9.5, not ported yet
-spatial/query/SpatialArgs	todo:M9	T9.5, not ported yet
-spatial/query/SpatialArgsParser	todo:M9	T9.5, not ported yet
-spatial/query/SpatialOperation	todo:M9	T9.5, not ported yet
-spatial/query/UnsupportedSpatialOperation	todo:M9	T9.5, not ported yet
+spatial/prefix/tree/SingletonCellIterator	ported	crates/lucene-util/src/spatial_extras/prefix_tree/mod.rs::SingletonCellIterator
+spatial/prefix/tree/SpatialPrefixTree	ported	crates/lucene-util/src/spatial_extras/prefix_tree/mod.rs::SpatialPrefixTree
+spatial/prefix/tree/SpatialPrefixTreeFactory	ported	crates/lucene-util/src/spatial_extras/prefix_tree/mod.rs::make_spt
+spatial/prefix/tree/TreeCellIterator	ported	crates/lucene-util/src/spatial_extras/prefix_tree/mod.rs::TreeCellIterator
+spatial/query/SpatialArgs	ported	crates/lucene-util/src/spatial_extras/query.rs::SpatialArgs
+spatial/query/SpatialArgsParser	ported	crates/lucene-util/src/spatial_extras/query.rs::SpatialArgsParser
+spatial/query/SpatialOperation	ported	crates/lucene-util/src/spatial_extras/query.rs::SpatialOperation
+spatial/query/UnsupportedSpatialOperation	ported	crates/lucene-util/src/spatial_extras/query.rs::unsupported
 spatial/serialized/SerializedDVStrategy	todo:M9	T9.5, not ported yet
 spatial/spatial4j/Geo3dBinaryCodec	ported	crates/lucene-util/src/spatial_extras/spatial4j.rs::Geo3dBinaryCodec
 spatial/spatial4j/Geo3dCircleShape	ported	crates/lucene-util/src/spatial_extras/spatial4j.rs::Geo3dShape -- one struct with a kind stands for the four shape classes (new_circle)
