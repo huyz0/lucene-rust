@@ -106,7 +106,10 @@ jobs:
       # and every "ported" row names Rust code that exists. The jar is fetched
       # from Maven Central here; see docs/mechanical-gates.md#port-inventory.
       - name: Port inventory
-        run: python3 scripts/check-port-inventory.py && python3 scripts/check-port-inventory.py --module backward-codecs
+        run: |
+          python3 scripts/check-port-inventory.py
+          python3 scripts/check-port-inventory.py --module backward-codecs
+          python3 scripts/check-port-inventory.py --module spatial3d
 
       - name: docs/parity.md consistency
         run: python3 scripts/check-parity.py

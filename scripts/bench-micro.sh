@@ -117,6 +117,24 @@ case "$BENCH" in
   geo)
     MAIN=GeoMicro
     SRC=benchmarks/micro/java/GeoMicro.java ;;
+  geo3d)
+    # M9 T9.4's pair (Geo3dMicro.java / micro_geo3d.rs): geo3d shape
+    # construction, x/y/z cell relations, membership and distances, over
+    # inputs both sides draw from the same SplitMix64 stream.
+    MAIN=Geo3dMicro
+    SRC=benchmarks/micro/java/Geo3dMicro.java
+    JAR_MODULES="lucene-core lucene-spatial3d" ;;
+  geo3d_points)
+    # M9 T9.4's query pair (Geo3dPointsMicro.java / micro_geo3d_points.rs):
+    # PointInGeo3DShapeQuery and the distance sorts over the 300 000-point
+    # index Geo3dPointsMicro builds (once) under benchmarks/.corpus/geo3d-points.
+    MAIN=Geo3dPointsMicro
+    SRC=benchmarks/micro/java/Geo3dPointsMicro.java
+    JAR_MODULES="lucene-core lucene-analysis-common lucene-spatial3d"
+    INDEX="${INDEX_ARG:-$PWD/benchmarks/.corpus/geo3d-points}"
+    PREP_ARGS=(build "$INDEX")
+    JAVA_ARGS=(run)
+    NEEDS_INDEX=1 ;;
   geo_points)
     # Both engines read the million-point index GeoPointsMicro builds (once)
     # under benchmarks/.corpus/geo-points, with its query set beside it.

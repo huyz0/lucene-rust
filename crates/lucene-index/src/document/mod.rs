@@ -35,6 +35,7 @@ mod date_tools;
 mod doc_values;
 mod feature;
 mod geo;
+pub mod geo3d;
 mod indexing;
 mod inet_address;
 mod late_interaction;
@@ -66,6 +67,7 @@ pub use geo::{
     doc_value_high, doc_value_low, pack_doc_value, LatLonDocValuesField, LatLonPoint,
     XYDocValuesField, XYPointField,
 };
+pub use geo3d::{Geo3DDocValuesField, Geo3DPoint};
 pub use inet_address::InetAddressPoint;
 pub use late_interaction::LateInteractionField;
 pub use numeric::{

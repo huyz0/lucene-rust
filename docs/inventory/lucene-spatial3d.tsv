@@ -1,0 +1,106 @@
+# Lucene 10.5.0 lucene-spatial3d: every top-level class of the jar, and what became of it.
+# Checked by scripts/check-port-inventory.py --module spatial3d (see its docstring for the statuses).
+# class	status	detail
+spatial3d/Geo3DDocValuesField	ported	crates/lucene-index/src/document/geo3d.rs::Geo3DDocValuesField -- its sort factories are lucene-search document/geo/geo3d.rs::geo3d_doc_values_field
+spatial3d/Geo3DPoint	ported	crates/lucene-index/src/document/geo3d.rs::Geo3DPoint -- its query factories are lucene-search document/geo/geo3d.rs::geo3d_point
+spatial3d/Geo3DPointDistanceComparator	ported	crates/lucene-search/src/document/geo/sort.rs::Geo3DDistance -- each document's own values are read (Lucene's re-reads a multi-valued document's values in copy(); see docs/parity.md)
+spatial3d/Geo3DPointOutsideDistanceComparator	ported	crates/lucene-search/src/document/geo/sort.rs::Geo3DOutsideDistance -- as the distance comparator
+spatial3d/Geo3DPointOutsideSortField	ported	crates/lucene-search/src/document/geo/sort.rs::Geo3DPointOutsideSortField
+spatial3d/Geo3DPointSortField	ported	crates/lucene-search/src/document/geo/sort.rs::Geo3DPointSortField
+spatial3d/Geo3DUtil	ported	crates/lucene-search/src/document/geo/geo3d.rs::from_polygon -- with from_large_polygon, from_path, from_distance, from_box, decode_value_floor/ceil; fromDegrees is lucene-index document/geo3d.rs::from_degrees
+spatial3d/PointInGeo3DShapeQuery	ported	crates/lucene-search/src/document/geo/geo3d.rs::PointInGeo3DShapeQuery
+spatial3d/PointInShapeIntersectVisitor	ported	crates/lucene-search/src/document/geo/geo3d.rs::ShapeVisitor
+spatial3d/geom/ArcDistance	ported	crates/lucene-util/src/spatial3d/distance_style.rs::DistanceStyle -- the five Java distance classes are one enum; this is DistanceStyle::Arc
+spatial3d/geom/BasePlanetObject	ported	crates/lucene-util/src/spatial3d/shape.rs::PlanetObject -- the abstract base is the trait
+spatial3d/geom/BaseXYZSolid	ported	crates/lucene-util/src/spatial3d/xyz_solid.rs::XYZSolid -- the shared solid code is free functions beside the trait
+spatial3d/geom/Bounded	ported	crates/lucene-util/src/spatial3d/bounds.rs::Bounded
+spatial3d/geom/Bounds	ported	crates/lucene-util/src/spatial3d/bounds.rs::Bounds
+spatial3d/geom/DistanceStyle	ported	crates/lucene-util/src/spatial3d/distance_style.rs::DistanceStyle
+spatial3d/geom/GeoArea	ported	crates/lucene-util/src/spatial3d/shape.rs::GeoArea
+spatial3d/geom/GeoAreaFactory	ported	crates/lucene-util/src/spatial3d/geo_area_factory.rs::make_geo_area
+spatial3d/geom/GeoAreaShape	ported	crates/lucene-util/src/spatial3d/shape.rs::GeoAreaShape
+spatial3d/geom/GeoBBox	ported	crates/lucene-util/src/spatial3d/shape.rs::GeoBBox
+spatial3d/geom/GeoBBoxFactory	ported	crates/lucene-util/src/spatial3d/geo_bbox_factory.rs::make_geo_bbox
+spatial3d/geom/GeoBaseAreaShape	ported	crates/lucene-util/src/spatial3d/shape.rs::base_get_relationship -- the abstract base as a free function
+spatial3d/geom/GeoBaseBBox	ported	crates/lucene-util/src/spatial3d/shape.rs::GeoBBox -- an empty abstract base
+spatial3d/geom/GeoBaseBounds	ported	crates/lucene-util/src/spatial3d/shape.rs::base_get_bounds -- the abstract base as a free function
+spatial3d/geom/GeoBaseCircle	ported	crates/lucene-util/src/spatial3d/shape.rs::GeoCircle -- an empty abstract base
+spatial3d/geom/GeoBaseCompositeAreaShape	ported	crates/lucene-util/src/spatial3d/geo_composite.rs::composite_area_shape -- the generic bases are one macro per member interface
+spatial3d/geom/GeoBaseCompositeMembershipShape	ported	crates/lucene-util/src/spatial3d/geo_composite.rs::composite_shape -- the generic bases are one macro per member interface
+spatial3d/geom/GeoBaseCompositeShape	ported	crates/lucene-util/src/spatial3d/geo_composite.rs::composite_shape -- the generic bases are one macro per member interface
+spatial3d/geom/GeoBaseDistanceShape	ported	crates/lucene-util/src/spatial3d/shape.rs::impl_distance_shape -- the abstract base as a macro
+spatial3d/geom/GeoBaseMembershipShape	ported	crates/lucene-util/src/spatial3d/shape.rs::impl_membership_shape -- the abstract base as a macro
+spatial3d/geom/GeoBasePath	ported	crates/lucene-util/src/spatial3d/shape.rs::GeoPath -- an empty abstract base
+spatial3d/geom/GeoBasePolygon	ported	crates/lucene-util/src/spatial3d/shape.rs::GeoPolygon -- an empty abstract base
+spatial3d/geom/GeoBaseShape	ported	crates/lucene-util/src/spatial3d/shape.rs::base_get_bounds -- the abstract base as a free function
+spatial3d/geom/GeoBounds	ported	crates/lucene-util/src/spatial3d/shape.rs::GeoBounds
+spatial3d/geom/GeoCircle	ported	crates/lucene-util/src/spatial3d/shape.rs::GeoCircle
+spatial3d/geom/GeoCircleFactory	ported	crates/lucene-util/src/spatial3d/geo_circle_factory.rs::make_geo_circle
+spatial3d/geom/GeoComplexPolygon	ported	crates/lucene-util/src/spatial3d/geo_complex_polygon.rs::GeoComplexPolygon
+spatial3d/geom/GeoCompositeAreaShape	ported	crates/lucene-util/src/spatial3d/geo_composite.rs::GeoCompositeAreaShape
+spatial3d/geom/GeoCompositeMembershipShape	ported	crates/lucene-util/src/spatial3d/geo_composite.rs::GeoCompositeMembershipShape
+spatial3d/geom/GeoCompositePolygon	ported	crates/lucene-util/src/spatial3d/geo_composite.rs::GeoCompositePolygon
+spatial3d/geom/GeoConcavePolygon	ported	crates/lucene-util/src/spatial3d/geo_convex_polygon.rs::GeoConcavePolygon -- shares EdgePolygon with GeoConvexPolygon
+spatial3d/geom/GeoConvexPolygon	ported	crates/lucene-util/src/spatial3d/geo_convex_polygon.rs::GeoConvexPolygon
+spatial3d/geom/GeoDegenerateHorizontalLine	ported	crates/lucene-util/src/spatial3d/geo_degenerate_horizontal_line.rs::GeoDegenerateHorizontalLine
+spatial3d/geom/GeoDegenerateLatitudeZone	ported	crates/lucene-util/src/spatial3d/geo_degenerate_vertical_line.rs::GeoDegenerateLatitudeZone
+spatial3d/geom/GeoDegenerateLongitudeSlice	ported	crates/lucene-util/src/spatial3d/geo_degenerate_vertical_line.rs::GeoDegenerateLongitudeSlice
+spatial3d/geom/GeoDegeneratePath	ported	crates/lucene-util/src/spatial3d/geo_degenerate_path.rs::GeoDegeneratePath
+spatial3d/geom/GeoDegeneratePoint	ported	crates/lucene-util/src/spatial3d/geo_degenerate_point.rs::GeoDegeneratePoint
+spatial3d/geom/GeoDegenerateVerticalLine	ported	crates/lucene-util/src/spatial3d/geo_degenerate_vertical_line.rs::GeoDegenerateVerticalLine
+spatial3d/geom/GeoDistance	ported	crates/lucene-util/src/spatial3d/shape.rs::GeoDistance
+spatial3d/geom/GeoDistanceShape	ported	crates/lucene-util/src/spatial3d/shape.rs::GeoDistanceShape
+spatial3d/geom/GeoExactCircle	ported	crates/lucene-util/src/spatial3d/geo_exact_circle.rs::GeoExactCircle
+spatial3d/geom/GeoLatitudeZone	ported	crates/lucene-util/src/spatial3d/geo_latitude_zone.rs::GeoLatitudeZone
+spatial3d/geom/GeoLongitudeSlice	ported	crates/lucene-util/src/spatial3d/geo_longitude_slice.rs::GeoLongitudeSlice
+spatial3d/geom/GeoMembershipShape	ported	crates/lucene-util/src/spatial3d/shape.rs::GeoMembershipShape
+spatial3d/geom/GeoNorthLatitudeZone	ported	crates/lucene-util/src/spatial3d/geo_latitude_zone.rs::GeoNorthLatitudeZone
+spatial3d/geom/GeoNorthRectangle	ported	crates/lucene-util/src/spatial3d/geo_north_rectangle.rs::GeoNorthRectangle
+spatial3d/geom/GeoOutsideDistance	ported	crates/lucene-util/src/spatial3d/shape.rs::GeoOutsideDistance
+spatial3d/geom/GeoPath	ported	crates/lucene-util/src/spatial3d/shape.rs::GeoPath
+spatial3d/geom/GeoPathFactory	ported	crates/lucene-util/src/spatial3d/geo_path_factory.rs::make_geo_path
+spatial3d/geom/GeoPoint	ported	crates/lucene-util/src/spatial3d/geo_point.rs::GeoPoint
+spatial3d/geom/GeoPointShape	ported	crates/lucene-util/src/spatial3d/shape.rs::GeoPointShape
+spatial3d/geom/GeoPointShapeFactory	ported	crates/lucene-util/src/spatial3d/geo_s2_shape.rs::make_geo_point_shape
+spatial3d/geom/GeoPolygon	ported	crates/lucene-util/src/spatial3d/shape.rs::GeoPolygon
+spatial3d/geom/GeoPolygonFactory	ported	crates/lucene-util/src/spatial3d/geo_polygon_factory.rs::make_geo_polygon
+spatial3d/geom/GeoRectangle	ported	crates/lucene-util/src/spatial3d/geo_rectangle.rs::GeoRectangle
+spatial3d/geom/GeoS2Shape	ported	crates/lucene-util/src/spatial3d/geo_s2_shape.rs::GeoS2Shape
+spatial3d/geom/GeoS2ShapeFactory	ported	crates/lucene-util/src/spatial3d/geo_s2_shape.rs::make_geo_s2_shape
+spatial3d/geom/GeoShape	ported	crates/lucene-util/src/spatial3d/shape.rs::GeoShape
+spatial3d/geom/GeoSizeable	ported	crates/lucene-util/src/spatial3d/shape.rs::GeoSizeable
+spatial3d/geom/GeoSouthLatitudeZone	ported	crates/lucene-util/src/spatial3d/geo_latitude_zone.rs::GeoSouthLatitudeZone
+spatial3d/geom/GeoSouthRectangle	ported	crates/lucene-util/src/spatial3d/geo_south_rectangle.rs::GeoSouthRectangle
+spatial3d/geom/GeoStandardCircle	ported	crates/lucene-util/src/spatial3d/geo_standard_circle.rs::GeoStandardCircle
+spatial3d/geom/GeoStandardPath	ported	crates/lucene-util/src/spatial3d/geo_standard_path.rs::GeoStandardPath
+spatial3d/geom/GeoWideDegenerateHorizontalLine	ported	crates/lucene-util/src/spatial3d/geo_degenerate_horizontal_line.rs::GeoWideDegenerateHorizontalLine
+spatial3d/geom/GeoWideLongitudeSlice	ported	crates/lucene-util/src/spatial3d/geo_longitude_slice.rs::GeoWideLongitudeSlice
+spatial3d/geom/GeoWideNorthRectangle	ported	crates/lucene-util/src/spatial3d/geo_wide_north_rectangle.rs::GeoWideNorthRectangle
+spatial3d/geom/GeoWideRectangle	ported	crates/lucene-util/src/spatial3d/geo_wide_rectangle.rs::GeoWideRectangle
+spatial3d/geom/GeoWideSouthRectangle	ported	crates/lucene-util/src/spatial3d/geo_wide_south_rectangle.rs::GeoWideSouthRectangle
+spatial3d/geom/GeoWorld	ported	crates/lucene-util/src/spatial3d/geo_world.rs::GeoWorld
+spatial3d/geom/LatLonBounds	ported	crates/lucene-util/src/spatial3d/lat_lon_bounds.rs::LatLonBounds
+spatial3d/geom/LinearDistance	ported	crates/lucene-util/src/spatial3d/distance_style.rs::DistanceStyle -- DistanceStyle::Linear
+spatial3d/geom/LinearSquaredDistance	ported	crates/lucene-util/src/spatial3d/distance_style.rs::DistanceStyle -- DistanceStyle::LinearSquared
+spatial3d/geom/Membership	ported	crates/lucene-util/src/spatial3d/membership.rs::Membership
+spatial3d/geom/NormalDistance	ported	crates/lucene-util/src/spatial3d/distance_style.rs::DistanceStyle -- DistanceStyle::Normal
+spatial3d/geom/NormalSquaredDistance	ported	crates/lucene-util/src/spatial3d/distance_style.rs::DistanceStyle -- DistanceStyle::NormalSquared
+spatial3d/geom/Plane	ported	crates/lucene-util/src/spatial3d/plane.rs::Plane
+spatial3d/geom/PlanetModel	ported	crates/lucene-util/src/spatial3d/planet_model.rs::PlanetModel
+spatial3d/geom/PlanetObject	ported	crates/lucene-util/src/spatial3d/shape.rs::PlanetObject
+spatial3d/geom/SerializableObject	ported	crates/lucene-util/src/spatial3d/shape.rs::SerializableObject -- the stream helpers are serializable.rs and standard_objects.rs
+spatial3d/geom/SidedPlane	ported	crates/lucene-util/src/spatial3d/sided_plane.rs::SidedPlane
+spatial3d/geom/StandardObjects	ported	crates/lucene-util/src/spatial3d/standard_objects.rs::CLASS_NAMES
+spatial3d/geom/StandardXYZSolid	ported	crates/lucene-util/src/spatial3d/xyz_solid.rs::StandardXYZSolid
+spatial3d/geom/Tools	ported	crates/lucene-util/src/spatial3d/tools.rs::safe_acos
+spatial3d/geom/Vector	ported	crates/lucene-util/src/spatial3d/vector.rs::Vector
+spatial3d/geom/XYZBounds	ported	crates/lucene-util/src/spatial3d/xyz_bounds.rs::XYZBounds
+spatial3d/geom/XYZSolid	ported	crates/lucene-util/src/spatial3d/xyz_solid.rs::XYZSolid
+spatial3d/geom/XYZSolidFactory	ported	crates/lucene-util/src/spatial3d/xyz_solid.rs::make_xyz_solid
+spatial3d/geom/XYdZSolid	ported	crates/lucene-util/src/spatial3d/xyz_solid.rs::XYdZSolid
+spatial3d/geom/XdYZSolid	ported	crates/lucene-util/src/spatial3d/xyz_solid.rs::XdYZSolid
+spatial3d/geom/XdYdZSolid	ported	crates/lucene-util/src/spatial3d/xyz_solid.rs::XdYdZSolid
+spatial3d/geom/dXYZSolid	ported	crates/lucene-util/src/spatial3d/xyz_solid.rs::DXYZSolid
+spatial3d/geom/dXYdZSolid	ported	crates/lucene-util/src/spatial3d/xyz_solid.rs::DXYdZSolid
+spatial3d/geom/dXdYZSolid	ported	crates/lucene-util/src/spatial3d/xyz_solid.rs::DXdYZSolid
+spatial3d/geom/dXdYdZSolid	ported	crates/lucene-util/src/spatial3d/xyz_solid.rs::DXdYdZSolid

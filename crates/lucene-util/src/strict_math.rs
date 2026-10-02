@@ -1,4 +1,5 @@
-//! `java.lang.StrictMath`'s `sin`, `cos`, `asin`, `acos` and `hypot`: the fdlibm
+//! `java.lang.StrictMath`'s `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`
+//! and `hypot`: the fdlibm
 //! algorithms Java specifies bit for bit (`java.lang.FdLibm`).
 //!
 //! Lucene's geo code and `SloppyMath` depend on these exact bits: SloppyMath
@@ -423,6 +424,274 @@ pub fn hypot(x: f64, y: f64) -> f64 {
     }
 }
 
+/// fdlibm `__kernel_tan`'s coefficients (`T[0..12]`), then `pio4`/`pio4lo`.
+const TAN_T: [f64; 13] = [
+    f64::from_bits(0x3FD5_5555_5555_5563),
+    f64::from_bits(0x3FC1_1111_1110_FE7A),
+    f64::from_bits(0x3FAB_A1BA_1BB3_41FE),
+    f64::from_bits(0x3F96_64F4_8406_D637),
+    f64::from_bits(0x3F82_26E3_E96E_8493),
+    f64::from_bits(0x3F6D_6D22_C956_0328),
+    f64::from_bits(0x3F57_DBC8_FEE0_8315),
+    f64::from_bits(0x3F43_44D8_F2F2_6501),
+    f64::from_bits(0x3F30_26F7_1A8D_1068),
+    f64::from_bits(0x3F14_7E88_A037_92A6),
+    f64::from_bits(0x3F12_B80F_32F0_A7E9),
+    f64::from_bits(0xBEF3_75CB_DB60_5373),
+    f64::from_bits(0x3EFB_2A70_74BF_7AD4),
+];
+const PIO4_LO: f64 = f64::from_bits(0x3C81_A626_3314_5C07);
+
+/// `x` with its low word replaced by zero, `__LO(x) = 0`.
+#[inline]
+fn lo_zero(x: f64) -> f64 {
+    with_lo_zero(x)
+}
+
+/// fdlibm `__kernel_tan(x, y, iy)` on `[-pi/4, pi/4]` (`FdLibm.Tan.kernelTan`):
+/// `tan(x + y)` when `iy == 1`, `-1 / tan(x + y)` when `iy == -1`.
+fn kernel_tan(mut x: f64, mut y: f64, iy: i32) -> f64 {
+    let hx = hi(x);
+    let ix = hx & 0x7fff_ffff;
+    if ix < 0x3e30_0000 && (x as i32) == 0 {
+        // |x| < 2^-28
+        if ((ix as u32 | lo(x)) | (iy + 1) as u32) == 0 {
+            return 1.0 / x.abs();
+        } else if iy == 1 {
+            return x;
+        } else {
+            // compute -1 / (x + y) carefully
+            let w = x + y;
+            let z = lo_zero(w);
+            let v = y - (z - x);
+            let a = -1.0 / w;
+            let t = lo_zero(a);
+            let s = 1.0 + t * z;
+            return t + a * (s + t * v);
+        }
+    }
+    if ix >= 0x3FE5_9428 {
+        // |x| >= 0.6744
+        if hx < 0 {
+            x = -x;
+            y = -y;
+        }
+        let z = PIO4_HI - x;
+        let w = PIO4_LO - y;
+        x = z + w;
+        y = 0.0;
+    }
+    let t = &TAN_T;
+    let z = x * x;
+    let w = z * z;
+    let r = t[1] + w * (t[3] + w * (t[5] + w * (t[7] + w * (t[9] + w * t[11]))));
+    let v = z * (t[2] + w * (t[4] + w * (t[6] + w * (t[8] + w * (t[10] + w * t[12])))));
+    let s = z * x;
+    let mut r = y + z * (s * (r + v) + y);
+    r += t[0] * s;
+    let w = x + r;
+    if ix >= 0x3FE5_9428 {
+        let v = f64::from(iy);
+        return f64::from(1 - ((hx >> 30) & 2)) * (v - 2.0 * (x - (w * w / (w + v) - r)));
+    }
+    if iy == 1 {
+        w
+    } else {
+        // compute -1.0 / (x + r) accurately
+        let z = lo_zero(w);
+        let v = r - (z - x);
+        let a = -1.0 / w;
+        let t = lo_zero(a);
+        let s = 1.0 + t * z;
+        t + a * (s + t * v)
+    }
+}
+
+/// `StrictMath.tan` (fdlibm `s_tan.c`). `Math.tan` is a HotSpot intrinsic
+/// on x86-64 whose last bit can differ; see `spatial3d`'s module doc.
+pub fn tan(x: f64) -> f64 {
+    let ix = hi(x) & 0x7fff_ffff;
+    if ix <= 0x3fe9_21fb {
+        return kernel_tan(x, 0.0, 1);
+    }
+    if ix >= 0x7ff0_0000 {
+        return x - x;
+    }
+    match rem_pio2(x) {
+        Some((n, y0, y1)) => kernel_tan(y0, y1, 1 - ((n & 1) << 1)),
+        None => x.tan(),
+    }
+}
+
+const ATAN_HI: [f64; 4] = [
+    f64::from_bits(0x3FDD_AC67_0561_BB4F),
+    f64::from_bits(0x3FE9_21FB_5444_2D18),
+    f64::from_bits(0x3FEF_730B_D281_F69B),
+    f64::from_bits(0x3FF9_21FB_5444_2D18),
+];
+const ATAN_LO: [f64; 4] = [
+    f64::from_bits(0x3C7A_2B7F_222F_65E2),
+    f64::from_bits(0x3C81_A626_3314_5C07),
+    f64::from_bits(0x3C70_0788_7AF0_CBBD),
+    f64::from_bits(0x3C91_A626_3314_5C07),
+];
+const AT: [f64; 11] = [
+    f64::from_bits(0x3FD5_5555_5555_550D),
+    f64::from_bits(0xBFC9_9999_9998_EBC4),
+    f64::from_bits(0x3FC2_4924_9200_83FF),
+    f64::from_bits(0xBFBC_71C6_FE23_1671),
+    f64::from_bits(0x3FB7_45CD_C54C_206E),
+    f64::from_bits(0xBFB3_B0F2_AF74_9A6D),
+    f64::from_bits(0x3FB1_0D66_A0D0_3D51),
+    f64::from_bits(0xBFAD_DE2D_52DE_FD9A),
+    f64::from_bits(0x3FA9_7B4B_2476_0DEB),
+    f64::from_bits(0xBFA2_B444_2C6A_6C2F),
+    f64::from_bits(0x3F90_AD3A_E322_DA11),
+];
+
+/// `StrictMath.atan` (fdlibm `s_atan.c`); `Math.atan` delegates to it.
+pub fn atan(x: f64) -> f64 {
+    let hx = hi(x);
+    let ix = hx & 0x7fff_ffff;
+    let mut x = x;
+    let id: i32;
+    if ix >= 0x4410_0000 {
+        // |x| >= 2^66
+        if ix > 0x7ff0_0000 || (ix == 0x7ff0_0000 && lo(x) != 0) {
+            return x + x; // NaN
+        }
+        return if hx > 0 {
+            ATAN_HI[3] + ATAN_LO[3]
+        } else {
+            -ATAN_HI[3] - ATAN_LO[3]
+        };
+    }
+    if ix < 0x3fdc_0000 {
+        // |x| < 0.4375
+        if ix < 0x3e20_0000 {
+            // |x| < 2^-29; fdlibm's `huge + x > one` is always true
+            return x;
+        }
+        id = -1;
+    } else {
+        x = x.abs();
+        if ix < 0x3ff3_0000 {
+            // |x| < 1.1875
+            if ix < 0x3fe6_0000 {
+                // 7/16 <= |x| < 11/16
+                id = 0;
+                x = (2.0 * x - 1.0) / (2.0 + x);
+            } else {
+                // 11/16 <= |x| < 19/16
+                id = 1;
+                x = (x - 1.0) / (x + 1.0);
+            }
+        } else if ix < 0x4003_8000 {
+            // |x| < 2.4375
+            id = 2;
+            x = (x - 1.5) / (1.0 + 1.5 * x);
+        } else {
+            // 2.4375 <= |x| < 2^66
+            id = 3;
+            x = -1.0 / x;
+        }
+    }
+    let z = x * x;
+    let w = z * z;
+    let s1 = z * (AT[0] + w * (AT[2] + w * (AT[4] + w * (AT[6] + w * (AT[8] + w * AT[10])))));
+    let s2 = w * (AT[1] + w * (AT[3] + w * (AT[5] + w * (AT[7] + w * AT[9]))));
+    if id < 0 {
+        x - x * (s1 + s2)
+    } else {
+        let i = id as usize;
+        let z = ATAN_HI[i] - ((x * (s1 + s2) - ATAN_LO[i]) - x);
+        if hx < 0 {
+            -z
+        } else {
+            z
+        }
+    }
+}
+
+/// `StrictMath.atan2` (fdlibm `e_atan2.c`); `Math.atan2` delegates to it.
+pub fn atan2(y: f64, x: f64) -> f64 {
+    const TINY: f64 = 1.0e-300;
+    const PI_O_4: f64 = f64::from_bits(0x3FE9_21FB_5444_2D18);
+    const PI_O_2: f64 = f64::from_bits(0x3FF9_21FB_5444_2D18);
+    const PI_LO: f64 = f64::from_bits(0x3CA1_A626_3314_5C07);
+    let hx = hi(x);
+    let ix = hx & 0x7fff_ffff;
+    let lx = lo(x);
+    let hy = hi(y);
+    let iy = hy & 0x7fff_ffff;
+    let ly = lo(y);
+    if (ix as u32 | ((lx | lx.wrapping_neg()) >> 31)) > 0x7ff0_0000
+        || (iy as u32 | ((ly | ly.wrapping_neg()) >> 31)) > 0x7ff0_0000
+    {
+        return x + y; // x or y is NaN
+    }
+    if (hx.wrapping_sub(0x3ff0_0000) as u32 | lx) == 0 {
+        return atan(y); // x = 1.0
+    }
+    let m = ((hy >> 31) & 1) | ((hx >> 30) & 2); // 2 * sign(x) + sign(y)
+    if (iy as u32 | ly) == 0 {
+        // y = 0
+        return match m {
+            0 | 1 => y,
+            2 => PI + TINY,
+            _ => -PI - TINY,
+        };
+    }
+    if (ix as u32 | lx) == 0 {
+        // x = 0
+        return if hy < 0 {
+            -PI_O_2 - TINY
+        } else {
+            PI_O_2 + TINY
+        };
+    }
+    if ix == 0x7ff0_0000 {
+        // x is INF
+        if iy == 0x7ff0_0000 {
+            return match m {
+                0 => PI_O_4 + TINY,
+                1 => -PI_O_4 - TINY,
+                2 => 3.0 * PI_O_4 + TINY,
+                _ => -3.0 * PI_O_4 - TINY,
+            };
+        }
+        return match m {
+            0 => 0.0,
+            1 => -0.0,
+            2 => PI + TINY,
+            _ => -PI - TINY,
+        };
+    }
+    if iy == 0x7ff0_0000 {
+        // y is INF
+        return if hy < 0 {
+            -PI_O_2 - TINY
+        } else {
+            PI_O_2 + TINY
+        };
+    }
+    // compute y / x
+    let k = (iy - ix) >> 20;
+    let z = if k > 60 {
+        PI_O_2 + 0.5 * PI_LO // |y / x| > 2^60
+    } else if hx < 0 && k < -60 {
+        0.0 // |y| / x < -2^60
+    } else {
+        atan((y / x).abs())
+    };
+    match m {
+        0 => z,
+        1 => -z, // `__HI(z) ^= 0x80000000`
+        2 => PI - (z - PI_LO),
+        _ => (z - PI_LO) - PI,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -476,6 +745,57 @@ mod tests {
         assert_eq!(acos(-1.0), std::f64::consts::PI);
         assert!(acos(-1.5).is_nan());
         assert_eq!(acos(1e-20), std::f64::consts::FRAC_PI_2);
+    }
+
+    #[test]
+    fn tan_atan_atan2_special_values() {
+        use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI};
+        // tan: NaN for infinities and NaN, odd, exact near zero, and the
+        // platform fallback past fdlibm's reduction range.
+        assert!(tan(f64::INFINITY).is_nan());
+        assert!(tan(f64::NAN).is_nan());
+        assert_eq!(tan(0.0), 0.0);
+        assert_eq!(tan(1e-300), 1e-300);
+        assert_eq!(tan(-0.5).to_bits(), (-tan(0.5)).to_bits());
+        assert!((tan(1e10) - 1e10f64.tan()).abs() < 1e-6);
+        assert!((tan(FRAC_PI_4) - 1.0).abs() < 1e-15);
+        // atan: NaN, saturation at +-pi/2, tiny arguments, every interval.
+        assert!(atan(f64::NAN).is_nan());
+        assert_eq!(atan(1e300), FRAC_PI_2);
+        assert_eq!(atan(-1e300), -FRAC_PI_2);
+        assert_eq!(atan(f64::INFINITY), FRAC_PI_2);
+        assert_eq!(atan(1e-30), 1e-30);
+        for x in [0.3, 0.6, 1.0, 1.5, 2.0, 3.0, 40.0, -0.6, -2.0, -40.0] {
+            assert!((atan(x) - x.atan()).abs() <= 2e-16 * x.atan().abs(), "{x}");
+        }
+        // atan2: NaN, zeros, infinities, the axes, huge and tiny ratios.
+        assert!(atan2(f64::NAN, 1.0).is_nan());
+        assert!(atan2(1.0, f64::NAN).is_nan());
+        assert_eq!(atan2(0.5, 1.0).to_bits(), atan(0.5).to_bits());
+        assert_eq!(atan2(0.0, 1.0), 0.0);
+        assert_eq!(atan2(-0.0, 1.0).to_bits(), (-0.0f64).to_bits());
+        assert_eq!(atan2(0.0, -1.0), PI);
+        assert_eq!(atan2(-0.0, -1.0), -PI);
+        assert_eq!(atan2(1.0, 0.0), FRAC_PI_2);
+        assert_eq!(atan2(-1.0, 0.0), -FRAC_PI_2);
+        assert_eq!(atan2(f64::INFINITY, f64::INFINITY), FRAC_PI_4);
+        assert_eq!(atan2(-f64::INFINITY, f64::INFINITY), -FRAC_PI_4);
+        assert_eq!(atan2(f64::INFINITY, -f64::INFINITY), 3.0 * FRAC_PI_4);
+        assert_eq!(atan2(-f64::INFINITY, -f64::INFINITY), -3.0 * FRAC_PI_4);
+        assert_eq!(atan2(1.0, f64::INFINITY), 0.0);
+        assert_eq!(atan2(-1.0, f64::INFINITY).to_bits(), (-0.0f64).to_bits());
+        assert_eq!(atan2(1.0, -f64::INFINITY), PI);
+        assert_eq!(atan2(-1.0, -f64::INFINITY), -PI);
+        assert_eq!(atan2(f64::INFINITY, 1.0), FRAC_PI_2);
+        assert_eq!(atan2(-f64::INFINITY, 1.0), -FRAC_PI_2);
+        assert_eq!(atan2(1e300, 1e-300), FRAC_PI_2);
+        assert_eq!(atan2(1e-300, -1e300), PI);
+        assert_eq!(atan2(-1e-300, -1e300), -PI);
+        assert_eq!(atan2(1e-300, 1e300), 0.0);
+        for (y, x) in [(1.0, -2.0), (-1.0, -2.0), (3.0, -0.5), (-0.1, 5.0)] {
+            let want = f64::atan2(y, x);
+            assert!((atan2(y, x) - want).abs() <= 2e-16 * want.abs(), "{y} {x}");
+        }
     }
 
     #[test]
