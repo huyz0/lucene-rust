@@ -21,3 +21,4 @@ rayon.workspace = true
 # module out of this crate's production build.
 lucene-util = { path = "../lucene-util", features = ["test-support"] }
 crc32fast.workspace = true
+proptest.workspace = true

@@ -24,6 +24,7 @@ use lucene_store::MmapDirectory;
 
 mod micro_geo;
 mod micro_geo_points;
+mod micro_geo_shapes;
 mod micro_m7;
 mod sexpr;
 #[path = "../../../crates/lucene-search/tests/m7grammar/mod.rs"]
@@ -2066,6 +2067,12 @@ fn main() {
                 .nth(2)
                 .expect("geo_points needs the GeoPointsMicro index directory");
             micro_geo_points::bench_geo_points(warmup, measure, &index);
+        }
+        "geo_shapes" => {
+            let index = std::env::args()
+                .nth(2)
+                .expect("geo_shapes needs the GeoShapesMicro index directory");
+            micro_geo_shapes::bench_geo_shapes(warmup, measure, &index);
         }
         "m7_fixture" => micro_m7::bench_m7_fixture(warmup, measure),
         "query_builder" => micro_m7::bench_query_builder(warmup, measure),

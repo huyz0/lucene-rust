@@ -104,6 +104,11 @@ geo_points/index/_1.si 18dc102cdf7d348ed51e4e26b563be86
 geo_points/index/_2.si 18dc102cdf7d348ed51e4e26b563be8a
 geo_points/index/_3.si 18dc102cdf7d348ed51e4e26b563be8e
 geo_points/index/segments_5 18dc102cdf7d348ed51e4e26b563be94
+geo_shapes/index/_0.si 7676842f4c3d8b8945a7633a19b77a6b
+geo_shapes/index/_1.si 7676842f4c3d8b8945a7633a19b77a6f
+geo_shapes/index/_2.si 7676842f4c3d8b8945a7633a19b77a73
+geo_shapes/index/_3.si 7676842f4c3d8b8945a7633a19b77a77
+geo_shapes/index/segments_5 7676842f4c3d8b8945a7633a19b77a7d
 keyword_sort_index/_0.si a6dbcefc8a88442e666e3f6798f96faf
 keyword_sort_index/_1.si a6dbcefc8a88442e666e3f6798f96fb3
 keyword_sort_index/_2.si a6dbcefc8a88442e666e3f6798f96fb7

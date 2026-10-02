@@ -1,4 +1,4 @@
-//! The geo point queries, sorts and nearest-neighbour search of Lucene's
+//! The geo point and shape queries, sorts and nearest-neighbour search of Lucene's
 //! `document` package, over the fields `lucene_index::document` writes
 //! (`LatLonPoint`, `LatLonDocValuesField`, `XYPointField`,
 //! `XYDocValuesField`):
@@ -19,6 +19,17 @@
 //!   [`XYDocValuesPointInGeometryQuery`]; `newDistanceSort` is
 //!   [`XYPointSortField`].
 //!
+//! and the shape queries, over the triangles and shape doc values
+//! `lucene_index::document::{LatLonShape, XYShape}` write:
+//!
+//! - the [`lat_lon_shape`] module: `newBoxQuery`
+//!   ([`LatLonShapeBoundingBoxQuery`], related in the encoded space; a
+//!   `CONTAINS` box across the dateline is a [`MustConjunction`] of its
+//!   halves), `newGeometryQuery` and its line/polygon/point/distance forms
+//!   ([`LatLonShapeQuery`]), `newSlowDocValuesBoxQuery`
+//!   ([`LatLonShapeDocValuesQuery`]);
+//! - the [`xy_shape`] module: [`XYShapeQuery`] and [`XYShapeDocValuesQuery`].
+//!
 //! Each query follows its Java class's `Weight`: the same cell relations
 //! (in the encoded space where Java relates encoded bounds), the same
 //! per-point predicates (`GeoEncodingUtils`' grid predicates), the same
@@ -30,8 +41,8 @@
 //!
 //! # Deviations
 //!
-//! - `ShapeField.QueryRelation` lives here as [`QueryRelation`] (the shape
-//!   half of `ShapeField` is T9.3's).
+//! - `ShapeField.QueryRelation` lives here as [`QueryRelation`] (the rest of
+//!   `ShapeField`, the encoding, is `lucene_index::document::ShapeField`).
 //! - `equals`/`hashCode`/`toString`, `QueryVisitor` and `explain` are not
 //!   ported, as for the rest of the package.
 
@@ -39,6 +50,7 @@ mod distance_feature;
 mod doc_values;
 mod nearest;
 mod point_queries;
+mod shape_queries;
 mod sort;
 
 use lucene_codecs::doc_values::{NumericReader, SortedNumericReader};
@@ -58,6 +70,10 @@ pub use doc_values::{
 };
 pub use nearest::{nearest, NearestHit, NearestHits};
 pub use point_queries::{LatLonPointDistanceQuery, LatLonPointQuery, XYPointInGeometryQuery};
+pub use shape_queries::{
+    EncodedRectangle, LatLonShapeBoundingBoxQuery, LatLonShapeDocValuesQuery, LatLonShapeQuery,
+    XYShapeDocValuesQuery, XYShapeQuery,
+};
 pub use sort::{LatLonPointSortField, SortedDistance, XYPointSortField};
 
 fn illegal(message: impl Into<String>) -> Error {
@@ -263,6 +279,46 @@ impl DocumentQuery for ConstantScoreBoolean {
         if let Some(bits) = acc {
             // Every clause already dropped deleted documents.
             collect_bits(leaf, &bits, boost, collector);
+        }
+        Ok(())
+    }
+}
+
+/// A `BooleanQuery` of `MUST` constant-score clauses that is *not* wrapped
+/// in a `ConstantScoreQuery` -- what `LatLonShape.newBoxQuery` builds for a
+/// `CONTAINS` box across the dateline: every match scores the sum of its
+/// clauses' scores (`ConjunctionScorer`, summed in `double`).
+#[derive(Debug)]
+pub struct MustConjunction {
+    pub clauses: Vec<Box<dyn DocumentQuery>>,
+}
+
+impl DocumentQuery for MustConjunction {
+    fn score_leaf(
+        &self,
+        leaf: &OpenSegment<'_>,
+        boost: f32,
+        collector: &mut dyn ScoringCollector,
+    ) -> Result<()> {
+        let mut sum = 0.0f64;
+        for _ in &self.clauses {
+            sum += f64::from(boost);
+        }
+        let mut hits = BitsCollector(FixedBitSet::new(idx(reader(leaf)?.max_doc)));
+        let mut acc: Option<FixedBitSet> = None;
+        for clause in &self.clauses {
+            hits.0.clear_all();
+            clause.score_leaf(leaf, 1.0, &mut hits)?;
+            acc = Some(match acc {
+                None => hits.0.clone(),
+                Some(mut a) => {
+                    a.and(&hits.0);
+                    a
+                }
+            });
+        }
+        if let Some(bits) = acc {
+            collect_bits(leaf, &bits, sum as f32, collector);
         }
         Ok(())
     }
@@ -677,6 +733,364 @@ pub mod xy_doc_values_field {
         geometries: &[XYGeometry],
     ) -> Result<XYDocValuesPointInGeometryQuery> {
         XYDocValuesPointInGeometryQuery::new(field, geometries)
+    }
+}
+
+/// `LatLonShape`'s query factories.
+pub mod lat_lon_shape {
+    use lucene_util::geo::{Circle, LatLonGeometry, Line, Point, Polygon, Rectangle};
+
+    use super::*;
+
+    /// `newBoxQuery(field, queryRelation, minLatitude, maxLatitude,
+    /// minLongitude, maxLongitude)`: a `CONTAINS` box across the dateline
+    /// is the conjunction of its two halves (a plain `BooleanQuery`, so a
+    /// match scores twice the boost).
+    ///
+    /// # Errors
+    /// An invalid rectangle, with Java's message.
+    pub fn new_box_query(
+        field: &str,
+        query_relation: QueryRelation,
+        min_latitude: f64,
+        max_latitude: f64,
+        min_longitude: f64,
+        max_longitude: f64,
+    ) -> Result<Box<dyn DocumentQuery>> {
+        if query_relation == QueryRelation::Contains && min_longitude > max_longitude {
+            return split_contains(
+                field,
+                min_latitude,
+                max_latitude,
+                min_longitude,
+                max_longitude,
+            );
+        }
+        let rectangle = Rectangle::new(min_latitude, max_latitude, min_longitude, max_longitude)
+            .map_err(geo)?;
+        Ok(Box::new(LatLonShapeBoundingBoxQuery::new(
+            field,
+            query_relation,
+            rectangle,
+        )?))
+    }
+
+    /// The two `MUST` halves of a `CONTAINS` box across the dateline.
+    fn split_contains(
+        field: &str,
+        min_latitude: f64,
+        max_latitude: f64,
+        min_longitude: f64,
+        max_longitude: f64,
+    ) -> Result<Box<dyn DocumentQuery>> {
+        let east = new_box_query(
+            field,
+            QueryRelation::Contains,
+            min_latitude,
+            max_latitude,
+            min_longitude,
+            180.0,
+        )?;
+        let west = new_box_query(
+            field,
+            QueryRelation::Contains,
+            min_latitude,
+            max_latitude,
+            -180.0,
+            max_longitude,
+        )?;
+        Ok(Box::new(MustConjunction {
+            clauses: vec![east, west],
+        }))
+    }
+
+    /// `newSlowDocValuesBoxQuery(field, queryRelation, minLatitude,
+    /// maxLatitude, minLongitude, maxLongitude)`: as Java, a `CONTAINS` box
+    /// across the dateline becomes the *indexed* box query's conjunction.
+    ///
+    /// # Errors
+    /// An invalid rectangle, or `CONTAINS`, with Java's message.
+    pub fn new_slow_doc_values_box_query(
+        field: &str,
+        query_relation: QueryRelation,
+        min_latitude: f64,
+        max_latitude: f64,
+        min_longitude: f64,
+        max_longitude: f64,
+    ) -> Result<Box<dyn DocumentQuery>> {
+        if query_relation == QueryRelation::Contains && min_longitude > max_longitude {
+            return split_contains(
+                field,
+                min_latitude,
+                max_latitude,
+                min_longitude,
+                max_longitude,
+            );
+        }
+        let rectangle = Rectangle::new(min_latitude, max_latitude, min_longitude, max_longitude)
+            .map_err(geo)?;
+        Ok(Box::new(LatLonShapeDocValuesQuery::new(
+            field,
+            query_relation,
+            &[LatLonGeometry::Rectangle(rectangle)],
+        )?))
+    }
+
+    /// `newLineQuery(field, queryRelation, lines...)`.
+    ///
+    /// # Errors
+    /// As [`new_geometry_query`].
+    pub fn new_line_query(
+        field: &str,
+        query_relation: QueryRelation,
+        lines: &[Line],
+    ) -> Result<Box<dyn DocumentQuery>> {
+        let g: Vec<LatLonGeometry> = lines.iter().cloned().map(LatLonGeometry::Line).collect();
+        new_geometry_query(field, query_relation, &g)
+    }
+
+    /// `newPolygonQuery(field, queryRelation, polygons...)`.
+    ///
+    /// # Errors
+    /// As [`new_geometry_query`].
+    pub fn new_polygon_query(
+        field: &str,
+        query_relation: QueryRelation,
+        polygons: &[Polygon],
+    ) -> Result<Box<dyn DocumentQuery>> {
+        let g: Vec<LatLonGeometry> = polygons
+            .iter()
+            .cloned()
+            .map(LatLonGeometry::Polygon)
+            .collect();
+        new_geometry_query(field, query_relation, &g)
+    }
+
+    /// `newPointQuery(field, queryRelation, double[]... points)`: each
+    /// point `[lat, lon]`.
+    ///
+    /// # Errors
+    /// An invalid point, or as [`new_geometry_query`].
+    pub fn new_point_query(
+        field: &str,
+        query_relation: QueryRelation,
+        points: &[[f64; 2]],
+    ) -> Result<Box<dyn DocumentQuery>> {
+        let g = points
+            .iter()
+            .map(|p| Point::new(p[0], p[1]).map(LatLonGeometry::Point))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(geo)?;
+        new_geometry_query(field, query_relation, &g)
+    }
+
+    /// `newDistanceQuery(field, queryRelation, circles...)`.
+    ///
+    /// # Errors
+    /// As [`new_geometry_query`].
+    pub fn new_distance_query(
+        field: &str,
+        query_relation: QueryRelation,
+        circles: &[Circle],
+    ) -> Result<Box<dyn DocumentQuery>> {
+        let g: Vec<LatLonGeometry> = circles
+            .iter()
+            .cloned()
+            .map(LatLonGeometry::Circle)
+            .collect();
+        new_geometry_query(field, query_relation, &g)
+    }
+
+    /// `newGeometryQuery(field, queryRelation, latLonGeometries...)`: a
+    /// single rectangle is a box query; a `CONTAINS` of several geometries
+    /// is a constant-score conjunction of one query per geometry.
+    ///
+    /// # Errors
+    /// A line under `WITHIN`, or geometries `LatLonGeometry.create`
+    /// rejects, with Java's message.
+    pub fn new_geometry_query(
+        field: &str,
+        query_relation: QueryRelation,
+        geometries: &[LatLonGeometry],
+    ) -> Result<Box<dyn DocumentQuery>> {
+        if let [geometry] = geometries {
+            if let LatLonGeometry::Rectangle(r) = geometry {
+                return new_box_query(
+                    field,
+                    query_relation,
+                    r.min_lat,
+                    r.max_lat,
+                    r.min_lon,
+                    r.max_lon,
+                );
+            }
+            return Ok(Box::new(LatLonShapeQuery::new(
+                field,
+                query_relation,
+                geometries,
+            )?));
+        }
+        if query_relation == QueryRelation::Contains {
+            // makeContainsGeometryQuery
+            let mut clauses: Vec<Box<dyn DocumentQuery>> = Vec::with_capacity(geometries.len());
+            for g in geometries {
+                if let LatLonGeometry::Rectangle(r) = g {
+                    // this handles rectangles across the dateline
+                    clauses.push(new_box_query(
+                        field,
+                        QueryRelation::Contains,
+                        r.min_lat,
+                        r.max_lat,
+                        r.min_lon,
+                        r.max_lon,
+                    )?);
+                } else {
+                    clauses.push(Box::new(LatLonShapeQuery::new(
+                        field,
+                        QueryRelation::Contains,
+                        std::slice::from_ref(g),
+                    )?));
+                }
+            }
+            return Ok(Box::new(ConstantScoreBoolean {
+                clauses,
+                must: true,
+            }));
+        }
+        Ok(Box::new(LatLonShapeQuery::new(
+            field,
+            query_relation,
+            geometries,
+        )?))
+    }
+}
+
+/// `XYShape`'s query factories.
+pub mod xy_shape {
+    use lucene_util::geo::{XYCircle, XYGeometry, XYLine, XYPoint, XYPolygon, XYRectangle};
+
+    use super::*;
+
+    /// `newBoxQuery(field, queryRelation, minX, maxX, minY, maxY)`.
+    ///
+    /// # Errors
+    /// An invalid rectangle, with Java's message.
+    pub fn new_box_query(
+        field: &str,
+        query_relation: QueryRelation,
+        min_x: f32,
+        max_x: f32,
+        min_y: f32,
+        max_y: f32,
+    ) -> Result<Box<dyn DocumentQuery>> {
+        let r = XYRectangle::new(min_x, max_x, min_y, max_y).map_err(geo)?;
+        new_geometry_query(field, query_relation, &[XYGeometry::Rectangle(r)])
+    }
+
+    /// `newSlowDocValuesBoxQuery(field, queryRelation, minX, maxX, minY,
+    /// maxY)`.
+    ///
+    /// # Errors
+    /// An invalid rectangle, or `CONTAINS`, with Java's message.
+    pub fn new_slow_doc_values_box_query(
+        field: &str,
+        query_relation: QueryRelation,
+        min_x: f32,
+        max_x: f32,
+        min_y: f32,
+        max_y: f32,
+    ) -> Result<Box<dyn DocumentQuery>> {
+        let r = XYRectangle::new(min_x, max_x, min_y, max_y).map_err(geo)?;
+        Ok(Box::new(XYShapeDocValuesQuery::new(
+            field,
+            query_relation,
+            &[XYGeometry::Rectangle(r)],
+        )?))
+    }
+
+    /// `newLineQuery(field, queryRelation, lines...)`.
+    ///
+    /// # Errors
+    /// As [`new_geometry_query`].
+    pub fn new_line_query(
+        field: &str,
+        query_relation: QueryRelation,
+        lines: &[XYLine],
+    ) -> Result<Box<dyn DocumentQuery>> {
+        let g: Vec<XYGeometry> = lines.iter().cloned().map(XYGeometry::Line).collect();
+        new_geometry_query(field, query_relation, &g)
+    }
+
+    /// `newPolygonQuery(field, queryRelation, polygons...)`.
+    ///
+    /// # Errors
+    /// As [`new_geometry_query`].
+    pub fn new_polygon_query(
+        field: &str,
+        query_relation: QueryRelation,
+        polygons: &[XYPolygon],
+    ) -> Result<Box<dyn DocumentQuery>> {
+        let g: Vec<XYGeometry> = polygons.iter().cloned().map(XYGeometry::Polygon).collect();
+        new_geometry_query(field, query_relation, &g)
+    }
+
+    /// `newPointQuery(field, queryRelation, float[]... points)`: each point
+    /// `[x, y]`.
+    ///
+    /// # Errors
+    /// An invalid point, or as [`new_geometry_query`].
+    pub fn new_point_query(
+        field: &str,
+        query_relation: QueryRelation,
+        points: &[[f32; 2]],
+    ) -> Result<Box<dyn DocumentQuery>> {
+        let g = points
+            .iter()
+            .map(|p| XYPoint::new(p[0], p[1]).map(XYGeometry::Point))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(geo)?;
+        new_geometry_query(field, query_relation, &g)
+    }
+
+    /// `newDistanceQuery(field, queryRelation, circles...)`.
+    ///
+    /// # Errors
+    /// As [`new_geometry_query`].
+    pub fn new_distance_query(
+        field: &str,
+        query_relation: QueryRelation,
+        circles: &[XYCircle],
+    ) -> Result<Box<dyn DocumentQuery>> {
+        let g: Vec<XYGeometry> = circles.iter().cloned().map(XYGeometry::Circle).collect();
+        new_geometry_query(field, query_relation, &g)
+    }
+
+    /// `newGeometryQuery(field, queryRelation, xyGeometries...)`: a
+    /// `CONTAINS` of several geometries is a constant-score conjunction of
+    /// one query per geometry.
+    ///
+    /// # Errors
+    /// Geometries `XYGeometry.create` rejects, with Java's message.
+    pub fn new_geometry_query(
+        field: &str,
+        query_relation: QueryRelation,
+        geometries: &[XYGeometry],
+    ) -> Result<Box<dyn DocumentQuery>> {
+        if query_relation == QueryRelation::Contains && geometries.len() > 1 {
+            let clauses = geometries
+                .iter()
+                .map(|g| new_geometry_query(field, query_relation, std::slice::from_ref(g)))
+                .collect::<Result<Vec<_>>>()?;
+            return Ok(Box::new(ConstantScoreBoolean {
+                clauses,
+                must: true,
+            }));
+        }
+        Ok(Box::new(XYShapeQuery::new(
+            field,
+            query_relation,
+            geometries,
+        )?))
     }
 }
 

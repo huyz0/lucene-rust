@@ -40,6 +40,8 @@ mod inet_address;
 mod late_interaction;
 mod numeric;
 mod range;
+mod shape;
+mod shape_doc_values;
 mod vectors;
 
 pub mod column;
@@ -77,6 +79,11 @@ pub use range::{
     FloatRangeDocValuesField, InetAddressRange, IntRange, IntRangeDocValuesField, LongRange,
     LongRangeDocValuesField, RangeQueryType,
 };
+pub use shape::{
+    DecodedTriangle, LatLonShape, LatLonShapeDocValues, LatLonShapeDocValuesField, ShapeField,
+    ShapeTriangle, TriangleType, XYShape, XYShapeDocValues, XYShapeDocValuesField, TRIANGLE_BYTES,
+};
+pub use shape_doc_values::{ShapeDocValues, ShapeEncoding};
 pub use vectors::{KnnByteVectorField, KnnFloatVectorField};
 
 #[cfg(doc)]

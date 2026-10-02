@@ -179,7 +179,7 @@ codecs/perfield/PerFieldDocValuesFormat	ported	crates/lucene-codecs/src/per_fiel
 codecs/perfield/PerFieldKnnVectorsFormat	ported	crates/lucene-codecs/src/per_field_knn_vectors.rs::group_fields
 codecs/perfield/PerFieldMergeState	ported	crates/lucene-codecs/src/per_field_postings.rs::field_suffixes
 codecs/perfield/PerFieldPostingsFormat	ported	crates/lucene-codecs/src/per_field_postings.rs::write
-document/BaseShapeDocValuesQuery	deferred:M9	base query over shape doc values (geo)
+document/BaseShapeDocValuesQuery	ported	crates/lucene-search/src/document/geo/shape_queries.rs::ShapeDocValuesMatcher -- M9 T9.3: the doc-values relate, CONTAINS refused; fixture GenGeoShapes (+ VerifyGeoShapes)
 document/BinaryDocValuesField	ported	crates/lucene-index/src/index_writer/explicit.rs::ExplicitFields
 document/BinaryPoint	ported	crates/lucene-index/src/document/numeric.rs::BinaryPoint -- M7: packed N-dimension bytes; queries in crates/lucene-search/src/document/point_queries.rs (binary_point); fixture GenDocumentFields
 document/BinaryRangeDocValues	ported	crates/lucene-search/src/document/range_queries.rs::BinaryRangeDocValues -- M7: BINARY range boxes read per document; fixture GenDocumentFields
@@ -227,12 +227,12 @@ document/LatLonPointDistanceFeatureQuery	ported	crates/lucene-search/src/documen
 document/LatLonPointDistanceQuery	ported	crates/lucene-search/src/document/geo/point_queries.rs::LatLonPointDistanceQuery -- M9 T9.2: forward and inverse walks; fixture GenGeoPoints (+ VerifyGeoPoints)
 document/LatLonPointQuery	ported	crates/lucene-search/src/document/geo/point_queries.rs::LatLonPointQuery -- M9 T9.2: every relation through SpatialQuery's scorers; fixture GenGeoPoints (+ VerifyGeoPoints)
 document/LatLonPointSortField	ported	crates/lucene-search/src/document/geo/sort.rs::LatLonPointSortField -- M9 T9.2: search and comparator source; fixture GenGeoPoints (+ VerifyGeoPoints)
-document/LatLonShape	deferred:M9	lat/lon geo shape (geo)
-document/LatLonShapeBoundingBoxQuery	deferred:M9	lat/lon geo shape bounding box query (geo)
-document/LatLonShapeDocValues	deferred:M9	lat/lon geo shape doc values (geo)
-document/LatLonShapeDocValuesField	deferred:M9	lat/lon geo shape doc values field (geo)
-document/LatLonShapeDocValuesQuery	deferred:M9	lat/lon geo shape doc values query (geo)
-document/LatLonShapeQuery	deferred:M9	lat/lon geo shape query (geo)
+document/LatLonShape	ported	crates/lucene-index/src/document/shape.rs::LatLonShape -- M9 T9.3: field factories; queries in crates/lucene-search/src/document/geo/mod.rs (lat_lon_shape); fixture GenGeoShapes (+ VerifyGeoShapes)
+document/LatLonShapeBoundingBoxQuery	ported	crates/lucene-search/src/document/geo/shape_queries.rs::LatLonShapeBoundingBoxQuery -- M9 T9.3: encoded-space box, dateline halves; fixture GenGeoShapes
+document/LatLonShapeDocValues	ported	crates/lucene-index/src/document/shape.rs::LatLonShapeDocValues -- M9 T9.3: centroid and bounding box over ShapeDocValues; fixture GenGeoShapes
+document/LatLonShapeDocValuesField	ported	crates/lucene-index/src/document/shape.rs::LatLonShapeDocValuesField -- M9 T9.3: one BINARY shape doc value; fixture GenGeoShapes (+ VerifyGeoShapes)
+document/LatLonShapeDocValuesQuery	ported	crates/lucene-search/src/document/geo/shape_queries.rs::LatLonShapeDocValuesQuery -- M9 T9.3: any geometry, every relation but CONTAINS; fixture GenGeoShapes
+document/LatLonShapeQuery	ported	crates/lucene-search/src/document/geo/shape_queries.rs::LatLonShapeQuery -- M9 T9.3: every relation, every geometry; fixture GenGeoShapes (+ VerifyGeoShapes)
 document/LateInteractionField	ported	crates/lucene-index/src/document/late_interaction.rs::LateInteractionField -- M7: multi-vector BINARY encode/decode; fixture GenDocumentFields
 document/LongDistanceFeatureQuery	ported	crates/lucene-search/src/document/distance_feature.rs::LongDistanceFeatureQuery -- M7: scores and pruning; fixture GenDocumentFields
 document/LongField	ported	crates/lucene-index/src/document/numeric.rs::LongField -- M7: point + SORTED_NUMERIC; queries/sort in crates/lucene-search/src/document/point_queries.rs (long_field); fixture GenDocumentFields
@@ -244,9 +244,9 @@ document/NearestNeighbor	ported	crates/lucene-search/src/document/geo/nearest.rs
 document/NumericDocValuesField	ported	crates/lucene-index/src/document/doc_values.rs::NumericDocValuesField -- M7: incl. indexedField; slow queries in crates/lucene-search/src/document/doc_values_queries.rs (numeric_dv_factories); fixture GenDocumentFields
 document/RangeBulkScorer	ported	crates/lucene-search/src/document/doc_values_queries.rs::RangeBulkScorer -- M7: doc-id interval collection; fixture GenDocumentFields (sorted twins)
 document/RangeFieldQuery	ported	crates/lucene-search/src/document/range_queries.rs::RangeFieldQuery -- M7: BKD walk with QueryType compare/matches; fixture GenDocumentFields
-document/ShapeDocValues	deferred:M9	shape doc-values encoding (geo)
-document/ShapeDocValuesField	deferred:M9	shape doc-values field (geo)
-document/ShapeField	deferred:M9	triangle-encoded shape field (geo)
+document/ShapeDocValues	ported	crates/lucene-index/src/document/shape_doc_values.rs::ShapeDocValues -- M9 T9.3: the tree encoding byte for byte, relate; fixture GenGeoShapes
+document/ShapeDocValuesField	ported	crates/lucene-index/src/document/shape.rs::LatLonShapeDocValuesField -- M9 T9.3: the abstract field as the two concrete ones (newGeometryQuery, which always throws in Java, not ported)
+document/ShapeField	ported	crates/lucene-index/src/document/shape.rs::ShapeField -- M9 T9.3: triangle encoding and decoding byte for byte; fixture GenGeoShapes
 document/SortedDocValuesField	ported	crates/lucene-index/src/document/doc_values.rs::SortedDocValuesField -- M7: incl. indexedField; slow queries in crates/lucene-search/src/document/doc_values_queries.rs (ords_dv_factories); fixture GenDocumentFields
 document/SortedNumericDocValuesField	ported	crates/lucene-index/src/document/doc_values.rs::SortedNumericDocValuesField -- M7: incl. indexedField; slow queries in crates/lucene-search/src/document/doc_values_queries.rs (numeric_dv_factories); fixture GenDocumentFields
 document/SortedNumericDocValuesRangeQuery	ported	crates/lucene-search/src/document/doc_values_queries.rs::SortedNumericDocValuesRangeQuery -- M7: rewrites, skip-index shortcuts and the index-sorted skipper path; fixture GenDocumentFields (sorted twins)
@@ -254,7 +254,7 @@ document/SortedNumericDocValuesSetQuery	ported	crates/lucene-search/src/document
 document/SortedSetDocValuesField	ported	crates/lucene-index/src/document/doc_values.rs::SortedSetDocValuesField -- M7: incl. indexedField; slow queries in crates/lucene-search/src/document/doc_values_queries.rs (ords_dv_factories); fixture GenDocumentFields
 document/SortedSetDocValuesRangeQuery	ported	crates/lucene-search/src/document/doc_values_queries.rs::SortedSetDocValuesRangeQuery -- M7: any-value ordinal range incl. skipper path; fixture GenDocumentFields
 document/SortedSkipperScorerSupplier	ported	crates/lucene-search/src/document/doc_values_queries.rs::SortedSkipperScorerSupplier -- M7: doc-id run from skipper + values; fixture GenDocumentFields sorted twins (reverse-flag mutation fails)
-document/SpatialQuery	deferred:M9	base class of geo shape/point spatial queries (geo)
+document/SpatialQuery	ported	crates/lucene-search/src/document/geo/point_queries.rs::spatial_score_leaf -- M9 T9.2/T9.3: the relation scorers for points and triangles; EncodedRectangle in shape_queries.rs; fixtures GenGeoPoints, GenGeoShapes
 document/StoredField	ported	crates/lucene-codecs/src/stored_fields.rs::StoredField
 document/StoredValue	ported	crates/lucene-codecs/src/stored_fields.rs::FieldValue
 document/StringField	ported	crates/lucene-index/src/index_writer/explicit.rs::InvertedField
@@ -265,11 +265,11 @@ document/XYPointDistanceComparator	ported	crates/lucene-search/src/document/geo/
 document/XYPointField	ported	crates/lucene-index/src/document/geo.rs::XYPointField -- M9 T9.2: encoding; queries in crates/lucene-search/src/document/geo/mod.rs (xy_point_field); fixture GenGeoPoints (+ VerifyGeoPoints)
 document/XYPointInGeometryQuery	ported	crates/lucene-search/src/document/geo/point_queries.rs::XYPointInGeometryQuery -- M9 T9.2; fixture GenGeoPoints (+ VerifyGeoPoints)
 document/XYPointSortField	ported	crates/lucene-search/src/document/geo/sort.rs::XYPointSortField -- M9 T9.2; fixture GenGeoPoints (+ VerifyGeoPoints)
-document/XYShape	deferred:M9	cartesian shape field factory (geo)
-document/XYShapeDocValues	deferred:M9	cartesian shape doc values (geo)
-document/XYShapeDocValuesField	deferred:M9	cartesian shape doc values field (geo)
-document/XYShapeDocValuesQuery	deferred:M9	cartesian shape doc values query (geo)
-document/XYShapeQuery	deferred:M9	cartesian shape query (geo)
+document/XYShape	ported	crates/lucene-index/src/document/shape.rs::XYShape -- M9 T9.3: field factories; queries in crates/lucene-search/src/document/geo/mod.rs (xy_shape); fixture GenGeoShapes (+ VerifyGeoShapes)
+document/XYShapeDocValues	ported	crates/lucene-index/src/document/shape.rs::XYShapeDocValues -- M9 T9.3; fixture GenGeoShapes
+document/XYShapeDocValuesField	ported	crates/lucene-index/src/document/shape.rs::XYShapeDocValuesField -- M9 T9.3; fixture GenGeoShapes
+document/XYShapeDocValuesQuery	ported	crates/lucene-search/src/document/geo/shape_queries.rs::XYShapeDocValuesQuery -- M9 T9.3; fixture GenGeoShapes
+document/XYShapeQuery	ported	crates/lucene-search/src/document/geo/shape_queries.rs::XYShapeQuery -- M9 T9.3: every relation, every geometry; fixture GenGeoShapes (+ VerifyGeoShapes)
 document/column/BinaryColumn	ported	crates/lucene-index/src/document/column.rs::BinaryColumn -- M7: fixture GenDocumentColumns
 document/column/BinaryColumnAdapter	ported	crates/lucene-index/src/document/column.rs::BinaryColumnAdapter -- M7: fixture GenDocumentColumns
 document/column/BytesRefValuesCursor	ported	crates/lucene-index/src/document/column.rs::BytesRefValuesCursor -- M7: fixture GenDocumentColumns
