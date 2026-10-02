@@ -182,7 +182,8 @@ What someone needs to run this who did not build it:
       2.47x; segmented 72/87 (83%), median 2.22x; nothing slower than
       Lucene, no recall mismatch
       ([run](https://github.com/huyz0/lucene-rust/actions/runs/36948975124)).
-      The margin is thin -- the runner is noisy and runs #3-#4 read 67-79% --
+      Run #6 on 049b651 passed again: merged 71/87 (82%), segmented 75/87
+      (86%). The margin is thin -- the runner is noisy and runs #3-#4 read 67-79% --
       so see [`perf-gate.md`](../benchmarks/perf-gate.md), "M6 close-out
       measurements".*
 - [x] The nightly performance job fails the build when a query is slower
