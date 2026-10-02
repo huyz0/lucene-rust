@@ -83,7 +83,8 @@ set -euo pipefail
 # lucene-facet is required by GenFacets (org.apache.lucene.facet.*).
 # lucene-highlighter is required by AppendHighlightManifest, which records what
 # `UnifiedHighlighter`'s own PhraseHelper produces rather than re-deriving it.
-LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-facet lucene-highlighter)
+# lucene-spatial3d is required by GenGeo3d* (org.apache.lucene.spatial3d).
+LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-facet lucene-highlighter lucene-spatial3d)
 
 cd "$(git rev-parse --show-toplevel)"
 FIXTURES="$PWD/fixtures"
@@ -205,12 +206,27 @@ CLASSES=$(mktemp -d)
 trap 'rm -rf "$CLASSES" ${TMP_A:-} ${TMP_B:-}' EXIT
 javac -nowarn -cp "$CP" -d "$CLASSES" "$FIXTURES"/src/*.java
 
+# JVM flags one generator needs on top of LUCENE_FIXTURE_JVM_OPTS. The geo3d
+# generators run with HotSpot's Math.sin/cos/tan intrinsics disabled: on x86-64
+# those stubs differ from StrictMath's fdlibm in the last bit for ~3.4% of
+# arguments, so spatial3d's output would depend on the CPU the fixture was made
+# on (arm64 and the interpreter-free paths disagree with x86-64). Disabled,
+# Math.sin *is* StrictMath.sin everywhere -- which is what the Rust port
+# computes. See crates/lucene-util/src/spatial3d/mod.rs ("Trigonometry").
+generator_jvm_opts() {
+  case "$1" in
+    GenGeo3d*) echo "-XX:+UnlockDiagnosticVMOptions -XX:DisableIntrinsic=_dsin,_dcos,_dtan" ;;
+  esac
+}
+
 generate_into() {
   local dest="$1"; shift
   local -a classes=("$@")
   mkdir -p "$dest"
   for cls in "${classes[@]}"; do
-    java --enable-native-access=ALL-UNNAMED "${LUCENE_FIXTURE_JVM_OPTS[@]}" -cp "$CLASSES:$CP" "$cls" "$dest" >/dev/null
+    local -a extra=()
+    read -r -a extra <<< "$(generator_jvm_opts "$cls")"
+    java --enable-native-access=ALL-UNNAMED "${LUCENE_FIXTURE_JVM_OPTS[@]}" "${extra[@]}" -cp "$CLASSES:$CP" "$cls" "$dest" >/dev/null
   done
   # IndexWriter leaves a zero-byte write.lock behind in every index it creates.
   # It is a lock artifact, not a fixture, and nothing in crates/ reads it --

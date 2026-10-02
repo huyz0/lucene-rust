@@ -24,6 +24,9 @@ use std::sync::Arc;
 use lucene_index::document::{doc_value_high, doc_value_low, double_to_sortable_long};
 use lucene_util::geo::{GeoEncodingUtils, GeoUtils, Rectangle, XYEncodingUtils, XYRectangle};
 use lucene_util::sloppy_math;
+use lucene_util::spatial3d::{
+    DistanceStyle, GeoDistanceShape, GeoOutsideDistance, PlanetModel, XYZBounds,
+};
 
 use lucene_codecs::field_infos::FieldInfo;
 
@@ -60,6 +63,12 @@ trait Distance: Send + Sync {
     fn value(&self, key: f64) -> f64;
     /// `getLeafComparator`'s field check.
     fn check(&self, r: &SegmentReader, field: &str) -> Result<()>;
+    /// [`Self::sort_key`] where the comparator is driven from outside
+    /// [`search_distance`]: a geo3d shape method's exception (raised, see
+    /// `lucene_util::spatial3d::errors`) becomes the key's error.
+    fn sort_key_checked(&self, values: &[i64]) -> Result<f64> {
+        Ok(self.sort_key(values))
+    }
 }
 
 /// `Double.compare(a, b)`, as an ordering.
@@ -292,6 +301,153 @@ impl Distance for XYDistance {
     fn check(&self, r: &SegmentReader, field: &str) -> Result<()> {
         check_dv(r, field, "XYDocValuesField")
     }
+}
+
+/// `Geo3DPointDistanceComparator`'s state beyond the slots: the distance
+/// shape and the bounds of the queue's bottom.
+#[derive(Clone)]
+struct Geo3DDistance {
+    planet_model: Arc<PlanetModel>,
+    shape: Arc<dyn GeoDistanceShape>,
+    /// `priorityQueueBounds`: `None` until the first `setBottom`.
+    bounds: Option<[f64; 6]>,
+    set_bottom_counter: i32,
+}
+
+impl Geo3DDistance {
+    fn decode(&self, encoded: i64) -> (f64, f64, f64) {
+        let e = self.planet_model.doc_value_encoder();
+        (
+            e.decode_x_value(encoded),
+            e.decode_y_value(encoded),
+            e.decode_z_value(encoded),
+        )
+    }
+}
+
+/// An `XYZBounds` getter Java unboxes: an unset side (which a distance
+/// shape's bounds never have) bounds nothing here, where Java would throw.
+fn side(v: Option<f64>, unset: f64) -> f64 {
+    v.unwrap_or(unset)
+}
+
+impl Distance for Geo3DDistance {
+    fn set_bottom(&mut self, bottom: f64) -> Result<()> {
+        let c = self.set_bottom_counter;
+        if c < 1024 || (c & 0x3F) == 0x3F {
+            let mut b = XYZBounds::new();
+            self.shape
+                .get_distance_bounds(&mut b, DistanceStyle::Arc, bottom)
+                .map_err(s3d)?;
+            self.bounds = Some([
+                side(b.minimum_x(), f64::NEG_INFINITY),
+                side(b.maximum_x(), f64::INFINITY),
+                side(b.minimum_y(), f64::NEG_INFINITY),
+                side(b.maximum_y(), f64::INFINITY),
+                side(b.minimum_z(), f64::NEG_INFINITY),
+                side(b.maximum_z(), f64::INFINITY),
+            ]);
+        }
+        self.set_bottom_counter = c.saturating_add(1);
+        Ok(())
+    }
+
+    fn compare_bottom(&self, bottom: f64, values: &[i64]) -> Ordering {
+        let mut cmp = Ordering::Less;
+        for &encoded in values {
+            let (x, y, z) = self.decode(encoded);
+            if let Some(b) = &self.bounds {
+                if x > b[1] || x < b[0] || y > b[3] || y < b[2] || z > b[5] || z < b[4] {
+                    continue;
+                }
+            }
+            let d = self.shape.compute_distance(DistanceStyle::Arc, x, y, z);
+            cmp = cmp.max(double_compare(bottom, d));
+        }
+        cmp
+    }
+
+    fn sort_key(&self, values: &[i64]) -> f64 {
+        let mut min = f64::INFINITY;
+        for &encoded in values {
+            let (x, y, z) = self.decode(encoded);
+            min = java_min(
+                min,
+                self.shape.compute_distance(DistanceStyle::Arc, x, y, z),
+            );
+        }
+        min
+    }
+
+    fn value(&self, key: f64) -> f64 {
+        key * self.planet_model.mean_radius()
+    }
+
+    fn check(&self, r: &SegmentReader, field: &str) -> Result<()> {
+        check_dv(r, field, "Geo3DDocValuesField")
+    }
+
+    fn sort_key_checked(&self, values: &[i64]) -> Result<f64> {
+        lucene_util::spatial3d::errors::catch(|| self.sort_key(values)).map_err(s3d)
+    }
+}
+
+/// `Geo3DPointOutsideDistanceComparator`'s state: no bounds, the outside
+/// distance of every value.
+#[derive(Clone)]
+struct Geo3DOutsideDistance {
+    planet_model: Arc<PlanetModel>,
+    shape: Arc<dyn GeoOutsideDistance>,
+}
+
+impl Geo3DOutsideDistance {
+    fn distance(&self, encoded: i64) -> f64 {
+        let e = self.planet_model.doc_value_encoder();
+        self.shape.compute_outside_distance(
+            DistanceStyle::Arc,
+            e.decode_x_value(encoded),
+            e.decode_y_value(encoded),
+            e.decode_z_value(encoded),
+        )
+    }
+}
+
+impl Distance for Geo3DOutsideDistance {
+    fn set_bottom(&mut self, _bottom: f64) -> Result<()> {
+        Ok(())
+    }
+
+    fn compare_bottom(&self, bottom: f64, values: &[i64]) -> Ordering {
+        let mut cmp = Ordering::Less;
+        for &encoded in values {
+            cmp = cmp.max(double_compare(bottom, self.distance(encoded)));
+        }
+        cmp
+    }
+
+    fn sort_key(&self, values: &[i64]) -> f64 {
+        let mut min = f64::INFINITY;
+        for &encoded in values {
+            min = java_min(min, self.distance(encoded));
+        }
+        min
+    }
+
+    fn value(&self, key: f64) -> f64 {
+        key * self.planet_model.mean_radius()
+    }
+
+    fn check(&self, r: &SegmentReader, field: &str) -> Result<()> {
+        check_dv(r, field, "Geo3DDocValuesField")
+    }
+
+    fn sort_key_checked(&self, values: &[i64]) -> Result<f64> {
+        lucene_util::spatial3d::errors::catch(|| self.sort_key(values)).map_err(s3d)
+    }
+}
+
+fn s3d(e: lucene_util::spatial3d::Error) -> Error {
+    illegal(e.to_string())
 }
 
 /// The segment's `FieldInfo` for `field`.
@@ -590,6 +746,147 @@ impl XYPointSortField {
     }
 }
 
+/// `Geo3DPointSortField` (`Geo3DDocValuesField.newDistanceSort` /
+/// `newPathSort`): by the arc distance (`computeDistance`) of a document's
+/// closest `Geo3DDocValuesField` value inside a distance shape, reported in
+/// meters (times the planet's mean radius); documents without a value or
+/// outside the shape last, at `f64::INFINITY`.
+#[derive(Clone)]
+pub struct Geo3DPointSortField {
+    pub field: String,
+    pub planet_model: Arc<PlanetModel>,
+    pub shape: Arc<dyn GeoDistanceShape>,
+}
+
+impl std::fmt::Debug for Geo3DPointSortField {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Geo3DPointSortField({:?})", self.field)
+    }
+}
+
+impl Geo3DPointSortField {
+    /// `Geo3DPointSortField(field, planetModel, distanceShape)`.
+    pub fn new(
+        field: impl Into<String>,
+        planet_model: &Arc<PlanetModel>,
+        shape: Arc<dyn GeoDistanceShape>,
+    ) -> Self {
+        Geo3DPointSortField {
+            field: field.into(),
+            planet_model: planet_model.clone(),
+            shape,
+        }
+    }
+
+    /// `setMissingValue(missingValue)`: only `+Infinity` (missing last).
+    ///
+    /// # Errors
+    /// Any other value, with Java's message.
+    pub fn set_missing_value(&mut self, missing: f64) -> Result<()> {
+        check_missing(missing)
+    }
+
+    fn distance(&self) -> Geo3DDistance {
+        Geo3DDistance {
+            planet_model: self.planet_model.clone(),
+            shape: self.shape.clone(),
+            bounds: None,
+            set_bottom_counter: 0,
+        }
+    }
+
+    /// `IndexSearcher.search(query, n, new Sort(this))`.
+    ///
+    /// # Errors
+    /// `n == 0`, the field's doc values are of another type, the index does
+    /// not decode, or a shape method throws (as Java's would).
+    pub fn search(
+        &self,
+        leaves: &[OpenSegment<'_>],
+        query: &dyn DocumentQuery,
+        n: usize,
+    ) -> Result<SortedDistance> {
+        let d = self.distance();
+        caught(|| search_distance(leaves, query, &self.field, n, d))
+    }
+
+    /// This sort as a `CUSTOM` key's comparator source.
+    pub fn comparator_source(&self) -> Arc<dyn FieldComparatorSource> {
+        Arc::new(Source::Geo3D(self.clone()))
+    }
+}
+
+/// `Geo3DPointOutsideSortField` (`Geo3DDocValuesField.newOutside*Sort`):
+/// by the arc distance of a document's closest value to the outside of a
+/// shape (0 inside), in meters; documents without a value last.
+#[derive(Clone)]
+pub struct Geo3DPointOutsideSortField {
+    pub field: String,
+    pub planet_model: Arc<PlanetModel>,
+    pub shape: Arc<dyn GeoOutsideDistance>,
+}
+
+impl std::fmt::Debug for Geo3DPointOutsideSortField {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Geo3DPointOutsideSortField({:?})", self.field)
+    }
+}
+
+impl Geo3DPointOutsideSortField {
+    /// `Geo3DPointOutsideSortField(field, planetModel, distanceShape)`.
+    pub fn new(
+        field: impl Into<String>,
+        planet_model: &Arc<PlanetModel>,
+        shape: Arc<dyn GeoOutsideDistance>,
+    ) -> Self {
+        Geo3DPointOutsideSortField {
+            field: field.into(),
+            planet_model: planet_model.clone(),
+            shape,
+        }
+    }
+
+    /// `setMissingValue(missingValue)`: only `+Infinity` (missing last).
+    ///
+    /// # Errors
+    /// Any other value, with Java's message.
+    pub fn set_missing_value(&mut self, missing: f64) -> Result<()> {
+        check_missing(missing)
+    }
+
+    fn distance(&self) -> Geo3DOutsideDistance {
+        Geo3DOutsideDistance {
+            planet_model: self.planet_model.clone(),
+            shape: self.shape.clone(),
+        }
+    }
+
+    /// `IndexSearcher.search(query, n, new Sort(this))`.
+    ///
+    /// # Errors
+    /// As [`Geo3DPointSortField::search`].
+    pub fn search(
+        &self,
+        leaves: &[OpenSegment<'_>],
+        query: &dyn DocumentQuery,
+        n: usize,
+    ) -> Result<SortedDistance> {
+        let d = self.distance();
+        caught(|| search_distance(leaves, query, &self.field, n, d))
+    }
+
+    /// This sort as a `CUSTOM` key's comparator source.
+    pub fn comparator_source(&self) -> Arc<dyn FieldComparatorSource> {
+        Arc::new(Source::Geo3DOutside(self.clone()))
+    }
+}
+
+/// Runs `f` under `spatial3d::errors::catch`: an exception a shape method
+/// raised while it ran is the search's error, as Java's would propagate.
+fn caught<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
+    lucene_util::spatial3d::errors::catch(f).map_err(s3d)?
+}
+
 fn check_missing(missing: f64) -> Result<()> {
     if missing == f64::INFINITY {
         return Ok(());
@@ -605,6 +902,8 @@ fn check_missing(missing: f64) -> Result<()> {
 enum Source {
     LatLon(LatLonPointSortField),
     XY(XYPointSortField),
+    Geo3D(Geo3DPointSortField),
+    Geo3DOutside(Geo3DPointOutsideSortField),
 }
 
 impl FieldComparatorSource for Source {
@@ -634,6 +933,8 @@ impl FieldComparator for Comparator {
         let distance: Box<dyn Distance> = match &self.source {
             Source::LatLon(s) => Box::new(LatLonDistance::new(s.latitude, s.longitude)),
             Source::XY(s) => Box::new(XYDistance::new(s.x, s.y)),
+            Source::Geo3D(s) => Box::new(s.distance()),
+            Source::Geo3DOutside(s) => Box::new(s.distance()),
         };
         distance.check(r, &self.field)?;
         let values = match info_of(r, &self.field) {
@@ -670,7 +971,7 @@ impl LeafFieldComparator for LeafComparator<'_> {
         let key = if self.buf.is_empty() {
             f64::INFINITY
         } else {
-            self.distance.sort_key(&self.buf)
+            self.distance.sort_key_checked(&self.buf)?
         };
         Ok(SortValue::Long(double_to_sortable_long(key)))
     }
@@ -749,6 +1050,59 @@ mod tests {
             error: None,
         };
         assert!(empty.finish().hits.is_empty());
+    }
+
+    #[test]
+    fn geo3d_sorts_and_their_distances() {
+        use crate::document::geo::geo3d::{from_distance, from_polygon};
+        use lucene_util::geo::Polygon;
+        let pm = PlanetModel::wgs84();
+        let circle = from_distance(&pm, 0.0, 0.0, 100_000.0).unwrap();
+        let mut s = Geo3DPointSortField::new("f", &pm, circle.clone());
+        assert!(s.set_missing_value(f64::INFINITY).is_ok());
+        assert!(s.set_missing_value(1.0).is_err());
+        assert_eq!(format!("{s:?}"), "Geo3DPointSortField(\"f\")");
+        let square = Polygon::new(
+            &[0.0, 1.0, 1.0, 0.0, 0.0],
+            &[0.0, 0.0, 1.0, 1.0, 0.0],
+            vec![],
+        )
+        .unwrap();
+        let polygon = from_polygon(&pm, &[square]).unwrap();
+        let mut o = Geo3DPointOutsideSortField::new("f", &pm, polygon);
+        assert!(o.set_missing_value(f64::INFINITY).is_ok());
+        assert!(o.set_missing_value(f64::NEG_INFINITY).is_err());
+        assert_eq!(format!("{o:?}"), "Geo3DPointOutsideSortField(\"f\")");
+
+        let enc = pm.doc_value_encoder();
+        let value = |lat: f64, lon: f64| {
+            let p = lucene_util::spatial3d::GeoPoint::from_lat_lon(
+                &pm,
+                lat.to_radians(),
+                lon.to_radians(),
+            )
+            .unwrap();
+            enc.encode_point(&p).unwrap()
+        };
+        // Past the bottom's bounds (here the circle's own) a value is
+        // skipped, not computed.
+        let mut d = s.distance();
+        d.set_bottom(1e-4).unwrap();
+        assert!(d.bounds.is_some_and(|b| b[3] < 0.05), "{:?}", d.bounds);
+        assert_eq!(d.compare_bottom(1e-4, &[value(0.0, 5.0)]), Ordering::Less);
+        assert_eq!(
+            d.compare_bottom(1e-4, &[value(0.0, 0.0001)]),
+            Ordering::Greater
+        );
+        let key = d
+            .sort_key_checked(&[value(0.0, 0.5), value(0.0, 0.0)])
+            .unwrap();
+        assert!(key < 1e-5, "{key}");
+        let od = o.distance();
+        assert_eq!(od.sort_key_checked(&[value(0.5, 0.5)]).unwrap(), 0.0);
+        assert!(od.sort_key_checked(&[value(5.0, 5.0)]).unwrap() > 0.0);
+        let e = s3d(lucene_util::spatial3d::Error::Runtime("boom".into()));
+        assert!(e.to_string().contains("boom"), "{e}");
     }
 
     #[test]
