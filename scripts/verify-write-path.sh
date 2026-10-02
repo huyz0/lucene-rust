@@ -273,10 +273,24 @@ CASES=(
   # query's answer -- the Rust test `every_point_is_indexed_as_lucene_indexes_it`
   # compares the packed points byte for byte instead.
   "lucene-search|write_geo_points_fixture|geo-points|VerifyGeoPoints|fixtures/data/geo_points"
+  # The shape fields (M9 T9.3): GenGeoShapes' corpus -- LatLonShape and
+  # XYShape triangles (seven-dimension points, four indexed) and their
+  # BINARY shape doc values, several shapes per document, across four
+  # segments with deletes -- written by this port. Lucene runs CheckIndex,
+  # then replays every query of fixtures/data/geo_shapes/queries.tsv (every
+  # geometry under every relation, the bounding-box query across the
+  # dateline, the doc-values queries) and must answer exactly as over its own
+  # index. What it cannot catch: a triangle or doc value encoded wrongly in a
+  # way no query's answer reflects -- the Rust test
+  # `every_triangle_and_doc_value_is_written_as_lucene_writes_it` compares
+  # them byte for byte instead.
+  "lucene-search|write_geo_shapes_fixture|geo-shapes|VerifyGeoShapes|fixtures/data/geo_shapes"
 )
 
 echo "verify-write-path: compiling verifiers"
-javac -nowarn -cp "$CP" -d "$CLASSES" "$FIXTURES"/src/Verify*.java
+# ShapeAccess reaches Lucene's package-private shape doc-values queries for
+# VerifyGeoShapes (it lives in org.apache.lucene.document).
+javac -nowarn -cp "$CP" -d "$CLASSES" "$FIXTURES"/src/Verify*.java "$FIXTURES"/src/ShapeAccess.java
 
 echo "verify-write-path: writing fixtures from Rust and verifying with Lucene $LUCENE_VERSION"
 failed=0

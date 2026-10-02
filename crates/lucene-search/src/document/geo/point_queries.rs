@@ -77,7 +77,7 @@ fn check_shape(name: &str, dims: i32, bytes: i32, kind: &str) -> Result<()> {
 
 /// The segment's points for `field`: its `FieldInfo`, the reader and the
 /// field's tree, or `None` when it has no points here.
-fn points_of<'a>(
+pub(crate) fn points_of<'a>(
     leaf: &OpenSegment<'a>,
     field: &str,
 ) -> Result<Option<(&'a FieldInfo, PointsReader<'a>)>> {
@@ -326,14 +326,24 @@ impl DocumentQuery for LatLonPointDistanceQuery {
 // ---------------------------------------------------------------- spatial
 
 /// `SpatialQuery.SpatialVisitor`: a query geometry's cell relation and its
-/// per-point predicates.
+/// per-value predicates -- over a packed point for `LatLonPointQuery`, over
+/// an encoded triangle for the shape queries.
 pub(crate) trait SpatialVisitor {
     /// `relate(minPackedValue, maxPackedValue)`.
     fn relate(&self, min: &[u8], max: &[u8]) -> Relation;
-    /// `intersects()` (and `within()`, which is the same test for a point).
+    /// `intersects()`.
     fn intersects(&self, packed: &[u8]) -> bool;
+    /// `within()`: for a point the same test as `intersects()`.
+    fn within(&self, packed: &[u8]) -> bool {
+        self.intersects(packed)
+    }
     /// `contains()`.
     fn contains(&self, packed: &[u8]) -> std::result::Result<WithinRelation, GeoError>;
+    /// What calling `contains()` itself throws, before any value is tested
+    /// (`LatLonShapeBoundingBoxQuery` refuses a box across the dateline).
+    fn check_contains(&self) -> std::result::Result<(), GeoError> {
+        Ok(())
+    }
 
     /// `getInnerFunction(queryRelation)`.
     fn inner(&self, rel: QueryRelation, min: &[u8], max: &[u8]) -> Relation {
@@ -348,7 +358,8 @@ pub(crate) trait SpatialVisitor {
     /// `getLeafPredicate(queryRelation)`.
     fn leaf(&self, rel: QueryRelation, packed: &[u8]) -> std::result::Result<bool, GeoError> {
         Ok(match rel {
-            QueryRelation::Intersects | QueryRelation::Within => self.intersects(packed),
+            QueryRelation::Intersects => self.intersects(packed),
+            QueryRelation::Within => self.within(packed),
             QueryRelation::Disjoint => !self.intersects(packed),
             QueryRelation::Contains => self.contains(packed)? == WithinRelation::Candidate,
         })
@@ -450,6 +461,32 @@ impl<V: SpatialVisitor + ?Sized> IntersectVisitor for SpatialWalk<'_, V> {
         }
     }
 
+    /// `visit(DocIdSetIterator)` / `visit(IntsRef)`: a cell inside the
+    /// query, its documents taken as a run (`result.or(iterator)` and
+    /// friends in Java) with one dispatch on the walk rather than one per
+    /// document.
+    fn visit_many(&mut self, doc_ids: &[i32]) {
+        match self.walk {
+            Walk::Estimate => {}
+            Walk::Forward | Walk::Dense => {
+                for &d in doc_ids {
+                    set_doc(&mut self.result, d);
+                }
+            }
+            Walk::Inverse | Walk::ShallowInverse => {
+                for &d in doc_ids {
+                    clear_doc(&mut self.result, d);
+                }
+            }
+            Walk::ContainsDense => {
+                for &d in doc_ids {
+                    set_doc(&mut self.excluded, d);
+                }
+            }
+            Walk::AnyHits => self.found |= !doc_ids.is_empty(),
+        }
+    }
+
     fn visit_with_value(&mut self, doc_id: i32, packed: &[u8]) {
         let d = doc_id;
         match self.walk {
@@ -496,7 +533,7 @@ impl<V: SpatialVisitor + ?Sized> IntersectVisitor for SpatialWalk<'_, V> {
 
 /// `SpatialQuery.getScorerSupplier` and `RelationScorerSupplier.getScorer`
 /// over one segment: every live match of `visitor` under `rel`, at `score`.
-fn spatial_score_leaf<V: SpatialVisitor + ?Sized>(
+pub(crate) fn spatial_score_leaf<V: SpatialVisitor + ?Sized>(
     leaf: &OpenSegment<'_>,
     info: &FieldInfo,
     points: &PointsReader<'_>,
@@ -548,6 +585,8 @@ fn spatial_score_leaf<V: SpatialVisitor + ?Sized>(
     };
     let result = match rel {
         QueryRelation::Contains => {
+            // `getContainsDenseVisitor` asks for `contains()` here.
+            visitor.check_contains().map_err(geo)?;
             let mut w = run(Walk::ContainsDense, None)?;
             w.result.and_not(&w.excluded);
             w.result

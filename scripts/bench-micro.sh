@@ -127,6 +127,16 @@ case "$BENCH" in
     PREP_ARGS=(build "$INDEX")
     JAVA_ARGS=(run)
     NEEDS_INDEX=1 ;;
+  geo_shapes)
+    # Both engines read the 200 000-shape index GeoShapesMicro builds (once)
+    # under benchmarks/.corpus/geo-shapes, with its polygons and query set.
+    MAIN=GeoShapesMicro
+    SRC=benchmarks/micro/java/GeoShapesMicro.java
+    JAR_MODULES="lucene-core lucene-analysis-common"
+    INDEX="${INDEX_ARG:-$PWD/benchmarks/.corpus/geo-shapes}"
+    PREP_ARGS=(build "$INDEX")
+    JAVA_ARGS=(run)
+    NEEDS_INDEX=1 ;;
   pfor_decode)
     MAIN=org.apache.lucene.codecs.lucene104.PForUtilMicro
     SRC=benchmarks/micro/java/org/apache/lucene/codecs/lucene104/PForUtilMicro.java ;;

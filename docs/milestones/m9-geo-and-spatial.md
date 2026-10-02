@@ -9,7 +9,7 @@
 | **Effort** | L |
 | **Depends on** | [M7](m7-core-complete.md) (`document` fields, multi-dimension BKD writing) |
 | **Unblocks** | native `geo_distance`, `geo_bounding_box`, `geo_shape`, geo sorting |
-| **Status** | in progress: T9.1, T9.2 done (2026-10-02) |
+| **Status** | in progress: T9.1, T9.2, T9.3 done (2026-10-02) |
 
 ---
 
@@ -91,6 +91,24 @@ last within the milestone.
   `docs/parity.md`. `SpatialQuery`'s shape half stays with T9.3.
 - **T9.3** — Shapes: `LatLonShape`/`XYShape` writing and querying, including
   the doc-values shape encoding.
+  **Done (2026-10-02).** `ShapeField`'s triangle encoding, the
+  `LatLonShape`/`XYShape` field factories and the shape doc values
+  (`ShapeDocValues`' tree, byte for byte, and its `relate`) in
+  `lucene-index/src/document/{shape.rs, shape_doc_values.rs}`; the queries
+  in `lucene-search/src/document/geo/shape_queries.rs` -- `LatLonShapeQuery`,
+  `XYShapeQuery` and `LatLonShapeBoundingBoxQuery` through `SpatialQuery`'s
+  scorers (now shared by points and triangles), `EncodedRectangle`, and the
+  doc-values queries -- with the `lat_lon_shape`/`xy_shape` factories in
+  `geo/mod.rs`. `StrictMath.hypot` joined `strict_math.rs` (the doc value's
+  centroid weights lines by `Math.hypot`). Differential: `GenGeoShapes` ->
+  `crates/lucene-search/tests/geo_shapes_fixtures.rs`: 1576 queries, every
+  geometry under every relation, indexed and doc-values, lat/lon and
+  cartesian, answered as Lucene answers over Lucene's index and over this
+  port's (whose triangles and doc values are Lucene's byte for byte); 1500
+  triangles encoded/decoded; 140 doc values and 700 `relate`s. Write path:
+  `VerifyGeoShapes`. Benchmark pair `scripts/bench-micro.sh --bench
+  geo_shapes`: every case above 1.0 (1.09x-1.76x); ratios and the stage-3
+  changes in `docs/parity.md`.
 - **T9.4** — `spatial3d`.
 - **T9.5** — `spatial-extras` (prefix trees, `SpatialStrategy`s).
 - **T9.6** — Plugin wiring for OpenSearch's geo queries and sort.
@@ -102,7 +120,7 @@ last within the milestone.
       degenerate polygons.
 - [ ] The `Tessellator` produces Lucene's triangles, or fails where Lucene
       fails, on a corpus of real-world polygons.
-- [ ] Real Lucene reads Rust-written point and shape indices.
+- [x] Real Lucene reads Rust-written point and shape indices.
 - [ ] Native `geo_distance` and `geo_shape` searches agree with a stock node
       in the plugin's matrix, and are no slower than Lucene.
 
