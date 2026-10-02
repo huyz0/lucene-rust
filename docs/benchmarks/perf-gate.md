@@ -66,6 +66,33 @@ in [`slow-tail-2026-09.md`](slow-tail-2026-09.md).
 The first two gate runs on the new build each failed one query, q68 and then
 q64, both at 0.92–1.00× after three passes. Those were the last two fixes.
 
+## M6 close-out measurements (2026-10-01/02)
+
+The M1 bar after the October optimisation round: impact bounds folded
+straight off the encoded bytes, the BKD walk copying dimensions as words, one
+reused postings cursor per wide multi-term clause and a first-delta skip of
+rare terms past the cutoff, MaxScore's first filter folded into the batch
+copy, and phrase candidates bounded without a divide. Nothing is slower than
+Lucene and there are no recall mismatches in any run below.
+
+| where | corpus | ≥1.5× | median |
+|---|---|---|---|
+| development VM, `bench-compare.sh`, a573c67 | merged | **79/87 (91%)** | 2.24x |
+| development VM, `bench-compare.sh`, a573c67 | segmented | **71/87 (82%)** | 2.30x |
+| nightly job #3 (hosted runner), a573c67 | merged | 69/87 (79%) | 2.57x |
+| nightly job #3 (hosted runner), a573c67 | segmented | 64/87 (74%) | 2.11x |
+| nightly job #4 (hosted runner), f581c7a | merged | 69/87 (79%) | 2.07x |
+| nightly job #4 (hosted runner), f581c7a | segmented | 58/87 (67%) | 2.17x |
+
+**M6's criterion -- the bar met on the nightly job -- is not met yet.** The
+hosted runner reads lower than the development VM, and it is noisy: between
+runs #3 and #4 the same queries moved 15-25% (q05 1.55x then 1.22x), with
+Lucene's own qps moving as much. The misses on the runner are the core
+AND/OR shapes (q04, q08, q09, q11, q12, q14, q15), the sorted queries
+(q74-q80), the phrase-bearing boolean expressions (q47, q49, q56-q60) and
+q69, q71, q89 -- most between 1.3x and 1.5x. Passing reliably there needs a
+margin over 1.5x on that band, not just a pass on a quiet machine.
+
 ## Negative control
 
 `bench-gate.py --negative-control 2` on `merged` runs every Rust query twice
