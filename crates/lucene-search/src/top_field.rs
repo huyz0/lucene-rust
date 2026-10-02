@@ -2210,29 +2210,42 @@ impl IntersectVisitor for CompetitiveVisitor {
         if self.bits.is_none() && self.docs.len() + doc_ids.len() >= self.upgrade_at {
             self.upgrade();
         }
-        let floor = self.max_doc_visited;
-        if let Some(&bad) = doc_ids
-            .iter()
-            .find(|&&d| d < 0 || d as usize >= self.max_doc)
-        {
-            self.corrupt.get_or_insert(bad);
-            return;
-        }
+        let (floor, max_doc) = (self.max_doc_visited, self.max_doc);
+        // One pass, validating as it adds: an id outside `0..max_doc` (a
+        // corrupt `.kdd`) ends the visit, and the walk then fails with it
+        // (`corrupt`), so nothing added before it is ever used. The separate
+        // validation pass this replaced, and the `added` field written back
+        // per document, were half of a numeric sort's leaf visits.
         match &mut self.bits {
             Some(b) => {
+                let mut added = 0usize;
                 for &d in doc_ids {
+                    // A negative id wraps far past any `max_doc`.
+                    let i = d as u32 as usize;
+                    if i >= max_doc {
+                        self.corrupt.get_or_insert(d);
+                        break;
+                    }
                     if d > floor {
-                        // FBS: every id was checked against `0..max_doc`
-                        // above, and `b` is `max_doc` bits.
-                        b.set(d as usize);
-                        self.added += 1;
+                        // FBS: `i < max_doc` was just checked, and `b` is
+                        // `max_doc` bits.
+                        b.set(i);
+                        added += 1;
                     }
                 }
+                self.added += added;
             }
             None => {
                 let before = self.docs.len();
-                self.docs
-                    .extend(doc_ids.iter().copied().filter(|&d| d > floor));
+                for &d in doc_ids {
+                    if d as u32 as usize >= max_doc {
+                        self.corrupt.get_or_insert(d);
+                        break;
+                    }
+                    if d > floor {
+                        self.docs.push(d);
+                    }
+                }
                 self.added += self.docs.len() - before;
             }
         }
@@ -5360,8 +5373,11 @@ mod tests {
             max_doc: 8,
             corrupt: None,
         };
+        // The visit stops at the bad id (what came before it may be added:
+        // a recorded `corrupt` fails the whole walk, so it is never used).
         w.visit_many(&[1, -3, 2]);
-        assert_eq!((w.corrupt, w.added), (Some(-3), 0));
+        assert_eq!((w.corrupt, w.added), (Some(-3), 1));
+        assert_eq!(w.docs, [1]);
     }
 
     fn comparator(reverse: bool, pruning: Pruning) -> Comparator {
