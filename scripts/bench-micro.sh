@@ -111,6 +111,12 @@ case "$BENCH" in
     JAR_MODULES="lucene-core lucene-queries"
     JAVA_ARGS=("$BENCH")
     case "$BENCH" in m7_corpus|similarity|sort_pruning) NEEDS_INDEX=1 ;; esac ;;
+  # M9's geo pair (GeoMicro.java / micro_geo.rs): the Tessellator, Component2D
+  # build/relate/contains/intersectsTriangle and haversin, over the inputs of
+  # the fixtures under fixtures/data/geo/ (read from the repository root).
+  geo)
+    MAIN=GeoMicro
+    SRC=benchmarks/micro/java/GeoMicro.java ;;
   pfor_decode)
     MAIN=org.apache.lucene.codecs.lucene104.PForUtilMicro
     SRC=benchmarks/micro/java/org/apache/lucene/codecs/lucene104/PForUtilMicro.java ;;

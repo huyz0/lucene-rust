@@ -22,6 +22,7 @@ use lucene_search::directory_reader::DirectoryReader;
 use lucene_store::data_input::SliceInput;
 use lucene_store::MmapDirectory;
 
+mod micro_geo;
 mod micro_m7;
 mod sexpr;
 #[path = "../../../crates/lucene-search/tests/m7grammar/mod.rs"]
@@ -2058,6 +2059,7 @@ fn main() {
         "dv_merge" => bench_dv_merge(warmup, measure),
         "points_write" => bench_points_write(warmup, measure),
         "concurrent_index" => bench_concurrent_index(warmup, measure),
+        "geo" => micro_geo::bench_geo(warmup, measure),
         "m7_fixture" => micro_m7::bench_m7_fixture(warmup, measure),
         "query_builder" => micro_m7::bench_query_builder(warmup, measure),
         "stored_fields_write" => micro_m7::bench_stored_fields_write(warmup, measure),
