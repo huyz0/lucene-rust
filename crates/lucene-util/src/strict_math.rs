@@ -413,8 +413,10 @@ pub fn hypot(x: f64, y: f64) -> f64 {
         w = (t1 * y1 - (w * (-w) - (t1 * y2 + t2 * b))).sqrt();
     }
     if k != 0 {
-        // `Math.powerOfTwoD(k)`: k is one of 600, -422, -600, -1022 -- a
-        // normal power of two.
+        // `Math.powerOfTwoD(k)`: k is one of 600, -600, -1022 -- a normal
+        // power of two. Both scalings (600 then -600 or -1022) would need
+        // `a > 2^500` with `b` below `2^100`, a ratio past the `2^60` that
+        // already returned `a + b`.
         f64::from_bits(((i64::from(k) + 1023) as u64) << 52) * w
     } else {
         w
