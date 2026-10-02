@@ -177,7 +177,12 @@ What someone needs to run this who did not build it:
       whose soft-deletes check agrees with Java's on a Java-written index
       where the field arrived by an update.
 - [ ] [M1](m1-performance-gate.md)'s performance bar is still met on the final
-      build, measured by the nightly job rather than by hand.
+      build, measured by the nightly job rather than by hand. *2026-10-02:
+      met on the development VM (merged 91%, segmented 82%) but not on the
+      nightly runner (merged 79%, segmented 67-74%); nothing slower than
+      Lucene, no recall mismatch. See
+      [`perf-gate.md`](../benchmarks/perf-gate.md), "M6 close-out
+      measurements".*
 - [x] The nightly performance job fails the build when a query is slower
       than Lucene or regresses more than 10% against its recorded baseline,
       verified with a deliberate negative control
