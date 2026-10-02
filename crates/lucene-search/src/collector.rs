@@ -411,6 +411,21 @@ pub(crate) fn rank_order(a: &ScoreDoc, b: &ScoreDoc) -> std::cmp::Ordering {
     }
 }
 
+/// A score as `DocScoreEncoder` stores it: `Float.floatToIntBits`
+/// canonicalizes every NaN to `0x7fc00000`, the positive quiet NaN, so in
+/// Java's heap a NaN of either sign ranks above `+inf` and reads back as that
+/// one NaN (x86 produces a *negative* NaN at run time, arm64 a positive one;
+/// Java hides the difference and so must this port). Every other value is
+/// returned unchanged.
+#[inline]
+pub(crate) fn canonical_score(score: f32) -> f32 {
+    if score.is_nan() {
+        f32::NAN
+    } else {
+        score
+    }
+}
+
 /// `DocScoreEncoder` (`org.apache.lucene.search.DocScoreEncoder`): a
 /// `(doc, score)` pair packed into one `i64` whose **natural integer order is
 /// the ranking order** -- higher score first, and on a score tie the lower doc
@@ -432,7 +447,10 @@ mod doc_score_encoder {
     }
 
     pub(super) fn encode(doc_id: i32, score: f32) -> i64 {
-        let sortable = sortable_float_bits(score.to_bits() as i32);
+        // `Float.floatToIntBits`, not `floatToRawIntBits`: every NaN is the
+        // canonical positive one, so a NaN sorts above `+inf` whatever its
+        // sign bit (see [`super::canonical_score`]).
+        let sortable = sortable_float_bits(super::canonical_score(score).to_bits() as i32);
         // `(long) sortableInt << 32 | (Integer.MAX_VALUE - docId)`: the low
         // half is masked to 32 bits by the `|`, exactly as Java's widening of
         // an `int` operand does.
@@ -767,7 +785,14 @@ impl TopDocsCollector {
         {
             None
         } else {
-            self.hits.last().map(|h| h.score)
+            // `f32::max` returns the other operand for a NaN: Java pushes
+            // nothing for a NaN worst hit (`Math.nextUp(NaN) >
+            // minCompetitiveScore` is false), so the scorer keeps the bar it
+            // was given before, `published_min` (`-inf` when there was none).
+            // Otherwise the worst hit only ever rises, so this is the worst
+            // hit's score, except after a queue full of NaN let a lower one in
+            // -- and then too Java's scorer keeps its higher bar.
+            self.hits.last().map(|h| h.score.max(self.published_min))
         }
     }
 
@@ -777,9 +802,10 @@ impl TopDocsCollector {
     fn note_threshold_published(&mut self) {
         match self.local_min_competitive_score() {
             Some(local) => {
-                self.total_hits_relation = TotalHitsRelation::GreaterThanOrEqualTo;
                 // `updateMinCompetitiveScore`'s `if (localMinScore >
-                // minCompetitiveScore)` gate, then its
+                // minCompetitiveScore)` gate, which is also the only place the
+                // relation flips (a bar at `-inf`, what a queue of NaN hits
+                // yields, raises nothing and so leaves the count exact), then its
                 // `minScoreAcc.accumulate(topCode)`. Two things are load-bearing
                 // here. The gate: without it the atomic read-modify-write below
                 // runs once per collected document, where Java runs it only when
@@ -791,28 +817,36 @@ impl TopDocsCollector {
                 // decide for itself whether a tie on that score is competitive
                 // in its own doc-id range.
                 if local > self.published_min {
+                    self.total_hits_relation = TotalHitsRelation::GreaterThanOrEqualTo;
                     self.published_min = local;
                     if let Some(acc) = &self.min_score_acc {
                         if let Some(worst) = self.hits.last() {
                             acc.accumulate(self.doc_base.saturating_add(worst.doc_id), worst.score);
                         }
                     }
+                } else {
+                    self.note_shared_threshold();
                 }
             }
-            None => {
-                // A *shared* threshold can authorize a skip before this
-                // collector has one of its own, and that makes the count a lower
-                // bound just the same -- Java's
-                // `updateGlobalMinCompetitiveScore` sets the relation too. Only
-                // reached while the relation is still `EqualTo`, so the atomic
-                // load stops once it has flipped.
-                if self.min_score_acc.is_some()
-                    && self.total_hits_relation == TotalHitsRelation::EqualTo
-                    && TopDocsCollector::min_competitive_score(self).is_some()
-                {
-                    self.total_hits_relation = TotalHitsRelation::GreaterThanOrEqualTo;
-                }
-            }
+            None => self.note_shared_threshold(),
+        }
+    }
+
+    /// The relation flip for a bar this leaf did not raise itself.
+    #[inline]
+    fn note_shared_threshold(&mut self) {
+        // A *shared* threshold can authorize a skip before this collector has
+        // one of its own, and that makes the count a lower bound just the
+        // same -- Java's `updateGlobalMinCompetitiveScore` sets the relation
+        // too. Only reached while the relation is still `EqualTo`, so the
+        // atomic load stops once it has flipped.
+        if self.total_hits_relation == TotalHitsRelation::EqualTo
+            && self
+                .min_score_acc
+                .as_ref()
+                .is_some_and(|acc| acc.threshold_for(self.doc_base).is_some())
+        {
+            self.total_hits_relation = TotalHitsRelation::GreaterThanOrEqualTo;
         }
     }
 }
@@ -824,10 +858,10 @@ const COLLECT_RUN: usize = 16;
 
 /// Whether any of `scores` might not lose to `worst` -- `collect_many`'s run
 /// test: true for a score above it, and whenever either side is a NaN, which
-/// the per-document test does not reject (a negative NaN, what x86 produces
-/// at run time, ranks below every score, so it can be the worst kept hit). A
-/// whole run is compared as a fixed-size array, which vectorizes; a shorter
-/// tail one by one.
+/// the per-document test does not reject (Java's `!(score <= topScore)`: a
+/// NaN hit always enters, and a NaN worst hit -- a queue full of NaN --
+/// lets every hit in). A whole run is compared as a fixed-size array, which
+/// vectorizes; a shorter tail one by one.
 #[inline]
 fn run_competes(scores: &[f32], worst: f32) -> bool {
     // `!(s <= worst)`, not `s > worst`: the negation is what makes a NaN on
@@ -951,12 +985,15 @@ impl ScoringCollector for TopDocsCollector {
     /// Only for a full queue with no `searchAfter` page and no shared bar,
     /// the case `constant_score_hits_needed` answers for; the caller hands
     /// its hits over in ascending doc-id order after every kept one.
+    // Java's `score <= topScore` reject, negated below: a NaN on either side
+    // is collected, not counted as losing.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
     fn count_losing_hits(&mut self, n: u64, score: f32) -> bool {
         if self.after.is_some()
             || self.min_score_acc.is_some()
             || self.top_n == 0
             || self.hits.len() != self.top_n
-            || self.hits[self.top_n - 1].score < score
+            || !(score <= self.hits[self.top_n - 1].score)
         {
             return false;
         }
@@ -989,11 +1026,16 @@ impl ScoringCollector for TopDocsCollector {
         self.total_hits += 1;
         // The common case, inline: a full queue the document loses to. Below
         // the count threshold and with no shared bar, publishing a threshold
-        // would do nothing, so nothing else runs.
+        // would do nothing, so nothing else runs; nor once the relation has
+        // flipped, since a losing hit moves neither bar (Java calls
+        // `updateMinCompetitiveScore` from its reject branch only at
+        // `hitCountSoFar == totalHitsThreshold + 1`).
         if self.after.is_none() && self.top_n != 0 && self.hits.len() == self.top_n {
             let worst = self.hits[self.top_n - 1];
             if score < worst.score || (score == worst.score && doc_id >= worst.doc_id) {
-                if self.total_hits > self.total_hits_threshold || self.min_score_acc.is_some() {
+                if self.total_hits_relation == TotalHitsRelation::EqualTo
+                    && (self.total_hits > self.total_hits_threshold || self.min_score_acc.is_some())
+                {
                     self.note_threshold_published();
                 }
                 return;
@@ -1022,38 +1064,43 @@ impl TopDocsCollector {
             self.note_threshold_published();
             return;
         }
-        // Fast reject, which is also `TopScoreDocCollector.collect`'s own first
-        // line (`if (score <= pqTop.score) return;`). Once the queue is full,
-        // the overwhelming majority of documents lose to the worst kept hit,
-        // and deciding that takes one comparison; everything below only needs
-        // to run for a hit that will actually be kept. NaN falls through to the
-        // general path below, which orders it via `total_cmp`.
+        // Fast reject, which is also `TopScoreDocCollector.collect`'s own
+        // `if (score <= topScore)` reject. Once the queue is full, the
+        // overwhelming majority of documents lose to the worst kept hit, and
+        // deciding that takes one comparison; everything below only needs to
+        // run for a hit that will actually be kept. The doc-id half of the
+        // tie only matters to a caller handing documents over out of order
+        // (Java assumes ascending order and rejects every tie).
+        //
+        // A NaN on either side is *not* rejected -- Java's test is
+        // `!(score <= topScore)`, and NaN compares false -- so a NaN hit
+        // replaces the worst kept hit, and while the worst kept hit is a NaN
+        // (a queue full of them) every hit replaces it: with one slot the last
+        // NaN document wins.
         if self.hits.len() == self.top_n {
             let worst = self.hits[self.top_n - 1];
             if score < worst.score || (score == worst.score && doc_id >= worst.doc_id) {
                 self.note_threshold_published();
                 return;
             }
-        }
-        let candidate = ScoreDoc { doc_id, score };
-        if self.hits.len() < self.top_n {
-            let pos = self
-                .hits
-                .partition_point(|h| rank_order(h, &candidate) == std::cmp::Ordering::Greater);
-            self.hits.insert(pos, candidate);
+            // `heap.updateTop(code)`: the worst hit leaves whatever the new
+            // one's rank.
+            self.hits.pop();
+        } else if score == f32::NEG_INFINITY {
+            // A queue that is not full has the `-inf` sentinel on top
+            // (`DocScoreEncoder.LEAST_COMPETITIVE_CODE`), and `-inf <= -inf`:
+            // Java never keeps a `-inf` hit.
             self.note_threshold_published();
             return;
         }
-        // Full: only replace the current worst (last) hit if the candidate outranks it.
-        if let Some(worst) = self.hits.last() {
-            if rank_order(&candidate, worst) == std::cmp::Ordering::Greater {
-                self.hits.pop();
-                let pos = self
-                    .hits
-                    .partition_point(|h| rank_order(h, &candidate) == std::cmp::Ordering::Greater);
-                self.hits.insert(pos, candidate);
-            }
-        }
+        let candidate = ScoreDoc {
+            doc_id,
+            score: canonical_score(score),
+        };
+        let pos = self
+            .hits
+            .partition_point(|h| rank_order(h, &candidate) == std::cmp::Ordering::Greater);
+        self.hits.insert(pos, candidate);
         self.note_threshold_published();
     }
 }
@@ -1342,9 +1389,10 @@ mod tests {
     #[test]
     fn collect_many_is_collect_per_document() {
         use std::sync::Arc;
-        // First a negative NaN -- x86's run-time NaN -- which ranks below
-        // every score: kept while the queue fills, it is then the worst kept
-        // hit, and the runs after it must still compete with it.
+        // First a negative NaN -- x86's run-time NaN -- which Java
+        // canonicalizes to the top of the order: kept while the queue fills,
+        // and while it is the only hit it is the worst kept one, which every
+        // hit after it replaces.
         let mut scores = vec![f32::from_bits(0xFFC0_0000)];
         scores.extend([1.0f32, 3.0, 2.0, 2.0, 5.0, 0.5, 2.0, f32::NAN, 4.0, 1.0]);
         scores.extend((0..30).map(|i| (i % 7) as f32 * 0.5));
@@ -1607,6 +1655,120 @@ mod tests {
         c.collect(9, 3.0);
         c.collect(2, 3.0); // ties doc 9 on score; lower doc id must win.
         assert_eq!(c.top_docs().to_vec(), score_docs(&[(2, 3.0)]));
+    }
+
+    /// The kept hits as `(doc, score bits)`, best first.
+    fn kept(c: &TopDocsCollector) -> Vec<(i32, u32)> {
+        c.top_docs()
+            .iter()
+            .map(|h| (h.doc_id, h.score.to_bits()))
+            .collect()
+    }
+
+    /// `TopScoreDocCollector.collect`'s `if (score <= topScore)` reject,
+    /// negated, is what decides a NaN: a NaN hit always enters (it ranks above
+    /// `+inf` once `floatToIntBits` has canonicalized it), and a queue whose
+    /// worst hit is a NaN lets every hit in, so with one slot the *last* NaN
+    /// document wins. No threshold is pushed for a NaN (`Math.nextUp(NaN) >
+    /// minCompetitiveScore` is false), so the count stays exact.
+    #[test]
+    fn a_nan_worst_hit_is_replaced_by_every_later_hit_as_in_java() {
+        let neg_nan = f32::from_bits(0xFFC0_0000);
+        let mut one = TopDocsCollector::new(1);
+        for doc in 0..5 {
+            one.collect(doc, if doc % 2 == 0 { f32::NAN } else { neg_nan });
+        }
+        assert_eq!(kept(&one), vec![(4, 0x7fc0_0000)]);
+        assert_eq!(one.total_hits().relation, TotalHitsRelation::EqualTo);
+        // No bar was ever pushed: `-inf`, which prunes nothing.
+        assert_eq!(one.min_competitive_score(), Some(f32::NEG_INFINITY));
+
+        // Three slots: the first two NaN hits stay, the last slot churns.
+        let mut three = TopDocsCollector::new(3);
+        for doc in 0..6 {
+            three.collect(doc, neg_nan);
+        }
+        assert_eq!(
+            kept(&three),
+            vec![(0, 0x7fc0_0000), (1, 0x7fc0_0000), (5, 0x7fc0_0000)]
+        );
+        assert_eq!(three.total_hits().relation, TotalHitsRelation::EqualTo);
+        // A finite hit after a queue full of NaN replaces the worst NaN and
+        // becomes the worst kept hit -- now a real threshold.
+        three.collect(6, 1.5);
+        assert_eq!(
+            kept(&three),
+            vec![(0, 0x7fc0_0000), (1, 0x7fc0_0000), (6, 1.5f32.to_bits())]
+        );
+        assert_eq!(three.min_competitive_score(), Some(1.5));
+        assert_eq!(
+            three.total_hits().relation,
+            TotalHitsRelation::GreaterThanOrEqualTo
+        );
+        // And a NaN hit then evicts it again; the bar already pushed stays.
+        three.collect(7, f32::NAN);
+        assert_eq!(
+            kept(&three),
+            vec![(0, 0x7fc0_0000), (1, 0x7fc0_0000), (7, 0x7fc0_0000)]
+        );
+        assert_eq!(three.min_competitive_score(), Some(1.5));
+        assert_eq!(three.total_hits().value, 8);
+    }
+
+    /// A finite queue: a NaN evicts the worst finite hit and ranks first.
+    #[test]
+    fn a_nan_hit_evicts_the_worst_finite_hit_and_ranks_first() {
+        let mut c = TopDocsCollector::new(2);
+        c.collect(0, 3.0);
+        c.collect(1, 2.0);
+        c.collect(2, f32::from_bits(0xFFC0_0000));
+        assert_eq!(kept(&c), vec![(2, 0x7fc0_0000), (0, 3.0f32.to_bits())]);
+        c.collect(3, f32::INFINITY);
+        assert_eq!(
+            kept(&c),
+            vec![(2, 0x7fc0_0000), (3, f32::INFINITY.to_bits())]
+        );
+    }
+
+    /// While the queue is not full its top is `LEAST_COMPETITIVE_CODE`, whose
+    /// score is `-inf`, and `-inf <= -inf`: Java never keeps a `-inf` hit,
+    /// though it counts it.
+    #[test]
+    fn a_negative_infinity_hit_is_counted_but_never_kept() {
+        let mut c = TopDocsCollector::new(3);
+        c.collect(0, f32::NEG_INFINITY);
+        c.collect(1, 1.0);
+        c.collect(2, f32::NEG_INFINITY);
+        assert_eq!(kept(&c), vec![(1, 1.0f32.to_bits())]);
+        assert_eq!(c.total_hits().value, 3);
+        assert_eq!(c.total_hits().relation, TotalHitsRelation::EqualTo);
+    }
+
+    /// `count_losing_hits` declines a NaN on either side: none of those hits
+    /// would lose under `score <= topScore`.
+    #[test]
+    fn count_losing_hits_declines_a_nan() {
+        let mut c = TopDocsCollector::new(1);
+        c.collect(0, 2.0);
+        assert!(!ScoringCollector::count_losing_hits(&mut c, 4, f32::NAN));
+        assert!(ScoringCollector::count_losing_hits(&mut c, 4, 2.0));
+        assert_eq!(c.total_hits().value, 5);
+        let mut n = TopDocsCollector::new(1);
+        n.collect(0, f32::NAN);
+        assert!(!ScoringCollector::count_losing_hits(&mut n, 4, 1.0));
+        assert_eq!(n.total_hits().value, 1);
+    }
+
+    /// `DocScoreEncoder.encode` goes through `floatToIntBits`: both NaN signs
+    /// encode alike, above `+inf`.
+    #[test]
+    fn doc_score_encoder_canonicalizes_nan() {
+        let neg = doc_score_encoder::encode(3, f32::from_bits(0xFFC0_0000));
+        let pos = doc_score_encoder::encode(3, f32::NAN);
+        assert_eq!(neg, pos);
+        assert!(pos > doc_score_encoder::encode(3, f32::INFINITY));
+        assert_eq!(doc_score_encoder::to_score(pos).to_bits(), 0x7fc0_0000);
+        assert_eq!(canonical_score(-0.0).to_bits(), (-0.0f32).to_bits());
     }
 
     #[test]
