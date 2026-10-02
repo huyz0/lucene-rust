@@ -1162,6 +1162,20 @@ outright.
   `VerifyGeo3D` (`scripts/verify-write-path.sh`) open the Rust-written index
   with Lucene, run `CheckIndex`, and require every query to answer as over
   Lucene's own `index/` in the same JVM.
+- `GenSpatial4j.java` (M9 T9.5) — no index: `spatial4j/spatial4j.tsv` for
+  `lucene-util`'s `spatial4j_fixtures.rs`. Needs `lucene-spatial-extras` and
+  its two third-party jars, Spatial4j 0.8 and s2-geometry-library-java
+  1.0.0 (`SPATIAL_EXTRAS_DEPS` in `scripts/lib-lucene-jars.sh`, Apache-2.0).
+  Eight spatial contexts (geodetic with each distance formula, longitude
+  wrapping, planar unbounded and bounded, Geo3D on the sphere and WGS84),
+  160 random shapes each written as factory-call specs (`P`, `R`, `C`, `L`,
+  `M`): `toString`, bounding box, center, areas, a buffer; 1000 relations
+  and `equals` per context (300 against small boxes and points placed near
+  the shape); distances, `pointOnBearing`, distance boxes; `BinaryCodec`
+  bytes and read-back; 49 WKT strings per context with Java's exception
+  class, message and offset; `DistanceUtils`; geohashes; S2 cell ids,
+  levels, tokens, child positions and cell vertices. Run with the trig
+  intrinsics off, like `GenGeo3d`. Deterministic (seeded, no index).
 
 ## Manifest appenders
 

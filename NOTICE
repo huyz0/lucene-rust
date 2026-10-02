@@ -6,6 +6,16 @@ under the Apache License, Version 2.0 -- together with an OpenSearch plugin,
 parts of whose engine code are derived from OpenSearch 3.8.0 (each such file
 says so in its header). The notices of both follow.
 
+It also contains Rust ports of parts of two Java libraries Lucene's
+spatial-extras module depends on, both under the Apache License, Version 2.0
+(crates/lucene-util/src/spatial4j and crates/lucene-util/src/s2):
+
+ - Spatial4j 0.8 (https://github.com/locationtech/spatial4j),
+   Copyright (c) the Spatial4j contributors (David Smiley et al.),
+   a LocationTech project; GeohashUtils came to it from Apache Lucene.
+ - The S2 Geometry Library for Java, as published in
+   io.sgr:s2-geometry-library-java 1.0.0, Copyright 2005 Google Inc.
+
 ===========================================================================
 Apache Lucene NOTICE
 ===========================================================================
