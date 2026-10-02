@@ -50,11 +50,6 @@ fn java_string_hash(s: &str) -> i32 {
         .fold(0i32, |h, b| h.wrapping_mul(31).wrapping_add(i32::from(b)))
 }
 
-/// The `totalHits` value of a `scored` line.
-fn total(line: &str) -> &str {
-    line.split('\t').nth(1).unwrap()
-}
-
 fn run(segments: &[OpenSegment<'_>], a: &[&str]) -> String {
     let weight: f32 = a[2].parse().unwrap();
     let n: usize = a[5].parse().unwrap();
@@ -94,18 +89,20 @@ fn distance_feature_pruning_counts_what_lucene_counts() {
     let mut failures = Vec::new();
     let mut n = 0;
     let mut pruned = 0;
+    let mut nans = 0;
     for line in text.lines() {
         let (query, want) = line.split_once("\t=>\t").unwrap();
         let a: Vec<&str> = query.split('\t').collect();
         let got = run(&segments, &a);
         // A NaN pivot scores every document NaN. Lucene never prunes it
-        // (`Math.nextUp(NaN) > minCompetitiveScore` is false), which is what
-        // the count checks. How a full queue of NaN hits churns and which
-        // relation it reports are `TopScoreDocCollector`'s, not the query's,
-        // and this port's collector orders NaN differently (`docs/parity.md`,
-        // the `TopScoreDocCollector` row), so only the count is compared.
-        let nan = a[4] == "NaN";
-        if (nan && total(&got) != total(want)) || (!nan && got != want) {
+        // (`Math.nextUp(NaN) > minCompetitiveScore` is false), so the count
+        // is exact and the relation stays `EQUAL_TO`; and since
+        // `TopScoreDocCollector` lets in every hit that is `!(score <=
+        // topScore)`, a full queue of NaN hits churns through its last slot
+        // and keeps the segment's last document there. Compared whole, like
+        // every other row.
+        nans += usize::from(a[4] == "NaN");
+        if got != want {
             let short = |s: &str| s.chars().take(200).collect::<String>();
             failures.push(format!(
                 "{query}\n  java: {}\n  rust: {}",
@@ -124,4 +121,5 @@ fn distance_feature_pruning_counts_what_lucene_counts() {
     );
     assert!(n > 200, "{n} queries");
     assert!(pruned > 100, "only {pruned} queries pruned");
+    assert!(nans >= 16, "only {nans} NaN-pivot queries");
 }
