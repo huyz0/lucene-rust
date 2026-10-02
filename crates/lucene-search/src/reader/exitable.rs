@@ -527,6 +527,12 @@ impl IntersectVisitor for ExitableVisitor<'_> {
             self.in_.visit_with_value(doc_id, packed_value);
         }
     }
+    /// `grow(count)`: `checkAndThrow()`, then forwarded.
+    fn grow(&mut self, count: usize) {
+        if !self.check_now() {
+            self.in_.grow(count);
+        }
+    }
 }
 
 impl ExitablePointValues<'_> {

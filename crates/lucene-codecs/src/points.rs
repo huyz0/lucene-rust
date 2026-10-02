@@ -76,6 +76,14 @@ pub enum Error {
     Bkd(#[from] crate::bkd_writer::BkdError),
     #[error("illegal field number: {0}")]
     IllegalFieldNumber(i32),
+    /// A [`PointTreeNode`] handed to a reader whose tree for that field has
+    /// another shape: a node of another segment's reader.
+    #[error("point tree node of field {0} does not belong to this reader's tree")]
+    ForeignPointTreeNode(i32),
+    /// [`PointsReader::count_points`] on a field of more than one
+    /// dimension, which `PointRangeQuery.pointCount` is never run on.
+    #[error("field {field_number}: counting points needs one dimension, the field has {num_dims}")]
+    MultiDimensionCount { field_number: i32, num_dims: i32 },
     #[error("unsupported doc-ids bits-per-value byte: {0}")]
     UnsupportedDocIdsEncoding(i8),
     #[error("unsupported compressed dimension marker: {0}")]
@@ -814,6 +822,7 @@ impl<'d> PointsReader<'d> {
         let mut input = SliceInput::new(self.inner_nodes(field)?);
         let fp = input.read_vlong()?;
         Ok(PointTreeNode {
+            field_number,
             node_id: 1,
             num_leaves: field.num_leaves,
             pos: input.position(),
@@ -825,17 +834,38 @@ impl<'d> PointsReader<'d> {
         })
     }
 
+    /// The field `node` belongs to, refusing a node whose shape is not that
+    /// field's tree's -- one taken from another reader (another segment),
+    /// whose cell, split values and per-dimension flags would index past
+    /// this field's.
+    fn node_field(&self, node: &PointTreeNode) -> Result<&PointsField> {
+        let field = self
+            .field(node.field_number)
+            .ok_or(Error::IllegalFieldNumber(node.field_number))?;
+        let len = field.min_packed_value.len();
+        if node.num_leaves != field.num_leaves
+            || node.min.len() != len
+            || node.max.len() != len
+            || node.split_values.len() != len
+            || node.negative_deltas.len() != field.num_index_dims as usize
+        {
+            return Err(Error::ForeignPointTreeNode(node.field_number));
+        }
+        Ok(field)
+    }
+
     /// `moveToChild()` then `moveToSibling()` on a clone of `node`: its two
     /// children, each with its own cell (`BKDPointTree.pushLeft` /
     /// `pushRight`), or `None` at a leaf.
+    ///
+    /// # Errors
+    /// A node of a tree other than this reader's (see [`point_tree`](Self::point_tree)),
+    /// or corrupt index bytes.
     pub fn point_tree_children(
         &self,
-        field_number: i32,
         node: &PointTreeNode,
     ) -> Result<Option<(PointTreeNode, PointTreeNode)>> {
-        let field = self
-            .field(field_number)
-            .ok_or(Error::IllegalFieldNumber(field_number))?;
+        let field = self.node_field(node)?;
         if node.node_id >= field.num_leaves {
             return Ok(None);
         }
@@ -860,6 +890,7 @@ impl<'d> PointsReader<'d> {
         let mut left_deltas = ctx.negative_deltas.clone();
         left_deltas[inner.split_dim] = true;
         let left = PointTreeNode {
+            field_number: node.field_number,
             node_id: inner.left_child,
             num_leaves: field.num_leaves,
             pos: input.position(),
@@ -876,6 +907,7 @@ impl<'d> PointsReader<'d> {
         let mut right_deltas = ctx.negative_deltas;
         right_deltas[inner.split_dim] = false;
         let right = PointTreeNode {
+            field_number: node.field_number,
             node_id: inner.right_child,
             num_leaves: field.num_leaves,
             pos: input.position(),
@@ -895,13 +927,10 @@ impl<'d> PointsReader<'d> {
     /// nothing.
     pub fn visit_leaf<V: IntersectVisitor>(
         &self,
-        field_number: i32,
         node: &PointTreeNode,
         visitor: &mut V,
     ) -> Result<()> {
-        let field = self
-            .field(field_number)
-            .ok_or(Error::IllegalFieldNumber(field_number))?;
+        let field = self.node_field(node)?;
         if node.node_id < field.num_leaves {
             return Ok(());
         }
@@ -920,9 +949,19 @@ impl<'d> PointsReader<'d> {
     /// exact: a cell entirely inside the query adds its point count
     /// (`BKDPointTree.size()`) without reading a leaf, a cell outside adds
     /// nothing, and a leaf the query crosses is decoded and handed to the
-    /// visitor value by value ([`IntersectVisitor::visit_with_value`]), as
-    /// [`intersect`](Self::intersect) does. Returns the inside cells' points;
-    /// the visitor counts what it accepted of the crossing leaves.
+    /// visitor value by value ([`IntersectVisitor::visit_with_value`]).
+    /// Returns the inside cells' points; the visitor counts what it accepted
+    /// of the crossing leaves.
+    ///
+    /// One-dimension fields only, the only ones Java runs `pointCount` on
+    /// (`numDims == 1`): a multi-dimension leaf is related by its own box
+    /// first, so it could be skipped or handed over whole through
+    /// [`IntersectVisitor::visit_many`] -- where Java's counting visitor
+    /// throws `UnsupportedOperationException` -- rather than value by value.
+    ///
+    /// # Errors
+    /// [`Error::MultiDimensionCount`] for a field of more than one
+    /// dimension, or corrupt index bytes.
     pub fn count_points<V: IntersectVisitor>(
         &self,
         field_number: i32,
@@ -931,6 +970,12 @@ impl<'d> PointsReader<'d> {
         let field = self
             .field(field_number)
             .ok_or(Error::IllegalFieldNumber(field_number))?;
+        if field.num_dims != 1 {
+            return Err(Error::MultiDimensionCount {
+                field_number,
+                num_dims: field.num_dims,
+            });
+        }
         let inner_nodes = self.inner_nodes(field)?;
         let mut input = SliceInput::new(inner_nodes);
         let mut ctx = IntersectCtx::new(field, self.kdd, true);
@@ -1397,6 +1442,9 @@ fn intersect_node<V: IntersectVisitor>(
 /// the `.kdi` position and leaf pointer).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PointTreeNode {
+    /// The field whose tree this node belongs to: the reader's methods take
+    /// the node alone, so a node cannot be walked as another field's.
+    field_number: i32,
     node_id: i32,
     num_leaves: i32,
     /// `.kdi` offset of this node's own data (after its FP delta).
@@ -4171,7 +4219,7 @@ mod tests {
         let mut out = Vec::new();
         let mut stack = vec![reader.point_tree(0).unwrap()];
         while let Some(node) = stack.pop() {
-            if let Some((l, r)) = reader.point_tree_children(0, &node).unwrap() {
+            if let Some((l, r)) = reader.point_tree_children(&node).unwrap() {
                 stack.push(r);
                 stack.push(l);
             }
@@ -4197,7 +4245,7 @@ mod tests {
         let mut leaves = 0;
         for node in &nodes {
             let (min, max) = (node.min_packed(), node.max_packed());
-            match reader.point_tree_children(0, node).unwrap() {
+            match reader.point_tree_children(node).unwrap() {
                 Some((l, r)) => {
                     assert_eq!(l.min_packed(), min);
                     assert_eq!(r.max_packed(), max);
@@ -4207,7 +4255,7 @@ mod tests {
                     assert!(node.is_leaf());
                     leaves += 1;
                     let mut v = Collect(Vec::new(), Relation::CellCrossesQuery);
-                    reader.visit_leaf(0, node, &mut v).unwrap();
+                    reader.visit_leaf(node, &mut v).unwrap();
                     for (doc, packed) in v.0 {
                         for d in 0..2 {
                             let r = d * 4..d * 4 + 4;
@@ -4231,11 +4279,88 @@ mod tests {
         assert_eq!(seen, points.iter().map(|p| p.0).collect::<Vec<_>>());
         // An inner node visits nothing; an unknown field is an error.
         let mut v = Collect(Vec::new(), Relation::CellCrossesQuery);
-        reader.visit_leaf(0, &root, &mut v).unwrap();
+        reader.visit_leaf(&root, &mut v).unwrap();
         assert!(v.0.is_empty());
-        assert!(reader.visit_leaf(7, &root, &mut v).is_err());
         assert!(reader.point_tree(7).is_err());
-        assert!(reader.point_tree_children(7, &root).is_err());
+    }
+
+    #[test]
+    fn a_node_of_another_field_is_refused() {
+        // Field 0: one dimension of 8 bytes; field 1: two of 4. Their packed
+        // values are the same length, their trees are not.
+        let one_d = WritePointsField {
+            field_number: 0,
+            num_dims: 1,
+            num_index_dims: 1,
+            bytes_per_dim: 8,
+            points: (0..100i32)
+                .map(|i| (i, i64::from(i * 7919 % 1000).to_be_bytes().to_vec()))
+                .collect(),
+        };
+        let (points, _) = two_d_field();
+        let two_d = WritePointsField {
+            field_number: 1,
+            num_dims: 2,
+            num_index_dims: 2,
+            bytes_per_dim: 4,
+            points,
+        };
+        // Field 2: one dimension of 4 bytes, shorter packed values.
+        let short = WritePointsField {
+            field_number: 2,
+            num_dims: 1,
+            num_index_dims: 1,
+            bytes_per_dim: 4,
+            points: (0..10i32).map(|i| (i, i.to_be_bytes().to_vec())).collect(),
+        };
+        let (kdm, kdi, kdd) = write(&[two_d], 4, &id(), "").unwrap();
+        let reader = open(&kdm, &kdi, &kdd, &id(), "").unwrap();
+        let two_root = reader.point_tree(1).unwrap();
+        let two_child = reader.point_tree_children(&two_root).unwrap().unwrap().0;
+        // Another segment's reader, where field 1 is a one-dimension field:
+        // of 8 bytes (same packed length, other tree), of 4 bytes, or absent.
+        let renumber = |mut f: WritePointsField| {
+            f.field_number = 1;
+            f
+        };
+        for other in [
+            vec![renumber(one_d.clone())],
+            vec![renumber(short.clone())],
+            vec![short.clone()],
+        ] {
+            let (kdm, kdi, kdd) = write(&other, 4, &id(), "").unwrap();
+            let other = open(&kdm, &kdi, &kdd, &id(), "").unwrap();
+            for node in [&two_root, &two_child] {
+                assert!(other.point_tree_children(node).is_err());
+                let mut v = Collect(Vec::new(), Relation::CellCrossesQuery);
+                assert!(other.visit_leaf(node, &mut v).is_err());
+                assert!(v.0.is_empty());
+            }
+        }
+        // Its own reader takes it.
+        assert!(reader.point_tree_children(&two_child).unwrap().is_some());
+    }
+
+    #[test]
+    fn count_points_refuses_a_multi_dimension_field() {
+        // Its leaves are related by their own boxes, so a crossing cell's
+        // leaf may arrive whole through `visit_many`: not a count `pointCount`
+        // (one dimension only) ever makes.
+        let (_, (kdm, kdi, kdd)) = two_d_field();
+        let reader = open(&kdm, &kdi, &kdd, &id(), "").unwrap();
+        let e = reader
+            .count_points(0, &mut Collect(Vec::new(), Relation::CellCrossesQuery))
+            .unwrap_err();
+        assert!(
+            matches!(
+                e,
+                Error::MultiDimensionCount {
+                    field_number: 0,
+                    num_dims: 2
+                }
+            ),
+            "{e}"
+        );
     }
 
     #[test]

@@ -547,6 +547,9 @@ impl IntersectVisitor for DynVisitor<'_> {
     fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) {
         self.0.visit_with_value(doc_id, packed_value);
     }
+    fn grow(&mut self, count: usize) {
+        self.0.grow(count);
+    }
 }
 
 // ---------------------------------------------------------------------------

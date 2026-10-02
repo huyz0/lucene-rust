@@ -434,6 +434,13 @@ impl IntersectVisitor for ShiftAll<'_> {
         self.inner
             .visit_with_value(doc_id + self.base, packed_value);
     }
+    /// Forwarded. Java's `wrapIntersectVisitor` keeps the interface's no-op
+    /// `grow`, which a visitor taking its `BulkAdder` from `grow` cannot
+    /// survive (see `SortingVisitor::grow`); this view is a merge-time one
+    /// in Java.
+    fn grow(&mut self, count: usize) {
+        self.inner.grow(count);
+    }
 }
 
 impl PointValues for MergedPoints<'_> {
