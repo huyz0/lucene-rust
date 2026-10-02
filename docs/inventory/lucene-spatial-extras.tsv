@@ -1,0 +1,70 @@
+# Lucene 10.5.0 lucene-spatial-extras: every top-level class of the jar, and what became of it.
+# Checked by scripts/check-port-inventory.py --module spatial-extras (see its docstring for the statuses).
+# Spatial4j and s2-geometry, which this module is built on, are third-party jars: their ported
+# subsets (crates/lucene-util/src/{spatial4j,s2}) are recorded in docs/parity.md, not here.
+# class	status	detail
+spatial/ShapeValues	todo:M9	T9.5, not ported yet
+spatial/ShapeValuesSource	todo:M9	T9.5, not ported yet
+spatial/SpatialStrategy	todo:M9	T9.5, not ported yet
+spatial/bbox/BBoxOverlapRatioValueSource	todo:M9	T9.5, not ported yet
+spatial/bbox/BBoxSimilarityValueSource	todo:M9	T9.5, not ported yet
+spatial/bbox/BBoxStrategy	todo:M9	T9.5, not ported yet
+spatial/bbox/BBoxValueSource	todo:M9	T9.5, not ported yet
+spatial/composite/CompositeSpatialStrategy	todo:M9	T9.5, not ported yet
+spatial/composite/CompositeVerifyQuery	todo:M9	T9.5, not ported yet
+spatial/composite/IntersectsRPTVerifyQuery	todo:M9	T9.5, not ported yet
+spatial/prefix/AbstractPrefixTreeQuery	todo:M9	T9.5, not ported yet
+spatial/prefix/AbstractVisitingPrefixTreeQuery	todo:M9	T9.5, not ported yet
+spatial/prefix/BytesRefIteratorTokenStream	todo:M9	T9.5, not ported yet
+spatial/prefix/CellToBytesRefIterator	todo:M9	T9.5, not ported yet
+spatial/prefix/ContainsPrefixTreeQuery	todo:M9	T9.5, not ported yet
+spatial/prefix/HeatmapFacetCounter	todo:M9	T9.5, not ported yet
+spatial/prefix/IntersectsPrefixTreeQuery	todo:M9	T9.5, not ported yet
+spatial/prefix/NumberRangePrefixTreeStrategy	todo:M9	T9.5, not ported yet
+spatial/prefix/PointPrefixTreeFieldCacheProvider	todo:M9	T9.5, not ported yet
+spatial/prefix/PrefixTreeFacetCounter	todo:M9	T9.5, not ported yet
+spatial/prefix/PrefixTreeStrategy	todo:M9	T9.5, not ported yet
+spatial/prefix/RecursivePrefixTreeStrategy	todo:M9	T9.5, not ported yet
+spatial/prefix/TermQueryPrefixTreeStrategy	todo:M9	T9.5, not ported yet
+spatial/prefix/WithinPrefixTreeQuery	todo:M9	T9.5, not ported yet
+spatial/prefix/tree/Cell	todo:M9	T9.5, not ported yet
+spatial/prefix/tree/CellCanPrune	todo:M9	T9.5, not ported yet
+spatial/prefix/tree/CellIterator	todo:M9	T9.5, not ported yet
+spatial/prefix/tree/DateRangePrefixTree	todo:M9	T9.5, not ported yet
+spatial/prefix/tree/FilterCellIterator	todo:M9	T9.5, not ported yet
+spatial/prefix/tree/GeohashPrefixTree	todo:M9	T9.5, not ported yet
+spatial/prefix/tree/LegacyCell	todo:M9	T9.5, not ported yet
+spatial/prefix/tree/LegacyPrefixTree	todo:M9	T9.5, not ported yet
+spatial/prefix/tree/NumberRangePrefixTree	todo:M9	T9.5, not ported yet
+spatial/prefix/tree/PackedQuadPrefixTree	todo:M9	T9.5, not ported yet
+spatial/prefix/tree/QuadPrefixTree	todo:M9	T9.5, not ported yet
+spatial/prefix/tree/S2PrefixTree	todo:M9	T9.5, not ported yet
+spatial/prefix/tree/S2PrefixTreeCell	todo:M9	T9.5, not ported yet
+spatial/prefix/tree/S2ShapeFactory	ported	crates/lucene-util/src/spatial_extras/prefix_tree/mod.rs::S2ShapeFactory
+spatial/prefix/tree/SingletonCellIterator	todo:M9	T9.5, not ported yet
+spatial/prefix/tree/SpatialPrefixTree	todo:M9	T9.5, not ported yet
+spatial/prefix/tree/SpatialPrefixTreeFactory	todo:M9	T9.5, not ported yet
+spatial/prefix/tree/TreeCellIterator	todo:M9	T9.5, not ported yet
+spatial/query/SpatialArgs	todo:M9	T9.5, not ported yet
+spatial/query/SpatialArgsParser	todo:M9	T9.5, not ported yet
+spatial/query/SpatialOperation	todo:M9	T9.5, not ported yet
+spatial/query/UnsupportedSpatialOperation	todo:M9	T9.5, not ported yet
+spatial/serialized/SerializedDVStrategy	todo:M9	T9.5, not ported yet
+spatial/spatial4j/Geo3dBinaryCodec	ported	crates/lucene-util/src/spatial_extras/spatial4j.rs::Geo3dBinaryCodec
+spatial/spatial4j/Geo3dCircleShape	ported	crates/lucene-util/src/spatial_extras/spatial4j.rs::Geo3dShape -- one struct with a kind stands for the four shape classes (new_circle)
+spatial/spatial4j/Geo3dDistanceCalculator	ported	crates/lucene-util/src/spatial_extras/spatial4j.rs::Geo3dDistanceCalculator
+spatial/spatial4j/Geo3dPointShape	ported	crates/lucene-util/src/spatial_extras/spatial4j.rs::Geo3dShape -- (new_point)
+spatial/spatial4j/Geo3dRectangleShape	ported	crates/lucene-util/src/spatial_extras/spatial4j.rs::Geo3dShape -- (new_rectangle)
+spatial/spatial4j/Geo3dShape	ported	crates/lucene-util/src/spatial_extras/spatial4j.rs::Geo3dShape
+spatial/spatial4j/Geo3dShapeFactory	ported	crates/lucene-util/src/spatial_extras/spatial4j.rs::Geo3dShapeFactory
+spatial/spatial4j/Geo3dSpatialContextFactory	ported	crates/lucene-util/src/spatial4j/context.rs::SpatialContextFactory -- its geo3d() kind (FactoryKind::Geo3d)
+spatial/util/CachingDoubleValueSource	todo:M9	T9.5, not ported yet
+spatial/util/DistanceToShapeValueSource	todo:M9	T9.5, not ported yet
+spatial/util/ReciprocalDoubleValuesSource	todo:M9	T9.5, not ported yet
+spatial/util/ShapeAreaValueSource	todo:M9	T9.5, not ported yet
+spatial/util/ShapeFieldCache	todo:M9	T9.5, not ported yet
+spatial/util/ShapeFieldCacheDistanceValueSource	todo:M9	T9.5, not ported yet
+spatial/util/ShapeFieldCacheProvider	todo:M9	T9.5, not ported yet
+spatial/util/ShapeValuesPredicate	todo:M9	T9.5, not ported yet
+spatial/vector/DistanceValueSource	todo:M9	T9.5, not ported yet
+spatial/vector/PointVectorStrategy	todo:M9	T9.5, not ported yet

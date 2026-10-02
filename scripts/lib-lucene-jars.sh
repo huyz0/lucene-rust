@@ -41,3 +41,29 @@ lucene_classpath() {
   for m in "$@"; do cp="$cp${cp:+:}$(lucene_resolve_jar "$m")"; done
   echo "$cp"
 }
+
+# Third-party jars a Lucene module depends on, as `group:artifact:version`
+# (Maven coordinates, so the Gradle cache and Maven Central lookups match
+# the ones above). lucene-spatial-extras 10.5.0's pom names these two; both
+# are Apache-2.0 (docs/licences.md).
+SPATIAL_EXTRAS_DEPS=(org.locationtech.spatial4j:spatial4j:0.8 io.sgr:s2-geometry-library-java:1.0.0)
+
+thirdparty_resolve_jar() {
+  local coord="$1" group artifact version jar found=""
+  IFS=: read -r group artifact version <<< "$coord"
+  jar="$artifact-$version.jar"
+  if [ -f "$JARS/$jar" ]; then echo "$JARS/$jar"; return; fi
+  found=$(find "$HOME/.gradle/caches" -name "$jar" 2>/dev/null | head -1 || true)
+  if [ -n "$found" ]; then echo "$found"; return; fi
+  mkdir -p "$JARS"
+  echo "lucene-jars: downloading $jar from Maven Central" >&2
+  curl -fsSL -o "$JARS/$jar" \
+    "https://repo1.maven.org/maven2/${group//.//}/$artifact/$version/$jar"
+  echo "$JARS/$jar"
+}
+
+thirdparty_classpath() {
+  local cp="" c
+  for c in "$@"; do cp="$cp${cp:+:}$(thirdparty_resolve_jar "$c")"; done
+  echo "$cp"
+}

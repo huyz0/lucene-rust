@@ -32,6 +32,23 @@ a dependency the shipped library links is not under a licence listed here.
 - **Distribution:** the plugin zip (`gradle -p opensearch-plugin bundlePlugin`)
   ships `LICENSE` and `NOTICE` beside the jar and the native library.
 
+- **Ported third-party Java code** (M9 T9.5). Lucene's `lucene-spatial-extras`
+  is built on two libraries outside Lucene; the subsets it exercises are
+  ported, file by file, like Lucene itself:
+  - **Spatial4j 0.8** (`org.locationtech.spatial4j:spatial4j:0.8`,
+    Apache-2.0; LocationTech, formerly an ASF-licensed Lucene spin-off) ->
+    `crates/lucene-util/src/spatial4j/`. Its optional JTS dependency (EPL/EDL)
+    is **not** ported or used: Lucene does not ship JTS, and spatial-extras
+    reaches polygons through Geo3D instead.
+  - **S2 Geometry Library for Java** (`io.sgr:s2-geometry-library-java:1.0.0`,
+    Apache-2.0, Google) -> `crates/lucene-util/src/s2/` (cell ids, cells'
+    vertices, the quadratic projection).
+  - Both are compatible with redistribution under Apache-2.0; `NOTICE` names
+    them. Their jars are fetched by the fixture scripts
+    (`SPATIAL_EXTRAS_DEPS` in `scripts/lib-lucene-jars.sh`) and the
+    container image, never redistributed. Neither jar carries a `NOTICE`
+    file of its own.
+
 ## What ships, and under what
 
 - **The plugin zip** holds three things:
@@ -82,7 +99,8 @@ The list M6's work order named has drifted since it was written:
   - Two, `r-efi` 5 and 6, offer LGPL-2.1-or-later *as one alternative* beside
     MIT and Apache-2.0; MIT is the one taken.
 - **The Java fixture generators and verifiers** (`fixtures/src`, `scripts/verify-*.sh`)
-  run against Lucene 10.5.0's jars and OpenSearch 3.8.0's distribution, both
+  run against Lucene 10.5.0's jars, Spatial4j 0.8 and s2-geometry-library-java
+  1.0.0 (for spatial-extras) and OpenSearch 3.8.0's distribution, all
   Apache-2.0. None of them is redistributed; the scripts fetch them.
 
 ## Prior art

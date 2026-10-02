@@ -137,6 +137,19 @@ last within the milestone.
   and 1.05x in two runs, inside the noise floor both times; written up in
   `docs/parity.md` with the ratios).
 - **T9.5** — `spatial-extras` (prefix trees, `SpatialStrategy`s).
+  *In progress.* **Dependency decision:** spatial-extras is built on
+  Spatial4j 0.8 and s2-geometry-library-java 1.0.0, third-party Java
+  libraries with no Rust equivalent; the subsets it exercises are ported as
+  faithful ports in `lucene-util` (`spatial4j/`, `s2/`, beside `geo/` and
+  `spatial3d/`), differentially tested against the real jars, both
+  Apache-2.0 (`docs/licences.md`, `NOTICE`). JTS (Spatial4j's optional
+  polygon backend) is not ported: Lucene does not ship it, and
+  spatial-extras makes polygons through Geo3D. Done so far: the Spatial4j
+  and S2 subsets and Lucene's Geo3D bridge
+  (`lucene-util/src/spatial_extras/spatial4j.rs`), `GenSpatial4j` ->
+  `spatial4j_fixtures.rs` (12 577 records); the
+  `check-port-inventory.py --module spatial-extras` gate
+  (`docs/inventory/lucene-spatial-extras.tsv`).
 - **T9.6** — Plugin wiring for OpenSearch's geo queries and sort.
 
 ## Acceptance criteria

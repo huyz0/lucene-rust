@@ -350,6 +350,50 @@ now takes each angle's sine and cosine from one argument reduction
 | `spatial3d/Geo3DPointSortField`, `spatial3d/Geo3DPointOutsideSortField`, `spatial3d/Geo3DPointDistanceComparator`, `spatial3d/Geo3DPointOutsideDistanceComparator` | `lucene-search/src/document/geo/sort.rs::{Geo3DPointSortField, Geo3DPointOutsideSortField, Geo3DDistance, Geo3DOutsideDistance}` | **ported, value for value on single-valued fields**: all seven `Geo3DDocValuesField` sorts, plain and filtered, top-1 to top-1500, the same hits in the same order with the same sort-value bits (arc distance times the mean radius), the bottom's bounds sampled as Java samples them (every `setBottom` for the first 1024, then every 64th -- the 12 000-point segment sorted from the poles passes that point). **Deliberate difference, a Lucene bug:** both 10.5.0 comparators read a document's values with `nextValue()` in `compareBottom` and again in `copy` for the same document, so on a multi-valued field `copy` reads the *next* documents' values (or past the segment's end: an `EOFException`); `LatLonPointDistanceComparator` caches them (`valuesDocID`) and does not. The port reads each document's own values, as the LatLon comparator does; the fixture sorts single-valued fields (`pd`, `s`) where the two agree. Also comparator sources for `top_field::search_sorted`. |
 
 
+## lucene-util / lucene-search -- spatial-extras (M9 T9.5)
+
+**In progress.** Lucene's `lucene-spatial-extras` is built on two third-party
+Java libraries with no Rust equivalent: **Spatial4j 0.8** (its whole shape
+model -- `SpatialContext`, `Shape`/`Point`/`Rectangle`/`Circle`,
+`SpatialRelation`, `DistanceCalculator`, the WKT reader, `BinaryCodec`) and
+Google's **s2-geometry-library-java 1.0.0** (`S2PrefixTree`'s cell ids).
+**Decision (T9.5):** port the subset of each that spatial-extras exercises,
+as faithful ports differentially tested against the real jars (both
+Apache-2.0, recorded in `docs/licences.md` and `NOTICE`), and place them in
+`lucene-util` beside `geo`/`spatial3d` (pure geometry). JTS, Spatial4j's
+optional polygon backend, is not ported: Lucene does not ship it, and
+spatial-extras builds polygons through Geo3D (`Geo3dShapeFactory`) instead;
+a non-Geo3D context answers a POLYGON with Spatial4j's own
+`UnsupportedOperationException`, as Java does without JTS. Differential:
+`fixtures/src/GenSpatial4j.java` -> `spatial4j/spatial4j.tsv` ->
+`crates/lucene-util/tests/spatial4j_fixtures.rs` -- eight contexts
+(geodetic with haversine, law of cosines and Vincenty; longitude wrapping;
+planar, unbounded and bounded; Geo3D on the sphere and on WGS84), 160 random
+shapes each (points, rectangles incl. dateline-crossing and vertical lines,
+circles incl. > 90 degrees and at the poles, line strings, nested
+collections) with their `toString`, bounding box, center, areas and
+buffers, 1000 relations and `equals` per context (300 against small boxes
+and points near the shape, as a prefix tree asks), distances,
+`pointOnBearing`, the distance boxes, binary encodings both ways, 49 WKT
+strings per context (results, exception class, message and offset),
+`DistanceUtils`, geohashes and S2 cell ids/levels/tokens/vertices: 12 577
+records, bit for bit (a NaN's sign aside). Generated with HotSpot's trig
+intrinsics off, as `GenGeo3d` is (`Math.sin`/`cos` are `StrictMath`'s here).
+
+| Java (third-party / Lucene) | Rust | Status |
+|---|---|---|
+| Spatial4j `context/SpatialContext`, `context/SpatialContextFactory`, Lucene `spatial4j/Geo3dSpatialContextFactory` | `lucene-util/src/spatial4j/context.rs::{SpatialContext, SpatialContextFactory, FactoryKind}` | **ported**: `makeSpatialContext(args)` with `geo`, `distCalculator` (all five plus `geo3d`), `worldBounds` (read as WKT), `normWrapLongitude`, `planetModel`, the class-name settings for the classes the factory uses; the world-bounds validation messages. The factory classes are a `FactoryKind`, not reflection. `toString` always prints the long form (Java prints `SpatialContext.GEO` for the singleton). |
+| Spatial4j `shape/Shape`, `Point`, `Rectangle`, `Circle`, `SpatialRelation`, `BaseShape`, `impl/PointImpl`, `impl/RectangleImpl`, `impl/CircleImpl`, `impl/GeoCircle`, `ShapeCollection`, `impl/BBoxCalculator`, `impl/InfBufLine`, `impl/BufferedLine`, `impl/BufferedLineString` | `lucene-util/src/spatial4j/shape.rs`, `lucene-util/src/spatial4j/point.rs`, `lucene-util/src/spatial4j/rectangle.rs`, `lucene-util/src/spatial4j/circle.rs`, `lucene-util/src/spatial4j/collection.rs`, `lucene-util/src/spatial4j/bbox_calculator.rs`, `lucene-util/src/spatial4j/buffered_line.rs` | **ported, bit-exact**: interfaces are traits over `Arc<dyn ...>`, `instanceof` is `as_point`/`as_rectangle`/`as_circle` or a downcast; `GeoCircle` is a `CircleImpl` carrying its inverse circle and horizontal axis. `reset`/"reuse" arguments are not ported (fresh shapes). `RectangleImpl.equals` casts the other rectangle to `RectangleImpl` (a `ClassCastException` against a Geo3D rectangle); here any rectangle's bounds are compared. `hashCode` is not ported (nothing hashes a shape). `GeoCircle.toString`'s `%.1f`/`%.2f` round half-up on the shortest decimal, as Java's `Formatter` does. |
+| Spatial4j `distance/DistanceUtils`, `DistanceCalculator`, `AbstractDistanceCalculator`, `GeodesicSphereDistCalc` (+ `Haversine`, `LawOfCosines`, `Vincenty`), `CartesianDistCalc` | `lucene-util/src/spatial4j/distance.rs` | **ported, bit-exact**; `toRadians` is `degrees * DEGREES_TO_RADIANS` as Spatial4j's own. The deprecated `vector*` helpers are not ported. |
+| Spatial4j `shape/ShapeFactory` (+ builders), `impl/ShapeFactoryImpl` | `lucene-util/src/spatial4j/shape_factory.rs` | **ported**: builders are traits; factory methods take the context (Java's factory holds it). |
+| Spatial4j `io/WKTReader`, `io/BinaryCodec`, `io/GeohashUtils` | `lucene-util/src/spatial4j/wkt.rs`, `lucene-util/src/spatial4j/binary_codec.rs`, `lucene-util/src/spatial4j/geohash.rs` | **ported, byte-identical** codec bytes; WKT errors with Java's class, message and offset (`Double.parseDouble`'s `NumberFormatException` text included). `decodeBoundary` fails on a non-geohash character (Java indexes its table unchecked). Not ported, being unused by spatial-extras: the GeoJSON, Polyshape and legacy readers/writers, `WKTWriter`, `SupportedFormats`, Jackson, and `Range` (deprecated). |
+| s2-geometry `S2CellId`, `S2Cell` (vertices), `S2LatLng.toPoint`, `S2Point`, `S2Projections` (quadratic), `S2.Metric` | `lucene-util/src/s2/mod.rs` | **ported, bit-exact** for what `S2PrefixTree` and `Geo3dShapeFactory.getS2CellShape` use: ids from lat/lng, parents and children, levels, faces, tokens, child positions, containment and unsigned order, cell vertices, `MAX_WIDTH`'s levels and values. Regions, coverers, loops and polygons are not used by spatial-extras and not ported. |
+| Lucene `spatial4j/Geo3dShape`, `Geo3dPointShape`, `Geo3dRectangleShape`, `Geo3dCircleShape`, `Geo3dShapeFactory`, `Geo3dBinaryCodec`, `Geo3dDistanceCalculator` | `lucene-util/src/spatial_extras/spatial4j.rs` | **ported, bit-exact** (the Geo3D contexts of the fixture above). One struct with a kind stands for the four shape classes. `equals` compares the geo3d shapes' serialized forms (geo3d shapes are not `PartialEq` in this port); `toString` is `Geo3D:` and the class name. **Kept, a Lucene quirk:** relating a Geo3D shape to a plain Spatial4j rectangle reads `GeoArea.getRelationship` the wrong way round (a Geo3D shape containing the box answers `WITHIN`). |
+| `spatial/prefix/tree/S2ShapeFactory` | `lucene-util/src/spatial_extras/prefix_tree/mod.rs::S2ShapeFactory` | **ported** (the trait `Geo3dShapeFactory` implements). The prefix trees are T9.5's next step. |
+| (module roots and unit tests) | `lucene-util/src/spatial4j/mod.rs` (the `Error` type, `Double.compare`/`Double.toString`/`%.Nf` helpers), `lucene-util/src/spatial_extras/mod.rs`, `lucene-util/src/spatial4j/tests.rs`, `lucene-util/src/s2/tests.rs`, `lucene-util/src/spatial_extras/spatial4j_tests.rs` | no Java counterpart: module roots and the unit tests (factory settings and their errors, error formatting, builders, codec and WKT edges, mixed-context relations). |
+| the rest of `lucene-spatial-extras` (strategies, prefix trees, queries, value sources) | -- | **not yet ported** (T9.5 in progress); see `docs/inventory/lucene-spatial-extras.tsv`. |
+
+
 ## lucene-analysis
 
 | Java | Rust | Status |
