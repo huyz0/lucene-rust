@@ -148,7 +148,29 @@ impl GeoEncodingUtils {
             tree.max_x(),
             |b| tree.relate(b.min_lon, b.max_lon, b.min_lat, b.max_lat),
         )?;
-        Ok(Component2DPredicate { grid, tree })
+        Ok(Component2DPredicate {
+            grid,
+            tree: TreeRef::Borrowed(tree),
+        })
+    }
+
+    /// [`Self::create_component_predicate`] over a shared tree: the
+    /// predicate keeps the tree alive, so a query can hold both (Java's
+    /// weight holds the tree and the predicate side by side).
+    pub fn create_component_predicate_shared(
+        tree: std::sync::Arc<dyn Component2D>,
+    ) -> Result<Component2DPredicate<'static>, GeoError> {
+        let grid = create_sub_boxes(
+            tree.min_y(),
+            tree.max_y(),
+            tree.min_x(),
+            tree.max_x(),
+            |b| tree.relate(b.min_lon, b.max_lon, b.min_lat, b.max_lat),
+        )?;
+        Ok(Component2DPredicate {
+            grid,
+            tree: TreeRef::Shared(tree),
+        })
     }
 }
 
@@ -313,15 +335,31 @@ impl DistancePredicate {
 #[derive(Debug, Clone)]
 pub struct Component2DPredicate<'a> {
     grid: Grid,
-    tree: &'a dyn Component2D,
+    tree: TreeRef<'a>,
+}
+
+/// The tree a [`Component2DPredicate`] falls back to: borrowed, or shared
+/// with its owner.
+#[derive(Debug, Clone)]
+enum TreeRef<'a> {
+    Borrowed(&'a dyn Component2D),
+    Shared(std::sync::Arc<dyn Component2D>),
 }
 
 impl Component2DPredicate<'_> {
+    /// The tree the predicate was built over.
+    pub fn tree(&self) -> &dyn Component2D {
+        match &self.tree {
+            TreeRef::Borrowed(t) => *t,
+            TreeRef::Shared(t) => t.as_ref(),
+        }
+    }
+
     /// `test(int lat, int lon)`.
     pub fn test(&self, lat: i32, lon: i32) -> bool {
         match self.grid.relation(lat, lon) {
             None => false,
-            Some(r) if r == Relation::CellCrossesQuery as u8 => self.tree.contains(
+            Some(r) if r == Relation::CellCrossesQuery as u8 => self.tree().contains(
                 GeoEncodingUtils::decode_longitude(lon),
                 GeoEncodingUtils::decode_latitude(lat),
             ),
@@ -333,6 +371,35 @@ impl Component2DPredicate<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_predicate_answers_as_the_borrowed_one() {
+        use crate::geo::{LatLonGeometry, Polygon};
+        let poly = Polygon::new(
+            &[0.0, 0.0, 10.0, 10.0, 0.0],
+            &[0.0, 10.0, 10.0, 0.0, 0.0],
+            vec![],
+        )
+        .unwrap();
+        let tree = LatLonGeometry::Polygon(poly).to_component2d().unwrap();
+        let shared: std::sync::Arc<dyn Component2D> = std::sync::Arc::from(tree);
+        let borrowed = GeoEncodingUtils::create_component_predicate(shared.as_ref()).unwrap();
+        let owned = GeoEncodingUtils::create_component_predicate_shared(shared.clone()).unwrap();
+        assert_eq!(owned.tree().max_y(), 10.0);
+        for lat in [-1.0, 0.0, 5.0, 9.99, 10.0, 20.0] {
+            for lon in [-1.0, 0.0, 5.0, 10.0, 11.0] {
+                let (a, b) = (
+                    GeoEncodingUtils::encode_latitude(lat).unwrap(),
+                    GeoEncodingUtils::encode_longitude(lon).unwrap(),
+                );
+                assert_eq!(borrowed.test(a, b), owned.test(a, b), "{lat} {lon}");
+            }
+        }
+        assert!(owned.test(
+            GeoEncodingUtils::encode_latitude(5.0).unwrap(),
+            GeoEncodingUtils::encode_longitude(5.0).unwrap()
+        ));
+    }
 
     #[test]
     fn encode_extremes() {

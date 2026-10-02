@@ -262,6 +262,17 @@ CASES=(
   # multiple of 11 and order by rank descending. Lucene must find exactly the
   # carried-over documents, in that order, and pass CheckIndex.
   "lucene-search|write_merge_reorder_fixture|merge-reorder|VerifyMergeReorder"
+  # The geo point fields (M9 T9.2): GenGeoPoints' corpus -- LatLonPoint,
+  # LatLonDocValuesField, XYPointField and XYDocValuesField, multi-valued,
+  # across four segments with deletes -- written by this port. Lucene runs
+  # CheckIndex, then replays every query of fixtures/data/geo_points/
+  # queries.tsv (boxes, distances, polygons, every geometry relation, the
+  # doc-values forms, cartesian queries, distance features, distance sorts,
+  # LatLonPoint.nearest) and must answer exactly as over its own index.
+  # What it cannot catch: a point encoded wrongly in a way that changes no
+  # query's answer -- the Rust test `every_point_is_indexed_as_lucene_indexes_it`
+  # compares the packed points byte for byte instead.
+  "lucene-search|write_geo_points_fixture|geo-points|VerifyGeoPoints|fixtures/data/geo_points"
 )
 
 echo "verify-write-path: compiling verifiers"

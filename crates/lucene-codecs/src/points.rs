@@ -802,6 +802,120 @@ impl<'d> PointsReader<'d> {
         out
     }
 
+    /// The root of the field's index tree -- `PointValues.getPointTree()` --
+    /// for a walk that is not depth first (`NearestNeighbor`'s best-first
+    /// search over cells): [`point_tree_children`](Self::point_tree_children)
+    /// is `moveToChild`/`moveToSibling`, a node is its own `clone()`, and a
+    /// leaf's points are read with [`visit_leaf`](Self::visit_leaf).
+    pub fn point_tree(&self, field_number: i32) -> Result<PointTreeNode> {
+        let field = self
+            .field(field_number)
+            .ok_or(Error::IllegalFieldNumber(field_number))?;
+        let mut input = SliceInput::new(self.inner_nodes(field)?);
+        let fp = input.read_vlong()?;
+        Ok(PointTreeNode {
+            node_id: 1,
+            num_leaves: field.num_leaves,
+            pos: input.position(),
+            fp,
+            min: field.min_packed_value.clone(),
+            max: field.max_packed_value.clone(),
+            split_values: vec![0u8; field.min_packed_value.len()],
+            negative_deltas: vec![false; field.num_index_dims as usize],
+        })
+    }
+
+    /// `moveToChild()` then `moveToSibling()` on a clone of `node`: its two
+    /// children, each with its own cell (`BKDPointTree.pushLeft` /
+    /// `pushRight`), or `None` at a leaf.
+    pub fn point_tree_children(
+        &self,
+        field_number: i32,
+        node: &PointTreeNode,
+    ) -> Result<Option<(PointTreeNode, PointTreeNode)>> {
+        let field = self
+            .field(field_number)
+            .ok_or(Error::IllegalFieldNumber(field_number))?;
+        if node.node_id >= field.num_leaves {
+            return Ok(None);
+        }
+        let mut input = SliceInput::new(self.inner_nodes(field)?);
+        input.seek(node.pos)?;
+        let mut ctx = IntersectCtx {
+            field,
+            kdd: self.kdd,
+            min: Vec::new(),
+            max: Vec::new(),
+            split_values: node.split_values.clone(),
+            negative_deltas: node.negative_deltas.clone(),
+            stack: Vec::new(),
+            reuse_scratch: true,
+            doc_ids: Vec::new(),
+        };
+        let inner = read_inner_node(&mut input, node.node_id, &mut ctx, 0)?;
+        let split = &ctx.stack[0].split_value;
+        let range = inner.dim_pos..inner.dim_end;
+        let mut left_max = node.max.clone();
+        left_max[range.clone()].copy_from_slice(split);
+        let mut left_deltas = ctx.negative_deltas.clone();
+        left_deltas[inner.split_dim] = true;
+        let left = PointTreeNode {
+            node_id: inner.left_child,
+            num_leaves: field.num_leaves,
+            pos: input.position(),
+            fp: node.fp,
+            min: node.min.clone(),
+            max: left_max,
+            split_values: ctx.split_values.clone(),
+            negative_deltas: left_deltas,
+        };
+        input.seek(inner.right_node_position)?;
+        let right_fp = child_block_fp(node.fp, input.read_vlong()?)?;
+        let mut right_min = node.min.clone();
+        right_min[range].copy_from_slice(split);
+        let mut right_deltas = ctx.negative_deltas;
+        right_deltas[inner.split_dim] = false;
+        let right = PointTreeNode {
+            node_id: inner.right_child,
+            num_leaves: field.num_leaves,
+            pos: input.position(),
+            fp: right_fp,
+            min: right_min,
+            max: node.max.clone(),
+            split_values: ctx.split_values,
+            negative_deltas: right_deltas,
+        };
+        Ok(Some((left, right)))
+    }
+
+    /// `PointTree.visitDocValues(visitor)` at a leaf of
+    /// [`point_tree`](Self::point_tree): every point of the leaf, through
+    /// the visitor (a multi-dimension leaf's own box asked first, as
+    /// [`intersect`](Self::intersect) asks it). An inner node visits
+    /// nothing.
+    pub fn visit_leaf<V: IntersectVisitor>(
+        &self,
+        field_number: i32,
+        node: &PointTreeNode,
+        visitor: &mut V,
+    ) -> Result<()> {
+        let field = self
+            .field(field_number)
+            .ok_or(Error::IllegalFieldNumber(field_number))?;
+        if node.node_id < field.num_leaves {
+            return Ok(());
+        }
+        let mut kdd_input = SliceInput::new(self.kdd);
+        seek_leaf_block(&mut kdd_input, node.fp)?;
+        read_leaf_block_into(
+            &mut kdd_input,
+            field,
+            &mut Vec::new(),
+            &mut VisitSink(visitor),
+        )?;
+        Ok(())
+    }
+
     /// `PointRangeQuery`'s `Weight.count` walk (its private `pointCount`),
     /// exact: a cell entirely inside the query adds its point count
     /// (`BKDPointTree.size()`) without reading a leaf, a cell outside adds
@@ -931,9 +1045,8 @@ pub use lucene_util::point_values_relation::Relation;
 
 /// Port of `org.apache.lucene.index.PointValues.IntersectVisitor`.
 ///
-/// Java's `grow(int)` hint has no counterpart here: it exists to pre-size a
-/// `DocIdSetBuilder`, and a Rust visitor that wants the same can size its own
-/// storage from [`PointsField::point_count`].
+/// Java's `grow(int)` hint is [`IntersectVisitor::grow`], called where
+/// `BKDReader` calls it.
 pub trait IntersectVisitor {
     /// `IntersectVisitor.compare` -- how the query relates to the cell
     /// `[min_packed, max_packed]` (both `num_index_dims * bytes_per_dim`).
@@ -953,6 +1066,14 @@ pub trait IntersectVisitor {
     /// cell that crosses the query boundary; the visitor must do its own
     /// per-point check.
     fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]);
+    /// `IntersectVisitor.grow(count)`: how many documents the walk is about
+    /// to hand over -- a whole matching subtree's size before its doc ids, a
+    /// leaf's point count before it is visited. A hint (Java sizes a
+    /// `DocIdSetBuilder` from it, and a builder's cost follows from it);
+    /// ignored by default.
+    fn grow(&mut self, count: usize) {
+        let _ = count;
+    }
 }
 
 /// One inner node's split descriptor, decoded the way
@@ -1203,7 +1324,14 @@ fn intersect_node<V: IntersectVisitor>(
     if relation == Relation::CellInsideQuery {
         // `PointValues.intersect`: an entirely-inside cell short-circuits to
         // `visitDocIDs`, which never calls `compare` again and never decodes
-        // a packed value anywhere in the subtree.
+        // a packed value anywhere in the subtree. `addAll` announces the
+        // subtree's size first (`grow`), when it fits an `int`.
+        let size = ctx.field.subtree_size(node_id)?;
+        if let Ok(size) = usize::try_from(size) {
+            if size <= i32::MAX as usize {
+                visitor.grow(size);
+            }
+        }
         return add_all(input, node_id, fp, ctx, visitor);
     }
 
@@ -1257,6 +1385,45 @@ fn intersect_node<V: IntersectVisitor>(
 
     node.restore(ctx);
     Ok(())
+}
+
+/// One node of a field's BKD index tree, with its cell -- what
+/// `BKDReader.BKDPointTree` is positioned on, as a value: cloning it is
+/// `PointTree.clone()`. See [`PointsReader::point_tree`].
+///
+/// Rust shape: Java keeps one set of per-level stacks and moves up and down;
+/// a node here carries its own copy of the state its children are decoded
+/// from (the split values seen along its path, the negative-delta flags,
+/// the `.kdi` position and leaf pointer).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PointTreeNode {
+    node_id: i32,
+    num_leaves: i32,
+    /// `.kdi` offset of this node's own data (after its FP delta).
+    pos: usize,
+    /// The leaf block pointer this node inherits (`leafBlockFPStack`).
+    fp: i64,
+    min: Vec<u8>,
+    max: Vec<u8>,
+    split_values: Vec<u8>,
+    negative_deltas: Vec<bool>,
+}
+
+impl PointTreeNode {
+    /// `getMinPackedValue()`.
+    pub fn min_packed(&self) -> &[u8] {
+        &self.min
+    }
+
+    /// `getMaxPackedValue()`.
+    pub fn max_packed(&self) -> &[u8] {
+        &self.max
+    }
+
+    /// Whether `moveToChild()` would answer `false`.
+    pub fn is_leaf(&self) -> bool {
+        self.node_id >= self.num_leaves
+    }
 }
 
 /// One inner node's decoded `.kdi` data -- everything both tree walks need
@@ -1949,6 +2116,22 @@ fn read_suffix_bytes(
 /// handed to the visitor point by point, never copied.
 trait LeafSink {
     fn point(&mut self, doc_id: i32, packed_value: &[u8]);
+
+    /// `visitor.compare(leafMin, leafMax)` on a multi-dimension leaf's own
+    /// bounding box, which `BKDReader.visitDocValuesWithCardinality` asks
+    /// before it decodes a value: a leaf outside the query is skipped, one
+    /// inside has its doc ids visited without values ([`Self::inside`]). A
+    /// sink that wants every point answers [`Relation::CellCrossesQuery`].
+    fn leaf_bounds(&mut self, _min: &[u8], _max: &[u8]) -> Relation {
+        Relation::CellCrossesQuery
+    }
+
+    /// The doc ids of a leaf [`Self::leaf_bounds`] put inside the query
+    /// (`visitor.visit(IntsRef)`).
+    fn inside(&mut self, _doc_ids: &[i32]) {}
+
+    /// `visitor.grow(count)` before a leaf's documents are handed over.
+    fn grow(&mut self, _count: usize) {}
 }
 
 impl LeafSink for Vec<Point> {
@@ -1969,6 +2152,18 @@ impl<V: IntersectVisitor> LeafSink for VisitSink<'_, V> {
     #[inline]
     fn point(&mut self, doc_id: i32, packed_value: &[u8]) {
         self.0.visit_with_value(doc_id, packed_value);
+    }
+
+    fn leaf_bounds(&mut self, min: &[u8], max: &[u8]) -> Relation {
+        self.0.compare(min, max)
+    }
+
+    fn inside(&mut self, doc_ids: &[i32]) {
+        self.0.visit_many(doc_ids);
+    }
+
+    fn grow(&mut self, count: usize) {
+        self.0.grow(count);
     }
 }
 
@@ -2049,6 +2244,7 @@ fn read_leaf_block_into<S: LeafSink>(
     if compressed_dim == -1 {
         // Every point in this leaf has the identical value (common prefixes
         // already cover every byte of every dimension).
+        out.grow(count);
         for &doc_id in doc_ids {
             out.point(doc_id, &scratch_value);
         }
@@ -2089,7 +2285,20 @@ fn read_leaf_block_into<S: LeafSink>(
             input.read_bytes(&mut min_bound[mid..hi])?;
             input.read_bytes(&mut max_bound[mid..hi])?;
         }
+        // `visitDocValuesWithCardinality`'s second look at the leaf: its own
+        // box is often much tighter than the cell the index gave it.
+        match out.leaf_bounds(&min_bound, &max_bound) {
+            Relation::CellOutsideQuery => return Ok(Some((min_bound, max_bound))),
+            Relation::CellInsideQuery => {
+                out.grow(count);
+                out.inside(doc_ids);
+                return Ok(Some((min_bound, max_bound)));
+            }
+            Relation::CellCrossesQuery => out.grow(count),
+        }
         bound = Some((min_bound, max_bound));
+    } else {
+        out.grow(count);
     }
 
     if compressed_dim == -2 {
@@ -3933,6 +4142,164 @@ mod tests {
             .collect();
         expected.sort_by_key(|p| p.doc_id);
         assert_eq!(decoded, expected);
+    }
+
+    /// A 2D field of 100 points, 4 per leaf: (doc, packed) pairs and the
+    /// reader's files.
+    #[allow(clippy::type_complexity)]
+    fn two_d_field() -> (Vec<(i32, Vec<u8>)>, (Vec<u8>, Vec<u8>, Vec<u8>)) {
+        let points: Vec<(i32, Vec<u8>)> = (0..100i32)
+            .map(|i| {
+                let mut v = Vec::with_capacity(8);
+                v.extend_from_slice(&((i * 37) % 1000).to_be_bytes());
+                v.extend_from_slice(&((i * 9973) % 1_000_000).to_be_bytes());
+                (i, v)
+            })
+            .collect();
+        let field = WritePointsField {
+            field_number: 0,
+            num_dims: 2,
+            num_index_dims: 2,
+            bytes_per_dim: 4,
+            points: points.clone(),
+        };
+        (points, write(&[field], 4, &id(), "").unwrap())
+    }
+
+    /// Every node of the field's tree, depth first, left before right.
+    fn all_nodes(reader: &PointsReader<'_>) -> Vec<PointTreeNode> {
+        let mut out = Vec::new();
+        let mut stack = vec![reader.point_tree(0).unwrap()];
+        while let Some(node) = stack.pop() {
+            if let Some((l, r)) = reader.point_tree_children(0, &node).unwrap() {
+                stack.push(r);
+                stack.push(l);
+            }
+            out.push(node);
+        }
+        out
+    }
+
+    #[test]
+    fn point_tree_cells_contain_their_leaves_points() {
+        let (points, (kdm, kdi, kdd)) = two_d_field();
+        let reader = open(&kdm, &kdi, &kdd, &id(), "").unwrap();
+        let root = reader.point_tree(0).unwrap();
+        let meta = reader.field(0).unwrap();
+        assert_eq!(root.min_packed(), meta.min_packed_value);
+        assert_eq!(root.max_packed(), meta.max_packed_value);
+        assert!(!root.is_leaf());
+        // Every node: its children split its cell; every leaf's points lie in
+        // its cell; the leaves hold every point once, in leaf order.
+        let nodes = all_nodes(&reader);
+        assert_eq!(nodes.len(), 2 * meta.num_leaves as usize - 1);
+        let mut seen = Vec::new();
+        let mut leaves = 0;
+        for node in &nodes {
+            let (min, max) = (node.min_packed(), node.max_packed());
+            match reader.point_tree_children(0, node).unwrap() {
+                Some((l, r)) => {
+                    assert_eq!(l.min_packed(), min);
+                    assert_eq!(r.max_packed(), max);
+                    assert!(!node.is_leaf());
+                }
+                None => {
+                    assert!(node.is_leaf());
+                    leaves += 1;
+                    let mut v = Collect(Vec::new(), Relation::CellCrossesQuery);
+                    reader.visit_leaf(0, node, &mut v).unwrap();
+                    for (doc, packed) in v.0 {
+                        for d in 0..2 {
+                            let r = d * 4..d * 4 + 4;
+                            assert!(packed[r.clone()] >= min[r.clone()]);
+                            assert!(packed[r.clone()] <= max[r]);
+                        }
+                        seen.push(doc);
+                    }
+                }
+            }
+        }
+        assert_eq!(leaves, meta.num_leaves);
+        let all: Vec<i32> = reader
+            .decode_all_points(0)
+            .unwrap()
+            .into_iter()
+            .map(|p| p.doc_id)
+            .collect();
+        assert_eq!(seen, all, "leaf order");
+        seen.sort_unstable();
+        assert_eq!(seen, points.iter().map(|p| p.0).collect::<Vec<_>>());
+        // An inner node visits nothing; an unknown field is an error.
+        let mut v = Collect(Vec::new(), Relation::CellCrossesQuery);
+        reader.visit_leaf(0, &root, &mut v).unwrap();
+        assert!(v.0.is_empty());
+        assert!(reader.visit_leaf(7, &root, &mut v).is_err());
+        assert!(reader.point_tree(7).is_err());
+        assert!(reader.point_tree_children(7, &root).is_err());
+    }
+
+    #[test]
+    fn a_multi_dimension_leaf_is_related_by_its_own_box() {
+        let (points, (kdm, kdi, kdd)) = two_d_field();
+        let reader = open(&kdm, &kdi, &kdd, &id(), "").unwrap();
+        let cells: Vec<(Vec<u8>, Vec<u8>)> = all_nodes(&reader)
+            .iter()
+            .map(|n| (n.min_packed().to_vec(), n.max_packed().to_vec()))
+            .collect();
+        // Every tree cell crosses; a box that is no tree cell is a leaf's own
+        // (`visitDocValuesWithCardinality`'s second look) and answers `leaf`.
+        for (leaf, ids, values) in [
+            (Relation::CellInsideQuery, points.len(), 0),
+            (Relation::CellOutsideQuery, 0, 0),
+            (Relation::CellCrossesQuery, 0, points.len()),
+        ] {
+            let mut v = LeafRelation {
+                cells: &cells,
+                leaf,
+                leaf_calls: 0,
+                ids: Vec::new(),
+                values: 0,
+            };
+            reader.intersect(0, &mut v).unwrap();
+            assert_eq!(v.leaf_calls, reader.field(0).unwrap().num_leaves as usize);
+            assert_eq!((v.ids.len(), v.values), (ids, values), "{leaf:?}");
+        }
+    }
+
+    struct LeafRelation<'c> {
+        cells: &'c [(Vec<u8>, Vec<u8>)],
+        leaf: Relation,
+        leaf_calls: usize,
+        ids: Vec<i32>,
+        values: usize,
+    }
+
+    impl IntersectVisitor for LeafRelation<'_> {
+        fn compare(&mut self, min: &[u8], max: &[u8]) -> Relation {
+            if self.cells.iter().any(|(a, b)| a == min && b == max) {
+                return Relation::CellCrossesQuery;
+            }
+            self.leaf_calls += 1;
+            self.leaf
+        }
+        fn visit(&mut self, doc_id: i32) {
+            self.ids.push(doc_id);
+        }
+        fn visit_with_value(&mut self, _doc_id: i32, _packed: &[u8]) {
+            self.values += 1;
+        }
+    }
+
+    struct Collect(Vec<(i32, Vec<u8>)>, Relation);
+
+    impl IntersectVisitor for Collect {
+        fn compare(&mut self, _min: &[u8], _max: &[u8]) -> Relation {
+            self.1
+        }
+        fn visit(&mut self, _doc_id: i32) {}
+        fn visit_with_value(&mut self, doc_id: i32, packed: &[u8]) {
+            self.0.push((doc_id, packed.to_vec()));
+        }
     }
 
     #[test]

@@ -9,7 +9,7 @@
 | **Effort** | L |
 | **Depends on** | [M7](m7-core-complete.md) (`document` fields, multi-dimension BKD writing) |
 | **Unblocks** | native `geo_distance`, `geo_bounding_box`, `geo_shape`, geo sorting |
-| **Status** | in progress: T9.1 done (2026-10-02) |
+| **Status** | in progress: T9.1, T9.2 done (2026-10-02) |
 
 ---
 
@@ -66,6 +66,29 @@ last within the milestone.
   2 ulps; exact on >99% of the corpus). Benchmark pair `scripts/bench-micro.sh
   --bench geo`; ratios in `docs/parity.md`'s geo section.
 - **T9.2** — `LatLonPoint`/`XYPoint`: fields, queries, distance sort.
+  **Done (2026-10-02).** Fields in `lucene-index/src/document/geo.rs`
+  (`LatLonPoint`, `LatLonDocValuesField`, `XYPointField`,
+  `XYDocValuesField`); queries, sorts and `nearest` in
+  `lucene-search/src/document/geo/`: `LatLonPoint.newBoxQuery` (dateline
+  split), `LatLonPointDistanceQuery` (forward and inverse walks),
+  `LatLonPointQuery` under all four relations through `SpatialQuery`'s
+  sparse/dense/inverse/contains scorers and `hasAnyHits`,
+  `XYPointInGeometryQuery`, the three doc-values queries,
+  `LatLonPointDistanceFeatureQuery` (scores and `setMinCompetitiveScore`
+  pruning), `LatLonPointSortField`/`XYPointSortField` with their
+  comparators' bounding-box `compareBottom` (also as `CUSTOM` keys of
+  `search_sorted`), and `NearestNeighbor` (best-first over a lazily navigated
+  `PointTreeNode`, `java.util.PriorityQueue`'s tie order). Supporting codec
+  changes: a multi-dimension leaf is related by its own stored box before it
+  is decoded (Java's `visitDocValuesWithCardinality`), and a singleton
+  `SORTED_NUMERIC` value is read through the resolved values array.
+  Differential: `GenGeoPoints` -> `crates/lucene-search/tests/geo_points_fixtures.rs`,
+  ~1100 queries (hits, score bits, sort-value bits, distance bits) equal over
+  Lucene's index and over this port's index of the same documents (whose
+  packed points are compared byte for byte too); write path:
+  `VerifyGeoPoints` replays them through Lucene over the Rust-written index.
+  Benchmark pair `scripts/bench-micro.sh --bench geo_points`; ratios in
+  `docs/parity.md`. `SpatialQuery`'s shape half stays with T9.3.
 - **T9.3** — Shapes: `LatLonShape`/`XYShape` writing and querying, including
   the doc-values shape encoding.
 - **T9.4** — `spatial3d`.

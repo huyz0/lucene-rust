@@ -117,6 +117,16 @@ case "$BENCH" in
   geo)
     MAIN=GeoMicro
     SRC=benchmarks/micro/java/GeoMicro.java ;;
+  geo_points)
+    # Both engines read the million-point index GeoPointsMicro builds (once)
+    # under benchmarks/.corpus/geo-points, with its query set beside it.
+    MAIN=GeoPointsMicro
+    SRC=benchmarks/micro/java/GeoPointsMicro.java
+    JAR_MODULES="lucene-core lucene-analysis-common"
+    INDEX="${INDEX_ARG:-$PWD/benchmarks/.corpus/geo-points}"
+    PREP_ARGS=(build "$INDEX")
+    JAVA_ARGS=(run)
+    NEEDS_INDEX=1 ;;
   pfor_decode)
     MAIN=org.apache.lucene.codecs.lucene104.PForUtilMicro
     SRC=benchmarks/micro/java/org/apache/lucene/codecs/lucene104/PForUtilMicro.java ;;
@@ -153,6 +163,12 @@ echo "bench-micro: building" >&2
 RUST_TARGET_DIR="${CARGO_TARGET_DIR:-benchmarks/rust-runner/target}"
 # shellcheck disable=SC2086  # EXTRA_SRC is a deliberate word list
 javac -nowarn -cp "$CP" -d "$OUT/classes" "$SRC" ${EXTRA_SRC:-}
+
+# A bench whose Java side builds the shared input first (once).
+if [ -n "${PREP_ARGS+x}" ]; then
+  echo "bench-micro: preparing ${PREP_ARGS[*]}" >&2
+  java -cp "$CP:$OUT/classes" "$MAIN" "${PREP_ARGS[@]}"
+fi
 
 # Every case but `index` measures a read path out of the shared `micro` binary,
 # selected by name and pointed at a prebuilt index; `index` has its own binary

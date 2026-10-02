@@ -23,6 +23,7 @@ use lucene_store::data_input::SliceInput;
 use lucene_store::MmapDirectory;
 
 mod micro_geo;
+mod micro_geo_points;
 mod micro_m7;
 mod sexpr;
 #[path = "../../../crates/lucene-search/tests/m7grammar/mod.rs"]
@@ -2060,6 +2061,12 @@ fn main() {
         "points_write" => bench_points_write(warmup, measure),
         "concurrent_index" => bench_concurrent_index(warmup, measure),
         "geo" => micro_geo::bench_geo(warmup, measure),
+        "geo_points" => {
+            let index = std::env::args()
+                .nth(2)
+                .expect("geo_points needs the GeoPointsMicro index directory");
+            micro_geo_points::bench_geo_points(warmup, measure, &index);
+        }
         "m7_fixture" => micro_m7::bench_m7_fixture(warmup, measure),
         "query_builder" => micro_m7::bench_query_builder(warmup, measure),
         "stored_fields_write" => micro_m7::bench_stored_fields_write(warmup, measure),

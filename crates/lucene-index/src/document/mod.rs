@@ -34,6 +34,7 @@
 mod date_tools;
 mod doc_values;
 mod feature;
+mod geo;
 mod indexing;
 mod inet_address;
 mod late_interaction;
@@ -59,6 +60,10 @@ pub use doc_values::{
     SortedNumericDocValuesField, SortedSetDocValuesField,
 };
 pub use feature::FeatureField;
+pub use geo::{
+    doc_value_high, doc_value_low, pack_doc_value, LatLonDocValuesField, LatLonPoint,
+    XYDocValuesField, XYPointField,
+};
 pub use inet_address::InetAddressPoint;
 pub use late_interaction::LateInteractionField;
 pub use numeric::{
