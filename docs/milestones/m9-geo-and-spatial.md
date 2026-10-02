@@ -133,8 +133,9 @@ last within the milestone.
   deliberate difference: Lucene's two geo3d comparators mis-read
   multi-valued documents in `copy()` (a Lucene bug, `docs/parity.md`); the
   port reads each document's own values. Benchmark pairs `--bench geo3d`
-  and `--bench geo3d_points`: every case at or above 1.0 (1.01x-1.75x;
-  two inside the noise floor), ratios in `docs/parity.md`.
+  and `--bench geo3d_points`: 1.10x-1.74x, but `geo3d_distance` (0.97x
+  and 1.05x in two runs, inside the noise floor both times; written up in
+  `docs/parity.md` with the ratios).
 - **T9.5** — `spatial-extras` (prefix trees, `SpatialStrategy`s).
 - **T9.6** — Plugin wiring for OpenSearch's geo queries and sort.
 

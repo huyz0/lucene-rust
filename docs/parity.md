@@ -307,26 +307,32 @@ and distances); of its 39 608 membership/relationship answers none changes
 for the same input, and 4 change because their probe point itself does (its
 coordinates come out NaN with the intrinsics).
 
-Benchmark pairs, every case at or above 1.0 (2026-10-02, three
-repetitions, result digests compared across the engines first):
+Benchmark pairs (2026-10-02, re-measured after the port was committed;
+three repetitions, result digests compared across the engines first):
 `scripts/bench-micro.sh --bench geo3d` (`Geo3dMicro.java` / `micro_geo3d.rs`,
-inputs from one SplitMix64 stream) -- `geo3d_polygon_build` 1.55x,
-`geo3d_within` 1.17x, `geo3d_relate` 1.14x, `geo3d_distance` 1.04x and
-`geo3d_circle_build` 1.01x (both inside the 1.11x noise floor: trigonometry dominates
-both, fdlibm here against HotSpot's intrinsics in the stock JVM the bench
-runs); and `--bench
-geo3d_points` (`Geo3dPointsMicro.java` / `micro_geo3d_points.rs`, 300 000
-WGS84 points, one segment) -- `geo3d_query_path` 1.75x, `geo3d_query_box`
-1.67x, `geo3d_query_polygon` 1.51x, `geo3d_query_distance` 1.46x,
-`geo3d_distance_sort` 1.12x, `geo3d_outside_sort` 1.11x. Stage 3: the
-first run had `geo3d_distance` at 0.89x, two thirds of its excess in
-`Plane.findIntersections`' `GeoPoint[]` allocations; the intersections now
-fill a fixed two-slot array on the stack (`Plane::find_intersections_two`,
-`find_intersections_arr`), unchanged in results.
+inputs from one SplitMix64 stream) -- `geo3d_polygon_build` 1.41x,
+`geo3d_within` 1.20x, `geo3d_relate` 1.18x, `geo3d_circle_build` 1.10x and
+`geo3d_distance` 0.97x (both inside the 1.17x noise floor; the run before
+had them at 0.98x and 1.05x). Below 1.0 and left: `geo3d_distance` measured
+1.05x and 0.97x in two runs, inside the noise both times; its time is
+`acos`/`atan2` (fdlibm on both sides) and the intersection planes, where
+nothing allocates any more. Trigonometry dominates `geo3d_circle_build`:
+fdlibm here against HotSpot's `sin`/`cos` intrinsics in the stock JVM the
+bench runs. And `--bench geo3d_points` (`Geo3dPointsMicro.java` /
+`micro_geo3d_points.rs`, 300 000 WGS84 points, one segment) --
+`geo3d_query_path` 1.74x, `geo3d_query_box` 1.69x, `geo3d_query_distance`
+1.65x, `geo3d_query_polygon` 1.42x, `geo3d_distance_sort` 1.26x,
+`geo3d_outside_sort` 1.18x. Stage 3: the first run had `geo3d_distance` at
+0.89x, two thirds of its excess in `Plane.findIntersections`' `GeoPoint[]`
+allocations; the intersections now fill a fixed two-slot array on the stack
+(`Plane::find_intersections_two`, `find_intersections_arr`), unchanged in
+results. `geo3d_circle_build` was 0.98x; `GeoPoint(planetModel, lat, lon)`
+now takes each angle's sine and cosine from one argument reduction
+(`strict_math::sin_cos`, bit for bit `sin` and `cos`): 471 ns to 401 ns.
 
 | Java | Rust | Status |
 |---|---|---|
-| `java.lang.StrictMath` `tan`/`atan`/`atan2` (JDK fdlibm) | `lucene-util/src/strict_math.rs::{tan, atan, atan2}` | **ported, bit-exact** on 600 arguments each (`geo3d/math.tsv`: random, tiny, huge, near multiples of pi/2, infinities, NaN) and through every geo3d record. Past `2^19*pi/2` fdlibm's `tan` needs the large-argument reduction this port does not have; it falls back to libm (equal to the JDK on the sampled `1e9`, `1e300`, `Double.MAX_VALUE`, not guaranteed). |
+| `java.lang.StrictMath` `tan`/`atan`/`atan2` (JDK fdlibm) | `lucene-util/src/strict_math.rs::{tan, atan, atan2, sin_cos}` | **ported, bit-exact** (`sin_cos`, no Java method: `sin` and `cos` sharing one argument reduction, unit-tested equal to both bit for bit) on 600 arguments each (`geo3d/math.tsv`: random, tiny, huge, near multiples of pi/2, infinities, NaN) and through every geo3d record. Past `2^19*pi/2` fdlibm's `tan` needs the large-argument reduction this port does not have; it falls back to libm (equal to the JDK on the sampled `1e9`, `1e300`, `Double.MAX_VALUE`, not guaranteed). |
 | `spatial3d/geom/Vector`, `spatial3d/geom/GeoPoint`, `spatial3d/geom/Tools`, `spatial3d/geom/Membership` | `lucene-util/src/spatial3d/vector.rs::Vector`, `lucene-util/src/spatial3d/geo_point.rs::GeoPoint`, `lucene-util/src/spatial3d/tools.rs::safe_acos`, `lucene-util/src/spatial3d/membership.rs::Membership` | **ported, bit-exact** (`math.tsv` `V.*`/`G.*`). `GeoPoint extends Vector` is `Deref`; its lazily cached magnitude/latitude/longitude are atomics (shapes are shared across threads). Where Java's virtual dispatch reads a `GeoPoint`'s cached magnitude, the method takes a `GeoPoint` (`arc_distance`) and the plain-vector form is separate (`arc_distance_vector`). |
 | `spatial3d/geom/Plane`, `spatial3d/geom/SidedPlane` | `lucene-util/src/spatial3d/plane.rs::Plane`, `lucene-util/src/spatial3d/sided_plane.rs::SidedPlane` | **ported, bit-exact** (`math.tsv` `P.*`/`S.*`: intersections, crossings, bounds recording into both bounds kinds, arc-distance points, interpolation, the normalized constructors, tangent and parallel planes). Methods that return Java's `null` return `Option`. Where Java iterates a `null` array (a numerically identical plane), the case returns before it in both. |
 | `spatial3d/geom/PlanetModel` (+ `DocValueEncoder`), `spatial3d/geom/PlanetObject`, `spatial3d/geom/BasePlanetObject` | `lucene-util/src/spatial3d/planet_model.rs::{PlanetModel, DocValueEncoder}` | **ported, bit-exact**: constants, `encodeValue`/`decodeValue`, the doc-value x/y/z packing and its rounding helpers, `surfaceDistance` (Vincenty), `surfacePointOnBearing`, `bisection`, `toString`/`hashCode`. `SPHERE`/`WGS84`/`CLARKE_1866` are shared `Arc` statics. |

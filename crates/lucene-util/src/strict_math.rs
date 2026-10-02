@@ -222,6 +222,32 @@ pub fn cos(x: f64) -> f64 {
     }
 }
 
+/// `(StrictMath.sin(x), StrictMath.cos(x))`, bit for bit, with the argument
+/// reduced once: [`sin`] and [`cos`] run the same `rem_pio2` on the same
+/// `x`, so sharing it changes no result (geo3d builds every point from a
+/// latitude's and a longitude's sine and cosine).
+pub fn sin_cos(x: f64) -> (f64, f64) {
+    let ix = hi(x) & 0x7fff_ffff;
+    if ix <= 0x3fe9_21fb {
+        return (kernel_sin(x, 0.0, 0), kernel_cos(x, 0.0));
+    }
+    if ix >= 0x7ff0_0000 {
+        return (x - x, x - x);
+    }
+    match rem_pio2(x) {
+        Some((n, y0, y1)) => {
+            let (s, c) = (kernel_sin(y0, y1, 1), kernel_cos(y0, y1));
+            match n & 3 {
+                0 => (s, c),
+                1 => (c, -s),
+                2 => (-s, -c),
+                _ => (-c, s),
+            }
+        }
+        None => (x.sin(), x.cos()),
+    }
+}
+
 const PI: f64 = f64::from_bits(0x4009_21FB_5444_2D18);
 const PIO2_HI: f64 = f64::from_bits(0x3FF9_21FB_5444_2D18);
 const PIO2_LO: f64 = f64::from_bits(0x3C91_A626_3314_5C07);
@@ -695,6 +721,45 @@ pub fn atan2(y: f64, x: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sin_cos_is_sin_and_cos_bit_for_bit() {
+        let mut args = vec![
+            0.0,
+            -0.0,
+            1e-300,
+            -1e-9,
+            0.5,
+            std::f64::consts::FRAC_PI_4,
+            std::f64::consts::FRAC_PI_2,
+            -std::f64::consts::FRAC_PI_2,
+            std::f64::consts::PI,
+            -3.0,
+            100.0,
+            1e6,
+            1e9,
+            1e300,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ];
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        for _ in 0..20_000 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            let unit = (state >> 11) as f64 / (1u64 << 53) as f64;
+            args.push((unit - 0.5) * 40.0);
+        }
+        for n in 1..40 {
+            args.push(f64::from(n) * std::f64::consts::FRAC_PI_2);
+        }
+        for x in args {
+            let (s, c) = sin_cos(x);
+            assert_eq!(s.to_bits(), sin(x).to_bits(), "sin({x:e})");
+            assert_eq!(c.to_bits(), cos(x).to_bits(), "cos({x:e})");
+        }
+    }
 
     #[test]
     fn hypot_matches_the_jdk_on_every_branch() {

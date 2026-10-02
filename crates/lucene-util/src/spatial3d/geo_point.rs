@@ -4,7 +4,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::jmath::{abs, asin, atan2, cos, sin};
+use super::jmath::{abs, asin, atan2, sin_cos};
 use super::planet_model::PlanetModel;
 use super::serializable::{read_double, write_double, Input};
 use super::tools::safe_acos;
@@ -221,7 +221,9 @@ impl GeoPoint {
     /// and longitude in radians. Fails as Java does when either is out of
     /// range.
     pub fn from_lat_lon(pm: &PlanetModel, lat: f64, lon: f64) -> Result<GeoPoint> {
-        GeoPoint::from_trig_lat_lon(pm, sin(lat), sin(lon), cos(lat), cos(lon), lat, lon)
+        let (sin_lat, cos_lat) = sin_cos(lat);
+        let (sin_lon, cos_lon) = sin_cos(lon);
+        GeoPoint::from_trig_lat_lon(pm, sin_lat, sin_lon, cos_lat, cos_lon, lat, lon)
     }
 
     /// `GeoPoint(InputStream)`: latitude, longitude, x, y, z.
