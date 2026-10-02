@@ -81,6 +81,14 @@ fn wrong_schemas_are_errors_and_missing_fields_match_nothing() {
     let sort = lat_lon_doc_values_field::new_distance_sort("kw", 0.0, 0.0).unwrap();
     let e = sort.search(&leaves, &MatchAllDocs, 3).unwrap_err();
     assert!(e.to_string().contains("docValuesType=SORTED"), "{e}");
+    // `n == 0` is refused before the field is looked at, as
+    // `TopFieldCollectorManager` refuses it; for both sorts, any index.
+    let e = sort.search(&leaves, &MatchAllDocs, 0).unwrap_err();
+    assert!(e.to_string().contains("numHits must be > 0"), "{e}");
+    let e = xy_doc_values_field::new_distance_sort("kw", 0.0, 0.0)
+        .search(&[], &MatchAllDocs, 0)
+        .unwrap_err();
+    assert!(e.to_string().contains("numHits must be > 0"), "{e}");
     let e = xy_doc_values_field::new_distance_sort("kw", 0.0, 0.0)
         .search(&leaves, &MatchAllDocs, 3)
         .unwrap_err();

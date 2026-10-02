@@ -206,28 +206,49 @@ pub(crate) fn idx(doc: i32) -> usize {
     usize::try_from(doc).unwrap_or(0)
 }
 
-/// `bits.set(doc)` for a doc id the tree handed out: one outside the
-/// segment (a corrupt index; Java throws) is dropped rather than panicking.
+/// `bits.set(doc)` for a doc id the tree handed out. One outside the
+/// segment -- a corrupt `.kdd`; Java's `FixedBitSet` throws -- sets nothing
+/// and is remembered in `bad` (the first one), which the walk's caller
+/// turns into an error with [`check_walk`].
 #[inline]
-pub(crate) fn set_doc(bits: &mut FixedBitSet, doc: i32) {
-    if let Ok(d) = usize::try_from(doc) {
-        if d < bits.len() {
-            bits.set(d);
+pub(crate) fn set_doc(bits: &mut FixedBitSet, doc: i32, bad: &mut Option<i32>) {
+    match usize::try_from(doc) {
+        Ok(d) if d < bits.len() => bits.set(d),
+        _ => {
+            bad.get_or_insert(doc);
         }
     }
 }
 
-/// `bits.clear(doc)`, bounded as [`set_doc`].
+/// `bits.clear(doc)`, checked as [`set_doc`].
 #[inline]
-pub(crate) fn clear_doc(bits: &mut FixedBitSet, doc: i32) {
-    if let Ok(d) = usize::try_from(doc) {
-        if d < bits.len() {
-            bits.clear(d);
+pub(crate) fn clear_doc(bits: &mut FixedBitSet, doc: i32, bad: &mut Option<i32>) {
+    match usize::try_from(doc) {
+        Ok(d) if d < bits.len() => bits.clear(d),
+        _ => {
+            bad.get_or_insert(doc);
         }
     }
 }
 
-/// `bits.get(doc)`, bounded as [`set_doc`] (outside: `false`).
+/// The corruption error for a points walk over `field` that named document
+/// `doc` in a segment of `max_doc` documents.
+pub(crate) fn out_of_segment(field: &str, doc: i32, max_doc: i32) -> Error {
+    Error::Store(lucene_store::Error::Corrupted(format!(
+        "points of field {field} name document {doc}, outside the segment's 0..{max_doc}"
+    )))
+}
+
+/// After a walk: the error for the first out-of-segment doc id it met.
+pub(crate) fn check_walk(bad: Option<i32>, field: &str, max_doc: i32) -> Result<()> {
+    match bad {
+        Some(doc) => Err(out_of_segment(field, doc, max_doc)),
+        None => Ok(()),
+    }
+}
+
+/// `bits.get(doc)`, bounded as [`set_doc`] (outside: `false`; the walk
+/// records such a doc id when it sets or clears it).
 #[inline]
 pub(crate) fn get_doc(bits: &FixedBitSet, doc: i32) -> bool {
     usize::try_from(doc).is_ok_and(|d| d < bits.len() && bits.get(d))
@@ -248,7 +269,13 @@ struct BitsCollector(FixedBitSet);
 
 impl ScoringCollector for BitsCollector {
     fn collect(&mut self, doc_id: i32, _score: f32) {
-        set_doc(&mut self.0, doc_id);
+        // The clauses collect only documents of this segment.
+        let mut bad = None;
+        set_doc(&mut self.0, doc_id, &mut bad);
+        debug_assert!(
+            bad.is_none(),
+            "collected document {doc_id} outside the segment"
+        );
     }
 }
 
