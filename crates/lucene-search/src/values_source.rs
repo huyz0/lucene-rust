@@ -155,6 +155,22 @@ impl<'c> ValuesContext<'c> {
         })
     }
 
+    /// Leaf `leaf`'s reader, as the spatial value sources read it.
+    pub(crate) fn leaf_reader(
+        &self,
+        leaf: usize,
+    ) -> Result<&'c crate::directory_reader::SegmentReader> {
+        self.reader(leaf)
+    }
+
+    /// Leaf `leaf`'s doc base (`LeafReaderContext.docBase`): `0` for a
+    /// context of one reader.
+    pub(crate) fn doc_base(&self, leaf: usize) -> i32 {
+        self.searcher
+            .and_then(|s| s.segments().get(leaf))
+            .map_or(0, |s| s.doc_base)
+    }
+
     fn vectors(&self, leaf: usize) -> Result<&'c VectorsInput<'c>> {
         self.vectors.get(leaf).copied().flatten().ok_or_else(|| {
             Error::IllegalState(format!(

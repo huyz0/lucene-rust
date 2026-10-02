@@ -119,6 +119,11 @@ pub enum Error {
     /// A geo3d (`spatial3d`) exception, passed through.
     #[error("{0}")]
     Spatial3d(crate::spatial3d::Error),
+    /// spatial-extras' `UnsupportedSpatialOperation` (an
+    /// `UnsupportedOperationException` whose message is the operation's
+    /// name).
+    #[error("{0}")]
+    UnsupportedSpatialOperation(String),
 }
 
 impl Error {
@@ -136,6 +141,9 @@ impl Error {
             Error::ArrayIndexOutOfBounds(_) => "java.lang.ArrayIndexOutOfBoundsException",
             Error::NumberFormat(_) => "java.lang.NumberFormatException",
             Error::Spatial3d(e) => e.java_class(),
+            Error::UnsupportedSpatialOperation(_) => {
+                "org.apache.lucene.spatial.query.UnsupportedSpatialOperation"
+            }
         }
     }
 

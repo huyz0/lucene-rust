@@ -155,7 +155,11 @@ last within the milestone.
   package (`lucene-util/src/spatial_extras/{prefix_tree,query.rs}`),
   `GenSpatialPrefixTree` -> `spatial_prefix_tree_fixtures.rs` (4 534
   records: byte-identical cell tokens for every tree, date parse/format
-  round trips, `SpatialArgsParser`).
+  round trips, `SpatialArgsParser`); every strategy
+  (`lucene-search/src/spatial/`: RPT, term-query, number-range, BBox,
+  point-vector, serialized doc values, composite, heatmaps, date facets, the
+  value sources), `GenSpatialStrategies` -> `spatial_strategies_fixtures.rs`
+  (byte-identical fields, 1 901 answers over Lucene's index and this port's).
 - **T9.6** — Plugin wiring for OpenSearch's geo queries and sort.
 
 ## Acceptance criteria
