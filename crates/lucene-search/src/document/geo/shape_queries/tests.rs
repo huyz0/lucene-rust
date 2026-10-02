@@ -407,3 +407,48 @@ fn xy_shape_queries_end_to_end() {
     let q = XYShapeQuery::new("xy", QueryRelation::Intersects, &[XYGeometry::Line(line)]).unwrap();
     assert_eq!(q.geometries.len(), 1);
 }
+
+#[test]
+fn shape_doc_values_of_deleted_documents_are_not_read() {
+    // `DefaultBulkScorer` asks `acceptDocs.get(doc)` before the two-phase
+    // `matches()` that decodes the value: a deleted document's value --
+    // here one that is no shape at all -- is never opened, so it neither
+    // fails the query nor costs a tree walk.
+    let tmp = TempDir::new("geo-shape-dv-deleted");
+    let dir = FsDirectory::open(tmp.path());
+    let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+    for (id, junk) in [("0", true), ("1", false), ("2", true)] {
+        let p = square(20.0, 20.0, 1.0);
+        let mut doc = Document::new();
+        doc.add_boxed(Box::new(d::StringField::new("id", id, d::Store::No)));
+        for t in d::LatLonShape::create_indexable_fields("s", &p).unwrap() {
+            doc.add_boxed(Box::new(t));
+        }
+        if junk {
+            doc.add_boxed(Box::new(d::BinaryDocValuesField::new("s", vec![0u8, 1, 2])));
+        } else {
+            doc.add_boxed(Box::new(
+                d::LatLonShape::create_doc_value_field("s", &p).unwrap(),
+            ));
+        }
+        w.add_fields_document(&doc).unwrap();
+    }
+    w.delete_documents_by_term(&[
+        lucene_index::buffered_updates::Term::new("id", "0"),
+        lucene_index::buffered_updates::Term::new("id", "2"),
+    ])
+    .unwrap();
+    w.commit().unwrap();
+    drop(w);
+    let r = DirectoryReader::open(&dir).unwrap();
+    let opened = r.open_segments().unwrap();
+    let leaves = opened.as_open_segments();
+    assert!(leaves[0].live_docs.is_some(), "deletions applied");
+    let q = LatLonShapeDocValuesQuery::new(
+        "s",
+        QueryRelation::Intersects,
+        &[LatLonGeometry::Point(Point::new(20.5, 20.5).unwrap())],
+    )
+    .unwrap();
+    assert_eq!(hits(&leaves, &q), vec![(1, 1.0)]);
+}
