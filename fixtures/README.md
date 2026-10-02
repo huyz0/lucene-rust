@@ -1071,6 +1071,17 @@ outright.
   rings for the morton path, and hand-built cases (holes sharing vertices,
   touching the shell, coinciding leftmost vertices, combs, a spiral).
   Deterministic: `--check` compares the files byte for byte.
+- `GenDistanceFeaturePruning.java` (M9 T9.2 review) —
+  `distance_feature_pruning/`: four 6000-document segments (a few deleted)
+  of `LongField` (`l`, some documents two-valued), `LongPoint` +
+  `NumericDocValuesField` (`n`) and `LatLonPoint` + `LatLonDocValuesField`
+  (`p`), a sixth of the documents exactly at the origin so a top-n queue
+  fills with hits scoring the boost. `queries.tsv` holds `LongField` and
+  `LatLonPoint` distance-feature top-n searches (n up to 1200, past the
+  1000-hit count threshold) with Lucene's `totalHits` value and relation --
+  what the scorers' pruning decides -- and hits (a list over 100 as its
+  `String.hashCode`), including NaN pivots, which Lucene never prunes.
+  Consumed by `crates/lucene-search/tests/distance_feature_pruning_fixtures.rs`.
 - `GenGeoPoints.java` (M9 T9.2) — `geo_points/`: a real index (four
   segments, the last without `one`/`xy`, deletions in the first two) of
   `LatLonPoint` + `LatLonDocValuesField` on `ll` (0-3 points, doc-local
