@@ -9,7 +9,7 @@
 | **Effort** | L |
 | **Depends on** | [M7](m7-core-complete.md) (`document` fields, multi-dimension BKD writing) |
 | **Unblocks** | native `geo_distance`, `geo_bounding_box`, `geo_shape`, geo sorting |
-| **Status** | not started |
+| **Status** | in progress: T9.1 done (2026-10-02) |
 
 ---
 
@@ -51,6 +51,20 @@ last within the milestone.
 
 - **T9.1** — `geo` primitives and the `Tessellator`, differential against
   Lucene on random polygons (triangle for triangle).
+  **Done (2026-10-02).** All 27 `geo` classes plus `util/SloppyMath` are
+  ported into `lucene-util` (`geo/`, `sloppy_math.rs`, and `strict_math.rs`
+  for the fdlibm `StrictMath` functions SloppyMath's tables are built from);
+  `PointValues.Relation` moved down to `lucene-util` with a re-export from
+  `lucene_codecs::points`. Differential: `GenGeo`, `GenGeoTessellator`,
+  `GenGeoParsers` -> `crates/lucene-util/tests/geo_fixtures.rs` -- bit-exact
+  math and encodings, every `Component2D` query over ~100 shapes, the
+  Tessellator triangle for triangle (or failure for failure) over ~200
+  polygons incl. holes, poles, the dateline, self-intersections, the morton
+  and SPLIT paths, and both parsers' results and error messages/offsets.
+  One documented inexactness: `Rectangle.axisLat` goes through HotSpot's
+  `Math.cos` intrinsic, which no portable code reproduces bit for bit (within
+  2 ulps; exact on >99% of the corpus). Benchmark pair `scripts/bench-micro.sh
+  --bench geo`; ratios in `docs/parity.md`'s geo section.
 - **T9.2** — `LatLonPoint`/`XYPoint`: fields, queries, distance sort.
 - **T9.3** — Shapes: `LatLonShape`/`XYShape` writing and querying, including
   the doc-values shape encoding.
