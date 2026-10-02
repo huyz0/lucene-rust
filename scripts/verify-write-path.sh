@@ -19,7 +19,7 @@
 # T3.1, see docs/milestones/m3-write-path-proven.md.
 set -euo pipefail
 
-LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-spatial3d)
+LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-spatial3d lucene-spatial-extras)
 
 cd "$(git rev-parse --show-toplevel)"
 FIXTURES="$PWD/fixtures"
@@ -37,7 +37,8 @@ done
 
 # shellcheck source=scripts/lib-lucene-jars.sh
 source "$(dirname "$0")/lib-lucene-jars.sh"
-CP=$(lucene_classpath "${LUCENE_MODULES[@]}")
+# lucene-spatial-extras' Spatial4j and S2 jars, for VerifySpatialExtras.
+CP=$(lucene_classpath "${LUCENE_MODULES[@]}"):$(thirdparty_classpath "${SPATIAL_EXTRAS_DEPS[@]}")
 
 WORK=$(mktemp -d)
 CLASSES=$(mktemp -d)
@@ -296,12 +297,28 @@ CASES=(
   # answer reflects -- `every_geo3d_point_is_indexed_as_lucene_indexes_it`
   # compares the packed points byte for byte instead.
   "lucene-search|write_geo3d_points_fixture|geo3d-points|VerifyGeo3D|fixtures/data/geo3d_points"
+  # The spatial-extras strategies (M9 T9.5): GenSpatialStrategies' corpus --
+  # every strategy's fields (prefix-tree token streams of geohash, quad,
+  # packed quad, S2 and date cells; BBox and point-vector doubles as points,
+  # doc values and stored values; serialized shapes in binary doc values),
+  # multi-valued, across four segments with deletes -- written by this
+  # port's strategies. Lucene runs CheckIndex, then answers every question of
+  # fixtures/data/spatial_strategies/queries.tsv (each strategy x operation x
+  # query shape, value sources, heatmaps, date facets) over this index and
+  # over its own, in one JVM, and they must agree. What it cannot catch: a
+  # field written wrongly in a way no answer reflects (a token no query
+  # visits) -- `every_spatial_strategy_makes_the_fields_lucene_makes`
+  # compares every field's tokens and values byte for byte instead.
+  "lucene-search|write_spatial_strategies_fixture|spatial-strategies|VerifySpatialExtras|fixtures/data/spatial_strategies"
 )
 
 echo "verify-write-path: compiling verifiers"
 # ShapeAccess reaches Lucene's package-private shape doc-values queries for
 # VerifyGeoShapes (it lives in org.apache.lucene.document).
-javac -nowarn -cp "$CP" -d "$CLASSES" "$FIXTURES"/src/Verify*.java "$FIXTURES"/src/ShapeAccess.java
+# SpatialExtrasCorpus answers VerifySpatialExtras' questions, as it answered
+# GenSpatialStrategies'.
+javac -nowarn -cp "$CP" -d "$CLASSES" "$FIXTURES"/src/Verify*.java "$FIXTURES"/src/ShapeAccess.java \
+  "$FIXTURES"/src/SpatialExtrasCorpus.java
 
 echo "verify-write-path: writing fixtures from Rust and verifying with Lucene $LUCENE_VERSION"
 failed=0
