@@ -525,7 +525,9 @@ impl Geo3dDistanceCalculator {
 
 impl fmt::Display for Geo3dDistanceCalculator {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("Geo3dDistanceCalculator")
+        // Java prints `Object.toString()`: the class name and an identity
+        // hash, which is left out.
+        f.write_str("org.apache.lucene.spatial.spatial4j.Geo3dDistanceCalculator")
     }
 }
 

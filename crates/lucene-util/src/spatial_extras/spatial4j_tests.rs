@@ -146,7 +146,10 @@ fn relates_to_plain_spatial4j_shapes() {
 fn distance_calculator() {
     let ctx = ctx();
     let calc = ctx.dist_calc();
-    assert_eq!(calc.to_string(), "Geo3dDistanceCalculator");
+    assert_eq!(
+        calc.to_string(),
+        "org.apache.lucene.spatial.spatial4j.Geo3dDistanceCalculator"
+    );
     assert!(calc.equals(&**calc));
     assert!(!calc.equals(&crate::spatial4j::CartesianDistCalc::new(false)));
     let a = ctx.point_xy(0.0, 0.0).unwrap();

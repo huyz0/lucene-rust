@@ -149,7 +149,13 @@ last within the milestone.
   (`lucene-util/src/spatial_extras/spatial4j.rs`), `GenSpatial4j` ->
   `spatial4j_fixtures.rs` (12 577 records); the
   `check-port-inventory.py --module spatial-extras` gate
-  (`docs/inventory/lucene-spatial-extras.tsv`).
+  (`docs/inventory/lucene-spatial-extras.tsv`); the prefix trees (quad,
+  packed quad, geohash, S2 at arities 1-3, number-range and date-range, with
+  the `GregorianCalendar` subset the date tree needs) and the `query`
+  package (`lucene-util/src/spatial_extras/{prefix_tree,query.rs}`),
+  `GenSpatialPrefixTree` -> `spatial_prefix_tree_fixtures.rs` (4 534
+  records: byte-identical cell tokens for every tree, date parse/format
+  round trips, `SpatialArgsParser`).
 - **T9.6** — Plugin wiring for OpenSearch's geo queries and sort.
 
 ## Acceptance criteria
