@@ -10,6 +10,7 @@
 //! Bounds are `MaxScoreCache.globalMaxScore`'s (`score(Float.MAX_VALUE, 1)`)
 //! rather than merged impacts; a looser bound only means less pruning.
 
+use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use lucene_codecs::blocktree::{BlockTreeFields, SeekedTerm};
@@ -1747,18 +1748,20 @@ pub(crate) fn expand_terms(
     let mut out = Vec::new();
     visit_terms(fields, source, limit, &mut |term, seeked| {
         out.push((term, seeked));
-        Ok(())
+        Ok(ControlFlow::Continue(()))
     })?;
     Ok(out)
 }
 
 /// [`expand_terms`], handing each term to `sink` as the walk reaches it
-/// rather than collecting them.
+/// rather than collecting them. A sink that returns [`ControlFlow::Break`]
+/// ends the walk there, as the constant-score wrappers `return` once a term
+/// matches every document of the field.
 pub(crate) fn visit_terms(
     fields: &BlockTreeFields,
     source: &MultiTermSource,
     limit: Option<usize>,
-    sink: &mut dyn FnMut(Vec<u8>, SeekedTerm) -> Result<()>,
+    sink: &mut dyn FnMut(Vec<u8>, SeekedTerm) -> Result<ControlFlow<()>>,
 ) -> Result<()> {
     let limit = limit.unwrap_or(usize::MAX);
     let mut take = |it: &mut dyn Iterator<
@@ -1767,7 +1770,9 @@ pub(crate) fn visit_terms(
      -> Result<()> {
         for t in it.take(limit) {
             let (term, seeked) = t?;
-            sink(term, seeked)?;
+            if sink(term, seeked)?.is_break() {
+                break;
+            }
         }
         Ok(())
     };
@@ -1822,7 +1827,9 @@ pub(crate) fn visit_terms(
                 if r.accepts(&term) {
                     if let Some(seeked) = it.try_seeked_term()? {
                         taken = taken.saturating_add(1);
-                        sink(term, seeked)?;
+                        if sink(term, seeked)?.is_break() {
+                            break;
+                        }
                     }
                 }
                 on = it.try_next_term()?.is_some();
@@ -1973,7 +1980,12 @@ fn multi_term<'a>(
             // automaton or range can match tens of thousands of terms.
             let mut stream = super::multi_term::StreamedTerms::new(ctx, q.field(), blended);
             visit_terms(ctx.fields, &q.source, None, &mut |term, seeked| {
-                stream.push(term, seeked)
+                stream.push(term, seeked)?;
+                Ok(if stream.settled() {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                })
             })?;
             stream.finish(ctx, q.field(), boost, mode)
         }
