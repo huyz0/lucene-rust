@@ -1192,6 +1192,19 @@ outright.
   over the contexts. Exceptions are recorded as class and message.
   Deterministic (seeded, no index; identity hashes stripped from
   `toString`).
+- `GenSpatialStrategies.java` (M9 T9.5), with `SpatialExtrasCorpus.java`
+  (the contexts, strategies, field description and question answering it
+  shares with `VerifySpatialExtras`) — `spatial_strategies/`: `index/` (400
+  documents through every spatial-extras strategy, multi-valued fields, four
+  segments with deletions, `NoMergePolicy`), `docs.tsv` (each document's
+  `strategy=spec` shapes: `g:`/`t:`/`f:`/`p:` WKT for the geodetic, Geo3D,
+  planar and point families, `d:` a date range), `deletes.tsv`, `fields.tsv`
+  (every field each spec makes: type, values, tokens -- over 24 tokens the
+  count, first three and an FNV-1a hash) and `queries.tsv` (1 901 questions
+  and Lucene's answers: `C` constant-score hits as hex bits, `S` scored hits,
+  `V` a value source over every document, `H` heatmaps, `F` date facets,
+  strategies' `toString`, `E` class and message). Same classpath and JVM
+  flags as `GenSpatial4j`. Deterministic (seeded; identity hashes stripped).
 
 ## Manifest appenders
 
