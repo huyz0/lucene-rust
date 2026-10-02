@@ -3929,7 +3929,7 @@ fn phrase_freq_exact_two(first: &[i32], second: &[i32], stop_at_first: bool) -> 
 fn phrase_freq_exact_two_count(first: &[i32], second: &[i32]) -> i32 {
     let (mut i, mut j, mut freq) = (0usize, 0usize, 0i32);
     while i < first.len() && j < second.len() {
-        let target = first[i] + 1;
+        let target = first[i].wrapping_add(1);
         let p1 = second[j];
         let behind = p1 < target;
         freq += i32::from(p1 == target);
