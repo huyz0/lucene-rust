@@ -33,7 +33,7 @@ pub(crate) fn cos(x: f64) -> f64 {
 /// `(Math.sin(x), Math.cos(x))`.
 #[inline]
 pub(crate) fn sin_cos(x: f64) -> (f64, f64) {
-    (sin(x), cos(x))
+    strict_math::sin_cos(x)
 }
 
 /// `Math.tan` (as `StrictMath.tan`).
