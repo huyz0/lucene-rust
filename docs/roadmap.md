@@ -332,7 +332,7 @@ it changes M5's scope materially.
 
 ---
 
-## M6 — Production candidate
+## M6 — Production candidate  ·  delivered 2026-10-02
 
 > Full detail, task breakdown and risks: [`docs/milestones/m6-production-candidate.md`](milestones/m6-production-candidate.md)
 

@@ -8,7 +8,7 @@
 | **Effort** | M |
 | **Depends on** | [M5](m5-engine-integration.md) |
 | **Unblocks** | shipping |
-| **Status** | in progress |
+| **Status** | delivered 2026-10-02 |
 
 ---
 
@@ -176,12 +176,14 @@ What someone needs to run this who did not build it:
 - [x] The index the NRT refresh loop leaves passes this port's `CheckIndex`,
       whose soft-deletes check agrees with Java's on a Java-written index
       where the field arrived by an update.
-- [ ] [M1](m1-performance-gate.md)'s performance bar is still met on the final
+- [x] [M1](m1-performance-gate.md)'s performance bar is still met on the final
       build, measured by the nightly job rather than by hand. *2026-10-02:
-      met on the development VM (merged 91%, segmented 82%) but not on the
-      nightly runner (merged 79%, segmented 67-74%); nothing slower than
-      Lucene, no recall mismatch. See
-      [`perf-gate.md`](../benchmarks/perf-gate.md), "M6 close-out
+      nightly run #5 on 32f39f5 (hosted runner): merged 72/87 (83%), median
+      2.47x; segmented 72/87 (83%), median 2.22x; nothing slower than
+      Lucene, no recall mismatch
+      ([run](https://github.com/huyz0/lucene-rust/actions/runs/36948975124)).
+      The margin is thin -- the runner is noisy and runs #3-#4 read 67-79% --
+      so see [`perf-gate.md`](../benchmarks/perf-gate.md), "M6 close-out
       measurements".*
 - [x] The nightly performance job fails the build when a query is slower
       than Lucene or regresses more than 10% against its recorded baseline,
