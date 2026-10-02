@@ -85,6 +85,8 @@ Lucene and there are no recall mismatches in any run below.
 | nightly job #4 (hosted runner), f581c7a | segmented | 58/87 (67%) | 2.17x |
 | nightly job #5 (hosted runner), 32f39f5 | merged | **72/87 (83%)** | 2.47x |
 | nightly job #5 (hosted runner), 32f39f5 | segmented | **72/87 (83%)** | 2.22x |
+| nightly job #6 (hosted runner), 049b651 | merged | **71/87 (82%)** | 2.57x |
+| nightly job #6 (hosted runner), 049b651 | segmented | **75/87 (86%)** | 2.74x |
 
 **M6's criterion -- the bar met on the nightly job -- is met by run #5**
 ([run](https://github.com/huyz0/lucene-rust/actions/runs/36948975124)), on
@@ -97,8 +99,9 @@ Lucene's own qps moving as much. The misses on the runner are the core
 AND/OR shapes (q04, q08, q09, q11, q12, q14, q15), the sorted queries
 (q74-q80), the phrase-bearing boolean expressions (q47, q49, q56-q60) and
 q69, q71, q89 -- most between 1.3x and 1.5x. Passing reliably there needs a
-margin over 1.5x on that band, not just a pass on a quiet machine; run #5 is that pass, not
-yet that margin.
+margin over 1.5x on that band, not just a pass on a quiet machine; runs #5 and #6 pass back to
+back (merged 83% then 82%, segmented 83% then 86%; merged q76 at 1.00x and
+q80 at 1.07-1.11x are the thinnest), but that is not yet that margin.
 
 ## Negative control
 

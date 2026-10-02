@@ -12,8 +12,8 @@ Status: M0-M8 and M5.6 delivered -- OpenSearch 3.8.0 serves search and
 indexes from Rust, real Lucene reads a Rust-written index, older segments are
 read and merged (M1's performance gate closed with a FAIL verdict; see the
 roadmap); M7 has every `lucene-core` class ported or recorded as not
-needed, and nightly perf run #5 (32f39f5) met M1's 1.5x bar on 83% of the query
-mix on both corpora. See [`docs/roadmap.md`](docs/roadmap.md) for milestone status and
+needed, and nightly perf runs #5 and #6 both met M1's 1.5x bar on 82-86% of the
+query mix on both corpora. See [`docs/roadmap.md`](docs/roadmap.md) for milestone status and
 PLAN.md §2 for the phases.
 
 ## Benchmarks
