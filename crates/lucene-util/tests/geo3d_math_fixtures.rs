@@ -685,6 +685,54 @@ fn run(op: &str, inp: &mut In<'_>, pms: &[Arc<PlanetModel>]) -> String {
     }
 }
 
+/// `text` with every 16-digit hex double that is a NaN replaced by `NaN`.
+///
+/// fdlibm's and the planet math's invalid results are `0.0 / 0.0`-style
+/// NaNs whose sign is the CPU's default -- negative on x86-64, where the
+/// fixture was written, positive on aarch64 -- and Java leaves NaN bits
+/// unspecified, so a NaN only has to be a NaN; every other value is still
+/// compared bit for bit.
+fn nan_blind(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let run = bytes[i..]
+            .iter()
+            .take_while(|b| b.is_ascii_hexdigit())
+            .count();
+        if run == 0 {
+            // Hex digits are ASCII, so the next one is a char boundary.
+            let skip = bytes[i..]
+                .iter()
+                .position(u8::is_ascii_hexdigit)
+                .unwrap_or(bytes.len() - i);
+            out.push_str(&text[i..i + skip]);
+            i += skip;
+            continue;
+        }
+        let token = &text[i..i + run];
+        let is_nan = run == 16
+            && u64::from_str_radix(token, 16).is_ok_and(|bits| f64::from_bits(bits).is_nan());
+        out.push_str(if is_nan { "NaN" } else { token });
+        i += run;
+    }
+    out
+}
+
+#[test]
+fn nan_blind_ignores_only_the_sign_of_a_nan() {
+    assert_eq!(
+        nan_blind("fff8000000000000,1|7ff8000000000001"),
+        "NaN,1|NaN"
+    );
+    assert_eq!(
+        nan_blind("7ff0000000000000 false"),
+        "7ff0000000000000 false"
+    );
+    assert_ne!(nan_blind("3ff0000000000000"), nan_blind("bff0000000000000"));
+}
+
 #[test]
 fn geo3d_primitives_match_lucene() {
     let text = std::fs::read_to_string(root().join("math.tsv"))
@@ -708,7 +756,7 @@ fn geo3d_primitives_match_lucene() {
         let got = run(a[1], &mut inp, &pms);
         assert_eq!(inp.at, inp.t.len(), "{line}: inputs not all read");
         checked += 1;
-        if got != a[4] && failures.len() < 30 {
+        if nan_blind(&got) != nan_blind(a[4]) && failures.len() < 30 {
             failures.push(format!("{line}\n  rust: {got}"));
         }
     }
