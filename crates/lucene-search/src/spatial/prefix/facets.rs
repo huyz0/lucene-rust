@@ -440,17 +440,25 @@ struct HeatmapVisitor<'h> {
 impl FacetVisitor for HeatmapVisitor<'_> {
     fn visit(&mut self, cell: &dyn Cell, count: i32) -> Result<()> {
         let heat_min_x = self.heatmap.region.min_x();
-        let shape = rect_of(cell)?;
-        let rect = shape.as_rectangle().expect("checked");
+        // `(Rectangle) cell.getShape()`: its bounds without making it when
+        // the tree can say them
+        let ([min_x, max_x, min_y, max_y], made) = match cell.rect_bounds() {
+            Some(bounds) => (bounds?, None),
+            None => {
+                let shape = rect_of(cell)?;
+                let r = shape.as_rectangle().expect("checked");
+                ([r.min_x(), r.max_x(), r.min_y(), r.max_y()], Some(shape))
+            }
+        };
         if cell.level() == self.facet_level {
             // heatmap level; count it directly: convert to col & row
-            let column = if rect.min_x() >= heat_min_x {
-                java_round((rect.min_x() - heat_min_x) / self.cell_width)
+            let column = if min_x >= heat_min_x {
+                java_round((min_x - heat_min_x) / self.cell_width)
             } else {
                 // due to dateline wrap
-                java_round((rect.min_x() + 360.0 - heat_min_x) / self.cell_width)
+                java_round((min_x + 360.0 - heat_min_x) / self.cell_width)
             };
-            let row = java_round((rect.min_y() - self.heat_min_y) / self.cell_height);
+            let row = java_round((min_y - self.heat_min_y) / self.cell_height);
             // the tree may hand out adjacent cells overlapping the seam:
             // skip them
             if column < 0 || column >= self.heatmap.columns || row < 0 || row >= self.heatmap.rows {
@@ -462,14 +470,17 @@ impl FacetVisitor for HeatmapVisitor<'_> {
             if let Some(c) = self.heatmap.counts.get_mut(i) {
                 *c = c.wrapping_add(count);
             }
-        } else if rect.relate(&*self.heatmap.region)? == SpatialRelation::Contains {
+            return Ok(());
+        }
+        let shape = match made {
+            Some(shape) => shape,
+            None => rect_of(cell)?,
+        };
+        if shape.relate(&*self.heatmap.region)? == SpatialRelation::Contains {
             self.all_cells_ancestor_count = self.all_cells_ancestor_count.wrapping_add(count);
         } else {
             // ancestor
-            self.ancestors.push((
-                [rect.min_x(), rect.max_x(), rect.min_y(), rect.max_y()],
-                count,
-            ));
+            self.ancestors.push(([min_x, max_x, min_y, max_y], count));
         }
         Ok(())
     }

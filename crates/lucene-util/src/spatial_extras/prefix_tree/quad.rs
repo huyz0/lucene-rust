@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use super::legacy::{self, LegacyCell, LegacyGrid};
 use super::{Cell, CellIterator, SpatialPrefixTree};
-use crate::spatial4j::{Error, Point, Result, Shape, SpatialContext, SpatialRelation};
+use crate::spatial4j::{
+    Error, Point, RectangleImpl, Result, Shape, ShapeFactoryImpl, SpatialContext, SpatialRelation,
+};
 
 /// `QuadPrefixTree.MAX_LEVELS_POSSIBLE`.
 pub const MAX_LEVELS_POSSIBLE: i32 = 50;
@@ -218,13 +220,18 @@ impl QuadGrid {
     /// `QuadCell.makeShape()`'s arithmetic: the cell's
     /// `[minX, maxX, minY, maxY]`.
     fn cell_bounds(&self, cell: &LegacyCell) -> Result<[f64; 4]> {
+        self.bytes_bounds(cell.bytes.as_slice())
+    }
+
+    /// [`Self::cell_bounds`] of the cell whose token (without the leaf
+    /// byte) is `bytes`.
+    fn bytes_bounds(&self, bytes: &[u8]) -> Result<[f64; 4]> {
         // The common case in one pass: a cell no deeper than the tree, all
         // of whose bytes are quadrants. The same additions in the same
         // order as `cell_rect` (a skipped one adds `-0.0`), so the same
         // bits; anything else takes the checking path below for Java's
         // exception.
         let g = &self.geom;
-        let bytes = cell.bytes.as_slice();
         if bytes.len() <= g.level_w.len() {
             let (mut xmin, mut ymin) = (g.xmin, g.ymin);
             let mut quadrants = true;
@@ -235,17 +242,28 @@ impl QuadGrid {
                 ymin += if c <= 1 { h } else { -0.0 };
             }
             if quadrants {
-                let (width, height) = match bytes.len().checked_sub(1) {
-                    Some(last) => (g.level_w[last], g.level_h[last]),
-                    None => (g.grid_w, g.grid_h),
-                };
-                return Ok([xmin, xmin + width, ymin, ymin + height]);
+                return Ok(self.finish(xmin, ymin, bytes.len()));
             }
         }
-        // Java's switch meets an unexpected byte, or reads `levelW` past
-        // its end, at the first index either happens.
+        self.bounds_error(bytes)
+    }
+
+    /// The bounds of a cell `len` levels deep whose running corner sums
+    /// are `xmin`/`ymin`.
+    fn finish(&self, xmin: f64, ymin: f64, len: usize) -> [f64; 4] {
+        let g = &self.geom;
+        let (width, height) = match len.checked_sub(1) {
+            Some(last) => (g.level_w[last], g.level_h[last]),
+            None => (g.grid_w, g.grid_h),
+        };
+        [xmin, xmin + width, ymin, ymin + height]
+    }
+
+    /// Java's switch meets an unexpected byte, or reads `levelW` past its
+    /// end, at the first index either happens.
+    fn bounds_error(&self, bytes: &[u8]) -> Result<[f64; 4]> {
         let n = self.geom.level_w.len();
-        for (i, &c) in cell.bytes.iter().enumerate() {
+        for (i, &c) in bytes.iter().enumerate() {
             match c {
                 b'C' => {}
                 b'A' | b'B' | b'D' if i >= n => return Err(array_index_out_of_bounds(i, n)),
@@ -253,8 +271,128 @@ impl QuadGrid {
                 _ => return Err(Error::Runtime(format!("unexpected char: {}", c as i8))),
             }
         }
-        let quads = cell.bytes.iter().map(|&c| c - b'A');
-        self.geom.cell_rect(quads, cell.bytes.len())
+        let quads = bytes.iter().map(|&c| c - b'A');
+        self.geom.cell_rect(quads, bytes.len())
+    }
+}
+
+/// Relates the cells of a [`QuadPrefixTree`], named by their token bytes,
+/// to one shape: `cell.getShape().relate(shape)` for a stream of cells --
+/// the visiting traversal's scanned terms, a query cell's children.
+///
+/// Two things make it cheaper than asking each cell, and neither changes
+/// an answer. A cell's corner is a running sum over its quadrants
+/// ([`QuadGrid::bytes_bounds`]); consecutive cells share most of their
+/// path, so the sums of the shared prefix are kept and only the levels
+/// after it are added -- the same additions in the same order, so the same
+/// bits. And for a context whose rectangles are `RectangleImpl`s, one
+/// rectangle is reset to each cell's (validated, normalised) bounds and
+/// related, where `rect(..).relate(shape)` would make one per cell.
+pub struct QuadCellRelater {
+    grid: Arc<QuadGrid>,
+    shape: Arc<dyn Shape>,
+    /// The reused rectangle; `None` when the context's factory makes
+    /// another kind of rectangle (Geo3D).
+    scratch: Option<RectangleImpl>,
+    /// The query shape when it is a `RectangleImpl`: related without
+    /// dynamic calls.
+    query_rect: Option<RectangleImpl>,
+    /// The quadrant bytes whose running sums are in `sums`.
+    path: Vec<u8>,
+    /// `(xmin, ymin)` after each byte of `path`.
+    sums: Vec<(f64, f64)>,
+}
+
+impl fmt::Debug for QuadCellRelater {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "QuadCellRelater({})", self.shape)
+    }
+}
+
+impl QuadCellRelater {
+    fn new(grid: Arc<QuadGrid>, shape: Arc<dyn Shape>) -> Self {
+        let ctx = &grid.geom.ctx;
+        let scratch = ctx
+            .plain_rect_bounds(-180.0, 180.0, -90.0, 90.0)
+            .map(|_| RectangleImpl::new(0.0, 0.0, 0.0, 0.0, ctx.clone()));
+        let query_rect = shape.as_any().downcast_ref::<RectangleImpl>().cloned();
+        QuadCellRelater {
+            grid,
+            shape,
+            scratch,
+            query_rect,
+            path: Vec::new(),
+            sums: Vec::new(),
+        }
+    }
+
+    /// The tree's `maxLevels`.
+    pub fn max_levels(&self) -> i32 {
+        self.grid.geom.max_levels
+    }
+
+    /// `readCell(term)`'s `readLeafAdjust()` on raw term bytes: the token
+    /// without the leaf byte, and whether the cell is a leaf.
+    pub fn split_term<'t>(&self, term: &'t [u8]) -> (&'t [u8], bool) {
+        let (bytes, leaf) = match term.split_last() {
+            Some((&legacy::LEAF_BYTE, rest)) => (rest, true),
+            _ => (term, false),
+        };
+        let leaf = leaf || bytes.len() as i32 == self.grid.geom.max_levels;
+        (bytes, leaf)
+    }
+
+    /// The bounds of the cell whose token (without the leaf byte) is
+    /// `bytes`, before the factory's validation: `QuadCell.makeShape()`'s
+    /// arithmetic.
+    ///
+    /// # Errors
+    /// A byte that is not a quadrant, or a path deeper than the tree
+    /// (Java's exceptions, as [`QuadGrid::bytes_bounds`]).
+    pub fn bounds(&mut self, bytes: &[u8]) -> Result<[f64; 4]> {
+        let g = &self.grid.geom;
+        if bytes.len() > g.level_w.len() {
+            return self.grid.bytes_bounds(bytes);
+        }
+        let mut keep = 0;
+        while keep < self.path.len() && keep < bytes.len() && self.path[keep] == bytes[keep] {
+            keep += 1;
+        }
+        self.path.truncate(keep);
+        self.sums.truncate(keep);
+        let (mut xmin, mut ymin) = self.sums.last().copied().unwrap_or((g.xmin, g.ymin));
+        for (i, &b) in bytes.iter().enumerate().skip(keep) {
+            let c = b.wrapping_sub(b'A');
+            if c > 3 {
+                return self.grid.bytes_bounds(bytes);
+            }
+            xmin += if c == 1 || c == 3 { g.level_w[i] } else { -0.0 };
+            ymin += if c <= 1 { g.level_h[i] } else { -0.0 };
+            self.path.push(b);
+            self.sums.push((xmin, ymin));
+        }
+        Ok(self.grid.finish(xmin, ymin, bytes.len()))
+    }
+
+    /// `cell.getShape().relate(shape)` for the cell whose token (without
+    /// the leaf byte) is `bytes`.
+    ///
+    /// # Errors
+    /// [`Self::bounds`]', the factory's validation, or the relation's.
+    pub fn relate(&mut self, bytes: &[u8]) -> Result<SpatialRelation> {
+        let [a, b, c, d] = self.bounds(bytes)?;
+        let ctx = &self.grid.geom.ctx;
+        match &mut self.scratch {
+            Some(rect) => {
+                rect.reset(ShapeFactoryImpl::rect_bounds(ctx, a, b, c, d)?);
+                match &self.query_rect {
+                    // `RectangleImpl.relate(Shape)` for a rectangle
+                    Some(q) if !q.is_empty() && !rect.is_empty() => rect.relate_rect(q),
+                    _ => rect.relate(&*self.shape),
+                }
+            }
+            None => ctx.rect_relate(a, b, c, d, &*self.shape),
+        }
     }
 }
 
@@ -298,6 +436,14 @@ impl LegacyGrid for QuadGrid {
     fn make_shape(&self, cell: &LegacyCell) -> Result<Arc<dyn Shape>> {
         let [a, b, c, d] = self.cell_bounds(cell)?;
         Ok(self.geom.ctx.rect(a, b, c, d)?)
+    }
+
+    fn rect_bounds(&self, cell: &LegacyCell) -> Option<Result<[f64; 4]>> {
+        let [a, b, c, d] = match self.cell_bounds(cell) {
+            Ok(v) => v,
+            Err(e) => return Some(Err(e)),
+        };
+        self.geom.ctx.plain_rect_bounds(a, b, c, d)
     }
 
     fn relate_cell(&self, cell: &LegacyCell, other: &dyn Shape) -> Result<SpatialRelation> {
@@ -344,6 +490,10 @@ impl SpatialPrefixTree for QuadPrefixTree {
     fn read_cell_into(&self, term: &[u8], scratch: &mut Box<dyn Cell>) -> Result<()> {
         LegacyCell::read_into(&self.inner, term, scratch);
         Ok(())
+    }
+
+    fn quad_relater(&self, shape: &Arc<dyn Shape>) -> Option<QuadCellRelater> {
+        Some(QuadCellRelater::new(self.inner.clone(), shape.clone()))
     }
 
     fn tree_cell_iterator(

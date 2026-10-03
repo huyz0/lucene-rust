@@ -381,6 +381,93 @@ impl fmt::Display for GeodesicSphereDistCalc {
     }
 }
 
+/// `within(from, toX, toY, distance)` of the haversine calculator for one
+/// `from` and `distance` and many targets -- a circle relating the cells
+/// of a prefix tree. The same answer as
+/// `GeodesicSphereDistCalc::Haversine.within`, for less work:
+///
+/// - `cos(lat1)` is computed once (the same value every call computes);
+/// - the haversine `h` is computed exactly as `distHaversineRAD` does,
+///   and only an `h` within a relative `1e-9` of the boundary value
+///   `sin(distance / 2)^2` goes on to `atan2` and the comparison in
+///   degrees. Further from it the answer is already decided: the distance
+///   `2 asin(sqrt h)` grows with `h`, by at least `1e-9 * sqrt(h)` across
+///   the margin, many orders of magnitude more than the few ulps the
+///   computed `atan2` and degree conversions can be off by, so the full
+///   computation could not land on the other side of `distance`.
+#[derive(Debug, Clone)]
+pub struct HaversineWithin {
+    lat1: f64,
+    lon1: f64,
+    cos_lat1: f64,
+    distance: f64,
+    /// Below this `h` the target is within (`-inf`: always compute).
+    h_within: f64,
+    /// Above this `h` it is not (`+inf`: always compute).
+    h_beyond: f64,
+}
+
+impl HaversineWithin {
+    /// The relative margin around the boundary `h` decided exactly.
+    const MARGIN: f64 = 1e-9;
+
+    /// For `from` (degrees) and `distance` (degrees).
+    pub fn new(from_x: f64, from_y: f64, distance: f64) -> Self {
+        let lat1 = DistanceUtils::to_radians(from_y);
+        let d = DistanceUtils::to_radians(distance);
+        let (h_within, h_beyond) = if d > 0.0 && d < PI * 0.999 {
+            let s = sin(d * 0.5);
+            let h = s * s;
+            (h * (1.0 - Self::MARGIN), h * (1.0 + Self::MARGIN))
+        } else {
+            (f64::NEG_INFINITY, f64::INFINITY)
+        };
+        HaversineWithin {
+            lat1,
+            lon1: DistanceUtils::to_radians(from_x),
+            cos_lat1: cos(lat1),
+            distance,
+            h_within,
+            h_beyond,
+        }
+    }
+
+    /// `within(from, toX, toY, distance)`.
+    pub fn within(&self, to_x: f64, to_y: f64) -> bool {
+        let (lat1, lon1) = (self.lat1, self.lon1);
+        let lat2 = DistanceUtils::to_radians(to_y);
+        let lon2 = DistanceUtils::to_radians(to_x);
+        // `distHaversineRAD`, `cos(lat1)` hoisted
+        if lat1 == lat2 && lon1 == lon2 {
+            return DistanceUtils::to_degrees(0.0) <= self.distance;
+        }
+        let hsin_x = sin((lon1 - lon2) * 0.5);
+        let hsin_y = sin((lat1 - lat2) * 0.5);
+        let mut h = hsin_y * hsin_y + (self.cos_lat1 * cos(lat2) * hsin_x * hsin_x);
+        if h > 1.0 {
+            h = 1.0;
+        }
+        if h < self.h_within {
+            return true;
+        }
+        if h > self.h_beyond {
+            return false;
+        }
+        DistanceUtils::to_degrees(2.0 * atan2(h.sqrt(), (1.0 - h).sqrt())) <= self.distance
+    }
+
+    /// The answer computed in full, for the tests.
+    #[cfg(test)]
+    pub(crate) fn within_exact(&self, to_x: f64, to_y: f64) -> bool {
+        DistanceUtils::to_degrees(DistanceUtils::dist_haversine_rad(
+            self.lat1,
+            self.lon1,
+            DistanceUtils::to_radians(to_y),
+            DistanceUtils::to_radians(to_x),
+        )) <= self.distance
+    }
+}
+
 impl DistanceCalculator for GeodesicSphereDistCalc {
     fn distance_xy(&self, from: &dyn Point, to_x: f64, to_y: f64) -> Result<f64> {
         let to_r = DistanceUtils::to_radians;

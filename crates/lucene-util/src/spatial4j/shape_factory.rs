@@ -107,6 +107,22 @@ pub trait ShapeFactory: Send + Sync + fmt::Debug {
     ) -> Result<SpatialRelation> {
         self.rect(ctx, min_x, max_x, min_y, max_y)?.relate(other)
     }
+    /// The bounds `rect(minX, maxX, minY, maxY)` would make a
+    /// [`RectangleImpl`] of, after its validation and dateline handling --
+    /// `None` for a factory whose rectangles are not `RectangleImpl`s. A
+    /// caller relating many rectangles keeps one `RectangleImpl` and
+    /// resets it to these bounds ([`RectangleImpl::reset`]): the same
+    /// relations, without a rectangle (and a context reference) per call.
+    fn plain_rect_bounds(
+        &self,
+        _ctx: &Arc<SpatialContext>,
+        _min_x: f64,
+        _max_x: f64,
+        _min_y: f64,
+        _max_y: f64,
+    ) -> Option<Result<[f64; 4]>> {
+        None
+    }
     /// `circle(x, y, distance)`.
     fn circle(
         &self,
@@ -259,26 +275,38 @@ impl ShapeFactoryImpl {
         min_y: f64,
         max_y: f64,
     ) -> Result<RectangleImpl> {
+        let [min_x, max_x, min_y, max_y] = Self::rect_bounds(ctx, min_x, max_x, min_y, max_y)?;
+        Ok(RectangleImpl::new(min_x, max_x, min_y, max_y, ctx.clone()))
+    }
+
+    /// [`Self::rect_impl`]'s validation and dateline handling: the
+    /// rectangle's final bounds (what `plain_rect_bounds` answers for this
+    /// factory, callable without one). Inlined: a prefix tree validates a
+    /// rectangle per cell it relates, and the bounds stay in registers.
+    #[inline]
+    pub fn rect_bounds(
+        ctx: &Arc<SpatialContext>,
+        min_x: f64,
+        max_x: f64,
+        min_y: f64,
+        max_y: f64,
+    ) -> Result<[f64; 4]> {
         let [bminx, bmaxx, bminy, bmaxy] = ctx.world_bounds_values();
-        if min_y < bminy || max_y > bmaxy {
-            return Err(Error::InvalidShape(format!(
-                "Y values [{} to {}] not in boundary {}",
-                dstr(min_y),
-                dstr(max_y),
-                ctx.world_bounds()
-            )));
-        }
-        if min_y > max_y {
-            return Err(Error::InvalidShape(format!(
-                "maxY must be >= minY: {} to {}",
-                dstr(min_y),
-                dstr(max_y)
-            )));
+        let geo = ctx.is_geo();
+        // Java's checks, any of them failing (NaN fails none, as in Java)
+        let invalid = min_y < bminy
+            || max_y > bmaxy
+            || min_y > max_y
+            || if geo {
+                min_x < bminx || min_x > bmaxx || max_x < bminx || max_x > bmaxx
+            } else {
+                min_x < bminx || max_x > bmaxx || min_x > max_x
+            };
+        if invalid {
+            return Err(Self::rect_bounds_error(ctx, min_x, max_x, min_y, max_y));
         }
         let (mut min_x, mut max_x) = (min_x, max_x);
-        if ctx.is_geo() {
-            self.verify_x(ctx, min_x)?;
-            self.verify_x(ctx, max_x)?;
+        if geo {
             // If an edge coincides with the dateline then don't make this
             // rect cross it.
             if min_x == 180.0 && min_x != max_x {
@@ -286,24 +314,63 @@ impl ShapeFactoryImpl {
             } else if max_x == -180.0 && min_x != max_x {
                 max_x = 180.0;
             }
-        } else {
-            if min_x < bminx || max_x > bmaxx {
-                return Err(Error::InvalidShape(format!(
-                    "X values [{} to {}] not in boundary {}",
-                    dstr(min_x),
-                    dstr(max_x),
-                    ctx.world_bounds()
-                )));
-            }
-            if min_x > max_x {
-                return Err(Error::InvalidShape(format!(
-                    "maxX must be >= minX: {} to {}",
-                    dstr(min_x),
-                    dstr(max_x)
-                )));
-            }
         }
-        Ok(RectangleImpl::new(min_x, max_x, min_y, max_y, ctx.clone()))
+        Ok([min_x, max_x, min_y, max_y])
+    }
+
+    /// The error [`Self::rect_bounds`] reports for invalid bounds: the
+    /// first of Java's checks that fails, in Java's order.
+    #[cold]
+    #[inline(never)]
+    fn rect_bounds_error(
+        ctx: &Arc<SpatialContext>,
+        min_x: f64,
+        max_x: f64,
+        min_y: f64,
+        max_y: f64,
+    ) -> Error {
+        let [bminx, bmaxx, bminy, bmaxy] = ctx.world_bounds_values();
+        if min_y < bminy || max_y > bmaxy {
+            return Error::InvalidShape(format!(
+                "Y values [{} to {}] not in boundary {}",
+                dstr(min_y),
+                dstr(max_y),
+                ctx.world_bounds()
+            ));
+        }
+        if min_y > max_y {
+            return Error::InvalidShape(format!(
+                "maxY must be >= minY: {} to {}",
+                dstr(min_y),
+                dstr(max_y)
+            ));
+        }
+        if ctx.is_geo() {
+            // `verifyX` on both
+            let x = if min_x < bminx || min_x > bmaxx {
+                min_x
+            } else {
+                max_x
+            };
+            return Error::InvalidShape(format!(
+                "Bad X value {} is not in boundary {}",
+                dstr(x),
+                ctx.world_bounds()
+            ));
+        }
+        if min_x < bminx || max_x > bmaxx {
+            return Error::InvalidShape(format!(
+                "X values [{} to {}] not in boundary {}",
+                dstr(min_x),
+                dstr(max_x),
+                ctx.world_bounds()
+            ));
+        }
+        Error::InvalidShape(format!(
+            "maxX must be >= minX: {} to {}",
+            dstr(min_x),
+            dstr(max_x)
+        ))
     }
 }
 
@@ -367,6 +434,17 @@ impl ShapeFactory for ShapeFactoryImpl {
     ) -> Result<SpatialRelation> {
         self.rect_impl(ctx, min_x, max_x, min_y, max_y)?
             .relate(other)
+    }
+
+    fn plain_rect_bounds(
+        &self,
+        ctx: &Arc<SpatialContext>,
+        min_x: f64,
+        max_x: f64,
+        min_y: f64,
+        max_y: f64,
+    ) -> Option<Result<[f64; 4]>> {
+        Some(Self::rect_bounds(ctx, min_x, max_x, min_y, max_y))
     }
 
     fn circle(
