@@ -213,3 +213,100 @@ fn multilevel_field_seek_ceil_matches_a_brute_force_ceiling() {
         }
     }
 }
+
+/// Java's seek-state reuse (`prepareSeekExact`/`seekCeil` resuming from the
+/// prefix the current term shares with the target, and `pushFrame` keeping
+/// the cursor of a frame at or below `targetBeforeCurrentLength`) is only
+/// reached by a *second* seek on the same enum. Every order it treats
+/// differently goes down one enum here -- ascending (cursors kept and
+/// scanned forward), descending (the diverging frame rewound), shuffled --
+/// with `next()` steps between seeks (which cut `validIndexPrefix` back as
+/// they pop frames), each answer checked against the sorted term list
+/// Lucene wrote. `seek_exact` runs on the field's pooled state the same
+/// way, stats included.
+#[test]
+fn reused_enum_seek_streams_match_a_brute_force_answer() {
+    let (fields, m) = open_fixture();
+    let many = fields.field("many").expect("expected field \"many\"");
+    let terms = expected_terms(&m);
+    let mut targets: Vec<Vec<u8>> = Vec::new();
+    for (i, t) in terms.iter().enumerate() {
+        let b = t.as_bytes();
+        // every term, plus a miss after it and its parent prefix, for a
+        // subset of terms (the full product is quadratic in debug builds)
+        targets.push(b.to_vec());
+        if i % 7 == 0 {
+            let mut appended = b.to_vec();
+            appended.push(b'a');
+            targets.push(appended);
+            targets.push(b[..b.len() / 2].to_vec());
+        }
+    }
+    targets.push(Vec::new());
+    targets.push(b"\xff".to_vec());
+    let mut sorted = targets.clone();
+    sorted.sort();
+    sorted.dedup();
+    let mut reversed = sorted.clone();
+    reversed.reverse();
+    let mut shuffled = sorted.clone();
+    let mut state = 0x9E37_79B9_7F4A_7C15u64;
+    for i in (1..shuffled.len()).rev() {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        shuffled.swap(i, (state % (i as u64 + 1)) as usize);
+    }
+    for (order, stream) in [
+        ("ascending", &sorted),
+        ("descending", &reversed),
+        ("shuffled", &shuffled),
+    ] {
+        let mut it = many.iter();
+        for (n, target) in stream.iter().enumerate() {
+            let at = terms.partition_point(|t| t.as_bytes() < target.as_slice());
+            let status = it.seek_ceil(target);
+            match terms.get(at) {
+                None => assert_eq!(status, blocktree::SeekStatus::End, "{order} {target:?}"),
+                Some(want) => {
+                    let found = want.as_bytes() == target.as_slice();
+                    let expected = if found {
+                        blocktree::SeekStatus::Found
+                    } else {
+                        blocktree::SeekStatus::NotFound
+                    };
+                    assert_eq!(status, expected, "{order} {target:?}");
+                    let (got, stats) = it.current().expect("positioned");
+                    assert_eq!(got, want.as_bytes(), "{order} {target:?}");
+                    assert!(stats.doc_freq >= 1, "{order} {target:?}");
+                    // Step on a little every few seeks: `next()` pops frames
+                    // and narrows the prefix the next seek may reuse.
+                    if n % 5 == 0 {
+                        for k in 1..=3 {
+                            let got = it.try_next_term().expect("next").map(<[u8]>::to_vec);
+                            assert_eq!(
+                                got.as_deref(),
+                                terms.get(at + k).map(String::as_bytes),
+                                "{order} next {k} after {target:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // The pooled `seek_exact` state, down the same stream: hits with
+        // their stats, misses (including targets past either end).
+        for target in stream {
+            let hit = terms
+                .binary_search_by(|t| t.as_bytes().cmp(target.as_slice()))
+                .is_ok();
+            let got = many.try_seek_exact(target).expect("seek_exact");
+            assert_eq!(got.is_some(), hit, "{order} seek_exact {target:?}");
+            if let Some(stats) = got {
+                assert!(stats.doc_freq >= 1, "{order} {target:?}");
+                let state = many.seek_term_state(target).expect("state").expect("hit");
+                assert_eq!(state.stats, stats, "{order} {target:?}");
+            }
+        }
+    }
+}

@@ -1405,21 +1405,32 @@ impl Frame {
 /// term's bytes, and where in the stack we are. Split out from the enum so
 /// [`FieldTerms`] can pool one and hand it to every `&self` lookup, keeping
 /// the last-loaded blocks warm across calls.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct EnumState {
     term: TermBuf,
     stack: Vec<Frame>,
     /// Index of the current frame, or `-1` when the enum is unpositioned
     /// (Java's `currentFrame == staticFrame`).
     current: i32,
+    /// Java's `nodes`: `nodes[i]` is the index node the last seek reached
+    /// after consuming `term[..i]` (`nodes[0]` the root). Valid up to
+    /// [`Self::valid_index_prefix`]; a seek sharing that prefix with the
+    /// current term resumes from these instead of walking down from the
+    /// root again.
+    nodes: Vec<IndexNode>,
+    /// Java's `validIndexPrefix`: how many leading bytes of [`Self::term`]
+    /// the frame stack and [`Self::nodes`] still describe -- the current
+    /// frame's prefix after a seek, cut back by `next()` as it pops frames.
+    valid_index_prefix: usize,
+    /// Java's `targetBeforeCurrentLength`: the frames at or below this ord
+    /// are positioned at or before the target of the seek in progress, so a
+    /// push that lands on one holding the same block keeps its cursor rather
+    /// than rewinding it (`pushFrame(node, fp, length)`); `-1` rewinds every
+    /// such frame.
+    target_before_current_length: i32,
     /// Java's `termExists`: the entry the cursor is on is a term rather than
-    /// a sub-block pointer. Written wherever Java writes it and read by
-    /// nothing here yet -- both of Java's consumers,
-    /// `seekExact(BytesRef, TermState)` and the seek-state-reuse prologue,
-    /// are deliberately unported (see [`SegmentTermsEnum`]'s doc comment).
-    /// Kept rather than dropped because `scanToTermNonLeaf` is the only place
-    /// that can compute it, so a later port of either would otherwise have to
-    /// re-thread it back through three call layers.
+    /// a sub-block pointer. Read by the seek-state reuse: a seek to exactly
+    /// the current term answers from it without touching a block.
     term_exists: bool,
     /// The enum is parked on a real term (so `term()`/`docFreq()` are
     /// meaningful). False before the first call and after end-of-terms.
@@ -1429,21 +1440,45 @@ struct EnumState {
     eof: bool,
 }
 
+impl Default for EnumState {
+    /// Unpositioned: no frame, nothing to reuse.
+    fn default() -> Self {
+        EnumState {
+            term: TermBuf::default(),
+            stack: Vec::new(),
+            current: -1,
+            nodes: Vec::new(),
+            valid_index_prefix: 0,
+            target_before_current_length: -1,
+            term_exists: false,
+            on_term: false,
+            eof: false,
+        }
+    }
+}
+
 /// Port of `SegmentTermsEnum` -- the whole lazy navigator. Borrows the
 /// field's `.tim`/`.tip` bytes and a (possibly pooled) [`EnumState`].
 ///
-/// **What is not ported.** Java's `prepareSeekExact` and `seekCeil` open with
-/// a branch that reuses the *previous* seek's frame stack when the new target
-/// shares a prefix with the current term (`validIndexPrefix`, `nodes[]`,
-/// `lastFrame`). It is a pure optimization for seeking in sorted order; every
-/// seek here restarts from the root instead, which is exactly Java's own
-/// `currentFrame == staticFrame` path. What that branch mainly buys --
-/// not re-loading a block the frame already holds -- is recovered by
-/// [`Frame::rewind`]'s in-place cursor reset plus the per-field pooled state,
-/// which apply to *any* access order rather than only a sorted one. See
+/// **Seek-state reuse.** As Java's `prepareSeekExact` and `seekCeil` do, a
+/// seek on a positioned enum first compares the target with the current
+/// term over the prefix the frame stack still describes
+/// ([`EnumState::valid_index_prefix`]), resumes the trie walk from the
+/// node stored for the shared prefix ([`EnumState::nodes`]) and the frame
+/// for it (`lastFrame`), and -- when the target sorts after the current
+/// term -- leaves every frame up to the old current one where its cursor
+/// stands ([`EnumState::target_before_current_length`]), so a sorted
+/// stream of seeks scans each block forward once instead of restarting at
+/// the root and the block's first entry for every target. A target before
+/// the current term rewinds the frame it diverges in; the exact current
+/// term (`termExists`) answers without reading anything. Until the
+/// spatial prefix-tree traversals (heatmaps, RPT intersects) nothing here
+/// issued sorted seeks, and every seek restarted from the root; the
+/// in-place [`Frame::rewind`] and the per-field pooled state (which make
+/// any access order cheap to repeat) stay. See
 /// `docs/sweep/m2/c1-lazy-blocktree.md`.
 ///
-/// Also unported, with the same status as before this batch:
+/// Unported, with the same status as before:
 /// `seekExact(BytesRef, TermState)`/`termState()`/`ord()` (no `TermStates`
 /// reuse exists in this port's search layer) and `prefetchBlock`
 /// (`IndexInput.prefetch`, unmeasurable against a warm page cache).
@@ -1555,11 +1590,16 @@ impl<'a> SegmentTermsEnum<'a> {
         let ord = self.next_ord()?;
         self.ensure_frame(ord);
         let index = self.index();
+        let keep = ord as i64 <= i64::from(self.st.target_before_current_length);
         let f = &mut self.st.stack[ord];
         if f.fp_orig == fp && f.next_ent != -1 && f.prefix_length == length {
-            // Same block as last time this ord was used: keep its decoded
-            // regions and just rewind the cursors.
-            f.rewind(index)?;
+            // Same block as last time this ord was used. A frame at or below
+            // `targetBeforeCurrentLength` stands at or before the target of
+            // this seek, so its cursor is kept and the scan resumes from it;
+            // any other is rewound -- in place, keeping its decoded regions.
+            if !keep {
+                f.rewind(index)?;
+            }
         } else {
             f.next_ent = -1;
             f.prefix_length = length;
@@ -1607,41 +1647,152 @@ impl<'a> SegmentTermsEnum<'a> {
         self.st.term_exists = false;
         self.st.on_term = false;
         self.st.eof = false;
+        self.st.valid_index_prefix = 0;
+        self.st.target_before_current_length = -1;
+    }
+
+    /// `nodes[0] = trieReader.root` (`getNode` for the root slot).
+    fn set_root_node(&mut self, root: IndexNode) {
+        match self.st.nodes.first_mut() {
+            Some(slot) => *slot = root,
+            None => self.st.nodes.push(root),
+        }
+    }
+
+    /// Stores the node reached after `depth` target bytes
+    /// (`lookupChild(label, node, getNode(depth))`); the slots below it are
+    /// already the path's.
+    fn set_node(&mut self, depth: usize, node: IndexNode) {
+        if depth < self.st.nodes.len() {
+            self.st.nodes[depth] = node;
+        } else {
+            debug_assert_eq!(depth, self.st.nodes.len());
+            self.st.nodes.push(node);
+        }
+    }
+
+    /// The opening of `prepareSeekExact`/`seekCeil` on a positioned enum:
+    /// how far the target shares the prefix the frame stack still
+    /// describes. Returns the bytes matched (`targetUpto`), the frame for
+    /// that prefix (`lastFrame.ord`) and how the current term compares with
+    /// the target; `None` when the stored state cannot describe the term
+    /// (it always can, but a stale pooled state must restart from the root
+    /// rather than index out of bounds).
+    // ARITH: `target_upto < target_limit <= term.len`, and `last_frame`
+    // counts frames along the path, each one a pushed stack entry, so both
+    // increments stay below lengths of live allocations.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn shared_prefix(&self, target: &[u8]) -> Option<(usize, usize, std::cmp::Ordering)> {
+        use std::cmp::Ordering;
+        let term = self.st.term.get();
+        let target_limit = target.len().min(self.st.valid_index_prefix).min(term.len());
+        if self.st.nodes.len() <= target_limit || self.st.current < 0 {
+            return None;
+        }
+        let mut target_upto = 0usize;
+        let mut last_frame = 0usize;
+        let mut cmp = Ordering::Equal;
+        while target_upto < target_limit {
+            cmp = term[target_upto].cmp(&target[target_upto]);
+            if cmp != Ordering::Equal {
+                break;
+            }
+            if self.st.nodes[1 + target_upto].has_output() {
+                last_frame += 1;
+            }
+            target_upto += 1;
+        }
+        if cmp == Ordering::Equal {
+            cmp = term[target_upto..].cmp(&target[target_upto..]);
+        }
+        if last_frame > self.st.current as usize {
+            return None;
+        }
+        Some((target_upto, last_frame, cmp))
     }
 
     fn root(&self) -> Result<IndexNode> {
         self.field.index.root()
     }
 
-    /// `SegmentTermsEnum.seekExact(BytesRef)`.
+    /// `SegmentTermsEnum.seekExact(BytesRef)` (`prepareSeekExact` without
+    /// prefetch, then its supplier).
+    ///
+    /// A seek that fails part way leaves the pooled state unpositioned: a
+    /// half-updated frame stack must not be resumed by the next seek.
+    fn seek_exact(&mut self, target: &[u8]) -> Result<bool> {
+        // `prepareSeekExact`'s first line: the field's recorded min/max term
+        // bound every possible hit, so an out-of-range target never touches
+        // the trie at all -- nor the seek state, which stays where it was.
+        if self.field.num_terms > 0
+            && (target < self.field.min_term.as_slice() || target > self.field.max_term.as_slice())
+        {
+            self.st.on_term = false;
+            return Ok(false);
+        }
+        let r = self.seek_exact_inner(target);
+        if r.is_err() {
+            self.reset();
+        }
+        r
+    }
+
     // ARITH: `target_upto` is only incremented inside `while target_upto <
     // target.len()`, so it never exceeds `target.len()`, which as a slice
     // length is at most `isize::MAX`; `target_upto + 1` and `1 + target_upto`
     // therefore cannot overflow `usize`.
     #[allow(clippy::arithmetic_side_effects)]
-    fn seek_exact(&mut self, target: &[u8]) -> Result<bool> {
-        // `prepareSeekExact`'s first line: the field's recorded min/max term
-        // bound every possible hit, so an out-of-range target never touches
-        // the trie at all.
-        if self.field.num_terms > 0
-            && (target < self.field.min_term.as_slice() || target > self.field.max_term.as_slice())
-        {
-            self.reset();
-            return Ok(false);
-        }
-        self.reset();
-
+    fn seek_exact_inner(&mut self, target: &[u8]) -> Result<bool> {
+        use std::cmp::Ordering;
+        self.st.eof = false;
+        self.st.on_term = false;
         let index = self.index();
-        let mut node = self.root()?;
-        let mut target_upto = 0usize;
-        self.push_frame_node(&node, 0)?;
+        self.st.target_before_current_length = self.st.current;
+        let mut target_upto = match self.shared_prefix(target) {
+            Some((target_upto, last_frame, cmp)) => {
+                match cmp {
+                    // The target is after the current term: every frame up
+                    // to the current one stands before it.
+                    Ordering::Less => self.st.current = last_frame as i32,
+                    // Before it: rewind the frame where they diverge, and
+                    // every frame pushed above it.
+                    Ordering::Greater => {
+                        self.st.target_before_current_length = last_frame as i32;
+                        self.st.current = last_frame as i32;
+                        self.cur().rewind(index)?;
+                    }
+                    Ordering::Equal => {
+                        if self.st.term_exists {
+                            self.st.on_term = true;
+                            return Ok(true);
+                        }
+                        // The current "term" is a sub-block or a prefix a
+                        // failed seek left: walk on from where it stands.
+                    }
+                }
+                target_upto
+            }
+            None => {
+                self.reset();
+                self.st.target_before_current_length = -1;
+                let root = self.root()?;
+                self.set_root_node(root);
+                self.push_node_frame_at(0)?;
+                0
+            }
+        };
 
         while target_upto < target.len() {
             let target_label = target[target_upto];
-            match self.field.index.child(index, &node, target_label)? {
+            let next = self
+                .field
+                .index
+                .child(index, &self.st.nodes[target_upto], target_label)?;
+            match next {
                 None => {
                     // The index is exhausted: this frame's block is the only
                     // one that could hold the target.
+                    self.st.valid_index_prefix = self.cur_ref().prefix_length;
                     self.cur().scan_to_floor_frame(index, target)?;
                     if !self.cur_ref().has_terms {
                         self.st.term_exists = false;
@@ -1653,15 +1804,17 @@ impl<'a> SegmentTermsEnum<'a> {
                 }
                 Some(next_node) => {
                     self.st.term.set_byte_at(target_upto, target_label);
-                    node = next_node;
+                    let has_output = next_node.has_output();
                     target_upto += 1;
-                    if node.has_output() {
-                        self.push_frame_node(&node, target_upto)?;
+                    self.set_node(target_upto, next_node);
+                    if has_output {
+                        self.push_node_frame_at(target_upto)?;
                     }
                 }
             }
         }
 
+        self.st.valid_index_prefix = self.cur_ref().prefix_length;
         self.cur().scan_to_floor_frame(index, target)?;
         if !self.cur_ref().has_terms {
             self.st.term_exists = false;
@@ -1669,6 +1822,20 @@ impl<'a> SegmentTermsEnum<'a> {
             return Ok(false);
         }
         self.load_and_scan_exact(target)
+    }
+
+    /// `pushFrame(node, length)` for the node stored at `nodes[depth]`,
+    /// whose prefix is `depth` bytes long.
+    fn push_node_frame_at(&mut self, depth: usize) -> Result<()> {
+        // The node is moved out for the push (which borrows the stack) and
+        // put back: no clone of an FST node's output bytes per frame.
+        let node = std::mem::replace(
+            &mut self.st.nodes[depth],
+            IndexNode::Trie(TrieNode::default()),
+        );
+        let r = self.push_frame_node(&node, depth);
+        self.st.nodes[depth] = node;
+        r
     }
 
     fn load_and_scan_exact(&mut self, target: &[u8]) -> Result<bool> {
@@ -1686,36 +1853,81 @@ impl<'a> SegmentTermsEnum<'a> {
         Ok(found)
     }
 
-    /// `SegmentTermsEnum.seekCeil(BytesRef)`.
-    // ARITH: as in [`SegmentTermsEnum::seek_exact`] -- `target_upto` is only
-    // incremented under `while target_upto < target.len()`, and a slice length
-    // is at most `isize::MAX`.
-    #[allow(clippy::arithmetic_side_effects)]
+    /// `SegmentTermsEnum.seekCeil(BytesRef)`. A seek that fails part way
+    /// leaves the state unpositioned, as [`Self::seek_exact`] does.
     fn seek_ceil(&mut self, target: &[u8]) -> Result<SeekStatus> {
-        self.reset();
+        let r = self.seek_ceil_inner(target);
+        if r.is_err() {
+            self.reset();
+        }
+        r
+    }
+
+    // ARITH: as in [`SegmentTermsEnum::seek_exact_inner`] -- `target_upto` is
+    // only incremented under `while target_upto < target.len()`, and a slice
+    // length is at most `isize::MAX`.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn seek_ceil_inner(&mut self, target: &[u8]) -> Result<SeekStatus> {
+        use std::cmp::Ordering;
+        self.st.eof = false;
+        self.st.on_term = false;
         let index = self.index();
-        let mut node = self.root()?;
-        let mut target_upto = 0usize;
-        self.push_frame_node(&node, 0)?;
+        self.st.target_before_current_length = self.st.current;
+        let mut target_upto = match self.shared_prefix(target) {
+            Some((target_upto, last_frame, cmp)) => {
+                match cmp {
+                    Ordering::Less => self.st.current = last_frame as i32,
+                    Ordering::Greater => {
+                        // `seekCeil` writes 0 here where `prepareSeekExact`
+                        // writes `lastFrame.ord`: kept as Java has it.
+                        self.st.target_before_current_length = 0;
+                        self.st.current = last_frame as i32;
+                        self.cur().rewind(index)?;
+                    }
+                    Ordering::Equal => {
+                        if self.st.term_exists {
+                            self.st.on_term = true;
+                            return Ok(SeekStatus::Found);
+                        }
+                    }
+                }
+                target_upto
+            }
+            None => {
+                self.reset();
+                self.st.target_before_current_length = -1;
+                let root = self.root()?;
+                self.set_root_node(root);
+                self.push_node_frame_at(0)?;
+                0
+            }
+        };
 
         while target_upto < target.len() {
             let target_label = target[target_upto];
-            match self.field.index.child(index, &node, target_label)? {
+            let next = self
+                .field
+                .index
+                .child(index, &self.st.nodes[target_upto], target_label)?;
+            match next {
                 None => {
+                    self.st.valid_index_prefix = self.cur_ref().prefix_length;
                     self.cur().scan_to_floor_frame(index, target)?;
                     return self.load_and_scan_ceil(target);
                 }
                 Some(next_node) => {
                     self.st.term.set_byte_at(target_upto, target_label);
-                    node = next_node;
+                    let has_output = next_node.has_output();
                     target_upto += 1;
-                    if node.has_output() {
-                        self.push_frame_node(&node, target_upto)?;
+                    self.set_node(target_upto, next_node);
+                    if has_output {
+                        self.push_node_frame_at(target_upto)?;
                     }
                 }
             }
         }
 
+        self.st.valid_index_prefix = self.cur_ref().prefix_length;
         self.cur().scan_to_floor_frame(index, target)?;
         self.load_and_scan_ceil(target)
     }
@@ -1758,6 +1970,9 @@ impl<'a> SegmentTermsEnum<'a> {
                 self.push_next_frame(sub_fp, length)?;
                 self.load_current_block()?;
             }
+            // The last `next()` landed on a term (Java's frame sets
+            // `termExists`).
+            self.st.term_exists = true;
             self.st.on_term = true;
             return Ok(SeekStatus::NotFound);
         }
@@ -1783,9 +1998,11 @@ impl<'a> SegmentTermsEnum<'a> {
         }
         if self.st.current < 0 {
             let node = self.root()?;
-            self.push_frame_node(&node, 0)?;
+            self.set_root_node(node);
+            self.push_node_frame_at(0)?;
             self.load_current_block()?;
         }
+        self.st.target_before_current_length = self.st.current;
 
         // Pop finished blocks.
         loop {
@@ -1812,6 +2029,7 @@ impl<'a> SegmentTermsEnum<'a> {
                 self.st.on_term = false;
                 self.st.term_exists = false;
                 self.st.term.clear();
+                self.st.valid_index_prefix = 0;
                 let index = self.index();
                 self.cur().rewind(index)?;
                 return Ok(false);
@@ -1843,6 +2061,10 @@ impl<'a> SegmentTermsEnum<'a> {
                 f.load_block(tim)?;
                 f.scan_to_sub_block(fp_orig as i64)?;
             }
+            self.st.valid_index_prefix = self
+                .st
+                .valid_index_prefix
+                .min(self.st.stack[parent].prefix_length);
         }
 
         loop {
@@ -2664,11 +2886,11 @@ impl FieldTerms {
         }
         let prefix = pattern.literal_prefix().to_vec();
         FuzzyIntersect {
-            walk: FuzzyWalk::Scan(Intersect::new(
+            walk: FuzzyWalk::Scan(Box::new(Intersect::new(
                 self,
                 DfaFiltered::new(matcher, None),
                 prefix,
-            )),
+            ))),
             field: self,
             last_term: Vec::new(),
             resume_after: None,
@@ -3302,7 +3524,8 @@ enum FuzzyWalk<'a> {
         FuzzyMatcher<'a, 'a>,
     ),
     /// A pattern too large for a DFA: the forward scan, every term tested.
-    Scan(Intersect<'a, DfaFiltered<FuzzyMatcher<'a, 'a>>>),
+    /// Boxed like the DFA walk: both carry a terms enum's frame stack.
+    Scan(Box<Intersect<'a, DfaFiltered<FuzzyMatcher<'a, 'a>>>>),
 }
 
 impl<'a> FuzzyIntersect<'a> {
@@ -4230,7 +4453,7 @@ pub(crate) fn read_freq_pair(
 /// every field it needs for that shape and callers only ever read the
 /// fields relevant to `node.sign`, mirroring how `TrieReader.Node` itself
 /// mixes single-child/multi-child fields in one class.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct TrieNode {
     sign: u32,
     /// This node's own file pointer within the field's `.tip` index slice.
@@ -7634,6 +7857,92 @@ mod tests {
     /// same split as every other real-bytes fixture test in this crate:
     /// external test = public-API differential, in-crate test = structural
     /// invariant only reachable with this module's private internals.
+    /// The multilevel fixture's "many" field (8000 random lowercase terms):
+    /// opened through `open()` for the seek-state reuse tests below.
+    fn multilevel_many() -> BlockTreeFields {
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/blocktree_multilevel_index/"
+        );
+        let manifest = std::fs::read_to_string(format!("{dir}manifest.properties"))
+            .expect("run fixtures generator first (GenBlockTreeMultilevel)");
+        let kv: std::collections::HashMap<String, String> = manifest
+            .lines()
+            .filter_map(|l| l.split_once('='))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let read_raw = |name: &str| std::fs::read(format!("{dir}{name}.raw")).unwrap();
+        let mut id = [0u8; ID_LENGTH];
+        let id_hex = &kv["id_hex"];
+        for (i, slot) in id.iter_mut().enumerate() {
+            *slot = u8::from_str_radix(&id_hex[i * 2..i * 2 + 2], 16).unwrap();
+        }
+        let fnm = read_raw(&kv["fnm_file_name"]);
+        let field_infos = crate::field_infos::parse(&fnm, &id, "").unwrap();
+        open(
+            &read_raw(&kv["tim_file_name"]),
+            &read_raw(&kv["tip_file_name"]),
+            &read_raw(&kv["tmd_file_name"]),
+            &field_infos,
+            &id,
+            &kv["segment_suffix"],
+            kv["max_doc"].parse().unwrap(),
+        )
+        .unwrap()
+    }
+
+    /// `seekCeil` to the term the enum stands on answers from `termExists`
+    /// without reading a block; a seek state whose stored path claims more
+    /// frames than the stack holds (which no sequence of seeks and `next()`s
+    /// produces) restarts from the root rather than trusting it.
+    #[test]
+    fn seek_state_reuse_answers_the_current_term_and_distrusts_a_broken_state() {
+        let fields = multilevel_many();
+        let many = fields.field("many").unwrap();
+        let mut it = many.iter();
+        let (first, _) = it.next().expect("a first term");
+        let first = first.to_vec();
+        let (second, _) = it.next().expect("a second term");
+        let second = second.to_vec();
+        assert_eq!(it.seek_ceil(&second), SeekStatus::Found);
+        let loads = it.st.stack.iter().map(|f| f.next_ent).collect::<Vec<_>>();
+        assert_eq!(it.seek_ceil(&second), SeekStatus::Found);
+        assert_eq!(it.term(), Some(second.as_slice()));
+        assert_eq!(
+            it.st.stack.iter().map(|f| f.next_ent).collect::<Vec<_>>(),
+            loads,
+            "the repeated seek moved no cursor"
+        );
+
+        // A deep term, then the state claims the current frame is the root
+        // while the stored prefix still carries the deep path's frames.
+        let terms: Vec<Vec<u8>> = {
+            let mut all = many.iter();
+            let mut v = Vec::new();
+            while let Some((t, _)) = all.next() {
+                v.push(t.to_vec());
+            }
+            v
+        };
+        let deep = terms.iter().max_by_key(|t| t.len()).unwrap().clone();
+        assert_eq!(it.seek_ceil(&deep), SeekStatus::Found);
+        assert!(it.st.current > 0, "a deep term sits below the root frame");
+        assert!(it.ste().shared_prefix(&deep).is_some());
+        it.st.current = 0;
+        assert!(it.ste().shared_prefix(&deep).is_none());
+        let at = terms.partition_point(|t| t.as_slice() < deep.as_slice());
+        let mut after = deep.clone();
+        after.push(b'a');
+        let want = terms.get(terms.partition_point(|t| t.as_slice() < after.as_slice()));
+        let status = it.seek_ceil(&after);
+        assert_eq!(it.term().map(<[u8]>::to_vec).as_ref(), want, "{status:?}");
+        assert_eq!(terms[at], deep);
+        // And the pooled exact seeks agree with the enum's.
+        assert!(many.seek_exact(&first).is_some());
+        assert!(many.seek_exact(&after).is_none());
+        assert!(many.seek_exact(&deep).is_some());
+    }
+
     #[test]
     fn multilevel_fixture_reaches_a_genuine_non_leaf_block() {
         let dir = concat!(
