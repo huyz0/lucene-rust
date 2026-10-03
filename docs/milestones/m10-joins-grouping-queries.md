@@ -10,7 +10,7 @@
 | **Effort** | L |
 | **Depends on** | [M7](m7-core-complete.md) |
 | **Unblocks** | native `nested`, `function_score`, `intervals`, `combined_fields`, field collapsing |
-| **Status** | not started |
+| **Status** | in progress (T10.0 done) |
 
 ---
 
@@ -53,6 +53,10 @@ grouping. Each of them falls back to Lucene today.
 
 ## Tasks
 
+- **T10.0** — Port inventories for `lucene-join`, `lucene-grouping` and
+  `lucene-queries` (`docs/inventory/lucene-{join,grouping,queries}.tsv`,
+  `check-port-inventory.py --module join|grouping|queries` in the gate and
+  CI). **Done.** `--milestone M10 --module <m>` lists what each still owes.
 - **T10.1** — Document blocks in the writer (atomic add and update of a
   parent with its children) and `CheckJoinIndex`.
 - **T10.2** — Block-join queries and their scoring modes.
