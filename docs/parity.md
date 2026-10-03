@@ -585,7 +585,7 @@ Against Lucene (`bench-micro.sh --bench spatial_extras --reps 5`,
 and 1.12x in the two runs before), `spx_heatmap` 0.60x -> **1.23x**;
 `spx_date_range` 1.38x, `spx_bbox_similarity` 1.08x and
 `spx_rpt_index_polygon` 1.01x, both inside the noise (1.00x-1.04x and
-1.03x-1.06x in the runs before). No case below 1.0.
+1.03x-1.06x in the runs before). No case below 1.0. Neighbouring families on the final build (with the span and aggregation changes of the same day): `m7_fixture` 1.06~-2.85x, `geo_points` 1.05~-3.03x, `geo_shapes` 1.07~-1.55x but `shape_index_fields` 0.93~ (inside the 1.09x floor; unchanged in an interleaved A/B against the build before these changes, 22.3 us both), `term_seek` inside its 1.17x floor (A/B unchanged: `seek_hit` ~720 ns both, `seek_miss` 405 -> 422 ns within the spread).
 
 
 ## lucene-analysis
