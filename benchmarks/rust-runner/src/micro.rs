@@ -28,6 +28,7 @@ mod micro_geo3d_points;
 mod micro_geo_points;
 mod micro_geo_shapes;
 mod micro_m7;
+mod micro_spatial_extras;
 mod sexpr;
 #[path = "../../../crates/lucene-search/tests/m7grammar/mod.rs"]
 mod m7grammar;
@@ -2070,6 +2071,12 @@ fn main() {
                 .nth(2)
                 .expect("geo3d_points needs the Geo3dPointsMicro index directory");
             micro_geo3d_points::bench_geo3d_points(warmup, measure, &index);
+        }
+        "spatial_extras" => {
+            let index = std::env::args()
+                .nth(2)
+                .expect("spatial_extras needs the SpatialExtrasMicro index directory");
+            micro_spatial_extras::bench_spatial_extras(warmup, measure, &index);
         }
         "geo_points" => {
             let index = std::env::args()

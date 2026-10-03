@@ -15,16 +15,28 @@ const TYPE_RECT: u8 = 2;
 const TYPE_CIRCLE: u8 = 3;
 const TYPE_COLL: u8 = 4;
 
+/// How deep shape collections may nest in a binary shape. Java recurses
+/// until `StackOverflowError`; a Rust stack overflow aborts the process
+/// (no `catch_unwind` sees it), so bytes nesting deeper -- six bytes a
+/// level, a corrupt doc value's worth -- are that error instead.
+pub const MAX_NESTING: u32 = 64;
+
 /// A `DataInput` over bytes (big-endian, as `DataInputStream`).
 #[derive(Debug, Clone)]
 pub struct DataInput<'a> {
     bytes: &'a [u8],
     pos: usize,
+    /// Collections being read, outermost first.
+    depth: u32,
 }
 
 impl<'a> DataInput<'a> {
     pub fn new(bytes: &'a [u8]) -> Self {
-        DataInput { bytes, pos: 0 }
+        DataInput {
+            bytes,
+            pos: 0,
+            depth: 0,
+        }
     }
 
     /// Bytes read so far.
@@ -39,7 +51,7 @@ impl<'a> DataInput<'a> {
 
     /// Skips `n` bytes (after another reader consumed them).
     pub fn advance(&mut self, n: usize) {
-        self.pos = (self.pos + n).min(self.bytes.len());
+        self.pos = self.pos.saturating_add(n).min(self.bytes.len());
     }
 
     fn take<const N: usize>(&mut self) -> Result<[u8; N]> {
@@ -125,27 +137,43 @@ impl DefaultBinaryCodec {
                 ctx.circle_at(&p, r)?
             }
             TYPE_COLL => {
-                let ty = input.read_byte()?;
-                let size = input.read_int()?;
-                let mut shapes = Vec::new();
-                for _ in 0..size.max(0) {
-                    if ty == 0 {
-                        shapes.push(self.read_shape(ctx, input)?);
-                    } else {
-                        match self.read_shape_by_type(ctx, input, ty)? {
-                            Some(s) => shapes.push(s),
-                            None => {
-                                return Err(Error::InvalidShape(format!(
-                                    "Unsupported shape byte {ty}"
-                                )))
-                            }
-                        }
-                    }
+                if input.depth >= MAX_NESTING {
+                    return Err(Error::Runtime(format!(
+                        "java.lang.StackOverflowError: shape collections nested deeper than {MAX_NESTING}"
+                    )));
                 }
-                Arc::new(ctx.collection(shapes)?)
+                input.depth += 1;
+                let shapes = self.read_collection(ctx, input);
+                input.depth -= 1;
+                Arc::new(ctx.collection(shapes?)?)
             }
             _ => return Ok(None),
         }))
+    }
+
+    /// A collection's members (its type byte, size, then the shapes);
+    /// grown as read, so a size off the stream sizes no allocation.
+    fn read_collection(
+        &self,
+        ctx: &Arc<SpatialContext>,
+        input: &mut DataInput<'_>,
+    ) -> Result<Vec<Arc<dyn Shape>>> {
+        let ty = input.read_byte()?;
+        let size = input.read_int()?;
+        let mut shapes = Vec::new();
+        for _ in 0..size.max(0) {
+            if ty == 0 {
+                shapes.push(self.read_shape(ctx, input)?);
+            } else {
+                match self.read_shape_by_type(ctx, input, ty)? {
+                    Some(s) => shapes.push(s),
+                    None => {
+                        return Err(Error::InvalidShape(format!("Unsupported shape byte {ty}")))
+                    }
+                }
+            }
+        }
+        Ok(shapes)
     }
 
     /// `typeForShape(s)`.

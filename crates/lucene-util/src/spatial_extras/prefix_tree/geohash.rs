@@ -130,6 +130,11 @@ impl SpatialPrefixTree for GeohashPrefixTree {
         Ok(Box::new(LegacyCell::new(self.grid(), term)))
     }
 
+    fn read_cell_into(&self, term: &[u8], scratch: &mut Box<dyn Cell>) -> Result<()> {
+        LegacyCell::read_into(&self.inner, term, scratch);
+        Ok(())
+    }
+
     fn tree_cell_iterator(
         &self,
         shape: &Arc<dyn Shape>,

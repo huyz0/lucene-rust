@@ -1205,6 +1205,11 @@ outright.
   `V` a value source over every document, `H` heatmaps, `F` date facets,
   strategies' `toString`, `E` class and message). Same classpath and JVM
   flags as `GenSpatial4j`. Deterministic (seeded; identity hashes stripped).
+  Values are `doubleToRawLongBits`, so the test compares any NaN as NaN
+  (x86-64 makes `fff8...`, arm64 `7ff8...`), as the Spatial4j and
+  prefix-tree tests do. The benchmark pair's index (`SpatialExtrasMicro
+  build`, under `benchmarks/.corpus/spatial-extras`) is not a fixture: it is
+  written once on first use and never committed.
 
 ## Manifest appenders
 

@@ -24,16 +24,42 @@
 use super::jmath::double_to_long_bits;
 use super::{Error, Result};
 
+/// How deep objects may nest in a stream (a composite holding a composite
+/// ...). Java recurses until `StackOverflowError`; a Rust stack overflow
+/// aborts the process (no `catch_unwind` sees it), so a stream nesting
+/// deeper -- a corrupt serialized doc value -- is that error instead.
+pub const MAX_NESTING: u32 = 64;
+
 /// The read side of a stream: a cursor over bytes, `InputStream`-shaped.
 pub struct Input<'a> {
     bytes: &'a [u8],
     pos: usize,
+    /// Objects being read, outermost first.
+    depth: u32,
 }
 
 impl<'a> Input<'a> {
     /// A stream over `bytes`.
     pub fn new(bytes: &'a [u8]) -> Input<'a> {
-        Input { bytes, pos: 0 }
+        Input {
+            bytes,
+            pos: 0,
+            depth: 0,
+        }
+    }
+
+    /// Runs `read` one nesting level deeper: the `StackOverflowError`
+    /// past [`MAX_NESTING`].
+    pub(crate) fn nested<T>(&mut self, read: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        if self.depth >= MAX_NESTING {
+            return Err(Error::Runtime(format!(
+                "java.lang.StackOverflowError: objects nested deeper than {MAX_NESTING}"
+            )));
+        }
+        self.depth += 1;
+        let r = read(self);
+        self.depth -= 1;
+        r
     }
 
     /// `InputStream.read()`: the next byte, or `-1` at the end.
