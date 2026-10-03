@@ -215,6 +215,7 @@ pub mod facets;
 pub mod field_norms;
 pub mod highlighter;
 pub mod index_searcher;
+pub mod join;
 pub mod knn_collectors;
 pub mod matches;
 pub mod multi_bits;

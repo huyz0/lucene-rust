@@ -988,11 +988,15 @@ impl<'d> ConcurrentIndexWriter<'d> {
         mut private: BufferedUpdates,
         tracking: &TrackingDirectory<'_>,
     ) -> Result<Built> {
-        let sort_map =
-            self.cfg
-                .sort_buffer(&mut docs, &mut custom_freq_terms, &mut vectors, has_blocks)?;
         // The concurrent writer takes native documents only.
-        let explicit = vec![ExplicitFields::default(); docs.len()];
+        let mut explicit = vec![ExplicitFields::default(); docs.len()];
+        let sort_map = self.cfg.sort_buffer(
+            &mut docs,
+            &mut custom_freq_terms,
+            &mut vectors,
+            &mut explicit,
+            has_blocks,
+        )?;
         let buffer = DocumentBuffer {
             docs: &docs,
             custom_freq_terms: &custom_freq_terms,

@@ -336,6 +336,26 @@ tell a *wrong* jar from the right one: whatever `lucene_resolve_jar` returns
 for `<module>-10.5.0.jar` is trusted, so a corrupt or substituted jar file
 under that name passes as long as it opens as a zip.
 
+## block integrity (M10 T10.1)
+
+**`VerifyJoin`** (`scripts/verify-write-path.sh`, `write_block_join_fixture`):
+real Lucene runs `CheckIndex` and `CheckJoinIndex` over two Rust-written block
+indexes (one index-sorted), finds every live block through the join queries,
+appends with its own `IndexWriter` and force-merges. **Seen to fail** with the
+flush's parent-key wrap (`key_of_parent` in `sort_buffer`) removed: `CheckJoinIndex:
+Parent doc 31 of segment _cz ... is live but has a deleted child document 30`.
+Lucene's own `CheckIndex` passed that index: `testSort` walks only the
+parents, so a shredded block is invisible to it -- which is why the verifier
+does not stop at `CheckIndex`.
+
+**`block_join_merge_stress.rs`** (24 seeded streams under a merge-happy
+policy, then `check_join_index` and every block read back): **seen to fail**
+with the merge's parent-key wrap removed (`seed 100 sorted=true: Parent doc
+111 of segment _4v is live but has a deleted child document 96`). Blind spot,
+shared with `op-stream-fuzz.sh`'s block lines: a block kept contiguous but
+reordered *within* itself would pass the join checks; the stress test's
+in-order child ids are what catch that.
+
 ## write-path verifiers of the geo modules (M9)
 
 `scripts/verify-write-path.sh` runs a Java verifier over an index this

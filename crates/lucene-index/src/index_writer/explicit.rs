@@ -53,7 +53,18 @@
 //! carries the flag, since Lucene's global `FieldNumbers` does not either.
 //!
 //! Not supported, and refused when a field is registered: term vectors.
-//! Index sorting is refused when explicit documents are enabled.
+//!
+//! # Index sorting and blocks
+//!
+//! A flush sorts the buffer by the index sort's keys, read from each
+//! document's own doc values -- the column the segment will carry -- before
+//! any format is built, as the native path does. With a parent field
+//! ([`IndexWriter::set_parent_field`], Java's `IndexWriterConfig.setParentField`)
+//! the last document of every add carries `-1` in it, and a buffer with blocks
+//! sorts each document by the key of the parent closing its block
+//! (`IndexingChain.maybeSortSegment`), so blocks move whole; a merge does the
+//! same per source (`MultiSorter.sort`). A block added to a sorted index
+//! without a parent field is refused at add time, as Java refuses it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -173,7 +184,53 @@ fn explicit_error(message: impl Into<String>) -> Error {
     Error::Explicit(message.into())
 }
 
+/// `IndexingChain.processDocument`'s `IllegalArgumentException` for a
+/// document that carries the parent field itself.
+fn reserved_parent_field(name: &str) -> Error {
+    Error::Document(crate::document::Error::IllegalArgument(format!(
+        "\"{name}\" is a reserved field and should not be added to any document"
+    )))
+}
+
+/// The `FieldInfo` of the parent field: `IndexingChain`'s
+/// `new NumericDocValuesField(parentField, -1)`, flagged
+/// `FieldInfo.isParentField()`.
+fn parent_field_info(name: &str) -> FieldInfo {
+    let mut info = FieldInfo::new(name, 0);
+    info.doc_values_type = DocValuesType::Numeric;
+    info.parent_field = true;
+    info
+}
+
+/// `parents.nextSetBit(doc)` for every document of a buffer or segment:
+/// `keys[doc]` becomes the key of the parent closing `doc`'s block, which is
+/// how `IndexingChain.maybeSortSegment`, `Sorter.sort` and `MultiSorter.sort`
+/// wrap the index sort's comparator once a segment has blocks and a parent
+/// field (`in.compare(parents.nextSetBit(d1), parents.nextSetBit(d2))`). A
+/// document after the last parent -- which a writer configured with a parent
+/// field never produces, every add ending in one -- keeps its own key.
+pub(crate) fn key_of_parent(keys: &mut [Option<i64>], is_parent: &dyn Fn(usize) -> bool) {
+    let mut parent_key: Option<Option<i64>> = None;
+    for doc in (0..keys.len()).rev() {
+        if is_parent(doc) {
+            parent_key = Some(keys[doc]);
+        } else if let Some(key) = parent_key {
+            keys[doc] = key;
+        }
+    }
+}
+
 impl IndexingConfig {
+    /// The registered number of the parent field, once a document has
+    /// registered it.
+    pub(crate) fn parent_field_number(&self) -> Option<i32> {
+        let name = self.parent_field.as_deref()?;
+        self.fields
+            .iter()
+            .find(|f| f.parent_field && f.name == name)
+            .map(|f| f.number)
+    }
+
     /// The registered vector field named `name`.
     fn explicit_vector_field(&self, name: &str) -> Result<&FieldInfo> {
         self.fields
@@ -230,6 +287,22 @@ impl IndexingConfig {
     /// Checks one document against the registered schema -- at add time,
     /// while the caller still has the document, as `IndexingChain` does.
     pub(crate) fn validate_explicit(&self, doc: &ExplicitDocument) -> Result<()> {
+        // `IndexingChain.processDocument`: the parent field is the writer's to
+        // set, on the last document of each block; a document carrying it is
+        // refused.
+        if let Some(parent) = self.parent_field_number() {
+            let fields = &doc.fields;
+            let touches = doc.stored.iter().any(|f| f.field_number == parent)
+                || fields.inverted.iter().any(|f| f.field_number == parent)
+                || fields.doc_values.iter().any(|f| f.field_number == parent)
+                || fields.points.iter().any(|f| f.field_number == parent)
+                || fields.registered.contains(&parent);
+            if touches {
+                return Err(reserved_parent_field(
+                    self.parent_field.as_deref().unwrap_or_default(),
+                ));
+            }
+        }
         for s in &doc.stored {
             self.explicit_field(s.field_number)?;
         }
@@ -734,6 +807,11 @@ impl IndexingConfig {
         if let Some(output) = &vectors_output {
             record(IndexWriter::write_vector_files(dir, segment_name, output)?);
         }
+        // The buffer was put in sort order before this build (`sort_buffer`);
+        // the `.si` records the sort, as the native path's does.
+        if let Some(sort) = &self.index_sort {
+            flushed.info.index_sort = Some(sort.clone());
+        }
         if self.use_compound_file {
             flushed.pending_sync =
                 segment_writer::create_compound_file(dir, segment_name, &mut flushed.info)?;
@@ -755,10 +833,20 @@ impl<'d> IndexWriter<'d> {
                 "explicit documents must be enabled before any document is buffered",
             ));
         }
-        if self.cfg.index_sort.is_some() {
-            return Err(explicit_error(
-                "explicit documents do not support an index sort",
-            ));
+        if let Some(sort) = self.cfg.index_sort.clone() {
+            // Explicit documents register their fields as they arrive; the
+            // sort's fields are checked against them then.
+            for sf in &sort {
+                if let Some(info) = self.cfg.fields.iter().find(|f| f.name == sf.field) {
+                    let wanted = super::sort_doc_values_type(sf);
+                    if info.doc_values_type != wanted {
+                        return Err(Error::UnsupportedIndexSortField(
+                            sf.field.clone(),
+                            info.doc_values_type,
+                        ));
+                    }
+                }
+            }
         }
         self.cfg_mut().explicit = true;
         Ok(())
@@ -793,6 +881,48 @@ impl<'d> IndexWriter<'d> {
                  SORTED_SET doc values",
                 info.name
             )));
+        }
+        // `FieldInfos.FieldNumbers.verifyParentFieldName`.
+        match (self.cfg.parent_field.as_deref(), info.parent_field) {
+            (None, true) => {
+                return Err(explicit_error(format!(
+                    "can't add field [{}] as parent document field; this IndexWriter has no \
+                     parent document field configured",
+                    info.name
+                )));
+            }
+            (Some(parent), true) if parent != info.name => {
+                return Err(explicit_error(format!(
+                    "can't add field [{}] as parent document field; this IndexWriter is \
+                     configured with [{parent}] as parent document field",
+                    info.name
+                )));
+            }
+            (Some(parent), false) if parent == info.name => {
+                return Err(explicit_error(format!(
+                    "can't add [{}] as non parent document field; this IndexWriter is \
+                     configured with [{parent}] as parent document field",
+                    info.name
+                )));
+            }
+            _ => {}
+        }
+        // `IndexingChain.validateIndexSortDVType`: a field the index sort
+        // names must carry the doc values the sort reads.
+        if let Some(sf) = self
+            .cfg
+            .index_sort
+            .iter()
+            .flatten()
+            .find(|sf| sf.field == info.name)
+        {
+            let wanted = super::sort_doc_values_type(sf);
+            if info.doc_values_type != wanted {
+                return Err(explicit_error(format!(
+                    "invalid doc value type: {:?} for sortField: {:?}, expected {wanted:?}",
+                    info.doc_values_type, sf.field
+                )));
+            }
         }
         let same_schema = |a: &FieldInfo, b: &FieldInfo| {
             a.index_options == b.index_options
@@ -831,6 +961,121 @@ impl<'d> IndexWriter<'d> {
         info.attributes.clear();
         self.cfg_mut().fields.push(info);
         Ok(number)
+    }
+
+    /// `IndexWriterConfig.setParentField(name)`: from here on the last
+    /// document of every add -- a single document, or the parent closing a
+    /// block -- carries a NUMERIC doc value of `-1` in the field `name`,
+    /// whose `FieldInfo` is flagged `isParentField`. With an index sort, a
+    /// flush or merge then moves whole blocks, each ordered by its parent
+    /// (`IndexingChain.maybeSortSegment`, `MultiSorter.sort`); without one,
+    /// adding a block to a sorted index is refused.
+    ///
+    /// The parent field is a property of the whole index, as Java fixes it
+    /// on `IndexWriterConfig` before the writer exists: it must be set
+    /// before any document is buffered, switches the writer to explicit
+    /// documents (the only ones it can mark), and is refused for an index
+    /// that already has fields but not this one (`IndexWriter`'s
+    /// constructor, "can't add a parent field to an already existing index
+    /// without a parent field"), or that uses `name` for something else, or
+    /// another field as its parent (`FieldNumbers.verifyParentFieldName`).
+    /// `None` removes it, for a writer that has buffered nothing.
+    pub fn set_parent_field(&mut self, name: Option<&str>) -> Result<()> {
+        if !self.pending_docs.is_empty() {
+            return Err(explicit_error(
+                "the parent field must be set before any document is buffered",
+            ));
+        }
+        let Some(name) = name else {
+            if let Some(f) = self.cfg.fields.iter().find(|f| f.parent_field) {
+                return Err(explicit_error(format!(
+                    "this index uses [{}] as parent document field; the writer must too",
+                    f.name
+                )));
+            }
+            self.cfg_mut().parent_field = None;
+            return Ok(());
+        };
+        if self
+            .cfg
+            .fields
+            .iter()
+            .any(|f| f.soft_deletes_field && f.name == name)
+        {
+            return Err(explicit_error(format!(
+                "parent document and soft-deletes field can't be the same field \"{name}\""
+            )));
+        }
+        for f in &self.cfg.fields {
+            if f.parent_field && f.name != name {
+                return Err(explicit_error(format!(
+                    "can't add field [{}] as parent document field; this IndexWriter is \
+                     configured with [{name}] as parent document field",
+                    f.name
+                )));
+            }
+            if !f.parent_field && f.name == name {
+                return Err(explicit_error(format!(
+                    "can't add [{name}] as non parent document field; this IndexWriter is \
+                     configured with [{name}] as parent document field"
+                )));
+            }
+        }
+        // `IndexWriter`'s constructor: a non-empty index without the field.
+        let mut any_field = !self.cfg.fields.is_empty();
+        let mut has_parent = self.cfg.fields.iter().any(|f| f.name == name);
+        let segments: Vec<SegmentCommitInfo> = self
+            .segment_infos
+            .segments
+            .iter()
+            .chain(&self.flushed_segments)
+            .cloned()
+            .collect();
+        for sci in &segments {
+            let infos = super::segment_field_infos(self.dir, sci)?;
+            any_field |= !infos.fields.is_empty();
+            for f in &infos.fields {
+                if f.name == name {
+                    if !f.parent_field {
+                        return Err(explicit_error(format!(
+                            "can't add [{name}] as non parent document field; this IndexWriter \
+                             is configured with [{name}] as parent document field"
+                        )));
+                    }
+                    has_parent = true;
+                } else if f.parent_field {
+                    return Err(explicit_error(format!(
+                        "can't add field [{}] as parent document field; this IndexWriter is \
+                         configured with [{name}] as parent document field",
+                        f.name
+                    )));
+                }
+            }
+        }
+        if any_field && !has_parent {
+            return Err(explicit_error(
+                "can't add a parent field to an already existing index without a parent field",
+            ));
+        }
+        self.enable_explicit_documents()?;
+        self.cfg_mut().parent_field = Some(name.to_string());
+        Ok(())
+    }
+
+    /// `IndexWriterConfig.getParentField()`.
+    pub fn parent_field(&self) -> Option<&str> {
+        self.cfg.parent_field.as_deref()
+    }
+
+    /// The parent field's number, registering it on first use -- Java's
+    /// `IndexingChain` initializes the parent field's `FieldInfo` the first
+    /// time a segment sees a last-in-block document. `None` without a parent
+    /// field.
+    pub(crate) fn register_parent_field(&mut self) -> Result<Option<i32>> {
+        let Some(name) = self.cfg.parent_field.clone() else {
+            return Ok(None);
+        };
+        self.register_field(parent_field_info(&name)).map(Some)
     }
 
     fn explicit_documents_check(&self, docs: &[ExplicitDocument]) -> Result<()> {
@@ -910,13 +1155,60 @@ impl<'d> IndexWriter<'d> {
         self.add_explicit_with_delete(delete, docs, Some(vectors))
     }
 
+    /// [`Self::soft_update_explicit_documents`] for the document API, with
+    /// each document's KNN vectors.
+    pub(crate) fn soft_update_explicit_documents_with_vectors(
+        &mut self,
+        term: super::Term,
+        docs: Vec<ExplicitDocument>,
+        vectors: Vec<Vec<super::DocumentVector>>,
+        soft_deletes: &[super::DocValuesUpdate],
+    ) -> Result<super::SeqNo> {
+        if soft_deletes.is_empty() {
+            return Err(Error::NoSoftDeletesSupplied);
+        }
+        self.explicit_documents_check(&docs)?;
+        if vectors.len() != docs.len() {
+            return Err(explicit_error("one vector list per document"));
+        }
+        for doc_vectors in &vectors {
+            self.cfg.validate_explicit_vectors(doc_vectors)?;
+        }
+        for update in soft_deletes {
+            self.cfg.verify_doc_values_update_field(update)?;
+        }
+        let updates = soft_deletes
+            .iter()
+            .map(|u| super::retarget_update(u, &term))
+            .collect();
+        self.add_explicit_with_delete(
+            Some(super::DeleteNode::DocValuesUpdates(updates)),
+            docs,
+            Some(vectors),
+        )
+    }
+
     fn add_explicit_with_delete(
         &mut self,
         delete: Option<super::DeleteNode>,
         docs: Vec<ExplicitDocument>,
         vectors: Option<Vec<Vec<super::DocumentVector>>>,
     ) -> Result<super::SeqNo> {
+        // `DocumentsWriterPerThread.updateDocuments`: a block in a sorted
+        // index needs a parent field to keep it together.
+        if docs.len() > 1 && self.cfg.index_sort.is_some() && self.cfg.parent_field.is_none() {
+            return Err(Error::BlocksWithIndexSortNeedParentField);
+        }
         self.reserve_docs(docs.len())?;
+        let mut docs = docs;
+        // `IndexingChain.processDocument(docId, doc, lastDocInBlock)`: the
+        // last document of the add is the parent, `-1` in the parent field.
+        if let (Some(parent), Some(last)) = (self.register_parent_field()?, docs.last_mut()) {
+            last.fields.doc_values.push(StoredField {
+                field_number: parent,
+                value: FieldValue::Long(-1),
+            });
+        }
         let doc_id_upto = self.pending_doc_id_upto();
         let seq_no = match delete {
             Some(node) => self.buffer_delete_node(node, doc_id_upto),

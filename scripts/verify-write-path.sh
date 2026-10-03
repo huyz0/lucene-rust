@@ -19,7 +19,7 @@
 # T3.1, see docs/milestones/m3-write-path-proven.md.
 set -euo pipefail
 
-LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-spatial3d lucene-spatial-extras)
+LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-spatial3d lucene-spatial-extras lucene-join)
 
 cd "$(git rev-parse --show-toplevel)"
 FIXTURES="$PWD/fixtures"
@@ -310,6 +310,16 @@ CASES=(
   # visits) -- `every_spatial_strategy_makes_the_fields_lucene_makes`
   # compares every field's tokens and values byte for byte instead.
   "lucene-search|write_spatial_strategies_fixture|spatial-strategies|VerifySpatialExtras|fixtures/data/spatial_strategies"
+  # Document blocks through merges (M10 T10.1): two seeded streams of block
+  # adds, updateDocuments, whole-block deletes, commits and natural merges
+  # with the parent field `_parent`, one of them index-sorted (whole blocks
+  # moved by their parents' keys). Lucene runs CheckIndex and CheckJoinIndex,
+  # finds every live block's children through ToChildBlockJoinQuery and its
+  # parent through ToParentBlockJoinQuery, then appends blocks with its own
+  # IndexWriter (same parent field and sort), force-merges to one segment and
+  # checks again. What it cannot catch: a block intact but holding the wrong
+  # field values -- the stored ids are all it reads besides the structure.
+  "lucene-index|write_block_join_fixture|block-join|VerifyJoin"
 )
 
 echo "verify-write-path: compiling verifiers"

@@ -10,7 +10,7 @@
 | **Effort** | L |
 | **Depends on** | [M7](m7-core-complete.md) |
 | **Unblocks** | native `nested`, `function_score`, `intervals`, `combined_fields`, field collapsing |
-| **Status** | in progress (T10.0 done) |
+| **Status** | in progress (T10.0, T10.1 done) |
 
 ---
 
@@ -58,7 +58,18 @@ grouping. Each of them falls back to Lucene today.
   `check-port-inventory.py --module join|grouping|queries` in the gate and
   CI). **Done.** `--milestone M10 --module <m>` lists what each still owes.
 - **T10.1** — Document blocks in the writer (atomic add and update of a
-  parent with its children) and `CheckJoinIndex`.
+  parent with its children) and `CheckJoinIndex`. **Done.** Blocks were
+  already atomic (one sequence number, never split by a flush, `hasBlocks`);
+  this adds `IndexWriterConfig.setParentField` (`set_parent_field`), index
+  sorting with blocks at flush and merge (whole blocks moved by their
+  parents' keys), index sorting for explicit documents, the document API's
+  `softUpdateDocuments`, `CheckIndex.testSort` over parents, and
+  `BitSetProducer`/`QueryBitSetProducer`/`CheckJoinIndex`. Proven by
+  `VerifyJoin` (real Lucene reads, checks, appends to and force-merges a
+  Rust-written block index, sorted and unsorted), the merge stress test
+  (`block_join_merge_stress.rs`) and block ops in `op-stream-fuzz.sh`. The
+  concurrent writer takes native documents only, so it has no parent field
+  and still refuses blocks in a sorted index.
 - **T10.2** — Block-join queries and their scoring modes.
 - **T10.3** — Query-time joins.
 - **T10.4** — Grouping.

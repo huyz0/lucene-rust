@@ -170,6 +170,8 @@ use lucene_store::directory::Directory;
 use lucene_util::fixed_bit_set::FixedBitSet;
 
 mod add_indexes;
+#[cfg(test)]
+mod block_tests;
 mod explicit;
 mod lifecycle;
 mod pluggable_merge;
@@ -611,6 +613,16 @@ pub enum Error {
          CorruptIndexException for exactly this combination"
     )]
     IndexSortWithBlocksAndNoParentField,
+    /// `DocumentsWriterPerThread.updateDocuments`'
+    /// `IllegalArgumentException`: a block of more than one document added
+    /// to a writer with an index sort and no parent field
+    /// ([`IndexWriter::set_parent_field`]), refused before anything is
+    /// buffered.
+    #[error(
+        "a parent field must be set in order to use document blocks with index sorting; see \
+         IndexWriterConfig#setParentField"
+    )]
+    BlocksWithIndexSortNeedParentField,
     /// `IndexWriter.updateDocValues`'s `IllegalArgumentException("cannot
     /// update docvalues field involved in the index sort")`. Rewriting the
     /// column the segment's physical order is defined over would leave the
@@ -851,6 +863,11 @@ pub(crate) struct IndexingConfig {
     /// unsorted, which is what `SegmentInfo`'s `numSortFields == 0` says on
     /// disk. See [`IndexWriter::set_index_sort`].
     index_sort: Option<Vec<segment_info::IndexSortField>>,
+    /// `IndexWriterConfig.getParentField()`: the NUMERIC doc-values field
+    /// that marks the last document of every `addDocument(s)` call -- the
+    /// parent of a block -- with `-1`, which is what lets an index sort move
+    /// whole blocks. See [`IndexWriter::set_parent_field`].
+    parent_field: Option<String>,
     /// Documents arrive as [`ExplicitDocument`]s: flushes write what each
     /// document states rather than deriving postings, norms, doc values and
     /// points from stored values. See [`IndexWriter::enable_explicit_documents`].
@@ -903,6 +920,18 @@ pub(crate) struct IndexingConfig {
     /// without a per-field setting of its own follows -- see
     /// [`IndexWriter::set_codec`]. `None` is `Lucene104Codec()`.
     codec: Option<std::sync::Arc<dyn lucene_codecs::codec::Lucene104Codec>>,
+}
+
+/// The doc-values type an index-sort field reads (`SortField.getIndexSorter`'s
+/// `NumericDocValues`/`SortedNumericDocValues`/`SortedDocValues`/...).
+pub(crate) fn sort_doc_values_type(sf: &segment_info::IndexSortField) -> DocValuesType {
+    match &sf.kind {
+        segment_info::IndexSortKind::Numeric(_) => DocValuesType::Numeric,
+        segment_info::IndexSortKind::SortedNumeric { .. } => DocValuesType::SortedNumeric,
+        segment_info::IndexSortKind::String(_) => DocValuesType::Sorted,
+        segment_info::IndexSortKind::SortedSet { .. } => DocValuesType::SortedSet,
+        segment_info::IndexSortKind::Binary(_) => DocValuesType::Binary,
+    }
 }
 
 /// One `PerFieldDocValuesFormat` instance's files for a flushed segment:
@@ -2416,6 +2445,29 @@ impl IndexingConfig {
                 })
                 .collect::<Result<Vec<_>>>()?,
         };
+        // `MultiSorter.sort`'s per-reader parent bit set: a source with blocks
+        // sorts each document by the key of the parent closing its block
+        // (`parents.nextSetBit(docID)`), so blocks move whole; one with blocks
+        // and no parent field cannot be sorted (`CorruptIndexException`).
+        let mut per_tier_keys = per_tier_keys;
+        if merge_sort.is_some() {
+            for (i, (o, reader)) in opened.iter().zip(readers.iter()).enumerate() {
+                if !o.has_blocks {
+                    continue;
+                }
+                let parents =
+                    source_parents(o.field_infos.as_slice(), &o.doc_values, reader.max_doc())?
+                        .ok_or(Error::IndexSortWithBlocksAndNoParentField)?;
+                for tier in &mut per_tier_keys {
+                    // FBS: `doc` walks the source's keys, one per document below
+                    // `maxDoc`, the set's length; the check keeps a mismatch
+                    // from panicking.
+                    explicit::key_of_parent(&mut tier[i], &|doc| {
+                        doc < parents.len() && parents.get(doc)
+                    });
+                }
+            }
+        }
         let per_tier_key_slices: Vec<Vec<&[Option<i64>]>> = per_tier_keys
             .iter()
             .map(|per_source| per_source.iter().map(|k| k.as_slice()).collect())
@@ -2579,19 +2631,41 @@ impl IndexingConfig {
         docs: &mut [Document],
         custom_freq_terms: &mut [Vec<(String, i32)>],
         vectors: &mut [Vec<DocumentVector>],
+        explicit: &mut [ExplicitFields],
         has_blocks: bool,
     ) -> Result<Option<Vec<usize>>> {
         let Some(sort) = self.index_sort.clone() else {
             return Ok(None);
         };
-        if has_blocks {
-            return Err(Error::IndexSortWithBlocksAndNoParentField);
-        }
+        // `IndexingChain.maybeSortSegment`: a segment with blocks is sorted
+        // block by block, each document by its parent's key, which needs the
+        // parent field to find the parents; without one it is refused.
+        let parents: Option<Vec<bool>> = match (has_blocks, self.parent_field_number()) {
+            (false, _) => None,
+            (true, Some(parent)) if self.explicit => Some(
+                explicit
+                    .iter()
+                    .map(|f| f.doc_values.iter().any(|v| v.field_number == parent))
+                    .collect(),
+            ),
+            (true, _) => return Err(Error::IndexSortWithBlocksAndNoParentField),
+        };
 
-        let keys: Vec<Vec<Option<i64>>> = sort
+        let mut keys: Vec<Vec<Option<i64>>> = sort
             .iter()
-            .map(|sf| self.buffer_sort_keys(docs, sf))
+            .map(|sf| {
+                if self.explicit {
+                    Ok(self.explicit_sort_keys(explicit, sf))
+                } else {
+                    self.buffer_sort_keys(docs, sf)
+                }
+            })
             .collect::<Result<_>>()?;
+        if let Some(parents) = &parents {
+            for tier in &mut keys {
+                explicit::key_of_parent(tier, &|doc| parents[doc]);
+            }
+        }
 
         let specs: Vec<segment_writer::SortKeySpec<'_>> = sort
             .iter()
@@ -2611,7 +2685,91 @@ impl IndexingConfig {
         segment_writer::permute_in_place(docs, &new_to_old);
         segment_writer::permute_in_place(custom_freq_terms, &new_to_old);
         segment_writer::permute_in_place(vectors, &new_to_old);
+        if self.explicit {
+            segment_writer::permute_in_place(explicit, &new_to_old);
+        }
         Ok(Some(new_to_old))
+    }
+
+    /// [`Self::buffer_sort_keys`] for explicit documents: each document's
+    /// value of the sort field out of its doc values -- the column the
+    /// segment will carry -- through the tier's selector; byte-keyed tiers
+    /// ranked. A field no document has registered sorts every document as
+    /// missing, as Java's empty `DocValues.getNumeric` does.
+    fn explicit_sort_keys(
+        &self,
+        explicit: &[ExplicitFields],
+        sf: &segment_info::IndexSortField,
+    ) -> Vec<Option<i64>> {
+        let Some(number) = self
+            .fields
+            .iter()
+            .find(|f| f.name == sf.field)
+            .map(|f| f.number)
+        else {
+            return vec![None; explicit.len()];
+        };
+        let longs = |f: &ExplicitFields| -> Vec<i64> {
+            f.doc_values
+                .iter()
+                .filter(|v| v.field_number == number)
+                .filter_map(|v| match &v.value {
+                    FieldValue::Long(x) => Some(*x),
+                    FieldValue::Int(x) => Some(i64::from(*x)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let bytes = |f: &ExplicitFields| -> Vec<Vec<u8>> {
+            f.doc_values
+                .iter()
+                .filter(|v| v.field_number == number)
+                .filter_map(|v| match &v.value {
+                    FieldValue::Binary(b) => Some(b.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        match &sf.kind {
+            segment_info::IndexSortKind::Numeric(_) => explicit
+                .iter()
+                .map(|f| longs(f).into_iter().next())
+                .collect(),
+            segment_info::IndexSortKind::SortedNumeric { selector, .. } => explicit
+                .iter()
+                .map(|f| {
+                    let mut values = longs(f);
+                    values.sort_unstable();
+                    match selector {
+                        segment_info::SortedNumericSelector::Min => values.first().copied(),
+                        segment_info::SortedNumericSelector::Max => values.last().copied(),
+                    }
+                })
+                .collect(),
+            segment_info::IndexSortKind::SortedSet { selector, .. } => {
+                let terms: Vec<Option<Vec<u8>>> = explicit
+                    .iter()
+                    .map(|f| {
+                        let mut values = bytes(f);
+                        values.sort_unstable();
+                        values.dedup();
+                        crate::index_sorter::select_sorted_set(&values, *selector).cloned()
+                    })
+                    .collect();
+                crate::index_sorter::rank_terms(&[terms])
+                    .pop()
+                    .unwrap_or_default()
+            }
+            segment_info::IndexSortKind::String(_) | segment_info::IndexSortKind::Binary(_) => {
+                let terms: Vec<Option<Vec<u8>>> = explicit
+                    .iter()
+                    .map(|f| bytes(f).into_iter().next())
+                    .collect();
+                crate::index_sorter::rank_terms(&[terms])
+                    .pop()
+                    .unwrap_or_default()
+            }
+        }
     }
 
     /// The one `Analyzer` this writer analyses every field with -- Java's
@@ -3232,6 +3390,58 @@ type SoftDeleteKey = (i64, i64, i64);
 
 fn soft_delete_key(sci: &SegmentCommitInfo) -> SoftDeleteKey {
     (sci.del_gen, sci.doc_values_gen, sci.field_infos_gen)
+}
+
+/// `BitSet.of(reader.getNumericDocValues(fieldInfos.getParentField()), maxDoc)`:
+/// the documents of a source that carry the parent field, `None` when the
+/// source has no parent field.
+fn source_parents(
+    fields: &[FieldInfo],
+    columns: &SourceDocValueColumns,
+    max_doc: i32,
+) -> Result<Option<FixedBitSet>> {
+    let Some(field) = fields
+        .iter()
+        .find(|f| f.parent_field && f.doc_values_type == DocValuesType::Numeric)
+    else {
+        return Ok(None);
+    };
+    let mut parents = FixedBitSet::new(usize::try_from(max_doc).unwrap_or(0));
+    let Some(&(_, at)) = columns.per_field.iter().find(|(n, _)| *n == field.number) else {
+        return Ok(Some(parents));
+    };
+    let (meta, data) = &columns.columns[at];
+    let Some(entry) = meta.numeric_entry(field.number) else {
+        return Ok(Some(parents));
+    };
+    let mut reader = doc_values::NumericReader::new(data, entry);
+    for doc in 0..max_doc {
+        if reader.value(doc)?.is_some() {
+            // FBS: `doc < max_doc`, the set's length.
+            parents.set(doc as usize);
+        }
+    }
+    Ok(Some(parents))
+}
+
+/// `IndexWriter.readFieldInfos(sci)`: a segment's current `FieldInfos`,
+/// through its compound file when it has one.
+pub(crate) fn segment_field_infos(
+    dir: &dyn Directory,
+    sci: &SegmentCommitInfo,
+) -> Result<lucene_codecs::field_infos::FieldInfos> {
+    let si = segment_info::parse_for_codec(
+        &dir.open(&format!("{}.si", sci.segment_name))?,
+        &sci.segment_id,
+        &sci.codec_name,
+    )?;
+    if si.is_compound_file {
+        let compound = CompoundReader::open(dir, &sci.segment_name, &sci.segment_id)?;
+        let files = compound.member_files();
+        return crate::field_updates::read_current_field_infos(&compound, sci, &files)
+            .map_err(Error::from);
+    }
+    crate::field_updates::read_current_field_infos(dir, sci, &si.files).map_err(Error::from)
 }
 
 /// Live documents of `sci` with a value in the soft-deletes field `soft`. A
@@ -4626,6 +4836,7 @@ impl<'d> IndexWriter<'d> {
                 term_vector_fields: Vec::new(),
                 doc_values_fields: Vec::new(),
                 index_sort: None,
+                parent_field: None,
                 explicit: false,
                 vector_fields: Vec::new(),
                 points_fields: Vec::new(),
@@ -5248,19 +5459,24 @@ impl<'d> IndexWriter<'d> {
             return Err(Error::EmptyIndexSort);
         }
         for sf in sort {
-            let info = self
-                .cfg
-                .fields
-                .iter()
-                .find(|f| f.name == sf.field)
-                .ok_or_else(|| Error::UnknownIndexSortField(sf.field.clone()))?;
-            let wanted = match &sf.kind {
-                segment_info::IndexSortKind::Numeric(_) => DocValuesType::Numeric,
-                segment_info::IndexSortKind::SortedNumeric { .. } => DocValuesType::SortedNumeric,
-                segment_info::IndexSortKind::String(_) => DocValuesType::Sorted,
-                segment_info::IndexSortKind::SortedSet { .. } => DocValuesType::SortedSet,
-                segment_info::IndexSortKind::Binary(_) => DocValuesType::Binary,
-            };
+            let wanted = sort_doc_values_type(sf);
+            let registered = self.cfg.fields.iter().find(|f| f.name == sf.field);
+            if self.cfg.explicit {
+                // Explicit documents register their fields as they arrive, as
+                // Java's `IndexWriterConfig.setIndexSort` names fields no
+                // document has yet: `register_field` checks the type then
+                // (`IndexingChain.validateIndexSortDVType`).
+                match registered {
+                    Some(info) if info.doc_values_type != wanted => {
+                        return Err(Error::UnsupportedIndexSortField(
+                            sf.field.clone(),
+                            info.doc_values_type,
+                        ));
+                    }
+                    _ => continue,
+                }
+            }
+            let info = registered.ok_or_else(|| Error::UnknownIndexSortField(sf.field.clone()))?;
             if info.doc_values_type != wanted {
                 return Err(Error::UnsupportedIndexSortField(
                     sf.field.clone(),
@@ -7210,6 +7426,7 @@ impl IndexWriter<'_> {
             &mut self.pending_docs,
             &mut self.pending_custom_freq_terms,
             &mut self.pending_vectors,
+            &mut self.pending_explicit,
             self.pending_has_blocks,
         )
     }

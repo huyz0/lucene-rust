@@ -104,7 +104,13 @@ public class OpStreamFuzz {
     return d;
   }
 
+  /** A block as added: its parent's id and version, its children's ids (each at version 0). */
+  record Block(long parent, long version, List<Long> children) {}
+
+  static List<Block> blocks = new ArrayList<>();
+
   static void run(Path dirPath, long seed, int numOps) throws IOException {
+    blocks = new ArrayList<>();
     Rng rng = new Rng(seed);
     int maxBufferedDocs = 2 + (int) rng.below(20);
     // id -> version, for choosing an existing document exactly as the Rust side does.
@@ -131,13 +137,48 @@ public class OpStreamFuzz {
           pick = live.keySet().stream().skip(k).findFirst().get();
         }
         if (roll <= 47 || (roll <= 77 && !(roll >= 67 && roll <= 70) && pick == null)) {
-          long id = nextId++;
-          w.addDocument(document(id, 0));
-          live.put(id, 0L);
+          // One add in five is a block: one to three children, then the parent.
+          if (rng.below(5) == 0) {
+            long children = 1 + rng.below(3);
+            List<Document> docs = new ArrayList<>();
+            List<Long> childIds = new ArrayList<>();
+            for (long c = 0; c <= children; c++) {
+              long id = nextId++;
+              docs.add(document(id, 0));
+              live.put(id, 0L);
+              if (c < children) {
+                childIds.add(id);
+              }
+            }
+            w.addDocuments(docs);
+            blocks.add(new Block(nextId - 1, 0, childIds));
+          } else {
+            long id = nextId++;
+            w.addDocument(document(id, 0));
+            live.put(id, 0L);
+          }
         } else if (roll <= 59) {
           Long current = live.get(pick);
           long v = current == null ? 1 : current + 1;
-          w.updateDocument(new Term("id", "i" + pick), document(pick, v));
+          // One update in four replaces the document with a block.
+          if (rng.below(4) == 0) {
+            long children = 1 + rng.below(3);
+            List<Document> docs = new ArrayList<>();
+            List<Long> childIds = new ArrayList<>();
+            for (long c = 0; c < children; c++) {
+              long id = nextId++;
+              docs.add(document(id, 0));
+              childIds.add(id);
+            }
+            docs.add(document(pick, v));
+            w.updateDocuments(new Term("id", "i" + pick), docs);
+            for (long c : childIds) {
+              live.put(c, 0L);
+            }
+            blocks.add(new Block(pick, v, childIds));
+          } else {
+            w.updateDocument(new Term("id", "i" + pick), document(pick, v));
+          }
           live.put(pick, v);
         } else if (roll <= 66) {
           w.deleteDocuments(new Term("id", "i" + pick));
@@ -171,7 +212,10 @@ public class OpStreamFuzz {
       // Global doc -> id, through the idn doc values.
       long[] idOf = new long[reader.maxDoc()];
       TreeMap<Long, String> docs = new TreeMap<>();
+      // id -> {segment, position among its live documents, version}.
+      TreeMap<Long, long[]> positions = new TreeMap<>();
       for (LeafReaderContext ctx : reader.leaves()) {
+        long livePos = 0;
         LeafReader leaf = ctx.reader();
         Bits liveDocs = leaf.getLiveDocs();
         NumericDocValues idn = leaf.getNumericDocValues("idn");
@@ -206,7 +250,9 @@ public class OpStreamFuzz {
           if (liveDocs != null && !liveDocs.get(doc)) {
             continue;
           }
-          String v = ver.advanceExact(doc) ? Long.toString(ver.longValue()) : "-";
+          boolean hasVer = ver.advanceExact(doc);
+          positions.put(id, new long[] {ctx.ord, livePos++, hasVer ? ver.longValue() : -1});
+          String v = hasVer ? Long.toString(ver.longValue()) : "-";
           String s = score.advanceExact(doc) ? Long.toString(score.longValue()) : "-";
           String c =
               cat != null && cat.advanceExact(doc)
@@ -220,6 +266,28 @@ public class OpStreamFuzz {
         }
       }
       lines.addAll(docs.values());
+      // Of each block, the members still live as added must be one run of
+      // consecutive live documents of one segment.
+      for (Block b : blocks) {
+        List<long[]> found = new ArrayList<>();
+        List<long[]> members = new ArrayList<>();
+        for (long c : b.children()) {
+          members.add(new long[] {c, 0});
+        }
+        members.add(new long[] {b.parent(), b.version()});
+        for (long[] m : members) {
+          long[] at = positions.get(m[0]);
+          if (at != null && at[2] == m[1]) {
+            found.add(at);
+          }
+        }
+        boolean intact = true;
+        for (int i = 1; i < found.size(); i++) {
+          intact &= found.get(i)[0] == found.get(i - 1)[0] && found.get(i)[1] == found.get(i - 1)[1] + 1;
+        }
+        lines.add(
+            "block " + b.parent() + "@" + b.version() + " " + found.size() + " " + (intact ? "ok" : "broken"));
+      }
 
       List<String> terms = new ArrayList<>();
       for (int i = 0; i < WORDS; i++) terms.add("w" + i);

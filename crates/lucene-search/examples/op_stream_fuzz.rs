@@ -7,7 +7,10 @@
 //! legitimately differ and do not appear in the dump.
 //!
 //! The dump: every live document (`doc <id> ver <v> score <s> cat <c> pt
-//! [<p>]`, by id); for every body term, the ids of the live documents it
+//! [<p>]`, by id); every document block the stream added (`addDocuments`, or
+//! `updateDocuments` replacing a document with a block) with how many of its
+//! members are still live as added and whether they are still one run of a
+//! segment (`block <parent>@<v> <n> ok`); for every body term, the ids of the live documents it
 //! matches; for a set of two-word phrases and one point range, the ids
 //! matched. This port's reader returns doc ids, not stored documents, so ids
 //! come from the `idn` doc values, as on the Java side.
@@ -175,6 +178,7 @@ fn run(path: &Path, seed: u64, num_ops: usize) -> Result<(), String> {
         ..MergePolicyConfig::default()
     }));
     let id_term = |id: u64| Term::new("id", format!("i{id}").into_bytes());
+    let mut blocks: Vec<Block> = Vec::new();
 
     for _ in 0..num_ops {
         let roll = rng.below(100);
@@ -193,14 +197,45 @@ fn run(path: &Path, seed: u64, num_ops: usize) -> Result<(), String> {
             None
         };
         if roll <= 47 || (needs_pick && pick.is_none()) {
-            let id = next_id;
-            next_id += 1;
-            w.add_document(document(id, 0)).map_err(e)?;
-            live.insert(id, 0);
+            // One add in five is a block: one to three children, then the
+            // parent, ids in that order (`addDocuments`).
+            if rng.below(5) == 0 {
+                let children = 1 + rng.below(3);
+                let ids: Vec<u64> = (next_id..next_id + children + 1).collect();
+                next_id += children + 1;
+                w.add_documents(ids.iter().map(|&id| document(id, 0)).collect())
+                    .map_err(e)?;
+                for &id in &ids {
+                    live.insert(id, 0);
+                }
+                let parent = *ids.last().expect("a parent");
+                blocks.push((parent, 0, ids[..ids.len() - 1].to_vec()));
+            } else {
+                let id = next_id;
+                next_id += 1;
+                w.add_document(document(id, 0)).map_err(e)?;
+                live.insert(id, 0);
+            }
         } else if roll <= 59 {
             let id = pick.expect("picked");
             let v = live.get(&id).map_or(1, |v| v + 1);
-            w.update_document(id_term(id), document(id, v)).map_err(e)?;
+            // One update in four replaces the document with a block: new
+            // children, then the document's new version as their parent
+            // (`updateDocuments`).
+            if rng.below(4) == 0 {
+                let children = 1 + rng.below(3);
+                let ids: Vec<u64> = (next_id..next_id + children).collect();
+                next_id += children;
+                let mut docs: Vec<Document> = ids.iter().map(|&c| document(c, 0)).collect();
+                docs.push(document(id, v));
+                w.update_documents(id_term(id), docs).map_err(e)?;
+                for &c in &ids {
+                    live.insert(c, 0);
+                }
+                blocks.push((id, v, ids));
+            } else {
+                w.update_document(id_term(id), document(id, v)).map_err(e)?;
+            }
             live.insert(id, v);
         } else if roll <= 66 {
             let id = pick.expect("picked");
@@ -223,7 +258,48 @@ fn run(path: &Path, seed: u64, num_ops: usize) -> Result<(), String> {
         }
     }
     w.commit().map_err(e)?;
+    let mut text = String::new();
+    for (parent, v, children) in &blocks {
+        let c: Vec<String> = children.iter().map(u64::to_string).collect();
+        writeln!(text, "{parent} {v} {}", c.join(",")).unwrap();
+    }
+    std::fs::write(path.with_extension("blocks"), text).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// A block as added: its parent's id and version, its children's ids (each
+/// at version 0).
+type Block = (u64, u64, Vec<u64>);
+
+/// The blocks' integrity, semantically: of each block, the members still
+/// live as added (a child at version 0, the parent at its version) must be
+/// one run of consecutive live documents of one segment -- a block is never
+/// split or interleaved, whatever the engines' segment layouts.
+fn block_lines(blocks: &[Block], positions: &BTreeMap<i64, (usize, usize, i64)>, out: &mut String) {
+    for (parent, v, children) in blocks {
+        let members = children
+            .iter()
+            .map(|&c| (c as i64, 0i64))
+            .chain(std::iter::once((*parent as i64, *v as i64)));
+        let found: Vec<(usize, usize)> = members
+            .filter_map(|(id, ver)| {
+                positions
+                    .get(&id)
+                    .filter(|&&(_, _, at)| at == ver)
+                    .map(|&(seg, pos, _)| (seg, pos))
+            })
+            .collect();
+        let intact = found
+            .windows(2)
+            .all(|w| w[1].0 == w[0].0 && w[1].1 == w[0].1 + 1);
+        writeln!(
+            out,
+            "block {parent}@{v} {} {}",
+            found.len(),
+            if intact { "ok" } else { "broken" }
+        )
+        .unwrap();
+    }
 }
 
 struct AllPoints(Vec<(i32, i64)>);
@@ -252,7 +328,10 @@ fn dump(path: &Path) -> Result<String, String> {
     let mut out = String::new();
     let mut id_of: Vec<i64> = Vec::new();
     let mut docs: BTreeMap<i64, String> = BTreeMap::new();
-    for segment in reader.segment_readers() {
+    // id -> (segment, position among its live documents, version).
+    let mut positions: BTreeMap<i64, (usize, usize, i64)> = BTreeMap::new();
+    for (seg_ord, segment) in reader.segment_readers().iter().enumerate() {
+        let mut live_pos = 0usize;
         let fields = &segment.field_infos().fields;
         let number = |name: &str| fields.iter().find(|f| f.name == name).map(|f| f.number);
         let numeric = |name: &str, doc: i32| -> Result<Option<i64>, String> {
@@ -310,6 +389,8 @@ fn dump(path: &Path) -> Result<String, String> {
                 .iter()
                 .map(|&(_, v)| v.to_string())
                 .collect();
+            positions.insert(id, (seg_ord, live_pos, numeric("ver", doc)?.unwrap_or(-1)));
+            live_pos += 1;
             let line = format!(
                 "doc {id} ver {} score {} cat {c} pt [{}]",
                 show(numeric("ver", doc)?),
@@ -324,6 +405,24 @@ fn dump(path: &Path) -> Result<String, String> {
     for line in docs.values() {
         writeln!(out, "{line}").unwrap();
     }
+    let blocks: Vec<Block> = std::fs::read_to_string(path.with_extension("blocks"))
+        .map_err(|e| e.to_string())?
+        .lines()
+        .map(|l| {
+            let mut p = l.split(' ');
+            let parent = p.next().unwrap().parse().unwrap();
+            let v = p.next().unwrap().parse().unwrap();
+            let children = p
+                .next()
+                .unwrap_or("")
+                .split(',')
+                .filter(|c| !c.is_empty())
+                .map(|c| c.parse().unwrap())
+                .collect();
+            (parent, v, children)
+        })
+        .collect();
+    block_lines(&blocks, &positions, &mut out);
     std::fs::write(
         path.with_extension("meta"),
         format!("{} {}\n", reader.segment_readers().len(), id_of.len()),
@@ -434,6 +533,7 @@ fn main() {
         if let Ok(meta) = std::fs::read(idx.with_extension("meta")) {
             std::fs::write(out.join(format!("{seed}.rust.meta")), meta).expect("write meta");
         }
+        let _ = std::fs::remove_file(idx.with_extension("blocks"));
         let _ = std::fs::remove_dir_all(&idx);
     }
     let _ = std::fs::remove_dir_all(&work);

@@ -588,6 +588,38 @@ and 1.12x in the two runs before), `spx_heatmap` 0.60x -> **1.23x**;
 1.03x-1.06x in the runs before). No case below 1.0. Neighbouring families on the final build (with the span and aggregation changes of the same day): `m7_fixture` 1.06~-2.85x, `geo_points` 1.05~-3.03x, `geo_shapes` 1.07~-1.55x but `shape_index_fields` 0.93~ (inside the 1.09x floor; unchanged in an interleaved A/B against the build before these changes, 22.3 us both), `term_seek` inside its 1.17x floor (A/B unchanged: `seek_hit` ~720 ns both, `seek_miss` 405 -> 422 ns within the spread).
 
 
+## lucene-index / lucene-search -- document blocks and block joins (M10)
+
+Document blocks in the writer (T10.1) and `lucene-join`'s block joins
+(T10.2). Inventory: `docs/inventory/lucene-join.tsv`
+(`check-port-inventory.py --module join`). Write path:
+`scripts/verify-write-path.sh` runs `write_block_join_fixture` ->
+`VerifyJoin` (two seeded streams of block adds, `updateDocuments`,
+whole-block deletes, commits and natural merges, one index-sorted; Lucene runs
+`CheckIndex` and `CheckJoinIndex`, finds every live block through
+`ToChildBlockJoinQuery`/`ToParentBlockJoinQuery`, then appends blocks with its
+own `IndexWriter` and force-merges; seen to fail when the flush's parent-key
+wrap is removed). Merge stress:
+`crates/lucene-search/tests/block_join_merge_stress.rs` (24 seeded streams,
+unsorted and sorted, under a two-segments-per-tier merge policy, then
+`check_join_index`, `CheckIndex` and every block read back whole; seen to fail
+when the merge's parent-key wrap is removed). Differential with Java's
+`IndexWriter`: `scripts/op-stream-fuzz.sh` adds `addDocuments` and
+`updateDocuments` blocks to its stream and compares each block's surviving
+members as one run of a segment. Unit tests:
+`lucene-index/src/index_writer/block_tests.rs` (the parent field, sorted
+flushes and merges of blocks, the refusals) and
+`lucene-search/src/join/tests.rs`.
+
+| Java | Rust | Status |
+|---|---|---|
+| `index/IndexWriter.addDocuments`/`updateDocuments`/`softUpdateDocuments` with blocks, `DocumentsWriterPerThread.updateDocuments` (`hasBlocks`, the sorted-blocks-need-a-parent-field refusal) | `lucene-index/src/index_writer.rs::{add_documents, update_documents, soft_update_documents}`, `lucene-index/src/index_writer/explicit.rs::{add_explicit_documents, update_explicit_documents, soft_update_explicit_documents}`, `lucene-index/src/document/indexing.rs::{add_fields_documents, update_fields_documents, soft_update_fields_documents}` | **ported (M10 T10.1).** One sequence number per block, never split by an automatic flush, `SegmentInfo.hasBlocks` set for a block of two or more (already since M4); `soft_update_fields_documents` new for the document API. A block added to a sorted writer without a parent field is refused at add time (`Error::BlocksWithIndexSortNeedParentField`), as Java refuses it. |
+| `index/IndexWriterConfig.setParentField`, `IndexingChain`'s parent field (`NumericDocValuesField(parentField, -1)` on the last document of every add), `FieldInfos.FieldNumbers.verifyParentFieldName`, `IndexWriter`'s "can't add a parent field to an already existing index" | `lucene-index/src/index_writer/explicit.rs::{set_parent_field, register_parent_field, parent_field_info}` | **ported (M10 T10.1)** for explicit documents and the document API (the native stored-values path cannot mark a document with an unstored doc value, so `set_parent_field` switches the writer to explicit documents). The parent field is numbered before the fields of the document that first carries it, as `processDocument` handles it first; a document naming it is refused ("is a reserved field"). |
+| `index/IndexingChain.maybeSortSegment`, `Sorter.sort` and `MultiSorter.sort` with blocks (`parents.nextSetBit(doc)` comparator wrap) | `lucene-index/src/index_writer/explicit.rs::key_of_parent`, `lucene-index/src/index_writer.rs::{sort_buffer, source_parents}` | **ported (M10 T10.1).** Every document sorts by the key of the parent closing its block, at flush and at merge, so blocks move whole; a source with blocks and no parent field refuses a sorted merge (`MultiSorter`'s `CorruptIndexException`). Index sorting now works for explicit documents too: keys come from each document's own doc values (a sort field no document has sorts every document as missing). |
+| `index/CheckIndex.testSort` with blocks (walks the parent field's documents) | `lucene-index/src/check_index.rs::check_index_sort` | **ported (M10 T10.1)**: a sorted segment with blocks is checked parent by parent, and fails without a parent field (Java's `IllegalStateException`; the `createdVersionMajor >= 10` condition is not modelled -- every segment this port writes is major 10). |
+| `search/join/BitSetProducer`, `QueryBitSetProducer` | `lucene-search/src/join/mod.rs::{BitSetProducer, QueryBitSetProducer}` | **ported (M10 T10.1)**: the query run `COMPLETE_NO_SCORES` without a query cache, deleted documents included, cached per segment core (name and id) until `clear` -- Java's weak map has no Rust counterpart. |
+| `search/join/CheckJoinIndex` | `lucene-search/src/join/mod.rs::check_join_index` | **ported (M10 T10.1)**, Java's three checks and messages (`IllegalStateException` -> `Error::IllegalState`). |
+
 ## lucene-analysis
 
 | Java | Rust | Status |

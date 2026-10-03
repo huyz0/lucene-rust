@@ -545,6 +545,20 @@ impl IndexWriter<'_> {
         self.add_fields_documents_with_vectors(docs, Some(term))
     }
 
+    /// `IndexWriter.softUpdateDocuments(term, docs, softDeletes...)`: `docs`
+    /// are added as one block and every earlier document matching `term`
+    /// gets the `soft_deletes` doc-values updates, atomically.
+    pub fn soft_update_fields_documents(
+        &mut self,
+        term: Term,
+        docs: &[Document],
+        soft_deletes: &[crate::buffered_updates::DocValuesUpdate],
+    ) -> Result<SeqNo> {
+        self.enable_explicit_documents()?;
+        let (explicit, vectors) = self.invert_fields_block(docs, Vec::new())?;
+        self.soft_update_explicit_documents_with_vectors(term, explicit, vectors, soft_deletes)
+    }
+
     /// The shared tail of the document and column-batch entry points.
     pub(crate) fn add_fields_documents_with_vectors(
         &mut self,
@@ -564,9 +578,38 @@ impl IndexWriter<'_> {
         registered: Vec<i32>,
     ) -> Result<SeqNo> {
         self.enable_explicit_documents()?;
+        let (explicit, vectors) = self.invert_fields_block(docs, registered)?;
+        self.add_explicit_documents_with_vectors(delete, explicit, vectors)
+    }
+
+    /// `DocumentsWriterPerThread.updateDocuments`' loop: each document of a
+    /// block through `IndexingChain.processDocument`, the last one as the
+    /// block's parent -- whose parent field, when the writer has one, is
+    /// registered before the document's own fields, as `processDocument`
+    /// handles it first.
+    fn invert_fields_block(
+        &mut self,
+        docs: &[Document],
+        registered: Vec<i32>,
+    ) -> Result<(Vec<ExplicitDocument>, Vec<Vec<DocumentVector>>)> {
+        if let Some(parent) = self.parent_field() {
+            if docs
+                .iter()
+                .flat_map(|d| d.fields())
+                .any(|f| f.name() == parent)
+            {
+                return Err(doc_error(illegal(format!(
+                    "\"{parent}\" is a reserved field and should not be added to any document"
+                ))));
+            }
+        }
         let mut explicit = Vec::with_capacity(docs.len());
         let mut vectors = Vec::with_capacity(docs.len());
-        for doc in docs {
+        let last = docs.len().saturating_sub(1);
+        for (i, doc) in docs.iter().enumerate() {
+            if i == last {
+                self.register_parent_field()?;
+            }
             let (e, v) = self.invert_fields_document(doc)?;
             explicit.push(e);
             vectors.push(v);
@@ -574,7 +617,7 @@ impl IndexWriter<'_> {
         if let Some(first) = explicit.first_mut() {
             first.fields.registered = registered;
         }
-        self.add_explicit_documents_with_vectors(delete, explicit, vectors)
+        Ok((explicit, vectors))
     }
 
     /// `updateDocFieldSchema` over `types` (one field instance each, in
