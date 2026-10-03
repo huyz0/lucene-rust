@@ -9,7 +9,7 @@
 | **Effort** | L |
 | **Depends on** | [M7](m7-core-complete.md) (`document` fields, multi-dimension BKD writing) |
 | **Unblocks** | native `geo_distance`, `geo_bounding_box`, `geo_shape`, geo sorting |
-| **Status** | delivered 2026-10-03, all four criteria met (the real-world Tessellator corpus 2026-10-03): T9.1-T9.6 done. Spatial-extras RPT intersects and heatmaps, the last cases below Lucene, at 1.17x-1.24x since 2026-10-03 (quad cells as values, `docs/parity.md`) |
+| **Status** | delivered 2026-10-03, all four criteria met (the real-world Tessellator corpus 2026-10-03): T9.1-T9.6 done. Performance caveats closed 2026-10-03: spatial-extras RPT intersects and heatmaps 1.17x-1.24x (quad cells as values, `docs/parity.md`); the geo-filtered `terms` aggregation 1.30x query phase / 1.03x REST (the plugin's `terminated_early` replay, T9.6 benchmark). Left, measured: a `terms` aggregation behind a *dense* non-geo filter, 0.81-0.98x (T9.6 benchmark) |
 
 ---
 
