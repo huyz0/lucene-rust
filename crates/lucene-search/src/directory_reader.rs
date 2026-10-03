@@ -313,8 +313,7 @@ impl SegmentReader {
         self.clone()
     }
 
-    /// The core's query cache.
-    #[cfg(test)]
+    /// The core's query cache (and its decoded sort columns).
     pub(crate) fn query_cache(&self) -> &crate::SegmentQueryCache {
         &self.query_cache
     }

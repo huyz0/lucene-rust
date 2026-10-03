@@ -3,6 +3,8 @@ query_phase_nanos counters (no HTTP or fetch time in either).
 
 Usage: phase_bench.py ROUNDS INDEX [PATTERN], against a node left running by
 `scripts/verify-opensearch.sh --keep` (BASE, default http://localhost:9200).
+GEO=1 measures the geo rows (geo_matrix.py) instead, on a geo index
+(`geo_matrix.py`'s mapping and loader; `GEO_LOAD=DOCS` loads one first).
 
 Every shape first runs WARMUP times on each path: the plugin's own code is
 only as fast as the JIT has made it, and a node that has served a few
@@ -17,13 +19,25 @@ counters."""
 import os, sys, statistics, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import verify_opensearch as v
+import geo_matrix
 v.BASE = os.environ.get("BASE", "http://localhost:9200")
 WARMUP = int(os.environ.get("WARMUP", "40"))
 REST = os.environ.get("REST") == "1"
 
 rounds = int(sys.argv[1]); index = sys.argv[2]
+if os.environ.get("GEO_LOAD"):
+    try:
+        v.req("DELETE", f"/{index}")
+    except RuntimeError:
+        pass
+    v.req("PUT", f"/{index}", {"settings": {"number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1},
+                               "mappings": geo_matrix.mapping()})
+    geo_matrix.create_shapes(v.req)
+    geo_matrix.load(v.req, v.check, index, int(os.environ["GEO_LOAD"]), 21)
 pat = sys.argv[3] if len(sys.argv) > 3 else ""
-qs = [(n, b) for n, b, e in v.matrix() if e in ("native", "slow") and pat in n]
+# GEO=1: geo_matrix.py's rows (M9 T9.6), against an index loaded as its geo indices are.
+rows = geo_matrix.rows() if os.environ.get("GEO") == "1" else v.matrix()
+qs = [(n, b) for n, b, e in rows if e in ("native", "slow") and pat in n]
 
 
 def phase():

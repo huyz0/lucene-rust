@@ -30,7 +30,7 @@ use lucene_util::spatial3d::{
 
 use lucene_codecs::field_infos::FieldInfo;
 
-use super::{geo, illegal, sorted_numeric_in, GeoValues};
+use super::{geo, idx, illegal, sorted_numeric_in, GeoValues};
 use crate::collector::{ScoreMode, ScoringCollector};
 use crate::directory_reader::SegmentReader;
 use crate::document::{reader, DocumentQuery};
@@ -937,11 +937,11 @@ impl FieldComparator for Comparator {
             Source::Geo3DOutside(s) => Box::new(s.distance()),
         };
         distance.check(r, &self.field)?;
-        let values = match info_of(r, &self.field) {
-            Some(info) => sorted_numeric_in(r, info)?,
-            None => None,
-        };
+        let values = GeoColumn::open(r, &self.field)?;
         Ok(Box::new(LeafComparator {
+            // Lucene's own `compareBottom` (the bottom's bounding box) for
+            // the lat/lon sort, the one the plugin runs.
+            bounded: matches!(self.source, Source::LatLon(_)),
             distance,
             values,
             buf: Vec::new(),
@@ -957,23 +957,128 @@ impl FieldComparator for Comparator {
 }
 
 struct LeafComparator<'a> {
+    /// Whether `compareBottom` is the distance's own ([`Distance::compare_bottom`]).
+    bounded: bool,
     distance: Box<dyn Distance>,
-    values: Option<GeoValues<'a>>,
+    values: GeoColumn<'a>,
     buf: Vec<i64>,
+}
+
+impl LeafComparator<'_> {
+    fn read(&mut self, doc: i32) -> Result<()> {
+        self.values.read(doc, &mut self.buf)
+    }
+}
+
+/// A segment's `SORTED_NUMERIC` geo points for a distance comparator: read
+/// per document (`DocValues.getSortedNumeric`), or -- in a segment of
+/// 10,000 documents or more, from a sort's second use on -- from the
+/// segment's decoded copy ([`crate::exec::cache::SortColumn::Multi`], the
+/// cache numeric sort keys use: the same values, decoded once).
+enum GeoColumn<'a> {
+    Live(Option<Box<GeoValues<'a>>>),
+    Decoded(Arc<crate::exec::cache::SortColumn>),
+}
+
+impl<'a> GeoColumn<'a> {
+    /// `field`'s points in `r`: none without the field, an error for one of
+    /// another doc-values type.
+    fn open(r: &'a SegmentReader, field: &str) -> Result<Self> {
+        let Some(info) = info_of(r, field) else {
+            return Ok(GeoColumn::Live(None));
+        };
+        let Some(values) = sorted_numeric_in(r, info)? else {
+            return Ok(GeoColumn::Live(None));
+        };
+        let key = format!("geo\0{field}");
+        let built = r.query_cache().sort_column(&key, r.max_doc, &mut || {
+            let mut fresh = sorted_numeric_in(r, info)?;
+            let n = idx(r.max_doc);
+            let mut starts = Vec::with_capacity(n + 1);
+            let mut all = Vec::new();
+            let mut buf = Vec::new();
+            for d in 0..r.max_doc {
+                starts.push(all.len());
+                if let Some(v) = fresh.as_mut() {
+                    v.values(d, &mut buf)?;
+                    all.extend_from_slice(&buf);
+                }
+            }
+            starts.push(all.len());
+            Ok(crate::exec::cache::SortColumn::Multi {
+                starts,
+                values: all,
+            })
+        })?;
+        Ok(match built {
+            Some(c) => GeoColumn::Decoded(c),
+            None => GeoColumn::Live(Some(Box::new(values))),
+        })
+    }
+
+    /// Replaces `out` with `doc`'s values.
+    #[inline]
+    fn read(&mut self, doc: i32, out: &mut Vec<i64>) -> Result<()> {
+        out.clear();
+        match self {
+            GeoColumn::Live(Some(v)) => v.values(doc, out)?,
+            GeoColumn::Live(None) => {}
+            GeoColumn::Decoded(c) => {
+                if let crate::exec::cache::SortColumn::Multi { starts, values } = &**c {
+                    let d = idx(doc);
+                    if let (Some(&a), Some(&b)) = (starts.get(d), starts.get(d + 1)) {
+                        out.extend_from_slice(values.get(a..b).unwrap_or(&[]));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A key's sort value back as the double it encodes.
+fn key_of(v: &SortValue) -> Option<f64> {
+    match v {
+        SortValue::Long(l) => Some(lucene_util::numeric_utils::sortable_long_to_double(*l)),
+        SortValue::Bytes(_) => None,
+    }
 }
 
 impl LeafFieldComparator for LeafComparator<'_> {
     fn value(&mut self, doc: i32, _score: f32) -> Result<SortValue> {
-        self.buf.clear();
-        if let Some(v) = self.values.as_mut() {
-            v.values(doc, &mut self.buf)?;
-        }
+        self.read(doc)?;
         let key = if self.buf.is_empty() {
             f64::INFINITY
         } else {
             self.distance.sort_key_checked(&self.buf)?
         };
         Ok(SortValue::Long(double_to_sortable_long(key)))
+    }
+
+    /// `setBottom(slot)`: the bottom's bounding box.
+    fn set_bottom(&mut self, bottom: &SortValue) -> Result<()> {
+        match key_of(bottom) {
+            Some(key) if self.bounded => self.distance.set_bottom(key),
+            _ => Ok(()),
+        }
+    }
+
+    /// `compareBottom(doc)`: a value outside the bottom's box is not
+    /// measured, and a document without one is `+Infinity`.
+    fn compare_bottom(
+        &mut self,
+        bottom: &SortValue,
+        doc: i32,
+        _score: f32,
+    ) -> Result<Option<Ordering>> {
+        let Some(bottom) = key_of(bottom).filter(|_| self.bounded) else {
+            return Ok(None);
+        };
+        self.read(doc)?;
+        if self.buf.is_empty() {
+            return Ok(Some(double_compare(bottom, f64::INFINITY)));
+        }
+        Ok(Some(self.distance.compare_bottom(bottom, &self.buf)))
     }
 }
 
@@ -1075,10 +1180,7 @@ impl FieldComparator for OpenSearchComparator {
     fn leaf<'a>(&self, ctx: LeafCtx<'a>) -> Result<Box<dyn LeafFieldComparator + 'a>> {
         // `DocValues.getSortedNumeric(reader, field)`: empty without the
         // field, an error for another doc-values type.
-        let values = match info_of(ctx.reader, &self.field) {
-            Some(info) => sorted_numeric_in(ctx.reader, info)?,
-            None => None,
-        };
+        let values = GeoColumn::open(ctx.reader, &self.field)?;
         Ok(Box::new(OpenSearchLeaf {
             sort: self.sort.clone(),
             values,
@@ -1097,19 +1199,33 @@ impl FieldComparator for OpenSearchComparator {
 
 struct OpenSearchLeaf<'a> {
     sort: OpenSearchGeoDistanceSort,
-    values: Option<GeoValues<'a>>,
+    values: GeoColumn<'a>,
     buf: Vec<i64>,
     scratch: Vec<f64>,
 }
 
 impl LeafFieldComparator for OpenSearchLeaf<'_> {
     fn value(&mut self, doc: i32, _score: f32) -> Result<SortValue> {
-        self.buf.clear();
-        if let Some(v) = self.values.as_mut() {
-            v.values(doc, &mut self.buf)?;
-        }
+        self.values.read(doc, &mut self.buf)?;
         let d = self.sort.value(&self.buf, &mut self.scratch);
         Ok(SortValue::Long(double_to_sortable_long(d)))
+    }
+
+    /// `DoubleComparator.compareBottom`: the bottom against the document's
+    /// value (`Double.compare`, as the sortable longs compare).
+    fn compare_bottom(
+        &mut self,
+        bottom: &SortValue,
+        doc: i32,
+        score: f32,
+    ) -> Result<Option<Ordering>> {
+        let SortValue::Long(bottom) = bottom else {
+            return Ok(None);
+        };
+        let SortValue::Long(v) = self.value(doc, score)? else {
+            return Ok(None);
+        };
+        Ok(Some(bottom.cmp(&v)))
     }
 }
 
@@ -1371,6 +1487,99 @@ mod tests {
                 doc_base: 0,
             })
             .is_err());
+    }
+
+    /// In a segment of 10,000 documents a distance comparator reads its
+    /// points from the segment's decoded copy from the second use on: the
+    /// same values as the per-document read, documents without any
+    /// included; and `compareBottom` answers as `value` compares.
+    #[test]
+    fn decoded_points_column_reads_as_the_doc_values() {
+        use crate::directory_reader::DirectoryReader;
+        use lucene_index::document::{self as d, Document};
+        use lucene_index::index_writer::IndexWriter;
+        use lucene_index::segment_info::LuceneVersion;
+        use lucene_store::FsDirectory;
+        use lucene_util::test_support::TempDir;
+        let tmp = TempDir::new("geo-sort-column");
+        let dir = FsDirectory::open(tmp.path());
+        let version = LuceneVersion {
+            major: 10,
+            minor: 5,
+            bugfix: 0,
+        };
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", version).unwrap();
+        for i in 0..10_050u32 {
+            let mut doc = Document::new();
+            for k in 0..(i % 3) {
+                let lat = f64::from((i * 7 + k) % 170) - 85.0;
+                let lon = f64::from((i * 13 + k) % 350) - 175.0;
+                doc.add_boxed(Box::new(
+                    d::LatLonDocValuesField::new("loc", lat, lon).unwrap(),
+                ));
+            }
+            w.add_fields_document(&doc).unwrap();
+        }
+        w.commit().unwrap();
+        drop(w);
+        let r = DirectoryReader::open(&dir).unwrap();
+        let seg = &r.segment_readers()[0];
+        assert!(seg.max_doc >= 10_000);
+        let ctx = LeafCtx {
+            reader: seg,
+            doc_base: 0,
+        };
+        let lucene = LatLonPointSortField::new("loc", 10.0, 20.0)
+            .unwrap()
+            .comparator_source()
+            .new_comparator("loc", 10, false);
+        let os = OpenSearchGeoDistanceSort {
+            origins: vec![(10.0, 20.0), (-5.0, 170.0)],
+            unit_meters: 1609.344,
+            mode: DistanceMode::Avg,
+        };
+        let os = os.new_comparator("loc", 10, false);
+        for cmp in [lucene, os] {
+            let all = |cmp: &dyn FieldComparator| {
+                let mut leaf = cmp.leaf(ctx).unwrap();
+                (0..seg.max_doc)
+                    .map(|d| leaf.value(d, 0.0).unwrap())
+                    .collect::<Vec<_>>()
+            };
+            // First use: per document; second: the column is built; third:
+            // read from it.
+            let first = all(cmp.as_ref());
+            assert_eq!(all(cmp.as_ref()), first);
+            assert_eq!(all(cmp.as_ref()), first);
+            assert!(matches!(
+                GeoColumn::open(seg, "loc").unwrap(),
+                GeoColumn::Decoded(_)
+            ));
+            // `compareBottom` against a middling bottom, as `value` compares.
+            let bottom = first[5000].clone();
+            let mut leaf = cmp.leaf(ctx).unwrap();
+            leaf.set_bottom(&bottom).unwrap();
+            for d in (0..seg.max_doc).step_by(7) {
+                let want = cmp.compare_values(&bottom, &first[idx(d)]);
+                let got = leaf.compare_bottom(&bottom, d, 0.0).unwrap().unwrap();
+                // Outside the bottom's box Lucene's comparator answers
+                // "not competitive" unmeasured, which `value` agrees with.
+                assert_eq!(got, want, "doc {d}");
+            }
+            assert_eq!(
+                leaf.compare_bottom(&SortValue::Bytes(None), 0, 0.0)
+                    .unwrap(),
+                None
+            );
+        }
+        // The other distance sorts compare by value.
+        let xy = XYPointSortField::new("nope", 1.0, 2.0)
+            .comparator_source()
+            .new_comparator("nope", 10, false);
+        let mut leaf = xy.leaf(ctx).unwrap();
+        let bottom = SortValue::Long(0);
+        leaf.set_bottom(&bottom).unwrap();
+        assert_eq!(leaf.compare_bottom(&bottom, 0, 0.0).unwrap(), None);
     }
 
     #[test]
