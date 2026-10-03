@@ -11,7 +11,7 @@
 //! are checked against the JDK's own output by
 //! `crates/lucene-util/tests/geo_fixtures.rs` (`fixtures/data/geo/strict_math.tsv`).
 //!
-//! Only the argument ranges Lucene reaches are ported in full: `sin`/`cos`
+//! Only the argument ranges Lucene reaches are ported in full: `sin`/`cos`/`tan`
 //! reduce arguments up to `2^19 * pi/2` with fdlibm's medium-size Cody-Waite
 //! path; beyond that (never reached by Lucene: `SloppyMath.cos` falls back to
 //! `Math.cos` only past ~4e6 radians, which it then hands to this module)
@@ -183,6 +183,12 @@ fn rem_pio2(x: f64) -> Option<(i32, f64, f64)> {
 }
 
 /// `StrictMath.sin`.
+///
+/// Arguments with `|x| > 2^19 * pi/2` (about 823 550) are not reduced by
+/// fdlibm's `__kernel_rem_pio2` (not ported): they fall back to the
+/// platform libm, which is not guaranteed to match the JDK bit for bit
+/// (glibc agrees on the fixture's `1e9`, `1e300` and `MAX_VALUE`, but
+/// nothing promises it). See the module doc for which callers can.
 pub fn sin(x: f64) -> f64 {
     let ix = hi(x) & 0x7fff_ffff;
     if ix <= 0x3fe9_21fb {
@@ -203,6 +209,12 @@ pub fn sin(x: f64) -> f64 {
 }
 
 /// `StrictMath.cos`.
+///
+/// Arguments with `|x| > 2^19 * pi/2` (about 823 550) are not reduced by
+/// fdlibm's `__kernel_rem_pio2` (not ported): they fall back to the
+/// platform libm, which is not guaranteed to match the JDK bit for bit
+/// (glibc agrees on the fixture's `1e9`, `1e300` and `MAX_VALUE`, but
+/// nothing promises it). See the module doc for which callers can.
 pub fn cos(x: f64) -> f64 {
     let ix = hi(x) & 0x7fff_ffff;
     if ix <= 0x3fe9_21fb {
@@ -226,6 +238,7 @@ pub fn cos(x: f64) -> f64 {
 /// reduced once: [`sin`] and [`cos`] run the same `rem_pio2` on the same
 /// `x`, so sharing it changes no result (geo3d builds every point from a
 /// latitude's and a longitude's sine and cosine).
+/// Past `2^19 * pi/2` it is the platform libm, as for [`sin`].
 pub fn sin_cos(x: f64) -> (f64, f64) {
     let ix = hi(x) & 0x7fff_ffff;
     if ix <= 0x3fe9_21fb {
@@ -535,6 +548,12 @@ fn kernel_tan(mut x: f64, mut y: f64, iy: i32) -> f64 {
 
 /// `StrictMath.tan` (fdlibm `s_tan.c`). `Math.tan` is a HotSpot intrinsic
 /// on x86-64 whose last bit can differ; see `spatial3d`'s module doc.
+///
+/// Arguments with `|x| > 2^19 * pi/2` (about 823 550) are not reduced by
+/// fdlibm's `__kernel_rem_pio2` (not ported): they fall back to the
+/// platform libm, which is not guaranteed to match the JDK bit for bit
+/// (glibc agrees on the fixture's `1e9`, `1e300` and `MAX_VALUE`, but
+/// nothing promises it). See the module doc for which callers can.
 pub fn tan(x: f64) -> f64 {
     let ix = hi(x) & 0x7fff_ffff;
     if ix <= 0x3fe9_21fb {
@@ -704,7 +723,11 @@ pub fn atan2(y: f64, x: f64) -> f64 {
     // compute y / x
     let k = (iy - ix) >> 20;
     let z = if k > 60 {
-        PI_O_2 + 0.5 * PI_LO // |y / x| > 2^60
+        // |y / x| > 2^60. JDK's FdLibm.Atan2 leaves `m` alone here (later
+        // fdlibm and musl add `m &= 1`), so x < 0 still takes the
+        // `pi - (z - pi_lo)` arm below: one ulp above pi/2, as the
+        // `GenGeo3dMath` atan2 specials pin.
+        PI_O_2 + 0.5 * PI_LO
     } else if hx < 0 && k < -60 {
         0.0 // |y| / x < -2^60
     } else {

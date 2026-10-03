@@ -305,6 +305,21 @@ It covers `lucene-core` only; other modules get their own file as their
 milestones start. Without a jar (offline, no Gradle cache) the membership
 check is skipped and says so; the per-row checks still run.
 
+**`--require-jar`** (T9.4 review): `gate.sh` and CI pass it, so a jar that
+cannot be found fails the check instead of reporting "ok" over a membership
+check that never ran. Before it, the script also ignored `$JARS` (it
+hard-coded `fixtures/.jars`), so inside the container -- jars baked into
+`/opt/lucene-jars`, no network -- every module's membership check was
+silently skipped. **Seen to fail**: with `$JARS` pointing nowhere, no Gradle
+cache and the proxy unreachable, `no lucene-spatial3d jar (looked in $JARS
+or fixtures/.jars, the Gradle cache and Maven Central); --require-jar makes
+that a failure`; with `$JARS` holding only the spatial3d jar (no cache, no
+network) and a row deleted, `spatial3d/geom/GeoWorld: in the jar, not in
+lucene-spatial3d.tsv` -- the old script would have skipped that. It cannot
+tell a *wrong* jar from the right one: whatever `lucene_resolve_jar` returns
+for `<module>-10.5.0.jar` is trusted, so a corrupt or substituted jar file
+under that name passes as long as it opens as a zip.
+
 ## write-path verifiers of the geo modules (M9)
 
 `scripts/verify-write-path.sh` runs a Java verifier over an index this

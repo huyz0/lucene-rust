@@ -316,6 +316,17 @@ public class GenGeo3dMath {
       rec("SM.trig", in(x, y), () -> h(StrictMath.tan(x)) + "," + h(StrictMath.atan(x)) + ","
           + h(StrictMath.atan2(y, x)) + "," + h(StrictMath.atan2(x, y)));
     }
+    // atan2's |y/x| > 2^60 branch with x < 0 (fdlibm's k > 60 case with m = 2
+    // or 3): JDK's FdLibm keeps m there, where later fdlibm/musl clear its
+    // x-sign bit, so these land on pi - (z - pi_lo), one ulp above pi/2.
+    // After the random loop, so the generator's random stream is unchanged.
+    double[][] atan2Pairs = {{1e300, -1.0}, {-1e300, -1.0}, {1.0, -1e-300}};
+    for (double[] p : atan2Pairs) {
+      double y = p[0];
+      double x = p[1];
+      rec("SM.trig", in(x, y), () -> h(StrictMath.tan(x)) + "," + h(StrictMath.atan(x)) + ","
+          + h(StrictMath.atan2(y, x)) + "," + h(StrictMath.atan2(x, y)));
+    }
     for (int pmi = 0; pmi < PMS.length; pmi++) {
       final int pi = pmi;
       final PlanetModel pm = PMS[pmi];
