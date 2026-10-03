@@ -310,6 +310,7 @@ pub(crate) fn map_writer_error(context: &str, e: index_writer::Error) -> FfiStat
         | index_writer::Error::IncongruentIndexSort { .. }
         | index_writer::Error::IndexSortChangedMidBuffer(_)
         | index_writer::Error::IndexSortWithBlocksAndNoParentField
+        | index_writer::Error::BlocksWithIndexSortNeedParentField
         | index_writer::Error::DocValuesUpdateOnIndexSortField { .. }
         | index_writer::Error::DuplicateDocValuesField(_)
         // `c22-sorted-merge`'s two configuration errors. Both describe a

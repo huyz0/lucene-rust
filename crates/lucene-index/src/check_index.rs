@@ -4072,7 +4072,7 @@ fn check_doc_value_skipper(index: &doc_values::DocValuesSkipIndex) -> Vec<String
 /// metadata and the raw data bytes. Shared by the doc-values-value checks,
 /// the index-sort check and the soft-deletes check, all of which need to
 /// read actual per-doc values.
-fn open_doc_values(
+pub(crate) fn open_doc_values(
     dir: &dyn Directory,
     commit: &SegmentCommitInfo,
     si: &SegmentInfo,
@@ -4291,11 +4291,40 @@ fn check_index_sort(
             ));
         }
 
+        // A segment with blocks is sorted parent by parent: Java walks the
+        // parent field's documents (`reader.getNumericDocValues(parentField)`)
+        // instead of every one, and refuses blocks without a parent field.
+        let walked: Vec<i32> = if si.has_blocks {
+            let parent = field_infos
+                .fields
+                .iter()
+                .find(|f| f.parent_field)
+                .ok_or_else(|| {
+                    "parent field is not set but the index has document blocks".to_string()
+                })?;
+            match meta.numeric_entry(parent.number) {
+                None => Vec::new(),
+                Some(entry) => {
+                    let mut reader = doc_values::NumericReader::new(&dvd, entry);
+                    let mut docs = Vec::new();
+                    for doc in 0..si.doc_count {
+                        if reader
+                            .value(doc)
+                            .map_err(|e| format!("parent field: {e}"))?
+                            .is_some()
+                        {
+                            docs.push(doc);
+                        }
+                    }
+                    docs
+                }
+            }
+        } else {
+            (0..si.doc_count).collect()
+        };
         let mut problems = Vec::new();
-        for doc in 1..si.doc_count {
-            // ARITH: the range starts at 1.
-            #[allow(clippy::arithmetic_side_effects)]
-            let prev = doc - 1;
+        for pair in walked.windows(2) {
+            let (prev, doc) = (pair[0], pair[1]);
             let mut ordering = std::cmp::Ordering::Equal;
             for (keys, cmp) in &per_field {
                 ordering = cmp.compare(keys[prev as usize], keys[doc as usize]);
