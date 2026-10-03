@@ -9,7 +9,7 @@
 | **Effort** | L |
 | **Depends on** | [M7](m7-core-complete.md) (`document` fields, multi-dimension BKD writing) |
 | **Unblocks** | native `geo_distance`, `geo_bounding_box`, `geo_shape`, geo sorting |
-| **Status** | delivered 2026-10-03, three of four criteria met: T9.1-T9.6 done; the Tessellator has no real-world polygon corpus yet. Open performance gaps tracked elsewhere: spatial-extras RPT intersects (0.73x) and heatmaps (0.60x) |
+| **Status** | delivered 2026-10-03, all four criteria met (the real-world Tessellator corpus 2026-10-03): T9.1-T9.6 done. Open performance gaps tracked elsewhere: spatial-extras RPT intersects (0.73x) and heatmaps (0.60x) |
 
 ---
 
@@ -247,13 +247,24 @@ column, and empty answers kept in the query cache, as `LRUQueryCache` keeps
       spatial-extras generators likewise, and through the plugin
       `NativeSelfTest.geo` (704 random queries, degenerate polygons -- on one
       parallel or meridian, repeated vertices -- included).
-- [ ] The `Tessellator` produces Lucene's triangles, or fails where Lucene
-      fails, on a corpus of real-world polygons. *Not met as worded:* it
-      does, triangle for triangle (or failure for failure), on ~200 seeded
-      synthetic polygons (`GenGeoTessellator`: holes, poles, the dateline,
-      self-intersections, the morton and SPLIT paths), but no real-world
-      corpus (country or coastline boundaries) has been added to the
-      fixtures yet.
+- [x] The `Tessellator` produces Lucene's triangles, or fails where Lucene
+      fails, on a corpus of real-world polygons. *Evidence:*
+      `GenGeoTessellatorReal` -> `geo_fixtures.rs`'
+      `tessellator_matches_lucene_on_real_world_polygons` over
+      `fixtures/corpus/real_polygons.z` (`scripts/gen-tessellator-corpus.py`):
+      Lucene 10.5.0's own `TestTessellator` shapes (21 resource files, 52
+      inline polygons from issue reports) and Natural Earth v5.1.2 -- 1:50m
+      countries, provinces and lakes, 1:10m lakes with islands and ten 1:10m
+      countries (Russia's 22,908-point mainland split at the antimeridian,
+      Antarctica at the pole, Norway's and Chile's coastlines, enclaves as
+      holes): 1,111 shapes, 4,193 polygons, ~399,000 vertices, each parsed by
+      both engines' parsers and tessellated with and without
+      `checkSelfIntersections` (Lucene's shapes as cartesian polygons too):
+      833,628 triangles identical (digest per polygon, full lists for
+      `TestTessellator`'s shapes) and all 33 failures identical, messages
+      included. Speed on the same corpus: `tessellate_real` 1.11x,
+      `tessellate_real_checked` 1.08x (`--bench geo`). The ~200 seeded
+      synthetic polygons of `GenGeoTessellator` stay beside it.
 - [x] Real Lucene reads Rust-written point and shape indices.
 - [x] Native `geo_distance` and `geo_shape` searches agree with a stock node
       in the plugin's matrix, and are no slower than Lucene. *Evidence:*

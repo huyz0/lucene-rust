@@ -16,6 +16,10 @@ spatial-extras module depends on, both under the Apache License, Version 2.0
  - The S2 Geometry Library for Java, as published in
    io.sgr:s2-geometry-library-java 1.0.0, Copyright 2005 Google Inc.
 
+The test corpus fixtures/corpus/real_polygons.z contains polygons from
+Apache Lucene's own tests (Apache License 2.0) and Natural Earth vector
+data (public domain, https://www.naturalearthdata.com/).
+
 ===========================================================================
 Apache Lucene NOTICE
 ===========================================================================

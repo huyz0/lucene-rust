@@ -604,6 +604,153 @@ fn tessellator_matches_lucene() {
     );
 }
 
+/// One triangle in `GenGeoTessellator`'s `tri` format.
+fn tri_line(t: &lucene_util::geo::tessellator::Triangle) -> String {
+    let mut s = String::from("tri\t");
+    for v in 0..3 {
+        s.push_str(&format!("{},{},", t.encoded_x(v), t.encoded_y(v)));
+    }
+    s.push_str(
+        &(0..3)
+            .map(|v| u8::from(t.is_edge_from_polygon(v)).to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+    );
+    s
+}
+
+/// `GenGeoTessellatorReal.result`: the triangle count and the FNV-1a 64 hash
+/// of the encoded vertices and edge flags.
+fn tri_digest(tris: &[lucene_util::geo::tessellator::Triangle]) -> String {
+    const PRIME: u64 = 0x100000001b3;
+    let mut h: u64 = 0xcbf29ce484222325;
+    for t in tris {
+        let mut flags = 0u64;
+        for v in 0..3 {
+            for x in [t.encoded_x(v), t.encoded_y(v)] {
+                for b in x.to_le_bytes() {
+                    h = (h ^ u64::from(b)).wrapping_mul(PRIME);
+                }
+            }
+            flags |= u64::from(t.is_edge_from_polygon(v)) << v;
+        }
+        h = (h ^ flags).wrapping_mul(PRIME);
+    }
+    format!("{}\t{h:x}", tris.len())
+}
+
+/// A shape of the real-world corpus as `GenGeoTessellatorReal.parse` reads it.
+fn parse_real(format: &str, text: &str) -> Result<Vec<Polygon>, GeoError> {
+    use lucene_util::geo::simple_wkt_shape_parser::{self, WktGeometry};
+    if format == "geojson" {
+        return Polygon::from_geojson(text);
+    }
+    Ok(match simple_wkt_shape_parser::parse(text)? {
+        Some(WktGeometry::Polygon(p)) => vec![p],
+        Some(WktGeometry::MultiPolygon(v)) => v.into_iter().map(Option::unwrap).collect(),
+        other => panic!("{other:?}"),
+    })
+}
+
+/// `GenGeoTessellatorReal.toXY`: lon/lat as float x/y, holes included.
+fn to_xy(p: &Polygon) -> Result<XYPolygon, GeoError> {
+    let holes = p.holes().iter().map(to_xy).collect::<Result<Vec<_>, _>>()?;
+    let x: Vec<f32> = p.poly_lons().iter().map(|&v| v as f32).collect();
+    let y: Vec<f32> = p.poly_lats().iter().map(|&v| v as f32).collect();
+    XYPolygon::new(&x, &y, holes)
+}
+
+/// The Tessellator over real-world polygons (`fixtures/corpus/real_polygons.z`:
+/// Lucene's own `TestTessellator` shapes and Natural Earth countries,
+/// provinces and lakes), triangle for triangle by digest -- and in full for
+/// `TestTessellator`'s shapes -- or failure for failure.
+#[test]
+fn tessellator_matches_lucene_on_real_world_polygons() {
+    use lucene_util::geo::tessellator::{self, Triangle};
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/corpus/real_polygons.z");
+    let packed = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let corpus =
+        String::from_utf8(miniz_oxide::inflate::decompress_to_vec_zlib(&packed).unwrap()).unwrap();
+    let text = fixture("tessellator_real.tsv");
+    let mut want = text.lines().peekable();
+    let (mut shapes, mut polys, mut tris_total, mut errs, mut vertices) = (0, 0, 0usize, 0, 0usize);
+    let mut sources = std::collections::BTreeSet::new();
+    for line in corpus.lines() {
+        let f: Vec<&str> = line.splitn(4, '\t').collect();
+        sources.insert(f[0]);
+        let lucene = !f[0].starts_with("ne_");
+        let header = want.next().unwrap();
+        let prefix = format!("shape\t{}\t{}\t", f[0], f[1]);
+        let rest = header
+            .strip_prefix(&prefix)
+            .unwrap_or_else(|| panic!("{header} vs {prefix}"));
+        let polygons = match parse_real(f[2], f[3]) {
+            Ok(p) => p,
+            Err(e) => {
+                assert_eq!(rest, err_cols(&e), "{} {}", f[0], f[1]);
+                continue;
+            }
+        };
+        assert_eq!(rest, polygons.len().to_string(), "{} {}", f[0], f[1]);
+        shapes += 1;
+        let mut check_one = |label: String, got: Result<Vec<Triangle>, GeoError>| {
+            let line = want.next().unwrap();
+            let (head, expect) = line.rsplit_once('\t').unwrap();
+            let (head, count) = head.rsplit_once('\t').unwrap();
+            let got_line = match &got {
+                Ok(tris) => format!("{}\t{}", label, tri_digest(tris)),
+                Err(e) => format!("{}\t{}", label, err_cols(e)),
+            };
+            if line.contains("\tERR\t") {
+                errs += 1;
+            }
+            let full: Vec<&str> =
+                std::iter::from_fn(|| want.next_if(|l| l.starts_with("tri\t"))).collect();
+            if let (Ok(tris), false) = (&got, full.is_empty()) {
+                let got_full: Vec<String> = tris.iter().map(tri_line).collect();
+                assert_eq!(got_full, full, "{} {} {label}", f[0], f[1]);
+            }
+            if let Ok(tris) = &got {
+                tris_total += tris.len();
+            }
+            assert_eq!(
+                got_line,
+                format!("{head}\t{count}\t{expect}"),
+                "{} {}",
+                f[0],
+                f[1]
+            );
+            polys += 1;
+        };
+        for (i, p) in polygons.iter().enumerate() {
+            vertices += p.num_points() + p.holes().iter().map(Polygon::num_points).sum::<usize>();
+            for check in [true, false] {
+                let label = format!("poly\t{i}\tlatlon\t{}", u8::from(check));
+                check_one(label, tessellator::tessellate(p, check));
+            }
+            if !lucene {
+                continue;
+            }
+            match to_xy(p) {
+                Ok(xy) => {
+                    for check in [true, false] {
+                        let label = format!("poly\t{i}\txy\t{}", u8::from(check));
+                        check_one(label, tessellator::tessellate_xy(&xy, check));
+                    }
+                }
+                Err(e) => check_one(format!("poly\t{i}\txy\t-"), Err(e)),
+            }
+        }
+    }
+    assert!(want.next().is_none(), "trailing expected lines");
+    assert_eq!(sources.len(), 7, "{sources:?}");
+    assert!(
+        shapes > 1_000 && polys > 9_000 && tris_total > 800_000 && errs > 30 && vertices > 390_000,
+        "{shapes} {polys} {tris_total} {errs} {vertices}"
+    );
+}
+
 // ---------------------------------------------------------------- parsers
 
 fn dump_ring(lats: &[f64], lons: &[f64]) -> String {
