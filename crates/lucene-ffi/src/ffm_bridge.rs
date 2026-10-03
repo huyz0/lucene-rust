@@ -241,19 +241,24 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_sorted_alloc(
 }
 
 /// Slots of [`ffi_jvm_reader_aggregate_alloc`]'s `out_total`.
-pub const AGGREGATE_TOTAL: usize = 3;
+pub const AGGREGATE_TOTAL: usize = 4;
 
 /// [`jvm_reader::ffi_jvm_reader_aggregate`] with its `terms` results handed
 /// back as an owned buffer: per metric field its value count in
 /// `out_counts` and [`jvm_reader::METRIC_VALUES`] doubles in `out_values`;
 /// with a positive `count_limit`, `out_total` the [`AGGREGATE_TOTAL`] slots
-/// `[1 when counted else 0, total, total is a lower bound]`.
+/// `[1 when counted else 0, total, total is a lower bound, 1 when
+/// out_seg_counts was written else 0]`. When counted and every segment's
+/// live matches were visited, and `out_seg_counts` holds a slot per segment,
+/// those counts go there (by segment, in reader order): what the count
+/// collector would iterate in each, so the caller can replay its early
+/// termination (`terminated_early`) without a second search.
 ///
 /// # Safety
 /// `query`/`aggs` must be valid for `query_len`/`aggs_len` bytes,
 /// `out_counts` for `counts_cap` and `out_values` for `values_cap` writes,
-/// `out_total` for [`AGGREGATE_TOTAL`], and `out_terms`/`out_terms_len` for
-/// one each.
+/// `out_total` for [`AGGREGATE_TOTAL`], `out_seg_counts` for `seg_cap` (null
+/// when 0), and `out_terms`/`out_terms_len` for one each.
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn ffi_jvm_reader_aggregate_alloc(
@@ -268,24 +273,41 @@ pub unsafe extern "C" fn ffi_jvm_reader_aggregate_alloc(
     out_values: *mut f64,
     values_cap: usize,
     out_total: *mut i64,
+    out_seg_counts: *mut i64,
+    seg_cap: usize,
     out_terms: *mut *mut u8,
     out_terms_len: *mut usize,
 ) -> i32 {
     guard(|| {
         // SAFETY: caller contract.
         unsafe { clear_out(out_terms, out_terms_len)? };
-        if out_counts.is_null() || out_values.is_null() || out_total.is_null() {
+        if out_counts.is_null()
+            || out_values.is_null()
+            || out_total.is_null()
+            || (out_seg_counts.is_null() && seg_cap > 0)
+        {
             return Err(FfiStatus::NullPointer);
         }
         // SAFETY: caller contract.
         let blob = unsafe { bytes_from_raw(query, query_len)? };
         // SAFETY: caller contract.
         let aggs_blob = unsafe { bytes_from_raw(aggs, aggs_len)? };
-        let (states, terms, total) =
-            jvm_reader::aggregate_counting_blobs(handle, blob, aggs_blob, count_limit)?;
+        let (states, terms, total, seen) =
+            jvm_reader::aggregate_counting_blobs_seen(handle, blob, aggs_blob, count_limit)?;
+        // Every segment's count, when the pass visited them all.
+        let per_segment: Option<Vec<u64>> = seen.iter().copied().collect();
+        let per_segment = per_segment.filter(|c| total.is_some() && c.len() <= seg_cap);
+        if let Some(c) = &per_segment {
+            for (i, &n) in c.iter().enumerate() {
+                // SAFETY: caller contract: `out_seg_counts` holds `seg_cap >=
+                // c.len()` slots.
+                unsafe { *out_seg_counts.add(i) = i64::try_from(n).unwrap_or(i64::MAX) };
+            }
+        }
+        let written = i64::from(per_segment.is_some());
         let totals = match total {
-            Some((total, lower_bound)) => [1, total, i64::from(lower_bound)],
-            None => [0, 0, 0],
+            Some((total, lower_bound)) => [1, total, i64::from(lower_bound), written],
+            None => [0, 0, 0, 0],
         };
         // SAFETY: caller contract: `out_total` holds `AGGREGATE_TOTAL` slots.
         unsafe { std::ptr::copy_nonoverlapping(totals.as_ptr(), out_total, AGGREGATE_TOTAL) };
@@ -672,6 +694,8 @@ mod tests {
                 values.as_mut_ptr(),
                 values_cap,
                 total.as_mut_ptr(),
+                std::ptr::null_mut(),
+                0,
                 &mut p,
                 &mut n,
             )
@@ -681,6 +705,82 @@ mod tests {
             return Err(rc);
         }
         Ok((counts, values, total, take(p, n)))
+    }
+
+    /// The segments' match counts come back when there is room for them and
+    /// the total was counted; not otherwise.
+    #[test]
+    fn aggregate_hands_back_the_segments_counts() {
+        let h = open();
+        let q = term_blob("body", "fox");
+        let aggs = aggs_blob(&[(0, 0, "n")], &[], &[]);
+        let (_, _, total, seen) =
+            jvm_reader::aggregate_counting_blobs_seen(h, &q, &aggs, i64::MAX).unwrap();
+        let call = |limit: i64, seg: &mut [i64]| {
+            let mut counts = [0i64; 1];
+            let mut values = [0f64; jvm_reader::METRIC_VALUES];
+            let mut out = [-1i64; AGGREGATE_TOTAL];
+            let (mut p, mut n) = (std::ptr::null_mut(), 0usize);
+            let rc = unsafe {
+                ffi_jvm_reader_aggregate_alloc(
+                    h,
+                    q.as_ptr(),
+                    q.len(),
+                    aggs.as_ptr(),
+                    aggs.len(),
+                    limit,
+                    counts.as_mut_ptr(),
+                    1,
+                    values.as_mut_ptr(),
+                    jvm_reader::METRIC_VALUES,
+                    out.as_mut_ptr(),
+                    seg.as_mut_ptr(),
+                    seg.len(),
+                    &mut p,
+                    &mut n,
+                )
+            };
+            assert_eq!(rc, 0);
+            drop(take(p, n));
+            out
+        };
+        let mut seg = vec![-1i64; seen.len()];
+        let (t, lb) = total.unwrap();
+        assert_eq!(call(i64::MAX, &mut seg), [1, t, i64::from(lb), 1]);
+        let want: Vec<i64> = seen.iter().map(|c| c.unwrap() as i64).collect();
+        assert_eq!(seg, want);
+        assert_eq!(seg.iter().sum::<i64>(), t);
+        // too little room, or no count asked for: nothing written
+        let mut short = vec![-1i64; seen.len() - 1];
+        assert_eq!(call(i64::MAX, &mut short)[3], 0);
+        assert!(short.iter().all(|&c| c == -1));
+        let mut seg = vec![-1i64; seen.len()];
+        assert_eq!(call(0, &mut seg), [0, 0, 0, 0]);
+        assert!(seg.iter().all(|&c| c == -1));
+        // a null buffer with room claimed is refused
+        let mut out = [0i64; AGGREGATE_TOTAL];
+        let (mut p, mut n) = (std::ptr::null_mut(), 0usize);
+        let rc = unsafe {
+            ffi_jvm_reader_aggregate_alloc(
+                h,
+                q.as_ptr(),
+                q.len(),
+                aggs.as_ptr(),
+                aggs.len(),
+                0,
+                [0i64; 1].as_mut_ptr(),
+                1,
+                [0f64; jvm_reader::METRIC_VALUES].as_mut_ptr(),
+                jvm_reader::METRIC_VALUES,
+                out.as_mut_ptr(),
+                std::ptr::null_mut(),
+                1,
+                &mut p,
+                &mut n,
+            )
+        };
+        assert_eq!(rc, FfiStatus::NullPointer.code());
+        assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(h), 0);
     }
 
     #[test]
@@ -696,7 +796,8 @@ mod tests {
         assert_eq!(values, jvm_reader::metric_values(&states[0]));
         assert_eq!(got_terms, terms);
         let (t, lb) = total.unwrap();
-        assert_eq!(got_total, [1, t, i64::from(lb)]);
+        // no room for the segments' counts: not written
+        assert_eq!(got_total, [1, t, i64::from(lb), 0]);
         // No count asked for: the total slots say so.
         let (_, _, got_total, _) =
             aggregate(h, &q, &aggs, 0, 1, jvm_reader::METRIC_VALUES).unwrap();
@@ -727,6 +828,8 @@ mod tests {
                 [0f64; 6].as_mut_ptr(),
                 6,
                 total.as_mut_ptr(),
+                std::ptr::null_mut(),
+                0,
                 &mut p,
                 &mut n,
             )
@@ -750,6 +853,8 @@ mod tests {
                 [0f64; 6].as_mut_ptr(),
                 6,
                 total.as_mut_ptr(),
+                std::ptr::null_mut(),
+                0,
                 &mut p,
                 &mut n,
             )
@@ -768,6 +873,8 @@ mod tests {
                 [0f64; 6].as_mut_ptr(),
                 6,
                 total.as_mut_ptr(),
+                std::ptr::null_mut(),
+                0,
                 &mut p,
                 std::ptr::null_mut(),
             )
@@ -786,6 +893,8 @@ mod tests {
                 [0f64; 6].as_mut_ptr(),
                 6,
                 total.as_mut_ptr(),
+                std::ptr::null_mut(),
+                0,
                 &mut p,
                 &mut n,
             )
@@ -804,6 +913,8 @@ mod tests {
                 [0f64; 6].as_mut_ptr(),
                 6,
                 total.as_mut_ptr(),
+                std::ptr::null_mut(),
+                0,
                 &mut p,
                 &mut n,
             )

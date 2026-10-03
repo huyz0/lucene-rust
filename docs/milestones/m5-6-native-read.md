@@ -868,6 +868,19 @@ contexts do, in the plugin's Java; the native searches underneath are R1-R5's.
   answers from `Weight.count` (and so never shows the terminating collector)
   -- the plugin asks Lucene's own weight, query cache included, and the
   native side replays each slice over the others (`count_terminates`).
+  Behind aggregations the replay needs no search (2026-10-03, ABI 32): the
+  aggregations' pass hands back each segment's live match count
+  (`ffi_jvm_reader_aggregate_alloc`'s `out_seg_counts`) and the plugin
+  replays the collectors from those (`replayCountTerminated`; held to the
+  native replay's answer by `NativeSelfTest` and
+  `the_aggregations_counts_replay_the_count_collector`); and since stopping
+  only grows with the segments a collector iterates, when no slice stops
+  even iterating every segment the answer is `false` without asking
+  Lucene's weight at all -- whose creation, for a `geo_distance` filter,
+  builds the doc-values twin's whole relation grid (JFR: most of the query
+  phase). Those two had made a `size: 0` `terms` aggregation behind a
+  filter of more than 10,000 hits cost twice its aggregation
+  (`docs/milestones/m9-geo-and-spatial.md`, T9.6 benchmark).
 
 - **`min_score`**: `MinimumScoreCollector` sits outside every other collector,
   so the hits, the total, the `size: 0` count and the aggregations all see

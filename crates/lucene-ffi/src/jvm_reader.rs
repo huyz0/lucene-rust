@@ -103,8 +103,10 @@ use std::sync::Arc;
 /// the tree); 28, the JNI `searchDocFreq` (a term query's total-hits shortcut
 /// and its search in one call); 29, the JNI entry points replaced by the
 /// Foreign Function & Memory API's downcalls ([`crate::ffm_bridge`]); 30,
-/// the points-box and geo nodes (M9 T9.6); 31, the geo-distance sort key.
-pub const JVM_ABI_VERSION: u32 = 31;
+/// the points-box and geo nodes (M9 T9.6); 31, the geo-distance sort key;
+/// 32, the aggregations' per-segment match counts
+/// ([`crate::ffm_bridge::ffi_jvm_reader_aggregate_alloc`]'s `out_seg_counts`).
+pub const JVM_ABI_VERSION: u32 = 32;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -1373,6 +1375,32 @@ pub(crate) fn aggregate_counting_blobs(
     aggs_blob: &[u8],
     count_limit: i64,
 ) -> Result<(Vec<MetricState>, Vec<u8>, Option<(i64, bool)>), FfiStatus> {
+    aggregate_counting_blobs_seen(handle, query_blob, aggs_blob, count_limit)
+        .map(|(s, t, total, _)| (s, t, total))
+}
+
+/// [`aggregate_counting_blobs`], also handing back each segment's live
+/// match count where the aggregations' pass counted it (`None` for a
+/// segment whose aggregations were answered without visiting its matches):
+/// what a `size: 0` search's count collector would iterate there, so the
+/// caller can tell whether that collector stops early (`terminated_early`,
+/// [`lucene_search::terminate::count_terminates`]) without running the
+/// query again.
+#[allow(clippy::type_complexity)]
+pub(crate) fn aggregate_counting_blobs_seen(
+    handle: u64,
+    query_blob: &[u8],
+    aggs_blob: &[u8],
+    count_limit: i64,
+) -> Result<
+    (
+        Vec<MetricState>,
+        Vec<u8>,
+        Option<(i64, bool)>,
+        Vec<Option<u64>>,
+    ),
+    FfiStatus,
+> {
     let (query, min_score) = decode_request(query_blob)?;
     let (specs, terms, slices) = decode_metrics(aggs_blob)?;
     let h = lookup(
@@ -1454,7 +1482,7 @@ pub(crate) fn aggregate_counting_blobs(
         (true, None) => Some(total_hits_with(&h, &segments, &query, count_limit, &seen)?),
         (true, Some(_)) => min_score_total(&seen, count_limit),
     };
-    Ok((states, encode_terms_results(&results)?, total))
+    Ok((states, encode_terms_results(&results)?, total, seen))
 }
 
 /// A decoded count blob: the limit, the iterate flags, the slices.
@@ -3287,6 +3315,92 @@ pub(crate) mod tests {
             b.extend_from_slice(&i.to_le_bytes());
         }
         b
+    }
+
+    /// The aggregations' per-segment counts replay a concurrent `size: 0`
+    /// count's early termination exactly as [`count_terminates_blobs`] runs
+    /// it: what the plugin computes from them (`countTerminatedEarly`)
+    /// instead of searching again. Every limit, iterate pattern and slicing
+    /// (a slice in reverse doc-base order included).
+    #[test]
+    fn the_aggregations_counts_replay_the_count_collector() {
+        {
+            let shape: &[i32] = &[4, 4];
+            let (rc, h) = open_with(shape, 0);
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            let segments = lookup(h, "test").unwrap().reader.segment_readers().len();
+            let segs: Vec<i32> = (0..segments as i32).collect();
+            let mut slicings: Vec<Vec<Vec<i32>>> = vec![vec![segs.clone()]];
+            slicings.push(segs.iter().map(|&i| vec![i]).collect());
+            slicings.push(vec![segs.iter().rev().copied().collect()]);
+            let patterns: Vec<Vec<u8>> = vec![
+                vec![1; segments],
+                vec![0; segments],
+                (0..segments).map(|i| (i % 2) as u8).collect(),
+            ];
+            let mut checked = 0;
+            for term in ["fox", "dog", "the", "no-such-term"] {
+                let q = term_blob("body", term);
+                let aggs = metrics_blob(&[(METRIC_LONG, "n")]);
+                let (_, _, total, seen) = aggregate_counting_blobs_seen(h, &q, &aggs, 1).unwrap();
+                assert!(total.is_some());
+                let seen: Vec<u64> = seen.into_iter().map(Option::unwrap).collect();
+                let all: u64 = seen.iter().sum();
+                for n in 1..=(all as i32 + 2) {
+                    for iterate in &patterns {
+                        for slices in &slicings {
+                            let mut spec = n.to_le_bytes().to_vec();
+                            spec.extend_from_slice(&(segments as i32).to_le_bytes());
+                            spec.extend_from_slice(iterate);
+                            spec.extend_from_slice(&(slices.len() as i32).to_le_bytes());
+                            for slice in slices {
+                                spec.extend_from_slice(&(slice.len() as i32).to_le_bytes());
+                                for i in slice {
+                                    spec.extend_from_slice(&i.to_le_bytes());
+                                }
+                            }
+                            let want = count_terminates_blobs(h, &q, &spec).unwrap();
+                            // `RustQueryPhaseSearcher.replayCountTerminated`
+                            let replay = slices.iter().any(|slice| {
+                                let mut order = slice.clone();
+                                order.sort_unstable(); // doc-base order is segment order here
+                                let mut collected = 0u64;
+                                for &i in &order {
+                                    if collected >= n as u64 {
+                                        return true;
+                                    }
+                                    if iterate[i as usize] == 0 {
+                                        continue;
+                                    }
+                                    let c = seen[i as usize];
+                                    if collected + c > n as u64 {
+                                        return true;
+                                    }
+                                    collected += c;
+                                }
+                                false
+                            });
+                            assert_eq!(replay, want, "{term} n={n} {iterate:?} {slices:?}");
+                            // monotone in the iterated segments: the plugin skips Lucene's
+                            // weight when iterating everywhere does not stop
+                            let everywhere = slices.iter().any(|slice| {
+                                let mut collected = 0u64;
+                                slice.iter().any(|&i| {
+                                    let stop = collected >= n as u64
+                                        || collected + seen[i as usize] > n as u64;
+                                    collected += seen[i as usize];
+                                    stop
+                                })
+                            });
+                            assert!(everywhere || !want, "{term} n={n} {slices:?}");
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+            assert!(checked > 50, "{checked}");
+            assert_eq!(ffi_close_jvm_reader(h), 0);
+        }
     }
 
     #[test]
