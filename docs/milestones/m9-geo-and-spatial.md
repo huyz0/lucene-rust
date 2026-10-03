@@ -174,6 +174,9 @@ last within the milestone.
   deeper than the tree, a date term's year overflow, an S2 term with no
   level, and unbounded nesting in binary shapes, geo3d streams and WKT.
 - **T9.6** — Plugin wiring for OpenSearch's geo queries and sort.
+  *In progress.* Queries native: `geo_bounding_box`, `geo_distance`,
+  `geo_polygon` and `geo_shape` on `geo_point` and `geo_shape` fields
+  (`GeoEncoder.java`, query-tree nodes 15-19, `DocumentClause`).
 
 ## Acceptance criteria
 

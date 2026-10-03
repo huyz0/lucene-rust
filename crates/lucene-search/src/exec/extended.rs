@@ -207,6 +207,7 @@ pub(crate) fn build<'a>(
         ExtendedQuery::IndexOrDocValues(q) => {
             index_or_doc_values(ctx, q, boost, mode, top_level, None)
         }
+        ExtendedQuery::Document(d) => super::ranges::document(ctx, d, boost, mode),
         // `RescoreTopNQuery` has no weight of its own: `rewrite(searcher)`
         // turns it into a `DocAndScoreQuery` first.
         ExtendedQuery::RescoreTopN(_) => Err(crate::Error::IllegalState(
