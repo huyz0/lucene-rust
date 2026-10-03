@@ -313,10 +313,24 @@ three repetitions, result digests compared across the engines first):
 inputs from one SplitMix64 stream) -- `geo3d_polygon_build` 1.41x,
 `geo3d_within` 1.20x, `geo3d_relate` 1.18x, `geo3d_circle_build` 1.10x and
 `geo3d_distance` 0.97x (both inside the 1.17x noise floor; the run before
-had them at 0.98x and 1.05x). Below 1.0 and left: `geo3d_distance` measured
-1.05x and 0.97x in two runs, inside the noise both times; its time is
-`acos`/`atan2` (fdlibm on both sides) and the intersection planes, where
-nothing allocates any more. Trigonometry dominates `geo3d_circle_build`:
+had them at 0.98x and 1.05x). `geo3d_distance` measured
+1.05x and 0.97x in two runs, inside the noise both times; the T9.4 review
+re-ran it with more repetitions (7, then 9 at 3 s each) and it was not
+noise: 0.80x (Rust 872 ns, Java 700 ns per point and shape, noise floor
+1.08x). A callgrind profile put a path's `outsideDistance` -- four bounded
+plane distances and four corner distances per segment -- at 17.5% in
+`Plane.findIntersections` (as `GeoPoint`s), 13% in `arcDistance`, 6.4% in
+`acos`, and ~12% in the bounds' `SidedPlane.isWithin`, each called through
+a `&dyn Membership` (HotSpot inlines Java's monomorphic call) with
+`Math.signum`'s zero/NaN branches. Three changes, results bit-identical
+(the digests are unchanged): the plane-distance functions take bounds of
+one concrete type (`meets_all_bounds_of`), so a segment's `SidedPlane`
+bounds inline (-7%); `arcDistance` takes its intersections as bare
+coordinates (`intersection_coords`) instead of building `GeoPoint`s with
+their lazy slots (-10%); `SidedPlane.isWithin` compares the sign without
+`signum` (-2%). Re-measured: **1.01x** (Rust 701 ns, Java 711 ns, 9
+repetitions, noise floor 1.10x) -- parity, not a lead: what is left is
+the same fdlibm `acos` and intersection arithmetic on both sides. Trigonometry dominates `geo3d_circle_build`:
 fdlibm here against HotSpot's `sin`/`cos` intrinsics in the stock JVM the
 bench runs. And `--bench geo3d_points` (`Geo3dPointsMicro.java` /
 `micro_geo3d_points.rs`, 300 000 WGS84 points, one segment) --
