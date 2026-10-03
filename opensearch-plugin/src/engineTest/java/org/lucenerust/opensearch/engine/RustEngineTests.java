@@ -7508,22 +7508,51 @@ public class RustEngineTests extends RustEngineTestCase {
         List<List<Engine.Operation>> commits = new ArrayList<>();
         commits.add(new ArrayList<>());
         try (Store store = createStore()) {
-            EngineConfig config = config(defaultSettings, store, translogPath, NoMergePolicy.INSTANCE, null, null, globalCheckpoint::get);
+            // Every commit the engine writes, as it writes it (derive_engine_tests.py, COMMIT_MODEL).
+            final List<Engine.Operation> flushedOperations = new ArrayList<>();
+            final AtomicLong recordedGeneration = new AtomicLong(Long.MIN_VALUE);
+            final AtomicBoolean recording = new AtomicBoolean();
+            final ReferenceManager.RefreshListener commitRecorder = new ReferenceManager.RefreshListener() {
+                @Override
+                public void beforeRefresh() {}
+
+                @Override
+                public void afterRefresh(boolean didRefresh) throws IOException {
+                    if (recording.get() == false) {
+                        return;
+                    }
+                    final long generation = store.readLastCommittedSegmentsInfo().getGeneration();
+                    if (recordedGeneration.getAndSet(generation) != generation) {
+                        final List<Engine.Operation> committed = new ArrayList<>(flushedOperations);
+                        committed.sort(Comparator.comparing(Engine.Operation::seqNo));
+                        commits.add(committed);
+                    }
+                }
+            };
+            EngineConfig config = config(
+                defaultSettings,
+                store,
+                translogPath,
+                NoMergePolicy.INSTANCE,
+                null,
+                commitRecorder,
+                null,
+                globalCheckpoint::get,
+                new NoneCircuitBreakerService()
+            );
             final List<DocIdSeqNoAndSource> docs;
             try (RustEngine engine = createEngine(config)) {
-                List<Engine.Operation> flushedOperations = new ArrayList<>();
+                recordedGeneration.set(store.readLastCommittedSegmentsInfo().getGeneration());
+                recording.set(true);
                 for (Engine.Operation op : operations) {
-                    flushedOperations.add(op);
                     applyOperation(engine, op);
+                    flushedOperations.add(op);
                     if (randomBoolean()) {
                         engine.translogManager().syncTranslog();
                         globalCheckpoint.set(randomLongBetween(globalCheckpoint.get(), engine.getPersistedLocalCheckpoint()));
                     }
                     if (randomInt(100) < 10) {
                         engine.refresh("test");
-                        // A Rust refresh is a commit (derive_engine_tests.py, COMMIT_MODEL).
-                        flushedOperations.sort(Comparator.comparing(Engine.Operation::seqNo));
-                        commits.add(new ArrayList<>(flushedOperations));
                     }
                     if (randomInt(100) < 5) {
                         engine.flush(true, true);

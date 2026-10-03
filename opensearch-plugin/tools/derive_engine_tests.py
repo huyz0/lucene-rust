@@ -167,21 +167,71 @@ def reach_line(text: str) -> str:
 # RustIndexWriter), and such a commit is a recovery point like any other: on restart,
 # trimUnsafeCommits rolls back to the newest commit whose max_seq_no is at or below the global
 # checkpoint, refresh commits included. A test that lists the commits it made must list those
-# too, or it expects the restart to land on an older commit than the engine's (seed
-# B86ED099065D7184: four deletes refreshed before any flush, all below the global checkpoint).
+# too, or it expects the restart to land on an older commit than the engine's.
+#
+# testRebuildLocalCheckpointTrackerAndVersionMap therefore records commits where they happen:
+# an internal refresh listener (every commit, flush included, is followed by an internal
+# refresh) adds the operations applied so far whenever the newest commit generation moves. The
+# engine's own refreshes are commits too, not only the test's engine.refresh: a replica index
+# operation whose version-map lookup finds the map unsafe refreshes inside
+# planIndexingAsNonPrimary ("unsafe_version_map"), before that operation is written, and
+# getDocIds refreshes after the loop. So an operation joins the list once applyOperation has
+# returned, and a commit written while it is in flight does not hold it. Seeds that lost a
+# commit to the narrower model: B86ED099065D7184 (four deletes refreshed before any flush,
+# fixed by recording the test's refreshes) and F119AF73222A4007 (an "unsafe_version_map" commit
+# with max_seq_no 68 under a global checkpoint of 85, newer than every commit the test recorded).
+# Merge commits need no entry: the writer writes them inside the same commit call, with the same
+# operations and user data.
 # Test name -> (code in its body, what replaces it).
 COMMIT_MODEL: dict[str, tuple[str, str]] = {
     "testRebuildLocalCheckpointTrackerAndVersionMap": (
-        """                    if (randomInt(100) < 10) {
-                        engine.refresh("test");
-                    }
+        """            EngineConfig config = config(defaultSettings, store, translogPath, NoMergePolicy.INSTANCE, null, null, globalCheckpoint::get);
+            final List<DocIdSeqNoAndSource> docs;
+            try (RustEngine engine = createEngine(config)) {
+                List<Engine.Operation> flushedOperations = new ArrayList<>();
+                for (Engine.Operation op : operations) {
+                    flushedOperations.add(op);
+                    applyOperation(engine, op);
 """,
-        """                    if (randomInt(100) < 10) {
-                        engine.refresh("test");
-                        // A Rust refresh is a commit (derive_engine_tests.py, COMMIT_MODEL).
-                        flushedOperations.sort(Comparator.comparing(Engine.Operation::seqNo));
-                        commits.add(new ArrayList<>(flushedOperations));
+        """            // Every commit the engine writes, as it writes it (derive_engine_tests.py, COMMIT_MODEL).
+            final List<Engine.Operation> flushedOperations = new ArrayList<>();
+            final AtomicLong recordedGeneration = new AtomicLong(Long.MIN_VALUE);
+            final AtomicBoolean recording = new AtomicBoolean();
+            final ReferenceManager.RefreshListener commitRecorder = new ReferenceManager.RefreshListener() {
+                @Override
+                public void beforeRefresh() {}
+
+                @Override
+                public void afterRefresh(boolean didRefresh) throws IOException {
+                    if (recording.get() == false) {
+                        return;
                     }
+                    final long generation = store.readLastCommittedSegmentsInfo().getGeneration();
+                    if (recordedGeneration.getAndSet(generation) != generation) {
+                        final List<Engine.Operation> committed = new ArrayList<>(flushedOperations);
+                        committed.sort(Comparator.comparing(Engine.Operation::seqNo));
+                        commits.add(committed);
+                    }
+                }
+            };
+            EngineConfig config = config(
+                defaultSettings,
+                store,
+                translogPath,
+                NoMergePolicy.INSTANCE,
+                null,
+                commitRecorder,
+                null,
+                globalCheckpoint::get,
+                new NoneCircuitBreakerService()
+            );
+            final List<DocIdSeqNoAndSource> docs;
+            try (RustEngine engine = createEngine(config)) {
+                recordedGeneration.set(store.readLastCommittedSegmentsInfo().getGeneration());
+                recording.set(true);
+                for (Engine.Operation op : operations) {
+                    applyOperation(engine, op);
+                    flushedOperations.add(op);
 """,
     ),
 }
