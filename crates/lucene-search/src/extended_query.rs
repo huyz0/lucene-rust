@@ -45,6 +45,11 @@ pub enum ExtendedQuery {
     RescoreTopN(crate::rescorer::RescoreTopNQuery),
     /// A query of the `document` package as a leaf of the tree.
     Document(DocumentClause),
+    /// `lucene-join`'s block joins ([`crate::join`]).
+    ToParentBlockJoin(crate::join::ToParentBlockJoinQuery),
+    ToChildBlockJoin(crate::join::ToChildBlockJoinQuery),
+    ParentChildrenBlockJoin(crate::join::ParentChildrenBlockJoinQuery),
+    ParentsChildrenBlockJoin(crate::join::ParentsChildrenBlockJoinQuery),
 }
 
 macro_rules! into_clause {
@@ -103,6 +108,10 @@ impl ExtendedQuery {
             ExtendedQuery::IndexOrDocValues(_) => "IndexOrDocValuesQuery",
             ExtendedQuery::RescoreTopN(_) => "RescoreTopNQuery",
             ExtendedQuery::Document(_) => "DocumentQuery",
+            ExtendedQuery::ToParentBlockJoin(_) => "ToParentBlockJoinQuery",
+            ExtendedQuery::ToChildBlockJoin(_) => "ToChildBlockJoinQuery",
+            ExtendedQuery::ParentChildrenBlockJoin(_) => "ParentChildrenBlockJoinQuery",
+            ExtendedQuery::ParentsChildrenBlockJoin(_) => "ParentsChildrenBlockJoinQuery",
         }
     }
 
@@ -114,6 +123,10 @@ impl ExtendedQuery {
             ExtendedQuery::BayesianScore(q) => vec![q.query.as_ref()],
             ExtendedQuery::IndexSortRange(q) => vec![q.fallback.as_ref()],
             ExtendedQuery::IndexOrDocValues(q) => vec![q.index_query.as_ref(), q.dv_query.as_ref()],
+            ExtendedQuery::ToParentBlockJoin(q) => vec![q.child.as_ref()],
+            ExtendedQuery::ToChildBlockJoin(q) => vec![q.parent.as_ref()],
+            ExtendedQuery::ParentChildrenBlockJoin(q) => vec![q.child.as_ref()],
+            ExtendedQuery::ParentsChildrenBlockJoin(q) => vec![q.parent.as_ref(), q.child.as_ref()],
             _ => Vec::new(),
         }
     }

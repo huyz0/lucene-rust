@@ -2173,6 +2173,80 @@ impl DirectoryReader {
     }
 }
 
+impl SegmentReader {
+    /// This one segment as an [`crate::multi_segment::OpenSegment`] at
+    /// `doc_base`, its postings and points opened for the length of `f` --
+    /// what a comparator holding only the segment's reader
+    /// ([`crate::top_field::LeafCtx`]) needs to run a query over it (a block
+    /// join sort's parent and child filters).
+    pub fn with_open_segment<R>(
+        &self,
+        doc_base: i32,
+        f: impl FnOnce(&crate::multi_segment::OpenSegment<'_>) -> crate::Result<R>,
+    ) -> crate::Result<R> {
+        let open = |e: Error| crate::Error::from(e);
+        use std::sync::atomic::Ordering;
+        let validated = self.postings_validated.load(Ordering::Acquire);
+        let doc_in = match &self.doc_buf {
+            Some(buf) if validated => Some(DocInput::validated(buf)),
+            Some(buf) => Some(
+                DocInput::open(buf, &self.segment_id, &self.segment_suffix)
+                    .map_err(|e| open(e.into()))?,
+            ),
+            None => None,
+        };
+        let pos_in = match &self.pos_buf {
+            Some(buf) if validated => Some(PosInput::validated(buf)),
+            Some(buf) => Some(
+                PosInput::open(buf, &self.segment_id, &self.segment_suffix)
+                    .map_err(|e| open(e.into()))?,
+            ),
+            None => None,
+        };
+        let pay_in = match &self.pay_buf {
+            Some(buf) if validated => Some(PayInput::validated(buf)),
+            Some(buf) => Some(
+                PayInput::open(buf, &self.segment_id, &self.segment_suffix)
+                    .map_err(|e| open(e.into()))?,
+            ),
+            None => None,
+        };
+        let points = match self.points_files() {
+            Some((kdm, kdi, kdd)) => {
+                if self.points_meta.get().is_none() {
+                    let parsed =
+                        lucene_codecs::points::open_meta(kdm, kdi, kdd, &self.segment_id, "")
+                            .map_err(|e| open(e.into()))?;
+                    let _ = self.points_meta.set(parsed);
+                }
+                let meta = self.points_meta.get_or_init(Vec::new);
+                crate::points_query::PointsInput {
+                    reader: lucene_codecs::points::PointsReader::with_meta(kdi, kdd, meta),
+                    field_infos: &self.field_infos,
+                }
+            }
+            None => crate::points_query::PointsInput {
+                reader: lucene_codecs::points::PointsReader::empty(),
+                field_infos: &self.field_infos,
+            },
+        };
+        let seg = crate::multi_segment::OpenSegment {
+            fields: &self.fields,
+            doc_in: doc_in.as_ref(),
+            pos_in: pos_in.as_ref(),
+            pay_in: pay_in.as_ref(),
+            live_docs: self.live_docs.as_deref(),
+            doc_base,
+            max_doc: Some(self.max_doc),
+            cache: Some(&self.query_cache),
+            points: Some(&points),
+            reader: Some(self),
+            index_sort_prefix: false,
+        };
+        f(&seg)
+    }
+}
+
 /// The `DocInput`/`PosInput`/`PayInput` values [`DirectoryReader::open_segments`]
 /// constructed, plus a reference back to their owning [`SegmentReader`]s --
 /// see this module's doc comment for why this intermediate type exists.

@@ -1169,6 +1169,18 @@ outright.
   output is platform independent. `-Dgeo3d.seed=N` draws another corpus; the
   tests read one from `GEO3D_FIXTURES=dir`.
 
+- `GenBlockJoin.java` (M10 T10.2) → `block_join/`, for `lucene-search`'s
+  `block_join_fixtures.rs`: `index/`, four segments of two-level document
+  blocks (grandchildren closed by a child, children closed by a parent; empty
+  and single-child blocks) written with the parent field `_parent`, whole
+  blocks deleted in two segments and lone children, grandchildren and parents
+  in a third; `searches.tsv`: 936 searches -- every block-join query and score
+  mode, alone and in booleans, two levels deep, with all hits and score bits
+  (`all`), the top ten (`top`), Lucene's exception (`ERR`), and
+  `ToParentBlockJoinSortField` sorts with their values (`sort`), in a query
+  grammar the Rust test parses. The children carry float and byte vectors for
+  the diversifying KNN queries.
+
 - `GenGeo3dPoints.java` (M9 T9.4) → `geo3d_points/`, for `lucene-search`'s
   `geo3d_points_fixtures.rs`: `index/`, four segments (3 × 1500 documents
   and one of 50) with 247 deletions, of `Geo3DPoint`s on WGS84 (`p`,

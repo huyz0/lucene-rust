@@ -85,6 +85,9 @@ pub(crate) enum Bulk<'a> {
     /// A scored `CombinedFieldQuery` of one or two members, a window at a
     /// time. See [`super::extended::CombinedWindow`].
     Combined(Box<super::extended::CombinedWindow<'a>>),
+    /// `ToParentBlockJoinQuery`'s `BlockJoinBulkScorer`: the child's bulk
+    /// scorer, its hits folded into their parents.
+    BlockJoin(Box<super::join::BlockJoinBulk<'a>>),
 }
 
 impl<'a> Bulk<'a> {
@@ -112,6 +115,7 @@ impl<'a> Bulk<'a> {
             Bulk::DisMax(..) => "dismax",
             Bulk::Union(..) => "union",
             Bulk::Combined(..) => "combined",
+            Bulk::BlockJoin(..) => "block_join",
         }
     }
 
@@ -167,6 +171,7 @@ impl<'a> Bulk<'a> {
             Bulk::DisMax(legs, state) => state.score(legs, live_docs, collector, min, max),
             Bulk::Union(legs) => union_score(legs, live_docs, collector, min, max),
             Bulk::Combined(c) => c.score(live_docs, collector, min, max),
+            Bulk::BlockJoin(j) => j.score(live_docs, collector, min, max),
             Bulk::MinShouldMatch(legs, state) => state.score(legs, live_docs, collector, min, max),
             Bulk::Filtered(inner, filter) => {
                 let mut fc = FilterCollector {
@@ -532,6 +537,11 @@ pub(crate) fn bulk_clause<'a>(
         if let crate::extended_query::ExtendedQuery::CombinedField(c) = e.as_ref() {
             if let Some(bulk) = super::extended::combined_field_bulk(ctx, c, dismax_boost, mode)? {
                 return Ok(bulk.map(Bulk::Combined));
+            }
+        }
+        if let crate::extended_query::ExtendedQuery::ToParentBlockJoin(q) = e.as_ref() {
+            if let Some(bulk) = super::join::to_parent_bulk(ctx, q, dismax_boost, mode)? {
+                return Ok(bulk);
             }
         }
         if let crate::extended_query::ExtendedQuery::IndriAnd(q) = e.as_ref() {

@@ -428,18 +428,20 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
         if let Some(max_doc) = seg.max_doc {
             set_match_all_max_doc(&mut clause, max_doc);
         }
-        explain_clause_with_stats(
-            seg.fields,
-            seg.doc_in,
-            seg.pos_in,
-            seg.pay_in,
-            seg.live_docs,
-            seg.points,
-            &clause,
-            doc - seg.doc_base,
-            self.norms(i),
-            Some(&global),
-        )
+        crate::explain::with_leaf(seg.max_doc, seg.doc_base, || {
+            explain_clause_with_stats(
+                seg.fields,
+                seg.doc_in,
+                seg.pos_in,
+                seg.pay_in,
+                seg.live_docs,
+                seg.points,
+                &clause,
+                doc - seg.doc_base,
+                self.norms(i),
+                Some(&global),
+            )
+        })
     }
 
     /// `weight.scorer(leaf)` run to the end: every document of segment

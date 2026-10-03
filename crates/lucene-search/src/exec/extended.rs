@@ -208,6 +208,14 @@ pub(crate) fn build<'a>(
             index_or_doc_values(ctx, q, boost, mode, top_level, None)
         }
         ExtendedQuery::Document(d) => super::ranges::document(ctx, d, boost, mode),
+        ExtendedQuery::ToParentBlockJoin(q) => super::join::to_parent(ctx, q, boost, mode),
+        ExtendedQuery::ToChildBlockJoin(q) => super::join::to_child(ctx, q, boost, mode),
+        ExtendedQuery::ParentChildrenBlockJoin(q) => {
+            super::join::parent_children(ctx, q, boost, mode)
+        }
+        ExtendedQuery::ParentsChildrenBlockJoin(q) => {
+            super::join::parents_children(ctx, q, boost, mode)
+        }
         // `RescoreTopNQuery` has no weight of its own: `rewrite(searcher)`
         // turns it into a `DocAndScoreQuery` first.
         ExtendedQuery::RescoreTopN(_) => Err(crate::Error::IllegalState(
@@ -2502,7 +2510,9 @@ pub(crate) fn resolve(
         points,
         norms,
         global,
-        max_doc: None,
+        // Set while `IndexSearcher.explain` runs: a block join's parent
+        // filter needs the segment's size.
+        max_doc: crate::explain::leaf().map(|(max_doc, _)| max_doc),
         cache: None,
         reader: None,
         similarity: None,

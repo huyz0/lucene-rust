@@ -52,6 +52,17 @@ pub fn is_cacheable(clause: &Clause, reader: Option<&SegmentReader>) -> bool {
                 && d.disjuncts.iter().all(|c| is_cacheable(c, reader))
         }
         Clause::ConstantScore(c) => is_cacheable(&c.inner, reader),
+        // The block joins: their weights delegate to the wrapped query's
+        // (`FilterWeight`); `ParentChildrenBlockJoinQuery` is never cacheable.
+        Clause::Extended(e) => match e.as_ref() {
+            crate::extended_query::ExtendedQuery::ParentChildrenBlockJoin(_) => false,
+            crate::extended_query::ExtendedQuery::ToParentBlockJoin(_)
+            | crate::extended_query::ExtendedQuery::ToChildBlockJoin(_)
+            | crate::extended_query::ExtendedQuery::ParentsChildrenBlockJoin(_) => {
+                e.children().into_iter().all(|c| is_cacheable(c, reader))
+            }
+            _ => true,
+        },
         Clause::Boost(b) => is_cacheable(&b.inner, reader),
         // `FieldExistsQuery`: through doc values only when the field has
         // them; norms and vectors are segment-immutable.

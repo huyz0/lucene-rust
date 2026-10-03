@@ -86,7 +86,8 @@ set -euo pipefail
 # lucene-spatial3d is required by GenGeo3d* (org.apache.lucene.spatial3d).
 # lucene-spatial-extras (and its Spatial4j and S2 jars, SPATIAL_EXTRAS_DEPS in
 # lib-lucene-jars.sh) is required by GenSpatial* (org.apache.lucene.spatial).
-LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-facet lucene-highlighter lucene-spatial3d lucene-spatial-extras)
+# lucene-join is required by GenBlockJoin (org.apache.lucene.search.join).
+LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-facet lucene-highlighter lucene-spatial3d lucene-spatial-extras lucene-join)
 
 cd "$(git rev-parse --show-toplevel)"
 FIXTURES="$PWD/fixtures"

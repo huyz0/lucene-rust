@@ -848,6 +848,29 @@ pub fn leaf_matches(
             multi_term_matches(seg, Arc::new(clause.clone()), doc)
         }
         Clause::MatchNoDocs(_) => Ok(None),
+        Clause::Extended(e) => match e.as_ref() {
+            // `ToChildBlockJoinWeight` is a `FilterWeight` that keeps its
+            // parent weight's `matches`: the parent query asked about the
+            // child document.
+            crate::extended_query::ExtendedQuery::ToChildBlockJoin(q) => {
+                leaf_matches(seg, &q.parent, doc)
+            }
+            // `ParentsChildrenBlockJoinWeight.matches`: the parent's and the
+            // child's matches of the document, combined.
+            crate::extended_query::ExtendedQuery::ParentsChildrenBlockJoin(q) => {
+                let subs: Vec<BoxMatches> = [
+                    leaf_matches(seg, &q.parent, doc)?,
+                    leaf_matches(seg, &q.child, doc)?,
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                Ok(from_sub_matches(subs))
+            }
+            // `ToParentBlockJoinQuery` (`MATCH_WITH_NO_TERMS` where its
+            // scorer matches) and everything else: `Weight`'s default.
+            _ => default_matches(seg, clause, doc),
+        },
         Clause::Fuzzy(_) | Clause::MultiPhrase(_) | Clause::Span(_) => Err(Error::IllegalArgument(
             format!("Weight.matches is not ported for {}", clause_name(clause)),
         )),
