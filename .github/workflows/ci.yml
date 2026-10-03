@@ -326,6 +326,11 @@ jobs:
             target
           key: cargo-x64-${{ hashFiles('**/Cargo.toml', 'rust-toolchain.toml') }}
           restore-keys: cargo-x64-
+      # The derived tests must be exactly derive_engine_tests.py's output from
+      # OpenSearch 3.8.0's own sources (pinned by SHA-256): no hand edits, no
+      # script change left un-run.
+      - name: The derived engine tests match their generator
+        run: ./scripts/check-derived-engine-tests.sh
       - name: OpenSearch's engine tests on the Rust engine
         run: ./scripts/opensearch-engine-tests.sh
       - name: The Rust engine on a real node, and the YAML suites on it
