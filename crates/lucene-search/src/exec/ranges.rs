@@ -579,6 +579,70 @@ pub(crate) fn point_in_set<'a>(
     Ok(doc_set(docs, max_doc, boost, mode))
 }
 
+/// A [`DocumentClause`]: the query's `ConstantScoreWeight` over this
+/// segment -- its matches, before deletions, collected into a set (as the geo
+/// queries' own scorers collect theirs into a `FixedBitSet` or
+/// `DocIdSetBuilder`) and iterated at the boost.
+pub(crate) fn document<'a>(
+    ctx: &LeafContext<'a>,
+    q: &DocumentClause,
+    boost: f32,
+    mode: Mode,
+) -> Result<Option<BoxScorer<'a>>> {
+    let Some(reader) = ctx.reader else {
+        return Err(crate::Error::MissingSegmentReader(q.key.clone()));
+    };
+    let leaf = crate::multi_segment::OpenSegment {
+        fields: ctx.fields,
+        doc_in: ctx.doc_in,
+        pos_in: ctx.pos_in,
+        pay_in: ctx.pay_in,
+        // The tree applies deletions; the set is the segment core's.
+        live_docs: None,
+        doc_base: 0,
+        max_doc: Some(reader.max_doc),
+        cache: None,
+        points: ctx.points,
+        reader: Some(reader),
+        index_sort_prefix: false,
+    };
+    let len = usize::try_from(reader.max_doc).unwrap_or(0);
+    let mut hits = SetCollector {
+        bits: crate::bit_set_pool::take(len).unwrap_or_else(|| FixedBitSet::new(len)),
+        cardinality: 0,
+    };
+    q.query.score_leaf(&leaf, boost, &mut hits)?;
+    let SetCollector { bits, cardinality } = hits;
+    if cardinality == 0 {
+        crate::bit_set_pool::give(bits);
+        return Ok(None);
+    }
+    let inner: BoxScorer<'a> = Box::new(super::cache::CachedScorer::new(std::sync::Arc::new(
+        super::cache::CachedSet::Bits { bits, cardinality },
+    )));
+    Ok(constant(inner, boost, mode))
+}
+
+/// Collects a document query's matches into a set.
+struct SetCollector {
+    bits: FixedBitSet,
+    cardinality: i64,
+}
+
+impl crate::collector::ScoringCollector for SetCollector {
+    fn collect(&mut self, doc_id: i32, _score: f32) {
+        if let Ok(i) = usize::try_from(doc_id) {
+            // FBS: a document query collects its own segment's documents,
+            // below `maxDoc`, the set's length; the check keeps a corrupt
+            // one from panicking.
+            if i < self.bits.len() && !self.bits.get(i) {
+                self.bits.set(i);
+                self.cardinality += 1;
+            }
+        }
+    }
+}
+
 /// `DocValuesRewriteMethod`: the multi-term query's terms looked up in the
 /// field's `SORTED_SET` (or `SORTED`) doc-values dictionary, and every
 /// document holding one of those ordinals.

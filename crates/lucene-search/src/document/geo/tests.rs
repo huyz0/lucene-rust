@@ -490,3 +490,73 @@ fn geo3d_query_schema_and_comparator_sources() {
     assert!(keys[0] < keys[1] && keys[1] < keys[2], "{keys:?}");
     assert!(keys[3] < keys[4] && keys[4] < keys[5], "{keys:?}");
 }
+
+/// A geo query as a leaf of the scorer tree ([`crate::extended_query::DocumentClause`]):
+/// the tree applies deletions (the query's set is the segment core's), a
+/// boost scores every match, and a segment with no reader is an error.
+#[test]
+fn document_clauses_join_the_scorer_tree() {
+    use crate::extended_query::DocumentClause;
+    use crate::query::{BooleanQuery, BoostQuery, Clause, MatchAllDocsQuery};
+    use crate::search_boolean_query_multi_segment;
+    use std::sync::Arc;
+
+    let tmp = TempDir::new("geo-tree");
+    let r = index(
+        &tmp,
+        vec![
+            vec![ll("p", 0.0, 0.0), ll("p", 0.5, 0.5), ll("p", 40.0, 40.0)],
+            vec![ll("p", 0.1, -0.1), vec![], ll("p", -60.0, 170.0)],
+        ],
+    );
+    let opened = r.open_segments().unwrap();
+    let mut leaves = opened.as_open_segments();
+    let distance = LatLonPointDistanceQuery::new("p", 0.0, 0.0, 100_000.0).unwrap();
+    assert_eq!(docs(&leaves, &distance), vec![0, 1, 3]);
+    let clause = DocumentClause::new("distance", Arc::new(distance));
+    assert_eq!(format!("{clause:?}"), "DocumentClause(distance)");
+    assert_eq!(
+        clause,
+        DocumentClause::new("distance", Arc::new(MatchAllDocs))
+    );
+    assert_ne!(clause, DocumentClause::new("other", Arc::new(MatchAllDocs)));
+    let norms = vec![None; leaves.len()];
+    let run = |leaves: &[OpenSegment<'_>], q: &BooleanQuery| {
+        search_boolean_query_multi_segment(leaves, q, &norms[..leaves.len()], 10)
+            .map(|h| h.iter().map(|d| (d.doc_id, d.score)).collect::<Vec<_>>())
+    };
+    let boosted = BooleanQuery {
+        must: vec![BoostQuery::new(Clause::from(clause.clone()), 3.0).into()],
+        ..Default::default()
+    };
+    assert_eq!(
+        run(&leaves, &boosted).unwrap(),
+        vec![(0, 3.0), (1, 3.0), (3, 3.0)]
+    );
+    // A filter beside match-all, with document 1 deleted.
+    let mut live = FixedBitSet::new(3);
+    // FBS: documents 0 and 2 of the three-document set just made.
+    live.set(0);
+    // FBS: as above.
+    live.set(2);
+    leaves[0].live_docs = Some(&live);
+    let filtered = BooleanQuery {
+        must: vec![Clause::MatchAllDocs(MatchAllDocsQuery::new(i32::MAX))],
+        filter: vec![clause.clone().into()],
+        ..Default::default()
+    };
+    assert_eq!(run(&leaves, &filtered).unwrap(), vec![(0, 1.0), (3, 1.0)]);
+    // No match in either segment: no scorer at all.
+    let none = DocumentClause::new(
+        "far",
+        Arc::new(LatLonPointDistanceQuery::new("p", -10.0, -10.0, 1.0).unwrap()),
+    );
+    let q = BooleanQuery {
+        must: vec![none.into()],
+        ..Default::default()
+    };
+    assert!(run(&leaves, &q).unwrap().is_empty());
+    // A segment opened without its reader cannot run a document query.
+    leaves[1].reader = None;
+    assert!(run(&leaves[1..], &filtered).is_err());
+}

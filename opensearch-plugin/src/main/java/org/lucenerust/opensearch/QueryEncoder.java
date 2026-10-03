@@ -61,7 +61,9 @@ import java.util.function.Predicate;
  *   <li>the leaves: {@link PhraseQuery} without position gaps, {@link TermInSetQuery}, {@link
  *       PrefixQuery}, {@link WildcardQuery} without escapes and {@link RegexpQuery} with its default
  *       flags (under a constant-score rewrite), a one-dimension 8-byte {@code PointRangeQuery}, and
- *       {@link FieldExistsQuery}.
+ *       {@link FieldExistsQuery};
+ *   <li>the geo queries {@code geo_bounding_box}, {@code geo_distance}, {@code geo_polygon} and
+ *       {@code geo_shape} build on {@code geo_point} and {@code geo_shape} fields ({@link GeoEncoder}).
  * </ul>
  *
  * <p>The blob is {@code QUERY_TREE}: one node per query, each a kind byte and its payload (the
@@ -327,7 +329,8 @@ public final class QueryEncoder {
             // `LongPoint`/`DoublePoint`/date ranges: one dimension of 8 bytes, sent as the sortable
             // longs their packed bytes encode. A 4-byte point (`integer`, `float`) falls back.
             if (pr.getNumDims() != 1 || pr.getBytesPerDim() != Long.BYTES) {
-                return "points_width";
+                // `LatLonPoint.newBoxQuery`'s two 4-byte dimensions, or points_width.
+                return GeoEncoder.node(pr, out);
             }
             out.write(NODE_POINT_RANGE);
             writeBytes(out, pr.getField().getBytes(StandardCharsets.UTF_8));
@@ -359,6 +362,11 @@ public final class QueryEncoder {
         if (q.getClass() == MatchNoDocsQuery.class) {
             out.write(NODE_MATCH_NONE);
             return null;
+        }
+        // The geo queries (GeoEncoder): written, or a geo reason to fall back.
+        String geo = GeoEncoder.node(q, out);
+        if (geo != GeoEncoder.NOT_GEO) {
+            return geo;
         }
         // The whole query is unsupported ("query_"), or one clause of an otherwise native tree is.
         return (depth == 0 ? "query_" : "clause_") + name(q);

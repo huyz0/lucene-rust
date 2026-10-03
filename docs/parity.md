@@ -267,6 +267,29 @@ Tessellator's (T9.1) cost almost entirely (`edge_match`, the
 | `document/LatLonShapeBoundingBoxQuery` | `lucene-search/src/document/geo/shape_queries.rs::LatLonShapeBoundingBoxQuery` | **ported**: the encoded box (ceil/floor, `validateMinLon`), east and west halves across the dateline, `intersectBBoxWithRangeBBox`'s corner-inside rule for `INTERSECTS`/`DISJOINT` and `compareBBoxToRangeBBox` otherwise (on `int`s, ordered as Java's unsigned byte comparison), the encoded-space triangle tests, and `contains()`'s refusal of a box across the dateline (reached only by constructing it directly: `newBoxQuery` splits a `CONTAINS` box into two `MUST` clauses -- `MustConjunction`, a plain conjunction whose match would score the sum of its clauses, twice the boost). That summed score is unreachable in practice and only unit-tested: a half box reaches +-180, which a shape's boundary cannot pass, and a boundary edge touching the box makes `withinTriangle` answer `NOTWITHIN`; Lucene 10.5.0 matched nothing for split `CONTAINS` boxes over polygons, lines and points placed on both sides of the dateline (T9.3 review, scratch check), and `geo_shapes`' fixture rows for it have no hits. |
 | `document/BaseShapeDocValuesQuery`, `document/LatLonShapeDocValuesQuery`, `document/XYShapeDocValuesQuery` | `lucene-search/src/document/geo/shape_queries.rs::{LatLonShapeDocValuesQuery, XYShapeDocValuesQuery}` | **ported**: every document's value related to the `Component2D` (`WITHIN` needs the whole bounding box inside, `DISJOINT` negates), `CONTAINS` refused; a field that is not `BINARY` has no values. The constructors take any geometries (package-private in Java, whose factories only build a box; the fixture reaches them through `ShapeAccess`). `newSlowDocValuesBoxQuery` turns a `CONTAINS` box across the dateline into the *indexed* query's conjunction, as Java does. |
 
+## OpenSearch plugin -- geo queries and geo sorting (M9 T9.6)
+
+What OpenSearch 3.8.0 builds for `geo_bounding_box`, `geo_distance`,
+`geo_polygon` and `geo_shape` (on `geo_point` and `geo_shape` fields) and
+for the `_geo_distance` sort, and how each reaches the native engine. The
+Java query objects are read by class (the four geo query classes are
+package-private: their constructor arguments through the plugin's `Reflect`)
+in `opensearch-plugin/.../GeoEncoder.java`, sent as the query tree's nodes
+15-19, decoded in `lucene-ffi/src/jvm_reader.rs` and run as
+`DocumentClause`s -- the T9.2/T9.3 ports as leaves of the scorer tree, their
+sets before deletions, keyed for the query cache by the node's bytes (Java's
+`equals`: every constructor argument). Proved against a stock node by
+`opensearch-plugin/e2e/geo_matrix.py` (in `scripts/verify-opensearch.sh`) and
+against Lucene in process by `NativeSelfTest.geo`.
+
+| Java | Rust | Status |
+|---|---|---|
+| `document/LatLonPoint.newBoxQuery` (its two-dimension `PointRangeQuery`; a `ConstantScoreQuery` of two across the dateline) -- OpenSearch's `geo_bounding_box` and `geo_shape` envelope on a `geo_point`, inside `IndexOrDocValuesQuery` with `LatLonDocValuesField.newSlowBoxQuery` | `lucene-ffi/src/jvm_reader.rs::decode_node` (node 15), `lucene-search/src/extended_query.rs::PointRangeQuery` | **native.** The index side of the `IndexOrDocValuesQuery` runs (both sides match the same documents); only `LatLonPoint`'s own range is taken, any other multi-dimension or 4-byte range falls back (`points_width`). |
+| `document/LatLonPointDistanceQuery` -- `geo_distance`, and a `geo_shape` circle, on a `geo_point` | `lucene-ffi/src/jvm_reader.rs::decode_geo` (node 16), `lucene-search/src/extended_query.rs::DocumentClause` | **native.** |
+| `document/LatLonPointQuery` -- `geo_polygon`, `geo_shape` polygons and multipolygons on a `geo_point` (OpenSearch asks `INTERSECTS` only; every relation is encoded) | `lucene-ffi/src/jvm_reader.rs::{decode_geo, decode_geometries}` (node 17) | **native**, every `LatLonGeometry` (`Point`, `Line`, `Polygon` with holes, `Rectangle`, `Circle`). |
+| `document/LatLonShapeQuery`, `document/LatLonShapeBoundingBoxQuery` -- every query on a `geo_shape` field (`LatLonShape.newGeometryQuery`, incl. `geo_bounding_box` and `geo_distance` on one; a `CONTAINS` of several geometries or across the dateline is a `BooleanQuery` of them, encoded as one) | `lucene-ffi/src/jvm_reader.rs::decode_geo` (nodes 18, 19) | **native**, all four relations, inline and `indexed_shape` geometries alike (OpenSearch fetches the indexed one before the query is built). |
+| OpenSearch's legacy `geo_shape` mapping (`tree: quadtree/geohash`, spatial-extras' `RecursivePrefixTreeStrategy`) | -- | **falls back** (`query_<Class>`): a deprecated mapping (OpenSearch logs a deprecation for its parameters); spatial-extras itself is ported (T9.5), but not wired to the plugin. |
+
 ## lucene-util / lucene-index / lucene-search -- spatial3d (M9 T9.4)
 
 `lucene-spatial3d`'s `geom` package: shapes on an ellipsoid as planes

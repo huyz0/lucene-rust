@@ -29,6 +29,8 @@ import time
 import urllib.error
 import urllib.request
 
+import geo_matrix
+
 BASE = "http://localhost:9200"
 FAILURES = []
 CHECKS = [0]
@@ -994,7 +996,30 @@ def main():
         create_nested(index, shards)
         load_nested(index, 1500, 5 + shards)
         native += run_matrix(index, shards, "nested", rows=nested_rows())
-    print(f"matrix: {len(matrix())} request shapes x 4 indices; {native} shard queries ran native")
+    # M9 T9.6: geo_point and geo_shape queries (and _geo_distance sorts), on a
+    # one-shard and a three-shard index; then the one-shard index merged into a
+    # segment past 10,000 documents, where the native query cache holds geo sets.
+    geo_matrix.create_shapes(req)
+    geo_docs = max(12000, a.docs // 2)
+    for index, shards in (("geo", 1), ("geom", 3)):
+        try:
+            req("DELETE", f"/{index}")
+        except RuntimeError:
+            pass
+        req("PUT", f"/{index}", {"settings": {"number_of_shards": shards, "number_of_replicas": 0, "refresh_interval": -1},
+                                 "mappings": geo_matrix.mapping()})
+        geo_matrix.load(req, check, index, geo_docs, 11 + shards)
+        for shapes in ("fast", "all"):
+            native += run_matrix(index, shards, "geo", shapes, rows=geo_matrix.rows())
+    req("POST", "/geo/_forcemerge?max_num_segments=1")
+    req("POST", "/geo/_refresh")
+    # The deprecated prefix-tree geo_shape mapping falls back, by name.
+    geo_matrix.create_legacy(req)
+    run_matrix("geo-legacy", 1, "geo legacy", rows=geo_matrix.legacy_rows())
+    # Five rounds: a filter is cached on its fifth use (UsageTrackingQueryCachingPolicy).
+    for _ in range(5):
+        native += run_matrix("geo", 1, "geo merged", rows=geo_matrix.rows())
+    print(f"matrix: {len(matrix())} request shapes x 4 indices, {len(geo_matrix.rows())} geo shapes x 2 indices; {native} shard queries ran native")
     # Read path R6: the fetch phase and get API with native stored fields.
     run_fetch("single", "fetch")
     run_fetch("multi", "fetch")
