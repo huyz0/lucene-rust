@@ -1440,6 +1440,34 @@ struct EnumState {
     eof: bool,
 }
 
+impl EnumState {
+    /// Unpositioned, as a new enum is, keeping the frames' buffers and the
+    /// stack (`SegmentTermsEnum::reset`, without the enum).
+    fn unposition(&mut self) {
+        self.current = -1;
+        self.term.clear();
+        self.term_exists = false;
+        self.on_term = false;
+        self.eof = false;
+        self.valid_index_prefix = 0;
+        self.target_before_current_length = -1;
+    }
+}
+
+impl Drop for TermsEnum<'_> {
+    /// Returns the state to the field's pool, unless the pool meanwhile
+    /// holds a state with more frames.
+    fn drop(&mut self) {
+        if let Ok(mut pooled) = self.field.scratch.try_lock() {
+            if pooled.stack.len() <= self.st.stack.len() {
+                let mut st = std::mem::take(&mut self.st);
+                st.unposition();
+                *pooled = st;
+            }
+        }
+    }
+}
+
 impl Default for EnumState {
     /// Unpositioned: no frame, nothing to reuse.
     fn default() -> Self {
@@ -1642,13 +1670,7 @@ impl<'a> SegmentTermsEnum<'a> {
     /// Puts the enum back in its unpositioned state, keeping every frame's
     /// decoded block so the next lookup can reuse it.
     fn reset(&mut self) {
-        self.st.current = -1;
-        self.st.term.clear();
-        self.st.term_exists = false;
-        self.st.on_term = false;
-        self.st.eof = false;
-        self.st.valid_index_prefix = 0;
-        self.st.target_before_current_length = -1;
+        self.st.unposition();
     }
 
     /// `nodes[0] = trieReader.root` (`getNode` for the root slot).
@@ -2143,14 +2165,18 @@ pub struct TermsEnum<'a> {
 }
 
 impl<'a> TermsEnum<'a> {
+    /// `Terms.iterator()`: an unpositioned enum. It borrows the field's
+    /// pooled state when no lookup holds it -- its frames keep their block
+    /// buffers, so an enum per query (a spatial traversal, a multi-term
+    /// rewrite) does not allocate and grow a dozen of them again each
+    /// time, the cost Java's TLAB hides -- and hands it back on drop.
     fn new(field: &'a FieldTerms) -> Self {
-        Self {
-            field,
-            st: EnumState {
-                current: -1,
-                ..EnumState::default()
-            },
-        }
+        let mut st = match field.scratch.try_lock() {
+            Ok(mut pooled) => std::mem::take(&mut *pooled),
+            Err(_) => EnumState::default(),
+        };
+        st.unposition();
+        Self { field, st }
     }
 
     fn ste(&mut self) -> SegmentTermsEnum<'_> {
@@ -7889,6 +7915,36 @@ mod tests {
             kv["max_doc"].parse().unwrap(),
         )
         .unwrap()
+    }
+
+    /// `iter()` borrows the field's pooled state and `drop` returns it: a
+    /// new enum starts unpositioned however the last one was left, and a
+    /// pooled lookup made while an enum holds the state still answers.
+    #[test]
+    fn terms_enums_share_the_pooled_state_and_start_unpositioned() {
+        let fields = multilevel_many();
+        let many = fields.field("many").unwrap();
+        let first = many.iter().next().map(|(t, _)| t.to_vec()).unwrap();
+        let mut it = many.iter();
+        assert_eq!(it.seek_ceil(b"m"), SeekStatus::NotFound);
+        let landed = it.term().unwrap().to_vec();
+        // the enum holds the pooled state: a lookup runs on a fresh one
+        assert!(many.seek_exact(&landed).is_some());
+        let frames = it.st.stack.len();
+        drop(it);
+        assert!(many.scratch.lock().unwrap().stack.len() >= frames);
+        let mut again = many.iter();
+        assert_eq!(again.term(), None, "unpositioned");
+        assert_eq!(again.st.current, -1);
+        assert!(again.st.stack.len() >= frames, "the frames came back");
+        assert_eq!(again.next().map(|(t, _)| t.to_vec()), Some(first));
+        // two enums at once: the second gets a state of its own
+        let mut other = many.iter();
+        assert!(other.st.stack.is_empty());
+        assert_eq!(other.seek_ceil(&landed), SeekStatus::Found);
+        drop(again);
+        drop(other);
+        assert!(many.seek_exact(&landed).is_some());
     }
 
     /// `seekCeil` to the term the enum stands on answers from `termExists`

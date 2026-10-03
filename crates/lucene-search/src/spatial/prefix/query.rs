@@ -344,6 +344,8 @@ pub(crate) fn visit(q: &VisitingQuery, t: &mut Traverser<'_>, v: &mut dyn Visito
         cell: q.base.grid.world_cell(),
         children: None,
     }];
+    // `curVNodeTerm`: one buffer for every seek target.
+    let mut target = Vec::new();
     v.start(t)?;
     add_intersecting_children(q, t, v, &mut stack)?;
 
@@ -391,7 +393,7 @@ pub(crate) fn visit(q: &VisitingQuery, t: &mut Traverser<'_>, v: &mut dyn Visito
         }
         if compare < 0 {
             // The indexed cell is before; seek ahead to query cell
-            let target = stack[cur].cell.token_bytes_no_leaf();
+            stack[cur].cell.token_bytes_no_leaf_into(&mut target);
             let status = t.try_seek_ceil(&target)?;
             if status == SeekStatus::End {
                 break; // all done
@@ -909,6 +911,8 @@ fn union(a: Option<SmallDocSet>, b: Option<SmallDocSet>) -> Option<SmallDocSet> 
 struct ContainsVisitor<'q, 'a> {
     q: &'q ContainsPrefixTreeQuery,
     t: Traverser<'a>,
+    /// `seekTerm`: one buffer for every seek target.
+    seek_term: Vec<u8>,
 }
 
 impl ContainsVisitor<'_, '_> {
@@ -971,7 +975,8 @@ impl ContainsVisitor<'_, '_> {
             return Ok(true); // already there!
         }
         // seek!
-        let status = self.t.try_seek_ceil(&cell.token_bytes_no_leaf())?;
+        cell.token_bytes_no_leaf_into(&mut self.seek_term);
+        let status = self.t.try_seek_ceil(&self.seek_term)?;
         if status == SeekStatus::End {
             return Ok(false); // all done (on_term is false)
         }
@@ -1066,7 +1071,11 @@ impl ContainsPrefixTreeQuery {
         if t.has_terms() {
             t.next_term()?; // advance to first
         }
-        let mut v = ContainsVisitor { q: self, t };
+        let mut v = ContainsVisitor {
+            q: self,
+            t,
+            seek_term: Vec::new(),
+        };
         let world = self.base.grid.world_cell();
         v.visit(&*world, None)
     }

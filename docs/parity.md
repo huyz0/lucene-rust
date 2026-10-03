@@ -475,20 +475,52 @@ ORs a posting list into the bit set a block at a time (Java's
 The heatmap and RPT intersect traversals are a sorted stream of
 `seekCeil`s down an 11-level trie, and 30% of the heatmap's time was
 `TermsEnum::try_seek_ceil` restarting every seek at the trie's root
-(`docs/sweep/m2/c1-lazy-blocktree.md` F-9). The block tree now ports
-Java's seek-state reuse (see the `Lucene103BlockTreeTermsReader` row):
-re-measured with five repetitions, `spx_heatmap` 0.42x -> 0.47x,
-`spx_rpt_intersects_circle` 0.75x -> 0.80x, `spx_rpt_intersects_rect`
-0.78x -> 0.75x (inside its 1.10x noise floor); the term-seek benches it
-touches did not regress (`term_seek` `seek_hit` 1.06x -> 1.14x, `seek_miss`
-0.86x -> 1.03x, `next_all` 0.89x -> 0.88x, all inside a 1.16x floor;
-`m7_fixture`'s fuzzy and multi-term families within noise or faster;
-`bench-compare.sh` over the term, prefix, wildcard, fuzzy, regexp and
-terms-in-set queries 1.4% to 38% faster in Rust queries per second, recall
-equal). Most of the rest is the cells themselves: four boxed children per
-expanded cell and a rectangle per relation, which Java's TLAB allocates
-for almost nothing; and the heatmap reads `docFreq` (a metadata decode)
-for every prefix term, as Java does. `spx_rpt_index_polygon` and
+(`docs/sweep/m2/c1-lazy-blocktree.md` F-9). Stage 3, second round:
+the block tree now ports Java's seek-state reuse (see the
+`Lucene103BlockTreeTermsReader` row); a quad cell's children are made one
+at a time from a scratch child, so a child the filter rejects costs no
+allocation (`LegacyChildren`, instead of `getSubCells`' list of four boxed
+cells behind a `FilterCellIterator`); the seek targets go through one
+buffer (`getTokenBytesNoLeaf(scratch)`, `Cell::token_bytes_no_leaf_into`,
+Java's `curVNodeTerm`/`seekTerm`); a quad cell's rectangle is computed in
+one pass; and `FieldTerms::iter()` borrows the field's pooled enum state
+(handed back on drop), so the enum each traversal opens no longer
+allocates and grows a dozen frames' block buffers. Measured
+before/after, interleaved on one machine (5 rounds each, Rust side):
+`spx_heatmap` 108.0 -> 75.3 us (-30%), `spx_rpt_intersects_rect` and
+`_circle` unchanged (+0.3%, +0.4%); the term-seek benches it touches did
+not regress (`term_seek` `seek_hit` -7.6%, `seek_miss` -15%, `next_all`
+-4.6%; `m7_fixture`'s fuzzy and multi-term families within noise;
+`bench-compare.sh`'s term, prefix, wildcard, fuzzy, regexp and
+terms-in-set queries within +-5% noise or faster -- `q35` +51%, `q24`
++28% -- with equal results). Against Lucene (`bench-micro.sh`, five
+repetitions): `spx_heatmap` 0.42x -> **0.60x**, `spx_rpt_intersects_rect`
+0.78x -> **0.73x**, `spx_rpt_intersects_circle` 0.75x -> **0.74x** (both
+unchanged in the interleaved A/B; this machine's absolute timings drift
+by ~10% between runs), `spx_date_range` 1.35x, `spx_rpt_index_polygon`
+1.06x and `spx_bbox_similarity` 0.94x inside the noise.
+
+**Below 1.0, measured.** Callgrind, instructions per traversal on the
+final build. `spx_rpt_intersects_rect`: 82% is the scan level
+(`scan(detailLevel)` reading every term under the scan cell) -- 32%
+collecting postings into the bit set (`Traverser::collect_docs`: the term
+metadata decode and `LazyDocsCursor::into_window`, Java's
+`bitSet.or(postingsEnum)`), 27% relating each scanned cell
+(`Cell::relate_shape`: 10% the quad rectangle, 15.5% spatial4j's
+rectangle-rectangle relate), 14% `SegmentTermsEnum::next`, 10% reading
+each term's cell (`read_cell_into`); allocation is under 1%. The same
+work, op for op, as Java's `IntersectsPrefixTreeQuery`; what is left is
+per-call overhead in each piece (dyn `Cell`/`Shape`/`LegacyGrid`
+dispatch HotSpot devirtualises, the postings cursor's per-term reset), not
+one hot spot. `spx_heatmap`: 26% the `seekCeil`s (now resuming from the
+shared prefix), 25% relating query cells' children, 16% `visit_prefix`'s
+`docFreq` (a metadata decode per prefix term, as Java), 13% `visit_leaf`
+(counts, and each facet-level cell's rectangle allocated as an
+`Arc<dyn Shape>` -- Java's cached `getShape()`), 10.6% `next()`, 7.5%
+malloc/free. Parity on these needs the cell and shape layers made static
+(a `QuadCell` the traversal knows, a rectangle relate without
+`dyn Shape`) -- a redesign of the spatial4j port's object model, recorded
+here rather than started under a stage-3 sweep. `spx_rpt_index_polygon` and
 `spx_bbox_similarity` measured inside the noise in both runs.
 
 
