@@ -298,6 +298,22 @@ still owes. It cannot see the third-party code the module is built on
 (Spatial4j, S2): those subsets are not Lucene classes, so `docs/parity.md`
 records them, and their correctness rests on `spatial4j_fixtures.rs` alone.
 
+**`--module join`, `--module grouping`, `--module queries`** (M10 T10.0,
+`docs/inventory/lucene-{join,grouping,queries}.tsv`: the 29, 30 and 157
+top-level classes of those jars) were each seen to fail before they joined
+`gate.sh` and CI: a deleted row (`search/join/BitSetProducer: in the jar, not
+in lucene-join.tsv`, `search/grouping/AllGroupHeadsCollectorManager: ...`,
+`queries/CommonTermsQuery: ...`), an extra row (`search/Bogus: in
+lucene-<module>.tsv, not in the jar`, all three), a renamed symbol
+(`queries/spans/SpanScorer: crates/lucene-search/src/exec/span.rs has no
+`span_doc_scoresX``) and, with `$JARS`, `$HOME` and the proxy pointing
+nowhere, `no lucene-join jar (...); --require-jar makes that a failure`.
+Every class M10 has not ported yet is `todo:M10`, so `--milestone M10` lists
+what the milestone still owes. The `queries` rows marked `ported` are the span
+queries M2/M7 ported as algorithms rather than classes (`SpanTermQuery`,
+`SpanNearQuery`, `SpanOrQuery` and the iterators under them); the gate checks
+that the cited function exists, not that it covers the whole Java class.
+
 **Blind spots.** It checks that a cited symbol *exists*, not that it does
 what the Java class does -- the classification is a judgement, made per class
 against the Java source and recorded in the row, and a wrong `ported` passes.

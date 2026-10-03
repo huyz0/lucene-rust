@@ -40,7 +40,7 @@ RUN mkdir -p "$LUCENE_JARS" && cd "$LUCENE_JARS" \
     && for m in lucene-core lucene-analysis-common lucene-queryparser \
                 lucene-facet lucene-highlighter lucene-suggest lucene-codecs \
                 lucene-backward-codecs lucene-misc lucene-queries lucene-spatial3d \
-                lucene-spatial-extras; do \
+                lucene-spatial-extras lucene-join lucene-grouping; do \
          curl -fsSL -O "$base/$m/$LUCENE_VERSION/$m-$LUCENE_VERSION.jar" || \
            echo "note: $m not published for $LUCENE_VERSION, skipping"; \
        done \
