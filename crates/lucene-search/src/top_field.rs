@@ -255,6 +255,11 @@ pub fn register_comparator_source(source: Arc<dyn FieldComparatorSource>) -> Cus
     CustomSortId(u32::try_from(all.len() - 1).unwrap_or(u32::MAX))
 }
 
+/// The id of [`SortField::with_source`]'s keys: never registered (the
+/// registry would need four billion sources to reach it), never looked up
+/// (their `rewritten` source answers first).
+const UNREGISTERED: CustomSortId = CustomSortId(u32::MAX);
+
 /// The comparator a custom key sorts with.
 pub(crate) fn custom_comparator(
     id: CustomSortId,
@@ -537,6 +542,17 @@ impl SortField {
             nested: None,
             rewritten: None,
         }
+    }
+
+    /// A `CUSTOM` key sorted by `source` itself, which no registry holds: a
+    /// source built for one request (the FFI's geo-distance keys), dropped
+    /// with the key, where [`register_comparator_source`] would keep it for
+    /// the process. Sorts exactly as [`Self::custom`] over a registered
+    /// `source` would.
+    pub fn with_source(field: &str, source: Arc<dyn FieldComparatorSource>, reverse: bool) -> Self {
+        let mut f = Self::custom(field, UNREGISTERED, reverse);
+        f.rewritten = Some(RewrittenSource(source));
+        f
     }
 
     /// `new BinarySortField(field, reverse, missingValue)` at search time:

@@ -176,7 +176,9 @@ last within the milestone.
 - **T9.6** — Plugin wiring for OpenSearch's geo queries and sort.
   *In progress.* Queries native: `geo_bounding_box`, `geo_distance`,
   `geo_polygon` and `geo_shape` on `geo_point` and `geo_shape` fields
-  (`GeoEncoder.java`, query-tree nodes 15-19, `DocumentClause`).
+  (`GeoEncoder.java`, query-tree nodes 15-19, `DocumentClause`); the
+  `_geo_distance` sort native in Lucene's comparator and in OpenSearch's
+  own (`ARC`; sort key 7).
 
 ## Acceptance criteria
 

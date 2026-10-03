@@ -12,6 +12,14 @@ import org.apache.lucene.geo.Polygon;
 import org.apache.lucene.geo.Rectangle;
 import org.apache.lucene.search.PointRangeQuery;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.search.SortField;
+import org.apache.lucene.util.SloppyMath;
+import org.opensearch.common.geo.GeoDistance;
+import org.opensearch.common.geo.GeoPoint;
+import org.opensearch.index.fielddata.IndexFieldData;
+import org.opensearch.index.fielddata.plain.AbstractLatLonPointIndexFieldData.LatLonPointIndexFieldData;
+import org.opensearch.search.MultiValueMode;
+import org.opensearch.search.sort.GeoDistanceSortBuilder;
 
 import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Field;
@@ -209,6 +217,93 @@ final class GeoEncoder {
         for (double v : lons) {
             writeDouble(out, v);
         }
+    }
+
+    // --- _geo_distance sorts ----------------------------------------------------------------
+
+    private static final String LUCENE_SORT = DOCUMENT + "LatLonPointSortField";
+
+    /** Whether {@code f} is Lucene's {@code LatLonPointSortField} (OpenSearch's single-origin, metres, ascending {@code _geo_distance}). */
+    static boolean luceneSort(SortField f) {
+        return f.getClass().getName().equals(LUCENE_SORT);
+    }
+
+    /** Whether {@code f} is a key of OpenSearch's own {@code _geo_distance} comparator source. */
+    static boolean openSearchSort(SortField f) {
+        return f.getClass() == SortField.class
+            && f.getType() == SortField.Type.CUSTOM
+            && f.getComparatorSource() != null
+            && f.getComparatorSource().getClass().getEnclosingClass() == GeoDistanceSortBuilder.class;
+    }
+
+    /**
+     * A {@code _geo_distance} key as {@code decode_geo_sort} reads it: {@code lucene} for {@code
+     * LatLonPointSortField}, else OpenSearch's comparator with its origins, unit (metres per unit)
+     * and mode.
+     */
+    record Sort(boolean lucene, String field, double[] lats, double[] lons, double unitMeters, MultiValueMode mode) {}
+
+    /** At most this many origins ({@code MAX_GEO_ORIGINS} in {@code jvm_reader.rs}). */
+    static final int MAX_ORIGINS = 1024;
+
+    /**
+     * {@code f}'s geo sort, or the reason it cannot run natively ({@code String}); null when {@code f}
+     * is no geo sort. OpenSearch's comparator is taken when it is not nested, measures {@code ARC}
+     * (not {@code PLANE}: {@code Math.cos} is a HotSpot intrinsic no portable code matches bit for
+     * bit), reads a {@code geo_point}'s own doc values, and has finite origins.
+     */
+    static Object sort(SortField f) {
+        try {
+            if (luceneSort(f)) {
+                Field lat = Reflect.declared(f.getClass(), "latitude");
+                Field lon = Reflect.declared(f.getClass(), "longitude");
+                if (lat == null || lon == null) {
+                    return "sort_geo_reflect";
+                }
+                return new Sort(true, f.getField(), new double[] { lat.getDouble(f) }, new double[] { lon.getDouble(f) }, 1.0, MultiValueMode.MIN);
+            }
+            if (openSearchSort(f) == false) {
+                return null;
+            }
+            IndexFieldData.XFieldComparatorSource src = (IndexFieldData.XFieldComparatorSource) f.getComparatorSource();
+            if (src.nested() != null) {
+                return "sort_geo_nested";
+            }
+            Class<?> c = src.getClass();
+            Field builder = Reflect.declared(c, "this$0");
+            Field points = Reflect.declared(c, "val$localPoints");
+            Field data = Reflect.declared(c, "val$geoIndexFieldData");
+            if (builder == null || points == null || data == null) {
+                return "sort_geo_reflect";
+            }
+            GeoDistanceSortBuilder b = (GeoDistanceSortBuilder) builder.get(src);
+            if (b.geoDistance() != GeoDistance.ARC) {
+                return "sort_geo_plane";
+            }
+            if (!(data.get(src) instanceof LatLonPointIndexFieldData ifd)) {
+                return "sort_geo_field_data";
+            }
+            GeoPoint[] origins = (GeoPoint[]) points.get(src);
+            if (origins.length == 0 || origins.length > MAX_ORIGINS) {
+                return "sort_geo_origins";
+            }
+            double[] lats = new double[origins.length], lons = new double[origins.length];
+            for (int i = 0; i < origins.length; i++) {
+                lats[i] = origins[i].lat();
+                lons[i] = origins[i].lon();
+                if (Double.isFinite(lats[i]) == false || Double.isFinite(lons[i]) == false) {
+                    return "sort_geo_origins";
+                }
+            }
+            return new Sort(false, ifd.getFieldName(), lats, lons, b.unit().toMeters(1.0), src.sortMode());
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return "sort_geo_reflect";
+        }
+    }
+
+    /** {@code SloppyMath.haversinMeters} of a sort key, as {@code LatLonPointDistanceComparator.haversin2}. */
+    static double haversin2(double key) {
+        return Double.isInfinite(key) ? key : SloppyMath.haversinMeters(key);
     }
 
     private static void writeDouble(ByteArrayOutputStream out, double v) {

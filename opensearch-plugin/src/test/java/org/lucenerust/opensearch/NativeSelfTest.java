@@ -78,6 +78,10 @@ public final class NativeSelfTest {
     private static int aggChecks;
     private static int termsChecks;
     private static int geoEncoded;
+    /** Whether {@link #randomSort} may draw {@code _geo_distance} keys (the geo index is being searched). */
+    private static boolean geoSorts;
+    private static int geoSortPages;
+    private static int geoAfterFallbacks;
 
     public static void main(String[] args) throws Exception {
         NativeLibrary.load(Path.of("."));
@@ -105,7 +109,12 @@ public final class NativeSelfTest {
         check(compared >= 20, "fixtures compared natively: " + compared);
         check(bwc >= 17, "backward-codecs fixtures found: " + bwc);
         System.out.printf("NativeSelfTest: %d of %d backward-codecs fixture indexes compared natively%n", bwcCompared, bwc);
-        System.out.printf("NativeSelfTest: %d geo queries encoded and compared%n", geoEncoded);
+        System.out.printf(
+            "NativeSelfTest: %d geo queries encoded and compared; %d sorted pages with a _geo_distance key (%d search_after pages left to Lucene)%n",
+            geoEncoded,
+            geoSortPages,
+            geoAfterFallbacks
+        );
         check(trackedPages >= 20, "sorted pages tracking the max score: " + trackedPages);
         check(sortedMinScoreChecks >= 20, "sorted pages behind min_score: " + sortedMinScoreChecks);
         check(aggChecks >= 100, "queries aggregated natively: " + aggChecks);
@@ -113,6 +122,8 @@ public final class NativeSelfTest {
         check(terminateChecks >= 100, "terminate_after searches compared: " + terminateChecks);
         check(minScoreChecks >= 100, "min_score searches compared: " + minScoreChecks);
         check(geoEncoded >= 600, "geo queries encoded and compared: " + geoEncoded);
+        check(geoSortPages >= 300, "sorted pages with a _geo_distance key compared: " + geoSortPages);
+        check(geoAfterFallbacks >= 10, "Lucene geo-distance pages after a hit, left to Lucene: " + geoAfterFallbacks);
         System.out.printf(
             "NativeSelfTest: %d checks, %d failures; %d of %d compared scores bit-exact; %d sorted pages compared (%d tracking the max score, %d behind min_score); %d aggregations, %d terms; %d terminate_after; %d min_score%n",
             checks,
@@ -655,7 +666,9 @@ public final class NativeSelfTest {
             boolean reverse = r.nextBoolean();
             var sel = r.nextBoolean() ? org.apache.lucene.search.SortedNumericSelector.Type.MIN : org.apache.lucene.search.SortedNumericSelector.Type.MAX;
             var ssel = r.nextBoolean() ? org.apache.lucene.search.SortedSetSelector.Type.MIN : org.apache.lucene.search.SortedSetSelector.Type.MAX;
-            SortField f = switch (r.nextInt(9)) {
+            SortField f = switch (r.nextInt(geoSorts ? 12 : 9)) {
+                case 9 -> org.apache.lucene.document.LatLonDocValuesField.newDistanceSort("loc", lat(r), lon(r));
+                case 10, 11 -> openSearchGeoSort(r, reverse);
                 case 6 -> new org.apache.lucene.search.SortedSetSortField("kt", reverse, ssel);
                 case 7 -> new org.apache.lucene.search.SortedSetSortField("kw", reverse, ssel);
                 case 8 -> new org.apache.lucene.search.SortedSetSortField("kx", reverse, ssel);
@@ -708,6 +721,15 @@ public final class NativeSelfTest {
                 SortEncoder.Encoded enc = SortEncoder.encode(sort, after, track);
                 String what = where + ": " + query + " sorted " + sort + " top" + topN + " threshold " + threshold + " page " + page
                     + (track ? " tracking the max score" : "") + (min != null ? " min_score " + min : "");
+                if (after != null && Arrays.stream(sort.getSort()).anyMatch(GeoEncoder::luceneSort)) {
+                    // LatLonPointDistanceComparator.compareTop compares metres: Lucene runs the page.
+                    check("search_after_geo".equals(enc.fallbackReason()), what + ": falls back as search_after_geo, not " + enc.fallbackReason());
+                    geoAfterFallbacks++;
+                    break;
+                }
+                if (Arrays.stream(sort.getSort()).anyMatch(k -> SortEncoder.type(k) == SortEncoder.GEO)) {
+                    geoSortPages++;
+                }
                 check(enc.blob() != null, what + ": sort encodes (" + enc.fallbackReason() + ")");
                 if (enc.blob() == null) {
                     return;
@@ -1280,6 +1302,17 @@ public final class NativeSelfTest {
      * segment of more than 10,000 documents) both serves and tells apart cached geo sets.
      */
     private static void geo(Random r) throws Exception {
+        geoSorts = true;
+        Random sr = new Random(3);
+        check(
+            "sort_geo_plane".equals(SortEncoder.encode(new Sort(openSearchGeoSort(sr, false, org.opensearch.common.geo.GeoDistance.PLANE)), null).fallbackReason()),
+            "a PLANE _geo_distance falls back"
+        );
+        check(SortEncoder.encode(new Sort(openSearchGeoSort(sr, true)), null).blob() != null, "an ARC _geo_distance encodes");
+        check(
+            SortEncoder.encode(new Sort(openSearchGeoSort(sr, false)), new FieldDoc(1, 0f, new Object[] { 12.5 })).blob() != null,
+            "OpenSearch's _geo_distance takes search_after"
+        );
         Path dir = Files.createTempDirectory("lucene-rust-selftest-geo");
         NativeReaders readers = new NativeReaders();
         try (FSDirectory d = FSDirectory.open(dir); IndexWriter w = new IndexWriter(d, new IndexWriterConfig(new StandardAnalyzer()))) {
@@ -1341,9 +1374,57 @@ public final class NativeSelfTest {
             }
             reader.close();
             check(readers.openCount() == 0, "geo: no native readers left open");
+            geoSorts = false;
         }
         try (Stream<Path> s = Files.walk(dir)) {
             s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
+        }
+    }
+
+    /** The units a {@code _geo_distance} sort may report in. */
+    private static final org.opensearch.common.unit.DistanceUnit[] UNITS = {
+        org.opensearch.common.unit.DistanceUnit.METERS,
+        org.opensearch.common.unit.DistanceUnit.KILOMETERS,
+        org.opensearch.common.unit.DistanceUnit.MILES,
+        org.opensearch.common.unit.DistanceUnit.NAUTICALMILES,
+        org.opensearch.common.unit.DistanceUnit.INCH };
+
+    /**
+     * OpenSearch's own {@code _geo_distance} key on {@code loc}: the comparator source {@code
+     * GeoDistanceSortBuilder.build} makes when it does not hand the sort to Lucene (several origins,
+     * a mode, a unit, descending), from the builder's own private {@code comparatorSource} -- the
+     * very class the encoder recognises -- over the real {@code LatLonPointIndexFieldData}.
+     */
+    private static SortField openSearchGeoSort(Random r, boolean reverse) {
+        return openSearchGeoSort(r, reverse, org.opensearch.common.geo.GeoDistance.ARC);
+    }
+
+    private static SortField openSearchGeoSort(Random r, boolean reverse, org.opensearch.common.geo.GeoDistance distance) {
+        org.opensearch.common.geo.GeoPoint[] origins = new org.opensearch.common.geo.GeoPoint[1 + r.nextInt(3)];
+        for (int i = 0; i < origins.length; i++) {
+            origins[i] = new org.opensearch.common.geo.GeoPoint(lat(r), lon(r));
+        }
+        var b = new org.opensearch.search.sort.GeoDistanceSortBuilder("loc", origins);
+        b.geoDistance(distance);
+        b.unit(UNITS[r.nextInt(UNITS.length)]);
+        org.opensearch.search.MultiValueMode mode = org.opensearch.search.MultiValueMode.values()[r.nextInt(5)];
+        try {
+            var m = org.opensearch.search.sort.GeoDistanceSortBuilder.class.getDeclaredMethod(
+                "comparatorSource",
+                org.opensearch.common.geo.GeoPoint[].class,
+                org.opensearch.search.MultiValueMode.class,
+                org.opensearch.index.fielddata.IndexGeoPointFieldData.class,
+                org.opensearch.index.fielddata.IndexFieldData.XFieldComparatorSource.Nested.class
+            );
+            m.setAccessible(true);
+            var data = new org.opensearch.index.fielddata.plain.AbstractLatLonPointIndexFieldData.LatLonPointIndexFieldData(
+                "loc",
+                org.opensearch.search.aggregations.support.CoreValuesSourceType.GEOPOINT
+            );
+            var source = (org.apache.lucene.search.FieldComparatorSource) m.invoke(b, origins, mode, data, null);
+            return new SortField("loc", source, reverse);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError(e);
         }
     }
 

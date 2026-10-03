@@ -77,8 +77,8 @@ pub use shape_queries::{
     XYShapeDocValuesQuery, XYShapeQuery,
 };
 pub use sort::{
-    Geo3DPointOutsideSortField, Geo3DPointSortField, LatLonPointSortField, SortedDistance,
-    XYPointSortField,
+    DistanceMode, Geo3DPointOutsideSortField, Geo3DPointSortField, LatLonPointSortField,
+    OpenSearchGeoDistanceSort, SortedDistance, XYPointSortField,
 };
 
 fn illegal(message: impl Into<String>) -> Error {

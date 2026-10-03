@@ -204,6 +204,36 @@ def rows():
     add("geo track_total_hits 50", {"track_total_hits": 50, "query": bbox(80, -170, -80, 170)})
     add("geo sorted by n", {"query": bbox(60, -120, -60, 120), "sort": [{"n": "desc"}]})
     add("geo terms agg", {"size": 0, "query": dist("6000km", 0, 0), "aggs": {"t": {"terms": {"field": "tag"}}}})
+
+    # _geo_distance sorts. One origin, metres, ascending, min: Lucene's LatLonPointSortField;
+    # anything else: OpenSearch's own comparator (GeoDistanceSortBuilder), ARC natively.
+    def gsort(origin, **kw):
+        return {"_geo_distance": {"loc": origin, **kw}}
+
+    add("geo sort", {"query": {"match": {"body": "alpha"}}, "sort": [gsort([20, 10])]})
+    add("geo sort match_all", {"sort": [gsort({"lat": -45, "lon": 100})], "size": 25})
+    add("geo sort pole", {"query": dist("3000km", 90, 0), "sort": [gsort([0, 90])]})
+    add("geo sort antimeridian", {"query": bbox(60, 150, -60, -150), "sort": [gsort([180, 0]), "_doc"]})
+    add("geo sort then n", {"query": {"match": {"body": "beta"}}, "sort": [gsort([0, 0]), {"n": "asc"}]})
+    add("geo sort after n", {"query": {"match": {"body": "gamma"}}, "sort": [{"tag": "asc"}, gsort([-70, 40])]})
+    add("geo sort track_scores", {"query": {"match": {"body": "delta"}}, "track_scores": True, "sort": [gsort([10, 10])]})
+    add("geo sort search_after", {"query": {"match": {"body": "alpha"}}, "sort": [gsort([20, 10]), {"n": "asc"}], "search_after": [5_000_000.0, 100]},
+        "search_after_geo")
+    add("geo sort desc", {"query": {"match": {"body": "alpha"}}, "sort": [gsort([20, 10], order="desc")]})
+    add("geo sort km", {"query": {"match": {"body": "beta"}}, "sort": [gsort([20, 10], unit="km")]})
+    add("geo sort miles desc", {"sort": [gsort([-120, 35], unit="mi", order="desc"), "_doc"]})
+    # (OpenSearch refuses `sum` for a geo distance.)
+    for mode in ("min", "max", "avg", "median"):
+        add(f"geo sort mode {mode}", {"query": {"match": {"body": "eta"}}, "sort": [gsort([5, 5], mode=mode), {"n": "desc"}]})
+    add("geo sort origins", {"query": {"match": {"body": "theta"}}, "sort": [gsort([[0, 0], [100, -30], [-150, 60]])]})
+    add("geo sort origins median desc", {"query": {"match": {"body": "alpha"}}, "sort": [gsort([[0, 89], [179.9, 0]], mode="median", order="desc")]})
+    add("geo sort origins search_after", {"query": {"match": {"body": "beta"}}, "sort": [gsort([[0, 0], [90, 0]], unit="km"), {"n": "asc"}], "search_after": [3000.0, 50]})
+    # PLANE goes through Math.cos's HotSpot intrinsic: OpenSearch's comparator keeps it. (A plain
+    # one-origin ascending sort is Lucene's whatever its distance_type: still native.)
+    add("geo sort plane", {"query": {"match": {"body": "alpha"}}, "sort": [gsort([20, 10], distance_type="plane", order="desc")]}, "sort_geo_plane")
+    add("geo sort plane as lucene", {"query": {"match": {"body": "alpha"}}, "sort": [gsort([20, 10], distance_type="plane")]})
+    add("geo sort unmapped", {"query": {"match": {"body": "alpha"}}, "sort": [{"_geo_distance": {"nowhere": [0, 0], "ignore_unmapped": True}}, {"n": "asc"}]})
+    add("geo sort shape filter", {"query": {"bool": {"filter": [gshape({"type": "envelope", "coordinates": [[-60, 50], [60, -50]]})]}}, "sort": [gsort([0, 0], order="desc", unit="km")]})
     return q
 
 

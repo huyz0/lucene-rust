@@ -41,6 +41,26 @@ extern "C" {
         out_total: *mut i64,
         out_total_is_lower_bound: *mut bool,
     ) -> i32;
+    pub fn ffi_jvm_reader_search_sorted(
+        handle: u64,
+        query: *const u8,
+        query_len: usize,
+        sort: *const u8,
+        sort_len: usize,
+        top_n: usize,
+        count_limit: i64,
+        out_docs: *mut i32,
+        out_values: *mut i64,
+        buf_len: usize,
+        out_terms: *mut u8,
+        terms_cap: usize,
+        out_hit_count: *mut usize,
+        out_total: *mut i64,
+        out_total_is_lower_bound: *mut bool,
+        out_terms_len: *mut usize,
+        out_max_score: *mut f32,
+        out_terminated: *mut bool,
+    ) -> i32;
     pub fn ffi_close_jvm_reader(handle: u64) -> i32;
     pub fn ffi_open_directory_reader(path: *const c_char, path_len: usize, out: *mut u64) -> i32;
     pub fn ffi_search_boolean_query_multi_segment(
@@ -132,6 +152,45 @@ pub fn search(handle: u64, blob: &[u8], top_n: usize, count_limit: i64) -> i32 {
         assert!(n <= top_n, "more hits than asked for");
         assert!(docs[..n].iter().all(|&d| (0..8).contains(&d)), "a doc id outside the index");
         assert!(total == -1 || total >= n as i64, "fewer total hits than returned hits");
+        assert!(total <= 8, "more total hits than documents");
+    }
+    rc
+}
+
+/// Runs `query` sorted by `sort` with the given sizing; returns the status.
+pub fn search_sorted(handle: u64, query: &[u8], sort: &[u8], top_n: usize, count_limit: i64) -> i32 {
+    // Room for up to 16 keys' values per hit, and some keyword terms.
+    let mut docs = vec![0i32; top_n];
+    let mut values = vec![0i64; top_n * 16];
+    let mut terms = vec![0u8; 4096];
+    let (mut n, mut total, mut lower, mut terms_len) = (0usize, 0i64, false, 0usize);
+    let (mut max_score, mut terminated) = (0f32, false);
+    let rc = unsafe {
+        ffi_jvm_reader_search_sorted(
+            handle,
+            query.as_ptr(),
+            query.len(),
+            sort.as_ptr(),
+            sort.len(),
+            top_n,
+            count_limit,
+            docs.as_mut_ptr(),
+            values.as_mut_ptr(),
+            top_n,
+            terms.as_mut_ptr(),
+            terms.len(),
+            &mut n,
+            &mut total,
+            &mut lower,
+            &mut terms_len,
+            &mut max_score,
+            &mut terminated,
+        )
+    };
+    if rc == 0 {
+        assert!(n <= top_n, "more hits than asked for");
+        assert!(docs[..n].iter().all(|&d| (0..8).contains(&d)), "a doc id outside the index");
+        assert!(terms_len <= terms.len(), "terms past the buffer");
         assert!(total <= 8, "more total hits than documents");
     }
     rc

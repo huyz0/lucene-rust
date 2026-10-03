@@ -387,7 +387,7 @@ jobs:
       - name: Fuzz
         working-directory: crates/lucene-ffi/fuzz
         run: |
-          for t in jvm_search jvm_open_reader jvm_live_docs boolean_clause_arrays read_planet_object; do
+          for t in jvm_search jvm_search_sorted jvm_open_reader jvm_live_docs boolean_clause_arrays read_planet_object; do
             mkdir -p "corpus/$t"
             cargo +nightly fuzz run "$t" "corpus/$t" "seeds/$t" -- -max_total_time=60 -rss_limit_mb=4096
           done

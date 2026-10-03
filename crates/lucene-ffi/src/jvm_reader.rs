@@ -103,8 +103,8 @@ use std::sync::Arc;
 /// the tree); 28, the JNI `searchDocFreq` (a term query's total-hits shortcut
 /// and its search in one call); 29, the JNI entry points replaced by the
 /// Foreign Function & Memory API's downcalls ([`crate::ffm_bridge`]); 30,
-/// the points-box and geo nodes (M9 T9.6).
-pub const JVM_ABI_VERSION: u32 = 30;
+/// the points-box and geo nodes (M9 T9.6); 31, the geo-distance sort key.
+pub const JVM_ABI_VERSION: u32 = 31;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -600,6 +600,11 @@ const SORT_INT: u8 = 3;
 const SORT_DOUBLE: u8 = 4;
 const SORT_FLOAT: u8 = 5;
 pub(crate) const SORT_STRING: u8 = 6;
+/// A geo-distance key ([`decode_geo_sort`]).
+const SORT_GEO_DISTANCE: u8 = 7;
+/// At most this many origins in a geo-distance key: each costs a distance
+/// per value per document.
+const MAX_GEO_ORIGINS: usize = 1024;
 /// Sort-key flags.
 const SORT_REVERSE: u8 = 1;
 const SORT_MAX: u8 = 2;
@@ -703,6 +708,8 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<DecodedSort, FfiStatus> {
         )));
     }
     let mut keys = Vec::new();
+    // Per key: a geo-distance key in Lucene's own comparator.
+    let mut lucene_geo = Vec::new();
     for _ in 0..n {
         let ty = c.u8()?;
         let flags = c.u8()?;
@@ -718,6 +725,12 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<DecodedSort, FfiStatus> {
             SORT_DOUBLE => SortType::Double,
             SORT_FLOAT => SortType::Float,
             SORT_STRING => SortType::String,
+            SORT_GEO_DISTANCE => {
+                let (key, lucene) = decode_geo_sort(&mut c, flags)?;
+                keys.push(key);
+                lucene_geo.push(lucene);
+                continue;
+            }
             other => return Err(bad(format!("sort blob: unknown key type {other}"))),
         };
         let (field, missing) = match ty {
@@ -777,6 +790,7 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<DecodedSort, FfiStatus> {
             nested,
             rewritten: None,
         });
+        lucene_geo.push(false);
     }
     let after = match c.u8()? {
         0 => None,
@@ -784,7 +798,15 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<DecodedSort, FfiStatus> {
             let doc = c.i32()?;
             let mut values = Vec::new();
             let mut terms = Vec::new();
-            for k in &keys {
+            for (k, &lucene) in keys.iter().zip(&lucene_geo) {
+                if lucene {
+                    // `LatLonPointDistanceComparator.compareTop` compares
+                    // metres, not the sort keys this side holds: the JVM
+                    // runs such a page itself.
+                    return Err(bad(
+                        "sort blob: search_after on Lucene's geo-distance key".to_string()
+                    ));
+                }
                 if k.ty != SortType::String {
                     values.push(c.i64()?);
                     terms.push(None);
@@ -850,6 +872,103 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<DecodedSort, FfiStatus> {
         slices,
         terminate_after,
         index_sorted,
+    ))
+}
+
+/// The flags a geo-distance key may carry: [`SORT_REVERSE`], [`SORT_MAX`]
+/// and a mode.
+const GEO_SORT_FLAGS: u8 = SORT_REVERSE | SORT_MAX | SORT_MODE_MASK;
+
+/// A [`SORT_GEO_DISTANCE`] key, after its type and flags: the field
+/// (`len: i32`, UTF-8), the missing value (`i64`, unused: missing documents
+/// sort at `+Infinity` in both comparators), `comparator: u8`, `count: i32`
+/// and `count` origins (`lat`, `lon`: `f64`), and `unit_meters: f64`.
+///
+/// | comparator | Java | value |
+/// |---|---|---|
+/// | `0` | `LatLonPointSortField` (`LatLonDocValuesField.newDistanceSort`): one origin, metres, ascending, no mode | the haversine sort key (`haversin2` of it is the distance) |
+/// | `1` | OpenSearch's `GeoDistanceSortBuilder` comparator ([`OpenSearchGeoDistanceSort`](lucene_search::document::geo::OpenSearchGeoDistanceSort)): `ARC`, any origins, unit, mode (flags as a numeric key's) and order | the distance in the unit |
+///
+/// Each value crosses as `double_to_sortable_long` of the double. Returns
+/// the key, and whether it is Lucene's comparator (which takes no
+/// `search_after`: its `compareTop` compares metres, not the keys).
+fn decode_geo_sort(c: &mut Cursor<'_>, flags: u8) -> Result<(SortField, bool), FfiStatus> {
+    use lucene_search::document::geo::{
+        DistanceMode, LatLonPointSortField, OpenSearchGeoDistanceSort,
+    };
+    if flags & !GEO_SORT_FLAGS != 0 {
+        return Err(invalid(format!(
+            "sort blob: geo-distance key flags {flags:#x}"
+        )));
+    }
+    let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
+    let _missing = c.i64()?;
+    let comparator = c.u8()?;
+    let count = c.len()?;
+    if count == 0 || count > MAX_GEO_ORIGINS {
+        return Err(invalid(format!(
+            "sort blob: {count} geo-distance origins, want 1..={MAX_GEO_ORIGINS}"
+        )));
+    }
+    let mut origins = Vec::new();
+    for _ in 0..count {
+        let (lat, lon) = (c.f64()?, c.f64()?);
+        if !lat.is_finite() || !lon.is_finite() {
+            return Err(invalid(format!(
+                "sort blob: geo-distance origin ({lat}, {lon})"
+            )));
+        }
+        origins.push((lat, lon));
+    }
+    let unit_meters = c.f64()?;
+    if !unit_meters.is_finite() || unit_meters <= 0.0 {
+        return Err(invalid(format!(
+            "sort blob: geo-distance unit of {unit_meters} metres"
+        )));
+    }
+    let reverse = flags & SORT_REVERSE != 0;
+    let source: std::sync::Arc<dyn lucene_search::top_field::FieldComparatorSource> =
+        match comparator {
+            0 => {
+                #[allow(clippy::float_cmp)]
+                let metres = unit_meters == 1.0;
+                if count != 1 || !metres || flags != 0 {
+                    return Err(invalid(
+                    "sort blob: Lucene's geo-distance key takes one origin, metres, ascending and no mode"
+                        .to_string(),
+                ));
+                }
+                let (lat, lon) = origins[0];
+                LatLonPointSortField::new(field, lat, lon)
+                    .map_err(|e| invalid(format!("sort blob: {e}")))?
+                    .comparator_source()
+            }
+            1 => {
+                let mode = match flags & SORT_MODE_MASK {
+                    0 if flags & SORT_MAX != 0 => DistanceMode::Max,
+                    0 => DistanceMode::Min,
+                    _ if flags & SORT_MAX != 0 => {
+                        return Err(invalid(format!("sort blob: geo-distance flags {flags:#x}")))
+                    }
+                    SORT_MODE_SUM => DistanceMode::Sum,
+                    SORT_MODE_AVG => DistanceMode::Avg,
+                    _ => DistanceMode::Median,
+                };
+                std::sync::Arc::new(OpenSearchGeoDistanceSort {
+                    origins,
+                    unit_meters,
+                    mode,
+                })
+            }
+            other => {
+                return Err(invalid(format!(
+                    "sort blob: geo-distance comparator {other} (want 0 or 1)"
+                )))
+            }
+        };
+    Ok((
+        SortField::with_source(field, source, reverse),
+        comparator == 0,
     ))
 }
 
@@ -2703,6 +2822,156 @@ pub(crate) mod tests {
         b.push(0); // options
         b.extend_from_slice(&0i32.to_le_bytes()); // no slices
         b
+    }
+
+    /// A one-key sort blob of a [`SORT_GEO_DISTANCE`] key, then `after`.
+    fn geo_sort_blob(
+        flags: u8,
+        comparator: u8,
+        origins: &[(f64, f64)],
+        unit: f64,
+        after: Option<i64>,
+    ) -> Vec<u8> {
+        let mut b = vec![1, SORT_GEO_DISTANCE, flags];
+        b.extend_from_slice(&3i32.to_le_bytes());
+        b.extend_from_slice(b"loc");
+        b.extend_from_slice(&0i64.to_le_bytes());
+        b.push(comparator);
+        b.extend_from_slice(&(origins.len() as i32).to_le_bytes());
+        for &(lat, lon) in origins {
+            b.extend_from_slice(&lat.to_bits().to_le_bytes());
+            b.extend_from_slice(&lon.to_bits().to_le_bytes());
+        }
+        b.extend_from_slice(&unit.to_bits().to_le_bytes());
+        match after {
+            None => b.push(0),
+            Some(v) => {
+                b.push(1);
+                b.extend_from_slice(&7i32.to_le_bytes());
+                b.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        b.push(0); // options
+        b.extend_from_slice(&0i32.to_le_bytes()); // no slices
+        b
+    }
+
+    /// The geo-distance sort key: Lucene's comparator (one origin, metres,
+    /// ascending, no `search_after`) and OpenSearch's (every mode, order and
+    /// unit, `search_after` too); malformed keys and every truncation are
+    /// errors; and a search sorted by one runs, a document without the field
+    /// at `+Infinity`.
+    #[test]
+    fn decode_geo_sort_keys() {
+        let invalid = Err(FfiStatus::InvalidArgument);
+        let status = |b: &[u8]| decode_sort(b).map(|_| ());
+        let o = [(10.0, 20.0)];
+        let lucene = geo_sort_blob(0, 0, &o, 1.0, None);
+        let (keys, after, ..) = decode_sort(&lucene).unwrap();
+        assert!(matches!(keys[0].ty, SortType::Custom(_)) && !keys[0].reverse && after.is_none());
+        for cut in 1..lucene.len() {
+            assert!(decode_sort(&lucene[..cut]).is_err(), "cut at {cut}");
+        }
+        assert_eq!(
+            status(&geo_sort_blob(0, 0, &o, 1.0, Some(5))),
+            invalid,
+            "Lucene's key and search_after"
+        );
+        assert_eq!(
+            status(&geo_sort_blob(SORT_REVERSE, 0, &o, 1.0, None)),
+            invalid,
+            "Lucene's key reversed"
+        );
+        assert_eq!(
+            status(&geo_sort_blob(0, 0, &[(0.0, 0.0), (1.0, 1.0)], 1.0, None)),
+            invalid,
+            "two origins"
+        );
+        assert_eq!(
+            status(&geo_sort_blob(0, 0, &o, 1000.0, None)),
+            invalid,
+            "kilometres"
+        );
+        assert_eq!(
+            status(&geo_sort_blob(0, 0, &[(95.0, 0.0)], 1.0, None)),
+            invalid,
+            "a latitude past the pole"
+        );
+        for flags in [
+            0,
+            SORT_MAX,
+            SORT_REVERSE,
+            SORT_MODE_SUM,
+            SORT_MODE_AVG | SORT_REVERSE,
+            SORT_MODE_MEDIAN,
+        ] {
+            let b = geo_sort_blob(flags, 1, &[(95.0, 0.0), (1.0, 1.0)], 1609.344, Some(42));
+            let (keys, after, ..) = decode_sort(&b).unwrap();
+            assert_eq!(keys[0].reverse, flags & SORT_REVERSE != 0);
+            assert_eq!(after.unwrap().values, vec![42]);
+        }
+        assert_eq!(
+            status(&geo_sort_blob(SORT_MAX | SORT_MODE_SUM, 1, &o, 1.0, None)),
+            invalid,
+            "max and a mode"
+        );
+        assert_eq!(
+            status(&geo_sort_blob(SORT_NESTED, 1, &o, 1.0, None)),
+            invalid,
+            "nested"
+        );
+        assert_eq!(
+            status(&geo_sort_blob(0, 1, &[], 1.0, None)),
+            invalid,
+            "no origins"
+        );
+        let many = vec![(0.0, 0.0); MAX_GEO_ORIGINS + 1];
+        assert_eq!(
+            status(&geo_sort_blob(0, 1, &many, 1.0, None)),
+            invalid,
+            "too many origins"
+        );
+        assert_eq!(
+            status(&geo_sort_blob(0, 1, &[(f64::NAN, 0.0)], 1.0, None)),
+            invalid,
+            "NaN origin"
+        );
+        assert_eq!(
+            status(&geo_sort_blob(0, 1, &[(0.0, f64::INFINITY)], 1.0, None)),
+            invalid,
+            "infinite origin"
+        );
+        assert_eq!(
+            status(&geo_sort_blob(0, 1, &o, 0.0, None)),
+            invalid,
+            "a unit of 0 m"
+        );
+        assert_eq!(
+            status(&geo_sort_blob(0, 2, &o, 1.0, None)),
+            invalid,
+            "unknown comparator"
+        );
+        let mut bad_utf8 = geo_sort_blob(0, 1, &o, 1.0, None);
+        bad_utf8[7] = 0xff;
+        assert_eq!(
+            decode_sort(&bad_utf8).map(|_| ()),
+            Err(FfiStatus::InvalidUtf8)
+        );
+
+        // Sorted by a field the index lacks: every hit at +Infinity, by doc.
+        let h = open();
+        let fox = term_blob("body", "fox");
+        let inf = lucene_search::facets::double_to_sortable_long(f64::INFINITY);
+        for blob in [
+            lucene,
+            geo_sort_blob(SORT_REVERSE | SORT_MODE_AVG, 1, &o, 1000.0, None),
+        ] {
+            let (hits, total, _) = run_sorted(h, &fox, &blob, 3, i64::MAX).unwrap();
+            assert!(total > 0 && !hits.is_empty());
+            assert!(hits.iter().all(|(_, v)| v == &vec![inf]), "{hits:?}");
+            assert!(hits.windows(2).all(|w| w[0].0 < w[1].0), "{hits:?}");
+        }
+        assert_eq!(ffi_close_jvm_reader(h), 0);
     }
 
     /// `(hits as (doc, values), total, lower_bound)`, or the status.

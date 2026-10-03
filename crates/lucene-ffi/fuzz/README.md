@@ -7,6 +7,7 @@ them — under AddressSanitizer (cargo-fuzz's default). M2 task T2.5.
 | target | drives |
 |---|---|
 | `jvm_search` | `ffi_jvm_reader_search` with an arbitrary query blob, `top_n` and count limit, over a real two-segment Java-written index |
+| `jvm_search_sorted` | `ffi_jvm_reader_search_sorted` with an arbitrary query blob and sort blob (split by the input's third byte): every sort-key type -- the geo-distance keys' comparators, origins and units included -- `search_after`, the options, slices and index-sort flags, over the same index |
 | `jvm_open_reader` | `ffi_open_jvm_reader` with arbitrary `SegmentInfos` bytes, generation and expected segment sizes; whatever opens is searched and closed |
 | `jvm_live_docs` | `ffi_open_jvm_reader` with arbitrary live-docs words and per-segment word counts, then searches and counts under whatever was accepted |
 | `boolean_clause_arrays` | the occur-tagged clause-array format through `ffi_search_boolean_query_multi_segment`: arbitrary occurs, kinds, parents and params |

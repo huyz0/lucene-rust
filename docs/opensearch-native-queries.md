@@ -113,6 +113,8 @@ frequency when nothing is deleted, without counting.
 | `geo_distance` on a `geo_point` | `LatLonPointDistanceQuery` in an `IndexOrDocValuesQuery` | — |
 | `geo_polygon`, and `geo_shape` polygons on a `geo_point` | `LatLonPointQuery` in an `IndexOrDocValuesQuery` | — |
 | `geo_shape` (any relation), `geo_bounding_box`, `geo_distance` on a `geo_shape` | `LatLonShapeQuery`, `LatLonShapeBoundingBoxQuery` (a `BooleanQuery` of them for a `CONTAINS` of several geometries) | — |
+| `_geo_distance` sort, one origin, metres, ascending, `min` (any `distance_type`) | `LatLonPointSortField` (Lucene's comparator; no `search_after`) | — |
+| `_geo_distance` sort, any other origins, `unit`, `order` or `mode`, `distance_type: arc`, `search_after` too | OpenSearch's `GeoDistanceSortBuilder` comparator (`DoubleComparator` over `MultiValueMode` of the distances) | — |
 
 "Measured" is the median REST round trip over 40 requests per engine on one
 node, both engines on the same 100k-document, two-segment index
@@ -152,6 +154,8 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `query_too_deep`, `query_too_large` | more than 32 levels, or more than 1,024 nodes counting wrappers (Lucene counts only leaves, and `indices.query.bool.max_clause_count` can raise its limit) |
 | `boolean_msm_negative` | a `BooleanQuery` with a negative `minimumNumberShouldMatch` |
 | `points_width` | a `range` on a 4-byte field (`integer`, `float`), which the native points range does not take (`geo_point`'s own two-dimension box is taken) |
+| `search_after_geo` | `search_after` (or a sorted scroll's later page) on Lucene's own `_geo_distance` key: its `compareTop` compares metres where the native side holds the haversine sort keys, which no conversion maps back exactly |
+| `sort_geo_plane`, `sort_geo_nested`, `sort_geo_field_data`, `sort_geo_origins`, `sort_geo_reflect` | OpenSearch's `_geo_distance` comparator with `distance_type: plane` (`Math.cos`'s HotSpot intrinsic, which no portable code reproduces bit for bit), a nested sort, field data other than a `geo_point`'s doc values, non-finite or more than 1,024 origins, or fields the plugin cannot read |
 | `geo_geometry`, `geo_reflect` | a geo query holding a geometry class Lucene's factories do not build, or one whose fields the plugin cannot read (a Lucene whose geo classes changed) |
 | `clause_IntersectsPrefixTreeQuery` (and the other spatial-extras queries) | a `geo_shape` field on the deprecated prefix-tree mapping (`tree`) |
 | `wildcard_escape` | a `wildcard` pattern with a `\\` escape (the native matcher has no escape syntax) |

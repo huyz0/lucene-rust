@@ -977,6 +977,142 @@ impl LeafFieldComparator for LeafComparator<'_> {
     }
 }
 
+/// OpenSearch's `_geo_distance` sort where it does not hand the sort to
+/// Lucene (several origins, a mode other than `min`, a unit other than
+/// metres, descending): `GeoDistanceSortBuilder`'s own
+/// `XFieldComparatorSource` -- a `DoubleComparator` over
+/// `MultiValueMode.select(GeoUtils.distanceValues(ARC, unit, values,
+/// origins))` with missing documents at `+Infinity`.
+///
+/// Per document: every value of the field (decoded as OpenSearch's
+/// `LatLonPointDVLeafFieldData` decodes it) against every origin, values
+/// outer and origins inner, each `SloppyMath.haversinMeters(origin, point)`
+/// divided by the unit's metres (`DistanceUnit.convert`), the lot sorted
+/// (`SortingNumericDoubleValues`), then the mode's pick. Only `GeoDistance.ARC`:
+/// `PLANE` goes through `Math.cos`, whose HotSpot intrinsic no portable
+/// code reproduces bit for bit, so the plugin leaves it to OpenSearch. The
+/// comparator is built with no field, so it never skips; nor does this.
+///
+/// A hit's value is `double_to_sortable_long` of the distance, compared as
+/// `Double.compare` compares the doubles (`search_after` included).
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpenSearchGeoDistanceSort {
+    /// `(lat, lon)` origins, at least one.
+    pub origins: Vec<(f64, f64)>,
+    /// The unit's metres (`DistanceUnit.meters`; 1 for metres).
+    pub unit_meters: f64,
+    pub mode: DistanceMode,
+}
+
+/// OpenSearch's `MultiValueMode` over a document's sorted distances.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DistanceMode {
+    Min,
+    Max,
+    Sum,
+    Avg,
+    Median,
+}
+
+impl OpenSearchGeoDistanceSort {
+    /// A document's value from its encoded points; `+Infinity` (OpenSearch's
+    /// `replaceMissing`) for a document without one.
+    pub fn value(&self, encoded: &[i64], scratch: &mut Vec<f64>) -> f64 {
+        if encoded.is_empty() {
+            return f64::INFINITY;
+        }
+        scratch.clear();
+        for &e in encoded {
+            // `(int) (encoded >>> 32)` and `(int) encoded`.
+            let lat = GeoEncodingUtils::decode_latitude(doc_value_high(e));
+            let lon = GeoEncodingUtils::decode_longitude(doc_value_low(e));
+            for &(o_lat, o_lon) in &self.origins {
+                scratch
+                    .push(sloppy_math::haversin_meters(o_lat, o_lon, lat, lon) / self.unit_meters);
+            }
+        }
+        // `Arrays.sort(double[])`: `Double.compare`'s order.
+        scratch.sort_by(|a, b| double_compare(*a, *b));
+        let n = scratch.len();
+        match self.mode {
+            DistanceMode::Min => scratch[0],
+            DistanceMode::Max => scratch[n - 1],
+            DistanceMode::Sum => scratch.iter().fold(0.0, |t, v| t + v),
+            // `total / count`, the count an int widened to double.
+            DistanceMode::Avg => scratch.iter().fold(0.0, |t, v| t + v) / n as f64,
+            DistanceMode::Median => {
+                let mid = (n - 1) / 2;
+                if n.is_multiple_of(2) {
+                    (scratch[mid] + scratch[mid + 1]) / 2.0
+                } else {
+                    scratch[mid]
+                }
+            }
+        }
+    }
+}
+
+impl FieldComparatorSource for OpenSearchGeoDistanceSort {
+    fn new_comparator(
+        &self,
+        field: &str,
+        _num_hits: usize,
+        _reverse: bool,
+    ) -> Box<dyn FieldComparator> {
+        Box::new(OpenSearchComparator {
+            field: field.to_string(),
+            sort: self.clone(),
+        })
+    }
+}
+
+struct OpenSearchComparator {
+    field: String,
+    sort: OpenSearchGeoDistanceSort,
+}
+
+impl FieldComparator for OpenSearchComparator {
+    fn leaf<'a>(&self, ctx: LeafCtx<'a>) -> Result<Box<dyn LeafFieldComparator + 'a>> {
+        // `DocValues.getSortedNumeric(reader, field)`: empty without the
+        // field, an error for another doc-values type.
+        let values = match info_of(ctx.reader, &self.field) {
+            Some(info) => sorted_numeric_in(ctx.reader, info)?,
+            None => None,
+        };
+        Ok(Box::new(OpenSearchLeaf {
+            sort: self.sort.clone(),
+            values,
+            buf: Vec::new(),
+            scratch: Vec::new(),
+        }))
+    }
+
+    fn compare_values(&self, a: &SortValue, b: &SortValue) -> Ordering {
+        match (a, b) {
+            (SortValue::Long(a), SortValue::Long(b)) => a.cmp(b),
+            _ => Ordering::Equal,
+        }
+    }
+}
+
+struct OpenSearchLeaf<'a> {
+    sort: OpenSearchGeoDistanceSort,
+    values: Option<GeoValues<'a>>,
+    buf: Vec<i64>,
+    scratch: Vec<f64>,
+}
+
+impl LeafFieldComparator for OpenSearchLeaf<'_> {
+    fn value(&mut self, doc: i32, _score: f32) -> Result<SortValue> {
+        self.buf.clear();
+        if let Some(v) = self.values.as_mut() {
+            v.values(doc, &mut self.buf)?;
+        }
+        let d = self.sort.value(&self.buf, &mut self.scratch);
+        Ok(SortValue::Long(double_to_sortable_long(d)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1103,6 +1239,138 @@ mod tests {
         assert!(od.sort_key_checked(&[value(5.0, 5.0)]).unwrap() > 0.0);
         let e = s3d(lucene_util::spatial3d::Error::Runtime("boom".into()));
         assert!(e.to_string().contains("boom"), "{e}");
+    }
+
+    /// OpenSearch's comparator: every value against every origin, sorted,
+    /// then the mode's pick; missing documents at `+Infinity`.
+    #[test]
+    fn opensearch_geo_distance_modes() {
+        let v = |lat, lon| LatLonDocValuesField::encode(lat, lon).unwrap();
+        let point = |e: i64| {
+            (
+                GeoEncodingUtils::decode_latitude(doc_value_high(e)),
+                GeoEncodingUtils::decode_longitude(doc_value_low(e)),
+            )
+        };
+        let values = [v(0.0, 1.0), v(0.0, 3.0), v(10.0, 0.0)];
+        let origins = vec![(0.0, 0.0), (0.0, 2.0)];
+        let mut want: Vec<f64> = values
+            .iter()
+            .flat_map(|&e| {
+                let (lat, lon) = point(e);
+                origins
+                    .iter()
+                    .map(move |&(a, b)| sloppy_math::haversin_meters(a, b, lat, lon) / 1000.0)
+            })
+            .collect();
+        want.sort_by(f64::total_cmp);
+        let sort = |mode| OpenSearchGeoDistanceSort {
+            origins: origins.clone(),
+            unit_meters: 1000.0,
+            mode,
+        };
+        let mut scratch = Vec::new();
+        let at = |mode| sort(mode).value(&values, &mut Vec::new());
+        assert_eq!(at(DistanceMode::Min), want[0]);
+        assert_eq!(at(DistanceMode::Max), want[5]);
+        let sum = want.iter().fold(0.0, |t, v| t + v);
+        assert_eq!(at(DistanceMode::Sum), sum);
+        assert_eq!(at(DistanceMode::Avg), sum / 6.0);
+        assert_eq!(at(DistanceMode::Median), (want[2] + want[3]) / 2.0);
+        // Two values: the mean of both; three (below): the middle one.
+        let odd = sort(DistanceMode::Median).value(&values[..1], &mut scratch);
+        let (lat, lon) = point(values[0]);
+        let mut two = [
+            sloppy_math::haversin_meters(0.0, 0.0, lat, lon) / 1000.0,
+            sloppy_math::haversin_meters(0.0, 2.0, lat, lon) / 1000.0,
+        ];
+        two.sort_by(f64::total_cmp);
+        assert_eq!(odd, (two[0] + two[1]) / 2.0);
+        let one = OpenSearchGeoDistanceSort {
+            origins: vec![(0.0, 0.0)],
+            unit_meters: 1.0,
+            mode: DistanceMode::Median,
+        };
+        assert_eq!(
+            one.value(&values, &mut scratch),
+            sloppy_math::haversin_meters(0.0, 0.0, point(values[1]).0, point(values[1]).1)
+        );
+        assert_eq!(one.value(&[], &mut scratch), f64::INFINITY);
+    }
+
+    /// The comparator over a real segment: values as sortable longs, a
+    /// document without the field at `+Infinity`, a field of another
+    /// doc-values type an error.
+    #[test]
+    fn opensearch_geo_distance_comparator_reads_the_segment() {
+        use crate::directory_reader::DirectoryReader;
+        use lucene_index::document::{self as d, Document};
+        use lucene_index::index_writer::IndexWriter;
+        use lucene_index::segment_info::LuceneVersion;
+        use lucene_store::FsDirectory;
+        use lucene_util::test_support::TempDir;
+        let tmp = TempDir::new("os-geo-sort");
+        let dir = FsDirectory::open(tmp.path());
+        let version = LuceneVersion {
+            major: 10,
+            minor: 5,
+            bugfix: 0,
+        };
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", version).unwrap();
+        for lat in [Some(1.0), None, Some(-3.0)] {
+            let mut doc = Document::new();
+            if let Some(lat) = lat {
+                doc.add_boxed(Box::new(
+                    d::LatLonDocValuesField::new("loc", lat, 0.0).unwrap(),
+                ));
+            }
+            doc.add_boxed(Box::new(d::SortedDocValuesField::new("kw", "x")));
+            w.add_fields_document(&doc).unwrap();
+        }
+        w.commit().unwrap();
+        drop(w);
+        let r = DirectoryReader::open(&dir).unwrap();
+        let seg = &r.segment_readers()[0];
+        let sort = OpenSearchGeoDistanceSort {
+            origins: vec![(0.0, 0.0)],
+            unit_meters: 1.0,
+            mode: DistanceMode::Min,
+        };
+        let src = sort.clone();
+        let cmp = src.new_comparator("loc", 3, false);
+        let mut leaf = cmp
+            .leaf(LeafCtx {
+                reader: seg,
+                doc_base: 0,
+            })
+            .unwrap();
+        let got: Vec<SortValue> = (0..3).map(|d| leaf.value(d, 0.0).unwrap()).collect();
+        let SortValue::Long(missing) = got[1] else {
+            panic!("{got:?}")
+        };
+        assert_eq!(missing, double_to_sortable_long(f64::INFINITY));
+        assert_eq!(cmp.compare_values(&got[0], &got[2]), Ordering::Less);
+        assert_eq!(
+            cmp.compare_values(&got[0], &SortValue::Bytes(None)),
+            Ordering::Equal
+        );
+        // No such field: every document missing.
+        let mut none = src
+            .new_comparator("nope", 3, false)
+            .leaf(LeafCtx {
+                reader: seg,
+                doc_base: 0,
+            })
+            .unwrap();
+        assert_eq!(none.value(0, 0.0).unwrap(), SortValue::Long(missing));
+        // A field of another doc-values type.
+        assert!(src
+            .new_comparator("kw", 3, false)
+            .leaf(LeafCtx {
+                reader: seg,
+                doc_base: 0,
+            })
+            .is_err());
     }
 
     #[test]
