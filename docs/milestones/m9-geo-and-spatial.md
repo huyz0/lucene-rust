@@ -164,9 +164,9 @@ last within the milestone.
   and `VerifySpatialExtras` in `scripts/verify-write-path.sh` (Lucene runs
   `CheckIndex` on the Rust-written index and answers every question over it
   as over its own). Benchmark pair `--bench spatial_extras`: date ranges
-  1.12x, BBox with the overlap-ratio similarity and RPT indexing a Geo3D
-  polygon 0.92x/0.90x (inside the noise floor in both runs), RPT
-  intersects 0.77x, heatmaps 0.43x -- the last three left with their
+  1.31x, BBox with the overlap-ratio similarity and RPT indexing a Geo3D
+  polygon 0.98x/0.99x (inside the noise floor in both runs), RPT
+  intersects 0.74x-0.77x, heatmaps 0.40x -- the last two left with their
   cause written up in `docs/parity.md`: a sorted stream of `seekCeil`s
   that this port's terms enum restarts at the trie's root each time
   (`c1-lazy-blocktree.md` F-9), and per-cell allocation. The review closed

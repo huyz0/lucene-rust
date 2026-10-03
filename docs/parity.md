@@ -445,10 +445,10 @@ across the engines first): `scripts/bench-micro.sh --bench spatial_extras`
 (`SpatialExtrasMicro.java` / `micro_spatial_extras.rs`, a 100 000-document
 one-segment index `SpatialExtrasMicro build` writes once: an 11-level quad
 RPT of clustered points and small boxes, their BBox, a date or date range)
--- `spx_date_range` 1.12x, `spx_bbox_similarity` 0.92x and
-`spx_rpt_index_polygon` 0.90x (both inside the 1.12x noise floor; the run
-before had them at 0.97x and 0.96x), `spx_rpt_intersects_rect` 0.77x,
-`spx_rpt_intersects_circle` 0.77x, `spx_heatmap` 0.43x. Stage 3: the
+-- `spx_date_range` 1.31x, `spx_rpt_index_polygon` 0.99x and
+`spx_bbox_similarity` 0.98x (both inside the 1.10x noise floor; 0.90x and
+0.92x, also inside it, in the run before), `spx_rpt_intersects_circle`
+0.77x, `spx_rpt_intersects_rect` 0.74x, `spx_heatmap` 0.40x. Stage 3: the
 visiting traversal reads each term's cell into one reused scratch cell
 (`readCell(term, scratch)`), relates a quad cell's rectangle without
 allocating it (`Cell::relate_shape`, `ShapeFactory::rect_relate`), keeps
@@ -456,7 +456,8 @@ legacy cell bytes inline, reuses one postings cursor from term to term and
 reads a pulsed single document off the term, and takes a query cell from
 its parent's iterator without the copy `thisCell()` keeps; `collectDocs`
 ORs a posting list into the bit set a block at a time (Java's
-`bitSet.or(postingsEnum)`), which took `spx_date_range` from 0.63x to 1.12x.
+`bitSet.or(postingsEnum)`), which took `spx_date_range` from 0.63x to
+1.12x-1.31x.
 Below 1.0 and left, with their causes: the heatmap and RPT intersect
 traversals are a sorted stream of `seekCeil`s down an 11-level trie, and
 30% of the heatmap's time is `TermsEnum::try_seek_ceil`, which restarts

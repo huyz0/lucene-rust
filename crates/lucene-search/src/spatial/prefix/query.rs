@@ -64,6 +64,14 @@ pub(crate) struct Traverser<'a> {
     pub(crate) bad: Option<i32>,
 }
 
+/// A term's documents (see [`Traverser::term_docs`]).
+enum TermDocs<'c, 'a> {
+    /// A pulsed single document.
+    One(i32),
+    /// A posting list, through the reused cursor.
+    Many(&'c mut LazyDocsCursor<'a>),
+}
+
 impl<'a> Traverser<'a> {
     pub(crate) fn new(
         leaf: &OpenSegment<'a>,
@@ -156,98 +164,78 @@ impl<'a> Traverser<'a> {
         r
     }
 
-    /// The current term's documents, deleted ones included
-    /// (`termsEnum.postings(.., NONE)`).
-    pub(crate) fn docs(&mut self) -> Result<Vec<i32>> {
-        let terms = self.terms.as_mut().expect("postings only on a term");
-        Ok(terms
-            .try_current_postings(self.doc_in)?
-            .map(|p| p.docs)
-            .unwrap_or_default())
-    }
-
     /// `termsEnum.docFreq()`.
     pub(crate) fn doc_freq(&mut self) -> Result<i32> {
         let terms = self.terms.as_mut().expect("docFreq only on a term");
         Ok(terms.try_stats()?.map_or(0, |s| s.doc_freq))
     }
 
-    /// The current term's documents, deleted ones included, each passed to
-    /// `f` until it returns `false`: Java's `postingsEnum` loop, the cursor
-    /// reused from term to term and a pulsed single document read off the term's
-    /// metadata.
-    pub(crate) fn for_each_doc(&mut self, mut f: impl FnMut(i32) -> bool) -> Result<()> {
+    /// The current term's documents, deleted ones included
+    /// (`termsEnum.postings(postingsEnum, NONE)`): its one document pulsed
+    /// into the term's metadata, or its postings through the cursor reused
+    /// from term to term. `None` off a term.
+    fn term_docs(&mut self) -> Result<Option<TermDocs<'_, 'a>>> {
         let terms = self.terms.as_mut().expect("postings only on a term");
-        let fast = match (self.field, self.doc_in) {
-            (Some(field), Some(doc_in)) => terms.try_seeked_term()?.map(|t| (field, doc_in, t)),
-            _ => None,
+        let Some(term) = terms.try_seeked_term()? else {
+            return Ok(None);
         };
-        match fast {
-            Some((_, _, term)) if term.singleton_doc().is_some() => {
-                f(term.singleton_doc().unwrap_or_default());
+        if let Some(doc) = term.singleton_doc() {
+            return Ok(Some(TermDocs::One(doc)));
+        }
+        let field = self.field.expect("a segment with terms has the field");
+        let doc_in = self.doc_in.ok_or(blocktree::Error::Unsupported(
+            "postings() needs an opened .doc file for docFreq > 1 terms",
+        ))?;
+        let cursor =
+            field.reuse_postings_for(&term, doc_in, PostingsFlags::DocsOnly, &mut self.reuse)?;
+        Ok(Some(TermDocs::Many(cursor)))
+    }
+
+    /// The current term's documents, deleted ones included, each passed to
+    /// `f` until it returns `false`: Java's `postingsEnum` loop.
+    pub(crate) fn for_each_doc(&mut self, mut f: impl FnMut(i32) -> bool) -> Result<()> {
+        match self.term_docs()? {
+            None => {}
+            Some(TermDocs::One(doc)) => {
+                f(doc);
             }
-            Some((field, doc_in, term)) if term.stats.doc_freq > 1 => {
-                let cursor = field.reuse_postings_for(
-                    &term,
-                    doc_in,
-                    PostingsFlags::DocsOnly,
-                    &mut self.reuse,
-                )?;
-                loop {
-                    let doc = cursor.next_doc().map_err(blocktree::Error::Postings)?;
-                    if doc == NO_MORE_DOCS || !f(doc) {
-                        break;
-                    }
+            Some(TermDocs::Many(cursor)) => loop {
+                let doc = cursor.next_doc().map_err(blocktree::Error::Postings)?;
+                if doc == NO_MORE_DOCS || !f(doc) {
+                    break;
                 }
-            }
-            _ => {
-                for doc in self.docs()? {
-                    if !f(doc) {
-                        break;
-                    }
-                }
-            }
+            },
         }
         Ok(())
     }
 
     /// `collectDocs(bitSet)` / `collectDocs(docSetBuilder)`: Java's
     /// `bitSet.or(postingsEnum)`, a posting list ORed in a block at a time
-    /// (`intoBitSet`) through the reused cursor. A document at or past the
-    /// set's end -- a corrupt `.doc` -- is remembered in `bad` as
+    /// (`intoBitSet`). A document outside the segment -- a corrupt `.doc`;
+    /// Java's `FixedBitSet` throws -- is remembered in `bad`, as
     /// [`set_doc`] does.
     pub(crate) fn collect_docs(&mut self, bits: &mut FixedBitSet) -> Result<()> {
-        let terms = self.terms.as_mut().expect("postings only on a term");
-        if let (Some(field), Some(doc_in)) = (self.field, self.doc_in) {
-            if let Some(term) = terms.try_seeked_term()? {
-                if term.stats.doc_freq > 1 {
-                    let cursor = field.reuse_postings_for(
-                        &term,
-                        doc_in,
-                        PostingsFlags::DocsOnly,
-                        &mut self.reuse,
-                    )?;
-                    let len = bits.len();
-                    let end = i32::try_from(len).unwrap_or(i32::MAX).min(self.max_doc);
-                    let mut words = std::mem::replace(bits, FixedBitSet::new(0)).into_words();
-                    let r = cursor
-                        .next_doc()
-                        .and_then(|_| cursor.into_window(0, end, &mut words));
-                    *bits = FixedBitSet::from_words(words, len);
-                    let past = r.map_err(blocktree::Error::Postings)?;
-                    if past != NO_MORE_DOCS {
-                        self.bad.get_or_insert(past);
-                    }
-                    return Ok(());
-                }
+        let max_doc = self.max_doc;
+        let bad = match self.term_docs()? {
+            None => None,
+            Some(TermDocs::One(doc)) => {
+                let mut bad = None;
+                set_doc(bits, doc, &mut bad);
+                bad
             }
+            Some(TermDocs::Many(cursor)) => {
+                let len = bits.len();
+                let end = i32::try_from(len).unwrap_or(i32::MAX).min(max_doc);
+                let mut words = std::mem::replace(bits, FixedBitSet::new(0)).into_words();
+                let r = (cursor.next_doc()).and_then(|_| cursor.into_window(0, end, &mut words));
+                *bits = FixedBitSet::from_words(words, len);
+                // the first document the window did not take
+                Some(r.map_err(blocktree::Error::Postings)?).filter(|&d| d != NO_MORE_DOCS)
+            }
+        };
+        if let Some(doc) = bad {
+            self.bad.get_or_insert(doc);
         }
-        let mut bad = self.bad;
-        self.for_each_doc(|doc| {
-            set_doc(bits, doc, &mut bad);
-            true
-        })?;
-        self.bad = bad;
         Ok(())
     }
 
