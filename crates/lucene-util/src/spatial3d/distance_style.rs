@@ -57,14 +57,14 @@ impl DistanceStyle {
 
     /// `computeDistance(planetModel, plane, x, y, z, bounds)`: the distance
     /// from the point to the bounded plane.
-    pub fn compute_distance_to_plane(
+    pub fn compute_distance_to_plane<M: Membership + ?Sized>(
         self,
         pm: &PlanetModel,
         plane: &Plane,
         x: f64,
         y: f64,
         z: f64,
-        bounds: &[&dyn Membership],
+        bounds: &[&M],
     ) -> f64 {
         match self {
             DistanceStyle::Arc => plane.arc_distance(pm, x, y, z, bounds),

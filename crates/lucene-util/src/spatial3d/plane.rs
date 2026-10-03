@@ -16,8 +16,9 @@ use super::bounds::Bounds;
 use super::geo_point::GeoPoint;
 use super::jmath::{abs, atan2, cos, next_down, next_up, sin, sqrt};
 use super::lat_lon_bounds::LatLonBounds;
-use super::membership::{meets_all_bounds, Membership};
+use super::membership::{meets_all_bounds, meets_all_bounds_of, Membership};
 use super::planet_model::PlanetModel;
+use super::tools::safe_acos;
 use super::vector::{
     Vector, MINIMUM_RESOLUTION, MINIMUM_RESOLUTION_CUBED, MINIMUM_RESOLUTION_SQUARED,
 };
@@ -414,16 +415,16 @@ impl Plane {
 
     /// `arcDistance(planetModel, x, y, z, bounds)`: the arc distance from the
     /// point to the nearest point of the plane within the bounds.
-    pub fn arc_distance(
+    pub fn arc_distance<M: Membership + ?Sized>(
         &self,
         pm: &PlanetModel,
         x: f64,
         y: f64,
         z: f64,
-        bounds: &[&dyn Membership],
+        bounds: &[&M],
     ) -> f64 {
         if self.evaluate_is_zero_xyz(x, y, z) {
-            if meets_all_bounds(x, y, z, bounds) {
+            if meets_all_bounds_of(x, y, z, bounds) {
                 return 0.0;
             }
             return f64::INFINITY;
@@ -434,14 +435,22 @@ impl Plane {
             self.x * y - self.y * x,
             0.0,
         );
-        let intersection_points = self.find_intersections_two(pm, &perp_plane, NO_BOUNDS);
-        let mut min_distance = f64::INFINITY;
         // Java iterates a null array (NullPointerException) when the planes
         // are numerically identical; that needs the point to be on this
         // plane, which returned above.
-        for p in intersection_points.iter().flatten() {
-            if meets_all_bounds(p.x, p.y, p.z, bounds) {
-                let the_distance = p.arc_distance_xyz(x, y, z);
+        let intersection_points = if self.is_numerically_identical_plane(&perp_plane) {
+            [None, None]
+        } else {
+            self.intersection_coords(pm, &perp_plane, NO_BOUNDS, NO_BOUNDS)
+        };
+        let mut min_distance = f64::INFINITY;
+        for &[px, py, pz] in intersection_points.iter().flatten() {
+            if meets_all_bounds_of(px, py, pz, bounds) {
+                // `GeoPoint.arcDistance(x, y, z)` on the intersection point.
+                let the_distance = safe_acos(
+                    (px * x + py * y + pz * z)
+                        / (Vector::magnitude_of(px, py, pz) * Vector::magnitude_of(x, y, z)),
+                );
                 if the_distance < min_distance {
                     min_distance = the_distance;
                 }
@@ -451,24 +460,30 @@ impl Plane {
     }
 
     /// `normalDistance(x, y, z, bounds)`.
-    pub fn normal_distance(&self, x: f64, y: f64, z: f64, bounds: &[&dyn Membership]) -> f64 {
+    pub fn normal_distance<M: Membership + ?Sized>(
+        &self,
+        x: f64,
+        y: f64,
+        z: f64,
+        bounds: &[&M],
+    ) -> f64 {
         let dist = self.evaluate_xyz(x, y, z);
         let perp_x = x - dist * self.x;
         let perp_y = y - dist * self.y;
         let perp_z = z - dist * self.z;
-        if !meets_all_bounds(perp_x, perp_y, perp_z, bounds) {
+        if !meets_all_bounds_of(perp_x, perp_y, perp_z, bounds) {
             return f64::INFINITY;
         }
         abs(dist)
     }
 
     /// `normalDistanceSquared(x, y, z, bounds)`.
-    pub fn normal_distance_squared(
+    pub fn normal_distance_squared<M: Membership + ?Sized>(
         &self,
         x: f64,
         y: f64,
         z: f64,
-        bounds: &[&dyn Membership],
+        bounds: &[&M],
     ) -> f64 {
         let normal = self.normal_distance(x, y, z, bounds);
         if normal == f64::INFINITY {
@@ -478,16 +493,16 @@ impl Plane {
     }
 
     /// `linearDistance(planetModel, x, y, z, bounds)`.
-    pub fn linear_distance(
+    pub fn linear_distance<M: Membership + ?Sized>(
         &self,
         pm: &PlanetModel,
         x: f64,
         y: f64,
         z: f64,
-        bounds: &[&dyn Membership],
+        bounds: &[&M],
     ) -> f64 {
         if self.evaluate_is_zero_xyz(x, y, z) {
-            if meets_all_bounds(x, y, z, bounds) {
+            if meets_all_bounds_of(x, y, z, bounds) {
                 return 0.0;
             }
             return f64::INFINITY;
@@ -501,7 +516,7 @@ impl Plane {
         let intersection_points = self.find_intersections_two(pm, &perp_plane, NO_BOUNDS);
         let mut min_distance = f64::INFINITY;
         for p in intersection_points.iter().flatten() {
-            if meets_all_bounds(p.x, p.y, p.z, bounds) {
+            if meets_all_bounds_of(p.x, p.y, p.z, bounds) {
                 let the_distance = p.linear_distance_xyz(x, y, z);
                 if the_distance < min_distance {
                     min_distance = the_distance;
@@ -512,13 +527,13 @@ impl Plane {
     }
 
     /// `linearDistanceSquared(planetModel, x, y, z, bounds)`.
-    pub fn linear_distance_squared(
+    pub fn linear_distance_squared<M: Membership + ?Sized>(
         &self,
         pm: &PlanetModel,
         x: f64,
         y: f64,
         z: f64,
-        bounds: &[&dyn Membership],
+        bounds: &[&M],
     ) -> f64 {
         let linear_distance = self.linear_distance(pm, x, y, z, bounds);
         linear_distance * linear_distance
@@ -716,6 +731,22 @@ impl Plane {
         bounds: &[&dyn Membership],
         more_bounds: &[&dyn Membership],
     ) -> [Option<GeoPoint>; 2] {
+        self.intersection_coords(pm, q, bounds, more_bounds)
+            .map(|p| p.map(|[x, y, z]| GeoPoint::new(x, y, z)))
+    }
+
+    /// [`Self::intersections`] as bare coordinates: the distance loops read
+    /// only a point's x/y/z and magnitude, so they skip building a
+    /// `GeoPoint` (and its lazy latitude/longitude/magnitude slots) for
+    /// each. The same arithmetic, so the same bits.
+    #[inline]
+    fn intersection_coords(
+        &self,
+        pm: &PlanetModel,
+        q: &Plane,
+        bounds: &[&dyn Membership],
+        more_bounds: &[&dyn Membership],
+    ) -> [Option<[f64; 3]>; 2] {
         let lvx = self.y * q.z - self.z * q.y;
         let lvy = self.z * q.x - self.x * q.z;
         let lvz = self.x * q.y - self.y * q.x;
@@ -741,7 +772,7 @@ impl Plane {
             if !meets_all_bounds(px, py, pz, bounds) || !meets_all_bounds(px, py, pz, more_bounds) {
                 return [None, None];
             }
-            [Some(GeoPoint::new(px, py, pz)), None]
+            [Some([px, py, pz]), None]
         } else if BsquaredMinus > 0.0 {
             let inverse2A = 1.0 / (2.0 * A);
             let sqrt_term = sqrt(BsquaredMinus);
@@ -785,6 +816,7 @@ impl Plane {
             two_points(lvx, lvy, lvz, x0, y0, z0, t1, t2, bounds, more_bounds)
                 .into_iter()
                 .flatten()
+                .map(|[x, y, z]| GeoPoint::new(x, y, z))
                 .collect()
         } else {
             Vec::new()
@@ -1449,7 +1481,7 @@ fn two_points(
     t2: f64,
     bounds: &[&dyn Membership],
     more_bounds: &[&dyn Membership],
-) -> [Option<GeoPoint>; 2] {
+) -> [Option<[f64; 3]>; 2] {
     let p1x = lvx * t1 + x0;
     let p1y = lvy * t1 + y0;
     let p1z = lvz * t1 + z0;
@@ -1460,8 +1492,8 @@ fn two_points(
         meets_all_bounds(p1x, p1y, p1z, bounds) && meets_all_bounds(p1x, p1y, p1z, more_bounds);
     let v2 =
         meets_all_bounds(p2x, p2y, p2z, bounds) && meets_all_bounds(p2x, p2y, p2z, more_bounds);
-    let p1 = v1.then(|| GeoPoint::new(p1x, p1y, p1z));
-    let p2 = v2.then(|| GeoPoint::new(p2x, p2y, p2z));
+    let p1 = v1.then_some([p1x, p1y, p1z]);
+    let p2 = v2.then_some([p2x, p2y, p2z]);
     // In Java's order: the first valid point first.
     if p1.is_none() {
         [p2, None]
