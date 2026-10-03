@@ -643,3 +643,99 @@ fn s2_term_decoding_to_no_level_has_an_empty_token() {
     assert_eq!(cell.level(), 0);
     assert!(cell.token_bytes_no_leaf().is_empty());
 }
+
+/// A quad cell's children are made one at a time (`LegacyChildren`)
+/// rather than as `getSubCells`' list behind a `FilterCellIterator`: the
+/// same cells, order, leaf flags and relations, for every filter kind, down
+/// to the last level (where every child is a leaf) and past 30 levels
+/// (where a cell's bytes leave their inline buffer).
+#[test]
+fn quad_children_match_the_filtered_sub_cell_list() {
+    let ctx = geo();
+    let filters: Vec<Option<Arc<dyn Shape>>> = vec![
+        None,
+        Some(ctx.rect(-170.0, -10.0, -60.0, 45.0).unwrap()),
+        Some(ctx.rect(-10.0, 10.0, -10.0, 10.0).unwrap()),
+        Some(ctx.circle(12.5, -7.25, 30.0).unwrap()),
+    ];
+    let describe = |c: &dyn Cell| (c.token_bytes_with_leaf(), c.is_leaf(), c.shape_rel());
+    for levels in [3, 40] {
+        let tree = QuadPrefixTree::new(ctx.clone(), levels).unwrap();
+        let mut parents: Vec<Box<dyn Cell>> = vec![tree.world_cell()];
+        // a path down the tree: always the third child (`C`, toward the
+        // origin's south-west), so the deep tree reaches past 30 bytes
+        while let Some(p) = parents.last() {
+            if p.level() >= levels - 1 || p.level() >= 35 {
+                break;
+            }
+            let mut it = p.next_level_cells(None).unwrap();
+            let mut third = None;
+            for _ in 0..3 {
+                third = Some(it.next().unwrap());
+            }
+            parents.push(third.unwrap());
+        }
+        for parent in &parents {
+            let legacy = parent.as_any().downcast_ref::<LegacyCell>().unwrap();
+            for filter in &filters {
+                let listed: Vec<Box<dyn Cell>> = legacy
+                    .grid
+                    .clone()
+                    .sub_cells(legacy)
+                    .unwrap()
+                    .into_iter()
+                    .map(|c| Box::new(c) as Box<dyn Cell>)
+                    .collect();
+                let mut want = FilterCellIterator::new(listed, filter.clone());
+                let mut got = parent.next_level_cells(filter.as_ref()).unwrap();
+                let mut n = 0;
+                loop {
+                    let more = want.has_next().unwrap();
+                    assert_eq!(got.has_next().unwrap(), more, "{parent} {n}");
+                    if !more {
+                        break;
+                    }
+                    // alternate the two ways of taking a cell
+                    let (w, g) = if n % 2 == 0 {
+                        (want.next().unwrap(), got.next().unwrap())
+                    } else {
+                        (want.next_detached().unwrap(), got.next_detached().unwrap())
+                    };
+                    assert_eq!(describe(&*g), describe(&*w), "{parent} child {n}");
+                    assert_eq!(
+                        got.this_cell().map(&describe),
+                        want.this_cell().map(&describe),
+                        "{parent} thisCell {n}"
+                    );
+                    n += 1;
+                }
+                assert!(got.next().is_err(), "past the end");
+                assert!(got.next_detached().is_err(), "past the end");
+                if filter.is_none() {
+                    assert_eq!(n, 4);
+                }
+                // the scratch target bytes equal the fresh ones
+                let mut scratch = vec![9u8; 3];
+                parent.token_bytes_no_leaf_into(&mut scratch);
+                assert_eq!(scratch, parent.token_bytes_no_leaf());
+            }
+        }
+        assert!(parents.last().unwrap().level() >= 2.min(levels - 1));
+    }
+}
+
+/// The default `token_bytes_no_leaf_into` (trees other than the legacy
+/// ones) writes the same bytes as `token_bytes_no_leaf`.
+#[test]
+fn token_bytes_into_scratch_for_every_tree() {
+    for tree in trees() {
+        let world = tree.world_cell();
+        let mut it = world.next_level_cells(None).unwrap();
+        while it.has_next().unwrap() {
+            let c = it.next().unwrap();
+            let mut scratch = b"stale".to_vec();
+            c.token_bytes_no_leaf_into(&mut scratch);
+            assert_eq!(scratch, c.token_bytes_no_leaf(), "{tree}");
+        }
+    }
+}

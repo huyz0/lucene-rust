@@ -20,8 +20,13 @@
 //!   No caller in spatial-extras keeps a cell across `next()` expecting it to
 //!   change, so the terms and relations are the same.
 //! - The "scratch" `BytesRef` arguments (`getTokenBytes*(BytesRef)`) are
-//!   not ported: results are fresh values. `readCell(term, scratch)` is
+//!   fresh values, except `getTokenBytesNoLeaf(scratch)`, which is
+//!   [`Cell::token_bytes_no_leaf_into`]. `readCell(term, scratch)` is
 //!   [`SpatialPrefixTree::read_cell_into`].
+//! - A quad cell's children (`getNextLevelCells` over `getSubCells`) are
+//!   made one at a time as the filter accepts them, from one scratch
+//!   child, instead of as a list of all four first: the same cells, in the
+//!   same order, with the same relations.
 //! - [`CellIterator::next_detached`] is `next()` without keeping the copy
 //!   `thisCell()` would return, for the visiting traversal, which never asks
 //!   for it.
@@ -140,6 +145,13 @@ pub trait Cell: fmt::Debug + fmt::Display + Send + Sync + Any {
     fn token_bytes_with_leaf(&self) -> Vec<u8>;
     /// `getTokenBytesNoLeaf(null)`.
     fn token_bytes_no_leaf(&self) -> Vec<u8>;
+    /// `getTokenBytesNoLeaf(scratch)`: the same bytes into `out` (cleared
+    /// first), reusing its storage -- the visiting traversal's
+    /// `curVNodeTerm`, one buffer for every seek target.
+    fn token_bytes_no_leaf_into(&self, out: &mut Vec<u8>) {
+        out.clear();
+        out.extend_from_slice(&self.token_bytes_no_leaf());
+    }
     /// `getLevel()`.
     fn level(&self) -> i32;
     /// `getNextLevelCells(shapeFilter)`: the children, filtered to those
