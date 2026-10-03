@@ -7,6 +7,7 @@ import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.IntPoint;
+import org.apache.lucene.document.LatLonPoint;
 import org.apache.lucene.document.LongPoint;
 import org.apache.lucene.document.StringField;
 import org.apache.lucene.document.TextField;
@@ -76,6 +77,7 @@ public final class NativeSelfTest {
     private static int minScoreChecks;
     private static int aggChecks;
     private static int termsChecks;
+    private static int geoEncoded;
 
     public static void main(String[] args) throws Exception {
         NativeLibrary.load(Path.of("."));
@@ -85,6 +87,7 @@ public final class NativeSelfTest {
         encoderMatrix();
         nrtReaders(new Random(42));
         softDeletes(new Random(7));
+        geo(new Random(13));
         storedFields(new Random(11));
         int compared = 0;
         int bwc = 0;
@@ -102,12 +105,14 @@ public final class NativeSelfTest {
         check(compared >= 20, "fixtures compared natively: " + compared);
         check(bwc >= 17, "backward-codecs fixtures found: " + bwc);
         System.out.printf("NativeSelfTest: %d of %d backward-codecs fixture indexes compared natively%n", bwcCompared, bwc);
+        System.out.printf("NativeSelfTest: %d geo queries encoded and compared%n", geoEncoded);
         check(trackedPages >= 20, "sorted pages tracking the max score: " + trackedPages);
         check(sortedMinScoreChecks >= 20, "sorted pages behind min_score: " + sortedMinScoreChecks);
         check(aggChecks >= 100, "queries aggregated natively: " + aggChecks);
         check(termsChecks >= 300, "terms aggregations compared: " + termsChecks);
         check(terminateChecks >= 100, "terminate_after searches compared: " + terminateChecks);
         check(minScoreChecks >= 100, "min_score searches compared: " + minScoreChecks);
+        check(geoEncoded >= 600, "geo queries encoded and compared: " + geoEncoded);
         System.out.printf(
             "NativeSelfTest: %d checks, %d failures; %d of %d compared scores bit-exact; %d sorted pages compared (%d tracking the max score, %d behind min_score); %d aggregations, %d terms; %d terminate_after; %d min_score%n",
             checks,
@@ -1261,6 +1266,264 @@ public final class NativeSelfTest {
         }
         try (Stream<Path> s = Files.walk(dir)) {
             s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
+        }
+    }
+
+    // --- geo (M9 T9.6) ----------------------------------------------------------------------
+
+    /**
+     * The geo queries OpenSearch builds for {@code geo_point} and {@code geo_shape} fields (and the
+     * rest of what {@link GeoEncoder} encodes), compared with Lucene on an index of points and
+     * shapes that reach the poles and the antimeridian: as roots, wrapped as OpenSearch wraps them
+     * ({@code IndexOrDocValuesQuery}, {@code constant_score}, a boost), and as filters beside a text
+     * clause -- including repeated and near-identical ones, so that the native query cache (a merged
+     * segment of more than 10,000 documents) both serves and tells apart cached geo sets.
+     */
+    private static void geo(Random r) throws Exception {
+        Path dir = Files.createTempDirectory("lucene-rust-selftest-geo");
+        NativeReaders readers = new NativeReaders();
+        try (FSDirectory d = FSDirectory.open(dir); IndexWriter w = new IndexWriter(d, new IndexWriterConfig(new StandardAnalyzer()))) {
+            DirectoryReader reader = null;
+            int id = 0;
+            for (int round = 0; round < 4; round++) {
+                for (int i = 0; i < 3000 + r.nextInt(800); i++, id++) {
+                    w.addDocument(geoDoc(r, id));
+                }
+                for (int i = 0; i < 60; i++) {
+                    w.deleteDocuments(new Term("id", Integer.toString(r.nextInt(id))));
+                }
+                if (round == 3) {
+                    w.forceMerge(1);
+                }
+                DirectoryReader next = reader == null ? DirectoryReader.open(w) : DirectoryReader.openIfChanged(reader, w);
+                if (next != null) {
+                    if (reader != null) {
+                        reader.close();
+                    }
+                    reader = next;
+                }
+                List<Query> queries = new ArrayList<>();
+                for (int q = 0; q < 70; q++) {
+                    Query g = randomGeoQuery(r);
+                    queries.add(g);
+                    // OpenSearch's wrappings, and the query as a filter beside a scored clause.
+                    switch (r.nextInt(4)) {
+                        case 0 -> queries.add(new ConstantScoreQuery(g));
+                        case 1 -> queries.add(new BoostQuery(g, 2.5f));
+                        default -> queries.add(
+                            new BooleanQuery.Builder().add(new TermQuery(new Term("body", word(r))), Occur.MUST).add(g, Occur.FILTER).build()
+                        );
+                    }
+                }
+                // Equal queries built apart (one cached set serves both), and near-identical
+                // ones (each must get its own set).
+                for (int q = 0; q < 6; q++) {
+                    double lat = r.nextDouble() * 120 - 60, lon = r.nextDouble() * 340 - 170, m = 50_000 + r.nextInt(2_000_000);
+                    for (int k = 0; k < 6; k++) {
+                        double radius = k % 2 == 0 ? m : m * 1.5;
+                        queries.add(
+                            new BooleanQuery.Builder().add(new TermQuery(new Term("body", WORDS[k % 3])), Occur.SHOULD)
+                                .add(LatLonPoint.newDistanceQuery("loc", lat, lon, radius), Occur.FILTER)
+                                .build()
+                        );
+                    }
+                }
+                int before = geoEncoded;
+                for (Query q : queries) {
+                    if (QueryEncoder.encode(new IndexSearcher(reader).rewrite(q), f -> true).blob() != null) {
+                        geoEncoded++;
+                    } else {
+                        check(false, "geo query does not encode: " + q + " (" + QueryEncoder.encode(new IndexSearcher(reader).rewrite(q), f -> true).fallbackReason() + ")");
+                    }
+                }
+                compare("geo round " + round + " (" + reader.leaves().size() + " segments, " + reader.numDeletedDocs() + " deleted)", reader, readers, queries);
+                check(geoEncoded - before == queries.size(), "every geo query encodes");
+            }
+            reader.close();
+            check(readers.openCount() == 0, "geo: no native readers left open");
+        }
+        try (Stream<Path> s = Files.walk(dir)) {
+            s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
+        }
+    }
+
+    /** A latitude, often at or next to a pole. */
+    private static double lat(Random r) {
+        return switch (r.nextInt(10)) {
+            case 0 -> r.nextBoolean() ? 90 : -90;
+            case 1 -> (r.nextBoolean() ? 1 : -1) * (90 - r.nextDouble() * 1e-3);
+            default -> r.nextDouble() * 180 - 90;
+        };
+    }
+
+    /** A longitude, often at or next to the antimeridian. */
+    private static double lon(Random r) {
+        return switch (r.nextInt(10)) {
+            case 0 -> r.nextBoolean() ? 180 : -180;
+            case 1 -> (r.nextBoolean() ? 1 : -1) * (180 - r.nextDouble() * 1e-2);
+            default -> r.nextDouble() * 360 - 180;
+        };
+    }
+
+    /** {@link #doc} plus zero to three {@code loc} points and a {@code shape}, as a geo_point and a geo_shape field index them. */
+    private static Document geoDoc(Random r, int id) {
+        Document d = doc(r, id);
+        for (int i = 0, n = r.nextInt(8) == 0 ? 0 : 1 + (r.nextInt(4) == 0 ? r.nextInt(3) : 0); i < n; i++) {
+            double la = lat(r), lo = lon(r);
+            d.add(new LatLonPoint("loc", la, lo));
+            d.add(new org.apache.lucene.document.LatLonDocValuesField("loc", la, lo));
+        }
+        if (r.nextInt(6) != 0) {
+            try {
+                org.apache.lucene.document.Field[] fields = switch (r.nextInt(4)) {
+                    case 0 -> org.apache.lucene.document.LatLonShape.createIndexableFields("shape", lat(r), lon(r));
+                    case 1 -> org.apache.lucene.document.LatLonShape.createIndexableFields("shape", randomLine(r));
+                    default -> org.apache.lucene.document.LatLonShape.createIndexableFields("shape", randomPolygon(r, r.nextInt(3) == 0));
+                };
+                for (org.apache.lucene.document.Field f : fields) {
+                    d.add(f);
+                }
+            } catch (IllegalArgumentException e) {
+                // A polygon the tessellator refuses: no shape for this document.
+            }
+        }
+        return d;
+    }
+
+    private static org.apache.lucene.geo.Line randomLine(Random r) {
+        int n = 2 + r.nextInt(5);
+        double[] lats = new double[n], lons = new double[n];
+        double la = lat(r), lo = lon(r);
+        for (int i = 0; i < n; i++) {
+            lats[i] = Math.max(-90, Math.min(90, la + r.nextGaussian() * 3));
+            lons[i] = Math.max(-180, Math.min(180, lo + r.nextGaussian() * 3));
+        }
+        return new org.apache.lucene.geo.Line(lats, lons);
+    }
+
+    /**
+     * A ring of 3-12 vertices around a centre (clamped to the valid range, so a ring near a pole or
+     * the antimeridian is flattened against it), optionally with a hole; sometimes degenerate: all
+     * vertices on one parallel or meridian, or repeated vertices.
+     */
+    private static org.apache.lucene.geo.Polygon randomPolygon(Random r, boolean hole) {
+        double cLat = lat(r), cLon = lon(r);
+        double radius = Math.pow(10, r.nextDouble() * 2.5 - 1.5);
+        int n = 3 + r.nextInt(10);
+        int degenerate = r.nextInt(12);
+        double[] lats = new double[n + 1], lons = new double[n + 1];
+        for (int i = 0; i < n; i++) {
+            double a = 2 * Math.PI * i / n;
+            lats[i] = Math.max(-90, Math.min(90, cLat + radius * Math.sin(a)));
+            lons[i] = Math.max(-180, Math.min(180, cLon + radius * Math.cos(a)));
+            if (degenerate == 0) {
+                lats[i] = Math.max(-90, Math.min(90, cLat));
+            } else if (degenerate == 1) {
+                lons[i] = Math.max(-180, Math.min(180, cLon));
+            } else if (degenerate == 2 && i % 2 == 1) {
+                lats[i] = lats[i - 1];
+                lons[i] = lons[i - 1];
+            }
+        }
+        lats[n] = lats[0];
+        lons[n] = lons[0];
+        if (hole && degenerate > 2) {
+            double[] hl = new double[5], ho = new double[5];
+            double h = radius / 4;
+            double[][] corners = { { -h, -h }, { -h, h }, { h, h }, { h, -h }, { -h, -h } };
+            for (int i = 0; i < 5; i++) {
+                hl[i] = Math.max(-90, Math.min(90, cLat + corners[i][0]));
+                ho[i] = Math.max(-180, Math.min(180, cLon + corners[i][1]));
+            }
+            return new org.apache.lucene.geo.Polygon(lats, lons, new org.apache.lucene.geo.Polygon(hl, ho));
+        }
+        return new org.apache.lucene.geo.Polygon(lats, lons);
+    }
+
+    private static org.apache.lucene.document.ShapeField.QueryRelation relation(Random r) {
+        return org.apache.lucene.document.ShapeField.QueryRelation.values()[r.nextInt(4)];
+    }
+
+    /** A random geometry of any kind Lucene's queries take. */
+    private static org.apache.lucene.geo.LatLonGeometry randomGeometry(Random r, boolean lines) {
+        return switch (r.nextInt(lines ? 5 : 4)) {
+            case 0 -> new org.apache.lucene.geo.Point(lat(r), lon(r));
+            case 1 -> randomPolygon(r, r.nextBoolean());
+            case 2 -> randomRectangle(r);
+            case 3 -> new org.apache.lucene.geo.Circle(lat(r), lon(r), 1 + r.nextDouble() * 3e6);
+            default -> randomLine(r);
+        };
+    }
+
+    /** A rectangle, crossing the antimeridian (min lon above max lon) about a third of the time. */
+    private static org.apache.lucene.geo.Rectangle randomRectangle(Random r) {
+        double a = lat(r), b = lat(r);
+        double minLon = lon(r), maxLon = lon(r);
+        if (minLon > maxLon && r.nextInt(3) != 0) {
+            double t = minLon;
+            minLon = maxLon;
+            maxLon = t;
+        }
+        return new org.apache.lucene.geo.Rectangle(Math.min(a, b), Math.max(a, b), minLon, maxLon);
+    }
+
+    /** One geo query, built by the factories OpenSearch's geo queries call (and their siblings). */
+    private static Query randomGeoQuery(Random r) {
+        String loc = "loc";
+        switch (r.nextInt(9)) {
+            case 0, 1: {
+                // geo_bounding_box on a geo_point: the box and its doc-values twin.
+                org.apache.lucene.geo.Rectangle b = randomRectangle(r);
+                double minLat = r.nextInt(20) == 0 ? 90 : b.minLat;
+                double minLon = r.nextInt(20) == 0 ? 180 : b.minLon;
+                Query index = LatLonPoint.newBoxQuery(loc, minLat, Math.max(minLat, b.maxLat), minLon, b.maxLon);
+                Query dv = org.apache.lucene.document.LatLonDocValuesField.newSlowBoxQuery(loc, minLat, Math.max(minLat, b.maxLat), minLon, b.maxLon);
+                return r.nextBoolean() ? new org.apache.lucene.search.IndexOrDocValuesQuery(index, dv) : index;
+            }
+            case 2, 3: {
+                // geo_distance on a geo_point, from a metre to the whole earth.
+                double la = lat(r), lo = lon(r);
+                double m = r.nextInt(10) == 0 ? 2.1e7 : Math.pow(10, r.nextDouble() * 7);
+                Query index = LatLonPoint.newDistanceQuery(loc, la, lo, m);
+                Query dv = org.apache.lucene.document.LatLonDocValuesField.newSlowDistanceQuery(loc, la, lo, m);
+                return r.nextBoolean() ? new org.apache.lucene.search.IndexOrDocValuesQuery(index, dv) : index;
+            }
+            case 4: {
+                // geo_polygon / geo_shape polygons on a geo_point.
+                org.apache.lucene.geo.Polygon[] polys = new org.apache.lucene.geo.Polygon[1 + (r.nextInt(4) == 0 ? 1 : 0)];
+                for (int i = 0; i < polys.length; i++) {
+                    polys[i] = randomPolygon(r, r.nextInt(3) == 0);
+                }
+                Query index = LatLonPoint.newPolygonQuery(loc, polys);
+                Query dv = org.apache.lucene.document.LatLonDocValuesField.newSlowPolygonQuery(loc, polys);
+                return r.nextBoolean() ? new org.apache.lucene.search.IndexOrDocValuesQuery(index, dv) : index;
+            }
+            case 5: {
+                // LatLonPoint.newGeometryQuery under any relation (OpenSearch asks only INTERSECTS).
+                var rel = relation(r);
+                int n = 1 + r.nextInt(2);
+                org.apache.lucene.geo.LatLonGeometry[] g = new org.apache.lucene.geo.LatLonGeometry[n];
+                for (int i = 0; i < n; i++) {
+                    g[i] = rel == org.apache.lucene.document.ShapeField.QueryRelation.CONTAINS ? new org.apache.lucene.geo.Point(lat(r), lon(r))
+                        : randomGeometry(r, rel != org.apache.lucene.document.ShapeField.QueryRelation.WITHIN);
+                }
+                return LatLonPoint.newGeometryQuery(loc, rel, g);
+            }
+            case 6: {
+                // geo_bounding_box on a geo_shape: LatLonShape.newBoxQuery, any relation.
+                org.apache.lucene.geo.Rectangle b = randomRectangle(r);
+                return org.apache.lucene.document.LatLonShape.newBoxQuery("shape", relation(r), b.minLat, b.maxLat, b.minLon, b.maxLon);
+            }
+            default: {
+                // geo_shape / geo_distance / geo_polygon on a geo_shape: LatLonShape.newGeometryQuery.
+                var rel = relation(r);
+                int n = 1 + (r.nextInt(3) == 0 ? 1 + r.nextInt(2) : 0);
+                org.apache.lucene.geo.LatLonGeometry[] g = new org.apache.lucene.geo.LatLonGeometry[n];
+                for (int i = 0; i < n; i++) {
+                    g[i] = randomGeometry(r, rel != org.apache.lucene.document.ShapeField.QueryRelation.WITHIN);
+                }
+                return org.apache.lucene.document.LatLonShape.newGeometryQuery("shape", rel, g);
+            }
         }
     }
 

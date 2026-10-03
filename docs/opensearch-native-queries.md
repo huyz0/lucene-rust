@@ -49,7 +49,10 @@ A request runs native when **all** of these hold:
   `IndexOrDocValuesQuery`), `range` on `long`, `date` and `double`
   fields (`PointRangeQuery` of 8-byte values), and `exists`
   (`FieldExistsQuery` over norms or doc values; a vector field is answered
-  by Lucene) -- at most 32 deep and 1,024 nodes,
+  by Lucene), and the geo queries on `geo_point` and `geo_shape` fields
+  (`geo_bounding_box`, `geo_distance`, `geo_polygon`, `geo_shape` with every
+  relation, inline or `indexed_shape`; M9 T9.6, the rows below) -- at most 32
+  deep and 1,024 nodes,
   over fields that score with the default BM25 (`k1 = 1.2`, `b = 0.75`), with
   every `TermQuery` scoring from the reader's own statistics (not blended
   `TermStates`, as `multi_match` `cross_fields` builds);
@@ -106,6 +109,10 @@ frequency when nothing is deleted, without counting.
 | `bool` `must` + `range` `filter` | `BooleanQuery` with a `PointRangeQuery` `FILTER` | 1.01× |
 | `bool` with a `must_not` `range` | `BooleanQuery` with a `MUST_NOT` `PointRangeQuery` | 1.07× |
 | any of the above with `size: 0`, `from`/`size` paging, or any `track_total_hits` | — | 0.97–1.24× |
+| `geo_bounding_box` on a `geo_point` (across the dateline too) | `LatLonPoint.newBoxQuery` (a two-dimension `PointRangeQuery`; two under a `ConstantScoreQuery` across the dateline) in an `IndexOrDocValuesQuery` | — |
+| `geo_distance` on a `geo_point` | `LatLonPointDistanceQuery` in an `IndexOrDocValuesQuery` | — |
+| `geo_polygon`, and `geo_shape` polygons on a `geo_point` | `LatLonPointQuery` in an `IndexOrDocValuesQuery` | — |
+| `geo_shape` (any relation), `geo_bounding_box`, `geo_distance` on a `geo_shape` | `LatLonShapeQuery`, `LatLonShapeBoundingBoxQuery` (a `BooleanQuery` of them for a `CONTAINS` of several geometries) | — |
 
 "Measured" is the median REST round trip over 40 requests per engine on one
 node, both engines on the same 100k-document, two-segment index
@@ -144,7 +151,9 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `clause_<Class>` | the same, for a clause anywhere below the root (inside a `bool`, `constant_score`, `dis_max`, a boost) |
 | `query_too_deep`, `query_too_large` | more than 32 levels, or more than 1,024 nodes counting wrappers (Lucene counts only leaves, and `indices.query.bool.max_clause_count` can raise its limit) |
 | `boolean_msm_negative` | a `BooleanQuery` with a negative `minimumNumberShouldMatch` |
-| `points_width` | a `range` on a 4-byte field (`integer`, `float`), which the native points range does not take |
+| `points_width` | a `range` on a 4-byte field (`integer`, `float`), which the native points range does not take (`geo_point`'s own two-dimension box is taken) |
+| `geo_geometry`, `geo_reflect` | a geo query holding a geometry class Lucene's factories do not build, or one whose fields the plugin cannot read (a Lucene whose geo classes changed) |
+| `clause_IntersectsPrefixTreeQuery` (and the other spatial-extras queries) | a `geo_shape` field on the deprecated prefix-tree mapping (`tree`) |
 | `wildcard_escape` | a `wildcard` pattern with a `\\` escape (the native matcher has no escape syntax) |
 | `phrase_positions` | a `PhraseQuery` whose terms are not at consecutive positions (the analyzer removed a stopword, leaving a gap) |
 | `field_similarity` | a field scores with anything but default-parameter BM25 |

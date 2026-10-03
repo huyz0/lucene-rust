@@ -4,8 +4,9 @@
 //! the prefix/wildcard/regexp family under a chosen `RewriteMethod`),
 //! `BlendedTermQuery`, the Indri and fusion queries (`IndriAndQuery`,
 //! `LogOddsFusionQuery`, `BayesianScoreQuery`), the doc-values and
-//! index-sort ranges, general points, and `DocAndScoreQuery` (what a KNN or
-//! vector-similarity query rewrites to).
+//! index-sort ranges, general points, `DocAndScoreQuery` (what a KNN or
+//! vector-similarity query rewrites to), and any query of the `document`
+//! package ([`DocumentClause`]: the geo point and shape queries).
 //!
 //! Each is a plain description of the Java query; how it runs per segment is
 //! `exec::extended`, and the reader-wide work its `Weight` does
@@ -42,6 +43,8 @@ pub enum ExtendedQuery {
     /// Searched only once [`crate::rescorer::rewrite_rescore_clauses`] (which
     /// `IndexSearcher`'s searches run) has made it a [`DocAndScoreQuery`].
     RescoreTopN(crate::rescorer::RescoreTopNQuery),
+    /// A query of the `document` package as a leaf of the tree.
+    Document(DocumentClause),
 }
 
 macro_rules! into_clause {
@@ -71,6 +74,7 @@ into_clause! {
     PointRangeQuery => PointRange,
     PointInSetQuery => PointInSet,
     IndexOrDocValuesQuery => IndexOrDocValues,
+    DocumentClause => Document,
 }
 
 impl From<crate::rescorer::RescoreTopNQuery> for Clause {
@@ -98,6 +102,7 @@ impl ExtendedQuery {
             ExtendedQuery::PointInSet(_) => "PointInSetQuery",
             ExtendedQuery::IndexOrDocValues(_) => "IndexOrDocValuesQuery",
             ExtendedQuery::RescoreTopN(_) => "RescoreTopNQuery",
+            ExtendedQuery::Document(_) => "DocumentQuery",
         }
     }
 
@@ -870,5 +875,49 @@ pub fn inet_bytes(v: std::net::IpAddr) -> [u8; 16] {
     match v {
         std::net::IpAddr::V4(a) => a.to_ipv6_mapped().octets(),
         std::net::IpAddr::V6(a) => a.octets(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The document package's queries
+// ---------------------------------------------------------------------------
+
+/// A [`crate::document::DocumentQuery`] -- `LatLonPointDistanceQuery`,
+/// `LatLonPointQuery`, `LatLonShapeQuery` and the rest of the geo package,
+/// each a `ConstantScoreWeight` -- as a leaf of the scorer tree: per segment
+/// its matches before deletions (the tree applies them, as Lucene's bulk
+/// scorer does), every one scored the boost.
+///
+/// `key` is the query's identity, which Java's `Query.equals` is: two
+/// clauses are equal exactly when their keys are, and the key is what
+/// [`std::fmt::Debug`] prints, so the query cache (which keys a clause by its
+/// debug form) tells two geo queries apart by it. The caller builds it from
+/// everything the query depends on -- the FFI decoder uses the query's own
+/// wire bytes.
+#[derive(Clone)]
+pub struct DocumentClause {
+    pub key: String,
+    pub query: Arc<dyn crate::document::DocumentQuery>,
+}
+
+impl DocumentClause {
+    /// `query`, identified by `key`.
+    pub fn new(key: impl Into<String>, query: Arc<dyn crate::document::DocumentQuery>) -> Self {
+        Self {
+            key: key.into(),
+            query,
+        }
+    }
+}
+
+impl std::fmt::Debug for DocumentClause {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "DocumentClause({})", self.key)
+    }
+}
+
+impl PartialEq for DocumentClause {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key
     }
 }

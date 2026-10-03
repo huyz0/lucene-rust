@@ -102,8 +102,9 @@ use std::sync::Arc;
 /// `cardinality` answered as `HyperLogLogPlusPlus` sketches (its precision in
 /// the tree); 28, the JNI `searchDocFreq` (a term query's total-hits shortcut
 /// and its search in one call); 29, the JNI entry points replaced by the
-/// Foreign Function & Memory API's downcalls ([`crate::ffm_bridge`]).
-pub const JVM_ABI_VERSION: u32 = 29;
+/// Foreign Function & Memory API's downcalls ([`crate::ffm_bridge`]); 30,
+/// the points-box and geo nodes (M9 T9.6).
+pub const JVM_ABI_VERSION: u32 = 30;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -131,6 +132,18 @@ const NODE_POINT_RANGE: u8 = 11;
 const NODE_REGEXP: u8 = 12;
 const NODE_EXISTS: u8 = 13;
 const NODE_TERM_STATS: u8 = 14;
+const NODE_POINTS_BOX: u8 = 15;
+const NODE_GEO_DISTANCE: u8 = 16;
+const NODE_GEO_POINT: u8 = 17;
+const NODE_GEO_SHAPE: u8 = 18;
+const NODE_GEO_SHAPE_BOX: u8 = 19;
+
+/// Geometry tags inside the geo nodes ([`decode_geometry`]).
+const GEOMETRY_POINT: u8 = 0;
+const GEOMETRY_LINE: u8 = 1;
+const GEOMETRY_POLYGON: u8 = 2;
+const GEOMETRY_RECTANGLE: u8 = 3;
+const GEOMETRY_CIRCLE: u8 = 4;
 
 /// [`JVM_ABI_VERSION`], for the plugin's load-time handshake.
 #[no_mangle]
@@ -208,6 +221,10 @@ impl<'a> Cursor<'a> {
         Ok(i64::from_le_bytes([
             b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
         ]))
+    }
+
+    pub(crate) fn f64(&mut self) -> Result<f64, FfiStatus> {
+        Ok(f64::from_bits(self.i64()? as u64))
     }
 
     pub(crate) fn len(&mut self) -> Result<usize, FfiStatus> {
@@ -1665,6 +1682,12 @@ pub(crate) fn boolean_uses_points(b: &BooleanQuery) -> bool {
             Clause::ConstantScore(c) => clause(&c.inner),
             Clause::Boost(b) => clause(&b.inner),
             Clause::DisjunctionMax(d) => d.disjuncts.iter().any(clause),
+            // A points box reads the opened points (`exec::ranges`); a geo
+            // node reads them through the segment's reader, unopened.
+            Clause::Extended(e) => matches!(
+                e.as_ref(),
+                lucene_search::extended_query::ExtendedQuery::PointRange(_)
+            ),
             _ => false,
         }
     }
@@ -2001,6 +2024,19 @@ fn count_segment(seg: &OpenSegment<'_>, query: &JvmQuery) -> Result<i64, FfiStat
 /// | `12` regexp | `field`, the pattern (UTF-8) | `RegexpQuery` with `RegExp.ALL` and no match flags |
 /// | `13` exists | `field` | `FieldExistsQuery` |
 /// | `14` term with its own statistics | `field`, `term`, `doc_freq: i64` (at least 1) | `TermQuery(term, TermStates)`: a `BlendedTermQuery`'s terms (fuzzy, `cross_fields`) |
+/// | `15` points box | `field`, `num_dims: i32`, `lower`, `upper` (packed bytes, `num_dims` dimensions of equal width) | a `PointRangeQuery` of any width: `LatLonPoint.newBoxQuery`'s two dimensions |
+/// | `16` geo distance | `field`, `lat: f64`, `lon: f64`, `radius_meters: f64` | `LatLonPointDistanceQuery` |
+/// | `17` geo points | `field`, `relation: u8`, geometries ([`decode_geometries`]) | `LatLonPointQuery` (`newPolygonQuery`, `newGeometryQuery`) |
+/// | `18` geo shapes | `field`, `relation: u8`, geometries | `LatLonShapeQuery` (`LatLonShape.newGeometryQuery`) |
+/// | `19` geo shapes in a box | `field`, `relation: u8`, `min_lat`, `max_lat`, `min_lon`, `max_lon` (`f64`) | `LatLonShapeBoundingBoxQuery` (`LatLonShape.newBoxQuery`) |
+///
+/// A relation is `ShapeField.QueryRelation`'s ordinal: `0` `INTERSECTS`, `1`
+/// `WITHIN`, `2` `DISJOINT`, `3` `CONTAINS`. The geo nodes (16-19) run as
+/// [`DocumentClause`](lucene_search::extended_query::DocumentClause)s keyed
+/// by their own bytes, so the query cache tells two of them apart exactly as
+/// Java's `Query.equals` does (by every value each is built from). Their
+/// geometries are validated as Java's constructors validate them; one Java
+/// would refuse is an error here, not a query.
 ///
 /// Depth is capped at `MAX_CLAUSE_DEPTH` and the whole tree at the clause
 /// count limit, so the recursion is bounded by the blob, not trusted to it.
@@ -2029,7 +2065,9 @@ fn decode_node(c: &mut Cursor<'_>, depth: usize, nodes: &mut usize) -> Result<Cl
         }
         Ok(v)
     };
-    Ok(match c.u8()? {
+    let start = c.pos;
+    let kind = c.u8()?;
+    Ok(match kind {
         NODE_TERM => {
             let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
             let term = c.bytes()?;
@@ -2169,13 +2207,192 @@ fn decode_node(c: &mut Cursor<'_>, depth: usize, nodes: &mut usize) -> Result<Cl
             let (min, max) = (c.i64()?, c.i64()?);
             Clause::PointsRange(PointsRangeQuery::new(field, min, max))
         }
+        NODE_POINTS_BOX => {
+            let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
+            let num_dims = c.len()?;
+            if !(1..=MAX_POINT_DIMS).contains(&num_dims) {
+                set_last_error(format!(
+                    "query tree: a points box of {num_dims} dimensions (want 1..={MAX_POINT_DIMS})"
+                ));
+                return Err(FfiStatus::InvalidArgument);
+            }
+            let lower = c.bytes()?.to_vec();
+            let upper = c.bytes()?.to_vec();
+            lucene_search::extended_query::PointRangeQuery::new(field, num_dims, lower, upper)
+                .map_err(|e| invalid(format!("query tree: {e}")))?
+                .into()
+        }
+        NODE_GEO_DISTANCE | NODE_GEO_POINT | NODE_GEO_SHAPE | NODE_GEO_SHAPE_BOX => {
+            return decode_geo(c, kind, start);
+        }
         other => {
             set_last_error(format!(
-                "query tree: unknown node kind {other} (expected 0..=11)"
+                "query tree: unknown node kind {other} (expected 0..={NODE_GEO_SHAPE_BOX})"
             ));
             return Err(FfiStatus::InvalidArgument);
         }
     })
+}
+
+/// Lucene's `PointValues.MAX_DIMENSIONS`.
+const MAX_POINT_DIMS: usize = 16;
+
+/// [`FfiStatus::InvalidArgument`] with `message` as the last error.
+fn invalid(message: String) -> FfiStatus {
+    set_last_error(message);
+    FfiStatus::InvalidArgument
+}
+
+/// A geo node (kinds 16-19, the kind byte already read; `start` is its
+/// offset), as a [`DocumentClause`](lucene_search::extended_query::DocumentClause)
+/// keyed by the node's bytes.
+fn decode_geo(c: &mut Cursor<'_>, kind: u8, start: usize) -> Result<Clause, FfiStatus> {
+    use lucene_search::document::geo::{
+        LatLonPointDistanceQuery, LatLonPointQuery, LatLonShapeBoundingBoxQuery, LatLonShapeQuery,
+        QueryRelation,
+    };
+    use lucene_search::document::DocumentQuery;
+    use lucene_util::geo::Rectangle;
+    let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
+    let built = |e: lucene_search::Error| invalid(format!("query tree: geo query: {e}"));
+    let relation = |c: &mut Cursor<'_>| -> Result<QueryRelation, FfiStatus> {
+        Ok(match c.u8()? {
+            0 => QueryRelation::Intersects,
+            1 => QueryRelation::Within,
+            2 => QueryRelation::Disjoint,
+            3 => QueryRelation::Contains,
+            other => {
+                return Err(invalid(format!(
+                    "query tree: unknown shape relation {other} (expected 0..=3)"
+                )))
+            }
+        })
+    };
+    let query: std::sync::Arc<dyn DocumentQuery> = match kind {
+        NODE_GEO_DISTANCE => {
+            let (lat, lon, radius) = (c.f64()?, c.f64()?, c.f64()?);
+            std::sync::Arc::new(
+                LatLonPointDistanceQuery::new(field, lat, lon, radius).map_err(built)?,
+            )
+        }
+        NODE_GEO_POINT => {
+            let rel = relation(c)?;
+            let geometries = decode_geometries(c)?;
+            std::sync::Arc::new(LatLonPointQuery::new(field, rel, &geometries).map_err(built)?)
+        }
+        NODE_GEO_SHAPE => {
+            let rel = relation(c)?;
+            let geometries = decode_geometries(c)?;
+            std::sync::Arc::new(LatLonShapeQuery::new(field, rel, &geometries).map_err(built)?)
+        }
+        _ => {
+            let rel = relation(c)?;
+            let (min_lat, max_lat, min_lon, max_lon) = (c.f64()?, c.f64()?, c.f64()?, c.f64()?);
+            let rect = Rectangle::new(min_lat, max_lat, min_lon, max_lon)
+                .map_err(|e| invalid(format!("query tree: geo query: {e}")))?;
+            std::sync::Arc::new(LatLonShapeBoundingBoxQuery::new(field, rel, rect).map_err(built)?)
+        }
+    };
+    let key: String = c.buf[start..c.pos]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    Ok(lucene_search::extended_query::DocumentClause::new(key, query).into())
+}
+
+/// A geo node's geometries: `count: i32` (at least 1), then each a tag and
+/// its coordinates (`f64`s):
+///
+/// | tag | layout | Lucene |
+/// |---|---|---|
+/// | `0` point | `lat`, `lon` | `Point` |
+/// | `1` line | `n: i32`, `n` lats, `n` lons | `Line` |
+/// | `2` polygon | `n: i32`, `n` lats, `n` lons, `holes: i32`, each hole a polygon without holes | `Polygon` |
+/// | `3` rectangle | `min_lat`, `max_lat`, `min_lon`, `max_lon` | `Rectangle` |
+/// | `4` circle | `lat`, `lon`, `radius_meters` | `Circle` |
+///
+/// Each is built through its constructor, which checks what Java's does.
+/// Counts are bounded by the blob (every vertex is 16 bytes of it).
+fn decode_geometries(
+    c: &mut Cursor<'_>,
+) -> Result<Vec<lucene_util::geo::LatLonGeometry>, FfiStatus> {
+    let count = c.len()?;
+    if count == 0 {
+        return Err(invalid("query tree: a geo query with no geometries".into()));
+    }
+    let mut out = Vec::new();
+    for _ in 0..count {
+        out.push(decode_geometry(c)?);
+    }
+    Ok(out)
+}
+
+/// One geometry of [`decode_geometries`].
+fn decode_geometry(c: &mut Cursor<'_>) -> Result<lucene_util::geo::LatLonGeometry, FfiStatus> {
+    use lucene_util::geo::{Circle, LatLonGeometry, Line, Point, Rectangle};
+    let geo = |e: lucene_util::geo::GeoError| invalid(format!("query tree: geometry: {e}"));
+    Ok(match c.u8()? {
+        GEOMETRY_POINT => {
+            let (lat, lon) = (c.f64()?, c.f64()?);
+            LatLonGeometry::Point(Point::new(lat, lon).map_err(geo)?)
+        }
+        GEOMETRY_LINE => {
+            let (lats, lons) = decode_vertices(c)?;
+            LatLonGeometry::Line(Line::new(&lats, &lons).map_err(geo)?)
+        }
+        GEOMETRY_POLYGON => LatLonGeometry::Polygon(decode_polygon(c, true)?),
+        GEOMETRY_RECTANGLE => {
+            let (a, b, d, e) = (c.f64()?, c.f64()?, c.f64()?, c.f64()?);
+            LatLonGeometry::Rectangle(Rectangle::new(a, b, d, e).map_err(geo)?)
+        }
+        GEOMETRY_CIRCLE => {
+            let (lat, lon, radius) = (c.f64()?, c.f64()?, c.f64()?);
+            LatLonGeometry::Circle(Circle::new(lat, lon, radius).map_err(geo)?)
+        }
+        other => {
+            return Err(invalid(format!(
+                "query tree: unknown geometry tag {other} (expected 0..=4)"
+            )))
+        }
+    })
+}
+
+/// A polygon of [`decode_geometry`]; a hole (`holes == false`) may have
+/// none of its own, as Java's `Polygon` requires.
+fn decode_polygon(c: &mut Cursor<'_>, holes: bool) -> Result<lucene_util::geo::Polygon, FfiStatus> {
+    let (lats, lons) = decode_vertices(c)?;
+    let n = c.len()?;
+    if n > 0 && !holes {
+        return Err(invalid("query tree: a polygon hole with holes".into()));
+    }
+    let mut inner = Vec::new();
+    for _ in 0..n {
+        inner.push(decode_polygon(c, false)?);
+    }
+    lucene_util::geo::Polygon::new(&lats, &lons, inner)
+        .map_err(|e| invalid(format!("query tree: geometry: {e}")))
+}
+
+/// `n`, then `n` latitudes and `n` longitudes; `n` is checked against the
+/// bytes left before anything is allocated.
+fn decode_vertices(c: &mut Cursor<'_>) -> Result<(Vec<f64>, Vec<f64>), FfiStatus> {
+    let n = c.len()?;
+    let need = n.checked_mul(16).ok_or(FfiStatus::InvalidArgument)?;
+    if need > c.buf.len().saturating_sub(c.pos) {
+        return Err(invalid(format!(
+            "query tree: {n} vertices, but only {} bytes are left",
+            c.buf.len().saturating_sub(c.pos)
+        )));
+    }
+    let mut lats = try_with_capacity::<f64>(n)?;
+    for _ in 0..n {
+        lats.push(c.f64()?);
+    }
+    let mut lons = try_with_capacity::<f64>(n)?;
+    for _ in 0..n {
+        lons.push(c.f64()?);
+    }
+    Ok((lats, lons))
 }
 
 /// Closes a JVM reader handle. Segments a later handle reused stay open
@@ -4146,6 +4363,267 @@ pub(crate) mod tests {
         many.extend_from_slice(&0i32.to_le_bytes());
         many.extend_from_slice(&i32::MAX.to_le_bytes());
         assert!(decode_query(&many).is_err());
+    }
+
+    /// A geo node's bytes, as `GeoEncoder.java` writes them.
+    struct Geo(Vec<u8>);
+
+    impl Geo {
+        fn new(kind: u8, field: &str) -> Self {
+            let mut g = Geo(vec![kind]);
+            g.bytes(field.as_bytes());
+            g
+        }
+        fn bytes(&mut self, b: &[u8]) -> &mut Self {
+            self.int(b.len() as i32);
+            self.0.extend_from_slice(b);
+            self
+        }
+        fn int(&mut self, v: i32) -> &mut Self {
+            self.0.extend_from_slice(&v.to_le_bytes());
+            self
+        }
+        fn byte(&mut self, v: u8) -> &mut Self {
+            self.0.push(v);
+            self
+        }
+        fn f(&mut self, v: f64) -> &mut Self {
+            self.0.extend_from_slice(&v.to_bits().to_le_bytes());
+            self
+        }
+        fn ring(&mut self, lats: &[f64], lons: &[f64]) -> &mut Self {
+            self.int(lats.len() as i32);
+            for &v in lats.iter().chain(lons) {
+                self.f(v);
+            }
+            self
+        }
+        fn blob(&self) -> Vec<u8> {
+            let mut b = vec![QUERY_TREE];
+            b.extend_from_slice(&self.0);
+            b
+        }
+    }
+
+    /// The one clause a [`QUERY_TREE`] blob of a single node decodes to.
+    fn single(blob: &[u8]) -> Result<Clause, FfiStatus> {
+        match decode_query(blob)? {
+            JvmQuery::Boolean(mut b) if b.must.len() == 1 => Ok(b.must.remove(0)),
+            other => panic!("not one node: {other:?}"),
+        }
+    }
+
+    /// The points-box and geo nodes (16-19): every geometry and relation
+    /// decodes, the key is the node's bytes (equal queries equal, any change
+    /// in a value a different query), and malformed or invalid input --
+    /// every truncation included -- is an error, never a panic.
+    #[test]
+    fn decode_geo_nodes() {
+        use lucene_search::extended_query::ExtendedQuery;
+        let invalid = Err(FfiStatus::InvalidArgument);
+        let status = |b: &[u8]| decode_query(b).map(|_| ());
+        // Points box: `LatLonPoint.newBoxQuery`'s two 4-byte dimensions.
+        let mut bx = Geo::new(NODE_POINTS_BOX, "loc");
+        bx.int(2)
+            .bytes(&[0, 0, 0, 1, 0, 0, 0, 2])
+            .bytes(&[9, 0, 0, 1, 9, 0, 0, 2]);
+        match single(&bx.blob()).unwrap() {
+            Clause::Extended(e) => match *e {
+                ExtendedQuery::PointRange(p) => {
+                    assert_eq!((p.num_dims, p.bytes_per_dim), (2, 4));
+                    assert_eq!(p.field, "loc");
+                }
+                other => panic!("{other:?}"),
+            },
+            other => panic!("{other:?}"),
+        }
+        assert!(query_uses_points(&decode_query(&bx.blob()).unwrap()));
+        for dims in [0, 17] {
+            let mut b = Geo::new(NODE_POINTS_BOX, "loc");
+            b.int(dims).bytes(&[0; 8]).bytes(&[0; 8]);
+            assert_eq!(status(&b.blob()), invalid, "{dims} dimensions");
+        }
+        let mut odd = Geo::new(NODE_POINTS_BOX, "loc");
+        odd.int(2).bytes(&[0; 3]).bytes(&[0; 3]);
+        assert_eq!(
+            status(&odd.blob()),
+            invalid,
+            "corners not a multiple of the dimensions"
+        );
+
+        // Distance, and its key.
+        let distance = |radius: f64| {
+            let mut g = Geo::new(NODE_GEO_DISTANCE, "loc");
+            g.f(10.0).f(-179.5).f(radius);
+            g
+        };
+        let a = single(&distance(1000.0).blob()).unwrap();
+        assert_eq!(
+            a,
+            single(&distance(1000.0).blob()).unwrap(),
+            "equal queries"
+        );
+        assert_ne!(
+            a,
+            single(&distance(1000.0000001).blob()).unwrap(),
+            "a different radius"
+        );
+        assert!(format!("{a:?}").contains(&format!("{:02x}", NODE_GEO_DISTANCE)));
+        assert!(!query_uses_points(
+            &decode_query(&distance(1.0).blob()).unwrap()
+        ));
+        assert_eq!(status(&distance(-1.0).blob()), invalid, "negative radius");
+        let mut bad_lat = Geo::new(NODE_GEO_DISTANCE, "loc");
+        bad_lat.f(91.0).f(0.0).f(1.0);
+        assert_eq!(status(&bad_lat.blob()), invalid, "latitude past the pole");
+
+        // Every geometry, under every relation it allows.
+        let square_lats = [0.0, 0.0, 1.0, 1.0, 0.0];
+        let square_lons = [0.0, 1.0, 1.0, 0.0, 0.0];
+        let hole_lats = [0.25, 0.25, 0.75, 0.75, 0.25];
+        let hole_lons = [0.25, 0.75, 0.75, 0.25, 0.25];
+        let geometries = |g: &mut Geo, line: bool| {
+            g.int(if line { 5 } else { 4 });
+            g.byte(GEOMETRY_POINT).f(0.5).f(0.5);
+            g.byte(GEOMETRY_POLYGON)
+                .ring(&square_lats, &square_lons)
+                .int(1);
+            g.ring(&hole_lats, &hole_lons).int(0);
+            g.byte(GEOMETRY_RECTANGLE).f(-1.0).f(1.0).f(179.0).f(-179.0);
+            g.byte(GEOMETRY_CIRCLE).f(89.9).f(180.0).f(5000.0);
+            if line {
+                g.byte(GEOMETRY_LINE).ring(&[0.0, 1.0], &[0.0, 1.0]);
+            }
+        };
+        for kind in [NODE_GEO_POINT, NODE_GEO_SHAPE] {
+            for rel in 0..3u8 {
+                let mut g = Geo::new(kind, "shape");
+                g.byte(rel);
+                geometries(&mut g, rel != 1);
+                let blob = g.blob();
+                assert!(
+                    single(&blob).is_ok(),
+                    "kind {kind} relation {rel}: {}",
+                    crate::error::last_error()
+                );
+                // Every truncation is an error.
+                for cut in 1..blob.len() {
+                    assert!(
+                        decode_query(&blob[..cut]).is_err(),
+                        "kind {kind} cut at {cut}"
+                    );
+                }
+            }
+            // A line under WITHIN is refused, as Java's constructor refuses it.
+            let mut within_line = Geo::new(kind, "shape");
+            within_line
+                .byte(1)
+                .int(1)
+                .byte(GEOMETRY_LINE)
+                .ring(&[0.0, 1.0], &[0.0, 1.0]);
+            assert_eq!(
+                status(&within_line.blob()),
+                invalid,
+                "kind {kind}: a line under WITHIN"
+            );
+            let mut rel = Geo::new(kind, "shape");
+            rel.byte(4).int(1).byte(GEOMETRY_POINT).f(0.0).f(0.0);
+            assert_eq!(status(&rel.blob()), invalid, "unknown relation");
+            let mut none = Geo::new(kind, "shape");
+            none.byte(0).int(0);
+            assert_eq!(status(&none.blob()), invalid, "no geometries");
+            let mut tag = Geo::new(kind, "shape");
+            tag.byte(0).int(1).byte(9);
+            assert_eq!(status(&tag.blob()), invalid, "unknown geometry tag");
+            let mut nested = Geo::new(kind, "shape");
+            nested
+                .byte(0)
+                .int(1)
+                .byte(GEOMETRY_POLYGON)
+                .ring(&square_lats, &square_lons)
+                .int(1);
+            nested
+                .ring(&hole_lats, &hole_lons)
+                .int(1)
+                .ring(&hole_lats, &hole_lons)
+                .int(0);
+            assert_eq!(status(&nested.blob()), invalid, "a hole with a hole");
+            let mut open = Geo::new(kind, "shape");
+            open.byte(0)
+                .int(1)
+                .byte(GEOMETRY_POLYGON)
+                .ring(&[0.0, 0.0, 1.0, 1.0], &[0.0, 1.0, 1.0, 0.0])
+                .int(0);
+            assert_eq!(status(&open.blob()), invalid, "a ring that does not close");
+            let mut huge = Geo::new(kind, "shape");
+            huge.byte(0).int(1).byte(GEOMETRY_LINE).int(i32::MAX);
+            assert_eq!(status(&huge.blob()), invalid, "more vertices than bytes");
+            for (tag, bad) in [
+                (GEOMETRY_POINT, vec![100.0, 0.0]),
+                (GEOMETRY_RECTANGLE, vec![0.0, 1.0, 0.0, 200.0]),
+                (GEOMETRY_CIRCLE, vec![0.0, 0.0, -5.0]),
+            ] {
+                let mut g = Geo::new(kind, "shape");
+                g.byte(0).int(1).byte(tag);
+                for v in bad {
+                    g.f(v);
+                }
+                assert_eq!(status(&g.blob()), invalid, "invalid geometry {tag}");
+            }
+            let mut line = Geo::new(kind, "shape");
+            line.byte(0).int(1).byte(GEOMETRY_LINE).ring(&[0.0], &[0.0]);
+            assert_eq!(status(&line.blob()), invalid, "a one-point line");
+        }
+        // CONTAINS: points only for points; anything for shapes.
+        let mut contains = Geo::new(NODE_GEO_POINT, "loc");
+        contains.byte(3).int(1).byte(GEOMETRY_POINT).f(1.0).f(2.0);
+        assert!(single(&contains.blob()).is_ok());
+        let mut contains_poly = Geo::new(NODE_GEO_POINT, "loc");
+        contains_poly
+            .byte(3)
+            .int(1)
+            .byte(GEOMETRY_POLYGON)
+            .ring(&square_lats, &square_lons)
+            .int(0);
+        assert_eq!(
+            status(&contains_poly.blob()),
+            invalid,
+            "points CONTAINS a polygon"
+        );
+        let mut shape_contains = Geo::new(NODE_GEO_SHAPE, "shape");
+        shape_contains
+            .byte(3)
+            .int(1)
+            .byte(GEOMETRY_POLYGON)
+            .ring(&square_lats, &square_lons)
+            .int(0);
+        assert!(single(&shape_contains.blob()).is_ok());
+
+        // Shapes in a box, across the dateline; and an invalid box.
+        let mut sbox = Geo::new(NODE_GEO_SHAPE_BOX, "shape");
+        sbox.byte(2).f(-10.0).f(10.0).f(170.0).f(-170.0);
+        assert!(single(&sbox.blob()).is_ok());
+        let mut bad_box = Geo::new(NODE_GEO_SHAPE_BOX, "shape");
+        bad_box.byte(0).f(-100.0).f(10.0).f(0.0).f(1.0);
+        assert_eq!(status(&bad_box.blob()), invalid, "box past the pole");
+        let mut bad_rel = Geo::new(NODE_GEO_SHAPE_BOX, "shape");
+        bad_rel.byte(7).f(0.0).f(1.0).f(0.0).f(1.0);
+        assert_eq!(status(&bad_rel.blob()), invalid, "box relation");
+        let mut bad_field = Geo(vec![NODE_GEO_DISTANCE]);
+        bad_field.bytes(&[0xff]).f(0.0).f(0.0).f(1.0);
+        assert_eq!(
+            decode_query(&bad_field.blob()).map(|_| ()),
+            Err(FfiStatus::InvalidUtf8)
+        );
+        assert_eq!(status(&[QUERY_TREE, 20]), invalid, "unknown node kind");
+
+        // Run against a real index without the fields: no hits, no error.
+        let h = open();
+        for blob in [distance(1e6).blob(), sbox.blob(), bx.blob()] {
+            let (hits, total) = run(h, &blob, 10, true).unwrap();
+            assert!(hits.is_empty() && total == 0);
+        }
+        assert_eq!(ffi_close_jvm_reader(h), 0);
     }
 
     /// `ConstantScoreQuery` and `BoostQuery` -- what OpenSearch builds for a
