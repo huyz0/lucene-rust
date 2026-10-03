@@ -2412,11 +2412,21 @@ fn decode_geo(c: &mut Cursor<'_>, kind: u8, start: usize) -> Result<Clause, FfiS
             std::sync::Arc::new(LatLonShapeBoundingBoxQuery::new(field, rel, rect).map_err(built)?)
         }
     };
-    let key: String = c.buf[start..c.pos]
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
+    let key = hex(&c.buf[start..c.pos]);
     Ok(lucene_search::extended_query::DocumentClause::new(key, query).into())
+}
+
+/// `bytes` as lowercase hex: a geo node's query-cache key.
+fn hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::new();
+    // The bytes are the blob's own, already in memory.
+    out.reserve(bytes.len().saturating_mul(2));
+    for &b in bytes {
+        out.push(char::from(DIGITS[usize::from(b >> 4)]));
+        out.push(char::from(DIGITS[usize::from(b & 15)]));
+    }
+    out
 }
 
 /// A geo node's geometries: `count: i32` (at least 1), then each a tag and
