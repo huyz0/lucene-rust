@@ -8,10 +8,20 @@
 //! multi-term query's profile (`exec::multi_term`). Lucene allocates the same
 //! sets per query, but on a warm heap where a new `long[]` is a memset;
 //! reusing a cleared set is what gives Rust the same effect. Sets are keyed by
-//! length, because a set fits only a segment of exactly its `maxDoc`, and a
-//! thread keeps at most [`SPARE_BIT_SET_LIMIT_BYTES`] of them.
+//! length, because a set fits only a segment of exactly its `maxDoc`.
+//!
+//! A thread keeps at most [`SPARE_BIT_SET_LIMIT_BYTES`] of them and at most
+//! [`SPARE_BIT_SET_LIMIT_COUNT`] sets, the oldest going first when a new one
+//! would pass either. The count bound is what keeps [`take`] and [`give`]
+//! constant-time: every cached bit set is handed back here when it is
+//! dropped (`exec::cache::CachedSet`), including the sets of point ranges no
+//! later query ever takes, and with a byte limit alone a run of queries over
+//! small segments piled up hundreds of thousands of tiny sets that every
+//! call then scanned -- `m7_fixture`'s point queries went from 1.39x of
+//! Lucene to 0.04x that way (`docs/benchmarks/m7-2026-10.md`).
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 
 use lucene_util::fixed_bit_set::FixedBitSet;
 
@@ -20,8 +30,24 @@ use lucene_util::fixed_bit_set::FixedBitSet;
 /// set, which is dropped rather than pinned.
 pub(crate) const SPARE_BIT_SET_LIMIT_BYTES: usize = 8 << 20;
 
+/// The most sets a thread keeps, whatever their size: a query holds a few
+/// sets per segment at once, so this covers a few queries' worth over a
+/// handful of segments while keeping every scan of the pool short.
+pub(crate) const SPARE_BIT_SET_LIMIT_COUNT: usize = 32;
+
+/// One thread's spares, oldest first, and their total bytes.
+struct Spare {
+    sets: VecDeque<FixedBitSet>,
+    bytes: usize,
+}
+
 thread_local! {
-    static SPARE: RefCell<Vec<FixedBitSet>> = const { RefCell::new(Vec::new()) };
+    static SPARE: RefCell<Spare> = const {
+        RefCell::new(Spare {
+            sets: VecDeque::new(),
+            bytes: 0,
+        })
+    };
 }
 
 fn bytes(b: &FixedBitSet) -> usize {
@@ -32,29 +58,86 @@ fn bytes(b: &FixedBitSet) -> usize {
 pub(crate) fn take(len: usize) -> Option<FixedBitSet> {
     SPARE.with(|s| {
         let mut s = s.borrow_mut();
-        let at = s.iter().position(|b| b.len() == len)?;
-        Some(s.swap_remove(at))
+        // The newest first: the set a query just finished with.
+        let at = s.sets.iter().rposition(|b| b.len() == len)?;
+        let b = s.sets.remove(at)?;
+        s.bytes -= bytes(&b);
+        Some(b)
     })
 }
 
-/// Clears `b` and keeps it for a later [`take`], unless the thread's
-/// spares would pass the limit.
+/// Clears `b` and keeps it for a later [`take`], dropping the oldest spares
+/// as needed to stay within both limits.
 pub(crate) fn give(mut b: FixedBitSet) {
-    if bytes(&b) > SPARE_BIT_SET_LIMIT_BYTES {
+    let size = bytes(&b);
+    if size > SPARE_BIT_SET_LIMIT_BYTES {
         return;
     }
     SPARE.with(|s| {
         let mut s = s.borrow_mut();
-        let held: usize = s.iter().map(bytes).sum();
-        if held + bytes(&b) <= SPARE_BIT_SET_LIMIT_BYTES {
-            b.clear_all();
-            s.push(b);
+        while s.sets.len() >= SPARE_BIT_SET_LIMIT_COUNT
+            || s.bytes + size > SPARE_BIT_SET_LIMIT_BYTES
+        {
+            let Some(old) = s.sets.pop_front() else { break };
+            s.bytes -= bytes(&old);
         }
+        b.clear_all();
+        s.bytes += size;
+        s.sets.push_back(b);
     });
 }
 
 /// How many sets of `len` bits this thread holds (tests).
 #[cfg(test)]
 pub(crate) fn held(len: usize) -> usize {
-    SPARE.with(|s| s.borrow().iter().filter(|b| b.len() == len).count())
+    SPARE.with(|s| s.borrow().sets.iter().filter(|b| b.len() == len).count())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::arithmetic_side_effects)]
+    use super::*;
+
+    fn totals() -> (usize, usize) {
+        SPARE.with(|s| {
+            let s = s.borrow();
+            assert_eq!(s.bytes, s.sets.iter().map(bytes).sum::<usize>());
+            (s.sets.len(), s.bytes)
+        })
+    }
+
+    #[test]
+    fn many_sets_no_query_takes_back_stay_bounded() {
+        // What a run of point-range queries over small segments hands back:
+        // sets of lengths nothing takes. The pool keeps the newest few.
+        for i in 0..10 * SPARE_BIT_SET_LIMIT_COUNT {
+            give(FixedBitSet::new(180 + i % 3));
+        }
+        let (count, _) = totals();
+        assert_eq!(count, SPARE_BIT_SET_LIMIT_COUNT);
+        // A set a later query wants is still kept, and is the one it gets.
+        let mut wanted = FixedBitSet::new(4_099);
+        wanted.set(5);
+        give(wanted);
+        assert_eq!(totals().0, SPARE_BIT_SET_LIMIT_COUNT);
+        let back = take(4_099).expect("the newest set is kept");
+        assert_eq!(back.cardinality(), 0, "handed back cleared");
+        assert_eq!(totals().0, SPARE_BIT_SET_LIMIT_COUNT - 1);
+    }
+
+    #[test]
+    fn a_set_that_would_pass_the_byte_limit_evicts_the_oldest() {
+        // Just over half the limit: two never fit together.
+        let half = SPARE_BIT_SET_LIMIT_BYTES * 8 / 2 + 64;
+        give(FixedBitSet::new(64));
+        give(FixedBitSet::new(half));
+        assert_eq!((held(64), held(half)), (1, 1));
+        // The second one fits only once both older sets are gone.
+        give(FixedBitSet::new(half));
+        assert_eq!((held(64), held(half)), (0, 1));
+        assert_eq!(totals(), (1, half / 8));
+        assert!(take(half).is_some());
+        assert_eq!(totals(), (0, 0));
+        assert!(take(half).is_none());
+    }
 }
