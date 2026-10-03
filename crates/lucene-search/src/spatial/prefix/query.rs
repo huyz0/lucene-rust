@@ -5,6 +5,15 @@
 //! [`ContainsPrefixTreeQuery`] -- plus the scored `TermQuery` RPT makes of a
 //! point on a points-only field ([`PrefixTreeTermQuery`]).
 //!
+//! Over a quad tree (the common case: RPT's default, heatmaps), the visitors
+//! with the default `findSubCellsToVisit`/`visitScanned` -- intersects and
+//! the facet counter -- run [`visit_quad`]: the same traversal with the query
+//! cells as plain values (`QuadNode`) related through one
+//! `QuadCellRelater`, the indexed cells read from the term bytes, and a
+//! `Cell` made only for a visitor's call. Java allocates a `QuadCell`, its
+//! rectangle and an iterator per node; HotSpot makes that cheap, and here it
+//! was most of the time (`docs/parity.md`).
+//!
 //! The traversal is Java's, step for step: the query shape's cells are
 //! walked depth first in term order, the field's `TermsEnum` leap-frogging
 //! them with `seekCeil`, until a level is reached where the remaining terms
@@ -18,7 +27,9 @@ use lucene_codecs::blocktree::{self, FieldTerms, SeekStatus, TermsEnum};
 use lucene_codecs::postings::{DocInput, LazyDocsCursor, PostingsFlags, NO_MORE_DOCS};
 use lucene_util::fixed_bit_set::FixedBitSet;
 use lucene_util::spatial4j::{DistanceUtils, Shape, SpatialContext, SpatialRelation};
-use lucene_util::spatial_extras::prefix_tree::{Cell, CellIterator, SpatialPrefixTree};
+use lucene_util::spatial_extras::prefix_tree::{
+    Cell, CellIterator, QuadCellRelater, SpatialPrefixTree,
+};
 
 use crate::collector::ScoringCollector;
 use crate::document::geo::{check_walk, collect_bits, idx, set_doc};
@@ -60,6 +71,9 @@ pub(crate) struct Traverser<'a> {
     pub(crate) on_term: bool,
     /// `indexedCell`: the cell of the current term (the last one read).
     pub(crate) indexed_cell: Option<Box<dyn Cell>>,
+    /// `indexed_cell` is an earlier term's: the term moved without reading
+    /// its cell ([`Self::next_term_raw`]); [`Self::fresh`] reads it.
+    stale: bool,
     /// The first postings doc id outside the segment (a corrupt `.doc`).
     pub(crate) bad: Option<i32>,
 }
@@ -89,6 +103,7 @@ impl<'a> Traverser<'a> {
             max_doc,
             on_term: false,
             indexed_cell: None,
+            stale: false,
             bad: None,
         })
     }
@@ -118,6 +133,58 @@ impl<'a> Traverser<'a> {
             None => self.indexed_cell = Some(self.grid.read_cell(term)?),
         }
         self.on_term = true;
+        self.stale = false;
+        Ok(())
+    }
+
+    /// The current term's bytes; only on a term.
+    fn term(&self) -> &[u8] {
+        self.terms
+            .as_ref()
+            .and_then(TermsEnum::term)
+            .expect("positioned on a term")
+    }
+
+    /// [`Self::next_term`] without reading the term's cell, for a caller
+    /// that reads the term itself and calls [`Self::fresh`] before anything
+    /// asks for [`Self::cell`].
+    fn next_term_raw(&mut self) -> Result<bool> {
+        let Some(terms) = self.terms.as_mut() else {
+            self.on_term = false;
+            return Ok(false);
+        };
+        if terms.try_next_term()?.is_none() {
+            self.on_term = false;
+            return Ok(false);
+        }
+        self.on_term = true;
+        self.stale = true;
+        Ok(true)
+    }
+
+    /// [`Self::try_seek_ceil`] without reading the cell the term lands on
+    /// (see [`Self::next_term_raw`]).
+    fn try_seek_ceil_raw(&mut self, target: &[u8]) -> Result<SeekStatus> {
+        let terms = self
+            .terms
+            .as_mut()
+            .expect("seekCeil only on a segment with terms");
+        let status = terms.try_seek_ceil(target)?;
+        if status == SeekStatus::End {
+            self.on_term = false;
+            return Ok(status);
+        }
+        self.on_term = true;
+        self.stale = true;
+        Ok(status)
+    }
+
+    /// Reads the current term's cell if [`Self::next_term_raw`] skipped it.
+    fn fresh(&mut self) -> Result<()> {
+        if self.stale && self.on_term {
+            self.read_current()?;
+        }
+        self.stale = false;
         Ok(())
     }
 
@@ -305,6 +372,27 @@ pub(crate) trait Visitor {
         cell: &dyn Cell,
     ) -> Result<()>;
 
+    /// Whether [`Self::visit_scanned`] is the default one, which the scan
+    /// may answer from a [`QuadCellRelater`] without reading each cell.
+    fn scans_by_default(&self) -> bool {
+        true
+    }
+
+    /// [`Self::visit_scanned`]'s `visitLeaf`/`visitPrefix` for a quad cell
+    /// the scan found intersecting (`relate`), for a visitor that needs only
+    /// the cell's level, leaf flag and relation: `true` when done, `false`
+    /// to be handed the cell itself.
+    fn visit_scanned_quad(
+        &mut self,
+        _q: &VisitingQuery,
+        _t: &mut Traverser<'_>,
+        _level: i32,
+        _leaf: bool,
+        _relate: SpatialRelation,
+    ) -> Result<bool> {
+        Ok(false)
+    }
+
     /// `visitScanned(cell)`: a leaf or a cell at the detail level met while
     /// scanning, visited when it intersects the query shape.
     fn visit_scanned(
@@ -335,6 +423,13 @@ struct VNode {
 /// `VisitorTemplate.getDocIdSet()`: the traversal. `false` when the
 /// segment has no terms of the field (Java's `null` before `start()`).
 pub(crate) fn visit(q: &VisitingQuery, t: &mut Traverser<'_>, v: &mut dyn Visitor) -> Result<bool> {
+    if v.scans_by_default() && q.base.query_shape.as_point().is_none() {
+        if let Some(relater) = q.base.grid.quad_relater(&q.base.query_shape) {
+            if relater.max_levels() < QUAD_MAX_BYTES as i32 {
+                return visit_quad(q, t, v, relater);
+            }
+        }
+    }
     if !t.has_terms() || !t.next_term()? {
         return Ok(false);
     }
@@ -346,8 +441,17 @@ pub(crate) fn visit(q: &VisitingQuery, t: &mut Traverser<'_>, v: &mut dyn Visito
     }];
     // `curVNodeTerm`: one buffer for every seek target.
     let mut target = Vec::new();
+    // The scan's cell relations from the terms' bytes, for a quad tree.
+    let mut scan = Scan {
+        relater: if v.scans_by_default() {
+            q.base.grid.quad_relater(&q.base.query_shape)
+        } else {
+            None
+        },
+        prefix: Vec::new(),
+    };
     v.start(t)?;
-    add_intersecting_children(q, t, v, &mut stack)?;
+    add_intersecting_children(q, t, v, &mut stack, &mut scan)?;
 
     'main: while t.on_term {
         // Advance curVNode pointer
@@ -433,7 +537,7 @@ pub(crate) fn visit(q: &VisitingQuery, t: &mut Traverser<'_>, v: &mut dyn Visito
         }
 
         if descend {
-            add_intersecting_children(q, t, v, &mut stack)?;
+            add_intersecting_children(q, t, v, &mut stack, &mut scan)?;
         }
     }
     Ok(true)
@@ -446,6 +550,7 @@ fn add_intersecting_children(
     t: &mut Traverser<'_>,
     v: &mut dyn Visitor,
     stack: &mut [VNode],
+    scan_state: &mut Scan,
 ) -> Result<()> {
     let cur = stack.len() - 1;
     let level = stack[cur].cell.level();
@@ -463,7 +568,18 @@ fn add_intersecting_children(
         stack[cur].children = Some(sub_cells);
     } else {
         // Scan (loop of termsEnum.next())
-        scan_terms(q, t, v, &*stack[cur].cell, q.base.detail_level)?;
+        match &mut scan_state.relater {
+            Some(r) => scan_quad_terms(
+                q,
+                t,
+                v,
+                &*stack[cur].cell,
+                q.base.detail_level,
+                r,
+                &mut scan_state.prefix,
+            )?,
+            None => scan_terms(q, t, v, &*stack[cur].cell, q.base.detail_level)?,
+        }
     }
     Ok(())
 }
@@ -486,6 +602,294 @@ fn scan_terms(
         if !t.next_term()? {
             break;
         }
+    }
+    Ok(())
+}
+
+/// What [`scan_quad_terms`] keeps across scans: the relater and the scan
+/// cell's bytes.
+struct Scan {
+    relater: Option<QuadCellRelater>,
+    prefix: Vec<u8>,
+}
+
+/// [`scan_terms`] over a quad tree, for a visitor with the default
+/// `visitScanned`: each term's level, leaf flag and relation to the query
+/// shape come from its bytes ([`QuadCellRelater`]), and its cell is read
+/// only when the visitor is called -- for a cell that intersects. The same
+/// cells are visited, with the same relations, as [`scan_terms`] visits.
+fn scan_quad_terms(
+    q: &VisitingQuery,
+    t: &mut Traverser<'_>,
+    v: &mut dyn Visitor,
+    cur: &dyn Cell,
+    scan_detail_level: i32,
+    relater: &mut QuadCellRelater,
+    prefix: &mut Vec<u8>,
+) -> Result<()> {
+    cur.token_bytes_no_leaf_into(prefix);
+    scan_quad_prefix(q, t, v, prefix, scan_detail_level, relater)
+}
+
+/// [`scan_quad_terms`] beneath the cell whose token is `prefix`.
+fn scan_quad_prefix(
+    q: &VisitingQuery,
+    t: &mut Traverser<'_>,
+    v: &mut dyn Visitor,
+    prefix: &[u8],
+    scan_detail_level: i32,
+    relater: &mut QuadCellRelater,
+) -> Result<()> {
+    loop {
+        let (bytes, leaf) = relater.split_term(t.term());
+        // `bytes.starts_with(prefix)`, inline: a token is a few bytes
+        if bytes.len() < prefix.len() || bytes.iter().zip(prefix).any(|(a, b)| a != b) {
+            break;
+        }
+        let level = i32::try_from(bytes.len()).unwrap_or(i32::MAX);
+        if level == scan_detail_level || (level < scan_detail_level && leaf) {
+            let relate = relater.relate(bytes)?;
+            if relate.intersects() && !v.visit_scanned_quad(q, t, level, leaf, relate)? {
+                t.fresh()?;
+                t.with_cell(|t, cell| {
+                    cell.set_shape_rel(Some(relate)); // just being pedantic
+                    if cell.is_leaf() {
+                        v.visit_leaf(q, t, cell)
+                    } else {
+                        v.visit_prefix(q, t, cell).map(|_| ())
+                    }
+                })?;
+            }
+        }
+        // advance
+        if !t.next_term_raw()? {
+            break;
+        }
+    }
+    t.fresh()
+}
+
+/// The deepest quad cell token [`visit_quad`] keeps inline (one byte a
+/// level, below `QuadPrefixTree.MAX_LEVELS_POSSIBLE`'s 50).
+const QUAD_MAX_BYTES: usize = 56;
+
+/// A query cell of [`visit_quad`]: a quad cell as plain values -- its
+/// token, leaf flag and relation to the query shape -- where the generic
+/// traversal keeps a boxed `LegacyCell`.
+#[derive(Clone, Copy)]
+struct QuadNode {
+    bytes: [u8; QUAD_MAX_BYTES],
+    len: usize,
+    leaf: bool,
+    rel: Option<SpatialRelation>,
+}
+
+impl QuadNode {
+    fn bytes(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+}
+
+/// `getNextLevelCells(queryShape)` of a [`QuadNode`]: the next label to
+/// try and the child `hasNext()` found.
+struct QuadChildren {
+    next_label: u8,
+    pending: Option<QuadNode>,
+}
+
+/// A `VNode` of [`visit_quad`].
+struct QuadVNode {
+    node: QuadNode,
+    children: Option<QuadChildren>,
+}
+
+/// `FilterCellIterator.hasNext()` over a quad cell's children `A`-`D`
+/// (`LegacyCell.getNextLevelCells(shapeFilter)`): the next child whose
+/// rectangle intersects the query shape, with its relation, made a leaf
+/// when `WITHIN` or at the last level.
+fn quad_has_next(
+    parent: &QuadNode,
+    it: &mut QuadChildren,
+    relater: &mut QuadCellRelater,
+) -> Result<bool> {
+    if it.pending.is_some() {
+        return Ok(true);
+    }
+    while it.next_label < 4 {
+        let mut child = *parent;
+        child.bytes[parent.len] = b'A' + it.next_label;
+        child.len = parent.len + 1;
+        it.next_label += 1;
+        let rel = relater.relate(child.bytes())?;
+        if rel.intersects() {
+            child.rel = Some(rel);
+            child.leaf = rel == SpatialRelation::Within
+                || i32::try_from(child.len).unwrap_or(i32::MAX) == relater.max_levels();
+            it.pending = Some(child);
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// [`visit`] for a quad tree and a visitor with the default
+/// `findSubCellsToVisit`/`visitScanned`: the same traversal, step for
+/// step, with the query cells as [`QuadNode`] values related through one
+/// [`QuadCellRelater`], and the indexed cells read from the term bytes --
+/// a cell (a `LegacyCell`) is made only for the visitor's calls. The same
+/// cells are visited in the same order with the same relations.
+fn visit_quad(
+    q: &VisitingQuery,
+    t: &mut Traverser<'_>,
+    v: &mut dyn Visitor,
+    mut relater: QuadCellRelater,
+) -> Result<bool> {
+    if !t.has_terms() || !t.next_term_raw()? {
+        return Ok(false);
+    }
+    let grid = &*q.base.grid;
+    // The query cell handed to `visitPrefix`, refilled per call.
+    let mut query_cell = grid.world_cell();
+    let world = QuadNode {
+        bytes: [0; QUAD_MAX_BYTES],
+        len: 0,
+        leaf: relater.max_levels() == 0,
+        rel: None,
+    };
+    let mut stack = vec![QuadVNode {
+        node: world,
+        children: None,
+    }];
+    v.start(t)?;
+    quad_add_intersecting_children(q, t, v, &mut stack, &mut relater)?;
+
+    'main: while t.on_term {
+        // Advance curVNode pointer
+        let top = stack.len() - 1;
+        if let Some(children) = &mut stack[top].children {
+            // -- HAVE CHILDREN: DESCEND
+            let node = children.pending.take().expect("hasNext() found the child");
+            stack.push(QuadVNode {
+                node,
+                children: None,
+            });
+        } else {
+            // -- NO CHILDREN: ADVANCE TO NEXT SIBLING
+            stack.pop();
+            loop {
+                let Some(parent) = stack.last_mut() else {
+                    break 'main; // all done
+                };
+                let node = parent.node;
+                let children = parent
+                    .children
+                    .as_mut()
+                    .expect("a parent node has its children");
+                if quad_has_next(&node, children, &mut relater)? {
+                    let node = children.pending.take().expect("hasNext() found it");
+                    stack.push(QuadVNode {
+                        node,
+                        children: None,
+                    });
+                    break;
+                }
+                // reached end of siblings; pop up
+                stack.pop();
+            }
+        }
+
+        let cur = stack[stack.len() - 1].node;
+        // Seek to curVNode's cell (or skip if termsEnum has moved beyond)
+        let compare = relater.split_term(t.term()).0.cmp(cur.bytes());
+        if compare.is_gt() {
+            // The indexed cell is after; continue loop to next query cell
+            continue;
+        }
+        if compare.is_lt() {
+            // The indexed cell is before; seek ahead to query cell
+            let status = t.try_seek_ceil_raw(cur.bytes())?;
+            if status == SeekStatus::End {
+                break; // all done
+            }
+            if status == SeekStatus::NotFound {
+                // Did we find a leaf of the cell we were looking for or
+                // something after?
+                let (bytes, leaf) = relater.split_term(t.term());
+                if !leaf || bytes != cur.bytes() {
+                    continue; // The indexed cell is after
+                }
+            }
+        }
+        // indexedCell == queryCell (disregarding leaf).
+
+        // If indexedCell is a leaf then there's no prefix (prefix sorts
+        // before) -- just visit and continue
+        if relater.split_term(t.term()).1 {
+            t.fresh()?;
+            t.with_cell(|t, cell| v.visit_leaf(q, t, cell))?;
+            if !t.next_term_raw()? {
+                break;
+            }
+            continue;
+        }
+        // If a prefix (non-leaf) then visit; see if we descend. (The query
+        // cell, not the indexed one.)
+        grid.read_cell_into(cur.bytes(), &mut query_cell)?;
+        query_cell.set_shape_rel(cur.rel);
+        if cur.leaf {
+            query_cell.set_leaf();
+        }
+        let descend = v.visit_prefix(q, t, &*query_cell)?;
+        if !t.next_term_raw()? {
+            break;
+        }
+        // Check for adjacent leaf with the same prefix
+        let (bytes, leaf) = relater.split_term(t.term());
+        if leaf && bytes.len() == cur.len {
+            t.fresh()?;
+            t.with_cell(|t, cell| v.visit_leaf(q, t, cell))?;
+            if !t.next_term_raw()? {
+                break;
+            }
+        }
+
+        if descend {
+            quad_add_intersecting_children(q, t, v, &mut stack, &mut relater)?;
+        }
+    }
+    t.fresh()?;
+    Ok(true)
+}
+
+/// `addIntersectingChildren()` for [`visit_quad`].
+fn quad_add_intersecting_children(
+    q: &VisitingQuery,
+    t: &mut Traverser<'_>,
+    v: &mut dyn Visitor,
+    stack: &mut [QuadVNode],
+    relater: &mut QuadCellRelater,
+) -> Result<()> {
+    let cur = stack.len() - 1;
+    let node = stack[cur].node;
+    let level = i32::try_from(node.len).unwrap_or(i32::MAX);
+    if level >= q.base.detail_level {
+        return Err(Error::IllegalState("Spatial logic error".into()));
+    }
+    // Scanning is a performance optimization trade-off.
+    let scan = level >= q.prefix_grid_scan_level; // simple heuristic
+    if !scan {
+        // Divide & conquer (ultimately termsEnum.seek())
+        let mut children = QuadChildren {
+            next_label: 0,
+            pending: None,
+        };
+        if !quad_has_next(&node, &mut children, relater)? {
+            return Ok(()); // not expected
+        }
+        stack[cur].children = Some(children);
+    } else {
+        // Scan (loop of termsEnum.next())
+        scan_quad_prefix(q, t, v, node.bytes(), q.base.detail_level, relater)?;
     }
     Ok(())
 }
@@ -576,6 +980,22 @@ impl Visitor for IntersectsVisitor {
         _cell: &dyn Cell,
     ) -> Result<()> {
         t.collect_docs(self.results())
+    }
+
+    /// `visitLeaf` collects; `visitPrefix` collects a `WITHIN` cell or one
+    /// at the detail level -- which a scanned non-leaf always is.
+    fn visit_scanned_quad(
+        &mut self,
+        q: &VisitingQuery,
+        t: &mut Traverser<'_>,
+        level: i32,
+        leaf: bool,
+        relate: SpatialRelation,
+    ) -> Result<bool> {
+        if leaf || relate == SpatialRelation::Within || level == q.base.detail_level {
+            t.collect_docs(self.results())?;
+        }
+        Ok(true)
     }
 }
 
@@ -836,6 +1256,10 @@ impl Visitor for WithinVisitor {
         } else {
             t.collect_docs(self.outside.as_mut().expect("started"))
         }
+    }
+
+    fn scans_by_default(&self) -> bool {
+        false
     }
 
     /// Collects as wanted even when the cell is not a leaf.

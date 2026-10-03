@@ -35,6 +35,16 @@ impl RectangleImpl {
         }
     }
 
+    /// `reset(minX, maxX, minY, maxY)` with bounds already validated and
+    /// normalised by its factory (`ShapeFactory::plain_rect_bounds`): the
+    /// rectangle reused for another cell.
+    pub fn reset(&mut self, [min_x, max_x, min_y, max_y]: [f64; 4]) {
+        self.min_x = min_x;
+        self.max_x = max_x;
+        self.min_y = min_y;
+        self.max_y = max_y;
+    }
+
     /// `relate(Point)`.
     pub fn relate_point(&self, point: &dyn Point) -> SpatialRelation {
         if point.y() > self.max_y || point.y() < self.min_y {
@@ -64,8 +74,9 @@ impl RectangleImpl {
         SpatialRelation::Contains
     }
 
-    /// `relate(Rectangle)`.
-    pub fn relate_rect(&self, rect: &dyn Rectangle) -> Result<SpatialRelation> {
+    /// `relate(Rectangle)`; generic so a caller holding the concrete
+    /// rectangle reads its bounds without a dynamic call.
+    pub fn relate_rect<R: Rectangle + ?Sized>(&self, rect: &R) -> Result<SpatialRelation> {
         let y_intersect = self.relate_y_range_impl(rect.min_y(), rect.max_y());
         if y_intersect == SpatialRelation::Disjoint {
             return Ok(SpatialRelation::Disjoint);
@@ -143,7 +154,7 @@ impl RectangleImpl {
 }
 
 /// `verticalAtDateline(rect1, rect2)`.
-fn vertical_at_dateline(rect1: &RectangleImpl, rect2: &dyn Rectangle) -> bool {
+fn vertical_at_dateline<R: Rectangle + ?Sized>(rect1: &RectangleImpl, rect2: &R) -> bool {
     if rect1.min_x == rect1.max_x && rect2.min_x() == rect2.max_x() {
         if rect1.min_x == -180.0 {
             return rect2.min_x() == 180.0;

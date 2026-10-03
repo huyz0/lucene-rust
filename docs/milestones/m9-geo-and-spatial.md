@@ -9,7 +9,7 @@
 | **Effort** | L |
 | **Depends on** | [M7](m7-core-complete.md) (`document` fields, multi-dimension BKD writing) |
 | **Unblocks** | native `geo_distance`, `geo_bounding_box`, `geo_shape`, geo sorting |
-| **Status** | delivered 2026-10-03, all four criteria met (the real-world Tessellator corpus 2026-10-03): T9.1-T9.6 done. Open performance gaps tracked elsewhere: spatial-extras RPT intersects (0.73x) and heatmaps (0.60x) |
+| **Status** | delivered 2026-10-03, all four criteria met (the real-world Tessellator corpus 2026-10-03): T9.1-T9.6 done. Spatial-extras RPT intersects and heatmaps, the last cases below Lucene, at 1.17x-1.24x since 2026-10-03 (quad cells as values, `docs/parity.md`) |
 
 ---
 
@@ -169,7 +169,12 @@ last within the milestone.
   intersects 0.74x-0.77x, heatmaps 0.40x -- the last two left with their
   cause written up in `docs/parity.md`: a sorted stream of `seekCeil`s
   that this port's terms enum restarts at the trie's root each time
-  (`c1-lazy-blocktree.md` F-9), and per-cell allocation. The review closed
+  (`c1-lazy-blocktree.md` F-9), and per-cell allocation. *Closed 2026-10-03:* a third stage-3 round made the quad
+  tree's cells plain values -- `QuadCellRelater` relating a cell from its
+  token bytes with one reused rectangle, `visit_quad` traversing query cells
+  without a boxed cell or iterator per node, a haversine circle's
+  `contains` precomputed -- every answer unchanged: RPT intersects 1.24x
+  (rectangles) and 1.17x (circles), heatmaps 1.23x (`docs/parity.md`). The review closed
   four ways corrupt bytes could panic or abort: quad/packed-quad terms
   deeper than the tree, a date term's year overflow, an S2 term with no
   level, and unbounded nesting in binary shapes, geo3d streams and WKT.

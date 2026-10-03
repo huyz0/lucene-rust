@@ -34,6 +34,11 @@ pub(crate) trait LegacyGrid: fmt::Debug + Send + Sync {
     }
     /// `getShape()` before caching.
     fn make_shape(&self, cell: &LegacyCell) -> Result<Arc<dyn Shape>>;
+    /// `getShape()`'s bounds, when the shape is a rectangle the caller may
+    /// rebuild from them ([`Cell::rect_bounds`]).
+    fn rect_bounds(&self, _cell: &LegacyCell) -> Option<Result<[f64; 4]>> {
+        None
+    }
     /// `getShape().relate(other)`.
     fn relate_cell(&self, cell: &LegacyCell, other: &dyn Shape) -> Result<SpatialRelation> {
         self.make_shape(cell)?.relate(other)
@@ -214,6 +219,10 @@ impl Cell for LegacyCell {
 
     fn relate_shape(&self, other: &dyn Shape) -> Result<SpatialRelation> {
         self.grid.relate_cell(self, other)
+    }
+
+    fn rect_bounds(&self) -> Option<Result<[f64; 4]>> {
+        self.grid.rect_bounds(self)
     }
 
     fn is_prefix_of(&self, c: &dyn Cell) -> bool {

@@ -408,6 +408,18 @@ impl SpatialContext {
         self.shape_factory.rect(self, min_x, max_x, min_y, max_y)
     }
 
+    /// [`ShapeFactory::plain_rect_bounds`] of this context's factory.
+    pub fn plain_rect_bounds(
+        self: &Arc<Self>,
+        min_x: f64,
+        max_x: f64,
+        min_y: f64,
+        max_y: f64,
+    ) -> Option<Result<[f64; 4]>> {
+        self.shape_factory
+            .plain_rect_bounds(self, min_x, max_x, min_y, max_y)
+    }
+
     /// `getShapeFactory().rect(..).relate(other)`, answered without keeping
     /// the rectangle where the factory can (the prefix trees relate a cell
     /// per term they visit).

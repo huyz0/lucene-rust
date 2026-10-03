@@ -525,7 +525,7 @@ unchanged in the interleaved A/B; this machine's absolute timings drift
 by ~10% between runs), `spx_date_range` 1.35x, `spx_rpt_index_polygon`
 1.06x and `spx_bbox_similarity` 0.94x inside the noise.
 
-**Below 1.0, measured.** Callgrind, instructions per traversal on the
+**Below 1.0, measured (the second round's final build).** Callgrind, instructions per traversal on the
 final build. `spx_rpt_intersects_rect`: 82% is the scan level
 (`scan(detailLevel)` reading every term under the scan cell) -- 32%
 collecting postings into the bit set (`Traverser::collect_docs`: the term
@@ -547,6 +547,45 @@ malloc/free. Parity on these needs the cell and shape layers made static
 `dyn Shape`) -- a redesign of the spatial4j port's object model, recorded
 here rather than started under a stage-3 sweep. `spx_rpt_index_polygon` and
 `spx_bbox_similarity` measured inside the noise in both runs.
+
+**Stage 3, third round (2026-10-03): the quad cells as values.** The
+redesign the profile above asked for, for the quad tree (RPT's default and
+the heatmaps'): `QuadCellRelater` (`prefix_tree/quad.rs`) relates a cell
+named by its token bytes -- the corner sums of the path consecutive cells
+share are kept and only the levels after it added (the same additions in
+the same order, so the same bits), and one `RectangleImpl` is reset to the
+cell's validated bounds and related (`ShapeFactoryImpl::rect_bounds`,
+inlined, its errors on a cold path; a `RectangleImpl` query is related
+without dynamic calls), where each cell made a rectangle holding an `Arc`
+of the context; `visit_quad` (`lucene-search/src/spatial/prefix/query.rs`)
+runs the visiting traversal for the intersects and facet visitors with the
+query cells as plain values (`QuadNode`: token, leaf flag, relation) on a
+stack, no boxed `Cell`/`CellIterator` per node, and the indexed cells read
+from the term bytes -- a `Cell` is filled only for a visitor's call;
+`Cell::rect_bounds` hands the heatmap a facet cell's rectangle as bounds
+instead of an `Arc<dyn Shape>`; and a geodetic circle with the haversine
+calculator precomputes `contains` (`HaversineWithin`: `cos` of the
+center's latitude once, and `atan2` only for an `h` within a relative
+`1e-9` of the boundary, where the answer could depend on it -- equal to the
+calculator's on 24,000 points placed on and around circles of every size,
+and seen to fail with a `1e-12` error in its margin). Every answer is
+unchanged: `spatial_strategies_fixtures` (1,901 answers over Lucene's index
+and this port's, seen to fail when `visit_quad` accepts a disjoint child),
+`spatial4j_fixtures`, `spatial_prefix_tree_fixtures`, and unit tests
+comparing `QuadCellRelater` with each cell's own relation over every cell
+of 4-5-level trees for rectangles, dateline rectangles, circles, points,
+collections, planar and Geo3D contexts. The scan also hands the
+intersects visitor a scanned cell's level, leaf flag and relation
+(`visit_scanned_quad`) instead of a filled `Cell`. Interleaved A/B, Rust
+side: `spx_rpt_intersects_rect` 500 -> 300 us, `spx_rpt_intersects_circle`
+670 -> 420 us, `spx_heatmap` 71 -> 37 us.
+Against Lucene (`bench-micro.sh --bench spatial_extras --reps 5`,
+2026-10-03): `spx_rpt_intersects_rect` 0.73x -> **1.24x**,
+`spx_rpt_intersects_circle` 0.74x -> **1.17x** (noise floor 1.17x; 1.09x
+and 1.12x in the two runs before), `spx_heatmap` 0.60x -> **1.23x**;
+`spx_date_range` 1.38x, `spx_bbox_similarity` 1.08x and
+`spx_rpt_index_polygon` 1.01x, both inside the noise (1.00x-1.04x and
+1.03x-1.06x in the runs before). No case below 1.0.
 
 
 ## lucene-analysis

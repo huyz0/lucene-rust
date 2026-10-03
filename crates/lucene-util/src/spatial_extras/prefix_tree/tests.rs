@@ -739,3 +739,138 @@ fn token_bytes_into_scratch_for_every_tree() {
         }
     }
 }
+
+/// Every cell of a quad tree to `depth`, as token bytes.
+fn quad_tokens(depth: usize) -> Vec<Vec<u8>> {
+    let mut out = vec![Vec::new()];
+    let mut level = vec![Vec::new()];
+    for _ in 0..depth {
+        level = level
+            .iter()
+            .flat_map(|p: &Vec<u8>| {
+                b"ABCD".iter().map(move |&b| {
+                    let mut c = p.clone();
+                    c.push(b);
+                    c
+                })
+            })
+            .collect();
+        out.extend(level.iter().cloned());
+    }
+    out
+}
+
+/// `QuadCellRelater` answers as each cell's `getShape().relate(shape)`,
+/// whatever the order the cells come in (its cached prefix sums), for a
+/// rectangle, a dateline-crossing rectangle, circles, a point and a
+/// collection, over geo, planar and Geo3D contexts; and its bounds and
+/// errors are the cells'.
+#[test]
+fn quad_cell_relater_answers_as_the_cells() {
+    let g = geo();
+    let f = flat();
+    let g3 = geo3d();
+    type Case = (Arc<dyn SpatialPrefixTree>, Vec<Arc<dyn Shape>>);
+    let cases: Vec<Case> = vec![
+        (
+            Arc::new(QuadPrefixTree::new(g.clone(), 5).unwrap()),
+            vec![
+                g.rect(-30.0, 40.5, -10.0, 25.0).unwrap(),
+                g.rect(170.0, -170.0, -10.0, 25.0).unwrap(),
+                g.rect(-180.0, 180.0, -90.0, 90.0).unwrap(),
+                g.circle(10.0, 20.0, 15.0).unwrap(),
+                g.circle(-179.0, 80.0, 30.0).unwrap(),
+                g.circle(0.0, 0.0, 120.0).unwrap(),
+                g.point_xy(12.0, -7.5).unwrap(),
+                Arc::new(
+                    g.collection(vec![
+                        g.rect(0.0, 10.0, 0.0, 10.0).unwrap(),
+                        g.circle(-50.0, -20.0, 5.0).unwrap(),
+                    ])
+                    .unwrap(),
+                ),
+                g.rect(f64::NAN, f64::NAN, f64::NAN, f64::NAN).unwrap(),
+            ],
+        ),
+        (
+            Arc::new(
+                QuadPrefixTree::with_bounds(f.clone(), [-100.0, 100.0, -50.0, 50.0], 5).unwrap(),
+            ),
+            vec![
+                f.rect(-30.0, 40.5, -10.0, 25.0).unwrap(),
+                f.circle(10.0, 20.0, 15.0).unwrap(),
+            ],
+        ),
+        (
+            Arc::new(QuadPrefixTree::new(g3.clone(), 4).unwrap()),
+            vec![g3.rect(-30.0, 40.5, -10.0, 25.0).unwrap()],
+        ),
+    ];
+    let mut n = 0;
+    for (tree, shapes) in &cases {
+        let mut tokens = quad_tokens(tree.max_levels() as usize);
+        // a shuffled order too, so cached prefixes are cut at every depth
+        let mut shuffled = tokens.clone();
+        shuffled.reverse();
+        shuffled.rotate_left(17);
+        tokens.extend(shuffled);
+        for shape in shapes {
+            let mut r = tree.quad_relater(shape).expect("a quad tree");
+            assert_eq!(r.max_levels(), tree.max_levels());
+            assert!(format!("{r:?}").starts_with("QuadCellRelater("));
+            for t in &tokens {
+                let cell = tree.read_cell(t).unwrap();
+                let want = cell.relate_shape(&**shape).unwrap();
+                assert_eq!(r.relate(t).unwrap(), want, "{tree} {shape} {cell}");
+                n += 1;
+            }
+        }
+        // a cell's rectangle bounds are its shape's
+        for t in quad_tokens(2) {
+            let cell = tree.read_cell(&t).unwrap();
+            match cell.rect_bounds() {
+                Some(b) => {
+                    let s = cell.shape().unwrap();
+                    let r = s.as_rectangle().unwrap();
+                    assert_eq!(b.unwrap(), [r.min_x(), r.max_x(), r.min_y(), r.max_y()]);
+                }
+                None => assert!(Arc::ptr_eq(tree.spatial_context(), &g3)),
+            }
+        }
+    }
+    assert!(n > 10_000, "{n}");
+
+    // leaf markers, the last level, bad bytes and paths deeper than the tree
+    let tree = QuadPrefixTree::new(g.clone(), 3).unwrap();
+    let shape: Arc<dyn Shape> = g.rect(-30.0, 40.5, -10.0, 25.0).unwrap();
+    let mut r = SpatialPrefixTree::quad_relater(&tree, &shape).unwrap();
+    assert_eq!(r.split_term(b"AB+"), (&b"AB"[..], true));
+    assert_eq!(r.split_term(b"AB"), (&b"AB"[..], false));
+    assert_eq!(r.split_term(b"ABC"), (&b"ABC"[..], true));
+    assert_eq!(r.split_term(b""), (&b""[..], false));
+    for bad in [&b"AX"[..], b"ABCDA", b"ABCDABCDABCDABCDB"] {
+        let want = tree
+            .read_cell(bad)
+            .unwrap()
+            .relate_shape(&*shape)
+            .unwrap_err();
+        assert_eq!(
+            r.relate(bad).unwrap_err().to_string(),
+            want.to_string(),
+            "{bad:?}"
+        );
+        assert_eq!(r.bounds(bad).unwrap_err().to_string(), want.to_string());
+        let cell = tree.read_cell(bad).unwrap();
+        assert_eq!(
+            cell.rect_bounds().unwrap().unwrap_err().to_string(),
+            want.to_string()
+        );
+    }
+    // other trees have no relater, and their cells no rectangle bounds
+    for t in trees() {
+        if t.as_any().downcast_ref::<QuadPrefixTree>().is_none() {
+            assert!(t.quad_relater(&shape).is_none(), "{t}");
+            assert!(t.world_cell().rect_bounds().is_none(), "{t}");
+        }
+    }
+}

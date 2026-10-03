@@ -7,7 +7,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use super::context::SpatialContext;
-use super::distance::DistanceUtils;
+use super::distance::{DistanceUtils, GeodesicSphereDistCalc, HaversineWithin};
 use super::shape::{Circle, Point, Rectangle, Shape, SpatialRelation};
 use super::{double_compare_eq, dstr, java_format_fixed, Result};
 
@@ -29,6 +29,8 @@ pub struct CircleImpl {
     enclosing_box: Arc<dyn Rectangle>,
     ctx: Arc<SpatialContext>,
     geo: Option<GeoCircleState>,
+    /// `contains` precomputed, when the context measures by haversine.
+    haversine: Option<HaversineWithin>,
 }
 
 /// `Math.ulp(d)`.
@@ -53,12 +55,20 @@ impl CircleImpl {
             ctx.dist_calc()
                 .calc_box_by_dist_from_pt(&p, radius_deg, &ctx)?
         };
+        let calc: &dyn Any = &**ctx.dist_calc();
+        let haversine = match calc.downcast_ref::<GeodesicSphereDistCalc>() {
+            Some(GeodesicSphereDistCalc::Haversine) if !p.is_empty() => {
+                Some(HaversineWithin::new(p.x(), p.y(), radius_deg))
+            }
+            _ => None,
+        };
         Ok(CircleImpl {
             point: p,
             radius_deg,
             enclosing_box,
             ctx,
             geo: None,
+            haversine,
         })
     }
 
@@ -136,6 +146,9 @@ impl CircleImpl {
 
     /// `contains(x, y)`.
     pub fn contains(&self, x: f64, y: f64) -> Result<bool> {
+        if let Some(h) = &self.haversine {
+            return Ok(h.within(x, y));
+        }
         self.ctx
             .dist_calc()
             .within(&*self.point, x, y, self.radius_deg)
