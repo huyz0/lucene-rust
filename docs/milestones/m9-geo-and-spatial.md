@@ -9,7 +9,7 @@
 | **Effort** | L |
 | **Depends on** | [M7](m7-core-complete.md) (`document` fields, multi-dimension BKD writing) |
 | **Unblocks** | native `geo_distance`, `geo_bounding_box`, `geo_shape`, geo sorting |
-| **Status** | in progress: T9.1, T9.2, T9.3 done (2026-10-02) |
+| **Status** | delivered 2026-10-03, three of four criteria met: T9.1-T9.6 done; the Tessellator has no real-world polygon corpus yet. Open performance gaps tracked elsewhere: spatial-extras RPT intersects (0.73x) and heatmaps (0.60x) |
 
 ---
 
@@ -174,22 +174,102 @@ last within the milestone.
   deeper than the tree, a date term's year overflow, an S2 term with no
   level, and unbounded nesting in binary shapes, geo3d streams and WKT.
 - **T9.6** — Plugin wiring for OpenSearch's geo queries and sort.
-  *In progress.* Queries native: `geo_bounding_box`, `geo_distance`,
-  `geo_polygon` and `geo_shape` on `geo_point` and `geo_shape` fields
-  (`GeoEncoder.java`, query-tree nodes 15-19, `DocumentClause`); the
-  `_geo_distance` sort native in Lucene's comparator and in OpenSearch's
-  own (`ARC`; sort key 7).
+  *Done (2026-10-03).* What OpenSearch 3.8.0 builds, mapped from its sources
+  (`GeoBoundingBoxQueryBuilder`, `GeoDistanceQueryBuilder`,
+  `GeoPolygonQueryBuilder`, `GeoShapeQueryBuilder`, the
+  `VectorGeoPointShapeQueryProcessor`/`VectorGeoShapeQueryProcessor` pair,
+  `GeoDistanceSortBuilder`): on a `geo_point`, `LatLonPoint.newBoxQuery` /
+  `newDistanceQuery` / `newPolygonQuery` inside an `IndexOrDocValuesQuery`
+  with the `LatLonDocValuesField` twin; on a `geo_shape`,
+  `LatLonShape.newGeometryQuery` (`LatLonShapeQuery`,
+  `LatLonShapeBoundingBoxQuery`, a `BooleanQuery` of them for a `CONTAINS` of
+  several geometries or across the dateline) inside a `ConstantScoreQuery`,
+  every relation, inline or `indexed_shape` alike; the `_geo_distance` sort
+  is Lucene's `LatLonPointSortField` for one origin, metres, ascending, `min`,
+  and OpenSearch's own comparator source otherwise (`MultiValueMode` over
+  `GeoDistance.calculate` of every value and origin). All of it now runs
+  natively: `GeoEncoder.java` reads the queries (the four package-private
+  classes through `Reflect`) into query-tree nodes 15-19 (ABI 30), decoded
+  through the validating constructors and run as `DocumentClause` leaves of
+  the scorer tree keyed for the query cache by their own bytes; the sorts
+  are sort key 7 (ABI 31), Lucene's comparator with its bounding-box
+  `compareBottom`, OpenSearch's as `OpenSearchGeoDistanceSort`. Falls back by
+  name: `search_after` on Lucene's geo sort (`search_after_geo`; its
+  `compareTop` compares metres), `distance_type: plane` in OpenSearch's
+  comparator (`sort_geo_plane`: `Math.cos`'s HotSpot intrinsic), nested geo
+  sorts, and the deprecated prefix-tree `geo_shape` mapping
+  (`clause_IntersectsPrefixTreeQuery`). Proved by `NativeSelfTest.geo` (704
+  random geo queries over points and shapes at the poles and the
+  antimeridian, degenerate polygons included, and ~900 sorted pages with a
+  geo key, against Lucene in process; seen to fail on a radius off by 0.1%,
+  a cache key that ignored the geometry and a wrong even median) and by
+  `geo_matrix.py` in `scripts/verify-opensearch.sh` (90 request shapes on a
+  one- and a three-shard index and on a merged one past 10,000 documents,
+  against a stock node). New fuzz target `jvm_search_sorted`; geo seeds for
+  `jvm_search`. Benchmark below.
+
+### T9.6 benchmark: native geo searches against a stock node
+
+`opensearch-plugin/e2e/phase_bench.py` with `GEO=1` (the geo rows of
+`geo_matrix.py`, 93 native shapes) on one shard of 100,000 documents of
+points and shapes (`GEO_LOAD=100000`: six segments of ~16,000), the index
+switched between the native path and Lucene six times. By the plugin's
+query-phase counters (Lucene over native): median 1.88x, two shapes under
+1.0 -- `terms` aggregation behind a `geo_distance` filter (0.68-0.80x; the
+same aggregation behind a `match` measured 0.93x on this node, and the geo
+filter alone 1.93x: the gap is the `terms` collection over a document list,
+not geo) and `_geo_distance` across the antimeridian (0.94x, then 1.10x on
+a re-run: noise). Over REST round trips (`REST=1`): median 1.06x; the rows
+under 1.0 are cheap `geo_shape` queries that both engines answer from
+their query caches (OpenSearch wraps `geo_shape` in a `ConstantScoreQuery`),
+where the response is ~2 ms and the query phase 40-120 us: there the native
+call's fixed cost shows -- in one JVM a cached geo filter costs 20 us
+natively against 7-15 us in Lucene, the same 18-20 us floor a cached term
+filter pays natively (the geo node's own share, after the key fix, is under
+2 us). Uncached, in process on the same shard: point box 0.72x
+(`document::PointRangeQuery`, not the plugin's points path) / distance
+1.87x / polygon 1.47x; shapes 0.99-1.25x (intersects box 0.99x, within box
+1.25x, disjoint 1.13x, contains line 1.23x); Lucene's distance sort 1.28x,
+OpenSearch's 1.75x. What closed the first measurement's gaps (sorts 0.5-0.7x,
+empty `CONTAINS`/`WITHIN` filters 0.06-0.19x): Lucene's `compareBottom`
+through a new comparator hook, the points read from the segment's decoded
+column, and empty answers kept in the query cache, as `LRUQueryCache` keeps
+`DocIdSet.EMPTY`.
 
 ## Acceptance criteria
 
-- [ ] Every geo query returns the same hits as Lucene on a generated corpus
+- [x] Every geo query returns the same hits as Lucene on a generated corpus
       of random points and shapes, including the antimeridian, the poles and
-      degenerate polygons.
+      degenerate polygons. *Evidence:* `GenGeoPoints` (~1,100 queries) and
+      `GenGeoShapes` (1,576; shapes on the poles and the dateline, slivers
+      and collinear runs) against Lucene's index and this port's
+      (`geo_points_fixtures.rs`, `geo_shapes_fixtures.rs`), the geo3d and
+      spatial-extras generators likewise, and through the plugin
+      `NativeSelfTest.geo` (704 random queries, degenerate polygons -- on one
+      parallel or meridian, repeated vertices -- included).
 - [ ] The `Tessellator` produces Lucene's triangles, or fails where Lucene
-      fails, on a corpus of real-world polygons.
+      fails, on a corpus of real-world polygons. *Not met as worded:* it
+      does, triangle for triangle (or failure for failure), on ~200 seeded
+      synthetic polygons (`GenGeoTessellator`: holes, poles, the dateline,
+      self-intersections, the morton and SPLIT paths), but no real-world
+      corpus (country or coastline boundaries) has been added to the
+      fixtures yet.
 - [x] Real Lucene reads Rust-written point and shape indices.
-- [ ] Native `geo_distance` and `geo_shape` searches agree with a stock node
-      in the plugin's matrix, and are no slower than Lucene.
+- [x] Native `geo_distance` and `geo_shape` searches agree with a stock node
+      in the plugin's matrix, and are no slower than Lucene. *Evidence:*
+      `scripts/verify-opensearch.sh --docs 20000 --yaml` (2026-10-03):
+      9,461 checks against a stock node, 0 failures, 95 geo request shapes
+      on a one- and a three-shard index and five rounds on a merged
+      12,000-document segment, every geo query and `_geo_distance` sort row
+      native but the four that fall back by name; OpenSearch's YAML suites
+      fail identically with and without the plugin (4 of 501). Speed: the
+      T9.6 benchmark above -- by the query-phase counters median 1.88x
+      Lucene, every geo query and sort row at or above 1.0 beyond noise; the
+      one row below, a `terms` aggregation behind a geo filter, is the
+      aggregation's own pre-existing gap (0.93x behind a `match` too). Over
+      REST median 1.06x; cheap `geo_shape` queries answered from the query
+      cache sit at 0.85-0.99x there, the native call's fixed ~10 us more
+      than Lucene's cached path (written up above), not geo work.
 
 ## Risks and unknowns
 
