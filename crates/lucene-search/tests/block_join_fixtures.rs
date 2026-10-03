@@ -9,7 +9,8 @@
 //! and inside booleans (the scorer), boosted and constant-scored -- must
 //! return Lucene's hits with the same score bits, or fail where Lucene threw;
 //! every `ToParentBlockJoinSortField` search the same documents and sort
-//! values.
+//! values; every `DiversifyingChildren{Float,Byte}KnnVectorQuery`, filtered or
+//! not, the same children with the same score bits.
 
 // Test fixtures' own arithmetic -- see `docs/arithmetic-gate.md`'s "Test code".
 #![allow(clippy::arithmetic_side_effects)]
@@ -17,15 +18,22 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use lucene_codecs::hnsw_vectors::HnswVectorsReader;
+use lucene_codecs::vectors::FlatVectorsReader;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
 use lucene_search::join::{
-    BitSetProducer, JoinMissing, JoinSortType, ParentChildrenBlockJoinQuery,
-    ParentsChildrenBlockJoinQuery, QueryBitSetProducer, ScoreMode, ToChildBlockJoinQuery,
-    ToParentBlockJoinQuery, ToParentBlockJoinSortField,
+    BitSetProducer, DiversifyingChildrenByteKnnVectorQuery,
+    DiversifyingChildrenFloatKnnVectorQuery, JoinMissing, JoinSortType,
+    ParentChildrenBlockJoinQuery, ParentsChildrenBlockJoinQuery, QueryBitSetProducer, ScoreMode,
+    ToChildBlockJoinQuery, ToParentBlockJoinQuery, ToParentBlockJoinSortField,
 };
+use lucene_search::multi_segment::OpenSegment;
 use lucene_search::query::{BooleanQuery, BoostQuery, Clause, ConstantScoreQuery, TermQuery};
+use lucene_search::vector_query::{
+    filter_bitsets, KnnByteVectorQuery, KnnFloatVectorQuery, KnnSegment, VectorsInput,
+};
 use lucene_store::FsDirectory;
 
 fn data() -> std::path::PathBuf {
@@ -253,13 +261,22 @@ fn block_join_queries_match_lucene_bit_for_bit() {
         .collect();
     let searcher = IndexSearcher::new(&segments, &norms).unwrap();
     let filters = Filters::new();
+    let vectors = Vectors::open(&reader);
 
-    let (mut cases, mut errors, mut failures) = (0, 0, Vec::new());
+    let (mut cases, mut errors, mut failures, mut knn) = (0, 0, Vec::new(), 0);
     for line in text.lines() {
         let [kind, spec, want] = line.split('\t').collect::<Vec<_>>()[..] else {
             panic!("bad line {line}");
         };
         cases += 1;
+        if kind == "knn" {
+            let got = vectors.search(&reader, &segments, spec, &filters);
+            check(&mut failures, &mut errors, line, want, got, |got| {
+                *got == scored_hits(want)
+            });
+            knn += 1;
+            continue;
+        }
         if kind == "sort" {
             let got = sorted(&searcher, &reader, spec, &filters);
             check(&mut failures, &mut errors, line, want, got, |got| {
@@ -288,15 +305,7 @@ fn block_join_queries_match_lucene_bit_for_bit() {
                 .collect::<Vec<_>>()
         });
         check(&mut failures, &mut errors, line, want, got, |got| {
-            let want: Vec<(i32, u32)> = want
-                .split(' ')
-                .filter(|s| *s != "-")
-                .map(|h| {
-                    let (d, b) = h.split_once(':').unwrap();
-                    (d.parse().unwrap(), u32::from_str_radix(b, 16).unwrap())
-                })
-                .collect();
-            *got == want
+            *got == scored_hits(want)
         });
     }
     assert!(
@@ -305,8 +314,126 @@ fn block_join_queries_match_lucene_bit_for_bit() {
         failures.len(),
         failures.join("\n")
     );
-    assert!(cases >= 900, "{cases} searches");
+    assert!(cases >= 1000, "{cases} searches");
+    assert!(knn >= 120, "{knn} diversifying KNN searches");
     assert!(errors >= 18, "{errors} expected errors");
+}
+
+/// `doc:scorebits doc:scorebits ..`, or `-` for none.
+fn scored_hits(want: &str) -> Vec<(i32, u32)> {
+    want.split(' ')
+        .filter(|s| *s != "-")
+        .map(|h| {
+            let (d, b) = h.split_once(':').unwrap();
+            (d.parse().unwrap(), u32::from_str_radix(b, 16).unwrap())
+        })
+        .collect()
+}
+
+/// Each segment's `fvec`/`bvec` vectors (one `Lucene99HnswVectorsFormat`).
+struct Vectors(Vec<(FlatVectorsReader<'static>, HnswVectorsReader<'static>)>);
+
+const VECTORS_SUFFIX: &str = "Lucene99HnswVectorsFormat_0";
+
+impl Vectors {
+    fn open(reader: &DirectoryReader) -> Self {
+        let dir = data().join("index");
+        Vectors(
+            reader
+                .segment_readers()
+                .iter()
+                .map(|seg| {
+                    let file = |ext: &str| -> &'static [u8] {
+                        Vec::leak(
+                            std::fs::read(
+                                dir.join(format!("{}_{VECTORS_SUFFIX}.{ext}", seg.segment_name)),
+                            )
+                            .unwrap(),
+                        )
+                    };
+                    let id = seg.segment_id();
+                    (
+                        FlatVectorsReader::open(file("vemf"), file("vec"), &id, VECTORS_SUFFIX)
+                            .unwrap(),
+                        HnswVectorsReader::open(file("vem"), file("vex"), &id, VECTORS_SUFFIX)
+                            .unwrap(),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    /// `dknnf(fvec,k,bits;..,P0,filter|-)` or `dknnb(bvec,k,b;..,P0,filter|-)`.
+    fn search(
+        &self,
+        reader: &DirectoryReader,
+        segments: &[OpenSegment<'_>],
+        spec: &str,
+        filters: &Filters,
+    ) -> lucene_search::Result<Vec<(i32, u32)>> {
+        let (head, rest) = spec.split_once('(').expect("knn spec");
+        let inner = rest.strip_suffix(')').expect("knn spec");
+        let parts: Vec<&str> = inner.splitn(5, ',').collect();
+        let k: usize = parts[1].parse().unwrap();
+        let parents = filters.get(parts[3]);
+        let child_filter = (parts[4] != "-").then(|| {
+            let mut p = Parser {
+                s: parts[4],
+                at: 0,
+                filters,
+            };
+            p.query()
+        });
+        let bits = child_filter
+            .map(|f| filter_bitsets(segments, &f))
+            .transpose()?;
+        let knn: Vec<KnnSegment<'_>> = reader
+            .segment_readers()
+            .iter()
+            .zip(&self.0)
+            .enumerate()
+            .map(|(i, (seg, (flat, hnsw)))| KnnSegment {
+                vectors: VectorsInput {
+                    flat: flat.clone(),
+                    hnsw: Some(hnsw.clone().into()),
+                    field_infos: seg.field_infos(),
+                    live_docs: seg.live_docs(),
+                    filter: bits.as_ref().map(|b| &b[i]),
+                    max_doc: seg.max_doc,
+                },
+                doc_base: seg.doc_base,
+            })
+            .collect();
+        let hits = match head {
+            "dknnf" => {
+                let target = parts[2]
+                    .split(';')
+                    .map(|b| f32::from_bits(u32::from_str_radix(b, 16).unwrap()))
+                    .collect();
+                DiversifyingChildrenFloatKnnVectorQuery::new(
+                    KnnFloatVectorQuery::new(parts[0], target, k)?,
+                    parents,
+                )
+                .search(segments, &knn)?
+            }
+            "dknnb" => {
+                let target = parts[2]
+                    .split(';')
+                    .map(|b| b.parse::<i8>().unwrap() as u8)
+                    .collect();
+                DiversifyingChildrenByteKnnVectorQuery::new(
+                    KnnByteVectorQuery::new(parts[0], target, k)?,
+                    parents,
+                )
+                .search(segments, &knn)?
+            }
+            other => panic!("knn head {other}"),
+        };
+        Ok(hits
+            .into_iter()
+            .map(|h| (h.doc_id, h.score.to_bits()))
+            .collect())
+    }
 }
 
 /// Compares one search with Lucene's answer: an error where Lucene threw,

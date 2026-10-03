@@ -807,3 +807,25 @@ fn a_reader_opens_one_segment_for_a_producer() {
     // Again, now that the points are parsed.
     r.with_open_segment(0, |seg| Ok(seg.max_doc)).unwrap();
 }
+
+#[test]
+fn diversifying_knn_queries_refuse_mismatched_segments() {
+    let tmp = small_index("join-knn-mismatch");
+    let reader = DirectoryReader::open(&FsDirectory::open(tmp.path())).unwrap();
+    let opened = reader.open_segments().unwrap();
+    let segments = opened.as_open_segments();
+    let float = DiversifyingChildrenFloatKnnVectorQuery::new(
+        crate::vector_query::KnnFloatVectorQuery::new("v", vec![1.0], 3).unwrap(),
+        Arc::new(parents()),
+    );
+    let e = float.search(&segments, &[]).unwrap_err();
+    assert!(e.to_string().contains("same leaves"), "{e}");
+    let byte = DiversifyingChildrenByteKnnVectorQuery::new(
+        crate::vector_query::KnnByteVectorQuery::new("v", vec![1], 3).unwrap(),
+        Arc::new(parents()),
+    );
+    assert!(byte.search(&segments, &[]).is_err());
+    // No segments on either side is an empty index: nothing found.
+    assert!(byte.search(&[], &[]).unwrap().is_empty());
+    assert!(float.search(&[], &[]).unwrap().is_empty());
+}

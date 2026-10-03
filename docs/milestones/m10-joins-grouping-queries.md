@@ -75,9 +75,9 @@ grouping. Each of them falls back to Lucene today.
   `ToParentBlockJoinQuery` (all five score modes, scorer and bulk scorer),
   `ToChildBlockJoinQuery`, `ParentChildrenBlockJoinQuery`,
   `ParentsChildrenBlockJoinQuery`, `ToParentBlockJoinSortField` with
-  `BlockJoinSelector`/`ToParentDocValues`, explain and matches; 936
-  differential searches (`GenBlockJoin`) bit for bit. Open: benchmarks and the
-  diversifying child KNN queries.
+  `BlockJoinSelector`/`ToParentDocValues`, explain and matches,
+  `DiversifyingChildrenFloat/ByteKnnVectorQuery`; 1056 differential searches
+  (`GenBlockJoin`) bit for bit. Open: benchmarks.
 - **T10.3** — Query-time joins.
 - **T10.4** — Grouping.
 - **T10.5** — Function queries and value sources.
