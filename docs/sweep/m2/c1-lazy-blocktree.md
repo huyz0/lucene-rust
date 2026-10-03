@@ -46,9 +46,9 @@ CompressionAlgorithm,Stats,IntersectTermsEnum,IntersectTermsEnumFrame}.java`.
 | `Frame::scan_to_term_non_leaf` | `scanToTermNonLeaf` | identical; the sub-frame descent is returned to the caller (needs the stack) |
 | `Frame::decode_meta_data` | `decodeMetaData` | identical (singleton run length, DOCS aliasing, per-block `absolute`) |
 | `Frame::fill_term` / `term_block_ord` | `fillTerm` / `getTermBlockOrd` | identical |
-| `SegmentTermsEnum::{push_frame_node,push_frame_fp,push_next_frame}` | `pushFrame(node,len)` / `pushFrame(node,fp,len)` | identical modulo F-9 |
-| `SegmentTermsEnum::seek_exact` | `seekExact` / `prepareSeekExact` | identical, minus the seek-state-reuse branch (F-9); min/max short-circuit **new** (F-4) |
-| `SegmentTermsEnum::seek_ceil` | `seekCeil` | identical, minus F-9 |
+| `SegmentTermsEnum::{push_frame_node,push_frame_fp,push_next_frame}` | `pushFrame(node,len)` / `pushFrame(node,fp,len)` | identical (the `targetBeforeCurrentLength` keep-or-rewind ported since F-9 was closed) |
+| `SegmentTermsEnum::seek_exact` | `seekExact` / `prepareSeekExact` | identical, the seek-state-reuse branch included (F-9, closed); min/max short-circuit **new** (F-4) |
+| `SegmentTermsEnum::seek_ceil` | `seekCeil` | identical, the seek-state-reuse branch included (F-9, closed) |
 | `SegmentTermsEnum::next` | `next()` | identical |
 | `SegmentTermsEnum::stats` / `stats_and_meta` | `docFreq()`/`totalTermFreq()` / `postings()`'s `decodeMetaData` | identical |
 | `TermsEnum::{try_next,next,try_seek_ceil,seek_ceil,try_current,current}` | `TermsEnum.next`/`seekCeil`/`term`+`docFreq` | same answers; `try_*` added (F-7) |
@@ -62,7 +62,7 @@ CompressionAlgorithm,Stats,IntersectTermsEnum,IntersectTermsEnumFrame}.java`.
 | -- | `SegmentTermsEnumFrame.prefetchBlock` / `SegmentTermsEnum.prefetch` | **not ported** (F-12) |
 | -- | `Stats.java` / `FieldReader.getStats` / `computeBlockStats` | **not ported** (F-12) |
 | -- | `IntersectTermsEnum` / `IntersectTermsEnumFrame` | **not ported** (F-12) |
-| -- | `SegmentTermsEnum`'s seek-state-reuse prologue | **intentionally not ported** (F-9) |
+| `SegmentTermsEnum::shared_prefix`, `EnumState::{nodes, valid_index_prefix, target_before_current_length}` | `SegmentTermsEnum`'s seek-state-reuse prologue | **ported** (F-9, closed in the M9 spatial-extras stage 3) |
 
 ---
 
@@ -382,7 +382,7 @@ from b8, 3000 terms x 10 patterns) still proves the skip never changes *which*
 terms come back; the bench asserts scan/skip agree on the match count for
 every pattern before timing them.
 
-### F-9 [INTENTIONAL] the seek-state-reuse prologue is not ported
+### F-9 [CLOSED] the seek-state-reuse prologue (was: not ported)
 
 **Java.** `prepareSeekExact` and `seekCeil` both open with ~80 lines that
 reuse the *previous* seek's frame stack when the new target shares a prefix
@@ -409,6 +409,24 @@ consecutive targets share a prefix. Porting it would add the port's single
 most bug-prone piece of state (three interacting cursors that Java itself guards with four
 asserts) for a win that only shows on sorted seek streams, which this port's
 search layer does not generate.
+
+**Closed (M9, spatial-extras stage 3).** The spatial prefix-tree traversals
+(`HeatmapFacetCounter`, the RPT `IntersectsPrefixTreeQuery` and friends) are
+exactly the sorted `seekCeil` streams the prologue exists for: 30% of a
+heatmap's time was the root-to-leaf re-walk. The prologue is now ported as
+Java has it -- `EnumState::nodes` (Java's `nodes[]`), `valid_index_prefix`,
+`target_before_current_length` and `SegmentTermsEnum::shared_prefix` (the
+compare-and-`lastFrame` walk), with `push_frame_fp` keeping a same-block
+frame's cursor at or below `targetBeforeCurrentLength` and `next()` cutting
+`validIndexPrefix` back as it pops -- on top of the in-place `rewind` and the
+pooled state, which stay. Rust-only: a seek that fails part way resets the
+state (a half-updated stack must not be resumed), and a stored path claiming
+more frames than the stack holds restarts from the root instead of indexing
+past it. Verified by `reused_enum_seek_streams_match_a_brute_force_answer`
+(ascending, descending and shuffled streams with `next()` steps between, on
+the multilevel and deep-nesting fixtures, against Lucene's term lists) and
+`seek_state_reuse_answers_the_current_term_and_distrusts_a_broken_state`;
+dropping the backward-seek rewind fails the first.
 
 ### F-10 [INTENTIONAL] `intersect`'s iterator item is now owned
 
