@@ -3,7 +3,7 @@
 # class	status	detail
 search/join/BaseGlobalOrdinalScorer	todo:M10	query-time join (T10.3): GlobalOrdinals*Query's scorer base
 search/join/BitSetProducer	ported	crates/lucene-search/src/join/mod.rs::BitSetProducer
-search/join/BlockJoinSelector	todo:M10	block join (T10.2): picks a parent's sort value from its children's doc values
+search/join/BlockJoinSelector	ported	crates/lucene-search/src/join/sort.rs::BlockJoinSelector
 search/join/CheckJoinIndex	ported	crates/lucene-search/src/join/mod.rs::check_join_index
 search/join/DiversifyingChildrenByteKnnVectorQuery	todo:M10	block join (T10.2): byte KNN over children, one best child per parent
 search/join/DiversifyingChildrenFloatKnnVectorQuery	todo:M10	block join (T10.2): float KNN over children, one best child per parent
@@ -16,17 +16,17 @@ search/join/GlobalOrdinalsQuery	todo:M10	query-time join (T10.3): the to-side qu
 search/join/GlobalOrdinalsWithScoreCollector	todo:M10	query-time join (T10.3): global ordinals with per-ordinal scores
 search/join/GlobalOrdinalsWithScoreQuery	todo:M10	query-time join (T10.3): the scoring to-side query over global ordinals
 search/join/JoinUtil	todo:M10	query-time join (T10.3): the createJoinQuery factories
-search/join/ParentChildrenBlockJoinQuery	todo:M10	block join (T10.2): the children of one parent that match a child query
-search/join/ParentsChildrenBlockJoinQuery	todo:M10	block join (T10.2): children of matching parents, limited per parent
+search/join/ParentChildrenBlockJoinQuery	ported	crates/lucene-search/src/join/query.rs::ParentChildrenBlockJoinQuery
+search/join/ParentsChildrenBlockJoinQuery	ported	crates/lucene-search/src/join/query.rs::ParentsChildrenBlockJoinQuery
 search/join/PointInSetIncludingScoreQuery	todo:M10	query-time join (T10.3): numeric join by points, scored
 search/join/QueryBitSetProducer	ported	crates/lucene-search/src/join/mod.rs::QueryBitSetProducer
-search/join/ScoreMode	todo:M10	block join (T10.2): None/Avg/Max/Total/Min
+search/join/ScoreMode	ported	crates/lucene-search/src/join/query.rs::ScoreMode
 search/join/SeekingTermSetTermsEnum	todo:M10	query-time join (T10.3): seeks a sorted term set through a terms enum
 search/join/TermsCollector	todo:M10	query-time join (T10.3): collects the from-side's terms
 search/join/TermsIncludingScoreQuery	todo:M10	query-time join (T10.3): the scoring to-side terms query
 search/join/TermsQuery	todo:M10	query-time join (T10.3): the to-side terms query
 search/join/TermsWithScoreCollector	todo:M10	query-time join (T10.3): the from-side's terms with scores
-search/join/ToChildBlockJoinQuery	todo:M10	block join (T10.2): the children of matching parents
-search/join/ToParentBlockJoinQuery	todo:M10	block join (T10.2): the parents of matching children, five score modes
-search/join/ToParentBlockJoinSortField	todo:M10	block join (T10.2): sorts parents by their children's doc values
-search/join/ToParentDocValues	todo:M10	block join (T10.2): a parent's doc value selected from its children
+search/join/ToChildBlockJoinQuery	ported	crates/lucene-search/src/join/query.rs::ToChildBlockJoinQuery
+search/join/ToParentBlockJoinQuery	ported	crates/lucene-search/src/join/query.rs::ToParentBlockJoinQuery
+search/join/ToParentBlockJoinSortField	ported	crates/lucene-search/src/join/sort.rs::ToParentBlockJoinSortField
+search/join/ToParentDocValues	ported	crates/lucene-search/src/join/sort.rs::fold_parents

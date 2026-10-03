@@ -10,7 +10,7 @@
 | **Effort** | L |
 | **Depends on** | [M7](m7-core-complete.md) |
 | **Unblocks** | native `nested`, `function_score`, `intervals`, `combined_fields`, field collapsing |
-| **Status** | in progress (T10.0, T10.1 done) |
+| **Status** | in progress (T10.0, T10.1 done; T10.2 queries ported) |
 
 ---
 
@@ -70,7 +70,14 @@ grouping. Each of them falls back to Lucene today.
   (`block_join_merge_stress.rs`) and block ops in `op-stream-fuzz.sh`. The
   concurrent writer takes native documents only, so it has no parent field
   and still refuses blocks in a sorted index.
-- **T10.2** — Block-join queries and their scoring modes.
+- **T10.2** — Block-join queries and their scoring modes. **Queries
+  ported** (`lucene-search/src/join`, `exec/join.rs`):
+  `ToParentBlockJoinQuery` (all five score modes, scorer and bulk scorer),
+  `ToChildBlockJoinQuery`, `ParentChildrenBlockJoinQuery`,
+  `ParentsChildrenBlockJoinQuery`, `ToParentBlockJoinSortField` with
+  `BlockJoinSelector`/`ToParentDocValues`, explain and matches; 936
+  differential searches (`GenBlockJoin`) bit for bit. Open: benchmarks and the
+  diversifying child KNN queries.
 - **T10.3** — Query-time joins.
 - **T10.4** — Grouping.
 - **T10.5** — Function queries and value sources.
