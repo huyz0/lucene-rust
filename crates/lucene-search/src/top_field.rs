@@ -143,6 +143,29 @@ pub trait LeafFieldComparator {
     /// The value `doc` (segment-local) sorts by; `score` is its score when
     /// the comparator [needs scores](FieldComparator::needs_scores).
     fn value(&mut self, doc: i32, score: f32) -> Result<SortValue>;
+
+    /// `setBottom(slot)`: the queue's bottom is now `bottom` -- called when
+    /// it changes, and for a new segment's comparator when the queue is
+    /// already full. A comparator that answers [`Self::compare_bottom`]
+    /// itself prepares for it here; the default does nothing.
+    fn set_bottom(&mut self, bottom: &SortValue) -> Result<()> {
+        let _ = bottom;
+        Ok(())
+    }
+
+    /// `compareBottom(doc)` when the comparator answers it without the
+    /// document's [`Self::value`] (Lucene's distance comparators reject a
+    /// value outside the bottom's bounding box unmeasured): `bottom`
+    /// against `doc`, ascending. `None`, the default, compares `value`.
+    fn compare_bottom(
+        &mut self,
+        bottom: &SortValue,
+        doc: i32,
+        score: f32,
+    ) -> Result<Option<std::cmp::Ordering>> {
+        let _ = (bottom, doc, score);
+        Ok(None)
+    }
 }
 
 /// `FieldComparator` for a custom key. Slots, the bottom and the top are
@@ -2369,7 +2392,7 @@ fn cached_ord(c: &SortColumn, doc: i32) -> Option<i32> {
     match c {
         // FBS: `v` is a `Vec<i32>`, not a bit set; `get` bounds the index.
         SortColumn::Ords(v) => usize::try_from(doc).ok().and_then(|i| v.get(i)).copied(),
-        SortColumn::Longs { .. } => None,
+        SortColumn::Longs { .. } | SortColumn::Multi { .. } => None,
     }
 }
 
@@ -3039,10 +3062,16 @@ fn open_leaf<'a>(
                     .custom
                     .as_ref()
                     .ok_or(SortError::UnknownComparatorSource(id.0))?;
-                LeafKey::Custom(cs.cmp.leaf(LeafCtx {
+                let mut k = cs.cmp.leaf(LeafCtx {
                     reader,
                     doc_base: seg.doc_base,
-                })?)
+                })?;
+                // `getLeafCollector`'s `setBottom` for a queue an earlier
+                // segment filled.
+                if tf.queue_full {
+                    k.set_bottom(&cs.bottom)?;
+                }
+                LeafKey::Custom(k)
             }
             _ => {
                 let info = reader
@@ -3344,9 +3373,19 @@ impl<'a> Leaf<'a> {
                     c.mul * vals.compare_values(vals.bottom.as_deref(), v.as_deref())
                 }
                 LeafKey::Custom(_) => {
-                    let v = self.custom_value(i, doc, scorer)?;
                     let cs = c.custom.as_ref().ok_or(SortError::NoKeys)?;
-                    c.mul * cs.cmp.compare_values(&cs.bottom, &v) as i32
+                    let score = self.score_of(doc, scorer)?;
+                    let own = match &mut self.keys[i] {
+                        LeafKey::Custom(k) => k.compare_bottom(&cs.bottom, doc, score)?,
+                        _ => None,
+                    };
+                    match own {
+                        Some(o) => c.mul * o as i32,
+                        None => {
+                            let v = self.custom_value(i, doc, scorer)?;
+                            c.mul * cs.cmp.compare_values(&cs.bottom, &v) as i32
+                        }
+                    }
                 }
                 _ => c.mul * cmp(c.bottom, self.value(i, doc, scorer)?),
             };
@@ -3430,6 +3469,9 @@ impl<'a> Leaf<'a> {
             }
             if let Some(cs) = c.custom.as_mut() {
                 cs.bottom = cs.values[slot].clone();
+                if let LeafKey::Custom(k) = &mut self.keys[i] {
+                    k.set_bottom(&cs.bottom)?;
+                }
                 continue;
             }
             if let (LeafKey::Str(k), Some(st)) = (&mut self.keys[i], c.strs.as_mut()) {
@@ -3501,6 +3543,16 @@ impl<'a> Leaf<'a> {
         let r = match self.keys.first_mut() {
             Some(LeafKey::Str(k)) => k.quick_compare_bottom(doc),
             Some(LeafKey::Numeric(n)) => n.quick_value(doc).map(|v| cmp(tf.comps[0].bottom, v)),
+            // A custom key that answers `compareBottom` itself without the
+            // score (an error is left for `collect` to raise).
+            Some(LeafKey::Custom(k)) => match tf.comps[0].custom.as_ref() {
+                Some(cs) if !cs.cmp.needs_scores() => k
+                    .compare_bottom(&cs.bottom, doc, 0.0)
+                    .ok()
+                    .flatten()
+                    .map(|o| o as i32),
+                _ => None,
+            },
             _ => None,
         };
         // `thresholdCheck` drops a document that does not beat the bottom;

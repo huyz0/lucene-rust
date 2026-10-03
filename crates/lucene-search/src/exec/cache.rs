@@ -64,6 +64,14 @@ impl Drop for CachedSet {
 }
 
 impl CachedSet {
+    /// Whether the set holds no document (a cached empty answer).
+    fn is_empty(&self) -> bool {
+        match self {
+            CachedSet::Bits { cardinality, .. } => *cardinality == 0,
+            CachedSet::Docs(docs) => docs.is_empty(),
+        }
+    }
+
     fn ram_bytes(&self) -> usize {
         match self {
             CachedSet::Bits { bits, .. } => bits.words().len() * 8,
@@ -103,6 +111,13 @@ pub(crate) enum SortColumn {
     Ords(Vec<i32>),
     /// Values, and which documents have one.
     Longs { values: Vec<i64>, has: FixedBitSet },
+    /// Every document's values (a multi-valued `SORTED_NUMERIC` column, the
+    /// geo distance sorts' points): document `d`'s are
+    /// `values[starts[d]..starts[d + 1]]`.
+    Multi {
+        starts: Vec<usize>,
+        values: Vec<i64>,
+    },
 }
 
 impl SortColumn {
@@ -110,6 +125,7 @@ impl SortColumn {
         match self {
             SortColumn::Ords(o) => o.len() * 4,
             SortColumn::Longs { values, has } => values.len() * 8 + has.words().len() * 8,
+            SortColumn::Multi { starts, values } => starts.len() * 8 + values.len() * 8,
         }
     }
 }
@@ -249,6 +265,9 @@ impl SegmentQueryCache {
             }
             if let Some(entry) = inner.entries.get_mut(&key) {
                 entry.last_used = now;
+                if entry.set.is_empty() {
+                    return Ok(Some(CacheResult::Empty));
+                }
                 return Ok(Some(CacheResult::Hit(Arc::clone(&entry.set))));
             }
             inner.policy.should_cache(&policy_key)
@@ -258,7 +277,11 @@ impl SegmentQueryCache {
         }
         // Built without the lock: another search may build the same set at
         // the same time, and the second insert simply replaces the first.
+        // An empty answer is cached too (`LRUQueryCache` keeps
+        // `DocIdSet.EMPTY`): a filter that matches nothing in a segment is
+        // not recomputed on every use.
         let Some(mut s) = uncached()? else {
+            self.insert(key, Arc::new(CachedSet::Docs(Vec::new())));
             return Ok(Some(CacheResult::Empty));
         };
         let set = Arc::new(collect(&mut *s, max_doc)?);
@@ -702,6 +725,21 @@ mod tests {
             .unwrap()
             .is_none());
         let r = cache.scorer(&other, 20_000, || Ok(None)).unwrap();
+        assert!(matches!(r, Some(CacheResult::Empty)));
+        // The empty answer is cached, as `LRUQueryCache` keeps `DocIdSet.EMPTY`.
+        let r = cache
+            .scorer(&other, 20_000, || panic!("cached empty"))
+            .unwrap();
+        assert!(matches!(r, Some(CacheResult::Empty)));
+        // So is a set that turned out empty once built.
+        let none = Clause::Prefix(PrefixQuery::new("f", "r"));
+        assert!(cache
+            .scorer(&none, 20_000, || panic!("first use"))
+            .unwrap()
+            .is_none());
+        let r = cache.scorer(&none, 20_000, || list(Vec::new())).unwrap();
+        assert!(matches!(r, Some(CacheResult::Hit(_))));
+        let r = cache.scorer(&none, 20_000, || panic!("cached")).unwrap();
         assert!(matches!(r, Some(CacheResult::Empty)));
     }
 
