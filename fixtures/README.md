@@ -1174,12 +1174,13 @@ outright.
   blocks (grandchildren closed by a child, children closed by a parent; empty
   and single-child blocks) written with the parent field `_parent`, whole
   blocks deleted in two segments and lone children, grandchildren and parents
-  in a third; `searches.tsv`: 936 searches -- every block-join query and score
+  in a third; `searches.tsv`: 1056 searches -- every block-join query and score
   mode, alone and in booleans, two levels deep, with all hits and score bits
   (`all`), the top ten (`top`), Lucene's exception (`ERR`), and
   `ToParentBlockJoinSortField` sorts with their values (`sort`), in a query
-  grammar the Rust test parses. The children carry float and byte vectors for
-  the diversifying KNN queries.
+  grammar the Rust test parses; and 120 `DiversifyingChildren{Float,Byte}KnnVectorQuery`
+  searches over the children's float and byte vectors (`knn`), unfiltered and
+  with child filters both broad and narrow enough for the exact search.
 
 - `GenGeo3dPoints.java` (M9 T9.4) → `geo3d_points/`, for `lucene-search`'s
   `geo3d_points_fixtures.rs`: `index/`, four segments (3 × 1500 documents

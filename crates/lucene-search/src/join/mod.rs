@@ -13,8 +13,11 @@
 //! documents, so the parents of a segment are the filter's matches whether or
 //! not they are deleted.
 
+mod knn;
 mod query;
 mod sort;
+
+pub use knn::{DiversifyingChildrenByteKnnVectorQuery, DiversifyingChildrenFloatKnnVectorQuery};
 
 pub use query::{
     ParentChildrenBlockJoinQuery, ParentsChildrenBlockJoinQuery, ScoreCombiner, ScoreMode,
