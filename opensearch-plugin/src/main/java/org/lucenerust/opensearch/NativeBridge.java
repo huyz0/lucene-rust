@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 31;
+    public static final int EXPECTED_ABI_VERSION = 32;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -157,6 +157,8 @@ public final class NativeBridge {
                 ADDRESS,
                 JAVA_LONG,
                 ADDRESS,
+                ADDRESS,
+                JAVA_LONG,
                 ADDRESS,
                 ADDRESS
             )
@@ -821,7 +823,10 @@ public final class NativeBridge {
      * bytes), little-endian. With a positive {@code countLimit}, {@code outTotal} receives the {@code
      * size: 0} search's total and whether it is a lower bound, as {@link #search} counts them, from
      * the matches the aggregations visited -- left alone when some segment's matches were not
-     * visited behind a {@code min_score} (its aggregations answered from points).
+     * visited behind a {@code min_score} (its aggregations answered from points). When counted,
+     * every segment's matches were visited and {@code outSegCounts} (may be null) holds a slot per
+     * segment, those get each segment's live match count -- what the count collector iterates
+     * there -- and {@code outTotal[2]} (when {@code outTotal} has a third slot) becomes 1, else 0.
      */
     public static int aggregate(
         long handle,
@@ -831,7 +836,8 @@ public final class NativeBridge {
         double[] outValues,
         byte[][] outTerms,
         long countLimit,
-        long[] outTotal
+        long[] outTotal,
+        long[] outSegCounts
     ) {
         if (query == null) {
             return nullArgument("query");
@@ -856,8 +862,10 @@ public final class NativeBridge {
             if (outValues.length > 0) {
                 MemorySegment.copy(outValues, 0, values, JAVA_DOUBLE, 0, outValues.length);
             }
-            MemorySegment total = s.alloc(3 * Long.BYTES);
+            MemorySegment total = s.alloc(4 * Long.BYTES);
             total.set(JAVA_LONG, 0, 0);
+            int segCap = outSegCounts == null ? 0 : outSegCounts.length;
+            MemorySegment segCounts = s.room(JAVA_LONG, segCap);
             MemorySegment terms = ownedSlot(s);
             int rc = (int) H.AGGREGATE.invokeExact(
                 handle,
@@ -871,6 +879,8 @@ public final class NativeBridge {
                 values,
                 (long) outValues.length,
                 total,
+                segCounts,
+                (long) segCap,
                 ptrOf(terms),
                 lenOf(terms)
             );
@@ -882,6 +892,13 @@ public final class NativeBridge {
                 }
                 outTotal[0] = total.get(JAVA_LONG, Long.BYTES);
                 outTotal[1] = total.get(JAVA_LONG, 2 * Long.BYTES);
+                boolean perSegment = total.get(JAVA_LONG, 3 * Long.BYTES) != 0;
+                if (outTotal.length > 2) {
+                    outTotal[2] = perSegment ? 1 : 0;
+                }
+                if (perSegment) {
+                    MemorySegment.copy(segCounts, JAVA_LONG, 0, outSegCounts, 0, segCap);
+                }
             }
             if (rc != OK) {
                 return rc;

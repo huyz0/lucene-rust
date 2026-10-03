@@ -189,7 +189,7 @@ public final class NativeSelfTest {
         check(NativeBridge.searchSorted(1, blob, sort, 4, 0, docs, values, new long[4], out) == 10, "short sorted counts -> InvalidArgument");
         check(NativeBridge.searchSorted(12345L, blob, sort, 4, 0, docs, values, counts5, out) == NativeBridge.INVALID_HANDLE, "sorted search on a fabricated handle");
         check(out[0] == null, "a failed call hands back nothing");
-        check(NativeBridge.aggregate(1, blob, new byte[0], new long[1], new double[6], null, 0, new long[2]) == 10, "null aggregate terms slot -> InvalidArgument");
+        check(NativeBridge.aggregate(1, blob, new byte[0], new long[1], new double[6], null, 0, new long[2], null) == 10, "null aggregate terms slot -> InvalidArgument");
         check(NativeBridge.aggregateTree(1, blob, new byte[0], new byte[0][]) == 10, "empty aggregateTree out -> InvalidArgument");
         check(NativeBridge.document(12345L, 0, 0, out) == NativeBridge.INVALID_HANDLE && out[0] == null, "document on a fabricated handle");
         check(NativeBridge.document(12345L, 0, 0, null) == 10, "null document out -> InvalidArgument");
@@ -473,14 +473,89 @@ public final class NativeSelfTest {
         );
         long[] counts = new long[AGG_FIELDS.length];
         double[] values = new double[AGG_FIELDS.length * NativeAggregations.VALUES];
-        int rc = NativeBridge.aggregate(handle, blob, plan.blob(new int[0][]), counts, values, new byte[1][], -1, new long[2]);
+        int rc = NativeBridge.aggregate(handle, blob, plan.blob(new int[0][]), counts, values, new byte[1][], -1, new long[2], null);
         check(rc == NativeBridge.OK, what + ": aggregate status " + rc + " " + NativeBridge.lastError());
         // A count with nowhere to put it: refused after the native call, whose results (the terms
         // buffer included) must still be released -- a status, not a throw or a leak.
-        int unusable = NativeBridge.aggregate(handle, blob, plan.blob(new int[0][]), new long[counts.length], new double[values.length], new byte[1][], Long.MAX_VALUE, null);
+        int unusable = NativeBridge.aggregate(handle, blob, plan.blob(new int[0][]), new long[counts.length], new double[values.length], new byte[1][], Long.MAX_VALUE, null, null);
         check(unusable == NativeBridge.OK || unusable == NativeBridge.INVALID_ARGUMENT, what + ": a null outTotal is a status, got " + unusable);
         if (rc != NativeBridge.OK) {
             return;
+        }
+        // Counted, with room for every segment: each segment's live match count, as Lucene's
+        // own scorer iterates it (what replays a concurrent count's early termination).
+        java.util.List<org.apache.lucene.index.LeafReaderContext> leaves = searcher.getIndexReader().leaves();
+        long[] perSegment = new long[leaves.size()];
+        long[] counted = new long[] { -1, 0, 0 };
+        int crc = NativeBridge.aggregate(handle, blob, plan.blob(new int[0][]), new long[counts.length], new double[values.length], new byte[1][], Long.MAX_VALUE, counted, perSegment);
+        check(crc == NativeBridge.OK, what + ": counted aggregate status " + crc + " " + NativeBridge.lastError());
+        if (crc == NativeBridge.OK && counted[2] == 1) {
+            try {
+                org.apache.lucene.search.Weight w = searcher.createWeight(searcher.rewrite(query), org.apache.lucene.search.ScoreMode.COMPLETE_NO_SCORES, 1f);
+                long sum = 0;
+                for (int i = 0; i < leaves.size(); i++) {
+                    long n = 0;
+                    org.apache.lucene.search.Scorer sc = w.scorer(leaves.get(i));
+                    org.apache.lucene.util.Bits live = leaves.get(i).reader().getLiveDocs();
+                    if (sc != null) {
+                        org.apache.lucene.search.DocIdSetIterator it = sc.iterator();
+                        for (int d = it.nextDoc(); d != org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS; d = it.nextDoc()) {
+                            if (live == null || live.get(d)) {
+                                n++;
+                            }
+                        }
+                    }
+                    check(perSegment[i] == n, what + ": segment " + i + " counted " + perSegment[i] + ", Lucene iterates " + n);
+                    sum += n;
+                }
+                check(counted[0] == sum, what + ": total " + counted[0] + " vs the segments' " + sum);
+                // The plugin's replay of a concurrent count's early termination from those counts
+                // answers as the native replay that searches again, for every limit, which-segments-
+                // iterate pattern and slicing (one slice in reverse order included).
+                int m = leaves.size();
+                int[] all = java.util.stream.IntStream.range(0, m).toArray();
+                int[] reversed = java.util.stream.IntStream.range(0, m).map(i -> m - 1 - i).toArray();
+                int[][][] slicings = { { all }, java.util.Arrays.stream(all).mapToObj(i -> new int[] { i }).toArray(int[][]::new), { reversed } };
+                // The limits where the answer can change: at and past every running sum of the
+                // segments' counts, in either order, and the ends.
+                java.util.TreeSet<Long> limits = new java.util.TreeSet<>(java.util.List.of(1L, sum, sum + 1));
+                long fwd = 0, back = 0;
+                for (int i = 0; i < m; i++) {
+                    fwd += perSegment[i];
+                    back += perSegment[m - 1 - i];
+                    limits.add(fwd);
+                    limits.add(fwd + 1);
+                    limits.add(back);
+                }
+                for (long limit : limits) {
+                    if (limit < 1 || limit > Integer.MAX_VALUE) {
+                        continue;
+                    }
+                    int n = (int) limit;
+                    for (int pattern = 0; pattern < 3; pattern += 2) {
+                        boolean[] iterate = new boolean[m];
+                        for (int i = 0; i < m; i++) {
+                            iterate[i] = pattern == 0 || (pattern == 2 && i % 2 == 0);
+                        }
+                        for (int[][] slices : slicings) {
+                            java.io.ByteArrayOutputStream spec = new java.io.ByteArrayOutputStream();
+                            NativeAggregations.writeInt(spec, n);
+                            NativeAggregations.writeInt(spec, m);
+                            for (boolean it : iterate) {
+                                spec.write(it ? 1 : 0);
+                            }
+                            NativeAggregations.writeSlices(spec, slices);
+                            long[] out = new long[1];
+                            int trc = NativeBridge.countTerminates(handle, blob, spec.toByteArray(), out);
+                            check(trc == NativeBridge.OK, what + ": countTerminates status " + trc);
+                            boolean replay = RustQueryPhaseSearcher.replayCountTerminated(slices, leaves, iterate, perSegment, n);
+                            check(replay == (out[0] != 0), what + ": replayed terminated_early " + replay + " at n " + n + ", native " + out[0]);
+                        }
+                    }
+                }
+            } catch (java.io.IOException e) {
+                check(false, what + ": " + e);
+            }
         }
         long[] wantCounts = new long[AGG_FIELDS.length];
         double[] want = new double[values.length];
@@ -637,7 +712,7 @@ public final class NativeSelfTest {
                 );
                 byte[][] out = new byte[1][];
                 NativeAggregations.Plan plan = new NativeAggregations.Plan(List.of(spec));
-                int rc = NativeBridge.aggregate(handle, blob, plan.blob(new int[0][]), new long[0], new double[0], out, -1, new long[2]);
+                int rc = NativeBridge.aggregate(handle, blob, plan.blob(new int[0][]), new long[0], new double[0], out, -1, new long[2], null);
                 check(rc == NativeBridge.OK, what + ": terms status " + rc + " " + NativeBridge.lastError());
                 if (rc != NativeBridge.OK) {
                     continue;
