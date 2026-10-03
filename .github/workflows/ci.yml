@@ -107,10 +107,10 @@ jobs:
       # from Maven Central here; see docs/mechanical-gates.md#port-inventory.
       - name: Port inventory
         run: |
-          python3 scripts/check-port-inventory.py
-          python3 scripts/check-port-inventory.py --module backward-codecs
-          python3 scripts/check-port-inventory.py --module spatial3d
-          python3 scripts/check-port-inventory.py --module spatial-extras
+          python3 scripts/check-port-inventory.py --require-jar
+          python3 scripts/check-port-inventory.py --module backward-codecs --require-jar
+          python3 scripts/check-port-inventory.py --module spatial3d --require-jar
+          python3 scripts/check-port-inventory.py --module spatial-extras --require-jar
 
       - name: docs/parity.md consistency
         run: python3 scripts/check-parity.py
@@ -382,7 +382,7 @@ jobs:
       - name: Fuzz
         working-directory: crates/lucene-ffi/fuzz
         run: |
-          for t in jvm_search jvm_open_reader jvm_live_docs boolean_clause_arrays; do
+          for t in jvm_search jvm_open_reader jvm_live_docs boolean_clause_arrays read_planet_object; do
             mkdir -p "corpus/$t"
             cargo +nightly fuzz run "$t" "corpus/$t" "seeds/$t" -- -max_total_time=60 -rss_limit_mb=4096
           done

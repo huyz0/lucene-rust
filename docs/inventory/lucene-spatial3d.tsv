@@ -8,7 +8,7 @@ spatial3d/Geo3DPointOutsideDistanceComparator	ported	crates/lucene-search/src/do
 spatial3d/Geo3DPointOutsideSortField	ported	crates/lucene-search/src/document/geo/sort.rs::Geo3DPointOutsideSortField
 spatial3d/Geo3DPointSortField	ported	crates/lucene-search/src/document/geo/sort.rs::Geo3DPointSortField
 spatial3d/Geo3DUtil	ported	crates/lucene-search/src/document/geo/geo3d.rs::from_polygon -- with from_large_polygon, from_path, from_distance, from_box, decode_value_floor/ceil; fromDegrees is lucene-index document/geo3d.rs::from_degrees
-spatial3d/PointInGeo3DShapeQuery	ported	crates/lucene-search/src/document/geo/geo3d.rs::PointInGeo3DShapeQuery
+spatial3d/PointInGeo3DShapeQuery	partial	crates/lucene-search/src/document/geo/geo3d.rs::PointInGeo3DShapeQuery -- M9: the search (createWeight/scorer/BKD walk) is ported; equals, hashCode, toString, ramBytesUsed and visit(QueryVisitor) are not -- they delegate to the shape's equals/hashCode/toString/ramBytesUsed, which no geo3d shape has yet (only GeoPoint, Vector, Plane, SidedPlane and PlanetModel carry java_hash_code), and the query is no Clause the query visitor walks. T9.6 (query cache, plugin wiring) needs the equality and hash
 spatial3d/PointInShapeIntersectVisitor	ported	crates/lucene-search/src/document/geo/geo3d.rs::ShapeVisitor
 spatial3d/geom/ArcDistance	ported	crates/lucene-util/src/spatial3d/distance_style.rs::DistanceStyle -- the five Java distance classes are one enum; this is DistanceStyle::Arc
 spatial3d/geom/BasePlanetObject	ported	crates/lucene-util/src/spatial3d/shape.rs::PlanetObject -- the abstract base is the trait
@@ -72,7 +72,7 @@ spatial3d/geom/GeoSizeable	ported	crates/lucene-util/src/spatial3d/shape.rs::Geo
 spatial3d/geom/GeoSouthLatitudeZone	ported	crates/lucene-util/src/spatial3d/geo_latitude_zone.rs::GeoSouthLatitudeZone
 spatial3d/geom/GeoSouthRectangle	ported	crates/lucene-util/src/spatial3d/geo_south_rectangle.rs::GeoSouthRectangle
 spatial3d/geom/GeoStandardCircle	ported	crates/lucene-util/src/spatial3d/geo_standard_circle.rs::GeoStandardCircle
-spatial3d/geom/GeoStandardPath	ported	crates/lucene-util/src/spatial3d/geo_standard_path.rs::GeoStandardPath
+spatial3d/geom/GeoStandardPath	ported	crates/lucene-util/src/spatial3d/geo_standard_path.rs::GeoStandardPath -- PathNode.pathDistance and PathNode.fullPathDistance are not ported: unreachable in Java (GeoStandardPath never calls pathDistance on rootComponent, only PathNode.pathDistance itself does, and the previous component whose fullPathDistance an end point or segment reads is never a PathNode)
 spatial3d/geom/GeoWideDegenerateHorizontalLine	ported	crates/lucene-util/src/spatial3d/geo_degenerate_horizontal_line.rs::GeoWideDegenerateHorizontalLine
 spatial3d/geom/GeoWideLongitudeSlice	ported	crates/lucene-util/src/spatial3d/geo_longitude_slice.rs::GeoWideLongitudeSlice
 spatial3d/geom/GeoWideNorthRectangle	ported	crates/lucene-util/src/spatial3d/geo_wide_north_rectangle.rs::GeoWideNorthRectangle
