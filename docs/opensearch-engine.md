@@ -130,8 +130,10 @@ Remote-backed storage stays refused, because its upload listener asks for an
   Java's, and BM25 statistics, so scores, can differ until a force merge.
   Scores on insert-only indices match exactly. A restart also rolls back to
   the newest safe commit, and that may be a refresh: the derived
-  `testRebuildLocalCheckpointTrackerAndVersionMap` records each refresh as a
-  commit point, where `InternalEngineTests` records only flushes
+  `testRebuildLocalCheckpointTrackerAndVersionMap` records every commit the
+  engine writes as a commit point -- including the engine's own refreshes,
+  such as a replica's `unsafe_version_map` refresh -- through an internal
+  refresh listener, where `InternalEngineTests` records only flushes
   (`COMMIT_MODEL` in `opensearch-plugin/tools/derive_engine_tests.py`).
 - **Segment stats count only hard deletes.** `_segments` and `_cat/segments`
   read document counts off the unwrapped `SegmentReader`, which here does not
