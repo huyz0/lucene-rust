@@ -671,3 +671,119 @@ fn nesting_stops_at_the_limit() {
     assert_eq!(e.java_class(), "java.text.ParseException");
     assert!(e.to_string().contains("StackOverflowError"), "{e}");
 }
+
+/// `HaversineWithin` answers as the haversine calculator's `within` --
+/// near the boundary above all, where its margin hands over to the exact
+/// computation: points placed on the circle by `pointOnBearing` and nudged
+/// by a few ulps, plus random ones, for radii from a millimetre to the
+/// antipode.
+#[test]
+fn haversine_within_answers_as_the_calculator() {
+    use super::distance::HaversineWithin;
+    let calc = GeodesicSphereDistCalc::Haversine;
+    let ctx = geo();
+    let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let (mut checked, mut near) = (0, 0);
+    for i in 0..400 {
+        let cx = next() * 360.0 - 180.0;
+        let cy = if i % 10 == 0 {
+            90.0 * (1.0 - 2.0 * (i % 20 == 0) as i32 as f64)
+        } else {
+            next() * 180.0 - 90.0
+        };
+        let radius = match i % 5 {
+            0 => 1e-8 * (1.0 + next()),
+            1 => next(),
+            2 => next() * 90.0,
+            3 => 90.0 + next() * 90.0,
+            _ => 180.0 * (i % 2) as f64,
+        };
+        let w = HaversineWithin::new(cx, cy, radius);
+        let center = ctx.point_xy(cx, cy).unwrap();
+        for k in 0..60 {
+            let (x, y) = if k < 40 {
+                let (lon, lat) = DistanceUtils::point_on_bearing_rad(
+                    DistanceUtils::to_radians(cy),
+                    DistanceUtils::to_radians(cx),
+                    DistanceUtils::to_radians(radius),
+                    DistanceUtils::to_radians(next() * 360.0),
+                );
+                let nudge = |v: f64, n: i64| f64::from_bits((v.to_bits() as i64 + n) as u64);
+                let n = (k % 9) as i64 - 4;
+                (
+                    nudge(DistanceUtils::to_degrees(lon), n),
+                    nudge(DistanceUtils::to_degrees(lat), -n),
+                )
+            } else {
+                (next() * 360.0 - 180.0, next() * 180.0 - 90.0)
+            };
+            let want = calc.within(&*center, x, y, radius).unwrap();
+            assert_eq!(w.within(x, y), want, "({cx}, {cy}) r={radius} ({x}, {y})");
+            assert_eq!(w.within_exact(x, y), want);
+            checked += 1;
+            if k < 40 {
+                near += 1;
+            }
+        }
+        // the center itself
+        assert_eq!(
+            w.within(cx, cy),
+            calc.within(&*center, cx, cy, radius).unwrap()
+        );
+    }
+    assert_eq!((checked, near), (24_000, 16_000));
+}
+
+/// `rect`'s validation, in Java's order and words, through the inlined
+/// check and its cold error path; `plain_rect_bounds` answers the same
+/// bounds for the plain factory and nothing for Geo3D's.
+#[test]
+fn rect_validation_errors_and_plain_bounds() {
+    let g = geo();
+    let c = cart();
+    let msg = |r: Result<Arc<dyn Rectangle>>| r.unwrap_err().to_string();
+    assert!(msg(g.rect(0.0, 1.0, -91.0, 0.0)).contains("Y values [-91.0 to 0.0] not in boundary"));
+    assert!(msg(g.rect(0.0, 1.0, 5.0, 4.0)).contains("maxY must be >= minY: 5.0 to 4.0"));
+    assert!(msg(g.rect(-181.0, 1.0, 0.0, 1.0)).contains("Bad X value -181.0 is not in boundary"));
+    assert!(msg(g.rect(0.0, 181.0, 0.0, 1.0)).contains("Bad X value 181.0 is not in boundary"));
+    let [_, cmax_x, _, _] = c.world_bounds_values();
+    assert!(msg(c.rect(0.0, cmax_x * 2.0, 0.0, 1.0)).contains("X values [0.0 to"));
+    assert!(msg(c.rect(2.0, 1.0, 0.0, 1.0)).contains("maxX must be >= minX: 2.0 to 1.0"));
+    // the dateline edges, and NaN passing every check as in Java
+    assert_eq!(
+        g.plain_rect_bounds(180.0, 10.0, 0.0, 1.0).unwrap().unwrap(),
+        [-180.0, 10.0, 0.0, 1.0]
+    );
+    assert_eq!(
+        g.plain_rect_bounds(-10.0, -180.0, 0.0, 1.0)
+            .unwrap()
+            .unwrap(),
+        [-10.0, 180.0, 0.0, 1.0]
+    );
+    assert!(g
+        .plain_rect_bounds(f64::NAN, f64::NAN, f64::NAN, f64::NAN)
+        .unwrap()
+        .unwrap()[0]
+        .is_nan());
+    assert_eq!(
+        c.plain_rect_bounds(1.0, 2.0, 3.0, 4.0).unwrap().unwrap(),
+        [1.0, 2.0, 3.0, 4.0]
+    );
+    let g3 = SpatialContextFactory::geo3d()
+        .new_spatial_context()
+        .unwrap();
+    assert!(g3.plain_rect_bounds(1.0, 2.0, 3.0, 4.0).is_none());
+    // a reset rectangle is the rectangle of its new bounds
+    let mut r = RectangleImpl::new(0.0, 0.0, 0.0, 0.0, g.clone());
+    r.reset([1.0, 2.0, 3.0, 4.0]);
+    assert_eq!(
+        r.to_string(),
+        g.rect(1.0, 2.0, 3.0, 4.0).unwrap().to_string()
+    );
+}

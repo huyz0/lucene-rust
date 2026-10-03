@@ -30,6 +30,13 @@
 //! - [`CellIterator::next_detached`] is `next()` without keeping the copy
 //!   `thisCell()` would return, for the visiting traversal, which never asks
 //!   for it.
+//! - A quad tree's cells can be related to a shape from their token bytes
+//!   alone ([`QuadCellRelater`], [`SpatialPrefixTree::quad_relater`]): the
+//!   corner sums of the path a stream of cells shares are kept, and one
+//!   `RectangleImpl` is reset to each cell's bounds and related, where
+//!   Java makes a `QuadCell` and its rectangle per cell. [`Cell::rect_bounds`]
+//!   gives a cell's rectangle as bounds, for a heatmap that only reads them.
+//!   Same relations and bounds, bit for bit (stage 3 of the port).
 //! - `QuadPrefixTree.buildNotRobustly`/`checkBattenbergNotRobustly` and
 //!   `printInfo`, which nothing in the module calls, are not ported.
 
@@ -59,7 +66,7 @@ pub use number_range::{
     UnitNRShape,
 };
 pub use packed_quad::PackedQuadPrefixTree;
-pub use quad::QuadPrefixTree;
+pub use quad::{QuadCellRelater, QuadPrefixTree};
 pub use s2::S2PrefixTree;
 
 /// `S2ShapeFactory`: a shape factory that can make the shape of an S2 cell.
@@ -107,6 +114,13 @@ pub trait SpatialPrefixTree: fmt::Debug + fmt::Display + Send + Sync + Any {
         detail_level: i32,
     ) -> Result<Box<dyn CellIterator>> {
         default_tree_cell_iterator(self, shape, detail_level)
+    }
+
+    /// A [`QuadCellRelater`] of this tree's cells against `shape`: `Some`
+    /// for a [`QuadPrefixTree`], whose cells' relations it answers from
+    /// their term bytes.
+    fn quad_relater(&self, _shape: &Arc<dyn Shape>) -> Option<QuadCellRelater> {
+        None
     }
 
     /// For downcasting.
@@ -166,6 +180,12 @@ pub trait Cell: fmt::Debug + fmt::Display + Send + Sync + Any {
     /// they meet, answered without keeping the shape where a tree can.
     fn relate_shape(&self, other: &dyn Shape) -> Result<SpatialRelation> {
         self.shape()?.relate(other)
+    }
+    /// `getShape()`'s `[minX, maxX, minY, maxY]` when the shape is a
+    /// plain rectangle (`RectangleImpl`) the tree can describe without
+    /// making it; `None` otherwise (ask [`Self::shape`]).
+    fn rect_bounds(&self) -> Option<Result<[f64; 4]>> {
+        None
     }
     /// `isPrefixOf(c)`.
     fn is_prefix_of(&self, c: &dyn Cell) -> bool;
