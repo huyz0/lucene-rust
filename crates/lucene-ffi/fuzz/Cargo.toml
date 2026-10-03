@@ -55,3 +55,10 @@ path = "fuzz_targets/read_planet_object.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "jvm_search_sorted"
+path = "fuzz_targets/jvm_search_sorted.rs"
+test = false
+doc = false
+bench = false

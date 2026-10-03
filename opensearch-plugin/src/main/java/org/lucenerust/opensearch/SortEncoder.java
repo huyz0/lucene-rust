@@ -58,6 +58,8 @@ public final class SortEncoder {
     static final byte DOUBLE = 4;
     static final byte FLOAT = 5;
     static final byte STRING = 6;
+    /** A {@code _geo_distance} key ({@link GeoEncoder#sort}). */
+    static final byte GEO = 7;
     static final byte REVERSE = 1;
     static final byte MAX = 2;
     /** Key flags' mode field: OpenSearch's {@code MultiValueMode} for its own comparator sources. */
@@ -160,6 +162,13 @@ public final class SortEncoder {
                 // The native comparator always skips with points; this one was told not to.
                 return new Encoded(null, "sort_unoptimized");
             }
+            if (type == GEO) {
+                String reason = geoKey(f, out);
+                if (reason != null) {
+                    return new Encoded(null, reason);
+                }
+                continue;
+            }
             byte flags = f.getReverse() ? REVERSE : 0;
             if (f instanceof SortedNumericSortField sn && sn.getSelector() == SortedNumericSelector.Type.MAX) {
                 flags |= MAX;
@@ -206,6 +215,11 @@ public final class SortEncoder {
             out.write(1);
             writeInt(out, after.doc);
             for (int i = 0; i < fields.length; i++) {
+                if (GeoEncoder.luceneSort(fields[i])) {
+                    // LatLonPointDistanceComparator.compareTop compares metres, not the sort keys the
+                    // native side holds: such a page runs on Lucene.
+                    return new Encoded(null, "search_after_geo");
+                }
                 if (type(fields[i]) == STRING) {
                     // A missing term is a value of its own (TermOrdValComparator's null top).
                     if (after.fields[i] == null) {
@@ -242,8 +256,44 @@ public final class SortEncoder {
         return new Encoded(out.toByteArray(), null);
     }
 
+    /**
+     * Appends {@code f}, a {@code _geo_distance} key, as {@code decode_geo_sort} reads it; returns
+     * the reason it cannot run natively, or null.
+     */
+    private static String geoKey(SortField f, ByteArrayOutputStream out) {
+        Object g = GeoEncoder.sort(f);
+        if (!(g instanceof GeoEncoder.Sort geo)) {
+            return g instanceof String reason ? reason : "sort_geo";
+        }
+        byte mode = switch (geo.mode()) {
+            case MIN -> 0;
+            case MAX -> MAX;
+            case SUM -> MODE_SUM;
+            case AVG -> MODE_AVG;
+            case MEDIAN -> MODE_MEDIAN;
+        };
+        byte flags = (byte) ((f.getReverse() ? REVERSE : 0) | mode);
+        out.write(GEO);
+        out.write(flags);
+        byte[] name = geo.field().getBytes(StandardCharsets.UTF_8);
+        writeInt(out, name.length);
+        out.writeBytes(name);
+        writeLong(out, 0);
+        out.write(geo.lucene() ? 0 : 1);
+        writeInt(out, geo.lats().length);
+        for (int i = 0; i < geo.lats().length; i++) {
+            writeLong(out, Double.doubleToRawLongBits(geo.lats()[i]));
+            writeLong(out, Double.doubleToRawLongBits(geo.lons()[i]));
+        }
+        writeLong(out, Double.doubleToRawLongBits(geo.unitMeters()));
+        return null;
+    }
+
     /** The blob type of {@code f}, or -1 when it has none. */
     static byte type(SortField f) {
+        if (GeoEncoder.luceneSort(f) || GeoEncoder.openSearchSort(f)) {
+            return GEO;
+        }
         if (f.getClass() == SortField.class) {
             return switch (f.getType()) {
                 case SCORE -> SCORE;
@@ -480,7 +530,7 @@ public final class SortEncoder {
             case SCORE -> Float.floatToIntBits(((Number) v).floatValue());
             case DOC, INT -> ((Number) v).intValue();
             case LONG -> ((Number) v).longValue();
-            case DOUBLE -> NumericUtils.doubleToSortableLong(((Number) v).doubleValue());
+            case DOUBLE, GEO -> NumericUtils.doubleToSortableLong(((Number) v).doubleValue());
             case FLOAT -> NumericUtils.floatToSortableInt(((Number) v).floatValue());
             default -> throw new IllegalArgumentException("sort type " + type);
         };
@@ -494,6 +544,10 @@ public final class SortEncoder {
             case LONG -> v;
             case DOUBLE -> NumericUtils.sortableLongToDouble(v);
             case FLOAT -> NumericUtils.sortableIntToFloat((int) v);
+            // Lucene's comparator holds the haversine sort key and reports its distance.
+            case GEO -> GeoEncoder.luceneSort(f)
+                ? GeoEncoder.haversin2(NumericUtils.sortableLongToDouble(v))
+                : NumericUtils.sortableLongToDouble(v);
             default -> throw new IllegalArgumentException(f.toString());
         };
     }
