@@ -137,14 +137,15 @@ last within the milestone.
   and 1.05x in two runs, inside the noise floor both times; written up in
   `docs/parity.md` with the ratios).
 - **T9.5** — `spatial-extras` (prefix trees, `SpatialStrategy`s).
-  *In progress.* **Dependency decision:** spatial-extras is built on
+  *Done (2026-10-03).* All 65 classes of the jar (`check-port-inventory.py
+  --module spatial-extras`). **Dependency decision:** spatial-extras is built on
   Spatial4j 0.8 and s2-geometry-library-java 1.0.0, third-party Java
   libraries with no Rust equivalent; the subsets it exercises are ported as
   faithful ports in `lucene-util` (`spatial4j/`, `s2/`, beside `geo/` and
   `spatial3d/`), differentially tested against the real jars, both
   Apache-2.0 (`docs/licences.md`, `NOTICE`). JTS (Spatial4j's optional
   polygon backend) is not ported: Lucene does not ship it, and
-  spatial-extras makes polygons through Geo3D. Done so far: the Spatial4j
+  spatial-extras makes polygons through Geo3D. Ported: the Spatial4j
   and S2 subsets and Lucene's Geo3D bridge
   (`lucene-util/src/spatial_extras/spatial4j.rs`), `GenSpatial4j` ->
   `spatial4j_fixtures.rs` (12 577 records); the
@@ -159,7 +160,19 @@ last within the milestone.
   (`lucene-search/src/spatial/`: RPT, term-query, number-range, BBox,
   point-vector, serialized doc values, composite, heatmaps, date facets, the
   value sources), `GenSpatialStrategies` -> `spatial_strategies_fixtures.rs`
-  (byte-identical fields, 1 901 answers over Lucene's index and this port's).
+  (byte-identical fields, 1 901 answers over Lucene's index and this port's),
+  and `VerifySpatialExtras` in `scripts/verify-write-path.sh` (Lucene runs
+  `CheckIndex` on the Rust-written index and answers every question over it
+  as over its own). Benchmark pair `--bench spatial_extras`: date ranges
+  1.12x, BBox with the overlap-ratio similarity and RPT indexing a Geo3D
+  polygon 0.92x/0.90x (inside the noise floor in both runs), RPT
+  intersects 0.77x, heatmaps 0.43x -- the last three left with their
+  cause written up in `docs/parity.md`: a sorted stream of `seekCeil`s
+  that this port's terms enum restarts at the trie's root each time
+  (`c1-lazy-blocktree.md` F-9), and per-cell allocation. The review closed
+  four ways corrupt bytes could panic or abort: quad/packed-quad terms
+  deeper than the tree, a date term's year overflow, an S2 term with no
+  level, and unbounded nesting in binary shapes, geo3d streams and WKT.
 - **T9.6** — Plugin wiring for OpenSearch's geo queries and sort.
 
 ## Acceptance criteria

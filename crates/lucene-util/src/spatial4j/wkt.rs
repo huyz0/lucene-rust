@@ -71,7 +71,15 @@ pub struct State {
     pub offset: usize,
     /// `dimension`: a dimension token (`Z`, `M`, ...) after a shape name.
     pub dimension: Option<String>,
+    /// Nested shapes being parsed (`BUFFER(`, `GEOMETRYCOLLECTION(`).
+    depth: u32,
 }
+
+/// How deep shapes may nest in a WKT string. Java recurses until
+/// `StackOverflowError`; a Rust stack overflow aborts the process (no
+/// `catch_unwind` sees it), so a string nesting deeper -- twenty bytes a
+/// level -- is a parse error naming that instead.
+pub const MAX_NESTING: u32 = 64;
 
 fn parse_err(message: impl Into<String>, offset: usize) -> Error {
     Error::Parse {
@@ -81,11 +89,13 @@ fn parse_err(message: impl Into<String>, offset: usize) -> Error {
 }
 
 impl State {
-    fn new(raw: &str) -> Self {
+    /// A state at the start of `raw`.
+    pub(crate) fn new(raw: &str) -> Self {
         State {
             raw: raw.chars().collect(),
             offset: 0,
             dimension: None,
+            depth: 0,
         }
     }
 
@@ -472,7 +482,16 @@ impl WktReader {
     /// `shape(state)`: a nested shape, which must be known.
     fn shape(&self, state: &mut State) -> Result<Arc<dyn Shape>> {
         let ty = state.next_word()?;
-        match self.parse_shape_by_type(state, &ty)? {
+        if state.depth >= MAX_NESTING {
+            return Err(parse_err(
+                format!("java.lang.StackOverflowError: shapes nested deeper than {MAX_NESTING}"),
+                state.offset,
+            ));
+        }
+        state.depth += 1;
+        let shape = self.parse_shape_by_type(state, &ty);
+        state.depth -= 1;
+        match shape? {
             Some(s) => Ok(s),
             None => Err(parse_err(
                 format!("Shape of type {ty} is unknown"),

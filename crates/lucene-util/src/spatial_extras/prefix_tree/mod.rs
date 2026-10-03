@@ -19,8 +19,12 @@
 //!   iterator keeps its own copy of the last one ([`CellIterator::this_cell`]).
 //!   No caller in spatial-extras keeps a cell across `next()` expecting it to
 //!   change, so the terms and relations are the same.
-//! - The "scratch" cell arguments (`readCell(term, scratch)`,
-//!   `getTokenBytes*(BytesRef)`) are not ported: results are fresh values.
+//! - The "scratch" `BytesRef` arguments (`getTokenBytes*(BytesRef)`) are
+//!   not ported: results are fresh values. `readCell(term, scratch)` is
+//!   [`SpatialPrefixTree::read_cell_into`].
+//! - [`CellIterator::next_detached`] is `next()` without keeping the copy
+//!   `thisCell()` would return, for the visiting traversal, which never asks
+//!   for it.
 //! - `QuadPrefixTree.buildNotRobustly`/`checkBattenbergNotRobustly` and
 //!   `printInfo`, which nothing in the module calls, are not ported.
 
@@ -82,6 +86,14 @@ pub trait SpatialPrefixTree: fmt::Debug + fmt::Display + Send + Sync + Any {
     /// term carries the leaf marker).
     fn read_cell(&self, term: &[u8]) -> Result<Box<dyn Cell>>;
 
+    /// `readCell(term, scratch)`: [`Self::read_cell`] into `scratch`, reusing
+    /// its storage when the tree can (Java's scratch cell). The default
+    /// replaces it.
+    fn read_cell_into(&self, term: &[u8], scratch: &mut Box<dyn Cell>) -> Result<()> {
+        *scratch = self.read_cell(term)?;
+        Ok(())
+    }
+
     /// `getTreeCellIterator(shape, detailLevel)`: the cells covering
     /// `shape`, in term order, down to `detail_level`.
     fn tree_cell_iterator(
@@ -138,6 +150,11 @@ pub trait Cell: fmt::Debug + fmt::Display + Send + Sync + Any {
     ) -> Result<Box<dyn CellIterator>>;
     /// `getShape()`.
     fn shape(&self) -> Result<Arc<dyn Shape>>;
+    /// `getShape().relate(other)`: what the traversals ask of every cell
+    /// they meet, answered without keeping the shape where a tree can.
+    fn relate_shape(&self, other: &dyn Shape) -> Result<SpatialRelation> {
+        self.shape()?.relate(other)
+    }
     /// `isPrefixOf(c)`.
     fn is_prefix_of(&self, c: &dyn Cell) -> bool;
     /// `compareToNoLeaf(fromCell)`: term order ignoring the leaf marker.
@@ -166,6 +183,12 @@ pub trait CellIterator: Send {
     fn next(&mut self) -> Result<Box<dyn Cell>>;
     /// `thisCell()`: the cell `next()` last returned.
     fn this_cell(&self) -> Option<&dyn Cell>;
+    /// `next()` for a caller that never asks [`Self::this_cell`] before the
+    /// following `hasNext()`: an iterator may hand the cell over without
+    /// keeping the copy `thisCell` needs (`this_cell` is then `None`).
+    fn next_detached(&mut self) -> Result<Box<dyn Cell>> {
+        self.next()
+    }
     /// `nextFrom(fromCell)`: the next cell at or after `from_cell`.
     fn next_from(&mut self, from_cell: &dyn Cell) -> Result<Option<Box<dyn Cell>>> {
         loop {
@@ -236,7 +259,7 @@ impl CellIterator for FilterCellIterator {
                     return Ok(true);
                 }
                 Some(filter) => {
-                    let rel = cell.shape()?.relate(&**filter)?;
+                    let rel = cell.relate_shape(&**filter)?;
                     if rel.intersects() {
                         cell.set_shape_rel(Some(rel));
                         if rel == SpatialRelation::Within {
@@ -260,6 +283,17 @@ impl CellIterator for FilterCellIterator {
 
     fn this_cell(&self) -> Option<&dyn Cell> {
         self.st.this_cell.as_deref()
+    }
+
+    fn next_detached(&mut self) -> Result<Box<dyn Cell>> {
+        if self.st.next_cell.is_none() && !self.has_next()? {
+            return Err(Error::Runtime("java.util.NoSuchElementException".into()));
+        }
+        self.st.this_cell = None;
+        self.st
+            .next_cell
+            .take()
+            .ok_or_else(|| Error::Runtime("java.util.NoSuchElementException".into()))
     }
 }
 

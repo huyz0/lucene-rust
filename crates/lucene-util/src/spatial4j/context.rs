@@ -10,7 +10,7 @@ use super::binary_codec::{BinaryCodec, DefaultBinaryCodec};
 use super::collection::ShapeCollection;
 use super::distance::{CartesianDistCalc, DistanceCalculator, GeodesicSphereDistCalc};
 use super::rectangle::RectangleImpl;
-use super::shape::{Circle, Point, Rectangle, Shape};
+use super::shape::{Circle, Point, Rectangle, Shape, SpatialRelation};
 use super::shape_factory::{ShapeFactory, ShapeFactoryImpl};
 use super::wkt::WktReader;
 use super::{Error, Result};
@@ -406,6 +406,21 @@ impl SpatialContext {
         max_y: f64,
     ) -> Result<Arc<dyn Rectangle>> {
         self.shape_factory.rect(self, min_x, max_x, min_y, max_y)
+    }
+
+    /// `getShapeFactory().rect(..).relate(other)`, answered without keeping
+    /// the rectangle where the factory can (the prefix trees relate a cell
+    /// per term they visit).
+    pub fn rect_relate(
+        self: &Arc<Self>,
+        min_x: f64,
+        max_x: f64,
+        min_y: f64,
+        max_y: f64,
+        other: &dyn Shape,
+    ) -> Result<SpatialRelation> {
+        self.shape_factory
+            .rect_relate(self, min_x, max_x, min_y, max_y, other)
     }
 
     /// `makeRectangle(lowerLeft, upperRight)`.
