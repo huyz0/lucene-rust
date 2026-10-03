@@ -222,9 +222,28 @@ switched between the native path and Lucene six times. By the plugin's
 query-phase counters (Lucene over native): median 1.88x, two shapes under
 1.0 -- `terms` aggregation behind a `geo_distance` filter (0.68-0.80x; the
 same aggregation behind a `match` measured 0.93x on this node, and the geo
-filter alone 1.93x: the gap is the `terms` collection over a document list,
-not geo) and `_geo_distance` across the antimeridian (0.94x, then 1.10x on
-a re-run: noise). Over REST round trips (`REST=1`): median 1.06x; the rows
+filter alone 1.93x) and `_geo_distance` across the antimeridian (0.94x,
+then 1.10x on a re-run: noise). *The `terms` row, closed 2026-10-03:* not
+the aggregation. JFR on the node put most of that query phase in Lucene's
+`LatLonDocValuesQuery.createWeight` (its `createComponentPredicate` grid)
+called from the plugin's `countTerminatedEarly`: under concurrent search a
+`size: 0` count past `track_total_hits` (12,000 hits against the default
+10,000) asks Lucene's weight which segments `Weight.count` answers and then
+replays the count natively -- a second search. Now the aggregations' pass
+hands back each segment's match count (ABI 32) and the plugin replays from
+those, skipping the weight whenever no slice could stop even iterating
+everything (the answer only grows with the iterated segments). On the same
+100,000-document index, query phase / REST, Lucene over native: behind
+`geo_distance` 0.62x -> **1.30x** / 0.82x -> **1.03x**, behind a
+`bool` filter 0.63x -> 1.18x / 0.83x -> 1.12x, and with
+`track_total_hits: 15000` (no replay at all) 1.43x / 1.16x. Left below 1.0,
+measured: the same aggregation behind a *dense* match -- a `match` of
+41,624 hits 0.93x / 0.98x, a `range` of 59,000 0.81x / 0.84x -- where the
+native pass collects the matches into a document list, marks them in a bit
+set and streams the ordinal column against it (three passes; the node's
+profile puts 11% of its CPU in the first), where OpenSearch's collector
+counts each match's ordinal in one; the slices there pass 10,000 hits, so
+Lucene's weight is still asked (cheap for a term or a range). Over REST round trips (`REST=1`): median 1.06x; the rows
 under 1.0 are cheap `geo_shape` queries that both engines answer from
 their query caches (OpenSearch wraps `geo_shape` in a `ConstantScoreQuery`),
 where the response is ~2 ms and the query phase 40-120 us: there the native
@@ -281,8 +300,10 @@ column, and empty answers kept in the query cache, as `LRUQueryCache` keeps
       fail identically with and without the plugin (4 of 501). Speed: the
       T9.6 benchmark above -- by the query-phase counters median 1.88x
       Lucene, every geo query and sort row at or above 1.0 beyond noise; the
-      one row below, a `terms` aggregation behind a geo filter, is the
-      aggregation's own pre-existing gap (0.93x behind a `match` too). Over
+      one row below, a `terms` aggregation behind a geo filter, is now
+      1.30x (query phase) / 1.03x (REST): the gap was the plugin's
+      `terminated_early` replay building Lucene's geo weight, not geo
+      (T9.6 benchmark). Over
       REST median 1.06x; cheap `geo_shape` queries answered from the query
       cache sit at 0.85-0.99x there, the native call's fixed ~10 us more
       than Lucene's cached path (written up above), not geo work.

@@ -548,6 +548,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         InternalAggregations aggResult = null;
         // The size-0 count the aggregations' pass already made: {total, lower bound}, or null.
         long[] counted = null;
+        // And each segment's live match count it saw, when it saw every segment's: what replays
+        // a concurrent count's early termination without searching again.
+        long[] segCounts = null;
         if (aggs != null) {
             int[][] slices = NativeAggregations.slices(ctx);
             if (slices == null) {
@@ -564,9 +567,10 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             // there is one, sits in front of both, and behind it both count the passing documents).
             boolean countHere = numDocs == 0 && sortBlob == null && ctx.parsedPostFilter() == null
                 && shortcut < 0 && countLimit > 0;
-            long[] total = new long[] { -1, 0 };
+            long[] total = new long[] { -1, 0, 0 };
+            long[] perSegment = new long[ctx.searcher().getIndexReader().leaves().size()];
             int rc = NativeBridge.aggregate(
-                handle, blob, aggs.blob(slices), aggCounts, aggValues, terms, countHere ? countLimit : -1, total
+                handle, blob, aggs.blob(slices), aggCounts, aggValues, terms, countHere ? countLimit : -1, total, perSegment
             );
             if (rc != NativeBridge.OK) {
                 stats.nativeError();
@@ -576,6 +580,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             aggResult = aggs.build(slices, aggCounts, aggValues, terms[0], ctx.partialOnShard());
             if (countHere && total[0] >= 0) {
                 counted = total;
+                if (total[2] == 1) {
+                    segCounts = perSegment;
+                }
             }
         } else if (tree != null) {
             int[][] slices = NativeAggregations.slices(ctx);
@@ -599,7 +606,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         }
         String reason = sortBlob != null
             ? searchSorted(ctx, handle, hitsBlob, sortBlob, sort, scoreDocs, Math.max(1, numDocs), countLimit, shortcut)
-            : searchUnsorted(ctx, handle, hitsBlob, numDocs, countLimit, shortcut, shortcutTerm, counted);
+            : searchUnsorted(ctx, handle, hitsBlob, numDocs, countLimit, shortcut, shortcutTerm, counted, segCounts);
         if (reason == null && aggResult != null) {
             // DefaultAggregationProcessor.postProcess keeps a result already there (hasAggs).
             ctx.queryResult().aggregations(aggResult);
@@ -621,7 +628,8 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         long countLimit,
         int shortcut,
         Term shortcutTerm,
-        long[] counted
+        long[] counted,
+        long[] segCounts
     ) {
         int[] docs = new int[numDocs];
         float[] scores = new float[numDocs];
@@ -673,7 +681,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             : new TotalHits(counts[1], counts[2] != 0 ? TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO : TotalHits.Relation.EQUAL_TO);
         float maxScore = n == 0 ? Float.NaN : scores[0];
         if (numDocs == 0 && ctx.shouldUseConcurrentSearch()) {
-            Boolean terminated = countTerminatedEarly(ctx, handle, blob, shortcut, total);
+            Boolean terminated = countTerminatedEarly(ctx, handle, blob, shortcut, total, segCounts);
             if (terminated == null) {
                 return "native_error";
             }
@@ -724,7 +732,14 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
      * disabled total, or one answered from index statistics: a limit of 0), past the limit
      * otherwise, which is when the total is a lower bound.
      */
-    private Boolean countTerminatedEarly(SearchContext ctx, long handle, byte[] blob, int shortcut, TotalHits total) {
+    private Boolean countTerminatedEarly(
+        SearchContext ctx,
+        long handle,
+        byte[] blob,
+        int shortcut,
+        TotalHits total,
+        long[] segCounts
+    ) {
         int trackUpTo = ctx.trackTotalHitsUpTo();
         List<LeafReaderContext> leaves = ctx.searcher().getIndexReader().leaves();
         if (trackUpTo == SearchContext.TRACK_TOTAL_HITS_DISABLED || shortcut >= 0) {
@@ -742,20 +757,38 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         if (slices == null) {
             return null;
         }
+        boolean counted = segCounts != null && segCounts.length == leaves.size();
+        if (counted) {
+            // The answer only grows with the segments the collectors iterate: when no slice stops
+            // even iterating every segment, none stops, whatever Weight.count would say -- and the
+            // Lucene weight it would take (a geo filter's builds its whole grid) is not built.
+            boolean[] everywhere = new boolean[leaves.size()];
+            java.util.Arrays.fill(everywhere, true);
+            if (replayCountTerminated(slices, leaves, everywhere, segCounts, trackUpTo) == false) {
+                return false;
+            }
+        }
         java.io.ByteArrayOutputStream spec = new java.io.ByteArrayOutputStream();
         NativeAggregations.writeInt(spec, trackUpTo);
         NativeAggregations.writeInt(spec, leaves.size());
+        boolean[] iterate = new boolean[leaves.size()];
         try {
             Weight weight = ctx.parsedPostFilter() != null || ctx.minimumScore() != null
                 ? null
                 : ctx.searcher().createWeight(ctx.query(), org.apache.lucene.search.ScoreMode.COMPLETE_NO_SCORES, 1f);
-            for (LeafReaderContext leaf : leaves) {
+            for (int i = 0; i < leaves.size(); i++) {
                 // Under a post_filter or min_score the count collector gets no weight (neither
                 // FilteredCollector nor MinimumScoreCollector passes it on): it iterates everywhere.
-                spec.write(weight == null || weight.count(leaf) == -1 ? 1 : 0);
+                iterate[i] = weight == null || weight.count(leaves.get(i)) == -1;
+                spec.write(iterate[i] ? 1 : 0);
             }
         } catch (IOException e) {
             return null;
+        }
+        if (counted) {
+            // The aggregations' pass already counted each segment's live matches: replay the
+            // collectors from those instead of searching again.
+            return replayCountTerminated(slices, leaves, iterate, segCounts, trackUpTo);
         }
         NativeAggregations.writeSlices(spec, slices);
         long[] out = new long[1];
@@ -766,6 +799,46 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             return null;
         }
         return out[0] != 0;
+    }
+
+    /**
+     * Whether some slice's {@code EarlyTerminatingCollector(TotalHitCountCollector, n)} stops, given
+     * each segment's live match count -- the native {@code count_terminates} replay, without the
+     * search: each slice's segments in doc-base order, a collector already holding {@code n}
+     * documents stops at the next segment, one that iterates a segment ({@code iterate}, where
+     * {@code Weight.count} gave -1) stops at its {@code n + 1}th document, and a segment the count
+     * answers from {@code Weight.count} reaches it with nothing. {@code
+     * the_aggregations_counts_replay_the_count_collector} in {@code jvm_reader.rs} holds the two
+     * to the same answer.
+     */
+    static boolean replayCountTerminated(
+        int[][] slices,
+        List<LeafReaderContext> leaves,
+        boolean[] iterate,
+        long[] segCounts,
+        int n
+    ) {
+        for (int[] slice : slices) {
+            Integer[] order = new Integer[slice.length];
+            for (int k = 0; k < slice.length; k++) {
+                order[k] = slice[k];
+            }
+            java.util.Arrays.sort(order, java.util.Comparator.comparingInt(i -> leaves.get(i).docBase));
+            long collected = 0;
+            for (int i : order) {
+                if (collected >= n) {
+                    return true;
+                }
+                if (iterate[i] == false) {
+                    continue;
+                }
+                if (collected + segCounts[i] > n) {
+                    return true;
+                }
+                collected += segCounts[i];
+            }
+        }
+        return false;
     }
 
     /**
