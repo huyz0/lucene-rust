@@ -35,11 +35,15 @@ counts per status and package.
 
 The class list comes from the compiled jar (`scripts/lib-lucene-jars.sh`: the
 container has it baked in, CI downloads it), top-level classes only (no `$`),
-including the Java 21 multi-release variants. If no jar can be found the
-jar-membership check is skipped and said so; the rest still runs.
+including the Java 21 multi-release variants, resolved from `$JARS` when set
+(else `fixtures/.jars`), then the Gradle cache, then Maven Central. If no jar
+can be found the jar-membership check is skipped and said so; the rest still
+runs -- unless `--require-jar` is given (CI and `scripts/gate.sh` pass it),
+which makes a missing jar a failure: a membership check that silently did not
+run must not read as a pass.
 
 Usage:
-  scripts/check-port-inventory.py [--module core|backward-codecs|spatial3d|spatial-extras] [--milestone M7] [--summary]
+  scripts/check-port-inventory.py [--module core|backward-codecs|spatial3d|spatial-extras] [--milestone M7] [--summary] [--require-jar]
 """
 
 from __future__ import annotations
@@ -71,8 +75,12 @@ def jar_classes(module: str) -> set[str] | None:
     if jar_env:
         path = jar_env
     else:
+        # $JARS first, as scripts/lib-lucene-jars.sh's callers set it (the
+        # container bakes the jars into /opt/lucene-jars and exports it);
+        # fixtures/.jars, the scripts' own default, otherwise.
+        jars = os.environ.get("JARS") or f"{ROOT}/fixtures/.jars"
         script = (
-            f'JARS="{ROOT}/fixtures/.jars"; '
+            f'JARS="{jars}"; '
             f'source "{ROOT}/scripts/lib-lucene-jars.sh"; '
             f"lucene_resolve_jar {MODULES[module]}"
         )
@@ -110,6 +118,11 @@ def main() -> int:
     ap.add_argument("--module", default="core", choices=sorted(MODULES))
     ap.add_argument("--milestone", help="also fail while this milestone's work is open")
     ap.add_argument("--summary", action="store_true")
+    ap.add_argument(
+        "--require-jar",
+        action="store_true",
+        help="fail, rather than skip the membership check, when the jar cannot be found",
+    )
     args = ap.parse_args()
 
     tsv = ROOT / "docs" / "inventory" / f"lucene-{args.module}.tsv"
@@ -148,7 +161,12 @@ def main() -> int:
                 )
 
     classes = jar_classes(args.module)
-    if classes is None:
+    if classes is None and args.require_jar:
+        errors.append(
+            f"no {MODULES[args.module]} jar (looked in $JARS or fixtures/.jars, the Gradle "
+            "cache and Maven Central); --require-jar makes that a failure"
+        )
+    elif classes is None:
         print(f"check-port-inventory: no {MODULES[args.module]} jar; jar membership not checked",
               file=sys.stderr)
     else:

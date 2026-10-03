@@ -45,10 +45,10 @@ echo "gate: check-licences (every shipped dependency is under an allowed licence
 python3 scripts/check-licences.py
 
 echo "gate: check-port-inventory (every lucene-core, lucene-backward-codecs, lucene-spatial3d and lucene-spatial-extras class has a status; every 'ported' location exists)"
-python3 scripts/check-port-inventory.py
-python3 scripts/check-port-inventory.py --module backward-codecs
-python3 scripts/check-port-inventory.py --module spatial3d
-python3 scripts/check-port-inventory.py --module spatial-extras
+python3 scripts/check-port-inventory.py --require-jar
+python3 scripts/check-port-inventory.py --module backward-codecs --require-jar
+python3 scripts/check-port-inventory.py --module spatial3d --require-jar
+python3 scripts/check-port-inventory.py --module spatial-extras --require-jar
 
 # rustdoc's link lints are warn-by-default and are reported by none of `fmt`,
 # `clippy`, `test` or `llvm-cov`, so a broken doc link ships through a fully

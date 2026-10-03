@@ -16,6 +16,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 lucene-ffi = { path = ".." }
+lucene-util = { path = "../../lucene-util" }
 
 [workspace]
 members = ["."]
@@ -44,6 +45,13 @@ bench = false
 [[bin]]
 name = "boolean_clause_arrays"
 path = "fuzz_targets/boolean_clause_arrays.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "read_planet_object"
+path = "fuzz_targets/read_planet_object.rs"
 test = false
 doc = false
 bench = false
