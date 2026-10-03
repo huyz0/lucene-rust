@@ -109,12 +109,12 @@ frequency when nothing is deleted, without counting.
 | `bool` `must` + `range` `filter` | `BooleanQuery` with a `PointRangeQuery` `FILTER` | 1.01× |
 | `bool` with a `must_not` `range` | `BooleanQuery` with a `MUST_NOT` `PointRangeQuery` | 1.07× |
 | any of the above with `size: 0`, `from`/`size` paging, or any `track_total_hits` | — | 0.97–1.24× |
-| `geo_bounding_box` on a `geo_point` (across the dateline too) | `LatLonPoint.newBoxQuery` (a two-dimension `PointRangeQuery`; two under a `ConstantScoreQuery` across the dateline) in an `IndexOrDocValuesQuery` | — |
-| `geo_distance` on a `geo_point` | `LatLonPointDistanceQuery` in an `IndexOrDocValuesQuery` | — |
-| `geo_polygon`, and `geo_shape` polygons on a `geo_point` | `LatLonPointQuery` in an `IndexOrDocValuesQuery` | — |
-| `geo_shape` (any relation), `geo_bounding_box`, `geo_distance` on a `geo_shape` | `LatLonShapeQuery`, `LatLonShapeBoundingBoxQuery` (a `BooleanQuery` of them for a `CONTAINS` of several geometries) | — |
-| `_geo_distance` sort, one origin, metres, ascending, `min` (any `distance_type`) | `LatLonPointSortField` (Lucene's comparator; no `search_after`) | — |
-| `_geo_distance` sort, any other origins, `unit`, `order` or `mode`, `distance_type: arc`, `search_after` too | OpenSearch's `GeoDistanceSortBuilder` comparator (`DoubleComparator` over `MultiValueMode` of the distances) | — |
+| `geo_bounding_box` on a `geo_point` (across the dateline too) | `LatLonPoint.newBoxQuery` (a two-dimension `PointRangeQuery`; two under a `ConstantScoreQuery` across the dateline) in an `IndexOrDocValuesQuery` | 1.06× (0.99–1.12) |
+| `geo_distance` on a `geo_point` | `LatLonPointDistanceQuery` in an `IndexOrDocValuesQuery` | 1.17× (1.06–1.26) |
+| `geo_polygon`, and `geo_shape` polygons on a `geo_point` | `LatLonPointQuery` in an `IndexOrDocValuesQuery` | 1.01× (0.86–1.30) |
+| `geo_shape` (any relation), `geo_bounding_box`, `geo_distance` on a `geo_shape` | `LatLonShapeQuery`, `LatLonShapeBoundingBoxQuery` (a `BooleanQuery` of them for a `CONTAINS` of several geometries) | 1.02× (0.85–1.70) |
+| `_geo_distance` sort, one origin, metres, ascending, `min` (any `distance_type`) | `LatLonPointSortField` (Lucene's comparator; no `search_after`) | 1.07× (0.98–1.27) |
+| `_geo_distance` sort, any other origins, `unit`, `order` or `mode`, `distance_type: arc`, `search_after` too | OpenSearch's `GeoDistanceSortBuilder` comparator (`DoubleComparator` over `MultiValueMode` of the distances) | 1.20× (1.05–1.66) |
 
 "Measured" is the median REST round trip over 40 requests per engine on one
 node, both engines on the same 100k-document, two-segment index
@@ -129,6 +129,15 @@ in process for most sloppy shapes, 0.84–0.91× for `(ps 1 t2 t3)`). Rows
 between 0.95× and 1.0× (`minimum_should_match: 2`, a rare term with an exact
 total, a text `prefix` filter) are within the run-to-run spread of about
 ±0.05; in process they run 1.1× or better.
+
+The geo rows (M9 T9.6) are medians over their request shapes in
+`opensearch-plugin/e2e/geo_matrix.py` (range in brackets), REST round trips
+on one shard of 100,000 points and shapes (`phase_bench.py` with `GEO=1
+REST=1`); by the query-phase counters the same shapes measure median 1.88×.
+The `geo_shape` rows under 1.0 are queries both engines answer from their
+query caches, a ~2 ms response whose query phase is tens of microseconds,
+where the native call's fixed cost shows -- see
+[`milestones/m9-geo-and-spatial.md`](milestones/m9-geo-and-spatial.md).
 
 `index.lucene_rust.search.native_shapes` (`fast`/`all`) predates read path
 R1, when mixed booleans measured slower and were routed to Lucene
