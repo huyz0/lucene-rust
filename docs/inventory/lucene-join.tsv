@@ -5,10 +5,10 @@ search/join/BaseGlobalOrdinalScorer	todo:M10	query-time join (T10.3): GlobalOrdi
 search/join/BitSetProducer	ported	crates/lucene-search/src/join/mod.rs::BitSetProducer
 search/join/BlockJoinSelector	ported	crates/lucene-search/src/join/sort.rs::BlockJoinSelector
 search/join/CheckJoinIndex	ported	crates/lucene-search/src/join/mod.rs::check_join_index
-search/join/DiversifyingChildrenByteKnnVectorQuery	todo:M10	block join (T10.2): byte KNN over children, one best child per parent
-search/join/DiversifyingChildrenFloatKnnVectorQuery	todo:M10	block join (T10.2): float KNN over children, one best child per parent
-search/join/DiversifyingNearestChildrenKnnCollector	todo:M10	block join (T10.2): the KNN collector keeping one child per parent
-search/join/DiversifyingNearestChildrenKnnCollectorManager	todo:M10	block join (T10.2): the manager of that collector
+search/join/DiversifyingChildrenByteKnnVectorQuery	ported	crates/lucene-search/src/join/knn.rs::DiversifyingChildrenByteKnnVectorQuery
+search/join/DiversifyingChildrenFloatKnnVectorQuery	ported	crates/lucene-search/src/join/knn.rs::DiversifyingChildrenFloatKnnVectorQuery
+search/join/DiversifyingNearestChildrenKnnCollector	ported	crates/lucene-search/src/vector_query.rs::DiversifyingCollector
+search/join/DiversifyingNearestChildrenKnnCollectorManager	ported	crates/lucene-search/src/vector_query.rs::diversified_leaf_results
 search/join/DocValuesTermsCollector	todo:M10	query-time join (T10.3): collects join terms from doc values
 search/join/GenericTermsCollector	todo:M10	query-time join (T10.3): the terms collector interface and its doc-values implementations
 search/join/GlobalOrdinalsCollector	todo:M10	query-time join (T10.3): collects the global ordinals of the from-side

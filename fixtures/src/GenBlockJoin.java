@@ -42,6 +42,8 @@ import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.TopFieldDocs;
 import org.apache.lucene.search.join.BitSetProducer;
 import org.apache.lucene.search.join.CheckJoinIndex;
+import org.apache.lucene.search.join.DiversifyingChildrenByteKnnVectorQuery;
+import org.apache.lucene.search.join.DiversifyingChildrenFloatKnnVectorQuery;
 import org.apache.lucene.search.join.ParentChildrenBlockJoinQuery;
 import org.apache.lucene.search.join.ParentsChildrenBlockJoinQuery;
 import org.apache.lucene.search.join.QueryBitSetProducer;
@@ -68,7 +70,10 @@ import org.apache.lucene.util.NumericUtils;
  * constant-scored -- each with every hit and its score bits ({@code all}, a search of more hits
  * than the index has), the top ten ({@code top}), or the exception Lucene threw; and searches
  * sorted by a {@code ToParentBlockJoinSortField} of every type with the sort values ({@code
- * sort}). The query grammar is the Rust test's ({@code block_join_fixtures.rs}).
+ * sort}); and {@code DiversifyingChildrenFloatKnnVectorQuery} / {@code
+ * DiversifyingChildrenByteKnnVectorQuery} searches over the children's vectors, with and without
+ * a child filter, each with its child hits and score bits ({@code knn}). The query grammar is the
+ * Rust test's ({@code block_join_fixtures.rs}).
  *
  * <p>Usage: {@code java GenBlockJoin <fixtures-data-dir>}.
  */
@@ -519,6 +524,55 @@ public class GenBlockJoin {
               + ")";
       emit("sort", new Q(spec, q.query()), () -> sorted(q.query(), new Sort(sf)));
     }
+    // DiversifyingChildren{Float,Byte}KnnVectorQuery: the best child per parent, unfiltered (the
+    // graph, optimistic per-leaf collectors and the re-entrant second pass) and filtered (small
+    // filters take the parent-grouping exact search, larger ones the graph).
+    int[] ks = {1, 3, 5, 10, 30};
+    for (int i = 0; i < 120; i++) {
+      boolean bytes = (i & 1) == 1;
+      int k = ks[r.nextInt(ks.length)];
+      StringBuilder vec = new StringBuilder();
+      float[] fv = new float[4];
+      byte[] bv = new byte[4];
+      for (int j = 0; j < 4; j++) {
+        fv[j] = (r.nextInt(2000) - 1000) / 250f;
+        bv[j] = (byte) (r.nextInt(200) - 100);
+        if (j > 0) vec.append(';');
+        vec.append(bytes ? Integer.toString(bv[j]) : Integer.toHexString(Float.floatToIntBits(fv[j])));
+      }
+      Q filter =
+          switch (r.nextInt(6)) {
+            case 0, 1 -> null;
+            case 2 -> level("child");
+            case 3 -> term("body", word(r));
+            default -> blocks(1 + r.nextInt(r.nextBoolean() ? 4 : 40));
+          };
+      Query filterQuery = filter == null ? null : filter.query();
+      Query q =
+          bytes
+              ? new DiversifyingChildrenByteKnnVectorQuery("bvec", bv, filterQuery, k, p0)
+              : new DiversifyingChildrenFloatKnnVectorQuery("fvec", fv, filterQuery, k, p0);
+      String spec =
+          (bytes ? "dknnb(bvec," : "dknnf(fvec,")
+              + k
+              + ","
+              + vec
+              + ",P0,"
+              + (filter == null ? "-" : filter.spec())
+              + ")";
+      emit("knn", new Q(spec, q), () -> hits(q, 1000));
+    }
+  }
+
+  /** Any of {@code n} random blocks: a filter small enough for the exact search. */
+  Q blocks(int n) {
+    List<String> occurs = new ArrayList<>();
+    List<Q> clauses = new ArrayList<>();
+    for (int i = 0; i < n; i++) {
+      occurs.add("should");
+      clauses.add(term("bid", Integer.toString(r.nextInt(480))));
+    }
+    return bool(occurs, clauses);
   }
 
   Object missing(SortField.Type type) {

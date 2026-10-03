@@ -970,7 +970,13 @@ fn leaf_results<S: VectorScorer>(
     max_doc: i32,
     plan: &LeafPlan,
     seed_ords: Option<&[i32]>,
+    diversify: Option<Option<&FixedBitSet>>,
 ) -> Result<(LeafHits, bool)> {
+    if let Some(parents) = diversify {
+        return diversified_leaf_results(
+            scorer, graph, accept, ord_to_doc, max_doc, plan, seed_ords, parents,
+        );
+    }
     let size = scorer.max_ord().max(0) as usize;
     // Clamped to the field's own vector count, which the reader validated
     // against the `.vec` file's length when it opened. That clamp is what
@@ -1074,6 +1080,7 @@ fn search_leaf(
     target: Target<'_>,
     plan: &LeafPlan,
     seed_ords: Option<&[i32]>,
+    diversify: Option<Option<&FixedBitSet>>,
 ) -> Result<(LeafHits, bool)> {
     let graph = leaf_graph(
         input,
@@ -1105,6 +1112,7 @@ fn search_leaf(
                     input.max_doc,
                     plan,
                     seed_ords,
+                    diversify,
                 );
             }
             let mut scorer = values.scorer(t)?;
@@ -1116,6 +1124,7 @@ fn search_leaf(
                 input.max_doc,
                 plan,
                 seed_ords,
+                diversify,
             )
         }
         Target::Byte(t) => {
@@ -1138,6 +1147,7 @@ fn search_leaf(
                 input.max_doc,
                 plan,
                 seed_ords,
+                diversify,
             )
         }
     }
@@ -1179,7 +1189,7 @@ fn search_one_segment<Q: KnnQuery>(input: &VectorsInput<'_>, query: &Q) -> Resul
             ..LeafExtras::default()
         },
     };
-    let (mut leaf, _) = search_leaf(input, &resolved, query.target(), &plan, None)?;
+    let (mut leaf, _) = search_leaf(input, &resolved, query.target(), &plan, None, None)?;
     leaf.hits.truncate(query.k());
     Ok(leaf.hits)
 }
@@ -1374,7 +1384,14 @@ fn knn_multi_segment<Q: KnnQuery + Sync>(
     query: &Q,
     concurrent: bool,
 ) -> Result<Vec<ScoreDoc>> {
-    knn_multi_segment_with(segments, query, concurrent, LeafExtras::default(), None)
+    knn_multi_segment_with(
+        segments,
+        query,
+        concurrent,
+        LeafExtras::default(),
+        None,
+        None,
+    )
 }
 
 /// [`knn_multi_segment`] with its collectors decorated (`extras`) and phase 1
@@ -1386,6 +1403,7 @@ fn knn_multi_segment_with<Q: KnnQuery + Sync>(
     concurrent: bool,
     extras: LeafExtras,
     phase1_seeds: Option<&[Vec<i32>]>,
+    diversify: Option<&[Option<&FixedBitSet>]>,
 ) -> Result<Vec<ScoreDoc>> {
     let k = query.k();
     let (resolved, plans) = plan_leaves(segments, query, extras)?;
@@ -1398,6 +1416,7 @@ fn knn_multi_segment_with<Q: KnnQuery + Sync>(
         &plans,
         phase1_seeds,
         concurrent,
+        diversify,
     )?;
     let mut early = false;
     let mut per_leaf: Vec<Vec<ScoreDoc>> = Vec::with_capacity(segments.len());
@@ -1430,6 +1449,7 @@ fn knn_multi_segment_with<Q: KnnQuery + Sync>(
                 &plans2,
                 Some(&per_leaf_ords),
                 concurrent,
+                diversify,
             )?;
             for (&i, (leaf, _)) in reenter.iter().zip(phase2) {
                 per_leaf[i] = leaf.hits;
@@ -1497,8 +1517,10 @@ fn run_leaves<Q: KnnQuery + Sync>(
     plans: &[LeafPlan],
     seeds: Option<&[Vec<i32>]>,
     concurrent: bool,
+    diversify: Option<&[Option<&FixedBitSet>]>,
 ) -> Result<Vec<(LeafHits, bool)>> {
     let seed_for = |i: usize| seed_slice(seeds, i);
+    let parents_for = |i: usize| diversify.map(|d| d.get(i).copied().flatten());
     if concurrent {
         use rayon::prelude::*;
         leaves
@@ -1510,6 +1532,7 @@ fn run_leaves<Q: KnnQuery + Sync>(
                     query.target(),
                     &plans[i],
                     seed_for(i),
+                    parents_for(i),
                 )
             })
             .collect()
@@ -1523,6 +1546,7 @@ fn run_leaves<Q: KnnQuery + Sync>(
                     query.target(),
                     &plans[i],
                     seed_for(i),
+                    parents_for(i),
                 )
             })
             .collect()
@@ -1561,7 +1585,7 @@ pub fn search_knn_float_vector_query_multi_segment_with_deadline(
         deadline: Some(deadline),
         ..LeafExtras::default()
     };
-    knn_multi_segment_with(segments, query, false, extras, None)
+    knn_multi_segment_with(segments, query, false, extras, None, None)
 }
 
 /// `KnnByteVectorQuery`'s equivalent of
@@ -1575,7 +1599,7 @@ pub fn search_knn_byte_vector_query_multi_segment_with_deadline(
         deadline: Some(deadline),
         ..LeafExtras::default()
     };
-    knn_multi_segment_with(segments, query, false, extras, None)
+    knn_multi_segment_with(segments, query, false, extras, None, None)
 }
 
 /// `PatienceKnnVectorQuery`: a KNN query whose graph walks stop once the
@@ -1632,7 +1656,7 @@ pub fn search_patience_knn_float_vector_query_multi_segment(
         patience: Some((query.saturation_threshold, query.patience)),
         ..LeafExtras::default()
     };
-    knn_multi_segment_with(segments, &query.query, false, extras, None)
+    knn_multi_segment_with(segments, &query.query, false, extras, None, None)
 }
 
 /// The byte-vector twin of
@@ -1645,7 +1669,7 @@ pub fn search_patience_knn_byte_vector_query_multi_segment(
         patience: Some((query.saturation_threshold, query.patience)),
         ..LeafExtras::default()
     };
-    knn_multi_segment_with(segments, &query.query, false, extras, None)
+    knn_multi_segment_with(segments, &query.query, false, extras, None, None)
 }
 
 /// `SeededKnnVectorQuery`'s first pass: each leaf's walk starts from the
@@ -1658,7 +1682,14 @@ pub fn search_seeded_knn_float_vector_query_multi_segment(
     seed_docs: &[Vec<i32>],
 ) -> Result<Vec<ScoreDoc>> {
     let seeds = seed_ords(segments, query, seed_docs)?;
-    knn_multi_segment_with(segments, query, false, LeafExtras::default(), Some(&seeds))
+    knn_multi_segment_with(
+        segments,
+        query,
+        false,
+        LeafExtras::default(),
+        Some(&seeds),
+        None,
+    )
 }
 
 /// The byte-vector twin of
@@ -1669,7 +1700,14 @@ pub fn search_seeded_knn_byte_vector_query_multi_segment(
     seed_docs: &[Vec<i32>],
 ) -> Result<Vec<ScoreDoc>> {
     let seeds = seed_ords(segments, query, seed_docs)?;
-    knn_multi_segment_with(segments, query, false, LeafExtras::default(), Some(&seeds))
+    knn_multi_segment_with(
+        segments,
+        query,
+        false,
+        LeafExtras::default(),
+        Some(&seeds),
+        None,
+    )
 }
 
 /// `SeededKnnVectorQuery.MappedDISI` over `TopDocsDISI`: each seed doc
@@ -2151,6 +2189,498 @@ impl SimilarityLeaf<'_, '_> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// lucene-join's diversifying child KNN queries
+// ---------------------------------------------------------------------------
+
+/// `DiversifyingNearestChildrenKnnCollector.ParentChildScore`: a child, its
+/// parent and its similarity -- and the child's ordinal, which a seeded second
+/// pass starts from (Java maps the doc back through `MappedDISI`).
+#[derive(Debug, Clone, Copy)]
+struct ParentChildScore {
+    child: i32,
+    ord: i32,
+    parent: i32,
+    score: f32,
+}
+
+impl ParentChildScore {
+    /// `compareTo`: by score, then the lower child first (it compares
+    /// greater: "lower ids are preferred").
+    fn cmp(&self, o: &Self) -> std::cmp::Ordering {
+        java_float_compare(self.score, o.score).then_with(|| o.child.cmp(&self.child))
+    }
+}
+
+/// `DiversifyingNearestChildrenKnnCollector.NodeIdCachingHeap`: a min-heap
+/// of the best child per parent, 1-based, with each parent's heap position.
+struct NodeIdCachingHeap {
+    max_size: usize,
+    /// `heapNodes[1..=size]`; slot 0 unused.
+    nodes: Vec<ParentChildScore>,
+    size: usize,
+    index: std::collections::HashMap<i32, usize>,
+}
+
+impl NodeIdCachingHeap {
+    fn new(max_size: usize) -> Self {
+        let empty = ParentChildScore {
+            child: 0,
+            ord: 0,
+            parent: 0,
+            score: 0.0,
+        };
+        Self {
+            max_size,
+            nodes: vec![empty; max_size.saturating_add(1).min(1 << 20)],
+            size: 0,
+            index: std::collections::HashMap::new(),
+        }
+    }
+
+    fn top(&self) -> ParentChildScore {
+        self.nodes[1]
+    }
+
+    fn set(&mut self, i: usize, v: ParentChildScore) {
+        if i >= self.nodes.len() {
+            self.nodes.resize(i + 1, v);
+        }
+        self.nodes[i] = v;
+    }
+
+    /// `insertWithOverflow(node, parentNode, score)`.
+    fn insert_with_overflow(&mut self, v: ParentChildScore) -> bool {
+        if let Some(&at) = self.index.get(&v.parent) {
+            if self.nodes[at].score < v.score {
+                self.update_element(at, v);
+                return true;
+            }
+            return false;
+        }
+        if self.size >= self.max_size {
+            let top = self.nodes[1];
+            if v.score < top.score || (v.score == top.score && v.child > top.child) {
+                return false;
+            }
+            // `updateTop`.
+            self.index.remove(&top.parent);
+            self.nodes[1] = v;
+            self.down_heap(1, true);
+            return true;
+        }
+        // `pushIn`.
+        self.size += 1;
+        let at = self.size;
+        self.set(at, v);
+        self.up_heap(at);
+        true
+    }
+
+    /// `updateElement(heapIndex, nodeId, parentId, score)`.
+    fn update_element(&mut self, at: usize, v: ParentChildScore) {
+        let old = self.nodes[at].score;
+        self.nodes[at] = v;
+        if v.score < old {
+            self.up_heap(at);
+        } else {
+            self.down_heap(at, true);
+        }
+    }
+
+    fn up_heap(&mut self, orig: usize) {
+        let mut i = orig;
+        let bottom = self.nodes[i];
+        let mut j = i >> 1;
+        while j > 0 && bottom.cmp(&self.nodes[j]).is_lt() {
+            self.nodes[i] = self.nodes[j];
+            self.index.insert(self.nodes[i].parent, i);
+            i = j;
+            j >>= 1;
+        }
+        self.index.insert(bottom.parent, i);
+        self.nodes[i] = bottom;
+    }
+
+    /// `downHeap(i)`, or `downHeapWithoutCacheUpdate(i)` without `cache`.
+    fn down_heap(&mut self, mut i: usize, cache: bool) {
+        let node = self.nodes[i];
+        let mut j = i << 1;
+        let mut k = j + 1;
+        if k <= self.size && self.nodes[k].cmp(&self.nodes[j]).is_lt() {
+            j = k;
+        }
+        while j <= self.size && self.nodes[j].cmp(&node).is_lt() {
+            self.nodes[i] = self.nodes[j];
+            if cache {
+                self.index.insert(self.nodes[i].parent, i);
+            }
+            i = j;
+            j = i << 1;
+            k = j + 1;
+            if k <= self.size && self.nodes[k].cmp(&self.nodes[j]).is_lt() {
+                j = k;
+            }
+        }
+        if cache {
+            self.index.insert(node.parent, i);
+        }
+        self.nodes[i] = node;
+    }
+
+    /// `popToDrain()`.
+    fn pop_to_drain(&mut self) {
+        if self.size > 0 {
+            self.nodes[1] = self.nodes[self.size];
+            self.size -= 1;
+            self.down_heap(1, false);
+        }
+    }
+}
+
+/// `DiversifyingNearestChildrenKnnCollector`, behind the reader's
+/// `OrdinalTranslatedKnnCollector`: an ordinal is translated to its document
+/// before the parent is looked up.
+struct DiversifyingCollector<'p, 'f> {
+    k: usize,
+    visit_limit: u64,
+    visited: u64,
+    parents: &'p FixedBitSet,
+    ord_to_doc: &'f dyn Fn(i32) -> Result<i32>,
+    heap: NodeIdCachingHeap,
+    error: Option<Error>,
+}
+
+impl<'p, 'f> DiversifyingCollector<'p, 'f> {
+    fn new(
+        k: usize,
+        visit_limit: u64,
+        parents: &'p FixedBitSet,
+        ord_to_doc: &'f dyn Fn(i32) -> Result<i32>,
+    ) -> Self {
+        Self {
+            k,
+            visit_limit,
+            visited: 0,
+            parents,
+            ord_to_doc,
+            heap: NodeIdCachingHeap::new(k.max(1)),
+            error: None,
+        }
+    }
+
+    /// `topDocs()`: the heap drained, best first, as `(doc, ord, score)`.
+    fn top_docs(mut self) -> Result<Vec<(i32, i32, f32)>> {
+        if let Some(e) = self.error.take() {
+            return Err(e);
+        }
+        while self.heap.size > self.k {
+            self.heap.pop_to_drain();
+        }
+        let n = self.heap.size;
+        let mut out = vec![(0, 0, 0.0f32); n];
+        for i in 1..=n {
+            let top = self.heap.top();
+            out[n - i] = (top.child, top.ord, top.score);
+            self.heap.pop_to_drain();
+        }
+        Ok(out)
+    }
+}
+
+impl KnnCollect for DiversifyingCollector<'_, '_> {
+    fn k(&self) -> usize {
+        self.k
+    }
+    fn early_terminated(&self) -> bool {
+        self.visited >= self.visit_limit
+    }
+    fn inc_visited_count(&mut self, count: usize) {
+        self.visited = self.visited.saturating_add(count as u64);
+    }
+    fn visited_count(&self) -> u64 {
+        self.visited
+    }
+    fn visit_limit(&self) -> u64 {
+        self.visit_limit
+    }
+    fn collect(&mut self, ord: i32, similarity: f32) -> bool {
+        let doc = match (self.ord_to_doc)(ord) {
+            Ok(d) => d,
+            Err(e) => {
+                self.error.get_or_insert(e);
+                return false;
+            }
+        };
+        let parent = usize::try_from(doc)
+            .ok()
+            .and_then(|d| self.parents.next_set_bit(d))
+            .and_then(|p| i32::try_from(p).ok())
+            .unwrap_or(i32::MAX);
+        self.heap.insert_with_overflow(ParentChildScore {
+            child: doc,
+            ord,
+            parent,
+            score: similarity,
+        })
+    }
+    fn min_competitive_similarity(&self) -> f32 {
+        if self.heap.size >= self.k {
+            self.heap.top().score
+        } else {
+            f32::NEG_INFINITY
+        }
+    }
+}
+
+/// A diversified hit: the child's document, its ordinal and its similarity.
+type ChildHit = (i32, i32, f32);
+
+/// `DiversifyingChildren*KnnVectorQuery.exactSearch`: each parent's best
+/// accepted child (the first on a tie), the best `min(k, cost)` of those.
+/// Java walks the accepted documents; this walks their ordinals, which
+/// ascend with them. The two are the same walk: Java's filter is
+/// `childFilter AND FieldExistsQuery(field)`, so every accepted document has
+/// a vector, and so an ordinal.
+fn diversified_exact_search<S: VectorScorer>(
+    scorer: &mut S,
+    accept_ords: &FixedBitSet,
+    cost: usize,
+    k: usize,
+    parents: &FixedBitSet,
+    ord_to_doc: &dyn Fn(i32) -> Result<i32>,
+) -> Result<Vec<(i32, i32, f32)>> {
+    let queue_size = k.min(cost);
+    if queue_size == 0 {
+        return Ok(Vec::new());
+    }
+    // `HitQueue(queueSize, true)`: prefilled with sentinels (`-inf`,
+    // `Integer.MAX_VALUE`), its top the worst entry -- the lowest score, then
+    // the highest document -- replaced whenever a parent's best beats it.
+    let mut queue: std::collections::BinaryHeap<WorstFirst> = (0..queue_size)
+        .map(|_| WorstFirst((i32::MAX, -1, f32::NEG_INFINITY)))
+        .collect();
+    let mut current_parent = -1i64;
+    let mut current: Option<(i32, i32, f32)> = None;
+    let offer = |queue: &mut std::collections::BinaryHeap<WorstFirst>, hit: (i32, i32, f32)| {
+        if let Some(mut top) = queue.peek_mut() {
+            if hit.2 > top.0 .2 {
+                top.0 = hit;
+            }
+        }
+    };
+    let accepted = accept_ords.len();
+    for ord in 0..scorer.max_ord() {
+        let o = ord as usize;
+        if o >= accepted || !accept_ords.get(o) {
+            continue;
+        }
+        let doc = ord_to_doc(ord)?;
+        let parent = usize::try_from(doc)
+            .ok()
+            .and_then(|d| parents.next_set_bit(d))
+            .map_or(i64::MAX, |p| p as i64);
+        if parent != current_parent {
+            if let Some(hit) = current.take() {
+                offer(&mut queue, hit);
+            }
+            current_parent = parent;
+        }
+        let score = scorer.score(ord)?;
+        if current.is_none_or(|(_, _, s)| score > s) {
+            current = Some((doc, ord, score));
+        }
+    }
+    if let Some(hit) = current {
+        offer(&mut queue, hit);
+    }
+    // `while (queue.size() > 0 && queue.top().score < 0) pop()`, then the
+    // rest popped worst first into the array from its end.
+    while queue.peek().is_some_and(|w| w.0 .2 < 0.0) {
+        queue.pop();
+    }
+    // Ascending under `WorstFirst` is best first.
+    Ok(queue.into_sorted_vec().into_iter().map(|w| w.0).collect())
+}
+
+/// A `HitQueue` entry ordered so a max-heap's top is `HitQueue`'s: the lowest
+/// score (`Float.compare`), then the highest document.
+struct WorstFirst((i32, i32, f32));
+
+impl PartialEq for WorstFirst {
+    fn eq(&self, o: &Self) -> bool {
+        self.cmp(o).is_eq()
+    }
+}
+impl Eq for WorstFirst {}
+impl PartialOrd for WorstFirst {
+    fn partial_cmp(&self, o: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(o))
+    }
+}
+impl Ord for WorstFirst {
+    fn cmp(&self, o: &Self) -> std::cmp::Ordering {
+        java_float_compare(o.0 .2, self.0 .2).then(self.0 .0.cmp(&o.0 .0))
+    }
+}
+
+/// `Float.compare`: `-0.0` below `0.0`, every `NaN` one value above all.
+fn java_float_compare(a: f32, b: f32) -> std::cmp::Ordering {
+    let canon = |x: f32| if x.is_nan() { f32::NAN } else { x };
+    canon(a).total_cmp(&canon(b))
+}
+
+/// `DiversifyingChildren*KnnVectorQuery.approximateSearch`: the reader's
+/// `searchNearestVectors` into a `DiversifyingNearestChildrenKnnCollector`.
+fn diversified_approximate<S: VectorScorer>(
+    scorer: &mut S,
+    graph: &LeafGraph<'_, '_>,
+    k: usize,
+    limit: u64,
+    options: SearchOptions<'_>,
+    parents: &FixedBitSet,
+    ord_to_doc: &dyn Fn(i32) -> Result<i32>,
+) -> Result<(Vec<ChildHit>, bool)> {
+    // `Lucene90HnswVectorsReader.search` collects documents already.
+    let identity = |o: i32| -> Result<i32> { Ok(o) };
+    let translate: &dyn Fn(i32) -> Result<i32> = if graph.hits_are_ordinals() {
+        &identity
+    } else {
+        ord_to_doc
+    };
+    let mut c = DiversifyingCollector::new(k, limit, parents, translate);
+    if scorer.max_ord() > 0 && k > 0 {
+        graph.search_with(scorer, &mut c, options)?;
+    }
+    let early = KnnCollect::early_terminated(&c);
+    Ok((c.top_docs()?, early))
+}
+
+/// [`leaf_results`] for the diversifying child queries: the same
+/// `getLeafResults` branches, with `DiversifyingNearestChildrenKnnCollector`
+/// and the parent-grouping `exactSearch`. A leaf without parents has no
+/// results (its collector manager returns `null`).
+#[allow(clippy::too_many_arguments)]
+fn diversified_leaf_results<S: VectorScorer>(
+    scorer: &mut S,
+    graph: &LeafGraph<'_, '_>,
+    accept: Option<&AcceptOrds<'_>>,
+    ord_to_doc: &dyn Fn(i32) -> Result<i32>,
+    max_doc: i32,
+    plan: &LeafPlan,
+    seed_ords: Option<&[i32]>,
+    parents: Option<&FixedBitSet>,
+) -> Result<(LeafHits, bool)> {
+    let Some(parents) = parents else {
+        return Ok((LeafHits::default(), false));
+    };
+    let size = scorer.max_ord().max(0) as usize;
+    let collector_k = plan.collector_k.min(size);
+    let per_leaf_top_k = plan.per_leaf_top_k.min(size);
+    let accept_bits = accept.map(|a| a.bits());
+    let (hits, early) = if !plan.filtered {
+        diversified_approximate(
+            scorer,
+            graph,
+            collector_k,
+            plan.visited_limit,
+            SearchOptions {
+                accept_ords: accept_bits,
+                filtered_doc_count: Some(max_doc),
+                seed_ords,
+                filtered_search_threshold: plan.extras.filtered_search_threshold,
+            },
+            parents,
+            ord_to_doc,
+        )?
+    } else {
+        let bits = accept_bits.expect("a filtered leaf always has an accept set");
+        let cost = bits.cardinality();
+        if cost <= per_leaf_top_k {
+            (
+                diversified_exact_search(scorer, bits, cost, plan.k, parents, ord_to_doc)?,
+                false,
+            )
+        } else {
+            let limit = plan.visited_limit.min(cost as u64 + 1);
+            let (hits, early) = diversified_approximate(
+                scorer,
+                graph,
+                collector_k,
+                limit,
+                SearchOptions {
+                    accept_ords: Some(bits),
+                    filtered_doc_count: Some(cost as i32),
+                    seed_ords,
+                    filtered_search_threshold: plan.extras.filtered_search_threshold,
+                },
+                parents,
+                ord_to_doc,
+            )?;
+            if (!early && hits.len() >= per_leaf_top_k) || plan.extras.timed_out() {
+                (hits, early)
+            } else {
+                (
+                    diversified_exact_search(scorer, bits, cost, plan.k, parents, ord_to_doc)?,
+                    false,
+                )
+            }
+        }
+    };
+    let mut ords: Vec<i32> = hits.iter().map(|h| h.1).collect();
+    ords.sort_unstable();
+    Ok((
+        LeafHits {
+            hits: hits
+                .into_iter()
+                .map(|(doc_id, _, score)| ScoreDoc { doc_id, score })
+                .collect(),
+            ords,
+        },
+        early,
+    ))
+}
+
+/// `IndexSearcher.search(DiversifyingChildrenFloatKnnVectorQuery, ..)`'s
+/// rewrite over a multi-segment index: [`search_knn_float_vector_query_multi_segment`]'s
+/// fan-out, pro-rata sizing, optimistic re-entry and merge, each leaf's
+/// collector keeping only the best child per parent
+/// (`DiversifyingNearestChildrenKnnCollectorManager`, optimistic too). Hits
+/// are children. `parents` has one entry per segment: its parent filter's
+/// bit set, `None` (or no entry) for a segment without parents -- no results
+/// there.
+pub fn search_diversifying_children_float_knn_multi_segment(
+    segments: &[KnnSegment<'_>],
+    parents: &[Option<&FixedBitSet>],
+    query: &KnnFloatVectorQuery,
+) -> Result<Vec<ScoreDoc>> {
+    knn_multi_segment_with(
+        segments,
+        query,
+        false,
+        LeafExtras::default(),
+        None,
+        Some(parents),
+    )
+}
+
+/// `DiversifyingChildrenByteKnnVectorQuery`'s equivalent of
+/// [`search_diversifying_children_float_knn_multi_segment`].
+pub fn search_diversifying_children_byte_knn_multi_segment(
+    segments: &[KnnSegment<'_>],
+    parents: &[Option<&FixedBitSet>],
+    query: &KnnByteVectorQuery,
+) -> Result<Vec<ScoreDoc>> {
+    knn_multi_segment_with(
+        segments,
+        query,
+        false,
+        LeafExtras::default(),
+        None,
+        Some(parents),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2405,5 +2935,204 @@ mod tests {
         let widened = reentry_plan(&phase1, 40);
         assert_eq!(widened.collector_k, 40);
         assert_eq!(widened.per_leaf_top_k, 24);
+    }
+    /// A scorer over a fixed table of similarities, one per ordinal.
+    struct Table(Vec<f32>);
+
+    impl VectorScorer for Table {
+        fn score(&mut self, node: i32) -> lucene_codecs::vectors::Result<f32> {
+            Ok(self.0[node as usize])
+        }
+
+        fn max_ord(&self) -> i32 {
+            self.0.len() as i32
+        }
+    }
+
+    fn bits(len: usize, set: &[usize]) -> FixedBitSet {
+        let mut b = FixedBitSet::new(len);
+        for &i in set {
+            b.set(i);
+        }
+        b
+    }
+
+    fn doc_of(ord: i32) -> Result<i32> {
+        Ok(ord * 2)
+    }
+
+    /// Children at even docs (ordinal `o` is doc `2o`), parents closing
+    /// blocks at docs 5, 11 and 19: blocks {0,2,4}, {6,8,10}, {12..18}, and
+    /// doc 20 after the last parent (`NO_MORE_DOCS` is its parent).
+    fn block_parents() -> FixedBitSet {
+        bits(21, &[5, 11, 19])
+    }
+
+    #[test]
+    fn diversified_exact_search_keeps_each_parents_best_child() {
+        let parents = block_parents();
+        //             block 0          block 1          block 2                block after
+        let mut t = Table(vec![0.1, 0.5, 0.5, 0.2, 0.9, 0.3, 0.4, 0.4, 0.4, 0.4, 0.6]);
+        let all = bits(11, &(0..11).collect::<Vec<_>>());
+        let hits = diversified_exact_search(&mut t, &all, 11, 10, &parents, &doc_of).unwrap();
+        // One per block, best first; a tie inside a block keeps the first
+        // child (`score > currentScore`), the orphan block counts too.
+        assert_eq!(
+            hits,
+            vec![(8, 4, 0.9), (20, 10, 0.6), (2, 1, 0.5), (12, 6, 0.4)]
+        );
+        // `k` (and `cost`) bound the queue; a tie between blocks keeps the
+        // lower document (`HitQueue`'s order), whatever came first.
+        let mut t = Table(vec![0.7, 0.0, 0.0, 0.7, 0.0, 0.0, 0.7, 0.0, 0.0, 0.0, 0.0]);
+        let hits = diversified_exact_search(&mut t, &all, 11, 2, &parents, &doc_of).unwrap();
+        assert_eq!(hits, vec![(0, 0, 0.7), (6, 3, 0.7)]);
+        let hits = diversified_exact_search(&mut t, &all, 1, 5, &parents, &doc_of).unwrap();
+        assert_eq!(hits, vec![(0, 0, 0.7)]);
+        // Only accepted ordinals count; nothing accepted is nothing.
+        let some = bits(11, &[2, 9]);
+        let hits = diversified_exact_search(&mut t, &some, 2, 5, &parents, &doc_of).unwrap();
+        assert_eq!(hits, vec![(4, 2, 0.0), (18, 9, 0.0)]);
+        assert!(
+            diversified_exact_search(&mut t, &some, 0, 5, &parents, &doc_of)
+                .unwrap()
+                .is_empty()
+        );
+        // Negative similarities are dropped with the sentinels.
+        let mut t = Table(vec![
+            -0.5, -0.5, -0.5, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ]);
+        let hits = diversified_exact_search(&mut t, &all, 11, 2, &parents, &doc_of).unwrap();
+        assert_eq!(hits, vec![(6, 3, 0.25), (12, 6, 0.0)]);
+        // A failing ordinal lookup is the caller's error.
+        let broken = |_: i32| -> Result<i32> { Err(Error::IllegalArgument("ord".into())) };
+        assert!(diversified_exact_search(&mut t, &all, 11, 2, &parents, &broken).is_err());
+    }
+
+    #[test]
+    fn the_diversifying_collector_follows_javas_heap() {
+        let parents = block_parents();
+        let mut c = DiversifyingCollector::new(2, 100, &parents, &doc_of);
+        assert_eq!(KnnCollect::k(&c), 2);
+        assert_eq!(c.min_competitive_similarity(), f32::NEG_INFINITY);
+        assert!(c.collect(0, 0.5)); // block 0
+        assert!(!c.collect(1, 0.4)); // block 0, worse: kept 0
+        assert!(c.collect(1, 0.6)); // block 0, better: replaces 0
+        assert!(c.collect(4, 0.2)); // block 1
+        assert_eq!(c.min_competitive_similarity(), 0.2);
+        assert!(!c.collect(6, 0.1)); // block 2, below the floor
+        assert!(!c.collect(7, 0.2)); // block 2, a tie with a higher child
+        assert!(c.collect(10, 0.3)); // the orphan block evicts block 1
+        assert!(c.collect(2, 0.7)); // block 0 improves again, in place
+        assert!(c.collect(9, 0.3)); // block 2, a tie with a lower child: evicts doc 20
+        c.inc_visited_count(3);
+        assert_eq!((c.visited_count(), c.visit_limit()), (3, 100));
+        assert!(!KnnCollect::early_terminated(&c));
+        assert_eq!(c.top_docs().unwrap(), vec![(4, 2, 0.7), (18, 9, 0.3)]);
+
+        // A worse score for a parent in the heap that must move down.
+        let mut c = DiversifyingCollector::new(3, 1, &parents, &doc_of);
+        for (ord, score) in [(0, 0.9), (3, 0.8), (6, 0.7)] {
+            assert!(c.collect(ord, score));
+        }
+        assert!(c.collect(1, 0.95));
+        assert!(c.collect(4, 0.85));
+        c.inc_visited_count(1);
+        assert!(KnnCollect::early_terminated(&c));
+        assert_eq!(
+            c.top_docs().unwrap(),
+            vec![(2, 1, 0.95), (8, 4, 0.85), (12, 6, 0.7)]
+        );
+
+        // An ordinal that does not translate fails the search.
+        let broken = |_: i32| -> Result<i32> { Err(Error::IllegalArgument("ord".into())) };
+        let mut c = DiversifyingCollector::new(1, 10, &parents, &broken);
+        assert!(!c.collect(0, 1.0));
+        assert!(c.top_docs().is_err());
+    }
+
+    #[test]
+    fn diversified_leaf_results_take_javas_branches() {
+        let parents = block_parents();
+        let plan = |filtered: bool, per_leaf_top_k: usize| LeafPlan {
+            k: 2,
+            per_leaf_top_k,
+            collector_k: 2,
+            visited_limit: u64::MAX,
+            filtered,
+            extras: LeafExtras::default(),
+        };
+        let mut t = Table(vec![0.1, 0.5, 0.5, 0.2, 0.9, 0.3, 0.4, 0.4, 0.4, 0.4, 0.6]);
+        // No parents in the segment: no results.
+        let (hits, early) = diversified_leaf_results(
+            &mut t,
+            &LeafGraph::ScanAll,
+            None,
+            &doc_of,
+            21,
+            &plan(false, 2),
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(hits.hits.is_empty() && !early);
+        // Unfiltered: the reader's search (a full scan here).
+        let (hits, _) = diversified_leaf_results(
+            &mut t,
+            &LeafGraph::ScanAll,
+            None,
+            &doc_of,
+            21,
+            &plan(false, 2),
+            None,
+            Some(&parents),
+        )
+        .unwrap();
+        let docs: Vec<(i32, f32)> = hits.hits.iter().map(|h| (h.doc_id, h.score)).collect();
+        assert_eq!(docs, vec![(8, 0.9), (20, 0.6)]);
+        assert_eq!(hits.ords, vec![4, 10]);
+        // Filtered below perLeafTopK: the exact search.
+        let some = bits(11, &[0, 1, 6]);
+        let accept = AcceptOrds::Borrowed(&some);
+        let (hits, _) = diversified_leaf_results(
+            &mut t,
+            &LeafGraph::Nothing,
+            Some(&accept),
+            &doc_of,
+            21,
+            &plan(true, 5),
+            None,
+            Some(&parents),
+        )
+        .unwrap();
+        let docs: Vec<i32> = hits.hits.iter().map(|h| h.doc_id).collect();
+        assert_eq!(docs, vec![2, 12]);
+        // Filtered above it: the graph first; one that finds too little (a
+        // flat format collects nothing) falls back to the exact search, one
+        // that finds enough is kept.
+        let (hits, _) = diversified_leaf_results(
+            &mut t,
+            &LeafGraph::Nothing,
+            Some(&accept),
+            &doc_of,
+            21,
+            &plan(true, 1),
+            None,
+            Some(&parents),
+        )
+        .unwrap();
+        assert_eq!(hits.hits.len(), 2);
+        let (hits, early) = diversified_leaf_results(
+            &mut t,
+            &LeafGraph::ScanAll,
+            Some(&accept),
+            &doc_of,
+            21,
+            &plan(true, 1),
+            None,
+            Some(&parents),
+        )
+        .unwrap();
+        let docs: Vec<i32> = hits.hits.iter().map(|h| h.doc_id).collect();
+        assert_eq!((docs, early), (vec![2, 12], false));
     }
 }
