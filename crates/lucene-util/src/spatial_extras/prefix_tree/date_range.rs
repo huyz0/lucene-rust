@@ -232,23 +232,28 @@ impl DateInner {
         if compare_prefix(lv, &self.min_lv) <= 0 {
             return self.mincal.clone();
         }
-        let mut year_adj = lv[0] * 1_000_000;
+        // Java's `int` arithmetic, which wraps: a term's level values are
+        // small unless the term is corrupt.
+        let mut year_adj = lv[0].wrapping_mul(1_000_000);
         if lv.len() > 1 {
-            year_adj += lv[1] * 1000;
+            year_adj = year_adj.wrapping_add(lv[1].wrapping_mul(1000));
             if lv.len() > 2 {
-                year_adj += lv[2];
+                year_adj = year_adj.wrapping_add(lv[2]);
             }
         }
         if year_adj > self.ad_year_base {
             cal.set(ERA, 1);
-            cal.set(YEAR, year_adj - self.ad_year_base);
+            cal.set(YEAR, year_adj.wrapping_sub(self.ad_year_base));
         } else {
             cal.set(ERA, 0);
-            cal.set(YEAR, (self.ad_year_base - year_adj) + 1);
+            cal.set(
+                YEAR,
+                self.ad_year_base.wrapping_sub(year_adj).wrapping_add(1),
+            );
         }
         for level in (YEAR_LEVEL as usize + 1)..=lv.len() {
             let field = FIELD_BY_LEVEL[level] as usize;
-            cal.set(field, lv[level - 1] + cal.actual_minimum(field));
+            cal.set(field, lv[level - 1].wrapping_add(cal.actual_minimum(field)));
         }
         cal
     }
@@ -259,8 +264,11 @@ impl DateInner {
             Ok(match lv[lv.len() - 1] {
                 8 | 3 | 5 | 10 => 30,
                 1 => {
-                    let year_adj = lv[0] * 1_000_000 + lv[1] * 1000 + lv[2];
-                    let year = year_adj - self.ad_year_base;
+                    let year_adj = lv[0]
+                        .wrapping_mul(1_000_000)
+                        .wrapping_add(lv[1].wrapping_mul(1000))
+                        .wrapping_add(lv[2]);
+                    let year = year_adj.wrapping_sub(self.ad_year_base);
                     if year % 4 == 0 && !(year % 100 == 0 && year % 400 != 0) {
                         29
                     } else {

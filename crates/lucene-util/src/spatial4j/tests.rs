@@ -549,26 +549,14 @@ fn wkt_lexing() {
     let long = format!("FOO({})", "1 ".repeat(100));
     let e = reader.parse(&long).unwrap_err();
     assert!(e.to_string().ends_with("...]"), "{e}");
-    let mut state = super::wkt::State {
-        raw: "A(B(1,2)),C".chars().collect(),
-        offset: 0,
-        dimension: None,
-    };
+    let mut state = super::wkt::State::new("A(B(1,2)),C");
     assert_eq!(state.next_sub_shape_string().unwrap(), "A(B(1,2))");
-    let mut bad = super::wkt::State {
-        raw: "A(B".chars().collect(),
-        offset: 0,
-        dimension: None,
-    };
+    let mut bad = super::wkt::State::new("A(B");
     assert_eq!(
         bad.next_sub_shape_string().unwrap_err().to_string(),
         "Unbalanced parenthesis"
     );
-    let mut word = super::wkt::State {
-        raw: "(".chars().collect(),
-        offset: 0,
-        dimension: None,
-    };
+    let mut word = super::wkt::State::new("(");
     assert_eq!(word.next_word().unwrap_err().to_string(), "Word expected");
     let geo3d = SpatialContextFactory::geo3d()
         .new_spatial_context()
@@ -634,4 +622,52 @@ fn factory_builders() {
         .unwrap()
         .to_string()
         .starts_with("ShapeCollection(BufferedLineString"));
+}
+
+/// Nested collections in a binary shape and nested shapes in WKT:
+/// `MAX_NESTING` deep reads, one deeper is the `StackOverflowError` Java
+/// would hit only at its stack's end (a Rust stack overflow aborts).
+#[test]
+fn nesting_stops_at_the_limit() {
+    let c = cart();
+    let codec = c.binary_codec();
+    let nested = |depth: u32| {
+        let mut out = Vec::new();
+        for _ in 0..depth {
+            out.extend_from_slice(&[4, 0]); // a collection of typed members
+            out.extend_from_slice(&1i32.to_be_bytes());
+        }
+        out.push(1);
+        write_double(&mut out, 1.0);
+        write_double(&mut out, 2.0);
+        out
+    };
+    let limit = binary_codec::MAX_NESTING;
+    assert!(codec
+        .read_shape(&c, &mut DataInput::new(&nested(limit)))
+        .is_ok());
+    let e = codec
+        .read_shape(&c, &mut DataInput::new(&nested(limit + 1)))
+        .unwrap_err();
+    assert!(
+        e.to_string().starts_with("java.lang.StackOverflowError"),
+        "{e}"
+    );
+    let mut input = DataInput::new(&[1, 2, 3]);
+    input.advance(usize::MAX);
+    assert!(input.remaining().is_empty());
+
+    let wkt = |depth: u32| {
+        let d = depth as usize;
+        format!(
+            "{}POINT(1 2){}",
+            "GEOMETRYCOLLECTION(".repeat(d),
+            ")".repeat(d)
+        )
+    };
+    let limit = wkt::MAX_NESTING;
+    assert!(c.read_shape_from_wkt(&wkt(limit)).is_ok());
+    let e = c.read_shape_from_wkt(&wkt(limit + 1)).unwrap_err();
+    assert_eq!(e.java_class(), "java.text.ParseException");
+    assert!(e.to_string().contains("StackOverflowError"), "{e}");
 }

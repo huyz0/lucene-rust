@@ -12,7 +12,7 @@ use super::context::SpatialContext;
 use super::distance::DistanceUtils;
 use super::point::PointImpl;
 use super::rectangle::RectangleImpl;
-use super::shape::{Circle, Point, Rectangle, Shape};
+use super::shape::{Circle, Point, Rectangle, Shape, SpatialRelation};
 use super::{dstr, Error, Result};
 
 /// `ShapeFactory`. Every method takes the context the shapes are made in
@@ -94,6 +94,19 @@ pub trait ShapeFactory: Send + Sync + fmt::Debug {
         min_y: f64,
         max_y: f64,
     ) -> Result<Arc<dyn Rectangle>>;
+    /// `rect(minX, maxX, minY, maxY).relate(other)`: the rectangle need not
+    /// outlive the call, so a factory may skip allocating it.
+    fn rect_relate(
+        &self,
+        ctx: &Arc<SpatialContext>,
+        min_x: f64,
+        max_x: f64,
+        min_y: f64,
+        max_y: f64,
+        other: &dyn Shape,
+    ) -> Result<SpatialRelation> {
+        self.rect(ctx, min_x, max_x, min_y, max_y)?.relate(other)
+    }
     /// `circle(x, y, distance)`.
     fn circle(
         &self,
@@ -235,6 +248,63 @@ impl ShapeFactoryImpl {
             norm_wrap_longitude,
         }
     }
+
+    /// `rect(minX, maxX, minY, maxY)`'s validation and dateline handling,
+    /// the rectangle unboxed.
+    fn rect_impl(
+        &self,
+        ctx: &Arc<SpatialContext>,
+        min_x: f64,
+        max_x: f64,
+        min_y: f64,
+        max_y: f64,
+    ) -> Result<RectangleImpl> {
+        let [bminx, bmaxx, bminy, bmaxy] = ctx.world_bounds_values();
+        if min_y < bminy || max_y > bmaxy {
+            return Err(Error::InvalidShape(format!(
+                "Y values [{} to {}] not in boundary {}",
+                dstr(min_y),
+                dstr(max_y),
+                ctx.world_bounds()
+            )));
+        }
+        if min_y > max_y {
+            return Err(Error::InvalidShape(format!(
+                "maxY must be >= minY: {} to {}",
+                dstr(min_y),
+                dstr(max_y)
+            )));
+        }
+        let (mut min_x, mut max_x) = (min_x, max_x);
+        if ctx.is_geo() {
+            self.verify_x(ctx, min_x)?;
+            self.verify_x(ctx, max_x)?;
+            // If an edge coincides with the dateline then don't make this
+            // rect cross it.
+            if min_x == 180.0 && min_x != max_x {
+                min_x = -180.0;
+            } else if max_x == -180.0 && min_x != max_x {
+                max_x = 180.0;
+            }
+        } else {
+            if min_x < bminx || max_x > bmaxx {
+                return Err(Error::InvalidShape(format!(
+                    "X values [{} to {}] not in boundary {}",
+                    dstr(min_x),
+                    dstr(max_x),
+                    ctx.world_bounds()
+                )));
+            }
+            if min_x > max_x {
+                return Err(Error::InvalidShape(format!(
+                    "maxX must be >= minX: {} to {}",
+                    dstr(min_x),
+                    dstr(max_x)
+                )));
+            }
+        }
+        Ok(RectangleImpl::new(min_x, max_x, min_y, max_y, ctx.clone()))
+    }
 }
 
 impl ShapeFactory for ShapeFactoryImpl {
@@ -283,57 +353,20 @@ impl ShapeFactory for ShapeFactoryImpl {
         min_y: f64,
         max_y: f64,
     ) -> Result<Arc<dyn Rectangle>> {
-        let [bminx, bmaxx, bminy, bmaxy] = ctx.world_bounds_values();
-        if min_y < bminy || max_y > bmaxy {
-            return Err(Error::InvalidShape(format!(
-                "Y values [{} to {}] not in boundary {}",
-                dstr(min_y),
-                dstr(max_y),
-                ctx.world_bounds()
-            )));
-        }
-        if min_y > max_y {
-            return Err(Error::InvalidShape(format!(
-                "maxY must be >= minY: {} to {}",
-                dstr(min_y),
-                dstr(max_y)
-            )));
-        }
-        let (mut min_x, mut max_x) = (min_x, max_x);
-        if ctx.is_geo() {
-            self.verify_x(ctx, min_x)?;
-            self.verify_x(ctx, max_x)?;
-            // If an edge coincides with the dateline then don't make this
-            // rect cross it.
-            if min_x == 180.0 && min_x != max_x {
-                min_x = -180.0;
-            } else if max_x == -180.0 && min_x != max_x {
-                max_x = 180.0;
-            }
-        } else {
-            if min_x < bminx || max_x > bmaxx {
-                return Err(Error::InvalidShape(format!(
-                    "X values [{} to {}] not in boundary {}",
-                    dstr(min_x),
-                    dstr(max_x),
-                    ctx.world_bounds()
-                )));
-            }
-            if min_x > max_x {
-                return Err(Error::InvalidShape(format!(
-                    "maxX must be >= minX: {} to {}",
-                    dstr(min_x),
-                    dstr(max_x)
-                )));
-            }
-        }
-        Ok(Arc::new(RectangleImpl::new(
-            min_x,
-            max_x,
-            min_y,
-            max_y,
-            ctx.clone(),
-        )))
+        Ok(Arc::new(self.rect_impl(ctx, min_x, max_x, min_y, max_y)?))
+    }
+
+    fn rect_relate(
+        &self,
+        ctx: &Arc<SpatialContext>,
+        min_x: f64,
+        max_x: f64,
+        min_y: f64,
+        max_y: f64,
+        other: &dyn Shape,
+    ) -> Result<SpatialRelation> {
+        self.rect_impl(ctx, min_x, max_x, min_y, max_y)?
+            .relate(other)
     }
 
     fn circle(

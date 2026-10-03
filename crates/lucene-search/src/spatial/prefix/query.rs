@@ -14,8 +14,8 @@
 
 use std::sync::Arc;
 
-use lucene_codecs::blocktree::{SeekStatus, TermsEnum};
-use lucene_codecs::postings::DocInput;
+use lucene_codecs::blocktree::{self, FieldTerms, SeekStatus, TermsEnum};
+use lucene_codecs::postings::{DocInput, LazyDocsCursor, PostingsFlags, NO_MORE_DOCS};
 use lucene_util::fixed_bit_set::FixedBitSet;
 use lucene_util::spatial4j::{DistanceUtils, Shape, SpatialContext, SpatialRelation};
 use lucene_util::spatial_extras::prefix_tree::{Cell, CellIterator, SpatialPrefixTree};
@@ -49,12 +49,16 @@ impl std::fmt::Debug for PrefixTreeQueryBase {
 /// one segment's terms of the field, the current term, and its cell.
 pub(crate) struct Traverser<'a> {
     terms: Option<TermsEnum<'a>>,
+    field: Option<&'a FieldTerms>,
     doc_in: Option<&'a DocInput<'a>>,
+    /// `postingsEnum`, reused from term to term (`termsEnum.postings(
+    /// postingsEnum, NONE)`).
+    reuse: Option<LazyDocsCursor<'a>>,
     grid: &'a dyn SpatialPrefixTree,
     pub(crate) max_doc: i32,
-    /// `thisTerm`; `None` once the terms are exhausted.
-    pub(crate) this_term: Option<Vec<u8>>,
-    /// `indexedCell`: the cell of `this_term` (the last one read).
+    /// `thisTerm != null`: `false` once the terms are exhausted.
+    pub(crate) on_term: bool,
+    /// `indexedCell`: the cell of the current term (the last one read).
     pub(crate) indexed_cell: Option<Box<dyn Cell>>,
     /// The first postings doc id outside the segment (a corrupt `.doc`).
     pub(crate) bad: Option<i32>,
@@ -67,12 +71,15 @@ impl<'a> Traverser<'a> {
         grid: &'a dyn SpatialPrefixTree,
     ) -> Result<Self> {
         let max_doc = reader(leaf)?.max_doc;
+        let field = leaf.fields.field(field);
         Ok(Traverser {
-            terms: leaf.fields.field(field).map(|f| f.iter()),
+            terms: field.map(FieldTerms::iter),
+            field,
             doc_in: leaf.doc_in,
+            reuse: None,
             grid,
             max_doc,
-            this_term: None,
+            on_term: false,
             indexed_cell: None,
             bad: None,
         })
@@ -90,33 +97,38 @@ impl<'a> Traverser<'a> {
             .expect("an indexed cell is read with each term")
     }
 
-    fn read_current(&mut self, term: Vec<u8>) -> Result<()> {
-        self.indexed_cell = Some(self.grid.read_cell(&term)?);
-        self.this_term = Some(term);
+    /// `indexedCell = grid.readCell(thisTerm, indexedCell)`: the scratch
+    /// cell reused.
+    fn read_current(&mut self) -> Result<()> {
+        let term = self
+            .terms
+            .as_ref()
+            .and_then(TermsEnum::term)
+            .expect("positioned on a term");
+        match &mut self.indexed_cell {
+            Some(cell) => self.grid.read_cell_into(term, cell)?,
+            None => self.indexed_cell = Some(self.grid.read_cell(term)?),
+        }
+        self.on_term = true;
         Ok(())
     }
 
     /// `nextTerm()`: the next term and its cell; `false` at the end.
     pub(crate) fn next_term(&mut self) -> Result<bool> {
         let Some(terms) = self.terms.as_mut() else {
-            self.this_term = None;
+            self.on_term = false;
             return Ok(false);
         };
-        match terms.try_next_term()? {
-            None => {
-                self.this_term = None;
-                Ok(false)
-            }
-            Some(t) => {
-                let t = t.to_vec();
-                self.read_current(t)?;
-                Ok(true)
-            }
+        if terms.try_next_term()?.is_none() {
+            self.on_term = false;
+            return Ok(false);
         }
+        self.read_current()?;
+        Ok(true)
     }
 
     /// `termsEnum.seekCeil(target)`, then the term it lands on and its cell
-    /// (`this_term` is `None` at the end).
+    /// (`on_term` is `false` at the end).
     pub(crate) fn try_seek_ceil(&mut self, target: &[u8]) -> Result<SeekStatus> {
         let terms = self
             .terms
@@ -124,12 +136,24 @@ impl<'a> Traverser<'a> {
             .expect("seekCeil only on a segment with terms");
         let status = terms.try_seek_ceil(target)?;
         if status == SeekStatus::End {
-            self.this_term = None;
+            self.on_term = false;
             return Ok(status);
         }
-        let t = terms.term().map(<[u8]>::to_vec).unwrap_or_default();
-        self.read_current(t)?;
+        self.read_current()?;
         Ok(status)
+    }
+
+    /// Runs `f` with the current indexed cell taken out of the traverser
+    /// (so `f` may read postings), then puts it back -- Java's visitors
+    /// hold `indexedCell` while they collect.
+    pub(crate) fn with_cell<R>(
+        &mut self,
+        f: impl FnOnce(&mut Self, &mut dyn Cell) -> Result<R>,
+    ) -> Result<R> {
+        let mut cell = self.indexed_cell.take().expect("an indexed cell is read");
+        let r = f(self, &mut *cell);
+        self.indexed_cell = Some(cell);
+        r
     }
 
     /// The current term's documents, deleted ones included
@@ -148,11 +172,82 @@ impl<'a> Traverser<'a> {
         Ok(terms.try_stats()?.map_or(0, |s| s.doc_freq))
     }
 
-    /// `collectDocs(bitSet)` / `collectDocs(docSetBuilder)`.
-    pub(crate) fn collect_docs(&mut self, bits: &mut FixedBitSet) -> Result<()> {
-        for doc in self.docs()? {
-            set_doc(bits, doc, &mut self.bad);
+    /// The current term's documents, deleted ones included, each passed to
+    /// `f` until it returns `false`: Java's `postingsEnum` loop, the cursor
+    /// reused from term to term and a pulsed single document read off the term's
+    /// metadata.
+    pub(crate) fn for_each_doc(&mut self, mut f: impl FnMut(i32) -> bool) -> Result<()> {
+        let terms = self.terms.as_mut().expect("postings only on a term");
+        let fast = match (self.field, self.doc_in) {
+            (Some(field), Some(doc_in)) => terms.try_seeked_term()?.map(|t| (field, doc_in, t)),
+            _ => None,
+        };
+        match fast {
+            Some((_, _, term)) if term.singleton_doc().is_some() => {
+                f(term.singleton_doc().unwrap_or_default());
+            }
+            Some((field, doc_in, term)) if term.stats.doc_freq > 1 => {
+                let cursor = field.reuse_postings_for(
+                    &term,
+                    doc_in,
+                    PostingsFlags::DocsOnly,
+                    &mut self.reuse,
+                )?;
+                loop {
+                    let doc = cursor.next_doc().map_err(blocktree::Error::Postings)?;
+                    if doc == NO_MORE_DOCS || !f(doc) {
+                        break;
+                    }
+                }
+            }
+            _ => {
+                for doc in self.docs()? {
+                    if !f(doc) {
+                        break;
+                    }
+                }
+            }
         }
+        Ok(())
+    }
+
+    /// `collectDocs(bitSet)` / `collectDocs(docSetBuilder)`: Java's
+    /// `bitSet.or(postingsEnum)`, a posting list ORed in a block at a time
+    /// (`intoBitSet`) through the reused cursor. A document at or past the
+    /// set's end -- a corrupt `.doc` -- is remembered in `bad` as
+    /// [`set_doc`] does.
+    pub(crate) fn collect_docs(&mut self, bits: &mut FixedBitSet) -> Result<()> {
+        let terms = self.terms.as_mut().expect("postings only on a term");
+        if let (Some(field), Some(doc_in)) = (self.field, self.doc_in) {
+            if let Some(term) = terms.try_seeked_term()? {
+                if term.stats.doc_freq > 1 {
+                    let cursor = field.reuse_postings_for(
+                        &term,
+                        doc_in,
+                        PostingsFlags::DocsOnly,
+                        &mut self.reuse,
+                    )?;
+                    let len = bits.len();
+                    let end = i32::try_from(len).unwrap_or(i32::MAX).min(self.max_doc);
+                    let mut words = std::mem::replace(bits, FixedBitSet::new(0)).into_words();
+                    let r = cursor
+                        .next_doc()
+                        .and_then(|_| cursor.into_window(0, end, &mut words));
+                    *bits = FixedBitSet::from_words(words, len);
+                    let past = r.map_err(blocktree::Error::Postings)?;
+                    if past != NO_MORE_DOCS {
+                        self.bad.get_or_insert(past);
+                    }
+                    return Ok(());
+                }
+            }
+        }
+        let mut bad = self.bad;
+        self.for_each_doc(|doc| {
+            set_doc(bits, doc, &mut bad);
+            true
+        })?;
+        self.bad = bad;
         Ok(())
     }
 
@@ -230,7 +325,7 @@ pub(crate) trait Visitor {
         t: &mut Traverser<'_>,
         cell: &mut dyn Cell,
     ) -> Result<()> {
-        let relate = cell.shape()?.relate(&*q.base.query_shape)?;
+        let relate = cell.relate_shape(&*q.base.query_shape)?;
         if relate.intersects() {
             cell.set_shape_rel(Some(relate)); // just being pedantic
             if cell.is_leaf() {
@@ -264,13 +359,13 @@ pub(crate) fn visit(q: &VisitingQuery, t: &mut Traverser<'_>, v: &mut dyn Visito
     v.start(t)?;
     add_intersecting_children(q, t, v, &mut stack)?;
 
-    'main: while t.this_term.is_some() {
+    'main: while t.on_term {
         // Advance curVNode pointer
         let top = stack.len() - 1;
         if stack[top].children.is_some() {
             // -- HAVE CHILDREN: DESCEND
             let children = stack[top].children.as_mut().expect("checked");
-            let cell = children.next()?;
+            let cell = children.next_detached()?;
             stack.push(VNode {
                 cell,
                 children: None,
@@ -287,7 +382,7 @@ pub(crate) fn visit(q: &VisitingQuery, t: &mut Traverser<'_>, v: &mut dyn Visito
                     .as_mut()
                     .expect("a parent node has its children");
                 if children.has_next()? {
-                    let cell = children.next()?;
+                    let cell = children.next_detached()?;
                     stack.push(VNode {
                         cell,
                         children: None,
@@ -327,8 +422,7 @@ pub(crate) fn visit(q: &VisitingQuery, t: &mut Traverser<'_>, v: &mut dyn Visito
         // If indexedCell is a leaf then there's no prefix (prefix sorts
         // before) -- just visit and continue
         if t.cell().is_leaf() {
-            let cell = t.cell().clone_box();
-            v.visit_leaf(q, t, &*cell)?;
+            t.with_cell(|t, cell| v.visit_leaf(q, t, cell))?;
             if !t.next_term()? {
                 break;
             }
@@ -336,17 +430,13 @@ pub(crate) fn visit(q: &VisitingQuery, t: &mut Traverser<'_>, v: &mut dyn Visito
         }
         // If a prefix (non-leaf) then visit; see if we descend. (The query
         // cell, not the indexed one.)
-        let descend = {
-            let cell = stack[cur].cell.clone_box();
-            v.visit_prefix(q, t, &*cell)?
-        };
+        let descend = v.visit_prefix(q, t, &*stack[cur].cell)?;
         if !t.next_term()? {
             break;
         }
         // Check for adjacent leaf with the same prefix
         if t.cell().is_leaf() && t.cell().level() == stack[cur].cell.level() {
-            let cell = t.cell().clone_box();
-            v.visit_leaf(q, t, &*cell)?;
+            t.with_cell(|t, cell| v.visit_leaf(q, t, cell))?;
             if !t.next_term()? {
                 break;
             }
@@ -400,8 +490,7 @@ fn scan_terms(
     while cur.is_prefix_of(t.cell()) {
         let level = t.cell().level();
         if level == scan_detail_level || (level < scan_detail_level && t.cell().is_leaf()) {
-            let mut cell = t.cell().clone_box();
-            v.visit_scanned(q, t, &mut *cell)?;
+            t.with_cell(|t, cell| v.visit_scanned(q, t, cell))?;
         }
         // advance
         if !t.next_term()? {
@@ -676,7 +765,7 @@ impl WithinVisitor {
     /// `allCellsIntersectQuery(cell)`: whether the cell and every cell
     /// beneath it to the detail level intersect the query shape.
     fn all_cells_intersect_query(q: &VisitingQuery, cell: &dyn Cell) -> Result<bool> {
-        let relate = cell.shape()?.relate(&*q.base.query_shape)?;
+        let relate = cell.relate_shape(&*q.base.query_shape)?;
         if cell.level() == q.base.detail_level {
             return Ok(relate.intersects());
         }
@@ -724,7 +813,7 @@ impl Visitor for WithinVisitor {
     ) -> Result<bool> {
         // cell.relate is based on the bufferedQueryShape; we need to examine
         // what the relation is against the queryShape
-        let visit_relation = cell.shape()?.relate(&*q.base.query_shape)?;
+        let visit_relation = cell.relate_shape(&*q.base.query_shape)?;
         let (inside, outside) = (
             self.inside.as_mut().expect("started"),
             self.outside.as_mut().expect("started"),
@@ -842,7 +931,7 @@ impl ContainsVisitor<'_, '_> {
         cell: &dyn Cell,
         accept_contains: Option<&SmallDocSet>,
     ) -> Result<Option<SmallDocSet>> {
-        if self.t.this_term.is_none() {
+        if !self.t.on_term {
             return Ok(None); // signals all done
         }
         // Get the AND of all child results
@@ -884,7 +973,7 @@ impl ContainsVisitor<'_, '_> {
     /// `seek(cell)`: whether the terms are now on `cell` (a leaf of it
     /// included).
     fn seek(&mut self, cell: &dyn Cell) -> Result<bool> {
-        if self.t.this_term.is_none() {
+        if !self.t.on_term {
             return Ok(false);
         }
         let compare = self.t.cell().compare_to_no_leaf(cell);
@@ -896,7 +985,7 @@ impl ContainsVisitor<'_, '_> {
         // seek!
         let status = self.t.try_seek_ceil(&cell.token_bytes_no_leaf())?;
         if status == SeekStatus::End {
-            return Ok(false); // all done (this_term is None)
+            return Ok(false); // all done (on_term is false)
         }
         if status == SeekStatus::Found {
             return Ok(true);
@@ -953,12 +1042,12 @@ impl ContainsVisitor<'_, '_> {
     /// `collectDocs(acceptContains)`: `None` for no documents.
     fn collect_docs(&mut self, accept: Option<&SmallDocSet>) -> Result<Option<SmallDocSet>> {
         let mut set: SmallDocSet = Vec::new();
-        for doc in self.t.docs()? {
-            if accept.is_some_and(|a| a.binary_search(&doc).is_err()) {
-                continue;
+        self.t.for_each_doc(|doc| {
+            if accept.is_none_or(|a| a.binary_search(&doc).is_ok()) {
+                set.push(doc);
             }
-            set.push(doc);
-        }
+            true
+        })?;
         set.sort_unstable();
         set.dedup();
         Ok(if set.is_empty() { None } else { Some(set) })

@@ -999,3 +999,48 @@ fn points_and_planes_text() {
     // `catch` sees nothing raised by a pure call.
     assert_eq!(catch(|| 1).unwrap(), 1);
 }
+
+/// Composites nested in a stream: `MAX_NESTING` deep reads, one deeper is
+/// the `StackOverflowError` Java would hit only at its stack's end (a Rust
+/// stack overflow aborts, so a corrupt doc value must not reach one).
+#[test]
+fn nested_composites_stop_at_the_nesting_limit() {
+    let nested = |depth: u32| {
+        let mut out = Vec::new();
+        for level in 0..depth {
+            out.extend_from_slice(&[1, 7]); // a standard object: GeoCompositePolygon
+            write_int(&mut out, i32::from(level + 1 < depth));
+        }
+        out
+    };
+    let limit = super::serializable::MAX_NESTING;
+    let ok = nested(limit);
+    assert!(read_object(&sphere(), &mut Input::new(&ok)).is_ok());
+    let deep = nested(limit + 1);
+    let Err(e) = read_object(&sphere(), &mut Input::new(&deep)) else {
+        panic!("read past the nesting limit");
+    };
+    // the innermost read's error, wrapped as each enclosing composite's
+    // reflective construction wraps it
+    assert_eq!(
+        e.to_string(),
+        "Exception instantiating class org.apache.lucene.spatial3d.geom.GeoCompositePolygon: null"
+    );
+    fn dive(input: &mut Input<'_>, levels: u32) -> super::Result<()> {
+        input.nested(|input| match levels {
+            0 => Ok(()),
+            _ => dive(input, levels - 1),
+        })
+    }
+    let mut input = Input::new(&[]);
+    assert!(dive(&mut input, limit - 1).is_ok());
+    let e = dive(&mut input, limit).unwrap_err();
+    assert!(
+        e.to_string().starts_with("java.lang.StackOverflowError"),
+        "{e}"
+    );
+    assert!(
+        dive(&mut input, 0).is_ok(),
+        "the depth is restored on the way out"
+    );
+}

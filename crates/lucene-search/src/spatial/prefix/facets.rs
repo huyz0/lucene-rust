@@ -126,11 +126,12 @@ impl CountingVisitor<'_, '_> {
             return t.doc_freq();
         }
         let mut count = 0i32;
-        for doc in t.docs()? {
+        t.for_each_doc(|doc| {
             if self.accept.get(doc) {
                 count = count.saturating_add(1);
             }
-        }
+            true
+        })?;
         Ok(count)
     }
 
@@ -139,7 +140,12 @@ impl CountingVisitor<'_, '_> {
         if self.accept.all() {
             return Ok(true);
         }
-        Ok(t.docs()?.into_iter().any(|doc| self.accept.get(doc)))
+        let mut any = false;
+        t.for_each_doc(|doc| {
+            any = self.accept.get(doc);
+            !any
+        })?;
+        Ok(any)
     }
 }
 

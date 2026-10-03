@@ -173,6 +173,13 @@ impl S2PrefixTreeCell {
             return Vec::new();
         };
         let arity = self.tree.arity;
+        // An id with no level (only a corrupt term decodes to one): Java's
+        // `new byte[level]` then `b[0]` is an `ArrayIndexOutOfBoundsException`
+        // (`NegativeArraySizeException` below zero); a token has no error
+        // to return, so it is empty.
+        if self.level < 1 {
+            return Vec::new();
+        }
         let mut b = vec![0u8; self.level as usize];
         b[0] = TOKENS[cell_id.face() as usize];
         for i in 1..self.level {

@@ -268,7 +268,7 @@ pub fn read_object(
     input: &mut Input<'_>,
 ) -> Result<StandardObject> {
     let code = read_class(input)?;
-    read_object_of(planet_model, input, code)
+    input.nested(|input| read_object_of(planet_model, input, code))
 }
 
 /// `readObject(inputStream)`: an object whose class has an

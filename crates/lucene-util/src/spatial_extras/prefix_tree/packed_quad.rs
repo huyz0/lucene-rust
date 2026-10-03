@@ -180,11 +180,19 @@ impl PackedQuadCell {
 
     /// `makeShape()`: a `RectangleImpl` built directly (not through the
     /// context's factory).
-    fn make_shape(&self) -> Arc<dyn Shape> {
+    /// A level past the tree's (a corrupt term's) is Java's
+    /// `ArrayIndexOutOfBoundsException`.
+    fn make_shape(&self) -> Result<Arc<dyn Shape>> {
         let level = self.level();
         let quads = (1..=level).map(|i| ((self.term >> (64 - (i << 1))) & 3) as u8);
-        let [a, b, c, d] = self.grid.geom.cell_rect(quads, level as usize);
-        Arc::new(RectangleImpl::new(a, b, c, d, self.grid.geom.ctx.clone()))
+        let [a, b, c, d] = self.grid.geom.cell_rect(quads, level as usize)?;
+        Ok(Arc::new(RectangleImpl::new(
+            a,
+            b,
+            c,
+            d,
+            self.grid.geom.ctx.clone(),
+        )))
     }
 
     /// The packed term (leaf bit included).
@@ -260,7 +268,11 @@ impl Cell for PackedQuadCell {
     }
 
     fn shape(&self) -> Result<Arc<dyn Shape>> {
-        Ok(self.shape.get_or_init(|| self.make_shape()).clone())
+        if let Some(s) = self.shape.get() {
+            return Ok(s.clone());
+        }
+        let s = self.make_shape()?;
+        Ok(self.shape.get_or_init(|| s).clone())
     }
 
     fn is_prefix_of(&self, c: &dyn Cell) -> bool {

@@ -160,12 +160,46 @@ fn err(e: &lucene_search::Error) -> String {
 }
 
 /// An answer as compared: a `ClassCastException`'s message is the JVM's
-/// (module and loader names), so only its class is.
+/// (module and loader names), so only its class is; a value's NaN is any
+/// NaN (`doubleToRawLongBits` keeps the sign and payload the hardware made:
+/// `fff8...` on x86-64, `7ff8...` on arm64).
 fn normalised(answer: &str) -> String {
     if answer.starts_with("E\tjava.lang.ClassCastException") {
         return "E\tjava.lang.ClassCastException".into();
     }
-    answer.to_string()
+    let mut out = String::with_capacity(answer.len());
+    for (i, v) in answer.split([',', '\t']).enumerate() {
+        if i > 0 {
+            // the separator `split` consumed: the byte before this token
+            let at = v.as_ptr() as usize - answer.as_ptr() as usize - 1;
+            out.push(char::from(answer.as_bytes()[at]));
+        }
+        match u64::from_str_radix(v, 16) {
+            Ok(bits) if v.len() == 16 && f64::from_bits(bits).is_nan() => out.push_str("NaN"),
+            _ => out.push_str(v),
+        }
+    }
+    out
+}
+
+#[test]
+fn normalised_compares_any_nan_as_nan() {
+    assert_eq!(
+        normalised("V\tfff8000000000001,fff8000000000000,-"),
+        "V\tNaN,NaN,-"
+    );
+    assert_eq!(
+        normalised("V\t3ff0000000000000\tx"),
+        "V\t3ff0000000000000\tx"
+    );
+    assert_ne!(
+        normalised("V\t3ff0000000000000"),
+        normalised("V\t4000000000000000")
+    );
+    assert_eq!(
+        normalised("E\tjava.lang.ClassCastException: x"),
+        "E\tjava.lang.ClassCastException"
+    );
 }
 
 fn hex_bits(max_doc: i32, docs: &[i32]) -> String {

@@ -90,21 +90,16 @@ impl BoolQuery {
                         // a pure negative (or empty) query matches nothing
                         return Ok(FixedBitSet::new(max_doc));
                     }
-                    let mut counts = vec![0usize; max_doc];
-                    for s in should {
-                        s.matches(leaf, max_doc)?.for_each_set_bit(|d| {
-                            if let Some(c) = counts.get_mut(d) {
-                                *c += 1;
-                            }
-                        });
-                    }
-                    let mut b = FixedBitSet::new(max_doc);
-                    let mut bad = None;
-                    for (d, &c) in counts.iter().enumerate() {
-                        if c >= required {
-                            set_doc(&mut b, i32::try_from(d).unwrap_or(-1), &mut bad);
+                    let b = if required == 1 {
+                        // any one SHOULD: their union
+                        let mut b = FixedBitSet::new(max_doc);
+                        for s in should {
+                            b.or(&s.matches(leaf, max_doc)?);
                         }
-                    }
+                        b
+                    } else {
+                        Self::at_least(should, required, leaf, max_doc)?
+                    };
                     acc = Some(match acc {
                         None => b,
                         Some(mut a) => {
@@ -120,6 +115,31 @@ impl BoolQuery {
                 Ok(acc)
             }
         }
+    }
+
+    /// The documents at least `required` of `should` match.
+    fn at_least(
+        should: &[BoolQuery],
+        required: usize,
+        leaf: &OpenSegment<'_>,
+        max_doc: usize,
+    ) -> Result<FixedBitSet> {
+        let mut counts = vec![0usize; max_doc];
+        for s in should {
+            s.matches(leaf, max_doc)?.for_each_set_bit(|d| {
+                if let Some(c) = counts.get_mut(d) {
+                    *c += 1;
+                }
+            });
+        }
+        let mut b = FixedBitSet::new(max_doc);
+        let mut bad = None;
+        for (d, &c) in counts.iter().enumerate() {
+            if c >= required {
+                set_doc(&mut b, i32::try_from(d).unwrap_or(-1), &mut bad);
+            }
+        }
+        Ok(b)
     }
 }
 

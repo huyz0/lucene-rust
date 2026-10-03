@@ -124,6 +124,19 @@ case "$BENCH" in
     MAIN=Geo3dMicro
     SRC=benchmarks/micro/java/Geo3dMicro.java
     JAR_MODULES="lucene-core lucene-spatial3d" ;;
+  spatial_extras)
+    # M9 T9.5's pair (SpatialExtrasMicro.java / micro_spatial_extras.rs): RPT
+    # indexing a Geo3D polygon, RPT intersects, BBox with the overlap-ratio
+    # similarity, heatmaps and date ranges over the 100 000-document index
+    # SpatialExtrasMicro builds (once) under benchmarks/.corpus/spatial-extras.
+    MAIN=SpatialExtrasMicro
+    SRC=benchmarks/micro/java/SpatialExtrasMicro.java
+    JAR_MODULES="lucene-core lucene-analysis-common lucene-spatial3d lucene-spatial-extras"
+    SPATIAL_JARS=1
+    INDEX="${INDEX_ARG:-$PWD/benchmarks/.corpus/spatial-extras}"
+    PREP_ARGS=(build "$INDEX")
+    JAVA_ARGS=(run)
+    NEEDS_INDEX=1 ;;
   geo3d_points)
     # M9 T9.4's query pair (Geo3dPointsMicro.java / micro_geo3d_points.rs):
     # PointInGeo3DShapeQuery and the distance sorts over the 300 000-point
@@ -165,6 +178,8 @@ esac
 source "$(dirname "$0")/lib-lucene-jars.sh"
 # shellcheck disable=SC2086  # JAR_MODULES is a deliberate word list
 CP=$(lucene_classpath ${JAR_MODULES:-lucene-core})
+# lucene-spatial-extras' Spatial4j and S2 jars.
+if [ -n "${SPATIAL_JARS:-}" ]; then CP="$CP:$(thirdparty_classpath "${SPATIAL_EXTRAS_DEPS[@]}")"; fi
 
 OUT=$(mktemp -d); trap 'rm -rf "$OUT"' EXIT
 

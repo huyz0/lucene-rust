@@ -249,6 +249,16 @@ pub struct SeekedTerm {
     meta: TermMetadata,
 }
 
+impl SeekedTerm {
+    /// `IntBlockTermState.singletonDocID`: the one document of a term pulsed
+    /// into the dictionary (`docFreq == 1`), read with no `.doc` access;
+    /// `None` for any other term.
+    pub fn singleton_doc(&self) -> Option<i32> {
+        (self.stats.doc_freq == 1 && self.meta.singleton_doc_id >= 0)
+            .then_some(self.meta.singleton_doc_id)
+    }
+}
+
 /// `docFreq`/`totalTermFreq` for one found term — the entirety of what this
 /// slice can read back for a term (no postings/doc-ids).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use super::legacy::{self, LegacyCell, LegacyGrid};
 use super::{Cell, CellIterator, SpatialPrefixTree};
-use crate::spatial4j::{Error, Point, Result, Shape, SpatialContext};
+use crate::spatial4j::{Error, Point, Result, Shape, SpatialContext, SpatialRelation};
 
 /// `QuadPrefixTree.MAX_LEVELS_POSSIBLE`.
 pub const MAX_LEVELS_POSSIBLE: i32 = 50;
@@ -129,28 +129,47 @@ impl QuadGeometry {
         quads
     }
 
-    /// `QuadCell.makeShape()`'s corner and size for the quadrant path.
-    pub(crate) fn cell_rect(&self, quads: impl Iterator<Item = u8>, len: usize) -> [f64; 4] {
+    /// `QuadCell.makeShape()`'s corner and size for the quadrant path
+    /// (`len` quadrants). A path deeper than `levelW` -- a term of a deeper
+    /// tree, or a corrupt one -- is Java's `ArrayIndexOutOfBoundsException`
+    /// at the first index it reads past the end.
+    pub(crate) fn cell_rect(
+        &self,
+        quads: impl Iterator<Item = u8>,
+        len: usize,
+    ) -> Result<[f64; 4]> {
+        let n = self.level_w.len();
+        if len > n {
+            // the first quadrant past the end that reads `levelW` (`C`
+            // reads nothing), else `levelW[len - 1]`
+            let i = quads
+                .enumerate()
+                .skip(n)
+                .find(|&(_, c)| c != 2)
+                .map_or(len - 1, |(i, _)| i);
+            return Err(array_index_out_of_bounds(i, n));
+        }
         let mut xmin = self.xmin;
         let mut ymin = self.ymin;
-        for (i, c) in quads.enumerate() {
-            match c {
-                0 => ymin += self.level_h[i],
-                1 => {
-                    xmin += self.level_w[i];
-                    ymin += self.level_h[i];
-                }
-                2 => {}
-                _ => xmin += self.level_w[i],
-            }
+        // Java's switch -- 0 (`A`): y; 1 (`B`): x and y; 2 (`C`): neither;
+        // 3 (`D`): x -- without its branches, which the cells' random
+        // quadrants mispredict: a skipped addition adds `-0.0`, the one
+        // value that leaves every double (`-0.0` included) unchanged.
+        for ((&w, &h), c) in self.level_w.iter().zip(&self.level_h).zip(quads) {
+            xmin += if c == 1 || c >= 3 { w } else { -0.0 };
+            ymin += if c <= 1 { h } else { -0.0 };
         }
-        let (width, height) = if len > 0 {
-            (self.level_w[len - 1], self.level_h[len - 1])
-        } else {
-            (self.grid_w, self.grid_h)
+        let (width, height) = match len.checked_sub(1) {
+            Some(last) => (self.level_w[last], self.level_h[last]),
+            None => (self.grid_w, self.grid_h),
         };
-        [xmin, xmin + width, ymin, ymin + height]
+        Ok([xmin, xmin + width, ymin, ymin + height])
     }
+}
+
+/// Java's `ArrayIndexOutOfBoundsException` message for `array[index]`.
+pub(crate) fn array_index_out_of_bounds(index: usize, length: usize) -> Error {
+    Error::ArrayIndexOutOfBounds(format!("Index {index} out of bounds for length {length}"))
 }
 
 /// `QuadPrefixTree`.
@@ -195,6 +214,26 @@ impl QuadPrefixTree {
     }
 }
 
+impl QuadGrid {
+    /// `QuadCell.makeShape()`'s arithmetic: the cell's
+    /// `[minX, maxX, minY, maxY]`.
+    fn cell_bounds(&self, cell: &LegacyCell) -> Result<[f64; 4]> {
+        // Java's switch meets an unexpected byte, or reads `levelW` past
+        // its end, at the first index either happens.
+        let n = self.geom.level_w.len();
+        for (i, &c) in cell.bytes.iter().enumerate() {
+            match c {
+                b'C' => {}
+                b'A' | b'B' | b'D' if i >= n => return Err(array_index_out_of_bounds(i, n)),
+                b'A' | b'B' | b'D' => {}
+                _ => return Err(Error::Runtime(format!("unexpected char: {}", c as i8))),
+            }
+        }
+        let quads = cell.bytes.iter().map(|&c| c - b'A');
+        self.geom.cell_rect(quads, cell.bytes.len())
+    }
+}
+
 impl LegacyGrid for QuadGrid {
     fn max_levels(&self) -> i32 {
         self.geom.max_levels
@@ -220,11 +259,7 @@ impl LegacyGrid for QuadGrid {
         let grid: Arc<dyn LegacyGrid> = self;
         Ok(b"ABCD"
             .iter()
-            .map(|&b| {
-                let mut bytes = cell.bytes.clone();
-                bytes.push(b);
-                LegacyCell::new(grid.clone(), &bytes)
-            })
+            .map(|&b| LegacyCell::from_bytes(grid.clone(), cell.bytes.with(b)))
             .collect())
     }
 
@@ -233,15 +268,13 @@ impl LegacyGrid for QuadGrid {
     }
 
     fn make_shape(&self, cell: &LegacyCell) -> Result<Arc<dyn Shape>> {
-        let mut quads = Vec::with_capacity(cell.bytes.len());
-        for &c in &cell.bytes {
-            match c {
-                b'A'..=b'D' => quads.push(c - b'A'),
-                _ => return Err(Error::Runtime(format!("unexpected char: {}", c as i8))),
-            }
-        }
-        let [a, b, c, d] = self.geom.cell_rect(quads.into_iter(), cell.bytes.len());
+        let [a, b, c, d] = self.cell_bounds(cell)?;
         Ok(self.geom.ctx.rect(a, b, c, d)?)
+    }
+
+    fn relate_cell(&self, cell: &LegacyCell, other: &dyn Shape) -> Result<SpatialRelation> {
+        let [a, b, c, d] = self.cell_bounds(cell)?;
+        self.geom.ctx.rect_relate(a, b, c, d, other)
     }
 }
 
@@ -278,6 +311,11 @@ impl SpatialPrefixTree for QuadPrefixTree {
 
     fn read_cell(&self, term: &[u8]) -> Result<Box<dyn Cell>> {
         Ok(Box::new(LegacyCell::new(self.grid(), term)))
+    }
+
+    fn read_cell_into(&self, term: &[u8], scratch: &mut Box<dyn Cell>) -> Result<()> {
+        LegacyCell::read_into(&self.inner, term, scratch);
+        Ok(())
     }
 
     fn tree_cell_iterator(

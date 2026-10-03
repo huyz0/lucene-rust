@@ -544,3 +544,102 @@ fn calendar_lenient_and_cutover_edges() {
     p.set_time_in_millis(i64::MIN);
     assert_eq!(p.actual_maximum(MONTH), 11);
 }
+
+/// Index terms are read off disk: whatever their bytes -- a corrupt term,
+/// or a term of a deeper or different tree -- reading the cell and asking
+/// it what the traversals ask fails with an error, never a panic (which
+/// could cross the FFI).
+#[test]
+fn arbitrary_terms_read_without_panicking() {
+    let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let alphabets: [&[u8]; 4] = [
+        b"ABCD+",
+        b"0123456789bcdefghjkmnpqrstuvwxyz+",
+        b"./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz*",
+        &[0, 1, 2, 3, 0x7f, 0x80, 0xfe, 0xff, b'A', b'+'],
+    ];
+    let mut trees = trees();
+    trees.push(Arc::new(PackedQuadPrefixTree::new(geo(), 2).unwrap()));
+    for tree in &trees {
+        let world = tree.world_cell();
+        let world_shape = world.shape().unwrap();
+        let mut scratch = tree.world_cell();
+        for round in 0..3000 {
+            let len = (next() % 40) as usize;
+            let alphabet = alphabets[round % alphabets.len()];
+            let term: Vec<u8> = (0..len)
+                .map(|_| alphabet[(next() % alphabet.len() as u64) as usize])
+                .collect();
+            let _ = tree.read_cell_into(&term, &mut scratch);
+            let Ok(mut cell) = tree.read_cell(&term) else {
+                continue;
+            };
+            let _ = (cell.level(), cell.is_leaf(), cell.to_string());
+            let _ = (cell.token_bytes_with_leaf(), cell.token_bytes_no_leaf());
+            let _ = cell.shape().map(|s| s.bounding_box());
+            let _ = cell.relate_shape(&*world_shape);
+            let _ = (
+                cell.compare_to_no_leaf(&*world),
+                world.compare_to_no_leaf(&*cell),
+            );
+            let _ = (cell.is_prefix_of(&*world), world.is_prefix_of(&*cell));
+            if cell.level() < tree.max_levels() {
+                if let Ok(mut kids) = cell.next_level_cells(None) {
+                    while let Ok(true) = kids.has_next() {
+                        if kids.next().is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+            cell.set_leaf();
+        }
+    }
+}
+
+/// A quad term deeper than the tree is Java's `ArrayIndexOutOfBoundsException`
+/// at the first index `makeShape` reads past `levelW` (a `C` reads none);
+/// an unexpected byte first is its `RuntimeException`.
+#[test]
+fn too_deep_quad_terms_are_java_index_errors() {
+    let quad = QuadPrefixTree::new(geo(), 2).unwrap(); // levelW has 3 entries
+    let err = |term: &[u8]| {
+        quad.read_cell(term)
+            .unwrap()
+            .shape()
+            .unwrap_err()
+            .to_string()
+    };
+    assert_eq!(err(b"ABCD"), "Index 3 out of bounds for length 3");
+    assert_eq!(err(b"ABCCA"), "Index 4 out of bounds for length 3");
+    assert_eq!(err(b"ABCC"), "Index 3 out of bounds for length 3");
+    assert_eq!(err(b"ABxD"), "unexpected char: 120");
+    let rel = quad
+        .read_cell(b"AAAA")
+        .unwrap()
+        .relate_shape(&geo().world_bounds());
+    assert!(matches!(rel, Err(Error::ArrayIndexOutOfBounds(_))));
+    assert!(quad.read_cell(b"ABC").unwrap().shape().is_ok());
+
+    let packed = PackedQuadPrefixTree::new(geo(), 2).unwrap();
+    // level 5 in the low bits (`(term >> 1) & 0x1f`), past maxLevels 2
+    let term = (5u64 << 1).to_be_bytes();
+    let e = packed.read_cell(&term).unwrap().shape().unwrap_err();
+    assert_eq!(e.to_string(), "Index 3 out of bounds for length 3");
+}
+/// A term past the S2 tree's 30 levels decodes, through Java's wrapping
+/// shifts, to an id without a level: its token (Java's
+/// `ArrayIndexOutOfBoundsException`) is empty rather than a panic.
+#[test]
+fn s2_term_decoding_to_no_level_has_an_empty_token() {
+    let tree = S2PrefixTree::new(geo3d(), 30, 1).unwrap();
+    let cell = tree.read_cell(&[b'.'; 32]).unwrap();
+    assert_eq!(cell.level(), 0);
+    assert!(cell.token_bytes_no_leaf().is_empty());
+}

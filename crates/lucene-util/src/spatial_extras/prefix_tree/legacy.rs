@@ -4,7 +4,7 @@
 
 use std::any::Any;
 use std::fmt;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use super::{Cell, CellIterator, FilterCellIterator, SingletonCellIterator};
 use crate::spatial4j::{Error, Point, Result, Shape, SpatialContext, SpatialRelation};
@@ -27,6 +27,10 @@ pub(crate) trait LegacyGrid: fmt::Debug + Send + Sync {
     fn sub_cells_size(&self) -> i32;
     /// `getShape()` before caching.
     fn make_shape(&self, cell: &LegacyCell) -> Result<Arc<dyn Shape>>;
+    /// `getShape().relate(other)`.
+    fn relate_cell(&self, cell: &LegacyCell, other: &dyn Shape) -> Result<SpatialRelation> {
+        self.make_shape(cell)?.relate(other)
+    }
 }
 
 /// `LegacyCell` (with `QuadCell`'s and `GhCell`'s tree-specific parts in
@@ -35,10 +39,9 @@ pub(crate) trait LegacyGrid: fmt::Debug + Send + Sync {
 pub struct LegacyCell {
     pub(crate) grid: Arc<dyn LegacyGrid>,
     /// The token without the leaf byte; its length is the level.
-    pub(crate) bytes: Vec<u8>,
+    pub(crate) bytes: CellBytes,
     pub(crate) is_leaf: bool,
     pub(crate) shape_rel: Option<SpatialRelation>,
-    pub(crate) shape: OnceLock<Arc<dyn Shape>>,
 }
 
 impl fmt::Debug for LegacyCell {
@@ -51,15 +54,46 @@ impl LegacyCell {
     /// `new LegacyCell(bytes, off, len)` then `readLeafAdjust()`: a trailing
     /// `+` marks a leaf; a cell at the last level is always a leaf.
     pub(crate) fn new(grid: Arc<dyn LegacyGrid>, bytes: &[u8]) -> Self {
+        Self::from_bytes(grid, CellBytes::from_slice(bytes))
+    }
+
+    /// [`Self::new`] taking the bytes.
+    pub(crate) fn from_bytes(grid: Arc<dyn LegacyGrid>, bytes: CellBytes) -> Self {
         let mut c = LegacyCell {
             grid,
-            bytes: bytes.to_vec(),
+            bytes,
             is_leaf: false,
             shape_rel: None,
-            shape: OnceLock::new(),
         };
         c.read_leaf_adjust();
         c
+    }
+
+    /// `readCell(term, scratch)` into this cell: its bytes, leaf flag,
+    /// relation and shape reset to `term`'s, the allocation kept.
+    pub(crate) fn reset(&mut self, bytes: &[u8]) {
+        self.bytes = CellBytes::from_slice(bytes);
+        self.is_leaf = false;
+        self.shape_rel = None;
+        self.read_leaf_adjust();
+    }
+
+    /// [`super::SpatialPrefixTree::read_cell_into`] for a legacy tree: the
+    /// scratch reused when it is a legacy cell of this grid.
+    pub(crate) fn read_into<G: LegacyGrid + 'static>(
+        grid: &Arc<G>,
+        term: &[u8],
+        scratch: &mut Box<dyn Cell>,
+    ) {
+        let any: &mut dyn Any = &mut **scratch;
+        if let Some(c) = any.downcast_mut::<LegacyCell>() {
+            if std::ptr::addr_eq(Arc::as_ptr(&c.grid), Arc::as_ptr(grid)) {
+                c.reset(term);
+                return;
+            }
+        }
+        let grid: Arc<dyn LegacyGrid> = grid.clone();
+        *scratch = Box::new(LegacyCell::new(grid, term));
     }
 
     /// `readLeafAdjust()`.
@@ -114,7 +148,7 @@ impl Cell for LegacyCell {
     }
 
     fn token_bytes_with_leaf(&self) -> Vec<u8> {
-        let mut result = self.bytes.clone();
+        let mut result = self.bytes.to_vec();
         if !self.is_leaf || self.level() == self.grid.max_levels() {
             return result;
         }
@@ -123,7 +157,7 @@ impl Cell for LegacyCell {
     }
 
     fn token_bytes_no_leaf(&self) -> Vec<u8> {
-        self.bytes.clone()
+        self.bytes.to_vec()
     }
 
     fn level(&self) -> i32 {
@@ -153,17 +187,22 @@ impl Cell for LegacyCell {
     }
 
     fn shape(&self) -> Result<Arc<dyn Shape>> {
-        if let Some(s) = self.shape.get() {
-            return Ok(s.clone());
-        }
-        let s = self.grid.make_shape(self)?;
-        Ok(self.shape.get_or_init(|| s).clone())
+        // Java caches the shape in the cell; making it again gives the same
+        // rectangle, and a cache's synchronisation costs more than the
+        // arithmetic (most cells' shapes are asked for once).
+        self.grid.make_shape(self)
+    }
+
+    fn relate_shape(&self, other: &dyn Shape) -> Result<SpatialRelation> {
+        self.grid.relate_cell(self, other)
     }
 
     fn is_prefix_of(&self, c: &dyn Cell) -> bool {
         // Java casts to `LegacyCell` and compares its byte slice.
-        let other = c.token_bytes_no_leaf();
-        other.len() >= self.bytes.len() && other[..self.bytes.len()] == self.bytes[..]
+        match c.as_any().downcast_ref::<LegacyCell>() {
+            Some(o) => o.bytes.starts_with(self.bytes.as_slice()),
+            None => c.token_bytes_no_leaf().starts_with(self.bytes.as_slice()),
+        }
     }
 
     fn compare_to_no_leaf(&self, from_cell: &dyn Cell) -> i32 {
@@ -211,7 +250,7 @@ pub(crate) fn point_cell_iterator(
     detail_level: i32,
 ) -> Result<Box<dyn CellIterator>> {
     let cell = grid.clone().get_cell(p, detail_level)?;
-    let full_bytes = cell.bytes.clone();
+    let full_bytes = cell.bytes.to_vec();
     let mut cells: Vec<Box<dyn Cell>> = Vec::with_capacity(detail_level.max(0) as usize);
     for i in 1..detail_level {
         let end = (i as usize).min(full_bytes.len());
@@ -219,4 +258,69 @@ pub(crate) fn point_cell_iterator(
     }
     cells.push(Box::new(cell));
     Ok(Box::new(FilterCellIterator::new(cells, None)))
+}
+
+/// How many token bytes a cell keeps inline (deeper cells spill to the
+/// heap): enough for every level of the default quad (12), packed quad
+/// and geohash trees, so a cell is copied without allocating.
+const INLINE_BYTES: usize = 30;
+
+/// A legacy cell's token bytes (without the leaf byte): inline when short.
+#[derive(Clone)]
+pub(crate) enum CellBytes {
+    Inline(u8, [u8; INLINE_BYTES]),
+    Heap(Vec<u8>),
+}
+
+impl CellBytes {
+    pub(crate) fn from_slice(b: &[u8]) -> Self {
+        if b.len() <= INLINE_BYTES {
+            let mut buf = [0u8; INLINE_BYTES];
+            buf[..b.len()].copy_from_slice(b);
+            CellBytes::Inline(b.len() as u8, buf)
+        } else {
+            CellBytes::Heap(b.to_vec())
+        }
+    }
+
+    /// The bytes followed by `b` (a child's).
+    pub(crate) fn with(&self, b: u8) -> Self {
+        match self {
+            CellBytes::Inline(len, buf) if usize::from(*len) < INLINE_BYTES => {
+                let mut buf = *buf;
+                buf[usize::from(*len)] = b;
+                CellBytes::Inline(len + 1, buf)
+            }
+            _ => {
+                let mut v = self.to_vec();
+                v.push(b);
+                CellBytes::Heap(v)
+            }
+        }
+    }
+
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        match self {
+            CellBytes::Inline(len, buf) => &buf[..usize::from(*len)],
+            CellBytes::Heap(v) => v,
+        }
+    }
+
+    /// Drops the last byte.
+    pub(crate) fn pop(&mut self) {
+        match self {
+            CellBytes::Inline(len, _) => *len = len.saturating_sub(1),
+            CellBytes::Heap(v) => {
+                v.pop();
+            }
+        }
+    }
+}
+
+impl std::ops::Deref for CellBytes {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        self.as_slice()
+    }
 }
