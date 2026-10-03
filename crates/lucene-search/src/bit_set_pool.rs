@@ -55,20 +55,28 @@ fn bytes(b: &FixedBitSet) -> usize {
 }
 
 /// A cleared set of exactly `len` bits, if this thread has one spare.
+///
+/// Sets are cleared here rather than in [`give`]: most sets given back are
+/// never taken (a point range's, a segment no later query revisits), and
+/// clearing those would be a memset of up to the whole set per query for
+/// nothing -- `geo_points_contains` read 0.78x of the unbounded pool's time
+/// that way.
 pub(crate) fn take(len: usize) -> Option<FixedBitSet> {
-    SPARE.with(|s| {
+    let mut b = SPARE.with(|s| {
         let mut s = s.borrow_mut();
         // The newest first: the set a query just finished with.
         let at = s.sets.iter().rposition(|b| b.len() == len)?;
         let b = s.sets.remove(at)?;
         s.bytes -= bytes(&b);
         Some(b)
-    })
+    })?;
+    b.clear_all();
+    Some(b)
 }
 
-/// Clears `b` and keeps it for a later [`take`], dropping the oldest spares
-/// as needed to stay within both limits.
-pub(crate) fn give(mut b: FixedBitSet) {
+/// Keeps `b`, as it is, for a later [`take`] (which clears it), dropping
+/// the oldest spares as needed to stay within both limits.
+pub(crate) fn give(b: FixedBitSet) {
     let size = bytes(&b);
     if size > SPARE_BIT_SET_LIMIT_BYTES {
         return;
@@ -81,7 +89,6 @@ pub(crate) fn give(mut b: FixedBitSet) {
             let Some(old) = s.sets.pop_front() else { break };
             s.bytes -= bytes(&old);
         }
-        b.clear_all();
         s.bytes += size;
         s.sets.push_back(b);
     });
