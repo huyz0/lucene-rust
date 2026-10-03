@@ -186,7 +186,7 @@ impl GeoWideRectangle {
             x,
             y,
             z,
-            &[&self.bottom_plane, &self.either_bound],
+            &[&self.bottom_plane as &dyn Membership, &self.either_bound],
         );
         let bottom_distance = style.compute_distance_to_plane(
             pm,
@@ -194,7 +194,7 @@ impl GeoWideRectangle {
             x,
             y,
             z,
-            &[&self.top_plane, &self.either_bound],
+            &[&self.top_plane as &dyn Membership, &self.either_bound],
         );
         let left_distance = style.compute_distance_to_plane(
             pm,
@@ -265,7 +265,7 @@ impl Bounded for GeoWideRectangle {
                 pm,
                 self.top_lat,
                 &self.top_plane,
-                &[&self.bottom_plane, &self.either_bound],
+                &[&self.bottom_plane as &dyn Membership, &self.either_bound],
             )
             .add_vertical_plane(
                 pm,
@@ -277,7 +277,7 @@ impl Bounded for GeoWideRectangle {
                 pm,
                 self.bottom_lat,
                 &self.bottom_plane,
-                &[&self.top_plane, &self.either_bound],
+                &[&self.top_plane as &dyn Membership, &self.either_bound],
             )
             .add_vertical_plane(
                 pm,
@@ -316,14 +316,14 @@ impl GeoShape for GeoWideRectangle {
             notable_points,
             &self.top_plane_points,
             bounds,
-            &[&self.bottom_plane, &self.either_bound],
+            &[&self.bottom_plane as &dyn Membership, &self.either_bound],
         ) || p.intersects(
             pm,
             &self.bottom_plane,
             notable_points,
             &self.bottom_plane_points,
             bounds,
-            &[&self.top_plane, &self.either_bound],
+            &[&self.top_plane as &dyn Membership, &self.either_bound],
         ) || p.intersects(
             pm,
             &self.left_plane,
@@ -347,11 +347,11 @@ impl GeoAreaShape for GeoWideRectangle {
         geo_shape.intersects(
             &self.top_plane,
             &self.top_plane_points,
-            &[&self.bottom_plane, &self.either_bound],
+            &[&self.bottom_plane as &dyn Membership, &self.either_bound],
         ) || geo_shape.intersects(
             &self.bottom_plane,
             &self.bottom_plane_points,
-            &[&self.top_plane, &self.either_bound],
+            &[&self.top_plane as &dyn Membership, &self.either_bound],
         ) || geo_shape.intersects(
             &self.left_plane,
             &self.left_plane_points,

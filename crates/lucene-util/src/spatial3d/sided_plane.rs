@@ -265,7 +265,12 @@ impl Membership for SidedPlane {
         if abs(eval_result) < MINIMUM_RESOLUTION {
             return true;
         }
-        signum(eval_result) == self.sig_num
+        // Java: `Math.signum(evalResult) == sigNum`. Past the check above
+        // `evalResult` is non-zero, so its signum is 1 or -1 by its sign,
+        // or NaN (equal to nothing, and neither comparison below holds).
+        // The same answer without `signum`'s zero/NaN branches, in the
+        // membership test every bounded distance and intersection runs.
+        (eval_result > 0.0 && self.sig_num == 1.0) || (eval_result < 0.0 && self.sig_num == -1.0)
     }
 }
 

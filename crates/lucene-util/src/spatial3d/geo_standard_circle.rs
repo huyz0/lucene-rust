@@ -141,7 +141,7 @@ impl GeoStandardCircle {
         // Only reached outside the circle, so the plane is there (a
         // whole-world circle has none, and nothing outside it).
         self.circle_plane.as_ref().map_or(0.0, |p| {
-            style.compute_distance_to_plane(&self.planet_model, p, x, y, z, &[])
+            style.compute_distance_to_plane(&self.planet_model, p, x, y, z, super::plane::NO_BOUNDS)
         })
     }
 }

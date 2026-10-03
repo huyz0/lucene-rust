@@ -285,8 +285,16 @@ impl GeoWideLongitudeSlice {
 
     fn outside_distance(&self, style: DistanceStyle, x: f64, y: f64, z: f64) -> f64 {
         let pm = &*self.planet_model;
-        let left_distance = style.compute_distance_to_plane(pm, &self.left_plane, x, y, z, &[]);
-        let right_distance = style.compute_distance_to_plane(pm, &self.right_plane, x, y, z, &[]);
+        let left_distance =
+            style.compute_distance_to_plane(pm, &self.left_plane, x, y, z, super::plane::NO_BOUNDS);
+        let right_distance = style.compute_distance_to_plane(
+            pm,
+            &self.right_plane,
+            x,
+            y,
+            z,
+            super::plane::NO_BOUNDS,
+        );
         let north_distance = style.compute_distance(&pm.north_pole, x, y, z);
         let south_distance = style.compute_distance(&pm.south_pole, x, y, z);
         min(

@@ -220,7 +220,14 @@ impl GeoNorthLatitudeZone {
     }
 
     fn outside_distance(&self, style: DistanceStyle, x: f64, y: f64, z: f64) -> f64 {
-        style.compute_distance_to_plane(&self.planet_model, &self.bottom_plane, x, y, z, &[])
+        style.compute_distance_to_plane(
+            &self.planet_model,
+            &self.bottom_plane,
+            x,
+            y,
+            z,
+            super::plane::NO_BOUNDS,
+        )
     }
 }
 
@@ -348,7 +355,14 @@ impl GeoSouthLatitudeZone {
     }
 
     fn outside_distance(&self, style: DistanceStyle, x: f64, y: f64, z: f64) -> f64 {
-        style.compute_distance_to_plane(&self.planet_model, &self.top_plane, x, y, z, &[])
+        style.compute_distance_to_plane(
+            &self.planet_model,
+            &self.top_plane,
+            x,
+            y,
+            z,
+            super::plane::NO_BOUNDS,
+        )
     }
 }
 
