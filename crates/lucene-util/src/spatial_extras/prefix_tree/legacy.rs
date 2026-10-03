@@ -25,6 +25,13 @@ pub(crate) trait LegacyGrid: fmt::Debug + Send + Sync {
     fn sub_cells(self: Arc<Self>, cell: &LegacyCell) -> Result<Vec<LegacyCell>>;
     /// `getSubCellsSize()`.
     fn sub_cells_size(&self) -> i32;
+    /// The byte each child appends to its parent's, in `getSubCells` order,
+    /// when every cell's children are exactly those (a quad tree's `ABCD`);
+    /// `None` makes `getNextLevelCells` build the list from
+    /// [`Self::sub_cells`].
+    fn child_labels(&self) -> Option<&'static [u8]> {
+        None
+    }
     /// `getShape()` before caching.
     fn make_shape(&self, cell: &LegacyCell) -> Result<Arc<dyn Shape>>;
     /// `getShape().relate(other)`.
@@ -160,6 +167,11 @@ impl Cell for LegacyCell {
         self.bytes.to_vec()
     }
 
+    fn token_bytes_no_leaf_into(&self, out: &mut Vec<u8>) {
+        out.clear();
+        out.extend_from_slice(&self.bytes);
+    }
+
     fn level(&self) -> i32 {
         self.bytes.len() as i32
     }
@@ -172,6 +184,13 @@ impl Cell for LegacyCell {
             let mut cell = self.sub_cell(p)?;
             cell.shape_rel = Some(SpatialRelation::Contains);
             return Ok(Box::new(SingletonCellIterator::new(Box::new(cell))));
+        }
+        if let Some(labels) = self.grid.child_labels() {
+            return Ok(Box::new(LegacyChildren::new(
+                self,
+                labels,
+                shape_filter.cloned(),
+            )));
         }
         let cells: Vec<Box<dyn Cell>> = self
             .grid
@@ -222,6 +241,100 @@ impl Cell for LegacyCell {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+}
+
+/// `getNextLevelCells(shapeFilter)` for a grid with fixed
+/// [`LegacyGrid::child_labels`]: `FilterCellIterator` over `getSubCells`,
+/// with each child made only when it is handed out. One scratch child is
+/// relabelled per candidate, so a child the filter rejects costs no
+/// allocation.
+struct LegacyChildren {
+    /// The candidate: the parent's bytes plus the current label.
+    child: LegacyCell,
+    labels: &'static [u8],
+    next: usize,
+    shape_filter: Option<Arc<dyn Shape>>,
+    st: super::IterState,
+}
+
+impl LegacyChildren {
+    fn new(
+        parent: &LegacyCell,
+        labels: &'static [u8],
+        shape_filter: Option<Arc<dyn Shape>>,
+    ) -> Self {
+        LegacyChildren {
+            child: LegacyCell {
+                grid: parent.grid.clone(),
+                bytes: parent.bytes.with(0),
+                is_leaf: false,
+                shape_rel: None,
+            },
+            labels,
+            next: 0,
+            shape_filter,
+            st: super::IterState::default(),
+        }
+    }
+}
+
+impl CellIterator for LegacyChildren {
+    fn has_next(&mut self) -> Result<bool> {
+        self.st.this_cell = None;
+        if self.st.next_cell.is_some() {
+            return Ok(true);
+        }
+        while let Some(&label) = self.labels.get(self.next) {
+            self.next = self.next.saturating_add(1);
+            // `LegacyCell(grid, parent + label)`: `readLeafAdjust` makes the
+            // last level a leaf (a label is never the leaf marker).
+            self.child.bytes.set_last(label);
+            self.child.is_leaf = false;
+            self.child.shape_rel = None;
+            self.child.read_leaf_adjust();
+            match &self.shape_filter {
+                None => {
+                    self.st.next_cell = Some(Box::new(self.child.clone()));
+                    return Ok(true);
+                }
+                Some(filter) => {
+                    let rel = self.child.relate_shape(&**filter)?;
+                    if rel.intersects() {
+                        let mut cell = self.child.clone();
+                        cell.shape_rel = Some(rel);
+                        if rel == SpatialRelation::Within {
+                            cell.is_leaf = true;
+                        }
+                        self.st.next_cell = Some(Box::new(cell));
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    fn next(&mut self) -> Result<Box<dyn Cell>> {
+        if self.st.next_cell.is_none() && !self.has_next()? {
+            return Err(Error::Runtime("java.util.NoSuchElementException".into()));
+        }
+        self.st.take_next()
+    }
+
+    fn this_cell(&self) -> Option<&dyn Cell> {
+        self.st.this_cell.as_deref()
+    }
+
+    fn next_detached(&mut self) -> Result<Box<dyn Cell>> {
+        if self.st.next_cell.is_none() && !self.has_next()? {
+            return Err(Error::Runtime("java.util.NoSuchElementException".into()));
+        }
+        self.st.this_cell = None;
+        self.st
+            .next_cell
+            .take()
+            .ok_or_else(|| Error::Runtime("java.util.NoSuchElementException".into()))
     }
 }
 
@@ -307,6 +420,17 @@ impl CellBytes {
     }
 
     /// Drops the last byte.
+    /// Overwrites the last byte (a cell's scratch child, relabelled).
+    pub(crate) fn set_last(&mut self, b: u8) {
+        let bytes: &mut [u8] = match self {
+            CellBytes::Inline(len, buf) => &mut buf[..usize::from(*len)],
+            CellBytes::Heap(v) => v,
+        };
+        if let Some(last) = bytes.last_mut() {
+            *last = b;
+        }
+    }
+
     pub(crate) fn pop(&mut self) {
         match self {
             CellBytes::Inline(len, _) => *len = len.saturating_sub(1),

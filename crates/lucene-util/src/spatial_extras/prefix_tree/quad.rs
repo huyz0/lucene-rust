@@ -218,6 +218,30 @@ impl QuadGrid {
     /// `QuadCell.makeShape()`'s arithmetic: the cell's
     /// `[minX, maxX, minY, maxY]`.
     fn cell_bounds(&self, cell: &LegacyCell) -> Result<[f64; 4]> {
+        // The common case in one pass: a cell no deeper than the tree, all
+        // of whose bytes are quadrants. The same additions in the same
+        // order as `cell_rect` (a skipped one adds `-0.0`), so the same
+        // bits; anything else takes the checking path below for Java's
+        // exception.
+        let g = &self.geom;
+        let bytes = cell.bytes.as_slice();
+        if bytes.len() <= g.level_w.len() {
+            let (mut xmin, mut ymin) = (g.xmin, g.ymin);
+            let mut quadrants = true;
+            for ((&b, &w), &h) in bytes.iter().zip(&g.level_w).zip(&g.level_h) {
+                let c = b.wrapping_sub(b'A');
+                quadrants &= c <= 3;
+                xmin += if c == 1 || c == 3 { w } else { -0.0 };
+                ymin += if c <= 1 { h } else { -0.0 };
+            }
+            if quadrants {
+                let (width, height) = match bytes.len().checked_sub(1) {
+                    Some(last) => (g.level_w[last], g.level_h[last]),
+                    None => (g.grid_w, g.grid_h),
+                };
+                return Ok([xmin, xmin + width, ymin, ymin + height]);
+            }
+        }
         // Java's switch meets an unexpected byte, or reads `levelW` past
         // its end, at the first index either happens.
         let n = self.geom.level_w.len();
@@ -265,6 +289,10 @@ impl LegacyGrid for QuadGrid {
 
     fn sub_cells_size(&self) -> i32 {
         4
+    }
+
+    fn child_labels(&self) -> Option<&'static [u8]> {
+        Some(b"ABCD")
     }
 
     fn make_shape(&self, cell: &LegacyCell) -> Result<Arc<dyn Shape>> {
