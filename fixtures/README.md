@@ -1071,6 +1071,33 @@ outright.
   rings for the morton path, and hand-built cases (holes sharing vertices,
   touching the shell, coinciding leftmost vertices, combs, a spiral).
   Deterministic: `--check` compares the files byte for byte.
+- `GenGeoTessellatorReal.java` (M9) — `geo/tessellator_real.tsv`: the
+  Tessellator over real-world polygons. Its input is not generated: it is
+  `fixtures/corpus/real_polygons.z` (zlib, one `source<TAB>name<TAB>wkt|geojson<TAB>text`
+  shape per line, numbers as the source spells them), built once by
+  `scripts/gen-tessellator-corpus.py` from SHA-256-pinned downloads
+  (`fixtures/corpus/real_polygons.sha256`, cached under
+  `fixtures/.jars/tessellator-corpus/`), and found by the generator through
+  `FIXTURES_CORPUS`, which `gen-fixtures.sh` exports. Sources and licences:
+  **Apache Lucene 10.5.0** (Apache-2.0) -- the 21 real-world
+  `.geojson.gz`/`.wkt.gz` shapes of `lucene-test-framework`'s
+  `org/apache/lucene/tests/geo/` and the 52 polygons `TestTessellator.java`
+  writes inline (both from user reports of Lucene issues); **Natural Earth
+  v5.1.2** (public domain, naturalearthdata.com, the GeoJSON exports of
+  `github.com/nvkelso/natural-earth-vector`) -- 1:50m admin-0 countries,
+  admin-1 states/provinces and lakes in full, 1:10m lakes with islands, and
+  ten 1:10m countries (NOR, CHL, GRC, RUS, ATA, ITA, ZAF, KGZ, FRA, KAZ: fjords,
+  archipelagos, the antimeridian split, the pole, enclaves as holes). 1,111
+  shapes, 4,193 polygons, ~399,000 vertices; 3.3 MB compressed. Each shape is
+  parsed by Lucene's `SimpleWKTShapeParser`/`Polygon.fromGeoJSON` (a shape
+  line with the polygon count, or the parser's exception), then every polygon
+  is tessellated with and without `checkSelfIntersections` -- the Lucene
+  shapes also as cartesian polygons (lon/lat as float x/y) -- and recorded as
+  the triangle count plus an FNV-1a 64 digest of the encoded vertices and
+  edge flags, or the exception; `TestTessellator`'s own shapes list their
+  triangles in full as well. Consumed by `geo_fixtures.rs`'
+  `tessellator_matches_lucene_on_real_world_polygons`, and timed by `--bench
+  geo`'s `tessellate_real*` cases. Deterministic.
 - `GenDistanceFeaturePruning.java` (M9 T9.2 review) —
   `distance_feature_pruning/`: four 6000-document segments (a few deleted)
   of `LongField` (`l`, some documents two-valued), `LongPoint` +

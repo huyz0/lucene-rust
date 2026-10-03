@@ -156,6 +156,7 @@ fn xy(spec: &str) -> Vec<XYGeometry> {
 
 pub fn bench_geo(w: Duration, m: Duration) {
     bench_tessellate(w, m);
+    bench_tessellate_real(w, m);
     bench_components(w, m);
     bench_haversin(w, m);
 }
@@ -224,6 +225,67 @@ fn bench_tessellate(w: Duration, m: Duration) {
         black_box(n);
         xy_polys.len() as u64
     });
+}
+
+/// The real-world corpus (`fixtures/corpus/real_polygons.z`: Lucene's
+/// `TestTessellator` shapes, Natural Earth countries, provinces and lakes),
+/// every lat/lon polygon Lucene tessellates both with and without
+/// `checkSelfIntersections` -- `GeoMicro.tessellateReal`.
+fn bench_tessellate_real(w: Duration, m: Duration) {
+    use lucene_util::geo::simple_wkt_shape_parser::{self, WktGeometry};
+    let packed = std::fs::read("fixtures/corpus/real_polygons.z").unwrap();
+    let corpus =
+        String::from_utf8(miniz_oxide::inflate::decompress_to_vec_zlib(&packed).unwrap()).unwrap();
+    let mut polys = Vec::new();
+    for line in corpus.lines() {
+        let f: Vec<&str> = line.splitn(4, '\t').collect();
+        let parsed = if f[2] == "geojson" {
+            Polygon::from_geojson(f[3]).ok()
+        } else {
+            match simple_wkt_shape_parser::parse(f[3]) {
+                Ok(Some(WktGeometry::Polygon(p))) => Some(vec![p]),
+                Ok(Some(WktGeometry::MultiPolygon(v))) => Some(v.into_iter().flatten().collect()),
+                _ => None,
+            }
+        };
+        for p in parsed.into_iter().flatten() {
+            if tessellator::tessellate(&p, true).is_ok()
+                && tessellator::tessellate(&p, false).is_ok()
+            {
+                polys.push(p);
+            }
+        }
+    }
+    for check_self in [true, false] {
+        let name = if check_self {
+            "tessellate_real_checked"
+        } else {
+            "tessellate_real"
+        };
+        let mut d = Fnv::new();
+        let mut tris = 0u64;
+        for p in &polys {
+            for t in tessellator::tessellate(p, check_self).unwrap() {
+                tris += 1;
+                for v in 0..3 {
+                    d.add(i64::from(t.encoded_x(v)));
+                    d.add(i64::from(t.encoded_y(v)));
+                    d.add(i64::from(t.is_edge_from_polygon(v)));
+                }
+            }
+        }
+        check(name, &d, tris);
+        measure(name, w, m, || {
+            let mut n = 0usize;
+            for p in &polys {
+                n += tessellator::tessellate(black_box(p), check_self)
+                    .unwrap()
+                    .len();
+            }
+            black_box(n);
+            polys.len() as u64
+        });
+    }
 }
 
 struct Shape {

@@ -194,6 +194,7 @@ public final class GeoMicro {
 
   public static void main(String[] args) throws IOException {
     tessellate();
+    tessellateReal();
     components();
     haversin();
   }
@@ -248,6 +249,64 @@ public final class GeoMicro {
       sink += n;
       return xyPolys.size();
     });
+  }
+
+  /**
+   * The real-world corpus ({@code fixtures/corpus/real_polygons.z}: Lucene's {@code TestTessellator}
+   * shapes, Natural Earth countries, provinces and lakes), every lat/lon polygon Lucene tessellates
+   * both with and without {@code checkSelfIntersections}.
+   */
+  static void tessellateReal() throws IOException {
+    String corpus;
+    try (var in = new java.util.zip.InflaterInputStream(Files.newInputStream(Path.of("fixtures/corpus/real_polygons.z")))) {
+      corpus = new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+    }
+    List<Polygon> polys = new ArrayList<>();
+    for (String line : corpus.split("\n")) {
+      String[] f = line.split("\t", 4);
+      Polygon[] parsed;
+      try {
+        if (f[2].equals("geojson")) {
+          parsed = Polygon.fromGeoJSON(f[3]);
+        } else {
+          Object g = org.apache.lucene.geo.SimpleWKTShapeParser.parse(f[3]);
+          parsed = g instanceof Polygon p ? new Polygon[] {p} : (Polygon[]) g;
+        }
+      } catch (Exception e) {
+        continue;
+      }
+      for (Polygon p : parsed) {
+        try {
+          Tessellator.tessellate(p, true);
+          Tessellator.tessellate(p, false);
+        } catch (IllegalArgumentException e) {
+          continue;
+        }
+        polys.add(p);
+      }
+    }
+    for (boolean check : new boolean[] {true, false}) {
+      String name = "tessellate_real" + (check ? "_checked" : "");
+      Fnv d = new Fnv();
+      long tris = 0;
+      for (Polygon p : polys) {
+        for (Tessellator.Triangle t : Tessellator.tessellate(p, check)) {
+          tris++;
+          for (int v = 0; v < 3; v++) {
+            d.add(t.getEncodedX(v));
+            d.add(t.getEncodedY(v));
+            d.add(t.isEdgefromPolygon(v) ? 1 : 0);
+          }
+        }
+      }
+      check(name, d, tris);
+      measure(name, () -> {
+        long n = 0;
+        for (Polygon p : polys) n += Tessellator.tessellate(p, check).size();
+        sink += n;
+        return polys.size();
+      });
+    }
   }
 
   record Shape(boolean geo, String spec, List<double[]> relate, List<double[]> contains, List<double[]> tris) {}
