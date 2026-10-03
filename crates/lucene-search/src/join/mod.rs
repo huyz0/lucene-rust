@@ -13,6 +13,15 @@
 //! documents, so the parents of a segment are the filter's matches whether or
 //! not they are deleted.
 
+mod query;
+mod sort;
+
+pub use query::{
+    ParentChildrenBlockJoinQuery, ParentsChildrenBlockJoinQuery, ScoreCombiner, ScoreMode,
+    ToChildBlockJoinQuery, ToParentBlockJoinQuery, DEFAULT_CHILD_LIMIT_PER_PARENT,
+};
+pub use sort::{BlockJoinSelector, JoinMissing, JoinSortType, ToParentBlockJoinSortField};
+
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex};

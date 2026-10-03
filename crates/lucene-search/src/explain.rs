@@ -81,6 +81,28 @@ pub struct Explanation {
     long_value: Option<i64>,
 }
 
+thread_local! {
+    /// The segment being explained, `(maxDoc, docBase)`: set by
+    /// [`crate::index_searcher::IndexSearcher::explain`] for the length of one
+    /// explanation, so a clause that needs the segment's size (a block join's
+    /// parent filter) or its base (its description) can read them where this
+    /// module's signatures do not carry them.
+    static LEAF: std::cell::Cell<Option<(i32, i32)>> = const { std::cell::Cell::new(None) };
+}
+
+/// Runs `f` with `(max_doc, doc_base)` as the segment being explained.
+pub(crate) fn with_leaf<R>(max_doc: Option<i32>, doc_base: i32, f: impl FnOnce() -> R) -> R {
+    let prev = LEAF.with(|l| l.replace(max_doc.map(|m| (m, doc_base))));
+    let out = f();
+    LEAF.with(|l| l.set(prev));
+    out
+}
+
+/// The segment being explained, if a caller set it.
+pub(crate) fn leaf() -> Option<(i32, i32)> {
+    LEAF.with(std::cell::Cell::get)
+}
+
 impl Explanation {
     /// Real `Explanation.match(value, description, details...)`-equivalent:
     /// builds a matching, leaf explanation (`details` empty; use
@@ -386,6 +408,11 @@ pub fn explain_clause_with_stats(
         Clause::Exists(q) => Err(crate::Error::MissingSegmentReader(q.field.clone())),
         // The score the scorer tree gives the document, as one match.
         Clause::Extended(q) => {
+            if let Some(e) = crate::exec::join::explain_extended(
+                fields, doc_in, pos_in, pay_in, live_docs, points, norms, global, q, doc,
+            )? {
+                return Ok(e);
+            }
             let hits = crate::exec::extended::resolve(
                 fields, doc_in, pos_in, pay_in, live_docs, points, norms, global, q, true,
             )?;
@@ -1030,7 +1057,7 @@ fn scorer_score(
         points,
         norms,
         global,
-        max_doc: None,
+        max_doc: leaf().map(|(max_doc, _)| max_doc),
         cache: None,
         reader: None,
         similarity: None,
