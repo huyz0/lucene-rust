@@ -110,6 +110,7 @@ the hook, the container and this table cannot drift apart:
 | Rust engine (M5), one node: Rust vs OpenSearch's engine op for op, restart/SIGKILL/panic/breaker, YAML suites with every index on the Rust engine | `scripts/verify-opensearch.sh --engine --yaml` (see `docs/opensearch-engine.md`) |
 | Rust engine (M5), three nodes: document replication, recovery, failover, Rust<->Java relocation | `scripts/verify-opensearch-cluster.sh` |
 | OpenSearch's own `InternalEngineTests` on the Rust engine | `scripts/opensearch-engine-tests.sh` (skips are listed with reasons in `opensearch-plugin/tools/derive_engine_tests.py`) |
+| The derived engine tests are exactly `derive_engine_tests.py`'s output (no hand edits) | `scripts/check-derived-engine-tests.sh` (downloads OpenSearch 3.8.0's sources, pinned by SHA-256; CI `opensearch engine`) |
 | OpenSearch plugin, JVM-side self test only (native path vs Lucene `IndexSearcher`, the bridge's error paths) | `scripts/opensearch-dist.sh && gradle -p opensearch-plugin check` (needs a JDK 25 for Gradle's toolchain, which the capped container lacks: run it on the host) |
 | FFI fuzzing (libFuzzer + ASan; nightly, outside the workspace) | `cd crates/lucene-ffi/fuzz && cargo +nightly fuzz run <target> corpus/<target> seeds/<target>` |
 
