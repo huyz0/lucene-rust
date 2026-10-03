@@ -49,6 +49,19 @@ a dependency the shipped library links is not under a licence listed here.
     container image, never redistributed. Neither jar carries a `NOTICE`
     file of its own.
 
+- **Test data from third parties** (M9). `fixtures/corpus/real_polygons.z`,
+  the Tessellator's real-world polygon corpus (`scripts/gen-tessellator-corpus.py`),
+  holds:
+  - polygons from **Apache Lucene 10.5.0**'s own tests (Apache-2.0):
+    `lucene-test-framework`'s geo resources and `TestTessellator.java`'s
+    inline shapes;
+  - **Natural Earth** v5.1.2 vector data (public domain:
+    naturalearthdata.com/about/terms-of-use, "No permission is needed to use
+    Natural Earth"), as exported to GeoJSON by
+    `github.com/nvkelso/natural-earth-vector`.
+  - Test data only: nothing under `fixtures/` ships in the plugin zip or the
+    native library. `NOTICE` names both anyway.
+
 ## What ships, and under what
 
 - **The plugin zip** holds three things:

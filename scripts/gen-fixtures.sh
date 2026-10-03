@@ -202,6 +202,10 @@ CP=$(lucene_classpath "${LUCENE_MODULES[@]}"):$(thirdparty_classpath "${SPATIAL_
 # its text from this jar's europarl.lines.txt.gz.
 LUCENE_TEST_FRAMEWORK_JAR=$(lucene_resolve_jar lucene-test-framework)
 export LUCENE_TEST_FRAMEWORK_JAR
+# Committed generator inputs that are neither generated nor fixtures
+# themselves: GenGeoTessellatorReal's real-world polygon corpus
+# (scripts/gen-tessellator-corpus.py builds it).
+export FIXTURES_CORPUS="$FIXTURES/corpus"
 
 # --- compile -----------------------------------------------------------------
 CLASSES=$(mktemp -d)

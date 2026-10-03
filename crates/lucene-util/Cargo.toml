@@ -21,6 +21,7 @@ test-support = []
 [dev-dependencies]
 proptest.workspace = true
 criterion.workspace = true
+miniz_oxide.workspace = true
 
 [[bench]]
 name = "util_ops"
