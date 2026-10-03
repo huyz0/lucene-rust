@@ -344,6 +344,114 @@ fn near(per: &[Vec<(i32, i32)>], slop: i64, in_order: bool, out: &mut Vec<Emissi
     }
 }
 
+/// The leaves of an in-order `SpanNearQuery` of terms alone (two or more):
+/// the shape [`ordered_terms_freq`] scores without materializing spans.
+fn ordered_term_leaves(c: &Compiled) -> Option<(Vec<usize>, i64)> {
+    let Compiled::Near {
+        clauses,
+        slop,
+        in_order: true,
+    } = c
+    else {
+        return None;
+    };
+    if clauses.len() < 2 {
+        return None;
+    }
+    let leaves = clauses
+        .iter()
+        .map(|cl| match cl {
+            Compiled::Term(i) => Some(*i),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some((leaves, *slop))
+}
+
+/// [`freq_of`] of [`emit`] for an in-order near of terms -- `clauses[i]` is
+/// clause `i`'s leaf in `pos` -- fused: [`crate::near_spans::ordered_walk`]
+/// over the positions themselves (a term's span is `[p, p + 1)`), each
+/// match's `1 / (1 + width)` added as it is found, in the order `emit`
+/// lists the matches. The same float sum, without the per-document span
+/// lists.
+///
+/// With a slop of 0 every match has width 0 (the walk never moves a clause
+/// before the previous one's end, so no gap is negative) and adds exactly
+/// 1: the float sum is the number of matches, up to 2^24, where adding 1
+/// to a `float` no longer changes it.
+fn ordered_terms_freq(clauses: &[usize], slop: i64, pos: &[Vec<i32>]) -> f32 {
+    if slop == 0 {
+        let mut n = 0u32;
+        ordered_terms_walk(clauses, slop, pos, |_| n = n.saturating_add(1));
+        return n.min(1 << 24) as f32;
+    }
+    let mut freq = 0.0f32;
+    ordered_terms_walk(clauses, slop, pos, |width| {
+        freq = (f64::from(freq) + 1.0 / (1.0 + width as f64)) as f32;
+    });
+    freq
+}
+
+/// [`crate::near_spans::ordered_walk`] over the clauses' term positions,
+/// `on_match` called with each match's width.
+fn ordered_terms_walk(
+    clauses: &[usize],
+    slop: i64,
+    pos: &[Vec<i32>],
+    mut on_match: impl FnMut(i64),
+) {
+    if let [a, b] = clauses {
+        let (first, second) = (&pos[*a], &pos[*b]);
+        let mut at = 0usize;
+        for &start in first {
+            let first_end = start.saturating_add(1);
+            while at < second.len() && second[at] < first_end {
+                at += 1;
+            }
+            let Some(&next) = second.get(at) else {
+                return;
+            };
+            let width = i64::from(next) - i64::from(first_end);
+            if width <= slop {
+                on_match(width);
+            }
+        }
+        return;
+    }
+    if clauses.iter().any(|&i| pos[i].is_empty()) {
+        return;
+    }
+    const STACK: usize = 8;
+    let mut on_stack = [0usize; STACK];
+    let mut on_heap = Vec::new();
+    let cursor: &mut [usize] = if clauses.len() <= STACK {
+        &mut on_stack[..clauses.len()]
+    } else {
+        on_heap.resize(clauses.len(), 0);
+        &mut on_heap
+    };
+    for &start in &pos[clauses[0]] {
+        let mut prev_end = start.saturating_add(1);
+        let mut width: i64 = 0;
+        for (k, &leaf) in clauses.iter().enumerate().skip(1) {
+            let spans = &pos[leaf];
+            let mut at = cursor[k];
+            while at < spans.len() && spans[at] < prev_end {
+                at += 1;
+            }
+            let Some(&next) = spans.get(at) else {
+                return;
+            };
+            cursor[k] = at;
+            width = width.saturating_add(i64::from(next) - i64::from(prev_end));
+            prev_end = next.saturating_add(1);
+        }
+        if width <= slop {
+            on_match(width);
+        }
+    }
+}
+
 /// `SpanScorer.setFreqCurrentDoc`: `sum(1 / (1 + width))` over the
 /// document's spans, each step rounded to `float` as Java's compound
 /// assignment rounds it; `0` when it has none.
@@ -458,6 +566,8 @@ pub(crate) fn span_doc_scores(
     let mut scratch = Scratch::default();
     // A query of terms and ors of terms emits only width-0 spans.
     let term_counts = term_counts(&compiled, sources.len());
+    // An in-order near of terms is scored straight from the positions.
+    let ordered_terms = ordered_term_leaves(&compiled);
     let mut doc = approximate(&compiled, 0, &mut sources)?;
     while doc != NO_MORE_DOCS {
         if ctx.live_docs.is_none_or(|live| live.get_doc(doc)) {
@@ -477,9 +587,14 @@ pub(crate) fn span_doc_scores(
                         buf.clear();
                         source.positions_at(doc, buf)?;
                     }
-                    spans.clear();
-                    emit(&compiled, &pos, &mut spans, &mut scratch);
-                    freq_of(&spans)
+                    match &ordered_terms {
+                        Some((clauses, slop)) => ordered_terms_freq(clauses, *slop, &pos),
+                        None => {
+                            spans.clear();
+                            emit(&compiled, &pos, &mut spans, &mut scratch);
+                            freq_of(&spans)
+                        }
+                    }
                 }
             };
             if freq != 0.0 {
@@ -547,6 +662,91 @@ mod tests {
 
     fn term(t: &str) -> SpanQuery {
         SpanQuery::span_term("f", t)
+    }
+
+    /// The fused in-order near of terms scores as `emit` + `freq_of` do,
+    /// bit for bit: random documents, two to five clauses (a repeated term
+    /// among them), slops from 0 to 6, and empty clauses.
+    #[test]
+    fn the_fused_ordered_near_of_terms_scores_as_the_spans_do() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        let names = ["a", "b", "c", "d"];
+        let mut fused_hits = 0;
+        for round in 0..3000 {
+            let mut entries: Vec<(&str, Vec<i32>)> = Vec::new();
+            for name in names {
+                let mut ps: Vec<i32> = (0..next(12)).map(|_| next(40) as i32).collect();
+                ps.sort_unstable();
+                ps.dedup();
+                entries.push((name, ps));
+            }
+            let d: DocPositions = entries
+                .iter()
+                .map(|(t, ps)| (("f".to_string(), t.as_bytes().to_vec()), ps.clone()))
+                .collect();
+            // up to ten clauses: past the eight the walks keep on the stack
+            let n = if round % 50 == 0 {
+                9 + round % 2
+            } else {
+                2 + (round % 4)
+            };
+            let clauses: Vec<SpanQuery> = (0..n).map(|_| term(names[next(4) as usize])).collect();
+            let slop = next(7) as u32;
+            let q = SpanQuery::span_near(clauses, slop, true);
+            let mut leaves = Vec::new();
+            crate::collect_span_leaves(&q, &mut leaves);
+            leaves.sort_unstable();
+            leaves.dedup();
+            let compiled = compile(&q, &leaves);
+            let pos: Vec<Vec<i32>> = leaves
+                .iter()
+                .map(|k| d.get(k).cloned().unwrap_or_default())
+                .collect();
+            let (fused, s) = ordered_term_leaves(&compiled).expect("an in-order near of terms");
+            let got = ordered_terms_freq(&fused, s, &pos);
+            assert_eq!(got.to_bits(), sloppy_freq(&q, &d).to_bits(), "{q:?} {d:?}");
+            if got > 0.0 {
+                fused_hits += 1;
+            }
+        }
+        assert!(fused_hits > 300, "{fused_hits}");
+        // only an in-order near of two or more terms is fused
+        let leaves = vec![
+            ("f".to_string(), b"a".to_vec()),
+            ("f".to_string(), b"b".to_vec()),
+        ];
+        let unordered = compile(
+            &SpanQuery::span_near([term("a"), term("b")], 1, false),
+            &leaves,
+        );
+        assert!(ordered_term_leaves(&unordered).is_none());
+        let one = compile(&SpanQuery::span_near([term("a")], 1, true), &leaves);
+        assert!(ordered_term_leaves(&one).is_none());
+        let nested = compile(
+            &SpanQuery::span_near([term("a"), SpanQuery::span_or([term("a")])], 1, true),
+            &leaves,
+        );
+        assert!(ordered_term_leaves(&nested).is_none());
+        assert!(ordered_term_leaves(&Compiled::Term(0)).is_none());
+        // an absent leaf is on no document; a near of no clauses matches none
+        let mut absent = [LeafPositions::Absent];
+        assert_eq!(absent[0].advance(0).unwrap(), NO_MORE_DOCS);
+        assert_eq!(absent[0].freq_at(0), 0);
+        let mut out = vec![];
+        absent[0].positions_at(0, &mut out).unwrap();
+        assert!(out.is_empty());
+        let empty = Compiled::Near {
+            clauses: vec![],
+            slop: 0,
+            in_order: true,
+        };
+        assert_eq!(approximate(&empty, 0, &mut absent).unwrap(), NO_MORE_DOCS);
     }
 
     #[test]
