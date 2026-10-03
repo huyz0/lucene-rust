@@ -589,3 +589,65 @@ fn facets_over_a_small_index() {
         .unwrap();
     assert_eq!(hits(&leaves, q.as_ref()), vec![0, 1]);
 }
+
+/// The boolean matcher's `minimumNumberShouldMatch` above one (no strategy
+/// builds it today) and its SHOULD-less required case.
+#[test]
+fn bool_query_minimum_should_match() {
+    use super::bool_query::BoolQuery;
+    let tmp = TempDir::new("spatial-bool");
+    let g = geo();
+    let rpt = RecursivePrefixTreeStrategy::new(quad(&g, 6), "rpt").unwrap();
+    let docs: Vec<Vec<Box<dyn IndexableField>>> =
+        ["POINT(10 20)", "POINT(10 20)", "POINT(-30 -40)"]
+            .iter()
+            .map(|s| rpt.create_indexable_fields(&wkt(&g, s)).unwrap())
+            .collect();
+    let reader = index(&tmp, docs);
+    let opened = reader.open_segments().unwrap();
+    let leaves = opened.as_open_segments();
+    let clause = |w: &str| {
+        BoolQuery::Clause(
+            rpt.make_query(&SpatialArgs::new(SpatialOperation::Intersects, wkt(&g, w)))
+                .unwrap(),
+        )
+    };
+    let near = || clause("ENVELOPE(9, 11, 21, 19)"); // docs 0 and 1
+    let world = || clause("ENVELOPE(-180, 180, 90, -90)"); // all three
+    let south = || clause("ENVELOPE(-31, -29, -39, -41)"); // doc 2
+    let docs_of = |q: &BoolQuery| {
+        let bits = q.matches(&leaves[0], 3).unwrap();
+        (0..3).filter(|&d| bits.get(d)).collect::<Vec<usize>>()
+    };
+    let at_least = |should: Vec<BoolQuery>, min_should_match| BoolQuery::Bool {
+        must: Vec::new(),
+        should,
+        must_not: Vec::new(),
+        min_should_match,
+    };
+    assert_eq!(
+        docs_of(&at_least(vec![near(), world(), south()], 2)),
+        vec![0, 1, 2]
+    );
+    assert_eq!(
+        docs_of(&at_least(vec![near(), south(), south()], 2)),
+        vec![2]
+    );
+    assert_eq!(
+        docs_of(&at_least(vec![near(), world(), south()], 3)),
+        Vec::<usize>::new()
+    );
+    let described = format!("{:?}", near());
+    assert!(
+        described.contains("fieldName=rpt,queryShape=Rect(minX=9.0"),
+        "{described}"
+    );
+    // a required SHOULD with none to match: nothing
+    let none = BoolQuery::Bool {
+        must: vec![world()],
+        should: Vec::new(),
+        must_not: Vec::new(),
+        min_should_match: 1,
+    };
+    assert_eq!(docs_of(&none), Vec::<usize>::new());
+}
