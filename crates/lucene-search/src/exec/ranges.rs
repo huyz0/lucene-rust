@@ -6,6 +6,7 @@
 //! documents score the boost.
 
 use lucene_codecs::doc_values::{self, NumericReader, SortedNumericEntry, SortedNumericReader};
+use lucene_codecs::points::{IntersectVisitor, Relation};
 use lucene_util::fixed_bit_set::FixedBitSet;
 
 use super::build::{self, LeafContext};
@@ -572,11 +573,91 @@ pub(crate) fn point_in_set<'a>(
     else {
         return Ok(None);
     };
-    let mut docs = Vec::new();
-    for p in &q.points {
-        docs.extend(points.reader.range_query(number, p, p)?);
-    }
+    let docs = if q.num_dims == 1 {
+        // `PointInSetQuery.MergePointVisitor`: one walk of the tree, the
+        // sorted query points merged with the cells' ascending values.
+        let mut visitor = MergePointVisitor {
+            points: &q.points,
+            next: 0,
+            docs: Vec::new(),
+        };
+        points.reader.intersect(number, &mut visitor)?;
+        visitor.docs
+    } else {
+        // `SinglePointVisitor`: a walk per point.
+        let mut docs = Vec::new();
+        for p in &q.points {
+            docs.extend(points.reader.range_query(number, p, p)?);
+        }
+        docs
+    };
     Ok(doc_set(docs, max_doc, boost, mode))
+}
+
+/// `PointInSetQuery.MergePointVisitor` (one dimension): the query's sorted
+/// points, advanced as the tree hands over cells and values in ascending
+/// order.
+struct MergePointVisitor<'q> {
+    points: &'q [Vec<u8>],
+    /// `nextQueryPoint`: `points.len()` once exhausted.
+    next: usize,
+    docs: Vec<i32>,
+}
+
+impl MergePointVisitor<'_> {
+    /// `matches(packedValue)`.
+    fn matches(&mut self, packed: &[u8]) -> bool {
+        while let Some(p) = self.points.get(self.next) {
+            match p.as_slice().cmp(packed) {
+                std::cmp::Ordering::Equal => return true,
+                std::cmp::Ordering::Less => self.next = self.next.saturating_add(1),
+                std::cmp::Ordering::Greater => break,
+            }
+        }
+        false
+    }
+}
+
+impl IntersectVisitor for MergePointVisitor<'_> {
+    fn compare(&mut self, min_packed: &[u8], max_packed: &[u8]) -> Relation {
+        while let Some(p) = self.points.get(self.next) {
+            let p = p.as_slice();
+            let cmp_min = p.cmp(min_packed);
+            if cmp_min == std::cmp::Ordering::Less {
+                // The query point is before the cell: try the next one.
+                self.next = self.next.saturating_add(1);
+                continue;
+            }
+            let cmp_max = p.cmp(max_packed);
+            if cmp_max == std::cmp::Ordering::Greater {
+                return Relation::CellOutsideQuery;
+            }
+            if cmp_min == std::cmp::Ordering::Equal && cmp_max == std::cmp::Ordering::Equal {
+                // A cell of one value, the query point's.
+                return Relation::CellInsideQuery;
+            }
+            return Relation::CellCrossesQuery;
+        }
+        Relation::CellOutsideQuery
+    }
+
+    fn visit(&mut self, doc_id: i32) {
+        self.docs.push(doc_id);
+    }
+
+    fn visit_many(&mut self, doc_ids: &[i32]) {
+        self.docs.extend_from_slice(doc_ids);
+    }
+
+    fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) {
+        if self.matches(packed_value) {
+            self.docs.push(doc_id);
+        }
+    }
+
+    fn grow(&mut self, count: usize) {
+        self.docs.reserve(count);
+    }
 }
 
 /// A [`DocumentClause`]: the query's `ConstantScoreWeight` over this
@@ -830,4 +911,34 @@ fn term_matcher(source: &MultiTermSource) -> Result<TermPredicate> {
             Box::new(move |t: &[u8]| q.contains(t))
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_merge_visitor_walks_the_set_with_the_tree() {
+        let points = vec![vec![2u8], vec![4], vec![9]];
+        let mut v = MergePointVisitor {
+            points: &points,
+            next: 0,
+            docs: Vec::new(),
+        };
+        // Below every point, a single-valued cell of one point, a cell that
+        // spans one: outside, inside, crossing.
+        assert_eq!(v.compare(&[0], &[1]), Relation::CellOutsideQuery);
+        assert_eq!(v.compare(&[2], &[2]), Relation::CellInsideQuery);
+        v.grow(2);
+        v.visit_many(&[5, 6]);
+        v.visit(7);
+        assert_eq!(v.compare(&[3], &[5]), Relation::CellCrossesQuery);
+        assert_eq!(v.next, 1, "2 is behind the cell");
+        v.visit_with_value(8, &[3]);
+        v.visit_with_value(9, &[4]);
+        v.visit_with_value(10, &[5]);
+        assert_eq!(v.compare(&[10], &[11]), Relation::CellOutsideQuery);
+        v.visit_with_value(11, &[12]);
+        assert_eq!(v.docs, vec![5, 6, 7, 9]);
+    }
 }
