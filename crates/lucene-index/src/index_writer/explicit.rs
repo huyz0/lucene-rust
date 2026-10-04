@@ -1196,9 +1196,7 @@ impl<'d> IndexWriter<'d> {
     ) -> Result<super::SeqNo> {
         // `DocumentsWriterPerThread.updateDocuments`: a block in a sorted
         // index needs a parent field to keep it together.
-        if docs.len() > 1 && self.cfg.index_sort.is_some() && self.cfg.parent_field.is_none() {
-            return Err(Error::BlocksWithIndexSortNeedParentField);
-        }
+        self.cfg.check_block(docs.len())?;
         self.reserve_docs(docs.len())?;
         let mut docs = docs;
         // `IndexingChain.processDocument(docId, doc, lastDocInBlock)`: the
@@ -1425,6 +1423,42 @@ mod tests {
 
     /// Explicit documents flush, merge and commit into segments the port's
     /// `CheckIndex` accepts, each listing only the fields it carries.
+    /// `DocumentsWriterPerThread.updateDocuments` validates each document of
+    /// a block as it goes, and on a failure marks the block's earlier
+    /// documents deleted; this port validates the whole block first, so a
+    /// bad document `k` leaves nothing buffered and the block flag as it
+    /// was -- the same documents survive either way.
+    #[test]
+    fn a_block_with_an_invalid_document_buffers_nothing() {
+        let tmp = TempDir::new("explicit-bad-block");
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        let f = register(&mut w);
+        w.add_explicit_documents(vec![doc(&f, 0)]).unwrap();
+        let (docs, explicit, ram) = (
+            w.pending_docs.len(),
+            w.pending_explicit.len(),
+            w.ram_bytes_used(),
+        );
+        for k in 0..3 {
+            let mut block: Vec<ExplicitDocument> = (1..4).map(|i| doc(&f, i)).collect();
+            // Document `k` names an unregistered field.
+            block[k].stored.push(StoredField {
+                field_number: 99,
+                value: FieldValue::Long(1),
+            });
+            assert!(w.add_explicit_documents(block).is_err(), "doc {k}");
+            assert_eq!(w.pending_docs.len(), docs);
+            assert_eq!(w.pending_explicit.len(), explicit);
+            assert_eq!(w.ram_bytes_used(), ram);
+            assert!(!w.pending_has_blocks, "doc {k} set the block flag");
+        }
+        w.commit().unwrap();
+        let infos = w.segment_infos().clone();
+        assert_eq!(infos.segments.len(), 1);
+        assert_eq!(infos.segments[0].del_count, 0);
+    }
+
     #[test]
     fn explicit_documents_round_trip_through_check_index() {
         let tmp = TempDir::new("explicit-round-trip");

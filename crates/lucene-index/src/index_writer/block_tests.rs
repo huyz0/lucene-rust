@@ -549,3 +549,47 @@ fn keys_follow_the_parent_closing_each_block() {
     explicit::key_of_parent(&mut keys, &|d| parents[d]);
     assert_eq!(keys, [Some(3), Some(3), Some(3), None, None, Some(6)]);
 }
+
+/// `CheckIndex.checkIndexSort` walks a block segment's parents through the
+/// parent field's doc values; a segment whose parent field has no column
+/// cannot be walked, and is reported -- not passed over an empty walk.
+#[test]
+fn a_block_segment_without_its_parent_column_fails_the_sort_check() {
+    let tmp = TempDir::new("sorted-blocks-no-parent-column");
+    let dir = FsDirectory::open(tmp.path());
+    let mut w = writer(&dir);
+    w.set_parent_field(Some("_parent")).unwrap();
+    w.set_index_sort(Some(&[IndexSortField::long("rank", false, None)]))
+        .unwrap();
+    for (b, rank) in [(0, 4), (1, 2), (2, 8)] {
+        w.add_fields_documents(&block(b, 2, rank)).unwrap();
+    }
+    let infos = w.commit().unwrap().clone();
+    let sci = &infos.segments[0];
+    let si = segment_info::parse_for_codec(
+        &dir.open(&format!("{}.si", sci.segment_name)).unwrap(),
+        &sci.segment_id,
+        &sci.codec_name,
+    )
+    .unwrap();
+    assert!(si.has_blocks);
+    let mut fields = segment_field_infos(&dir, sci).unwrap();
+    let run = |fields: &lucene_codecs::field_infos::FieldInfos| {
+        let mut checks = Vec::new();
+        crate::check_index::check_index_sort(&dir, sci, &si, fields, &mut checks);
+        checks
+    };
+    let intact = run(&fields);
+    assert!(intact.iter().all(|c| c.passed()), "{intact:?}");
+    // The parent flag moves to `id`, a field without a doc-values column.
+    for f in &mut fields.fields {
+        f.parent_field = f.name == "id";
+    }
+    let broken = run(&fields);
+    assert!(
+        broken
+            .iter()
+            .any(|c| !c.passed() && !c.was_skipped() && c.message.contains("has no doc values")),
+        "{broken:?}"
+    );
+}

@@ -604,9 +604,10 @@ pub enum Error {
     /// `add_documents`/`update_documents` must stay physically contiguous
     /// and in order; an index sort would scatter it. Java allows the
     /// combination only when a *parent* field marks each block's last
-    /// document, so the sort can be applied to whole blocks. This port has
-    /// no parent-field write path, so the combination is refused rather than
-    /// silently producing a segment whose blocks are shredded.
+    /// document, so the sort can be applied to whole blocks
+    /// ([`IndexWriter::set_parent_field`]). The add paths refuse such a block
+    /// up front ([`Error::BlocksWithIndexSortNeedParentField`]); this is the
+    /// flush's backstop, so no segment with shredded blocks is ever written.
     #[error(
         "flush: this segment carries document blocks (add_documents/update_documents) and an \
          index sort is configured, but no parent field is set -- real Lucene raises \
@@ -1171,6 +1172,31 @@ impl DocumentBuffer<'_> {
 }
 
 impl IndexingConfig {
+    /// `DocumentsWriterPerThread.updateDocuments`' refusal: a block of `docs`
+    /// documents cannot be added to a writer with an index sort and no
+    /// parent field. Every entry point that adds a block checks this before
+    /// it reserves or buffers anything (`check-port-invariants.py`'s
+    /// block-guard rule).
+    pub(crate) fn check_block(&self, docs: usize) -> Result<()> {
+        if docs > 1 && self.index_sort.is_some() && self.parent_field.is_none() {
+            return Err(Error::BlocksWithIndexSortNeedParentField);
+        }
+        Ok(())
+    }
+
+    /// Whether this configuration takes [`ExplicitDocument`]s or has a
+    /// parent field: what the concurrent writer, which builds native
+    /// documents only, refuses.
+    pub(crate) fn concurrent_unsupported(&self) -> Option<&'static str> {
+        if self.parent_field.is_some() {
+            Some("a parent field (set_parent_field)")
+        } else if self.explicit {
+            Some("explicit documents (enable_explicit_documents)")
+        } else {
+            None
+        }
+    }
+
     /// `IndexWriter._mergeInit`'s `estimatedMergeBytes`: each source's
     /// `sizeInBytes()` pro-rated by its live documents, the size estimate of
     /// the merge's `IOContext(MergeInfo)`. A source whose `.si` cannot be
@@ -6082,6 +6108,10 @@ impl IndexWriter<'_> {
         delete: Option<DeleteNode>,
         docs: Vec<Document>,
     ) -> Result<SeqNo> {
+        // BLOCK-GUARD: `DocumentsWriterPerThread.updateDocuments` refuses a
+        // block in a sorted index without a parent field before it reserves
+        // or buffers anything; a buffered one could never be flushed.
+        self.cfg.check_block(docs.len())?;
         self.reserve_docs(docs.len())?;
         let doc_id_upto = self.pending_doc_id_upto();
         let seq_no = match delete {
@@ -7416,10 +7446,11 @@ impl IndexWriter<'_> {
     /// the same thing one indirection later.
     ///
     /// Returns [`Error::IndexSortWithBlocksAndNoParentField`] for a buffer
-    /// carrying document blocks: a block must stay contiguous and in order,
-    /// and a sort would shred it. Java refuses the same combination unless a
-    /// *parent* field marks each block's last document, which this port has
-    /// no write path for.
+    /// carrying document blocks without a parent field
+    /// ([`IndexWriter::set_parent_field`]) to sort them by: a block must stay
+    /// contiguous and in order, and a sort would shred it. Every add path
+    /// refuses such a block up front ([`Error::BlocksWithIndexSortNeedParentField`]),
+    /// so this is a backstop that no buffer reaches.
     fn sort_pending_buffer(&mut self) -> Result<Option<Vec<usize>>> {
         let cfg = std::sync::Arc::clone(&self.cfg);
         cfg.sort_buffer(
@@ -21901,10 +21932,13 @@ pub(crate) mod tests {
         }
     }
 
-    /// `IndexingChain.maybeSortSegment`'s `CorruptIndexException`: a block
-    /// of documents must stay contiguous and in order, which an index sort
-    /// would shred. Java allows the pair only with a parent field marking
-    /// each block's last document; this port has no parent-field write path.
+    /// `DocumentsWriterPerThread.updateDocuments`' `IllegalArgumentException`:
+    /// a block of documents must stay contiguous and in order, which an
+    /// index sort would shred, so a sorted writer without a parent field
+    /// ([`IndexWriter::set_parent_field`]) refuses the block when it is
+    /// added -- before anything is buffered -- and the writer goes on (Java
+    /// throws before `reserveOneDoc`). Refusing it only at flush, as this
+    /// port once did, left a buffer no flush could ever write.
     #[test]
     fn document_blocks_and_an_index_sort_are_refused_together() {
         let tmp = tempdir("sort-blocks");
@@ -21915,16 +21949,33 @@ pub(crate) mod tests {
         writer
             .set_index_sort(Some(&[sort_field("rank", false, SortMissingValue::Last)]))
             .unwrap();
+        writer.add_document(sortable_doc("a", 2, 0, "x")).unwrap();
+        let before = writer.pending_docs.len();
+        for err in [
+            writer
+                .add_documents(vec![
+                    sortable_doc("b", 1, 0, "x"),
+                    sortable_doc("c", 3, 0, "x"),
+                ])
+                .unwrap_err(),
+            writer
+                .update_documents(
+                    Term::new("body", "x"),
+                    vec![sortable_doc("d", 1, 0, "x"), sortable_doc("e", 3, 0, "x")],
+                )
+                .unwrap_err(),
+        ] {
+            assert!(matches!(err, Error::BlocksWithIndexSortNeedParentField));
+        }
+        assert_eq!(writer.pending_docs.len(), before, "nothing was buffered");
+        assert!(!writer.pending_has_blocks);
+        // A one-document "block" is a plain document, as in Java.
         writer
-            .add_documents(vec![
-                sortable_doc("a", 2, 0, "x"),
-                sortable_doc("b", 1, 0, "x"),
-            ])
+            .add_documents(vec![sortable_doc("f", 1, 0, "x")])
             .unwrap();
-        assert!(matches!(
-            writer.flush().unwrap_err(),
-            Error::IndexSortWithBlocksAndNoParentField
-        ));
+        writer.commit().unwrap();
+        assert_eq!(writer.segment_infos().segments.len(), 1);
+        assert!(!parsed_si(&dir, &writer.segment_infos().segments[0]).has_blocks);
     }
 
     /// `IndexWriter.updateNumericDocValue`: rewriting the column the
