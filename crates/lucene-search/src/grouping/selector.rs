@@ -1,6 +1,7 @@
 //! The group selectors: `TermGroupSelector` (a `SORTED` field's term),
 //! `LongRangeGroupSelector`/`DoubleRangeGroupSelector` (the range a values
-//! source's value falls in, `LongRangeFactory`/`DoubleRangeFactory`).
+//! source's value falls in, `LongRangeFactory`/`DoubleRangeFactory`) and
+//! `ValueSourceGroupSelector` (a function value source's value).
 
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
@@ -8,6 +9,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use super::{FxHashMap, GroupSelector, GroupState, SearchGroup};
+use crate::function::{BoxValues, FunctionContext, MutableValue, TopLevel, ValueLeaf, ValueSource};
 use crate::multi_segment::OpenSegment;
 use crate::reader::doc_values as dv;
 use crate::reader::SortedDocValues;
@@ -533,6 +535,105 @@ impl<'a> GroupSelector<'a> for DoubleRangeGroupSelector<'a> {
 
     fn set_groups(&mut self, groups: &[SearchGroup<DoubleRange>]) {
         self.state.set_groups(groups);
+    }
+}
+
+/// `ValueSourceGroupSelector`: groups by a value source's value (its
+/// `ValueFiller`'s [`MutableValue`]); a document whose value does not exist
+/// is in the `None` group (Java's group of a non-existing mutable value).
+///
+/// `context` is Java's `Map<Object,Object> context` -- built by
+/// [`FunctionContext::create`] for a source with reader-wide state -- and
+/// `top` the searcher's leaves as Java's `IndexSearcher` sees them (norms,
+/// similarity, and the statistics a `query()` source inside scores with);
+/// without it each segment stands alone, without norms, under the default
+/// similarity.
+pub struct ValueSourceGroupSelector<'a> {
+    source: Arc<dyn ValueSource>,
+    context: Arc<FunctionContext>,
+    top: Option<TopLevel<'a>>,
+    values: Option<BoxValues<'a>>,
+    value: MutableValue,
+    second_pass: Option<HashSet<MutableValue>>,
+    include_empty: bool,
+}
+
+impl<'a> ValueSourceGroupSelector<'a> {
+    /// `new ValueSourceGroupSelector(valueSource, context)`.
+    pub fn new(source: Arc<dyn ValueSource>, context: Arc<FunctionContext>) -> Self {
+        Self {
+            source,
+            context,
+            top: None,
+            values: None,
+            value: MutableValue::float(),
+            second_pass: None,
+            include_empty: false,
+        }
+    }
+
+    /// The searcher's leaves ([`TopLevel::of_searcher`]): segment `ord`
+    /// is read with leaf `ord`'s norms, similarity and reader-wide
+    /// statistics.
+    pub fn with_top_level(mut self, top: TopLevel<'a>) -> Self {
+        self.top = Some(top);
+        self
+    }
+}
+
+impl<'a> GroupSelector<'a> for ValueSourceGroupSelector<'a> {
+    type Value = MutableValue;
+
+    /// `setNextReader`: the segment's values and their filler.
+    fn set_next_reader(&mut self, ord: usize, leaf: &OpenSegment<'a>) -> Result<()> {
+        let leaf = match self.top.as_ref().and_then(|t| t.leaves.get(ord)) {
+            Some(ctx) => ValueLeaf::new(*ctx),
+            None => ValueLeaf::of_segment(leaf),
+        };
+        let values = self.source.get_values(&self.context, &leaf)?;
+        self.value = values.new_value();
+        self.values = Some(values);
+        Ok(())
+    }
+
+    /// `advanceTo(doc)`: `fillValue(doc)`, then a value that does not exist
+    /// is accepted only when the empty group is wanted, and in the second
+    /// pass only the chosen groups' values are.
+    fn advance_to(&mut self, doc: i32, _score: f32) -> Result<GroupState> {
+        let values = self.values.as_mut().ok_or_else(|| {
+            Error::IllegalState("the group selector was moved before a segment".into())
+        })?;
+        values.fill_value(doc, &mut self.value)?;
+        if !self.value.exists() {
+            return Ok(if self.include_empty {
+                GroupState::Accept
+            } else {
+                GroupState::Skip
+            });
+        }
+        if let Some(groups) = &self.second_pass {
+            if !groups.contains(&self.value) {
+                return Ok(GroupState::Skip);
+            }
+        }
+        Ok(GroupState::Accept)
+    }
+
+    fn current_value(&self) -> Option<&MutableValue> {
+        self.value.exists().then_some(&self.value)
+    }
+
+    fn set_groups(&mut self, groups: &[SearchGroup<MutableValue>]) {
+        let mut set = HashSet::new();
+        for g in groups {
+            match &g.group_value {
+                None => self.include_empty = true,
+                Some(v) => {
+                    set.insert(v.clone());
+                }
+            }
+        }
+        self.second_pass = Some(set);
     }
 }
 

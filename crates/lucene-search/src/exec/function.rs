@@ -1,0 +1,635 @@
+//! The function queries over one segment: `FunctionQuery`'s `AllScorer`,
+//! `FunctionRangeQuery`'s `ValueSourceScorer`, `FunctionMatchQuery`'s
+//! constant-scored two-phase iterator, `FunctionScoreQuery`'s
+//! `FilterScorer`, and their weights' `explain`.
+//!
+//! A query's reader-wide state (its sources' `createWeight` contexts, its
+//! values source's `rewrite(searcher)`) comes from the statistics pass
+//! ([`crate::GlobalStats`]); a segment searched without one treats itself
+//! as the whole index.
+
+use std::cell::Cell;
+use std::rc::Rc;
+use std::sync::Arc;
+
+use super::leaf::ConstantScorer;
+use super::{build, BoxScorer, LeafContext, Mode, Scorer, NO_MORE_DOCS};
+use crate::explain::Explanation;
+use crate::extended_query::ExtendedQuery;
+use crate::function::{
+    BoxValues, FunctionContext, FunctionMatchQuery, FunctionQuery, FunctionRangeQuery,
+    FunctionScoreQuery, TopLevel, ValueLeaf, ValueSource, ValueSourceScorer,
+};
+use crate::values_source::{BoxDoubleValues, DoubleValues, DoubleValuesSource, ValuesContext};
+use crate::{Error, Result};
+
+/// The segment's `maxDoc`.
+fn max_doc(ctx: &LeafContext<'_>) -> Result<i32> {
+    match (ctx.max_doc, ctx.reader) {
+        (Some(m), _) => Ok(m),
+        (None, Some(r)) => Ok(r.max_doc),
+        (None, None) => Err(Error::MissingSegmentReader(
+            "a function query needs the segment's maxDoc".into(),
+        )),
+    }
+}
+
+/// `source`'s `createWeight` context for this search.
+fn context(ctx: &LeafContext<'_>, source: &Arc<dyn ValueSource>) -> Result<Arc<FunctionContext>> {
+    if let Some(c) = ctx
+        .global
+        .and_then(|g| g.functions().context(source.as_ref()))
+    {
+        return Ok(Arc::clone(c));
+    }
+    Ok(Arc::new(FunctionContext::create(
+        source.as_ref(),
+        &TopLevel::single(*ctx),
+    )?))
+}
+
+/// `source.rewrite(searcher)` for this search.
+fn rewritten(
+    ctx: &LeafContext<'_>,
+    source: &Arc<dyn DoubleValuesSource>,
+) -> Result<Arc<dyn DoubleValuesSource>> {
+    if let Some(s) = ctx
+        .global
+        .and_then(|g| g.functions().source(source.as_ref()))
+    {
+        return Ok(Arc::clone(s));
+    }
+    let prepared = ctx.global.is_some_and(|g| !g.functions().is_empty());
+    if !prepared {
+        if let Some(r) = source.rewrite(&TopLevel::single(*ctx))? {
+            return Ok(r);
+        }
+    }
+    Ok(Arc::clone(source))
+}
+
+// ---------------------------------------------------------------------------
+// FunctionQuery
+// ---------------------------------------------------------------------------
+
+/// `FunctionQuery.AllScorer`: every document, scored `boost * floatVal`
+/// (`0` for a negative or `NaN` value).
+struct AllScorer<'a> {
+    vals: BoxValues<'a>,
+    boost: f32,
+    doc: i32,
+    max_doc: i32,
+}
+
+impl Scorer for AllScorer<'_> {
+    fn doc_id(&self) -> i32 {
+        self.doc
+    }
+    fn next_doc(&mut self) -> Result<i32> {
+        self.advance(self.doc.saturating_add(1))
+    }
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.doc = if target >= self.max_doc {
+            NO_MORE_DOCS
+        } else {
+            target
+        };
+        Ok(self.doc)
+    }
+    fn cost(&self) -> i64 {
+        i64::from(self.max_doc)
+    }
+    fn score(&mut self) -> Result<f32> {
+        let val = self.vals.float_val(self.doc)?;
+        // `val >= 0 == false` covers `NaN` too.
+        Ok(if val >= 0.0 { self.boost * val } else { 0.0 })
+    }
+    fn max_score(&mut self, _up_to: i32) -> Result<f32> {
+        Ok(f32::INFINITY)
+    }
+}
+
+/// `FunctionWeight.scorerSupplier(context).get(...)`.
+pub(crate) fn function_query<'a>(
+    ctx: &LeafContext<'a>,
+    q: &FunctionQuery,
+    boost: f32,
+) -> Result<Option<BoxScorer<'a>>> {
+    let fcx = context(ctx, &q.source)?;
+    let vals = q.source.get_values(&fcx, &ValueLeaf::new(*ctx))?;
+    Ok(Some(Box::new(AllScorer {
+        vals,
+        boost,
+        doc: -1,
+        max_doc: max_doc(ctx)?,
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// FunctionRangeQuery
+// ---------------------------------------------------------------------------
+
+impl Scorer for ValueSourceScorer<'_> {
+    fn doc_id(&self) -> i32 {
+        self.doc
+    }
+    fn next_doc(&mut self) -> Result<i32> {
+        self.advance(self.doc.saturating_add(1))
+    }
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.doc = if target >= self.max_doc {
+            NO_MORE_DOCS
+        } else {
+            target
+        };
+        Ok(self.doc)
+    }
+    fn cost(&self) -> i64 {
+        i64::from(self.max_doc)
+    }
+    fn two_phase(&self) -> bool {
+        true
+    }
+    fn matches(&mut self) -> Result<bool> {
+        let doc = self.doc;
+        self.matches_doc(doc)
+    }
+    fn match_cost(&self) -> f32 {
+        self.match_cost_of()
+    }
+    fn score(&mut self) -> Result<f32> {
+        let doc = self.doc;
+        self.score_doc(doc)
+    }
+    fn max_score(&mut self, _up_to: i32) -> Result<f32> {
+        Ok(f32::INFINITY)
+    }
+}
+
+/// `FunctionRangeWeight.scorerSupplier(context).get(...)`: the values'
+/// range scorer (never boosted: the weight ignores its boost).
+pub(crate) fn function_range<'a>(
+    ctx: &LeafContext<'a>,
+    q: &FunctionRangeQuery,
+) -> Result<Option<BoxScorer<'a>>> {
+    Ok(Some(Box::new(range_scorer(ctx, q)?)))
+}
+
+fn range_scorer<'a>(
+    ctx: &LeafContext<'a>,
+    q: &FunctionRangeQuery,
+) -> Result<ValueSourceScorer<'a>> {
+    let fcx = context(ctx, &q.source)?;
+    let vals = q.source.get_values(&fcx, &ValueLeaf::new(*ctx))?;
+    ValueSourceScorer::range(
+        vals,
+        max_doc(ctx)?,
+        q.lower_val.as_deref(),
+        q.upper_val.as_deref(),
+        q.include_lower,
+        q.include_upper,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// FunctionMatchQuery
+// ---------------------------------------------------------------------------
+
+/// `FunctionMatchQuery`'s two-phase iterator: every document, confirmed
+/// where the source has a value that passes the predicate.
+struct MatchIterator<'a> {
+    values: BoxDoubleValues<'a>,
+    filter: Arc<crate::function::DoublePredicate>,
+    match_cost: f32,
+    doc: i32,
+    max_doc: i32,
+}
+
+impl Scorer for MatchIterator<'_> {
+    fn doc_id(&self) -> i32 {
+        self.doc
+    }
+    fn next_doc(&mut self) -> Result<i32> {
+        self.advance(self.doc.saturating_add(1))
+    }
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.doc = if target >= self.max_doc {
+            NO_MORE_DOCS
+        } else {
+            target
+        };
+        Ok(self.doc)
+    }
+    fn cost(&self) -> i64 {
+        i64::from(self.max_doc)
+    }
+    fn two_phase(&self) -> bool {
+        true
+    }
+    fn matches(&mut self) -> Result<bool> {
+        Ok(self.values.advance_exact(self.doc)? && (self.filter)(self.values.double_value()?))
+    }
+    fn match_cost(&self) -> f32 {
+        self.match_cost
+    }
+    fn score(&mut self) -> Result<f32> {
+        Ok(0.0)
+    }
+    fn max_score(&mut self, _up_to: i32) -> Result<f32> {
+        Ok(0.0)
+    }
+}
+
+fn match_iterator<'a>(ctx: &LeafContext<'a>, q: &FunctionMatchQuery) -> Result<MatchIterator<'a>> {
+    let vs = rewritten(ctx, &q.source)?;
+    let values = vs.get_values(&ValuesContext::for_leaf(*ctx), 0, None)?;
+    Ok(MatchIterator {
+        values,
+        filter: Arc::clone(&q.filter),
+        match_cost: q.match_cost,
+        doc: -1,
+        max_doc: max_doc(ctx)?,
+    })
+}
+
+/// `FunctionMatchQuery`'s `ConstantScoreWeight`: the iterator,
+/// constant-scored at the boost.
+pub(crate) fn function_match<'a>(
+    ctx: &LeafContext<'a>,
+    q: &FunctionMatchQuery,
+    boost: f32,
+    mode: Mode,
+) -> Result<Option<BoxScorer<'a>>> {
+    let it: BoxScorer<'a> = Box::new(match_iterator(ctx, q)?);
+    Ok(Some(Box::new(ConstantScorer::new(
+        it,
+        boost,
+        mode == Mode::TopScores,
+    ))))
+}
+
+// ---------------------------------------------------------------------------
+// FunctionScoreQuery
+// ---------------------------------------------------------------------------
+
+/// `DoubleValuesSource.fromScorer(in)`: the wrapped scorer's score at the
+/// document, set before the source's values are read.
+struct ScoreCellValues(Rc<Cell<f32>>);
+
+impl DoubleValues for ScoreCellValues {
+    fn advance_exact(&mut self, _doc: i32) -> Result<bool> {
+        Ok(true)
+    }
+    fn double_value(&mut self) -> Result<f64> {
+        Ok(f64::from(self.0.get()))
+    }
+}
+
+/// `FunctionScoreWeight`'s `FilterScorer`: the wrapped query's iteration,
+/// scored `(float) (value * boost)` (`0` for a missing, negative or `NaN`
+/// value).
+struct FunctionScoreScorer<'a> {
+    inner: BoxScorer<'a>,
+    values: BoxDoubleValues<'a>,
+    score: Rc<Cell<f32>>,
+    needs_scores: bool,
+    boost: f32,
+}
+
+impl Scorer for FunctionScoreScorer<'_> {
+    fn doc_id(&self) -> i32 {
+        self.inner.doc_id()
+    }
+    fn next_doc(&mut self) -> Result<i32> {
+        self.inner.next_doc()
+    }
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.inner.advance(target)
+    }
+    fn cost(&self) -> i64 {
+        self.inner.cost()
+    }
+    fn two_phase(&self) -> bool {
+        self.inner.two_phase()
+    }
+    fn matches(&mut self) -> Result<bool> {
+        self.inner.matches()
+    }
+    fn match_cost(&self) -> f32 {
+        self.inner.match_cost()
+    }
+    fn score(&mut self) -> Result<f32> {
+        if self.needs_scores {
+            self.score.set(self.inner.score()?);
+        }
+        let doc = self.inner.doc_id();
+        if self.values.advance_exact(doc)? {
+            let factor = self.values.double_value()?;
+            if factor >= 0.0 {
+                return Ok((factor * f64::from(self.boost)) as f32);
+            }
+        }
+        Ok(0.0)
+    }
+    fn max_score(&mut self, _up_to: i32) -> Result<f32> {
+        Ok(f32::INFINITY)
+    }
+}
+
+/// The wrapped query's weight: `COMPLETE` when the source reads its scores,
+/// `COMPLETE_NO_SCORES` otherwise, boost `1`.
+fn inner_mode(source: &dyn DoubleValuesSource) -> Mode {
+    if source.needs_scores() {
+        Mode::Complete
+    } else {
+        Mode::NoScores
+    }
+}
+
+/// The wrapped query's scorer, the source's values, the cell they read the
+/// scorer's score from, and whether they read it.
+type ScoreParts<'a> = (BoxScorer<'a>, BoxDoubleValues<'a>, Rc<Cell<f32>>, bool);
+
+/// The scorer over the wrapped query, the source's values reading its
+/// scores.
+fn score_parts<'a>(
+    ctx: &LeafContext<'a>,
+    q: &FunctionScoreQuery,
+) -> Result<Option<ScoreParts<'a>>> {
+    let source = rewritten(ctx, &q.source)?;
+    let needs_scores = source.needs_scores();
+    let Some(inner) = build::build(ctx, &q.in_query, 1.0, inner_mode(source.as_ref()), false)?
+    else {
+        return Ok(None);
+    };
+    let cell = Rc::new(Cell::new(0.0f32));
+    let scores: BoxDoubleValues<'a> = Box::new(ScoreCellValues(Rc::clone(&cell)));
+    let values = source.get_values(&ValuesContext::for_leaf(*ctx), 0, Some(scores))?;
+    Ok(Some((inner, values, cell, needs_scores)))
+}
+
+/// `FunctionScoreQuery.createWeight(...)`'s scorer: without scores, the
+/// wrapped query's own (`createWeight` returns its weight).
+pub(crate) fn function_score<'a>(
+    ctx: &LeafContext<'a>,
+    q: &FunctionScoreQuery,
+    boost: f32,
+    mode: Mode,
+    top_level: bool,
+) -> Result<Option<BoxScorer<'a>>> {
+    if !mode.needs_scores() {
+        return build::build(ctx, &q.in_query, 1.0, Mode::NoScores, top_level);
+    }
+    let Some((inner, values, score, needs_scores)) = score_parts(ctx, q)? else {
+        return Ok(None);
+    };
+    Ok(Some(Box::new(FunctionScoreScorer {
+        inner,
+        values,
+        score,
+        needs_scores,
+        boost,
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// explain
+// ---------------------------------------------------------------------------
+
+/// The explanation of `clause` for `doc` over this segment.
+fn explain_in(
+    ctx: &LeafContext<'_>,
+    clause: &crate::query::Clause,
+    doc: i32,
+) -> Result<Explanation> {
+    crate::explain::explain_clause_with_stats(
+        ctx.fields,
+        ctx.doc_in,
+        ctx.pos_in,
+        ctx.pay_in,
+        ctx.live_docs,
+        ctx.points,
+        clause,
+        doc,
+        ctx.norms,
+        ctx.global,
+    )
+}
+
+/// `Explanation`s of a value that is no score: `truncated score` for a
+/// negative one, the `NaN` rule for a `NaN`.
+fn illegal_score(value: f64, expl: Explanation) -> Option<Explanation> {
+    if value < 0.0 {
+        Some(
+            Explanation::match_long(0, "truncated score, max of:")
+                .with_details(vec![Explanation::match_(0.0, "minimum score"), expl]),
+        )
+    } else if value.is_nan() {
+        Some(
+            Explanation::match_long(
+                0,
+                "score, computed as (score == NaN ? 0 : score) since NaN is an illegal score \
+                 from:",
+            )
+            .with_details(vec![expl]),
+        )
+    } else {
+        None
+    }
+}
+
+/// The function queries' weights' `explain(context, doc)` (the weight
+/// unboosted, as `IndexSearcher.explain` creates it); `None` for any other
+/// query.
+pub(crate) fn explain(
+    ctx: &LeafContext<'_>,
+    q: &ExtendedQuery,
+    doc: i32,
+) -> Result<Option<Explanation>> {
+    if !matches!(
+        q,
+        ExtendedQuery::Function(_)
+            | ExtendedQuery::FunctionRange(_)
+            | ExtendedQuery::FunctionMatch(_)
+            | ExtendedQuery::FunctionScore(_)
+    ) {
+        return Ok(None);
+    }
+    crate::explain::with_leaf_reader(|reader, similarity| {
+        let mut ctx = *ctx;
+        if ctx.reader.is_none() {
+            ctx.reader = reader;
+        }
+        if ctx.similarity.is_none() {
+            ctx.similarity = similarity;
+        }
+        explain_function(&ctx, q, doc, 1.0).map(Some)
+    })
+}
+
+/// `explain` of a function query under `BoostQuery`s (`createWeight(...,
+/// boost)`: the boost is the weight's, which each function query's
+/// explanation shows in its own way -- or ignores, as `FunctionRangeQuery`
+/// does); `None` when `clause` is not a (boosted) function query.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn explain_boosted(
+    fields: &lucene_codecs::blocktree::BlockTreeFields,
+    doc_in: Option<&lucene_codecs::postings::DocInput<'_>>,
+    pos_in: Option<&lucene_codecs::postings::PosInput<'_>>,
+    pay_in: Option<&lucene_codecs::postings::PayInput<'_>>,
+    live_docs: Option<&lucene_util::fixed_bit_set::FixedBitSet>,
+    points: Option<&crate::points_query::PointsInput<'_>>,
+    norms: Option<&std::collections::HashMap<String, crate::FieldNorms<'_>>>,
+    global: Option<&crate::GlobalStats>,
+    clause: &crate::query::Clause,
+    boost: f32,
+    doc: i32,
+) -> Result<Option<Explanation>> {
+    use crate::query::Clause;
+    let (mut inner, mut boost) = (clause, boost);
+    while let Clause::Boost(b) = inner {
+        boost *= b.boost;
+        inner = &b.inner;
+    }
+    let Clause::Extended(q) = inner else {
+        return Ok(None);
+    };
+    if !matches!(
+        q.as_ref(),
+        ExtendedQuery::Function(_)
+            | ExtendedQuery::FunctionRange(_)
+            | ExtendedQuery::FunctionMatch(_)
+            | ExtendedQuery::FunctionScore(_)
+    ) {
+        return Ok(None);
+    }
+    let leaf = crate::explain::leaf();
+    crate::explain::with_leaf_reader(|reader, similarity| {
+        let ctx = LeafContext {
+            fields,
+            doc_in,
+            pos_in,
+            pay_in,
+            live_docs,
+            points,
+            norms,
+            global,
+            max_doc: leaf.map(|(max_doc, _)| max_doc),
+            cache: None,
+            reader,
+            similarity,
+        };
+        explain_function(&ctx, q, doc, boost).map(Some)
+    })
+}
+
+fn explain_function(
+    ctx: &LeafContext<'_>,
+    q: &ExtendedQuery,
+    doc: i32,
+    boost: f32,
+) -> Result<Explanation> {
+    match q {
+        // `AllScorer.explain(doc)`.
+        ExtendedQuery::Function(q) => {
+            let fcx = context(ctx, &q.source)?;
+            let mut vals = q.source.get_values(&fcx, &ValueLeaf::new(*ctx))?;
+            let raw = vals.explain(doc)?;
+            let value = raw.value;
+            let expl = illegal_score(f64::from(value), raw.clone()).unwrap_or(raw);
+            Ok(Explanation::match_(
+                boost * expl.value,
+                format!("FunctionQuery({}), product of:", q.source.description()),
+            )
+            .with_details(vec![
+                vals.explain(doc)?,
+                Explanation::match_(boost, "boost"),
+            ]))
+        }
+        // `FunctionRangeWeight.explain`.
+        ExtendedQuery::FunctionRange(q) => {
+            let fcx = context(ctx, &q.source)?;
+            let mut function_values = q.source.get_values(&fcx, &ValueLeaf::new(*ctx))?;
+            let mut scorer = range_scorer(ctx, q)?;
+            let description = format!("{q:?}");
+            if scorer.matches_doc(doc)? {
+                super::exact_advance(&mut scorer, doc)?;
+                let score = scorer.score()?;
+                Ok(Explanation::match_(score, description)
+                    .with_details(vec![function_values.explain(doc)?]))
+            } else {
+                Ok(Explanation::no_match(description)
+                    .with_details(vec![function_values.explain(doc)?]))
+            }
+        }
+        // `ConstantScoreWeight.explain`.
+        ExtendedQuery::FunctionMatch(q) => {
+            let mut it = match_iterator(ctx, q)?;
+            let exists = it.advance(doc)? == doc && it.matches()?;
+            let description = format!("{q:?}");
+            Ok(if exists {
+                let suffix = if boost == 1.0 {
+                    String::new()
+                } else {
+                    format!("^{}", crate::function::java_float(boost))
+                };
+                Explanation::match_(boost, format!("{description}{suffix}"))
+            } else {
+                Explanation::no_match(format!("{description} doesn't match id {doc}"))
+            })
+        }
+        // `FunctionScoreWeight.explain`.
+        ExtendedQuery::FunctionScore(q) => {
+            let score_explanation = explain_in(ctx, &q.in_query, doc)?;
+            if !score_explanation.matched {
+                return Ok(score_explanation);
+            }
+            let source = rewritten(ctx, &q.source)?;
+            let Some((mut inner, mut values, cell, needs_scores)) = score_parts(ctx, q)? else {
+                return Ok(score_explanation);
+            };
+            inner.advance(doc)?;
+            if needs_scores {
+                cell.set(inner.score()?);
+            }
+            let vctx = ValuesContext::for_leaf(*ctx);
+            let mut value;
+            let mut expl;
+            if values.advance_exact(doc)? {
+                value = values.double_value()?;
+                expl = source.explain(&vctx, 0, doc, &score_explanation)?;
+                if let Some(e) = illegal_score(value, expl.clone()) {
+                    value = 0.0;
+                    expl = e;
+                }
+            } else {
+                value = 0.0;
+                expl = source.explain(&vctx, 0, doc, &score_explanation)?;
+            }
+            let query = format!("{q:?}");
+            Ok(if !expl.matched {
+                Explanation::match_(
+                    0.0,
+                    format!(
+                        "weight({query}) using default score of 0 because the function \
+                         produced no value:"
+                    ),
+                )
+                .with_details(vec![expl])
+            } else if boost != 1.0 {
+                Explanation::match_(
+                    (value * f64::from(boost)) as f32,
+                    format!("weight({query}), product of:"),
+                )
+                .with_details(vec![Explanation::match_(boost, "boost"), expl])
+            } else {
+                Explanation::match_value_of(&expl, format!("weight({query}), result of:"))
+                    .with_details(vec![expl])
+            })
+        }
+        _ => Err(Error::IllegalState(format!(
+            "{} is not a function query",
+            q.name()
+        ))),
+    }
+}

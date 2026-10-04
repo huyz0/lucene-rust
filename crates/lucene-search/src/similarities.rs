@@ -149,6 +149,29 @@ pub trait Similarity: NormSimilarity {
     fn is_default_bm25(&self) -> bool {
         false
     }
+
+    /// `IDFValueSource.asTFIDF(sim, field)`: this similarity as a
+    /// `TFIDFSimilarity` (a `PerFieldSimilarityWrapper` unwrapped to
+    /// `field`'s), or `None` when it is not one.
+    fn as_tfidf(&self, _field: &str) -> Option<&dyn TfIdfSimilarity> {
+        None
+    }
+
+    /// An owned copy of this similarity, for a caller that must keep it past
+    /// the borrow it was handed (an explanation's segment state); `None`
+    /// for a similarity that cannot be copied.
+    fn shared(&self) -> Option<Arc<dyn Similarity>> {
+        None
+    }
+}
+
+/// `TFIDFSimilarity`'s `tf` and `idf`, which the function queries' `tf()`
+/// and `idf()` sources read.
+pub trait TfIdfSimilarity: Similarity {
+    /// `tf(freq)`.
+    fn tf(&self, freq: f32) -> f32;
+    /// `idf(docFreq, docCount)`.
+    fn idf(&self, doc_freq: i64, doc_count: i64) -> f32;
 }
 
 /// `SmallFloat.byte4ToInt((byte) i)` for every norm byte, as a float
@@ -364,6 +387,23 @@ impl Similarity for ClassicSimilarity {
             query_weight: boost * idf,
             norm_table,
         })
+    }
+
+    fn as_tfidf(&self, _field: &str) -> Option<&dyn TfIdfSimilarity> {
+        Some(self)
+    }
+
+    fn shared(&self) -> Option<Arc<dyn Similarity>> {
+        Some(Arc::new(*self))
+    }
+}
+
+impl TfIdfSimilarity for ClassicSimilarity {
+    fn tf(&self, freq: f32) -> f32 {
+        Self::tf(freq)
+    }
+    fn idf(&self, doc_freq: i64, doc_count: i64) -> f32 {
+        Self::idf(doc_freq, doc_count)
     }
 }
 
@@ -1248,6 +1288,14 @@ impl Similarity for PerFieldSimilarity {
 
     fn is_default_bm25(&self) -> bool {
         self.default.is_default_bm25() && self.fields.values().all(|s| s.is_default_bm25())
+    }
+
+    fn as_tfidf(&self, field: &str) -> Option<&dyn TfIdfSimilarity> {
+        self.get(field).as_tfidf(field)
+    }
+
+    fn shared(&self) -> Option<Arc<dyn Similarity>> {
+        Some(Arc::new(self.clone()))
     }
 }
 

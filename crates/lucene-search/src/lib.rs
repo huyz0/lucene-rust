@@ -213,6 +213,7 @@ pub mod explain;
 pub mod extended_query;
 pub mod facets;
 pub mod field_norms;
+pub mod function;
 pub mod grouping;
 pub mod highlighter;
 pub mod index_searcher;
@@ -3161,6 +3162,9 @@ pub struct GlobalStats {
     /// keyed by the query's `Debug` form; see
     /// [`crate::exec::extended::rewrite_multi_term`].
     extended: HashMap<String, Clause>,
+    /// The function queries' reader-wide state: each value source's
+    /// `createWeight` context and each values source's rewrite.
+    functions: function::FunctionStats,
 }
 
 impl GlobalStats {
@@ -3259,7 +3263,17 @@ impl GlobalStats {
 
     /// True when nothing was gathered at all.
     pub fn is_empty(&self) -> bool {
-        self.terms.is_empty() && self.fuzzy.is_empty()
+        self.terms.is_empty() && self.fuzzy.is_empty() && self.functions.is_empty()
+    }
+
+    /// The function queries' state the statistics pass computed.
+    pub(crate) fn functions(&self) -> &function::FunctionStats {
+        &self.functions
+    }
+
+    /// Records the function queries' state.
+    pub(crate) fn set_functions(&mut self, functions: function::FunctionStats) {
+        self.functions = functions;
     }
 }
 

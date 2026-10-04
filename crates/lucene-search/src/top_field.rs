@@ -669,7 +669,7 @@ pub enum SortError {
 }
 
 /// `NumericUtils.floatToSortableInt`, over `Float.floatToIntBits` (one NaN).
-fn float_to_sortable_int(f: f32) -> i32 {
+pub(crate) fn float_to_sortable_int(f: f32) -> i32 {
     let bits = if f.is_nan() {
         0x7fc0_0000
     } else {

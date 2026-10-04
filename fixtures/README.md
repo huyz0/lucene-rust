@@ -1205,6 +1205,19 @@ outright.
   (`mgr`), `GroupingSearch` by blocks (`block`) and `TermGroupFacetCollector`
   (`facet`), each printed in full -- or Lucene's exception.
 
+- `GenFunction.java` (M10 T10.5) → `function/`, for `lucene-search`'s
+  `function_fixtures.rs`: `index/`, four segments with deletions in two, of
+  documents with a text body, `NUMERIC` ints/longs/enum ordinals, float and
+  double doc values (with `NaN`, infinities and `-0.0`), multi-valued
+  `SORTED_NUMERIC` (plain and sortable float/double), `SORTED`, `SORTED_SET`
+  and `BINARY` fields and float/byte vectors, each sometimes missing;
+  `values.tsv`: every getter of every value source for every document of
+  every segment (or Lucene's exception); `searches.tsv`: function, range,
+  score and match queries -- alone, boosted, inside booleans -- with every
+  hit's score bits and four explanations, and value-source sorts;
+  `groups.tsv`: `GroupingSearch(ValueSource, Map)` by 14 sources over all
+  documents and `t:red` (group values, counts and hit score bits).
+
 - `GenGeo3dPoints.java` (M9 T9.4) → `geo3d_points/`, for `lucene-search`'s
   `geo3d_points_fixtures.rs`: `index/`, four segments (3 × 1500 documents
   and one of 50) with 247 deletions, of `Geo3DPoint`s on WGS84 (`p`,

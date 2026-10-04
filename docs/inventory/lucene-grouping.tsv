@@ -30,4 +30,4 @@ search/grouping/TermGroupSelector	ported	crates/lucene-search/src/grouping/selec
 search/grouping/TopGroups	ported	crates/lucene-search/src/grouping/mod.rs::TopGroups
 search/grouping/TopGroupsCollector	ported	crates/lucene-search/src/grouping/collectors.rs::TopGroupsCollector
 search/grouping/TopGroupsCollectorManager	ported	crates/lucene-search/src/grouping/collectors.rs::TopGroupsCollectorManager
-search/grouping/ValueSourceGroupSelector	todo:M10	grouping (T10.4) by a lucene-queries ValueSource: needs ValueSource, FunctionValues.ValueFiller and MutableValue group values, which are T10.5's function queries; every other selector is ported
+search/grouping/ValueSourceGroupSelector	ported	crates/lucene-search/src/grouping/selector.rs::ValueSourceGroupSelector

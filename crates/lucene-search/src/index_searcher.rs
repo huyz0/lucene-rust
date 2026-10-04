@@ -31,8 +31,7 @@ use crate::collectors::CollectorManager;
 use crate::explain::{explain_clause_with_stats, Explanation};
 use crate::field_norms::FieldNorms;
 use crate::multi_segment::{
-    global_boolean_stats, rewrite_points_ranges,
-    search_boolean_query_multi_segment_maxscore_counting, OpenSegment,
+    rewrite_points_ranges, search_boolean_query_multi_segment_maxscore_counting, OpenSegment,
 };
 use crate::query::{BooleanQuery, Clause};
 use crate::reader::exitable::QueryTimeout;
@@ -311,7 +310,11 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
         let rescored = self.rewrite_rescore(query)?;
         let query = rescored.as_ref().unwrap_or(query);
         let rewritten = rewrite_points_ranges(query, self.segments).or(rescored.clone());
-        let global = global_boolean_stats(self.segments, rewritten.as_ref().unwrap_or(query))?;
+        let global = crate::multi_segment::global_boolean_stats_with_similarity(
+            self.segments,
+            rewritten.as_ref().unwrap_or(query),
+            self.similarity.filter(|s| !s.is_default_bm25()),
+        )?;
         Ok((rewritten, global))
     }
 
@@ -448,20 +451,26 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
         if let Some(max_doc) = seg.max_doc {
             set_match_all_max_doc(&mut clause, max_doc);
         }
-        crate::explain::with_leaf(seg.max_doc, seg.doc_base, || {
-            explain_clause_with_stats(
-                seg.fields,
-                seg.doc_in,
-                seg.pos_in,
-                seg.pay_in,
-                seg.live_docs,
-                seg.points,
-                &clause,
-                doc - seg.doc_base,
-                self.norms(i),
-                Some(&global),
-            )
-        })
+        crate::explain::with_leaf(
+            seg.max_doc,
+            seg.doc_base,
+            seg.reader,
+            self.similarity.filter(|s| !s.is_default_bm25()),
+            || {
+                explain_clause_with_stats(
+                    seg.fields,
+                    seg.doc_in,
+                    seg.pos_in,
+                    seg.pay_in,
+                    seg.live_docs,
+                    seg.points,
+                    &clause,
+                    doc - seg.doc_base,
+                    self.norms(i),
+                    Some(&global),
+                )
+            },
+        )
     }
 
     /// `weight.scorer(leaf)` run to the end: every document of segment
@@ -569,6 +578,11 @@ fn set_match_all_max_doc(clause: &mut Clause, max_doc: i32) {
         }
         Clause::ConstantScore(c) => set_match_all_max_doc(&mut c.inner, max_doc),
         Clause::Boost(b) => set_match_all_max_doc(&mut b.inner, max_doc),
+        Clause::Extended(e) => {
+            if let crate::extended_query::ExtendedQuery::FunctionScore(f) = e.as_mut() {
+                set_match_all_max_doc(&mut f.in_query, max_doc);
+            }
+        }
         _ => {}
     }
 }
