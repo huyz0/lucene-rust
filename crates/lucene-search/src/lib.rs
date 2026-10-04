@@ -217,6 +217,7 @@ pub mod highlighter;
 pub mod index_searcher;
 pub mod join;
 pub mod knn_collectors;
+pub mod leaf_collector;
 pub mod matches;
 pub mod multi_bits;
 pub mod multi_segment;

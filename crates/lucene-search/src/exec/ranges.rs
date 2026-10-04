@@ -785,6 +785,13 @@ fn term_range(source: &MultiTermSource) -> Result<(Option<Vec<u8>>, TermPredicat
             )
         }
         MultiTermSource::Automaton(_) => (None, Box::new(|_: &[u8]| true)),
+        MultiTermSource::TermSet(q) => {
+            let last = q.terms.last().cloned();
+            (
+                q.terms.first().cloned(),
+                Box::new(move |t: &[u8]| last.as_deref().is_some_and(|l| t <= l)),
+            )
+        }
     })
 }
 
@@ -817,6 +824,10 @@ fn term_matcher(source: &MultiTermSource) -> Result<TermPredicate> {
                 AutomatonType::SINGLE => compiled.term.as_deref() == Some(t),
                 AutomatonType::NORMAL => compiled.get_byte_runnable().is_some_and(|r| r.run(t)),
             })
+        }
+        MultiTermSource::TermSet(q) => {
+            let q = q.clone();
+            Box::new(move |t: &[u8]| q.contains(t))
         }
     })
 }

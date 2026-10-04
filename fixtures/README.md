@@ -1182,6 +1182,17 @@ outright.
   searches over the children's float and byte vectors (`knn`), unfiltered and
   with child filters both broad and narrow enough for the exact search.
 
+- `GenQueryTimeJoin.java` (M10 T10.3) → `query_time_join/`, for
+  `lucene-search`'s `query_time_join_fixtures.rs`: `index/`, four segments of
+  "from" documents referencing "to" documents by key (indexed terms, int/
+  long/float/double points, `SORTED`/`SORTED_SET`/`NUMERIC`/`SORTED_NUMERIC`
+  doc values, some missing, keys repeated), with deletions in two segments;
+  `searches.tsv`: 897 `JoinUtil.createJoinQuery` searches -- terms, numeric and
+  global-ordinal joins in every score mode, alone with every hit and score
+  bits (`all`), boosted inside a boolean with a filter (`bool`, top ten), and
+  global-ordinal joins over a single-segment searcher without an ordinal map
+  (`one`), or Lucene's exception.
+
 - `GenGeo3dPoints.java` (M9 T9.4) → `geo3d_points/`, for `lucene-search`'s
   `geo3d_points_fixtures.rs`: `index/`, four segments (3 × 1500 documents
   and one of 50) with 247 deletions, of `Geo3DPoint`s on WGS84 (`p`,

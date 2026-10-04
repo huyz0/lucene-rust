@@ -15,6 +15,7 @@
 
 mod knn;
 mod query;
+pub(crate) mod query_time;
 mod sort;
 
 pub use knn::{DiversifyingChildrenByteKnnVectorQuery, DiversifyingChildrenFloatKnnVectorQuery};
@@ -22,6 +23,13 @@ pub use knn::{DiversifyingChildrenByteKnnVectorQuery, DiversifyingChildrenFloatK
 pub use query::{
     ParentChildrenBlockJoinQuery, ParentsChildrenBlockJoinQuery, ScoreCombiner, ScoreMode,
     ToChildBlockJoinQuery, ToParentBlockJoinQuery, DEFAULT_CHILD_LIMIT_PER_PARENT,
+};
+pub use query_time::{
+    create_global_ordinals_join_query, create_join_query, create_numeric_join_query, ordinal_map,
+    seeking_term_set_terms_enum, terms_query, CollectedOrdinals, GlobalOrdinalsCollector,
+    GlobalOrdinalsQuery, GlobalOrdinalsWithScoreCollector, GlobalOrdinalsWithScoreQuery,
+    NumericJoinCollector, NumericType, PointInSetIncludingScoreQuery, SeekingTermSet,
+    TermSetSource, TermsCollector, TermsIncludingScoreQuery, TermsWithScoreCollector,
 };
 pub use sort::{BlockJoinSelector, JoinMissing, JoinSortType, ToParentBlockJoinSortField};
 

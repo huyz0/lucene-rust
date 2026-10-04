@@ -50,6 +50,11 @@ pub enum ExtendedQuery {
     ToChildBlockJoin(crate::join::ToChildBlockJoinQuery),
     ParentChildrenBlockJoin(crate::join::ParentChildrenBlockJoinQuery),
     ParentsChildrenBlockJoin(crate::join::ParentsChildrenBlockJoinQuery),
+    /// `lucene-join`'s query-time joins' to-side queries ([`crate::join`]).
+    TermsIncludingScore(crate::join::TermsIncludingScoreQuery),
+    GlobalOrdinals(crate::join::GlobalOrdinalsQuery),
+    GlobalOrdinalsWithScore(crate::join::GlobalOrdinalsWithScoreQuery),
+    PointInSetIncludingScore(crate::join::PointInSetIncludingScoreQuery),
 }
 
 macro_rules! into_clause {
@@ -112,6 +117,10 @@ impl ExtendedQuery {
             ExtendedQuery::ToChildBlockJoin(_) => "ToChildBlockJoinQuery",
             ExtendedQuery::ParentChildrenBlockJoin(_) => "ParentChildrenBlockJoinQuery",
             ExtendedQuery::ParentsChildrenBlockJoin(_) => "ParentsChildrenBlockJoinQuery",
+            ExtendedQuery::TermsIncludingScore(_) => "TermsIncludingScoreQuery",
+            ExtendedQuery::GlobalOrdinals(_) => "GlobalOrdinalsQuery",
+            ExtendedQuery::GlobalOrdinalsWithScore(_) => "GlobalOrdinalsWithScoreQuery",
+            ExtendedQuery::PointInSetIncludingScore(_) => "PointInSetIncludingScoreQuery",
         }
     }
 
@@ -127,6 +136,9 @@ impl ExtendedQuery {
             ExtendedQuery::ToChildBlockJoin(q) => vec![q.parent.as_ref()],
             ExtendedQuery::ParentChildrenBlockJoin(q) => vec![q.child.as_ref()],
             ExtendedQuery::ParentsChildrenBlockJoin(q) => vec![q.parent.as_ref(), q.child.as_ref()],
+            // The to-query runs inside the global-ordinals joins' weights.
+            ExtendedQuery::GlobalOrdinals(q) => vec![q.to_query.as_ref()],
+            ExtendedQuery::GlobalOrdinalsWithScore(q) => vec![q.to_query.as_ref()],
             _ => Vec::new(),
         }
     }
@@ -362,6 +374,9 @@ pub enum MultiTermSource {
     Regexp(RegexpQuery),
     TermRange(TermRangeQuery),
     Automaton(AutomatonQuery),
+    /// `lucene-join`'s `TermsQuery`: a sorted set of terms, found by seeking
+    /// (`SeekingTermSetTermsEnum`).
+    TermSet(crate::join::TermSetSource),
 }
 
 impl MultiTermSource {
@@ -372,6 +387,7 @@ impl MultiTermSource {
             MultiTermSource::Regexp(q) => &q.field,
             MultiTermSource::TermRange(q) => &q.field,
             MultiTermSource::Automaton(q) => &q.field,
+            MultiTermSource::TermSet(q) => &q.field,
         }
     }
 
@@ -382,6 +398,7 @@ impl MultiTermSource {
             MultiTermSource::Regexp(_) => "RegexpQuery",
             MultiTermSource::TermRange(_) => "TermRangeQuery",
             MultiTermSource::Automaton(_) => "AutomatonQuery",
+            MultiTermSource::TermSet(_) => "TermsQuery",
         }
     }
 }

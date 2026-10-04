@@ -274,6 +274,26 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
         self.search_leaves(query, &order, collector)
     }
 
+    /// `search(leaves, weight, collector)` over the segments `slice` names
+    /// (a `CollectorManager` slice): statistics reader-wide, the segments in
+    /// doc-base order, documents shifted to global ids.
+    pub fn search_slice_collector<C: ScoringCollector + ?Sized>(
+        &self,
+        query: &BooleanQuery,
+        slice: &[usize],
+        collector: &mut C,
+    ) -> Result<()> {
+        for &s in slice {
+            if s >= self.segments.len() {
+                return Err(Error::SliceOutOfRange {
+                    segment: s,
+                    segments: self.segments.len(),
+                });
+            }
+        }
+        self.search_leaves(query, slice, collector)
+    }
+
     /// The query rewritten against the reader and its reader-wide statistics.
     /// `RescoreTopNQuery.rewrite(searcher)` for a query holding one (see
     /// [`crate::rescorer::rewrite_rescore_clauses`]; a vector-backed source

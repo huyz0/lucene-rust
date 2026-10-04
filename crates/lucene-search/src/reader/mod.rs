@@ -40,6 +40,7 @@
 //!   [`slow_codec::SlowCompositeCodecReaderWrapper`]) translates the numbers
 //!   through field names, as Java's `remap(FieldInfo)` does.
 
+pub mod doc_values;
 pub mod exitable;
 pub mod filter;
 pub mod filtered_terms_enum;
