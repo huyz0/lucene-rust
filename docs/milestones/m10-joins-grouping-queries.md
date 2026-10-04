@@ -126,7 +126,16 @@ grouping. Each of them falls back to Lucene today.
   a per-document ordinal read through a boxed doc-values iterator, the
   bulk loop), each piece Java's own -- and numeric `None` 0.90x-0.94x,
   inside its 1.09x-1.17x noise floor (it was 0.02x).
-- **T10.4** — Grouping.
+- **T10.4** — Grouping. **Ported** (`lucene-search/src/grouping`): every
+  class of `lucene-grouping` but `ValueSourceGroupSelector` (it needs T10.5's
+  value sources) -- the selectors (term, long range, double range), the first
+  and second passes with their reducers, `TopGroupsCollector`,
+  `AllGroupsCollector`, `AllGroupHeadsCollector`, `DistinctValuesCollector`,
+  `BlockGroupingCollector`, the grouped facets, every collector manager,
+  `SearchGroup.merge`/`TopGroups.merge`/`mergeBlockGroups`, and
+  `GroupingSearch` with caching. 668 differential searches (`GenGrouping`:
+  `GroupingSearch` by selectors and by blocks, the managers over one slice and
+  two, the facets) equal to Lucene's.
 - **T10.5** — Function queries and value sources.
 - **T10.6** — Intervals, payload queries, `MoreLikeThis`, `CommonTermsQuery`.
 - **T10.7** — Plugin wiring for the OpenSearch shapes above.
