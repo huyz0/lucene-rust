@@ -179,6 +179,17 @@ case "$BENCH" in
     PREP_ARGS=(build "$INDEX")
     JAVA_ARGS=(run)
     NEEDS_INDEX=1 ;;
+  query_join)
+    # M10 T10.3's pair (QueryJoinMicro.java / micro_query_join.rs): JoinUtil's
+    # query-time joins over the 200 000-document index QueryJoinMicro builds
+    # (once) under benchmarks/.corpus/query-join.
+    MAIN=QueryJoinMicro
+    SRC=benchmarks/micro/java/QueryJoinMicro.java
+    JAR_MODULES="lucene-core lucene-analysis-common lucene-join"
+    INDEX="${INDEX_ARG:-$PWD/benchmarks/.corpus/query-join}"
+    PREP_ARGS=(build "$INDEX")
+    JAVA_ARGS=(run)
+    NEEDS_INDEX=1 ;;
   pfor_decode)
     MAIN=org.apache.lucene.codecs.lucene104.PForUtilMicro
     SRC=benchmarks/micro/java/org/apache/lucene/codecs/lucene104/PForUtilMicro.java ;;

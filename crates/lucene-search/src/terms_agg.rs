@@ -179,6 +179,36 @@ impl GlobalOrds {
     }
 }
 
+/// `OrdinalMap.build(null, values, PackedInts.DEFAULT)` over `field`'s
+/// `SORTED`/`SORTED_SET` dictionaries of `readers` (in order; a reader
+/// without the field contributes no terms), streamed as
+/// [`GlobalOrds::build`] streams them.
+///
+/// # Errors
+/// A field whose doc values are not keyword ones, or a dictionary that
+/// cannot be read.
+pub(crate) fn ordinal_map_of(readers: &[&SegmentReader], field: &str) -> Result<OrdinalMap> {
+    let mut cursors = Vec::with_capacity(readers.len());
+    for reader in readers {
+        cursors.push(match terms_entry(reader, field)? {
+            Some((data, entry)) => Some(TermsCursor::open(data, entry).map_err(store_err)?),
+            None => None,
+        });
+    }
+    let mut empty: Vec<NoTerms> = std::iter::repeat_with(|| NoTerms)
+        .take(readers.len())
+        .collect();
+    let mut refs: Vec<&mut dyn TermCursor> = cursors
+        .iter_mut()
+        .zip(&mut empty)
+        .map(|(c, e)| match c {
+            Some(c) => c as &mut dyn TermCursor,
+            None => e as &mut dyn TermCursor,
+        })
+        .collect();
+    OrdinalMap::build_streaming(&mut refs).map_err(store_err)
+}
+
 /// A segment without the field: no terms.
 struct NoTerms;
 
