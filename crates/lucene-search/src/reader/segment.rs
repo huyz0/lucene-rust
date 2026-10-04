@@ -8,6 +8,8 @@
 //! vectors and flat vectors. No format is decoded here that the codec crate
 //! does not already decode.
 
+use std::sync::Arc;
+
 use lucene_codecs::blocktree::{self, FieldTerms, SeekStatus};
 use lucene_codecs::doc_values::{
     self, BinaryReader, NumericEntry, NumericReader, SortedNumericReader, SortedSetKind,
@@ -39,7 +41,65 @@ pub(crate) enum DocSet {
     Empty,
     /// Every document below this bound.
     Dense(i32),
-    Sparse(Vec<i32>),
+    Sparse(Arc<SparseDocs>),
+}
+
+/// A sparse field's documents, ascending, with a rank index over them: a
+/// bit per document of the segment and, per 64-bit word, how many documents
+/// come before it -- so a document's position among them (what
+/// `IndexedDISI`'s rank tables give Java) is a lookup, not a search.
+#[derive(Debug)]
+pub(crate) struct SparseDocs {
+    docs: Vec<i32>,
+    words: Vec<u64>,
+    ranks: Vec<u32>,
+}
+
+impl SparseDocs {
+    pub(crate) fn new(docs: Vec<i32>) -> Self {
+        let end = docs
+            .last()
+            .and_then(|&d| usize::try_from(d).ok())
+            .map_or(0, |d| d.saturating_add(1));
+        let mut words = vec![0u64; end.div_ceil(64)];
+        for &d in &docs {
+            if let Some(w) = usize::try_from(d).ok().and_then(|d| words.get_mut(d >> 6)) {
+                *w |= 1u64 << (d & 63);
+            }
+        }
+        let mut ranks = Vec::with_capacity(words.len());
+        let mut before = 0u32;
+        for w in &words {
+            ranks.push(before);
+            before = before.saturating_add(w.count_ones());
+        }
+        Self { docs, words, ranks }
+    }
+
+    fn len(&self) -> usize {
+        self.docs.len()
+    }
+
+    fn get(&self, i: usize) -> Option<i32> {
+        self.docs.get(i).copied()
+    }
+
+    /// How many documents are below `target`, and whether `target` is one.
+    fn rank(&self, target: i32) -> (usize, bool) {
+        let Ok(t) = usize::try_from(target) else {
+            return (0, false);
+        };
+        let w = t >> 6;
+        match (self.words.get(w), self.ranks.get(w)) {
+            (Some(&word), Some(&before)) => {
+                let bit = 1u64 << (t & 63);
+                let below = (word & (bit - 1)).count_ones();
+                let rank = usize::try_from(before.saturating_add(below)).unwrap_or(usize::MAX);
+                (rank, word & bit != 0)
+            }
+            _ => (self.docs.len(), false),
+        }
+    }
 }
 
 impl DocSet {
@@ -65,21 +125,52 @@ impl DocSet {
                             "docs-with-field region {offset}+{length} outside its file"
                         ))
                     })?;
-                Ok(DocSet::Sparse(lucene_codecs::indexed_disi::decode_doc_ids(
-                    region,
-                    dense_rank_power,
-                )?))
+                Ok(DocSet::Sparse(Arc::new(SparseDocs::new(
+                    lucene_codecs::indexed_disi::decode_doc_ids(region, dense_rank_power)?,
+                ))))
             }
         }
     }
 
-    fn of_numeric(data: &[u8], e: &NumericEntry, max_doc: i32) -> Result<Self> {
-        Self::read(
+    /// [`Self::read`] through `reader`'s cache of decoded sets: a sparse
+    /// field's documents are decoded once per reader, not once per iterator
+    /// (stage 3, M10 T10.4: the grouping collectors open a field's values in
+    /// every segment for every selector, and decoding them was a tenth of a
+    /// grouping search).
+    pub(crate) fn cached(
+        reader: &SegmentReader,
+        data: &[u8],
+        offset: i64,
+        length: i64,
+        dense_rank_power: u8,
+    ) -> Result<Self> {
+        if offset < 0 {
+            return Self::read(data, offset, length, dense_rank_power, reader.max_doc);
+        }
+        let key = (data.as_ptr() as usize, offset);
+        let cache = &reader.docs_with_field;
+        let lock = || {
+            cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        };
+        if let Some(docs) = lock().get(&key) {
+            return Ok(DocSet::Sparse(Arc::clone(docs)));
+        }
+        let set = Self::read(data, offset, length, dense_rank_power, reader.max_doc)?;
+        if let DocSet::Sparse(docs) = &set {
+            lock().insert(key, Arc::clone(docs));
+        }
+        Ok(set)
+    }
+
+    fn of_numeric(reader: &SegmentReader, data: &[u8], e: &NumericEntry) -> Result<Self> {
+        Self::cached(
+            reader,
             data,
             e.docs_with_field_offset,
             e.docs_with_field_length,
             e.dense_rank_power,
-            max_doc,
         )
     }
 
@@ -123,7 +214,7 @@ impl DvCursor {
                 }
             }
             DocSet::Sparse(v) => match v.get(self.next) {
-                Some(&d) => {
+                Some(d) => {
                     self.next += 1;
                     d
                 }
@@ -144,9 +235,10 @@ impl DvCursor {
                 }
             }
             DocSet::Sparse(v) => {
-                let at = self.next + v[self.next.min(v.len())..].partition_point(|&d| d < target);
+                // Not behind the current position (the iterator contract).
+                let at = v.rank(target).0.max(self.next.min(v.len()));
                 match v.get(at) {
-                    Some(&d) => {
+                    Some(d) => {
                         self.next = at + 1;
                         d
                     }
@@ -160,14 +252,23 @@ impl DvCursor {
         self.doc
     }
 
+    /// The current document's position among a sparse field's documents
+    /// (the `IndexedDISI` rank the cursor already found); `None` for a
+    /// dense field, whose readers index by document.
+    fn sparse_index(&self) -> Option<i64> {
+        match &self.docs {
+            DocSet::Sparse(_) => i64::try_from(self.next.checked_sub(1)?).ok(),
+            _ => None,
+        }
+    }
+
     pub(crate) fn advance_exact(&mut self, target: i32) -> bool {
         self.doc = target;
         match &self.docs {
             DocSet::Empty => false,
             DocSet::Dense(n) => target < *n,
             DocSet::Sparse(v) => {
-                let at = v.partition_point(|&d| d < target);
-                let found = v.get(at) == Some(&target);
+                let (at, found) = v.rank(target);
                 self.next = if found { at + 1 } else { at };
                 found
             }
@@ -229,7 +330,10 @@ impl SegNumeric<'_> {
     }
 
     fn load(&mut self) -> Result<()> {
-        self.value = self.reader.value(self.cur.doc)?.unwrap_or(0);
+        self.value = match self.cur.sparse_index() {
+            Some(i) => self.reader.value_at_index(i)?,
+            None => self.reader.value(self.cur.doc)?.unwrap_or(0),
+        };
         Ok(())
     }
 }
@@ -302,7 +406,10 @@ impl SegSorted<'_> {
     }
 
     fn load(&mut self) -> Result<()> {
-        let ord = self.ords.value(self.cur.doc)?.unwrap_or(0);
+        let ord = match self.cur.sparse_index() {
+            Some(i) => self.ords.value_at_index(i)?,
+            None => self.ords.value(self.cur.doc)?.unwrap_or(0),
+        };
         self.ord = i32::try_from(ord)
             .map_err(|_| lucene_store::Error::Corrupted(format!("sorted ordinal {ord}")))?;
         Ok(())
@@ -320,6 +427,26 @@ impl SortedDocValues for SegSorted<'_> {
     fn value_count(&self) -> i32 {
         i32::try_from(self.terms.size()).unwrap_or(i32::MAX)
     }
+    // SENTINEL: negative = absent, `-insertionPoint-1` (`SortedDocValues.lookupTerm`).
+    fn lookup_term(&mut self, key: &[u8]) -> Result<i32> {
+        let ord = dict_lookup_term(&mut self.terms, key)?;
+        Ok(i32::try_from(ord).unwrap_or(i32::MIN))
+    }
+}
+
+/// `Lucene90DocValuesProducer`'s `lookupTerm(key)`: `TermsDict.seekCeil`
+/// (the terms index, then one block) -- the ordinal when found, else
+/// `-ord - 1` with `ord` the insertion point (the value count past the end).
+// SENTINEL: negative = absent, `-insertionPoint-1`.
+fn dict_lookup_term(terms: &mut TermsDict<'_>, key: &[u8]) -> Result<i64> {
+    use lucene_codecs::terms_dict::SeekStatus;
+    // `TermsDict::seek_ceil` spelled out: the doc-values dictionary's own,
+    // already fallible -- not the block tree's infallible one.
+    Ok(match TermsDict::seek_ceil(terms, key)? {
+        SeekStatus::Found => terms.ord(),
+        SeekStatus::NotFound => terms.ord().saturating_neg().saturating_sub(1),
+        SeekStatus::End => terms.size().saturating_neg().saturating_sub(1),
+    })
 }
 
 struct SegSortedNumeric<'a> {
@@ -406,6 +533,10 @@ impl SortedSetDocValues for SegSortedSet<'_> {
     }
     fn value_count(&self) -> i64 {
         self.terms.size()
+    }
+    // SENTINEL: negative = absent, `-insertionPoint-1` (`SortedSetDocValues.lookupTerm`).
+    fn lookup_term(&mut self, key: &[u8]) -> Result<i64> {
+        dict_lookup_term(&mut self.terms, key)
     }
 }
 
@@ -671,7 +802,7 @@ impl LeafReader for SegmentReader {
             return Ok(None);
         };
         Ok(Some(Box::new(SegNumeric {
-            cur: DvCursor::new(DocSet::of_numeric(data, e, self.max_doc)?),
+            cur: DvCursor::new(DocSet::of_numeric(self, data, e)?),
             reader: NumericReader::new(data, e),
             value: 0,
         })))
@@ -702,7 +833,7 @@ impl LeafReader for SegmentReader {
             return Ok(None);
         };
         Ok(Some(Box::new(SegSorted {
-            cur: DvCursor::new(DocSet::of_numeric(data, &e.ords, self.max_doc)?),
+            cur: DvCursor::new(DocSet::of_numeric(self, data, &e.ords)?),
             ords: NumericReader::new(data, &e.ords),
             terms: TermsDict::open(data, &e.terms)?,
             ord: -1,
@@ -719,7 +850,7 @@ impl LeafReader for SegmentReader {
             return Ok(None);
         };
         Ok(Some(Box::new(SegSortedNumeric {
-            cur: DvCursor::new(DocSet::of_numeric(data, &e.numeric, self.max_doc)?),
+            cur: DvCursor::new(DocSet::of_numeric(self, data, &e.numeric)?),
             reader: SortedNumericReader::new(data, e),
             values: Vec::new(),
             upto: 0,
@@ -737,12 +868,12 @@ impl LeafReader for SegmentReader {
         };
         let (docs, ords, terms) = match &e.kind {
             SortedSetKind::Single(s) => (
-                DocSet::of_numeric(data, &s.ords, self.max_doc)?,
+                DocSet::of_numeric(self, data, &s.ords)?,
                 SetOrds::Single(NumericReader::new(data, &s.ords)),
                 &s.terms,
             ),
             SortedSetKind::Multi { ords, terms } => (
-                DocSet::of_numeric(data, &ords.numeric, self.max_doc)?,
+                DocSet::of_numeric(self, data, &ords.numeric)?,
                 SetOrds::Multi(SortedNumericReader::new(data, ords)),
                 terms,
             ),

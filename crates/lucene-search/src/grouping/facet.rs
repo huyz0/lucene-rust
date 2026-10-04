@@ -3,7 +3,7 @@
 //! counts in which each (group, facet value) pair counts once, merged
 //! across segments by term.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::collector::ScoreMode;
 use crate::leaf_collector::SegmentCollector;
@@ -189,25 +189,28 @@ pub struct TermGroupFacetCollector<'a> {
 /// `seekCeil(term)` over a `SORTED_SET` dictionary: the first ordinal at
 /// or after `term`, `value_count` when none is.
 fn seek_ceil(values: &mut dyn SortedSetDocValues, term: &[u8]) -> Result<i64> {
-    let (mut low, mut high) = (0i64, values.value_count().saturating_sub(1));
-    while low <= high {
-        let mid = low + (high - low) / 2;
-        match values.lookup_ord(mid)?.as_slice().cmp(term) {
-            std::cmp::Ordering::Less => low = mid + 1,
-            std::cmp::Ordering::Greater => high = mid - 1,
-            std::cmp::Ordering::Equal => return Ok(mid),
-        }
-    }
-    Ok(low)
+    let ord = values.lookup_term(term)?;
+    // SENTINEL: a negative ordinal is `-insertionPoint - 1`.
+    Ok(if ord < 0 {
+        ord.saturating_neg().saturating_sub(1)
+    } else {
+        ord
+    })
 }
 
-/// `seekExact(term)` over a `SORTED_SET` dictionary: its ordinal.
-fn seek_exact(values: &mut dyn SortedSetDocValues, term: &[u8]) -> Result<Option<i64>> {
-    let ord = seek_ceil(values, term)?;
-    if ord < values.value_count() && values.lookup_ord(ord)? == term {
-        Ok(Some(ord))
-    } else {
-        Ok(None)
+/// A segment's `lookupTerm` answers, by term.
+#[derive(Default)]
+struct TermOrds<'k>(HashMap<&'k [u8], i64>);
+
+impl<'k> TermOrds<'k> {
+    /// `term`'s ordinal (or `-insertionPoint - 1`), looked up once.
+    fn get(&mut self, term: &'k [u8], lookup: impl FnOnce(&[u8]) -> Result<i64>) -> Result<i64> {
+        if let Some(&o) = self.0.get(term) {
+            return Ok(o);
+        }
+        let o = lookup(term)?;
+        self.0.insert(term, o);
+        Ok(o)
     }
 }
 
@@ -441,17 +444,20 @@ impl<'a> TermGroupFacetCollector<'a> {
             vec![0; usize::try_from(value_count).unwrap_or(0).saturating_add(1)];
         self.segment_total_count = 0;
         self.segment_grouped_facet_hits.clear();
+        // Each distinct term is looked up once per segment (Java looks up
+        // both terms of every pair; the ordinals are the same).
+        let (mut groups, mut facets) = (TermOrds::default(), TermOrds::default());
         for (group_value, facet_value) in &self.grouped_facet_hits {
             let facet_ord = match facet_value {
                 None => -1,
-                Some(v) => facet.lookup_term(v)?,
+                Some(v) => as_int(facets.get(v, |t| Ok(i64::from(facet.lookup_term(t)?)))?),
             };
             if facet_value.is_some() && facet_ord < 0 {
                 continue;
             }
             let group_ord = match group_value {
                 None => -1,
-                Some(v) => group_index.lookup_term(v)?,
+                Some(v) => as_int(groups.get(v, |t| Ok(i64::from(group_index.lookup_term(t)?)))?),
             };
             if group_value.is_some() && group_ord < 0 {
                 continue;
@@ -504,10 +510,12 @@ impl<'a> TermGroupFacetCollector<'a> {
         ];
         self.segment_total_count = 0;
         self.segment_grouped_facet_hits.clear();
+        // Each distinct term is looked up once per segment, as above.
+        let (mut groups, mut facets) = (TermOrds::default(), TermOrds::default());
         for (group_value, facet_value) in &self.grouped_facet_hits {
             let group_ord = match group_value {
                 None => -1,
-                Some(v) => group_index.lookup_term(v)?,
+                Some(v) => as_int(groups.get(v, |t| Ok(i64::from(group_index.lookup_term(t)?)))?),
             };
             if group_value.is_some() && group_ord < 0 {
                 continue;
@@ -517,10 +525,12 @@ impl<'a> TermGroupFacetCollector<'a> {
                     if self.facet_num_terms == 0 {
                         continue;
                     }
-                    match seek_exact(facet.as_mut(), v)? {
-                        Some(o) => as_int(o),
-                        None => continue,
+                    let o = facets.get(v, |t| facet.lookup_term(t))?;
+                    // SENTINEL: a negative ordinal is absent.
+                    if o < 0 {
+                        continue;
                     }
+                    as_int(o)
                 }
                 None => self.facet_num_terms,
             };

@@ -57,6 +57,7 @@ pub struct BlockGroupingCollector<'a> {
     queue_top: usize,
     group_competes: bool,
     keys: Option<LeafKeys<'a>>,
+    scratch: Vec<GroupSortValue>,
 }
 
 impl<'a> BlockGroupingCollector<'a> {
@@ -98,6 +99,7 @@ impl<'a> BlockGroupingCollector<'a> {
             queue_top: 0,
             group_competes: false,
             keys: None,
+            scratch: Vec::new(),
         })
     }
 
@@ -267,20 +269,25 @@ impl<'a> BlockGroupingCollector<'a> {
         }))
     }
 
-    /// The document's values beat the bottom slot's.
-    fn beats_bottom(&mut self, doc: i32, score: f32) -> Result<Option<Vec<GroupSortValue>>> {
+    /// Whether the document's values (read into `scratch`) beat the bottom
+    /// slot's.
+    fn beats_bottom(&mut self, doc: i32, score: f32) -> Result<bool> {
         let keys = self
             .keys
             .as_mut()
             .ok_or_else(|| Error::IllegalState("collected before entering a segment".into()))?;
-        let values = keys.values(&self.sort, doc, score)?;
-        Ok((compare_all(
+        if keys.compare_doc(
             &self.sort,
             &self.reversed,
             &self.slots[self.bottom_slot],
-            &values,
-        ) == Ordering::Greater)
-            .then_some(values))
+            doc,
+            score,
+        )? != Ordering::Greater
+        {
+            return Ok(false);
+        }
+        keys.values_into(&self.sort, doc, score, &mut self.scratch)?;
+        Ok(true)
     }
 }
 
@@ -335,18 +342,20 @@ impl<'a> SegmentCollector<'a> for BlockGroupingCollector<'a> {
                 .keys
                 .as_mut()
                 .ok_or_else(|| Error::IllegalState("collected before entering a segment".into()))?;
-            self.slots[self.bottom_slot] = keys.values(&self.sort, doc, score)?;
+            keys.values_into(&self.sort, doc, score, &mut self.slots[self.bottom_slot])?;
             self.top_group_doc = doc;
             return Ok(());
         }
         // Either the group already competes and the document must beat its
         // best so far, or the queue is full and it must beat the bottom
         // group: both are the bottom slot.
-        let Some(values) = self.beats_bottom(doc, score)? else {
+        if !self.beats_bottom(doc, score)? {
             return Ok(());
-        };
+        }
         self.group_competes = true;
-        self.slots[self.bottom_slot] = values;
+        let slot = &mut self.slots[self.bottom_slot];
+        slot.clear();
+        slot.extend_from_slice(&self.scratch);
         self.top_group_doc = doc;
         Ok(())
     }

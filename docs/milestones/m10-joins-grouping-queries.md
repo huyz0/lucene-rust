@@ -136,6 +136,33 @@ grouping. Each of them falls back to Lucene today.
   `GroupingSearch` with caching. 668 differential searches (`GenGrouping`:
   `GroupingSearch` by selectors and by blocks, the managers over one slice and
   two, the facets) equal to Lucene's.
+  Benchmark pair `scripts/bench-micro.sh --bench grouping`
+  (`GroupingMicro.java` / `micro_grouping.rs`: 200 000 documents in four
+  segments, in blocks of one to eight, 2 000 groups; per word, one grouping
+  search; every case's digest equal to Lucene's). The faithful port measured
+  0.21x-0.82x (facets 0.24x). Stage 3, each step re-run against the 668
+  differential searches: `lookupTerm` through the doc-values dictionary's
+  `seekCeil` instead of a binary search of `lookupOrd`s (the facets'
+  per-segment re-mapping and every selector's); each distinct term of the
+  facet pairs looked up once per segment; a sparse doc-values field's
+  documents decoded once per reader with a rank index (`advanceExact` was a
+  binary search of the whole set) and its column read at that rank; the
+  selector's ordinal map a table, filled as ordinals show up (or by one
+  forward walk of the dictionary once many miss) instead of seeking every
+  known term per segment; the comparator slots compared against a
+  document's values as Java's `compareBottom` does -- by score, number or
+  ordinal, without building the document's values unless it wins a slot
+  (a keyword slot's term resolved to this segment's ordinal once); the
+  group maps hashed with `FxHasher`. After: grouped facets 2.31x (single-
+  valued) and 2.48x (multi-valued), all groups with group heads 2.30x,
+  distinct values 1.95x, cached 1.28x, long range 1.23x. Left below 1.0:
+  by relevance 0.92x, field-sorted (`n` descending, `s` within the group)
+  0.80x, and blocks 0.86x. Their time is the two passes' walk of every
+  matching document (about 80 000 per word), each reading the group
+  field's ordinal through a boxed doc-values iterator and comparing it
+  through the generic multi-key comparator -- per-document work Java's JIT
+  inlines monomorphically; the algorithms and the documents visited are
+  Lucene's.
 - **T10.5** — Function queries and value sources.
 - **T10.6** — Intervals, payload queries, `MoreLikeThis`, `CommonTermsQuery`.
 - **T10.7** — Plugin wiring for the OpenSearch shapes above.

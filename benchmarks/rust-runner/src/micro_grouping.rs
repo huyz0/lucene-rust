@@ -78,6 +78,11 @@ fn q(word: &str) -> BooleanQuery {
 }
 
 fn cases(name: &str, words: &[String], w: Duration, m: Duration, run: &dyn Fn(&str, &mut Fnv)) {
+    // `MICRO_CASE`: the one case alone, its check included, so a profile
+    // of it is not mixed with the others' checks.
+    if std::env::var("MICRO_CASE").is_ok_and(|only| only != name) {
+        return;
+    }
     let mut f = Fnv::new();
     for word in words {
         run(word, &mut f);

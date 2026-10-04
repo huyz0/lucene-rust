@@ -125,6 +125,11 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// [`SegmentReader`]'s decoded sparse doc-values documents, by the data's
+/// address and the set's offset in it.
+pub(crate) type DocsWithFieldCache =
+    std::sync::Mutex<HashMap<(usize, i64), Arc<crate::reader::SparseDocs>>>;
+
 /// One opened segment: everything [`OpenSegment`] needs, already decoded/
 /// validated, plus the bookkeeping ([`SegmentReader::doc_base`]) real
 /// `SegmentReader.docBase` carries. `fields`/`live_docs` are owned outright
@@ -146,6 +151,10 @@ pub struct SegmentReader {
     /// [`Self::skip_indexes`].
     dvs: Option<(Arc<Input>, String)>,
     skip_indexes: Arc<OnceLock<HashMap<i32, doc_values::DocValuesSkipIndex>>>,
+    /// Sparse doc-values fields' documents (their `IndexedDISI`), decoded on
+    /// first use and shared by every iterator opened over them since --
+    /// keyed by the data's address and the set's offset in it.
+    pub(crate) docs_with_field: Arc<DocsWithFieldCache>,
     segment_id: [u8; ID_LENGTH],
     /// The generation of this segment's deletions at the time this reader
     /// was opened (`-1` if it has none) -- used by
@@ -722,6 +731,7 @@ impl SegmentReader {
             index_sort: si.index_sort.clone().map(Arc::new),
             dvs,
             skip_indexes: Arc::default(),
+            docs_with_field: Arc::default(),
             max_doc: si.doc_count,
             doc_base,
             segment_id,

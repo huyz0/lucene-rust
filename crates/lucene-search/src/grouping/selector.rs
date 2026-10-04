@@ -2,12 +2,12 @@
 //! `LongRangeGroupSelector`/`DoubleRangeGroupSelector` (the range a values
 //! source's value falls in, `LongRangeFactory`/`DoubleRangeFactory`).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
-use super::{GroupSelector, GroupState, SearchGroup};
+use super::{FxHashMap, GroupSelector, GroupState, SearchGroup};
 use crate::multi_segment::OpenSegment;
 use crate::reader::doc_values as dv;
 use crate::reader::SortedDocValues;
@@ -37,15 +37,71 @@ fn leaf_reader<'a>(leaf: &OpenSegment<'a>) -> Result<&'a crate::directory_reader
 /// `TermGroupSelector`: groups by a `SORTED` field's term. Terms get ids in
 /// the order first seen (`BytesRefHash`), and each segment maps its
 /// ordinals to them as it goes (`ordsToGroupIds`).
+///
+/// Stage 3, same groups: the segment's ordinal map is a table indexed by
+/// ordinal (Java's `IntIntHashMap`), filled in the first pass as ordinals
+/// show up (or, once many have, by one forward walk of the dictionary)
+/// rather than by seeking every known term per segment.
 pub struct TermGroupSelector<'a> {
     field: String,
     values: Vec<Vec<u8>>,
-    ids: HashMap<Vec<u8>, usize>,
-    ords_to_group_ids: HashMap<i32, usize>,
+    ids: FxHashMap<Vec<u8>, usize>,
+    ords_to_group_ids: OrdTable,
     doc_values: Option<Box<dyn SortedDocValues + 'a>>,
     group_id: Option<usize>,
     second_pass: bool,
     include_empty: bool,
+    /// This segment's documents whose ordinal was not mapped yet, and
+    /// whether the dictionary was walked for the known terms.
+    misses: i32,
+    walked: bool,
+}
+
+/// A segment's ordinals to group ids: a table, or a map for a dictionary
+/// too large to tabulate.
+#[derive(Debug, Default)]
+struct OrdTable {
+    table: Vec<u32>,
+    map: FxHashMap<i32, usize>,
+    tabulated: bool,
+}
+
+impl OrdTable {
+    const NONE: u32 = u32::MAX;
+    /// The most ordinals a table holds.
+    const MAX: i32 = 1 << 22;
+
+    fn reset(&mut self, value_count: i32) {
+        self.map.clear();
+        self.table.clear();
+        self.tabulated = (0..=Self::MAX).contains(&value_count);
+        if self.tabulated {
+            self.table
+                .resize(usize::try_from(value_count).unwrap_or(0), Self::NONE);
+        }
+    }
+
+    fn get(&self, ord: i32) -> Option<usize> {
+        if self.tabulated {
+            if let Some(&id) = usize::try_from(ord).ok().and_then(|o| self.table.get(o)) {
+                return (id != Self::NONE).then(|| usize::try_from(id).ok())?;
+            }
+        }
+        self.map.get(&ord).copied()
+    }
+
+    fn insert(&mut self, ord: i32, id: usize) {
+        if self.tabulated {
+            let slot = usize::try_from(ord)
+                .ok()
+                .and_then(|o| self.table.get_mut(o));
+            if let (Some(slot), Ok(id)) = (slot, u32::try_from(id)) {
+                *slot = id;
+                return;
+            }
+        }
+        self.map.insert(ord, id);
+    }
 }
 
 impl<'a> TermGroupSelector<'a> {
@@ -54,12 +110,14 @@ impl<'a> TermGroupSelector<'a> {
         Self {
             field: field.to_string(),
             values: Vec::new(),
-            ids: HashMap::new(),
-            ords_to_group_ids: HashMap::new(),
+            ids: FxHashMap::default(),
+            ords_to_group_ids: OrdTable::default(),
             doc_values: None,
             group_id: None,
             second_pass: false,
             include_empty: false,
+            misses: 0,
+            walked: false,
         }
     }
 }
@@ -69,11 +127,21 @@ impl<'a> GroupSelector<'a> for TermGroupSelector<'a> {
 
     fn set_next_reader(&mut self, _ord: usize, leaf: &OpenSegment<'a>) -> Result<()> {
         let mut values = dv::get_sorted(leaf_reader(leaf)?, &self.field)?;
-        self.ords_to_group_ids.clear();
-        for (i, v) in self.values.iter().enumerate() {
-            let ord = values.lookup_term(v)?;
-            if ord >= 0 {
-                self.ords_to_group_ids.insert(ord, i);
+        let count = values.value_count();
+        self.ords_to_group_ids.reset(count);
+        self.misses = 0;
+        self.walked = false;
+        // The second pass maps its few groups' terms up front, as Java
+        // does; the first pass maps an ordinal when a document first shows
+        // it (its term looked up among the known), where Java seeks every
+        // known term up front -- the same ids either way, and the first
+        // pass reaches few documents once its top groups fill.
+        if self.second_pass {
+            for (i, v) in self.values.iter().enumerate() {
+                let ord = values.lookup_term(v)?;
+                if ord >= 0 {
+                    self.ords_to_group_ids.insert(ord, i);
+                }
             }
         }
         self.doc_values = Some(values);
@@ -93,12 +161,32 @@ impl<'a> GroupSelector<'a> for TermGroupSelector<'a> {
             });
         }
         let ord = values.ord_value();
-        if let Some(&id) = self.ords_to_group_ids.get(&ord) {
+        if let Some(id) = self.ords_to_group_ids.get(ord) {
             self.group_id = Some(id);
             return Ok(GroupState::Accept);
         }
         if self.second_pass {
             return Ok(GroupState::Skip);
+        }
+        // Many documents with unmapped ordinals (a collector that sees every
+        // document, `AllGroupsCollector`): map every known term at once by
+        // walking the dictionary forward, rather than one random lookup
+        // each.
+        self.misses = self.misses.saturating_add(1);
+        let count = values.value_count();
+        let known = i32::try_from(self.values.len()).unwrap_or(i32::MAX);
+        if !self.walked && self.misses > 32 && known.saturating_mul(8) >= count {
+            self.walked = true;
+            for o in 0..count {
+                let term = values.lookup_ord(o)?;
+                if let Some(&id) = self.ids.get(&term) {
+                    self.ords_to_group_ids.insert(o, id);
+                }
+            }
+            if let Some(id) = self.ords_to_group_ids.get(ord) {
+                self.group_id = Some(id);
+                return Ok(GroupState::Accept);
+            }
         }
         let term = values.lookup_ord(ord)?;
         let id = match self.ids.get(&term) {
@@ -445,5 +533,27 @@ impl<'a> GroupSelector<'a> for DoubleRangeGroupSelector<'a> {
 
     fn set_groups(&mut self, groups: &[SearchGroup<DoubleRange>]) {
         self.state.set_groups(groups);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_ordinal_table_falls_back_to_a_map() {
+        let mut t = OrdTable::default();
+        t.reset(4);
+        t.insert(2, 7);
+        t.insert(9, 1);
+        assert_eq!(
+            (t.get(2), t.get(9), t.get(3), t.get(-1)),
+            (Some(7), Some(1), None, None)
+        );
+        // Too many ordinals to tabulate: a map.
+        t.reset(OrdTable::MAX.saturating_add(1));
+        assert_eq!(t.get(2), None);
+        t.insert(1 << 30, 3);
+        assert_eq!(t.get(1 << 30), Some(3));
     }
 }

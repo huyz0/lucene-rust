@@ -293,6 +293,9 @@ impl SortedSetDocValues for SingletonSortedSet<'_> {
     fn value_count(&self) -> i64 {
         i64::from(self.inner.value_count())
     }
+    fn lookup_term(&mut self, key: &[u8]) -> Result<i64> {
+        Ok(i64::from(self.inner.lookup_term(key)?))
+    }
 }
 
 /// `DocValues.singleton(NumericDocValues)`: a `NUMERIC` field as a set of
@@ -367,7 +370,8 @@ mod tests {
         assert_eq!(e.long_value(), 0);
         assert_eq!(SortedSetDocValues::doc_value_count(&e), 0);
         assert_eq!(SortedNumericDocValues::doc_value_count(&e), 0);
-        assert_eq!(e.lookup_term(b"x").unwrap(), -1);
+        assert_eq!(SortedDocValues::lookup_term(&mut e, b"x").unwrap(), -1);
+        assert_eq!(SortedSetDocValues::lookup_term(&mut e, b"x").unwrap(), -1);
     }
 
     #[test]

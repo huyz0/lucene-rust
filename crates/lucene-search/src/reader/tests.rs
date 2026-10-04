@@ -1655,6 +1655,25 @@ fn segment_shapes_single_valued_sets_sparse_norms_and_empty_sets() {
         super::segment::DocSet::Empty
     ));
 
+    // A sparse set's rank index: positions, misses, targets past its end,
+    // the current document again, and a step back (outside the contract).
+    let sparse = std::sync::Arc::new(super::SparseDocs::new(vec![2, 5, 64, 65, 130]));
+    let mut c = super::segment::DvCursor::new(super::segment::DocSet::Sparse(sparse));
+    assert!(!c.advance_exact(1));
+    assert!(c.advance_exact(5));
+    assert!(c.advance_exact(5), "the current document again");
+    assert!(c.advance_exact(65));
+    assert_eq!(c.next_doc(), 130);
+    assert!(!c.advance_exact(131));
+    assert!(!c.advance_exact(9999));
+    assert!(!c.advance_exact(-1));
+    let sparse = std::sync::Arc::new(super::SparseDocs::new(vec![2, 5, 64, 65, 130]));
+    let mut c = super::segment::DvCursor::new(super::segment::DocSet::Sparse(sparse));
+    assert_eq!(c.advance(3), 5);
+    assert_eq!(c.advance(5), 64, "never behind the current position");
+    assert_eq!(c.advance(66), 130);
+    assert_eq!(c.advance(131), NO_MORE_DOCS);
+
     // Postings of an unpositioned enum.
     let t = s.terms("t").unwrap().unwrap();
     let mut te = t.iterator().unwrap();

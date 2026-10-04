@@ -36,14 +36,6 @@ fn no_leaf() -> Error {
     Error::IllegalState("a grouping collector collected before entering a segment".into())
 }
 
-/// Whether a document with `doc` values beats the slot holding `slot`:
-/// `reverseMul * compareBottom(doc) > 0` over the keys in order (the first
-/// that differs decides; all equal does not compete, as the earlier
-/// document wins).
-fn beats(sort: &Sort, reversed: &[i32], slot: &[GroupSortValue], doc: &[GroupSortValue]) -> bool {
-    compare_all(sort, reversed, slot, doc) == Ordering::Greater
-}
-
 // ---------------------------------------------------------------------------
 // First pass
 // ---------------------------------------------------------------------------
@@ -70,6 +62,7 @@ pub struct FirstPassGroupingCollector<'a, S: GroupSelector<'a>> {
     doc_base: i32,
     spare_slot: usize,
     keys: Option<LeafKeys<'a>>,
+    scratch: Vec<GroupSortValue>,
 }
 
 impl<'a, S: GroupSelector<'a>> FirstPassGroupingCollector<'a, S> {
@@ -105,6 +98,7 @@ impl<'a, S: GroupSelector<'a>> FirstPassGroupingCollector<'a, S> {
             doc_base: 0,
             spare_slot: top_n_groups,
             keys: None,
+            scratch: Vec::new(),
         })
     }
 
@@ -163,12 +157,58 @@ impl<'a, S: GroupSelector<'a>> FirstPassGroupingCollector<'a, S> {
         )
     }
 
+    /// `collect(doc)`, the document's values read into `values`.
+    fn collect_into(
+        &mut self,
+        doc: i32,
+        score: f32,
+        values: &mut Vec<GroupSortValue>,
+    ) -> Result<()> {
+        let keys = self.keys.as_mut().ok_or_else(no_leaf)?;
+        // `isCompetitive(doc)`: once the top groups are full, a document
+        // that cannot beat the bottom group is skipped before its group is
+        // even looked at.
+        if self.ordered.is_some()
+            && keys.compare_doc(
+                &self.sort,
+                &self.reversed,
+                &self.slots[self.bottom_slot],
+                doc,
+                score,
+            )? != Ordering::Greater
+        {
+            return Ok(());
+        }
+        let state = self.selector.advance_to(doc, score)?;
+        if self.ignore_docs_without_group_field && state == GroupState::Skip {
+            return Ok(());
+        }
+        match self.group_map.get(self.selector.current_value()) {
+            None => {
+                keys.values_into(&self.sort, doc, score, values)?;
+                self.collect_new_group(doc, values);
+            }
+            Some(g) => {
+                // `collectExistingGroup`: the document must beat the group's
+                // best so far.
+                let slot = &self.slots[self.groups[g].comparator_slot];
+                if keys.compare_doc(&self.sort, &self.reversed, slot, doc, score)?
+                    == Ordering::Greater
+                {
+                    keys.values_into(&self.sort, doc, score, values)?;
+                    self.collect_existing_group(doc, g, values);
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// `collectNewGroup(doc)`.
-    fn collect_new_group(&mut self, doc: i32, values: Vec<GroupSortValue>) {
+    fn collect_new_group(&mut self, doc: i32, values: &[GroupSortValue]) {
         if !self.is_group_map_full() {
             let slot = self.group_map.len();
             let value = self.selector.copy_value();
-            self.slots[slot] = values;
+            copy_values(&mut self.slots[slot], values);
             let g = self.groups.len();
             self.groups.push(CollectedSearchGroup {
                 group_value: value.clone(),
@@ -198,7 +238,7 @@ impl<'a, S: GroupSelector<'a>> FirstPassGroupingCollector<'a, S> {
         self.groups[bottom].group_value = value.clone();
         self.groups[bottom].top_doc = self.doc_base.saturating_add(doc);
         let slot = self.groups[bottom].comparator_slot;
-        self.slots[slot] = values;
+        copy_values(&mut self.slots[slot], values);
         self.group_map.insert(value, bottom);
         let (slots, groups) = (&self.slots, &self.groups);
         ordered.add(bottom, &mut |a: &usize, b: &usize| {
@@ -210,16 +250,10 @@ impl<'a, S: GroupSelector<'a>> FirstPassGroupingCollector<'a, S> {
     }
 
     /// `collectExistingGroup(doc, group)`.
-    fn collect_existing_group(&mut self, doc: i32, group: usize, values: Vec<GroupSortValue>) {
-        if !beats(
-            &self.sort,
-            &self.reversed,
-            &self.slots[self.groups[group].comparator_slot],
-            &values,
-        ) {
-            return;
-        }
-        self.slots[self.spare_slot] = values;
+    /// `collectExistingGroup(doc, group)` for a document that beats the
+    /// group's best so far (checked by the caller), with its values.
+    fn collect_existing_group(&mut self, doc: i32, group: usize, values: &[GroupSortValue]) {
+        copy_values(&mut self.slots[self.spare_slot], values);
         let (sort, reversed) = (&self.sort, &self.reversed);
         let mut skip_heavy_ops = false;
         let mut prev_last = None;
@@ -254,6 +288,13 @@ impl<'a, S: GroupSelector<'a>> FirstPassGroupingCollector<'a, S> {
             }
         }
     }
+}
+
+/// `FieldComparator.copy(slot, doc)`: the document's values into a slot, its
+/// allocation reused.
+fn copy_values(slot: &mut Vec<GroupSortValue>, values: &[GroupSortValue]) {
+    slot.clear();
+    slot.extend_from_slice(values);
 }
 
 /// `buildSortedSet`'s comparator: the slots' values, then the top document.
@@ -295,37 +336,12 @@ impl<'a, S: GroupSelector<'a>> SegmentCollector<'a> for FirstPassGroupingCollect
     }
 
     fn collect(&mut self, doc: i32, score: f32) -> Result<()> {
-        let keys = self.keys.as_mut().ok_or_else(no_leaf)?;
-        let mut values = None;
-        // `isCompetitive(doc)`: once the top groups are full, a document
-        // that cannot beat the bottom group is skipped before its group is
-        // even looked at.
-        if self.ordered.is_some() {
-            let v = keys.values(&self.sort, doc, score)?;
-            if !beats(
-                &self.sort,
-                &self.reversed,
-                &self.slots[self.bottom_slot],
-                &v,
-            ) {
-                return Ok(());
-            }
-            values = Some(v);
-        }
-        let state = self.selector.advance_to(doc, score)?;
-        if self.ignore_docs_without_group_field && state == GroupState::Skip {
-            return Ok(());
-        }
-        let group = self.group_map.get(self.selector.current_value());
-        let values = match values {
-            Some(v) => v,
-            None => keys.values(&self.sort, doc, score)?,
-        };
-        match group {
-            None => self.collect_new_group(doc, values),
-            Some(g) => self.collect_existing_group(doc, g, values),
-        }
-        Ok(())
+        // The document's sort values go to a scratch buffer, copied into a
+        // slot only when they win one.
+        let mut values = std::mem::take(&mut self.scratch);
+        let r = self.collect_into(doc, score, &mut values);
+        self.scratch = values;
+        r
     }
 }
 
@@ -720,15 +736,22 @@ impl<'a> SegmentCollector<'a> for GroupTopDocs<'a> {
             );
         } else {
             let keys = self.keys.as_mut().ok_or_else(no_leaf)?;
-            let values = keys.values(&self.sort, doc, score)?;
             // `TopFieldCollector`: a full queue takes only a document
             // strictly better than its bottom.
             if self.hits.len() >= self.num_hits {
                 let bottom = self.hits.last().and_then(|h| h.fields.as_deref());
-                if !bottom.is_some_and(|b| beats(&self.sort, &self.reversed, b, &values)) {
+                let competes = match bottom {
+                    Some(b) => {
+                        keys.compare_doc(&self.sort, &self.reversed, b, doc, score)?
+                            == Ordering::Greater
+                    }
+                    None => false,
+                };
+                if !competes {
                     return Ok(());
                 }
             }
+            let values = keys.values(&self.sort, doc, score)?;
             let (sort, reversed) = (&self.sort, &self.reversed);
             let at = self.hits.partition_point(|h| {
                 h.fields
@@ -1073,6 +1096,7 @@ pub struct AllGroupHeadsCollector<'a, S: GroupSelector<'a>> {
     heads: Vec<GroupHead<S::Value>>,
     keys: Option<LeafKeys<'a>>,
     doc_base: i32,
+    scratch: Vec<GroupSortValue>,
 }
 
 impl<'a, S: GroupSelector<'a>> AllGroupHeadsCollector<'a, S> {
@@ -1087,6 +1111,7 @@ impl<'a, S: GroupSelector<'a>> AllGroupHeadsCollector<'a, S> {
             heads: Vec::new(),
             keys: None,
             doc_base: 0,
+            scratch: Vec::new(),
         }
     }
 
@@ -1179,10 +1204,12 @@ impl<'a, S: GroupSelector<'a>> SegmentCollector<'a> for AllGroupHeadsCollector<'
             return Ok(());
         }
         let keys = self.keys.as_mut().ok_or_else(no_leaf)?;
-        let values = keys.values(&self.sort, doc, score)?;
-        if beats(&self.sort, &self.reversed, &head.sort_values, &values) {
+        if keys.compare_doc(&self.sort, &self.reversed, &head.sort_values, doc, score)?
+            == Ordering::Greater
+        {
             head.doc = global;
-            head.sort_values = values;
+            keys.values_into(&self.sort, doc, score, &mut self.scratch)?;
+            copy_values(&mut head.sort_values, &self.scratch);
         }
         Ok(())
     }

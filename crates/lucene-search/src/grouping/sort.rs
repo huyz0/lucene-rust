@@ -20,11 +20,15 @@
 
 use std::cmp::Ordering;
 
+use super::FxHashMap;
 use crate::multi_segment::OpenSegment;
 use crate::reader::doc_values as dv;
-use crate::reader::{SortedNumericDocValues, SortedSetDocValues};
+use crate::reader::{
+    NumericDocValues, SortedDocValues, SortedNumericDocValues, SortedSetDocValues,
+};
 use crate::top_field::{SortField, SortType};
 use crate::{Error, Result};
+use lucene_codecs::field_infos::DocValuesType;
 
 /// `Sort`: the keys, in priority order. `Sort.RELEVANCE` is
 /// [`Sort::relevance`], which [`TopGroupsCollector`](super::TopGroupsCollector)
@@ -178,12 +182,87 @@ pub fn compare_values(field: &SortField, a: &GroupSortValue, b: &GroupSortValue)
     }
 }
 
+/// A numeric key's comparable long as the value its comparator boxes.
+fn numeric_value(ty: SortType, v: i64) -> GroupSortValue {
+    match ty {
+        SortType::Long => GroupSortValue::Long(v),
+        SortType::Int => GroupSortValue::Int(v as i32),
+        SortType::Double => GroupSortValue::Double(sortable_long_to_double(v)),
+        _ => GroupSortValue::Float(sortable_int_to_float(v)),
+    }
+}
+
+/// `compareValues(slot, value)` for a numeric key's comparable long.
+fn compare_numeric(ty: SortType, slot: &GroupSortValue, v: i64) -> Ordering {
+    match (ty, slot) {
+        (SortType::Long, GroupSortValue::Long(b)) => b.cmp(&v),
+        (SortType::Int, GroupSortValue::Int(b)) => b.cmp(&(v as i32)),
+        (SortType::Double, GroupSortValue::Double(b)) => {
+            double_compare(*b, sortable_long_to_double(v))
+        }
+        (SortType::Float, GroupSortValue::Float(b)) => float_compare(*b, sortable_int_to_float(v)),
+        _ => Ordering::Equal,
+    }
+}
+
 /// One key's reading of one segment (`getLeafComparator(context)`).
 enum LeafKey<'a> {
     Score,
     Doc(i32),
     Numeric(Box<dyn SortedNumericDocValues + 'a>, Vec<i64>),
-    Str(Box<dyn SortedSetDocValues + 'a>, Vec<i64>),
+    /// A numeric key over a `NUMERIC` field: one value per document, read
+    /// directly (the comparator's `DocValues.getNumeric`), its missing value
+    /// substituted.
+    Single(Box<dyn NumericDocValues + 'a>),
+    /// The values, and the slot terms placed in this segment with their
+    /// ordinals: a term copied from this segment's document keeps its
+    /// ordinal, any other is resolved once by `lookupTerm`
+    /// (`TermOrdValComparator`'s `bottomOrd`/`bottomSameReader`).
+    Str(StrValues<'a>, FxHashMap<Vec<u8>, i64>),
+}
+
+/// A keyword key's values: a `SORTED_SET` field through its selector, or a
+/// `SORTED` field's one ordinal read directly.
+enum StrValues<'a> {
+    Set(Box<dyn SortedSetDocValues + 'a>, Vec<i64>),
+    Single(Box<dyn SortedDocValues + 'a>),
+}
+
+impl StrValues<'_> {
+    /// The ordinal the key's selector picks for `doc`, if it has one.
+    fn doc_ord(&mut self, doc: i32, selector: crate::top_field::Selector) -> Result<Option<i64>> {
+        match self {
+            StrValues::Single(v) => Ok(if v.advance_exact(doc)? {
+                Some(i64::from(v.ord_value()))
+            } else {
+                None
+            }),
+            StrValues::Set(v, buf) => {
+                buf.clear();
+                if v.advance_exact(doc)? {
+                    for _ in 0..v.doc_value_count() {
+                        buf.push(v.next_ord()?);
+                    }
+                }
+                Ok(selector.pick_ord(buf))
+            }
+        }
+    }
+
+    fn lookup_ord(&mut self, ord: i64) -> Result<Vec<u8>> {
+        match self {
+            StrValues::Single(v) => v.lookup_ord(i32::try_from(ord).unwrap_or(i32::MAX)),
+            StrValues::Set(v, _) => v.lookup_ord(ord),
+        }
+    }
+
+    // SENTINEL: negative = absent, `-insertionPoint-1` (`lookupTerm`).
+    fn lookup_term(&mut self, term: &[u8]) -> Result<i64> {
+        match self {
+            StrValues::Single(v) => Ok(i64::from(v.lookup_term(term)?)),
+            StrValues::Set(v, _) => v.lookup_term(term),
+        }
+    }
 }
 
 /// The keys of a [`Sort`] over one segment: each document's values.
@@ -207,13 +286,30 @@ impl<'a> LeafKeys<'a> {
                     let reader = leaf.reader.ok_or_else(|| {
                         Error::MissingSegmentReader(format!("sort field {}", f.field))
                     })?;
-                    LeafKey::Numeric(dv::get_sorted_numeric(reader, &f.field)?, Vec::new())
+                    let single = reader
+                        .field_infos()
+                        .field_by_name(&f.field)
+                        .is_some_and(|fi| fi.doc_values_type == DocValuesType::Numeric);
+                    if single {
+                        LeafKey::Single(dv::get_numeric(reader, &f.field)?)
+                    } else {
+                        LeafKey::Numeric(dv::get_sorted_numeric(reader, &f.field)?, Vec::new())
+                    }
                 }
                 SortType::String => {
                     let reader = leaf.reader.ok_or_else(|| {
                         Error::MissingSegmentReader(format!("sort field {}", f.field))
                     })?;
-                    LeafKey::Str(dv::get_sorted_set(reader, &f.field)?, Vec::new())
+                    let single = reader
+                        .field_infos()
+                        .field_by_name(&f.field)
+                        .is_some_and(|fi| fi.doc_values_type == DocValuesType::Sorted);
+                    let values = if single {
+                        StrValues::Single(dv::get_sorted(reader, &f.field)?)
+                    } else {
+                        StrValues::Set(dv::get_sorted_set(reader, &f.field)?, Vec::new())
+                    };
+                    LeafKey::Str(values, FxHashMap::default())
                 }
                 SortType::StringVal | SortType::Custom(_) => {
                     return Err(Error::Unsupported(format!(
@@ -239,6 +335,14 @@ impl<'a> LeafKeys<'a> {
         Ok(match &mut self.keys[i] {
             LeafKey::Score => GroupSortValue::Float(score),
             LeafKey::Doc(base) => GroupSortValue::Int(base.saturating_add(doc)),
+            LeafKey::Single(values) => {
+                let v = if values.advance_exact(doc)? {
+                    values.long_value()
+                } else {
+                    f.missing
+                };
+                numeric_value(f.ty, v)
+            }
             LeafKey::Numeric(values, buf) => {
                 buf.clear();
                 if values.advance_exact(doc)? {
@@ -247,26 +351,143 @@ impl<'a> LeafKeys<'a> {
                     }
                 }
                 let v = f.selector.pick(f.ty, buf).unwrap_or(f.missing);
-                match f.ty {
-                    SortType::Long => GroupSortValue::Long(v),
-                    SortType::Int => GroupSortValue::Int(v as i32),
-                    SortType::Double => GroupSortValue::Double(sortable_long_to_double(v)),
-                    _ => GroupSortValue::Float(sortable_int_to_float(v)),
-                }
+                numeric_value(f.ty, v)
             }
-            LeafKey::Str(values, buf) => {
+            LeafKey::Str(values, placed) => match values.doc_ord(doc, f.selector)? {
+                Some(ord) => {
+                    let term = values.lookup_ord(ord)?;
+                    placed.insert(term.clone(), ord);
+                    GroupSortValue::Bytes(Some(term))
+                }
+                None => GroupSortValue::Bytes(None),
+            },
+        })
+    }
+
+    /// `compareValues(slot, doc's value)` for key `i` without boxing the
+    /// document's value where the comparator does not (`compareBottom`):
+    /// the score and the document compared as numbers, a numeric key as its
+    /// selected long, a keyword key by ordinal against the slot term's
+    /// position in this segment (looked up once per slot term).
+    pub(crate) fn compare_slot(
+        &mut self,
+        sort: &Sort,
+        i: usize,
+        slot: &GroupSortValue,
+        doc: i32,
+        score: f32,
+    ) -> Result<Ordering> {
+        let f = &sort.fields[i];
+        match (&mut self.keys[i], slot) {
+            (LeafKey::Score, GroupSortValue::Float(b)) => Ok(float_compare(score, *b)),
+            (LeafKey::Doc(base), GroupSortValue::Int(b)) => Ok(b.cmp(&base.saturating_add(doc))),
+            (LeafKey::Single(values), _) => {
+                let v = if values.advance_exact(doc)? {
+                    values.long_value()
+                } else {
+                    f.missing
+                };
+                Ok(compare_numeric(f.ty, slot, v))
+            }
+            (LeafKey::Numeric(values, buf), _) => {
                 buf.clear();
                 if values.advance_exact(doc)? {
                     for _ in 0..values.doc_value_count() {
-                        buf.push(values.next_ord()?);
+                        buf.push(values.next_value()?);
                     }
                 }
-                match f.selector.pick_ord(buf) {
-                    Some(ord) => GroupSortValue::Bytes(Some(values.lookup_ord(ord)?)),
-                    None => GroupSortValue::Bytes(None),
-                }
+                let v = f.selector.pick(f.ty, buf).unwrap_or(f.missing);
+                Ok(compare_numeric(f.ty, slot, v))
             }
-        })
+            (LeafKey::Str(values, placed), GroupSortValue::Bytes(slot_term)) => {
+                let doc_ord = values.doc_ord(doc, f.selector)?;
+                let missing_last = f.missing == 1;
+                Ok(match (slot_term, doc_ord) {
+                    (None, None) => Ordering::Equal,
+                    (None, Some(_)) => {
+                        if missing_last {
+                            Ordering::Greater
+                        } else {
+                            Ordering::Less
+                        }
+                    }
+                    (Some(_), None) => {
+                        if missing_last {
+                            Ordering::Less
+                        } else {
+                            Ordering::Greater
+                        }
+                    }
+                    (Some(term), Some(ord)) => {
+                        let at = match placed.get(term.as_slice()) {
+                            Some(&at) => at,
+                            None => {
+                                let at = values.lookup_term(term)?;
+                                placed.insert(term.clone(), at);
+                                at
+                            }
+                        };
+                        // SENTINEL: a negative answer is `-insertionPoint - 1`:
+                        // the slot term sorts between that point's
+                        // neighbours, after every ordinal below it.
+                        if at >= 0 {
+                            at.cmp(&ord)
+                        } else if ord < at.saturating_neg().saturating_sub(1) {
+                            Ordering::Greater
+                        } else {
+                            Ordering::Less
+                        }
+                    }
+                })
+            }
+            _ => {
+                let v = self.value(sort, i, doc, score)?;
+                Ok(compare_values(f, slot, &v))
+            }
+        }
+    }
+
+    /// `reverseMul * compareBottom(doc)` over every key, in order, against
+    /// the values of a slot: the first that differs ([`compare_all`] with
+    /// the document's values read as the comparators read them).
+    pub(crate) fn compare_doc(
+        &mut self,
+        sort: &Sort,
+        reversed: &[i32],
+        slot: &[GroupSortValue],
+        doc: i32,
+        score: f32,
+    ) -> Result<Ordering> {
+        // By score alone (`Sort.RELEVANCE`, the default): one float compare.
+        if let ([LeafKey::Score], [GroupSortValue::Float(b)], [r]) =
+            (self.keys.as_slice(), slot, reversed)
+        {
+            let c = float_compare(score, *b);
+            return Ok(if *r < 0 { c.reverse() } else { c });
+        }
+        for (i, s) in slot.iter().enumerate().take(sort.fields.len()) {
+            let c = self.compare_slot(sort, i, s, doc, score)?;
+            let c = if reversed[i] < 0 { c.reverse() } else { c };
+            if c != Ordering::Equal {
+                return Ok(c);
+            }
+        }
+        Ok(Ordering::Equal)
+    }
+
+    /// Every key's value for `doc`, into `out` (its allocation reused).
+    pub(crate) fn values_into(
+        &mut self,
+        sort: &Sort,
+        doc: i32,
+        score: f32,
+        out: &mut Vec<GroupSortValue>,
+    ) -> Result<()> {
+        out.clear();
+        for i in 0..sort.fields.len() {
+            out.push(self.value(sort, i, doc, score)?);
+        }
+        Ok(())
     }
 
     /// Every key's value for `doc`.
