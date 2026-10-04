@@ -5,8 +5,10 @@
 //!
 //! A query's reader-wide state (its sources' `createWeight` contexts, its
 //! values source's `rewrite(searcher)`) comes from the statistics pass
-//! ([`crate::GlobalStats`]); a segment searched without one treats itself
-//! as the whole index.
+//! ([`crate::GlobalStats`]), which every entry point runs over all its
+//! segments when the query holds a function query
+//! (`crate::multi_segment::global_function_stats`); a segment reached without
+//! it is an error, never one segment read as the whole index.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -18,7 +20,7 @@ use crate::explain::Explanation;
 use crate::extended_query::ExtendedQuery;
 use crate::function::{
     BoxValues, FunctionContext, FunctionMatchQuery, FunctionQuery, FunctionRangeQuery,
-    FunctionScoreQuery, TopLevel, ValueLeaf, ValueSource, ValueSourceScorer,
+    FunctionScoreQuery, ValueLeaf, ValueSource, ValueSourceScorer,
 };
 use crate::values_source::{BoxDoubleValues, DoubleValues, DoubleValuesSource, ValuesContext};
 use crate::{Error, Result};
@@ -34,38 +36,42 @@ fn max_doc(ctx: &LeafContext<'_>) -> Result<i32> {
     }
 }
 
-/// `source`'s `createWeight` context for this search.
+/// `source`'s `createWeight` context for this search, from the statistics
+/// pass.
+///
+/// # Errors
+/// [`Error::IllegalState`] when the entry point that built this leaf did not
+/// prepare the query's function queries: Java creates the weight over the
+/// whole searcher, and a context built from this segment alone would read
+/// one segment's statistics as the index's.
 fn context(ctx: &LeafContext<'_>, source: &Arc<dyn ValueSource>) -> Result<Arc<FunctionContext>> {
-    if let Some(c) = ctx
-        .global
+    ctx.global
         .and_then(|g| g.functions().context(source.as_ref()))
-    {
-        return Ok(Arc::clone(c));
-    }
-    Ok(Arc::new(FunctionContext::create(
-        source.as_ref(),
-        &TopLevel::single(*ctx),
-    )?))
+        .map(Arc::clone)
+        .ok_or_else(|| unprepared(&source.description()))
 }
 
-/// `source.rewrite(searcher)` for this search.
+/// `source.rewrite(searcher)` for this search, from the statistics pass.
+///
+/// # Errors
+/// As [`context`].
 fn rewritten(
     ctx: &LeafContext<'_>,
     source: &Arc<dyn DoubleValuesSource>,
 ) -> Result<Arc<dyn DoubleValuesSource>> {
-    if let Some(s) = ctx
-        .global
+    ctx.global
         .and_then(|g| g.functions().source(source.as_ref()))
-    {
-        return Ok(Arc::clone(s));
-    }
-    let prepared = ctx.global.is_some_and(|g| !g.functions().is_empty());
-    if !prepared {
-        if let Some(r) = source.rewrite(&TopLevel::single(*ctx))? {
-            return Ok(r);
-        }
-    }
-    Ok(Arc::clone(source))
+        .map(Arc::clone)
+        .ok_or_else(|| unprepared(&source.describe()))
+}
+
+/// A function query reached a leaf whose entry point did not prepare it
+/// (`crate::multi_segment::global_function_stats`).
+fn unprepared(what: &str) -> Error {
+    Error::IllegalState(format!(
+        "function query over {what} reached a segment without its reader-wide \
+         preparation: the search must prepare its function queries over every segment"
+    ))
 }
 
 // ---------------------------------------------------------------------------

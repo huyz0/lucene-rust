@@ -62,6 +62,8 @@ pub fn cannot_reach(segments: &[OpenSegment<'_>], query: &BooleanQuery, n: u64) 
 pub fn terminate_after(segments: &[OpenSegment<'_>], query: &BooleanQuery, n: u64) -> Result<Cut> {
     let rewritten = crate::multi_segment::rewrite_points_ranges(query, segments);
     let query = rewritten.as_ref().unwrap_or(query);
+    // Unscored, but a function query's weight is still the whole reader's.
+    let global = crate::multi_segment::global_function_stats(segments, query, None)?;
     let mut collected = 0u64;
     let mut per_leaf = Vec::new();
     for (i, seg) in segments.iter().enumerate() {
@@ -74,7 +76,7 @@ pub fn terminate_after(segments: &[OpenSegment<'_>], query: &BooleanQuery, n: u6
             live_docs: seg.live_docs,
             points: seg.points,
             norms: None,
-            global: None,
+            global: global.as_ref(),
             max_doc: seg.max_doc,
             cache: seg.cache,
             reader: seg.reader,
@@ -248,6 +250,7 @@ pub fn search_sorted_until(
         Some(&searched),
         until,
         None,
+        None,
     )?;
     Ok((top, cut))
 }
@@ -279,10 +282,7 @@ pub fn count_terminates(
 ) -> Result<bool> {
     let rewritten = crate::multi_segment::rewrite_points_ranges(query, segments);
     let query = rewritten.as_ref().unwrap_or(query);
-    let global = match min_score {
-        Some(_) => Some(crate::multi_segment::global_boolean_stats(segments, query)?),
-        None => None,
-    };
+    let global = crate::multi_segment::leaf_stats(segments, query, min_score.is_some(), None)?;
     let mode = if min_score.is_some() {
         Mode::Complete
     } else {

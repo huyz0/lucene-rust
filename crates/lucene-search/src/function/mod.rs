@@ -972,11 +972,6 @@ impl<'a> TopLevel<'a> {
         }
     }
 
-    /// One segment as the whole index.
-    pub(crate) fn single(ctx: LeafContext<'a>) -> Self {
-        Self { leaves: vec![ctx] }
-    }
-
     /// The leaves, in order.
     pub fn leaves(&self) -> impl Iterator<Item = ValueLeaf<'a>> + '_ {
         self.leaves.iter().map(|c| ValueLeaf::new(*c))
@@ -1180,7 +1175,7 @@ impl fmt::Debug for FunctionStats {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "FunctionStats({} contexts, {} rewritten sources)",
+            "FunctionStats({} contexts, {} values sources)",
             self.contexts.len(),
             self.sources.len()
         )
@@ -1212,7 +1207,8 @@ impl FunctionStats {
         self.contexts.get(&source_key(source))
     }
 
-    /// `source.rewrite(searcher)` for this search, when it rewrote.
+    /// `source.rewrite(searcher)` for this search (the source itself when
+    /// it does not rewrite); `None` when the source was not prepared.
     pub(crate) fn source(
         &self,
         source: &dyn crate::values_source::DoubleValuesSource,
@@ -1376,9 +1372,10 @@ pub(crate) fn prepare_functions(
             FunctionSource::Double(s) => {
                 let key = source_key(s.as_ref());
                 if let std::collections::hash_map::Entry::Vacant(slot) = out.sources.entry(key) {
-                    if let Some(r) = s.rewrite(&top)? {
-                        slot.insert(r);
-                    }
+                    // A source that does not rewrite is recorded as itself:
+                    // every function query of the search is then found.
+                    let r = s.rewrite(&top)?.unwrap_or_else(|| Arc::clone(*s));
+                    slot.insert(r);
                 }
             }
         }

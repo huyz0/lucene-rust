@@ -3945,6 +3945,7 @@ pub fn search_sorted_tracking(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -3966,6 +3967,7 @@ pub(crate) fn search_sorted_leaves(
     leaves: Option<&[usize]>,
     until: Option<(usize, i32)>,
     min_score: Option<f32>,
+    similarity: Option<&dyn crate::similarities::Similarity>,
 ) -> Result<TopFieldDocs> {
     if sort.is_empty() {
         return Err(SortError::NoKeys.into());
@@ -4002,7 +4004,13 @@ pub(crate) fn search_sorted_leaves(
     let query = rewritten.as_ref().unwrap_or(query);
     // The score leading the sort gives the max score itself (the first hit).
     let track = track_max_score && sort[0].ty != SortType::Score;
-    let global = global_stats(segments, query, sort, track || min_score.is_some())?;
+    let global = global_stats(
+        segments,
+        query,
+        sort,
+        track || min_score.is_some(),
+        similarity,
+    )?;
     let all: Vec<usize> = match leaves {
         Some(l) => l.to_vec(),
         None => (0..segments.len().min(readers.len())).collect(),
@@ -4020,6 +4028,7 @@ pub(crate) fn search_sorted_leaves(
         global: global.as_ref(),
         until,
         min_score,
+        similarity,
     };
     search_segments(&run, &all)
 }
@@ -4099,13 +4108,14 @@ pub fn search_sorted_min_score(
             None,
             None,
             min_score,
+            None,
         );
     }
     // The arity checks, once.
     search_sorted(segments, readers, query, norms, sort, 0, 0, after)?;
     let rewritten = crate::multi_segment::rewrite_points_ranges(query, segments);
     let query = rewritten.as_ref().unwrap_or(query);
-    let global = global_stats(segments, query, sort, min_score.is_some())?;
+    let global = global_stats(segments, query, sort, min_score.is_some(), None)?;
     let run = Run {
         segments,
         readers,
@@ -4119,6 +4129,7 @@ pub fn search_sorted_min_score(
         global: global.as_ref(),
         until: None,
         min_score,
+        similarity: None,
     };
     let parallel =
         crate::slices::estimated_matches(segments, query) >= crate::slices::SEQUENTIAL_BELOW;
@@ -4214,20 +4225,22 @@ pub(crate) fn compare_keys(sort: &[SortField], a: &FieldDoc, b: &FieldDoc) -> st
     Ordering::Equal
 }
 
-/// The statistics a scored sort needs, index-wide.
+/// The statistics a sorted search hands its leaves, index-wide: every
+/// scored term's when the sort scores, else the function queries' alone
+/// (whose weights Java creates over the whole searcher in any score mode).
 fn global_stats(
     segments: &[OpenSegment<'_>],
     query: &BooleanQuery,
     sort: &[SortField],
     track: bool,
+    similarity: Option<&dyn crate::similarities::Similarity>,
 ) -> Result<Option<crate::GlobalStats>> {
-    if track || sort.iter().any(key_needs_scores) {
-        Ok(Some(crate::multi_segment::global_boolean_stats(
-            segments, query,
-        )?))
-    } else {
-        Ok(None)
-    }
+    crate::multi_segment::leaf_stats(
+        segments,
+        query,
+        track || sort.iter().any(key_needs_scores),
+        similarity,
+    )
 }
 
 /// What one sorted search over a list of segments needs.
@@ -4248,6 +4261,8 @@ struct Run<'r, 'a> {
     /// OpenSearch's `min_score` (its `MinimumScoreCollector` around the
     /// collector): only the matches scoring at least it are collected.
     min_score: Option<f32>,
+    /// The searcher's similarity when it is not the default BM25.
+    similarity: Option<&'r dyn crate::similarities::Similarity>,
 }
 
 /// One collector over the segments at `order`, in that order.
@@ -4265,6 +4280,7 @@ fn search_segments(run: &Run<'_, '_>, order: &[usize]) -> Result<TopFieldDocs> {
         global,
         until,
         min_score,
+        similarity,
     } = *run;
     let mut tf = TopField::new(sort, top_n, total_hits_threshold, after);
     let want_scores = tf.needs_scores || track || min_score.is_some();
@@ -4305,7 +4321,7 @@ fn search_segments(run: &Run<'_, '_>, order: &[usize]) -> Result<TopFieldDocs> {
             max_doc: seg.max_doc,
             cache: seg.cache,
             reader: seg.reader,
-            similarity: None,
+            similarity,
         };
         if sort[0].ty == SortType::Score {
             // No competitive iterator: the bulk scorers, pruning by score.

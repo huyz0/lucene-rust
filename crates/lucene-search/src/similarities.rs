@@ -376,16 +376,9 @@ impl Similarity for ClassicSimilarity {
         terms: &[TermStatistics],
     ) -> Arc<dyn SimScorer> {
         let idf = summed_idf(|t| Self::idf(t.doc_freq, collection.doc_count), terms);
-        // `TFIDFSimilarity.scorer`: the table from byte 1 up, then byte 0 as
-        // the inverse of byte 255's.
-        let mut norm_table = [0.0f32; 256];
-        for (i, slot) in norm_table.iter_mut().enumerate().skip(1) {
-            *slot = Self::length_norm(small_float::byte4_to_int(i as u8) as i32);
-        }
-        norm_table[0] = 1.0 / norm_table[255];
         Arc::new(TfIdfScorer {
             query_weight: boost * idf,
-            norm_table,
+            norm_table: Self::norm_table(),
         })
     }
 
@@ -395,6 +388,20 @@ impl Similarity for ClassicSimilarity {
 
     fn shared(&self) -> Option<Arc<dyn Similarity>> {
         Some(Arc::new(*self))
+    }
+}
+
+impl ClassicSimilarity {
+    /// `TFIDFSimilarity.scorer`'s `normTable`: `lengthNorm` of each norm
+    /// byte's length from byte 1 up, then byte 0 as the inverse of byte
+    /// 255's.
+    pub(crate) fn norm_table() -> [f32; 256] {
+        let mut norm_table = [0.0f32; 256];
+        for (i, slot) in norm_table.iter_mut().enumerate().skip(1) {
+            *slot = Self::length_norm(small_float::byte4_to_int(i as u8) as i32);
+        }
+        norm_table[0] = 1.0 / norm_table[255];
+        norm_table
     }
 }
 

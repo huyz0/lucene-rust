@@ -2565,49 +2565,56 @@ pub(crate) fn resolve(
     q: &ExtendedQuery,
     scores: bool,
 ) -> Result<Vec<(i32, f32)>> {
-    let ctx = LeafContext {
-        fields,
-        doc_in,
-        pos_in,
-        pay_in,
-        live_docs,
-        points,
-        norms,
-        global,
-        // Set while `IndexSearcher.explain` runs: a block join's parent
-        // filter needs the segment's size.
-        max_doc: crate::explain::leaf().map(|(max_doc, _)| max_doc),
-        cache: None,
-        reader: None,
-        similarity: None,
-    };
-    let mode = if scores {
-        Mode::Complete
-    } else {
-        Mode::NoScores
-    };
-    let Some(mut s) = build(&ctx, q, 1.0, mode, false)? else {
-        return Ok(Vec::new());
-    };
-    let mut out = Vec::new();
-    let mut doc = super::exact_next(&mut *s)?;
-    while doc != NO_MORE_DOCS {
-        if live_docs.is_none_or(|l| l.get_doc(doc)) {
-            let score = if scores { s.score()? } else { 0.0 };
-            out.push((doc, score));
+    crate::explain::with_leaf_reader(|reader, similarity| {
+        let ctx = LeafContext {
+            fields,
+            doc_in,
+            pos_in,
+            pay_in,
+            live_docs,
+            points,
+            norms,
+            global,
+            // Set while `IndexSearcher.explain` runs: a block join's parent
+            // filter needs the segment's size.
+            max_doc: crate::explain::leaf().map(|(max_doc, _)| max_doc),
+            cache: None,
+            // Set while `IndexSearcher.explain` runs: a `DocAndScoreQuery` finds
+            // its segment by the reader's doc base, and the scorer scores under
+            // the searcher's similarity.
+            reader,
+            similarity,
+        };
+        let mode = if scores {
+            Mode::Complete
+        } else {
+            Mode::NoScores
+        };
+        let Some(mut s) = build(&ctx, q, 1.0, mode, false)? else {
+            return Ok(Vec::new());
+        };
+        let mut out = Vec::new();
+        let mut doc = super::exact_next(&mut *s)?;
+        while doc != NO_MORE_DOCS {
+            if live_docs.is_none_or(|l| l.get_doc(doc)) {
+                let score = if scores { s.score()? } else { 0.0 };
+                out.push((doc, score));
+            }
+            doc = super::exact_next(&mut *s)?;
         }
-        doc = super::exact_next(&mut *s)?;
-    }
-    Ok(out)
+        Ok(out)
+    })
 }
 
 /// Every document `clause` matches in one segment, deletions not applied --
+/// `global` the reader-wide preparation of its function queries, if any --
 /// its scorer's iterator (`Weight.scorer(ctx).iterator()`) -- as a bit set
 /// of `max_doc` documents. Collected through the clause's bulk scorer, a
 /// window at a time rather than a scorer step each: the same documents.
 pub(crate) fn segment_match_bits(
     seg: &crate::multi_segment::OpenSegment<'_>,
     clause: &Clause,
+    global: Option<&crate::GlobalStats>,
 ) -> Result<lucene_util::fixed_bit_set::FixedBitSet> {
     use lucene_util::fixed_bit_set::FixedBitSet;
     struct Bits(FixedBitSet);
@@ -2634,7 +2641,7 @@ pub(crate) fn segment_match_bits(
         live_docs: None,
         points: seg.points,
         norms: None,
-        global: None,
+        global,
         max_doc: seg.max_doc,
         cache: None,
         reader: seg.reader,

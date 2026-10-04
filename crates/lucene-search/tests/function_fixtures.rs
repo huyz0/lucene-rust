@@ -586,14 +586,17 @@ fn searches(
             &as_boolean(Clause::Boost(Box::new(BoostQuery::new(fq(spec), 2.5)))),
             out,
         ),
-        "fqbool" => {
+        "fqbool" | "fqboolclassic" => {
             let q = BooleanQuery {
                 must: vec![term("red")],
                 should: vec![fq(spec)],
                 ..Default::default()
             };
-            search_lines(bm25, kind, spec, &q, out)
+            let s = if kind == "fqbool" { bm25 } else { classic };
+            search_lines(s, kind, spec, &q, out)
         }
+        "gfilter" => unscored_lines(bm25, readers, kind, spec, out),
+        "gfilterclassic" => unscored_lines(classic, readers, kind, spec, out),
         "frange" | "frangefilter" => {
             let p: Vec<&str> = spec.split('|').collect();
             let fr = Clause::from(FunctionRangeQuery::new(
@@ -665,6 +668,89 @@ fn searches(
         }
         k => panic!("search kind {k}"),
     }
+}
+
+/// A `GLOBAL_FILTERS` spec: `frange|source|lower|upper` or
+/// `fmq|source|predicate`.
+fn global_filter(spec: &str) -> Clause {
+    let p: Vec<&str> = spec.split('|').collect();
+    if p[0] == "fmq" {
+        return Clause::from(FunctionMatchQuery::new(dvs(p[1]), predicate(p[2])));
+    }
+    Clause::from(FunctionRangeQuery::new(
+        vs(p[1]),
+        opt(p[2]),
+        opt(p[3]),
+        true,
+        true,
+    ))
+}
+
+/// `body:red OR body:blue` filtered by a reader-wide function, through every
+/// entry point that builds leaf contexts without scoring: the searcher's and
+/// the free sorted search (by index order), the searcher's count and
+/// `terminate_after`'s, and a metric aggregation over the hits' `l` values.
+/// Each line is Lucene's one, and every path giving it must agree.
+fn unscored_lines(
+    searcher: &IndexSearcher<'_, '_>,
+    readers: &[lucene_search::directory_reader::SegmentReader],
+    kind: &str,
+    spec: &str,
+    out: &mut Vec<String>,
+) {
+    use lucene_search::aggs::{self, MetricSpec, Source, ValueKind, NEED_ALL};
+    let head = format!("{kind}\t{spec}");
+    let q = BooleanQuery {
+        must: vec![query("or:red:blue")],
+        filter: vec![global_filter(spec)],
+        ..Default::default()
+    };
+    let sort = [SortField::doc()];
+    let line = |r: lucene_search::Result<lucene_search::top_field::TopFieldDocs>| match r {
+        Ok(td) => {
+            let docs: String = td.hits.iter().map(|h| format!("{},", h.doc)).collect();
+            format!("{} {docs}", td.total.value)
+        }
+        Err(e) => err(&e),
+    };
+    let sorted = line(searcher.search_sorted(readers, &q, 1000, &sort, None));
+    let failed = sorted.starts_with('!');
+    out.push(format!("{head}\tsorted\t{sorted}"));
+    if failed {
+        return;
+    }
+    let segments = searcher.segments();
+    if searcher.similarity().is_none() {
+        // The free functions score with the default similarity only.
+        let norms: Vec<SegmentNorms<'_, '_>> =
+            (0..segments.len()).map(|i| searcher.norms(i)).collect();
+        let free = line(lucene_search::top_field::search_sorted(
+            segments, readers, &q, &norms, &sort, 1000, 1000, None,
+        ));
+        assert_eq!(free, sorted, "{head}: top_field::search_sorted");
+        let cut = lucene_search::terminate::terminate_after(segments, &q, u64::MAX).unwrap();
+        let count = searcher.count(&q).unwrap();
+        assert_eq!(cut.collected, count, "{head}: terminate_after");
+    }
+    out.push(format!("{head}\tcount\t{}", searcher.count(&q).unwrap()));
+    if searcher.similarity().is_some() {
+        // Aggregations score, when they do, with the default similarity only.
+        return;
+    }
+    let spec_l = MetricSpec {
+        field: "l".into(),
+        kind: ValueKind::Long,
+        source: Source::DocValues,
+        needs: NEED_ALL,
+    };
+    let all: Vec<usize> = (0..segments.len()).collect();
+    let states = aggs::metric_states_sliced(segments, readers, &q, &[spec_l], &[all]).unwrap();
+    let st = states[0][0];
+    let mut agg = format!("{}", st.count);
+    if st.count > 0 {
+        agg.push_str(&format!(" {} {}", hex64(st.min), hex64(st.max)));
+    }
+    out.push(format!("{head}\tagg\t{agg}"));
 }
 
 /// Compares Rust's lines with Lucene's, reporting the first differences.

@@ -724,6 +724,57 @@ def rule_alloc_from_doc(files, problems, stats):
                     )
 
 
+# --------------------------------------------------------------------------
+# Rule 9: a function query's top-level reader is the whole reader
+# --------------------------------------------------------------------------
+#
+# `ValueSource.createWeight` and `DoubleValuesSource.rewrite` read the
+# searcher's top-level reader (a `scale`'s minimum and maximum, `docfreq`,
+# `maxdoc`, the `IndexReaderFunctions`). The T10.5 review found the function
+# scorers falling back to `TopLevel::single(leaf)` -- one segment as the
+# whole index -- whenever an entry point (sorted, counted, aggregated,
+# terminated searches) had not run the statistics pass: silently wrong hits
+# on any multi-segment index. The `TopLevel` is now built in one place,
+# `function::prepare_functions`, from every segment the search covers (and
+# `TopLevel::of_searcher` from a searcher's), and a leaf reached unprepared
+# is an error. This rule keeps it that way: outside tests, no
+# `TopLevel::single(` anywhere, and no `TopLevel { .. }` literal outside
+# `function/mod.rs`.
+
+TOPLEVEL_OWNER = "crates/lucene-search/src/function/mod.rs"
+TOPLEVEL_SINGLE = re.compile(r"\bTopLevel::single\s*\(")
+TOPLEVEL_LITERAL = re.compile(r"(?<![\w:])(?:\w+::)*TopLevel\s*\{")
+TOPLEVEL_DECL = re.compile(r"\b(struct|impl|enum|trait)\b")
+
+
+def rule_toplevel_whole_reader(files, problems, stats):
+    for rel, raw in files:
+        lines = blank_cfg_test(raw)
+        owner = rel.replace(os.sep, "/") == TOPLEVEL_OWNER
+        for k, line in enumerate(lines):
+            code = strip_comment(line)
+            if TOPLEVEL_SINGLE.search(code):
+                stats["toplevel_sites"] += 1
+                problems.append(
+                    f"{rel}:{k + 1}: `TopLevel::single(` builds a function "
+                    f"query's top-level reader from one segment. Prepare the "
+                    f"query over every segment instead "
+                    f"(`multi_segment::global_function_stats`). "
+                    f"(docs/mechanical-gates.md#toplevel-whole-reader)"
+                )
+            elif TOPLEVEL_LITERAL.search(code) and not TOPLEVEL_DECL.search(code):
+                stats["toplevel_sites"] += 1
+                if owner:
+                    continue
+                problems.append(
+                    f"{rel}:{k + 1}: a `TopLevel` built outside "
+                    f"`function/mod.rs`. Its leaves must be every segment the "
+                    f"search covers: build it with `prepare_functions` or "
+                    f"`TopLevel::of_searcher`. "
+                    f"(docs/mechanical-gates.md#toplevel-whole-reader)"
+                )
+
+
 RULES = (
     ("fixed-bitset-bound", rule_fixed_bitset_bound),
     ("sentinel-callers", rule_sentinel_callers),
@@ -733,6 +784,7 @@ RULES = (
     ("ledger-single-list", rule_ledger_single_list),
     ("block-guard", rule_block_guard),
     ("alloc-from-doc", rule_alloc_from_doc),
+    ("toplevel-whole-reader", rule_toplevel_whole_reader),
 )
 
 
@@ -755,6 +807,7 @@ def main(argv):
         "ledger_open_boxes": 0,
         "block_flag_sites": 0,
         "alloc_doc_sites": 0,
+        "toplevel_sites": 0,
     }
     for name, rule in RULES:
         if only and name != only:
@@ -772,6 +825,7 @@ def main(argv):
         print(f"doc-values per-document call sites  : {stats['dv_loop_sites']}" + f" (burn-down: {sum(DV_LOOP_BURNDOWN.values())})")
         print(f"block-flag sites (guarded)          : {stats['block_flag_sites']}")
         print(f"allocations sized from a doc id     : {stats['alloc_doc_sites']}")
+        print(f"function TopLevel constructions     : {stats['toplevel_sites']}")
 
     if problems:
         for p in problems:

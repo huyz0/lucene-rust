@@ -1813,9 +1813,13 @@ pub fn filter_bitsets(
     segments: &[crate::multi_segment::OpenSegment<'_>],
     filter: &crate::query::Clause,
 ) -> Result<Vec<FixedBitSet>> {
+    // `filterWeight` is created over the whole searcher: a function query
+    // in the filter reads the reader's statistics.
+    let as_query = crate::query::BooleanQuery::new().with_filter([filter.clone()]);
+    let global = crate::multi_segment::global_function_stats(segments, &as_query, None)?;
     segments
         .iter()
-        .map(|seg| crate::exec::extended::segment_match_bits(seg, filter))
+        .map(|seg| crate::exec::extended::segment_match_bits(seg, filter, global.as_ref()))
         .collect()
 }
 
