@@ -115,7 +115,7 @@ jobs:
           python3 scripts/check-port-inventory.py --module grouping --require-jar
           python3 scripts/check-port-inventory.py --module queries --require-jar
 
-      - name: docs/parity.md consistency
+      - name: parity ledger consistency (docs/parity.md + docs/parity/)
         run: python3 scripts/check-parity.py
 
       # Needs the pinned Java tree, which CI does not check out; the script

@@ -14,6 +14,29 @@ Two failure modes have already been observed and cost real review time:
 
 Both are mechanical and have no false positives.
 
+The ledger also grew to 1.25 MB in one file, mostly dated history, before it
+was split, so the layout itself is checked too:
+
+  * the index links every `docs/parity/*.md` file, and every relative
+    Markdown link in the ledger resolves to a file that exists;
+  * budgets: no table row over `MAX_ROW` characters, no file over
+    `MAX_FILE` bytes, the whole ledger under `MAX_TOTAL` bytes;
+  * no `## ` heading appears in two files (a section split across files
+    has no single place for its next row);
+  * the row count the index's area table states for each file is the
+    number of rows the file has.
+
+Verifying that a row's *Java* side names something real is deliberately not
+done here: `scripts/check-java-refs.py` does it for the whole tree, against
+the pinned 10.5.0 checkout, and resolves that checkout in both the host and
+container layouts. This script used to print a warning about a
+Java-counterpart check it never performed, which was its own small instance
+of the defect both scripts exist to catch. Detecting two rows that
+genuinely *contradict* each other is deliberately NOT automated: a class
+routinely has several rows (read side and write side, a scoped-down first
+cut and a later widening), and a heuristic over the status text flags
+fourteen of those for every real problem it finds. `--verbose` lists the
+multi-row classes for a human to scan instead.
 """
 import os
 import re
@@ -32,6 +55,20 @@ EXEMPT = {
 }
 PARITY = os.path.join(ROOT, "docs", "parity.md")
 PARITY_DIR = os.path.join(ROOT, "docs", "parity")
+
+# Budgets. A row is one Java class or one coherent feature: what is ported,
+# where, how it differs, the evidence, the benchmark ratio -- not its history
+# (that is `git log` and `docs/sweep/`). Past these, split the row or the
+# file; do not raise them to fit.
+MAX_ROW = 2_000
+MAX_FILE = 80_000
+MAX_TOTAL = 400_000
+
+# A line of the index's area table: its link and its row count.
+AREA_ROW = re.compile(r"^\|\s*\[[^\]]*\]\(([^)]+\.md)\)\s*\|.*\|\s*(\d+)\s*\|\s*$")
+
+# `[text](target)` with a relative target; anchors and absolute URLs aside.
+MD_LINK = re.compile(r"\[[^\]]*\]\(([^)\s#]+)(?:#[^)]*)?\)")
 
 # A Rust path: `crate/src/path.rs`, optionally followed by `::item`.
 RUST_PATH = re.compile(r"`(lucene-[a-z]+/(?:src|tests|benches|examples)/[A-Za-z0-9_/]+\.rs)(?:::[^`]*)?`")
@@ -156,10 +193,79 @@ def rel(path):
     return os.path.relpath(path, ROOT)
 
 
+def check_layout(ledger, errors):
+    """Index links, link targets, budgets and duplicated headings."""
+    index_text = ledger[0][1]
+    linked = {
+        os.path.normpath(os.path.join(os.path.dirname(PARITY), target))
+        for target in MD_LINK.findall(index_text)
+    }
+    for path, _ in ledger[1:]:
+        if os.path.normpath(path) not in linked:
+            errors.append(
+                f"{rel(PARITY)}: the index does not link {rel(path)} -- "
+                f"add it to the area table"
+            )
+
+    # The area table's row counts: `| [name](parity/name.md) | ... | N |`.
+    counts = {}
+    for line in index_text.splitlines():
+        m = AREA_ROW.match(line)
+        if m:
+            counts[os.path.normpath(os.path.join(os.path.dirname(PARITY), m.group(1)))] = int(m.group(2))
+    for path, text in ledger[1:]:
+        actual = sum(1 for _ in rows(text))
+        stated = counts.get(os.path.normpath(path))
+        if stated is not None and stated != actual:
+            errors.append(
+                f"{rel(PARITY)}: the area table says {rel(path)} has {stated} "
+                f"rows, it has {actual}"
+            )
+
+    total = 0
+    headings = defaultdict(list)
+    for path, text in ledger:
+        size = len(text.encode("utf-8"))
+        total += size
+        if size > MAX_FILE:
+            errors.append(
+                f"{rel(path)}: {size} bytes, over the {MAX_FILE}-byte file "
+                f"budget -- split the area"
+            )
+        for lineno, line in enumerate(text.splitlines(), 1):
+            for target in MD_LINK.findall(line):
+                if "://" in target or target.startswith("mailto:"):
+                    continue
+                full = os.path.normpath(os.path.join(os.path.dirname(path), target))
+                if not os.path.exists(full):
+                    errors.append(
+                        f"{rel(path)}:{lineno}: link target does not exist: {target}"
+                    )
+            if line.startswith("|") and len(line) > MAX_ROW:
+                errors.append(
+                    f"{rel(path)}:{lineno}: row is {len(line)} characters, over "
+                    f"the {MAX_ROW} budget -- drop history, or split the row"
+                )
+            if line.startswith("## "):
+                headings[line.strip()].append(f"{rel(path)}:{lineno}")
+    if total > MAX_TOTAL:
+        errors.append(
+            f"docs/parity*: {total} bytes in all, over the {MAX_TOTAL}-byte "
+            f"ledger budget"
+        )
+    for heading, where in sorted(headings.items()):
+        files = {w.rsplit(":", 1)[0] for w in where}
+        if len(files) > 1:
+            errors.append(
+                f"heading `{heading}` appears in several files: {', '.join(where)}"
+            )
+
+
 def main():
     ledger = ledger_files()
     errors = []
     java_to_rows = defaultdict(list)
+    check_layout(ledger, errors)
 
     for path, text in ledger:
         check_rows(rel(path), text, errors, java_to_rows)

@@ -29,7 +29,8 @@ to describe a defect that got past it.
 | [`codec-suffix-literal`](#codec-suffix-literal) | `check-port-invariants.py` | a `LuceneNN_N` suffix spelled outside `per_field_codec_suffix` | a suffix assembled from pieces (`format!("{fmt}_{n}")`) |
 | [`blocktree-infallible`](#blocktree-infallible) | `check-port-invariants.py` | `seek_exact`/`seek_ceil`/`current` in a module that consumes `blocktree` | the same call on a receiver in a module that never names `blocktree` |
 | [`doc-values-per-doc`](#doc-values-per-doc) | `check-port-invariants.py` | a *new* per-document `doc_values::numeric_value`/`binary_value` call | a per-document call hidden behind a helper fn; the ten already on the burn-down list |
-| [`parity ::item`](#parity-item) | `check-parity.py` | `docs/parity.md` naming a Rust item its own file does not define | prose outside a row's Rust column; an item that exists but no longer does what the row says |
+| [`parity ::item`](#parity-item) | `check-parity.py` | a ledger row (`docs/parity/*.md`) naming a Rust item its own file does not define | prose outside a row's Rust column; an item that exists but no longer does what the row says |
+| [`parity-layout`](#parity-layout) | `check-parity.py` | an area file the index does not link; a relative link to a missing file; a stated row count that is wrong; a row over 2,000 characters, a file over 80 KB, a ledger over 400 KB; a `## ` heading in two files | history written *within* budget; a row filed in the wrong area; a stale fact; a link to a file that exists but no longer says what the link claims |
 | [`ledger-single-list`](#ledger-single-list) | `check-port-invariants.py` | an unticked `- [ ]` anywhere in `docs/sweep/m2/LEDGER.md` | whether a `- [x]` is *true*, or whether a `- [->]` names the right item |
 | [`block-guard`](#block-guard) | `check-port-invariants.py` | a `lucene-index` fn setting `pending_has_blocks`/`dwpt.has_blocks = true` with no earlier `check_block(` call in the same fn | a guard that is called but whose result is ignored, or that sits on a branch the flag's line does not follow; a block flag spelled any other way |
 | [`alloc-from-doc`](#alloc-from-doc) | `check-port-invariants.py` | an allocation size (`vec![_; n]`, `with_capacity(n)`, `.resize(n, ..)`, `FixedBitSet::new(n)`) mentioning a name its fn bound from a doc list's `.last()`/`.first()`/`.max()`, with no `max_doc` in the size and no `// ALLOC:` proof | a doc id reaching the size through a struct field, a parameter or another fn; a source not spelled on a `*doc*` name (`ids.last()`); a `max_doc` in the size that does not actually bound it |
@@ -233,7 +234,7 @@ mode `docs/arithmetic-gate.md` names for a lint adopted too widely.
 
 ## parity ::item
 
-`docs/parity.md` rows carry a Rust column like
+Ledger rows (`docs/parity/*.md`) carry a Rust column like
 ``lucene-codecs/src/norms.rs::write_fields``. `check-parity.py` validated the
 file path and **deliberately not** the `::item` suffix -- which is how c37's
 Tier-2 review found `parity.md` describing two *deleted* functions in the
@@ -244,6 +245,35 @@ wrong when the check first ran.
 **Blind spots.** Textual, not resolved: a name that exists somewhere in the
 file satisfies it, and the check says nothing about whether the row's *prose*
 is still true. Identifiers named in the status column are not checked at all.
+
+## parity-layout
+
+**Rule.** The parity ledger is `docs/parity.md` (an index) plus one table per
+area in `docs/parity/`. `check-parity.py` fails when the index does not link
+an area file or states its row count wrongly; when any relative Markdown link
+in the ledger points at a file that does not exist; when a table row is over
+2,000 characters, a file over 80 KB or the whole ledger over 400 KB; and when
+one `## ` heading appears in two files.
+
+The ledger was one 1.25 MB file whose largest row was 39,508 characters: every
+batch appended its own history (dates, "previously", test counts, superseded
+gaps) to the row it touched, so the row's current state had to be dug out of
+the last of several contradicting paragraphs. Splitting it removed the
+history; the budgets keep it from growing back, and the index checks keep the
+split navigable (an orphaned file is a file nobody finds).
+
+Seen to fail, then reverted: an unlinked `docs/parity/orphan.md` ("the index
+does not link"); `[Index](../parity-old.md)` in `store.md` ("link target does
+not exist"); a 2,275-character grouping row ("over the 2000 budget"); 85 KB of
+padding in `store.md` (file and ledger budgets); `## Supported` in two files
+("appears in several files"); an extra grouping row ("the area table says ...
+has 11 rows, it has 12").
+
+**Blind spots.** Size is a proxy: a row can carry history in 1,900 characters,
+and only review catches a "previously" or a superseded gap that the next
+sentence contradicts. Nothing checks that a row sits in the right area file,
+that its prose is still true, or that a link's target still says what the
+link claims. Links with an absolute URL or only an anchor are not checked.
 
 ## ledger-single-list
 
