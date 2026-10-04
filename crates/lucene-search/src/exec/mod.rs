@@ -53,7 +53,7 @@ mod wand;
 
 pub(crate) use build::LeafContext;
 pub(crate) use bulk::{
-    bulk_boolean, score_segment, score_segment_below, score_segment_time_limited,
+    bulk_boolean, bulk_clause, score_segment, score_segment_below, score_segment_time_limited,
     score_segment_with_deadline, Bulk,
 };
 

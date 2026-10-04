@@ -27,6 +27,7 @@ mod micro_geo3d;
 mod micro_geo3d_points;
 mod micro_geo_points;
 mod micro_geo_shapes;
+mod micro_join;
 mod micro_m7;
 mod micro_spatial_extras;
 mod sexpr;
@@ -2089,6 +2090,12 @@ fn main() {
                 .nth(2)
                 .expect("geo_shapes needs the GeoShapesMicro index directory");
             micro_geo_shapes::bench_geo_shapes(warmup, measure, &index);
+        }
+        "join" => {
+            let index = std::env::args()
+                .nth(2)
+                .expect("join needs the JoinMicro index directory");
+            micro_join::bench_join(warmup, measure, &index);
         }
         "m7_fixture" => micro_m7::bench_m7_fixture(warmup, measure),
         "query_builder" => micro_m7::bench_query_builder(warmup, measure),

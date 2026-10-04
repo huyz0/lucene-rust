@@ -35,6 +35,7 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 
 use lucene_codecs::doc_values::{self, SortedSetKind};
+use lucene_codecs::terms_dict::TermsDict;
 use lucene_util::fixed_bit_set::FixedBitSet;
 
 use super::BitSetProducer;
@@ -219,38 +220,34 @@ impl FieldComparator for Comparator {
         let (parents, children) = ctx.reader.with_open_segment(ctx.doc_base, |seg| {
             Ok((s.parents.bit_set(seg)?, s.children.bit_set(seg)?))
         })?;
-        let values = match s.ty {
+        let column = match s.ty {
             JoinSortType::String => {
                 let missing_ord = if s.child_missing == Some(JoinMissing::StringLast) {
                     i64::from(i32::MAX)
                 } else {
                     -1
                 };
-                let (ords, terms) = parent_ords(
-                    ctx.reader,
-                    &s.field,
-                    s.selector(),
-                    parents.as_deref(),
-                    children.as_deref(),
-                    missing_ord,
-                )?;
-                Values::Ords(ords, terms)
+                Column::Ords(OrdColumn::open(ctx.reader, &s.field)?, missing_ord)
             }
-            _ => Values::Longs(parent_longs(
-                ctx.reader,
-                &s.field,
-                s.selector(),
-                parents.as_deref(),
-                children.as_deref(),
+            _ => Column::Longs(
+                numeric_column(ctx.reader, &s.field)?,
                 s.child_missing.and_then(JoinMissing::comparable),
-            )?),
+            ),
         };
         let parent_missing = s
             .parent_missing
             .and_then(JoinMissing::comparable)
             .unwrap_or(0);
         Ok(Box::new(Leaf {
-            values,
+            blocks: Blocks {
+                parents,
+                children,
+                selector: s.selector(),
+            },
+            column,
+            buf: Vec::new(),
+            last: None,
+            term: None,
             parent_missing,
             missing_last: s.parent_missing == Some(JoinMissing::StringLast),
         }))
@@ -290,17 +287,82 @@ impl FieldComparator for Comparator {
     }
 }
 
-/// One segment's parent values.
-enum Values {
-    /// Per document, the comparable long, `None` without one.
-    Longs(Vec<Option<i64>>),
-    /// Per document, the selected ordinal (`-1` none; `i32::MAX` the child
-    /// missing ordinal), and the segment's terms by ordinal.
-    Ords(Vec<i64>, Vec<Vec<u8>>),
+/// A segment's parents and children, and the selection over a block.
+struct Blocks {
+    parents: Option<Arc<FixedBitSet>>,
+    children: Option<Arc<FixedBitSet>>,
+    selector: BlockJoinSelector,
 }
 
-struct Leaf {
-    values: Values,
+impl Blocks {
+    /// `ToParentDocValues.advanceExact(parent)` and the selector's value, for
+    /// a value per child: the selection over the parent's children that have
+    /// a value, the child missing value taken into it when some document of
+    /// the block has none, and `None` when no child has one -- or when `doc`
+    /// is not a parent (`advanceExact` returns `false`). A missing child or
+    /// parent filter is `DocValues.emptyNumeric()`: no value.
+    fn fold(
+        &self,
+        doc: i32,
+        mut child_value: impl FnMut(i32) -> Result<Option<i64>>,
+        child_missing: Option<i64>,
+    ) -> Result<Option<i64>> {
+        let (Some(parents), Some(children)) = (self.parents.as_deref(), self.children.as_deref())
+        else {
+            return Ok(None);
+        };
+        let Ok(p) = usize::try_from(doc) else {
+            return Ok(None);
+        };
+        // FBS: `p` checked against the parent set's own length.
+        if p >= parents.len() || !parents.get(p) {
+            return Ok(None);
+        }
+        let start = p
+            .checked_sub(1)
+            .and_then(|q| parents.prev_set_bit(q))
+            .map_or(0, |q| q.saturating_add(1));
+        let mut acc: Option<i64> = None;
+        let mut with_values = 0usize;
+        for child in start..p {
+            // FBS: `child < p`, checked against the child set's own length.
+            if child >= children.len() || !children.get(child) {
+                continue;
+            }
+            let Some(v) = child_value(i32::try_from(child).unwrap_or(i32::MAX))? else {
+                continue;
+            };
+            acc = Some(match acc {
+                None => v,
+                Some(a) => self.selector.pick(a, v),
+            });
+            with_values += 1;
+        }
+        Ok(acc.map(|v| match child_missing {
+            Some(m) if with_values < p - start => self.selector.pick(v, m),
+            _ => v,
+        }))
+    }
+}
+
+/// The column a segment's parents are sorted by.
+enum Column<'a> {
+    /// `getSortedNumeric`, with the comparable child missing value.
+    Longs(NumericColumn<'a>, Option<i64>),
+    /// `getSortedSet`, with the child missing ordinal (`-1`, or
+    /// `Integer.MAX_VALUE` for `STRING_LAST`).
+    Ords(OrdColumn<'a>, i64),
+}
+
+struct Leaf<'a> {
+    blocks: Blocks,
+    column: Column<'a>,
+    buf: Vec<i64>,
+    /// The last document folded and its value: a competitive document is
+    /// read twice (`compareBottom`, then `copy`).
+    last: Option<(i32, Option<i64>)>,
+    /// The last term looked up, by ordinal.
+    term: Option<(i64, Vec<u8>)>,
     parent_missing: i64,
     missing_last: bool,
 }
@@ -313,20 +375,57 @@ enum Position {
     Last,
 }
 
-impl Leaf {
+impl Leaf<'_> {
+    /// The parent's selected value -- for `STRING` its ordinal.
+    fn selected(&mut self, doc: i32) -> Result<Option<i64>> {
+        if let Some((d, v)) = self.last {
+            if d == doc {
+                return Ok(v);
+            }
+        }
+        let selector = self.blocks.selector;
+        let buf = &mut self.buf;
+        let v = match &mut self.column {
+            Column::Longs(column, missing) => self.blocks.fold(
+                doc,
+                |child| child_long(column, child, selector, buf),
+                *missing,
+            )?,
+            Column::Ords(column, missing_ord) => self.blocks.fold(
+                doc,
+                |child| column.ord(child, selector, buf),
+                Some(*missing_ord),
+            )?,
+        };
+        self.last = Some((doc, v));
+        Ok(v)
+    }
+
     /// The parent's selected ordinal.
     // SENTINEL: `-1` = "no value" (`getOrdForDoc`'s missing ordinal),
     // outside the ordinals; callers test it (`value`) or map it through
     // `position` (`compare_bottom`).
-    fn ord(&self, doc: i32) -> i64 {
-        match &self.values {
-            Values::Ords(ords, _) => usize::try_from(doc)
-                .ok()
-                .and_then(|d| ords.get(d))
-                .copied()
-                .unwrap_or(-1),
-            Values::Longs(_) => -1,
+    fn ord(&mut self, doc: i32) -> Result<i64> {
+        Ok(self.selected(doc)?.unwrap_or(-1))
+    }
+
+    /// `lookupOrd(ord)`, Lucene's `IndexOutOfBoundsException` for an
+    /// ordinal past the terms (the child missing ordinal of `STRING_LAST`).
+    fn term(&mut self, ord: i64) -> Result<&[u8]> {
+        let Column::Ords(column, _) = &mut self.column else {
+            return Ok(&[]);
+        };
+        if self.term.as_ref().is_none_or(|(o, _)| *o != ord) {
+            let size = column.size();
+            if ord < 0 || ord >= size {
+                return Err(Error::IllegalState(format!(
+                    "Index {ord} out of bounds for length {size}"
+                )));
+            }
+            let t = column.lookup(ord)?.to_vec();
+            self.term = Some((ord, t));
         }
+        Ok(self.term.as_ref().map_or(&[][..], |(_, t)| t.as_slice()))
     }
 
     /// `getOrdForDoc` with `missingOrd` substituted, as `compareBottom` reads it.
@@ -345,32 +444,18 @@ impl Leaf {
     }
 }
 
-impl LeafFieldComparator for Leaf {
+impl LeafFieldComparator for Leaf<'_> {
     fn value(&mut self, doc: i32, _score: f32) -> Result<SortValue> {
-        match &self.values {
-            Values::Longs(v) => Ok(SortValue::Long(
-                usize::try_from(doc)
-                    .ok()
-                    .and_then(|d| v.get(d).copied().flatten())
-                    .unwrap_or(self.parent_missing),
-            )),
-            Values::Ords(_, terms) => {
-                let ord = self.ord(doc);
-                if ord == -1 {
-                    return Ok(SortValue::Bytes(None));
-                }
-                usize::try_from(ord)
-                    .ok()
-                    .and_then(|o| terms.get(o))
-                    .map(|t| SortValue::Bytes(Some(t.clone())))
-                    .ok_or_else(|| {
-                        Error::IllegalState(format!(
-                            "Index {ord} out of bounds for length {}",
-                            terms.len()
-                        ))
-                    })
-            }
+        if matches!(self.column, Column::Longs(..)) {
+            return Ok(SortValue::Long(
+                self.selected(doc)?.unwrap_or(self.parent_missing),
+            ));
         }
+        let ord = self.ord(doc)?;
+        if ord == -1 {
+            return Ok(SortValue::Bytes(None));
+        }
+        Ok(SortValue::Bytes(Some(self.term(ord)?.to_vec())))
     }
 
     /// `TermOrdValComparator.compareBottom` for `STRING`: by position among
@@ -382,14 +467,14 @@ impl LeafFieldComparator for Leaf {
         doc: i32,
         _score: f32,
     ) -> Result<Option<Ordering>> {
-        let Values::Ords(_, terms) = &self.values else {
+        if !matches!(self.column, Column::Ords(..)) {
             return Ok(None);
-        };
+        }
         let SortValue::Bytes(bottom) = bottom else {
             return Ok(None);
         };
         // SENTINEL-OK: `position` maps `-1` to the missing position.
-        let ord = self.ord(doc);
+        let ord = self.ord(doc)?;
         let doc_pos = self.position(ord);
         let bottom_pos = match bottom {
             None => self.position(-1),
@@ -398,13 +483,10 @@ impl LeafFieldComparator for Leaf {
         if doc_pos != bottom_pos || doc_pos != Position::Term {
             return Ok(Some(bottom_pos.cmp(&doc_pos)));
         }
-        let (Some(b), Some(t)) = (
-            bottom.as_deref(),
-            usize::try_from(ord).ok().and_then(|o| terms.get(o)),
-        ) else {
+        let Some(b) = bottom.as_deref() else {
             return Ok(Some(Ordering::Equal));
         };
-        Ok(Some(b.cmp(t.as_slice())))
+        Ok(Some(b.cmp(self.term(ord)?)))
     }
 }
 
@@ -464,150 +546,199 @@ fn child_long(
     })
 }
 
-/// `ToParentDocValues.advanceExact(parent)` over every parent of a segment,
-/// for a value per child: the selection over the parent's children that
-/// have a value, whether some document of the block has none, and the
-/// parent's value (`None` when no child has one).
-fn fold_parents(
-    max_doc: i32,
-    parents: Option<&FixedBitSet>,
-    children: Option<&FixedBitSet>,
-    selector: BlockJoinSelector,
-    mut child_value: impl FnMut(i32) -> Result<Option<i64>>,
-    child_missing: Option<i64>,
-) -> Result<Vec<Option<i64>>> {
-    let len = usize::try_from(max_doc).unwrap_or(0);
-    let mut out = vec![None; len];
-    // A missing child filter is `DocValues.emptyNumeric()`: no parent has a
-    // value; so is a missing parent filter.
-    let (Some(parents), Some(children)) = (parents, children) else {
-        return Ok(out);
-    };
-    let mut prev_parent: i64 = -1;
-    let mut parent = parents.next_set_bit(0);
-    while let Some(p) = parent {
-        if p >= len {
-            break;
-        }
-        let start = usize::try_from(prev_parent.saturating_add(1)).unwrap_or(0);
-        let mut acc: Option<i64> = None;
-        let mut with_values = 0usize;
-        for child in start..p {
-            // FBS: `child < p < len`, checked against the child set's own length.
-            if child >= children.len() || !children.get(child) {
-                continue;
-            }
-            let Some(v) = child_value(i32::try_from(child).unwrap_or(i32::MAX))? else {
-                continue;
-            };
-            acc = Some(match acc {
-                None => v,
-                Some(a) => selector.pick(a, v),
+/// A segment's column of `field` as `DocValues.getSortedSet` reads it, with
+/// `SortedSetSelector`'s pick and the terms dictionary for `lookupOrd`.
+enum OrdColumn<'a> {
+    Absent,
+    Single(&'a [u8], &'a doc_values::SortedEntry, TermsDict<'a>),
+    Multi(&'a [u8], &'a doc_values::SortedNumericEntry, TermsDict<'a>),
+}
+
+impl<'a> OrdColumn<'a> {
+    fn open(reader: &'a SegmentReader, field: &str) -> Result<Self> {
+        let Some(info) = reader.field_infos().field_by_name(field) else {
+            return Ok(OrdColumn::Absent);
+        };
+        let Some((meta, data)) = reader.doc_values_for_field(info.number) else {
+            return Ok(OrdColumn::Absent);
+        };
+        let store = |e| Error::from(lucene_codecs::blocktree::Error::Store(e));
+        let dict = |entry| TermsDict::open(data, entry).map_err(store);
+        if let Some(e) = meta.sorted_set_entry(info.number) {
+            return Ok(match &e.kind {
+                SortedSetKind::Single(s) => OrdColumn::Single(data, s, dict(&s.terms)?),
+                SortedSetKind::Multi { ords, terms } => OrdColumn::Multi(data, ords, dict(terms)?),
             });
-            with_values += 1;
         }
-        if let Some(mut v) = acc {
-            let total = p - start;
-            if let Some(m) = child_missing {
-                if with_values < total {
-                    v = selector.pick(v, m);
+        if let Some(s) = meta.sorted_entry(info.number) {
+            return Ok(OrdColumn::Single(data, s, dict(&s.terms)?));
+        }
+        if info.doc_values_type == lucene_codecs::field_infos::DocValuesType::None {
+            return Ok(OrdColumn::Absent);
+        }
+        Err(Error::IllegalState(format!(
+            "unexpected docvalues type {:?} for field '{field}' (expected one of [SORTED, \
+             SORTED_SET]). Re-index with correct docvalues type.",
+            info.doc_values_type
+        )))
+    }
+
+    /// The child's ordinal picked by `selector`, `None` without one.
+    fn ord(
+        &mut self,
+        doc: i32,
+        selector: BlockJoinSelector,
+        buf: &mut Vec<i64>,
+    ) -> Result<Option<i64>> {
+        Ok(match self {
+            OrdColumn::Absent => None,
+            OrdColumn::Single(data, s, _) => doc_values::sorted_ord(data, s, doc)?,
+            OrdColumn::Multi(data, m, _) => {
+                *buf = doc_values::sorted_numeric_values(data, m, doc)?;
+                match selector {
+                    BlockJoinSelector::Min => buf.first().copied(),
+                    BlockJoinSelector::Max => buf.last().copied(),
                 }
             }
-            out[p] = Some(v);
-        }
-        prev_parent = i64::try_from(p).unwrap_or(i64::MAX);
-        parent = p.checked_add(1).and_then(|n| parents.next_set_bit(n));
+        })
     }
-    Ok(out)
+
+    /// `getValueCount()`.
+    fn size(&self) -> i64 {
+        match self {
+            OrdColumn::Absent => 0,
+            OrdColumn::Single(_, _, d) | OrdColumn::Multi(_, _, d) => d.size(),
+        }
+    }
+
+    /// `lookupOrd(ord)` for `0 <= ord < size()`.
+    fn lookup(&mut self, ord: i64) -> Result<&[u8]> {
+        let store = |e| Error::from(lucene_codecs::blocktree::Error::Store(e));
+        match self {
+            OrdColumn::Absent => Ok(&[]),
+            OrdColumn::Single(_, _, d) | OrdColumn::Multi(_, _, d) => {
+                d.seek_ord(ord).map_err(store)
+            }
+        }
+    }
 }
 
-/// `BlockJoinSelector.wrap(sortedNumeric, selection, parents, children,
-/// childMissingValue)` read for every parent of the segment.
-fn parent_longs(
-    reader: &SegmentReader,
-    field: &str,
-    selector: BlockJoinSelector,
-    parents: Option<&FixedBitSet>,
-    children: Option<&FixedBitSet>,
-    child_missing: Option<i64>,
-) -> Result<Vec<Option<i64>>> {
-    let mut column = numeric_column(reader, field)?;
-    let mut buf = Vec::new();
-    fold_parents(
-        reader.max_doc,
-        parents,
-        children,
-        selector,
-        |doc| child_long(&mut column, doc, selector, &mut buf),
-        child_missing,
-    )
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// `BlockJoinSelector.wrap(sortedSet, selection, parents, children,
-/// sortMissingLast)` read for every parent of the segment: the selected
-/// ordinal (`-1` without one; the child missing ordinal taken into the
-/// selection whenever a document of the block has no value, which is `-1`
-/// too unless `STRING_LAST`), and the segment's terms.
-fn parent_ords(
-    reader: &SegmentReader,
-    field: &str,
-    selector: BlockJoinSelector,
-    parents: Option<&FixedBitSet>,
-    children: Option<&FixedBitSet>,
-    missing_ord: i64,
-) -> Result<(Vec<i64>, Vec<Vec<u8>>)> {
-    let len = usize::try_from(reader.max_doc).unwrap_or(0);
-    let column = match reader.field_infos().field_by_name(field) {
-        Some(info) => reader
-            .doc_values_for_field(info.number)
-            .map(|(meta, data)| (info.number, info.doc_values_type, meta, data)),
-        None => None,
-    };
-    let Some((number, ty, meta, data)) = column else {
-        return Ok((vec![-1; len], Vec::new()));
-    };
-    let store = |e| Error::from(lucene_codecs::blocktree::Error::Store(e));
-    enum Ords<'e> {
-        Single(&'e doc_values::SortedEntry),
-        Multi(&'e doc_values::SortedNumericEntry),
-    }
-    let (ords, terms_entry) = if let Some(e) = meta.sorted_set_entry(number) {
-        match &e.kind {
-            SortedSetKind::Single(s) => (Ords::Single(s), &s.terms),
-            SortedSetKind::Multi { ords, terms } => (Ords::Multi(ords), terms),
+    fn bits(len: usize, set: &[usize]) -> Arc<FixedBitSet> {
+        let mut b = FixedBitSet::new(len);
+        for &i in set {
+            b.set(i);
         }
-    } else if let Some(s) = meta.sorted_entry(number) {
-        (Ords::Single(s), &s.terms)
-    } else if ty == lucene_codecs::field_infos::DocValuesType::None {
-        return Ok((vec![-1; len], Vec::new()));
-    } else {
-        return Err(Error::IllegalState(format!(
-            "unexpected docvalues type {ty:?} for field '{field}' (expected one of [SORTED, \
-             SORTED_SET]). Re-index with correct docvalues type."
-        )));
-    };
-    let terms = lucene_codecs::terms_dict::decode_all_terms(data, terms_entry).map_err(store)?;
-    let selected = fold_parents(
-        reader.max_doc,
-        parents,
-        children,
-        selector,
-        |doc| -> Result<Option<i64>> {
-            Ok(match &ords {
-                Ords::Single(s) => doc_values::sorted_ord(data, s, doc)?,
-                Ords::Multi(m) => {
-                    let values = doc_values::sorted_numeric_values(data, m, doc)?;
-                    match selector {
-                        BlockJoinSelector::Min => values.first().copied(),
-                        BlockJoinSelector::Max => values.last().copied(),
-                    }
-                }
-            })
-        },
-        Some(missing_ord),
-    )?;
-    Ok((
-        selected.into_iter().map(|o| o.unwrap_or(-1)).collect(),
-        terms,
-    ))
+        Arc::new(b)
+    }
+
+    /// Blocks {0, 1 | 2}, {3 | 4} (3 not a child), {| 5}: parents 2, 4, 5.
+    fn blocks(selector: BlockJoinSelector) -> Blocks {
+        Blocks {
+            parents: Some(bits(6, &[2, 4, 5])),
+            children: Some(bits(6, &[0, 1])),
+            selector,
+        }
+    }
+
+    #[test]
+    fn a_block_folds_like_to_parent_doc_values() {
+        let value = |doc: i32| Ok(Some(i64::from(10 - doc)));
+        let min = blocks(BlockJoinSelector::Min);
+        let max = blocks(BlockJoinSelector::Max);
+        assert_eq!(min.fold(2, value, None).unwrap(), Some(9));
+        assert_eq!(max.fold(2, value, None).unwrap(), Some(10));
+        // A child missing value joins the selection only when some document
+        // of the block has no value -- doc 3 is not even a child.
+        assert_eq!(min.fold(2, value, Some(-1)).unwrap(), Some(9));
+        assert_eq!(min.fold(4, value, Some(-1)).unwrap(), None);
+        let some = |doc: i32| Ok((doc == 1).then_some(7));
+        assert_eq!(min.fold(2, some, Some(3)).unwrap(), Some(3));
+        assert_eq!(max.fold(2, some, Some(3)).unwrap(), Some(7));
+        // No children, not a parent, outside the set: no value.
+        for doc in [5, 1, -1, 6, 99] {
+            assert_eq!(min.fold(doc, value, Some(0)).unwrap(), None, "{doc}");
+        }
+        // Either filter missing is `emptyNumeric()`.
+        let none = Blocks {
+            parents: None,
+            children: Some(bits(6, &[0])),
+            selector: BlockJoinSelector::Min,
+        };
+        assert_eq!(none.fold(2, value, None).unwrap(), None);
+        // A child set shorter than the block reads as no child there.
+        let short = Blocks {
+            parents: Some(bits(6, &[2])),
+            children: Some(bits(1, &[0])),
+            selector: BlockJoinSelector::Max,
+        };
+        assert_eq!(short.fold(2, value, None).unwrap(), Some(10));
+        // A failing read is the sort's error.
+        let broken = |_: i32| Err(Error::IllegalState("read".into()));
+        assert!(min.fold(2, broken, None).is_err());
+    }
+
+    fn leaf(column: Column<'static>) -> Leaf<'static> {
+        Leaf {
+            blocks: blocks(BlockJoinSelector::Min),
+            column,
+            buf: Vec::new(),
+            last: None,
+            term: None,
+            parent_missing: 42,
+            missing_last: false,
+        }
+    }
+
+    #[test]
+    fn a_field_without_values_sorts_every_parent_as_missing() {
+        let mut longs = leaf(Column::Longs(NumericColumn::Absent, Some(1)));
+        assert_eq!(longs.value(2, 0.0).unwrap(), SortValue::Long(42));
+        // Read twice: the second answer comes from the memo.
+        assert_eq!(longs.value(2, 0.0).unwrap(), SortValue::Long(42));
+        assert_eq!(
+            longs.compare_bottom(&SortValue::Long(0), 2, 0.0).unwrap(),
+            None
+        );
+        assert_eq!(longs.term(0).unwrap(), b"");
+
+        let mut ords = leaf(Column::Ords(OrdColumn::Absent, -1));
+        assert_eq!(ords.value(2, 0.0).unwrap(), SortValue::Bytes(None));
+        assert_eq!(
+            ords.compare_bottom(&SortValue::Long(0), 2, 0.0).unwrap(),
+            None
+        );
+        // Missing sorts first (no `STRING_LAST`): against a term bottom the
+        // document wins, against a missing bottom it ties.
+        assert_eq!(
+            ords.compare_bottom(&SortValue::Bytes(Some(b"a".to_vec())), 2, 0.0)
+                .unwrap(),
+            Some(Ordering::Greater)
+        );
+        assert_eq!(
+            ords.compare_bottom(&SortValue::Bytes(None), 4, 0.0)
+                .unwrap(),
+            Some(Ordering::Equal)
+        );
+        // No child has a value, so the child missing ordinal never joins a
+        // selection (`advanceExact` is `false`); looked up, `STRING_LAST`'s
+        // is past every term.
+        let mut last = leaf(Column::Ords(OrdColumn::Absent, i64::from(i32::MAX)));
+        assert_eq!(last.value(2, 0.0).unwrap(), SortValue::Bytes(None));
+        let e = last.term(i64::from(i32::MAX)).unwrap_err();
+        assert!(e.to_string().contains("out of bounds for length 0"), "{e}");
+        assert!(last.term(-1).is_err());
+        let mut absent = OrdColumn::Absent;
+        assert_eq!(absent.size(), 0);
+        assert_eq!(absent.lookup(0).unwrap(), b"");
+        assert_eq!(
+            absent
+                .ord(0, BlockJoinSelector::Min, &mut Vec::new())
+                .unwrap(),
+            None
+        );
+    }
 }
