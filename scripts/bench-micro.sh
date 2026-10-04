@@ -190,6 +190,18 @@ case "$BENCH" in
     PREP_ARGS=(build "$INDEX")
     JAVA_ARGS=(run)
     NEEDS_INDEX=1 ;;
+  grouping)
+    # M10 T10.4's pair (GroupingMicro.java / micro_grouping.rs): grouping
+    # searches, block grouping, distinct values and grouped facets over the
+    # 200 000-document index GroupingMicro builds (once) under
+    # benchmarks/.corpus/grouping.
+    MAIN=GroupingMicro
+    SRC=benchmarks/micro/java/GroupingMicro.java
+    JAR_MODULES="lucene-core lucene-analysis-common lucene-grouping"
+    INDEX="${INDEX_ARG:-$PWD/benchmarks/.corpus/grouping}"
+    PREP_ARGS=(build "$INDEX")
+    JAVA_ARGS=(run)
+    NEEDS_INDEX=1 ;;
   pfor_decode)
     MAIN=org.apache.lucene.codecs.lucene104.PForUtilMicro
     SRC=benchmarks/micro/java/org/apache/lucene/codecs/lucene104/PForUtilMicro.java ;;
