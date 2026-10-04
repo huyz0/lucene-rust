@@ -1,7 +1,7 @@
 # Lucene 10.5.0 lucene-join: every top-level class of the jar, and what became of it.
 # Checked by scripts/check-port-inventory.py --module join (see its docstring for the statuses).
 # class	status	detail
-search/join/BaseGlobalOrdinalScorer	todo:M10	query-time join (T10.3): GlobalOrdinals*Query's scorer base
+search/join/BaseGlobalOrdinalScorer	ported	crates/lucene-search/src/exec/query_join.rs::GlobalOrdinalScorer
 search/join/BitSetProducer	ported	crates/lucene-search/src/join/mod.rs::BitSetProducer
 search/join/BlockJoinSelector	ported	crates/lucene-search/src/join/sort.rs::BlockJoinSelector
 search/join/CheckJoinIndex	ported	crates/lucene-search/src/join/mod.rs::check_join_index
@@ -9,23 +9,23 @@ search/join/DiversifyingChildrenByteKnnVectorQuery	ported	crates/lucene-search/s
 search/join/DiversifyingChildrenFloatKnnVectorQuery	ported	crates/lucene-search/src/join/knn.rs::DiversifyingChildrenFloatKnnVectorQuery
 search/join/DiversifyingNearestChildrenKnnCollector	ported	crates/lucene-search/src/vector_query.rs::DiversifyingCollector
 search/join/DiversifyingNearestChildrenKnnCollectorManager	ported	crates/lucene-search/src/vector_query.rs::diversified_leaf_results
-search/join/DocValuesTermsCollector	todo:M10	query-time join (T10.3): collects join terms from doc values
-search/join/GenericTermsCollector	todo:M10	query-time join (T10.3): the terms collector interface and its doc-values implementations
-search/join/GlobalOrdinalsCollector	todo:M10	query-time join (T10.3): collects the global ordinals of the from-side
-search/join/GlobalOrdinalsQuery	todo:M10	query-time join (T10.3): the to-side query over global ordinals
-search/join/GlobalOrdinalsWithScoreCollector	todo:M10	query-time join (T10.3): global ordinals with per-ordinal scores
-search/join/GlobalOrdinalsWithScoreQuery	todo:M10	query-time join (T10.3): the scoring to-side query over global ordinals
-search/join/JoinUtil	todo:M10	query-time join (T10.3): the createJoinQuery factories
+search/join/DocValuesTermsCollector	ported	crates/lucene-search/src/join/query_time.rs::TermsCollector
+search/join/GenericTermsCollector	ported	crates/lucene-search/src/join/query_time.rs::TermsWithScoreCollector
+search/join/GlobalOrdinalsCollector	ported	crates/lucene-search/src/join/query_time.rs::GlobalOrdinalsCollector
+search/join/GlobalOrdinalsQuery	ported	crates/lucene-search/src/join/query_time.rs::GlobalOrdinalsQuery
+search/join/GlobalOrdinalsWithScoreCollector	ported	crates/lucene-search/src/join/query_time.rs::GlobalOrdinalsWithScoreCollector
+search/join/GlobalOrdinalsWithScoreQuery	ported	crates/lucene-search/src/join/query_time.rs::GlobalOrdinalsWithScoreQuery
+search/join/JoinUtil	ported	crates/lucene-search/src/join/query_time.rs::create_join_query
 search/join/ParentChildrenBlockJoinQuery	ported	crates/lucene-search/src/join/query.rs::ParentChildrenBlockJoinQuery
 search/join/ParentsChildrenBlockJoinQuery	ported	crates/lucene-search/src/join/query.rs::ParentsChildrenBlockJoinQuery
-search/join/PointInSetIncludingScoreQuery	todo:M10	query-time join (T10.3): numeric join by points, scored
+search/join/PointInSetIncludingScoreQuery	ported	crates/lucene-search/src/join/query_time.rs::PointInSetIncludingScoreQuery
 search/join/QueryBitSetProducer	ported	crates/lucene-search/src/join/mod.rs::QueryBitSetProducer
 search/join/ScoreMode	ported	crates/lucene-search/src/join/query.rs::ScoreMode
-search/join/SeekingTermSetTermsEnum	todo:M10	query-time join (T10.3): seeks a sorted term set through a terms enum
-search/join/TermsCollector	todo:M10	query-time join (T10.3): collects the from-side's terms
-search/join/TermsIncludingScoreQuery	todo:M10	query-time join (T10.3): the scoring to-side terms query
-search/join/TermsQuery	todo:M10	query-time join (T10.3): the to-side terms query
-search/join/TermsWithScoreCollector	todo:M10	query-time join (T10.3): the from-side's terms with scores
+search/join/SeekingTermSetTermsEnum	ported	crates/lucene-search/src/join/query_time.rs::SeekingTermSet
+search/join/TermsCollector	ported	crates/lucene-search/src/join/query_time.rs::TermsCollector
+search/join/TermsIncludingScoreQuery	ported	crates/lucene-search/src/join/query_time.rs::TermsIncludingScoreQuery
+search/join/TermsQuery	ported	crates/lucene-search/src/join/query_time.rs::terms_query
+search/join/TermsWithScoreCollector	ported	crates/lucene-search/src/join/query_time.rs::TermsWithScoreCollector
 search/join/ToChildBlockJoinQuery	ported	crates/lucene-search/src/join/query.rs::ToChildBlockJoinQuery
 search/join/ToParentBlockJoinQuery	ported	crates/lucene-search/src/join/query.rs::ToParentBlockJoinQuery
 search/join/ToParentBlockJoinSortField	ported	crates/lucene-search/src/join/sort.rs::ToParentBlockJoinSortField

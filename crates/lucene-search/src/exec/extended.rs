@@ -216,6 +216,16 @@ pub(crate) fn build<'a>(
         ExtendedQuery::ParentsChildrenBlockJoin(q) => {
             super::join::parents_children(ctx, q, boost, mode)
         }
+        ExtendedQuery::TermsIncludingScore(q) => {
+            super::query_join::terms_including_score(ctx, q, boost, mode, top_level)
+        }
+        ExtendedQuery::GlobalOrdinals(q) => super::query_join::global_ordinals(ctx, q, boost),
+        ExtendedQuery::GlobalOrdinalsWithScore(q) => {
+            super::query_join::global_ordinals_with_score(ctx, q, boost, mode)
+        }
+        ExtendedQuery::PointInSetIncludingScore(q) => {
+            super::query_join::point_in_set_including_score(ctx, q)
+        }
         // `RescoreTopNQuery` has no weight of its own: `rewrite(searcher)`
         // turns it into a `DocAndScoreQuery` first.
         ExtendedQuery::RescoreTopN(_) => Err(crate::Error::IllegalState(
@@ -1842,6 +1852,54 @@ pub(crate) fn visit_terms(
                     }
                 }
                 on = it.try_next_term()?.is_some();
+            }
+            Ok(())
+        }
+        // `TermsQuery.getTermsEnum`: `TermsEnum.EMPTY` for no terms, else a
+        // `SeekingTermSetTermsEnum` -- `FilteredTermsEnum.next` driven over
+        // the field's terms, seeking to each set term in turn.
+        MultiTermSource::TermSet(q) => {
+            let Some(ft) = fields.field(&q.field) else {
+                return Ok(());
+            };
+            if q.terms.is_empty() {
+                return Ok(());
+            }
+            let mut filter = crate::join::SeekingTermSet::new(std::sync::Arc::clone(&q.terms));
+            let mut it = ft.iter();
+            let mut do_seek = true;
+            let mut taken = 0usize;
+            while taken < limit {
+                let term = if do_seek {
+                    do_seek = false;
+                    let Some(t) = filter.next_seek().map(<[u8]>::to_vec) else {
+                        break;
+                    };
+                    if it.try_seek_ceil(&t)? == lucene_codecs::blocktree::SeekStatus::End {
+                        break;
+                    }
+                    it.term().map(<[u8]>::to_vec).unwrap_or_default()
+                } else {
+                    match it.try_next_term()? {
+                        Some(t) => t.to_vec(),
+                        None => break,
+                    }
+                };
+                use crate::reader::filtered_terms_enum::AcceptStatus;
+                let status = filter.accept_term(&term);
+                if matches!(status, AcceptStatus::Yes | AcceptStatus::YesAndSeek) {
+                    if let Some(seeked) = it.try_seeked_term()? {
+                        taken = taken.saturating_add(1);
+                        if sink(term, seeked)?.is_break() {
+                            break;
+                        }
+                    }
+                }
+                match status {
+                    AcceptStatus::YesAndSeek | AcceptStatus::NoAndSeek => do_seek = true,
+                    AcceptStatus::End => break,
+                    AcceptStatus::Yes | AcceptStatus::No => {}
+                }
             }
             Ok(())
         }

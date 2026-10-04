@@ -29,6 +29,7 @@ mod micro_geo_points;
 mod micro_geo_shapes;
 mod micro_join;
 mod micro_m7;
+mod micro_query_join;
 mod micro_spatial_extras;
 mod sexpr;
 #[path = "../../../crates/lucene-search/tests/m7grammar/mod.rs"]
@@ -2096,6 +2097,12 @@ fn main() {
                 .nth(2)
                 .expect("join needs the JoinMicro index directory");
             micro_join::bench_join(warmup, measure, &index);
+        }
+        "query_join" => {
+            let index = std::env::args()
+                .nth(2)
+                .expect("query_join needs the QueryJoinMicro index directory");
+            micro_query_join::bench_query_join(warmup, measure, &index);
         }
         "m7_fixture" => micro_m7::bench_m7_fixture(warmup, measure),
         "query_builder" => micro_m7::bench_query_builder(warmup, measure),

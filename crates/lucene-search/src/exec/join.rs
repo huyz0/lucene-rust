@@ -986,6 +986,9 @@ pub(crate) fn explain(
     use crate::explain::Explanation;
     use crate::extended_query::ExtendedQuery;
     let not_a_match = || Explanation::no_match("Not a match");
+    if let Some(e) = super::query_join::explain(ctx, q, doc)? {
+        return Ok(Some(e));
+    }
     Ok(Some(match q {
         // `BlockJoinWeight.explain` -> `BlockJoinScorer.explain`.
         ExtendedQuery::ToParentBlockJoin(q) => {

@@ -10,7 +10,7 @@
 | **Effort** | L |
 | **Depends on** | [M7](m7-core-complete.md) |
 | **Unblocks** | native `nested`, `function_score`, `intervals`, `combined_fields`, field collapsing |
-| **Status** | in progress (T10.0, T10.1 done; T10.2 queries ported) |
+| **Status** | in progress (T10.0, T10.1 done; T10.2, T10.3 queries ported) |
 
 ---
 
@@ -91,7 +91,18 @@ grouping. Each of them falls back to Lucene today.
   per-child hit was a virtual call). The boolean case's remaining time is the
   generic `ReqOptSumScorer`/conjunction scorers around the join, which
   mirror Java's; the join's own scorer is a small share of it.
-- **T10.3** — Query-time joins.
+- **T10.3** — Query-time joins. **Ported** (`lucene-search/src/join/query_time.rs`,
+  `exec/query_join.rs`): `JoinUtil`'s four `createJoinQuery` overloads with
+  every collector and to-side query -- `TermsCollector`/`TermsWithScoreCollector`
+  over `SORTED`/`SORTED_SET` doc values into `TermsQuery` (a seeking term-set
+  multi-term query) or `TermsIncludingScoreQuery`, the numeric join into
+  `PointInSetQuery`/`PointInSetIncludingScoreQuery`, and the global-ordinal
+  joins (`GlobalOrdinals{,WithScore}Collector`/`Query`, `min`/`max`). The from
+  side runs through a new per-segment collector driver
+  (`leaf_collector.rs`: `getLeafCollector`/`collect`/`finish` for every
+  segment) and the `DocValues` getters (`reader/doc_values.rs`). 897
+  differential searches (`GenQueryTimeJoin`, four segments with deletions,
+  every score mode, alone and boosted in booleans) bit for bit.
 - **T10.4** — Grouping.
 - **T10.5** — Function queries and value sources.
 - **T10.6** — Intervals, payload queries, `MoreLikeThis`, `CommonTermsQuery`.
