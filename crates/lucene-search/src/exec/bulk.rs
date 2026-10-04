@@ -46,6 +46,14 @@ pub(crate) enum Bulk<'a> {
     /// of the term's postings at a time. See
     /// [`crate::bulk_scorer::score_filtered_term_window`].
     FilteredTerm(Box<TermLeg<'a>>, BoxScorer<'a>, DocScores),
+    /// One scoring term and a two-phase filter over every document that
+    /// confirms runs of documents at once. See
+    /// [`crate::bulk_scorer::score_term_two_phase_window`].
+    TwoPhaseTerm(
+        Box<TermLeg<'a>>,
+        BoxScorer<'a>,
+        Box<crate::bulk_scorer::TwoPhaseRun>,
+    ),
     /// One scoring clause that has its own bulk scorer (a nested boolean or
     /// dismax) and a dense filter answering membership: the clause's bulk
     /// scorer, its hits kept only where the filter matches. See
@@ -103,6 +111,7 @@ impl<'a> Bulk<'a> {
             Bulk::Term(..) => "term",
             Bulk::Conjunction(..) => "conjunction",
             Bulk::FilteredTerm(..) => "filtered_term",
+            Bulk::TwoPhaseTerm(..) => "two_phase_term",
             Bulk::Filtered(..) => "filtered",
             Bulk::ScorerConjunction(..) => "scorer_conjunction",
             Bulk::Disjunction(_, None, _) => "disjunction",
@@ -145,6 +154,17 @@ impl<'a> Bulk<'a> {
                 min,
                 max,
             ),
+            Bulk::TwoPhaseTerm(leg, filter, run) => {
+                crate::bulk_scorer::score_term_two_phase_window(
+                    leg,
+                    &mut **filter,
+                    run,
+                    live_docs,
+                    collector,
+                    min,
+                    max,
+                )
+            }
             Bulk::ScorerConjunction(scorers, state) => {
                 state.score(scorers, live_docs, collector, min, max)
             }
@@ -316,6 +336,9 @@ fn default_score<C: ScoringCollector + ?Sized>(
             }
         }
     }
+    if needs_scores && doc < max && scorer.prefers_batches() && super::batches_on() {
+        return batch_score(scorer, published, prune, live_docs, collector, doc, max);
+    }
     while doc < max {
         if live_docs.is_none_or(|l| l.get_doc(doc)) && (!two_phase || scorer.matches()?) {
             let score = if needs_scores { scorer.score()? } else { 0.0 };
@@ -327,6 +350,47 @@ fn default_score<C: ScoringCollector + ?Sized>(
         doc = scorer.next_doc()?;
     }
     Ok(doc)
+}
+
+/// [`default_score`] over a scorer that [prefers
+/// batches](super::Scorer::prefers_batches): its matches below `max` a
+/// batch at a time ([`super::Scorer::next_docs_and_scores`]), each
+/// collected in order with its score -- the documents and scores the
+/// document-at-a-time loop collects. Such a scorer ignores thresholds, so
+/// publishing one once per batch rather than after each hit changes
+/// nothing it does. `doc` is the scorer's current document, below `max`.
+fn batch_score<C: ScoringCollector + ?Sized>(
+    scorer: &mut dyn super::Scorer,
+    published: &mut f32,
+    prune: bool,
+    live_docs: Option<&FixedBitSet>,
+    collector: &mut C,
+    mut doc: i32,
+    max: i32,
+) -> Result<i32> {
+    // The batches start on a match.
+    if scorer.two_phase() {
+        while doc < max && !scorer.matches()? {
+            doc = scorer.next_doc()?;
+        }
+        if doc >= max {
+            return Ok(doc);
+        }
+    }
+    let mut buf = DocScores::default();
+    loop {
+        scorer.next_docs_and_scores(max, live_docs, &mut buf)?;
+        if buf.docs.is_empty() {
+            return Ok(scorer.doc_id());
+        }
+        let from = collector.collect_many(&buf.docs, &buf.scores, 0);
+        for (&d, &score) in buf.docs[from..].iter().zip(&buf.scores[from..]) {
+            collector.collect(d, score);
+        }
+        if prune {
+            publish(scorer, published, collector)?;
+        }
+    }
 }
 
 /// [`default_score`] over a constant-scored cached bit set: every set bit in
@@ -811,7 +875,14 @@ pub(crate) fn bulk_boolean<'a>(
             let (c, _) = must.pop().expect("one scoring clause");
             let filter_scorer = filter_of(std::mem::take(&mut filter));
             if filter_scorer.two_phase() {
-                return bulk_boolean_tree(ctx, q, boost, mode);
+                if !filter_scorer.batch_matches() || !super::batches_on() {
+                    return bulk_boolean_tree(ctx, q, boost, mode);
+                }
+                return Ok(Some(Bulk::TwoPhaseTerm(
+                    Box::new(c.into_leg()),
+                    filter_scorer,
+                    Box::default(),
+                )));
             }
             Some(Bulk::FilteredTerm(
                 Box::new(c.into_leg()),

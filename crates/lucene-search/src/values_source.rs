@@ -55,6 +55,40 @@ pub trait DoubleValues {
     /// `doubleValue()`: the value at the current document; only valid after
     /// [`Self::advance_exact`] returned `true`.
     fn double_value(&mut self) -> Result<f64>;
+
+    /// Whether [`Self::fill_batch`] may stand in for the per-document calls:
+    /// the values read the current scorer's score, if at all, only from
+    /// `fill_batch`'s `scores` -- never from state a caller sets per document
+    /// (`FunctionScoreQuery`'s score cell). `false` unless overridden.
+    fn batch_capable(&self) -> bool {
+        false
+    }
+
+    /// For each of `docs` (ascending, the first not before the last target),
+    /// with `scores[i]` the score at `docs[i]`: `advance_exact`, then --
+    /// where it has a value -- `double_value`. `has[i]` is whether `docs[i]`
+    /// has a value and `out[i]` that value (unspecified without one); both
+    /// as long as `docs`. Only valid when [`Self::batch_capable`]. By
+    /// default the per-document calls, statically dispatched within the
+    /// implementing type.
+    ///
+    /// # Errors
+    /// Whatever reading a value reports.
+    fn fill_batch(
+        &mut self,
+        docs: &[i32],
+        _scores: &[f32],
+        out: &mut [f64],
+        has: &mut [bool],
+    ) -> Result<()> {
+        for ((&doc, o), h) in docs.iter().zip(out.iter_mut()).zip(has.iter_mut()) {
+            *h = self.advance_exact(doc)?;
+            if *h {
+                *o = self.double_value()?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// `LongValues`: a per-leaf cursor over `long` values.
@@ -74,6 +108,9 @@ impl DoubleValues for EmptyDoubleValues {
     fn double_value(&mut self) -> Result<f64> {
         Ok(0.0)
     }
+    fn batch_capable(&self) -> bool {
+        true
+    }
 }
 
 /// Every document has `value` (`ConstantValuesSource`'s values, and the
@@ -87,6 +124,9 @@ impl DoubleValues for ConstantDoubleValues {
     }
     fn double_value(&mut self) -> Result<f64> {
         Ok(self.0)
+    }
+    fn batch_capable(&self) -> bool {
+        true
     }
 }
 
@@ -429,6 +469,9 @@ impl DoubleValues for FieldDoubleValues<'_> {
     }
     fn double_value(&mut self) -> Result<f64> {
         Ok(self.decoder.apply(self.inner.current))
+    }
+    fn batch_capable(&self) -> bool {
+        true
     }
 }
 

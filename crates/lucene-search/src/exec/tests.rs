@@ -13,6 +13,12 @@
 //! that corpus cannot reach -- two-phase clauses (no leaf in this crate is
 //! two-phase yet) and thousands of random tree shapes.
 
+// Turns the batched scoring paths off (`super::batches_on`), for a test
+// comparing them with the document-at-a-time ones.
+thread_local! {
+    pub(crate) static BATCHES_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 use super::build::{compose, Child};
 use super::disjunction::{Combine, DisjunctionScorer};
 use super::leaf::{AllDocs, ConstantScorer, DocList};
@@ -2374,4 +2380,14 @@ fn index_or_doc_values_picks_its_side_by_the_lead_cost() {
             .push(Clause::Term(TermQuery::new("body", b"t7".to_vec())));
         Clause::Boolean(Box::new(q))
     }
+}
+
+#[test]
+fn a_scorer_confirms_a_batch_one_document_at_a_time_by_default() {
+    let mut s = AllDocs::new(10);
+    assert!(!s.batch_matches() && !s.prefers_batches() && !s.constant_scores());
+    let mut keep = [false; 3];
+    s.matches_batch(&[2, 5, 9], &mut keep).unwrap();
+    assert_eq!(keep, [true; 3]);
+    assert_eq!(s.doc_id(), 9);
 }

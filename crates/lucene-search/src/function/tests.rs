@@ -1400,3 +1400,513 @@ fn nested_function_queries_are_collected_once_each() {
     collect_functions(&q, &mut found);
     assert_eq!(found.len(), 21);
 }
+
+/// The batched function paths against the document-at-a-time ones.
+mod batches {
+    // The batched function paths against the document-at-a-time ones they
+    // stand in for: every value source's batch getters against its
+    // per-document getters, and whole searches with the batches on and off
+    // (`exec::batches_on`), over an index this port writes -- two segments,
+    // one past `NumericColumn::get_batch`'s widest window, sparse and dense
+    // columns, deleted documents, and terms long enough for impacts to skip
+    // blocks. The batches' agreement with Lucene is
+    // `tests/function_fixtures.rs` and the benchmark digests.
+    use std::sync::Arc;
+
+    use lucene_index::buffered_updates::Term;
+    use lucene_index::document::{self as d, Document, IndexableField, Store};
+    use lucene_index::index_writer::IndexWriter;
+    use lucene_index::segment_info::LuceneVersion;
+    use lucene_store::FsDirectory;
+    use lucene_util::test_support::TempDir;
+
+    use super::super::valuesource::*;
+    use super::super::*;
+    use crate::directory_reader::DirectoryReader;
+    use crate::index_searcher::{IndexSearcher, SegmentNorms};
+    use crate::query::{BooleanQuery, BoostQuery, Clause, TermQuery};
+    use crate::top_docs::TopDocs;
+    use crate::values_source::{self as dvs, ValuesContext};
+
+    const VERSION: LuceneVersion = LuceneVersion {
+        major: 10,
+        minor: 5,
+        bugfix: 0,
+    };
+
+    /// Two segments (5 000 and 300 documents), every eleventh document of the
+    /// first deleted. `i` is sparse (missing on every seventh), `n` and `f`
+    /// dense, `g` a sparse float column; `body` holds `a` everywhere, `b` on
+    /// every third (twice on every fifth), `c` on three in seven; `s` a sparse
+    /// `SORTED` column.
+    fn index(tmp: &TempDir) -> DirectoryReader {
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        for (seg, count) in [(0, 5000i64), (1, 300)] {
+            for i in 0..count {
+                let mut doc = Document::new();
+                let mut body = String::from("a");
+                if i % 3 == 0 {
+                    body.push_str(" b");
+                    if i % 5 == 0 {
+                        body.push_str(" b");
+                    }
+                }
+                if i % 7 < 3 {
+                    body.push_str(" c");
+                }
+                let fields: Vec<Box<dyn IndexableField>> = vec![
+                    Box::new(d::StringField::new("id", format!("{seg}-{i}"), Store::No)),
+                    Box::new(d::TextField::new("body", body, Store::No)),
+                    Box::new(d::NumericDocValuesField::new("n", i * 7919 % 100_000)),
+                    Box::new(d::NumericDocValuesField::new(
+                        "f",
+                        i64::from(((i * 13 % 997) as f32 / 10.0 - 5.0).to_bits()),
+                    )),
+                ];
+                for f in fields {
+                    doc.add_boxed(f);
+                }
+                if i % 7 != 0 {
+                    doc.add_boxed(Box::new(d::NumericDocValuesField::new("i", i * 37 % 1000)));
+                }
+                if i % 5 != 0 {
+                    doc.add_boxed(Box::new(d::SortedDocValuesField::new(
+                        "s",
+                        format!("w{}", i % 13).into_bytes(),
+                    )));
+                }
+                if i % 4 != 0 {
+                    doc.add_boxed(Box::new(d::NumericDocValuesField::new(
+                        "g",
+                        i64::from(((i % 50) as f32 * 1.5).to_bits()),
+                    )));
+                }
+                w.add_fields_document(&doc).unwrap();
+            }
+            w.commit().unwrap();
+        }
+        let deleted: Vec<Term> = (0..5000)
+            .step_by(11)
+            .map(|i| Term::new("id", format!("0-{i}")))
+            .collect();
+        w.delete_documents_by_term(&deleted).unwrap();
+        w.commit().unwrap();
+        drop(w);
+        DirectoryReader::open(&dir).unwrap()
+    }
+
+    fn composite() -> Arc<dyn ValueSource> {
+        Arc::new(SumFloatFunction::new(vec![
+            Arc::new(ProductFloatFunction::new(vec![
+                Arc::new(IntFieldSource::new("i")),
+                Arc::new(ConstValueSource::new(0.5)),
+            ])),
+            Arc::new(LinearFloatFunction::new(
+                Arc::new(FloatFieldSource::new("f")),
+                2.0,
+                1.0,
+            )),
+            Arc::new(ReciprocalFloatFunction::new(
+                Arc::new(LongFieldSource::new("n")),
+                0.001,
+                10.0,
+                1.0,
+            )),
+        ]))
+    }
+
+    fn sources() -> Vec<Arc<dyn ValueSource>> {
+        vec![
+            Arc::new(IntFieldSource::new("i")),
+            Arc::new(LongFieldSource::new("n")),
+            Arc::new(FloatFieldSource::new("f")),
+            Arc::new(FloatFieldSource::new("g")),
+            Arc::new(IntFieldSource::new("nosuch")),
+            Arc::new(DoubleFieldSource::new("n")),
+            composite(),
+            Arc::new(ProductFloatFunction::new(vec![
+                Arc::new(IntFieldSource::new("i")),
+                Arc::new(FloatFieldSource::new("g")),
+            ])),
+            Arc::new(DivFloatFunction::new(
+                Arc::new(FloatFieldSource::new("f")),
+                Arc::new(IntFieldSource::new("i")),
+            )),
+            Arc::new(MaxFloatFunction::new(vec![
+                Arc::new(IntFieldSource::new("i")),
+                Arc::new(FloatFieldSource::new("g")),
+            ])),
+            Arc::new(BytesRefFieldSource::new("s")),
+        ]
+    }
+
+    /// The batches a scorer may hand its values: aligned runs, runs from an
+    /// odd start, every third document, single documents, and one batch whose
+    /// span passes the widest window.
+    fn patterns(max_doc: i32) -> Vec<Vec<Vec<i32>>> {
+        let all: Vec<i32> = (0..max_doc).collect();
+        let chunks =
+            |docs: &[i32], n: usize| docs.chunks(n).map(<[i32]>::to_vec).collect::<Vec<_>>();
+        let thirds: Vec<i32> = (0..max_doc).step_by(3).collect();
+        let mut odd = vec![(0..5).collect::<Vec<i32>>()];
+        odd.extend(chunks(&all[5..], 128));
+        let mut wide = vec![vec![0, 1, max_doc - 1]];
+        if max_doc > 4100 {
+            wide = vec![vec![0, 4500, max_doc - 1]];
+        }
+        vec![
+            chunks(&all, 64),
+            odd,
+            chunks(&thirds, 100),
+            chunks(&all, 1),
+            wide,
+        ]
+    }
+
+    fn bits(r: &Result<f32>) -> std::result::Result<u32, String> {
+        match r {
+            Ok(v) => Ok(v.to_bits()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    #[test]
+    fn value_batches_read_what_the_per_document_getters_read() {
+        let tmp = TempDir::new("function-batches-values");
+        let reader = index(&tmp);
+        let opened = reader.open_segments().unwrap();
+        let segments = opened.as_open_segments();
+        let norms: Vec<SegmentNorms<'_, '_>> = segments.iter().map(|_| None).collect();
+        let searcher = IndexSearcher::new(&segments, &norms).unwrap();
+        let top = TopLevel::of_searcher(&searcher, None);
+        for src in sources() {
+            let fcx = FunctionContext::create(src.as_ref(), &top).unwrap();
+            for (leaf, seg) in segments.iter().enumerate() {
+                let vleaf = ValueLeaf::of_searcher(&searcher, leaf, None).unwrap();
+                let max_doc = seg.reader.unwrap().max_doc;
+                let mut one = src.get_values(&fcx, &vleaf).unwrap();
+                let floats: Vec<Result<f32>> = (0..max_doc).map(|d| one.float_val(d)).collect();
+                let mut one = src.get_values(&fcx, &vleaf).unwrap();
+                let doubles: Vec<Result<f64>> = (0..max_doc).map(|d| one.double_val(d)).collect();
+                for pattern in patterns(max_doc) {
+                    let what = format!("{} leaf {leaf}", src.description());
+                    let mut fv = src.get_values(&fcx, &vleaf).unwrap();
+                    let mut dv = src.get_values(&fcx, &vleaf).unwrap();
+                    for batch in &pattern {
+                        let mut out = vec![0.0f32; batch.len()];
+                        let got = fv.float_val_batch(batch, &mut out);
+                        let want: Vec<&Result<f32>> =
+                            batch.iter().map(|&d| &floats[d as usize]).collect();
+                        match got {
+                            Ok(()) => {
+                                for (o, w) in out.iter().zip(&want) {
+                                    assert_eq!(Ok(o.to_bits()), bits(w), "{what} floats");
+                                }
+                            }
+                            Err(_) => assert!(want.iter().any(|w| w.is_err()), "{what}"),
+                        }
+                        let mut out = vec![0.0f64; batch.len()];
+                        let got = dv.double_val_batch(batch, &mut out);
+                        match got {
+                            Ok(()) => {
+                                for (o, &doc) in out.iter().zip(batch) {
+                                    let w = doubles[doc as usize].as_ref().unwrap();
+                                    assert_eq!(o.to_bits(), w.to_bits(), "{what} doubles");
+                                }
+                            }
+                            Err(_) => assert!(
+                                batch.iter().any(|&d| doubles[d as usize].is_err()),
+                                "{what}"
+                            ),
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn range_batches_match_and_score_as_the_scorer_does() {
+        let tmp = TempDir::new("function-batches-ranges");
+        let reader = index(&tmp);
+        let opened = reader.open_segments().unwrap();
+        let segments = opened.as_open_segments();
+        let norms: Vec<SegmentNorms<'_, '_>> = segments.iter().map(|_| None).collect();
+        let searcher = IndexSearcher::new(&segments, &norms).unwrap();
+        let top = TopLevel::of_searcher(&searcher, None);
+        for src in sources() {
+            let fcx = FunctionContext::create(src.as_ref(), &top).unwrap();
+            for (leaf, seg) in segments.iter().enumerate() {
+                let vleaf = ValueLeaf::of_searcher(&searcher, leaf, None).unwrap();
+                let max_doc = seg.reader.unwrap().max_doc;
+                let mut probe = src.get_values(&fcx, &vleaf).unwrap();
+                let own = probe.range_matcher(Some("100"), Some("500"), true, false);
+                let mut ranges: Vec<Option<RangeMatcher>> = vec![
+                    None,
+                    Some(RangeMatcher::float(Some("-2.5"), Some("40"), false, true).unwrap()),
+                    Some(RangeMatcher::double(Some("1"), None, true, true).unwrap()),
+                    Some(RangeMatcher::int(Some(100), Some(500), false, true)),
+                    Some(RangeMatcher::long(None, Some(50_000), true, false)),
+                    Some(RangeMatcher::Ord { lower: 0, upper: 3 }),
+                ];
+                if let Ok(r) = own {
+                    ranges.push(Some(r));
+                }
+                for range in &ranges {
+                    let what = format!("{} leaf {leaf} {range:?}", src.description());
+                    // Per document, as `ValueSourceScorer` asks: scored, and
+                    // matched only (a filter's).
+                    let all: Vec<i32> = (0..max_doc).collect();
+                    let expect = |scored: bool| {
+                        let mut one = src.get_values(&fcx, &vleaf).unwrap();
+                        let mut want = (Vec::new(), Vec::new());
+                        let values = scored.then_some(&mut want.1);
+                        let ok = range_batch_per_doc(
+                            one.as_mut(),
+                            range.as_ref(),
+                            &all,
+                            &mut want.0,
+                            values,
+                        );
+                        (ok.is_ok(), want)
+                    };
+                    for (pattern, scored) in [(0, true), (1, false), (2, true)] {
+                        let (want_ok, want) = expect(scored);
+                        let batches = &patterns(max_doc)[pattern];
+                        let mut v = src.get_values(&fcx, &vleaf).unwrap();
+                        let mut got = (Vec::new(), Vec::new());
+                        let mut ok = Ok(());
+                        for batch in batches {
+                            let values = scored.then_some(&mut got.1);
+                            ok = v.range_batch(range.as_ref(), batch, &mut got.0, values);
+                            if ok.is_err() {
+                                break;
+                            }
+                        }
+                        if pattern == 2 {
+                            // Every third document: the per-document matches
+                            // among them.
+                            if want_ok && ok.is_ok() {
+                                let thirds: Vec<i32> =
+                                    want.0.iter().copied().filter(|d| d % 3 == 0).collect();
+                                assert_eq!(got.0, thirds, "{what}");
+                            }
+                            continue;
+                        }
+                        assert_eq!(ok.is_ok(), want_ok, "{what}");
+                        if ok.is_ok() {
+                            assert_eq!(got.0, want.0, "{what}");
+                            if scored {
+                                let a: Vec<u32> = got.1.iter().map(|f| f.to_bits()).collect();
+                                let b: Vec<u32> = want.1.iter().map(|f| f.to_bits()).collect();
+                                assert_eq!(a, b, "{what}");
+                            } else {
+                                assert!(got.1.is_empty());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_column_batch_refuses_documents_behind_the_last_one_asked() {
+        let tmp = TempDir::new("function-batches-order");
+        let reader = index(&tmp);
+        let opened = reader.open_segments().unwrap();
+        let segments = opened.as_open_segments();
+        let norms: Vec<SegmentNorms<'_, '_>> = segments.iter().map(|_| None).collect();
+        let searcher = IndexSearcher::new(&segments, &norms).unwrap();
+        let top = TopLevel::of_searcher(&searcher, None);
+        let vleaf = ValueLeaf::of_searcher(&searcher, 0, None).unwrap();
+        for field in ["i", "n", "f", "g"] {
+            let src = FloatFieldSource::new(field);
+            let fcx = FunctionContext::create(&src, &top).unwrap();
+            let mut v = src.get_values(&fcx, &vleaf).unwrap();
+            v.float_val(100).unwrap();
+            let mut out = [0.0f32; 2];
+            assert!(matches!(
+                v.float_val_batch(&[50, 51], &mut out),
+                Err(Error::IllegalArgument(_))
+            ));
+            // A window batch leaves the column where its last `get` would.
+            v.float_val_batch(&(128..192).collect::<Vec<_>>(), &mut [0.0; 64])
+                .unwrap();
+            assert!(v.exists(191).is_ok());
+            assert!(v.exists(190).is_err());
+        }
+    }
+
+    #[test]
+    fn wrapped_sources_batch_only_without_a_score_reader() {
+        let tmp = TempDir::new("function-batches-wrapped");
+        let reader = index(&tmp);
+        let opened = reader.open_segments().unwrap();
+        let segments = opened.as_open_segments();
+        let norms: Vec<SegmentNorms<'_, '_>> = segments.iter().map(|_| None).collect();
+        let searcher = IndexSearcher::new(&segments, &norms).unwrap();
+        let ctx = ValuesContext::new(&searcher);
+        let plain = as_double_values_source(composite());
+        let mut v = plain.get_values(&ctx, 1, None).unwrap();
+        assert!(v.batch_capable());
+        let docs: Vec<i32> = (0..300).collect();
+        let (mut out, mut has) = (vec![0.0; 300], vec![false; 300]);
+        v.fill_batch(&docs, &[0.0; 300], &mut out, &mut has)
+            .unwrap();
+        let mut one = plain.get_values(&ctx, 1, None).unwrap();
+        for (&d, (&o, &h)) in docs.iter().zip(out.iter().zip(&has)) {
+            assert!(h && one.advance_exact(d).unwrap());
+            assert_eq!(o.to_bits(), one.double_value().unwrap().to_bits());
+        }
+        // A source reading the scores through the wrapper's view: per document.
+        let scored = as_double_values_source(Arc::new(ProductFloatFunction::new(vec![
+            from_double_values_source(dvs::scores()),
+            Arc::new(IntFieldSource::new("i")),
+        ])));
+        let v = scored.get_values(&ctx, 1, None).unwrap();
+        assert!(!v.batch_capable());
+    }
+
+    fn term(w: &str) -> Clause {
+        Clause::Term(TermQuery::new("body", w.as_bytes().to_vec()))
+    }
+
+    fn queries() -> Vec<BooleanQuery> {
+        let one = |c: Clause| BooleanQuery {
+            must: vec![c],
+            ..Default::default()
+        };
+        let filtered = |w: &str, f: Clause| BooleanQuery {
+            must: vec![term(w)],
+            filter: vec![f],
+            ..Default::default()
+        };
+        let frange = |src: Arc<dyn ValueSource>, lo: Option<&str>, hi: Option<&str>| -> Clause {
+            FunctionRangeQuery::new(src, lo, hi, true, false).into()
+        };
+        let int_i = || -> Arc<dyn ValueSource> { Arc::new(IntFieldSource::new("i")) };
+        let float_f = || -> Arc<dyn ValueSource> { Arc::new(FloatFieldSource::new("f")) };
+        let mut out = Vec::new();
+        for w in ["a", "b", "c"] {
+            out.push(one(FunctionScoreQuery::new(
+                term(w),
+                dvs::from_float_field("f"),
+            )
+            .into()));
+            out.push(one(FunctionScoreQuery::new(
+                term(w),
+                dvs::from_int_field("i"),
+            )
+            .into()));
+            out.push(one(FunctionScoreQuery::boost_by_value(
+                term(w),
+                as_double_values_source(composite()),
+            )
+            .into()));
+            out.push(one(FunctionScoreQuery::boost_by_value(
+                term(w),
+                dvs::from_float_field("g"),
+            )
+            .into()));
+            out.push(one(FunctionScoreQuery::new(
+                term(w),
+                as_double_values_source(composite()),
+            )
+            .into()));
+            out.push(filtered(w, frange(int_i(), Some("100"), Some("500"))));
+            out.push(filtered(w, frange(float_f(), Some("-1"), None)));
+            out.push(filtered(w, frange(composite(), None, Some("300"))));
+            out.push(filtered(
+                w,
+                FunctionMatchQuery::new(dvs::from_int_field("i"), Arc::new(|v| v > 500.0)).into(),
+            ));
+            out.push(filtered(
+                w,
+                FunctionMatchQuery::new(
+                    as_double_values_source(composite()),
+                    Arc::new(|v| v < 200.0),
+                )
+                .into(),
+            ));
+            out.push(filtered(
+                w,
+                Clause::Boost(Box::new(BoostQuery {
+                    inner: Box::new(
+                        FunctionMatchQuery::new(dvs::from_float_field("g"), Arc::new(|v| v > 10.0))
+                            .into(),
+                    ),
+                    boost: 2.0,
+                })),
+            ));
+            out.push(BooleanQuery {
+                should: vec![term(w), frange(int_i(), Some("900"), None)],
+                ..Default::default()
+            });
+            out.push(one(FunctionQuery::new(Arc::new(TermFreqValueSource::new(
+                "body",
+                w,
+                "body",
+                w.as_bytes(),
+            )))
+            .into()));
+        }
+        for src in [
+            int_i(),
+            float_f(),
+            composite(),
+            Arc::new(FloatFieldSource::new("g")),
+        ] {
+            out.push(one(FunctionQuery::new(Arc::clone(&src)).into()));
+            out.push(one(Clause::Boost(Box::new(BoostQuery {
+                inner: Box::new(FunctionQuery::new(Arc::clone(&src)).into()),
+                boost: 0.5,
+            }))));
+            out.push(one(frange(Arc::clone(&src), Some("2"), Some("300"))));
+            out.push(one(frange(src, None, None)));
+        }
+        out
+    }
+
+    fn run(searcher: &IndexSearcher<'_, '_>, q: &BooleanQuery, n: usize, off: bool) -> String {
+        crate::exec::tests::BATCHES_OFF.with(|c| c.set(off));
+        let r = searcher.search(q, n);
+        crate::exec::tests::BATCHES_OFF.with(|c| c.set(false));
+        match r {
+            Ok(TopDocs {
+                total_hits,
+                score_docs,
+            }) => {
+                let hits: Vec<(i32, u32)> = score_docs
+                    .iter()
+                    .map(|d| (d.doc, d.score.to_bits()))
+                    .collect();
+                format!("{total_hits:?} {hits:?}")
+            }
+            Err(e) => format!("error {e}"),
+        }
+    }
+
+    #[test]
+    fn searches_collect_the_same_hits_with_and_without_batches() {
+        let tmp = TempDir::new("function-batches-searches");
+        let reader = index(&tmp);
+        let opened = reader.open_segments().unwrap();
+        let mut segments = opened.as_open_segments();
+        for seg in &mut segments {
+            seg.cache = None;
+        }
+        let owned = reader.field_norms_by_field(&["body".to_string()]);
+        let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
+        let searcher = IndexSearcher::new(&segments, &norms).unwrap();
+        for q in queries() {
+            for n in [1, 10, 2000] {
+                let on = run(&searcher, &q, n, false);
+                let off = run(&searcher, &q, n, true);
+                assert_eq!(on, off, "{q:?} top {n}");
+                assert!(!on.starts_with("error"), "{q:?}: {on}");
+            }
+        }
+    }
+}

@@ -40,6 +40,23 @@ pub(crate) struct NumericColumn<'a> {
     /// The last document asked about, and its value (`None` without one).
     at: i32,
     value: Option<i64>,
+    /// A window's values and presence bits ([`Self::get_batch`]).
+    window: Vec<i64>,
+    present: Vec<u64>,
+}
+
+/// The widest run of documents [`NumericColumn::get_batch`] reads as one
+/// window; a batch spread wider (many deleted documents between) is read
+/// one document at a time.
+const MAX_WINDOW: i32 = 4096;
+
+/// Whether `n` documents over a window `span + 1` wide are worth decoding
+/// the whole window for: more than three in four of its documents asked
+/// (an every-document scorer's run). Sparser batches -- a term's postings
+/// -- are cheaper looked up one by one: measured, a window decode lost to
+/// per-document reads even at half the window asked.
+fn dense_enough(n: usize, span: i32) -> bool {
+    usize::try_from(span).is_ok_and(|s| n.saturating_mul(4) > s.saturating_mul(3))
 }
 
 /// Where a column's values come from: any `NumericDocValues` (a
@@ -63,6 +80,8 @@ impl<'a> NumericColumn<'a> {
             last_doc: 0,
             at: -1,
             value: None,
+            window: Vec::new(),
+            present: Vec::new(),
         }
     }
 
@@ -83,6 +102,75 @@ impl<'a> NumericColumn<'a> {
     /// arr.docID()`: the document's value is looked up once.
     pub(crate) fn exists(&mut self, doc: i32) -> Result<bool> {
         Ok(self.get(doc)?.is_some())
+    }
+
+    /// [`Self::get`] for each of `docs` (ascending): `has[i]` whether `docs[i]`
+    /// has a value and `out[i]` that value (`0` without one); both as long
+    /// as `docs`. A segment's own column is read as one window over the
+    /// 64-aligned documents covering the batch
+    /// ([`NumericReader::fill_window`]: a chunked decode for a dense column,
+    /// one walk of the `IndexedDISI` and a run of consecutive ordinals for a
+    /// sparse one); the values are [`Self::get`]'s, and the column is left
+    /// as the last `get` would leave it.
+    ///
+    /// # Errors
+    /// As [`Self::get`]: a batch before the last document asked about, or
+    /// whatever reading the column reports.
+    pub(crate) fn get_batch(
+        &mut self,
+        docs: &[i32],
+        out: &mut [i64],
+        has: &mut [bool],
+    ) -> Result<()> {
+        let (Some(&first), Some(&last)) = (docs.first(), docs.last()) else {
+            return Ok(());
+        };
+        let start = first & !63;
+        let direct = match &mut self.arr {
+            Arr::Direct(r)
+                if first >= self.last_doc
+                    && last.saturating_sub(start) < MAX_WINDOW
+                    && dense_enough(docs.len(), last.saturating_sub(start)) =>
+            {
+                Some(r)
+            }
+            _ => None,
+        };
+        let Some(r) = direct else {
+            for ((&doc, o), h) in docs.iter().zip(out.iter_mut()).zip(has.iter_mut()) {
+                let v = self.get(doc)?;
+                *h = v.is_some();
+                *o = v.unwrap_or(0);
+            }
+            return Ok(());
+        };
+        // A sparse column's window is whole words of 64 documents (its
+        // `IndexedDISI` is read a word at a time; documents past the last
+        // have no value); a dense one's ends at the batch's last document,
+        // never past the column's.
+        // ARITH: `0 <= last - start < MAX_WINDOW`, so either length is
+        // positive and no larger than `MAX_WINDOW`.
+        #[allow(clippy::arithmetic_side_effects)]
+        let len = if r.entry().is_dense() {
+            (last - start) as usize + 1
+        } else {
+            ((last - start) as usize / 64 + 1) * 64
+        };
+        self.window.resize(len, 0);
+        self.present.resize(len.div_ceil(64), 0);
+        r.fill_window(start, &mut self.window, &mut self.present)?;
+        for ((&doc, o), h) in docs.iter().zip(out.iter_mut()).zip(has.iter_mut()) {
+            // ARITH: `start <= doc <= last`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let i = (doc - start) as usize;
+            *h = self.present[i >> 6] >> (i & 63) & 1 == 1;
+            *o = if *h { self.window[i] } else { 0 };
+        }
+        self.last_doc = last;
+        self.at = last;
+        let n = docs.len() - 1;
+        self.value = has[n].then_some(out[n]);
+        Ok(())
     }
 
     /// The value at `doc`, or `None` without one.
@@ -357,6 +445,9 @@ fn selected_set<'a>(
 struct IntValues<'a> {
     col: NumericColumn<'a>,
     description: String,
+    /// A batch's values ([`NumericColumn::get_batch`]).
+    buf: Vec<i64>,
+    has: Vec<bool>,
 }
 
 impl IntDocValues for IntValues<'_> {
@@ -368,6 +459,46 @@ impl IntDocValues for IntValues<'_> {
     }
     fn exists(&mut self, doc: i32) -> Result<bool> {
         self.col.exists(doc)
+    }
+    /// `(float) intVal(doc)` per document.
+    fn float_val_batch(&mut self, docs: &[i32], out: &mut [f32]) -> Result<()> {
+        self.buf.resize(docs.len(), 0);
+        self.has.resize(docs.len(), false);
+        self.col.get_batch(docs, &mut self.buf, &mut self.has)?;
+        for (o, &v) in out.iter_mut().zip(&self.buf) {
+            // `0` without a value, as `intVal` reads it.
+            *o = v as i32 as f32;
+        }
+        Ok(())
+    }
+    /// `IntDocValues`' getters over one batch of the column: `exists`, the
+    /// bounds against the getter the range reads, and `floatVal`.
+    fn range_batch_native(
+        &mut self,
+        range: &RangeMatcher,
+        docs: &[i32],
+        matched: &mut Vec<i32>,
+        mut values: Option<&mut Vec<f32>>,
+    ) -> Result<bool> {
+        if matches!(range, RangeMatcher::Ord { .. }) {
+            return Ok(false);
+        }
+        self.buf.resize(docs.len(), 0);
+        self.has.resize(docs.len(), false);
+        self.col.get_batch(docs, &mut self.buf, &mut self.has)?;
+        for ((&doc, &v), &h) in docs.iter().zip(&self.buf).zip(&self.has) {
+            if !h {
+                continue;
+            }
+            let i = v as i32;
+            if range.matches_numeric(i as f32, f64::from(i), i, i64::from(i)) == Some(true) {
+                matched.push(doc);
+                if let Some(values) = values.as_deref_mut() {
+                    values.push(i as f32);
+                }
+            }
+        }
+        Ok(true)
     }
 }
 
@@ -394,6 +525,8 @@ impl ValueSource for IntFieldSource {
         Ok(Box::new(Int(IntValues {
             col: NumericColumn::open(leaf, &self.field)?,
             description: self.description(),
+            buf: Vec::new(),
+            has: Vec::new(),
         })))
     }
     fn description(&self) -> String {
@@ -449,6 +582,8 @@ impl ValueSource for MultiValuedIntFieldSource {
         Ok(Box::new(Int(IntValues {
             col: NumericColumn::new(arr),
             description: self.description(),
+            buf: Vec::new(),
+            has: Vec::new(),
         })))
     }
     fn description(&self) -> String {
@@ -494,6 +629,9 @@ fn multi_sort(
 struct LongValues<'a> {
     col: NumericColumn<'a>,
     description: String,
+    /// A batch's values ([`NumericColumn::get_batch`]).
+    buf: Vec<i64>,
+    has: Vec<bool>,
 }
 
 impl LongDocValues for LongValues<'_> {
@@ -502,6 +640,16 @@ impl LongDocValues for LongValues<'_> {
     }
     fn long_val(&mut self, doc: i32) -> Result<i64> {
         Ok(self.col.get(doc)?.unwrap_or(0))
+    }
+    /// `(float) longVal(doc)` per document.
+    fn float_val_batch(&mut self, docs: &[i32], out: &mut [f32]) -> Result<()> {
+        self.buf.resize(docs.len(), 0);
+        self.has.resize(docs.len(), false);
+        self.col.get_batch(docs, &mut self.buf, &mut self.has)?;
+        for (o, &v) in out.iter_mut().zip(&self.buf) {
+            *o = v as f32;
+        }
+        Ok(())
     }
     fn exists(&mut self, doc: i32) -> Result<bool> {
         self.col.exists(doc)
@@ -542,6 +690,8 @@ impl ValueSource for LongFieldSource {
         Ok(Box::new(Long(LongValues {
             col: NumericColumn::open(leaf, &self.field)?,
             description: self.description(),
+            buf: Vec::new(),
+            has: Vec::new(),
         })))
     }
     fn description(&self) -> String {
@@ -596,6 +746,8 @@ impl ValueSource for MultiValuedLongFieldSource {
         Ok(Box::new(Long(LongValues {
             col: NumericColumn::new(arr),
             description: self.description(),
+            buf: Vec::new(),
+            has: Vec::new(),
         })))
     }
     fn description(&self) -> String {
@@ -621,6 +773,9 @@ impl FieldCacheSource for MultiValuedLongFieldSource {
 struct FloatValues<'a> {
     col: NumericColumn<'a>,
     description: String,
+    /// A batch's values ([`NumericColumn::get_batch`]).
+    buf: Vec<i64>,
+    has: Vec<bool>,
 }
 
 impl FloatDocValues for FloatValues<'_> {
@@ -633,6 +788,33 @@ impl FloatDocValues for FloatValues<'_> {
             .col
             .get(doc)?
             .map_or(0.0, |v| f32::from_bits(v as i32 as u32)))
+    }
+    fn float_val_batch(&mut self, docs: &[i32], out: &mut [f32]) -> Result<()> {
+        self.buf.resize(docs.len(), 0);
+        self.has.resize(docs.len(), false);
+        self.col.get_batch(docs, &mut self.buf, &mut self.has)?;
+        for ((o, &v), &h) in out.iter_mut().zip(&self.buf).zip(&self.has) {
+            *o = if h {
+                f32::from_bits(v as i32 as u32)
+            } else {
+                0.0
+            };
+        }
+        Ok(())
+    }
+    /// `doubleVal` is `floatVal` widened (the base's).
+    fn double_val_batch(&mut self, docs: &[i32], out: &mut [f64]) -> Result<()> {
+        self.buf.resize(docs.len(), 0);
+        self.has.resize(docs.len(), false);
+        self.col.get_batch(docs, &mut self.buf, &mut self.has)?;
+        for ((o, &v), &h) in out.iter_mut().zip(&self.buf).zip(&self.has) {
+            *o = f64::from(if h {
+                f32::from_bits(v as i32 as u32)
+            } else {
+                0.0
+            });
+        }
+        Ok(())
     }
     fn exists(&mut self, doc: i32) -> Result<bool> {
         self.col.exists(doc)
@@ -663,6 +845,8 @@ impl ValueSource for FloatFieldSource {
         Ok(Box::new(Float(FloatValues {
             col: NumericColumn::open(leaf, &self.field)?,
             description: self.description(),
+            buf: Vec::new(),
+            has: Vec::new(),
         })))
     }
     fn description(&self) -> String {
@@ -720,6 +904,8 @@ impl ValueSource for MultiValuedFloatFieldSource {
         Ok(Box::new(Float(FloatValues {
             col: NumericColumn::new(arr),
             description: self.description(),
+            buf: Vec::new(),
+            has: Vec::new(),
         })))
     }
     fn description(&self) -> String {

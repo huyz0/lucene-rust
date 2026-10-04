@@ -133,6 +133,8 @@ pub struct ValueSourceScorer<'a> {
     pub(crate) range: Option<RangeMatcher>,
     pub(crate) doc: i32,
     pub(crate) max_doc: i32,
+    /// A batch's candidate documents (`exec::function`'s batches).
+    pub(crate) candidates: Vec<i32>,
 }
 
 /// `ValueSourceScorer.DEF_COST`.
@@ -157,6 +159,7 @@ impl<'a> ValueSourceScorer<'a> {
             range: Some(range),
             doc: -1,
             max_doc,
+            candidates: Vec::new(),
         })
     }
 
@@ -167,6 +170,7 @@ impl<'a> ValueSourceScorer<'a> {
             range: None,
             doc: -1,
             max_doc,
+            candidates: Vec::new(),
         }
     }
 
@@ -366,6 +370,9 @@ struct MultiplicativeBoostValuesSource {
 struct MultiplicativeValues<'c> {
     scores: BoxDoubleValues<'c>,
     boost: WithDefault<'c>,
+    /// The scores' batch, for [`DoubleValues::fill_batch`].
+    score_values: Vec<f64>,
+    score_has: Vec<bool>,
 }
 
 impl DoubleValues for MultiplicativeValues<'_> {
@@ -374,6 +381,31 @@ impl DoubleValues for MultiplicativeValues<'_> {
     }
     fn double_value(&mut self) -> Result<f64> {
         Ok(self.scores.double_value()? * self.boost.double_value()?)
+    }
+    fn batch_capable(&self) -> bool {
+        self.scores.batch_capable() && self.boost.inner.batch_capable()
+    }
+    /// Every document has a value: the score times the boost's value, or
+    /// `1` where the boost has none (`WithDefault`).
+    fn fill_batch(
+        &mut self,
+        docs: &[i32],
+        scores: &[f32],
+        out: &mut [f64],
+        has: &mut [bool],
+    ) -> Result<()> {
+        let n = docs.len();
+        self.boost.inner.fill_batch(docs, scores, out, has)?;
+        self.score_values.resize(n, 0.0);
+        self.score_has.resize(n, false);
+        self.scores
+            .fill_batch(docs, scores, &mut self.score_values, &mut self.score_has)?;
+        for i in 0..n {
+            let boost = if has[i] { out[i] } else { 1.0 };
+            out[i] = self.score_values[i] * boost;
+            has[i] = true;
+        }
+        Ok(())
     }
 }
 
@@ -394,6 +426,8 @@ impl DoubleValuesSource for MultiplicativeBoostValuesSource {
                 missing: 1.0,
                 has_value: false,
             },
+            score_values: Vec::new(),
+            score_has: Vec::new(),
         }))
     }
     fn needs_scores(&self) -> bool {
@@ -618,6 +652,9 @@ struct WrappedDoubleValuesSource {
 struct WrappedDoubleValues<'c> {
     fv: BoxValues<'c>,
     scorer: Rc<RefCell<ScorableView<'c>>>,
+    /// Nothing in `fv` holds the scorer view (no `fromDoubleValuesSource`
+    /// under it reads the scores), so the values are the documents' alone.
+    batch: bool,
 }
 
 impl DoubleValues for WrappedDoubleValues<'_> {
@@ -628,6 +665,23 @@ impl DoubleValues for WrappedDoubleValues<'_> {
     fn double_value(&mut self) -> Result<f64> {
         let doc = self.scorer.borrow().doc_id;
         self.fv.double_val(doc)
+    }
+    fn batch_capable(&self) -> bool {
+        self.batch
+    }
+    /// Every document has a value, the source's `doubleVal`.
+    fn fill_batch(
+        &mut self,
+        docs: &[i32],
+        _scores: &[f32],
+        out: &mut [f64],
+        has: &mut [bool],
+    ) -> Result<()> {
+        if let Some(&last) = docs.last() {
+            self.scorer.borrow_mut().doc_id = last;
+        }
+        has[..docs.len()].fill(true);
+        self.fv.double_val_batch(docs, out)
     }
 }
 
@@ -652,7 +706,10 @@ impl DoubleValuesSource for WrappedDoubleValuesSource {
         let mut vleaf = value_leaf(ctx, leaf)?;
         vleaf.scorer = Some(Rc::clone(&scorer));
         let fv = self.inner.get_values(fcx, &vleaf)?;
-        Ok(Box::new(WrappedDoubleValues { fv, scorer }))
+        drop(vleaf);
+        // Only this wrapper still holds the view: no value under it reads it.
+        let batch = Rc::strong_count(&scorer) == 1;
+        Ok(Box::new(WrappedDoubleValues { fv, scorer, batch }))
     }
     /// On the safe side, as Java.
     fn needs_scores(&self) -> bool {

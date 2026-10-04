@@ -286,6 +286,62 @@ pub trait MultiFloatOp: Send + Sync + 'static {
     fn exists(doc: i32, values: &mut [BoxValues<'_>]) -> Result<bool> {
         all_exists(doc, values)
     }
+    /// [`Self::func`] for each of `docs` into `out`
+    /// ([`FunctionValues::float_val_batch`]); `scratch` is the caller's
+    /// buffer for a child's batch. By default `func` per document.
+    fn func_batch(
+        docs: &[i32],
+        values: &mut [BoxValues<'_>],
+        out: &mut [f32],
+        _scratch: &mut Vec<f32>,
+    ) -> Result<()> {
+        for (&doc, o) in docs.iter().zip(out.iter_mut()) {
+            *o = Self::func(doc, values)?;
+        }
+        Ok(())
+    }
+}
+
+/// [`FloatDocValues::double_val_batch`] for values whose `doubleVal` is
+/// the base's (`floatVal` widened): the `float` batch, widened.
+fn widen_batch<T: FloatDocValues + ?Sized>(
+    values: &mut T,
+    docs: &[i32],
+    out: &mut [f64],
+) -> Result<()> {
+    const CHUNK: usize = 128;
+    let mut floats = [0.0f32; CHUNK];
+    for (docs, out) in docs.chunks(CHUNK).zip(out.chunks_mut(CHUNK)) {
+        values.float_val_batch(docs, &mut floats[..docs.len()])?;
+        for (o, &f) in out.iter_mut().zip(floats.iter()) {
+            *o = f64::from(f);
+        }
+    }
+    Ok(())
+}
+
+/// A fold of the children's `floatVal`s, a batch at a time: `out` starts at
+/// `init` and takes each child's batch in the sources' order, so every
+/// document's value is the same `float` expression `func` evaluates.
+fn fold_batch(
+    docs: &[i32],
+    values: &mut [BoxValues<'_>],
+    out: &mut [f32],
+    scratch: &mut Vec<f32>,
+    init: f32,
+    op: impl Fn(f32, f32) -> f32,
+) -> Result<()> {
+    let out = &mut out[..docs.len()];
+    out.fill(init);
+    scratch.clear();
+    scratch.resize(docs.len(), 0.0);
+    for v in values {
+        v.float_val_batch(docs, scratch)?;
+        for (o, &x) in out.iter_mut().zip(scratch.iter()) {
+            *o = op(*o, x);
+        }
+    }
+    Ok(())
 }
 
 /// `MultiFloatFunction`: a `float` function of several sources.
@@ -315,6 +371,14 @@ impl MultiFloatOp for Sum {
         }
         Ok(val)
     }
+    fn func_batch(
+        docs: &[i32],
+        values: &mut [BoxValues<'_>],
+        out: &mut [f32],
+        scratch: &mut Vec<f32>,
+    ) -> Result<()> {
+        fold_batch(docs, values, out, scratch, 0.0, |a, b| a + b)
+    }
 }
 
 /// `ProductFloatFunction`'s `func`: the `float` product, in order.
@@ -328,6 +392,14 @@ impl MultiFloatOp for Product {
             val *= v.float_val(doc)?;
         }
         Ok(val)
+    }
+    fn func_batch(
+        docs: &[i32],
+        values: &mut [BoxValues<'_>],
+        out: &mut [f32],
+        scratch: &mut Vec<f32>,
+    ) -> Result<()> {
+        fold_batch(docs, values, out, scratch, 1.0, |a, b| a * b)
     }
 }
 
@@ -386,12 +458,21 @@ pub type MinFloatFunction = MultiFloatFunction<Min>;
 
 struct MultiFloatValues<'a, F> {
     values: Vec<BoxValues<'a>>,
+    /// A child's batch, for [`MultiFloatOp::func_batch`].
+    scratch: Vec<f32>,
     op: PhantomData<F>,
 }
 
 impl<F: MultiFloatOp> FloatDocValues for MultiFloatValues<'_, F> {
     fn float_val(&mut self, doc: i32) -> Result<f32> {
         F::func(doc, &mut self.values)
+    }
+    fn float_val_batch(&mut self, docs: &[i32], out: &mut [f32]) -> Result<()> {
+        F::func_batch(docs, &mut self.values, out, &mut self.scratch)
+    }
+    /// `doubleVal` is `floatVal` widened (not overridden here).
+    fn double_val_batch(&mut self, docs: &[i32], out: &mut [f64]) -> Result<()> {
+        widen_batch(self, docs, out)
     }
     fn exists(&mut self, doc: i32) -> Result<bool> {
         F::exists(doc, &mut self.values)
@@ -405,6 +486,7 @@ impl<F: MultiFloatOp> ValueSource for MultiFloatFunction<F> {
     fn get_values<'a>(&self, fcx: &FunctionContext, leaf: &ValueLeaf<'a>) -> Result<BoxValues<'a>> {
         Ok(Box::new(Float(MultiFloatValues::<F> {
             values: values_of(&self.sources, fcx, leaf)?,
+            scratch: Vec::new(),
             op: PhantomData,
         })))
     }
@@ -555,6 +637,17 @@ impl FloatDocValues for LinearValues<'_> {
     fn float_val(&mut self, doc: i32) -> Result<f32> {
         Ok(self.vals.float_val(doc)? * self.slope + self.intercept)
     }
+    fn float_val_batch(&mut self, docs: &[i32], out: &mut [f32]) -> Result<()> {
+        let out = &mut out[..docs.len()];
+        self.vals.float_val_batch(docs, out)?;
+        for o in out {
+            *o = *o * self.slope + self.intercept;
+        }
+        Ok(())
+    }
+    fn double_val_batch(&mut self, docs: &[i32], out: &mut [f64]) -> Result<()> {
+        widen_batch(self, docs, out)
+    }
     fn exists(&mut self, doc: i32) -> Result<bool> {
         self.vals.exists(doc)
     }
@@ -614,6 +707,17 @@ struct ReciprocalValues<'a> {
 impl FloatDocValues for ReciprocalValues<'_> {
     fn float_val(&mut self, doc: i32) -> Result<f32> {
         Ok(self.a / (self.m * self.vals.float_val(doc)? + self.b))
+    }
+    fn float_val_batch(&mut self, docs: &[i32], out: &mut [f32]) -> Result<()> {
+        let out = &mut out[..docs.len()];
+        self.vals.float_val_batch(docs, out)?;
+        for o in out {
+            *o = self.a / (self.m * *o + self.b);
+        }
+        Ok(())
+    }
+    fn double_val_batch(&mut self, docs: &[i32], out: &mut [f64]) -> Result<()> {
+        widen_batch(self, docs, out)
     }
     fn exists(&mut self, doc: i32) -> Result<bool> {
         self.vals.exists(doc)

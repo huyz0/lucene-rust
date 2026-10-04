@@ -213,43 +213,64 @@ grouping. Each of them falls back to Lucene today.
   instead of through a boxed `NumericDocValues` iterator. That took
   `fn_query_field` from 0.56x to 0.75x.
 
-  Final, 3 interleaved reps, noise floor 1.09x:
+  Before the batches (3 interleaved reps, noise floor 1.09x): `fn_score_field`
+  0.62x, `fn_boost_composite` 0.88x, `fn_query_field` 0.75x,
+  `fn_query_composite` 0.80x, `fn_range` 0.75x, `fn_range_filter` 0.84x,
+  `fn_termfreq` 0.83x, `fn_tf_idf` 0.73x, `fn_match` 0.92x. Every case was
+  a per-document chain of virtual calls -- `Bulk::score` -> `dyn
+  Scorer::score` -> `dyn FunctionValues`/`DoubleValues` -> the doc-values
+  reader, each link returning a `Result` through memory -- which Java's JIT
+  inlines into one loop at these monomorphic call sites; the decode was
+  14%-34% of each profile.
 
-  | Case | Ratio |
-  |---|---|
-  | `fn_score_field` | 0.62x |
-  | `fn_boost_composite` | 0.88x |
-  | `fn_query_field` | 0.75x |
-  | `fn_query_composite` | 0.80x |
-  | `fn_range` | 0.75x |
-  | `fn_range_filter` | 0.84x |
-  | `fn_termfreq` | 0.83x |
-  | `fn_tf_idf` | 0.73x |
-  | `fn_match` | 0.92x |
-  | `fn_joindf` | 1.15x |
+  Stage 3, the batches (M10 optimisation pass): one virtual call per batch
+  of documents instead of several per document.
+  `FunctionValues::{float_val_batch, double_val_batch, range_batch}` and
+  `DoubleValues::fill_batch` are each defined as the per-document getters,
+  asked in the same order (so forward-only values read exactly as before),
+  with the per-document loop as their default -- statically dispatched
+  inside each implementation -- and overrides where the batch is cheaper:
+  the arithmetic functions ask each child for the whole batch, and the
+  field columns read the 64-aligned window covering a dense batch through
+  `NumericReader::fill_window` (a chunked decode; one `IndexedDISI` walk for
+  a sparse column). `AllScorer`, `ValueSourceScorer` and
+  `FunctionScoreScorer` score a batch at a time (`Scorer::prefers_batches`,
+  collected by `DefaultBulkScorer`'s loop; they ignore thresholds, so
+  nothing a threshold could skip is read). A `DoubleValues` only batches
+  when nothing under it reads the scorer's score through the per-document
+  cell (`batch_capable`; a wrapped value source checks that no
+  `fromDoubleValuesSource` kept its scorer view). `+term #filter` with a
+  two-phase filter over every document (`frange`, `FunctionMatchQuery`)
+  became `Bulk::TwoPhaseTerm`: the term's postings a level-0 block at a
+  time, the filter confirming the run in one call
+  (`Scorer::matches_batch`), the confirmed documents scored as a batch --
+  replaying `ImpactsDISI` exactly (a check of the run's block after any hit
+  that raises the threshold, which may drop the rest of the run), because
+  the first version, which only re-checked at block boundaries, counted
+  different `totalHits` than Lucene. `function/tests.rs::batches` checks every
+  batch getter against the per-document getters and 165 searches with the
+  batches on and off.
 
-  `fn_joindf` (added by the review, a later run; floor 1.12x) keeps
-  `joindf`'s map precomputed in `createWeight`: Java's per-document
-  `seekExact` needs the top-level reader at `getValues`, and the map is
-  faster on a field of ~20 000 keys per segment.
+  After (3 interleaved reps, Java and the pre-change binary interleaved,
+  noise floor 1.12x):
 
-  Left below 1.0, with the cause measured (perf). Every case is a
-  per-document chain of virtual calls: `Bulk::score` -> `dyn Scorer::score`
-  -> `dyn FunctionValues`/`DoubleValues` -> the doc-values reader. Each link
-  returns a `Result<_, Error>` through memory. Java's call sites here are
-  monomorphic, so the JIT inlines the whole chain into one loop.
+  | Case | Before | After |
+  |---|---|---|
+  | `fn_score_field` | 0.71x | 1.92x |
+  | `fn_boost_composite` | 0.98x | 2.44x |
+  | `fn_query_field` | 0.81x | 2.05x |
+  | `fn_query_composite` | 0.94x | 2.94x |
+  | `fn_range` | 0.70x | 1.83x |
+  | `fn_range_filter` | 0.88x | 1.24x |
+  | `fn_termfreq` | 0.77x | 1.41x |
+  | `fn_tf_idf` | 0.67x | 2.07x |
+  | `fn_match` | 0.92x | 1.61x |
+  | `fn_joindf` | 1.12x | 1.31x |
 
-  | Case | Bulk loop + collector | Scorer `score` frame | Value-source frames | Doc-values decode |
-  |---|---|---|---|---|
-  | `fn_query_field` | 33% | 30% | 31% | the rest |
-  | `fn_range` | -- | -- | `NumericColumn::get` + `RangeMatcher` 32% | `DisiCursor` + `FastDense` 34% |
-  | `fn_score_field` | 24% | `FunctionScoreScorer::score` 27% | `FieldDoubleValues` 14% | `NumericLongValues` 13% |
-  | `fn_tf_idf` | -- | `FunctionScoreScorer::score` 16% | `Product` 20% | -- |
-
-  The decode is never the majority. Closing the gap means monomorphizing
-  the common source shapes into their scorers (a field source under
-  `AllScorer`, the range scorer, `FunctionScoreScorer`). That is a change
-  to the scorer tree's dispatch, left for after T10.7.
+  (`fn_joindf`, added by the review: it keeps `joindf`'s map precomputed in
+  `createWeight` -- Java's per-document `seekExact` needs the top-level
+  reader at `getValues`, and the map is faster on a field of ~20 000 keys
+  per segment.)
 - **T10.6** — Intervals, payload queries, `MoreLikeThis`, `CommonTermsQuery`.
 - **T10.7** — Plugin wiring for the OpenSearch shapes above.
 

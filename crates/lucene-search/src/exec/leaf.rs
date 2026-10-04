@@ -106,6 +106,10 @@ impl Scorer for TermScorer<'_> {
     ) -> Result<()> {
         self.leg.next_docs_and_scores(up_to, live_docs, out)
     }
+
+    fn constant_scores(&self) -> bool {
+        self.leg.is_constant()
+    }
 }
 
 /// `ConstantScoreScorer`: the wrapped scorer's matches, each scoring `score`.
@@ -192,6 +196,16 @@ impl Scorer for ConstantScorer<'_> {
             return None;
         }
         self.inner.contains(doc)
+    }
+
+    fn batch_matches(&self) -> bool {
+        !self.emptied && self.inner.batch_matches()
+    }
+
+    fn matches_batch(&mut self, docs: &[i32], keep: &mut [bool]) -> Result<()> {
+        self.inner.matches_batch(docs, keep)?;
+        self.doc = self.inner.doc_id();
+        Ok(())
     }
 
     fn constant_bits(&self) -> Option<(std::sync::Arc<super::cache::CachedSet>, f32)> {

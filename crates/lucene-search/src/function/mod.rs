@@ -668,11 +668,41 @@ impl RangeMatcher {
         RangeMatcher::Long { lower, upper }
     }
 
+    /// [`Self::matches`] for a document that has a value, given that value
+    /// as each getter answers it (`floatVal`, `doubleVal`, `intVal`,
+    /// `longVal`); `None` for [`RangeMatcher::Ord`], which reads `ordVal`.
+    #[inline]
+    pub(crate) fn matches_numeric(&self, f: f32, d: f64, i: i32, l: i64) -> Option<bool> {
+        Some(match *self {
+            RangeMatcher::Float {
+                lower,
+                upper,
+                include_lower,
+                include_upper,
+            } => {
+                (if include_lower { f >= lower } else { f > lower })
+                    && (if include_upper { f <= upper } else { f < upper })
+            }
+            RangeMatcher::Double {
+                lower,
+                upper,
+                include_lower,
+                include_upper,
+            } => {
+                (if include_lower { d >= lower } else { d > lower })
+                    && (if include_upper { d <= upper } else { d < upper })
+            }
+            RangeMatcher::Int { lower, upper } => i >= lower && i <= upper,
+            RangeMatcher::Long { lower, upper } => l >= lower && l <= upper,
+            RangeMatcher::Ord { .. } => return None,
+        })
+    }
+
     /// `ValueSourceScorer.matches(doc)`: whether `doc` has a value in range.
     ///
     /// # Errors
     /// Whatever reading the value reports.
-    pub fn matches(&self, values: &mut dyn FunctionValues, doc: i32) -> Result<bool> {
+    pub fn matches<V: FunctionValues + ?Sized>(&self, values: &mut V, doc: i32) -> Result<bool> {
         if !values.exists(doc)? {
             return Ok(false);
         }
@@ -850,6 +880,83 @@ pub trait FunctionValues {
     ) -> Result<RangeMatcher> {
         RangeMatcher::float(lower, upper, include_lower, include_upper)
     }
+
+    // -- Batches -----------------------------------------------------------
+    //
+    // A scorer over a function reads a run of documents at a time through
+    // these, one virtual call per batch instead of one (or several) per
+    // document. Each is defined as the per-document getters it replaces,
+    // asked in the same order: `docs` ascend, and the first is not before
+    // the last document asked about, so values backed by a forward-only
+    // iterator read them exactly as the document-at-a-time path does. The
+    // defaults loop over those getters, statically dispatched within the
+    // implementing type; a function of other values overrides them to ask
+    // each child for the whole batch. A value that cannot be read is an
+    // error either way (which getter's error is reported first may differ
+    // when several fail).
+
+    /// `floatVal(doc)` for each of `docs` into `out` (as long as `docs`).
+    ///
+    /// # Errors
+    /// Whatever reading a value reports.
+    fn float_val_batch(&mut self, docs: &[i32], out: &mut [f32]) -> Result<()> {
+        for (&doc, o) in docs.iter().zip(out.iter_mut()) {
+            *o = self.float_val(doc)?;
+        }
+        Ok(())
+    }
+
+    /// `doubleVal(doc)` for each of `docs` into `out` (as long as `docs`).
+    ///
+    /// # Errors
+    /// Whatever reading a value reports.
+    fn double_val_batch(&mut self, docs: &[i32], out: &mut [f64]) -> Result<()> {
+        for (&doc, o) in docs.iter().zip(out.iter_mut()) {
+            *o = self.double_val(doc)?;
+        }
+        Ok(())
+    }
+
+    /// `ValueSourceScorer` over `docs`: each document that `range` matches
+    /// (every one without a range) is appended to `matched`, and -- with
+    /// `values`, for a scorer whose scores are read -- its `floatVal` to
+    /// `values`: per document, `matches(doc)` then, for a match,
+    /// `floatVal(doc)`, as the scorer asks them.
+    ///
+    /// # Errors
+    /// Whatever reading a value reports.
+    fn range_batch(
+        &mut self,
+        range: Option<&RangeMatcher>,
+        docs: &[i32],
+        matched: &mut Vec<i32>,
+        values: Option<&mut Vec<f32>>,
+    ) -> Result<()> {
+        range_batch_per_doc(self, range, docs, matched, values)
+    }
+}
+
+/// [`FunctionValues::range_batch`] one document at a time: `matches(doc)`,
+/// then `floatVal(doc)` for a match.
+///
+/// # Errors
+/// Whatever reading a value reports.
+pub(crate) fn range_batch_per_doc<V: FunctionValues + ?Sized>(
+    v: &mut V,
+    range: Option<&RangeMatcher>,
+    docs: &[i32],
+    matched: &mut Vec<i32>,
+    mut values: Option<&mut Vec<f32>>,
+) -> Result<()> {
+    for &doc in docs {
+        if range.map_or(Ok(true), |r| r.matches(v, doc))? {
+            matched.push(doc);
+            if let Some(values) = values.as_deref_mut() {
+                values.push(v.float_val(doc)?);
+            }
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
