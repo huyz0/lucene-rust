@@ -95,6 +95,19 @@ impl SparseDocs {
         self.docs.len()
     }
 
+    /// The bytes this set holds on the heap, which the cache's budget counts.
+    pub(crate) fn heap_bytes(&self) -> usize {
+        let words = self.words.capacity().saturating_mul(8);
+        let lists = self
+            .docs
+            .capacity()
+            .saturating_add(self.ranks.capacity())
+            .saturating_mul(4);
+        words
+            .saturating_add(lists)
+            .saturating_add(std::mem::size_of::<Self>())
+    }
+
     fn get(&self, i: usize) -> Option<i32> {
         self.docs.get(i).copied()
     }
@@ -153,10 +166,11 @@ impl DocSet {
     }
 
     /// [`Self::read`] through `reader`'s cache of decoded sets: a sparse
-    /// field's documents are decoded once per reader, not once per iterator
-    /// (stage 3, M10 T10.4: the grouping collectors open a field's values in
-    /// every segment for every selector, and decoding them was a tenth of a
-    /// grouping search).
+    /// field's documents are decoded once per segment core, not once per
+    /// iterator, while the process-wide budget keeps them
+    /// ([`crate::sparse_docs_cache`]; stage 3, M10 T10.4: the grouping
+    /// collectors open a field's values in every segment for every selector,
+    /// and decoding them was a tenth of a grouping search).
     pub(crate) fn cached(
         reader: &SegmentReader,
         data: &[u8],
@@ -168,18 +182,12 @@ impl DocSet {
             return Self::read(data, offset, length, dense_rank_power, reader.max_doc);
         }
         let key = (data.as_ptr() as usize, offset);
-        let cache = &reader.docs_with_field;
-        let lock = || {
-            cache
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-        };
-        if let Some(docs) = lock().get(&key) {
-            return Ok(DocSet::Sparse(Arc::clone(docs)));
+        if let Some(docs) = reader.docs_with_field.get(key) {
+            return Ok(DocSet::Sparse(docs));
         }
         let set = Self::read(data, offset, length, dense_rank_power, reader.max_doc)?;
         if let DocSet::Sparse(docs) = &set {
-            lock().insert(key, Arc::clone(docs));
+            reader.docs_with_field.insert(key, docs);
         }
         Ok(set)
     }
@@ -776,6 +784,17 @@ impl ByteVectorValues for SegByteVectors<'_> {
 impl SegmentReader {
     /// `fieldInfo(field)` when its doc-values type is `kind`, with the column
     /// (meta, data) serving it.
+    /// The decoded set of the numeric field `field`, through the cache
+    /// (tests).
+    #[cfg(test)]
+    pub(crate) fn cached_sparse_docs(&self, field: &str) -> Option<Arc<SparseDocs>> {
+        let (e, data) = self.dv_field(field, DocValuesType::Numeric, |m, n| m.numeric_entry(n))?;
+        match DocSet::of_numeric(self, data, e).ok()? {
+            DocSet::Sparse(docs) => Some(docs),
+            _ => None,
+        }
+    }
+
     fn dv_field<'s, E>(
         &'s self,
         field: &str,

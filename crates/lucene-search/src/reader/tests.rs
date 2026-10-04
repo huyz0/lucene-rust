@@ -2122,3 +2122,80 @@ fn corrupt_sparse_docs_are_refused_before_anything_is_sized_from_them() {
         );
     }
 }
+
+/// A sparse field's decoded documents are kept per segment core: a reader
+/// reopened with only new deletions reads the same doc-values bytes and
+/// shares the set, while a doc-values update -- a new generation, opened
+/// afresh -- gets its own, and the old reader keeps answering from the old.
+#[test]
+fn sparse_doc_sets_follow_the_segment_core_across_reopens() {
+    use lucene_index::buffered_updates::Term;
+    use lucene_index::document::{self as d, Document, Store};
+    use lucene_index::index_writer::IndexWriter;
+    use lucene_index::segment_info::LuceneVersion;
+
+    let tmp = lucene_util::test_support::TempDir::new("sparse-docs-cache");
+    let dir = FsDirectory::open(tmp.path());
+    let version = LuceneVersion {
+        major: 10,
+        minor: 5,
+        bugfix: 0,
+    };
+    let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", version).unwrap();
+    for i in 0..100i64 {
+        let mut doc = Document::new();
+        doc.add(d::StringField::new("id", i.to_string(), Store::No));
+        if i % 3 == 0 {
+            doc.add(d::NumericDocValuesField::new("n", i));
+        }
+        w.add_fields_document(&doc).unwrap();
+    }
+    w.commit().unwrap();
+    let docs_of = |r: &DirectoryReader| {
+        let seg = &r.segment_readers()[0];
+        let set = seg.cached_sparse_docs("n").unwrap();
+        let mut c = super::segment::DvCursor::new(super::segment::DocSet::Sparse(Arc::clone(&set)));
+        let mut docs = Vec::new();
+        loop {
+            let d = c.next_doc();
+            if d == NO_MORE_DOCS {
+                break;
+            }
+            docs.push(d);
+        }
+        (set, docs, seg.docs_with_field.held())
+    };
+    let first = DirectoryReader::open(&dir).unwrap();
+    let (a, a_docs, held) = docs_of(&first);
+    assert_eq!(a_docs, (0..100).step_by(3).collect::<Vec<_>>());
+    assert_eq!(held, 1, "decoded once and kept");
+    assert!(
+        Arc::ptr_eq(&a, &docs_of(&first).0),
+        "the next iterator shares it"
+    );
+
+    // Deletions only: the core, and so the set, is shared.
+    w.delete_documents_by_term(&[Term::new("id", "3")]).unwrap();
+    w.commit().unwrap();
+    let deleted = first.open_if_changed(&dir).unwrap().expect("a new commit");
+    assert!(deleted.segment_readers()[0].live_docs().is_some());
+    assert!(Arc::ptr_eq(&a, &docs_of(&deleted).0));
+
+    // A doc-values update: a new generation, read afresh into its own set.
+    w.update_numeric_doc_value(Term::new("id", "4"), "n", 44)
+        .unwrap();
+    w.commit().unwrap();
+    let updated = deleted
+        .open_if_changed(&dir)
+        .unwrap()
+        .expect("a new commit");
+    let (b, b_docs, held) = docs_of(&updated);
+    assert!(!Arc::ptr_eq(&a, &b));
+    assert!(b_docs.contains(&4) && !a_docs.contains(&4));
+    assert_eq!(held, 1);
+    // The earlier readers still answer from their own generation.
+    assert_eq!(docs_of(&first).1, a_docs);
+    assert!(Arc::ptr_eq(&a, &docs_of(&deleted).0));
+
+    drop(w);
+}

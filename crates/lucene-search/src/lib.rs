@@ -245,6 +245,7 @@ pub mod similarity;
 mod slices;
 pub mod sloppy_phrase;
 pub mod soft_deletes;
+mod sparse_docs_cache;
 pub mod spatial;
 pub mod term_vectors_query;
 pub mod terminate;

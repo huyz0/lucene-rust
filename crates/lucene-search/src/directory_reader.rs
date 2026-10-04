@@ -127,8 +127,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// [`SegmentReader`]'s decoded sparse doc-values documents, by the data's
 /// address and the set's offset in it.
-pub(crate) type DocsWithFieldCache =
-    std::sync::Mutex<HashMap<(usize, i64), Arc<crate::reader::SparseDocs>>>;
+pub(crate) use crate::sparse_docs_cache::DocsWithFieldCache;
 
 /// One opened segment: everything [`OpenSegment`] needs, already decoded/
 /// validated, plus the bookkeeping ([`SegmentReader::doc_base`]) real
@@ -152,8 +151,10 @@ pub struct SegmentReader {
     dvs: Option<(Arc<Input>, String)>,
     skip_indexes: Arc<OnceLock<HashMap<i32, doc_values::DocValuesSkipIndex>>>,
     /// Sparse doc-values fields' documents (their `IndexedDISI`), decoded on
-    /// first use and shared by every iterator opened over them since --
-    /// keyed by the data's address and the set's offset in it.
+    /// first use and shared by every iterator opened over them since, under
+    /// the process-wide byte budget of [`crate::sparse_docs_cache`]. Shared
+    /// by the readers of one core (a delete-only reopen keeps it); a fresh
+    /// open, a new doc-values generation included, starts its own.
     pub(crate) docs_with_field: Arc<DocsWithFieldCache>,
     segment_id: [u8; ID_LENGTH],
     /// The generation of this segment's deletions at the time this reader
