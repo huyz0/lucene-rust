@@ -239,7 +239,8 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
     /// (`TopFieldCollectorManager(sort, n, after, 1000)`). `readers[i]` is
     /// the segment reader segment `i` was opened from (its doc values and
     /// field infos), which this object does not hold; see
-    /// [`crate::top_field::search_sorted`].
+    /// [`crate::top_field::search_sorted`]. A score key, and the function
+    /// queries' preparation, use the searcher's similarity.
     pub fn search_sorted(
         &self,
         readers: &[crate::directory_reader::SegmentReader],
@@ -250,7 +251,7 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
     ) -> Result<crate::top_field::TopFieldDocs> {
         let norms: Vec<SegmentNorms<'s, 'a>> =
             (0..self.segments.len()).map(|i| self.norms(i)).collect();
-        crate::top_field::search_sorted(
+        crate::top_field::search_sorted_leaves(
             self.segments,
             readers,
             query,
@@ -259,6 +260,11 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
             n,
             TOTAL_HITS_THRESHOLD,
             after,
+            false,
+            None,
+            None,
+            None,
+            self.similarity.filter(|s| !s.is_default_bm25()),
         )
     }
 

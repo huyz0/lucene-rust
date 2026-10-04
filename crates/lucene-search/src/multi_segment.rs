@@ -695,6 +695,58 @@ pub(crate) fn global_boolean_stats_with_similarity(
     query: &BooleanQuery,
     similarity: Option<&dyn crate::similarities::Similarity>,
 ) -> crate::Result<crate::GlobalStats> {
+    reader_stats(segments, query, similarity, false)
+}
+
+/// The function queries' reader-wide state alone -- each function's
+/// `createWeight` (a value source's context) or `rewrite(searcher)` (a values
+/// source's) over every segment, under `similarity`, with the statistics the
+/// queries they score read -- or `None` when `query` holds no function query.
+///
+/// What an entry point that does not score hands its leaves: Java creates
+/// every weight over the whole searcher whatever the score mode, so a
+/// `scale`'s minimum and maximum, a `docfreq`, an `IndexReaderFunctions`
+/// statistic are the reader's on a sorted, counted, aggregated or terminated
+/// search too; a leaf built without them refuses the function query
+/// ([`crate::exec::function`]) rather than read one segment as the index.
+pub(crate) fn global_function_stats(
+    segments: &[OpenSegment<'_>],
+    query: &BooleanQuery,
+    similarity: Option<&dyn crate::similarities::Similarity>,
+) -> crate::Result<Option<crate::GlobalStats>> {
+    let mut functions = Vec::new();
+    crate::function::collect_functions(query, &mut functions);
+    if functions.is_empty() {
+        return Ok(None);
+    }
+    reader_stats(segments, query, similarity, true).map(Some)
+}
+
+/// The statistics a search hands its leaves: every scored term's
+/// ([`global_boolean_stats_with_similarity`]) when `scores`, else only the
+/// function queries' ([`global_function_stats`]).
+pub(crate) fn leaf_stats(
+    segments: &[OpenSegment<'_>],
+    query: &BooleanQuery,
+    scores: bool,
+    similarity: Option<&dyn crate::similarities::Similarity>,
+) -> crate::Result<Option<crate::GlobalStats>> {
+    if scores {
+        global_boolean_stats_with_similarity(segments, query, similarity).map(Some)
+    } else {
+        global_function_stats(segments, query, similarity)
+    }
+}
+
+/// [`global_boolean_stats_with_similarity`], or with `functions_only` just
+/// what the function queries need: their sources' preparation and the
+/// statistics of the queries they score.
+fn reader_stats(
+    segments: &[OpenSegment<'_>],
+    query: &BooleanQuery,
+    similarity: Option<&dyn crate::similarities::Similarity>,
+    functions_only: bool,
+) -> crate::Result<crate::GlobalStats> {
     fn walk_clause(c: &crate::query::Clause, out: &mut Collected) {
         use crate::query::Clause;
         match c {
@@ -810,7 +862,9 @@ pub(crate) fn global_boolean_stats_with_similarity(
         }
     }
     let mut collected = Collected::default();
-    walk(query, &mut collected);
+    if !functions_only {
+        walk(query, &mut collected);
+    }
     // The queries a function query scores (a `QueryValueSource`'s,
     // `DoubleValuesSource.fromQuery`'s) score with reader-wide statistics
     // wherever the function query sits, as their `createWeight`'s
@@ -823,13 +877,12 @@ pub(crate) fn global_boolean_stats_with_similarity(
         }
     }
     let mut all_fuzzy = Vec::new();
-    for c in query
-        .must
-        .iter()
-        .chain(&query.should)
-        .chain(&query.filter)
-        .chain(&query.must_not)
-    {
+    let unscored = if functions_only {
+        &[][..]
+    } else {
+        &[&query.must, &query.should, &query.filter, &query.must_not][..]
+    };
+    for c in unscored.iter().copied().flatten() {
         walk_unscored_fuzzy(c, &mut all_fuzzy);
     }
     for f in all_fuzzy {

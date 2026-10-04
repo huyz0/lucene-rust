@@ -30,6 +30,8 @@ import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.NoMergePolicy;
+import org.apache.lucene.index.NumericDocValues;
+import org.apache.lucene.index.ReaderUtil;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.index.VectorSimilarityFunction;
 import org.apache.lucene.queries.function.FunctionMatchQuery;
@@ -90,7 +92,8 @@ import org.apache.lucene.util.mutable.MutableValue;
  * FunctionScoreQuery} (with {@code boostByValue}, {@code boostByQuery}, the {@code
  * IndexReaderFunctions}), {@code FunctionMatchQuery}, the function queries inside booleans, and
  * sorts by {@code ValueSource.getSortField}: every hit with its score bits, then the explanation of
- * three documents.
+ * three documents. Function filters whose values are reader-wide, through the entry points that
+ * do not score (a sort by index order, {@code count}, an aggregation over the hits).
  *
  * <p>Usage: {@code java GenFunction <fixtures-data-dir>}.
  */
@@ -701,6 +704,78 @@ public class GenFunction {
     {"dfloat(f)", "gt:3.5"}, {"irmaxdoc()", "gt:5"},
   };
 
+  /**
+   * Function filters whose values are reader-wide (a {@code scale}'s min and max, an index
+   * statistic): {@code frange|source|lower|upper} (both bounds inclusive) or {@code
+   * fmq|source|predicate}. A search that does not score still creates the function's weight over the
+   * whole index.
+   */
+  static final String[] GLOBAL_FILTERS = {
+    "frange|scale(float(f),0.0,1.0)|0.25|0.75", "frange|scale(int(i),0.0,1.0)|0.5|null",
+    "frange|docfreq(body,red)|12|null", "frange|maxdoc()|50|null", "frange|numdocs()|50|null",
+    "frange|idf(body,red)|0.5|null", "fmq|irmaxdoc()|gt:50", "fmq|irnumdocs()|gt:50",
+    "fmq|irdocfreq(body,red)|gt:12", "fmq|vs(scale(float(f),0.0,1.0))|gt:0.5",
+  };
+
+  /** {@link #GLOBAL_FILTERS} under {@code ClassicSimilarity}: sources that need a TFIDF one. */
+  static final String[] CLASSIC_FILTERS = {
+    "frange|scale(tf(body,red),0.0,1.0)|0.5|null", "frange|scale(idf(body,blue),0.0,1.0)|null|0.5",
+    "frange|norm(body)|0.4|null",
+  };
+
+  static Query filter(String spec) {
+    String[] p = spec.split("\\|");
+    if (p[0].equals("fmq")) return new FunctionMatchQuery(dvs(p[1]), predicate(p[2]));
+    String lo = p[2].equals("null") ? null : p[2];
+    String hi = p[3].equals("null") ? null : p[3];
+    return new FunctionRangeQuery(vs(p[1]), lo, hi, true, true);
+  }
+
+  /**
+   * {@code body:red OR body:blue} filtered by a function, through the entry points that do not
+   * score: a search sorted by index order (every hit), {@code count}, and an aggregation over the
+   * hits' {@code l} values (how many hits have one, and the smallest and largest as doubles, the
+   * bits an aggregation's {@code min}/{@code max} report).
+   */
+  void unscored(StringBuilder out, String kind, String spec, IndexSearcher searcher)
+      throws IOException {
+    String head = kind + "\t" + spec;
+    BooleanQuery.Builder b = new BooleanQuery.Builder();
+    b.add(query("or:red:blue"), BooleanClause.Occur.MUST);
+    b.add(filter(spec), BooleanClause.Occur.FILTER);
+    Query q = b.build();
+    try {
+      TopDocs td = searcher.search(q, 1000, Sort.INDEXORDER);
+      StringBuilder s = new StringBuilder();
+      s.append(td.totalHits.value()).append(' ');
+      long count = 0, min = Long.MAX_VALUE, max = Long.MIN_VALUE;
+      for (ScoreDoc sd : td.scoreDocs) {
+        s.append(sd.doc).append(',');
+        List<LeafReaderContext> leaves = searcher.getIndexReader().leaves();
+        LeafReaderContext leaf = leaves.get(ReaderUtil.subIndex(sd.doc, leaves));
+        NumericDocValues l = leaf.reader().getNumericDocValues("l");
+        if (l != null && l.advanceExact(sd.doc - leaf.docBase)) {
+          long v = l.longValue();
+          count++;
+          min = Math.min(min, v);
+          max = Math.max(max, v);
+        }
+      }
+      out.append(head).append("\tsorted\t").append(s).append('\n');
+      out.append(head).append("\tcount\t").append(searcher.count(q)).append('\n');
+      // The port's aggregations score, when they do, with the default similarity only.
+      if (searcher == bm25) {
+        out.append(head).append("\tagg\t").append(count);
+        if (count > 0) {
+          out.append(' ').append(hex((double) min)).append(' ').append(hex((double) max));
+        }
+        out.append('\n');
+      }
+    } catch (Exception e) {
+      out.append(head).append("\tsorted\t").append(err(e)).append('\n');
+    }
+  }
+
   void searches(StringBuilder out) throws IOException {
     for (String spec : FQ_SPECS) {
       search(out, "fq", spec, bm25, new FunctionQuery(vs(spec)));
@@ -713,6 +788,12 @@ public class GenFunction {
     for (String spec : new String[] {"tf(body,red)", "idf(body,red)", "norm(body)"}) {
       search(out, "fqclassic", spec, classic, new FunctionQuery(vs(spec)));
       search(out, "fq", spec, bm25, new FunctionQuery(vs(spec)));
+      // A boolean's explanation takes its value from the scorer, which scores
+      // the term and the function under the searcher's similarity.
+      BooleanQuery.Builder b = new BooleanQuery.Builder();
+      b.add(new TermQuery(new Term("body", "red")), BooleanClause.Occur.MUST);
+      b.add(new FunctionQuery(vs(spec)), BooleanClause.Occur.SHOULD);
+      search(out, "fqboolclassic", spec, classic, b.build());
     }
     for (String[] r : RANGE_SPECS) {
       String spec = r[0] + "|" + r[1] + "|" + r[2] + "|" + r[3] + "|" + r[4];
@@ -760,6 +841,12 @@ public class GenFunction {
       fb.add(new TermQuery(new Term("body", "big")), BooleanClause.Occur.MUST);
       fb.add(q, BooleanClause.Occur.FILTER);
       searchHits(out, "fmqfilter", spec, bm25, fb.build());
+    }
+    for (String spec : GLOBAL_FILTERS) {
+      unscored(out, "gfilter", spec, bm25);
+    }
+    for (String spec : CLASSIC_FILTERS) {
+      unscored(out, "gfilterclassic", spec, classic);
     }
     for (String spec : new String[] {"sum(int(i),float(f))", "query(t:red,0.0)", "int(i)", "double(d)", "scale(float(f),0.0,1.0)"}) {
       for (boolean reverse : new boolean[] {false, true}) {

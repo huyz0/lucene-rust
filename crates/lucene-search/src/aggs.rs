@@ -628,11 +628,9 @@ fn unique_states(
     let rewritten = crate::multi_segment::rewrite_points_ranges(query, segments);
     let query = rewritten.as_ref().unwrap_or(query);
     let clause = lone_clause(query);
-    // Scoring, for `min_score`: the reader's statistics, once.
-    let global = match min_score {
-        Some(_) => Some(crate::multi_segment::global_boolean_stats(segments, query)?),
-        None => None,
-    };
+    // Scoring, for `min_score`: the reader's statistics, once; without it,
+    // the function queries' reader-wide preparation alone.
+    let global = crate::multi_segment::leaf_stats(segments, query, min_score.is_some(), None)?;
     let scoring = min_score.zip(global.as_ref());
     // Slices are independent, as a concurrent search's are: they run
     // concurrently ([`crate::slices::run_slices`]) -- unless every
@@ -640,7 +638,16 @@ fn unique_states(
     // slices to other threads costs more than it saves.
     let one = |slice: &[usize]| {
         slice_states(
-            segments, readers, query, &clause, specs, terms, globals, slice, scoring,
+            segments,
+            readers,
+            query,
+            &clause,
+            specs,
+            terms,
+            globals,
+            slice,
+            scoring,
+            global.as_ref(),
         )
     };
     let points_only = terms.is_empty() && specs.iter().all(|s| s.source != Source::DocValues);
@@ -677,6 +684,7 @@ fn slice_states(
     globals: &[std::sync::Arc<GlobalOrds>],
     slice: &[usize],
     scoring: Option<(&MinScore<'_, '_>, &crate::GlobalStats)>,
+    global: Option<&crate::GlobalStats>,
 ) -> Result<SliceStates> {
     let mut seen = Vec::with_capacity(slice.len());
     let mut term_counts: Vec<Vec<u64>> = globals.iter().map(|g| vec![0; g.value_count()]).collect();
@@ -702,7 +710,7 @@ fn slice_states(
             live_docs: seg.live_docs,
             points: seg.points,
             norms: None,
-            global: None,
+            global,
             max_doc: seg.max_doc,
             cache: seg.cache,
             reader: seg.reader,

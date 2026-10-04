@@ -725,7 +725,7 @@ fn queries_score_explain_and_prepare() {
     let global = crate::multi_segment::global_boolean_stats(&segments, &q).unwrap();
     assert!(!global.functions().is_empty() && !global.is_empty());
     let shown = format!("{:?}", global.functions());
-    assert_eq!(shown, "FunctionStats(1 contexts, 1 rewritten sources)");
+    assert_eq!(shown, "FunctionStats(1 contexts, 2 values sources)");
     assert_eq!(global.functions(), &global.functions().clone());
     assert_ne!(global.functions(), &FunctionStats::default());
     let none = crate::multi_segment::global_boolean_stats(&segments, &must(term("red"))).unwrap();
@@ -754,15 +754,22 @@ fn queries_score_explain_and_prepare() {
         "int(i)"
     );
 
-    // Searched one segment at a time, with no statistics pass: each segment
-    // stands for the whole index.
+    // Searched one segment at a time: without a statistics pass the function
+    // query is refused (one segment is not the index); a caller whose index
+    // is that one segment prepares over it.
     for seg in &segments {
-        let mut c = crate::collector::TopDocsCollector::new(100);
-        crate::search_boolean_query_scored_segment(seg, &must(fs.clone()), None, None, &mut c)
-            .unwrap();
-        let mut c = crate::collector::TopDocsCollector::new(100);
-        crate::search_boolean_query_scored_segment(seg, &must(fq.clone()), None, None, &mut c)
-            .unwrap();
+        for q in [must(fs.clone()), must(fq.clone())] {
+            let mut c = crate::collector::TopDocsCollector::new(100);
+            let e = crate::search_boolean_query_scored_segment(seg, &q, None, None, &mut c);
+            assert!(matches!(e, Err(crate::Error::IllegalState(_))), "{e:?}");
+            let one =
+                crate::multi_segment::global_function_stats(std::slice::from_ref(seg), &q, None)
+                    .unwrap();
+            assert!(one.is_some());
+            let mut c = crate::collector::TopDocsCollector::new(100);
+            crate::search_boolean_query_scored_segment(seg, &q, None, one.as_ref(), &mut c)
+                .unwrap();
+        }
     }
 
     // Cacheability: never for a function or range query; a match or score
@@ -968,23 +975,72 @@ fn bridges_sorts_and_scorer_edges() {
         .unwrap();
     assert_eq!(hits.hits.len(), 5);
 
-    // The scorers' remaining paths.
-    let lc = leaf_context(&segments[0], None, None, None);
+    // The scorers' remaining paths, over the function queries' reader-wide
+    // preparation.
+    let fqq = FunctionQuery::new(Arc::clone(&i));
+    let frq = FunctionRangeQuery::new(Arc::clone(&i), None, None, true, true);
+    let fmq = FunctionMatchQuery::new(dvs::from_int_field("i"), Arc::new(|v| v > 0.0));
+    let absent = FunctionScoreQuery::new(term("nosuch"), dvs::constant(1.0));
+    let two_phase = FunctionScoreQuery::new(
+        FunctionRangeQuery::new(Arc::clone(&i), Some("1"), None, true, true),
+        dvs::constant(2.0),
+    );
+    let nested = Clause::Boost(Box::new(BoostQuery::new(
+        Clause::Boost(Box::new(BoostQuery::new(
+            Clause::from(FunctionQuery::new(Arc::new(ConstValueSource::new(
+                f32::NAN,
+            )))),
+            2.0,
+        ))),
+        3.0,
+    )));
+    let every = crate::query::BooleanQuery::new().with_should([
+        Clause::from(fqq.clone()),
+        Clause::from(frq.clone()),
+        Clause::from(fmq.clone()),
+        Clause::from(absent.clone()),
+        Clause::from(two_phase.clone()),
+        nested.clone(),
+    ]);
+    let prepared = crate::multi_segment::global_function_stats(&segments, &every, None)
+        .unwrap()
+        .unwrap();
+    assert!(
+        crate::multi_segment::global_function_stats(&segments, &all, None)
+            .unwrap()
+            .is_none(),
+        "nothing to prepare"
+    );
+    // A leaf reached without the preparation refuses the function query
+    // rather than read its one segment as the index.
+    let unprepared = leaf_context(&segments[0], None, None, None);
+    for e in [
+        crate::exec::function::function_query(&unprepared, &fqq, 1.0).err(),
+        crate::exec::function::function_score(
+            &unprepared,
+            &two_phase,
+            1.0,
+            crate::exec::Mode::Complete,
+            false,
+        )
+        .err(),
+    ] {
+        let e = e.expect("refused").to_string();
+        assert!(e.contains("without its reader-wide preparation"), "{e}");
+    }
+    let lc = leaf_context(&segments[0], None, Some(&prepared), None);
     let mut bare = lc;
     bare.max_doc = None;
     bare.reader = None;
-    let fqq = FunctionQuery::new(Arc::clone(&i));
     assert!(crate::exec::function::function_query(&bare, &fqq, 1.0).is_err());
     let mut s = crate::exec::function::function_query(&lc, &fqq, 1.0)
         .unwrap()
         .unwrap();
     assert_eq!(s.max_score(10).unwrap(), f32::INFINITY);
-    let frq = FunctionRangeQuery::new(Arc::clone(&i), None, None, true, true);
     let mut s = crate::exec::function::function_range(&lc, &frq)
         .unwrap()
         .unwrap();
     assert_eq!(s.max_score(10).unwrap(), f32::INFINITY);
-    let fmq = FunctionMatchQuery::new(dvs::from_int_field("i"), Arc::new(|v| v > 0.0));
     let s = crate::exec::function::function_match(&lc, &fmq, 2.0, crate::exec::Mode::TopScores)
         .unwrap()
         .unwrap();
@@ -1007,7 +1063,6 @@ fn bridges_sorts_and_scorer_edges() {
         matched += i32::from(first);
     }
     assert!(matched > 0 && matched < 10);
-    let absent = FunctionScoreQuery::new(term("nosuch"), dvs::constant(1.0));
     assert!(crate::exec::function::function_score(
         &lc,
         &absent,
@@ -1017,10 +1072,6 @@ fn bridges_sorts_and_scorer_edges() {
     )
     .unwrap()
     .is_none());
-    let two_phase = FunctionScoreQuery::new(
-        FunctionRangeQuery::new(Arc::clone(&i), Some("1"), None, true, true),
-        dvs::constant(2.0),
-    );
     let mut s = crate::exec::function::function_score(
         &lc,
         &two_phase,
@@ -1054,17 +1105,18 @@ fn bridges_sorts_and_scorer_edges() {
         .unwrap()
         .is_none());
     }
-    let nested = Clause::Boost(Box::new(BoostQuery::new(
-        Clause::Boost(Box::new(BoostQuery::new(
-            Clause::from(FunctionQuery::new(Arc::new(ConstValueSource::new(
-                f32::NAN,
-            )))),
-            2.0,
-        ))),
-        3.0,
-    )));
     let e = crate::exec::function::explain_boosted(
-        lc.fields, lc.doc_in, None, None, None, None, None, None, &nested, 1.0, 0,
+        lc.fields,
+        lc.doc_in,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(&prepared),
+        &nested,
+        1.0,
+        0,
     )
     .unwrap()
     .unwrap();
@@ -1211,6 +1263,73 @@ fn value_source_group_selector_states() {
             assert_eq!(state, GroupState::Skip);
         } else if d == missing {
             assert_eq!(state, GroupState::Accept);
+        }
+    }
+}
+
+/// A boolean's explanation takes its value from the boolean's scorer
+/// (`BooleanWeight.explain`): that scorer runs under the searcher's
+/// similarity, so the value is the score the search gives -- with term,
+/// `FieldExistsQuery` and `DocAndScoreQuery` clauses (which explain through
+/// that scorer) and a function query that needs a TFIDF similarity.
+#[test]
+fn a_booleans_explanation_is_its_score_under_the_searchers_similarity() {
+    let reader = index();
+    let opened = reader.open_segments().unwrap();
+    let segments = opened.as_open_segments();
+    let owned = reader.field_norms_by_field(&["body".to_string()]);
+    let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
+    let classic = crate::similarities::ClassicSimilarity::default();
+    let mut cs = IndexSearcher::new(&segments, &norms).unwrap();
+    cs.set_similarity(&classic);
+    let bm25 = IndexSearcher::new(&segments, &norms).unwrap();
+    let bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
+    let fixed = crate::extended_query::DocAndScoreQuery::new(
+        vec![(0, 1.5), (7, 0.25), (29, 2.0), (61, 0.75)],
+        &bases,
+    );
+    let tf = Clause::from(FunctionQuery::new(Arc::new(TFValueSource::new(
+        "body",
+        "red",
+        "body",
+        b"red".to_vec(),
+    ))));
+    let shapes = [
+        BooleanQuery {
+            must: vec![term("red")],
+            should: vec![Clause::Exists(crate::query::FieldExistsQuery::new("i"))],
+            ..Default::default()
+        },
+        BooleanQuery {
+            should: vec![term("blue"), Clause::from(fixed)],
+            ..Default::default()
+        },
+        BooleanQuery {
+            must: vec![term("red")],
+            should: vec![tf],
+            ..Default::default()
+        },
+    ];
+    for (searcher, name) in [(&cs, "classic"), (&bm25, "bm25")] {
+        for (n, q) in shapes.iter().enumerate() {
+            let hits = searcher.search(q, 100);
+            if name == "bm25" && n == 2 {
+                // `tf()` needs a TFIDF similarity, as in Java.
+                assert!(hits.is_err());
+                continue;
+            }
+            let hits = hits.unwrap();
+            assert!(hits.score_docs.len() > 1, "{name} {n}");
+            for h in &hits.score_docs {
+                let e = searcher.explain(q, h.doc).unwrap();
+                assert!(e.matched, "{name} {n} doc {}", h.doc);
+                assert_eq!(
+                    e.value.to_bits(),
+                    h.score.to_bits(),
+                    "{name} {n} doc {}: {e}",
+                    h.doc
+                );
+            }
         }
     }
 }
