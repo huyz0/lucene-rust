@@ -669,3 +669,160 @@ fn assert_hits(what: &str, got: &TopDocs, want: &str, tolerant: bool) {
         );
     }
 }
+
+/// The vector values sources' refusals and descriptions, over the same
+/// index: Java's `IllegalArgumentException` for a query vector of the wrong
+/// dimension (the scorer's message for the plain sources, the full-precision
+/// source's own otherwise), `IllegalStateException` for a field without
+/// vectors of the source's encoding, empty values for a field the segment
+/// lacks -- and a context without the segment's vectors or reader.
+#[test]
+fn vector_values_sources_refuse_and_describe_as_java() {
+    let dir = fixture("values_rescore_index");
+    let m = Manifest::load(&format!("{dir}/manifest.properties"));
+    let reader = DirectoryReader::open(&FsDirectory::open(&dir)).expect("open reader");
+    let opened = reader.open_segments().expect("open postings");
+    let segments = opened.as_open_segments();
+    let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = vec![None; segments.len()];
+    let searcher = IndexSearcher::new(&segments, &norms).unwrap();
+    let bytes: Vec<(Vec<u8>, Vec<u8>, String)> = (0..segments.len())
+        .map(|s| {
+            let read = |ext: &str| {
+                std::fs::read(format!("{dir}/{}", m.get(&format!("s{s}.{ext}_file")))).unwrap()
+            };
+            (
+                read("vemf"),
+                read("vec"),
+                m.get(&format!("s{s}.vector_suffix")).to_string(),
+            )
+        })
+        .collect();
+    let inputs: Vec<VectorsInput<'_>> = reader
+        .segment_readers()
+        .iter()
+        .zip(&bytes)
+        .map(|(r, (vemf, vec, suffix))| VectorsInput {
+            flat: FlatVectorsReader::open(vemf, vec, &r.segment_id(), suffix).expect("vectors"),
+            hnsw: None,
+            field_infos: r.field_infos(),
+            live_docs: r.live_docs(),
+            filter: None,
+            max_doc: r.max_doc,
+        })
+        .collect();
+    let vectors: Vec<Option<&VectorsInput<'_>>> = inputs.iter().map(Some).collect();
+    let ctx = ValuesContext::new(&searcher).with_vectors(&vectors);
+    let err = |s: &Arc<dyn DoubleValuesSource>, ctx: &ValuesContext<'_>, leaf: usize| match s
+        .get_values(ctx, leaf, None)
+    {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("{} accepted", s.describe()),
+    };
+    let empty = |s: Arc<dyn DoubleValuesSource>| {
+        let mut v = s.get_values(&ctx, 0, None).unwrap();
+        assert!(!v.advance_exact(0).unwrap(), "{}", s.describe());
+    };
+
+    // A query vector of the wrong dimension.
+    let short_f = vs::float_vector_similarity("vec", vec![1.0]);
+    assert!(err(&short_f, &ctx, 0)
+        .contains("vector query dimension: 1 differs from field dimension: 4"));
+    let short_b = vs::byte_vector_similarity("bvec", vec![1]);
+    assert!(err(&short_b, &ctx, 0)
+        .contains("vector query dimension: 1 differs from field dimension: 4"));
+    let short_full = vs::full_precision_float_vector_similarity("vec", vec![1.0], None);
+    assert!(err(&short_full, &ctx, 0)
+        .contains("Query vector dimension does not match field dimension: 1 != 4"));
+    let short_fn = vs::full_precision_float_vector_similarity(
+        "vec",
+        vec![1.0],
+        Some(VectorSimilarityFunction::Euclidean),
+    );
+    assert!(err(&short_fn, &ctx, 0).contains("vector query dimension: 1 differs"));
+
+    // A field without vectors of the source's encoding.
+    let as_byte = vs::byte_vector_similarity("vec", vec![1, 2, 3, 4]);
+    assert!(err(&as_byte, &ctx, 0).contains("field \"vec\" does not have byte vectors indexed"));
+    let as_float = vs::float_vector_similarity("bvec", QV.to_vec());
+    assert!(err(&as_float, &ctx, 0).contains("field \"bvec\" does not have float vectors indexed"));
+    let no_vectors = vs::float_vector_similarity("body", QV.to_vec());
+    assert!(err(&no_vectors, &ctx, 0).contains("does not have float vectors indexed"));
+
+    // A field the segment lacks: no values.
+    empty(vs::float_vector_similarity("nosuch", QV.to_vec()));
+    empty(vs::byte_vector_similarity("nosuch", vec![1, 2, 3, 4]));
+    empty(vs::full_precision_float_vector_similarity(
+        "nosuch",
+        QV.to_vec(),
+        None,
+    ));
+    empty(Arc::new(
+        LateInteractionFloatValuesSource::with_function(
+            "nosuch",
+            qmv(),
+            VectorSimilarityFunction::Cosine,
+        )
+        .unwrap(),
+    ));
+
+    // A context without the vectors, or without the leaf.
+    let bare = ValuesContext::new(&searcher);
+    let f = vs::float_vector_similarity("vec", QV.to_vec());
+    assert!(
+        err(&f, &bare, 0).contains("leaf 0: a vector values source needs the segment's vectors")
+    );
+    assert!(err(&f, &bare, 99).contains("leaf 99: a values source needs the segment's reader"));
+    assert!(!vs::doc_values_cacheable(&bare, 99, "n"));
+
+    // What each source declares, and its `toString`.
+    let b = vs::byte_vector_similarity("bvec", QB.iter().map(|&b| b as u8).collect());
+    let full = vs::full_precision_float_vector_similarity(
+        "veu",
+        QEU.to_vec(),
+        Some(VectorSimilarityFunction::MaximumInnerProduct),
+    );
+    let late: Arc<dyn DoubleValuesSource> = Arc::new(
+        LateInteractionFloatValuesSource::with_function(
+            "li",
+            qmv(),
+            VectorSimilarityFunction::Cosine,
+        )
+        .unwrap(),
+    );
+    for s in [&f, &b, &full] {
+        assert!(!s.needs_scores() && s.needs_searcher() && s.is_cacheable(&ctx, 0));
+    }
+    assert!(!late.needs_scores() && late.is_cacheable(&ctx, 0));
+    assert_eq!(
+        format!("{f:?}"),
+        "FloatVectorSimilarityValuesSource(fieldName=vec queryVector=[0.5, -1.25, 2.0, 0.75])"
+    );
+    assert_eq!(
+        b.describe(),
+        "ByteVectorSimilarityValuesSource(fieldName=bvec queryVector=[3, -7, 12, 1])"
+    );
+    assert_eq!(
+        full.describe(),
+        "FullPrecisionFloatVectorSimilarityValuesSource(fieldName=veu \
+         vectorSimilarityFunction=MaximumInnerProduct queryVector=[1.0, 0.5, -0.5])"
+    );
+
+    // The scalar sources' declarations.
+    assert!(vs::constant(1.5).is_cacheable(&ctx, 0));
+    let lc = vs::long_constant(3);
+    assert!(!lc.needs_scores() && lc.is_cacheable(&ctx, 0));
+    assert_eq!(format!("{lc:?}"), lc.describe());
+    let from_long = vs::to_double_values_source(vs::long_from_long_field("n"));
+    assert!(!from_long.needs_searcher());
+    let q = vs::from_query(BooleanQuery {
+        must: vec![Clause::Term(TermQuery::new("body", b"nosuch".to_vec()))],
+        ..Default::default()
+    });
+    assert!(vs::to_double_values_source(vs::to_long_values_source(q)).needs_searcher());
+    assert!(!vs::to_sortable_long_values_source(vs::from_long_field("n")).is_cacheable(&ctx, 0));
+    // `SCORES` without the scorer's scores.
+    assert!(err(&vs::scores(), &ctx, 0).contains("needs the scorer's scores"));
+    // A doc-values source over a field with another type of doc values.
+    let wrong = vs::from_long_field("li");
+    assert!(err(&wrong, &ctx, 0).contains("unexpected docvalues type"));
+}

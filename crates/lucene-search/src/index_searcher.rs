@@ -528,36 +528,6 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
         all.0.sort_by_key(|&(d, _)| d);
         Ok(all.0)
     }
-
-    /// The score `query` gives each of `docs` (global ids, any order) that it
-    /// matches: what a `Weight`'s scorer, advanced to each, would report --
-    /// the per-document scores `QueryRescorer` and a query-backed values
-    /// source read. A document the query does not match is absent.
-    pub fn scores_of(&self, query: &BooleanQuery, docs: &[i32]) -> Result<HashMap<i32, f32>> {
-        struct Pick<'w> {
-            wanted: &'w std::collections::HashSet<i32>,
-            out: HashMap<i32, f32>,
-        }
-        impl ScoringCollector for Pick<'_> {
-            fn collect(&mut self, doc: i32, score: f32) {
-                if self.wanted.contains(&doc) {
-                    self.out.insert(doc, score);
-                }
-            }
-        }
-        let wanted: std::collections::HashSet<i32> = docs.iter().copied().collect();
-        let mut segs: Vec<usize> = docs.iter().filter_map(|&d| self.segment_of(d)).collect();
-        segs.sort_unstable();
-        segs.dedup();
-        let mut pick = Pick {
-            wanted: &wanted,
-            out: HashMap::new(),
-        };
-        if !segs.is_empty() {
-            self.search_leaves(query, &segs, &mut pick)?;
-        }
-        Ok(pick.out)
-    }
 }
 
 /// A `MatchAllDocsQuery` built without a `maxDoc` (a query parsed once for
