@@ -23,6 +23,7 @@ use crate::reader::{
 };
 use crate::top_field::{SortField, SortType};
 use crate::{Error, Result};
+use lucene_codecs::doc_values::NumericReader;
 
 /// `FieldCacheSource`: a source reading one field (its description is the
 /// field's name).
@@ -34,34 +35,77 @@ pub trait FieldCacheSource: ValueSource {
 /// A `NUMERIC` iterator positioned as the field sources' `exists(doc)`
 /// moves it: forward only, `docs were sent out-of-order` otherwise.
 pub(crate) struct NumericColumn<'a> {
-    arr: Box<dyn NumericDocValues + 'a>,
+    arr: Arr<'a>,
     last_doc: i32,
+    /// The last document asked about, and its value (`None` without one).
+    at: i32,
+    value: Option<i64>,
+}
+
+/// Where a column's values come from: any `NumericDocValues` (a
+/// selector's view, an empty column), or a segment's own `NUMERIC` field
+/// read through the codec's reader directly (stage 3: no iterator object
+/// between the source and the values; the same values, read forward as the
+/// iterator reads them).
+enum Arr<'a> {
+    Iter(Box<dyn NumericDocValues + 'a>),
+    Direct(Box<NumericReader<'a>>),
 }
 
 impl<'a> NumericColumn<'a> {
     pub(crate) fn new(arr: Box<dyn NumericDocValues + 'a>) -> Self {
-        Self { arr, last_doc: 0 }
+        Self::of(Arr::Iter(arr))
     }
 
+    fn of(arr: Arr<'a>) -> Self {
+        Self {
+            arr,
+            last_doc: 0,
+            at: -1,
+            value: None,
+        }
+    }
+
+    /// `DocValues.getNumeric(reader, field)` for a field source.
+    fn open(leaf: &ValueLeaf<'a>, field: &str) -> Result<Self> {
+        let reader = leaf.reader()?;
+        let direct = reader.field_infos().field_by_name(field).and_then(|fi| {
+            let (meta, data) = reader.doc_values_for_field(fi.number)?;
+            Some((meta.numeric_entry(fi.number)?, data))
+        });
+        Ok(match direct {
+            Some((entry, data)) => Self::of(Arr::Direct(Box::new(NumericReader::new(data, entry)))),
+            None => Self::new(dv::get_numeric(reader, field)?),
+        })
+    }
+
+    /// Java's `if (doc > arr.docID()) arr.advance(doc); return doc ==
+    /// arr.docID()`: the document's value is looked up once.
     pub(crate) fn exists(&mut self, doc: i32) -> Result<bool> {
+        Ok(self.get(doc)?.is_some())
+    }
+
+    /// The value at `doc`, or `None` without one.
+    #[inline]
+    pub(crate) fn get(&mut self, doc: i32) -> Result<Option<i64>> {
         if doc < self.last_doc {
             return Err(out_of_order(self.last_doc, doc));
         }
         self.last_doc = doc;
-        let mut cur = self.arr.doc_id();
-        if doc > cur {
-            cur = self.arr.advance(doc)?;
+        if doc != self.at {
+            self.value = match &mut self.arr {
+                Arr::Direct(r) => r.value(doc)?,
+                Arr::Iter(arr) => {
+                    if arr.advance_exact(doc)? {
+                        Some(arr.long_value())
+                    } else {
+                        None
+                    }
+                }
+            };
+            self.at = doc;
         }
-        Ok(doc == cur)
-    }
-
-    /// The value at `doc`, or `None` without one.
-    pub(crate) fn get(&mut self, doc: i32) -> Result<Option<i64>> {
-        Ok(if self.exists(doc)? {
-            Some(self.arr.long_value())
-        } else {
-            None
-        })
+        Ok(self.value)
     }
 }
 
@@ -310,10 +354,6 @@ fn selected_set<'a>(
 // Int / Long / Float / Double
 // ---------------------------------------------------------------------------
 
-fn numeric<'a>(leaf: &ValueLeaf<'a>, field: &str) -> Result<Box<dyn NumericDocValues + 'a>> {
-    dv::get_numeric(leaf.reader()?, field)
-}
-
 struct IntValues<'a> {
     col: NumericColumn<'a>,
     description: String,
@@ -352,7 +392,7 @@ impl ValueSource for IntFieldSource {
         leaf: &ValueLeaf<'a>,
     ) -> Result<BoxValues<'a>> {
         Ok(Box::new(Int(IntValues {
-            col: NumericColumn::new(numeric(leaf, &self.field)?),
+            col: NumericColumn::open(leaf, &self.field)?,
             description: self.description(),
         })))
     }
@@ -500,7 +540,7 @@ impl ValueSource for LongFieldSource {
         leaf: &ValueLeaf<'a>,
     ) -> Result<BoxValues<'a>> {
         Ok(Box::new(Long(LongValues {
-            col: NumericColumn::new(numeric(leaf, &self.field)?),
+            col: NumericColumn::open(leaf, &self.field)?,
             description: self.description(),
         })))
     }
@@ -621,7 +661,7 @@ impl ValueSource for FloatFieldSource {
         leaf: &ValueLeaf<'a>,
     ) -> Result<BoxValues<'a>> {
         Ok(Box::new(Float(FloatValues {
-            col: NumericColumn::new(numeric(leaf, &self.field)?),
+            col: NumericColumn::open(leaf, &self.field)?,
             description: self.description(),
         })))
     }
@@ -743,7 +783,7 @@ impl ValueSource for DoubleFieldSource {
         leaf: &ValueLeaf<'a>,
     ) -> Result<BoxValues<'a>> {
         Ok(Box::new(Double(DoubleValues {
-            col: NumericColumn::new(numeric(leaf, &self.field)?),
+            col: NumericColumn::open(leaf, &self.field)?,
             description: self.description(),
         })))
     }
@@ -925,7 +965,7 @@ impl ValueSource for EnumFieldSource {
         leaf: &ValueLeaf<'a>,
     ) -> Result<BoxValues<'a>> {
         Ok(Box::new(Int(EnumValues {
-            col: NumericColumn::new(numeric(leaf, &self.field)?),
+            col: NumericColumn::open(leaf, &self.field)?,
             int_to_string: Arc::clone(&self.int_to_string),
             string_to_int: Arc::clone(&self.string_to_int),
             description: self.description(),
