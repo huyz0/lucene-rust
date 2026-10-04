@@ -2,7 +2,7 @@
 //! `Collector.getLeafCollector(context)` / `LeafCollector.collect(doc)` /
 //! `LeafCollector.finish()`, for the collectors that open a leaf's doc values
 //! when the search reaches it (the query-time join collectors of
-//! [`crate::join`]).
+//! [`crate::join`], the grouping collectors of [`crate::grouping`]).
 //!
 //! This crate's [`ScoringCollector`] sees reader-wide document ids only. A
 //! [`SegmentCollector`] is driven through [`PerSegment`], a

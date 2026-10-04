@@ -1,33 +1,33 @@
 # Lucene 10.5.0 lucene-grouping: every top-level class of the jar, and what became of it.
 # Checked by scripts/check-port-inventory.py --module grouping (see its docstring for the statuses).
 # class	status	detail
-search/grouping/AllGroupHeadsCollector	todo:M10	grouping (T10.4)
-search/grouping/AllGroupHeadsCollectorManager	todo:M10	grouping (T10.4)
-search/grouping/AllGroupsCollector	todo:M10	grouping (T10.4)
-search/grouping/AllGroupsCollectorManager	todo:M10	grouping (T10.4)
-search/grouping/BlockGroupingCollector	todo:M10	grouping (T10.4)
-search/grouping/BlockGroupingCollectorManager	todo:M10	grouping (T10.4)
-search/grouping/CollectedSearchGroup	todo:M10	grouping (T10.4)
-search/grouping/DistinctValuesCollector	todo:M10	grouping (T10.4)
-search/grouping/DistinctValuesCollectorManager	todo:M10	grouping (T10.4)
-search/grouping/DoubleRange	todo:M10	grouping (T10.4)
-search/grouping/DoubleRangeFactory	todo:M10	grouping (T10.4)
-search/grouping/DoubleRangeGroupSelector	todo:M10	grouping (T10.4)
-search/grouping/FirstPassGroupingCollector	todo:M10	grouping (T10.4)
-search/grouping/FirstPassGroupingCollectorManager	todo:M10	grouping (T10.4)
-search/grouping/GroupDocs	todo:M10	grouping (T10.4)
-search/grouping/GroupFacetCollector	todo:M10	grouping (T10.4)
-search/grouping/GroupReducer	todo:M10	grouping (T10.4)
-search/grouping/GroupSelector	todo:M10	grouping (T10.4)
-search/grouping/GroupingSearch	todo:M10	grouping (T10.4)
-search/grouping/LongRange	todo:M10	grouping (T10.4)
-search/grouping/LongRangeFactory	todo:M10	grouping (T10.4)
-search/grouping/LongRangeGroupSelector	todo:M10	grouping (T10.4)
-search/grouping/SearchGroup	todo:M10	grouping (T10.4)
-search/grouping/SecondPassGroupingCollector	todo:M10	grouping (T10.4)
-search/grouping/TermGroupFacetCollector	todo:M10	grouping (T10.4)
-search/grouping/TermGroupSelector	todo:M10	grouping (T10.4)
-search/grouping/TopGroups	todo:M10	grouping (T10.4)
-search/grouping/TopGroupsCollector	todo:M10	grouping (T10.4)
-search/grouping/TopGroupsCollectorManager	todo:M10	grouping (T10.4)
-search/grouping/ValueSourceGroupSelector	todo:M10	grouping (T10.4)
+search/grouping/AllGroupHeadsCollector	ported	crates/lucene-search/src/grouping/collectors.rs::AllGroupHeadsCollector
+search/grouping/AllGroupHeadsCollectorManager	ported	crates/lucene-search/src/grouping/collectors.rs::AllGroupHeadsCollectorManager
+search/grouping/AllGroupsCollector	ported	crates/lucene-search/src/grouping/collectors.rs::AllGroupsCollector
+search/grouping/AllGroupsCollectorManager	ported	crates/lucene-search/src/grouping/collectors.rs::AllGroupsCollectorManager
+search/grouping/BlockGroupingCollector	ported	crates/lucene-search/src/grouping/block.rs::BlockGroupingCollector
+search/grouping/BlockGroupingCollectorManager	ported	crates/lucene-search/src/grouping/block.rs::BlockGroupingCollectorManager
+search/grouping/CollectedSearchGroup	ported	crates/lucene-search/src/grouping/mod.rs::CollectedSearchGroup
+search/grouping/DistinctValuesCollector	ported	crates/lucene-search/src/grouping/collectors.rs::DistinctValuesCollector
+search/grouping/DistinctValuesCollectorManager	ported	crates/lucene-search/src/grouping/collectors.rs::DistinctValuesCollectorManager
+search/grouping/DoubleRange	ported	crates/lucene-search/src/grouping/selector.rs::DoubleRange
+search/grouping/DoubleRangeFactory	ported	crates/lucene-search/src/grouping/selector.rs::DoubleRangeFactory
+search/grouping/DoubleRangeGroupSelector	ported	crates/lucene-search/src/grouping/selector.rs::DoubleRangeGroupSelector
+search/grouping/FirstPassGroupingCollector	ported	crates/lucene-search/src/grouping/collectors.rs::FirstPassGroupingCollector
+search/grouping/FirstPassGroupingCollectorManager	ported	crates/lucene-search/src/grouping/collectors.rs::FirstPassGroupingCollectorManager
+search/grouping/GroupDocs	ported	crates/lucene-search/src/grouping/mod.rs::GroupDocs
+search/grouping/GroupFacetCollector	ported	crates/lucene-search/src/grouping/facet.rs::GroupedFacetResult
+search/grouping/GroupReducer	ported	crates/lucene-search/src/grouping/mod.rs::GroupReducer
+search/grouping/GroupSelector	ported	crates/lucene-search/src/grouping/mod.rs::GroupSelector
+search/grouping/GroupingSearch	ported	crates/lucene-search/src/grouping/search.rs::GroupingSearch
+search/grouping/LongRange	ported	crates/lucene-search/src/grouping/selector.rs::LongRange
+search/grouping/LongRangeFactory	ported	crates/lucene-search/src/grouping/selector.rs::LongRangeFactory
+search/grouping/LongRangeGroupSelector	ported	crates/lucene-search/src/grouping/selector.rs::LongRangeGroupSelector
+search/grouping/SearchGroup	ported	crates/lucene-search/src/grouping/mod.rs::SearchGroup
+search/grouping/SecondPassGroupingCollector	ported	crates/lucene-search/src/grouping/collectors.rs::SecondPassGroupingCollector
+search/grouping/TermGroupFacetCollector	ported	crates/lucene-search/src/grouping/facet.rs::TermGroupFacetCollector
+search/grouping/TermGroupSelector	ported	crates/lucene-search/src/grouping/selector.rs::TermGroupSelector
+search/grouping/TopGroups	ported	crates/lucene-search/src/grouping/mod.rs::TopGroups
+search/grouping/TopGroupsCollector	ported	crates/lucene-search/src/grouping/collectors.rs::TopGroupsCollector
+search/grouping/TopGroupsCollectorManager	ported	crates/lucene-search/src/grouping/collectors.rs::TopGroupsCollectorManager
+search/grouping/ValueSourceGroupSelector	todo:M10	grouping (T10.4) by a lucene-queries ValueSource: needs ValueSource, FunctionValues.ValueFiller and MutableValue group values, which are T10.5's function queries; every other selector is ported

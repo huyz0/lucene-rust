@@ -1193,6 +1193,18 @@ outright.
   global-ordinal joins over a single-segment searcher without an ordinal map
   (`one`), or Lucene's exception.
 
+- `GenGrouping.java` (M10 T10.4) → `grouping/`, for `lucene-search`'s
+  `grouping_fixtures.rs`: `index/`, four segments with deletions in two, of
+  documents with a text body, `SORTED` group, value, sort and facet fields
+  (some missing), `NUMERIC` longs, ints and double bits, sortable
+  double/float and multi-valued `SORTED_NUMERIC` keys and a `SORTED_SET`
+  facet field; `blocks/`, three segments of document blocks closed by
+  `end:x`, with deletions (some of a block's closing document);
+  `searches.tsv`: `GroupingSearch` by term, long-range, double-range and
+  score-range selectors (`gs`), the collector managers over one slice and two
+  (`mgr`), `GroupingSearch` by blocks (`block`) and `TermGroupFacetCollector`
+  (`facet`), each printed in full -- or Lucene's exception.
+
 - `GenGeo3dPoints.java` (M9 T9.4) → `geo3d_points/`, for `lucene-search`'s
   `geo3d_points_fixtures.rs`: `index/`, four segments (3 × 1500 documents
   and one of 50) with 247 deletions, of `Geo3DPoint`s on WGS84 (`p`,
