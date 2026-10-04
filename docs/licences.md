@@ -124,4 +124,4 @@ The list M6's work order named has drifted since it was written:
   `crates/lucene-codecs/src/regexp.rs` crediting the *idea* of caching a
   compiled pattern across queries; the code there is this port's own.
 - The port's reference is Lucene's Java source, file by file, as
-  `docs/parity.md` records.
+  the parity ledger (`docs/parity.md` and `docs/parity/`) records.

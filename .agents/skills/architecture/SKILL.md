@@ -26,7 +26,7 @@ never depend on each other.
   Java-format concept (e.g. `codec_util.rs`, `segment_info.rs`,
   `segment_infos.rs` — each maps to one Java file or format).
 - **Read path before write path.** Don't add write-side (encode) support for a
-  format until its phase (PLAN.md §2) says so — flag it in `docs/parity.md` as
+  format until its phase (PLAN.md §2) says so — flag it in the parity ledger (`docs/parity/`) as
   deferred instead of half-implementing it.
 
 ## Enforced by

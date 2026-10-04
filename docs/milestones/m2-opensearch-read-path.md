@@ -112,7 +112,7 @@ Build:
   per-hit crossings.
 
 Whichever is chosen, record the decision and its reasoning in
-`docs/parity.md`'s `lucene-ffi` section.
+`docs/parity/plugin.md` (the `ffm_bridge.rs` row).
 
 ### T2.4 — Translate the query DSL, and fall back for the rest
 
