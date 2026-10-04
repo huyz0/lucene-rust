@@ -307,7 +307,16 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// it -- and merging passes to [`Self::maybe_merge`], so that merges run
     /// on the caller's merge thread rather than inside a commit. Anything it
     /// had buffered is flushed first.
+    ///
+    /// # Errors
+    /// [`crate::index_writer::Error::ConcurrentUnsupported`] for a writer that takes explicit
+    /// documents or has a parent field: the building threads write native
+    /// documents only, with no explicit postings, doc values or parent
+    /// marker to give them.
     pub fn new(mut writer: IndexWriter<'d>, slots: usize) -> Result<Self> {
+        if let Some(what) = writer.shared_config().concurrent_unsupported() {
+            return Err(crate::index_writer::Error::ConcurrentUnsupported(what));
+        }
         writer.flush()?;
         writer.set_merges_by_caller(true);
         let slots = slots.max(1);
@@ -819,6 +828,10 @@ impl<'d> ConcurrentIndexWriter<'d> {
     }
 
     fn add_entries(&self, delete: Option<DeleteNode>, docs: Vec<Entry>) -> Result<SeqNo> {
+        // BLOCK-GUARD: refused before anything is buffered, as
+        // `DocumentsWriterPerThread.updateDocuments` refuses it; a buffered
+        // block could never be flushed.
+        self.cfg.check_block(docs.len())?;
         let mut flushed = self.pre_update()?;
         let (seq_no, batch) = {
             let (i, mut dwpt) = self.acquire_slot();
@@ -2117,6 +2130,71 @@ mod tests {
         assert_clean(&dir);
     }
 
+    /// `DocumentsWriterPerThread.updateDocuments`: a block in a sorted index
+    /// without a parent field is refused before anything is buffered, and
+    /// the writer goes on (a buffered one would fail every later flush).
+    #[test]
+    fn a_block_in_a_sorted_index_without_a_parent_field_is_refused_at_add() {
+        let tmp = TempDir::new("concurrent-sorted-block");
+        let dir = FsDirectory::open(&tmp);
+        let w = ConcurrentIndexWriter::new(sorted_writer(&dir), 2).unwrap();
+        w.add_document(ranked("a", 0, 2)).unwrap();
+        let before = w.pending_doc_count();
+        assert!(matches!(
+            w.add_documents(vec![ranked("b", 0, 1), ranked("c", 0, 3)]),
+            Err(Error::BlocksWithIndexSortNeedParentField)
+        ));
+        assert_eq!(w.pending_doc_count(), before);
+        w.add_documents(vec![ranked("d", 0, 1)]).unwrap();
+        w.commit().unwrap();
+        let (docs, _) = live_documents(&dir);
+        assert_eq!(docs.keys().collect::<Vec<_>>(), ["a", "d"]);
+        assert_clean(&dir);
+    }
+
+    /// The building threads write native documents only: a writer taking
+    /// explicit documents, or with a parent field, is refused up front
+    /// rather than built into segments missing what it was told to write.
+    #[test]
+    fn explicit_documents_and_a_parent_field_are_refused() {
+        let tmp = TempDir::new("concurrent-explicit");
+        let dir = FsDirectory::open(&tmp);
+        let mut explicit = IndexWriter::open(
+            &dir,
+            Vec::new(),
+            "Lucene104",
+            LuceneVersion {
+                major: 10,
+                minor: 5,
+                bugfix: 0,
+            },
+        )
+        .unwrap();
+        explicit.enable_explicit_documents().unwrap();
+        assert!(matches!(
+            ConcurrentIndexWriter::new(explicit, 1),
+            Err(Error::ConcurrentUnsupported(m)) if m.contains("explicit")
+        ));
+        let tmp = TempDir::new("concurrent-parent");
+        let dir = FsDirectory::open(&tmp);
+        let mut parent = IndexWriter::open(
+            &dir,
+            Vec::new(),
+            "Lucene104",
+            LuceneVersion {
+                major: 10,
+                minor: 5,
+                bugfix: 0,
+            },
+        )
+        .unwrap();
+        parent.set_parent_field(Some("_parent")).unwrap();
+        assert!(matches!(
+            ConcurrentIndexWriter::new(parent, 1),
+            Err(Error::ConcurrentUnsupported(m)) if m.contains("parent")
+        ));
+    }
+
     /// `DocumentsWriterPerThread.abort`: a buffer whose segment cannot be
     /// built loses its documents and leaves no file behind, the published
     /// segments still get the deletes its ticket froze, and the writer goes
@@ -2140,13 +2218,19 @@ mod tests {
         w.add_document(ranked("also", 0, 1)).unwrap();
         w.commit().unwrap();
         // The delete is frozen into the next ticket, whose build then fails:
-        // a block in a sorted index with no parent field fills the buffer
-        // (`max_buffered_docs` is 2) and the automatic flush refuses it.
+        // a document whose sort value is not a number fills the buffer
+        // (`max_buffered_docs` is 2) and the automatic flush cannot sort it.
         w.delete_documents_by_term(&[Term::new("id", b"old".to_vec())])
             .unwrap();
+        w.add_document(ranked("p", 0, 2)).unwrap();
+        let mut bad = doc("q", 0);
+        bad.fields.push(StoredField {
+            field_number: 2,
+            value: FieldValue::String("not a number".to_string()),
+        });
         assert!(matches!(
-            w.add_documents(vec![ranked("p", 0, 2), ranked("q", 0, 3)]),
-            Err(Error::IndexSortWithBlocksAndNoParentField)
+            w.add_document(bad),
+            Err(Error::NonNumericDocValue(..))
         ));
         let failed: Vec<String> = dir
             .list_all()

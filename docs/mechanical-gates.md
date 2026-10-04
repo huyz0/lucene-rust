@@ -31,6 +31,7 @@ to describe a defect that got past it.
 | [`doc-values-per-doc`](#doc-values-per-doc) | `check-port-invariants.py` | a *new* per-document `doc_values::numeric_value`/`binary_value` call | a per-document call hidden behind a helper fn; the ten already on the burn-down list |
 | [`parity ::item`](#parity-item) | `check-parity.py` | `docs/parity.md` naming a Rust item its own file does not define | prose outside a row's Rust column; an item that exists but no longer does what the row says |
 | [`ledger-single-list`](#ledger-single-list) | `check-port-invariants.py` | an unticked `- [ ]` anywhere in `docs/sweep/m2/LEDGER.md` | whether a `- [x]` is *true*, or whether a `- [->]` names the right item |
+| [`block-guard`](#block-guard) | `check-port-invariants.py` | a `lucene-index` fn setting `pending_has_blocks`/`dwpt.has_blocks = true` with no earlier `check_block(` call in the same fn | a guard that is called but whose result is ignored, or that sits on a branch the flag's line does not follow; a block flag spelled any other way |
 | [rustdoc links](#rustdoc) | `cargo doc` | a `[`link`]` that resolves to nothing | a symbol named in *plain backticks*, which is most of them |
 
 Between them these six rules cover **the indexing row** of the
@@ -355,6 +356,24 @@ with the merge's parent-key wrap removed (`seed 100 sorted=true: Parent doc
 shared with `op-stream-fuzz.sh`'s block lines: a block kept contiguous but
 reordered *within* itself would pass the join checks; the stress test's
 in-order child ids are what catch that.
+
+## block-guard
+
+`check-port-invariants.py --only=block-guard`. Java's
+`DocumentsWriterPerThread.updateDocuments` refuses a block (two or more
+documents) in a sorted index without a parent field before it buffers
+anything. The T10.1 review found two writer paths (the native
+`add_documents_with_delete` and the concurrent writer's `add_entries`) that
+buffered such a block, after which every flush failed in `sort_buffer` and the
+good documents could only be dropped by a rollback. The rule: in
+`crates/lucene-index/src`, outside tests, every fn that sets
+`pending_has_blocks = true` or `dwpt.has_blocks = true` must call
+`check_block(` on an earlier line of the same fn (brace-counted spans, as the
+other rules). **Seen to fail** with the guard removed from `add_entries`:
+`concurrent_writer.rs:843: `add_entries` marks its buffer as holding document
+blocks without calling `check_block(..)` first`. Blind to: a call whose
+`Result` is discarded (`let _ =`), a guard on a sibling branch, and a flag set
+through any other name (a helper taking `&mut bool`).
 
 ## write-path verifiers of the geo modules (M9)
 

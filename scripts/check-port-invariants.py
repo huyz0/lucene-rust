@@ -616,6 +616,45 @@ def rule_ledger_single_list(_files, problems, stats):
                 )
 
 
+# --------------------------------------------------------------------------
+# Rule 7: a writer marks its buffer as holding blocks only after the
+# sorted-blocks-need-a-parent-field check
+# --------------------------------------------------------------------------
+#
+# `DocumentsWriterPerThread.updateDocuments` refuses a block of more than one
+# document in a sorted index without a parent field *before* buffering it. A
+# writer path that sets its buffer's block flag without that check accepts a
+# block no flush can ever write (the T10.1 review found two such paths). Every
+# function setting `pending_has_blocks = true` or `<dwpt>.has_blocks = true`
+# must call `check_block(` on an earlier line of the same function.
+
+BLOCK_FLAG = re.compile(r"\b(pending_has_blocks|dwpt\.has_blocks)\s*=\s*true\b")
+BLOCK_GUARD = re.compile(r"\bcheck_block\s*\(")
+
+
+def rule_block_guard(files, problems, stats):
+    for rel, raw in files:
+        if not rel.replace(os.sep, "/").startswith("crates/lucene-index/src/"):
+            continue
+        lines = blank_cfg_test(raw)
+        for fname, a, b in fn_spans(lines):
+            for k in range(a, b + 1):
+                if not BLOCK_FLAG.search(strip_comment(lines[k])):
+                    continue
+                stats["block_flag_sites"] += 1
+                guarded = any(
+                    BLOCK_GUARD.search(strip_comment(lines[j])) for j in range(a, k)
+                )
+                if not guarded:
+                    problems.append(
+                        f"{rel}:{k + 1}: `{fname}` marks its buffer as holding "
+                        f"document blocks without calling `check_block(..)` first: "
+                        f"a block in a sorted index with no parent field would be "
+                        f"buffered and fail every later flush. "
+                        f"(docs/mechanical-gates.md#block-guard)"
+                    )
+
+
 RULES = (
     ("fixed-bitset-bound", rule_fixed_bitset_bound),
     ("sentinel-callers", rule_sentinel_callers),
@@ -623,6 +662,7 @@ RULES = (
     ("blocktree-infallible", rule_blocktree_infallible),
     ("doc-values-per-doc", rule_doc_values_per_doc),
     ("ledger-single-list", rule_ledger_single_list),
+    ("block-guard", rule_block_guard),
 )
 
 
@@ -643,6 +683,7 @@ def main(argv):
         "blocktree_sites": 0,
         "dv_loop_sites": 0,
         "ledger_open_boxes": 0,
+        "block_flag_sites": 0,
     }
     for name, rule in RULES:
         if only and name != only:
@@ -658,6 +699,7 @@ def main(argv):
         print(f"codec-suffix literals               : {stats['suffix_sites']}")
         print(f"blocktree infallible lookups        : {stats['blocktree_sites']}")
         print(f"doc-values per-document call sites  : {stats['dv_loop_sites']}" + f" (burn-down: {sum(DV_LOOP_BURNDOWN.values())})")
+        print(f"block-flag sites (guarded)          : {stats['block_flag_sites']}")
 
     if problems:
         for p in problems:
