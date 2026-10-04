@@ -104,6 +104,10 @@ pub struct ValuesContext<'c> {
     searcher: Option<&'c IndexSearcher<'c, 'c>>,
     reader: Option<&'c crate::directory_reader::SegmentReader>,
     vectors: &'c [Option<&'c VectorsInput<'c>>],
+    /// One segment of a running search (a function query's): its reader as
+    /// leaf `0`, and its postings and statistics, which a query-backed
+    /// source scores through as `weight.scorer(ctx)` does.
+    leaf: Option<crate::exec::LeafContext<'c>>,
 }
 
 impl<'c> ValuesContext<'c> {
@@ -112,6 +116,7 @@ impl<'c> ValuesContext<'c> {
             searcher: Some(searcher),
             reader: None,
             vectors: &[],
+            leaf: None,
         }
     }
 
@@ -122,7 +127,23 @@ impl<'c> ValuesContext<'c> {
             searcher: None,
             reader: Some(reader),
             vectors: &[],
+            leaf: None,
         }
+    }
+
+    /// One segment of a running search as leaf `0`.
+    pub(crate) fn for_leaf(ctx: crate::exec::LeafContext<'c>) -> Self {
+        Self {
+            searcher: None,
+            reader: ctx.reader,
+            vectors: &[],
+            leaf: Some(ctx),
+        }
+    }
+
+    /// The running search's segment, for a context of one.
+    pub(crate) fn exec_leaf(&self) -> Option<crate::exec::LeafContext<'c>> {
+        self.leaf
     }
 
     /// The searcher, which a query-backed source needs.
@@ -208,6 +229,32 @@ pub trait DoubleValuesSource: Send + Sync {
     /// `toString()`.
     fn describe(&self) -> String;
 
+    /// `rewrite(searcher)`: a source bound to the reader (`None`: this one
+    /// as it is). [`crate::function::FunctionScoreQuery`] and
+    /// [`crate::function::FunctionMatchQuery`] search through it, as their
+    /// `createWeight` does.
+    ///
+    /// # Errors
+    /// Whatever reading the reader reports.
+    fn rewrite(
+        &self,
+        _top: &crate::function::TopLevel<'_>,
+    ) -> Result<Option<Arc<dyn DoubleValuesSource>>> {
+        Ok(None)
+    }
+
+    /// The queries the source scores, whose reader-wide statistics a search
+    /// gathers.
+    fn queries(&self) -> Vec<&crate::query::Clause> {
+        Vec::new()
+    }
+
+    /// The value source this wraps (`ValueSource.asDoubleValuesSource()`'s
+    /// `WrappedDoubleValuesSource`), which `fromDoubleValuesSource` unwraps.
+    fn wrapped_value_source(&self) -> Option<Arc<dyn crate::function::ValueSource>> {
+        None
+    }
+
     /// `explain(ctx, docId, scoreExplanation)`: the value of `doc` computed
     /// with the explained score as the scores.
     fn explain(
@@ -220,8 +267,8 @@ pub trait DoubleValuesSource: Send + Sync {
         let scores = Box::new(ConstantDoubleValues(f64::from(score_explanation.value)));
         let mut dv = self.get_values(ctx, leaf, Some(scores))?;
         if dv.advance_exact(doc)? {
-            Ok(Explanation::match_(
-                dv.double_value()? as f32,
+            Ok(Explanation::match_double(
+                dv.double_value()?,
                 self.describe(),
             ))
         } else {
@@ -245,6 +292,16 @@ pub trait LongValuesSource: Send + Sync {
     }
     fn is_cacheable(&self, ctx: &ValuesContext<'_>, leaf: usize) -> bool;
     fn describe(&self) -> String;
+    /// As [`DoubleValuesSource::rewrite`].
+    ///
+    /// # Errors
+    /// Whatever reading the reader reports.
+    fn rewrite(
+        &self,
+        _top: &crate::function::TopLevel<'_>,
+    ) -> Result<Option<Arc<dyn LongValuesSource>>> {
+        Ok(None)
+    }
 }
 
 impl std::fmt::Debug for dyn DoubleValuesSource {
@@ -409,8 +466,8 @@ impl DoubleValuesSource for FieldDoubleSource {
     ) -> Result<Explanation> {
         let mut v = self.get_values(ctx, leaf, None)?;
         if v.advance_exact(doc)? {
-            Ok(Explanation::match_(
-                v.double_value()? as f32,
+            Ok(Explanation::match_double(
+                v.double_value()?,
                 self.describe(),
             ))
         } else {
@@ -518,7 +575,7 @@ impl DoubleValuesSource for ConstantSource {
         _doc: i32,
         _score_explanation: &Explanation,
     ) -> Result<Explanation> {
-        Ok(Explanation::match_(self.0 as f32, self.describe()))
+        Ok(Explanation::match_double(self.0, self.describe()))
     }
 }
 
@@ -542,7 +599,9 @@ pub fn constant(value: f64) -> Arc<dyn DoubleValuesSource> {
 
 /// `QueryDoubleValuesSource`/`WeightDoubleValuesSource`: a document's score
 /// under `query` (`ScoreMode.COMPLETE`, boost 1), where it matches.
-struct QuerySource(BooleanQuery);
+/// The query (as the boolean a searcher scores), its rewrite, and the query
+/// as given (its `toString`).
+struct QuerySource(BooleanQuery, crate::query::Clause, crate::query::Clause);
 
 /// A leaf's matches and scores, ascending by document.
 struct SortedScores {
@@ -570,6 +629,19 @@ impl DoubleValuesSource for QuerySource {
         leaf: usize,
         _scores: Option<BoxDoubleValues<'c>>,
     ) -> Result<BoxDoubleValues<'c>> {
+        if let Some(lc) = ctx.exec_leaf() {
+            // `WeightDoubleValuesSource.getValues`: the query's scorer
+            // (`ScoreMode.COMPLETE`), advanced with the documents.
+            let scorer =
+                crate::exec::build::build(&lc, &self.1, 1.0, crate::exec::Mode::Complete, false)?;
+            return Ok(match scorer {
+                None => Box::new(EmptyDoubleValues),
+                Some(scorer) => Box::new(WeightScores {
+                    scorer,
+                    tpi_match: None,
+                }),
+            });
+        }
         let hits = ctx.searcher()?.leaf_scores(&self.0, leaf, true)?;
         let (docs, scores) = hits.into_iter().unzip();
         Ok(Box::new(SortedScores {
@@ -588,13 +660,84 @@ impl DoubleValuesSource for QuerySource {
         false
     }
     fn describe(&self) -> String {
-        format!("score({:?})", self.0)
+        format!("score({})", crate::explain::describe_query(&self.2))
+    }
+    /// `WeightDoubleValuesSource.explain`: the query's own explanation.
+    fn explain(
+        &self,
+        ctx: &ValuesContext<'_>,
+        leaf: usize,
+        doc: i32,
+        _score_explanation: &Explanation,
+    ) -> Result<Explanation> {
+        if let Some(lc) = ctx.exec_leaf() {
+            return crate::explain::explain_clause_with_stats(
+                lc.fields,
+                lc.doc_in,
+                lc.pos_in,
+                lc.pay_in,
+                lc.live_docs,
+                lc.points,
+                &self.1,
+                doc,
+                lc.norms,
+                lc.global,
+            );
+        }
+        let searcher = ctx.searcher()?;
+        let base = searcher.segments().get(leaf).map_or(0, |s| s.doc_base);
+        searcher.explain(&self.0, base + doc)
+    }
+    fn queries(&self) -> Vec<&crate::query::Clause> {
+        vec![&self.1]
+    }
+}
+
+/// `WeightDoubleValuesSource`'s values: the scorer's score where it
+/// matches (its two-phase check run once per document).
+struct WeightScores<'c> {
+    scorer: crate::exec::BoxScorer<'c>,
+    tpi_match: Option<bool>,
+}
+
+impl DoubleValues for WeightScores<'_> {
+    fn advance_exact(&mut self, doc: i32) -> Result<bool> {
+        if self.scorer.doc_id() < doc {
+            self.scorer.advance(doc)?;
+            self.tpi_match = None;
+        }
+        if self.scorer.doc_id() == doc {
+            if !self.scorer.two_phase() {
+                return Ok(true);
+            }
+            if self.tpi_match.is_none() {
+                self.tpi_match = Some(self.scorer.matches()?);
+            }
+            return Ok(self.tpi_match == Some(true));
+        }
+        Ok(false)
+    }
+    fn double_value(&mut self) -> Result<f64> {
+        Ok(f64::from(self.scorer.score()?))
     }
 }
 
 /// `DoubleValuesSource.fromQuery(query)`.
 pub fn from_query(query: BooleanQuery) -> Arc<dyn DoubleValuesSource> {
-    Arc::new(QuerySource(query))
+    from_clause(crate::query::Clause::Boolean(Box::new(query)))
+}
+
+/// `DoubleValuesSource.fromQuery(query)` for any query.
+pub fn from_clause(query: crate::query::Clause) -> Arc<dyn DoubleValuesSource> {
+    let rewritten = query.clone().rewrite();
+    let as_boolean = match &rewritten {
+        crate::query::Clause::Boolean(b) => (**b).clone(),
+        other => BooleanQuery {
+            must: vec![other.clone()],
+            ..Default::default()
+        },
+    };
+    Arc::new(QuerySource(as_boolean, rewritten, query))
 }
 
 // ---------------------------------------------------------------------------
@@ -751,6 +894,18 @@ impl LongValuesSource for DoubleAsLongSource {
             DoubleToLong::Sortable => format!("sortableLong({})", self.inner.describe()),
         }
     }
+    /// The inner source's rewrite, converted the same way.
+    fn rewrite(
+        &self,
+        top: &crate::function::TopLevel<'_>,
+    ) -> Result<Option<Arc<dyn LongValuesSource>>> {
+        Ok(self.inner.rewrite(top)?.map(|inner| {
+            Arc::new(DoubleAsLongSource {
+                inner,
+                how: self.how,
+            }) as Arc<dyn LongValuesSource>
+        }))
+    }
 }
 
 /// `DoubleValuesSource.toLongValuesSource()`.
@@ -807,6 +962,16 @@ impl DoubleValuesSource for LongAsDoubleSource {
     }
     fn describe(&self) -> String {
         format!("double({})", self.0.describe())
+    }
+    /// `inner.rewrite(searcher).toDoubleValuesSource()`.
+    fn rewrite(
+        &self,
+        top: &crate::function::TopLevel<'_>,
+    ) -> Result<Option<Arc<dyn DoubleValuesSource>>> {
+        Ok(self
+            .0
+            .rewrite(top)?
+            .map(|r| Arc::new(LongAsDoubleSource(r)) as Arc<dyn DoubleValuesSource>))
     }
 }
 

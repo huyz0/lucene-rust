@@ -226,6 +226,12 @@ pub(crate) fn build<'a>(
         ExtendedQuery::PointInSetIncludingScore(q) => {
             super::query_join::point_in_set_including_score(ctx, q)
         }
+        ExtendedQuery::Function(q) => super::function::function_query(ctx, q, boost),
+        ExtendedQuery::FunctionRange(q) => super::function::function_range(ctx, q),
+        ExtendedQuery::FunctionMatch(q) => super::function::function_match(ctx, q, boost, mode),
+        ExtendedQuery::FunctionScore(q) => {
+            super::function::function_score(ctx, q, boost, mode, top_level)
+        }
         // `RescoreTopNQuery` has no weight of its own: `rewrite(searcher)`
         // turns it into a `DocAndScoreQuery` first.
         ExtendedQuery::RescoreTopN(_) => Err(crate::Error::IllegalState(
