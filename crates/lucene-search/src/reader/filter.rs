@@ -677,4 +677,7 @@ impl SortedSetDocValues for FilterSortedSetDocValues<'_> {
     fn value_count(&self) -> i64 {
         self.in_.value_count()
     }
+    fn lookup_term(&mut self, key: &[u8]) -> Result<i64> {
+        self.in_.lookup_term(key)
+    }
 }
