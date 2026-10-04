@@ -989,6 +989,9 @@ pub(crate) fn explain(
     if let Some(e) = super::query_join::explain(ctx, q, doc)? {
         return Ok(Some(e));
     }
+    if let Some(e) = super::function::explain(ctx, q, doc)? {
+        return Ok(Some(e));
+    }
     Ok(Some(match q {
         // `BlockJoinWeight.explain` -> `BlockJoinScorer.explain`.
         ExtendedQuery::ToParentBlockJoin(q) => {

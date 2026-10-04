@@ -59,6 +59,18 @@ pub fn is_cacheable(clause: &Clause, reader: Option<&SegmentReader>) -> bool {
             // `GlobalOrdinals*Query.W.isCacheable`: never.
             crate::extended_query::ExtendedQuery::GlobalOrdinals(_)
             | crate::extended_query::ExtendedQuery::GlobalOrdinalsWithScore(_) => false,
+            // `FunctionWeight`/`FunctionRangeWeight.isCacheable`: never.
+            crate::extended_query::ExtendedQuery::Function(_)
+            | crate::extended_query::ExtendedQuery::FunctionRange(_) => false,
+            // `FunctionMatchQuery`: its source's; `FunctionScoreWeight`: the
+            // wrapped query's and its source's.
+            crate::extended_query::ExtendedQuery::FunctionMatch(q) => {
+                crate::function::source_cacheable(q.source.as_ref(), reader)
+            }
+            crate::extended_query::ExtendedQuery::FunctionScore(q) => {
+                is_cacheable(&q.in_query, reader)
+                    && crate::function::source_cacheable(q.source.as_ref(), reader)
+            }
             crate::extended_query::ExtendedQuery::ToParentBlockJoin(_)
             | crate::extended_query::ExtendedQuery::ToChildBlockJoin(_)
             | crate::extended_query::ExtendedQuery::ParentsChildrenBlockJoin(_) => {

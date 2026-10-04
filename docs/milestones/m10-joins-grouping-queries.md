@@ -10,7 +10,7 @@
 | **Effort** | L |
 | **Depends on** | [M7](m7-core-complete.md) |
 | **Unblocks** | native `nested`, `function_score`, `intervals`, `combined_fields`, field collapsing |
-| **Status** | in progress (T10.0, T10.1, T10.3 done; T10.2 queries ported) |
+| **Status** | in progress (T10.0, T10.1, T10.3 done; T10.2 queries ported; T10.4, T10.5 ported) |
 
 ---
 
@@ -127,7 +127,7 @@ grouping. Each of them falls back to Lucene today.
   bulk loop), each piece Java's own -- and numeric `None` 0.90x-0.94x,
   inside its 1.09x-1.17x noise floor (it was 0.02x).
 - **T10.4** — Grouping. **Ported** (`lucene-search/src/grouping`): every
-  class of `lucene-grouping` but `ValueSourceGroupSelector` (it needs T10.5's
+  class of `lucene-grouping` (`ValueSourceGroupSelector` came with T10.5's
   value sources) -- the selectors (term, long range, double range), the first
   and second passes with their reducers, `TopGroupsCollector`,
   `AllGroupsCollector`, `AllGroupHeadsCollector`, `DistinctValuesCollector`,
@@ -163,7 +163,28 @@ grouping. Each of them falls back to Lucene today.
   through the generic multi-key comparator -- per-document work Java's JIT
   inlines monomorphically; the algorithms and the documents visited are
   Lucene's.
-- **T10.5** — Function queries and value sources.
+- **T10.5** — Function queries and value sources. **Ported**
+  (`lucene-search/src/function`, `exec/function.rs`): every class of
+  `lucene-queries`' `function`, `function.docvalues` and
+  `function.valuesource` packages -- `ValueSource`/`FunctionValues` (with
+  `ValueFiller` and `MutableValue`), the typed `*DocValues` bases, every
+  value source (constants, the doc-values field sources with their
+  multi-valued selectors, `joindf`, the arithmetic, range-map, scale and
+  boolean functions, `docfreq`/`idf`/`termfreq`/`tf`/`totaltermfreq`/
+  `sumtotaltermfreq`/`numdocs`/`maxdoc`/`norm`, `query()`, the vector
+  sources and similarities), `FunctionQuery`, `FunctionRangeQuery` with
+  `ValueSourceScorer`, `FunctionMatchQuery`, `FunctionScoreQuery` with
+  `boostByValue`/`boostByQuery`, `IndexReaderFunctions`, the bridges to
+  `DoubleValuesSource`/`LongValuesSource` and sorting by a value source.
+  Reader-wide state (`createWeight`) is computed once per search in the
+  statistics pass. `GenFunction` records 96 value-source specs read for every
+  document (every getter's bits, strings, objects, vectors and filled
+  mutable values, or Lucene's exception) and 214 searches (hits and score
+  bits, alone, boosted and in booleans, and their explanations), all equal
+  to Lucene's; `(float) Math.pow` needed no tolerance. With them,
+  `lucene-grouping`'s `ValueSourceGroupSelector`: 28 grouped searches
+  (`groups.tsv`, 14 sources by all documents and by `t:red`) equal to
+  Lucene's.
 - **T10.6** — Intervals, payload queries, `MoreLikeThis`, `CommonTermsQuery`.
 - **T10.7** — Plugin wiring for the OpenSearch shapes above.
 

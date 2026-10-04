@@ -41,6 +41,7 @@ mod conjunction;
 mod disi_approx;
 mod disjunction;
 pub(crate) mod extended;
+pub(crate) mod function;
 pub(crate) mod join;
 mod leaf;
 pub(crate) mod multi_term;

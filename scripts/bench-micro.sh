@@ -202,6 +202,17 @@ case "$BENCH" in
     PREP_ARGS=(build "$INDEX")
     JAVA_ARGS=(run)
     NEEDS_INDEX=1 ;;
+  function)
+    # M10 T10.5's pair (FunctionMicro.java / micro_function.rs): function,
+    # function-score, range and match queries over the 200 000-document index
+    # FunctionMicro builds (once) under benchmarks/.corpus/function.
+    MAIN=FunctionMicro
+    SRC=benchmarks/micro/java/FunctionMicro.java
+    JAR_MODULES="lucene-core lucene-analysis-common lucene-queries"
+    INDEX="${INDEX_ARG:-$PWD/benchmarks/.corpus/function}"
+    PREP_ARGS=(build "$INDEX")
+    JAVA_ARGS=(run)
+    NEEDS_INDEX=1 ;;
   pfor_decode)
     MAIN=org.apache.lucene.codecs.lucene104.PForUtilMicro
     SRC=benchmarks/micro/java/org/apache/lucene/codecs/lucene104/PForUtilMicro.java ;;

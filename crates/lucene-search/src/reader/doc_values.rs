@@ -9,7 +9,8 @@
 //!   a one-value-per-document set, `DocValues.singleton`);
 //! - [`get_numeric`][]: `DocValues.getNumeric`;
 //! - [`get_sorted_numeric`]: `DocValues.getSortedNumeric` (a `NUMERIC` field
-//!   as a singleton).
+//!   as a singleton);
+//! - [`get_binary`][]: `DocValues.getBinary`.
 //!
 //! The query-time joins ([`crate::join`]) and the grouping collectors
 //! ([`crate::grouping`]) read every leaf through these, as their Java
@@ -18,8 +19,8 @@
 use lucene_codecs::field_infos::DocValuesType;
 
 use super::{
-    DocIdSetIterator, DocValuesIterator, LeafReader, NumericDocValues, SortedDocValues,
-    SortedNumericDocValues, SortedSetDocValues, NO_MORE_DOCS,
+    BinaryDocValues, DocIdSetIterator, DocValuesIterator, LeafReader, NumericDocValues,
+    SortedDocValues, SortedNumericDocValues, SortedSetDocValues, NO_MORE_DOCS,
 };
 use crate::{Error, Result};
 
@@ -116,6 +117,23 @@ pub fn get_numeric<'a, R: LeafReader + ?Sized>(
         Some(dv) => Ok(dv),
         None => {
             check_field(reader, field, &[DocValuesType::Numeric])?;
+            Ok(Box::new(Empty::default()))
+        }
+    }
+}
+
+/// `DocValues.getBinary(reader, field)`.
+///
+/// # Errors
+/// [`Error::IllegalState`] when the field exists without `BINARY` doc values.
+pub fn get_binary<'a, R: LeafReader + ?Sized>(
+    reader: &'a R,
+    field: &str,
+) -> Result<Box<dyn BinaryDocValues + 'a>> {
+    match reader.binary_doc_values(field)? {
+        Some(dv) => Ok(dv),
+        None => {
+            check_field(reader, field, &[DocValuesType::Binary])?;
             Ok(Box::new(Empty::default()))
         }
     }
@@ -223,6 +241,12 @@ impl SortedSetDocValues for Empty {
 impl NumericDocValues for Empty {
     fn long_value(&self) -> i64 {
         0
+    }
+}
+
+impl BinaryDocValues for Empty {
+    fn binary_value(&self) -> &[u8] {
+        &[]
     }
 }
 

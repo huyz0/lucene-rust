@@ -41,9 +41,9 @@
 //!   round, `DistinctValuesCollector`'s value selector) is one per collector
 //!   here, or owned once by the collector: their state is a cache of the
 //!   segment's ordinals, so the groups found are the same.
-//! - `ValueSourceGroupSelector` (and `GroupingSearch`'s `ValueSource`
-//!   constructor) needs `lucene-queries`' `ValueSource`/`FunctionValues`
-//!   (`MutableValue` group values), which are M10's T10.5: not ported yet.
+//! - `GroupingSearch(ValueSource, Map)` is `GroupingSearch::new` with a
+//!   factory of [`ValueSourceGroupSelector`]s sharing one context; a group
+//!   whose `MutableValue` does not exist is the `None` group.
 
 mod block;
 mod collectors;
@@ -64,7 +64,7 @@ pub use facet::{FacetEntry, GroupedFacetResult, TermGroupFacetCollector};
 pub use search::{GroupingSearch, GroupingSearchResult};
 pub use selector::{
     DoubleRange, DoubleRangeFactory, DoubleRangeGroupSelector, LongRange, LongRangeFactory,
-    LongRangeGroupSelector, TermGroupSelector,
+    LongRangeGroupSelector, TermGroupSelector, ValueSourceGroupSelector,
 };
 pub use sort::{GroupSortValue, Sort};
 

@@ -684,6 +684,17 @@ pub(crate) fn global_boolean_stats(
     segments: &[OpenSegment<'_>],
     query: &BooleanQuery,
 ) -> crate::Result<crate::GlobalStats> {
+    global_boolean_stats_with_similarity(segments, query, None)
+}
+
+/// [`global_boolean_stats`] under a searcher's similarity (`None` the
+/// default BM25), which the function queries' `createWeight` reads (a
+/// `tf()`/`idf()`/`norm()` source scaled over the whole index).
+pub(crate) fn global_boolean_stats_with_similarity(
+    segments: &[OpenSegment<'_>],
+    query: &BooleanQuery,
+    similarity: Option<&dyn crate::similarities::Similarity>,
+) -> crate::Result<crate::GlobalStats> {
     fn walk_clause(c: &crate::query::Clause, out: &mut Collected) {
         use crate::query::Clause;
         match c {
@@ -800,6 +811,17 @@ pub(crate) fn global_boolean_stats(
     }
     let mut collected = Collected::default();
     walk(query, &mut collected);
+    // The queries a function query scores (a `QueryValueSource`'s,
+    // `DoubleValuesSource.fromQuery`'s) score with reader-wide statistics
+    // wherever the function query sits, as their `createWeight`'s
+    // `searcher.createWeight(q, COMPLETE, 1)` does.
+    let mut functions = Vec::new();
+    crate::function::collect_functions(query, &mut functions);
+    for f in &functions {
+        for q in f.queries() {
+            walk_clause(q, &mut collected);
+        }
+    }
     let mut all_fuzzy = Vec::new();
     for c in query
         .must
@@ -848,6 +870,9 @@ pub(crate) fn global_boolean_stats(
     // The expanded terms' own statistics, which the blended rewrite scores
     // each term from (`totalTermFreq`, the field's sums).
     crate::exec::extended::add_fuzzy_term_stats(&mut map, segments)?;
+    let function_stats =
+        crate::function::prepare_functions(segments, &functions, &map, similarity)?;
+    map.set_functions(function_stats);
     Ok(map)
 }
 

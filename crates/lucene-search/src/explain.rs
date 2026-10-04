@@ -79,6 +79,9 @@ pub struct Explanation {
     /// The value as the `long` Java's `Explanation` holds for a count (a
     /// term's `n`, a field's `N`), which prints with no decimal point.
     long_value: Option<i64>,
+    /// The value as the `double` a function query's explanation holds,
+    /// printed as `Double.toString` prints it.
+    double_value: Option<f64>,
 }
 
 thread_local! {
@@ -90,12 +93,49 @@ thread_local! {
     static LEAF: std::cell::Cell<Option<(i32, i32)>> = const { std::cell::Cell::new(None) };
 }
 
-/// Runs `f` with `(max_doc, doc_base)` as the segment being explained.
-pub(crate) fn with_leaf<R>(max_doc: Option<i32>, doc_base: i32, f: impl FnOnce() -> R) -> R {
+/// The reader of the segment being explained and the searcher's similarity
+/// (when not the default BM25): what a clause reading doc values or the
+/// similarity itself (a function query) explains through.
+type LeafState = (
+    Option<crate::directory_reader::SegmentReader>,
+    Option<std::sync::Arc<dyn crate::similarities::Similarity>>,
+);
+
+thread_local! {
+    static LEAF_READER: std::cell::RefCell<LeafState> =
+        const { std::cell::RefCell::new((None, None)) };
+}
+
+/// Runs `f` with `(max_doc, doc_base)` as the segment being explained,
+/// `reader` its reader and `similarity` the searcher's.
+pub(crate) fn with_leaf<R>(
+    max_doc: Option<i32>,
+    doc_base: i32,
+    reader: Option<&crate::directory_reader::SegmentReader>,
+    similarity: Option<&dyn crate::similarities::Similarity>,
+    f: impl FnOnce() -> R,
+) -> R {
     let prev = LEAF.with(|l| l.replace(max_doc.map(|m| (m, doc_base))));
+    let state = (reader.cloned(), similarity.and_then(|s| s.shared()));
+    let prev_reader = LEAF_READER.with(|r| r.replace(state));
     let out = f();
     LEAF.with(|l| l.set(prev));
+    LEAF_READER.with(|r| r.replace(prev_reader));
     out
+}
+
+/// Runs `f` with the reader of the segment being explained and the
+/// searcher's similarity, where a caller set them.
+pub(crate) fn with_leaf_reader<R>(
+    f: impl FnOnce(
+        Option<&crate::directory_reader::SegmentReader>,
+        Option<&dyn crate::similarities::Similarity>,
+    ) -> R,
+) -> R {
+    LEAF_READER.with(|r| {
+        let state = r.borrow();
+        f(state.0.as_ref(), state.1.as_deref())
+    })
 }
 
 /// The segment being explained, if a caller set it.
@@ -114,6 +154,7 @@ impl Explanation {
             description: description.into(),
             details: Vec::new(),
             long_value: None,
+            double_value: None,
         }
     }
 
@@ -127,6 +168,38 @@ impl Explanation {
         }
     }
 
+    /// `Explanation.match(double, description)`: a `double`, printed as
+    /// Java prints a `Double`; [`Self::value`] holds it as a float.
+    pub fn match_double(value: f64, description: impl Into<String>) -> Self {
+        Self {
+            double_value: Some(value),
+            ..Self::match_(value as f32, description)
+        }
+    }
+
+    /// `Explanation.match(other.getValue(), description, details)`: a match
+    /// holding `other`'s value as `other` holds it (a `Float`, `Long` or
+    /// `Double`).
+    pub fn match_value_of(other: &Explanation, description: impl Into<String>) -> Self {
+        Self {
+            matched: true,
+            value: other.value,
+            description: description.into(),
+            details: Vec::new(),
+            long_value: other.long_value,
+            double_value: other.double_value,
+        }
+    }
+
+    /// `getValue().doubleValue()`.
+    pub fn double_value(&self) -> f64 {
+        match (self.double_value, self.long_value) {
+            (Some(d), _) => d,
+            (None, Some(l)) => l as f64,
+            _ => f64::from(self.value),
+        }
+    }
+
     /// Real `Explanation.noMatch(description, details...)`-equivalent: a
     /// non-matching explanation, `value` fixed at `0.0` — real Lucene's own
     /// convention (a non-match has no score to report).
@@ -137,6 +210,7 @@ impl Explanation {
             description: description.into(),
             details: Vec::new(),
             long_value: None,
+            double_value: None,
         }
     }
 
@@ -163,9 +237,15 @@ impl Explanation {
         for _ in 0..depth {
             f.write_str("  ")?;
         }
-        match self.long_value {
-            Some(v) => writeln!(f, "{v} = {}", self.description)?,
-            None => writeln!(f, "{} = {}", java_float(self.value), self.description)?,
+        match (self.long_value, self.double_value) {
+            (Some(v), _) => writeln!(f, "{v} = {}", self.description)?,
+            (None, Some(d)) => writeln!(
+                f,
+                "{} = {}",
+                crate::function::java_double(d),
+                self.description
+            )?,
+            (None, None) => writeln!(f, "{} = {}", java_float(self.value), self.description)?,
         }
         for detail in &self.details {
             detail.fmt_at_depth(f, depth + 1)?;
@@ -215,14 +295,21 @@ fn java_float(v: f32) -> String {
 /// when the field equals the enclosing "default" field; explanations always
 /// call the no-argument `toString()`, i.e. default field `""`, so every
 /// field is printed.
-fn describe_clause(clause: &Clause) -> String {
+pub(crate) fn describe_clause(clause: &Clause) -> String {
     fn term(bytes: &[u8]) -> String {
         String::from_utf8_lossy(bytes).into_owned()
     }
     match clause {
         // `FieldExistsQuery.toString`.
         Clause::Exists(q) => format!("FieldExistsQuery [field={}]", q.field),
-        Clause::Extended(q) => q.name().to_string(),
+        // The function queries' own `toString`.
+        Clause::Extended(q) => match q.as_ref() {
+            crate::extended_query::ExtendedQuery::Function(f) => format!("{f:?}"),
+            crate::extended_query::ExtendedQuery::FunctionRange(f) => format!("{f:?}"),
+            crate::extended_query::ExtendedQuery::FunctionMatch(f) => format!("{f:?}"),
+            crate::extended_query::ExtendedQuery::FunctionScore(f) => format!("{f:?}"),
+            _ => q.name().to_string(),
+        },
         Clause::Term(q) => format!("{}:{}", q.field, term(&q.term)),
         Clause::Phrase(q) => {
             let body = q
@@ -316,6 +403,21 @@ fn describe_clause(clause: &Clause) -> String {
                 .collect::<Vec<_>>()
                 .join(" ")
         ),
+    }
+}
+
+/// `Query.toString()` of a query at the top level: [`describe_clause`],
+/// except that a boolean prints its clauses without the parentheses a
+/// nested boolean gets (`BooleanQuery.toString` adds them only for a
+/// minimum-should-match).
+pub(crate) fn describe_query(clause: &Clause) -> String {
+    let s = describe_clause(clause);
+    match clause {
+        Clause::Boolean(b) if b.minimum_should_match == 0 => s
+            .strip_prefix('(')
+            .and_then(|s| s.strip_suffix(')'))
+            .map_or_else(|| s.clone(), str::to_string),
+        _ => s,
     }
 }
 
@@ -949,8 +1051,17 @@ fn explain_boolean(
     // value is not what the parent adds up. `matchCount` counts it (Java
     // increments for every non-prohibited match); `shouldMatchCount` does not.
     for clause in &query.filter {
+        // A function-score query that does not score is its wrapped query
+        // (`FunctionScoreQuery.createWeight` returns the inner weight).
+        let unscored = match clause {
+            Clause::Extended(e) => match e.as_ref() {
+                crate::extended_query::ExtendedQuery::FunctionScore(f) => f.in_query.as_ref(),
+                _ => clause,
+            },
+            _ => clause,
+        };
         let e = explain_clause_with_stats(
-            fields, doc_in, pos_in, pay_in, live_docs, points, clause, doc, norms, global,
+            fields, doc_in, pos_in, pay_in, live_docs, points, unscored, doc, norms, global,
         )?;
         if e.matched {
             match_count += 1;
@@ -1048,29 +1159,31 @@ fn scorer_score(
     clause: &Clause,
     doc: i32,
 ) -> Result<Option<f32>> {
-    let ctx = crate::exec::LeafContext {
-        fields,
-        doc_in,
-        pos_in,
-        pay_in,
-        live_docs,
-        points,
-        norms,
-        global,
-        max_doc: leaf().map(|(max_doc, _)| max_doc),
-        cache: None,
-        reader: None,
-        similarity: None,
-    };
-    let Some(mut s) =
-        crate::exec::build::build(&ctx, clause, 1.0, crate::exec::Mode::Complete, false)?
-    else {
-        return Ok(None);
-    };
-    if crate::exec::exact_advance(&mut *s, doc)? != doc {
-        return Ok(None);
-    }
-    Ok(Some(s.score()?))
+    with_leaf_reader(|reader, _similarity| {
+        let ctx = crate::exec::LeafContext {
+            fields,
+            doc_in,
+            pos_in,
+            pay_in,
+            live_docs,
+            points,
+            norms,
+            global,
+            max_doc: leaf().map(|(max_doc, _)| max_doc),
+            cache: None,
+            reader,
+            similarity: None,
+        };
+        let Some(mut s) =
+            crate::exec::build::build(&ctx, clause, 1.0, crate::exec::Mode::Complete, false)?
+        else {
+            return Ok(None);
+        };
+        if crate::exec::exact_advance(&mut *s, doc)? != doc {
+            return Ok(None);
+        }
+        Ok(Some(s.score()?))
+    })
 }
 
 /// [`Clause::DisjunctionMax`]'s explanation: mirrors real
@@ -1195,6 +1308,22 @@ fn explain_boost(
     norms: Option<&HashMap<String, FieldNorms<'_>>>,
     global: Option<&GlobalStats>,
 ) -> Result<Explanation> {
+    // A function query's weight takes the boost itself.
+    if let Some(e) = crate::exec::function::explain_boosted(
+        fields,
+        doc_in,
+        pos_in,
+        pay_in,
+        live_docs,
+        points,
+        norms,
+        global,
+        &nested.inner,
+        nested.boost,
+        doc,
+    )? {
+        return Ok(e);
+    }
     let inner = explain_clause_with_stats(
         fields,
         doc_in,

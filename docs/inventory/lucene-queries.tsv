@@ -3,80 +3,80 @@
 # The span queries (term/near/or) were ported in M2/M7 as algorithms in lucene-search, not as classes.
 # class	status	detail
 queries/CommonTermsQuery	todo:M10	CommonTermsQuery (T10.6)
-queries/function/FunctionMatchQuery	todo:M10	function queries and value sources (T10.5)
-queries/function/FunctionQuery	todo:M10	function queries and value sources (T10.5)
-queries/function/FunctionRangeQuery	todo:M10	function queries and value sources (T10.5)
-queries/function/FunctionScoreQuery	todo:M10	function queries and value sources (T10.5)
-queries/function/FunctionValues	todo:M10	function queries and value sources (T10.5)
-queries/function/IndexReaderFunctions	todo:M10	function queries and value sources (T10.5)
-queries/function/ValueSource	todo:M10	function queries and value sources (T10.5)
-queries/function/ValueSourceScorer	todo:M10	function queries and value sources (T10.5)
-queries/function/docvalues/BoolDocValues	todo:M10	function queries and value sources (T10.5)
-queries/function/docvalues/DocTermsIndexDocValues	todo:M10	function queries and value sources (T10.5)
-queries/function/docvalues/DoubleDocValues	todo:M10	function queries and value sources (T10.5)
-queries/function/docvalues/FloatDocValues	todo:M10	function queries and value sources (T10.5)
-queries/function/docvalues/IntDocValues	todo:M10	function queries and value sources (T10.5)
-queries/function/docvalues/LongDocValues	todo:M10	function queries and value sources (T10.5)
-queries/function/docvalues/StrDocValues	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/BoolFunction	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/ByteKnnVectorFieldSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/ByteVectorSimilarityFunction	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/BytesRefFieldSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/ComparisonBoolFunction	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/ConstKnnByteVectorValueSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/ConstKnnFloatValueSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/ConstNumberSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/ConstValueSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/DefFunction	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/DivFloatFunction	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/DocFreqValueSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/DoubleConstValueSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/DoubleFieldSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/DualFloatFunction	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/EnumFieldSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/FieldCacheSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/FloatFieldSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/FloatKnnVectorFieldSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/FloatVectorSimilarityFunction	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/IDFValueSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/IfFunction	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/IntFieldSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/JoinDocFreqValueSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/LinearFloatFunction	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/LiteralValueSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/LongFieldSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/MaxDocValueSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/MaxFloatFunction	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/MinFloatFunction	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/MultiBoolFunction	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/MultiFloatFunction	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/MultiFunction	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/MultiValueSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/MultiValuedDoubleFieldSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/MultiValuedFloatFieldSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/MultiValuedIntFieldSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/MultiValuedLongFieldSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/NormValueSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/NumDocsValueSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/PowFloatFunction	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/ProductFloatFunction	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/QueryDocValues	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/QueryValueSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/RangeMapFloatFunction	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/ReciprocalFloatFunction	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/ScaleFloatFunction	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/SimpleBoolFunction	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/SimpleFloatFunction	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/SingleFunction	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/SortedSetFieldSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/SumFloatFunction	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/SumTotalTermFreqValueSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/TFValueSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/TermFreqValueSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/TotalTermFreqValueSource	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/VectorFieldFunction	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/VectorSimilarityFunction	todo:M10	function queries and value sources (T10.5)
-queries/function/valuesource/VectorValueSource	todo:M10	function queries and value sources (T10.5)
+queries/function/FunctionMatchQuery	ported	crates/lucene-search/src/function/queries.rs::FunctionMatchQuery
+queries/function/FunctionQuery	ported	crates/lucene-search/src/function/queries.rs::FunctionQuery
+queries/function/FunctionRangeQuery	ported	crates/lucene-search/src/function/queries.rs::FunctionRangeQuery
+queries/function/FunctionScoreQuery	ported	crates/lucene-search/src/function/queries.rs::FunctionScoreQuery
+queries/function/FunctionValues	ported	crates/lucene-search/src/function/mod.rs::FunctionValues
+queries/function/IndexReaderFunctions	ported	crates/lucene-search/src/function/index_reader_functions.rs::doc_freq
+queries/function/ValueSource	ported	crates/lucene-search/src/function/mod.rs::ValueSource
+queries/function/ValueSourceScorer	ported	crates/lucene-search/src/function/queries.rs::ValueSourceScorer
+queries/function/docvalues/BoolDocValues	ported	crates/lucene-search/src/function/docvalues.rs::BoolDocValues
+queries/function/docvalues/DocTermsIndexDocValues	ported	crates/lucene-search/src/function/docvalues.rs::DocTermsIndexDocValues
+queries/function/docvalues/DoubleDocValues	ported	crates/lucene-search/src/function/docvalues.rs::DoubleDocValues
+queries/function/docvalues/FloatDocValues	ported	crates/lucene-search/src/function/docvalues.rs::FloatDocValues
+queries/function/docvalues/IntDocValues	ported	crates/lucene-search/src/function/docvalues.rs::IntDocValues
+queries/function/docvalues/LongDocValues	ported	crates/lucene-search/src/function/docvalues.rs::LongDocValues
+queries/function/docvalues/StrDocValues	ported	crates/lucene-search/src/function/docvalues.rs::StrDocValues
+queries/function/valuesource/BoolFunction	ported	crates/lucene-search/src/function/valuesource/functions.rs::BoolFunction
+queries/function/valuesource/ByteKnnVectorFieldSource	ported	crates/lucene-search/src/function/valuesource/vectors.rs::ByteKnnVectorFieldSource
+queries/function/valuesource/ByteVectorSimilarityFunction	ported	crates/lucene-search/src/function/valuesource/vectors.rs::ByteVectorSimilarityFunction
+queries/function/valuesource/BytesRefFieldSource	ported	crates/lucene-search/src/function/valuesource/fields.rs::BytesRefFieldSource
+queries/function/valuesource/ComparisonBoolFunction	ported	crates/lucene-search/src/function/valuesource/functions.rs::ComparisonBoolFunction
+queries/function/valuesource/ConstKnnByteVectorValueSource	ported	crates/lucene-search/src/function/valuesource/constants.rs::ConstKnnByteVectorValueSource
+queries/function/valuesource/ConstKnnFloatValueSource	ported	crates/lucene-search/src/function/valuesource/constants.rs::ConstKnnFloatValueSource
+queries/function/valuesource/ConstNumberSource	ported	crates/lucene-search/src/function/valuesource/constants.rs::ConstNumberSource
+queries/function/valuesource/ConstValueSource	ported	crates/lucene-search/src/function/valuesource/constants.rs::ConstValueSource
+queries/function/valuesource/DefFunction	ported	crates/lucene-search/src/function/valuesource/functions.rs::DefFunction
+queries/function/valuesource/DivFloatFunction	ported	crates/lucene-search/src/function/valuesource/functions.rs::DivFloatFunction
+queries/function/valuesource/DocFreqValueSource	ported	crates/lucene-search/src/function/valuesource/terms.rs::DocFreqValueSource
+queries/function/valuesource/DoubleConstValueSource	ported	crates/lucene-search/src/function/valuesource/constants.rs::DoubleConstValueSource
+queries/function/valuesource/DoubleFieldSource	ported	crates/lucene-search/src/function/valuesource/fields.rs::DoubleFieldSource
+queries/function/valuesource/DualFloatFunction	ported	crates/lucene-search/src/function/valuesource/functions.rs::DualFloatFunction
+queries/function/valuesource/EnumFieldSource	ported	crates/lucene-search/src/function/valuesource/fields.rs::EnumFieldSource
+queries/function/valuesource/FieldCacheSource	ported	crates/lucene-search/src/function/valuesource/fields.rs::FieldCacheSource
+queries/function/valuesource/FloatFieldSource	ported	crates/lucene-search/src/function/valuesource/fields.rs::FloatFieldSource
+queries/function/valuesource/FloatKnnVectorFieldSource	ported	crates/lucene-search/src/function/valuesource/vectors.rs::FloatKnnVectorFieldSource
+queries/function/valuesource/FloatVectorSimilarityFunction	ported	crates/lucene-search/src/function/valuesource/vectors.rs::FloatVectorSimilarityFunction
+queries/function/valuesource/IDFValueSource	ported	crates/lucene-search/src/function/valuesource/terms.rs::IDFValueSource
+queries/function/valuesource/IfFunction	ported	crates/lucene-search/src/function/valuesource/functions.rs::IfFunction
+queries/function/valuesource/IntFieldSource	ported	crates/lucene-search/src/function/valuesource/fields.rs::IntFieldSource
+queries/function/valuesource/JoinDocFreqValueSource	ported	crates/lucene-search/src/function/valuesource/fields.rs::JoinDocFreqValueSource
+queries/function/valuesource/LinearFloatFunction	ported	crates/lucene-search/src/function/valuesource/functions.rs::LinearFloatFunction
+queries/function/valuesource/LiteralValueSource	ported	crates/lucene-search/src/function/valuesource/constants.rs::LiteralValueSource
+queries/function/valuesource/LongFieldSource	ported	crates/lucene-search/src/function/valuesource/fields.rs::LongFieldSource
+queries/function/valuesource/MaxDocValueSource	ported	crates/lucene-search/src/function/valuesource/terms.rs::MaxDocValueSource
+queries/function/valuesource/MaxFloatFunction	ported	crates/lucene-search/src/function/valuesource/functions.rs::MaxFloatFunction
+queries/function/valuesource/MinFloatFunction	ported	crates/lucene-search/src/function/valuesource/functions.rs::MinFloatFunction
+queries/function/valuesource/MultiBoolFunction	ported	crates/lucene-search/src/function/valuesource/functions.rs::MultiBoolFunction
+queries/function/valuesource/MultiFloatFunction	ported	crates/lucene-search/src/function/valuesource/functions.rs::MultiFloatFunction
+queries/function/valuesource/MultiFunction	ported	crates/lucene-search/src/function/valuesource/functions.rs::MultiFunction
+queries/function/valuesource/MultiValueSource	ported	crates/lucene-search/src/function/valuesource/vectors.rs::MultiValueSource
+queries/function/valuesource/MultiValuedDoubleFieldSource	ported	crates/lucene-search/src/function/valuesource/fields.rs::MultiValuedDoubleFieldSource
+queries/function/valuesource/MultiValuedFloatFieldSource	ported	crates/lucene-search/src/function/valuesource/fields.rs::MultiValuedFloatFieldSource
+queries/function/valuesource/MultiValuedIntFieldSource	ported	crates/lucene-search/src/function/valuesource/fields.rs::MultiValuedIntFieldSource
+queries/function/valuesource/MultiValuedLongFieldSource	ported	crates/lucene-search/src/function/valuesource/fields.rs::MultiValuedLongFieldSource
+queries/function/valuesource/NormValueSource	ported	crates/lucene-search/src/function/valuesource/terms.rs::NormValueSource
+queries/function/valuesource/NumDocsValueSource	ported	crates/lucene-search/src/function/valuesource/terms.rs::NumDocsValueSource
+queries/function/valuesource/PowFloatFunction	ported	crates/lucene-search/src/function/valuesource/functions.rs::PowFloatFunction
+queries/function/valuesource/ProductFloatFunction	ported	crates/lucene-search/src/function/valuesource/functions.rs::ProductFloatFunction
+queries/function/valuesource/QueryDocValues	ported	crates/lucene-search/src/function/valuesource/query.rs::QueryDocValues
+queries/function/valuesource/QueryValueSource	ported	crates/lucene-search/src/function/valuesource/query.rs::QueryValueSource
+queries/function/valuesource/RangeMapFloatFunction	ported	crates/lucene-search/src/function/valuesource/functions.rs::RangeMapFloatFunction
+queries/function/valuesource/ReciprocalFloatFunction	ported	crates/lucene-search/src/function/valuesource/functions.rs::ReciprocalFloatFunction
+queries/function/valuesource/ScaleFloatFunction	ported	crates/lucene-search/src/function/valuesource/functions.rs::ScaleFloatFunction
+queries/function/valuesource/SimpleBoolFunction	ported	crates/lucene-search/src/function/valuesource/functions.rs::SimpleBoolFunction
+queries/function/valuesource/SimpleFloatFunction	ported	crates/lucene-search/src/function/valuesource/functions.rs::SimpleFloatFunction
+queries/function/valuesource/SingleFunction	ported	crates/lucene-search/src/function/valuesource/functions.rs::SingleFunction
+queries/function/valuesource/SortedSetFieldSource	ported	crates/lucene-search/src/function/valuesource/fields.rs::SortedSetFieldSource
+queries/function/valuesource/SumFloatFunction	ported	crates/lucene-search/src/function/valuesource/functions.rs::SumFloatFunction
+queries/function/valuesource/SumTotalTermFreqValueSource	ported	crates/lucene-search/src/function/valuesource/terms.rs::SumTotalTermFreqValueSource
+queries/function/valuesource/TFValueSource	ported	crates/lucene-search/src/function/valuesource/terms.rs::TFValueSource
+queries/function/valuesource/TermFreqValueSource	ported	crates/lucene-search/src/function/valuesource/terms.rs::TermFreqValueSource
+queries/function/valuesource/TotalTermFreqValueSource	ported	crates/lucene-search/src/function/valuesource/terms.rs::TotalTermFreqValueSource
+queries/function/valuesource/VectorFieldFunction	ported	crates/lucene-search/src/function/valuesource/vectors.rs::VectorFieldFunction
+queries/function/valuesource/VectorSimilarityFunction	ported	crates/lucene-search/src/function/valuesource/vectors.rs::VectorSimilarityFunction
+queries/function/valuesource/VectorValueSource	ported	crates/lucene-search/src/function/valuesource/vectors.rs::VectorValueSource
 queries/intervals/BlockIntervalsSource	todo:M10	intervals (T10.6)
 queries/intervals/CachingMatchesIterator	todo:M10	intervals (T10.6)
 queries/intervals/ConjunctionIntervalIterator	todo:M10	intervals (T10.6)

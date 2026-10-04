@@ -55,6 +55,11 @@ pub enum ExtendedQuery {
     GlobalOrdinals(crate::join::GlobalOrdinalsQuery),
     GlobalOrdinalsWithScore(crate::join::GlobalOrdinalsWithScoreQuery),
     PointInSetIncludingScore(crate::join::PointInSetIncludingScoreQuery),
+    /// `lucene-queries`' function queries ([`crate::function`]).
+    Function(crate::function::FunctionQuery),
+    FunctionRange(crate::function::FunctionRangeQuery),
+    FunctionMatch(crate::function::FunctionMatchQuery),
+    FunctionScore(crate::function::FunctionScoreQuery),
 }
 
 macro_rules! into_clause {
@@ -85,6 +90,30 @@ into_clause! {
     PointInSetQuery => PointInSet,
     IndexOrDocValuesQuery => IndexOrDocValues,
     DocumentClause => Document,
+}
+
+impl From<crate::function::FunctionQuery> for Clause {
+    fn from(q: crate::function::FunctionQuery) -> Self {
+        Clause::Extended(Box::new(ExtendedQuery::Function(q)))
+    }
+}
+
+impl From<crate::function::FunctionRangeQuery> for Clause {
+    fn from(q: crate::function::FunctionRangeQuery) -> Self {
+        Clause::Extended(Box::new(ExtendedQuery::FunctionRange(q)))
+    }
+}
+
+impl From<crate::function::FunctionMatchQuery> for Clause {
+    fn from(q: crate::function::FunctionMatchQuery) -> Self {
+        Clause::Extended(Box::new(ExtendedQuery::FunctionMatch(q)))
+    }
+}
+
+impl From<crate::function::FunctionScoreQuery> for Clause {
+    fn from(q: crate::function::FunctionScoreQuery) -> Self {
+        Clause::Extended(Box::new(ExtendedQuery::FunctionScore(q)))
+    }
 }
 
 impl From<crate::rescorer::RescoreTopNQuery> for Clause {
@@ -121,6 +150,10 @@ impl ExtendedQuery {
             ExtendedQuery::GlobalOrdinals(_) => "GlobalOrdinalsQuery",
             ExtendedQuery::GlobalOrdinalsWithScore(_) => "GlobalOrdinalsWithScoreQuery",
             ExtendedQuery::PointInSetIncludingScore(_) => "PointInSetIncludingScoreQuery",
+            ExtendedQuery::Function(_) => "FunctionQuery",
+            ExtendedQuery::FunctionRange(_) => "FunctionRangeQuery",
+            ExtendedQuery::FunctionMatch(_) => "FunctionMatchQuery",
+            ExtendedQuery::FunctionScore(_) => "FunctionScoreQuery",
         }
     }
 
@@ -139,6 +172,7 @@ impl ExtendedQuery {
             // The to-query runs inside the global-ordinals joins' weights.
             ExtendedQuery::GlobalOrdinals(q) => vec![q.to_query.as_ref()],
             ExtendedQuery::GlobalOrdinalsWithScore(q) => vec![q.to_query.as_ref()],
+            ExtendedQuery::FunctionScore(q) => vec![q.in_query.as_ref()],
             _ => Vec::new(),
         }
     }

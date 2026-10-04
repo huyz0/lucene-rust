@@ -1130,14 +1130,14 @@ util/hnsw/RandomVectorScorerSupplier	ported	crates/lucene-codecs/src/vectors.rs:
 util/hnsw/SeededHnswGraphSearcher	ported	crates/lucene-codecs/src/hnsw.rs::search_seeded
 util/hnsw/UpdateGraphsUtils	ported	crates/lucene-codecs/src/hnsw.rs::compute_join_set
 util/hnsw/UpdateableRandomVectorScorer	ported	crates/lucene-codecs/src/hnsw.rs::UpdateableVectorScorer
-util/mutable/MutableValue	not-needed	mutable boxed value holder for function-query/grouping value filling; Rust uses plain Option<T>/enum values
-util/mutable/MutableValueBool	not-needed	mutable boxed value holder for function-query/grouping value filling; Rust uses plain Option<T>/enum values
-util/mutable/MutableValueDate	not-needed	mutable boxed value holder for function-query/grouping value filling; Rust uses plain Option<T>/enum values
-util/mutable/MutableValueDouble	not-needed	mutable boxed value holder for function-query/grouping value filling; Rust uses plain Option<T>/enum values
-util/mutable/MutableValueFloat	not-needed	mutable boxed value holder for function-query/grouping value filling; Rust uses plain Option<T>/enum values
-util/mutable/MutableValueInt	not-needed	mutable boxed value holder for function-query/grouping value filling; Rust uses plain Option<T>/enum values
-util/mutable/MutableValueLong	not-needed	mutable boxed value holder for function-query/grouping value filling; Rust uses plain Option<T>/enum values
-util/mutable/MutableValueStr	not-needed	mutable boxed value holder for function-query/grouping value filling; Rust uses plain Option<T>/enum values
+util/mutable/MutableValue	ported	crates/lucene-search/src/function/mod.rs::MutableValue
+util/mutable/MutableValueBool	ported	crates/lucene-search/src/function/mod.rs::MutableValue
+util/mutable/MutableValueDate	ported	crates/lucene-search/src/function/mod.rs::MutableValue
+util/mutable/MutableValueDouble	ported	crates/lucene-search/src/function/mod.rs::MutableValue
+util/mutable/MutableValueFloat	ported	crates/lucene-search/src/function/mod.rs::MutableValue
+util/mutable/MutableValueInt	ported	crates/lucene-search/src/function/mod.rs::MutableValue
+util/mutable/MutableValueLong	ported	crates/lucene-search/src/function/mod.rs::MutableValue
+util/mutable/MutableValueStr	ported	crates/lucene-search/src/function/mod.rs::MutableValue
 util/packed/AbstractBlockPackedWriter	ported	crates/lucene-codecs/src/block_packed.rs::encode_all
 util/packed/AbstractPagedMutable	ported	crates/lucene-util/src/packed/paged_mutable.rs::AbstractPagedMutable
 util/packed/BlockPackedReaderIterator	ported	crates/lucene-codecs/src/block_packed.rs::BlockPackedReaderIterator
