@@ -105,7 +105,7 @@ fn corrupt(what: &str) -> doc_values::Error {
     )))
 }
 
-fn present_docs(field: &SoftDeletesField<'_>) -> Result<PresentDocs> {
+fn present_docs(field: &SoftDeletesField<'_>, max_doc: usize) -> Result<PresentDocs> {
     let entry = field.entry;
     if entry.is_empty_field() {
         return Ok(PresentDocs::Nothing);
@@ -140,8 +140,14 @@ fn present_docs(field: &SoftDeletesField<'_>) -> Result<PresentDocs> {
                 field.data.len()
             ))
         })?;
+    // Bounded by the segment as it decodes, so a corrupt region cannot
+    // grow the list past `max_doc` entries.
     Ok(PresentDocs::These(
-        lucene_codecs::indexed_disi::decode_doc_ids(region, entry.dense_rank_power)?,
+        lucene_codecs::indexed_disi::decode_doc_ids_below(
+            region,
+            entry.dense_rank_power,
+            i32::try_from(max_doc).unwrap_or(i32::MAX),
+        )?,
     ))
 }
 
@@ -269,7 +275,7 @@ pub fn effective_live_docs(
         return Ok(live_docs.cloned());
     };
 
-    let present = present_docs(field)?;
+    let present = present_docs(field, max_doc)?;
     let mut bits = hard_live_bits(live_docs, max_doc);
     clear_present(&mut bits, &present, max_doc, &|_| false);
     Ok(Some(bits))
@@ -335,7 +341,7 @@ pub fn effective_live_docs_with_overlay(
     max_doc: usize,
 ) -> Result<Option<FixedBitSet>> {
     let present = match soft_deletes {
-        Some(field) => present_docs(field)?,
+        Some(field) => present_docs(field, max_doc)?,
         None if overlay.is_empty() => return Ok(live_docs.cloned()),
         // No base soft-deletes field configured, but the overlay itself
         // carries soft-delete marks (e.g. a soft-deletes field introduced

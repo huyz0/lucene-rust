@@ -36,6 +36,8 @@ pub fn sort_dedup_doc_ids(docs: &mut Vec<i32>) {
     let width = bits.div_ceil(passes as u32);
     let buckets = 1usize << width;
     let mask = (1u32 << width) - 1;
+    // ALLOC: `bits <= 32` gives `passes <= 3` and `width <= 11`, so the
+    // histogram is at most 3 * 2048 counters whatever the largest id is.
     let mut hist = vec![0u32; passes * buckets];
     for &d in docs.iter() {
         let v = d as u32;

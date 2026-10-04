@@ -655,6 +655,75 @@ def rule_block_guard(files, problems, stats):
                     )
 
 
+# --------------------------------------------------------------------------
+# Rule 8: an allocation is never sized from a decoded document id
+# --------------------------------------------------------------------------
+#
+# M10's T10.4 review found `SparseDocs::new` sizing its bit words (and their
+# rank table) from the *last decoded* document of an `IndexedDISI` rather than
+# from the segment's `maxDoc`: eight corrupt bytes (a SPARSE block numbered
+# ~0x7FFF) named a document near `i32::MAX`, and the reader cached a ~400 MB
+# allocation for its whole life -- or aborted the process, and the JVM with
+# it, when the allocation failed. A decoded document id is a value read off
+# disk; the only sound size for a per-document structure is the segment's
+# `max_doc`, against which every decoded id is checked first.
+#
+# The rule: outside tests, in any fn, an allocation size (`vec![_; n]`,
+# `Vec::with_capacity(n)`, `.resize(n, ..)`, `FixedBitSet::new(n)`) must not
+# mention a name the same fn bound from a doc list's `.last()`/`.first()`/
+# `.max()` (or from such a name, transitively), unless the size expression
+# itself mentions `max_doc`, or an `// ALLOC:` comment within the 6 lines above
+# names the bound that makes it sound.
+
+DOC_SOURCE = re.compile(
+    r"\b\w*docs?\w*(\s*\.\s*\w+\s*\(\s*\))*\s*\.\s*(last|first|max)\s*\(\s*\)"
+)
+LET_BIND = re.compile(r"^\s*let\s+(mut\s+)?(?P<name>[a-z_]\w*)\b[^=]*=(?P<rhs>.*)$")
+ALLOC_SINK = re.compile(
+    r"vec!\[[^;\]]*;(?P<a>[^\]]*)\]"
+    r"|with_capacity\s*\((?P<b>[^;]*)\)"
+    r"|\.resize\s*\((?P<c>[^,;]*),"
+    r"|FixedBitSet::new\s*\((?P<d>[^;]*)\)"
+)
+
+
+def rule_alloc_from_doc(files, problems, stats):
+    for rel, raw in files:
+        lines = blank_cfg_test(raw)
+        for fname, a, b in fn_spans(lines):
+            tainted = set()
+            for k in range(a, b + 1):
+                code = strip_comment(lines[k])
+                m = LET_BIND.match(code)
+                if m:
+                    rhs = m.group("rhs")
+                    # A `let` is a statement: carry the right-hand side over
+                    # the lines a chained expression is split across.
+                    j = k
+                    while not rhs.rstrip().endswith(";") and j < b and j - k < 8:
+                        j += 1
+                        rhs += " " + strip_comment(lines[j])
+                    words = set(re.findall(r"[a-z_]\w*", rhs))
+                    if DOC_SOURCE.search(rhs) or words & tainted:
+                        tainted.add(m.group("name"))
+                for s in ALLOC_SINK.finditer(code):
+                    expr = next(g for g in s.groups() if g is not None)
+                    words = set(re.findall(r"[a-z_]\w*", expr))
+                    if not (DOC_SOURCE.search(expr) or words & tainted):
+                        continue
+                    stats["alloc_doc_sites"] += 1
+                    if "max_doc" in expr or "ALLOC:" in leading_comment(lines, k):
+                        continue
+                    problems.append(
+                        f"{rel}:{k + 1}: `{fname}` sizes an allocation from a "
+                        f"decoded document id (`{expr.strip()}`). A corrupt file "
+                        f"names any document it likes: size from `max_doc` and "
+                        f"reject ids at or past it, or justify the bound in an "
+                        f"`// ALLOC:` comment. "
+                        f"(docs/mechanical-gates.md#alloc-from-doc)"
+                    )
+
+
 RULES = (
     ("fixed-bitset-bound", rule_fixed_bitset_bound),
     ("sentinel-callers", rule_sentinel_callers),
@@ -663,6 +732,7 @@ RULES = (
     ("doc-values-per-doc", rule_doc_values_per_doc),
     ("ledger-single-list", rule_ledger_single_list),
     ("block-guard", rule_block_guard),
+    ("alloc-from-doc", rule_alloc_from_doc),
 )
 
 
@@ -684,6 +754,7 @@ def main(argv):
         "dv_loop_sites": 0,
         "ledger_open_boxes": 0,
         "block_flag_sites": 0,
+        "alloc_doc_sites": 0,
     }
     for name, rule in RULES:
         if only and name != only:
@@ -700,6 +771,7 @@ def main(argv):
         print(f"blocktree infallible lookups        : {stats['blocktree_sites']}")
         print(f"doc-values per-document call sites  : {stats['dv_loop_sites']}" + f" (burn-down: {sum(DV_LOOP_BURNDOWN.values())})")
         print(f"block-flag sites (guarded)          : {stats['block_flag_sites']}")
+        print(f"allocations sized from a doc id     : {stats['alloc_doc_sites']}")
 
     if problems:
         for p in problems:
