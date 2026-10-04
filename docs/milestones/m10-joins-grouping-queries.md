@@ -226,6 +226,12 @@ grouping. Each of them falls back to Lucene today.
   | `fn_termfreq` | 0.83x |
   | `fn_tf_idf` | 0.73x |
   | `fn_match` | 0.92x |
+  | `fn_joindf` | 1.15x |
+
+  `fn_joindf` (added by the review, a later run; floor 1.12x) keeps
+  `joindf`'s map precomputed in `createWeight`: Java's per-document
+  `seekExact` needs the top-level reader at `getValues`, and the map is
+  faster on a field of ~20 000 keys per segment.
 
   Left below 1.0, with the cause measured (perf). Every case is a
   per-document chain of virtual calls: `Bulk::score` -> `dyn Scorer::score`
