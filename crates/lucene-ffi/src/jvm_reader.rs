@@ -5019,6 +5019,34 @@ pub(crate) mod tests {
         assert_eq!(ffi_close_jvm_reader(h), 0);
     }
 
+    /// The fuzzer's `jvm_search` finding (seed `geo_distance_dateline`): a
+    /// distance query centred on the dateline with a subnormal radius,
+    /// whose bounding box crosses it a few quantization steps wide. Its
+    /// grid's `int` arithmetic wraps past `i32::MAX` in Java; here it
+    /// overflowed, and the caught panic came back as `FfiStatus::Panic`.
+    #[test]
+    fn geo_distance_on_the_dateline_answers_without_a_panic() {
+        let input = include_bytes!("../fuzz/seeds/jvm_search/geo_distance_dateline");
+        // The harness's framing: `top_n`, the count limit, then the blob.
+        let (top_n, limit) = (usize::from(input[0] % 12), i64::from(input[1] % 12) - 1);
+        let blob = &input[2..];
+        assert_eq!(&blob[..2], &[QUERY_TREE, NODE_GEO_DISTANCE]);
+        let h = open();
+        // As found, the node is followed by bytes no query reads: an error.
+        assert_eq!(
+            run_limit(h, blob, top_n, limit),
+            Err(FfiStatus::InvalidArgument.code())
+        );
+        assert!(crate::error::last_error().contains("trailing bytes"));
+        // The node alone (kind, field `loc`, three `f64`s) is a valid query;
+        // the fixture has no `loc` field, so it matches nothing.
+        let node = &blob[..2 + 4 + 3 + 3 * 8];
+        let (hits, total, _) = run_limit(h, node, top_n, limit)
+            .unwrap_or_else(|rc| panic!("status {rc}: {}", crate::error::last_error()));
+        assert!(hits.is_empty() && total == 0);
+        assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+
     /// `ConstantScoreQuery` and `BoostQuery` -- what OpenSearch builds for a
     /// `term` on a keyword field and for a boosted `match` -- score as Lucene
     /// defines them: the constant, and the inner score times the boost.
