@@ -478,16 +478,12 @@ impl Scorer for GlobalOrdinalScorer<'_> {
     }
 }
 
-/// The segment's position among the searcher's (`context.ord`), for the
-/// ordinal map.
-fn leaf_ord(
-    ctx: &LeafContext<'_>,
-    map: Option<&Arc<crate::ordinal_map::OrdinalMap>>,
-    leaves: &crate::join::query_time::LeafOrds,
-) -> Result<usize> {
-    if map.is_none() {
-        return Ok(0);
-    }
+/// The segment's position among the searcher's the query was built over
+/// (`context.ord`), for the ordinal map. A segment that was not among them
+/// is Java's `IllegalStateException` -- with or without a map: a query built
+/// over one segment (no map) and run over a refreshed reader would
+/// otherwise read another segment's ordinals as that one's.
+fn leaf_ord(ctx: &LeafContext<'_>, leaves: &crate::join::query_time::LeafOrds) -> Result<usize> {
     let reader = ctx
         .reader
         .ok_or_else(|| Error::MissingSegmentReader("GlobalOrdinalsQuery".into()))?;
@@ -517,7 +513,7 @@ pub(crate) fn global_ordinals<'a>(
     let Some(approximation) = build::build(ctx, &q.to_query, 1.0, Mode::NoScores, false)? else {
         return Ok(None);
     };
-    let ord = leaf_ord(ctx, q.ordinal_map.as_ref(), &q.leaves)?;
+    let ord = leaf_ord(ctx, &q.leaves)?;
     let accept = if translate_up_front(&approximation, values.as_ref()) {
         let found = segment_ordinals(
             values.as_ref(),
@@ -569,7 +565,7 @@ pub(crate) fn global_ordinals_with_score<'a>(
     let Some(approximation) = build::build(ctx, &q.to_query, 1.0, Mode::NoScores, false)? else {
         return Ok(None);
     };
-    let ord = leaf_ord(ctx, q.ordinal_map.as_ref(), &q.leaves)?;
+    let ord = leaf_ord(ctx, &q.leaves)?;
     let c = &q.collected;
     let accept = if translate_up_front(&approximation, values.as_ref()) {
         let mut scores = Vec::new();

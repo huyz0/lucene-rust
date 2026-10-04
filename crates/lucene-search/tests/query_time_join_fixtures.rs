@@ -527,6 +527,29 @@ fn query_time_join_edges() {
         .unwrap();
         assert!(search(&foreign, q, 10).unwrap().is_empty());
     }
+    // A query built over one segment (so with no ordinal map) and run over
+    // the whole reader: the other segments' ordinals are not the first's,
+    // and reading them as its own would answer with wrong hits.
+    {
+        let one = IndexSearcher::new(&segments[..1], &norms[..1]).unwrap();
+        let match_all = Clause::MatchAllDocs(MatchAllDocsQuery::new(0));
+        for mode in [ScoreMode::None, ScoreMode::Max] {
+            let q = create_global_ordinals_join_query(
+                "gj",
+                &from,
+                &match_all,
+                &one,
+                mode,
+                None,
+                0,
+                i32::MAX,
+            )
+            .unwrap();
+            assert!(!search(&one, q.clone(), 10).unwrap().is_empty(), "{mode:?}");
+            let err = search(&searcher, q, 10).unwrap_err().to_string();
+            assert!(err.contains("different index reader"), "{mode:?}: {err}");
+        }
+    }
     // A scoring numeric join over segments whose points were not opened.
     {
         let unopened = reader.open_segments().unwrap();
