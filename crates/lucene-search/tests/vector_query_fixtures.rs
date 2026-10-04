@@ -28,10 +28,15 @@ use lucene_codecs::hnsw_vectors::HnswVectorsReader;
 use lucene_codecs::vectors::FlatVectorsReader;
 use lucene_search::vector_query::{
     search_knn_byte_vector_query, search_knn_byte_vector_query_multi_segment,
-    search_knn_byte_vector_query_multi_segment_concurrent, search_knn_float_vector_query,
+    search_knn_byte_vector_query_multi_segment_concurrent,
+    search_knn_byte_vector_query_multi_segment_with_deadline, search_knn_float_vector_query,
     search_knn_float_vector_query_multi_segment,
-    search_knn_float_vector_query_multi_segment_concurrent, KnnByteVectorQuery,
-    KnnFloatVectorQuery, KnnSegment, VectorsInput,
+    search_knn_float_vector_query_multi_segment_concurrent,
+    search_knn_float_vector_query_multi_segment_with_deadline,
+    search_patience_knn_byte_vector_query_multi_segment,
+    search_seeded_knn_byte_vector_query_multi_segment, ByteVectorSimilarityQuery,
+    FloatVectorSimilarityQuery, KnnByteVectorQuery, KnnFloatVectorQuery, KnnSegment,
+    PatienceKnnVectorQuery, VectorsInput,
 };
 use lucene_search::ScoreDoc;
 use lucene_util::fixed_bit_set::FixedBitSet;
@@ -1034,4 +1039,178 @@ fn a_single_segment_filtered_hit_is_always_in_the_filter() {
             }
         }
     }
+}
+
+/// `TimeLimitingKnnCollectorManager` over the multi-segment fixture: a
+/// deadline that never comes changes nothing, one already past stops every
+/// walk at once -- what was found stands, never an error.
+#[test]
+fn a_deadline_bounds_the_multi_segment_walks() {
+    let f = MultiFixture::load();
+    let infos = f.infos();
+    let leaves = f.leaves(&infos, None);
+    let k = f.m.int("k") as usize;
+    let later = std::time::Instant::now() + std::time::Duration::from_secs(3600);
+    let past = std::time::Instant::now();
+    let ordered = |hits: &[ScoreDoc]| {
+        assert!(hits.len() <= k);
+        assert!(hits.windows(2).all(|w| w[0].score >= w[1].score));
+    };
+    let fq =
+        KnnFloatVectorQuery::new(f.m.get("f0.name"), float_vec(f.m.get("q.f0.0.vec")), k).unwrap();
+    let plain = search_knn_float_vector_query_multi_segment(&leaves, &fq).unwrap();
+    assert_eq!(
+        search_knn_float_vector_query_multi_segment_with_deadline(&leaves, &fq, later).unwrap(),
+        plain
+    );
+    ordered(
+        &search_knn_float_vector_query_multi_segment_with_deadline(&leaves, &fq, past).unwrap(),
+    );
+    let bq =
+        KnnByteVectorQuery::new(f.m.get("f3.name"), byte_vec(f.m.get("q.f3.0.vec")), k).unwrap();
+    let plain = search_knn_byte_vector_query_multi_segment(&leaves, &bq).unwrap();
+    assert_eq!(
+        search_knn_byte_vector_query_multi_segment_with_deadline(&leaves, &bq, later).unwrap(),
+        plain
+    );
+    ordered(&search_knn_byte_vector_query_multi_segment_with_deadline(&leaves, &bq, past).unwrap());
+
+    // The byte twins of the patience and seeded queries: patience with
+    // Java's defaults (`max(7, k * 0.3)`), and seeds that are the plain
+    // search's own hits, which the walk starts from and returns again.
+    let patient = PatienceKnnVectorQuery::from_byte_query(bq.clone());
+    assert_eq!(patient.patience, 7.max(k * 3 / 10));
+    ordered(&search_patience_knn_byte_vector_query_multi_segment(&leaves, &patient).unwrap());
+    let mut seeds: Vec<Vec<i32>> = vec![Vec::new(); leaves.len()];
+    for h in &plain {
+        let i = leaves.iter().rposition(|l| l.doc_base <= h.doc_id).unwrap();
+        seeds[i].push(h.doc_id - leaves[i].doc_base);
+    }
+    let seeded = search_seeded_knn_byte_vector_query_multi_segment(&leaves, &bq, &seeds).unwrap();
+    assert_eq!(seeded.len(), plain.len());
+    let unseeded = search_seeded_knn_byte_vector_query_multi_segment(
+        &leaves,
+        &bq,
+        &vec![Vec::new(); leaves.len()],
+    )
+    .unwrap();
+    assert_eq!(unseeded, plain, "no seeds is the plain walk");
+}
+
+/// `AbstractKnnVectorQuery`'s preflight refusals, per leaf: an unknown
+/// field, the other encoding, a similarity other than the field's (the
+/// graph's arcs were built with the field's), a target of the wrong
+/// dimension -- and the similarity queries' own argument checks.
+#[test]
+fn knn_queries_refuse_a_field_they_cannot_search() {
+    let f = MultiFixture::load();
+    let infos = f.infos();
+    let leaves = f.leaves(&infos, None);
+    let refused = |r: lucene_search::Result<Vec<ScoreDoc>>| match r {
+        Err(lucene_search::Error::InvalidKnnQuery(m)) => m,
+        other => panic!("accepted: {other:?}"),
+    };
+    let dense = f.m.get("f0.name");
+    let bytes = f.m.get("f3.name");
+    let target = float_vec(f.m.get("q.f0.0.vec"));
+    let q = |field: &str, target: Vec<f32>| KnnFloatVectorQuery::new(field, target, 5).unwrap();
+    let m = refused(search_knn_float_vector_query_multi_segment(
+        &leaves,
+        &q("nosuch", target.clone()),
+    ));
+    assert!(m.contains("unknown field \"nosuch\""), "{m}");
+    let m = refused(search_knn_float_vector_query_multi_segment(
+        &leaves,
+        &q(bytes, vec![1.0; 8]),
+    ));
+    assert!(
+        m.contains("is Byte-encoded, but this call searches Float32 vectors"),
+        "{m}"
+    );
+    let m = refused(search_knn_byte_vector_query_multi_segment(
+        &leaves,
+        &KnnByteVectorQuery::new(dense, vec![1; 16], 5).unwrap(),
+    ));
+    assert!(
+        m.contains("is Float32-encoded, but this call searches Byte vectors"),
+        "{m}"
+    );
+    let m = refused(search_knn_float_vector_query_multi_segment(
+        &leaves,
+        &q(dense, vec![1.0; 3]),
+    ));
+    assert_eq!(
+        m,
+        "vector query dimension: 3 differs from field dimension: 16"
+    );
+    let mut other = q(dense, target.clone());
+    other.similarity = Some(lucene_codecs::field_infos::VectorSimilarityFunction::Cosine);
+    let m = refused(search_knn_float_vector_query_multi_segment(&leaves, &other));
+    assert!(
+        m.starts_with("similarity 2 does not match the field's own 0"),
+        "{m}"
+    );
+    // A field with no vectors in a segment's `.vemf`.
+    if let Some(plain) = infos[0].fields.iter().find(|fi| fi.vector_dimension == 0) {
+        let m = refused(search_knn_float_vector_query_multi_segment(
+            &leaves,
+            &q(&plain.name, target.clone()),
+        ));
+        assert!(m.contains("has no vectors in this segment"), "{m}");
+        // A similarity query over it finds nothing there.
+        let q = FloatVectorSimilarityQuery::new(&plain.name, target.clone(), 0.0, 0.5).unwrap();
+        assert!(
+            lucene_search::vector_query::float_vector_similarity_hits(&leaves, &q)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    // The similarity queries: a NaN threshold, a decay outside [0, 1]; the
+    // other encoding refused, an absent field nothing.
+    let m = match FloatVectorSimilarityQuery::new(dense, target.clone(), f32::NAN, 0.5) {
+        Err(lucene_search::Error::InvalidKnnQuery(m)) => m,
+        other => panic!("{other:?}"),
+    };
+    assert!(
+        m.starts_with("resultSimilarity must have a valid value"),
+        "{m}"
+    );
+    for decay in [-0.5, 1.5, f32::NAN] {
+        assert!(FloatVectorSimilarityQuery::new(dense, target.clone(), 0.5, decay).is_err());
+    }
+    let wrong = ByteVectorSimilarityQuery::new(dense, vec![1; 16], 0.5, 0.5).unwrap();
+    let m = match lucene_search::vector_query::byte_vector_similarity_hits(&leaves, &wrong) {
+        Err(lucene_search::Error::InvalidKnnQuery(m)) => m,
+        other => panic!("{other:?}"),
+    };
+    assert!(
+        m.contains("is Float32-encoded, but this query searches Byte vectors"),
+        "{m}"
+    );
+    // A filter accepting nothing: no leaf is searched.
+    let none: Vec<FixedBitSet> = f
+        .segments
+        .iter()
+        .map(|seg| FixedBitSet::new(seg.max_doc as usize))
+        .collect();
+    let filtered = f.leaves(&infos, Some(&none));
+    let all =
+        FloatVectorSimilarityQuery::new(dense, target.clone(), f32::NEG_INFINITY, 0.5).unwrap();
+    assert!(
+        lucene_search::vector_query::float_vector_similarity_hits(&filtered, &all)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        !lucene_search::vector_query::float_vector_similarity_hits(&leaves, &all)
+            .unwrap()
+            .is_empty()
+    );
+    let absent = FloatVectorSimilarityQuery::new("nosuch", target, 0.5, 0.5).unwrap();
+    assert!(
+        lucene_search::vector_query::float_vector_similarity_hits(&leaves, &absent)
+            .unwrap()
+            .is_empty()
+    );
 }
