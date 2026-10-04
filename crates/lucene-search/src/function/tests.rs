@@ -1333,3 +1333,53 @@ fn a_booleans_explanation_is_its_score_under_the_searchers_similarity() {
         }
     }
 }
+
+/// Two sources' vectors of different lengths: Java's `VectorUtil` throws
+/// `IllegalArgumentException("vector dimensions differ: a!=b")` from the
+/// similarity (`FloatVectorSimilarityFunction.func`'s own `assert` is off in
+/// production), for float and byte vectors alike.
+#[test]
+fn vector_similarities_refuse_vectors_of_different_lengths() {
+    use lucene_codecs::field_infos::VectorSimilarityFunction as Sim;
+    let reader = index();
+    let opened = reader.open_segments().unwrap();
+    let segments = opened.as_open_segments();
+    let leaf = ValueLeaf::of_segment(&segments[0]);
+    let fcx = FunctionContext::new();
+    let f3: Arc<dyn ValueSource> =
+        Arc::new(ConstKnnFloatValueSource::new(vec![1.0, 2.0, 3.0]).unwrap());
+    let f2: Arc<dyn ValueSource> = Arc::new(ConstKnnFloatValueSource::new(vec![1.0, 2.0]).unwrap());
+    let b3: Arc<dyn ValueSource> = Arc::new(ConstKnnByteVectorValueSource::new(vec![1, 2, 3]));
+    let b4: Arc<dyn ValueSource> = Arc::new(ConstKnnByteVectorValueSource::new(vec![1, 2, 3, 4]));
+    for sim in [
+        Sim::Euclidean,
+        Sim::DotProduct,
+        Sim::Cosine,
+        Sim::MaximumInnerProduct,
+    ] {
+        for (s, want) in [
+            (
+                FloatVectorSimilarityFunction::new(sim, Arc::clone(&f3), Arc::clone(&f2)),
+                "3!=2",
+            ),
+            (
+                ByteVectorSimilarityFunction::new(sim, Arc::clone(&b3), Arc::clone(&b4)),
+                "3!=4",
+            ),
+        ] {
+            let mut v = s.get_values(&fcx, &leaf).unwrap();
+            for r in [v.float_val(0).map(f64::from), v.double_val(0)] {
+                match r {
+                    Err(Error::IllegalArgument(m)) => {
+                        assert_eq!(m, format!("vector dimensions differ: {want}"), "{sim:?}")
+                    }
+                    other => panic!("{sim:?}: {other:?}"),
+                }
+            }
+            assert!(v.str_val(0).is_err());
+        }
+        // Equal lengths still compare.
+        let same = FloatVectorSimilarityFunction::new(sim, Arc::clone(&f3), Arc::clone(&f3));
+        assert!(same.get_values(&fcx, &leaf).unwrap().float_val(0).is_ok());
+    }
+}

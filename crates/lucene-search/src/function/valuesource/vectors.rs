@@ -313,6 +313,17 @@ impl ByteVectorSimilarityFunction {
     }
 }
 
+/// `VectorUtil`'s dimension check: `vector dimensions differ: a!=b`.
+fn same_dimensions(a: usize, b: usize) -> Result<()> {
+    if a == b {
+        Ok(())
+    } else {
+        Err(Error::IllegalArgument(format!(
+            "vector dimensions differ: {a}!={b}"
+        )))
+    }
+}
+
 struct VectorSimilarityValues<'a> {
     v1: BoxValues<'a>,
     v2: BoxValues<'a>,
@@ -322,14 +333,19 @@ struct VectorSimilarityValues<'a> {
 }
 
 impl VectorSimilarityValues<'_> {
-    /// `func(doc, f1, f2)`.
+    /// `func(doc, f1, f2)`. Vectors of different lengths are `VectorUtil`'s
+    /// `IllegalArgumentException` (`func`'s own `assert` is off in
+    /// production), never a comparison of the common prefix.
     fn func(&mut self, doc: i32) -> Result<f32> {
         Ok(match self.kind {
             Kind::Float => {
                 let a = self.v1.float_vector_val(doc)?;
                 let b = self.v2.float_vector_val(doc)?;
                 match (a, b) {
-                    (Some(a), Some(b)) => self.similarity.score(&a, &b),
+                    (Some(a), Some(b)) => {
+                        same_dimensions(a.len(), b.len())?;
+                        self.similarity.score(&a, &b)
+                    }
                     _ => 0.0,
                 }
             }
@@ -337,7 +353,10 @@ impl VectorSimilarityValues<'_> {
                 let a = self.v1.byte_vector_val(doc)?;
                 let b = self.v2.byte_vector_val(doc)?;
                 match (a, b) {
-                    (Some(a), Some(b)) => self.similarity.score_bytes(&a, &b),
+                    (Some(a), Some(b)) => {
+                        same_dimensions(a.len(), b.len())?;
+                        self.similarity.score_bytes(&a, &b)
+                    }
                     _ => 0.0,
                 }
             }
