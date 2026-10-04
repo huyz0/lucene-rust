@@ -1258,7 +1258,6 @@ pub(crate) fn collect_functions<'q>(
 fn collect_clause<'q>(c: &'q crate::query::Clause, out: &mut Vec<FunctionSource<'q>>) {
     use crate::extended_query::ExtendedQuery;
     use crate::query::Clause;
-    let start = out.len();
     match c {
         Clause::Boolean(b) => collect_functions(b, out),
         Clause::DisjunctionMax(d) => {
@@ -1269,25 +1268,28 @@ fn collect_clause<'q>(c: &'q crate::query::Clause, out: &mut Vec<FunctionSource<
         Clause::Boost(b) => collect_clause(&b.inner, out),
         Clause::ConstantScore(cs) => collect_clause(&cs.inner, out),
         Clause::Extended(e) => {
-            match e.as_ref() {
-                ExtendedQuery::Function(q) => out.push(FunctionSource::Value(&q.source)),
-                ExtendedQuery::FunctionRange(q) => out.push(FunctionSource::Value(&q.source)),
-                ExtendedQuery::FunctionScore(q) => out.push(FunctionSource::Double(&q.source)),
-                ExtendedQuery::FunctionMatch(q) => out.push(FunctionSource::Double(&q.source)),
-                _ => {}
+            let own = match e.as_ref() {
+                ExtendedQuery::Function(q) => Some(FunctionSource::Value(&q.source)),
+                ExtendedQuery::FunctionRange(q) => Some(FunctionSource::Value(&q.source)),
+                ExtendedQuery::FunctionScore(q) => Some(FunctionSource::Double(&q.source)),
+                ExtendedQuery::FunctionMatch(q) => Some(FunctionSource::Double(&q.source)),
+                _ => None,
+            };
+            // The queries this clause's function scores may hold functions
+            // themselves: walked once, here -- the nested ones walk their
+            // own.
+            if let Some(f) = own {
+                let queries = f.queries();
+                out.push(f);
+                for q in queries {
+                    collect_clause(q, out);
+                }
             }
             for child in e.children() {
                 collect_clause(child, out);
             }
         }
         _ => {}
-    }
-    // The queries the new functions score may hold functions themselves.
-    let added: Vec<FunctionSource<'q>> = out[start..].to_vec();
-    for f in added {
-        for q in f.queries() {
-            collect_clause(q, out);
-        }
     }
 }
 
