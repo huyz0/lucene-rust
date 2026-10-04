@@ -723,6 +723,9 @@ fn accept_ords_from_docs(
     let last_doc = (values.ord_to_doc)(size - 1)?;
     let mut bits = FixedBitSet::new(ords);
     match (input.filter, input.live_docs) {
+        (Some(filter), live) if filter.cardinality() >= ords / RANK_WALK_INVERSE_DENSITY => {
+            accept_ords_by_rank(&cursor, filter, live, last_doc, &mut bits)?;
+        }
         (Some(filter), live) => {
             let mut next = filter.next_set_bit(0);
             while let Some(doc) = next {
@@ -765,6 +768,53 @@ fn accept_ords_from_docs(
         (None, None) => return Ok(None),
     }
     Ok(Some(bits))
+}
+
+/// A filter passing at least one in this many of a field's vectors is
+/// turned into ordinals by [`accept_ords_by_rank`] rather than a lookup per
+/// document: the rank walk reads the field's whole document set once, which
+/// a few lookups beat and many do not.
+const RANK_WALK_INVERSE_DENSITY: usize = 16;
+
+/// [`accept_ords_from_docs`] for a filter passing many documents: the
+/// field's documents as a bit set
+/// ([`lucene_codecs::vectors::DocToOrdCursor::or_docs_into`]), each
+/// accepted one's ordinal its rank among them -- the set bits before it --
+/// a word at a time, where a lookup per document would seek the field's
+/// `IndexedDISI` each time. The same set of ordinals.
+fn accept_ords_by_rank(
+    cursor: &lucene_codecs::vectors::DocToOrdCursor<'_>,
+    filter: &FixedBitSet,
+    live: Option<&FixedBitSet>,
+    last_doc: i32,
+    bits: &mut FixedBitSet,
+) -> Result<()> {
+    let span = usize::try_from(last_doc).map_or(0, |d| (d >> 6).saturating_add(1));
+    let mut field = vec![0u64; span.max(filter.words().len())];
+    cursor.or_docs_into(&mut field)?;
+    let ords = bits.len();
+    let mut rank = 0usize;
+    for (i, &has) in field.iter().enumerate() {
+        if has == 0 {
+            continue;
+        }
+        let mut accepted = has & filter.words().get(i).copied().unwrap_or(0);
+        if let Some(live) = live {
+            accepted &= live.words().get(i).copied().unwrap_or(0);
+        }
+        while accepted != 0 {
+            let bit = accepted.trailing_zeros();
+            let below = has & ((1u64 << bit) - 1);
+            let ord = rank + below.count_ones() as usize;
+            if ord < ords {
+                // FBS: bounded by the check above.
+                bits.set(ord);
+            }
+            accepted &= accepted - 1;
+        }
+        rank += has.count_ones() as usize;
+    }
+    Ok(())
 }
 
 fn flush_bulk<S: VectorScorer>(
@@ -1765,10 +1815,7 @@ pub fn filter_bitsets(
 ) -> Result<Vec<FixedBitSet>> {
     segments
         .iter()
-        .map(|seg| {
-            let docs = crate::exec::extended::segment_matches(seg, filter)?;
-            Ok(accept_bitset(docs, seg.max_doc.unwrap_or(0)))
-        })
+        .map(|seg| crate::exec::extended::segment_match_bits(seg, filter))
         .collect()
 }
 
@@ -1809,7 +1856,11 @@ pub fn knn_seed_docs(
             .into_iter()
             .filter(|&(d, _)| {
                 seg.live_docs.is_none_or(|l| l.get_doc(d))
-                    && filter.and_then(|f| f.get(i)).is_none_or(|b| b.get_doc(d))
+                    // FBS: `sets` is the slice of per-segment filter sets,
+                    // not a bit set; `get(i)` is the slice's checked `get`.
+                    && filter
+                        .and_then(|sets| sets.get(i))
+                        .is_none_or(|b| b.get_doc(d))
             })
             .collect();
         if let Some(s) = knn.get(i) {
@@ -3134,5 +3185,43 @@ mod tests {
         .unwrap();
         let docs: Vec<i32> = hits.hits.iter().map(|h| h.doc_id).collect();
         assert_eq!((docs, early), (vec![2, 12], false));
+    }
+
+    #[test]
+    fn the_rank_walk_accepts_what_the_lookups_accept() {
+        use lucene_codecs::vectors::DocToOrdCursor;
+        // Documents with a vector, in ordinal order, spanning several words.
+        let docs: Vec<i32> = (0..300).filter(|d| d % 3 != 1).collect();
+        let cursor = DocToOrdCursor::Explicit(&docs);
+        let last = *docs.last().unwrap();
+        let filter = bits(300, &(0..300).filter(|d| d % 5 != 0).collect::<Vec<_>>());
+        let live = bits(300, &(0..300).filter(|d| d % 7 != 0).collect::<Vec<_>>());
+        for live in [None, Some(&live)] {
+            let mut got = FixedBitSet::new(docs.len());
+            accept_ords_by_rank(&cursor, &filter, live, last, &mut got).unwrap();
+            let want: Vec<usize> = docs
+                .iter()
+                .enumerate()
+                .filter(|(_, &d)| filter.get(d as usize) && live.is_none_or(|l| l.get(d as usize)))
+                .map(|(o, _)| o)
+                .collect();
+            let mut have = Vec::new();
+            got.for_each_set_bit(|o| have.push(o));
+            assert_eq!(have, want);
+        }
+        // A shorter filter or live set accepts nothing past its end, and an
+        // ordinal past the accept set is dropped.
+        let short = bits(64, &[2, 3, 63]);
+        let mut got = FixedBitSet::new(2);
+        accept_ords_by_rank(&cursor, &short, None, last, &mut got).unwrap();
+        let mut have = Vec::new();
+        got.for_each_set_bit(|o| have.push(o));
+        assert_eq!(have, vec![1]);
+        let mut got = FixedBitSet::new(docs.len());
+        accept_ords_by_rank(&cursor, &filter, Some(&short), last, &mut got).unwrap();
+        let mut have = Vec::new();
+        got.for_each_set_bit(|o| have.push(o));
+        // Docs 2, 3 and 63 are live; 63 is the 43rd document with a vector.
+        assert_eq!(have, vec![1, 2, 42]);
     }
 }

@@ -77,7 +77,20 @@ grouping. Each of them falls back to Lucene today.
   `ParentsChildrenBlockJoinQuery`, `ToParentBlockJoinSortField` with
   `BlockJoinSelector`/`ToParentDocValues`, explain and matches,
   `DiversifyingChildrenFloat/ByteKnnVectorQuery`; 1056 differential searches
-  (`GenBlockJoin`) bit for bit. Open: benchmarks.
+  (`GenBlockJoin`) bit for bit. Benchmark pair `scripts/bench-micro.sh
+  --bench join` (`JoinMicro.java` / `micro_join.rs`, 60 000 blocks, ~300 000
+  children with vectors; every case's hits digest equal to Lucene's): unfiltered
+  diversifying KNN 1.24x, filtered 1.09x, `ParentChildren` 1.60x, `ToParent`
+  `Max` 1.60x, `Total` 1.11x; `Avg`, `Min`, `None`, `ToChild`,
+  `ParentsChildren` and the sort field 0.94x-1.06x, inside the 1.07x noise
+  floor; `ToParent` inside a boolean 0.90x. Stage 3 made the sort field lazy
+  (a block folded only when the collector reads its parent, as
+  `ToParentDocValues` does: 0.52x before), gave the KNN filter its bulk
+  scorer and a rank walk from documents to ordinals (0.73x before), and let
+  the block-join bulk scorer's child collect into a concrete collector (the
+  per-child hit was a virtual call). The boolean case's remaining time is the
+  generic `ReqOptSumScorer`/conjunction scorers around the join, which
+  mirror Java's; the join's own scorer is a small share of it.
 - **T10.3** — Query-time joins.
 - **T10.4** — Grouping.
 - **T10.5** — Function queries and value sources.

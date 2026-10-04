@@ -1017,6 +1017,37 @@ impl DocToOrdCursor<'_> {
         }
     }
 
+    /// ORs every document that has a vector into `words`, a bit set of
+    /// `words.len() * 64` documents: the field's documents in ordinal order,
+    /// so a document's ordinal is the number of set bits before it. A
+    /// document past the set is corruption (a dense or explicit field's
+    /// documents are dropped there instead, as no caller sizes `words` below
+    /// the field's last document).
+    pub fn or_docs_into(&self, words: &mut [u64]) -> Result<()> {
+        let mut set = |doc: usize| {
+            if let Some(w) = words.get_mut(doc >> 6) {
+                *w |= 1u64 << (doc & 63);
+            }
+        };
+        match self {
+            DocToOrdCursor::Empty => {}
+            DocToOrdCursor::Dense { size } => {
+                for doc in 0..usize::try_from(*size).unwrap_or(0) {
+                    set(doc);
+                }
+            }
+            DocToOrdCursor::Sparse(cursor) => cursor.or_into_words(words)?,
+            DocToOrdCursor::Explicit(docs) => {
+                for &doc in docs.iter() {
+                    if let Ok(d) = usize::try_from(doc) {
+                        set(d);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn reset(&mut self) {
         if let DocToOrdCursor::Sparse(cursor) = self {
             cursor.reset();
@@ -3022,5 +3053,48 @@ mod tests {
         // field's 4-byte aligned, exactly as a flush would leave them.
         assert_eq!(reader.field(0).unwrap().vector_data_offset % 64, 0);
         assert_eq!(reader.field(1).unwrap().vector_data_offset % 4, 0);
+    }
+
+    #[test]
+    fn doc_to_ord_cursors_list_their_documents_in_bulk() {
+        let words_of = |c: &DocToOrdCursor<'_>, n: usize| {
+            let mut w = vec![0u64; n];
+            c.or_docs_into(&mut w).unwrap();
+            w
+        };
+        assert_eq!(words_of(&DocToOrdCursor::Empty, 2), vec![0, 0]);
+        assert_eq!(words_of(&DocToOrdCursor::Dense { size: 3 }, 1), vec![0b111]);
+        // Documents past the words are dropped, not written out of bounds.
+        assert_eq!(
+            words_of(&DocToOrdCursor::Dense { size: 70 }, 1),
+            vec![u64::MAX]
+        );
+        let docs = [1, 64, 65, 200, -3];
+        assert_eq!(
+            words_of(&DocToOrdCursor::Explicit(&docs), 3),
+            vec![0b10, 0b11, 0]
+        );
+        // An IndexedDISI with sparse, dense and all-documents blocks.
+        let docs: Vec<i32> = (0..140_000)
+            .filter(|d| d % 3 == 0 || (5_000..10_000).contains(d) || (65_536..131_072).contains(d))
+            .collect();
+        let (bytes, jumps) = crate::indexed_disi::write_with_dense_rank_power(
+            &docs,
+            crate::indexed_disi::DEFAULT_DENSE_RANK_POWER,
+        );
+        let c = DocToOrdCursor::Sparse(Box::new(DisiCursor::new(
+            &bytes,
+            crate::indexed_disi::DEFAULT_DENSE_RANK_POWER,
+            jumps,
+        )));
+        let w = words_of(&c, 140_000 / 64 + 1);
+        let got: Vec<i32> = (0..140_000usize)
+            .filter(|&d| (w[d >> 6] >> (d & 63)) & 1 == 1)
+            .map(|d| d as i32)
+            .collect();
+        assert_eq!(got, docs);
+        // Too few words for the set is corruption.
+        let mut short = vec![0u64; 4];
+        assert!(c.or_docs_into(&mut short).is_err());
     }
 }
