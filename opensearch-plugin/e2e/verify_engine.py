@@ -426,6 +426,12 @@ def fault_containment():
     status, out = req("PUT", "/fault_rust/_doc/boom?routing=r", {"__lucene_rust_panic": 1, "n": 1})
     check(status >= 500, f"the panicking write fails: {status} {json.dumps(out)[:300]}")
     check("panic" in json.dumps(out).lower(), f"the failure names the panic: {json.dumps(out)[:300]}")
+    # The 5xx comes back before the shard is failed: the engine fails itself and
+    # IndexShard reports it to the cluster manager asynchronously, so the shard can
+    # still be green here and its recovery record unchanged. Wait for a shard's
+    # latest finished recovery to move (recoveries() returns only once every shard's
+    # latest recovery is DONE), then for green.
+    wait(lambda: recoveries("fault_rust") != before_rust, "the panicking shard to be failed and recovered", 300)
     check(wait_green("fault_rust", 300), "the failed shard recovers")
     after_rust, after_peer = recoveries("fault_rust"), recoveries("fault_peer")
     changed = [s for s in before_rust if after_rust[s] != before_rust[s]]
