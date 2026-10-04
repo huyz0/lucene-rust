@@ -573,6 +573,11 @@ fn sources_describe_sort_and_refuse_as_java() {
     let empty = FunctionContext::new();
     assert_eq!(format!("{empty:?}"), "FunctionContext(0 entries)");
     let leaf = ValueLeaf::of_searcher(&searcher, 0, None).unwrap();
+    // def() of nothing: Java's index -1, an error rather than a panic.
+    let mut none = DefFunction::new(Vec::new())
+        .get_values(&empty, &leaf)
+        .unwrap();
+    assert!(none.float_val(0).is_err() && !none.exists(0).unwrap());
     assert!(ValueLeaf::of_searcher(&searcher, 9, None).is_err());
     let unweighted: Vec<Arc<dyn ValueSource>> = vec![
         Arc::new(DocFreqValueSource::new("body", "red", "body", "red")),

@@ -756,6 +756,10 @@ public class GenFunction {
       Query q = new FunctionMatchQuery(dvs(f[0]), predicate(f[1]));
       search(out, "fmq", spec, bm25, q);
       search(out, "fmqboost", spec, bm25, new BoostQuery(q, 0.5f));
+      BooleanQuery.Builder fb = new BooleanQuery.Builder();
+      fb.add(new TermQuery(new Term("body", "big")), BooleanClause.Occur.MUST);
+      fb.add(q, BooleanClause.Occur.FILTER);
+      searchHits(out, "fmqfilter", spec, bm25, fb.build());
     }
     for (String spec : new String[] {"sum(int(i),float(f))", "query(t:red,0.0)", "int(i)", "double(d)", "scale(float(f),0.0,1.0)"}) {
       for (boolean reverse : new boolean[] {false, true}) {

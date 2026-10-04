@@ -659,7 +659,7 @@ queries`). Differential: `fixtures/src/GenFunction.java` ->
 deletions in two segments and missing, multi-valued, `NaN`, infinite and
 `-0.0` values: 96 value-source specs (`values.tsv`: every getter of every
 document of every segment -- bits, strings, objects, vectors, filled
-mutable values -- or Lucene's exception) and 214 searches (`searches.tsv`:
+mutable values -- or Lucene's exception) and 220 searches (`searches.tsv`:
 every hit's score bits and four documents' explanations), all equal to
 Lucene's. Unit tests: `lucene-search/src/function/tests.rs`.
 
@@ -675,6 +675,7 @@ Lucene's. Unit tests: `lucene-search/src/function/tests.rs`.
 | `DocFreqValueSource`, `IDFValueSource`, `TermFreqValueSource`, `TFValueSource`, `TotalTermFreqValueSource`, `SumTotalTermFreqValueSource`, `NumDocsValueSource`, `MaxDocValueSource`, `NormValueSource` | `lucene-search/src/function/valuesource/terms.rs::{DocFreqValueSource, IDFValueSource, TermFreqValueSource, TFValueSource, TotalTermFreqValueSource, SumTotalTermFreqValueSource, NumDocsValueSource, MaxDocValueSource, NormValueSource}`, `lucene-search/src/similarities.rs::TfIdfSimilarity` | **ported (M10 T10.5)**; `tf`/`idf`/`norm` read the searcher's similarity (`Similarity::as_tfidf`, `IDFValueSource.asTFIDF`). |
 | `QueryValueSource`, `QueryDocValues` | `lucene-search/src/function/valuesource/query.rs::QueryValueSource` | **ported (M10 T10.5)**: the query scores with the reader-wide statistics the search gathers for every query inside a function query, wherever it sits. |
 | `VectorFieldFunction`, `FloatKnnVectorFieldSource`, `ByteKnnVectorFieldSource`, `VectorSimilarityFunction`, `FloatVectorSimilarityFunction`, `ByteVectorSimilarityFunction`, `MultiValueSource`, `VectorValueSource` | `lucene-search/src/function/valuesource/vectors.rs::{VectorFieldFunction, FloatKnnVectorFieldSource, ByteKnnVectorFieldSource, VectorSimilarityFunction, FloatVectorSimilarityFunction, ByteVectorSimilarityFunction, MultiValueSource, VectorValueSource}`, `lucene-search/src/function/valuesource/mod.rs` (re-exports) | **ported (M10 T10.5)** |
+| Benchmark | `scripts/bench-micro.sh --bench function` (`FunctionMicro.java` / `micro_function.rs`) | 200 000 documents in four segments, query cache off on both sides; per word, a top-10 search; every case's digest equal to Lucene's. Measured (3 interleaved reps, noise floor 1.09x): `FunctionScoreQuery` with a field source 0.62x, `boostByValue` with a composite source 0.88x, `FunctionQuery` over a field 0.75x and over `sum(product,linear,recip)` 0.80x, `FunctionRangeQuery` 0.75x and as a filter 0.84x, `termfreq` 0.83x, `tf*idf` under `ClassicSimilarity` 0.73x, `FunctionMatchQuery` filter 0.92x. **Below 1.0, cause measured** (perf, see the milestone doc): the per-document chain of `dyn Scorer` -> `dyn FunctionValues`/`DoubleValues` calls, each returning a `Result` through memory, which the JIT inlines away at these monomorphic call sites; the doc-values decode itself (`FastDense::get`, `DisiCursor`) is 14%-34% of the profile. Stage 3 so far: field sources read the codec's `NumericReader` directly (`fn_query_field` 0.56x -> 0.75x). |
 
 ## lucene-analysis
 

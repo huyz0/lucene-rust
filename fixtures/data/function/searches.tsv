@@ -872,6 +872,7 @@ fmqboost	dint(i)|gt:10	explain 0	0.0 = FunctionMatchQuery(double(i)) doesn't mat
 fmqboost	dint(i)|gt:10	explain 7	0.0 = FunctionMatchQuery(double(i)) doesn't match id 7\n
 fmqboost	dint(i)|gt:10	explain 29	0.5 = FunctionMatchQuery(double(i))^0.5\n
 fmqboost	dint(i)|gt:10	explain 61	0.5 = FunctionMatchQuery(double(i))^0.5\n
+fmqfilter	dint(i)|gt:10	hits	9 29:3f7a59cb,1:3f4a27a6,63:3f3b24b5,13:3f274510,12:3f17363e,2:3f09f78e,55:3f09f78e,5:3efdb60e,38:3efdb60e,
 fmq	ddouble(d)|le:0	hits	15 0:3f800000,9:3f800000,14:3f800000,15:3f800000,16:3f800000,18:3f800000,21:3f800000,24:3f800000,25:3f800000,38:3f800000,47:3f800000,60:3f800000,62:3f800000,73:3f800000,78:3f800000,
 fmq	ddouble(d)|le:0	explain 0	1.0 = FunctionMatchQuery(double(d))\n
 fmq	ddouble(d)|le:0	explain 7	0.0 = FunctionMatchQuery(double(d)) doesn't match id 7\n
@@ -882,6 +883,7 @@ fmqboost	ddouble(d)|le:0	explain 0	0.5 = FunctionMatchQuery(double(d))^0.5\n
 fmqboost	ddouble(d)|le:0	explain 7	0.0 = FunctionMatchQuery(double(d)) doesn't match id 7\n
 fmqboost	ddouble(d)|le:0	explain 29	0.0 = FunctionMatchQuery(double(d)) doesn't match id 3\n
 fmqboost	ddouble(d)|le:0	explain 61	0.0 = FunctionMatchQuery(double(d)) doesn't match id 15\n
+fmqfilter	ddouble(d)|le:0	hits	4 60:3f6f4260,73:3f09f78e,0:3efdb60e,38:3efdb60e,
 fmq	vs(float(f))|nan	hits	1 74:3f800000,
 fmq	vs(float(f))|nan	explain 0	0.0 = FunctionMatchQuery(float(f)) doesn't match id 0\n
 fmq	vs(float(f))|nan	explain 7	0.0 = FunctionMatchQuery(float(f)) doesn't match id 7\n
@@ -892,6 +894,7 @@ fmqboost	vs(float(f))|nan	explain 0	0.0 = FunctionMatchQuery(float(f)) doesn't m
 fmqboost	vs(float(f))|nan	explain 7	0.0 = FunctionMatchQuery(float(f)) doesn't match id 7\n
 fmqboost	vs(float(f))|nan	explain 29	0.0 = FunctionMatchQuery(float(f)) doesn't match id 3\n
 fmqboost	vs(float(f))|nan	explain 61	0.0 = FunctionMatchQuery(float(f)) doesn't match id 15\n
+fmqfilter	vs(float(f))|nan	hits	0 
 fmq	vs(int(i))|gt:-100	hits	71 0:3f800000,1:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,6:3f800000,7:3f800000,8:3f800000,9:3f800000,10:3f800000,11:3f800000,12:3f800000,13:3f800000,14:3f800000,15:3f800000,16:3f800000,17:3f800000,18:3f800000,19:3f800000,20:3f800000,21:3f800000,22:3f800000,23:3f800000,24:3f800000,25:3f800000,26:3f800000,27:3f800000,28:3f800000,29:3f800000,30:3f800000,31:3f800000,33:3f800000,35:3f800000,36:3f800000,37:3f800000,38:3f800000,39:3f800000,41:3f800000,42:3f800000,44:3f800000,45:3f800000,46:3f800000,47:3f800000,48:3f800000,49:3f800000,50:3f800000,51:3f800000,52:3f800000,54:3f800000,55:3f800000,57:3f800000,58:3f800000,60:3f800000,61:3f800000,62:3f800000,63:3f800000,64:3f800000,65:3f800000,68:3f800000,69:3f800000,70:3f800000,71:3f800000,72:3f800000,73:3f800000,74:3f800000,75:3f800000,76:3f800000,77:3f800000,78:3f800000,79:3f800000,
 fmq	vs(int(i))|gt:-100	explain 0	1.0 = FunctionMatchQuery(int(i))\n
 fmq	vs(int(i))|gt:-100	explain 7	1.0 = FunctionMatchQuery(int(i))\n
@@ -902,6 +905,7 @@ fmqboost	vs(int(i))|gt:-100	explain 0	0.5 = FunctionMatchQuery(int(i))^0.5\n
 fmqboost	vs(int(i))|gt:-100	explain 7	0.5 = FunctionMatchQuery(int(i))^0.5\n
 fmqboost	vs(int(i))|gt:-100	explain 29	0.5 = FunctionMatchQuery(int(i))^0.5\n
 fmqboost	vs(int(i))|gt:-100	explain 61	0.5 = FunctionMatchQuery(int(i))^0.5\n
+fmqfilter	vs(int(i))|gt:-100	hits	16 29:3f7a59cb,60:3f6f4260,58:3f54604f,1:3f4a27a6,63:3f3b24b5,13:3f274510,23:3f274510,12:3f17363e,2:3f09f78e,55:3f09f78e,73:3f09f78e,76:3f09f78e,0:3efdb60e,5:3efdb60e,38:3efdb60e,68:3efdb60e,
 fmq	dfloat(f)|gt:3.5	hits	42 1:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,6:3f800000,12:3f800000,13:3f800000,14:3f800000,15:3f800000,16:3f800000,17:3f800000,18:3f800000,19:3f800000,20:3f800000,22:3f800000,23:3f800000,29:3f800000,30:3f800000,31:3f800000,33:3f800000,35:3f800000,36:3f800000,37:3f800000,38:3f800000,42:3f800000,45:3f800000,46:3f800000,51:3f800000,52:3f800000,55:3f800000,58:3f800000,60:3f800000,61:3f800000,62:3f800000,63:3f800000,64:3f800000,68:3f800000,71:3f800000,73:3f800000,78:3f800000,79:3f800000,
 fmq	dfloat(f)|gt:3.5	explain 0	0.0 = FunctionMatchQuery(double(f)) doesn't match id 0\n
 fmq	dfloat(f)|gt:3.5	explain 7	0.0 = FunctionMatchQuery(double(f)) doesn't match id 7\n
@@ -912,6 +916,7 @@ fmqboost	dfloat(f)|gt:3.5	explain 0	0.0 = FunctionMatchQuery(double(f)) doesn't 
 fmqboost	dfloat(f)|gt:3.5	explain 7	0.0 = FunctionMatchQuery(double(f)) doesn't match id 7\n
 fmqboost	dfloat(f)|gt:3.5	explain 29	0.5 = FunctionMatchQuery(double(f))^0.5\n
 fmqboost	dfloat(f)|gt:3.5	explain 61	0.5 = FunctionMatchQuery(double(f))^0.5\n
+fmqfilter	dfloat(f)|gt:3.5	hits	14 29:3f7a59cb,60:3f6f4260,58:3f54604f,1:3f4a27a6,63:3f3b24b5,13:3f274510,23:3f274510,12:3f17363e,2:3f09f78e,55:3f09f78e,73:3f09f78e,5:3efdb60e,38:3efdb60e,68:3efdb60e,
 fmq	irmaxdoc()|gt:5	hits	71 0:3f800000,1:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,6:3f800000,7:3f800000,8:3f800000,9:3f800000,10:3f800000,11:3f800000,12:3f800000,13:3f800000,14:3f800000,15:3f800000,16:3f800000,17:3f800000,18:3f800000,19:3f800000,20:3f800000,21:3f800000,22:3f800000,23:3f800000,24:3f800000,25:3f800000,26:3f800000,27:3f800000,28:3f800000,29:3f800000,30:3f800000,31:3f800000,33:3f800000,35:3f800000,36:3f800000,37:3f800000,38:3f800000,39:3f800000,41:3f800000,42:3f800000,44:3f800000,45:3f800000,46:3f800000,47:3f800000,48:3f800000,49:3f800000,50:3f800000,51:3f800000,52:3f800000,54:3f800000,55:3f800000,57:3f800000,58:3f800000,60:3f800000,61:3f800000,62:3f800000,63:3f800000,64:3f800000,65:3f800000,68:3f800000,69:3f800000,70:3f800000,71:3f800000,72:3f800000,73:3f800000,74:3f800000,75:3f800000,76:3f800000,77:3f800000,78:3f800000,79:3f800000,
 fmq	irmaxdoc()|gt:5	explain 0	1.0 = FunctionMatchQuery(maxDoc())\n
 fmq	irmaxdoc()|gt:5	explain 7	1.0 = FunctionMatchQuery(maxDoc())\n
@@ -922,6 +927,7 @@ fmqboost	irmaxdoc()|gt:5	explain 0	0.5 = FunctionMatchQuery(maxDoc())^0.5\n
 fmqboost	irmaxdoc()|gt:5	explain 7	0.5 = FunctionMatchQuery(maxDoc())^0.5\n
 fmqboost	irmaxdoc()|gt:5	explain 29	0.5 = FunctionMatchQuery(maxDoc())^0.5\n
 fmqboost	irmaxdoc()|gt:5	explain 61	0.5 = FunctionMatchQuery(maxDoc())^0.5\n
+fmqfilter	irmaxdoc()|gt:5	hits	16 29:3f7a59cb,60:3f6f4260,58:3f54604f,1:3f4a27a6,63:3f3b24b5,13:3f274510,23:3f274510,12:3f17363e,2:3f09f78e,55:3f09f78e,73:3f09f78e,76:3f09f78e,0:3efdb60e,5:3efdb60e,38:3efdb60e,68:3efdb60e,
 sort	sum(int(i),float(f))|false	hits	50,10,8,70,69,47,45,26,11,25,39,75,
 sort	sum(int(i),float(f))|true	hits	74,2,4,14,61,38,13,79,1,16,63,55,
 sort	query(t:red,0.0)|false	hits	3,4,10,11,12,15,16,17,19,20,21,23,
