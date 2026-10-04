@@ -179,12 +179,55 @@ grouping. Each of them falls back to Lucene today.
   Reader-wide state (`createWeight`) is computed once per search in the
   statistics pass. `GenFunction` records 96 value-source specs read for every
   document (every getter's bits, strings, objects, vectors and filled
-  mutable values, or Lucene's exception) and 214 searches (hits and score
+  mutable values, or Lucene's exception) and 220 searches (hits and score
   bits, alone, boosted and in booleans, and their explanations), all equal
   to Lucene's; `(float) Math.pow` needed no tolerance. With them,
   `lucene-grouping`'s `ValueSourceGroupSelector`: 28 grouped searches
   (`groups.tsv`, 14 sources by all documents and by `t:red`) equal to
   Lucene's.
+  Benchmark pair `scripts/bench-micro.sh --bench function`
+  (`FunctionMicro.java` / `micro_function.rs`: 200 000 documents in four
+  segments, 16 words, one top-10 search per word, query cache off on both
+  sides). First run: 0.56x-0.87x, plus a digest mismatch on
+  `FunctionMatchQuery` as a filter. That was the Rust runner leaving the
+  segment query cache on where Java's `setQueryCache(null)` turns it off: a
+  cached filter changes where a top-10 search stops counting hits, never the
+  hits. Fixed in the runner, and covered by a new `fmqfilter` fixture search.
+  Stage 3: field sources read the segment's `NumericReader` directly,
+  instead of through a boxed `NumericDocValues` iterator. That took
+  `fn_query_field` from 0.56x to 0.75x.
+
+  Final, 3 interleaved reps, noise floor 1.09x:
+
+  | Case | Ratio |
+  |---|---|
+  | `fn_score_field` | 0.62x |
+  | `fn_boost_composite` | 0.88x |
+  | `fn_query_field` | 0.75x |
+  | `fn_query_composite` | 0.80x |
+  | `fn_range` | 0.75x |
+  | `fn_range_filter` | 0.84x |
+  | `fn_termfreq` | 0.83x |
+  | `fn_tf_idf` | 0.73x |
+  | `fn_match` | 0.92x |
+
+  Left below 1.0, with the cause measured (perf). Every case is a
+  per-document chain of virtual calls: `Bulk::score` -> `dyn Scorer::score`
+  -> `dyn FunctionValues`/`DoubleValues` -> the doc-values reader. Each link
+  returns a `Result<_, Error>` through memory. Java's call sites here are
+  monomorphic, so the JIT inlines the whole chain into one loop.
+
+  | Case | Bulk loop + collector | Scorer `score` frame | Value-source frames | Doc-values decode |
+  |---|---|---|---|---|
+  | `fn_query_field` | 33% | 30% | 31% | the rest |
+  | `fn_range` | -- | -- | `NumericColumn::get` + `RangeMatcher` 32% | `DisiCursor` + `FastDense` 34% |
+  | `fn_score_field` | 24% | `FunctionScoreScorer::score` 27% | `FieldDoubleValues` 14% | `NumericLongValues` 13% |
+  | `fn_tf_idf` | -- | `FunctionScoreScorer::score` 16% | `Product` 20% | -- |
+
+  The decode is never the majority. Closing the gap means monomorphizing
+  the common source shapes into their scorers (a field source under
+  `AllScorer`, the range scorer, `FunctionScoreScorer`). That is a change
+  to the scorer tree's dispatch, left for after T10.7.
 - **T10.6** — Intervals, payload queries, `MoreLikeThis`, `CommonTermsQuery`.
 - **T10.7** — Plugin wiring for the OpenSearch shapes above.
 

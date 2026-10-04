@@ -540,7 +540,7 @@ fn search_lines(
     }
     // A filter's term explains itself unscored in Lucene, which explain
     // does not render: the generator records only the hits.
-    if kind == "fsqfilter" {
+    if kind == "fsqfilter" || kind == "fmqfilter" {
         return;
     }
     for doc in [0, 7, 29, 61] {
@@ -631,13 +631,17 @@ fn searches(
             };
             search_lines(bm25, kind, spec, &q, out)
         }
-        "fmq" | "fmqboost" => {
+        "fmq" | "fmqboost" | "fmqfilter" => {
             let (s, p) = spec.split_once('|').unwrap();
             let f = Clause::from(FunctionMatchQuery::new(dvs(s), predicate(p)));
-            let q = if kind == "fmq" {
-                as_boolean(f)
-            } else {
-                as_boolean(Clause::Boost(Box::new(BoostQuery::new(f, 0.5))))
+            let q = match kind {
+                "fmq" => as_boolean(f),
+                "fmqboost" => as_boolean(Clause::Boost(Box::new(BoostQuery::new(f, 0.5)))),
+                _ => BooleanQuery {
+                    must: vec![term("big")],
+                    filter: vec![f],
+                    ..Default::default()
+                },
             };
             search_lines(bm25, kind, spec, &q, out)
         }

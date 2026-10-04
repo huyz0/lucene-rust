@@ -127,7 +127,12 @@ pub fn bench_function(w: Duration, m: Duration, dir: &str) {
         .collect();
     let reader = DirectoryReader::open(&FsDirectory::open(std::path::Path::new(dir))).unwrap();
     let opened = reader.open_segments().unwrap();
-    let segments = opened.as_open_segments();
+    // No query cache, as the Java side's `setQueryCache(null)`: a cached
+    // filter's set changes where a top-10 search stops counting hits.
+    let mut segments = opened.as_open_segments();
+    for seg in &mut segments {
+        seg.cache = None;
+    }
     let owned = reader.field_norms_by_field(&["body".to_string()]);
     let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
     let s = IndexSearcher::new(&segments, &norms).unwrap();

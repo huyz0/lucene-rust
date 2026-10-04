@@ -447,9 +447,14 @@ struct DefValues<'a> {
 }
 
 impl DefValues<'_> {
-    /// `get(doc)`: the index of the values answering for `doc`.
+    /// `get(doc)`: the index of the values answering for `doc`; with no
+    /// sources, Java's `ArrayIndexOutOfBoundsException` (index `-1`).
     fn get(&mut self, doc: i32) -> Result<usize> {
-        let upto = self.values.len().saturating_sub(1);
+        let Some(upto) = self.values.len().checked_sub(1) else {
+            return Err(crate::Error::IllegalArgument(
+                "def() has no sources: index -1 out of bounds for length 0".into(),
+            ));
+        };
         for i in 0..upto {
             if self.values[i].exists(doc)? {
                 return Ok(i);
