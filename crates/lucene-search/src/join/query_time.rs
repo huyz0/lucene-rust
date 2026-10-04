@@ -150,42 +150,146 @@ fn sorted_terms(mut hash: BytesRefHash) -> (Vec<Vec<u8>>, Vec<u32>) {
     (terms, ords)
 }
 
-/// The from side's segment ordinals, gathered while the segment is
-/// collected and turned into terms when it is finished, in ordinal order --
-/// so the terms dictionary is walked forward once instead of seeked per
-/// document.
+/// Values by ordinal in blocks of 4096, a block allocated (filled with
+/// `unset`) when one of its slots is first written: Java's
+/// `GlobalOrdinalsWithScoreCollector.Scores`/`Occurrences`, which keep
+/// nothing for the stretches of ordinals no document matched.
+#[derive(Debug, Clone)]
+pub(crate) struct Blocks<T> {
+    blocks: Vec<Option<Box<[T; BLOCK_SIZE]>>>,
+    unset: T,
+}
+
+/// `GlobalOrdinalsWithScoreCollector.arraySize`.
+const BLOCK_SIZE: usize = 4096;
+
+impl<T: Copy> Blocks<T> {
+    /// Room for ordinals `0..len`, nothing allocated yet.
+    pub(crate) fn new(len: usize, unset: T) -> Self {
+        Self {
+            blocks: std::iter::repeat_with(|| None)
+                .take(len.div_ceil(BLOCK_SIZE))
+                .collect(),
+            unset,
+        }
+    }
+
+    /// The value at `i`: `unset` when its block was never written, or when
+    /// `i` is past the end.
+    pub(crate) fn get(&self, i: usize) -> T {
+        match self.blocks.get(i / BLOCK_SIZE) {
+            // `i % BLOCK_SIZE` indexes a `[T; BLOCK_SIZE]`: never out of
+            // bounds, and the compiler sees it.
+            Some(Some(b)) => b[i % BLOCK_SIZE],
+            _ => self.unset,
+        }
+    }
+
+    /// The slot at `i`, its block allocated on first use; `None` past the
+    /// end.
+    pub(crate) fn get_mut(&mut self, i: usize) -> Option<&mut T> {
+        let unset = self.unset;
+        let block = self
+            .blocks
+            .get_mut(i / BLOCK_SIZE)?
+            .get_or_insert_with(|| Box::new([unset; BLOCK_SIZE]));
+        Some(&mut block[i % BLOCK_SIZE])
+    }
+}
+
+/// How many `(ordinal, score)` pairs [`PendingOrds`] holds before it drains
+/// them, mid-segment if need be: 1 MiB, whatever the segment's size.
+const PENDING_LIMIT: usize = 1 << 16;
+
+/// A pended ordinal's term, as [`PendingOrds::drain`] hands it over: read
+/// from the dictionary the first time the segment's ordinal is drained,
+/// then by the id the collector gave it.
+enum Resolved<'t> {
+    Term(&'t [u8]),
+    Id(usize),
+}
+
+/// The from side's segment ordinals and scores, gathered as the segment is
+/// collected and turned into terms in ordinal order -- so the terms
+/// dictionary is walked forward instead of seeked per document -- when the
+/// segment is finished or [`PENDING_LIMIT`] pairs are pending.
 ///
 /// Java looks every document's term up as it collects it (`lookupOrd`).
 /// Deferring changes nothing observable: each term's own combination of
 /// scores still sees its documents in document order (the pairs are
-/// sorted stably by ordinal), terms do not interact, and the collected
-/// terms come out sorted either way. Stage 3: the per-document lookup was
-/// most of the from side's time.
-#[derive(Debug, Default)]
+/// sorted stably by ordinal, and drains run in collection order), terms do
+/// not interact, and the collected terms come out sorted either way. A
+/// segment ordinal is looked up once however many drains it spans: its id
+/// is kept, by ordinal, until the next segment. Stage 3: the per-document
+/// lookup was most of the from side's time.
+///
+/// Memory: the pending pairs (bounded by [`PENDING_LIMIT`]) and the blocks
+/// of ids the matching ordinals fall in -- not a pair per matching document
+/// and value, which a broad from-query over a large segment made into
+/// gigabytes.
+#[derive(Debug)]
 struct PendingOrds {
     /// `(segment ordinal, score)` in collection order.
     pairs: Vec<(i64, f32)>,
+    /// The ids of this segment's ordinals already drained (`u32::MAX`: not
+    /// yet).
+    ids: Blocks<u32>,
+}
+
+impl Default for PendingOrds {
+    fn default() -> Self {
+        Self {
+            pairs: Vec::new(),
+            ids: Blocks::new(0, u32::MAX),
+        }
+    }
 }
 
 impl PendingOrds {
-    /// The pairs by ordinal (stable: a term's documents stay in order):
-    /// `visit(Some(term), score)` for the first pair of each distinct
-    /// ordinal (its term read by `lookup`), `visit(None, score)` for the
-    /// rest of that ordinal's pairs.
+    /// A new segment of `value_count` ordinals.
+    fn reset(&mut self, value_count: i64) {
+        self.pairs.clear();
+        self.ids = Blocks::new(usize::try_from(value_count).unwrap_or(0), u32::MAX);
+    }
+
+    /// Pends one pair; true when it is time to drain.
+    fn push(&mut self, ord: i64, score: f32) -> bool {
+        self.pairs.push((ord, score));
+        self.pairs.len() >= PENDING_LIMIT
+    }
+
+    /// The pairs by ordinal (stable: a term's documents stay in order),
+    /// each handed to `visit` with its term (the first time the segment's
+    /// ordinal is drained, read by `lookup`) or the id `visit` returned for
+    /// it then.
     fn drain(
         &mut self,
         mut lookup: impl FnMut(i64) -> Result<Vec<u8>>,
-        mut visit: impl FnMut(Option<&[u8]>, f32) -> Result<()>,
+        mut visit: impl FnMut(Resolved<'_>, f32) -> Result<usize>,
     ) -> Result<()> {
         self.pairs.sort_by_key(|&(ord, _)| ord);
-        let mut current = None;
+        let mut current: Option<(i64, usize)> = None;
         for &(ord, score) in &self.pairs {
-            if current == Some(ord) {
-                visit(None, score)?;
-            } else {
-                current = Some(ord);
-                visit(Some(&lookup(ord)?), score)?;
-            }
+            let known = match current {
+                Some((o, id)) if o == ord => Some(id),
+                _ => usize::try_from(ord)
+                    .ok()
+                    .map(|o| self.ids.get(o))
+                    .filter(|&id| id != u32::MAX)
+                    .and_then(|id| usize::try_from(id).ok()),
+            };
+            let id = match known {
+                Some(id) => visit(Resolved::Id(id), score)?,
+                None => {
+                    let id = visit(Resolved::Term(&lookup(ord)?), score)?;
+                    if let Some(slot) = usize::try_from(ord).ok().and_then(|o| self.ids.get_mut(o))
+                    {
+                        *slot = u32::try_from(id).unwrap_or(u32::MAX);
+                    }
+                    id
+                }
+            };
+            current = Some((ord, id));
         }
         self.pairs.clear();
         Ok(())
@@ -199,13 +303,19 @@ impl PendingOrds {
 /// `TermsCollector` (`SV`, `MV`): every join term of the matching documents
 /// (`COMPLETE_NO_SCORES`). A single-valued document without a value
 /// contributes the empty term, as Java's `SV` adds `BytesRef.EMPTY_BYTES`.
+///
+/// A segment's matching ordinals are marked in a bit set (one bit per
+/// ordinal of the segment) and turned into terms in ordinal order when the
+/// segment is finished: one forward walk of the terms dictionary, and
+/// nothing kept per document.
 pub struct TermsCollector<'a> {
     field: String,
     multiple_values_per_document: bool,
     sv: Option<Box<dyn SortedDocValues + 'a>>,
     mv: Option<Box<dyn SortedSetDocValues + 'a>>,
     terms: BytesRefHash,
-    pending: PendingOrds,
+    /// The segment's ordinals seen so far.
+    seen: FixedBitSet,
 }
 
 impl<'a> TermsCollector<'a> {
@@ -217,13 +327,34 @@ impl<'a> TermsCollector<'a> {
             sv: None,
             mv: None,
             terms: BytesRefHash::new(),
-            pending: PendingOrds::default(),
+            seen: FixedBitSet::new(0),
         }
     }
 
     /// `getCollectorTerms()`: the terms in id order and the ids in term order.
+    ///
+    /// The ids are this port's, not Java's: Java numbers the terms in the
+    /// order documents bring them, this in the order segments are finished
+    /// and, within a segment, in term order (the empty term of a document
+    /// without a value as soon as one is collected). Only the pairing of
+    /// terms and ids, and the term order, are Java's.
     pub fn into_terms(self) -> (Vec<Vec<u8>>, Vec<u32>) {
         sorted_terms(self.terms)
+    }
+}
+
+/// Marks a segment ordinal `TermsCollector` saw.
+fn mark(seen: &mut FixedBitSet, ord: i64) -> Result<()> {
+    match usize::try_from(ord) {
+        // FBS: bounded by `seen.len()`, the segment's value count.
+        Ok(o) if o < seen.len() => {
+            seen.set(o);
+            Ok(())
+        }
+        _ => Err(Error::IllegalState(format!(
+            "ordinal {ord} outside the segment's {} values",
+            seen.len()
+        ))),
     }
 }
 
@@ -234,11 +365,18 @@ impl<'a> SegmentCollector<'a> for TermsCollector<'a> {
 
     fn set_next_reader(&mut self, _ord: usize, leaf: &OpenSegment<'a>) -> Result<()> {
         let reader = leaf_reader(leaf)?;
-        if self.multiple_values_per_document {
-            self.mv = Some(dv::get_sorted_set(reader, &self.field)?);
+        let value_count = if self.multiple_values_per_document {
+            let values = dv::get_sorted_set(reader, &self.field)?;
+            let n = values.value_count();
+            self.mv = Some(values);
+            n
         } else {
-            self.sv = Some(dv::get_sorted(reader, &self.field)?);
-        }
+            let values = dv::get_sorted(reader, &self.field)?;
+            let n = i64::from(values.value_count());
+            self.sv = Some(values);
+            n
+        };
+        self.seen = FixedBitSet::new(usize::try_from(value_count).unwrap_or(0));
         Ok(())
     }
 
@@ -251,14 +389,13 @@ impl<'a> SegmentCollector<'a> for TermsCollector<'a> {
             if doc == values.doc_id() {
                 for _ in 0..values.doc_value_count() {
                     let ord = values.next_ord()?;
-                    self.pending.pairs.push((ord, 0.0));
+                    mark(&mut self.seen, ord)?;
                 }
             }
         } else if let Some(values) = self.sv.as_mut() {
             if values.advance_exact(doc)? {
-                self.pending
-                    .pairs
-                    .push((i64::from(values.ord_value()), 0.0));
+                let ord = i64::from(values.ord_value());
+                mark(&mut self.seen, ord)?;
             } else {
                 add_term(&mut self.terms, &[])?;
             }
@@ -266,31 +403,24 @@ impl<'a> SegmentCollector<'a> for TermsCollector<'a> {
         Ok(())
     }
 
-    /// The segment's ordinals as terms ([`PendingOrds`]).
+    /// The segment's ordinals as terms, in ordinal order.
     fn finish(&mut self) -> Result<()> {
-        let Self {
-            sv,
-            mv,
-            terms,
-            pending,
-            ..
-        } = self;
-        let mut add = |t: Option<&[u8]>, _score: f32| -> Result<()> {
-            if let Some(t) = t {
-                add_term(terms, t)?;
-            }
-            Ok(())
-        };
-        if let Some(values) = mv.as_mut() {
-            pending.drain(|o| values.lookup_ord(o), &mut add)
-        } else if let Some(values) = sv.as_mut() {
-            pending.drain(
-                |o| values.lookup_ord(i32::try_from(o).unwrap_or(i32::MAX)),
-                &mut add,
-            )
-        } else {
-            Ok(())
+        let mut ord = 0usize;
+        while ord < self.seen.len() {
+            let Some(o) = self.seen.next_set_bit(ord) else {
+                break;
+            };
+            let term = if let Some(values) = self.mv.as_mut() {
+                values.lookup_ord(i64::try_from(o).unwrap_or(i64::MAX))?
+            } else if let Some(values) = self.sv.as_mut() {
+                values.lookup_ord(i32::try_from(o).unwrap_or(i32::MAX))?
+            } else {
+                break;
+            };
+            add_term(&mut self.terms, &term)?;
+            ord = o.saturating_add(1);
         }
+        Ok(())
     }
 }
 
@@ -416,6 +546,11 @@ impl<'a> TermsWithScoreCollector<'a> {
 
     /// `getCollectedTerms()` and `getScoresPerTerm()`: the terms in id
     /// order, the ids in term order, and each term's score by id.
+    ///
+    /// The ids are this port's, not Java's: Java numbers the terms in the
+    /// order documents bring them, this in the order [`PendingOrds`] drains
+    /// them (term order within each drain). Only the pairing of terms,
+    /// ids and scores, and the term order, are Java's.
     pub fn into_terms_and_scores(self) -> (Vec<Vec<u8>>, Vec<u32>, Vec<f32>) {
         let mut scores = self.score_sums;
         if self.score_mode == ScoreMode::Avg {
@@ -437,59 +572,70 @@ impl<'a> SegmentCollector<'a> for TermsWithScoreCollector<'a> {
     fn set_next_reader(&mut self, _ord: usize, leaf: &OpenSegment<'a>) -> Result<()> {
         let reader = leaf_reader(leaf)?;
         if self.multiple_values_per_document {
-            self.mv = Some(dv::get_sorted_set(reader, &self.field)?);
+            let values = dv::get_sorted_set(reader, &self.field)?;
+            self.pending.reset(values.value_count());
+            self.mv = Some(values);
         } else {
             let mut values = dv::get_sorted(reader, &self.field)?;
             self.missing_ord = -1;
             if values.value_count() > 0 && values.lookup_ord(0)?.is_empty() {
                 self.missing_ord = 0;
             }
+            self.pending.reset(i64::from(values.value_count()));
             self.sv = Some(values);
         }
         Ok(())
     }
 
     fn collect(&mut self, doc: i32, score: f32) -> Result<()> {
+        let mut full = false;
         if let Some(values) = self.mv.as_mut() {
             if values.advance_exact(doc)? {
                 for _ in 0..values.doc_value_count() {
                     let ord = values.next_ord()?;
-                    self.pending.pairs.push((ord, score));
+                    full |= self.pending.push(ord, score);
                 }
             }
-            return Ok(());
+        } else if let Some(values) = self.sv.as_mut() {
+            // Java adds the empty term for a document without a value.
+            let ord = if values.advance_exact(doc)? {
+                i64::from(values.ord_value())
+            } else {
+                self.missing_ord
+            };
+            full = self.pending.push(ord, score);
         }
-        let Some(values) = self.sv.as_mut() else {
-            return Ok(());
-        };
-        // Java adds the empty term for a document without a value.
-        let ord = if values.advance_exact(doc)? {
-            i64::from(values.ord_value())
-        } else {
-            self.missing_ord
-        };
-        self.pending.pairs.push((ord, score));
+        if full {
+            self.drain()?;
+        }
         Ok(())
     }
 
-    /// The segment's ordinals as terms, each term's scores combined in
-    /// document order ([`PendingOrds`]).
+    /// The segment's remaining ordinals as terms, each term's scores
+    /// combined in document order ([`PendingOrds`]).
     fn finish(&mut self) -> Result<()> {
+        self.drain()
+    }
+}
+
+impl TermsWithScoreCollector<'_> {
+    /// The pending pairs folded into their terms' scores ([`PendingOrds`]).
+    fn drain(&mut self) -> Result<()> {
         let mut pending = std::mem::take(&mut self.pending);
         let multi = self.mv.is_some();
         let mut mv = self.mv.take();
         let mut sv = self.sv.take();
-        let mut id = 0usize;
-        let mut visit = |t: Option<&[u8]>, score: f32| -> Result<()> {
-            if let Some(t) = t {
-                id = self.slot(t)?;
-            }
+        let mut visit = |t: Resolved<'_>, score: f32| -> Result<usize> {
+            let id = match t {
+                Resolved::Term(t) => self.slot(t)?,
+                Resolved::Id(id) => id,
+            };
             if multi {
                 self.collect_mv(id, score);
             } else {
                 self.collect_sv(id, score);
             }
-            Ok(())
+            Ok(id)
         };
         let r = match (mv.as_mut(), sv.as_mut()) {
             (Some(values), _) => pending.drain(|o| values.lookup_ord(o), &mut visit),
@@ -907,7 +1053,8 @@ fn bytes_ref_string(b: &[u8]) -> String {
 /// documents (a single-valued document without one contributes `0`, as
 /// Java's does), with the scores aggregated per value as `LongFloatHashMap`
 /// aggregates them (`Max`/`Min` through `Math.max`/`Math.min` from the
-/// first score, `Total`/`Avg` summed from `0`, `Avg` also counted).
+/// first score, `Total`/`Avg` summed from the first score as `addTo` does,
+/// `Avg` also counted).
 pub struct NumericJoinCollector<'a> {
     field: String,
     multiple_values_per_document: bool,
@@ -945,9 +1092,19 @@ impl<'a> NumericJoinCollector<'a> {
                 let e = self.scores.entry(value).or_insert(score);
                 *e = java_min_f32(*e, score);
             }
-            ScoreMode::Total => *self.scores.entry(value).or_insert(0.0) += score,
+            // `LongFloatHashMap.addTo`: the first score is stored as is (a
+            // `-0.0` stays `-0.0`), later ones added to it.
+            ScoreMode::Total => {
+                self.scores
+                    .entry(value)
+                    .and_modify(|s| *s += score)
+                    .or_insert(score);
+            }
             ScoreMode::Avg => {
-                *self.scores.entry(value).or_insert(0.0) += score;
+                self.scores
+                    .entry(value)
+                    .and_modify(|s| *s += score)
+                    .or_insert(score);
                 let o = self.occurrences.entry(value).or_insert(0);
                 *o = o.wrapping_add(1);
             }
@@ -1363,9 +1520,9 @@ pub struct CollectedOrdinals {
     pub(crate) score_mode: ScoreMode,
     pub(crate) collected: FixedBitSet,
     /// `Scores`, every slot starting at `unset()`; empty for `None`.
-    pub(crate) scores: Vec<f32>,
+    pub(crate) scores: Blocks<f32>,
     /// `Occurrences`; empty unless `Avg` or a min/max bound.
-    pub(crate) occurrences: Vec<i32>,
+    pub(crate) occurrences: Blocks<i32>,
     pub(crate) do_min_max: bool,
     pub(crate) min: i32,
     pub(crate) max: i32,
@@ -1380,10 +1537,7 @@ impl CollectedOrdinals {
         if !self.do_min_max {
             return true;
         }
-        let n = usize::try_from(ord)
-            .ok()
-            .and_then(|o| self.occurrences.get(o).copied())
-            .unwrap_or(0);
+        let n = usize::try_from(ord).map_or(0, |o| self.occurrences.get(o));
         n >= self.min && n <= self.max
     }
 
@@ -1394,11 +1548,8 @@ impl CollectedOrdinals {
         };
         match self.score_mode {
             ScoreMode::None => 1.0,
-            ScoreMode::Avg => {
-                let s = self.scores.get(o).copied().unwrap_or(0.0);
-                s / self.occurrences.get(o).copied().unwrap_or(0) as f32
-            }
-            _ => self.scores.get(o).copied().unwrap_or(0.0),
+            ScoreMode::Avg => self.scores.get(o) / self.occurrences.get(o) as f32,
+            _ => self.scores.get(o),
         }
     }
 }
@@ -1441,15 +1592,17 @@ impl<'a> GlobalOrdinalsWithScoreCollector<'a> {
             ScoreMode::Max => f32::NEG_INFINITY,
             _ => 0.0,
         };
+        // Java's `Scores`/`Occurrences`: blocks of 4096 allocated as
+        // ordinals in them first match, not an array per ordinal up front.
         let scores = if score_mode == ScoreMode::None {
-            Vec::new()
+            Blocks::new(0, unset)
         } else {
-            vec![unset; value_count]
+            Blocks::new(value_count, unset)
         };
         let occurrences = if score_mode == ScoreMode::Avg || do_min_max {
-            vec![0; value_count]
+            Blocks::new(value_count, 0)
         } else {
-            Vec::new()
+            Blocks::new(0, 0)
         };
         Ok(Self {
             field: field.to_string(),
@@ -1848,12 +2001,119 @@ mod tests {
     }
 
     #[test]
+    fn blocks_allocate_a_block_only_when_one_of_its_slots_is_written() {
+        let mut b = Blocks::new(BLOCK_SIZE * 3 + 1, f32::INFINITY);
+        assert_eq!(b.blocks.len(), 4);
+        assert!(b.blocks.iter().all(Option::is_none));
+        assert_eq!(b.get(5), f32::INFINITY, "unset before any write");
+        *b.get_mut(BLOCK_SIZE * 2 + 7).unwrap() = 1.5;
+        assert_eq!(
+            b.blocks.iter().map(Option::is_some).collect::<Vec<_>>(),
+            [false, false, true, false]
+        );
+        assert_eq!(b.get(BLOCK_SIZE * 2 + 7), 1.5);
+        assert_eq!(b.get(BLOCK_SIZE * 2 + 8), f32::INFINITY, "the block's fill");
+        assert!(b.get_mut(BLOCK_SIZE * 4).is_none(), "past the end");
+        assert_eq!(b.get(BLOCK_SIZE * 4), f32::INFINITY);
+        assert!(Blocks::<i32>::new(0, 0).get_mut(0).is_none());
+    }
+
+    #[test]
+    fn pending_ords_fold_each_term_in_document_order_across_drains() {
+        let mut p = PendingOrds::default();
+        p.reset(10);
+        let mut lookups = Vec::new();
+        let mut seen: Vec<(usize, f32)> = Vec::new();
+        let mut ids: HashMap<Vec<u8>, usize> = HashMap::new();
+        fn drain(
+            p: &mut PendingOrds,
+            lookups: &mut Vec<i64>,
+            seen: &mut Vec<(usize, f32)>,
+            ids: &mut HashMap<Vec<u8>, usize>,
+        ) {
+            p.drain(
+                |o| {
+                    lookups.push(o);
+                    Ok(format!("t{o}").into_bytes())
+                },
+                |t, score| {
+                    let id = match t {
+                        Resolved::Term(t) => {
+                            let n = ids.len();
+                            *ids.entry(t.to_vec()).or_insert(n)
+                        }
+                        Resolved::Id(id) => id,
+                    };
+                    seen.push((id, score));
+                    Ok(id)
+                },
+            )
+            .unwrap();
+        }
+        // Two drains: ordinal 3 spans both, and is looked up once.
+        assert!(!p.push(3, 1.0));
+        p.push(1, 2.0);
+        p.push(3, 3.0);
+        drain(&mut p, &mut lookups, &mut seen, &mut ids);
+        p.push(3, 4.0);
+        p.push(-1, 5.0);
+        p.push(-1, 6.0);
+        drain(&mut p, &mut lookups, &mut seen, &mut ids);
+        assert_eq!(
+            lookups,
+            [1, 3, -1],
+            "an ordinal's term is read once per segment"
+        );
+        let of = |id: usize| -> Vec<f32> {
+            seen.iter()
+                .filter(|&&(i, _)| i == id)
+                .map(|&(_, s)| s)
+                .collect()
+        };
+        assert_eq!(of(ids[b"t3".as_slice()]), [1.0, 3.0, 4.0], "document order");
+        assert_eq!(of(ids[b"t1".as_slice()]), [2.0]);
+        assert!(p.pairs.is_empty());
+        // A new segment forgets the ids.
+        p.reset(10);
+        p.push(3, 7.0);
+        drain(&mut p, &mut lookups, &mut seen, &mut ids);
+        assert_eq!(lookups, [1, 3, -1, 3]);
+        // The limit asks for a drain.
+        let mut p = PendingOrds::default();
+        assert!((0..PENDING_LIMIT)
+            .map(|i| p.push(i as i64, 0.0))
+            .last()
+            .unwrap());
+    }
+
+    #[test]
+    fn numeric_join_sums_start_from_the_first_score_as_hppc_add_to_does() {
+        // `LongFloatHashMap.addTo` inserts the first score itself, so a lone
+        // `-0.0` stays `-0.0` (summed from `0.0` it would turn `+0.0`).
+        for mode in [ScoreMode::Total, ScoreMode::Avg] {
+            let mut c = NumericJoinCollector::new("n", false, mode);
+            c.add(7, -0.0);
+            c.add(8, 1.5);
+            c.add(8, 2.0);
+            let got = c.into_sorted();
+            assert_eq!(got[0].0, 7);
+            assert_eq!(got[0].1.to_bits(), (-0.0f32).to_bits(), "{mode:?}");
+            let eight = if mode == ScoreMode::Avg { 1.75 } else { 3.5 };
+            assert_eq!(got[1], (8, eight), "{mode:?}");
+        }
+    }
+
+    #[test]
     fn collected_ordinals_match_and_score() {
+        let mut scores = Blocks::new(4, 0.0);
+        *scores.get_mut(0).unwrap() = 6.0;
+        let mut occurrences = Blocks::new(4, 0);
+        *occurrences.get_mut(0).unwrap() = 3;
         let mut c = CollectedOrdinals {
             score_mode: ScoreMode::Avg,
             collected: FixedBitSet::new(4),
-            scores: vec![6.0, 0.0, 0.0, 0.0],
-            occurrences: vec![3, 0, 0, 0],
+            scores,
+            occurrences,
             do_min_max: true,
             min: 2,
             max: 3,
@@ -2019,8 +2279,8 @@ mod tests {
             collected: Arc::new(CollectedOrdinals {
                 score_mode: ScoreMode::None,
                 collected: FixedBitSet::new(2),
-                scores: Vec::new(),
-                occurrences: Vec::new(),
+                scores: Blocks::new(0, 0.0),
+                occurrences: Blocks::new(0, 0),
                 do_min_max: false,
                 min: 0,
                 max: i32::MAX,
