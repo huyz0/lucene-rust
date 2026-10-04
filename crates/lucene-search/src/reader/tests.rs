@@ -1657,7 +1657,7 @@ fn segment_shapes_single_valued_sets_sparse_norms_and_empty_sets() {
 
     // A sparse set's rank index: positions, misses, targets past its end,
     // the current document again, and a step back (outside the contract).
-    let sparse = std::sync::Arc::new(super::SparseDocs::new(vec![2, 5, 64, 65, 130]));
+    let sparse = std::sync::Arc::new(super::SparseDocs::new(vec![2, 5, 64, 65, 130], 200).unwrap());
     let mut c = super::segment::DvCursor::new(super::segment::DocSet::Sparse(sparse));
     assert!(!c.advance_exact(1));
     assert!(c.advance_exact(5));
@@ -1667,7 +1667,7 @@ fn segment_shapes_single_valued_sets_sparse_norms_and_empty_sets() {
     assert!(!c.advance_exact(131));
     assert!(!c.advance_exact(9999));
     assert!(!c.advance_exact(-1));
-    let sparse = std::sync::Arc::new(super::SparseDocs::new(vec![2, 5, 64, 65, 130]));
+    let sparse = std::sync::Arc::new(super::SparseDocs::new(vec![2, 5, 64, 65, 130], 200).unwrap());
     let mut c = super::segment::DvCursor::new(super::segment::DocSet::Sparse(sparse));
     assert_eq!(c.advance(3), 5);
     assert_eq!(c.advance(5), 64, "never behind the current position");
@@ -2040,4 +2040,85 @@ fn check_integrity_and_skippers() {
     let r = DirectoryReader::open(&FsDirectory::open(tmp.path())).unwrap();
     assert!(r.segment_readers()[0].check_integrity().is_err());
     r.segment_readers()[1].check_integrity().unwrap();
+}
+
+/// A sparse field's `IndexedDISI` region, as bytes: each `(block, docs)` a
+/// SPARSE block of those low 16 bits, then the `NO_MORE_DOCS` block.
+fn sparse_region(blocks: &[(u16, &[u16])]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for &(block, lows) in blocks {
+        out.extend_from_slice(&block.to_le_bytes());
+        out.extend_from_slice(&u16::try_from(lows.len() - 1).unwrap().to_le_bytes());
+        for low in lows {
+            out.extend_from_slice(&low.to_le_bytes());
+        }
+    }
+    out.extend_from_slice(&[0xFF, 0x7F, 0, 0, 0xFF, 0xFF]);
+    out
+}
+
+#[test]
+fn corrupt_sparse_docs_are_refused_before_anything_is_sized_from_them() {
+    use super::segment::DocSet;
+    let read = |region: &[u8], max_doc: i32| {
+        DocSet::read(
+            region,
+            0,
+            region.len() as i64,
+            lucene_codecs::indexed_disi::NO_RANK,
+            max_doc,
+        )
+    };
+    // Eight bytes naming document 0x7FFF_FFFE in a ten-document segment: sized
+    // from the document, this was a ~400 MB bit set cached for the reader's
+    // life (or an abort when the allocation failed).
+    let huge = sparse_region(&[(0x7FFF, &[0xFFFE])]);
+    assert!(matches!(read(&huge, 10), Err(Error::Store(_))));
+    // The last legal document, and the first past the segment.
+    let mut c = super::segment::DvCursor::new(read(&sparse_region(&[(0, &[3, 9])]), 10).unwrap());
+    assert_eq!(
+        (c.next_doc(), c.next_doc(), c.next_doc()),
+        (3, 9, NO_MORE_DOCS)
+    );
+    assert!(matches!(
+        read(&sparse_region(&[(0, &[3, 10])]), 10),
+        Err(Error::Store(_))
+    ));
+    // Out of order, and repeated, inside a block and across blocks.
+    for blocks in [
+        &[(0u16, &[5u16, 3][..])][..],
+        &[(0, &[5, 5])],
+        &[(1, &[0]), (0, &[7])],
+        &[(1, &[4]), (1, &[4])],
+    ] {
+        assert!(
+            matches!(read(&sparse_region(blocks), 1 << 20), Err(Error::Store(_))),
+            "{blocks:?}"
+        );
+    }
+    // An ALL block repeated: 65,536 documents per four bytes, refused at the
+    // second header rather than decoded into a list sized by the file.
+    let mut all = Vec::new();
+    for _ in 0..64 {
+        all.extend_from_slice(&[0, 0, 0xFF, 0xFF]);
+    }
+    all.extend_from_slice(&[0xFF, 0x7F, 0, 0, 0xFF, 0xFF]);
+    assert!(matches!(read(&all, 1 << 20), Err(Error::Store(_))));
+    // One ALL block that runs past the segment.
+    assert!(matches!(read(&all[60..], 1000), Err(Error::Store(_))));
+    // The rank index refuses the same shapes when handed a list directly.
+    for (docs, max_doc) in [
+        (vec![-1], 10),
+        (vec![3, 3], 10),
+        (vec![4, 2], 10),
+        (vec![10], 10),
+    ] {
+        assert!(
+            matches!(
+                super::SparseDocs::new(docs.clone(), max_doc),
+                Err(Error::Store(_))
+            ),
+            "{docs:?}"
+        );
+    }
 }

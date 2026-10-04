@@ -32,12 +32,14 @@ to describe a defect that got past it.
 | [`parity ::item`](#parity-item) | `check-parity.py` | `docs/parity.md` naming a Rust item its own file does not define | prose outside a row's Rust column; an item that exists but no longer does what the row says |
 | [`ledger-single-list`](#ledger-single-list) | `check-port-invariants.py` | an unticked `- [ ]` anywhere in `docs/sweep/m2/LEDGER.md` | whether a `- [x]` is *true*, or whether a `- [->]` names the right item |
 | [`block-guard`](#block-guard) | `check-port-invariants.py` | a `lucene-index` fn setting `pending_has_blocks`/`dwpt.has_blocks = true` with no earlier `check_block(` call in the same fn | a guard that is called but whose result is ignored, or that sits on a branch the flag's line does not follow; a block flag spelled any other way |
+| [`alloc-from-doc`](#alloc-from-doc) | `check-port-invariants.py` | an allocation size (`vec![_; n]`, `with_capacity(n)`, `.resize(n, ..)`, `FixedBitSet::new(n)`) mentioning a name its fn bound from a doc list's `.last()`/`.first()`/`.max()`, with no `max_doc` in the size and no `// ALLOC:` proof | a doc id reaching the size through a struct field, a parameter or another fn; a source not spelled on a `*doc*` name (`ids.last()`); a `max_doc` in the size that does not actually bound it |
 | [rustdoc links](#rustdoc) | `cargo doc` | a `[`link`]` that resolves to nothing | a symbol named in *plain backticks*, which is most of them |
 
 Between them these six rules cover **the indexing row** of the
 arithmetic gate's table (`FixedBitSet` only) and **the two hand-checked rules**
-at the end of that document. They do not cover slicing or allocation sizing:
-that is still a hand audit, still step 2 of the three-part module audit, and
+at the end of that document. Apart from `alloc-from-doc`'s one shape (a size
+taken from a decoded document id) they do not cover slicing or allocation
+sizing: that is still a hand audit, still step 2 of the three-part module audit, and
 still where c27 found four aborts and a release-mode infinite loop.
 
 ---
@@ -374,6 +376,29 @@ other rules). **Seen to fail** with the guard removed from `add_entries`:
 blocks without calling `check_block(..)` first`. Blind to: a call whose
 `Result` is discarded (`let _ =`), a guard on a sibling branch, and a flag set
 through any other name (a helper taking `&mut bool`).
+
+## alloc-from-doc
+
+`check-port-invariants.py --only=alloc-from-doc`. The M10 T10.3-T10.4 review
+found `reader::segment::SparseDocs::new` sizing its bit words and rank table
+from the **last decoded document** of a sparse field's `IndexedDISI` instead
+of the segment's `maxDoc`: eight corrupt bytes (a SPARSE block numbered
+`0x7FFF`) named document `0x7FFF_FFFE` in a ten-document segment, and the
+reader cached a ~400 MB allocation for its life -- or, when the allocation
+failed, aborted the process and the JVM with it. The fix sizes from `max_doc`
+and refuses a document at or past it, or out of order, as it decodes
+(`indexed_disi::decode_doc_ids_below`). The rule: outside tests, in any fn, an
+allocation size must not mention a name bound (directly or through other
+`let`s of the same fn) from a `*doc*` list's `.last()`/`.first()`/`.max()`,
+unless the size expression names `max_doc` or an `// ALLOC:` comment within
+the six lines above states the bound that makes it sound
+(`lucene_util::doc_id_sort`'s radix histogram carries the one such proof).
+**Seen to fail** on the unfixed `SparseDocs::new`:
+`crates/lucene-search/src/reader/segment.rs:64: `new` sizes an allocation from
+a decoded document id (`end.div_ceil(64)`)` and, through `words`, line 70's
+`Vec::with_capacity(words.len())`. Blind to: a document id that reaches the
+size through a struct field, a parameter or a helper fn; a list not named
+`*doc*`; and a `max_doc` in the size that does not bound it (`max_doc.max(n)`).
 
 ## write-path verifiers of the geo modules (M9)
 

@@ -130,14 +130,40 @@ fn dense_rank_bytes(dense_rank_power: u8) -> Result<usize> {
 /// start exactly at the first block header (the same `offset` a `NormsEntry`
 /// or doc-values entry records); `dense_rank_power` comes from that same
 /// entry and only matters for correctly skipping DENSE blocks' rank bytes.
+///
+/// [`decode_doc_ids_below`] with no segment to bound the documents by: the
+/// order is still checked, but nothing caps the list's length below
+/// `i32::MAX`. A reader that knows its segment's `maxDoc` passes it there.
+pub fn decode_doc_ids(data: &[u8], dense_rank_power: u8) -> Result<Vec<i32>> {
+    decode_doc_ids_below(data, dense_rank_power, i32::MAX)
+}
+
+/// [`decode_doc_ids`] for a segment of `max_doc` documents: a document at or
+/// past `max_doc`, or one not strictly above the one before it, is
+/// corruption, and it is refused as it is read -- so the list never holds
+/// more than `max_doc` entries, whatever the bytes say. Without the order
+/// check an ALL block repeated is 65,536 documents per four bytes of input.
 // ARITH: `read_u16` yields a `u16`, so `1u32 + it` is at most 65 536.
 // `block` is a `u16` widened to `i64`, so `block << 16` is at most 2^32 and
 // every `base + ...` below adds at most 65 535 to it -- all far inside `i64`.
-// `word_idx` runs over `0..1024` and `bit` over `0..64`.
+// `word_idx` runs over `0..1024` and `bit` over `0..64`. Every `as i32` is of
+// a document already checked below `max_doc`.
 #[allow(clippy::arithmetic_side_effects)]
-pub fn decode_doc_ids(data: &[u8], dense_rank_power: u8) -> Result<Vec<i32>> {
+pub fn decode_doc_ids_below(data: &[u8], dense_rank_power: u8, max_doc: i32) -> Result<Vec<i32>> {
     let mut input = SliceInput::new(data);
     let mut docs = Vec::new();
+    let limit = i64::from(max_doc);
+    // The last document taken, `-1` before the first.
+    let mut last = -1i64;
+    let check = |first: i64, end: i64, last: i64| {
+        if first <= last || end >= limit {
+            return Err(lucene_store::Error::Corrupted(format!(
+                "IndexedDISI documents {first}..={end} after document {last} \
+                 in a segment of {max_doc}: out of order or past the segment"
+            )));
+        }
+        Ok(())
+    };
 
     loop {
         let block = input.read_u16()? as i64;
@@ -153,7 +179,9 @@ pub fn decode_doc_ids(data: &[u8], dense_rank_power: u8) -> Result<Vec<i32>> {
                     reached_sentinel = true;
                     break;
                 }
+                check(doc, doc, last)?;
                 docs.push(doc as i32);
+                last = doc;
             }
             if reached_sentinel {
                 break;
@@ -161,7 +189,10 @@ pub fn decode_doc_ids(data: &[u8], dense_rank_power: u8) -> Result<Vec<i32>> {
         } else if num_values == BLOCK_SIZE {
             // ALL: every doc in this 65536-range has a value; no bytes stored.
             let base = block << 16;
-            docs.extend((0..BLOCK_SIZE as i64).map(|i| (base + i) as i32));
+            let end = base + BLOCK_SIZE as i64 - 1;
+            check(base, end, last)?;
+            docs.extend((base..=end).map(|d| d as i32));
+            last = end;
         } else {
             // DENSE: a 65536-bit array, optionally preceded by rank bytes we skip.
             input.skip(dense_rank_bytes(dense_rank_power)?)?;
@@ -171,11 +202,15 @@ pub fn decode_doc_ids(data: &[u8], dense_rank_power: u8) -> Result<Vec<i32>> {
                 if word == 0 {
                     continue;
                 }
+                let at = base + word_idx * 64;
+                let end = at + 63 - i64::from(word.leading_zeros());
+                check(at + i64::from(word.trailing_zeros()), end, last)?;
                 for bit in 0..64u32 {
                     if (word >> bit) & 1 != 0 {
-                        docs.push((base + word_idx * 64 + bit as i64) as i32);
+                        docs.push((at + bit as i64) as i32);
                     }
                 }
+                last = end;
             }
         }
     }
@@ -1517,6 +1552,43 @@ mod tests {
         let docs = vec![1, 5, 100];
         assert_eq!(rank_of(&docs, 5), Some(1));
         assert_eq!(rank_of(&docs, 2), None);
+    }
+
+    #[test]
+    fn decode_below_refuses_documents_past_the_segment_or_out_of_order() {
+        // Every block shape, written by the real writer, decodes the same
+        // bounded and unbounded while the segment holds its last document.
+        let sparse: Vec<i32> = vec![3, 70_000, 70_001];
+        let dense: Vec<i32> = (0..10_000).map(|d| d * 3).collect();
+        let all: Vec<i32> = (65_536..131_072).collect();
+        for docs in [&sparse, &dense, &all] {
+            let bytes = write(docs).0;
+            let last = *docs.last().unwrap();
+            assert_eq!(
+                &decode_doc_ids_below(&bytes, NO_RANK, last + 1).unwrap(),
+                docs
+            );
+            assert!(decode_doc_ids_below(&bytes, NO_RANK, last).is_err());
+        }
+        // A DENSE block whose first word restates the SPARSE block before it.
+        let mut data = Vec::new();
+        write_block_header(&mut data, 0, 1);
+        data.extend_from_slice(&40u16.to_le_bytes());
+        write_block_header(&mut data, 0, MAX_ARRAY_LENGTH + 1);
+        let mut words = vec![0i64; DENSE_BLOCK_LONGS as usize];
+        words[0] = 1 << 40;
+        for w in &words {
+            data.extend_from_slice(&w.to_le_bytes());
+        }
+        data.extend_from_slice(&sentinel_block());
+        assert!(decode_doc_ids_below(&data, NO_RANK, 1 << 20).is_err());
+        // A block numbered past `i32::MAX` is refused even unbounded, rather
+        // than wrapped into a negative document.
+        let mut data = Vec::new();
+        write_block_header(&mut data, 0xFFFF, 1);
+        data.extend_from_slice(&7u16.to_le_bytes());
+        data.extend_from_slice(&sentinel_block());
+        assert!(decode_doc_ids(&data, NO_RANK).is_err());
     }
 
     #[test]
