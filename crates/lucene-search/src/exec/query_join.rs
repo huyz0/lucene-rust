@@ -23,8 +23,8 @@ use super::{exact_advance, exact_next, BoxScorer, Mode, Scorer, NO_MORE_DOCS};
 use crate::explain::Explanation;
 use crate::extended_query::ExtendedQuery;
 use crate::join::query_time::{
-    bit, global_ord, GlobalOrdinalsQuery, GlobalOrdinalsWithScoreQuery,
-    PointInSetIncludingScoreQuery, TermsIncludingScoreQuery,
+    bit, global_ord, segment_map, CollectedOrdinals, GlobalOrdinalsQuery,
+    GlobalOrdinalsWithScoreQuery, PointInSetIncludingScoreQuery, TermsIncludingScoreQuery,
 };
 use crate::reader::SortedDocValues;
 use crate::{Error, Result};
@@ -106,11 +106,21 @@ fn terms_docs_and_scores(
     let Some(doc_in) = ctx.doc_in else {
         return Ok(Some((bits, scores, cost)));
     };
+    // `postingsEnum = segmentTermsEnum.postings(postingsEnum, NONE)`: one
+    // cursor, reset onto each term (a pulsed single-document term reads its
+    // one document from the term metadata).
+    let mut reuse = None;
+    let mut single;
     for (term, score) in q.terms_and_scores() {
         let Some(seeked) = ft.seek_term_state(term)? else {
             continue;
         };
-        let mut docs = ft.lazy_postings_for(&seeked, doc_in, PostingsFlags::DocsOnly)?;
+        let docs = if seeked.stats.doc_freq <= 1 {
+            single = ft.lazy_postings_for(&seeked, doc_in, PostingsFlags::DocsOnly)?;
+            &mut single
+        } else {
+            ft.reuse_postings_for(&seeked, doc_in, PostingsFlags::DocsOnly, &mut reuse)?
+        };
         loop {
             let doc = docs.next_doc()?;
             if doc == NO_MORE_DOCS {
@@ -316,12 +326,40 @@ pub(crate) fn point_in_set_including_score<'a>(
 // Global ordinals
 // ---------------------------------------------------------------------------
 
-/// What a global-ordinal scorer accepts and scores.
+/// What a global-ordinal scorer accepts and scores, by **segment** ordinal:
+/// the collected global ordinals translated through the segment's map once,
+/// when the scorer is made. Java maps every document's ordinal to its global
+/// one (`segmentOrdToGlobalOrdLookup.get(ord)`) and asks the collector; the
+/// matches and scores are the same (stage 3: the per-document lookups were
+/// most of the scorer's time).
 enum OrdinalMatch {
     /// `GlobalOrdinalsQuery`: the found ordinals, at the constant score.
+    Found(FixedBitSet, f32),
+    /// `GlobalOrdinalsWithScoreQuery`: the collector's `match`, its
+    /// `score` per ordinal, and the boost it is multiplied by.
+    Scored(FixedBitSet, Vec<f32>, f32),
+    /// Java's per-document lookup, for a to-query that visits few
+    /// documents of a large dictionary (where translating every ordinal
+    /// would cost more than it saves): the segment's map and the collected
+    /// global ordinals.
+    PerDocument {
+        map: Option<Arc<crate::ordinal_map::OrdinalMap>>,
+        ord: usize,
+        global: GlobalAccept,
+    },
+}
+
+/// The collected global ordinals [`OrdinalMatch::PerDocument`] asks.
+enum GlobalAccept {
     Found(Arc<FixedBitSet>, f32),
-    /// `GlobalOrdinalsWithScoreQuery`: the collector's `match` and `score`.
-    Collected(Arc<crate::join::query_time::CollectedOrdinals>, f32),
+    Collected(Arc<CollectedOrdinals>, f32),
+}
+
+/// Whether to translate the segment's ordinals up front: unless the
+/// to-query visits fewer than a quarter as many documents as the segment
+/// has ordinals.
+fn translate_up_front(approximation: &BoxScorer<'_>, values: &dyn SortedDocValues) -> bool {
+    approximation.cost().saturating_mul(4) >= i64::from(values.value_count())
 }
 
 /// `BaseGlobalOrdinalScorer` with `OrdinalMapScorer`/`SegmentOrdinalScorer`:
@@ -329,11 +367,40 @@ enum OrdinalMatch {
 struct GlobalOrdinalScorer<'a> {
     approximation: BoxScorer<'a>,
     values: Box<dyn SortedDocValues + 'a>,
-    /// The segment's ordinals to global ones; `None` with a single segment.
-    map: Option<Arc<crate::ordinal_map::OrdinalMap>>,
-    ord: usize,
     accept: OrdinalMatch,
     score: f32,
+}
+
+/// The segment's ordinals that `accept` takes (and, with `score`, their
+/// scores), through the segment's part of the ordinal map.
+fn segment_ordinals(
+    values: &dyn SortedDocValues,
+    map: Option<&Arc<crate::ordinal_map::OrdinalMap>>,
+    ord: usize,
+    accept: impl Fn(i64) -> bool,
+    mut score: Option<&mut Vec<f32>>,
+    score_of: impl Fn(i64) -> f32,
+) -> Result<FixedBitSet> {
+    let map = segment_map(map.map(Arc::as_ref), ord)?;
+    let count = usize::try_from(values.value_count()).unwrap_or(0);
+    let mut bits = FixedBitSet::new(count);
+    if let Some(s) = score.as_mut() {
+        s.resize(count, 0.0);
+    }
+    for o in 0..count {
+        let g = match map {
+            Some(m) => m.get(o).copied().unwrap_or(-1),
+            None => i64::try_from(o).unwrap_or(-1),
+        };
+        if accept(g) {
+            // FBS: `o` is below `count`, the set's length.
+            bits.set(o);
+            if let Some(s) = score.as_mut() {
+                s[o] = score_of(g);
+            }
+        }
+    }
+    Ok(bits)
 }
 
 impl Scorer for GlobalOrdinalScorer<'_> {
@@ -357,24 +424,45 @@ impl Scorer for GlobalOrdinalScorer<'_> {
         if !self.values.advance_exact(doc)? {
             return Ok(false);
         }
-        let map = match &self.map {
-            Some(m) => Some(m.segment_ords(self.ord).ok_or_else(|| {
-                Error::IllegalArgument(format!("the ordinal map has no segment {}", self.ord))
-            })?),
-            None => None,
-        };
-        let g = global_ord(map, self.values.ord_value())?;
+        let ord = i64::from(self.values.ord_value());
         Ok(match &self.accept {
             OrdinalMatch::Found(found, score) => {
                 self.score = *score;
-                bit(found, g)
+                bit(found, ord)
             }
-            OrdinalMatch::Collected(c, boost) => {
-                if c.matches(g) {
-                    self.score = c.score(g) * boost;
+            OrdinalMatch::Scored(found, scores, boost) => {
+                if bit(found, ord) {
+                    let s = usize::try_from(ord)
+                        .ok()
+                        .and_then(|o| scores.get(o))
+                        .copied()
+                        .unwrap_or(0.0);
+                    self.score = s * boost;
                     true
                 } else {
                     false
+                }
+            }
+            OrdinalMatch::PerDocument {
+                map,
+                ord: seg,
+                global,
+            } => {
+                let map = segment_map(map.as_deref(), *seg)?;
+                let g = global_ord(map, self.values.ord_value())?;
+                match global {
+                    GlobalAccept::Found(found, score) => {
+                        self.score = *score;
+                        bit(found, g)
+                    }
+                    GlobalAccept::Collected(c, boost) => {
+                        if c.matches(g) {
+                            self.score = c.score(g) * boost;
+                            true
+                        } else {
+                            false
+                        }
+                    }
                 }
             }
         })
@@ -412,11 +500,15 @@ fn leaf_ord(
     })
 }
 
-/// `GlobalOrdinalsQuery.W.scorerSupplier(context)`.
+/// `GlobalOrdinalsQuery.W.scorerSupplier(context)`: a `ConstantScoreWeight`'s
+/// `ConstantScoreScorer` over the two-phase iterator -- which, collecting
+/// the top hits, empties itself once the minimum competitive score passes
+/// its constant.
 pub(crate) fn global_ordinals<'a>(
     ctx: &LeafContext<'a>,
     q: &GlobalOrdinalsQuery,
     boost: f32,
+    mode: Mode,
 ) -> Result<Option<BoxScorer<'a>>> {
     let reader = ctx
         .reader
@@ -426,14 +518,34 @@ pub(crate) fn global_ordinals<'a>(
         return Ok(None);
     };
     let ord = leaf_ord(ctx, q.ordinal_map.as_ref(), &q.leaves)?;
-    Ok(Some(Box::new(GlobalOrdinalScorer {
+    let accept = if translate_up_front(&approximation, values.as_ref()) {
+        let found = segment_ordinals(
+            values.as_ref(),
+            q.ordinal_map.as_ref(),
+            ord,
+            |g| bit(&q.found_ords, g),
+            None,
+            |_| 0.0,
+        )?;
+        OrdinalMatch::Found(found, boost)
+    } else {
+        OrdinalMatch::PerDocument {
+            map: q.ordinal_map.clone(),
+            ord,
+            global: GlobalAccept::Found(Arc::clone(&q.found_ords), boost),
+        }
+    };
+    let inner: BoxScorer<'a> = Box::new(GlobalOrdinalScorer {
         approximation,
         values,
-        map: q.ordinal_map.clone(),
-        ord,
-        accept: OrdinalMatch::Found(Arc::clone(&q.found_ords), boost),
+        accept,
         score: 0.0,
-    })))
+    });
+    Ok(Some(Box::new(super::leaf::ConstantScorer::new(
+        inner,
+        boost,
+        mode == Mode::TopScores,
+    ))))
 }
 
 /// `GlobalOrdinalsWithScoreQuery.createWeight(...).scorerSupplier(context)`.
@@ -445,7 +557,7 @@ pub(crate) fn global_ordinals_with_score<'a>(
 ) -> Result<Option<BoxScorer<'a>>> {
     let no_min_max = q.min <= 1 && q.max == i32::MAX;
     if !mode.needs_scores() && no_min_max {
-        return global_ordinals(ctx, &q.as_global_ordinals_query(), boost);
+        return global_ordinals(ctx, &q.as_global_ordinals_query(), boost, mode);
     }
     use crate::reader::LeafReader;
     let reader = ctx
@@ -458,12 +570,29 @@ pub(crate) fn global_ordinals_with_score<'a>(
         return Ok(None);
     };
     let ord = leaf_ord(ctx, q.ordinal_map.as_ref(), &q.leaves)?;
+    let c = &q.collected;
+    let accept = if translate_up_front(&approximation, values.as_ref()) {
+        let mut scores = Vec::new();
+        let found = segment_ordinals(
+            values.as_ref(),
+            q.ordinal_map.as_ref(),
+            ord,
+            |g| c.matches(g),
+            Some(&mut scores),
+            |g| c.score(g),
+        )?;
+        OrdinalMatch::Scored(found, scores, boost)
+    } else {
+        OrdinalMatch::PerDocument {
+            map: q.ordinal_map.clone(),
+            ord,
+            global: GlobalAccept::Collected(Arc::clone(c), boost),
+        }
+    };
     Ok(Some(Box::new(GlobalOrdinalScorer {
         approximation,
         values,
-        map: q.ordinal_map.clone(),
-        ord,
-        accept: OrdinalMatch::Collected(Arc::clone(&q.collected), boost),
+        accept,
         score: 0.0,
     })))
 }

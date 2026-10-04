@@ -430,6 +430,50 @@ fn query_time_join_edges() {
             .unwrap();
     assert!(matches!(q, Clause::MatchNoDocs(_)));
 
+    // A to-query that visits few documents takes Java's per-document
+    // ordinal lookup; it finds what the full join finds, with the same
+    // score bits.
+    for mode in [ScoreMode::None, ScoreMode::Max, ScoreMode::Avg] {
+        let map = Some(ordinal_map(&searcher, "gj").unwrap());
+        let gord = |to: &Clause| {
+            create_global_ordinals_join_query(
+                "gj",
+                &from,
+                to,
+                &searcher,
+                mode,
+                map.clone(),
+                0,
+                i32::MAX,
+            )
+            .unwrap()
+        };
+        let full: HashMap<i32, u32> = search(&searcher, gord(&term("type", "to")), 1000)
+            .unwrap()
+            .into_iter()
+            .collect();
+        let mut seen = 0;
+        for id in 0..400 {
+            let one = term("id", &format!("t{id}"));
+            let Some(&(doc, _)) = search(&searcher, one.clone(), 1).unwrap().first() else {
+                continue;
+            };
+            let to = Clause::Boolean(Box::new(BooleanQuery {
+                filter: vec![term("type", "to")],
+                must: vec![one],
+                ..Default::default()
+            }));
+            let hits = search(&searcher, gord(&to), 10).unwrap();
+            match full.get(&doc) {
+                Some(&bits) => {
+                    assert_eq!(hits, vec![(doc, bits)], "{mode:?} t{id}");
+                    seen += 1;
+                }
+                None => assert!(hits.is_empty(), "{mode:?} t{id}"),
+            }
+        }
+        assert!(seen > 10, "{seen}");
+    }
     // A to-query without a scorer in any segment.
     for mode in [ScoreMode::None, ScoreMode::Max] {
         let q = create_global_ordinals_join_query(
