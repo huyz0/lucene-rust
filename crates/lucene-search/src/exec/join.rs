@@ -450,29 +450,50 @@ impl BlockJoinBulk<'_> {
         if after_last_parent == after_prev_parent {
             return Ok(complete(max, max));
         }
-        let mut wrapped = BlockJoinCollector {
-            inner: collector,
+        // The child collects into one concrete type, whatever `C` is -- a
+        // child hit is a static call, a parent a dynamic one -- and a nested
+        // block join's child collects into that same type again, so the
+        // instantiations stop there.
+        let mut forward = Forward(collector);
+        let mut wrapped = BlockJoinCollector::<dyn ScoringCollector> {
+            inner: &mut forward,
             parents: &self.parents,
             mode: self.mode,
             current_parent: -1,
             score: ParentScore::new(self.mode),
             error: None,
         };
-        {
-            let wrapped: &mut dyn ScoringCollector = &mut wrapped;
-            self.child.score(
-                self.child_mode,
-                live_docs,
-                wrapped,
-                after_prev_parent,
-                after_last_parent,
-            )?;
-        }
+        self.child.score(
+            self.child_mode,
+            live_docs,
+            &mut wrapped,
+            after_prev_parent,
+            after_last_parent,
+        )?;
         if let Some(e) = wrapped.error.take() {
             return Err(e);
         }
         wrapped.end_batch();
         Ok(complete(after_last_parent, max))
+    }
+}
+
+/// A collector of any size behind a sized one, so it can be a
+/// `dyn ScoringCollector`: every call passed through.
+struct Forward<'c, C: ?Sized>(&'c mut C);
+
+impl<C: ScoringCollector + ?Sized> ScoringCollector for Forward<'_, C> {
+    fn collect(&mut self, doc: i32, score: f32) {
+        self.0.collect(doc, score);
+    }
+    fn min_competitive_score(&self) -> Option<f32> {
+        self.0.min_competitive_score()
+    }
+    fn score_mode(&self) -> crate::collector::ScoreMode {
+        self.0.score_mode()
+    }
+    fn pruning_threshold(&self) -> Option<f32> {
+        self.0.pruning_threshold()
     }
 }
 

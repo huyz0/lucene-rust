@@ -2537,12 +2537,31 @@ pub(crate) fn resolve(
     Ok(out)
 }
 
-/// Every document `clause` matches in one segment, deletions not applied:
-/// its scorer's iterator (`Weight.scorer(ctx).iterator()`).
-pub(crate) fn segment_matches(
+/// Every document `clause` matches in one segment, deletions not applied --
+/// its scorer's iterator (`Weight.scorer(ctx).iterator()`) -- as a bit set
+/// of `max_doc` documents. Collected through the clause's bulk scorer, a
+/// window at a time rather than a scorer step each: the same documents.
+pub(crate) fn segment_match_bits(
     seg: &crate::multi_segment::OpenSegment<'_>,
     clause: &Clause,
-) -> Result<Vec<i32>> {
+) -> Result<lucene_util::fixed_bit_set::FixedBitSet> {
+    use lucene_util::fixed_bit_set::FixedBitSet;
+    struct Bits(FixedBitSet);
+    impl crate::collector::ScoringCollector for Bits {
+        fn collect(&mut self, doc_id: i32, _score: f32) {
+            if let Ok(d) = usize::try_from(doc_id) {
+                // FBS: a scorer returns this segment's documents, below
+                // `maxDoc`, the set's length; the check keeps a corrupt one
+                // from panicking.
+                if d < self.0.len() {
+                    self.0.set(d);
+                }
+            }
+        }
+        fn score_mode(&self) -> crate::collector::ScoreMode {
+            crate::collector::ScoreMode::CompleteNoScores
+        }
+    }
     let ctx = LeafContext {
         fields: seg.fields,
         doc_in: seg.doc_in,
@@ -2557,16 +2576,13 @@ pub(crate) fn segment_matches(
         reader: seg.reader,
         similarity: None,
     };
-    let Some(mut s) = build::build(&ctx, clause, 1.0, Mode::NoScores, false)? else {
-        return Ok(Vec::new());
-    };
-    let mut out = Vec::new();
-    let mut doc = super::exact_next(&mut *s)?;
-    while doc != NO_MORE_DOCS {
-        out.push(doc);
-        doc = super::exact_next(&mut *s)?;
+    let mut bits = Bits(FixedBitSet::new(
+        usize::try_from(seg.max_doc.unwrap_or(0)).unwrap_or(0),
+    ));
+    if let Some(mut bulk) = super::bulk_clause(&ctx, clause, 1.0, Mode::NoScores)? {
+        super::score_segment(&mut bulk, Mode::NoScores, None, &mut bits)?;
     }
-    Ok(out)
+    Ok(bits.0)
 }
 
 #[cfg(test)]

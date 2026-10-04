@@ -168,6 +168,17 @@ case "$BENCH" in
     PREP_ARGS=(build "$INDEX")
     JAVA_ARGS=(run)
     NEEDS_INDEX=1 ;;
+  join)
+    # M10 T10.2's pair (JoinMicro.java / micro_join.rs): the block-join
+    # queries and the ToParentBlockJoinSortField sort over the 60 000-block
+    # index JoinMicro builds (once) under benchmarks/.corpus/join.
+    MAIN=JoinMicro
+    SRC=benchmarks/micro/java/JoinMicro.java
+    JAR_MODULES="lucene-core lucene-analysis-common lucene-join"
+    INDEX="${INDEX_ARG:-$PWD/benchmarks/.corpus/join}"
+    PREP_ARGS=(build "$INDEX")
+    JAVA_ARGS=(run)
+    NEEDS_INDEX=1 ;;
   pfor_decode)
     MAIN=org.apache.lucene.codecs.lucene104.PForUtilMicro
     SRC=benchmarks/micro/java/org/apache/lucene/codecs/lucene104/PForUtilMicro.java ;;

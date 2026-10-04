@@ -430,6 +430,13 @@ impl<'a> DisiCursor<'a> {
     /// Rewinds to the start of the region, so `advance_exact` may go backwards
     /// again. Java has no equivalent because it constructs a new `IndexedDISI`;
     /// this keeps the same borrow and allocates nothing.
+    /// ORs every document of the set into `words` ([`or_into_words`] over
+    /// this cursor's blocks): a bit set of `words.len() * 64` documents,
+    /// independent of where the cursor stands.
+    pub fn or_into_words(&self, words: &mut [u64]) -> Result<()> {
+        or_into_words(self.data, self.dense_rank_power, words)
+    }
+
     pub fn reset(&mut self) {
         *self = Self::at_start(
             self.data,
