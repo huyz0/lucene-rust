@@ -1383,3 +1383,20 @@ fn vector_similarities_refuse_vectors_of_different_lengths() {
         assert!(same.get_values(&fcx, &leaf).unwrap().float_val(0).is_ok());
     }
 }
+
+/// `collect_functions` walks each function's scored queries once: a chain
+/// of `query()` sources nested `n` deep yields `n` functions, not one per
+/// path through the chain (which grew as `2^n`).
+#[test]
+fn nested_function_queries_are_collected_once_each() {
+    let mut c = term("red");
+    for _ in 0..20 {
+        c = Clause::from(FunctionQuery::new(Arc::new(QueryValueSource::new(c, 0.0))));
+    }
+    // And through a values source's query and a function score's own query.
+    let fsq = FunctionScoreQuery::new(c, dvs::from_clause(term("blue")));
+    let q = must(Clause::from(fsq));
+    let mut found = Vec::new();
+    collect_functions(&q, &mut found);
+    assert_eq!(found.len(), 21);
+}
