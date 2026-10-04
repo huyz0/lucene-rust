@@ -192,7 +192,13 @@ grouping. Each of them falls back to Lucene today.
   to Lucene's; `(float) Math.pow` needed no tolerance. With them,
   `lucene-grouping`'s `ValueSourceGroupSelector`: 28 grouped searches
   (`groups.tsv`, 14 sources by all documents and by `t:red`) equal to
-  Lucene's.
+  Lucene's. The review after the port found the reader-wide state computed
+  only on scoring paths -- a sorted, counted, aggregated or terminated search
+  read `scale`/`docfreq`/`maxdoc`/`IndexReaderFunctions` from one segment --
+  and a boolean's explanation scored without the searcher's similarity. Every
+  entry point now prepares its function queries over all its segments, a
+  leaf without them errors (gate `toplevel-whole-reader`), and 16 more
+  searches (`gfilter`, `gfilterclassic`, `fqboolclassic`; 236 in all) pin it.
   Benchmark pair `scripts/bench-micro.sh --bench function`
   (`FunctionMicro.java` / `micro_function.rs`: 200 000 documents in four
   segments, 16 words, one top-10 search per word, query cache off on both

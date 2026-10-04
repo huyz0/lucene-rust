@@ -507,7 +507,19 @@ pub fn explain_clause_with_stats(
     global: Option<&GlobalStats>,
 ) -> Result<Explanation> {
     match clause {
-        Clause::Exists(q) => Err(crate::Error::MissingSegmentReader(q.field.clone())),
+        // `ConstantScoreWeight.explain`: the scorer reaches the document or
+        // not (it needs the segment's reader, which `with_leaf` sets).
+        Clause::Exists(q) => {
+            let name = format!("FieldExistsQuery [field={}]", q.field);
+            Ok(
+                match scorer_score(
+                    fields, doc_in, pos_in, pay_in, live_docs, points, norms, global, clause, doc,
+                )? {
+                    Some(score) => Explanation::match_(score, name),
+                    None => Explanation::no_match(format!("{name} doesn't match id {doc}")),
+                },
+            )
+        }
         // The score the scorer tree gives the document, as one match.
         Clause::Extended(q) => {
             if let Some(e) = crate::exec::join::explain_extended(
@@ -728,6 +740,22 @@ fn explain_term(
         Some(g) => (g.doc_freq, g.doc_count),
         None => (stats.doc_freq as i64, field_terms.doc_count as i64),
     };
+    // Under a TFIDF similarity (the searcher's, `ClassicSimilarity`):
+    // `TFIDFScorer.explain`.
+    if let Some(e) = with_leaf_reader(|_, sim| {
+        let Some(tfidf) = sim.and_then(|s| s.as_tfidf(&query.field)) else {
+            return Ok(None);
+        };
+        let encoded = match norms {
+            Some(n) => n.cursor().norm_long(doc)?.unwrap_or(1),
+            None => 1,
+        };
+        Ok::<_, crate::Error>(Some(explain_term_tfidf(
+            tfidf, query, doc, freq, doc_freq, doc_count, encoded,
+        )))
+    })? {
+        return Ok(e);
+    }
     let (field_length, avg_field_length) = match norms {
         Some(fn_) => (fn_.field_length(doc)?, fn_.avg_field_length),
         None => (
@@ -783,6 +811,59 @@ fn explain_term(
         ),
     )
     .with_details(vec![score_explanation]))
+}
+
+/// `TermWeight.explain` under a TFIDF similarity: `TFIDFScorer.explainScore`
+/// (`ClassicSimilarity`'s `idfExplain`, its `normTable`), in the scorer's
+/// order of operations (`queryWeight * tf * norm`).
+fn explain_term_tfidf(
+    tfidf: &dyn crate::similarities::TfIdfSimilarity,
+    query: &TermQuery,
+    doc: i32,
+    freq: i32,
+    doc_freq: i64,
+    doc_count: i64,
+    encoded_norm: i64,
+) -> Explanation {
+    let idf = tfidf.idf(doc_freq, doc_count);
+    let idf_explanation = Explanation::match_(
+        idf,
+        "idf, computed as log((docCount+1)/(docFreq+1)) + 1 from:",
+    )
+    .with_details(vec![
+        Explanation::match_long(doc_freq, "docFreq, number of documents containing term"),
+        Explanation::match_long(doc_count, "docCount, total number of documents with field"),
+    ]);
+    let freq = freq as f32;
+    let tf = tfidf.tf(freq);
+    let tf_explanation =
+        Explanation::match_(tf, format!("tf(freq={}), with freq of:", java_float(freq)))
+            .with_details(vec![Explanation::match_(
+                freq,
+                "freq, occurrences of term within document",
+            )]);
+    let table = crate::similarities::ClassicSimilarity::norm_table();
+    // `normTable[(int) (encodedNorm & 0xFF)]`.
+    let norm = table[(encoded_norm & 0xFF) as usize];
+    let query_weight = idf;
+    let value = query_weight * tf * norm;
+    let score = Explanation::match_(
+        value,
+        format!("score(freq={}), product of:", java_float(freq)),
+    )
+    .with_details(vec![
+        idf_explanation,
+        tf_explanation,
+        Explanation::match_(norm, "fieldNorm"),
+    ]);
+    Explanation::match_(
+        value,
+        format!(
+            "weight({} in {doc}) [ClassicSimilarity], result of:",
+            describe_clause(&Clause::Term(query.clone()))
+        ),
+    )
+    .with_details(vec![score])
 }
 
 /// One term's `idf` node, verbatim from `BM25Similarity.idfExplain(FieldStats,
@@ -1159,7 +1240,7 @@ fn scorer_score(
     clause: &Clause,
     doc: i32,
 ) -> Result<Option<f32>> {
-    with_leaf_reader(|reader, _similarity| {
+    with_leaf_reader(|reader, similarity| {
         let ctx = crate::exec::LeafContext {
             fields,
             doc_in,
@@ -1172,7 +1253,7 @@ fn scorer_score(
             max_doc: leaf().map(|(max_doc, _)| max_doc),
             cache: None,
             reader,
-            similarity: None,
+            similarity,
         };
         let Some(mut s) =
             crate::exec::build::build(&ctx, clause, 1.0, crate::exec::Mode::Complete, false)?

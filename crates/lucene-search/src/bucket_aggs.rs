@@ -1958,10 +1958,9 @@ pub fn aggregate_tree(
     let rewritten = crate::multi_segment::rewrite_points_ranges(query, segments);
     let query = rewritten.as_ref().unwrap_or(query);
     let clause = aggs::lone_clause(query);
-    let global = match min_score {
-        Some(_) => Some(crate::multi_segment::global_boolean_stats(segments, query)?),
-        None => None,
-    };
+    // Scoring, for `min_score`: the reader's statistics, once; without it,
+    // the function queries' reader-wide preparation alone.
+    let global = crate::multi_segment::leaf_stats(segments, query, min_score.is_some(), None)?;
     let scoring = min_score.zip(global.as_ref());
     let one = |slice: &[usize]| -> Result<Vec<AggResult>> {
         let mut states: Vec<State> = nodes.iter().map(State::new).collect();
@@ -1983,7 +1982,10 @@ pub fn aggregate_tree(
             for (n, s) in nodes.iter().zip(&mut states) {
                 leaves.push(open_leaf(n, &view, globals, s)?);
             }
-            let ctx = aggs::plain_context(seg);
+            let ctx = exec::LeafContext {
+                global: global.as_ref(),
+                ..aggs::plain_context(seg)
+            };
             let live: Option<&FixedBitSet> = seg.live_docs;
             let matched = match scoring {
                 Some((m, g)) => {

@@ -400,6 +400,33 @@ a decoded document id (`end.div_ceil(64)`)` and, through `words`, line 70's
 size through a struct field, a parameter or a helper fn; a list not named
 `*doc*`; and a `max_doc` in the size that does not bound it (`max_doc.max(n)`).
 
+## toplevel-whole-reader
+
+`check-port-invariants.py --only=toplevel-whole-reader`. The M10 T10.5 review
+found `exec/function.rs`'s `context()` and `rewritten()` falling back to
+`TopLevel::single(*ctx)` -- the segment being scored as the whole index --
+whenever the leaf had no statistics pass, and the sorted, counted, aggregated
+and `terminate_after` entry points ran that pass only when they scored. A
+`scale`, `docfreq`, `idf`, `maxdoc`, `numdocs`, `joindf` or
+`IndexReaderFunctions` source then read one segment's statistics: wrong hits
+on any multi-segment index, with nothing to say so. Every entry point now
+prepares the query's function queries over all its segments
+(`multi_segment::global_function_stats`, or the full statistics when it
+scores), and a leaf reached unprepared is an `IllegalState` error. The rule:
+outside tests, no `TopLevel::single(` anywhere, and no `TopLevel { .. }`
+literal outside `function/mod.rs` (where `prepare_functions` and
+`TopLevel::of_searcher` build it from every segment). **Seen to fail** on the
+unfixed `exec/function.rs`: `crates/lucene-search/src/exec/function.rs:47:
+`TopLevel::single(` builds a function query's top-level reader from one
+segment.` (and line 64), and on a probe `TopLevel { leaves: vec![c] }` in
+`exec/function.rs`: `a `TopLevel` built outside `function/mod.rs``. Blind
+to: a `TopLevel` built inside `function/mod.rs` from fewer segments than the
+search covers (a slice of the segments passed to `prepare_functions`); an
+entry point that hands its leaves a `GlobalStats` prepared for a different
+query (the leaf then errors, it does not read wrong statistics); and a
+function query reached through a path that builds leaf contexts without a
+statistics pass -- that is a runtime error, not a gate failure.
+
 ## write-path verifiers of the geo modules (M9)
 
 `scripts/verify-write-path.sh` runs a Java verifier over an index this
