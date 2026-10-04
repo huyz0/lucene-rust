@@ -15,7 +15,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use super::leaf::ConstantScorer;
-use super::{build, BoxScorer, LeafContext, Mode, Scorer, NO_MORE_DOCS};
+use super::{build, BoxScorer, LeafContext, Mode, Scorer, NEXT_DOCS_BATCH, NO_MORE_DOCS};
 use crate::explain::Explanation;
 use crate::extended_query::ExtendedQuery;
 use crate::function::{
@@ -87,6 +87,36 @@ struct AllScorer<'a> {
     max_doc: i32,
 }
 
+/// The documents a batch of an every-document scorer reads: the live ones
+/// from `doc` up to the next multiple of 64 (below `end`), so that the
+/// values are read as aligned windows (`NumericColumn::get_batch`) -- or
+/// further, a window at a time, while none is live (a batch is empty only
+/// at `end`). Returns where the walk stopped, the first document not taken.
+fn live_run(
+    doc: i32,
+    end: i32,
+    live_docs: Option<&lucene_util::fixed_bit_set::FixedBitSet>,
+    docs: &mut Vec<i32>,
+) -> i32 {
+    docs.clear();
+    let mut d = doc;
+    while d < end {
+        // ARITH: `d < end <= max_doc`, an `i32`, so `(d | 63) + 1` is at
+        // most `max_doc + 63`, which `min` brings back below `end`.
+        #[allow(clippy::arithmetic_side_effects)]
+        let stop = end.min((d | 63).saturating_add(1));
+        match live_docs {
+            None => docs.extend(d..stop),
+            Some(l) => docs.extend((d..stop).filter(|&x| l.get_doc(x))),
+        }
+        d = stop;
+        if !docs.is_empty() {
+            break;
+        }
+    }
+    d
+}
+
 impl Scorer for AllScorer<'_> {
     fn doc_id(&self) -> i32 {
         self.doc
@@ -112,6 +142,28 @@ impl Scorer for AllScorer<'_> {
     }
     fn max_score(&mut self, _up_to: i32) -> Result<f32> {
         Ok(f32::INFINITY)
+    }
+    /// The live documents from the current one on, their values read in
+    /// one batch.
+    fn next_docs_and_scores(
+        &mut self,
+        up_to: i32,
+        live_docs: Option<&lucene_util::fixed_bit_set::FixedBitSet>,
+        out: &mut crate::bulk_scorer::DocScores,
+    ) -> Result<()> {
+        let end = up_to.min(self.max_doc);
+        let next = live_run(self.doc, end, live_docs, &mut out.docs);
+        out.scores.clear();
+        out.scores.resize(out.docs.len(), 0.0);
+        self.vals.float_val_batch(&out.docs, &mut out.scores)?;
+        for s in &mut out.scores {
+            *s = if *s >= 0.0 { self.boost * *s } else { 0.0 };
+        }
+        self.advance(next)?;
+        Ok(())
+    }
+    fn prefers_batches(&self) -> bool {
+        true
     }
 }
 
@@ -170,6 +222,68 @@ impl Scorer for ValueSourceScorer<'_> {
     fn max_score(&mut self, _up_to: i32) -> Result<f32> {
         Ok(f32::INFINITY)
     }
+    /// Runs of live documents from the current one (a match) on, each
+    /// matched and scored in one batch, until at least [`NEXT_DOCS_BATCH`]
+    /// matches (fewer than twice that: a run is at most 64 documents); then,
+    /// as the document-at-a-time default does, on to the next match.
+    fn next_docs_and_scores(
+        &mut self,
+        up_to: i32,
+        live_docs: Option<&lucene_util::fixed_bit_set::FixedBitSet>,
+        out: &mut crate::bulk_scorer::DocScores,
+    ) -> Result<()> {
+        out.docs.clear();
+        out.scores.clear();
+        let end = up_to.min(self.max_doc);
+        let mut candidates = std::mem::take(&mut self.candidates);
+        let mut doc = self.doc;
+        while doc < end && out.docs.len() < NEXT_DOCS_BATCH {
+            doc = live_run(doc, end, live_docs, &mut candidates);
+            self.values.range_batch(
+                self.range.as_ref(),
+                &candidates,
+                &mut out.docs,
+                Some(&mut out.scores),
+            )?;
+        }
+        self.candidates = candidates;
+        // `score()`'s floor for negative infinity and `NaN`.
+        for s in &mut out.scores {
+            if s.is_nan() || *s == f32::NEG_INFINITY {
+                *s = -f32::MAX;
+            }
+        }
+        self.advance(doc)?;
+        while self.doc != NO_MORE_DOCS && !self.matches()? {
+            self.next_doc()?;
+        }
+        Ok(())
+    }
+    fn prefers_batches(&self) -> bool {
+        true
+    }
+    fn batch_matches(&self) -> bool {
+        true
+    }
+    /// The range over the batch at once (no value read beyond what
+    /// `matches` reads).
+    fn matches_batch(&mut self, docs: &[i32], keep: &mut [bool]) -> Result<()> {
+        let mut matched = std::mem::take(&mut self.candidates);
+        matched.clear();
+        self.values
+            .range_batch(self.range.as_ref(), docs, &mut matched, None)?;
+        // `matched` is the documents of `docs` that match, in order.
+        let mut j = 0;
+        for (&doc, k) in docs.iter().zip(keep.iter_mut()) {
+            *k = matched.get(j) == Some(&doc);
+            j += usize::from(*k);
+        }
+        self.candidates = matched;
+        if let Some(&last) = docs.last() {
+            self.advance(last)?;
+        }
+        Ok(())
+    }
 }
 
 /// `FunctionRangeWeight.scorerSupplier(context).get(...)`: the values'
@@ -209,6 +323,10 @@ struct MatchIterator<'a> {
     match_cost: f32,
     doc: i32,
     max_doc: i32,
+    /// A batch's values ([`Scorer::matches_batch`]), and the zero scores
+    /// handed with them.
+    batch_values: Vec<f64>,
+    batch_scores: Vec<f32>,
 }
 
 impl Scorer for MatchIterator<'_> {
@@ -235,6 +353,36 @@ impl Scorer for MatchIterator<'_> {
     fn matches(&mut self) -> Result<bool> {
         Ok(self.values.advance_exact(self.doc)? && (self.filter)(self.values.double_value()?))
     }
+    fn batch_matches(&self) -> bool {
+        true
+    }
+    /// The values for the whole batch ([`DoubleValues::fill_batch`] when
+    /// they can, else one document at a time), then the predicate.
+    fn matches_batch(&mut self, docs: &[i32], keep: &mut [bool]) -> Result<()> {
+        let n = docs.len();
+        if self.values.batch_capable() {
+            self.batch_values.resize(n, 0.0);
+            // No scorer's scores: the source was opened without them.
+            self.batch_scores.resize(n, 0.0);
+            self.values.fill_batch(
+                docs,
+                &self.batch_scores,
+                &mut self.batch_values,
+                &mut keep[..n],
+            )?;
+            for (k, &v) in keep[..n].iter_mut().zip(&self.batch_values) {
+                *k = *k && (self.filter)(v);
+            }
+        } else {
+            for (&doc, k) in docs.iter().zip(keep.iter_mut()) {
+                *k = self.values.advance_exact(doc)? && (self.filter)(self.values.double_value()?);
+            }
+        }
+        if let Some(&last) = docs.last() {
+            self.advance(last)?;
+        }
+        Ok(())
+    }
     fn match_cost(&self) -> f32 {
         self.match_cost
     }
@@ -255,6 +403,8 @@ fn match_iterator<'a>(ctx: &LeafContext<'a>, q: &FunctionMatchQuery) -> Result<M
         match_cost: q.match_cost,
         doc: -1,
         max_doc: max_doc(ctx)?,
+        batch_values: Vec::new(),
+        batch_scores: Vec::new(),
     })
 }
 
@@ -289,6 +439,27 @@ impl DoubleValues for ScoreCellValues {
     fn double_value(&mut self) -> Result<f64> {
         Ok(f64::from(self.0.get()))
     }
+    /// A batch reads the scores it is handed, not the cell.
+    fn batch_capable(&self) -> bool {
+        true
+    }
+    fn fill_batch(
+        &mut self,
+        docs: &[i32],
+        scores: &[f32],
+        out: &mut [f64],
+        has: &mut [bool],
+    ) -> Result<()> {
+        let n = docs.len();
+        for (o, &s) in out[..n].iter_mut().zip(&scores[..n]) {
+            *o = f64::from(s);
+        }
+        has[..n].fill(true);
+        if let Some(&last) = scores[..n].last() {
+            self.0.set(last);
+        }
+        Ok(())
+    }
 }
 
 /// `FunctionScoreWeight`'s `FilterScorer`: the wrapped query's iteration,
@@ -300,6 +471,24 @@ struct FunctionScoreScorer<'a> {
     score: Rc<Cell<f32>>,
     needs_scores: bool,
     boost: f32,
+    /// `values` can be read a batch at a time ([`DoubleValues::fill_batch`]).
+    batch: bool,
+    /// A batch's values and whether each document has one.
+    batch_values: Vec<f64>,
+    batch_has: Vec<bool>,
+}
+
+impl FunctionScoreScorer<'_> {
+    /// `(float) (value * boost)` for a value, `0` without one or for a
+    /// negative or `NaN` one.
+    #[inline]
+    fn combine(&self, has: bool, factor: f64) -> f32 {
+        if has && factor >= 0.0 {
+            (factor * f64::from(self.boost)) as f32
+        } else {
+            0.0
+        }
+    }
 }
 
 impl Scorer for FunctionScoreScorer<'_> {
@@ -331,14 +520,41 @@ impl Scorer for FunctionScoreScorer<'_> {
         let doc = self.inner.doc_id();
         if self.values.advance_exact(doc)? {
             let factor = self.values.double_value()?;
-            if factor >= 0.0 {
-                return Ok((factor * f64::from(self.boost)) as f32);
-            }
+            return Ok(self.combine(true, factor));
         }
         Ok(0.0)
     }
     fn max_score(&mut self, _up_to: i32) -> Result<f32> {
         Ok(f32::INFINITY)
+    }
+    /// The wrapped scorer's batch (its scores, when the source reads
+    /// them), then the source's values for the whole batch.
+    fn next_docs_and_scores(
+        &mut self,
+        up_to: i32,
+        live_docs: Option<&lucene_util::fixed_bit_set::FixedBitSet>,
+        out: &mut crate::bulk_scorer::DocScores,
+    ) -> Result<()> {
+        if !self.batch {
+            return super::docs_and_scores_one_by_one(self, up_to, live_docs, out);
+        }
+        self.inner.next_docs_and_scores(up_to, live_docs, out)?;
+        let n = out.docs.len();
+        self.batch_values.resize(n, 0.0);
+        self.batch_has.resize(n, false);
+        self.values.fill_batch(
+            &out.docs,
+            &out.scores,
+            &mut self.batch_values,
+            &mut self.batch_has,
+        )?;
+        for i in 0..n {
+            out.scores[i] = self.combine(self.batch_has[i], self.batch_values[i]);
+        }
+        Ok(())
+    }
+    fn prefers_batches(&self) -> bool {
+        self.batch
     }
 }
 
@@ -389,12 +605,19 @@ pub(crate) fn function_score<'a>(
     let Some((inner, values, score, needs_scores)) = score_parts(ctx, q)? else {
         return Ok(None);
     };
+    // Without its scores the wrapped scorer's batch must not compute any:
+    // the document-at-a-time `score()` never asks for them.
+    let batch =
+        values.batch_capable() && (needs_scores || inner.constant_scores()) && super::batches_on();
     Ok(Some(Box::new(FunctionScoreScorer {
         inner,
         values,
         score,
         needs_scores,
         boost,
+        batch,
+        batch_values: Vec::new(),
+        batch_has: Vec::new(),
     })))
 }
 

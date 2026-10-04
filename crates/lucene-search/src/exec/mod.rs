@@ -174,27 +174,90 @@ pub(crate) trait Scorer {
         live_docs: Option<&FixedBitSet>,
         out: &mut crate::bulk_scorer::DocScores,
     ) -> Result<()> {
-        out.docs.clear();
-        out.scores.clear();
-        let mut doc = self.doc_id();
-        while doc < up_to && out.docs.len() < NEXT_DOCS_BATCH {
-            if live_docs.is_none_or(|l| l.get_doc(doc)) {
-                out.docs.push(doc);
-                out.scores.push(self.score()?);
-            }
-            doc = self.next_doc()?;
-            if self.two_phase() {
-                while doc != NO_MORE_DOCS && !self.matches()? {
-                    doc = self.next_doc()?;
-                }
-            }
+        docs_and_scores_one_by_one(self, up_to, live_docs, out)
+    }
+    /// Whether [`Self::next_docs_and_scores`] is this scorer's cheaper way
+    /// to score: it reads its values a batch of documents at a time, where
+    /// the document-at-a-time loop pays a chain of virtual calls per
+    /// document. `DefaultBulkScorer`'s loop ([`bulk`]) then collects the
+    /// batches. Only a scorer whose [`Self::set_min_competitive_score`] does
+    /// nothing may say so: the batches skip nothing a threshold could.
+    fn prefers_batches(&self) -> bool {
+        false
+    }
+    /// Whether every score [`Self::next_docs_and_scores`] produces is a
+    /// constant, read from nothing (so it cannot fail): a caller that
+    /// does not read the scores may take its batches anyway.
+    fn constant_scores(&self) -> bool {
+        false
+    }
+    /// Whether [`Self::matches_batch`] answers: a two-phase scorer whose
+    /// approximation is every document of the segment (so moving it to any
+    /// later document lands on that document), confirming a batch of
+    /// documents in one call.
+    fn batch_matches(&self) -> bool {
+        false
+    }
+    /// For each of `docs` (ascending, each past the current document):
+    /// `advance(doc)` -- which lands on `doc` -- then `matches()`, into
+    /// `keep` (as long as `docs`). Leaves the scorer on the last of `docs`.
+    /// Only valid when [`Self::batch_matches`].
+    ///
+    /// # Errors
+    /// Whatever confirming a document reports.
+    fn matches_batch(&mut self, docs: &[i32], keep: &mut [bool]) -> Result<()> {
+        for (&doc, k) in docs.iter().zip(keep.iter_mut()) {
+            *k = self.advance(doc)? == doc && self.matches()?;
         }
         Ok(())
     }
 }
 
+/// [`Scorer::next_docs_and_scores`]'s default: one document at a time,
+/// confirming each next one (so the scorer is left on a match, or past the
+/// last).
+pub(crate) fn docs_and_scores_one_by_one<S: Scorer + ?Sized>(
+    s: &mut S,
+    up_to: i32,
+    live_docs: Option<&FixedBitSet>,
+    out: &mut crate::bulk_scorer::DocScores,
+) -> Result<()> {
+    out.docs.clear();
+    out.scores.clear();
+    let mut doc = s.doc_id();
+    while doc < up_to && out.docs.len() < NEXT_DOCS_BATCH {
+        if live_docs.is_none_or(|l| l.get_doc(doc)) {
+            out.docs.push(doc);
+            out.scores.push(s.score()?);
+        }
+        doc = s.next_doc()?;
+        if s.two_phase() {
+            while doc != NO_MORE_DOCS && !s.matches()? {
+                doc = s.next_doc()?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The batch [`Scorer::next_docs_and_scores`] fills.
 pub(crate) const NEXT_DOCS_BATCH: usize = 64;
+
+/// Whether the batched scoring paths ([`Scorer::prefers_batches`], the
+/// function-score batches, `Bulk::TwoPhaseTerm`) are taken: always, except
+/// in a test that turns them off to compare them with the
+/// document-at-a-time paths they stand in for.
+#[inline]
+pub(crate) fn batches_on() -> bool {
+    #[cfg(test)]
+    {
+        !tests::BATCHES_OFF.with(std::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        true
+    }
+}
 
 pub(crate) type BoxScorer<'a> = Box<dyn Scorer + 'a>;
 
@@ -304,4 +367,4 @@ fn confirm(s: &mut dyn Scorer, mut doc: i32) -> Result<i32> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

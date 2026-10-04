@@ -98,6 +98,71 @@ macro_rules! forward_values {
             fn cost(&self) -> f32 {
                 $base::cost(&self.0)
             }
+            fn float_val_batch(&mut self, docs: &[i32], out: &mut [f32]) -> Result<()> {
+                $base::float_val_batch(&mut self.0, docs, out)
+            }
+            fn double_val_batch(&mut self, docs: &[i32], out: &mut [f64]) -> Result<()> {
+                $base::double_val_batch(&mut self.0, docs, out)
+            }
+            fn range_batch(
+                &mut self,
+                range: Option<&RangeMatcher>,
+                docs: &[i32],
+                matched: &mut Vec<i32>,
+                mut values: Option<&mut Vec<f32>>,
+            ) -> Result<()> {
+                if let Some(r) = range {
+                    let v = values.as_deref_mut();
+                    if $base::range_batch_native(&mut self.0, r, docs, matched, v)? {
+                        return Ok(());
+                    }
+                }
+                super::range_batch_per_doc(self, range, docs, matched, values)
+            }
+        }
+    };
+}
+
+/// The batch getters of a typed base ([`FunctionValues::float_val_batch`],
+/// [`FunctionValues::double_val_batch`]): the per-document getters in a
+/// loop, statically dispatched to the implementation, which a function of
+/// other values overrides to read each of them a batch at a time.
+macro_rules! batch_defaults {
+    () => {
+        /// [`FunctionValues::float_val_batch`].
+        ///
+        /// # Errors
+        /// Whatever reading a value reports.
+        fn float_val_batch(&mut self, docs: &[i32], out: &mut [f32]) -> Result<()> {
+            for (&doc, o) in docs.iter().zip(out.iter_mut()) {
+                *o = self.float_val(doc)?;
+            }
+            Ok(())
+        }
+        /// [`FunctionValues::double_val_batch`].
+        ///
+        /// # Errors
+        /// Whatever reading a value reports.
+        fn double_val_batch(&mut self, docs: &[i32], out: &mut [f64]) -> Result<()> {
+            for (&doc, o) in docs.iter().zip(out.iter_mut()) {
+                *o = self.double_val(doc)?;
+            }
+            Ok(())
+        }
+        /// [`FunctionValues::range_batch`] read natively, for values that
+        /// can: `Ok(false)`, having read nothing, otherwise (the default),
+        /// and the batch is then read one document at a time.
+        ///
+        /// # Errors
+        /// Whatever reading a value reports.
+        fn range_batch_native(
+            &mut self,
+            _range: &RangeMatcher,
+            _docs: &[i32],
+            _matched: &mut Vec<i32>,
+            _values: Option<&mut Vec<f32>>,
+        ) -> Result<bool> {
+            Ok(false)
         }
     };
 }
@@ -120,6 +185,7 @@ fn bytes_from_str(s: Option<String>, target: &mut Vec<u8>) -> bool {
 
 /// `FloatDocValues`: values whose native getter is `floatVal`.
 pub trait FloatDocValues {
+    batch_defaults!();
     /// `vs.description()`, which only the base's `toString(doc)` reads
     /// (empty for values that override it).
     fn description(&self) -> String {
@@ -206,6 +272,7 @@ forward_values!(Float, FloatDocValues);
 
 /// `IntDocValues`: values whose native getter is `intVal`.
 pub trait IntDocValues {
+    batch_defaults!();
     /// As [`FloatDocValues::description`].
     fn description(&self) -> String {
         String::new()
@@ -296,6 +363,7 @@ forward_values!(Int, IntDocValues);
 
 /// `LongDocValues`: values whose native getter is `longVal`.
 pub trait LongDocValues {
+    batch_defaults!();
     /// As [`FloatDocValues::description`].
     fn description(&self) -> String {
         String::new()
@@ -392,6 +460,7 @@ forward_values!(Long, LongDocValues);
 
 /// `DoubleDocValues`: values whose native getter is `doubleVal`.
 pub trait DoubleDocValues {
+    batch_defaults!();
     /// As [`FloatDocValues::description`].
     fn description(&self) -> String {
         String::new()
@@ -476,6 +545,7 @@ forward_values!(Double, DoubleDocValues);
 
 /// `BoolDocValues`: values whose native getter is `boolVal`.
 pub trait BoolDocValues {
+    batch_defaults!();
     /// As [`FloatDocValues::description`].
     fn description(&self) -> String {
         String::new()
@@ -562,6 +632,7 @@ forward_values!(Bool, BoolDocValues);
 /// `StrDocValues`: values whose native getter is `strVal`. Its numeric
 /// getters are `FunctionValues`' (unsupported).
 pub trait StrDocValues {
+    batch_defaults!();
     /// As [`FloatDocValues::description`].
     fn description(&self) -> String {
         String::new()

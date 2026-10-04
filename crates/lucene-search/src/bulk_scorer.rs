@@ -695,7 +695,7 @@ impl<'a> TermLeg<'a> {
 
     /// `ImpactsDISI.advanceTarget`: the first doc at or after `target` whose
     /// block can hold a competitive score, deciding on impacts alone.
-    fn advance_target(&mut self, mut target: i32) -> Result<i32> {
+    pub(crate) fn advance_target(&mut self, mut target: i32) -> Result<i32> {
         if target <= self.up_to {
             return Ok(target);
         }
@@ -738,6 +738,25 @@ impl<'a> TermLeg<'a> {
         self.advance(target)
     }
 
+    /// `TermScorer.nextDoc` as the scorer tree runs it: through
+    /// `ImpactsDISI` once a threshold is set, plainly before.
+    pub(crate) fn tree_next_doc(&mut self) -> Result<i32> {
+        if self.min_competitive > 0.0 {
+            self.impacts_next_doc()
+        } else {
+            self.next_doc()
+        }
+    }
+
+    /// `TermScorer.advance(target)` as the scorer tree runs it.
+    pub(crate) fn tree_advance(&mut self, target: i32) -> Result<i32> {
+        if self.min_competitive > 0.0 {
+            self.impacts_advance(target)
+        } else {
+            self.advance(target)
+        }
+    }
+
     /// `ImpactsDISI.nextDoc`.
     pub(crate) fn impacts_next_doc(&mut self) -> Result<i32> {
         let doc = self.doc_id();
@@ -750,6 +769,11 @@ impl<'a> TermLeg<'a> {
     /// A `FILTER` leg: matches only, every score `0`.
     pub(crate) fn is_filter(&self) -> bool {
         !self.scoring && self.constant == 0.0 && self.sim.is_none()
+    }
+
+    /// Every score is [`Self::constant`]: scoring reads nothing.
+    pub(crate) fn is_constant(&self) -> bool {
+        !self.scoring && self.sim.is_none()
     }
 
     /// `PostingsEnum.docIDRunEnd()`.
@@ -866,7 +890,7 @@ impl<'a> TermLeg<'a> {
 
     /// Scores `out.docs` (with their frequencies in `self.freqs`) into
     /// `out.scores`: `TermScorer.nextDocsAndScores`'s second half.
-    fn score_batch(&mut self, out: &mut DocScores) -> Result<()> {
+    pub(crate) fn score_batch(&mut self, out: &mut DocScores) -> Result<()> {
         out.scores.clear();
         if !self.scoring {
             if let Some(sim) = self.sim.as_deref_mut() {
@@ -1084,6 +1108,137 @@ pub(crate) fn score_filtered_term_window<C: ScoringCollector + ?Sized>(
         }
         leg.set_min_competitive_score(min_competitive);
     }
+}
+
+/// A term with a two-phase filter over every document (`+term #frange`,
+/// `+term #FunctionMatchQuery`): Lucene's `ConjunctionScorer` under
+/// `DefaultBulkScorer`, the filter confirming a run of the term's documents
+/// in one call ([`crate::exec::Scorer::matches_batch`]) instead of one
+/// virtual `matches()` each.
+///
+/// The documents visited, collected, counted and skipped are the
+/// document-at-a-time loop's. That loop moves the term as `ImpactsDISI`
+/// does: a plain `nextDoc` inside the impacts block it last checked, a
+/// check of the next block against the threshold past it, and -- once a
+/// hit raises the threshold (`setMinCompetitiveScore` resets `upTo`) -- a
+/// check of the block holding the next document. So a run never leaves
+/// the term's current level-0 block and is read before any such check;
+/// every match is collected (and counted) as the loop would, and a hit
+/// that raises the threshold runs the check the next step would run, which
+/// drops the rest of the run when its block can no longer compete. Scores
+/// are computed for the confirmed documents only.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn score_term_two_phase_window<C: ScoringCollector + ?Sized>(
+    leg: &mut TermLeg<'_>,
+    filter: &mut dyn crate::exec::Scorer,
+    run: &mut TwoPhaseRun,
+    live_docs: Option<&FixedBitSet>,
+    collector: &mut C,
+    min: i32,
+    max: i32,
+) -> Result<i32> {
+    debug_assert!(filter.batch_matches());
+    // `publish` before the first document.
+    let mut min_competitive = min_competitive_score(collector);
+    leg.set_min_competitive_score(min_competitive);
+    let mut doc = leg.doc_id();
+    if doc < min {
+        doc = if doc == min.saturating_sub(1) {
+            leg.tree_next_doc()?
+        } else {
+            leg.tree_advance(min)?
+        };
+    }
+    while doc < max {
+        // The run: from `doc` through the end of its level-0 block (or the
+        // batch's room, or `max`), stepping as `nextDoc` inside a block does.
+        let block_end = leg.shallow_advance(doc)?;
+        // The run's live documents and their frequencies; `last` the last
+        // term document read into it (live or not).
+        run.docs.clear();
+        run.freqs.clear();
+        // Whether the cursor stepped (inside the block, plainly) to a
+        // document at or past `max`, which the run does not hold.
+        let mut past = false;
+        let mut last;
+        let mut read = 0usize;
+        loop {
+            if live_docs.is_none_or(|l| l.get_doc(doc)) {
+                run.docs.push(doc);
+                run.freqs.push(leg.cursor.freq().unwrap_or(1));
+            }
+            last = doc;
+            read += 1;
+            if doc >= block_end || read >= RUN {
+                break;
+            }
+            doc = leg.next_doc()?;
+            if doc >= max {
+                past = true;
+                break;
+            }
+        }
+        // The last term document the run read: a check after a hit at or
+        // after it is the next step's own.
+        let read_to = if past { doc } else { last };
+        // Confirmed by the filter in one call, then scored as a batch
+        // (norms read forward, once each).
+        run.keep.clear();
+        run.keep.resize(run.docs.len(), false);
+        if !run.docs.is_empty() {
+            filter.matches_batch(&run.docs, &mut run.keep)?;
+        }
+        run.out.docs.clear();
+        leg.freqs.clear();
+        for ((&d, &f), &k) in run.docs.iter().zip(&run.freqs).zip(&run.keep) {
+            if k {
+                run.out.docs.push(d);
+                leg.freqs.push(f);
+            }
+        }
+        leg.score_batch(&mut run.out)?;
+        let mut skipped_to = None;
+        for (&d, &score) in run.out.docs.iter().zip(&run.out.scores) {
+            collector.collect(d, score);
+            let m = min_competitive_score(collector);
+            if m > min_competitive {
+                min_competitive = m;
+                leg.set_min_competitive_score(m);
+                // The next step would check the block of `d + 1` -- this
+                // run's block, which the cursor has not left -- against the
+                // new threshold. Any term document after `d` in the run is
+                // that next step's.
+                if d < read_to {
+                    let target = leg.advance_target(d.saturating_add(1))?;
+                    if target != d.saturating_add(1) {
+                        skipped_to = Some(target);
+                        break;
+                    }
+                }
+            }
+        }
+        doc = match skipped_to {
+            // The rest of the run is in a block that can no longer compete:
+            // `advance(target)`, past the cursor.
+            Some(target) => leg.advance(target)?,
+            None if past => doc,
+            None => leg.tree_next_doc()?,
+        };
+    }
+    Ok(doc)
+}
+
+/// The longest run [`score_term_two_phase_window`] reads before confirming
+/// it (a level-0 block is 128 documents).
+const RUN: usize = 128;
+
+/// [`score_term_two_phase_window`]'s buffers.
+#[derive(Debug, Default)]
+pub(crate) struct TwoPhaseRun {
+    docs: Vec<i32>,
+    freqs: Vec<i32>,
+    keep: Vec<bool>,
+    out: DocScores,
 }
 
 /// `ReqOptSumScorer(req, opt)` under `DefaultBulkScorer`, where `req` is a
