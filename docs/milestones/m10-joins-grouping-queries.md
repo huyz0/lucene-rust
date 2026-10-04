@@ -189,7 +189,9 @@ grouping. Each of them falls back to Lucene today.
   document (every getter's bits, strings, objects, vectors and filled
   mutable values, or Lucene's exception) and 220 searches (hits and score
   bits, alone, boosted and in booleans, and their explanations), all equal
-  to Lucene's; `(float) Math.pow` needed no tolerance. With them,
+  to Lucene's; `(float) Math.pow` and `idf`'s `Math.log` needed no tolerance
+  on any fixture value (equal here, not guaranteed across libm/JIT
+  implementations: neither is `StrictMath`). With them,
   `lucene-grouping`'s `ValueSourceGroupSelector`: 28 grouped searches
   (`groups.tsv`, 14 sources by all documents and by `t:red`) equal to
   Lucene's. The review after the port found the reader-wide state computed
