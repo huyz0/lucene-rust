@@ -4,7 +4,8 @@
 //! `boostByValue` with a composite source, `FunctionQuery` over a field and
 //! a composite arithmetic source (every document), `FunctionRangeQuery`
 //! alone and as a filter, `FunctionQuery(termfreq)`, `tf * idf` under
-//! `ClassicSimilarity`, and `FunctionMatchQuery` -- over the
+//! `ClassicSimilarity`, `joindf(k,body)` as a score, and
+//! `FunctionMatchQuery` -- over the
 //! 200 000-document, four-segment index the Java side builds
 //! (`FunctionMicro build <dir>`). Each case prints a `#check` digest of its
 //! hits the report compares before it shows a ratio.
@@ -15,7 +16,8 @@ use std::time::Duration;
 
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::function::valuesource::{
-    ConstValueSource, FloatFieldSource, IDFValueSource, IntFieldSource, LinearFloatFunction,
+    ConstValueSource, FloatFieldSource, IDFValueSource, IntFieldSource, JoinDocFreqValueSource,
+    LinearFloatFunction,
     LongFieldSource, ProductFloatFunction, ReciprocalFloatFunction, SumFloatFunction,
     TFValueSource, TermFreqValueSource,
 };
@@ -192,6 +194,11 @@ pub fn bench_function(w: Duration, m: Duration, dir: &str) {
             Arc::new(IDFValueSource::new("body", word, "body", word.as_bytes())),
         ]));
         one(FunctionScoreQuery::new(term(word), as_double_values_source(product)).into())
+    });
+    // `joindf`: Java seeks the top-level terms per visited document.
+    cases("fn_joindf", &words, &s, w, m, &|word| {
+        let joindf: Arc<dyn ValueSource> = Arc::new(JoinDocFreqValueSource::new("k", "body"));
+        one(FunctionScoreQuery::new(term(word), as_double_values_source(joindf)).into())
     });
     cases("fn_match", &words, &s, w, m, &|word| BooleanQuery {
         must: vec![term(word)],

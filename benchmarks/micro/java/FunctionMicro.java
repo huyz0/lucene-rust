@@ -8,6 +8,7 @@ import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.FloatDocValuesField;
 import org.apache.lucene.document.NumericDocValuesField;
+import org.apache.lucene.document.SortedDocValuesField;
 import org.apache.lucene.document.TextField;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexWriter;
@@ -23,6 +24,7 @@ import org.apache.lucene.queries.function.valuesource.ConstValueSource;
 import org.apache.lucene.queries.function.valuesource.FloatFieldSource;
 import org.apache.lucene.queries.function.valuesource.IDFValueSource;
 import org.apache.lucene.queries.function.valuesource.IntFieldSource;
+import org.apache.lucene.queries.function.valuesource.JoinDocFreqValueSource;
 import org.apache.lucene.queries.function.valuesource.LinearFloatFunction;
 import org.apache.lucene.queries.function.valuesource.LongFieldSource;
 import org.apache.lucene.queries.function.valuesource.ProductFloatFunction;
@@ -111,6 +113,10 @@ public final class FunctionMicro {
     cfg.setMaxBufferedDocs(IndexWriterConfig.DISABLE_AUTO_FLUSH);
     cfg.setMergePolicy(NoMergePolicy.INSTANCE);
     cfg.setOpenMode(IndexWriterConfig.OpenMode.CREATE);
+    // `k`, for `joindf(k,body)`: a quarter of the documents name a body word,
+    // the rest one of 20 000 keys no body holds. Its own generator, so the
+    // other fields are what they were before `k` was added.
+    Random rk = new Random(0x10_5_2026_1006L);
     try (Directory d = FSDirectory.open(dir);
         IndexWriter w = new IndexWriter(d, cfg)) {
       for (int i = 0; i < DOCS; i++) {
@@ -125,6 +131,8 @@ public final class FunctionMicro {
         if (r.nextInt(10) != 0) doc.add(new NumericDocValuesField("i", r.nextInt(1000)));
         doc.add(new NumericDocValuesField("n", r.nextInt(100_000)));
         doc.add(new FloatDocValuesField("f", r.nextFloat() * 100f));
+        String key = rk.nextInt(4) == 0 ? WORDS[rk.nextInt(WORDS.length)] : "k" + rk.nextInt(20_000);
+        doc.add(new SortedDocValuesField("k", new BytesRef(key)));
         w.addDocument(doc);
         if ((i + 1) % (DOCS / 4) == 0) w.commit();
       }
@@ -132,8 +140,9 @@ public final class FunctionMicro {
     }
     StringBuilder q = new StringBuilder();
     for (int k = 0; k < 16; k++) q.append(word(r)).append('\n');
-    // Last: its presence is what marks the corpus built.
     Files.writeString(dir.resolve("function-words.tsv"), q.toString());
+    // Last: its presence is what marks the corpus built (with `k`).
+    Files.writeString(dir.resolve("function-k"), "k\n");
   }
 
   interface Case {
@@ -223,6 +232,12 @@ public final class FunctionMicro {
                             new IDFValueSource("body", w, "body", new BytesRef(w))
                           })
                       .asDoubleValuesSource()));
+      // `joindf`: Java seeks the top-level terms per visited document.
+      cases(
+          "fn_joindf",
+          words,
+          s,
+          w -> new FunctionScoreQuery(q(w), new JoinDocFreqValueSource("k", "body").asDoubleValuesSource()));
       cases(
           "fn_match",
           words,
@@ -240,7 +255,7 @@ public final class FunctionMicro {
   public static void main(String[] args) throws IOException {
     Path dir = Path.of(args[1]);
     if (args[0].equals("build")) {
-      if (Files.exists(dir.resolve("function-words.tsv"))) return;
+      if (Files.exists(dir.resolve("function-k"))) return;
       Files.createDirectories(dir);
       build(dir);
     } else {
