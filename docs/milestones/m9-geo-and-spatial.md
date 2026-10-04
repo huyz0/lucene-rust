@@ -64,7 +64,7 @@ last within the milestone.
   One documented inexactness: `Rectangle.axisLat` goes through HotSpot's
   `Math.cos` intrinsic, which no portable code reproduces bit for bit (within
   2 ulps; exact on >99% of the corpus). Benchmark pair `scripts/bench-micro.sh
-  --bench geo`; ratios in `docs/parity.md`'s geo section.
+  --bench geo`; ratios in `docs/parity/util-geo.md`.
 - **T9.2** — `LatLonPoint`/`XYPoint`: fields, queries, distance sort.
   **Done (2026-10-02).** Fields in `lucene-index/src/document/geo.rs`
   (`LatLonPoint`, `LatLonDocValuesField`, `XYPointField`,

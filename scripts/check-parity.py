@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Mechanical consistency check for docs/parity.md.
+"""Mechanical consistency check for the parity ledger.
 
-`parity.md` is the source of truth for what is ported (see the
-`parity-tracking` skill), and it is maintained append-only by many
-concurrent authors. Two failure modes have already been observed and cost
-real review time:
+The ledger is `docs/parity.md` (an index) plus one file per area under
+`docs/parity/`. It is the source of truth for what is ported (see the
+`parity-tracking` skill), and it is maintained by many concurrent authors.
+Two failure modes have already been observed and cost real review time:
 
   * A Rust path in a row no longer exists -- a module was renamed or moved
     and the row rotted. Batch c10 shipped a stale path that survived to its
@@ -14,17 +14,6 @@ real review time:
 
 Both are mechanical and have no false positives.
 
-Verifying that a row's *Java* side names something real is deliberately not
-done here: `scripts/check-java-refs.py` does it for the whole tree, against
-the pinned 10.5.0 checkout, and resolves that checkout in both the host and
-container layouts. This script used to print a warning about a
-Java-counterpart check it never performed, which was its own small instance
-of the defect both scripts exist to catch. Detecting two rows that
-genuinely *contradict* each other is deliberately NOT automated: a class
-routinely has several rows (read side and write side, a scoped-down first
-cut and a later widening), and a heuristic over the status text flags
-fourteen of those for every real problem it finds. `--verbose` lists the
-multi-row classes for a human to scan instead.
 """
 import os
 import re
@@ -42,6 +31,7 @@ EXEMPT = {
     "lucene-util/src/test_support.rs": "shared test scratch-directory guard; compiled only under cfg(test)/the test-support feature",
 }
 PARITY = os.path.join(ROOT, "docs", "parity.md")
+PARITY_DIR = os.path.join(ROOT, "docs", "parity")
 
 # A Rust path: `crate/src/path.rs`, optionally followed by `::item`.
 RUST_PATH = re.compile(r"`(lucene-[a-z]+/(?:src|tests|benches|examples)/[A-Za-z0-9_/]+\.rs)(?:::[^`]*)?`")
@@ -125,19 +115,14 @@ def defines(source, name):
     )
 
 
-def main():
-    text = open(PARITY, encoding="utf-8").read()
-    errors = []
-    java_to_rows = defaultdict(list)
-
+def check_rows(name, text, errors, java_to_rows):
+    """Rust paths and `::items` in one ledger file's rows."""
     for lineno, cells in rows(text):
         java_cell, rust_cell, status = cells[0], cells[1], cells[2]
 
         for path in RUST_PATH.findall(rust_cell):
             if not os.path.exists(os.path.join(ROOT, "crates", path)):
-                errors.append(
-                    f"{PARITY}:{lineno}: Rust path does not exist: {path}"
-                )
+                errors.append(f"{name}:{lineno}: Rust path does not exist: {path}")
 
         for path, items in RUST_ITEMS.findall(rust_cell):
             full = os.path.join(ROOT, "crates", path)
@@ -147,16 +132,42 @@ def main():
             for item in item_names(items):
                 if not defines(source, item):
                     errors.append(
-                        f"{PARITY}:{lineno}: {path} does not define `{item}` "
+                        f"{name}:{lineno}: {path} does not define `{item}` "
                         f"(the row's Rust column names it)"
                     )
 
         for ref in JAVA_REF.findall(java_cell):
-            java_to_rows[ref].append((lineno, status))
+            java_to_rows[ref].append((f"{name}:{lineno}", status))
+
+
+def ledger_files():
+    """The index followed by every area file, as (path, text) pairs."""
+    files = [PARITY]
+    if os.path.isdir(PARITY_DIR):
+        files += sorted(
+            os.path.join(PARITY_DIR, f)
+            for f in os.listdir(PARITY_DIR)
+            if f.endswith(".md")
+        )
+    return [(f, open(f, encoding="utf-8").read()) for f in files]
+
+
+def rel(path):
+    return os.path.relpath(path, ROOT)
+
+
+def main():
+    ledger = ledger_files()
+    errors = []
+    java_to_rows = defaultdict(list)
+
+    for path, text in ledger:
+        check_rows(rel(path), text, errors, java_to_rows)
+    text = "\n".join(t for _, t in ledger)
 
     # Coverage: every ported source file should be described by at least one
     # row. A file with no row is a file whose port status nobody can look up,
-    # which is the failure `parity.md` exists to prevent.
+    # which is the failure the ledger exists to prevent.
     mentioned = set(RUST_PATH.findall(text))
     crates = os.path.join(ROOT, "crates")
     for crate in sorted(os.listdir(crates)):
@@ -167,14 +178,14 @@ def main():
             for name in sorted(files):
                 if not name.endswith(".rs"):
                     continue
-                rel = os.path.relpath(os.path.join(dirpath, name), crates)
+                relpath = os.path.relpath(os.path.join(dirpath, name), crates)
                 if name in ("lib.rs", "error.rs"):
                     continue  # module facade / error enum: no Java counterpart
-                if rel in EXEMPT:
+                if relpath in EXEMPT:
                     continue
-                if rel not in mentioned:
+                if relpath not in mentioned:
                     errors.append(
-                        f"{PARITY}: no row describes {rel} -- add one, "
+                        f"docs/parity: no row describes {relpath} -- add one, "
                         f"or say explicitly that it has no Java counterpart"
                     )
 
@@ -186,7 +197,7 @@ def main():
     if multi and "--verbose" in sys.argv:
         print("classes with multiple rows (review by hand, not an error):")
         for ref, entries in sorted(multi.items()):
-            print(f"  {ref}: lines {', '.join(str(ln) for ln, _ in entries)}")
+            print(f"  {ref}: {', '.join(where for where, _ in entries)}")
 
     if errors:
         for e in errors:

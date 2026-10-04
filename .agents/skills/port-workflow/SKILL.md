@@ -38,7 +38,8 @@ wrong and not measurably faster.
 - Nothing mechanical checks the order or that a benchmark exists — say so
   rather than pretend. The `quality-reviewer` agent and the `code-review`
   checklist ask for the stage-2 ratio and stage-3 result on any diff that
-  finishes an area; `docs/parity.md` rows record them (`parity-tracking`).
+  finishes an area; the area's `docs/parity/*.md` row records the current
+  ratio (`parity-tracking`).
 - Stage 1 correctness is enforced by the differential and unit tests
   (`scripts/gate.sh`, `scripts/verify-write-path.sh`).
 
