@@ -32,7 +32,7 @@ ready.
 - **Doc links resolve**: `[`links`]` in doc comments are gated
   (`rustdoc::broken_intra_doc_links`), but a symbol in *plain backticks* is
   not. When a change removes a `fn` or a `struct`, grep `crates/`,
-  `docs/parity.md` and `PLAN.md` for its name -- three stale references were
+  `docs/parity/` and `PLAN.md` for its name -- three stale references were
   found that way in c41.
 - **Port → benchmark → optimise** (see `port-workflow`): new ported code is
   the closest-to-Java port, citing the Java methods it ports; a diff that
@@ -45,7 +45,8 @@ ready.
   case; round-trip or cross-module consistency checks where two modules
   should agree (e.g. `segments_N`'s doc count vs the segment's own `.si`);
   per-file line coverage ≥95% (`cargo llvm-cov --summary-only`).
-- **Docs**: `docs/parity.md` updated in the same change (see
+- **Docs**: the parity ledger (`docs/parity/<area>.md`) updated in the same
+  change, as current facts rather than an appended history (see
   `parity-tracking`); module-level doc comments describe the wire format,
   not "what the code does."
 - **No stray scratch files**: throwaway debug binaries/examples used to
@@ -59,9 +60,11 @@ ready.
 - `python3 scripts/check-port-invariants.py` and the gate's rustdoc pass, both
   in `scripts/gate.sh` — see
   [`docs/mechanical-gates.md`](../../../docs/mechanical-gates.md).
-- Nothing mechanical yet checks "new decoder has a fixture" or "parity.md
-  updated" — self-review + the `quality-reviewer` subagent (`/quality-review`)
-  cover it until this repo has an `xtask`-style gate worth building.
+- Nothing mechanical yet checks "new decoder has a fixture" or "the ledger
+  row was updated" (`check-parity.py` checks only that rows name real
+  paths and items, that every source file has one, and the ledger's
+  layout) — self-review + the `quality-reviewer` subagent
+  (`/quality-review`) cover it until this repo has an `xtask`-style gate worth building.
 
 ## Deep dive
 

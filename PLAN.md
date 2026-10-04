@@ -680,7 +680,7 @@ scoped panic-injection switch rather than reusing task #20's process-wide
 `AtomicBool` one, since the latter is exposed to a cross-test race under
 `cargo test`'s default parallel execution (flagged by task #29's review;
 fixing the pre-existing one is tracked as a separate follow-up, not touched by
-this task). See `docs/parity.md`'s `## lucene-ffi` section for the exact
+this task). See `docs/parity/ffi.md` for the exact
 surface and what's still deferred (`.liv`/`.pay`, the unified `.si`-driven
 segment-open entry point, the JNI wrapper class itself, nested/phrase
 `BooleanQuery` clause construction over the C ABI, and the query-tree
@@ -1887,7 +1887,7 @@ mixed-case/punctuation sentence with none removed), and
 `Analyzer` produces byte-identical (term, position_increment, offsets)
 sequences -- all six passed on the first real-Lucene run. Coverage:
 `lucene-analysis/src/lib.rs` covered by 12 unit tests plus the fixture
-test; see `docs/parity.md`'s new `lucene-analysis` section for the full
+test; see `docs/parity/analysis.md` for the full
 scope table (ported vs. deferred: stemming, synonyms, ASCII-folding, and
 per-field analyzer configuration are all out of scope for this slice).
 

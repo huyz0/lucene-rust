@@ -164,7 +164,7 @@ instead of the price of a Java plugin. If the answer is no, everything after M1 
 > than FFM (JDK 21 has FFM only as a preview) -- both reasoned in the milestone
 > file. (Superseded 2026-09-28: the plugin now targets JDK 25, the JDK
 > OpenSearch 3.8.0 bundles, and calls the C ABI through FFM downcalls; see
-> `docs/parity.md`'s `lucene-ffi` section.) The shapes the M1 mix never measured (boosts, `must_not`, mixed
+> `docs/parity/plugin.md`.) The shapes the M1 mix never measured (boosts, `must_not`, mixed
 > booleans) are 4–8× slower natively and are routed to Lucene; that is the next
 > engine performance item.
 

@@ -17,7 +17,7 @@
 
 Today only 10.5.0's `Lucene104` codec is read. A segment with any other codec
 name or format version fails its header check, and the plugin falls back to
-Lucene for the whole index (`parity.md`, "Deliberately out of scope"). An
+Lucene for the whole index (`parity/matrix.md`, "Deliberately out of scope"). An
 OpenSearch 3.x cluster upgraded from 2.x holds Lucene 9 segments until they
 are merged away, so the Rust engine cannot serve it without the
 reindex-and-alias-swap in [`operations.md`](../operations.md) -- the single

@@ -41,9 +41,10 @@ pinned to **OpenSearch 3.8.0**.
    assumptions get it wrong more often than intuition predicts — verify
    against real Lucene output, not just plausibility. See
    **differential-testing**.
-7. **`docs/parity.md` updates in the same commit** as any format that gets
-   ported, partially ported, or deliberately deferred. See
-   **parity-tracking**.
+7. **The parity ledger updates in the same commit** as any format that gets
+   ported, partially ported, or deliberately deferred: a row in the area
+   file under `docs/parity/` (index: `docs/parity.md`), current facts only.
+   See **parity-tracking**.
 8. **≥95% line coverage, per file, from day one.** Differential fixture tests
    prove format fidelity; unit tests (inspired by Lucene's own JUnit tests,
    not transliterated from them) prove the decoder's own boundary/error
@@ -92,6 +93,7 @@ the hook, the container and this table cannot drift apart:
 | Lint | `cargo clippy --workspace --all-targets -- -D warnings` (includes the arithmetic gate — see [`docs/arithmetic-gate.md`](docs/arithmetic-gate.md)) |
 | Lint for arm64 (catches target-dependent defects) | `cargo clippy --workspace --all-targets --target aarch64-unknown-linux-gnu -- -D warnings` |
 | Port invariants clippy cannot express | `python3 scripts/check-port-invariants.py` (FixedBitSet bounds, sentinel call sites, codec-suffix literals, blocktree `try_*`, per-document doc-values, ledger drift — see [`docs/mechanical-gates.md`](docs/mechanical-gates.md)) |
+| Parity ledger (every Rust path/item exists, every source file has a row) | `python3 scripts/check-parity.py` |
 | Port inventory (every `lucene-core` class has a status; `--milestone M7 --summary` shows what M7 still owes; `--module backward-codecs` the same for `lucene-backward-codecs`) | `python3 scripts/check-port-inventory.py` (and `--module backward-codecs`) |
 | Rustdoc link lints | `RUSTDOCFLAGS="-D warnings -A rustdoc::private_intra_doc_links" cargo doc --workspace --no-deps --document-private-items` |
 | Type-check the out-of-workspace benchmarks | `cargo check --manifest-path benchmarks/rust-runner/Cargo.toml --all-targets` |
@@ -161,7 +163,7 @@ Skills are the process source of truth; `PLAN.md`/`docs/` are the deep-dives.
 | Optimising a ported module (stage 3, after its benchmark) | `rust-performance` |
 | Anything in `lucene-ffi`, any `unsafe` block | `ffi-safety` |
 | The OpenSearch plugin (`opensearch-plugin/`), its native (FFM) surface | `ffi-safety` + [`opensearch-plugin/README.md`](opensearch-plugin/README.md) |
-| Finished a format, need to record it | `parity-tracking` |
+| Finished a format, need to record it (which `docs/parity/` file, row format) | `parity-tracking` + [`docs/parity.md`](docs/parity.md) |
 | Committing / finishing a unit of work | `git-workflow`, `code-review` |
 | Writing tests for a new/changed module | `test-coverage` |
 | Arithmetic on a length/count read off disk | `code-review` + [`docs/arithmetic-gate.md`](docs/arithmetic-gate.md) |
@@ -182,6 +184,6 @@ Skills are the process source of truth; `PLAN.md`/`docs/` are the deep-dives.
 - **Before declaring work done**, after the gate is green, run the Tier 2
   semantic review: spawn the `quality-reviewer` subagent or run
   `/quality-review`.
-- **Update `PLAN.md`/`docs/parity.md`/skills in the same change** — drift is a
+- **Update `PLAN.md`/the parity ledger/skills in the same change** — drift is a
   bug.
 - **Roadmap**: build in phase order, [`PLAN.md`](PLAN.md) §2.
