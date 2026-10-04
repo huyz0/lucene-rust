@@ -125,7 +125,15 @@ grouping. Each of them falls back to Lucene today.
   to-documents as Java does, and its time is that two-phase walk (postings,
   a per-document ordinal read through a boxed doc-values iterator, the
   bulk loop), each piece Java's own -- and numeric `None` 0.90x-0.94x,
-  inside its 1.09x-1.17x noise floor (it was 0.02x).
+  inside its 1.09x-1.17x noise floor (it was 0.02x). The T10.3-T10.4
+  review bounded the from side's memory -- `TermsCollector` marks ordinals in
+  a per-segment bit set, `TermsWithScoreCollector` drains its pending
+  `(ordinal, score)` pairs every 65 536 and keeps drained ordinals' ids for
+  the segment, `GlobalOrdinalsWithScoreCollector` allocates Java's 4096-slot
+  blocks lazily -- with the 897 searches unchanged (also with a drain every
+  two pairs) and no case moving outside the noise in an interleaved
+  same-machine A/B of the two builds (five repetitions: every case within
+  0.90x-1.03x of before, spreads 1.06x-1.25x).
 - **T10.4** — Grouping. **Ported** (`lucene-search/src/grouping`): every
   class of `lucene-grouping` (`ValueSourceGroupSelector` came with T10.5's
   value sources) -- the selectors (term, long range, double range), the first
