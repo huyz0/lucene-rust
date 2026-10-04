@@ -38,7 +38,36 @@ fn queries() -> Vec<(&'static str, Clause)> {
     let absent = |source: MultiTermSource| -> Clause {
         MultiTermQuery::new(source, RewriteMethod::ScoringBoolean).into()
     };
+    // Nine positions, any of the large index's words at each: more slots
+    // than the phrase matcher keeps on the stack, and every position
+    // repeating the others' terms.
+    let any: Vec<Vec<u8>> = ["red", "blue", "green", "slow", "big", "new"]
+        .iter()
+        .map(|w| w.as_bytes().to_vec())
+        .collect();
+    let nine = MultiPhraseQuery::new("body", vec![any.clone(); 9]);
     vec![
+        (
+            "multi-phrase of nine positions",
+            Clause::MultiPhrase(nine.clone()),
+        ),
+        (
+            "sloppy multi-phrase of nine positions",
+            Clause::MultiPhrase(nine.with_slop(2)),
+        ),
+        (
+            "multi-phrase of absent terms",
+            Clause::MultiPhrase(MultiPhraseQuery::new(
+                "body",
+                [vec![b"nosuch".to_vec()], vec![b"nothing".to_vec()]],
+            )),
+        ),
+        (
+            "synonym of nothing",
+            SynonymQuery::new("body", Vec::<(Vec<u8>, f32)>::new())
+                .unwrap()
+                .into(),
+        ),
         (
             "index or doc values, terms",
             IndexOrDocValuesQuery::new(t("red"), t("red")).into(),
