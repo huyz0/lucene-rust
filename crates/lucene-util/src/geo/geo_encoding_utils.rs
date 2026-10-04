@@ -229,7 +229,13 @@ fn create_sub_boxes(
         }
         let shift = compute_shift(min_lon2, max_lon2);
         let base = ((min_lon2 as u64) >> shift) as i32;
-        let delta = (((max_lon2 as u64) >> shift) as i32) - base + 1;
+        // Java's `int` arithmetic, which wraps: across the dateline the
+        // last cell, `max_lon2 >> shift`, can pass `i32::MAX` (a span of
+        // 2^32 + k), and its truncation minus `base` is still the true,
+        // small (1..=ARITY) count of cells.
+        let delta = (((max_lon2 as u64) >> shift) as i32)
+            .wrapping_sub(base)
+            .wrapping_add(1);
         (shift, base, delta)
     };
     let mut relations = vec![0u8; (max_lat_delta * max_lon_delta) as usize];
@@ -237,7 +243,8 @@ fn create_sub_boxes(
         for j in 0..max_lon_delta {
             // Java int arithmetic: wraps.
             let box_min_lat = ((lat_base + i) << lat_shift).wrapping_add(i32::MIN);
-            let box_min_lon = ((lon_base + j) << lon_shift).wrapping_add(i32::MIN);
+            // Past `i32::MAX` across the dateline, as Java's does.
+            let box_min_lon = (lon_base.wrapping_add(j) << lon_shift).wrapping_add(i32::MIN);
             let box_max_lat = box_min_lat.wrapping_add(1 << lat_shift).wrapping_sub(1);
             let box_max_lon = box_min_lon.wrapping_add(1 << lon_shift).wrapping_sub(1);
             // Java's `new Rectangle(...)` validates; decoded values are
@@ -295,9 +302,12 @@ impl Grid {
         if lon2.wrapping_sub(self.lon_base) >= self.max_lon_delta {
             return None;
         }
+        // `lon2` wrapped past `i32::MAX` above (a lon shift of 1 adds
+        // 2^31) is still the true cell minus 2^32, so the wrapping
+        // difference is the true, in-grid offset.
         Some(
-            self.relations
-                [((lat2 - self.lat_base) * self.max_lon_delta + (lon2 - self.lon_base)) as usize],
+            self.relations[((lat2 - self.lat_base) * self.max_lon_delta
+                + lon2.wrapping_sub(self.lon_base)) as usize],
         )
     }
 }
@@ -446,6 +456,63 @@ mod tests {
         let p = GeoEncodingUtils::create_distance_predicate(0.0, 0.0, 1000.0).unwrap();
         assert!(p.test(0, 0));
         assert!(!p.test(i32::MAX, 0));
+        // Near the circle's edge the cells cross it, and the exact distance
+        // decides: 999 m north is in, 1001 m out.
+        let north = |m: f64| GeoEncodingUtils::encode_latitude(m / 111_195.0).unwrap();
+        assert!(p.test(north(999.0), 0));
+        assert!(!p.test(north(1001.0), 0));
+    }
+
+    /// A grid a few quantization steps wide that crosses the dateline: its
+    /// encoded span wraps past `i32::MAX`, so the base, the delta and a
+    /// cell index are Java `int` arithmetic that wraps (`createSubBoxes`,
+    /// `Grid`'s `test`). The fuzzer's input: a distance query of a
+    /// subnormal radius centred on the dateline.
+    #[test]
+    fn dateline_grid_wraps_as_java_int_arithmetic() {
+        let west = GeoEncodingUtils::decode_longitude(i32::MAX - 3);
+        let east = GeoEncodingUtils::decode_longitude(i32::MIN + 3);
+        let grid = create_sub_boxes(0.0, 1.0, west, east, |_| Relation::CellInsideQuery).unwrap();
+        assert_eq!(grid.lon_shift, 1);
+        // Cells (2^32 - 4) >> 1 through (2^32 + 3) >> 1: the last two past
+        // `i32::MAX`.
+        assert_eq!(grid.lon_base, i32::MAX - 1);
+        assert_eq!(grid.max_lon_delta, 4);
+        let lat = GeoEncodingUtils::encode_latitude(0.5).unwrap();
+        for lon in [i32::MAX - 3, i32::MAX, i32::MIN, i32::MIN + 3] {
+            assert_eq!(
+                grid.relation(lat, lon),
+                Some(Relation::CellInsideQuery as u8),
+                "{lon}"
+            );
+        }
+        for lon in [i32::MAX - 6, 0, i32::MIN + 6] {
+            assert_eq!(grid.relation(lat, lon), None, "{lon}");
+        }
+
+        let p = GeoEncodingUtils::create_distance_predicate(
+            18.1719970703125,
+            180.0,
+            f64::from_bits(0x0000_0003_7964_6f00),
+        )
+        .unwrap();
+        // Its bounding box crosses the dateline, both edges in the grid.
+        // A point either side of it is the same place, so they answer
+        // alike; at this radius `haversinSortKey`'s `1 - cos(d)` is 0 for
+        // every cell this close to the centre, so the cells are inside.
+        let lat = GeoEncodingUtils::encode_latitude(18.1719970703125).unwrap();
+        assert_eq!(p.grid.relation(lat, 0), None);
+        assert!(!p.test(lat, 0));
+        for dlat in [-1, 0, 1] {
+            for lon in [i32::MIN, i32::MIN + 1, i32::MAX - 1, i32::MAX] {
+                assert_eq!(
+                    p.grid.relation(lat + dlat, lon),
+                    Some(Relation::CellInsideQuery as u8),
+                    "{dlat} {lon}"
+                );
+                assert!(p.test(lat + dlat, lon), "{dlat} {lon}");
+            }
+        }
     }
 
     #[test]
