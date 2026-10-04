@@ -56,13 +56,28 @@ pub(crate) struct SparseDocs {
 }
 
 impl SparseDocs {
-    pub(crate) fn new(docs: Vec<i32>) -> Self {
-        let end = docs
-            .last()
-            .and_then(|&d| usize::try_from(d).ok())
-            .map_or(0, |d| d.saturating_add(1));
-        let mut words = vec![0u64; end.div_ceil(64)];
+    /// The rank index over `docs`, a set within a segment of `max_doc`
+    /// documents. Everything is sized from `max_doc`, never from a document:
+    /// the documents come off disk, and one near `i32::MAX` in a ten-document
+    /// segment would otherwise size a ~400 MB bit set. A document outside
+    /// `0..max_doc`, or not strictly above the one before it, is corruption.
+    pub(crate) fn new(docs: Vec<i32>, max_doc: i32) -> Result<Self> {
+        let mut last = -1i32;
         for &d in &docs {
+            if d <= last || d >= max_doc {
+                return Err(lucene_store::Error::Corrupted(format!(
+                    "docs-with-field document {d} after {last} in a segment of {max_doc}: \
+                     out of order or past the segment"
+                ))
+                .into());
+            }
+            last = d;
+        }
+        // ALLOC: sized from the segment, which every document was checked
+        // against above.
+        let mut words = vec![0u64; usize::try_from(max_doc).unwrap_or(0).div_ceil(64)];
+        for &d in &docs {
+            // Checked in `0..max_doc` above, so every word exists.
             if let Some(w) = usize::try_from(d).ok().and_then(|d| words.get_mut(d >> 6)) {
                 *w |= 1u64 << (d & 63);
             }
@@ -73,7 +88,7 @@ impl SparseDocs {
             ranks.push(before);
             before = before.saturating_add(w.count_ones());
         }
-        Self { docs, words, ranks }
+        Ok(Self { docs, words, ranks })
     }
 
     fn len(&self) -> usize {
@@ -125,9 +140,14 @@ impl DocSet {
                             "docs-with-field region {offset}+{length} outside its file"
                         ))
                     })?;
-                Ok(DocSet::Sparse(Arc::new(SparseDocs::new(
-                    lucene_codecs::indexed_disi::decode_doc_ids(region, dense_rank_power)?,
-                ))))
+                // Bounded by the segment as it decodes: a corrupt region
+                // cannot grow the list past `max_doc` entries.
+                let docs = lucene_codecs::indexed_disi::decode_doc_ids_below(
+                    region,
+                    dense_rank_power,
+                    max_doc,
+                )?;
+                Ok(DocSet::Sparse(Arc::new(SparseDocs::new(docs, max_doc)?)))
             }
         }
     }
