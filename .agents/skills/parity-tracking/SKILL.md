@@ -41,12 +41,17 @@ become changelogs (it reached 1.25 MB in one file before the split).
   caller sees.
 - **Pin the Lucene version** at the top of `docs/parity.md` and update it
   (plus `fixtures/`, see the `differential-testing` skill) together.
+- **Budgets**: a row over 2,000 characters, a file over 80 KB or a ledger
+  over 400 KB fails the check. Split the row (read side / write side, one
+  class per row) or the area file -- never raise the budget to fit.
 
 ## Enforced by
 
 - `scripts/check-parity.py` (in `scripts/gate.sh` and CI): every Rust path
   and `::item` in a Rust column exists; every `crates/*/src/*.rs` (bar
-  `lib.rs`, `error.rs` and a reasoned `EXEMPT` list) is named by some row.
+  `lib.rs`, `error.rs` and a reasoned `EXEMPT` list) is named by some row;
+  the index links every area file and its row counts are right; every
+  relative link resolves; the budgets above; no `## ` heading in two files.
   What it cannot catch: [`docs/mechanical-gates.md`](../../../docs/mechanical-gates.md).
 - Code review checks that a PR touching a new format also touches the ledger,
   and that a row's prose still matches the code.

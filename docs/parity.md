@@ -5,7 +5,7 @@ this port has, file by file: ported, partial, deliberately not ported, or
 Rust-only. This page is the index; the rows live in one file per area under
 [`docs/parity/`](parity/). Process: the `parity-tracking` skill. Checked by
 `scripts/check-parity.py` (every Rust path and `::item` exists, every
-`crates/*/src/*.rs` has a row).
+`crates/*/src/*.rs` has a row, the index links every area file, budgets).
 
 ## Reading a row
 
@@ -84,6 +84,7 @@ Java package: a `lucene-search` collector goes in `search-collectors.md`,
 even for a `lucene-grouping` class. The M9/M10 module files (geo, spatial,
 joins, grouping, functions) and `engine.md` are the exceptions, grouped by
 feature because a feature spans crates. Next to the rows for the same Java
-class; bump the row count above. Keep rows short: split a long row (read
-side / write side, one class per row), and link [`docs/sweep/`](sweep/) for
-rationale instead of writing it out.
+class; bump the row count above. A row past 2,000 characters or a file past
+80 KB fails the check: split the row (read side / write side, one class per
+row) or the area, and link [`docs/sweep/`](sweep/) for rationale instead of
+writing it out.
