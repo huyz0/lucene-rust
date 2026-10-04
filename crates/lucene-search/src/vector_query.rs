@@ -2740,6 +2740,34 @@ pub fn search_diversifying_children_byte_knn_multi_segment(
 mod tests {
     use super::*;
 
+    /// `HitQueue`'s order through `Float.compare`: `-0.0` below `0.0`,
+    /// every `NaN` equal and above everything; a lower score is "worse",
+    /// and between equal scores the higher document is.
+    #[test]
+    fn hit_queue_order_is_float_compare_then_document() {
+        use std::cmp::Ordering::{Equal, Greater, Less};
+        assert_eq!(java_float_compare(-0.0, 0.0), Less);
+        assert_eq!(java_float_compare(f32::NAN, -f32::NAN), Equal);
+        assert_eq!(java_float_compare(f32::NAN, f32::INFINITY), Greater);
+        let w = |doc: i32, score: f32| WorstFirst((doc, 0, score));
+        assert!(w(1, 0.5) == w(1, 0.5));
+        assert!(w(1, 0.5) != w(2, 0.5));
+        // The max-heap's top is the worst hit: the lower score...
+        assert!(w(1, 0.25) > w(1, 0.5));
+        // ...and, between equal scores, the higher document.
+        assert!(w(9, 0.5) > w(1, 0.5));
+        assert!(w(1, -0.0) > w(1, 0.0));
+    }
+
+    /// No KNN hit rewrites to `MatchNoDocsQuery`.
+    #[test]
+    fn no_knn_hits_is_match_no_docs() {
+        assert!(matches!(
+            knn_hits_to_clause(&[], &[]),
+            crate::query::Clause::MatchNoDocs(_)
+        ));
+    }
+
     #[test]
     fn per_leaf_top_k_is_javas_pro_rata_formula() {
         // One leaf: proportion 1, variance 0, so it is exactly `k`.
