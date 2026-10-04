@@ -150,6 +150,48 @@ fn sorted_terms(mut hash: BytesRefHash) -> (Vec<Vec<u8>>, Vec<u32>) {
     (terms, ords)
 }
 
+/// The from side's segment ordinals, gathered while the segment is
+/// collected and turned into terms when it is finished, in ordinal order --
+/// so the terms dictionary is walked forward once instead of seeked per
+/// document.
+///
+/// Java looks every document's term up as it collects it (`lookupOrd`).
+/// Deferring changes nothing observable: each term's own combination of
+/// scores still sees its documents in document order (the pairs are
+/// sorted stably by ordinal), terms do not interact, and the collected
+/// terms come out sorted either way. Stage 3: the per-document lookup was
+/// most of the from side's time.
+#[derive(Debug, Default)]
+struct PendingOrds {
+    /// `(segment ordinal, score)` in collection order.
+    pairs: Vec<(i64, f32)>,
+}
+
+impl PendingOrds {
+    /// The pairs by ordinal (stable: a term's documents stay in order):
+    /// `visit(Some(term), score)` for the first pair of each distinct
+    /// ordinal (its term read by `lookup`), `visit(None, score)` for the
+    /// rest of that ordinal's pairs.
+    fn drain(
+        &mut self,
+        mut lookup: impl FnMut(i64) -> Result<Vec<u8>>,
+        mut visit: impl FnMut(Option<&[u8]>, f32) -> Result<()>,
+    ) -> Result<()> {
+        self.pairs.sort_by_key(|&(ord, _)| ord);
+        let mut current = None;
+        for &(ord, score) in &self.pairs {
+            if current == Some(ord) {
+                visit(None, score)?;
+            } else {
+                current = Some(ord);
+                visit(Some(&lookup(ord)?), score)?;
+            }
+        }
+        self.pairs.clear();
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The from side: terms
 // ---------------------------------------------------------------------------
@@ -163,6 +205,7 @@ pub struct TermsCollector<'a> {
     sv: Option<Box<dyn SortedDocValues + 'a>>,
     mv: Option<Box<dyn SortedSetDocValues + 'a>>,
     terms: BytesRefHash,
+    pending: PendingOrds,
 }
 
 impl<'a> TermsCollector<'a> {
@@ -174,6 +217,7 @@ impl<'a> TermsCollector<'a> {
             sv: None,
             mv: None,
             terms: BytesRefHash::new(),
+            pending: PendingOrds::default(),
         }
     }
 
@@ -207,19 +251,46 @@ impl<'a> SegmentCollector<'a> for TermsCollector<'a> {
             if doc == values.doc_id() {
                 for _ in 0..values.doc_value_count() {
                     let ord = values.next_ord()?;
-                    let term = values.lookup_ord(ord)?;
-                    add_term(&mut self.terms, &term)?;
+                    self.pending.pairs.push((ord, 0.0));
                 }
             }
         } else if let Some(values) = self.sv.as_mut() {
-            let term = if values.advance_exact(doc)? {
-                values.lookup_ord(values.ord_value())?
+            if values.advance_exact(doc)? {
+                self.pending
+                    .pairs
+                    .push((i64::from(values.ord_value()), 0.0));
             } else {
-                Vec::new()
-            };
-            add_term(&mut self.terms, &term)?;
+                add_term(&mut self.terms, &[])?;
+            }
         }
         Ok(())
+    }
+
+    /// The segment's ordinals as terms ([`PendingOrds`]).
+    fn finish(&mut self) -> Result<()> {
+        let Self {
+            sv,
+            mv,
+            terms,
+            pending,
+            ..
+        } = self;
+        let mut add = |t: Option<&[u8]>, _score: f32| -> Result<()> {
+            if let Some(t) = t {
+                add_term(terms, t)?;
+            }
+            Ok(())
+        };
+        if let Some(values) = mv.as_mut() {
+            pending.drain(|o| values.lookup_ord(o), &mut add)
+        } else if let Some(values) = sv.as_mut() {
+            pending.drain(
+                |o| values.lookup_ord(i32::try_from(o).unwrap_or(i32::MAX)),
+                &mut add,
+            )
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -245,6 +316,11 @@ pub struct TermsWithScoreCollector<'a> {
     terms: BytesRefHash,
     score_sums: Vec<f32>,
     score_counts: Vec<i32>,
+    pending: PendingOrds,
+    /// The ordinal a single-valued document without a value is pended
+    /// under: the segment's own empty term when it has one (so the two
+    /// keep their document order), else `-1`.
+    missing_ord: i64,
 }
 
 impl<'a> TermsWithScoreCollector<'a> {
@@ -260,6 +336,8 @@ impl<'a> TermsWithScoreCollector<'a> {
             terms: BytesRefHash::new(),
             score_sums: Vec::new(),
             score_counts: Vec::new(),
+            pending: PendingOrds::default(),
+            missing_ord: -1,
         }
     }
 
@@ -276,12 +354,16 @@ impl<'a> TermsWithScoreCollector<'a> {
     /// A term's slot, created when the term is new.
     fn slot(&mut self, term: &[u8]) -> Result<usize> {
         let (id, _) = add_term(&mut self.terms, term)?;
+        self.grow_to(id);
+        Ok(id)
+    }
+
+    fn grow_to(&mut self, id: usize) {
         while self.score_sums.len() <= id {
             let unset = self.unset();
             self.score_sums.push(unset);
             self.score_counts.push(0);
         }
-        Ok(id)
     }
 
     fn collect_sv(&mut self, id: usize, current: f32) {
@@ -357,38 +439,76 @@ impl<'a> SegmentCollector<'a> for TermsWithScoreCollector<'a> {
         if self.multiple_values_per_document {
             self.mv = Some(dv::get_sorted_set(reader, &self.field)?);
         } else {
-            self.sv = Some(dv::get_sorted(reader, &self.field)?);
+            let mut values = dv::get_sorted(reader, &self.field)?;
+            self.missing_ord = -1;
+            if values.value_count() > 0 && values.lookup_ord(0)?.is_empty() {
+                self.missing_ord = 0;
+            }
+            self.sv = Some(values);
         }
         Ok(())
     }
 
     fn collect(&mut self, doc: i32, score: f32) -> Result<()> {
-        if let Some(mut values) = self.mv.take() {
-            let r = (|| -> Result<()> {
-                if values.advance_exact(doc)? {
-                    for _ in 0..values.doc_value_count() {
-                        let ord = values.next_ord()?;
-                        let term = values.lookup_ord(ord)?;
-                        let id = self.slot(&term)?;
-                        self.collect_mv(id, score);
-                    }
+        if let Some(values) = self.mv.as_mut() {
+            if values.advance_exact(doc)? {
+                for _ in 0..values.doc_value_count() {
+                    let ord = values.next_ord()?;
+                    self.pending.pairs.push((ord, score));
                 }
-                Ok(())
-            })();
-            self.mv = Some(values);
-            return r;
+            }
+            return Ok(());
         }
         let Some(values) = self.sv.as_mut() else {
             return Ok(());
         };
-        let term = if values.advance_exact(doc)? {
-            values.lookup_ord(values.ord_value())?
+        // Java adds the empty term for a document without a value.
+        let ord = if values.advance_exact(doc)? {
+            i64::from(values.ord_value())
         } else {
-            Vec::new()
+            self.missing_ord
         };
-        let id = self.slot(&term)?;
-        self.collect_sv(id, score);
+        self.pending.pairs.push((ord, score));
         Ok(())
+    }
+
+    /// The segment's ordinals as terms, each term's scores combined in
+    /// document order ([`PendingOrds`]).
+    fn finish(&mut self) -> Result<()> {
+        let mut pending = std::mem::take(&mut self.pending);
+        let multi = self.mv.is_some();
+        let mut mv = self.mv.take();
+        let mut sv = self.sv.take();
+        let mut id = 0usize;
+        let mut visit = |t: Option<&[u8]>, score: f32| -> Result<()> {
+            if let Some(t) = t {
+                id = self.slot(t)?;
+            }
+            if multi {
+                self.collect_mv(id, score);
+            } else {
+                self.collect_sv(id, score);
+            }
+            Ok(())
+        };
+        let r = match (mv.as_mut(), sv.as_mut()) {
+            (Some(values), _) => pending.drain(|o| values.lookup_ord(o), &mut visit),
+            (None, Some(values)) => pending.drain(
+                |o| {
+                    if o < 0 {
+                        Ok(Vec::new())
+                    } else {
+                        values.lookup_ord(i32::try_from(o).unwrap_or(i32::MAX))
+                    }
+                },
+                &mut visit,
+            ),
+            (None, None) => Ok(()),
+        };
+        self.mv = mv;
+        self.sv = sv;
+        self.pending = pending;
+        r
     }
 }
 
@@ -1147,7 +1267,7 @@ impl LeafOrds {
 
 /// A leaf's segment ordinals to global ones: the map's, or the identity
 /// without one (a single segment).
-fn segment_map(map: Option<&OrdinalMap>, ord: usize) -> Result<Option<&[i64]>> {
+pub(crate) fn segment_map(map: Option<&OrdinalMap>, ord: usize) -> Result<Option<&[i64]>> {
     match map {
         None => Ok(None),
         Some(m) => m

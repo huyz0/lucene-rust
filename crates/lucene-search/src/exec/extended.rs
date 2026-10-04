@@ -219,7 +219,7 @@ pub(crate) fn build<'a>(
         ExtendedQuery::TermsIncludingScore(q) => {
             super::query_join::terms_including_score(ctx, q, boost, mode, top_level)
         }
-        ExtendedQuery::GlobalOrdinals(q) => super::query_join::global_ordinals(ctx, q, boost),
+        ExtendedQuery::GlobalOrdinals(q) => super::query_join::global_ordinals(ctx, q, boost, mode),
         ExtendedQuery::GlobalOrdinalsWithScore(q) => {
             super::query_join::global_ordinals_with_score(ctx, q, boost, mode)
         }

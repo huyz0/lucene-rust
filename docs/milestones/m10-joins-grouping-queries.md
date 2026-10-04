@@ -10,7 +10,7 @@
 | **Effort** | L |
 | **Depends on** | [M7](m7-core-complete.md) |
 | **Unblocks** | native `nested`, `function_score`, `intervals`, `combined_fields`, field collapsing |
-| **Status** | in progress (T10.0, T10.1 done; T10.2, T10.3 queries ported) |
+| **Status** | in progress (T10.0, T10.1, T10.3 done; T10.2 queries ported) |
 
 ---
 
@@ -103,6 +103,29 @@ grouping. Each of them falls back to Lucene today.
   segment) and the `DocValues` getters (`reader/doc_values.rs`). 897
   differential searches (`GenQueryTimeJoin`, four segments with deletions,
   every score mode, alone and boosted in booleans) bit for bit.
+  Benchmark pair `scripts/bench-micro.sh --bench query_join`
+  (`QueryJoinMicro.java` / `micro_query_join.rs`: 200 000 documents in four
+  segments, half from-documents referencing 20 000 keys; per word, the join
+  built from `+type:from +body:word` and its top ten; every case's hits
+  digest equal to Lucene's). Before stage 3: terms joins 0.63x-0.83x, global
+  ordinals `None` 0.59x, numeric `None` 0.02x. Stage 3 read the from side's
+  terms once per segment ordinal in ordinal order after the segment (the
+  dictionary walked forward instead of an LZ4 block decompressed per
+  document; each term's scores still combined in document order), reused one
+  postings cursor across the to side's terms, translated the collected
+  global ordinals to segment ordinals once per segment, made
+  `GlobalOrdinalsQuery`'s scorer the constant-score scorer Java's
+  `ConstantScoreWeight` gives it (it now stops once ten hits beat it, as
+  Lucene's does), and gave the one-dimensional `PointInSetQuery` Java's
+  single merged tree walk (it walked the tree once per point). After: terms
+  `None` 1.39x, `Avg` 1.08x, `Max`/`Min`/`Total` 0.99x-1.05x (inside the
+  1.07x noise floor), multi-valued `Max` 1.21x, global ordinals `None` 1.42x,
+  `Avg` with min/max 1.13x, numeric `Max` 1.06x. Left below 1.0: global
+  ordinals `Max` 0.90x -- not constant-scored, so it walks all 100 000
+  to-documents as Java does, and its time is that two-phase walk (postings,
+  a per-document ordinal read through a boxed doc-values iterator, the
+  bulk loop), each piece Java's own -- and numeric `None` 0.90x-0.94x,
+  inside its 1.09x-1.17x noise floor (it was 0.02x).
 - **T10.4** — Grouping.
 - **T10.5** — Function queries and value sources.
 - **T10.6** — Intervals, payload queries, `MoreLikeThis`, `CommonTermsQuery`.
