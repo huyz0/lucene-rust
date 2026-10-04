@@ -126,6 +126,15 @@ geo_shapes/index/_1.si 7676842f4c3d8b8945a7633a19b77a6f
 geo_shapes/index/_2.si 7676842f4c3d8b8945a7633a19b77a73
 geo_shapes/index/_3.si 7676842f4c3d8b8945a7633a19b77a77
 geo_shapes/index/segments_5 7676842f4c3d8b8945a7633a19b77a7d
+grouping/blocks/_0.si e2ba62270e3c68362c29a042d5f702ee
+grouping/blocks/_1.si e2ba62270e3c68362c29a042d5f702f2
+grouping/blocks/_2.si e2ba62270e3c68362c29a042d5f702f8
+grouping/blocks/segments_5 e2ba62270e3c68362c29a042d5f702fd
+grouping/index/_0.si e2ba62270e3c68362c29a042d5f702da
+grouping/index/_1.si e2ba62270e3c68362c29a042d5f702de
+grouping/index/_2.si e2ba62270e3c68362c29a042d5f702e4
+grouping/index/_3.si e2ba62270e3c68362c29a042d5f702ea
+grouping/index/segments_6 e2ba62270e3c68362c29a042d5f702ed
 keyword_sort_index/_0.si a6dbcefc8a88442e666e3f6798f96faf
 keyword_sort_index/_1.si a6dbcefc8a88442e666e3f6798f96fb3
 keyword_sort_index/_2.si a6dbcefc8a88442e666e3f6798f96fb7

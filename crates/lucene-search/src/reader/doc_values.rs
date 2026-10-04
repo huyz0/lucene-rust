@@ -11,8 +11,9 @@
 //! - [`get_sorted_numeric`]: `DocValues.getSortedNumeric` (a `NUMERIC` field
 //!   as a singleton).
 //!
-//! The query-time joins ([`crate::join`]) read every leaf through these, as
-//! their Java originals do.
+//! The query-time joins ([`crate::join`]) and the grouping collectors
+//! ([`crate::grouping`]) read every leaf through these, as their Java
+//! originals do.
 
 use lucene_codecs::field_infos::DocValuesType;
 

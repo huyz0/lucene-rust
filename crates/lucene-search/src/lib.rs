@@ -213,6 +213,7 @@ pub mod explain;
 pub mod extended_query;
 pub mod facets;
 pub mod field_norms;
+pub mod grouping;
 pub mod highlighter;
 pub mod index_searcher;
 pub mod join;
