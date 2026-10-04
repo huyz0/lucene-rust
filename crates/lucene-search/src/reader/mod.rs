@@ -49,6 +49,7 @@ pub mod multi_doc_values;
 pub mod multi_reader;
 pub mod parallel;
 mod segment;
+pub(crate) use segment::SparseDocs;
 pub mod slow_codec;
 pub mod sorting;
 
@@ -482,6 +483,21 @@ pub trait SortedSetDocValues: DocValuesIterator {
     fn lookup_ord(&mut self, ord: i64) -> Result<Vec<u8>>;
     /// `getValueCount()`.
     fn value_count(&self) -> i64;
+    /// `lookupTerm(key)`: `key`'s ordinal, or `-insertionPoint - 1`.
+    // SENTINEL: negative = absent, `-insertionPoint-1` (`SortedSetDocValues.lookupTerm`).
+    fn lookup_term(&mut self, key: &[u8]) -> Result<i64> {
+        let (mut low, mut high) = (0i64, self.value_count().saturating_sub(1));
+        while low <= high {
+            let mid = low + (high - low) / 2;
+            let term = self.lookup_ord(mid)?;
+            match term.as_slice().cmp(key) {
+                std::cmp::Ordering::Less => low = mid + 1,
+                std::cmp::Ordering::Greater => high = mid - 1,
+                std::cmp::Ordering::Equal => return Ok(mid),
+            }
+        }
+        Ok(-(low + 1))
+    }
 }
 
 /// `PointValues` of one field.

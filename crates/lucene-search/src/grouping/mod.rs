@@ -135,18 +135,67 @@ pub struct CollectedSearchGroup<V> {
     pub comparator_slot: usize,
 }
 
+/// The multiply-rotate hash rustc uses (`FxHasher`): the group maps hash a
+/// group value per collected document, where SipHash's DoS resistance buys
+/// nothing (stage 3: SipHash was a tenth of a term grouping's time).
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct FxHasher(u64);
+
+impl std::hash::Hasher for FxHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let mut chunks = bytes.chunks_exact(8);
+        for c in &mut chunks {
+            let mut w = [0u8; 8];
+            w.copy_from_slice(c);
+            self.add(u64::from_le_bytes(w));
+        }
+        for &b in chunks.remainder() {
+            self.add(u64::from(b));
+        }
+    }
+
+    fn write_u8(&mut self, i: u8) {
+        self.add(u64::from(i));
+    }
+
+    fn write_u32(&mut self, i: u32) {
+        self.add(u64::from(i));
+    }
+
+    fn write_u64(&mut self, i: u64) {
+        self.add(i);
+    }
+
+    fn write_usize(&mut self, i: usize) {
+        self.add(i as u64);
+    }
+}
+
+impl FxHasher {
+    fn add(&mut self, w: u64) {
+        self.0 = (self.0.rotate_left(5) ^ w).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+}
+
+/// A `HashMap` under [`FxHasher`].
+pub(crate) type FxHashMap<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<FxHasher>>;
+
 /// A map from group values (`null` included) to an index, looked up by
 /// reference -- Java's `HashMap<T, ...>` with its one `null` key.
 #[derive(Debug, Clone)]
 pub(crate) struct GroupIndex<V> {
-    map: HashMap<V, usize>,
+    map: FxHashMap<V, usize>,
     null: Option<usize>,
 }
 
 impl<V: Eq + Hash> Default for GroupIndex<V> {
     fn default() -> Self {
         Self {
-            map: HashMap::new(),
+            map: FxHashMap::default(),
             null: None,
         }
     }

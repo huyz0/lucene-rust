@@ -1407,6 +1407,27 @@ impl<'a> NumericReader<'a> {
         self.value_slow(doc)
     }
 
+    /// The value of the `index`-th document that has one (its position
+    /// among them, which a caller that already found the document's rank in
+    /// the field's `IndexedDISI` knows): no second walk of the
+    /// `IndexedDISI`.
+    pub fn value_at_index(&mut self, index: i64) -> Result<i64> {
+        if let Some(v) = self
+            .sparse_fast
+            .as_ref()
+            .and_then(|f| f.get(i32::try_from(index).ok()?))
+        {
+            return Ok(v);
+        }
+        if index < 0 || index >= self.entry.num_values {
+            return Err(Error::DocOutOfRange(
+                i32::try_from(index).unwrap_or(i32::MAX),
+                self.entry.num_values,
+            ));
+        }
+        self.decode_at(index)
+    }
+
     /// The value at `ordinal` in the values array.
     fn decode_at(&mut self, ordinal: i64) -> Result<i64> {
         match self.entry.block_shift {
