@@ -80,7 +80,10 @@ impl QueryBitSetProducer {
     }
 
     /// Drops every cached segment (Java's entries go when their segment
-    /// core is collected).
+    /// core is collected). Nothing here evicts on its own: a producer that
+    /// outlives reader reopens keeps the bit set of every segment it ever
+    /// saw, merged-away ones included, until this is called -- a long-lived
+    /// producer should be cleared (or rebuilt) when its reader is replaced.
     pub fn clear(&self) {
         self.lock().clear();
     }

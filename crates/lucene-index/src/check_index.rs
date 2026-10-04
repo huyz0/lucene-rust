@@ -4247,7 +4247,7 @@ fn sort_key_values(
 /// the difference between a check that passed and one that never ran. Every
 /// sort kind is verified, the byte-keyed ones through
 /// [`crate::index_sorter`].
-fn check_index_sort(
+pub(crate) fn check_index_sort(
     dir: &dyn Directory,
     commit: &SegmentCommitInfo,
     si: &SegmentInfo,
@@ -4302,8 +4302,16 @@ fn check_index_sort(
                 .ok_or_else(|| {
                     "parent field is not set but the index has document blocks".to_string()
                 })?;
+            // `reader.getNumericDocValues(parentField)`: Java walks it
+            // unconditionally, so a block segment without the column fails
+            // the check rather than passing over an empty walk.
             match meta.numeric_entry(parent.number) {
-                None => Vec::new(),
+                None => {
+                    return Err(format!(
+                        "the index has document blocks but parent field {:?} has no doc values",
+                        parent.name
+                    ))
+                }
                 Some(entry) => {
                     let mut reader = doc_values::NumericReader::new(&dvd, entry);
                     let mut docs = Vec::new();
