@@ -294,7 +294,13 @@ the build before; `~` inside the run's noise floor):
 | `query_join` (T10.3) | 11 | 1.14x-1.61x | terms `Min` 1.14x |
 | `grouping` (T10.4) | 9 | 1.05x-2.98x | blocks 1.05x-1.17x (two 7-rep runs of two builds each; floors 1.14x-1.30x) |
 | `function` (T10.5) | 10 | 1.39x-2.82x | `FunctionRangeQuery` as a filter 1.39x |
-| `aggs` (terms behind a filter) | 6 | 1.45x-3.11x | dense range on a keyword 1.45x |
+| `aggs` (terms behind a filter) | 6 | 1.45x-3.11x | dense range on a keyword 1.45x; see below |
+
+Lucene's side of the two term-filtered `cat` cases (a single-valued
+`SORTED_SET`) is bimodal: in some JVM runs (one of six, three of five in
+two runs on 2026-10-05) it settles about 2x faster than its usual 5-7 ms,
+at 2.5-2.7 ms, against our 3.1-3.8 ms -- 0.72x-0.80x against those runs.
+The median ratios above count every run; that faster mode is the gap left.
 
 Block grouping is the one case not clearly above 1.0. Its profile
 (callgrind, `MICRO_CASE=grp_blocks`): the collector's per-hit bookkeeping
