@@ -176,6 +176,8 @@ pub(crate) struct DisiQueue {
     size: usize,
     /// `DisjunctionDISIApproximation.cost`.
     cost: i64,
+    /// [`Self::top_list`]'s answer, kept to be refilled.
+    list: Vec<usize>,
 }
 
 fn left_node(node: usize) -> usize {
@@ -195,6 +197,7 @@ impl DisiQueue {
             heap: Vec::with_capacity(subs.len()),
             size: 0,
             cost: 0,
+            list: Vec::with_capacity(subs.len()),
         };
         for (i, s) in subs.iter().enumerate() {
             q.cost = q.cost.wrapping_add(s.cost());
@@ -215,9 +218,10 @@ impl DisiQueue {
 
     /// `topList()`: the sub-iterators on the top document, in the order
     /// Java's linked list holds them.
-    pub(crate) fn top_list(&mut self) -> Vec<usize> {
+    pub(crate) fn top_list(&mut self) -> &[usize] {
+        self.list.clear();
         if self.size == 0 {
-            return Vec::new();
+            return &self.list;
         }
         let mut list = self.heap[0];
         self.next[list] = None;
@@ -229,13 +233,12 @@ impl DisiQueue {
             self.next[w] = Some(list);
             list = w;
         }
-        let mut out = Vec::with_capacity(self.size);
         let mut at = Some(list);
         while let Some(w) = at {
-            out.push(w);
+            self.list.push(w);
             at = self.next[w];
         }
-        out
+        &self.list
     }
 
     fn top_list_from(&mut self, mut list: usize, i: usize) -> usize {
@@ -446,6 +449,13 @@ pub(crate) struct TermIntervals<'a> {
     cost: i64,
     match_cost: f32,
     payloads: Option<PayloadSide<'a>>,
+    /// Whether the cursor reads each position's payload as it goes
+    /// (`PostingsEnum.PAYLOADS`), rather than the document's occurrences
+    /// being read whole on its first interval.
+    stream: bool,
+    /// Whether positions come one at a time off a lazy cursor
+    /// (`nextPosition()`), rather than a pulsed singleton's decoded list.
+    lazy: bool,
 }
 
 impl<'a> TermIntervals<'a> {
@@ -473,13 +483,13 @@ impl<'a> TermIntervals<'a> {
                 self.postings.positions_at(self.doc, &mut self.positions)?;
             }
             Some(p) => {
-                let Some(pos_in) = p.ctx.pos_in else {
-                    return Err(Error::MissingPosInput);
-                };
-                p.occurrences = p
-                    .field_terms
-                    .occurrences_for_doc(&p.term, p.ctx.doc_in, pos_in, p.ctx.pay_in, self.doc)?
-                    .unwrap_or_default();
+                self.postings.occurrences_at(
+                    &p.ctx,
+                    p.field_terms,
+                    &p.term,
+                    self.doc,
+                    &mut p.occurrences,
+                )?;
             }
         }
         Ok(())
@@ -517,6 +527,22 @@ impl IntervalIterator for TermIntervals<'_> {
                 return Ok(self.pos);
             }
             self.upto -= 1;
+            if self.lazy && self.payloads.is_none() {
+                self.pos = self.postings.next_position()?;
+                return Ok(self.pos);
+            }
+            if self.stream {
+                let (position, payload) = self.postings.next_position_with_payload()?;
+                self.pos = position;
+                if self
+                    .payloads
+                    .as_ref()
+                    .is_some_and(|p| p.filter.test(payload))
+                {
+                    return Ok(position);
+                }
+                continue;
+            }
             self.load()?;
             match &self.payloads {
                 None => {
@@ -570,7 +596,9 @@ fn term_iterator<'a>(
     let Some(pos_in) = ctx.pos_in else {
         return Err(Error::MissingPosInput);
     };
-    let postings = LeafPositions::open(ctx, pos_in, field, term)?;
+    let mut postings = LeafPositions::open(ctx, pos_in, field, term)?;
+    let stream = payloads.is_some() && postings.stream_payloads(ctx);
+    let lazy = postings.is_lazy();
     Ok(Box::new(TermIntervals {
         postings,
         doc: -1,
@@ -588,6 +616,8 @@ fn term_iterator<'a>(
             ctx: *ctx,
             occurrences: Vec::new(),
         }),
+        stream,
+        lazy,
     }))
 }
 
@@ -645,7 +675,7 @@ impl<'a> DisjunctionIntervals<'a> {
 
     fn reset(&mut self) -> Result<()> {
         self.queue.clear();
-        for w in self.disi.top_list() {
+        for &w in self.disi.top_list() {
             self.subs[w].next_interval()?;
             self.queue.add(w, &end_then_wider(&self.subs));
         }
@@ -1278,7 +1308,7 @@ impl<'a> MinimumShouldMatchIntervals<'a> {
     fn reset(&mut self) -> Result<()> {
         self.proximity.clear();
         self.background.clear();
-        for w in self.disi.top_list() {
+        for &w in self.disi.top_list() {
             if self.subs[w].next_interval()? != NO_MORE_INTERVALS {
                 self.background.add(w, &end_then_wider(&self.subs));
             }

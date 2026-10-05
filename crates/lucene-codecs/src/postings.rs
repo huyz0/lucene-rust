@@ -2123,6 +2123,23 @@ struct PositionBlock {
     len: usize,
 }
 
+/// [`walk_document_occurrences`]' decode buffers, held by the caller so a
+/// walk per document does not zero four 256-entry arrays (and a payload
+/// buffer) each time.
+pub(crate) struct WalkScratch {
+    for_util: for_util::ForUtil,
+    block: PositionBlock,
+}
+
+impl WalkScratch {
+    pub(crate) fn new() -> Self {
+        WalkScratch {
+            for_util: for_util::ForUtil::new(),
+            block: PositionBlock::new(),
+        }
+    }
+}
+
 impl PositionBlock {
     fn new() -> Self {
         PositionBlock {
@@ -2319,6 +2336,7 @@ fn walk_document_occurrences<S: OccurrenceSink>(
     last_pos_block: Option<u64>,
     tail_count: usize,
     wants: PositionWants,
+    scratch: &mut WalkScratch,
     sink: &mut S,
 ) -> Result<()> {
     if (wants.has_offsets || wants.has_payloads) && pay.is_none() {
@@ -2362,8 +2380,10 @@ fn walk_document_occurrences<S: OccurrenceSink>(
         }
     }
 
-    let mut for_util_state = for_util::ForUtil::new();
-    let mut block = PositionBlock::new();
+    let WalkScratch {
+        for_util: for_util_state,
+        block,
+    } = scratch;
     // `refillPositions`' one-line dispatch: the vint tail is recognised by
     // the file pointer alone. It is also the *last* block, so once it has
     // been decoded there is nothing after it -- a walk still wanting
@@ -2385,10 +2405,10 @@ fn walk_document_occurrences<S: OccurrenceSink>(
             *tail_decoded = true;
             refill_last_position_block(pos_r, wants, tail_count, block)
         } else {
-            refill_full_position_block(pos_r, pay_r, wants, &mut for_util_state, block)
+            refill_full_position_block(pos_r, pay_r, wants, for_util_state, block)
         }
     };
-    refill(&mut pos_r, pay_r.as_mut(), &mut block, &mut tail_decoded)?;
+    refill(&mut pos_r, pay_r.as_mut(), block, &mut tail_decoded)?;
 
     let mut upto = to_skip as usize;
     if upto > block.len {
@@ -2437,7 +2457,7 @@ fn walk_document_occurrences<S: OccurrenceSink>(
     let mut cursor = SinkCursor::new();
     for g in 0..freq {
         if upto == block.len {
-            refill(&mut pos_r, pay_r.as_mut(), &mut block, &mut tail_decoded)?;
+            refill(&mut pos_r, pay_r.as_mut(), block, &mut tail_decoded)?;
             upto = 0;
             payload_upto = 0;
             if block.len == 0 {
@@ -2939,6 +2959,7 @@ pub fn read_occurrences_for_doc(
         last_pos_block_fp(meta, total_term_freq),
         n % for_util::BLOCK_SIZE,
         wants,
+        &mut WalkScratch::new(),
         &mut sink,
     )?;
     Ok(Some(sink.occurrences))
@@ -5855,6 +5876,17 @@ pub struct PositionsCursor<'a> {
     /// block, every retired generation 128 with its own `PForUtil` -- the
     /// layout is otherwise the same, down to the vint tail.
     format: PostingsFormat,
+    /// [`Self::occurrences_into`]'s decode buffers, made on its first call.
+    occ_scratch: Option<Box<WalkScratch>>,
+    /// `.pay`, once [`Self::read_payloads`] asked for payloads: every full
+    /// positions block then decodes its payload block too, and every block
+    /// stepped over steps over its `.pay` half.
+    pay_r: Option<SliceInput<'a>>,
+    /// The next unread payload byte of `block.payload_bytes`.
+    payload_upto: usize,
+    /// The last position's payload: its start in `block.payload_bytes` and
+    /// its length.
+    payload: (usize, usize),
 }
 
 impl<'a> PositionsCursor<'a> {
@@ -5899,7 +5931,122 @@ impl<'a> PositionsCursor<'a> {
             doc_left: 0,
             position: 0,
             format: pos.format,
+            occ_scratch: None,
+            pay_r: None,
+            payload_upto: 0,
+            payload: (0, 0),
         })
+    }
+
+    /// `PostingsEnum.PAYLOADS`: from here on [`Self::payload`] answers each
+    /// position's payload, read as the positions are -- `.pay` stepped in
+    /// lockstep with `.pos`, each payload block decoded once -- rather than
+    /// walked again per document as [`Self::occurrences_into`] does.
+    ///
+    /// # Errors
+    /// [`Error::Unsupported`] for a field without payloads, a retired
+    /// format's cursor, or a cursor that has already read positions.
+    pub fn read_payloads(&mut self, pay: &PayInput<'a>) -> Result<()> {
+        if !self.wants.has_payloads {
+            return Err(Error::Unsupported(
+                "read_payloads needs a field with payloads",
+            ));
+        }
+        if self.format != PostingsFormat::Lucene104 {
+            return Err(Error::Unsupported(
+                "read_payloads reads Lucene104 postings only",
+            ));
+        }
+        if self.buf_fp != u64::MAX || self.pos_doc != -1 {
+            return Err(Error::Unsupported(
+                "read_payloads must be asked before the first position is read",
+            ));
+        }
+        self.pay_r = Some(SliceInput::new(pay.buf));
+        self.wants.want_payloads = true;
+        Ok(())
+    }
+
+    /// `PostingsEnum.getPayload()` after [`Self::next_position`]: `None`
+    /// where the position has none, or payloads are not being read.
+    ///
+    /// # Errors
+    /// Payload lengths that overrun the block's payload bytes.
+    pub fn payload(&self) -> Result<Option<&[u8]>> {
+        let (start, len) = self.payload;
+        if self.pay_r.is_none() || len == 0 {
+            return Ok(None);
+        }
+        Ok(Some(self.block.payload(start, len)?))
+    }
+
+    /// The payload bytes of the block's occurrences `from..to`.
+    fn payload_span(&self, from: usize, to: usize) -> usize {
+        self.block.payload_lengths[from..to]
+            .iter()
+            .fold(0usize, |acc, &l| acc.saturating_add(l as usize))
+    }
+
+    /// The current document's occurrences with their offsets and payloads
+    /// (`nextPosition()` and `startOffset()`/`endOffset()`/`getPayload()`
+    /// for each, as a cursor opened with `PostingsEnum.ALL` reads them),
+    /// replacing `out`'s contents.
+    ///
+    /// Read from `.pos`/`.pay` at the origin the `.doc` skip data gives the
+    /// document -- [`read_occurrences_for_doc`]'s walk, without its term
+    /// lookup and skip-list descent per call, since this cursor is already on
+    /// the document -- and independently of [`Self::next_position`]'s
+    /// stream, which is left where it was.
+    ///
+    /// # Errors
+    /// [`Error::Unsupported`] off a document, or for a retired format's
+    /// cursor (whose documents [`read_occurrences_for_doc`] reads); the
+    /// walk's corruption errors.
+    pub fn occurrences_into(
+        &mut self,
+        pos: &PosInput<'_>,
+        pay: Option<&PayInput<'_>>,
+        out: &mut Vec<Position>,
+    ) -> Result<()> {
+        if self.format != PostingsFormat::Lucene104 {
+            return Err(Error::Unsupported(
+                "occurrences_into reads Lucene104 postings only",
+            ));
+        }
+        let origin = self.docs.position_origin()?.ok_or(Error::Unsupported(
+            "occurrences_into needs the cursor positioned on a document",
+        ))?;
+        let freq = usize::try_from(self.freq())
+            .ok()
+            .filter(|&f| f > 0)
+            .ok_or_else(|| corrupted("document frequency is not positive"))?;
+        let wants = PositionWants {
+            has_offsets: self.wants.has_offsets,
+            has_payloads: self.wants.has_payloads,
+            want_offsets: self.wants.has_offsets,
+            want_payloads: self.wants.has_payloads,
+        };
+        let scratch = self
+            .occ_scratch
+            .get_or_insert_with(|| Box::new(WalkScratch::new()));
+        out.clear();
+        let mut sink = FullOccurrences {
+            occurrences: std::mem::take(out),
+            doc_starts: Vec::new(),
+        };
+        let walked = walk_document_occurrences(
+            pos,
+            pay,
+            origin,
+            freq,
+            self.last_pos_block_fp,
+            self.tail_count,
+            wants,
+            scratch,
+            &mut sink,
+        );
+        *out = sink.occurrences;
+        walked
     }
 
     /// The underlying document cursor, for everything that is not a position:
@@ -5954,6 +6101,11 @@ impl<'a> PositionsCursor<'a> {
                 return Err(positions_overrun());
             }
         }
+        if self.pay_r.is_some() {
+            let len = self.block.payload_lengths[self.buf_upto] as usize;
+            self.payload = (self.payload_upto, len);
+            self.payload_upto = self.payload_upto.saturating_add(len);
+        }
         // ARITH: `buf_upto < block.len <= BLOCK_SIZE` after the refill above,
         // and a position is `wrapping_add`ed exactly as Java's `int` sum
         // wraps; `doc_left > 0` was just checked.
@@ -5991,6 +6143,11 @@ impl<'a> PositionsCursor<'a> {
             #[allow(clippy::arithmetic_side_effects)]
             {
                 let take = (self.block.len - self.buf_upto).min(self.doc_left as usize);
+                if self.pay_r.is_some() {
+                    let bytes = self.payload_span(self.buf_upto, self.buf_upto + take);
+                    self.payload_upto = self.payload_upto.saturating_add(bytes);
+                    self.payload = (0, 0);
+                }
                 let deltas = &self.block.pos_deltas[self.buf_upto..self.buf_upto + take];
                 let mut p = self.position;
                 out.extend(deltas.iter().map(|&d| {
@@ -6023,12 +6180,21 @@ impl<'a> PositionsCursor<'a> {
             if origin.pos_fp == self.buf_fp && start <= self.block.len && start >= self.buf_upto {
                 // The new block's first document starts inside the positions
                 // block already decoded: move to it, decode nothing.
+                if self.pay_r.is_some() {
+                    let bytes = self.payload_span(self.buf_upto, start);
+                    self.payload_upto = self.payload_upto.saturating_add(bytes);
+                }
                 self.buf_upto = start;
                 self.pending = 0;
             } else {
                 let fp = usize::try_from(origin.pos_fp)
                     .map_err(|_| corrupted("positions file pointer overflows usize"))?;
                 self.pos_r.seek(fp)?;
+                if let Some(pay_r) = self.pay_r.as_mut() {
+                    let pay_fp = usize::try_from(origin.pay_fp)
+                        .map_err(|_| corrupted("payloads file pointer overflows usize"))?;
+                    pay_r.seek(pay_fp)?;
+                }
                 self.buf_fp = u64::MAX;
                 self.block.len = 0;
                 self.buf_upto = 0;
@@ -6076,9 +6242,12 @@ impl<'a> PositionsCursor<'a> {
         if n <= left {
             // ARITH: `n <= left` fits, and lands at most on `block.len`.
             #[allow(clippy::arithmetic_side_effects)]
-            {
-                self.buf_upto += n as usize;
+            let to = self.buf_upto + n as usize;
+            if self.pay_r.is_some() {
+                let bytes = self.payload_span(self.buf_upto, to);
+                self.payload_upto = self.payload_upto.saturating_add(bytes);
             }
+            self.buf_upto = to;
             return Ok(());
         }
         // ARITH: `n > left` was just established.
@@ -6093,7 +6262,17 @@ impl<'a> PositionsCursor<'a> {
                 ));
             }
             if self.format == PostingsFormat::Lucene104 {
-                skip_position_block(&mut self.pos_r, None, false, false)?;
+                match self.pay_r.as_mut() {
+                    // `.pay` keeps step: its payload (and offset) blocks
+                    // follow the positions blocks one for one.
+                    Some(pay_r) => skip_position_block(
+                        &mut self.pos_r,
+                        Some(pay_r),
+                        self.wants.has_payloads,
+                        self.wants.has_offsets,
+                    )?,
+                    None => skip_position_block(&mut self.pos_r, None, false, false)?,
+                }
             } else {
                 crate::backward_codecs::for_util::pfor_skip(&mut self.pos_r, self.format.word())?;
             }
@@ -6109,6 +6288,9 @@ impl<'a> PositionsCursor<'a> {
                 return Err(corrupted("positions to skip overrun the positions block"));
             }
             self.buf_upto = n as usize;
+            if self.pay_r.is_some() {
+                self.payload_upto = self.payload_span(0, self.buf_upto);
+            }
         }
         Ok(())
     }
@@ -6125,9 +6307,20 @@ impl<'a> PositionsCursor<'a> {
                 &mut self.block,
             )?;
         } else if self.format == PostingsFormat::Lucene104 {
-            self.for_util
-                .pfor_decode(&mut self.pos_r, &mut self.block.pos_deltas)?;
-            self.block.len = for_util::BLOCK_SIZE;
+            match self.pay_r.as_mut() {
+                Some(pay_r) => refill_full_position_block(
+                    &mut self.pos_r,
+                    Some(pay_r),
+                    self.wants,
+                    &mut self.for_util,
+                    &mut self.block,
+                )?,
+                None => {
+                    self.for_util
+                        .pfor_decode(&mut self.pos_r, &mut self.block.pos_deltas)?;
+                    self.block.len = for_util::BLOCK_SIZE;
+                }
+            }
         } else {
             // A retired generation's 128 deltas, in the front of the buffer.
             let mut words = [0u64; crate::backward_codecs::for_util::BLOCK_SIZE];
@@ -6143,6 +6336,7 @@ impl<'a> PositionsCursor<'a> {
         }
         self.buf_fp = fp;
         self.buf_upto = 0;
+        self.payload_upto = 0;
         Ok(())
     }
 }
@@ -8585,6 +8779,7 @@ mod tests {
             last_pos_block,
             tail_count,
             positions_only_wants(),
+            &mut WalkScratch::new(),
             &mut sink,
         )?;
         Ok(sink.occurrences)
