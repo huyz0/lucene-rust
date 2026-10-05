@@ -158,3 +158,202 @@ fn fst_util_matches_lucene() {
     assert!(names.len() >= 6, "{names:?}");
     assert!(total >= 1000, "only {total} checks");
 }
+
+/// The arc readers agree with each other over FSTs this port compiles with
+/// every node encoding (dense label runs -- direct addressing or continuous
+/// -- sparse fixed-length nodes searched by binary search, and
+/// variable-length lists when fixed-length arcs are off) and every input
+/// width: from every node, `readLastTargetArc` is the arc `readNextArc`
+/// stops on, a binary-search node's `readArcByIndex(i)` is its `i`-th arc,
+/// and `Util.get` finds every input's output.
+#[test]
+fn arc_readers_agree_over_every_node_encoding() {
+    use lucene_codecs::fst::InputType;
+    use lucene_codecs::fst_compiler::FstCompilerBuilder;
+    // Dense runs (every label 0..40 under a few prefixes), sparse labels
+    // (multiples of 19) and a few long chains.
+    let mut inputs: Vec<Vec<i32>> = Vec::new();
+    for p in 0..4 {
+        for l in 0..40 {
+            inputs.push(vec![p, l]);
+        }
+        for l in 0..12 {
+            inputs.push(vec![p + 10, l * 19, l]);
+        }
+    }
+    inputs.push(vec![50, 1, 2, 3, 4, 5]);
+    inputs.push(vec![50, 1, 2, 9]);
+    // Inputs that are prefixes of others: final arcs with arcs after them,
+    // densely (direct addressing or continuous) and sparsely (binary
+    // search) labelled.
+    inputs.push(vec![50, 1, 2]);
+    inputs.extend((10..40).map(|k| vec![50, 1, 2, k]));
+    inputs.push(vec![51]);
+    inputs.extend((0..12).map(|k| vec![51, k * 7]));
+    inputs.sort();
+    inputs.dedup();
+    let mut shapes = std::collections::BTreeSet::new();
+    let mut finals_with_arcs = 0;
+    for input_type in [InputType::Byte1, InputType::Byte2, InputType::Byte4] {
+        for fixed in [true, false] {
+            let mut c = FstCompilerBuilder::new(input_type)
+                .allow_fixed_length_arcs(fixed)
+                .build::<PositiveIntOutputs>();
+            for (i, input) in inputs.iter().enumerate() {
+                c.add(input, i as i64 + 1).unwrap();
+            }
+            let compiled = c.compile().unwrap();
+            // The saved form reads back to the same FST.
+            let saved =
+                TypedFst::<PositiveIntOutputs>::read(&compiled.save::<PositiveIntOutputs>())
+                    .unwrap();
+            let fst = TypedFst::<PositiveIntOutputs>::from_compiled(compiled);
+            assert_eq!(fst.input_type(), input_type);
+            assert_eq!(saved.input_type(), input_type);
+            for (i, input) in inputs.iter().enumerate() {
+                assert_eq!(fst_util::get(&saved, input).unwrap(), Some(i as i64 + 1));
+            }
+            assert!(fst.empty_output().is_none());
+            assert!(format!("{fst:?}").contains("TypedFst"));
+            for (i, input) in inputs.iter().enumerate() {
+                assert_eq!(fst_util::get(&fst, input).unwrap(), Some(i as i64 + 1));
+            }
+            let mut r = fst.bytes_reader();
+            let mut stack = vec![fst.first_arc()];
+            while let Some(follow) = stack.pop() {
+                if !fst_util::target_has_arcs(&follow) {
+                    continue;
+                }
+                let last = fst.read_last_target_arc(&follow, &mut r).unwrap();
+                let mut arc = follow.clone();
+                fst.read_first_target_arc(&follow, &mut arc, &mut r)
+                    .unwrap();
+                let node_flags = arc.node_flags();
+                shapes.insert((node_flags, fixed));
+                let mut arcs = vec![arc.clone()];
+                while !arc.is_last() {
+                    fst.read_next_arc(&mut arc, &mut r).unwrap();
+                    arcs.push(arc.clone());
+                }
+                // `readCeilArc`: the first arc at or past each label.
+                let labels: Vec<i32> = arcs.iter().map(|a| a.label()).filter(|&l| l >= 0).collect();
+                for l in 0..=labels.last().copied().unwrap_or(0) + 1 {
+                    let want = labels.iter().copied().find(|&x| x >= l);
+                    let got = fst_util::read_ceil_arc(l, &fst, &follow, &mut r)
+                        .unwrap()
+                        .map(|a| a.label());
+                    assert_eq!(got, want, "ceil of {l} in {labels:?}");
+                }
+                // The label of the arc after each one, read without
+                // moving to it.
+                for w in arcs.windows(2) {
+                    assert_eq!(
+                        fst.read_next_arc_label(&w[0], &mut r).unwrap(),
+                        w[1].label()
+                    );
+                }
+                assert_eq!(
+                    fst.is_expanded_target(&follow, &mut r).unwrap(),
+                    arcs.iter()
+                        .find(|a| a.label() >= 0)
+                        .unwrap()
+                        .bytes_per_arc()
+                        > 0,
+                    "{node_flags}"
+                );
+                for a in &arcs {
+                    // A final arc ends an input: its end arc carries the
+                    // final output; past a final node there is only that.
+                    let end = TypedFst::<PositiveIntOutputs>::read_end_arc(a);
+                    assert_eq!(end.is_some(), a.is_final());
+                    // Looking for the end label finds that end arc.
+                    let found = fst.find_target_arc(-1, a, &mut r).unwrap();
+                    assert_eq!(found.map(|f| f.label()), end.as_ref().map(|e| e.label()));
+                    let ceil = fst_util::read_ceil_arc(-1, &fst, a, &mut r).unwrap();
+                    assert_eq!(ceil.is_some(), a.is_final());
+                    if let (Some(mut end), true) = (end, fst_util::target_has_arcs(a)) {
+                        // Ends here, or goes on: the end arc's next arc is
+                        // the target node's first real one (its first
+                        // target arc is the end arc itself, as in Lucene).
+                        let mut first = a.clone();
+                        fst.read_first_target_arc(a, &mut first, &mut r).unwrap();
+                        assert_eq!(first.label(), -1);
+                        fst.read_first_real_target_arc(a.target(), &mut first, &mut r)
+                            .unwrap();
+                        assert_eq!(
+                            fst.read_next_arc_label(&end, &mut r).unwrap(),
+                            first.label()
+                        );
+                        fst.read_next_arc(&mut end, &mut r).unwrap();
+                        assert_eq!(end.label(), first.label());
+                        finals_with_arcs += 1;
+                    }
+                    if !fst_util::target_has_arcs(a) {
+                        let last = fst.read_last_target_arc(a, &mut r).unwrap();
+                        assert_eq!(last.label(), -1);
+                        assert!(!fst.is_expanded_target(a, &mut r).unwrap());
+                    }
+                }
+                let end = arcs.last().unwrap();
+                assert_eq!(
+                    (last.label(), last.output(), last.target(), last.is_final()),
+                    (end.label(), end.output(), end.target(), end.is_final()),
+                    "last arc of the node {follow:?}"
+                );
+                // Binary-search nodes: every arc by its index.
+                if node_flags == 32 {
+                    assert_eq!(arcs.len() as i32, end.num_arcs());
+                    assert!(end.bytes_per_arc() > 0);
+                    for (idx, want) in arcs.iter().enumerate() {
+                        let mut by_index = arc.clone();
+                        fst.read_arc_by_index(&mut by_index, &mut r, idx as i32)
+                            .unwrap();
+                        assert_eq!(by_index.label(), want.label());
+                        assert_eq!(by_index.arc_idx(), idx as i32);
+                    }
+                }
+                let _ = (end.flags(), end.next_final_output());
+                stack.extend(arcs.into_iter().filter(|a| a.label() >= 0));
+            }
+        }
+    }
+    // Every encoding showed up: plain lists, binary search, direct
+    // addressing or continuous.
+    let flags: std::collections::BTreeSet<u8> = shapes.iter().map(|&(f, _)| f).collect();
+    assert!(flags.contains(&32), "{shapes:?}");
+    assert!(flags.iter().any(|&f| f == 64 || f == 96), "{shapes:?}");
+    assert!(shapes.iter().any(|&(_, fixed)| !fixed));
+    assert!(finals_with_arcs > 0);
+}
+
+/// `Util.shortestPaths` when every path ties on output: the queue keeps the
+/// lexicographically smallest inputs, comparing a tied candidate's input
+/// against the queue's bottom before it enters.
+#[test]
+fn shortest_paths_break_ties_by_input() {
+    use lucene_codecs::fst::InputType;
+    use lucene_codecs::fst_compiler::FstCompilerBuilder;
+    let mut c = FstCompilerBuilder::new(InputType::Byte1).build::<PositiveIntOutputs>();
+    let inputs: Vec<Vec<i32>> = (0..20)
+        .flat_map(|a| (0..3).map(move |b| vec![a, b]))
+        .collect();
+    for input in &inputs {
+        c.add(input, 5).unwrap();
+    }
+    let fst = TypedFst::<PositiveIntOutputs>::from_compiled(c.compile().unwrap());
+    for top_n in [1usize, 3, 7] {
+        let res = fst_util::shortest_paths(
+            &fst,
+            &fst.first_arc(),
+            0,
+            |a: &i64, b: &i64| a.cmp(b),
+            top_n,
+            false,
+        )
+        .unwrap();
+        assert!(res.is_complete);
+        let got: Vec<Vec<i32>> = res.top_n.iter().map(|r| r.input.clone()).collect();
+        assert_eq!(got, inputs[..top_n].to_vec(), "top {top_n}");
+        assert!(res.top_n.iter().all(|r| r.output == 5));
+    }
+}
