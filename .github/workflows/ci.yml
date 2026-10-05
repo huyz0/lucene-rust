@@ -137,11 +137,14 @@ jobs:
 
       # llvm-cov runs the tests, so there is no separate `cargo test` step.
       # Output is captured so the per-file report below reuses this run rather
-      # than executing the whole suite a second time.
+      # than executing the whole suite a second time. scripts/coverage.sh drops
+      # lucene-ffi's never-loaded cdylib from the report (its phantom copies of
+      # the `#[no_mangle]` entry points hid the executed ones); see
+      # docs/mechanical-gates.md#coverage-objects.
       - name: Tests + coverage gate
         run: |
           set -o pipefail
-          cargo llvm-cov --workspace --summary-only --fail-under-lines 95 | tee coverage.txt
+          scripts/coverage.sh --workspace -- --summary-only --fail-under-lines 95 | tee coverage.txt
 
       # The plugin ships the release build, and the optimiser may change what
       # debug arithmetic promised: a NaN's bits, for one (`inf + -inf` is

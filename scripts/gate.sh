@@ -66,8 +66,12 @@ echo "gate: cargo doc (rustdoc link lints)"
 RUSTDOCFLAGS="-D warnings -A rustdoc::private_intra_doc_links" \
   cargo doc --workspace --no-deps --document-private-items
 
+# Through scripts/coverage.sh, not `cargo llvm-cov` directly: it drops
+# lucene-ffi's never-loaded cdylib from the report, whose phantom copy of every
+# `#[no_mangle]` entry point otherwise hides the executed one. See
+# docs/mechanical-gates.md#coverage-objects.
 echo "gate: cargo llvm-cov (tests + >=95% line coverage)"
-cargo llvm-cov --workspace --fail-under-lines 95
+scripts/coverage.sh --workspace -- --fail-under-lines 95
 
 # The plugin ships the release build, and the optimiser may change what debug
 # arithmetic promised -- a NaN's bits, for one. lucene-search's fixtures compare

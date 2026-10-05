@@ -38,8 +38,9 @@ layers**, and both are required, not either/or:
   `segment_infos.rs` for the pattern) — this is different from *dumbly*
   porting Java's writer; keep it minimal and test-only (`#[cfg(test)]`).
 - **≥95% line coverage per file**, not just workspace-average — a 100%-file
-  hiding a 40%-file is a gap. Check `cargo llvm-cov --workspace
-  --summary-only` per-file, not just the `TOTAL` row.
+  hiding a 40%-file is a gap. Check `scripts/coverage.sh --workspace
+  -- --summary-only` per-file, not just the `TOTAL` row (the script, not bare
+  `cargo llvm-cov`: see `docs/mechanical-gates.md#coverage-objects`).
 - **Property tests for anything with a decode/encode symmetry** (vint/vlong/
   zigzag round-trips, base36) — `proptest`, not a handful of examples.
 - **No coverage theater.** A test that calls a function without asserting
@@ -48,10 +49,12 @@ layers**, and both are required, not either/or:
 
 ## Enforced by
 
-- `cargo llvm-cov --workspace --fail-under-lines 95` — part of
-  `.githooks/pre-commit`, blocks the commit below threshold.
-- `cargo llvm-cov --workspace --summary-only` — per-file breakdown; read it,
-  don't just check the aggregate passed.
+- `scripts/coverage.sh --workspace -- --fail-under-lines 95` — part of
+  `scripts/gate.sh` (so `.githooks/pre-commit`), blocks the commit below
+  threshold.
+- `scripts/coverage.sh --workspace -- --summary-only` — per-file breakdown;
+  read it, don't just check the aggregate passed. `--show-missing-lines`
+  names the lines, and is the truth when a file's summary disagrees with it.
 
 ## Deep dive
 

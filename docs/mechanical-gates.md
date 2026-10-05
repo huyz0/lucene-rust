@@ -35,6 +35,7 @@ to describe a defect that got past it.
 | [`block-guard`](#block-guard) | `check-port-invariants.py` | a `lucene-index` fn setting `pending_has_blocks`/`dwpt.has_blocks = true` with no earlier `check_block(` call in the same fn | a guard that is called but whose result is ignored, or that sits on a branch the flag's line does not follow; a block flag spelled any other way |
 | [`alloc-from-doc`](#alloc-from-doc) | `check-port-invariants.py` | an allocation size (`vec![_; n]`, `with_capacity(n)`, `.resize(n, ..)`, `FixedBitSet::new(n)`) mentioning a name its fn bound from a doc list's `.last()`/`.first()`/`.max()`, with no `max_doc` in the size and no `// ALLOC:` proof | a doc id reaching the size through a struct field, a parameter or another fn; a source not spelled on a `*doc*` name (`ids.last()`); a `max_doc` in the size that does not actually bound it |
 | [rustdoc links](#rustdoc) | `cargo doc` | a `[`link`]` that resolves to nothing | a symbol named in *plain backticks*, which is most of them |
+| [coverage objects](#coverage-objects) | `scripts/coverage.sh` | lucene-ffi's never-loaded cdylib standing in for the executed copy of a `#[no_mangle]` function in the line report | the same first-copy-wins rule between two *executed* copies; a file whose lines split between a crate's unit-test and integration-test builds, which the summary under-reports |
 
 Between them these six rules cover **the indexing row** of the
 arithmetic gate's table (`FixedBitSet` only) and **the two hand-checked rules**
@@ -550,6 +551,38 @@ does every Java-side check. A difference that needs a CPU other than x64 or
 arm64, or a toolchain other than the pinned one, is not reached. The step
 adds `lucene-search`'s release build to the gate's time (about 1m40 on a
 warm dependency cache).
+
+## coverage-objects
+
+`scripts/coverage.sh`, which `scripts/gate.sh` and CI's coverage step call in
+place of `cargo llvm-cov`: it runs the tests (`cargo llvm-cov --no-report`),
+deletes `liblucene_ffi*.so` from `llvm-cov-target/`, then reports (`cargo
+llvm-cov report`). cargo-llvm-cov passes every executable file under its
+target directory to `llvm-cov` as an `-object`, the cdylib included, though no
+test loads it. Each `#[no_mangle]` entry point is in it under the same
+unmangled name as the executed copy, and `llvm-cov` keeps the first record it
+loads for a name. When that was the cdylib's, the report showed a function
+nobody ran: lucene-ffi's `directory.rs` 91.9%, `results.rs` 91.8%,
+`results_sorted.rs` 90.7%, `results_scored.rs` 94.8%, `ffm_bridge.rs` 94.2%,
+`explain.rs` 94.7%, crate 96.0% -- and 100, 100, 100, 100, 99.9, 96.3 and
+98.2% without it.
+
+**Seen to fail**: with `results_sorted.rs`'s two buffer tests un-`#[test]`ed,
+`scripts/coverage.sh -p lucene-ffi -- --summary-only` reports it at 88.0%
+(from 100%) and CI's per-file filter lists it; reverted. Without the deletion
+the same file reads 90.7% with every test in place -- the phantom this removes.
+
+**Blind spots.** First-record-wins also applies between two *executed* copies:
+lucene-ffi's unit-test binary and `tests/resource_bounds.rs` (which links the
+rlib) carry the functions it calls under different function hashes, and the
+report shows whichever `llvm-cov` loads first -- the order is the target
+directory's, not sorted. And `llvm-cov`'s per-file *summary* takes, for each
+function, its best single copy rather than the union of copies, so a file
+whose lines are split between a crate's unit-test build and its
+integration-test build is under-reported: `lucene-codecs`'
+`backward_codecs/postings.rs` reads 94.5% (20 lines missed) while
+`--show-missing-lines`, which is the union, names 5 (98.6%). The gate's
+`--fail-under-lines` uses the summary, so it errs low, never high.
 
 ---
 
