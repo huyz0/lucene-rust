@@ -9831,4 +9831,272 @@ mod tests {
             assert_eq!(d.lookup_term(b"a").unwrap(), -1);
         }
     }
+
+    /// The cursor readers (`NumericReader`, `SortedNumericReader`,
+    /// `BinaryReader`) answer what the one-shot decoders (`numeric_value`,
+    /// `sorted_numeric_values`, `binary_value`) answer, over fields this
+    /// module writes dense and sparse across several DISI blocks: every
+    /// document in order, out of order where the cursor allows it (one that
+    /// has to start over), by value index, a window at a time and through
+    /// `for_each_value`.
+    #[test]
+    fn cursor_readers_agree_with_the_one_shot_decoders() {
+        let id = [9u8; ID_LENGTH];
+        let max_doc = 200_000i32;
+        // Sparse: every 3rd document (DISI's sparse and dense blocks both
+        // show up: blocks of 65536 with ~21845 documents are dense).
+        let sparse_docs: Vec<i32> = (0..max_doc).filter(|d| d % 3 == 0).collect();
+        let val = |d: i32| i64::from(d % 1000) * 7 - 3000 + i64::from(d / 50_000);
+        let order: Vec<i32> = (0..max_doc)
+            .step_by(997)
+            .chain((0..max_doc).rev().step_by(4999))
+            .chain([0, 1, 3, 65535, 65536, 65537, max_doc - 1])
+            .collect();
+
+        // NUMERIC, dense and sparse.
+        let dense: Vec<i64> = (0..max_doc).map(val).collect();
+        let sparse: Vec<(i32, i64)> = sparse_docs.iter().map(|&d| (d, val(d))).collect();
+        for (dvm, dvd) in [
+            {
+                let (m, d, _) =
+                    write_single_dense_numeric_field(0, &dense, max_doc, &id, "").unwrap();
+                (m, d)
+            },
+            {
+                let (m, d, _) =
+                    write_single_sparse_numeric_field(0, &sparse, max_doc, &id, "").unwrap();
+                (m, d)
+            },
+        ] {
+            let (_, meta) = parse_meta(&dvm, &id, "", &field_infos_with(&[0])).unwrap();
+            let entry = meta.numeric_entry(0).unwrap();
+            let mut r = NumericReader::new(&dvd, entry);
+            assert!(std::ptr::eq(r.entry(), entry));
+            for &doc in &order {
+                let want = numeric_value(&dvd, entry, doc).unwrap();
+                assert_eq!(r.value(doc).unwrap(), want, "doc {doc}");
+                // The fast path answers or defers, never contradicts.
+                if let Some(v) = r.dense_value(doc).filter(|_| r.has_dense_fast()) {
+                    assert_eq!(Some(v), want, "doc {doc}");
+                }
+            }
+            let present: Vec<i64> = (0..max_doc)
+                .filter_map(|d| numeric_value(&dvd, entry, d).unwrap())
+                .collect();
+            for i in (0..present.len()).step_by(1013) {
+                assert_eq!(r.value_at_index(i as i64).unwrap(), present[i]);
+            }
+            assert!(r.value_at_index(present.len() as i64).is_err());
+            assert!(r.value_at_index(-1).is_err());
+            let mut seen = Vec::new();
+            r.for_each_value(65_000, 66_100, |d, v| seen.push((d, v)))
+                .unwrap();
+            let want: Vec<(i32, i64)> = (65_000..66_100)
+                .filter_map(|d| numeric_value(&dvd, entry, d).unwrap().map(|v| (d, v)))
+                .collect();
+            assert_eq!(seen, want);
+            let (mut values, mut bits) = (vec![0i64; 640], vec![0u64; 10]);
+            r.fill_window(65_500, &mut values, &mut bits).unwrap();
+            for (i, &v) in values.iter().enumerate() {
+                let doc = 65_500 + i as i32;
+                let has = bits[i >> 6] & (1 << (i & 63)) != 0;
+                let want = numeric_value(&dvd, entry, doc).unwrap();
+                assert_eq!(has, want.is_some(), "doc {doc}");
+                if has {
+                    assert_eq!(Some(v), want, "doc {doc}");
+                }
+            }
+        }
+
+        // SORTED_NUMERIC, sparse, one to three values a document.
+        let multi: Vec<(i32, Vec<i64>)> = sparse_docs
+            .iter()
+            .map(|&d| (d, (0..1 + d % 3).map(|k| val(d) + i64::from(k)).collect()))
+            .collect();
+        let (dvm, dvd, _) =
+            write_single_sparse_sorted_numeric_field(0, &multi, max_doc, &id, "").unwrap();
+        let (_, meta) = parse_meta(&dvm, &id, "", &sorted_numeric_field_infos()).unwrap();
+        let entry = meta.sorted_numeric_entry(0).unwrap();
+        let mut r = SortedNumericReader::new(&dvd, entry);
+        assert!(std::ptr::eq(r.entry(), entry));
+        // Documents in non-decreasing order, the cursor's contract.
+        let mut ascending = order.clone();
+        ascending.sort_unstable();
+        let mut got = Vec::new();
+        for &doc in &ascending {
+            r.values(doc, &mut got).unwrap();
+            assert_eq!(
+                got,
+                sorted_numeric_values(&dvd, entry, doc).unwrap(),
+                "doc {doc}"
+            );
+        }
+        let mut r = SortedNumericReader::new(&dvd, entry);
+        let (mut offsets, mut values) = (Vec::new(), Vec::new());
+        // A window across two DISI blocks is left to `values`; one inside a
+        // block, when answered (values in one width), is each document's.
+        assert!(!r
+            .fill_window(65_530, 20, &mut offsets, &mut values)
+            .unwrap());
+        let mut answered = 0;
+        for start in [70_016, 140_032] {
+            let mut r = SortedNumericReader::new(&dvd, entry);
+            if r.fill_window(start, 320, &mut offsets, &mut values)
+                .unwrap()
+            {
+                answered += 1;
+                for i in 0..320 {
+                    let doc = start + i as i32;
+                    let (a, b) = (offsets[i] as usize, offsets[i + 1] as usize);
+                    assert_eq!(
+                        values[a..b],
+                        sorted_numeric_values(&dvd, entry, doc).unwrap()[..],
+                        "doc {doc}"
+                    );
+                }
+            }
+        }
+
+        // A dense field's windows always come in one piece.
+        let dense_multi: Vec<Vec<i64>> = (0..5000)
+            .map(|d| (0..1 + d % 3).map(|k| i64::from(d % 100 + k)).collect())
+            .collect();
+        let (ddvm, ddvd, _) =
+            write_single_dense_sorted_numeric_field(0, &dense_multi, &id, "").unwrap();
+        let (_, dmeta) = parse_meta(&ddvm, &id, "", &sorted_numeric_field_infos()).unwrap();
+        let dentry = dmeta.sorted_numeric_entry(0).unwrap();
+        for start in [0, 1000, 4900] {
+            let mut r = SortedNumericReader::new(&ddvd, dentry);
+            if r.fill_window(start, 100, &mut offsets, &mut values)
+                .unwrap()
+            {
+                answered += 1;
+                for i in 0..100 {
+                    let doc = start + i as i32;
+                    let (a, b) = (offsets[i] as usize, offsets[i + 1] as usize);
+                    assert_eq!(values[a..b], dense_multi[doc as usize][..], "doc {doc}");
+                }
+            }
+        }
+        assert!(answered > 0, "a window answered");
+        // The dense field read document by document and streamed.
+        let mut r = SortedNumericReader::new(&ddvd, dentry);
+        for doc in (0..5000).step_by(7) {
+            r.values(doc, &mut got).unwrap();
+            assert_eq!(got, dense_multi[doc as usize], "doc {doc}");
+        }
+        assert!(r.values(5000, &mut got).is_err() || got.is_empty());
+        for (lo, hi) in [(0, 5000), (123, 4567)] {
+            let mut seen = Vec::new();
+            SortedNumericReader::new(&ddvd, dentry)
+                .for_each_doc(lo, hi, |d, v| seen.push((d, v.to_vec())))
+                .unwrap();
+            let want: Vec<(i32, Vec<i64>)> = (lo..hi)
+                .map(|d| (d, dense_multi[d as usize].clone()))
+                .collect();
+            assert_eq!(seen, want);
+            let mut some = Vec::new();
+            SortedNumericReader::new(&ddvd, dentry)
+                .for_each_accepted(lo, hi, |d| d % 5 == 0, |d, v| some.push((d, v.to_vec())))
+                .unwrap();
+            let want_some: Vec<(i32, Vec<i64>)> =
+                want.into_iter().filter(|(d, _)| d % 5 == 0).collect();
+            assert_eq!(some, want_some);
+        }
+        // `for_each_doc` / `for_each_accepted`: every document of a range
+        // with values, or only the accepted ones, with its values.
+        for (lo, hi) in [(0, 5_000), (64_000, 67_000), (max_doc - 500, max_doc)] {
+            let want: Vec<(i32, Vec<i64>)> = (lo..hi)
+                .map(|d| (d, sorted_numeric_values(&dvd, entry, d).unwrap()))
+                .filter(|(_, v)| !v.is_empty())
+                .collect();
+            let mut seen = Vec::new();
+            SortedNumericReader::new(&dvd, entry)
+                .for_each_doc(lo, hi, |d, v| seen.push((d, v.to_vec())))
+                .unwrap();
+            assert_eq!(seen, want, "[{lo}, {hi})");
+            let mut odd = Vec::new();
+            SortedNumericReader::new(&dvd, entry)
+                .for_each_accepted(lo, hi, |d| d % 2 == 1, |d, v| odd.push((d, v.to_vec())))
+                .unwrap();
+            let want_odd: Vec<(i32, Vec<i64>)> =
+                want.iter().filter(|(d, _)| d % 2 == 1).cloned().collect();
+            assert_eq!(odd, want_odd, "[{lo}, {hi}) odd");
+        }
+
+        // A sparse field of small values, its windows read off its DISI
+        // blocks a window at a time.
+        let small: Vec<(i32, Vec<i64>)> = sparse_docs
+            .iter()
+            .take(30_000)
+            .map(|&d| (d, (0..1 + d % 2).map(|k| i64::from(d % 13 + k)).collect()))
+            .collect();
+        let (sdvm, sdvd, _) =
+            write_single_sparse_sorted_numeric_field(0, &small, max_doc, &id, "").unwrap();
+        let (_, smeta) = parse_meta(&sdvm, &id, "", &sorted_numeric_field_infos()).unwrap();
+        let sentry = smeta.sorted_numeric_entry(0).unwrap();
+        let mut windows = 0;
+        for start in [0, 640, 64_000, 66_048] {
+            let mut r = SortedNumericReader::new(&sdvd, sentry);
+            if r.fill_window(start, 640, &mut offsets, &mut values)
+                .unwrap()
+            {
+                windows += 1;
+                for i in 0..640 {
+                    let doc = start + i as i32;
+                    let (a, b) = (offsets[i] as usize, offsets[i + 1] as usize);
+                    assert_eq!(
+                        values[a..b],
+                        sorted_numeric_values(&sdvd, sentry, doc).unwrap()[..],
+                        "doc {doc}"
+                    );
+                }
+            }
+        }
+        assert!(windows > 0);
+        // Streamed whole from the first document: its DISI's documents
+        // straight off the words.
+        for end in [max_doc, 70_000] {
+            let mut seen = Vec::new();
+            SortedNumericReader::new(&sdvd, sentry)
+                .for_each_accepted(0, end, |d| d % 4 != 1, |d, v| seen.push((d, v.to_vec())))
+                .unwrap();
+            let want: Vec<(i32, Vec<i64>)> = small
+                .iter()
+                .filter(|(d, _)| *d < end && d % 4 != 1)
+                .cloned()
+                .collect();
+            assert_eq!(seen, want, "end {end}");
+        }
+
+        // BINARY, dense: read forwards and backwards.
+        let dense_bins: Vec<Vec<u8>> = (0..3000)
+            .map(|d| format!("d{}", d % 91).into_bytes())
+            .collect();
+        let (bdvm, bdvd, _) =
+            write_single_dense_binary_field(0, &dense_bins, 3000, &id, "").unwrap();
+        let (_, bmeta) = parse_meta(&bdvm, &id, "", &binary_field_infos()).unwrap();
+        let bentry = bmeta.binary_entry(0).unwrap();
+        let mut r = BinaryReader::new(&bdvd, bentry);
+        for doc in (0..3000).step_by(11).chain((0..3000).rev().step_by(17)) {
+            assert_eq!(r.value(doc).unwrap(), Some(&dense_bins[doc as usize][..]));
+        }
+
+        // BINARY, sparse.
+        let bins: Vec<(i32, Vec<u8>)> = sparse_docs
+            .iter()
+            .map(|&d| (d, format!("v{}", d % 777).into_bytes()))
+            .collect();
+        let (dvm, dvd, _) = write_single_sparse_binary_field(0, &bins, max_doc, &id, "").unwrap();
+        let (_, meta) = parse_meta(&dvm, &id, "", &binary_field_infos()).unwrap();
+        let entry = meta.binary_entry(0).unwrap();
+        let mut r = BinaryReader::new(&dvd, entry);
+        for &doc in &order {
+            assert_eq!(
+                r.value(doc).unwrap(),
+                binary_value(&dvd, entry, doc).unwrap(),
+                "doc {doc}"
+            );
+        }
+    }
 }
