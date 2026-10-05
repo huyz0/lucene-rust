@@ -196,3 +196,23 @@ fn both_writers_are_nrt_sources() {
         &dir2 as *const FsDirectory as *const u8
     ));
 }
+
+/// A snapshot of a writer with no segments pins no files: dropping its
+/// hold returns nothing to release, and the next snapshot (and commit) go
+/// on as usual.
+#[test]
+fn a_snapshot_of_an_empty_writer_pins_nothing() {
+    let tmp = TempDir::new("nrt-empty");
+    let dir = FsDirectory::open(&tmp);
+    let mut w = writer(&dir);
+    let snap = w.nrt_snapshot(true, false).unwrap();
+    assert!(snap.segment_infos.segments.is_empty());
+    assert!(snap.hold.files().is_empty());
+    drop(snap);
+    w.add_document(doc("a")).unwrap();
+    let snap = w.nrt_snapshot(true, false).unwrap();
+    assert_eq!(live_docs(&snap.segment_infos, &dir), 1);
+    assert!(!snap.hold.files().is_empty());
+    drop(snap);
+    w.commit().unwrap();
+}

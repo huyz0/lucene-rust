@@ -1659,4 +1659,118 @@ mod tests {
         assert_eq!(batch.columns()[0].column().name(), "id");
         assert_eq!(batch.columns()[1].column().name(), "v");
     }
+
+    /// `processBatch` over the column kinds the other tests leave out: a
+    /// dense binary column (one value a document, in order), a sparse one
+    /// with a repeated doc id (two values of that document), a token-stream
+    /// column and a float-vector column -- each cell its document's field.
+    #[test]
+    fn binary_token_and_float_vector_columns_become_their_documents_fields() {
+        struct DenseBinary {
+            c: Column,
+            values: Vec<Vec<u8>>,
+        }
+        impl BinaryColumn for DenseBinary {
+            fn column(&self) -> &Column {
+                &self.c
+            }
+            fn stored_type(&self) -> StoredType {
+                StoredType::String
+            }
+            fn tuples(&self) -> Box<dyn ObjectTupleCursor<Vec<u8>> + '_> {
+                Box::new(VecObjectTupleCursor::new(&[]))
+            }
+            fn values(&self) -> Result<Box<dyn BytesRefValuesCursor + '_>> {
+                Ok(Box::new(VecBytesValuesCursor::new(&self.values)))
+            }
+        }
+        struct FloatVectors {
+            c: Column,
+            tuples: Vec<(i32, Vec<f32>)>,
+        }
+        impl VectorColumn<Vec<f32>> for FloatVectors {
+            fn column(&self) -> &Column {
+                &self.c
+            }
+            fn tuples(&self) -> Box<dyn ObjectTupleCursor<Vec<f32>> + '_> {
+                Box::new(VecObjectTupleCursor::new(&self.tuples))
+            }
+        }
+        let stored = ft(|t| t.set_stored(true).unwrap());
+        let title = DenseBinary {
+            c: Column::new("title", stored.clone(), Density::Dense),
+            values: vec![b"t0".to_vec(), b"t1".to_vec(), b"t2".to_vec()],
+        };
+        let tags = B {
+            c: Column::new("tag", stored, Density::Sparse),
+            stored: StoredType::Binary,
+            tuples: vec![(1, b"x".to_vec()), (1, b"y".to_vec()), (2, b"z".to_vec())],
+        };
+        let text = ft(|t| t.set_index_options(IndexOptions::DocsAndFreqs).unwrap());
+        let body = T {
+            c: Column::new("body", text, Density::Sparse),
+            tuples: vec![(0, FieldTokens::default())],
+        };
+        let vec_type = ft(|t| {
+            t.set_vector_attributes(
+                2,
+                VectorEncoding::Float32,
+                VectorSimilarityFunction::Euclidean,
+            )
+            .unwrap()
+        });
+        let vectors = FloatVectors {
+            c: Column::new("vec", vec_type, Density::Sparse),
+            tuples: vec![(0, vec![1.0, 2.0]), (2, vec![3.0, 4.0])],
+        };
+        let batch = Batch {
+            n: 3,
+            cols: vec![
+                BatchColumn::Binary(&title),
+                BatchColumn::Binary(&tags),
+                BatchColumn::TokenStream(&body),
+                BatchColumn::FloatVector(&vectors),
+            ],
+        };
+        let docs = batch_documents(&batch).unwrap();
+        assert_eq!(docs.len(), 3);
+        let stored = |d: usize, name: &str| -> Vec<Option<StoredValue>> {
+            docs[d]
+                .get_fields_named(name)
+                .iter()
+                .map(|f| f.stored_value())
+                .collect()
+        };
+        for d in 0..3 {
+            assert_eq!(
+                stored(d, "title"),
+                vec![Some(StoredValue::String(format!("t{d}")))]
+            );
+        }
+        assert!(stored(0, "tag").is_empty());
+        assert_eq!(
+            stored(1, "tag"),
+            vec![
+                Some(StoredValue::Binary(b"x".to_vec())),
+                Some(StoredValue::Binary(b"y".to_vec()))
+            ]
+        );
+        assert_eq!(docs[0].get_fields_named("body").len(), 1);
+        assert!(docs[1].get_fields_named("body").is_empty());
+        let vector = |d: usize| docs[d].get_field("vec").and_then(|f| f.vector_value());
+        assert_eq!(vector(0), Some(VectorValue::Float32(vec![1.0, 2.0])));
+        assert_eq!(vector(1), None);
+        assert_eq!(vector(2), Some(VectorValue::Float32(vec![3.0, 4.0])));
+
+        // A dense column must have a value for every document.
+        let short = DenseBinary {
+            c: Column::new("title", ft(|t| t.set_stored(true).unwrap()), Density::Dense),
+            values: vec![b"only".to_vec()],
+        };
+        let e = err(&Batch {
+            n: 3,
+            cols: vec![BatchColumn::Binary(&short)],
+        });
+        assert!(e.contains("title"), "{e}");
+    }
 }
