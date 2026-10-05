@@ -22,10 +22,8 @@ use std::cmp::Ordering;
 
 use super::FxHashMap;
 use crate::multi_segment::OpenSegment;
-use crate::reader::doc_values as dv;
-use crate::reader::{
-    NumericDocValues, SortedDocValues, SortedNumericDocValues, SortedSetDocValues,
-};
+use crate::reader::doc_values::{self as dv, SortedOrds};
+use crate::reader::{NumericDocValues, SortedNumericDocValues, SortedSetDocValues};
 use crate::top_field::{SortField, SortType};
 use crate::{Error, Result};
 use lucene_codecs::field_infos::DocValuesType;
@@ -214,6 +212,9 @@ enum LeafKey<'a> {
     /// directly (the comparator's `DocValues.getNumeric`), its missing value
     /// substituted.
     Single(Box<dyn NumericDocValues + 'a>),
+    /// [`LeafKey::Single`] over a segment's own column, read without an
+    /// iterator object between (stage 3: the same values).
+    Direct(Box<lucene_codecs::doc_values::NumericReader<'a>>),
     /// The values, and the slot terms placed in this segment with their
     /// ordinals: a term copied from this segment's document keeps its
     /// ordinal, any other is resolved once by `lookupTerm`
@@ -225,18 +226,14 @@ enum LeafKey<'a> {
 /// `SORTED` field's one ordinal read directly.
 enum StrValues<'a> {
     Set(Box<dyn SortedSetDocValues + 'a>, Vec<i64>),
-    Single(Box<dyn SortedDocValues + 'a>),
+    Single(Box<SortedOrds<'a>>),
 }
 
 impl StrValues<'_> {
     /// The ordinal the key's selector picks for `doc`, if it has one.
     fn doc_ord(&mut self, doc: i32, selector: crate::top_field::Selector) -> Result<Option<i64>> {
         match self {
-            StrValues::Single(v) => Ok(if v.advance_exact(doc)? {
-                Some(i64::from(v.ord_value()))
-            } else {
-                None
-            }),
+            StrValues::Single(v) => Ok(v.ord(doc)?.map(i64::from)),
             StrValues::Set(v, buf) => {
                 buf.clear();
                 if v.advance_exact(doc)? {
@@ -251,7 +248,7 @@ impl StrValues<'_> {
 
     fn lookup_ord(&mut self, ord: i64) -> Result<Vec<u8>> {
         match self {
-            StrValues::Single(v) => v.lookup_ord(i32::try_from(ord).unwrap_or(i32::MAX)),
+            StrValues::Single(v) => v.dict().lookup_ord(i32::try_from(ord).unwrap_or(i32::MAX)),
             StrValues::Set(v, _) => v.lookup_ord(ord),
         }
     }
@@ -259,7 +256,7 @@ impl StrValues<'_> {
     // SENTINEL: negative = absent, `-insertionPoint-1` (`lookupTerm`).
     fn lookup_term(&mut self, term: &[u8]) -> Result<i64> {
         match self {
-            StrValues::Single(v) => Ok(i64::from(v.lookup_term(term)?)),
+            StrValues::Single(v) => Ok(i64::from(v.dict().lookup_term(term)?)),
             StrValues::Set(v, _) => v.lookup_term(term),
         }
     }
@@ -291,7 +288,10 @@ impl<'a> LeafKeys<'a> {
                         .field_by_name(&f.field)
                         .is_some_and(|fi| fi.doc_values_type == DocValuesType::Numeric);
                     if single {
-                        LeafKey::Single(dv::get_numeric(reader, &f.field)?)
+                        match dv::direct_numeric(reader, &f.field) {
+                            Some(r) => LeafKey::Direct(Box::new(r)),
+                            None => LeafKey::Single(dv::get_numeric(reader, &f.field)?),
+                        }
                     } else {
                         LeafKey::Numeric(dv::get_sorted_numeric(reader, &f.field)?, Vec::new())
                     }
@@ -305,7 +305,7 @@ impl<'a> LeafKeys<'a> {
                         .field_by_name(&f.field)
                         .is_some_and(|fi| fi.doc_values_type == DocValuesType::Sorted);
                     let values = if single {
-                        StrValues::Single(dv::get_sorted(reader, &f.field)?)
+                        StrValues::Single(Box::new(SortedOrds::open(reader, &f.field)?))
                     } else {
                         StrValues::Set(dv::get_sorted_set(reader, &f.field)?, Vec::new())
                     };
@@ -343,6 +343,7 @@ impl<'a> LeafKeys<'a> {
                 };
                 numeric_value(f.ty, v)
             }
+            LeafKey::Direct(r) => numeric_value(f.ty, r.value(doc)?.unwrap_or(f.missing)),
             LeafKey::Numeric(values, buf) => {
                 buf.clear();
                 if values.advance_exact(doc)? {
@@ -389,6 +390,11 @@ impl<'a> LeafKeys<'a> {
                 };
                 Ok(compare_numeric(f.ty, slot, v))
             }
+            (LeafKey::Direct(r), _) => Ok(compare_numeric(
+                f.ty,
+                slot,
+                r.value(doc)?.unwrap_or(f.missing),
+            )),
             (LeafKey::Numeric(values, buf), _) => {
                 buf.clear();
                 if values.advance_exact(doc)? {
@@ -450,6 +456,7 @@ impl<'a> LeafKeys<'a> {
     /// `reverseMul * compareBottom(doc)` over every key, in order, against
     /// the values of a slot: the first that differs ([`compare_all`] with
     /// the document's values read as the comparators read them).
+    #[inline(always)]
     pub(crate) fn compare_doc(
         &mut self,
         sort: &Sort,
@@ -465,6 +472,29 @@ impl<'a> LeafKeys<'a> {
             let c = float_compare(score, *b);
             return Ok(if *r < 0 { c.reverse() } else { c });
         }
+        // By one `NUMERIC` field read off its column: one load and compare.
+        if let ([LeafKey::Direct(values)], [s], [r], [f]) = (
+            self.keys.as_mut_slice(),
+            slot,
+            reversed,
+            sort.fields.as_slice(),
+        ) {
+            let c = compare_numeric(f.ty, s, values.value(doc)?.unwrap_or(f.missing));
+            return Ok(if *r < 0 { c.reverse() } else { c });
+        }
+        self.compare_doc_keys(sort, reversed, slot, doc, score)
+    }
+
+    /// [`Self::compare_doc`] key by key.
+    #[inline(never)]
+    fn compare_doc_keys(
+        &mut self,
+        sort: &Sort,
+        reversed: &[i32],
+        slot: &[GroupSortValue],
+        doc: i32,
+        score: f32,
+    ) -> Result<Ordering> {
         for (i, s) in slot.iter().enumerate().take(sort.fields.len()) {
             let c = self.compare_slot(sort, i, s, doc, score)?;
             let c = if reversed[i] < 0 { c.reverse() } else { c };
