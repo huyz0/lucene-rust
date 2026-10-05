@@ -282,6 +282,32 @@ grouping. Each of them falls back to Lucene today.
 - **T10.6** — Intervals, payload queries, `MoreLikeThis`, `CommonTermsQuery`.
 - **T10.7** — Plugin wiring for the OpenSearch shapes above.
 
+## Stage-3 status (2026-10-05)
+
+Every M10 benchmark case at or above Lucene's speed. Ratios are Lucene's
+time over ours (`scripts/bench-micro.sh --bench <name>`, interleaved with
+the build before; `~` inside the run's noise floor):
+
+| Bench | Cases | Range | Lowest |
+|---|---|---|---|
+| `join` (T10.2) | 12 | 1.03x-1.79x | `ToChild` 1.03~, `Min` 1.05~, filtered KNN 1.08~ |
+| `query_join` (T10.3) | 11 | 1.14x-1.61x | terms `Min` 1.14x |
+| `grouping` (T10.4) | 9 | 1.05x-2.98x | blocks 1.05x-1.17x (two 7-rep runs of two builds each; floors 1.14x-1.30x) |
+| `function` (T10.5) | 10 | 1.39x-2.82x | `FunctionRangeQuery` as a filter 1.39x |
+| `aggs` (terms behind a filter) | 6 | 1.45x-3.11x | dense range on a keyword 1.45x |
+
+Block grouping is the one case not clearly above 1.0. Its profile
+(callgrind, `MICRO_CASE=grp_blocks`): the collector's per-hit bookkeeping
+(append the document and score, one float compare against the bottom
+group, `processGroup` per block) about 45%, the term's postings and BM25
+scores about 25%, and finding each block's end about 18% -- the
+`lastDocPerGroup` matches marked in a bit set per segment, which Java
+instead advances its scorer through. A lazily advanced scorer, as Java's,
+and reusing the evicted group's buffers measured the same instruction count
+(1.110G vs 1.114G) and no wall-clock change (1.41 ms vs 1.44 ms, 7 reps), so
+neither was kept: nothing in it is a port inefficiency; Lucene does the same
+work per hit.
+
 ## Acceptance criteria
 
 - [ ] Every query matches Lucene's hits and scores bit for bit on generated
