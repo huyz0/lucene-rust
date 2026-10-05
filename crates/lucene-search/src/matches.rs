@@ -870,6 +870,9 @@ pub fn leaf_matches(
             crate::extended_query::ExtendedQuery::Interval(q) => {
                 crate::intervals::matches::interval_matches(seg, q, Arc::new(clause.clone()), doc)
             }
+            crate::extended_query::ExtendedQuery::Span(_) => Err(Error::IllegalArgument(
+                "Weight.matches is not ported for SpanQuery".into(),
+            )),
             // `ToParentBlockJoinQuery` (`MATCH_WITH_NO_TERMS` where its
             // scorer matches) and everything else: `Weight`'s default.
             _ => default_matches(seg, clause, doc),

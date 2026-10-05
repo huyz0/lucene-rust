@@ -10,7 +10,7 @@
 | **Effort** | L |
 | **Depends on** | [M7](m7-core-complete.md) |
 | **Unblocks** | native `nested`, `function_score`, `intervals`, `combined_fields`, field collapsing |
-| **Status** | in progress (T10.0, T10.1, T10.3 done; T10.2 queries ported; T10.4, T10.5 ported; T10.6 intervals, common terms and more-like-this ported) |
+| **Status** | in progress (T10.0, T10.1, T10.3 done; T10.2 queries ported; T10.4, T10.5 ported; T10.6 ported: intervals, common terms, more-like-this, spans, payloads) |
 
 ---
 
@@ -294,7 +294,12 @@ grouping. Each of them falls back to Lucene today.
   parentheses, a deleted document's explanation and `MatchNoDocsQuery`'s.
   `MoreLikeThis` and `MoreLikeThisQuery` **ported** (`lucene-search/src/mlt.rs`):
   344 lines of `mlt.tsv` equal to Lucene's, Java's `HashMap` iteration order
-  over the candidate terms reproduced.
+  over the candidate terms reproduced. The span queries and the payload
+  queries **ported** (`lucene-search/src/spans`, `exec/spans.rs`): `SpanNode`
+  (first, position range, not, containing, within, field masking, the
+  multi-term wrapper, payload check and payload score, over terms, nears and
+  ors) on lazy `Spans` -- `GenSpans`'s 73 queries, 1 387 lines equal to
+  Lucene's but ten where Java's `toString` throws on a `null` payload.
 - **T10.7** — Plugin wiring for the OpenSearch shapes above.
 
 ## Stage-3 status (2026-10-05)
@@ -311,7 +316,7 @@ the build before; `~` inside the run's noise floor):
 | `grouping` (T10.4) | 9 | 1.05x-2.98x | blocks 1.05x-1.17x (two 7-rep runs of two builds each; floors 1.14x-1.30x) |
 | `function` (T10.5) | 10 | 1.39x-2.82x | `FunctionRangeQuery` as a filter 1.39x |
 | `aggs` (terms behind a filter) | 6 | 1.45x-3.11x | dense range on a keyword 1.45x; see below |
-| `queries` (T10.6) | 11 | 0.83x-1.65x | `ordered` 0.83x, `phrase` 0.90x, `maxgaps(unordered)` 0.91x; see below; `CommonTermsQuery` 0.95~-1.00~; `MoreLikeThisQuery` 1.65x |
+| `queries` (T10.6) | 19 | 0.79x-1.68x | intervals: `ordered` 0.86x, `phrase` 0.88x, `maxgaps(unordered)` 0.92x, or-phrase 0.94x; spans: `spanFirst` 0.79x, `spanNot` 0.80x, `SpanWithin` 0.88x, four more 0.94x-0.95~; see below; `CommonTermsQuery` 1.00~-1.04~; `MoreLikeThisQuery` 1.68x |
 
 Lucene's side of the two term-filtered `cat` cases (a single-valued
 `SORTED_SET`) is bimodal: in some JVM runs (one of six, three of five in
@@ -350,6 +355,21 @@ collector. The difference from Lucene is the call structure: every
 `start()`/`end()`/`nextInterval()` of a sub-iterator is a virtual call through
 `Box<dyn IntervalIterator>` returning a `Result`, which the JIT inlines at
 these monomorphic sites; the decode and skip work per document is the same.
+
+The span and payload queries (eight cases in the same pair, every digest
+equal to Lucene's) are in the same position. The payload queries started at
+a fifth of Lucene's speed (`SpanPayloadCheckQuery` 45 ms, `PayloadScoreQuery`
+35 ms for the word list): their terms walked each document's occurrences from
+the skip data per collected span. Streaming the payloads with the positions
+(`requiredPostings` at `PAYLOADS`, the same `read_payloads` cursor) brought
+them to 0.94x and 0.95~. What is left below 1.0 -- `spanFirst` 0.79x,
+`spanNot` 0.80x, `SpanWithin` 0.88x -- profiles (`MICRO_CASE=sp_first`) as the
+intervals do: `.doc` advancing 10%, positioning `.pos` per document 9%, the
+filter's `matches` 9%, the term spans' `nextStartPosition` 9%, the rest
+spread over the scorer, bulk loop and collector, every step a virtual call
+through `Box<dyn Spans>` with a `Result`. A term's sequential step now uses
+the cursor's `nextDoc` rather than `advance`, as Java's `TermSpans` does;
+it measured within noise.
 
 ## Acceptance criteria
 
