@@ -451,6 +451,14 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
         let (rewritten, global) = self.prepare(query)?;
         let query = rewritten.as_ref().unwrap_or(query);
         let seg = &self.segments[i];
+        // `IndexSearcher.explain(weight, doc)`: a deleted document is not
+        // explained.
+        if seg
+            .live_docs
+            .is_some_and(|live| !live.get_doc(doc - seg.doc_base))
+        {
+            return Ok(Explanation::no_match(format!("Document {doc} is deleted")));
+        }
         // `IndexSearcher.explain` explains `rewrite(query)`: a one-clause
         // boolean is its clause.
         let mut clause = Clause::Boolean(Box::new(query.clone())).rewrite();
