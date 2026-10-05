@@ -229,6 +229,7 @@ pub(crate) fn build<'a>(
         ExtendedQuery::Function(q) => super::function::function_query(ctx, q, boost),
         ExtendedQuery::FunctionRange(q) => super::function::function_range(ctx, q),
         ExtendedQuery::FunctionMatch(q) => super::function::function_match(ctx, q, boost, mode),
+        ExtendedQuery::Interval(q) => super::intervals::interval(ctx, q, boost, mode),
         ExtendedQuery::FunctionScore(q) => {
             super::function::function_score(ctx, q, boost, mode, top_level)
         }

@@ -77,49 +77,49 @@ queries/function/valuesource/TotalTermFreqValueSource	ported	crates/lucene-searc
 queries/function/valuesource/VectorFieldFunction	ported	crates/lucene-search/src/function/valuesource/vectors.rs::VectorFieldFunction
 queries/function/valuesource/VectorSimilarityFunction	ported	crates/lucene-search/src/function/valuesource/vectors.rs::VectorSimilarityFunction
 queries/function/valuesource/VectorValueSource	ported	crates/lucene-search/src/function/valuesource/vectors.rs::VectorValueSource
-queries/intervals/BlockIntervalsSource	todo:M10	intervals (T10.6)
-queries/intervals/CachingMatchesIterator	todo:M10	intervals (T10.6)
-queries/intervals/ConjunctionIntervalIterator	todo:M10	intervals (T10.6)
-queries/intervals/ConjunctionIntervalsSource	todo:M10	intervals (T10.6)
-queries/intervals/ConjunctionMatchesIterator	todo:M10	intervals (T10.6)
-queries/intervals/ContainedByIntervalsSource	todo:M10	intervals (T10.6)
-queries/intervals/ContainingIntervalsSource	todo:M10	intervals (T10.6)
-queries/intervals/DifferenceIntervalsSource	todo:M10	intervals (T10.6)
-queries/intervals/DisiPriorityQueue	todo:M10	intervals (T10.6)
-queries/intervals/DisiWrapper	todo:M10	intervals (T10.6)
-queries/intervals/DisjunctionDISIApproximation	todo:M10	intervals (T10.6)
-queries/intervals/DisjunctionIntervalsSource	todo:M10	intervals (T10.6)
-queries/intervals/Disjunctions	todo:M10	intervals (T10.6)
-queries/intervals/ExtendedIntervalIterator	todo:M10	intervals (T10.6)
-queries/intervals/ExtendedIntervalsSource	todo:M10	intervals (T10.6)
-queries/intervals/FilteredIntervalsSource	todo:M10	intervals (T10.6)
-queries/intervals/FilteringIntervalIterator	todo:M10	intervals (T10.6)
-queries/intervals/FixedFieldIntervalsSource	todo:M10	intervals (T10.6)
-queries/intervals/IntervalBuilder	todo:M10	intervals (T10.6)
-queries/intervals/IntervalFilter	todo:M10	intervals (T10.6)
-queries/intervals/IntervalIterator	todo:M10	intervals (T10.6)
-queries/intervals/IntervalMatches	todo:M10	intervals (T10.6)
-queries/intervals/IntervalMatchesIterator	todo:M10	intervals (T10.6)
-queries/intervals/IntervalQuery	todo:M10	intervals (T10.6)
-queries/intervals/IntervalScoreFunction	todo:M10	intervals (T10.6)
-queries/intervals/IntervalScorer	todo:M10	intervals (T10.6)
-queries/intervals/Intervals	todo:M10	intervals (T10.6)
-queries/intervals/IntervalsSource	todo:M10	intervals (T10.6)
-queries/intervals/MinimizingConjunctionIntervalsSource	todo:M10	intervals (T10.6)
-queries/intervals/MinimumShouldMatchIntervalsSource	todo:M10	intervals (T10.6)
-queries/intervals/MultiTermIntervalsSource	todo:M10	intervals (T10.6)
-queries/intervals/NoMatchIntervalsSource	todo:M10	intervals (T10.6)
-queries/intervals/NonOverlappingIntervalsSource	todo:M10	intervals (T10.6)
-queries/intervals/NotContainedByIntervalsSource	todo:M10	intervals (T10.6)
-queries/intervals/NotContainingIntervalsSource	todo:M10	intervals (T10.6)
-queries/intervals/OffsetIntervalsSource	todo:M10	intervals (T10.6)
-queries/intervals/OrderedIntervalsSource	todo:M10	intervals (T10.6)
-queries/intervals/OverlappingIntervalsSource	todo:M10	intervals (T10.6)
-queries/intervals/PayloadFilteredTermIntervalsSource	todo:M10	intervals (T10.6)
-queries/intervals/RelativeIterator	todo:M10	intervals (T10.6)
-queries/intervals/RepeatingIntervalsSource	todo:M10	intervals (T10.6)
-queries/intervals/TermIntervalsSource	todo:M10	intervals (T10.6)
-queries/intervals/UnorderedIntervalsSource	todo:M10	intervals (T10.6)
+queries/intervals/BlockIntervalsSource	ported	crates/lucene-search/src/intervals/mod.rs::IntervalsSource
+queries/intervals/CachingMatchesIterator	ported	crates/lucene-search/src/intervals/matches.rs::CachingMatches
+queries/intervals/ConjunctionIntervalIterator	ported	crates/lucene-search/src/intervals/iterators.rs::ConjunctionIntervals
+queries/intervals/ConjunctionIntervalsSource	ported	crates/lucene-search/src/intervals/iterators.rs::all_of
+queries/intervals/ConjunctionMatchesIterator	ported	crates/lucene-search/src/intervals/matches.rs::ConjunctionMatches
+queries/intervals/ContainedByIntervalsSource	ported	crates/lucene-search/src/intervals/iterators.rs::FilteringKind
+queries/intervals/ContainingIntervalsSource	ported	crates/lucene-search/src/intervals/iterators.rs::FilteringKind
+queries/intervals/DifferenceIntervalsSource	ported	crates/lucene-search/src/intervals/iterators.rs::difference
+queries/intervals/DisiPriorityQueue	ported	crates/lucene-search/src/intervals/iterators.rs::DisiQueue
+queries/intervals/DisiWrapper	ported	crates/lucene-search/src/intervals/iterators.rs::DisiQueue
+queries/intervals/DisjunctionDISIApproximation	ported	crates/lucene-search/src/intervals/iterators.rs::DisiQueue
+queries/intervals/DisjunctionIntervalsSource	ported	crates/lucene-search/src/intervals/iterators.rs::DisjunctionIntervals
+queries/intervals/Disjunctions	ported	crates/lucene-search/src/intervals/mod.rs::pull_up_list
+queries/intervals/ExtendedIntervalIterator	ported	crates/lucene-search/src/intervals/iterators.rs::ExtendedIntervals
+queries/intervals/ExtendedIntervalsSource	ported	crates/lucene-search/src/intervals/mod.rs::IntervalsSource
+queries/intervals/FilteredIntervalsSource	ported	crates/lucene-search/src/intervals/iterators.rs::FilteredIntervals
+queries/intervals/FilteringIntervalIterator	ported	crates/lucene-search/src/intervals/iterators.rs::Filtering
+queries/intervals/FixedFieldIntervalsSource	ported	crates/lucene-search/src/intervals/mod.rs::IntervalsSource
+queries/intervals/IntervalBuilder	ported	crates/lucene-search/src/intervals/builder.rs::analyzed_tokens
+queries/intervals/IntervalFilter	ported	crates/lucene-search/src/intervals/iterators.rs::FilteredIntervals
+queries/intervals/IntervalIterator	ported	crates/lucene-search/src/intervals/iterators.rs::IntervalIterator
+queries/intervals/IntervalMatches	ported	crates/lucene-search/src/intervals/matches.rs::as_matches
+queries/intervals/IntervalMatchesIterator	ported	crates/lucene-search/src/intervals/matches.rs::IntervalMatchesIterator
+queries/intervals/IntervalQuery	ported	crates/lucene-search/src/intervals/mod.rs::IntervalQuery
+queries/intervals/IntervalScoreFunction	ported	crates/lucene-search/src/intervals/mod.rs::IntervalScoreFunction
+queries/intervals/IntervalScorer	ported	crates/lucene-search/src/exec/intervals.rs::IntervalScorer
+queries/intervals/Intervals	ported	crates/lucene-search/src/intervals/mod.rs::Intervals
+queries/intervals/IntervalsSource	ported	crates/lucene-search/src/intervals/mod.rs::IntervalsSource
+queries/intervals/MinimizingConjunctionIntervalsSource	ported	crates/lucene-search/src/intervals/matches.rs::cache_iterators
+queries/intervals/MinimumShouldMatchIntervalsSource	ported	crates/lucene-search/src/intervals/iterators.rs::MinimumShouldMatchIntervals
+queries/intervals/MultiTermIntervalsSource	ported	crates/lucene-search/src/intervals/mod.rs::MultiTermPattern
+queries/intervals/NoMatchIntervalsSource	ported	crates/lucene-search/src/intervals/mod.rs::IntervalsSource
+queries/intervals/NonOverlappingIntervalsSource	ported	crates/lucene-search/src/intervals/iterators.rs::RelativeKind
+queries/intervals/NotContainedByIntervalsSource	ported	crates/lucene-search/src/intervals/iterators.rs::RelativeKind
+queries/intervals/NotContainingIntervalsSource	ported	crates/lucene-search/src/intervals/iterators.rs::RelativeKind
+queries/intervals/OffsetIntervalsSource	ported	crates/lucene-search/src/intervals/iterators.rs::OffsetIntervals
+queries/intervals/OrderedIntervalsSource	ported	crates/lucene-search/src/intervals/iterators.rs::Ordered
+queries/intervals/OverlappingIntervalsSource	ported	crates/lucene-search/src/intervals/iterators.rs::FilteringKind
+queries/intervals/PayloadFilteredTermIntervalsSource	ported	crates/lucene-search/src/intervals/iterators.rs::TermIntervals
+queries/intervals/RelativeIterator	ported	crates/lucene-search/src/intervals/iterators.rs::RelativeIntervals
+queries/intervals/RepeatingIntervalsSource	ported	crates/lucene-search/src/intervals/iterators.rs::DuplicateIntervals
+queries/intervals/TermIntervalsSource	ported	crates/lucene-search/src/intervals/iterators.rs::TermIntervals
+queries/intervals/UnorderedIntervalsSource	ported	crates/lucene-search/src/intervals/iterators.rs::Unordered
 queries/mlt/MoreLikeThis	todo:M10	MoreLikeThis (T10.6)
 queries/mlt/MoreLikeThisQuery	todo:M10	MoreLikeThis (T10.6)
 queries/payloads/AveragePayloadFunction	todo:M10	payload queries (T10.6)

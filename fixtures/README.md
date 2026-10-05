@@ -1218,6 +1218,16 @@ outright.
   `groups.tsv`: `GroupingSearch(ValueSource, Map)` by 14 sources over all
   documents and `t:red` (group values, counts and hit score bits).
 
+- `GenIntervals.java` (M10 T10.6) → `intervals/`, for `lucene-search`'s
+  `intervals_fixtures.rs`: `index/`, four segments with deletions in two, of
+  text with positions and offsets (`body`, a stop word leaving holes;
+  `body2`, the words reversed), positions, offsets and one-byte payloads
+  (`pay`, none on every fifth position) and a docs-only `nopos`, one word in a
+  single document; `queries.tsv`: every `Intervals` factory's source -- its
+  `toString` and `minExtent`, five `IntervalQuery` scoring variants (hits with
+  score bits, five explanations) and the `Matches` of every hit, or Lucene's
+  exception.
+
 - `GenGeo3dPoints.java` (M9 T9.4) → `geo3d_points/`, for `lucene-search`'s
   `geo3d_points_fixtures.rs`: `index/`, four segments (3 × 1500 documents
   and one of 50) with 247 deletions, of `Geo3DPoint`s on WGS84 (`p`,

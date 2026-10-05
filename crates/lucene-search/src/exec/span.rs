@@ -71,7 +71,7 @@ enum Compiled {
 type Emission = (i32, i32, i64);
 
 /// Where a leaf's positions come from, document by document.
-pub(super) enum LeafPositions<'a> {
+pub(crate) enum LeafPositions<'a> {
     /// The term is not in this segment.
     Absent,
     /// `TermsEnum.postings(POSITIONS)`: decoded only for the documents asked.
@@ -84,7 +84,7 @@ pub(super) enum LeafPositions<'a> {
 impl<'a> LeafPositions<'a> {
     /// `field:term`'s positions in this segment: a lazy cursor when the term
     /// has a `.doc` stream, else its one (live) posting decoded.
-    pub(super) fn open(
+    pub(crate) fn open(
         ctx: &LeafContext<'a>,
         pos_in: &lucene_codecs::postings::PosInput<'a>,
         field: &str,
@@ -115,7 +115,7 @@ impl<'a> LeafPositions<'a> {
 
     /// `DocIdSetIterator.advance(target)` unless already there:
     /// the leaf's first document at or after `target`.
-    pub(super) fn advance(&mut self, target: i32) -> Result<i32> {
+    pub(crate) fn advance(&mut self, target: i32) -> Result<i32> {
         Ok(match self {
             LeafPositions::Absent => NO_MORE_DOCS,
             LeafPositions::Lazy(cursor) => {
@@ -135,7 +135,7 @@ impl<'a> LeafPositions<'a> {
     }
 
     /// The leaf's frequency in `doc`: `0` when it is not on `doc`.
-    fn freq_at(&self, doc: i32) -> u64 {
+    pub(crate) fn freq_at(&self, doc: i32) -> u64 {
         match self {
             LeafPositions::Absent => 0,
             LeafPositions::Lazy(cursor) => {
@@ -158,7 +158,7 @@ impl<'a> LeafPositions<'a> {
 
     /// The leaf's positions in `doc`, appended to `out`; nothing when the
     /// leaf is not on `doc`.
-    pub(super) fn positions_at(&mut self, doc: i32, out: &mut Vec<i32>) -> Result<()> {
+    pub(crate) fn positions_at(&mut self, doc: i32, out: &mut Vec<i32>) -> Result<()> {
         match self {
             LeafPositions::Absent => {}
             LeafPositions::Lazy(cursor) => {
