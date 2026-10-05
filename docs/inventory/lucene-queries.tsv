@@ -122,40 +122,40 @@ queries/intervals/TermIntervalsSource	ported	crates/lucene-search/src/intervals/
 queries/intervals/UnorderedIntervalsSource	ported	crates/lucene-search/src/intervals/iterators.rs::Unordered
 queries/mlt/MoreLikeThis	ported	crates/lucene-search/src/mlt.rs::MoreLikeThis
 queries/mlt/MoreLikeThisQuery	ported	crates/lucene-search/src/mlt.rs::MoreLikeThisQuery
-queries/payloads/AveragePayloadFunction	todo:M10	payload queries (T10.6)
-queries/payloads/MaxPayloadFunction	todo:M10	payload queries (T10.6)
-queries/payloads/MinPayloadFunction	todo:M10	payload queries (T10.6)
-queries/payloads/PayloadDecoder	todo:M10	payload queries (T10.6)
-queries/payloads/PayloadFunction	todo:M10	payload queries (T10.6)
-queries/payloads/PayloadMatcher	todo:M10	payload queries (T10.6)
-queries/payloads/PayloadMatcherFactory	todo:M10	payload queries (T10.6)
-queries/payloads/PayloadScoreQuery	todo:M10	payload queries (T10.6)
-queries/payloads/SpanPayloadCheckQuery	todo:M10	payload queries (T10.6)
-queries/payloads/SumPayloadFunction	todo:M10	payload queries (T10.6)
+queries/payloads/AveragePayloadFunction	ported	crates/lucene-search/src/spans/payloads.rs::PayloadFunction
+queries/payloads/MaxPayloadFunction	ported	crates/lucene-search/src/spans/payloads.rs::PayloadFunction
+queries/payloads/MinPayloadFunction	ported	crates/lucene-search/src/spans/payloads.rs::PayloadFunction
+queries/payloads/PayloadDecoder	ported	crates/lucene-search/src/spans/payloads.rs::PayloadDecoder
+queries/payloads/PayloadFunction	ported	crates/lucene-search/src/spans/payloads.rs::PayloadFunction
+queries/payloads/PayloadMatcher	ported	crates/lucene-search/src/spans/payloads.rs::compare_payload
+queries/payloads/PayloadMatcherFactory	ported	crates/lucene-search/src/spans/payloads.rs::compare_payload
+queries/payloads/PayloadScoreQuery	ported	crates/lucene-search/src/spans/payloads.rs::PayloadScoreQuery
+queries/payloads/SpanPayloadCheckQuery	ported	crates/lucene-search/src/spans/payloads.rs::SpanPayloadCheckQuery
+queries/payloads/SumPayloadFunction	ported	crates/lucene-search/src/spans/payloads.rs::PayloadFunction
 queries/spans/ConjunctionSpans	ported	crates/lucene-search/src/exec/span.rs::approximate
-queries/spans/ContainSpans	todo:M10	the remaining spans (T10.6)
-queries/spans/FieldMaskingSpanQuery	todo:M10	the remaining spans (T10.6)
-queries/spans/FilterSpans	todo:M10	the remaining spans (T10.6)
+queries/spans/ContainSpans	ported	crates/lucene-search/src/spans/mod.rs::ContainSpans
+queries/spans/FieldMaskingSpanQuery	ported	crates/lucene-search/src/spans/mod.rs::SpanNode
+queries/spans/FilterSpans	ported	crates/lucene-search/src/spans/mod.rs::FilterSpans
 queries/spans/NearSpansOrdered	ported	crates/lucene-search/src/near_spans.rs::for_each_ordered_match
 queries/spans/NearSpansUnordered	ported	crates/lucene-search/src/near_spans.rs::for_each_unordered_match
-queries/spans/SpanCollector	todo:M10	the remaining spans (T10.6): collects terms/payloads from matching spans
-queries/spans/SpanContainQuery	todo:M10	the remaining spans (T10.6)
-queries/spans/SpanContainingQuery	todo:M10	the remaining spans (T10.6)
+queries/spans/SpanCollector	ported	crates/lucene-search/src/spans/mod.rs::SpanCollector
+queries/spans/SpanContainQuery	ported	crates/lucene-search/src/spans/mod.rs::SpanNode
+queries/spans/SpanContainingQuery	ported	crates/lucene-search/src/spans/mod.rs::SpanNode
 queries/spans/SpanDisiPriorityQueue	ported	crates/lucene-search/src/exec/span.rs::approximate
 queries/spans/SpanDisiWrapper	ported	crates/lucene-search/src/exec/span.rs::approximate
 queries/spans/SpanDisjunctionDISIApproximation	ported	crates/lucene-search/src/exec/span.rs::approximate
-queries/spans/SpanFirstQuery	todo:M10	the remaining spans (T10.6)
-queries/spans/SpanMultiTermQueryWrapper	todo:M10	the remaining spans (T10.6)
+queries/spans/SpanFirstQuery	ported	crates/lucene-search/src/spans/mod.rs::SpanNode
+queries/spans/SpanMultiTermQueryWrapper	ported	crates/lucene-search/src/spans/mod.rs::SpanNode
 queries/spans/SpanNearQuery	ported	crates/lucene-search/src/query.rs::SpanNear
-queries/spans/SpanNotQuery	todo:M10	the remaining spans (T10.6)
+queries/spans/SpanNotQuery	ported	crates/lucene-search/src/spans/mod.rs::SpanNode
 queries/spans/SpanOrQuery	ported	crates/lucene-search/src/query.rs::SpanOr
-queries/spans/SpanPositionCheckQuery	todo:M10	the remaining spans (T10.6)
+queries/spans/SpanPositionCheckQuery	ported	crates/lucene-search/src/spans/mod.rs::PositionRange
 queries/spans/SpanPositionQueue	ported	crates/lucene-search/src/exec/span.rs::emit
-queries/spans/SpanPositionRangeQuery	todo:M10	the remaining spans (T10.6)
+queries/spans/SpanPositionRangeQuery	ported	crates/lucene-search/src/spans/mod.rs::SpanNode
 queries/spans/SpanQuery	ported	crates/lucene-search/src/query.rs::SpanQuery
 queries/spans/SpanScorer	ported	crates/lucene-search/src/exec/span.rs::span_doc_scores
 queries/spans/SpanTermQuery	ported	crates/lucene-search/src/query.rs::SpanTerm
 queries/spans/SpanWeight	ported	crates/lucene-search/src/exec/span.rs::span
-queries/spans/SpanWithinQuery	todo:M10	the remaining spans (T10.6)
+queries/spans/SpanWithinQuery	ported	crates/lucene-search/src/spans/mod.rs::SpanNode
 queries/spans/Spans	ported	crates/lucene-search/src/exec/span.rs::emit
 queries/spans/TermSpans	ported	crates/lucene-search/src/exec/span.rs::LeafPositions

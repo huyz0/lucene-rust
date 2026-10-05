@@ -719,4 +719,124 @@ mod tests {
         q.update_top();
         assert_eq!(MoreLikeThis::interesting(q, 1), ["c"]);
     }
+    fn reader() -> DirectoryReader {
+        let dir = std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/mlt/index"
+        ));
+        DirectoryReader::open(&lucene_store::FsDirectory::open(dir)).unwrap()
+    }
+
+    /// The reader's and a searcher's term statistics agree; a field list
+    /// left `None` is every indexed field; settings Java refuses are refused.
+    #[test]
+    fn statistics_settings_and_refusals() {
+        let reader = reader();
+        let opened = reader.open_segments().unwrap();
+        let segments = opened.as_open_segments();
+        let norms = vec![None; segments.len()];
+        let searcher = IndexSearcher::new(&segments, &norms).unwrap();
+        for (field, term) in [
+            ("body", "river"),
+            ("tv", "stone"),
+            ("body", "nosuch"),
+            ("x", "y"),
+        ] {
+            assert_eq!(
+                TermStatsReader::doc_freq(&reader, field, term.as_bytes()).unwrap(),
+                TermStatsReader::doc_freq(&searcher, field, term.as_bytes()).unwrap(),
+                "{field}:{term}"
+            );
+            assert_eq!(
+                TermStatsReader::doc_count(&reader, field).unwrap(),
+                TermStatsReader::doc_count(&searcher, field).unwrap()
+            );
+        }
+        assert_eq!(
+            TermStatsReader::max_doc(&reader),
+            TermStatsReader::max_doc(&searcher)
+        );
+
+        let mut m = MoreLikeThis::new(&reader);
+        m.field_names = None;
+        m.min_term_freq = 1;
+        m.min_doc_freq = 1;
+        let analyzer = Analyzer::standard(None);
+        m.analyzer = Some(&analyzer);
+        let q = m.like_doc(3).unwrap();
+        assert!(!q.should.is_empty());
+        let fields = m.field_names.clone().unwrap();
+        assert!(fields.contains(&"body".to_string()) && fields.contains(&"id".to_string()));
+        assert!(m.set_max_doc_freq_pct(i32::MAX).is_err());
+        assert!(m.like_doc(10_000).is_err(), "a document outside the reader");
+        m.max_query_terms = 0;
+        assert!(m.retrieve_interesting_terms(3).unwrap().is_empty());
+
+        // Statistics alone: no documents, no field list to resolve.
+        let mut over = MoreLikeThis::over(&searcher);
+        over.field_names = None;
+        assert!(over.like_doc(0).is_err());
+        assert!(over.like_fields(&[("body", vec!["river".into()])]).is_err());
+        over.field_names = Some(vec!["body".into()]);
+        assert!(over.like_texts("body", &["river"]).is_err(), "no analyzer");
+        over.analyzer = Some(&analyzer);
+        over.min_doc_freq = 1;
+        over.min_term_freq = 1;
+        over.min_word_len = 5;
+        over.max_word_len = 5;
+        over.stop_words = Some(["stone".to_string()].into_iter().collect());
+        let words = over
+            .retrieve_interesting_terms_of_text("river stone light house river garden", "body")
+            .unwrap();
+        // Five letters exactly, and not a stop word.
+        assert!(!words.is_empty());
+        assert!(
+            words.iter().all(|w| w.len() == 5 && w != "stone"),
+            "{words:?}"
+        );
+        over.max_num_tokens_parsed = 1;
+        assert_eq!(
+            over.retrieve_interesting_terms_of_text("river light", "body")
+                .unwrap(),
+            ["river"]
+        );
+    }
+
+    /// `MoreLikeThisQuery`: `toString`, equality (the analyzer by identity),
+    /// its rewrite's minimum and settings.
+    #[test]
+    fn the_query_rewrites_prints_and_compares() {
+        let reader = reader();
+        let opened = reader.open_segments().unwrap();
+        let segments = opened.as_open_segments();
+        let norms = vec![None; segments.len()];
+        let searcher = IndexSearcher::new(&segments, &norms).unwrap();
+        let analyzer = std::sync::Arc::new(Analyzer::standard(None));
+        let mut q = MoreLikeThisQuery::new(
+            "river stone river light",
+            vec!["body".into()],
+            std::sync::Arc::clone(&analyzer),
+            "body",
+        );
+        assert_eq!(q.to_string(), "like:river stone river light");
+        assert_eq!(q, q.clone());
+        let other = MoreLikeThisQuery::new(
+            "river stone river light",
+            vec!["body".into()],
+            std::sync::Arc::new(Analyzer::standard(None)),
+            "body",
+        );
+        assert_ne!(q, other, "another analyzer");
+        assert!(format!("{q:?}").starts_with("MoreLikeThisQuery"));
+        q.min_doc_freq = 1;
+        q.percent_terms_to_match = 1.0;
+        q.stop_words = Some(["light".to_string()].into_iter().collect());
+        let Clause::Boolean(b) = q.rewrite(&searcher).unwrap() else {
+            panic!("a boolean")
+        };
+        assert_eq!(b.minimum_should_match, b.should.len());
+        assert!(b.should.len() >= 2);
+        let clause = Clause::from(q);
+        assert!(matches!(clause, Clause::Extended(_)));
+    }
 }

@@ -508,7 +508,9 @@ impl IntervalIterator for TermIntervals<'_> {
         self.doc
     }
     fn next_doc(&mut self) -> Result<i32> {
-        self.advance(self.doc.saturating_add(1))
+        self.doc = self.postings.next_doc(self.doc)?;
+        self.reset();
+        Ok(self.doc)
     }
     fn advance(&mut self, target: i32) -> Result<i32> {
         self.doc = self.postings.advance(target)?;
