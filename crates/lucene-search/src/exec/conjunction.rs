@@ -402,12 +402,16 @@ impl<'a> LegConjunctionScorer<'a> {
                 return Ok(doc);
             }
             for i in 1..self.legs.len() {
-                if self.legs[i].doc_id() < doc {
-                    let next = self.advance_leg(i, doc)?;
-                    if next > doc {
-                        doc = self.advance_leg(0, next)?;
-                        continue 'head;
-                    }
+                // A leg may be ahead of `doc`: the batch loop advances the
+                // other legs to candidates it then rejects, past where the
+                // lead stops.
+                let mut at = self.legs[i].doc_id();
+                if at < doc {
+                    at = self.advance_leg(i, doc)?;
+                }
+                if at > doc {
+                    doc = self.advance_leg(0, at)?;
+                    continue 'head;
                 }
             }
             return Ok(doc);
@@ -509,6 +513,9 @@ impl Scorer for LegConjunctionScorer<'_> {
         while self.legs[0].doc_id() < up_to && out.docs.len() < super::NEXT_DOCS_BATCH {
             self.legs[0].next_docs_and_scores(up_to, live_docs, &mut self.buf)?;
             if self.buf.docs.is_empty() {
+                // Nothing below `up_to`: back on a match past it.
+                let next = self.legs[0].doc_id();
+                self.do_next(next)?;
                 break;
             }
             'candidate: for (&d, &lead) in self.buf.docs.iter().zip(&self.buf.scores) {
@@ -534,5 +541,90 @@ impl Scorer for LegConjunctionScorer<'_> {
             self.do_next(next)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::exec::Mode;
+    use crate::query::{BooleanQuery, Clause, TermQuery};
+
+    /// **Batches of a conjunction are its document-at-a-time matches**, and
+    /// each batch leaves it on its next match. Narrow windows end batches
+    /// between a candidate the lead offers and the other legs' next match,
+    /// where a leg advanced to a rejected candidate sits ahead of the lead
+    /// (once left there unaligned: a block join over the conjunction then
+    /// took the lead's document for a match).
+    #[test]
+    fn batches_are_the_document_at_a_time_matches_and_end_on_a_match() {
+        let dir = lucene_store::FsDirectory::open(std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/terms_aggs_index"
+        )));
+        let reader = crate::directory_reader::DirectoryReader::open(&dir).unwrap();
+        let opened = reader.open_segments().unwrap();
+        let term = |t: &str| Clause::Term(TermQuery::new("body", t.as_bytes().to_vec()));
+        let mut batches = 0;
+        for seg in opened.as_open_segments() {
+            let ctx = super::super::LeafContext {
+                fields: seg.fields,
+                doc_in: seg.doc_in,
+                pos_in: seg.pos_in,
+                pay_in: seg.pay_in,
+                live_docs: seg.live_docs,
+                points: seg.points,
+                norms: None,
+                global: None,
+                max_doc: seg.max_doc,
+                cache: seg.cache,
+                reader: seg.reader,
+                similarity: None,
+            };
+            for (a, b) in [("w0", "w1"), ("w2", "w0"), ("w1", "w3")] {
+                let q = Clause::Boolean(Box::new(BooleanQuery {
+                    must: vec![term(a)],
+                    filter: vec![term(b)],
+                    ..Default::default()
+                }));
+                let build = || {
+                    super::super::build::build(&ctx, &q, 1.0, Mode::Complete, false)
+                        .unwrap()
+                        .unwrap()
+                };
+                let mut one = build();
+                let mut want = Vec::new();
+                let mut doc = one.next_doc().unwrap();
+                while doc != NO_MORE_DOCS {
+                    want.push((doc, one.score().unwrap().to_bits()));
+                    doc = one.next_doc().unwrap();
+                }
+                for window in [1, 3, 7] {
+                    let mut s = build();
+                    s.next_doc().unwrap();
+                    let mut got = Vec::new();
+                    let mut out = crate::bulk_scorer::DocScores::default();
+                    let mut up_to = 0;
+                    while s.doc_id() != NO_MORE_DOCS {
+                        up_to += window;
+                        s.next_docs_and_scores(up_to, None, &mut out).unwrap();
+                        batches += 1;
+                        got.extend(
+                            out.docs
+                                .iter()
+                                .zip(&out.scores)
+                                .map(|(&d, s)| (d, s.to_bits())),
+                        );
+                        // On a match: the next one document at a time.
+                        let next = want.iter().map(|w| w.0).find(|&d| d >= up_to);
+                        if s.doc_id() >= up_to {
+                            assert_eq!(Some(s.doc_id()).filter(|&d| d != NO_MORE_DOCS), next);
+                        }
+                    }
+                    assert_eq!(got, want, "{a} {b}, windows of {window}");
+                }
+            }
+        }
+        assert!(batches > 0);
     }
 }
