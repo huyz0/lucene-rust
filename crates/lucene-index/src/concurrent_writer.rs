@@ -2958,4 +2958,61 @@ mod tests {
         assert!(!docs.contains_key("a2"), "{docs:?}");
         assert_clean(&dir);
     }
+
+    /// `addDocument` with vectors or explicit term frequencies through the
+    /// concurrent writer answers what the single-threaded writer answers for
+    /// the same writer configuration: accepted where it is (no vectors, no
+    /// custom terms), refused with the same error where it is not (among a
+    /// vector field the writer was not given and custom frequencies without a
+    /// custom-frequency field, whichever of those it refuses) -- and both
+    /// commit the same documents.
+    #[test]
+    fn vectors_and_custom_frequencies_go_through_as_the_single_writer_takes_them() {
+        let (a, b) = (TempDir::new("cw-vectors-a"), TempDir::new("cw-vectors-b"));
+        let (da, db) = (FsDirectory::open(&a), FsDirectory::open(&b));
+        let mut single = writer(&da, 100);
+        let concurrent = ConcurrentIndexWriter::new(writer(&db, 100), 2).unwrap();
+        let outcome = |r: Result<SeqNo>| r.map(|_| ()).map_err(|e| e.to_string());
+        let vectors = || vec![DocumentVector::float32("nosuch", vec![1.0, 2.0])];
+        let terms = || vec![("alpha".to_string(), 3)];
+        type OnSingle = Box<dyn Fn(&mut IndexWriter<'_>) -> Result<SeqNo>>;
+        type OnConcurrent = Box<dyn Fn(&ConcurrentIndexWriter<'_>) -> Result<SeqNo>>;
+        let cases: [(&str, OnSingle, OnConcurrent); 4] = [
+            (
+                "no vectors",
+                Box::new(|w| w.add_document_with_vectors(doc("a", 0), Vec::new())),
+                Box::new(|w| w.add_document_with_vectors(doc("a", 0), Vec::new())),
+            ),
+            (
+                "unknown vector field",
+                Box::new(move |w| w.add_document_with_vectors(doc("b", 0), vectors())),
+                Box::new(move |w| w.add_document_with_vectors(doc("b", 0), vectors())),
+            ),
+            (
+                "no custom terms",
+                Box::new(|w| w.add_document_with_custom_freq_terms(doc("c", 0), Vec::new())),
+                Box::new(|w| w.add_document_with_custom_freq_terms(doc("c", 0), Vec::new())),
+            ),
+            (
+                "custom terms without the field",
+                Box::new(move |w| w.add_document_with_custom_freq_terms(doc("d", 0), terms())),
+                Box::new(move |w| w.add_document_with_custom_freq_terms(doc("d", 0), terms())),
+            ),
+        ];
+        let mut refused = 0;
+        for (what, on_single, on_concurrent) in &cases {
+            let want = outcome(on_single(&mut single));
+            assert_eq!(outcome(on_concurrent(&concurrent)), want, "{what}");
+            refused += usize::from(want.is_err());
+        }
+        assert!((1..4).contains(&refused), "{refused} refused");
+        single.commit().unwrap();
+        concurrent.commit().unwrap();
+        let concurrent = concurrent.into_writer().unwrap();
+        assert_eq!(
+            concurrent.committed_doc_count().unwrap(),
+            single.committed_doc_count().unwrap()
+        );
+        assert_eq!(single.committed_doc_count().unwrap(), 4 - refused);
+    }
 }
