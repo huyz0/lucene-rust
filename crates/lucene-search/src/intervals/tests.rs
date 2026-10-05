@@ -383,3 +383,29 @@ fn score_functions_validate_score_and_explain() {
     assert_eq!(e.value, want);
     assert_eq!(e.details.len(), 4);
 }
+
+/// The rest of the equality and pull-up cases: overlapping, an extension of
+/// an empty disjunction, a source that keeps itself, and the automaton
+/// factory.
+#[test]
+fn remaining_equalities_and_pull_ups() {
+    let o = |a: &str, b: &str| Intervals::overlapping(t(a), t(b));
+    assert_eq!(o("a", "b"), o("a", "b"));
+    assert_ne!(o("a", "b"), o("b", "a"));
+    let empty = Intervals::or(vec![]).unwrap();
+    let ext = Intervals::extend(empty, 1, 1);
+    assert_eq!(ext.pull_up_disjunctions().unwrap(), vec![ext.clone()]);
+    let none = Intervals::no_intervals("n");
+    assert_eq!(none.pull_up_disjunctions().unwrap(), vec![none.clone()]);
+    let a = lucene_util::automaton::automata::make_string("abc");
+    let m = Intervals::multiterm(a, false, 7, "abc").unwrap();
+    assert_eq!(m.to_string(), "MultiTerm(abc)");
+    assert_eq!(m.min_extent(), 1);
+    assert!(Intervals::multiterm(
+        lucene_util::automaton::automata::make_string("x"),
+        true,
+        MAX_CLAUSE_COUNT + 1,
+        "x"
+    )
+    .is_err());
+}

@@ -286,7 +286,7 @@ grouping. Each of them falls back to Lucene today.
   with its saturation and sigmoid scoring, `IntervalMatches` and
   `IntervalBuilder`'s analyzed text. `GenIntervals` records 120 sources
   (`toString`, `minExtent`, five scoring variants with hits, score bits and
-  explanations, the `Matches` of every hit), all 6 149 lines equal to
+  explanations, the `Matches` of every hit and explained document), all 6 538 lines equal to
   Lucene's.
 - **T10.7** — Plugin wiring for the OpenSearch shapes above.
 

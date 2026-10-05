@@ -43,6 +43,7 @@ body	apple	matches 11	body|8:8:36:41,15:15:66:71
 body	apple	matches 12	body|3:3:15:20,10:10:49:54,15:15:71:76,16:16:77:82,18:18:87:92
 body	apple	matches 13	body|9:9:39:44,12:12:56:61,17:17:80:85,18:18:86:91
 body	apple	matches 15	body|9:9:45:50,13:13:66:71
+body	apple	matches 17	none
 body	apple	matches 18	body|0:0:0:5,23:23:109:114
 body	apple	matches 19	body|7:7:29:34
 body	apple	matches 20	body|9:9:39:44
@@ -68,6 +69,7 @@ body	apple	matches 55	body|0:0:0:5,8:8:46:51,19:19:98:103
 body	apple	matches 56	body|0:0:0:5,2:2:10:15,3:3:16:21,17:17:82:87
 body	apple	matches 58	body|0:0:0:5
 body	apple	matches 59	body|8:8:35:40,14:14:62:67
+body	apple	matches 60	none
 body	apple	matches 61	body|3:3:14:19,6:6:31:36,9:9:46:51,13:13:65:70
 body	apple	matches 62	body|0:0:0:5,3:3:15:20,14:14:70:75
 body	apple	matches 65	body|1:1:6:11,4:4:20:25
@@ -115,7 +117,11 @@ body	zeta	bool	explain 7	0.0 = Failure to meet condition(s) of required/prohibit
 body	zeta	bool	explain 17	0.5 = sum of:\n  0.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n    1.0 = w, weight of this function\n    1.0 = k, pivot feature value that would give a score contribution equal to w/2\n    1.0 = S, the sloppy frequency of the interval query body:zeta\n
 body	zeta	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:zeta)\n    0.0 = no matching intervals\n
 body	zeta	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:zeta)\n    0.0 = no matching intervals\n
+body	zeta	matches 0	none
+body	zeta	matches 7	none
 body	zeta	matches 17	body|1:1:4:8
+body	zeta	matches 33	none
+body	zeta	matches 60	none
 body	nosuch	source	nosuch	1
 body	nosuch	plain	hits	0 
 body	nosuch	plain	explain 0	0.0 = no matching intervals\n
@@ -147,6 +153,11 @@ body	nosuch	bool	explain 7	0.0 = Failure to meet condition(s) of required/prohib
 body	nosuch	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:nosuch)\n    0.0 = no matching intervals\n
 body	nosuch	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:nosuch)\n    0.0 = no matching intervals\n
 body	nosuch	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:nosuch)\n    0.0 = no matching intervals\n
+body	nosuch	matches 0	none
+body	nosuch	matches 7	none
+body	nosuch	matches 17	none
+body	nosuch	matches 33	none
+body	nosuch	matches 60	none
 pay	cat	source	cat	1
 pay	cat	plain	hits	33 17:3f400000,21:3f400000,59:3f400000,70:3f400000,9:3f2aaaaa,28:3f2aaaaa,30:3f2aaaaa,67:3f2aaaaa,92:3f2aaaaa,1:3f000000,6:3f000000,8:3f000000,12:3f000000,13:3f000000,19:3f000000,23:3f000000,24:3f000000,32:3f000000,33:3f000000,35:3f000000,39:3f000000,45:3f000000,47:3f000000,57:3f000000,69:3f000000,80:3f000000,81:3f000000,83:3f000000,87:3f000000,88:3f000000,89:3f000000,91:3f000000,94:3f000000,
 pay	cat	plain	explain 0	0.0 = no matching intervals\n
@@ -178,8 +189,10 @@ pay	cat	bool	explain 7	0.0 = Failure to meet condition(s) of required/prohibited
 pay	cat	bool	explain 17	0.75 = sum of:\n  0.75 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n    1.0 = w, weight of this function\n    1.0 = k, pivot feature value that would give a score contribution equal to w/2\n    3.0 = S, the sloppy frequency of the interval query pay:cat\n
 pay	cat	bool	explain 33	0.5 = sum of:\n  0.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n    1.0 = w, weight of this function\n    1.0 = k, pivot feature value that would give a score contribution equal to w/2\n    1.0 = S, the sloppy frequency of the interval query pay:cat\n
 pay	cat	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (pay:cat)\n    0.0 = no matching intervals\n
+pay	cat	matches 0	none
 pay	cat	matches 1	pay|14:14:66:69
 pay	cat	matches 6	pay|18:18:88:91
+pay	cat	matches 7	none
 pay	cat	matches 8	pay|6:6:30:33
 pay	cat	matches 9	pay|7:7:34:37,18:18:85:88
 pay	cat	matches 12	pay|8:8:38:41
@@ -199,6 +212,7 @@ pay	cat	matches 45	pay|10:10:46:49
 pay	cat	matches 47	pay|0:0:0:3
 pay	cat	matches 57	pay|6:6:30:33
 pay	cat	matches 59	pay|3:3:13:16,6:6:25:28,12:12:53:56
+pay	cat	matches 60	none
 pay	cat	matches 67	pay|5:5:23:26,13:13:58:61
 pay	cat	matches 69	pay|1:1:4:7
 pay	cat	matches 70	pay|0:0:0:3,8:8:35:38,21:21:104:107
@@ -242,12 +256,22 @@ nofield	apple	bool	explain 7	0.0 = Failure to meet condition(s) of required/proh
 nofield	apple	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (nofield:apple)\n    0.0 = no matching intervals\n
 nofield	apple	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (nofield:apple)\n    0.0 = no matching intervals\n
 nofield	apple	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (nofield:apple)\n    0.0 = no matching intervals\n
+nofield	apple	matches 0	none
+nofield	apple	matches 7	none
+nofield	apple	matches 17	none
+nofield	apple	matches 33	none
+nofield	apple	matches 60	none
 nopos	apple	source	apple	1
 nopos	apple	plain	hits	!IllegalArgumentException
 nopos	apple	pivot	hits	!IllegalArgumentException
 nopos	apple	sigmoid	hits	!IllegalArgumentException
 nopos	apple	boost	hits	!IllegalArgumentException
 nopos	apple	bool	hits	!IllegalArgumentException
+nopos	apple	matches 0	!IllegalArgumentException
+nopos	apple	matches 7	!IllegalArgumentException
+nopos	apple	matches 17	!IllegalArgumentException
+nopos	apple	matches 33	!IllegalArgumentException
+nopos	apple	matches 60	!IllegalArgumentException
 body	phrase(apple,bank)	source	BLOCK(apple,bank)	2
 body	phrase(apple,bank)	plain	hits	5 0:3f000000,3:3f000000,33:3f000000,35:3f000000,55:3f000000,
 body	phrase(apple,bank)	plain	explain 0	0.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  1.0 = w, weight of this function\n  1.0 = k, pivot feature value that would give a score contribution equal to w/2\n  1.0 = S, the sloppy frequency of the interval query body:BLOCK(apple,bank)\n
@@ -281,9 +305,12 @@ body	phrase(apple,bank)	bool	explain 33	0.5 = sum of:\n  0.5 = Saturation functi
 body	phrase(apple,bank)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(apple,bank))\n    0.0 = no matching intervals\n
 body	phrase(apple,bank)	matches 0	body|6:7:27:37[6:6:27:32 7:7:33:37]
 body	phrase(apple,bank)	matches 3	body|5:6:26:36[5:5:26:31 6:6:32:36]
+body	phrase(apple,bank)	matches 7	none
+body	phrase(apple,bank)	matches 17	none
 body	phrase(apple,bank)	matches 33	body|8:9:40:50[8:8:40:45 9:9:46:50]
 body	phrase(apple,bank)	matches 35	body|7:8:32:42[7:7:32:37 8:8:38:42]
 body	phrase(apple,bank)	matches 55	body|0:1:0:10[0:0:0:5 1:1:6:10]
+body	phrase(apple,bank)	matches 60	none
 body	phraset(cat,dog,egg)	source	BLOCK(cat,dog,egg)	3
 body	phraset(cat,dog,egg)	plain	hits	0 
 body	phraset(cat,dog,egg)	plain	explain 0	0.0 = no matching intervals\n
@@ -315,6 +342,11 @@ body	phraset(cat,dog,egg)	bool	explain 7	0.0 = Failure to meet condition(s) of r
 body	phraset(cat,dog,egg)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(cat,dog,egg))\n    0.0 = no matching intervals\n
 body	phraset(cat,dog,egg)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(cat,dog,egg))\n    0.0 = no matching intervals\n
 body	phraset(cat,dog,egg)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(cat,dog,egg))\n    0.0 = no matching intervals\n
+body	phraset(cat,dog,egg)	matches 0	none
+body	phraset(cat,dog,egg)	matches 7	none
+body	phraset(cat,dog,egg)	matches 17	none
+body	phraset(cat,dog,egg)	matches 33	none
+body	phraset(cat,dog,egg)	matches 60	none
 body	phraset(fig)	source	fig	1
 body	phraset(fig)	plain	hits	32 6:3f400000,54:3f400000,56:3f400000,25:3f2aaaaa,26:3f2aaaaa,39:3f2aaaaa,52:3f2aaaaa,67:3f2aaaaa,88:3f2aaaaa,1:3f000000,3:3f000000,9:3f000000,10:3f000000,11:3f000000,12:3f000000,17:3f000000,18:3f000000,19:3f000000,20:3f000000,29:3f000000,30:3f000000,33:3f000000,35:3f000000,37:3f000000,47:3f000000,51:3f000000,63:3f000000,73:3f000000,80:3f000000,81:3f000000,85:3f000000,92:3f000000,
 body	phraset(fig)	plain	explain 0	0.0 = no matching intervals\n
@@ -346,9 +378,11 @@ body	phraset(fig)	bool	explain 7	0.0 = Failure to meet condition(s) of required/
 body	phraset(fig)	bool	explain 17	0.5 = sum of:\n  0.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n    1.0 = w, weight of this function\n    1.0 = k, pivot feature value that would give a score contribution equal to w/2\n    1.0 = S, the sloppy frequency of the interval query body:fig\n
 body	phraset(fig)	bool	explain 33	0.5 = sum of:\n  0.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n    1.0 = w, weight of this function\n    1.0 = k, pivot feature value that would give a score contribution equal to w/2\n    1.0 = S, the sloppy frequency of the interval query body:fig\n
 body	phraset(fig)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:fig)\n    0.0 = no matching intervals\n
+body	phraset(fig)	matches 0	none
 body	phraset(fig)	matches 1	body|5:5:22:25
 body	phraset(fig)	matches 3	body|9:9:45:48
 body	phraset(fig)	matches 6	body|1:1:5:8,7:7:32:35,22:22:105:108
+body	phraset(fig)	matches 7	none
 body	phraset(fig)	matches 9	body|1:1:5:8
 body	phraset(fig)	matches 10	body|5:5:26:29
 body	phraset(fig)	matches 11	body|17:17:78:81
@@ -370,6 +404,7 @@ body	phraset(fig)	matches 51	body|16:16:79:82
 body	phraset(fig)	matches 52	body|0:0:0:3,3:3:13:16
 body	phraset(fig)	matches 54	body|8:8:40:43,11:11:54:57,17:17:84:87
 body	phraset(fig)	matches 56	body|9:9:47:50,14:14:69:72,20:20:97:100
+body	phraset(fig)	matches 60	none
 body	phraset(fig)	matches 63	body|0:0:0:3
 body	phraset(fig)	matches 67	body|7:7:31:34,9:9:39:42
 body	phraset(fig)	matches 73	body|9:9:41:44
@@ -415,12 +450,15 @@ body	phrase(apple,apple)	matches 7	body|2:3:8:19[2:2:8:13 3:3:14:19]
 body	phrase(apple,apple)	matches 10	body|1:2:6:17[1:1:6:11 2:2:12:17]
 body	phrase(apple,apple)	matches 12	body|15:16:71:82[15:15:71:76 16:16:77:82]
 body	phrase(apple,apple)	matches 13	body|17:18:80:91[17:17:80:85 18:18:86:91]
+body	phrase(apple,apple)	matches 17	none
+body	phrase(apple,apple)	matches 33	none
 body	phrase(apple,apple)	matches 41	body|5:6:23:34[5:5:23:28 6:6:29:34]
 body	phrase(apple,apple)	matches 47	body|9:10:40:51[9:9:40:45 10:10:46:51]
 body	phrase(apple,apple)	matches 51	body|9:10:40:51[9:9:40:45 10:10:46:51],10:11:46:57[10:10:46:51 11:11:52:57]
 body	phrase(apple,apple)	matches 53	body|3:4:15:26[3:3:15:20 4:4:21:26]
 body	phrase(apple,apple)	matches 54	body|12:13:58:69[12:12:58:63 13:13:64:69]
 body	phrase(apple,apple)	matches 56	body|2:3:10:21[2:2:10:15 3:3:16:21]
+body	phrase(apple,apple)	matches 60	none
 body	phrase(apple,apple)	matches 70	body|19:20:92:103[19:19:92:97 20:20:98:103]
 body	phrase(apple,apple)	matches 92	body|7:8:30:41[7:7:30:35 8:8:36:41]
 body	phrase(apple,apple)	matches 94	body|2:3:8:19[2:2:8:13 3:3:14:19]
@@ -455,8 +493,13 @@ body	phrase(or(apple,phrase(ape,bank)),cat)	bool	explain 7	0.0 = Failure to meet
 body	phrase(or(apple,phrase(ape,bank)),cat)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:or(BLOCK(ape,bank,cat),BLOCK(apple,cat)))\n    0.0 = no matching intervals\n
 body	phrase(or(apple,phrase(ape,bank)),cat)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:or(BLOCK(ape,bank,cat),BLOCK(apple,cat)))\n    0.0 = no matching intervals\n
 body	phrase(or(apple,phrase(ape,bank)),cat)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:or(BLOCK(ape,bank,cat),BLOCK(apple,cat)))\n    0.0 = no matching intervals\n
+body	phrase(or(apple,phrase(ape,bank)),cat)	matches 0	none
+body	phrase(or(apple,phrase(ape,bank)),cat)	matches 7	none
 body	phrase(or(apple,phrase(ape,bank)),cat)	matches 9	body|17:18:79:88[17:17:79:84 18:18:85:88]
+body	phrase(or(apple,phrase(ape,bank)),cat)	matches 17	none
+body	phrase(or(apple,phrase(ape,bank)),cat)	matches 33	none
 body	phrase(or(apple,phrase(ape,bank)),cat)	matches 59	body|1:3:4:16[1:1:4:7 2:2:8:12 3:3:13:16]
+body	phrase(or(apple,phrase(ape,bank)),cat)	matches 60	none
 body	phrase(or(apple,phrase(ape,bank)),cat)	matches 70	body|20:21:98:107[20:20:98:103 21:21:104:107]
 body	phrase(or(apple,phrase(ape,bank)),cat)	matches 80	body|2:3:9:18[2:2:9:14 3:3:15:18]
 body	phrase(or(apple,phrase(ape,bank)),cat)	matches 81	body|6:7:28:37[6:6:28:33 7:7:34:37]
@@ -491,8 +534,13 @@ body	phrase(ornr(apple,phrase(ape,bank)),cat)	bool	explain 7	0.0 = Failure to me
 body	phrase(ornr(apple,phrase(ape,bank)),cat)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(or(BLOCK(ape,bank),apple),cat))\n    0.0 = no matching intervals\n
 body	phrase(ornr(apple,phrase(ape,bank)),cat)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(or(BLOCK(ape,bank),apple),cat))\n    0.0 = no matching intervals\n
 body	phrase(ornr(apple,phrase(ape,bank)),cat)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(or(BLOCK(ape,bank),apple),cat))\n    0.0 = no matching intervals\n
+body	phrase(ornr(apple,phrase(ape,bank)),cat)	matches 0	none
+body	phrase(ornr(apple,phrase(ape,bank)),cat)	matches 7	none
 body	phrase(ornr(apple,phrase(ape,bank)),cat)	matches 9	body|17:18:79:88[17:17:79:84 18:18:85:88]
+body	phrase(ornr(apple,phrase(ape,bank)),cat)	matches 17	none
+body	phrase(ornr(apple,phrase(ape,bank)),cat)	matches 33	none
 body	phrase(ornr(apple,phrase(ape,bank)),cat)	matches 59	body|1:3:4:16[1:1:4:7 2:2:8:12 3:3:13:16]
+body	phrase(ornr(apple,phrase(ape,bank)),cat)	matches 60	none
 body	phrase(ornr(apple,phrase(ape,bank)),cat)	matches 70	body|20:21:98:107[20:20:98:103 21:21:104:107]
 body	phrase(ornr(apple,phrase(ape,bank)),cat)	matches 80	body|2:3:9:18[2:2:9:14 3:3:15:18]
 body	phrase(ornr(apple,phrase(ape,bank)),cat)	matches 81	body|6:7:28:37[6:6:28:33 7:7:34:37]
@@ -527,6 +575,11 @@ body	phrase(phrase(apple,bank),cat)	bool	explain 7	0.0 = Failure to meet conditi
 body	phrase(phrase(apple,bank),cat)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(apple,bank,cat))\n    0.0 = no matching intervals\n
 body	phrase(phrase(apple,bank),cat)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(apple,bank,cat))\n    0.0 = no matching intervals\n
 body	phrase(phrase(apple,bank),cat)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(apple,bank,cat))\n    0.0 = no matching intervals\n
+body	phrase(phrase(apple,bank),cat)	matches 0	none
+body	phrase(phrase(apple,bank),cat)	matches 7	none
+body	phrase(phrase(apple,bank),cat)	matches 17	none
+body	phrase(phrase(apple,bank),cat)	matches 33	none
+body	phrase(phrase(apple,bank),cat)	matches 60	none
 body	phrase(apple,extend(bank,0,2),cat)	source	BLOCK(apple,EXTEND(bank,0,2),cat)	5
 body	phrase(apple,extend(bank,0,2),cat)	plain	hits	0 
 body	phrase(apple,extend(bank,0,2),cat)	plain	explain 0	0.0 = no matching intervals\n
@@ -558,6 +611,11 @@ body	phrase(apple,extend(bank,0,2),cat)	bool	explain 7	0.0 = Failure to meet con
 body	phrase(apple,extend(bank,0,2),cat)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(apple,EXTEND(bank,0,2),cat))\n    0.0 = no matching intervals\n
 body	phrase(apple,extend(bank,0,2),cat)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(apple,EXTEND(bank,0,2),cat))\n    0.0 = no matching intervals\n
 body	phrase(apple,extend(bank,0,2),cat)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(apple,EXTEND(bank,0,2),cat))\n    0.0 = no matching intervals\n
+body	phrase(apple,extend(bank,0,2),cat)	matches 0	none
+body	phrase(apple,extend(bank,0,2),cat)	matches 7	none
+body	phrase(apple,extend(bank,0,2),cat)	matches 17	none
+body	phrase(apple,extend(bank,0,2),cat)	matches 33	none
+body	phrase(apple,extend(bank,0,2),cat)	matches 60	none
 body	or(apple,bank)	source	or(apple,bank)	1
 body	or(apple,bank)	plain	hits	63 35:3f5b6db7,47:3f5b6db7,56:3f5b6db7,2:3f555555,3:3f555555,12:3f555555,13:3f555555,33:3f555555,51:3f555555,54:3f555555,70:3f555555,91:3f555555,92:3f555555,20:3f4ccccd,26:3f4ccccd,32:3f4ccccd,53:3f4ccccd,55:3f4ccccd,59:3f4ccccd,61:3f4ccccd,62:3f4ccccd,80:3f4ccccd,84:3f4ccccd,85:3f4ccccd,0:3f400000,6:3f400000,8:3f400000,9:3f400000,10:3f400000,15:3f400000,18:3f400000,37:3f400000,39:3f400000,41:3f400000,45:3f400000,81:3f400000,1:3f2aaaaa,7:3f2aaaaa,11:3f2aaaaa,19:3f2aaaaa,21:3f2aaaaa,24:3f2aaaaa,28:3f2aaaaa,30:3f2aaaaa,46:3f2aaaaa,65:3f2aaaaa,68:3f2aaaaa,88:3f2aaaaa,94:3f2aaaaa,4:3f000000,22:3f000000,23:3f000000,40:3f000000,44:3f000000,52:3f000000,57:3f000000,58:3f000000,66:3f000000,73:3f000000,76:3f000000,79:3f000000,83:3f000000,87:3f000000,
 body	or(apple,bank)	plain	explain 0	0.75 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  1.0 = w, weight of this function\n  1.0 = k, pivot feature value that would give a score contribution equal to w/2\n  3.0 = S, the sloppy frequency of the interval query body:or(apple,bank)\n
@@ -603,6 +661,7 @@ body	or(apple,bank)	matches 11	body|8:8:36:41,15:15:66:71
 body	or(apple,bank)	matches 12	body|3:3:15:20,10:10:49:54,15:15:71:76,16:16:77:82,18:18:87:92
 body	or(apple,bank)	matches 13	body|9:9:39:44,12:12:56:61,17:17:80:85,18:18:86:91,21:21:100:104
 body	or(apple,bank)	matches 15	body|1:1:4:8,9:9:45:50,13:13:66:71
+body	or(apple,bank)	matches 17	none
 body	or(apple,bank)	matches 18	body|0:0:0:5,21:21:97:101,23:23:109:114
 body	or(apple,bank)	matches 19	body|4:4:16:20,7:7:29:34
 body	or(apple,bank)	matches 20	body|7:7:29:33,8:8:34:38,9:9:39:44,11:11:49:53
@@ -633,6 +692,7 @@ body	or(apple,bank)	matches 56	body|0:0:0:5,2:2:10:15,3:3:16:21,10:10:51:55,17:1
 body	or(apple,bank)	matches 57	body|9:9:43:47
 body	or(apple,bank)	matches 58	body|0:0:0:5
 body	or(apple,bank)	matches 59	body|2:2:8:12,8:8:35:40,13:13:57:61,14:14:62:67
+body	or(apple,bank)	matches 60	none
 body	or(apple,bank)	matches 61	body|3:3:14:19,6:6:31:36,9:9:46:51,13:13:65:70
 body	or(apple,bank)	matches 62	body|0:0:0:5,2:2:10:14,3:3:15:20,14:14:70:75
 body	or(apple,bank)	matches 65	body|1:1:6:11,4:4:20:25
@@ -697,6 +757,7 @@ body	or(apple,phrase(bank,cat))	matches 11	body|8:8:36:41,15:15:66:71
 body	or(apple,phrase(bank,cat))	matches 12	body|3:3:15:20,10:10:49:54,15:15:71:76,16:16:77:82,18:18:87:92
 body	or(apple,phrase(bank,cat))	matches 13	body|9:9:39:44,12:12:56:61,17:17:80:85,18:18:86:91
 body	or(apple,phrase(bank,cat))	matches 15	body|9:9:45:50,13:13:66:71
+body	or(apple,phrase(bank,cat))	matches 17	none
 body	or(apple,phrase(bank,cat))	matches 18	body|0:0:0:5,23:23:109:114
 body	or(apple,phrase(bank,cat))	matches 19	body|7:7:29:34
 body	or(apple,phrase(bank,cat))	matches 20	body|9:9:39:44
@@ -722,6 +783,7 @@ body	or(apple,phrase(bank,cat))	matches 55	body|0:0:0:5,8:8:46:51,19:19:98:103
 body	or(apple,phrase(bank,cat))	matches 56	body|0:0:0:5,2:2:10:15,3:3:16:21,17:17:82:87
 body	or(apple,phrase(bank,cat))	matches 58	body|0:0:0:5
 body	or(apple,phrase(bank,cat))	matches 59	body|2:3:8:16[2:2:8:12 3:3:13:16],8:8:35:40,14:14:62:67
+body	or(apple,phrase(bank,cat))	matches 60	none
 body	or(apple,phrase(bank,cat))	matches 61	body|3:3:14:19,6:6:31:36,9:9:46:51,13:13:65:70
 body	or(apple,phrase(bank,cat))	matches 62	body|0:0:0:5,3:3:15:20,14:14:70:75
 body	or(apple,phrase(bank,cat))	matches 65	body|1:1:6:11,4:4:20:25
@@ -783,6 +845,7 @@ body	or(apple,apple,or(bank,apple))	matches 11	body|8:8:36:41,15:15:66:71
 body	or(apple,apple,or(bank,apple))	matches 12	body|3:3:15:20,10:10:49:54,15:15:71:76,16:16:77:82,18:18:87:92
 body	or(apple,apple,or(bank,apple))	matches 13	body|9:9:39:44,12:12:56:61,17:17:80:85,18:18:86:91,21:21:100:104
 body	or(apple,apple,or(bank,apple))	matches 15	body|1:1:4:8,9:9:45:50,13:13:66:71
+body	or(apple,apple,or(bank,apple))	matches 17	none
 body	or(apple,apple,or(bank,apple))	matches 18	body|0:0:0:5,21:21:97:101,23:23:109:114
 body	or(apple,apple,or(bank,apple))	matches 19	body|4:4:16:20,7:7:29:34
 body	or(apple,apple,or(bank,apple))	matches 20	body|7:7:29:33,8:8:34:38,9:9:39:44,11:11:49:53
@@ -813,6 +876,7 @@ body	or(apple,apple,or(bank,apple))	matches 56	body|0:0:0:5,2:2:10:15,3:3:16:21,
 body	or(apple,apple,or(bank,apple))	matches 57	body|9:9:43:47
 body	or(apple,apple,or(bank,apple))	matches 58	body|0:0:0:5
 body	or(apple,apple,or(bank,apple))	matches 59	body|2:2:8:12,8:8:35:40,13:13:57:61,14:14:62:67
+body	or(apple,apple,or(bank,apple))	matches 60	none
 body	or(apple,apple,or(bank,apple))	matches 61	body|3:3:14:19,6:6:31:36,9:9:46:51,13:13:65:70
 body	or(apple,apple,or(bank,apple))	matches 62	body|0:0:0:5,2:2:10:14,3:3:15:20,14:14:70:75
 body	or(apple,apple,or(bank,apple))	matches 65	body|1:1:6:11,4:4:20:25
@@ -863,7 +927,11 @@ body	or(nosuch,zeta)	bool	explain 7	0.0 = Failure to meet condition(s) of requir
 body	or(nosuch,zeta)	bool	explain 17	0.5 = sum of:\n  0.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n    1.0 = w, weight of this function\n    1.0 = k, pivot feature value that would give a score contribution equal to w/2\n    1.0 = S, the sloppy frequency of the interval query body:or(nosuch,zeta)\n
 body	or(nosuch,zeta)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:or(nosuch,zeta))\n    0.0 = no matching intervals\n
 body	or(nosuch,zeta)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:or(nosuch,zeta))\n    0.0 = no matching intervals\n
+body	or(nosuch,zeta)	matches 0	none
+body	or(nosuch,zeta)	matches 7	none
 body	or(nosuch,zeta)	matches 17	body|1:1:4:8
+body	or(nosuch,zeta)	matches 33	none
+body	or(nosuch,zeta)	matches 60	none
 body	ornr(apple,phrase(bank,cat))	source	or(BLOCK(bank,cat),apple)	1
 body	ornr(apple,phrase(bank,cat))	plain	hits	55 12:3f555555,35:3f555555,47:3f555555,54:3f555555,70:3f555555,2:3f4ccccd,3:3f4ccccd,13:3f4ccccd,33:3f4ccccd,51:3f4ccccd,56:3f4ccccd,61:3f4ccccd,80:3f4ccccd,10:3f400000,45:3f400000,53:3f400000,55:3f400000,62:3f400000,84:3f400000,85:3f400000,92:3f400000,39:3f36db6e,59:3f36db6e,0:3f2aaaaa,1:3f2aaaaa,7:3f2aaaaa,9:3f2aaaaa,11:3f2aaaaa,15:3f2aaaaa,18:3f2aaaaa,26:3f2aaaaa,28:3f2aaaaa,32:3f2aaaaa,37:3f2aaaaa,41:3f2aaaaa,46:3f2aaaaa,65:3f2aaaaa,68:3f2aaaaa,81:3f2aaaaa,88:3f2aaaaa,94:3f2aaaaa,8:3f19999a,21:3f19999a,4:3f000000,6:3f000000,19:3f000000,20:3f000000,22:3f000000,30:3f000000,40:3f000000,58:3f000000,76:3f000000,83:3f000000,87:3f000000,91:3f000000,
 body	ornr(apple,phrase(bank,cat))	plain	explain 0	0.6666666 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  1.0 = w, weight of this function\n  1.0 = k, pivot feature value that would give a score contribution equal to w/2\n  2.0 = S, the sloppy frequency of the interval query body:or(BLOCK(bank,cat),apple)\n
@@ -909,6 +977,7 @@ body	ornr(apple,phrase(bank,cat))	matches 11	body|8:8:36:41,15:15:66:71
 body	ornr(apple,phrase(bank,cat))	matches 12	body|3:3:15:20,10:10:49:54,15:15:71:76,16:16:77:82,18:18:87:92
 body	ornr(apple,phrase(bank,cat))	matches 13	body|9:9:39:44,12:12:56:61,17:17:80:85,18:18:86:91
 body	ornr(apple,phrase(bank,cat))	matches 15	body|9:9:45:50,13:13:66:71
+body	ornr(apple,phrase(bank,cat))	matches 17	none
 body	ornr(apple,phrase(bank,cat))	matches 18	body|0:0:0:5,23:23:109:114
 body	ornr(apple,phrase(bank,cat))	matches 19	body|7:7:29:34
 body	ornr(apple,phrase(bank,cat))	matches 20	body|9:9:39:44
@@ -934,6 +1003,7 @@ body	ornr(apple,phrase(bank,cat))	matches 55	body|0:0:0:5,8:8:46:51,19:19:98:103
 body	ornr(apple,phrase(bank,cat))	matches 56	body|0:0:0:5,2:2:10:15,3:3:16:21,17:17:82:87
 body	ornr(apple,phrase(bank,cat))	matches 58	body|0:0:0:5
 body	ornr(apple,phrase(bank,cat))	matches 59	body|2:3:8:16[2:2:8:12 3:3:13:16],8:8:35:40,14:14:62:67
+body	ornr(apple,phrase(bank,cat))	matches 60	none
 body	ornr(apple,phrase(bank,cat))	matches 61	body|3:3:14:19,6:6:31:36,9:9:46:51,13:13:65:70
 body	ornr(apple,phrase(bank,cat))	matches 62	body|0:0:0:5,3:3:15:20,14:14:70:75
 body	ornr(apple,phrase(bank,cat))	matches 65	body|1:1:6:11,4:4:20:25
@@ -985,8 +1055,10 @@ body	ordered(apple,bank)	matches 0	body|6:7:27:37[6:6:27:32 7:7:33:37]
 body	ordered(apple,bank)	matches 2	body|2:7:8:37[2:2:8:13 7:7:33:37]
 body	ordered(apple,bank)	matches 3	body|5:6:26:36[5:5:26:31 6:6:32:36]
 body	ordered(apple,bank)	matches 6	body|9:14:41:68[9:9:41:46 14:14:64:68]
+body	ordered(apple,bank)	matches 7	none
 body	ordered(apple,bank)	matches 8	body|2:5:11:29[2:2:11:16 5:5:25:29]
 body	ordered(apple,bank)	matches 13	body|18:21:86:104[18:18:86:91 21:21:100:104]
+body	ordered(apple,bank)	matches 17	none
 body	ordered(apple,bank)	matches 18	body|0:21:0:101[0:0:0:5 21:21:97:101]
 body	ordered(apple,bank)	matches 20	body|9:11:39:53[9:9:39:44 11:11:49:53]
 body	ordered(apple,bank)	matches 26	body|5:9:23:48[5:5:23:28 9:9:44:48],10:13:49:70[10:10:49:54 13:13:66:70]
@@ -1000,6 +1072,7 @@ body	ordered(apple,bank)	matches 53	body|4:9:21:51[4:4:21:26 9:9:47:51]
 body	ordered(apple,bank)	matches 55	body|0:1:0:10[0:0:0:5 1:1:6:10]
 body	ordered(apple,bank)	matches 56	body|3:10:16:55[3:3:16:21 10:10:51:55],17:22:82:109[17:17:82:87 22:22:105:109]
 body	ordered(apple,bank)	matches 59	body|8:13:35:61[8:8:35:40 13:13:57:61]
+body	ordered(apple,bank)	matches 60	none
 body	ordered(apple,bank)	matches 62	body|0:2:0:14[0:0:0:5 2:2:10:14]
 body	ordered(apple,bank)	matches 81	body|6:10:28:50[6:6:28:33 10:10:46:50]
 body	ordered(apple,bank)	matches 91	body|16:18:79:94[16:16:79:84 18:18:90:94]
@@ -1035,9 +1108,14 @@ body	ordered(apple,bank,cat)	bool	explain 7	0.0 = Failure to meet condition(s) o
 body	ordered(apple,bank,cat)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(apple,bank,cat))\n    0.0 = no matching intervals\n
 body	ordered(apple,bank,cat)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(apple,bank,cat))\n    0.0 = no matching intervals\n
 body	ordered(apple,bank,cat)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(apple,bank,cat))\n    0.0 = no matching intervals\n
+body	ordered(apple,bank,cat)	matches 0	none
 body	ordered(apple,bank,cat)	matches 6	body|9:18:41:91[9:9:41:46 14:14:64:68 18:18:88:91]
+body	ordered(apple,bank,cat)	matches 7	none
 body	ordered(apple,bank,cat)	matches 8	body|2:6:11:33[2:2:11:16 5:5:25:29 6:6:30:33]
+body	ordered(apple,bank,cat)	matches 17	none
+body	ordered(apple,bank,cat)	matches 33	none
 body	ordered(apple,bank,cat)	matches 39	body|10:17:46:83[10:10:46:51 16:16:75:79 17:17:80:83]
+body	ordered(apple,bank,cat)	matches 60	none
 body	ordered(apple,bank,cat)	matches 92	body|8:16:36:80[8:8:36:41 12:12:56:60 16:16:77:80]
 body	ordered(apple,apple)	source	ORDERED(apple,apple)	1
 body	ordered(apple,apple)	plain	hits	41 70:3f0d5f86,35:3f0ba2e9,51:3f0ba2e9,3:3f09d89e,12:3f078788,47:3f03759f,54:3ef96f98,13:3ef4de9c,56:3ef286be,53:3edb6db6,61:3ed2d2d4,10:3ec8590a,92:3ec8590a,80:3ec4ec4e,2:3eb9c518,33:3eb0df6c,0:3eaaaaaa,7:3eaaaaaa,41:3eaaaaaa,94:3eaaaaaa,85:3e969696,84:3e82b930,46:3e800000,62:3e800000,68:3e800000,88:3e800000,65:3e4ccccc,45:3e44ec50,15:3e2aaaac,28:3e2aaaac,81:3e2aaaac,55:3e26b298,26:3e124924,59:3e000004,9:3de38e38,11:3de38e38,32:3de38e38,37:3de38e38,39:3dba2e90,1:3d70f0f0,18:3d23d700,
@@ -1081,6 +1159,7 @@ body	ordered(apple,apple)	matches 11	body|8:15:36:71[8:8:36:41 15:15:66:71]
 body	ordered(apple,apple)	matches 12	body|3:10:15:54[3:3:15:20 10:10:49:54],10:15:49:76[10:10:49:54 15:15:71:76],15:16:71:82[15:15:71:76 16:16:77:82],16:18:77:92[16:16:77:82 18:18:87:92]
 body	ordered(apple,apple)	matches 13	body|9:12:39:61[9:9:39:44 12:12:56:61],12:17:56:85[12:12:56:61 17:17:80:85],17:18:80:91[17:17:80:85 18:18:86:91]
 body	ordered(apple,apple)	matches 15	body|9:13:45:71[9:9:45:50 13:13:66:71]
+body	ordered(apple,apple)	matches 17	none
 body	ordered(apple,apple)	matches 18	body|0:23:0:114[0:0:0:5 23:23:109:114]
 body	ordered(apple,apple)	matches 26	body|5:10:23:54[5:5:23:28 10:10:49:54]
 body	ordered(apple,apple)	matches 28	body|3:7:12:37[3:3:12:17 7:7:32:37]
@@ -1099,6 +1178,7 @@ body	ordered(apple,apple)	matches 54	body|1:12:4:63[1:1:4:9 12:12:58:63],12:13:5
 body	ordered(apple,apple)	matches 55	body|0:8:0:51[0:0:0:5 8:8:46:51],8:19:46:103[8:8:46:51 19:19:98:103]
 body	ordered(apple,apple)	matches 56	body|0:2:0:15[0:0:0:5 2:2:10:15],2:3:10:21[2:2:10:15 3:3:16:21],3:17:16:87[3:3:16:21 17:17:82:87]
 body	ordered(apple,apple)	matches 59	body|8:14:35:67[8:8:35:40 14:14:62:67]
+body	ordered(apple,apple)	matches 60	none
 body	ordered(apple,apple)	matches 61	body|3:6:14:36[3:3:14:19 6:6:31:36],6:9:31:51[6:6:31:36 9:9:46:51],9:13:46:70[9:9:46:51 13:13:65:70]
 body	ordered(apple,apple)	matches 62	body|0:3:0:20[0:0:0:5 3:3:15:20],3:14:15:75[3:3:15:20 14:14:70:75]
 body	ordered(apple,apple)	matches 65	body|1:4:6:25[1:1:6:11 4:4:20:25]
@@ -1144,7 +1224,9 @@ body	ordered(apple,apple,bank)	bool	explain 33	0.14285713 = sum of:\n  0.1428571
 body	ordered(apple,apple,bank)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(apple,apple,bank))\n    0.0 = no matching intervals\n
 body	ordered(apple,apple,bank)	matches 0	body|5:7:21:37[5:5:21:26 6:6:27:32 7:7:33:37]
 body	ordered(apple,apple,bank)	matches 3	body|4:6:20:36[4:4:20:25 5:5:26:31 6:6:32:36]
+body	ordered(apple,apple,bank)	matches 7	none
 body	ordered(apple,apple,bank)	matches 13	body|17:21:80:104[17:17:80:85 18:18:86:91 21:21:100:104]
+body	ordered(apple,apple,bank)	matches 17	none
 body	ordered(apple,apple,bank)	matches 26	body|5:13:23:70[5:5:23:28 10:10:49:54 13:13:66:70]
 body	ordered(apple,apple,bank)	matches 33	body|3:9:15:50[3:3:15:20 8:8:40:45 9:9:46:50]
 body	ordered(apple,apple,bank)	matches 35	body|3:8:14:42[3:3:14:19 7:7:32:37 8:8:38:42]
@@ -1153,6 +1235,7 @@ body	ordered(apple,apple,bank)	matches 39	body|1:16:5:79[1:1:5:10 10:10:46:51 16
 body	ordered(apple,apple,bank)	matches 47	body|10:18:46:88[10:10:46:51 12:12:56:61 18:18:84:88]
 body	ordered(apple,apple,bank)	matches 53	body|3:9:15:51[3:3:15:20 4:4:21:26 9:9:47:51]
 body	ordered(apple,apple,bank)	matches 56	body|2:10:10:55[2:2:10:15 3:3:16:21 10:10:51:55],3:22:16:109[3:3:16:21 17:17:82:87 22:22:105:109]
+body	ordered(apple,apple,bank)	matches 60	none
 body	ordered(apple,apple,bank)	matches 81	body|2:10:8:50[2:2:8:13 6:6:28:33 10:10:46:50]
 body	ordered(apple,apple,bank)	matches 92	body|7:12:30:60[7:7:30:35 8:8:36:41 12:12:56:60]
 body	ordered(bank,apple,apple)	source	ORDERED(bank,apple,apple)	2
@@ -1186,15 +1269,20 @@ body	ordered(bank,apple,apple)	bool	explain 7	0.0 = Failure to meet condition(s)
 body	ordered(bank,apple,apple)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(bank,apple,apple))\n    0.0 = no matching intervals\n
 body	ordered(bank,apple,apple)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(bank,apple,apple))\n    0.0 = no matching intervals\n
 body	ordered(bank,apple,apple)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(bank,apple,apple))\n    0.0 = no matching intervals\n
+body	ordered(bank,apple,apple)	matches 0	none
 body	ordered(bank,apple,apple)	matches 2	body|7:12:33:62[7:7:33:37 10:10:47:52 12:12:57:62]
+body	ordered(bank,apple,apple)	matches 7	none
 body	ordered(bank,apple,apple)	matches 9	body|3:17:16:84[3:3:16:20 10:10:46:51 17:17:79:84]
 body	ordered(bank,apple,apple)	matches 15	body|1:13:4:71[1:1:4:8 9:9:45:50 13:13:66:71]
+body	ordered(bank,apple,apple)	matches 17	none
 body	ordered(bank,apple,apple)	matches 32	body|3:17:14:86[3:3:14:18 10:10:46:51 17:17:81:86]
+body	ordered(bank,apple,apple)	matches 33	none
 body	ordered(bank,apple,apple)	matches 35	body|8:11:38:58[8:8:38:42 9:9:43:48 11:11:53:58]
 body	ordered(bank,apple,apple)	matches 41	body|4:6:18:34[4:4:18:22 5:5:23:28 6:6:29:34]
 body	ordered(bank,apple,apple)	matches 51	body|5:10:22:51[5:5:22:26 9:9:40:45 10:10:46:51]
 body	ordered(bank,apple,apple)	matches 55	body|1:19:6:103[1:1:6:10 8:8:46:51 19:19:98:103]
 body	ordered(bank,apple,apple)	matches 59	body|2:14:8:67[2:2:8:12 8:8:35:40 14:14:62:67]
+body	ordered(bank,apple,apple)	matches 60	none
 body	ordered(bank,apple,apple)	matches 62	body|2:14:10:75[2:2:10:14 3:3:15:20 14:14:70:75]
 body	ordered(bank,apple,apple)	matches 84	body|0:8:0:45[0:0:0:4 2:2:9:14 8:8:40:45]
 body	ordered(bank,apple,apple)	matches 85	body|4:18:17:92[4:4:17:21 7:7:30:35 18:18:87:92]
@@ -1230,15 +1318,20 @@ body	ordered(apple,or(bank,cat),dog)	bool	explain 7	0.0 = Failure to meet condit
 body	ordered(apple,or(bank,cat),dog)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(apple,or(bank,cat),dog))\n    0.0 = no matching intervals\n
 body	ordered(apple,or(bank,cat),dog)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(apple,or(bank,cat),dog))\n    0.0 = no matching intervals\n
 body	ordered(apple,or(bank,cat),dog)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(apple,or(bank,cat),dog))\n    0.0 = no matching intervals\n
+body	ordered(apple,or(bank,cat),dog)	matches 0	none
 body	ordered(apple,or(bank,cat),dog)	matches 1	body|4:15:16:73[4:4:16:21 14:14:66:69 15:15:70:73]
 body	ordered(apple,or(bank,cat),dog)	matches 3	body|5:7:26:40[5:5:26:31 6:6:32:36 7:7:37:40]
+body	ordered(apple,or(bank,cat),dog)	matches 7	none
 body	ordered(apple,or(bank,cat),dog)	matches 12	body|3:19:15:96[3:3:15:20 8:8:38:41 19:19:93:96]
+body	ordered(apple,or(bank,cat),dog)	matches 17	none
 body	ordered(apple,or(bank,cat),dog)	matches 20	body|9:20:39:93[9:9:39:44 11:11:49:53 20:20:90:93]
+body	ordered(apple,or(bank,cat),dog)	matches 33	none
 body	ordered(apple,or(bank,cat),dog)	matches 39	body|10:19:46:92[10:10:46:51 16:16:75:79 19:19:89:92]
 body	ordered(apple,or(bank,cat),dog)	matches 53	body|4:12:21:63[4:4:21:26 9:9:47:51 12:12:60:63]
 body	ordered(apple,or(bank,cat),dog)	matches 55	body|0:21:0:112[0:0:0:5 1:1:6:10 21:21:109:112]
 body	ordered(apple,or(bank,cat),dog)	matches 56	body|3:15:16:76[3:3:16:21 10:10:51:55 15:15:73:76]
 body	ordered(apple,or(bank,cat),dog)	matches 59	body|8:19:35:92[8:8:35:40 12:12:53:56 19:19:89:92]
+body	ordered(apple,or(bank,cat),dog)	matches 60	none
 body	ordered(apple,or(bank,cat),dog)	matches 62	body|0:7:0:40[0:0:0:5 2:2:10:14 7:7:37:40]
 body	ordered(apple,or(bank,cat),dog)	matches 80	body|2:4:9:22[2:2:9:14 3:3:15:18 4:4:19:22]
 body	ordered(phrase(apple,bank),cat)	source	ORDERED(BLOCK(apple,bank),cat)	3
@@ -1272,6 +1365,11 @@ body	ordered(phrase(apple,bank),cat)	bool	explain 7	0.0 = Failure to meet condit
 body	ordered(phrase(apple,bank),cat)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(BLOCK(apple,bank),cat))\n    0.0 = no matching intervals\n
 body	ordered(phrase(apple,bank),cat)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(BLOCK(apple,bank),cat))\n    0.0 = no matching intervals\n
 body	ordered(phrase(apple,bank),cat)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(BLOCK(apple,bank),cat))\n    0.0 = no matching intervals\n
+body	ordered(phrase(apple,bank),cat)	matches 0	none
+body	ordered(phrase(apple,bank),cat)	matches 7	none
+body	ordered(phrase(apple,bank),cat)	matches 17	none
+body	ordered(phrase(apple,bank),cat)	matches 33	none
+body	ordered(phrase(apple,bank),cat)	matches 60	none
 body	ordered(apple,nosuch)	source	ORDERED(apple,nosuch)	2
 body	ordered(apple,nosuch)	plain	hits	0 
 body	ordered(apple,nosuch)	plain	explain 0	0.0 = no matching intervals\n
@@ -1303,6 +1401,11 @@ body	ordered(apple,nosuch)	bool	explain 7	0.0 = Failure to meet condition(s) of 
 body	ordered(apple,nosuch)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(apple,nosuch))\n    0.0 = no matching intervals\n
 body	ordered(apple,nosuch)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(apple,nosuch))\n    0.0 = no matching intervals\n
 body	ordered(apple,nosuch)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(apple,nosuch))\n    0.0 = no matching intervals\n
+body	ordered(apple,nosuch)	matches 0	none
+body	ordered(apple,nosuch)	matches 7	none
+body	ordered(apple,nosuch)	matches 17	none
+body	ordered(apple,nosuch)	matches 33	none
+body	ordered(apple,nosuch)	matches 60	none
 body	unordered(apple,bank)	source	UNORDERED(apple,bank)	2
 body	unordered(apple,bank)	plain	hits	32 35:3f2aaaaa,26:3f1ce73a,20:3f19999a,62:3f19999a,59:3f13d4bc,8:3f124925,6:3f0ba2e9,33:3f088888,55:3f088888,0:3f000000,3:3f000000,41:3f000000,92:3ef1826a,32:3eea2ba8,91:3ee8ba2e,47:3eccccce,18:3eb52b54,2:3eb21642,30:3eaaaaaa,37:3eaaaaaa,84:3eaaaaaa,56:3ea76276,13:3e800000,19:3e800000,85:3e800000,51:3e4ccccc,81:3e4ccccc,53:3e2aaaac,21:3e124924,39:3e124924,9:3e000004,15:3de38e38,
 body	unordered(apple,bank)	plain	explain 0	0.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  1.0 = w, weight of this function\n  1.0 = k, pivot feature value that would give a score contribution equal to w/2\n  1.0 = S, the sloppy frequency of the interval query body:UNORDERED(apple,bank)\n
@@ -1338,10 +1441,12 @@ body	unordered(apple,bank)	matches 0	body|6:7:27:37[6:6:27:32 7:7:33:37]
 body	unordered(apple,bank)	matches 2	body|2:7:8:37[2:2:8:13 7:7:33:37],7:10:33:52[7:7:33:37 10:10:47:52]
 body	unordered(apple,bank)	matches 3	body|5:6:26:36[5:5:26:31 6:6:32:36]
 body	unordered(apple,bank)	matches 6	body|8:9:36:46[8:8:36:40 9:9:41:46],9:14:41:68[9:9:41:46 14:14:64:68]
+body	unordered(apple,bank)	matches 7	none
 body	unordered(apple,bank)	matches 8	body|1:2:6:16[1:1:6:10 2:2:11:16],2:5:11:29[2:2:11:16 5:5:25:29]
 body	unordered(apple,bank)	matches 9	body|3:10:16:51[3:3:16:20 10:10:46:51]
 body	unordered(apple,bank)	matches 13	body|18:21:86:104[18:18:86:91 21:21:100:104]
 body	unordered(apple,bank)	matches 15	body|1:9:4:50[1:1:4:8 9:9:45:50]
+body	unordered(apple,bank)	matches 17	none
 body	unordered(apple,bank)	matches 18	body|0:21:0:101[0:0:0:5 21:21:97:101],21:23:97:114[21:21:97:101 23:23:109:114]
 body	unordered(apple,bank)	matches 19	body|4:7:16:34[4:4:16:20 7:7:29:34]
 body	unordered(apple,bank)	matches 20	body|8:9:34:44[8:8:34:38 9:9:39:44],9:11:39:53[9:9:39:44 11:11:49:53]
@@ -1360,6 +1465,7 @@ body	unordered(apple,bank)	matches 53	body|4:9:21:51[4:4:21:26 9:9:47:51]
 body	unordered(apple,bank)	matches 55	body|0:1:0:10[0:0:0:5 1:1:6:10],1:8:6:51[1:1:6:10 8:8:46:51]
 body	unordered(apple,bank)	matches 56	body|3:10:16:55[3:3:16:21 10:10:51:55],10:17:51:87[10:10:51:55 17:17:82:87],17:22:82:109[17:17:82:87 22:22:105:109]
 body	unordered(apple,bank)	matches 59	body|2:8:8:40[2:2:8:12 8:8:35:40],8:13:35:61[8:8:35:40 13:13:57:61],13:14:57:67[13:13:57:61 14:14:62:67]
+body	unordered(apple,bank)	matches 60	none
 body	unordered(apple,bank)	matches 62	body|0:2:0:14[0:0:0:5 2:2:10:14],2:3:10:20[2:2:10:14 3:3:15:20]
 body	unordered(apple,bank)	matches 81	body|6:10:28:50[6:6:28:33 10:10:46:50]
 body	unordered(apple,bank)	matches 84	body|0:2:0:14[0:0:0:4 2:2:9:14]
@@ -1408,6 +1514,7 @@ body	unordered(apple,apple)	matches 11	body|8:15:36:71[8:8:36:41 15:15:66:71]
 body	unordered(apple,apple)	matches 12	body|3:10:15:54[3:3:15:20 10:10:49:54],10:15:49:76[10:10:49:54 15:15:71:76],15:16:71:82[15:15:71:76 16:16:77:82],16:18:77:92[16:16:77:82 18:18:87:92]
 body	unordered(apple,apple)	matches 13	body|9:12:39:61[9:9:39:44 12:12:56:61],12:17:56:85[12:12:56:61 17:17:80:85],17:18:80:91[17:17:80:85 18:18:86:91]
 body	unordered(apple,apple)	matches 15	body|9:13:45:71[9:9:45:50 13:13:66:71]
+body	unordered(apple,apple)	matches 17	none
 body	unordered(apple,apple)	matches 18	body|0:23:0:114[0:0:0:5 23:23:109:114]
 body	unordered(apple,apple)	matches 26	body|5:10:23:54[5:5:23:28 10:10:49:54]
 body	unordered(apple,apple)	matches 28	body|3:7:12:37[3:3:12:17 7:7:32:37]
@@ -1426,6 +1533,7 @@ body	unordered(apple,apple)	matches 54	body|1:12:4:63[1:1:4:9 12:12:58:63],12:13
 body	unordered(apple,apple)	matches 55	body|0:8:0:51[0:0:0:5 8:8:46:51],8:19:46:103[8:8:46:51 19:19:98:103]
 body	unordered(apple,apple)	matches 56	body|0:2:0:15[0:0:0:5 2:2:10:15],2:3:10:21[2:2:10:15 3:3:16:21],3:17:16:87[3:3:16:21 17:17:82:87]
 body	unordered(apple,apple)	matches 59	body|8:14:35:67[8:8:35:40 14:14:62:67]
+body	unordered(apple,apple)	matches 60	none
 body	unordered(apple,apple)	matches 61	body|3:6:14:36[3:3:14:19 6:6:31:36],6:9:31:51[6:6:31:36 9:9:46:51],9:13:46:70[9:9:46:51 13:13:65:70]
 body	unordered(apple,apple)	matches 62	body|0:3:0:20[0:0:0:5 3:3:15:20],3:14:15:75[3:3:15:20 14:14:70:75]
 body	unordered(apple,apple)	matches 65	body|1:4:6:25[1:1:6:11 4:4:20:25]
@@ -1472,9 +1580,11 @@ body	unordered(apple,bank,apple)	bool	explain 60	0.0 = Failure to meet condition
 body	unordered(apple,bank,apple)	matches 0	body|5:7:21:37[5:5:21:26 6:6:27:32 7:7:33:37]
 body	unordered(apple,bank,apple)	matches 2	body|2:10:8:52[2:2:8:13 7:7:33:37 10:10:47:52],7:12:33:62[7:7:33:37 10:10:47:52 12:12:57:62]
 body	unordered(apple,bank,apple)	matches 3	body|4:6:20:36[4:4:20:25 5:5:26:31 6:6:32:36]
+body	unordered(apple,bank,apple)	matches 7	none
 body	unordered(apple,bank,apple)	matches 9	body|3:17:16:84[3:3:16:20 10:10:46:51 17:17:79:84]
 body	unordered(apple,bank,apple)	matches 13	body|17:21:80:104[17:17:80:85 18:18:86:91 21:21:100:104]
 body	unordered(apple,bank,apple)	matches 15	body|1:13:4:71[1:1:4:8 9:9:45:50 13:13:66:71]
+body	unordered(apple,bank,apple)	matches 17	none
 body	unordered(apple,bank,apple)	matches 18	body|0:23:0:114[0:0:0:5 21:21:97:101 23:23:109:114]
 body	unordered(apple,bank,apple)	matches 26	body|5:10:23:54[5:5:23:28 9:9:44:48 10:10:49:54]
 body	unordered(apple,bank,apple)	matches 32	body|10:17:46:86[10:10:46:51 15:15:72:76 17:17:81:86]
@@ -1489,6 +1599,7 @@ body	unordered(apple,bank,apple)	matches 53	body|3:9:15:51[3:3:15:20 4:4:21:26 9
 body	unordered(apple,bank,apple)	matches 55	body|0:8:0:51[0:0:0:5 1:1:6:10 8:8:46:51],1:19:6:103[1:1:6:10 8:8:46:51 19:19:98:103]
 body	unordered(apple,bank,apple)	matches 56	body|2:10:10:55[2:2:10:15 3:3:16:21 10:10:51:55],3:17:16:87[3:3:16:21 10:10:51:55 17:17:82:87]
 body	unordered(apple,bank,apple)	matches 59	body|8:14:35:67[8:8:35:40 13:13:57:61 14:14:62:67]
+body	unordered(apple,bank,apple)	matches 60	none
 body	unordered(apple,bank,apple)	matches 62	body|0:3:0:20[0:0:0:5 2:2:10:14 3:3:15:20],2:14:10:75[2:2:10:14 3:3:15:20 14:14:70:75]
 body	unordered(apple,bank,apple)	matches 81	body|2:10:8:50[2:2:8:13 6:6:28:33 10:10:46:50]
 body	unordered(apple,bank,apple)	matches 84	body|0:8:0:45[0:0:0:4 2:2:9:14 8:8:40:45]
@@ -1525,13 +1636,18 @@ body	unordered(apple,bank,cat,dog)	bool	explain 7	0.0 = Failure to meet conditio
 body	unordered(apple,bank,cat,dog)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:UNORDERED(apple,bank,cat,dog))\n    0.0 = no matching intervals\n
 body	unordered(apple,bank,cat,dog)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:UNORDERED(apple,bank,cat,dog))\n    0.0 = no matching intervals\n
 body	unordered(apple,bank,cat,dog)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:UNORDERED(apple,bank,cat,dog))\n    0.0 = no matching intervals\n
+body	unordered(apple,bank,cat,dog)	matches 0	none
+body	unordered(apple,bank,cat,dog)	matches 7	none
 body	unordered(apple,bank,cat,dog)	matches 8	body|2:6:11:33[2:2:11:16 3:3:17:20 5:5:25:29 6:6:30:33]
 body	unordered(apple,bank,cat,dog)	matches 13	body|8:21:35:104[8:8:35:38 9:9:39:44 15:15:72:75 21:21:100:104]
+body	unordered(apple,bank,cat,dog)	matches 17	none
 body	unordered(apple,bank,cat,dog)	matches 19	body|4:12:16:62[4:4:16:20 5:5:21:24 7:7:29:34 12:12:59:62]
 body	unordered(apple,bank,cat,dog)	matches 21	body|6:14:27:65[6:6:27:30 8:8:35:39 9:9:40:43 14:14:60:65]
+body	unordered(apple,bank,cat,dog)	matches 33	none
 body	unordered(apple,bank,cat,dog)	matches 39	body|2:17:11:83[2:2:11:14 10:10:46:51 16:16:75:79 17:17:80:83],10:19:46:92[10:10:46:51 16:16:75:79 17:17:80:83 19:19:89:92]
 body	unordered(apple,bank,cat,dog)	matches 47	body|0:18:0:88[0:0:0:3 1:1:4:9 4:4:19:22 18:18:84:88]
 body	unordered(apple,bank,cat,dog)	matches 59	body|2:8:8:40[2:2:8:12 3:3:13:16 5:5:21:24 8:8:35:40],5:13:21:61[5:5:21:24 6:6:25:28 8:8:35:40 13:13:57:61],12:19:53:92[12:12:53:56 13:13:57:61 14:14:62:67 19:19:89:92]
+body	unordered(apple,bank,cat,dog)	matches 60	none
 body	unordered(apple,bank,cat,dog)	matches 91	body|12:16:62:84[12:12:62:65 13:13:66:70 15:15:75:78 16:16:79:84]
 body	unordered(apple,ordered(bank,cat))	source	UNORDERED(apple,ORDERED(bank,cat))	3
 body	unordered(apple,ordered(bank,cat))	plain	hits	11 91:3eaaaaaa,92:3eaaaaaa,8:3e800000,21:3e2aaaac,30:3e2aaaac,59:3e2aaaac,9:3e124924,39:3e124924,19:3e000004,6:3de38e38,32:3de38e38,
@@ -1564,15 +1680,20 @@ body	unordered(apple,ordered(bank,cat))	bool	explain 7	0.0 = Failure to meet con
 body	unordered(apple,ordered(bank,cat))	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:UNORDERED(apple,ORDERED(bank,cat)))\n    0.0 = no matching intervals\n
 body	unordered(apple,ordered(bank,cat))	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:UNORDERED(apple,ORDERED(bank,cat)))\n    0.0 = no matching intervals\n
 body	unordered(apple,ordered(bank,cat))	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:UNORDERED(apple,ORDERED(bank,cat)))\n    0.0 = no matching intervals\n
+body	unordered(apple,ordered(bank,cat))	matches 0	none
 body	unordered(apple,ordered(bank,cat))	matches 6	body|9:18:41:91[9:9:41:46 14:14:64:68 18:18:88:91]
+body	unordered(apple,ordered(bank,cat))	matches 7	none
 body	unordered(apple,ordered(bank,cat))	matches 8	body|2:6:11:33[2:2:11:16 5:5:25:29 6:6:30:33]
 body	unordered(apple,ordered(bank,cat))	matches 9	body|3:10:16:51[3:3:16:20 7:7:34:37 10:10:46:51]
+body	unordered(apple,ordered(bank,cat))	matches 17	none
 body	unordered(apple,ordered(bank,cat))	matches 19	body|4:12:16:62[4:4:16:20 7:7:29:34 12:12:59:62]
 body	unordered(apple,ordered(bank,cat))	matches 21	body|8:14:35:65[8:8:35:39 9:9:40:43 14:14:60:65]
 body	unordered(apple,ordered(bank,cat))	matches 30	body|3:9:14:54[3:3:14:18 5:5:25:30 9:9:51:54]
 body	unordered(apple,ordered(bank,cat))	matches 32	body|3:12:14:61[3:3:14:18 10:10:46:51 12:12:58:61]
+body	unordered(apple,ordered(bank,cat))	matches 33	none
 body	unordered(apple,ordered(bank,cat))	matches 39	body|10:17:46:83[10:10:46:51 16:16:75:79 17:17:80:83]
 body	unordered(apple,ordered(bank,cat))	matches 59	body|2:8:8:40[2:2:8:12 3:3:13:16 8:8:35:40]
+body	unordered(apple,ordered(bank,cat))	matches 60	none
 body	unordered(apple,ordered(bank,cat))	matches 91	body|13:16:66:84[13:13:66:70 15:15:75:78 16:16:79:84]
 body	unordered(apple,ordered(bank,cat))	matches 92	body|0:7:0:35[0:0:0:4 4:4:17:20 7:7:30:35],12:16:56:80[12:12:56:60 14:14:66:71 16:16:77:80]
 body	uno(apple,bank)	source	or(ORDERED(apple,bank),ORDERED(bank,apple))	2
@@ -1610,10 +1731,12 @@ body	uno(apple,bank)	matches 0	body|6:7:27:37[6:6:27:32 7:7:33:37]
 body	uno(apple,bank)	matches 2	body|2:7:8:37[2:2:8:13 7:7:33:37],7:10:33:52[7:7:33:37 10:10:47:52]
 body	uno(apple,bank)	matches 3	body|5:6:26:36[5:5:26:31 6:6:32:36]
 body	uno(apple,bank)	matches 6	body|8:9:36:46[8:8:36:40 9:9:41:46],9:14:41:68[9:9:41:46 14:14:64:68]
+body	uno(apple,bank)	matches 7	none
 body	uno(apple,bank)	matches 8	body|1:2:6:16[1:1:6:10 2:2:11:16],2:5:11:29[2:2:11:16 5:5:25:29]
 body	uno(apple,bank)	matches 9	body|3:10:16:51[3:3:16:20 10:10:46:51]
 body	uno(apple,bank)	matches 13	body|18:21:86:104[18:18:86:91 21:21:100:104]
 body	uno(apple,bank)	matches 15	body|1:9:4:50[1:1:4:8 9:9:45:50]
+body	uno(apple,bank)	matches 17	none
 body	uno(apple,bank)	matches 18	body|0:21:0:101[0:0:0:5 21:21:97:101],21:23:97:114[21:21:97:101 23:23:109:114]
 body	uno(apple,bank)	matches 19	body|4:7:16:34[4:4:16:20 7:7:29:34]
 body	uno(apple,bank)	matches 20	body|8:9:34:44[8:8:34:38 9:9:39:44],9:11:39:53[9:9:39:44 11:11:49:53]
@@ -1632,6 +1755,7 @@ body	uno(apple,bank)	matches 53	body|4:9:21:51[4:4:21:26 9:9:47:51]
 body	uno(apple,bank)	matches 55	body|0:1:0:10[0:0:0:5 1:1:6:10],1:8:6:51[1:1:6:10 8:8:46:51]
 body	uno(apple,bank)	matches 56	body|3:10:16:55[3:3:16:21 10:10:51:55],10:17:51:87[10:10:51:55 17:17:82:87],17:22:82:109[17:17:82:87 22:22:105:109]
 body	uno(apple,bank)	matches 59	body|2:8:8:40[2:2:8:12 8:8:35:40],8:13:35:61[8:8:35:40 13:13:57:61],13:14:57:67[13:13:57:61 14:14:62:67]
+body	uno(apple,bank)	matches 60	none
 body	uno(apple,bank)	matches 62	body|0:2:0:14[0:0:0:5 2:2:10:14],2:3:10:20[2:2:10:14 3:3:15:20]
 body	uno(apple,bank)	matches 81	body|6:10:28:50[6:6:28:33 10:10:46:50]
 body	uno(apple,bank)	matches 84	body|0:2:0:14[0:0:0:4 2:2:9:14]
@@ -1683,6 +1807,7 @@ body	unordered(apple)	matches 11	body|8:8:36:41,15:15:66:71
 body	unordered(apple)	matches 12	body|3:3:15:20,10:10:49:54,15:15:71:76,16:16:77:82,18:18:87:92
 body	unordered(apple)	matches 13	body|9:9:39:44,12:12:56:61,17:17:80:85,18:18:86:91
 body	unordered(apple)	matches 15	body|9:9:45:50,13:13:66:71
+body	unordered(apple)	matches 17	none
 body	unordered(apple)	matches 18	body|0:0:0:5,23:23:109:114
 body	unordered(apple)	matches 19	body|7:7:29:34
 body	unordered(apple)	matches 20	body|9:9:39:44
@@ -1708,6 +1833,7 @@ body	unordered(apple)	matches 55	body|0:0:0:5,8:8:46:51,19:19:98:103
 body	unordered(apple)	matches 56	body|0:0:0:5,2:2:10:15,3:3:16:21,17:17:82:87
 body	unordered(apple)	matches 58	body|0:0:0:5
 body	unordered(apple)	matches 59	body|8:8:35:40,14:14:62:67
+body	unordered(apple)	matches 60	none
 body	unordered(apple)	matches 61	body|3:3:14:19,6:6:31:36,9:9:46:51,13:13:65:70
 body	unordered(apple)	matches 62	body|0:0:0:5,3:3:15:20,14:14:70:75
 body	unordered(apple)	matches 65	body|1:1:6:11,4:4:20:25
@@ -1757,11 +1883,14 @@ body	maxgaps(1,ordered(apple,bank))	bool	explain 33	0.5 = sum of:\n  0.5 = Satur
 body	maxgaps(1,ordered(apple,bank))	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:MAXGAPS/1(ORDERED(apple,bank)))\n    0.0 = no matching intervals\n
 body	maxgaps(1,ordered(apple,bank))	matches 0	body|6:7:27:37[6:6:27:32 7:7:33:37]
 body	maxgaps(1,ordered(apple,bank))	matches 3	body|5:6:26:36[5:5:26:31 6:6:32:36]
+body	maxgaps(1,ordered(apple,bank))	matches 7	none
+body	maxgaps(1,ordered(apple,bank))	matches 17	none
 body	maxgaps(1,ordered(apple,bank))	matches 20	body|9:11:39:53[9:9:39:44 11:11:49:53]
 body	maxgaps(1,ordered(apple,bank))	matches 33	body|8:9:40:50[8:8:40:45 9:9:46:50]
 body	maxgaps(1,ordered(apple,bank))	matches 35	body|7:8:32:42[7:7:32:37 8:8:38:42]
 body	maxgaps(1,ordered(apple,bank))	matches 37	body|12:14:55:69[12:12:55:60 14:14:65:69]
 body	maxgaps(1,ordered(apple,bank))	matches 55	body|0:1:0:10[0:0:0:5 1:1:6:10]
+body	maxgaps(1,ordered(apple,bank))	matches 60	none
 body	maxgaps(1,ordered(apple,bank))	matches 62	body|0:2:0:14[0:0:0:5 2:2:10:14]
 body	maxgaps(1,ordered(apple,bank))	matches 91	body|16:18:79:94[16:16:79:84 18:18:90:94]
 body	maxgaps(0,unordered(apple,bank,cat))	source	MAXGAPS/0(UNORDERED(apple,bank,cat))	3
@@ -1795,9 +1924,13 @@ body	maxgaps(0,unordered(apple,bank,cat))	bool	explain 7	0.0 = Failure to meet c
 body	maxgaps(0,unordered(apple,bank,cat))	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:MAXGAPS/0(UNORDERED(apple,bank,cat)))\n    0.0 = no matching intervals\n
 body	maxgaps(0,unordered(apple,bank,cat))	bool	explain 33	0.5 = sum of:\n  0.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n    1.0 = w, weight of this function\n    1.0 = k, pivot feature value that would give a score contribution equal to w/2\n    1.0 = S, the sloppy frequency of the interval query body:MAXGAPS/0(UNORDERED(apple,bank,cat))\n
 body	maxgaps(0,unordered(apple,bank,cat))	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:MAXGAPS/0(UNORDERED(apple,bank,cat)))\n    0.0 = no matching intervals\n
+body	maxgaps(0,unordered(apple,bank,cat))	matches 0	none
+body	maxgaps(0,unordered(apple,bank,cat))	matches 7	none
+body	maxgaps(0,unordered(apple,bank,cat))	matches 17	none
 body	maxgaps(0,unordered(apple,bank,cat))	matches 33	body|7:9:36:50[7:7:36:39 8:8:40:45 9:9:46:50]
 body	maxgaps(0,unordered(apple,bank,cat))	matches 35	body|6:8:28:42[6:6:28:31 7:7:32:37 8:8:38:42]
 body	maxgaps(0,unordered(apple,bank,cat))	matches 59	body|12:14:53:67[12:12:53:56 13:13:57:61 14:14:62:67]
+body	maxgaps(0,unordered(apple,bank,cat))	matches 60	none
 body	maxgaps(2,ordered(or(apple,phrase(ape,bank)),cat))	source	or(MAXGAPS/2(ORDERED(BLOCK(ape,bank),cat)),MAXGAPS/2(ORDERED(apple,cat)))	2
 body	maxgaps(2,ordered(or(apple,phrase(ape,bank)),cat))	plain	hits	9 9:3f000000,70:3f000000,80:3f000000,81:3f000000,28:3eaaaaaa,32:3eaaaaaa,59:3eaaaaaa,92:3eaaaaaa,35:3e800000,
 body	maxgaps(2,ordered(or(apple,phrase(ape,bank)),cat))	plain	explain 0	0.0 = no matching intervals\n
@@ -1829,11 +1962,16 @@ body	maxgaps(2,ordered(or(apple,phrase(ape,bank)),cat))	bool	explain 7	0.0 = Fai
 body	maxgaps(2,ordered(or(apple,phrase(ape,bank)),cat))	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:or(MAXGAPS/2(ORDERED(BLOCK(ape,bank),cat)),MAXGAPS/2(ORDERED(apple,cat))))\n    0.0 = no matching intervals\n
 body	maxgaps(2,ordered(or(apple,phrase(ape,bank)),cat))	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:or(MAXGAPS/2(ORDERED(BLOCK(ape,bank),cat)),MAXGAPS/2(ORDERED(apple,cat))))\n    0.0 = no matching intervals\n
 body	maxgaps(2,ordered(or(apple,phrase(ape,bank)),cat))	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:or(MAXGAPS/2(ORDERED(BLOCK(ape,bank),cat)),MAXGAPS/2(ORDERED(apple,cat))))\n    0.0 = no matching intervals\n
+body	maxgaps(2,ordered(or(apple,phrase(ape,bank)),cat))	matches 0	none
+body	maxgaps(2,ordered(or(apple,phrase(ape,bank)),cat))	matches 7	none
 body	maxgaps(2,ordered(or(apple,phrase(ape,bank)),cat))	matches 9	body|17:18:79:88[17:17:79:84 18:18:85:88]
+body	maxgaps(2,ordered(or(apple,phrase(ape,bank)),cat))	matches 17	none
 body	maxgaps(2,ordered(or(apple,phrase(ape,bank)),cat))	matches 28	body|7:9:32:46[7:7:32:37 9:9:43:46]
 body	maxgaps(2,ordered(or(apple,phrase(ape,bank)),cat))	matches 32	body|10:12:46:61[10:10:46:51 12:12:58:61]
+body	maxgaps(2,ordered(or(apple,phrase(ape,bank)),cat))	matches 33	none
 body	maxgaps(2,ordered(or(apple,phrase(ape,bank)),cat))	matches 35	body|3:6:14:31[3:3:14:19 6:6:28:31]
 body	maxgaps(2,ordered(or(apple,phrase(ape,bank)),cat))	matches 59	body|1:3:4:16[1:1:4:7 2:2:8:12 3:3:13:16]
+body	maxgaps(2,ordered(or(apple,phrase(ape,bank)),cat))	matches 60	none
 body	maxgaps(2,ordered(or(apple,phrase(ape,bank)),cat))	matches 70	body|20:21:98:107[20:20:98:103 21:21:104:107]
 body	maxgaps(2,ordered(or(apple,phrase(ape,bank)),cat))	matches 80	body|2:3:9:18[2:2:9:14 3:3:15:18]
 body	maxgaps(2,ordered(or(apple,phrase(ape,bank)),cat))	matches 81	body|6:7:28:37[6:6:28:33 7:7:34:37]
@@ -1877,6 +2015,7 @@ body	maxgaps(3,unordered(apple,apple))	matches 10	body|1:2:6:17[1:1:6:11 2:2:12:
 body	maxgaps(3,unordered(apple,apple))	matches 12	body|15:16:71:82[15:15:71:76 16:16:77:82],16:18:77:92[16:16:77:82 18:18:87:92]
 body	maxgaps(3,unordered(apple,apple))	matches 13	body|9:12:39:61[9:9:39:44 12:12:56:61],17:18:80:91[17:17:80:85 18:18:86:91]
 body	maxgaps(3,unordered(apple,apple))	matches 15	body|9:13:45:71[9:9:45:50 13:13:66:71]
+body	maxgaps(3,unordered(apple,apple))	matches 17	none
 body	maxgaps(3,unordered(apple,apple))	matches 28	body|3:7:12:37[3:3:12:17 7:7:32:37]
 body	maxgaps(3,unordered(apple,apple))	matches 33	body|0:3:0:20[0:0:0:5 3:3:15:20]
 body	maxgaps(3,unordered(apple,apple))	matches 35	body|3:7:14:37[3:3:14:19 7:7:32:37],7:9:32:48[7:7:32:37 9:9:43:48],9:11:43:58[9:9:43:48 11:11:53:58],11:13:53:68[11:11:53:58 13:13:63:68]
@@ -1887,6 +2026,7 @@ body	maxgaps(3,unordered(apple,apple))	matches 51	body|9:10:40:51[9:9:40:45 10:1
 body	maxgaps(3,unordered(apple,apple))	matches 53	body|0:3:0:20[0:0:0:5 3:3:15:20],3:4:15:26[3:3:15:20 4:4:21:26]
 body	maxgaps(3,unordered(apple,apple))	matches 54	body|12:13:58:69[12:12:58:63 13:13:64:69],18:22:88:113[18:18:88:93 22:22:108:113]
 body	maxgaps(3,unordered(apple,apple))	matches 56	body|0:2:0:15[0:0:0:5 2:2:10:15],2:3:10:21[2:2:10:15 3:3:16:21]
+body	maxgaps(3,unordered(apple,apple))	matches 60	none
 body	maxgaps(3,unordered(apple,apple))	matches 61	body|3:6:14:36[3:3:14:19 6:6:31:36],6:9:31:51[6:6:31:36 9:9:46:51],9:13:46:70[9:9:46:51 13:13:65:70]
 body	maxgaps(3,unordered(apple,apple))	matches 62	body|0:3:0:20[0:0:0:5 3:3:15:20]
 body	maxgaps(3,unordered(apple,apple))	matches 65	body|1:4:6:25[1:1:6:11 4:4:20:25]
@@ -1933,7 +2073,9 @@ body	maxwidth(3,unordered(apple,bank))	bool	explain 60	0.0 = Failure to meet con
 body	maxwidth(3,unordered(apple,bank))	matches 0	body|6:7:27:37[6:6:27:32 7:7:33:37]
 body	maxwidth(3,unordered(apple,bank))	matches 3	body|5:6:26:36[5:5:26:31 6:6:32:36]
 body	maxwidth(3,unordered(apple,bank))	matches 6	body|8:9:36:46[8:8:36:40 9:9:41:46]
+body	maxwidth(3,unordered(apple,bank))	matches 7	none
 body	maxwidth(3,unordered(apple,bank))	matches 8	body|1:2:6:16[1:1:6:10 2:2:11:16]
+body	maxwidth(3,unordered(apple,bank))	matches 17	none
 body	maxwidth(3,unordered(apple,bank))	matches 18	body|21:23:97:114[21:21:97:101 23:23:109:114]
 body	maxwidth(3,unordered(apple,bank))	matches 20	body|8:9:34:44[8:8:34:38 9:9:39:44],9:11:39:53[9:9:39:44 11:11:49:53]
 body	maxwidth(3,unordered(apple,bank))	matches 26	body|9:10:44:54[9:9:44:48 10:10:49:54]
@@ -1946,6 +2088,7 @@ body	maxwidth(3,unordered(apple,bank))	matches 41	body|4:5:18:28[4:4:18:22 5:5:2
 body	maxwidth(3,unordered(apple,bank))	matches 47	body|18:20:84:99[18:18:84:88 20:20:94:99]
 body	maxwidth(3,unordered(apple,bank))	matches 55	body|0:1:0:10[0:0:0:5 1:1:6:10]
 body	maxwidth(3,unordered(apple,bank))	matches 59	body|13:14:57:67[13:13:57:61 14:14:62:67]
+body	maxwidth(3,unordered(apple,bank))	matches 60	none
 body	maxwidth(3,unordered(apple,bank))	matches 62	body|0:2:0:14[0:0:0:5 2:2:10:14],2:3:10:20[2:2:10:14 3:3:15:20]
 body	maxwidth(3,unordered(apple,bank))	matches 84	body|0:2:0:14[0:0:0:4 2:2:9:14]
 body	maxwidth(3,unordered(apple,bank))	matches 91	body|16:18:79:94[16:16:79:84 18:18:90:94]
@@ -1983,14 +2126,17 @@ body	maxwidth(4,or(ordered(apple,bank),phrase(cat,dog,egg)))	bool	explain 33	0.5
 body	maxwidth(4,or(ordered(apple,bank),phrase(cat,dog,egg)))	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:MAXWIDTH/4(or(BLOCK(cat,dog,egg),ORDERED(apple,bank))))\n    0.0 = no matching intervals\n
 body	maxwidth(4,or(ordered(apple,bank),phrase(cat,dog,egg)))	matches 0	body|6:7:27:37[6:6:27:32 7:7:33:37]
 body	maxwidth(4,or(ordered(apple,bank),phrase(cat,dog,egg)))	matches 3	body|5:6:26:36[5:5:26:31 6:6:32:36]
+body	maxwidth(4,or(ordered(apple,bank),phrase(cat,dog,egg)))	matches 7	none
 body	maxwidth(4,or(ordered(apple,bank),phrase(cat,dog,egg)))	matches 8	body|2:5:11:29[2:2:11:16 5:5:25:29]
 body	maxwidth(4,or(ordered(apple,bank),phrase(cat,dog,egg)))	matches 13	body|18:21:86:104[18:18:86:91 21:21:100:104]
+body	maxwidth(4,or(ordered(apple,bank),phrase(cat,dog,egg)))	matches 17	none
 body	maxwidth(4,or(ordered(apple,bank),phrase(cat,dog,egg)))	matches 20	body|9:11:39:53[9:9:39:44 11:11:49:53]
 body	maxwidth(4,or(ordered(apple,bank),phrase(cat,dog,egg)))	matches 26	body|10:13:49:70[10:10:49:54 13:13:66:70]
 body	maxwidth(4,or(ordered(apple,bank),phrase(cat,dog,egg)))	matches 33	body|8:9:40:50[8:8:40:45 9:9:46:50]
 body	maxwidth(4,or(ordered(apple,bank),phrase(cat,dog,egg)))	matches 35	body|7:8:32:42[7:7:32:37 8:8:38:42]
 body	maxwidth(4,or(ordered(apple,bank),phrase(cat,dog,egg)))	matches 37	body|12:14:55:69[12:12:55:60 14:14:65:69]
 body	maxwidth(4,or(ordered(apple,bank),phrase(cat,dog,egg)))	matches 55	body|0:1:0:10[0:0:0:5 1:1:6:10]
+body	maxwidth(4,or(ordered(apple,bank),phrase(cat,dog,egg)))	matches 60	none
 body	maxwidth(4,or(ordered(apple,bank),phrase(cat,dog,egg)))	matches 62	body|0:2:0:14[0:0:0:5 2:2:10:14]
 body	maxwidth(4,or(ordered(apple,bank),phrase(cat,dog,egg)))	matches 91	body|16:18:79:94[16:16:79:84 18:18:90:94]
 body	ordered(maxgaps(1,ordered(apple,bank)),cat)	source	ORDERED(MAXGAPS/1(ORDERED(apple,bank)),cat)	3
@@ -2024,6 +2170,11 @@ body	ordered(maxgaps(1,ordered(apple,bank)),cat)	bool	explain 7	0.0 = Failure to
 body	ordered(maxgaps(1,ordered(apple,bank)),cat)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(MAXGAPS/1(ORDERED(apple,bank)),cat))\n    0.0 = no matching intervals\n
 body	ordered(maxgaps(1,ordered(apple,bank)),cat)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(MAXGAPS/1(ORDERED(apple,bank)),cat))\n    0.0 = no matching intervals\n
 body	ordered(maxgaps(1,ordered(apple,bank)),cat)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(MAXGAPS/1(ORDERED(apple,bank)),cat))\n    0.0 = no matching intervals\n
+body	ordered(maxgaps(1,ordered(apple,bank)),cat)	matches 0	none
+body	ordered(maxgaps(1,ordered(apple,bank)),cat)	matches 7	none
+body	ordered(maxgaps(1,ordered(apple,bank)),cat)	matches 17	none
+body	ordered(maxgaps(1,ordered(apple,bank)),cat)	matches 33	none
+body	ordered(maxgaps(1,ordered(apple,bank)),cat)	matches 60	none
 body	extend(apple,1,2)	source	EXTEND(apple,1,2)	4
 body	extend(apple,1,2)	plain	hits	55 12:3f555555,35:3f555555,47:3f555555,54:3f555555,70:3f555555,2:3f4ccccd,3:3f4ccccd,13:3f4ccccd,33:3f4ccccd,51:3f4ccccd,56:3f4ccccd,61:3f4ccccd,80:3f4ccccd,10:3f400000,45:3f400000,53:3f400000,55:3f400000,62:3f400000,84:3f400000,85:3f400000,92:3f400000,0:3f2aaaaa,1:3f2aaaaa,7:3f2aaaaa,9:3f2aaaaa,11:3f2aaaaa,15:3f2aaaaa,18:3f2aaaaa,26:3f2aaaaa,28:3f2aaaaa,32:3f2aaaaa,37:3f2aaaaa,39:3f2aaaaa,41:3f2aaaaa,46:3f2aaaaa,59:3f2aaaaa,65:3f2aaaaa,68:3f2aaaaa,81:3f2aaaaa,88:3f2aaaaa,94:3f2aaaaa,4:3f000000,6:3f000000,8:3f000000,19:3f000000,20:3f000000,21:3f000000,22:3f000000,30:3f000000,40:3f000000,58:3f000000,76:3f000000,83:3f000000,87:3f000000,91:3f000000,
 body	extend(apple,1,2)	plain	explain 0	0.6666666 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  1.0 = w, weight of this function\n  1.0 = k, pivot feature value that would give a score contribution equal to w/2\n  2.0 = S, the sloppy frequency of the interval query body:EXTEND(apple,1,2)\n
@@ -2069,6 +2220,7 @@ body	extend(apple,1,2)	matches 11	body|7:10:-1:-1,14:17:-1:-1
 body	extend(apple,1,2)	matches 12	body|2:5:-1:-1,9:12:-1:-1,14:17:-1:-1,15:18:-1:-1,17:20:-1:-1
 body	extend(apple,1,2)	matches 13	body|8:11:-1:-1,11:14:-1:-1,16:19:-1:-1,17:20:-1:-1
 body	extend(apple,1,2)	matches 15	body|8:11:-1:-1,12:15:-1:-1
+body	extend(apple,1,2)	matches 17	none
 body	extend(apple,1,2)	matches 18	body|0:2:-1:-1,22:25:-1:-1
 body	extend(apple,1,2)	matches 19	body|6:9:-1:-1
 body	extend(apple,1,2)	matches 20	body|8:11:-1:-1
@@ -2094,6 +2246,7 @@ body	extend(apple,1,2)	matches 55	body|0:2:-1:-1,7:10:-1:-1,18:21:-1:-1
 body	extend(apple,1,2)	matches 56	body|0:2:-1:-1,1:4:-1:-1,2:5:-1:-1,16:19:-1:-1
 body	extend(apple,1,2)	matches 58	body|0:2:-1:-1
 body	extend(apple,1,2)	matches 59	body|7:10:-1:-1,13:16:-1:-1
+body	extend(apple,1,2)	matches 60	none
 body	extend(apple,1,2)	matches 61	body|2:5:-1:-1,5:8:-1:-1,8:11:-1:-1,12:15:-1:-1
 body	extend(apple,1,2)	matches 62	body|0:2:-1:-1,2:5:-1:-1,13:16:-1:-1
 body	extend(apple,1,2)	matches 65	body|0:3:-1:-1,3:6:-1:-1
@@ -2145,8 +2298,10 @@ body	ordered(extend(apple,2,0),bank)	matches 0	body|4:7:-1:-1[4:6:-1:-1 7:7:33:3
 body	ordered(extend(apple,2,0),bank)	matches 2	body|0:7:-1:-1[0:2:-1:-1 7:7:33:37]
 body	ordered(extend(apple,2,0),bank)	matches 3	body|3:6:-1:-1[3:5:-1:-1 6:6:32:36]
 body	ordered(extend(apple,2,0),bank)	matches 6	body|7:14:-1:-1[7:9:-1:-1 14:14:64:68]
+body	ordered(extend(apple,2,0),bank)	matches 7	none
 body	ordered(extend(apple,2,0),bank)	matches 8	body|0:5:-1:-1[0:2:-1:-1 5:5:25:29]
 body	ordered(extend(apple,2,0),bank)	matches 13	body|16:21:-1:-1[16:18:-1:-1 21:21:100:104]
+body	ordered(extend(apple,2,0),bank)	matches 17	none
 body	ordered(extend(apple,2,0),bank)	matches 18	body|0:21:-1:-1[0:0:-1:-1 21:21:97:101]
 body	ordered(extend(apple,2,0),bank)	matches 20	body|7:11:-1:-1[7:9:-1:-1 11:11:49:53]
 body	ordered(extend(apple,2,0),bank)	matches 26	body|3:9:-1:-1[3:5:-1:-1 9:9:44:48],8:13:-1:-1[8:10:-1:-1 13:13:66:70]
@@ -2160,6 +2315,7 @@ body	ordered(extend(apple,2,0),bank)	matches 53	body|2:9:-1:-1[2:4:-1:-1 9:9:47:
 body	ordered(extend(apple,2,0),bank)	matches 55	body|0:1:-1:-1[0:0:-1:-1 1:1:6:10]
 body	ordered(extend(apple,2,0),bank)	matches 56	body|1:10:-1:-1[1:3:-1:-1 10:10:51:55],15:22:-1:-1[15:17:-1:-1 22:22:105:109]
 body	ordered(extend(apple,2,0),bank)	matches 59	body|6:13:-1:-1[6:8:-1:-1 13:13:57:61]
+body	ordered(extend(apple,2,0),bank)	matches 60	none
 body	ordered(extend(apple,2,0),bank)	matches 62	body|0:2:-1:-1[0:0:-1:-1 2:2:10:14]
 body	ordered(extend(apple,2,0),bank)	matches 81	body|4:10:-1:-1[4:6:-1:-1 10:10:46:50]
 body	ordered(extend(apple,2,0),bank)	matches 91	body|14:18:-1:-1[14:16:-1:-1 18:18:90:94]
@@ -2199,8 +2355,10 @@ body	extend(ordered(apple,bank),3,1)	matches 0	body|3:8:-1:-1[6:6:27:32 7:7:33:3
 body	extend(ordered(apple,bank),3,1)	matches 2	body|0:8:-1:-1[2:2:8:13 7:7:33:37]
 body	extend(ordered(apple,bank),3,1)	matches 3	body|2:7:-1:-1[5:5:26:31 6:6:32:36]
 body	extend(ordered(apple,bank),3,1)	matches 6	body|6:15:-1:-1[9:9:41:46 14:14:64:68]
+body	extend(ordered(apple,bank),3,1)	matches 7	none
 body	extend(ordered(apple,bank),3,1)	matches 8	body|0:6:-1:-1[2:2:11:16 5:5:25:29]
 body	extend(ordered(apple,bank),3,1)	matches 13	body|15:22:-1:-1[18:18:86:91 21:21:100:104]
+body	extend(ordered(apple,bank),3,1)	matches 17	none
 body	extend(ordered(apple,bank),3,1)	matches 18	body|0:22:-1:-1[0:0:0:5 21:21:97:101]
 body	extend(ordered(apple,bank),3,1)	matches 20	body|6:12:-1:-1[9:9:39:44 11:11:49:53]
 body	extend(ordered(apple,bank),3,1)	matches 26	body|2:10:-1:-1[5:5:23:28 9:9:44:48],7:14:-1:-1[10:10:49:54 13:13:66:70]
@@ -2214,6 +2372,7 @@ body	extend(ordered(apple,bank),3,1)	matches 53	body|1:10:-1:-1[4:4:21:26 9:9:47
 body	extend(ordered(apple,bank),3,1)	matches 55	body|0:2:-1:-1[0:0:0:5 1:1:6:10]
 body	extend(ordered(apple,bank),3,1)	matches 56	body|0:11:-1:-1[3:3:16:21 10:10:51:55],14:23:-1:-1[17:17:82:87 22:22:105:109]
 body	extend(ordered(apple,bank),3,1)	matches 59	body|5:14:-1:-1[8:8:35:40 13:13:57:61]
+body	extend(ordered(apple,bank),3,1)	matches 60	none
 body	extend(ordered(apple,bank),3,1)	matches 62	body|0:3:-1:-1[0:0:0:5 2:2:10:14]
 body	extend(ordered(apple,bank),3,1)	matches 81	body|3:11:-1:-1[6:6:28:33 10:10:46:50]
 body	extend(ordered(apple,bank),3,1)	matches 91	body|13:19:-1:-1[16:16:79:84 18:18:90:94]
@@ -2249,11 +2408,16 @@ body	phrase(extend(or(apple,bank),1,0),cat)	bool	explain 7	0.0 = Failure to meet
 body	phrase(extend(or(apple,bank),1,0),cat)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:or(BLOCK(EXTEND(apple,1,0),cat),BLOCK(EXTEND(bank,1,0),cat)))\n    0.0 = no matching intervals\n
 body	phrase(extend(or(apple,bank),1,0),cat)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:or(BLOCK(EXTEND(apple,1,0),cat),BLOCK(EXTEND(bank,1,0),cat)))\n    0.0 = no matching intervals\n
 body	phrase(extend(or(apple,bank),1,0),cat)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:or(BLOCK(EXTEND(apple,1,0),cat),BLOCK(EXTEND(bank,1,0),cat)))\n    0.0 = no matching intervals\n
+body	phrase(extend(or(apple,bank),1,0),cat)	matches 0	none
+body	phrase(extend(or(apple,bank),1,0),cat)	matches 7	none
 body	phrase(extend(or(apple,bank),1,0),cat)	matches 8	body|4:6:-1:-1[4:5:-1:-1 6:6:30:33]
 body	phrase(extend(or(apple,bank),1,0),cat)	matches 9	body|16:18:-1:-1[16:17:-1:-1 18:18:85:88]
+body	phrase(extend(or(apple,bank),1,0),cat)	matches 17	none
 body	phrase(extend(or(apple,bank),1,0),cat)	matches 21	body|7:9:-1:-1[7:8:-1:-1 9:9:40:43]
+body	phrase(extend(or(apple,bank),1,0),cat)	matches 33	none
 body	phrase(extend(or(apple,bank),1,0),cat)	matches 39	body|15:17:-1:-1[15:16:-1:-1 17:17:80:83]
 body	phrase(extend(or(apple,bank),1,0),cat)	matches 59	body|1:3:-1:-1[1:2:-1:-1 3:3:13:16]
+body	phrase(extend(or(apple,bank),1,0),cat)	matches 60	none
 body	phrase(extend(or(apple,bank),1,0),cat)	matches 70	body|19:21:-1:-1[19:20:-1:-1 21:21:104:107]
 body	phrase(extend(or(apple,bank),1,0),cat)	matches 80	body|1:3:-1:-1[1:2:-1:-1 3:3:15:18]
 body	phrase(extend(or(apple,bank),1,0),cat)	matches 81	body|5:7:-1:-1[5:6:-1:-1 7:7:34:37]
@@ -2288,9 +2452,14 @@ body	containing(ordered(apple,cat),bank)	bool	explain 7	0.0 = Failure to meet co
 body	containing(ordered(apple,cat),bank)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:CONTAINING(ORDERED(apple,cat),bank))\n    0.0 = no matching intervals\n
 body	containing(ordered(apple,cat),bank)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:CONTAINING(ORDERED(apple,cat),bank))\n    0.0 = no matching intervals\n
 body	containing(ordered(apple,cat),bank)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:CONTAINING(ORDERED(apple,cat),bank))\n    0.0 = no matching intervals\n
+body	containing(ordered(apple,cat),bank)	matches 0	none
 body	containing(ordered(apple,cat),bank)	matches 6	body|9:18:41:91[9:9:41:46 14:14:64:68 18:18:88:91]
+body	containing(ordered(apple,cat),bank)	matches 7	none
 body	containing(ordered(apple,cat),bank)	matches 8	body|2:6:11:33[2:2:11:16 5:5:25:29 6:6:30:33]
+body	containing(ordered(apple,cat),bank)	matches 17	none
+body	containing(ordered(apple,cat),bank)	matches 33	none
 body	containing(ordered(apple,cat),bank)	matches 39	body|10:17:46:83[10:10:46:51 16:16:75:79 17:17:80:83]
+body	containing(ordered(apple,cat),bank)	matches 60	none
 body	containing(unordered(apple,bank),or(cat,dog))	source	CONTAINING(UNORDERED(apple,bank),or(cat,dog))	2
 body	containing(unordered(apple,bank),or(cat,dog))	plain	hits	13 59:3e895da8,8:3e800000,19:3e800000,91:3e800000,56:3e638e38,81:3e4ccccc,2:3e2aaaac,32:3e2aaaac,21:3e124924,47:3e124924,9:3e000004,92:3e000004,18:3d3a2ea0,
 body	containing(unordered(apple,bank),or(cat,dog))	plain	explain 0	0.0 = no matching intervals\n
@@ -2322,16 +2491,21 @@ body	containing(unordered(apple,bank),or(cat,dog))	bool	explain 7	0.0 = Failure 
 body	containing(unordered(apple,bank),or(cat,dog))	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:CONTAINING(UNORDERED(apple,bank),or(cat,dog)))\n    0.0 = no matching intervals\n
 body	containing(unordered(apple,bank),or(cat,dog))	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:CONTAINING(UNORDERED(apple,bank),or(cat,dog)))\n    0.0 = no matching intervals\n
 body	containing(unordered(apple,bank),or(cat,dog))	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:CONTAINING(UNORDERED(apple,bank),or(cat,dog)))\n    0.0 = no matching intervals\n
+body	containing(unordered(apple,bank),or(cat,dog))	matches 0	none
 body	containing(unordered(apple,bank),or(cat,dog))	matches 2	body|2:7:8:37[2:2:8:13 6:6:29:32 7:7:33:37]
+body	containing(unordered(apple,bank),or(cat,dog))	matches 7	none
 body	containing(unordered(apple,bank),or(cat,dog))	matches 8	body|2:5:11:29[2:2:11:16 3:3:17:20 5:5:25:29]
 body	containing(unordered(apple,bank),or(cat,dog))	matches 9	body|3:10:16:51[3:3:16:20 7:7:34:37 10:10:46:51]
+body	containing(unordered(apple,bank),or(cat,dog))	matches 17	none
 body	containing(unordered(apple,bank),or(cat,dog))	matches 18	body|0:21:0:101[0:0:0:5 17:17:79:82 21:21:97:101]
 body	containing(unordered(apple,bank),or(cat,dog))	matches 19	body|4:7:16:34[4:4:16:20 5:5:21:24 7:7:29:34]
 body	containing(unordered(apple,bank),or(cat,dog))	matches 21	body|8:14:35:65[8:8:35:39 9:9:40:43 14:14:60:65]
 body	containing(unordered(apple,bank),or(cat,dog))	matches 32	body|10:15:46:76[10:10:46:51 12:12:58:61 15:15:72:76]
+body	containing(unordered(apple,bank),or(cat,dog))	matches 33	none
 body	containing(unordered(apple,bank),or(cat,dog))	matches 47	body|12:18:56:88[12:12:56:61 14:14:67:70 18:18:84:88]
 body	containing(unordered(apple,bank),or(cat,dog))	matches 56	body|3:10:16:55[3:3:16:21 8:8:43:46 10:10:51:55],10:17:51:87[10:10:51:55 15:15:73:76 17:17:82:87]
 body	containing(unordered(apple,bank),or(cat,dog))	matches 59	body|2:8:8:40[2:2:8:12 3:3:13:16 8:8:35:40],8:13:35:61[8:8:35:40 12:12:53:56 13:13:57:61]
+body	containing(unordered(apple,bank),or(cat,dog))	matches 60	none
 body	containing(unordered(apple,bank),or(cat,dog))	matches 81	body|6:10:28:50[6:6:28:33 7:7:34:37 10:10:46:50]
 body	containing(unordered(apple,bank),or(cat,dog))	matches 91	body|13:16:66:84[13:13:66:70 15:15:75:78 16:16:79:84]
 body	containing(unordered(apple,bank),or(cat,dog))	matches 92	body|0:7:0:35[0:0:0:4 4:4:17:20 7:7:30:35]
@@ -2366,9 +2540,14 @@ body	containing(or(ordered(apple,cat),phrase(dog,egg,fig)),bank)	bool	explain 7	
 body	containing(or(ordered(apple,cat),phrase(dog,egg,fig)),bank)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:or(CONTAINING(BLOCK(dog,egg,fig),bank),CONTAINING(ORDERED(apple,cat),bank)))\n    0.0 = no matching intervals\n
 body	containing(or(ordered(apple,cat),phrase(dog,egg,fig)),bank)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:or(CONTAINING(BLOCK(dog,egg,fig),bank),CONTAINING(ORDERED(apple,cat),bank)))\n    0.0 = no matching intervals\n
 body	containing(or(ordered(apple,cat),phrase(dog,egg,fig)),bank)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:or(CONTAINING(BLOCK(dog,egg,fig),bank),CONTAINING(ORDERED(apple,cat),bank)))\n    0.0 = no matching intervals\n
+body	containing(or(ordered(apple,cat),phrase(dog,egg,fig)),bank)	matches 0	none
 body	containing(or(ordered(apple,cat),phrase(dog,egg,fig)),bank)	matches 6	body|9:18:41:91[9:9:41:46 14:14:64:68 18:18:88:91]
+body	containing(or(ordered(apple,cat),phrase(dog,egg,fig)),bank)	matches 7	none
 body	containing(or(ordered(apple,cat),phrase(dog,egg,fig)),bank)	matches 8	body|2:6:11:33[2:2:11:16 5:5:25:29 6:6:30:33]
+body	containing(or(ordered(apple,cat),phrase(dog,egg,fig)),bank)	matches 17	none
+body	containing(or(ordered(apple,cat),phrase(dog,egg,fig)),bank)	matches 33	none
 body	containing(or(ordered(apple,cat),phrase(dog,egg,fig)),bank)	matches 39	body|10:17:46:83[10:10:46:51 16:16:75:79 17:17:80:83]
+body	containing(or(ordered(apple,cat),phrase(dog,egg,fig)),bank)	matches 60	none
 body	notcontaining(ordered(apple,cat),bank)	source	NOT_CONTAINING(ORDERED(apple,cat),bank)	2
 body	notcontaining(ordered(apple,cat),bank)	plain	hits	15 9:3f000000,70:3f000000,80:3f000000,81:3f000000,28:3eaaaaaa,32:3eaaaaaa,92:3eaaaaaa,35:3e800000,30:3e4ccccc,33:3e4ccccc,45:3e4ccccc,59:3e4ccccc,12:3e2aaaac,19:3e2aaaac,1:3dba2e90,
 body	notcontaining(ordered(apple,cat),bank)	plain	explain 0	0.0 = no matching intervals\n
@@ -2400,9 +2579,12 @@ body	notcontaining(ordered(apple,cat),bank)	bool	explain 7	0.0 = Failure to meet
 body	notcontaining(ordered(apple,cat),bank)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:NOT_CONTAINING(ORDERED(apple,cat),bank))\n    0.0 = no matching intervals\n
 body	notcontaining(ordered(apple,cat),bank)	bool	explain 33	0.19999999 = sum of:\n  0.19999999 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n    1.0 = w, weight of this function\n    1.0 = k, pivot feature value that would give a score contribution equal to w/2\n    0.25 = S, the sloppy frequency of the interval query body:NOT_CONTAINING(ORDERED(apple,cat),bank)\n
 body	notcontaining(ordered(apple,cat),bank)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:NOT_CONTAINING(ORDERED(apple,cat),bank))\n    0.0 = no matching intervals\n
+body	notcontaining(ordered(apple,cat),bank)	matches 0	none
 body	notcontaining(ordered(apple,cat),bank)	matches 1	body|4:14:16:69[4:4:16:21 14:14:66:69]
+body	notcontaining(ordered(apple,cat),bank)	matches 7	none
 body	notcontaining(ordered(apple,cat),bank)	matches 9	body|17:18:79:88[17:17:79:84 18:18:85:88]
 body	notcontaining(ordered(apple,cat),bank)	matches 12	body|3:8:15:41[3:3:15:20 8:8:38:41]
+body	notcontaining(ordered(apple,cat),bank)	matches 17	none
 body	notcontaining(ordered(apple,cat),bank)	matches 19	body|7:12:29:62[7:7:29:34 12:12:59:62]
 body	notcontaining(ordered(apple,cat),bank)	matches 28	body|7:9:32:46[7:7:32:37 9:9:43:46]
 body	notcontaining(ordered(apple,cat),bank)	matches 30	body|5:9:25:54[5:5:25:30 9:9:51:54]
@@ -2411,6 +2593,7 @@ body	notcontaining(ordered(apple,cat),bank)	matches 33	body|3:7:15:39[3:3:15:20 
 body	notcontaining(ordered(apple,cat),bank)	matches 35	body|3:6:14:31[3:3:14:19 6:6:28:31]
 body	notcontaining(ordered(apple,cat),bank)	matches 45	body|6:10:26:49[6:6:26:31 10:10:46:49]
 body	notcontaining(ordered(apple,cat),bank)	matches 59	body|8:12:35:56[8:8:35:40 12:12:53:56]
+body	notcontaining(ordered(apple,cat),bank)	matches 60	none
 body	notcontaining(ordered(apple,cat),bank)	matches 70	body|20:21:98:107[20:20:98:103 21:21:104:107]
 body	notcontaining(ordered(apple,cat),bank)	matches 80	body|2:3:9:18[2:2:9:14 3:3:15:18]
 body	notcontaining(ordered(apple,cat),bank)	matches 81	body|6:7:28:37[6:6:28:33 7:7:34:37]
@@ -2446,11 +2629,14 @@ body	notcontaining(or(ordered(apple,cat),ordered(dog,fig)),bank)	bool	explain 7	
 body	notcontaining(or(ordered(apple,cat),ordered(dog,fig)),bank)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:or(NOT_CONTAINING(ORDERED(apple,cat),bank),NOT_CONTAINING(ORDERED(dog,fig),bank)))\n    0.0 = no matching intervals\n
 body	notcontaining(or(ordered(apple,cat),ordered(dog,fig)),bank)	bool	explain 33	0.19999999 = sum of:\n  0.19999999 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n    1.0 = w, weight of this function\n    1.0 = k, pivot feature value that would give a score contribution equal to w/2\n    0.25 = S, the sloppy frequency of the interval query body:or(NOT_CONTAINING(ORDERED(apple,cat),bank),NOT_CONTAINING(ORDERED(dog,fig),bank))\n
 body	notcontaining(or(ordered(apple,cat),ordered(dog,fig)),bank)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:or(NOT_CONTAINING(ORDERED(apple,cat),bank),NOT_CONTAINING(ORDERED(dog,fig),bank)))\n    0.0 = no matching intervals\n
+body	notcontaining(or(ordered(apple,cat),ordered(dog,fig)),bank)	matches 0	none
 body	notcontaining(or(ordered(apple,cat),ordered(dog,fig)),bank)	matches 1	body|4:14:16:69[4:4:16:21 14:14:66:69]
 body	notcontaining(or(ordered(apple,cat),ordered(dog,fig)),bank)	matches 3	body|7:9:37:48[7:7:37:40 9:9:45:48]
+body	notcontaining(or(ordered(apple,cat),ordered(dog,fig)),bank)	matches 7	none
 body	notcontaining(or(ordered(apple,cat),ordered(dog,fig)),bank)	matches 9	body|17:18:79:88[17:17:79:84 18:18:85:88]
 body	notcontaining(or(ordered(apple,cat),ordered(dog,fig)),bank)	matches 11	body|13:17:58:81[13:13:58:61 17:17:78:81]
 body	notcontaining(or(ordered(apple,cat),ordered(dog,fig)),bank)	matches 12	body|3:8:15:41[3:3:15:20 8:8:38:41]
+body	notcontaining(or(ordered(apple,cat),ordered(dog,fig)),bank)	matches 17	none
 body	notcontaining(or(ordered(apple,cat),ordered(dog,fig)),bank)	matches 19	body|5:8:21:38[5:5:21:24 8:8:35:38],7:12:29:62[7:7:29:34 12:12:59:62]
 body	notcontaining(or(ordered(apple,cat),ordered(dog,fig)),bank)	matches 20	body|1:5:4:24[1:1:4:7 5:5:21:24]
 body	notcontaining(or(ordered(apple,cat),ordered(dog,fig)),bank)	matches 25	body|1:3:4:15[1:1:4:7 3:3:12:15]
@@ -2464,6 +2650,7 @@ body	notcontaining(or(ordered(apple,cat),ordered(dog,fig)),bank)	matches 45	body
 body	notcontaining(or(ordered(apple,cat),ordered(dog,fig)),bank)	matches 47	body|7:8:32:39[7:7:32:35 8:8:36:39]
 body	notcontaining(or(ordered(apple,cat),ordered(dog,fig)),bank)	matches 56	body|8:9:43:50[8:8:43:46 9:9:47:50],15:20:73:100[15:15:73:76 20:20:97:100]
 body	notcontaining(or(ordered(apple,cat),ordered(dog,fig)),bank)	matches 59	body|8:12:35:56[8:8:35:40 12:12:53:56]
+body	notcontaining(or(ordered(apple,cat),ordered(dog,fig)),bank)	matches 60	none
 body	notcontaining(or(ordered(apple,cat),ordered(dog,fig)),bank)	matches 67	body|8:9:35:42[8:8:35:38 9:9:39:42]
 body	notcontaining(or(ordered(apple,cat),ordered(dog,fig)),bank)	matches 70	body|20:21:98:107[20:20:98:103 21:21:104:107]
 body	notcontaining(or(ordered(apple,cat),ordered(dog,fig)),bank)	matches 80	body|2:3:9:18[2:2:9:14 3:3:15:18],4:5:19:26[4:4:19:22 5:5:23:26]
@@ -2501,9 +2688,14 @@ body	containedby(bank,ordered(apple,cat))	bool	explain 7	0.0 = Failure to meet c
 body	containedby(bank,ordered(apple,cat))	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:CONTAINED_BY(bank,ORDERED(apple,cat)))\n    0.0 = no matching intervals\n
 body	containedby(bank,ordered(apple,cat))	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:CONTAINED_BY(bank,ORDERED(apple,cat)))\n    0.0 = no matching intervals\n
 body	containedby(bank,ordered(apple,cat))	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:CONTAINED_BY(bank,ORDERED(apple,cat)))\n    0.0 = no matching intervals\n
+body	containedby(bank,ordered(apple,cat))	matches 0	none
 body	containedby(bank,ordered(apple,cat))	matches 6	body|14:14:64:68[14:14:64:68]
+body	containedby(bank,ordered(apple,cat))	matches 7	none
 body	containedby(bank,ordered(apple,cat))	matches 8	body|5:5:25:29[5:5:25:29]
+body	containedby(bank,ordered(apple,cat))	matches 17	none
+body	containedby(bank,ordered(apple,cat))	matches 33	none
 body	containedby(bank,ordered(apple,cat))	matches 39	body|16:16:75:79[16:16:75:79]
+body	containedby(bank,ordered(apple,cat))	matches 60	none
 body	containedby(bank,or(ordered(apple,cat),phrase(dog,egg)))	source	or(CONTAINED_BY(bank,BLOCK(dog,egg)),CONTAINED_BY(bank,ORDERED(apple,cat)))	1
 body	containedby(bank,or(ordered(apple,cat),phrase(dog,egg)))	plain	hits	3 6:3f000000,8:3f000000,39:3f000000,
 body	containedby(bank,or(ordered(apple,cat),phrase(dog,egg)))	plain	explain 0	0.0 = no matching intervals\n
@@ -2535,9 +2727,14 @@ body	containedby(bank,or(ordered(apple,cat),phrase(dog,egg)))	bool	explain 7	0.0
 body	containedby(bank,or(ordered(apple,cat),phrase(dog,egg)))	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:or(CONTAINED_BY(bank,BLOCK(dog,egg)),CONTAINED_BY(bank,ORDERED(apple,cat))))\n    0.0 = no matching intervals\n
 body	containedby(bank,or(ordered(apple,cat),phrase(dog,egg)))	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:or(CONTAINED_BY(bank,BLOCK(dog,egg)),CONTAINED_BY(bank,ORDERED(apple,cat))))\n    0.0 = no matching intervals\n
 body	containedby(bank,or(ordered(apple,cat),phrase(dog,egg)))	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:or(CONTAINED_BY(bank,BLOCK(dog,egg)),CONTAINED_BY(bank,ORDERED(apple,cat))))\n    0.0 = no matching intervals\n
+body	containedby(bank,or(ordered(apple,cat),phrase(dog,egg)))	matches 0	none
 body	containedby(bank,or(ordered(apple,cat),phrase(dog,egg)))	matches 6	body|14:14:64:68[14:14:64:68]
+body	containedby(bank,or(ordered(apple,cat),phrase(dog,egg)))	matches 7	none
 body	containedby(bank,or(ordered(apple,cat),phrase(dog,egg)))	matches 8	body|5:5:25:29[5:5:25:29]
+body	containedby(bank,or(ordered(apple,cat),phrase(dog,egg)))	matches 17	none
+body	containedby(bank,or(ordered(apple,cat),phrase(dog,egg)))	matches 33	none
 body	containedby(bank,or(ordered(apple,cat),phrase(dog,egg)))	matches 39	body|16:16:75:79[16:16:75:79]
+body	containedby(bank,or(ordered(apple,cat),phrase(dog,egg)))	matches 60	none
 body	notcontainedby(bank,ordered(apple,cat))	source	NOT_CONTAINED_BY(bank,ORDERED(apple,cat))	1
 body	notcontainedby(bank,ordered(apple,cat))	plain	hits	39 91:3f4ccccd,20:3f400000,24:3f2aaaaa,26:3f2aaaaa,32:3f2aaaaa,56:3f2aaaaa,59:3f2aaaaa,92:3f2aaaaa,0:3f000000,2:3f000000,3:3f000000,6:3f000000,8:3f000000,9:3f000000,13:3f000000,15:3f000000,18:3f000000,19:3f000000,21:3f000000,23:3f000000,30:3f000000,33:3f000000,35:3f000000,37:3f000000,41:3f000000,44:3f000000,47:3f000000,51:3f000000,52:3f000000,53:3f000000,55:3f000000,57:3f000000,62:3f000000,66:3f000000,73:3f000000,79:3f000000,81:3f000000,84:3f000000,85:3f000000,
 body	notcontainedby(bank,ordered(apple,cat))	plain	explain 0	0.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  1.0 = w, weight of this function\n  1.0 = k, pivot feature value that would give a score contribution equal to w/2\n  1.0 = S, the sloppy frequency of the interval query body:NOT_CONTAINED_BY(bank,ORDERED(apple,cat))\n
@@ -2573,10 +2770,12 @@ body	notcontainedby(bank,ordered(apple,cat))	matches 0	body|7:7:33:37
 body	notcontainedby(bank,ordered(apple,cat))	matches 2	body|7:7:33:37
 body	notcontainedby(bank,ordered(apple,cat))	matches 3	body|6:6:32:36
 body	notcontainedby(bank,ordered(apple,cat))	matches 6	body|8:8:36:40
+body	notcontainedby(bank,ordered(apple,cat))	matches 7	none
 body	notcontainedby(bank,ordered(apple,cat))	matches 8	body|1:1:6:10
 body	notcontainedby(bank,ordered(apple,cat))	matches 9	body|3:3:16:20
 body	notcontainedby(bank,ordered(apple,cat))	matches 13	body|21:21:100:104
 body	notcontainedby(bank,ordered(apple,cat))	matches 15	body|1:1:4:8
+body	notcontainedby(bank,ordered(apple,cat))	matches 17	none
 body	notcontainedby(bank,ordered(apple,cat))	matches 18	body|21:21:97:101
 body	notcontainedby(bank,ordered(apple,cat))	matches 19	body|4:4:16:20
 body	notcontainedby(bank,ordered(apple,cat))	matches 20	body|7:7:29:33,8:8:34:38,11:11:49:53
@@ -2599,6 +2798,7 @@ body	notcontainedby(bank,ordered(apple,cat))	matches 55	body|1:1:6:10
 body	notcontainedby(bank,ordered(apple,cat))	matches 56	body|10:10:51:55,22:22:105:109
 body	notcontainedby(bank,ordered(apple,cat))	matches 57	body|9:9:43:47
 body	notcontainedby(bank,ordered(apple,cat))	matches 59	body|2:2:8:12,13:13:57:61
+body	notcontainedby(bank,ordered(apple,cat))	matches 60	none
 body	notcontainedby(bank,ordered(apple,cat))	matches 62	body|2:2:10:14
 body	notcontainedby(bank,ordered(apple,cat))	matches 66	body|2:2:11:15
 body	notcontainedby(bank,ordered(apple,cat))	matches 73	body|8:8:36:40
@@ -2643,10 +2843,12 @@ body	notcontainedby(bank,or(ordered(apple,cat),ordered(dog,fig)))	matches 0	body
 body	notcontainedby(bank,or(ordered(apple,cat),ordered(dog,fig)))	matches 2	body|7:7:33:37
 body	notcontainedby(bank,or(ordered(apple,cat),ordered(dog,fig)))	matches 3	body|6:6:32:36
 body	notcontainedby(bank,or(ordered(apple,cat),ordered(dog,fig)))	matches 6	body|8:8:36:40,14:14:64:68
+body	notcontainedby(bank,or(ordered(apple,cat),ordered(dog,fig)))	matches 7	none
 body	notcontainedby(bank,or(ordered(apple,cat),ordered(dog,fig)))	matches 8	body|1:1:6:10,5:5:25:29
 body	notcontainedby(bank,or(ordered(apple,cat),ordered(dog,fig)))	matches 9	body|3:3:16:20
 body	notcontainedby(bank,or(ordered(apple,cat),ordered(dog,fig)))	matches 13	body|21:21:100:104
 body	notcontainedby(bank,or(ordered(apple,cat),ordered(dog,fig)))	matches 15	body|1:1:4:8
+body	notcontainedby(bank,or(ordered(apple,cat),ordered(dog,fig)))	matches 17	none
 body	notcontainedby(bank,or(ordered(apple,cat),ordered(dog,fig)))	matches 18	body|21:21:97:101
 body	notcontainedby(bank,or(ordered(apple,cat),ordered(dog,fig)))	matches 19	body|4:4:16:20
 body	notcontainedby(bank,or(ordered(apple,cat),ordered(dog,fig)))	matches 20	body|7:7:29:33,8:8:34:38,11:11:49:53
@@ -2670,6 +2872,7 @@ body	notcontainedby(bank,or(ordered(apple,cat),ordered(dog,fig)))	matches 55	bod
 body	notcontainedby(bank,or(ordered(apple,cat),ordered(dog,fig)))	matches 56	body|10:10:51:55,22:22:105:109
 body	notcontainedby(bank,or(ordered(apple,cat),ordered(dog,fig)))	matches 57	body|9:9:43:47
 body	notcontainedby(bank,or(ordered(apple,cat),ordered(dog,fig)))	matches 59	body|2:2:8:12,13:13:57:61
+body	notcontainedby(bank,or(ordered(apple,cat),ordered(dog,fig)))	matches 60	none
 body	notcontainedby(bank,or(ordered(apple,cat),ordered(dog,fig)))	matches 62	body|2:2:10:14
 body	notcontainedby(bank,or(ordered(apple,cat),ordered(dog,fig)))	matches 66	body|2:2:11:15
 body	notcontainedby(bank,or(ordered(apple,cat),ordered(dog,fig)))	matches 73	body|8:8:36:40
@@ -2710,7 +2913,12 @@ body	overlapping(ordered(apple,bank),ordered(cat,dog))	bool	explain 7	0.0 = Fail
 body	overlapping(ordered(apple,bank),ordered(cat,dog))	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:OVERLAPPING(ORDERED(apple,bank),ORDERED(cat,dog)))\n    0.0 = no matching intervals\n
 body	overlapping(ordered(apple,bank),ordered(cat,dog))	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:OVERLAPPING(ORDERED(apple,bank),ORDERED(cat,dog)))\n    0.0 = no matching intervals\n
 body	overlapping(ordered(apple,bank),ordered(cat,dog))	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:OVERLAPPING(ORDERED(apple,bank),ORDERED(cat,dog)))\n    0.0 = no matching intervals\n
+body	overlapping(ordered(apple,bank),ordered(cat,dog))	matches 0	none
+body	overlapping(ordered(apple,bank),ordered(cat,dog))	matches 7	none
+body	overlapping(ordered(apple,bank),ordered(cat,dog))	matches 17	none
+body	overlapping(ordered(apple,bank),ordered(cat,dog))	matches 33	none
 body	overlapping(ordered(apple,bank),ordered(cat,dog))	matches 59	body|8:13:35:61[8:8:35:40 13:13:57:61]
+body	overlapping(ordered(apple,bank),ordered(cat,dog))	matches 60	none
 body	overlapping(or(apple,phrase(bank,cat)),unordered(cat,dog))	source	OVERLAPPING(or(BLOCK(bank,cat),apple),UNORDERED(cat,dog))	1
 body	overlapping(or(apple,phrase(bank,cat)),unordered(cat,dog))	plain	hits	9 12:3f4ccccd,13:3f2aaaaa,39:3f19999a,59:3f19999a,19:3f000000,45:3f000000,47:3f000000,8:3eaaaaaa,21:3eaaaaaa,
 body	overlapping(or(apple,phrase(bank,cat)),unordered(cat,dog))	plain	explain 0	0.0 = no matching intervals\n
@@ -2742,15 +2950,20 @@ body	overlapping(or(apple,phrase(bank,cat)),unordered(cat,dog))	bool	explain 7	0
 body	overlapping(or(apple,phrase(bank,cat)),unordered(cat,dog))	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:OVERLAPPING(or(BLOCK(bank,cat),apple),UNORDERED(cat,dog)))\n    0.0 = no matching intervals\n
 body	overlapping(or(apple,phrase(bank,cat)),unordered(cat,dog))	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:OVERLAPPING(or(BLOCK(bank,cat),apple),UNORDERED(cat,dog)))\n    0.0 = no matching intervals\n
 body	overlapping(or(apple,phrase(bank,cat)),unordered(cat,dog))	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:OVERLAPPING(or(BLOCK(bank,cat),apple),UNORDERED(cat,dog)))\n    0.0 = no matching intervals\n
+body	overlapping(or(apple,phrase(bank,cat)),unordered(cat,dog))	matches 0	none
+body	overlapping(or(apple,phrase(bank,cat)),unordered(cat,dog))	matches 7	none
 body	overlapping(or(apple,phrase(bank,cat)),unordered(cat,dog))	matches 8	body|5:6:25:33[5:5:25:29 6:6:30:33]
 body	overlapping(or(apple,phrase(bank,cat)),unordered(cat,dog))	matches 12	body|10:10:49:54[10:10:49:54],15:15:71:76[15:15:71:76],16:16:77:82[16:16:77:82],18:18:87:92[18:18:87:92]
 body	overlapping(or(apple,phrase(bank,cat)),unordered(cat,dog))	matches 13	body|9:9:39:44[9:9:39:44],12:12:56:61[12:12:56:61]
+body	overlapping(or(apple,phrase(bank,cat)),unordered(cat,dog))	matches 17	none
 body	overlapping(or(apple,phrase(bank,cat)),unordered(cat,dog))	matches 19	body|7:7:29:34[7:7:29:34]
 body	overlapping(or(apple,phrase(bank,cat)),unordered(cat,dog))	matches 21	body|8:9:35:43[8:8:35:39 9:9:40:43]
+body	overlapping(or(apple,phrase(bank,cat)),unordered(cat,dog))	matches 33	none
 body	overlapping(or(apple,phrase(bank,cat)),unordered(cat,dog))	matches 39	body|10:10:46:51[10:10:46:51],16:17:75:83[16:16:75:79 17:17:80:83]
 body	overlapping(or(apple,phrase(bank,cat)),unordered(cat,dog))	matches 45	body|6:6:26:31[6:6:26:31]
 body	overlapping(or(apple,phrase(bank,cat)),unordered(cat,dog))	matches 47	body|1:1:4:9[1:1:4:9]
 body	overlapping(or(apple,phrase(bank,cat)),unordered(cat,dog))	matches 59	body|2:3:8:16[2:2:8:12 3:3:13:16],14:14:62:67[14:14:62:67]
+body	overlapping(or(apple,phrase(bank,cat)),unordered(cat,dog))	matches 60	none
 body	nonoverlapping(ordered(apple,bank),ordered(bank,cat))	source	NON_OVERLAPPING(ORDERED(apple,bank),ORDERED(bank,cat))	2
 body	nonoverlapping(ordered(apple,bank),ordered(bank,cat))	plain	hits	18 0:3f000000,3:3f000000,33:3f000000,35:3f000000,55:3f000000,26:3ebca1ae,20:3eaaaaaa,37:3eaaaaaa,62:3eaaaaaa,91:3eaaaaaa,56:3e82b930,13:3e800000,81:3e4ccccc,2:3e2aaaac,53:3e2aaaac,59:3e2aaaac,47:3e124924,18:3d3a2ea0,
 body	nonoverlapping(ordered(apple,bank),ordered(bank,cat))	plain	explain 0	0.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  1.0 = w, weight of this function\n  1.0 = k, pivot feature value that would give a score contribution equal to w/2\n  1.0 = S, the sloppy frequency of the interval query body:NON_OVERLAPPING(ORDERED(apple,bank),ORDERED(bank,cat))\n
@@ -2785,7 +2998,9 @@ body	nonoverlapping(ordered(apple,bank),ordered(bank,cat))	bool	explain 60	0.0 =
 body	nonoverlapping(ordered(apple,bank),ordered(bank,cat))	matches 0	body|6:7:27:37[6:6:27:32 7:7:33:37]
 body	nonoverlapping(ordered(apple,bank),ordered(bank,cat))	matches 2	body|2:7:8:37[2:2:8:13 7:7:33:37]
 body	nonoverlapping(ordered(apple,bank),ordered(bank,cat))	matches 3	body|5:6:26:36[5:5:26:31 6:6:32:36]
+body	nonoverlapping(ordered(apple,bank),ordered(bank,cat))	matches 7	none
 body	nonoverlapping(ordered(apple,bank),ordered(bank,cat))	matches 13	body|18:21:86:104[18:18:86:91 21:21:100:104]
+body	nonoverlapping(ordered(apple,bank),ordered(bank,cat))	matches 17	none
 body	nonoverlapping(ordered(apple,bank),ordered(bank,cat))	matches 18	body|0:21:0:101[0:0:0:5 21:21:97:101]
 body	nonoverlapping(ordered(apple,bank),ordered(bank,cat))	matches 20	body|9:11:39:53[9:9:39:44 11:11:49:53]
 body	nonoverlapping(ordered(apple,bank),ordered(bank,cat))	matches 26	body|5:9:23:48[5:5:23:28 9:9:44:48],10:13:49:70[10:10:49:54 13:13:66:70]
@@ -2797,6 +3012,7 @@ body	nonoverlapping(ordered(apple,bank),ordered(bank,cat))	matches 53	body|4:9:2
 body	nonoverlapping(ordered(apple,bank),ordered(bank,cat))	matches 55	body|0:1:0:10[0:0:0:5 1:1:6:10]
 body	nonoverlapping(ordered(apple,bank),ordered(bank,cat))	matches 56	body|3:10:16:55[3:3:16:21 10:10:51:55],17:22:82:109[17:17:82:87 22:22:105:109]
 body	nonoverlapping(ordered(apple,bank),ordered(bank,cat))	matches 59	body|8:13:35:61[8:8:35:40 13:13:57:61]
+body	nonoverlapping(ordered(apple,bank),ordered(bank,cat))	matches 60	none
 body	nonoverlapping(ordered(apple,bank),ordered(bank,cat))	matches 62	body|0:2:0:14[0:0:0:5 2:2:10:14]
 body	nonoverlapping(ordered(apple,bank),ordered(bank,cat))	matches 81	body|6:10:28:50[6:6:28:33 10:10:46:50]
 body	nonoverlapping(ordered(apple,bank),ordered(bank,cat))	matches 91	body|16:18:79:94[16:16:79:84 18:18:90:94]
@@ -2845,6 +3061,7 @@ body	nonoverlapping(apple,nosuch)	matches 11	body|8:8:36:41,15:15:66:71
 body	nonoverlapping(apple,nosuch)	matches 12	body|3:3:15:20,10:10:49:54,15:15:71:76,16:16:77:82,18:18:87:92
 body	nonoverlapping(apple,nosuch)	matches 13	body|9:9:39:44,12:12:56:61,17:17:80:85,18:18:86:91
 body	nonoverlapping(apple,nosuch)	matches 15	body|9:9:45:50,13:13:66:71
+body	nonoverlapping(apple,nosuch)	matches 17	none
 body	nonoverlapping(apple,nosuch)	matches 18	body|0:0:0:5,23:23:109:114
 body	nonoverlapping(apple,nosuch)	matches 19	body|7:7:29:34
 body	nonoverlapping(apple,nosuch)	matches 20	body|9:9:39:44
@@ -2870,6 +3087,7 @@ body	nonoverlapping(apple,nosuch)	matches 55	body|0:0:0:5,8:8:46:51,19:19:98:103
 body	nonoverlapping(apple,nosuch)	matches 56	body|0:0:0:5,2:2:10:15,3:3:16:21,17:17:82:87
 body	nonoverlapping(apple,nosuch)	matches 58	body|0:0:0:5
 body	nonoverlapping(apple,nosuch)	matches 59	body|8:8:35:40,14:14:62:67
+body	nonoverlapping(apple,nosuch)	matches 60	none
 body	nonoverlapping(apple,nosuch)	matches 61	body|3:3:14:19,6:6:31:36,9:9:46:51,13:13:65:70
 body	nonoverlapping(apple,nosuch)	matches 62	body|0:0:0:5,3:3:15:20,14:14:70:75
 body	nonoverlapping(apple,nosuch)	matches 65	body|1:1:6:11,4:4:20:25
@@ -2931,6 +3149,7 @@ body	notcontaining(apple,nosuch)	matches 11	body|8:8:36:41,15:15:66:71
 body	notcontaining(apple,nosuch)	matches 12	body|3:3:15:20,10:10:49:54,15:15:71:76,16:16:77:82,18:18:87:92
 body	notcontaining(apple,nosuch)	matches 13	body|9:9:39:44,12:12:56:61,17:17:80:85,18:18:86:91
 body	notcontaining(apple,nosuch)	matches 15	body|9:9:45:50,13:13:66:71
+body	notcontaining(apple,nosuch)	matches 17	none
 body	notcontaining(apple,nosuch)	matches 18	body|0:0:0:5,23:23:109:114
 body	notcontaining(apple,nosuch)	matches 19	body|7:7:29:34
 body	notcontaining(apple,nosuch)	matches 20	body|9:9:39:44
@@ -2956,6 +3175,7 @@ body	notcontaining(apple,nosuch)	matches 55	body|0:0:0:5,8:8:46:51,19:19:98:103
 body	notcontaining(apple,nosuch)	matches 56	body|0:0:0:5,2:2:10:15,3:3:16:21,17:17:82:87
 body	notcontaining(apple,nosuch)	matches 58	body|0:0:0:5
 body	notcontaining(apple,nosuch)	matches 59	body|8:8:35:40,14:14:62:67
+body	notcontaining(apple,nosuch)	matches 60	none
 body	notcontaining(apple,nosuch)	matches 61	body|3:3:14:19,6:6:31:36,9:9:46:51,13:13:65:70
 body	notcontaining(apple,nosuch)	matches 62	body|0:0:0:5,3:3:15:20,14:14:70:75
 body	notcontaining(apple,nosuch)	matches 65	body|1:1:6:11,4:4:20:25
@@ -3007,8 +3227,10 @@ body	before(apple,bank)	matches 0	body|5:5:21:26[5:5:21:26],6:6:27:32[6:6:27:32]
 body	before(apple,bank)	matches 2	body|2:2:8:13[2:2:8:13]
 body	before(apple,bank)	matches 3	body|0:0:0:5[0:0:0:5],2:2:10:15[2:2:10:15],4:4:20:25[4:4:20:25],5:5:26:31[5:5:26:31]
 body	before(apple,bank)	matches 6	body|9:9:41:46[9:9:41:46]
+body	before(apple,bank)	matches 7	none
 body	before(apple,bank)	matches 8	body|2:2:11:16[2:2:11:16]
 body	before(apple,bank)	matches 13	body|9:9:39:44[9:9:39:44],12:12:56:61[12:12:56:61],17:17:80:85[17:17:80:85],18:18:86:91[18:18:86:91]
+body	before(apple,bank)	matches 17	none
 body	before(apple,bank)	matches 18	body|0:0:0:5[0:0:0:5]
 body	before(apple,bank)	matches 20	body|9:9:39:44[9:9:39:44]
 body	before(apple,bank)	matches 26	body|5:5:23:28[5:5:23:28],10:10:49:54[10:10:49:54]
@@ -3022,6 +3244,7 @@ body	before(apple,bank)	matches 53	body|0:0:0:5[0:0:0:5],3:3:15:20[3:3:15:20],4:
 body	before(apple,bank)	matches 55	body|0:0:0:5[0:0:0:5]
 body	before(apple,bank)	matches 56	body|0:0:0:5[0:0:0:5],2:2:10:15[2:2:10:15],3:3:16:21[3:3:16:21],17:17:82:87[17:17:82:87]
 body	before(apple,bank)	matches 59	body|8:8:35:40[8:8:35:40]
+body	before(apple,bank)	matches 60	none
 body	before(apple,bank)	matches 62	body|0:0:0:5[0:0:0:5]
 body	before(apple,bank)	matches 81	body|2:2:8:13[2:2:8:13],6:6:28:33[6:6:28:33]
 body	before(apple,bank)	matches 91	body|16:16:79:84[16:16:79:84]
@@ -3057,11 +3280,14 @@ body	after(apple,bank)	bool	explain 7	0.0 = Failure to meet condition(s) of requ
 body	after(apple,bank)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:CONTAINED_BY(apple,EXTEND(FOLLOWING(bank),0,2147483647)))\n    0.0 = no matching intervals\n
 body	after(apple,bank)	bool	explain 33	0.5 = sum of:\n  0.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n    1.0 = w, weight of this function\n    1.0 = k, pivot feature value that would give a score contribution equal to w/2\n    1.0 = S, the sloppy frequency of the interval query body:CONTAINED_BY(apple,EXTEND(FOLLOWING(bank),0,2147483647))\n
 body	after(apple,bank)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:CONTAINED_BY(apple,EXTEND(FOLLOWING(bank),0,2147483647)))\n    0.0 = no matching intervals\n
+body	after(apple,bank)	matches 0	none
 body	after(apple,bank)	matches 2	body|10:10:47:52[10:10:47:52],12:12:57:62[12:12:57:62],19:19:91:96[19:19:91:96]
 body	after(apple,bank)	matches 6	body|9:9:41:46[9:9:41:46]
+body	after(apple,bank)	matches 7	none
 body	after(apple,bank)	matches 8	body|2:2:11:16[2:2:11:16]
 body	after(apple,bank)	matches 9	body|10:10:46:51[10:10:46:51],17:17:79:84[17:17:79:84]
 body	after(apple,bank)	matches 15	body|9:9:45:50[9:9:45:50],13:13:66:71[13:13:66:71]
+body	after(apple,bank)	matches 17	none
 body	after(apple,bank)	matches 18	body|23:23:109:114[23:23:109:114]
 body	after(apple,bank)	matches 19	body|7:7:29:34[7:7:29:34]
 body	after(apple,bank)	matches 20	body|9:9:39:44[9:9:39:44]
@@ -3077,6 +3303,7 @@ body	after(apple,bank)	matches 51	body|9:9:40:45[9:9:40:45],10:10:46:51[10:10:46
 body	after(apple,bank)	matches 55	body|8:8:46:51[8:8:46:51],19:19:98:103[19:19:98:103]
 body	after(apple,bank)	matches 56	body|17:17:82:87[17:17:82:87]
 body	after(apple,bank)	matches 59	body|8:8:35:40[8:8:35:40],14:14:62:67[14:14:62:67]
+body	after(apple,bank)	matches 60	none
 body	after(apple,bank)	matches 62	body|3:3:15:20[3:3:15:20],14:14:70:75[14:14:70:75]
 body	after(apple,bank)	matches 84	body|2:2:9:14[2:2:9:14],8:8:40:45[8:8:40:45],12:12:59:64[12:12:59:64]
 body	after(apple,bank)	matches 85	body|7:7:30:35[7:7:30:35],18:18:87:92[18:18:87:92],20:20:97:102[20:20:97:102]
@@ -3113,7 +3340,12 @@ body	before(or(apple,cat),phrase(bank,dog))	bool	explain 7	0.0 = Failure to meet
 body	before(or(apple,cat),phrase(bank,dog))	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:CONTAINED_BY(or(apple,cat),EXTEND(PRECEDING(BLOCK(bank,dog)),2147483647,0)))\n    0.0 = no matching intervals\n
 body	before(or(apple,cat),phrase(bank,dog))	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:CONTAINED_BY(or(apple,cat),EXTEND(PRECEDING(BLOCK(bank,dog)),2147483647,0)))\n    0.0 = no matching intervals\n
 body	before(or(apple,cat),phrase(bank,dog))	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:CONTAINED_BY(or(apple,cat),EXTEND(PRECEDING(BLOCK(bank,dog)),2147483647,0)))\n    0.0 = no matching intervals\n
+body	before(or(apple,cat),phrase(bank,dog))	matches 0	none
 body	before(or(apple,cat),phrase(bank,dog))	matches 3	body|0:0:0:5[0:0:0:5],2:2:10:15[2:2:10:15],4:4:20:25[4:4:20:25],5:5:26:31[5:5:26:31]
+body	before(or(apple,cat),phrase(bank,dog))	matches 7	none
+body	before(or(apple,cat),phrase(bank,dog))	matches 17	none
+body	before(or(apple,cat),phrase(bank,dog))	matches 33	none
+body	before(or(apple,cat),phrase(bank,dog))	matches 60	none
 body	within(apple,2,bank)	source	CONTAINED_BY(apple,EXTEND(bank,2,2))	1
 body	within(apple,2,bank)	plain	hits	20 0:3f2aaaaa,3:3f2aaaaa,35:3f2aaaaa,41:3f2aaaaa,62:3f2aaaaa,6:3f000000,8:3f000000,18:3f000000,20:3f000000,26:3f000000,30:3f000000,32:3f000000,33:3f000000,37:3f000000,47:3f000000,55:3f000000,59:3f000000,84:3f000000,91:3f000000,92:3f000000,
 body	within(apple,2,bank)	plain	explain 0	0.6666666 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  1.0 = w, weight of this function\n  1.0 = k, pivot feature value that would give a score contribution equal to w/2\n  2.0 = S, the sloppy frequency of the interval query body:CONTAINED_BY(apple,EXTEND(bank,2,2))\n
@@ -3148,7 +3380,9 @@ body	within(apple,2,bank)	bool	explain 60	0.0 = Failure to meet condition(s) of 
 body	within(apple,2,bank)	matches 0	body|5:5:21:26[5:5:21:26],6:6:27:32[6:6:27:32]
 body	within(apple,2,bank)	matches 3	body|4:4:20:25[4:4:20:25],5:5:26:31[5:5:26:31]
 body	within(apple,2,bank)	matches 6	body|9:9:41:46[9:9:41:46]
+body	within(apple,2,bank)	matches 7	none
 body	within(apple,2,bank)	matches 8	body|2:2:11:16[2:2:11:16]
+body	within(apple,2,bank)	matches 17	none
 body	within(apple,2,bank)	matches 18	body|23:23:109:114[23:23:109:114]
 body	within(apple,2,bank)	matches 20	body|9:9:39:44[9:9:39:44]
 body	within(apple,2,bank)	matches 26	body|10:10:49:54[10:10:49:54]
@@ -3161,6 +3395,7 @@ body	within(apple,2,bank)	matches 41	body|5:5:23:28[5:5:23:28],6:6:29:34[6:6:29:
 body	within(apple,2,bank)	matches 47	body|20:20:94:99[20:20:94:99]
 body	within(apple,2,bank)	matches 55	body|0:0:0:5[0:0:0:5]
 body	within(apple,2,bank)	matches 59	body|14:14:62:67[14:14:62:67]
+body	within(apple,2,bank)	matches 60	none
 body	within(apple,2,bank)	matches 62	body|0:0:0:5[0:0:0:5],3:3:15:20[3:3:15:20]
 body	within(apple,2,bank)	matches 84	body|2:2:9:14[2:2:9:14]
 body	within(apple,2,bank)	matches 91	body|16:16:79:84[16:16:79:84]
@@ -3208,6 +3443,7 @@ body	notwithin(apple,1,bank)	matches 11	body|8:8:36:41,15:15:66:71
 body	notwithin(apple,1,bank)	matches 12	body|3:3:15:20,10:10:49:54,15:15:71:76,16:16:77:82,18:18:87:92
 body	notwithin(apple,1,bank)	matches 13	body|9:9:39:44,12:12:56:61,17:17:80:85,18:18:86:91
 body	notwithin(apple,1,bank)	matches 15	body|9:9:45:50,13:13:66:71
+body	notwithin(apple,1,bank)	matches 17	none
 body	notwithin(apple,1,bank)	matches 18	body|0:0:0:5,23:23:109:114
 body	notwithin(apple,1,bank)	matches 19	body|7:7:29:34
 body	notwithin(apple,1,bank)	matches 21	body|14:14:60:65
@@ -3232,6 +3468,7 @@ body	notwithin(apple,1,bank)	matches 55	body|8:8:46:51,19:19:98:103
 body	notwithin(apple,1,bank)	matches 56	body|0:0:0:5,2:2:10:15,3:3:16:21,17:17:82:87
 body	notwithin(apple,1,bank)	matches 58	body|0:0:0:5
 body	notwithin(apple,1,bank)	matches 59	body|8:8:35:40
+body	notwithin(apple,1,bank)	matches 60	none
 body	notwithin(apple,1,bank)	matches 61	body|3:3:14:19,6:6:31:36,9:9:46:51,13:13:65:70
 body	notwithin(apple,1,bank)	matches 62	body|0:0:0:5,14:14:70:75
 body	notwithin(apple,1,bank)	matches 65	body|1:1:6:11,4:4:20:25
@@ -3284,9 +3521,11 @@ body	within(or(apple,dog),1,or(bank,cat))	matches 1	body|15:15:70:73[15:15:70:73
 body	within(or(apple,dog),1,or(bank,cat))	matches 2	body|6:6:29:32[6:6:29:32]
 body	within(or(apple,dog),1,or(bank,cat))	matches 3	body|5:5:26:31[5:5:26:31],7:7:37:40[7:7:37:40]
 body	within(or(apple,dog),1,or(bank,cat))	matches 6	body|9:9:41:46[9:9:41:46]
+body	within(or(apple,dog),1,or(bank,cat))	matches 7	none
 body	within(or(apple,dog),1,or(bank,cat))	matches 8	body|2:2:11:16[2:2:11:16]
 body	within(or(apple,dog),1,or(bank,cat))	matches 9	body|17:17:79:84[17:17:79:84]
 body	within(or(apple,dog),1,or(bank,cat))	matches 13	body|7:7:31:34[7:7:31:34],9:9:39:44[9:9:39:44]
+body	within(or(apple,dog),1,or(bank,cat))	matches 17	none
 body	within(or(apple,dog),1,or(bank,cat))	matches 19	body|3:3:12:15[3:3:12:15],5:5:21:24[5:5:21:24]
 body	within(or(apple,dog),1,or(bank,cat))	matches 20	body|9:9:39:44[9:9:39:44]
 body	within(or(apple,dog),1,or(bank,cat))	matches 26	body|10:10:49:54[10:10:49:54]
@@ -3296,6 +3535,7 @@ body	within(or(apple,dog),1,or(bank,cat))	matches 41	body|5:5:23:28[5:5:23:28]
 body	within(or(apple,dog),1,or(bank,cat))	matches 47	body|1:1:4:9[1:1:4:9]
 body	within(or(apple,dog),1,or(bank,cat))	matches 55	body|0:0:0:5[0:0:0:5]
 body	within(or(apple,dog),1,or(bank,cat))	matches 59	body|5:5:21:24[5:5:21:24],14:14:62:67[14:14:62:67]
+body	within(or(apple,dog),1,or(bank,cat))	matches 60	none
 body	within(or(apple,dog),1,or(bank,cat))	matches 62	body|3:3:15:20[3:3:15:20]
 body	within(or(apple,dog),1,or(bank,cat))	matches 67	body|12:12:54:57[12:12:54:57]
 body	within(or(apple,dog),1,or(bank,cat))	matches 70	body|9:9:39:44[9:9:39:44],20:20:98:103[20:20:98:103]
@@ -3339,11 +3579,13 @@ body	atleast(2,apple,bank,cat)	matches 1	body|4:14:16:69[4:4:16:21 14:14:66:69],
 body	atleast(2,apple,bank,cat)	matches 2	body|2:7:8:37[2:2:8:13 7:7:33:37],7:10:33:52[7:7:33:37 10:10:47:52]
 body	atleast(2,apple,bank,cat)	matches 3	body|5:6:26:36[5:5:26:31 6:6:32:36]
 body	atleast(2,apple,bank,cat)	matches 6	body|8:9:36:46[8:8:36:40 9:9:41:46],9:14:41:68[9:9:41:46 14:14:64:68],14:18:64:91[14:14:64:68 18:18:88:91]
+body	atleast(2,apple,bank,cat)	matches 7	none
 body	atleast(2,apple,bank,cat)	matches 8	body|1:2:6:16[1:1:6:10 2:2:11:16],2:5:11:29[2:2:11:16 5:5:25:29],5:6:25:33[5:5:25:29 6:6:30:33]
 body	atleast(2,apple,bank,cat)	matches 9	body|3:7:16:37[3:3:16:20 7:7:34:37],7:10:34:51[7:7:34:37 10:10:46:51],17:18:79:88[17:17:79:84 18:18:85:88]
 body	atleast(2,apple,bank,cat)	matches 12	body|3:8:15:41[3:3:15:20 8:8:38:41],8:10:38:54[8:8:38:41 10:10:49:54]
 body	atleast(2,apple,bank,cat)	matches 13	body|8:9:35:44[8:8:35:38 9:9:39:44],18:21:86:104[18:18:86:91 21:21:100:104]
 body	atleast(2,apple,bank,cat)	matches 15	body|1:9:4:50[1:1:4:8 9:9:45:50]
+body	atleast(2,apple,bank,cat)	matches 17	none
 body	atleast(2,apple,bank,cat)	matches 18	body|0:21:0:101[0:0:0:5 21:21:97:101],21:23:97:114[21:21:97:101 23:23:109:114]
 body	atleast(2,apple,bank,cat)	matches 19	body|4:7:16:34[4:4:16:20 7:7:29:34],7:12:29:62[7:7:29:34 12:12:59:62]
 body	atleast(2,apple,bank,cat)	matches 20	body|8:9:34:44[8:8:34:38 9:9:39:44],9:11:39:53[9:9:39:44 11:11:49:53]
@@ -3367,6 +3609,7 @@ body	atleast(2,apple,bank,cat)	matches 55	body|0:1:0:10[0:0:0:5 1:1:6:10],1:8:6:
 body	atleast(2,apple,bank,cat)	matches 56	body|3:10:16:55[3:3:16:21 10:10:51:55],10:17:51:87[10:10:51:55 17:17:82:87],17:22:82:109[17:17:82:87 22:22:105:109]
 body	atleast(2,apple,bank,cat)	matches 57	body|6:9:30:47[6:6:30:33 9:9:43:47]
 body	atleast(2,apple,bank,cat)	matches 59	body|2:3:8:16[2:2:8:12 3:3:13:16],6:8:25:40[6:6:25:28 8:8:35:40],8:12:35:56[8:8:35:40 12:12:53:56],12:13:53:61[12:12:53:56 13:13:57:61],13:14:57:67[13:13:57:61 14:14:62:67]
+body	atleast(2,apple,bank,cat)	matches 60	none
 body	atleast(2,apple,bank,cat)	matches 62	body|0:2:0:14[0:0:0:5 2:2:10:14],2:3:10:20[2:2:10:14 3:3:15:20]
 body	atleast(2,apple,bank,cat)	matches 70	body|8:9:35:44[8:8:35:38 9:9:39:44],20:21:98:107[20:20:98:103 21:21:104:107]
 body	atleast(2,apple,bank,cat)	matches 80	body|2:3:9:18[2:2:9:14 3:3:15:18],3:9:15:45[3:3:15:18 9:9:40:45]
@@ -3447,6 +3690,7 @@ body	atleast(2,apple,bank,cat,dog)	matches 55	body|0:1:0:10[0:0:0:5 1:1:6:10],1:
 body	atleast(2,apple,bank,cat,dog)	matches 56	body|3:8:16:46[3:3:16:21 8:8:43:46],8:10:43:55[8:8:43:46 10:10:51:55],10:15:51:76[10:10:51:55 15:15:73:76],15:17:73:87[15:15:73:76 17:17:82:87],17:22:82:109[17:17:82:87 22:22:105:109]
 body	atleast(2,apple,bank,cat,dog)	matches 57	body|6:9:30:47[6:6:30:33 9:9:43:47]
 body	atleast(2,apple,bank,cat,dog)	matches 59	body|2:3:8:16[2:2:8:12 3:3:13:16],3:5:13:24[3:3:13:16 5:5:21:24],5:6:21:28[5:5:21:24 6:6:25:28],6:8:25:40[6:6:25:28 8:8:35:40],8:12:35:56[8:8:35:40 12:12:53:56],12:13:53:61[12:12:53:56 13:13:57:61],13:14:57:67[13:13:57:61 14:14:62:67],14:19:62:92[14:14:62:67 19:19:89:92]
+body	atleast(2,apple,bank,cat,dog)	matches 60	none
 body	atleast(2,apple,bank,cat,dog)	matches 62	body|0:2:0:14[0:0:0:5 2:2:10:14],2:3:10:20[2:2:10:14 3:3:15:20],3:7:15:40[3:3:15:20 7:7:37:40],7:14:37:75[7:7:37:40 14:14:70:75]
 body	atleast(2,apple,bank,cat,dog)	matches 67	body|5:8:23:38[5:5:23:26 8:8:35:38],12:13:54:61[12:12:54:57 13:13:58:61]
 body	atleast(2,apple,bank,cat,dog)	matches 68	body|3:4:12:21[3:3:12:17 4:4:18:21],4:5:18:27[4:4:18:21 5:5:22:27]
@@ -3494,14 +3738,17 @@ body	atleast(3,apple,bank,cat,dog)	bool	explain 7	0.0 = Failure to meet conditio
 body	atleast(3,apple,bank,cat,dog)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:AtLeast(apple,bank,cat,dog~3))\n    0.0 = no matching intervals\n
 body	atleast(3,apple,bank,cat,dog)	bool	explain 33	0.5 = sum of:\n  0.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n    1.0 = w, weight of this function\n    1.0 = k, pivot feature value that would give a score contribution equal to w/2\n    1.0 = S, the sloppy frequency of the interval query body:AtLeast(apple,bank,cat,dog~3)\n
 body	atleast(3,apple,bank,cat,dog)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:AtLeast(apple,bank,cat,dog~3))\n    0.0 = no matching intervals\n
+body	atleast(3,apple,bank,cat,dog)	matches 0	none
 body	atleast(3,apple,bank,cat,dog)	matches 1	body|4:15:16:73[4:4:16:21 14:14:66:69 15:15:70:73],14:19:66:92[14:14:66:69 15:15:70:73 19:19:87:92]
 body	atleast(3,apple,bank,cat,dog)	matches 2	body|2:7:8:37[2:2:8:13 6:6:29:32 7:7:33:37],6:10:29:52[6:6:29:32 7:7:33:37 10:10:47:52]
 body	atleast(3,apple,bank,cat,dog)	matches 3	body|5:7:26:40[5:5:26:31 6:6:32:36 7:7:37:40]
 body	atleast(3,apple,bank,cat,dog)	matches 6	body|9:18:41:91[9:9:41:46 14:14:64:68 18:18:88:91]
+body	atleast(3,apple,bank,cat,dog)	matches 7	none
 body	atleast(3,apple,bank,cat,dog)	matches 8	body|1:3:6:20[1:1:6:10 2:2:11:16 3:3:17:20],2:5:11:29[2:2:11:16 3:3:17:20 5:5:25:29],3:6:17:33[3:3:17:20 5:5:25:29 6:6:30:33]
 body	atleast(3,apple,bank,cat,dog)	matches 9	body|3:10:16:51[3:3:16:20 7:7:34:37 10:10:46:51]
 body	atleast(3,apple,bank,cat,dog)	matches 12	body|8:19:38:96[8:8:38:41 10:10:49:54 19:19:93:96]
 body	atleast(3,apple,bank,cat,dog)	matches 13	body|7:9:31:44[7:7:31:34 8:8:35:38 9:9:39:44],8:15:35:75[8:8:35:38 9:9:39:44 15:15:72:75],15:21:72:104[15:15:72:75 17:17:80:85 21:21:100:104]
+body	atleast(3,apple,bank,cat,dog)	matches 17	none
 body	atleast(3,apple,bank,cat,dog)	matches 18	body|0:21:0:101[0:0:0:5 17:17:79:82 21:21:97:101],19:23:88:114[19:19:88:91 21:21:97:101 23:23:109:114]
 body	atleast(3,apple,bank,cat,dog)	matches 19	body|4:7:16:34[4:4:16:20 5:5:21:24 7:7:29:34],5:12:21:62[5:5:21:24 7:7:29:34 12:12:59:62]
 body	atleast(3,apple,bank,cat,dog)	matches 20	body|1:9:4:44[1:1:4:7 7:7:29:33 9:9:39:44],9:20:39:93[9:9:39:44 11:11:49:53 20:20:90:93]
@@ -3518,6 +3765,7 @@ body	atleast(3,apple,bank,cat,dog)	matches 53	body|4:12:21:63[4:4:21:26 9:9:47:5
 body	atleast(3,apple,bank,cat,dog)	matches 55	body|1:21:6:112[1:1:6:10 8:8:46:51 21:21:109:112]
 body	atleast(3,apple,bank,cat,dog)	matches 56	body|3:10:16:55[3:3:16:21 8:8:43:46 10:10:51:55],10:17:51:87[10:10:51:55 15:15:73:76 17:17:82:87],15:22:73:109[15:15:73:76 17:17:82:87 22:22:105:109]
 body	atleast(3,apple,bank,cat,dog)	matches 59	body|2:5:8:24[2:2:8:12 3:3:13:16 5:5:21:24],5:8:21:40[5:5:21:24 6:6:25:28 8:8:35:40],8:13:35:61[8:8:35:40 12:12:53:56 13:13:57:61],12:14:53:67[12:12:53:56 13:13:57:61 14:14:62:67],13:19:57:92[13:13:57:61 14:14:62:67 19:19:89:92]
+body	atleast(3,apple,bank,cat,dog)	matches 60	none
 body	atleast(3,apple,bank,cat,dog)	matches 62	body|2:7:10:40[2:2:10:14 3:3:15:20 7:7:37:40]
 body	atleast(3,apple,bank,cat,dog)	matches 80	body|2:4:9:22[2:2:9:14 3:3:15:18 4:4:19:22],3:9:15:45[3:3:15:18 4:4:19:22 9:9:40:45]
 body	atleast(3,apple,bank,cat,dog)	matches 81	body|6:10:28:50[6:6:28:33 7:7:34:37 10:10:46:50]
@@ -3558,6 +3806,7 @@ body	atleast(2,apple,phrase(bank,cat),dog)	bool	explain 7	0.5 = sum of:\n  0.5 =
 body	atleast(2,apple,phrase(bank,cat),dog)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:AtLeast(apple,BLOCK(bank,cat),dog~2))\n    0.0 = no matching intervals\n
 body	atleast(2,apple,phrase(bank,cat),dog)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:AtLeast(apple,BLOCK(bank,cat),dog~2))\n    0.0 = no matching intervals\n
 body	atleast(2,apple,phrase(bank,cat),dog)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:AtLeast(apple,BLOCK(bank,cat),dog~2))\n    0.0 = no matching intervals\n
+body	atleast(2,apple,phrase(bank,cat),dog)	matches 0	none
 body	atleast(2,apple,phrase(bank,cat),dog)	matches 1	body|4:15:16:73[4:4:16:21 15:15:70:73],15:19:70:92[15:15:70:73 19:19:87:92]
 body	atleast(2,apple,phrase(bank,cat),dog)	matches 2	body|2:6:8:32[2:2:8:13 6:6:29:32],6:10:29:52[6:6:29:32 10:10:47:52]
 body	atleast(2,apple,phrase(bank,cat),dog)	matches 3	body|5:7:26:40[5:5:26:31 7:7:37:40]
@@ -3566,10 +3815,12 @@ body	atleast(2,apple,phrase(bank,cat),dog)	matches 8	body|2:3:11:20[2:2:11:16 3:
 body	atleast(2,apple,phrase(bank,cat),dog)	matches 11	body|8:11:36:53[8:8:36:41 11:11:50:53],13:15:58:71[13:13:58:61 15:15:66:71]
 body	atleast(2,apple,phrase(bank,cat),dog)	matches 12	body|18:19:87:96[18:18:87:92 19:19:93:96]
 body	atleast(2,apple,phrase(bank,cat),dog)	matches 13	body|7:9:31:44[7:7:31:34 9:9:39:44],12:15:56:75[12:12:56:61 15:15:72:75],15:17:72:85[15:15:72:75 17:17:80:85]
+body	atleast(2,apple,phrase(bank,cat),dog)	matches 17	none
 body	atleast(2,apple,phrase(bank,cat),dog)	matches 18	body|0:17:0:82[0:0:0:5 17:17:79:82],19:23:88:114[19:19:88:91 23:23:109:114]
 body	atleast(2,apple,phrase(bank,cat),dog)	matches 19	body|5:7:21:34[5:5:21:24 7:7:29:34]
 body	atleast(2,apple,phrase(bank,cat),dog)	matches 20	body|1:9:4:44[1:1:4:7 9:9:39:44],9:20:39:93[9:9:39:44 20:20:90:93]
 body	atleast(2,apple,phrase(bank,cat),dog)	matches 21	body|6:9:27:43[6:6:27:30 8:8:35:39 9:9:40:43],8:14:35:65[8:8:35:39 9:9:40:43 14:14:60:65]
+body	atleast(2,apple,phrase(bank,cat),dog)	matches 33	none
 body	atleast(2,apple,phrase(bank,cat),dog)	matches 39	body|1:2:5:14[1:1:5:10 2:2:11:14],2:10:11:51[2:2:11:14 10:10:46:51],10:17:46:83[10:10:46:51 16:16:75:79 17:17:80:83],16:19:75:92[16:16:75:79 17:17:80:83 19:19:89:92]
 body	atleast(2,apple,phrase(bank,cat),dog)	matches 41	body|2:5:10:28[2:2:10:13 5:5:23:28]
 body	atleast(2,apple,phrase(bank,cat),dog)	matches 45	body|1:3:4:17[1:1:4:9 3:3:14:17],3:6:14:31[3:3:14:17 6:6:26:31]
@@ -3579,6 +3830,7 @@ body	atleast(2,apple,phrase(bank,cat),dog)	matches 54	body|18:21:88:107[18:18:88
 body	atleast(2,apple,phrase(bank,cat),dog)	matches 55	body|19:21:98:112[19:19:98:103 21:21:109:112]
 body	atleast(2,apple,phrase(bank,cat),dog)	matches 56	body|3:8:16:46[3:3:16:21 8:8:43:46],15:17:73:87[15:15:73:76 17:17:82:87]
 body	atleast(2,apple,phrase(bank,cat),dog)	matches 59	body|2:5:8:24[2:2:8:12 3:3:13:16 5:5:21:24],5:8:21:40[5:5:21:24 8:8:35:40],14:19:62:92[14:14:62:67 19:19:89:92]
+body	atleast(2,apple,phrase(bank,cat),dog)	matches 60	none
 body	atleast(2,apple,phrase(bank,cat),dog)	matches 62	body|3:7:15:40[3:3:15:20 7:7:37:40],7:14:37:75[7:7:37:40 14:14:70:75]
 body	atleast(2,apple,phrase(bank,cat),dog)	matches 68	body|3:4:12:21[3:3:12:17 4:4:18:21],4:5:18:27[4:4:18:21 5:5:22:27]
 body	atleast(2,apple,phrase(bank,cat),dog)	matches 80	body|2:4:9:22[2:2:9:14 4:4:19:22],4:9:19:45[4:4:19:22 9:9:40:45]
@@ -3618,6 +3870,11 @@ body	atleast(4,apple,bank,cat)	bool	explain 7	0.0 = Failure to meet condition(s)
 body	atleast(4,apple,bank,cat)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:NOMATCH(Too few sources to match minimum of [4]: [apple, bank, cat]))\n    0.0 = no matching intervals\n
 body	atleast(4,apple,bank,cat)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:NOMATCH(Too few sources to match minimum of [4]: [apple, bank, cat]))\n    0.0 = no matching intervals\n
 body	atleast(4,apple,bank,cat)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:NOMATCH(Too few sources to match minimum of [4]: [apple, bank, cat]))\n    0.0 = no matching intervals\n
+body	atleast(4,apple,bank,cat)	matches 0	none
+body	atleast(4,apple,bank,cat)	matches 7	none
+body	atleast(4,apple,bank,cat)	matches 17	none
+body	atleast(4,apple,bank,cat)	matches 33	none
+body	atleast(4,apple,bank,cat)	matches 60	none
 body	atleast(3,apple,bank,cat)	source	UNORDERED(apple,bank,cat)	3
 body	atleast(3,apple,bank,cat)	plain	hits	16 59:3f17829d,33:3f000000,35:3f000000,91:3f000000,92:3ec8590a,32:3ec4ec4e,30:3e9ee586,8:3e800000,81:3e800000,21:3e2aaaac,9:3e124924,39:3e124924,19:3e000004,6:3de38e38,13:3d9d89e0,47:3d638e40,
 body	atleast(3,apple,bank,cat)	plain	explain 0	0.0 = no matching intervals\n
@@ -3649,10 +3906,13 @@ body	atleast(3,apple,bank,cat)	bool	explain 7	0.0 = Failure to meet condition(s)
 body	atleast(3,apple,bank,cat)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:UNORDERED(apple,bank,cat))\n    0.0 = no matching intervals\n
 body	atleast(3,apple,bank,cat)	bool	explain 33	0.5 = sum of:\n  0.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n    1.0 = w, weight of this function\n    1.0 = k, pivot feature value that would give a score contribution equal to w/2\n    1.0 = S, the sloppy frequency of the interval query body:UNORDERED(apple,bank,cat)\n
 body	atleast(3,apple,bank,cat)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:UNORDERED(apple,bank,cat))\n    0.0 = no matching intervals\n
+body	atleast(3,apple,bank,cat)	matches 0	none
 body	atleast(3,apple,bank,cat)	matches 6	body|9:18:41:91[9:9:41:46 14:14:64:68 18:18:88:91]
+body	atleast(3,apple,bank,cat)	matches 7	none
 body	atleast(3,apple,bank,cat)	matches 8	body|2:6:11:33[2:2:11:16 5:5:25:29 6:6:30:33]
 body	atleast(3,apple,bank,cat)	matches 9	body|3:10:16:51[3:3:16:20 7:7:34:37 10:10:46:51]
 body	atleast(3,apple,bank,cat)	matches 13	body|8:21:35:104[8:8:35:38 9:9:39:44 21:21:100:104]
+body	atleast(3,apple,bank,cat)	matches 17	none
 body	atleast(3,apple,bank,cat)	matches 19	body|4:12:16:62[4:4:16:20 7:7:29:34 12:12:59:62]
 body	atleast(3,apple,bank,cat)	matches 21	body|8:14:35:65[8:8:35:39 9:9:40:43 14:14:60:65]
 body	atleast(3,apple,bank,cat)	matches 30	body|0:5:0:30[0:0:0:3 3:3:14:18 5:5:25:30],3:9:14:54[3:3:14:18 5:5:25:30 9:9:51:54]
@@ -3662,6 +3922,7 @@ body	atleast(3,apple,bank,cat)	matches 35	body|6:8:28:42[6:6:28:31 7:7:32:37 8:8
 body	atleast(3,apple,bank,cat)	matches 39	body|10:17:46:83[10:10:46:51 16:16:75:79 17:17:80:83]
 body	atleast(3,apple,bank,cat)	matches 47	body|0:18:0:88[0:0:0:3 1:1:4:9 18:18:84:88]
 body	atleast(3,apple,bank,cat)	matches 59	body|2:8:8:40[2:2:8:12 3:3:13:16 8:8:35:40],8:13:35:61[8:8:35:40 12:12:53:56 13:13:57:61],12:14:53:67[12:12:53:56 13:13:57:61 14:14:62:67]
+body	atleast(3,apple,bank,cat)	matches 60	none
 body	atleast(3,apple,bank,cat)	matches 81	body|6:10:28:50[6:6:28:33 7:7:34:37 10:10:46:50]
 body	atleast(3,apple,bank,cat)	matches 91	body|13:16:66:84[13:13:66:70 15:15:75:78 16:16:79:84],15:18:75:94[15:15:75:78 16:16:79:84 18:18:90:94]
 body	atleast(3,apple,bank,cat)	matches 92	body|0:7:0:35[0:0:0:4 4:4:17:20 7:7:30:35],4:12:17:60[4:4:17:20 7:7:30:35 12:12:56:60],12:16:56:80[12:12:56:60 14:14:66:71 16:16:77:80]
@@ -3710,6 +3971,7 @@ body	atleast(2,apple,apple,bank)	matches 11	body|8:8:36:41[8:8:36:41 8:8:36:41],
 body	atleast(2,apple,apple,bank)	matches 12	body|3:3:15:20[3:3:15:20 3:3:15:20],10:10:49:54[10:10:49:54 10:10:49:54],15:15:71:76[15:15:71:76 15:15:71:76],16:16:77:82[16:16:77:82 16:16:77:82],18:18:87:92[18:18:87:92 18:18:87:92]
 body	atleast(2,apple,apple,bank)	matches 13	body|9:9:39:44[9:9:39:44 9:9:39:44],12:12:56:61[12:12:56:61 12:12:56:61],17:17:80:85[17:17:80:85 17:17:80:85],18:18:86:91[18:18:86:91 18:18:86:91]
 body	atleast(2,apple,apple,bank)	matches 15	body|9:9:4:50[9:9:45:50 9:9:45:50 2147483647:2147483647:4:8],13:13:66:71[13:13:66:71 13:13:66:71]
+body	atleast(2,apple,apple,bank)	matches 17	none
 body	atleast(2,apple,apple,bank)	matches 18	body|0:0:0:5[0:0:0:5 0:0:0:5],23:23:97:114[23:23:109:114 23:23:109:114 2147483647:2147483647:97:101]
 body	atleast(2,apple,apple,bank)	matches 19	body|7:7:16:34[7:7:29:34 7:7:29:34 2147483647:2147483647:16:20]
 body	atleast(2,apple,apple,bank)	matches 20	body|9:9:39:53[9:9:39:44 9:9:39:44 11:11:49:53]
@@ -3735,6 +3997,7 @@ body	atleast(2,apple,apple,bank)	matches 55	body|0:0:0:5[0:0:0:5 0:0:0:5],8:8:6:
 body	atleast(2,apple,apple,bank)	matches 56	body|0:0:0:5[0:0:0:5 0:0:0:5],2:2:10:15[2:2:10:15 2:2:10:15],3:3:16:21[3:3:16:21 3:3:16:21],17:17:82:109[17:17:82:87 17:17:82:87 22:22:105:109]
 body	atleast(2,apple,apple,bank)	matches 58	body|0:0:0:5[0:0:0:5 0:0:0:5]
 body	atleast(2,apple,apple,bank)	matches 59	body|8:8:35:61[8:8:35:40 8:8:35:40 13:13:57:61],14:14:57:67[14:14:62:67 14:14:62:67 2147483647:2147483647:57:61]
+body	atleast(2,apple,apple,bank)	matches 60	none
 body	atleast(2,apple,apple,bank)	matches 61	body|3:3:14:19[3:3:14:19 3:3:14:19],6:6:31:36[6:6:31:36 6:6:31:36],9:9:46:51[9:9:46:51 9:9:46:51],13:13:65:70[13:13:65:70 13:13:65:70]
 body	atleast(2,apple,apple,bank)	matches 62	body|0:0:0:5[0:0:0:5 0:0:0:5],3:3:10:20[3:3:15:20 3:3:15:20 2147483647:2147483647:10:14],14:14:70:75[14:14:70:75 14:14:70:75]
 body	atleast(2,apple,apple,bank)	matches 65	body|1:1:6:11[1:1:6:11 1:1:6:11],4:4:20:25[4:4:20:25 4:4:20:25]
@@ -3796,6 +4059,7 @@ body	atleast(1,apple,nosuch)	matches 11	body|8:8:36:41[8:8:36:41],15:15:66:71[15
 body	atleast(1,apple,nosuch)	matches 12	body|3:3:15:20[3:3:15:20],10:10:49:54[10:10:49:54],15:15:71:76[15:15:71:76],16:16:77:82[16:16:77:82],18:18:87:92[18:18:87:92]
 body	atleast(1,apple,nosuch)	matches 13	body|9:9:39:44[9:9:39:44],12:12:56:61[12:12:56:61],17:17:80:85[17:17:80:85],18:18:86:91[18:18:86:91]
 body	atleast(1,apple,nosuch)	matches 15	body|9:9:45:50[9:9:45:50],13:13:66:71[13:13:66:71]
+body	atleast(1,apple,nosuch)	matches 17	none
 body	atleast(1,apple,nosuch)	matches 18	body|0:0:0:5[0:0:0:5],23:23:109:114[23:23:109:114]
 body	atleast(1,apple,nosuch)	matches 19	body|7:7:29:34[7:7:29:34]
 body	atleast(1,apple,nosuch)	matches 20	body|9:9:39:44[9:9:39:44]
@@ -3821,6 +4085,7 @@ body	atleast(1,apple,nosuch)	matches 55	body|0:0:0:5[0:0:0:5],8:8:46:51[8:8:46:5
 body	atleast(1,apple,nosuch)	matches 56	body|0:0:0:5[0:0:0:5],2:2:10:15[2:2:10:15],3:3:16:21[3:3:16:21],17:17:82:87[17:17:82:87]
 body	atleast(1,apple,nosuch)	matches 58	body|0:0:0:5[0:0:0:5]
 body	atleast(1,apple,nosuch)	matches 59	body|8:8:35:40[8:8:35:40],14:14:62:67[14:14:62:67]
+body	atleast(1,apple,nosuch)	matches 60	none
 body	atleast(1,apple,nosuch)	matches 61	body|3:3:14:19[3:3:14:19],6:6:31:36[6:6:31:36],9:9:46:51[9:9:46:51],13:13:65:70[13:13:65:70]
 body	atleast(1,apple,nosuch)	matches 62	body|0:0:0:5[0:0:0:5],3:3:15:20[3:3:15:20],14:14:70:75[14:14:70:75]
 body	atleast(1,apple,nosuch)	matches 65	body|1:1:6:11[1:1:6:11],4:4:20:25[4:4:20:25]
@@ -3868,18 +4133,23 @@ body	ordered(atleast(2,apple,bank,cat),dog)	bool	explain 7	0.0 = Failure to meet
 body	ordered(atleast(2,apple,bank,cat),dog)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(AtLeast(apple,bank,cat~2),dog))\n    0.0 = no matching intervals\n
 body	ordered(atleast(2,apple,bank,cat),dog)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(AtLeast(apple,bank,cat~2),dog))\n    0.0 = no matching intervals\n
 body	ordered(atleast(2,apple,bank,cat),dog)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(AtLeast(apple,bank,cat~2),dog))\n    0.0 = no matching intervals\n
+body	ordered(atleast(2,apple,bank,cat),dog)	matches 0	none
 body	ordered(atleast(2,apple,bank,cat),dog)	matches 1	body|4:15:16:73[4:4:16:21 14:14:66:69 15:15:70:73]
 body	ordered(atleast(2,apple,bank,cat),dog)	matches 3	body|5:7:26:40[5:5:26:31 6:6:32:36 7:7:37:40]
+body	ordered(atleast(2,apple,bank,cat),dog)	matches 7	none
 body	ordered(atleast(2,apple,bank,cat),dog)	matches 8	body|1:3:6:20[1:1:6:10 2:2:11:16 3:3:17:20]
 body	ordered(atleast(2,apple,bank,cat),dog)	matches 12	body|8:19:38:96[8:8:38:41 10:10:49:54 19:19:93:96]
 body	ordered(atleast(2,apple,bank,cat),dog)	matches 13	body|8:15:35:75[8:8:35:38 9:9:39:44 15:15:72:75]
+body	ordered(atleast(2,apple,bank,cat),dog)	matches 17	none
 body	ordered(atleast(2,apple,bank,cat),dog)	matches 20	body|9:20:39:93[9:9:39:44 11:11:49:53 20:20:90:93]
+body	ordered(atleast(2,apple,bank,cat),dog)	matches 33	none
 body	ordered(atleast(2,apple,bank,cat),dog)	matches 39	body|16:19:75:92[16:16:75:79 17:17:80:83 19:19:89:92]
 body	ordered(atleast(2,apple,bank,cat),dog)	matches 47	body|0:4:0:22[0:0:0:3 1:1:4:9 4:4:19:22]
 body	ordered(atleast(2,apple,bank,cat),dog)	matches 53	body|4:12:21:63[4:4:21:26 9:9:47:51 12:12:60:63]
 body	ordered(atleast(2,apple,bank,cat),dog)	matches 55	body|1:21:6:112[1:1:6:10 8:8:46:51 21:21:109:112]
 body	ordered(atleast(2,apple,bank,cat),dog)	matches 56	body|3:15:16:76[3:3:16:21 10:10:51:55 15:15:73:76]
 body	ordered(atleast(2,apple,bank,cat),dog)	matches 59	body|2:5:8:24[2:2:8:12 3:3:13:16 5:5:21:24],13:19:57:92[13:13:57:61 14:14:62:67 19:19:89:92]
+body	ordered(atleast(2,apple,bank,cat),dog)	matches 60	none
 body	ordered(atleast(2,apple,bank,cat),dog)	matches 62	body|2:7:10:40[2:2:10:14 3:3:15:20 7:7:37:40]
 body	ordered(atleast(2,apple,bank,cat),dog)	matches 80	body|2:4:9:22[2:2:9:14 3:3:15:18 4:4:19:22]
 body	ordered(atleast(2,apple,bank,cat),dog)	matches 84	body|0:5:0:30[0:0:0:4 2:2:9:14 5:5:27:30]
@@ -3914,12 +4184,15 @@ body	ordered(apple,fix(body2,bank))	bool	explain 7	0.0 = Failure to meet conditi
 body	ordered(apple,fix(body2,bank))	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(apple,FIELD(body2,bank)))\n    0.0 = no matching intervals\n
 body	ordered(apple,fix(body2,bank))	bool	explain 33	0.19999999 = sum of:\n  0.19999999 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n    1.0 = w, weight of this function\n    1.0 = k, pivot feature value that would give a score contribution equal to w/2\n    0.25 = S, the sloppy frequency of the interval query body:ORDERED(apple,FIELD(body2,bank))\n
 body	ordered(apple,fix(body2,bank))	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(apple,FIELD(body2,bank)))\n    0.0 = no matching intervals\n
+body	ordered(apple,fix(body2,bank))	matches 0	none
 body	ordered(apple,fix(body2,bank))	matches 2	body|12:14:57:74[12:12:57:62 14:14:70:74]
 body	ordered(apple,fix(body2,bank))	matches 3	body|4:5:20:25[4:4:20:25 5:5:21:25]
 body	ordered(apple,fix(body2,bank))	matches 6	body|9:14:41:72[9:9:41:46 14:14:68:72]
+body	ordered(apple,fix(body2,bank))	matches 7	none
 body	ordered(apple,fix(body2,bank))	matches 8	body|2:6:11:33[2:2:11:16 6:6:29:33]
 body	ordered(apple,fix(body2,bank))	matches 9	body|10:15:46:72[10:10:46:51 15:15:68:72]
 body	ordered(apple,fix(body2,bank))	matches 15	body|13:16:66:86[13:13:66:71 16:16:82:86]
+body	ordered(apple,fix(body2,bank))	matches 17	none
 body	ordered(apple,fix(body2,bank))	matches 18	body|0:3:0:22[0:0:0:5 3:3:18:22]
 body	ordered(apple,fix(body2,bank))	matches 19	body|7:11:29:62[7:7:29:34 11:11:58:62]
 body	ordered(apple,fix(body2,bank))	matches 20	body|9:11:39:52[9:9:39:44 11:11:48:52]
@@ -3935,6 +4208,7 @@ body	ordered(apple,fix(body2,bank))	matches 53	body|4:8:21:41[4:4:21:26 8:8:37:4
 body	ordered(apple,fix(body2,bank))	matches 55	body|19:23:98:119[19:19:98:103 23:23:115:119]
 body	ordered(apple,fix(body2,bank))	matches 56	body|0:2:0:12[0:0:0:5 2:2:8:12],3:14:16:66[3:3:16:21 14:14:62:66]
 body	ordered(apple,fix(body2,bank))	matches 59	body|14:17:62:84[14:14:62:67 17:17:80:84]
+body	ordered(apple,fix(body2,bank))	matches 60	none
 body	ordered(apple,fix(body2,bank))	matches 62	body|3:12:15:65[3:3:15:20 12:12:61:65]
 body	ordered(apple,fix(body2,bank))	matches 81	body|6:9:28:45[6:6:28:33 9:9:41:45]
 body	ordered(apple,fix(body2,bank))	matches 84	body|12:13:59:71[12:12:59:64 13:13:67:71]
@@ -3974,9 +4248,12 @@ body	fix(body2,phrase(bank,apple))	bool	explain 33	0.5 = sum of:\n  0.5 = Satura
 body	fix(body2,phrase(bank,apple))	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:FIELD(body2,BLOCK(bank,apple)))\n    0.0 = no matching intervals\n
 body	fix(body2,phrase(bank,apple))	matches 0	body|0:1:0:10[0:0:0:4 1:1:5:10]
 body	fix(body2,phrase(bank,apple))	matches 3	body|5:6:21:31[5:5:21:25 6:6:26:31]
+body	fix(body2,phrase(bank,apple))	matches 7	none
+body	fix(body2,phrase(bank,apple))	matches 17	none
 body	fix(body2,phrase(bank,apple))	matches 33	body|7:8:32:42[7:7:32:36 8:8:37:42]
 body	fix(body2,phrase(bank,apple))	matches 35	body|10:11:50:60[10:10:50:54 11:11:55:60]
 body	fix(body2,phrase(bank,apple))	matches 55	body|23:24:115:125[23:23:115:119 24:24:120:125]
+body	fix(body2,phrase(bank,apple))	matches 60	none
 body	fix(body2,or(apple,phrase(bank,cat)))	source	FIELD(body2,or(BLOCK(bank,cat),apple))	1
 body	fix(body2,or(apple,phrase(bank,cat)))	plain	hits	56 12:3f555555,35:3f555555,47:3f555555,54:3f555555,70:3f555555,2:3f4ccccd,3:3f4ccccd,13:3f4ccccd,33:3f4ccccd,51:3f4ccccd,56:3f4ccccd,61:3f4ccccd,80:3f4ccccd,10:3f400000,45:3f400000,53:3f400000,55:3f400000,62:3f400000,84:3f400000,85:3f400000,92:3f400000,59:3f36db6e,0:3f2aaaaa,1:3f2aaaaa,7:3f2aaaaa,9:3f2aaaaa,11:3f2aaaaa,15:3f2aaaaa,18:3f2aaaaa,26:3f2aaaaa,28:3f2aaaaa,32:3f2aaaaa,37:3f2aaaaa,39:3f2aaaaa,41:3f2aaaaa,46:3f2aaaaa,65:3f2aaaaa,68:3f2aaaaa,81:3f2aaaaa,88:3f2aaaaa,94:3f2aaaaa,4:3f000000,6:3f000000,8:3f000000,19:3f000000,20:3f000000,21:3f000000,22:3f000000,30:3f000000,40:3f000000,58:3f000000,76:3f000000,83:3f000000,87:3f000000,91:3f000000,24:3eaaaaaa,
 body	fix(body2,or(apple,phrase(bank,cat)))	plain	explain 0	0.6666666 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  1.0 = w, weight of this function\n  1.0 = k, pivot feature value that would give a score contribution equal to w/2\n  2.0 = S, the sloppy frequency of the interval query body:FIELD(body2,or(BLOCK(bank,cat),apple))\n
@@ -4022,6 +4299,7 @@ body	fix(body2,or(apple,phrase(bank,cat)))	matches 11	body|7:7:33:38,14:14:63:68
 body	fix(body2,or(apple,phrase(bank,cat)))	matches 12	body|4:4:19:24,6:6:29:34,7:7:35:40,12:12:57:62,19:19:91:96
 body	fix(body2,or(apple,phrase(bank,cat)))	matches 13	body|3:3:13:18,4:4:19:24,9:9:43:48,12:12:60:65
 body	fix(body2,or(apple,phrase(bank,cat)))	matches 15	body|4:4:19:24,8:8:40:45
+body	fix(body2,or(apple,phrase(bank,cat)))	matches 17	none
 body	fix(body2,or(apple,phrase(bank,cat)))	matches 18	body|1:1:5:10,24:24:114:119
 body	fix(body2,or(apple,phrase(bank,cat)))	matches 19	body|8:8:44:49
 body	fix(body2,or(apple,phrase(bank,cat)))	matches 20	body|13:13:57:62
@@ -4048,6 +4326,7 @@ body	fix(body2,or(apple,phrase(bank,cat)))	matches 55	body|5:5:22:27,16:16:74:79
 body	fix(body2,or(apple,phrase(bank,cat)))	matches 56	body|7:7:30:35,21:21:96:101,22:22:102:107,24:24:112:117
 body	fix(body2,or(apple,phrase(bank,cat)))	matches 58	body|0:0:0:5
 body	fix(body2,or(apple,phrase(bank,cat)))	matches 59	body|5:5:25:30,6:7:31:39[6:6:31:35 7:7:36:39],11:11:52:57
+body	fix(body2,or(apple,phrase(bank,cat)))	matches 60	none
 body	fix(body2,or(apple,phrase(bank,cat)))	matches 61	body|0:0:0:5,4:4:19:24,7:7:34:39,10:10:51:56
 body	fix(body2,or(apple,phrase(bank,cat)))	matches 62	body|0:0:0:5,11:11:55:60,14:14:70:75
 body	fix(body2,or(apple,phrase(bank,cat)))	matches 65	body|13:13:62:67,16:16:76:81
@@ -4140,6 +4419,7 @@ body	prefix(ap)	matches 56	body|0:0:0:5,1:1:6:9,2:2:10:15,3:3:16:21,17:17:82:87,
 body	prefix(ap)	matches 57	body|3:3:14:19,5:5:24:29
 body	prefix(ap)	matches 58	body|0:0:0:5
 body	prefix(ap)	matches 59	body|1:1:4:7,7:7:29:34,8:8:35:40,9:9:41:44,11:11:49:52,14:14:62:67
+body	prefix(ap)	matches 60	none
 body	prefix(ap)	matches 61	body|2:2:8:13,3:3:14:19,6:6:31:36,7:7:37:40,9:9:46:51,13:13:65:70
 body	prefix(ap)	matches 62	body|0:0:0:5,3:3:15:20,11:11:57:60,12:12:61:64,14:14:70:75
 body	prefix(ap)	matches 63	body|2:2:8:13,3:3:14:19,5:5:25:30
@@ -4200,6 +4480,7 @@ body	prefix(ba)	matches 1	body|8:8:35:41
 body	prefix(ba)	matches 2	body|4:4:19:23,5:5:24:28,7:7:33:37,15:15:72:76,17:17:82:86,20:20:97:103
 body	prefix(ba)	matches 3	body|6:6:32:36
 body	prefix(ba)	matches 6	body|0:0:0:4,2:2:9:13,3:3:14:18,8:8:36:40,10:10:47:51,14:14:64:68,16:16:75:81
+body	prefix(ba)	matches 7	none
 body	prefix(ba)	matches 8	body|1:1:6:10,5:5:25:29
 body	prefix(ba)	matches 9	body|2:2:9:15,3:3:16:20,6:6:29:33,14:14:65:69
 body	prefix(ba)	matches 10	body|12:12:57:61,16:16:77:81,17:17:82:88
@@ -4237,6 +4518,7 @@ body	prefix(ba)	matches 55	body|1:1:6:10,2:2:11:17,3:3:18:24,5:5:29:35,13:13:68:
 body	prefix(ba)	matches 56	body|4:4:22:28,6:6:33:37,10:10:51:55,22:22:105:109
 body	prefix(ba)	matches 57	body|9:9:43:47,10:10:48:52
 body	prefix(ba)	matches 59	body|2:2:8:12,13:13:57:61,16:16:73:79
+body	prefix(ba)	matches 60	none
 body	prefix(ba)	matches 61	body|4:4:20:26,10:10:52:56
 body	prefix(ba)	matches 62	body|2:2:10:14,5:5:25:31,6:6:32:36,9:9:46:52,13:13:65:69
 body	prefix(ba)	matches 63	body|4:4:20:24
@@ -4284,6 +4566,11 @@ body	prefix(zz)	bool	explain 7	0.0 = Failure to meet condition(s) of required/pr
 body	prefix(zz)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:MultiTerm(zz*))\n    0.0 = no matching intervals\n
 body	prefix(zz)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:MultiTerm(zz*))\n    0.0 = no matching intervals\n
 body	prefix(zz)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:MultiTerm(zz*))\n    0.0 = no matching intervals\n
+body	prefix(zz)	matches 0	none
+body	prefix(zz)	matches 7	none
+body	prefix(zz)	matches 17	none
+body	prefix(zz)	matches 33	none
+body	prefix(zz)	matches 60	none
 body	wildcard(ca?)	source	MultiTerm(ca?)	1
 body	wildcard(ca?)	plain	hits	50 28:3f5b6db7,17:3f555555,81:3f555555,1:3f4ccccd,12:3f4ccccd,21:3f4ccccd,30:3f4ccccd,59:3f4ccccd,6:3f400000,9:3f400000,11:3f400000,20:3f400000,39:3f400000,55:3f400000,70:3f400000,13:3f2aaaaa,19:3f2aaaaa,32:3f2aaaaa,35:3f2aaaaa,37:3f2aaaaa,47:3f2aaaaa,57:3f2aaaaa,65:3f2aaaaa,67:3f2aaaaa,80:3f2aaaaa,91:3f2aaaaa,92:3f2aaaaa,0:3f000000,2:3f000000,3:3f000000,8:3f000000,10:3f000000,15:3f000000,18:3f000000,22:3f000000,23:3f000000,24:3f000000,33:3f000000,45:3f000000,53:3f000000,56:3f000000,61:3f000000,69:3f000000,79:3f000000,83:3f000000,85:3f000000,87:3f000000,88:3f000000,89:3f000000,94:3f000000,
 body	wildcard(ca?)	plain	explain 0	0.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  1.0 = w, weight of this function\n  1.0 = k, pivot feature value that would give a score contribution equal to w/2\n  1.0 = S, the sloppy frequency of the interval query body:MultiTerm(ca?)\n
@@ -4320,6 +4607,7 @@ body	wildcard(ca?)	matches 1	body|1:1:4:7,14:14:66:69,17:17:79:82,18:18:83:86
 body	wildcard(ca?)	matches 2	body|21:21:104:107
 body	wildcard(ca?)	matches 3	body|3:3:16:19
 body	wildcard(ca?)	matches 6	body|4:4:19:22,18:18:88:91,21:21:101:104
+body	wildcard(ca?)	matches 7	none
 body	wildcard(ca?)	matches 8	body|6:6:30:33
 body	wildcard(ca?)	matches 9	body|7:7:34:37,12:12:56:59,18:18:85:88
 body	wildcard(ca?)	matches 10	body|10:10:49:52
@@ -4349,6 +4637,7 @@ body	wildcard(ca?)	matches 55	body|4:4:25:28,7:7:42:45,10:10:56:59
 body	wildcard(ca?)	matches 56	body|12:12:60:63
 body	wildcard(ca?)	matches 57	body|6:6:30:33,11:11:53:56
 body	wildcard(ca?)	matches 59	body|3:3:13:16,4:4:17:20,6:6:25:28,12:12:53:56
+body	wildcard(ca?)	matches 60	none
 body	wildcard(ca?)	matches 61	body|0:0:0:3
 body	wildcard(ca?)	matches 65	body|16:16:80:83,17:17:84:87
 body	wildcard(ca?)	matches 67	body|5:5:23:26,13:13:58:61
@@ -4433,6 +4722,7 @@ body	wildcard(d*)	matches 55	body|21:21:109:112,23:23:117:120,24:24:121:125
 body	wildcard(d*)	matches 56	body|7:7:38:42,8:8:43:46,15:15:73:76,18:18:88:92
 body	wildcard(d*)	matches 57	body|1:1:5:8,2:2:9:13,7:7:34:37
 body	wildcard(d*)	matches 59	body|0:0:0:3,5:5:21:24,10:10:45:48,18:18:85:88,19:19:89:92
+body	wildcard(d*)	matches 60	none
 body	wildcard(d*)	matches 61	body|12:12:61:64
 body	wildcard(d*)	matches 62	body|7:7:37:40
 body	wildcard(d*)	matches 63	body|7:7:35:38
@@ -4489,6 +4779,7 @@ body	regexp(b[a-z]+)	matches 1	body|8:8:35:41
 body	regexp(b[a-z]+)	matches 2	body|4:4:19:23,5:5:24:28,7:7:33:37,15:15:72:76,17:17:82:86,20:20:97:103
 body	regexp(b[a-z]+)	matches 3	body|6:6:32:36
 body	regexp(b[a-z]+)	matches 6	body|0:0:0:4,2:2:9:13,3:3:14:18,8:8:36:40,10:10:47:51,14:14:64:68,16:16:75:81
+body	regexp(b[a-z]+)	matches 7	none
 body	regexp(b[a-z]+)	matches 8	body|1:1:6:10,5:5:25:29
 body	regexp(b[a-z]+)	matches 9	body|2:2:9:15,3:3:16:20,6:6:29:33,14:14:65:69
 body	regexp(b[a-z]+)	matches 10	body|12:12:57:61,16:16:77:81,17:17:82:88
@@ -4526,6 +4817,7 @@ body	regexp(b[a-z]+)	matches 55	body|1:1:6:10,2:2:11:17,3:3:18:24,5:5:29:35,13:1
 body	regexp(b[a-z]+)	matches 56	body|4:4:22:28,6:6:33:37,10:10:51:55,22:22:105:109
 body	regexp(b[a-z]+)	matches 57	body|9:9:43:47,10:10:48:52
 body	regexp(b[a-z]+)	matches 59	body|2:2:8:12,13:13:57:61,16:16:73:79
+body	regexp(b[a-z]+)	matches 60	none
 body	regexp(b[a-z]+)	matches 61	body|4:4:20:26,10:10:52:56
 body	regexp(b[a-z]+)	matches 62	body|2:2:10:14,5:5:25:31,6:6:32:36,9:9:46:52,13:13:65:69
 body	regexp(b[a-z]+)	matches 63	body|4:4:20:24
@@ -4615,6 +4907,7 @@ body	range(c,e,true,false)	matches 55	body|4:4:25:28,7:7:42:45,10:10:56:59,20:20
 body	range(c,e,true,false)	matches 56	body|7:7:38:42,8:8:43:46,12:12:60:63,15:15:73:76,16:16:77:81,18:18:88:92
 body	range(c,e,true,false)	matches 57	body|0:0:0:4,1:1:5:8,2:2:9:13,6:6:30:33,7:7:34:37,8:8:38:42,11:11:53:56
 body	range(c,e,true,false)	matches 59	body|0:0:0:3,3:3:13:16,4:4:17:20,5:5:21:24,6:6:25:28,10:10:45:48,12:12:53:56,15:15:68:72,17:17:80:84,18:18:85:88,19:19:89:92
+body	range(c,e,true,false)	matches 60	none
 body	range(c,e,true,false)	matches 61	body|0:0:0:3,12:12:61:64
 body	range(c,e,true,false)	matches 62	body|7:7:37:40,8:8:41:45
 body	range(c,e,true,false)	matches 63	body|7:7:35:38
@@ -4713,6 +5006,7 @@ body	range(*,b,true,true)	matches 56	body|0:0:0:5,1:1:6:9,2:2:10:15,3:3:16:21,17
 body	range(*,b,true,true)	matches 57	body|3:3:14:19,5:5:24:29
 body	range(*,b,true,true)	matches 58	body|0:0:0:5
 body	range(*,b,true,true)	matches 59	body|1:1:4:7,7:7:29:34,8:8:35:40,9:9:41:44,11:11:49:52,14:14:62:67
+body	range(*,b,true,true)	matches 60	none
 body	range(*,b,true,true)	matches 61	body|2:2:8:13,3:3:14:19,6:6:31:36,7:7:37:40,9:9:46:51,13:13:65:70
 body	range(*,b,true,true)	matches 62	body|0:0:0:5,3:3:15:20,11:11:57:60,12:12:61:64,14:14:70:75
 body	range(*,b,true,true)	matches 63	body|2:2:8:13,3:3:14:19,5:5:25:30
@@ -4768,10 +5062,12 @@ body	range(fig,*,false,true)	bool	explain 7	0.0 = Failure to meet condition(s) o
 body	range(fig,*,false,true)	bool	explain 17	0.5 = sum of:\n  0.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n    1.0 = w, weight of this function\n    1.0 = k, pivot feature value that would give a score contribution equal to w/2\n    1.0 = S, the sloppy frequency of the interval query body:MultiTerm({fig,*})\n
 body	range(fig,*,false,true)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:MultiTerm({fig,*}))\n    0.0 = no matching intervals\n
 body	range(fig,*,false,true)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:MultiTerm({fig,*}))\n    0.0 = no matching intervals\n
+body	range(fig,*,false,true)	matches 0	none
 body	range(fig,*,false,true)	matches 1	body|16:16:74:78
 body	range(fig,*,false,true)	matches 2	body|9:9:42:46
 body	range(fig,*,false,true)	matches 3	body|10:10:49:53
 body	range(fig,*,false,true)	matches 6	body|5:5:23:27
+body	range(fig,*,false,true)	matches 7	none
 body	range(fig,*,false,true)	matches 9	body|13:13:60:64
 body	range(fig,*,false,true)	matches 11	body|2:2:9:13,5:5:23:27,20:20:90:94
 body	range(fig,*,false,true)	matches 17	body|1:1:4:8
@@ -4783,6 +5079,7 @@ body	range(fig,*,false,true)	matches 23	body|1:1:4:8
 body	range(fig,*,false,true)	matches 26	body|8:8:39:43
 body	range(fig,*,false,true)	matches 30	body|2:2:9:13
 body	range(fig,*,false,true)	matches 32	body|1:1:4:8
+body	range(fig,*,false,true)	matches 33	none
 body	range(fig,*,false,true)	matches 35	body|17:17:82:86
 body	range(fig,*,false,true)	matches 37	body|16:16:74:78
 body	range(fig,*,false,true)	matches 39	body|6:6:27:31
@@ -4791,6 +5088,7 @@ body	range(fig,*,false,true)	matches 52	body|4:4:17:21
 body	range(fig,*,false,true)	matches 53	body|1:1:6:10,5:5:27:31,8:8:42:46
 body	range(fig,*,false,true)	matches 54	body|3:3:15:19
 body	range(fig,*,false,true)	matches 56	body|13:13:64:68
+body	range(fig,*,false,true)	matches 60	none
 body	range(fig,*,false,true)	matches 61	body|8:8:41:45
 body	range(fig,*,false,true)	matches 67	body|10:10:43:47
 body	range(fig,*,false,true)	matches 77	body|0:0:0:4
@@ -4837,6 +5135,7 @@ body	fuzzy(cat,1)	matches 1	body|1:1:4:7,7:7:30:34,14:14:66:69,17:17:79:82,18:18
 body	fuzzy(cat,1)	matches 2	body|3:3:14:18,14:14:67:71,16:16:77:81,21:21:104:107
 body	fuzzy(cat,1)	matches 3	body|3:3:16:19
 body	fuzzy(cat,1)	matches 6	body|4:4:19:22,18:18:88:91,19:19:92:96,21:21:101:104
+body	fuzzy(cat,1)	matches 7	none
 body	fuzzy(cat,1)	matches 8	body|6:6:30:33
 body	fuzzy(cat,1)	matches 9	body|0:0:0:4,7:7:34:37,12:12:56:59,15:15:70:74,18:18:85:88
 body	fuzzy(cat,1)	matches 10	body|10:10:49:52,13:13:62:66
@@ -4869,6 +5168,7 @@ body	fuzzy(cat,1)	matches 55	body|4:4:25:28,7:7:42:45,10:10:56:59,20:20:104:108
 body	fuzzy(cat,1)	matches 56	body|12:12:60:63,16:16:77:81
 body	fuzzy(cat,1)	matches 57	body|0:0:0:4,6:6:30:33,8:8:38:42,11:11:53:56
 body	fuzzy(cat,1)	matches 59	body|3:3:13:16,4:4:17:20,6:6:25:28,12:12:53:56,15:15:68:72,17:17:80:84
+body	fuzzy(cat,1)	matches 60	none
 body	fuzzy(cat,1)	matches 61	body|0:0:0:3
 body	fuzzy(cat,1)	matches 62	body|8:8:41:45
 body	fuzzy(cat,1)	matches 65	body|16:16:80:83,17:17:84:87
@@ -4958,6 +5258,7 @@ body	fuzzy(dor,2)	matches 55	body|4:4:25:28,7:7:42:45,10:10:56:59,21:21:109:112,
 body	fuzzy(dor,2)	matches 56	body|7:7:38:42,8:8:43:46,12:12:60:63,15:15:73:76,18:18:88:92
 body	fuzzy(dor,2)	matches 57	body|1:1:5:8,2:2:9:13,7:7:34:37,11:11:53:56
 body	fuzzy(dor,2)	matches 59	body|0:0:0:3,4:4:17:20,5:5:21:24,10:10:45:48,18:18:85:88,19:19:89:92
+body	fuzzy(dor,2)	matches 60	none
 body	fuzzy(dor,2)	matches 61	body|0:0:0:3,12:12:61:64
 body	fuzzy(dor,2)	matches 62	body|7:7:37:40
 body	fuzzy(dor,2)	matches 63	body|7:7:35:38
@@ -5013,10 +5314,12 @@ body	fuzzy(bnak,1,0,true,128)	matches 0	body|7:7:33:37
 body	fuzzy(bnak,1,0,true,128)	matches 2	body|7:7:33:37
 body	fuzzy(bnak,1,0,true,128)	matches 3	body|6:6:32:36
 body	fuzzy(bnak,1,0,true,128)	matches 6	body|8:8:36:40,14:14:64:68
+body	fuzzy(bnak,1,0,true,128)	matches 7	none
 body	fuzzy(bnak,1,0,true,128)	matches 8	body|1:1:6:10,5:5:25:29
 body	fuzzy(bnak,1,0,true,128)	matches 9	body|3:3:16:20
 body	fuzzy(bnak,1,0,true,128)	matches 13	body|21:21:100:104
 body	fuzzy(bnak,1,0,true,128)	matches 15	body|1:1:4:8
+body	fuzzy(bnak,1,0,true,128)	matches 17	none
 body	fuzzy(bnak,1,0,true,128)	matches 18	body|21:21:97:101
 body	fuzzy(bnak,1,0,true,128)	matches 19	body|4:4:16:20
 body	fuzzy(bnak,1,0,true,128)	matches 20	body|7:7:29:33,8:8:34:38,11:11:49:53
@@ -5040,6 +5343,7 @@ body	fuzzy(bnak,1,0,true,128)	matches 55	body|1:1:6:10
 body	fuzzy(bnak,1,0,true,128)	matches 56	body|10:10:51:55,22:22:105:109
 body	fuzzy(bnak,1,0,true,128)	matches 57	body|9:9:43:47
 body	fuzzy(bnak,1,0,true,128)	matches 59	body|2:2:8:12,13:13:57:61
+body	fuzzy(bnak,1,0,true,128)	matches 60	none
 body	fuzzy(bnak,1,0,true,128)	matches 62	body|2:2:10:14
 body	fuzzy(bnak,1,0,true,128)	matches 66	body|2:2:11:15
 body	fuzzy(bnak,1,0,true,128)	matches 73	body|8:8:36:40
@@ -5080,6 +5384,11 @@ body	fuzzy(bnak,1,0,false,128)	bool	explain 7	0.0 = Failure to meet condition(s)
 body	fuzzy(bnak,1,0,false,128)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:MultiTerm(bnak~1))\n    0.0 = no matching intervals\n
 body	fuzzy(bnak,1,0,false,128)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:MultiTerm(bnak~1))\n    0.0 = no matching intervals\n
 body	fuzzy(bnak,1,0,false,128)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:MultiTerm(bnak~1))\n    0.0 = no matching intervals\n
+body	fuzzy(bnak,1,0,false,128)	matches 0	none
+body	fuzzy(bnak,1,0,false,128)	matches 7	none
+body	fuzzy(bnak,1,0,false,128)	matches 17	none
+body	fuzzy(bnak,1,0,false,128)	matches 33	none
+body	fuzzy(bnak,1,0,false,128)	matches 60	none
 body	fuzzy(ap,1,1,true,128)	source	MultiTerm(ap~1)	1
 body	fuzzy(ap,1,1,true,128)	plain	hits	42 89:3f600000,1:3f4ccccd,21:3f4ccccd,56:3f4ccccd,73:3f4ccccd,88:3f4ccccd,9:3f400000,13:3f400000,59:3f400000,65:3f400000,69:3f400000,70:3f400000,74:3f400000,81:3f400000,0:3f2aaaaa,3:3f2aaaaa,10:3f2aaaaa,17:3f2aaaaa,37:3f2aaaaa,45:3f2aaaaa,51:3f2aaaaa,53:3f2aaaaa,62:3f2aaaaa,6:3f000000,11:3f000000,18:3f000000,19:3f000000,20:3f000000,26:3f000000,28:3f000000,32:3f000000,33:3f000000,52:3f000000,54:3f000000,55:3f000000,61:3f000000,66:3f000000,67:3f000000,85:3f000000,90:3f000000,91:3f000000,94:3f000000,
 body	fuzzy(ap,1,1,true,128)	plain	explain 0	0.6666666 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  1.0 = w, weight of this function\n  1.0 = k, pivot feature value that would give a score contribution equal to w/2\n  2.0 = S, the sloppy frequency of the interval query body:MultiTerm(ap~1)\n
@@ -5115,6 +5424,7 @@ body	fuzzy(ap,1,1,true,128)	matches 0	body|0:0:0:3,2:2:8:11
 body	fuzzy(ap,1,1,true,128)	matches 1	body|0:0:0:3,2:2:8:11,3:3:12:15,20:20:93:96
 body	fuzzy(ap,1,1,true,128)	matches 3	body|1:1:6:9,8:8:41:44
 body	fuzzy(ap,1,1,true,128)	matches 6	body|11:11:52:55
+body	fuzzy(ap,1,1,true,128)	matches 7	none
 body	fuzzy(ap,1,1,true,128)	matches 9	body|4:4:21:24,9:9:42:45,11:11:52:55
 body	fuzzy(ap,1,1,true,128)	matches 10	body|6:6:30:33,11:11:53:56
 body	fuzzy(ap,1,1,true,128)	matches 11	body|10:10:46:49
@@ -5137,6 +5447,7 @@ body	fuzzy(ap,1,1,true,128)	matches 54	body|0:0:0:3
 body	fuzzy(ap,1,1,true,128)	matches 55	body|17:17:89:92
 body	fuzzy(ap,1,1,true,128)	matches 56	body|1:1:6:9,19:19:93:96,21:21:101:104,24:24:114:117
 body	fuzzy(ap,1,1,true,128)	matches 59	body|1:1:4:7,9:9:41:44,11:11:49:52
+body	fuzzy(ap,1,1,true,128)	matches 60	none
 body	fuzzy(ap,1,1,true,128)	matches 61	body|7:7:37:40
 body	fuzzy(ap,1,1,true,128)	matches 62	body|11:11:57:60,12:12:61:64
 body	fuzzy(ap,1,1,true,128)	matches 65	body|3:3:16:19,9:9:44:47,12:12:59:62
@@ -5159,6 +5470,11 @@ body	prefix(a,2)	pivot	hits	!IllegalStateException
 body	prefix(a,2)	sigmoid	hits	!IllegalStateException
 body	prefix(a,2)	boost	hits	!IllegalStateException
 body	prefix(a,2)	bool	hits	!IllegalStateException
+body	prefix(a,2)	matches 0	body|0:0:0:3,2:2:8:11,5:5:21:26,6:6:27:32
+body	prefix(a,2)	matches 7	body|2:2:8:13,3:3:14:19
+body	prefix(a,2)	matches 17	body|5:5:22:27,13:13:60:63,14:14:64:67,16:16:73:78
+body	prefix(a,2)	matches 33	body|0:0:0:5,3:3:15:20,4:4:21:26,8:8:40:45,12:12:60:63,16:16:77:82
+body	prefix(a,2)	matches 60	none
 body	prefix(ba,2000)	source	!IllegalArgumentException
 body	ordered(prefix(ap),cat)	source	ORDERED(MultiTerm(ap*),cat)	2
 body	ordered(prefix(ap),cat)	plain	hits	27 17:3f19999a,59:3f19999a,67:3f19999a,9:3f124925,70:3f0e38e4,1:3f000000,6:3f000000,24:3f000000,28:3f000000,32:3f000000,57:3f000000,80:3f000000,81:3f000000,83:3f000000,88:3f000000,89:3f000000,19:3eaaaaaa,30:3eaaaaaa,45:3eaaaaaa,92:3eaaaaaa,33:3e800000,35:3e800000,39:3e800000,8:3e4ccccc,91:3e4ccccc,12:3e2aaaac,21:3e2aaaac,
@@ -5191,8 +5507,10 @@ body	ordered(prefix(ap),cat)	bool	explain 7	0.0 = Failure to meet condition(s) o
 body	ordered(prefix(ap),cat)	bool	explain 17	0.6 = sum of:\n  0.6 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n    1.0 = w, weight of this function\n    1.0 = k, pivot feature value that would give a score contribution equal to w/2\n    1.5 = S, the sloppy frequency of the interval query body:ORDERED(MultiTerm(ap*),cat)\n
 body	ordered(prefix(ap),cat)	bool	explain 33	0.25 = sum of:\n  0.25 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n    1.0 = w, weight of this function\n    1.0 = k, pivot feature value that would give a score contribution equal to w/2\n    0.33333334 = S, the sloppy frequency of the interval query body:ORDERED(MultiTerm(ap*),cat)\n
 body	ordered(prefix(ap),cat)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(MultiTerm(ap*),cat))\n    0.0 = no matching intervals\n
+body	ordered(prefix(ap),cat)	matches 0	none
 body	ordered(prefix(ap),cat)	matches 1	body|13:14:60:69[13:13:60:65 14:14:66:69]
 body	ordered(prefix(ap),cat)	matches 6	body|17:18:82:91[17:17:82:87 18:18:88:91]
+body	ordered(prefix(ap),cat)	matches 7	none
 body	ordered(prefix(ap),cat)	matches 8	body|2:6:11:33[2:2:11:16 6:6:30:33]
 body	ordered(prefix(ap),cat)	matches 9	body|4:7:21:37[4:4:21:24 7:7:34:37],17:18:79:88[17:17:79:84 18:18:85:88]
 body	ordered(prefix(ap),cat)	matches 12	body|3:8:15:41[3:3:15:20 8:8:38:41]
@@ -5209,6 +5527,7 @@ body	ordered(prefix(ap),cat)	matches 39	body|14:17:65:83[14:14:65:70 17:17:80:83
 body	ordered(prefix(ap),cat)	matches 45	body|8:10:36:49[8:8:36:41 10:10:46:49]
 body	ordered(prefix(ap),cat)	matches 57	body|5:6:24:33[5:5:24:29 6:6:30:33]
 body	ordered(prefix(ap),cat)	matches 59	body|1:3:4:16[1:1:4:7 3:3:13:16],11:12:49:56[11:11:49:52 12:12:53:56]
+body	ordered(prefix(ap),cat)	matches 60	none
 body	ordered(prefix(ap),cat)	matches 67	body|4:5:17:26[4:4:17:22 5:5:23:26],11:13:48:61[11:11:48:53 13:13:58:61]
 body	ordered(prefix(ap),cat)	matches 70	body|4:8:17:38[4:4:17:20 8:8:35:38],20:21:98:107[20:20:98:103 21:21:104:107]
 body	ordered(prefix(ap),cat)	matches 80	body|2:3:9:18[2:2:9:14 3:3:15:18]
@@ -5249,8 +5568,10 @@ body	phrase(prefix(ba),or(cat,car))	bool	explain 7	0.0 = Failure to meet conditi
 body	phrase(prefix(ba),or(cat,car))	bool	explain 17	0.5 = sum of:\n  0.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n    1.0 = w, weight of this function\n    1.0 = k, pivot feature value that would give a score contribution equal to w/2\n    1.0 = S, the sloppy frequency of the interval query body:BLOCK(MultiTerm(ba*),or(car,cat))\n
 body	phrase(prefix(ba),or(cat,car))	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(MultiTerm(ba*),or(car,cat)))\n    0.0 = no matching intervals\n
 body	phrase(prefix(ba),or(cat,car))	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(MultiTerm(ba*),or(car,cat)))\n    0.0 = no matching intervals\n
+body	phrase(prefix(ba),or(cat,car))	matches 0	none
 body	phrase(prefix(ba),or(cat,car))	matches 2	body|20:21:97:107[20:20:97:103 21:21:104:107]
 body	phrase(prefix(ba),or(cat,car))	matches 6	body|3:4:14:22[3:3:14:18 4:4:19:22]
+body	phrase(prefix(ba),or(cat,car))	matches 7	none
 body	phrase(prefix(ba),or(cat,car))	matches 8	body|5:6:25:33[5:5:25:29 6:6:30:33]
 body	phrase(prefix(ba),or(cat,car))	matches 9	body|6:7:29:37[6:6:29:33 7:7:34:37]
 body	phrase(prefix(ba),or(cat,car))	matches 17	body|6:7:28:38[6:6:28:34 7:7:35:38]
@@ -5258,10 +5579,12 @@ body	phrase(prefix(ba),or(cat,car))	matches 19	body|11:12:52:62[11:11:52:58 12:1
 body	phrase(prefix(ba),or(cat,car))	matches 21	body|8:9:35:43[8:8:35:39 9:9:40:43]
 body	phrase(prefix(ba),or(cat,car))	matches 28	body|8:9:38:46[8:8:38:42 9:9:43:46]
 body	phrase(prefix(ba),or(cat,car))	matches 30	body|8:9:44:54[8:8:44:50 9:9:51:54]
+body	phrase(prefix(ba),or(cat,car))	matches 33	none
 body	phrase(prefix(ba),or(cat,car))	matches 39	body|16:17:75:83[16:16:75:79 17:17:80:83]
 body	phrase(prefix(ba),or(cat,car))	matches 55	body|3:4:18:28[3:3:18:24 4:4:25:28]
 body	phrase(prefix(ba),or(cat,car))	matches 57	body|10:11:48:56[10:10:48:52 11:11:53:56]
 body	phrase(prefix(ba),or(cat,car))	matches 59	body|2:3:8:16[2:2:8:12 3:3:13:16]
+body	phrase(prefix(ba),or(cat,car))	matches 60	none
 body	phrase(prefix(ba),or(cat,car))	matches 92	body|15:16:72:80[15:15:72:76 16:16:77:80]
 pay	prefix(do)	source	MultiTerm(do*)	1
 pay	prefix(do)	plain	hits	57 80:3f638e39,47:3f600000,11:3f5b6db7,13:3f555555,20:3f555555,59:3f555555,85:3f555555,89:3f555555,91:3f555555,18:3f4ccccd,39:3f4ccccd,45:3f4ccccd,56:3f4ccccd,2:3f400000,10:3f400000,12:3f400000,15:3f400000,17:3f400000,21:3f400000,26:3f400000,33:3f400000,53:3f400000,55:3f400000,57:3f400000,73:3f400000,84:3f400000,88:3f400000,3:3f2aaaaa,19:3f2aaaaa,35:3f2aaaaa,41:3f2aaaaa,54:3f2aaaaa,65:3f2aaaaa,67:3f2aaaaa,70:3f2aaaaa,79:3f2aaaaa,81:3f2aaaaa,0:3f000000,1:3f000000,6:3f000000,7:3f000000,8:3f000000,9:3f000000,22:3f000000,25:3f000000,32:3f000000,37:3f000000,46:3f000000,52:3f000000,61:3f000000,62:3f000000,63:3f000000,66:3f000000,68:3f000000,69:3f000000,83:3f000000,94:3f000000,
@@ -5331,6 +5654,7 @@ pay	prefix(do)	matches 55	pay|21:21:109:112,23:23:117:120,24:24:121:125
 pay	prefix(do)	matches 56	pay|7:7:38:42,8:8:43:46,15:15:73:76,18:18:88:92
 pay	prefix(do)	matches 57	pay|1:1:5:8,2:2:9:13,7:7:34:37
 pay	prefix(do)	matches 59	pay|0:0:0:3,5:5:21:24,10:10:45:48,18:18:85:88,19:19:89:92
+pay	prefix(do)	matches 60	none
 pay	prefix(do)	matches 61	pay|12:12:61:64
 pay	prefix(do)	matches 62	pay|7:7:37:40
 pay	prefix(do)	matches 63	pay|7:7:35:38
@@ -5393,6 +5717,7 @@ pay	pt(apple,even)	matches 10	pay|2:2:12:17,8:8:38:43
 pay	pt(apple,even)	matches 12	pay|3:3:15:20,16:16:77:82
 pay	pt(apple,even)	matches 13	pay|12:12:56:61,18:18:86:91
 pay	pt(apple,even)	matches 15	pay|9:9:45:50
+pay	pt(apple,even)	matches 17	none
 pay	pt(apple,even)	matches 18	pay|0:0:0:5
 pay	pt(apple,even)	matches 20	pay|9:9:39:44
 pay	pt(apple,even)	matches 21	pay|14:14:60:65
@@ -5412,6 +5737,7 @@ pay	pt(apple,even)	matches 55	pay|0:0:0:5,8:8:46:51,19:19:98:103
 pay	pt(apple,even)	matches 56	pay|0:0:0:5,2:2:10:15,3:3:16:21
 pay	pt(apple,even)	matches 58	pay|0:0:0:5
 pay	pt(apple,even)	matches 59	pay|8:8:35:40
+pay	pt(apple,even)	matches 60	none
 pay	pt(apple,even)	matches 61	pay|3:3:14:19,6:6:31:36,13:13:65:70
 pay	pt(apple,even)	matches 62	pay|0:0:0:5,3:3:15:20
 pay	pt(apple,even)	matches 65	pay|4:4:20:25
@@ -5458,18 +5784,23 @@ pay	pt(apple,null)	bool	explain 7	0.0 = Failure to meet condition(s) of required
 pay	pt(apple,null)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (pay:PAYLOAD_FILTERED(apple))\n    0.0 = no matching intervals\n
 pay	pt(apple,null)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (pay:PAYLOAD_FILTERED(apple))\n    0.0 = no matching intervals\n
 pay	pt(apple,null)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (pay:PAYLOAD_FILTERED(apple))\n    0.0 = no matching intervals\n
+pay	pt(apple,null)	matches 0	pay|
 pay	pt(apple,null)	matches 1	pay|4:4:16:21,19:19:87:92
 pay	pt(apple,null)	matches 2	pay|10:10:47:52
 pay	pt(apple,null)	matches 3	pay|4:4:20:25
 pay	pt(apple,null)	matches 6	pay|9:9:41:46
+pay	pt(apple,null)	matches 7	pay|
 pay	pt(apple,null)	matches 9	pay|10:10:46:51
 pay	pt(apple,null)	matches 12	pay|18:18:87:92
+pay	pt(apple,null)	matches 17	none
 pay	pt(apple,null)	matches 18	pay|23:23:109:114
+pay	pt(apple,null)	matches 33	pay|
 pay	pt(apple,null)	matches 41	pay|5:5:23:28
 pay	pt(apple,null)	matches 47	pay|9:9:40:45
 pay	pt(apple,null)	matches 51	pay|10:10:46:51
 pay	pt(apple,null)	matches 53	pay|4:4:21:26
 pay	pt(apple,null)	matches 59	pay|14:14:62:67
+pay	pt(apple,null)	matches 60	none
 pay	pt(apple,null)	matches 61	pay|9:9:46:51
 pay	pt(apple,null)	matches 68	pay|5:5:22:27
 pay	pt(apple,null)	matches 70	pay|9:9:39:44,15:15:71:76,20:20:98:103
@@ -5506,7 +5837,9 @@ pay	pt(cat,ge1)	bool	explain 7	0.0 = Failure to meet condition(s) of required/pr
 pay	pt(cat,ge1)	bool	explain 17	0.5 = sum of:\n  0.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n    1.0 = w, weight of this function\n    1.0 = k, pivot feature value that would give a score contribution equal to w/2\n    1.0 = S, the sloppy frequency of the interval query pay:PAYLOAD_FILTERED(cat)\n
 pay	pt(cat,ge1)	bool	explain 33	0.5 = sum of:\n  0.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n    1.0 = w, weight of this function\n    1.0 = k, pivot feature value that would give a score contribution equal to w/2\n    1.0 = S, the sloppy frequency of the interval query pay:PAYLOAD_FILTERED(cat)\n
 pay	pt(cat,ge1)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (pay:PAYLOAD_FILTERED(cat))\n    0.0 = no matching intervals\n
+pay	pt(cat,ge1)	matches 0	none
 pay	pt(cat,ge1)	matches 6	pay|18:18:88:91
+pay	pt(cat,ge1)	matches 7	none
 pay	pt(cat,ge1)	matches 8	pay|6:6:30:33
 pay	pt(cat,ge1)	matches 9	pay|7:7:34:37
 pay	pt(cat,ge1)	matches 12	pay|8:8:38:41
@@ -5520,6 +5853,7 @@ pay	pt(cat,ge1)	matches 39	pay|17:17:80:83
 pay	pt(cat,ge1)	matches 45	pay|10:10:46:49
 pay	pt(cat,ge1)	matches 57	pay|6:6:30:33
 pay	pt(cat,ge1)	matches 59	pay|6:6:25:28
+pay	pt(cat,ge1)	matches 60	none
 pay	pt(cat,ge1)	matches 69	pay|1:1:4:7
 pay	pt(cat,ge1)	matches 81	pay|7:7:34:37
 pay	pt(cat,ge1)	matches 83	pay|2:2:10:13
@@ -5557,11 +5891,16 @@ pay	pt(bank,neg)	bool	explain 7	0.0 = Failure to meet condition(s) of required/p
 pay	pt(bank,neg)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (pay:PAYLOAD_FILTERED(bank))\n    0.0 = no matching intervals\n
 pay	pt(bank,neg)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (pay:PAYLOAD_FILTERED(bank))\n    0.0 = no matching intervals\n
 pay	pt(bank,neg)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (pay:PAYLOAD_FILTERED(bank))\n    0.0 = no matching intervals\n
+pay	pt(bank,neg)	matches 0	pay|
+pay	pt(bank,neg)	matches 7	none
 pay	pt(bank,neg)	matches 9	pay|3:3:16:20
+pay	pt(bank,neg)	matches 17	none
 pay	pt(bank,neg)	matches 18	pay|21:21:97:101
 pay	pt(bank,neg)	matches 20	pay|11:11:49:53
 pay	pt(bank,neg)	matches 30	pay|3:3:14:18
+pay	pt(bank,neg)	matches 33	pay|
 pay	pt(bank,neg)	matches 41	pay|4:4:18:22
+pay	pt(bank,neg)	matches 60	none
 pay	pt(bank,neg)	matches 79	pay|4:4:16:20
 pay	pt(bank,neg)	matches 81	pay|10:10:46:50
 pay	pt(bank,neg)	matches 85	pay|4:4:17:21
@@ -5598,11 +5937,15 @@ pay	ordered(pt(cat,ge1),dog)	bool	explain 7	0.0 = Failure to meet condition(s) o
 pay	ordered(pt(cat,ge1),dog)	bool	explain 17	0.3333333 = sum of:\n  0.3333333 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n    1.0 = w, weight of this function\n    1.0 = k, pivot feature value that would give a score contribution equal to w/2\n    0.5 = S, the sloppy frequency of the interval query pay:ORDERED(PAYLOAD_FILTERED(cat),dog)\n
 pay	ordered(pt(cat,ge1),dog)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (pay:ORDERED(PAYLOAD_FILTERED(cat),dog))\n    0.0 = no matching intervals\n
 pay	ordered(pt(cat,ge1),dog)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (pay:ORDERED(PAYLOAD_FILTERED(cat),dog))\n    0.0 = no matching intervals\n
+pay	ordered(pt(cat,ge1),dog)	matches 0	none
+pay	ordered(pt(cat,ge1),dog)	matches 7	none
 pay	ordered(pt(cat,ge1),dog)	matches 12	!UnsupportedOperationException
 pay	ordered(pt(cat,ge1),dog)	matches 13	!UnsupportedOperationException
 pay	ordered(pt(cat,ge1),dog)	matches 17	!UnsupportedOperationException
+pay	ordered(pt(cat,ge1),dog)	matches 33	none
 pay	ordered(pt(cat,ge1),dog)	matches 39	!UnsupportedOperationException
 pay	ordered(pt(cat,ge1),dog)	matches 59	!UnsupportedOperationException
+pay	ordered(pt(cat,ge1),dog)	matches 60	none
 pay	ordered(pt(cat,ge1),dog)	matches 88	!UnsupportedOperationException
 pay	or(pt(apple,even),pt(apple,null))	source	PAYLOAD_FILTERED(apple)	1
 pay	or(pt(apple,even),pt(apple,null))	plain	hits	45 35:3f555555,2:3f400000,47:3f400000,55:3f400000,56:3f400000,61:3f400000,3:3f2aaaaa,10:3f2aaaaa,12:3f2aaaaa,13:3f2aaaaa,33:3f2aaaaa,45:3f2aaaaa,46:3f2aaaaa,51:3f2aaaaa,53:3f2aaaaa,54:3f2aaaaa,62:3f2aaaaa,70:3f2aaaaa,81:3f2aaaaa,84:3f2aaaaa,88:3f2aaaaa,92:3f2aaaaa,94:3f2aaaaa,0:3f000000,4:3f000000,7:3f000000,8:3f000000,9:3f000000,15:3f000000,18:3f000000,20:3f000000,21:3f000000,26:3f000000,28:3f000000,32:3f000000,39:3f000000,58:3f000000,59:3f000000,65:3f000000,68:3f000000,76:3f000000,80:3f000000,85:3f000000,87:3f000000,91:3f000000,
@@ -5646,6 +5989,7 @@ pay	or(pt(apple,even),pt(apple,null))	matches 10	pay|2:2:12:17,8:8:38:43
 pay	or(pt(apple,even),pt(apple,null))	matches 12	pay|3:3:15:20,16:16:77:82
 pay	or(pt(apple,even),pt(apple,null))	matches 13	pay|12:12:56:61,18:18:86:91
 pay	or(pt(apple,even),pt(apple,null))	matches 15	pay|9:9:45:50
+pay	or(pt(apple,even),pt(apple,null))	matches 17	none
 pay	or(pt(apple,even),pt(apple,null))	matches 18	pay|0:0:0:5
 pay	or(pt(apple,even),pt(apple,null))	matches 20	pay|9:9:39:44
 pay	or(pt(apple,even),pt(apple,null))	matches 21	pay|14:14:60:65
@@ -5665,6 +6009,7 @@ pay	or(pt(apple,even),pt(apple,null))	matches 55	pay|0:0:0:5,8:8:46:51,19:19:98:
 pay	or(pt(apple,even),pt(apple,null))	matches 56	pay|0:0:0:5,2:2:10:15,3:3:16:21
 pay	or(pt(apple,even),pt(apple,null))	matches 58	pay|0:0:0:5
 pay	or(pt(apple,even),pt(apple,null))	matches 59	pay|8:8:35:40
+pay	or(pt(apple,even),pt(apple,null))	matches 60	none
 pay	or(pt(apple,even),pt(apple,null))	matches 61	pay|3:3:14:19,6:6:31:36,13:13:65:70
 pay	or(pt(apple,even),pt(apple,null))	matches 62	pay|0:0:0:5,3:3:15:20
 pay	or(pt(apple,even),pt(apple,null))	matches 65	pay|4:4:20:25
@@ -5686,6 +6031,11 @@ body	pt(apple,even)	pivot	hits	!IllegalArgumentException
 body	pt(apple,even)	sigmoid	hits	!IllegalArgumentException
 body	pt(apple,even)	boost	hits	!IllegalArgumentException
 body	pt(apple,even)	bool	hits	!IllegalArgumentException
+body	pt(apple,even)	matches 0	!IllegalArgumentException
+body	pt(apple,even)	matches 7	!IllegalArgumentException
+body	pt(apple,even)	matches 17	!IllegalArgumentException
+body	pt(apple,even)	matches 33	!IllegalArgumentException
+body	pt(apple,even)	matches 60	!IllegalArgumentException
 body	none(nothing_here)	source	NOMATCH(nothing_here)	0
 body	none(nothing_here)	plain	hits	0 
 body	none(nothing_here)	plain	explain 0	0.0 = no matching intervals\n
@@ -5717,6 +6067,11 @@ body	none(nothing_here)	bool	explain 7	0.0 = Failure to meet condition(s) of req
 body	none(nothing_here)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:NOMATCH(nothing_here))\n    0.0 = no matching intervals\n
 body	none(nothing_here)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:NOMATCH(nothing_here))\n    0.0 = no matching intervals\n
 body	none(nothing_here)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:NOMATCH(nothing_here))\n    0.0 = no matching intervals\n
+body	none(nothing_here)	matches 0	none
+body	none(nothing_here)	matches 7	none
+body	none(nothing_here)	matches 17	none
+body	none(nothing_here)	matches 33	none
+body	none(nothing_here)	matches 60	none
 body	ordered(apple,none(x))	source	ORDERED(apple,NOMATCH(x))	1
 body	ordered(apple,none(x))	plain	hits	0 
 body	ordered(apple,none(x))	plain	explain 0	0.0 = no matching intervals\n
@@ -5748,6 +6103,11 @@ body	ordered(apple,none(x))	bool	explain 7	0.0 = Failure to meet condition(s) of
 body	ordered(apple,none(x))	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(apple,NOMATCH(x)))\n    0.0 = no matching intervals\n
 body	ordered(apple,none(x))	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(apple,NOMATCH(x)))\n    0.0 = no matching intervals\n
 body	ordered(apple,none(x))	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(apple,NOMATCH(x)))\n    0.0 = no matching intervals\n
+body	ordered(apple,none(x))	matches 0	none
+body	ordered(apple,none(x))	matches 7	none
+body	ordered(apple,none(x))	matches 17	none
+body	ordered(apple,none(x))	matches 33	none
+body	ordered(apple,none(x))	matches 60	none
 body	or(apple,none(x))	source	or(NOMATCH(x),apple)	0
 body	or(apple,none(x))	plain	hits	55 12:3f36db6e,35:3f36db6e,47:3f36db6e,54:3f36db6e,70:3f36db6e,2:3f2aaaaa,3:3f2aaaaa,13:3f2aaaaa,33:3f2aaaaa,51:3f2aaaaa,56:3f2aaaaa,61:3f2aaaaa,80:3f2aaaaa,10:3f19999a,45:3f19999a,53:3f19999a,55:3f19999a,62:3f19999a,84:3f19999a,85:3f19999a,92:3f19999a,0:3f000000,1:3f000000,7:3f000000,9:3f000000,11:3f000000,15:3f000000,18:3f000000,26:3f000000,28:3f000000,32:3f000000,37:3f000000,39:3f000000,41:3f000000,46:3f000000,59:3f000000,65:3f000000,68:3f000000,81:3f000000,88:3f000000,94:3f000000,4:3eaaaaaa,6:3eaaaaaa,8:3eaaaaaa,19:3eaaaaaa,20:3eaaaaaa,21:3eaaaaaa,22:3eaaaaaa,30:3eaaaaaa,40:3eaaaaaa,58:3eaaaaaa,76:3eaaaaaa,83:3eaaaaaa,87:3eaaaaaa,91:3eaaaaaa,
 body	or(apple,none(x))	plain	explain 0	0.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  1.0 = w, weight of this function\n  1.0 = k, pivot feature value that would give a score contribution equal to w/2\n  1.0 = S, the sloppy frequency of the interval query body:or(NOMATCH(x),apple)\n
@@ -5793,6 +6153,7 @@ body	or(apple,none(x))	matches 11	body|8:8:36:41,15:15:66:71
 body	or(apple,none(x))	matches 12	body|3:3:15:20,10:10:49:54,15:15:71:76,16:16:77:82,18:18:87:92
 body	or(apple,none(x))	matches 13	body|9:9:39:44,12:12:56:61,17:17:80:85,18:18:86:91
 body	or(apple,none(x))	matches 15	body|9:9:45:50,13:13:66:71
+body	or(apple,none(x))	matches 17	none
 body	or(apple,none(x))	matches 18	body|0:0:0:5,23:23:109:114
 body	or(apple,none(x))	matches 19	body|7:7:29:34
 body	or(apple,none(x))	matches 20	body|9:9:39:44
@@ -5818,6 +6179,7 @@ body	or(apple,none(x))	matches 55	body|0:0:0:5,8:8:46:51,19:19:98:103
 body	or(apple,none(x))	matches 56	body|0:0:0:5,2:2:10:15,3:3:16:21,17:17:82:87
 body	or(apple,none(x))	matches 58	body|0:0:0:5
 body	or(apple,none(x))	matches 59	body|8:8:35:40,14:14:62:67
+body	or(apple,none(x))	matches 60	none
 body	or(apple,none(x))	matches 61	body|3:3:14:19,6:6:31:36,9:9:46:51,13:13:65:70
 body	or(apple,none(x))	matches 62	body|0:0:0:5,3:3:15:20,14:14:70:75
 body	or(apple,none(x))	matches 65	body|1:1:6:11,4:4:20:25
@@ -5867,9 +6229,12 @@ body	analyzed(apple_bank,0,true)	bool	explain 33	0.5 = sum of:\n  0.5 = Saturati
 body	analyzed(apple_bank,0,true)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(apple,bank))\n    0.0 = no matching intervals\n
 body	analyzed(apple_bank,0,true)	matches 0	body|6:7:27:37[6:6:27:32 7:7:33:37]
 body	analyzed(apple_bank,0,true)	matches 3	body|5:6:26:36[5:5:26:31 6:6:32:36]
+body	analyzed(apple_bank,0,true)	matches 7	none
+body	analyzed(apple_bank,0,true)	matches 17	none
 body	analyzed(apple_bank,0,true)	matches 33	body|8:9:40:50[8:8:40:45 9:9:46:50]
 body	analyzed(apple_bank,0,true)	matches 35	body|7:8:32:42[7:7:32:37 8:8:38:42]
 body	analyzed(apple_bank,0,true)	matches 55	body|0:1:0:10[0:0:0:5 1:1:6:10]
+body	analyzed(apple_bank,0,true)	matches 60	none
 body	analyzed(the_apple_the_bank,0,true)	source	BLOCK(EXTEND(apple,1,0),EXTEND(bank,1,0))	4
 body	analyzed(the_apple_the_bank,0,true)	plain	hits	6 0:3f000000,3:3f000000,20:3f000000,37:3f000000,62:3f000000,91:3f000000,
 body	analyzed(the_apple_the_bank,0,true)	plain	explain 0	0.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  1.0 = w, weight of this function\n  1.0 = k, pivot feature value that would give a score contribution equal to w/2\n  1.0 = S, the sloppy frequency of the interval query body:BLOCK(EXTEND(apple,1,0),EXTEND(bank,1,0))\n
@@ -5903,8 +6268,12 @@ body	analyzed(the_apple_the_bank,0,true)	bool	explain 33	0.0 = Failure to meet c
 body	analyzed(the_apple_the_bank,0,true)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(EXTEND(apple,1,0),EXTEND(bank,1,0)))\n    0.0 = no matching intervals\n
 body	analyzed(the_apple_the_bank,0,true)	matches 0	body|4:7:-1:-1[4:5:-1:-1 6:7:-1:-1]
 body	analyzed(the_apple_the_bank,0,true)	matches 3	body|3:6:-1:-1[3:4:-1:-1 5:6:-1:-1]
+body	analyzed(the_apple_the_bank,0,true)	matches 7	none
+body	analyzed(the_apple_the_bank,0,true)	matches 17	none
 body	analyzed(the_apple_the_bank,0,true)	matches 20	body|8:11:-1:-1[8:9:-1:-1 10:11:-1:-1]
+body	analyzed(the_apple_the_bank,0,true)	matches 33	none
 body	analyzed(the_apple_the_bank,0,true)	matches 37	body|11:14:-1:-1[11:12:-1:-1 13:14:-1:-1]
+body	analyzed(the_apple_the_bank,0,true)	matches 60	none
 body	analyzed(the_apple_the_bank,0,true)	matches 62	body|0:2:-1:-1[0:0:-1:-1 1:2:-1:-1]
 body	analyzed(the_apple_the_bank,0,true)	matches 91	body|15:18:-1:-1[15:16:-1:-1 17:18:-1:-1]
 body	analyzed(apple_the_cat,2,false)	source	MAXGAPS/2(UNORDERED(apple,EXTEND(cat,1,0)))	3
@@ -5938,10 +6307,13 @@ body	analyzed(apple_the_cat,2,false)	bool	explain 7	0.0 = Failure to meet condit
 body	analyzed(apple_the_cat,2,false)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:MAXGAPS/2(UNORDERED(apple,EXTEND(cat,1,0))))\n    0.0 = no matching intervals\n
 body	analyzed(apple_the_cat,2,false)	bool	explain 33	0.5714286 = sum of:\n  0.5714286 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n    1.0 = w, weight of this function\n    1.0 = k, pivot feature value that would give a score contribution equal to w/2\n    1.3333334 = S, the sloppy frequency of the interval query body:MAXGAPS/2(UNORDERED(apple,EXTEND(cat,1,0)))\n
 body	analyzed(apple_the_cat,2,false)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:MAXGAPS/2(UNORDERED(apple,EXTEND(cat,1,0))))\n    0.0 = no matching intervals\n
+body	analyzed(apple_the_cat,2,false)	matches 0	none
+body	analyzed(apple_the_cat,2,false)	matches 7	none
 body	analyzed(apple_the_cat,2,false)	matches 8	body|2:6:-1:-1[2:2:11:16 5:6:-1:-1]
 body	analyzed(apple_the_cat,2,false)	matches 9	body|6:10:-1:-1[6:7:-1:-1 10:10:46:51],17:18:-1:-1[17:17:79:84 17:18:-1:-1]
 body	analyzed(apple_the_cat,2,false)	matches 12	body|7:10:-1:-1[7:8:-1:-1 10:10:49:54]
 body	analyzed(apple_the_cat,2,false)	matches 13	body|7:9:-1:-1[7:8:-1:-1 9:9:39:44]
+body	analyzed(apple_the_cat,2,false)	matches 17	none
 body	analyzed(apple_the_cat,2,false)	matches 21	body|10:14:-1:-1[10:11:-1:-1 14:14:60:65]
 body	analyzed(apple_the_cat,2,false)	matches 28	body|7:9:-1:-1[7:7:32:37 8:9:-1:-1]
 body	analyzed(apple_the_cat,2,false)	matches 30	body|5:9:-1:-1[5:5:25:30 8:9:-1:-1]
@@ -5951,6 +6323,7 @@ body	analyzed(apple_the_cat,2,false)	matches 35	body|3:6:-1:-1[3:3:14:19 5:6:-1:
 body	analyzed(apple_the_cat,2,false)	matches 45	body|6:10:-1:-1[6:6:26:31 9:10:-1:-1]
 body	analyzed(apple_the_cat,2,false)	matches 47	body|0:1:-1:-1[0:0:-1:-1 1:1:4:9]
 body	analyzed(apple_the_cat,2,false)	matches 59	body|5:8:-1:-1[5:6:-1:-1 8:8:35:40],8:12:-1:-1[8:8:35:40 11:12:-1:-1],11:14:-1:-1[11:12:-1:-1 14:14:62:67]
+body	analyzed(apple_the_cat,2,false)	matches 60	none
 body	analyzed(apple_the_cat,2,false)	matches 70	body|7:9:-1:-1[7:8:-1:-1 9:9:39:44],20:21:-1:-1[20:20:98:103 20:21:-1:-1]
 body	analyzed(apple_the_cat,2,false)	matches 80	body|2:3:-1:-1[2:2:9:14 2:3:-1:-1]
 body	analyzed(apple_the_cat,2,false)	matches 81	body|6:7:-1:-1[6:6:28:33 6:7:-1:-1]
@@ -5990,9 +6363,14 @@ body	analyzed(apple_bank_cat,-1,true)	bool	explain 7	0.0 = Failure to meet condi
 body	analyzed(apple_bank_cat,-1,true)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(apple,bank,cat))\n    0.0 = no matching intervals\n
 body	analyzed(apple_bank_cat,-1,true)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(apple,bank,cat))\n    0.0 = no matching intervals\n
 body	analyzed(apple_bank_cat,-1,true)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(apple,bank,cat))\n    0.0 = no matching intervals\n
+body	analyzed(apple_bank_cat,-1,true)	matches 0	none
 body	analyzed(apple_bank_cat,-1,true)	matches 6	body|9:18:41:91[9:9:41:46 14:14:64:68 18:18:88:91]
+body	analyzed(apple_bank_cat,-1,true)	matches 7	none
 body	analyzed(apple_bank_cat,-1,true)	matches 8	body|2:6:11:33[2:2:11:16 5:5:25:29 6:6:30:33]
+body	analyzed(apple_bank_cat,-1,true)	matches 17	none
+body	analyzed(apple_bank_cat,-1,true)	matches 33	none
 body	analyzed(apple_bank_cat,-1,true)	matches 39	body|10:17:46:83[10:10:46:51 16:16:75:79 17:17:80:83]
+body	analyzed(apple_bank_cat,-1,true)	matches 60	none
 body	analyzed(apple_bank_cat,-1,true)	matches 92	body|8:16:36:80[8:8:36:41 12:12:56:60 16:16:77:80]
 body	analyzed(apple,0,true)	source	apple	1
 body	analyzed(apple,0,true)	plain	hits	55 12:3f555555,35:3f555555,47:3f555555,54:3f555555,70:3f555555,2:3f4ccccd,3:3f4ccccd,13:3f4ccccd,33:3f4ccccd,51:3f4ccccd,56:3f4ccccd,61:3f4ccccd,80:3f4ccccd,10:3f400000,45:3f400000,53:3f400000,55:3f400000,62:3f400000,84:3f400000,85:3f400000,92:3f400000,0:3f2aaaaa,1:3f2aaaaa,7:3f2aaaaa,9:3f2aaaaa,11:3f2aaaaa,15:3f2aaaaa,18:3f2aaaaa,26:3f2aaaaa,28:3f2aaaaa,32:3f2aaaaa,37:3f2aaaaa,39:3f2aaaaa,41:3f2aaaaa,46:3f2aaaaa,59:3f2aaaaa,65:3f2aaaaa,68:3f2aaaaa,81:3f2aaaaa,88:3f2aaaaa,94:3f2aaaaa,4:3f000000,6:3f000000,8:3f000000,19:3f000000,20:3f000000,21:3f000000,22:3f000000,30:3f000000,40:3f000000,58:3f000000,76:3f000000,83:3f000000,87:3f000000,91:3f000000,
@@ -6039,6 +6417,7 @@ body	analyzed(apple,0,true)	matches 11	body|8:8:36:41,15:15:66:71
 body	analyzed(apple,0,true)	matches 12	body|3:3:15:20,10:10:49:54,15:15:71:76,16:16:77:82,18:18:87:92
 body	analyzed(apple,0,true)	matches 13	body|9:9:39:44,12:12:56:61,17:17:80:85,18:18:86:91
 body	analyzed(apple,0,true)	matches 15	body|9:9:45:50,13:13:66:71
+body	analyzed(apple,0,true)	matches 17	none
 body	analyzed(apple,0,true)	matches 18	body|0:0:0:5,23:23:109:114
 body	analyzed(apple,0,true)	matches 19	body|7:7:29:34
 body	analyzed(apple,0,true)	matches 20	body|9:9:39:44
@@ -6064,6 +6443,7 @@ body	analyzed(apple,0,true)	matches 55	body|0:0:0:5,8:8:46:51,19:19:98:103
 body	analyzed(apple,0,true)	matches 56	body|0:0:0:5,2:2:10:15,3:3:16:21,17:17:82:87
 body	analyzed(apple,0,true)	matches 58	body|0:0:0:5
 body	analyzed(apple,0,true)	matches 59	body|8:8:35:40,14:14:62:67
+body	analyzed(apple,0,true)	matches 60	none
 body	analyzed(apple,0,true)	matches 61	body|3:3:14:19,6:6:31:36,9:9:46:51,13:13:65:70
 body	analyzed(apple,0,true)	matches 62	body|0:0:0:5,3:3:15:20,14:14:70:75
 body	analyzed(apple,0,true)	matches 65	body|1:1:6:11,4:4:20:25
@@ -6111,6 +6491,11 @@ body	analyzed(the,0,true)	bool	explain 7	0.0 = Failure to meet condition(s) of r
 body	analyzed(the,0,true)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:NOMATCH(No terms in analyzed text))\n    0.0 = no matching intervals\n
 body	analyzed(the,0,true)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:NOMATCH(No terms in analyzed text))\n    0.0 = no matching intervals\n
 body	analyzed(the,0,true)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:NOMATCH(No terms in analyzed text))\n    0.0 = no matching intervals\n
+body	analyzed(the,0,true)	matches 0	none
+body	analyzed(the,0,true)	matches 7	none
+body	analyzed(the,0,true)	matches 17	none
+body	analyzed(the,0,true)	matches 33	none
+body	analyzed(the,0,true)	matches 60	none
 body	analyzed(cat_dog,1,true)	source	MAXGAPS/1(ORDERED(cat,dog))	2
 body	analyzed(cat_dog,1,true)	plain	hits	5 1:3f000000,80:3f000000,17:3eaaaaaa,39:3eaaaaaa,59:3eaaaaaa,
 body	analyzed(cat_dog,1,true)	plain	explain 0	0.0 = no matching intervals\n
@@ -6142,8 +6527,12 @@ body	analyzed(cat_dog,1,true)	bool	explain 7	0.0 = Failure to meet condition(s) 
 body	analyzed(cat_dog,1,true)	bool	explain 17	0.3333333 = sum of:\n  0.3333333 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n    1.0 = w, weight of this function\n    1.0 = k, pivot feature value that would give a score contribution equal to w/2\n    0.5 = S, the sloppy frequency of the interval query body:MAXGAPS/1(ORDERED(cat,dog))\n
 body	analyzed(cat_dog,1,true)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:MAXGAPS/1(ORDERED(cat,dog)))\n    0.0 = no matching intervals\n
 body	analyzed(cat_dog,1,true)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:MAXGAPS/1(ORDERED(cat,dog)))\n    0.0 = no matching intervals\n
+body	analyzed(cat_dog,1,true)	matches 0	none
 body	analyzed(cat_dog,1,true)	matches 1	body|14:15:66:73[14:14:66:69 15:15:70:73]
+body	analyzed(cat_dog,1,true)	matches 7	none
 body	analyzed(cat_dog,1,true)	matches 17	body|7:9:35:47[7:7:35:38 9:9:44:47]
+body	analyzed(cat_dog,1,true)	matches 33	none
 body	analyzed(cat_dog,1,true)	matches 39	body|17:19:80:92[17:17:80:83 19:19:89:92]
 body	analyzed(cat_dog,1,true)	matches 59	body|3:5:13:24[3:3:13:16 5:5:21:24]
+body	analyzed(cat_dog,1,true)	matches 60	none
 body	analyzed(cat_dog,1,true)	matches 80	body|3:4:15:22[3:3:15:18 4:4:19:22]
