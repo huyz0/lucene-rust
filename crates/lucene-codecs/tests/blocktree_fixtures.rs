@@ -1167,3 +1167,175 @@ fn into_window_marks_exactly_the_real_lucene_postings_in_each_window() {
         }
     }
 }
+
+/// The terms enum's per-term accessors agree with the field's lookups by
+/// term, over every field of the Java-written segment: at each term the enum
+/// walks, `try_stats`/`try_seeked_term` are `try_seek_exact`'s/
+/// `seek_term_state`'s, `try_current_postings` is `postings`' (and, on
+/// `pos`, `try_current_postings_and_positions` is `positions`'), a pulsed
+/// singleton names its document, and `or_docs_into` sets exactly the
+/// term's documents below the end it is given. Before the first term and
+/// past the last, the accessors have nothing.
+#[test]
+fn enum_accessors_agree_with_lookups_by_term() {
+    let (fields, m) = open_fixture();
+    let id = id_from_hex(m.get("id_hex"));
+    let suffix = m.get("segment_suffix").to_string();
+    let doc = read_raw(m.get("doc_file_name"));
+    let pos = read_raw(m.get("pos_file_name"));
+    let pay = read_raw(m.get("pay_file_name"));
+    let doc_in = postings::DocInput::open(&doc, &id, &suffix).expect("open .doc");
+    let pos_in = postings::PosInput::open(&pos, &id, &suffix).expect("open .pos");
+    let pay_in = postings::PayInput::open(&pay, &id, &suffix).expect("open .pay");
+    let (mut terms_seen, mut singletons) = (0, 0);
+    for name in ["body", "id", "pos", "big", "many"] {
+        let field = fields.field(name).unwrap();
+        let mut it = field.iter();
+        assert!(it.term().is_none());
+        assert!(it.try_stats().unwrap().is_none());
+        assert!(it.try_seeked_term().unwrap().is_none());
+        assert!(it.try_current_postings(Some(&doc_in)).unwrap().is_none());
+        let mut reuse = None;
+        while let Some(t) = it.try_next_term().unwrap() {
+            let t = t.to_vec();
+            terms_seen += 1;
+            let stats = it.try_stats().unwrap().unwrap();
+            assert_eq!(Some(stats), field.try_seek_exact(&t).unwrap(), "{name}");
+            let seeked = it.try_seeked_term().unwrap().unwrap();
+            assert_eq!(Some(seeked), field.seek_term_state(&t).unwrap());
+            let got = it.try_current_postings(Some(&doc_in)).unwrap().unwrap();
+            let want = field.postings(&t, Some(&doc_in)).unwrap().unwrap();
+            assert_eq!((&got.docs, &got.freqs), (&want.docs, &want.freqs), "{name}");
+            if stats.doc_freq == 1 {
+                singletons += 1;
+                assert_eq!(seeked.singleton_doc(), Some(want.docs[0]));
+            } else {
+                assert_eq!(seeked.singleton_doc(), None);
+            }
+            // Every document, then only those below the second one.
+            for end in [i32::MAX, want.docs.get(1).copied().unwrap_or(0)] {
+                let max = want.docs.iter().max().copied().unwrap_or(0) as usize + 1;
+                let mut words = vec![0u64; max.div_ceil(64)];
+                field
+                    .or_docs_into(
+                        &seeked,
+                        &doc_in,
+                        end.min(max as i32),
+                        &mut words,
+                        &mut reuse,
+                    )
+                    .unwrap();
+                let set: Vec<i32> = (0..max as i32)
+                    .filter(|&d| words[d as usize >> 6] & (1 << (d & 63)) != 0)
+                    .collect();
+                let below: Vec<i32> = want.docs.iter().copied().filter(|&d| d < end).collect();
+                assert_eq!(set, below, "{name} end {end}");
+            }
+            // `tail_only_first_doc` knows a short list's first document;
+            // a reused lazy cursor walks the term's documents.
+            if let Some(first) = field.tail_only_first_doc(&seeked, &doc_in).unwrap() {
+                assert_eq!(first, want.docs[0], "{name}");
+            }
+            let flags = postings::PostingsFlags::DocsOnly;
+            let mut lazy = None;
+            if stats.doc_freq > 1 {
+                for _ in 0..2 {
+                    let cursor = field
+                        .reuse_postings_for(&seeked, &doc_in, flags, &mut lazy)
+                        .unwrap();
+                    let mut walked = Vec::new();
+                    loop {
+                        let d = cursor.next_doc().unwrap();
+                        if d == postings::NO_MORE_DOCS {
+                            break;
+                        }
+                        walked.push(d);
+                    }
+                    assert_eq!(walked, want.docs, "{name}");
+                }
+                // `nextPostings(upTo)`: the cursor's documents a decoded block
+                // at a time, cut at each `up_to`, with their frequencies; and
+                // membership answered from a bit-set block where it can be.
+                let mut freqs_cursor = None;
+                for step in [3, 50, 1000] {
+                    let c = field
+                        .reuse_postings_for(
+                            &seeked,
+                            &doc_in,
+                            postings::PostingsFlags::Freqs,
+                            &mut freqs_cursor,
+                        )
+                        .unwrap();
+                    let (mut docs, mut freqs) = (Vec::new(), Vec::new());
+                    let (mut all_docs, mut all_freqs) = (Vec::new(), Vec::new());
+                    let mut up_to = c.next_doc().unwrap();
+                    while c.doc_id() != postings::NO_MORE_DOCS {
+                        up_to = up_to.saturating_add(step);
+                        c.next_postings(up_to, &mut docs, &mut freqs).unwrap();
+                        assert!(docs.iter().all(|&d| d < up_to));
+                        all_docs.extend_from_slice(&docs);
+                        all_freqs.extend_from_slice(&freqs);
+                        if docs.is_empty() && c.doc_id() < up_to {
+                            break;
+                        }
+                    }
+                    assert_eq!(all_docs, want.docs, "{name} step {step}");
+                    if field.index_options() != lucene_codecs::field_infos::IndexOptions::Docs {
+                        assert_eq!(all_freqs, want.freqs, "{name} step {step}");
+                    }
+                }
+                let c = field
+                    .reuse_postings_for(&seeked, &doc_in, flags, &mut lazy)
+                    .unwrap();
+                c.next_doc().unwrap();
+                let last = *want.docs.last().unwrap();
+                for target in 0..last.min(4096) {
+                    if let Some(hit) = c.advance_exact_in_bits(target) {
+                        assert_eq!(
+                            hit,
+                            want.docs.binary_search(&target).is_ok(),
+                            "{name} {target}"
+                        );
+                    }
+                }
+            } else {
+                assert!(field
+                    .reuse_postings_for(&seeked, &doc_in, flags, &mut lazy)
+                    .is_err());
+            }
+            if name == "pos" {
+                let (docs, positions) = it
+                    .try_current_postings_and_positions(Some(&doc_in), &pos_in, Some(&pay_in))
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(docs.docs, want.docs);
+                assert_eq!(
+                    Some(positions),
+                    field
+                        .positions(&t, Some(&doc_in), &pos_in, Some(&pay_in))
+                        .unwrap()
+                );
+            }
+        }
+        assert!(it.term().is_none());
+        assert!(it.try_stats().unwrap().is_none());
+        assert!(it
+            .try_current_postings_and_positions(Some(&doc_in), &pos_in, Some(&pay_in))
+            .unwrap()
+            .is_none());
+    }
+    assert!(
+        terms_seen > 100 && singletons > 0,
+        "{terms_seen} {singletons}"
+    );
+    assert_eq!(
+        fields.field("id").unwrap().index_options(),
+        lucene_codecs::field_infos::IndexOptions::Docs
+    );
+    assert!(!fields.field("body").unwrap().has_payloads());
+    // Positions of a field indexed without them.
+    let ids = fields.field("id").unwrap();
+    let mut it = ids.iter();
+    let first = it.try_next_term().unwrap().unwrap().to_vec();
+    assert!(ids.lazy_positions(&first, &doc_in, &pos_in).is_err());
+}
