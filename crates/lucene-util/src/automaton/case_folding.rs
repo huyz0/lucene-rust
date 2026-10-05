@@ -159,4 +159,24 @@ mod tests {
         assert_eq!(java_to_upper_case(0x1C5), 0x1C4);
         assert_eq!(java_to_lower_case(0x1C5), 0x1C6);
     }
+
+    /// Lucene's extra variants pair up: whatever a code point lists, that
+    /// variant leads back to it -- directly, or through its own simple
+    /// mappings -- so a case-insensitive pattern built from either side
+    /// matches the other. Checked over every code point (each table entry).
+    #[test]
+    fn every_extra_variant_leads_back() {
+        let mut listed = 0;
+        for c in 0..=0x10FFFF {
+            for &v in special(c) {
+                listed += 1;
+                let back = all(v).contains(&c)
+                    || all(java_to_lower_case(v)).contains(&c)
+                    || all(java_to_upper_case(v)).contains(&c);
+                assert!(back, "{c:#x} lists {v:#x}, which does not lead back");
+                assert!(all(c).contains(&v));
+            }
+        }
+        assert_eq!(listed, 99);
+    }
 }

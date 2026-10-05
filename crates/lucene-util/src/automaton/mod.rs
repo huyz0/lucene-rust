@@ -116,3 +116,33 @@ pub(crate) fn utf16_to_utf8(units: &[u32]) -> Vec<u8> {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `UnicodeUtil.UTF16toUTF8`: well-formed text as UTF-8, a supplementary
+    /// code point from its surrogate pair, and every unpaired surrogate as
+    /// U+FFFD -- what a lossy decode of the same units encodes.
+    #[test]
+    fn utf16_and_code_points_encode_as_utf8() {
+        let cps = [
+            0x41, 0x7F, 0x80, 0x7FF, 0x800, 0xFFFF, 0x10000, 0x1F600, 0x10FFFF,
+        ];
+        let want: String = cps.iter().map(|&c| char::from_u32(c).unwrap()).collect();
+        let cps: Vec<i32> = cps.iter().map(|&c| c as i32).collect();
+        assert_eq!(code_points_to_utf8(&cps), want.as_bytes());
+        for units in [
+            &[0xD83D_u16, 0xDE00][..],
+            &[0xD83D, 0x41],
+            &[0x41, 0xD83D],
+            &[0xDE00, 0x41],
+            &[0xDE00, 0xD83D, 0xDE00],
+            &[0xD800, 0xD800, 0xDC00],
+        ] {
+            let lossy = String::from_utf16_lossy(units);
+            let wide: Vec<u32> = units.iter().map(|&u| u32::from(u)).collect();
+            assert_eq!(utf16_to_utf8(&wide), lossy.as_bytes(), "{units:x?}");
+        }
+    }
+}

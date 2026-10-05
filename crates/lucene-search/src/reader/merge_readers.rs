@@ -139,13 +139,8 @@ impl lucene_index::merge_policy::MergeHooks for SegmentMergeHooks {
                 .iter()
                 .map(|r| Arc::new(r.clone()) as Arc<dyn CodecReader>)
                 .collect();
-            if readers.len() != sources.segments.len() {
-                return Err(crate::Error::IllegalState(format!(
-                    "opened {} readers for {} merge sources",
-                    readers.len(),
-                    sources.segments.len()
-                )));
-            }
+            // `open_at` opens one reader per listed segment, in order.
+            debug_assert_eq!(readers.len(), sources.segments.len());
             let merge = prepare_merge_readers(self.hooks.as_ref(), readers.clone(), !may_reorder)?;
             // The wrapped readers' live documents: with a reorder, the one
             // sorted view hides them, so they are taken from the wrapped

@@ -109,11 +109,13 @@ fn sample_vocabulary_terms(
         if reservoir.len() < sample_size {
             reservoir.push(term);
         } else {
+            // A draw at or past the reservoir's end keeps it as it is.
             let replacement = next_long_bounded(rng, seen);
-            if let Ok(i) = usize::try_from(replacement) {
-                if i < sample_size {
-                    reservoir[i] = term;
-                }
+            if let Some(slot) = usize::try_from(replacement)
+                .ok()
+                .and_then(|i| reservoir.get_mut(i))
+            {
+                *slot = term;
             }
         }
     }
