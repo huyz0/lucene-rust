@@ -2826,7 +2826,7 @@ mod tests {
         let mut opened = reader.open_segments().unwrap();
         opened.open_points().unwrap();
         let segments = opened.as_open_segments();
-        for q in [all(), body("a"), body("b")] {
+        for q in [all(), body("w1"), body("w4")] {
             let specs: Vec<MetricSpec> = [
                 ("d", ValueKind::Double),
                 ("md", ValueKind::Double),
@@ -2899,9 +2899,9 @@ mod tests {
         let reader = fixture("metric_aggs_index");
         for (q, field, kind) in [
             (all(), "d", ValueKind::Double),
-            (body("a"), "md", ValueKind::Double),
+            (body("w1"), "md", ValueKind::Double),
             (all(), "ml", ValueKind::Long),
-            (body("b"), "f", ValueKind::Float),
+            (body("w4"), "f", ValueKind::Float),
             (all(), "i", ValueKind::Long),
         ] {
             let rows = scan(&reader, &q, field);
@@ -3187,7 +3187,7 @@ mod tests {
             let windowed = run(reader, q, nodes, &whole(reader)).unwrap();
             assert_eq!(format!("{windowed:?}"), format!("{one:?}"), "{tree:?}");
         };
-        for q in [all(), body("a"), body("b")] {
+        for q in [all(), body("w1"), body("w4")] {
             for tree in &trees {
                 both(&reader, &q, tree);
             }
@@ -3212,7 +3212,7 @@ mod tests {
                     },
                 ],
             };
-            for q in [all(), body("a")] {
+            for q in [all(), body("w1")] {
                 both(&reader, &q, &tree);
             }
         }
@@ -3224,7 +3224,7 @@ mod tests {
             subs,
         };
         let nested = keyword("sk", vec![keyword("kw", vec![]), keyword("hk", vec![])]);
-        for q in [all(), body("a")] {
+        for q in [all(), body("w1")] {
             both(&reader, &q, &nested);
         }
     }
@@ -3416,7 +3416,7 @@ mod tests {
         opened.open_points().unwrap();
         let segments = opened.as_open_segments();
         let n = reader.segment_readers().len();
-        for q in [all(), body("a")] {
+        for q in [all(), body("w1")] {
             for (field, shard_size) in [("kw", 5), ("mkw", 3), ("bk", 1000), ("sk", 2)] {
                 let want = crate::terms_agg::terms(
                     &segments,
@@ -3554,5 +3554,92 @@ mod tests {
         };
         g.filter_queries(&mut qs);
         assert_eq!(qs.len(), 1);
+    }
+
+    /// A top-level `min`/`max` read from each segment's points bound
+    /// (OpenSearch's shortcut over a match-all), and the tree behind
+    /// `min_score`: both answer what the flat metric pass answers -- a
+    /// minimum of 0 every match clears, one none does.
+    #[test]
+    fn points_bounds_and_min_score_answer_what_the_metric_pass_answers() {
+        let reader = fixture("metric_aggs_index");
+        let mut opened = reader.open_segments().unwrap();
+        opened.open_points().unwrap();
+        let segments = opened.as_open_segments();
+        for (field, kind) in [
+            ("l", ValueKind::Long),
+            ("d", ValueKind::Double),
+            ("f", ValueKind::Float),
+        ] {
+            for source in [Source::PointsMin, Source::PointsMax] {
+                let spec = MetricSpec {
+                    field: field.to_string(),
+                    kind,
+                    source,
+                    needs: NEED_ALL,
+                };
+                let want = crate::aggs::metric_states(
+                    &segments,
+                    reader.segment_readers(),
+                    &all(),
+                    &[spec],
+                )
+                .unwrap();
+                let node = AggNode::Metric {
+                    field: field.to_string(),
+                    kind,
+                    source,
+                    needs: NEED_ALL,
+                };
+                let got = run(&reader, &all(), &[node], &whole(&reader))
+                    .unwrap()
+                    .remove(0);
+                let AggResult::Metric(states) = &got[0] else {
+                    panic!("{got:?}")
+                };
+                assert_eq!(bits(&states[0]), bits(&want[0]), "{field} {source:?}");
+            }
+        }
+
+        let owned = reader.field_norms_by_field(&["body".to_string()]);
+        let norms: Vec<Option<&HashMap<String, crate::field_norms::FieldNorms<'_>>>> =
+            owned.iter().map(Some).collect();
+        let behind = |q: &BooleanQuery, min: f32| {
+            let m = crate::aggs::MinScore { min, norms: &norms };
+            aggregate_tree(
+                &segments,
+                reader.segment_readers(),
+                q,
+                &[metric("d", ValueKind::Double)],
+                &Globals {
+                    ords: &HashMap::new(),
+                },
+                &whole(&reader),
+                Some(&m),
+            )
+            .unwrap()
+            .remove(0)
+        };
+        for q in [body("w0"), body("w3")] {
+            let plain = run(
+                &reader,
+                &q,
+                &[metric("d", ValueKind::Double)],
+                &whole(&reader),
+            )
+            .unwrap()
+            .remove(0);
+            let (AggResult::Metric(want), AggResult::Metric(got)) =
+                (&plain[0], &behind(&q, 0.0)[0])
+            else {
+                panic!()
+            };
+            assert!(want[0].count > 0);
+            assert_eq!(bits(&got[0]), bits(&want[0]));
+            let AggResult::Metric(none) = &behind(&q, f32::MAX)[0] else {
+                panic!()
+            };
+            assert_eq!(none[0].count, 0);
+        }
     }
 }
