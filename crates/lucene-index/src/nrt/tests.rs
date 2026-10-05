@@ -11,7 +11,7 @@ use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
 use lucene_store::FsDirectory;
 use lucene_util::test_support::TempDir;
 
-fn writer(dir: &FsDirectory) -> IndexWriter<'_> {
+fn writer(dir: &dyn Directory) -> IndexWriter<'_> {
     let fields = vec![FieldInfo {
         index_options: IndexOptions::Docs,
         omit_norms: true,
@@ -215,4 +215,100 @@ fn a_snapshot_of_an_empty_writer_pins_nothing() {
     assert!(!snap.hold.files().is_empty());
     drop(snap);
     w.commit().unwrap();
+}
+
+/// A merge policy whose every answer is an error: a snapshot that gets as
+/// far as `getReader`'s point-in-time merges must report it.
+#[derive(Debug, Default)]
+struct RefusingPolicy(crate::merge_policy::CompoundFileSettings);
+
+impl crate::merge_policy::MergePolicy for RefusingPolicy {
+    fn find_merges(
+        &self,
+        _trigger: crate::merge_policy::MergeTrigger,
+        _infos: &[crate::merge_policy::MergeSegment],
+        _ctx: &dyn crate::merge_policy::MergeContext,
+    ) -> crate::merge_policy::api::Result<Option<crate::merge_policy::MergeSpecification>> {
+        Err(crate::merge_policy::api::Error::IllegalArgument(
+            "no merges today".into(),
+        ))
+    }
+    fn find_forced_merges(
+        &self,
+        _infos: &[crate::merge_policy::MergeSegment],
+        _max_segment_count: i32,
+        _segments_to_merge: &std::collections::HashMap<String, bool>,
+        _ctx: &dyn crate::merge_policy::MergeContext,
+    ) -> crate::merge_policy::api::Result<Option<crate::merge_policy::MergeSpecification>> {
+        Ok(None)
+    }
+    fn find_forced_deletes_merges(
+        &self,
+        _infos: &[crate::merge_policy::MergeSegment],
+        _ctx: &dyn crate::merge_policy::MergeContext,
+    ) -> crate::merge_policy::api::Result<Option<crate::merge_policy::MergeSpecification>> {
+        Ok(None)
+    }
+    fn compound_file_settings(&self) -> crate::merge_policy::CompoundFileSettings {
+        self.0
+    }
+    fn compound_file_settings_mut(&mut self) -> &mut crate::merge_policy::CompoundFileSettings {
+        &mut self.0
+    }
+}
+
+/// Every exit of a snapshot that can fail does, and says so rather than
+/// handing out a view: the flush of the buffered documents (a directory that
+/// has lost power), `getReader`'s merges (a policy that refuses), and the
+/// release of a dropped reader's pins (the delete of a merged-away file).
+#[test]
+fn a_snapshot_reports_a_failing_flush_merge_or_release() {
+    use lucene_store::crashing_directory::CrashingDirectory;
+
+    // The flush: the first file it creates fails.
+    let tmp = TempDir::new("nrt-flush-fails");
+    let dir = CrashingDirectory::new(tmp.path(), 7);
+    let mut w = writer(&dir);
+    w.add_document(doc("a")).unwrap();
+    dir.crash_after(1);
+    assert!(w.nrt_snapshot(true, false).is_err());
+    assert!(dir.crashed(), "the flush never reached the directory");
+    drop(w);
+
+    // The merges: flushed, then refused by the policy.
+    let tmp = TempDir::new("nrt-merge-fails");
+    let dir = FsDirectory::open(&tmp);
+    let mut w = writer(&dir);
+    w.set_pluggable_merge_policy(Some(std::sync::Arc::new(RefusingPolicy::default())));
+    w.set_max_full_flush_merge_wait_millis(500);
+    w.add_document(doc("a")).unwrap();
+    let e = w.nrt_snapshot(true, false).unwrap_err();
+    assert!(e.to_string().contains("no merges today"), "{e}");
+    // Without the point-in-time merges the same writer snapshots fine.
+    w.set_max_full_flush_merge_wait_millis(0);
+    let snap = w.nrt_snapshot(true, false).unwrap();
+    assert_eq!(live_docs(&snap.segment_infos, &dir), 1);
+    drop(snap);
+    drop(w);
+
+    // The release: a dropped snapshot's last hold on merged-away files is let
+    // go at the next snapshot, whose delete fails.
+    let tmp = TempDir::new("nrt-release-fails");
+    let dir = CrashingDirectory::new(tmp.path(), 11);
+    let mut w = writer(&dir);
+    for i in 0..2 {
+        w.add_document(doc(&format!("a{i}"))).unwrap();
+        w.commit().unwrap();
+    }
+    let snap = w.nrt_snapshot(true, false).unwrap();
+    w.force_merge(1).unwrap();
+    w.commit().unwrap();
+    drop(snap);
+    dir.crash_after(1);
+    assert!(w.nrt_snapshot(true, false).is_err());
+    assert!(
+        dir.crash_point().is_some_and(|p| p.starts_with("delete")),
+        "{:?}",
+        dir.crash_point()
+    );
 }
