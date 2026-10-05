@@ -29,6 +29,7 @@ mod micro_geo_points;
 mod micro_geo_shapes;
 mod micro_aggs;
 mod micro_function;
+mod micro_queries;
 mod micro_grouping;
 mod micro_join;
 mod micro_m7;
@@ -2118,6 +2119,12 @@ fn main() {
                 .nth(2)
                 .expect("function needs the FunctionMicro index directory");
             micro_function::bench_function(warmup, measure, &index);
+        }
+        "queries" => {
+            let index = std::env::args()
+                .nth(2)
+                .expect("queries needs the QueriesMicro index directory");
+            micro_queries::bench_queries(warmup, measure, &index);
         }
         "grouping" => {
             let index = std::env::args()

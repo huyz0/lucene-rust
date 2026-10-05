@@ -416,3 +416,97 @@ fn a_wrong_last_pos_block_offset_is_visible_to_the_skip_driven_walk() {
          if it does not, the walk is not using it and b5's defect is invisible again"
     );
 }
+
+/// `PositionsCursor::read_payloads`: a cursor that reads each position's
+/// payload as it goes, `.pay` stepped in lockstep with `.pos`, answers what
+/// the whole-term reader answers -- over every way a scorer moves it:
+/// every document read whole; documents skipped without reading their
+/// positions (whole `.pos`/`.pay` blocks stepped over); documents read only
+/// in part; and `advance` across `.doc` blocks and the level-1 span (8 500
+/// documents), where the cursor re-seeks both streams from the skip data.
+#[test]
+fn a_payload_reading_cursor_agrees_with_the_whole_term_reader() {
+    let doc_count = 8_500;
+    for index_options in [
+        IndexOptions::DocsAndFreqsAndPositions,
+        IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
+    ] {
+        let has_offsets = index_options == IndexOptions::DocsAndFreqsAndPositionsAndOffsets;
+        let term = synthetic_term(doc_count, has_offsets, true);
+        let doc_ids: Vec<i32> = term.docs.iter().map(|&(d, _)| d).collect();
+        let written = write(&term, index_options, true);
+        let (fields, doc_in, pos_in, pay_in) = written.open();
+        let pay_in = pay_in.expect("a payload field writes .pay");
+        let field = fields.field("body").expect("field");
+        let expected = whole_term(field, &doc_in, &pos_in, Some(&pay_in));
+        // (stride between documents visited, positions read per document:
+        // `usize::MAX` for all of them, `0` for none).
+        for (stride, read) in [
+            (1, usize::MAX),
+            (3, usize::MAX),
+            (2, 1),
+            (1, 0),
+            (97, 2),
+            (701, usize::MAX),
+        ] {
+            let mut cursor = field
+                .lazy_positions(b"alpha", &doc_in, &pos_in)
+                .expect("lazy_positions")
+                .expect("present");
+            cursor.read_payloads(&pay_in).expect("read_payloads");
+            let mut i = 0usize;
+            while i < doc_count {
+                assert_eq!(cursor.advance(doc_ids[i]).unwrap(), doc_ids[i]);
+                // Every fourth visited document also checks the occurrence
+                // walk that does not move the cursor's own streams.
+                if (i / stride).is_multiple_of(4) {
+                    let mut occ = Vec::new();
+                    cursor
+                        .occurrences_into(&pos_in, Some(&pay_in), &mut occ)
+                        .unwrap();
+                    assert_eq!(occ, expected[i], "doc index {i}");
+                }
+                let want = &expected[i];
+                for o in want.iter().take(read) {
+                    assert_eq!(cursor.next_position().unwrap(), o.position, "doc index {i}");
+                    let payload = cursor.payload().unwrap();
+                    assert_eq!(
+                        payload.unwrap_or_default(),
+                        o.payload.as_slice(),
+                        "doc index {i}, stride {stride}, {index_options:?}"
+                    );
+                    assert_eq!(payload.is_none(), o.payload.is_empty());
+                }
+                i += stride;
+            }
+        }
+        // Asked for after a position was read, or of a field without
+        // payloads, it is refused.
+        let mut late = field
+            .lazy_positions(b"alpha", &doc_in, &pos_in)
+            .expect("lazy_positions")
+            .expect("present");
+        late.next_doc().unwrap();
+        late.next_position().unwrap();
+        assert!(late.read_payloads(&pay_in).is_err());
+        assert_eq!(late.payload().unwrap(), None);
+    }
+    let plain = synthetic_term(300, false, false);
+    let written = write(&plain, IndexOptions::DocsAndFreqsAndPositions, false);
+    let (fields, doc_in, pos_in, _) = written.open();
+    let other = synthetic_term(300, false, true);
+    let with_pay = write(&other, IndexOptions::DocsAndFreqsAndPositions, true);
+    let (_, _, _, pay_in) = with_pay.open();
+    let mut cursor = fields
+        .field("body")
+        .unwrap()
+        .lazy_positions(b"alpha", &doc_in, &pos_in)
+        .unwrap()
+        .unwrap();
+    assert!(cursor.read_payloads(&pay_in.unwrap()).is_err());
+    let mut occ = Vec::new();
+    assert!(
+        cursor.occurrences_into(&pos_in, None, &mut occ).is_err(),
+        "off a document"
+    );
+}

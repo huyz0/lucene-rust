@@ -175,6 +175,85 @@ impl<'a> LeafPositions<'a> {
         }
         Ok(())
     }
+
+    /// Asks a lazy cursor to read each position's payload as it reads the
+    /// position (`PostingsEnum.PAYLOADS`), for
+    /// [`Self::next_position_with_payload`]; `false` where it will not (a
+    /// pulsed singleton, a retired format, no `.pay`), and the leaf's
+    /// occurrences are then read per document by [`Self::occurrences_at`].
+    pub(crate) fn stream_payloads(&mut self, ctx: &LeafContext<'a>) -> bool {
+        match (self, ctx.pay_in) {
+            (LeafPositions::Lazy(cursor), Some(pay)) => cursor.read_payloads(pay).is_ok(),
+            _ => false,
+        }
+    }
+
+    /// Whether this is a lazy cursor, whose positions
+    /// [`Self::next_position`] reads one at a time.
+    pub(crate) fn is_lazy(&self) -> bool {
+        matches!(self, LeafPositions::Lazy(_))
+    }
+
+    /// `nextPosition()` of the document a lazy cursor is on.
+    pub(crate) fn next_position(&mut self) -> Result<i32> {
+        match self {
+            LeafPositions::Lazy(cursor) => Ok(cursor.next_position()?),
+            _ => Err(crate::Error::IllegalState(
+                "positions are streamed from a lazy cursor only".into(),
+            )),
+        }
+    }
+
+    /// `nextPosition()` and `getPayload()` of the document the cursor is on,
+    /// once [`Self::stream_payloads`] said yes.
+    pub(crate) fn next_position_with_payload(&mut self) -> Result<(i32, Option<&[u8]>)> {
+        match self {
+            LeafPositions::Lazy(cursor) => {
+                let position = cursor.next_position()?;
+                Ok((position, cursor.payload()?))
+            }
+            _ => Err(crate::Error::IllegalState(
+                "payloads are streamed from a lazy cursor only".into(),
+            )),
+        }
+    }
+
+    /// The leaf's occurrences in `doc` -- positions with their offsets and
+    /// payloads -- replacing `out`'s contents; nothing when the leaf is not
+    /// on `doc`. A lazy cursor reads them where it stands
+    /// (`PositionsCursor::occurrences_into`); a pulsed singleton, or a
+    /// retired format's postings, through `field_terms`' one-document read.
+    pub(crate) fn occurrences_at(
+        &mut self,
+        ctx: &LeafContext<'a>,
+        field_terms: &lucene_codecs::blocktree::FieldTerms,
+        term: &[u8],
+        doc: i32,
+        out: &mut Vec<lucene_codecs::postings::Position>,
+    ) -> Result<()> {
+        out.clear();
+        let Some(pos_in) = ctx.pos_in else {
+            return Err(crate::Error::MissingPosInput);
+        };
+        if let LeafPositions::Lazy(cursor) = self {
+            if cursor.doc_id() != doc {
+                return Ok(());
+            }
+            match cursor.occurrences_into(pos_in, ctx.pay_in, out) {
+                Err(lucene_codecs::postings::Error::Unsupported(_)) => {}
+                other => return other.map_err(Into::into),
+            }
+        }
+        if self.freq_at(doc) == 0 {
+            return Ok(());
+        }
+        if let Some(found) =
+            field_terms.occurrences_for_doc(term, ctx.doc_in, pos_in, ctx.pay_in, doc)?
+        {
+            *out = found;
+        }
+        Ok(())
+    }
 }
 
 /// How many times `c` names each leaf, when it is only terms and ors of
