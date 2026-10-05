@@ -9766,4 +9766,69 @@ mod tests {
             assert_eq!(got, want_sorted);
         }
     }
+
+    /// `TermsDict`'s random access over a dictionary of many LZ4 blocks and
+    /// several reverse-index intervals, written by [`write_terms_dict`] (the
+    /// writer `addSortedField` and `addSortedSetField` share): every ordinal
+    /// seeks to its term in any order, `lookupTerm` gives a term's ordinal
+    /// and a key between terms `-insertionPoint - 1`, `seekCeil` lands on the
+    /// ceiling or reports the end, and an ordinal outside the dictionary is
+    /// refused.
+    #[test]
+    fn a_terms_dictionary_seeks_by_ordinal_and_by_term() {
+        use crate::terms_dict::{self, SeekStatus};
+        let n = 3000i64;
+        let terms: Vec<Vec<u8>> = (0..n)
+            .map(|i| format!("t{:05}", i * 3).into_bytes())
+            .collect();
+        let (mut meta, mut data) = (Vec::new(), Vec::new());
+        write_terms_dict(&mut meta, &mut data, &terms);
+        let entry = terms_dict::read_term_dict_entry(&mut SliceInput::new(&meta)).unwrap();
+        let mut dict = terms_dict::TermsDict::open(&data, &entry).unwrap();
+        assert_eq!(dict.size(), n);
+        let ords: Vec<i64> = (0..n)
+            .step_by(7)
+            .chain((0..n).rev().step_by(13))
+            .chain([0, n - 1, 64, 63, 1024, 1023, 2047, 2048])
+            .collect();
+        for ord in ords {
+            assert_eq!(
+                dict.seek_ord(ord).unwrap(),
+                &terms[ord as usize][..],
+                "ord {ord}"
+            );
+            assert_eq!(dict.ord(), ord);
+        }
+        for i in (0..n).step_by(5).chain([n - 1]) {
+            let t = &terms[i as usize];
+            assert_eq!(dict.lookup_term(t).unwrap(), i);
+            assert_eq!(dict.term(), &t[..]);
+            // Just past `t`, before the next term.
+            let between = format!("t{:05}", i * 3 + 1).into_bytes();
+            let want = if i + 1 < n { -(i + 1) - 1 } else { -n - 1 };
+            assert_eq!(dict.lookup_term(&between).unwrap(), want, "{i}");
+        }
+        assert_eq!(dict.lookup_term(b"a").unwrap(), -1);
+        assert_eq!(dict.lookup_term(b"u").unwrap(), -n - 1);
+        assert_eq!(dict.seek_ceil(b"t00004").unwrap(), SeekStatus::NotFound);
+        assert_eq!(dict.term(), b"t00006");
+        assert_eq!(dict.seek_ceil(b"t00006").unwrap(), SeekStatus::Found);
+        assert_eq!(dict.seek_ceil(b"zzz").unwrap(), SeekStatus::End);
+        for bad in [-1, n, i64::MAX] {
+            assert!(dict.seek_ord(bad).is_err(), "{bad}");
+        }
+        let no_index = terms_dict::TermsDictEntry {
+            index: None,
+            ..entry.clone()
+        };
+        assert!(terms_dict::TermsDict::open(&data, &no_index).is_err());
+        // An empty dictionary has no term to land on.
+        let (mut meta, mut data) = (Vec::new(), Vec::new());
+        write_terms_dict(&mut meta, &mut data, &[]);
+        let empty = terms_dict::read_term_dict_entry(&mut SliceInput::new(&meta)).unwrap();
+        if let Ok(mut d) = terms_dict::TermsDict::open(&data, &empty) {
+            assert_eq!(d.seek_ceil(b"a").unwrap(), SeekStatus::End);
+            assert_eq!(d.lookup_term(b"a").unwrap(), -1);
+        }
+    }
 }
