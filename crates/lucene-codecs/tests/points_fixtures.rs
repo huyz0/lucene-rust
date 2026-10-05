@@ -754,3 +754,85 @@ fn flushed_points_are_written_byte_identical_to_lucene() {
     assert_eq!(kdd.len(), want_kdd.len(), ".kdd length");
     assert!(kdd == want_kdd, ".kdd bytes differ");
 }
+
+/// The scratch-reusing walks (`intersect_in`, `estimate_point_count_bounded_in`)
+/// answer what the plain walks answer, one scratch carried across fields of
+/// different widths and dimension counts; and an empty reader has no fields.
+#[test]
+fn walks_reusing_one_scratch_answer_as_fresh_walks_do() {
+    let manifest = Manifest::load();
+    let id = id_from_hex(manifest.get("id_hex"));
+    let kdm = std::fs::read(format!("{}{}.raw", dir(), manifest.get("kdm_file_name"))).unwrap();
+    let kdi = std::fs::read(format!("{}{}.raw", dir(), manifest.get("kdi_file_name"))).unwrap();
+    let kdd = std::fs::read(format!("{}{}.raw", dir(), manifest.get("kdd_file_name"))).unwrap();
+    let reader = points::open(&kdm, &kdi, &kdd, &id, "").unwrap();
+    let mut scratch = points::PointsScratch::default();
+    for key in ["field_number", "multi_field_number", "shape_field_number"] {
+        let field: i32 = manifest.get(key).parse().unwrap();
+        let f = reader.field(field).unwrap();
+        let (min, max) = (f.min_packed_value.clone(), f.max_packed_value.clone());
+        // The whole space, and the box from the minimum to the midpoint of
+        // each dimension's bytes.
+        let mid: Vec<u8> = min
+            .iter()
+            .zip(&max)
+            .map(|(&a, &b)| ((u16::from(a) + u16::from(b)) / 2) as u8)
+            .collect();
+        for (lower, upper) in [(min.clone(), max.clone()), (min.clone(), mid)] {
+            let mut want = reader.range_query(field, &lower, &upper).unwrap();
+            want.sort_unstable();
+            let mut collect = Collect {
+                bounds: RangeBox::new(&lower, &upper, &reader, field).visitor,
+                docs: Vec::new(),
+            };
+            reader
+                .intersect_in(field, &mut collect, &mut scratch)
+                .unwrap();
+            collect.docs.sort_unstable();
+            assert_eq!(collect.docs, want, "{key}");
+            for bound in [1i64, 64, i64::MAX] {
+                let mut fresh = RangeBox::new(&lower, &upper, &reader, field);
+                let mut reused = RangeBox::new(&lower, &upper, &reader, field);
+                assert_eq!(
+                    reader
+                        .estimate_point_count_bounded_in(
+                            field,
+                            &mut reused.visitor,
+                            bound,
+                            &mut scratch
+                        )
+                        .unwrap(),
+                    reader
+                        .estimate_point_count_bounded(field, &mut fresh.visitor, bound)
+                        .unwrap(),
+                    "{key} bound {bound}"
+                );
+            }
+        }
+    }
+    let empty = points::PointsReader::empty();
+    assert!(empty.field(0).is_none());
+    assert!(empty.range_query(0, &[0], &[1]).is_err());
+}
+
+/// Every document whose point is inside `bounds`.
+struct Collect {
+    bounds: BoxVisitor,
+    docs: Vec<i32>,
+}
+
+impl points::IntersectVisitor for Collect {
+    fn compare(&mut self, min_packed: &[u8], max_packed: &[u8]) -> points::Relation {
+        self.bounds.compare(min_packed, max_packed)
+    }
+
+    fn visit(&mut self, doc_id: i32) {
+        self.docs.push(doc_id);
+    }
+
+    fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) {
+        if self.bounds.compare(packed_value, packed_value) != points::Relation::CellOutsideQuery {
+            self.docs.push(doc_id);
+        }
+    }
+}
