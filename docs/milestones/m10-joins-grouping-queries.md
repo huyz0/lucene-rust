@@ -10,7 +10,7 @@
 | **Effort** | L |
 | **Depends on** | [M7](m7-core-complete.md) |
 | **Unblocks** | native `nested`, `function_score`, `intervals`, `combined_fields`, field collapsing |
-| **Status** | in progress (T10.0, T10.1, T10.3 done; T10.2 queries ported; T10.4, T10.5 ported) |
+| **Status** | in progress (T10.0, T10.1, T10.3 done; T10.2 queries ported; T10.4, T10.5 ported; T10.6 intervals ported) |
 
 ---
 
@@ -280,6 +280,14 @@ grouping. Each of them falls back to Lucene today.
   reader at `getValues`, and the map is faster on a field of ~20 000 keys
   per segment.)
 - **T10.6** — Intervals, payload queries, `MoreLikeThis`, `CommonTermsQuery`.
+  Intervals **ported** (`lucene-search/src/intervals`, `exec/intervals.rs`):
+  every class of `lucene-queries`' `intervals` package -- the `Intervals`
+  factories and every `IntervalsSource`, their iterators, `IntervalQuery`
+  with its saturation and sigmoid scoring, `IntervalMatches` and
+  `IntervalBuilder`'s analyzed text. `GenIntervals` records 120 sources
+  (`toString`, `minExtent`, five scoring variants with hits, score bits and
+  explanations, the `Matches` of every hit), all 6 149 lines equal to
+  Lucene's.
 - **T10.7** — Plugin wiring for the OpenSearch shapes above.
 
 ## Stage-3 status (2026-10-05)

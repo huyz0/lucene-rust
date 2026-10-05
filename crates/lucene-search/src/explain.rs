@@ -264,7 +264,7 @@ impl Explanation {
 ///
 /// Outside `[1e-3, 1e7)` Java switches to computerized scientific notation
 /// (`1.0E-4`, `1.2345678E7`), the mantissa again always with a decimal point.
-fn java_float(v: f32) -> String {
+pub(crate) fn java_float(v: f32) -> String {
     let a = v.abs();
     if !v.is_finite() {
         return if v.is_nan() {
@@ -308,6 +308,7 @@ pub(crate) fn describe_clause(clause: &Clause) -> String {
             crate::extended_query::ExtendedQuery::FunctionRange(f) => format!("{f:?}"),
             crate::extended_query::ExtendedQuery::FunctionMatch(f) => format!("{f:?}"),
             crate::extended_query::ExtendedQuery::FunctionScore(f) => format!("{f:?}"),
+            crate::extended_query::ExtendedQuery::Interval(f) => f.to_string(),
             _ => q.name().to_string(),
         },
         Clause::Term(q) => format!("{}:{}", q.field, term(&q.term)),
@@ -522,6 +523,12 @@ pub fn explain_clause_with_stats(
         }
         // The score the scorer tree gives the document, as one match.
         Clause::Extended(q) => {
+            if let crate::extended_query::ExtendedQuery::Interval(iq) = q.as_ref() {
+                let ctx = interval_context(
+                    fields, doc_in, pos_in, pay_in, live_docs, points, norms, global,
+                );
+                return crate::exec::intervals::explain_interval(&ctx, iq, 1.0, doc);
+            }
             if let Some(e) = crate::exec::join::explain_extended(
                 fields, doc_in, pos_in, pay_in, live_docs, points, norms, global, q, doc,
             )? {
@@ -659,6 +666,35 @@ pub fn explain_clause_with_stats(
                 crate::term_in_set_doc_ids(fields, doc_in, live_docs, query)?.contains(&doc);
             Ok(explain_flat_match(matched, clause, doc))
         }
+    }
+}
+
+/// The segment as a scorer tree sees it, for the weights whose explanation
+/// runs their own scorer.
+#[allow(clippy::too_many_arguments)]
+fn interval_context<'a>(
+    fields: &'a BlockTreeFields,
+    doc_in: Option<&'a DocInput<'a>>,
+    pos_in: Option<&'a PosInput<'a>>,
+    pay_in: Option<&'a PayInput<'a>>,
+    live_docs: Option<&'a FixedBitSet>,
+    points: Option<&'a PointsInput<'a>>,
+    norms: Option<&'a HashMap<String, FieldNorms<'a>>>,
+    global: Option<&'a GlobalStats>,
+) -> crate::exec::LeafContext<'a> {
+    crate::exec::LeafContext {
+        fields,
+        doc_in,
+        pos_in,
+        pay_in,
+        live_docs,
+        points,
+        norms,
+        global,
+        max_doc: None,
+        cache: None,
+        reader: None,
+        similarity: None,
     }
 }
 
@@ -1389,6 +1425,21 @@ fn explain_boost(
     norms: Option<&HashMap<String, FieldNorms<'_>>>,
     global: Option<&GlobalStats>,
 ) -> Result<Explanation> {
+    // An interval query's weight takes the boosts around it itself.
+    let mut boost = nested.boost;
+    let mut inner: &Clause = &nested.inner;
+    while let Clause::Boost(b) = inner {
+        boost *= b.boost;
+        inner = &b.inner;
+    }
+    if let Clause::Extended(e) = inner {
+        if let crate::extended_query::ExtendedQuery::Interval(iq) = e.as_ref() {
+            let ctx = interval_context(
+                fields, doc_in, pos_in, pay_in, live_docs, points, norms, global,
+            );
+            return crate::exec::intervals::explain_interval(&ctx, iq, boost, doc);
+        }
+    }
     // A function query's weight takes the boost itself.
     if let Some(e) = crate::exec::function::explain_boosted(
         fields,

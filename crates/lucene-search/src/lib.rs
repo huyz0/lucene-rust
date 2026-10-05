@@ -217,6 +217,7 @@ pub mod function;
 pub mod grouping;
 pub mod highlighter;
 pub mod index_searcher;
+pub mod intervals;
 pub mod join;
 pub mod knn_collectors;
 pub mod leaf_collector;
