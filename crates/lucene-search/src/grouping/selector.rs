@@ -11,8 +11,7 @@ use std::sync::Arc;
 use super::{FxHashMap, GroupSelector, GroupState, SearchGroup};
 use crate::function::{BoxValues, FunctionContext, MutableValue, TopLevel, ValueLeaf, ValueSource};
 use crate::multi_segment::OpenSegment;
-use crate::reader::doc_values as dv;
-use crate::reader::SortedDocValues;
+use crate::reader::doc_values::SortedOrds;
 use crate::values_source::{
     BoxDoubleValues, BoxLongValues, DoubleValues, DoubleValuesSource, LongValuesSource,
     ValuesContext,
@@ -49,7 +48,8 @@ pub struct TermGroupSelector<'a> {
     values: Vec<Vec<u8>>,
     ids: FxHashMap<Vec<u8>, usize>,
     ords_to_group_ids: OrdTable,
-    doc_values: Option<Box<dyn SortedDocValues + 'a>>,
+    /// The segment's group field: ordinals read straight off its column.
+    doc_values: Option<SortedOrds<'a>>,
     group_id: Option<usize>,
     second_pass: bool,
     include_empty: bool,
@@ -128,7 +128,8 @@ impl<'a> GroupSelector<'a> for TermGroupSelector<'a> {
     type Value = Vec<u8>;
 
     fn set_next_reader(&mut self, _ord: usize, leaf: &OpenSegment<'a>) -> Result<()> {
-        let mut values = dv::get_sorted(leaf_reader(leaf)?, &self.field)?;
+        let mut ords = SortedOrds::open(leaf_reader(leaf)?, &self.field)?;
+        let values = ords.dict();
         let count = values.value_count();
         self.ords_to_group_ids.reset(count);
         self.misses = 0;
@@ -146,23 +147,22 @@ impl<'a> GroupSelector<'a> for TermGroupSelector<'a> {
                 }
             }
         }
-        self.doc_values = Some(values);
+        self.doc_values = Some(ords);
         Ok(())
     }
 
     fn advance_to(&mut self, doc: i32, _score: f32) -> Result<GroupState> {
-        let Some(values) = self.doc_values.as_mut() else {
+        let Some(ords) = self.doc_values.as_mut() else {
             return Ok(GroupState::Skip);
         };
-        if !values.advance_exact(doc)? {
+        let Some(ord) = ords.ord(doc)? else {
             self.group_id = None;
             return Ok(if self.include_empty {
                 GroupState::Accept
             } else {
                 GroupState::Skip
             });
-        }
-        let ord = values.ord_value();
+        };
         if let Some(id) = self.ords_to_group_ids.get(ord) {
             self.group_id = Some(id);
             return Ok(GroupState::Accept);
@@ -170,6 +170,7 @@ impl<'a> GroupSelector<'a> for TermGroupSelector<'a> {
         if self.second_pass {
             return Ok(GroupState::Skip);
         }
+        let values = ords.dict();
         // Many documents with unmapped ordinals (a collector that sees every
         // document, `AllGroupsCollector`): map every known term at once by
         // walking the dictionary forward, rather than one random lookup
@@ -207,6 +208,12 @@ impl<'a> GroupSelector<'a> for TermGroupSelector<'a> {
 
     fn current_value(&self) -> Option<&Vec<u8>> {
         self.group_id.and_then(|i| self.values.get(i))
+    }
+
+    /// The term's index among the terms seen (or, after `set_groups`, the
+    /// groups'): one per distinct term.
+    fn current_id(&self) -> Option<usize> {
+        self.group_id
     }
 
     fn set_groups(&mut self, groups: &[SearchGroup<Vec<u8>>]) {

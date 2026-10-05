@@ -13,8 +13,8 @@ use lucene_util::fixed_bit_set::FixedBitSet;
 use super::sort::{compare_all, compare_values, GroupSortValue, LeafKeys, Sort};
 use super::{
     non_nan_max, CollectedSearchGroup, GroupDocs, GroupIndex, GroupReducer, GroupScoreDoc,
-    GroupSelector, GroupState, GroupingCollectorManager, ScoreMergeMode, SearchGroup, TopGroups,
-    TreeSet,
+    GroupSelector, GroupState, GroupingCollectorManager, IdIndex, ScoreMergeMode, SearchGroup,
+    TopGroups, TreeSet,
 };
 use crate::collector::{ScoreMode, TotalHits, TotalHitsRelation};
 use crate::join::query_time::java_max_f32;
@@ -63,6 +63,10 @@ pub struct FirstPassGroupingCollector<'a, S: GroupSelector<'a>> {
     spare_slot: usize,
     keys: Option<LeafKeys<'a>>,
     scratch: Vec<GroupSortValue>,
+    /// `group_map` by selector id, and each group's id: a document finds
+    /// its group by index rather than by hashing its value.
+    by_id: IdIndex,
+    group_ids: Vec<Option<usize>>,
 }
 
 impl<'a, S: GroupSelector<'a>> FirstPassGroupingCollector<'a, S> {
@@ -99,7 +103,23 @@ impl<'a, S: GroupSelector<'a>> FirstPassGroupingCollector<'a, S> {
             spare_slot: top_n_groups,
             keys: None,
             scratch: Vec::new(),
+            by_id: IdIndex::default(),
+            group_ids: Vec::new(),
         })
+    }
+
+    /// `groupMap.get(groupSelector.currentValue())`.
+    #[inline]
+    fn current_group(&mut self) -> Option<usize> {
+        let Some(id) = self.selector.current_id() else {
+            return self.group_map.get(self.selector.current_value());
+        };
+        if let Some(g) = self.by_id.get(id) {
+            return Some(g);
+        }
+        let g = self.group_map.get(self.selector.current_value())?;
+        self.by_id.set(id, g);
+        Some(g)
     }
 
     /// `getGroupSelector()`.
@@ -183,14 +203,16 @@ impl<'a, S: GroupSelector<'a>> FirstPassGroupingCollector<'a, S> {
         if self.ignore_docs_without_group_field && state == GroupState::Skip {
             return Ok(());
         }
-        match self.group_map.get(self.selector.current_value()) {
+        match self.current_group() {
             None => {
+                let keys = self.keys.as_mut().ok_or_else(no_leaf)?;
                 keys.values_into(&self.sort, doc, score, values)?;
                 self.collect_new_group(doc, values);
             }
             Some(g) => {
                 // `collectExistingGroup`: the document must beat the group's
                 // best so far.
+                let keys = self.keys.as_mut().ok_or_else(no_leaf)?;
                 let slot = &self.slots[self.groups[g].comparator_slot];
                 if keys.compare_doc(&self.sort, &self.reversed, slot, doc, score)?
                     == Ordering::Greater
@@ -216,6 +238,11 @@ impl<'a, S: GroupSelector<'a>> FirstPassGroupingCollector<'a, S> {
                 comparator_slot: slot,
             });
             self.group_map.insert(value, g);
+            let id = self.selector.current_id();
+            if let Some(id) = id {
+                self.by_id.set(id, g);
+            }
+            self.group_ids.push(id);
             if self.is_group_map_full() {
                 self.build_sorted_set();
                 if let Some(last) = self.ordered.as_ref().and_then(TreeSet::last) {
@@ -234,6 +261,14 @@ impl<'a, S: GroupSelector<'a>> FirstPassGroupingCollector<'a, S> {
         };
         self.group_map
             .remove(self.groups[bottom].group_value.as_ref());
+        if let Some(old) = self.group_ids[bottom] {
+            self.by_id.forget(old);
+        }
+        let id = self.selector.current_id();
+        if let Some(id) = id {
+            self.by_id.set(id, bottom);
+        }
+        self.group_ids[bottom] = id;
         let value = self.selector.copy_value();
         self.groups[bottom].group_value = value.clone();
         self.groups[bottom].top_doc = self.doc_base.saturating_add(doc);
@@ -519,8 +554,9 @@ where
             return Ok(());
         }
         self.total_grouped_hit_count = self.total_grouped_hit_count.wrapping_add(1);
+        let id = self.selector.current_id();
         self.reducer
-            .collect(self.selector.current_value(), doc, score)
+            .collect_with_id(id, self.selector.current_value(), doc, score)
     }
 }
 
@@ -528,6 +564,8 @@ where
 /// `newCollector()` (here `new_collector`), each entering every segment.
 pub struct CollectorsReducer<V, C, F> {
     groups: GroupIndex<V>,
+    /// `groups` by selector id, as ids show up.
+    by_id: IdIndex,
     collectors: Vec<C>,
     new_collector: F,
     needs_scores: bool,
@@ -539,6 +577,7 @@ impl<V: Eq + Hash, C, F: Fn() -> C> CollectorsReducer<V, C, F> {
     pub fn new(new_collector: F, needs_scores: bool) -> Self {
         Self {
             groups: GroupIndex::default(),
+            by_id: IdIndex::default(),
             collectors: Vec::new(),
             new_collector,
             needs_scores,
@@ -558,6 +597,7 @@ where
     F: Fn() -> C,
 {
     fn set_groups(&mut self, groups: &[SearchGroup<V>]) {
+        self.by_id = IdIndex::default();
         for g in groups {
             // `groups.put(value, new GroupCollector(newCollector()))`: a
             // repeated value replaces its collector.
@@ -586,6 +626,27 @@ where
 
     fn collect(&mut self, value: Option<&V>, doc: i32, score: f32) -> Result<()> {
         let i = self.groups.get(value).ok_or_else(not_given)?;
+        self.collectors[i].collect(doc, score)
+    }
+
+    fn collect_with_id(
+        &mut self,
+        id: Option<usize>,
+        value: Option<&V>,
+        doc: i32,
+        score: f32,
+    ) -> Result<()> {
+        let Some(id) = id else {
+            return self.collect(value, doc, score);
+        };
+        let i = match self.by_id.get(id) {
+            Some(i) => i,
+            None => {
+                let i = self.groups.get(value).ok_or_else(not_given)?;
+                self.by_id.set(id, i);
+                i
+            }
+        };
         self.collectors[i].collect(doc, score)
     }
 }
