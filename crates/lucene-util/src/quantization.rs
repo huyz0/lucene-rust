@@ -1443,6 +1443,41 @@ mod tests {
         );
     }
 
+    /// Past their sample size `fromVectors` and `fromVectorsAutoInterval`
+    /// read a reservoir sample: over copies of one vector every sample is
+    /// that vector, so they find what the same number of copies read whole
+    /// gives. Non-finite values leave the interval search no quantiles.
+    #[test]
+    fn sampled_quantiles_over_copies_of_one_vector_are_the_whole_sets() {
+        let v: Vec<f32> = (0..16).map(|i| (i as f32 - 7.5) / 3.0).collect();
+        let copies = |n: usize| vec![v.clone(); n];
+        let (whole, many) = (copies(100), copies(1500));
+        let read = |vs: &[Vec<f32>]| {
+            ScalarQuantizer::from_vectors_with_sample_size(vs, 0.95, vs.len(), 7, 100).unwrap()
+        };
+        assert_eq!(read(&many), read(&whole));
+        let auto = |vs: &[Vec<f32>]| {
+            ScalarQuantizer::from_vectors_auto_interval(
+                vs,
+                VectorSimilarityFunction::DotProduct,
+                vs.len(),
+                7,
+            )
+            .unwrap()
+        };
+        assert_eq!(auto(&many), auto(&copies(1000)));
+        let bad = vec![vec![f32::INFINITY; 16]; 30];
+        assert_eq!(
+            ScalarQuantizer::from_vectors_auto_interval(
+                &bad,
+                VectorSimilarityFunction::DotProduct,
+                bad.len(),
+                7,
+            ),
+            Err(QuantizerError::NonFiniteQuantiles)
+        );
+    }
+
     #[test]
     fn quantile_selection() {
         let mut two = [3.0f32, 1.0];
