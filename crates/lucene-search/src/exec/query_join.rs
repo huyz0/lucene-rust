@@ -26,6 +26,7 @@ use crate::join::query_time::{
     bit, global_ord, segment_map, CollectedOrdinals, GlobalOrdinalsQuery,
     GlobalOrdinalsWithScoreQuery, PointInSetIncludingScoreQuery, TermsIncludingScoreQuery,
 };
+use crate::reader::doc_values::SortedOrds;
 use crate::reader::SortedDocValues;
 use crate::{Error, Result};
 
@@ -366,9 +367,65 @@ fn translate_up_front(approximation: &BoxScorer<'_>, values: &dyn SortedDocValue
 /// two-phase over the to-query's documents.
 struct GlobalOrdinalScorer<'a> {
     approximation: BoxScorer<'a>,
-    values: Box<dyn SortedDocValues + 'a>,
+    /// The join field, its ordinals read straight off the column.
+    values: SortedOrds<'a>,
     accept: OrdinalMatch,
     score: f32,
+    /// A batch of the approximation's documents.
+    buf: crate::bulk_scorer::DocScores,
+}
+
+impl GlobalOrdinalScorer<'_> {
+    /// `matches()` for `doc`, the approximation's document: whether its
+    /// join ordinal is accepted, the score set when it is.
+    #[inline]
+    fn matches_doc(&mut self, doc: i32) -> Result<bool> {
+        let Some(seg_ord) = self.values.ord(doc)? else {
+            return Ok(false);
+        };
+        let ord = i64::from(seg_ord);
+        Ok(match &self.accept {
+            OrdinalMatch::Found(found, score) => {
+                self.score = *score;
+                bit(found, ord)
+            }
+            OrdinalMatch::Scored(found, scores, boost) => {
+                if bit(found, ord) {
+                    let s = usize::try_from(ord)
+                        .ok()
+                        .and_then(|o| scores.get(o))
+                        .copied()
+                        .unwrap_or(0.0);
+                    self.score = s * boost;
+                    true
+                } else {
+                    false
+                }
+            }
+            OrdinalMatch::PerDocument {
+                map,
+                ord: seg,
+                global,
+            } => {
+                let map = segment_map(map.as_deref(), *seg)?;
+                let g = global_ord(map, seg_ord)?;
+                match global {
+                    GlobalAccept::Found(found, score) => {
+                        self.score = *score;
+                        bit(found, g)
+                    }
+                    GlobalAccept::Collected(c, boost) => {
+                        if c.matches(g) {
+                            self.score = c.score(g) * boost;
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                }
+            }
+        })
+    }
 }
 
 /// The segment's ordinals that `accept` takes (and, with `score`, their
@@ -421,51 +478,7 @@ impl Scorer for GlobalOrdinalScorer<'_> {
     }
     fn matches(&mut self) -> Result<bool> {
         let doc = self.approximation.doc_id();
-        if !self.values.advance_exact(doc)? {
-            return Ok(false);
-        }
-        let ord = i64::from(self.values.ord_value());
-        Ok(match &self.accept {
-            OrdinalMatch::Found(found, score) => {
-                self.score = *score;
-                bit(found, ord)
-            }
-            OrdinalMatch::Scored(found, scores, boost) => {
-                if bit(found, ord) {
-                    let s = usize::try_from(ord)
-                        .ok()
-                        .and_then(|o| scores.get(o))
-                        .copied()
-                        .unwrap_or(0.0);
-                    self.score = s * boost;
-                    true
-                } else {
-                    false
-                }
-            }
-            OrdinalMatch::PerDocument {
-                map,
-                ord: seg,
-                global,
-            } => {
-                let map = segment_map(map.as_deref(), *seg)?;
-                let g = global_ord(map, self.values.ord_value())?;
-                match global {
-                    GlobalAccept::Found(found, score) => {
-                        self.score = *score;
-                        bit(found, g)
-                    }
-                    GlobalAccept::Collected(c, boost) => {
-                        if c.matches(g) {
-                            self.score = c.score(g) * boost;
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                }
-            }
-        })
+        self.matches_doc(doc)
     }
     fn match_cost(&self) -> f32 {
         100.0
@@ -475,6 +488,48 @@ impl Scorer for GlobalOrdinalScorer<'_> {
     }
     fn max_score(&mut self, _up_to: i32) -> Result<f32> {
         Ok(f32::INFINITY)
+    }
+    /// The approximation's documents a batch at a time (its exact
+    /// iterator's, as `next_doc` steps), each confirmed by its ordinal;
+    /// then, as the document-at-a-time default does, on to the next match.
+    fn next_docs_and_scores(
+        &mut self,
+        up_to: i32,
+        live_docs: Option<&FixedBitSet>,
+        out: &mut crate::bulk_scorer::DocScores,
+    ) -> Result<()> {
+        if !self.approximation.constant_scores() {
+            // Its batches would score documents nobody asked it to.
+            return super::docs_and_scores_one_by_one(self, up_to, live_docs, out);
+        }
+        out.docs.clear();
+        out.scores.clear();
+        let mut buf = std::mem::take(&mut self.buf);
+        loop {
+            self.approximation
+                .next_docs_and_scores(up_to, live_docs, &mut buf)?;
+            if buf.docs.is_empty() {
+                break;
+            }
+            for &doc in &buf.docs {
+                if self.matches_doc(doc)? {
+                    out.docs.push(doc);
+                    out.scores.push(self.score);
+                }
+            }
+            if !out.docs.is_empty() {
+                break;
+            }
+        }
+        self.buf = buf;
+        let mut doc = self.approximation.doc_id();
+        while doc != NO_MORE_DOCS && !self.matches_doc(doc)? {
+            doc = exact_next(self.approximation.as_mut())?;
+        }
+        Ok(())
+    }
+    fn prefers_batches(&self) -> bool {
+        self.approximation.constant_scores()
     }
 }
 
@@ -509,14 +564,14 @@ pub(crate) fn global_ordinals<'a>(
     let reader = ctx
         .reader
         .ok_or_else(|| Error::MissingSegmentReader("GlobalOrdinalsQuery".into()))?;
-    let values = crate::reader::doc_values::get_sorted(reader, &q.join_field)?;
+    let mut values = SortedOrds::open(reader, &q.join_field)?;
     let Some(approximation) = build::build(ctx, &q.to_query, 1.0, Mode::NoScores, false)? else {
         return Ok(None);
     };
     let ord = leaf_ord(ctx, &q.leaves)?;
-    let accept = if translate_up_front(&approximation, values.as_ref()) {
+    let accept = if translate_up_front(&approximation, values.dict()) {
         let found = segment_ordinals(
-            values.as_ref(),
+            values.dict(),
             q.ordinal_map.as_ref(),
             ord,
             |g| bit(&q.found_ords, g),
@@ -536,6 +591,7 @@ pub(crate) fn global_ordinals<'a>(
         values,
         accept,
         score: 0.0,
+        buf: Default::default(),
     });
     Ok(Some(Box::new(super::leaf::ConstantScorer::new(
         inner,
@@ -562,15 +618,16 @@ pub(crate) fn global_ordinals_with_score<'a>(
     let Some(values) = reader.sorted_doc_values(&q.join_field)? else {
         return Ok(None);
     };
+    let mut values = SortedOrds::with(values, reader, &q.join_field);
     let Some(approximation) = build::build(ctx, &q.to_query, 1.0, Mode::NoScores, false)? else {
         return Ok(None);
     };
     let ord = leaf_ord(ctx, &q.leaves)?;
     let c = &q.collected;
-    let accept = if translate_up_front(&approximation, values.as_ref()) {
+    let accept = if translate_up_front(&approximation, values.dict()) {
         let mut scores = Vec::new();
         let found = segment_ordinals(
-            values.as_ref(),
+            values.dict(),
             q.ordinal_map.as_ref(),
             ord,
             |g| c.matches(g),
@@ -590,6 +647,7 @@ pub(crate) fn global_ordinals_with_score<'a>(
         values,
         accept,
         score: 0.0,
+        buf: Default::default(),
     })))
 }
 

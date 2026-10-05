@@ -120,12 +120,14 @@ grouping. Each of them falls back to Lucene today.
   single merged tree walk (it walked the tree once per point). After: terms
   `None` 1.39x, `Avg` 1.08x, `Max`/`Min`/`Total` 0.99x-1.05x (inside the
   1.07x noise floor), multi-valued `Max` 1.21x, global ordinals `None` 1.42x,
-  `Avg` with min/max 1.13x, numeric `Max` 1.06x. Left below 1.0: global
-  ordinals `Max` 0.90x -- not constant-scored, so it walks all 100 000
-  to-documents as Java does, and its time is that two-phase walk (postings,
-  a per-document ordinal read through a boxed doc-values iterator, the
-  bulk loop), each piece Java's own -- and numeric `None` 0.90x-0.94x,
-  inside its 1.09x-1.17x noise floor (it was 0.02x). The T10.3-T10.4
+  `Avg` with min/max 1.13x, numeric `Max` 1.06x. Then (2026-10-05, the
+  same-machine A/B against the build before): `GlobalOrdinalsQuery`'s
+  scorer reads the join field's ordinals straight off the codec's column
+  (no boxed iterator per document) and confirms its approximation's
+  documents a batch at a time -- global ordinals `Max` 0.94x -> 1.21x-1.28x,
+  `Avg` with min/max 1.07x -> 1.39x-1.42x, `None` 1.41x; numeric `None`
+  1.10x-1.15x (it was 0.90x-0.94x, inside its noise floor), every other case
+  1.07x-1.62x. Nothing left below 1.0. The T10.3-T10.4
   review bounded the from side's memory -- `TermsCollector` marks ordinals in
   a per-segment bit set, `TermsWithScoreCollector` drains its pending
   `(ordinal, score)` pairs every 65 536 and keeps drained ordinals' ids for
@@ -163,14 +165,16 @@ grouping. Each of them falls back to Lucene today.
   (a keyword slot's term resolved to this segment's ordinal once); the
   group maps hashed with `FxHasher`. After: grouped facets 2.31x (single-
   valued) and 2.48x (multi-valued), all groups with group heads 2.30x,
-  distinct values 1.95x, cached 1.28x, long range 1.23x. Left below 1.0:
-  by relevance 0.92x, field-sorted (`n` descending, `s` within the group)
-  0.80x, and blocks 0.86x. Their time is the two passes' walk of every
-  matching document (about 80 000 per word), each reading the group
-  field's ordinal through a boxed doc-values iterator and comparing it
-  through the generic multi-key comparator -- per-document work Java's JIT
-  inlines monomorphically; the algorithms and the documents visited are
-  Lucene's.
+  distinct values 1.95x, cached 1.28x, long range 1.23x. Then (2026-10-05):
+  the group field's ordinals read straight off the codec's column
+  (`reader/doc_values.rs::SortedOrds`, the numeric sort key likewise), each
+  document's group found by the selector's term id in a table instead of
+  by hashing its bytes (`grouping::IdIndex`), and a one-key numeric group
+  sort compared without the generic multi-key loop. By relevance 1.00x ->
+  1.19x-1.23x, field-sorted 0.83x-0.92x -> 1.12x-1.16x, blocks 0.89x-0.90x ->
+  1.05x-1.07x (inside its 1.04x-1.07x noise floor), distinct values
+  2.22x-2.43x, cached 1.47x-1.55x, every case now at or above 1.0 (two
+  interleaved runs against the build before; noise floors 1.03x-1.22x).
 - **T10.5** — Function queries and value sources. **Ported**
   (`lucene-search/src/function`, `exec/function.rs`): every class of
   `lucene-queries`' `function`, `function.docvalues` and

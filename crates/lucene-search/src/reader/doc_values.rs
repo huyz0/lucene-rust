@@ -371,6 +371,105 @@ impl SortedNumericDocValues for SingletonSortedNumeric<'_> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Direct columns (stage 3)
+// ---------------------------------------------------------------------------
+
+/// A segment's `NUMERIC` field as the codec's column
+/// ([`NumericReader`]): the values [`get_numeric`]'s iterator reads, looked
+/// up without an iterator object (or a virtual call) in between. `None`
+/// when the segment has no such field (the iterator's empty values).
+///
+/// [`NumericReader`]: lucene_codecs::doc_values::NumericReader
+pub(crate) fn direct_numeric<'a>(
+    reader: &'a crate::directory_reader::SegmentReader,
+    field: &str,
+) -> Option<lucene_codecs::doc_values::NumericReader<'a>> {
+    let fi = reader.field_infos().field_by_name(field)?;
+    if fi.doc_values_type != DocValuesType::Numeric {
+        return None;
+    }
+    let (meta, data) = reader.doc_values_for_field(fi.number)?;
+    let entry = meta.numeric_entry(fi.number)?;
+    Some(lucene_codecs::doc_values::NumericReader::new(data, entry))
+}
+
+/// A `SORTED` field's per-document ordinals read straight from the codec's
+/// ordinal column, beside its [`get_sorted`] values for everything else
+/// (the dictionary): `SortedDocValues.advanceExact` + `ordValue` without a
+/// virtual call per document, over a segment's own field.
+pub(crate) struct SortedOrds<'a> {
+    direct: Option<lucene_codecs::doc_values::NumericReader<'a>>,
+    values: Box<dyn SortedDocValues + 'a>,
+}
+
+impl<'a> SortedOrds<'a> {
+    /// [`get_sorted`] of `reader`'s `field`, its ordinals read directly.
+    ///
+    /// # Errors
+    /// As [`get_sorted`].
+    pub(crate) fn open(
+        reader: &'a crate::directory_reader::SegmentReader,
+        field: &str,
+    ) -> Result<Self> {
+        Ok(Self::with(get_sorted(reader, field)?, reader, field))
+    }
+
+    /// `values` (the segment's [`get_sorted`] of `field`, opened by the
+    /// caller), its ordinals read directly.
+    pub(crate) fn with(
+        values: Box<dyn SortedDocValues + 'a>,
+        reader: &'a crate::directory_reader::SegmentReader,
+        field: &str,
+    ) -> Self {
+        let direct = reader
+            .field_infos()
+            .field_by_name(field)
+            .filter(|fi| fi.doc_values_type == DocValuesType::Sorted)
+            .and_then(|fi| {
+                let (meta, data) = reader.doc_values_for_field(fi.number)?;
+                let entry = meta.sorted_entry(fi.number)?;
+                Some(lucene_codecs::doc_values::NumericReader::new(
+                    data,
+                    &entry.ords,
+                ))
+            });
+        Self { direct, values }
+    }
+
+    /// `advanceExact(doc) ? ordValue() : none` (documents ascending).
+    ///
+    /// # Errors
+    /// Whatever reading the column reports; an ordinal past `i32`.
+    #[inline(always)]
+    pub(crate) fn ord(&mut self, doc: i32) -> Result<Option<i32>> {
+        match &mut self.direct {
+            Some(r) => r.value(doc)?.map(ordinal).transpose(),
+            None => Ok(if self.values.advance_exact(doc)? {
+                Some(self.values.ord_value())
+            } else {
+                None
+            }),
+        }
+    }
+
+    /// The values, for the dictionary (`lookupOrd`, `lookupTerm`,
+    /// `getValueCount`).
+    pub(crate) fn dict(&mut self) -> &mut (dyn SortedDocValues + 'a) {
+        self.values.as_mut()
+    }
+}
+
+/// A `SORTED` ordinal off the column as `ordValue()`'s `int`; one past it
+/// is corrupt.
+fn ordinal(o: i64) -> Result<i32> {
+    i32::try_from(o).map_err(|_| {
+        Error::from(lucene_store::Error::Corrupted(format!(
+            "sorted ordinal {o}"
+        )))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -396,6 +495,37 @@ mod tests {
         assert_eq!(SortedNumericDocValues::doc_value_count(&e), 0);
         assert_eq!(SortedDocValues::lookup_term(&mut e, b"x").unwrap(), -1);
         assert_eq!(SortedSetDocValues::lookup_term(&mut e, b"x").unwrap(), -1);
+    }
+
+    /// The ordinals read off the column are `advanceExact`/`ordValue`'s;
+    /// a field without `SORTED` values reads none (and no numeric column).
+    #[test]
+    fn sorted_ords_read_the_iterators_ordinals() {
+        let dir = lucene_store::FsDirectory::open(std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/terms_aggs_index"
+        )));
+        let reader = crate::directory_reader::DirectoryReader::open(&dir).unwrap();
+        for seg in reader.segment_readers() {
+            let mut ords = SortedOrds::open(seg, "sk").unwrap();
+            let mut values = get_sorted(seg, "sk").unwrap();
+            assert!(ords.direct.is_some());
+            for doc in 0..seg.max_doc {
+                let want = values
+                    .advance_exact(doc)
+                    .unwrap()
+                    .then(|| values.ord_value());
+                assert_eq!(ords.ord(doc).unwrap(), want, "doc {doc}");
+            }
+            let mut none = SortedOrds::open(seg, "no_such_field").unwrap();
+            assert!(none.direct.is_none());
+            assert_eq!(none.ord(0).unwrap(), None);
+            assert_eq!(none.dict().value_count(), 0);
+            assert!(direct_numeric(seg, "sk").is_none());
+            assert!(direct_numeric(seg, "no_such_field").is_none());
+        }
+        assert_eq!(ordinal(7).unwrap(), 7);
+        assert!(ordinal(i64::from(i32::MAX) + 1).is_err());
     }
 
     #[test]

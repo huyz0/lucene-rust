@@ -271,6 +271,7 @@ impl<'a> BlockGroupingCollector<'a> {
 
     /// Whether the document's values (read into `scratch`) beat the bottom
     /// slot's.
+    #[inline]
     fn beats_bottom(&mut self, doc: i32, score: f32) -> Result<bool> {
         let keys = self
             .keys

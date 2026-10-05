@@ -54,6 +54,8 @@ pub struct PerSegment<'c, 's, 'a, C: ?Sized> {
     at: Option<usize>,
     /// One past the current segment's last global document.
     end: i32,
+    /// The current segment's doc base.
+    base: i32,
     inner: &'c mut C,
     error: Option<Error>,
 }
@@ -79,6 +81,7 @@ impl<'c, 's, 'a, C: SegmentCollector<'a> + ?Sized> PerSegment<'c, 's, 'a, C> {
             order,
             at: None,
             end: i32::MIN,
+            base: 0,
             inner,
             error: None,
         }
@@ -102,11 +105,22 @@ impl<'c, 's, 'a, C: SegmentCollector<'a> + ?Sized> PerSegment<'c, 's, 'a, C> {
             .or(seg.reader.map(|r| r.max_doc))
             .ok_or_else(|| Error::MissingSegmentReader("a leaf collector".into()))?;
         self.end = seg.doc_base.saturating_add(max_doc);
+        self.base = seg.doc_base;
         self.inner.set_next_reader(i, seg)?;
         Ok(true)
     }
 
+    #[inline]
     fn collect_global(&mut self, doc: i32, score: f32) -> Result<()> {
+        if self.at.is_none() || doc >= self.end {
+            self.enter(doc)?;
+        }
+        self.inner.collect(doc.saturating_sub(self.base), score)
+    }
+
+    /// Moves on to the segment holding global `doc`.
+    #[inline(never)]
+    fn enter(&mut self, doc: i32) -> Result<()> {
         while self.at.is_none() || doc >= self.end {
             if !self.advance()? {
                 return Err(Error::IllegalArgument(format!(
@@ -114,11 +128,7 @@ impl<'c, 's, 'a, C: SegmentCollector<'a> + ?Sized> PerSegment<'c, 's, 'a, C> {
                 )));
             }
         }
-        let base = self
-            .at
-            .and_then(|a| self.order.get(a))
-            .map_or(0, |&i| self.segments[i].doc_base);
-        self.inner.collect(doc.saturating_sub(base), score)
+        Ok(())
     }
 
     /// Visits every segment the search did not reach (entering and

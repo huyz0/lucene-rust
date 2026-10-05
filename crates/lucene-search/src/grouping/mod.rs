@@ -109,6 +109,13 @@ pub trait GroupSelector<'a> {
     fn advance_to(&mut self, doc: i32, score: f32) -> Result<GroupState>;
     /// `currentValue()`.
     fn current_value(&self) -> Option<&Self::Value>;
+    /// A small id of [`Self::current_value`], one per distinct value and
+    /// the same for the selector's life, for a collector to find the
+    /// value's group by index instead of hashing the value per document;
+    /// `None` (the default) when the selector has no such id or no value.
+    fn current_id(&self) -> Option<usize> {
+        None
+    }
     /// `copyValue()`.
     fn copy_value(&self) -> Option<Self::Value> {
         self.current_value().cloned()
@@ -248,6 +255,50 @@ pub trait GroupReducer<'a, V> {
     /// `collect(value, doc)`: segment document `doc` (scoring `score`) of
     /// the group `value`.
     fn collect(&mut self, value: Option<&V>, doc: i32, score: f32) -> Result<()>;
+    /// [`Self::collect`] with the selector's [id](GroupSelector::current_id)
+    /// of `value`, which a reducer may key its groups by.
+    fn collect_with_id(
+        &mut self,
+        _id: Option<usize>,
+        value: Option<&V>,
+        doc: i32,
+        score: f32,
+    ) -> Result<()> {
+        self.collect(value, doc, score)
+    }
+}
+
+/// A group index by selector id ([`GroupSelector::current_id`]), filled
+/// from the value map as ids show up: `NONE` for an id not known yet.
+#[derive(Debug, Default)]
+pub(crate) struct IdIndex(Vec<u32>);
+
+impl IdIndex {
+    const NONE: u32 = u32::MAX;
+
+    #[inline]
+    pub(crate) fn get(&self, id: usize) -> Option<usize> {
+        self.0
+            .get(id)
+            .filter(|&&g| g != Self::NONE)
+            .and_then(|&g| usize::try_from(g).ok())
+    }
+
+    pub(crate) fn set(&mut self, id: usize, group: usize) {
+        let Ok(g) = u32::try_from(group) else {
+            return;
+        };
+        if id >= self.0.len() {
+            self.0.resize(id.saturating_add(1), Self::NONE);
+        }
+        self.0[id] = g;
+    }
+
+    pub(crate) fn forget(&mut self, id: usize) {
+        if let Some(g) = self.0.get_mut(id) {
+            *g = Self::NONE;
+        }
+    }
 }
 
 /// `CollectorManager<C, T>` for a [`SegmentCollector`]: one collector per
