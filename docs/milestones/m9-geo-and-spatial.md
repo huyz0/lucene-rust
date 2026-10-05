@@ -9,7 +9,7 @@
 | **Effort** | L |
 | **Depends on** | [M7](m7-core-complete.md) (`document` fields, multi-dimension BKD writing) |
 | **Unblocks** | native `geo_distance`, `geo_bounding_box`, `geo_shape`, geo sorting |
-| **Status** | delivered 2026-10-03, all four criteria met (the real-world Tessellator corpus 2026-10-03): T9.1-T9.6 done. Performance caveats closed 2026-10-03: spatial-extras RPT intersects and heatmaps 1.17x-1.24x (quad cells as values, `docs/parity.md`); the geo-filtered `terms` aggregation 1.30x query phase / 1.03x REST (the plugin's `terminated_early` replay, T9.6 benchmark). Left, measured: a `terms` aggregation behind a *dense* non-geo filter, 0.81-0.98x (T9.6 benchmark) |
+| **Status** | delivered 2026-10-03, all four criteria met (the real-world Tessellator corpus 2026-10-03): T9.1-T9.6 done. Performance caveats closed 2026-10-03: spatial-extras RPT intersects and heatmaps 1.17x-1.24x (quad cells as values, `docs/parity.md`); the geo-filtered `terms` aggregation 1.30x query phase / 1.03x REST (the plugin's `terminated_early` replay, T9.6 benchmark). A `terms` aggregation behind a *dense* non-geo filter, 0.81-0.98x in the T9.6 benchmark, closed 2026-10-05 in process: 1.41x-2.97x (`scripts/bench-micro.sh --bench aggs`, below) |
 
 ---
 
@@ -243,7 +243,19 @@ native pass collects the matches into a document list, marks them in a bit
 set and streams the ordinal column against it (three passes; the node's
 profile puts 11% of its CPU in the first), where OpenSearch's collector
 counts each match's ordinal in one; the slices there pass 10,000 hits, so
-Lucene's weight is still asked (cheap for a term or a range). Over REST round trips (`REST=1`): median 1.06x; the rows
+Lucene's weight is still asked (cheap for a term or a range). *Closed 2026-10-05,
+in process* (`scripts/bench-micro.sh --bench aggs`: `AggsMicro.java`, the
+`DenseGlobalOrds` collect loop and `buildAggregations` over Lucene, against
+`micro_aggs.rs`, the native `aggregate_sliced_counting`; one segment of the
+benchmark corpus, a frequent and a mid-frequency term and a 70% range, `keyword`
+and `cat`): the native pass now marks the matches as it collects them (a
+constant-scored bit set -- a points range, a cached clause -- copied a word
+at a time; a postings batch's bits gathered in a register), and counts the
+ordinal column a 1,024-document window at a time into per-segment counts by
+segment ordinal (a small dictionary's spread over four counter lanes),
+mapped to global ordinals once per segment. Before 0.35x-0.97x, after
+1.41x-2.97x (pinned, three interleaved repetitions, noise floor 1.10x). The
+REST benchmark was not re-run. Over REST round trips (`REST=1`): median 1.06x; the rows
 under 1.0 are cheap `geo_shape` queries that both engines answer from
 their query caches (OpenSearch wraps `geo_shape` in a `ConstantScoreQuery`),
 where the response is ~2 ms and the query phase 40-120 us: there the native

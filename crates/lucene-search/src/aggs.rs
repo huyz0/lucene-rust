@@ -742,29 +742,41 @@ fn slice_states(
         // The matches: every live document for a match-all (read straight
         // down each column below), else the scorer's, collected once.
         let live: Option<&FixedBitSet> = seg.live_docs;
-        let matched = match scoring {
+        let read = match scoring {
             Some((m, global)) => {
                 let scored = exec::LeafContext {
                     norms: m.norms.get(i).copied().flatten(),
                     global: Some(global),
                     ..ctx
                 };
-                segment_matches_scoring(&scored, query, live, m.min, &mut docs_buf)?
+                let Some(docs) =
+                    segment_matches_scoring(&scored, query, live, m.min, &mut docs_buf)?
+                else {
+                    seen.push((i, 0));
+                    continue;
+                };
+                let count = docs.map_or(0, <[i32]>::len);
+                seen.push((i, u64::try_from(count).unwrap_or(u64::MAX)));
+                column_read(docs, live, reader.max_doc, &mut words)
             }
-            None => segment_matches(&ctx, query, &clause, live, &mut docs_buf)?,
+            None => {
+                let Some((read, count)) = segment_match_read(
+                    &ctx,
+                    query,
+                    &clause,
+                    live,
+                    reader.max_doc,
+                    &mut words,
+                    &mut docs_buf,
+                )?
+                else {
+                    seen.push((i, 0));
+                    continue;
+                };
+                seen.push((i, count));
+                read
+            }
         };
-        let Some(docs) = matched else {
-            seen.push((i, 0));
-            continue;
-        };
-        let count = match docs {
-            Some(d) => d.len(),
-            None => live.map_or(usize::try_from(reader.max_doc).unwrap_or(0), |l| {
-                l.cardinality()
-            }),
-        };
-        seen.push((i, u64::try_from(count).unwrap_or(u64::MAX)));
-        let read = column_read(docs, live, reader.max_doc, &mut words);
         // Field by field: each state depends on its own column alone, read
         // in document order, so the order of the sums is Java's.
         for ((spec, state), &done) in specs.iter().zip(&mut states).zip(&precomputed) {
@@ -966,6 +978,143 @@ pub(crate) fn segment_matches<'b>(
     Ok(Some(Some(&buf[..])))
 }
 
+/// [`segment_matches`] read as [`column_read`] reads them, in one pass over
+/// the matches: the bulk scorer marks each match in the segment's bit set
+/// as it collects it (no list of the matches is built and walked again),
+/// and the matches are listed from the bits only when they are sparse
+/// enough to seek. The same documents, so the same reads, as
+/// `column_read(segment_matches(..))`; also the live match count. `None`
+/// when the query matches nothing in the segment.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn segment_match_read<'b>(
+    ctx: &exec::LeafContext<'_>,
+    query: &BooleanQuery,
+    clause: &Clause,
+    live: Option<&'b FixedBitSet>,
+    max_doc: i32,
+    words: &'b mut Vec<u64>,
+    docs: &'b mut Vec<i32>,
+) -> Result<Option<(ColumnRead<'b>, u64)>> {
+    let max = usize::try_from(max_doc).unwrap_or(0);
+    if matches_everything(clause) {
+        let count = live.map_or(max, FixedBitSet::cardinality);
+        return Ok(Some((
+            ColumnRead::Stream(Accept::Live(live)),
+            u64::try_from(count).unwrap_or(u64::MAX),
+        )));
+    }
+    struct Marks<'w>(&'w mut [u64]);
+    impl crate::collector::ScoringCollector for Marks<'_> {
+        #[inline]
+        fn collect(&mut self, doc_id: i32, _score: f32) {
+            let d = doc_id as u32 as usize;
+            if let Some(w) = self.0.get_mut(d >> 6) {
+                *w |= 1 << (d & 63);
+            }
+        }
+        fn score_mode(&self) -> crate::collector::ScoreMode {
+            crate::collector::ScoreMode::CompleteNoScores
+        }
+        /// No threshold: a batch is marked whole.
+        /// The batch's bits gathered in a register while its documents stay
+        /// in one word (ascending, they mostly do), each word stored once:
+        /// a store per document would wait on the previous one's.
+        fn collect_many(&mut self, docs: &[i32], _scores: &[f32], doc_base: i32) -> usize {
+            let mut at = usize::MAX;
+            let mut bits = 0u64;
+            for &d in docs {
+                let d = d.saturating_add(doc_base) as u32 as usize;
+                if d >> 6 != at {
+                    if let Some(w) = self.0.get_mut(at) {
+                        *w |= bits;
+                    }
+                    at = d >> 6;
+                    bits = 0;
+                }
+                bits |= 1 << (d & 63);
+            }
+            if let Some(w) = self.0.get_mut(at) {
+                *w |= bits;
+            }
+            docs.len()
+        }
+    }
+    let Some(mut bulk) = exec::bulk_boolean(ctx, query, 1.0, Mode::NoScores)? else {
+        return Ok(None);
+    };
+    words.clear();
+    words.resize(max.div_ceil(64), 0);
+    if !copy_constant_bits(&bulk, live, words) {
+        exec::score_segment(&mut bulk, Mode::NoScores, live, &mut Marks(words))?;
+    }
+    let count: u64 = words.iter().map(|w| u64::from(w.count_ones())).sum();
+    // As `column_read`: seek when the matches are at most a quarter of the
+    // segment.
+    if usize::try_from(count)
+        .unwrap_or(usize::MAX)
+        .saturating_mul(4)
+        <= max
+    {
+        docs.clear();
+        for (w, &word) in words.iter().enumerate() {
+            let mut bits = word;
+            while bits != 0 {
+                // ARITH: `w < max_doc / 64 + 1` and the bit `< 64`: a
+                // document below `max_doc`, an `i32`.
+                #[allow(clippy::arithmetic_side_effects)]
+                docs.push((w * 64) as i32 + bits.trailing_zeros() as i32);
+                bits &= bits - 1;
+            }
+        }
+        return Ok(Some((ColumnRead::Seek(docs), count)));
+    }
+    Ok(Some((ColumnRead::Stream(Accept::Marked(words)), count)))
+}
+
+/// The marks of a bulk scorer over a constant-scored bit set (a points range
+/// or a cached clause: what `DefaultBulkScorer` hands over as a
+/// `DocIdStream`) taken a word at a time -- the set's words from the
+/// scorer's document on, and-ed with the live ones -- instead of one
+/// collected document at a time. The same documents [`exec::score_segment`]
+/// would collect. `false` (nothing written) for any other bulk scorer.
+fn copy_constant_bits(
+    bulk: &exec::Bulk<'_>,
+    live: Option<&FixedBitSet>,
+    words: &mut [u64],
+) -> bool {
+    let exec::Bulk::Scorer(scorer, _) = bulk else {
+        return false;
+    };
+    if scorer.two_phase() {
+        return false;
+    }
+    let Some((set, _)) = scorer.constant_bits() else {
+        return false;
+    };
+    let exec::cache::CachedSet::Bits { bits, .. } = &*set else {
+        return false;
+    };
+    // The scorer's document (unpositioned: -1) is its first match; nothing
+    // before it is collected.
+    let from = usize::try_from(scorer.doc_id()).unwrap_or(0);
+    let live_words = live.map(FixedBitSet::words);
+    for (i, (w, &b)) in words.iter_mut().zip(bits.words()).enumerate() {
+        // A word past the live set's is no live document's.
+        let mut b = b & live_words.map_or(u64::MAX, |lw| lw.get(i).copied().unwrap_or(0));
+        // ARITH: `i < words.len()`, a word index of the segment.
+        #[allow(clippy::arithmetic_side_effects)]
+        if i << 6 < from {
+            b &= if (i + 1) << 6 <= from {
+                0
+            } else {
+                u64::MAX << (from & 63)
+            };
+        }
+        *w = b;
+    }
+    true
+}
+
 /// [`segment_matches`] behind `min_score`: the matches scoring at least
 /// `min`, the query scored in `COMPLETE` mode (never a match-all read straight
 /// down the columns).
@@ -1016,7 +1165,7 @@ pub(crate) enum Accept<'b> {
 impl Accept<'_> {
     /// Word `i` of the accepted documents' bits: documents `64 i..64 i + 64`.
     #[inline]
-    fn word(&self, i: usize) -> u64 {
+    pub(crate) fn word(&self, i: usize) -> u64 {
         match self {
             Accept::Live(None) => u64::MAX,
             Accept::Live(Some(l)) => l.words().get(i).copied().unwrap_or(0),
@@ -1099,6 +1248,134 @@ pub(crate) fn lone_clause(query: &BooleanQuery) -> Clause {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The one-pass match read marks what collecting the matches marks.**
+    /// A dense range over the terms fixture (deletions in three of its four
+    /// segments) is a constant-scored bit set, copied a word at a time;
+    /// with the scorer moved past its first documents only the rest are
+    /// copied; a term goes through the bulk scorer's batches.
+    #[test]
+    fn one_pass_match_reads_mark_what_collecting_marks() {
+        let dir = lucene_store::FsDirectory::open(std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/terms_aggs_index"
+        )));
+        let reader = crate::directory_reader::DirectoryReader::open(&dir).unwrap();
+        let mut opened = reader.open_segments().unwrap();
+        opened.open_points().unwrap();
+        let segments = opened.as_open_segments();
+        let filter = |c: Clause| BooleanQuery {
+            filter: vec![c],
+            ..Default::default()
+        };
+        let queries = [
+            filter(Clause::PointsRange(crate::query::PointsRangeQuery::new(
+                "r",
+                0,
+                i64::MAX,
+            ))),
+            filter(Clause::Term(crate::query::TermQuery::new(
+                "body",
+                b"w0".to_vec(),
+            ))),
+        ];
+        let mut copied = 0;
+        for seg in &segments {
+            let ctx = exec::LeafContext {
+                fields: seg.fields,
+                doc_in: seg.doc_in,
+                pos_in: seg.pos_in,
+                pay_in: seg.pay_in,
+                live_docs: seg.live_docs,
+                points: seg.points,
+                norms: None,
+                global: None,
+                max_doc: seg.max_doc,
+                cache: seg.cache,
+                reader: seg.reader,
+                similarity: None,
+            };
+            let max_doc = seg.reader.unwrap().max_doc;
+            for q in &queries {
+                let clause = lone_clause(q);
+                let (mut words, mut docs, mut buf, mut want_words) =
+                    (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+                let want = segment_matches(&ctx, q, &clause, seg.live_docs, &mut buf).unwrap();
+                let got = segment_match_read(
+                    &ctx,
+                    q,
+                    &clause,
+                    seg.live_docs,
+                    max_doc,
+                    &mut words,
+                    &mut docs,
+                )
+                .unwrap();
+                let (Some(want), Some((got, count))) = (want, got) else {
+                    panic!("{q:?} matches in every segment");
+                };
+                let want_docs: Vec<i32> = want.unwrap().to_vec();
+                assert_eq!(count, want_docs.len() as u64);
+                match (
+                    got,
+                    column_read(Some(&want_docs), seg.live_docs, max_doc, &mut want_words),
+                ) {
+                    (ColumnRead::Seek(g), ColumnRead::Seek(w)) => assert_eq!(g, w),
+                    (
+                        ColumnRead::Stream(Accept::Marked(g)),
+                        ColumnRead::Stream(Accept::Marked(w)),
+                    ) => {
+                        assert_eq!(g, w)
+                    }
+                    _ => panic!("{q:?}: different reads"),
+                }
+                // The bit set copied with its scorer moved on: only the
+                // documents from there are marked.
+                let mut bulk = exec::bulk_boolean(&ctx, q, 1.0, Mode::NoScores)
+                    .unwrap()
+                    .unwrap();
+                let exec::Bulk::Scorer(scorer, _) = &mut bulk else {
+                    continue;
+                };
+                let target = scorer.advance(70).unwrap();
+                let mut marks = vec![0u64; usize::try_from(max_doc).unwrap().div_ceil(64)];
+                if !copy_constant_bits(&bulk, seg.live_docs, &mut marks) {
+                    continue;
+                }
+                copied += 1;
+                for &d in &want_docs {
+                    let set = marks[d as usize >> 6] >> (d & 63) & 1 == 1;
+                    assert_eq!(set, d >= target, "doc {d}, scorer on {target}");
+                }
+                let marked: u32 = marks.iter().map(|w| w.count_ones()).sum();
+                assert_eq!(
+                    marked as usize,
+                    want_docs.iter().filter(|&&d| d >= target).count()
+                );
+            }
+        }
+        assert!(copied > 0, "no segment's range was a bit set");
+        // Any other bulk scorer is not copied.
+        let ctx_seg = &segments[0];
+        let ctx = exec::LeafContext {
+            fields: ctx_seg.fields,
+            doc_in: ctx_seg.doc_in,
+            pos_in: ctx_seg.pos_in,
+            pay_in: ctx_seg.pay_in,
+            live_docs: ctx_seg.live_docs,
+            points: ctx_seg.points,
+            norms: None,
+            global: None,
+            max_doc: ctx_seg.max_doc,
+            cache: ctx_seg.cache,
+            reader: ctx_seg.reader,
+            similarity: None,
+        };
+        let bulk = exec::bulk_boolean(&ctx, &queries[1], 1.0, Mode::NoScores)
+            .unwrap()
+            .unwrap();
+        assert!(!copy_constant_bits(&bulk, None, &mut [0u64; 4]));
+    }
 
     /// `NumericUtils.doubleToSortableLong`: how a `double` field stores `d`.
     fn enc(d: f64) -> i64 {
