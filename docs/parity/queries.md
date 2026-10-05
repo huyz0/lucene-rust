@@ -8,9 +8,10 @@ queries`). Intervals tests: `fixtures/src/GenIntervals.java` ->
 stop word's position holes, offsets, payloads and a pulsed singleton term:
 120 source specs, each with its `toString` and `minExtent`, five scoring
 variants (hits with score bits, five explanations each) and the `Matches`
-of every hit, 6 149 lines equal to Lucene's. Unit:
-`lucene-search/src/intervals/tests.rs`,
-`lucene-search/src/intervals/iterators/tests.rs`.
+of every hit and of each explained document, 6 538 lines equal to Lucene's.
+Unit: `lucene-search/src/intervals/tests.rs`,
+`lucene-search/src/intervals/iterators/tests.rs`,
+`lucene-search/src/intervals/matches/tests.rs`.
 
 | Java | Rust | Status |
 |---|---|---|

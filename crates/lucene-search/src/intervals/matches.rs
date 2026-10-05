@@ -1332,3 +1332,6 @@ pub(crate) fn interval_matches(
         }),
     )
 }
+
+#[cfg(test)]
+mod tests;
