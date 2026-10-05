@@ -125,11 +125,8 @@ pub(crate) fn encode(values: &[i64], bits_per_value: u32) -> Vec<u8> {
             let free = 8 - bit_off;
             let take = remaining.min(free);
             let shift_in_value = remaining - take;
-            let mask: u64 = if take == 64 {
-                u64::MAX
-            } else {
-                (1u64 << take) - 1
-            };
+            // `take <= free <= 8`, so the shift is in range.
+            let mask: u64 = (1u64 << take) - 1;
             let bits_val = ((v as u64) >> shift_in_value) & mask;
             out[byte_idx] |= (bits_val as u8) << (free - take);
             bit_pos += take as u64;
@@ -588,5 +585,64 @@ mod tests {
     #[test]
     fn encode_empty_values_produces_empty_output() {
         assert_eq!(encode(&[], 5), Vec::<u8>::new());
+    }
+
+    /// The writer's and iterator's bookkeeping as Java's: `ord()` from -1,
+    /// `getBitsPerValue`/`getFormat`/`size`; a value past a known count and a
+    /// read past the end are `EOFException`s; a width the format cannot hold,
+    /// or a count the input cannot fill, is refused before anything is read.
+    #[test]
+    fn writer_and_iterator_bookkeeping_and_refusals() {
+        use lucene_store::data_input::SliceInput;
+        for format in [Format::Packed, Format::PackedSingleBlock] {
+            let mut buf = Vec::new();
+            {
+                let mut w = PackedWriter::new(&mut buf, format, Some(5), 7, 0);
+                assert_eq!((w.bits_per_value(), w.format(), w.ord()), (7, format, -1));
+                for v in [1, 2, 3] {
+                    w.add(v).unwrap();
+                }
+                assert_eq!(w.ord(), 2);
+                w.finish().unwrap();
+                assert_eq!(w.ord(), 4, "finish pads the known count");
+            }
+            {
+                let mut full = Vec::new();
+                let mut w = PackedWriter::new(&mut full, format, Some(1), 7, 0);
+                w.add(1).unwrap();
+                assert!(matches!(w.add(2), Err(lucene_store::Error::Eof { .. })));
+            }
+            let mut input = SliceInput::new(&buf);
+            let mut it =
+                PackedReaderIterator::new(&mut input, format, VERSION_CURRENT, 5, 7, 0).unwrap();
+            assert_eq!((it.bits_per_value(), it.size(), it.ord()), (7, 5, -1));
+            let got: Vec<i64> = (0..5).map(|_| it.next_value().unwrap()).collect();
+            assert_eq!(got, [1, 2, 3, 0, 0]);
+            assert_eq!(it.ord(), 4);
+            assert!(matches!(
+                it.next_value(),
+                Err(lucene_store::Error::Eof { .. })
+            ));
+            // More values than the bytes hold.
+            let mut short = SliceInput::new(&buf);
+            assert!(matches!(
+                PackedReaderIterator::new(&mut short, format, VERSION_CURRENT, 5000, 7, 0),
+                Err(lucene_store::Error::Eof { .. })
+            ));
+        }
+        // `PACKED_SINGLE_BLOCK` holds no 64-bit (or 11-bit) values.
+        for bits in [11u32, 64] {
+            let mut input = SliceInput::new(&[0u8; 64]);
+            assert!(PackedReaderIterator::new(
+                &mut input,
+                Format::PackedSingleBlock,
+                VERSION_CURRENT,
+                1,
+                bits,
+                0
+            )
+            .is_err());
+            assert!(DirectPacked64SingleBlockReader::new(bits, 1, &[0u8; 64]).is_err());
+        }
     }
 }
