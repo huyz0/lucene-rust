@@ -44,7 +44,7 @@ ready.
   boundary paths (see `test-coverage`); at least one negative/corruption
   case; round-trip or cross-module consistency checks where two modules
   should agree (e.g. `segments_N`'s doc count vs the segment's own `.si`);
-  per-file line coverage ≥95% (`cargo llvm-cov --summary-only`).
+  per-file line coverage ≥95% (`scripts/coverage.sh -- --summary-only`).
 - **Docs**: the parity ledger (`docs/parity/<area>.md`) updated in the same
   change, as current facts rather than an appended history (see
   `parity-tracking`); module-level doc comments describe the wire format,
@@ -55,7 +55,7 @@ ready.
 ## Enforced by
 
 - `cargo fmt --all --check`, `cargo clippy --workspace -- -D warnings`,
-  `cargo llvm-cov --workspace --fail-under-lines 95` (see `git-workflow`,
+  `scripts/coverage.sh --workspace -- --fail-under-lines 95` (see `git-workflow`,
   `test-coverage`).
 - `python3 scripts/check-port-invariants.py` and the gate's rustdoc pass, both
   in `scripts/gate.sh` — see

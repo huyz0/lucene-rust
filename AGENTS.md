@@ -97,8 +97,8 @@ the hook, the container and this table cannot drift apart:
 | Port inventory (every `lucene-core` class has a status; `--milestone M7 --summary` shows what M7 still owes; `--module backward-codecs` the same for `lucene-backward-codecs`) | `python3 scripts/check-port-inventory.py` (and `--module backward-codecs`) |
 | Rustdoc link lints | `RUSTDOCFLAGS="-D warnings -A rustdoc::private_intra_doc_links" cargo doc --workspace --no-deps --document-private-items` |
 | Type-check the out-of-workspace benchmarks | `cargo check --manifest-path benchmarks/rust-runner/Cargo.toml --all-targets` |
-| Tests + coverage gate | `cargo llvm-cov --workspace --fail-under-lines 95` |
-| Coverage report, per file | `cargo llvm-cov --workspace --summary-only` |
+| Tests + coverage gate | `scripts/coverage.sh --workspace -- --fail-under-lines 95` (`cargo llvm-cov`, minus lucene-ffi's never-run cdylib -- see [`docs/mechanical-gates.md`](docs/mechanical-gates.md#coverage-objects)) |
+| Coverage report, per file | `scripts/coverage.sh --workspace -- --summary-only` |
 | `lucene-search`'s tests in release (bit-for-bit float fixtures under the profile the plugin ships) | `cargo test --release -p lucene-search` |
 | Regenerate Java fixtures | `scripts/gen-fixtures.sh --only <Gen…>` (a full run rewrites every index with fresh segment ids — see [`fixtures/README.md`](fixtures/README.md)) |
 | Check fixtures are still Java-produced | `scripts/gen-fixtures.sh --check` and `scripts/gen-bwc-fixtures.sh --check` |
@@ -139,7 +139,15 @@ C-ABI functions (`jvm_reader.rs`, `ffm_bridge.rs`), all unit-tested without a
 JVM, and the Java half is exercised by the plugin's `NativeSelfTest` and by
 `scripts/verify-opensearch.sh`. CI reports the per-file view in its job summary
 without failing on it, so the day one drops below 95% it is visible rather than
-enforced.
+enforced. Run coverage through `scripts/coverage.sh`, never bare `cargo
+llvm-cov`: lucene-ffi's cdylib is handed to `llvm-cov` as an object although no
+test loads it, and its zero-count copy of each `#[no_mangle]` function hid the
+executed one (lucene-ffi read 96.0% where it is 98.2%). The per-file view still
+under-reports a file whose lines are split between a crate's unit-test build
+and its integration-test build: `llvm-cov`'s summary takes each function's best
+single copy, not their union (`backward_codecs/postings.rs` reads 94.5%, its
+`--show-missing-lines` union 98.6%). Both are in
+[`docs/mechanical-gates.md`](docs/mechanical-gates.md#coverage-objects).
 
 When reading `cargo llvm-cov --summary-only` output, note that it prints three
 `Cover` columns — Regions, Functions, then **Lines**. Only the third is what
