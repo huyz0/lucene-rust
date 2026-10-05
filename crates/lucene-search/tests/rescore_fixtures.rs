@@ -32,6 +32,7 @@ use std::sync::Arc;
 use lucene_codecs::field_infos::VectorSimilarityFunction;
 use lucene_codecs::vectors::FlatVectorsReader;
 use lucene_search::directory_reader::DirectoryReader;
+use lucene_search::explain::Explanation;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::index_searcher::IndexSearcher;
 use lucene_search::query::{BooleanQuery, Clause, TermQuery};
@@ -487,6 +488,15 @@ fn values_sources_and_rescorers_match_real_lucene() {
         .unwrap();
         assert_eq!(got_hits(&got), want_hits(&k("hits")), "qr.{i}");
         assert_eq!(got.total_hits, fp.total_hits);
+        let r =
+            QueryRescorer::with_weight(GRAMMAR.query(&k("query")), k("weight").parse().unwrap());
+        let e = assert_explains(&r, &ctx, fp, &format!("qr.{i}"));
+        assert!(e.iter().all(|e| e.description
+            == "combined first and second pass score using QueryRescorer"
+            && matches!(
+                (e.details[1].matched, e.details[1].description.as_str()),
+                (true, "second pass score") | (false, "no second pass score")
+            )));
     }
 
     let combine: Arc<vs_combine::Combine> = Arc::new(|first: f32, present: bool, value: f64| {
@@ -507,9 +517,20 @@ fn values_sources_and_rescorers_match_real_lucene() {
             ),
             _ => (vs::from_query(q(0)), false),
         };
+        let described = format!(
+            "combined score from firstPass and DoubleValuesSource={} using \
+             DoubleValuesSourceRescorer",
+            source.describe()
+        );
         let r = DoubleValuesSourceRescorer::new(source, Arc::clone(&combine));
         let got = r.rescore(&ctx, fp, k("top_n").parse().unwrap()).unwrap();
         assert_hits(&format!("dvr.{i}"), &got, &k("hits"), tolerant);
+        let e = assert_explains(&r, &ctx, fp, &format!("dvr.{i}"));
+        assert!(e.iter().all(|e| e.description == described));
+        assert!(e.iter().all(|e| matches!(
+            (e.details[1].matched, e.details[1].description.as_str()),
+            (true, "value from DoubleValuesSource") | (false, "no value in DoubleValuesSource")
+        )));
     }
 
     for i in 0..count("late") {
@@ -527,6 +548,7 @@ fn values_sources_and_rescorers_match_real_lucene() {
         };
         let got = r.rescore(&ctx, fp, 15).unwrap();
         assert_hits(&format!("late.{i}"), &got, &k("hits"), true);
+        assert_explains(&r, &ctx, fp, &format!("late.{i}"));
     }
 
     for i in 0..count("sort") {
@@ -577,6 +599,35 @@ fn values_sources_and_rescorers_match_real_lucene() {
         }
         let plain = r.rescore(&ctx, fp, k("top_n").parse().unwrap()).unwrap();
         assert_eq!(plain.score_docs.len(), want.len());
+        // `explain`: scored 0, the first pass then one detail per key; a
+        // long key's value as the hit carries it.
+        for g in &got.hits {
+            let first = fp
+                .score_docs
+                .iter()
+                .find(|h| h.doc == g.fields.doc)
+                .unwrap();
+            let e = r
+                .explain(&ctx, &Explanation::match_(first.score, "fp"), g.fields.doc)
+                .unwrap();
+            assert_eq!(
+                (e.value, e.description.as_str()),
+                (0.0, "sort field values")
+            );
+            assert_eq!(e.details.len(), 1 + kinds.len(), "sort.{i}");
+            assert_eq!(e.details[0].description, "first pass score");
+            assert_eq!(e.details[0].details[0].description, "fp");
+            for (j, kind) in kinds.iter().enumerate() {
+                let d = &e.details[1 + j].description;
+                assert!(d.starts_with("sort field "), "sort.{i}: {d}");
+                if kind == "long" {
+                    assert!(
+                        d.ends_with(&format!(" value={}", g.fields.values[j])),
+                        "{d}"
+                    );
+                }
+            }
+        }
     }
 
     for i in 0..count("rtn") {
@@ -635,6 +686,119 @@ fn values_sources_and_rescorers_match_real_lucene() {
             "rtnb.{i} total"
         );
     }
+}
+
+/// `explain` for every first-pass hit gives the score `rescore` gives it
+/// (every hit rescored), over the first-pass explanation as its first
+/// detail. Returns the explanations.
+fn assert_explains(
+    r: &dyn Rescorer,
+    ctx: &ValuesContext<'_>,
+    fp: &TopDocs,
+    what: &str,
+) -> Vec<Explanation> {
+    let all = r.rescore(ctx, fp, usize::MAX).unwrap();
+    assert_eq!(all.score_docs.len(), fp.score_docs.len(), "{what}");
+    let first: HashMap<i32, f32> = fp.score_docs.iter().map(|h| (h.doc, h.score)).collect();
+    all.score_docs
+        .iter()
+        .map(|h| {
+            let e = r
+                .explain(ctx, &Explanation::match_(first[&h.doc], "fp"), h.doc)
+                .unwrap();
+            let doc = h.doc;
+            assert_eq!(e.value.to_bits(), h.score.to_bits(), "{what} doc {doc}");
+            assert_eq!(e.details.len(), 2, "{what} doc {doc}");
+            assert_eq!(e.details[0].description, "first pass score");
+            assert_eq!(e.details[0].value.to_bits(), first[&doc].to_bits());
+            assert_eq!(e.details[0].details[0].description, "fp");
+            e
+        })
+        .collect()
+}
+
+/// The rescorers' refusals: a first-pass document in no leaf of the
+/// searcher (`rescore` and `explain`: Java's `IllegalStateException` /
+/// `IllegalArgumentException` messages), and a sort key whose doc-values
+/// type cannot serve it; a key on a field the index lacks sorts as
+/// missing.
+#[test]
+fn rescorers_refuse_documents_and_keys_they_cannot_read() {
+    let dir = fixture("values_rescore_index");
+    let reader = DirectoryReader::open(&FsDirectory::open(&dir)).expect("open reader");
+    let opened = reader.open_segments().expect("open postings");
+    let segments = opened.as_open_segments();
+    let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = vec![None; segments.len()];
+    let searcher = IndexSearcher::new(&segments, &norms).unwrap();
+    let ctx = ValuesContext::new(&searcher);
+    let top = |docs: &[i32]| TopDocs {
+        total_hits: TotalHits {
+            value: docs.len() as u64,
+            relation: TotalHitsRelation::EqualTo,
+        },
+        score_docs: docs.iter().map(|&d| ShardScoreDoc::new(d, 1.0)).collect(),
+    };
+    let beyond: i32 = reader.segment_readers().iter().map(|r| r.max_doc).sum();
+    let fp = Explanation::match_(1.0, "fp");
+
+    let mut q = BooleanQuery::new();
+    q.should
+        .push(Clause::Term(TermQuery::new("body", b"w1".to_vec())));
+    let qr = QueryRescorer::with_weight(q, 2.0);
+    let msg = |r: lucene_search::Result<TopDocs>| r.expect_err("refused").to_string();
+    assert!(
+        msg(qr.rescore(&ctx, &top(&[0, beyond]), 10)).contains(&format!(
+            "hit docId={beyond} is not in any leaf of the searcher"
+        ))
+    );
+    let e = qr.explain(&ctx, &fp, beyond).expect_err("refused");
+    assert!(e.to_string().contains("is not in any leaf"), "{e}");
+    let dvr = DoubleValuesSourceRescorer::new(
+        vs::from_float_field("f"),
+        Arc::new(|first: f32, _: bool, _: f64| first),
+    );
+    let e = dvr.explain(&ctx, &fp, beyond).expect_err("refused");
+    assert!(
+        e.to_string().contains(&format!(
+            "docId={beyond} not found in any leaf in provided searcher"
+        )),
+        "{e}"
+    );
+    assert!(msg(dvr.rescore(&ctx, &top(&[beyond]), 10)).contains("is not in any leaf"));
+
+    // Keys their field's doc values cannot serve.
+    let sorted =
+        |sort: SortField| SortRescorer::new(vec![sort]).rescore_field_docs(&ctx, &top(&[0, 1]), 10);
+    for (what, sort) in [
+        ("keyword on NUMERIC", SortField::string("n", false)),
+        (
+            "numeric on SORTED",
+            SortField::numeric("s", SortType::Long, false),
+        ),
+        ("bytes on SORTED", SortField::string_val("s", false)),
+    ] {
+        assert!(sorted(sort).is_err(), "{what}");
+    }
+    let e = SortRescorer::new(vec![SortField::string("n", false)])
+        .explain(&ctx, &fp, 0)
+        .expect_err("refused");
+    assert!(e.to_string().contains('n'), "{e}");
+    // Fields the index lacks: every document missing.
+    let mut absent = SortField::numeric("nosuch", SortType::Long, false);
+    absent.missing = 7;
+    let got = sorted(absent).unwrap();
+    assert!(got.hits.iter().all(|h| h.fields.values == [7]));
+    for sort in [
+        SortField::string_val("nosuch", false),
+        SortField::string("nosuch", false),
+    ] {
+        let got = sorted(sort).unwrap();
+        assert!(got.hits.iter().all(|h| h.fields.terms == [None]));
+    }
+    let e = SortRescorer::new(vec![SortField::string("nosuch", false)])
+        .explain(&ctx, &fp, 0)
+        .unwrap();
+    assert_eq!(e.details[1].description, "sort field nosuch value=null");
 }
 
 mod vs_combine {

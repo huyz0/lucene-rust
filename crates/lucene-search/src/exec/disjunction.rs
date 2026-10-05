@@ -568,3 +568,61 @@ impl Scorer for DisjunctionScorer<'_> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::exec::leaf::DocList;
+
+    /// `topList()` from the heap (more members than a linear queue keeps)
+    /// names exactly the members on the top's document -- the ones a scan
+    /// finds -- as the top moves through the members' documents.
+    #[test]
+    fn a_heaped_queue_lists_every_member_on_the_top_document() {
+        // Twelve members, document lists overlapping in places.
+        let lists: Vec<Vec<i32>> = (0..12)
+            .map(|m| (0..40).filter(|d| (d + m) % (2 + m % 5) == 0).collect())
+            .collect();
+        let disis = || -> Vec<Disi<'static>> {
+            lists
+                .iter()
+                .map(|l| Disi::new(Box::new(DocList::new(l.clone(), Vec::new()))))
+                .collect()
+        };
+        let (mut heaped, mut scanned) = (disis(), disis());
+        let mut heap = DisiQueue::for_disjunction(lists.len());
+        assert!(!heap.linear);
+        for i in 0..heaped.len() {
+            heaped[i].doc = heaped[i].scorer.next_doc().unwrap();
+            scanned[i].doc = heaped[i].doc;
+            heap.push(&heaped, i);
+        }
+        let (mut got, mut steps) = (Vec::new(), 0);
+        while let Some(top) = heap.top_of(&heaped) {
+            let doc = heaped[top].doc;
+            if doc == NO_MORE_DOCS {
+                break;
+            }
+            heap.top_list(&heaped, &mut got);
+            got.sort_unstable();
+            let want: Vec<usize> = (0..scanned.len())
+                .filter(|&i| scanned[i].doc == doc)
+                .collect();
+            assert_eq!(got, want, "doc {doc}");
+            // Move every member on `doc` on, the top at a time, as
+            // `nextDoc` does.
+            let mut top = top;
+            while heaped[top].doc == doc {
+                heaped[top].doc = heaped[top].scorer.next_doc().unwrap();
+                scanned[top].doc = heaped[top].doc;
+                top = heap.update_top(&heaped);
+            }
+            steps += 1;
+        }
+        assert!(steps > 20, "{steps}");
+        // An empty queue lists nothing.
+        let empty = DisiQueue::for_disjunction(12);
+        empty.top_list(&heaped, &mut got);
+        assert!(got.is_empty());
+    }
+}
