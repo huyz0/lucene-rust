@@ -6357,6 +6357,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_wide_expansion_into_a_top_n_collector_keeps_the_first_documents() {
+        // 400 single-document terms into a collector that needs only `n`:
+        // more than the small k-way merge takes, so `cutoff_constant_score_union`
+        // keeps the lowest `n` documents under a shrinking cutoff -- the same
+        // documents, at the same flat 1.0, as collecting every match.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let q = BooleanQuery::new().with_must([Clause::Prefix(PrefixQuery::new("many", "term0"))]);
+        let mut all = ScoreVecCollector::default();
+        search_boolean_query_scored(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            &q,
+            None,
+            &mut all,
+        )
+        .unwrap();
+        let mut every: Vec<i32> = all.hits.iter().map(|h| h.0).collect();
+        every.sort_unstable();
+        assert_eq!(every.len(), 400, "term0000..term0399");
+        for n in [1, 5, 40] {
+            let mut top = collector::TopDocsCollector::new(n);
+            search_boolean_query_scored(
+                &fields,
+                doc_in.as_ref(),
+                None,
+                None,
+                None,
+                None,
+                &q,
+                None,
+                &mut top,
+            )
+            .unwrap();
+            let mut docs: Vec<i32> = top.top_docs().iter().map(|h| h.doc_id).collect();
+            docs.sort_unstable();
+            assert_eq!(docs, every[..n], "top {n}");
+            assert!(top.top_docs().iter().all(|h| h.score == 1.0));
+        }
+    }
+
     // ---- `MaxNonCompetitiveBoostAttribute`'s feedback loop (c40) --------
 
     /// The loop is a **pruning** channel, not a semantic one: whatever it

@@ -380,3 +380,94 @@ fn concurrent_count_termination_matches_real_lucene() {
         failures.join("\n")
     );
 }
+
+/// The shapes the recorded queries leave out. `count_until` reads
+/// `Weight.count` through a `ConstantScoreQuery`, a `BoostQuery` and a
+/// one-clause boolean as from the term they wrap, `MatchNoDocsQuery`'s as 0,
+/// and has none for a phrase; `cannot_reach` bounds the same wrappers by the
+/// term's `docFreq` and `MatchNoDocsQuery` by 0; `count_terminates` refuses a
+/// slice naming a segment the reader lacks, and behind `min_score` lets
+/// through only the documents scoring at least its minimum.
+#[test]
+fn counts_read_through_wrappers_and_refuse_unknown_slices() {
+    use lucene_search::query::{BoostQuery, ConstantScoreQuery, MatchNoDocsQuery};
+    let reader = DirectoryReader::open(&FsDirectory::open(fixture_dir())).expect("open reader");
+    let mut opened = reader.open_segments().expect("open postings");
+    opened.open_points().expect("open points");
+    let segments = opened.as_open_segments();
+    let one = |c: Clause| {
+        let mut q = BooleanQuery::new();
+        q.filter.push(c);
+        q
+    };
+    let term = Clause::Term(TermQuery::new("body", b"w0".to_vec()));
+    let plain = one(term.clone());
+    let cut = terminate_after(&segments, &plain, u64::MAX).unwrap();
+    let count = count_until(&segments, &plain, &cut).unwrap();
+    assert_eq!(count, Some(cut.collected), "every live match, from docFreq");
+    let max_doc: u64 = reader
+        .segment_readers()
+        .iter()
+        .map(|r| r.max_doc as u64)
+        .sum();
+    let reachable = (cut.collected..=max_doc + 1)
+        .find(|&n| cannot_reach(&segments, &plain, n))
+        .expect("an n past docFreq");
+    for wrapped in [
+        Clause::ConstantScore(Box::new(ConstantScoreQuery::new(term.clone(), 1.0))),
+        Clause::Boost(Box::new(BoostQuery::new(term.clone(), 2.0))),
+        Clause::Boolean(Box::new(plain.clone())),
+    ] {
+        let q = one(wrapped);
+        let c = terminate_after(&segments, &q, u64::MAX).unwrap();
+        assert_eq!(c.collected, cut.collected);
+        assert_eq!(count_until(&segments, &q, &c).unwrap(), count);
+        assert!(cannot_reach(&segments, &q, reachable));
+        assert!(!cannot_reach(&segments, &q, reachable - 1));
+    }
+    let none = one(Clause::MatchNoDocs(MatchNoDocsQuery::new()));
+    let c = terminate_after(&segments, &none, 5).unwrap();
+    assert_eq!((c.collected, c.terminated), (0, false));
+    assert_eq!(count_until(&segments, &none, &c).unwrap(), Some(0));
+    assert!(cannot_reach(&segments, &none, 1));
+    let phrase = one(Clause::Phrase(PhraseQuery::new("body", ["w1", "w2"])));
+    let c = terminate_after(&segments, &phrase, u64::MAX).unwrap();
+    assert_eq!(count_until(&segments, &phrase, &c).unwrap(), None);
+
+    // `count_terminates`.
+    let every: Vec<bool> = vec![true; segments.len()];
+    let all: Vec<usize> = (0..segments.len()).collect();
+    let e = lucene_search::terminate::count_terminates(
+        &segments,
+        &plain,
+        &[vec![0, segments.len()]],
+        &every,
+        u64::MAX,
+        None,
+    )
+    .unwrap_err();
+    assert!(e.to_string().contains(&segments.len().to_string()), "{e}");
+    let owned = reader.field_norms_by_field(&["body".to_string()]);
+    let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
+    let run = |min: Option<f32>, n: u64| {
+        let m = min.map(|min| lucene_search::aggs::MinScore { min, norms: &norms });
+        lucene_search::terminate::count_terminates(
+            &segments,
+            &plain,
+            std::slice::from_ref(&all),
+            &every,
+            n,
+            m.as_ref(),
+        )
+        .unwrap()
+    };
+    // Every match scores above 0: behind a minimum of 0 the count is the
+    // plain one.
+    let n = cut.collected;
+    for k in [1, n - 1, n, n + 1] {
+        assert_eq!(run(Some(0.0), k), run(None, k), "n={k}");
+    }
+    assert!(run(None, n - 1));
+    // None scores this high: nothing is let through.
+    assert!(!run(Some(f32::MAX), 1));
+}
