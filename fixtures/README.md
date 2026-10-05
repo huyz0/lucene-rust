@@ -1225,8 +1225,19 @@ outright.
   (`pay`, none on every fifth position) and a docs-only `nopos`, one word in a
   single document; `queries.tsv`: every `Intervals` factory's source -- its
   `toString` and `minExtent`, five `IntervalQuery` scoring variants (hits with
-  score bits, five explanations) and the `Matches` of every hit, or Lucene's
-  exception.
+  score bits, five explanations) and the `Matches` of every hit and of the
+  explained documents, or Lucene's exception.
+
+- `GenMoreLikeThis.java` (M10 T10.6) → `mlt/`, for `lucene-search`'s
+  `mlt_fixtures.rs` and `common_terms_fixtures.rs`: `index/`, four segments
+  with deletions in two, of stored text (`body`, some documents twice, some
+  without), stored text with term vectors (`tv`) and short titles, the words
+  skewed so some are in most documents and some in few; `mlt.tsv`:
+  `MoreLikeThis` under twelve settings (interesting terms, the query's
+  clauses and hits for six documents, `like(field, texts)`, `like(Map)`) and
+  `MoreLikeThisQuery` (rewrite, hits, explanations); `common.tsv`:
+  `CommonTermsQuery` over twelve term sets (`toString`, hits with score bits,
+  four explanations), or Lucene's exception.
 
 - `GenGeo3dPoints.java` (M9 T9.4) → `geo3d_points/`, for `lucene-search`'s
   `geo3d_points_fixtures.rs`: `index/`, four segments (3 × 1500 documents

@@ -19,8 +19,11 @@ import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.NoMergePolicy;
+import org.apache.lucene.index.Term;
+import org.apache.lucene.queries.CommonTermsQuery;
 import org.apache.lucene.queries.intervals.IntervalQuery;
 import org.apache.lucene.queries.intervals.Intervals;
+import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
@@ -31,7 +34,7 @@ import org.apache.lucene.util.BytesRef;
 
 /**
  * M10 T10.6's benchmark pair, against {@code benchmarks/rust-runner/src/micro_queries.rs}: per
- * word, one top-10 search of each case over a 200 000-document, four-segment index of text with
+ * word, one top-10 search of each case (interval queries, {@code CommonTermsQuery}) over a 200 000-document, four-segment index of text with
  * positions ({@code body}) and positions with one-byte payloads ({@code pay}).
  *
  * <p>Usage: {@code QueriesMicro build <dir>}, then {@code QueriesMicro run <dir>}.
@@ -247,6 +250,32 @@ public final class QueriesMicro {
                   Intervals.ordered(
                       Intervals.term(a, p -> p != null && p.bytes[p.offset] >= 2),
                       Intervals.term(b))));
+      cases(
+          "ct_split",
+          words,
+          s,
+          (a, b, c) -> {
+            CommonTermsQuery q =
+                new CommonTermsQuery(BooleanClause.Occur.SHOULD, BooleanClause.Occur.SHOULD, 0.5f);
+            q.add(new Term("body", a));
+            q.add(new Term("body", b));
+            q.add(new Term("body", c));
+            return q;
+          });
+      cases(
+          "ct_msm",
+          words,
+          s,
+          (a, b, c) -> {
+            CommonTermsQuery q =
+                new CommonTermsQuery(BooleanClause.Occur.SHOULD, BooleanClause.Occur.SHOULD, 0.45f);
+            q.add(new Term("body", a));
+            q.add(new Term("body", b));
+            q.add(new Term("body", c));
+            q.add(new Term("body", "missing"));
+            q.setLowFreqMinimumNumberShouldMatch(0.5f);
+            return q;
+          });
     }
   }
 

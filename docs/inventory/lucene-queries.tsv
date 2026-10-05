@@ -2,7 +2,7 @@
 # Checked by scripts/check-port-inventory.py --module queries (see its docstring for the statuses).
 # The span queries (term/near/or) were ported in M2/M7 as algorithms in lucene-search, not as classes.
 # class	status	detail
-queries/CommonTermsQuery	todo:M10	CommonTermsQuery (T10.6)
+queries/CommonTermsQuery	ported	crates/lucene-search/src/common_terms.rs::CommonTermsQuery
 queries/function/FunctionMatchQuery	ported	crates/lucene-search/src/function/queries.rs::FunctionMatchQuery
 queries/function/FunctionQuery	ported	crates/lucene-search/src/function/queries.rs::FunctionQuery
 queries/function/FunctionRangeQuery	ported	crates/lucene-search/src/function/queries.rs::FunctionRangeQuery

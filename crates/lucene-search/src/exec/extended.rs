@@ -233,6 +233,13 @@ pub(crate) fn build<'a>(
         ExtendedQuery::FunctionScore(q) => {
             super::function::function_score(ctx, q, boost, mode, top_level)
         }
+        // `CommonTermsQuery` has no weight of its own: `rewrite(searcher)`
+        // turns it into the boolean of its rare and frequent terms first.
+        ExtendedQuery::CommonTerms(_) => Err(crate::Error::IllegalState(
+            "CommonTermsQuery must be rewritten against the searcher \
+             (rescorer::rewrite_rescore_clauses) before it is searched"
+                .into(),
+        )),
         // `RescoreTopNQuery` has no weight of its own: `rewrite(searcher)`
         // turns it into a `DocAndScoreQuery` first.
         ExtendedQuery::RescoreTopN(_) => Err(crate::Error::IllegalState(

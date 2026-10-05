@@ -204,6 +204,7 @@ mod bulk_scorer;
 pub mod cardinality_sketch;
 pub mod collector;
 pub mod collectors;
+pub mod common_terms;
 pub mod directory_reader;
 pub mod doc_value_query;
 pub mod docid_set;

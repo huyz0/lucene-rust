@@ -644,10 +644,12 @@ impl PartialEq for RescoreTopNQuery {
     }
 }
 
-/// `IndexSearcher.rewrite(query)` for the [`RescoreTopNQuery`] clauses a
-/// query holds (inside booleans, dis-max, boosts and constant-score
-/// wrappers): each becomes the `DocAndScoreQuery` its `rewrite(searcher)`
-/// returns, over `ctx`'s searcher. `None` when there are none.
+/// `IndexSearcher.rewrite(query)` for the clauses whose rewrite needs the
+/// searcher, inside booleans, dis-max, boosts and constant-score wrappers:
+/// a [`RescoreTopNQuery`] becomes the `DocAndScoreQuery` its
+/// `rewrite(searcher)` returns, a
+/// [`crate::common_terms::CommonTermsQuery`] its boolean of rare and
+/// frequent terms. `None` when there are none.
 ///
 /// # Errors
 /// What a [`RescoreTopNQuery::rewrite`] reports.
@@ -672,6 +674,9 @@ pub fn rewrite_rescore_clauses(
                         .collect();
                     Some(Clause::from(DocAndScoreQuery::new(hits, &bases)))
                 }
+                // The `lucene-queries` queries whose `rewrite(searcher)` reads
+                // the reader's term statistics.
+                ExtendedQuery::CommonTerms(q) => Some(q.rewrite(ctx.searcher()?)?),
                 _ => None,
             },
             Clause::Boolean(b) => boolean(b, ctx)?.map(|b| Clause::Boolean(Box::new(b))),
@@ -722,15 +727,17 @@ pub fn rewrite_rescore_clauses(
     boolean(query, ctx)
 }
 
-/// Whether a query holds a [`RescoreTopNQuery`] clause anywhere.
+/// Whether a query holds a clause [`rewrite_rescore_clauses`] rewrites.
 pub(crate) fn has_rescore_clauses(query: &BooleanQuery) -> bool {
     use crate::extended_query::ExtendedQuery;
     use crate::query::Clause;
     fn clause(c: &Clause) -> bool {
         match c {
             Clause::Extended(e) => {
-                matches!(e.as_ref(), ExtendedQuery::RescoreTopN(_))
-                    || e.children().into_iter().any(clause)
+                matches!(
+                    e.as_ref(),
+                    ExtendedQuery::RescoreTopN(_) | ExtendedQuery::CommonTerms(_)
+                ) || e.children().into_iter().any(clause)
             }
             Clause::Boolean(b) => has_rescore_clauses(b),
             Clause::DisjunctionMax(d) => d.disjuncts.iter().any(clause),

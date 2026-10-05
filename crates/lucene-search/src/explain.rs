@@ -106,6 +106,20 @@ thread_local! {
         const { std::cell::RefCell::new((None, None)) };
 }
 
+thread_local! {
+    /// The boost the weights being explained were created with
+    /// (`createWeight(searcher, scoreMode, boost)`): the product of the
+    /// `BoostQuery`s around them, which a term weight's BM25 explanation
+    /// reports as its `boost` node and scores with. Set by [`explain_boost`]
+    /// for the clauses whose explanation takes it (see [`takes_boost`]).
+    static BOOST: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) };
+}
+
+/// The boost the clause being explained was weighted with.
+fn weight_boost() -> f32 {
+    BOOST.with(std::cell::Cell::get)
+}
+
 /// Runs `f` with `(max_doc, doc_base)` as the segment being explained,
 /// `reader` its reader and `similarity` the searcher's.
 pub(crate) fn with_leaf<R>(
@@ -349,27 +363,34 @@ pub(crate) fn describe_clause(clause: &Clause) -> String {
             };
             format!("{}:\"{body}\"{slop}", q.field)
         }
+        // `BooleanQuery.toString`: a sub-boolean in parentheses, the whole in
+        // parentheses only under a minimum-should-match.
         Clause::Boolean(q) => {
+            fn sub(c: &Clause) -> String {
+                match c {
+                    Clause::Boolean(_) => format!("({})", describe_clause(c)),
+                    _ => describe_clause(c),
+                }
+            }
             let mut parts = Vec::new();
             for c in &q.must {
-                parts.push(format!("+{}", describe_clause(c)));
+                parts.push(format!("+{}", sub(c)));
             }
             // `Occur.FILTER.toString()` is `"#"`.
             for c in &q.filter {
-                parts.push(format!("#{}", describe_clause(c)));
+                parts.push(format!("#{}", sub(c)));
             }
             for c in &q.should {
-                parts.push(describe_clause(c));
+                parts.push(sub(c));
             }
             for c in &q.must_not {
-                parts.push(format!("-{}", describe_clause(c)));
+                parts.push(format!("-{}", sub(c)));
             }
-            let mm = if q.minimum_should_match == 0 {
-                String::new()
+            if q.minimum_should_match == 0 {
+                parts.join(" ")
             } else {
-                format!("~{}", q.minimum_should_match)
-            };
-            format!("({}){mm}", parts.join(" "))
+                format!("({})~{}", parts.join(" "), q.minimum_should_match)
+            }
         }
         Clause::DisjunctionMax(q) => {
             let body = q
@@ -615,10 +636,8 @@ pub fn explain_clause_with_stats(
             let matched = crate::match_all_doc_ids(live_docs, query.max_doc).contains(&doc);
             Ok(explain_flat_match(matched, clause, doc))
         }
-        Clause::MatchNoDocs(_) => Ok(Explanation::no_match(format!(
-            "{} doesn't match id {doc}",
-            describe_clause(clause)
-        ))),
+        // `MatchNoDocsQuery`'s weight: `Explanation.noMatch(reason)`.
+        Clause::MatchNoDocs(q) => Ok(Explanation::no_match(q.reason.clone())),
         Clause::MultiPhrase(query) => {
             // No per-position breakdown yet (real `MultiPhraseWeight.explain`
             // has one): this reports the real score the scorer produces for
@@ -814,7 +833,9 @@ fn explain_term(
         similarity::DEFAULT_B,
     );
     let tf_norm = 1.0 - 1.0 / (1.0 + freq as f32 * norm_inverse);
-    let value = similarity::do_score(idf, freq as f32, norm_inverse);
+    // `BM25Scorer`'s `weight = boost * idf`.
+    let boost = weight_boost();
+    let value = similarity::do_score(boost * idf, freq as f32, norm_inverse);
 
     let idf_explanation = idf_explanation(idf, doc_freq, doc_count);
 
@@ -830,6 +851,12 @@ fn explain_term(
         Explanation::match_(avg_field_length, "avgdl, average length of field"),
     ]);
 
+    let mut subs = Vec::with_capacity(3);
+    if boost != 1.0 {
+        subs.push(Explanation::match_(boost, "boost"));
+    }
+    subs.push(idf_explanation);
+    subs.push(tf_explanation);
     let score_explanation = Explanation::match_(
         value,
         format!(
@@ -837,7 +864,7 @@ fn explain_term(
             java_float(freq as f32)
         ),
     )
-    .with_details(vec![idf_explanation, tf_explanation]);
+    .with_details(subs);
 
     Ok(Explanation::match_(
         value,
@@ -1291,8 +1318,13 @@ fn scorer_score(
             reader,
             similarity,
         };
-        let Some(mut s) =
-            crate::exec::build::build(&ctx, clause, 1.0, crate::exec::Mode::Complete, false)?
+        let Some(mut s) = crate::exec::build::build(
+            &ctx,
+            clause,
+            weight_boost(),
+            crate::exec::Mode::Complete,
+            false,
+        )?
         else {
             return Ok(None);
         };
@@ -1440,6 +1472,19 @@ fn explain_boost(
             return crate::exec::intervals::explain_interval(&ctx, iq, boost, doc);
         }
     }
+    // Term weights take the boost into their BM25 explanation, and a
+    // boolean or dis-max of them hands it down (`BooleanWeight` creates its
+    // clauses' weights with it): explained with the boost, not as a
+    // product with it.
+    if takes_boost(inner) && with_leaf_reader(|_, sim| sim.is_none()) {
+        let outer = weight_boost();
+        BOOST.with(|b| b.set(outer * boost));
+        let out = explain_clause_with_stats(
+            fields, doc_in, pos_in, pay_in, live_docs, points, inner, doc, norms, global,
+        );
+        BOOST.with(|b| b.set(outer));
+        return out;
+    }
     // A function query's weight takes the boost itself.
     if let Some(e) = crate::exec::function::explain_boosted(
         fields,
@@ -1477,6 +1522,24 @@ fn explain_boost(
     let value = inner.value * nested.boost;
     Ok(Explanation::match_(value, "product of:")
         .with_details(vec![inner, Explanation::match_(nested.boost, "boost")]))
+}
+
+/// Whether `clause`'s explanation takes its weight's boost (the default
+/// BM25 term weights, and the booleans, dis-maxes and boosts of them).
+fn takes_boost(clause: &Clause) -> bool {
+    match clause {
+        Clause::Term(_) | Clause::MatchNoDocs(_) => true,
+        Clause::Boost(b) => takes_boost(&b.inner),
+        Clause::Boolean(b) => b
+            .must
+            .iter()
+            .chain(&b.filter)
+            .chain(&b.should)
+            .chain(&b.must_not)
+            .all(takes_boost),
+        Clause::DisjunctionMax(d) => d.disjuncts.iter().all(takes_boost),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -1839,7 +1902,7 @@ mod tests {
                     .with_should([TermQuery::new("body", "bird")])
                     .with_must_not([TermQuery::new("body", "fish")])
             ))),
-            "(+body:cat #body:dog body:bird -body:fish)"
+            "+body:cat #body:dog body:bird -body:fish"
         );
     }
 
@@ -2065,7 +2128,26 @@ mod tests {
                 must_not: vec![Clause::Term(TermQuery::new("f", "c"))],
                 minimum_should_match: 0,
             }))),
-            "(+f:a f:b -f:c)"
+            "+f:a f:b -f:c"
+        );
+        // A sub-boolean in parentheses; the whole only under a minimum.
+        assert_eq!(
+            describe_clause(&Clause::Boolean(Box::new(BooleanQuery {
+                must: vec![Clause::Boolean(Box::new(BooleanQuery {
+                    should: vec![
+                        Clause::Term(TermQuery::new("f", "a")),
+                        Clause::Term(TermQuery::new("f", "b")),
+                    ],
+                    ..Default::default()
+                }))],
+                should: vec![
+                    Clause::Term(TermQuery::new("f", "c")),
+                    Clause::Term(TermQuery::new("f", "d")),
+                ],
+                minimum_should_match: 1,
+                ..Default::default()
+            }))),
+            "(+(f:a f:b) f:c f:d)~1"
         );
         assert_eq!(
             describe_clause(&Clause::DisjunctionMax(Box::new(DisjunctionMaxQuery::new(

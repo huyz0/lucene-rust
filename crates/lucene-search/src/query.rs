@@ -722,9 +722,10 @@ impl Clause {
     /// sub-`Clause`.
     ///
     /// See [`BooleanQuery::rewrite`]'s doc comment for the exact rewrite
-    /// rules this delegates to for `Clause::Boolean`; `DisjunctionMax`/
-    /// `ConstantScore`/`Boost` themselves are never collapsed away (this
-    /// port implements no simplification for those three), only their
+    /// rules this delegates to for `Clause::Boolean`. `BoostQuery.rewrite`'s
+    /// two simplifications apply (a boost of `1` is dropped, nested boosts
+    /// multiply; its boost-of-`0` constant-score wrapping does not);
+    /// `DisjunctionMax`/`ConstantScore` are never collapsed away, only their
     /// wrapped clause(s) are rewritten.
     pub fn rewrite(self) -> Clause {
         match self {
@@ -746,12 +747,24 @@ impl Clause {
                     score,
                 }))
             }
+            // `BoostQuery.rewrite`: a boost of `1` is its query, and a boost
+            // of a boost one boost of their product.
             Clause::Boost(boxed) => {
                 let BoostQuery { inner, boost } = *boxed;
-                Clause::Boost(Box::new(BoostQuery {
-                    inner: Box::new(inner.rewrite()),
-                    boost,
-                }))
+                let inner = inner.rewrite();
+                if boost == 1.0 {
+                    return inner;
+                }
+                match inner {
+                    Clause::Boost(nested) => Clause::Boost(Box::new(BoostQuery {
+                        inner: nested.inner,
+                        boost: boost * nested.boost,
+                    })),
+                    inner => Clause::Boost(Box::new(BoostQuery {
+                        inner: Box::new(inner),
+                        boost,
+                    })),
+                }
             }
             leaf => leaf,
         }

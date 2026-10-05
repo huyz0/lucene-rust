@@ -10,7 +10,7 @@
 | **Effort** | L |
 | **Depends on** | [M7](m7-core-complete.md) |
 | **Unblocks** | native `nested`, `function_score`, `intervals`, `combined_fields`, field collapsing |
-| **Status** | in progress (T10.0, T10.1, T10.3 done; T10.2 queries ported; T10.4, T10.5 ported; T10.6 intervals ported) |
+| **Status** | in progress (T10.0, T10.1, T10.3 done; T10.2 queries ported; T10.4, T10.5 ported; T10.6 intervals and common terms ported) |
 
 ---
 
@@ -287,7 +287,11 @@ grouping. Each of them falls back to Lucene today.
   `IntervalBuilder`'s analyzed text. `GenIntervals` records 120 sources
   (`toString`, `minExtent`, five scoring variants with hits, score bits and
   explanations, the `Matches` of every hit and explained document), all 6 538 lines equal to
-  Lucene's.
+  Lucene's. `CommonTermsQuery` **ported** (`lucene-search/src/common_terms.rs`),
+  rewritten by the searcher: `GenMoreLikeThis`'s twelve term sets, 67 lines
+  equal to Lucene's -- which took `BoostQuery.rewrite`'s unit-boost drop,
+  boosts folded into term weights' explanations, `BooleanQuery.toString`'s
+  parentheses, a deleted document's explanation and `MatchNoDocsQuery`'s.
 - **T10.7** — Plugin wiring for the OpenSearch shapes above.
 
 ## Stage-3 status (2026-10-05)
@@ -304,7 +308,7 @@ the build before; `~` inside the run's noise floor):
 | `grouping` (T10.4) | 9 | 1.05x-2.98x | blocks 1.05x-1.17x (two 7-rep runs of two builds each; floors 1.14x-1.30x) |
 | `function` (T10.5) | 10 | 1.39x-2.82x | `FunctionRangeQuery` as a filter 1.39x |
 | `aggs` (terms behind a filter) | 6 | 1.45x-3.11x | dense range on a keyword 1.45x; see below |
-| `queries` (T10.6 intervals) | 8 | 0.83x-1.12x | `ordered` 0.83x, `phrase` 0.90x, `maxgaps(unordered)` 0.91x; see below |
+| `queries` (T10.6) | 10 | 0.83x-1.12x | `ordered` 0.83x, `phrase` 0.90x, `maxgaps(unordered)` 0.91x; see below; `CommonTermsQuery` 0.95~-1.00~ |
 
 Lucene's side of the two term-filtered `cat` cases (a single-valued
 `SORTED_SET`) is bimodal: in some JVM runs (one of six, three of five in
