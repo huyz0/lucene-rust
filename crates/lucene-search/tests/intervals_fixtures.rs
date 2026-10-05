@@ -6,7 +6,8 @@
 //! a pulsed singleton term -- its `toString` and `minExtent`; under five
 //! scoring variants (plain, pivot, sigmoid, boosted, a boolean's required
 //! clause) every hit's score bits and five documents' explanations; and the
-//! `Matches` of every hit, positions, offsets and sub-matches. The file is
+//! `Matches` of every hit and of the five documents, positions, offsets and
+//! sub-matches. The file is
 //! rebuilt here line for line and compared with Lucene's.
 
 // Test fixtures' own arithmetic -- see `docs/arithmetic-gate.md`'s "Test code".
@@ -305,7 +306,10 @@ fn run(searcher: &IndexSearcher<'_, '_>, field: &str, spec: &str, out: &mut Vec<
             out.push(format!("{head}\t{v}\texplain {doc}\t{e}"));
         }
     }
+    // The hits, and the explained documents whether they match or not.
+    hits.extend(EXPLAIN);
     hits.sort_unstable();
+    hits.dedup();
     let plain = Clause::from(IntervalQuery::new(field, s.clone()));
     for doc in hits {
         let m = match matches(searcher, &plain, doc).and_then(render) {

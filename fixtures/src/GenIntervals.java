@@ -397,9 +397,11 @@ public class GenIntervals {
         out.append(e).append('\n');
       }
     }
-    hits.sort(Integer::compare);
+    // The hits, and the explained documents whether they match or not.
+    java.util.TreeSet<Integer> docs = new java.util.TreeSet<>(hits);
+    for (int doc : EXPLAIN) docs.add(doc);
     Query plain = new IntervalQuery(field, s);
-    for (int doc : hits) {
+    for (int doc : docs) {
       String m;
       try {
         Weight w = searcher.createWeight(searcher.rewrite(plain), ScoreMode.COMPLETE_NO_SCORES, 1);
