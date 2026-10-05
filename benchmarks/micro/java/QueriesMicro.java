@@ -22,6 +22,7 @@ import org.apache.lucene.index.NoMergePolicy;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.queries.CommonTermsQuery;
 import org.apache.lucene.queries.intervals.IntervalQuery;
+import org.apache.lucene.queries.mlt.MoreLikeThisQuery;
 import org.apache.lucene.queries.intervals.Intervals;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.IndexSearcher;
@@ -34,7 +35,8 @@ import org.apache.lucene.util.BytesRef;
 
 /**
  * M10 T10.6's benchmark pair, against {@code benchmarks/rust-runner/src/micro_queries.rs}: per
- * word, one top-10 search of each case (interval queries, {@code CommonTermsQuery}) over a 200 000-document, four-segment index of text with
+ * word, one top-10 search of each case (interval queries, {@code CommonTermsQuery}, {@code
+ * MoreLikeThisQuery}) over a 200 000-document, four-segment index of text with
  * positions ({@code body}) and positions with one-byte payloads ({@code pay}).
  *
  * <p>Usage: {@code QueriesMicro build <dir>}, then {@code QueriesMicro run <dir>}.
@@ -276,6 +278,17 @@ public final class QueriesMicro {
             q.setLowFreqMinimumNumberShouldMatch(0.5f);
             return q;
           });
+      StandardAnalyzer analyzer = new StandardAnalyzer();
+      cases(
+          "mlt_query",
+          words,
+          s,
+          (a, b, c) ->
+              new MoreLikeThisQuery(
+                  a + " " + b + " " + c + " " + a + " " + c + " " + a,
+                  new String[] {"body"},
+                  analyzer,
+                  "body"));
     }
   }
 

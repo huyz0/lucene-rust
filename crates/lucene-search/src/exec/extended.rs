@@ -240,6 +240,13 @@ pub(crate) fn build<'a>(
              (rescorer::rewrite_rescore_clauses) before it is searched"
                 .into(),
         )),
+        // So has `MoreLikeThisQuery`: its rewrite finds the text's
+        // interesting terms.
+        ExtendedQuery::MoreLikeThis(_) => Err(crate::Error::IllegalState(
+            "MoreLikeThisQuery must be rewritten against the searcher \
+             (rescorer::rewrite_rescore_clauses) before it is searched"
+                .into(),
+        )),
         // `RescoreTopNQuery` has no weight of its own: `rewrite(searcher)`
         // turns it into a `DocAndScoreQuery` first.
         ExtendedQuery::RescoreTopN(_) => Err(crate::Error::IllegalState(
