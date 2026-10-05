@@ -1499,12 +1499,9 @@ pub unsafe extern "C" fn ffi_writer_omit_norms_field(
     field_name_len: usize,
 ) -> i32 {
     guard(|| {
-        // SAFETY: forwarded from this function's own caller contract.
-        let name = unsafe { decode_optional_field_name(1, field_name, field_name_len)? };
-        let name = name.ok_or_else(|| {
-            set_last_error("ffi_writer_omit_norms_field: field_name must not be null");
-            FfiStatus::InvalidArgument
-        })?;
+        // SAFETY: forwarded from this function's own caller contract. A null
+        // name of length 0 reads as `""`, a field no writer knows.
+        let name = unsafe { str_from_raw(field_name, field_name_len)? };
         let mut registry = lock_recovering(writers());
         let handle = registry.get_mut(writer_handle).ok_or_else(|| {
             set_last_error("ffi_writer_omit_norms_field: unknown or already-closed handle");
@@ -5831,6 +5828,174 @@ mod tests {
             },
             FfiStatus::InvalidHandle.code()
         );
+        assert_eq!(ffi_close_writer(handle), FfiStatus::Ok.code());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The wire codes the JVM side sends for index options and doc-values
+    /// types, each to its variant, and anything else refused.
+    #[test]
+    fn index_option_and_doc_values_codes_decode_to_their_variants() {
+        let options = [
+            IndexOptions::None,
+            IndexOptions::Docs,
+            IndexOptions::DocsAndFreqs,
+            IndexOptions::DocsAndFreqsAndPositions,
+            IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
+            IndexOptions::DocsAndCustomFreqs,
+        ];
+        for (code, want) in options.into_iter().enumerate() {
+            assert_eq!(index_options_from_i32(code as i32), Ok(want));
+        }
+        let types = [
+            DocValuesType::None,
+            DocValuesType::Numeric,
+            DocValuesType::Binary,
+            DocValuesType::Sorted,
+            DocValuesType::SortedSet,
+            DocValuesType::SortedNumeric,
+        ];
+        for (code, want) in types.into_iter().enumerate() {
+            assert_eq!(doc_values_type_from_i32(code as i32), Ok(want));
+        }
+        for bad in [-1, 6, i32::MAX] {
+            assert_eq!(index_options_from_i32(bad), Err(FfiStatus::InvalidArgument));
+            assert_eq!(
+                doc_values_type_from_i32(bad),
+                Err(FfiStatus::InvalidArgument)
+            );
+        }
+    }
+
+    /// A well-formed request against a handle that is not an open writer is
+    /// `InvalidHandle` from every document-writing entry point -- after the
+    /// arguments decode, so it is the handle that is refused -- and the
+    /// sequence-number out-parameter is left alone.
+    #[test]
+    fn document_writes_against_an_unknown_handle_are_invalid_handle() {
+        let bad = 0xDEAD_BEEF;
+        let field = "id";
+        let term = b"t";
+        let value = "v";
+        let counts = [1usize];
+        let numbers = [0i32];
+        let kinds = [0u8];
+        let ptrs = [value.as_ptr()];
+        let lens = [value.len()];
+        let mut seq = -7i64;
+        let add = unsafe {
+            ffi_writer_add_documents(
+                bad,
+                counts.as_ptr(),
+                1,
+                numbers.as_ptr(),
+                kinds.as_ptr(),
+                ptrs.as_ptr(),
+                lens.as_ptr(),
+                &mut seq as *mut _,
+            )
+        };
+        let update = unsafe {
+            ffi_writer_update_documents(
+                bad,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                term.as_ptr(),
+                term.len(),
+                counts.as_ptr(),
+                1,
+                numbers.as_ptr(),
+                kinds.as_ptr(),
+                ptrs.as_ptr(),
+                lens.as_ptr(),
+                &mut seq as *mut _,
+            )
+        };
+        let soft = "__soft_deletes";
+        let soft_update = unsafe {
+            ffi_writer_soft_update_document(
+                bad,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                term.as_ptr(),
+                term.len(),
+                soft.as_ptr() as *const c_char,
+                soft.len(),
+                1,
+                numbers.as_ptr(),
+                kinds.as_ptr(),
+                ptrs.as_ptr(),
+                lens.as_ptr(),
+                1,
+                &mut seq as *mut _,
+            )
+        };
+        let dv = "payload";
+        let binary = unsafe {
+            ffi_writer_update_binary_doc_value(
+                bad,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                term.as_ptr(),
+                term.len(),
+                dv.as_ptr() as *const c_char,
+                dv.len(),
+                b"x".as_ptr(),
+                1,
+                &mut seq as *mut _,
+            )
+        };
+        let mut buf = [0 as c_char; 8];
+        let entry = unsafe {
+            ffi_writer_live_commit_data_entry(
+                bad,
+                0,
+                buf.as_mut_ptr(),
+                buf.len(),
+                std::ptr::null_mut(),
+                buf.as_mut_ptr(),
+                buf.len(),
+                std::ptr::null_mut(),
+            )
+        };
+        for (what, rc) in [
+            ("add_documents", add),
+            ("update_documents", update),
+            ("soft_update_document", soft_update),
+            ("update_binary_doc_value", binary),
+            ("live_commit_data_entry", entry),
+        ] {
+            assert_eq!(rc, FfiStatus::InvalidHandle.code(), "{what}");
+        }
+        assert_eq!(seq, -7, "no sequence number written");
+    }
+
+    /// `ffi_writer_live_commit_data_entry` checks both buffers' sizes first,
+    /// then that neither is null: a null buffer with room claimed is
+    /// `NullPointer`, nothing written.
+    #[test]
+    fn live_commit_data_entry_refuses_a_null_buffer() {
+        let tmp = tempdir("live-commit-data-null");
+        let (_, handle) = open_test_writer(&tmp);
+        assert_eq!(
+            set_live_commit_data(handle, &[("k", "v")]),
+            FfiStatus::Ok.code()
+        );
+        let mut buf = [0 as c_char; 8];
+        let rc = unsafe {
+            ffi_writer_live_commit_data_entry(
+                handle,
+                0,
+                std::ptr::null_mut(),
+                8,
+                std::ptr::null_mut(),
+                buf.as_mut_ptr(),
+                buf.len(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(rc, FfiStatus::NullPointer.code());
+        assert_eq!(buf, [0; 8]);
         assert_eq!(ffi_close_writer(handle), FfiStatus::Ok.code());
         let _ = std::fs::remove_dir_all(&tmp);
     }
