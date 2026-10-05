@@ -120,8 +120,8 @@ queries/intervals/RelativeIterator	ported	crates/lucene-search/src/intervals/ite
 queries/intervals/RepeatingIntervalsSource	ported	crates/lucene-search/src/intervals/iterators.rs::DuplicateIntervals
 queries/intervals/TermIntervalsSource	ported	crates/lucene-search/src/intervals/iterators.rs::TermIntervals
 queries/intervals/UnorderedIntervalsSource	ported	crates/lucene-search/src/intervals/iterators.rs::Unordered
-queries/mlt/MoreLikeThis	todo:M10	MoreLikeThis (T10.6)
-queries/mlt/MoreLikeThisQuery	todo:M10	MoreLikeThis (T10.6)
+queries/mlt/MoreLikeThis	ported	crates/lucene-search/src/mlt.rs::MoreLikeThis
+queries/mlt/MoreLikeThisQuery	ported	crates/lucene-search/src/mlt.rs::MoreLikeThisQuery
 queries/payloads/AveragePayloadFunction	todo:M10	payload queries (T10.6)
 queries/payloads/MaxPayloadFunction	todo:M10	payload queries (T10.6)
 queries/payloads/MinPayloadFunction	todo:M10	payload queries (T10.6)

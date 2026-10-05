@@ -2,9 +2,10 @@
 //! `benchmarks/micro/java/QueriesMicro.java`: per word, one top-10 search of
 //! each case -- interval queries (ordered, phrase, unordered under
 //! `maxgaps`, a phrase over a disjunction, containing, at-least, a prefix,
-//! a payload filter) and `CommonTermsQuery` -- over the 200 000-document,
-//! four-segment index the Java side builds (`QueriesMicro build <dir>`). Each case prints a
-//! `#check` digest of its hits the report compares before it shows a ratio.
+//! a payload filter), `CommonTermsQuery` and `MoreLikeThisQuery` -- over
+//! the 200 000-document, four-segment index the Java side builds
+//! (`QueriesMicro build <dir>`). Each case prints a `#check` digest of its
+//! hits the report compares before it shows a ratio.
 
 use std::hint::black_box;
 use std::time::Duration;
@@ -12,6 +13,7 @@ use std::time::Duration;
 use lucene_search::common_terms::CommonTermsQuery;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
+use lucene_search::mlt::MoreLikeThisQuery;
 use lucene_search::intervals::{IntervalQuery, Intervals, IntervalsSource, PayloadFilter};
 use lucene_search::query::{BooleanQuery, Clause};
 use lucene_search::query_visitor::Occur;
@@ -138,6 +140,16 @@ pub fn bench_queries(w: Duration, m: Duration, dir: &str) {
             "pay",
             Intervals::ordered(vec![Intervals::term_with_payload_filter(a, filter), t(b)]),
         )
+    });
+    let analyzer = std::sync::Arc::new(lucene_analysis::Analyzer::standard(None));
+    cases("mlt_query", &words, &s, w, m, &move |a, b, c| {
+        one(MoreLikeThisQuery::new(
+            format!("{a} {b} {c} {a} {c} {a}"),
+            vec!["body".to_string()],
+            std::sync::Arc::clone(&analyzer),
+            "body",
+        )
+        .into())
     });
     cases("ct_split", &words, &s, w, m, &|a, b, c| {
         let mut q = CommonTermsQuery::new(Occur::Should, Occur::Should, 0.5).unwrap();

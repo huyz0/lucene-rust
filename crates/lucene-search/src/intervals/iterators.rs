@@ -114,6 +114,13 @@ impl IndexQueue {
         self.up_heap(index, less);
     }
 
+    /// `updateTop()`: the top changed in place; re-sift it and return the
+    /// new top.
+    pub(crate) fn update_top(&mut self, less: &dyn Fn(usize, usize) -> bool) -> Option<usize> {
+        self.down_heap(1, less);
+        self.top()
+    }
+
     pub(crate) fn pop(&mut self, less: &dyn Fn(usize, usize) -> bool) -> Option<usize> {
         if self.size == 0 {
             return None;

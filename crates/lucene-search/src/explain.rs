@@ -2917,6 +2917,54 @@ mod tests {
         assert_eq!(explanation.value, inner_score * 3.0);
     }
 
+    /// `createWeight(..., boost)`: the boosts around a dis-max of terms
+    /// multiply into the term weight's `boost` node; around anything else
+    /// the boost stays a `product of:`; `MatchNoDocsQuery` explains as its
+    /// reason.
+    #[test]
+    fn boosts_fold_into_term_weights_and_wrap_the_rest() {
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut capture = ScoreCapture::default();
+        search_term_query_scored(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            &TermQuery::new("body", "cat"),
+            None,
+            &mut capture,
+        )
+        .unwrap();
+        let target_doc = capture.scores[0].0;
+        let explain = |c: &Clause, doc: i32| {
+            explain_clause(&fields, doc_in.as_ref(), None, None, None, c, doc, None).unwrap()
+        };
+        let dismax = DisjunctionMaxQuery::new([TermQuery::new("body", "cat")], 0.0);
+        let q = Clause::Boost(Box::new(BoostQuery::new(BoostQuery::new(dismax, 2.0), 1.5)));
+        let e = explain(&q, target_doc);
+        assert!(e.matched);
+        let text = e.to_string();
+        assert!(text.contains("3.0 = boost"), "{text}");
+        assert!(!text.contains("product of"), "{text}");
+        assert_eq!(weight_boost(), 1.0, "the boost is restored afterwards");
+
+        let wildcard = Clause::Boost(Box::new(BoostQuery::new(
+            WildcardQuery::new("body", "ca*"),
+            2.0,
+        )));
+        let e = explain(&wildcard, target_doc);
+        assert_eq!(e.description, "product of:");
+        assert!(!takes_boost(&Clause::Wildcard(WildcardQuery::new(
+            "body", "c*"
+        ))));
+
+        let none = Clause::MatchNoDocs(crate::query::MatchNoDocsQuery::new().with_reason("why"));
+        assert!(takes_boost(&none));
+        let e = explain(&none, target_doc);
+        assert!(!e.matched);
+        assert_eq!(e.description, "why");
+    }
+
     #[test]
     fn boost_explain_non_matching_doc_is_no_match() {
         let (fields, doc) = open_fixture();

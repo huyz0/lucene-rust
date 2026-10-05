@@ -65,6 +65,9 @@ pub enum ExtendedQuery {
     /// `lucene-queries`' `CommonTermsQuery` ([`crate::common_terms`]),
     /// rewritten by the searcher before it is searched.
     CommonTerms(crate::common_terms::CommonTermsQuery),
+    /// `lucene-queries`' `MoreLikeThisQuery` ([`crate::mlt`]), rewritten by
+    /// the searcher before it is searched.
+    MoreLikeThis(crate::mlt::MoreLikeThisQuery),
 }
 
 macro_rules! into_clause {
@@ -160,6 +163,7 @@ impl ExtendedQuery {
             ExtendedQuery::FunctionMatch(_) => "FunctionMatchQuery",
             ExtendedQuery::Interval(_) => "IntervalQuery",
             ExtendedQuery::CommonTerms(_) => "CommonTermsQuery",
+            ExtendedQuery::MoreLikeThis(_) => "MoreLikeThisQuery",
             ExtendedQuery::FunctionScore(_) => "FunctionScoreQuery",
         }
     }

@@ -223,6 +223,7 @@ pub mod join;
 pub mod knn_collectors;
 pub mod leaf_collector;
 pub mod matches;
+pub mod mlt;
 pub mod multi_bits;
 pub mod multi_segment;
 pub mod multi_terms;
