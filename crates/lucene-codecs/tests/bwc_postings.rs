@@ -132,6 +132,19 @@ fn check_version(version: &str, format: PostingsFormat) {
                     assert_eq!(c.freq().unwrap_or(1), eager.freqs[i], "{ctx} freq #{i}");
                 }
                 assert_eq!(c.next_doc().unwrap(), NO_MORE_DOCS, "{ctx}");
+                // Documents only: the frequency blocks stepped over.
+                let mut c = terms
+                    .lazy_postings_with_flags(
+                        &term,
+                        &doc_in,
+                        lucene_codecs::postings::PostingsFlags::DocsOnly,
+                    )
+                    .unwrap()
+                    .unwrap();
+                for (i, &d) in eager.docs.iter().enumerate() {
+                    assert_eq!(c.next_doc().unwrap(), d, "{ctx} docs-only #{i}");
+                }
+                assert_eq!(c.next_doc().unwrap(), NO_MORE_DOCS, "{ctx}");
                 let mut c = terms.lazy_postings(&term, &doc_in).unwrap().unwrap();
                 for &d in eager.docs.iter().step_by(37) {
                     let got = c.advance(d).unwrap_or_else(|e| {

@@ -659,6 +659,7 @@ mod tests {
             }
         }
         let n = 200;
+        assert_eq!(Panics(line(n)).max_ord(), n as i32, "one ordinal a point");
         let err = build_concurrent(
             vec![Panics(line(n)), Panics(line(n))],
             6,
