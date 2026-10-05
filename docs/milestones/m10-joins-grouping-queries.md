@@ -88,9 +88,13 @@ grouping. Each of them falls back to Lucene today.
   `ToParentDocValues` does: 0.52x before), gave the KNN filter its bulk
   scorer and a rank walk from documents to ordinals (0.73x before), and let
   the block-join bulk scorer's child collect into a concrete collector (the
-  per-child hit was a virtual call). The boolean case's remaining time is the
-  generic `ReqOptSumScorer`/conjunction scorers around the join, which
-  mirror Java's; the join's own scorer is a small share of it.
+  per-child hit was a virtual call). Then (2026-10-05) `ToParent` inside a
+  boolean (one scoring join as the `MUST` beside one optional term) got its
+  own bulk path, `Bulk::ReqScorerOpt`: `ReqOptSumScorer` when the required
+  scorer's maximum is unbounded, so no threshold can skip a document of it
+  and the generic leap-frogging only cost a virtual call per document on each
+  side -- 6.91 ms -> 6.00 ms, 1.10x -> 1.26x (interleaved against the build
+  before, noise floor 1.12x; every other join case unchanged).
 - **T10.3** — Query-time joins. **Ported** (`lucene-search/src/join/query_time.rs`,
   `exec/query_join.rs`): `JoinUtil`'s four `createJoinQuery` overloads with
   every collector and to-side query -- `TermsCollector`/`TermsWithScoreCollector`

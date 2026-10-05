@@ -82,6 +82,12 @@ pub(crate) enum Bulk<'a> {
         Box<TermLeg<'a>>,
         DocScores,
     ),
+    /// `ReqOptSumScorer` over one required scorer whose maximum score is
+    /// unbounded (so no threshold ever skips a document of it, nor makes
+    /// the optional clause required) and one optional term: every required
+    /// match scored, the term's score added where it matches. See
+    /// [`req_scorer_opt_score`].
+    ReqScorerOpt(BoxScorer<'a>, Box<TermLeg<'a>>),
     /// `ReqExclBulkScorer`.
     ReqExcl(Box<Bulk<'a>>, BoxScorer<'a>),
     /// A dismax of terms, a window at a time. See `DisMaxBulk`.
@@ -120,6 +126,7 @@ impl<'a> Bulk<'a> {
             Bulk::ScorerDisjunction(..) => "scorer_disjunction",
             Bulk::ReqOpt(..) => "req_opt",
             Bulk::ReqBitsOpt(..) => "req_bits_opt",
+            Bulk::ReqScorerOpt(..) => "req_scorer_opt",
             Bulk::ReqExcl(..) => "req_excl",
             Bulk::DisMax(..) => "dismax",
             Bulk::Union(..) => "union",
@@ -188,6 +195,9 @@ impl<'a> Bulk<'a> {
                 min,
                 max,
             ),
+            Bulk::ReqScorerOpt(req, leg) => {
+                req_scorer_opt_score(&mut **req, leg, live_docs, collector, min, max)
+            }
             Bulk::DisMax(legs, state) => state.score(legs, live_docs, collector, min, max),
             Bulk::Union(legs) => union_score(legs, live_docs, collector, min, max),
             Bulk::Combined(c) => c.score(live_docs, collector, min, max),
@@ -240,6 +250,56 @@ impl<C: ScoringCollector + ?Sized> ScoringCollector for FilterCollector<'_, '_, 
     fn pruning_threshold(&self) -> Option<f32> {
         self.inner.pruning_threshold()
     }
+}
+
+/// Whether `child` is a one-phase scorer (not a term leg) that
+/// `ReqOptSumScorer` would never skip in: outside `TOP_SCORES` it skips
+/// nothing; in `TOP_SCORES` only when the scorer's maximum is unbounded for
+/// every block ([`super::Scorer::max_score_unbounded`]): `reqMaxScore` and
+/// every block's maximum are then infinite, so no threshold skips a block
+/// (`advanceImpacts`) or makes the optional clause required
+/// (`setMinCompetitiveScore`), and nothing reaches the required scorer's own
+/// `setMinCompetitiveScore`, which `ReqOptSumScorer` never calls.
+fn unbounded_one_phase(child: &Child<'_>, mode: Mode) -> bool {
+    match child {
+        Child::Scorer(s) => !s.two_phase() && (mode != Mode::TopScores || s.max_score_unbounded()),
+        _ => false,
+    }
+}
+
+/// [`Bulk::ReqScorerOpt`]: `DefaultBulkScorer` over `ReqOptSumScorer` when
+/// its required scorer's maximum is unbounded -- every required match in
+/// `[min, max)`, live ones collected with the required score plus, as a
+/// `float` addition, the optional term's where it is on the same document.
+/// Returns the next document to score.
+fn req_scorer_opt_score<C: ScoringCollector + ?Sized>(
+    req: &mut dyn super::Scorer,
+    leg: &mut TermLeg<'_>,
+    live_docs: Option<&FixedBitSet>,
+    collector: &mut C,
+    min: i32,
+    max: i32,
+) -> Result<i32> {
+    #[cfg(test)]
+    test_only_req_scorer_opt::record();
+    let mut doc = req.doc_id();
+    if doc < min {
+        doc = req.advance(min)?;
+    }
+    while doc < max {
+        if live_docs.is_none_or(|l| l.get_doc(doc)) {
+            let mut score = req.score()?;
+            if leg.doc_id() < doc {
+                leg.advance(doc)?;
+            }
+            if leg.doc_id() == doc {
+                score += leg.score()?;
+            }
+            collector.collect(doc, score);
+        }
+        doc = req.next_doc()?;
+    }
+    Ok(doc)
 }
 
 /// [`Bulk::Union`]: the documents of any leg in `[min, max)`, live ones
@@ -957,6 +1017,24 @@ pub(crate) fn bulk_boolean<'a>(
             Box::new(leg.into_leg()),
             DocScores::default(),
         ))
+    } else if must.len() == 1
+        && filter.is_empty()
+        && should.len() == 1
+        && msm == 0
+        && mode.needs_scores()
+        && should[0].0.is_leg()
+        && unbounded_one_phase(&must[0].0, mode)
+    {
+        // A required clause no threshold can skip in (a block join scoring
+        // its children's average, say) and one optional term:
+        // `ReqOptSumScorer` without a virtual call per document on the
+        // optional side or around the two.
+        let (leg, _) = should.pop().expect("one optional clause");
+        let (req, _) = must.pop().expect("one required clause");
+        Some(Bulk::ReqScorerOpt(
+            req.into_scorer(mode),
+            Box::new(leg.into_leg()),
+        ))
     } else if required > 0
         && msm == 0
         && mode.needs_scores()
@@ -1264,4 +1342,23 @@ pub(crate) fn score_segment_below<C: ScoringCollector + ?Sized>(
 ) -> Result<()> {
     bulk.score(mode, live_docs, collector, 0, end)?;
     Ok(())
+}
+
+/// How many windows [`Bulk::ReqScorerOpt`] scored, per thread, for a test
+/// that must show the path is taken.
+#[cfg(test)]
+pub(crate) mod test_only_req_scorer_opt {
+    use std::cell::Cell;
+
+    thread_local! {
+        static WINDOWS: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn record() {
+        WINDOWS.with(|w| w.set(w.get() + 1));
+    }
+
+    pub(crate) fn take() -> u64 {
+        WINDOWS.with(|w| w.replace(0))
+    }
 }

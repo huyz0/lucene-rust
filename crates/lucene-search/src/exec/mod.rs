@@ -131,6 +131,15 @@ pub(crate) trait Scorer {
     /// `Scorer.getMaxScore(upTo)`: a bound on every score up to and including
     /// `up_to`.
     fn max_score(&mut self, up_to: i32) -> Result<f32>;
+    /// Whether [`Self::max_score`] is `+Infinity` whatever its `up_to` and
+    /// whatever state the scorer is in (a block join averaging, summing or
+    /// taking the extremes of its children's scores reports no bound), so
+    /// no threshold can ever skip one of its documents. `false` unless a
+    /// scorer knows it: a wrapper that does not forward it only loses a
+    /// faster path.
+    fn max_score_unbounded(&self) -> bool {
+        false
+    }
     /// `Scorable.setMinCompetitiveScore`: documents scoring below `min` may be
     /// skipped from now on.
     fn set_min_competitive_score(&mut self, _min: f32) -> Result<()> {
@@ -333,6 +342,9 @@ impl Scorer for Below<'_> {
     }
     fn max_score(&mut self, up_to: i32) -> Result<f32> {
         self.inner.max_score(up_to)
+    }
+    fn max_score_unbounded(&self) -> bool {
+        self.inner.max_score_unbounded()
     }
     fn set_min_competitive_score(&mut self, min: f32) -> Result<()> {
         self.inner.set_min_competitive_score(min)

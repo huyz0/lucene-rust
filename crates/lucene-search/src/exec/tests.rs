@@ -1668,6 +1668,9 @@ mod fixture {
             "min_should_match",
             "scorer_disjunction",
             "req_opt",
+            // A one-phase nested boolean beside one optional term, scored
+            // exhaustively (`COMPLETE`: no threshold to skip on).
+            "req_scorer_opt",
             "req_excl",
             "dismax",
             "union",
@@ -2390,4 +2393,97 @@ fn a_scorer_confirms_a_batch_one_document_at_a_time_by_default() {
     s.matches_batch(&[2, 5, 9], &mut keep).unwrap();
     assert_eq!(keep, [true; 3]);
     assert_eq!(s.doc_id(), 9);
+}
+
+/// A block join scoring its children (unbounded maximum) as the one `MUST`
+/// beside one optional term takes `Bulk::ReqScorerOpt` in `TOP_SCORES`, and
+/// returns Lucene's hits and score bits (`GenBlockJoin`'s
+/// recorded searches); with `ScoreMode::None` the join's maximum is its
+/// child's, a threshold can skip on it, and top hits keep the generic
+/// `ReqOptSumScorer`.
+#[test]
+fn a_scoring_block_join_beside_an_optional_term_scores_like_lucene() {
+    use crate::directory_reader::DirectoryReader;
+    use crate::field_norms::FieldNorms;
+    use crate::index_searcher::{IndexSearcher, SegmentNorms};
+    use crate::join::{QueryBitSetProducer, ScoreMode, ToParentBlockJoinQuery};
+    use crate::query::{BooleanQuery, Clause, TermQuery};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    let data =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data/block_join");
+    let text = std::fs::read_to_string(data.join("searches.tsv")).unwrap();
+    let reader =
+        DirectoryReader::open(&lucene_store::FsDirectory::open(data.join("index"))).unwrap();
+    let opened = reader.open_segments().unwrap();
+    let segments = opened.as_open_segments();
+    let owned = reader.field_norms_by_field(&["body".to_string()]);
+    let norms: Vec<SegmentNorms<'_, '_>> = owned
+        .iter()
+        .map(|m: &HashMap<String, FieldNorms<'_>>| Some(m))
+        .collect();
+    let searcher = IndexSearcher::new(&segments, &norms).unwrap();
+    let term = |f: &str, v: &str| Clause::Term(TermQuery::new(f, v.as_bytes().to_vec()));
+    let query = |mode: ScoreMode, word: &str| {
+        let parents = Arc::new(QueryBitSetProducer::new(BooleanQuery {
+            must: vec![term("type", "parent")],
+            ..Default::default()
+        }));
+        let children = BooleanQuery {
+            filter: vec![term("type", "child")],
+            ..Default::default()
+        };
+        let inner = BooleanQuery {
+            must: vec![ToParentBlockJoinQuery::new(children, parents, mode).into()],
+            should: vec![term("body", word)],
+            ..Default::default()
+        };
+        BooleanQuery {
+            must: vec![Clause::Boolean(Box::new(inner))],
+            ..Default::default()
+        }
+    };
+    let hits = |q: &BooleanQuery, n: usize| -> Vec<(i32, u32)> {
+        searcher
+            .search(q, n)
+            .unwrap()
+            .score_docs
+            .iter()
+            .map(|h| (h.doc, h.score.to_bits()))
+            .collect()
+    };
+    for (mode, name, word) in [
+        (ScoreMode::Max, "Max", "green"),
+        (ScoreMode::Total, "Total", "rare"),
+    ] {
+        for (kind, n) in [("all", 100_000), ("top", 10)] {
+            let spec = format!(
+                "bool(must:tp({name},P0,bool(filter:t(type,child))),should:t(body,{word}))"
+            );
+            let want: Vec<(i32, u32)> = text
+                .lines()
+                .find_map(|l| l.strip_prefix(&format!("{kind}\t{spec}\t")))
+                .unwrap_or_else(|| panic!("no fixture line for {kind} {spec}"))
+                .split(' ')
+                .filter(|s| *s != "-")
+                .map(|h| {
+                    let (d, b) = h.split_once(':').unwrap();
+                    (d.parse().unwrap(), u32::from_str_radix(b, 16).unwrap())
+                })
+                .collect();
+            super::bulk::test_only_req_scorer_opt::take();
+            assert_eq!(hits(&query(mode, word), n), want, "{kind} {spec}");
+            assert!(
+                super::bulk::test_only_req_scorer_opt::take() > 0,
+                "{kind} {spec}: the path ran"
+            );
+        }
+    }
+    // No unbounded maximum: top hits (any `n`) through `ReqOptSumScorer`.
+    let q = query(ScoreMode::None, "green");
+    super::bulk::test_only_req_scorer_opt::take();
+    let top = hits(&q, 10);
+    let all = hits(&q, 100_000);
+    assert_eq!(super::bulk::test_only_req_scorer_opt::take(), 0);
+    assert_eq!(top[..], all[..top.len()]);
 }

@@ -401,6 +401,9 @@ impl Scorer for BlockJoinScorer<'_> {
         }
         Ok(f32::INFINITY)
     }
+    fn max_score_unbounded(&self) -> bool {
+        self.mode != ScoreMode::None
+    }
     fn set_min_competitive_score(&mut self, min: f32) -> Result<()> {
         if matches!(self.mode, ScoreMode::None | ScoreMode::Max) {
             self.child.set_min_competitive_score(min)?;
@@ -1201,12 +1204,14 @@ mod tests {
             assert_eq!(s.score().unwrap(), want[0], "read again, not recomputed");
             assert_eq!(s.current_range(), (0, 1));
             assert_eq!(s.max_score(5).unwrap(), f32::INFINITY);
+            assert!(s.max_score_unbounded());
             s.set_min_competitive_score(0.5).unwrap();
             assert_eq!(s.advance(3).unwrap(), 5);
             assert_eq!(s.score().unwrap(), want[1]);
             assert_eq!(s.next_doc().unwrap(), NO_MORE_DOCS);
         }
         let mut s = BlockJoinScorer::new(list(&[0], &[1.0]), bits(2, &[1]), ScoreMode::None);
+        assert!(!s.max_score_unbounded(), "its child's maximum");
         s.next_doc().unwrap();
         s.max_score(1).unwrap();
         s.set_min_competitive_score(1.0).unwrap();
