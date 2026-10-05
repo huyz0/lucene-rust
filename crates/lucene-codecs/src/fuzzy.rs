@@ -875,4 +875,62 @@ mod tests {
         assert_eq!(DEFAULT_MAX_EXPANSIONS, 50);
         const { assert!(DEFAULT_TRANSPOSITIONS) };
     }
+
+    /// The per-budget helpers agree with the whole-budget ones: matching
+    /// within `k` edits is having a distance within `k`; the boost of an
+    /// edit count is `boost`'s for the candidate's own distance -- invalid
+    /// UTF-8 counted as the decoder reads it, an empty side boosting 1; the
+    /// smaller automata are built once each, the full budget's is the
+    /// pattern's own, and a term the automaton cannot spell builds none.
+    #[test]
+    fn per_budget_helpers_agree_with_the_whole_budget() {
+        let m = FuzzyMatch::new(b"lucene", 2, 1, true);
+        for c in [
+            &b"lucene"[..],
+            b"lucine",
+            b"lcuene",
+            b"lucenes",
+            b"luc",
+            b"xucene",
+            b"l\xffcene",
+        ] {
+            for k in 0..=2u8 {
+                assert_eq!(
+                    m.matches_within(c, k),
+                    m.edits_within(c, k).is_some(),
+                    "{c:?} {k}"
+                );
+            }
+            if let Some(ed) = m.edits(c) {
+                assert_eq!(Some(m.boost_from_edits(c, ed)), m.boost(c), "{c:?}");
+            }
+        }
+        assert_eq!(m.boost_from_edits(b"lucene", 0), 1.0);
+        let empty = FuzzyMatch::new(b"", 1, 0, true);
+        assert_eq!(empty.boost(b"a"), Some(1.0));
+        assert_eq!(empty.boost_from_edits(b"a", 1), 1.0);
+
+        let full = m.cached_compiled_dfa().unwrap();
+        assert!(std::sync::Arc::ptr_eq(
+            &m.cached_compiled_dfa_within(2).unwrap(),
+            &full
+        ));
+        assert!(std::sync::Arc::ptr_eq(
+            &m.cached_compiled_dfa_within(5).unwrap(),
+            &full
+        ));
+        for k in 0..2u8 {
+            let once = m.cached_compiled_dfa_within(k).unwrap();
+            assert!(!std::sync::Arc::ptr_eq(&once, &full));
+            assert!(std::sync::Arc::ptr_eq(
+                &m.cached_compiled_dfa_within(k).unwrap(),
+                &once
+            ));
+        }
+        // An unpaired surrogate decodes to U+FFFD, which no automaton spells.
+        let bad = FuzzyMatch::new(b"a\xed\xa0\x80b", 1, 0, true);
+        assert!(bad.to_dfa(1).is_none());
+        assert!(bad.cached_compiled_dfa().is_none());
+        assert!(bad.cached_compiled_dfa_within(0).is_none());
+    }
 }

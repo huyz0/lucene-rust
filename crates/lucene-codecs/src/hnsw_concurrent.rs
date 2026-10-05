@@ -636,4 +636,54 @@ mod tests {
         assert_eq!(shared.max_node_id(), 2);
         assert_eq!(shared.max_conn(), 4);
     }
+
+    /// A worker whose scorer panics fails the build with an error rather
+    /// than taking the merging thread down; the shared view reports the
+    /// graph's size as the graph it wraps.
+    #[test]
+    fn a_panicking_worker_is_an_error_not_a_crash() {
+        #[derive(Clone)]
+        struct Panics(Line);
+        impl VectorScorer for Panics {
+            fn score(&mut self, node: i32) -> Result<f32> {
+                assert!(node < 50, "scorer failure at node {node}");
+                self.0.score(node)
+            }
+            fn max_ord(&self) -> i32 {
+                self.0.max_ord()
+            }
+        }
+        impl UpdateableVectorScorer for Panics {
+            fn set_scoring_ordinal(&mut self, ord: i32) -> Result<()> {
+                self.0.set_scoring_ordinal(ord)
+            }
+        }
+        let n = 200;
+        let err = build_concurrent(
+            vec![Panics(line(n)), Panics(line(n))],
+            6,
+            20,
+            42,
+            OnHeapHnswGraph::with_size(6, n as i32),
+            None,
+            n as i32,
+            7,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("merge worker panicked"), "{err}");
+
+        let built = build_concurrent(
+            vec![line(30)],
+            6,
+            20,
+            42,
+            OnHeapHnswGraph::with_size(6, 30),
+            None,
+            30,
+            7,
+        )
+        .unwrap();
+        let shared = ConcurrentHnswGraph::from_graph(built).unwrap();
+        assert_eq!(HnswGraphView::size(&shared), 30);
+    }
 }

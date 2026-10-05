@@ -683,4 +683,95 @@ mod tests {
         let other = [7u8; 16];
         assert!(open_fixture(&tim, &tip, &tmd, &fnm, &other, &suffix).is_err());
     }
+
+    /// `.tmd`'s field records checked as `Lucene90BlockTreeTermsReader`
+    /// checks them, each value re-encoded in place: an index block size
+    /// other than 128, a field count the file cannot hold, a field with no
+    /// terms, a doc count past `maxDoc`, sums smaller than what they sum.
+    #[test]
+    fn field_records_out_of_range_are_corrupt() {
+        let (tim, tip, tmd, fnm, id, suffix) = fixture();
+        let vint = |out: &mut Vec<u8>, v: i64| {
+            let mut v = v as u64;
+            while v >= 0x80 {
+                out.push((v as u8) | 0x80);
+                v >>= 7;
+            }
+            out.push(v as u8);
+        };
+        // Where each value of the first field record starts and ends.
+        let mut input = SliceInput::new(&tmd);
+        let version = codec_util::check_index_header(
+            &mut input,
+            TERMS_META_CODEC_NAME,
+            VERSION_START,
+            VERSION_CURRENT,
+            &id,
+            &suffix,
+        )
+        .unwrap()
+        .version;
+        assert!(version >= VERSION_START);
+        codec_util::check_index_header(
+            &mut input,
+            POSTINGS_TERMS_CODEC,
+            0,
+            POSTINGS_TERMS_VERSION_CURRENT,
+            &id,
+            &suffix,
+        )
+        .unwrap();
+        type Spans = Vec<(usize, usize, i64)>;
+        fn span(
+            spans: &mut Spans,
+            input: &mut SliceInput<'_>,
+            read: &dyn Fn(&mut SliceInput<'_>) -> i64,
+        ) {
+            let start = input.position();
+            let v = read(input);
+            spans.push((start, input.position(), v));
+        }
+        let mut spans = Spans::new();
+        let vi = |i: &mut SliceInput<'_>| i64::from(i.read_vint().unwrap());
+        let vl = |i: &mut SliceInput<'_>| i.read_vlong().unwrap();
+        span(&mut spans, &mut input, &vi); // 0: block size
+        span(&mut spans, &mut input, &vi); // 1: field count
+        span(&mut spans, &mut input, &vi); // 2: field number
+        span(&mut spans, &mut input, &vl); // 3: term count
+        blocktree::read_bytes_ref(&mut input).unwrap();
+        let field_number = spans[2].2 as i32;
+        let info = fnm.field_by_number(field_number).unwrap();
+        let has_freqs = info.index_options != crate::field_infos::IndexOptions::Docs;
+        if has_freqs {
+            span(&mut spans, &mut input, &vl); // 4: sumTotalTermFreq
+        }
+        span(&mut spans, &mut input, &vl); // sumDocFreq
+        span(&mut spans, &mut input, &vi); // docCount
+        let n = spans.len();
+        let (sum_df, doc_count) = (n - 2, n - 1);
+        let patched = |at: usize, v: i64| {
+            let (start, end, _) = spans[at];
+            let mut out = tmd[..start].to_vec();
+            vint(&mut out, v);
+            out.extend_from_slice(&tmd[end..]);
+            out
+        };
+        let err = |bytes: &[u8]| {
+            open_fixture(&tim, &tip, bytes, &fnm, &id, &suffix)
+                .unwrap_err()
+                .to_string()
+        };
+        assert!(err(&patched(0, 64)).contains("64"));
+        let too_many = err(&patched(1, 1 << 20));
+        assert!(too_many.contains(&(1 << 20).to_string()), "{too_many}");
+        let no_terms = err(&patched(3, 0));
+        assert!(no_terms.contains(&field_number.to_string()), "{no_terms}");
+        assert!(err(&patched(doc_count, 3001)).contains("3001"));
+        let docs = spans[doc_count].2;
+        assert!(err(&patched(sum_df, docs - 1)).contains(&(docs - 1).to_string()));
+        if has_freqs {
+            let sdf = spans[sum_df].2;
+            assert!(err(&patched(4, sdf - 1)).contains(&(sdf - 1).to_string()));
+        }
+    }
 }

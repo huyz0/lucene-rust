@@ -1499,4 +1499,119 @@ mod tests {
         assert_eq!(align(&mut v, 4), 4);
         assert_eq!(v, [1, 2, 3, 0]);
     }
+
+    /// `.vemq` field records `readField`/`validateFieldEntry` refuse, each
+    /// written with a valid header and footer around it: a negative field
+    /// number, a non-positive dimension, a negative region, an unknown
+    /// scalar-encoding wire number, a centroid past the end of the file, a
+    /// data length that is not `size * (packed + 16)`, a region past the end
+    /// of `.veq` -- and a `BYTE` field asked for its float vectors.
+    #[test]
+    fn field_records_out_of_range_are_corrupt() {
+        use lucene_store::data_output::DataOutput;
+        let (veq, _) = write(
+            ScalarEncoding::UnsignedByte,
+            VectorSimilarityFunction::Euclidean,
+            &[0],
+            &[0.5, -0.5],
+            2,
+            1,
+        );
+        let meta = |record: &dyn Fn(&mut Vec<u8>)| -> Vec<u8> {
+            let mut m = Vec::new();
+            codec_util::write_index_header(&mut m, META_CODEC, VERSION_CURRENT, &ID, "suf");
+            record(&mut m);
+            m.write_i32(-1);
+            codec_util::write_footer(&mut m);
+            m
+        };
+        // field, encoding, similarity, dimension, offset, length, size.
+        let head =
+            |m: &mut Vec<u8>, field: i32, enc: i32, dim: i32, off: i64, len: i64, size: i32| {
+                m.write_i32(field);
+                m.write_i32(enc);
+                m.write_i32(0);
+                m.write_vint(dim);
+                m.write_vlong(off);
+                m.write_vlong(len);
+                m.write_vint(size);
+            };
+        // A one-vector field's tail: wire 0 (unsigned byte), a two-float
+        // centroid, its dot product, and a dense ordToDoc.
+        let tail = |m: &mut Vec<u8>| {
+            m.write_vint(0);
+            for _ in 0..3 {
+                m.write_i32(0);
+            }
+            m.write_i64(-1);
+            m.write_i64(0);
+            m.write_i16(-1);
+            m.write_byte(0xff);
+        };
+        let open = |m: &[u8]| ScalarQuantizedVectorsReader::open(m, &veq, &ID, "suf");
+        let err = |m: Vec<u8>| open(&m).err().map(|e| e.to_string()).unwrap_or_default();
+        let header_end = codec_util::index_header_length(META_CODEC, "suf");
+        let data_start = codec_util::index_header_length(DATA_CODEC, "suf") as i64;
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            ("Invalid field number", meta(&|m| m.write_i32(-5))),
+            (
+                "illegal vector dimension",
+                meta(&|m| head(m, 3, 1, 0, 0, 0, 0)),
+            ),
+            (
+                "illegal quantized vector region",
+                meta(&|m| head(m, 3, 1, 2, 0, 0, -1)),
+            ),
+            (
+                "Could not get ScalarEncoding",
+                meta(&|m| {
+                    head(m, 3, 1, 2, 0, 0, 1);
+                    m.write_vint(99);
+                }),
+            ),
+            (
+                "not matching",
+                meta(&|m| {
+                    head(m, 3, 1, 2, data_start, 7, 1);
+                    tail(m);
+                }),
+            ),
+            (
+                "past the end",
+                meta(&|m| {
+                    head(m, 3, 1, 2, 1 << 40, 18, 1);
+                    tail(m);
+                }),
+            ),
+        ];
+        for (want, m) in cases {
+            assert!(m.len() > header_end);
+            let e = err(m);
+            assert!(e.contains(want), "{want}: {e}");
+        }
+        // A centroid wider than what is left of the file.
+        let wide = meta(&|m| {
+            head(m, 3, 1, 1 << 20, 0, 0, 1);
+            m.write_vint(0);
+        });
+        assert!(matches!(open(&wide), Err(Error::Store(_))));
+        // A valid empty BYTE field: its float vectors are not there.
+        let byte_field = meta(&|m| {
+            head(m, 3, 0, 2, data_start, 0, 0);
+            m.write_i64(-2);
+            m.write_i64(0);
+            m.write_i16(-1);
+            m.write_byte(0xff);
+        });
+        let r = open(&byte_field).unwrap();
+        assert_eq!(r.fields().len(), 1);
+        assert!(matches!(
+            r.quantized_vector_values(3),
+            Err(Error::EncodingMismatch(
+                3,
+                VectorEncoding::Byte,
+                VectorEncoding::Float32
+            ))
+        ));
+    }
 }
