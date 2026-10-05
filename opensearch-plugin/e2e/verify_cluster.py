@@ -297,6 +297,10 @@ def main():
     docker("stop", p)
     DOWN.add(p)
     wait(lambda: health("segrep_rust", "yellow") and primary("segrep_rust") == r, "the segrep replica promoted")
+    # The cluster state names r primary before its IndexShard swaps the NRTReplicationEngine for
+    # a primary engine (the promotion runs on the shard's own thread after the primary-term
+    # bump), so the new engine may not be counted yet: wait for it rather than read once.
+    wait(lambda: engines(r).get("rust", 0) > rust_before, f"{r}'s promoted engine", 60)
     check(engines(r).get("rust", 0) > rust_before, f"{r} was promoted into the Rust engine: {engines(r)}")
     if not native:
         check(engines(r).get("rust_indexer", 0) >= 1, f"the promoted engine on {r} went through RustIndexerFactory: {engines(r)}")
