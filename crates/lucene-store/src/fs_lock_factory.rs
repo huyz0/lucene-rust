@@ -611,4 +611,53 @@ mod tests {
             Err(Error::Io(_))
         ));
     }
+
+    /// A lock file deleted and created again behind a holder's back is a
+    /// different file: both factories' locks report the change. (Twenty
+    /// milliseconds apart, so the new file's time differs at any filesystem
+    /// timestamp granularity in use here.)
+    #[test]
+    fn a_lock_file_recreated_behind_the_holder_is_detected() {
+        let root = TempDir::new("lock-recreated");
+        let native = NativeFsLockFactory
+            .obtain_fs_lock(&root, "native.lock")
+            .unwrap();
+        let simple = SimpleFsLockFactory
+            .obtain_fs_lock(&root, "simple.lock")
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        for name in ["native.lock", "simple.lock"] {
+            fs::remove_file(root.join(name)).unwrap();
+            fs::write(root.join(name), b"").unwrap();
+        }
+        for lock in [&native, &simple] {
+            let err = lock.ensure_valid().unwrap_err();
+            assert!(
+                err.to_string().contains("changed by an external force"),
+                "{err}"
+            );
+        }
+        native.close().unwrap();
+        // The recreated file is not the one this lock created: removing it
+        // is refused.
+        assert!(simple.close().is_err());
+    }
+
+    /// A lock name under a directory that does not exist: neither factory
+    /// can create the file, and the native one reports both failures.
+    #[test]
+    fn a_lock_under_a_missing_directory_is_an_io_error() {
+        let root = TempDir::new("lock-missing-subdir");
+        let err = NativeFsLockFactory
+            .obtain_fs_lock(&root, "nosuch/write.lock")
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::Io(e) if e.to_string().contains("creating the lock file failed too")),
+            "{err}"
+        );
+        assert!(matches!(
+            SimpleFsLockFactory.obtain_fs_lock(&root, "nosuch/write.lock"),
+            Err(Error::Io(_))
+        ));
+    }
 }
