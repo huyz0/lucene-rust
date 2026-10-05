@@ -27,6 +27,7 @@ mod micro_geo3d;
 mod micro_geo3d_points;
 mod micro_geo_points;
 mod micro_geo_shapes;
+mod micro_aggs;
 mod micro_function;
 mod micro_grouping;
 mod micro_join;
@@ -2105,6 +2106,12 @@ fn main() {
                 .nth(2)
                 .expect("query_join needs the QueryJoinMicro index directory");
             micro_query_join::bench_query_join(warmup, measure, &index);
+        }
+        "aggs" => {
+            let index = std::env::args()
+                .nth(2)
+                .expect("aggs needs the benchmark corpus directory");
+            micro_aggs::bench_aggs(warmup, measure, &index);
         }
         "function" => {
             let index = std::env::args()

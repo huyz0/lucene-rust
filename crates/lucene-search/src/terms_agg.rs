@@ -291,6 +291,10 @@ pub(crate) fn precomputable(
 #[derive(Default)]
 pub(crate) struct TermsScratch {
     ords: Vec<i64>,
+    /// A window of a single-valued column ([`count_window_stream`]).
+    window: Vec<i64>,
+    /// The segment's counts by segment ordinal.
+    local: Vec<u32>,
 }
 
 /// Adds segment `seg`'s matches to `counts`, indexed by global ordinal: `read`
@@ -346,11 +350,15 @@ pub(crate) fn segment_counts(
     match (ords, read) {
         (Ords::Absent, _) => {}
         (Ords::Single(mut r), ColumnRead::Stream(accept)) => {
-            r.for_each_value(0, max_doc, |doc, ord| {
-                if accept.test(doc) {
-                    bump(ord);
+            bad_ord = count_window_stream(&mut r, accept, max_doc, map.len(), scratch)?.or(bad_ord);
+            // The segment's counts into the global ones, ordinal by ordinal:
+            // the same sums as one per document. (`map` holds one global
+            // ordinal per segment ordinal, each inside `counts`.)
+            for (&g, &n) in map.iter().zip(&scratch.local) {
+                if let Some(c) = counts.get_mut(g as usize) {
+                    *c += u64::from(n);
                 }
-            })?
+            }
         }
         (Ords::Single(mut r), ColumnRead::Seek(docs)) => {
             for &doc in *docs {
@@ -388,6 +396,121 @@ pub(crate) fn segment_counts(
 
 fn store_err(e: lucene_store::Error) -> crate::Error {
     crate::Error::from(lucene_codecs::doc_values::Error::from(e))
+}
+
+/// Documents per [`count_window_stream`] window: a multiple of 64, so each
+/// window's presence words line up with the segment's bit sets.
+const COUNT_WINDOW: usize = 1024;
+
+/// A single-valued ordinal column streamed a window at a time
+/// ([`NumericReader::fill_window`]), each window's documents with a value
+/// and `accept`ed taken a word at a time, into `scratch.local` -- the
+/// segment's counts by segment ordinal, OpenSearch's `LowCardinality`
+/// shape: one array index per match rather than a global-ordinal lookup
+/// too; `ords` is the segment's dictionary size. `Some(ordinal)` for an
+/// ordinal past the dictionary (counted nowhere).
+fn count_window_stream(
+    r: &mut NumericReader<'_>,
+    accept: &crate::aggs::Accept<'_>,
+    max_doc: i32,
+    ords: usize,
+    scratch: &mut TermsScratch,
+) -> Result<Option<i64>> {
+    // A few ordinals take most matches each: their counters are spread over
+    // lanes (summed after), so consecutive matches of one ordinal do not
+    // each wait on the previous increment's store.
+    if ords <= LANED_ORDS {
+        count_lanes::<COUNT_LANES>(r, accept, max_doc, ords, scratch)
+    } else {
+        count_lanes::<1>(r, accept, max_doc, ords, scratch)
+    }
+}
+
+/// Counter lanes per ordinal for a small dictionary ([`count_window_stream`]).
+const COUNT_LANES: usize = 4;
+
+/// The most ordinals counted in [`COUNT_LANES`] lanes: their counters stay
+/// in the first-level cache.
+const LANED_ORDS: usize = 2048;
+
+/// [`count_window_stream`] with `L` counters per ordinal (`local[o * L +
+/// lane]`, the lane cycling per match), folded to one per ordinal at the end.
+/// An ordinal past the dictionary (or negative) lands in one extra
+/// ordinal's counters, so the loop has no branch for it; only when that
+/// is not empty is the column read again for the ordinal to report.
+#[inline(never)]
+fn count_lanes<const L: usize>(
+    r: &mut NumericReader<'_>,
+    accept: &crate::aggs::Accept<'_>,
+    max_doc: i32,
+    ords: usize,
+    scratch: &mut TermsScratch,
+) -> Result<Option<i64>> {
+    let TermsScratch { window, local, .. } = scratch;
+    local.clear();
+    local.resize(ords.saturating_add(1).saturating_mul(L), 0);
+    let counters = local.as_mut_slice();
+    window.resize(COUNT_WINDOW, 0);
+    let window = window.as_mut_slice();
+    let mut present = [0u64; COUNT_WINDOW / 64];
+    let mut lane = 0usize;
+    let mut start = 0i32;
+    while start < max_doc {
+        // ARITH: `start < max_doc`, so the difference is positive; `start`
+        // stays a multiple of `COUNT_WINDOW` below `max_doc + COUNT_WINDOW`,
+        // and `base + w` indexes the segment's words; `o <= ords`, so
+        // `o * L + lane` is below the counters' `(ords + 1) * L`.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            let len = ((max_doc - start) as usize).min(COUNT_WINDOW);
+            r.fill_window(start, &mut window[..len], &mut present)?;
+            let base = start as usize >> 6;
+            let words = len.div_ceil(64);
+            for (w, have) in present[..words].iter_mut().enumerate() {
+                *have &= accept.word(base + w);
+            }
+            for (w, &have) in present[..words].iter().enumerate() {
+                let mut bits = have;
+                let docs = &window[w * 64..(w * 64 + 64).min(len)];
+                while bits != 0 {
+                    let i = bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
+                    let o = (docs.get(i).copied().unwrap_or(-1) as u64).min(ords as u64) as usize;
+                    if let Some(c) = counters.get_mut(o * L + lane) {
+                        *c += 1;
+                    }
+                    lane = (lane + 1) % L;
+                }
+            }
+            start += len as i32;
+        }
+    }
+    // ARITH: `ords * L + L` is the counters' length.
+    #[allow(clippy::arithmetic_side_effects)]
+    let bad = counters[ords * L..].iter().any(|&n| n > 0);
+    if L > 1 {
+        // Ordinal `o`'s lanes sit at `o * L..`, at or past `o`: folding in
+        // ascending order reads each before it is overwritten.
+        for o in 0..ords {
+            // ARITH: `o < ords`, so `o * L + L <= ords * L`, inside.
+            #[allow(clippy::arithmetic_side_effects)]
+            let sum = counters[o * L..o * L + L].iter().sum();
+            counters[o] = sum;
+        }
+    }
+    local.truncate(ords);
+    if !bad {
+        return Ok(None);
+    }
+    // A corrupt column: the first ordinal outside the dictionary, read again.
+    let mut first = None;
+    r.for_each_value(0, max_doc, |doc, ord| {
+        let outside = usize::try_from(ord).map_or(true, |o| o >= ords);
+        if first.is_none() && outside && accept.test(doc) {
+            first = Some(ord);
+        }
+    })?;
+    Ok(first)
 }
 
 /// `buildAggregations`: the top `shard_size` by count desc, then global
@@ -465,5 +588,74 @@ mod tests {
             TermsResult::default()
         );
         assert_eq!(global.value_count(), 0);
+    }
+
+    /// The streamed count (laned for a small dictionary, plain for a large
+    /// one) against one ordinal read per accepted document, and an ordinal
+    /// past a (here: deliberately understated) dictionary reported as the
+    /// first such accepted ordinal.
+    #[test]
+    fn streamed_counts_match_a_per_document_read_and_report_a_bad_ordinal() {
+        let dir = lucene_store::FsDirectory::open(std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/terms_aggs_index"
+        )));
+        let reader = crate::directory_reader::DirectoryReader::open(&dir).unwrap();
+        // Laned (a small dictionary) and plain both met, each with a bad ordinal.
+        let mut seen = [false; 2];
+        for field in ["kw", "sk", "hk"] {
+            for seg in reader.segment_readers() {
+                let Some((Ords::Single(mut r), _, entry)) = keyword_column(seg, field).unwrap()
+                else {
+                    continue;
+                };
+                let ords = usize::try_from(entry.terms_dict_size).unwrap();
+                let max_doc = seg.max_doc;
+                // Every third document accepted.
+                let words: Vec<u64> = (0..usize::try_from(max_doc).unwrap().div_ceil(64))
+                    .map(|_| 0x9249_2492_4924_9249)
+                    .collect();
+                let accept = crate::aggs::Accept::Marked(&words);
+                let mut want = vec![0u32; ords];
+                for doc in 0..max_doc {
+                    if accept.test(doc) {
+                        if let Some(o) = r.value(doc).unwrap() {
+                            want[usize::try_from(o).unwrap()] += 1;
+                        }
+                    }
+                }
+                let mut scratch = TermsScratch::default();
+                let bad = count_window_stream(&mut r, &accept, max_doc, ords, &mut scratch);
+                assert_eq!(bad.unwrap(), None, "{field}");
+                assert_eq!(scratch.local, want, "{field}");
+                // One ordinal fewer than the dictionary holds: the top one
+                // is outside it, counted nowhere and reported.
+                let top = i64::try_from(ords - 1).unwrap();
+                if want[ords - 1] > 0 {
+                    let bad = count_window_stream(&mut r, &accept, max_doc, ords - 1, &mut scratch);
+                    assert_eq!(bad.unwrap(), Some(top), "{field}");
+                    assert_eq!(scratch.local[..], want[..ords - 1], "{field}");
+                    seen[usize::from(ords - 1 > LANED_ORDS)] = true;
+                }
+            }
+        }
+        assert_eq!(seen, [true, true]);
+    }
+
+    /// Counts come off the postings only for a field with postings and at
+    /// most `MAX_PRECOMPUTE_CARDINALITY` terms.
+    #[test]
+    fn only_a_small_indexed_field_is_precomputable() {
+        let dir = lucene_store::FsDirectory::open(std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/terms_aggs_index"
+        )));
+        let reader = crate::directory_reader::DirectoryReader::open(&dir).unwrap();
+        let opened = reader.open_segments().unwrap();
+        for seg in opened.as_open_segments() {
+            assert!(precomputable(seg.fields, "body"));
+            assert!(!precomputable(seg.fields, "kw"), "doc values only");
+            assert!(!precomputable(seg.fields, "no_such_field"));
+        }
     }
 }

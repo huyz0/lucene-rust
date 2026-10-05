@@ -213,6 +213,13 @@ case "$BENCH" in
     PREP_ARGS=(build "$INDEX")
     JAVA_ARGS=(run)
     NEEDS_INDEX=1 ;;
+  aggs)
+    # M10 stage 3's pair (AggsMicro.java / micro_aggs.rs): the plugin's
+    # `terms` aggregation behind a dense filter against OpenSearch's
+    # collector for it, over the benchmark corpus (benchmarks/.corpus/merged).
+    MAIN=AggsMicro
+    SRC=benchmarks/micro/java/AggsMicro.java
+    NEEDS_INDEX=1 ;;
   pfor_decode)
     MAIN=org.apache.lucene.codecs.lucene104.PForUtilMicro
     SRC=benchmarks/micro/java/org/apache/lucene/codecs/lucene104/PForUtilMicro.java ;;
