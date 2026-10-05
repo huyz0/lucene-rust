@@ -867,6 +867,9 @@ pub fn leaf_matches(
                 .collect();
                 Ok(from_sub_matches(subs))
             }
+            crate::extended_query::ExtendedQuery::Interval(q) => {
+                crate::intervals::matches::interval_matches(seg, q, Arc::new(clause.clone()), doc)
+            }
             // `ToParentBlockJoinQuery` (`MATCH_WITH_NO_TERMS` where its
             // scorer matches) and everything else: `Weight`'s default.
             _ => default_matches(seg, clause, doc),

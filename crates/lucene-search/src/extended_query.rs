@@ -60,6 +60,8 @@ pub enum ExtendedQuery {
     FunctionRange(crate::function::FunctionRangeQuery),
     FunctionMatch(crate::function::FunctionMatchQuery),
     FunctionScore(crate::function::FunctionScoreQuery),
+    /// `lucene-queries`' `IntervalQuery` ([`crate::intervals`]).
+    Interval(crate::intervals::IntervalQuery),
 }
 
 macro_rules! into_clause {
@@ -153,6 +155,7 @@ impl ExtendedQuery {
             ExtendedQuery::Function(_) => "FunctionQuery",
             ExtendedQuery::FunctionRange(_) => "FunctionRangeQuery",
             ExtendedQuery::FunctionMatch(_) => "FunctionMatchQuery",
+            ExtendedQuery::Interval(_) => "IntervalQuery",
             ExtendedQuery::FunctionScore(_) => "FunctionScoreQuery",
         }
     }

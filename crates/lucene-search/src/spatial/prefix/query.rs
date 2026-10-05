@@ -949,7 +949,9 @@ struct IntersectsVisitor {
 
 impl IntersectsVisitor {
     fn results(&mut self) -> &mut FixedBitSet {
-        self.results.as_mut().expect("start() made the results")
+        self.results
+            .as_mut()
+            .expect("the visit's start made the results")
     }
 }
 
