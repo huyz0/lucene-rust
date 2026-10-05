@@ -650,7 +650,8 @@ impl PartialEq for RescoreTopNQuery {
 /// `rewrite(searcher)` returns, a
 /// [`crate::common_terms::CommonTermsQuery`] its boolean of rare and
 /// frequent terms, a [`crate::mlt::MoreLikeThisQuery`] its text's
-/// interesting terms. `None` when there are none.
+/// interesting terms, a span query holding a multi-term wrapper its terms'
+/// span disjunction. `None` when there are none.
 ///
 /// # Errors
 /// What a [`RescoreTopNQuery::rewrite`] reports.
@@ -679,6 +680,11 @@ pub fn rewrite_rescore_clauses(
                 // the reader's term statistics.
                 ExtendedQuery::CommonTerms(q) => Some(q.rewrite(ctx.searcher()?)?),
                 ExtendedQuery::MoreLikeThis(q) => Some(q.rewrite(ctx.searcher()?)?),
+                // `SpanMultiTermQueryWrapper.rewrite`: a span disjunction of
+                // the terms the reader holds.
+                ExtendedQuery::Span(q) if q.needs_rewrite() => {
+                    Some(Clause::from(q.rewrite(ctx.searcher()?)?))
+                }
                 _ => None,
             },
             Clause::Boolean(b) => boolean(b, ctx)?.map(|b| Clause::Boolean(Box::new(b))),
@@ -741,7 +747,8 @@ pub(crate) fn has_rescore_clauses(query: &BooleanQuery) -> bool {
                     ExtendedQuery::RescoreTopN(_)
                         | ExtendedQuery::CommonTerms(_)
                         | ExtendedQuery::MoreLikeThis(_)
-                ) || e.children().into_iter().any(clause)
+                ) || matches!(e.as_ref(), ExtendedQuery::Span(q) if q.needs_rewrite())
+                    || e.children().into_iter().any(clause)
             }
             Clause::Boolean(b) => has_rescore_clauses(b),
             Clause::DisjunctionMax(d) => d.disjuncts.iter().any(clause),

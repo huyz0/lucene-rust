@@ -2,7 +2,8 @@
 //! `benchmarks/micro/java/QueriesMicro.java`: per word, one top-10 search of
 //! each case -- interval queries (ordered, phrase, unordered under
 //! `maxgaps`, a phrase over a disjunction, containing, at-least, a prefix,
-//! a payload filter), `CommonTermsQuery` and `MoreLikeThisQuery` -- over
+//! a payload filter), `CommonTermsQuery`, `MoreLikeThisQuery` and the span
+//! and payload queries -- over
 //! the 200 000-document, four-segment index the Java side builds
 //! (`QueriesMicro build <dir>`). Each case prints a `#check` digest of its
 //! hits the report compares before it shows a ratio.
@@ -13,9 +14,14 @@ use std::time::Duration;
 use lucene_search::common_terms::CommonTermsQuery;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
+use lucene_search::extended_query::{MultiTermQuery, MultiTermSource, RewriteMethod};
 use lucene_search::mlt::MoreLikeThisQuery;
+use lucene_search::spans::payloads::{
+    PayloadDecoder, PayloadFunction, PayloadScoreQuery, SpanPayloadCheckQuery,
+};
+use lucene_search::spans::SpanNode;
 use lucene_search::intervals::{IntervalQuery, Intervals, IntervalsSource, PayloadFilter};
-use lucene_search::query::{BooleanQuery, Clause};
+use lucene_search::query::{BooleanQuery, Clause, PrefixQuery};
 use lucene_search::query_visitor::Occur;
 use lucene_search::top_docs::TopDocs;
 use lucene_store::FsDirectory;
@@ -140,6 +146,46 @@ pub fn bench_queries(w: Duration, m: Duration, dir: &str) {
             "pay",
             Intervals::ordered(vec![Intervals::term_with_payload_filter(a, filter), t(b)]),
         )
+    });
+    let st = |f: &str, w: &str| SpanNode::term(f, w);
+    let sp = |q: SpanNode| one(q.into());
+    cases("sp_first", &words, &s, w, m, &move |a, _, _| sp(SpanNode::first(st("body", a), 3)));
+    cases("sp_pos_range", &words, &s, w, m, &move |a, b, _| {
+        let near = SpanNode::near(vec![st("body", a), st("body", b)], 1, true).unwrap();
+        sp(SpanNode::position_range(near, 2, 10))
+    });
+    cases("sp_not", &words, &s, w, m, &move |a, b, _| {
+        sp(SpanNode::not(st("body", a), st("body", b), 1, 1).unwrap())
+    });
+    cases("sp_containing", &words, &s, w, m, &move |a, b, c| {
+        let near = SpanNode::near(vec![st("body", a), st("body", c)], 4, true).unwrap();
+        sp(SpanNode::containing(near, st("body", b)).unwrap())
+    });
+    cases("sp_within", &words, &s, w, m, &move |a, b, c| {
+        let near = SpanNode::near(vec![st("body", a), st("body", c)], 4, false).unwrap();
+        sp(SpanNode::within(near, st("body", b)).unwrap())
+    });
+    cases("sp_multi", &words, &s, w, m, &move |a, b, _| {
+        let prefix = SpanNode::multi_term(MultiTermQuery::new(
+            MultiTermSource::Prefix(PrefixQuery::new("body", &a[..2])),
+            RewriteMethod::default(),
+        ));
+        sp(SpanNode::near(vec![prefix, st("body", b)], 2, true).unwrap())
+    });
+    cases("sp_check", &words, &s, w, m, &move |a, _, _| {
+        sp(SpanNode::PayloadCheck(Box::new(SpanPayloadCheckQuery::new(
+            st("pay", a),
+            vec![Some(vec![1])],
+        ))))
+    });
+    cases("sp_pscore", &words, &s, w, m, &move |a, b, _| {
+        let near = SpanNode::near(vec![st("pay", a), st("pay", b)], 2, true).unwrap();
+        sp(SpanNode::PayloadScore(Box::new(PayloadScoreQuery::new(
+            near,
+            PayloadFunction::Sum,
+            PayloadDecoder::Float,
+            true,
+        ))))
     });
     let analyzer = std::sync::Arc::new(lucene_analysis::Analyzer::standard(None));
     cases("mlt_query", &words, &s, w, m, &move |a, b, c| {

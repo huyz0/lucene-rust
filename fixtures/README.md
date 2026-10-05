@@ -1228,6 +1228,16 @@ outright.
   score bits, five explanations) and the `Matches` of every hit and of the
   explained documents, or Lucene's exception.
 
+- `GenSpans.java` (M10 T10.6) → `spans/`, for `lucene-search`'s
+  `spans_fixtures.rs`: `index/`, four segments with deletions in two, of text
+  with positions and offsets (`body`, a stop word leaving holes; `body2`, the
+  words reversed) and the same text with payloads: one byte (`pay`, none on
+  every fifth position), a big-endian `int` (`ipay`), a `float` (`fpay`) and a
+  short UTF-8 string (`spay`), none on every sixth; `queries.tsv`: 73 span and
+  payload queries -- `toString`, then plain, boosted and as a boolean's
+  required clause, hits with score bits and five explanations, or Lucene's
+  exception.
+
 - `GenMoreLikeThis.java` (M10 T10.6) → `mlt/`, for `lucene-search`'s
   `mlt_fixtures.rs` and `common_terms_fixtures.rs`: `index/`, four segments
   with deletions in two, of stored text (`body`, some documents twice, some

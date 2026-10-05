@@ -158,6 +158,9 @@ pub(crate) fn collect_terms(q: &ExtendedQuery, out: &mut Vec<(String, Vec<u8>)>)
                 out.push((n.phrase.field.clone(), t.clone()));
             }
         }
+        // `SpanWeight.buildSimWeight`: the terms the weight takes its
+        // statistics from (and a not query's exclude side, built too).
+        ExtendedQuery::Span(q) => crate::spans::all_terms(q, out),
         _ => {}
     }
 }
@@ -230,6 +233,7 @@ pub(crate) fn build<'a>(
         ExtendedQuery::FunctionRange(q) => super::function::function_range(ctx, q),
         ExtendedQuery::FunctionMatch(q) => super::function::function_match(ctx, q, boost, mode),
         ExtendedQuery::Interval(q) => super::intervals::interval(ctx, q, boost, mode),
+        ExtendedQuery::Span(q) => super::spans::span_node(ctx, q, boost, mode),
         ExtendedQuery::FunctionScore(q) => {
             super::function::function_score(ctx, q, boost, mode, top_level)
         }

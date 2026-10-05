@@ -134,6 +134,15 @@ impl<'a> LeafPositions<'a> {
         })
     }
 
+    /// `DocIdSetIterator.nextDoc()` from `current`, the document the leaf
+    /// is on: a cursor's one-slot step rather than an `advance`.
+    pub(crate) fn next_doc(&mut self, current: i32) -> Result<i32> {
+        match self {
+            LeafPositions::Lazy(cursor) => Ok(cursor.next_doc()?),
+            _ => self.advance(current.saturating_add(1)),
+        }
+    }
+
     /// The leaf's frequency in `doc`: `0` when it is not on `doc`.
     pub(crate) fn freq_at(&self, doc: i32) -> u64 {
         match self {

@@ -23,9 +23,23 @@ import org.apache.lucene.index.Term;
 import org.apache.lucene.queries.CommonTermsQuery;
 import org.apache.lucene.queries.intervals.IntervalQuery;
 import org.apache.lucene.queries.mlt.MoreLikeThisQuery;
+import org.apache.lucene.queries.payloads.PayloadDecoder;
+import org.apache.lucene.queries.payloads.PayloadScoreQuery;
+import org.apache.lucene.queries.payloads.SpanPayloadCheckQuery;
+import org.apache.lucene.queries.payloads.SumPayloadFunction;
+import org.apache.lucene.queries.spans.SpanContainingQuery;
+import org.apache.lucene.queries.spans.SpanFirstQuery;
+import org.apache.lucene.queries.spans.SpanMultiTermQueryWrapper;
+import org.apache.lucene.queries.spans.SpanNearQuery;
+import org.apache.lucene.queries.spans.SpanNotQuery;
+import org.apache.lucene.queries.spans.SpanPositionRangeQuery;
+import org.apache.lucene.queries.spans.SpanQuery;
+import org.apache.lucene.queries.spans.SpanTermQuery;
+import org.apache.lucene.queries.spans.SpanWithinQuery;
 import org.apache.lucene.queries.intervals.Intervals;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.PrefixQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.TopDocs;
@@ -36,7 +50,7 @@ import org.apache.lucene.util.BytesRef;
 /**
  * M10 T10.6's benchmark pair, against {@code benchmarks/rust-runner/src/micro_queries.rs}: per
  * word, one top-10 search of each case (interval queries, {@code CommonTermsQuery}, {@code
- * MoreLikeThisQuery}) over a 200 000-document, four-segment index of text with
+ * MoreLikeThisQuery}, span and payload queries) over a 200 000-document, four-segment index of text with
  * positions ({@code body}) and positions with one-byte payloads ({@code pay}).
  *
  * <p>Usage: {@code QueriesMicro build <dir>}, then {@code QueriesMicro run <dir>}.
@@ -278,6 +292,60 @@ public final class QueriesMicro {
             q.setLowFreqMinimumNumberShouldMatch(0.5f);
             return q;
           });
+      cases("sp_first", words, s, (a, b, c) -> new SpanFirstQuery(st("body", a), 3));
+      cases(
+          "sp_pos_range",
+          words,
+          s,
+          (a, b, c) ->
+              new SpanPositionRangeQuery(
+                  new SpanNearQuery(new SpanQuery[] {st("body", a), st("body", b)}, 1, true), 2, 10));
+      cases("sp_not", words, s, (a, b, c) -> new SpanNotQuery(st("body", a), st("body", b), 1, 1));
+      cases(
+          "sp_containing",
+          words,
+          s,
+          (a, b, c) ->
+              new SpanContainingQuery(
+                  new SpanNearQuery(new SpanQuery[] {st("body", a), st("body", c)}, 4, true),
+                  st("body", b)));
+      cases(
+          "sp_within",
+          words,
+          s,
+          (a, b, c) ->
+              new SpanWithinQuery(
+                  new SpanNearQuery(new SpanQuery[] {st("body", a), st("body", c)}, 4, false),
+                  st("body", b)));
+      cases(
+          "sp_multi",
+          words,
+          s,
+          (a, b, c) ->
+              new SpanNearQuery(
+                  new SpanQuery[] {
+                    new SpanMultiTermQueryWrapper<>(new PrefixQuery(new Term("body", a.substring(0, 2)))),
+                    st("body", b)
+                  },
+                  2,
+                  true));
+      cases(
+          "sp_check",
+          words,
+          s,
+          (a, b, c) ->
+              new SpanPayloadCheckQuery(
+                  st("pay", a), java.util.List.of(new BytesRef(new byte[] {1}))));
+      cases(
+          "sp_pscore",
+          words,
+          s,
+          (a, b, c) ->
+              new PayloadScoreQuery(
+                  new SpanNearQuery(new SpanQuery[] {st("pay", a), st("pay", b)}, 2, true),
+                  new SumPayloadFunction(),
+                  PayloadDecoder.FLOAT_DECODER,
+                  true));
       StandardAnalyzer analyzer = new StandardAnalyzer();
       cases(
           "mlt_query",
@@ -290,6 +358,10 @@ public final class QueriesMicro {
                   analyzer,
                   "body"));
     }
+  }
+
+  static SpanTermQuery st(String field, String word) {
+    return new SpanTermQuery(new Term(field, word));
   }
 
   public static void main(String[] args) throws IOException {

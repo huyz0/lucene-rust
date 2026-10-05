@@ -323,6 +323,7 @@ pub(crate) fn describe_clause(clause: &Clause) -> String {
             crate::extended_query::ExtendedQuery::FunctionMatch(f) => format!("{f:?}"),
             crate::extended_query::ExtendedQuery::FunctionScore(f) => format!("{f:?}"),
             crate::extended_query::ExtendedQuery::Interval(f) => f.to_string(),
+            crate::extended_query::ExtendedQuery::Span(f) => f.to_string(),
             _ => q.name().to_string(),
         },
         Clause::Term(q) => format!("{}:{}", q.field, term(&q.term)),
@@ -549,6 +550,11 @@ pub fn explain_clause_with_stats(
                     fields, doc_in, pos_in, pay_in, live_docs, points, norms, global,
                 );
                 return crate::exec::intervals::explain_interval(&ctx, iq, 1.0, doc);
+            }
+            if let crate::extended_query::ExtendedQuery::Span(sq) = q.as_ref() {
+                return explain_span(
+                    fields, doc_in, pos_in, pay_in, live_docs, points, norms, global, sq, 1.0, doc,
+                );
             }
             if let Some(e) = crate::exec::join::explain_extended(
                 fields, doc_in, pos_in, pay_in, live_docs, points, norms, global, q, doc,
@@ -932,7 +938,7 @@ fn explain_term_tfidf(
 /// One term's `idf` node, verbatim from `BM25Similarity.idfExplain(FieldStats,
 /// TermStats)` -- the description and both leaf-detail descriptions are real
 /// Lucene's exact strings (`N`/`n`, not `docCount`/`docFreq`).
-fn idf_explanation(idf: f32, doc_freq: i64, doc_count: i64) -> Explanation {
+pub(crate) fn idf_explanation(idf: f32, doc_freq: i64, doc_count: i64) -> Explanation {
     Explanation::match_(
         idf,
         "idf, computed as log(1 + (N - n + 0.5) / (n + 0.5)) from:",
@@ -1471,6 +1477,12 @@ fn explain_boost(
             );
             return crate::exec::intervals::explain_interval(&ctx, iq, boost, doc);
         }
+        // A span query's weight takes the boost into its similarity.
+        if let crate::extended_query::ExtendedQuery::Span(sq) = e.as_ref() {
+            return explain_span(
+                fields, doc_in, pos_in, pay_in, live_docs, points, norms, global, sq, boost, doc,
+            );
+        }
     }
     // Term weights take the boost into their BM25 explanation, and a
     // boolean or dis-max of them hands it down (`BooleanWeight` creates its
@@ -1522,6 +1534,32 @@ fn explain_boost(
     let value = inner.value * nested.boost;
     Ok(Explanation::match_(value, "product of:")
         .with_details(vec![inner, Explanation::match_(nested.boost, "boost")]))
+}
+
+/// `SpanWeight.explain` over the segment as a scorer tree sees it, with the
+/// searcher's similarity.
+#[allow(clippy::too_many_arguments)]
+fn explain_span(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    pos_in: Option<&PosInput<'_>>,
+    pay_in: Option<&PayInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    points: Option<&PointsInput<'_>>,
+    norms: Option<&HashMap<String, FieldNorms<'_>>>,
+    global: Option<&GlobalStats>,
+    q: &crate::spans::SpanNode,
+    boost: f32,
+    doc: i32,
+) -> Result<Explanation> {
+    with_leaf_reader(|_, similarity| {
+        let mut ctx = interval_context(
+            fields, doc_in, pos_in, pay_in, live_docs, points, norms, global,
+        );
+        ctx.similarity = similarity;
+        ctx.max_doc = leaf().map(|(max_doc, _)| max_doc);
+        crate::exec::spans::explain_span_node(&ctx, q, boost, doc)
+    })
 }
 
 /// Whether `clause`'s explanation takes its weight's boost (the default

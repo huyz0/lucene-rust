@@ -68,6 +68,8 @@ pub enum ExtendedQuery {
     /// `lucene-queries`' `MoreLikeThisQuery` ([`crate::mlt`]), rewritten by
     /// the searcher before it is searched.
     MoreLikeThis(crate::mlt::MoreLikeThisQuery),
+    /// `lucene-queries`' span and payload queries ([`crate::spans`]).
+    Span(crate::spans::SpanNode),
 }
 
 macro_rules! into_clause {
@@ -164,6 +166,7 @@ impl ExtendedQuery {
             ExtendedQuery::Interval(_) => "IntervalQuery",
             ExtendedQuery::CommonTerms(_) => "CommonTermsQuery",
             ExtendedQuery::MoreLikeThis(_) => "MoreLikeThisQuery",
+            ExtendedQuery::Span(_) => "SpanQuery",
             ExtendedQuery::FunctionScore(_) => "FunctionScoreQuery",
         }
     }

@@ -51,6 +51,7 @@ pub(crate) mod query_join;
 pub(crate) mod ranges;
 mod req;
 pub(crate) mod span;
+pub(crate) mod spans;
 mod term_dismax;
 mod wand;
 
