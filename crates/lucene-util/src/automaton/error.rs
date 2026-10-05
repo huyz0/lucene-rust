@@ -62,3 +62,42 @@ impl From<TooComplexToDeterminize> for AutomatonError {
 pub(crate) fn illegal_argument<T>(msg: impl Into<String>) -> Result<T, AutomatonError> {
     Err(AutomatonError::IllegalArgument(msg.into()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn messages_are_javas() {
+        let e = TooComplexToDeterminize {
+            num_states: 7,
+            num_transitions: 12,
+            determinize_work_limit: 100,
+            regexp: None,
+        };
+        assert_eq!(
+            e.to_string(),
+            "Determinizing automaton with 7 states and 12 transitions would require more than \
+             100 effort."
+        );
+        let from_regexp = TooComplexToDeterminize {
+            regexp: Some("a*b".to_string()),
+            ..e.clone()
+        };
+        assert_eq!(
+            from_regexp.to_string(),
+            "Determinizing a*b would require more than 100 effort."
+        );
+        let wrapped = AutomatonError::from(e.clone());
+        assert_eq!(wrapped, AutomatonError::TooComplex(e.clone()));
+        assert_eq!(wrapped.to_string(), e.to_string());
+        assert_eq!(
+            illegal_argument::<()>("bad").unwrap_err().to_string(),
+            "bad"
+        );
+        assert_eq!(
+            AutomatonError::IllegalState("late".into()).to_string(),
+            "late"
+        );
+    }
+}

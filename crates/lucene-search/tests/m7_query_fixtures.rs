@@ -588,6 +588,9 @@ fn the_estimator_falls_back_without_a_vocabulary_and_samples_past_its_reservoir(
     let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
     let p = estimate(&segments, &norms, "nosuch", 5, 3, 1).unwrap();
     assert_eq!((p.alpha, p.beta, p.base_rate), (1.0, 0.0, 0.01));
+    // `Math.multiplyExact(nSamples, tokensPerQuery)` past an `int`.
+    let e = estimate(&segments, &norms, "body", 1 << 30, 4, 1).unwrap_err();
+    assert!(e.to_string().contains("integer overflow"), "{e}");
     for seed in [1, 7, 42] {
         let p = estimate(&segments, &norms, "title", 1, 1, seed).unwrap();
         assert!(p.alpha.is_finite() && p.alpha > 0.0, "{seed}: {}", p.alpha);
@@ -598,4 +601,158 @@ fn the_estimator_falls_back_without_a_vocabulary_and_samples_past_its_reservoir(
             p.base_rate
         );
     }
+}
+
+/// `BM25Similarity` passed explicitly but not recognised as the default:
+/// the similarity path, scoring through `similarity.scorer(...)`.
+#[derive(Debug)]
+struct ExplicitBm25(lucene_search::similarities::Bm25Similarity);
+
+impl lucene_search::similarities::NormSimilarity for ExplicitBm25 {
+    fn discount_overlaps(&self) -> bool {
+        lucene_search::similarities::NormSimilarity::discount_overlaps(&self.0)
+    }
+}
+
+impl lucene_search::similarities::Similarity for ExplicitBm25 {
+    fn scorer(
+        &self,
+        field: &str,
+        boost: f32,
+        collection: &lucene_search::similarities::CollectionStatistics,
+        terms: &[lucene_search::similarities::TermStatistics],
+    ) -> std::sync::Arc<dyn lucene_search::similarities::SimScorer> {
+        self.0.scorer(field, boost, collection, terms)
+    }
+}
+
+/// Phrases through a similarity other than the default: a one-term phrase
+/// (the `TermQuery` it rewrites to), a phrase with a term in one document
+/// only (no `.doc` stream: resolved up front and scored through the
+/// similarity), exact and sloppy, matching and not -- each scoring, under
+/// `BM25Similarity` given explicitly, exactly what the default BM25 path
+/// scores.
+#[test]
+fn phrases_through_a_similarity_score_as_the_default_bm25_does() {
+    use lucene_index::document::{Document, Store, TextField};
+    use lucene_index::index_writer::IndexWriter;
+    use lucene_index::segment_info::LuceneVersion;
+    use lucene_search::multi_segment::search_boolean_query_multi_segment_maxscore;
+    use lucene_search::query::{BooleanQuery, PhraseQuery};
+    use lucene_search::similarities::Bm25Similarity;
+    use lucene_util::test_support::TempDir;
+
+    let tmp = TempDir::new("similarity-phrases");
+    let dir = FsDirectory::open(tmp.path());
+    {
+        let version = LuceneVersion {
+            major: 10,
+            minor: 5,
+            bugfix: 0,
+        };
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", version).unwrap();
+        w.set_max_buffered_docs(25).unwrap();
+        let words = ["alpha", "beta", "gamma", "delta", "beta"];
+        for i in 0..60usize {
+            let mut text: Vec<&str> = (0..3 + i % 5).map(|k| words[(i + k * 3) % 5]).collect();
+            if i == 31 {
+                text.insert(1, "unique");
+            }
+            let mut d = Document::new();
+            d.add(TextField::new("body", text.join(" "), Store::No));
+            w.add_fields_document(&d).unwrap();
+        }
+        w.commit().unwrap();
+    }
+    let reader = DirectoryReader::open(&dir).unwrap();
+    assert!(reader.segment_readers().len() > 1);
+    let opened = reader.open_segments().unwrap();
+    let segments = opened.as_open_segments();
+    let owned = reader.field_norms_by_field(&["body".to_string()]);
+    let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
+    let explicit = ExplicitBm25(Bm25Similarity::default());
+    let phrase = |terms: &[&str], slop: u32| {
+        let mut q = BooleanQuery::new();
+        q.must.push(Clause::Phrase(
+            PhraseQuery::new("body", terms.to_vec()).with_slop(slop),
+        ));
+        q
+    };
+    let hits = |v: Vec<lucene_search::collector::ScoreDoc>| -> Vec<(i32, u32)> {
+        v.iter().map(|h| (h.doc_id, h.score.to_bits())).collect()
+    };
+    let mut matched = 0;
+    for (terms, slop) in [
+        (&["beta"][..], 0),
+        (&["nosuch"][..], 0),
+        (&["delta", "beta"][..], 0),
+        (&["unique", "beta"][..], 0),
+        (&["unique", "gamma"][..], 0),
+        (&["unique", "gamma"][..], 4),
+        (&["unique", "nosuch"][..], 0),
+    ] {
+        let q = phrase(terms, slop);
+        let want =
+            hits(search_boolean_query_multi_segment_maxscore(&segments, &q, &norms, 100).unwrap());
+        let got = hits(
+            search_boolean_query_multi_segment_with_similarity(
+                &segments, &q, &norms, 100, &explicit,
+            )
+            .unwrap(),
+        );
+        assert_eq!(got, want, "{terms:?} ~{slop}");
+        matched += usize::from(!want.is_empty());
+    }
+    assert!(matched >= 4, "{matched}");
+}
+
+/// `BayesianScoreEstimator.estimate` over a vocabulary that only deleted
+/// documents hold: every sampled query matches nothing live, so there are no
+/// scores to estimate from and Java's fallback comes back.
+#[test]
+fn the_estimator_falls_back_when_only_deleted_documents_hold_the_vocabulary() {
+    use lucene_index::buffered_updates::Term;
+    use lucene_index::document::{Document, Store, StringField, TextField};
+    use lucene_index::index_writer::IndexWriter;
+    use lucene_index::segment_info::LuceneVersion;
+    use lucene_search::bayesian_estimator::estimate;
+    use lucene_util::test_support::TempDir;
+
+    let tmp = TempDir::new("estimator-deleted");
+    let dir = FsDirectory::open(tmp.path());
+    {
+        let version = LuceneVersion {
+            major: 10,
+            minor: 5,
+            bugfix: 0,
+        };
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", version).unwrap();
+        for i in 0..4 {
+            let mut d = Document::new();
+            if i == 0 {
+                d.add(StringField::new("keep", "yes", Store::No));
+            } else {
+                d.add(StringField::new("keep", "no", Store::No));
+                d.add(TextField::new("body", "gone away", Store::No));
+            }
+            w.add_fields_document(&d).unwrap();
+        }
+        w.commit().unwrap();
+        w.delete_documents_by_term(&[Term::new("keep", "no")])
+            .unwrap();
+        w.commit().unwrap();
+    }
+    let reader = DirectoryReader::open(&dir).unwrap();
+    assert_eq!(reader.segment_readers().len(), 1);
+    let opened = reader.open_segments().unwrap();
+    let segments = opened.as_open_segments();
+    let owned = reader.field_norms_by_field(&["body".to_string()]);
+    let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
+    let p = estimate(&segments, &norms, "body", 4, 1, 3).unwrap();
+    assert_eq!((p.alpha, p.beta, p.base_rate), (1.0, 0.0, 0.01));
+    // One live match of one term: a single score, no spread -- `alpha` is
+    // 1 rather than the inverse of a zero deviation.
+    let p = estimate(&segments, &norms, "keep", 1, 1, 3).unwrap();
+    assert_eq!(p.alpha, 1.0);
+    assert!(p.beta > 0.0);
 }

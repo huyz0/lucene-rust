@@ -92,6 +92,31 @@ impl LeafFilter for Keep {
 /// `GenMergeReorder.RankMerge`.
 struct RankHooks;
 
+/// `wrapForMerge` hiding every document whose `rank` is a multiple of 11.
+fn drop_elevenths(reader: Arc<dyn CodecReader>) -> Arc<dyn CodecReader> {
+    let ranks = ranks(reader.as_ref());
+    let mut live = FixedBitSet::new(ranks.len());
+    for (doc, rank) in ranks.iter().enumerate() {
+        let was_live = reader.live_docs().is_none_or(|l| l.get(doc));
+        if was_live && rank % 11 != 0 {
+            live.set(doc);
+        }
+    }
+    Arc::new(FilterCodecReader::new(reader, Box::new(Keep { live })))
+}
+
+/// The same wrapping, without a reorder.
+struct WrapOnly;
+
+impl MergeReaderHooks for WrapOnly {
+    fn wrap_for_merge(
+        &self,
+        reader: Arc<dyn CodecReader>,
+    ) -> lucene_search::Result<Arc<dyn CodecReader>> {
+        Ok(drop_elevenths(reader))
+    }
+}
+
 impl MergeReaderHooks for RankHooks {
     fn wrap_for_merge(
         &self,
@@ -120,6 +145,10 @@ impl MergeReaderHooks for RankHooks {
 }
 
 fn write(dir: &FsDirectory) {
+    write_with(dir, Arc::new(RankHooks));
+}
+
+fn write_with(dir: &FsDirectory, merge_hooks: Arc<dyn MergeReaderHooks>) {
     let version = LuceneVersion {
         major: 10,
         minor: 5,
@@ -131,7 +160,8 @@ fn write(dir: &FsDirectory) {
     tmp.compound_file_settings_mut()
         .set_no_cfs_ratio(0.0)
         .unwrap();
-    let hooks = Arc::new(SegmentMergeHooks::new(Arc::new(RankHooks)));
+    let hooks = Arc::new(SegmentMergeHooks::new(merge_hooks));
+    assert_eq!(format!("{hooks:?}"), "SegmentMergeHooks");
     let policy = OneMergeWrappingMergePolicy::new(
         Box::new(tmp),
         Arc::new(move |m: OneMerge| m.with_hooks(hooks.clone())),
@@ -240,6 +270,49 @@ fn a_reordering_merge_writes_javas_segment() {
         compared += 1;
     }
     assert_eq!(compared, 18);
+    for result in lucene_index::check_index::check_directory(&dir).unwrap() {
+        assert!(result.all_passed(), "{:?}", result.failures());
+    }
+}
+
+/// `wrapForMerge` without a reorder: the merged segment keeps the wrapped
+/// readers' documents in their order -- every document `write` left live
+/// whose `rank` is not a multiple of 11, each segment's in a run.
+#[test]
+fn a_wrapping_merge_without_a_reorder_keeps_the_wrapped_documents_in_order() {
+    let tmp = TempDir::new("merge-wrap-only");
+    let dir = FsDirectory::open(&tmp);
+    write_with(&dir, Arc::new(WrapOnly));
+    let reader = DirectoryReader::open(&dir).unwrap();
+    assert_eq!(reader.segment_readers().len(), 1);
+    let seg = &reader.segment_readers()[0];
+    let ids: Vec<String> = (0..seg.max_doc())
+        .map(|d| {
+            let mut id = Id::default();
+            seg.document(d, &mut id).unwrap();
+            id.0.unwrap()
+        })
+        .collect();
+    let want: Vec<String> = (0..3 * PER_SEGMENT)
+        .filter(|&i| i % 13 != 0 && (value(i, 0) % 1000) % 11 != 0)
+        .map(|i| format!("d{i}"))
+        .collect();
+    assert!(want.len() > 100 && want.len() < 3 * PER_SEGMENT);
+    // The merge takes its segments in the policy's order, each whole and in
+    // its own order.
+    let n = |id: &String| id[1..].parse::<usize>().unwrap();
+    let mut sorted = ids.clone();
+    sorted.sort_by_key(n);
+    assert_eq!(sorted, want);
+    let runs: Vec<usize> = ids.iter().map(|id| n(id) / PER_SEGMENT).collect();
+    assert_eq!(
+        runs.windows(2).filter(|w| w[0] != w[1]).count(),
+        2,
+        "{runs:?}"
+    );
+    assert!(ids
+        .windows(2)
+        .all(|w| n(&w[0]) / PER_SEGMENT != n(&w[1]) / PER_SEGMENT || n(&w[0]) < n(&w[1])));
     for result in lucene_index::check_index::check_directory(&dir).unwrap() {
         assert!(result.all_passed(), "{:?}", result.failures());
     }
