@@ -275,13 +275,15 @@ impl Rescorer for DoubleValuesSourceRescorer {
             local,
             &Explanation::no_match("DoubleValuesSource was not initialized with query scores"),
         )?;
+        // `getValue()` is the source's `double`: kept whole, as Java's
+        // `Number` keeps it, both in the detail and in the combination.
         let second = if values.matched {
-            Explanation::match_(values.value, "value from DoubleValuesSource")
+            Explanation::match_value_of(&values, "value from DoubleValuesSource")
                 .with_details(vec![values.clone()])
         } else {
             Explanation::no_match("no value in DoubleValuesSource")
         };
-        let score = (self.combine)(first_pass.value, values.matched, f64::from(values.value));
+        let score = (self.combine)(first_pass.value, values.matched, values.double_value());
         Ok(Explanation::match_(
             score,
             format!(
@@ -468,6 +470,17 @@ fn key_value(
     })
 }
 
+/// Whether `key`'s values are terms (bytes) rather than comparable longs.
+fn key_is_bytes(key: &SortField) -> bool {
+    match key.ty {
+        SortType::String | SortType::StringVal => true,
+        SortType::Custom(id) => {
+            crate::top_field::custom_comparator(id, key, 1).is_ok_and(|c| c.values_are_bytes())
+        }
+        _ => false,
+    }
+}
+
 /// `SortRescorer`: the first-pass hits re-ordered by a sort, as a
 /// `TopFieldCollector` over just those documents collects them (the
 /// first-pass score is the score a `SCORE` key reads).
@@ -501,12 +514,7 @@ impl SortRescorer {
                 values.push(v);
                 terms.push(t);
             }
-            if !self.sort.iter().any(|k| match k.ty {
-                SortType::String | SortType::StringVal => true,
-                SortType::Custom(id) => crate::top_field::custom_comparator(id, k, 1)
-                    .is_ok_and(|c| c.values_are_bytes()),
-                _ => false,
-            }) {
+            if !self.sort.iter().any(key_is_bytes) {
                 terms.clear();
             }
             collected.push(ShardFieldDoc {
@@ -579,10 +587,15 @@ impl Rescorer for SortRescorer {
             .with_details(vec![first_pass.clone()])];
         if let Some(h) = hits.hits.first() {
             for (i, key) in self.sort.iter().enumerate() {
-                let value = match h.fields.terms.get(i) {
-                    Some(Some(t)) => String::from_utf8_lossy(t).into_owned(),
-                    Some(None) => "null".to_string(),
-                    None => h.fields.values.get(i).copied().unwrap_or(0).to_string(),
+                // A key's own value: a term (`null` without one), else its
+                // long -- whatever the other keys are.
+                let value = if key_is_bytes(key) {
+                    match h.fields.terms.get(i) {
+                        Some(Some(t)) => String::from_utf8_lossy(t).into_owned(),
+                        _ => "null".to_string(),
+                    }
+                } else {
+                    h.fields.values.get(i).copied().unwrap_or(0).to_string()
                 };
                 subs.push(Explanation::match_(
                     0.0,
