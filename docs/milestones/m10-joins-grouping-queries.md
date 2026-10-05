@@ -292,7 +292,8 @@ grouping. Each of them falls back to Lucene today.
 
 ## Stage-3 status (2026-10-05)
 
-Every M10 benchmark case at or above Lucene's speed. Ratios are Lucene's
+Every M10 benchmark case at or above Lucene's speed but three interval
+cases (written up below the table). Ratios are Lucene's
 time over ours (`scripts/bench-micro.sh --bench <name>`, interleaved with
 the build before; `~` inside the run's noise floor):
 
@@ -303,6 +304,7 @@ the build before; `~` inside the run's noise floor):
 | `grouping` (T10.4) | 9 | 1.05x-2.98x | blocks 1.05x-1.17x (two 7-rep runs of two builds each; floors 1.14x-1.30x) |
 | `function` (T10.5) | 10 | 1.39x-2.82x | `FunctionRangeQuery` as a filter 1.39x |
 | `aggs` (terms behind a filter) | 6 | 1.45x-3.11x | dense range on a keyword 1.45x; see below |
+| `queries` (T10.6 intervals) | 8 | 0.83x-1.12x | `ordered` 0.83x, `phrase` 0.90x, `maxgaps(unordered)` 0.91x; see below |
 
 Lucene's side of the two term-filtered `cat` cases (a single-valued
 `SORTED_SET`) is bimodal: in some JVM runs (one of six, three of five in
@@ -321,6 +323,26 @@ and reusing the evicted group's buffers measured the same instruction count
 (1.110G vs 1.114G) and no wall-clock change (1.41 ms vs 1.44 ms, 7 reps), so
 neither was kept: nothing in it is a port inefficiency; Lucene does the same
 work per hit.
+
+The interval queries (`--bench queries`, 200 000 documents, a pair of
+words per query, every case's digest equal to Lucene's) started at 0.73x-0.87x
+and 0.11x with a payload filter. Stage 3: a term's positions are read one at
+a time off the lazy cursor, as `nextPosition()` is, instead of copied into a
+buffer per document (iv_phrase 0.78x -> 0.90x); the payload filter streams
+its payloads with the positions (`PositionsCursor::read_payloads`, `.pay`
+decoded and skipped in lockstep with `.pos`) where it had looked the term up
+and walked the skip list per document (0.11x -> 1.12x); a disjunction reuses
+its top-list buffer (malloc was 6% of the phrase over a disjunction, 0.73x ->
+0.93~). The three left below 1.0 -- an ordered pair 0.83x, a phrase 0.90x,
+`maxgaps(unordered)` 0.91x -- are the cheapest queries (8-12 ms for the
+word list), and their profile (callgrind, `MICRO_CASE=iv_ordered`) has no
+single cost to remove: the term iterators' `nextInterval` 14%, the ordered
+conjunction's 11%, `.doc` advancing 9%, `.pos` positioning per document 7%,
+the remaining third spread over the scorer, the bulk loop and the
+collector. The difference from Lucene is the call structure: every
+`start()`/`end()`/`nextInterval()` of a sub-iterator is a virtual call through
+`Box<dyn IntervalIterator>` returning a `Result`, which the JIT inlines at
+these monomorphic sites; the decode and skip work per document is the same.
 
 ## Acceptance criteria
 

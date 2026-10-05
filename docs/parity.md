@@ -45,7 +45,7 @@ Milestones (M1-M10, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | [util.md](parity/util.md) | `lucene-util`: bits, packed ints, `BytesRef*`, FST, automata, hashing, sorting | 32 |
 | [util-geo.md](parity/util-geo.md) | `lucene-util` geo: encodings, tessellator, polygons, distance (M9 T9.1) | 10 |
 | [store.md](parity/store.md) | `lucene-store`: directories, inputs/outputs, locks, checksums | 22 |
-| [codecs.md](parity/codecs.md) | `lucene-codecs`: the `Lucene104` codec, every format read and written | 66 |
+| [codecs.md](parity/codecs.md) | `lucene-codecs`: the `Lucene104` codec, every format read and written | 67 |
 | [backward-codecs.md](parity/backward-codecs.md) | `lucene-backward-codecs`: Lucene 9.0-10.4 formats (M8) | 18 |
 | [analysis.md](parity/analysis.md) | `lucene-analysis`: analyzers, tokenizers, filters | 19 |
 | [index.md](parity/index.md) | `lucene-index`: documents, `IndexWriter`, flush, merge, deletes, segment files, NRT snapshots | 45 |
@@ -60,7 +60,7 @@ Milestones (M1-M10, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | [joins.md](parity/joins.md) | Document blocks and block joins, `lucene-join` (M10) | 11 |
 | [grouping.md](parity/grouping.md) | `lucene-grouping` (M10 T10.4) | 11 |
 | [functions.md](parity/functions.md) | `lucene-queries` function queries (M10 T10.5) | 11 |
-| [queries.md](parity/queries.md) | `lucene-queries` intervals, payloads, more-like-this, common terms, spans (M10 T10.6) | 5 |
+| [queries.md](parity/queries.md) | `lucene-queries` intervals, payloads, more-like-this, common terms, spans (M10 T10.6) | 6 |
 | [ffi.md](parity/ffi.md) | `lucene-ffi`: the general C ABI (handles, searches, writer) | 16 |
 | [plugin.md](parity/plugin.md) | `lucene-ffi`: the OpenSearch plugin boundary (JVM reader, FFM, query phase) | 4 |
 | [plugin-geo.md](parity/plugin-geo.md) | OpenSearch plugin: geo queries and geo sorting (M9 T9.6) | 7 |

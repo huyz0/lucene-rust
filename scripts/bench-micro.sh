@@ -213,6 +213,17 @@ case "$BENCH" in
     PREP_ARGS=(build "$INDEX")
     JAVA_ARGS=(run)
     NEEDS_INDEX=1 ;;
+  queries)
+    # M10 T10.6's pair (QueriesMicro.java / micro_queries.rs): interval
+    # queries over the 200 000-document index QueriesMicro builds (once)
+    # under benchmarks/.corpus/queries.
+    MAIN=QueriesMicro
+    SRC=benchmarks/micro/java/QueriesMicro.java
+    JAR_MODULES="lucene-core lucene-analysis-common lucene-queries"
+    INDEX="${INDEX_ARG:-$PWD/benchmarks/.corpus/queries}"
+    PREP_ARGS=(build "$INDEX")
+    JAVA_ARGS=(run)
+    NEEDS_INDEX=1 ;;
   aggs)
     # M10 stage 3's pair (AggsMicro.java / micro_aggs.rs): the plugin's
     # `terms` aggregation behind a dense filter against OpenSearch's
