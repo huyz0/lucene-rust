@@ -20,5 +20,9 @@ rayon.workspace = true
 # A `[dev-dependencies]` edge, so resolver-2 feature unification keeps the
 # module out of this crate's production build.
 lucene-util = { path = "../lucene-util", features = ["test-support"] }
+# `lucene_store::crashing_directory::CrashingDirectory`, for the tests whose
+# writer must see a directory fail (the NRT snapshot's flush and release
+# exits). Test infrastructure, kept out of production builds the same way.
+lucene-store = { path = "../lucene-store", features = ["test-util"] }
 crc32fast.workspace = true
 proptest.workspace = true
