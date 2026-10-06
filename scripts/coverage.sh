@@ -38,12 +38,15 @@ done
 
 # The test run's package selection is also the report's; the test-only flags
 # (`--no-fail-fast`, ...) are not report flags, so only selection is carried.
+# `--workspace`/`--all` are not carried either: `cargo llvm-cov report`
+# rejects them (CI's pinned 0.8.7: "--workspace is specific to [test, ...]"),
+# and a report with no package selection already covers the whole workspace.
 select_args=()
 i=0
 while [ $i -lt ${#run_args[@]} ]; do
   a="${run_args[$i]}"
   case "$a" in
-    --workspace|--all) select_args+=("$a") ;;
+    --workspace|--all) ;;
     -p|--package|--exclude|--exclude-from-report)
       select_args+=("$a" "${run_args[$((i + 1))]}")
       i=$((i + 1)) ;;
