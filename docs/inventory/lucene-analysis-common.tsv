@@ -3,31 +3,31 @@
 # M11 ships in parts; every class not yet ported is todo:M11 tagged with the M11 task that takes it
 # (docs/milestones/m11-analysis-common.md). Factories (T11.7) are the configuration layer.
 # class	status	detail
-analysis/ar/ArabicAnalyzer	todo:M11	T11.6 per-language (ar): ArabicAnalyzer
-analysis/ar/ArabicNormalizationFilter	todo:M11	T11.6 per-language (ar): ArabicNormalizationFilter
+analysis/ar/ArabicAnalyzer	ported	crates/lucene-analysis/src/lang/ar.rs::ArabicAnalyzer
+analysis/ar/ArabicNormalizationFilter	ported	crates/lucene-analysis/src/lang/ar.rs::ArabicNormalizationFilter
 analysis/ar/ArabicNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: ArabicNormalizationFilterFactory
-analysis/ar/ArabicNormalizer	todo:M11	T11.6 per-language (ar): ArabicNormalizer
-analysis/ar/ArabicStemFilter	todo:M11	T11.6 per-language (ar): ArabicStemFilter
+analysis/ar/ArabicNormalizer	ported	crates/lucene-analysis/src/lang/ar.rs::ArabicNormalizer
+analysis/ar/ArabicStemFilter	ported	crates/lucene-analysis/src/lang/ar.rs::ArabicStemFilter
 analysis/ar/ArabicStemFilterFactory	todo:M11	T11.7 factory/SPI: ArabicStemFilterFactory
-analysis/ar/ArabicStemmer	todo:M11	T11.6 per-language (ar): ArabicStemmer
-analysis/bg/BulgarianAnalyzer	todo:M11	T11.6 per-language (bg): BulgarianAnalyzer
-analysis/bg/BulgarianStemFilter	todo:M11	T11.6 per-language (bg): BulgarianStemFilter
+analysis/ar/ArabicStemmer	ported	crates/lucene-analysis/src/lang/ar.rs::ArabicStemmer
+analysis/bg/BulgarianAnalyzer	ported	crates/lucene-analysis/src/lang/bg.rs::BulgarianAnalyzer
+analysis/bg/BulgarianStemFilter	ported	crates/lucene-analysis/src/lang/bg.rs::BulgarianStemFilter
 analysis/bg/BulgarianStemFilterFactory	todo:M11	T11.7 factory/SPI: BulgarianStemFilterFactory
-analysis/bg/BulgarianStemmer	todo:M11	T11.6 per-language (bg): BulgarianStemmer
-analysis/bn/BengaliAnalyzer	todo:M11	T11.6 per-language (bn): BengaliAnalyzer
-analysis/bn/BengaliNormalizationFilter	todo:M11	T11.6 per-language (bn): BengaliNormalizationFilter
+analysis/bg/BulgarianStemmer	ported	crates/lucene-analysis/src/lang/bg.rs::BulgarianStemmer
+analysis/bn/BengaliAnalyzer	ported	crates/lucene-analysis/src/lang/bn.rs::BengaliAnalyzer
+analysis/bn/BengaliNormalizationFilter	ported	crates/lucene-analysis/src/lang/bn.rs::BengaliNormalizationFilter
 analysis/bn/BengaliNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: BengaliNormalizationFilterFactory
-analysis/bn/BengaliNormalizer	todo:M11	T11.6 per-language (bn): BengaliNormalizer
-analysis/bn/BengaliStemFilter	todo:M11	T11.6 per-language (bn): BengaliStemFilter
+analysis/bn/BengaliNormalizer	ported	crates/lucene-analysis/src/lang/bn.rs::BengaliNormalizer
+analysis/bn/BengaliStemFilter	ported	crates/lucene-analysis/src/lang/bn.rs::BengaliStemFilter
 analysis/bn/BengaliStemFilterFactory	todo:M11	T11.7 factory/SPI: BengaliStemFilterFactory
-analysis/bn/BengaliStemmer	todo:M11	T11.6 per-language (bn): BengaliStemmer
+analysis/bn/BengaliStemmer	ported	crates/lucene-analysis/src/lang/bn.rs::BengaliStemmer
 analysis/boost/DelimitedBoostTokenFilter	ported	crates/lucene-analysis/src/boost/mod.rs::DelimitedBoostTokenFilter
 analysis/boost/DelimitedBoostTokenFilterFactory	todo:M11	T11.7 factory/SPI: DelimitedBoostTokenFilterFactory
-analysis/br/BrazilianAnalyzer	todo:M11	T11.6 per-language (br): BrazilianAnalyzer
-analysis/br/BrazilianStemFilter	todo:M11	T11.6 per-language (br): BrazilianStemFilter
+analysis/br/BrazilianAnalyzer	ported	crates/lucene-analysis/src/lang/br.rs::BrazilianAnalyzer
+analysis/br/BrazilianStemFilter	ported	crates/lucene-analysis/src/lang/br.rs::BrazilianStemFilter
 analysis/br/BrazilianStemFilterFactory	todo:M11	T11.7 factory/SPI: BrazilianStemFilterFactory
-analysis/br/BrazilianStemmer	todo:M11	T11.6 per-language (br): BrazilianStemmer
-analysis/ca/CatalanAnalyzer	todo:M11	T11.6 per-language (ca): CatalanAnalyzer
+analysis/br/BrazilianStemmer	ported	crates/lucene-analysis/src/lang/br.rs::BrazilianStemmer
+analysis/ca/CatalanAnalyzer	ported	crates/lucene-analysis/src/lang/ca.rs::CatalanAnalyzer
 analysis/charfilter/BaseCharFilter	ported	crates/lucene-analysis/src/charfilter/mod.rs::OffsetCorrections
 analysis/charfilter/HTMLStripCharFilter	ported	crates/lucene-analysis/src/charfilter/html_strip.rs::HTMLStripCharFilter
 analysis/charfilter/HTMLStripCharFilterFactory	todo:M11	T11.7 factory/SPI: HTMLStripCharFilterFactory
@@ -41,13 +41,13 @@ analysis/cjk/CJKWidthCharFilter	ported	crates/lucene-analysis/src/cjk/mod.rs::CJ
 analysis/cjk/CJKWidthCharFilterFactory	todo:M11	T11.7 factory/SPI: CJKWidthCharFilterFactory
 analysis/cjk/CJKWidthFilter	ported	crates/lucene-analysis/src/cjk/mod.rs::CJKWidthFilter
 analysis/cjk/CJKWidthFilterFactory	todo:M11	T11.7 factory/SPI: CJKWidthFilterFactory
-analysis/ckb/SoraniAnalyzer	todo:M11	T11.6 per-language (ckb): SoraniAnalyzer
-analysis/ckb/SoraniNormalizationFilter	todo:M11	T11.6 per-language (ckb): SoraniNormalizationFilter
+analysis/ckb/SoraniAnalyzer	ported	crates/lucene-analysis/src/lang/ckb.rs::SoraniAnalyzer
+analysis/ckb/SoraniNormalizationFilter	ported	crates/lucene-analysis/src/lang/ckb.rs::SoraniNormalizationFilter
 analysis/ckb/SoraniNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: SoraniNormalizationFilterFactory
-analysis/ckb/SoraniNormalizer	todo:M11	T11.6 per-language (ckb): SoraniNormalizer
-analysis/ckb/SoraniStemFilter	todo:M11	T11.6 per-language (ckb): SoraniStemFilter
+analysis/ckb/SoraniNormalizer	ported	crates/lucene-analysis/src/lang/ckb.rs::SoraniNormalizer
+analysis/ckb/SoraniStemFilter	ported	crates/lucene-analysis/src/lang/ckb.rs::SoraniStemFilter
 analysis/ckb/SoraniStemFilterFactory	todo:M11	T11.7 factory/SPI: SoraniStemFilterFactory
-analysis/ckb/SoraniStemmer	todo:M11	T11.6 per-language (ckb): SoraniStemmer
+analysis/ckb/SoraniStemmer	ported	crates/lucene-analysis/src/lang/ckb.rs::SoraniStemmer
 analysis/classic/ClassicAnalyzer	ported	crates/lucene-analysis/src/classic/mod.rs::ClassicAnalyzer
 analysis/classic/ClassicFilter	ported	crates/lucene-analysis/src/classic/mod.rs::ClassicFilter
 analysis/classic/ClassicFilterFactory	todo:M11	T11.7 factory/SPI: ClassicFilterFactory
@@ -96,29 +96,29 @@ analysis/core/WhitespaceAnalyzer	ported	crates/lucene-analysis/src/core_analysis
 analysis/core/WhitespaceTokenizer	ported	crates/lucene-analysis/src/util/char_tokenizer.rs::WhitespaceTokenizer
 analysis/core/WhitespaceTokenizerFactory	todo:M11	T11.7 factory/SPI: WhitespaceTokenizerFactory
 analysis/custom/CustomAnalyzer	todo:M11	T11.6 custom: CustomAnalyzer
-analysis/cz/CzechAnalyzer	todo:M11	T11.6 per-language (cz): CzechAnalyzer
-analysis/cz/CzechStemFilter	todo:M11	T11.6 per-language (cz): CzechStemFilter
+analysis/cz/CzechAnalyzer	ported	crates/lucene-analysis/src/lang/cz.rs::CzechAnalyzer
+analysis/cz/CzechStemFilter	ported	crates/lucene-analysis/src/lang/cz.rs::CzechStemFilter
 analysis/cz/CzechStemFilterFactory	todo:M11	T11.7 factory/SPI: CzechStemFilterFactory
-analysis/cz/CzechStemmer	todo:M11	T11.6 per-language (cz): CzechStemmer
-analysis/da/DanishAnalyzer	todo:M11	T11.6 per-language (da): DanishAnalyzer
-analysis/de/GermanAnalyzer	todo:M11	T11.6 per-language (de): GermanAnalyzer
-analysis/de/GermanLightStemFilter	todo:M11	T11.6 per-language (de): GermanLightStemFilter
+analysis/cz/CzechStemmer	ported	crates/lucene-analysis/src/lang/cz.rs::CzechStemmer
+analysis/da/DanishAnalyzer	ported	crates/lucene-analysis/src/lang/da.rs::DanishAnalyzer
+analysis/de/GermanAnalyzer	ported	crates/lucene-analysis/src/lang/de.rs::GermanAnalyzer
+analysis/de/GermanLightStemFilter	ported	crates/lucene-analysis/src/lang/de.rs::GermanLightStemFilter
 analysis/de/GermanLightStemFilterFactory	todo:M11	T11.7 factory/SPI: GermanLightStemFilterFactory
-analysis/de/GermanLightStemmer	todo:M11	T11.6 per-language (de): GermanLightStemmer
-analysis/de/GermanMinimalStemFilter	todo:M11	T11.6 per-language (de): GermanMinimalStemFilter
+analysis/de/GermanLightStemmer	ported	crates/lucene-analysis/src/lang/de.rs::GermanLightStemmer
+analysis/de/GermanMinimalStemFilter	ported	crates/lucene-analysis/src/lang/de.rs::GermanMinimalStemFilter
 analysis/de/GermanMinimalStemFilterFactory	todo:M11	T11.7 factory/SPI: GermanMinimalStemFilterFactory
-analysis/de/GermanMinimalStemmer	todo:M11	T11.6 per-language (de): GermanMinimalStemmer
-analysis/de/GermanNormalizationFilter	todo:M11	T11.6 per-language (de): GermanNormalizationFilter
+analysis/de/GermanMinimalStemmer	ported	crates/lucene-analysis/src/lang/de.rs::GermanMinimalStemmer
+analysis/de/GermanNormalizationFilter	ported	crates/lucene-analysis/src/lang/de.rs::GermanNormalizationFilter
 analysis/de/GermanNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: GermanNormalizationFilterFactory
-analysis/de/GermanStemFilter	todo:M11	T11.6 per-language (de): GermanStemFilter
+analysis/de/GermanStemFilter	ported	crates/lucene-analysis/src/lang/de.rs::GermanStemFilter
 analysis/de/GermanStemFilterFactory	todo:M11	T11.7 factory/SPI: GermanStemFilterFactory
-analysis/de/GermanStemmer	todo:M11	T11.6 per-language (de): GermanStemmer
-analysis/el/GreekAnalyzer	todo:M11	T11.6 per-language (el): GreekAnalyzer
-analysis/el/GreekLowerCaseFilter	todo:M11	T11.6 per-language (el): GreekLowerCaseFilter
+analysis/de/GermanStemmer	ported	crates/lucene-analysis/src/lang/de.rs::GermanStemmer
+analysis/el/GreekAnalyzer	ported	crates/lucene-analysis/src/lang/el.rs::GreekAnalyzer
+analysis/el/GreekLowerCaseFilter	ported	crates/lucene-analysis/src/lang/el.rs::GreekLowerCaseFilter
 analysis/el/GreekLowerCaseFilterFactory	todo:M11	T11.7 factory/SPI: GreekLowerCaseFilterFactory
-analysis/el/GreekStemFilter	todo:M11	T11.6 per-language (el): GreekStemFilter
+analysis/el/GreekStemFilter	ported	crates/lucene-analysis/src/lang/el.rs::GreekStemFilter
 analysis/el/GreekStemFilterFactory	todo:M11	T11.7 factory/SPI: GreekStemFilterFactory
-analysis/el/GreekStemmer	todo:M11	T11.6 per-language (el): GreekStemmer
+analysis/el/GreekStemmer	ported	crates/lucene-analysis/src/lang/el.rs::GreekStemmer
 analysis/email/UAX29URLEmailAnalyzer	ported	crates/lucene-analysis/src/email/mod.rs::UAX29URLEmailAnalyzer
 analysis/email/UAX29URLEmailTokenizer	ported	crates/lucene-analysis/src/email/mod.rs::UAX29URLEmailTokenizer
 analysis/email/UAX29URLEmailTokenizerFactory	todo:M11	T11.7 factory/SPI: UAX29URLEmailTokenizerFactory
@@ -144,59 +144,59 @@ analysis/en/KStemmer	ported	crates/lucene-analysis/src/en/kstem.rs::KStemmer
 analysis/en/PorterStemFilter	ported	crates/lucene-analysis/src/en/mod.rs::PorterStemFilter
 analysis/en/PorterStemFilterFactory	todo:M11	T11.7 factory/SPI: PorterStemFilterFactory
 analysis/en/PorterStemmer	ported	crates/lucene-analysis/src/lib.rs::porter
-analysis/es/SpanishAnalyzer	todo:M11	T11.6 per-language (es): SpanishAnalyzer
-analysis/es/SpanishLightStemFilter	todo:M11	T11.6 per-language (es): SpanishLightStemFilter
+analysis/es/SpanishAnalyzer	ported	crates/lucene-analysis/src/lang/es.rs::SpanishAnalyzer
+analysis/es/SpanishLightStemFilter	ported	crates/lucene-analysis/src/lang/es.rs::SpanishLightStemFilter
 analysis/es/SpanishLightStemFilterFactory	todo:M11	T11.7 factory/SPI: SpanishLightStemFilterFactory
-analysis/es/SpanishLightStemmer	todo:M11	T11.6 per-language (es): SpanishLightStemmer
-analysis/es/SpanishMinimalStemFilter	todo:M11	T11.6 per-language (es): SpanishMinimalStemFilter
+analysis/es/SpanishLightStemmer	ported	crates/lucene-analysis/src/lang/es.rs::SpanishLightStemmer
+analysis/es/SpanishMinimalStemFilter	ported	crates/lucene-analysis/src/lang/es.rs::SpanishMinimalStemFilter
 analysis/es/SpanishMinimalStemFilterFactory	todo:M11	T11.7 factory/SPI: SpanishMinimalStemFilterFactory
-analysis/es/SpanishMinimalStemmer	todo:M11	T11.6 per-language (es): SpanishMinimalStemmer
-analysis/es/SpanishPluralStemFilter	todo:M11	T11.6 per-language (es): SpanishPluralStemFilter
+analysis/es/SpanishMinimalStemmer	ported	crates/lucene-analysis/src/lang/es.rs::SpanishMinimalStemmer
+analysis/es/SpanishPluralStemFilter	ported	crates/lucene-analysis/src/lang/es.rs::SpanishPluralStemFilter
 analysis/es/SpanishPluralStemFilterFactory	todo:M11	T11.7 factory/SPI: SpanishPluralStemFilterFactory
-analysis/es/SpanishPluralStemmer	todo:M11	T11.6 per-language (es): SpanishPluralStemmer
-analysis/et/EstonianAnalyzer	todo:M11	T11.6 per-language (et): EstonianAnalyzer
-analysis/eu/BasqueAnalyzer	todo:M11	T11.6 per-language (eu): BasqueAnalyzer
-analysis/fa/PersianAnalyzer	todo:M11	T11.6 per-language (fa): PersianAnalyzer
-analysis/fa/PersianCharFilter	todo:M11	T11.6 per-language (fa): PersianCharFilter
+analysis/es/SpanishPluralStemmer	ported	crates/lucene-analysis/src/lang/es.rs::SpanishPluralStemmer
+analysis/et/EstonianAnalyzer	ported	crates/lucene-analysis/src/lang/et.rs::EstonianAnalyzer
+analysis/eu/BasqueAnalyzer	ported	crates/lucene-analysis/src/lang/eu.rs::BasqueAnalyzer
+analysis/fa/PersianAnalyzer	ported	crates/lucene-analysis/src/lang/fa.rs::PersianAnalyzer
+analysis/fa/PersianCharFilter	ported	crates/lucene-analysis/src/lang/fa.rs::PersianCharFilter
 analysis/fa/PersianCharFilterFactory	todo:M11	T11.7 factory/SPI: PersianCharFilterFactory
-analysis/fa/PersianNormalizationFilter	todo:M11	T11.6 per-language (fa): PersianNormalizationFilter
+analysis/fa/PersianNormalizationFilter	ported	crates/lucene-analysis/src/lang/fa.rs::PersianNormalizationFilter
 analysis/fa/PersianNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: PersianNormalizationFilterFactory
-analysis/fa/PersianNormalizer	todo:M11	T11.6 per-language (fa): PersianNormalizer
-analysis/fa/PersianStemFilter	todo:M11	T11.6 per-language (fa): PersianStemFilter
+analysis/fa/PersianNormalizer	ported	crates/lucene-analysis/src/lang/fa.rs::PersianNormalizer
+analysis/fa/PersianStemFilter	ported	crates/lucene-analysis/src/lang/fa.rs::PersianStemFilter
 analysis/fa/PersianStemFilterFactory	todo:M11	T11.7 factory/SPI: PersianStemFilterFactory
-analysis/fa/PersianStemmer	todo:M11	T11.6 per-language (fa): PersianStemmer
-analysis/fi/FinnishAnalyzer	todo:M11	T11.6 per-language (fi): FinnishAnalyzer
-analysis/fi/FinnishLightStemFilter	todo:M11	T11.6 per-language (fi): FinnishLightStemFilter
+analysis/fa/PersianStemmer	ported	crates/lucene-analysis/src/lang/fa.rs::PersianStemmer
+analysis/fi/FinnishAnalyzer	ported	crates/lucene-analysis/src/lang/fi.rs::FinnishAnalyzer
+analysis/fi/FinnishLightStemFilter	ported	crates/lucene-analysis/src/lang/fi.rs::FinnishLightStemFilter
 analysis/fi/FinnishLightStemFilterFactory	todo:M11	T11.7 factory/SPI: FinnishLightStemFilterFactory
-analysis/fi/FinnishLightStemmer	todo:M11	T11.6 per-language (fi): FinnishLightStemmer
-analysis/fr/FrenchAnalyzer	todo:M11	T11.6 per-language (fr): FrenchAnalyzer
-analysis/fr/FrenchLightStemFilter	todo:M11	T11.6 per-language (fr): FrenchLightStemFilter
+analysis/fi/FinnishLightStemmer	ported	crates/lucene-analysis/src/lang/fi.rs::FinnishLightStemmer
+analysis/fr/FrenchAnalyzer	ported	crates/lucene-analysis/src/lang/fr.rs::FrenchAnalyzer
+analysis/fr/FrenchLightStemFilter	ported	crates/lucene-analysis/src/lang/fr.rs::FrenchLightStemFilter
 analysis/fr/FrenchLightStemFilterFactory	todo:M11	T11.7 factory/SPI: FrenchLightStemFilterFactory
-analysis/fr/FrenchLightStemmer	todo:M11	T11.6 per-language (fr): FrenchLightStemmer
-analysis/fr/FrenchMinimalStemFilter	todo:M11	T11.6 per-language (fr): FrenchMinimalStemFilter
+analysis/fr/FrenchLightStemmer	ported	crates/lucene-analysis/src/lang/fr.rs::FrenchLightStemmer
+analysis/fr/FrenchMinimalStemFilter	ported	crates/lucene-analysis/src/lang/fr.rs::FrenchMinimalStemFilter
 analysis/fr/FrenchMinimalStemFilterFactory	todo:M11	T11.7 factory/SPI: FrenchMinimalStemFilterFactory
-analysis/fr/FrenchMinimalStemmer	todo:M11	T11.6 per-language (fr): FrenchMinimalStemmer
-analysis/ga/IrishAnalyzer	todo:M11	T11.6 per-language (ga): IrishAnalyzer
-analysis/ga/IrishLowerCaseFilter	todo:M11	T11.6 per-language (ga): IrishLowerCaseFilter
+analysis/fr/FrenchMinimalStemmer	ported	crates/lucene-analysis/src/lang/fr.rs::FrenchMinimalStemmer
+analysis/ga/IrishAnalyzer	ported	crates/lucene-analysis/src/lang/ga.rs::IrishAnalyzer
+analysis/ga/IrishLowerCaseFilter	ported	crates/lucene-analysis/src/lang/ga.rs::IrishLowerCaseFilter
 analysis/ga/IrishLowerCaseFilterFactory	todo:M11	T11.7 factory/SPI: IrishLowerCaseFilterFactory
-analysis/gl/GalicianAnalyzer	todo:M11	T11.6 per-language (gl): GalicianAnalyzer
-analysis/gl/GalicianMinimalStemFilter	todo:M11	T11.6 per-language (gl): GalicianMinimalStemFilter
+analysis/gl/GalicianAnalyzer	ported	crates/lucene-analysis/src/lang/gl.rs::GalicianAnalyzer
+analysis/gl/GalicianMinimalStemFilter	ported	crates/lucene-analysis/src/lang/gl.rs::GalicianMinimalStemFilter
 analysis/gl/GalicianMinimalStemFilterFactory	todo:M11	T11.7 factory/SPI: GalicianMinimalStemFilterFactory
-analysis/gl/GalicianMinimalStemmer	todo:M11	T11.6 per-language (gl): GalicianMinimalStemmer
-analysis/gl/GalicianStemFilter	todo:M11	T11.6 per-language (gl): GalicianStemFilter
+analysis/gl/GalicianMinimalStemmer	ported	crates/lucene-analysis/src/lang/gl.rs::GalicianMinimalStemmer
+analysis/gl/GalicianStemFilter	ported	crates/lucene-analysis/src/lang/gl.rs::GalicianStemFilter
 analysis/gl/GalicianStemFilterFactory	todo:M11	T11.7 factory/SPI: GalicianStemFilterFactory
-analysis/gl/GalicianStemmer	todo:M11	T11.6 per-language (gl): GalicianStemmer
-analysis/hi/HindiAnalyzer	todo:M11	T11.6 per-language (hi): HindiAnalyzer
-analysis/hi/HindiNormalizationFilter	todo:M11	T11.6 per-language (hi): HindiNormalizationFilter
+analysis/gl/GalicianStemmer	ported	crates/lucene-analysis/src/lang/gl.rs::GalicianStemmer
+analysis/hi/HindiAnalyzer	ported	crates/lucene-analysis/src/lang/hi.rs::HindiAnalyzer
+analysis/hi/HindiNormalizationFilter	ported	crates/lucene-analysis/src/lang/hi.rs::HindiNormalizationFilter
 analysis/hi/HindiNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: HindiNormalizationFilterFactory
-analysis/hi/HindiNormalizer	todo:M11	T11.6 per-language (hi): HindiNormalizer
-analysis/hi/HindiStemFilter	todo:M11	T11.6 per-language (hi): HindiStemFilter
+analysis/hi/HindiNormalizer	ported	crates/lucene-analysis/src/lang/hi.rs::HindiNormalizer
+analysis/hi/HindiStemFilter	ported	crates/lucene-analysis/src/lang/hi.rs::HindiStemFilter
 analysis/hi/HindiStemFilterFactory	todo:M11	T11.7 factory/SPI: HindiStemFilterFactory
-analysis/hi/HindiStemmer	todo:M11	T11.6 per-language (hi): HindiStemmer
-analysis/hu/HungarianAnalyzer	todo:M11	T11.6 per-language (hu): HungarianAnalyzer
-analysis/hu/HungarianLightStemFilter	todo:M11	T11.6 per-language (hu): HungarianLightStemFilter
+analysis/hi/HindiStemmer	ported	crates/lucene-analysis/src/lang/hi.rs::HindiStemmer
+analysis/hu/HungarianAnalyzer	ported	crates/lucene-analysis/src/lang/hu.rs::HungarianAnalyzer
+analysis/hu/HungarianLightStemFilter	ported	crates/lucene-analysis/src/lang/hu.rs::HungarianLightStemFilter
 analysis/hu/HungarianLightStemFilterFactory	todo:M11	T11.7 factory/SPI: HungarianLightStemFilterFactory
-analysis/hu/HungarianLightStemmer	todo:M11	T11.6 per-language (hu): HungarianLightStemmer
+analysis/hu/HungarianLightStemmer	ported	crates/lucene-analysis/src/lang/hu.rs::HungarianLightStemmer
 analysis/hunspell/AffixCondition	ported	crates/lucene-analysis/src/hunspell/affix_condition.rs::AffixCondition -- M11 T11.4
 analysis/hunspell/AffixKind	ported	crates/lucene-analysis/src/hunspell/affix_condition.rs::AffixKind -- M11 T11.4
 analysis/hunspell/AffixedWord	ported	crates/lucene-analysis/src/hunspell/affixed_word.rs::AffixedWord -- M11 T11.4
@@ -231,23 +231,23 @@ analysis/hunspell/WordCase	ported	crates/lucene-analysis/src/hunspell/word_case.
 analysis/hunspell/WordContext	ported	crates/lucene-analysis/src/hunspell/stemmer.rs::WordContext -- M11 T11.4
 analysis/hunspell/WordFormGenerator	partial	crates/lucene-analysis/src/hunspell/word_form_generator.rs::WordFormGenerator -- M11: compress (EntrySuggestion) not ported
 analysis/hunspell/WordStorage	ported	crates/lucene-analysis/src/hunspell/word_storage.rs::WordStorage -- M11 T11.4
-analysis/hy/ArmenianAnalyzer	todo:M11	T11.6 per-language (hy): ArmenianAnalyzer
-analysis/id/IndonesianAnalyzer	todo:M11	T11.6 per-language (id): IndonesianAnalyzer
-analysis/id/IndonesianStemFilter	todo:M11	T11.6 per-language (id): IndonesianStemFilter
+analysis/hy/ArmenianAnalyzer	ported	crates/lucene-analysis/src/lang/hy.rs::ArmenianAnalyzer
+analysis/id/IndonesianAnalyzer	ported	crates/lucene-analysis/src/lang/id.rs::IndonesianAnalyzer
+analysis/id/IndonesianStemFilter	ported	crates/lucene-analysis/src/lang/id.rs::IndonesianStemFilter
 analysis/id/IndonesianStemFilterFactory	todo:M11	T11.7 factory/SPI: IndonesianStemFilterFactory
-analysis/id/IndonesianStemmer	todo:M11	T11.6 per-language (id): IndonesianStemmer
-analysis/in/IndicNormalizationFilter	todo:M11	T11.6 per-language (in): IndicNormalizationFilter
+analysis/id/IndonesianStemmer	ported	crates/lucene-analysis/src/lang/id.rs::IndonesianStemmer
+analysis/in/IndicNormalizationFilter	ported	crates/lucene-analysis/src/lang/in_.rs::IndicNormalizationFilter
 analysis/in/IndicNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: IndicNormalizationFilterFactory
-analysis/in/IndicNormalizer	todo:M11	T11.6 per-language (in): IndicNormalizer
-analysis/it/ItalianAnalyzer	todo:M11	T11.6 per-language (it): ItalianAnalyzer
-analysis/it/ItalianLightStemFilter	todo:M11	T11.6 per-language (it): ItalianLightStemFilter
+analysis/in/IndicNormalizer	ported	crates/lucene-analysis/src/lang/in_.rs::IndicNormalizer
+analysis/it/ItalianAnalyzer	ported	crates/lucene-analysis/src/lang/it.rs::ItalianAnalyzer
+analysis/it/ItalianLightStemFilter	ported	crates/lucene-analysis/src/lang/it.rs::ItalianLightStemFilter
 analysis/it/ItalianLightStemFilterFactory	todo:M11	T11.7 factory/SPI: ItalianLightStemFilterFactory
-analysis/it/ItalianLightStemmer	todo:M11	T11.6 per-language (it): ItalianLightStemmer
-analysis/lt/LithuanianAnalyzer	todo:M11	T11.6 per-language (lt): LithuanianAnalyzer
-analysis/lv/LatvianAnalyzer	todo:M11	T11.6 per-language (lv): LatvianAnalyzer
-analysis/lv/LatvianStemFilter	todo:M11	T11.6 per-language (lv): LatvianStemFilter
+analysis/it/ItalianLightStemmer	ported	crates/lucene-analysis/src/lang/it.rs::ItalianLightStemmer
+analysis/lt/LithuanianAnalyzer	ported	crates/lucene-analysis/src/lang/lt.rs::LithuanianAnalyzer
+analysis/lv/LatvianAnalyzer	ported	crates/lucene-analysis/src/lang/lv.rs::LatvianAnalyzer
+analysis/lv/LatvianStemFilter	ported	crates/lucene-analysis/src/lang/lv.rs::LatvianStemFilter
 analysis/lv/LatvianStemFilterFactory	todo:M11	T11.7 factory/SPI: LatvianStemFilterFactory
-analysis/lv/LatvianStemmer	todo:M11	T11.6 per-language (lv): LatvianStemmer
+analysis/lv/LatvianStemmer	ported	crates/lucene-analysis/src/lang/lv.rs::LatvianStemmer
 analysis/minhash/MinHashFilter	ported	crates/lucene-analysis/src/minhash/mod.rs::MinHashFilter
 analysis/minhash/MinHashFilterFactory	todo:M11	T11.7 factory/SPI: MinHashFilterFactory
 analysis/miscellaneous/ASCIIFoldingFilter	ported	crates/lucene-analysis/src/miscellaneous/stateful.rs::AsciiFoldingTokenFilter
@@ -329,7 +329,7 @@ analysis/morph/TokenInfoFST	todo:M11	T11.6 morph: TokenInfoFST
 analysis/morph/TokenType	todo:M11	T11.6 morph: TokenType
 analysis/morph/Viterbi	todo:M11	T11.6 morph: Viterbi
 analysis/morph/ViterbiNBest	todo:M11	T11.6 morph: ViterbiNBest
-analysis/ne/NepaliAnalyzer	todo:M11	T11.6 per-language (ne): NepaliAnalyzer
+analysis/ne/NepaliAnalyzer	ported	crates/lucene-analysis/src/lang/ne.rs::NepaliAnalyzer
 analysis/ngram/EdgeNGramFilterFactory	todo:M11	T11.7 factory/SPI: EdgeNGramFilterFactory
 analysis/ngram/EdgeNGramTokenFilter	ported	crates/lucene-analysis/src/ngram/mod.rs::EdgeNGramTokenFilter
 analysis/ngram/EdgeNGramTokenizer	ported	crates/lucene-analysis/src/ngram/mod.rs::EdgeNGramTokenizer
@@ -338,15 +338,15 @@ analysis/ngram/NGramFilterFactory	todo:M11	T11.7 factory/SPI: NGramFilterFactory
 analysis/ngram/NGramTokenFilter	ported	crates/lucene-analysis/src/ngram/mod.rs::NGramTokenFilter
 analysis/ngram/NGramTokenizer	ported	crates/lucene-analysis/src/ngram/mod.rs::NGramTokenizer
 analysis/ngram/NGramTokenizerFactory	todo:M11	T11.7 factory/SPI: NGramTokenizerFactory
-analysis/nl/DutchAnalyzer	todo:M11	T11.6 per-language (nl): DutchAnalyzer
-analysis/no/NorwegianAnalyzer	todo:M11	T11.6 per-language (no): NorwegianAnalyzer
-analysis/no/NorwegianLightStemFilter	todo:M11	T11.6 per-language (no): NorwegianLightStemFilter
+analysis/nl/DutchAnalyzer	ported	crates/lucene-analysis/src/lang/nl.rs::DutchAnalyzer
+analysis/no/NorwegianAnalyzer	ported	crates/lucene-analysis/src/lang/no.rs::NorwegianAnalyzer
+analysis/no/NorwegianLightStemFilter	ported	crates/lucene-analysis/src/lang/no.rs::NorwegianLightStemFilter
 analysis/no/NorwegianLightStemFilterFactory	todo:M11	T11.7 factory/SPI: NorwegianLightStemFilterFactory
-analysis/no/NorwegianLightStemmer	todo:M11	T11.6 per-language (no): NorwegianLightStemmer
-analysis/no/NorwegianMinimalStemFilter	todo:M11	T11.6 per-language (no): NorwegianMinimalStemFilter
+analysis/no/NorwegianLightStemmer	ported	crates/lucene-analysis/src/lang/no.rs::NorwegianLightStemmer
+analysis/no/NorwegianMinimalStemFilter	ported	crates/lucene-analysis/src/lang/no.rs::NorwegianMinimalStemFilter
 analysis/no/NorwegianMinimalStemFilterFactory	todo:M11	T11.7 factory/SPI: NorwegianMinimalStemFilterFactory
-analysis/no/NorwegianMinimalStemmer	todo:M11	T11.6 per-language (no): NorwegianMinimalStemmer
-analysis/no/NorwegianNormalizationFilter	todo:M11	T11.6 per-language (no): NorwegianNormalizationFilter
+analysis/no/NorwegianMinimalStemmer	ported	crates/lucene-analysis/src/lang/no.rs::NorwegianMinimalStemmer
+analysis/no/NorwegianNormalizationFilter	ported	crates/lucene-analysis/src/lang/no.rs::NorwegianNormalizationFilter
 analysis/no/NorwegianNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: NorwegianNormalizationFilterFactory
 analysis/path/PathHierarchyTokenizer	ported	crates/lucene-analysis/src/path/mod.rs::PathHierarchyTokenizer
 analysis/path/PathHierarchyTokenizerFactory	todo:M11	T11.7 factory/SPI: PathHierarchyTokenizerFactory
@@ -379,28 +379,28 @@ analysis/payloads/TokenOffsetPayloadTokenFilter	ported	crates/lucene-analysis/sr
 analysis/payloads/TokenOffsetPayloadTokenFilterFactory	todo:M11	T11.7 factory/SPI: TokenOffsetPayloadTokenFilterFactory
 analysis/payloads/TypeAsPayloadTokenFilter	ported	crates/lucene-analysis/src/payloads/mod.rs::TypeAsPayloadTokenFilter
 analysis/payloads/TypeAsPayloadTokenFilterFactory	todo:M11	T11.7 factory/SPI: TypeAsPayloadTokenFilterFactory
-analysis/pt/PortugueseAnalyzer	todo:M11	T11.6 per-language (pt): PortugueseAnalyzer
-analysis/pt/PortugueseLightStemFilter	todo:M11	T11.6 per-language (pt): PortugueseLightStemFilter
+analysis/pt/PortugueseAnalyzer	ported	crates/lucene-analysis/src/lang/pt.rs::PortugueseAnalyzer
+analysis/pt/PortugueseLightStemFilter	ported	crates/lucene-analysis/src/lang/pt.rs::PortugueseLightStemFilter
 analysis/pt/PortugueseLightStemFilterFactory	todo:M11	T11.7 factory/SPI: PortugueseLightStemFilterFactory
-analysis/pt/PortugueseLightStemmer	todo:M11	T11.6 per-language (pt): PortugueseLightStemmer
-analysis/pt/PortugueseMinimalStemFilter	todo:M11	T11.6 per-language (pt): PortugueseMinimalStemFilter
+analysis/pt/PortugueseLightStemmer	ported	crates/lucene-analysis/src/lang/pt.rs::PortugueseLightStemmer
+analysis/pt/PortugueseMinimalStemFilter	ported	crates/lucene-analysis/src/lang/pt.rs::PortugueseMinimalStemFilter
 analysis/pt/PortugueseMinimalStemFilterFactory	todo:M11	T11.7 factory/SPI: PortugueseMinimalStemFilterFactory
-analysis/pt/PortugueseMinimalStemmer	todo:M11	T11.6 per-language (pt): PortugueseMinimalStemmer
-analysis/pt/PortugueseStemFilter	todo:M11	T11.6 per-language (pt): PortugueseStemFilter
+analysis/pt/PortugueseMinimalStemmer	ported	crates/lucene-analysis/src/lang/pt.rs::PortugueseMinimalStemmer
+analysis/pt/PortugueseStemFilter	ported	crates/lucene-analysis/src/lang/pt.rs::PortugueseStemFilter
 analysis/pt/PortugueseStemFilterFactory	todo:M11	T11.7 factory/SPI: PortugueseStemFilterFactory
-analysis/pt/PortugueseStemmer	todo:M11	T11.6 per-language (pt): PortugueseStemmer
-analysis/pt/RSLPStemmerBase	todo:M11	T11.6 per-language (pt): RSLPStemmerBase
+analysis/pt/PortugueseStemmer	ported	crates/lucene-analysis/src/lang/pt.rs::PortugueseStemmer
+analysis/pt/RSLPStemmerBase	ported	crates/lucene-analysis/src/lang/pt.rs::parse_rslp
 analysis/query/QueryAutoStopWordAnalyzer	todo:M11	T11.6 query: QueryAutoStopWordAnalyzer
 analysis/reverse/ReverseStringFilter	todo:M11	T11.6 reverse: ReverseStringFilter
 analysis/reverse/ReverseStringFilterFactory	todo:M11	T11.7 factory/SPI: ReverseStringFilterFactory
-analysis/ro/RomanianAnalyzer	todo:M11	T11.6 per-language (ro): RomanianAnalyzer
-analysis/ro/RomanianNormalizationFilter	todo:M11	T11.6 per-language (ro): RomanianNormalizationFilter
+analysis/ro/RomanianAnalyzer	ported	crates/lucene-analysis/src/lang/ro.rs::RomanianAnalyzer
+analysis/ro/RomanianNormalizationFilter	ported	crates/lucene-analysis/src/lang/ro.rs::RomanianNormalizationFilter
 analysis/ro/RomanianNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: RomanianNormalizationFilterFactory
-analysis/ro/RomanianNormalizer	todo:M11	T11.6 per-language (ro): RomanianNormalizer
-analysis/ru/RussianAnalyzer	todo:M11	T11.6 per-language (ru): RussianAnalyzer
-analysis/ru/RussianLightStemFilter	todo:M11	T11.6 per-language (ru): RussianLightStemFilter
+analysis/ro/RomanianNormalizer	ported	crates/lucene-analysis/src/lang/ro.rs::RomanianNormalizer
+analysis/ru/RussianAnalyzer	ported	crates/lucene-analysis/src/lang/ru.rs::RussianAnalyzer
+analysis/ru/RussianLightStemFilter	ported	crates/lucene-analysis/src/lang/ru.rs::RussianLightStemFilter
 analysis/ru/RussianLightStemFilterFactory	todo:M11	T11.7 factory/SPI: RussianLightStemFilterFactory
-analysis/ru/RussianLightStemmer	todo:M11	T11.6 per-language (ru): RussianLightStemmer
+analysis/ru/RussianLightStemmer	ported	crates/lucene-analysis/src/lang/ru.rs::RussianLightStemmer
 analysis/shingle/FixedShingleFilter	ported	crates/lucene-analysis/src/shingle/mod.rs::FixedShingleFilter
 analysis/shingle/FixedShingleFilterFactory	todo:M11	T11.7 factory/SPI: FixedShingleFilterFactory
 analysis/shingle/ShingleAnalyzerWrapper	ported	crates/lucene-analysis/src/shingle/mod.rs::ShingleAnalyzerWrapper
@@ -409,17 +409,17 @@ analysis/shingle/ShingleFilterFactory	todo:M11	T11.7 factory/SPI: ShingleFilterF
 analysis/sinks/TeeSinkTokenFilter	todo:M11	T11.6 sinks: TeeSinkTokenFilter
 analysis/snowball/SnowballFilter	ported	crates/lucene-analysis/src/snowball/mod.rs::SnowballFilter -- M11 T11.3
 analysis/snowball/SnowballPorterFilterFactory	todo:M11	T11.7 factory/SPI: SnowballPorterFilterFactory
-analysis/sr/SerbianAnalyzer	todo:M11	T11.6 per-language (sr): SerbianAnalyzer
-analysis/sr/SerbianNormalizationFilter	todo:M11	T11.6 per-language (sr): SerbianNormalizationFilter
+analysis/sr/SerbianAnalyzer	ported	crates/lucene-analysis/src/lang/sr.rs::SerbianAnalyzer
+analysis/sr/SerbianNormalizationFilter	ported	crates/lucene-analysis/src/lang/sr.rs::SerbianNormalizationFilter
 analysis/sr/SerbianNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: SerbianNormalizationFilterFactory
-analysis/sr/SerbianNormalizationRegularFilter	todo:M11	T11.6 per-language (sr): SerbianNormalizationRegularFilter
-analysis/sv/SwedishAnalyzer	todo:M11	T11.6 per-language (sv): SwedishAnalyzer
-analysis/sv/SwedishLightStemFilter	todo:M11	T11.6 per-language (sv): SwedishLightStemFilter
+analysis/sr/SerbianNormalizationRegularFilter	ported	crates/lucene-analysis/src/lang/sr.rs::SerbianNormalizationRegularFilter
+analysis/sv/SwedishAnalyzer	ported	crates/lucene-analysis/src/lang/sv.rs::SwedishAnalyzer
+analysis/sv/SwedishLightStemFilter	ported	crates/lucene-analysis/src/lang/sv.rs::SwedishLightStemFilter
 analysis/sv/SwedishLightStemFilterFactory	todo:M11	T11.7 factory/SPI: SwedishLightStemFilterFactory
-analysis/sv/SwedishLightStemmer	todo:M11	T11.6 per-language (sv): SwedishLightStemmer
-analysis/sv/SwedishMinimalStemFilter	todo:M11	T11.6 per-language (sv): SwedishMinimalStemFilter
+analysis/sv/SwedishLightStemmer	ported	crates/lucene-analysis/src/lang/sv.rs::SwedishLightStemmer
+analysis/sv/SwedishMinimalStemFilter	ported	crates/lucene-analysis/src/lang/sv.rs::SwedishMinimalStemFilter
 analysis/sv/SwedishMinimalStemFilterFactory	todo:M11	T11.7 factory/SPI: SwedishMinimalStemFilterFactory
-analysis/sv/SwedishMinimalStemmer	todo:M11	T11.6 per-language (sv): SwedishMinimalStemmer
+analysis/sv/SwedishMinimalStemmer	ported	crates/lucene-analysis/src/lang/sv.rs::SwedishMinimalStemmer
 analysis/synonym/SolrSynonymParser	ported	crates/lucene-analysis/src/synonym/solr_synonym_parser.rs::SolrSynonymParser
 analysis/synonym/SynonymFilter	ported	crates/lucene-analysis/src/synonym/synonym_filter.rs::SynonymFilter
 analysis/synonym/SynonymFilterFactory	todo:M11	T11.7 factory/SPI: SynonymFilterFactory
@@ -434,21 +434,21 @@ analysis/synonym/word2vec/Word2VecSynonymFilter	todo:M11	T11.5 synonyms: Word2Ve
 analysis/synonym/word2vec/Word2VecSynonymFilterFactory	todo:M11	T11.7 factory/SPI: Word2VecSynonymFilterFactory
 analysis/synonym/word2vec/Word2VecSynonymProvider	todo:M11	T11.5 synonyms: Word2VecSynonymProvider
 analysis/synonym/word2vec/Word2VecSynonymProviderFactory	todo:M11	T11.7 factory/SPI: Word2VecSynonymProviderFactory
-analysis/ta/TamilAnalyzer	todo:M11	T11.6 per-language (ta): TamilAnalyzer
-analysis/te/TeluguAnalyzer	todo:M11	T11.6 per-language (te): TeluguAnalyzer
-analysis/te/TeluguNormalizationFilter	todo:M11	T11.6 per-language (te): TeluguNormalizationFilter
+analysis/ta/TamilAnalyzer	ported	crates/lucene-analysis/src/lang/ta.rs::TamilAnalyzer
+analysis/te/TeluguAnalyzer	ported	crates/lucene-analysis/src/lang/te.rs::TeluguAnalyzer
+analysis/te/TeluguNormalizationFilter	ported	crates/lucene-analysis/src/lang/te.rs::TeluguNormalizationFilter
 analysis/te/TeluguNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: TeluguNormalizationFilterFactory
-analysis/te/TeluguNormalizer	todo:M11	T11.6 per-language (te): TeluguNormalizer
-analysis/te/TeluguStemFilter	todo:M11	T11.6 per-language (te): TeluguStemFilter
+analysis/te/TeluguNormalizer	ported	crates/lucene-analysis/src/lang/te.rs::TeluguNormalizer
+analysis/te/TeluguStemFilter	ported	crates/lucene-analysis/src/lang/te.rs::TeluguStemFilter
 analysis/te/TeluguStemFilterFactory	todo:M11	T11.7 factory/SPI: TeluguStemFilterFactory
-analysis/te/TeluguStemmer	todo:M11	T11.6 per-language (te): TeluguStemmer
+analysis/te/TeluguStemmer	ported	crates/lucene-analysis/src/lang/te.rs::TeluguStemmer
 analysis/th/ThaiAnalyzer	todo:M11	T11.6 per-language (th): ThaiAnalyzer
 analysis/th/ThaiTokenizer	todo:M11	T11.6 per-language (th): ThaiTokenizer
 analysis/th/ThaiTokenizerFactory	todo:M11	T11.7 factory/SPI: ThaiTokenizerFactory
-analysis/tr/ApostropheFilter	todo:M11	T11.6 per-language (tr): ApostropheFilter
+analysis/tr/ApostropheFilter	ported	crates/lucene-analysis/src/lang/tr.rs::ApostropheFilter
 analysis/tr/ApostropheFilterFactory	todo:M11	T11.7 factory/SPI: ApostropheFilterFactory
-analysis/tr/TurkishAnalyzer	todo:M11	T11.6 per-language (tr): TurkishAnalyzer
-analysis/tr/TurkishLowerCaseFilter	todo:M11	T11.6 per-language (tr): TurkishLowerCaseFilter
+analysis/tr/TurkishAnalyzer	ported	crates/lucene-analysis/src/lang/tr.rs::TurkishAnalyzer
+analysis/tr/TurkishLowerCaseFilter	ported	crates/lucene-analysis/src/lang/tr.rs::TurkishLowerCaseFilter
 analysis/tr/TurkishLowerCaseFilterFactory	todo:M11	T11.7 factory/SPI: TurkishLowerCaseFilterFactory
 analysis/util/CSVUtil	todo:M11	T11.6 util: CSVUtil
 analysis/util/CharArrayIterator	todo:M11	T11.6 util: CharArrayIterator
@@ -459,7 +459,7 @@ analysis/util/FilesystemResourceLoader	todo:M11	T11.7 factory/SPI: FilesystemRes
 analysis/util/OpenStringBuilder	todo:M11	T11.6 util: OpenStringBuilder
 analysis/util/RollingCharBuffer	ported	crates/lucene-analysis/src/charfilter/mod.rs::RollingCharBuffer
 analysis/util/SegmentingTokenizerBase	todo:M11	T11.6 util: SegmentingTokenizerBase
-analysis/util/StemmerUtil	todo:M11	T11.6 util: StemmerUtil
+analysis/util/StemmerUtil	ported	crates/lucene-analysis/src/util/stemmer_util.rs::delete_n
 analysis/util/UnicodeProps	ported	crates/lucene-analysis/src/java_character.rs::is_unicode_whitespace
 analysis/wikipedia/WikipediaTokenizer	ported	crates/lucene-analysis/src/wikipedia/mod.rs::WikipediaTokenizer
 analysis/wikipedia/WikipediaTokenizerFactory	todo:M11	T11.7 factory/SPI: WikipediaTokenizerFactory

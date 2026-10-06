@@ -71,6 +71,7 @@ pub mod java_character;
 #[rustfmt::skip]
 mod java_character_tables;
 mod keyword_tokenizer;
+pub mod lang;
 mod legacy;
 pub mod minhash;
 pub mod miscellaneous;
