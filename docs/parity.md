@@ -48,6 +48,7 @@ Milestones (M1-M10, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | [codecs.md](parity/codecs.md) | `lucene-codecs`: the `Lucene104` codec, every format read and written | 67 |
 | [backward-codecs.md](parity/backward-codecs.md) | `lucene-backward-codecs`: Lucene 9.0-10.4 formats (M8) | 18 |
 | [analysis.md](parity/analysis.md) | `lucene-analysis`: analyzers, tokenizers, filters | 19 |
+| [analysis-common.md](parity/analysis-common.md) | `lucene-analysis-common` (M11) | 4 |
 | [index.md](parity/index.md) | `lucene-index`: documents, `IndexWriter`, flush, merge, deletes, segment files, NRT snapshots | 45 |
 | [search-queries.md](parity/search-queries.md) | `lucene-search`: query types, rewrites, parser, vector queries | 37 |
 | [search-execution.md](parity/search-execution.md) | `lucene-search`: scorer tree, bulk scorers, similarities, multi-segment fan-out | 29 |

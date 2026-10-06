@@ -1,0 +1,437 @@
+T	0	Th_	0	3	1	1	word	0	-	0	1
+T	0	q__ck	4	9	1	1	word	0	-	0	1
+T	0	br_wn	10	15	1	1	word	0	-	0	1
+T	0	f_x	16	19	1	1	word	0	-	0	1
+T	0	j_mps	20	25	1	1	word	0	-	0	1
+T	0	_v_r	26	30	1	1	word	0	-	0	1
+T	0	th_	31	34	1	1	word	0	-	0	1
+T	0	l_zy	35	39	1	1	word	0	-	0	1
+T	0	d_g.	40	44	1	1	word	0	-	0	1
+E	0	44	44	0
+T	1	th_	0	3	1	1	word	0	-	0	1
+T	1	th_	4	7	1	1	word	0	-	0	1
+T	1	Th_	8	11	1	1	word	0	-	0	1
+T	1	q__ck	12	17	1	1	word	0	-	0	1
+T	1	q__ck	18	23	1	1	word	0	-	0	1
+T	1	br_wn	24	29	1	1	word	0	-	0	1
+T	1	BROWN	30	35	1	1	word	0	-	0	1
+T	1	f_x	36	39	1	1	word	0	-	0	1
+E	1	39	39	0
+T	2	R_nn_ng	0	7	1	1	word	0	-	0	1
+T	2	r_ns	8	12	1	1	word	0	-	0	1
+T	2	r_n	13	16	1	1	word	0	-	0	1
+T	2	__s_ly;	17	24	1	1	word	0	-	0	1
+T	2	th_	25	28	1	1	word	0	-	0	1
+T	2	p_n__s'	29	36	1	1	word	0	-	0	1
+T	2	c_r_ss_s	37	45	1	1	word	0	-	0	1
+T	2	w_r_	46	50	1	1	word	0	-	0	1
+T	2	r_l_t__n_l,	51	62	1	1	word	0	-	0	1
+T	2	c_nd_t__n_l	63	74	1	1	word	0	-	0	1
+T	2	_nd	75	78	1	1	word	0	-	0	1
+T	2	g_n_r_l_z_t__ns	79	94	1	1	word	0	-	0	1
+T	2	_f	95	97	1	1	word	0	-	0	1
+T	2	h_pp_n_ss.	98	108	1	1	word	0	-	0	1
+E	2	108	108	0
+T	3	O'N__l's	0	8	1	1	word	0	-	0	1
+T	3	fr__nd's	9	17	1	1	word	0	-	0	1
+T	3	d_gs'	18	23	1	1	word	0	-	0	1
+T	3	t_ys	24	28	1	1	word	0	-	0	1
+T	3	--	29	31	1	1	word	0	-	0	1
+T	3	J_hn's	32	38	1	1	word	0	-	0	1
+T	3	_nd	39	42	1	1	word	0	-	0	1
+T	3	JAMES'S	43	50	1	1	word	0	-	0	1
+T	3	b__ks	51	56	1	1	word	0	-	0	1
+T	3	_r_n't	57	63	1	1	word	0	-	0	1
+T	3	th__rs.	64	71	1	1	word	0	-	0	1
+E	3	71	71	0
+T	4	W_-F_	0	5	1	1	word	0	-	0	1
+T	4	P_w_rSh_t500	6	18	1	1	word	0	-	0	1
+T	4	SD-500	19	25	1	1	word	0	-	0	1
+T	4	f___b_r	26	33	1	1	word	0	-	0	1
+T	4	42nd	34	38	1	1	word	0	-	0	1
+T	4	1st-pl_c_	39	48	1	1	word	0	-	0	1
+T	4	AT&T	49	53	1	1	word	0	-	0	1
+T	4	_-m__l	54	60	1	1	word	0	-	0	1
+T	4	j2s_	61	65	1	1	word	0	-	0	1
+T	4	_Ph_n_	66	72	1	1	word	0	-	0	1
+T	4	XMLHttpR_q__st	73	87	1	1	word	0	-	0	1
+T	4	ABCd_f	88	94	1	1	word	0	-	0	1
+E	4	94	94	0
+T	5	U.S.A.	0	6	1	1	word	0	-	0	1
+T	5	I.B.M.	7	13	1	1	word	0	-	0	1
+T	5	_.g.	14	18	1	1	word	0	-	0	1
+T	5	Dr.	19	22	1	1	word	0	-	0	1
+T	5	Sm_th's	23	30	1	1	word	0	-	0	1
+T	5	3.14	31	35	1	1	word	0	-	0	1
+T	5	1,000,000	36	45	1	1	word	0	-	0	1
+T	5	0x1F	46	50	1	1	word	0	-	0	1
+T	5	2026-10-06	51	61	1	1	word	0	-	0	1
+T	5	12:30	62	67	1	1	word	0	-	0	1
+T	5	-42	68	71	1	1	word	0	-	0	1
+T	5	+7	72	74	1	1	word	0	-	0	1
+T	5	1.5_10	75	81	1	1	word	0	-	0	1
+E	5	81	81	0
+T	6	Crèm_	0	5	1	1	word	0	-	0	1
+T	6	brûlé_	6	12	1	1	word	0	-	0	1
+T	6	à	13	14	1	1	word	0	-	0	1
+T	6	l_	15	17	1	1	word	0	-	0	1
+T	6	c_fé	18	22	1	1	word	0	-	0	1
+T	6	—	23	24	1	1	word	0	-	0	1
+T	6	n_ïv_	25	30	1	1	word	0	-	0	1
+T	6	f_ç_d_,	31	38	1	1	word	0	-	0	1
+T	6	Ærøskøb_ng,	39	50	1	1	word	0	-	0	1
+T	6	Str_ß_,	51	58	1	1	word	0	-	0	1
+T	6	Ĳss_lm__r,	59	69	1	1	word	0	-	0	1
+T	6	ﬁn_nc__l	70	78	1	1	word	0	-	0	1
+T	6	ﬂ_w,	79	83	1	1	word	0	-	0	1
+T	6	Œ_vr_,	84	90	1	1	word	0	-	0	1
+T	6	Ångström	91	99	1	1	word	0	-	0	1
+E	6	99	99	0
+T	7	l'_v__n	0	7	1	1	word	0	-	0	1
+T	7	d'A_r	8	13	1	1	word	0	-	0	1
+T	7	Fr_nc_	14	20	1	1	word	0	-	0	1
+T	7	q_'_l	21	26	1	1	word	0	-	0	1
+T	7	_	27	28	1	1	word	0	-	0	1
+T	7	pr_s	29	33	1	1	word	0	-	0	1
+T	7	j_sq_'à	34	41	1	1	word	0	-	0	1
+T	7	l'_ér_p_rt	42	52	1	1	word	0	-	0	1
+T	7	n'ét__t	53	60	1	1	word	0	-	0	1
+T	7	p_s	61	64	1	1	word	0	-	0	1
+T	7	L'Hôt_l	65	72	1	1	word	0	-	0	1
+E	7	72	72	0
+T	8	D__	0	3	1	1	word	0	-	0	1
+T	8	B_nd_sr_p_bl_k	4	18	1	1	word	0	-	0	1
+T	8	D__tschl_nd	19	30	1	1	word	0	-	0	1
+T	8	_st	31	34	1	1	word	0	-	0	1
+T	8	__n	35	38	1	1	word	0	-	0	1
+T	8	B_nd_sst__t	39	50	1	1	word	0	-	0	1
+T	8	_n	51	53	1	1	word	0	-	0	1
+T	8	M_tt_l__r_p_;	54	67	1	1	word	0	-	0	1
+T	8	F_ßgäng_rüb_rgäng_	68	86	1	1	word	0	-	0	1
+T	8	s_nd	87	91	1	1	word	0	-	0	1
+T	8	hä_f_g.	92	99	1	1	word	0	-	0	1
+E	8	99	99	0
+T	9	El	0	2	1	1	word	0	-	0	1
+T	9	n_ñ_	3	7	1	1	word	0	-	0	1
+T	9	c_m_ó	8	13	1	1	word	0	-	0	1
+T	9	p_q__ñ_s	14	22	1	1	word	0	-	0	1
+T	9	m_nz_n_s;	23	32	1	1	word	0	-	0	1
+T	9	¿Dónd_	33	39	1	1	word	0	-	0	1
+T	9	_stá	40	44	1	1	word	0	-	0	1
+T	9	l_	45	47	1	1	word	0	-	0	1
+T	9	_st_c_ón?	48	57	1	1	word	0	-	0	1
+T	9	¡Q_é	58	62	1	1	word	0	-	0	1
+T	9	dí_!	63	67	1	1	word	0	-	0	1
+E	9	67	67	0
+T	10	Съешь	0	5	1	1	word	0	-	0	1
+T	10	же	6	8	1	1	word	0	-	0	1
+T	10	ещё	9	12	1	1	word	0	-	0	1
+T	10	этих	13	17	1	1	word	0	-	0	1
+T	10	мягких	18	24	1	1	word	0	-	0	1
+T	10	французских	25	36	1	1	word	0	-	0	1
+T	10	булок,	37	43	1	1	word	0	-	0	1
+T	10	да	44	46	1	1	word	0	-	0	1
+T	10	выпей	47	52	1	1	word	0	-	0	1
+T	10	чаю.	53	57	1	1	word	0	-	0	1
+T	10	ЁЛКА	58	62	1	1	word	0	-	0	1
+T	10	ёлка	63	67	1	1	word	0	-	0	1
+E	10	67	67	0
+T	11	Η	0	1	1	1	word	0	-	0	1
+T	11	γρήγορη	2	9	1	1	word	0	-	0	1
+T	11	καφέ	10	14	1	1	word	0	-	0	1
+T	11	αλεπού	15	21	1	1	word	0	-	0	1
+T	11	πηδάει	22	28	1	1	word	0	-	0	1
+T	11	πάνω	29	33	1	1	word	0	-	0	1
+T	11	από	34	37	1	1	word	0	-	0	1
+T	11	τον	38	41	1	1	word	0	-	0	1
+T	11	τεμπέλη	42	49	1	1	word	0	-	0	1
+T	11	σκύλο.	50	56	1	1	word	0	-	0	1
+T	11	ΟΔΟΣ	57	61	1	1	word	0	-	0	1
+T	11	Σίσυφος	62	69	1	1	word	0	-	0	1
+E	11	69	69	0
+T	12	Türkç_	0	6	1	1	word	0	-	0	1
+T	12	İst_nb_l	7	15	1	1	word	0	-	0	1
+T	12	ılık	16	20	1	1	word	0	-	0	1
+T	12	ISPARTA;	21	29	1	1	word	0	-	0	1
+T	12	Ünlü	30	34	1	1	word	0	-	0	1
+T	12	ş_rkıcı	35	42	1	1	word	0	-	0	1
+T	12	Ç_ğrı	43	48	1	1	word	0	-	0	1
+E	12	48	48	0
+T	13	Sv_nsk_:	0	8	1	1	word	0	-	0	1
+T	13	åk_	9	12	1	1	word	0	-	0	1
+T	13	på	13	15	1	1	word	0	-	0	1
+T	13	sjön,	16	21	1	1	word	0	-	0	1
+T	13	N_rsk:	22	28	1	1	word	0	-	0	1
+T	13	blåbærsylt_tøy,	29	44	1	1	word	0	-	0	1
+T	13	D_nsk:	45	51	1	1	word	0	-	0	1
+T	13	rødgrød	52	59	1	1	word	0	-	0	1
+T	13	m_d	60	63	1	1	word	0	-	0	1
+T	13	flød_,	64	70	1	1	word	0	-	0	1
+T	13	Ísl_nsk_:	71	80	1	1	word	0	-	0	1
+T	13	þú	81	83	1	1	word	0	-	0	1
+T	13	ðú	84	86	1	1	word	0	-	0	1
+E	13	86	86	0
+T	14	العربية	0	7	1	1	word	0	-	0	1
+T	14	لغة	8	11	1	1	word	0	-	0	1
+T	14	جميلة،	12	18	1	1	word	0	-	0	1
+T	14	والكتابُ	19	27	1	1	word	0	-	0	1
+T	14	مفيدٌ	28	33	1	1	word	0	-	0	1
+T	14	٠١٢٣٤٥٦٧٨٩	34	44	1	1	word	0	-	0	1
+E	14	44	44	0
+T	15	עברית	0	5	1	1	word	0	-	0	1
+T	15	היא	6	9	1	1	word	0	-	0	1
+T	15	שפה	10	13	1	1	word	0	-	0	1
+T	15	שמית;	14	19	1	1	word	0	-	0	1
+T	15	ספר	20	23	1	1	word	0	-	0	1
+T	15	"תורה"	24	30	1	1	word	0	-	0	1
+E	15	30	30	0
+T	16	فارسی	0	5	1	1	word	0	-	0	1
+T	16	زبان	6	10	1	1	word	0	-	0	1
+T	16	زیبایی	11	17	1	1	word	0	-	0	1
+T	16	است	18	21	1	1	word	0	-	0	1
+T	16	و	22	23	1	1	word	0	-	0	1
+T	16	می‌خواهم	24	32	1	1	word	0	-	0	1
+T	16	کتاب‌ها	33	40	1	1	word	0	-	0	1
+T	16	را	41	43	1	1	word	0	-	0	1
+T	16	بخوانم	44	50	1	1	word	0	-	0	1
+T	16	۱۲۳	51	54	1	1	word	0	-	0	1
+E	16	54	54	0
+T	17	हिन्दी	0	6	1	1	word	0	-	0	1
+T	17	भाषा	7	11	1	1	word	0	-	0	1
+T	17	बहुत	12	16	1	1	word	0	-	0	1
+T	17	सुंदर	17	22	1	1	word	0	-	0	1
+T	17	है।	23	26	1	1	word	0	-	0	1
+T	17	संख्या	27	33	1	1	word	0	-	0	1
+T	17	१२३	34	37	1	1	word	0	-	0	1
+E	17	37	37	0
+T	18	বাংলা	0	5	1	1	word	0	-	0	1
+T	18	ভাষা	6	10	1	1	word	0	-	0	1
+T	18	সুন্দর	11	17	1	1	word	0	-	0	1
+T	18	১২৩	18	21	1	1	word	0	-	0	1
+E	18	21	21	0
+T	19	ภาษาไทยไม่มีช่องว่างระหว่างคำ	0	29	1	1	word	0	-	0	1
+T	19	แต่มีช่องว่างระหว่างประโยค	30	56	1	1	word	0	-	0	1
+T	19	๑๒๓	57	60	1	1	word	0	-	0	1
+E	19	60	60	0
+T	20	中华人民共和国成立于1949年。我爱北京天安门！	0	24	1	1	word	0	-	0	1
+E	20	24	24	0
+T	21	日本語のテキストとカタカナとｶﾀｶﾅとひらがな、ＡＢＣ１２３と全角	0	33	1	1	word	0	-	0	1
+E	21	33	33	0
+T	22	한국어	0	3	1	1	word	0	-	0	1
+T	22	텍스트입니다	4	10	1	1	word	0	-	0	1
+T	22	서울특별시	11	16	1	1	word	0	-	0	1
+T	22	ＫＯＲＥＡ	17	22	1	1	word	0	-	0	1
+E	22	22	22	0
+T	23	Em_j_:	0	6	1	1	word	0	-	0	1
+T	23	👍	7	9	1	1	word	0	-	0	1
+T	23	🇺🇸	10	14	1	1	word	0	-	0	1
+T	23	👨‍👩‍👧	15	23	1	1	word	0	-	0	1
+T	23	✌🏽	24	27	1	1	word	0	-	0	1
+T	23	😀😀	28	32	1	1	word	0	-	0	1
+T	23	❤️	33	35	1	1	word	0	-	0	1
+T	23	1️⃣	36	39	1	1	word	0	-	0	1
+T	23	_nd	40	43	1	1	word	0	-	0	1
+T	23	𝐀𝐁𝐂	44	50	1	1	word	0	-	0	1
+T	23	m_th	51	55	1	1	word	0	-	0	1
+T	23	pl_s	56	60	1	1	word	0	-	0	1
+T	23	𠀀𠀁	61	65	1	1	word	0	-	0	1
+T	23	r_r_	66	70	1	1	word	0	-	0	1
+T	23	_d__gr_phs	71	81	1	1	word	0	-	0	1
+E	23	81	81	0
+T	24	V_s_t	0	5	1	1	word	0	-	0	1
+T	24	https://l_c_n_._p_ch_._rg/c_r_/	6	37	1	1	word	0	-	0	1
+T	24	_r	38	40	1	1	word	0	-	0	1
+T	24	m__l	41	45	1	1	word	0	-	0	1
+T	24	d_v@l_c_n_._p_ch_._rg	46	67	1	1	word	0	-	0	1
+T	24	t_d_y!	68	74	1	1	word	0	-	0	1
+E	24	74	74	0
+T	25	S__	0	3	1	1	word	0	-	0	1
+T	25	www._x_mpl_.c_m/p_th?q=1&x=y#fr_g	4	37	1	1	word	0	-	0	1
+T	25	_nd	38	41	1	1	word	0	-	0	1
+T	25	http://[::1]:8080/_,	42	62	1	1	word	0	-	0	1
+T	25	_s_r.n_m_+t_g@s_b._x_mpl_.c_._k,	63	95	1	1	word	0	-	0	1
+T	25	192.168.0.1	96	107	1	1	word	0	-	0	1
+E	25	107	107	0
+T	26	m__lt_:s_m__n_@_x_mpl_._rg	0	26	1	1	word	0	-	0	1
+T	26	ftp://f_l_s._x_mpl_.n_t/p_b/f_l_.t_r.gz	27	66	1	1	word	0	-	0	1
+T	26	_x_mpl_.c_m.	67	79	1	1	word	0	-	0	1
+E	26	79	79	0
+T	27	<p>H_ll_	0	8	1	1	word	0	-	0	1
+T	27	<b>w_rld</b>	9	21	1	1	word	0	-	0	1
+T	27	&_mp;	22	27	1	1	word	0	-	0	1
+T	27	fr__nds	28	35	1	1	word	0	-	0	1
+T	27	&lt;t_g&gt;	36	47	1	1	word	0	-	0	1
+T	27	&#169;	48	54	1	1	word	0	-	0	1
+T	27	&#x263A;	55	63	1	1	word	0	-	0	1
+T	27	&nbsp;x&__c_t_;</p><!--	64	87	1	1	word	0	-	0	1
+T	27	_	88	89	1	1	word	0	-	0	1
+T	27	c_mm_nt	90	97	1	1	word	0	-	0	1
+T	27	--><br/>	98	106	1	1	word	0	-	0	1
+E	27	106	106	0
+T	28	<scr_pt	0	7	1	1	word	0	-	0	1
+T	28	typ_="t_xt/j_v_scr_pt">v_r	8	34	1	1	word	0	-	0	1
+T	28	x	35	36	1	1	word	0	-	0	1
+T	28	=	37	38	1	1	word	0	-	0	1
+T	28	1	39	40	1	1	word	0	-	0	1
+T	28	<	41	42	1	1	word	0	-	0	1
+T	28	2;</scr_pt><_	43	56	1	1	word	0	-	0	1
+T	28	hr_f="http://x._rg/">_	57	79	1	1	word	0	-	0	1
+T	28	l_nk</_>	80	88	1	1	word	0	-	0	1
+T	28	<styl_>p{}</styl_>_ft_r	89	112	1	1	word	0	-	0	1
+E	28	112	112	0
+T	29	<d_v	0	4	1	1	word	0	-	0	1
+T	29	cl_ss='c'>&q__t;q__t_d&q__t;	5	33	1	1	word	0	-	0	1
+T	29	&_p_s;s_ngl_&_p_s;	34	52	1	1	word	0	-	0	1
+T	29	&_nkn_wn;	53	62	1	1	word	0	-	0	1
+T	29	&#xZZ;	63	69	1	1	word	0	-	0	1
+T	29	<![CDATA[	70	79	1	1	word	0	-	0	1
+T	29	r_w	80	83	1	1	word	0	-	0	1
+T	29	<d_t_>	84	90	1	1	word	0	-	0	1
+T	29	]]>	91	94	1	1	word	0	-	0	1
+T	29	t__l</d_v>	95	105	1	1	word	0	-	0	1
+E	29	105	105	0
+T	30	/_sr/l_c_l/b_n/l_c_n_	0	21	1	1	word	0	-	0	1
+T	30	/v_r/l_g//sysl_g.1	22	40	1	1	word	0	-	0	1
+T	30	r_l_t_v_/p_th/t_/f_l_.txt	41	66	1	1	word	0	-	0	1
+E	30	66	66	0
+T	31	C:\\Pr_gr_m	0	10	1	1	word	0	-	0	1
+T	31	F_l_s\\L_c_n_\\_nd_x	11	29	1	1	word	0	-	0	1
+T	31	_\\b\\c	30	35	1	1	word	0	-	0	1
+E	31	35	35	0
+T	32	th_|1.5	0	7	1	1	word	0	-	0	1
+T	32	q__ck|2	8	15	1	1	word	0	-	0	1
+T	32	br_wn|0.5	16	25	1	1	word	0	-	0	1
+T	32	f_x	26	29	1	1	word	0	-	0	1
+T	32	j_mps|3	30	37	1	1	word	0	-	0	1
+E	32	37	37	0
+T	33	_ppl_|3	0	7	1	1	word	0	-	0	1
+T	33	b_n_n_|1	8	16	1	1	word	0	-	0	1
+T	33	ch_rry	17	23	1	1	word	0	-	0	1
+T	33	p__r|10	24	31	1	1	word	0	-	0	1
+E	33	31	31	0
+T	34	q__ck|0.5	0	9	1	1	word	0	-	0	1
+T	34	f_x|2.0	10	17	1	1	word	0	-	0	1
+T	34	d_g|-1.25	18	27	1	1	word	0	-	0	1
+E	34	27	27	0
+T	35	t_k_n1|p_yl__d	0	14	1	1	word	0	-	0	1
+T	35	_n_|tw_|thr__	15	28	1	1	word	0	-	0	1
+E	35	28	28	0
+T	36	T_bs	1	5	1	1	word	0	-	0	1
+T	36	_nd	6	9	1	1	word	0	-	0	1
+T	36	m_lt_pl_	12	20	1	1	word	0	-	0	1
+T	36	sp_c_s	23	29	1	1	word	0	-	0	1
+T	36	_nd	30	33	1	1	word	0	-	0	1
+T	36	NBSP h_r_	34	43	1	1	word	0	-	0	1
+T	36	_nd	44	47	1	1	word	0	-	0	1
+T	36	_d__gr_ph_c	48	59	1	1	word	0	-	0	1
+T	36	sp_c_	60	65	1	1	word	0	-	0	1
+T	36	_nd	66	69	1	1	word	0	-	0	1
+T	36	l_n_	70	74	1	1	word	0	-	0	1
+T	36	s_p	75	78	1	1	word	0	-	0	1
+T	36	_nd	79	82	1	1	word	0	-	0	1
+T	36	z_r_​w_dth	83	93	1	1	word	0	-	0	1
+T	36	s_ft­hyph_n	94	105	1	1	word	0	-	0	1
+E	36	105	105	0
+T	37	_b	0	2	1	1	word	0	-	0	1
+E	37	2	2	0
+T	38	A	0	1	1	1	word	0	-	0	1
+E	38	1	1	0
+T	39	s_p_rc_l_fr_g_l_st_c_xp__l_d_c___ss_p_rc_l_fr_g_l_st_c_xp__l_d_c___ss_p_rc_l_fr_g_l_st_c_xp__l_d_c___ss_p_rc_l_fr_g_l_st_c_xp__l_d_c___ss_p_rc_l_fr_g_l_st_c_xp__l_d_c___ss_p_rc_l_fr_g_l_st_c_xp__l_d_c___ss_p_rc_l_fr_g_l_st_c_xp__l_d_c___ss_p_rc_l_fr_g_l_s	0	255	1	1	word	0	-	0	1
+T	39	t_c_xp__l_d_c___ss_p_rc_l_fr_g_l_st_c_xp__l_d_c___s	255	306	1	1	word	0	-	0	1
+T	39	_nd	307	310	1	1	word	0	-	0	1
+E	39	310	310	0
+T	40	x	0	1	1	1	word	0	-	0	1
+T	40	y	2	3	1	1	word	0	-	0	1
+T	40	z	4	5	1	1	word	0	-	0	1
+T	40	xy	6	8	1	1	word	0	-	0	1
+T	40	xyz	9	12	1	1	word	0	-	0	1
+T	40	_-b-c	13	18	1	1	word	0	-	0	1
+T	40	_.b.c	19	24	1	1	word	0	-	0	1
+T	40	__b_c	25	30	1	1	word	0	-	0	1
+T	40	_/b/c	31	36	1	1	word	0	-	0	1
+T	40	_:b:c	37	42	1	1	word	0	-	0	1
+E	40	42	42	0
+T	41	f__-b_r-b_z	0	11	1	1	word	0	-	0	1
+T	41	F__B_rB_z	12	21	1	1	word	0	-	0	1
+T	41	FOOb_r	22	28	1	1	word	0	-	0	1
+T	41	f__BAR	29	35	1	1	word	0	-	0	1
+T	41	f__2b_r	36	43	1	1	word	0	-	0	1
+T	41	2f__	44	48	1	1	word	0	-	0	1
+T	41	b_r2	49	53	1	1	word	0	-	0	1
+T	41	..._ll_ps_s...	54	68	1	1	word	0	-	0	1
+T	41	--d_sh_s--	69	79	1	1	word	0	-	0	1
+E	41	79	79	0
+T	42	Th_	0	3	1	1	word	0	-	0	1
+T	42	CEO's	4	9	1	1	word	0	-	0	1
+T	42	1990s-_r_	10	19	1	1	word	0	-	0	1
+T	42	IBM-c_mp_t_bl_	20	34	1	1	word	0	-	0	1
+T	42	PCs	35	38	1	1	word	0	-	0	1
+T	42	r_n	39	42	1	1	word	0	-	0	1
+T	42	MS-DOS	43	49	1	1	word	0	-	0	1
+T	42	6.22;	50	55	1	1	word	0	-	0	1
+T	42	th_	56	59	1	1	word	0	-	0	1
+T	42	5th	60	63	1	1	word	0	-	0	1
+T	42	g_n.	64	68	1	1	word	0	-	0	1
+T	42	C_r_	69	73	1	1	word	0	-	0	1
+T	42	_7-4790K	74	82	1	1	word	0	-	0	1
+T	42	CPU	83	86	1	1	word	0	-	0	1
+T	42	@	87	88	1	1	word	0	-	0	1
+T	42	4.00GHz	89	96	1	1	word	0	-	0	1
+E	42	96	96	0
+T	43	r_nn_ng	0	7	1	1	word	0	-	0	1
+T	43	j_mp_ng	8	15	1	1	word	0	-	0	1
+T	43	h_pp_ly	16	23	1	1	word	0	-	0	1
+T	43	h_pp_n_ss	24	33	1	1	word	0	-	0	1
+T	43	c_nd_t__n_l	34	45	1	1	word	0	-	0	1
+T	43	r_l_t__n_l	46	56	1	1	word	0	-	0	1
+T	43	s_ns_b_l_ty	57	68	1	1	word	0	-	0	1
+T	43	_gr__d	69	75	1	1	word	0	-	0	1
+T	43	f__d	76	80	1	1	word	0	-	0	1
+T	43	bl_d	81	85	1	1	word	0	-	0	1
+T	43	s_ng	86	90	1	1	word	0	-	0	1
+E	43	90	90	0
+T	44	l__d_ng	2	9	1	1	word	0	-	0	1
+T	44	_nd	10	13	1	1	word	0	-	0	1
+T	44	tr__l_ng	14	22	1	1	word	0	-	0	1
+T	44	sp_c_s	23	29	1	1	word	0	-	0	1
+E	44	32	32	0
+E	45	0	0	0
+T	46	ÀÁÂÃÄÅ	0	6	1	1	word	0	-	0	1
+T	46	àáâãäå	7	13	1	1	word	0	-	0	1
+T	46	ÇçÈÉÊË	14	20	1	1	word	0	-	0	1
+T	46	èéêë	21	25	1	1	word	0	-	0	1
+T	46	ÌÍÎÏ	26	30	1	1	word	0	-	0	1
+T	46	ìíîï	31	35	1	1	word	0	-	0	1
+T	46	ÑñÒÓÔÕÖ	36	43	1	1	word	0	-	0	1
+T	46	òóôõö	44	49	1	1	word	0	-	0	1
+T	46	ÙÚÛÜ	50	54	1	1	word	0	-	0	1
+T	46	ùúûü	55	59	1	1	word	0	-	0	1
+T	46	Ýýÿ	60	63	1	1	word	0	-	0	1
+T	46	ŠšŽž	64	68	1	1	word	0	-	0	1
+T	46	Łł	69	71	1	1	word	0	-	0	1
+T	46	Ðð	72	74	1	1	word	0	-	0	1
+T	46	Þþ	75	77	1	1	word	0	-	0	1
+T	46	ß	78	79	1	1	word	0	-	0	1
+T	46	ŒœÆæØø	80	86	1	1	word	0	-	0	1
+E	46	86	86	0
+T	47	“Sm_rt	0	6	1	1	word	0	-	0	1
+T	47	q__t_s”	7	14	1	1	word	0	-	0	1
+T	47	‘s_ngl_’	15	23	1	1	word	0	-	0	1
+T	47	«g__ll_m_ts»	24	36	1	1	word	0	-	0	1
+T	47	‹s_ngl_›	37	45	1	1	word	0	-	0	1
+T	47	„l_w“	46	51	1	1	word	0	-	0	1
+T	47	‐‑‒–—―	52	58	1	1	word	0	-	0	1
+T	47	…	59	60	1	1	word	0	-	0	1
+T	47	‰	61	62	1	1	word	0	-	0	1
+T	47	€	63	64	1	1	word	0	-	0	1
+T	47	£	65	66	1	1	word	0	-	0	1
+T	47	¥	67	68	1	1	word	0	-	0	1
+T	47	©	69	70	1	1	word	0	-	0	1
+T	47	®	71	72	1	1	word	0	-	0	1
+T	47	™	73	74	1	1	word	0	-	0	1
+T	47	½	75	76	1	1	word	0	-	0	1
+T	47	¼	77	78	1	1	word	0	-	0	1
+T	47	²	79	80	1	1	word	0	-	0	1
+T	47	³	81	82	1	1	word	0	-	0	1
+T	47	¹	83	84	1	1	word	0	-	0	1
+E	47	84	84	0

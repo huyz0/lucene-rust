@@ -1,0 +1,437 @@
+T	0	the	0	3	1	1	word	0	-	0	1
+T	0	quick	4	9	1	1	word	0	-	0	1
+T	0	brown	10	15	1	1	word	0	-	0	1
+T	0	fox	16	19	1	1	word	0	-	0	1
+T	0	jump	20	25	1	1	word	0	-	0	1
+T	0	over	26	30	1	1	word	0	-	0	1
+T	0	the	31	34	1	1	word	0	-	0	1
+T	0	lazi	35	39	1	1	word	0	-	0	1
+T	0	dog.	40	44	1	1	word	0	-	0	1
+E	0	44	44	0
+T	1	the	0	3	1	1	word	0	-	0	1
+T	1	the	4	7	1	1	word	0	-	0	1
+T	1	the	8	11	1	1	word	0	-	0	1
+T	1	quick	12	17	1	1	word	0	-	0	1
+T	1	quick	18	23	1	1	word	0	-	0	1
+T	1	brown	24	29	1	1	word	0	-	0	1
+T	1	brown	30	35	1	1	word	0	-	0	1
+T	1	fox	36	39	1	1	word	0	-	0	1
+E	1	39	39	0
+T	2	running	0	7	1	1	word	0	-	1	1
+T	2	run	8	12	1	1	word	0	-	0	1
+T	2	ran	13	16	1	1	word	0	-	0	1
+T	2	easily;	17	24	1	1	word	0	-	0	1
+T	2	the	25	28	1	1	word	0	-	0	1
+T	2	ponies'	29	36	1	1	word	0	-	0	1
+T	2	caress	37	45	1	1	word	0	-	0	1
+T	2	were	46	50	1	1	word	0	-	0	1
+T	2	relational,	51	62	1	1	word	0	-	0	1
+T	2	condit	63	74	1	1	word	0	-	0	1
+T	2	and	75	78	1	1	word	0	-	0	1
+T	2	gener	79	94	1	1	word	0	-	0	1
+T	2	of	95	97	1	1	word	0	-	0	1
+T	2	happiness.	98	108	1	1	word	0	-	0	1
+E	2	108	108	0
+T	3	o'neil'	0	8	1	1	word	0	-	0	1
+T	3	friend'	9	17	1	1	word	0	-	0	1
+T	3	dogs'	18	23	1	1	word	0	-	0	1
+T	3	toi	24	28	1	1	word	0	-	0	1
+T	3	--	29	31	1	1	word	0	-	0	1
+T	3	john'	32	38	1	1	word	0	-	0	1
+T	3	and	39	42	1	1	word	0	-	0	1
+T	3	james'	43	50	1	1	word	0	-	0	1
+T	3	book	51	56	1	1	word	0	-	0	1
+T	3	aren't	57	63	1	1	word	0	-	0	1
+T	3	theirs.	64	71	1	1	word	0	-	0	1
+E	3	71	71	0
+T	4	wi-fi	0	5	1	1	word	0	-	0	1
+T	4	powershot500	6	18	1	1	word	0	-	0	1
+T	4	sd-500	19	25	1	1	word	0	-	0	1
+T	4	foo_bar	26	33	1	1	word	0	-	0	1
+T	4	42nd	34	38	1	1	word	0	-	0	1
+T	4	1st-place	39	48	1	1	word	0	-	0	1
+T	4	at&t	49	53	1	1	word	0	-	0	1
+T	4	e-mail	54	60	1	1	word	0	-	0	1
+T	4	j2se	61	65	1	1	word	0	-	0	1
+T	4	iphon	66	72	1	1	word	0	-	0	1
+T	4	xmlhttprequest	73	87	1	1	word	0	-	0	1
+T	4	abcdef	88	94	1	1	word	0	-	0	1
+E	4	94	94	0
+T	5	u.s.a.	0	6	1	1	word	0	-	0	1
+T	5	i.b.m.	7	13	1	1	word	0	-	0	1
+T	5	e.g.	14	18	1	1	word	0	-	0	1
+T	5	dr.	19	22	1	1	word	0	-	0	1
+T	5	smith'	23	30	1	1	word	0	-	0	1
+T	5	3.14	31	35	1	1	word	0	-	0	1
+T	5	1,000,000	36	45	1	1	word	0	-	0	1
+T	5	0x1f	46	50	1	1	word	0	-	0	1
+T	5	2026-10-06	51	61	1	1	word	0	-	0	1
+T	5	12:30	62	67	1	1	word	0	-	0	1
+T	5	-42	68	71	1	1	word	0	-	0	1
+T	5	+7	72	74	1	1	word	0	-	0	1
+T	5	1.5e10	75	81	1	1	word	0	-	0	1
+E	5	81	81	0
+T	6	crème	0	5	1	1	word	0	-	0	1
+T	6	brûlée	6	12	1	1	word	0	-	0	1
+T	6	à	13	14	1	1	word	0	-	0	1
+T	6	la	15	17	1	1	word	0	-	0	1
+T	6	café	18	22	1	1	word	0	-	0	1
+T	6	—	23	24	1	1	word	0	-	0	1
+T	6	naïv	25	30	1	1	word	0	-	0	1
+T	6	façade,	31	38	1	1	word	0	-	0	1
+T	6	ærøskøbing,	39	50	1	1	word	0	-	0	1
+T	6	straße,	51	58	1	1	word	0	-	0	1
+T	6	ĳsselmeer,	59	69	1	1	word	0	-	0	1
+T	6	ﬁnancial	70	78	1	1	word	0	-	0	1
+T	6	ﬂow,	79	83	1	1	word	0	-	0	1
+T	6	œuvre,	84	90	1	1	word	0	-	0	1
+T	6	ångström	91	99	1	1	word	0	-	0	1
+E	6	99	99	0
+T	7	l'avion	0	7	1	1	word	0	-	0	1
+T	7	d'air	8	13	1	1	word	0	-	0	1
+T	7	franc	14	20	1	1	word	0	-	0	1
+T	7	qu'il	21	26	1	1	word	0	-	0	1
+T	7	a	27	28	1	1	word	0	-	0	1
+T	7	pri	29	33	1	1	word	0	-	0	1
+T	7	jusqu'à	34	41	1	1	word	0	-	0	1
+T	7	l'aéroport	42	52	1	1	word	0	-	0	1
+T	7	n'était	53	60	1	1	word	0	-	0	1
+T	7	pa	61	64	1	1	word	0	-	0	1
+T	7	l'hôtel	65	72	1	1	word	0	-	0	1
+E	7	72	72	0
+T	8	die	0	3	1	1	word	0	-	0	1
+T	8	bundesrepublik	4	18	1	1	word	0	-	0	1
+T	8	deutschland	19	30	1	1	word	0	-	0	1
+T	8	ist	31	34	1	1	word	0	-	0	1
+T	8	ein	35	38	1	1	word	0	-	0	1
+T	8	bundesstaat	39	50	1	1	word	0	-	0	1
+T	8	in	51	53	1	1	word	0	-	0	1
+T	8	mitteleuropa;	54	67	1	1	word	0	-	0	1
+T	8	fußgängerübergäng	68	86	1	1	word	0	-	0	1
+T	8	sind	87	91	1	1	word	0	-	0	1
+T	8	häufig.	92	99	1	1	word	0	-	0	1
+E	8	99	99	0
+T	9	el	0	2	1	1	word	0	-	0	1
+T	9	niño	3	7	1	1	word	0	-	0	1
+T	9	comió	8	13	1	1	word	0	-	0	1
+T	9	pequeña	14	22	1	1	word	0	-	0	1
+T	9	manzanas;	23	32	1	1	word	0	-	0	1
+T	9	¿dónde	33	39	1	1	word	0	-	0	1
+T	9	está	40	44	1	1	word	0	-	0	1
+T	9	la	45	47	1	1	word	0	-	0	1
+T	9	estación?	48	57	1	1	word	0	-	0	1
+T	9	¡qué	58	62	1	1	word	0	-	0	1
+T	9	día!	63	67	1	1	word	0	-	0	1
+E	9	67	67	0
+T	10	съешь	0	5	1	1	word	0	-	0	1
+T	10	же	6	8	1	1	word	0	-	0	1
+T	10	ещё	9	12	1	1	word	0	-	0	1
+T	10	этих	13	17	1	1	word	0	-	0	1
+T	10	мягких	18	24	1	1	word	0	-	0	1
+T	10	французских	25	36	1	1	word	0	-	0	1
+T	10	булок,	37	43	1	1	word	0	-	0	1
+T	10	да	44	46	1	1	word	0	-	0	1
+T	10	выпей	47	52	1	1	word	0	-	0	1
+T	10	чаю.	53	57	1	1	word	0	-	0	1
+T	10	ёлка	58	62	1	1	word	0	-	0	1
+T	10	ёлка	63	67	1	1	word	0	-	0	1
+E	10	67	67	0
+T	11	η	0	1	1	1	word	0	-	0	1
+T	11	γρήγορη	2	9	1	1	word	0	-	0	1
+T	11	καφέ	10	14	1	1	word	0	-	0	1
+T	11	αλεπού	15	21	1	1	word	0	-	0	1
+T	11	πηδάει	22	28	1	1	word	0	-	0	1
+T	11	πάνω	29	33	1	1	word	0	-	0	1
+T	11	από	34	37	1	1	word	0	-	0	1
+T	11	τον	38	41	1	1	word	0	-	0	1
+T	11	τεμπέλη	42	49	1	1	word	0	-	0	1
+T	11	σκύλο.	50	56	1	1	word	0	-	0	1
+T	11	οδοσ	57	61	1	1	word	0	-	0	1
+T	11	σίσυφος	62	69	1	1	word	0	-	0	1
+E	11	69	69	0
+T	12	türkçe	0	6	1	1	word	0	-	0	1
+T	12	istanbul	7	15	1	1	word	0	-	0	1
+T	12	ılık	16	20	1	1	word	0	-	0	1
+T	12	isparta;	21	29	1	1	word	0	-	0	1
+T	12	ünlü	30	34	1	1	word	0	-	0	1
+T	12	şarkıcı	35	42	1	1	word	0	-	0	1
+T	12	çağrı	43	48	1	1	word	0	-	0	1
+E	12	48	48	0
+T	13	svenska:	0	8	1	1	word	0	-	0	1
+T	13	åka	9	12	1	1	word	0	-	0	1
+T	13	på	13	15	1	1	word	0	-	0	1
+T	13	sjön,	16	21	1	1	word	0	-	0	1
+T	13	norsk:	22	28	1	1	word	0	-	0	1
+T	13	blåbærsyltetøy,	29	44	1	1	word	0	-	0	1
+T	13	dansk:	45	51	1	1	word	0	-	0	1
+T	13	rødgrød	52	59	1	1	word	0	-	0	1
+T	13	med	60	63	1	1	word	0	-	0	1
+T	13	fløde,	64	70	1	1	word	0	-	0	1
+T	13	íslenska:	71	80	1	1	word	0	-	0	1
+T	13	þú	81	83	1	1	word	0	-	0	1
+T	13	ðú	84	86	1	1	word	0	-	0	1
+E	13	86	86	0
+T	14	العربية	0	7	1	1	word	0	-	0	1
+T	14	لغة	8	11	1	1	word	0	-	0	1
+T	14	جميلة،	12	18	1	1	word	0	-	0	1
+T	14	والكتابُ	19	27	1	1	word	0	-	0	1
+T	14	مفيدٌ	28	33	1	1	word	0	-	0	1
+T	14	٠١٢٣٤٥٦٧٨٩	34	44	1	1	word	0	-	0	1
+E	14	44	44	0
+T	15	עברית	0	5	1	1	word	0	-	0	1
+T	15	היא	6	9	1	1	word	0	-	0	1
+T	15	שפה	10	13	1	1	word	0	-	0	1
+T	15	שמית;	14	19	1	1	word	0	-	0	1
+T	15	ספר	20	23	1	1	word	0	-	0	1
+T	15	"תורה"	24	30	1	1	word	0	-	0	1
+E	15	30	30	0
+T	16	فارسی	0	5	1	1	word	0	-	0	1
+T	16	زبان	6	10	1	1	word	0	-	0	1
+T	16	زیبایی	11	17	1	1	word	0	-	0	1
+T	16	است	18	21	1	1	word	0	-	0	1
+T	16	و	22	23	1	1	word	0	-	0	1
+T	16	می‌خواهم	24	32	1	1	word	0	-	0	1
+T	16	کتاب‌ها	33	40	1	1	word	0	-	0	1
+T	16	را	41	43	1	1	word	0	-	0	1
+T	16	بخوانم	44	50	1	1	word	0	-	0	1
+T	16	۱۲۳	51	54	1	1	word	0	-	0	1
+E	16	54	54	0
+T	17	हिन्दी	0	6	1	1	word	0	-	0	1
+T	17	भाषा	7	11	1	1	word	0	-	0	1
+T	17	बहुत	12	16	1	1	word	0	-	0	1
+T	17	सुंदर	17	22	1	1	word	0	-	0	1
+T	17	है।	23	26	1	1	word	0	-	0	1
+T	17	संख्या	27	33	1	1	word	0	-	0	1
+T	17	१२३	34	37	1	1	word	0	-	0	1
+E	17	37	37	0
+T	18	বাংলা	0	5	1	1	word	0	-	0	1
+T	18	ভাষা	6	10	1	1	word	0	-	0	1
+T	18	সুন্দর	11	17	1	1	word	0	-	0	1
+T	18	১২৩	18	21	1	1	word	0	-	0	1
+E	18	21	21	0
+T	19	ภาษาไทยไม่มีช่องว่างระหว่างคำ	0	29	1	1	word	0	-	0	1
+T	19	แต่มีช่องว่างระหว่างประโยค	30	56	1	1	word	0	-	0	1
+T	19	๑๒๓	57	60	1	1	word	0	-	0	1
+E	19	60	60	0
+T	20	中华人民共和国成立于1949年。我爱北京天安门！	0	24	1	1	word	0	-	0	1
+E	20	24	24	0
+T	21	日本語のテキストとカタカナとｶﾀｶﾅとひらがな、ａｂｃ１２３と全角	0	33	1	1	word	0	-	0	1
+E	21	33	33	0
+T	22	한국어	0	3	1	1	word	0	-	0	1
+T	22	텍스트입니다	4	10	1	1	word	0	-	0	1
+T	22	서울특별시	11	16	1	1	word	0	-	0	1
+T	22	ｋｏｒｅａ	17	22	1	1	word	0	-	0	1
+E	22	22	22	0
+T	23	emoji:	0	6	1	1	word	0	-	0	1
+T	23	👍	7	9	1	1	word	0	-	0	1
+T	23	🇺🇸	10	14	1	1	word	0	-	0	1
+T	23	👨‍👩‍👧	15	23	1	1	word	0	-	0	1
+T	23	✌🏽	24	27	1	1	word	0	-	0	1
+T	23	😀😀	28	32	1	1	word	0	-	0	1
+T	23	❤️	33	35	1	1	word	0	-	0	1
+T	23	1️⃣	36	39	1	1	word	0	-	0	1
+T	23	and	40	43	1	1	word	0	-	0	1
+T	23	𝐀𝐁𝐂	44	50	1	1	word	0	-	0	1
+T	23	math	51	55	1	1	word	0	-	0	1
+T	23	plu	56	60	1	1	word	0	-	0	1
+T	23	𠀀𠀁	61	65	1	1	word	0	-	0	1
+T	23	rare	66	70	1	1	word	0	-	0	1
+T	23	ideograph	71	81	1	1	word	0	-	0	1
+E	23	81	81	0
+T	24	visit	0	5	1	1	word	0	-	0	1
+T	24	https://lucene.apache.org/core/	6	37	1	1	word	0	-	0	1
+T	24	or	38	40	1	1	word	0	-	0	1
+T	24	mail	41	45	1	1	word	0	-	0	1
+T	24	dev@lucene.apache.org	46	67	1	1	word	0	-	0	1
+T	24	today!	68	74	1	1	word	0	-	0	1
+E	24	74	74	0
+T	25	see	0	3	1	1	word	0	-	0	1
+T	25	www.example.com/path?q=1&x=y#frag	4	37	1	1	word	0	-	0	1
+T	25	and	38	41	1	1	word	0	-	0	1
+T	25	http://[::1]:8080/a,	42	62	1	1	word	0	-	0	1
+T	25	user.name+tag@sub.example.co.uk,	63	95	1	1	word	0	-	0	1
+T	25	192.168.0.1	96	107	1	1	word	0	-	0	1
+E	25	107	107	0
+T	26	mailto:someone@example.org	0	26	1	1	word	0	-	0	1
+T	26	ftp://files.example.net/pub/file.tar.gz	27	66	1	1	word	0	-	0	1
+T	26	example.com.	67	79	1	1	word	0	-	0	1
+E	26	79	79	0
+T	27	<p>hello	0	8	1	1	word	0	-	0	1
+T	27	<b>world</b>	9	21	1	1	word	0	-	0	1
+T	27	&amp;	22	27	1	1	word	0	-	0	1
+T	27	friend	28	35	1	1	word	0	-	0	1
+T	27	&lt;tag&gt;	36	47	1	1	word	0	-	0	1
+T	27	&#169;	48	54	1	1	word	0	-	0	1
+T	27	&#x263a;	55	63	1	1	word	0	-	0	1
+T	27	&nbsp;x&eacute;</p><!--	64	87	1	1	word	0	-	0	1
+T	27	a	88	89	1	1	word	0	-	0	1
+T	27	comment	90	97	1	1	word	0	-	0	1
+T	27	--><br/>	98	106	1	1	word	0	-	0	1
+E	27	106	106	0
+T	28	<script	0	7	1	1	word	0	-	0	1
+T	28	type="text/javascript">var	8	34	1	1	word	0	-	0	1
+T	28	x	35	36	1	1	word	0	-	0	1
+T	28	=	37	38	1	1	word	0	-	0	1
+T	28	1	39	40	1	1	word	0	-	0	1
+T	28	<	41	42	1	1	word	0	-	0	1
+T	28	2;</script><a	43	56	1	1	word	0	-	0	1
+T	28	href="http://x.org/">a	57	79	1	1	word	0	-	0	1
+T	28	link</a>	80	88	1	1	word	0	-	0	1
+T	28	<style>p{}</style>aft	89	112	1	1	word	0	-	0	1
+E	28	112	112	0
+T	29	<div	0	4	1	1	word	0	-	0	1
+T	29	class='c'>&quot;quoted&quot;	5	33	1	1	word	0	-	0	1
+T	29	&apos;single&apos;	34	52	1	1	word	0	-	0	1
+T	29	&unknown;	53	62	1	1	word	0	-	0	1
+T	29	&#xzz;	63	69	1	1	word	0	-	0	1
+T	29	<![cdata[	70	79	1	1	word	0	-	0	1
+T	29	raw	80	83	1	1	word	0	-	0	1
+T	29	<data>	84	90	1	1	word	0	-	0	1
+T	29	]]>	91	94	1	1	word	0	-	0	1
+T	29	tail</div>	95	105	1	1	word	0	-	0	1
+E	29	105	105	0
+T	30	/usr/local/bin/lucen	0	21	1	1	word	0	-	0	1
+T	30	/var/log//syslog.1	22	40	1	1	word	0	-	0	1
+T	30	relative/path/to/file.txt	41	66	1	1	word	0	-	0	1
+E	30	66	66	0
+T	31	c:\\program	0	10	1	1	word	0	-	0	1
+T	31	files\\lucene\\index	11	29	1	1	word	0	-	0	1
+T	31	a\\b\\c	30	35	1	1	word	0	-	0	1
+E	31	35	35	0
+T	32	the|1.5	0	7	1	1	word	0	-	0	1
+T	32	quick|2	8	15	1	1	word	0	-	0	1
+T	32	brown|0.5	16	25	1	1	word	0	-	0	1
+T	32	fox	26	29	1	1	word	0	-	0	1
+T	32	jumps|3	30	37	1	1	word	0	-	0	1
+E	32	37	37	0
+T	33	apple|3	0	7	1	1	word	0	-	0	1
+T	33	banana|1	8	16	1	1	word	0	-	0	1
+T	33	cherri	17	23	1	1	word	0	-	0	1
+T	33	pear|10	24	31	1	1	word	0	-	0	1
+E	33	31	31	0
+T	34	quick|0.5	0	9	1	1	word	0	-	0	1
+T	34	fox|2.0	10	17	1	1	word	0	-	0	1
+T	34	dog|-1.25	18	27	1	1	word	0	-	0	1
+E	34	27	27	0
+T	35	token1|payload	0	14	1	1	word	0	-	0	1
+T	35	one|two|thre	15	28	1	1	word	0	-	0	1
+E	35	28	28	0
+T	36	tab	1	5	1	1	word	0	-	0	1
+T	36	and	6	9	1	1	word	0	-	0	1
+T	36	multipl	12	20	1	1	word	0	-	0	1
+T	36	space	23	29	1	1	word	0	-	0	1
+T	36	and	30	33	1	1	word	0	-	0	1
+T	36	nbsp here	34	43	1	1	word	0	-	0	1
+T	36	and	44	47	1	1	word	0	-	0	1
+T	36	ideograph	48	59	1	1	word	0	-	0	1
+T	36	space	60	65	1	1	word	0	-	0	1
+T	36	and	66	69	1	1	word	0	-	0	1
+T	36	line	70	74	1	1	word	0	-	0	1
+T	36	sep	75	78	1	1	word	0	-	0	1
+T	36	and	79	82	1	1	word	0	-	0	1
+T	36	zero​width	83	93	1	1	word	0	-	0	1
+T	36	soft­hyphen	94	105	1	1	word	0	-	0	1
+E	36	105	105	0
+T	37	ab	0	2	1	1	word	0	-	0	1
+E	37	2	2	0
+T	38	a	0	1	1	1	word	0	-	0	1
+E	38	1	1	0
+T	39	supercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragili	0	255	1	1	word	0	-	0	1
+T	39	ticexpialidocioussupercalifragilisticexpialidoci	255	306	1	1	word	0	-	0	1
+T	39	end	307	310	1	1	word	0	-	0	1
+E	39	310	310	0
+T	40	x	0	1	1	1	word	0	-	0	1
+T	40	y	2	3	1	1	word	0	-	0	1
+T	40	z	4	5	1	1	word	0	-	0	1
+T	40	xy	6	8	1	1	word	0	-	0	1
+T	40	xyz	9	12	1	1	word	0	-	0	1
+T	40	a-b-c	13	18	1	1	word	0	-	0	1
+T	40	a.b.c	19	24	1	1	word	0	-	0	1
+T	40	a_b_c	25	30	1	1	word	0	-	0	1
+T	40	a/b/c	31	36	1	1	word	0	-	0	1
+T	40	a:b:c	37	42	1	1	word	0	-	0	1
+E	40	42	42	0
+T	41	foo-bar-baz	0	11	1	1	word	0	-	0	1
+T	41	foobarbaz	12	21	1	1	word	0	-	0	1
+T	41	foobar	22	28	1	1	word	0	-	0	1
+T	41	foobar	29	35	1	1	word	0	-	0	1
+T	41	foo2bar	36	43	1	1	word	0	-	0	1
+T	41	2foo	44	48	1	1	word	0	-	0	1
+T	41	bar2	49	53	1	1	word	0	-	0	1
+T	41	...ellipsis...	54	68	1	1	word	0	-	0	1
+T	41	--dashes--	69	79	1	1	word	0	-	0	1
+E	41	79	79	0
+T	42	the	0	3	1	1	word	0	-	0	1
+T	42	ceo'	4	9	1	1	word	0	-	0	1
+T	42	1990s-era	10	19	1	1	word	0	-	0	1
+T	42	ibm-compat	20	34	1	1	word	0	-	0	1
+T	42	pc	35	38	1	1	word	0	-	0	1
+T	42	ran	39	42	1	1	word	0	-	0	1
+T	42	ms-do	43	49	1	1	word	0	-	0	1
+T	42	6.22;	50	55	1	1	word	0	-	0	1
+T	42	the	56	59	1	1	word	0	-	0	1
+T	42	5th	60	63	1	1	word	0	-	0	1
+T	42	gen.	64	68	1	1	word	0	-	0	1
+T	42	core	69	73	1	1	word	0	-	0	1
+T	42	i7-4790k	74	82	1	1	word	0	-	0	1
+T	42	cpu	83	86	1	1	word	0	-	0	1
+T	42	@	87	88	1	1	word	0	-	0	1
+T	42	4.00ghz	89	96	1	1	word	0	-	0	1
+E	42	96	96	0
+T	43	running	0	7	1	1	word	0	-	1	1
+T	43	jump	8	15	1	1	word	0	-	0	1
+T	43	happili	16	23	1	1	word	0	-	0	1
+T	43	happiness	24	33	1	1	word	0	-	1	1
+T	43	condit	34	45	1	1	word	0	-	0	1
+T	43	relat	46	56	1	1	word	0	-	0	1
+T	43	sensibl	57	68	1	1	word	0	-	0	1
+T	43	agre	69	75	1	1	word	0	-	0	1
+T	43	feed	76	80	1	1	word	0	-	0	1
+T	43	bled	81	85	1	1	word	0	-	0	1
+T	43	sing	86	90	1	1	word	0	-	0	1
+E	43	90	90	0
+T	44	lead	2	9	1	1	word	0	-	0	1
+T	44	and	10	13	1	1	word	0	-	0	1
+T	44	trail	14	22	1	1	word	0	-	0	1
+T	44	space	23	29	1	1	word	0	-	0	1
+E	44	32	32	0
+E	45	0	0	0
+T	46	àáâãäå	0	6	1	1	word	0	-	0	1
+T	46	àáâãäå	7	13	1	1	word	0	-	0	1
+T	46	ççèéêë	14	20	1	1	word	0	-	0	1
+T	46	èéêë	21	25	1	1	word	0	-	0	1
+T	46	ìíîï	26	30	1	1	word	0	-	0	1
+T	46	ìíîï	31	35	1	1	word	0	-	0	1
+T	46	ññòóôõö	36	43	1	1	word	0	-	0	1
+T	46	òóôõö	44	49	1	1	word	0	-	0	1
+T	46	ùúûü	50	54	1	1	word	0	-	0	1
+T	46	ùúûü	55	59	1	1	word	0	-	0	1
+T	46	ýýÿ	60	63	1	1	word	0	-	0	1
+T	46	ššžž	64	68	1	1	word	0	-	0	1
+T	46	łł	69	71	1	1	word	0	-	0	1
+T	46	ðð	72	74	1	1	word	0	-	0	1
+T	46	þþ	75	77	1	1	word	0	-	0	1
+T	46	ß	78	79	1	1	word	0	-	0	1
+T	46	œœææøø	80	86	1	1	word	0	-	0	1
+E	46	86	86	0
+T	47	“smart	0	6	1	1	word	0	-	0	1
+T	47	quotes”	7	14	1	1	word	0	-	0	1
+T	47	‘single’	15	23	1	1	word	0	-	0	1
+T	47	«guillemets»	24	36	1	1	word	0	-	0	1
+T	47	‹single›	37	45	1	1	word	0	-	0	1
+T	47	„low“	46	51	1	1	word	0	-	0	1
+T	47	‐‑‒–—―	52	58	1	1	word	0	-	0	1
+T	47	…	59	60	1	1	word	0	-	0	1
+T	47	‰	61	62	1	1	word	0	-	0	1
+T	47	€	63	64	1	1	word	0	-	0	1
+T	47	£	65	66	1	1	word	0	-	0	1
+T	47	¥	67	68	1	1	word	0	-	0	1
+T	47	©	69	70	1	1	word	0	-	0	1
+T	47	®	71	72	1	1	word	0	-	0	1
+T	47	™	73	74	1	1	word	0	-	0	1
+T	47	½	75	76	1	1	word	0	-	0	1
+T	47	¼	77	78	1	1	word	0	-	0	1
+T	47	²	79	80	1	1	word	0	-	0	1
+T	47	³	81	82	1	1	word	0	-	0	1
+T	47	¹	83	84	1	1	word	0	-	0	1
+E	47	84	84	0

@@ -1,0 +1,186 @@
+T	0	T	0	1	1	1	word	0	-	0	1
+T	0	Th	0	2	1	1	word	0	-	0	1
+T	0	The	0	3	1	1	word	0	-	0	1
+E	0	44	44	0
+T	1	t	0	1	1	1	word	0	-	0	1
+T	1	th	0	2	1	1	word	0	-	0	1
+T	1	the	0	3	1	1	word	0	-	0	1
+E	1	39	39	0
+T	2	R	0	1	1	1	word	0	-	0	1
+T	2	Ru	0	2	1	1	word	0	-	0	1
+T	2	Run	0	3	1	1	word	0	-	0	1
+E	2	108	108	0
+T	3	O	0	1	1	1	word	0	-	0	1
+T	3	O'	0	2	1	1	word	0	-	0	1
+T	3	O'N	0	3	1	1	word	0	-	0	1
+E	3	71	71	0
+T	4	W	0	1	1	1	word	0	-	0	1
+T	4	Wi	0	2	1	1	word	0	-	0	1
+T	4	Wi-	0	3	1	1	word	0	-	0	1
+E	4	94	94	0
+T	5	U	0	1	1	1	word	0	-	0	1
+T	5	U.	0	2	1	1	word	0	-	0	1
+T	5	U.S	0	3	1	1	word	0	-	0	1
+E	5	81	81	0
+T	6	C	0	1	1	1	word	0	-	0	1
+T	6	Cr	0	2	1	1	word	0	-	0	1
+T	6	Crè	0	3	1	1	word	0	-	0	1
+E	6	99	99	0
+T	7	l	0	1	1	1	word	0	-	0	1
+T	7	l'	0	2	1	1	word	0	-	0	1
+T	7	l'a	0	3	1	1	word	0	-	0	1
+E	7	72	72	0
+T	8	D	0	1	1	1	word	0	-	0	1
+T	8	Di	0	2	1	1	word	0	-	0	1
+T	8	Die	0	3	1	1	word	0	-	0	1
+E	8	99	99	0
+T	9	E	0	1	1	1	word	0	-	0	1
+T	9	El	0	2	1	1	word	0	-	0	1
+T	9	El 	0	3	1	1	word	0	-	0	1
+E	9	67	67	0
+T	10	С	0	1	1	1	word	0	-	0	1
+T	10	Съ	0	2	1	1	word	0	-	0	1
+T	10	Съе	0	3	1	1	word	0	-	0	1
+E	10	67	67	0
+T	11	Η	0	1	1	1	word	0	-	0	1
+T	11	Η 	0	2	1	1	word	0	-	0	1
+T	11	Η γ	0	3	1	1	word	0	-	0	1
+E	11	69	69	0
+T	12	T	0	1	1	1	word	0	-	0	1
+T	12	Tü	0	2	1	1	word	0	-	0	1
+T	12	Tür	0	3	1	1	word	0	-	0	1
+E	12	48	48	0
+T	13	S	0	1	1	1	word	0	-	0	1
+T	13	Sv	0	2	1	1	word	0	-	0	1
+T	13	Sve	0	3	1	1	word	0	-	0	1
+E	13	86	86	0
+T	14	ا	0	1	1	1	word	0	-	0	1
+T	14	ال	0	2	1	1	word	0	-	0	1
+T	14	الع	0	3	1	1	word	0	-	0	1
+E	14	44	44	0
+T	15	ע	0	1	1	1	word	0	-	0	1
+T	15	עב	0	2	1	1	word	0	-	0	1
+T	15	עבר	0	3	1	1	word	0	-	0	1
+E	15	30	30	0
+T	16	ف	0	1	1	1	word	0	-	0	1
+T	16	فا	0	2	1	1	word	0	-	0	1
+T	16	فار	0	3	1	1	word	0	-	0	1
+E	16	54	54	0
+T	17	ह	0	1	1	1	word	0	-	0	1
+T	17	हि	0	2	1	1	word	0	-	0	1
+T	17	हिन	0	3	1	1	word	0	-	0	1
+E	17	37	37	0
+T	18	ব	0	1	1	1	word	0	-	0	1
+T	18	বা	0	2	1	1	word	0	-	0	1
+T	18	বাং	0	3	1	1	word	0	-	0	1
+E	18	21	21	0
+T	19	ภ	0	1	1	1	word	0	-	0	1
+T	19	ภา	0	2	1	1	word	0	-	0	1
+T	19	ภาษ	0	3	1	1	word	0	-	0	1
+E	19	60	60	0
+T	20	中	0	1	1	1	word	0	-	0	1
+T	20	中华	0	2	1	1	word	0	-	0	1
+T	20	中华人	0	3	1	1	word	0	-	0	1
+E	20	24	24	0
+T	21	日	0	1	1	1	word	0	-	0	1
+T	21	日本	0	2	1	1	word	0	-	0	1
+T	21	日本語	0	3	1	1	word	0	-	0	1
+E	21	33	33	0
+T	22	한	0	1	1	1	word	0	-	0	1
+T	22	한국	0	2	1	1	word	0	-	0	1
+T	22	한국어	0	3	1	1	word	0	-	0	1
+E	22	22	22	0
+T	23	E	0	1	1	1	word	0	-	0	1
+T	23	Em	0	2	1	1	word	0	-	0	1
+T	23	Emo	0	3	1	1	word	0	-	0	1
+E	23	81	81	0
+T	24	V	0	1	1	1	word	0	-	0	1
+T	24	Vi	0	2	1	1	word	0	-	0	1
+T	24	Vis	0	3	1	1	word	0	-	0	1
+E	24	74	74	0
+T	25	S	0	1	1	1	word	0	-	0	1
+T	25	Se	0	2	1	1	word	0	-	0	1
+T	25	See	0	3	1	1	word	0	-	0	1
+E	25	107	107	0
+T	26	m	0	1	1	1	word	0	-	0	1
+T	26	ma	0	2	1	1	word	0	-	0	1
+T	26	mai	0	3	1	1	word	0	-	0	1
+E	26	79	79	0
+T	27	<	0	1	1	1	word	0	-	0	1
+T	27	<p	0	2	1	1	word	0	-	0	1
+T	27	<p>	0	3	1	1	word	0	-	0	1
+E	27	106	106	0
+T	28	<	0	1	1	1	word	0	-	0	1
+T	28	<s	0	2	1	1	word	0	-	0	1
+T	28	<sc	0	3	1	1	word	0	-	0	1
+E	28	112	112	0
+T	29	<	0	1	1	1	word	0	-	0	1
+T	29	<d	0	2	1	1	word	0	-	0	1
+T	29	<di	0	3	1	1	word	0	-	0	1
+E	29	105	105	0
+T	30	/	0	1	1	1	word	0	-	0	1
+T	30	/u	0	2	1	1	word	0	-	0	1
+T	30	/us	0	3	1	1	word	0	-	0	1
+E	30	66	66	0
+T	31	C	0	1	1	1	word	0	-	0	1
+T	31	C:	0	2	1	1	word	0	-	0	1
+T	31	C:\\	0	3	1	1	word	0	-	0	1
+E	31	35	35	0
+T	32	t	0	1	1	1	word	0	-	0	1
+T	32	th	0	2	1	1	word	0	-	0	1
+T	32	the	0	3	1	1	word	0	-	0	1
+E	32	37	37	0
+T	33	a	0	1	1	1	word	0	-	0	1
+T	33	ap	0	2	1	1	word	0	-	0	1
+T	33	app	0	3	1	1	word	0	-	0	1
+E	33	31	31	0
+T	34	q	0	1	1	1	word	0	-	0	1
+T	34	qu	0	2	1	1	word	0	-	0	1
+T	34	qui	0	3	1	1	word	0	-	0	1
+E	34	27	27	0
+T	35	t	0	1	1	1	word	0	-	0	1
+T	35	to	0	2	1	1	word	0	-	0	1
+T	35	tok	0	3	1	1	word	0	-	0	1
+E	35	28	28	0
+T	36	\t	0	1	1	1	word	0	-	0	1
+T	36	\tT	0	2	1	1	word	0	-	0	1
+T	36	\tTa	0	3	1	1	word	0	-	0	1
+E	36	105	105	0
+T	37	a	0	1	1	1	word	0	-	0	1
+T	37	ab	0	2	1	1	word	0	-	0	1
+E	37	2	2	0
+T	38	A	0	1	1	1	word	0	-	0	1
+E	38	1	1	0
+T	39	s	0	1	1	1	word	0	-	0	1
+T	39	su	0	2	1	1	word	0	-	0	1
+T	39	sup	0	3	1	1	word	0	-	0	1
+E	39	310	310	0
+T	40	x	0	1	1	1	word	0	-	0	1
+T	40	x 	0	2	1	1	word	0	-	0	1
+T	40	x y	0	3	1	1	word	0	-	0	1
+E	40	42	42	0
+T	41	f	0	1	1	1	word	0	-	0	1
+T	41	fo	0	2	1	1	word	0	-	0	1
+T	41	foo	0	3	1	1	word	0	-	0	1
+E	41	79	79	0
+T	42	T	0	1	1	1	word	0	-	0	1
+T	42	Th	0	2	1	1	word	0	-	0	1
+T	42	The	0	3	1	1	word	0	-	0	1
+E	42	96	96	0
+T	43	r	0	1	1	1	word	0	-	0	1
+T	43	ru	0	2	1	1	word	0	-	0	1
+T	43	run	0	3	1	1	word	0	-	0	1
+E	43	90	90	0
+T	44	 	0	1	1	1	word	0	-	0	1
+T	44	  	0	2	1	1	word	0	-	0	1
+T	44	  l	0	3	1	1	word	0	-	0	1
+E	44	32	32	0
+E	45	0	0	0
+T	46	À	0	1	1	1	word	0	-	0	1
+T	46	ÀÁ	0	2	1	1	word	0	-	0	1
+T	46	ÀÁÂ	0	3	1	1	word	0	-	0	1
+E	46	86	86	0
+T	47	“	0	1	1	1	word	0	-	0	1
+T	47	“S	0	2	1	1	word	0	-	0	1
+T	47	“Sm	0	3	1	1	word	0	-	0	1
+E	47	84	84	0
