@@ -22,6 +22,7 @@ use lucene_search::directory_reader::DirectoryReader;
 use lucene_store::data_input::SliceInput;
 use lucene_store::MmapDirectory;
 
+mod micro_analysis_common;
 mod micro_geo;
 mod micro_geo3d;
 mod micro_geo3d_points;
@@ -2060,6 +2061,7 @@ fn main() {
         "direct_monotonic" => bench_direct_monotonic(warmup, measure),
         "checksum" => bench_checksum(warmup, measure),
         "analysis" => bench_analysis(warmup, measure),
+        "analysis_common" => micro_analysis_common::bench_analysis_common(warmup, measure),
         "vectors" => bench_vectors(warmup, measure),
         "automaton" => bench_automaton(warmup, measure),
         "quantized" => bench_quantized(warmup, measure),

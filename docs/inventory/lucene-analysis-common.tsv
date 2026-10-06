@@ -29,7 +29,7 @@ analysis/br/BrazilianStemFilterFactory	todo:M11	T11.7 factory/SPI: BrazilianStem
 analysis/br/BrazilianStemmer	todo:M11	T11.6 per-language (br): BrazilianStemmer
 analysis/ca/CatalanAnalyzer	todo:M11	T11.6 per-language (ca): CatalanAnalyzer
 analysis/charfilter/BaseCharFilter	ported	crates/lucene-analysis/src/charfilter/mod.rs::OffsetCorrections
-analysis/charfilter/HTMLStripCharFilter	todo:M11	T11.6 charfilter: HTMLStripCharFilter
+analysis/charfilter/HTMLStripCharFilter	ported	crates/lucene-analysis/src/charfilter/html_strip.rs::HTMLStripCharFilter
 analysis/charfilter/HTMLStripCharFilterFactory	todo:M11	T11.7 factory/SPI: HTMLStripCharFilterFactory
 analysis/charfilter/MappingCharFilter	ported	crates/lucene-analysis/src/charfilter/mod.rs::MappingCharFilter
 analysis/charfilter/MappingCharFilterFactory	todo:M11	T11.7 factory/SPI: MappingCharFilterFactory
@@ -119,10 +119,10 @@ analysis/el/GreekLowerCaseFilterFactory	todo:M11	T11.7 factory/SPI: GreekLowerCa
 analysis/el/GreekStemFilter	todo:M11	T11.6 per-language (el): GreekStemFilter
 analysis/el/GreekStemFilterFactory	todo:M11	T11.7 factory/SPI: GreekStemFilterFactory
 analysis/el/GreekStemmer	todo:M11	T11.6 per-language (el): GreekStemmer
-analysis/email/UAX29URLEmailAnalyzer	todo:M11	T11.2 JFlex tokenizer: UAX29URLEmailAnalyzer
-analysis/email/UAX29URLEmailTokenizer	todo:M11	T11.2 JFlex tokenizer: UAX29URLEmailTokenizer
+analysis/email/UAX29URLEmailAnalyzer	ported	crates/lucene-analysis/src/email/mod.rs::UAX29URLEmailAnalyzer
+analysis/email/UAX29URLEmailTokenizer	ported	crates/lucene-analysis/src/email/mod.rs::UAX29URLEmailTokenizer
 analysis/email/UAX29URLEmailTokenizerFactory	todo:M11	T11.7 factory/SPI: UAX29URLEmailTokenizerFactory
-analysis/email/UAX29URLEmailTokenizerImpl	todo:M11	T11.2 JFlex tokenizer: UAX29URLEmailTokenizerImpl
+analysis/email/UAX29URLEmailTokenizerImpl	ported	crates/lucene-analysis/src/email/mod.rs::get_next_token
 analysis/en/AbstractWordsFileFilterFactory	todo:M11	T11.7 factory/SPI: AbstractWordsFileFilterFactory
 analysis/en/EnglishAnalyzer	ported	crates/lucene-analysis/src/en/mod.rs::EnglishAnalyzer
 analysis/en/EnglishMinimalStemFilter	ported	crates/lucene-analysis/src/en/mod.rs::EnglishMinimalStemFilter
