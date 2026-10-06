@@ -216,11 +216,12 @@ impl<'c> ValuesContext<'c> {
         })
     }
 
-    /// Leaf `leaf`'s reader, as the spatial value sources read it.
-    pub(crate) fn leaf_reader(
-        &self,
-        leaf: usize,
-    ) -> Result<&'c crate::directory_reader::SegmentReader> {
+    /// Leaf `leaf`'s reader, as the spatial value sources (and a caller's
+    /// own sources, through [`crate::reader::doc_values`]) read it.
+    ///
+    /// # Errors
+    /// [`Error::IllegalState`] when the context has no reader for `leaf`.
+    pub fn leaf_reader(&self, leaf: usize) -> Result<&'c crate::directory_reader::SegmentReader> {
         self.reader(leaf)
     }
 

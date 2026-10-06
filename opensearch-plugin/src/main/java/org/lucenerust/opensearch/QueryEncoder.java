@@ -63,7 +63,9 @@ import java.util.function.Predicate;
  *       flags (under a constant-score rewrite), a one-dimension 8-byte {@code PointRangeQuery}, and
  *       {@link FieldExistsQuery};
  *   <li>the geo queries {@code geo_bounding_box}, {@code geo_distance}, {@code geo_polygon} and
- *       {@code geo_shape} build on {@code geo_point} and {@code geo_shape} fields ({@link GeoEncoder}).
+ *       {@code geo_shape} build on {@code geo_point} and {@code geo_shape} fields ({@link GeoEncoder});
+ *   <li>{@code nested}, the span queries, {@code intervals}, {@code combined_fields} and OpenSearch's
+ *       {@code function_score} ({@link ExtendedEncoder}, M10).
  * </ul>
  *
  * <p>The blob is {@code QUERY_TREE}: one node per query, each a kind byte and its payload (the
@@ -266,6 +268,11 @@ public final class QueryEncoder {
             if (Float.isFinite(boost) == false || boost < 0) {
                 return "boost_invalid";
             }
+            Query boosted = unwrapUnitBoost(b.getQuery());
+            if (boosted instanceof org.opensearch.common.lucene.search.function.FunctionScoreQuery) {
+                // OpenSearch's function score takes its boost itself (onto its sub-query).
+                return ExtendedEncoder.node(boosted, boost, out, fieldOk, c -> node(c, out, fieldOk, depth + 1, nodes));
+            }
             out.write(NODE_BOOST);
             writeInt(out, Float.floatToIntBits(boost));
             return node(b.getQuery(), out, fieldOk, depth + 1, nodes);
@@ -362,6 +369,11 @@ public final class QueryEncoder {
         if (q.getClass() == MatchNoDocsQuery.class) {
             out.write(NODE_MATCH_NONE);
             return null;
+        }
+        // nested, spans, intervals, combined_fields, function_score (ExtendedEncoder, M10).
+        String extended = ExtendedEncoder.node(q, 1f, out, fieldOk, c -> node(c, out, fieldOk, depth + 1, nodes));
+        if (extended != ExtendedEncoder.NOT_EXTENDED) {
+            return extended;
         }
         // The geo queries (GeoEncoder): written, or a geo reason to fall back.
         String geo = GeoEncoder.node(q, out);

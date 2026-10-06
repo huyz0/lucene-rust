@@ -105,8 +105,10 @@ use std::sync::Arc;
 /// Foreign Function & Memory API's downcalls ([`crate::ffm_bridge`]); 30,
 /// the points-box and geo nodes (M9 T9.6); 31, the geo-distance sort key;
 /// 32, the aggregations' per-segment match counts
-/// ([`crate::ffm_bridge::ffi_jvm_reader_aggregate_alloc`]'s `out_seg_counts`).
-pub const JVM_ABI_VERSION: u32 = 32;
+/// ([`crate::ffm_bridge::ffi_jvm_reader_aggregate_alloc`]'s `out_seg_counts`);
+/// 33, the block-join, span, interval, combined-field and function-score
+/// nodes ([`crate::jvm_nodes`], M10 T10.7).
+pub const JVM_ABI_VERSION: u32 = 33;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -207,6 +209,11 @@ impl<'a> Cursor<'a> {
         let out = &self.buf[self.pos..end];
         self.pos = end;
         Ok(out)
+    }
+
+    /// The bytes read since offset `start`.
+    pub(crate) fn since(&self, start: usize) -> &'a [u8] {
+        self.buf.get(start..self.pos).unwrap_or_default()
     }
 
     pub(crate) fn u8(&mut self) -> Result<u8, FfiStatus> {
@@ -1830,11 +1837,17 @@ pub(crate) fn boolean_uses_points(b: &BooleanQuery) -> bool {
             Clause::Boost(b) => clause(&b.inner),
             Clause::DisjunctionMax(d) => d.disjuncts.iter().any(clause),
             // A points box reads the opened points (`exec::ranges`); a geo
-            // node reads them through the segment's reader, unopened.
-            Clause::Extended(e) => matches!(
-                e.as_ref(),
-                lucene_search::extended_query::ExtendedQuery::PointRange(_)
-            ),
+            // node reads them through the segment's reader, unopened. A
+            // join's or a function score's clauses may hold a range.
+            Clause::Extended(e) => {
+                matches!(
+                    e.as_ref(),
+                    lucene_search::extended_query::ExtendedQuery::PointRange(_)
+                ) || e.children().into_iter().any(clause)
+                    || crate::jvm_function_score::queries(e)
+                        .into_iter()
+                        .any(clause)
+            }
             _ => false,
         }
     }
@@ -2176,6 +2189,7 @@ fn count_segment(seg: &OpenSegment<'_>, query: &JvmQuery) -> Result<i64, FfiStat
 /// | `17` geo points | `field`, `relation: u8`, geometries ([`decode_geometries`]) | `LatLonPointQuery` (`newPolygonQuery`, `newGeometryQuery`) |
 /// | `18` geo shapes | `field`, `relation: u8`, geometries | `LatLonShapeQuery` (`LatLonShape.newGeometryQuery`) |
 /// | `19` geo shapes in a box | `field`, `relation: u8`, `min_lat`, `max_lat`, `min_lon`, `max_lon` (`f64`) | `LatLonShapeBoundingBoxQuery` (`LatLonShape.newBoxQuery`) |
+/// | `20`-`24` | [`crate::jvm_nodes`] | block join, spans, intervals, combined fields, OpenSearch's function score (M10 T10.7) |
 ///
 /// A relation is `ShapeField.QueryRelation`'s ordinal: `0` `INTERSECTS`, `1`
 /// `WITHIN`, `2` `DISJOINT`, `3` `CONTAINS`. The geo nodes (16-19) run as
@@ -2189,7 +2203,11 @@ fn count_segment(seg: &OpenSegment<'_>, query: &JvmQuery) -> Result<i64, FfiStat
 /// count limit, so the recursion is bounded by the blob, not trusted to it.
 /// A score, boost or tie-breaker must be finite and non-negative (and a tie
 /// breaker at most 1), as Lucene's constructors require.
-fn decode_node(c: &mut Cursor<'_>, depth: usize, nodes: &mut usize) -> Result<Clause, FfiStatus> {
+pub(crate) fn decode_node(
+    c: &mut Cursor<'_>,
+    depth: usize,
+    nodes: &mut usize,
+) -> Result<Clause, FfiStatus> {
     use crate::query::MAX_CLAUSE_DEPTH;
     use lucene_search::query::{
         BoostQuery, ConstantScoreQuery, DisjunctionMaxQuery, FieldExistsQuery, MatchAllDocsQuery,
@@ -2372,9 +2390,13 @@ fn decode_node(c: &mut Cursor<'_>, depth: usize, nodes: &mut usize) -> Result<Cl
         NODE_GEO_DISTANCE | NODE_GEO_POINT | NODE_GEO_SHAPE | NODE_GEO_SHAPE_BOX => {
             return decode_geo(c, kind, start);
         }
+        crate::jvm_nodes::NODE_TO_PARENT..=crate::jvm_nodes::NODE_LAST => {
+            return crate::jvm_nodes::decode(c, kind, start, depth, nodes);
+        }
         other => {
             set_last_error(format!(
-                "query tree: unknown node kind {other} (expected 0..={NODE_GEO_SHAPE_BOX})"
+                "query tree: unknown node kind {other} (expected 0..={})",
+                crate::jvm_nodes::NODE_LAST
             ));
             return Err(FfiStatus::InvalidArgument);
         }
@@ -2445,7 +2467,7 @@ fn decode_geo(c: &mut Cursor<'_>, kind: u8, start: usize) -> Result<Clause, FfiS
 }
 
 /// `bytes` as lowercase hex: a geo node's query-cache key.
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::new();
     // The bytes are the blob's own, already in memory.
@@ -2761,9 +2783,14 @@ pub(crate) mod tests {
     }
 
     /// `(hits as (doc, score), total, total_is_lower_bound)`, or the status.
-    type Searched = (Vec<(i32, f32)>, i64, bool);
+    pub(crate) type Searched = (Vec<(i32, f32)>, i64, bool);
 
-    fn run_limit(handle: u64, blob: &[u8], top_n: usize, limit: i64) -> Result<Searched, i32> {
+    pub(crate) fn run_limit(
+        handle: u64,
+        blob: &[u8],
+        top_n: usize,
+        limit: i64,
+    ) -> Result<Searched, i32> {
         let mut docs = vec![0i32; top_n];
         let mut scores = vec![0f32; top_n];
         let (mut n, mut total, mut lower) = (0usize, 0i64, false);

@@ -87,11 +87,25 @@ public final class NativeSelfTest {
         NativeLibrary.load(Path.of("."));
         check(NativeBridge.abiVersion() == NativeBridge.EXPECTED_ABI_VERSION, "ABI handshake");
 
+        // SELFTEST_ONLY=m10: the M10 shapes alone (a quick loop while working on them).
+        boolean onlyM10 = "m10".equals(System.getenv("SELFTEST_ONLY"));
+        if (onlyM10 == false) {
         bridgeErrorPaths();
         encoderMatrix();
         nrtReaders(new Random(42));
         softDeletes(new Random(7));
         geo(new Random(13));
+        }
+        NativeSelfTestM10.run(new Random(17), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+        for (var e : NativeSelfTestM10.ENCODED.entrySet()) {
+            check(e.getValue()[0] >= 100, "M10 " + e.getKey() + " queries encoded and compared: " + e.getValue()[0]);
+        }
+        check(NativeSelfTestM10.ENCODED.size() == 5, "M10 shapes compared: " + NativeSelfTestM10.ENCODED.keySet());
+        System.out.printf("NativeSelfTest: M10 queries encoded and compared, by shape: %s%n", NativeSelfTestM10.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList());
+        if (onlyM10) {
+            System.out.printf("NativeSelfTest (M10 only): %d checks, %d failures; %d of %d compared scores bit-exact%n", checks, failures, bitExact, scored);
+            System.exit(failures > 0 ? 1 : 0);
+        }
         storedFields(new Random(11));
         int compared = 0;
         int bwc = 0;
@@ -1683,7 +1697,7 @@ public final class NativeSelfTest {
         }
     }
 
-    private static Document doc(Random r, int id) {
+    static Document doc(Random r, int id) {
         Document d = new Document();
         d.add(new StringField("id", Integer.toString(id), Field.Store.YES));
         StringBuilder body = new StringBuilder();

@@ -10,7 +10,7 @@
 | **Effort** | L |
 | **Depends on** | [M7](m7-core-complete.md) |
 | **Unblocks** | native `nested`, `function_score`, `intervals`, `combined_fields`, field collapsing |
-| **Status** | in progress (T10.0, T10.1, T10.3 done; T10.2 queries ported; T10.4, T10.5 ported; T10.6 done: intervals, common terms, more-like-this, spans, payloads, two benchmark cases below 1.0 written up) |
+| **Status** | in progress (T10.0, T10.1, T10.3 done; T10.2 queries ported; T10.4, T10.5 ported; T10.6 done: intervals, common terms, more-like-this, spans, payloads, two benchmark cases below 1.0 written up; T10.7 wired, its REST and YAML runs pending) |
 
 ---
 
@@ -301,7 +301,51 @@ grouping. Each of them falls back to Lucene today.
   ors) on lazy `Spans`, with `SpanWeight.matches` -- `GenSpans`'s 95 queries
   with the `Matches` of their hits, 4 794 lines equal to Lucene's but the 18
   where Java's `toString` throws on a `null` payload.
-- **T10.7** — Plugin wiring for the OpenSearch shapes above.
+- **T10.7** — Plugin wiring for the OpenSearch shapes above. **Wired**
+  (ABI 33; `opensearch-plugin/.../ExtendedEncoder.java`, query-tree nodes
+  20-24 decoded by `lucene-ffi/src/jvm_nodes.rs` and
+  `jvm_function_score.rs`): `nested` (OpenSearch's
+  `OpenSearchToParentBlockJoinQuery`, every `score_mode`, its parent filter
+  -- OpenSearch's bit-set-cache producer or a `QueryBitSetProducer` -- a node
+  whose bit sets the native side caches across requests per segment and
+  filter; `inner_hits` is the fetch phase and does not affect it), the span
+  queries (`span_term`/`near`/`or`/`not`/`first`/`containing`/`within`,
+  `field_masking_span`, `span_multi` once rewritten), `intervals` (every
+  Lucene `IntervalsSource`, read field by field, a multi-term source's
+  automaton sent as bytes), `combined_fields`, and OpenSearch's own
+  `function_score` -- not Lucene's `FunctionScoreQuery`: OpenSearch combines
+  in its own `double` arithmetic, so it runs as the ported
+  `FunctionScoreQuery` around a values source computing exactly that
+  (`weight`, `field_value_factor` with every modifier, `random_score`,
+  numeric and date `gauss`/`exp`/`linear` with every `multi_value_mode`,
+  function filters, every `score_mode` and `boost_mode`, `max_boost`, a
+  `boost` moved onto the sub-query as OpenSearch's weight does).
+  `more_like_this`, `common` and `parent_id` need nothing: OpenSearch
+  rewrites them to booleans of term queries before the query phase.
+  **Falls back**, each by name (`docs/opensearch-native-queries.md`):
+  `has_child`/`has_parent` (the rewrite runs `JoinUtil`'s from side in Java
+  over OpenSearch's own `OrdinalMap` and keeps the collected ordinals; the
+  ported global-ordinal joins would have to receive the from query and the
+  ordinal map instead), `collapse` (a collector with its own collapsed
+  result, which the native top-hits path does not return), `function_score`
+  with `min_score`, scripts (`script_score`, script functions, the intervals
+  `script` filter), geo decays, field data other than plain sorted-numeric
+  doc values (keyword for `random_score`), a `span_near` with `span_gap`.
+  Proven in process by `NativeSelfTestM10` (`gradle -p opensearch-plugin
+  selfTest`): 1,068 queries -- 216 `nested`, 212 span, 212 `intervals`, 216
+  `combined_fields`, 212 `function_score`, alone, beside a scored clause and
+  as filters, on an NRT block index with OpenSearch's nested layout and
+  whole-block deletions over four refreshes and a force merge -- every one
+  encoded and compared with Lucene by `NativeSelfTest.compare` (top hits,
+  counts and the total-hits threshold, sorted pages, `terminate_after`,
+  `min_score`, aggregations): 13,479 of 13,479 compared scores bit-exact,
+  0 failures. Seen to fail when a decoder mapped `Max` to `Total`, offset
+  `span_first`'s end by one, or skewed the `sum` boost mode by 0.1%.
+  Rust unit tests `jvm_nodes::tests`, `jvm_function_score::tests` (lines
+  99.5% and 98.8%). The REST matrix gained `e2e/m10_matrix.py` (44 rows on
+  the main indices, 11 `nested` rows, 3 on a parent-join index), and `mlt` joined
+  the YAML suites `scripts/verify-opensearch.sh --yaml` runs; neither has
+  been run (Docker unavailable where this was done).
 
 ## Stage-3 status (2026-10-06)
 
@@ -378,9 +422,16 @@ near behind one virtual call. Neither has a single cost left to remove.
 
 - [ ] Every query matches Lucene's hits and scores bit for bit on generated
       fixtures, including empty and single-child blocks and deleted parents.
-- [ ] A Rust-written block index passes Lucene's `CheckJoinIndex`.
+- [x] A Rust-written block index passes Lucene's `CheckJoinIndex`. (T10.1:
+      `fixtures/src/VerifyJoin.java` runs Lucene's `CheckJoinIndex` over
+      Rust-written block indices, sorted and unsorted, before and after a
+      force merge.)
 - [ ] OpenSearch's `nested` and `function_score` YAML suites fail
-      identically with and without native execution.
+      identically with and without native execution. Open: not run yet
+      (`scripts/verify-opensearch.sh --yaml` needs Docker). OpenSearch's core
+      REST spec has no suite of its own for either: `nested` is exercised by
+      `search.inner_hits` (in `YAML_SUITES`), `function_score` only by the
+      `lang-painless` module's `script_score` suites, which fall back.
 - [ ] Each new query is no slower than Lucene on its benchmark.
 
 ## Risks and unknowns

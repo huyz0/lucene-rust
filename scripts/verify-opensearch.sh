@@ -31,7 +31,7 @@ PORT="${OS_PORT:-9200}"
 KEEP=0
 YAML=0
 ENGINE=0
-YAML_SUITES="${YAML_SUITES:-search,search.highlight,search.inner_hits,msearch,scroll,count,explain,suggest,get,index,delete,bulk,update,mget,exists}"
+YAML_SUITES="${YAML_SUITES:-search,search.highlight,search.inner_hits,mlt,msearch,scroll,count,explain,suggest,get,index,delete,bulk,update,mget,exists}"
 ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
