@@ -96,17 +96,12 @@ final class ExtendedEncoder {
 
     /**
      * Appends {@code q} when it is one of these shapes: null when it was written, a fallback reason
-     * when it cannot be, {@link #NOT_EXTENDED} when it is none of them. {@code boost} is a boost
-     * around it that the shape takes itself (OpenSearch's function score passes it to its
-     * sub-query); 1 otherwise.
+     * when it cannot be, {@link #NOT_EXTENDED} when it is none of them.
      */
-    static String node(Query q, float boost, ByteArrayOutputStream out, Predicate<String> fieldOk, Child child) {
+    static String node(Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, Child child) {
         try {
             if (q instanceof FunctionScoreQuery fs) {
-                return functionScore(fs, boost, out, fieldOk, child);
-            }
-            if (boost != 1f) {
-                return NOT_EXTENDED;
+                return functionScore(fs, out, fieldOk, child);
             }
             if (q instanceof OpenSearchToParentBlockJoinQuery os) {
                 Field f = Reflect.declared(OpenSearchToParentBlockJoinQuery.class, "query");
@@ -334,8 +329,14 @@ final class ExtendedEncoder {
                 return sources((Collection<IntervalsSource>) field(s, "subSources"), out);
             }
             case "RepeatingIntervalsSource" -> {
+                int count = (int) field(s, "childCount");
+                if (count > MAX_REPEATS) {
+                    // The native decoder's bound (the clause limit), which Lucene's own
+                    // deduplication of equal clauses never passes under OpenSearch's limit.
+                    return "interval_repeating_count";
+                }
                 out.write(5);
-                writeInt(out, (int) field(s, "childCount"));
+                writeInt(out, count);
                 Object n = field(s, "name");
                 out.write(n == null ? 0 : "ORDERED".equals(n) ? 1 : "UNORDERED".equals(n) ? 2 : 3);
                 if (n != null && "ORDERED".equals(n) == false && "UNORDERED".equals(n) == false) {
@@ -405,6 +406,9 @@ final class ExtendedEncoder {
             }
         }
     }
+
+    /** At most this many copies in a repeating source ({@code MAX_CLAUSE_COUNT} natively). */
+    private static final int MAX_REPEATS = 1024;
 
     private static String pair(int tag, Object a, Object b, ByteArrayOutputStream out) throws ReflectiveOperationException {
         out.write(tag);
@@ -492,7 +496,6 @@ final class ExtendedEncoder {
 
     private static String functionScore(
         FunctionScoreQuery q,
-        float boost,
         ByteArrayOutputStream out,
         Predicate<String> fieldOk,
         Child child
@@ -500,11 +503,16 @@ final class ExtendedEncoder {
         if (q.getMinScore() != null) {
             return "function_score_min_score";
         }
-        // OpenSearch's weight passes the boost to the sub-query's weight alone.
-        Query sub = boost == 1f ? q.getSubQuery() : new org.apache.lucene.search.BoostQuery(q.getSubQuery(), boost);
+        // OpenSearch's weight passes any boost from above to the sub-query's weight alone; the
+        // native source does the same (`boosts_wrapped_query`), whatever the ancestor.
+        Query sub = q.getSubQuery();
         ScoreFunction[] functions = q.getFunctions();
         if (functions.length == 0) {
-            // FunctionFactorScorer.score(): the sub-query's score, unchanged.
+            // FunctionFactorScorer.score(): the sub-query's score, unchanged -- but with boost_mode
+            // replace the weight never scores the sub-query (needsScores is false), so it is 0.
+            if (q.getCombineFunction() == CombineFunction.REPLACE) {
+                return child.node(new org.apache.lucene.search.BoostQuery(new org.apache.lucene.search.ConstantScoreQuery(sub), 0f));
+            }
             return child.node(sub);
         }
         out.write(NODE_FUNCTION_SCORE);
@@ -624,8 +632,11 @@ final class ExtendedEncoder {
     }
 
     /**
-     * How the native side reads a field data's doubles: 0 a long ({@code (double) v}), 1 a double,
-     * 2 a float; -1 for field data that is not plain sorted-numeric doc values of those types.
+     * How the native side reads a field data's doubles: 0 a long ({@code (double) v}) -- the
+     * integral types, {@code boolean} (0 and 1) and {@code date} (epoch milliseconds), all of which
+     * OpenSearch's {@code SortedNumericLongFieldData} serves, whose {@code getBytesValues} prints
+     * each value with {@code Long.toString} -- 1 a double, 2 a float; -1 for field data that is not
+     * plain sorted-numeric doc values of those types.
      */
     private static byte numericType(Object data) {
         if (data == null || data.getClass().getName().equals("org.opensearch.index.fielddata.plain.SortedNumericIndexFieldData") == false) {

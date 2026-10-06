@@ -268,11 +268,6 @@ public final class QueryEncoder {
             if (Float.isFinite(boost) == false || boost < 0) {
                 return "boost_invalid";
             }
-            Query boosted = unwrapUnitBoost(b.getQuery());
-            if (boosted instanceof org.opensearch.common.lucene.search.function.FunctionScoreQuery) {
-                // OpenSearch's function score takes its boost itself (onto its sub-query).
-                return ExtendedEncoder.node(boosted, boost, out, fieldOk, c -> node(c, out, fieldOk, depth + 1, nodes));
-            }
             out.write(NODE_BOOST);
             writeInt(out, Float.floatToIntBits(boost));
             return node(b.getQuery(), out, fieldOk, depth + 1, nodes);
@@ -371,7 +366,7 @@ public final class QueryEncoder {
             return null;
         }
         // nested, spans, intervals, combined_fields, function_score (ExtendedEncoder, M10).
-        String extended = ExtendedEncoder.node(q, 1f, out, fieldOk, c -> node(c, out, fieldOk, depth + 1, nodes));
+        String extended = ExtendedEncoder.node(q, out, fieldOk, c -> node(c, out, fieldOk, depth + 1, nodes));
         if (extended != ExtendedEncoder.NOT_EXTENDED) {
             return extended;
         }

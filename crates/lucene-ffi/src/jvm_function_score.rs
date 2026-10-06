@@ -8,9 +8,18 @@
 //! ([`OpenSearchFunctionScore`]) that computes exactly that arithmetic and
 //! hands back the combined `float` widened to `double` -- which Lucene's
 //! scorer (`(float) (boost * value)` with the boost `1`) narrows back to the
-//! same bits. OpenSearch passes a query's boost to its sub-query's weight
-//! only, so the encoder moves a `BoostQuery` around the function score onto
-//! the sub-query.
+//! same bits. OpenSearch passes a weight's boost to its sub-query's weight
+//! only: the source says so ([`DoubleValuesSource::boosts_wrapped_query`]),
+//! and the scorer hands every boost from above -- a `BoostQuery`, a boosted
+//! `bool`, `dis_max` or `nested` -- to the sub-query instead.
+//!
+//! **Not bit-exact by construction**: `field_value_factor`'s `log`/`log1p`/
+//! `ln`/`ln1p`/`ln2p` and the decays' `exp` are libm's here and HotSpot's
+//! `Math` intrinsics in OpenSearch, which Java allows to differ from the
+//! correctly rounded result by one ulp (`StrictMath` would not, but
+//! OpenSearch calls `Math`). A one-ulp `double` difference rarely survives
+//! the final `(float)` cast; every value the tests compared was equal, but a
+//! last-bit difference stays possible.
 //!
 //! What OpenSearch throws on -- a missing field value without `missing`, a
 //! negative field-value score, a negative or `NaN` final score -- is a search
@@ -221,7 +230,9 @@ enum RandomField {
     DocId,
     /// A keyword's first (smallest) term.
     Keyword(String),
-    /// An integral numeric field's first value, as `Long.toString` prints it.
+    /// An integral numeric, boolean or date field (`LeafLongFieldData`):
+    /// its values as `Long.toString` prints them, the bytewise smallest
+    /// string hashed (`FieldData.toString` sorts them as bytes).
     Long(String),
 }
 
@@ -555,6 +566,13 @@ impl DoubleValuesSource for OpenSearchFunctionScore {
         format!("opensearch_function_score({})", self.key)
     }
 
+    /// `createWeight` passes its boost to `subQuery.createWeight`: under
+    /// any boosted ancestor the sub-query's score is boosted, the combined
+    /// score is not (and `replace` ignores it).
+    fn boosts_wrapped_query(&self) -> bool {
+        true
+    }
+
     fn queries(&self) -> Vec<&Clause> {
         self.functions
             .iter()
@@ -589,7 +607,12 @@ enum LeafFunction<'c> {
     },
     Decay {
         values: Box<dyn SortedNumericDocValues + 'c>,
-        function: Function,
+        decay: Decay,
+        numeric: Numeric,
+        origin: f64,
+        scale: f64,
+        offset: f64,
+        mode: MultiValue,
         distances: Vec<f64>,
     },
 }
@@ -639,9 +662,22 @@ impl<'c> LeafFunction<'c> {
                 values: get_sorted_numeric(reader, field)?,
                 salted_seed: *salted_seed,
             },
-            Function::Decay { field, .. } => LeafFunction::Decay {
+            Function::Decay {
+                decay,
+                field,
+                numeric,
+                origin,
+                scale,
+                offset,
+                mode,
+            } => LeafFunction::Decay {
                 values: get_sorted_numeric(reader, field)?,
-                function: f.clone(),
+                decay: *decay,
+                numeric: *numeric,
+                origin: *origin,
+                scale: *scale,
+                offset: *offset,
+                mode: *mode,
                 distances: Vec::new(),
             },
         })
@@ -695,28 +731,36 @@ impl<'c> LeafFunction<'c> {
                 values,
                 salted_seed,
             } => random(if values.advance_exact(doc)? {
-                let text = values.next_value()?.to_string();
+                // `FieldData.toString`: every value as `Long.toString`, sorted
+                // as bytes (`SortingBinaryDocValues`) -- the first is the
+                // bytewise smallest string, not the smallest number.
+                let mut first: Option<String> = None;
+                for _ in 0..values.doc_value_count() {
+                    let text = values.next_value()?.to_string();
+                    if first
+                        .as_ref()
+                        .is_none_or(|f| text.as_bytes() < f.as_bytes())
+                    {
+                        first = Some(text);
+                    }
+                }
+                let text = first.unwrap_or_default();
                 lucene_util::string_helper::murmurhash3_x86_32(text.as_bytes(), *salted_seed)
             } else {
                 *salted_seed
             }),
             LeafFunction::Decay {
                 values,
-                function,
+                decay,
+                numeric,
+                origin,
+                scale,
+                offset,
+                mode,
                 distances,
             } => {
-                let Function::Decay {
-                    decay,
-                    numeric,
-                    origin,
-                    scale,
-                    offset,
-                    mode,
-                    ..
-                } = *function
-                else {
-                    return Ok(0.0);
-                };
+                let (decay, numeric, origin, scale, offset, mode) =
+                    (*decay, *numeric, *origin, *scale, *offset, *mode);
                 // `FieldData.replaceMissing(..., 0)`: no value is distance 0.
                 let distance = if values.advance_exact(doc)? {
                     distances.clear();
@@ -1113,8 +1157,12 @@ mod tests {
             &fs(1, 0, f32::MAX, &[(None, random_fn(2, Some("si")))]),
             |doc, _| {
                 let i = block_of(doc);
+                // `si` holds `i` and `3i + 1`; OpenSearch hashes the bytewise
+                // smaller decimal string ("13" before "4" on block 4).
+                let (a, b) = (i.to_string(), (3 * i + 1).to_string());
+                let first = if a.as_bytes() <= b.as_bytes() { a } else { b };
                 random(if i.is_multiple_of(2) {
-                    lucene_util::string_helper::murmurhash3_x86_32(i.to_string().as_bytes(), 12345)
+                    lucene_util::string_helper::murmurhash3_x86_32(first.as_bytes(), 12345)
                 } else {
                     12345
                 }) as f32
