@@ -135,26 +135,9 @@ impl GlobalOrds {
     /// A field whose doc values are not keyword ones, or a dictionary that
     /// cannot be read.
     pub fn build(readers: &[SegmentReader], field: &str) -> Result<Self> {
-        let mut cursors = Vec::with_capacity(readers.len());
-        for reader in readers {
-            cursors.push(match terms_entry(reader, field)? {
-                Some((data, entry)) => Some(TermsCursor::open(data, entry).map_err(store_err)?),
-                None => None,
-            });
-        }
-        let mut empty: Vec<NoTerms> = std::iter::repeat_with(|| NoTerms)
-            .take(readers.len())
-            .collect();
-        let mut refs: Vec<&mut dyn TermCursor> = cursors
-            .iter_mut()
-            .zip(&mut empty)
-            .map(|(c, e)| match c {
-                Some(c) => c as &mut dyn TermCursor,
-                None => e as &mut dyn TermCursor,
-            })
-            .collect();
+        let readers: Vec<&SegmentReader> = readers.iter().collect();
         Ok(GlobalOrds {
-            map: OrdinalMap::build_streaming(&mut refs).map_err(store_err)?,
+            map: ordinal_map_of(&readers, field)?,
         })
     }
 
@@ -640,6 +623,34 @@ mod tests {
             }
         }
         assert_eq!(seen, [true, true]);
+    }
+
+    /// A field no segment has doc values for merges to no ordinals, and the
+    /// aggregation over it has no buckets and nothing left over.
+    #[test]
+    fn a_field_without_doc_values_has_no_ordinals_or_buckets() {
+        let dir = lucene_store::FsDirectory::open(std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/terms_aggs_index"
+        )));
+        let reader = crate::directory_reader::DirectoryReader::open(&dir).unwrap();
+        let readers = reader.segment_readers();
+        assert!(readers.len() > 1);
+        let global = GlobalOrds::build(readers, "no_such_field").unwrap();
+        assert_eq!(global.value_count(), 0);
+        assert!(global.segment_map(0).is_some_and(<[i64]>::is_empty));
+        let opened = reader.open_segments().unwrap();
+        let segments = opened.as_open_segments();
+        let all = BooleanQuery {
+            must: vec![crate::query::Clause::MatchAllDocs(
+                crate::query::MatchAllDocsQuery::new(reader.max_doc()),
+            )],
+            ..Default::default()
+        };
+        let r = terms(&segments, readers, &all, "no_such_field", 10).unwrap();
+        assert_eq!(r, TermsResult::default());
+        // The keyword field itself does have them.
+        assert!(GlobalOrds::build(readers, "kw").unwrap().value_count() > 0);
     }
 
     /// Counts come off the postings only for a field with postings and at
