@@ -1045,6 +1045,12 @@ outright.
   -- keeping each that covers a line nothing kept so far does), so that every
   stemmer file reaches the per-file bar without the Snowball project's
   vocabularies (those run opt-in: `scripts/check-snowball-vocabulary.sh`).
+- `GenSnowballFuzz.java` — M11 T11.3: 2,000 seeded random strings per Snowball
+  language (any BMP character, letters of every script the stemmers handle,
+  supplementary characters, chains of the stemmer's among strings with emoji
+  between) through Lucene's `SnowballFilter` (`data/snowball-fuzz/<Language>.tsv`,
+  `word\tstem`, an unpaired surrogate written as U+FFFD); read by
+  `crates/lucene-analysis/tests/snowball_fixtures.rs`.
 - `GenHunspell.java` — M11 T11.4: Lucene's Hunspell over this project's own
   dictionaries (`corpus/hunspell/<name>.aff`/`.dic`/`.words`, each named for
   the features it exercises; `broken_*` are ones Lucene refuses; `charset_*`
