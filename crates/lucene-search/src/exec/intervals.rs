@@ -11,9 +11,11 @@ use crate::intervals::iterators::{self, BoxIntervals, IntervalIterator};
 use crate::intervals::{IntervalQuery, IntervalScoreFunction, NO_MORE_INTERVALS};
 use crate::Result;
 
-/// `IntervalScorer`.
-pub(crate) struct IntervalScorer<'a> {
-    intervals: BoxIntervals<'a>,
+/// `IntervalScorer`, monomorphised over its iterator's type where
+/// [`iterators::root_intervals`] knows it.
+pub(crate) struct IntervalScorer<'a, I = BoxIntervals<'a>> {
+    intervals: I,
+    _leaf: std::marker::PhantomData<&'a ()>,
     min_extent: i32,
     boost: f32,
     function: IntervalScoreFunction,
@@ -21,15 +23,11 @@ pub(crate) struct IntervalScorer<'a> {
     last_scored_doc: i32,
 }
 
-impl<'a> IntervalScorer<'a> {
-    fn new(
-        intervals: BoxIntervals<'a>,
-        min_extent: i32,
-        boost: f32,
-        function: IntervalScoreFunction,
-    ) -> Self {
+impl<I: IntervalIterator> IntervalScorer<'_, I> {
+    fn new(intervals: I, min_extent: i32, boost: f32, function: IntervalScoreFunction) -> Self {
         IntervalScorer {
             intervals,
+            _leaf: std::marker::PhantomData,
             min_extent,
             boost,
             function,
@@ -56,7 +54,7 @@ impl<'a> IntervalScorer<'a> {
     }
 }
 
-impl Scorer for IntervalScorer<'_> {
+impl<I: IntervalIterator> Scorer for IntervalScorer<'_, I> {
     fn doc_id(&self) -> i32 {
         self.intervals.doc_id()
     }
@@ -96,15 +94,22 @@ pub(crate) fn interval<'a>(
     boost: f32,
     _mode: Mode,
 ) -> Result<Option<BoxScorer<'a>>> {
-    let Some(it) = iterators::intervals(&q.source, &q.field, ctx)? else {
-        return Ok(None);
-    };
-    Ok(Some(Box::new(IntervalScorer::new(
-        it,
-        q.source.min_extent(),
-        boost,
-        q.score_function,
-    ))))
+    struct Sink<'q> {
+        q: &'q IntervalQuery,
+        boost: f32,
+    }
+    impl<'a> iterators::IntervalsSink<'a> for Sink<'_> {
+        type Out = BoxScorer<'a>;
+        fn sink<I: IntervalIterator + 'a>(self, it: I) -> BoxScorer<'a> {
+            Box::new(IntervalScorer::new(
+                it,
+                self.q.source.min_extent(),
+                self.boost,
+                self.q.score_function,
+            ))
+        }
+    }
+    iterators::root_intervals(&q.source, &q.field, ctx, Sink { q, boost })
 }
 
 /// `IntervalWeight.explain(context, doc)`: the score function's

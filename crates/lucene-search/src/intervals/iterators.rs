@@ -1354,7 +1354,19 @@ pub(crate) fn filtering<'a>(
     a: BoxIntervals<'a>,
     b: BoxIntervals<'a>,
 ) -> BoxIntervals<'a> {
-    conjunction(vec![a, b], Filtering { kind, bpos: false })
+    BoxIntervals::boxed(filtering_of(kind, a, b))
+}
+
+/// [`filtering`]'s iterator, unboxed.
+fn filtering_of<'a>(
+    kind: FilteringKind,
+    a: BoxIntervals<'a>,
+    b: BoxIntervals<'a>,
+) -> ConjunctionIntervals<'a, Filtering> {
+    ConjunctionIntervals {
+        state: ConjunctionState::new(vec![a, b]),
+        kind: Filtering { kind, bpos: false },
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1980,6 +1992,72 @@ impl IntervalIterator for OffsetIntervals<'_> {
 // ---------------------------------------------------------------------------
 // IntervalsSource.intervals(field, ctx)
 // ---------------------------------------------------------------------------
+
+/// What [`root_intervals`] hands a source's iterator to: generic over the
+/// iterator's type, so a scorer built from it is monomorphised for it.
+pub(crate) trait IntervalsSink<'a> {
+    type Out;
+    fn sink<I: IntervalIterator + 'a>(self, it: I) -> Self::Out;
+}
+
+/// [`intervals`], the iterators of the common shapes -- block, ordered,
+/// unordered, a filter, a containment or overlap -- handed to `sink` as
+/// their own types rather than boxed: a scorer over them then calls its
+/// iterator without a virtual call per document and per interval (the
+/// dispatch Java's JIT removes by inlining). Everything else goes boxed.
+pub(crate) fn root_intervals<'a, K: IntervalsSink<'a>>(
+    source: &IntervalsSource,
+    field: &str,
+    ctx: &LeafContext<'a>,
+    sink: K,
+) -> Result<Option<K::Out>> {
+    use IntervalsSource as S;
+    let conj = |subs: Vec<BoxIntervals<'a>>| ConjunctionState::new(subs);
+    Ok(match source {
+        S::Block(subs) => all_of(subs, field, ctx)?.map(|s| {
+            sink.sink(ConjunctionIntervals {
+                state: conj(s),
+                kind: Block { start: -1, end: -1 },
+            })
+        }),
+        S::Ordered(subs) => all_of(subs, field, ctx)?.map(|s| {
+            sink.sink(ConjunctionIntervals {
+                state: conj(s),
+                kind: Ordered {
+                    start: -1,
+                    end: -1,
+                    i: 1,
+                    slop: 0,
+                    on_match: None,
+                },
+            })
+        }),
+        S::Unordered(subs) => all_of(subs, field, ctx)?.map(|s| {
+            let n = s.len();
+            sink.sink(ConjunctionIntervals {
+                state: conj(s),
+                kind: Unordered {
+                    queue: IndexQueue::new(n),
+                    start: -1,
+                    end: -1,
+                    slop: 0,
+                    queue_end: 0,
+                    on_match: None,
+                },
+            })
+        }),
+        S::Filtered { source, filter } => {
+            intervals(source, field, ctx)?.map(|it| sink.sink(FilteredIntervals::new(it, *filter)))
+        }
+        S::Containing { big, small } => pair(big, small, field, ctx)?
+            .map(|(a, b)| sink.sink(filtering_of(FilteringKind::Containing, a, b))),
+        S::ContainedBy { small, big } => pair(small, big, field, ctx)?
+            .map(|(a, b)| sink.sink(filtering_of(FilteringKind::ContainedBy, a, b))),
+        S::Overlapping { source, reference } => pair(source, reference, field, ctx)?
+            .map(|(a, b)| sink.sink(filtering_of(FilteringKind::Overlapping, a, b))),
+        _ => intervals(source, field, ctx)?.map(|it| sink.sink(it)),
+    })
+}
 
 /// `IntervalsSource.intervals(field, ctx)`: the source's iterator over this
 /// segment, `None` where Java returns `null` (no intervals for the field

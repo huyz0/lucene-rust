@@ -2787,6 +2787,42 @@ mod tests {
             .is_none());
     }
 
+    /// The term-statistics queries over a segment without their field have
+    /// no scorer, as their weights' `scorer` returns `null`: a multi-phrase
+    /// (empty, or of absent terms), a synonym, a combined field and a
+    /// blended term.
+    #[test]
+    fn term_statistics_queries_without_the_field_have_no_scorer() {
+        let fields = BlockTreeFields::empty();
+        let ctx = empty_ctx(&fields);
+        let none: Vec<Vec<&str>> = Vec::new();
+        for (q, mode) in [
+            (MultiPhraseQuery::new("f", none), Mode::Complete),
+            (
+                MultiPhraseQuery::new("f", [vec!["a", "b"], vec!["c"]]),
+                Mode::Complete,
+            ),
+            (
+                MultiPhraseQuery::new("f", [vec!["a"], vec!["c"]]),
+                Mode::NoScores,
+            ),
+        ] {
+            assert!(multi_phrase(&ctx, &q, 1.0, mode).unwrap().is_none());
+        }
+        let syn = SynonymQuery::new("f", [("a", 1.0), ("b", 0.5)]).unwrap();
+        assert!(synonym(&ctx, &syn, 1.0, Mode::Complete).unwrap().is_none());
+        let combined = CombinedFieldQuery::new("a", [("f", 1.0), ("g", 2.0)]).unwrap();
+        assert!(combined_field(&ctx, &combined, 1.0, Mode::Complete)
+            .unwrap()
+            .is_none());
+        let blend =
+            BlendedTermQuery::new([("f", "a", 1.0), ("g", "a", 1.0)], BlendedRewrite::Boolean)
+                .unwrap();
+        assert!(blended(&ctx, &blend, 1.0, Mode::Complete, true)
+            .unwrap()
+            .is_none());
+    }
+
     /// `IndexOrDocValuesQuery`'s two sides over a segment without points or
     /// a reader: a point-in-set index side has no supplier (`null`), any
     /// other clause one of unknown cost; the doc-values side cannot be

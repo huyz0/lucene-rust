@@ -66,8 +66,11 @@ fn sim_inputs(ctx: &LeafContext<'_>, q: &SpanNode) -> Result<Option<SimInputs>> 
 }
 
 /// The spans a scorer reads: a payload score query's collect payloads.
-enum ScorerSpans<'a> {
-    Plain(BoxSpans<'a>),
+// One per scorer, the plain spans held inline on purpose (no pointer to
+// chase on the hottest calls).
+#[allow(clippy::large_enum_variant)]
+enum ScorerSpans<'a, S = BoxSpans<'a>> {
+    Plain(S),
     Payload {
         spans: PayloadSpans<'a>,
         function: PayloadFunction,
@@ -85,16 +88,17 @@ macro_rules! on_spans {
     };
 }
 
-/// `SpanScorer` (and `PayloadSpanScorer`).
-pub(crate) struct SpanScorer<'a> {
-    spans: ScorerSpans<'a>,
+/// `SpanScorer` (and `PayloadSpanScorer`), monomorphised over its plain
+/// spans' type where [`spans::root_spans`] knows it.
+pub(crate) struct SpanScorer<'a, S = BoxSpans<'a>> {
+    spans: ScorerSpans<'a, S>,
     sim: Option<Arc<dyn SimScorer>>,
     norms: Option<FieldNormsCursor<'a, 'a>>,
     freq: f32,
     last_scored_doc: i32,
 }
 
-impl<'a> SpanScorer<'a> {
+impl<'a, S: Spans> SpanScorer<'a, S> {
     /// `ensureFreq()` / `setFreqCurrentDoc()`.
     fn ensure_freq(&mut self) -> Result<()> {
         let doc = on_spans!(&self.spans, s => s.doc_id());
@@ -124,7 +128,7 @@ impl<'a> SpanScorer<'a> {
     }
 }
 
-impl Scorer for SpanScorer<'_> {
+impl<S: Spans> Scorer for SpanScorer<'_, S> {
     fn doc_id(&self) -> i32 {
         on_spans!(&self.spans, s => s.doc_id())
     }
@@ -192,23 +196,7 @@ fn build_scorer<'a>(
     let Some(s) = spans::spans_with(ctx, weight_q, payload.is_some())? else {
         return Ok(None);
     };
-    let (sim, norms) = if mode.needs_scores() {
-        match sim_inputs(ctx, weight_q)? {
-            Some(inputs) => (
-                Some(super::extended::sim_scorer(
-                    ctx,
-                    &inputs.field,
-                    boost,
-                    &inputs.collection,
-                    &inputs.terms,
-                )),
-                super::extended::norms_cursor(ctx, &inputs.field),
-            ),
-            None => (None, None),
-        }
-    } else {
-        (None, None)
-    };
+    let (sim, norms) = sim_of(ctx, weight_q, boost, mode)?;
     let spans = match payload {
         Some(p) => ScorerSpans::Payload {
             spans: PayloadSpans::new(s, p.function, p.decoder.clone()),
@@ -226,15 +214,80 @@ fn build_scorer<'a>(
     }))
 }
 
+/// A span scorer's similarity and its field's norms.
+type SimAndNorms<'a> = (Option<Arc<dyn SimScorer>>, Option<FieldNormsCursor<'a, 'a>>);
+
+/// The similarity and norms a weight over `weight_q` scores with: none
+/// without scores.
+fn sim_of<'a>(
+    ctx: &LeafContext<'a>,
+    weight_q: &SpanNode,
+    boost: f32,
+    mode: Mode,
+) -> Result<SimAndNorms<'a>> {
+    if !mode.needs_scores() {
+        return Ok((None, None));
+    }
+    Ok(match sim_inputs(ctx, weight_q)? {
+        Some(inputs) => (
+            Some(super::extended::sim_scorer(
+                ctx,
+                &inputs.field,
+                boost,
+                &inputs.collection,
+                &inputs.terms,
+            )),
+            super::extended::norms_cursor(ctx, &inputs.field),
+        ),
+        None => (None, None),
+    })
+}
+
 /// `SpanWeight.scorerSupplier(context)`: `None` when the query has no spans
-/// in this segment.
+/// in this segment. A payload score query's goes through
+/// [`build_scorer`]; every other query's scorer is monomorphised over its
+/// root spans ([`spans::root_spans`]).
 pub(crate) fn span_node<'a>(
     ctx: &LeafContext<'a>,
     q: &SpanNode,
     boost: f32,
     mode: Mode,
 ) -> Result<Option<BoxScorer<'a>>> {
-    Ok(build_scorer(ctx, q, boost, mode)?.map(|s| -> BoxScorer<'a> { Box::new(s) }))
+    if matches!(q, SpanNode::PayloadScore(_)) {
+        return Ok(build_scorer(ctx, q, boost, mode)?.map(|s| -> BoxScorer<'a> { Box::new(s) }));
+    }
+    struct Sink<'c, 'a> {
+        ctx: &'c LeafContext<'a>,
+        weight_q: &'c SpanNode,
+        boost: f32,
+        mode: Mode,
+    }
+    impl<'a> spans::SpansSink<'a> for Sink<'_, 'a> {
+        type Out = Result<BoxScorer<'a>>;
+        fn sink<S: Spans + 'a>(self, spans: S) -> Self::Out {
+            let (sim, norms) = sim_of(self.ctx, self.weight_q, self.boost, self.mode)?;
+            Ok(Box::new(SpanScorer {
+                spans: ScorerSpans::<'a, S>::Plain(spans),
+                sim,
+                norms,
+                freq: 0.0,
+                last_scored_doc: -1,
+            }))
+        }
+    }
+    let weight_q = spans::weight_query(q);
+    spans::root_spans(
+        ctx,
+        weight_q,
+        false,
+        Sink {
+            ctx,
+            weight_q,
+            boost,
+            mode,
+        },
+    )?
+    .transpose()
 }
 
 /// `BM25Similarity`'s `BM25Scorer.explain(freq, norm)` for the default
