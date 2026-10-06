@@ -484,7 +484,10 @@ public class GenSpans {
     }
   }
 
-  /** Each field's matches: {@code start:end:startOffset:endOffset[sub ...]}, a sub with its term. */
+  /**
+   * Each field's matches: {@code start:end:startOffset:endOffset@query[sub ...]}, the query the
+   * match reports and a sub with its term.
+   */
   static String render(Matches m) throws IOException {
     if (m == null) return "none";
     StringBuilder b = new StringBuilder();
@@ -497,7 +500,8 @@ public class GenSpans {
         if (!first) b.append(',');
         first = false;
         b.append(it.startPosition()).append(':').append(it.endPosition()).append(':')
-            .append(it.startOffset()).append(':').append(it.endOffset());
+            .append(it.startOffset()).append(':').append(it.endOffset())
+            .append('@').append(it.getQuery());
         MatchesIterator sub = it.getSubMatches();
         if (sub != null) {
           b.append('[');

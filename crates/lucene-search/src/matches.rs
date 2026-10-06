@@ -874,9 +874,11 @@ pub fn leaf_matches(
                 crate::intervals::matches::interval_matches(seg, q, Arc::new(clause.clone()), doc)
             }
             // `SpanWeight.matches`; a top-level `FieldMaskingSpanQuery`'s
-            // weight is its masked query's, which the iterators report.
+            // weight is its masked query's, and an unscored
+            // `PayloadScoreQuery`'s its wrapped query's, which the iterators
+            // report.
             crate::extended_query::ExtendedQuery::Span(q) => {
-                let weight = crate::spans::weight_query(q);
+                let weight = crate::spans::unscored_weight_query(q);
                 let query = if std::ptr::eq(weight, q) {
                     Arc::new(clause.clone())
                 } else {

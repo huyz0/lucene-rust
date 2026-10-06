@@ -11,7 +11,8 @@
 //! each query's `toString`; under five variants (plain, boosted, a
 //! boolean's required clause, its filter, its prohibited clause) every hit's
 //! score bits and five documents' explanations; then `Weight.matches` of the hits and the
-//! explained documents -- each span's positions and offsets, its terms as
+//! explained documents -- each span's positions and offsets and the query
+//! it reports, its terms as
 //! sub-matches with their `TermQuery`. The file is rebuilt here line for
 //! line and compared with Lucene's.
 //!
@@ -26,7 +27,7 @@
 
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::extended_query::{
-    MultiTermQuery, MultiTermSource, RewriteMethod, TermRangeQuery,
+    ExtendedQuery, MultiTermQuery, MultiTermSource, RewriteMethod, TermRangeQuery,
 };
 use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
 use lucene_search::matches::{matches, BoxMatches};
@@ -280,7 +281,8 @@ fn run(searcher: &IndexSearcher<'_, '_>, spec: &str, out: &mut Vec<String>) {
     matches_lines(searcher, spec, &s, out);
 }
 
-/// `GenSpans.render`: each field's matches, a sub-match with its term.
+/// `GenSpans.render`: each field's matches with the query they report, a
+/// sub-match with its term.
 fn render(m: Option<BoxMatches>) -> Result<String> {
     let Some(m) = m else {
         return Ok("none".into());
@@ -302,8 +304,15 @@ fn render(m: Option<BoxMatches>) -> Result<String> {
                 b.push(',');
             }
             first = false;
+            // `MatchesIterator.getQuery()`: the span weight's query.
+            let Clause::Extended(q) = i.query() else {
+                panic!("a span match reports its span query");
+            };
+            let ExtendedQuery::Span(q) = q.as_ref() else {
+                panic!("a span match reports its span query");
+            };
             b.push_str(&format!(
-                "{}:{}:{}:{}",
+                "{}:{}:{}:{}@{q}",
                 i.start_position(),
                 i.end_position(),
                 i.start_offset(),

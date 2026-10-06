@@ -18,6 +18,7 @@ import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.FieldType;
+import org.apache.lucene.document.StoredField;
 import org.apache.lucene.document.StringField;
 import org.apache.lucene.document.TextField;
 import org.apache.lucene.index.DirectoryReader;
@@ -46,10 +47,10 @@ import org.apache.lucene.store.FSDirectory;
  * with deletions in two segments, and two result files.
  *
  * <p>Fields: {@code id} (StringField), {@code body} (stored text, no term vectors), {@code tv}
- * (stored text with term vectors), {@code title} (stored text). The words follow a skewed
+ * (stored text with term vectors), {@code title} (stored text), {@code num} (a stored int). The words follow a skewed
  * distribution, so some are in most documents and some in a few.
  *
- * <p>{@code mlt.tsv}: {@code MoreLikeThis} under twelve settings -- for six documents (one deleted)
+ * <p>{@code mlt.tsv}: {@code MoreLikeThis} under thirteen settings -- for six documents (one deleted)
  * the interesting terms, the query's clauses (field, term, boost bits) and its hits; {@code
  * like(field, texts)} and {@code like(Map)}; and {@code MoreLikeThisQuery} over three texts, with
  * hits and explanations. {@code common.tsv}: {@code CommonTermsQuery} over fourteen term sets and
@@ -99,6 +100,8 @@ public class GenMoreLikeThis {
     if (id % 7 != 2) d.add(new Field("tv", text(r, 2 + r.nextInt(25)), TV));
     if (id % 3 == 0) d.add(new TextField("title", text(r, 1 + r.nextInt(5)), Field.Store.YES));
     if (id % 5 == 1) d.add(new TextField("body", text(r, 4), Field.Store.YES));
+    // A stored number: `MoreLikeThis` re-analyzes only stored strings.
+    d.add(new StoredField("num", id * 7));
     return d;
   }
 
@@ -214,6 +217,7 @@ public class GenMoreLikeThis {
     {"maxdfpct", "tv", "1", "1", "pct30", "25", "false", "1", "0", "0", "-"},
     {"nofields", "title|missing", "1", "1", "-1", "25", "false", "1", "0", "0", "-"},
     {"noanalyzer", "body", "1", "1", "-1", "25", "false", "1", "0", "0", "-"},
+    {"numeric", "body|num", "1", "1", "-1", "25", "false", "1", "0", "0", "-"},
   };
 
   static final int[] DOCS = {0, 3, 11, 17, 44, 102};
