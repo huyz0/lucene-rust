@@ -293,6 +293,8 @@ mod handle;
 mod highlighter;
 mod jvm_aggs;
 mod jvm_fetch;
+mod jvm_function_score;
+mod jvm_nodes;
 mod jvm_reader;
 #[cfg(test)]
 mod legacy_boolean_abi;

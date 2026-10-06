@@ -51,7 +51,9 @@ A request runs native when **all** of these hold:
   (`FieldExistsQuery` over norms or doc values; a vector field is answered
   by Lucene), and the geo queries on `geo_point` and `geo_shape` fields
   (`geo_bounding_box`, `geo_distance`, `geo_polygon`, `geo_shape` with every
-  relation, inline or `indexed_shape`; M9 T9.6, the rows below) -- at most 32
+  relation, inline or `indexed_shape`; M9 T9.6, the rows below), and the M10
+  shapes (T10.7, the second table below): `nested`, the `span_*` queries,
+  `intervals`, `combined_fields` and `function_score` -- at most 32
   deep and 1,024 nodes,
   over fields that score with the default BM25 (`k1 = 1.2`, `b = 0.75`), with
   every `TermQuery` scoring from the reader's own statistics (not blended
@@ -139,6 +141,19 @@ query caches, a ~2 ms response whose query phase is tens of microseconds,
 where the native call's fixed cost shows -- see
 [`milestones/m9-geo-and-spatial.md`](milestones/m9-geo-and-spatial.md).
 
+### M10 shapes (T10.7)
+
+| Request (DSL) | Rewritten Lucene query | Native |
+|---|---|---|
+| `nested`, any `score_mode`, with or without `inner_hits` | `OpenSearchToParentBlockJoinQuery` (`ToParentBlockJoinQuery` over OpenSearch's bit-set producer for the root or parent-path filter) | yes; the parent bit sets are cached natively per segment and filter |
+| `span_term`, `span_near`, `span_or`, `span_not`, `span_first`, `span_containing`, `span_within`, `field_masking_span`, `span_multi` | the `spans` package's queries (`span_multi` rewritten to a `SpanOrQuery`) | yes, but a `span_near` holding a `span_gap` (`span_gap`) |
+| `intervals` (`match`, `any_of`, `all_of`, `prefix`, `wildcard`, `fuzzy`, every filter but `script`) | `IntervalQuery` over Lucene's `IntervalsSource`s | yes; a `script` filter falls back (`interval_ScriptFilterSource`) |
+| `combined_fields` | `CombinedFieldQuery` | yes |
+| `function_score` with `weight`, `field_value_factor`, `random_score` (with a `seed` and `field`, or neither), numeric and date `gauss`/`exp`/`linear` decays, function filters, any `score_mode`, `boost_mode`, `max_boost`, `boost` | OpenSearch's `FunctionScoreQuery` | yes, OpenSearch's arithmetic computed natively; `min_score`, scripts, geo decays fall back (`function_score_*`) |
+| `more_like_this`, `common`, `parent_id` | rewritten by OpenSearch to booleans of term queries | when the rewrite is a native shape |
+| `has_child`, `has_parent` | `JoinUtil`'s global-ordinal joins (package-private Lucene classes) | no (`query_*`, `clause_*`): the join's from side runs in Java during the rewrite |
+| `script_score` | OpenSearch's `ScriptScoreQuery` | no (`query_ScriptScoreQuery`) |
+
 `index.lucene_rust.search.native_shapes` (`fast`/`all`) predates read path
 R1, when mixed booleans measured slower and were routed to Lucene
 (`slower_shape`); since R1 every encodable shape runs native under both
@@ -157,7 +172,7 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `sort_*`, `search_after`, `collapse`, `rescore`, `profile` | the request needs something the native top-hits path does not produce |
 | `scroll_after` | a sorted scroll page whose last emitted hit carries no sort values |
 | `timeout` | the request's `timeout` had already passed when the native call would start; Lucene answers it (nothing, `timed_out`) |
-| `query_<Class>` | the rewritten query's root is not a supported shape — e.g. `query_ToParentBlockJoinQuery` (`nested`), `query_FunctionScoreQuery` (`function_score`), `query_TermQuery` on a numeric field |
+| `query_<Class>` | the rewritten query's root is not a supported shape — e.g. `query_GlobalOrdinalsWithScoreQuery` (`has_child`), `query_ScriptScoreQuery` (`script_score`), `query_TermQuery` on a numeric field |
 | `regexp_flags` | a `regexp` whose flags are not the default `ALL` with no match flags — e.g. `case_insensitive` (compared by the automaton they build) |
 | `clause_<Class>` | the same, for a clause anywhere below the root (inside a `bool`, `constant_score`, `dis_max`, a boost) |
 | `query_too_deep`, `query_too_large` | more than 32 levels, or more than 1,024 nodes counting wrappers (Lucene counts only leaves, and `indices.query.bool.max_clause_count` can raise its limit) |
@@ -167,6 +182,11 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `sort_geo_plane`, `sort_geo_nested`, `sort_geo_field_data`, `sort_geo_origins`, `sort_geo_reflect` | OpenSearch's `_geo_distance` comparator with `distance_type: plane` (`Math.cos`'s HotSpot intrinsic, which no portable code reproduces bit for bit), a nested sort, field data other than a `geo_point`'s doc values, non-finite or more than 1,024 origins, or fields the plugin cannot read |
 | `geo_geometry`, `geo_reflect` | a geo query holding a geometry class Lucene's factories do not build, or one whose fields the plugin cannot read (a Lucene whose geo classes changed) |
 | `clause_IntersectsPrefixTreeQuery` (and the other spatial-extras queries) | a `geo_shape` field on the deprecated prefix-tree mapping (`tree`) |
+| `join_parents` | a block join whose parent filter is not a `QueryBitSetProducer` or OpenSearch's bit-set-cache producer |
+| `span_gap`, `span_<Class>` | a `span_near` with a `span_gap`; a span query class outside the encoded set (payload spans) |
+| `interval_<Class>`, `interval_scoring`, `interval_automaton` | an intervals source outside Lucene's own classes (OpenSearch's `script` filter), a payload-filtered term, another scoring function, a multi-term automaton past 65,536 states |
+| `function_score_min_score`, `function_score_script`, `function_score_field_data`, `function_score_decay`, `function_score_<Class>` | `function_score` with `min_score`; a script function; a function over field data other than plain sorted-numeric doc values (keyword for `random_score`; not `half_float`, `unsigned_long` or `date_nanos`); another decay or function class (geo decays) |
+| `combined_fields_empty`, `extended_reflect` | a `CombinedFieldQuery` over no field; a Lucene or OpenSearch class whose private fields the plugin cannot read (a version whose classes changed) |
 | `wildcard_escape` | a `wildcard` pattern with a `\\` escape (the native matcher has no escape syntax) |
 | `phrase_positions` | a `PhraseQuery` whose terms are not at consecutive positions (the analyzer removed a stopword, leaving a gap) |
 | `field_similarity` | a field scores with anything but default-parameter BM25 |
