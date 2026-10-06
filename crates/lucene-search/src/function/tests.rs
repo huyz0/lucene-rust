@@ -1153,7 +1153,7 @@ fn bridges_sorts_and_scorer_edges() {
 /// function sources and explanations read.
 #[test]
 fn query_strings_and_similarity_accessors() {
-    use crate::explain::{describe_clause, describe_query};
+    use crate::explain::describe_clause;
     use crate::similarities::{Bm25Similarity, ClassicSimilarity, PerFieldSimilarity, Similarity};
     let i: Arc<dyn ValueSource> = Arc::new(IntFieldSource::new("i"));
     let fq = Clause::from(FunctionQuery::new(Arc::clone(&i)));
@@ -1177,15 +1177,44 @@ fn query_strings_and_similarity_accessors() {
         ..Default::default()
     };
     assert_eq!(
-        describe_query(&Clause::Boolean(Box::new(b.clone()))),
+        describe_clause(&Clause::Boolean(Box::new(b.clone()))),
         "body:red body:blue"
     );
     b.minimum_should_match = 1;
     assert_eq!(
-        describe_query(&Clause::Boolean(Box::new(b))),
+        describe_clause(&Clause::Boolean(Box::new(b))),
         "(body:red body:blue)~1"
     );
-    assert_eq!(describe_query(&term("red")), "body:red");
+    assert_eq!(describe_clause(&term("red")), "body:red");
+    // Every caller prints a boolean as `BooleanQuery.toString` does: no
+    // outer parentheses to strip, so its first and last clauses keep theirs.
+    let dm = Clause::DisjunctionMax(Box::new(crate::query::DisjunctionMaxQuery::new(
+        [term("a"), term("b")],
+        0.0,
+    )));
+    let sub = Clause::Boolean(Box::new(BooleanQuery {
+        should: vec![term("c"), term("d")],
+        ..Default::default()
+    }));
+    let edges = Clause::Boolean(Box::new(BooleanQuery {
+        should: vec![dm.clone(), sub.clone()],
+        ..Default::default()
+    }));
+    assert_eq!(
+        format!(
+            "{:?}",
+            FunctionScoreQuery::new(edges.clone(), dvs::constant(1.0))
+        ),
+        "FunctionScoreQuery((body:a | body:b) (body:c body:d), scored by constant(1.0))"
+    );
+    let only_dm = Clause::Boolean(Box::new(BooleanQuery {
+        should: vec![dm],
+        ..Default::default()
+    }));
+    assert_eq!(
+        format!("{:?}", FunctionScoreQuery::new(only_dm, dvs::constant(1.0))),
+        "FunctionScoreQuery((body:a | body:b), scored by constant(1.0))"
+    );
 
     let classic = ClassicSimilarity::default();
     assert!(classic.as_tfidf("f").is_some() && classic.shared().is_some());

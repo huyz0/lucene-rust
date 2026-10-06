@@ -50,8 +50,9 @@ import org.apache.lucene.store.FSDirectory;
  * <p>{@code mlt.tsv}: {@code MoreLikeThis} under twelve settings -- for six documents (one deleted)
  * the interesting terms, the query's clauses (field, term, boost bits) and its hits; {@code
  * like(field, texts)} and {@code like(Map)}; and {@code MoreLikeThisQuery} over three texts, with
- * hits and explanations. {@code common.tsv}: {@code CommonTermsQuery} over twelve term sets and
- * settings, hits with score bits and four explanations each. Exceptions are recorded by class name.
+ * hits and explanations. {@code common.tsv}: {@code CommonTermsQuery} over fourteen term sets and
+ * settings, hits with score bits and four explanations each; then four boosted booleans of
+ * MUST/FILTER/SHOULD/MUST_NOT term clauses, hits and four explanations each. Exceptions are recorded by class name.
  *
  * <p>Usage: {@code java GenMoreLikeThis <fixtures-data-dir>}.
  */
@@ -139,6 +140,7 @@ public class GenMoreLikeThis {
       searcher.setQueryCache(null);
       mlt(mlt, reader, searcher);
       common(common, searcher);
+      boosted(common, searcher);
     }
     Files.writeString(root.resolve("mlt.tsv"), mlt.toString(), StandardCharsets.UTF_8);
     Files.writeString(root.resolve("common.tsv"), common.toString(), StandardCharsets.UTF_8);
@@ -309,7 +311,45 @@ public class GenMoreLikeThis {
     {"", "0.1", "SHOULD", "SHOULD", "0", "0", "1", "1"},
     {"title:river|title:stone|title:quartz", "0.1", "SHOULD", "SHOULD", "0.4", "0.6", "1", "1"},
     {"body:river|body:stone", "0.1", "MUST_NOT", "SHOULD", "0", "0", "1", "1"},
+    {"body:river|body:glacier|body:quartz", "0.3", "SHOULD", "FILTER", "0", "0", "2", "1"},
+    {"body:river|body:stone|body:glacier|body:tundra", "0.25", "MUST", "FILTER", "0", "0", "1", "0.5"},
   };
+
+  /**
+   * A boosted boolean of term clauses: {clauses (space separated, +/#/- prefixed, in the
+   * MUST, FILTER, SHOULD, MUST_NOT order the Rust query keeps them in), boost}.
+   */
+  static final String[][] BOOSTED = {
+    {"+body:river #body:stone -body:glacier", "2.5"},
+    {"#body:light body:river body:stone -body:quartz", "0.5"},
+    {"#body:river #body:stone", "3"},
+    {"+body:stone -body:river -body:zephyr", "1.5"},
+  };
+
+  static void boosted(StringBuilder out, IndexSearcher searcher) {
+    for (String[] spec : BOOSTED) {
+      BooleanQuery.Builder b = new BooleanQuery.Builder();
+      for (String c : spec[0].split(" ")) {
+        BooleanClause.Occur occur;
+        String t = c;
+        switch (c.charAt(0)) {
+          case '+' -> { occur = BooleanClause.Occur.MUST; t = c.substring(1); }
+          case '#' -> { occur = BooleanClause.Occur.FILTER; t = c.substring(1); }
+          case '-' -> { occur = BooleanClause.Occur.MUST_NOT; t = c.substring(1); }
+          default -> occur = BooleanClause.Occur.SHOULD;
+        }
+        String[] ft = t.split(":");
+        b.add(new TermQuery(new Term(ft[0], ft[1])), occur);
+      }
+      Query q = new BoostQuery(b.build(), Float.parseFloat(spec[1]));
+      String head = "boost\t" + spec[0] + "^" + spec[1];
+      out.append(head).append("\thits\t").append(g(() -> hits(searcher, q))).append('\n');
+      for (int doc : new int[] {0, 7, 33, 60}) {
+        out.append(head).append("\texplain ").append(doc).append('\t')
+            .append(g(() -> searcher.explain(q, doc).toString())).append('\n');
+      }
+    }
+  }
 
   static void common(StringBuilder out, IndexSearcher searcher) {
     for (String[] c : COMMON) {

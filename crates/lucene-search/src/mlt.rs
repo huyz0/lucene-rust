@@ -104,6 +104,11 @@ fn java_string_hash(s: &str) -> i32 {
 /// order, iterates them: by bucket (`(h ^ (h >>> 16)) & (capacity - 1)`,
 /// the capacity it has grown to from 16 at load factor 0.75), insertion
 /// order within a bucket (a resize keeps it). Returns indices into `keys`.
+///
+/// Blind spot: `HashMap.treeifyBin` is not modelled. A bucket reaching nine
+/// keys (`TREEIFY_THRESHOLD`) makes Java double a table smaller than 64
+/// (`MIN_TREEIFY_CAPACITY`) or turn the bucket into a tree bin with its own
+/// iteration order; for such adversarial key sets the order differs.
 pub fn java_hash_order(keys: &[&str]) -> Vec<usize> {
     let mut capacity: usize = 16;
     while keys.len() > capacity / 4 * 3 {
@@ -120,6 +125,21 @@ pub fn java_hash_order(keys: &[&str]) -> Vec<usize> {
         .collect();
     order.sort_unstable();
     order.into_iter().map(|(_, i)| i).collect()
+}
+
+/// `Field.stringValue()` of a stored field as `DocumentStoredFieldVisitor`
+/// loads it: a string, or a number's `toString()` (`Integer`, `Long`,
+/// `Float`, `Double`); `null` for binary.
+fn stored_string_value(value: &lucene_codecs::stored_fields::FieldValue) -> Option<String> {
+    use lucene_codecs::stored_fields::FieldValue;
+    match value {
+        FieldValue::String(s) => Some(s.clone()),
+        FieldValue::Int(v) => Some(v.to_string()),
+        FieldValue::Long(v) => Some(v.to_string()),
+        FieldValue::Float(v) => Some(crate::function::java_float(*v)),
+        FieldValue::Double(v) => Some(crate::function::java_double(*v)),
+        FieldValue::Binary(_) => None,
+    }
 }
 
 /// `MoreLikeThis.ScoreTerm`.
@@ -440,10 +460,7 @@ impl<'r> MoreLikeThis<'r> {
                         .fields
                         .iter()
                         .filter(|f| Some(f.field_number) == number)
-                        .filter_map(|f| match &f.value {
-                            lucene_codecs::stored_fields::FieldValue::String(s) => Some(s.clone()),
-                            _ => None,
-                        })
+                        .filter_map(|f| stored_string_value(&f.value))
                         .collect();
                     if values.is_empty() {
                         // `field2termFreqMap` gets no entry for the field.
@@ -677,6 +694,25 @@ mod tests {
     /// Java's `String.hashCode` and a `HashMap`'s iteration order, as
     /// `new HashMap<String, ?>()` filled with these keys iterates them
     /// (printed by Lucene's JDK for the same keys).
+    /// `Field.stringValue()` of a loaded stored field: numbers print as
+    /// `Integer`/`Long`/`Float`/`Double.toString`, binary is `null`.
+    #[test]
+    fn stored_numbers_read_as_their_java_strings() {
+        use lucene_codecs::stored_fields::FieldValue;
+        let s = |v| stored_string_value(&v);
+        assert_eq!(s(FieldValue::String("a b".into())).as_deref(), Some("a b"));
+        assert_eq!(s(FieldValue::Int(-42)).as_deref(), Some("-42"));
+        assert_eq!(
+            s(FieldValue::Long(1 << 40)).as_deref(),
+            Some("1099511627776")
+        );
+        assert_eq!(s(FieldValue::Float(3.0)).as_deref(), Some("3.0"));
+        assert_eq!(s(FieldValue::Float(1.0e-5)).as_deref(), Some("1.0E-5"));
+        assert_eq!(s(FieldValue::Double(1.0e10)).as_deref(), Some("1.0E10"));
+        assert_eq!(s(FieldValue::Double(0.1)).as_deref(), Some("0.1"));
+        assert_eq!(s(FieldValue::Binary(vec![1])), None);
+    }
+
     #[test]
     fn hash_order_is_a_java_hash_maps() {
         assert_eq!(java_string_hash("apple"), 93029210);
@@ -684,7 +720,21 @@ mod tests {
         assert_eq!(java_string_hash("Aa"), java_string_hash("BB"));
         let keys = ["red", "blue", "green", "fast", "slow"];
         let order: Vec<&str> = java_hash_order(&keys).iter().map(|&i| keys[i]).collect();
-        assert_eq!(order.len(), 5);
+        // `new HashMap<>()` filled in `keys`' order, `keySet()` on JDK 25.
+        assert_eq!(order, ["red", "green", "fast", "blue", "slow"]);
+        // 14 keys: past the 12-entry threshold, at capacity 32.
+        let greek = [
+            "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa",
+            "lambda", "mu", "nu", "xi",
+        ];
+        let order: Vec<&str> = java_hash_order(&greek).iter().map(|&i| greek[i]).collect();
+        assert_eq!(
+            order,
+            [
+                "zeta", "iota", "nu", "delta", "mu", "theta", "epsilon", "xi", "lambda", "eta",
+                "alpha", "kappa", "beta", "gamma"
+            ]
+        );
         // Colliding keys keep their insertion order.
         let same = ["Aa", "BB"];
         assert_eq!(java_hash_order(&same), [0, 1]);
