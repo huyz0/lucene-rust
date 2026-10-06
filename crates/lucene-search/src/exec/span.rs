@@ -906,4 +906,69 @@ mod tests {
         assert_eq!(span_field(&or), Some("g"));
         assert_eq!(span_field(&SpanQuery::span_or(std::iter::empty())), None);
     }
+    /// A leaf's positions, payloads and occurrences, over the spans
+    /// fixture's real postings: a lazy cursor's, a pulsed singleton's and an
+    /// absent term's.
+    #[test]
+    fn leaf_positions_read_positions_payloads_and_occurrences() {
+        let dir = std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/spans/index"
+        ));
+        let reader =
+            crate::directory_reader::DirectoryReader::open(&lucene_store::FsDirectory::open(dir))
+                .unwrap();
+        let opened = reader.open_segments().unwrap();
+        let segments = opened.as_open_segments();
+        for seg in &segments {
+            let ctx = LeafContext {
+                fields: seg.fields,
+                doc_in: seg.doc_in,
+                pos_in: seg.pos_in,
+                pay_in: seg.pay_in,
+                live_docs: seg.live_docs,
+                points: None,
+                norms: None,
+                global: None,
+                max_doc: seg.max_doc,
+                cache: None,
+                reader: None,
+                similarity: None,
+            };
+            let pos_in = ctx.pos_in.unwrap();
+            let ft = ctx.fields.field("pay").unwrap();
+            for term in [b"apple".as_slice(), b"zeta", b"nosuch"] {
+                let mut leaf = LeafPositions::open(&ctx, pos_in, "pay", term).unwrap();
+                let mut streamed = LeafPositions::open(&ctx, pos_in, "pay", term).unwrap();
+                let streams = streamed.stream_payloads(&ctx);
+                assert_eq!(streams, leaf.is_lazy(), "{term:?}");
+                let mut doc = leaf.next_doc(-1).unwrap();
+                let mut out = Vec::new();
+                while doc != NO_MORE_DOCS {
+                    assert_eq!(streamed.advance(doc).unwrap(), doc);
+                    leaf.occurrences_at(&ctx, ft, term, doc, &mut out).unwrap();
+                    let want = ft
+                        .occurrences_for_doc(term, ctx.doc_in, pos_in, ctx.pay_in, doc)
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(out, want, "{term:?} doc {doc}");
+                    if streams {
+                        for o in &want {
+                            let (p, payload) = streamed.next_position_with_payload().unwrap();
+                            assert_eq!(p, o.position);
+                            assert_eq!(payload.unwrap_or_default(), o.payload.as_slice());
+                        }
+                    } else {
+                        assert!(streamed.next_position().is_err());
+                        assert!(streamed.next_position_with_payload().is_err());
+                    }
+                    // Not on the document asked: nothing.
+                    leaf.occurrences_at(&ctx, ft, term, doc + 1, &mut out)
+                        .unwrap();
+                    assert!(out.is_empty());
+                    doc = leaf.next_doc(doc).unwrap();
+                }
+            }
+        }
+    }
 }
