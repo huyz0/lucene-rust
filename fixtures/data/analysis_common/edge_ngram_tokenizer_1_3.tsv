@@ -192,3 +192,15 @@ T	49	ー	0	1	1	1	word	0	-	0	1
 T	49	ーﾟ	0	2	1	1	word	0	-	0	1
 T	49	ーﾟ 	0	3	1	1	word	0	-	0	1
 E	49	17	17	0
+T	50	e	0	1	1	1	word	0	-	0	1
+T	50	en	0	2	1	1	word	0	-	0	1
+T	50	end	0	3	1	1	word	0	-	0	1
+E	50	22	22	0
+T	51	e	0	1	1	1	word	0	-	0	1
+T	51	en	0	2	1	1	word	0	-	0	1
+T	51	end	0	3	1	1	word	0	-	0	1
+E	51	27	27	0
+T	52	T	0	1	1	1	word	0	-	0	1
+T	52	Th	0	2	1	1	word	0	-	0	1
+T	52	The	0	3	1	1	word	0	-	0	1
+E	52	75	75	0

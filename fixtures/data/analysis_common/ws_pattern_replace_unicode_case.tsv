@@ -1,0 +1,507 @@
+T	0	Th#	0	3	1	1	word	0	-	0	1
+T	0	qui##	4	9	1	1	word	0	-	0	1
+T	0	#rown	10	15	1	1	word	0	-	0	1
+T	0	fox	16	19	1	1	word	0	-	0	1
+T	0	jumps	20	25	1	1	word	0	-	0	1
+T	0	ov#r	26	30	1	1	word	0	-	0	1
+T	0	th#	31	34	1	1	word	0	-	0	1
+T	0	l#zy	35	39	1	1	word	0	-	0	1
+T	0	#og.	40	44	1	1	word	0	-	0	1
+E	0	44	44	0
+T	1	th#	0	3	1	1	word	0	-	0	1
+T	1	th#	4	7	1	1	word	0	-	0	1
+T	1	Th#	8	11	1	1	word	0	-	0	1
+T	1	qui##	12	17	1	1	word	0	-	0	1
+T	1	qui##	18	23	1	1	word	0	-	0	1
+T	1	#rown	24	29	1	1	word	0	-	0	1
+T	1	#ROWN	30	35	1	1	word	0	-	0	1
+T	1	fox	36	39	1	1	word	0	-	0	1
+E	1	39	39	0
+T	2	Running	0	7	1	1	word	0	-	0	1
+T	2	runs	8	12	1	1	word	0	-	0	1
+T	2	r#n	13	16	1	1	word	0	-	0	1
+T	2	##sily;	17	24	1	1	word	0	-	0	1
+T	2	th#	25	28	1	1	word	0	-	0	1
+T	2	poni#s'	29	36	1	1	word	0	-	0	1
+T	2	##r#ss#s	37	45	1	1	word	0	-	0	1
+T	2	w#r#	46	50	1	1	word	0	-	0	1
+T	2	r#l#tion#l,	51	62	1	1	word	0	-	0	1
+T	2	#on#ition#l	63	74	1	1	word	0	-	0	1
+T	2	#n#	75	78	1	1	word	0	-	0	1
+T	2	g#n#r#liz#tions	79	94	1	1	word	0	-	0	1
+T	2	of	95	97	1	1	word	0	-	0	1
+T	2	h#ppin#ss.	98	108	1	1	word	0	-	0	1
+E	2	108	108	0
+T	3	O'N#il's	0	8	1	1	word	0	-	0	1
+T	3	fri#n#'s	9	17	1	1	word	0	-	0	1
+T	3	#ogs'	18	23	1	1	word	0	-	0	1
+T	3	toys	24	28	1	1	word	0	-	0	1
+T	3	--	29	31	1	1	word	0	-	0	1
+T	3	John's	32	38	1	1	word	0	-	0	1
+T	3	#n#	39	42	1	1	word	0	-	0	1
+T	3	J#M#S'S	43	50	1	1	word	0	-	0	1
+T	3	#oo#s	51	56	1	1	word	0	-	0	1
+T	3	#r#n't	57	63	1	1	word	0	-	0	1
+T	3	th#irs.	64	71	1	1	word	0	-	0	1
+E	3	71	71	0
+T	4	Wi-Fi	0	5	1	1	word	0	-	0	1
+T	4	Pow#rShot500	6	18	1	1	word	0	-	0	1
+T	4	S#-500	19	25	1	1	word	0	-	0	1
+T	4	foo_##r	26	33	1	1	word	0	-	0	1
+T	4	42n#	34	38	1	1	word	0	-	0	1
+T	4	1st-pl###	39	48	1	1	word	0	-	0	1
+T	4	#T&T	49	53	1	1	word	0	-	0	1
+T	4	#-m#il	54	60	1	1	word	0	-	0	1
+T	4	j2s#	61	65	1	1	word	0	-	0	1
+T	4	iPhon#	66	72	1	1	word	0	-	0	1
+T	4	XMLHttpR#qu#st	73	87	1	1	word	0	-	0	1
+T	4	#####f	88	94	1	1	word	0	-	0	1
+E	4	94	94	0
+T	5	U.S.#.	0	6	1	1	word	0	-	0	1
+T	5	I.#.M.	7	13	1	1	word	0	-	0	1
+T	5	#.g.	14	18	1	1	word	0	-	0	1
+T	5	#r.	19	22	1	1	word	0	-	0	1
+T	5	Smith's	23	30	1	1	word	0	-	0	1
+T	5	3.14	31	35	1	1	word	0	-	0	1
+T	5	1,000,000	36	45	1	1	word	0	-	0	1
+T	5	0x1F	46	50	1	1	word	0	-	0	1
+T	5	2026-10-06	51	61	1	1	word	0	-	0	1
+T	5	12:30	62	67	1	1	word	0	-	0	1
+T	5	-42	68	71	1	1	word	0	-	0	1
+T	5	+7	72	74	1	1	word	0	-	0	1
+T	5	1.5#10	75	81	1	1	word	0	-	0	1
+E	5	81	81	0
+T	6	#rèm#	0	5	1	1	word	0	-	0	1
+T	6	#rûl##	6	12	1	1	word	0	-	0	1
+T	6	à	13	14	1	1	word	0	-	0	1
+T	6	l#	15	17	1	1	word	0	-	0	1
+T	6	##f#	18	22	1	1	word	0	-	0	1
+T	6	—	23	24	1	1	word	0	-	0	1
+T	6	n#ïv#	25	30	1	1	word	0	-	0	1
+T	6	f#ç###,	31	38	1	1	word	0	-	0	1
+T	6	Ærøs#ø#ing,	39	50	1	1	word	0	-	0	1
+T	6	#,	51	58	1	1	word	0	-	0	1
+T	6	Ĳss#lm##r,	59	69	1	1	word	0	-	0	1
+T	6	ﬁn#n#i#l	70	78	1	1	word	0	-	0	1
+T	6	ﬂow,	79	83	1	1	word	0	-	0	1
+T	6	Œuvr#,	84	90	1	1	word	0	-	0	1
+T	6	Ångström	91	99	1	1	word	0	-	0	1
+E	6	99	99	0
+T	7	l'#vion	0	7	1	1	word	0	-	0	1
+T	7	#'#ir	8	13	1	1	word	0	-	0	1
+T	7	Fr#n##	14	20	1	1	word	0	-	0	1
+T	7	qu'il	21	26	1	1	word	0	-	0	1
+T	7	#	27	28	1	1	word	0	-	0	1
+T	7	pris	29	33	1	1	word	0	-	0	1
+T	7	jusqu'à	34	41	1	1	word	0	-	0	1
+T	7	l'##roport	42	52	1	1	word	0	-	0	1
+T	7	n'#t#it	53	60	1	1	word	0	-	0	1
+T	7	p#s	61	64	1	1	word	0	-	0	1
+T	7	L'Hôt#l	65	72	1	1	word	0	-	0	1
+E	7	72	72	0
+T	8	#i#	0	3	1	1	word	0	-	0	1
+T	8	#un##sr#pu#li#	4	18	1	1	word	0	-	0	1
+T	8	##uts#hl#n#	19	30	1	1	word	0	-	0	1
+T	8	ist	31	34	1	1	word	0	-	0	1
+T	8	#in	35	38	1	1	word	0	-	0	1
+T	8	#un##sst##t	39	50	1	1	word	0	-	0	1
+T	8	in	51	53	1	1	word	0	-	0	1
+T	8	Mitt#l#urop#;	54	67	1	1	word	0	-	0	1
+T	8	Fußgäng#rü##rgäng#	68	86	1	1	word	0	-	0	1
+T	8	sin#	87	91	1	1	word	0	-	0	1
+T	8	häufig.	92	99	1	1	word	0	-	0	1
+E	8	99	99	0
+T	9	#l	0	2	1	1	word	0	-	0	1
+T	9	niño	3	7	1	1	word	0	-	0	1
+T	9	#omió	8	13	1	1	word	0	-	0	1
+T	9	p#qu#ñ#s	14	22	1	1	word	0	-	0	1
+T	9	m#nz#n#s;	23	32	1	1	word	0	-	0	1
+T	9	¿#ón##	33	39	1	1	word	0	-	0	1
+T	9	#stá	40	44	1	1	word	0	-	0	1
+T	9	l#	45	47	1	1	word	0	-	0	1
+T	9	#st##ión?	48	57	1	1	word	0	-	0	1
+T	9	¡Qu#	58	62	1	1	word	0	-	0	1
+T	9	#í#!	63	67	1	1	word	0	-	0	1
+E	9	67	67	0
+T	10	Съешь	0	5	1	1	word	0	-	0	1
+T	10	же	6	8	1	1	word	0	-	0	1
+T	10	ещё	9	12	1	1	word	0	-	0	1
+T	10	этих	13	17	1	1	word	0	-	0	1
+T	10	мягких	18	24	1	1	word	0	-	0	1
+T	10	французских	25	36	1	1	word	0	-	0	1
+T	10	булок,	37	43	1	1	word	0	-	0	1
+T	10	да	44	46	1	1	word	0	-	0	1
+T	10	выпей	47	52	1	1	word	0	-	0	1
+T	10	чаю.	53	57	1	1	word	0	-	0	1
+T	10	ЁЛКА	58	62	1	1	word	0	-	0	1
+T	10	ёлка	63	67	1	1	word	0	-	0	1
+E	10	67	67	0
+T	11	Η	0	1	1	1	word	0	-	0	1
+T	11	γρήγορη	2	9	1	1	word	0	-	0	1
+T	11	καφέ	10	14	1	1	word	0	-	0	1
+T	11	αλεπού	15	21	1	1	word	0	-	0	1
+T	11	πηδάει	22	28	1	1	word	0	-	0	1
+T	11	πάνω	29	33	1	1	word	0	-	0	1
+T	11	από	34	37	1	1	word	0	-	0	1
+T	11	τον	38	41	1	1	word	0	-	0	1
+T	11	τεμπέλη	42	49	1	1	word	0	-	0	1
+T	11	#κύλο.	50	56	1	1	word	0	-	0	1
+T	11	ΟΔΟ#	57	61	1	1	word	0	-	0	1
+T	11	#ί#υφο#	62	69	1	1	word	0	-	0	1
+E	11	69	69	0
+T	12	Tür#ç#	0	6	1	1	word	0	-	0	1
+T	12	İst#n#ul	7	15	1	1	word	0	-	0	1
+T	12	ılı#	16	20	1	1	word	0	-	0	1
+T	12	ISP#RT#;	21	29	1	1	word	0	-	0	1
+T	12	Ünlü	30	34	1	1	word	0	-	0	1
+T	12	ş#r#ı#ı	35	42	1	1	word	0	-	0	1
+T	12	Ç#ğrı	43	48	1	1	word	0	-	0	1
+E	12	48	48	0
+T	13	Sv#ns##:	0	8	1	1	word	0	-	0	1
+T	13	å##	9	12	1	1	word	0	-	0	1
+T	13	på	13	15	1	1	word	0	-	0	1
+T	13	sjön,	16	21	1	1	word	0	-	0	1
+T	13	Nors#:	22	28	1	1	word	0	-	0	1
+T	13	#lå#ærsylt#tøy,	29	44	1	1	word	0	-	0	1
+T	13	##ns#:	45	51	1	1	word	0	-	0	1
+T	13	rø#grø#	52	59	1	1	word	0	-	0	1
+T	13	m##	60	63	1	1	word	0	-	0	1
+T	13	flø##,	64	70	1	1	word	0	-	0	1
+T	13	Ísl#ns##:	71	80	1	1	word	0	-	0	1
+T	13	þú	81	83	1	1	word	0	-	0	1
+T	13	ðú	84	86	1	1	word	0	-	0	1
+E	13	86	86	0
+T	14	العربية	0	7	1	1	word	0	-	0	1
+T	14	لغة	8	11	1	1	word	0	-	0	1
+T	14	جميلة،	12	18	1	1	word	0	-	0	1
+T	14	والكتابُ	19	27	1	1	word	0	-	0	1
+T	14	مفيدٌ	28	33	1	1	word	0	-	0	1
+T	14	٠١٢٣٤٥٦٧٨٩	34	44	1	1	word	0	-	0	1
+E	14	44	44	0
+T	15	עברית	0	5	1	1	word	0	-	0	1
+T	15	היא	6	9	1	1	word	0	-	0	1
+T	15	שפה	10	13	1	1	word	0	-	0	1
+T	15	שמית;	14	19	1	1	word	0	-	0	1
+T	15	ספר	20	23	1	1	word	0	-	0	1
+T	15	"תורה"	24	30	1	1	word	0	-	0	1
+E	15	30	30	0
+T	16	فارسی	0	5	1	1	word	0	-	0	1
+T	16	زبان	6	10	1	1	word	0	-	0	1
+T	16	زیبایی	11	17	1	1	word	0	-	0	1
+T	16	است	18	21	1	1	word	0	-	0	1
+T	16	و	22	23	1	1	word	0	-	0	1
+T	16	می‌خواهم	24	32	1	1	word	0	-	0	1
+T	16	کتاب‌ها	33	40	1	1	word	0	-	0	1
+T	16	را	41	43	1	1	word	0	-	0	1
+T	16	بخوانم	44	50	1	1	word	0	-	0	1
+T	16	۱۲۳	51	54	1	1	word	0	-	0	1
+E	16	54	54	0
+T	17	हिन्दी	0	6	1	1	word	0	-	0	1
+T	17	भाषा	7	11	1	1	word	0	-	0	1
+T	17	बहुत	12	16	1	1	word	0	-	0	1
+T	17	सुंदर	17	22	1	1	word	0	-	0	1
+T	17	है।	23	26	1	1	word	0	-	0	1
+T	17	संख्या	27	33	1	1	word	0	-	0	1
+T	17	१२३	34	37	1	1	word	0	-	0	1
+E	17	37	37	0
+T	18	বাংলা	0	5	1	1	word	0	-	0	1
+T	18	ভাষা	6	10	1	1	word	0	-	0	1
+T	18	সুন্দর	11	17	1	1	word	0	-	0	1
+T	18	১২৩	18	21	1	1	word	0	-	0	1
+E	18	21	21	0
+T	19	ภาษาไทยไม่มีช่องว่างระหว่างคำ	0	29	1	1	word	0	-	0	1
+T	19	แต่มีช่องว่างระหว่างประโยค	30	56	1	1	word	0	-	0	1
+T	19	๑๒๓	57	60	1	1	word	0	-	0	1
+E	19	60	60	0
+T	20	中华人民共和国成立于1949年。我爱北京天安门！	0	24	1	1	word	0	-	0	1
+E	20	24	24	0
+T	21	日本語のテキストとカタカナとｶﾀｶﾅとひらがな、ＡＢＣ１２３と全角	0	33	1	1	word	0	-	0	1
+E	21	33	33	0
+T	22	한국어	0	3	1	1	word	0	-	0	1
+T	22	텍스트입니다	4	10	1	1	word	0	-	0	1
+T	22	서울특별시	11	16	1	1	word	0	-	0	1
+T	22	ＫＯＲＥＡ	17	22	1	1	word	0	-	0	1
+E	22	22	22	0
+T	23	#moji:	0	6	1	1	word	0	-	0	1
+T	23	👍	7	9	1	1	word	0	-	0	1
+T	23	🇺🇸	10	14	1	1	word	0	-	0	1
+T	23	👨‍👩‍👧	15	23	1	1	word	0	-	0	1
+T	23	✌🏽	24	27	1	1	word	0	-	0	1
+T	23	😀😀	28	32	1	1	word	0	-	0	1
+T	23	❤️	33	35	1	1	word	0	-	0	1
+T	23	1️⃣	36	39	1	1	word	0	-	0	1
+T	23	#n#	40	43	1	1	word	0	-	0	1
+T	23	𝐀𝐁𝐂	44	50	1	1	word	0	-	0	1
+T	23	m#th	51	55	1	1	word	0	-	0	1
+T	23	plus	56	60	1	1	word	0	-	0	1
+T	23	𠀀𠀁	61	65	1	1	word	0	-	0	1
+T	23	r#r#	66	70	1	1	word	0	-	0	1
+T	23	i##ogr#phs	71	81	1	1	word	0	-	0	1
+E	23	81	81	0
+T	24	Visit	0	5	1	1	word	0	-	0	1
+T	24	https://lu##n#.#p##h#.org/#or#/	6	37	1	1	word	0	-	0	1
+T	24	or	38	40	1	1	word	0	-	0	1
+T	24	m#il	41	45	1	1	word	0	-	0	1
+T	24	##v@lu##n#.#p##h#.org	46	67	1	1	word	0	-	0	1
+T	24	to##y!	68	74	1	1	word	0	-	0	1
+E	24	74	74	0
+T	25	S##	0	3	1	1	word	0	-	0	1
+T	25	www.#x#mpl#.#om/p#th?q=1&x=y#fr#g	4	37	1	1	word	0	-	0	1
+T	25	#n#	38	41	1	1	word	0	-	0	1
+T	25	http://[::1]:8080/#,	42	62	1	1	word	0	-	0	1
+T	25	us#r.n#m#+t#g@su#.#x#mpl#.#o.u#,	63	95	1	1	word	0	-	0	1
+T	25	192.168.0.1	96	107	1	1	word	0	-	0	1
+E	25	107	107	0
+T	26	m#ilto:som#on#@#x#mpl#.org	0	26	1	1	word	0	-	0	1
+T	26	ftp://fil#s.#x#mpl#.n#t/pu#/fil#.t#r.gz	27	66	1	1	word	0	-	0	1
+T	26	#x#mpl#.#om.	67	79	1	1	word	0	-	0	1
+E	26	79	79	0
+T	27	<p>H#llo	0	8	1	1	word	0	-	0	1
+T	27	<#>worl#</#>	9	21	1	1	word	0	-	0	1
+T	27	&#mp;	22	27	1	1	word	0	-	0	1
+T	27	fri#n#s	28	35	1	1	word	0	-	0	1
+T	27	&lt;t#g&gt;	36	47	1	1	word	0	-	0	1
+T	27	&#169;	48	54	1	1	word	0	-	0	1
+T	27	&#x263#;	55	63	1	1	word	0	-	0	1
+T	27	&n#sp;x&###ut#;</p><!--	64	87	1	1	word	0	-	0	1
+T	27	#	88	89	1	1	word	0	-	0	1
+T	27	#omm#nt	90	97	1	1	word	0	-	0	1
+T	27	--><#r/>	98	106	1	1	word	0	-	0	1
+E	27	106	106	0
+T	28	<s#ript	0	7	1	1	word	0	-	0	1
+T	28	typ#="t#xt/j#v#s#ript">v#r	8	34	1	1	word	0	-	0	1
+T	28	x	35	36	1	1	word	0	-	0	1
+T	28	=	37	38	1	1	word	0	-	0	1
+T	28	1	39	40	1	1	word	0	-	0	1
+T	28	<	41	42	1	1	word	0	-	0	1
+T	28	2;</s#ript><#	43	56	1	1	word	0	-	0	1
+T	28	hr#f="http://x.org/">#	57	79	1	1	word	0	-	0	1
+T	28	lin#</#>	80	88	1	1	word	0	-	0	1
+T	28	<styl#>p{}</styl#>#ft#r	89	112	1	1	word	0	-	0	1
+E	28	112	112	0
+T	29	<#iv	0	4	1	1	word	0	-	0	1
+T	29	#l#ss='#'>&quot;quot##&quot;	5	33	1	1	word	0	-	0	1
+T	29	&#pos;singl#&#pos;	34	52	1	1	word	0	-	0	1
+T	29	&un#nown;	53	62	1	1	word	0	-	0	1
+T	29	&#xZZ;	63	69	1	1	word	0	-	0	1
+T	29	<![###T#[	70	79	1	1	word	0	-	0	1
+T	29	r#w	80	83	1	1	word	0	-	0	1
+T	29	<##t#>	84	90	1	1	word	0	-	0	1
+T	29	]]>	91	94	1	1	word	0	-	0	1
+T	29	t#il</#iv>	95	105	1	1	word	0	-	0	1
+E	29	105	105	0
+T	30	/usr/lo##l/#in/lu##n#	0	21	1	1	word	0	-	0	1
+T	30	/v#r/log//syslog.1	22	40	1	1	word	0	-	0	1
+T	30	r#l#tiv#/p#th/to/fil#.txt	41	66	1	1	word	0	-	0	1
+E	30	66	66	0
+T	31	#:\\Progr#m	0	10	1	1	word	0	-	0	1
+T	31	Fil#s\\Lu##n#\\in##x	11	29	1	1	word	0	-	0	1
+T	31	#\\#\\#	30	35	1	1	word	0	-	0	1
+E	31	35	35	0
+T	32	th#|1.5	0	7	1	1	word	0	-	0	1
+T	32	qui##|2	8	15	1	1	word	0	-	0	1
+T	32	#rown|0.5	16	25	1	1	word	0	-	0	1
+T	32	fox	26	29	1	1	word	0	-	0	1
+T	32	jumps|3	30	37	1	1	word	0	-	0	1
+E	32	37	37	0
+T	33	#ppl#|3	0	7	1	1	word	0	-	0	1
+T	33	##n#n#|1	8	16	1	1	word	0	-	0	1
+T	33	#h#rry	17	23	1	1	word	0	-	0	1
+T	33	p##r|10	24	31	1	1	word	0	-	0	1
+E	33	31	31	0
+T	34	qui##|0.5	0	9	1	1	word	0	-	0	1
+T	34	fox|2.0	10	17	1	1	word	0	-	0	1
+T	34	#og|-1.25	18	27	1	1	word	0	-	0	1
+E	34	27	27	0
+T	35	to##n1|p#ylo##	0	14	1	1	word	0	-	0	1
+T	35	on#|two|thr##	15	28	1	1	word	0	-	0	1
+E	35	28	28	0
+T	36	T##s	1	5	1	1	word	0	-	0	1
+T	36	#n#	6	9	1	1	word	0	-	0	1
+T	36	multipl#	12	20	1	1	word	0	-	0	1
+T	36	sp###s	23	29	1	1	word	0	-	0	1
+T	36	#n#	30	33	1	1	word	0	-	0	1
+T	36	N#SP h#r#	34	43	1	1	word	0	-	0	1
+T	36	#n#	44	47	1	1	word	0	-	0	1
+T	36	i##ogr#phi#	48	59	1	1	word	0	-	0	1
+T	36	sp###	60	65	1	1	word	0	-	0	1
+T	36	#n#	66	69	1	1	word	0	-	0	1
+T	36	lin#	70	74	1	1	word	0	-	0	1
+T	36	s#p	75	78	1	1	word	0	-	0	1
+T	36	#n#	79	82	1	1	word	0	-	0	1
+T	36	z#ro​wi#th	83	93	1	1	word	0	-	0	1
+T	36	soft­hyph#n	94	105	1	1	word	0	-	0	1
+E	36	105	105	0
+T	37	##	0	2	1	1	word	0	-	0	1
+E	37	2	2	0
+T	38	#	0	1	1	1	word	0	-	0	1
+E	38	1	1	0
+T	39	sup#r##lifr#gilisti##xpi#li#o#ioussup#r##lifr#gilisti##xpi#li#o#ioussup#r##lifr#gilisti##xpi#li#o#ioussup#r##lifr#gilisti##xpi#li#o#ioussup#r##lifr#gilisti##xpi#li#o#ioussup#r##lifr#gilisti##xpi#li#o#ioussup#r##lifr#gilisti##xpi#li#o#ioussup#r##lifr#gilis	0	255	1	1	word	0	-	0	1
+T	39	ti##xpi#li#o#ioussup#r##lifr#gilisti##xpi#li#o#ious	255	306	1	1	word	0	-	0	1
+T	39	#n#	307	310	1	1	word	0	-	0	1
+E	39	310	310	0
+T	40	x	0	1	1	1	word	0	-	0	1
+T	40	y	2	3	1	1	word	0	-	0	1
+T	40	z	4	5	1	1	word	0	-	0	1
+T	40	xy	6	8	1	1	word	0	-	0	1
+T	40	xyz	9	12	1	1	word	0	-	0	1
+T	40	#-#-#	13	18	1	1	word	0	-	0	1
+T	40	#.#.#	19	24	1	1	word	0	-	0	1
+T	40	#_#_#	25	30	1	1	word	0	-	0	1
+T	40	#/#/#	31	36	1	1	word	0	-	0	1
+T	40	#:#:#	37	42	1	1	word	0	-	0	1
+E	40	42	42	0
+T	41	foo-##r-##z	0	11	1	1	word	0	-	0	1
+T	41	Foo##r##z	12	21	1	1	word	0	-	0	1
+T	41	FOO##r	22	28	1	1	word	0	-	0	1
+T	41	foo##R	29	35	1	1	word	0	-	0	1
+T	41	foo2##r	36	43	1	1	word	0	-	0	1
+T	41	2foo	44	48	1	1	word	0	-	0	1
+T	41	##r2	49	53	1	1	word	0	-	0	1
+T	41	...#llipsis...	54	68	1	1	word	0	-	0	1
+T	41	--##sh#s--	69	79	1	1	word	0	-	0	1
+E	41	79	79	0
+T	42	Th#	0	3	1	1	word	0	-	0	1
+T	42	##O's	4	9	1	1	word	0	-	0	1
+T	42	1990s-#r#	10	19	1	1	word	0	-	0	1
+T	42	I#M-#omp#ti#l#	20	34	1	1	word	0	-	0	1
+T	42	P#s	35	38	1	1	word	0	-	0	1
+T	42	r#n	39	42	1	1	word	0	-	0	1
+T	42	MS-#OS	43	49	1	1	word	0	-	0	1
+T	42	6.22;	50	55	1	1	word	0	-	0	1
+T	42	th#	56	59	1	1	word	0	-	0	1
+T	42	5th	60	63	1	1	word	0	-	0	1
+T	42	g#n.	64	68	1	1	word	0	-	0	1
+T	42	#or#	69	73	1	1	word	0	-	0	1
+T	42	i7-4790#	74	82	1	1	word	0	-	0	1
+T	42	#PU	83	86	1	1	word	0	-	0	1
+T	42	@	87	88	1	1	word	0	-	0	1
+T	42	4.00GHz	89	96	1	1	word	0	-	0	1
+E	42	96	96	0
+T	43	running	0	7	1	1	word	0	-	0	1
+T	43	jumping	8	15	1	1	word	0	-	0	1
+T	43	h#ppily	16	23	1	1	word	0	-	0	1
+T	43	h#ppin#ss	24	33	1	1	word	0	-	0	1
+T	43	#on#ition#l	34	45	1	1	word	0	-	0	1
+T	43	r#l#tion#l	46	56	1	1	word	0	-	0	1
+T	43	s#nsi#ility	57	68	1	1	word	0	-	0	1
+T	43	#gr###	69	75	1	1	word	0	-	0	1
+T	43	f###	76	80	1	1	word	0	-	0	1
+T	43	#l##	81	85	1	1	word	0	-	0	1
+T	43	sing	86	90	1	1	word	0	-	0	1
+E	43	90	90	0
+T	44	l###ing	2	9	1	1	word	0	-	0	1
+T	44	#n#	10	13	1	1	word	0	-	0	1
+T	44	tr#iling	14	22	1	1	word	0	-	0	1
+T	44	sp###s	23	29	1	1	word	0	-	0	1
+E	44	32	32	0
+E	45	0	0	0
+T	46	ÀÁÂÃÄÅ	0	6	1	1	word	0	-	0	1
+T	46	àáâãäå	7	13	1	1	word	0	-	0	1
+T	46	ÇçÈ#ÊË	14	20	1	1	word	0	-	0	1
+T	46	è#êë	21	25	1	1	word	0	-	0	1
+T	46	ÌÍÎÏ	26	30	1	1	word	0	-	0	1
+T	46	ìíîï	31	35	1	1	word	0	-	0	1
+T	46	ÑñÒÓÔÕÖ	36	43	1	1	word	0	-	0	1
+T	46	òóôõö	44	49	1	1	word	0	-	0	1
+T	46	ÙÚÛÜ	50	54	1	1	word	0	-	0	1
+T	46	ùúûü	55	59	1	1	word	0	-	0	1
+T	46	Ýýÿ	60	63	1	1	word	0	-	0	1
+T	46	ŠšŽž	64	68	1	1	word	0	-	0	1
+T	46	Łł	69	71	1	1	word	0	-	0	1
+T	46	Ðð	72	74	1	1	word	0	-	0	1
+T	46	Þþ	75	77	1	1	word	0	-	0	1
+T	46	ß	78	79	1	1	word	0	-	0	1
+T	46	ŒœÆæØø	80	86	1	1	word	0	-	0	1
+E	46	86	86	0
+T	47	“Sm#rt	0	6	1	1	word	0	-	0	1
+T	47	quot#s”	7	14	1	1	word	0	-	0	1
+T	47	‘singl#’	15	23	1	1	word	0	-	0	1
+T	47	«guill#m#ts»	24	36	1	1	word	0	-	0	1
+T	47	‹singl#›	37	45	1	1	word	0	-	0	1
+T	47	„low“	46	51	1	1	word	0	-	0	1
+T	47	‐‑‒–—―	52	58	1	1	word	0	-	0	1
+T	47	…	59	60	1	1	word	0	-	0	1
+T	47	‰	61	62	1	1	word	0	-	0	1
+T	47	€	63	64	1	1	word	0	-	0	1
+T	47	£	65	66	1	1	word	0	-	0	1
+T	47	¥	67	68	1	1	word	0	-	0	1
+T	47	©	69	70	1	1	word	0	-	0	1
+T	47	®	71	72	1	1	word	0	-	0	1
+T	47	™	73	74	1	1	word	0	-	0	1
+T	47	½	75	76	1	1	word	0	-	0	1
+T	47	¼	77	78	1	1	word	0	-	0	1
+T	47	²	79	80	1	1	word	0	-	0	1
+T	47	³	81	82	1	1	word	0	-	0	1
+T	47	¹	83	84	1	1	word	0	-	0	1
+E	47	84	84	0
+T	48	##iliti#s	0	9	1	1	word	0	-	0	1
+T	48	#gr###	10	16	1	1	word	0	-	0	1
+T	48	##tivism	17	25	1	1	word	0	-	0	1
+T	48	##p##l#	26	33	1	1	word	0	-	0	1
+T	48	#ri##	34	39	1	1	word	0	-	0	1
+T	48	##p#n##n##	40	50	1	1	word	0	-	0	1
+T	48	#m#rg#n#y	51	60	1	1	word	0	-	0	1
+T	48	f##ri##t#	61	70	1	1	word	0	-	0	1
+T	48	fr#qu#n#y	71	80	1	1	word	0	-	0	1
+T	48	g#n#r#liz#tion	81	95	1	1	word	0	-	0	1
+T	48	gov#rnm#nt	96	106	1	1	word	0	-	0	1
+T	48	h#ppin#ss	107	116	1	1	word	0	-	0	1
+T	48	h#sit#n#y	117	126	1	1	word	0	-	0	1
+T	48	hop##	127	132	1	1	word	0	-	0	1
+T	48	hopping	133	140	1	1	word	0	-	0	1
+T	48	horri#l#	141	149	1	1	word	0	-	0	1
+T	48	ironi#	150	156	1	1	word	0	-	0	1
+T	48	jump##	157	163	1	1	word	0	-	0	1
+T	48	n#tion#liz#	164	175	1	1	word	0	-	0	1
+T	48	org#niz#tion	176	188	1	1	word	0	-	0	1
+T	48	poni#s	189	195	1	1	word	0	-	0	1
+T	48	r#tion#lity	196	207	1	1	word	0	-	0	1
+T	48	r##liz#	208	215	1	1	word	0	-	0	1
+T	48	r#l#tion#l	216	226	1	1	word	0	-	0	1
+T	48	s#nsitivity	227	238	1	1	word	0	-	0	1
+T	48	stopp##	239	246	1	1	word	0	-	0	1
+T	48	tr##ition#lly	247	260	1	1	word	0	-	0	1
+T	48	w#l#ing	261	268	1	1	word	0	-	0	1
+T	48	#ri##	269	274	1	1	word	0	-	0	1
+T	48	stu#i#s	275	282	1	1	word	0	-	0	1
+T	48	#l#ss#s	283	290	1	1	word	0	-	0	1
+T	48	#us#s	291	296	1	1	word	0	-	0	1
+T	48	h#ro#s	297	303	1	1	word	0	-	0	1
+T	48	#x#s	304	308	1	1	word	0	-	0	1
+E	48	308	308	0
+T	49	ーﾟ	0	2	1	1	word	0	-	0	1
+T	49	ヽﾟ	3	5	1	1	word	0	-	0	1
+T	49	ｰﾟ	6	8	1	1	word	0	-	0	1
+T	49	ヽﾞ	9	11	1	1	word	0	-	0	1
+T	49	ｳﾞ	12	14	1	1	word	0	-	0	1
+T	49	ﾊﾟ	15	17	1	1	word	0	-	0	1
+E	49	17	17	0
+T	50	#n#s	0	4	1	1	word	0	-	0	1
+T	50	with	5	9	1	1	word	0	-	0	1
+T	50	#	10	11	1	1	word	0	-	0	1
+T	50	n#xt	12	16	1	1	word	0	-	0	1
+T	50	lin#	17	22	1	1	word	0	-	0	1
+E	50	22	22	0
+T	51	#n#s	0	4	1	1	word	0	-	0	1
+T	51	with	5	9	1	1	word	0	-	0	1
+T	51	#	10	11	1	1	word	0	-	0	1
+T	51	lin#	12	16	1	1	word	0	-	0	1
+T	51	s#p#r#tor	17	26	1	1	word	0	-	0	1
+E	51	27	27	0
+T	52	Th#	0	3	1	1	word	0	-	0	1
+T	52	##f#	4	8	1	1	word	0	-	0	1
+T	52	#rossing	9	17	1	1	word	0	-	0	1
+T	52	#Ί#ΥΦΟ#	18	25	1	1	word	0	-	0	1
+T	52	#	26	32	1	1	word	0	-	0	1
+T	52	STR#SS#	33	40	1	1	word	0	-	0	1
+T	52	#	41	42	1	1	word	0	-	0	1
+T	52	##lvin	43	49	1	1	word	0	-	0	1
+T	52	#,	50	52	1	1	word	0	-	0	1
+T	52	12	53	55	1	1	word	0	-	0	1
+T	52	#n#	56	59	1	1	word	0	-	0	1
+T	52	th#	60	63	1	1	word	0	-	0	1
+T	52	#n#:	64	68	1	1	word	0	-	0	1
+T	52	😀x	69	72	1	1	word	0	-	0	1
+T	52	𝐀	73	75	1	1	word	0	-	0	1
+E	52	75	75	0

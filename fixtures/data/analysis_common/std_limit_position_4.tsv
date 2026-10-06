@@ -236,3 +236,18 @@ T	49	ヽﾟ	3	5	1	1	<KATAKANA>	0	-	0	1
 T	49	ｰﾟ	6	8	1	1	<KATAKANA>	0	-	0	1
 T	49	ヽﾞ	9	11	1	1	<KATAKANA>	0	-	0	1
 E	49	14	14	0
+T	50	ends	0	4	1	1	<ALPHANUM>	0	-	0	1
+T	50	with	5	9	1	1	<ALPHANUM>	0	-	0	1
+T	50	a	10	11	1	1	<ALPHANUM>	0	-	0	1
+T	50	next	12	16	1	1	<ALPHANUM>	0	-	0	1
+E	50	21	21	0
+T	51	ends	0	4	1	1	<ALPHANUM>	0	-	0	1
+T	51	with	5	9	1	1	<ALPHANUM>	0	-	0	1
+T	51	a	10	11	1	1	<ALPHANUM>	0	-	0	1
+T	51	line	12	16	1	1	<ALPHANUM>	0	-	0	1
+E	51	26	26	0
+T	52	The	0	3	1	1	<ALPHANUM>	0	-	0	1
+T	52	Café	4	8	1	1	<ALPHANUM>	0	-	0	1
+T	52	crossing	9	17	1	1	<ALPHANUM>	0	-	0	1
+T	52	ΣΊΣΥΦΟΣ	18	25	1	1	<ALPHANUM>	0	-	0	1
+E	52	32	32	0

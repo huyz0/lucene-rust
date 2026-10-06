@@ -144,3 +144,12 @@ E	48	308	308	0
 T	49	ーﾟ	0	2	1	1	word	0	-	0	1
 T	49	ヽﾟ	3	5	1	1	word	0	-	0	1
 E	49	17	17	0
+T	50	ends	0	4	1	1	word	0	-	0	1
+T	50	with	5	9	1	1	word	0	-	0	1
+E	50	22	22	0
+T	51	ends	0	4	1	1	word	0	-	0	1
+T	51	with	5	9	1	1	word	0	-	0	1
+E	51	27	27	0
+T	52	the	0	3	1	1	word	0	-	0	1
+T	52	café	4	8	1	1	word	0	-	0	1
+E	52	75	75	0
