@@ -349,6 +349,21 @@ queries M2/M7 ported as algorithms rather than classes (`SpanTermQuery`,
 `SpanNearQuery`, `SpanOrQuery` and the iterators under them); the gate checks
 that the cited function exists, not that it covers the whole Java class.
 
+**`--module analysis-common`** (M11 T11.0,
+`docs/inventory/lucene-analysis-common.tsv`: the 498 top-level classes of
+`lucene-analysis-common`, the 33 `org/tartarus/snowball/` classes of the
+Snowball runtime and its generated stemmers included -- the jar ships them, so
+the checker now reads classes outside `org/apache/lucene/` too and keeps their
+full path) was seen to fail before it joined `gate.sh` and CI: a deleted row
+(`analysis/core/WhitespaceTokenizer: in the jar, not in
+lucene-analysis-common.tsv`), a deleted Snowball row
+(`org/tartarus/snowball/Among: ...`), an extra row (`analysis/Bogus: in
+lucene-analysis-common.tsv, not in the jar`), a renamed symbol
+(`keyword_tokenizer.rs has no `KeywordTokenizerX``) and a missing jar. Every
+class M11 has not ported is `todo:M11` tagged with its task (T11.2 JFlex,
+T11.3 Snowball, T11.4 Hunspell, T11.5 synonyms, T11.6 per package, T11.7
+factories), so `--milestone M11` lists what the milestone still owes.
+
 **Blind spots.** It checks that a cited symbol *exists*, not that it does
 what the Java class does -- the classification is a judgement, made per class
 against the Java source and recorded in the row, and a wrong `ported` passes.

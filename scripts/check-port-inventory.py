@@ -8,7 +8,8 @@ top-level class of the module's jar, one per line:
     <class>\t<status>\t<detail>
 
 `<class>` is the path under `org/apache/lucene/` without `.class`
-(`index/IndexWriter`). `<status>` is one of:
+(`index/IndexWriter`); a class outside it (lucene-analysis-common's
+`org/tartarus/snowball/` Snowball runtime) keeps its full path. `<status>` is one of:
 
   ported              detail = `crates/<crate>/src/<file>.rs` and optionally
                       `::<symbol>`; the file must exist and, when a symbol is
@@ -43,7 +44,7 @@ which makes a missing jar a failure: a membership check that silently did not
 run must not read as a pass.
 
 Usage:
-  scripts/check-port-inventory.py [--module core|backward-codecs|spatial3d|spatial-extras|join|grouping|queries] [--milestone M7] [--summary] [--require-jar]
+  scripts/check-port-inventory.py [--module core|backward-codecs|spatial3d|spatial-extras|join|grouping|queries|analysis-common] [--milestone M7] [--summary] [--require-jar]
 """
 
 from __future__ import annotations
@@ -69,6 +70,7 @@ MODULES = {
     "join": "lucene-join",
     "grouping": "lucene-grouping",
     "queries": "lucene-queries",
+    "analysis-common": "lucene-analysis-common",
 }
 
 
@@ -100,10 +102,18 @@ def jar_classes(module: str) -> set[str] | None:
         for name in z.namelist():
             # Multi-release variants (`META-INF/versions/<n>/...`) are real
             # classes of the jar too: the Panama implementations live there.
-            m = re.match(r"^(?:META-INF/versions/\d+/)?org/apache/lucene/(.+)\.class$", name)
-            if not m or "$" in m.group(1):
+            m = re.match(
+                r"^(?:META-INF/versions/\d+/)?(?:org/apache/lucene/(.+)|(org/tartarus/.+))\.class$",
+                name,
+            )
+            if not m:
                 continue
-            cls = m.group(1)
+            # lucene-analysis-common also ships the Snowball runtime and its
+            # generated stemmers under `org/tartarus/snowball/`; those rows keep
+            # their full path.
+            cls = m.group(1) or m.group(2)
+            if "$" in cls:
+                continue
             if cls.endswith(("module-info", "package-info")):
                 continue
             out.add(cls)

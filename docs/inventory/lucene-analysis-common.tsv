@@ -1,0 +1,503 @@
+# Lucene 10.5.0 lucene-analysis-common: every top-level class of the jar, and what became of it.
+# Checked by scripts/check-port-inventory.py --module analysis-common (see its docstring for the statuses).
+# M11 ships in parts; every class not yet ported is todo:M11 tagged with the M11 task that takes it
+# (docs/milestones/m11-analysis-common.md). Factories (T11.7) are the configuration layer.
+# class	status	detail
+analysis/ar/ArabicAnalyzer	todo:M11	T11.6 per-language (ar): ArabicAnalyzer
+analysis/ar/ArabicNormalizationFilter	todo:M11	T11.6 per-language (ar): ArabicNormalizationFilter
+analysis/ar/ArabicNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: ArabicNormalizationFilterFactory
+analysis/ar/ArabicNormalizer	todo:M11	T11.6 per-language (ar): ArabicNormalizer
+analysis/ar/ArabicStemFilter	todo:M11	T11.6 per-language (ar): ArabicStemFilter
+analysis/ar/ArabicStemFilterFactory	todo:M11	T11.7 factory/SPI: ArabicStemFilterFactory
+analysis/ar/ArabicStemmer	todo:M11	T11.6 per-language (ar): ArabicStemmer
+analysis/bg/BulgarianAnalyzer	todo:M11	T11.6 per-language (bg): BulgarianAnalyzer
+analysis/bg/BulgarianStemFilter	todo:M11	T11.6 per-language (bg): BulgarianStemFilter
+analysis/bg/BulgarianStemFilterFactory	todo:M11	T11.7 factory/SPI: BulgarianStemFilterFactory
+analysis/bg/BulgarianStemmer	todo:M11	T11.6 per-language (bg): BulgarianStemmer
+analysis/bn/BengaliAnalyzer	todo:M11	T11.6 per-language (bn): BengaliAnalyzer
+analysis/bn/BengaliNormalizationFilter	todo:M11	T11.6 per-language (bn): BengaliNormalizationFilter
+analysis/bn/BengaliNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: BengaliNormalizationFilterFactory
+analysis/bn/BengaliNormalizer	todo:M11	T11.6 per-language (bn): BengaliNormalizer
+analysis/bn/BengaliStemFilter	todo:M11	T11.6 per-language (bn): BengaliStemFilter
+analysis/bn/BengaliStemFilterFactory	todo:M11	T11.7 factory/SPI: BengaliStemFilterFactory
+analysis/bn/BengaliStemmer	todo:M11	T11.6 per-language (bn): BengaliStemmer
+analysis/boost/DelimitedBoostTokenFilter	todo:M11	T11.6 boost: DelimitedBoostTokenFilter
+analysis/boost/DelimitedBoostTokenFilterFactory	todo:M11	T11.7 factory/SPI: DelimitedBoostTokenFilterFactory
+analysis/br/BrazilianAnalyzer	todo:M11	T11.6 per-language (br): BrazilianAnalyzer
+analysis/br/BrazilianStemFilter	todo:M11	T11.6 per-language (br): BrazilianStemFilter
+analysis/br/BrazilianStemFilterFactory	todo:M11	T11.7 factory/SPI: BrazilianStemFilterFactory
+analysis/br/BrazilianStemmer	todo:M11	T11.6 per-language (br): BrazilianStemmer
+analysis/ca/CatalanAnalyzer	todo:M11	T11.6 per-language (ca): CatalanAnalyzer
+analysis/charfilter/BaseCharFilter	todo:M11	T11.6 charfilter: BaseCharFilter
+analysis/charfilter/HTMLStripCharFilter	todo:M11	T11.6 charfilter: HTMLStripCharFilter
+analysis/charfilter/HTMLStripCharFilterFactory	todo:M11	T11.7 factory/SPI: HTMLStripCharFilterFactory
+analysis/charfilter/MappingCharFilter	todo:M11	T11.6 charfilter: MappingCharFilter
+analysis/charfilter/MappingCharFilterFactory	todo:M11	T11.7 factory/SPI: MappingCharFilterFactory
+analysis/charfilter/NormalizeCharMap	todo:M11	T11.6 charfilter: NormalizeCharMap
+analysis/cjk/CJKAnalyzer	todo:M11	T11.6 cjk: CJKAnalyzer
+analysis/cjk/CJKBigramFilter	todo:M11	T11.6 cjk: CJKBigramFilter
+analysis/cjk/CJKBigramFilterFactory	todo:M11	T11.7 factory/SPI: CJKBigramFilterFactory
+analysis/cjk/CJKWidthCharFilter	todo:M11	T11.6 cjk: CJKWidthCharFilter
+analysis/cjk/CJKWidthCharFilterFactory	todo:M11	T11.7 factory/SPI: CJKWidthCharFilterFactory
+analysis/cjk/CJKWidthFilter	todo:M11	T11.6 cjk: CJKWidthFilter
+analysis/cjk/CJKWidthFilterFactory	todo:M11	T11.7 factory/SPI: CJKWidthFilterFactory
+analysis/ckb/SoraniAnalyzer	todo:M11	T11.6 per-language (ckb): SoraniAnalyzer
+analysis/ckb/SoraniNormalizationFilter	todo:M11	T11.6 per-language (ckb): SoraniNormalizationFilter
+analysis/ckb/SoraniNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: SoraniNormalizationFilterFactory
+analysis/ckb/SoraniNormalizer	todo:M11	T11.6 per-language (ckb): SoraniNormalizer
+analysis/ckb/SoraniStemFilter	todo:M11	T11.6 per-language (ckb): SoraniStemFilter
+analysis/ckb/SoraniStemFilterFactory	todo:M11	T11.7 factory/SPI: SoraniStemFilterFactory
+analysis/ckb/SoraniStemmer	todo:M11	T11.6 per-language (ckb): SoraniStemmer
+analysis/classic/ClassicAnalyzer	todo:M11	T11.2 JFlex tokenizer: ClassicAnalyzer
+analysis/classic/ClassicFilter	todo:M11	T11.2 JFlex tokenizer: ClassicFilter
+analysis/classic/ClassicFilterFactory	todo:M11	T11.7 factory/SPI: ClassicFilterFactory
+analysis/classic/ClassicTokenizer	todo:M11	T11.2 JFlex tokenizer: ClassicTokenizer
+analysis/classic/ClassicTokenizerFactory	todo:M11	T11.7 factory/SPI: ClassicTokenizerFactory
+analysis/classic/ClassicTokenizerImpl	todo:M11	T11.2 JFlex tokenizer: ClassicTokenizerImpl
+analysis/commongrams/CommonGramsFilter	todo:M11	T11.6 commongrams: CommonGramsFilter
+analysis/commongrams/CommonGramsFilterFactory	todo:M11	T11.7 factory/SPI: CommonGramsFilterFactory
+analysis/commongrams/CommonGramsQueryFilter	todo:M11	T11.6 commongrams: CommonGramsQueryFilter
+analysis/commongrams/CommonGramsQueryFilterFactory	todo:M11	T11.7 factory/SPI: CommonGramsQueryFilterFactory
+analysis/compound/CompoundWordTokenFilterBase	todo:M11	T11.6 compound: CompoundWordTokenFilterBase
+analysis/compound/DictionaryCompoundWordTokenFilter	todo:M11	T11.6 compound: DictionaryCompoundWordTokenFilter
+analysis/compound/DictionaryCompoundWordTokenFilterFactory	todo:M11	T11.7 factory/SPI: DictionaryCompoundWordTokenFilterFactory
+analysis/compound/HyphenationCompoundWordTokenFilter	todo:M11	T11.6 compound: HyphenationCompoundWordTokenFilter
+analysis/compound/HyphenationCompoundWordTokenFilterFactory	todo:M11	T11.7 factory/SPI: HyphenationCompoundWordTokenFilterFactory
+analysis/compound/hyphenation/ByteVector	todo:M11	T11.6 compound: ByteVector
+analysis/compound/hyphenation/CharVector	todo:M11	T11.6 compound: CharVector
+analysis/compound/hyphenation/Hyphen	todo:M11	T11.6 compound: Hyphen
+analysis/compound/hyphenation/Hyphenation	todo:M11	T11.6 compound: Hyphenation
+analysis/compound/hyphenation/HyphenationTree	todo:M11	T11.6 compound: HyphenationTree
+analysis/compound/hyphenation/PatternConsumer	todo:M11	T11.6 compound: PatternConsumer
+analysis/compound/hyphenation/PatternParser	todo:M11	T11.6 compound: PatternParser
+analysis/compound/hyphenation/TernaryTree	todo:M11	T11.6 compound: TernaryTree
+analysis/core/DecimalDigitFilter	todo:M11	T11.6 core: DecimalDigitFilter
+analysis/core/DecimalDigitFilterFactory	todo:M11	T11.7 factory/SPI: DecimalDigitFilterFactory
+analysis/core/FlattenGraphFilter	todo:M11	T11.6 core: FlattenGraphFilter
+analysis/core/FlattenGraphFilterFactory	todo:M11	T11.7 factory/SPI: FlattenGraphFilterFactory
+analysis/core/KeywordAnalyzer	ported	crates/lucene-analysis/src/analyzer.rs::keyword
+analysis/core/KeywordTokenizer	ported	crates/lucene-analysis/src/keyword_tokenizer.rs::KeywordTokenizer
+analysis/core/KeywordTokenizerFactory	todo:M11	T11.7 factory/SPI: KeywordTokenizerFactory
+analysis/core/LetterTokenizer	todo:M11	T11.6 core: LetterTokenizer
+analysis/core/LetterTokenizerFactory	todo:M11	T11.7 factory/SPI: LetterTokenizerFactory
+analysis/core/LowerCaseFilter	ported	crates/lucene-analysis/src/lib.rs::LowerCaseFilter
+analysis/core/LowerCaseFilterFactory	todo:M11	T11.7 factory/SPI: LowerCaseFilterFactory
+analysis/core/SimpleAnalyzer	todo:M11	T11.6 core: SimpleAnalyzer
+analysis/core/StopAnalyzer	todo:M11	T11.6 core: StopAnalyzer
+analysis/core/StopFilter	ported	crates/lucene-analysis/src/lib.rs::StopFilter
+analysis/core/StopFilterFactory	todo:M11	T11.7 factory/SPI: StopFilterFactory
+analysis/core/TypeTokenFilter	todo:M11	T11.6 core: TypeTokenFilter
+analysis/core/TypeTokenFilterFactory	todo:M11	T11.7 factory/SPI: TypeTokenFilterFactory
+analysis/core/UnicodeWhitespaceAnalyzer	todo:M11	T11.6 core: UnicodeWhitespaceAnalyzer
+analysis/core/UnicodeWhitespaceTokenizer	todo:M11	T11.6 core: UnicodeWhitespaceTokenizer
+analysis/core/UpperCaseFilter	todo:M11	T11.6 core: UpperCaseFilter
+analysis/core/UpperCaseFilterFactory	todo:M11	T11.7 factory/SPI: UpperCaseFilterFactory
+analysis/core/WhitespaceAnalyzer	todo:M11	T11.6 core: WhitespaceAnalyzer
+analysis/core/WhitespaceTokenizer	todo:M11	T11.6 core: WhitespaceTokenizer
+analysis/core/WhitespaceTokenizerFactory	todo:M11	T11.7 factory/SPI: WhitespaceTokenizerFactory
+analysis/custom/CustomAnalyzer	todo:M11	T11.6 custom: CustomAnalyzer
+analysis/cz/CzechAnalyzer	todo:M11	T11.6 per-language (cz): CzechAnalyzer
+analysis/cz/CzechStemFilter	todo:M11	T11.6 per-language (cz): CzechStemFilter
+analysis/cz/CzechStemFilterFactory	todo:M11	T11.7 factory/SPI: CzechStemFilterFactory
+analysis/cz/CzechStemmer	todo:M11	T11.6 per-language (cz): CzechStemmer
+analysis/da/DanishAnalyzer	todo:M11	T11.6 per-language (da): DanishAnalyzer
+analysis/de/GermanAnalyzer	todo:M11	T11.6 per-language (de): GermanAnalyzer
+analysis/de/GermanLightStemFilter	todo:M11	T11.6 per-language (de): GermanLightStemFilter
+analysis/de/GermanLightStemFilterFactory	todo:M11	T11.7 factory/SPI: GermanLightStemFilterFactory
+analysis/de/GermanLightStemmer	todo:M11	T11.6 per-language (de): GermanLightStemmer
+analysis/de/GermanMinimalStemFilter	todo:M11	T11.6 per-language (de): GermanMinimalStemFilter
+analysis/de/GermanMinimalStemFilterFactory	todo:M11	T11.7 factory/SPI: GermanMinimalStemFilterFactory
+analysis/de/GermanMinimalStemmer	todo:M11	T11.6 per-language (de): GermanMinimalStemmer
+analysis/de/GermanNormalizationFilter	todo:M11	T11.6 per-language (de): GermanNormalizationFilter
+analysis/de/GermanNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: GermanNormalizationFilterFactory
+analysis/de/GermanStemFilter	todo:M11	T11.6 per-language (de): GermanStemFilter
+analysis/de/GermanStemFilterFactory	todo:M11	T11.7 factory/SPI: GermanStemFilterFactory
+analysis/de/GermanStemmer	todo:M11	T11.6 per-language (de): GermanStemmer
+analysis/el/GreekAnalyzer	todo:M11	T11.6 per-language (el): GreekAnalyzer
+analysis/el/GreekLowerCaseFilter	todo:M11	T11.6 per-language (el): GreekLowerCaseFilter
+analysis/el/GreekLowerCaseFilterFactory	todo:M11	T11.7 factory/SPI: GreekLowerCaseFilterFactory
+analysis/el/GreekStemFilter	todo:M11	T11.6 per-language (el): GreekStemFilter
+analysis/el/GreekStemFilterFactory	todo:M11	T11.7 factory/SPI: GreekStemFilterFactory
+analysis/el/GreekStemmer	todo:M11	T11.6 per-language (el): GreekStemmer
+analysis/email/UAX29URLEmailAnalyzer	todo:M11	T11.2 JFlex tokenizer: UAX29URLEmailAnalyzer
+analysis/email/UAX29URLEmailTokenizer	todo:M11	T11.2 JFlex tokenizer: UAX29URLEmailTokenizer
+analysis/email/UAX29URLEmailTokenizerFactory	todo:M11	T11.7 factory/SPI: UAX29URLEmailTokenizerFactory
+analysis/email/UAX29URLEmailTokenizerImpl	todo:M11	T11.2 JFlex tokenizer: UAX29URLEmailTokenizerImpl
+analysis/en/AbstractWordsFileFilterFactory	todo:M11	T11.7 factory/SPI: AbstractWordsFileFilterFactory
+analysis/en/EnglishAnalyzer	todo:M11	T11.6 en: EnglishAnalyzer
+analysis/en/EnglishMinimalStemFilter	todo:M11	T11.6 en: EnglishMinimalStemFilter
+analysis/en/EnglishMinimalStemFilterFactory	todo:M11	T11.7 factory/SPI: EnglishMinimalStemFilterFactory
+analysis/en/EnglishMinimalStemmer	todo:M11	T11.6 en: EnglishMinimalStemmer
+analysis/en/EnglishPossessiveFilter	todo:M11	T11.6 en: EnglishPossessiveFilter
+analysis/en/EnglishPossessiveFilterFactory	todo:M11	T11.7 factory/SPI: EnglishPossessiveFilterFactory
+analysis/en/KStemData1	todo:M11	T11.6 en: KStemData1
+analysis/en/KStemData2	todo:M11	T11.6 en: KStemData2
+analysis/en/KStemData3	todo:M11	T11.6 en: KStemData3
+analysis/en/KStemData4	todo:M11	T11.6 en: KStemData4
+analysis/en/KStemData5	todo:M11	T11.6 en: KStemData5
+analysis/en/KStemData6	todo:M11	T11.6 en: KStemData6
+analysis/en/KStemData7	todo:M11	T11.6 en: KStemData7
+analysis/en/KStemData8	todo:M11	T11.6 en: KStemData8
+analysis/en/KStemFilter	todo:M11	T11.6 en: KStemFilter
+analysis/en/KStemFilterFactory	todo:M11	T11.7 factory/SPI: KStemFilterFactory
+analysis/en/KStemmer	todo:M11	T11.6 en: KStemmer
+analysis/en/PorterStemFilter	ported	crates/lucene-analysis/src/lib.rs::PorterStemFilter
+analysis/en/PorterStemFilterFactory	todo:M11	T11.7 factory/SPI: PorterStemFilterFactory
+analysis/en/PorterStemmer	ported	crates/lucene-analysis/src/lib.rs::porter
+analysis/es/SpanishAnalyzer	todo:M11	T11.6 per-language (es): SpanishAnalyzer
+analysis/es/SpanishLightStemFilter	todo:M11	T11.6 per-language (es): SpanishLightStemFilter
+analysis/es/SpanishLightStemFilterFactory	todo:M11	T11.7 factory/SPI: SpanishLightStemFilterFactory
+analysis/es/SpanishLightStemmer	todo:M11	T11.6 per-language (es): SpanishLightStemmer
+analysis/es/SpanishMinimalStemFilter	todo:M11	T11.6 per-language (es): SpanishMinimalStemFilter
+analysis/es/SpanishMinimalStemFilterFactory	todo:M11	T11.7 factory/SPI: SpanishMinimalStemFilterFactory
+analysis/es/SpanishMinimalStemmer	todo:M11	T11.6 per-language (es): SpanishMinimalStemmer
+analysis/es/SpanishPluralStemFilter	todo:M11	T11.6 per-language (es): SpanishPluralStemFilter
+analysis/es/SpanishPluralStemFilterFactory	todo:M11	T11.7 factory/SPI: SpanishPluralStemFilterFactory
+analysis/es/SpanishPluralStemmer	todo:M11	T11.6 per-language (es): SpanishPluralStemmer
+analysis/et/EstonianAnalyzer	todo:M11	T11.6 per-language (et): EstonianAnalyzer
+analysis/eu/BasqueAnalyzer	todo:M11	T11.6 per-language (eu): BasqueAnalyzer
+analysis/fa/PersianAnalyzer	todo:M11	T11.6 per-language (fa): PersianAnalyzer
+analysis/fa/PersianCharFilter	todo:M11	T11.6 per-language (fa): PersianCharFilter
+analysis/fa/PersianCharFilterFactory	todo:M11	T11.7 factory/SPI: PersianCharFilterFactory
+analysis/fa/PersianNormalizationFilter	todo:M11	T11.6 per-language (fa): PersianNormalizationFilter
+analysis/fa/PersianNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: PersianNormalizationFilterFactory
+analysis/fa/PersianNormalizer	todo:M11	T11.6 per-language (fa): PersianNormalizer
+analysis/fa/PersianStemFilter	todo:M11	T11.6 per-language (fa): PersianStemFilter
+analysis/fa/PersianStemFilterFactory	todo:M11	T11.7 factory/SPI: PersianStemFilterFactory
+analysis/fa/PersianStemmer	todo:M11	T11.6 per-language (fa): PersianStemmer
+analysis/fi/FinnishAnalyzer	todo:M11	T11.6 per-language (fi): FinnishAnalyzer
+analysis/fi/FinnishLightStemFilter	todo:M11	T11.6 per-language (fi): FinnishLightStemFilter
+analysis/fi/FinnishLightStemFilterFactory	todo:M11	T11.7 factory/SPI: FinnishLightStemFilterFactory
+analysis/fi/FinnishLightStemmer	todo:M11	T11.6 per-language (fi): FinnishLightStemmer
+analysis/fr/FrenchAnalyzer	todo:M11	T11.6 per-language (fr): FrenchAnalyzer
+analysis/fr/FrenchLightStemFilter	todo:M11	T11.6 per-language (fr): FrenchLightStemFilter
+analysis/fr/FrenchLightStemFilterFactory	todo:M11	T11.7 factory/SPI: FrenchLightStemFilterFactory
+analysis/fr/FrenchLightStemmer	todo:M11	T11.6 per-language (fr): FrenchLightStemmer
+analysis/fr/FrenchMinimalStemFilter	todo:M11	T11.6 per-language (fr): FrenchMinimalStemFilter
+analysis/fr/FrenchMinimalStemFilterFactory	todo:M11	T11.7 factory/SPI: FrenchMinimalStemFilterFactory
+analysis/fr/FrenchMinimalStemmer	todo:M11	T11.6 per-language (fr): FrenchMinimalStemmer
+analysis/ga/IrishAnalyzer	todo:M11	T11.6 per-language (ga): IrishAnalyzer
+analysis/ga/IrishLowerCaseFilter	todo:M11	T11.6 per-language (ga): IrishLowerCaseFilter
+analysis/ga/IrishLowerCaseFilterFactory	todo:M11	T11.7 factory/SPI: IrishLowerCaseFilterFactory
+analysis/gl/GalicianAnalyzer	todo:M11	T11.6 per-language (gl): GalicianAnalyzer
+analysis/gl/GalicianMinimalStemFilter	todo:M11	T11.6 per-language (gl): GalicianMinimalStemFilter
+analysis/gl/GalicianMinimalStemFilterFactory	todo:M11	T11.7 factory/SPI: GalicianMinimalStemFilterFactory
+analysis/gl/GalicianMinimalStemmer	todo:M11	T11.6 per-language (gl): GalicianMinimalStemmer
+analysis/gl/GalicianStemFilter	todo:M11	T11.6 per-language (gl): GalicianStemFilter
+analysis/gl/GalicianStemFilterFactory	todo:M11	T11.7 factory/SPI: GalicianStemFilterFactory
+analysis/gl/GalicianStemmer	todo:M11	T11.6 per-language (gl): GalicianStemmer
+analysis/hi/HindiAnalyzer	todo:M11	T11.6 per-language (hi): HindiAnalyzer
+analysis/hi/HindiNormalizationFilter	todo:M11	T11.6 per-language (hi): HindiNormalizationFilter
+analysis/hi/HindiNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: HindiNormalizationFilterFactory
+analysis/hi/HindiNormalizer	todo:M11	T11.6 per-language (hi): HindiNormalizer
+analysis/hi/HindiStemFilter	todo:M11	T11.6 per-language (hi): HindiStemFilter
+analysis/hi/HindiStemFilterFactory	todo:M11	T11.7 factory/SPI: HindiStemFilterFactory
+analysis/hi/HindiStemmer	todo:M11	T11.6 per-language (hi): HindiStemmer
+analysis/hu/HungarianAnalyzer	todo:M11	T11.6 per-language (hu): HungarianAnalyzer
+analysis/hu/HungarianLightStemFilter	todo:M11	T11.6 per-language (hu): HungarianLightStemFilter
+analysis/hu/HungarianLightStemFilterFactory	todo:M11	T11.7 factory/SPI: HungarianLightStemFilterFactory
+analysis/hu/HungarianLightStemmer	todo:M11	T11.6 per-language (hu): HungarianLightStemmer
+analysis/hunspell/AffixCondition	todo:M11	T11.4 Hunspell: AffixCondition
+analysis/hunspell/AffixKind	todo:M11	T11.4 Hunspell: AffixKind
+analysis/hunspell/AffixedWord	todo:M11	T11.4 Hunspell: AffixedWord
+analysis/hunspell/CheckCompoundPattern	todo:M11	T11.4 Hunspell: CheckCompoundPattern
+analysis/hunspell/CompoundRule	todo:M11	T11.4 Hunspell: CompoundRule
+analysis/hunspell/ConvTable	todo:M11	T11.4 Hunspell: ConvTable
+analysis/hunspell/DictEntries	todo:M11	T11.4 Hunspell: DictEntries
+analysis/hunspell/DictEntry	todo:M11	T11.4 Hunspell: DictEntry
+analysis/hunspell/Dictionary	todo:M11	T11.4 Hunspell: Dictionary
+analysis/hunspell/EntrySuggestion	todo:M11	T11.4 Hunspell: EntrySuggestion
+analysis/hunspell/FlagEnumerator	todo:M11	T11.4 Hunspell: FlagEnumerator
+analysis/hunspell/FlyweightEntry	todo:M11	T11.4 Hunspell: FlyweightEntry
+analysis/hunspell/FragmentChecker	todo:M11	T11.4 Hunspell: FragmentChecker
+analysis/hunspell/GeneratingSuggester	todo:M11	T11.4 Hunspell: GeneratingSuggester
+analysis/hunspell/Hunspell	todo:M11	T11.4 Hunspell: Hunspell
+analysis/hunspell/HunspellStemFilter	todo:M11	T11.4 Hunspell: HunspellStemFilter
+analysis/hunspell/HunspellStemFilterFactory	todo:M11	T11.7 factory/SPI: HunspellStemFilterFactory
+analysis/hunspell/ISO8859_14Decoder	todo:M11	T11.4 Hunspell: ISO8859_14Decoder
+analysis/hunspell/ModifyingSuggester	todo:M11	T11.4 Hunspell: ModifyingSuggester
+analysis/hunspell/NGramFragmentChecker	todo:M11	T11.4 Hunspell: NGramFragmentChecker
+analysis/hunspell/RepEntry	todo:M11	T11.4 Hunspell: RepEntry
+analysis/hunspell/Root	todo:M11	T11.4 Hunspell: Root
+analysis/hunspell/SortingStrategy	todo:M11	T11.4 Hunspell: SortingStrategy
+analysis/hunspell/Stemmer	todo:M11	T11.4 Hunspell: Stemmer
+analysis/hunspell/Suggester	todo:M11	T11.4 Hunspell: Suggester
+analysis/hunspell/SuggestibleEntryCache	todo:M11	T11.4 Hunspell: SuggestibleEntryCache
+analysis/hunspell/Suggestion	todo:M11	T11.4 Hunspell: Suggestion
+analysis/hunspell/SuggestionTimeoutException	todo:M11	T11.4 Hunspell: SuggestionTimeoutException
+analysis/hunspell/TimeoutPolicy	todo:M11	T11.4 Hunspell: TimeoutPolicy
+analysis/hunspell/TrigramAutomaton	todo:M11	T11.4 Hunspell: TrigramAutomaton
+analysis/hunspell/WordCase	todo:M11	T11.4 Hunspell: WordCase
+analysis/hunspell/WordContext	todo:M11	T11.4 Hunspell: WordContext
+analysis/hunspell/WordFormGenerator	todo:M11	T11.4 Hunspell: WordFormGenerator
+analysis/hunspell/WordStorage	todo:M11	T11.4 Hunspell: WordStorage
+analysis/hy/ArmenianAnalyzer	todo:M11	T11.6 per-language (hy): ArmenianAnalyzer
+analysis/id/IndonesianAnalyzer	todo:M11	T11.6 per-language (id): IndonesianAnalyzer
+analysis/id/IndonesianStemFilter	todo:M11	T11.6 per-language (id): IndonesianStemFilter
+analysis/id/IndonesianStemFilterFactory	todo:M11	T11.7 factory/SPI: IndonesianStemFilterFactory
+analysis/id/IndonesianStemmer	todo:M11	T11.6 per-language (id): IndonesianStemmer
+analysis/in/IndicNormalizationFilter	todo:M11	T11.6 per-language (in): IndicNormalizationFilter
+analysis/in/IndicNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: IndicNormalizationFilterFactory
+analysis/in/IndicNormalizer	todo:M11	T11.6 per-language (in): IndicNormalizer
+analysis/it/ItalianAnalyzer	todo:M11	T11.6 per-language (it): ItalianAnalyzer
+analysis/it/ItalianLightStemFilter	todo:M11	T11.6 per-language (it): ItalianLightStemFilter
+analysis/it/ItalianLightStemFilterFactory	todo:M11	T11.7 factory/SPI: ItalianLightStemFilterFactory
+analysis/it/ItalianLightStemmer	todo:M11	T11.6 per-language (it): ItalianLightStemmer
+analysis/lt/LithuanianAnalyzer	todo:M11	T11.6 per-language (lt): LithuanianAnalyzer
+analysis/lv/LatvianAnalyzer	todo:M11	T11.6 per-language (lv): LatvianAnalyzer
+analysis/lv/LatvianStemFilter	todo:M11	T11.6 per-language (lv): LatvianStemFilter
+analysis/lv/LatvianStemFilterFactory	todo:M11	T11.7 factory/SPI: LatvianStemFilterFactory
+analysis/lv/LatvianStemmer	todo:M11	T11.6 per-language (lv): LatvianStemmer
+analysis/minhash/MinHashFilter	todo:M11	T11.6 minhash: MinHashFilter
+analysis/minhash/MinHashFilterFactory	todo:M11	T11.7 factory/SPI: MinHashFilterFactory
+analysis/miscellaneous/ASCIIFoldingFilter	partial	crates/lucene-analysis/src/lib.rs::AsciiFoldingFilter -- M11: T11.6 the streaming filter and preserveOriginal
+analysis/miscellaneous/ASCIIFoldingFilterFactory	todo:M11	T11.7 factory/SPI: ASCIIFoldingFilterFactory
+analysis/miscellaneous/CapitalizationFilter	todo:M11	T11.6 miscellaneous: CapitalizationFilter
+analysis/miscellaneous/CapitalizationFilterFactory	todo:M11	T11.7 factory/SPI: CapitalizationFilterFactory
+analysis/miscellaneous/CodepointCountFilter	todo:M11	T11.6 miscellaneous: CodepointCountFilter
+analysis/miscellaneous/CodepointCountFilterFactory	todo:M11	T11.7 factory/SPI: CodepointCountFilterFactory
+analysis/miscellaneous/ConcatenateGraphFilter	todo:M11	T11.6 miscellaneous: ConcatenateGraphFilter
+analysis/miscellaneous/ConcatenateGraphFilterFactory	todo:M11	T11.7 factory/SPI: ConcatenateGraphFilterFactory
+analysis/miscellaneous/ConcatenatingTokenStream	todo:M11	T11.6 miscellaneous: ConcatenatingTokenStream
+analysis/miscellaneous/ConditionalTokenFilter	todo:M11	T11.6 miscellaneous: ConditionalTokenFilter
+analysis/miscellaneous/ConditionalTokenFilterFactory	todo:M11	T11.7 factory/SPI: ConditionalTokenFilterFactory
+analysis/miscellaneous/DateRecognizerFilter	todo:M11	T11.6 miscellaneous: DateRecognizerFilter
+analysis/miscellaneous/DateRecognizerFilterFactory	todo:M11	T11.7 factory/SPI: DateRecognizerFilterFactory
+analysis/miscellaneous/DelimitedTermFrequencyTokenFilter	todo:M11	T11.6 miscellaneous: DelimitedTermFrequencyTokenFilter
+analysis/miscellaneous/DelimitedTermFrequencyTokenFilterFactory	todo:M11	T11.7 factory/SPI: DelimitedTermFrequencyTokenFilterFactory
+analysis/miscellaneous/DropIfFlaggedFilter	todo:M11	T11.6 miscellaneous: DropIfFlaggedFilter
+analysis/miscellaneous/DropIfFlaggedFilterFactory	todo:M11	T11.7 factory/SPI: DropIfFlaggedFilterFactory
+analysis/miscellaneous/EmptyTokenStream	todo:M11	T11.6 miscellaneous: EmptyTokenStream
+analysis/miscellaneous/FingerprintFilter	todo:M11	T11.6 miscellaneous: FingerprintFilter
+analysis/miscellaneous/FingerprintFilterFactory	todo:M11	T11.7 factory/SPI: FingerprintFilterFactory
+analysis/miscellaneous/FixBrokenOffsetsFilter	todo:M11	T11.6 miscellaneous: FixBrokenOffsetsFilter
+analysis/miscellaneous/FixBrokenOffsetsFilterFactory	todo:M11	T11.7 factory/SPI: FixBrokenOffsetsFilterFactory
+analysis/miscellaneous/HyphenatedWordsFilter	todo:M11	T11.6 miscellaneous: HyphenatedWordsFilter
+analysis/miscellaneous/HyphenatedWordsFilterFactory	todo:M11	T11.7 factory/SPI: HyphenatedWordsFilterFactory
+analysis/miscellaneous/KeepWordFilter	todo:M11	T11.6 miscellaneous: KeepWordFilter
+analysis/miscellaneous/KeepWordFilterFactory	todo:M11	T11.7 factory/SPI: KeepWordFilterFactory
+analysis/miscellaneous/KeywordMarkerFilter	todo:M11	T11.6 miscellaneous: KeywordMarkerFilter
+analysis/miscellaneous/KeywordMarkerFilterFactory	todo:M11	T11.7 factory/SPI: KeywordMarkerFilterFactory
+analysis/miscellaneous/KeywordRepeatFilter	todo:M11	T11.6 miscellaneous: KeywordRepeatFilter
+analysis/miscellaneous/KeywordRepeatFilterFactory	todo:M11	T11.7 factory/SPI: KeywordRepeatFilterFactory
+analysis/miscellaneous/LengthFilter	todo:M11	T11.6 miscellaneous: LengthFilter
+analysis/miscellaneous/LengthFilterFactory	todo:M11	T11.7 factory/SPI: LengthFilterFactory
+analysis/miscellaneous/LimitTokenCountAnalyzer	todo:M11	T11.6 miscellaneous: LimitTokenCountAnalyzer
+analysis/miscellaneous/LimitTokenCountFilter	todo:M11	T11.6 miscellaneous: LimitTokenCountFilter
+analysis/miscellaneous/LimitTokenCountFilterFactory	todo:M11	T11.7 factory/SPI: LimitTokenCountFilterFactory
+analysis/miscellaneous/LimitTokenOffsetFilter	todo:M11	T11.6 miscellaneous: LimitTokenOffsetFilter
+analysis/miscellaneous/LimitTokenOffsetFilterFactory	todo:M11	T11.7 factory/SPI: LimitTokenOffsetFilterFactory
+analysis/miscellaneous/LimitTokenPositionFilter	todo:M11	T11.6 miscellaneous: LimitTokenPositionFilter
+analysis/miscellaneous/LimitTokenPositionFilterFactory	todo:M11	T11.7 factory/SPI: LimitTokenPositionFilterFactory
+analysis/miscellaneous/PatternKeywordMarkerFilter	todo:M11	T11.6 miscellaneous: PatternKeywordMarkerFilter
+analysis/miscellaneous/PerFieldAnalyzerWrapper	todo:M11	T11.6 miscellaneous: PerFieldAnalyzerWrapper
+analysis/miscellaneous/ProtectedTermFilter	todo:M11	T11.6 miscellaneous: ProtectedTermFilter
+analysis/miscellaneous/ProtectedTermFilterFactory	todo:M11	T11.7 factory/SPI: ProtectedTermFilterFactory
+analysis/miscellaneous/RemoveDuplicatesTokenFilter	todo:M11	T11.6 miscellaneous: RemoveDuplicatesTokenFilter
+analysis/miscellaneous/RemoveDuplicatesTokenFilterFactory	todo:M11	T11.7 factory/SPI: RemoveDuplicatesTokenFilterFactory
+analysis/miscellaneous/ScandinavianFoldingFilter	todo:M11	T11.6 miscellaneous: ScandinavianFoldingFilter
+analysis/miscellaneous/ScandinavianFoldingFilterFactory	todo:M11	T11.7 factory/SPI: ScandinavianFoldingFilterFactory
+analysis/miscellaneous/ScandinavianNormalizationFilter	todo:M11	T11.6 miscellaneous: ScandinavianNormalizationFilter
+analysis/miscellaneous/ScandinavianNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: ScandinavianNormalizationFilterFactory
+analysis/miscellaneous/ScandinavianNormalizer	todo:M11	T11.6 miscellaneous: ScandinavianNormalizer
+analysis/miscellaneous/SetKeywordMarkerFilter	todo:M11	T11.6 miscellaneous: SetKeywordMarkerFilter
+analysis/miscellaneous/StemmerOverrideFilter	todo:M11	T11.6 miscellaneous: StemmerOverrideFilter
+analysis/miscellaneous/StemmerOverrideFilterFactory	todo:M11	T11.7 factory/SPI: StemmerOverrideFilterFactory
+analysis/miscellaneous/TrimFilter	todo:M11	T11.6 miscellaneous: TrimFilter
+analysis/miscellaneous/TrimFilterFactory	todo:M11	T11.7 factory/SPI: TrimFilterFactory
+analysis/miscellaneous/TruncateTokenFilter	todo:M11	T11.6 miscellaneous: TruncateTokenFilter
+analysis/miscellaneous/TruncateTokenFilterFactory	todo:M11	T11.7 factory/SPI: TruncateTokenFilterFactory
+analysis/miscellaneous/TypeAsSynonymFilter	todo:M11	T11.6 miscellaneous: TypeAsSynonymFilter
+analysis/miscellaneous/TypeAsSynonymFilterFactory	todo:M11	T11.7 factory/SPI: TypeAsSynonymFilterFactory
+analysis/miscellaneous/WordDelimiterFilter	todo:M11	T11.6 miscellaneous: WordDelimiterFilter
+analysis/miscellaneous/WordDelimiterFilterFactory	todo:M11	T11.7 factory/SPI: WordDelimiterFilterFactory
+analysis/miscellaneous/WordDelimiterGraphFilter	todo:M11	T11.6 miscellaneous: WordDelimiterGraphFilter
+analysis/miscellaneous/WordDelimiterGraphFilterFactory	todo:M11	T11.7 factory/SPI: WordDelimiterGraphFilterFactory
+analysis/miscellaneous/WordDelimiterIterator	todo:M11	T11.6 miscellaneous: WordDelimiterIterator
+analysis/morph/BinaryDictionary	todo:M11	T11.6 morph: BinaryDictionary
+analysis/morph/BinaryDictionaryWriter	todo:M11	T11.6 morph: BinaryDictionaryWriter
+analysis/morph/CharacterDefinition	todo:M11	T11.6 morph: CharacterDefinition
+analysis/morph/CharacterDefinitionWriter	todo:M11	T11.6 morph: CharacterDefinitionWriter
+analysis/morph/ConnectionCosts	todo:M11	T11.6 morph: ConnectionCosts
+analysis/morph/ConnectionCostsWriter	todo:M11	T11.6 morph: ConnectionCostsWriter
+analysis/morph/Dictionary	todo:M11	T11.6 morph: Dictionary
+analysis/morph/DictionaryEntryWriter	todo:M11	T11.6 morph: DictionaryEntryWriter
+analysis/morph/GraphvizFormatter	todo:M11	T11.6 morph: GraphvizFormatter
+analysis/morph/MorphData	todo:M11	T11.6 morph: MorphData
+analysis/morph/Token	todo:M11	T11.6 morph: Token
+analysis/morph/TokenInfoFST	todo:M11	T11.6 morph: TokenInfoFST
+analysis/morph/TokenType	todo:M11	T11.6 morph: TokenType
+analysis/morph/Viterbi	todo:M11	T11.6 morph: Viterbi
+analysis/morph/ViterbiNBest	todo:M11	T11.6 morph: ViterbiNBest
+analysis/ne/NepaliAnalyzer	todo:M11	T11.6 per-language (ne): NepaliAnalyzer
+analysis/ngram/EdgeNGramFilterFactory	todo:M11	T11.7 factory/SPI: EdgeNGramFilterFactory
+analysis/ngram/EdgeNGramTokenFilter	partial	crates/lucene-analysis/src/lib.rs::EdgeNGramTokenFilter -- M11: T11.6 the streaming filter
+analysis/ngram/EdgeNGramTokenizer	todo:M11	T11.6 ngram: EdgeNGramTokenizer
+analysis/ngram/EdgeNGramTokenizerFactory	todo:M11	T11.7 factory/SPI: EdgeNGramTokenizerFactory
+analysis/ngram/NGramFilterFactory	todo:M11	T11.7 factory/SPI: NGramFilterFactory
+analysis/ngram/NGramTokenFilter	partial	crates/lucene-analysis/src/lib.rs::NGramTokenFilter -- M11: T11.6 the streaming filter
+analysis/ngram/NGramTokenizer	todo:M11	T11.6 ngram: NGramTokenizer
+analysis/ngram/NGramTokenizerFactory	todo:M11	T11.7 factory/SPI: NGramTokenizerFactory
+analysis/nl/DutchAnalyzer	todo:M11	T11.6 per-language (nl): DutchAnalyzer
+analysis/no/NorwegianAnalyzer	todo:M11	T11.6 per-language (no): NorwegianAnalyzer
+analysis/no/NorwegianLightStemFilter	todo:M11	T11.6 per-language (no): NorwegianLightStemFilter
+analysis/no/NorwegianLightStemFilterFactory	todo:M11	T11.7 factory/SPI: NorwegianLightStemFilterFactory
+analysis/no/NorwegianLightStemmer	todo:M11	T11.6 per-language (no): NorwegianLightStemmer
+analysis/no/NorwegianMinimalStemFilter	todo:M11	T11.6 per-language (no): NorwegianMinimalStemFilter
+analysis/no/NorwegianMinimalStemFilterFactory	todo:M11	T11.7 factory/SPI: NorwegianMinimalStemFilterFactory
+analysis/no/NorwegianMinimalStemmer	todo:M11	T11.6 per-language (no): NorwegianMinimalStemmer
+analysis/no/NorwegianNormalizationFilter	todo:M11	T11.6 per-language (no): NorwegianNormalizationFilter
+analysis/no/NorwegianNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: NorwegianNormalizationFilterFactory
+analysis/path/PathHierarchyTokenizer	todo:M11	T11.6 path: PathHierarchyTokenizer
+analysis/path/PathHierarchyTokenizerFactory	todo:M11	T11.7 factory/SPI: PathHierarchyTokenizerFactory
+analysis/path/ReversePathHierarchyTokenizer	todo:M11	T11.6 path: ReversePathHierarchyTokenizer
+analysis/pattern/PatternCaptureGroupFilterFactory	todo:M11	T11.7 factory/SPI: PatternCaptureGroupFilterFactory
+analysis/pattern/PatternCaptureGroupTokenFilter	todo:M11	T11.6 pattern: PatternCaptureGroupTokenFilter
+analysis/pattern/PatternReplaceCharFilter	todo:M11	T11.6 pattern: PatternReplaceCharFilter
+analysis/pattern/PatternReplaceCharFilterFactory	todo:M11	T11.7 factory/SPI: PatternReplaceCharFilterFactory
+analysis/pattern/PatternReplaceFilter	todo:M11	T11.6 pattern: PatternReplaceFilter
+analysis/pattern/PatternReplaceFilterFactory	todo:M11	T11.7 factory/SPI: PatternReplaceFilterFactory
+analysis/pattern/PatternTokenizer	todo:M11	T11.6 pattern: PatternTokenizer
+analysis/pattern/PatternTokenizerFactory	todo:M11	T11.7 factory/SPI: PatternTokenizerFactory
+analysis/pattern/PatternTypingFilter	todo:M11	T11.6 pattern: PatternTypingFilter
+analysis/pattern/PatternTypingFilterFactory	todo:M11	T11.7 factory/SPI: PatternTypingFilterFactory
+analysis/pattern/SimplePatternSplitTokenizer	todo:M11	T11.6 pattern: SimplePatternSplitTokenizer
+analysis/pattern/SimplePatternSplitTokenizerFactory	todo:M11	T11.7 factory/SPI: SimplePatternSplitTokenizerFactory
+analysis/pattern/SimplePatternTokenizer	todo:M11	T11.6 pattern: SimplePatternTokenizer
+analysis/pattern/SimplePatternTokenizerFactory	todo:M11	T11.7 factory/SPI: SimplePatternTokenizerFactory
+analysis/payloads/AbstractEncoder	todo:M11	T11.6 payloads: AbstractEncoder
+analysis/payloads/DelimitedPayloadTokenFilter	todo:M11	T11.6 payloads: DelimitedPayloadTokenFilter
+analysis/payloads/DelimitedPayloadTokenFilterFactory	todo:M11	T11.7 factory/SPI: DelimitedPayloadTokenFilterFactory
+analysis/payloads/FloatEncoder	todo:M11	T11.6 payloads: FloatEncoder
+analysis/payloads/IdentityEncoder	todo:M11	T11.6 payloads: IdentityEncoder
+analysis/payloads/IntegerEncoder	todo:M11	T11.6 payloads: IntegerEncoder
+analysis/payloads/NumericPayloadTokenFilter	todo:M11	T11.6 payloads: NumericPayloadTokenFilter
+analysis/payloads/NumericPayloadTokenFilterFactory	todo:M11	T11.7 factory/SPI: NumericPayloadTokenFilterFactory
+analysis/payloads/PayloadEncoder	todo:M11	T11.6 payloads: PayloadEncoder
+analysis/payloads/PayloadHelper	todo:M11	T11.6 payloads: PayloadHelper
+analysis/payloads/TokenOffsetPayloadTokenFilter	todo:M11	T11.6 payloads: TokenOffsetPayloadTokenFilter
+analysis/payloads/TokenOffsetPayloadTokenFilterFactory	todo:M11	T11.7 factory/SPI: TokenOffsetPayloadTokenFilterFactory
+analysis/payloads/TypeAsPayloadTokenFilter	todo:M11	T11.6 payloads: TypeAsPayloadTokenFilter
+analysis/payloads/TypeAsPayloadTokenFilterFactory	todo:M11	T11.7 factory/SPI: TypeAsPayloadTokenFilterFactory
+analysis/pt/PortugueseAnalyzer	todo:M11	T11.6 per-language (pt): PortugueseAnalyzer
+analysis/pt/PortugueseLightStemFilter	todo:M11	T11.6 per-language (pt): PortugueseLightStemFilter
+analysis/pt/PortugueseLightStemFilterFactory	todo:M11	T11.7 factory/SPI: PortugueseLightStemFilterFactory
+analysis/pt/PortugueseLightStemmer	todo:M11	T11.6 per-language (pt): PortugueseLightStemmer
+analysis/pt/PortugueseMinimalStemFilter	todo:M11	T11.6 per-language (pt): PortugueseMinimalStemFilter
+analysis/pt/PortugueseMinimalStemFilterFactory	todo:M11	T11.7 factory/SPI: PortugueseMinimalStemFilterFactory
+analysis/pt/PortugueseMinimalStemmer	todo:M11	T11.6 per-language (pt): PortugueseMinimalStemmer
+analysis/pt/PortugueseStemFilter	todo:M11	T11.6 per-language (pt): PortugueseStemFilter
+analysis/pt/PortugueseStemFilterFactory	todo:M11	T11.7 factory/SPI: PortugueseStemFilterFactory
+analysis/pt/PortugueseStemmer	todo:M11	T11.6 per-language (pt): PortugueseStemmer
+analysis/pt/RSLPStemmerBase	todo:M11	T11.6 per-language (pt): RSLPStemmerBase
+analysis/query/QueryAutoStopWordAnalyzer	todo:M11	T11.6 query: QueryAutoStopWordAnalyzer
+analysis/reverse/ReverseStringFilter	todo:M11	T11.6 reverse: ReverseStringFilter
+analysis/reverse/ReverseStringFilterFactory	todo:M11	T11.7 factory/SPI: ReverseStringFilterFactory
+analysis/ro/RomanianAnalyzer	todo:M11	T11.6 per-language (ro): RomanianAnalyzer
+analysis/ro/RomanianNormalizationFilter	todo:M11	T11.6 per-language (ro): RomanianNormalizationFilter
+analysis/ro/RomanianNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: RomanianNormalizationFilterFactory
+analysis/ro/RomanianNormalizer	todo:M11	T11.6 per-language (ro): RomanianNormalizer
+analysis/ru/RussianAnalyzer	todo:M11	T11.6 per-language (ru): RussianAnalyzer
+analysis/ru/RussianLightStemFilter	todo:M11	T11.6 per-language (ru): RussianLightStemFilter
+analysis/ru/RussianLightStemFilterFactory	todo:M11	T11.7 factory/SPI: RussianLightStemFilterFactory
+analysis/ru/RussianLightStemmer	todo:M11	T11.6 per-language (ru): RussianLightStemmer
+analysis/shingle/FixedShingleFilter	todo:M11	T11.6 shingle: FixedShingleFilter
+analysis/shingle/FixedShingleFilterFactory	todo:M11	T11.7 factory/SPI: FixedShingleFilterFactory
+analysis/shingle/ShingleAnalyzerWrapper	todo:M11	T11.6 shingle: ShingleAnalyzerWrapper
+analysis/shingle/ShingleFilter	todo:M11	T11.6 shingle: ShingleFilter
+analysis/shingle/ShingleFilterFactory	todo:M11	T11.7 factory/SPI: ShingleFilterFactory
+analysis/sinks/TeeSinkTokenFilter	todo:M11	T11.6 sinks: TeeSinkTokenFilter
+analysis/snowball/SnowballFilter	partial	crates/lucene-analysis/src/lib.rs::SnowballEnglishStemFilter -- M11: T11.3 every other Snowball language
+analysis/snowball/SnowballPorterFilterFactory	todo:M11	T11.7 factory/SPI: SnowballPorterFilterFactory
+analysis/sr/SerbianAnalyzer	todo:M11	T11.6 per-language (sr): SerbianAnalyzer
+analysis/sr/SerbianNormalizationFilter	todo:M11	T11.6 per-language (sr): SerbianNormalizationFilter
+analysis/sr/SerbianNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: SerbianNormalizationFilterFactory
+analysis/sr/SerbianNormalizationRegularFilter	todo:M11	T11.6 per-language (sr): SerbianNormalizationRegularFilter
+analysis/sv/SwedishAnalyzer	todo:M11	T11.6 per-language (sv): SwedishAnalyzer
+analysis/sv/SwedishLightStemFilter	todo:M11	T11.6 per-language (sv): SwedishLightStemFilter
+analysis/sv/SwedishLightStemFilterFactory	todo:M11	T11.7 factory/SPI: SwedishLightStemFilterFactory
+analysis/sv/SwedishLightStemmer	todo:M11	T11.6 per-language (sv): SwedishLightStemmer
+analysis/sv/SwedishMinimalStemFilter	todo:M11	T11.6 per-language (sv): SwedishMinimalStemFilter
+analysis/sv/SwedishMinimalStemFilterFactory	todo:M11	T11.7 factory/SPI: SwedishMinimalStemFilterFactory
+analysis/sv/SwedishMinimalStemmer	todo:M11	T11.6 per-language (sv): SwedishMinimalStemmer
+analysis/synonym/SolrSynonymParser	todo:M11	T11.5 synonyms: SolrSynonymParser
+analysis/synonym/SynonymFilter	partial	crates/lucene-analysis/src/lib.rs::SynonymFilter -- M11: T11.5 SynonymMap and the deprecated filter
+analysis/synonym/SynonymFilterFactory	todo:M11	T11.7 factory/SPI: SynonymFilterFactory
+analysis/synonym/SynonymGraphFilter	partial	crates/lucene-analysis/src/lib.rs::SynonymFilter -- M11: T11.5 SynonymMap and graph output
+analysis/synonym/SynonymGraphFilterFactory	todo:M11	T11.7 factory/SPI: SynonymGraphFilterFactory
+analysis/synonym/SynonymMap	todo:M11	T11.5 synonyms: SynonymMap
+analysis/synonym/WordnetSynonymParser	todo:M11	T11.5 synonyms: WordnetSynonymParser
+analysis/synonym/word2vec/Dl4jModelReader	todo:M11	T11.5 synonyms: Dl4jModelReader
+analysis/synonym/word2vec/TermAndBoost	todo:M11	T11.5 synonyms: TermAndBoost
+analysis/synonym/word2vec/Word2VecModel	todo:M11	T11.5 synonyms: Word2VecModel
+analysis/synonym/word2vec/Word2VecSynonymFilter	todo:M11	T11.5 synonyms: Word2VecSynonymFilter
+analysis/synonym/word2vec/Word2VecSynonymFilterFactory	todo:M11	T11.7 factory/SPI: Word2VecSynonymFilterFactory
+analysis/synonym/word2vec/Word2VecSynonymProvider	todo:M11	T11.5 synonyms: Word2VecSynonymProvider
+analysis/synonym/word2vec/Word2VecSynonymProviderFactory	todo:M11	T11.7 factory/SPI: Word2VecSynonymProviderFactory
+analysis/ta/TamilAnalyzer	todo:M11	T11.6 per-language (ta): TamilAnalyzer
+analysis/te/TeluguAnalyzer	todo:M11	T11.6 per-language (te): TeluguAnalyzer
+analysis/te/TeluguNormalizationFilter	todo:M11	T11.6 per-language (te): TeluguNormalizationFilter
+analysis/te/TeluguNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: TeluguNormalizationFilterFactory
+analysis/te/TeluguNormalizer	todo:M11	T11.6 per-language (te): TeluguNormalizer
+analysis/te/TeluguStemFilter	todo:M11	T11.6 per-language (te): TeluguStemFilter
+analysis/te/TeluguStemFilterFactory	todo:M11	T11.7 factory/SPI: TeluguStemFilterFactory
+analysis/te/TeluguStemmer	todo:M11	T11.6 per-language (te): TeluguStemmer
+analysis/th/ThaiAnalyzer	todo:M11	T11.6 per-language (th): ThaiAnalyzer
+analysis/th/ThaiTokenizer	todo:M11	T11.6 per-language (th): ThaiTokenizer
+analysis/th/ThaiTokenizerFactory	todo:M11	T11.7 factory/SPI: ThaiTokenizerFactory
+analysis/tr/ApostropheFilter	todo:M11	T11.6 per-language (tr): ApostropheFilter
+analysis/tr/ApostropheFilterFactory	todo:M11	T11.7 factory/SPI: ApostropheFilterFactory
+analysis/tr/TurkishAnalyzer	todo:M11	T11.6 per-language (tr): TurkishAnalyzer
+analysis/tr/TurkishLowerCaseFilter	todo:M11	T11.6 per-language (tr): TurkishLowerCaseFilter
+analysis/tr/TurkishLowerCaseFilterFactory	todo:M11	T11.7 factory/SPI: TurkishLowerCaseFilterFactory
+analysis/util/CSVUtil	todo:M11	T11.6 util: CSVUtil
+analysis/util/CharArrayIterator	todo:M11	T11.6 util: CharArrayIterator
+analysis/util/CharTokenizer	todo:M11	T11.6 util: CharTokenizer
+analysis/util/ElisionFilter	todo:M11	T11.6 util: ElisionFilter
+analysis/util/ElisionFilterFactory	todo:M11	T11.7 factory/SPI: ElisionFilterFactory
+analysis/util/FilesystemResourceLoader	todo:M11	T11.7 factory/SPI: FilesystemResourceLoader
+analysis/util/OpenStringBuilder	todo:M11	T11.6 util: OpenStringBuilder
+analysis/util/RollingCharBuffer	todo:M11	T11.6 util: RollingCharBuffer
+analysis/util/SegmentingTokenizerBase	todo:M11	T11.6 util: SegmentingTokenizerBase
+analysis/util/StemmerUtil	todo:M11	T11.6 util: StemmerUtil
+analysis/util/UnicodeProps	todo:M11	T11.6 util: UnicodeProps
+analysis/wikipedia/WikipediaTokenizer	todo:M11	T11.2 JFlex tokenizer: WikipediaTokenizer
+analysis/wikipedia/WikipediaTokenizerFactory	todo:M11	T11.7 factory/SPI: WikipediaTokenizerFactory
+analysis/wikipedia/WikipediaTokenizerImpl	todo:M11	T11.2 JFlex tokenizer: WikipediaTokenizerImpl
+collation/CollationAttributeFactory	todo:M11	T11.7 factory/SPI: CollationAttributeFactory
+collation/CollationDocValuesField	todo:M11	T11.6 CollationDocValuesField: CollationDocValuesField
+collation/CollationKeyAnalyzer	todo:M11	T11.6 CollationKeyAnalyzer: CollationKeyAnalyzer
+collation/tokenattributes/CollatedTermAttributeImpl	todo:M11	T11.6 tokenattributes: CollatedTermAttributeImpl
+org/tartarus/snowball/Among	todo:M11	T11.3 Snowball runtime/stemmer: Among
+org/tartarus/snowball/SnowballProgram	todo:M11	T11.3 Snowball runtime/stemmer: SnowballProgram
+org/tartarus/snowball/SnowballStemmer	todo:M11	T11.3 Snowball runtime/stemmer: SnowballStemmer
+org/tartarus/snowball/ext/ArabicStemmer	todo:M11	T11.3 Snowball runtime/stemmer: ArabicStemmer
+org/tartarus/snowball/ext/ArmenianStemmer	todo:M11	T11.3 Snowball runtime/stemmer: ArmenianStemmer
+org/tartarus/snowball/ext/BasqueStemmer	todo:M11	T11.3 Snowball runtime/stemmer: BasqueStemmer
+org/tartarus/snowball/ext/CatalanStemmer	todo:M11	T11.3 Snowball runtime/stemmer: CatalanStemmer
+org/tartarus/snowball/ext/DanishStemmer	todo:M11	T11.3 Snowball runtime/stemmer: DanishStemmer
+org/tartarus/snowball/ext/DutchStemmer	todo:M11	T11.3 Snowball runtime/stemmer: DutchStemmer
+org/tartarus/snowball/ext/EnglishStemmer	partial	crates/lucene-analysis/src/lib.rs::snowball_english -- M11: T11.3 the generated stemmer over the Snowball runtime
+org/tartarus/snowball/ext/EstonianStemmer	todo:M11	T11.3 Snowball runtime/stemmer: EstonianStemmer
+org/tartarus/snowball/ext/FinnishStemmer	todo:M11	T11.3 Snowball runtime/stemmer: FinnishStemmer
+org/tartarus/snowball/ext/FrenchStemmer	todo:M11	T11.3 Snowball runtime/stemmer: FrenchStemmer
+org/tartarus/snowball/ext/GermanStemmer	todo:M11	T11.3 Snowball runtime/stemmer: GermanStemmer
+org/tartarus/snowball/ext/GreekStemmer	todo:M11	T11.3 Snowball runtime/stemmer: GreekStemmer
+org/tartarus/snowball/ext/HindiStemmer	todo:M11	T11.3 Snowball runtime/stemmer: HindiStemmer
+org/tartarus/snowball/ext/HungarianStemmer	todo:M11	T11.3 Snowball runtime/stemmer: HungarianStemmer
+org/tartarus/snowball/ext/IndonesianStemmer	todo:M11	T11.3 Snowball runtime/stemmer: IndonesianStemmer
+org/tartarus/snowball/ext/IrishStemmer	todo:M11	T11.3 Snowball runtime/stemmer: IrishStemmer
+org/tartarus/snowball/ext/ItalianStemmer	todo:M11	T11.3 Snowball runtime/stemmer: ItalianStemmer
+org/tartarus/snowball/ext/LithuanianStemmer	todo:M11	T11.3 Snowball runtime/stemmer: LithuanianStemmer
+org/tartarus/snowball/ext/NepaliStemmer	todo:M11	T11.3 Snowball runtime/stemmer: NepaliStemmer
+org/tartarus/snowball/ext/NorwegianStemmer	todo:M11	T11.3 Snowball runtime/stemmer: NorwegianStemmer
+org/tartarus/snowball/ext/PorterStemmer	todo:M11	T11.3 Snowball runtime/stemmer: PorterStemmer
+org/tartarus/snowball/ext/PortugueseStemmer	todo:M11	T11.3 Snowball runtime/stemmer: PortugueseStemmer
+org/tartarus/snowball/ext/RomanianStemmer	todo:M11	T11.3 Snowball runtime/stemmer: RomanianStemmer
+org/tartarus/snowball/ext/RussianStemmer	todo:M11	T11.3 Snowball runtime/stemmer: RussianStemmer
+org/tartarus/snowball/ext/SerbianStemmer	todo:M11	T11.3 Snowball runtime/stemmer: SerbianStemmer
+org/tartarus/snowball/ext/SpanishStemmer	todo:M11	T11.3 Snowball runtime/stemmer: SpanishStemmer
+org/tartarus/snowball/ext/SwedishStemmer	todo:M11	T11.3 Snowball runtime/stemmer: SwedishStemmer
+org/tartarus/snowball/ext/TamilStemmer	todo:M11	T11.3 Snowball runtime/stemmer: TamilStemmer
+org/tartarus/snowball/ext/TurkishStemmer	todo:M11	T11.3 Snowball runtime/stemmer: TurkishStemmer
+org/tartarus/snowball/ext/YiddishStemmer	todo:M11	T11.3 Snowball runtime/stemmer: YiddishStemmer

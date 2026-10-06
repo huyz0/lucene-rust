@@ -114,6 +114,7 @@ jobs:
           python3 scripts/check-port-inventory.py --module join --require-jar
           python3 scripts/check-port-inventory.py --module grouping --require-jar
           python3 scripts/check-port-inventory.py --module queries --require-jar
+          python3 scripts/check-port-inventory.py --module analysis-common --require-jar
 
       - name: parity ledger consistency (docs/parity.md + docs/parity/)
         run: python3 scripts/check-parity.py
