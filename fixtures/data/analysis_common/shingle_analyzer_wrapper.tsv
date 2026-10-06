@@ -1,0 +1,1512 @@
+T	0	the	0	3	1	1	<ALPHANUM>	0	-	0	1
+T	0	the quick	0	9	0	2	shingle	0	-	0	1
+T	0	the quick brown	0	15	0	3	shingle	0	-	0	1
+T	0	quick	4	9	1	1	<ALPHANUM>	0	-	0	1
+T	0	quick brown	4	15	0	2	shingle	0	-	0	1
+T	0	quick brown fox	4	19	0	3	shingle	0	-	0	1
+T	0	brown	10	15	1	1	<ALPHANUM>	0	-	0	1
+T	0	brown fox	10	19	0	2	shingle	0	-	0	1
+T	0	brown fox jumps	10	25	0	3	shingle	0	-	0	1
+T	0	fox	16	19	1	1	<ALPHANUM>	0	-	0	1
+T	0	fox jumps	16	25	0	2	shingle	0	-	0	1
+T	0	fox jumps over	16	30	0	3	shingle	0	-	0	1
+T	0	jumps	20	25	1	1	<ALPHANUM>	0	-	0	1
+T	0	jumps over	20	30	0	2	shingle	0	-	0	1
+T	0	jumps over the	20	34	0	3	shingle	0	-	0	1
+T	0	over	26	30	1	1	<ALPHANUM>	0	-	0	1
+T	0	over the	26	34	0	2	shingle	0	-	0	1
+T	0	over the lazy	26	39	0	3	shingle	0	-	0	1
+T	0	the	31	34	1	1	<ALPHANUM>	0	-	0	1
+T	0	the lazy	31	39	0	2	shingle	0	-	0	1
+T	0	the lazy dog	31	43	0	3	shingle	0	-	0	1
+T	0	lazy	35	39	1	1	<ALPHANUM>	0	-	0	1
+T	0	lazy dog	35	43	0	2	shingle	0	-	0	1
+T	0	dog	40	43	1	1	<ALPHANUM>	0	-	0	1
+E	0	44	44	0
+T	1	the	0	3	1	1	<ALPHANUM>	0	-	0	1
+T	1	the the	0	7	0	2	shingle	0	-	0	1
+T	1	the the the	0	11	0	3	shingle	0	-	0	1
+T	1	the	4	7	1	1	<ALPHANUM>	0	-	0	1
+T	1	the the	4	11	0	2	shingle	0	-	0	1
+T	1	the the quick	4	17	0	3	shingle	0	-	0	1
+T	1	the	8	11	1	1	<ALPHANUM>	0	-	0	1
+T	1	the quick	8	17	0	2	shingle	0	-	0	1
+T	1	the quick quick	8	23	0	3	shingle	0	-	0	1
+T	1	quick	12	17	1	1	<ALPHANUM>	0	-	0	1
+T	1	quick quick	12	23	0	2	shingle	0	-	0	1
+T	1	quick quick brown	12	29	0	3	shingle	0	-	0	1
+T	1	quick	18	23	1	1	<ALPHANUM>	0	-	0	1
+T	1	quick brown	18	29	0	2	shingle	0	-	0	1
+T	1	quick brown brown	18	35	0	3	shingle	0	-	0	1
+T	1	brown	24	29	1	1	<ALPHANUM>	0	-	0	1
+T	1	brown brown	24	35	0	2	shingle	0	-	0	1
+T	1	brown brown fox	24	39	0	3	shingle	0	-	0	1
+T	1	brown	30	35	1	1	<ALPHANUM>	0	-	0	1
+T	1	brown fox	30	39	0	2	shingle	0	-	0	1
+T	1	fox	36	39	1	1	<ALPHANUM>	0	-	0	1
+E	1	39	39	0
+T	2	running	0	7	1	1	<ALPHANUM>	0	-	0	1
+T	2	running runs	0	12	0	2	shingle	0	-	0	1
+T	2	running runs ran	0	16	0	3	shingle	0	-	0	1
+T	2	runs	8	12	1	1	<ALPHANUM>	0	-	0	1
+T	2	runs ran	8	16	0	2	shingle	0	-	0	1
+T	2	runs ran easily	8	23	0	3	shingle	0	-	0	1
+T	2	ran	13	16	1	1	<ALPHANUM>	0	-	0	1
+T	2	ran easily	13	23	0	2	shingle	0	-	0	1
+T	2	ran easily the	13	28	0	3	shingle	0	-	0	1
+T	2	easily	17	23	1	1	<ALPHANUM>	0	-	0	1
+T	2	easily the	17	28	0	2	shingle	0	-	0	1
+T	2	easily the ponies	17	35	0	3	shingle	0	-	0	1
+T	2	the	25	28	1	1	<ALPHANUM>	0	-	0	1
+T	2	the ponies	25	35	0	2	shingle	0	-	0	1
+T	2	the ponies caresses	25	45	0	3	shingle	0	-	0	1
+T	2	ponies	29	35	1	1	<ALPHANUM>	0	-	0	1
+T	2	ponies caresses	29	45	0	2	shingle	0	-	0	1
+T	2	ponies caresses were	29	50	0	3	shingle	0	-	0	1
+T	2	caresses	37	45	1	1	<ALPHANUM>	0	-	0	1
+T	2	caresses were	37	50	0	2	shingle	0	-	0	1
+T	2	caresses were relational	37	61	0	3	shingle	0	-	0	1
+T	2	were	46	50	1	1	<ALPHANUM>	0	-	0	1
+T	2	were relational	46	61	0	2	shingle	0	-	0	1
+T	2	were relational conditional	46	74	0	3	shingle	0	-	0	1
+T	2	relational	51	61	1	1	<ALPHANUM>	0	-	0	1
+T	2	relational conditional	51	74	0	2	shingle	0	-	0	1
+T	2	relational conditional and	51	78	0	3	shingle	0	-	0	1
+T	2	conditional	63	74	1	1	<ALPHANUM>	0	-	0	1
+T	2	conditional and	63	78	0	2	shingle	0	-	0	1
+T	2	conditional and generalizations	63	94	0	3	shingle	0	-	0	1
+T	2	and	75	78	1	1	<ALPHANUM>	0	-	0	1
+T	2	and generalizations	75	94	0	2	shingle	0	-	0	1
+T	2	and generalizations of	75	97	0	3	shingle	0	-	0	1
+T	2	generalizations	79	94	1	1	<ALPHANUM>	0	-	0	1
+T	2	generalizations of	79	97	0	2	shingle	0	-	0	1
+T	2	generalizations of happiness	79	107	0	3	shingle	0	-	0	1
+T	2	of	95	97	1	1	<ALPHANUM>	0	-	0	1
+T	2	of happiness	95	107	0	2	shingle	0	-	0	1
+T	2	happiness	98	107	1	1	<ALPHANUM>	0	-	0	1
+E	2	108	108	0
+T	3	o'neil's	0	8	1	1	<ALPHANUM>	0	-	0	1
+T	3	o'neil's friend's	0	17	0	2	shingle	0	-	0	1
+T	3	o'neil's friend's dogs	0	22	0	3	shingle	0	-	0	1
+T	3	friend's	9	17	1	1	<ALPHANUM>	0	-	0	1
+T	3	friend's dogs	9	22	0	2	shingle	0	-	0	1
+T	3	friend's dogs toys	9	28	0	3	shingle	0	-	0	1
+T	3	dogs	18	22	1	1	<ALPHANUM>	0	-	0	1
+T	3	dogs toys	18	28	0	2	shingle	0	-	0	1
+T	3	dogs toys john's	18	38	0	3	shingle	0	-	0	1
+T	3	toys	24	28	1	1	<ALPHANUM>	0	-	0	1
+T	3	toys john's	24	38	0	2	shingle	0	-	0	1
+T	3	toys john's and	24	42	0	3	shingle	0	-	0	1
+T	3	john's	32	38	1	1	<ALPHANUM>	0	-	0	1
+T	3	john's and	32	42	0	2	shingle	0	-	0	1
+T	3	john's and james's	32	50	0	3	shingle	0	-	0	1
+T	3	and	39	42	1	1	<ALPHANUM>	0	-	0	1
+T	3	and james's	39	50	0	2	shingle	0	-	0	1
+T	3	and james's books	39	56	0	3	shingle	0	-	0	1
+T	3	james's	43	50	1	1	<ALPHANUM>	0	-	0	1
+T	3	james's books	43	56	0	2	shingle	0	-	0	1
+T	3	james's books aren't	43	63	0	3	shingle	0	-	0	1
+T	3	books	51	56	1	1	<ALPHANUM>	0	-	0	1
+T	3	books aren't	51	63	0	2	shingle	0	-	0	1
+T	3	books aren't theirs	51	70	0	3	shingle	0	-	0	1
+T	3	aren't	57	63	1	1	<ALPHANUM>	0	-	0	1
+T	3	aren't theirs	57	70	0	2	shingle	0	-	0	1
+T	3	theirs	64	70	1	1	<ALPHANUM>	0	-	0	1
+E	3	71	71	0
+T	4	wi	0	2	1	1	<ALPHANUM>	0	-	0	1
+T	4	wi fi	0	5	0	2	shingle	0	-	0	1
+T	4	wi fi powershot500	0	18	0	3	shingle	0	-	0	1
+T	4	fi	3	5	1	1	<ALPHANUM>	0	-	0	1
+T	4	fi powershot500	3	18	0	2	shingle	0	-	0	1
+T	4	fi powershot500 sd	3	21	0	3	shingle	0	-	0	1
+T	4	powershot500	6	18	1	1	<ALPHANUM>	0	-	0	1
+T	4	powershot500 sd	6	21	0	2	shingle	0	-	0	1
+T	4	powershot500 sd 500	6	25	0	3	shingle	0	-	0	1
+T	4	sd	19	21	1	1	<ALPHANUM>	0	-	0	1
+T	4	sd 500	19	25	0	2	shingle	0	-	0	1
+T	4	sd 500 foo_bar	19	33	0	3	shingle	0	-	0	1
+T	4	500	22	25	1	1	<NUM>	0	-	0	1
+T	4	500 foo_bar	22	33	0	2	shingle	0	-	0	1
+T	4	500 foo_bar 42nd	22	38	0	3	shingle	0	-	0	1
+T	4	foo_bar	26	33	1	1	<ALPHANUM>	0	-	0	1
+T	4	foo_bar 42nd	26	38	0	2	shingle	0	-	0	1
+T	4	foo_bar 42nd 1st	26	42	0	3	shingle	0	-	0	1
+T	4	42nd	34	38	1	1	<ALPHANUM>	0	-	0	1
+T	4	42nd 1st	34	42	0	2	shingle	0	-	0	1
+T	4	42nd 1st place	34	48	0	3	shingle	0	-	0	1
+T	4	1st	39	42	1	1	<ALPHANUM>	0	-	0	1
+T	4	1st place	39	48	0	2	shingle	0	-	0	1
+T	4	1st place at	39	51	0	3	shingle	0	-	0	1
+T	4	place	43	48	1	1	<ALPHANUM>	0	-	0	1
+T	4	place at	43	51	0	2	shingle	0	-	0	1
+T	4	place at t	43	53	0	3	shingle	0	-	0	1
+T	4	at	49	51	1	1	<ALPHANUM>	0	-	0	1
+T	4	at t	49	53	0	2	shingle	0	-	0	1
+T	4	at t e	49	55	0	3	shingle	0	-	0	1
+T	4	t	52	53	1	1	<ALPHANUM>	0	-	0	1
+T	4	t e	52	55	0	2	shingle	0	-	0	1
+T	4	t e mail	52	60	0	3	shingle	0	-	0	1
+T	4	e	54	55	1	1	<ALPHANUM>	0	-	0	1
+T	4	e mail	54	60	0	2	shingle	0	-	0	1
+T	4	e mail j2se	54	65	0	3	shingle	0	-	0	1
+T	4	mail	56	60	1	1	<ALPHANUM>	0	-	0	1
+T	4	mail j2se	56	65	0	2	shingle	0	-	0	1
+T	4	mail j2se iphone	56	72	0	3	shingle	0	-	0	1
+T	4	j2se	61	65	1	1	<ALPHANUM>	0	-	0	1
+T	4	j2se iphone	61	72	0	2	shingle	0	-	0	1
+T	4	j2se iphone xmlhttprequest	61	87	0	3	shingle	0	-	0	1
+T	4	iphone	66	72	1	1	<ALPHANUM>	0	-	0	1
+T	4	iphone xmlhttprequest	66	87	0	2	shingle	0	-	0	1
+T	4	iphone xmlhttprequest abcdef	66	94	0	3	shingle	0	-	0	1
+T	4	xmlhttprequest	73	87	1	1	<ALPHANUM>	0	-	0	1
+T	4	xmlhttprequest abcdef	73	94	0	2	shingle	0	-	0	1
+T	4	abcdef	88	94	1	1	<ALPHANUM>	0	-	0	1
+E	4	94	94	0
+T	5	u.s.a	0	5	1	1	<ALPHANUM>	0	-	0	1
+T	5	u.s.a i.b.m	0	12	0	2	shingle	0	-	0	1
+T	5	u.s.a i.b.m e.g	0	17	0	3	shingle	0	-	0	1
+T	5	i.b.m	7	12	1	1	<ALPHANUM>	0	-	0	1
+T	5	i.b.m e.g	7	17	0	2	shingle	0	-	0	1
+T	5	i.b.m e.g dr	7	21	0	3	shingle	0	-	0	1
+T	5	e.g	14	17	1	1	<ALPHANUM>	0	-	0	1
+T	5	e.g dr	14	21	0	2	shingle	0	-	0	1
+T	5	e.g dr smith's	14	30	0	3	shingle	0	-	0	1
+T	5	dr	19	21	1	1	<ALPHANUM>	0	-	0	1
+T	5	dr smith's	19	30	0	2	shingle	0	-	0	1
+T	5	dr smith's 3.14	19	35	0	3	shingle	0	-	0	1
+T	5	smith's	23	30	1	1	<ALPHANUM>	0	-	0	1
+T	5	smith's 3.14	23	35	0	2	shingle	0	-	0	1
+T	5	smith's 3.14 1,000,000	23	45	0	3	shingle	0	-	0	1
+T	5	3.14	31	35	1	1	<NUM>	0	-	0	1
+T	5	3.14 1,000,000	31	45	0	2	shingle	0	-	0	1
+T	5	3.14 1,000,000 0x1f	31	50	0	3	shingle	0	-	0	1
+T	5	1,000,000	36	45	1	1	<NUM>	0	-	0	1
+T	5	1,000,000 0x1f	36	50	0	2	shingle	0	-	0	1
+T	5	1,000,000 0x1f 2026	36	55	0	3	shingle	0	-	0	1
+T	5	0x1f	46	50	1	1	<ALPHANUM>	0	-	0	1
+T	5	0x1f 2026	46	55	0	2	shingle	0	-	0	1
+T	5	0x1f 2026 10	46	58	0	3	shingle	0	-	0	1
+T	5	2026	51	55	1	1	<NUM>	0	-	0	1
+T	5	2026 10	51	58	0	2	shingle	0	-	0	1
+T	5	2026 10 06	51	61	0	3	shingle	0	-	0	1
+T	5	10	56	58	1	1	<NUM>	0	-	0	1
+T	5	10 06	56	61	0	2	shingle	0	-	0	1
+T	5	10 06 12	56	64	0	3	shingle	0	-	0	1
+T	5	06	59	61	1	1	<NUM>	0	-	0	1
+T	5	06 12	59	64	0	2	shingle	0	-	0	1
+T	5	06 12 30	59	67	0	3	shingle	0	-	0	1
+T	5	12	62	64	1	1	<NUM>	0	-	0	1
+T	5	12 30	62	67	0	2	shingle	0	-	0	1
+T	5	12 30 42	62	71	0	3	shingle	0	-	0	1
+T	5	30	65	67	1	1	<NUM>	0	-	0	1
+T	5	30 42	65	71	0	2	shingle	0	-	0	1
+T	5	30 42 7	65	74	0	3	shingle	0	-	0	1
+T	5	42	69	71	1	1	<NUM>	0	-	0	1
+T	5	42 7	69	74	0	2	shingle	0	-	0	1
+T	5	42 7 1.5e10	69	81	0	3	shingle	0	-	0	1
+T	5	7	73	74	1	1	<NUM>	0	-	0	1
+T	5	7 1.5e10	73	81	0	2	shingle	0	-	0	1
+T	5	1.5e10	75	81	1	1	<ALPHANUM>	0	-	0	1
+E	5	81	81	0
+T	6	crème	0	5	1	1	<ALPHANUM>	0	-	0	1
+T	6	crème brûlée	0	12	0	2	shingle	0	-	0	1
+T	6	crème brûlée à	0	14	0	3	shingle	0	-	0	1
+T	6	brûlée	6	12	1	1	<ALPHANUM>	0	-	0	1
+T	6	brûlée à	6	14	0	2	shingle	0	-	0	1
+T	6	brûlée à la	6	17	0	3	shingle	0	-	0	1
+T	6	à	13	14	1	1	<ALPHANUM>	0	-	0	1
+T	6	à la	13	17	0	2	shingle	0	-	0	1
+T	6	à la café	13	22	0	3	shingle	0	-	0	1
+T	6	la	15	17	1	1	<ALPHANUM>	0	-	0	1
+T	6	la café	15	22	0	2	shingle	0	-	0	1
+T	6	la café naïve	15	30	0	3	shingle	0	-	0	1
+T	6	café	18	22	1	1	<ALPHANUM>	0	-	0	1
+T	6	café naïve	18	30	0	2	shingle	0	-	0	1
+T	6	café naïve façade	18	37	0	3	shingle	0	-	0	1
+T	6	naïve	25	30	1	1	<ALPHANUM>	0	-	0	1
+T	6	naïve façade	25	37	0	2	shingle	0	-	0	1
+T	6	naïve façade ærøskøbing	25	49	0	3	shingle	0	-	0	1
+T	6	façade	31	37	1	1	<ALPHANUM>	0	-	0	1
+T	6	façade ærøskøbing	31	49	0	2	shingle	0	-	0	1
+T	6	façade ærøskøbing straße	31	57	0	3	shingle	0	-	0	1
+T	6	ærøskøbing	39	49	1	1	<ALPHANUM>	0	-	0	1
+T	6	ærøskøbing straße	39	57	0	2	shingle	0	-	0	1
+T	6	ærøskøbing straße ĳsselmeer	39	68	0	3	shingle	0	-	0	1
+T	6	straße	51	57	1	1	<ALPHANUM>	0	-	0	1
+T	6	straße ĳsselmeer	51	68	0	2	shingle	0	-	0	1
+T	6	straße ĳsselmeer ﬁnancial	51	78	0	3	shingle	0	-	0	1
+T	6	ĳsselmeer	59	68	1	1	<ALPHANUM>	0	-	0	1
+T	6	ĳsselmeer ﬁnancial	59	78	0	2	shingle	0	-	0	1
+T	6	ĳsselmeer ﬁnancial ﬂow	59	82	0	3	shingle	0	-	0	1
+T	6	ﬁnancial	70	78	1	1	<ALPHANUM>	0	-	0	1
+T	6	ﬁnancial ﬂow	70	82	0	2	shingle	0	-	0	1
+T	6	ﬁnancial ﬂow œuvre	70	89	0	3	shingle	0	-	0	1
+T	6	ﬂow	79	82	1	1	<ALPHANUM>	0	-	0	1
+T	6	ﬂow œuvre	79	89	0	2	shingle	0	-	0	1
+T	6	ﬂow œuvre ångström	79	99	0	3	shingle	0	-	0	1
+T	6	œuvre	84	89	1	1	<ALPHANUM>	0	-	0	1
+T	6	œuvre ångström	84	99	0	2	shingle	0	-	0	1
+T	6	ångström	91	99	1	1	<ALPHANUM>	0	-	0	1
+E	6	99	99	0
+T	7	l'avion	0	7	1	1	<ALPHANUM>	0	-	0	1
+T	7	l'avion d'air	0	13	0	2	shingle	0	-	0	1
+T	7	l'avion d'air france	0	20	0	3	shingle	0	-	0	1
+T	7	d'air	8	13	1	1	<ALPHANUM>	0	-	0	1
+T	7	d'air france	8	20	0	2	shingle	0	-	0	1
+T	7	d'air france qu'il	8	26	0	3	shingle	0	-	0	1
+T	7	france	14	20	1	1	<ALPHANUM>	0	-	0	1
+T	7	france qu'il	14	26	0	2	shingle	0	-	0	1
+T	7	france qu'il a	14	28	0	3	shingle	0	-	0	1
+T	7	qu'il	21	26	1	1	<ALPHANUM>	0	-	0	1
+T	7	qu'il a	21	28	0	2	shingle	0	-	0	1
+T	7	qu'il a pris	21	33	0	3	shingle	0	-	0	1
+T	7	a	27	28	1	1	<ALPHANUM>	0	-	0	1
+T	7	a pris	27	33	0	2	shingle	0	-	0	1
+T	7	a pris jusqu'à	27	41	0	3	shingle	0	-	0	1
+T	7	pris	29	33	1	1	<ALPHANUM>	0	-	0	1
+T	7	pris jusqu'à	29	41	0	2	shingle	0	-	0	1
+T	7	pris jusqu'à l'aéroport	29	52	0	3	shingle	0	-	0	1
+T	7	jusqu'à	34	41	1	1	<ALPHANUM>	0	-	0	1
+T	7	jusqu'à l'aéroport	34	52	0	2	shingle	0	-	0	1
+T	7	jusqu'à l'aéroport n'était	34	60	0	3	shingle	0	-	0	1
+T	7	l'aéroport	42	52	1	1	<ALPHANUM>	0	-	0	1
+T	7	l'aéroport n'était	42	60	0	2	shingle	0	-	0	1
+T	7	l'aéroport n'était pas	42	64	0	3	shingle	0	-	0	1
+T	7	n'était	53	60	1	1	<ALPHANUM>	0	-	0	1
+T	7	n'était pas	53	64	0	2	shingle	0	-	0	1
+T	7	n'était pas l'hôtel	53	72	0	3	shingle	0	-	0	1
+T	7	pas	61	64	1	1	<ALPHANUM>	0	-	0	1
+T	7	pas l'hôtel	61	72	0	2	shingle	0	-	0	1
+T	7	l'hôtel	65	72	1	1	<ALPHANUM>	0	-	0	1
+E	7	72	72	0
+T	8	die	0	3	1	1	<ALPHANUM>	0	-	0	1
+T	8	die bundesrepublik	0	18	0	2	shingle	0	-	0	1
+T	8	die bundesrepublik deutschland	0	30	0	3	shingle	0	-	0	1
+T	8	bundesrepublik	4	18	1	1	<ALPHANUM>	0	-	0	1
+T	8	bundesrepublik deutschland	4	30	0	2	shingle	0	-	0	1
+T	8	bundesrepublik deutschland ist	4	34	0	3	shingle	0	-	0	1
+T	8	deutschland	19	30	1	1	<ALPHANUM>	0	-	0	1
+T	8	deutschland ist	19	34	0	2	shingle	0	-	0	1
+T	8	deutschland ist ein	19	38	0	3	shingle	0	-	0	1
+T	8	ist	31	34	1	1	<ALPHANUM>	0	-	0	1
+T	8	ist ein	31	38	0	2	shingle	0	-	0	1
+T	8	ist ein bundesstaat	31	50	0	3	shingle	0	-	0	1
+T	8	ein	35	38	1	1	<ALPHANUM>	0	-	0	1
+T	8	ein bundesstaat	35	50	0	2	shingle	0	-	0	1
+T	8	ein bundesstaat in	35	53	0	3	shingle	0	-	0	1
+T	8	bundesstaat	39	50	1	1	<ALPHANUM>	0	-	0	1
+T	8	bundesstaat in	39	53	0	2	shingle	0	-	0	1
+T	8	bundesstaat in mitteleuropa	39	66	0	3	shingle	0	-	0	1
+T	8	in	51	53	1	1	<ALPHANUM>	0	-	0	1
+T	8	in mitteleuropa	51	66	0	2	shingle	0	-	0	1
+T	8	in mitteleuropa fußgängerübergänge	51	86	0	3	shingle	0	-	0	1
+T	8	mitteleuropa	54	66	1	1	<ALPHANUM>	0	-	0	1
+T	8	mitteleuropa fußgängerübergänge	54	86	0	2	shingle	0	-	0	1
+T	8	mitteleuropa fußgängerübergänge sind	54	91	0	3	shingle	0	-	0	1
+T	8	fußgängerübergänge	68	86	1	1	<ALPHANUM>	0	-	0	1
+T	8	fußgängerübergänge sind	68	91	0	2	shingle	0	-	0	1
+T	8	fußgängerübergänge sind häufig	68	98	0	3	shingle	0	-	0	1
+T	8	sind	87	91	1	1	<ALPHANUM>	0	-	0	1
+T	8	sind häufig	87	98	0	2	shingle	0	-	0	1
+T	8	häufig	92	98	1	1	<ALPHANUM>	0	-	0	1
+E	8	99	99	0
+T	9	el	0	2	1	1	<ALPHANUM>	0	-	0	1
+T	9	el niño	0	7	0	2	shingle	0	-	0	1
+T	9	el niño comió	0	13	0	3	shingle	0	-	0	1
+T	9	niño	3	7	1	1	<ALPHANUM>	0	-	0	1
+T	9	niño comió	3	13	0	2	shingle	0	-	0	1
+T	9	niño comió pequeñas	3	22	0	3	shingle	0	-	0	1
+T	9	comió	8	13	1	1	<ALPHANUM>	0	-	0	1
+T	9	comió pequeñas	8	22	0	2	shingle	0	-	0	1
+T	9	comió pequeñas manzanas	8	31	0	3	shingle	0	-	0	1
+T	9	pequeñas	14	22	1	1	<ALPHANUM>	0	-	0	1
+T	9	pequeñas manzanas	14	31	0	2	shingle	0	-	0	1
+T	9	pequeñas manzanas dónde	14	39	0	3	shingle	0	-	0	1
+T	9	manzanas	23	31	1	1	<ALPHANUM>	0	-	0	1
+T	9	manzanas dónde	23	39	0	2	shingle	0	-	0	1
+T	9	manzanas dónde está	23	44	0	3	shingle	0	-	0	1
+T	9	dónde	34	39	1	1	<ALPHANUM>	0	-	0	1
+T	9	dónde está	34	44	0	2	shingle	0	-	0	1
+T	9	dónde está la	34	47	0	3	shingle	0	-	0	1
+T	9	está	40	44	1	1	<ALPHANUM>	0	-	0	1
+T	9	está la	40	47	0	2	shingle	0	-	0	1
+T	9	está la estación	40	56	0	3	shingle	0	-	0	1
+T	9	la	45	47	1	1	<ALPHANUM>	0	-	0	1
+T	9	la estación	45	56	0	2	shingle	0	-	0	1
+T	9	la estación qué	45	62	0	3	shingle	0	-	0	1
+T	9	estación	48	56	1	1	<ALPHANUM>	0	-	0	1
+T	9	estación qué	48	62	0	2	shingle	0	-	0	1
+T	9	estación qué día	48	66	0	3	shingle	0	-	0	1
+T	9	qué	59	62	1	1	<ALPHANUM>	0	-	0	1
+T	9	qué día	59	66	0	2	shingle	0	-	0	1
+T	9	día	63	66	1	1	<ALPHANUM>	0	-	0	1
+E	9	67	67	0
+T	10	съешь	0	5	1	1	<ALPHANUM>	0	-	0	1
+T	10	съешь же	0	8	0	2	shingle	0	-	0	1
+T	10	съешь же ещё	0	12	0	3	shingle	0	-	0	1
+T	10	же	6	8	1	1	<ALPHANUM>	0	-	0	1
+T	10	же ещё	6	12	0	2	shingle	0	-	0	1
+T	10	же ещё этих	6	17	0	3	shingle	0	-	0	1
+T	10	ещё	9	12	1	1	<ALPHANUM>	0	-	0	1
+T	10	ещё этих	9	17	0	2	shingle	0	-	0	1
+T	10	ещё этих мягких	9	24	0	3	shingle	0	-	0	1
+T	10	этих	13	17	1	1	<ALPHANUM>	0	-	0	1
+T	10	этих мягких	13	24	0	2	shingle	0	-	0	1
+T	10	этих мягких французских	13	36	0	3	shingle	0	-	0	1
+T	10	мягких	18	24	1	1	<ALPHANUM>	0	-	0	1
+T	10	мягких французских	18	36	0	2	shingle	0	-	0	1
+T	10	мягких французских булок	18	42	0	3	shingle	0	-	0	1
+T	10	французских	25	36	1	1	<ALPHANUM>	0	-	0	1
+T	10	французских булок	25	42	0	2	shingle	0	-	0	1
+T	10	французских булок да	25	46	0	3	shingle	0	-	0	1
+T	10	булок	37	42	1	1	<ALPHANUM>	0	-	0	1
+T	10	булок да	37	46	0	2	shingle	0	-	0	1
+T	10	булок да выпей	37	52	0	3	shingle	0	-	0	1
+T	10	да	44	46	1	1	<ALPHANUM>	0	-	0	1
+T	10	да выпей	44	52	0	2	shingle	0	-	0	1
+T	10	да выпей чаю	44	56	0	3	shingle	0	-	0	1
+T	10	выпей	47	52	1	1	<ALPHANUM>	0	-	0	1
+T	10	выпей чаю	47	56	0	2	shingle	0	-	0	1
+T	10	выпей чаю ёлка	47	62	0	3	shingle	0	-	0	1
+T	10	чаю	53	56	1	1	<ALPHANUM>	0	-	0	1
+T	10	чаю ёлка	53	62	0	2	shingle	0	-	0	1
+T	10	чаю ёлка ёлка	53	67	0	3	shingle	0	-	0	1
+T	10	ёлка	58	62	1	1	<ALPHANUM>	0	-	0	1
+T	10	ёлка ёлка	58	67	0	2	shingle	0	-	0	1
+T	10	ёлка	63	67	1	1	<ALPHANUM>	0	-	0	1
+E	10	67	67	0
+T	11	η	0	1	1	1	<ALPHANUM>	0	-	0	1
+T	11	η γρήγορη	0	9	0	2	shingle	0	-	0	1
+T	11	η γρήγορη καφέ	0	14	0	3	shingle	0	-	0	1
+T	11	γρήγορη	2	9	1	1	<ALPHANUM>	0	-	0	1
+T	11	γρήγορη καφέ	2	14	0	2	shingle	0	-	0	1
+T	11	γρήγορη καφέ αλεπού	2	21	0	3	shingle	0	-	0	1
+T	11	καφέ	10	14	1	1	<ALPHANUM>	0	-	0	1
+T	11	καφέ αλεπού	10	21	0	2	shingle	0	-	0	1
+T	11	καφέ αλεπού πηδάει	10	28	0	3	shingle	0	-	0	1
+T	11	αλεπού	15	21	1	1	<ALPHANUM>	0	-	0	1
+T	11	αλεπού πηδάει	15	28	0	2	shingle	0	-	0	1
+T	11	αλεπού πηδάει πάνω	15	33	0	3	shingle	0	-	0	1
+T	11	πηδάει	22	28	1	1	<ALPHANUM>	0	-	0	1
+T	11	πηδάει πάνω	22	33	0	2	shingle	0	-	0	1
+T	11	πηδάει πάνω από	22	37	0	3	shingle	0	-	0	1
+T	11	πάνω	29	33	1	1	<ALPHANUM>	0	-	0	1
+T	11	πάνω από	29	37	0	2	shingle	0	-	0	1
+T	11	πάνω από τον	29	41	0	3	shingle	0	-	0	1
+T	11	από	34	37	1	1	<ALPHANUM>	0	-	0	1
+T	11	από τον	34	41	0	2	shingle	0	-	0	1
+T	11	από τον τεμπέλη	34	49	0	3	shingle	0	-	0	1
+T	11	τον	38	41	1	1	<ALPHANUM>	0	-	0	1
+T	11	τον τεμπέλη	38	49	0	2	shingle	0	-	0	1
+T	11	τον τεμπέλη σκύλο	38	55	0	3	shingle	0	-	0	1
+T	11	τεμπέλη	42	49	1	1	<ALPHANUM>	0	-	0	1
+T	11	τεμπέλη σκύλο	42	55	0	2	shingle	0	-	0	1
+T	11	τεμπέλη σκύλο οδοσ	42	61	0	3	shingle	0	-	0	1
+T	11	σκύλο	50	55	1	1	<ALPHANUM>	0	-	0	1
+T	11	σκύλο οδοσ	50	61	0	2	shingle	0	-	0	1
+T	11	σκύλο οδοσ σίσυφος	50	69	0	3	shingle	0	-	0	1
+T	11	οδοσ	57	61	1	1	<ALPHANUM>	0	-	0	1
+T	11	οδοσ σίσυφος	57	69	0	2	shingle	0	-	0	1
+T	11	σίσυφος	62	69	1	1	<ALPHANUM>	0	-	0	1
+E	11	69	69	0
+T	12	türkçe	0	6	1	1	<ALPHANUM>	0	-	0	1
+T	12	türkçe istanbul	0	15	0	2	shingle	0	-	0	1
+T	12	türkçe istanbul ılık	0	20	0	3	shingle	0	-	0	1
+T	12	istanbul	7	15	1	1	<ALPHANUM>	0	-	0	1
+T	12	istanbul ılık	7	20	0	2	shingle	0	-	0	1
+T	12	istanbul ılık isparta	7	28	0	3	shingle	0	-	0	1
+T	12	ılık	16	20	1	1	<ALPHANUM>	0	-	0	1
+T	12	ılık isparta	16	28	0	2	shingle	0	-	0	1
+T	12	ılık isparta ünlü	16	34	0	3	shingle	0	-	0	1
+T	12	isparta	21	28	1	1	<ALPHANUM>	0	-	0	1
+T	12	isparta ünlü	21	34	0	2	shingle	0	-	0	1
+T	12	isparta ünlü şarkıcı	21	42	0	3	shingle	0	-	0	1
+T	12	ünlü	30	34	1	1	<ALPHANUM>	0	-	0	1
+T	12	ünlü şarkıcı	30	42	0	2	shingle	0	-	0	1
+T	12	ünlü şarkıcı çağrı	30	48	0	3	shingle	0	-	0	1
+T	12	şarkıcı	35	42	1	1	<ALPHANUM>	0	-	0	1
+T	12	şarkıcı çağrı	35	48	0	2	shingle	0	-	0	1
+T	12	çağrı	43	48	1	1	<ALPHANUM>	0	-	0	1
+E	12	48	48	0
+T	13	svenska	0	7	1	1	<ALPHANUM>	0	-	0	1
+T	13	svenska åka	0	12	0	2	shingle	0	-	0	1
+T	13	svenska åka på	0	15	0	3	shingle	0	-	0	1
+T	13	åka	9	12	1	1	<ALPHANUM>	0	-	0	1
+T	13	åka på	9	15	0	2	shingle	0	-	0	1
+T	13	åka på sjön	9	20	0	3	shingle	0	-	0	1
+T	13	på	13	15	1	1	<ALPHANUM>	0	-	0	1
+T	13	på sjön	13	20	0	2	shingle	0	-	0	1
+T	13	på sjön norsk	13	27	0	3	shingle	0	-	0	1
+T	13	sjön	16	20	1	1	<ALPHANUM>	0	-	0	1
+T	13	sjön norsk	16	27	0	2	shingle	0	-	0	1
+T	13	sjön norsk blåbærsyltetøy	16	43	0	3	shingle	0	-	0	1
+T	13	norsk	22	27	1	1	<ALPHANUM>	0	-	0	1
+T	13	norsk blåbærsyltetøy	22	43	0	2	shingle	0	-	0	1
+T	13	norsk blåbærsyltetøy dansk	22	50	0	3	shingle	0	-	0	1
+T	13	blåbærsyltetøy	29	43	1	1	<ALPHANUM>	0	-	0	1
+T	13	blåbærsyltetøy dansk	29	50	0	2	shingle	0	-	0	1
+T	13	blåbærsyltetøy dansk rødgrød	29	59	0	3	shingle	0	-	0	1
+T	13	dansk	45	50	1	1	<ALPHANUM>	0	-	0	1
+T	13	dansk rødgrød	45	59	0	2	shingle	0	-	0	1
+T	13	dansk rødgrød med	45	63	0	3	shingle	0	-	0	1
+T	13	rødgrød	52	59	1	1	<ALPHANUM>	0	-	0	1
+T	13	rødgrød med	52	63	0	2	shingle	0	-	0	1
+T	13	rødgrød med fløde	52	69	0	3	shingle	0	-	0	1
+T	13	med	60	63	1	1	<ALPHANUM>	0	-	0	1
+T	13	med fløde	60	69	0	2	shingle	0	-	0	1
+T	13	med fløde íslenska	60	79	0	3	shingle	0	-	0	1
+T	13	fløde	64	69	1	1	<ALPHANUM>	0	-	0	1
+T	13	fløde íslenska	64	79	0	2	shingle	0	-	0	1
+T	13	fløde íslenska þú	64	83	0	3	shingle	0	-	0	1
+T	13	íslenska	71	79	1	1	<ALPHANUM>	0	-	0	1
+T	13	íslenska þú	71	83	0	2	shingle	0	-	0	1
+T	13	íslenska þú ðú	71	86	0	3	shingle	0	-	0	1
+T	13	þú	81	83	1	1	<ALPHANUM>	0	-	0	1
+T	13	þú ðú	81	86	0	2	shingle	0	-	0	1
+T	13	ðú	84	86	1	1	<ALPHANUM>	0	-	0	1
+E	13	86	86	0
+T	14	العربية	0	7	1	1	<ALPHANUM>	0	-	0	1
+T	14	العربية لغة	0	11	0	2	shingle	0	-	0	1
+T	14	العربية لغة جميلة	0	17	0	3	shingle	0	-	0	1
+T	14	لغة	8	11	1	1	<ALPHANUM>	0	-	0	1
+T	14	لغة جميلة	8	17	0	2	shingle	0	-	0	1
+T	14	لغة جميلة والكتابُ	8	27	0	3	shingle	0	-	0	1
+T	14	جميلة	12	17	1	1	<ALPHANUM>	0	-	0	1
+T	14	جميلة والكتابُ	12	27	0	2	shingle	0	-	0	1
+T	14	جميلة والكتابُ مفيدٌ	12	33	0	3	shingle	0	-	0	1
+T	14	والكتابُ	19	27	1	1	<ALPHANUM>	0	-	0	1
+T	14	والكتابُ مفيدٌ	19	33	0	2	shingle	0	-	0	1
+T	14	والكتابُ مفيدٌ ٠١٢٣٤٥٦٧٨٩	19	44	0	3	shingle	0	-	0	1
+T	14	مفيدٌ	28	33	1	1	<ALPHANUM>	0	-	0	1
+T	14	مفيدٌ ٠١٢٣٤٥٦٧٨٩	28	44	0	2	shingle	0	-	0	1
+T	14	٠١٢٣٤٥٦٧٨٩	34	44	1	1	<NUM>	0	-	0	1
+E	14	44	44	0
+T	15	עברית	0	5	1	1	<ALPHANUM>	0	-	0	1
+T	15	עברית היא	0	9	0	2	shingle	0	-	0	1
+T	15	עברית היא שפה	0	13	0	3	shingle	0	-	0	1
+T	15	היא	6	9	1	1	<ALPHANUM>	0	-	0	1
+T	15	היא שפה	6	13	0	2	shingle	0	-	0	1
+T	15	היא שפה שמית	6	18	0	3	shingle	0	-	0	1
+T	15	שפה	10	13	1	1	<ALPHANUM>	0	-	0	1
+T	15	שפה שמית	10	18	0	2	shingle	0	-	0	1
+T	15	שפה שמית ספר	10	23	0	3	shingle	0	-	0	1
+T	15	שמית	14	18	1	1	<ALPHANUM>	0	-	0	1
+T	15	שמית ספר	14	23	0	2	shingle	0	-	0	1
+T	15	שמית ספר תורה	14	29	0	3	shingle	0	-	0	1
+T	15	ספר	20	23	1	1	<ALPHANUM>	0	-	0	1
+T	15	ספר תורה	20	29	0	2	shingle	0	-	0	1
+T	15	תורה	25	29	1	1	<ALPHANUM>	0	-	0	1
+E	15	30	30	0
+T	16	فارسی	0	5	1	1	<ALPHANUM>	0	-	0	1
+T	16	فارسی زبان	0	10	0	2	shingle	0	-	0	1
+T	16	فارسی زبان زیبایی	0	17	0	3	shingle	0	-	0	1
+T	16	زبان	6	10	1	1	<ALPHANUM>	0	-	0	1
+T	16	زبان زیبایی	6	17	0	2	shingle	0	-	0	1
+T	16	زبان زیبایی است	6	21	0	3	shingle	0	-	0	1
+T	16	زیبایی	11	17	1	1	<ALPHANUM>	0	-	0	1
+T	16	زیبایی است	11	21	0	2	shingle	0	-	0	1
+T	16	زیبایی است و	11	23	0	3	shingle	0	-	0	1
+T	16	است	18	21	1	1	<ALPHANUM>	0	-	0	1
+T	16	است و	18	23	0	2	shingle	0	-	0	1
+T	16	است و می‌خواهم	18	32	0	3	shingle	0	-	0	1
+T	16	و	22	23	1	1	<ALPHANUM>	0	-	0	1
+T	16	و می‌خواهم	22	32	0	2	shingle	0	-	0	1
+T	16	و می‌خواهم کتاب‌ها	22	40	0	3	shingle	0	-	0	1
+T	16	می‌خواهم	24	32	1	1	<ALPHANUM>	0	-	0	1
+T	16	می‌خواهم کتاب‌ها	24	40	0	2	shingle	0	-	0	1
+T	16	می‌خواهم کتاب‌ها را	24	43	0	3	shingle	0	-	0	1
+T	16	کتاب‌ها	33	40	1	1	<ALPHANUM>	0	-	0	1
+T	16	کتاب‌ها را	33	43	0	2	shingle	0	-	0	1
+T	16	کتاب‌ها را بخوانم	33	50	0	3	shingle	0	-	0	1
+T	16	را	41	43	1	1	<ALPHANUM>	0	-	0	1
+T	16	را بخوانم	41	50	0	2	shingle	0	-	0	1
+T	16	را بخوانم ۱۲۳	41	54	0	3	shingle	0	-	0	1
+T	16	بخوانم	44	50	1	1	<ALPHANUM>	0	-	0	1
+T	16	بخوانم ۱۲۳	44	54	0	2	shingle	0	-	0	1
+T	16	۱۲۳	51	54	1	1	<NUM>	0	-	0	1
+E	16	54	54	0
+T	17	हिन्दी	0	6	1	1	<ALPHANUM>	0	-	0	1
+T	17	हिन्दी भाषा	0	11	0	2	shingle	0	-	0	1
+T	17	हिन्दी भाषा बहुत	0	16	0	3	shingle	0	-	0	1
+T	17	भाषा	7	11	1	1	<ALPHANUM>	0	-	0	1
+T	17	भाषा बहुत	7	16	0	2	shingle	0	-	0	1
+T	17	भाषा बहुत सुंदर	7	22	0	3	shingle	0	-	0	1
+T	17	बहुत	12	16	1	1	<ALPHANUM>	0	-	0	1
+T	17	बहुत सुंदर	12	22	0	2	shingle	0	-	0	1
+T	17	बहुत सुंदर है	12	25	0	3	shingle	0	-	0	1
+T	17	सुंदर	17	22	1	1	<ALPHANUM>	0	-	0	1
+T	17	सुंदर है	17	25	0	2	shingle	0	-	0	1
+T	17	सुंदर है संख्या	17	33	0	3	shingle	0	-	0	1
+T	17	है	23	25	1	1	<ALPHANUM>	0	-	0	1
+T	17	है संख्या	23	33	0	2	shingle	0	-	0	1
+T	17	है संख्या १२३	23	37	0	3	shingle	0	-	0	1
+T	17	संख्या	27	33	1	1	<ALPHANUM>	0	-	0	1
+T	17	संख्या १२३	27	37	0	2	shingle	0	-	0	1
+T	17	१२३	34	37	1	1	<NUM>	0	-	0	1
+E	17	37	37	0
+T	18	বাংলা	0	5	1	1	<ALPHANUM>	0	-	0	1
+T	18	বাংলা ভাষা	0	10	0	2	shingle	0	-	0	1
+T	18	বাংলা ভাষা সুন্দর	0	17	0	3	shingle	0	-	0	1
+T	18	ভাষা	6	10	1	1	<ALPHANUM>	0	-	0	1
+T	18	ভাষা সুন্দর	6	17	0	2	shingle	0	-	0	1
+T	18	ভাষা সুন্দর ১২৩	6	21	0	3	shingle	0	-	0	1
+T	18	সুন্দর	11	17	1	1	<ALPHANUM>	0	-	0	1
+T	18	সুন্দর ১২৩	11	21	0	2	shingle	0	-	0	1
+T	18	১২৩	18	21	1	1	<NUM>	0	-	0	1
+E	18	21	21	0
+T	19	ภาษาไทยไม่มีช่องว่างระหว่างคำ	0	29	1	1	<SOUTHEAST_ASIAN>	0	-	0	1
+T	19	ภาษาไทยไม่มีช่องว่างระหว่างคำ แต่มีช่องว่างระหว่างประโยค	0	56	0	2	shingle	0	-	0	1
+T	19	ภาษาไทยไม่มีช่องว่างระหว่างคำ แต่มีช่องว่างระหว่างประโยค ๑๒๓	0	60	0	3	shingle	0	-	0	1
+T	19	แต่มีช่องว่างระหว่างประโยค	30	56	1	1	<SOUTHEAST_ASIAN>	0	-	0	1
+T	19	แต่มีช่องว่างระหว่างประโยค ๑๒๓	30	60	0	2	shingle	0	-	0	1
+T	19	๑๒๓	57	60	1	1	<NUM>	0	-	0	1
+E	19	60	60	0
+T	20	中	0	1	1	1	<IDEOGRAPHIC>	0	-	0	1
+T	20	中 华	0	2	0	2	shingle	0	-	0	1
+T	20	中 华 人	0	3	0	3	shingle	0	-	0	1
+T	20	华	1	2	1	1	<IDEOGRAPHIC>	0	-	0	1
+T	20	华 人	1	3	0	2	shingle	0	-	0	1
+T	20	华 人 民	1	4	0	3	shingle	0	-	0	1
+T	20	人	2	3	1	1	<IDEOGRAPHIC>	0	-	0	1
+T	20	人 民	2	4	0	2	shingle	0	-	0	1
+T	20	人 民 共	2	5	0	3	shingle	0	-	0	1
+T	20	民	3	4	1	1	<IDEOGRAPHIC>	0	-	0	1
+T	20	民 共	3	5	0	2	shingle	0	-	0	1
+T	20	民 共 和	3	6	0	3	shingle	0	-	0	1
+T	20	共	4	5	1	1	<IDEOGRAPHIC>	0	-	0	1
+T	20	共 和	4	6	0	2	shingle	0	-	0	1
+T	20	共 和 国	4	7	0	3	shingle	0	-	0	1
+T	20	和	5	6	1	1	<IDEOGRAPHIC>	0	-	0	1
+T	20	和 国	5	7	0	2	shingle	0	-	0	1
+T	20	和 国 成	5	8	0	3	shingle	0	-	0	1
+T	20	国	6	7	1	1	<IDEOGRAPHIC>	0	-	0	1
+T	20	国 成	6	8	0	2	shingle	0	-	0	1
+T	20	国 成 立	6	9	0	3	shingle	0	-	0	1
+T	20	成	7	8	1	1	<IDEOGRAPHIC>	0	-	0	1
+T	20	成 立	7	9	0	2	shingle	0	-	0	1
+T	20	成 立 于	7	10	0	3	shingle	0	-	0	1
+T	20	立	8	9	1	1	<IDEOGRAPHIC>	0	-	0	1
+T	20	立 于	8	10	0	2	shingle	0	-	0	1
+T	20	立 于 1949	8	14	0	3	shingle	0	-	0	1
+T	20	于	9	10	1	1	<IDEOGRAPHIC>	0	-	0	1
+T	20	于 1949	9	14	0	2	shingle	0	-	0	1
+T	20	于 1949 年	9	15	0	3	shingle	0	-	0	1
+T	20	1949	10	14	1	1	<NUM>	0	-	0	1
+T	20	1949 年	10	15	0	2	shingle	0	-	0	1
+T	20	1949 年 我	10	17	0	3	shingle	0	-	0	1
+T	20	年	14	15	1	1	<IDEOGRAPHIC>	0	-	0	1
+T	20	年 我	14	17	0	2	shingle	0	-	0	1
+T	20	年 我 爱	14	18	0	3	shingle	0	-	0	1
+T	20	我	16	17	1	1	<IDEOGRAPHIC>	0	-	0	1
+T	20	我 爱	16	18	0	2	shingle	0	-	0	1
+T	20	我 爱 北	16	19	0	3	shingle	0	-	0	1
+T	20	爱	17	18	1	1	<IDEOGRAPHIC>	0	-	0	1
+T	20	爱 北	17	19	0	2	shingle	0	-	0	1
+T	20	爱 北 京	17	20	0	3	shingle	0	-	0	1
+T	20	北	18	19	1	1	<IDEOGRAPHIC>	0	-	0	1
+T	20	北 京	18	20	0	2	shingle	0	-	0	1
+T	20	北 京 天	18	21	0	3	shingle	0	-	0	1
+T	20	京	19	20	1	1	<IDEOGRAPHIC>	0	-	0	1
+T	20	京 天	19	21	0	2	shingle	0	-	0	1
+T	20	京 天 安	19	22	0	3	shingle	0	-	0	1
+T	20	天	20	21	1	1	<IDEOGRAPHIC>	0	-	0	1
+T	20	天 安	20	22	0	2	shingle	0	-	0	1
+T	20	天 安 门	20	23	0	3	shingle	0	-	0	1
+T	20	安	21	22	1	1	<IDEOGRAPHIC>	0	-	0	1
+T	20	安 门	21	23	0	2	shingle	0	-	0	1
+T	20	门	22	23	1	1	<IDEOGRAPHIC>	0	-	0	1
+E	20	24	24	0
+T	21	日	0	1	1	1	<IDEOGRAPHIC>	0	-	0	1
+T	21	日 本	0	2	0	2	shingle	0	-	0	1
+T	21	日 本 語	0	3	0	3	shingle	0	-	0	1
+T	21	本	1	2	1	1	<IDEOGRAPHIC>	0	-	0	1
+T	21	本 語	1	3	0	2	shingle	0	-	0	1
+T	21	本 語 の	1	4	0	3	shingle	0	-	0	1
+T	21	語	2	3	1	1	<IDEOGRAPHIC>	0	-	0	1
+T	21	語 の	2	4	0	2	shingle	0	-	0	1
+T	21	語 の テキスト	2	8	0	3	shingle	0	-	0	1
+T	21	の	3	4	1	1	<HIRAGANA>	0	-	0	1
+T	21	の テキスト	3	8	0	2	shingle	0	-	0	1
+T	21	の テキスト と	3	9	0	3	shingle	0	-	0	1
+T	21	テキスト	4	8	1	1	<KATAKANA>	0	-	0	1
+T	21	テキスト と	4	9	0	2	shingle	0	-	0	1
+T	21	テキスト と カタカナ	4	13	0	3	shingle	0	-	0	1
+T	21	と	8	9	1	1	<HIRAGANA>	0	-	0	1
+T	21	と カタカナ	8	13	0	2	shingle	0	-	0	1
+T	21	と カタカナ と	8	14	0	3	shingle	0	-	0	1
+T	21	カタカナ	9	13	1	1	<KATAKANA>	0	-	0	1
+T	21	カタカナ と	9	14	0	2	shingle	0	-	0	1
+T	21	カタカナ と ｶﾀｶﾅ	9	18	0	3	shingle	0	-	0	1
+T	21	と	13	14	1	1	<HIRAGANA>	0	-	0	1
+T	21	と ｶﾀｶﾅ	13	18	0	2	shingle	0	-	0	1
+T	21	と ｶﾀｶﾅ と	13	19	0	3	shingle	0	-	0	1
+T	21	ｶﾀｶﾅ	14	18	1	1	<KATAKANA>	0	-	0	1
+T	21	ｶﾀｶﾅ と	14	19	0	2	shingle	0	-	0	1
+T	21	ｶﾀｶﾅ と ひ	14	20	0	3	shingle	0	-	0	1
+T	21	と	18	19	1	1	<HIRAGANA>	0	-	0	1
+T	21	と ひ	18	20	0	2	shingle	0	-	0	1
+T	21	と ひ ら	18	21	0	3	shingle	0	-	0	1
+T	21	ひ	19	20	1	1	<HIRAGANA>	0	-	0	1
+T	21	ひ ら	19	21	0	2	shingle	0	-	0	1
+T	21	ひ ら が	19	22	0	3	shingle	0	-	0	1
+T	21	ら	20	21	1	1	<HIRAGANA>	0	-	0	1
+T	21	ら が	20	22	0	2	shingle	0	-	0	1
+T	21	ら が な	20	23	0	3	shingle	0	-	0	1
+T	21	が	21	22	1	1	<HIRAGANA>	0	-	0	1
+T	21	が な	21	23	0	2	shingle	0	-	0	1
+T	21	が な ａｂｃ１２３	21	30	0	3	shingle	0	-	0	1
+T	21	な	22	23	1	1	<HIRAGANA>	0	-	0	1
+T	21	な ａｂｃ１２３	22	30	0	2	shingle	0	-	0	1
+T	21	な ａｂｃ１２３ と	22	31	0	3	shingle	0	-	0	1
+T	21	ａｂｃ１２３	24	30	1	1	<ALPHANUM>	0	-	0	1
+T	21	ａｂｃ１２３ と	24	31	0	2	shingle	0	-	0	1
+T	21	ａｂｃ１２３ と 全	24	32	0	3	shingle	0	-	0	1
+T	21	と	30	31	1	1	<HIRAGANA>	0	-	0	1
+T	21	と 全	30	32	0	2	shingle	0	-	0	1
+T	21	と 全 角	30	33	0	3	shingle	0	-	0	1
+T	21	全	31	32	1	1	<IDEOGRAPHIC>	0	-	0	1
+T	21	全 角	31	33	0	2	shingle	0	-	0	1
+T	21	角	32	33	1	1	<IDEOGRAPHIC>	0	-	0	1
+E	21	33	33	0
+T	22	한국어	0	3	1	1	<HANGUL>	0	-	0	1
+T	22	한국어 텍스트입니다	0	10	0	2	shingle	0	-	0	1
+T	22	한국어 텍스트입니다 서울특별시	0	16	0	3	shingle	0	-	0	1
+T	22	텍스트입니다	4	10	1	1	<HANGUL>	0	-	0	1
+T	22	텍스트입니다 서울특별시	4	16	0	2	shingle	0	-	0	1
+T	22	텍스트입니다 서울특별시 ｋｏｒｅａ	4	22	0	3	shingle	0	-	0	1
+T	22	서울특별시	11	16	1	1	<HANGUL>	0	-	0	1
+T	22	서울특별시 ｋｏｒｅａ	11	22	0	2	shingle	0	-	0	1
+T	22	ｋｏｒｅａ	17	22	1	1	<ALPHANUM>	0	-	0	1
+E	22	22	22	0
+T	23	emoji	0	5	1	1	<ALPHANUM>	0	-	0	1
+T	23	emoji 👍	0	9	0	2	shingle	0	-	0	1
+T	23	emoji 👍 🇺🇸	0	14	0	3	shingle	0	-	0	1
+T	23	👍	7	9	1	1	<EMOJI>	0	-	0	1
+T	23	👍 🇺🇸	7	14	0	2	shingle	0	-	0	1
+T	23	👍 🇺🇸 👨‍👩‍👧	7	23	0	3	shingle	0	-	0	1
+T	23	🇺🇸	10	14	1	1	<EMOJI>	0	-	0	1
+T	23	🇺🇸 👨‍👩‍👧	10	23	0	2	shingle	0	-	0	1
+T	23	🇺🇸 👨‍👩‍👧 ✌🏽	10	27	0	3	shingle	0	-	0	1
+T	23	👨‍👩‍👧	15	23	1	1	<EMOJI>	0	-	0	1
+T	23	👨‍👩‍👧 ✌🏽	15	27	0	2	shingle	0	-	0	1
+T	23	👨‍👩‍👧 ✌🏽 😀	15	30	0	3	shingle	0	-	0	1
+T	23	✌🏽	24	27	1	1	<EMOJI>	0	-	0	1
+T	23	✌🏽 😀	24	30	0	2	shingle	0	-	0	1
+T	23	✌🏽 😀 😀	24	32	0	3	shingle	0	-	0	1
+T	23	😀	28	30	1	1	<EMOJI>	0	-	0	1
+T	23	😀 😀	28	32	0	2	shingle	0	-	0	1
+T	23	😀 😀 ❤️	28	35	0	3	shingle	0	-	0	1
+T	23	😀	30	32	1	1	<EMOJI>	0	-	0	1
+T	23	😀 ❤️	30	35	0	2	shingle	0	-	0	1
+T	23	😀 ❤️ 1️⃣	30	39	0	3	shingle	0	-	0	1
+T	23	❤️	33	35	1	1	<EMOJI>	0	-	0	1
+T	23	❤️ 1️⃣	33	39	0	2	shingle	0	-	0	1
+T	23	❤️ 1️⃣ and	33	43	0	3	shingle	0	-	0	1
+T	23	1️⃣	36	39	1	1	<EMOJI>	0	-	0	1
+T	23	1️⃣ and	36	43	0	2	shingle	0	-	0	1
+T	23	1️⃣ and 𝐀𝐁𝐂	36	50	0	3	shingle	0	-	0	1
+T	23	and	40	43	1	1	<ALPHANUM>	0	-	0	1
+T	23	and 𝐀𝐁𝐂	40	50	0	2	shingle	0	-	0	1
+T	23	and 𝐀𝐁𝐂 math	40	55	0	3	shingle	0	-	0	1
+T	23	𝐀𝐁𝐂	44	50	1	1	<ALPHANUM>	0	-	0	1
+T	23	𝐀𝐁𝐂 math	44	55	0	2	shingle	0	-	0	1
+T	23	𝐀𝐁𝐂 math plus	44	60	0	3	shingle	0	-	0	1
+T	23	math	51	55	1	1	<ALPHANUM>	0	-	0	1
+T	23	math plus	51	60	0	2	shingle	0	-	0	1
+T	23	math plus 𠀀	51	63	0	3	shingle	0	-	0	1
+T	23	plus	56	60	1	1	<ALPHANUM>	0	-	0	1
+T	23	plus 𠀀	56	63	0	2	shingle	0	-	0	1
+T	23	plus 𠀀 𠀁	56	65	0	3	shingle	0	-	0	1
+T	23	𠀀	61	63	1	1	<IDEOGRAPHIC>	0	-	0	1
+T	23	𠀀 𠀁	61	65	0	2	shingle	0	-	0	1
+T	23	𠀀 𠀁 rare	61	70	0	3	shingle	0	-	0	1
+T	23	𠀁	63	65	1	1	<IDEOGRAPHIC>	0	-	0	1
+T	23	𠀁 rare	63	70	0	2	shingle	0	-	0	1
+T	23	𠀁 rare ideographs	63	81	0	3	shingle	0	-	0	1
+T	23	rare	66	70	1	1	<ALPHANUM>	0	-	0	1
+T	23	rare ideographs	66	81	0	2	shingle	0	-	0	1
+T	23	ideographs	71	81	1	1	<ALPHANUM>	0	-	0	1
+E	23	81	81	0
+T	24	visit	0	5	1	1	<ALPHANUM>	0	-	0	1
+T	24	visit https	0	11	0	2	shingle	0	-	0	1
+T	24	visit https lucene.apache.org	0	31	0	3	shingle	0	-	0	1
+T	24	https	6	11	1	1	<ALPHANUM>	0	-	0	1
+T	24	https lucene.apache.org	6	31	0	2	shingle	0	-	0	1
+T	24	https lucene.apache.org core	6	36	0	3	shingle	0	-	0	1
+T	24	lucene.apache.org	14	31	1	1	<ALPHANUM>	0	-	0	1
+T	24	lucene.apache.org core	14	36	0	2	shingle	0	-	0	1
+T	24	lucene.apache.org core or	14	40	0	3	shingle	0	-	0	1
+T	24	core	32	36	1	1	<ALPHANUM>	0	-	0	1
+T	24	core or	32	40	0	2	shingle	0	-	0	1
+T	24	core or mail	32	45	0	3	shingle	0	-	0	1
+T	24	or	38	40	1	1	<ALPHANUM>	0	-	0	1
+T	24	or mail	38	45	0	2	shingle	0	-	0	1
+T	24	or mail dev	38	49	0	3	shingle	0	-	0	1
+T	24	mail	41	45	1	1	<ALPHANUM>	0	-	0	1
+T	24	mail dev	41	49	0	2	shingle	0	-	0	1
+T	24	mail dev lucene.apache.org	41	67	0	3	shingle	0	-	0	1
+T	24	dev	46	49	1	1	<ALPHANUM>	0	-	0	1
+T	24	dev lucene.apache.org	46	67	0	2	shingle	0	-	0	1
+T	24	dev lucene.apache.org today	46	73	0	3	shingle	0	-	0	1
+T	24	lucene.apache.org	50	67	1	1	<ALPHANUM>	0	-	0	1
+T	24	lucene.apache.org today	50	73	0	2	shingle	0	-	0	1
+T	24	today	68	73	1	1	<ALPHANUM>	0	-	0	1
+E	24	74	74	0
+T	25	see	0	3	1	1	<ALPHANUM>	0	-	0	1
+T	25	see www.example.com	0	19	0	2	shingle	0	-	0	1
+T	25	see www.example.com path	0	24	0	3	shingle	0	-	0	1
+T	25	www.example.com	4	19	1	1	<ALPHANUM>	0	-	0	1
+T	25	www.example.com path	4	24	0	2	shingle	0	-	0	1
+T	25	www.example.com path q	4	26	0	3	shingle	0	-	0	1
+T	25	path	20	24	1	1	<ALPHANUM>	0	-	0	1
+T	25	path q	20	26	0	2	shingle	0	-	0	1
+T	25	path q 1	20	28	0	3	shingle	0	-	0	1
+T	25	q	25	26	1	1	<ALPHANUM>	0	-	0	1
+T	25	q 1	25	28	0	2	shingle	0	-	0	1
+T	25	q 1 x	25	30	0	3	shingle	0	-	0	1
+T	25	1	27	28	1	1	<NUM>	0	-	0	1
+T	25	1 x	27	30	0	2	shingle	0	-	0	1
+T	25	1 x y	27	32	0	3	shingle	0	-	0	1
+T	25	x	29	30	1	1	<ALPHANUM>	0	-	0	1
+T	25	x y	29	32	0	2	shingle	0	-	0	1
+T	25	x y frag	29	37	0	3	shingle	0	-	0	1
+T	25	y	31	32	1	1	<ALPHANUM>	0	-	0	1
+T	25	y frag	31	37	0	2	shingle	0	-	0	1
+T	25	y frag and	31	41	0	3	shingle	0	-	0	1
+T	25	frag	33	37	1	1	<ALPHANUM>	0	-	0	1
+T	25	frag and	33	41	0	2	shingle	0	-	0	1
+T	25	frag and http	33	46	0	3	shingle	0	-	0	1
+T	25	and	38	41	1	1	<ALPHANUM>	0	-	0	1
+T	25	and http	38	46	0	2	shingle	0	-	0	1
+T	25	and http 1	38	53	0	3	shingle	0	-	0	1
+T	25	http	42	46	1	1	<ALPHANUM>	0	-	0	1
+T	25	http 1	42	53	0	2	shingle	0	-	0	1
+T	25	http 1 8080	42	59	0	3	shingle	0	-	0	1
+T	25	1	52	53	1	1	<NUM>	0	-	0	1
+T	25	1 8080	52	59	0	2	shingle	0	-	0	1
+T	25	1 8080 a	52	61	0	3	shingle	0	-	0	1
+T	25	8080	55	59	1	1	<NUM>	0	-	0	1
+T	25	8080 a	55	61	0	2	shingle	0	-	0	1
+T	25	8080 a user.name	55	72	0	3	shingle	0	-	0	1
+T	25	a	60	61	1	1	<ALPHANUM>	0	-	0	1
+T	25	a user.name	60	72	0	2	shingle	0	-	0	1
+T	25	a user.name tag	60	76	0	3	shingle	0	-	0	1
+T	25	user.name	63	72	1	1	<ALPHANUM>	0	-	0	1
+T	25	user.name tag	63	76	0	2	shingle	0	-	0	1
+T	25	user.name tag sub.example.co.uk	63	94	0	3	shingle	0	-	0	1
+T	25	tag	73	76	1	1	<ALPHANUM>	0	-	0	1
+T	25	tag sub.example.co.uk	73	94	0	2	shingle	0	-	0	1
+T	25	tag sub.example.co.uk 192.168.0.1	73	107	0	3	shingle	0	-	0	1
+T	25	sub.example.co.uk	77	94	1	1	<ALPHANUM>	0	-	0	1
+T	25	sub.example.co.uk 192.168.0.1	77	107	0	2	shingle	0	-	0	1
+T	25	192.168.0.1	96	107	1	1	<NUM>	0	-	0	1
+E	25	107	107	0
+T	26	mailto:someone	0	14	1	1	<ALPHANUM>	0	-	0	1
+T	26	mailto:someone example.org	0	26	0	2	shingle	0	-	0	1
+T	26	mailto:someone example.org ftp	0	30	0	3	shingle	0	-	0	1
+T	26	example.org	15	26	1	1	<ALPHANUM>	0	-	0	1
+T	26	example.org ftp	15	30	0	2	shingle	0	-	0	1
+T	26	example.org ftp files.example.net	15	50	0	3	shingle	0	-	0	1
+T	26	ftp	27	30	1	1	<ALPHANUM>	0	-	0	1
+T	26	ftp files.example.net	27	50	0	2	shingle	0	-	0	1
+T	26	ftp files.example.net pub	27	54	0	3	shingle	0	-	0	1
+T	26	files.example.net	33	50	1	1	<ALPHANUM>	0	-	0	1
+T	26	files.example.net pub	33	54	0	2	shingle	0	-	0	1
+T	26	files.example.net pub file.tar.gz	33	66	0	3	shingle	0	-	0	1
+T	26	pub	51	54	1	1	<ALPHANUM>	0	-	0	1
+T	26	pub file.tar.gz	51	66	0	2	shingle	0	-	0	1
+T	26	pub file.tar.gz example.com	51	78	0	3	shingle	0	-	0	1
+T	26	file.tar.gz	55	66	1	1	<ALPHANUM>	0	-	0	1
+T	26	file.tar.gz example.com	55	78	0	2	shingle	0	-	0	1
+T	26	example.com	67	78	1	1	<ALPHANUM>	0	-	0	1
+E	26	79	79	0
+T	27	p	1	2	1	1	<ALPHANUM>	0	-	0	1
+T	27	p hello	1	8	0	2	shingle	0	-	0	1
+T	27	p hello b	1	11	0	3	shingle	0	-	0	1
+T	27	hello	3	8	1	1	<ALPHANUM>	0	-	0	1
+T	27	hello b	3	11	0	2	shingle	0	-	0	1
+T	27	hello b world	3	17	0	3	shingle	0	-	0	1
+T	27	b	10	11	1	1	<ALPHANUM>	0	-	0	1
+T	27	b world	10	17	0	2	shingle	0	-	0	1
+T	27	b world b	10	20	0	3	shingle	0	-	0	1
+T	27	world	12	17	1	1	<ALPHANUM>	0	-	0	1
+T	27	world b	12	20	0	2	shingle	0	-	0	1
+T	27	world b amp	12	26	0	3	shingle	0	-	0	1
+T	27	b	19	20	1	1	<ALPHANUM>	0	-	0	1
+T	27	b amp	19	26	0	2	shingle	0	-	0	1
+T	27	b amp friends	19	35	0	3	shingle	0	-	0	1
+T	27	amp	23	26	1	1	<ALPHANUM>	0	-	0	1
+T	27	amp friends	23	35	0	2	shingle	0	-	0	1
+T	27	amp friends lt	23	39	0	3	shingle	0	-	0	1
+T	27	friends	28	35	1	1	<ALPHANUM>	0	-	0	1
+T	27	friends lt	28	39	0	2	shingle	0	-	0	1
+T	27	friends lt tag	28	43	0	3	shingle	0	-	0	1
+T	27	lt	37	39	1	1	<ALPHANUM>	0	-	0	1
+T	27	lt tag	37	43	0	2	shingle	0	-	0	1
+T	27	lt tag gt	37	46	0	3	shingle	0	-	0	1
+T	27	tag	40	43	1	1	<ALPHANUM>	0	-	0	1
+T	27	tag gt	40	46	0	2	shingle	0	-	0	1
+T	27	tag gt 169	40	53	0	3	shingle	0	-	0	1
+T	27	gt	44	46	1	1	<ALPHANUM>	0	-	0	1
+T	27	gt 169	44	53	0	2	shingle	0	-	0	1
+T	27	gt 169 x263a	44	62	0	3	shingle	0	-	0	1
+T	27	169	50	53	1	1	<NUM>	0	-	0	1
+T	27	169 x263a	50	62	0	2	shingle	0	-	0	1
+T	27	169 x263a nbsp	50	69	0	3	shingle	0	-	0	1
+T	27	x263a	57	62	1	1	<ALPHANUM>	0	-	0	1
+T	27	x263a nbsp	57	69	0	2	shingle	0	-	0	1
+T	27	x263a nbsp x	57	71	0	3	shingle	0	-	0	1
+T	27	nbsp	65	69	1	1	<ALPHANUM>	0	-	0	1
+T	27	nbsp x	65	71	0	2	shingle	0	-	0	1
+T	27	nbsp x eacute	65	78	0	3	shingle	0	-	0	1
+T	27	x	70	71	1	1	<ALPHANUM>	0	-	0	1
+T	27	x eacute	70	78	0	2	shingle	0	-	0	1
+T	27	x eacute p	70	82	0	3	shingle	0	-	0	1
+T	27	eacute	72	78	1	1	<ALPHANUM>	0	-	0	1
+T	27	eacute p	72	82	0	2	shingle	0	-	0	1
+T	27	eacute p a	72	89	0	3	shingle	0	-	0	1
+T	27	p	81	82	1	1	<ALPHANUM>	0	-	0	1
+T	27	p a	81	89	0	2	shingle	0	-	0	1
+T	27	p a comment	81	97	0	3	shingle	0	-	0	1
+T	27	a	88	89	1	1	<ALPHANUM>	0	-	0	1
+T	27	a comment	88	97	0	2	shingle	0	-	0	1
+T	27	a comment br	88	104	0	3	shingle	0	-	0	1
+T	27	comment	90	97	1	1	<ALPHANUM>	0	-	0	1
+T	27	comment br	90	104	0	2	shingle	0	-	0	1
+T	27	br	102	104	1	1	<ALPHANUM>	0	-	0	1
+E	27	106	106	0
+T	28	script	1	7	1	1	<ALPHANUM>	0	-	0	1
+T	28	script type	1	12	0	2	shingle	0	-	0	1
+T	28	script type text	1	18	0	3	shingle	0	-	0	1
+T	28	type	8	12	1	1	<ALPHANUM>	0	-	0	1
+T	28	type text	8	18	0	2	shingle	0	-	0	1
+T	28	type text javascript	8	29	0	3	shingle	0	-	0	1
+T	28	text	14	18	1	1	<ALPHANUM>	0	-	0	1
+T	28	text javascript	14	29	0	2	shingle	0	-	0	1
+T	28	text javascript var	14	34	0	3	shingle	0	-	0	1
+T	28	javascript	19	29	1	1	<ALPHANUM>	0	-	0	1
+T	28	javascript var	19	34	0	2	shingle	0	-	0	1
+T	28	javascript var x	19	36	0	3	shingle	0	-	0	1
+T	28	var	31	34	1	1	<ALPHANUM>	0	-	0	1
+T	28	var x	31	36	0	2	shingle	0	-	0	1
+T	28	var x 1	31	40	0	3	shingle	0	-	0	1
+T	28	x	35	36	1	1	<ALPHANUM>	0	-	0	1
+T	28	x 1	35	40	0	2	shingle	0	-	0	1
+T	28	x 1 2	35	44	0	3	shingle	0	-	0	1
+T	28	1	39	40	1	1	<NUM>	0	-	0	1
+T	28	1 2	39	44	0	2	shingle	0	-	0	1
+T	28	1 2 script	39	53	0	3	shingle	0	-	0	1
+T	28	2	43	44	1	1	<NUM>	0	-	0	1
+T	28	2 script	43	53	0	2	shingle	0	-	0	1
+T	28	2 script a	43	56	0	3	shingle	0	-	0	1
+T	28	script	47	53	1	1	<ALPHANUM>	0	-	0	1
+T	28	script a	47	56	0	2	shingle	0	-	0	1
+T	28	script a href	47	61	0	3	shingle	0	-	0	1
+T	28	a	55	56	1	1	<ALPHANUM>	0	-	0	1
+T	28	a href	55	61	0	2	shingle	0	-	0	1
+T	28	a href http	55	67	0	3	shingle	0	-	0	1
+T	28	href	57	61	1	1	<ALPHANUM>	0	-	0	1
+T	28	href http	57	67	0	2	shingle	0	-	0	1
+T	28	href http x.org	57	75	0	3	shingle	0	-	0	1
+T	28	http	63	67	1	1	<ALPHANUM>	0	-	0	1
+T	28	http x.org	63	75	0	2	shingle	0	-	0	1
+T	28	http x.org a	63	79	0	3	shingle	0	-	0	1
+T	28	x.org	70	75	1	1	<ALPHANUM>	0	-	0	1
+T	28	x.org a	70	79	0	2	shingle	0	-	0	1
+T	28	x.org a link	70	84	0	3	shingle	0	-	0	1
+T	28	a	78	79	1	1	<ALPHANUM>	0	-	0	1
+T	28	a link	78	84	0	2	shingle	0	-	0	1
+T	28	a link a	78	87	0	3	shingle	0	-	0	1
+T	28	link	80	84	1	1	<ALPHANUM>	0	-	0	1
+T	28	link a	80	87	0	2	shingle	0	-	0	1
+T	28	link a style	80	95	0	3	shingle	0	-	0	1
+T	28	a	86	87	1	1	<ALPHANUM>	0	-	0	1
+T	28	a style	86	95	0	2	shingle	0	-	0	1
+T	28	a style p	86	97	0	3	shingle	0	-	0	1
+T	28	style	90	95	1	1	<ALPHANUM>	0	-	0	1
+T	28	style p	90	97	0	2	shingle	0	-	0	1
+T	28	style p style	90	106	0	3	shingle	0	-	0	1
+T	28	p	96	97	1	1	<ALPHANUM>	0	-	0	1
+T	28	p style	96	106	0	2	shingle	0	-	0	1
+T	28	p style after	96	112	0	3	shingle	0	-	0	1
+T	28	style	101	106	1	1	<ALPHANUM>	0	-	0	1
+T	28	style after	101	112	0	2	shingle	0	-	0	1
+T	28	after	107	112	1	1	<ALPHANUM>	0	-	0	1
+E	28	112	112	0
+T	29	div	1	4	1	1	<ALPHANUM>	0	-	0	1
+T	29	div class	1	10	0	2	shingle	0	-	0	1
+T	29	div class c	1	13	0	3	shingle	0	-	0	1
+T	29	class	5	10	1	1	<ALPHANUM>	0	-	0	1
+T	29	class c	5	13	0	2	shingle	0	-	0	1
+T	29	class c quot	5	20	0	3	shingle	0	-	0	1
+T	29	c	12	13	1	1	<ALPHANUM>	0	-	0	1
+T	29	c quot	12	20	0	2	shingle	0	-	0	1
+T	29	c quot quoted	12	27	0	3	shingle	0	-	0	1
+T	29	quot	16	20	1	1	<ALPHANUM>	0	-	0	1
+T	29	quot quoted	16	27	0	2	shingle	0	-	0	1
+T	29	quot quoted quot	16	32	0	3	shingle	0	-	0	1
+T	29	quoted	21	27	1	1	<ALPHANUM>	0	-	0	1
+T	29	quoted quot	21	32	0	2	shingle	0	-	0	1
+T	29	quoted quot apos	21	39	0	3	shingle	0	-	0	1
+T	29	quot	28	32	1	1	<ALPHANUM>	0	-	0	1
+T	29	quot apos	28	39	0	2	shingle	0	-	0	1
+T	29	quot apos single	28	46	0	3	shingle	0	-	0	1
+T	29	apos	35	39	1	1	<ALPHANUM>	0	-	0	1
+T	29	apos single	35	46	0	2	shingle	0	-	0	1
+T	29	apos single apos	35	51	0	3	shingle	0	-	0	1
+T	29	single	40	46	1	1	<ALPHANUM>	0	-	0	1
+T	29	single apos	40	51	0	2	shingle	0	-	0	1
+T	29	single apos unknown	40	61	0	3	shingle	0	-	0	1
+T	29	apos	47	51	1	1	<ALPHANUM>	0	-	0	1
+T	29	apos unknown	47	61	0	2	shingle	0	-	0	1
+T	29	apos unknown xzz	47	68	0	3	shingle	0	-	0	1
+T	29	unknown	54	61	1	1	<ALPHANUM>	0	-	0	1
+T	29	unknown xzz	54	68	0	2	shingle	0	-	0	1
+T	29	unknown xzz cdata	54	78	0	3	shingle	0	-	0	1
+T	29	xzz	65	68	1	1	<ALPHANUM>	0	-	0	1
+T	29	xzz cdata	65	78	0	2	shingle	0	-	0	1
+T	29	xzz cdata raw	65	83	0	3	shingle	0	-	0	1
+T	29	cdata	73	78	1	1	<ALPHANUM>	0	-	0	1
+T	29	cdata raw	73	83	0	2	shingle	0	-	0	1
+T	29	cdata raw data	73	89	0	3	shingle	0	-	0	1
+T	29	raw	80	83	1	1	<ALPHANUM>	0	-	0	1
+T	29	raw data	80	89	0	2	shingle	0	-	0	1
+T	29	raw data tail	80	99	0	3	shingle	0	-	0	1
+T	29	data	85	89	1	1	<ALPHANUM>	0	-	0	1
+T	29	data tail	85	99	0	2	shingle	0	-	0	1
+T	29	data tail div	85	104	0	3	shingle	0	-	0	1
+T	29	tail	95	99	1	1	<ALPHANUM>	0	-	0	1
+T	29	tail div	95	104	0	2	shingle	0	-	0	1
+T	29	div	101	104	1	1	<ALPHANUM>	0	-	0	1
+E	29	105	105	0
+T	30	usr	1	4	1	1	<ALPHANUM>	0	-	0	1
+T	30	usr local	1	10	0	2	shingle	0	-	0	1
+T	30	usr local bin	1	14	0	3	shingle	0	-	0	1
+T	30	local	5	10	1	1	<ALPHANUM>	0	-	0	1
+T	30	local bin	5	14	0	2	shingle	0	-	0	1
+T	30	local bin lucene	5	21	0	3	shingle	0	-	0	1
+T	30	bin	11	14	1	1	<ALPHANUM>	0	-	0	1
+T	30	bin lucene	11	21	0	2	shingle	0	-	0	1
+T	30	bin lucene var	11	26	0	3	shingle	0	-	0	1
+T	30	lucene	15	21	1	1	<ALPHANUM>	0	-	0	1
+T	30	lucene var	15	26	0	2	shingle	0	-	0	1
+T	30	lucene var log	15	30	0	3	shingle	0	-	0	1
+T	30	var	23	26	1	1	<ALPHANUM>	0	-	0	1
+T	30	var log	23	30	0	2	shingle	0	-	0	1
+T	30	var log syslog	23	38	0	3	shingle	0	-	0	1
+T	30	log	27	30	1	1	<ALPHANUM>	0	-	0	1
+T	30	log syslog	27	38	0	2	shingle	0	-	0	1
+T	30	log syslog 1	27	40	0	3	shingle	0	-	0	1
+T	30	syslog	32	38	1	1	<ALPHANUM>	0	-	0	1
+T	30	syslog 1	32	40	0	2	shingle	0	-	0	1
+T	30	syslog 1 relative	32	49	0	3	shingle	0	-	0	1
+T	30	1	39	40	1	1	<NUM>	0	-	0	1
+T	30	1 relative	39	49	0	2	shingle	0	-	0	1
+T	30	1 relative path	39	54	0	3	shingle	0	-	0	1
+T	30	relative	41	49	1	1	<ALPHANUM>	0	-	0	1
+T	30	relative path	41	54	0	2	shingle	0	-	0	1
+T	30	relative path to	41	57	0	3	shingle	0	-	0	1
+T	30	path	50	54	1	1	<ALPHANUM>	0	-	0	1
+T	30	path to	50	57	0	2	shingle	0	-	0	1
+T	30	path to file.txt	50	66	0	3	shingle	0	-	0	1
+T	30	to	55	57	1	1	<ALPHANUM>	0	-	0	1
+T	30	to file.txt	55	66	0	2	shingle	0	-	0	1
+T	30	file.txt	58	66	1	1	<ALPHANUM>	0	-	0	1
+E	30	66	66	0
+T	31	c	0	1	1	1	<ALPHANUM>	0	-	0	1
+T	31	c program	0	10	0	2	shingle	0	-	0	1
+T	31	c program files	0	16	0	3	shingle	0	-	0	1
+T	31	program	3	10	1	1	<ALPHANUM>	0	-	0	1
+T	31	program files	3	16	0	2	shingle	0	-	0	1
+T	31	program files lucene	3	23	0	3	shingle	0	-	0	1
+T	31	files	11	16	1	1	<ALPHANUM>	0	-	0	1
+T	31	files lucene	11	23	0	2	shingle	0	-	0	1
+T	31	files lucene index	11	29	0	3	shingle	0	-	0	1
+T	31	lucene	17	23	1	1	<ALPHANUM>	0	-	0	1
+T	31	lucene index	17	29	0	2	shingle	0	-	0	1
+T	31	lucene index a	17	31	0	3	shingle	0	-	0	1
+T	31	index	24	29	1	1	<ALPHANUM>	0	-	0	1
+T	31	index a	24	31	0	2	shingle	0	-	0	1
+T	31	index a b	24	33	0	3	shingle	0	-	0	1
+T	31	a	30	31	1	1	<ALPHANUM>	0	-	0	1
+T	31	a b	30	33	0	2	shingle	0	-	0	1
+T	31	a b c	30	35	0	3	shingle	0	-	0	1
+T	31	b	32	33	1	1	<ALPHANUM>	0	-	0	1
+T	31	b c	32	35	0	2	shingle	0	-	0	1
+T	31	c	34	35	1	1	<ALPHANUM>	0	-	0	1
+E	31	35	35	0
+T	32	the	0	3	1	1	<ALPHANUM>	0	-	0	1
+T	32	the 1.5	0	7	0	2	shingle	0	-	0	1
+T	32	the 1.5 quick	0	13	0	3	shingle	0	-	0	1
+T	32	1.5	4	7	1	1	<NUM>	0	-	0	1
+T	32	1.5 quick	4	13	0	2	shingle	0	-	0	1
+T	32	1.5 quick 2	4	15	0	3	shingle	0	-	0	1
+T	32	quick	8	13	1	1	<ALPHANUM>	0	-	0	1
+T	32	quick 2	8	15	0	2	shingle	0	-	0	1
+T	32	quick 2 brown	8	21	0	3	shingle	0	-	0	1
+T	32	2	14	15	1	1	<NUM>	0	-	0	1
+T	32	2 brown	14	21	0	2	shingle	0	-	0	1
+T	32	2 brown 0.5	14	25	0	3	shingle	0	-	0	1
+T	32	brown	16	21	1	1	<ALPHANUM>	0	-	0	1
+T	32	brown 0.5	16	25	0	2	shingle	0	-	0	1
+T	32	brown 0.5 fox	16	29	0	3	shingle	0	-	0	1
+T	32	0.5	22	25	1	1	<NUM>	0	-	0	1
+T	32	0.5 fox	22	29	0	2	shingle	0	-	0	1
+T	32	0.5 fox jumps	22	35	0	3	shingle	0	-	0	1
+T	32	fox	26	29	1	1	<ALPHANUM>	0	-	0	1
+T	32	fox jumps	26	35	0	2	shingle	0	-	0	1
+T	32	fox jumps 3	26	37	0	3	shingle	0	-	0	1
+T	32	jumps	30	35	1	1	<ALPHANUM>	0	-	0	1
+T	32	jumps 3	30	37	0	2	shingle	0	-	0	1
+T	32	3	36	37	1	1	<NUM>	0	-	0	1
+E	32	37	37	0
+T	33	apple	0	5	1	1	<ALPHANUM>	0	-	0	1
+T	33	apple 3	0	7	0	2	shingle	0	-	0	1
+T	33	apple 3 banana	0	14	0	3	shingle	0	-	0	1
+T	33	3	6	7	1	1	<NUM>	0	-	0	1
+T	33	3 banana	6	14	0	2	shingle	0	-	0	1
+T	33	3 banana 1	6	16	0	3	shingle	0	-	0	1
+T	33	banana	8	14	1	1	<ALPHANUM>	0	-	0	1
+T	33	banana 1	8	16	0	2	shingle	0	-	0	1
+T	33	banana 1 cherry	8	23	0	3	shingle	0	-	0	1
+T	33	1	15	16	1	1	<NUM>	0	-	0	1
+T	33	1 cherry	15	23	0	2	shingle	0	-	0	1
+T	33	1 cherry pear	15	28	0	3	shingle	0	-	0	1
+T	33	cherry	17	23	1	1	<ALPHANUM>	0	-	0	1
+T	33	cherry pear	17	28	0	2	shingle	0	-	0	1
+T	33	cherry pear 10	17	31	0	3	shingle	0	-	0	1
+T	33	pear	24	28	1	1	<ALPHANUM>	0	-	0	1
+T	33	pear 10	24	31	0	2	shingle	0	-	0	1
+T	33	10	29	31	1	1	<NUM>	0	-	0	1
+E	33	31	31	0
+T	34	quick	0	5	1	1	<ALPHANUM>	0	-	0	1
+T	34	quick 0.5	0	9	0	2	shingle	0	-	0	1
+T	34	quick 0.5 fox	0	13	0	3	shingle	0	-	0	1
+T	34	0.5	6	9	1	1	<NUM>	0	-	0	1
+T	34	0.5 fox	6	13	0	2	shingle	0	-	0	1
+T	34	0.5 fox 2.0	6	17	0	3	shingle	0	-	0	1
+T	34	fox	10	13	1	1	<ALPHANUM>	0	-	0	1
+T	34	fox 2.0	10	17	0	2	shingle	0	-	0	1
+T	34	fox 2.0 dog	10	21	0	3	shingle	0	-	0	1
+T	34	2.0	14	17	1	1	<NUM>	0	-	0	1
+T	34	2.0 dog	14	21	0	2	shingle	0	-	0	1
+T	34	2.0 dog 1.25	14	27	0	3	shingle	0	-	0	1
+T	34	dog	18	21	1	1	<ALPHANUM>	0	-	0	1
+T	34	dog 1.25	18	27	0	2	shingle	0	-	0	1
+T	34	1.25	23	27	1	1	<NUM>	0	-	0	1
+E	34	27	27	0
+T	35	token1	0	6	1	1	<ALPHANUM>	0	-	0	1
+T	35	token1 payload	0	14	0	2	shingle	0	-	0	1
+T	35	token1 payload one	0	18	0	3	shingle	0	-	0	1
+T	35	payload	7	14	1	1	<ALPHANUM>	0	-	0	1
+T	35	payload one	7	18	0	2	shingle	0	-	0	1
+T	35	payload one two	7	22	0	3	shingle	0	-	0	1
+T	35	one	15	18	1	1	<ALPHANUM>	0	-	0	1
+T	35	one two	15	22	0	2	shingle	0	-	0	1
+T	35	one two three	15	28	0	3	shingle	0	-	0	1
+T	35	two	19	22	1	1	<ALPHANUM>	0	-	0	1
+T	35	two three	19	28	0	2	shingle	0	-	0	1
+T	35	three	23	28	1	1	<ALPHANUM>	0	-	0	1
+E	35	28	28	0
+T	36	tabs	1	5	1	1	<ALPHANUM>	0	-	0	1
+T	36	tabs and	1	9	0	2	shingle	0	-	0	1
+T	36	tabs and multiple	1	20	0	3	shingle	0	-	0	1
+T	36	and	6	9	1	1	<ALPHANUM>	0	-	0	1
+T	36	and multiple	6	20	0	2	shingle	0	-	0	1
+T	36	and multiple spaces	6	29	0	3	shingle	0	-	0	1
+T	36	multiple	12	20	1	1	<ALPHANUM>	0	-	0	1
+T	36	multiple spaces	12	29	0	2	shingle	0	-	0	1
+T	36	multiple spaces and	12	33	0	3	shingle	0	-	0	1
+T	36	spaces	23	29	1	1	<ALPHANUM>	0	-	0	1
+T	36	spaces and	23	33	0	2	shingle	0	-	0	1
+T	36	spaces and nbsp	23	38	0	3	shingle	0	-	0	1
+T	36	and	30	33	1	1	<ALPHANUM>	0	-	0	1
+T	36	and nbsp	30	38	0	2	shingle	0	-	0	1
+T	36	and nbsp here	30	43	0	3	shingle	0	-	0	1
+T	36	nbsp	34	38	1	1	<ALPHANUM>	0	-	0	1
+T	36	nbsp here	34	43	0	2	shingle	0	-	0	1
+T	36	nbsp here and	34	47	0	3	shingle	0	-	0	1
+T	36	here	39	43	1	1	<ALPHANUM>	0	-	0	1
+T	36	here and	39	47	0	2	shingle	0	-	0	1
+T	36	here and ideographic	39	59	0	3	shingle	0	-	0	1
+T	36	and	44	47	1	1	<ALPHANUM>	0	-	0	1
+T	36	and ideographic	44	59	0	2	shingle	0	-	0	1
+T	36	and ideographic space	44	65	0	3	shingle	0	-	0	1
+T	36	ideographic	48	59	1	1	<ALPHANUM>	0	-	0	1
+T	36	ideographic space	48	65	0	2	shingle	0	-	0	1
+T	36	ideographic space and	48	69	0	3	shingle	0	-	0	1
+T	36	space	60	65	1	1	<ALPHANUM>	0	-	0	1
+T	36	space and	60	69	0	2	shingle	0	-	0	1
+T	36	space and line	60	74	0	3	shingle	0	-	0	1
+T	36	and	66	69	1	1	<ALPHANUM>	0	-	0	1
+T	36	and line	66	74	0	2	shingle	0	-	0	1
+T	36	and line sep	66	78	0	3	shingle	0	-	0	1
+T	36	line	70	74	1	1	<ALPHANUM>	0	-	0	1
+T	36	line sep	70	78	0	2	shingle	0	-	0	1
+T	36	line sep and	70	82	0	3	shingle	0	-	0	1
+T	36	sep	75	78	1	1	<ALPHANUM>	0	-	0	1
+T	36	sep and	75	82	0	2	shingle	0	-	0	1
+T	36	sep and zero	75	87	0	3	shingle	0	-	0	1
+T	36	and	79	82	1	1	<ALPHANUM>	0	-	0	1
+T	36	and zero	79	87	0	2	shingle	0	-	0	1
+T	36	and zero width	79	93	0	3	shingle	0	-	0	1
+T	36	zero	83	87	1	1	<ALPHANUM>	0	-	0	1
+T	36	zero width	83	93	0	2	shingle	0	-	0	1
+T	36	zero width soft­hyphen	83	105	0	3	shingle	0	-	0	1
+T	36	width	88	93	1	1	<ALPHANUM>	0	-	0	1
+T	36	width soft­hyphen	88	105	0	2	shingle	0	-	0	1
+T	36	soft­hyphen	94	105	1	1	<ALPHANUM>	0	-	0	1
+E	36	105	105	0
+T	37	ab	0	2	1	1	<ALPHANUM>	0	-	0	1
+E	37	2	2	0
+T	38	a	0	1	1	1	<ALPHANUM>	0	-	0	1
+E	38	1	1	0
+T	39	supercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilis	0	255	1	1	<ALPHANUM>	0	-	0	1
+T	39	supercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilis ticexpialidocioussupercalifragilisticexpialidocious	0	306	0	2	shingle	0	-	0	1
+T	39	supercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilis ticexpialidocioussupercalifragilisticexpialidocious end	0	310	0	3	shingle	0	-	0	1
+T	39	ticexpialidocioussupercalifragilisticexpialidocious	255	306	1	1	<ALPHANUM>	0	-	0	1
+T	39	ticexpialidocioussupercalifragilisticexpialidocious end	255	310	0	2	shingle	0	-	0	1
+T	39	end	307	310	1	1	<ALPHANUM>	0	-	0	1
+E	39	310	310	0
+T	40	x	0	1	1	1	<ALPHANUM>	0	-	0	1
+T	40	x y	0	3	0	2	shingle	0	-	0	1
+T	40	x y z	0	5	0	3	shingle	0	-	0	1
+T	40	y	2	3	1	1	<ALPHANUM>	0	-	0	1
+T	40	y z	2	5	0	2	shingle	0	-	0	1
+T	40	y z xy	2	8	0	3	shingle	0	-	0	1
+T	40	z	4	5	1	1	<ALPHANUM>	0	-	0	1
+T	40	z xy	4	8	0	2	shingle	0	-	0	1
+T	40	z xy xyz	4	12	0	3	shingle	0	-	0	1
+T	40	xy	6	8	1	1	<ALPHANUM>	0	-	0	1
+T	40	xy xyz	6	12	0	2	shingle	0	-	0	1
+T	40	xy xyz a	6	14	0	3	shingle	0	-	0	1
+T	40	xyz	9	12	1	1	<ALPHANUM>	0	-	0	1
+T	40	xyz a	9	14	0	2	shingle	0	-	0	1
+T	40	xyz a b	9	16	0	3	shingle	0	-	0	1
+T	40	a	13	14	1	1	<ALPHANUM>	0	-	0	1
+T	40	a b	13	16	0	2	shingle	0	-	0	1
+T	40	a b c	13	18	0	3	shingle	0	-	0	1
+T	40	b	15	16	1	1	<ALPHANUM>	0	-	0	1
+T	40	b c	15	18	0	2	shingle	0	-	0	1
+T	40	b c a.b.c	15	24	0	3	shingle	0	-	0	1
+T	40	c	17	18	1	1	<ALPHANUM>	0	-	0	1
+T	40	c a.b.c	17	24	0	2	shingle	0	-	0	1
+T	40	c a.b.c a_b_c	17	30	0	3	shingle	0	-	0	1
+T	40	a.b.c	19	24	1	1	<ALPHANUM>	0	-	0	1
+T	40	a.b.c a_b_c	19	30	0	2	shingle	0	-	0	1
+T	40	a.b.c a_b_c a	19	32	0	3	shingle	0	-	0	1
+T	40	a_b_c	25	30	1	1	<ALPHANUM>	0	-	0	1
+T	40	a_b_c a	25	32	0	2	shingle	0	-	0	1
+T	40	a_b_c a b	25	34	0	3	shingle	0	-	0	1
+T	40	a	31	32	1	1	<ALPHANUM>	0	-	0	1
+T	40	a b	31	34	0	2	shingle	0	-	0	1
+T	40	a b c	31	36	0	3	shingle	0	-	0	1
+T	40	b	33	34	1	1	<ALPHANUM>	0	-	0	1
+T	40	b c	33	36	0	2	shingle	0	-	0	1
+T	40	b c a:b:c	33	42	0	3	shingle	0	-	0	1
+T	40	c	35	36	1	1	<ALPHANUM>	0	-	0	1
+T	40	c a:b:c	35	42	0	2	shingle	0	-	0	1
+T	40	a:b:c	37	42	1	1	<ALPHANUM>	0	-	0	1
+E	40	42	42	0
+T	41	foo	0	3	1	1	<ALPHANUM>	0	-	0	1
+T	41	foo bar	0	7	0	2	shingle	0	-	0	1
+T	41	foo bar baz	0	11	0	3	shingle	0	-	0	1
+T	41	bar	4	7	1	1	<ALPHANUM>	0	-	0	1
+T	41	bar baz	4	11	0	2	shingle	0	-	0	1
+T	41	bar baz foobarbaz	4	21	0	3	shingle	0	-	0	1
+T	41	baz	8	11	1	1	<ALPHANUM>	0	-	0	1
+T	41	baz foobarbaz	8	21	0	2	shingle	0	-	0	1
+T	41	baz foobarbaz foobar	8	28	0	3	shingle	0	-	0	1
+T	41	foobarbaz	12	21	1	1	<ALPHANUM>	0	-	0	1
+T	41	foobarbaz foobar	12	28	0	2	shingle	0	-	0	1
+T	41	foobarbaz foobar foobar	12	35	0	3	shingle	0	-	0	1
+T	41	foobar	22	28	1	1	<ALPHANUM>	0	-	0	1
+T	41	foobar foobar	22	35	0	2	shingle	0	-	0	1
+T	41	foobar foobar foo2bar	22	43	0	3	shingle	0	-	0	1
+T	41	foobar	29	35	1	1	<ALPHANUM>	0	-	0	1
+T	41	foobar foo2bar	29	43	0	2	shingle	0	-	0	1
+T	41	foobar foo2bar 2foo	29	48	0	3	shingle	0	-	0	1
+T	41	foo2bar	36	43	1	1	<ALPHANUM>	0	-	0	1
+T	41	foo2bar 2foo	36	48	0	2	shingle	0	-	0	1
+T	41	foo2bar 2foo bar2	36	53	0	3	shingle	0	-	0	1
+T	41	2foo	44	48	1	1	<ALPHANUM>	0	-	0	1
+T	41	2foo bar2	44	53	0	2	shingle	0	-	0	1
+T	41	2foo bar2 ellipsis	44	65	0	3	shingle	0	-	0	1
+T	41	bar2	49	53	1	1	<ALPHANUM>	0	-	0	1
+T	41	bar2 ellipsis	49	65	0	2	shingle	0	-	0	1
+T	41	bar2 ellipsis dashes	49	77	0	3	shingle	0	-	0	1
+T	41	ellipsis	57	65	1	1	<ALPHANUM>	0	-	0	1
+T	41	ellipsis dashes	57	77	0	2	shingle	0	-	0	1
+T	41	dashes	71	77	1	1	<ALPHANUM>	0	-	0	1
+E	41	79	79	0
+T	42	the	0	3	1	1	<ALPHANUM>	0	-	0	1
+T	42	the ceo's	0	9	0	2	shingle	0	-	0	1
+T	42	the ceo's 1990s	0	15	0	3	shingle	0	-	0	1
+T	42	ceo's	4	9	1	1	<ALPHANUM>	0	-	0	1
+T	42	ceo's 1990s	4	15	0	2	shingle	0	-	0	1
+T	42	ceo's 1990s era	4	19	0	3	shingle	0	-	0	1
+T	42	1990s	10	15	1	1	<ALPHANUM>	0	-	0	1
+T	42	1990s era	10	19	0	2	shingle	0	-	0	1
+T	42	1990s era ibm	10	23	0	3	shingle	0	-	0	1
+T	42	era	16	19	1	1	<ALPHANUM>	0	-	0	1
+T	42	era ibm	16	23	0	2	shingle	0	-	0	1
+T	42	era ibm compatible	16	34	0	3	shingle	0	-	0	1
+T	42	ibm	20	23	1	1	<ALPHANUM>	0	-	0	1
+T	42	ibm compatible	20	34	0	2	shingle	0	-	0	1
+T	42	ibm compatible pcs	20	38	0	3	shingle	0	-	0	1
+T	42	compatible	24	34	1	1	<ALPHANUM>	0	-	0	1
+T	42	compatible pcs	24	38	0	2	shingle	0	-	0	1
+T	42	compatible pcs ran	24	42	0	3	shingle	0	-	0	1
+T	42	pcs	35	38	1	1	<ALPHANUM>	0	-	0	1
+T	42	pcs ran	35	42	0	2	shingle	0	-	0	1
+T	42	pcs ran ms	35	45	0	3	shingle	0	-	0	1
+T	42	ran	39	42	1	1	<ALPHANUM>	0	-	0	1
+T	42	ran ms	39	45	0	2	shingle	0	-	0	1
+T	42	ran ms dos	39	49	0	3	shingle	0	-	0	1
+T	42	ms	43	45	1	1	<ALPHANUM>	0	-	0	1
+T	42	ms dos	43	49	0	2	shingle	0	-	0	1
+T	42	ms dos 6.22	43	54	0	3	shingle	0	-	0	1
+T	42	dos	46	49	1	1	<ALPHANUM>	0	-	0	1
+T	42	dos 6.22	46	54	0	2	shingle	0	-	0	1
+T	42	dos 6.22 the	46	59	0	3	shingle	0	-	0	1
+T	42	6.22	50	54	1	1	<NUM>	0	-	0	1
+T	42	6.22 the	50	59	0	2	shingle	0	-	0	1
+T	42	6.22 the 5th	50	63	0	3	shingle	0	-	0	1
+T	42	the	56	59	1	1	<ALPHANUM>	0	-	0	1
+T	42	the 5th	56	63	0	2	shingle	0	-	0	1
+T	42	the 5th gen	56	67	0	3	shingle	0	-	0	1
+T	42	5th	60	63	1	1	<ALPHANUM>	0	-	0	1
+T	42	5th gen	60	67	0	2	shingle	0	-	0	1
+T	42	5th gen core	60	73	0	3	shingle	0	-	0	1
+T	42	gen	64	67	1	1	<ALPHANUM>	0	-	0	1
+T	42	gen core	64	73	0	2	shingle	0	-	0	1
+T	42	gen core i7	64	76	0	3	shingle	0	-	0	1
+T	42	core	69	73	1	1	<ALPHANUM>	0	-	0	1
+T	42	core i7	69	76	0	2	shingle	0	-	0	1
+T	42	core i7 4790k	69	82	0	3	shingle	0	-	0	1
+T	42	i7	74	76	1	1	<ALPHANUM>	0	-	0	1
+T	42	i7 4790k	74	82	0	2	shingle	0	-	0	1
+T	42	i7 4790k cpu	74	86	0	3	shingle	0	-	0	1
+T	42	4790k	77	82	1	1	<ALPHANUM>	0	-	0	1
+T	42	4790k cpu	77	86	0	2	shingle	0	-	0	1
+T	42	4790k cpu 4.00ghz	77	96	0	3	shingle	0	-	0	1
+T	42	cpu	83	86	1	1	<ALPHANUM>	0	-	0	1
+T	42	cpu 4.00ghz	83	96	0	2	shingle	0	-	0	1
+T	42	4.00ghz	89	96	1	1	<ALPHANUM>	0	-	0	1
+E	42	96	96	0
+T	43	running	0	7	1	1	<ALPHANUM>	0	-	0	1
+T	43	running jumping	0	15	0	2	shingle	0	-	0	1
+T	43	running jumping happily	0	23	0	3	shingle	0	-	0	1
+T	43	jumping	8	15	1	1	<ALPHANUM>	0	-	0	1
+T	43	jumping happily	8	23	0	2	shingle	0	-	0	1
+T	43	jumping happily happiness	8	33	0	3	shingle	0	-	0	1
+T	43	happily	16	23	1	1	<ALPHANUM>	0	-	0	1
+T	43	happily happiness	16	33	0	2	shingle	0	-	0	1
+T	43	happily happiness conditional	16	45	0	3	shingle	0	-	0	1
+T	43	happiness	24	33	1	1	<ALPHANUM>	0	-	0	1
+T	43	happiness conditional	24	45	0	2	shingle	0	-	0	1
+T	43	happiness conditional relational	24	56	0	3	shingle	0	-	0	1
+T	43	conditional	34	45	1	1	<ALPHANUM>	0	-	0	1
+T	43	conditional relational	34	56	0	2	shingle	0	-	0	1
+T	43	conditional relational sensibility	34	68	0	3	shingle	0	-	0	1
+T	43	relational	46	56	1	1	<ALPHANUM>	0	-	0	1
+T	43	relational sensibility	46	68	0	2	shingle	0	-	0	1
+T	43	relational sensibility agreed	46	75	0	3	shingle	0	-	0	1
+T	43	sensibility	57	68	1	1	<ALPHANUM>	0	-	0	1
+T	43	sensibility agreed	57	75	0	2	shingle	0	-	0	1
+T	43	sensibility agreed feed	57	80	0	3	shingle	0	-	0	1
+T	43	agreed	69	75	1	1	<ALPHANUM>	0	-	0	1
+T	43	agreed feed	69	80	0	2	shingle	0	-	0	1
+T	43	agreed feed bled	69	85	0	3	shingle	0	-	0	1
+T	43	feed	76	80	1	1	<ALPHANUM>	0	-	0	1
+T	43	feed bled	76	85	0	2	shingle	0	-	0	1
+T	43	feed bled sing	76	90	0	3	shingle	0	-	0	1
+T	43	bled	81	85	1	1	<ALPHANUM>	0	-	0	1
+T	43	bled sing	81	90	0	2	shingle	0	-	0	1
+T	43	sing	86	90	1	1	<ALPHANUM>	0	-	0	1
+E	43	90	90	0
+T	44	leading	2	9	1	1	<ALPHANUM>	0	-	0	1
+T	44	leading and	2	13	0	2	shingle	0	-	0	1
+T	44	leading and trailing	2	22	0	3	shingle	0	-	0	1
+T	44	and	10	13	1	1	<ALPHANUM>	0	-	0	1
+T	44	and trailing	10	22	0	2	shingle	0	-	0	1
+T	44	and trailing spaces	10	29	0	3	shingle	0	-	0	1
+T	44	trailing	14	22	1	1	<ALPHANUM>	0	-	0	1
+T	44	trailing spaces	14	29	0	2	shingle	0	-	0	1
+T	44	spaces	23	29	1	1	<ALPHANUM>	0	-	0	1
+E	44	32	32	0
+E	45	0	0	0
+T	46	àáâãäå	0	6	1	1	<ALPHANUM>	0	-	0	1
+T	46	àáâãäå àáâãäå	0	13	0	2	shingle	0	-	0	1
+T	46	àáâãäå àáâãäå ççèéêë	0	20	0	3	shingle	0	-	0	1
+T	46	àáâãäå	7	13	1	1	<ALPHANUM>	0	-	0	1
+T	46	àáâãäå ççèéêë	7	20	0	2	shingle	0	-	0	1
+T	46	àáâãäå ççèéêë èéêë	7	25	0	3	shingle	0	-	0	1
+T	46	ççèéêë	14	20	1	1	<ALPHANUM>	0	-	0	1
+T	46	ççèéêë èéêë	14	25	0	2	shingle	0	-	0	1
+T	46	ççèéêë èéêë ìíîï	14	30	0	3	shingle	0	-	0	1
+T	46	èéêë	21	25	1	1	<ALPHANUM>	0	-	0	1
+T	46	èéêë ìíîï	21	30	0	2	shingle	0	-	0	1
+T	46	èéêë ìíîï ìíîï	21	35	0	3	shingle	0	-	0	1
+T	46	ìíîï	26	30	1	1	<ALPHANUM>	0	-	0	1
+T	46	ìíîï ìíîï	26	35	0	2	shingle	0	-	0	1
+T	46	ìíîï ìíîï ññòóôõö	26	43	0	3	shingle	0	-	0	1
+T	46	ìíîï	31	35	1	1	<ALPHANUM>	0	-	0	1
+T	46	ìíîï ññòóôõö	31	43	0	2	shingle	0	-	0	1
+T	46	ìíîï ññòóôõö òóôõö	31	49	0	3	shingle	0	-	0	1
+T	46	ññòóôõö	36	43	1	1	<ALPHANUM>	0	-	0	1
+T	46	ññòóôõö òóôõö	36	49	0	2	shingle	0	-	0	1
+T	46	ññòóôõö òóôõö ùúûü	36	54	0	3	shingle	0	-	0	1
+T	46	òóôõö	44	49	1	1	<ALPHANUM>	0	-	0	1
+T	46	òóôõö ùúûü	44	54	0	2	shingle	0	-	0	1
+T	46	òóôõö ùúûü ùúûü	44	59	0	3	shingle	0	-	0	1
+T	46	ùúûü	50	54	1	1	<ALPHANUM>	0	-	0	1
+T	46	ùúûü ùúûü	50	59	0	2	shingle	0	-	0	1
+T	46	ùúûü ùúûü ýýÿ	50	63	0	3	shingle	0	-	0	1
+T	46	ùúûü	55	59	1	1	<ALPHANUM>	0	-	0	1
+T	46	ùúûü ýýÿ	55	63	0	2	shingle	0	-	0	1
+T	46	ùúûü ýýÿ ššžž	55	68	0	3	shingle	0	-	0	1
+T	46	ýýÿ	60	63	1	1	<ALPHANUM>	0	-	0	1
+T	46	ýýÿ ššžž	60	68	0	2	shingle	0	-	0	1
+T	46	ýýÿ ššžž łł	60	71	0	3	shingle	0	-	0	1
+T	46	ššžž	64	68	1	1	<ALPHANUM>	0	-	0	1
+T	46	ššžž łł	64	71	0	2	shingle	0	-	0	1
+T	46	ššžž łł ðð	64	74	0	3	shingle	0	-	0	1
+T	46	łł	69	71	1	1	<ALPHANUM>	0	-	0	1
+T	46	łł ðð	69	74	0	2	shingle	0	-	0	1
+T	46	łł ðð þþ	69	77	0	3	shingle	0	-	0	1
+T	46	ðð	72	74	1	1	<ALPHANUM>	0	-	0	1
+T	46	ðð þþ	72	77	0	2	shingle	0	-	0	1
+T	46	ðð þþ ß	72	79	0	3	shingle	0	-	0	1
+T	46	þþ	75	77	1	1	<ALPHANUM>	0	-	0	1
+T	46	þþ ß	75	79	0	2	shingle	0	-	0	1
+T	46	þþ ß œœææøø	75	86	0	3	shingle	0	-	0	1
+T	46	ß	78	79	1	1	<ALPHANUM>	0	-	0	1
+T	46	ß œœææøø	78	86	0	2	shingle	0	-	0	1
+T	46	œœææøø	80	86	1	1	<ALPHANUM>	0	-	0	1
+E	46	86	86	0
+T	47	smart	1	6	1	1	<ALPHANUM>	0	-	0	1
+T	47	smart quotes	1	13	0	2	shingle	0	-	0	1
+T	47	smart quotes single	1	22	0	3	shingle	0	-	0	1
+T	47	quotes	7	13	1	1	<ALPHANUM>	0	-	0	1
+T	47	quotes single	7	22	0	2	shingle	0	-	0	1
+T	47	quotes single guillemets	7	35	0	3	shingle	0	-	0	1
+T	47	single	16	22	1	1	<ALPHANUM>	0	-	0	1
+T	47	single guillemets	16	35	0	2	shingle	0	-	0	1
+T	47	single guillemets single	16	44	0	3	shingle	0	-	0	1
+T	47	guillemets	25	35	1	1	<ALPHANUM>	0	-	0	1
+T	47	guillemets single	25	44	0	2	shingle	0	-	0	1
+T	47	guillemets single low	25	50	0	3	shingle	0	-	0	1
+T	47	single	38	44	1	1	<ALPHANUM>	0	-	0	1
+T	47	single low	38	50	0	2	shingle	0	-	0	1
+T	47	single low ©	38	70	0	3	shingle	0	-	0	1
+T	47	low	47	50	1	1	<ALPHANUM>	0	-	0	1
+T	47	low ©	47	70	0	2	shingle	0	-	0	1
+T	47	low © ®	47	72	0	3	shingle	0	-	0	1
+T	47	©	69	70	1	1	<EMOJI>	0	-	0	1
+T	47	© ®	69	72	0	2	shingle	0	-	0	1
+T	47	© ® ™	69	74	0	3	shingle	0	-	0	1
+T	47	®	71	72	1	1	<EMOJI>	0	-	0	1
+T	47	® ™	71	74	0	2	shingle	0	-	0	1
+T	47	™	73	74	1	1	<EMOJI>	0	-	0	1
+E	47	84	84	0
+T	48	abilities	0	9	1	1	<ALPHANUM>	0	-	0	1
+T	48	abilities agreed	0	16	0	2	shingle	0	-	0	1
+T	48	abilities agreed activism	0	25	0	3	shingle	0	-	0	1
+T	48	agreed	10	16	1	1	<ALPHANUM>	0	-	0	1
+T	48	agreed activism	10	25	0	2	shingle	0	-	0	1
+T	48	agreed activism capable	10	33	0	3	shingle	0	-	0	1
+T	48	activism	17	25	1	1	<ALPHANUM>	0	-	0	1
+T	48	activism capable	17	33	0	2	shingle	0	-	0	1
+T	48	activism capable cried	17	39	0	3	shingle	0	-	0	1
+T	48	capable	26	33	1	1	<ALPHANUM>	0	-	0	1
+T	48	capable cried	26	39	0	2	shingle	0	-	0	1
+T	48	capable cried dependence	26	50	0	3	shingle	0	-	0	1
+T	48	cried	34	39	1	1	<ALPHANUM>	0	-	0	1
+T	48	cried dependence	34	50	0	2	shingle	0	-	0	1
+T	48	cried dependence emergency	34	60	0	3	shingle	0	-	0	1
+T	48	dependence	40	50	1	1	<ALPHANUM>	0	-	0	1
+T	48	dependence emergency	40	60	0	2	shingle	0	-	0	1
+T	48	dependence emergency fabricate	40	70	0	3	shingle	0	-	0	1
+T	48	emergency	51	60	1	1	<ALPHANUM>	0	-	0	1
+T	48	emergency fabricate	51	70	0	2	shingle	0	-	0	1
+T	48	emergency fabricate frequency	51	80	0	3	shingle	0	-	0	1
+T	48	fabricate	61	70	1	1	<ALPHANUM>	0	-	0	1
+T	48	fabricate frequency	61	80	0	2	shingle	0	-	0	1
+T	48	fabricate frequency generalization	61	95	0	3	shingle	0	-	0	1
+T	48	frequency	71	80	1	1	<ALPHANUM>	0	-	0	1
+T	48	frequency generalization	71	95	0	2	shingle	0	-	0	1
+T	48	frequency generalization government	71	106	0	3	shingle	0	-	0	1
+T	48	generalization	81	95	1	1	<ALPHANUM>	0	-	0	1
+T	48	generalization government	81	106	0	2	shingle	0	-	0	1
+T	48	generalization government happiness	81	116	0	3	shingle	0	-	0	1
+T	48	government	96	106	1	1	<ALPHANUM>	0	-	0	1
+T	48	government happiness	96	116	0	2	shingle	0	-	0	1
+T	48	government happiness hesitancy	96	126	0	3	shingle	0	-	0	1
+T	48	happiness	107	116	1	1	<ALPHANUM>	0	-	0	1
+T	48	happiness hesitancy	107	126	0	2	shingle	0	-	0	1
+T	48	happiness hesitancy hoped	107	132	0	3	shingle	0	-	0	1
+T	48	hesitancy	117	126	1	1	<ALPHANUM>	0	-	0	1
+T	48	hesitancy hoped	117	132	0	2	shingle	0	-	0	1
+T	48	hesitancy hoped hopping	117	140	0	3	shingle	0	-	0	1
+T	48	hoped	127	132	1	1	<ALPHANUM>	0	-	0	1
+T	48	hoped hopping	127	140	0	2	shingle	0	-	0	1
+T	48	hoped hopping horrible	127	149	0	3	shingle	0	-	0	1
+T	48	hopping	133	140	1	1	<ALPHANUM>	0	-	0	1
+T	48	hopping horrible	133	149	0	2	shingle	0	-	0	1
+T	48	hopping horrible ironic	133	156	0	3	shingle	0	-	0	1
+T	48	horrible	141	149	1	1	<ALPHANUM>	0	-	0	1
+T	48	horrible ironic	141	156	0	2	shingle	0	-	0	1
+T	48	horrible ironic jumped	141	163	0	3	shingle	0	-	0	1
+T	48	ironic	150	156	1	1	<ALPHANUM>	0	-	0	1
+T	48	ironic jumped	150	163	0	2	shingle	0	-	0	1
+T	48	ironic jumped nationalize	150	175	0	3	shingle	0	-	0	1
+T	48	jumped	157	163	1	1	<ALPHANUM>	0	-	0	1
+T	48	jumped nationalize	157	175	0	2	shingle	0	-	0	1
+T	48	jumped nationalize organization	157	188	0	3	shingle	0	-	0	1
+T	48	nationalize	164	175	1	1	<ALPHANUM>	0	-	0	1
+T	48	nationalize organization	164	188	0	2	shingle	0	-	0	1
+T	48	nationalize organization ponies	164	195	0	3	shingle	0	-	0	1
+T	48	organization	176	188	1	1	<ALPHANUM>	0	-	0	1
+T	48	organization ponies	176	195	0	2	shingle	0	-	0	1
+T	48	organization ponies rationality	176	207	0	3	shingle	0	-	0	1
+T	48	ponies	189	195	1	1	<ALPHANUM>	0	-	0	1
+T	48	ponies rationality	189	207	0	2	shingle	0	-	0	1
+T	48	ponies rationality realize	189	215	0	3	shingle	0	-	0	1
+T	48	rationality	196	207	1	1	<ALPHANUM>	0	-	0	1
+T	48	rationality realize	196	215	0	2	shingle	0	-	0	1
+T	48	rationality realize relational	196	226	0	3	shingle	0	-	0	1
+T	48	realize	208	215	1	1	<ALPHANUM>	0	-	0	1
+T	48	realize relational	208	226	0	2	shingle	0	-	0	1
+T	48	realize relational sensitivity	208	238	0	3	shingle	0	-	0	1
+T	48	relational	216	226	1	1	<ALPHANUM>	0	-	0	1
+T	48	relational sensitivity	216	238	0	2	shingle	0	-	0	1
+T	48	relational sensitivity stopped	216	246	0	3	shingle	0	-	0	1
+T	48	sensitivity	227	238	1	1	<ALPHANUM>	0	-	0	1
+T	48	sensitivity stopped	227	246	0	2	shingle	0	-	0	1
+T	48	sensitivity stopped traditionally	227	260	0	3	shingle	0	-	0	1
+T	48	stopped	239	246	1	1	<ALPHANUM>	0	-	0	1
+T	48	stopped traditionally	239	260	0	2	shingle	0	-	0	1
+T	48	stopped traditionally walking	239	268	0	3	shingle	0	-	0	1
+T	48	traditionally	247	260	1	1	<ALPHANUM>	0	-	0	1
+T	48	traditionally walking	247	268	0	2	shingle	0	-	0	1
+T	48	traditionally walking dried	247	274	0	3	shingle	0	-	0	1
+T	48	walking	261	268	1	1	<ALPHANUM>	0	-	0	1
+T	48	walking dried	261	274	0	2	shingle	0	-	0	1
+T	48	walking dried studies	261	282	0	3	shingle	0	-	0	1
+T	48	dried	269	274	1	1	<ALPHANUM>	0	-	0	1
+T	48	dried studies	269	282	0	2	shingle	0	-	0	1
+T	48	dried studies classes	269	290	0	3	shingle	0	-	0	1
+T	48	studies	275	282	1	1	<ALPHANUM>	0	-	0	1
+T	48	studies classes	275	290	0	2	shingle	0	-	0	1
+T	48	studies classes buses	275	296	0	3	shingle	0	-	0	1
+T	48	classes	283	290	1	1	<ALPHANUM>	0	-	0	1
+T	48	classes buses	283	296	0	2	shingle	0	-	0	1
+T	48	classes buses heroes	283	303	0	3	shingle	0	-	0	1
+T	48	buses	291	296	1	1	<ALPHANUM>	0	-	0	1
+T	48	buses heroes	291	303	0	2	shingle	0	-	0	1
+T	48	buses heroes axes	291	308	0	3	shingle	0	-	0	1
+T	48	heroes	297	303	1	1	<ALPHANUM>	0	-	0	1
+T	48	heroes axes	297	308	0	2	shingle	0	-	0	1
+T	48	axes	304	308	1	1	<ALPHANUM>	0	-	0	1
+E	48	308	308	0

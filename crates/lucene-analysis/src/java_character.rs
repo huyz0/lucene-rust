@@ -134,8 +134,10 @@ pub fn is_letter_or_digit(cp: u32) -> bool {
 /// other than the three non-breaking spaces, or one of `\t \n \u000B \f \r
 /// \u001C..\u001F`.
 pub fn is_whitespace(cp: u32) -> bool {
+    if cp < 0x80 {
+        return matches!(cp, 0x09..=0x0D | 0x1C..=0x20);
+    }
     match cp {
-        0x09..=0x0D | 0x1C..=0x1F => true,
         0x00A0 | 0x2007 | 0x202F => false,
         _ => matches!(
             get_type(cp),

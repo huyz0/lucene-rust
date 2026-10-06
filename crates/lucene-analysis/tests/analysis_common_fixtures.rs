@@ -690,8 +690,57 @@ fn build(name: &str) -> Option<Analyzer> {
                 StandardTokenizer::new(),
             )))
         }),
+        "ws_limit_token_count_analyzer" => {
+            lucene_analysis::miscellaneous::LimitTokenCountAnalyzer::new(ws_analyzer(), 3, false)
+                .unwrap()
+                .into_analyzer()
+        }
+        "simple_limit_token_count_consume_all" => {
+            lucene_analysis::miscellaneous::LimitTokenCountAnalyzer::new(
+                Analyzer::new(core_analysis::SimpleAnalyzer),
+                2,
+                true,
+            )
+            .unwrap()
+            .into_analyzer()
+        }
+        "per_field_wrapper_field" | "per_field_wrapper_default" => {
+            let field = if name.ends_with("field") { "f" } else { "g" };
+            let mut map = std::collections::HashMap::new();
+            map.insert(
+                field.to_string(),
+                Analyzer::new(core_analysis::SimpleAnalyzer),
+            );
+            lucene_analysis::miscellaneous::PerFieldAnalyzerWrapper::new(ws_analyzer(), map)
+                .into_analyzer()
+        }
+        "shingle_analyzer_wrapper" => lucene_analysis::shingle::ShingleAnalyzerWrapper::new(
+            Analyzer::new(StandardAnalyzer::default()),
+            2,
+            3,
+        )
+        .unwrap()
+        .into_analyzer(),
+        "shingle_analyzer_wrapper_options" => {
+            lucene_analysis::shingle::ShingleAnalyzerWrapper::with_options(
+                ws_analyzer(),
+                2,
+                3,
+                Some("_"),
+                false,
+                true,
+                Some("*"),
+            )
+            .unwrap()
+            .into_analyzer()
+        }
         _ => return None,
     })
+}
+
+/// `new WhitespaceAnalyzer()`.
+fn ws_analyzer() -> Analyzer {
+    Analyzer::new(core_analysis::WhitespaceAnalyzer::default())
 }
 
 // ---------------------------------------------------------------- rows
@@ -863,7 +912,7 @@ fn chains_match_lucene_token_for_token() {
         assert_eq!(actual.len(), expected.len(), "{name}: row count");
         checked += 1;
     }
-    assert!(checked >= 104, "only {checked} chains checked");
+    assert!(checked >= 110, "only {checked} chains checked");
 }
 
 #[test]

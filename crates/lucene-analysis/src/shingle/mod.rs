@@ -85,6 +85,20 @@ pub struct ShingleFilter<I> {
     no_shingle_output: bool,
     end_state: Option<State>,
     exhausted: bool,
+    /// Window tokens shifted out, reused by the next captures (Java's
+    /// `getNextToken(target)` recycles the shifted-out token the same way).
+    spare: Vec<AttributeSource>,
+}
+
+/// `captureState` into a recycled source when there is one.
+fn capture(spare: &mut Vec<AttributeSource>, a: &AttributeSource) -> AttributeSource {
+    match spare.pop() {
+        Some(mut t) => {
+            t.clone_from(a);
+            t
+        }
+        None => a.clone(),
+    }
 }
 
 impl<I: TokenStream> ShingleFilter<I> {
@@ -113,6 +127,7 @@ impl<I: TokenStream> ShingleFilter<I> {
             no_shingle_output: true,
             end_state: None,
             exhausted: false,
+            spare: Vec::new(),
         };
         f.set_max_shingle_size(max_shingle_size)?;
         f.set_min_shingle_size(min_shingle_size)?;
@@ -231,7 +246,7 @@ impl<I: TokenStream> ShingleFilter<I> {
                 return Ok(Some(filler));
             }
             return Ok(Some(InputWindowToken {
-                att_source: a.capture_state(),
+                att_source: capture(&mut self.spare, a),
                 is_filler: false,
             }));
         }
@@ -253,7 +268,9 @@ impl<I: TokenStream> ShingleFilter<I> {
 
     // Java: ShingleFilter.shiftInputWindow
     fn shift_input_window(&mut self) -> Result<(), AnalysisError> {
-        self.input_window.pop_front();
+        if let Some(t) = self.input_window.pop_front() {
+            self.spare.push(t.att_source);
+        }
         while (self.input_window.len() as i32) < self.max_shingle_size {
             match self.get_next_token()? {
                 Some(t) => self.input_window.push_back(t),
@@ -490,6 +507,99 @@ impl<I: TokenStream> TokenFilter for FixedShingleFilter<I> {
     }
 }
 
+/// `org.apache.lucene.analysis.shingle.ShingleAnalyzerWrapper`: the
+/// delegate's chain behind a configured [`ShingleFilter`]. Build the
+/// [`crate::Analyzer`] with [`Self::into_analyzer`] (the delegate's reuse
+/// strategy, as Java's constructor passes up).
+pub struct ShingleAnalyzerWrapper {
+    delegate: crate::Analyzer,
+    min_shingle_size: i32,
+    max_shingle_size: i32,
+    token_separator: String,
+    output_unigrams: bool,
+    output_unigrams_if_no_shingles: bool,
+    filler_token: Option<String>,
+}
+
+impl ShingleAnalyzerWrapper {
+    /// `new ShingleAnalyzerWrapper(Analyzer, int minShingleSize, int
+    /// maxShingleSize)`: separator `" "`, unigrams output, filler `"_"`.
+    pub fn new(
+        delegate: crate::Analyzer,
+        min_shingle_size: i32,
+        max_shingle_size: i32,
+    ) -> Result<Self, AnalysisError> {
+        Self::with_options(
+            delegate,
+            min_shingle_size,
+            max_shingle_size,
+            Some(DEFAULT_TOKEN_SEPARATOR),
+            true,
+            false,
+            Some(DEFAULT_FILLER_TOKEN),
+        )
+    }
+
+    /// The seven-argument constructor (`None` separator is `""`).
+    pub fn with_options(
+        delegate: crate::Analyzer,
+        min_shingle_size: i32,
+        max_shingle_size: i32,
+        token_separator: Option<&str>,
+        output_unigrams: bool,
+        output_unigrams_if_no_shingles: bool,
+        filler_token: Option<&str>,
+    ) -> Result<Self, AnalysisError> {
+        let bad = |m: &str| Err(AnalysisError::IllegalArgument(m.to_string()));
+        if max_shingle_size < 2 {
+            return bad("Max shingle size must be >= 2");
+        }
+        if min_shingle_size < 2 {
+            return bad("Min shingle size must be >= 2");
+        }
+        if min_shingle_size > max_shingle_size {
+            return bad("Min shingle size must be <= max shingle size");
+        }
+        Ok(ShingleAnalyzerWrapper {
+            delegate,
+            min_shingle_size,
+            max_shingle_size,
+            token_separator: token_separator.unwrap_or("").to_string(),
+            output_unigrams,
+            output_unigrams_if_no_shingles,
+            filler_token: filler_token.map(str::to_string),
+        })
+    }
+
+    /// The [`crate::Analyzer`], with the delegate's reuse strategy.
+    pub fn into_analyzer(self) -> crate::Analyzer {
+        let strategy = self.delegate.reuse_strategy();
+        crate::Analyzer::with_reuse_strategy(self, strategy)
+    }
+}
+
+impl crate::AnalyzerWrapper for ShingleAnalyzerWrapper {
+    fn wrapped_analyzer(&self, _field_name: &str) -> &crate::Analyzer {
+        &self.delegate
+    }
+
+    // Java: ShingleAnalyzerWrapper.wrapComponents
+    fn wrap_components(
+        &self,
+        _field_name: &str,
+        components: crate::TokenStreamComponents,
+    ) -> crate::TokenStreamComponents {
+        let (source, sink) = components.into_parts();
+        let mut f = ShingleFilter::new(sink, self.min_shingle_size, self.max_shingle_size)
+            .expect("shingle sizes checked in the constructor");
+        f.set_token_separator(Some(&self.token_separator));
+        f.set_output_unigrams(self.output_unigrams);
+        f.set_output_unigrams_if_no_shingles(self.output_unigrams_if_no_shingles);
+        f.set_filler_token(self.filler_token.as_deref());
+        crate::TokenStreamComponents::from_parts(source, Box::new(f))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -533,5 +643,29 @@ mod tests {
             FixedShingleFilter::new(Canned::parse("a:0:1:1:1 c:4:5:3:1 d:6:7:1:1|9|1"), 3).unwrap();
         assert_eq!(render(&mut f), "a _ _:0:1:1:1 c d _:4:7:3:1|9|1");
         assert!(FixedShingleFilter::new(Canned::parse(""), 5).is_err());
+    }
+
+    #[test]
+    fn shingle_analyzer_wrapper_configures_the_filter() {
+        use crate::core_analysis::WhitespaceAnalyzer;
+        let terms = |a: &crate::Analyzer, text: &str| {
+            let mut ts = a.token_stream("f", text).unwrap();
+            let mut out = Vec::new();
+            crate::token_stream::consume(&mut ts, |x| out.push(x.term().to_string())).unwrap();
+            out
+        };
+        let ws = || crate::Analyzer::new(WhitespaceAnalyzer::default());
+        let a = ShingleAnalyzerWrapper::new(ws(), 2, 2)
+            .unwrap()
+            .into_analyzer();
+        assert_eq!(terms(&a, "a b"), vec!["a", "a b", "b"]);
+        let a = ShingleAnalyzerWrapper::with_options(ws(), 2, 3, None, false, true, None)
+            .unwrap()
+            .into_analyzer();
+        assert_eq!(terms(&a, "a b c"), vec!["ab", "abc", "bc"]);
+        assert_eq!(terms(&a, "z"), vec!["z"]);
+        for (min, max) in [(2, 1), (1, 2), (3, 2)] {
+            assert!(ShingleAnalyzerWrapper::new(ws(), min, max).is_err());
+        }
     }
 }
