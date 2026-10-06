@@ -1037,6 +1037,15 @@ outright.
   `Among` tables, selected by a traced stemmer for new decisions
   (`data/snowball/<Language>.words`); read by
   `crates/lucene-analysis/tests/snowball_fixtures.rs`.
+- `GenHunspell.java` — M11 T11.4: Lucene's Hunspell over this project's own
+  dictionaries (`corpus/hunspell/<name>.aff`/`.dic`/`.words`, each named for
+  the features it exercises; `broken_*` are ones Lucene refuses), loaded
+  case-sensitive and `ignoreCase` (`data/hunspell/<name>[.ic].tsv`): per word,
+  `spell`, `HunspellStemFilter`'s stems three ways, `getRoots`,
+  `analyzeSimpleWord`, `suggest`, a tuned `Suggester` and an n-gram
+  `FragmentChecker`; per root, `lookupEntries` and `getAllWordForms`; per
+  dictionary, `generateAllSimpleWords`; a refused dictionary's exception. Read
+  by `crates/lucene-analysis/tests/hunspell_fixtures.rs`.
 - `GenDisiJumpTable.java` — the only Java-written `IndexedDISI` **block jump
   table** in this tree (`disi_jump_table_index/`). `IndexedDISI.writeBitSet`
   emits `jumpTableEntryCount = 0` below two logical 65 536-document blocks, and

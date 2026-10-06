@@ -157,3 +157,10 @@ The list M6's work order named has drifted since it was written:
   compiled pattern across queries; the code there is this port's own.
 - The port's reference is Lucene's Java source, file by file, as
   the parity ledger (`docs/parity.md` and `docs/parity/`) records.
+- **Hunspell test dictionaries** (M11 T11.4). Lucene's own Hunspell test
+  dictionaries (`lucene/analysis/common/src/test/.../hunspell/*.aff`, `.dic`)
+  are not redistributed: most are copied from Hunspell's test suite
+  (MPL-1.1/GPL-2.0/LGPL-2.1 tri-licence) with no per-file licence to rely on.
+  The fixtures run on dictionaries written for this project instead
+  (`fixtures/corpus/hunspell/`, Apache-2.0), each exercising named features.
+  Test data only.

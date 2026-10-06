@@ -1,0 +1,16 @@
+# FLAG num, numeric flags in rules and continuation classes.
+SET UTF-8
+FLAG num
+
+SFX 101 Y 1
+SFX 101 0 s .
+
+SFX 2000 Y 2
+SFX 2000 0 ed [^e]
+SFX 2000 0 d e
+
+SFX 3 Y 1
+SFX 3 0 er/101 .
+
+PFX 65000 Y 1
+PFX 65000 0 out .

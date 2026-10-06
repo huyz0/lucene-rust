@@ -1,0 +1,34 @@
+W	acen	1	ac	ac	ac	ac	AffixedWord[word=acen, entry=ac/A, prefixes=[], suffixes=[A(id=0)]]	acen	acen	1
+W	-cen	1	-c	-c	-c	-c	AffixedWord[word=-cen, entry=-c/A, prefixes=[], suffixes=[A(id=0)]]	-cen	-cen	1
+W	bcen	0	bcen	bcen	bcen			-cen	-cen	1
+W	cen	0	cen	cen	cen			-cen	-cen	1
+W	ac	1	ac	ac	ac	ac	AffixedWord[word=ac, entry=ac/A, prefixes=[], suffixes=[]]	c	c	0
+W	-c	1	-c	-c	-c	-c	AffixedWord[word=-c, entry=-c/A, prefixes=[], suffixes=[]]	c	c	0
+W	bc	1	bc	bc	bc	bc	AffixedWord[word=bc, entry=bc/A, prefixes=[], suffixes=[]]	c	c	0
+W	\c	0	\c	\c	\c			c	c	0
+W	ACEN	1	ac	ac	ac	ac	AffixedWord[word=ACEN, entry=ac/A, prefixes=[], suffixes=[A(id=0)]]	acen	acen	1
+W	Acen	1	ac	ac	ac	ac	AffixedWord[word=Acen, entry=ac/A, prefixes=[], suffixes=[A(id=0)]]	acen	acen	1
+W	-CEN	1	-c	-c	-c	-c	AffixedWord[word=-CEN, entry=-c/A, prefixes=[], suffixes=[A(id=0)]]	-cen	-cen	1
+W	BCEN	0	BCEN	BCEN	BCEN			-cen	-cen	1
+W	Bcen	0	Bcen	Bcen	Bcen			-cen	-cen	1
+W	CEN	0	CEN	CEN	CEN			-cen	-cen	1
+W	Cen	0	Cen	Cen	Cen			-cen	-cen	1
+W	AC	1	ac	ac	ac	ac	AffixedWord[word=AC, entry=ac/A, prefixes=[], suffixes=[]]	c	c	0
+W	Ac	1	ac	ac	ac	ac	AffixedWord[word=Ac, entry=ac/A, prefixes=[], suffixes=[]]	c	c	0
+W	-C	1	-c	-c	-c	-c	AffixedWord[word=-C, entry=-c/A, prefixes=[], suffixes=[]]	c	c	0
+W	BC	1	bc	bc	bc	bc	AffixedWord[word=BC, entry=bc/A, prefixes=[], suffixes=[]]	c	c	0
+W	Bc	1	bc	bc	bc	bc	AffixedWord[word=Bc, entry=bc/A, prefixes=[], suffixes=[]]	c	c	0
+W	\C	0	\C	\C	\C			c	c	0
+W	acn	0	acn	acn	acn			ac	ac	1
+W	caen	0	caen	caen	caen			acen	acen	1
+W	-cn	0	-cn	-cn	-cn			-c	-c	1
+W	c-en	0	c-en	c-en	c-en			-cen	-cen	1
+W	bcn	0	bcn	bcn	bcn			bc	bc	1
+W	cben	0	cben	cben	cben			-cen	-cen	1
+W	cn	0	cn	cn	cn			c	c	0
+W	ecn	0	ecn	ecn	ecn					1
+E	ac	ac/A	AffixedWord[word=ac, entry=ac/A, prefixes=[], suffixes=[]]|AffixedWord[word=acen, entry=ac/A, prefixes=[], suffixes=[A(id=0)]]
+E	-c	-c/A	AffixedWord[word=-c, entry=-c/A, prefixes=[], suffixes=[]]|AffixedWord[word=-cen, entry=-c/A, prefixes=[], suffixes=[A(id=0)]]
+E	bc	bc/A	AffixedWord[word=bc, entry=bc/A, prefixes=[], suffixes=[]]
+E	\c	null	
+G	AffixedWord[word=bc, entry=bc/A, prefixes=[], suffixes=[]]|AffixedWord[word=ac, entry=ac/A, prefixes=[], suffixes=[]]|AffixedWord[word=acen, entry=ac/A, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=-c, entry=-c/A, prefixes=[], suffixes=[]]|AffixedWord[word=-cen, entry=-c/A, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=c, entry=c/A, prefixes=[], suffixes=[]]

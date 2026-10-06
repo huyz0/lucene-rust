@@ -1,0 +1,40 @@
+# lucene-rust's own test dictionary: COMPOUNDRULE, CHECKCOMPOUNDPATTERN
+# replacements, FORCEUCASE, phonetic data, split and mixed-case suggestions,
+# trailing dots, and affix conditions with dashes, unclosed brackets and
+# strips longer than their condition.
+SET UTF-8
+TRY esianrtolcdugmphbyfvkwz
+WORDCHARS -.
+KEY qwertyuiop|asdfghjkl|zxcvbnm
+COMPOUNDMIN 1
+ONLYINCOMPOUND c
+COMPOUNDRULE 3
+COMPOUNDRULE n*1t
+COMPOUNDRULE n*mp
+COMPOUNDRULE (y)(w)?(z)
+COMPOUNDFLAG C
+CHECKCOMPOUNDPATTERN 1
+CHECKCOMPOUNDPATTERN o b z
+FORCEUCASE U
+REP 2
+REP alot a_lot
+REP ph f
+BREAK 1
+BREAK -
+
+SFX A Y 2
+SFX A   0     s          [a-c]
+SFX A   0     er         [ae
+
+SFX B Y 3
+SFX B   abc   x          [ab]c
+SFX B   y     ies        x
+SFX B   y     ied        [^aeiou]z
+
+PFX G Y 3
+PFX G   ab    x          abc
+PFX G   0     re         [^-]
+PFX G   ab    y          [ab]
+
+SFX H Y 1
+SFX H   ing   e          [^aeiou]ing

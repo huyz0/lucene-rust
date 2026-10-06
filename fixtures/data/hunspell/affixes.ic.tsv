@@ -1,0 +1,371 @@
+W	creates	1	create	create	create	create	AffixedWord[word=creates, entry=create/DGNRSU, prefixes=[], suffixes=[S(id=7)]]			0
+W	created	1	create	create	create	create	AffixedWord[word=created, entry=create/DGNRSU, prefixes=[], suffixes=[D(id=8)]]			1
+W	creating	1	create	create	create	create	AffixedWord[word=creating, entry=create/DGNRSU, prefixes=[], suffixes=[G(id=12)]]			1
+W	creation	1	create	create	create	create	AffixedWord[word=creation, entry=create/DGNRSU, prefixes=[], suffixes=[N(id=15)]]			1
+W	creations	0	creations	creations	creations					1
+W	recreate	1	create	create	create	create	AffixedWord[word=recreate, entry=create/DGNRSU, prefixes=[R(id=0)], suffixes=[]]			0
+W	uncreated	1	create	create	create	create	AffixedWord[word=uncreated, entry=create/DGNRSU, prefixes=[U(id=1)], suffixes=[D(id=8)]]			1
+W	connections	0	connections	connections	connections					1
+W	reconnected	1	connect	connect	connect	connect	AffixedWord[word=reconnected, entry=connect/DGNRSU, prefixes=[R(id=0)], suffixes=[D(id=10)]]			1
+W	unconnected	1	connect	connect	connect	connect	AffixedWord[word=unconnected, entry=connect/DGNRSU, prefixes=[U(id=1)], suffixes=[D(id=10)]]			1
+W	unhappy	1	happy	happy	happy	happy	AffixedWord[word=unhappy, entry=happy/U, prefixes=[U(id=1)], suffixes=[]]	unhappy	unhappy	0
+W	happily	0	happily	happily	happily			happy	happy	1
+W	quickly	1	quick	quick	quick	quick	AffixedWord[word=quickly, entry=quick/L, prefixes=[], suffixes=[L(id=14)]]	quickly	quickly	1
+W	quicklies	1	quick	quick	quick	quick	AffixedWord[word=quicklies, entry=quick/L, prefixes=[], suffixes=[S(id=4), L(id=14)]]	quicklies|quick	quicklies|quick	1
+W	calmly	1	calm	calm	calm	calm	AffixedWord[word=calmly, entry=calm/LQU, prefixes=[], suffixes=[L(id=14)]]	calmly	calmly	0
+W	calmness	1	calm	calm	calm	calm	AffixedWord[word=calmness, entry=calm/LQU, prefixes=[], suffixes=[Q(id=18)]]	calmness	calmness	1
+W	uncalm	1	calm	calm	calm	calm	AffixedWord[word=uncalm, entry=calm/LQU, prefixes=[U(id=1)], suffixes=[]]	uncalm	uncalm	1
+W	movement	1	move	move	move	move	AffixedWord[word=movement, entry=move/DGMRSU, prefixes=[], suffixes=[M(id=17)]]	movement|movements	movement|movements	1
+W	movements	1	move	move	move	move	AffixedWord[word=movements, entry=move/DGMRSU, prefixes=[], suffixes=[S(id=7), M(id=17)]]	movements|movement	movements|movement	1
+W	removed	1	move	move	move	move	AffixedWord[word=removed, entry=move/DGMRSU, prefixes=[R(id=0)], suffixes=[D(id=8)]]	removed|removes|remove	removed|removes|remove	1
+W	tries	1	try	try	try	try	AffixedWord[word=tries, entry=try/DGS, prefixes=[], suffixes=[S(id=4)]]	tried|tries	tried|tries	1
+W	tried	1	try	try	try	try	AffixedWord[word=tried, entry=try/DGS, prefixes=[], suffixes=[D(id=9)]]	tries|tried	tries|tried	0
+W	trying	1	try	try	try	try	AffixedWord[word=trying, entry=try/DGS, prefixes=[], suffixes=[G(id=13)]]	trying	trying	1
+W	plays	1	play	play	play	play	AffixedWord[word=plays, entry=play/DGRS, prefixes=[], suffixes=[S(id=5)]]	play	play	0
+W	played	1	play	play	play	play	AffixedWord[word=played, entry=play/DGRS, prefixes=[], suffixes=[D(id=11)]]	played	played	1
+W	replay	1	play	play	play	play	AffixedWord[word=replay, entry=play/DGRS, prefixes=[R(id=0)], suffixes=[]]	replays|replay	replays|replay	1
+W	boxes	1	box	box	box	box	AffixedWord[word=boxes, entry=box/S, prefixes=[], suffixes=[S(id=6)]]	boxes	boxes	1
+W	kissed	1	kiss	kiss	kiss	kiss	AffixedWord[word=kissed, entry=kiss/DGS, prefixes=[], suffixes=[D(id=10)]]	kissed|kisses	kissed|kisses	1
+W	kissing	1	kiss	kiss	kiss	kiss	AffixedWord[word=kissing, entry=kiss/DGS, prefixes=[], suffixes=[G(id=13)]]	kissing	kissing	0
+W	kisses	1	kiss	kiss	kiss	kiss	AffixedWord[word=kisses, entry=kiss/DGS, prefixes=[], suffixes=[S(id=6)]]	kisses|kissed	kisses|kissed	1
+W	orders	1	order	order	order	order	AffixedWord[word=orders, entry=order/DGRSU, prefixes=[], suffixes=[S(id=7)]]	orders|order	orders|order	0
+W	disorder	0	disorder	disorder	disorder			order	order	1
+W	reordering	1	order	order	order	order	AffixedWord[word=reordering, entry=order/DGRSU, prefixes=[R(id=0)], suffixes=[G(id=13)]]	reordering	reordering	0
+W	acts	1	act	act	act	act	AffixedWord[word=acts, entry=act/DGNRS, prefixes=[], suffixes=[S(id=7)]]			0
+W	action	1	act	act	act	act	AffixedWord[word=action, entry=act/DGNRS, prefixes=[], suffixes=[N(id=16)]]			1
+W	actions	0	actions	actions	actions					1
+W	reacted	1	act	act	act	act	AffixedWord[word=reacted, entry=act/DGNRS, prefixes=[R(id=0)], suffixes=[D(id=10)]]	replayed	replayed	1
+W	niceness	1	nice	nice	nice	nice	AffixedWord[word=niceness, entry=nice/Q, prefixes=[], suffixes=[Q(id=18)]]	niceness	niceness	1
+W	noughts	0	noughts	noughts	noughts			ought	ought	0
+W	iPhone	1	iphone	iphone	iphone	iphone	AffixedWord[word=iPhone, entry=iphone/K, prefixes=[], suffixes=[]]	iphone	iphone	0
+W	iphone	1	iphone	iphone	iphone	iphone	AffixedWord[word=iphone, entry=iphone/K, prefixes=[], suffixes=[]]	iphone	iphone	0
+W	IPHONE	1	iphone	iphone	iphone	iphone	AffixedWord[word=IPHONE, entry=iphone/K, prefixes=[], suffixes=[]]	iphone	iphone	1
+W	NASA	1	nasa	nasa	nasa	nasa	AffixedWord[word=NASA, entry=nasa, prefixes=[], suffixes=[]]	nasa	nasa	0
+W	nasa	1	nasa	nasa	nasa	nasa	AffixedWord[word=nasa, entry=nasa, prefixes=[], suffixes=[]]	nasa	nasa	1
+W	Nasa	1	nasa	nasa	nasa	nasa	AffixedWord[word=Nasa, entry=nasa, prefixes=[], suffixes=[]]	nasa	nasa	0
+W	parises	1	:Paris	:Paris	:Paris	:Paris	AffixedWord[word=parises, entry=paris/S po:noun st:Paris, prefixes=[], suffixes=[S(id=6)]]	parises	parises	1
+W	paris	1	:Paris	:Paris	:Paris	:Paris	AffixedWord[word=paris, entry=paris/S po:noun st:Paris, prefixes=[], suffixes=[]]	paris	paris	0
+W	Paris	1	:Paris	:Paris	:Paris	:Paris	AffixedWord[word=Paris, entry=paris/S po:noun st:Paris, prefixes=[], suffixes=[]]	paris	paris	1
+W	leads	1	lead|lead	lead	lead	lead	AffixedWord[word=leads, entry=lead/DGS po:verb, prefixes=[], suffixes=[S(id=7)]]|AffixedWord[word=leads, entry=lead/S po:noun, prefixes=[], suffixes=[S(id=7)]]	lead	lead	0
+W	leading	1	lead	lead	lead	lead	AffixedWord[word=leading, entry=lead/DGS po:verb, prefixes=[], suffixes=[G(id=13)]]	leading	leading	1
+W	went	1	go	go	go	go	AffixedWord[word=went, entry=went st:go, prefixes=[], suffixes=[]]	went	went	0
+W	gone	1	go	go	go	go	AffixedWord[word=gone, entry=gone st:go, prefixes=[], suffixes=[]]	gone	gone	0
+W	goes	0	goes	goes	goes			gone	gone	1
+W	going	1	going	going	going	going	AffixedWord[word=going, entry=go/G st:going, prefixes=[], suffixes=[G(id=13)]]	going	going	1
+W	teapot	0	teapot	teapot	teapot			teapot?	teapot?	0
+W	teapots	0	teapots	teapots	teapots			teapot?s|teapot?	teapot?s|teapot?	1
+W	ain't	0	ain't	ain't	ain't	ain't	AffixedWord[word=ain't, entry=ain't/!, prefixes=[], suffixes=[]]			0
+W	CREATED	1	create	create	create	create	AffixedWord[word=CREATED, entry=create/DGNRSU, prefixes=[], suffixes=[D(id=8)]]			1
+W	Created	1	create	create	create	create	AffixedWord[word=Created, entry=create/DGNRSU, prefixes=[], suffixes=[D(id=8)]]			1
+W	Movement	1	move	move	move	move	AffixedWord[word=Movement, entry=move/DGMRSU, prefixes=[], suffixes=[M(id=17)]]	movement|movements	movement|movements	1
+W	TRIES	1	try	try	try	try	AffixedWord[word=TRIES, entry=try/DGS, prefixes=[], suffixes=[S(id=4)]]	tried|tries	tried|tries	0
+W	crate	0	crate	crate	crate					0
+W	creat	0	creat	creat	creat					0
+W	xyzzy	0	xyzzy	xyzzy	xyzzy					1
+W	create	1	create	create	create	create	AffixedWord[word=create, entry=create/DGNRSU, prefixes=[], suffixes=[]]			0
+W	connect	1	connect	connect	connect	connect	AffixedWord[word=connect, entry=connect/DGNRSU, prefixes=[], suffixes=[]]			0
+W	happy	1	happy	happy	happy	happy	AffixedWord[word=happy, entry=happy/U, prefixes=[], suffixes=[]]	happy	happy	0
+W	quick	1	quick	quick	quick	quick	AffixedWord[word=quick, entry=quick/L, prefixes=[], suffixes=[]]	quick	quick	0
+W	calm	1	calm	calm	calm	calm	AffixedWord[word=calm, entry=calm/LQU, prefixes=[], suffixes=[]]	calm	calm	0
+W	move	1	move	move	move	move	AffixedWord[word=move, entry=move/DGMRSU, prefixes=[], suffixes=[]]	moves|moved|move	moves|moved|move	0
+W	try	1	try	try	try	try	AffixedWord[word=try, entry=try/DGS, prefixes=[], suffixes=[]]	try	try	0
+W	play	1	play	play	play	play	AffixedWord[word=play, entry=play/DGRS, prefixes=[], suffixes=[]]	plays|play	plays|play	0
+W	box	1	box	box	box	box	AffixedWord[word=box, entry=box/S, prefixes=[], suffixes=[]]	box	box	0
+W	kiss	1	kiss	kiss	kiss	kiss	AffixedWord[word=kiss, entry=kiss/DGS, prefixes=[], suffixes=[]]	kiss	kiss	0
+W	order	1	order	order	order	order	AffixedWord[word=order, entry=order/DGRSU, prefixes=[], suffixes=[]]	order|orders	order|orders	0
+W	act	1	act	act	act	act	AffixedWord[word=act, entry=act/DGNRS, prefixes=[], suffixes=[]]			0
+W	nice	1	nice	nice	nice	nice	AffixedWord[word=nice, entry=nice/Q, prefixes=[], suffixes=[]]	nice	nice	0
+W	ought	1	ought	ought	ought	ought	AffixedWord[word=ought, entry=ought, prefixes=[], suffixes=[]]	ought	ought	0
+W	lead	1	lead|lead	lead	lead	lead	AffixedWord[word=lead, entry=lead/DGS po:verb, prefixes=[], suffixes=[]]|AffixedWord[word=lead, entry=lead/S po:noun, prefixes=[], suffixes=[]]	leads|lead	leads|lead	0
+W	go	1	going	going	going	going	AffixedWord[word=go, entry=go/G st:going, prefixes=[], suffixes=[]]	go	go	0
+W	teapot?	1	teapot?	teapot?	teapot?	teapot?	AffixedWord[word=teapot?, entry=teapot?/S, prefixes=[], suffixes=[]]	teapot?s|teapot?	teapot?s|teapot?	0
+W	CREATES	1	create	create	create	create	AffixedWord[word=CREATES, entry=create/DGNRSU, prefixes=[], suffixes=[S(id=7)]]			1
+W	Creates	1	create	create	create	create	AffixedWord[word=Creates, entry=create/DGNRSU, prefixes=[], suffixes=[S(id=7)]]			0
+W	CREATING	1	create	create	create	create	AffixedWord[word=CREATING, entry=create/DGNRSU, prefixes=[], suffixes=[G(id=12)]]			1
+W	Creating	1	create	create	create	create	AffixedWord[word=Creating, entry=create/DGNRSU, prefixes=[], suffixes=[G(id=12)]]			1
+W	CREATION	1	create	create	create	create	AffixedWord[word=CREATION, entry=create/DGNRSU, prefixes=[], suffixes=[N(id=15)]]			1
+W	Creation	1	create	create	create	create	AffixedWord[word=Creation, entry=create/DGNRSU, prefixes=[], suffixes=[N(id=15)]]			1
+W	CREATIONS	0	CREATIONS	CREATIONS	CREATIONS					1
+W	Creations	0	Creations	Creations	Creations					1
+W	RECREATE	1	create	create	create	create	AffixedWord[word=RECREATE, entry=create/DGNRSU, prefixes=[R(id=0)], suffixes=[]]			1
+W	Recreate	1	create	create	create	create	AffixedWord[word=Recreate, entry=create/DGNRSU, prefixes=[R(id=0)], suffixes=[]]			0
+W	UNCREATED	1	create	create	create	create	AffixedWord[word=UNCREATED, entry=create/DGNRSU, prefixes=[U(id=1)], suffixes=[D(id=8)]]			1
+W	Uncreated	1	create	create	create	create	AffixedWord[word=Uncreated, entry=create/DGNRSU, prefixes=[U(id=1)], suffixes=[D(id=8)]]			1
+W	CONNECTIONS	0	CONNECTIONS	CONNECTIONS	CONNECTIONS					1
+W	Connections	0	Connections	Connections	Connections					1
+W	RECONNECTED	1	connect	connect	connect	connect	AffixedWord[word=RECONNECTED, entry=connect/DGNRSU, prefixes=[R(id=0)], suffixes=[D(id=10)]]			1
+W	Reconnected	1	connect	connect	connect	connect	AffixedWord[word=Reconnected, entry=connect/DGNRSU, prefixes=[R(id=0)], suffixes=[D(id=10)]]			1
+W	UNCONNECTED	1	connect	connect	connect	connect	AffixedWord[word=UNCONNECTED, entry=connect/DGNRSU, prefixes=[U(id=1)], suffixes=[D(id=10)]]			1
+W	Unconnected	1	connect	connect	connect	connect	AffixedWord[word=Unconnected, entry=connect/DGNRSU, prefixes=[U(id=1)], suffixes=[D(id=10)]]			1
+W	UNHAPPY	1	happy	happy	happy	happy	AffixedWord[word=UNHAPPY, entry=happy/U, prefixes=[U(id=1)], suffixes=[]]	unhappy	unhappy	1
+W	Unhappy	1	happy	happy	happy	happy	AffixedWord[word=Unhappy, entry=happy/U, prefixes=[U(id=1)], suffixes=[]]	unhappy	unhappy	1
+W	HAPPILY	0	HAPPILY	HAPPILY	HAPPILY			happy	happy	1
+W	Happily	0	Happily	Happily	Happily			happy	happy	1
+W	QUICKLY	1	quick	quick	quick	quick	AffixedWord[word=QUICKLY, entry=quick/L, prefixes=[], suffixes=[L(id=14)]]	quickly	quickly	1
+W	Quickly	1	quick	quick	quick	quick	AffixedWord[word=Quickly, entry=quick/L, prefixes=[], suffixes=[L(id=14)]]	quickly	quickly	1
+W	QUICKLIES	1	quick	quick	quick	quick	AffixedWord[word=QUICKLIES, entry=quick/L, prefixes=[], suffixes=[S(id=4), L(id=14)]]	quicklies|quick	quicklies|quick	1
+W	Quicklies	1	quick	quick	quick	quick	AffixedWord[word=Quicklies, entry=quick/L, prefixes=[], suffixes=[S(id=4), L(id=14)]]	quicklies|quick	quicklies|quick	1
+W	CALMLY	1	calm	calm	calm	calm	AffixedWord[word=CALMLY, entry=calm/LQU, prefixes=[], suffixes=[L(id=14)]]	calmly	calmly	1
+W	Calmly	1	calm	calm	calm	calm	AffixedWord[word=Calmly, entry=calm/LQU, prefixes=[], suffixes=[L(id=14)]]	calmly	calmly	0
+W	CALMNESS	1	calm	calm	calm	calm	AffixedWord[word=CALMNESS, entry=calm/LQU, prefixes=[], suffixes=[Q(id=18)]]	calmness	calmness	1
+W	Calmness	1	calm	calm	calm	calm	AffixedWord[word=Calmness, entry=calm/LQU, prefixes=[], suffixes=[Q(id=18)]]	calmness	calmness	1
+W	UNCALM	1	calm	calm	calm	calm	AffixedWord[word=UNCALM, entry=calm/LQU, prefixes=[U(id=1)], suffixes=[]]	uncalm	uncalm	1
+W	Uncalm	1	calm	calm	calm	calm	AffixedWord[word=Uncalm, entry=calm/LQU, prefixes=[U(id=1)], suffixes=[]]	uncalm	uncalm	1
+W	MOVEMENT	1	move	move	move	move	AffixedWord[word=MOVEMENT, entry=move/DGMRSU, prefixes=[], suffixes=[M(id=17)]]	movement|movements	movement|movements	1
+W	MOVEMENTS	1	move	move	move	move	AffixedWord[word=MOVEMENTS, entry=move/DGMRSU, prefixes=[], suffixes=[S(id=7), M(id=17)]]	movements|movement	movements|movement	1
+W	Movements	1	move	move	move	move	AffixedWord[word=Movements, entry=move/DGMRSU, prefixes=[], suffixes=[S(id=7), M(id=17)]]	movements|movement	movements|movement	1
+W	REMOVED	1	move	move	move	move	AffixedWord[word=REMOVED, entry=move/DGMRSU, prefixes=[R(id=0)], suffixes=[D(id=8)]]	removed|removes|remove	removed|removes|remove	1
+W	Removed	1	move	move	move	move	AffixedWord[word=Removed, entry=move/DGMRSU, prefixes=[R(id=0)], suffixes=[D(id=8)]]	removed|removes|remove	removed|removes|remove	1
+W	Tries	1	try	try	try	try	AffixedWord[word=Tries, entry=try/DGS, prefixes=[], suffixes=[S(id=4)]]	tried|tries	tried|tries	1
+W	TRIED	1	try	try	try	try	AffixedWord[word=TRIED, entry=try/DGS, prefixes=[], suffixes=[D(id=9)]]	tries|tried	tries|tried	0
+W	Tried	1	try	try	try	try	AffixedWord[word=Tried, entry=try/DGS, prefixes=[], suffixes=[D(id=9)]]	tries|tried	tries|tried	0
+W	TRYING	1	try	try	try	try	AffixedWord[word=TRYING, entry=try/DGS, prefixes=[], suffixes=[G(id=13)]]	trying	trying	1
+W	Trying	1	try	try	try	try	AffixedWord[word=Trying, entry=try/DGS, prefixes=[], suffixes=[G(id=13)]]	trying	trying	1
+W	PLAYS	1	play	play	play	play	AffixedWord[word=PLAYS, entry=play/DGRS, prefixes=[], suffixes=[S(id=5)]]	play	play	1
+W	Plays	1	play	play	play	play	AffixedWord[word=Plays, entry=play/DGRS, prefixes=[], suffixes=[S(id=5)]]	play	play	0
+W	PLAYED	1	play	play	play	play	AffixedWord[word=PLAYED, entry=play/DGRS, prefixes=[], suffixes=[D(id=11)]]	played	played	1
+W	Played	1	play	play	play	play	AffixedWord[word=Played, entry=play/DGRS, prefixes=[], suffixes=[D(id=11)]]	played	played	1
+W	REPLAY	1	play	play	play	play	AffixedWord[word=REPLAY, entry=play/DGRS, prefixes=[R(id=0)], suffixes=[]]	replays|replay	replays|replay	1
+W	Replay	1	play	play	play	play	AffixedWord[word=Replay, entry=play/DGRS, prefixes=[R(id=0)], suffixes=[]]	replays|replay	replays|replay	1
+W	BOXES	1	box	box	box	box	AffixedWord[word=BOXES, entry=box/S, prefixes=[], suffixes=[S(id=6)]]	boxes	boxes	0
+W	Boxes	1	box	box	box	box	AffixedWord[word=Boxes, entry=box/S, prefixes=[], suffixes=[S(id=6)]]	boxes	boxes	1
+W	KISSED	1	kiss	kiss	kiss	kiss	AffixedWord[word=KISSED, entry=kiss/DGS, prefixes=[], suffixes=[D(id=10)]]	kissed|kisses	kissed|kisses	0
+W	Kissed	1	kiss	kiss	kiss	kiss	AffixedWord[word=Kissed, entry=kiss/DGS, prefixes=[], suffixes=[D(id=10)]]	kissed|kisses	kissed|kisses	1
+W	KISSING	1	kiss	kiss	kiss	kiss	AffixedWord[word=KISSING, entry=kiss/DGS, prefixes=[], suffixes=[G(id=13)]]	kissing	kissing	1
+W	Kissing	1	kiss	kiss	kiss	kiss	AffixedWord[word=Kissing, entry=kiss/DGS, prefixes=[], suffixes=[G(id=13)]]	kissing	kissing	0
+W	KISSES	1	kiss	kiss	kiss	kiss	AffixedWord[word=KISSES, entry=kiss/DGS, prefixes=[], suffixes=[S(id=6)]]	kisses|kissed	kisses|kissed	0
+W	Kisses	1	kiss	kiss	kiss	kiss	AffixedWord[word=Kisses, entry=kiss/DGS, prefixes=[], suffixes=[S(id=6)]]	kisses|kissed	kisses|kissed	1
+W	ORDERS	1	order	order	order	order	AffixedWord[word=ORDERS, entry=order/DGRSU, prefixes=[], suffixes=[S(id=7)]]	orders|order	orders|order	1
+W	Orders	1	order	order	order	order	AffixedWord[word=Orders, entry=order/DGRSU, prefixes=[], suffixes=[S(id=7)]]	orders|order	orders|order	0
+W	DISORDER	0	DISORDER	DISORDER	DISORDER			order	order	1
+W	Disorder	0	Disorder	Disorder	Disorder			order	order	1
+W	REORDERING	1	order	order	order	order	AffixedWord[word=REORDERING, entry=order/DGRSU, prefixes=[R(id=0)], suffixes=[G(id=13)]]	reordering	reordering	1
+W	Reordering	1	order	order	order	order	AffixedWord[word=Reordering, entry=order/DGRSU, prefixes=[R(id=0)], suffixes=[G(id=13)]]	reordering	reordering	1
+W	ACTS	1	act	act	act	act	AffixedWord[word=ACTS, entry=act/DGNRS, prefixes=[], suffixes=[S(id=7)]]			0
+W	Acts	1	act	act	act	act	AffixedWord[word=Acts, entry=act/DGNRS, prefixes=[], suffixes=[S(id=7)]]			0
+W	ACTION	1	act	act	act	act	AffixedWord[word=ACTION, entry=act/DGNRS, prefixes=[], suffixes=[N(id=16)]]			1
+W	Action	1	act	act	act	act	AffixedWord[word=Action, entry=act/DGNRS, prefixes=[], suffixes=[N(id=16)]]			1
+W	ACTIONS	0	ACTIONS	ACTIONS	ACTIONS					1
+W	Actions	0	Actions	Actions	Actions					1
+W	REACTED	1	act	act	act	act	AffixedWord[word=REACTED, entry=act/DGNRS, prefixes=[R(id=0)], suffixes=[D(id=10)]]	replayed	replayed	1
+W	Reacted	1	act	act	act	act	AffixedWord[word=Reacted, entry=act/DGNRS, prefixes=[R(id=0)], suffixes=[D(id=10)]]	replayed	replayed	1
+W	NICENESS	1	nice	nice	nice	nice	AffixedWord[word=NICENESS, entry=nice/Q, prefixes=[], suffixes=[Q(id=18)]]	niceness	niceness	1
+W	Niceness	1	nice	nice	nice	nice	AffixedWord[word=Niceness, entry=nice/Q, prefixes=[], suffixes=[Q(id=18)]]	niceness	niceness	1
+W	NOUGHTS	0	NOUGHTS	NOUGHTS	NOUGHTS			ought	ought	1
+W	Noughts	0	Noughts	Noughts	Noughts			ought	ought	0
+W	IPhone	1	iphone	iphone	iphone	iphone	AffixedWord[word=IPhone, entry=iphone/K, prefixes=[], suffixes=[]]	iphone	iphone	0
+W	Iphone	1	iphone	iphone	iphone	iphone	AffixedWord[word=Iphone, entry=iphone/K, prefixes=[], suffixes=[]]	iphone	iphone	0
+W	PARISES	1	:Paris	:Paris	:Paris	:Paris	AffixedWord[word=PARISES, entry=paris/S po:noun st:Paris, prefixes=[], suffixes=[S(id=6)]]	parises	parises	1
+W	Parises	1	:Paris	:Paris	:Paris	:Paris	AffixedWord[word=Parises, entry=paris/S po:noun st:Paris, prefixes=[], suffixes=[S(id=6)]]	parises	parises	1
+W	PARIS	1	:Paris	:Paris	:Paris	:Paris	AffixedWord[word=PARIS, entry=paris/S po:noun st:Paris, prefixes=[], suffixes=[]]	paris	paris	1
+W	LEADS	1	lead|lead	lead	lead	lead	AffixedWord[word=LEADS, entry=lead/DGS po:verb, prefixes=[], suffixes=[S(id=7)]]|AffixedWord[word=LEADS, entry=lead/S po:noun, prefixes=[], suffixes=[S(id=7)]]	lead	lead	1
+W	Leads	1	lead|lead	lead	lead	lead	AffixedWord[word=Leads, entry=lead/DGS po:verb, prefixes=[], suffixes=[S(id=7)]]|AffixedWord[word=Leads, entry=lead/S po:noun, prefixes=[], suffixes=[S(id=7)]]	lead	lead	0
+W	LEADING	1	lead	lead	lead	lead	AffixedWord[word=LEADING, entry=lead/DGS po:verb, prefixes=[], suffixes=[G(id=13)]]	leading	leading	0
+W	Leading	1	lead	lead	lead	lead	AffixedWord[word=Leading, entry=lead/DGS po:verb, prefixes=[], suffixes=[G(id=13)]]	leading	leading	1
+W	WENT	1	go	go	go	go	AffixedWord[word=WENT, entry=went st:go, prefixes=[], suffixes=[]]	went	went	1
+W	Went	1	go	go	go	go	AffixedWord[word=Went, entry=went st:go, prefixes=[], suffixes=[]]	went	went	1
+W	GONE	1	go	go	go	go	AffixedWord[word=GONE, entry=gone st:go, prefixes=[], suffixes=[]]	gone	gone	1
+W	Gone	1	go	go	go	go	AffixedWord[word=Gone, entry=gone st:go, prefixes=[], suffixes=[]]	gone	gone	0
+W	GOES	0	GOES	GOES	GOES			gone	gone	1
+W	Goes	0	Goes	Goes	Goes			gone	gone	1
+W	GOING	1	going	going	going	going	AffixedWord[word=GOING, entry=go/G st:going, prefixes=[], suffixes=[G(id=13)]]	going	going	0
+W	Going	1	going	going	going	going	AffixedWord[word=Going, entry=go/G st:going, prefixes=[], suffixes=[G(id=13)]]	going	going	0
+W	TEAPOT	0	TEAPOT	TEAPOT	TEAPOT			teapot?	teapot?	0
+W	Teapot	0	Teapot	Teapot	Teapot			teapot?	teapot?	0
+W	TEAPOTS	0	TEAPOTS	TEAPOTS	TEAPOTS			teapot?s|teapot?	teapot?s|teapot?	1
+W	Teapots	0	Teapots	Teapots	Teapots			teapot?s|teapot?	teapot?s|teapot?	1
+W	AIN'T	0	ain't	ain't	ain't	ain't	AffixedWord[word=AIN'T, entry=ain't/!, prefixes=[], suffixes=[]]			0
+W	Ain't	0	ain't	ain't	ain't	ain't	AffixedWord[word=Ain't, entry=ain't/!, prefixes=[], suffixes=[]]			0
+W	CRATE	0	CRATE	CRATE	CRATE					1
+W	Crate	0	Crate	Crate	Crate					0
+W	CREAT	0	CREAT	CREAT	CREAT					1
+W	Creat	0	Creat	Creat	Creat					0
+W	XYZZY	0	XYZZY	XYZZY	XYZZY					1
+W	Xyzzy	0	Xyzzy	Xyzzy	Xyzzy					1
+W	CREATE	1	create	create	create	create	AffixedWord[word=CREATE, entry=create/DGNRSU, prefixes=[], suffixes=[]]			1
+W	Create	1	create	create	create	create	AffixedWord[word=Create, entry=create/DGNRSU, prefixes=[], suffixes=[]]			0
+W	CONNECT	1	connect	connect	connect	connect	AffixedWord[word=CONNECT, entry=connect/DGNRSU, prefixes=[], suffixes=[]]			1
+W	Connect	1	connect	connect	connect	connect	AffixedWord[word=Connect, entry=connect/DGNRSU, prefixes=[], suffixes=[]]			0
+W	HAPPY	1	happy	happy	happy	happy	AffixedWord[word=HAPPY, entry=happy/U, prefixes=[], suffixes=[]]	happy	happy	1
+W	Happy	1	happy	happy	happy	happy	AffixedWord[word=Happy, entry=happy/U, prefixes=[], suffixes=[]]	happy	happy	1
+W	QUICK	1	quick	quick	quick	quick	AffixedWord[word=QUICK, entry=quick/L, prefixes=[], suffixes=[]]	quick	quick	1
+W	Quick	1	quick	quick	quick	quick	AffixedWord[word=Quick, entry=quick/L, prefixes=[], suffixes=[]]	quick	quick	1
+W	CALM	1	calm	calm	calm	calm	AffixedWord[word=CALM, entry=calm/LQU, prefixes=[], suffixes=[]]	calm	calm	0
+W	Calm	1	calm	calm	calm	calm	AffixedWord[word=Calm, entry=calm/LQU, prefixes=[], suffixes=[]]	calm	calm	0
+W	MOVE	1	move	move	move	move	AffixedWord[word=MOVE, entry=move/DGMRSU, prefixes=[], suffixes=[]]	moves|moved|move	moves|moved|move	0
+W	Move	1	move	move	move	move	AffixedWord[word=Move, entry=move/DGMRSU, prefixes=[], suffixes=[]]	moves|moved|move	moves|moved|move	0
+W	TRY	1	try	try	try	try	AffixedWord[word=TRY, entry=try/DGS, prefixes=[], suffixes=[]]	try	try	0
+W	Try	1	try	try	try	try	AffixedWord[word=Try, entry=try/DGS, prefixes=[], suffixes=[]]	try	try	0
+W	PLAY	1	play	play	play	play	AffixedWord[word=PLAY, entry=play/DGRS, prefixes=[], suffixes=[]]	plays|play	plays|play	1
+W	Play	1	play	play	play	play	AffixedWord[word=Play, entry=play/DGRS, prefixes=[], suffixes=[]]	plays|play	plays|play	0
+W	BOX	1	box	box	box	box	AffixedWord[word=BOX, entry=box/S, prefixes=[], suffixes=[]]	box	box	0
+W	Box	1	box	box	box	box	AffixedWord[word=Box, entry=box/S, prefixes=[], suffixes=[]]	box	box	0
+W	KISS	1	kiss	kiss	kiss	kiss	AffixedWord[word=KISS, entry=kiss/DGS, prefixes=[], suffixes=[]]	kiss	kiss	0
+W	Kiss	1	kiss	kiss	kiss	kiss	AffixedWord[word=Kiss, entry=kiss/DGS, prefixes=[], suffixes=[]]	kiss	kiss	0
+W	ORDER	1	order	order	order	order	AffixedWord[word=ORDER, entry=order/DGRSU, prefixes=[], suffixes=[]]	order|orders	order|orders	0
+W	Order	1	order	order	order	order	AffixedWord[word=Order, entry=order/DGRSU, prefixes=[], suffixes=[]]	order|orders	order|orders	0
+W	ACT	1	act	act	act	act	AffixedWord[word=ACT, entry=act/DGNRS, prefixes=[], suffixes=[]]			0
+W	Act	1	act	act	act	act	AffixedWord[word=Act, entry=act/DGNRS, prefixes=[], suffixes=[]]			0
+W	NICE	1	nice	nice	nice	nice	AffixedWord[word=NICE, entry=nice/Q, prefixes=[], suffixes=[]]	nice	nice	0
+W	Nice	1	nice	nice	nice	nice	AffixedWord[word=Nice, entry=nice/Q, prefixes=[], suffixes=[]]	nice	nice	0
+W	OUGHT	1	ought	ought	ought	ought	AffixedWord[word=OUGHT, entry=ought, prefixes=[], suffixes=[]]	ought	ought	1
+W	Ought	1	ought	ought	ought	ought	AffixedWord[word=Ought, entry=ought, prefixes=[], suffixes=[]]	ought	ought	1
+W	LEAD	1	lead|lead	lead	lead	lead	AffixedWord[word=LEAD, entry=lead/DGS po:verb, prefixes=[], suffixes=[]]|AffixedWord[word=LEAD, entry=lead/S po:noun, prefixes=[], suffixes=[]]	leads|lead	leads|lead	0
+W	Lead	1	lead|lead	lead	lead	lead	AffixedWord[word=Lead, entry=lead/DGS po:verb, prefixes=[], suffixes=[]]|AffixedWord[word=Lead, entry=lead/S po:noun, prefixes=[], suffixes=[]]	leads|lead	leads|lead	0
+W	GO	1	going	going	going	going	AffixedWord[word=GO, entry=go/G st:going, prefixes=[], suffixes=[]]	go	go	0
+W	Go	1	going	going	going	going	AffixedWord[word=Go, entry=go/G st:going, prefixes=[], suffixes=[]]	go	go	0
+W	TEAPOT?	1	teapot?	teapot?	teapot?	teapot?	AffixedWord[word=TEAPOT?, entry=teapot?/S, prefixes=[], suffixes=[]]	teapot?s|teapot?	teapot?s|teapot?	0
+W	Teapot?	1	teapot?	teapot?	teapot?	teapot?	AffixedWord[word=Teapot?, entry=teapot?/S, prefixes=[], suffixes=[]]	teapot?s|teapot?	teapot?s|teapot?	0
+W	cretes	0	cretes	cretes	cretes					0
+W	rceates	0	rceates	rceates	rceates					0
+W	creted	0	creted	creted	creted					1
+W	rceated	0	rceated	rceated	rceated					1
+W	creaing	0	creaing	creaing	creaing					1
+W	rceating	0	rceating	rceating	rceating					1
+W	creaion	0	creaion	creaion	creaion					1
+W	rceation	0	rceation	rceation	rceation					1
+W	creaions	0	creaions	creaions	creaions					1
+W	rceations	0	rceations	rceations	rceations					1
+W	recrate	0	recrate	recrate	recrate					0
+W	ercreate	0	ercreate	ercreate	ercreate					1
+W	uncrated	0	uncrated	uncrated	uncrated			uncalm	uncalm	1
+W	nucreated	0	nucreated	nucreated	nucreated					1
+W	connetions	0	connetions	connetions	connetions					1
+W	ocnnections	0	ocnnections	ocnnections	ocnnections					1
+W	reconected	0	reconected	reconected	reconected					1
+W	erconnected	0	erconnected	erconnected	erconnected					1
+W	unconected	0	unconected	unconected	unconected					1
+W	nuconnected	0	nuconnected	nuconnected	nuconnected					1
+W	unhppy	0	unhppy	unhppy	unhppy			unhappy	unhappy	1
+W	nuhappy	0	nuhappy	nuhappy	nuhappy			unhappy|happy	unhappy|happy	1
+W	hapily	0	hapily	hapily	hapily			happy	happy	1
+W	ahppily	0	ahppily	ahppily	ahppily					1
+W	quikly	0	quikly	quikly	quikly			quickly|quick	quickly|quick	1
+W	uqickly	0	uqickly	uqickly	uqickly			quickly	quickly	1
+W	quiclies	0	quiclies	quiclies	quiclies			quicklies|quick	quicklies|quick	1
+W	uqicklies	0	uqicklies	uqicklies	uqicklies			quicklies	quicklies	1
+W	cally	0	cally	cally	cally			calmly|calm	calmly|calm	0
+W	aclmly	0	aclmly	aclmly	aclmly			calmly	calmly	0
+W	calmess	0	calmess	calmess	calmess			calmness|calm	calmness|calm	1
+W	aclmness	0	aclmness	aclmness	aclmness			calmness|niceness	calmness|niceness	1
+W	unclm	0	unclm	unclm	unclm			uncalm|unmove	uncalm|unmove	1
+W	nucalm	0	nucalm	nucalm	nucalm			uncalm|calm	uncalm|calm	1
+W	moveent	0	moveent	moveent	moveent			movement|move	movement|move	0
+W	omvement	0	omvement	omvement	omvement			movement	movement	1
+W	moveents	0	moveents	moveents	moveents			movements|moves	movements|moves	1
+W	omvements	0	omvements	omvements	omvements			movements	movements	1
+W	remved	0	remved	remved	remved			removed|remove	removed|remove	1
+W	ermoved	0	ermoved	ermoved	ermoved			removed|moved	removed|moved	0
+W	tres	0	tres	tres	tres			tries|try	tries|try	1
+W	rties	0	rties	rties	rties			tries	tries	1
+W	tred	0	tred	tred	tred			tried|ordered	tried|ordered	1
+W	rtied	0	rtied	rtied	rtied			tried	tried	0
+W	tryng	0	tryng	tryng	tryng			trying|try	trying|try	0
+W	rtying	0	rtying	rtying	rtying			trying	trying	1
+W	plys	0	plys	plys	plys			plays	plays	1
+W	lpays	0	lpays	lpays	lpays			plays	plays	1
+W	plaed	0	plaed	plaed	plaed			played|play	played|play	1
+W	lpayed	0	lpayed	lpayed	lpayed			played	played	1
+W	repay	0	repay	repay	repay			replay	replay	1
+W	erplay	0	erplay	erplay	erplay			replay|play	replay|play	1
+W	boes	0	boes	boes	boes			boxes	boxes	1
+W	obxes	0	obxes	obxes	obxes			boxes	boxes	1
+W	kised	0	kised	kised	kised			kissed|kiss	kissed|kiss	0
+W	ikssed	0	ikssed	ikssed	ikssed			kissed	kissed	1
+W	kising	0	kising	kising	kising			kissing	kissing	1
+W	ikssing	0	ikssing	ikssing	ikssing			kissing	kissing	0
+W	kises	0	kises	kises	kises			kiss|kisses	kiss|kisses	1
+W	iksses	0	iksses	iksses	iksses			kisses	kisses	1
+W	ordrs	0	ordrs	ordrs	ordrs			orders|order	orders|order	0
+W	roders	0	roders	roders	roders			orders|order	orders|order	0
+W	disoder	0	disoder	disoder	disoder					1
+W	idsorder	0	idsorder	idsorder	idsorder			order	order	1
+W	reordring	0	reordring	reordring	reordring			reordering|ordering	reordering|ordering	0
+W	erordering	0	erordering	erordering	erordering			reordering	reordering	0
+W	acs	0	acs	acs	acs					0
+W	cats	0	cats	cats	cats			calm	calm	1
+W	acton	0	acton	acton	acton					1
+W	cation	0	cation	cation	cation					1
+W	actons	0	actons	actons	actons					1
+W	cations	0	cations	cations	cations					1
+W	reated	0	reated	reated	reated			replayed	replayed	1
+W	eracted	0	eracted	eracted	eracted					1
+W	niceess	0	niceess	niceess	niceess			niceness|nice	niceness|nice	1
+W	inceness	0	inceness	inceness	inceness			niceness|calmness	niceness|calmness	1
+W	nouhts	0	nouhts	nouhts	nouhts					0
+W	onughts	0	onughts	onughts	onughts			ought	ought	0
+W	iPhne	0	iPhne	iPhne	iPhne			iphone	iphone	0
+W	Pihone	0	Pihone	Pihone	Pihone			iphone	iphone	0
+W	iphne	0	iphne	iphne	iphne			iphone	iphone	0
+W	pihone	0	pihone	pihone	pihone			iphone	iphone	0
+W	IPHNE	0	IPHNE	IPHNE	IPHNE			iphone	iphone	0
+W	PIHONE	0	PIHONE	PIHONE	PIHONE			iphone	iphone	1
+W	NAA	0	NAA	NAA	NAA			nasa	nasa	0
+W	ANSA	0	ANSA	ANSA	ANSA			nasa	nasa	1
+W	naa	0	naa	naa	naa			nasa	nasa	0
+W	ansa	0	ansa	ansa	ansa			nasa	nasa	0
+W	Naa	0	Naa	Naa	Naa			nasa	nasa	0
+W	aNsa	0	aNsa	aNsa	aNsa			nasa	nasa	1
+W	parses	0	parses	parses	parses			parises|paris	parises|paris	1
+W	aprises	0	aprises	aprises	aprises			parises	parises	1
+W	pais	0	pais	pais	pais			paris	paris	1
+W	apris	0	apris	apris	apris			paris	paris	1
+W	Pais	0	Pais	Pais	Pais			paris	paris	0
+W	aPris	0	aPris	aPris	aPris			paris	paris	1
+W	leds	0	leds	leds	leds			leads	leads	1
+W	elads	0	elads	elads	elads			leads	leads	1
+W	leaing	0	leaing	leaing	leaing			leading	leading	1
+W	elading	0	elading	elading	elading			leading	leading	1
+W	wet	0	wet	wet	wet			went	went	0
+W	ewnt	0	ewnt	ewnt	ewnt			went	went	1
+W	goe	0	goe	goe	goe			go	go|gone	1
+W	ogne	0	ogne	ogne	ogne			gone	gone	0
+W	gos	0	gos	gos	gos			go	go	0
+W	oges	0	oges	oges	oges			boxes	boxes	1
+W	gong	0	gong	gong	gong			going|gone	going|gone	1
+W	oging	0	oging	oging	oging			going	going	1
+W	teaot	0	teaot	teaot	teaot			teapot?	teapot?	1
+W	etapot	0	etapot	etapot	etapot			teapot?	teapot?	0
+W	teaots	0	teaots	teaots	teaots			teapot?s	teapot?s	1
+W	etapots	0	etapots	etapots	etapots			teapot?s	teapot?s	1
+W	ai't	0	ai't	ai't	ai't					0
+W	ian't	0	ian't	ian't	ian't					1
+W	CRETED	0	CRETED	CRETED	CRETED					1
+W	RCEATED	0	RCEATED	RCEATED	RCEATED					1
+W	Creted	0	Creted	Creted	Creted					1
+W	rCeated	0	rCeated	rCeated	rCeated					1
+W	Moveent	0	Moveent	Moveent	Moveent			movement|move	movement|move	0
+W	oMvement	0	oMvement	oMvement	oMvement			movement	movement	1
+W	TRES	0	TRES	TRES	TRES			tries|try	tries|try	0
+W	RTIES	0	RTIES	RTIES	RTIES			tries	tries	1
+W	crte	0	crte	crte	crte					1
+W	rcate	0	rcate	rcate	rcate					1
+W	crat	0	crat	crat	crat					0
+W	rceat	0	rceat	rceat	rceat					0
+W	xyzy	0	xyzy	xyzy	xyzy					1
+W	yxzzy	0	yxzzy	yxzzy	yxzzy					0
+E	create	create/DGNRSU	AffixedWord[word=create, entry=create/DGNRSU, prefixes=[], suffixes=[]]|AffixedWord[word=created, entry=create/DGNRSU, prefixes=[], suffixes=[D(id=8)]]|AffixedWord[word=recreated, entry=create/DGNRSU, prefixes=[R(id=0)], suffixes=[D(id=8)]]|AffixedWord[word=uncreated, entry=create/DGNRSU, prefixes=[U(id=1)], suffixes=[D(id=8)]]|AffixedWord[word=creating, entry=create/DGNRSU, prefixes=[], suffixes=[G(id=12)]]|AffixedWord[word=recreating, entry=create/DGNRSU, prefixes=[R(id=0)], suffixes=[G(id=12)]]|AffixedWord[word=uncreating, entry=create/DGNRSU, prefixes=[U(id=1)], suffixes=[G(id=12)]]|AffixedWord[word=creation, entry=create/DGNRSU, prefixes=[], suffixes=[N(id=15)]]|AffixedWord[word=recreate, entry=create/DGNRSU, prefixes=[R(id=0)], suffixes=[]]|AffixedWord[word=creates, entry=create/DGNRSU, prefixes=[], suffixes=[S(id=7)]]|AffixedWord[word=recreates, entry=create/DGNRSU, prefixes=[R(id=0)], suffixes=[S(id=7)]]|AffixedWord[word=uncreates, entry=create/DGNRSU, prefixes=[U(id=1)], suffixes=[S(id=7)]]|AffixedWord[word=uncreate, entry=create/DGNRSU, prefixes=[U(id=1)], suffixes=[]]
+E	connect	connect/DGNRSU	AffixedWord[word=connect, entry=connect/DGNRSU, prefixes=[], suffixes=[]]|AffixedWord[word=connected, entry=connect/DGNRSU, prefixes=[], suffixes=[D(id=10)]]|AffixedWord[word=reconnected, entry=connect/DGNRSU, prefixes=[R(id=0)], suffixes=[D(id=10)]]|AffixedWord[word=unconnected, entry=connect/DGNRSU, prefixes=[U(id=1)], suffixes=[D(id=10)]]|AffixedWord[word=connecting, entry=connect/DGNRSU, prefixes=[], suffixes=[G(id=13)]]|AffixedWord[word=reconnecting, entry=connect/DGNRSU, prefixes=[R(id=0)], suffixes=[G(id=13)]]|AffixedWord[word=unconnecting, entry=connect/DGNRSU, prefixes=[U(id=1)], suffixes=[G(id=13)]]|AffixedWord[word=connection, entry=connect/DGNRSU, prefixes=[], suffixes=[N(id=16)]]|AffixedWord[word=reconnect, entry=connect/DGNRSU, prefixes=[R(id=0)], suffixes=[]]|AffixedWord[word=connects, entry=connect/DGNRSU, prefixes=[], suffixes=[S(id=7)]]|AffixedWord[word=reconnects, entry=connect/DGNRSU, prefixes=[R(id=0)], suffixes=[S(id=7)]]|AffixedWord[word=unconnects, entry=connect/DGNRSU, prefixes=[U(id=1)], suffixes=[S(id=7)]]|AffixedWord[word=unconnect, entry=connect/DGNRSU, prefixes=[U(id=1)], suffixes=[]]
+E	happy	happy/U	AffixedWord[word=happy, entry=happy/U, prefixes=[], suffixes=[]]|AffixedWord[word=unhappy, entry=happy/U, prefixes=[U(id=1)], suffixes=[]]
+E	quick	quick/L	AffixedWord[word=quick, entry=quick/L, prefixes=[], suffixes=[]]|AffixedWord[word=quickly, entry=quick/L, prefixes=[], suffixes=[L(id=14)]]|AffixedWord[word=quicklies, entry=quick/L, prefixes=[], suffixes=[S(id=4), L(id=14)]]
+E	calm	calm/LQU	AffixedWord[word=calm, entry=calm/LQU, prefixes=[], suffixes=[]]|AffixedWord[word=calmly, entry=calm/LQU, prefixes=[], suffixes=[L(id=14)]]|AffixedWord[word=calmlies, entry=calm/LQU, prefixes=[], suffixes=[S(id=4), L(id=14)]]|AffixedWord[word=uncalmlies, entry=calm/LQU, prefixes=[U(id=1)], suffixes=[S(id=4), L(id=14)]]|AffixedWord[word=uncalmly, entry=calm/LQU, prefixes=[U(id=1)], suffixes=[L(id=14)]]|AffixedWord[word=calmness, entry=calm/LQU, prefixes=[], suffixes=[Q(id=18)]]|AffixedWord[word=uncalmness, entry=calm/LQU, prefixes=[U(id=1)], suffixes=[Q(id=18)]]|AffixedWord[word=uncalm, entry=calm/LQU, prefixes=[U(id=1)], suffixes=[]]
+E	move	move/DGMRSU	AffixedWord[word=move, entry=move/DGMRSU, prefixes=[], suffixes=[]]|AffixedWord[word=moved, entry=move/DGMRSU, prefixes=[], suffixes=[D(id=8)]]|AffixedWord[word=removed, entry=move/DGMRSU, prefixes=[R(id=0)], suffixes=[D(id=8)]]|AffixedWord[word=unmoved, entry=move/DGMRSU, prefixes=[U(id=1)], suffixes=[D(id=8)]]|AffixedWord[word=moving, entry=move/DGMRSU, prefixes=[], suffixes=[G(id=12)]]|AffixedWord[word=removing, entry=move/DGMRSU, prefixes=[R(id=0)], suffixes=[G(id=12)]]|AffixedWord[word=unmoving, entry=move/DGMRSU, prefixes=[U(id=1)], suffixes=[G(id=12)]]|AffixedWord[word=movement, entry=move/DGMRSU, prefixes=[], suffixes=[M(id=17)]]|AffixedWord[word=removement, entry=move/DGMRSU, prefixes=[R(id=0)], suffixes=[M(id=17)]]|AffixedWord[word=movements, entry=move/DGMRSU, prefixes=[], suffixes=[S(id=7), M(id=17)]]|AffixedWord[word=removements, entry=move/DGMRSU, prefixes=[R(id=0)], suffixes=[S(id=7), M(id=17)]]|AffixedWord[word=unmovements, entry=move/DGMRSU, prefixes=[U(id=1)], suffixes=[S(id=7), M(id=17)]]|AffixedWord[word=unmovement, entry=move/DGMRSU, prefixes=[U(id=1)], suffixes=[M(id=17)]]|AffixedWord[word=remove, entry=move/DGMRSU, prefixes=[R(id=0)], suffixes=[]]|AffixedWord[word=moves, entry=move/DGMRSU, prefixes=[], suffixes=[S(id=7)]]|AffixedWord[word=removes, entry=move/DGMRSU, prefixes=[R(id=0)], suffixes=[S(id=7)]]|AffixedWord[word=unmoves, entry=move/DGMRSU, prefixes=[U(id=1)], suffixes=[S(id=7)]]|AffixedWord[word=unmove, entry=move/DGMRSU, prefixes=[U(id=1)], suffixes=[]]
+E	try	try/DGS	AffixedWord[word=try, entry=try/DGS, prefixes=[], suffixes=[]]|AffixedWord[word=tried, entry=try/DGS, prefixes=[], suffixes=[D(id=9)]]|AffixedWord[word=trying, entry=try/DGS, prefixes=[], suffixes=[G(id=13)]]|AffixedWord[word=tries, entry=try/DGS, prefixes=[], suffixes=[S(id=4)]]
+E	play	play/DGRS	AffixedWord[word=play, entry=play/DGRS, prefixes=[], suffixes=[]]|AffixedWord[word=played, entry=play/DGRS, prefixes=[], suffixes=[D(id=11)]]|AffixedWord[word=replayed, entry=play/DGRS, prefixes=[R(id=0)], suffixes=[D(id=11)]]|AffixedWord[word=playing, entry=play/DGRS, prefixes=[], suffixes=[G(id=13)]]|AffixedWord[word=replaying, entry=play/DGRS, prefixes=[R(id=0)], suffixes=[G(id=13)]]|AffixedWord[word=replay, entry=play/DGRS, prefixes=[R(id=0)], suffixes=[]]|AffixedWord[word=plays, entry=play/DGRS, prefixes=[], suffixes=[S(id=5)]]|AffixedWord[word=replays, entry=play/DGRS, prefixes=[R(id=0)], suffixes=[S(id=5)]]
+E	box	box/S	AffixedWord[word=box, entry=box/S, prefixes=[], suffixes=[]]|AffixedWord[word=boxes, entry=box/S, prefixes=[], suffixes=[S(id=6)]]
+E	kiss	kiss/DGS	AffixedWord[word=kiss, entry=kiss/DGS, prefixes=[], suffixes=[]]|AffixedWord[word=kissed, entry=kiss/DGS, prefixes=[], suffixes=[D(id=10)]]|AffixedWord[word=kissing, entry=kiss/DGS, prefixes=[], suffixes=[G(id=13)]]|AffixedWord[word=kisses, entry=kiss/DGS, prefixes=[], suffixes=[S(id=6)]]
+E	order	order/DGRSU	AffixedWord[word=order, entry=order/DGRSU, prefixes=[], suffixes=[]]|AffixedWord[word=ordered, entry=order/DGRSU, prefixes=[], suffixes=[D(id=10)]]|AffixedWord[word=reordered, entry=order/DGRSU, prefixes=[R(id=0)], suffixes=[D(id=10)]]|AffixedWord[word=unordered, entry=order/DGRSU, prefixes=[U(id=1)], suffixes=[D(id=10)]]|AffixedWord[word=ordering, entry=order/DGRSU, prefixes=[], suffixes=[G(id=13)]]|AffixedWord[word=reordering, entry=order/DGRSU, prefixes=[R(id=0)], suffixes=[G(id=13)]]|AffixedWord[word=unordering, entry=order/DGRSU, prefixes=[U(id=1)], suffixes=[G(id=13)]]|AffixedWord[word=reorder, entry=order/DGRSU, prefixes=[R(id=0)], suffixes=[]]|AffixedWord[word=orders, entry=order/DGRSU, prefixes=[], suffixes=[S(id=7)]]|AffixedWord[word=reorders, entry=order/DGRSU, prefixes=[R(id=0)], suffixes=[S(id=7)]]|AffixedWord[word=unorders, entry=order/DGRSU, prefixes=[U(id=1)], suffixes=[S(id=7)]]|AffixedWord[word=unorder, entry=order/DGRSU, prefixes=[U(id=1)], suffixes=[]]
+E	act	act/DGNRS	AffixedWord[word=act, entry=act/DGNRS, prefixes=[], suffixes=[]]|AffixedWord[word=acted, entry=act/DGNRS, prefixes=[], suffixes=[D(id=10)]]|AffixedWord[word=reacted, entry=act/DGNRS, prefixes=[R(id=0)], suffixes=[D(id=10)]]|AffixedWord[word=acting, entry=act/DGNRS, prefixes=[], suffixes=[G(id=13)]]|AffixedWord[word=reacting, entry=act/DGNRS, prefixes=[R(id=0)], suffixes=[G(id=13)]]|AffixedWord[word=action, entry=act/DGNRS, prefixes=[], suffixes=[N(id=16)]]|AffixedWord[word=react, entry=act/DGNRS, prefixes=[R(id=0)], suffixes=[]]|AffixedWord[word=acts, entry=act/DGNRS, prefixes=[], suffixes=[S(id=7)]]|AffixedWord[word=reacts, entry=act/DGNRS, prefixes=[R(id=0)], suffixes=[S(id=7)]]
+E	nice	nice/Q	AffixedWord[word=nice, entry=nice/Q, prefixes=[], suffixes=[]]|AffixedWord[word=niceness, entry=nice/Q, prefixes=[], suffixes=[Q(id=18)]]
+E	ought	ought	AffixedWord[word=ought, entry=ought, prefixes=[], suffixes=[]]
+E	iPhone	null	
+E	NASA	null	
+E	paris	paris/S po:noun st:Paris	AffixedWord[word=paris, entry=paris/S, prefixes=[], suffixes=[]]|AffixedWord[word=parises, entry=paris/S, prefixes=[], suffixes=[S(id=6)]]
+E	lead	lead/DGS po:verb|lead/S po:noun	AffixedWord[word=lead, entry=lead/DGS, prefixes=[], suffixes=[]]|AffixedWord[word=leaded, entry=lead/DGS, prefixes=[], suffixes=[D(id=10)]]|AffixedWord[word=leading, entry=lead/DGS, prefixes=[], suffixes=[G(id=13)]]|AffixedWord[word=leads, entry=lead/DGS, prefixes=[], suffixes=[S(id=7)]]|AffixedWord[word=lead, entry=lead/S, prefixes=[], suffixes=[]]|AffixedWord[word=leads, entry=lead/S, prefixes=[], suffixes=[S(id=7)]]
+E	lead	lead/DGS po:verb|lead/S po:noun	AffixedWord[word=lead, entry=lead/DGS, prefixes=[], suffixes=[]]|AffixedWord[word=leaded, entry=lead/DGS, prefixes=[], suffixes=[D(id=10)]]|AffixedWord[word=leading, entry=lead/DGS, prefixes=[], suffixes=[G(id=13)]]|AffixedWord[word=leads, entry=lead/DGS, prefixes=[], suffixes=[S(id=7)]]|AffixedWord[word=lead, entry=lead/S, prefixes=[], suffixes=[]]|AffixedWord[word=leads, entry=lead/S, prefixes=[], suffixes=[S(id=7)]]
+E	go	go/G st:going	AffixedWord[word=go, entry=go/G, prefixes=[], suffixes=[]]|AffixedWord[word=going, entry=go/G, prefixes=[], suffixes=[G(id=13)]]
+E	went	went st:go	AffixedWord[word=went, entry=went, prefixes=[], suffixes=[]]
+E	gone	gone st:go	AffixedWord[word=gone, entry=gone, prefixes=[], suffixes=[]]
+E	teapot?	teapot?/S	AffixedWord[word=teapot?, entry=teapot?/S, prefixes=[], suffixes=[]]|AffixedWord[word=teapot?s, entry=teapot?/S, prefixes=[], suffixes=[S(id=7)]]
+E	ain't	ain't/!	
+G	AffixedWord[word=happy, entry=happy/U, prefixes=[], suffixes=[]]|AffixedWord[word=unhappy, entry=happy/U, prefixes=[U(id=1)], suffixes=[]]|AffixedWord[word=move, entry=move/DGMRSU, prefixes=[], suffixes=[]]|AffixedWord[word=moved, entry=move/DGMRSU, prefixes=[], suffixes=[D(id=8)]]|AffixedWord[word=removed, entry=move/DGMRSU, prefixes=[R(id=0)], suffixes=[D(id=8)]]|AffixedWord[word=unmoved, entry=move/DGMRSU, prefixes=[U(id=1)], suffixes=[D(id=8)]]|AffixedWord[word=moving, entry=move/DGMRSU, prefixes=[], suffixes=[G(id=12)]]|AffixedWord[word=removing, entry=move/DGMRSU, prefixes=[R(id=0)], suffixes=[G(id=12)]]|AffixedWord[word=unmoving, entry=move/DGMRSU, prefixes=[U(id=1)], suffixes=[G(id=12)]]|AffixedWord[word=movement, entry=move/DGMRSU, prefixes=[], suffixes=[M(id=17)]]|AffixedWord[word=removement, entry=move/DGMRSU, prefixes=[R(id=0)], suffixes=[M(id=17)]]|AffixedWord[word=movements, entry=move/DGMRSU, prefixes=[], suffixes=[S(id=7), M(id=17)]]|AffixedWord[word=removements, entry=move/DGMRSU, prefixes=[R(id=0)], suffixes=[S(id=7), M(id=17)]]|AffixedWord[word=unmovements, entry=move/DGMRSU, prefixes=[U(id=1)], suffixes=[S(id=7), M(id=17)]]|AffixedWord[word=unmovement, entry=move/DGMRSU, prefixes=[U(id=1)], suffixes=[M(id=17)]]|AffixedWord[word=remove, entry=move/DGMRSU, prefixes=[R(id=0)], suffixes=[]]|AffixedWord[word=moves, entry=move/DGMRSU, prefixes=[], suffixes=[S(id=7)]]|AffixedWord[word=removes, entry=move/DGMRSU, prefixes=[R(id=0)], suffixes=[S(id=7)]]|AffixedWord[word=unmoves, entry=move/DGMRSU, prefixes=[U(id=1)], suffixes=[S(id=7)]]|AffixedWord[word=unmove, entry=move/DGMRSU, prefixes=[U(id=1)], suffixes=[]]|AffixedWord[word=connect, entry=connect/DGNRSU, prefixes=[], suffixes=[]]|AffixedWord[word=connected, entry=connect/DGNRSU, prefixes=[], suffixes=[D(id=10)]]|AffixedWord[word=reconnected, entry=connect/DGNRSU, prefixes=[R(id=0)], suffixes=[D(id=10)]]|AffixedWord[word=unconnected, entry=connect/DGNRSU, prefixes=[U(id=1)], suffixes=[D(id=10)]]|AffixedWord[word=connecting, entry=connect/DGNRSU, prefixes=[], suffixes=[G(id=13)]]|AffixedWord[word=reconnecting, entry=connect/DGNRSU, prefixes=[R(id=0)], suffixes=[G(id=13)]]|AffixedWord[word=unconnecting, entry=connect/DGNRSU, prefixes=[U(id=1)], suffixes=[G(id=13)]]|AffixedWord[word=connection, entry=connect/DGNRSU, prefixes=[], suffixes=[N(id=16)]]|AffixedWord[word=reconnect, entry=connect/DGNRSU, prefixes=[R(id=0)], suffixes=[]]|AffixedWord[word=connects, entry=connect/DGNRSU, prefixes=[], suffixes=[S(id=7)]]|AffixedWord[word=reconnects, entry=connect/DGNRSU, prefixes=[R(id=0)], suffixes=[S(id=7)]]|AffixedWord[word=unconnects, entry=connect/DGNRSU, prefixes=[U(id=1)], suffixes=[S(id=7)]]|AffixedWord[word=unconnect, entry=connect/DGNRSU, prefixes=[U(id=1)], suffixes=[]]|AffixedWord[word=try, entry=try/DGS, prefixes=[], suffixes=[]]|AffixedWord[word=tried, entry=try/DGS, prefixes=[], suffixes=[D(id=9)]]|AffixedWord[word=trying, entry=try/DGS, prefixes=[], suffixes=[G(id=13)]]|AffixedWord[word=tries, entry=try/DGS, prefixes=[], suffixes=[S(id=4)]]|AffixedWord[word=paris, entry=paris/S, prefixes=[], suffixes=[]]|AffixedWord[word=parises, entry=paris/S, prefixes=[], suffixes=[S(id=6)]]|AffixedWord[word=iphone, entry=iphone/K, prefixes=[], suffixes=[]]|AffixedWord[word=lead, entry=lead/DGS, prefixes=[], suffixes=[]]|AffixedWord[word=leaded, entry=lead/DGS, prefixes=[], suffixes=[D(id=10)]]|AffixedWord[word=leading, entry=lead/DGS, prefixes=[], suffixes=[G(id=13)]]|AffixedWord[word=leads, entry=lead/DGS, prefixes=[], suffixes=[S(id=7)]]|AffixedWord[word=ought, entry=ought, prefixes=[], suffixes=[]]|AffixedWord[word=order, entry=order/DGRSU, prefixes=[], suffixes=[]]|AffixedWord[word=ordered, entry=order/DGRSU, prefixes=[], suffixes=[D(id=10)]]|AffixedWord[word=reordered, entry=order/DGRSU, prefixes=[R(id=0)], suffixes=[D(id=10)]]|AffixedWord[word=unordered, entry=order/DGRSU, prefixes=[U(id=1)], suffixes=[D(id=10)]]|AffixedWord[word=ordering, entry=order/DGRSU, prefixes=[], suffixes=[G(id=13)]]|AffixedWord[word=reordering, entry=order/DGRSU, prefixes=[R(id=0)], suffixes=[G(id=13)]]|AffixedWord[word=unordering, entry=order/DGRSU, prefixes=[U(id=1)], suffixes=[G(id=13)]]|AffixedWord[word=reorder, entry=order/DGRSU, prefixes=[R(id=0)], suffixes=[]]|AffixedWord[word=orders, entry=order/DGRSU, prefixes=[], suffixes=[S(id=7)]]|AffixedWord[word=reorders, entry=order/DGRSU, prefixes=[R(id=0)], suffixes=[S(id=7)]]|AffixedWord[word=unorders, entry=order/DGRSU, prefixes=[U(id=1)], suffixes=[S(id=7)]]|AffixedWord[word=unorder, entry=order/DGRSU, prefixes=[U(id=1)], suffixes=[]]|AffixedWord[word=box, entry=box/S, prefixes=[], suffixes=[]]|AffixedWord[word=boxes, entry=box/S, prefixes=[], suffixes=[S(id=6)]]|AffixedWord[word=play, entry=play/DGRS, prefixes=[], suffixes=[]]|AffixedWord[word=played, entry=play/DGRS, prefixes=[], suffixes=[D(id=11)]]|AffixedWord[word=replayed, entry=play/DGRS, prefixes=[R(id=0)], suffixes=[D(id=11)]]|AffixedWord[word=playing, entry=play/DGRS, prefixes=[], suffixes=[G(id=13)]]|AffixedWord[word=replaying, entry=play/DGRS, prefixes=[R(id=0)], suffixes=[G(id=13)]]|AffixedWord[word=replay, entry=play/DGRS, prefixes=[R(id=0)], suffixes=[]]|AffixedWord[word=plays, entry=play/DGRS, prefixes=[], suffixes=[S(id=5)]]|AffixedWord[word=replays, entry=play/DGRS, prefixes=[R(id=0)], suffixes=[S(id=5)]]|AffixedWord[word=create, entry=create/DGNRSU, prefixes=[], suffixes=[]]|AffixedWord[word=created, entry=create/DGNRSU, prefixes=[], suffixes=[D(id=8)]]|AffixedWord[word=recreated, entry=create/DGNRSU, prefixes=[R(id=0)], suffixes=[D(id=8)]]|AffixedWord[word=uncreated, entry=create/DGNRSU, prefixes=[U(id=1)], suffixes=[D(id=8)]]|AffixedWord[word=creating, entry=create/DGNRSU, prefixes=[], suffixes=[G(id=12)]]|AffixedWord[word=recreating, entry=create/DGNRSU, prefixes=[R(id=0)], suffixes=[G(id=12)]]|AffixedWord[word=uncreating, entry=create/DGNRSU, prefixes=[U(id=1)], suffixes=[G(id=12)]]|AffixedWord[word=creation, entry=create/DGNRSU, prefixes=[], suffixes=[N(id=15)]]|AffixedWord[word=recreate, entry=create/DGNRSU, prefixes=[R(id=0)], suffixes=[]]|AffixedWord[word=creates, entry=create/DGNRSU, prefixes=[], suffixes=[S(id=7)]]|AffixedWord[word=recreates, entry=create/DGNRSU, prefixes=[R(id=0)], suffixes=[S(id=7)]]|AffixedWord[word=uncreates, entry=create/DGNRSU, prefixes=[U(id=1)], suffixes=[S(id=7)]]|AffixedWord[word=uncreate, entry=create/DGNRSU, prefixes=[U(id=1)], suffixes=[]]|AffixedWord[word=quick, entry=quick/L, prefixes=[], suffixes=[]]|AffixedWord[word=quickly, entry=quick/L, prefixes=[], suffixes=[L(id=14)]]|AffixedWord[word=quicklies, entry=quick/L, prefixes=[], suffixes=[S(id=4), L(id=14)]]|AffixedWord[word=nice, entry=nice/Q, prefixes=[], suffixes=[]]|AffixedWord[word=niceness, entry=nice/Q, prefixes=[], suffixes=[Q(id=18)]]|AffixedWord[word=teapot?, entry=teapot?/S, prefixes=[], suffixes=[]]|AffixedWord[word=teapot?s, entry=teapot?/S, prefixes=[], suffixes=[S(id=7)]]|AffixedWord[word=go, entry=go/G, prefixes=[], suffixes=[]]|AffixedWord[word=going, entry=go/G, prefixes=[], suffixes=[G(id=13)]]|AffixedWord[word=nasa, entry=nasa, prefixes=[], suffixes=[]]|AffixedWord[word=act, entry=act/DGNRS, prefixes=[], suffixes=[]]|AffixedWord[word=acted, entry=act/DGNRS, prefixes=[], suffixes=[D(id=10)]]|AffixedWord[word=reacted, entry=act/DGNRS, prefixes=[R(id=0)], suffixes=[D(id=10)]]|AffixedWord[word=acting, entry=act/DGNRS, prefixes=[], suffixes=[G(id=13)]]|AffixedWord[word=reacting, entry=act/DGNRS, prefixes=[R(id=0)], suffixes=[G(id=13)]]|AffixedWord[word=action, entry=act/DGNRS, prefixes=[], suffixes=[N(id=16)]]|AffixedWord[word=react, entry=act/DGNRS, prefixes=[R(id=0)], suffixes=[]]|AffixedWord[word=acts, entry=act/DGNRS, prefixes=[], suffixes=[S(id=7)]]|AffixedWord[word=reacts, entry=act/DGNRS, prefixes=[R(id=0)], suffixes=[S(id=7)]]|AffixedWord[word=went, entry=went, prefixes=[], suffixes=[]]|AffixedWord[word=kiss, entry=kiss/DGS, prefixes=[], suffixes=[]]|AffixedWord[word=kissed, entry=kiss/DGS, prefixes=[], suffixes=[D(id=10)]]|AffixedWord[word=kissing, entry=kiss/DGS, prefixes=[], suffixes=[G(id=13)]]|AffixedWord[word=kisses, entry=kiss/DGS, prefixes=[], suffixes=[S(id=6)]]|AffixedWord[word=gone, entry=gone, prefixes=[], suffixes=[]]|AffixedWord[word=calm, entry=calm/LQU, prefixes=[], suffixes=[]]|AffixedWord[word=calmly, entry=calm/LQU, prefixes=[], suffixes=[L(id=14)]]|AffixedWord[word=calmlies, entry=calm/LQU, prefixes=[], suffixes=[S(id=4), L(id=14)]]|AffixedWord[word=uncalmlies, entry=calm/LQU, prefixes=[U(id=1)], suffixes=[S(id=4), L(id=14)]]|AffixedWord[word=uncalmly, entry=calm/LQU, prefixes=[U(id=1)], suffixes=[L(id=14)]]|AffixedWord[word=calmness, entry=calm/LQU, prefixes=[], suffixes=[Q(id=18)]]|AffixedWord[word=uncalmness, entry=calm/LQU, prefixes=[U(id=1)], suffixes=[Q(id=18)]]|AffixedWord[word=uncalm, entry=calm/LQU, prefixes=[U(id=1)], suffixes=[]]

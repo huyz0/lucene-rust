@@ -1,0 +1,3 @@
+# lucene-rust's own test dictionary: a malformed directive.
+MAP 1
+MAP (ab

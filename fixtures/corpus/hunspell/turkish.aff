@@ -1,0 +1,6 @@
+# LANG tr: dotted and dotless i.
+SET UTF-8
+LANG tr_TR
+
+SFX S Y 1
+SFX S 0 ler .

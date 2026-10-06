@@ -1,0 +1,36 @@
+W	ILIK	1	ılık	ılık	ılık	ılık	AffixedWord[word=ILIK, entry=ılık/S, prefixes=[], suffixes=[]]	ılık	ılık	1
+W	ılıklar	0	ılıklar	ılıklar	ılıklar			ılık	ılık	1
+W	İYİ	1	iyi	iyi	iyi	iyi	AffixedWord[word=İYİ, entry=iyi/S, prefixes=[], suffixes=[]]	iyi	iyi	1
+W	iyiler	1	iyi	iyi	iyi	iyi	AffixedWord[word=iyiler, entry=iyi/S, prefixes=[], suffixes=[S(id=0)]]	iyiler	iyiler	1
+W	İSTANBUL	1	istanbul	istanbul	istanbul	istanbul	AffixedWord[word=İSTANBUL, entry=istanbul, prefixes=[], suffixes=[]]	istanbul	istanbul	1
+W	İstanbul	1	istanbul	istanbul	istanbul	istanbul	AffixedWord[word=İstanbul, entry=istanbul, prefixes=[], suffixes=[]]	istanbul	istanbul	0
+W	istanbul	1	istanbul	istanbul	istanbul	istanbul	AffixedWord[word=istanbul, entry=istanbul, prefixes=[], suffixes=[]]	istanbul	istanbul	1
+W	ılık	1	ılık	ılık	ılık	ılık	AffixedWord[word=ılık, entry=ılık/S, prefixes=[], suffixes=[]]	ılık	ılık	0
+W	iyi	1	iyi	iyi	iyi	iyi	AffixedWord[word=iyi, entry=iyi/S, prefixes=[], suffixes=[]]	iyi	iyi	0
+W	ILIKLAR	0	ILIKLAR	ILIKLAR	ILIKLAR			ılık	ılık	1
+W	Ilıklar	0	Ilıklar	Ilıklar	Ilıklar			ılık	ılık	1
+W	IYILER	0	IYILER	IYILER	IYILER			ılıkler	ılıkler	1
+W	Iyiler	0	Iyiler	Iyiler	Iyiler			iyiler	iyiler	1
+W	ISTANBUL	0	ISTANBUL	ISTANBUL	ISTANBUL			istanbul	istanbul	1
+W	Istanbul	0	Istanbul	Istanbul	Istanbul			istanbul	istanbul	1
+W	Ilık	1	ılık	ılık	ılık	ılık	AffixedWord[word=Ilık, entry=ılık/S, prefixes=[], suffixes=[]]	ılık	ılık	1
+W	IYI	0	IYI	IYI	IYI					0
+W	Iyi	0	Iyi	Iyi	Iyi			iyi	iyi	0
+W	ILK	0	ILK	ILK	ILK			ılık	ılık	1
+W	LIIK	0	LIIK	LIIK	LIIK			ılık	ılık	1
+W	ılılar	0	ılılar	ılılar	ılılar			ılık	ılık	1
+W	lııklar	0	lııklar	lııklar	lııklar					1
+W	İİ	0	İİ	İİ	İİ			iyi	iyi	0
+W	Yİİ	0	Yİİ	Yİİ	Yİİ			iyi	iyi	1
+W	iyier	0	iyier	iyier	iyier			iyi	iyi	1
+W	yiiler	0	yiiler	yiiler	yiiler			iyiler	iyiler	1
+W	İSTABUL	0	İSTABUL	İSTABUL	İSTABUL			istanbul	istanbul	1
+W	SİTANBUL	0	SİTANBUL	SİTANBUL	SİTANBUL			istanbul	istanbul	1
+W	İstabul	0	İstabul	İstabul	İstabul			istanbul	istanbul	1
+W	sİtanbul	0	sİtanbul	sİtanbul	sİtanbul			istanbul	istanbul	1
+W	istabul	0	istabul	istabul	istabul			istanbul	istanbul	1
+W	sitanbul	0	sitanbul	sitanbul	sitanbul			istanbul	istanbul	1
+E	ılık	ılık/S	AffixedWord[word=ılık, entry=ılık/S, prefixes=[], suffixes=[]]|AffixedWord[word=ılıkler, entry=ılık/S, prefixes=[], suffixes=[S(id=0)]]
+E	iyi	iyi/S	AffixedWord[word=iyi, entry=iyi/S, prefixes=[], suffixes=[]]|AffixedWord[word=iyiler, entry=iyi/S, prefixes=[], suffixes=[S(id=0)]]
+E	İstanbul	null	
+G	AffixedWord[word=ılık, entry=ılık/S, prefixes=[], suffixes=[]]|AffixedWord[word=ılıkler, entry=ılık/S, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=iyi, entry=iyi/S, prefixes=[], suffixes=[]]|AffixedWord[word=iyiler, entry=iyi/S, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=istanbul, entry=istanbul, prefixes=[], suffixes=[]]

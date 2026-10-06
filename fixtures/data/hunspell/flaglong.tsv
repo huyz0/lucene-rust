@@ -1,0 +1,93 @@
+W	walks	1	walk	walk	walk	walk	AffixedWord[word=walks, entry=walk/AaBb is:singular po:noun, prefixes=[], suffixes=[Aa(id=0)]]	walk	walk	1
+W	walked	1	walk	walk	walk	walk	AffixedWord[word=walked, entry=walk/AaBb is:singular po:noun, prefixes=[], suffixes=[Bb(id=1)]]	walked	walked	1
+W	baked	1	bake	bake	bake	bake	AffixedWord[word=baked, entry=bake/Bb po:verb, prefixes=[], suffixes=[Bb(id=2)]]	bake	bake	1
+W	bakes	0	bakes	bakes	bakes			baked|bake	baked|bake	1
+W	reads	1	read	read	read	read	AffixedWord[word=reads, entry=read/AaCc, prefixes=[], suffixes=[Aa(id=0)]]	read	read	1
+W	readers	1	read	read	read	read	AffixedWord[word=readers, entry=read/AaCc, prefixes=[], suffixes=[Aa(id=0), Cc(id=3)]]	readers|reader|reads	readers|reader|reads	1
+W	reader	1	read	read	read	read	AffixedWord[word=reader, entry=read/AaCc, prefixes=[], suffixes=[Cc(id=3)]]	reader	reader	1
+W	worked	1	work	work	work	work	AffixedWord[word=worked, entry=work/AaBb, prefixes=[], suffixes=[Bb(id=1)]]	worked	worked	1
+W	overworked	0	overworked	overworked	overworked					1
+W	overwork	0	overwork	overwork	overwork					1
+W	works	1	work	work	work	work	AffixedWord[word=works, entry=work/AaBb, prefixes=[], suffixes=[Aa(id=0)]]	work	work	1
+W	runner	0	runner	runner	runner			runer|run	runer|run	1
+W	runners	0	runners	runners	runners			runers|runs	runers|runs	1
+W	runs	1	run	run	run	run	AffixedWord[word=runs, entry=run/AaCc, prefixes=[], suffixes=[Aa(id=0)]]	run	run	1
+W	walk	1	walk	walk	walk	walk	AffixedWord[word=walk, entry=walk/AaBb is:singular po:noun, prefixes=[], suffixes=[]]	walk	walk	0
+W	bake	1	bake	bake	bake	bake	AffixedWord[word=bake, entry=bake/Bb po:verb, prefixes=[], suffixes=[]]	bake	bake	0
+W	read	1	read	read	read	read	AffixedWord[word=read, entry=read/AaCc, prefixes=[], suffixes=[]]	read	read	0
+W	work	1	work	work	work	work	AffixedWord[word=work, entry=work/AaBb, prefixes=[], suffixes=[]]	work	work	0
+W	run	1	run	run	run	run	AffixedWord[word=run, entry=run/AaCc, prefixes=[], suffixes=[]]	run	run	0
+W	WALKS	1	walk	walk	walk	walk	AffixedWord[word=WALKS, entry=walk/AaBb is:singular po:noun, prefixes=[], suffixes=[Aa(id=0)]]	WALKS|WALK	WALKS|WALK	1
+W	Walks	1	walk	walk	walk	walk	AffixedWord[word=Walks, entry=walk/AaBb is:singular po:noun, prefixes=[], suffixes=[Aa(id=0)]]	Walk	Walk	1
+W	WALKED	1	walk	walk	walk	walk	AffixedWord[word=WALKED, entry=walk/AaBb is:singular po:noun, prefixes=[], suffixes=[Bb(id=1)]]	WALKED	WALKED	1
+W	Walked	1	walk	walk	walk	walk	AffixedWord[word=Walked, entry=walk/AaBb is:singular po:noun, prefixes=[], suffixes=[Bb(id=1)]]	Walked	Walked	1
+W	BAKED	1	bake	bake	bake	bake	AffixedWord[word=BAKED, entry=bake/Bb po:verb, prefixes=[], suffixes=[Bb(id=2)]]	BAKED|BAKE	BAKED|BAKE	1
+W	Baked	1	bake	bake	bake	bake	AffixedWord[word=Baked, entry=bake/Bb po:verb, prefixes=[], suffixes=[Bb(id=2)]]	Bake	Bake	1
+W	BAKES	0	BAKES	BAKES	BAKES			BAKED|BAKE	BAKED|BAKE	1
+W	Bakes	0	Bakes	Bakes	Bakes			Baked|Bake	Baked|Bake	1
+W	READS	1	read	read	read	read	AffixedWord[word=READS, entry=read/AaCc, prefixes=[], suffixes=[Aa(id=0)]]	READS|READ	READS|READ	1
+W	Reads	1	read	read	read	read	AffixedWord[word=Reads, entry=read/AaCc, prefixes=[], suffixes=[Aa(id=0)]]	Read	Read	1
+W	READERS	1	read	read	read	read	AffixedWord[word=READERS, entry=read/AaCc, prefixes=[], suffixes=[Aa(id=0), Cc(id=3)]]	READERS|READER|READS	READERS|READER|READS	1
+W	Readers	1	read	read	read	read	AffixedWord[word=Readers, entry=read/AaCc, prefixes=[], suffixes=[Aa(id=0), Cc(id=3)]]	Readers|Reader|Reads	Readers|Reader|Reads	1
+W	READER	1	read	read	read	read	AffixedWord[word=READER, entry=read/AaCc, prefixes=[], suffixes=[Cc(id=3)]]	READER	READER	1
+W	Reader	1	read	read	read	read	AffixedWord[word=Reader, entry=read/AaCc, prefixes=[], suffixes=[Cc(id=3)]]	Reader	Reader	1
+W	WORKED	1	work	work	work	work	AffixedWord[word=WORKED, entry=work/AaBb, prefixes=[], suffixes=[Bb(id=1)]]	WORKED	WORKED	1
+W	Worked	1	work	work	work	work	AffixedWord[word=Worked, entry=work/AaBb, prefixes=[], suffixes=[Bb(id=1)]]	Worked	Worked	1
+W	OVERWORKED	0	OVERWORKED	OVERWORKED	OVERWORKED					1
+W	Overworked	0	Overworked	Overworked	Overworked					1
+W	OVERWORK	0	OVERWORK	OVERWORK	OVERWORK					1
+W	Overwork	0	Overwork	Overwork	Overwork					1
+W	WORKS	1	work	work	work	work	AffixedWord[word=WORKS, entry=work/AaBb, prefixes=[], suffixes=[Aa(id=0)]]	WORKS|WORK	WORKS|WORK	1
+W	Works	1	work	work	work	work	AffixedWord[word=Works, entry=work/AaBb, prefixes=[], suffixes=[Aa(id=0)]]	Work	Work	1
+W	RUNNER	0	RUNNER	RUNNER	RUNNER			RUNER|RUN	RUNER|RUN	1
+W	Runner	0	Runner	Runner	Runner			Runer|Run	Runer|Run	1
+W	RUNNERS	0	RUNNERS	RUNNERS	RUNNERS			RUNERS|RUNS	RUNERS|RUNS	1
+W	Runners	0	Runners	Runners	Runners			Runers|Runs	Runers|Runs	1
+W	RUNS	1	run	run	run	run	AffixedWord[word=RUNS, entry=run/AaCc, prefixes=[], suffixes=[Aa(id=0)]]	RUNS|RUN	RUNS|RUN	1
+W	Runs	1	run	run	run	run	AffixedWord[word=Runs, entry=run/AaCc, prefixes=[], suffixes=[Aa(id=0)]]	Run	Run	1
+W	WALK	1	walk	walk	walk	walk	AffixedWord[word=WALK, entry=walk/AaBb is:singular po:noun, prefixes=[], suffixes=[]]	WALK	WALK	1
+W	Walk	1	walk	walk	walk	walk	AffixedWord[word=Walk, entry=walk/AaBb is:singular po:noun, prefixes=[], suffixes=[]]	Walk	Walk	1
+W	BAKE	1	bake	bake	bake	bake	AffixedWord[word=BAKE, entry=bake/Bb po:verb, prefixes=[], suffixes=[]]	BAKE	BAKE	1
+W	Bake	1	bake	bake	bake	bake	AffixedWord[word=Bake, entry=bake/Bb po:verb, prefixes=[], suffixes=[]]	Bake	Bake	1
+W	READ	1	read	read	read	read	AffixedWord[word=READ, entry=read/AaCc, prefixes=[], suffixes=[]]	READ	READ	1
+W	Read	1	read	read	read	read	AffixedWord[word=Read, entry=read/AaCc, prefixes=[], suffixes=[]]	Read	Read	1
+W	WORK	1	work	work	work	work	AffixedWord[word=WORK, entry=work/AaBb, prefixes=[], suffixes=[]]	WORK	WORK	1
+W	Work	1	work	work	work	work	AffixedWord[word=Work, entry=work/AaBb, prefixes=[], suffixes=[]]	Work	Work	1
+W	RUN	1	run	run	run	run	AffixedWord[word=RUN, entry=run/AaCc, prefixes=[], suffixes=[]]	RUN	RUN	1
+W	Run	1	run	run	run	run	AffixedWord[word=Run, entry=run/AaCc, prefixes=[], suffixes=[]]	Run	Run	1
+W	waks	0	waks	waks	waks			walks	walks	1
+W	awlks	0	awlks	awlks	awlks			walks	walks	1
+W	waled	0	waled	waled	waled			walked	walked	1
+W	awlked	0	awlked	awlked	awlked			walked	walked	1
+W	baed	0	baed	baed	baed			baked	baked	1
+W	abked	0	abked	abked	abked			baked	baked	1
+W	baes	0	baes	baes	baes			bake	bake	1
+W	abkes	0	abkes	abkes	abkes					1
+W	reds	0	reds	reds	reds			reads	reads	1
+W	erads	0	erads	erads	erads			reads	reads	1
+W	reaers	0	reaers	reaers	reaers			reads	reads	1
+W	eraders	0	eraders	eraders	eraders			readers	readers	1
+W	reaer	0	reaer	reaer	reaer			reader	reader	1
+W	erader	0	erader	erader	erader			reader	reader	1
+W	wored	0	wored	wored	wored			worked	worked	1
+W	owrked	0	owrked	owrked	owrked			worked	worked	1
+W	overwrked	0	overwrked	overwrked	overwrked					1
+W	voerworked	0	voerworked	voerworked	voerworked					1
+W	overork	0	overork	overork	overork					1
+W	voerwork	0	voerwork	voerwork	voerwork					1
+W	woks	0	woks	woks	woks			works	works	1
+W	owrks	0	owrks	owrks	owrks			works	works	1
+W	runer	1	run	run	run	run	AffixedWord[word=runer, entry=run/AaCc, prefixes=[], suffixes=[Cc(id=3)]]	runer	runer	1
+W	urnner	0	urnner	urnner	urnner			runer	runer	1
+W	runers	1	run	run	run	run	AffixedWord[word=runers, entry=run/AaCc, prefixes=[], suffixes=[Aa(id=0), Cc(id=3)]]	runers|runer|runs	runers|runer|runs	1
+W	urnners	0	urnners	urnners	urnners					1
+W	rus	0	rus	rus	rus			runs	runs	1
+W	urns	0	urns	urns	urns			runs	runs	1
+W	wak	0	wak	wak	wak			walk	walk	1
+W	awlk	0	awlk	awlk	awlk			walk	walk	1
+E	walk	walk/AaBb is:singular po:noun	AffixedWord[word=walk, entry=walk/AaBb, prefixes=[], suffixes=[]]|AffixedWord[word=walks, entry=walk/AaBb, prefixes=[], suffixes=[Aa(id=0)]]|AffixedWord[word=walked, entry=walk/AaBb, prefixes=[], suffixes=[Bb(id=1)]]
+E	bake	bake/Bb po:verb	AffixedWord[word=bake, entry=bake/Bb, prefixes=[], suffixes=[]]|AffixedWord[word=baked, entry=bake/Bb, prefixes=[], suffixes=[Bb(id=2)]]
+E	read	read/AaCc	AffixedWord[word=read, entry=read/AaCc, prefixes=[], suffixes=[]]|AffixedWord[word=reads, entry=read/AaCc, prefixes=[], suffixes=[Aa(id=0)]]|AffixedWord[word=reader, entry=read/AaCc, prefixes=[], suffixes=[Cc(id=3)]]|AffixedWord[word=readers, entry=read/AaCc, prefixes=[], suffixes=[Aa(id=0), Cc(id=3)]]|AffixedWord[word=readered, entry=read/AaCc, prefixes=[], suffixes=[Bb(id=1), Cc(id=3)]]
+E	work	work/AaBb	AffixedWord[word=work, entry=work/AaBb, prefixes=[], suffixes=[]]|AffixedWord[word=works, entry=work/AaBb, prefixes=[], suffixes=[Aa(id=0)]]|AffixedWord[word=worked, entry=work/AaBb, prefixes=[], suffixes=[Bb(id=1)]]
+E	run	run/AaCc	AffixedWord[word=run, entry=run/AaCc, prefixes=[], suffixes=[]]|AffixedWord[word=runs, entry=run/AaCc, prefixes=[], suffixes=[Aa(id=0)]]|AffixedWord[word=runer, entry=run/AaCc, prefixes=[], suffixes=[Cc(id=3)]]|AffixedWord[word=runers, entry=run/AaCc, prefixes=[], suffixes=[Aa(id=0), Cc(id=3)]]|AffixedWord[word=runered, entry=run/AaCc, prefixes=[], suffixes=[Bb(id=1), Cc(id=3)]]
+G	AffixedWord[word=work, entry=work/AaBb, prefixes=[], suffixes=[]]|AffixedWord[word=works, entry=work/AaBb, prefixes=[], suffixes=[Aa(id=0)]]|AffixedWord[word=worked, entry=work/AaBb, prefixes=[], suffixes=[Bb(id=1)]]|AffixedWord[word=walk, entry=walk/AaBb, prefixes=[], suffixes=[]]|AffixedWord[word=walks, entry=walk/AaBb, prefixes=[], suffixes=[Aa(id=0)]]|AffixedWord[word=walked, entry=walk/AaBb, prefixes=[], suffixes=[Bb(id=1)]]|AffixedWord[word=run, entry=run/AaCc, prefixes=[], suffixes=[]]|AffixedWord[word=runs, entry=run/AaCc, prefixes=[], suffixes=[Aa(id=0)]]|AffixedWord[word=runer, entry=run/AaCc, prefixes=[], suffixes=[Cc(id=3)]]|AffixedWord[word=runers, entry=run/AaCc, prefixes=[], suffixes=[Aa(id=0), Cc(id=3)]]|AffixedWord[word=runered, entry=run/AaCc, prefixes=[], suffixes=[Bb(id=1), Cc(id=3)]]|AffixedWord[word=read, entry=read/AaCc, prefixes=[], suffixes=[]]|AffixedWord[word=reads, entry=read/AaCc, prefixes=[], suffixes=[Aa(id=0)]]|AffixedWord[word=reader, entry=read/AaCc, prefixes=[], suffixes=[Cc(id=3)]]|AffixedWord[word=readers, entry=read/AaCc, prefixes=[], suffixes=[Aa(id=0), Cc(id=3)]]|AffixedWord[word=readered, entry=read/AaCc, prefixes=[], suffixes=[Bb(id=1), Cc(id=3)]]|AffixedWord[word=bake, entry=bake/Bb, prefixes=[], suffixes=[]]|AffixedWord[word=baked, entry=bake/Bb, prefixes=[], suffixes=[Bb(id=2)]]
