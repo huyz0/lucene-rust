@@ -7,9 +7,10 @@
 //! included, minimum-should-match counts and fractions, boosts, a term absent
 //! everywhere, a field of its own, no terms and one term) -- `toString`,
 //! every hit's score bits and four documents' explanations; then hits and
-//! explanations for four boosted booleans of `MUST`/`FILTER`/`SHOULD`/
-//! `MUST_NOT` term clauses (a boost the term weights take into their
-//! explanation). The file is rebuilt here line for line and compared with
+//! explanations for eight boosted booleans of `MUST`/`FILTER`/`SHOULD`/
+//! `MUST_NOT` term, phrase and nested-boolean clauses (a boost the term
+//! weights take into their explanation; the filters' and exclusions' weights
+//! created without scores, two of the eight under `ClassicSimilarity`). The file is rebuilt here line for line and compared with
 //! Lucene's.
 
 // Test fixtures' own arithmetic -- see `docs/arithmetic-gate.md`'s "Test code".
@@ -18,8 +19,9 @@
 use lucene_search::common_terms::CommonTermsQuery;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
-use lucene_search::query::{BooleanQuery, BoostQuery, Clause, TermQuery};
+use lucene_search::query::{BooleanQuery, BoostQuery, Clause, PhraseQuery, TermQuery};
 use lucene_search::query_visitor::Occur;
+use lucene_search::similarities::ClassicSimilarity;
 use lucene_search::{Error, Result};
 use lucene_store::FsDirectory;
 
@@ -86,15 +88,56 @@ const COMMON: [&str; 14] = [
     "body:river|body:stone|body:glacier|body:tundra,0.25,MUST,FILTER,0,0,1,0.5",
 ];
 
-/// `GenMoreLikeThis.BOOSTED`: `+`/`#`/`-` prefixed term clauses, the boost.
-const BOOSTED: [(&str, &str); 4] = [
-    ("+body:river #body:stone -body:glacier", "2.5"),
-    ("#body:light body:river body:stone -body:quartz", "0.5"),
-    ("#body:river #body:stone", "3"),
-    ("+body:stone -body:river -body:zephyr", "1.5"),
+/// `GenMoreLikeThis.BOOSTED`: `+`/`#`/`-` prefixed clauses -- a term
+/// `f:t`, a phrase `"f:a,b"`, a nested boolean of `SHOULD` terms
+/// `(f:a|f:b)` -- the boost, and the searcher's similarity (`""` for the
+/// default).
+const BOOSTED: [(&str, &str, &str); 8] = [
+    ("+body:river #body:stone -body:glacier", "2.5", ""),
+    ("#body:light body:river body:stone -body:quartz", "0.5", ""),
+    ("#body:river #body:stone", "3", ""),
+    ("+body:stone -body:river -body:zephyr", "1.5", ""),
+    ("+body:river #\"body:the,the\" -body:quartz", "2", ""),
+    (
+        "#(body:light|body:winter) body:river -\"body:light,house\"",
+        "1.5",
+        "",
+    ),
+    (
+        "+body:river #\"body:the,the\" #(body:light|body:winter) -body:quartz",
+        "1",
+        "classic",
+    ),
+    (
+        "#body:river -\"body:river,window\" -(body:glacier|body:compass)",
+        "1",
+        "classic",
+    ),
 ];
 
-fn boosted_lines(s: &IndexSearcher<'_, '_>, (clauses, boost): (&str, &str), out: &mut Vec<String>) {
+/// `GenMoreLikeThis.clause`.
+fn clause(t: &str) -> Clause {
+    if let Some(p) = t.strip_prefix('"') {
+        let (f, words) = p.trim_end_matches('"').split_once(':').unwrap();
+        return Clause::Phrase(PhraseQuery::new(f, words.split(',')));
+    }
+    if let Some(b) = t.strip_prefix('(') {
+        return Clause::from(BooleanQuery {
+            should: b.trim_end_matches(')').split('|').map(clause).collect(),
+            ..Default::default()
+        });
+    }
+    let (f, text) = t.split_once(':').unwrap();
+    Clause::Term(TermQuery::new(f, text))
+}
+
+fn boosted_lines(
+    plain: &IndexSearcher<'_, '_>,
+    classic: &IndexSearcher<'_, '_>,
+    (clauses, boost, sim): (&str, &str, &str),
+    out: &mut Vec<String>,
+) {
+    let s = if sim.is_empty() { plain } else { classic };
     let mut b = BooleanQuery::new();
     for c in clauses.split(' ') {
         let (list, t) = match c.as_bytes()[0] {
@@ -103,11 +146,15 @@ fn boosted_lines(s: &IndexSearcher<'_, '_>, (clauses, boost): (&str, &str), out:
             b'-' => (&mut b.must_not, &c[1..]),
             _ => (&mut b.should, c),
         };
-        let (f, text) = t.split_once(':').unwrap();
-        list.push(Clause::Term(TermQuery::new(f, text)));
+        list.push(clause(t));
     }
     let q = Clause::Boost(Box::new(BoostQuery::new(b, boost.parse().unwrap())));
-    let head = format!("boost\t{clauses}^{boost}");
+    let sim = if sim.is_empty() {
+        String::new()
+    } else {
+        format!("@{sim}")
+    };
+    let head = format!("boost\t{clauses}^{boost}{sim}");
     let query = as_boolean(q);
     out.push(format!("{head}\thits\t{}", g(hits(s, &query))));
     for doc in [0, 7, 33, 60] {
@@ -187,8 +234,11 @@ fn common_terms_match_lucene() {
     for spec in COMMON {
         common_lines(&searcher, spec, &mut got);
     }
+    let classic_sim = ClassicSimilarity::default();
+    let mut classic = IndexSearcher::new(&segments, &norms).unwrap();
+    classic.set_similarity(&classic_sim);
     for spec in BOOSTED {
-        boosted_lines(&searcher, spec, &mut got);
+        boosted_lines(&searcher, &classic, spec, &mut got);
     }
     compare(
         &std::fs::read_to_string(dir.join("common.tsv")).unwrap(),

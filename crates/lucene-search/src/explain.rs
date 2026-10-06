@@ -145,6 +145,36 @@ fn with_no_scores<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
+/// `similarity.getClass().getSimpleName()` of the searcher being explained:
+/// a weight's explanation prints it whatever its scorer.
+fn similarity_name() -> String {
+    with_leaf_reader(|_, sim| {
+        sim.map_or("BM25Similarity", |s| s.simple_name())
+            .to_string()
+    })
+}
+
+/// A weight created without scores, explained through the dummy
+/// `SimScorer` its query assigns (`TermWeight`'s scores `0`,
+/// `PhraseWeight`'s `1`) and `SimScorer.explain`'s default layout:
+/// `weight(q in doc) [Sim], result of:` over `score(freq=f), with freq of:`
+/// over `freq`, whatever the searcher's similarity -- only its name shows.
+fn explain_dummy_scorer(clause: &Clause, doc: i32, value: f32, freq: Explanation) -> Explanation {
+    Explanation::match_(
+        value,
+        format!(
+            "weight({} in {doc}) [{}], result of:",
+            describe_clause(clause),
+            similarity_name()
+        ),
+    )
+    .with_details(vec![Explanation::match_(
+        value,
+        format!("score(freq={}), with freq of:", java_float(freq.value)),
+    )
+    .with_details(vec![freq])])
+}
+
 /// Runs `f` with `(max_doc, doc_base)` as the segment being explained,
 /// `reader` its reader and `similarity` the searcher's.
 pub(crate) fn with_leaf<R>(
@@ -598,6 +628,33 @@ pub fn explain_clause_with_stats(
                     fields, doc_in, pos_in, pay_in, live_docs, points, norms, global, sq, 1.0, doc,
                 );
             }
+            // `SynonymQuery.createWeight` without scores: the rewritten
+            // boolean of its terms' `TermQuery`s, also without scores.
+            if let crate::extended_query::ExtendedQuery::Synonym(sq) = q.as_ref() {
+                if no_scores() {
+                    let disjunction = Clause::from(BooleanQuery {
+                        should: sq
+                            .terms
+                            .iter()
+                            .map(|(t, _)| Clause::Term(TermQuery::new(sq.field.clone(), t.clone())))
+                            .collect(),
+                        ..BooleanQuery::default()
+                    })
+                    .rewrite();
+                    return explain_clause_with_stats(
+                        fields,
+                        doc_in,
+                        pos_in,
+                        pay_in,
+                        live_docs,
+                        points,
+                        &disjunction,
+                        doc,
+                        norms,
+                        global,
+                    );
+                }
+            }
             if let Some(e) = crate::exec::join::explain_extended(
                 fields, doc_in, pos_in, pay_in, live_docs, points, norms, global, q, doc,
             )? {
@@ -666,6 +723,11 @@ pub fn explain_clause_with_stats(
                 fields, doc_in, pos_in, pay_in, live_docs, norms, global, query,
             )?;
             Ok(match hits.iter().find(|(d, _)| *d == doc) {
+                // `SpanWeight` without scores has no similarity.
+                Some(_) if no_scores() => Explanation::match_(
+                    0.0,
+                    format!("match {} in {doc} without score", describe_clause(clause)),
+                ),
                 Some(&(_, score)) => Explanation::match_(
                     score,
                     format!(
@@ -686,6 +748,40 @@ pub fn explain_clause_with_stats(
         }
         // `MatchNoDocsQuery`'s weight: `Explanation.noMatch(reason)`.
         Clause::MatchNoDocs(q) => Ok(Explanation::no_match(q.reason.clone())),
+        Clause::MultiPhrase(query) if no_scores() && !query.term_arrays.is_empty() => {
+            // `MultiPhraseQuery.rewrite`: one position is a boolean of its
+            // terms, explained as one created without scores.
+            if let [terms] = query.term_arrays.as_slice() {
+                let disjunction = Clause::from(BooleanQuery {
+                    should: terms
+                        .iter()
+                        .map(|t| Clause::Term(TermQuery::new(query.field.clone(), t.clone())))
+                        .collect(),
+                    ..BooleanQuery::default()
+                })
+                .rewrite();
+                return explain_clause_with_stats(
+                    fields,
+                    doc_in,
+                    pos_in,
+                    pay_in,
+                    live_docs,
+                    points,
+                    &disjunction,
+                    doc,
+                    norms,
+                    global,
+                );
+            }
+            Ok(
+                match crate::multi_phrase_freq(
+                    fields, doc_in, pos_in, pay_in, live_docs, query, doc,
+                )? {
+                    Some(freq) => explain_phrase_unscored(clause, doc, freq),
+                    None => Explanation::no_match("no matching terms"),
+                },
+            )
+        }
         Clause::MultiPhrase(query) => {
             // No per-position breakdown yet (real `MultiPhraseWeight.explain`
             // has one): this reports the real score the scorer produces for
@@ -837,24 +933,15 @@ fn explain_term(
         return Ok(Explanation::no_match("no matching term"));
     };
     // A `TermWeight` without scores reads postings without frequencies
-    // (`freq()` is 1) and explains through its dummy `SimScorer` (score 0,
-    // `SimScorer.explain`'s default layout).
-    if no_scores() && with_leaf_reader(|_, sim| sim.is_none()) {
-        return Ok(Explanation::match_(
+    // (`freq()` is 1) and explains through its dummy `SimScorer` (score 0),
+    // under any similarity.
+    if no_scores() {
+        return Ok(explain_dummy_scorer(
+            &Clause::Term(query.clone()),
+            doc,
             0.0,
-            format!(
-                "weight({} in {doc}) [BM25Similarity], result of:",
-                describe_clause(&Clause::Term(query.clone()))
-            ),
-        )
-        .with_details(vec![Explanation::match_(
-            0.0,
-            "score(freq=1.0), with freq of:",
-        )
-        .with_details(vec![Explanation::match_(
-            1.0,
-            "freq, occurrences of term within document",
-        )])]));
+            Explanation::match_(1.0, "freq, occurrences of term within document"),
+        ));
     }
 
     // `TermWeight` takes `searcher.collectionStatistics`/`termStatistics`:
@@ -1136,6 +1223,15 @@ fn explain_phrase(
     if phrase_freq == 0.0 {
         return Ok(Explanation::no_match("no matching phrase"));
     }
+    // `PhraseWeight` without scores: no term statistics, so `getStats` is
+    // `null` and the weight's dummy `SimScorer` scores every match `1`.
+    if no_scores() {
+        return Ok(explain_phrase_unscored(
+            &Clause::Phrase(query.clone()),
+            doc,
+            phrase_freq,
+        ));
+    }
 
     let (field_length, avg_field_length) = match norms {
         Some(fn_) => (fn_.field_length(doc)?, fn_.avg_field_length),
@@ -1195,6 +1291,18 @@ fn explain_phrase(
         ),
     )
     .with_details(vec![score_explanation]))
+}
+
+/// `PhraseWeight.explain` of a weight created without scores (a
+/// `PhraseQuery`'s or a `MultiPhraseQuery`'s): its dummy `SimScorer`, which
+/// scores `1`, over the matcher's frequency.
+fn explain_phrase_unscored(clause: &Clause, doc: i32, freq: f32) -> Explanation {
+    explain_dummy_scorer(
+        clause,
+        doc,
+        1.0,
+        Explanation::match_(freq, format!("phraseFreq={}", java_float(freq))),
+    )
 }
 
 /// [`Clause::Boolean`]'s explanation: mirrors real `BooleanWeight.explain` --
@@ -1272,26 +1380,11 @@ fn explain_boolean(
             },
             _ => clause,
         };
-        // A span query's weight without scores has no similarity
-        // (`buildSimWeight` with no term states).
-        let e = match unscored {
-            Clause::Extended(x)
-                if matches!(x.as_ref(), crate::extended_query::ExtendedQuery::Span(_)) =>
-            {
-                let crate::extended_query::ExtendedQuery::Span(sq) = x.as_ref() else {
-                    unreachable!("matched above")
-                };
-                let ctx = interval_context(
-                    fields, doc_in, pos_in, pay_in, live_docs, points, norms, global,
-                );
-                crate::exec::spans::explain_span_unscored(&ctx, sq, doc)?
-            }
-            _ => with_no_scores(|| {
-                explain_clause_with_stats(
-                    fields, doc_in, pos_in, pay_in, live_docs, points, unscored, doc, norms, global,
-                )
-            })?,
-        };
+        let e = with_no_scores(|| {
+            explain_clause_with_stats(
+                fields, doc_in, pos_in, pay_in, live_docs, points, unscored, doc, norms, global,
+            )
+        })?;
         if e.matched {
             match_count += 1;
             details.push(
@@ -1376,7 +1469,9 @@ fn explain_boolean(
 }
 
 /// `weight.scorer(context)` advanced to `doc`: its score, `None` when the
-/// scorer does not match it.
+/// scorer does not match it. The weight is created without scores where the
+/// clause being explained was (a filter's or an exclusion's subtree), so a
+/// boolean there sums its clauses' dummy scores.
 #[allow(clippy::too_many_arguments)]
 fn scorer_score(
     fields: &BlockTreeFields,
@@ -1409,7 +1504,11 @@ fn scorer_score(
             &ctx,
             clause,
             weight_boost(),
-            crate::exec::Mode::Complete,
+            if no_scores() {
+                crate::exec::Mode::NoScores
+            } else {
+                crate::exec::Mode::Complete
+            },
             false,
         )?
         else {
@@ -1637,6 +1736,11 @@ fn explain_span(
         );
         ctx.similarity = similarity;
         ctx.max_doc = leaf().map(|(max_doc, _)| max_doc);
+        // A span query's weight without scores has no similarity
+        // (`buildSimWeight` with no term states).
+        if no_scores() {
+            return crate::exec::spans::explain_span_unscored(&ctx, q, doc);
+        }
         crate::exec::spans::explain_span_node(&ctx, q, boost, doc)
     })
 }
@@ -1647,13 +1751,10 @@ fn takes_boost(clause: &Clause) -> bool {
     match clause {
         Clause::Term(_) | Clause::MatchNoDocs(_) => true,
         Clause::Boost(b) => takes_boost(&b.inner),
-        Clause::Boolean(b) => b
-            .must
-            .iter()
-            .chain(&b.filter)
-            .chain(&b.should)
-            .chain(&b.must_not)
-            .all(takes_boost),
+        // A boolean's `FILTER` and `MUST_NOT` weights are created without
+        // scores: whatever they are, the boost reaches no explanation of
+        // theirs.
+        Clause::Boolean(b) => b.must.iter().chain(&b.should).all(takes_boost),
         Clause::DisjunctionMax(d) => d.disjuncts.iter().all(takes_boost),
         _ => false,
     }
@@ -3704,5 +3805,113 @@ mod tests {
         assert!(!nm.matched);
         assert_eq!(nm.value, 0.0);
         assert!(nm.details.is_empty());
+    }
+
+    /// The positional leaves of a filter's or an exclusion's subtree explain
+    /// as Java's weights created without scores do: a phrase's (and a
+    /// multi-phrase's) dummy scorer scores `1` over its frequency, a
+    /// one-position multi-phrase and a synonym query are booleans of their
+    /// terms, a span query has no similarity -- and only the similarity's
+    /// name changes under another one.
+    #[test]
+    fn weights_without_scores_explain_through_their_dummy_scorers() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.expect("fixture has an opened .doc file");
+        let doc_in = doc.open();
+        let pos_in = doc.open_pos();
+        let pay_in = doc.open_pay();
+        let explain = |clause: &Clause, d: i32| {
+            with_no_scores(|| {
+                explain_clause(
+                    &fields,
+                    Some(&doc_in),
+                    Some(&pos_in),
+                    Some(&pay_in),
+                    None,
+                    clause,
+                    d,
+                    None,
+                )
+            })
+            .unwrap()
+        };
+        let phrase = crate::PhraseQuery::new("pos", ["alpha", "beta"]);
+        let freqs = crate::phrase_doc_freqs(
+            fields.field("pos").unwrap(),
+            Some(&doc_in),
+            &pos_in,
+            Some(&pay_in),
+            None,
+            &phrase,
+        )
+        .unwrap();
+        let matched: Vec<i32> = freqs.iter().map(|&(d, _)| d).collect();
+        let d = freqs
+            .iter()
+            .find(|&&(_, f)| f == 1.0)
+            .expect("a document with the phrase once")
+            .0;
+        let e = explain(&Clause::Phrase(phrase), d);
+        assert_eq!(
+            e.to_string(),
+            format!(
+                "1.0 = weight(pos:\"alpha beta\" in {d}) [BM25Similarity], result of:\n  \
+                 1.0 = score(freq=1.0), with freq of:\n    1.0 = phraseFreq=1.0\n"
+            )
+        );
+        // A multi-phrase of one term per position is the same phrase.
+        let multi = crate::query::MultiPhraseQuery::new("pos", [["alpha"], ["beta"]]);
+        let m = explain(&Clause::MultiPhrase(multi.clone()), d);
+        assert_eq!((m.value, &m.details), (e.value, &e.details));
+        assert!(m.description.starts_with("weight(pos:\"alpha beta\" in "));
+        let no_doc = (0..)
+            .find(|x| !matched.contains(x))
+            .expect("a document without the phrase");
+        assert_eq!(
+            explain(&Clause::MultiPhrase(multi), no_doc).description,
+            "no matching terms"
+        );
+        // One position: the boolean of its terms, and a synonym query too.
+        let terms = Clause::from(BooleanQuery {
+            should: vec![
+                Clause::Term(TermQuery::new("pos", "alpha")),
+                Clause::Term(TermQuery::new("pos", "beta")),
+            ],
+            ..BooleanQuery::default()
+        });
+        let want = explain(&terms, d);
+        assert_eq!(want.description, "sum of:");
+        assert_eq!(want.value, 0.0);
+        let one_position = crate::query::MultiPhraseQuery::new("pos", [["alpha", "beta"]]);
+        assert_eq!(explain(&Clause::MultiPhrase(one_position), d), want);
+        let synonym = crate::extended_query::SynonymQuery::new(
+            "pos",
+            [(b"alpha".to_vec(), 1.0), (b"beta".to_vec(), 0.5)],
+        )
+        .unwrap();
+        assert_eq!(explain(&Clause::from(synonym), d), want);
+        // A span query: matched, without a score.
+        let span = crate::SpanQuery::span_term("pos", "alpha");
+        let s = explain(&Clause::Span(span), d);
+        assert_eq!(
+            (s.matched, s.value, s.description.as_str()),
+            (
+                true,
+                0.0,
+                format!("match spanTerm(pos:alpha) in {d} without score").as_str()
+            )
+        );
+        // Another similarity: the same dummy scorers, under its name.
+        let classic = crate::similarities::ClassicSimilarity::default();
+        let term = Clause::Term(TermQuery::new("pos", "alpha"));
+        let t = with_leaf(None, 0, None, Some(&classic), || explain(&term, d));
+        assert_eq!(
+            t.to_string(),
+            format!(
+                "0.0 = weight(pos:alpha in {d}) [ClassicSimilarity], result of:\n  \
+                 0.0 = score(freq=1.0), with freq of:\n    \
+                 1.0 = freq, occurrences of term within document\n"
+            )
+        );
     }
 }

@@ -87,7 +87,7 @@ import org.apache.lucene.util.BytesRef;
  * single document (a pulsed singleton term); a few documents have no text at all.
  *
  * <p>For each query spec (the grammar is the Rust test's, {@code spans_fixtures.rs}): its {@code
- * toString}; then, for each variant (plain, boosted, the required clause or the filter of a boolean with an
+ * toString}; then, for each variant (plain, boosted, the required clause, the filter or the prohibited clause of a boolean with an
  * optional term), every hit with its score bits and five documents' explanations; then the {@code
  * Matches} of every hit and of the explained documents -- each span's positions and offsets, and its
  * terms as sub-matches with their {@code TermQuery}. An exception is recorded as its class name.
@@ -395,7 +395,7 @@ public class GenSpans {
 
   static final int[] EXPLAIN = {0, 7, 17, 33, 60};
 
-  static final String[] VARIANTS = {"plain", "boost", "bool", "filter"};
+  static final String[] VARIANTS = {"plain", "boost", "bool", "filter", "mustnot"};
 
   static Query variant(String v, SpanQuery s) {
     return switch (v) {
@@ -410,6 +410,11 @@ public class GenSpans {
           new BooleanQuery.Builder()
               .add(s, BooleanClause.Occur.FILTER)
               .add(new TermQuery(new Term("body", "egg")), BooleanClause.Occur.SHOULD)
+              .build();
+      case "mustnot" ->
+          new BooleanQuery.Builder()
+              .add(new TermQuery(new Term("body", "egg")), BooleanClause.Occur.SHOULD)
+              .add(s, BooleanClause.Occur.MUST_NOT)
               .build();
       default -> throw new AssertionError(v);
     };

@@ -32,10 +32,12 @@ import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.BoostQuery;
 import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.PhraseQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.similarities.ClassicSimilarity;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
@@ -51,8 +53,9 @@ import org.apache.lucene.store.FSDirectory;
  * the interesting terms, the query's clauses (field, term, boost bits) and its hits; {@code
  * like(field, texts)} and {@code like(Map)}; and {@code MoreLikeThisQuery} over three texts, with
  * hits and explanations. {@code common.tsv}: {@code CommonTermsQuery} over fourteen term sets and
- * settings, hits with score bits and four explanations each; then four boosted booleans of
- * MUST/FILTER/SHOULD/MUST_NOT term clauses, hits and four explanations each. Exceptions are recorded by class name.
+ * settings, hits with score bits and four explanations each; then eight boosted booleans of
+ * MUST/FILTER/SHOULD/MUST_NOT term, phrase and nested-boolean clauses (two under {@code
+ * ClassicSimilarity}), hits and four explanations each. Exceptions are recorded by class name.
  *
  * <p>Usage: {@code java GenMoreLikeThis <fixtures-data-dir>}.
  */
@@ -316,18 +319,49 @@ public class GenMoreLikeThis {
   };
 
   /**
-   * A boosted boolean of term clauses: {clauses (space separated, +/#/- prefixed, in the
-   * MUST, FILTER, SHOULD, MUST_NOT order the Rust query keeps them in), boost}.
+   * A boosted boolean: {clauses (space separated, +/#/- prefixed, in the MUST, FILTER, SHOULD,
+   * MUST_NOT order the Rust query keeps them in), boost, and optionally the searcher's similarity
+   * ("classic")}. A clause is a term {@code f:t}, a phrase {@code "f:a,b"} or a nested boolean of
+   * SHOULD terms {@code (f:a|f:b)}. The filters and exclusions explain through weights created
+   * without scores: a term's and a phrase's dummy scorers, a nested boolean's sum of them.
    */
   static final String[][] BOOSTED = {
     {"+body:river #body:stone -body:glacier", "2.5"},
     {"#body:light body:river body:stone -body:quartz", "0.5"},
     {"#body:river #body:stone", "3"},
     {"+body:stone -body:river -body:zephyr", "1.5"},
+    {"+body:river #\"body:the,the\" -body:quartz", "2"},
+    {"#(body:light|body:winter) body:river -\"body:light,house\"", "1.5"},
+    {"+body:river #\"body:the,the\" #(body:light|body:winter) -body:quartz", "1", "classic"},
+    {"#body:river -\"body:river,window\" -(body:glacier|body:compass)", "1", "classic"},
   };
 
-  static void boosted(StringBuilder out, IndexSearcher searcher) {
+  static Query clause(String t) {
+    if (t.startsWith("\"")) {
+      String[] ft = t.substring(1, t.length() - 1).split(":");
+      return new PhraseQuery(ft[0], ft[1].split(","));
+    }
+    if (t.startsWith("(")) {
+      BooleanQuery.Builder b = new BooleanQuery.Builder();
+      for (String c : t.substring(1, t.length() - 1).split("\\|")) {
+        b.add(clause(c), BooleanClause.Occur.SHOULD);
+      }
+      return b.build();
+    }
+    String[] ft = t.split(":");
+    return new TermQuery(new Term(ft[0], ft[1]));
+  }
+
+  static void boosted(StringBuilder out, IndexSearcher plain) {
     for (String[] spec : BOOSTED) {
+      IndexSearcher searcher = plain;
+      String sim = "";
+      if (spec.length > 2) {
+        searcher = new IndexSearcher(plain.getIndexReader());
+        searcher.setQueryCache(null);
+        searcher.setSimilarity(new ClassicSimilarity());
+        sim = "@" + spec[2];
+      }
       BooleanQuery.Builder b = new BooleanQuery.Builder();
       for (String c : spec[0].split(" ")) {
         BooleanClause.Occur occur;
@@ -338,15 +372,15 @@ public class GenMoreLikeThis {
           case '-' -> { occur = BooleanClause.Occur.MUST_NOT; t = c.substring(1); }
           default -> occur = BooleanClause.Occur.SHOULD;
         }
-        String[] ft = t.split(":");
-        b.add(new TermQuery(new Term(ft[0], ft[1])), occur);
+        b.add(clause(t), occur);
       }
       Query q = new BoostQuery(b.build(), Float.parseFloat(spec[1]));
-      String head = "boost\t" + spec[0] + "^" + spec[1];
-      out.append(head).append("\thits\t").append(g(() -> hits(searcher, q))).append('\n');
+      String head = "boost\t" + spec[0] + "^" + spec[1] + sim;
+      IndexSearcher s = searcher;
+      out.append(head).append("\thits\t").append(g(() -> hits(s, q))).append('\n');
       for (int doc : new int[] {0, 7, 33, 60}) {
         out.append(head).append("\texplain ").append(doc).append('\t')
-            .append(g(() -> searcher.explain(q, doc).toString())).append('\n');
+            .append(g(() -> s.explain(q, doc).toString())).append('\n');
       }
     }
   }
