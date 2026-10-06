@@ -29,6 +29,14 @@ a dependency the shipped library links is not under a licence listed here.
     (`fixtures/data/snowball/`) is synthetic, built by `GenSnowball.java`
     from the stemmers' own suffix tables -- no Snowball test data is
     redistributed.
+  - the language packages' stop word lists and RSLP rule files
+    (`lucene-analysis/src/lang/stopwords/`, vendored verbatim from the
+    10.5.0 jar, headers kept): Jacques Savoy's (BSD) and Snowball's (BSD)
+    lists and the others Lucene ships under its own licence, attributed in
+    Lucene's `NOTICE.txt`, which [`NOTICE`](../NOTICE) carries in full; they
+    are compiled into the library (`include_str!`).
+  - the Savoy light stemmers (BSD reference implementations, also in
+    Lucene's `NOTICE.txt`): ported in `lucene-analysis/src/lang/`.
   - Two others this port does *not* carry, and the reason:
     - the moman Levenshtein tables (MIT): `fuzzy` matches by dynamic
       programming instead;
@@ -98,7 +106,7 @@ a dependency the shipped library links is not under a licence listed here.
   (and its frozen copy `snowball-seed.txt`, which seeds `GenSnowball`),
   is written for this project (Apache-2.0); the few well-known pangrams in it
   are short phrases in common use. Test data only.
-- **The synonym and classic fixtures' inputs** (M11), `fixtures/corpus/analysis-classic.txt`, `analysis-synonym.txt`,
+- **The synonym, classic and language fixtures' inputs** (M11), `fixtures/corpus/analysis-classic.txt`, `analysis-lang.txt`, `analysis-synonym.txt`,
   `synonyms-solr.txt` and `synonyms-wordnet.txt`, are written for this project
   (Apache-2.0); the WordNet file uses only WordNet's `wn_s.pl` line *format*,
   none of its synsets. Test data only.

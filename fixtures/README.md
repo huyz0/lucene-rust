@@ -1065,6 +1065,14 @@ outright.
   four of them over 2,000 seeded joins of markup fragments (`fragments.txt`,
   `frag_<chain>.tsv`). Deterministic. Read by
   `crates/lucene-analysis/tests/analysis_classic_fixtures.rs`.
+- `GenAnalysisLanguages.java` — M11 T11.6: every language analyzer of
+  analysis-common (and a few filter chains) over `corpus/analysis-lang.txt`
+  (sentences in each language written for this project;
+  `data/analysis_lang/<chain>.tsv`), and `lang.words`: each stemmer and
+  normalizer over words built from its own suffixes, prefixes and characters
+  (harvested once from Lucene's sources into the generator's `AFFIXES`; RSLP
+  exception words as they are) on short bases. Deterministic. Read by
+  `crates/lucene-analysis/tests/analysis_lang_fixtures.rs`.
 - `GenDisiJumpTable.java` — the only Java-written `IndexedDISI` **block jump
   table** in this tree (`disi_jump_table_index/`). `IndexedDISI.writeBitSet`
   emits `jumpTableEntryCount = 0` below two logical 65 536-document blocks, and

@@ -179,6 +179,14 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   `corpus/analysis-synonym.txt`: all equal. Left: `word2vec`, the factories.
   Part 3's generators share `fixtures/src/AnalysisRows.java` /
   `tests/support/mod.rs` and record in `docs/parity/analysis-lang.md`.
+- **T11.6, languages** -- every language package (`src/lang/<code>.rs`, 37
+  packages: analyzers, light/minimal/plural/RSLP stemmers, normalizers,
+  Greek/Brazilian/German classic stemmers, `PersianCharFilter`,
+  `IndicNormalizer`), the stemmers line for line over UTF-16 units behind one
+  generic stem filter; stop files vendored from the jar.
+  `GenAnalysisLanguages.java`: every analyzer and four filter chains over
+  `corpus/analysis-lang.txt` (45 chains), every analyzer's `normalize` (540 cases) and
+  25,659 words through 53 stemmers and normalizers, all equal to Lucene.
 - `java.util.regex` is the `regex` crate behind a Java-syntax shim (`util/java_regex.rs`: ASCII
   `\d\w\s`, `$n` replacements; no backreferences or lookaround).
 - The parity ledger's 400 KB budget is shared (the large area files were
