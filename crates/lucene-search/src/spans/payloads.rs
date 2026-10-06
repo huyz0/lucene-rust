@@ -413,7 +413,7 @@ impl SpanCollector for PayloadChecker {
 
 impl SpanFilter for PayloadChecker {
     /// The anonymous `FilterSpans.accept`: collect, then `match()`.
-    fn accept(&mut self, candidate: &mut dyn Spans) -> Result<AcceptStatus> {
+    fn accept(&mut self, candidate: &mut BoxSpans<'_>) -> Result<AcceptStatus> {
         self.reset();
         candidate.collect(self)?;
         if let Some(e) = self.error.take() {
@@ -431,7 +431,7 @@ impl SpanFilter for PayloadChecker {
 
 /// `SpanPayloadCheckWeight.getSpans`.
 pub(crate) fn check_spans<'a>(q: &SpanPayloadCheckQuery, inner: BoxSpans<'a>) -> BoxSpans<'a> {
-    Box::new(super::FilterSpans::new(
+    BoxSpans::boxed(super::FilterSpans::new(
         inner,
         PayloadChecker {
             payload_to_match: q.payload_to_match.clone().into(),

@@ -43,6 +43,21 @@ pub(crate) trait IntervalIterator {
     fn next_interval(&mut self) -> Result<i32>;
     /// `matchCost()`.
     fn match_cost(&self) -> f32;
+    /// `IntervalScorer.ensureFreq()`'s sum from the current interval on:
+    /// `freq += 1.0 / max(length - minExtent + 1, 1)` per interval, in
+    /// `double`, to the `float` sum. A method so that it is monomorphised
+    /// per iterator: one virtual call per document, not three per interval.
+    fn sum_freq(&mut self, min_extent: i32) -> Result<f32> {
+        let mut freq = 0.0f32;
+        loop {
+            let length = self.end().wrapping_sub(self.start()).wrapping_add(1);
+            let d = length.wrapping_sub(min_extent).wrapping_add(1).max(1);
+            freq = (f64::from(freq) + 1.0 / f64::from(d)) as f32;
+            if self.next_interval()? == NO_MORE_INTERVALS {
+                return Ok(freq);
+            }
+        }
+    }
 }
 
 impl fmt::Debug for dyn IntervalIterator + '_ {
@@ -52,7 +67,88 @@ impl fmt::Debug for dyn IntervalIterator + '_ {
     }
 }
 
-pub(crate) type BoxIntervals<'a> = Box<dyn IntervalIterator + 'a>;
+/// An interval iterator as its parent holds it: a term's inline, so the
+/// leaf every source bottoms out in is called statically (and inlined)
+/// rather than through a virtual call per document and per interval -- the
+/// dispatch Java's JIT removes by inlining monomorphic call sites; any
+/// other iterator boxed.
+// The term held inline, not boxed, is the point: no pointer to chase on
+// the hottest calls. Parents hold a few of these, never many.
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum BoxIntervals<'a> {
+    Term(TermIntervals<'a>),
+    Dyn(Box<dyn IntervalIterator + 'a>),
+}
+
+impl<'a> BoxIntervals<'a> {
+    /// Boxes `it` behind a virtual call.
+    pub(crate) fn boxed(it: impl IntervalIterator + 'a) -> Self {
+        BoxIntervals::Dyn(Box::new(it))
+    }
+}
+
+impl fmt::Debug for BoxIntervals<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:[{}->{}]", self.doc_id(), self.start(), self.end())
+    }
+}
+
+/// Forwards to the variant, statically for a term.
+macro_rules! dispatch {
+    ($self:expr, $s:ident => $e:expr) => {
+        match $self {
+            BoxIntervals::Term($s) => $e,
+            BoxIntervals::Dyn($s) => $e,
+        }
+    };
+}
+
+impl IntervalIterator for BoxIntervals<'_> {
+    #[inline]
+    fn doc_id(&self) -> i32 {
+        dispatch!(self, s => s.doc_id())
+    }
+    #[inline]
+    fn next_doc(&mut self) -> Result<i32> {
+        dispatch!(self, s => s.next_doc())
+    }
+    #[inline]
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        dispatch!(self, s => s.advance(target))
+    }
+    #[inline]
+    fn cost(&self) -> i64 {
+        dispatch!(self, s => s.cost())
+    }
+    #[inline]
+    fn start(&self) -> i32 {
+        dispatch!(self, s => s.start())
+    }
+    #[inline]
+    fn end(&self) -> i32 {
+        dispatch!(self, s => s.end())
+    }
+    #[inline]
+    fn gaps(&self) -> i32 {
+        dispatch!(self, s => s.gaps())
+    }
+    #[inline]
+    fn width(&self) -> i32 {
+        dispatch!(self, s => s.width())
+    }
+    #[inline]
+    fn next_interval(&mut self) -> Result<i32> {
+        dispatch!(self, s => s.next_interval())
+    }
+    #[inline]
+    fn match_cost(&self) -> f32 {
+        dispatch!(self, s => s.match_cost())
+    }
+    #[inline]
+    fn sum_freq(&mut self, min_extent: i32) -> Result<f32> {
+        dispatch!(self, s => s.sum_freq(min_extent))
+    }
+}
 
 /// `MinimizingConjunctionIntervalsSource.MatchCallback`: run each time a
 /// minimizing iterator settles on a match (the matches path caches its
@@ -608,7 +704,7 @@ fn term_iterator<'a>(
     let mut postings = LeafPositions::open(ctx, pos_in, field, term)?;
     let stream = payloads.is_some() && postings.stream_payloads(ctx);
     let lazy = postings.is_lazy();
-    Ok(Box::new(TermIntervals {
+    Ok(BoxIntervals::Term(TermIntervals {
         postings,
         doc: -1,
         upto: 0,
@@ -874,7 +970,7 @@ fn conjunction<'a, K: ConjunctionKind + 'a>(
     subs: Vec<BoxIntervals<'a>>,
     kind: K,
 ) -> BoxIntervals<'a> {
-    Box::new(ConjunctionIntervals {
+    BoxIntervals::boxed(ConjunctionIntervals {
         state: ConjunctionState::new(subs),
         kind,
     })
@@ -1937,28 +2033,34 @@ pub(crate) fn intervals<'a>(
             if subs.is_empty() {
                 None
             } else {
-                Some(Box::new(DisjunctionIntervals::new(subs)))
+                Some(BoxIntervals::boxed(DisjunctionIntervals::new(subs)))
             }
         }
         S::Repeating { source, count, .. } => {
             intervals(source, field, ctx)?.map(|it| -> BoxIntervals<'a> {
-                Box::new(DuplicateIntervals::new(
+                BoxIntervals::boxed(DuplicateIntervals::new(
                     it,
                     usize::try_from(*count).unwrap_or(1),
                 ))
             })
         }
-        S::Filtered { source, filter } => intervals(source, field, ctx)?
-            .map(|it| -> BoxIntervals<'a> { Box::new(FilteredIntervals::new(it, *filter)) }),
+        S::Filtered { source, filter } => {
+            intervals(source, field, ctx)?.map(|it| -> BoxIntervals<'a> {
+                BoxIntervals::boxed(FilteredIntervals::new(it, *filter))
+            })
+        }
         S::Extended {
             source,
             before,
             after,
         } => intervals(source, field, ctx)?.map(|it| -> BoxIntervals<'a> {
-            Box::new(ExtendedIntervals::new(it, *before, *after))
+            BoxIntervals::boxed(ExtendedIntervals::new(it, *before, *after))
         }),
-        S::Offset { source, before } => intervals(source, field, ctx)?
-            .map(|it| -> BoxIntervals<'a> { Box::new(OffsetIntervals::new(it, *before)) }),
+        S::Offset { source, before } => {
+            intervals(source, field, ctx)?.map(|it| -> BoxIntervals<'a> {
+                BoxIntervals::boxed(OffsetIntervals::new(it, *before))
+            })
+        }
         S::FixedField { field, source } => intervals(source, field, ctx)?,
         S::NoMatch(_) => None,
         S::Containing { big, small } => {
@@ -2007,7 +2109,9 @@ pub(crate) fn intervals<'a>(
             if subs.len() < msm {
                 None
             } else {
-                Some(Box::new(MinimumShouldMatchIntervals::new(subs, msm, None)))
+                Some(BoxIntervals::boxed(MinimumShouldMatchIntervals::new(
+                    subs, msm, None,
+                )))
             }
         }
         S::MultiTerm {
@@ -2032,7 +2136,7 @@ pub(crate) fn intervals<'a>(
             if subs.is_empty() {
                 None
             } else {
-                Some(Box::new(DisjunctionIntervals::new(subs)))
+                Some(BoxIntervals::boxed(DisjunctionIntervals::new(subs)))
             }
         }
     })
@@ -2085,7 +2189,9 @@ fn difference<'a>(
     let Some(b) = intervals(subtrahend, field, ctx)? else {
         return Ok(Some(a));
     };
-    Ok(Some(Box::new(RelativeIntervals::new(kind, a, b))))
+    Ok(Some(BoxIntervals::boxed(RelativeIntervals::new(
+        kind, a, b,
+    ))))
 }
 
 #[cfg(test)]

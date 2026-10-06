@@ -234,13 +234,13 @@ fn spans_walk_and_collect_by_their_contract() {
         .find(|ctx| {
             spans_with(ctx, &containing, false)
                 .unwrap()
-                .is_some_and(|mut c| !walk(c.as_mut()).is_empty())
+                .is_some_and(|mut c| !walk(&mut c).is_empty())
         })
         .expect("a segment with a containing span");
     let mut c = spans_with(&ctx, &containing, false).unwrap().unwrap();
-    let spans = walk(c.as_mut());
+    let spans = walk(&mut c);
     let mut b = spans_with(&ctx, &near, false).unwrap().unwrap();
-    let bigs = walk(b.as_mut());
+    let bigs = walk(&mut b);
     assert!(spans.iter().all(|s| bigs.contains(s)), "{spans:?} {bigs:?}");
     let mut w = spans_with(
         &ctx,
@@ -249,7 +249,7 @@ fn spans_walk_and_collect_by_their_contract() {
     )
     .unwrap()
     .unwrap();
-    let littles = walk(w.as_mut());
+    let littles = walk(&mut w);
     assert!(littles.iter().all(|&(_, s, e, wd)| e == s + 1 && wd == 0));
     // Collected: the big spans' terms, then the little one's.
     let mut c = spans_with(&ctx, &containing, false).unwrap().unwrap();
@@ -277,7 +277,7 @@ fn spans_walk_and_collect_by_their_contract() {
     assert!(p.match_cost() > 0.0 && p.cost() > 0);
     let walked = walk(&mut p);
     let mut plain = spans_with(&ctx, &pay, false).unwrap().unwrap();
-    assert_eq!(walked, walk(plain.as_mut()));
+    assert_eq!(walked, walk(&mut plain));
     let inner = spans_with(&ctx, &pay, true).unwrap().unwrap();
     let mut p = payloads::PayloadSpans::new(
         inner,

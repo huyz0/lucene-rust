@@ -343,7 +343,7 @@ impl IntervalIterator for WrapMatches {
 }
 
 fn wrap(mi: &Shared, doc: i32) -> BoxIntervals<'static> {
-    Box::new(WrapMatches {
+    BoxIntervals::boxed(WrapMatches {
         mi: Rc::clone(mi),
         doc,
         state: WrapState::Unpositioned,
@@ -1053,7 +1053,8 @@ fn source_matches(
             let Some(mi) = source_matches(source, field, cx)? else {
                 return Ok(None);
             };
-            let filtered = Box::new(iterators::FilteredIntervals::new(wrap(&mi, doc), *filter));
+            let filtered =
+                BoxIntervals::boxed(iterators::FilteredIntervals::new(wrap(&mi, doc), *filter));
             as_matches(filtered, mi, doc)?
         }
         S::Extended {
@@ -1065,7 +1066,7 @@ fn source_matches(
                 return Ok(None);
             };
             let no_offsets = shared(NoOffsets { inner: mi });
-            let wrapped = Box::new(iterators::ExtendedIntervals::new(
+            let wrapped = BoxIntervals::boxed(iterators::ExtendedIntervals::new(
                 wrap(&no_offsets, doc),
                 *before,
                 *after,
@@ -1076,7 +1077,7 @@ fn source_matches(
             let Some(mi) = source_matches(source, field, cx)? else {
                 return Ok(None);
             };
-            let it = Box::new(iterators::OffsetIntervals::new(wrap(&mi, doc), *before));
+            let it = BoxIntervals::boxed(iterators::OffsetIntervals::new(wrap(&mi, doc), *before));
             as_matches(it, mi, doc)?
         }
         S::NotContaining {
@@ -1294,7 +1295,7 @@ fn difference(
     let Some(sub_it) = source_matches(subtrahend, field, cx)? else {
         return Ok(Some(min_it));
     };
-    let it = Box::new(iterators::RelativeIntervals::new(
+    let it = BoxIntervals::boxed(iterators::RelativeIntervals::new(
         kind,
         wrap(&min_it, cx.doc),
         wrap(&sub_it, cx.doc),

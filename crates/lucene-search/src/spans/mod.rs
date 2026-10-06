@@ -83,9 +83,105 @@ pub(crate) trait Spans {
     fn do_current_spans(&mut self) -> Result<()> {
         Ok(())
     }
+    /// [`sloppy_freq`] of the current document, monomorphised per spans:
+    /// one virtual call per document instead of three per span.
+    fn sloppy_freq(&mut self) -> Result<f32> {
+        sloppy_freq(self)
+    }
 }
 
-pub(crate) type BoxSpans<'a> = Box<dyn Spans + 'a>;
+/// A spans as its parent holds it: a term's inline, so the leaf every span
+/// query bottoms out in is called statically (and inlined) rather than
+/// through a virtual call per document and per position -- the dispatch
+/// Java's JIT removes by inlining the monomorphic call sites; any other
+/// spans boxed.
+// The term held inline, not boxed, is the point: no pointer to chase on
+// the hottest calls. Parents hold a few of these, never many.
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum BoxSpans<'a> {
+    Term(TermSpans<'a>),
+    Dyn(Box<dyn Spans + 'a>),
+}
+
+impl<'a> BoxSpans<'a> {
+    /// Boxes `spans` behind a virtual call.
+    pub(crate) fn boxed(spans: impl Spans + 'a) -> Self {
+        BoxSpans::Dyn(Box::new(spans))
+    }
+}
+
+/// Forwards to the variant, statically for a term.
+macro_rules! dispatch {
+    ($self:expr, $s:ident => $e:expr) => {
+        match $self {
+            BoxSpans::Term($s) => $e,
+            BoxSpans::Dyn($s) => $e,
+        }
+    };
+}
+
+impl Spans for BoxSpans<'_> {
+    #[inline]
+    fn doc_id(&self) -> i32 {
+        dispatch!(self, s => s.doc_id())
+    }
+    #[inline]
+    fn next_doc(&mut self) -> Result<i32> {
+        dispatch!(self, s => s.next_doc())
+    }
+    #[inline]
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        dispatch!(self, s => s.advance(target))
+    }
+    #[inline]
+    fn cost(&self) -> i64 {
+        dispatch!(self, s => s.cost())
+    }
+    #[inline]
+    fn matches(&mut self) -> Result<bool> {
+        dispatch!(self, s => s.matches())
+    }
+    #[inline]
+    fn match_cost(&self) -> f32 {
+        dispatch!(self, s => s.match_cost())
+    }
+    #[inline]
+    fn two_phase(&self) -> bool {
+        dispatch!(self, s => s.two_phase())
+    }
+    #[inline]
+    fn next_start_position(&mut self) -> Result<i32> {
+        dispatch!(self, s => s.next_start_position())
+    }
+    #[inline]
+    fn start_position(&self) -> i32 {
+        dispatch!(self, s => s.start_position())
+    }
+    #[inline]
+    fn end_position(&self) -> i32 {
+        dispatch!(self, s => s.end_position())
+    }
+    #[inline]
+    fn width(&self) -> i32 {
+        dispatch!(self, s => s.width())
+    }
+    #[inline]
+    fn collect(&mut self, collector: &mut dyn SpanCollector) -> Result<()> {
+        dispatch!(self, s => s.collect(collector))
+    }
+    #[inline]
+    fn do_start_current_doc(&mut self) {
+        dispatch!(self, s => s.do_start_current_doc())
+    }
+    #[inline]
+    fn do_current_spans(&mut self) -> Result<()> {
+        dispatch!(self, s => s.do_current_spans())
+    }
+    #[inline]
+    fn sloppy_freq(&mut self) -> Result<f32> {
+        dispatch!(self, s => s.sloppy_freq())
+    }
+}
 
 // ---------------------------------------------------------------------------
 // TermSpans
@@ -276,7 +372,7 @@ fn term_spans<'a>(
     let mut postings = LeafPositions::open(ctx, pos_in, field, term)?;
     let stream = payloads && ft.has_payloads() && postings.stream_payloads(ctx);
     let lazy = postings.is_lazy();
-    Ok(Some(Box::new(TermSpans {
+    Ok(Some(BoxSpans::Term(TermSpans {
         postings,
         field_terms: ft,
         ctx: *ctx,
@@ -511,7 +607,7 @@ impl Spans for NearSpansOrdered<'_> {
 }
 
 /// `NearSpansUnordered.positionsOrdered`.
-fn positions_ordered(a: &dyn Spans, b: &dyn Spans) -> bool {
+fn positions_ordered(a: &BoxSpans<'_>, b: &BoxSpans<'_>) -> bool {
     let (s1, s2) = (a.start_position(), b.start_position());
     if s1 == s2 {
         a.end_position() < b.end_position()
@@ -560,9 +656,8 @@ impl<'a> NearSpansUnordered<'a> {
         for i in 0..self.subs.len() {
             self.subs[i].next_start_position()?;
             let subs = &self.subs;
-            self.window.add(i, &|a, b| {
-                positions_ordered(subs[a].as_ref(), subs[b].as_ref())
-            });
+            self.window
+                .add(i, &|a, b| positions_ordered(&subs[a], &subs[b]));
             let s = &self.subs[i];
             if s.end_position() > self.max_end_position {
                 self.max_end_position = s.end_position();
@@ -591,7 +686,7 @@ impl<'a> NearSpansUnordered<'a> {
         }
         let subs = &self.subs;
         self.window
-            .update_top(&|a, b| positions_ordered(subs[a].as_ref(), subs[b].as_ref()));
+            .update_top(&|a, b| positions_ordered(&subs[a], &subs[b]));
         Ok(true)
     }
 
@@ -719,11 +814,11 @@ impl<'a> ContainSpans<'a> {
         }
     }
 
-    fn source(&self) -> &dyn Spans {
+    fn source(&self) -> &BoxSpans<'a> {
         if self.containing {
-            self.subs[0].as_ref()
+            &self.subs[0]
         } else {
-            self.subs[1].as_ref()
+            &self.subs[1]
         }
     }
 
@@ -1142,7 +1237,7 @@ pub(crate) enum AcceptStatus {
 /// What a `FilterSpans` accepts.
 pub(crate) trait SpanFilter {
     /// `accept(candidate)`.
-    fn accept(&mut self, candidate: &mut dyn Spans) -> Result<AcceptStatus>;
+    fn accept(&mut self, candidate: &mut BoxSpans<'_>) -> Result<AcceptStatus>;
 }
 
 /// `FilterSpans`.
@@ -1168,7 +1263,7 @@ impl<'a, F: SpanFilter> FilterSpans<'a, F> {
         self.at_first_in_current_doc = false;
         self.start_pos = self.inner.next_start_position()?;
         loop {
-            match self.filter.accept(self.inner.as_mut())? {
+            match self.filter.accept(&mut self.inner)? {
                 AcceptStatus::Yes => {
                     self.at_first_in_current_doc = true;
                     return Ok(true);
@@ -1221,7 +1316,7 @@ impl<F: SpanFilter> Spans for FilterSpans<'_, F> {
             if self.start_pos == NO_MORE_POSITIONS {
                 return Ok(NO_MORE_POSITIONS);
             }
-            match self.filter.accept(self.inner.as_mut())? {
+            match self.filter.accept(&mut self.inner)? {
                 AcceptStatus::Yes => return Ok(self.start_pos),
                 AcceptStatus::No => {}
                 AcceptStatus::NoMoreInCurrentDoc => {
@@ -1275,7 +1370,7 @@ pub(crate) struct PositionRange {
 }
 
 impl SpanFilter for PositionRange {
-    fn accept(&mut self, s: &mut dyn Spans) -> Result<AcceptStatus> {
+    fn accept(&mut self, s: &mut BoxSpans<'_>) -> Result<AcceptStatus> {
         Ok(if s.start_position() >= self.end {
             AcceptStatus::NoMoreInCurrentDoc
         } else if s.start_position() >= self.start && s.end_position() <= self.end {
@@ -1297,7 +1392,7 @@ pub(crate) struct NotFilter<'a> {
 }
 
 impl SpanFilter for NotFilter<'_> {
-    fn accept(&mut self, candidate: &mut dyn Spans) -> Result<AcceptStatus> {
+    fn accept(&mut self, candidate: &mut BoxSpans<'_>) -> Result<AcceptStatus> {
         let doc = candidate.doc_id();
         let two_phase = self.exclude.two_phase();
         if doc > self.exclude.doc_id() {
@@ -1379,9 +1474,9 @@ pub(crate) fn spans_with<'a>(
                 )));
             }
             if *in_order {
-                Some(Box::new(NearSpansOrdered::new(*slop, subs)))
+                Some(BoxSpans::boxed(NearSpansOrdered::new(*slop, subs)))
             } else {
-                Some(Box::new(NearSpansUnordered::new(*slop, subs)))
+                Some(BoxSpans::boxed(NearSpansUnordered::new(*slop, subs)))
             }
         }
         SpanNode::Or { clauses } => {
@@ -1394,11 +1489,11 @@ pub(crate) fn spans_with<'a>(
             match subs.len() {
                 0 => None,
                 1 => subs.pop(),
-                _ => Some(Box::new(OrSpans::new(subs))),
+                _ => Some(BoxSpans::boxed(OrSpans::new(subs))),
             }
         }
         SpanNode::First { inner, end } => sub(ctx, inner)?.map(|s| -> BoxSpans<'a> {
-            Box::new(FilterSpans::new(
+            BoxSpans::boxed(FilterSpans::new(
                 s,
                 PositionRange {
                     start: 0,
@@ -1408,7 +1503,7 @@ pub(crate) fn spans_with<'a>(
         }),
         SpanNode::PositionRange { inner, start, end } => {
             sub(ctx, inner)?.map(|s| -> BoxSpans<'a> {
-                Box::new(FilterSpans::new(
+                BoxSpans::boxed(FilterSpans::new(
                     s,
                     PositionRange {
                         start: *start,
@@ -1429,7 +1524,7 @@ pub(crate) fn spans_with<'a>(
             let Some(exc) = sub(ctx, exclude)? else {
                 return Ok(Some(inc));
             };
-            Some(Box::new(FilterSpans::new(
+            Some(BoxSpans::boxed(FilterSpans::new(
                 inc,
                 NotFilter {
                     exclude: exc,
@@ -1447,7 +1542,7 @@ pub(crate) fn spans_with<'a>(
             let Some(l) = sub(ctx, little)? else {
                 return Ok(None);
             };
-            Some(Box::new(ContainSpans::new(
+            Some(BoxSpans::boxed(ContainSpans::new(
                 b,
                 l,
                 matches!(q, SpanNode::Containing { .. }),
@@ -1532,7 +1627,7 @@ pub(crate) fn weight_query(q: &SpanNode) -> &SpanNode {
 
 /// `SpanScorer.setFreqCurrentDoc()`: `sum(1 / (1 + width))` over the
 /// document's spans, each added in `double` to the `float` sum.
-pub(crate) fn sloppy_freq(spans: &mut dyn Spans) -> Result<f32> {
+pub(crate) fn sloppy_freq<S: Spans + ?Sized>(spans: &mut S) -> Result<f32> {
     let mut freq = 0.0f32;
     spans.do_start_current_doc();
     let mut start = spans.next_start_position()?;
