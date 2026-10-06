@@ -124,11 +124,11 @@ analysis/email/UAX29URLEmailTokenizer	todo:M11	T11.2 JFlex tokenizer: UAX29URLEm
 analysis/email/UAX29URLEmailTokenizerFactory	todo:M11	T11.7 factory/SPI: UAX29URLEmailTokenizerFactory
 analysis/email/UAX29URLEmailTokenizerImpl	todo:M11	T11.2 JFlex tokenizer: UAX29URLEmailTokenizerImpl
 analysis/en/AbstractWordsFileFilterFactory	todo:M11	T11.7 factory/SPI: AbstractWordsFileFilterFactory
-analysis/en/EnglishAnalyzer	todo:M11	T11.6 en: EnglishAnalyzer
-analysis/en/EnglishMinimalStemFilter	todo:M11	T11.6 en: EnglishMinimalStemFilter
+analysis/en/EnglishAnalyzer	ported	crates/lucene-analysis/src/en/mod.rs::EnglishAnalyzer
+analysis/en/EnglishMinimalStemFilter	ported	crates/lucene-analysis/src/en/mod.rs::EnglishMinimalStemFilter
 analysis/en/EnglishMinimalStemFilterFactory	todo:M11	T11.7 factory/SPI: EnglishMinimalStemFilterFactory
-analysis/en/EnglishMinimalStemmer	todo:M11	T11.6 en: EnglishMinimalStemmer
-analysis/en/EnglishPossessiveFilter	todo:M11	T11.6 en: EnglishPossessiveFilter
+analysis/en/EnglishMinimalStemmer	ported	crates/lucene-analysis/src/en/mod.rs::minimal_stem
+analysis/en/EnglishPossessiveFilter	ported	crates/lucene-analysis/src/en/mod.rs::EnglishPossessiveFilter
 analysis/en/EnglishPossessiveFilterFactory	todo:M11	T11.7 factory/SPI: EnglishPossessiveFilterFactory
 analysis/en/KStemData1	todo:M11	T11.6 en: KStemData1
 analysis/en/KStemData2	todo:M11	T11.6 en: KStemData2
@@ -141,7 +141,7 @@ analysis/en/KStemData8	todo:M11	T11.6 en: KStemData8
 analysis/en/KStemFilter	todo:M11	T11.6 en: KStemFilter
 analysis/en/KStemFilterFactory	todo:M11	T11.7 factory/SPI: KStemFilterFactory
 analysis/en/KStemmer	todo:M11	T11.6 en: KStemmer
-analysis/en/PorterStemFilter	ported	crates/lucene-analysis/src/lib.rs::PorterStemFilter
+analysis/en/PorterStemFilter	ported	crates/lucene-analysis/src/en/mod.rs::PorterStemFilter
 analysis/en/PorterStemFilterFactory	todo:M11	T11.7 factory/SPI: PorterStemFilterFactory
 analysis/en/PorterStemmer	ported	crates/lucene-analysis/src/lib.rs::porter
 analysis/es/SpanishAnalyzer	todo:M11	T11.6 per-language (es): SpanishAnalyzer
@@ -250,70 +250,70 @@ analysis/lv/LatvianStemFilterFactory	todo:M11	T11.7 factory/SPI: LatvianStemFilt
 analysis/lv/LatvianStemmer	todo:M11	T11.6 per-language (lv): LatvianStemmer
 analysis/minhash/MinHashFilter	todo:M11	T11.6 minhash: MinHashFilter
 analysis/minhash/MinHashFilterFactory	todo:M11	T11.7 factory/SPI: MinHashFilterFactory
-analysis/miscellaneous/ASCIIFoldingFilter	partial	crates/lucene-analysis/src/lib.rs::AsciiFoldingFilter -- M11: T11.6 the streaming filter and preserveOriginal
+analysis/miscellaneous/ASCIIFoldingFilter	ported	crates/lucene-analysis/src/miscellaneous/stateful.rs::AsciiFoldingTokenFilter
 analysis/miscellaneous/ASCIIFoldingFilterFactory	todo:M11	T11.7 factory/SPI: ASCIIFoldingFilterFactory
-analysis/miscellaneous/CapitalizationFilter	todo:M11	T11.6 miscellaneous: CapitalizationFilter
+analysis/miscellaneous/CapitalizationFilter	ported	crates/lucene-analysis/src/miscellaneous/term_filters.rs::CapitalizationFilter
 analysis/miscellaneous/CapitalizationFilterFactory	todo:M11	T11.7 factory/SPI: CapitalizationFilterFactory
-analysis/miscellaneous/CodepointCountFilter	todo:M11	T11.6 miscellaneous: CodepointCountFilter
+analysis/miscellaneous/CodepointCountFilter	ported	crates/lucene-analysis/src/miscellaneous/filtering.rs::CodepointCountFilter
 analysis/miscellaneous/CodepointCountFilterFactory	todo:M11	T11.7 factory/SPI: CodepointCountFilterFactory
 analysis/miscellaneous/ConcatenateGraphFilter	todo:M11	T11.6 miscellaneous: ConcatenateGraphFilter
 analysis/miscellaneous/ConcatenateGraphFilterFactory	todo:M11	T11.7 factory/SPI: ConcatenateGraphFilterFactory
 analysis/miscellaneous/ConcatenatingTokenStream	todo:M11	T11.6 miscellaneous: ConcatenatingTokenStream
-analysis/miscellaneous/ConditionalTokenFilter	todo:M11	T11.6 miscellaneous: ConditionalTokenFilter
+analysis/miscellaneous/ConditionalTokenFilter	ported	crates/lucene-analysis/src/miscellaneous/conditional.rs::ConditionalTokenFilter
 analysis/miscellaneous/ConditionalTokenFilterFactory	todo:M11	T11.7 factory/SPI: ConditionalTokenFilterFactory
 analysis/miscellaneous/DateRecognizerFilter	todo:M11	T11.6 miscellaneous: DateRecognizerFilter
 analysis/miscellaneous/DateRecognizerFilterFactory	todo:M11	T11.7 factory/SPI: DateRecognizerFilterFactory
-analysis/miscellaneous/DelimitedTermFrequencyTokenFilter	todo:M11	T11.6 miscellaneous: DelimitedTermFrequencyTokenFilter
+analysis/miscellaneous/DelimitedTermFrequencyTokenFilter	ported	crates/lucene-analysis/src/miscellaneous/term_filters.rs::DelimitedTermFrequencyTokenFilter
 analysis/miscellaneous/DelimitedTermFrequencyTokenFilterFactory	todo:M11	T11.7 factory/SPI: DelimitedTermFrequencyTokenFilterFactory
-analysis/miscellaneous/DropIfFlaggedFilter	todo:M11	T11.6 miscellaneous: DropIfFlaggedFilter
+analysis/miscellaneous/DropIfFlaggedFilter	ported	crates/lucene-analysis/src/miscellaneous/filtering.rs::DropIfFlaggedFilter
 analysis/miscellaneous/DropIfFlaggedFilterFactory	todo:M11	T11.7 factory/SPI: DropIfFlaggedFilterFactory
 analysis/miscellaneous/EmptyTokenStream	todo:M11	T11.6 miscellaneous: EmptyTokenStream
-analysis/miscellaneous/FingerprintFilter	todo:M11	T11.6 miscellaneous: FingerprintFilter
+analysis/miscellaneous/FingerprintFilter	ported	crates/lucene-analysis/src/miscellaneous/stateful.rs::FingerprintFilter
 analysis/miscellaneous/FingerprintFilterFactory	todo:M11	T11.7 factory/SPI: FingerprintFilterFactory
-analysis/miscellaneous/FixBrokenOffsetsFilter	todo:M11	T11.6 miscellaneous: FixBrokenOffsetsFilter
+analysis/miscellaneous/FixBrokenOffsetsFilter	ported	crates/lucene-analysis/src/miscellaneous/stateful.rs::FixBrokenOffsetsFilter
 analysis/miscellaneous/FixBrokenOffsetsFilterFactory	todo:M11	T11.7 factory/SPI: FixBrokenOffsetsFilterFactory
-analysis/miscellaneous/HyphenatedWordsFilter	todo:M11	T11.6 miscellaneous: HyphenatedWordsFilter
+analysis/miscellaneous/HyphenatedWordsFilter	ported	crates/lucene-analysis/src/miscellaneous/stateful.rs::HyphenatedWordsFilter
 analysis/miscellaneous/HyphenatedWordsFilterFactory	todo:M11	T11.7 factory/SPI: HyphenatedWordsFilterFactory
-analysis/miscellaneous/KeepWordFilter	todo:M11	T11.6 miscellaneous: KeepWordFilter
+analysis/miscellaneous/KeepWordFilter	ported	crates/lucene-analysis/src/miscellaneous/filtering.rs::KeepWordFilter
 analysis/miscellaneous/KeepWordFilterFactory	todo:M11	T11.7 factory/SPI: KeepWordFilterFactory
-analysis/miscellaneous/KeywordMarkerFilter	todo:M11	T11.6 miscellaneous: KeywordMarkerFilter
+analysis/miscellaneous/KeywordMarkerFilter	ported	crates/lucene-analysis/src/miscellaneous/keyword.rs::KeywordMarkerFilter
 analysis/miscellaneous/KeywordMarkerFilterFactory	todo:M11	T11.7 factory/SPI: KeywordMarkerFilterFactory
-analysis/miscellaneous/KeywordRepeatFilter	todo:M11	T11.6 miscellaneous: KeywordRepeatFilter
+analysis/miscellaneous/KeywordRepeatFilter	ported	crates/lucene-analysis/src/miscellaneous/keyword.rs::KeywordRepeatFilter
 analysis/miscellaneous/KeywordRepeatFilterFactory	todo:M11	T11.7 factory/SPI: KeywordRepeatFilterFactory
-analysis/miscellaneous/LengthFilter	todo:M11	T11.6 miscellaneous: LengthFilter
+analysis/miscellaneous/LengthFilter	ported	crates/lucene-analysis/src/miscellaneous/filtering.rs::LengthFilter
 analysis/miscellaneous/LengthFilterFactory	todo:M11	T11.7 factory/SPI: LengthFilterFactory
 analysis/miscellaneous/LimitTokenCountAnalyzer	todo:M11	T11.6 miscellaneous: LimitTokenCountAnalyzer
-analysis/miscellaneous/LimitTokenCountFilter	todo:M11	T11.6 miscellaneous: LimitTokenCountFilter
+analysis/miscellaneous/LimitTokenCountFilter	ported	crates/lucene-analysis/src/miscellaneous/limit.rs::LimitTokenCountFilter
 analysis/miscellaneous/LimitTokenCountFilterFactory	todo:M11	T11.7 factory/SPI: LimitTokenCountFilterFactory
-analysis/miscellaneous/LimitTokenOffsetFilter	todo:M11	T11.6 miscellaneous: LimitTokenOffsetFilter
+analysis/miscellaneous/LimitTokenOffsetFilter	ported	crates/lucene-analysis/src/miscellaneous/limit.rs::LimitTokenOffsetFilter
 analysis/miscellaneous/LimitTokenOffsetFilterFactory	todo:M11	T11.7 factory/SPI: LimitTokenOffsetFilterFactory
-analysis/miscellaneous/LimitTokenPositionFilter	todo:M11	T11.6 miscellaneous: LimitTokenPositionFilter
+analysis/miscellaneous/LimitTokenPositionFilter	ported	crates/lucene-analysis/src/miscellaneous/limit.rs::LimitTokenPositionFilter
 analysis/miscellaneous/LimitTokenPositionFilterFactory	todo:M11	T11.7 factory/SPI: LimitTokenPositionFilterFactory
-analysis/miscellaneous/PatternKeywordMarkerFilter	todo:M11	T11.6 miscellaneous: PatternKeywordMarkerFilter
+analysis/miscellaneous/PatternKeywordMarkerFilter	ported	crates/lucene-analysis/src/miscellaneous/keyword.rs::PatternKeywordMarkerFilter
 analysis/miscellaneous/PerFieldAnalyzerWrapper	todo:M11	T11.6 miscellaneous: PerFieldAnalyzerWrapper
-analysis/miscellaneous/ProtectedTermFilter	todo:M11	T11.6 miscellaneous: ProtectedTermFilter
+analysis/miscellaneous/ProtectedTermFilter	ported	crates/lucene-analysis/src/miscellaneous/conditional.rs::ProtectedTermFilter
 analysis/miscellaneous/ProtectedTermFilterFactory	todo:M11	T11.7 factory/SPI: ProtectedTermFilterFactory
-analysis/miscellaneous/RemoveDuplicatesTokenFilter	todo:M11	T11.6 miscellaneous: RemoveDuplicatesTokenFilter
+analysis/miscellaneous/RemoveDuplicatesTokenFilter	ported	crates/lucene-analysis/src/miscellaneous/keyword.rs::RemoveDuplicatesTokenFilter
 analysis/miscellaneous/RemoveDuplicatesTokenFilterFactory	todo:M11	T11.7 factory/SPI: RemoveDuplicatesTokenFilterFactory
-analysis/miscellaneous/ScandinavianFoldingFilter	todo:M11	T11.6 miscellaneous: ScandinavianFoldingFilter
+analysis/miscellaneous/ScandinavianFoldingFilter	ported	crates/lucene-analysis/src/miscellaneous/term_filters.rs::ScandinavianFoldingFilter
 analysis/miscellaneous/ScandinavianFoldingFilterFactory	todo:M11	T11.7 factory/SPI: ScandinavianFoldingFilterFactory
-analysis/miscellaneous/ScandinavianNormalizationFilter	todo:M11	T11.6 miscellaneous: ScandinavianNormalizationFilter
+analysis/miscellaneous/ScandinavianNormalizationFilter	ported	crates/lucene-analysis/src/miscellaneous/term_filters.rs::ScandinavianNormalizationFilter
 analysis/miscellaneous/ScandinavianNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: ScandinavianNormalizationFilterFactory
-analysis/miscellaneous/ScandinavianNormalizer	todo:M11	T11.6 miscellaneous: ScandinavianNormalizer
-analysis/miscellaneous/SetKeywordMarkerFilter	todo:M11	T11.6 miscellaneous: SetKeywordMarkerFilter
-analysis/miscellaneous/StemmerOverrideFilter	todo:M11	T11.6 miscellaneous: StemmerOverrideFilter
+analysis/miscellaneous/ScandinavianNormalizer	ported	crates/lucene-analysis/src/miscellaneous/term_filters.rs::ScandinavianNormalizer
+analysis/miscellaneous/SetKeywordMarkerFilter	ported	crates/lucene-analysis/src/miscellaneous/keyword.rs::SetKeywordMarkerFilter
+analysis/miscellaneous/StemmerOverrideFilter	ported	crates/lucene-analysis/src/miscellaneous/keyword.rs::StemmerOverrideFilter
 analysis/miscellaneous/StemmerOverrideFilterFactory	todo:M11	T11.7 factory/SPI: StemmerOverrideFilterFactory
-analysis/miscellaneous/TrimFilter	todo:M11	T11.6 miscellaneous: TrimFilter
+analysis/miscellaneous/TrimFilter	ported	crates/lucene-analysis/src/miscellaneous/term_filters.rs::TrimFilter
 analysis/miscellaneous/TrimFilterFactory	todo:M11	T11.7 factory/SPI: TrimFilterFactory
-analysis/miscellaneous/TruncateTokenFilter	todo:M11	T11.6 miscellaneous: TruncateTokenFilter
+analysis/miscellaneous/TruncateTokenFilter	ported	crates/lucene-analysis/src/miscellaneous/term_filters.rs::TruncateTokenFilter
 analysis/miscellaneous/TruncateTokenFilterFactory	todo:M11	T11.7 factory/SPI: TruncateTokenFilterFactory
-analysis/miscellaneous/TypeAsSynonymFilter	todo:M11	T11.6 miscellaneous: TypeAsSynonymFilter
+analysis/miscellaneous/TypeAsSynonymFilter	ported	crates/lucene-analysis/src/miscellaneous/stateful.rs::TypeAsSynonymFilter
 analysis/miscellaneous/TypeAsSynonymFilterFactory	todo:M11	T11.7 factory/SPI: TypeAsSynonymFilterFactory
 analysis/miscellaneous/WordDelimiterFilter	todo:M11	T11.6 miscellaneous: WordDelimiterFilter
 analysis/miscellaneous/WordDelimiterFilterFactory	todo:M11	T11.7 factory/SPI: WordDelimiterFilterFactory
-analysis/miscellaneous/WordDelimiterGraphFilter	todo:M11	T11.6 miscellaneous: WordDelimiterGraphFilter
+analysis/miscellaneous/WordDelimiterGraphFilter	ported	crates/lucene-analysis/src/miscellaneous/word_delimiter.rs::WordDelimiterGraphFilter
 analysis/miscellaneous/WordDelimiterGraphFilterFactory	todo:M11	T11.7 factory/SPI: WordDelimiterGraphFilterFactory
-analysis/miscellaneous/WordDelimiterIterator	todo:M11	T11.6 miscellaneous: WordDelimiterIterator
+analysis/miscellaneous/WordDelimiterIterator	ported	crates/lucene-analysis/src/miscellaneous/word_delimiter.rs::WordDelimiterIterator
 analysis/morph/BinaryDictionary	todo:M11	T11.6 morph: BinaryDictionary
 analysis/morph/BinaryDictionaryWriter	todo:M11	T11.6 morph: BinaryDictionaryWriter
 analysis/morph/CharacterDefinition	todo:M11	T11.6 morph: CharacterDefinition
@@ -453,7 +453,7 @@ analysis/tr/TurkishLowerCaseFilterFactory	todo:M11	T11.7 factory/SPI: TurkishLow
 analysis/util/CSVUtil	todo:M11	T11.6 util: CSVUtil
 analysis/util/CharArrayIterator	todo:M11	T11.6 util: CharArrayIterator
 analysis/util/CharTokenizer	ported	crates/lucene-analysis/src/util/char_tokenizer.rs::CharTokenizer
-analysis/util/ElisionFilter	todo:M11	T11.6 util: ElisionFilter
+analysis/util/ElisionFilter	ported	crates/lucene-analysis/src/util/elision_filter.rs::ElisionFilter
 analysis/util/ElisionFilterFactory	todo:M11	T11.7 factory/SPI: ElisionFilterFactory
 analysis/util/FilesystemResourceLoader	todo:M11	T11.7 factory/SPI: FilesystemResourceLoader
 analysis/util/OpenStringBuilder	todo:M11	T11.6 util: OpenStringBuilder

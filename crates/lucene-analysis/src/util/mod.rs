@@ -2,13 +2,34 @@
 //! lucene-core's `RollingBuffer`, which the graph filters share.
 
 pub mod char_tokenizer;
+mod elision_filter;
+pub mod java_regex;
 pub mod rolling_buffer;
 
 pub use char_tokenizer::{
     from_separator_char_predicate, CharTokenizer, JavaLetter, LetterTokenizer, NotJavaWhitespace,
     NotUnicodeWhitespace, TokenChar, UnicodeWhitespaceTokenizer, WhitespaceTokenizer,
 };
+pub use elision_filter::ElisionFilter;
+pub use java_regex::JavaPattern;
 pub use rolling_buffer::{Resettable, RollingBuffer};
+
+use crate::attributes::AttributeSource;
+
+/// Runs `f` over the term's UTF-16 code units (Java's `buffer()` /
+/// `length()`), in `buf`; when `f` returns `true` the units are written back
+/// (`copyBuffer`/`setLength`), an unpaired surrogate becoming U+FFFD.
+pub(crate) fn with_utf16_term(
+    a: &mut AttributeSource,
+    buf: &mut Vec<u16>,
+    f: impl FnOnce(&mut Vec<u16>) -> bool,
+) {
+    buf.clear();
+    buf.extend(a.term().encode_utf16());
+    if f(buf) {
+        a.set_term_utf16(buf);
+    }
+}
 
 /// Test support: Lucene test-framework's `CannedTokenStream`, written as the
 /// compact `term:start:end:posInc:posLen ...|finalOffset|finalPosInc` spec the
@@ -55,6 +76,36 @@ pub(crate) mod canned {
                 upto: 0,
                 final_offset,
                 final_inc,
+            }
+        }
+    }
+
+    impl Canned {
+        /// Overrides each token's term (for text the spec cannot hold).
+        pub(crate) fn set_terms(&mut self, terms: &[&str]) {
+            for (t, s) in self.tokens.iter_mut().zip(terms) {
+                t.set_term(s);
+            }
+        }
+
+        /// Sets each token's flags.
+        pub(crate) fn set_flags(&mut self, flags: &[i32]) {
+            for (t, f) in self.tokens.iter_mut().zip(flags) {
+                t.set_flags(*f);
+            }
+        }
+
+        /// Sets each token's keyword flag.
+        pub(crate) fn set_keywords(&mut self, k: &[bool]) {
+            for (t, k) in self.tokens.iter_mut().zip(k) {
+                t.set_keyword(*k);
+            }
+        }
+
+        /// Sets each token's type.
+        pub(crate) fn set_types(&mut self, types: &[&'static str]) {
+            for (t, ty) in self.tokens.iter_mut().zip(types) {
+                t.set_token_type(*ty);
             }
         }
     }

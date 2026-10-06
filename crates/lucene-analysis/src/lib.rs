@@ -37,11 +37,27 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+/// The `input`/`input_mut` half of a [`TokenFilter`] impl whose input is the
+/// field `input` of type `I`.
+macro_rules! filter_input {
+    () => {
+        type Input = I;
+        fn input(&self) -> &I {
+            &self.input
+        }
+        fn input_mut(&mut self) -> &mut I {
+            &mut self.input
+        }
+    };
+}
+pub(crate) use filter_input;
+
 mod analyzer;
 pub mod attributes;
 mod automaton;
 mod char_array_set;
 pub mod core_analysis;
+pub mod en;
 pub mod graph_finite_strings;
 mod graph_token_filter;
 pub mod java_character;
@@ -49,6 +65,7 @@ pub mod java_character;
 mod java_character_tables;
 mod keyword_tokenizer;
 mod legacy;
+pub mod miscellaneous;
 pub mod reader;
 pub mod standard;
 mod stopword_analyzer_base;
@@ -2658,7 +2675,7 @@ impl EdgeNGramTokenFilter {
 /// lowercase ASCII alphabetic words. See [`PorterStemFilter`] for the
 /// documented per-step scope; this module is a direct, mechanical port of
 /// the published algorithm's five steps.
-mod porter {
+pub(crate) mod porter {
     /// Stems `term`.
     ///
     /// Java's `PorterStemmer.stem(char[], int)` runs the six steps only when
@@ -2674,7 +2691,7 @@ mod porter {
     ///   ASCII-lowercase guard. Java has no such test -- `cons()` simply
     ///   treats every character that is not `a/e/i/o/u/y` as a consonant --
     ///   so it stems them to `"Cat"` and `"café"`.
-    pub(super) fn stem(term: &str) -> String {
+    pub(crate) fn stem(term: &str) -> String {
         let mut w: Vec<char> = term.chars().collect();
         if w.len() <= 2 {
             return term.to_string();
