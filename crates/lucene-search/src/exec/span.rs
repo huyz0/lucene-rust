@@ -206,6 +206,17 @@ impl<'a> LeafPositions<'a> {
         matches!(self, LeafPositions::Lazy(_))
     }
 
+    /// [`Self::next_position`]'s infallible common step
+    /// (`PositionsCursor::try_next_position`): `None` where the full call is
+    /// needed, and always for a leaf that is not a lazy cursor.
+    #[inline]
+    pub(crate) fn try_next_position(&mut self) -> Option<i32> {
+        match self {
+            LeafPositions::Lazy(cursor) => cursor.try_next_position(),
+            _ => None,
+        }
+    }
+
     /// `nextPosition()` of the document a lazy cursor is on.
     #[inline]
     pub(crate) fn next_position(&mut self) -> Result<i32> {
