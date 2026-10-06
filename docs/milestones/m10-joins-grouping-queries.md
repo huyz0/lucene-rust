@@ -10,7 +10,7 @@
 | **Effort** | L |
 | **Depends on** | [M7](m7-core-complete.md) |
 | **Unblocks** | native `nested`, `function_score`, `intervals`, `combined_fields`, field collapsing |
-| **Status** | in progress (T10.0, T10.1, T10.3 done; T10.2 queries ported; T10.4, T10.5 ported; T10.6 ported: intervals, common terms, more-like-this, spans, payloads) |
+| **Status** | in progress (T10.0, T10.1, T10.3 done; T10.2 queries ported; T10.4, T10.5 ported; T10.6 done: intervals, common terms, more-like-this, spans, payloads, two benchmark cases below 1.0 written up) |
 
 ---
 
@@ -288,8 +288,8 @@ grouping. Each of them falls back to Lucene today.
   (`toString`, `minExtent`, five scoring variants with hits, score bits and
   explanations, the `Matches` of every hit and explained document), all 6 538 lines equal to
   Lucene's. `CommonTermsQuery` **ported** (`lucene-search/src/common_terms.rs`),
-  rewritten by the searcher: `GenMoreLikeThis`'s twelve term sets, 67 lines
-  equal to Lucene's -- which took `BoostQuery.rewrite`'s unit-boost drop,
+  rewritten by the searcher: `GenMoreLikeThis`'s fourteen term sets and four
+  boosted booleans of term clauses, 99 lines equal to Lucene's -- which took `BoostQuery.rewrite`'s unit-boost drop,
   boosts folded into term weights' explanations, `BooleanQuery.toString`'s
   parentheses, a deleted document's explanation and `MatchNoDocsQuery`'s.
   `MoreLikeThis` and `MoreLikeThisQuery` **ported** (`lucene-search/src/mlt.rs`):
@@ -298,14 +298,15 @@ grouping. Each of them falls back to Lucene today.
   queries **ported** (`lucene-search/src/spans`, `exec/spans.rs`): `SpanNode`
   (first, position range, not, containing, within, field masking, the
   multi-term wrapper, payload check and payload score, over terms, nears and
-  ors) on lazy `Spans` -- `GenSpans`'s 95 queries, 2 335 lines equal to
-  Lucene's but the 18 where Java's `toString` throws on a `null` payload.
+  ors) on lazy `Spans`, with `SpanWeight.matches` -- `GenSpans`'s 95 queries
+  with the `Matches` of their hits, 4 794 lines equal to Lucene's but the 18
+  where Java's `toString` throws on a `null` payload.
 - **T10.7** — Plugin wiring for the OpenSearch shapes above.
 
-## Stage-3 status (2026-10-05)
+## Stage-3 status (2026-10-06)
 
-Every M10 benchmark case at or above Lucene's speed but three interval
-cases (written up below the table). Ratios are Lucene's
+Every M10 benchmark case at or above Lucene's speed, or inside the run's
+noise, but two `queries` cases (written up below the table). Ratios are Lucene's
 time over ours (`scripts/bench-micro.sh --bench <name>`, interleaved with
 the build before; `~` inside the run's noise floor):
 
@@ -316,7 +317,7 @@ the build before; `~` inside the run's noise floor):
 | `grouping` (T10.4) | 9 | 1.05x-2.98x | blocks 1.05x-1.17x (two 7-rep runs of two builds each; floors 1.14x-1.30x) |
 | `function` (T10.5) | 10 | 1.39x-2.82x | `FunctionRangeQuery` as a filter 1.39x |
 | `aggs` (terms behind a filter) | 6 | 1.45x-3.11x | dense range on a keyword 1.45x; see below |
-| `queries` (T10.6) | 19 | 0.79x-1.68x | intervals: `ordered` 0.86x, `phrase` 0.88x, `maxgaps(unordered)` 0.92x, or-phrase 0.94x; spans: `spanFirst` 0.79x, `spanNot` 0.80x, `SpanWithin` 0.88x, four more 0.94x-0.95~; see below; `CommonTermsQuery` 1.00~-1.04~; `MoreLikeThisQuery` 1.68x |
+| `queries` (T10.6) | 19 | 0.89x-1.68x | a phrase over a disjunction 0.89x, `SpanPositionRangeQuery` 0.90x; see below; eleven more inside the noise (0.93~-1.03~); `MoreLikeThisQuery` 1.68x |
 
 Lucene's side of the two term-filtered `cat` cases (a single-valued
 `SORTED_SET`) is bimodal: in some JVM runs (one of six, three of five in
@@ -336,40 +337,42 @@ and reusing the evicted group's buffers measured the same instruction count
 neither was kept: nothing in it is a port inefficiency; Lucene does the same
 work per hit.
 
-The interval queries (`--bench queries`, 200 000 documents, a pair of
-words per query, every case's digest equal to Lucene's) started at 0.73x-0.87x
-and 0.11x with a payload filter. Stage 3: a term's positions are read one at
-a time off the lazy cursor, as `nextPosition()` is, instead of copied into a
-buffer per document (iv_phrase 0.78x -> 0.90x); the payload filter streams
-its payloads with the positions (`PositionsCursor::read_payloads`, `.pay`
-decoded and skipped in lockstep with `.pos`) where it had looked the term up
-and walked the skip list per document (0.11x -> 1.12x); a disjunction reuses
-its top-list buffer (malloc was 6% of the phrase over a disjunction, 0.73x ->
-0.93~). The three left below 1.0 -- an ordered pair 0.83x, a phrase 0.90x,
-`maxgaps(unordered)` 0.91x -- are the cheapest queries (8-12 ms for the
-word list), and their profile (callgrind, `MICRO_CASE=iv_ordered`) has no
-single cost to remove: the term iterators' `nextInterval` 14%, the ordered
-conjunction's 11%, `.doc` advancing 9%, `.pos` positioning per document 7%,
-the remaining third spread over the scorer, the bulk loop and the
-collector. The difference from Lucene is the call structure: every
-`start()`/`end()`/`nextInterval()` of a sub-iterator is a virtual call through
-`Box<dyn IntervalIterator>` returning a `Result`, which the JIT inlines at
-these monomorphic sites; the decode and skip work per document is the same.
+The interval, span and payload queries (`--bench queries`, 200 000
+documents, a pair of words per query, every case's digest equal to
+Lucene's) started at 0.73x-0.87x, the payload ones at 0.11x-0.2x. Stage 3,
+in order: a term's positions read one at a time off the lazy cursor
+(`nextPosition()`), its payloads streamed with them
+(`PositionsCursor::read_payloads`; they had walked the skip data per
+document), a disjunction's top list reused; then the call structure, which
+the profile showed as the whole remaining cost -- every step a virtual call
+through `Box<dyn Spans>`/`Box<dyn IntervalIterator>` returning a `Result`,
+where Java's JIT inlines the monomorphic sites. A parent now holds a term
+leaf inline (`BoxSpans::Term`, `BoxIntervals::Term`) and calls it
+statically, with its per-position steps `#[inline]`; the per-document
+frequency sums are trait methods, monomorphised per spans or iterator; and
+a scorer is generic over its root for the common shapes (term, first,
+range, not, near and containment spans; block, ordered, unordered,
+filtered and containment intervals). Together: `spanFirst` 0.79x -> 0.96~,
+`spanNot` 0.80x -> 0.94~, `ordered` 0.83x -> 0.98~, `phrase` 0.90x ->
+0.99~, `SpanWithin` 0.88x -> 1.01~. Two tries made it slower and were
+dropped: boxing the `Result`'s error so it comes back in registers (the
+96-byte `Error` returns through memory) cost 5-13% on every case, and
+making a near spans or a disjunction an enum variant of its own cost
+5-18% (the larger dispatch defeats inlining).
 
-The span and payload queries (eight cases in the same pair, every digest
-equal to Lucene's) are in the same position. The payload queries started at
-a fifth of Lucene's speed (`SpanPayloadCheckQuery` 45 ms, `PayloadScoreQuery`
-35 ms for the word list): their terms walked each document's occurrences from
-the skip data per collected span. Streaming the payloads with the positions
-(`requiredPostings` at `PAYLOADS`, the same `read_payloads` cursor) brought
-them to 0.94x and 0.95~. What is left below 1.0 -- `spanFirst` 0.79x,
-`spanNot` 0.80x, `SpanWithin` 0.88x -- profiles (`MICRO_CASE=sp_first`) as the
-intervals do: `.doc` advancing 10%, positioning `.pos` per document 9%, the
-filter's `matches` 9%, the term spans' `nextStartPosition` 9%, the rest
-spread over the scorer, bulk loop and collector, every step a virtual call
-through `Box<dyn Spans>` with a `Result`. A term's sequential step now uses
-the cursor's `nextDoc` rather than `advance`, as Java's `TermSpans` does;
-it measured within noise.
+Two cases stay below the noise floor. A phrase over a disjunction (0.89x,
+`MICRO_CASE=iv_or_phrase`, perf): the disjunction's `nextInterval` 11%, the
+term iterators' 10%, the block conjunction's 9%, `.pos` positioning per
+document 9% and `nextPosition` 6%, `.doc` advancing 6%, and the
+disjunction's queues (`DisiQueue` advance, top list, down heap, the
+interval queue's add) 13% between them -- the disjunction is the one level
+still behind a virtual call, and holding it statically measured slower.
+`SpanPositionRangeQuery` over an ordered near (0.90x,
+`MICRO_CASE=sp_pos_range`): the near's `stretchToOrder` 14%, the term
+spans' `nextStartPosition` 13%, `.pos` positioning 10% and `nextPosition`
+8%, `.doc` advancing 8%, the near's `matches` 7%, the conjunction's
+`doNext` 5%: the same work per document as Lucene's `NearSpansOrdered`, the
+near behind one virtual call. Neither has a single cost left to remove.
 
 ## Acceptance criteria
 
