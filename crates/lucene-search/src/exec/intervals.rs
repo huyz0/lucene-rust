@@ -7,7 +7,7 @@
 
 use super::{BoxScorer, LeafContext, Mode, Scorer, NO_MORE_DOCS};
 use crate::explain::Explanation;
-use crate::intervals::iterators::{self, BoxIntervals};
+use crate::intervals::iterators::{self, BoxIntervals, IntervalIterator};
 use crate::intervals::{IntervalQuery, IntervalScoreFunction, NO_MORE_INTERVALS};
 use crate::Result;
 
@@ -44,19 +44,7 @@ impl<'a> IntervalScorer<'a> {
         let doc = self.intervals.doc_id();
         if self.last_scored_doc != doc {
             self.last_scored_doc = doc;
-            self.freq = 0.0;
-            loop {
-                let length = self
-                    .intervals
-                    .end()
-                    .wrapping_sub(self.intervals.start())
-                    .wrapping_add(1);
-                let d = length.wrapping_sub(self.min_extent).wrapping_add(1).max(1);
-                self.freq = (f64::from(self.freq) + 1.0 / f64::from(d)) as f32;
-                if self.intervals.next_interval()? == NO_MORE_INTERVALS {
-                    break;
-                }
-            }
+            self.freq = self.intervals.sum_freq(self.min_extent)?;
         }
         Ok(())
     }
@@ -204,7 +192,7 @@ mod tests {
     }
 
     fn scripted(docs: Vec<(i32, Vec<(i32, i32)>)>) -> BoxIntervals<'static> {
-        Box::new(Scripted {
+        BoxIntervals::boxed(Scripted {
             docs,
             at: None,
             upto: 0,
