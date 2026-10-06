@@ -1,0 +1,92 @@
+T	0	at&t	32	36	6	1	<COMPANY>	0	-	0	1
+E	0	66	66	3
+T	1	book	11	15	2	1	<ALPHANUM>	0	-	0	1
+E	1	52	52	5
+T	2	mail	0	4	1	1	<ALPHANUM>	0	-	0	1
+E	2	76	76	6
+T	3	ends	56	60	8	1	<ALPHANUM>	0	-	0	1
+E	3	60	60	0
+T	4	中	0	1	1	1	<CJ>	0	-	0	1
+T	4	文	1	2	1	1	<CJ>	0	-	0	1
+T	4	字	2	3	1	1	<CJ>	0	-	0	1
+T	4	符	3	4	1	1	<CJ>	0	-	0	1
+T	4	日	5	6	1	1	<CJ>	0	-	0	1
+T	4	本	6	7	1	1	<CJ>	0	-	0	1
+T	4	語	7	8	1	1	<CJ>	0	-	0	1
+T	4	の	8	9	1	1	<CJ>	0	-	0	1
+T	4	テ	9	10	1	1	<CJ>	0	-	0	1
+T	4	キ	10	11	1	1	<CJ>	0	-	0	1
+T	4	ス	11	12	1	1	<CJ>	0	-	0	1
+T	4	ト	12	13	1	1	<CJ>	0	-	0	1
+T	4	한국어	14	17	1	1	<ALPHANUM>	0	-	0	1
+T	4	텍스트	18	21	1	1	<ALPHANUM>	0	-	0	1
+T	4	漢	27	28	2	1	<CJ>	0	-	0	1
+T	4	字	28	29	1	1	<CJ>	0	-	0	1
+T	4	text	29	33	1	1	<ALPHANUM>	0	-	0	1
+E	4	33	33	0
+T	5	æøå	35	38	6	1	<ALPHANUM>	0	-	0	1
+E	5	38	38	0
+T	6	tabs	0	4	1	1	<ALPHANUM>	0	-	0	1
+E	6	59	59	6
+T	7	b	2	3	2	1	<ALPHANUM>	0	-	0	1
+T	7	c	4	5	1	1	<ALPHANUM>	0	-	0	1
+T	7	d	6	7	1	1	<ALPHANUM>	0	-	0	1
+T	7	e	8	9	1	1	<ALPHANUM>	0	-	0	1
+T	7	f	10	11	1	1	<ALPHANUM>	0	-	0	1
+T	7	g	12	13	1	1	<ALPHANUM>	0	-	0	1
+T	7	h	14	15	1	1	<ALPHANUM>	0	-	0	1
+T	7	i	16	17	1	1	<ALPHANUM>	0	-	0	1
+T	7	j	18	19	1	1	<ALPHANUM>	0	-	0	1
+E	7	19	19	0
+T	8	text	11	15	2	1	<ALPHANUM>	0	-	0	1
+T	8	bold	23	27	2	1	<ALPHANUM>	0	-	0	1
+T	8	text	31	35	1	1	<ALPHANUM>	0	-	0	1
+T	8	bold	45	49	2	1	<ALPHANUM>	0	-	0	1
+T	8	text	62	66	2	1	<ALPHANUM>	0	-	0	1
+E	8	66	66	0
+T	9	sub	22	25	3	1	<ALPHANUM>	0	-	0	1
+T	9	here	38	42	2	1	<ALPHANUM>	0	-	0	1
+E	9	42	42	0
+T	10	main	2	6	1	1	<ALPHANUM>	0	-	0	1
+T	10	page	7	11	1	1	<ALPHANUM>	0	-	0	1
+T	10	help	45	49	5	1	<ALPHANUM>	0	-	0	1
+T	10	help	63	67	3	1	<ALPHANUM>	0	-	0	1
+E	10	69	69	0
+T	11	http	1	5	1	1	<ALPHANUM>	0	-	0	1
+T	11	site	32	36	3	1	<ALPHANUM>	0	-	0	1
+T	11	b	59	60	5	1	<ALPHANUM>	0	-	0	1
+T	11	c	61	62	1	1	<ALPHANUM>	0	-	0	1
+T	11	link	63	67	1	1	<ALPHANUM>	0	-	0	1
+T	11	two	68	71	1	1	<ALPHANUM>	0	-	0	1
+E	11	78	78	1
+T	12	date	18	22	3	1	<ALPHANUM>	0	-	0	1
+T	12	2026	23	27	1	1	<ALPHANUM>	0	-	0	1
+T	12	text	35	39	2	1	<ALPHANUM>	0	-	0	1
+E	12	58	58	3
+T	13	key	27	30	4	1	<ALPHANUM>	0	-	0	1
+E	13	47	47	2
+T	14	http	6	10	2	1	<ALPHANUM>	0	-	0	1
+T	14	path	30	34	2	1	<ALPHANUM>	0	-	0	1
+T	14	url	35	38	1	1	<ALPHANUM>	0	-	0	1
+E	14	66	66	3
+T	15	link	36	40	5	1	<ALPHANUM>	0	-	0	1
+T	15	text	43	47	1	1	<ALPHANUM>	0	-	0	1
+T	15	here	50	54	1	1	<ALPHANUM>	0	-	0	1
+E	15	54	54	0
+T	16	bold	3	7	1	1	<ALPHANUM>	0	-	0	1
+T	16	link	19	23	2	1	<ALPHANUM>	0	-	0	1
+T	16	bold	33	37	2	1	<ALPHANUM>	0	-	0	1
+T	16	end	41	44	1	1	<ALPHANUM>	0	-	0	1
+E	16	44	44	0
+E	17	48	48	7
+T	18	sub	4	7	1	1	<ALPHANUM>	0	-	0	1
+E	18	36	36	3
+T	19	url	13	16	3	1	<ALPHANUM>	0	-	0	1
+E	19	45	45	3
+T	20	x	0	1	1	1	<ALPHANUM>	0	-	0	1
+T	20	y	8	9	1	1	<ALPHANUM>	0	-	0	1
+E	20	9	9	0
+T	21	ends	0	4	1	1	<ALPHANUM>	0	-	0	1
+T	21	open	13	17	3	1	<ALPHANUM>	0	-	0	1
+T	21	link	18	22	1	1	<ALPHANUM>	0	-	0	1
+E	21	37	37	1
