@@ -1048,6 +1048,15 @@ outright.
   `FragmentChecker`; per root, `lookupEntries` and `getAllWordForms`; per
   dictionary, `generateAllSimpleWords`; a refused dictionary's exception. Read
   by `crates/lucene-analysis/tests/hunspell_fixtures.rs`.
+- `GenAnalysisSynonym.java` — M11 T11.5: `SolrSynonymParser` and
+  `WordnetSynonymParser` over this project's rule files
+  (`corpus/synonyms-solr.txt`, `corpus/synonyms-wordnet.txt`) with each
+  option set, every map entry in FST order (`data/analysis_synonym/maps.tsv`);
+  small rule texts, bad ones included, through both parsers (`parse.tsv`);
+  `SynonymGraphFilter`/`SynonymFilter` chains over
+  `corpus/analysis-synonym.txt` (`<chain>.tsv`, `GenAnalysisCommon`'s rows,
+  written by the shared `AnalysisRows.java`). Deterministic. Read by
+  `crates/lucene-analysis/tests/analysis_synonym_fixtures.rs`.
 - `GenDisiJumpTable.java` — the only Java-written `IndexedDISI` **block jump
   table** in this tree (`disi_jump_table_index/`). `IndexedDISI.writeBitSet`
   emits `jumpTableEntryCount = 0` below two logical 65 536-document blocks, and

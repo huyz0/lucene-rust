@@ -82,6 +82,7 @@ pub mod shingle;
 pub mod snowball;
 pub mod standard;
 mod stopword_analyzer_base;
+pub mod synonym;
 pub mod token_stream;
 pub mod util;
 pub mod wordlist_loader;
