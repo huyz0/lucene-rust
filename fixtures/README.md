@@ -1008,6 +1008,17 @@ outright.
   the same jars (`LUCENE_TEST_FRAMEWORK_JAR`/`LUCENE_ANALYSIS_COMMON_JAR`,
   `fixtures/.jars`, the Gradle cache) and prints `skipped` without them;
   `scripts/verify-write-path.sh` runs it with the jars and fails on a skip.
+- `GenAnalysisCommon.java` — M11's analysis-common harness
+  (`analysis_common/<chain>.tsv`, one file per chain, ~100 chains): each
+  chain is one reused `Analyzer` run over every line of
+  `fixtures/corpus/analysis-common.txt` (48 multilingual lines written for
+  this project: scripts, HTML, URLs/emails, paths, payload syntax, edge
+  cases), recording every token's term, offsets, increment, length, type,
+  flags, payload, keyword flag and term frequency, then `end()`'s state or
+  the exception a line throws (the row format is in the generator's
+  javadoc). Deterministic. Consumed by
+  `crates/lucene-analysis/tests/analysis_common_fixtures.rs`, which lists the
+  chains the port does not build yet (`PENDING`) and fails on any other gap.
 - `GenDisiJumpTable.java` — the only Java-written `IndexedDISI` **block jump
   table** in this tree (`disi_jump_table_index/`). `IndexedDISI.writeBitSet`
   emits `jumpTableEntryCount = 0` below two logical 65 536-document blocks, and

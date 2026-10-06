@@ -1,0 +1,185 @@
+T	0	The	0	3	1	1	<ALPHANUM>	0	-	0	1
+T	0	quick	4	9	1	1	<ALPHANUM>	0	-	0	1
+T	0	brown	10	15	1	1	<ALPHANUM>	0	-	0	1
+E	0	44	44	0
+T	1	the	0	3	1	1	<ALPHANUM>	0	-	0	1
+T	1	the	4	7	1	1	<ALPHANUM>	0	-	0	1
+T	1	The	8	11	1	1	<ALPHANUM>	0	-	0	1
+E	1	39	39	0
+T	2	Running	0	7	1	1	<ALPHANUM>	0	-	0	1
+T	2	runs	8	12	1	1	<ALPHANUM>	0	-	0	1
+T	2	ran	13	16	1	1	<ALPHANUM>	0	-	0	1
+E	2	108	108	0
+T	3	O'Neil's	0	8	1	1	<ALPHANUM>	0	-	0	1
+T	3	friend's	9	17	1	1	<ALPHANUM>	0	-	0	1
+T	3	dogs	18	22	1	1	<ALPHANUM>	0	-	0	1
+E	3	71	71	0
+T	4	Wi	0	2	1	1	<ALPHANUM>	0	-	0	1
+T	4	Fi	3	5	1	1	<ALPHANUM>	0	-	0	1
+T	4	PowerShot500	6	18	1	1	<ALPHANUM>	0	-	0	1
+E	4	94	94	0
+T	5	U.S.A	0	5	1	1	<ALPHANUM>	0	-	0	1
+T	5	I.B.M	7	12	1	1	<ALPHANUM>	0	-	0	1
+T	5	e.g	14	17	1	1	<ALPHANUM>	0	-	0	1
+E	5	81	81	0
+T	6	Crème	0	5	1	1	<ALPHANUM>	0	-	0	1
+T	6	brûlée	6	12	1	1	<ALPHANUM>	0	-	0	1
+T	6	à	13	14	1	1	<ALPHANUM>	0	-	0	1
+E	6	99	99	0
+T	7	l'avion	0	7	1	1	<ALPHANUM>	0	-	0	1
+T	7	d'Air	8	13	1	1	<ALPHANUM>	0	-	0	1
+T	7	France	14	20	1	1	<ALPHANUM>	0	-	0	1
+E	7	72	72	0
+T	8	Die	0	3	1	1	<ALPHANUM>	0	-	0	1
+T	8	Bundesrepublik	4	18	1	1	<ALPHANUM>	0	-	0	1
+T	8	Deutschland	19	30	1	1	<ALPHANUM>	0	-	0	1
+E	8	99	99	0
+T	9	El	0	2	1	1	<ALPHANUM>	0	-	0	1
+T	9	niño	3	7	1	1	<ALPHANUM>	0	-	0	1
+T	9	comió	8	13	1	1	<ALPHANUM>	0	-	0	1
+E	9	67	67	0
+T	10	Съешь	0	5	1	1	<ALPHANUM>	0	-	0	1
+T	10	же	6	8	1	1	<ALPHANUM>	0	-	0	1
+T	10	ещё	9	12	1	1	<ALPHANUM>	0	-	0	1
+E	10	67	67	0
+T	11	Η	0	1	1	1	<ALPHANUM>	0	-	0	1
+T	11	γρήγορη	2	9	1	1	<ALPHANUM>	0	-	0	1
+T	11	καφέ	10	14	1	1	<ALPHANUM>	0	-	0	1
+E	11	69	69	0
+T	12	Türkçe	0	6	1	1	<ALPHANUM>	0	-	0	1
+T	12	İstanbul	7	15	1	1	<ALPHANUM>	0	-	0	1
+T	12	ılık	16	20	1	1	<ALPHANUM>	0	-	0	1
+E	12	48	48	0
+T	13	Svenska	0	7	1	1	<ALPHANUM>	0	-	0	1
+T	13	åka	9	12	1	1	<ALPHANUM>	0	-	0	1
+T	13	på	13	15	1	1	<ALPHANUM>	0	-	0	1
+E	13	86	86	0
+T	14	العربية	0	7	1	1	<ALPHANUM>	0	-	0	1
+T	14	لغة	8	11	1	1	<ALPHANUM>	0	-	0	1
+T	14	جميلة	12	17	1	1	<ALPHANUM>	0	-	0	1
+E	14	44	44	0
+T	15	עברית	0	5	1	1	<ALPHANUM>	0	-	0	1
+T	15	היא	6	9	1	1	<ALPHANUM>	0	-	0	1
+T	15	שפה	10	13	1	1	<ALPHANUM>	0	-	0	1
+E	15	30	30	0
+T	16	فارسی	0	5	1	1	<ALPHANUM>	0	-	0	1
+T	16	زبان	6	10	1	1	<ALPHANUM>	0	-	0	1
+T	16	زیبایی	11	17	1	1	<ALPHANUM>	0	-	0	1
+E	16	54	54	0
+T	17	हिन्दी	0	6	1	1	<ALPHANUM>	0	-	0	1
+T	17	भाषा	7	11	1	1	<ALPHANUM>	0	-	0	1
+T	17	बहुत	12	16	1	1	<ALPHANUM>	0	-	0	1
+E	17	37	37	0
+T	18	বাংলা	0	5	1	1	<ALPHANUM>	0	-	0	1
+T	18	ভাষা	6	10	1	1	<ALPHANUM>	0	-	0	1
+T	18	সুন্দর	11	17	1	1	<ALPHANUM>	0	-	0	1
+E	18	21	21	0
+T	19	ภาษาไทยไม่มีช่องว่างระหว่างคำ	0	29	1	1	<SOUTHEAST_ASIAN>	0	-	0	1
+T	19	แต่มีช่องว่างระหว่างประโยค	30	56	1	1	<SOUTHEAST_ASIAN>	0	-	0	1
+T	19	๑๒๓	57	60	1	1	<NUM>	0	-	0	1
+E	19	60	60	0
+T	20	中	0	1	1	1	<IDEOGRAPHIC>	0	-	0	1
+T	20	华	1	2	1	1	<IDEOGRAPHIC>	0	-	0	1
+T	20	人	2	3	1	1	<IDEOGRAPHIC>	0	-	0	1
+E	20	24	24	0
+T	21	日	0	1	1	1	<IDEOGRAPHIC>	0	-	0	1
+T	21	本	1	2	1	1	<IDEOGRAPHIC>	0	-	0	1
+T	21	語	2	3	1	1	<IDEOGRAPHIC>	0	-	0	1
+E	21	33	33	0
+T	22	한국어	0	3	1	1	<HANGUL>	0	-	0	1
+T	22	텍스트입니다	4	10	1	1	<HANGUL>	0	-	0	1
+T	22	서울특별시	11	16	1	1	<HANGUL>	0	-	0	1
+E	22	22	22	0
+T	23	Emoji	0	5	1	1	<ALPHANUM>	0	-	0	1
+T	23	👍	7	9	1	1	<EMOJI>	0	-	0	1
+T	23	🇺🇸	10	14	1	1	<EMOJI>	0	-	0	1
+E	23	81	81	0
+T	24	Visit	0	5	1	1	<ALPHANUM>	0	-	0	1
+T	24	https	6	11	1	1	<ALPHANUM>	0	-	0	1
+T	24	lucene.apache.org	14	31	1	1	<ALPHANUM>	0	-	0	1
+E	24	74	74	0
+T	25	See	0	3	1	1	<ALPHANUM>	0	-	0	1
+T	25	www.example.com	4	19	1	1	<ALPHANUM>	0	-	0	1
+T	25	path	20	24	1	1	<ALPHANUM>	0	-	0	1
+E	25	107	107	0
+T	26	mailto:someone	0	14	1	1	<ALPHANUM>	0	-	0	1
+T	26	example.org	15	26	1	1	<ALPHANUM>	0	-	0	1
+T	26	ftp	27	30	1	1	<ALPHANUM>	0	-	0	1
+E	26	79	79	0
+T	27	p	1	2	1	1	<ALPHANUM>	0	-	0	1
+T	27	Hello	3	8	1	1	<ALPHANUM>	0	-	0	1
+T	27	b	10	11	1	1	<ALPHANUM>	0	-	0	1
+E	27	106	106	0
+T	28	script	1	7	1	1	<ALPHANUM>	0	-	0	1
+T	28	type	8	12	1	1	<ALPHANUM>	0	-	0	1
+T	28	text	14	18	1	1	<ALPHANUM>	0	-	0	1
+E	28	112	112	0
+T	29	div	1	4	1	1	<ALPHANUM>	0	-	0	1
+T	29	class	5	10	1	1	<ALPHANUM>	0	-	0	1
+T	29	c	12	13	1	1	<ALPHANUM>	0	-	0	1
+E	29	105	105	0
+T	30	usr	1	4	1	1	<ALPHANUM>	0	-	0	1
+T	30	local	5	10	1	1	<ALPHANUM>	0	-	0	1
+T	30	bin	11	14	1	1	<ALPHANUM>	0	-	0	1
+E	30	66	66	0
+T	31	C	0	1	1	1	<ALPHANUM>	0	-	0	1
+T	31	Program	3	10	1	1	<ALPHANUM>	0	-	0	1
+T	31	Files	11	16	1	1	<ALPHANUM>	0	-	0	1
+E	31	35	35	0
+T	32	the	0	3	1	1	<ALPHANUM>	0	-	0	1
+T	32	1.5	4	7	1	1	<NUM>	0	-	0	1
+T	32	quick	8	13	1	1	<ALPHANUM>	0	-	0	1
+E	32	37	37	0
+T	33	apple	0	5	1	1	<ALPHANUM>	0	-	0	1
+T	33	3	6	7	1	1	<NUM>	0	-	0	1
+T	33	banana	8	14	1	1	<ALPHANUM>	0	-	0	1
+E	33	31	31	0
+T	34	quick	0	5	1	1	<ALPHANUM>	0	-	0	1
+T	34	0.5	6	9	1	1	<NUM>	0	-	0	1
+T	34	fox	10	13	1	1	<ALPHANUM>	0	-	0	1
+E	34	27	27	0
+T	35	token1	0	6	1	1	<ALPHANUM>	0	-	0	1
+T	35	payload	7	14	1	1	<ALPHANUM>	0	-	0	1
+T	35	one	15	18	1	1	<ALPHANUM>	0	-	0	1
+E	35	28	28	0
+T	36	Tabs	1	5	1	1	<ALPHANUM>	0	-	0	1
+T	36	and	6	9	1	1	<ALPHANUM>	0	-	0	1
+T	36	multiple	12	20	1	1	<ALPHANUM>	0	-	0	1
+E	36	105	105	0
+T	37	ab	0	2	1	1	<ALPHANUM>	0	-	0	1
+E	37	2	2	0
+T	38	A	0	1	1	1	<ALPHANUM>	0	-	0	1
+E	38	1	1	0
+T	39	supercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilis	0	255	1	1	<ALPHANUM>	0	-	0	1
+T	39	ticexpialidocioussupercalifragilisticexpialidocious	255	306	1	1	<ALPHANUM>	0	-	0	1
+T	39	end	307	310	1	1	<ALPHANUM>	0	-	0	1
+E	39	310	310	0
+T	40	x	0	1	1	1	<ALPHANUM>	0	-	0	1
+T	40	y	2	3	1	1	<ALPHANUM>	0	-	0	1
+T	40	z	4	5	1	1	<ALPHANUM>	0	-	0	1
+E	40	42	42	0
+T	41	foo	0	3	1	1	<ALPHANUM>	0	-	0	1
+T	41	bar	4	7	1	1	<ALPHANUM>	0	-	0	1
+T	41	baz	8	11	1	1	<ALPHANUM>	0	-	0	1
+E	41	79	79	0
+T	42	The	0	3	1	1	<ALPHANUM>	0	-	0	1
+T	42	CEO's	4	9	1	1	<ALPHANUM>	0	-	0	1
+T	42	1990s	10	15	1	1	<ALPHANUM>	0	-	0	1
+E	42	96	96	0
+T	43	running	0	7	1	1	<ALPHANUM>	0	-	0	1
+T	43	jumping	8	15	1	1	<ALPHANUM>	0	-	0	1
+T	43	happily	16	23	1	1	<ALPHANUM>	0	-	0	1
+E	43	90	90	0
+T	44	leading	2	9	1	1	<ALPHANUM>	0	-	0	1
+T	44	and	10	13	1	1	<ALPHANUM>	0	-	0	1
+T	44	trailing	14	22	1	1	<ALPHANUM>	0	-	0	1
+E	44	32	32	0
+E	45	0	0	0
+T	46	ÀÁÂÃÄÅ	0	6	1	1	<ALPHANUM>	0	-	0	1
+T	46	àáâãäå	7	13	1	1	<ALPHANUM>	0	-	0	1
+T	46	ÇçÈÉÊË	14	20	1	1	<ALPHANUM>	0	-	0	1
+E	46	86	86	0
+T	47	Smart	1	6	1	1	<ALPHANUM>	0	-	0	1
+T	47	quotes	7	13	1	1	<ALPHANUM>	0	-	0	1
+T	47	single	16	22	1	1	<ALPHANUM>	0	-	0	1
+E	47	84	84	0

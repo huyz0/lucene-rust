@@ -62,6 +62,20 @@ a dependency the shipped library links is not under a licence listed here.
   - Test data only: nothing under `fixtures/` ships in the plugin zip or the
     native library. `NOTICE` names both anyway.
 
+- **Unicode data** (M11). `crates/lucene-analysis/src/java_character_tables.rs`
+  (the general category of every code point, the decimal digits, `White_Space`)
+  is generated from the **Unicode Character Database 16.0.0** by
+  `crates/lucene-analysis/tools/gen_java_character_tables.py`, reading it
+  through PyPI's `unicodedata2` 16.0.0 (Apache-2.0 code over the UCD files).
+  The data is under the Unicode licence (Unicode-3.0, allowed above) and
+  ships in the native library; `NOTICE` names it. It is deliberately *not*
+  extracted from the JDK (GPL-2.0 with the Classpath Exception): Java's
+  `Character.getType` is specified as the UCD's `General_Category`, and the
+  generated tables equal JDK 25's code point for code point.
+- **The analysis-common corpus** (M11), `fixtures/corpus/analysis-common.txt`,
+  is written for this project (Apache-2.0); the few well-known pangrams in it
+  are short phrases in common use. Test data only.
+
 ## What ships, and under what
 
 - **The plugin zip** holds three things:

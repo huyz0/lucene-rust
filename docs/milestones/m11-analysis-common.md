@@ -73,6 +73,22 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   its status; `scripts/check-port-inventory.py --module analysis-common
   --require-jar` runs in `gate.sh` and CI. `--milestone M11 --summary` is the
   live count of what M11 still owes.
+- **T11.1** -- `fixtures/src/GenAnalysisCommon.java` runs ~100 chains (one
+  reused `Analyzer` each) over `fixtures/corpus/analysis-common.txt` and
+  writes every attribute of every token, `end()`'s state and any exception
+  to `fixtures/data/analysis_common/<chain>.tsv`;
+  `crates/lucene-analysis/tests/analysis_common_fixtures.rs` compares row for
+  row. Chains not yet built are listed in its `PENDING`; a fixture neither
+  built nor pending fails. Deterministic, so `gen-fixtures.sh --check`
+  covers it.
+- `java.lang.Character`'s classification (`getType`, `isLetter`,
+  `isWhitespace`, decimal digits) is generated from the Unicode Character
+  Database 16.0.0, not the JDK (`docs/licences.md`).
+- **T11.6** packages done: `core` (with `FlattenGraphFilter`) and the
+  `CharTokenizer` family.
+- The parity ledger is within a few hundred bytes of its 400 KB budget, so
+  M11's rows are one per package (`docs/parity/analysis-common.md`) and the
+  per-class status lives in the inventory.
 
 ## Acceptance criteria
 

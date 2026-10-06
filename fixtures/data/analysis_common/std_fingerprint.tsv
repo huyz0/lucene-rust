@@ -1,0 +1,95 @@
+T	0	brown dog fox jumps lazy over quick the	0	44	1	1	fingerprint	0	-	0	1
+E	0	0	44	1
+T	1	brown fox quick the	0	39	1	1	fingerprint	0	-	0	1
+E	1	0	39	1
+T	2	and caresses conditional easily generalizations happiness of ponies ran relational running runs the were	0	108	1	1	fingerprint	0	-	0	1
+E	2	0	108	1
+T	3	and aren't books dogs friend's james's john's o'neil's theirs toys	0	71	1	1	fingerprint	0	-	0	1
+E	3	0	71	1
+T	4	1st 42nd 500 abcdef at e fi foo_bar iphone j2se mail place powershot500 sd t wi xmlhttprequest	0	94	1	1	fingerprint	0	-	0	1
+E	4	0	94	1
+T	5	06 0x1f 1,000,000 1.5e10 10 12 2026 3.14 30 42 7 dr e.g i.b.m smith's u.s.a	0	81	1	1	fingerprint	0	-	0	1
+E	5	0	81	1
+T	6	brûlée café crème façade la naïve straße à ångström ærøskøbing ĳsselmeer œuvre ﬁnancial ﬂow	0	99	1	1	fingerprint	0	-	0	1
+E	6	0	99	1
+T	7	a d'air france jusqu'à l'avion l'aéroport l'hôtel n'était pas pris qu'il	0	72	1	1	fingerprint	0	-	0	1
+E	7	0	72	1
+T	8	bundesrepublik bundesstaat deutschland die ein fußgängerübergänge häufig in ist mitteleuropa sind	0	99	1	1	fingerprint	0	-	0	1
+E	8	0	99	1
+T	9	comió día dónde el estación está la manzanas niño pequeñas qué	0	67	1	1	fingerprint	0	-	0	1
+E	9	0	67	1
+T	10	булок выпей да ещё же мягких съешь французских чаю этих ёлка	0	67	1	1	fingerprint	0	-	0	1
+E	10	0	67	1
+T	11	αλεπού από γρήγορη η καφέ οδοσ πάνω πηδάει σίσυφος σκύλο τεμπέλη τον	0	69	1	1	fingerprint	0	-	0	1
+E	11	0	69	1
+T	12	isparta istanbul türkçe çağrı ünlü ılık şarkıcı	0	48	1	1	fingerprint	0	-	0	1
+E	12	0	48	1
+T	13	blåbærsyltetøy dansk fløde med norsk på rødgrød sjön svenska åka íslenska ðú þú	0	86	1	1	fingerprint	0	-	0	1
+E	13	0	86	1
+T	14	العربية جميلة لغة مفيدٌ والكتابُ ٠١٢٣٤٥٦٧٨٩	0	44	1	1	fingerprint	0	-	0	1
+E	14	0	44	1
+T	15	היא ספר עברית שמית שפה תורה	0	30	1	1	fingerprint	0	-	0	1
+E	15	0	30	1
+T	16	است بخوانم را زبان زیبایی فارسی می‌خواهم و کتاب‌ها ۱۲۳	0	54	1	1	fingerprint	0	-	0	1
+E	16	0	54	1
+T	17	बहुत भाषा संख्या सुंदर हिन्दी है १२३	0	37	1	1	fingerprint	0	-	0	1
+E	17	0	37	1
+T	18	বাংলা ভাষা সুন্দর ১২৩	0	21	1	1	fingerprint	0	-	0	1
+E	18	0	21	1
+T	19	ภาษาไทยไม่มีช่องว่างระหว่างคำ แต่มีช่องว่างระหว่างประโยค ๑๒๓	0	60	1	1	fingerprint	0	-	0	1
+E	19	0	60	1
+T	20	1949 中 于 京 人 共 北 华 和 国 天 安 年 成 我 民 爱 立 门	0	24	1	1	fingerprint	0	-	0	1
+E	20	0	24	1
+T	21	が と な の ひ ら カタカナ テキスト 全 日 本 角 語 ａｂｃ１２３ ｶﾀｶﾅ	0	33	1	1	fingerprint	0	-	0	1
+E	21	0	33	1
+T	22	서울특별시 텍스트입니다 한국어 ｋｏｒｅａ	0	22	1	1	fingerprint	0	-	0	1
+E	22	0	22	1
+T	23	1️⃣ and emoji ideographs math plus rare ✌🏽 ❤️ 𝐀𝐁𝐂 🇺🇸 👍 👨‍👩‍👧 😀 𠀀 𠀁	0	81	1	1	fingerprint	0	-	0	1
+E	23	0	81	1
+T	24	core dev https lucene.apache.org mail or today visit	0	74	1	1	fingerprint	0	-	0	1
+E	24	0	74	1
+T	25	1 192.168.0.1 8080 a and frag http path q see sub.example.co.uk tag user.name www.example.com x y	0	107	1	1	fingerprint	0	-	0	1
+E	25	0	107	1
+T	26	example.com example.org file.tar.gz files.example.net ftp mailto:someone pub	0	79	1	1	fingerprint	0	-	0	1
+E	26	0	79	1
+T	27	169 a amp b br comment eacute friends gt hello lt nbsp p tag world x x263a	0	106	1	1	fingerprint	0	-	0	1
+E	27	0	106	1
+T	28	1 2 a after href http javascript link p script style text type var x x.org	0	112	1	1	fingerprint	0	-	0	1
+E	28	0	112	1
+T	29	apos c cdata class data div quot quoted raw single tail unknown xzz	0	105	1	1	fingerprint	0	-	0	1
+E	29	0	105	1
+T	30	1 bin file.txt local log lucene path relative syslog to usr var	0	66	1	1	fingerprint	0	-	0	1
+E	30	0	66	1
+T	31	a b c files index lucene program	0	35	1	1	fingerprint	0	-	0	1
+E	31	0	35	1
+T	32	0.5 1.5 2 3 brown fox jumps quick the	0	37	1	1	fingerprint	0	-	0	1
+E	32	0	37	1
+T	33	1 10 3 apple banana cherry pear	0	31	1	1	fingerprint	0	-	0	1
+E	33	0	31	1
+T	34	0.5 1.25 2.0 dog fox quick	0	27	1	1	fingerprint	0	-	0	1
+E	34	0	27	1
+T	35	one payload three token1 two	0	28	1	1	fingerprint	0	-	0	1
+E	35	0	28	1
+T	36	and here ideographic line multiple nbsp sep soft­hyphen space spaces tabs width zero	0	105	1	1	fingerprint	0	-	0	1
+E	36	0	105	1
+T	37	ab	0	2	1	1	fingerprint	0	-	0	1
+E	37	0	2	1
+T	38	a	0	1	1	1	fingerprint	0	-	0	1
+E	38	0	1	1
+T	39	end supercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilis ticexpialidocioussupercalifragilisticexpialidocious	0	310	1	1	fingerprint	0	-	0	1
+E	39	0	310	1
+T	40	a a.b.c a:b:c a_b_c b c x xy xyz y z	0	42	1	1	fingerprint	0	-	0	1
+E	40	0	42	1
+T	41	2foo bar bar2 baz dashes ellipsis foo foo2bar foobar foobarbaz	0	79	1	1	fingerprint	0	-	0	1
+E	41	0	79	1
+T	42	1990s 4.00ghz 4790k 5th 6.22 ceo's compatible core cpu dos era gen i7 ibm ms pcs ran the	0	96	1	1	fingerprint	0	-	0	1
+E	42	0	96	1
+T	43	agreed bled conditional feed happily happiness jumping relational running sensibility sing	0	90	1	1	fingerprint	0	-	0	1
+E	43	0	90	1
+T	44	and leading spaces trailing	0	32	1	1	fingerprint	0	-	0	1
+E	44	0	32	1
+E	45	0	0	1
+T	46	ß àáâãäå ççèéêë èéêë ìíîï ðð ññòóôõö òóôõö ùúûü ýýÿ þþ łł œœææøø ššžž	0	86	1	1	fingerprint	0	-	0	1
+E	46	0	86	1
+T	47	guillemets low quotes single smart © ® ™	0	84	1	1	fingerprint	0	-	0	1
+E	47	0	84	1

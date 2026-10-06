@@ -1,0 +1,99 @@
+E	0	44	44	0
+E	1	39	39	0
+E	2	108	108	0
+E	3	71	71	0
+E	4	94	94	0
+T	5	U.S.A. I.B.M. e.g. Dr. Smith's 3.14 1,000,000 0x1F 2026-10-06 12:30 -42 +7 1.	0	77	1	1	word	0	-	0	1
+T	5	S.A. I.B.M. e.g. Dr. Smith's 3.14 1,000,000 0x1F 2026-10-06 12:30 -42 +7 1.	2	77	1	1	word	0	-	0	1
+T	5	A. I.B.M. e.g. Dr. Smith's 3.14 1,000,000 0x1F 2026-10-06 12:30 -42 +7 1.	4	77	1	1	word	0	-	0	1
+T	5	 I.B.M. e.g. Dr. Smith's 3.14 1,000,000 0x1F 2026-10-06 12:30 -42 +7 1.	6	77	1	1	word	0	-	0	1
+T	5	B.M. e.g. Dr. Smith's 3.14 1,000,000 0x1F 2026-10-06 12:30 -42 +7 1.	9	77	1	1	word	0	-	0	1
+T	5	M. e.g. Dr. Smith's 3.14 1,000,000 0x1F 2026-10-06 12:30 -42 +7 1.	11	77	1	1	word	0	-	0	1
+T	5	 e.g. Dr. Smith's 3.14 1,000,000 0x1F 2026-10-06 12:30 -42 +7 1.	13	77	1	1	word	0	-	0	1
+T	5	g. Dr. Smith's 3.14 1,000,000 0x1F 2026-10-06 12:30 -42 +7 1.	16	77	1	1	word	0	-	0	1
+T	5	 Dr. Smith's 3.14 1,000,000 0x1F 2026-10-06 12:30 -42 +7 1.	18	77	1	1	word	0	-	0	1
+T	5	 Smith's 3.14 1,000,000 0x1F 2026-10-06 12:30 -42 +7 1.	22	77	1	1	word	0	-	0	1
+T	5	14 1,000,000 0x1F 2026-10-06 12:30 -42 +7 1.	33	77	1	1	word	0	-	0	1
+E	5	81	81	0
+E	6	99	99	0
+E	7	72	72	0
+E	8	99	99	0
+E	9	67	67	0
+T	10	Съешь же ещё этих мягких французских булок, да выпей чаю.	0	57	1	1	word	0	-	0	1
+E	10	67	67	0
+T	11	Η γρήγορη καφέ αλεπού πηδάει πάνω από τον τεμπέλη σκύλο.	0	56	1	1	word	0	-	0	1
+E	11	69	69	0
+E	12	48	48	0
+E	13	86	86	0
+E	14	44	44	0
+E	15	30	30	0
+E	16	54	54	0
+E	17	37	37	0
+E	18	21	21	0
+E	19	60	60	0
+E	20	24	24	0
+E	21	33	33	0
+E	22	22	22	0
+E	23	81	81	0
+T	24	Visit https://lucene.apache.org/core/ or mail dev@lucene.apache.	0	64	1	1	word	0	-	0	1
+T	24	apache.org/core/ or mail dev@lucene.apache.	21	64	1	1	word	0	-	0	1
+T	24	org/core/ or mail dev@lucene.apache.	28	64	1	1	word	0	-	0	1
+T	24	apache.	57	64	1	1	word	0	-	0	1
+E	24	74	74	0
+T	25	See www.example.com/path?q=1&x=y#frag and http://[::1]:8080/a, user.name+tag@sub.example.co.uk, 192.168.0.	0	106	1	1	word	0	-	0	1
+T	25	example.com/path?q=1&x=y#frag and http://[::1]:8080/a, user.name+tag@sub.example.co.uk, 192.168.0.	8	106	1	1	word	0	-	0	1
+T	25	com/path?q=1&x=y#frag and http://[::1]:8080/a, user.name+tag@sub.example.co.uk, 192.168.0.	16	106	1	1	word	0	-	0	1
+T	25	name+tag@sub.example.co.uk, 192.168.0.	68	106	1	1	word	0	-	0	1
+T	25	example.co.uk, 192.168.0.	81	106	1	1	word	0	-	0	1
+T	25	co.uk, 192.168.0.	89	106	1	1	word	0	-	0	1
+T	25	uk, 192.168.0.	92	106	1	1	word	0	-	0	1
+T	25	168.0.	100	106	1	1	word	0	-	0	1
+T	25	0.	104	106	1	1	word	0	-	0	1
+E	25	107	107	0
+T	26	mailto:someone@example.org ftp://files.example.net/pub/file.tar.gz example.	0	75	1	1	word	0	-	0	1
+T	26	org ftp://files.example.net/pub/file.tar.gz example.	23	75	1	1	word	0	-	0	1
+T	26	example.net/pub/file.tar.gz example.	39	75	1	1	word	0	-	0	1
+T	26	net/pub/file.tar.gz example.	47	75	1	1	word	0	-	0	1
+T	26	tar.gz example.	60	75	1	1	word	0	-	0	1
+T	26	gz example.	64	75	1	1	word	0	-	0	1
+E	26	79	79	0
+E	27	106	106	0
+T	28	<script type="text/javascript">var x = 1 < 2;</script><a href="http://x.	0	72	1	1	word	0	-	0	1
+E	28	112	112	0
+E	29	105	105	0
+T	30	/usr/local/bin/lucene /var/log//syslog.1 relative/path/to/file.	0	63	1	1	word	0	-	0	1
+T	30	1 relative/path/to/file.	39	63	1	1	word	0	-	0	1
+E	30	66	66	0
+E	31	35	35	0
+T	32	the|1.5 quick|2 brown|0.	0	24	1	1	word	0	-	0	1
+T	32	5 quick|2 brown|0.	6	24	1	1	word	0	-	0	1
+E	32	37	37	0
+E	33	31	31	0
+T	34	quick|0.5 fox|2.0 dog|-1.	0	25	1	1	word	0	-	0	1
+T	34	5 fox|2.0 dog|-1.	8	25	1	1	word	0	-	0	1
+T	34	0 dog|-1.	16	25	1	1	word	0	-	0	1
+E	34	27	27	0
+E	35	28	28	0
+E	36	105	105	0
+E	37	2	2	0
+E	38	1	1	0
+E	39	310	310	0
+T	40	x y z xy xyz a-b-c a.b.	0	23	1	1	word	0	-	0	1
+T	40	b.	21	23	1	1	word	0	-	0	1
+E	40	42	42	0
+T	41	foo-bar-baz FooBarBaz FOObar fooBAR foo2bar 2foo bar2 ...ellipsis...	0	68	1	1	word	0	-	0	1
+T	41	..ellipsis...	55	68	1	1	word	0	-	0	1
+T	41	.ellipsis...	56	68	1	1	word	0	-	0	1
+T	41	ellipsis...	57	68	1	1	word	0	-	0	1
+T	41	..	66	68	1	1	word	0	-	0	1
+T	41	.	67	68	1	1	word	0	-	0	1
+E	41	79	79	0
+T	42	The CEO's 1990s-era IBM-compatible PCs ran MS-DOS 6.22; the 5th gen. Core i7-4790K CPU @ 4.	0	91	1	1	word	0	-	0	1
+T	42	22; the 5th gen. Core i7-4790K CPU @ 4.	52	91	1	1	word	0	-	0	1
+T	42	 Core i7-4790K CPU @ 4.	68	91	1	1	word	0	-	0	1
+E	42	96	96	0
+E	43	90	90	0
+E	44	32	32	0
+E	45	0	0	0
+E	46	86	86	0
+E	47	84	84	0

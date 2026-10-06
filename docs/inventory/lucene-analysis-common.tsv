@@ -71,29 +71,29 @@ analysis/compound/hyphenation/HyphenationTree	todo:M11	T11.6 compound: Hyphenati
 analysis/compound/hyphenation/PatternConsumer	todo:M11	T11.6 compound: PatternConsumer
 analysis/compound/hyphenation/PatternParser	todo:M11	T11.6 compound: PatternParser
 analysis/compound/hyphenation/TernaryTree	todo:M11	T11.6 compound: TernaryTree
-analysis/core/DecimalDigitFilter	todo:M11	T11.6 core: DecimalDigitFilter
+analysis/core/DecimalDigitFilter	ported	crates/lucene-analysis/src/core_analysis/filters.rs::DecimalDigitFilter
 analysis/core/DecimalDigitFilterFactory	todo:M11	T11.7 factory/SPI: DecimalDigitFilterFactory
-analysis/core/FlattenGraphFilter	todo:M11	T11.6 core: FlattenGraphFilter
+analysis/core/FlattenGraphFilter	ported	crates/lucene-analysis/src/core_analysis/flatten_graph_filter.rs::FlattenGraphFilter
 analysis/core/FlattenGraphFilterFactory	todo:M11	T11.7 factory/SPI: FlattenGraphFilterFactory
 analysis/core/KeywordAnalyzer	ported	crates/lucene-analysis/src/analyzer.rs::keyword
 analysis/core/KeywordTokenizer	ported	crates/lucene-analysis/src/keyword_tokenizer.rs::KeywordTokenizer
 analysis/core/KeywordTokenizerFactory	todo:M11	T11.7 factory/SPI: KeywordTokenizerFactory
-analysis/core/LetterTokenizer	todo:M11	T11.6 core: LetterTokenizer
+analysis/core/LetterTokenizer	ported	crates/lucene-analysis/src/util/char_tokenizer.rs::LetterTokenizer
 analysis/core/LetterTokenizerFactory	todo:M11	T11.7 factory/SPI: LetterTokenizerFactory
 analysis/core/LowerCaseFilter	ported	crates/lucene-analysis/src/lib.rs::LowerCaseFilter
 analysis/core/LowerCaseFilterFactory	todo:M11	T11.7 factory/SPI: LowerCaseFilterFactory
-analysis/core/SimpleAnalyzer	todo:M11	T11.6 core: SimpleAnalyzer
-analysis/core/StopAnalyzer	todo:M11	T11.6 core: StopAnalyzer
+analysis/core/SimpleAnalyzer	ported	crates/lucene-analysis/src/core_analysis/analyzers.rs::SimpleAnalyzer
+analysis/core/StopAnalyzer	ported	crates/lucene-analysis/src/core_analysis/analyzers.rs::StopAnalyzer
 analysis/core/StopFilter	ported	crates/lucene-analysis/src/lib.rs::StopFilter
 analysis/core/StopFilterFactory	todo:M11	T11.7 factory/SPI: StopFilterFactory
-analysis/core/TypeTokenFilter	todo:M11	T11.6 core: TypeTokenFilter
+analysis/core/TypeTokenFilter	ported	crates/lucene-analysis/src/core_analysis/filters.rs::TypeTokenFilter
 analysis/core/TypeTokenFilterFactory	todo:M11	T11.7 factory/SPI: TypeTokenFilterFactory
-analysis/core/UnicodeWhitespaceAnalyzer	todo:M11	T11.6 core: UnicodeWhitespaceAnalyzer
-analysis/core/UnicodeWhitespaceTokenizer	todo:M11	T11.6 core: UnicodeWhitespaceTokenizer
-analysis/core/UpperCaseFilter	todo:M11	T11.6 core: UpperCaseFilter
+analysis/core/UnicodeWhitespaceAnalyzer	ported	crates/lucene-analysis/src/core_analysis/analyzers.rs::UnicodeWhitespaceAnalyzer
+analysis/core/UnicodeWhitespaceTokenizer	ported	crates/lucene-analysis/src/util/char_tokenizer.rs::UnicodeWhitespaceTokenizer
+analysis/core/UpperCaseFilter	ported	crates/lucene-analysis/src/core_analysis/filters.rs::UpperCaseFilter
 analysis/core/UpperCaseFilterFactory	todo:M11	T11.7 factory/SPI: UpperCaseFilterFactory
-analysis/core/WhitespaceAnalyzer	todo:M11	T11.6 core: WhitespaceAnalyzer
-analysis/core/WhitespaceTokenizer	todo:M11	T11.6 core: WhitespaceTokenizer
+analysis/core/WhitespaceAnalyzer	ported	crates/lucene-analysis/src/core_analysis/analyzers.rs::WhitespaceAnalyzer
+analysis/core/WhitespaceTokenizer	ported	crates/lucene-analysis/src/util/char_tokenizer.rs::WhitespaceTokenizer
 analysis/core/WhitespaceTokenizerFactory	todo:M11	T11.7 factory/SPI: WhitespaceTokenizerFactory
 analysis/custom/CustomAnalyzer	todo:M11	T11.6 custom: CustomAnalyzer
 analysis/cz/CzechAnalyzer	todo:M11	T11.6 per-language (cz): CzechAnalyzer
@@ -452,7 +452,7 @@ analysis/tr/TurkishLowerCaseFilter	todo:M11	T11.6 per-language (tr): TurkishLowe
 analysis/tr/TurkishLowerCaseFilterFactory	todo:M11	T11.7 factory/SPI: TurkishLowerCaseFilterFactory
 analysis/util/CSVUtil	todo:M11	T11.6 util: CSVUtil
 analysis/util/CharArrayIterator	todo:M11	T11.6 util: CharArrayIterator
-analysis/util/CharTokenizer	todo:M11	T11.6 util: CharTokenizer
+analysis/util/CharTokenizer	ported	crates/lucene-analysis/src/util/char_tokenizer.rs::CharTokenizer
 analysis/util/ElisionFilter	todo:M11	T11.6 util: ElisionFilter
 analysis/util/ElisionFilterFactory	todo:M11	T11.7 factory/SPI: ElisionFilterFactory
 analysis/util/FilesystemResourceLoader	todo:M11	T11.7 factory/SPI: FilesystemResourceLoader
@@ -460,7 +460,7 @@ analysis/util/OpenStringBuilder	todo:M11	T11.6 util: OpenStringBuilder
 analysis/util/RollingCharBuffer	todo:M11	T11.6 util: RollingCharBuffer
 analysis/util/SegmentingTokenizerBase	todo:M11	T11.6 util: SegmentingTokenizerBase
 analysis/util/StemmerUtil	todo:M11	T11.6 util: StemmerUtil
-analysis/util/UnicodeProps	todo:M11	T11.6 util: UnicodeProps
+analysis/util/UnicodeProps	ported	crates/lucene-analysis/src/java_character.rs::is_unicode_whitespace
 analysis/wikipedia/WikipediaTokenizer	todo:M11	T11.2 JFlex tokenizer: WikipediaTokenizer
 analysis/wikipedia/WikipediaTokenizerFactory	todo:M11	T11.7 factory/SPI: WikipediaTokenizerFactory
 analysis/wikipedia/WikipediaTokenizerImpl	todo:M11	T11.2 JFlex tokenizer: WikipediaTokenizerImpl
