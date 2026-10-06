@@ -30,6 +30,7 @@ import urllib.error
 import urllib.request
 
 import geo_matrix
+import m10_matrix
 
 BASE = "http://localhost:9200"
 FAILURES = []
@@ -500,12 +501,18 @@ def run_matrix(index, shards, label, shapes="fast", index_sorted=False, rows=Non
         ran_native = after["native_queries"] - before["native_queries"]
         errors = after["native_errors"] - before["native_errors"]
         check(errors == 0, f"{label} {index} [{name}]: {errors} native errors")
-        if expect == "native":
+        if expect == "either":
+            # The two engines' responses agree (checked above); where it ran is not pinned.
+            print(f"  {label} {index} [{name}]: native on {ran_native} of {shards} shards, fallbacks {fallback_delta(before, after)}")
+            native_total += ran_native
+        elif expect == "native":
             check(ran_native == shards, f"{label} {index} [{name}]: ran native on {ran_native} of {shards} shards; fallbacks {fallback_delta(before, after)}")
             native_total += ran_native
         else:
             delta = fallback_delta(before, after)
-            if expect.endswith("*"):
+            if expect == "fallback":
+                matched = sum(delta.values())
+            elif expect.endswith("*"):
                 matched = sum(v for k, v in delta.items() if k.startswith(expect[:-1]))
             else:
                 matched = delta.get(expect, 0)
@@ -996,6 +1003,19 @@ def main():
         create_nested(index, shards)
         load_nested(index, 1500, 5 + shards)
         native += run_matrix(index, shards, "nested", rows=nested_rows())
+        # M10 T10.7: the nested query itself (ToParentBlockJoinQuery).
+        native += run_matrix(index, shards, "nested query", rows=m10_matrix.nested_rows())
+    # M10 T10.7: spans, intervals, combined_fields, function_score, more_like_this.
+    for index, shards in (("single", 1), ("multi", 3)):
+        native += run_matrix(index, shards, "m10", rows=m10_matrix.rows())
+    # parent-join: has_child/has_parent fall back (see m10_matrix.join_rows).
+    try:
+        req("DELETE", "/pj")
+    except RuntimeError:
+        pass
+    m10_matrix.create_join(req, "pj")
+    m10_matrix.load_join(req, check, "pj", 400, 21)
+    native += run_matrix("pj", 1, "parent-join", rows=m10_matrix.join_rows())
     # M9 T9.6: geo_point and geo_shape queries (and _geo_distance sorts), on a
     # one-shard and a three-shard index; then the one-shard index merged into a
     # segment past 10,000 documents, where the native query cache holds geo sets.
