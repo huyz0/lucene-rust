@@ -7,11 +7,15 @@ import java.util.Map;
 import java.util.function.Supplier;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.core.WhitespaceTokenizer;
+import org.apache.lucene.analysis.miscellaneous.SetKeywordMarkerFilter;
+import org.apache.lucene.analysis.miscellaneous.WordDelimiterFilter;
+import org.apache.lucene.analysis.pattern.PatternReplaceFilter;
 import org.apache.lucene.analysis.reverse.ReverseStringFilter;
 import org.apache.lucene.analysis.util.CSVUtil;
 
 /**
- * M11 T11.6: small packages. {@code ReverseStringFilter} (with and without each marker) over the
+ * M11 T11.6: small packages. {@code WordDelimiterFilter} (the deprecated one) over {@link
+ * #WDF_LINES} ({@code wdf_lines.txt}, {@code wdf_<chain>.tsv}); {@code ReverseStringFilter} (with and without each marker) over the
  * lines of {@link #LINES} (written here; surrogate pairs at every position), stored with the
  * fixture as {@code lines.txt} and run as {@code <chain>.tsv} ({@link AnalysisRows}' rows); {@code
  * CSVUtil.parse}/{@code quoteEscape} over {@link #CSV} ({@code csv.words}). {@code
@@ -28,6 +32,21 @@ public class GenAnalysisMisc {
     "",
     "single"
   };
+
+  /** Lines for the deprecated {@code WordDelimiterFilter} (stored as {@code wdf_lines.txt}). */
+  static final String[] WDF_LINES = {
+    "Wi-Fi PowerShot500 O'Neil's 3.14 AT&T j2se wi-fi-4000 SD500 foo's",
+    "  --x--  -- 123-456 abc_def a1b2c3 ABCdef abcDEF 42nd 1st-2nd",
+    "ŁódźPolska ÀÉÎ-òü 中文-字符 😀-a b😀c",
+    "x-xx-xxx xxx-xx-x -a- a- -a a--b--c",
+    "",
+    "protected-word keyword-term Hello-World HELLO-world"
+  };
+
+  static final int WDF_DEFAULT =
+      WordDelimiterFilter.GENERATE_WORD_PARTS | WordDelimiterFilter.GENERATE_NUMBER_PARTS
+          | WordDelimiterFilter.SPLIT_ON_CASE_CHANGE | WordDelimiterFilter.SPLIT_ON_NUMERICS
+          | WordDelimiterFilter.STEM_ENGLISH_POSSESSIVE;
 
   static final String[] CSV = {
     "a,b,c", "\"a,b\",c", "\"x\"\"y\",z", "a,\"b,c\"", "\"a,b", "", "\"\",x", "a,,b", ",", "\"q\",\"r\"",
@@ -47,6 +66,25 @@ public class GenAnalysisMisc {
     c.put("ws_reverse_rtl", () -> AnalysisRows.chain(WhitespaceTokenizer::new, t -> new ReverseStringFilter(t, ReverseStringFilter.RTL_DIRECTION_MARKER)));
     c.put("ws_reverse_is", () -> AnalysisRows.chain(WhitespaceTokenizer::new, t -> new ReverseStringFilter(t, ReverseStringFilter.INFORMATION_SEPARATOR_MARKER)));
     AnalysisRows.writeChains(out, c, List.of(LINES));
+    StringBuilder wdfLines = new StringBuilder();
+    for (String l : WDF_LINES) wdfLines.append(AnalysisRows.esc(l)).append('\n');
+    Files.writeString(out.resolve("wdf_lines.txt"), wdfLines.toString(), StandardCharsets.UTF_8);
+    org.apache.lucene.analysis.CharArraySet prot = AnalysisRows.set(false, "protected-word", "AT&T");
+    org.apache.lucene.analysis.CharArraySet kw = AnalysisRows.set(false, "keyword-term");
+    int all = WDF_DEFAULT | WordDelimiterFilter.CATENATE_WORDS | WordDelimiterFilter.CATENATE_NUMBERS
+        | WordDelimiterFilter.CATENATE_ALL | WordDelimiterFilter.PRESERVE_ORIGINAL;
+    Map<String, Supplier<Analyzer>> w = new LinkedHashMap<>();
+    w.put("wdf_default", () -> AnalysisRows.chain(WhitespaceTokenizer::new, t -> new WordDelimiterFilter(t, WDF_DEFAULT, null)));
+    w.put("wdf_all", () -> AnalysisRows.chain(WhitespaceTokenizer::new, t -> new WordDelimiterFilter(t, all, prot)));
+    w.put("wdf_catenate_only", () -> AnalysisRows.chain(WhitespaceTokenizer::new,
+        t -> new WordDelimiterFilter(t, WordDelimiterFilter.CATENATE_WORDS | WordDelimiterFilter.CATENATE_NUMBERS | WordDelimiterFilter.CATENATE_ALL, null)));
+    w.put("wdf_ignore_keywords", () -> AnalysisRows.chain(WhitespaceTokenizer::new,
+        t -> new WordDelimiterFilter(new SetKeywordMarkerFilter(t, kw), WDF_DEFAULT | WordDelimiterFilter.IGNORE_KEYWORDS | WordDelimiterFilter.CATENATE_ALL, null)));
+    w.put("wdf_illegal_offsets", () -> AnalysisRows.chain(WhitespaceTokenizer::new,
+        t -> new WordDelimiterFilter(new PatternReplaceFilter(t, java.util.regex.Pattern.compile("x"), "yy", true), all, null)));
+    w.put("wdf_no_case_numerics", () -> AnalysisRows.chain(WhitespaceTokenizer::new,
+        t -> new WordDelimiterFilter(t, WordDelimiterFilter.GENERATE_WORD_PARTS | WordDelimiterFilter.GENERATE_NUMBER_PARTS | WordDelimiterFilter.CATENATE_ALL, null)));
+    AnalysisRows.writeChains(out, w, List.of(WDF_LINES));
     StringBuilder csv = new StringBuilder();
     for (String s : CSV) {
       csv.append(AnalysisRows.esc(s)).append('\t').append(AnalysisRows.esc(CSVUtil.quoteEscape(s)));
