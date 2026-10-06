@@ -75,19 +75,14 @@ enum ScorerSpans<'a> {
     },
 }
 
-impl<'a> ScorerSpans<'a> {
-    fn spans(&self) -> &dyn Spans {
-        match self {
-            ScorerSpans::Plain(s) => s.as_ref(),
-            ScorerSpans::Payload { spans, .. } => spans,
+/// Forwards to the scorer's spans without a virtual call of its own.
+macro_rules! on_spans {
+    ($spans:expr, $s:ident => $e:expr) => {
+        match $spans {
+            ScorerSpans::Plain($s) => $e,
+            ScorerSpans::Payload { spans: $s, .. } => $e,
         }
-    }
-    fn spans_mut(&mut self) -> &mut (dyn Spans + 'a) {
-        match self {
-            ScorerSpans::Plain(s) => s.as_mut(),
-            ScorerSpans::Payload { spans, .. } => spans,
-        }
-    }
+    };
 }
 
 /// `SpanScorer` (and `PayloadSpanScorer`).
@@ -102,10 +97,10 @@ pub(crate) struct SpanScorer<'a> {
 impl<'a> SpanScorer<'a> {
     /// `ensureFreq()` / `setFreqCurrentDoc()`.
     fn ensure_freq(&mut self) -> Result<()> {
-        let doc = self.spans.spans().doc_id();
+        let doc = on_spans!(&self.spans, s => s.doc_id());
         if self.last_scored_doc != doc {
             self.freq = if self.sim.is_some() {
-                spans::sloppy_freq(self.spans.spans_mut())?
+                on_spans!(&mut self.spans, s => s.sloppy_freq())?
             } else {
                 1.0
             };
@@ -123,7 +118,7 @@ impl<'a> SpanScorer<'a> {
 
     /// `SpanScorer.scoreCurrentDoc()`.
     fn span_score(&mut self) -> Result<f32> {
-        let doc = self.spans.spans().doc_id();
+        let doc = on_spans!(&self.spans, s => s.doc_id());
         let norm = self.norm(doc)?;
         Ok(self.sim.as_ref().map_or(0.0, |s| s.score(self.freq, norm)))
     }
@@ -131,25 +126,25 @@ impl<'a> SpanScorer<'a> {
 
 impl Scorer for SpanScorer<'_> {
     fn doc_id(&self) -> i32 {
-        self.spans.spans().doc_id()
+        on_spans!(&self.spans, s => s.doc_id())
     }
     fn next_doc(&mut self) -> Result<i32> {
-        self.spans.spans_mut().next_doc()
+        on_spans!(&mut self.spans, s => s.next_doc())
     }
     fn advance(&mut self, target: i32) -> Result<i32> {
-        self.spans.spans_mut().advance(target)
+        on_spans!(&mut self.spans, s => s.advance(target))
     }
     fn cost(&self) -> i64 {
-        self.spans.spans().cost()
+        on_spans!(&self.spans, s => s.cost())
     }
     fn two_phase(&self) -> bool {
-        self.spans.spans().two_phase()
+        on_spans!(&self.spans, s => s.two_phase())
     }
     fn matches(&mut self) -> Result<bool> {
-        self.spans.spans_mut().matches()
+        on_spans!(&mut self.spans, s => s.matches())
     }
     fn match_cost(&self) -> f32 {
-        self.spans.spans().match_cost()
+        on_spans!(&self.spans, s => s.match_cost())
     }
     fn score(&mut self) -> Result<f32> {
         self.ensure_freq()?;

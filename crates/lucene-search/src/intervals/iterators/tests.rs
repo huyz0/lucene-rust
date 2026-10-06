@@ -10,7 +10,7 @@ pub(crate) struct Scripted {
 }
 
 pub(crate) fn scripted(docs: &[(i32, &[(i32, i32)])]) -> BoxIntervals<'static> {
-    Box::new(Scripted {
+    BoxIntervals::boxed(Scripted {
         docs: docs.iter().map(|(d, iv)| (*d, iv.to_vec())).collect(),
         at: None,
         upto: 0,
@@ -89,7 +89,7 @@ fn terms(positions: &[(i32, &[i32])]) -> BoxIntervals<'static> {
         .iter()
         .map(|(d, ps)| (*d, ps.iter().map(|&p| (p, p)).collect()))
         .collect();
-    Box::new(Scripted {
+    BoxIntervals::boxed(Scripted {
         docs,
         at: None,
         upto: 0,
@@ -130,7 +130,7 @@ fn a_disjunction_merges_and_drops_contained_intervals() {
     assert_eq!(it.cost(), 4);
     assert_eq!(it.match_cost(), 4.0);
     assert_eq!(
-        walk(Box::new(it)),
+        walk(BoxIntervals::boxed(it)),
         [(1, 0, 0, 0), (1, 4, 4, 0), (2, 7, 7, 0), (3, 2, 2, 0)]
     );
     // Before its first interval and after its last.
@@ -204,7 +204,8 @@ fn the_filtering_and_relative_iterators_filter_by_the_other_side() {
         walk(filtering(FilteringKind::Overlapping, big(), small())),
         [(0, 0, 4, 0), (0, 6, 9, 0)]
     );
-    let rel = |k, a, b| -> BoxIntervals<'static> { Box::new(RelativeIntervals::new(k, a, b)) };
+    let rel =
+        |k, a, b| -> BoxIntervals<'static> { BoxIntervals::boxed(RelativeIntervals::new(k, a, b)) };
     assert_eq!(
         walk(rel(RelativeKind::NotContaining, big(), small())),
         [(2, 1, 1, 0)]
@@ -226,14 +227,15 @@ fn the_filtering_and_relative_iterators_filter_by_the_other_side() {
 fn filters_extensions_offsets_and_repeats() {
     let ab = || ordered(vec![terms(&[(0, &[0, 5])]), terms(&[(0, &[3, 6])])], None);
     let gaps: BoxIntervals<'static> =
-        Box::new(FilteredIntervals::new(ab(), IntervalFilterKind::MaxGaps(1)));
+        BoxIntervals::boxed(FilteredIntervals::new(ab(), IntervalFilterKind::MaxGaps(1)));
     assert_eq!(walk(gaps), [(0, 5, 6, 0)]);
-    let width: BoxIntervals<'static> = Box::new(FilteredIntervals::new(
+    let width: BoxIntervals<'static> = BoxIntervals::boxed(FilteredIntervals::new(
         ab(),
         IntervalFilterKind::MaxWidth(4),
     ));
     assert_eq!(walk(width), [(0, 0, 3, 2), (0, 5, 6, 0)]);
-    let ext: BoxIntervals<'static> = Box::new(ExtendedIntervals::new(terms(&[(0, &[1, 5])]), 2, 3));
+    let ext: BoxIntervals<'static> =
+        BoxIntervals::boxed(ExtendedIntervals::new(terms(&[(0, &[1, 5])]), 2, 3));
     assert_eq!(walk(ext), [(0, 0, 4, 0), (0, 3, 8, 0)]);
     let mut ext = ExtendedIntervals::new(terms(&[(0, &[7])]), 0, i32::MAX);
     assert_eq!((ext.start(), ext.end()), (-1, -1));
@@ -243,10 +245,10 @@ fn filters_extensions_offsets_and_repeats() {
     assert_eq!(ext.next_interval().unwrap(), NO_MORE_INTERVALS);
     assert_eq!(ext.end(), NO_MORE_INTERVALS);
     let before: BoxIntervals<'static> =
-        Box::new(OffsetIntervals::new(terms(&[(0, &[0, 4])]), true));
+        BoxIntervals::boxed(OffsetIntervals::new(terms(&[(0, &[0, 4])]), true));
     assert_eq!(walk(before), [(0, 0, 0, 0), (0, 3, 3, 0)]);
     let after: BoxIntervals<'static> =
-        Box::new(OffsetIntervals::new(terms(&[(0, &[0, 4])]), false));
+        BoxIntervals::boxed(OffsetIntervals::new(terms(&[(0, &[0, 4])]), false));
     assert_eq!(walk(after), [(0, 1, 1, 0), (0, 5, 5, 0)]);
     let mut edge =
         OffsetIntervals::new(scripted(&[(0, &[(0, i32::MAX), (0, i32::MAX - 1)])]), false);
@@ -255,7 +257,7 @@ fn filters_extensions_offsets_and_repeats() {
     assert_eq!(edge.next_interval().unwrap(), i32::MAX);
     assert_eq!(edge.next_interval().unwrap(), i32::MAX - 1);
     let rep: BoxIntervals<'static> =
-        Box::new(DuplicateIntervals::new(terms(&[(0, &[1, 3, 4])]), 2));
+        BoxIntervals::boxed(DuplicateIntervals::new(terms(&[(0, &[1, 3, 4])]), 2));
     assert_eq!(walk(rep), [(0, 1, 3, 1), (0, 3, 4, 0)]);
     let mut short = DuplicateIntervals::new(terms(&[(0, &[1])]), 2);
     short.next_doc().unwrap();
@@ -273,7 +275,7 @@ fn at_least_n_of_m_minimizes_over_the_front_of_the_queue() {
     let it = MinimumShouldMatchIntervals::new(vec![a(), b(), c()], 2, None);
     assert_eq!(it.cost(), 5);
     assert_eq!(
-        walk(Box::new(it)),
+        walk(BoxIntervals::boxed(it)),
         [(0, 0, 2, 1), (0, 2, 3, 0), (0, 3, 6, 2), (1, 2, 9, 6)]
     );
     let mut it = MinimumShouldMatchIntervals::new(vec![a(), b(), c()], 2, None);
