@@ -115,6 +115,7 @@ impl<'a> LeafPositions<'a> {
 
     /// `DocIdSetIterator.advance(target)` unless already there:
     /// the leaf's first document at or after `target`.
+    #[inline]
     pub(crate) fn advance(&mut self, target: i32) -> Result<i32> {
         Ok(match self {
             LeafPositions::Absent => NO_MORE_DOCS,
@@ -136,6 +137,7 @@ impl<'a> LeafPositions<'a> {
 
     /// `DocIdSetIterator.nextDoc()` from `current`, the document the leaf
     /// is on: a cursor's one-slot step rather than an `advance`.
+    #[inline]
     pub(crate) fn next_doc(&mut self, current: i32) -> Result<i32> {
         match self {
             LeafPositions::Lazy(cursor) => Ok(cursor.next_doc()?),
@@ -144,6 +146,7 @@ impl<'a> LeafPositions<'a> {
     }
 
     /// The leaf's frequency in `doc`: `0` when it is not on `doc`.
+    #[inline]
     pub(crate) fn freq_at(&self, doc: i32) -> u64 {
         match self {
             LeafPositions::Absent => 0,
@@ -204,6 +207,7 @@ impl<'a> LeafPositions<'a> {
     }
 
     /// `nextPosition()` of the document a lazy cursor is on.
+    #[inline]
     pub(crate) fn next_position(&mut self) -> Result<i32> {
         match self {
             LeafPositions::Lazy(cursor) => Ok(cursor.next_position()?),
@@ -215,6 +219,7 @@ impl<'a> LeafPositions<'a> {
 
     /// `nextPosition()` and `getPayload()` of the document the cursor is on,
     /// once [`Self::stream_payloads`] said yes.
+    #[inline]
     pub(crate) fn next_position_with_payload(&mut self) -> Result<(i32, Option<&[u8]>)> {
         match self {
             LeafPositions::Lazy(cursor) => {

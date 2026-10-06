@@ -562,6 +562,7 @@ pub(crate) struct TermIntervals<'a> {
 }
 
 impl<'a> TermIntervals<'a> {
+    #[inline]
     fn reset(&mut self) {
         if self.doc == NO_MORE_DOCS {
             self.upto = -1;
@@ -600,14 +601,17 @@ impl<'a> TermIntervals<'a> {
 }
 
 impl IntervalIterator for TermIntervals<'_> {
+    #[inline]
     fn doc_id(&self) -> i32 {
         self.doc
     }
+    #[inline]
     fn next_doc(&mut self) -> Result<i32> {
         self.doc = self.postings.next_doc(self.doc)?;
         self.reset();
         Ok(self.doc)
     }
+    #[inline]
     fn advance(&mut self, target: i32) -> Result<i32> {
         self.doc = self.postings.advance(target)?;
         self.reset();
@@ -616,15 +620,18 @@ impl IntervalIterator for TermIntervals<'_> {
     fn cost(&self) -> i64 {
         self.cost
     }
+    #[inline]
     fn start(&self) -> i32 {
         self.pos
     }
+    #[inline]
     fn end(&self) -> i32 {
         self.pos
     }
     fn gaps(&self) -> i32 {
         0
     }
+    #[inline]
     fn next_interval(&mut self) -> Result<i32> {
         loop {
             if self.upto <= 0 {

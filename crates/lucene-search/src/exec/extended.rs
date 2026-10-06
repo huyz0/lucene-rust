@@ -2754,11 +2754,11 @@ mod tests {
             (ExtendedQuery::CommonTerms(ct), "CommonTermsQuery"),
             (ExtendedQuery::MoreLikeThis(mlt), "MoreLikeThisQuery"),
         ] {
-            match build(&ctx, &q, 1.0, Mode::Complete, true) {
-                Err(crate::Error::IllegalState(m)) => assert!(m.starts_with(name), "{m}"),
-                Err(e) => panic!("{name}: {e:?}"),
-                Ok(_) => panic!("{name} built a scorer"),
-            }
+            let built = build(&ctx, &q, 1.0, Mode::Complete, true);
+            assert!(
+                matches!(&built, Err(crate::Error::IllegalState(m)) if m.starts_with(name)),
+                "{name}"
+            );
         }
     }
 
@@ -2785,6 +2785,72 @@ mod tests {
         assert!(cursor(&ctx, "f", b"a", PostingsFlags::Freqs)
             .unwrap()
             .is_none());
+    }
+
+    /// A positional phrase over a real segment: a pulsed singleton term
+    /// (no `.doc` stream to walk) resolves the matches up front, a segment
+    /// opened without `.pos` cannot run it, and an absent field has no
+    /// term cursor.
+    #[test]
+    fn positional_phrases_over_a_real_segment() {
+        let dir = std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/spans/index"
+        ));
+        let reader =
+            crate::directory_reader::DirectoryReader::open(&lucene_store::FsDirectory::open(dir))
+                .unwrap();
+        let opened = reader.open_segments().unwrap();
+        let segs = opened.as_open_segments();
+        let mut eager = 0;
+        for seg in &segs {
+            let ctx = LeafContext {
+                fields: seg.fields,
+                doc_in: seg.doc_in,
+                pos_in: seg.pos_in,
+                pay_in: seg.pay_in,
+                live_docs: None,
+                points: None,
+                norms: None,
+                global: None,
+                max_doc: seg.max_doc,
+                cache: None,
+                reader: seg.reader,
+                similarity: None,
+            };
+            assert!(cursor(&ctx, "no_such_field", b"a", PostingsFlags::Freqs)
+                .unwrap()
+                .is_none());
+            // `zeta` is in one document: a pulsed singleton where present.
+            for w in [
+                "apple", "ape", "bank", "band", "cat", "car", "dog", "egg", "fig",
+            ] {
+                for k in 1..=2 {
+                    for pair in [[("zeta", 0), (w, k)], [(w, 0), ("zeta", k)]] {
+                        let q = PhraseQuery::with_positions("body", pair).unwrap();
+                        if let Some(mut s) =
+                            positional_phrase(&ctx, &q, 1.0, Mode::Complete).unwrap()
+                        {
+                            let doc = super::super::exact_next(&mut *s).unwrap();
+                            if doc != NO_MORE_DOCS {
+                                eager += 1;
+                                assert!(s.score().unwrap() > 0.0);
+                            }
+                        }
+                    }
+                }
+            }
+            let without_pos = LeafContext {
+                pos_in: None,
+                ..ctx
+            };
+            let two = PhraseQuery::with_positions("body", [("apple", 0), ("bank", 1)]).unwrap();
+            assert!(matches!(
+                positional_phrase(&without_pos, &two, 1.0, Mode::Complete),
+                Err(crate::Error::MissingPosInput)
+            ));
+        }
+        assert!(eager > 0, "zeta's document has neighbours");
     }
 
     /// The term-statistics queries over a segment without their field have
