@@ -204,6 +204,10 @@ jobs:
           key: lucene-jars-10.5.0
       - name: Regenerate and verify
         run: ./scripts/gen-fixtures.sh --check
+      # Hunspell's charset tables are read off the JDK; a hand edit, or a JDK
+      # that decodes differently, fails here.
+      - name: The Hunspell charset tables match their generator
+        run: java crates/lucene-analysis/tools/GenHunspellCharsets.java | diff - crates/lucene-analysis/src/hunspell/charsets.rs
       # fixtures/data/bwc is written by old Lucene jars, not by the
       # generators above; this re-reads it with 10.5.0 + backward-codecs.
       - name: Backward-codecs fixtures
