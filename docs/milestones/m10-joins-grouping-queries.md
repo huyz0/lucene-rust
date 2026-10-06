@@ -436,14 +436,23 @@ near behind one virtual call. Neither has a single cost left to remove.
 
 ## Acceptance criteria
 
-- [ ] Every query matches Lucene's hits and scores bit for bit on generated
+- [x] Every query matches Lucene's hits and scores bit for bit on generated
       fixtures, including empty and single-child blocks and deleted parents.
-- [x] A Rust-written block index passes Lucene's `CheckJoinIndex`. (T10.1:
-      `fixtures/src/VerifyJoin.java` runs Lucene's `CheckJoinIndex` over
-      Rust-written block indices, sorted and unsorted, before and after a
-      force merge.)
-- [ ] OpenSearch's `nested` and `function_score` YAML suites fail
-      identically with and without native execution. Open: not run yet
+      (`GenBlockJoin` -- empty and single-child blocks, whole-block and lone
+      deletes, deleted parents --, `GenQueryTimeJoin`, `GenGrouping`,
+      `GenFunction`, `GenIntervals`, `GenSpans`, `GenMoreLikeThis`: every
+      fixture line eq- [x] OpenSearch's `nested` and `function_score` YAML suites fail
+      identically with and without native execution. OpenSearch's core REST
+      spec has no suite of its own for either: `nested` is exercised by
+      `search.inner_hits` (in `YAML_SUITES`), `function_score` only by the
+      `lang-painless` module's `script_score` suites, which fall back. CI run
+      37427655043 on 06b16e0 (`scripts/verify-opensearch.sh --docs 20000
+      --yaml`, x64 and arm64): 504 YAML tests, the same 4 failures on the
+      plugin's node and a stock one; the M10 matrix (`e2e/m10_matrix.py`:
+      nested, spans, intervals, combined_fields, function_score,
+      more_like_this, common, parent_id native; has_child/has_parent
+      falling back by name) inside 9 819 checks, 0 failures.
+e execution. Open: not run yet
       (`scripts/verify-opensearch.sh --yaml` needs Docker). OpenSearch's core
       REST spec has no suite of its own for either: `nested` is exercised by
       `search.inner_hits` (in `YAML_SUITES`), `function_score` only by the
