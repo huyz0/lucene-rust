@@ -55,7 +55,7 @@ const REPLACEMENT_CHARACTER: u16 = 0xFFFD;
 /// `entityValues`: the HTML 4 character entities (and the upper-case
 /// variants of `quot`, `copy`, `gt`, `lt`, `reg`, `amp`).
 static ENTITY_VALUES: LazyLock<HashMap<&'static str, u16>> = LazyLock::new(|| {
-    const ENTITIES: &[(&str, u16)] = &[
+    const ENTITIES: [(&str, u16); 253] = [
         ("AElig", 0x00C6),
         ("Aacute", 0x00C1),
         ("Acirc", 0x00C2),
@@ -310,7 +310,7 @@ static ENTITY_VALUES: LazyLock<HashMap<&'static str, u16>> = LazyLock::new(|| {
         ("zwj", 0x200D),
         ("zwnj", 0x200C),
     ];
-    const UPPER: &[(&str, &str)] = &[
+    const UPPER: [(&str, &str); 6] = [
         ("quot", "QUOT"),
         ("copy", "COPY"),
         ("gt", "GT"),
@@ -319,7 +319,7 @@ static ENTITY_VALUES: LazyLock<HashMap<&'static str, u16>> = LazyLock::new(|| {
         ("amp", "AMP"),
     ];
     let mut m = HashMap::with_capacity(260);
-    for &(name, v) in ENTITIES {
+    for &(name, v) in &ENTITIES {
         m.insert(name, v);
         if let Some(&(_, upper)) = UPPER.iter().find(|(l, _)| *l == name) {
             m.insert(upper, v);

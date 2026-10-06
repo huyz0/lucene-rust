@@ -35,6 +35,7 @@ to describe a defect that got past it.
 | [`block-guard`](#block-guard) | `check-port-invariants.py` | a `lucene-index` fn setting `pending_has_blocks`/`dwpt.has_blocks = true` with no earlier `check_block(` call in the same fn | a guard that is called but whose result is ignored, or that sits on a branch the flag's line does not follow; a block flag spelled any other way |
 | [`alloc-from-doc`](#alloc-from-doc) | `check-port-invariants.py` | an allocation size (`vec![_; n]`, `with_capacity(n)`, `.resize(n, ..)`, `FixedBitSet::new(n)`) mentioning a name its fn bound from a doc list's `.last()`/`.first()`/`.max()`, with no `max_doc` in the size and no `// ALLOC:` proof | a doc id reaching the size through a struct field, a parameter or another fn; a source not spelled on a `*doc*` name (`ids.last()`); a `max_doc` in the size that does not actually bound it |
 | [`occur-guard`](#occur-guard) | `check-port-invariants.py` | one condition testing `R.must.is_empty()` and `R.must_not.is_empty()` on a receiver `R` without naming `R.filter` | a guard split across statements or helper fns; a test on `should`/`filter` alone that forgets an occur; a `filter` named but treated wrongly |
+| [`table-fixed-len`](#table-fixed-len) | `check-port-invariants.py` | a non-test `static`/`const` in `lucene-analysis` typed as a slice literal (`&[T] = &[`) | a fixed-length type whose `N` was itself copied from the short transcription; a table built at runtime (`vec!`, `LazyLock`); a dropped or reordered entry in a table nothing indexes by position; every other crate |
 | [rustdoc links](#rustdoc) | `cargo doc` | a `[`link`]` that resolves to nothing | a symbol named in *plain backticks*, which is most of them |
 | [coverage objects](#coverage-objects) | `scripts/coverage.sh` | lucene-ffi's never-loaded cdylib standing in for the executed copy of a `#[no_mangle]` function in the line report | the same first-copy-wins rule between two *executed* copies; a file whose lines split between a crate's unit-test and integration-test builds, which the summary under-reports |
 
@@ -496,6 +497,27 @@ statements, `let`s or helper fns; one testing `should` or `filter` without
 iterator tests instead of `is_empty()`; and a `filter` that is named but
 handled wrongly -- the rule proves the fourth occur was *thought about*, not
 that the answer is right.
+
+## table-fixed-len
+
+`check-port-invariants.py --only=table-fixed-len`. The M11 part 1 review
+found `cjk::KANA_COMBINE_HALF_VOICED` typed `&[u8]` with 86 entries where
+Java's `byte[]` has 88: `combine` indexes it by `prev - 0x30A6` for `prev`
+up to U+30FD, so `ーﾟ` panicked in `CJKWidthFilter`, `CJKWidthCharFilter`
+and `CJKAnalyzer` (Java: `30fc 309a`). A slice type accepts any length; an
+array type makes the compiler count. The rule: outside tests, no `static` or
+`const` in `crates/lucene-analysis/src` is a slice literal (`: &[..] = &[`,
+`: &'static [..] = &[`). Indexed tables spell `N` from the range Java
+indexes them by (`[u8; 0x30FD - 0x30A6 + 1]`), so the count is checked
+against Java's arithmetic, not against the transcription. **Seen to fail** on
+the original `&[u8]` declaration (`crates/lucene-analysis/src/cjk/mod.rs:284:
+table `KANA_COMBINE_HALF_VOICED` is a slice literal`) and on
+`PROPER_NOUNS: &'static [&str]`; with the array type, the 86-entry
+transcription is `error[E0308]: mismatched types`. Blind to: an `N` copied
+from the short transcription rather than derived (only list tables do this,
+and every one was counted against the Java source or resource when the rule
+landed); a table built at runtime; a dropped or reordered entry in a list
+nothing indexes by position (a stop list); other crates.
 
 ## write-path verifiers of the geo modules (M9)
 

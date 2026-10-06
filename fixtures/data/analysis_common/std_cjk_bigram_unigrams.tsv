@@ -653,3 +653,22 @@ T	48	buses	291	296	1	1	<ALPHANUM>	0	-	0	1
 T	48	heroes	297	303	1	1	<ALPHANUM>	0	-	0	1
 T	48	axes	304	308	1	1	<ALPHANUM>	0	-	0	1
 E	48	308	308	0
+T	49	ー	0	1	1	1	<SINGLE>	0	-	0	1
+T	49	ーﾟ	0	2	0	2	<DOUBLE>	0	-	0	1
+T	49	ﾟ	1	2	1	1	<SINGLE>	0	-	0	1
+T	49	ヽ	3	4	1	1	<SINGLE>	0	-	0	1
+T	49	ヽﾟ	3	5	0	2	<DOUBLE>	0	-	0	1
+T	49	ﾟ	4	5	1	1	<SINGLE>	0	-	0	1
+T	49	ｰ	6	7	1	1	<SINGLE>	0	-	0	1
+T	49	ｰﾟ	6	8	0	2	<DOUBLE>	0	-	0	1
+T	49	ﾟ	7	8	1	1	<SINGLE>	0	-	0	1
+T	49	ヽ	9	10	1	1	<SINGLE>	0	-	0	1
+T	49	ヽﾞ	9	11	0	2	<DOUBLE>	0	-	0	1
+T	49	ﾞ	10	11	1	1	<SINGLE>	0	-	0	1
+T	49	ｳ	12	13	1	1	<SINGLE>	0	-	0	1
+T	49	ｳﾞ	12	14	0	2	<DOUBLE>	0	-	0	1
+T	49	ﾞ	13	14	1	1	<SINGLE>	0	-	0	1
+T	49	ﾊ	15	16	1	1	<SINGLE>	0	-	0	1
+T	49	ﾊﾟ	15	17	0	2	<DOUBLE>	0	-	0	1
+T	49	ﾟ	16	17	1	1	<SINGLE>	0	-	0	1
+E	49	17	17	0

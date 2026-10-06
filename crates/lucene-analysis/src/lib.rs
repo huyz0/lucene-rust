@@ -429,7 +429,7 @@ impl<I: TokenStream> TokenFilter for StopFilter<I> {
 /// (case-sensitive) string match against terms that have already passed
 /// through [`LowerCaseFilter`] earlier in the chain -- see
 /// [`english_stop_words`].
-pub const ENGLISH_STOP_WORDS: &[&str] = &[
+pub const ENGLISH_STOP_WORDS: [&str; 33] = [
     "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "if", "in", "into", "is", "it",
     "no", "not", "of", "on", "or", "such", "that", "the", "their", "then", "there", "these",
     "they", "this", "to", "was", "will", "with",
@@ -478,7 +478,7 @@ pub fn english_stop_words() -> HashSet<String> {
 /// an English one. A composed `Analyzer::french()`-style helper mirroring the
 /// full `FrenchAnalyzer` pipeline (tokenize -> elide -> lowercase -> stopword
 /// -> stem) is not provided.
-pub const FRENCH_STOP_WORDS: &[&str] = &[
+pub const FRENCH_STOP_WORDS: [&str; 154] = [
     "au", "aux", "avec", "ce", "ces", "dans", "de", "des", "du", "elle", "en", "et", "eux", "il",
     "je", "la", "le", "leur", "lui", "ma", "mais", "me", "même", "mes", "moi", "mon", "ne", "nos",
     "notre", "nous", "on", "ou", "par", "pas", "pour", "qu", "que", "qui", "sa", "se", "ses",
@@ -604,7 +604,7 @@ pub struct AsciiFoldingFilter;
 ///
 /// The filter's own `char[]`-based signature means the table is BMP-only;
 /// no supplementary codepoint folds in Lucene either.
-const FOLD_TABLE: &[(char, &str)] = &[
+static FOLD_TABLE: [(char, &str); 1242] = [
     ('\u{00AB}', "\""),
     ('\u{00B2}', "2"),
     ('\u{00B3}', "3"),
@@ -3107,7 +3107,7 @@ mod snowball_english {
     /// The three irregular prefixes real Snowball's `a_0` table forces R1
     /// to start right after, instead of the normally-computed position (a
     /// fix-up for otherwise-too-short words like `"generalization"`).
-    const R1_EXCEPTION_PREFIXES: &[&str] = &["arsen", "commun", "gener"];
+    const R1_EXCEPTION_PREFIXES: [&str; 3] = ["arsen", "commun", "gener"];
 
     /// Computes `(R1, R2)` -- the region-start indices real Snowball calls
     /// `I_p1`/`I_p2` -- once per [`stem`] call, on the word as it stands
@@ -3345,7 +3345,7 @@ mod snowball_english {
     /// additionally requires the character right before it to be one of
     /// the fixed `valid_LI` set (`c`/`d`/`e`/`g`/`h`/`k`/`m`/`n`/`r`/`t`).
     fn step2(w: &mut Vec<char>, p1: usize) {
-        const RULES: &[(&str, &str)] = &[
+        const RULES: [(&str, &str); 21] = [
             ("ational", "ate"),
             ("ization", "ize"),
             ("iveness", "ive"),
@@ -3368,7 +3368,7 @@ mod snowball_english {
             ("izer", "ize"),
             ("ator", "ate"),
         ];
-        for (suf, rep) in RULES {
+        for (suf, rep) in &RULES {
             if ends(w, suf) {
                 apply_if_r1(w, p1, suf.chars().count(), rep);
                 return;
@@ -3402,7 +3402,7 @@ mod snowball_english {
             apply_if_r2(w, p2, 5);
             return;
         }
-        const RULES: &[(&str, &str)] = &[
+        const RULES: [(&str, &str); 8] = [
             ("ational", "ate"),
             ("tional", "tion"),
             ("icate", "ic"),
@@ -3412,7 +3412,7 @@ mod snowball_english {
             ("ness", ""),
             ("ful", ""),
         ];
-        for (suf, rep) in RULES {
+        for (suf, rep) in &RULES {
             if ends(w, suf) {
                 apply_if_r1(w, p1, suf.chars().count(), rep);
                 return;
@@ -3432,11 +3432,11 @@ mod snowball_english {
             }
             return;
         }
-        const RULES: &[&str] = &[
+        const RULES: [&str; 17] = [
             "ement", "ance", "ence", "able", "ible", "ment", "ate", "ive", "ize", "iti", "ism",
             "ous", "ant", "ent", "ic", "al", "er",
         ];
-        for suf in RULES {
+        for suf in &RULES {
             if ends(w, suf) {
                 apply_if_r2(w, p2, suf.chars().count());
                 return;
@@ -4040,7 +4040,7 @@ mod tests {
         // StopFilter matches against already-lowercased terms (it runs after
         // LowerCaseFilter in the chain) -- so every entry here must be
         // lowercase, not merely "matched case-insensitively".
-        for word in ENGLISH_STOP_WORDS {
+        for word in &ENGLISH_STOP_WORDS {
             assert_eq!(
                 *word,
                 word.to_lowercase(),
@@ -4133,7 +4133,7 @@ mod tests {
 
     #[test]
     fn french_stop_words_case_is_already_lowercase() {
-        for word in FRENCH_STOP_WORDS {
+        for word in &FRENCH_STOP_WORDS {
             assert_eq!(
                 *word,
                 word.to_lowercase(),

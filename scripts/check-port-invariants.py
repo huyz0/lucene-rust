@@ -819,6 +819,43 @@ def rule_occur_guard(files, problems, stats):
             start = m.end() if m else len(text)
 
 
+# --------------------------------------------------------------------------
+# Rule 11: an analysis table transcribed from Java has a fixed-length type
+# --------------------------------------------------------------------------
+#
+# The M11 part 1 review found `cjk::KANA_COMBINE_HALF_VOICED` declared as
+# `&[u8]` with 86 entries where Java's `byte[]` has 88 (two trailing zeros
+# dropped): `combine` indexes it by `prev - 0x30A6` for `prev` up to U+30FD, so
+# `ーﾟ` panicked in `CJKWidthFilter`, `CJKWidthCharFilter` and `CJKAnalyzer`.
+# A slice type accepts any length; an array type `[T; N]` makes the compiler
+# count. The rule: outside tests, a `static`/`const` in `lucene-analysis` is
+# never a slice literal (`: &[..] = &[` or `: &'static [..] = &[`).
+
+TABLE_CRATE = "crates/lucene-analysis/src/"
+SLICE_TABLE = re.compile(
+    r"\b(?:static|const)\s+(?P<name>[A-Z][A-Z0-9_]*)\s*:\s*&\s*(?:'static\s+)?\[.*=\s*&\s*\["
+)
+
+
+def rule_table_fixed_len(files, problems, stats):
+    for rel, raw in files:
+        if not rel.replace(os.sep, "/").startswith(TABLE_CRATE):
+            continue
+        lines = blank_cfg_test(raw)
+        for k, line in enumerate(lines):
+            m = SLICE_TABLE.search(strip_comment(line))
+            if not m:
+                continue
+            stats["slice_tables"] += 1
+            problems.append(
+                f"{rel}:{k + 1}: table `{m.group('name')}` is a slice literal. "
+                f"Give it a fixed-length array type `[T; N]` (N derived from "
+                f"the range Java indexes it by, where it is indexed) so a "
+                f"dropped entry fails to compile. "
+                f"(docs/mechanical-gates.md#table-fixed-len)"
+            )
+
+
 RULES = (
     ("fixed-bitset-bound", rule_fixed_bitset_bound),
     ("sentinel-callers", rule_sentinel_callers),
@@ -830,6 +867,7 @@ RULES = (
     ("alloc-from-doc", rule_alloc_from_doc),
     ("toplevel-whole-reader", rule_toplevel_whole_reader),
     ("occur-guard", rule_occur_guard),
+    ("table-fixed-len", rule_table_fixed_len),
 )
 
 
@@ -854,6 +892,7 @@ def main(argv):
         "alloc_doc_sites": 0,
         "toplevel_sites": 0,
         "occur_guard_sites": 0,
+        "slice_tables": 0,
     }
     for name, rule in RULES:
         if only and name != only:
@@ -873,6 +912,7 @@ def main(argv):
         print(f"allocations sized from a doc id     : {stats['alloc_doc_sites']}")
         print(f"function TopLevel constructions     : {stats['toplevel_sites']}")
         print(f"must+must_not guards (name filter)  : {stats['occur_guard_sites']}")
+        print(f"slice-typed analysis tables         : {stats['slice_tables']}")
 
     if problems:
         for p in problems:
