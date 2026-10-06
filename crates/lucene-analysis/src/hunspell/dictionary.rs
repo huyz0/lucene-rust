@@ -541,8 +541,9 @@ impl CheckCompoundPattern {
     }
 }
 
-/// A trie node: its children by code point, the ids of the key ending here.
-type TrieNode = (HashMap<u32, usize>, Option<Vec<i32>>);
+/// A trie node: its children sorted by code point, the ids of the key ending
+/// here.
+type TrieNode = (Vec<(u32, usize)>, Option<Vec<i32>>);
 
 /// The prefix or suffix table: a trie over code points whose nodes hold the
 /// affix ids of the keys ending there (Lucene's `FST<IntsRef>`).
@@ -556,19 +557,19 @@ pub(crate) struct AffixTrie {
 impl AffixTrie {
     fn build(affixes: &BTreeMap<Vec<u16>, Vec<i32>>) -> AffixTrie {
         let mut t = AffixTrie {
-            nodes: vec![(HashMap::new(), None)],
+            nodes: vec![(Vec::new(), None)],
             entries: Vec::new(),
         };
         for (key, ids) in affixes {
             let mut node = 0;
             for c in char::decode_utf16(key.iter().copied()) {
                 let cp = c.map_or_else(|e| u32::from(e.unpaired_surrogate()), u32::from);
-                node = match t.nodes[node].0.get(&cp) {
-                    Some(&n) => n,
-                    None => {
-                        t.nodes.push((HashMap::new(), None));
+                node = match t.nodes[node].0.binary_search_by_key(&cp, |&(k, _)| k) {
+                    Ok(i) => t.nodes[node].0[i].1,
+                    Err(i) => {
+                        t.nodes.push((Vec::new(), None));
                         let n = t.nodes.len() - 1;
-                        t.nodes[node].0.insert(cp, n);
+                        t.nodes[node].0.insert(i, (cp, n));
                         n
                     }
                 };
@@ -597,7 +598,11 @@ impl AffixTrie {
 
     /// The child of `node` by one UTF-16 unit (`Dictionary.nextArc`).
     pub(crate) fn step(&self, node: usize, unit: u16) -> Option<usize> {
-        self.nodes[node].0.get(&u32::from(unit)).copied()
+        let children = &self.nodes[node].0;
+        children
+            .binary_search_by_key(&u32::from(unit), |&(k, _)| k)
+            .ok()
+            .map(|i| children[i].1)
     }
 
     /// The affix ids of the key ending at `node` (`arc.isFinal()`).

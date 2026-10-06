@@ -44,10 +44,21 @@ pub(crate) fn to_upper(c: u16) -> u16 {
 
 /// `Character.toLowerCase(char)`.
 pub(crate) fn to_lower(c: u16) -> u16 {
+    if c < 0x80 {
+        return u16::from((c as u8).to_ascii_lowercase());
+    }
     u16::try_from(jc::to_lower_case(u32::from(c))).unwrap_or(c)
 }
 
 fn char_case(c: u16) -> CharCase {
+    // ASCII, where Java's answer is the letter ranges.
+    if c < 0x80 {
+        return match c as u8 {
+            b'A'..=b'Z' => CharCase::Upper,
+            b'a'..=b'z' => CharCase::Lower,
+            _ => CharCase::Neutral,
+        };
+    }
     if is_upper(c) {
         CharCase::Upper
     } else if is_lower(c) && to_upper(c) != c {

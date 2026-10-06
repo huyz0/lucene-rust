@@ -160,4 +160,7 @@ fn stem_filter_defaults_and_keywords() {
 fn stemmer_unique_stems() {
     let d = dictionary();
     assert_eq!(Stemmer::new(&d).unique_stems("walks"), ["walk"]);
+    // Past the stack buffer for a stripped word.
+    let long = format!("{}s", "walk".repeat(17));
+    assert!(Stemmer::new(&d).stem(&long).is_empty());
 }

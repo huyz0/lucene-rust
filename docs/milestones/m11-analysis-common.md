@@ -156,8 +156,13 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   entries and word forms, all equal to Lucene's -- including two Lucene
   quirks kept (a second `formStep()` stride skipping homonyms; a numeric flag
   reading `1x` as 1). Left for later: `WordFormGenerator.compress`,
-  `SuggestibleEntryCache`, suggestion time limits. Bench pair `--bench
-  hunspell` (HunspellStemFilter per dictionary over its fixture words).
+  `SuggestibleEntryCache`, suggestion time limits. Bench `--bench hunspell`
+  (HunspellStemFilter per dictionary over its fixture words, 2026-10-06):
+  affixes 1.93x, compound 1.69x, features 1.53x. The faithful port started at
+  1.06~/0.84x/0.99~; callgrind put the cost in SipHash on the affix trie's
+  per-node `HashMap` (now sorted child vectors), a `Vec` per stripped
+  candidate (now a stack buffer), a `HashSet` for `uniqueStems`' handful of
+  stems, and Unicode table lookups for ASCII case tests.
 - `java.util.regex` is the `regex` crate behind a Java-syntax shim (`util/java_regex.rs`: ASCII
   `\d\w\s`, `$n` replacements; no backreferences or lookaround).
 - The parity ledger's 400 KB budget is shared (the large area files were
