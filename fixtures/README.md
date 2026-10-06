@@ -1022,6 +1022,11 @@ outright.
   Deterministic. Consumed by
   `crates/lucene-analysis/tests/analysis_common_fixtures.rs`, which lists the
   chains the port does not build yet (`PENDING`) and fails on any other gap.
+- `GenSnowball.java` — M11 T11.3: every Snowball stemmer through Lucene's
+  `SnowballFilter` over a synthetic vocabulary built from the stemmers' own
+  `Among` tables, selected by a traced stemmer for new decisions
+  (`data/snowball/<Language>.words`); read by
+  `crates/lucene-analysis/tests/snowball_fixtures.rs`.
 - `GenDisiJumpTable.java` — the only Java-written `IndexedDISI` **block jump
   table** in this tree (`disi_jump_table_index/`). `IndexedDISI.writeBitSet`
   emits `jumpTableEntryCount = 0` below two logical 65 536-document blocks, and

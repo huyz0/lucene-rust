@@ -113,6 +113,28 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   per regex match. `pattern` stays at ~0.9x: ~45% of its instructions are
   the `regex` crate's lazy DFA, which finds a match's end forwards and then
   scans back for its start, where `java.util.regex` walks `[ ,.]+` once.
+- **T11.3** -- Snowball: the 30 stemmers of `org.tartarus.snowball.ext`
+  are the Snowball compiler's Rust backend output (`src/snowball/algorithms/`,
+  `tools/gen_snowball.sh`) at the Snowball commit Lucene's Java stemmers came
+  from (`34f3612e`, Snowball 2.2.0; the script re-runs the Java backend and
+  checks it reproduces Lucene's 30 classes). The runtime (`snowball/program.rs`)
+  is Lucene's `SnowballProgram` over UTF-16 units behind the backend's API,
+  because the backend's UTF-8 byte positions disagree with Java's wherever an
+  algorithm compares a position with a number (Dutch, Serbian), keeps a
+  position across a width-changing edit (Yiddish), or sorts a backward
+  `among` table (Arabic, by its last byte); the script turns the backend's
+  literals into UTF-16 arrays, re-sorts every table into UTF-16 order and
+  checks each against Lucene's. `GenSnowball.java` stems 82,571 synthetic
+  words (built from each stemmer's own `Among` tables and grown by a traced
+  stemmer for new decisions -- no Snowball vocabulary is redistributed)
+  through Lucene's `SnowballFilter`: every stem equal. Bench `--bench
+  snowball` (2026-10-06): arabic 1.23x, english 1.11~, french 1.16x, german
+  1.13~, russian 0.96~, turkish 1.32x; the faithful port started at 0.48x-0.81x
+  (literals re-encoded per comparison, a `String` per token), fixed by the
+  UTF-16 literal arrays, an ASCII fast path and skipping the copy-back of an
+  unedited term. Per-file line coverage of the generated stemmers is 88-100%
+  (Turkish and Greek suffix chains the synthetic words do not reach;
+  unreachable `setlimit` guards).
 - `java.util.regex` is the `regex` crate behind a Java-syntax shim (`util/java_regex.rs`: ASCII
   `\d\w\s`, `$n` replacements; no backreferences or lookaround).
 - The parity ledger's 400 KB budget is shared (the large area files were
