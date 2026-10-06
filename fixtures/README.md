@@ -1041,7 +1041,9 @@ outright.
   `crates/lucene-analysis/tests/snowball_fixtures.rs`.
 - `GenHunspell.java` — M11 T11.4: Lucene's Hunspell over this project's own
   dictionaries (`corpus/hunspell/<name>.aff`/`.dic`/`.words`, each named for
-  the features it exercises; `broken_*` are ones Lucene refuses), loaded
+  the features it exercises; `broken_*` are ones Lucene refuses; `charset_*`
+  are written in the charset their `SET` names, and their words are read in
+  it), loaded
   case-sensitive and `ignoreCase` (`data/hunspell/<name>[.ic].tsv`): per word,
   `spell`, `HunspellStemFilter`'s stems three ways, `getRoots`,
   `analyzeSimpleWord`, `suggest`, a tuned `Suggester` and an n-gram

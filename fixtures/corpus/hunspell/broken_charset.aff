@@ -1,0 +1,2 @@
+# lucene-rust's own test dictionary: a charset the JDK does not know.
+SET KOI8-X

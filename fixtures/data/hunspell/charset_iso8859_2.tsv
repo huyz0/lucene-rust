@@ -1,0 +1,73 @@
+W	żółw	1	żółw	żółw	żółw	żółw	AffixedWord[word=żółw, entry=żółw/AB, prefixes=[], suffixes=[]]	żółwy|żółwą|żółwę|żółw	żółwy|żółwą|żółwę|żółw	0
+W	łódź	1	łódź	łódź	łódź	łódź	AffixedWord[word=łódź, entry=łódź/A, prefixes=[], suffixes=[]]	łódźy|łódź	łódźy|łódź	0
+W	część	1	część	część	część	część	AffixedWord[word=część, entry=część/AN, prefixes=[], suffixes=[]]	częśćy|część	częśćy|część	0
+W	ściana	1	ściana	ściana	ściana	ściana	AffixedWord[word=ściana, entry=ściana/B, prefixes=[], suffixes=[]]	ściana|ścianaą|ścianaę	ściana|ścianaą|ścianaę	0
+W	źrebak	1	źrebak	źrebak	źrebak	źrebak	AffixedWord[word=źrebak, entry=źrebak/A, prefixes=[], suffixes=[]]	źrebaky|źrebak	źrebaky|źrebak	0
+W	Kraków	1	Kraków	Kraków	Kraków	Kraków	AffixedWord[word=Kraków, entry=Kraków, prefixes=[], suffixes=[]]	Kraków	Kraków	0
+W	żółwy	1	żółw	żółw	żółw	żółw	AffixedWord[word=żółwy, entry=żółw/AB, prefixes=[], suffixes=[A(id=0)]]	żółw|żółwą|żółwę	żółw|żółwą|żółwę	0
+W	żółwami	1	żółw	żółw	żółw	żółw	AffixedWord[word=żółwami, entry=żółw/AB, prefixes=[], suffixes=[A(id=1)]]	żółwami	żółwami	1
+W	łodzie	0	łodzie	łodzie	łodzie					1
+W	częściach	0	częściach	częściach	częściach			częśćach	częśćach	1
+W	ścianę	0	ścianę	ścianę	ścianę			ścianaę|ściana	ścianaę|ściana	1
+W	nieczęść	1	część	część	część	część	AffixedWord[word=nieczęść, entry=część/AN, prefixes=[N(id=5)], suffixes=[]]	nieczęśćy|nieczęść	nieczęśćy|nieczęść	1
+W	zolw	0	zolw	zolw	zolw					1
+W	KRAKÓW	1	Kraków	Kraków	Kraków	Kraków	AffixedWord[word=KRAKÓW, entry=Kraków, prefixes=[], suffixes=[]]	KRAKÓW	KRAKÓW	1
+W	ŻÓŁW	1	żółw	żółw	żółw	żółw	AffixedWord[word=ŻÓŁW, entry=żółw/AB, prefixes=[], suffixes=[]]	ŻÓŁW|ŻÓŁWY|ŻÓŁWĄ|ŻÓŁWĘ	ŻÓŁW|ŻÓŁWY|ŻÓŁWĄ|ŻÓŁWĘ	1
+W	Żółw	1	żółw	żółw	żółw	żółw	AffixedWord[word=Żółw, entry=żółw/AB, prefixes=[], suffixes=[]]	Żółw|Żółwy|Żółwą|Żółwę	Żółw|Żółwy|Żółwą|Żółwę	0
+W	ŁÓDŹ	1	łódź	łódź	łódź	łódź	AffixedWord[word=ŁÓDŹ, entry=łódź/A, prefixes=[], suffixes=[]]	ŁÓDŹ|ŁÓDŹY	ŁÓDŹ|ŁÓDŹY	1
+W	Łódź	1	łódź	łódź	łódź	łódź	AffixedWord[word=Łódź, entry=łódź/A, prefixes=[], suffixes=[]]	Łódź|Łódźy	Łódź|Łódźy	1
+W	CZĘŚĆ	1	część	część	część	część	AffixedWord[word=CZĘŚĆ, entry=część/AN, prefixes=[], suffixes=[]]	CZĘŚĆ|CZĘŚĆY	CZĘŚĆ|CZĘŚĆY	1
+W	Część	1	część	część	część	część	AffixedWord[word=Część, entry=część/AN, prefixes=[], suffixes=[]]	Częśćy|Część	Częśćy|Część	1
+W	ŚCIANA	1	ściana	ściana	ściana	ściana	AffixedWord[word=ŚCIANA, entry=ściana/B, prefixes=[], suffixes=[]]	ŚCIANA|ŚCIANAĄ|ŚCIANAĘ	ŚCIANA|ŚCIANAĄ|ŚCIANAĘ	1
+W	Ściana	1	ściana	ściana	ściana	ściana	AffixedWord[word=Ściana, entry=ściana/B, prefixes=[], suffixes=[]]	Ściana|Ścianaą|Ścianaę	Ściana|Ścianaą|Ścianaę	1
+W	ŹREBAK	1	źrebak	źrebak	źrebak	źrebak	AffixedWord[word=ŹREBAK, entry=źrebak/A, prefixes=[], suffixes=[]]	ŹREBAK|ŹREBAKY	ŹREBAK|ŹREBAKY	1
+W	Źrebak	1	źrebak	źrebak	źrebak	źrebak	AffixedWord[word=Źrebak, entry=źrebak/A, prefixes=[], suffixes=[]]	Źrebak|Źrebaky	Źrebak|Źrebaky	0
+W	ŻÓŁWY	1	żółw	żółw	żółw	żółw	AffixedWord[word=ŻÓŁWY, entry=żółw/AB, prefixes=[], suffixes=[A(id=0)]]	ŻÓŁWY|ŻÓŁW|ŻÓŁWĄ|ŻÓŁWĘ	ŻÓŁWY|ŻÓŁW|ŻÓŁWĄ|ŻÓŁWĘ	1
+W	Żółwy	1	żółw	żółw	żółw	żółw	AffixedWord[word=Żółwy, entry=żółw/AB, prefixes=[], suffixes=[A(id=0)]]	Żółwy|Żółw|Żółwą|Żółwę	Żółwy|Żółw|Żółwą|Żółwę	0
+W	ŻÓŁWAMI	1	żółw	żółw	żółw	żółw	AffixedWord[word=ŻÓŁWAMI, entry=żółw/AB, prefixes=[], suffixes=[A(id=1)]]	ŻÓŁWAMI	ŻÓŁWAMI	1
+W	Żółwami	1	żółw	żółw	żółw	żółw	AffixedWord[word=Żółwami, entry=żółw/AB, prefixes=[], suffixes=[A(id=1)]]	Żółwami	Żółwami	1
+W	ŁODZIE	0	ŁODZIE	ŁODZIE	ŁODZIE					1
+W	Łodzie	0	Łodzie	Łodzie	Łodzie					1
+W	CZĘŚCIACH	0	CZĘŚCIACH	CZĘŚCIACH	CZĘŚCIACH			CZĘŚĆACH	CZĘŚĆACH	1
+W	Częściach	0	Częściach	Częściach	Częściach			Częśćach	Częśćach	1
+W	ŚCIANĘ	0	ŚCIANĘ	ŚCIANĘ	ŚCIANĘ			ŚCIANAĘ|ŚCIANA	ŚCIANAĘ|ŚCIANA	1
+W	Ścianę	0	Ścianę	Ścianę	Ścianę			Ścianaę|Ściana	Ścianaę|Ściana	1
+W	NIECZĘŚĆ	1	część	część	część	część	AffixedWord[word=NIECZĘŚĆ, entry=część/AN, prefixes=[N(id=5)], suffixes=[]]	NIECZĘŚĆ|NIECZĘŚĆY	NIECZĘŚĆ|NIECZĘŚĆY	1
+W	Nieczęść	1	część	część	część	część	AffixedWord[word=Nieczęść, entry=część/AN, prefixes=[N(id=5)], suffixes=[]]	Nieczęśćy|Nieczęść	Nieczęśćy|Nieczęść	1
+W	ZOLW	0	ZOLW	ZOLW	ZOLW					1
+W	Zolw	0	Zolw	Zolw	Zolw					1
+W	żów	0	żów	żów	żów			żółw	żółw	1
+W	óżłw	0	óżłw	óżłw	óżłw			żółw	żółw	0
+W	łóź	0	łóź	łóź	łóź			łódź	łódź	0
+W	ółdź	0	ółdź	ółdź	ółdź			łódź	łódź	1
+W	czść	0	czść	czść	czść			część	część	1
+W	zcęść	0	zcęść	zcęść	zcęść			część	część	1
+W	ścina	0	ścina	ścina	ścina			ściana	ściana	1
+W	cśiana	0	cśiana	cśiana	cśiana			ściana	ściana	1
+W	źreak	0	źreak	źreak	źreak			źrebak	źrebak	1
+W	rźebak	0	rźebak	rźebak	rźebak			źrebak	źrebak	1
+W	Kraów	0	Kraów	Kraów	Kraów			Kraków	Kraków	1
+W	rKaków	0	rKaków	rKaków	rKaków			Kraków	Kraków	1
+W	żówy	0	żówy	żówy	żówy			żółwy	żółwy	1
+W	óżłwy	0	óżłwy	óżłwy	óżłwy			żółwy	żółwy	0
+W	żółami	0	żółami	żółami	żółami			żółwami	żółwami	1
+W	óżłwami	0	óżłwami	óżłwami	óżłwami			żółwami	żółwami	1
+W	łodie	0	łodie	łodie	łodie					1
+W	ołdzie	0	ołdzie	ołdzie	ołdzie					1
+W	częśiach	0	częśiach	częśiach	częśiach			częśćach|część	częśćach|część	1
+W	zcęściach	0	zcęściach	zcęściach	zcęściach					1
+W	ścinę	0	ścinę	ścinę	ścinę			ścianaę	ścianaę	1
+W	cśianę	0	cśianę	cśianę	cśianę			ścianaę	ścianaę	1
+W	niecęść	0	niecęść	niecęść	niecęść			nieczęść	nieczęść	1
+W	ineczęść	0	ineczęść	ineczęść	ineczęść			nieczęść|część	nieczęść|część	1
+W	zow	0	zow	zow	zow					1
+W	ozlw	0	ozlw	ozlw	ozlw					1
+W	KRAÓW	0	KRAÓW	KRAÓW	KRAÓW			KRAKÓW	KRAKÓW	0
+W	RKAKÓW	0	RKAKÓW	RKAKÓW	RKAKÓW			KRAKÓW	KRAKÓW	1
+E	żółw	żółw/AB	AffixedWord[word=żółw, entry=żółw/AB, prefixes=[], suffixes=[]]|AffixedWord[word=żółwach, entry=żółw/AB, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=żółwami, entry=żółw/AB, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=żółwy, entry=żółw/AB, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=żółwą, entry=żółw/AB, prefixes=[], suffixes=[B(id=4)]]|AffixedWord[word=żółwę, entry=żółw/AB, prefixes=[], suffixes=[B(id=3)]]
+E	łódź	łódź/A	AffixedWord[word=łódź, entry=łódź/A, prefixes=[], suffixes=[]]|AffixedWord[word=łódźach, entry=łódź/A, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=łódźami, entry=łódź/A, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=łódźy, entry=łódź/A, prefixes=[], suffixes=[A(id=0)]]
+E	część	część/AN	AffixedWord[word=część, entry=część/AN, prefixes=[], suffixes=[]]|AffixedWord[word=częśćach, entry=część/AN, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=nieczęśćach, entry=część/AN, prefixes=[N(id=5)], suffixes=[A(id=2)]]|AffixedWord[word=częśćami, entry=część/AN, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=nieczęśćami, entry=część/AN, prefixes=[N(id=5)], suffixes=[A(id=1)]]|AffixedWord[word=częśćy, entry=część/AN, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=nieczęśćy, entry=część/AN, prefixes=[N(id=5)], suffixes=[A(id=0)]]|AffixedWord[word=nieczęść, entry=część/AN, prefixes=[N(id=5)], suffixes=[]]
+E	ściana	ściana/B	AffixedWord[word=ściana, entry=ściana/B, prefixes=[], suffixes=[]]|AffixedWord[word=ścianaą, entry=ściana/B, prefixes=[], suffixes=[B(id=4)]]|AffixedWord[word=ścianaę, entry=ściana/B, prefixes=[], suffixes=[B(id=3)]]
+E	źrebak	źrebak/A	AffixedWord[word=źrebak, entry=źrebak/A, prefixes=[], suffixes=[]]|AffixedWord[word=źrebakach, entry=źrebak/A, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=źrebakami, entry=źrebak/A, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=źrebaky, entry=źrebak/A, prefixes=[], suffixes=[A(id=0)]]
+E	Kraków	Kraków	AffixedWord[word=Kraków, entry=Kraków, prefixes=[], suffixes=[]]
+G	AffixedWord[word=ściana, entry=ściana/B, prefixes=[], suffixes=[]]|AffixedWord[word=ścianaą, entry=ściana/B, prefixes=[], suffixes=[B(id=4)]]|AffixedWord[word=ścianaę, entry=ściana/B, prefixes=[], suffixes=[B(id=3)]]|AffixedWord[word=żółw, entry=żółw/AB, prefixes=[], suffixes=[]]|AffixedWord[word=żółwach, entry=żółw/AB, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=żółwami, entry=żółw/AB, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=żółwy, entry=żółw/AB, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=żółwą, entry=żółw/AB, prefixes=[], suffixes=[B(id=4)]]|AffixedWord[word=żółwę, entry=żółw/AB, prefixes=[], suffixes=[B(id=3)]]|AffixedWord[word=część, entry=część/AN, prefixes=[], suffixes=[]]|AffixedWord[word=częśćach, entry=część/AN, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=nieczęśćach, entry=część/AN, prefixes=[N(id=5)], suffixes=[A(id=2)]]|AffixedWord[word=częśćami, entry=część/AN, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=nieczęśćami, entry=część/AN, prefixes=[N(id=5)], suffixes=[A(id=1)]]|AffixedWord[word=częśćy, entry=część/AN, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=nieczęśćy, entry=część/AN, prefixes=[N(id=5)], suffixes=[A(id=0)]]|AffixedWord[word=nieczęść, entry=część/AN, prefixes=[N(id=5)], suffixes=[]]|AffixedWord[word=źrebak, entry=źrebak/A, prefixes=[], suffixes=[]]|AffixedWord[word=źrebakach, entry=źrebak/A, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=źrebakami, entry=źrebak/A, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=źrebaky, entry=źrebak/A, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=łódź, entry=łódź/A, prefixes=[], suffixes=[]]|AffixedWord[word=łódźach, entry=łódź/A, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=łódźami, entry=łódź/A, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=łódźy, entry=łódź/A, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=Kraków, entry=Kraków, prefixes=[], suffixes=[]]

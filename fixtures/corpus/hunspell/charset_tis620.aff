@@ -1,0 +1,14 @@
+# lucene-rust's own test dictionary: SET TIS620-2533 (Thai words).
+SET TIS620-2533
+TRY авдежзийрст
+
+SFX A Y 2
+SFX A 0 ц .
+SFX A 0 фЫС .
+
+SFX B Y 1
+SFX B 0 ЄУбК .
+
+PFX N Y 1
+PFX N 0 ЁвУ .
+

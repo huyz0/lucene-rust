@@ -1,6 +1,8 @@
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.Charset;
+import java.nio.charset.IllegalCharsetNameException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -8,6 +10,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
 import org.apache.lucene.analysis.Analyzer;
@@ -87,6 +90,32 @@ public class GenHunspell {
     }
   }
 
+  /**
+   * The charset the {@code .dic} roots and {@code .words} are read in: the {@code SET} charset
+   * when the JDK has it (through Lucene's {@code CHARSET_ALIASES}), else UTF-8 for an affix file
+   * naming it and ISO-8859-1 otherwise (so {@code ISO8859-14} words are read as Latin-1).
+   */
+  static String wordCharset(byte[] aff) {
+    String text = new String(aff, StandardCharsets.ISO_8859_1);
+    for (String line : text.split("\n")) {
+      String[] f = line.trim().split("\\s+");
+      if (f.length == 2 && f[0].equals("SET")) {
+        String name =
+            Map.of("microsoft-cp1251", "windows-1251", "TIS620-2533", "TIS-620")
+                .getOrDefault(f[1], f[1]);
+        try {
+          if (!name.equals("ISO8859-14") && Charset.isSupported(name)) {
+            return Charset.forName(name).name();
+          }
+        } catch (IllegalCharsetNameException e) {
+          // an illegal name: the dictionary is refused anyway
+        }
+        break;
+      }
+    }
+    return text.contains("SET UTF-8") ? "UTF-8" : "ISO-8859-1";
+  }
+
   static InputStream in(byte[] b) {
     return new ByteArrayInputStream(b);
   }
@@ -121,8 +150,7 @@ public class GenHunspell {
           continue;
         }
         Hunspell h = new Hunspell(d, TimeoutPolicy.NO_TIMEOUT, () -> {});
-        String charset = new String(aff, StandardCharsets.ISO_8859_1).contains("SET UTF-8")
-            ? "UTF-8" : "ISO-8859-1";
+        String charset = wordCharset(aff);
         List<String> roots = new ArrayList<>();
         for (String line : new String(dic, charset).split("\n")) roots.add(line);
         if (!roots.isEmpty()) roots.remove(0);

@@ -11,6 +11,7 @@
 
 mod affix_condition;
 mod affixed_word;
+mod charsets;
 mod conv_table;
 mod dictionary;
 mod flags;
@@ -71,8 +72,19 @@ pub enum HunspellError {
     /// `NegativeArraySizeException` (a negative `AF`/`AM` count).
     #[error("negative array size: {0}")]
     NegativeArraySize(String),
+    /// `java.nio.charset.UnsupportedCharsetException`: a `SET` charset the
+    /// JDK does not know.
+    #[error("unsupported charset: {0}")]
+    UnsupportedCharset(String),
+    /// `java.nio.charset.IllegalCharsetNameException`.
+    #[error("illegal charset name: {0}")]
+    IllegalCharsetName(String),
+    /// `java.nio.charset.UnmappableCharacterException`: a byte the
+    /// dictionary's charset cannot map.
+    #[error("unmappable character: {0}")]
+    UnmappableCharacter(String),
     /// `UnsupportedOperationException`, or a feature this port does not
-    /// support (a charset other than UTF-8/ISO8859-1/ISO8859-14).
+    /// support (a charset the JDK knows but the port does not decode).
     #[error("unsupported: {0}")]
     Unsupported(String),
 }

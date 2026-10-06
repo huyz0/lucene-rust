@@ -1,0 +1,10 @@
+# lucene-rust's own test dictionary: SET ISO8859-14, then ISO8859-1, FLAG UTF-8.
+SET ISO8859-14
+SET ISO8859-1
+FLAG UTF-8
+
+SFX Ã© Y 1
+SFX Ã© 0 s .
+
+SFX ¡ Y 1
+SFX ¡ 0 ed .

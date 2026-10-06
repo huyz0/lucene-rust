@@ -1,0 +1,15 @@
+# lucene-rust's own test dictionary: SET ISO8859-15 (French words).
+SET ISO8859-15
+TRY aeiouyéèêà½
+
+SFX A Y 2
+SFX A 0 s .
+SFX A 0 x .
+
+SFX B Y 2
+SFX B 0 ée .
+SFX B 0 é .
+
+PFX N Y 1
+PFX N 0 ré .
+

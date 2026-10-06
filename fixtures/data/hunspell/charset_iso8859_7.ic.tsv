@@ -1,0 +1,59 @@
+W	άνθρωπο	1	άνθρωπο	άνθρωπο	άνθρωπο	άνθρωπο	AffixedWord[word=άνθρωπο, entry=άνθρωπο/AB, prefixes=[], suffixes=[]]	άνθρωποι|άνθρωπου|άνθρωπο	άνθρωποι|άνθρωπου|άνθρωπο	0
+W	λόγο	1	λόγο	λόγο	λόγο	λόγο	AffixedWord[word=λόγο, entry=λόγο/AN, prefixes=[], suffixes=[]]	λόγοι|λόγου|λόγο	λόγοι|λόγου|λόγο	0
+W	θάλασσα	1	θάλασσα	θάλασσα	θάλασσα	θάλασσα	AffixedWord[word=θάλασσα, entry=θάλασσα, prefixes=[], suffixes=[]]	θάλασσα	θάλασσα	0
+W	πόλη	1	πόλη	πόλη	πόλη	πόλη	AffixedWord[word=πόλη, entry=πόλη/B, prefixes=[], suffixes=[]]	πόλη	πόλη	0
+W	Αθήνα	1	αθήνα	αθήνα	αθήνα	αθήνα	AffixedWord[word=Αθήνα, entry=αθήνα, prefixes=[], suffixes=[]]	αθήνα	αθήνα	0
+W	€	1	€	€	€	€	AffixedWord[word=€, entry=€, prefixes=[], suffixes=[]]	€	€	0
+W	άνθρωπος	1	άνθρωπο	άνθρωπο	άνθρωπο	άνθρωπο	AffixedWord[word=άνθρωπος, entry=άνθρωπο/AB, prefixes=[], suffixes=[A(id=0)]]	άνθρωπο|άνθρωποι|άνθρωπου	άνθρωπο|άνθρωποι|άνθρωπου	1
+W	ανθρώπων	0	ανθρώπων	ανθρώπων	ανθρώπων					1
+W	λόγου	1	λόγο	λόγο	λόγο	λόγο	AffixedWord[word=λόγου, entry=λόγο/AN, prefixes=[], suffixes=[A(id=1)]]	λόγο|λόγοι	λόγο|λόγοι	1
+W	λόγους	0	λόγους	λόγους	λόγους			λόγος|λόγου	λόγος|λόγου	1
+W	ΘΆΛΑΣΣΑ	1	θάλασσα	θάλασσα	θάλασσα	θάλασσα	AffixedWord[word=ΘΆΛΑΣΣΑ, entry=θάλασσα, prefixes=[], suffixes=[]]	θάλασσα	θάλασσα	1
+W	πολη	0	πολη	πολη	πολη			πόλη	πόλη	1
+W	ΆΝΘΡΩΠΟ	1	άνθρωπο	άνθρωπο	άνθρωπο	άνθρωπο	AffixedWord[word=ΆΝΘΡΩΠΟ, entry=άνθρωπο/AB, prefixes=[], suffixes=[]]	άνθρωποι|άνθρωπου|άνθρωπο	άνθρωποι|άνθρωπου|άνθρωπο	1
+W	Άνθρωπο	1	άνθρωπο	άνθρωπο	άνθρωπο	άνθρωπο	AffixedWord[word=Άνθρωπο, entry=άνθρωπο/AB, prefixes=[], suffixes=[]]	άνθρωποι|άνθρωπου|άνθρωπο	άνθρωποι|άνθρωπου|άνθρωπο	1
+W	ΛΌΓΟ	1	λόγο	λόγο	λόγο	λόγο	AffixedWord[word=ΛΌΓΟ, entry=λόγο/AN, prefixes=[], suffixes=[]]	λόγοι|λόγου|λόγο	λόγοι|λόγου|λόγο	0
+W	Λόγο	1	λόγο	λόγο	λόγο	λόγο	AffixedWord[word=Λόγο, entry=λόγο/AN, prefixes=[], suffixes=[]]	λόγοι|λόγου|λόγο	λόγοι|λόγου|λόγο	1
+W	Θάλασσα	1	θάλασσα	θάλασσα	θάλασσα	θάλασσα	AffixedWord[word=Θάλασσα, entry=θάλασσα, prefixes=[], suffixes=[]]	θάλασσα	θάλασσα	0
+W	ΠΌΛΗ	1	πόλη	πόλη	πόλη	πόλη	AffixedWord[word=ΠΌΛΗ, entry=πόλη/B, prefixes=[], suffixes=[]]	πόλη	πόλη	0
+W	Πόλη	1	πόλη	πόλη	πόλη	πόλη	AffixedWord[word=Πόλη, entry=πόλη/B, prefixes=[], suffixes=[]]	πόλη	πόλη	1
+W	ΑΘΉΝΑ	1	αθήνα	αθήνα	αθήνα	αθήνα	AffixedWord[word=ΑΘΉΝΑ, entry=αθήνα, prefixes=[], suffixes=[]]	αθήνα	αθήνα	1
+W	ΆΝΘΡΩΠΟΣ	0	ΆΝΘΡΩΠΟΣ	ΆΝΘΡΩΠΟΣ	ΆΝΘΡΩΠΟΣ			άνθρωπο|άνθρωποι|άνθρωπου	άνθρωπο|άνθρωποι|άνθρωπου	1
+W	Άνθρωπος	1	άνθρωπο	άνθρωπο	άνθρωπο	άνθρωπο	AffixedWord[word=Άνθρωπος, entry=άνθρωπο/AB, prefixes=[], suffixes=[A(id=0)]]	άνθρωπο|άνθρωποι|άνθρωπου	άνθρωπο|άνθρωποι|άνθρωπου	1
+W	ΑΝΘΡΏΠΩΝ	0	ΑΝΘΡΏΠΩΝ	ΑΝΘΡΏΠΩΝ	ΑΝΘΡΏΠΩΝ					1
+W	Ανθρώπων	0	Ανθρώπων	Ανθρώπων	Ανθρώπων					1
+W	ΛΌΓΟΥ	1	λόγο	λόγο	λόγο	λόγο	AffixedWord[word=ΛΌΓΟΥ, entry=λόγο/AN, prefixes=[], suffixes=[A(id=1)]]	λόγο|λόγοι	λόγο|λόγοι	1
+W	Λόγου	1	λόγο	λόγο	λόγο	λόγο	AffixedWord[word=Λόγου, entry=λόγο/AN, prefixes=[], suffixes=[A(id=1)]]	λόγο|λόγοι	λόγο|λόγοι	1
+W	ΛΌΓΟΥΣ	0	ΛΌΓΟΥΣ	ΛΌΓΟΥΣ	ΛΌΓΟΥΣ			λόγου|λόγο	λόγου|λόγο	1
+W	Λόγους	0	Λόγους	Λόγους	Λόγους			λόγος|λόγου	λόγος|λόγου	1
+W	ΠΟΛΗ	0	ΠΟΛΗ	ΠΟΛΗ	ΠΟΛΗ			πόλη	πόλη	1
+W	Πολη	0	Πολη	Πολη	Πολη			πόλη	πόλη	1
+W	άνθωπο	0	άνθωπο	άνθωπο	άνθωπο			άνθρωπο	άνθρωπο	1
+W	νάθρωπο	0	νάθρωπο	νάθρωπο	νάθρωπο			άνθρωπο	άνθρωπο	1
+W	λόο	0	λόο	λόο	λόο			λόγο	λόγο	1
+W	όλγο	0	όλγο	όλγο	όλγο			λόγο	λόγο	1
+W	θάλσσα	0	θάλσσα	θάλσσα	θάλσσα			θάλασσα	θάλασσα	1
+W	άθλασσα	0	άθλασσα	άθλασσα	άθλασσα			θάλασσα	θάλασσα	1
+W	πόη	0	πόη	πόη	πόη			πόλη	πόλη	1
+W	όπλη	0	όπλη	όπλη	όπλη			πόλη	πόλη	1
+W	Αθνα	0	Αθνα	Αθνα	Αθνα			αθήνα	αθήνα	1
+W	θΑήνα	0	θΑήνα	θΑήνα	θΑήνα			αθήνα	αθήνα	1
+W	άνθρπος	0	άνθρπος	άνθρπος	άνθρπος			άνθρωπος|άνθρωπο	άνθρωπος|άνθρωπο	1
+W	νάθρωπος	0	νάθρωπος	νάθρωπος	νάθρωπος			άνθρωπος|άνθρωπο	άνθρωπος|άνθρωπο	1
+W	ανθρπων	0	ανθρπων	ανθρπων	ανθρπων			άνθρωποων	άνθρωποων	1
+W	ναθρώπων	0	ναθρώπων	ναθρώπων	ναθρώπων					1
+W	λόου	0	λόου	λόου	λόου			λόγου	λόγου	1
+W	όλγου	0	όλγου	όλγου	όλγου			λόγου	λόγου	1
+W	λόγυς	0	λόγυς	λόγυς	λόγυς			λόγος	λόγος	1
+W	όλγους	0	όλγους	όλγους	όλγους			πόληους	πόληους	1
+W	ΘΆΛΣΣΑ	0	ΘΆΛΣΣΑ	ΘΆΛΣΣΑ	ΘΆΛΣΣΑ			θάλασσα	θάλασσα	1
+W	ΆΘΛΑΣΣΑ	0	ΆΘΛΑΣΣΑ	ΆΘΛΑΣΣΑ	ΆΘΛΑΣΣΑ			θάλασσα	θάλασσα	1
+W	ποη	0	ποη	ποη	ποη			πόλη	πόλη	0
+W	οπλη	0	οπλη	οπλη	οπλη			πόλη	πόλη	1
+E	άνθρωπο	άνθρωπο/AB	AffixedWord[word=άνθρωπο, entry=άνθρωπο/AB, prefixes=[], suffixes=[]]|AffixedWord[word=άνθρωποι, entry=άνθρωπο/AB, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=άνθρωπος, entry=άνθρωπο/AB, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=άνθρωπου, entry=άνθρωπο/AB, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=άνθρωποων, entry=άνθρωπο/AB, prefixes=[], suffixes=[B(id=3)]]|AffixedWord[word=άνθρωποους, entry=άνθρωπο/AB, prefixes=[], suffixes=[B(id=4)]]
+E	λόγο	λόγο/AN	AffixedWord[word=λόγο, entry=λόγο/AN, prefixes=[], suffixes=[]]|AffixedWord[word=λόγοι, entry=λόγο/AN, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=ξλόγοι, entry=λόγο/AN, prefixes=[N(id=5)], suffixes=[A(id=2)]]|AffixedWord[word=λόγος, entry=λόγο/AN, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=ξλόγος, entry=λόγο/AN, prefixes=[N(id=5)], suffixes=[A(id=0)]]|AffixedWord[word=λόγου, entry=λόγο/AN, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=ξλόγου, entry=λόγο/AN, prefixes=[N(id=5)], suffixes=[A(id=1)]]|AffixedWord[word=ξλόγο, entry=λόγο/AN, prefixes=[N(id=5)], suffixes=[]]
+E	θάλασσα	θάλασσα	AffixedWord[word=θάλασσα, entry=θάλασσα, prefixes=[], suffixes=[]]
+E	πόλη	πόλη/B	AffixedWord[word=πόλη, entry=πόλη/B, prefixes=[], suffixes=[]]|AffixedWord[word=πόληων, entry=πόλη/B, prefixes=[], suffixes=[B(id=3)]]|AffixedWord[word=πόληους, entry=πόλη/B, prefixes=[], suffixes=[B(id=4)]]
+E	Αθήνα	null	
+E	€	€	AffixedWord[word=€, entry=€, prefixes=[], suffixes=[]]
+G	AffixedWord[word=€, entry=€, prefixes=[], suffixes=[]]|AffixedWord[word=θάλασσα, entry=θάλασσα, prefixes=[], suffixes=[]]|AffixedWord[word=αθήνα, entry=αθήνα, prefixes=[], suffixes=[]]|AffixedWord[word=πόλη, entry=πόλη/B, prefixes=[], suffixes=[]]|AffixedWord[word=πόληων, entry=πόλη/B, prefixes=[], suffixes=[B(id=3)]]|AffixedWord[word=πόληους, entry=πόλη/B, prefixes=[], suffixes=[B(id=4)]]|AffixedWord[word=άνθρωπο, entry=άνθρωπο/AB, prefixes=[], suffixes=[]]|AffixedWord[word=άνθρωποι, entry=άνθρωπο/AB, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=άνθρωπος, entry=άνθρωπο/AB, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=άνθρωπου, entry=άνθρωπο/AB, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=άνθρωποων, entry=άνθρωπο/AB, prefixes=[], suffixes=[B(id=3)]]|AffixedWord[word=άνθρωποους, entry=άνθρωπο/AB, prefixes=[], suffixes=[B(id=4)]]|AffixedWord[word=λόγο, entry=λόγο/AN, prefixes=[], suffixes=[]]|AffixedWord[word=λόγοι, entry=λόγο/AN, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=ξλόγοι, entry=λόγο/AN, prefixes=[N(id=5)], suffixes=[A(id=2)]]|AffixedWord[word=λόγος, entry=λόγο/AN, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=ξλόγος, entry=λόγο/AN, prefixes=[N(id=5)], suffixes=[A(id=0)]]|AffixedWord[word=λόγου, entry=λόγο/AN, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=ξλόγου, entry=λόγο/AN, prefixes=[N(id=5)], suffixes=[A(id=1)]]|AffixedWord[word=ξλόγο, entry=λόγο/AN, prefixes=[N(id=5)], suffixes=[]]

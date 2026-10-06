@@ -1,0 +1,2 @@
+# lucene-rust's own test dictionary: an illegal charset name.
+SET ISO@8859

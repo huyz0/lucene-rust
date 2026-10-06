@@ -1,0 +1,39 @@
+W	แมว	1	แมว	แมว	แมว	แมว	AffixedWord[word=แมว, entry=แมว/A, prefixes=[], suffixes=[]]	แมว	แมว	0
+W	บ้าน	1	บ้าน	บ้าน	บ้าน	บ้าน	AffixedWord[word=บ้าน, entry=บ้าน/AN, prefixes=[], suffixes=[]]	บ้าน	บ้าน	0
+W	น้ำ	1	น้ำ	น้ำ	น้ำ	น้ำ	AffixedWord[word=น้ำ, entry=น้ำ/B, prefixes=[], suffixes=[]]	น้ำ	น้ำ	0
+W	ภาษา	1	ภาษา	ภาษา	ภาษา	ภาษา	AffixedWord[word=ภาษา, entry=ภาษา, prefixes=[], suffixes=[]]	ภาษา	ภาษา	0
+W	ไทย	1	ไทย	ไทย	ไทย	ไทย	AffixedWord[word=ไทย, entry=ไทย, prefixes=[], suffixes=[]]	ไทย	ไทย	0
+W	แมวๆ	1	แมว	แมว	แมว	แมว	AffixedWord[word=แมวๆ, entry=แมว/A, prefixes=[], suffixes=[A(id=0)]]	แมวๆ|แมว	แมวๆ|แมว	0
+W	บ้านไหม	1	บ้าน	บ้าน	บ้าน	บ้าน	AffixedWord[word=บ้านไหม, entry=บ้าน/AN, prefixes=[], suffixes=[A(id=1)]]	บ้านไหม	บ้านไหม	1
+W	การบ้าน	1	บ้าน	บ้าน	บ้าน	บ้าน	AffixedWord[word=การบ้าน, entry=บ้าน/AN, prefixes=[N(id=3)], suffixes=[]]	การบ้าน	การบ้าน	1
+W	น้ำครับ	1	น้ำ	น้ำ	น้ำ	น้ำ	AffixedWord[word=น้ำครับ, entry=น้ำ/B, prefixes=[], suffixes=[B(id=2)]]	น้ำครับ	น้ำครับ	1
+W	ภาษาไทย	0	ภาษาไทย	ภาษาไทย	ภาษาไทย			ภาษา ไทย|ภาษา	ภาษา ไทย|ภาษา	1
+W	แมา	0	แมา	แมา	แมา			แมว	แมว	1
+W	แว	0	แว	แว	แว			แมว	แมว	0
+W	มแว	0	มแว	มแว	มแว			แมว	แมว	0
+W	บ้น	0	บ้น	บ้น	บ้น			บ้าน	บ้าน	1
+W	้บาน	0	้บาน	้บาน	้บาน			บ้าน	บ้าน	1
+W	นำ	0	นำ	นำ	นำ			น้ำ	น้ำ	0
+W	้นำ	0	้นำ	้นำ	้นำ			น้ำ	น้ำ	0
+W	ภาา	0	ภาา	ภาา	ภาา			ภาษา	ภาษา	1
+W	าภษา	0	าภษา	าภษา	าภษา			ภาษา	ภาษา	1
+W	ไย	0	ไย	ไย	ไย			ไทย	ไทย	0
+W	ทไย	0	ทไย	ทไย	ทไย			ไทย	ไทย	1
+W	แมๆ	0	แมๆ	แมๆ	แมๆ			แมวๆ	แมวๆ	1
+W	มแวๆ	0	มแวๆ	มแวๆ	มแวๆ			แมวๆ	แมวๆ	1
+W	บ้าไหม	0	บ้าไหม	บ้าไหม	บ้าไหม			บ้านไหม	บ้านไหม	1
+W	้บานไหม	0	้บานไหม	้บานไหม	้บานไหม			บ้านไหม	บ้านไหม	1
+W	การ้าน	0	การ้าน	การ้าน	การ้าน			การบ้าน	การบ้าน	1
+W	ากรบ้าน	0	ากรบ้าน	ากรบ้าน	ากรบ้าน			การบ้าน|บ้าน	การบ้าน|บ้าน	1
+W	น้ำรับ	0	น้ำรับ	น้ำรับ	น้ำรับ			น้ำ	น้ำ	1
+W	้นำครับ	0	้นำครับ	้นำครับ	้นำครับ			น้ำครับ	น้ำครับ	1
+W	ภาษไทย	0	ภาษไทย	ภาษไทย	ภาษไทย			ภาษา	ภาษา	1
+W	าภษาไทย	0	าภษาไทย	าภษาไทย	าภษาไทย					1
+W	แา	0	แา	แา	แา			แมว	แมว	0
+W	มแา	0	มแา	มแา	มแา					1
+E	แมว	แมว/A	AffixedWord[word=แมว, entry=แมว/A, prefixes=[], suffixes=[]]|AffixedWord[word=แมวไหม, entry=แมว/A, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=แมวๆ, entry=แมว/A, prefixes=[], suffixes=[A(id=0)]]
+E	บ้าน	บ้าน/AN	AffixedWord[word=บ้าน, entry=บ้าน/AN, prefixes=[], suffixes=[]]|AffixedWord[word=บ้านไหม, entry=บ้าน/AN, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=การบ้านไหม, entry=บ้าน/AN, prefixes=[N(id=3)], suffixes=[A(id=1)]]|AffixedWord[word=บ้านๆ, entry=บ้าน/AN, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=การบ้านๆ, entry=บ้าน/AN, prefixes=[N(id=3)], suffixes=[A(id=0)]]|AffixedWord[word=การบ้าน, entry=บ้าน/AN, prefixes=[N(id=3)], suffixes=[]]
+E	น้ำ	น้ำ/B	AffixedWord[word=น้ำ, entry=น้ำ/B, prefixes=[], suffixes=[]]|AffixedWord[word=น้ำครับ, entry=น้ำ/B, prefixes=[], suffixes=[B(id=2)]]
+E	ภาษา	ภาษา	AffixedWord[word=ภาษา, entry=ภาษา, prefixes=[], suffixes=[]]
+E	ไทย	ไทย	AffixedWord[word=ไทย, entry=ไทย, prefixes=[], suffixes=[]]
+G	AffixedWord[word=บ้าน, entry=บ้าน/AN, prefixes=[], suffixes=[]]|AffixedWord[word=บ้านไหม, entry=บ้าน/AN, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=การบ้านไหม, entry=บ้าน/AN, prefixes=[N(id=3)], suffixes=[A(id=1)]]|AffixedWord[word=บ้านๆ, entry=บ้าน/AN, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=การบ้านๆ, entry=บ้าน/AN, prefixes=[N(id=3)], suffixes=[A(id=0)]]|AffixedWord[word=การบ้าน, entry=บ้าน/AN, prefixes=[N(id=3)], suffixes=[]]|AffixedWord[word=น้ำ, entry=น้ำ/B, prefixes=[], suffixes=[]]|AffixedWord[word=น้ำครับ, entry=น้ำ/B, prefixes=[], suffixes=[B(id=2)]]|AffixedWord[word=ไทย, entry=ไทย, prefixes=[], suffixes=[]]|AffixedWord[word=แมว, entry=แมว/A, prefixes=[], suffixes=[]]|AffixedWord[word=แมวไหม, entry=แมว/A, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=แมวๆ, entry=แมว/A, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=ภาษา, entry=ภาษา, prefixes=[], suffixes=[]]

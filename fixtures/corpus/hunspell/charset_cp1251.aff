@@ -1,0 +1,16 @@
+# lucene-rust's own test dictionary: SET microsoft-cp1251 (Bulgarian/Ukrainian words).
+SET microsoft-cp1251
+TRY аеиоуъюяїєі
+
+SFX A Y 3
+SFX A 0 и .
+SFX A 0 а .
+SFX A 0 ът .
+
+SFX B Y 2
+SFX B 0 ка .
+SFX B 0 ки .
+
+PFX N Y 1
+PFX N 0 пре .
+

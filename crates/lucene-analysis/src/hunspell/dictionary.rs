@@ -10,15 +10,20 @@
 //!   it), not FSTs; lookups return the same affix ids in the same order.
 //! - Entries are sorted in memory (`SortingStrategy.inMemory`); the offline
 //!   strategy's temporary files have no counterpart.
-//! - `SET` supports `UTF-8`, `ISO8859-1` (the default) and Lucene's
-//!   `ISO8859-14`; another charset is [`HunspellError::Unsupported`]
-//!   where Java would look it up with `Charset.forName`.
+//! - `SET` decodes UTF-8, ISO-8859-1 (the default), Lucene's `ISO8859-14`
+//!   and the JDK's ISO-8859-2, -7, -13, -15, KOI8-R, windows-1251 and
+//!   TIS-620 (`charsets.rs`, generated from the JDK), under every name the
+//!   JDK accepts; another charset the JDK knows is
+//!   [`HunspellError::Unsupported`]. Files are decoded whole: a byte the
+//!   charset cannot map fails the load even past a parse error Java's
+//!   8 KB reads would have met first.
 //! - The `tolerate*` hooks are fixed at Lucene's defaults (`false`) and
 //!   `hashFactor` at `1.0`.
 
 use std::collections::{BTreeMap, HashMap};
 
 use super::affix_condition::{unique_key, AffixCondition, AffixKind, ALWAYS_TRUE_KEY};
+use super::charsets;
 use super::conv_table::ConvTable;
 use super::flags::{FlagEnumerator, FlagLookup, FlagParsing};
 use super::word_case::{to_lower, to_upper, WordCase};
@@ -144,6 +149,8 @@ enum Charset {
     Utf8,
     Iso8859_1,
     Iso8859_14,
+    /// A JDK single-byte charset: `charsets::TABLES[i]`.
+    Table(usize),
 }
 
 /// `ISO8859_14Decoder.TABLE`: `0xA0..=0xFF`.
@@ -158,23 +165,63 @@ const ISO8859_14: [u16; 96] = [
     0x00F4, 0x00F5, 0x00F6, 0x1E6B, 0x00F8, 0x00F9, 0x00FA, 0x00FB, 0x00FC, 0x00FD, 0x0177, 0x00FF,
 ];
 
+/// Whether `name` passes `Charset.checkName`: ASCII letters and digits,
+/// and `-+:_.` after the first character.
+fn is_legal_charset_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.bytes().enumerate().all(|(i, c)| {
+            c.is_ascii_alphanumeric() || i > 0 && matches!(c, b'-' | b'+' | b':' | b'_' | b'.')
+        })
+}
+
 impl Charset {
-    /// `Dictionary.getDecoder` (with `CHARSET_ALIASES`).
+    /// `Dictionary.getDecoder`: Lucene's `ISO8859-14`, then
+    /// `CHARSET_ALIASES`, then `Charset.forName` (case-insensitive over the
+    /// JDK's names and aliases, `charsets::NAMES`). A legal name the JDK
+    /// does not know is Java's `UnsupportedCharsetException`, an illegal one
+    /// its `IllegalCharsetNameException`; one the JDK knows but this port
+    /// cannot decode is [`HunspellError::Unsupported`].
     fn for_name(name: &[u16]) -> Result<Charset, HunspellError> {
         let n = st(name);
-        match n.to_ascii_uppercase().as_str() {
-            "UTF-8" | "UTF8" => Ok(Charset::Utf8),
-            "ISO8859-1" | "ISO-8859-1" | "ISO_8859_1" | "ISO8859_1" | "LATIN1" | "8859_1" => {
-                Ok(Charset::Iso8859_1)
-            }
-            _ if n == "ISO8859-14" => Ok(Charset::Iso8859_14),
-            _ => Err(HunspellError::Unsupported(format!("charset {n}"))),
+        if n == "ISO8859-14" {
+            return Ok(Charset::Iso8859_14);
+        }
+        let n = match n.as_str() {
+            "microsoft-cp1251" => "windows-1251".to_string(),
+            "TIS620-2533" => "TIS-620".to_string(),
+            _ => n,
+        };
+        let lower = n.to_ascii_lowercase();
+        if let Ok(i) = charsets::NAMES.binary_search_by(|(k, _)| (*k).cmp(lower.as_str())) {
+            return Ok(match charsets::NAMES[i].1 {
+                0 => Charset::Utf8,
+                1 => Charset::Iso8859_1,
+                t => Charset::Table(t - 2),
+            });
+        }
+        if !is_legal_charset_name(&n) {
+            Err(HunspellError::IllegalCharsetName(n))
+        } else if charsets::JDK_NAMES.binary_search(&lower.as_str()).is_ok() {
+            Err(HunspellError::Unsupported(format!("charset {n}")))
+        } else {
+            Err(HunspellError::UnsupportedCharset(n))
         }
     }
 
-    /// Decodes `bytes` (malformed input replaced, as `CodingErrorAction.REPLACE`).
-    fn decode(self, bytes: &[u8]) -> Vec<u16> {
+    /// `decoder.charset()`: Lucene's `ISO8859_14Decoder` reports ISO-8859-1.
+    fn java_charset(self) -> Charset {
         match self {
+            Charset::Iso8859_14 => Charset::Iso8859_1,
+            other => other,
+        }
+    }
+
+    /// Decodes `bytes` as Lucene's decoder does: malformed UTF-8 replaced
+    /// (`CodingErrorAction.REPLACE`), a byte a single-byte charset cannot
+    /// map Java's `UnmappableCharacterException` (the action Lucene leaves
+    /// at `REPORT`).
+    fn decode(self, bytes: &[u8]) -> Result<Vec<u16>, HunspellError> {
+        Ok(match self {
             Charset::Utf8 => String::from_utf8_lossy(bytes).encode_utf16().collect(),
             Charset::Iso8859_1 => bytes.iter().map(|&b| u16::from(b)).collect(),
             Charset::Iso8859_14 => bytes
@@ -187,7 +234,25 @@ impl Charset {
                     }
                 })
                 .collect(),
-        }
+            Charset::Table(t) => {
+                let table = charsets::TABLES[t];
+                let mut out = Vec::with_capacity(bytes.len());
+                for &b in bytes {
+                    let c = if b >= 0x80 {
+                        table[usize::from(b - 0x80)]
+                    } else {
+                        u16::from(b)
+                    };
+                    if c == charsets::UNMAPPABLE {
+                        return Err(HunspellError::UnmappableCharacter(
+                            "Input length = 1".to_string(),
+                        ));
+                    }
+                    out.push(c);
+                }
+                out
+            }
+        })
     }
 }
 
@@ -788,9 +853,9 @@ impl Dictionary {
             None => (affix, Charset::Iso8859_1),
         };
         let prologue = &affix[..affix.len().min(MAX_PROLOGUE_SCAN_WINDOW - 1)];
-        b.read_config(stream_charset.decode(prologue))?;
+        b.read_config(stream_charset.decode(prologue)?)?;
         let mut flags = FlagEnumerator::new();
-        b.read_affix_file(b.decoder.decode(affix), &mut flags)?;
+        b.read_affix_file(b.decoder.decode(affix)?, &mut flags)?;
         let mut entries = Vec::new();
         for dic in dictionaries {
             b.merge_dictionary(dic, &mut entries)?;
@@ -1322,7 +1387,7 @@ impl Builder {
                 }
                 "SET" => {
                     let cs = Charset::for_name(&self.single_argument(&reader, &line)?)?;
-                    if cs != self.decoder {
+                    if cs.java_charset() != self.decoder.java_charset() {
                         return Err(self.critical_directive("SET", &reader));
                     }
                 }
@@ -1650,7 +1715,7 @@ impl Builder {
         dic: &[u8],
         acc: &mut Vec<Vec<u16>>,
     ) -> Result<(), HunspellError> {
-        let mut lines = LineReader::new(self.decoder.decode(dic));
+        let mut lines = LineReader::new(self.decoder.decode(dic)?);
         lines.read_line(); // the (approximate) entry count
         while let Some(line) = lines.read_line() {
             if line.is_empty() || line[0] == u16::from(b'#') || line[0] == u16::from(b'\t') {
@@ -1910,7 +1975,7 @@ fn flag_parsing_strategy(
     }
     match st(parts[1]).as_str() {
         "num" => Ok(FlagParsing::Num),
-        "UTF-8" => Ok(if charset == Charset::Iso8859_1 {
+        "UTF-8" => Ok(if charset.java_charset() == Charset::Iso8859_1 {
             FlagParsing::DefaultAsUtf8
         } else {
             FlagParsing::Simple

@@ -1,0 +1,16 @@
+# lucene-rust's own test dictionary: SET KOI8-R (Russian words).
+SET KOI8-R
+TRY ¡≈…œ’Ÿ‹¿—£
+
+SFX A Y 3
+SFX A 0 ¡ .
+SFX A 0 Ÿ .
+SFX A 0 œÕ .
+
+SFX B Y 2
+SFX B 0 œ  .
+SFX B 0 ≈  .
+
+PFX N Y 1
+PFX N 0 –≈“≈ .
+

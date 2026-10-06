@@ -1,0 +1,16 @@
+# lucene-rust's own test dictionary: SET ISO8859-13 (Lithuanian words).
+SET ISO8859-13
+TRY aeiouyàæëáøûèðþ
+
+SFX A Y 3
+SFX A 0 as .
+SFX A 0 ai .
+SFX A 0 ø .
+
+SFX B Y 2
+SFX B 0 ës .
+SFX B 0 ë .
+
+PFX N Y 1
+PFX N 0 ne .
+
