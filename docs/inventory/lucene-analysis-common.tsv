@@ -58,19 +58,19 @@ analysis/commongrams/CommonGramsFilter	ported	crates/lucene-analysis/src/commong
 analysis/commongrams/CommonGramsFilterFactory	todo:M11	T11.7 factory/SPI: CommonGramsFilterFactory
 analysis/commongrams/CommonGramsQueryFilter	ported	crates/lucene-analysis/src/commongrams/mod.rs::CommonGramsQueryFilter
 analysis/commongrams/CommonGramsQueryFilterFactory	todo:M11	T11.7 factory/SPI: CommonGramsQueryFilterFactory
-analysis/compound/CompoundWordTokenFilterBase	todo:M11	T11.6 compound: CompoundWordTokenFilterBase
-analysis/compound/DictionaryCompoundWordTokenFilter	todo:M11	T11.6 compound: DictionaryCompoundWordTokenFilter
+analysis/compound/CompoundWordTokenFilterBase	ported	crates/lucene-analysis/src/compound/mod.rs::CompoundWordTokenFilter
+analysis/compound/DictionaryCompoundWordTokenFilter	ported	crates/lucene-analysis/src/compound/mod.rs::DictionaryCompoundWordTokenFilter
 analysis/compound/DictionaryCompoundWordTokenFilterFactory	todo:M11	T11.7 factory/SPI: DictionaryCompoundWordTokenFilterFactory
-analysis/compound/HyphenationCompoundWordTokenFilter	todo:M11	T11.6 compound: HyphenationCompoundWordTokenFilter
+analysis/compound/HyphenationCompoundWordTokenFilter	ported	crates/lucene-analysis/src/compound/mod.rs::HyphenationCompoundWordTokenFilter
 analysis/compound/HyphenationCompoundWordTokenFilterFactory	todo:M11	T11.7 factory/SPI: HyphenationCompoundWordTokenFilterFactory
-analysis/compound/hyphenation/ByteVector	todo:M11	T11.6 compound: ByteVector
-analysis/compound/hyphenation/CharVector	todo:M11	T11.6 compound: CharVector
-analysis/compound/hyphenation/Hyphen	todo:M11	T11.6 compound: Hyphen
-analysis/compound/hyphenation/Hyphenation	todo:M11	T11.6 compound: Hyphenation
-analysis/compound/hyphenation/HyphenationTree	todo:M11	T11.6 compound: HyphenationTree
-analysis/compound/hyphenation/PatternConsumer	todo:M11	T11.6 compound: PatternConsumer
-analysis/compound/hyphenation/PatternParser	todo:M11	T11.6 compound: PatternParser
-analysis/compound/hyphenation/TernaryTree	todo:M11	T11.6 compound: TernaryTree
+analysis/compound/hyphenation/ByteVector	ported	crates/lucene-analysis/src/compound/hyphenation.rs::pack_values
+analysis/compound/hyphenation/CharVector	ported	crates/lucene-analysis/src/compound/hyphenation.rs::HyphenationTree
+analysis/compound/hyphenation/Hyphen	ported	crates/lucene-analysis/src/compound/hyphenation.rs::Hyphen
+analysis/compound/hyphenation/Hyphenation	ported	crates/lucene-analysis/src/compound/hyphenation.rs::Hyphenation
+analysis/compound/hyphenation/HyphenationTree	ported	crates/lucene-analysis/src/compound/hyphenation.rs::HyphenationTree
+analysis/compound/hyphenation/PatternConsumer	ported	crates/lucene-analysis/src/compound/hyphenation.rs::add_pattern
+analysis/compound/hyphenation/PatternParser	ported	crates/lucene-analysis/src/compound/hyphenation.rs::PatternParser
+analysis/compound/hyphenation/TernaryTree	ported	crates/lucene-analysis/src/compound/hyphenation.rs::search_patterns
 analysis/core/DecimalDigitFilter	ported	crates/lucene-analysis/src/core_analysis/filters.rs::DecimalDigitFilter
 analysis/core/DecimalDigitFilterFactory	todo:M11	T11.7 factory/SPI: DecimalDigitFilterFactory
 analysis/core/FlattenGraphFilter	ported	crates/lucene-analysis/src/core_analysis/flatten_graph_filter.rs::FlattenGraphFilter
@@ -314,21 +314,21 @@ analysis/miscellaneous/WordDelimiterFilterFactory	todo:M11	T11.7 factory/SPI: Wo
 analysis/miscellaneous/WordDelimiterGraphFilter	ported	crates/lucene-analysis/src/miscellaneous/word_delimiter.rs::WordDelimiterGraphFilter
 analysis/miscellaneous/WordDelimiterGraphFilterFactory	todo:M11	T11.7 factory/SPI: WordDelimiterGraphFilterFactory
 analysis/miscellaneous/WordDelimiterIterator	ported	crates/lucene-analysis/src/miscellaneous/word_delimiter.rs::WordDelimiterIterator
-analysis/morph/BinaryDictionary	todo:M11	T11.6 morph: BinaryDictionary
-analysis/morph/BinaryDictionaryWriter	todo:M11	T11.6 morph: BinaryDictionaryWriter
-analysis/morph/CharacterDefinition	todo:M11	T11.6 morph: CharacterDefinition
-analysis/morph/CharacterDefinitionWriter	todo:M11	T11.6 morph: CharacterDefinitionWriter
-analysis/morph/ConnectionCosts	todo:M11	T11.6 morph: ConnectionCosts
-analysis/morph/ConnectionCostsWriter	todo:M11	T11.6 morph: ConnectionCostsWriter
-analysis/morph/Dictionary	todo:M11	T11.6 morph: Dictionary
-analysis/morph/DictionaryEntryWriter	todo:M11	T11.6 morph: DictionaryEntryWriter
-analysis/morph/GraphvizFormatter	todo:M11	T11.6 morph: GraphvizFormatter
-analysis/morph/MorphData	todo:M11	T11.6 morph: MorphData
-analysis/morph/Token	todo:M11	T11.6 morph: Token
-analysis/morph/TokenInfoFST	todo:M11	T11.6 morph: TokenInfoFST
-analysis/morph/TokenType	todo:M11	T11.6 morph: TokenType
-analysis/morph/Viterbi	todo:M11	T11.6 morph: Viterbi
-analysis/morph/ViterbiNBest	todo:M11	T11.6 morph: ViterbiNBest
+analysis/morph/BinaryDictionary	deferred:M12	BinaryDictionary: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
+analysis/morph/BinaryDictionaryWriter	deferred:M12	BinaryDictionaryWriter: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
+analysis/morph/CharacterDefinition	deferred:M12	CharacterDefinition: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
+analysis/morph/CharacterDefinitionWriter	deferred:M12	CharacterDefinitionWriter: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
+analysis/morph/ConnectionCosts	deferred:M12	ConnectionCosts: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
+analysis/morph/ConnectionCostsWriter	deferred:M12	ConnectionCostsWriter: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
+analysis/morph/Dictionary	deferred:M12	Dictionary: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
+analysis/morph/DictionaryEntryWriter	deferred:M12	DictionaryEntryWriter: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
+analysis/morph/GraphvizFormatter	deferred:M12	GraphvizFormatter: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
+analysis/morph/MorphData	deferred:M12	MorphData: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
+analysis/morph/Token	deferred:M12	Token: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
+analysis/morph/TokenInfoFST	deferred:M12	TokenInfoFST: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
+analysis/morph/TokenType	deferred:M12	TokenType: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
+analysis/morph/Viterbi	deferred:M12	Viterbi: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
+analysis/morph/ViterbiNBest	deferred:M12	ViterbiNBest: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
 analysis/ne/NepaliAnalyzer	ported	crates/lucene-analysis/src/lang/ne.rs::NepaliAnalyzer
 analysis/ngram/EdgeNGramFilterFactory	todo:M11	T11.7 factory/SPI: EdgeNGramFilterFactory
 analysis/ngram/EdgeNGramTokenFilter	ported	crates/lucene-analysis/src/ngram/mod.rs::EdgeNGramTokenFilter
@@ -391,7 +391,7 @@ analysis/pt/PortugueseStemFilterFactory	todo:M11	T11.7 factory/SPI: PortugueseSt
 analysis/pt/PortugueseStemmer	ported	crates/lucene-analysis/src/lang/pt.rs::PortugueseStemmer
 analysis/pt/RSLPStemmerBase	ported	crates/lucene-analysis/src/lang/pt.rs::parse_rslp
 analysis/query/QueryAutoStopWordAnalyzer	todo:M11	T11.6 query: QueryAutoStopWordAnalyzer
-analysis/reverse/ReverseStringFilter	todo:M11	T11.6 reverse: ReverseStringFilter
+analysis/reverse/ReverseStringFilter	ported	crates/lucene-analysis/src/reverse/mod.rs::ReverseStringFilter
 analysis/reverse/ReverseStringFilterFactory	todo:M11	T11.7 factory/SPI: ReverseStringFilterFactory
 analysis/ro/RomanianAnalyzer	ported	crates/lucene-analysis/src/lang/ro.rs::RomanianAnalyzer
 analysis/ro/RomanianNormalizationFilter	ported	crates/lucene-analysis/src/lang/ro.rs::RomanianNormalizationFilter
@@ -406,7 +406,7 @@ analysis/shingle/FixedShingleFilterFactory	todo:M11	T11.7 factory/SPI: FixedShin
 analysis/shingle/ShingleAnalyzerWrapper	ported	crates/lucene-analysis/src/shingle/mod.rs::ShingleAnalyzerWrapper
 analysis/shingle/ShingleFilter	ported	crates/lucene-analysis/src/shingle/mod.rs::ShingleFilter
 analysis/shingle/ShingleFilterFactory	todo:M11	T11.7 factory/SPI: ShingleFilterFactory
-analysis/sinks/TeeSinkTokenFilter	todo:M11	T11.6 sinks: TeeSinkTokenFilter
+analysis/sinks/TeeSinkTokenFilter	ported	crates/lucene-analysis/src/sinks/mod.rs::TeeSinkTokenFilter
 analysis/snowball/SnowballFilter	ported	crates/lucene-analysis/src/snowball/mod.rs::SnowballFilter -- M11 T11.3
 analysis/snowball/SnowballPorterFilterFactory	todo:M11	T11.7 factory/SPI: SnowballPorterFilterFactory
 analysis/sr/SerbianAnalyzer	ported	crates/lucene-analysis/src/lang/sr.rs::SerbianAnalyzer
@@ -442,32 +442,32 @@ analysis/te/TeluguNormalizer	ported	crates/lucene-analysis/src/lang/te.rs::Telug
 analysis/te/TeluguStemFilter	ported	crates/lucene-analysis/src/lang/te.rs::TeluguStemFilter
 analysis/te/TeluguStemFilterFactory	todo:M11	T11.7 factory/SPI: TeluguStemFilterFactory
 analysis/te/TeluguStemmer	ported	crates/lucene-analysis/src/lang/te.rs::TeluguStemmer
-analysis/th/ThaiAnalyzer	todo:M11	T11.6 per-language (th): ThaiAnalyzer
-analysis/th/ThaiTokenizer	todo:M11	T11.6 per-language (th): ThaiTokenizer
+analysis/th/ThaiAnalyzer	deferred:M12	ThaiAnalyzer: ThaiTokenizer is java.text.BreakIterator's dictionary word breaking for Thai, whose dictionary is GPL-licensed JDK data; M12 takes Thai with ICU
+analysis/th/ThaiTokenizer	deferred:M12	ThaiTokenizer: BreakIterator.getWordInstance(th) is the JDK's GPL-licensed Thai dictionary; M12 (ICU)
 analysis/th/ThaiTokenizerFactory	todo:M11	T11.7 factory/SPI: ThaiTokenizerFactory
 analysis/tr/ApostropheFilter	ported	crates/lucene-analysis/src/lang/tr.rs::ApostropheFilter
 analysis/tr/ApostropheFilterFactory	todo:M11	T11.7 factory/SPI: ApostropheFilterFactory
 analysis/tr/TurkishAnalyzer	ported	crates/lucene-analysis/src/lang/tr.rs::TurkishAnalyzer
 analysis/tr/TurkishLowerCaseFilter	ported	crates/lucene-analysis/src/lang/tr.rs::TurkishLowerCaseFilter
 analysis/tr/TurkishLowerCaseFilterFactory	todo:M11	T11.7 factory/SPI: TurkishLowerCaseFilterFactory
-analysis/util/CSVUtil	todo:M11	T11.6 util: CSVUtil
-analysis/util/CharArrayIterator	todo:M11	T11.6 util: CharArrayIterator
+analysis/util/CSVUtil	ported	crates/lucene-analysis/src/util/csv_util.rs::quote_escape
+analysis/util/CharArrayIterator	deferred:M12	CharArrayIterator: the CharacterIterator SegmentingTokenizerBase feeds BreakIterator; M12
 analysis/util/CharTokenizer	ported	crates/lucene-analysis/src/util/char_tokenizer.rs::CharTokenizer
 analysis/util/ElisionFilter	ported	crates/lucene-analysis/src/util/elision_filter.rs::ElisionFilter
 analysis/util/ElisionFilterFactory	todo:M11	T11.7 factory/SPI: ElisionFilterFactory
 analysis/util/FilesystemResourceLoader	todo:M11	T11.7 factory/SPI: FilesystemResourceLoader
-analysis/util/OpenStringBuilder	todo:M11	T11.6 util: OpenStringBuilder
+analysis/util/OpenStringBuilder	ported	crates/lucene-analysis/src/en/kstem.rs::OpenStringBuilder
 analysis/util/RollingCharBuffer	ported	crates/lucene-analysis/src/charfilter/mod.rs::RollingCharBuffer
-analysis/util/SegmentingTokenizerBase	todo:M11	T11.6 util: SegmentingTokenizerBase
+analysis/util/SegmentingTokenizerBase	deferred:M12	SegmentingTokenizerBase: its tokenizers (Thai, smartcn, ICU) run java.text.BreakIterator; M12 ports it with them
 analysis/util/StemmerUtil	ported	crates/lucene-analysis/src/util/stemmer_util.rs::delete_n
 analysis/util/UnicodeProps	ported	crates/lucene-analysis/src/java_character.rs::is_unicode_whitespace
 analysis/wikipedia/WikipediaTokenizer	ported	crates/lucene-analysis/src/wikipedia/mod.rs::WikipediaTokenizer
 analysis/wikipedia/WikipediaTokenizerFactory	todo:M11	T11.7 factory/SPI: WikipediaTokenizerFactory
 analysis/wikipedia/WikipediaTokenizerImpl	ported	crates/lucene-analysis/src/wikipedia/mod.rs::WikipediaTokenizer
 collation/CollationAttributeFactory	todo:M11	T11.7 factory/SPI: CollationAttributeFactory
-collation/CollationDocValuesField	todo:M11	T11.6 CollationDocValuesField: CollationDocValuesField
-collation/CollationKeyAnalyzer	todo:M11	T11.6 CollationKeyAnalyzer: CollationKeyAnalyzer
-collation/tokenattributes/CollatedTermAttributeImpl	todo:M11	T11.6 tokenattributes: CollatedTermAttributeImpl
+collation/CollationDocValuesField	deferred:M12	CollationDocValuesField: java.text.Collator sort keys (JDK locale data); M12 (ICU collation)
+collation/CollationKeyAnalyzer	deferred:M12	CollationKeyAnalyzer: java.text.Collator sort keys (JDK locale data); M12 (ICU collation)
+collation/tokenattributes/CollatedTermAttributeImpl	deferred:M12	CollatedTermAttributeImpl: java.text.Collator sort keys; M12 (ICU collation)
 org/tartarus/snowball/Among	ported	crates/lucene-analysis/src/snowball/program.rs::Among -- M11 T11.3
 org/tartarus/snowball/SnowballProgram	ported	crates/lucene-analysis/src/snowball/program.rs::SnowballEnv -- M11 T11.3
 org/tartarus/snowball/SnowballStemmer	ported	crates/lucene-analysis/src/snowball/mod.rs::SnowballStemmer -- M11 T11.3

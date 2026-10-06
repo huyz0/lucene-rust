@@ -2,6 +2,7 @@
 //! lucene-core's `RollingBuffer`, which the graph filters share.
 
 pub mod char_tokenizer;
+pub mod csv_util;
 mod elision_filter;
 pub mod java_regex;
 pub mod jflex;

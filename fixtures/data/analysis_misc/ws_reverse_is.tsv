@@ -1,0 +1,31 @@
+T	0	\u001FA	0	1	1	1	word	0	-	0	1
+T	0	\u001FAB	2	4	1	1	word	0	-	0	1
+T	0	\u001FABC	5	8	1	1	word	0	-	0	1
+T	0	\u001FABCD	9	13	1	1	word	0	-	0	1
+T	0	\u001Ffedcba	14	20	1	1	word	0	-	0	1
+E	0	20	20	0
+T	1	\u001F经易	0	2	1	1	word	0	-	0	1
+T	1	\u001F符字文中	3	7	1	1	word	0	-	0	1
+T	1	\u001F語本日	8	11	1	1	word	0	-	0	1
+E	1	11	11	0
+T	2	\u001F😀	0	2	1	1	word	0	-	0	1
+T	2	\u001Fa😀	3	6	1	1	word	0	-	0	1
+T	2	\u001F😀a	7	10	1	1	word	0	-	0	1
+T	2	\u001Fb😀a	11	15	1	1	word	0	-	0	1
+T	2	\u001F😁😀	16	20	1	1	word	0	-	0	1
+T	2	\u001F😁a😀	21	26	1	1	word	0	-	0	1
+T	2	\u001Fa😁😀	27	32	1	1	word	0	-	0	1
+T	2	\u001F😁😀ba	33	39	1	1	word	0	-	0	1
+T	2	\u001Fdc😁ba😀	40	48	1	1	word	0	-	0	1
+E	2	48	48	0
+T	3	\u001F😂😁😀	0	6	1	1	word	0	-	0	1
+T	3	\u001Fy😁😀x	7	13	1	1	word	0	-	0	1
+E	3	13	13	0
+T	4	\u001FédöcïnÜ	0	7	1	1	word	0	-	0	1
+T	4	\u001Fevïan	8	13	1	1	word	0	-	0	1
+T	4	\u001Fedaçaf	14	20	1	1	word	0	-	0	1
+T	4	\u001Fémusér	21	27	1	1	word	0	-	0	1
+E	4	27	27	0
+E	5	0	0	0
+T	6	\u001Felgnis	0	6	1	1	word	0	-	0	1
+E	6	6	6	0
