@@ -83,7 +83,14 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   covers it.
 - `java.lang.Character`'s classification (`getType`, `isLetter`,
   `isWhitespace`, decimal digits) is generated from the Unicode Character
-  Database 16.0.0, not the JDK (`docs/licences.md`).
+  Database 16.0.0, not the JDK (`docs/licences.md`); simple case mappings
+  are JDK 25's table in `lucene-util` (never `char::to_lowercase`, whose
+  Unicode version is the toolchain's). The analysis must match the JVM the
+  plugin runs on: JDK 25, which OpenSearch 3.8.0 bundles (the FFM bridge
+  needs 22+), so Unicode 16. CI's fixture job runs JDK 21 (Unicode 15):
+  `codepoints.words` leaves out the 55 ranges whose `Character` properties
+  differ between the two, so it is byte-identical under both, and
+  `tests/code_point_fixtures.rs` pins the port's Unicode 16 answers there.
 - **T11.6** packages done: `core` (with `FlattenGraphFilter`) and the
   `CharTokenizer` family; `miscellaneous` but `DateRecognizerFilter` and the
   deprecated `WordDelimiterFilter`; `en` (KStem's dictionary generated from
