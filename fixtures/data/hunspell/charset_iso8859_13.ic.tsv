@@ -1,0 +1,68 @@
+W	ąžuol	1	ąžuol	ąžuol	ąžuol	ąžuol	AffixedWord[word=ąžuol, entry=ąžuol/A, prefixes=[], suffixes=[]]	ąžuolų|ąžuol	ąžuolų|ąžuol	0
+W	šun	1	šun	šun	šun	šun	AffixedWord[word=šun, entry=šun/AN, prefixes=[], suffixes=[]]	šunų|šun	šunų|šun	0
+W	gėl	1	gėl	gėl	gėl	gėl	AffixedWord[word=gėl, entry=gėl/B, prefixes=[], suffixes=[]]	gėlė|gėl	gėlė|gėl	0
+W	Vilnius	1	vilnius	vilnius	vilnius	vilnius	AffixedWord[word=Vilnius, entry=vilnius, prefixes=[], suffixes=[]]	vilnius	vilnius	0
+W	žuvis	1	žuvis	žuvis	žuvis	žuvis	AffixedWord[word=žuvis, entry=žuvis, prefixes=[], suffixes=[]]	žuvis	žuvis	0
+W	ūkis	1	ūkis	ūkis	ūkis	ūkis	AffixedWord[word=ūkis, entry=ūkis, prefixes=[], suffixes=[]]	ūkis	ūkis	0
+W	ąžuolas	1	ąžuol	ąžuol	ąžuol	ąžuol	AffixedWord[word=ąžuolas, entry=ąžuol/A, prefixes=[], suffixes=[A(id=0)]]	ąžuolai|ąžuolas	ąžuolai|ąžuolas	1
+W	ąžuolai	1	ąžuol	ąžuol	ąžuol	ąžuol	AffixedWord[word=ąžuolai, entry=ąžuol/A, prefixes=[], suffixes=[A(id=1)]]	ąžuolai	ąžuolai	1
+W	šunų	1	šun	šun	šun	šun	AffixedWord[word=šunų, entry=šun/AN, prefixes=[], suffixes=[A(id=2)]]	šun	šun	1
+W	nešunas	1	šun	šun	šun	šun	AffixedWord[word=nešunas, entry=šun/AN, prefixes=[N(id=5)], suffixes=[A(id=0)]]	nešunas|nešunai	nešunas|nešunai	1
+W	gėlės	1	gėl	gėl	gėl	gėl	AffixedWord[word=gėlės, entry=gėl/B, prefixes=[], suffixes=[B(id=3)]]	gėlės|gėlė	gėlės|gėlė	1
+W	VILNIUS	1	vilnius	vilnius	vilnius	vilnius	AffixedWord[word=VILNIUS, entry=vilnius, prefixes=[], suffixes=[]]	vilnius	vilnius	1
+W	zuvis	0	zuvis	zuvis	zuvis			žuvis	žuvis	1
+W	ĄŽUOL	1	ąžuol	ąžuol	ąžuol	ąžuol	AffixedWord[word=ĄŽUOL, entry=ąžuol/A, prefixes=[], suffixes=[]]	ąžuolų|ąžuol	ąžuolų|ąžuol	1
+W	Ąžuol	1	ąžuol	ąžuol	ąžuol	ąžuol	AffixedWord[word=Ąžuol, entry=ąžuol/A, prefixes=[], suffixes=[]]	ąžuolų|ąžuol	ąžuolų|ąžuol	1
+W	ŠUN	1	šun	šun	šun	šun	AffixedWord[word=ŠUN, entry=šun/AN, prefixes=[], suffixes=[]]	šunų|šun	šunų|šun	0
+W	Šun	1	šun	šun	šun	šun	AffixedWord[word=Šun, entry=šun/AN, prefixes=[], suffixes=[]]	šunų|šun	šunų|šun	0
+W	GĖL	1	gėl	gėl	gėl	gėl	AffixedWord[word=GĖL, entry=gėl/B, prefixes=[], suffixes=[]]	gėlė|gėl	gėlė|gėl	1
+W	Gėl	1	gėl	gėl	gėl	gėl	AffixedWord[word=Gėl, entry=gėl/B, prefixes=[], suffixes=[]]	gėlė|gėl	gėlė|gėl	1
+W	ŽUVIS	1	žuvis	žuvis	žuvis	žuvis	AffixedWord[word=ŽUVIS, entry=žuvis, prefixes=[], suffixes=[]]	žuvis	žuvis	1
+W	Žuvis	1	žuvis	žuvis	žuvis	žuvis	AffixedWord[word=Žuvis, entry=žuvis, prefixes=[], suffixes=[]]	žuvis	žuvis	1
+W	ŪKIS	1	ūkis	ūkis	ūkis	ūkis	AffixedWord[word=ŪKIS, entry=ūkis, prefixes=[], suffixes=[]]	ūkis	ūkis	1
+W	Ūkis	1	ūkis	ūkis	ūkis	ūkis	AffixedWord[word=Ūkis, entry=ūkis, prefixes=[], suffixes=[]]	ūkis	ūkis	1
+W	ĄŽUOLAS	1	ąžuol	ąžuol	ąžuol	ąžuol	AffixedWord[word=ĄŽUOLAS, entry=ąžuol/A, prefixes=[], suffixes=[A(id=0)]]	ąžuolai|ąžuolas	ąžuolai|ąžuolas	1
+W	Ąžuolas	1	ąžuol	ąžuol	ąžuol	ąžuol	AffixedWord[word=Ąžuolas, entry=ąžuol/A, prefixes=[], suffixes=[A(id=0)]]	ąžuolai|ąžuolas	ąžuolai|ąžuolas	1
+W	ĄŽUOLAI	1	ąžuol	ąžuol	ąžuol	ąžuol	AffixedWord[word=ĄŽUOLAI, entry=ąžuol/A, prefixes=[], suffixes=[A(id=1)]]	ąžuolai	ąžuolai	1
+W	Ąžuolai	1	ąžuol	ąžuol	ąžuol	ąžuol	AffixedWord[word=Ąžuolai, entry=ąžuol/A, prefixes=[], suffixes=[A(id=1)]]	ąžuolai	ąžuolai	1
+W	ŠUNŲ	1	šun	šun	šun	šun	AffixedWord[word=ŠUNŲ, entry=šun/AN, prefixes=[], suffixes=[A(id=2)]]	šun	šun	1
+W	Šunų	1	šun	šun	šun	šun	AffixedWord[word=Šunų, entry=šun/AN, prefixes=[], suffixes=[A(id=2)]]	šun	šun	1
+W	NEŠUNAS	1	šun	šun	šun	šun	AffixedWord[word=NEŠUNAS, entry=šun/AN, prefixes=[N(id=5)], suffixes=[A(id=0)]]	nešunas|nešunai	nešunas|nešunai	1
+W	Nešunas	1	šun	šun	šun	šun	AffixedWord[word=Nešunas, entry=šun/AN, prefixes=[N(id=5)], suffixes=[A(id=0)]]	nešunas|nešunai	nešunas|nešunai	1
+W	GĖLĖS	1	gėl	gėl	gėl	gėl	AffixedWord[word=GĖLĖS, entry=gėl/B, prefixes=[], suffixes=[B(id=3)]]	gėlės|gėlė	gėlės|gėlė	1
+W	Gėlės	1	gėl	gėl	gėl	gėl	AffixedWord[word=Gėlės, entry=gėl/B, prefixes=[], suffixes=[B(id=3)]]	gėlės|gėlė	gėlės|gėlė	1
+W	ZUVIS	0	ZUVIS	ZUVIS	ZUVIS			žuvis	žuvis	1
+W	Zuvis	0	Zuvis	Zuvis	Zuvis			žuvis	žuvis	0
+W	ąžol	0	ąžol	ąžol	ąžol			ąžuol	ąžuol	1
+W	žąuol	0	žąuol	žąuol	žąuol			ąžuol	ąžuol	1
+W	šn	0	šn	šn	šn			šun	šun	0
+W	ušn	0	ušn	ušn	ušn			šun	šun	1
+W	gl	0	gl	gl	gl			gėl	gėl	0
+W	ėgl	0	ėgl	ėgl	ėgl			gėl	gėl	1
+W	Vilius	0	Vilius	Vilius	Vilius			vilnius	vilnius	1
+W	iVlnius	0	iVlnius	iVlnius	iVlnius			vilnius	vilnius	1
+W	žuis	0	žuis	žuis	žuis			žuvis	žuvis	1
+W	užvis	0	užvis	užvis	užvis			žuvis	žuvis	1
+W	ūks	0	ūks	ūks	ūks			ūkis	ūkis	1
+W	kūis	0	kūis	kūis	kūis			ūkis	ūkis	0
+W	ąžulas	0	ąžulas	ąžulas	ąžulas			ąžuolas|ąžuol	ąžuolas|ąžuol	1
+W	žąuolas	0	žąuolas	žąuolas	žąuolas			ąžuolas	ąžuolas	1
+W	ąžulai	0	ąžulai	ąžulai	ąžulai			ąžuolai|ąžuol	ąžuolai|ąžuol	1
+W	žąuolai	0	žąuolai	žąuolai	žąuolai			ąžuolai	ąžuolai	1
+W	šuų	0	šuų	šuų	šuų			šunų	šunų	0
+W	ušnų	0	ušnų	ušnų	ušnų			šunų	šunų	1
+W	nešnas	0	nešnas	nešnas	nešnas			nešunas|nešun	nešunas|nešun	1
+W	enšunas	0	enšunas	enšunas	enšunas			nešunas|šunas	nešunas|šunas	1
+W	gėės	0	gėės	gėės	gėės			gėlės	gėlės	1
+W	ėglės	0	ėglės	ėglės	ėglės			gėlės	gėlės	1
+W	VILIUS	0	VILIUS	VILIUS	VILIUS			vilnius	vilnius	1
+W	IVLNIUS	0	IVLNIUS	IVLNIUS	IVLNIUS			vilnius	vilnius	1
+W	zuis	0	zuis	zuis	zuis			žuvis	žuvis	1
+W	uzvis	0	uzvis	uzvis	uzvis			žuvis	žuvis	1
+E	ąžuol	ąžuol/A	AffixedWord[word=ąžuol, entry=ąžuol/A, prefixes=[], suffixes=[]]|AffixedWord[word=ąžuolai, entry=ąžuol/A, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=ąžuolas, entry=ąžuol/A, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=ąžuolų, entry=ąžuol/A, prefixes=[], suffixes=[A(id=2)]]
+E	šun	šun/AN	AffixedWord[word=šun, entry=šun/AN, prefixes=[], suffixes=[]]|AffixedWord[word=šunai, entry=šun/AN, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=nešunai, entry=šun/AN, prefixes=[N(id=5)], suffixes=[A(id=1)]]|AffixedWord[word=šunas, entry=šun/AN, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=nešunas, entry=šun/AN, prefixes=[N(id=5)], suffixes=[A(id=0)]]|AffixedWord[word=šunų, entry=šun/AN, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=nešunų, entry=šun/AN, prefixes=[N(id=5)], suffixes=[A(id=2)]]|AffixedWord[word=nešun, entry=šun/AN, prefixes=[N(id=5)], suffixes=[]]
+E	gėl	gėl/B	AffixedWord[word=gėl, entry=gėl/B, prefixes=[], suffixes=[]]|AffixedWord[word=gėlės, entry=gėl/B, prefixes=[], suffixes=[B(id=3)]]|AffixedWord[word=gėlė, entry=gėl/B, prefixes=[], suffixes=[B(id=4)]]
+E	Vilnius	null	
+E	žuvis	žuvis	AffixedWord[word=žuvis, entry=žuvis, prefixes=[], suffixes=[]]
+E	ūkis	ūkis	AffixedWord[word=ūkis, entry=ūkis, prefixes=[], suffixes=[]]
+G	AffixedWord[word=ūkis, entry=ūkis, prefixes=[], suffixes=[]]|AffixedWord[word=vilnius, entry=vilnius, prefixes=[], suffixes=[]]|AffixedWord[word=ąžuol, entry=ąžuol/A, prefixes=[], suffixes=[]]|AffixedWord[word=ąžuolai, entry=ąžuol/A, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=ąžuolas, entry=ąžuol/A, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=ąžuolų, entry=ąžuol/A, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=žuvis, entry=žuvis, prefixes=[], suffixes=[]]|AffixedWord[word=šun, entry=šun/AN, prefixes=[], suffixes=[]]|AffixedWord[word=šunai, entry=šun/AN, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=nešunai, entry=šun/AN, prefixes=[N(id=5)], suffixes=[A(id=1)]]|AffixedWord[word=šunas, entry=šun/AN, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=nešunas, entry=šun/AN, prefixes=[N(id=5)], suffixes=[A(id=0)]]|AffixedWord[word=šunų, entry=šun/AN, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=nešunų, entry=šun/AN, prefixes=[N(id=5)], suffixes=[A(id=2)]]|AffixedWord[word=nešun, entry=šun/AN, prefixes=[N(id=5)], suffixes=[]]|AffixedWord[word=gėl, entry=gėl/B, prefixes=[], suffixes=[]]|AffixedWord[word=gėlės, entry=gėl/B, prefixes=[], suffixes=[B(id=3)]]|AffixedWord[word=gėlė, entry=gėl/B, prefixes=[], suffixes=[B(id=4)]]

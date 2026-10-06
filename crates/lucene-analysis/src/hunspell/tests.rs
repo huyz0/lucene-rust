@@ -86,10 +86,26 @@ fn dictionary_accessors_and_unsupported_charsets() {
     let walk = &d.lookup_entries("walk").unwrap()[0];
     assert!(walk.morphological_values("st:").is_empty());
 
-    assert!(matches!(
-        Dictionary::new(b"SET KOI8-R\n", &[DIC], false),
-        Err(HunspellError::Unsupported(_))
-    ));
+    // A charset the JDK knows but the port does not decode; Java's
+    // exceptions for one it does not know, or cannot name.
+    for (set, class) in [
+        (&b"SET Shift_JIS\n"[..], "unsupported: charset Shift_JIS"),
+        (b"SET x-unknown\n", "unsupported charset: x-unknown"),
+        (b"SET -koi8\n", "illegal charset name: -koi8"),
+        (b"SET koi8!r\n", "illegal charset name: koi8!r"),
+    ] {
+        let e = Dictionary::new(set, &[DIC], false).unwrap_err();
+        assert_eq!(e.to_string(), class);
+    }
+    // Names resolve case-insensitively over the JDK's aliases.
+    assert!(
+        Dictionary::new(b"SET cp1251\n", &[b"1\n\xe4\xee\xec\n"], false)
+            .unwrap()
+            .lookup_entries("дом")
+            .is_some()
+    );
+    // Lucene's ISO8859-14 decoder reports ISO-8859-1 as its charset.
+    assert!(Dictionary::new(b"SET ISO8859-14\nSET ISO8859-1\n", &[DIC], false).is_ok());
     let e = Dictionary::new(
         b"FLAG num\nSFX 1x Y 1\nSFX 1x 0 s/99999999999 .\n",
         &[DIC],

@@ -1,0 +1,3 @@
+# lucene-rust's own test dictionary: a byte ISO8859-7 cannot map.
+SET ISO8859-7
+TRY со

@@ -68,6 +68,9 @@ fn exception_name(e: &HunspellError) -> &'static str {
         HunspellError::NumberFormat(_) => "NumberFormatException",
         HunspellError::IndexOutOfBounds(_) => "ArrayIndexOutOfBoundsException",
         HunspellError::NegativeArraySize(_) => "NegativeArraySizeException",
+        HunspellError::UnsupportedCharset(_) => "UnsupportedCharsetException",
+        HunspellError::IllegalCharsetName(_) => "IllegalCharsetNameException",
+        HunspellError::UnmappableCharacter(_) => "UnmappableCharacterException",
         HunspellError::Unsupported(_) => "UnsupportedOperationException",
     }
 }
@@ -201,7 +204,7 @@ fn hunspell_matches_lucene_on_every_dictionary() {
             }
         }
     }
-    assert!(files >= 80, "{files} fixture files");
-    assert!(refused >= 50, "{refused} refused dictionaries");
+    assert!(files >= 104, "{files} fixture files");
+    assert!(refused >= 58, "{refused} refused dictionaries");
     assert!(words >= 4400, "{words} words");
 }

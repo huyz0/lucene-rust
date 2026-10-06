@@ -1,0 +1,67 @@
+W	œuvre	1	œuvre	œuvre	œuvre	œuvre	AffixedWord[word=œuvre, entry=œuvre/AN, prefixes=[], suffixes=[]]	œuvre	œuvre	0
+W	cœur	1	cœur	cœur	cœur	cœur	AffixedWord[word=cœur, entry=cœur/A, prefixes=[], suffixes=[]]	cœur	cœur	0
+W	bœuf	1	bœuf	bœuf	bœuf	bœuf	AffixedWord[word=bœuf, entry=bœuf/A, prefixes=[], suffixes=[]]	bœuf	bœuf	0
+W	aim	1	aim	aim	aim	aim	AffixedWord[word=aim, entry=aim/B, prefixes=[], suffixes=[]]	aimé|aim	aimé|aim	0
+W	Šokk	1	šokk	šokk	šokk	šokk	AffixedWord[word=Šokk, entry=šokk, prefixes=[], suffixes=[]]	šokk	šokk	0
+W	€uro	1	€uro	€uro	€uro	€uro	AffixedWord[word=€uro, entry=€uro, prefixes=[], suffixes=[]]	€uro	€uro	0
+W	œuvres	1	œuvre	œuvre	œuvre	œuvre	AffixedWord[word=œuvres, entry=œuvre/AN, prefixes=[], suffixes=[A(id=0)]]	œuvre	œuvre	1
+W	cœurs	1	cœur	cœur	cœur	cœur	AffixedWord[word=cœurs, entry=cœur/A, prefixes=[], suffixes=[A(id=0)]]	cœur	cœur	1
+W	bœufx	1	bœuf	bœuf	bœuf	bœuf	AffixedWord[word=bœufx, entry=bœuf/A, prefixes=[], suffixes=[A(id=1)]]	bœuf	bœuf	1
+W	aimée	1	aim	aim	aim	aim	AffixedWord[word=aimée, entry=aim/B, prefixes=[], suffixes=[B(id=2)]]	aimé	aimé	1
+W	réœuvre	1	œuvre	œuvre	œuvre	œuvre	AffixedWord[word=réœuvre, entry=œuvre/AN, prefixes=[N(id=4)], suffixes=[]]	réœuvre	réœuvre	1
+W	ŒUVRE	1	œuvre	œuvre	œuvre	œuvre	AffixedWord[word=ŒUVRE, entry=œuvre/AN, prefixes=[], suffixes=[]]	œuvre	œuvre	1
+W	oeuvre	0	oeuvre	oeuvre	oeuvre			œuvre	œuvre	1
+W	Œuvre	1	œuvre	œuvre	œuvre	œuvre	AffixedWord[word=Œuvre, entry=œuvre/AN, prefixes=[], suffixes=[]]	œuvre	œuvre	1
+W	CŒUR	1	cœur	cœur	cœur	cœur	AffixedWord[word=CŒUR, entry=cœur/A, prefixes=[], suffixes=[]]	cœur	cœur	1
+W	Cœur	1	cœur	cœur	cœur	cœur	AffixedWord[word=Cœur, entry=cœur/A, prefixes=[], suffixes=[]]	cœur	cœur	1
+W	BŒUF	1	bœuf	bœuf	bœuf	bœuf	AffixedWord[word=BŒUF, entry=bœuf/A, prefixes=[], suffixes=[]]	bœuf	bœuf	1
+W	Bœuf	1	bœuf	bœuf	bœuf	bœuf	AffixedWord[word=Bœuf, entry=bœuf/A, prefixes=[], suffixes=[]]	bœuf	bœuf	1
+W	AIM	1	aim	aim	aim	aim	AffixedWord[word=AIM, entry=aim/B, prefixes=[], suffixes=[]]	aimé|aim	aimé|aim	1
+W	Aim	1	aim	aim	aim	aim	AffixedWord[word=Aim, entry=aim/B, prefixes=[], suffixes=[]]	aimé|aim	aimé|aim	1
+W	ŠOKK	1	šokk	šokk	šokk	šokk	AffixedWord[word=ŠOKK, entry=šokk, prefixes=[], suffixes=[]]	šokk	šokk	1
+W	€URO	1	€uro	€uro	€uro	€uro	AffixedWord[word=€URO, entry=€uro, prefixes=[], suffixes=[]]	€uro	€uro	1
+W	ŒUVRES	1	œuvre	œuvre	œuvre	œuvre	AffixedWord[word=ŒUVRES, entry=œuvre/AN, prefixes=[], suffixes=[A(id=0)]]	œuvre	œuvre	1
+W	Œuvres	1	œuvre	œuvre	œuvre	œuvre	AffixedWord[word=Œuvres, entry=œuvre/AN, prefixes=[], suffixes=[A(id=0)]]	œuvre	œuvre	1
+W	CŒURS	1	cœur	cœur	cœur	cœur	AffixedWord[word=CŒURS, entry=cœur/A, prefixes=[], suffixes=[A(id=0)]]	cœur	cœur	1
+W	Cœurs	1	cœur	cœur	cœur	cœur	AffixedWord[word=Cœurs, entry=cœur/A, prefixes=[], suffixes=[A(id=0)]]	cœur	cœur	1
+W	BŒUFX	1	bœuf	bœuf	bœuf	bœuf	AffixedWord[word=BŒUFX, entry=bœuf/A, prefixes=[], suffixes=[A(id=1)]]	bœuf	bœuf	1
+W	Bœufx	1	bœuf	bœuf	bœuf	bœuf	AffixedWord[word=Bœufx, entry=bœuf/A, prefixes=[], suffixes=[A(id=1)]]	bœuf	bœuf	1
+W	AIMÉE	1	aim	aim	aim	aim	AffixedWord[word=AIMÉE, entry=aim/B, prefixes=[], suffixes=[B(id=2)]]	aimé	aimé	1
+W	Aimée	1	aim	aim	aim	aim	AffixedWord[word=Aimée, entry=aim/B, prefixes=[], suffixes=[B(id=2)]]	aimé	aimé	1
+W	RÉŒUVRE	1	œuvre	œuvre	œuvre	œuvre	AffixedWord[word=RÉŒUVRE, entry=œuvre/AN, prefixes=[N(id=4)], suffixes=[]]	réœuvre	réœuvre	1
+W	Réœuvre	1	œuvre	œuvre	œuvre	œuvre	AffixedWord[word=Réœuvre, entry=œuvre/AN, prefixes=[N(id=4)], suffixes=[]]	réœuvre	réœuvre	1
+W	OEUVRE	0	OEUVRE	OEUVRE	OEUVRE			œuvre	œuvre	1
+W	Oeuvre	0	Oeuvre	Oeuvre	Oeuvre			œuvre	œuvre	1
+W	œure	0	œure	œure	œure			œuvre	œuvre	1
+W	uœvre	0	uœvre	uœvre	uœvre			œuvre	œuvre	1
+W	cœr	0	cœr	cœr	cœr			cœur	cœur	0
+W	œcur	0	œcur	œcur	œcur			cœur	cœur	1
+W	bœf	0	bœf	bœf	bœf			bœuf	bœuf	1
+W	œbuf	0	œbuf	œbuf	œbuf			bœuf	bœuf	1
+W	am	0	am	am	am			aim	aim	0
+W	iam	0	iam	iam	iam			aim	aim	1
+W	Šok	0	Šok	Šok	Šok			šokk	šokk	0
+W	oŠkk	0	oŠkk	oŠkk	oŠkk			šokk	šokk	1
+W	€uo	0	€uo	€uo	€uo			€uro	€uro	1
+W	u€ro	0	u€ro	u€ro	u€ro			€uro	€uro	1
+W	œuves	0	œuves	œuves	œuves			œuvres	œuvres	1
+W	uœvres	0	uœvres	uœvres	uœvres			œuvres|œuvre	œuvres|œuvre	1
+W	cœrs	0	cœrs	cœrs	cœrs			cœurs	cœurs	0
+W	œcurs	0	œcurs	œcurs	œcurs			cœurs	cœurs	1
+W	bœfx	0	bœfx	bœfx	bœfx			bœufx	bœufx	1
+W	œbufx	0	œbufx	œbufx	œbufx			bœufx	bœufx	1
+W	aiée	0	aiée	aiée	aiée			aimée	aimée	0
+W	iamée	0	iamée	iamée	iamée			aimée	aimée	1
+W	réœvre	0	réœvre	réœvre	réœvre			réœuvre|œuvre	réœuvre|œuvre	1
+W	érœuvre	0	érœuvre	érœuvre	érœuvre			réœuvre|œuvre	réœuvre|œuvre	1
+W	ŒURE	0	ŒURE	ŒURE	ŒURE			œuvre	œuvre	1
+W	UŒVRE	0	UŒVRE	UŒVRE	UŒVRE			œuvre	œuvre	1
+W	oeure	0	oeure	oeure	oeure					1
+W	eouvre	0	eouvre	eouvre	eouvre			œuvre	œuvre	1
+E	œuvre	œuvre/AN	AffixedWord[word=œuvre, entry=œuvre/AN, prefixes=[], suffixes=[]]|AffixedWord[word=œuvres, entry=œuvre/AN, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=réœuvres, entry=œuvre/AN, prefixes=[N(id=4)], suffixes=[A(id=0)]]|AffixedWord[word=œuvrex, entry=œuvre/AN, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=réœuvrex, entry=œuvre/AN, prefixes=[N(id=4)], suffixes=[A(id=1)]]|AffixedWord[word=réœuvre, entry=œuvre/AN, prefixes=[N(id=4)], suffixes=[]]
+E	cœur	cœur/A	AffixedWord[word=cœur, entry=cœur/A, prefixes=[], suffixes=[]]|AffixedWord[word=cœurs, entry=cœur/A, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=cœurx, entry=cœur/A, prefixes=[], suffixes=[A(id=1)]]
+E	bœuf	bœuf/A	AffixedWord[word=bœuf, entry=bœuf/A, prefixes=[], suffixes=[]]|AffixedWord[word=bœufs, entry=bœuf/A, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=bœufx, entry=bœuf/A, prefixes=[], suffixes=[A(id=1)]]
+E	aim	aim/B	AffixedWord[word=aim, entry=aim/B, prefixes=[], suffixes=[]]|AffixedWord[word=aimée, entry=aim/B, prefixes=[], suffixes=[B(id=2)]]|AffixedWord[word=aimé, entry=aim/B, prefixes=[], suffixes=[B(id=3)]]
+E	Šokk	null	
+E	€uro	€uro	AffixedWord[word=€uro, entry=€uro, prefixes=[], suffixes=[]]
+G	AffixedWord[word=€uro, entry=€uro, prefixes=[], suffixes=[]]|AffixedWord[word=šokk, entry=šokk, prefixes=[], suffixes=[]]|AffixedWord[word=bœuf, entry=bœuf/A, prefixes=[], suffixes=[]]|AffixedWord[word=bœufs, entry=bœuf/A, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=bœufx, entry=bœuf/A, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=œuvre, entry=œuvre/AN, prefixes=[], suffixes=[]]|AffixedWord[word=œuvres, entry=œuvre/AN, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=réœuvres, entry=œuvre/AN, prefixes=[N(id=4)], suffixes=[A(id=0)]]|AffixedWord[word=œuvrex, entry=œuvre/AN, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=réœuvrex, entry=œuvre/AN, prefixes=[N(id=4)], suffixes=[A(id=1)]]|AffixedWord[word=réœuvre, entry=œuvre/AN, prefixes=[N(id=4)], suffixes=[]]|AffixedWord[word=cœur, entry=cœur/A, prefixes=[], suffixes=[]]|AffixedWord[word=cœurs, entry=cœur/A, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=cœurx, entry=cœur/A, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=aim, entry=aim/B, prefixes=[], suffixes=[]]|AffixedWord[word=aimée, entry=aim/B, prefixes=[], suffixes=[B(id=2)]]|AffixedWord[word=aimé, entry=aim/B, prefixes=[], suffixes=[B(id=3)]]
