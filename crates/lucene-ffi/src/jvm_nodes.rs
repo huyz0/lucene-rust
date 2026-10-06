@@ -16,9 +16,20 @@
 //! nodes counts against the same depth and node limits as the rest of the
 //! tree.
 //!
+//! Every count read off the blob is bounded before it sizes anything: list
+//! lengths count against the node limit as they are read (and each element
+//! must be in the blob), a repeating source's copies -- each an iterator with
+//! its own cached positions -- against the clause limit, a multi-term
+//! source's `max_expansions` likewise, an automaton's states at 65,536 (its
+//! transitions are in the blob). The remaining integers (slops, positions,
+//! gaps, widths, `pre`/`post`) are thresholds the ported iterators compare,
+//! never sizes. No `check-port-invariants.py` rule covers this: telling a
+//! wire-decoded count from any other `usize` needs data flow, not a pattern.
+//!
 //! A parent filter's bit sets are cached across requests ([`SharedParents`]),
 //! as OpenSearch's `BitsetFilterCache` caches them: per segment core and
-//! filter, deleted documents included.
+//! filter, deleted documents included, at most 64 MiB, and dropped when the
+//! last reader holding their segment closes.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -343,11 +354,22 @@ pub(crate) fn decode_source(
         SOURCE_UNORDERED => IntervalsSource::Unordered(list(c, nodes)?),
         SOURCE_REPEATING => {
             let count = c.i32()?;
-            if count < 1 {
+            // Each copy is a sub-iterator with its own cached positions
+            // (`DuplicateIntervals`), its matches and its `toString` part: a
+            // count only the blob bounds would size an allocation from the
+            // wire. Java builds one only from that many equal clauses of
+            // `Intervals.ordered`/`unordered`, so the clause limit bounds it,
+            // and each copy counts as a node.
+            if count < 1
+                || usize::try_from(count).map_or(true, |n| n > crate::query::MAX_CLAUSE_COUNT)
+            {
                 return Err(invalid(format!(
-                    "query tree: a repeating interval source of {count} copies"
+                    "query tree: a repeating interval source of {count} copies (want 1..={})",
+                    crate::query::MAX_CLAUSE_COUNT
                 )));
             }
+            *nodes = nodes.saturating_add(usize::try_from(count).unwrap_or(usize::MAX));
+            check_clause_count(*nodes)?;
             let name = match c.u8()? {
                 0 => None,
                 1 => Some("ORDERED"),
@@ -539,24 +561,85 @@ fn decode_compiled_automaton(c: &mut Cursor<'_>) -> Result<Automaton, FfiStatus>
 // The parent filter's cache
 // ---------------------------------------------------------------------------
 
-/// A segment core (its name and id) and a filter's key.
-type ParentKey = (String, [u8; 16], String);
+/// A segment core: its id, the 16 random bytes `SegmentInfo` carries, which
+/// identify its immutable files (borrowed for a lookup, never cloned).
+type SegmentKey = [u8; 16];
 
-/// Every cached parent bit set, across requests and readers: a segment's
-/// name and id identify its immutable core, and a bit set ignores deletions,
-/// so an entry stays right for as long as the segment exists. Cleared
-/// whole once it holds [`MAX_CACHED_PARENTS`] entries.
-fn parents_cache() -> &'static Mutex<HashMap<ParentKey, Option<Arc<FixedBitSet>>>> {
-    static CACHE: OnceLock<Mutex<HashMap<ParentKey, Option<Arc<FixedBitSet>>>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+/// Every cached parent bit set, across requests and readers: a bit set
+/// ignores deletions and a segment's core never changes, so an entry stays
+/// right for as long as the segment exists.
+///
+/// Bounded twice: by [`MAX_CACHED_PARENT_BYTES`] of bit sets (cleared whole
+/// when a new set would pass it), and by the open readers -- closing a JVM
+/// reader drops the sets of every segment no open reader still holds
+/// ([`retain_parent_sets`]).
+#[derive(Default)]
+struct ParentsCache {
+    /// Segment -> (filter key -> its set there, `None` without parents).
+    sets: HashMap<SegmentKey, HashMap<String, Option<Arc<FixedBitSet>>>>,
+    bytes: usize,
+    entries: usize,
+}
+
+impl ParentsCache {
+    fn get(&self, segment: &SegmentKey, filter: &str) -> Option<Option<Arc<FixedBitSet>>> {
+        self.sets.get(segment)?.get(filter).cloned()
+    }
+
+    fn insert(&mut self, segment: SegmentKey, filter: String, bits: Option<Arc<FixedBitSet>>) {
+        let size = bits.as_ref().map_or(0, |b| b.len() / 8);
+        if self.bytes.saturating_add(size) > MAX_CACHED_PARENT_BYTES {
+            self.clear();
+        }
+        if let Some(old) = self.sets.entry(segment).or_default().insert(filter, bits) {
+            self.bytes = self.bytes.saturating_sub(old.map_or(0, |b| b.len() / 8));
+        } else {
+            self.entries = self.entries.saturating_add(1);
+        }
+        self.bytes = self.bytes.saturating_add(size);
+    }
+
+    fn clear(&mut self) {
+        self.sets.clear();
+        self.bytes = 0;
+        self.entries = 0;
+    }
+
+    fn retain(&mut self, live: &std::collections::HashSet<SegmentKey>) {
+        self.sets.retain(|k, _| live.contains(k));
+        self.entries = self.sets.values().map(HashMap::len).sum();
+        self.bytes = self
+            .sets
+            .values()
+            .flat_map(HashMap::values)
+            .map(|b| b.as_ref().map_or(0, |b| b.len() / 8))
+            .sum();
+    }
+}
+
+fn parents_cache() -> &'static Mutex<ParentsCache> {
+    static CACHE: OnceLock<Mutex<ParentsCache>> = OnceLock::new();
+    CACHE.get_or_init(Mutex::default)
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// At most this many `(segment, filter)` bit sets are cached.
-const MAX_CACHED_PARENTS: usize = 4096;
+/// At most this many bytes of parent bit sets are cached (64 MiB).
+const MAX_CACHED_PARENT_BYTES: usize = 64 << 20;
+
+/// Drops the cached sets of every segment outside `live` (the segments the
+/// open JVM readers hold): called when a reader closes.
+pub(crate) fn retain_parent_sets(live: &std::collections::HashSet<SegmentKey>) {
+    lock(parents_cache()).retain(live);
+}
+
+/// `(entries, bytes)` of the parent bit-set cache, for the plugin's stats.
+pub(crate) fn parent_cache_stats() -> (usize, usize) {
+    let c = lock(parents_cache());
+    (c.entries, c.bytes)
+}
 
 /// A nested query's parent filter: OpenSearch's
 /// `BitsetFilterCache.getBitSetProducer(query)`, a `QueryBitSetProducer`
@@ -570,21 +653,15 @@ pub(crate) struct SharedParents {
 
 impl BitSetProducer for SharedParents {
     fn bit_set(&self, leaf: &OpenSegment<'_>) -> lucene_search::Result<Option<Arc<FixedBitSet>>> {
-        let key = leaf
-            .reader
-            .map(|r| (r.segment_name.clone(), r.segment_id(), self.key.clone()));
-        if let Some(key) = &key {
-            if let Some(hit) = lock(parents_cache()).get(key) {
-                return Ok(hit.clone());
+        let segment = leaf.reader.map(|r| r.segment_id());
+        if let Some(segment) = &segment {
+            if let Some(hit) = lock(parents_cache()).get(segment, &self.key) {
+                return Ok(hit);
             }
         }
         let bits = QueryBitSetProducer::new(self.query.clone()).bit_set(leaf)?;
-        if let Some(key) = key {
-            let mut cache = lock(parents_cache());
-            if cache.len() >= MAX_CACHED_PARENTS {
-                cache.clear();
-            }
-            cache.insert(key, bits.clone());
+        if let Some(segment) = segment {
+            lock(parents_cache()).insert(segment, self.key.clone(), bits.clone());
         }
         Ok(bits)
     }
@@ -848,29 +925,121 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_parent_cache_is_bounded_and_keyed_by_segment_and_filter() {
+    fn the_parent_cache_is_bounded_by_bytes_and_by_the_open_segments() {
         let p = SharedParents {
             key: "aa".into(),
             query: BooleanQuery::default(),
         };
         assert_eq!(p.key(), "parents(aa)");
-        let mut cache = lock(parents_cache());
-        cache.insert(("x".into(), [0; 16], "f".into()), None);
-        assert!(cache.contains_key(&("x".into(), [0; 16], "f".into())));
-        drop(cache);
-        // A full cache is cleared before the next insertion.
+        // A cache of its own: the process-wide one is shared by parallel tests.
+        let mut c = ParentsCache::default();
+        let seg = |n: &str| [n.as_bytes()[0]; 16];
+        let set = |bits: usize| Some(Arc::new(FixedBitSet::new(bits)));
+        c.insert(seg("a"), "f".into(), set(8 * 1024));
+        c.insert(seg("a"), "g".into(), None);
+        c.insert(seg("b"), "f".into(), set(8 * 2048));
+        assert_eq!((c.entries, c.bytes), (3, 3072));
+        assert!(c.get(&seg("a"), "g").is_some_and(|b| b.is_none()));
+        assert!(c.get(&seg("a"), "h").is_none());
+        // Replacing an entry accounts for the old set.
+        c.insert(seg("b"), "f".into(), set(8 * 1024));
+        assert_eq!((c.entries, c.bytes), (3, 2048));
+        // Only the open segments' sets survive a reader closing.
+        c.retain(&[seg("b")].into_iter().collect());
+        assert_eq!((c.entries, c.bytes), (1, 1024));
+        // A set that would pass the byte cap clears the cache first.
+        c.insert(
+            seg("c"),
+            "f".into(),
+            set(8 * (MAX_CACHED_PARENT_BYTES - 512)),
+        );
+        assert_eq!(c.entries, 1);
+        assert!(c.get(&seg("b"), "f").is_none());
+        c.clear();
+        assert_eq!((c.entries, c.bytes), (0, 0));
+    }
+
+    /// The index opened with block 1 (its child, document 1, and root,
+    /// document 2, in the first segment) deleted.
+    fn open_without_block_1(tmp: &TempDir) -> u64 {
+        let dir = FsDirectory::open(tmp.path());
+        let reader = lucene_search::directory_reader::DirectoryReader::open(&dir).unwrap();
+        let name = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .filter(|n| n.starts_with("segments_"))
+            .max()
+            .unwrap();
+        let generation = i64::from_str_radix(&name["segments_".len()..], 36).unwrap();
+        let bytes = std::fs::read(tmp.path().join(&name)).unwrap();
+        let max_docs: Vec<i32> = reader.segment_readers().iter().map(|s| s.max_doc).collect();
+        let words: Vec<u64> = vec![
+            ((1u64 << max_docs[0]) - 1) & !0b110,
+            (1u64 << max_docs[1]) - 1,
+        ];
+        let counts = [1usize, 1];
+        let path = tmp.path().to_str().unwrap();
+        let mut handle = 0u64;
+        // SAFETY: live buffers of the stated lengths.
+        let rc = unsafe {
+            ffi_open_jvm_reader(
+                path.as_ptr().cast(),
+                path.len(),
+                bytes.as_ptr(),
+                bytes.len(),
+                generation,
+                0,
+                max_docs.as_ptr(),
+                max_docs.len(),
+                words.as_ptr(),
+                counts.as_ptr(),
+                &mut handle,
+            )
+        };
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        handle
+    }
+
+    #[test]
+    fn parent_sets_are_shared_across_readers_and_dropped_with_their_segments() {
         let tmp = index("jvm-nodes-cache");
+        let dir = FsDirectory::open(tmp.path());
+        let reader = lucene_search::directory_reader::DirectoryReader::open(&dir).unwrap();
+        let segments: Vec<SegmentKey> = reader
+            .segment_readers()
+            .iter()
+            .map(|r| r.segment_id())
+            .collect();
+        let filter = crate::jvm_reader::hex(&Blob::default().exists("_primary_term").0);
+        let cached = |s: &SegmentKey| lock(parents_cache()).get(s, &filter);
+        assert!(segments.iter().all(|s| cached(s).is_none()));
         let h = open(&tmp);
-        {
-            let mut cache = lock(parents_cache());
-            for i in 0..MAX_CACHED_PARENTS {
-                cache.insert((i.to_string(), [1; 16], "filler".into()), None);
-            }
-        }
-        let (_, total) = search(h, &nested(2, Blob::default().term("c_body", "alpha")));
+        let blob = nested(2, Blob::default().term("c_body", "alpha"));
+        let (first, total) = search(h, &blob);
         assert_eq!(total, 8);
-        assert!(lock(parents_cache()).len() < MAX_CACHED_PARENTS);
-        ffi_close_jvm_reader(h);
+        // Both segments' sets are cached, with the parents the filter matches.
+        for s in &segments {
+            let bits = cached(s).expect("cached").expect("parents");
+            assert_eq!(bits.cardinality(), 6);
+        }
+        // A reader over the same segments with block 1 deleted reuses the sets
+        // (deletions are not in them) and no longer finds that block.
+        let h2 = open_without_block_1(&tmp);
+        let set = cached(&segments[0]).unwrap().unwrap();
+        let (hits, total) = search(h2, &blob);
+        assert_eq!(total, 7);
+        assert!(hits.iter().all(|&(d, _)| d != 2), "{hits:?}");
+        assert!(first.iter().any(|&(d, _)| d == 2), "{first:?}");
+        assert!(Arc::ptr_eq(&set, &cached(&segments[0]).unwrap().unwrap()));
+        // Closing one reader keeps the sets the other still reads; closing the
+        // last drops them.
+        assert_eq!(ffi_close_jvm_reader(h), 0);
+        assert!(segments.iter().all(|s| cached(s).is_some()));
+        assert_eq!(ffi_close_jvm_reader(h2), 0);
+        assert!(segments.iter().all(|s| cached(s).is_none()));
+        // The process-wide counts track the cache (other tests may hold sets).
+        let (entries, bytes) = parent_cache_stats();
+        assert!(entries > 0 || bytes == 0);
     }
 
     fn span(tag: u8) -> Blob {
@@ -1159,6 +1328,16 @@ pub(crate) mod tests {
         bad(
             intervals(src(SOURCE_REPEATING).i32(0).u8(0).raw(&it("a"))),
             "0 copies",
+        );
+        // Each copy is an iterator and its cached positions: bounded as the
+        // clauses Java's `Intervals.ordered` could have deduplicated.
+        bad(
+            intervals(src(SOURCE_REPEATING).i32(5000).u8(0).raw(&it("a"))),
+            "5000 copies",
+        );
+        bad(
+            intervals(src(SOURCE_REPEATING).i32(i32::MAX).u8(0).raw(&it("a"))),
+            "copies",
         );
         bad(
             intervals(src(SOURCE_REPEATING).i32(2).u8(7).raw(&it("a"))),

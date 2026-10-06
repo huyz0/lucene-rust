@@ -577,10 +577,17 @@ type ScoreParts<'a> = (BoxScorer<'a>, BoxDoubleValues<'a>, Rc<Cell<f32>>, bool);
 fn score_parts<'a>(
     ctx: &LeafContext<'a>,
     q: &FunctionScoreQuery,
+    sub_boost: f32,
 ) -> Result<Option<ScoreParts<'a>>> {
     let source = rewritten(ctx, &q.source)?;
     let needs_scores = source.needs_scores();
-    let Some(inner) = build::build(ctx, &q.in_query, 1.0, inner_mode(source.as_ref()), false)?
+    let Some(inner) = build::build(
+        ctx,
+        &q.in_query,
+        sub_boost,
+        inner_mode(source.as_ref()),
+        false,
+    )?
     else {
         return Ok(None);
     };
@@ -602,7 +609,14 @@ pub(crate) fn function_score<'a>(
     if !mode.needs_scores() {
         return build::build(ctx, &q.in_query, 1.0, Mode::NoScores, top_level);
     }
-    let Some((inner, values, score, needs_scores)) = score_parts(ctx, q)? else {
+    // A source that takes the weight's boost onto the wrapped query
+    // (OpenSearch's function score) scores its own value unboosted.
+    let (sub_boost, boost) = if q.source.boosts_wrapped_query() {
+        (boost, 1.0)
+    } else {
+        (1.0, boost)
+    };
+    let Some((inner, values, score, needs_scores)) = score_parts(ctx, q, sub_boost)? else {
         return Ok(None);
     };
     // Without its scores the wrapped scorer's batch must not compute any:
@@ -809,12 +823,27 @@ fn explain_function(
         }
         // `FunctionScoreWeight.explain`.
         ExtendedQuery::FunctionScore(q) => {
-            let score_explanation = explain_in(ctx, &q.in_query, doc)?;
+            // As `function_score`: such a source's boost is its wrapped query's.
+            let (sub_boost, boost) = if q.source.boosts_wrapped_query() {
+                (boost, 1.0)
+            } else {
+                (1.0, boost)
+            };
+            let score_explanation = if sub_boost == 1.0 {
+                explain_in(ctx, &q.in_query, doc)?
+            } else {
+                let boosted = crate::query::Clause::Boost(Box::new(crate::query::BoostQuery::new(
+                    (*q.in_query).clone(),
+                    sub_boost,
+                )));
+                explain_in(ctx, &boosted, doc)?
+            };
             if !score_explanation.matched {
                 return Ok(score_explanation);
             }
             let source = rewritten(ctx, &q.source)?;
-            let Some((mut inner, mut values, cell, needs_scores)) = score_parts(ctx, q)? else {
+            let Some((mut inner, mut values, cell, needs_scores)) = score_parts(ctx, q, sub_boost)?
+            else {
                 return Ok(score_explanation);
             };
             inner.advance(doc)?;

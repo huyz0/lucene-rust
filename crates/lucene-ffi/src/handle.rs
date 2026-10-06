@@ -320,6 +320,11 @@ impl<T> SlotMap<T> {
     /// (with the generation bumped on the *next* `insert`, not here — a
     /// concurrent removed-but-not-yet-reused handle still fails `get`
     /// because `value` is `None`).
+    /// Every live value, in slot order.
+    pub fn values(&self) -> impl Iterator<Item = &T> {
+        self.slots.iter().filter_map(|s| s.value.as_ref())
+    }
+
     pub fn remove(&mut self, handle: u64) -> Option<T> {
         let (tag, shard, index, generation) = unpack(handle);
         if tag != self.tag as u8 || shard != self.shard {

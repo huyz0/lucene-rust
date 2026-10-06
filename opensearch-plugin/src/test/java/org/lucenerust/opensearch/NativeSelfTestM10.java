@@ -119,6 +119,12 @@ final class NativeSelfTestM10 {
         root.add(new NumericDocValuesField("_seq_no", id));
         root.add(new TextField("title", text(r, 6), Field.Store.NO));
         root.add(new SortedNumericDocValuesField("pos", 1 + r.nextInt(1000)));
+        // random_score over a multi-valued long with negatives (hashed as the bytewise smallest
+        // decimal string) and a boolean.
+        for (int i = 0, n = r.nextInt(4); i < n; i++) {
+            root.add(new SortedNumericDocValuesField("ml", r.nextInt(400) - 200));
+        }
+        root.add(new SortedNumericDocValuesField("flag", r.nextInt(2)));
         docs.add(root);
         return docs;
     }
@@ -155,7 +161,37 @@ final class NativeSelfTestM10 {
                     add(queries, shapes, "combined_fields", roots(combined(r)));
                     add(queries, shapes, "function_score", roots(functionScore(r)));
                 }
-                // Each beside a scored clause and as a filter.
+                // Each inside a boosted boolean (a boost from an ancestor, which OpenSearch's
+                // function score hands to its sub-query), beside a scored clause and as a filter.
+                int base = queries.size();
+                for (int q = 0; q < base; q += 2) {
+                    add(
+                        queries,
+                        shapes,
+                        shapes.get(q),
+                        new BoostQuery(
+                            new BooleanQuery.Builder().add(queries.get(q), Occur.MUST)
+                                .add(new TermQuery(new Term("body", word(r))), Occur.SHOULD)
+                                .build(),
+                            0.5f + r.nextInt(4)
+                        )
+                    );
+                }
+                for (CombineFunction combine : new CombineFunction[] { CombineFunction.SUM, CombineFunction.REPLACE }) {
+                    Query fs = new FunctionScoreQuery(
+                        new TermQuery(new Term("body", word(r))),
+                        FunctionScoreQuery.ScoreMode.SUM,
+                        new ScoreFunction[] { new WeightFactorFunction(3f) },
+                        combine,
+                        null,
+                        Float.MAX_VALUE
+                    );
+                    Query wrapped = new BooleanQuery.Builder().add(fs, Occur.MUST).add(new TermQuery(new Term("body", word(r))), Occur.SHOULD).build();
+                    add(queries, shapes, "function_score", new BoostQuery(wrapped, 2f));
+                    add(queries, shapes, "function_score", roots(new BoostQuery(wrapped, 2f)));
+                    // No functions: the sub-query's score, or 0 under replace.
+                    add(queries, shapes, "function_score", new BoostQuery(new FunctionScoreQuery(new TermQuery(new Term("body", word(r))), null, FunctionScoreQuery.ScoreMode.FIRST, new ScoreFunction[0], combine, null, Float.MAX_VALUE), 1.5f));
+                }
                 int n = queries.size();
                 for (int q = 0; q < n; q += 3) {
                     Query inner = queries.get(q);
@@ -178,8 +214,12 @@ final class NativeSelfTestM10 {
                 }
                 compare.run("m10 round " + round + " (" + reader.leaves().size() + " segments, " + reader.numDeletedDocs() + " deleted)", reader, readers, queries);
             }
+            long[] parents = NativeBridge.parentCacheStats();
+            check.accept(parents[0] > 0 && parents[1] > 0, "m10: nested parent sets cached natively: " + java.util.Arrays.toString(parents));
             reader.close();
             check.accept(readers.openCount() == 0, "m10: no native readers left open");
+            parents = NativeBridge.parentCacheStats();
+            check.accept(parents[0] == 0 && parents[1] == 0, "m10: closing the last reader drops its parent sets: " + java.util.Arrays.toString(parents));
         }
         try (Stream<Path> s = Files.walk(dir)) {
             s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
@@ -370,7 +410,19 @@ final class NativeSelfTestM10 {
                 new SortedNumericIndexFieldData("pos", IndexNumericFieldData.NumericType.LONG)
             );
             case 3 -> new RandomScoreFunction(r.nextInt(), r.nextInt(), null);
-            case 4 -> new RandomScoreFunction(r.nextInt(), r.nextInt(), new SortedNumericIndexFieldData("_seq_no", IndexNumericFieldData.NumericType.LONG));
+            case 4 -> new RandomScoreFunction(r.nextInt(), r.nextInt(), switch (r.nextInt(5)) {
+                case 0 -> new SortedNumericIndexFieldData("_seq_no", IndexNumericFieldData.NumericType.LONG);
+                case 1 -> new SortedNumericIndexFieldData("ml", IndexNumericFieldData.NumericType.LONG);
+                case 2 -> new SortedNumericIndexFieldData("flag", IndexNumericFieldData.NumericType.BOOLEAN);
+                case 3 -> new SortedNumericIndexFieldData("pos", IndexNumericFieldData.NumericType.DATE);
+                default -> new org.opensearch.index.fielddata.plain.SortedSetOrdinalsIndexFieldData(
+                    new org.opensearch.index.fielddata.IndexFieldDataCache.None(),
+                    "kw",
+                    org.opensearch.search.aggregations.support.CoreValuesSourceType.BYTES,
+                    new org.opensearch.core.indices.breaker.NoneCircuitBreakerService(),
+                    org.opensearch.index.fielddata.plain.AbstractLeafOrdinalsFieldData.DEFAULT_SCRIPT_FUNCTION
+                );
+            });
             case 5 -> new WeightFactorFunction(
                 2f,
                 new FieldValueFactorFunction(

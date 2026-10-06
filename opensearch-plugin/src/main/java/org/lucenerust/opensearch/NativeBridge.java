@@ -118,6 +118,7 @@ public final class NativeBridge {
                 ADDRESS
             )
         );
+        static final MethodHandle PARENT_CACHE_STATS = bind("ffi_jvm_parent_cache_stats", FunctionDescriptor.of(JAVA_INT, ADDRESS));
         static final MethodHandle DOC_FREQ = bind(
             "ffi_jvm_reader_doc_freq",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
@@ -406,6 +407,20 @@ public final class NativeBridge {
     public static int abiVersion() {
         try {
             return (int) Abi.VERSION.invokeExact();
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * The native parent bit-set cache of {@code nested} queries: {@code [entries, bytes]}, or
+     * {@code [-1, -1]} if the call fails.
+     */
+    public static long[] parentCacheStats() {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment out = s.alloc(2 * Long.BYTES);
+            int rc = (int) H.PARENT_CACHE_STATS.invokeExact(out);
+            return rc == OK ? new long[] { out.get(JAVA_LONG, 0), out.get(JAVA_LONG, Long.BYTES) } : new long[] { -1, -1 };
         } catch (Throwable t) {
             throw rethrow(t);
         }

@@ -331,21 +331,37 @@ grouping. Each of them falls back to Lucene today.
   with `min_score`, scripts (`script_score`, script functions, the intervals
   `script` filter), geo decays, field data other than plain sorted-numeric
   doc values (keyword for `random_score`), a `span_near` with `span_gap`.
+  OpenSearch's function score takes every boost from above (a
+  `BoostQuery`, a boosted `bool`, `dis_max` or `nested`) onto its
+  sub-query (`DoubleValuesSource::boosts_wrapped_query`), as its
+  `createWeight` does; `random_score` on a long, boolean or date field
+  hashes the bytewise smallest `Long.toString` of the document's values; a
+  repeating interval source's copies are capped at the clause limit; the
+  nested parent bit sets are capped at 64 MiB, dropped when the last reader
+  holding their segment closes, and reported in the plugin stats.
   Proven in process by `NativeSelfTestM10` (`gradle -p opensearch-plugin
-  selfTest`): 1,068 queries -- 216 `nested`, 212 span, 212 `intervals`, 216
-  `combined_fields`, 212 `function_score`, alone, beside a scored clause and
-  as filters, on an NRT block index with OpenSearch's nested layout and
-  whole-block deletions over four refreshes and a force merge -- every one
-  encoded and compared with Lucene by `NativeSelfTest.compare` (top hits,
-  counts and the total-hits threshold, sorted pages, `terminate_after`,
-  `min_score`, aggregations): 13,479 of 13,479 compared scores bit-exact,
-  0 failures. Seen to fail when a decoder mapped `Max` to `Total`, offset
-  `span_first`'s end by one, or skewed the `sum` boost mode by 0.1%.
-  Rust unit tests `jvm_nodes::tests`, `jvm_function_score::tests` (lines
-  99.5% and 98.8%). The REST matrix gained `e2e/m10_matrix.py` (44 rows on
-  the main indices, 11 `nested` rows, 3 on a parent-join index), and `mlt` joined
-  the YAML suites `scripts/verify-opensearch.sh --yaml` runs; neither has
-  been run (Docker unavailable where this was done).
+  selfTest`): 1,632 queries -- 320 `nested`, 316 span, 320 `intervals`,
+  324 `combined_fields`, 352 `function_score`, alone, inside a boosted
+  boolean, beside a scored clause and as filters, on an NRT block index with
+  OpenSearch's nested layout and whole-block deletions over four refreshes
+  and a force merge -- every one encoded and compared with Lucene by
+  `NativeSelfTest.compare` (top hits, counts and the total-hits threshold,
+  sorted pages, `terminate_after`, `min_score`, aggregations): 20,387 of
+  20,387 compared scores bit-exact, 0 failures. Seen to fail when a decoder
+  mapped `Max` to `Total`, offset `span_first`'s end by one, skewed the
+  `sum` boost mode by 0.1%, applied an ancestor's boost to the combined
+  score (3,019 failures) or hashed a multi-valued long's smallest number
+  (144). Rust unit tests `jvm_nodes::tests`, `jvm_function_score::tests`,
+  `function::tests::a_source_may_take_the_boost_onto_its_wrapped_query`.
+  The REST matrix `e2e/m10_matrix.py` (46 rows on the main indices, 12
+  `nested` rows, 3 on a parent-join index; `mlt` joined the YAML suites)
+  runs in CI's real-node job: its first run (on the first T10.7 commit)
+  passed every row but two, now fixed -- a `nested` row ranging over an
+  `integer` field (a 4-byte points range, `points_width`, now its own row)
+  and a `field_value_factor` row the stock engine itself failed (a missing
+  value) -- and showed `more_like_this`, `common` and `parent_id` native,
+  `has_child`/`has_parent` falling back as
+  `query_GlobalOrdinalsWithScoreQuery`, which the rows now pin.
 
 ## Stage-3 status (2026-10-06)
 

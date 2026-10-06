@@ -284,6 +284,16 @@ pub trait DoubleValuesSource: Send + Sync {
         Ok(None)
     }
 
+    /// Whether a [`crate::function::FunctionScoreQuery`] scoring through this
+    /// source hands its weight's boost to the wrapped query's weight and
+    /// scores the value unboosted -- OpenSearch's `FunctionScoreQuery`
+    /// (`createWeight` passes `boost` to `subQuery.createWeight`), not
+    /// Lucene's, which multiplies the value by it. `false` unless
+    /// overridden.
+    fn boosts_wrapped_query(&self) -> bool {
+        false
+    }
+
     /// The queries the source scores, whose reader-wide statistics a search
     /// gathers.
     fn queries(&self) -> Vec<&crate::query::Clause> {
