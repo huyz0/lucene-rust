@@ -1,0 +1,19 @@
+# lucene-rust's own test dictionary: FLAG UTF-8 with non-ASCII flags, AM aliases.
+SET UTF-8
+FLAG UTF-8
+AM 3
+AM po:noun is:sg
+AM po:verb
+AM po:noun ph:katz
+COMPOUNDFLAG ж
+COMPOUNDMIN 2
+
+SFX Ä Y 1
+SFX Ä 0 s .
+
+SFX 鳥 Y 2
+SFX 鳥 0 ed [^e]
+SFX 鳥 0 d e
+
+PFX ж Y 1
+PFX ж 0 un .

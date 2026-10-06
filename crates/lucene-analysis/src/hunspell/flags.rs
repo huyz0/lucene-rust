@@ -104,25 +104,38 @@ impl FlagParsing {
         }
     }
 
-    /// `FlagParsingStrategy.printFlag`.
-    pub(crate) fn print_flag(self, flag: u16) -> String {
+    /// `FlagParsingStrategy.printFlag`, as UTF-16 units.
+    fn print_flag_units(self, flag: u16) -> Vec<u16> {
         match self {
-            FlagParsing::Num => flag.to_string(),
-            FlagParsing::DoubleAscii => String::from_utf16_lossy(&[flag >> 8, flag & 0xff]),
-            FlagParsing::Simple | FlagParsing::DefaultAsUtf8 => String::from_utf16_lossy(&[flag]),
+            FlagParsing::Num => flag.to_string().encode_utf16().collect(),
+            FlagParsing::DoubleAscii => vec![flag >> 8, flag & 0xff],
+            FlagParsing::Simple | FlagParsing::DefaultAsUtf8 => vec![flag],
         }
     }
 
+    /// `FlagParsingStrategy.printFlag` (a lone surrogate flag is U+FFFD).
+    pub(crate) fn print_flag(self, flag: u16) -> String {
+        String::from_utf16_lossy(&self.print_flag_units(flag))
+    }
+
     /// `FlagParsingStrategy.printFlags`: internal flags dropped, the rest
-    /// printed and sorted (`,`-joined for `num`).
+    /// printed and sorted (`,`-joined for `num`). Joined as Java joins
+    /// them, before any conversion: the two `char` flags `FLAG UTF-8` makes
+    /// of a character outside the BMP sort next to each other and print as
+    /// that character.
     pub(crate) fn print_flags(self, flags: &[u16]) -> String {
-        let mut printed: Vec<String> = flags
+        let mut printed: Vec<Vec<u16>> = flags
             .iter()
             .filter(|&&f| f < DEFAULT_FLAGS)
-            .map(|&f| self.print_flag(f))
+            .map(|&f| self.print_flag_units(f))
             .collect();
-        printed.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
-        printed.join(if self == FlagParsing::Num { "," } else { "" })
+        printed.sort();
+        let sep: &[u16] = if self == FlagParsing::Num {
+            &[0x2C]
+        } else {
+            &[]
+        };
+        String::from_utf16_lossy(&printed.join(sep))
     }
 }
 

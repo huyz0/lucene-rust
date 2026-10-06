@@ -46,7 +46,7 @@ import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
  * {@code TimeoutPolicy.NO_TIMEOUT}, a {@code Suggester} with {@code
  * NGramFragmentChecker.fromAllSimpleWords(2)} and {@code proceedPastRep()}, and whether {@code
  * NGramFragmentChecker.fromWords(3, roots)} finds an impossible fragment in the word (a suggester
- * that throws writes {@code !} and the exception class). Per root,
+ * that throws, or a checker Lucene cannot build, writes {@code !} and the exception class). Per root,
  * {@code E  root  lookupEntries  getAllWordForms}; per dictionary, {@code G  generateAllSimpleWords}.
  * A dictionary Lucene refuses writes {@code X  exception-class  message}. Deterministic.
  */
@@ -116,6 +116,34 @@ public class GenHunspell {
     return text.contains("SET UTF-8") ? "UTF-8" : "ISO-8859-1";
   }
 
+  /**
+   * The text with each unpaired surrogate written as U+FFFD, as the port's {@code String} carries
+   * it (a flag outside the BMP splits into two {@code char} flags under {@code FLAG UTF-8}).
+   */
+  static String fix(CharSequence s) {
+    StringBuilder b = new StringBuilder();
+    for (int i = 0; i < s.length(); i++) {
+      char c = s.charAt(i);
+      if (Character.isHighSurrogate(c)
+          && i + 1 < s.length()
+          && Character.isLowSurrogate(s.charAt(i + 1))) {
+        b.append(c).append(s.charAt(++i));
+      } else {
+        b.append(Character.isSurrogate(c) ? '\uFFFD' : c);
+      }
+    }
+    return b.toString();
+  }
+
+  /** Whether the checker finds an impossible fragment, or {@code !} and what it threw. */
+  static String fragment(NGramFragmentChecker checker, String w) {
+    try {
+      return checker.hasImpossibleFragmentAround(w, 0, w.length()) ? "1" : "0";
+    } catch (RuntimeException e) {
+      return "!" + e.getClass().getSimpleName();
+    }
+  }
+
   static InputStream in(byte[] b) {
     return new ByteArrayInputStream(b);
   }
@@ -145,7 +173,7 @@ public class GenHunspell {
         } catch (Exception e) {
           sb.append("X\t").append(e.getClass().getSimpleName()).append('\t')
               .append(String.valueOf(e.getMessage()).replace('\n', ' ')).append('\n');
-          Files.writeString(out.resolve(name + (ignoreCase ? ".ic.tsv" : ".tsv")), sb.toString(),
+          Files.writeString(out.resolve(name + (ignoreCase ? ".ic.tsv" : ".tsv")), fix(sb),
               StandardCharsets.UTF_8);
           continue;
         }
@@ -180,11 +208,27 @@ public class GenHunspell {
             words.add("" + w.charAt(1) + w.charAt(0) + w.substring(2));
           }
         }
-        Suggester tuned =
-            new Suggester(d)
-                .withFragmentChecker(NGramFragmentChecker.fromAllSimpleWords(2, d, () -> {}))
-                .proceedPastRep();
-        NGramFragmentChecker fromRoots = NGramFragmentChecker.fromWords(3, rootWords);
+        // An n-gram checker Lucene cannot build ("Too many collisions") makes
+        // its column `!` and the exception class.
+        String tunedError = null;
+        Suggester tunedOrNull = null;
+        try {
+          tunedOrNull =
+              new Suggester(d)
+                  .withFragmentChecker(NGramFragmentChecker.fromAllSimpleWords(2, d, () -> {}))
+                  .proceedPastRep();
+        } catch (RuntimeException e) {
+          tunedError = "!" + e.getClass().getSimpleName();
+        }
+        Suggester tuned = tunedOrNull;
+        String rootsError = null;
+        NGramFragmentChecker fromRootsOrNull = null;
+        try {
+          fromRootsOrNull = NGramFragmentChecker.fromWords(3, rootWords);
+        } catch (RuntimeException e) {
+          rootsError = "!" + e.getClass().getSimpleName();
+        }
+        NGramFragmentChecker fromRoots = fromRootsOrNull;
         WordFormGenerator gen = new WordFormGenerator(d);
         for (String w : words) {
           if (w.isEmpty()) continue;
@@ -198,8 +242,13 @@ public class GenHunspell {
               .append('\t').append(join(h.getRoots(w)))
               .append('\t').append(join(analyses))
               .append('\t').append(suggestions(() -> h.suggest(w)))
-              .append('\t').append(suggestions(() -> tuned.suggestNoTimeout(w, () -> {})))
-              .append('\t').append(fromRoots.hasImpossibleFragmentAround(w, 0, w.length()) ? 1 : 0)
+              .append('\t')
+              .append(tuned == null ? tunedError : suggestions(() -> tuned.suggestNoTimeout(w, () -> {})))
+              .append('\t')
+              .append(
+                  fromRoots == null
+                      ? rootsError
+                      : fragment(fromRoots, w))
               .append('\n');
         }
         for (String r : rootWords) {
@@ -210,7 +259,7 @@ public class GenHunspell {
         List<String> all = new ArrayList<>();
         gen.generateAllSimpleWords(aw -> all.add(aw.toString()), () -> {});
         sb.append("G\t").append(join(all)).append('\n');
-        Files.writeString(out.resolve(name + (ignoreCase ? ".ic.tsv" : ".tsv")), sb.toString(),
+        Files.writeString(out.resolve(name + (ignoreCase ? ".ic.tsv" : ".tsv")), fix(sb),
             StandardCharsets.UTF_8);
       }
     }
