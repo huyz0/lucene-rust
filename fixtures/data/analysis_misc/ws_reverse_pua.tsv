@@ -1,0 +1,31 @@
+T	0	A	0	1	1	1	word	0	-	0	1
+T	0	AB	2	4	1	1	word	0	-	0	1
+T	0	ABC	5	8	1	1	word	0	-	0	1
+T	0	ABCD	9	13	1	1	word	0	-	0	1
+T	0	fedcba	14	20	1	1	word	0	-	0	1
+E	0	20	20	0
+T	1	经易	0	2	1	1	word	0	-	0	1
+T	1	符字文中	3	7	1	1	word	0	-	0	1
+T	1	語本日	8	11	1	1	word	0	-	0	1
+E	1	11	11	0
+T	2	😀	0	2	1	1	word	0	-	0	1
+T	2	a😀	3	6	1	1	word	0	-	0	1
+T	2	😀a	7	10	1	1	word	0	-	0	1
+T	2	b😀a	11	15	1	1	word	0	-	0	1
+T	2	😁😀	16	20	1	1	word	0	-	0	1
+T	2	😁a😀	21	26	1	1	word	0	-	0	1
+T	2	a😁😀	27	32	1	1	word	0	-	0	1
+T	2	😁😀ba	33	39	1	1	word	0	-	0	1
+T	2	dc😁ba😀	40	48	1	1	word	0	-	0	1
+E	2	48	48	0
+T	3	😂😁😀	0	6	1	1	word	0	-	0	1
+T	3	y😁😀x	7	13	1	1	word	0	-	0	1
+E	3	13	13	0
+T	4	édöcïnÜ	0	7	1	1	word	0	-	0	1
+T	4	evïan	8	13	1	1	word	0	-	0	1
+T	4	edaçaf	14	20	1	1	word	0	-	0	1
+T	4	émusér	21	27	1	1	word	0	-	0	1
+E	4	27	27	0
+E	5	0	0	0
+T	6	elgnis	0	6	1	1	word	0	-	0	1
+E	6	6	6	0

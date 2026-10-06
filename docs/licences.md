@@ -106,7 +106,7 @@ a dependency the shipped library links is not under a licence listed here.
   (and its frozen copy `snowball-seed.txt`, which seeds `GenSnowball`),
   is written for this project (Apache-2.0); the few well-known pangrams in it
   are short phrases in common use. Test data only.
-- **The synonym, classic and language fixtures' inputs** (M11), `fixtures/corpus/analysis-classic.txt`, `analysis-lang.txt`, `analysis-synonym.txt`,
+- **The synonym, classic, language and compound fixtures' inputs** (M11), `fixtures/corpus/analysis-classic.txt`, `analysis-compound.txt`, `hyphenation-test.xml` (a toy grammar, not a real language's patterns), `analysis-lang.txt`, `analysis-synonym.txt`,
   `synonyms-solr.txt` and `synonyms-wordnet.txt`, are written for this project
   (Apache-2.0); the WordNet file uses only WordNet's `wn_s.pl` line *format*,
   none of its synsets. Test data only.
