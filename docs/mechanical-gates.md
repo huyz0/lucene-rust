@@ -710,6 +710,16 @@ segment it had never opened. Every rule above was verified by introducing the
 defect it targets, watching it fire, and reverting; `c41-gates-and-record.md`
 records the exact edit and the exact message for each.
 
+## The Snowball stemmers' gates (M11)
+
+Not in `scripts/gate.sh` (they download pinned inputs and need a C compiler);
+CI job `snowball vocabularies`.
+
+| gate | where | catches | seen to fail by | blind to |
+|---|---|---|---|---|
+| generated stemmers | `scripts/check-snowball-generated.sh` | a file under `lucene-analysis/src/snowball/algorithms` that is not byte for byte `tools/gen_snowball.sh`'s output over the Snowball sources at `34f3612e` (a hand edit, a generator change nobody re-ran); Snowball sources or Lucene's sources jar other than the pinned ones (SHA-256 over the source tree file by file, and of the jar); the compiler's Java backend no longer reproducing Lucene's stemmers | one space inserted into `english.rs`'s first `slice_from` (`189c189 < env.slice_from(&[89]); > env.slice_from(&[ 89]);`) | whether the generator's four rewrites are *right* (the fixtures and the vocabularies are); the runtime, `program.rs`, which is written by hand |
+| snowball vocabularies | `scripts/check-snowball-vocabulary.sh` -> `tests/snowball_vocabulary.rs` (skipped without `SNOWBALL_DATA`) | a stem of any of the 11.3 million snowball-data `f08c4d63` words that differs from its `output.txt` (where Lucene 10.5.0's own stemmers agree word for word); a moved data file (SHA-256 per file) | one Danish `output.txt` line changed (`Danish: 1 of 23830 differ, first ["adami -> adami (snowball-data: adamix)"]`) | words outside the vocabularies (the committed fixtures cover the synthetic ones); the filter around the stemmer (`SnowballFilter`, which the committed fixtures run) |
+
 ## The OpenSearch plugin's gates (M2)
 
 These are not in `scripts/gate.sh` — they need a JVM, Docker, or a nightly
