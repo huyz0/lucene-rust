@@ -4,13 +4,22 @@
 //!
 //! The filter is its own `TokenStream` (Java's does not share its input's
 //! attributes), so the output's attributes are its own cleared set plus the
-//! term, offsets and increment it writes. Java's lazy
-//! `LimitedFiniteStringsIterator` is drained into a list on the first
-//! `incrementToken` (the iterator borrows the automaton); the strings and
-//! their order are the same.
+//! term, offsets and increment it writes. The strings are produced one per
+//! `incrementToken`, as Java's `LimitedFiniteStringsIterator` produces them:
+//! the filter keeps the automaton and a `LimitedFiniteStringsCursor` over it
+//! (up to `maxGraphExpansions` paths, each as long as the input, are never
+//! held at once).
+//!
+//! Each label becomes one byte (`Util.toBytesRef`'s `(byte)` cast), so a
+//! separator above U+007F reaches the index as its low byte, as in Java
+//! (which also escapes term bytes equal to `(byte) separator`). Where those
+//! bytes are not UTF-8 the token carries them as its binary term
+//! ([`AttributeSource::set_bytes_term`], Java's
+//! `BytesRefBuilderTermAttribute`); Java's `CharTermAttribute` copy of them is
+//! a lenient decode no index reads.
 
 use lucene_util::automaton::{
-    operations, Automaton, LimitedFiniteStringsIterator, Transition, TransitionAccessor,
+    operations, Automaton, LimitedFiniteStringsCursor, Transition, TransitionAccessor,
     DEFAULT_DETERMINIZE_WORK_LIMIT,
 };
 
@@ -35,8 +44,8 @@ pub struct ConcatenateGraphFilter<I> {
     token_separator: Option<char>,
     preserve_position_increments: bool,
     max_graph_expansions: i32,
-    strings: Option<Vec<Vec<i32>>>,
-    next: usize,
+    /// The determinized graph and the cursor over its finite strings.
+    strings: Option<(Automaton, LimitedFiniteStringsCursor)>,
     was_reset: bool,
     end_offset: i32,
 }
@@ -63,7 +72,6 @@ impl<I: TokenStream> ConcatenateGraphFilter<I> {
             preserve_position_increments,
             max_graph_expansions,
             strings: None,
-            next: 0,
             was_reset: false,
             end_offset: -1,
         }
@@ -73,8 +81,9 @@ impl<I: TokenStream> ConcatenateGraphFilter<I> {
     pub fn to_automaton(&mut self) -> Result<Automaton, AnalysisError> {
         let mut tsta = TokenStreamToAutomaton::new();
         if let Some(sep) = self.token_separator {
-            // Java: EscapingTokenStreamToAutomaton doubles a separator byte.
-            let sep_label = u8::try_from(u32::from(sep)).map_err(illegal)?;
+            // Java: EscapingTokenStreamToAutomaton doubles a separator byte;
+            // `(byte) sepLabel` keeps the low byte.
+            let sep_label = (u32::from(sep) & 0xFF) as u8;
             tsta.set_change_token(move |bytes: &[u8]| {
                 let mut out = Vec::with_capacity(bytes.len());
                 for &b in bytes {
@@ -143,29 +152,30 @@ impl<I: TokenStream> TokenStream for ConcatenateGraphFilter<I> {
                 ));
             }
             let automaton = self.to_automaton()?;
-            let mut it = LimitedFiniteStringsIterator::new(&automaton, self.max_graph_expansions)
+            let cursor = LimitedFiniteStringsCursor::new(&automaton, self.max_graph_expansions)
                 .map_err(illegal)?;
-            let mut all = Vec::new();
-            while let Some(s) = it.next_string().map_err(illegal)? {
-                all.push(s);
-            }
-            self.strings = Some(all);
-            self.next = 0;
+            self.strings = Some((automaton, cursor));
             self.end_offset = self.input.attributes().end_offset();
         }
-        let strings = self.strings.as_ref().expect("filled above");
-        let Some(string) = strings.get(self.next) else {
+        let (automaton, cursor) = self.strings.as_mut().expect("filled above");
+        let Some(string) = cursor.next_string(automaton).map_err(illegal)? else {
             return Ok(false);
         };
         // Util.toBytesRef: each label is a byte.
-        let bytes: Vec<u8> = string.iter().map(|&l| l as u8).collect();
-        self.next += 1;
+        let bytes: Vec<u8> = string.iter().map(|&l| (l & 0xFF) as u8).collect();
+        let stacked = cursor.size() > 1;
         self.atts.clear_attributes();
-        if self.next > 1 {
+        if stacked {
             self.atts.set_position_increment(0)?;
         }
         self.atts.set_offset(0, self.end_offset)?;
-        self.atts.set_term(&String::from_utf8_lossy(&bytes));
+        match String::from_utf8(bytes) {
+            Ok(term) => self.atts.set_term(&term),
+            Err(e) => {
+                self.atts.set_term(&String::from_utf8_lossy(e.as_bytes()));
+                self.atts.set_bytes_term(Some(e.into_bytes()));
+            }
+        }
         Ok(true)
     }
 
@@ -225,6 +235,34 @@ mod tests {
         assert_eq!(render(&mut f), "a\u{1F}\u{1F}b:0:0:1:1|0|0");
     }
 
+    /// Java casts the separator to a byte (`(byte) sepLabel` when escaping,
+    /// `Util.toBytesRef`'s `(byte)` per label), so a separator above U+007F
+    /// reaches the index as that raw byte; Lucene 10.5.0 gives `61 e9 62`
+    /// for `é` and `61 00 62` for U+0100 over `a b`.
+    #[test]
+    fn separators_above_ascii_are_raw_bytes() {
+        let run = |sep: char, spec: &str| -> Vec<Vec<u8>> {
+            let mut f =
+                ConcatenateGraphFilter::with_options(Canned::parse(spec), Some(sep), true, 100);
+            let mut out = Vec::new();
+            crate::token_stream::consume(&mut f, |a| out.push(a.term_bytes().to_vec())).unwrap();
+            out
+        };
+        let ab = "a:0:1:1:1 b:2:3:1:1|3|0";
+        assert_eq!(run('\u{e9}', ab), vec![vec![0x61, 0xE9, 0x62]]);
+        assert_eq!(run('\u{ff}', ab), vec![vec![0x61, 0xFF, 0x62]]);
+        assert_eq!(run('\u{100}', ab), vec![vec![0x61, 0x00, 0x62]]);
+        assert_eq!(run('\u{141}', ab), vec![vec![0x61, 0x41, 0x62]]);
+        assert_eq!(run('\u{1F}', ab), vec![vec![0x61, 0x1F, 0x62]]);
+        // A term byte equal to the separator byte is doubled.
+        let mut c = Canned::parse("x:0:1:1:1");
+        c.set_terms(&["\u{e9}"]);
+        let mut f = ConcatenateGraphFilter::with_options(c, Some('\u{a9}'), true, 100);
+        let mut out = Vec::new();
+        crate::token_stream::consume(&mut f, |a| out.push(a.term_bytes().to_vec())).unwrap();
+        assert_eq!(out, vec![vec![0xC3, 0xA9, 0xA9]]);
+    }
+
     #[test]
     fn contract() {
         let mut f = ConcatenateGraphFilter::new(Canned::parse("a:0:1:1:1|1|0"));
@@ -239,6 +277,8 @@ mod tests {
             10,
         );
         f.reset().unwrap();
-        assert!(f.increment_token().is_err(), "a separator above a byte");
+        assert!(f.increment_token().unwrap(), "the separator's low byte");
+        assert_eq!(f.attributes().term_bytes(), b"a");
+        assert!(!f.increment_token().unwrap());
     }
 }

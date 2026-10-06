@@ -249,6 +249,10 @@ public class GenAnalysisCommon {
     c.put("std_fingerprint", () -> chain(StandardTokenizer::new, t -> new FingerprintFilter(new LowerCaseFilter(t))));
     c.put("std_fingerprint_small", () -> chain(StandardTokenizer::new, t -> new FingerprintFilter(t, 20, '_')));
     c.put("std_concatenate_graph", () -> chain(StandardTokenizer::new, ConcatenateGraphFilter::new));
+    // A word-delimiter graph: up to DEFAULT_MAX_GRAPH_EXPANSIONS paths, produced one at a time.
+    c.put("ws_wdgf_concatenate_graph", () -> chain(WhitespaceTokenizer::new,
+        t -> new ConcatenateGraphFilter(new WordDelimiterGraphFilter(t,
+            WordDelimiterGraphFilter.GENERATE_WORD_PARTS | WordDelimiterGraphFilter.CATENATE_ALL, null))));
     c.put("ws_delimited_term_frequency", () -> chain(WhitespaceTokenizer::new, DelimitedTermFrequencyTokenFilter::new));
     c.put("ws_protected_term", () -> chain(WhitespaceTokenizer::new,
         t -> new ProtectedTermFilter(set(false, "BROWN", "The"), t, in -> new LowerCaseFilter(in))));
@@ -623,6 +627,33 @@ public class GenAnalysisCommon {
     Files.writeString(out.resolve("regex_ci.words"), ci.toString(), StandardCharsets.UTF_8);
   }
 
+
+  /**
+   * {@code ConcatenateGraphFilter} with separators that are not ASCII (Java casts the separator to
+   * a byte when escaping and when writing the label) over a few inputs: "sep\tinput\tbytes|...".
+   * The bytes are {@code TermToBytesRefAttribute}'s, what an index receives.
+   */
+  static void writeConcatenateFixtures(Path out) throws Exception {
+    StringBuilder b = new StringBuilder();
+    Character[] seps = {null, '\u001f', 'x', '\u0080', '©', 'é', 'ÿ', 'Ā', 'Ł'};
+    String[] inputs = {"a b", "aéb c", "xŁ y", "a-b c-d", "© x"};
+    for (Character sep : seps) {
+      for (String input : inputs) {
+        WhitespaceTokenizer t = new WhitespaceTokenizer();
+        t.setReader(new java.io.StringReader(input));
+        TokenStream ts = new ConcatenateGraphFilter(t, sep, true, 10000);
+        TermToBytesRefAttribute bytes = ts.getAttribute(TermToBytesRefAttribute.class);
+        b.append(sep == null ? "-" : Integer.toHexString(sep)).append('\t').append(esc(input)).append('\t');
+        ts.reset();
+        while (ts.incrementToken()) b.append(hex(bytes.getBytesRef())).append('|');
+        ts.end();
+        ts.close();
+        b.append('\n');
+      }
+    }
+    Files.writeString(out.resolve("concatenate.words"), b.toString(), StandardCharsets.UTF_8);
+  }
+
   public static void main(String[] args) throws Exception {
     Path out = Path.of(args[0]).resolve("analysis_common");
     Files.createDirectories(out);
@@ -692,6 +723,7 @@ public class GenAnalysisCommon {
     Files.writeString(out.resolve("urls.words"), urls.toString(), StandardCharsets.UTF_8);
 
     writeRegexFixtures(out);
+    writeConcatenateFixtures(out);
 
     for (Map.Entry<String, Supplier<Analyzer>> e : chains().entrySet()) {
       StringBuilder m = new StringBuilder();

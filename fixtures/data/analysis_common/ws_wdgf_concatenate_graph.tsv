@@ -1,0 +1,533 @@
+T	0	The\u001Fquick\u001Fbrown\u001Ffox\u001Fjumps\u001Fover\u001Fthe\u001Flazy\u001Fdog	0	44	1	1	word	0	-	0	1
+E	0	0	44	0
+T	1	the\u001Fthe\u001FThe\u001Fquick\u001Fquick\u001Fbrown\u001FBROWN\u001Ffox	0	39	1	1	word	0	-	0	1
+E	1	0	39	0
+T	2	Running\u001Fruns\u001Fran\u001Feasily\u001Fthe\u001Fponies\u001Fcaresses\u001Fwere\u001Frelational\u001Fconditional\u001Fand\u001Fgeneralizations\u001Fof\u001Fhappiness	0	108	1	1	word	0	-	0	1
+E	2	0	108	0
+T	3	O\u001FNeil\u001Fs\u001Ffriend\u001Fs\u001Fdogs\u001Ftoys\u001F\u001FJohn\u001Fs\u001Fand\u001FJAMES\u001FS\u001Fbooks\u001Faren\u001Ft\u001Ftheirs	0	71	1	1	word	0	-	0	1
+T	3	O\u001FNeil\u001Fs\u001Ffriend\u001Fs\u001Fdogs\u001Ftoys\u001F\u001FJohn\u001Fs\u001Fand\u001FJAMES\u001FS\u001Fbooks\u001Farent\u001Ftheirs	0	71	0	1	word	0	-	0	1
+T	3	O\u001FNeil\u001Fs\u001Ffriend\u001Fs\u001Fdogs\u001Ftoys\u001F\u001FJohn\u001Fs\u001Fand\u001FJAMESS\u001Fbooks\u001Faren\u001Ft\u001Ftheirs	0	71	0	1	word	0	-	0	1
+T	3	O\u001FNeil\u001Fs\u001Ffriend\u001Fs\u001Fdogs\u001Ftoys\u001F\u001FJohn\u001Fs\u001Fand\u001FJAMESS\u001Fbooks\u001Farent\u001Ftheirs	0	71	0	1	word	0	-	0	1
+T	3	O\u001FNeil\u001Fs\u001Ffriend\u001Fs\u001Fdogs\u001Ftoys\u001F\u001FJohns\u001Fand\u001FJAMES\u001FS\u001Fbooks\u001Faren\u001Ft\u001Ftheirs	0	71	0	1	word	0	-	0	1
+T	3	O\u001FNeil\u001Fs\u001Ffriend\u001Fs\u001Fdogs\u001Ftoys\u001F\u001FJohns\u001Fand\u001FJAMES\u001FS\u001Fbooks\u001Farent\u001Ftheirs	0	71	0	1	word	0	-	0	1
+T	3	O\u001FNeil\u001Fs\u001Ffriend\u001Fs\u001Fdogs\u001Ftoys\u001F\u001FJohns\u001Fand\u001FJAMESS\u001Fbooks\u001Faren\u001Ft\u001Ftheirs	0	71	0	1	word	0	-	0	1
+T	3	O\u001FNeil\u001Fs\u001Ffriend\u001Fs\u001Fdogs\u001Ftoys\u001F\u001FJohns\u001Fand\u001FJAMESS\u001Fbooks\u001Farent\u001Ftheirs	0	71	0	1	word	0	-	0	1
+T	3	O\u001FNeil\u001Fs\u001Ffriends\u001Fdogs\u001Ftoys\u001F\u001FJohn\u001Fs\u001Fand\u001FJAMES\u001FS\u001Fbooks\u001Faren\u001Ft\u001Ftheirs	0	71	0	1	word	0	-	0	1
+T	3	O\u001FNeil\u001Fs\u001Ffriends\u001Fdogs\u001Ftoys\u001F\u001FJohn\u001Fs\u001Fand\u001FJAMES\u001FS\u001Fbooks\u001Farent\u001Ftheirs	0	71	0	1	word	0	-	0	1
+T	3	O\u001FNeil\u001Fs\u001Ffriends\u001Fdogs\u001Ftoys\u001F\u001FJohn\u001Fs\u001Fand\u001FJAMESS\u001Fbooks\u001Faren\u001Ft\u001Ftheirs	0	71	0	1	word	0	-	0	1
+T	3	O\u001FNeil\u001Fs\u001Ffriends\u001Fdogs\u001Ftoys\u001F\u001FJohn\u001Fs\u001Fand\u001FJAMESS\u001Fbooks\u001Farent\u001Ftheirs	0	71	0	1	word	0	-	0	1
+T	3	O\u001FNeil\u001Fs\u001Ffriends\u001Fdogs\u001Ftoys\u001F\u001FJohns\u001Fand\u001FJAMES\u001FS\u001Fbooks\u001Faren\u001Ft\u001Ftheirs	0	71	0	1	word	0	-	0	1
+T	3	O\u001FNeil\u001Fs\u001Ffriends\u001Fdogs\u001Ftoys\u001F\u001FJohns\u001Fand\u001FJAMES\u001FS\u001Fbooks\u001Farent\u001Ftheirs	0	71	0	1	word	0	-	0	1
+T	3	O\u001FNeil\u001Fs\u001Ffriends\u001Fdogs\u001Ftoys\u001F\u001FJohns\u001Fand\u001FJAMESS\u001Fbooks\u001Faren\u001Ft\u001Ftheirs	0	71	0	1	word	0	-	0	1
+T	3	O\u001FNeil\u001Fs\u001Ffriends\u001Fdogs\u001Ftoys\u001F\u001FJohns\u001Fand\u001FJAMESS\u001Fbooks\u001Farent\u001Ftheirs	0	71	0	1	word	0	-	0	1
+T	3	ONeils\u001Ffriend\u001Fs\u001Fdogs\u001Ftoys\u001F\u001FJohn\u001Fs\u001Fand\u001FJAMES\u001FS\u001Fbooks\u001Faren\u001Ft\u001Ftheirs	0	71	0	1	word	0	-	0	1
+T	3	ONeils\u001Ffriend\u001Fs\u001Fdogs\u001Ftoys\u001F\u001FJohn\u001Fs\u001Fand\u001FJAMES\u001FS\u001Fbooks\u001Farent\u001Ftheirs	0	71	0	1	word	0	-	0	1
+T	3	ONeils\u001Ffriend\u001Fs\u001Fdogs\u001Ftoys\u001F\u001FJohn\u001Fs\u001Fand\u001FJAMESS\u001Fbooks\u001Faren\u001Ft\u001Ftheirs	0	71	0	1	word	0	-	0	1
+T	3	ONeils\u001Ffriend\u001Fs\u001Fdogs\u001Ftoys\u001F\u001FJohn\u001Fs\u001Fand\u001FJAMESS\u001Fbooks\u001Farent\u001Ftheirs	0	71	0	1	word	0	-	0	1
+T	3	ONeils\u001Ffriend\u001Fs\u001Fdogs\u001Ftoys\u001F\u001FJohns\u001Fand\u001FJAMES\u001FS\u001Fbooks\u001Faren\u001Ft\u001Ftheirs	0	71	0	1	word	0	-	0	1
+T	3	ONeils\u001Ffriend\u001Fs\u001Fdogs\u001Ftoys\u001F\u001FJohns\u001Fand\u001FJAMES\u001FS\u001Fbooks\u001Farent\u001Ftheirs	0	71	0	1	word	0	-	0	1
+T	3	ONeils\u001Ffriend\u001Fs\u001Fdogs\u001Ftoys\u001F\u001FJohns\u001Fand\u001FJAMESS\u001Fbooks\u001Faren\u001Ft\u001Ftheirs	0	71	0	1	word	0	-	0	1
+T	3	ONeils\u001Ffriend\u001Fs\u001Fdogs\u001Ftoys\u001F\u001FJohns\u001Fand\u001FJAMESS\u001Fbooks\u001Farent\u001Ftheirs	0	71	0	1	word	0	-	0	1
+T	3	ONeils\u001Ffriends\u001Fdogs\u001Ftoys\u001F\u001FJohn\u001Fs\u001Fand\u001FJAMES\u001FS\u001Fbooks\u001Faren\u001Ft\u001Ftheirs	0	71	0	1	word	0	-	0	1
+T	3	ONeils\u001Ffriends\u001Fdogs\u001Ftoys\u001F\u001FJohn\u001Fs\u001Fand\u001FJAMES\u001FS\u001Fbooks\u001Farent\u001Ftheirs	0	71	0	1	word	0	-	0	1
+T	3	ONeils\u001Ffriends\u001Fdogs\u001Ftoys\u001F\u001FJohn\u001Fs\u001Fand\u001FJAMESS\u001Fbooks\u001Faren\u001Ft\u001Ftheirs	0	71	0	1	word	0	-	0	1
+T	3	ONeils\u001Ffriends\u001Fdogs\u001Ftoys\u001F\u001FJohn\u001Fs\u001Fand\u001FJAMESS\u001Fbooks\u001Farent\u001Ftheirs	0	71	0	1	word	0	-	0	1
+T	3	ONeils\u001Ffriends\u001Fdogs\u001Ftoys\u001F\u001FJohns\u001Fand\u001FJAMES\u001FS\u001Fbooks\u001Faren\u001Ft\u001Ftheirs	0	71	0	1	word	0	-	0	1
+T	3	ONeils\u001Ffriends\u001Fdogs\u001Ftoys\u001F\u001FJohns\u001Fand\u001FJAMES\u001FS\u001Fbooks\u001Farent\u001Ftheirs	0	71	0	1	word	0	-	0	1
+T	3	ONeils\u001Ffriends\u001Fdogs\u001Ftoys\u001F\u001FJohns\u001Fand\u001FJAMESS\u001Fbooks\u001Faren\u001Ft\u001Ftheirs	0	71	0	1	word	0	-	0	1
+T	3	ONeils\u001Ffriends\u001Fdogs\u001Ftoys\u001F\u001FJohns\u001Fand\u001FJAMESS\u001Fbooks\u001Farent\u001Ftheirs	0	71	0	1	word	0	-	0	1
+E	3	0	71	0
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD\u001Ffoo\u001Fbar\u001F42nd\u001F1stplace\u001FAT\u001FT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	1	1	word	0	-	0	1
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD\u001Ffoo\u001Fbar\u001F42nd\u001F1stplace\u001FAT\u001FT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD\u001Ffoo\u001Fbar\u001F42nd\u001F1stplace\u001FATT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD\u001Ffoo\u001Fbar\u001F42nd\u001F1stplace\u001FATT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD\u001Ffoo\u001Fbar\u001F42nd\u001Fplace\u001FAT\u001FT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD\u001Ffoo\u001Fbar\u001F42nd\u001Fplace\u001FAT\u001FT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD\u001Ffoo\u001Fbar\u001F42nd\u001Fplace\u001FATT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD\u001Ffoo\u001Fbar\u001F42nd\u001Fplace\u001FATT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD\u001Ffoobar\u001F42nd\u001F1stplace\u001FAT\u001FT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD\u001Ffoobar\u001F42nd\u001F1stplace\u001FAT\u001FT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD\u001Ffoobar\u001F42nd\u001F1stplace\u001FATT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD\u001Ffoobar\u001F42nd\u001F1stplace\u001FATT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD\u001Ffoobar\u001F42nd\u001Fplace\u001FAT\u001FT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD\u001Ffoobar\u001F42nd\u001Fplace\u001FAT\u001FT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD\u001Ffoobar\u001F42nd\u001Fplace\u001FATT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD\u001Ffoobar\u001F42nd\u001Fplace\u001FATT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD500\u001Ffoo\u001Fbar\u001F42nd\u001F1stplace\u001FAT\u001FT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD500\u001Ffoo\u001Fbar\u001F42nd\u001F1stplace\u001FAT\u001FT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD500\u001Ffoo\u001Fbar\u001F42nd\u001F1stplace\u001FATT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD500\u001Ffoo\u001Fbar\u001F42nd\u001F1stplace\u001FATT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD500\u001Ffoo\u001Fbar\u001F42nd\u001Fplace\u001FAT\u001FT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD500\u001Ffoo\u001Fbar\u001F42nd\u001Fplace\u001FAT\u001FT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD500\u001Ffoo\u001Fbar\u001F42nd\u001Fplace\u001FATT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD500\u001Ffoo\u001Fbar\u001F42nd\u001Fplace\u001FATT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD500\u001Ffoobar\u001F42nd\u001F1stplace\u001FAT\u001FT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD500\u001Ffoobar\u001F42nd\u001F1stplace\u001FAT\u001FT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD500\u001Ffoobar\u001F42nd\u001F1stplace\u001FATT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD500\u001Ffoobar\u001F42nd\u001F1stplace\u001FATT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD500\u001Ffoobar\u001F42nd\u001Fplace\u001FAT\u001FT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD500\u001Ffoobar\u001F42nd\u001Fplace\u001FAT\u001FT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD500\u001Ffoobar\u001F42nd\u001Fplace\u001FATT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	Wi\u001FFi\u001FPowerShot500\u001FSD500\u001Ffoobar\u001F42nd\u001Fplace\u001FATT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD\u001Ffoo\u001Fbar\u001F42nd\u001F1stplace\u001FAT\u001FT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD\u001Ffoo\u001Fbar\u001F42nd\u001F1stplace\u001FAT\u001FT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD\u001Ffoo\u001Fbar\u001F42nd\u001F1stplace\u001FATT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD\u001Ffoo\u001Fbar\u001F42nd\u001F1stplace\u001FATT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD\u001Ffoo\u001Fbar\u001F42nd\u001Fplace\u001FAT\u001FT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD\u001Ffoo\u001Fbar\u001F42nd\u001Fplace\u001FAT\u001FT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD\u001Ffoo\u001Fbar\u001F42nd\u001Fplace\u001FATT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD\u001Ffoo\u001Fbar\u001F42nd\u001Fplace\u001FATT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD\u001Ffoobar\u001F42nd\u001F1stplace\u001FAT\u001FT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD\u001Ffoobar\u001F42nd\u001F1stplace\u001FAT\u001FT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD\u001Ffoobar\u001F42nd\u001F1stplace\u001FATT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD\u001Ffoobar\u001F42nd\u001F1stplace\u001FATT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD\u001Ffoobar\u001F42nd\u001Fplace\u001FAT\u001FT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD\u001Ffoobar\u001F42nd\u001Fplace\u001FAT\u001FT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD\u001Ffoobar\u001F42nd\u001Fplace\u001FATT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD\u001Ffoobar\u001F42nd\u001Fplace\u001FATT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD500\u001Ffoo\u001Fbar\u001F42nd\u001F1stplace\u001FAT\u001FT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD500\u001Ffoo\u001Fbar\u001F42nd\u001F1stplace\u001FAT\u001FT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD500\u001Ffoo\u001Fbar\u001F42nd\u001F1stplace\u001FATT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD500\u001Ffoo\u001Fbar\u001F42nd\u001F1stplace\u001FATT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD500\u001Ffoo\u001Fbar\u001F42nd\u001Fplace\u001FAT\u001FT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD500\u001Ffoo\u001Fbar\u001F42nd\u001Fplace\u001FAT\u001FT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD500\u001Ffoo\u001Fbar\u001F42nd\u001Fplace\u001FATT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD500\u001Ffoo\u001Fbar\u001F42nd\u001Fplace\u001FATT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD500\u001Ffoobar\u001F42nd\u001F1stplace\u001FAT\u001FT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD500\u001Ffoobar\u001F42nd\u001F1stplace\u001FAT\u001FT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD500\u001Ffoobar\u001F42nd\u001F1stplace\u001FATT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD500\u001Ffoobar\u001F42nd\u001F1stplace\u001FATT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD500\u001Ffoobar\u001F42nd\u001Fplace\u001FAT\u001FT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD500\u001Ffoobar\u001F42nd\u001Fplace\u001FAT\u001FT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD500\u001Ffoobar\u001F42nd\u001Fplace\u001FATT\u001Fe\u001Fmail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+T	4	WiFi\u001FPowerShot500\u001FSD500\u001Ffoobar\u001F42nd\u001Fplace\u001FATT\u001Femail\u001Fj2se\u001FiPhone\u001FXMLHttpRequest\u001FABCdef	0	94	0	1	word	0	-	0	1
+E	4	0	94	0
+T	5	U\u001FS\u001FA\u001FI\u001FB\u001FM\u001Fe\u001Fg\u001FDr\u001FSmith\u001Fs\u001F314\u001F1000000\u001F0x1F\u001F20261006\u001F1230\u001F42\u001F7\u001F15e10	0	81	1	1	word	0	-	0	1
+T	5	U\u001FS\u001FA\u001FI\u001FB\u001FM\u001Fe\u001Fg\u001FDr\u001FSmiths\u001F314\u001F1000000\u001F0x1F\u001F20261006\u001F1230\u001F42\u001F7\u001F15e10	0	81	0	1	word	0	-	0	1
+T	5	U\u001FS\u001FA\u001FI\u001FB\u001FM\u001Feg\u001FDr\u001FSmith\u001Fs\u001F314\u001F1000000\u001F0x1F\u001F20261006\u001F1230\u001F42\u001F7\u001F15e10	0	81	0	1	word	0	-	0	1
+T	5	U\u001FS\u001FA\u001FI\u001FB\u001FM\u001Feg\u001FDr\u001FSmiths\u001F314\u001F1000000\u001F0x1F\u001F20261006\u001F1230\u001F42\u001F7\u001F15e10	0	81	0	1	word	0	-	0	1
+T	5	U\u001FS\u001FA\u001FIBM\u001Fe\u001Fg\u001FDr\u001FSmith\u001Fs\u001F314\u001F1000000\u001F0x1F\u001F20261006\u001F1230\u001F42\u001F7\u001F15e10	0	81	0	1	word	0	-	0	1
+T	5	U\u001FS\u001FA\u001FIBM\u001Fe\u001Fg\u001FDr\u001FSmiths\u001F314\u001F1000000\u001F0x1F\u001F20261006\u001F1230\u001F42\u001F7\u001F15e10	0	81	0	1	word	0	-	0	1
+T	5	U\u001FS\u001FA\u001FIBM\u001Feg\u001FDr\u001FSmith\u001Fs\u001F314\u001F1000000\u001F0x1F\u001F20261006\u001F1230\u001F42\u001F7\u001F15e10	0	81	0	1	word	0	-	0	1
+T	5	U\u001FS\u001FA\u001FIBM\u001Feg\u001FDr\u001FSmiths\u001F314\u001F1000000\u001F0x1F\u001F20261006\u001F1230\u001F42\u001F7\u001F15e10	0	81	0	1	word	0	-	0	1
+T	5	USA\u001FI\u001FB\u001FM\u001Fe\u001Fg\u001FDr\u001FSmith\u001Fs\u001F314\u001F1000000\u001F0x1F\u001F20261006\u001F1230\u001F42\u001F7\u001F15e10	0	81	0	1	word	0	-	0	1
+T	5	USA\u001FI\u001FB\u001FM\u001Fe\u001Fg\u001FDr\u001FSmiths\u001F314\u001F1000000\u001F0x1F\u001F20261006\u001F1230\u001F42\u001F7\u001F15e10	0	81	0	1	word	0	-	0	1
+T	5	USA\u001FI\u001FB\u001FM\u001Feg\u001FDr\u001FSmith\u001Fs\u001F314\u001F1000000\u001F0x1F\u001F20261006\u001F1230\u001F42\u001F7\u001F15e10	0	81	0	1	word	0	-	0	1
+T	5	USA\u001FI\u001FB\u001FM\u001Feg\u001FDr\u001FSmiths\u001F314\u001F1000000\u001F0x1F\u001F20261006\u001F1230\u001F42\u001F7\u001F15e10	0	81	0	1	word	0	-	0	1
+T	5	USA\u001FIBM\u001Fe\u001Fg\u001FDr\u001FSmith\u001Fs\u001F314\u001F1000000\u001F0x1F\u001F20261006\u001F1230\u001F42\u001F7\u001F15e10	0	81	0	1	word	0	-	0	1
+T	5	USA\u001FIBM\u001Fe\u001Fg\u001FDr\u001FSmiths\u001F314\u001F1000000\u001F0x1F\u001F20261006\u001F1230\u001F42\u001F7\u001F15e10	0	81	0	1	word	0	-	0	1
+T	5	USA\u001FIBM\u001Feg\u001FDr\u001FSmith\u001Fs\u001F314\u001F1000000\u001F0x1F\u001F20261006\u001F1230\u001F42\u001F7\u001F15e10	0	81	0	1	word	0	-	0	1
+T	5	USA\u001FIBM\u001Feg\u001FDr\u001FSmiths\u001F314\u001F1000000\u001F0x1F\u001F20261006\u001F1230\u001F42\u001F7\u001F15e10	0	81	0	1	word	0	-	0	1
+E	5	0	81	0
+T	6	Crème\u001Fbrûlée\u001Fà\u001Fla\u001Fcafé\u001F\u001Fnaïve\u001Ffaçade\u001FÆrøskøbing\u001FStraße\u001FĲsselmeer\u001Fﬁnancial\u001Fﬂow\u001FŒuvre\u001FÅngström	0	99	1	1	word	0	-	0	1
+E	6	0	99	0
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	1	1	word	0	-	0	1
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	l\u001Favion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001Fd\u001FAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fqu\u001Fil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusqu\u001Fà\u001Flaéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Fl\u001Faéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fn\u001Fétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fnétait\u001Fpas\u001FL\u001FHôtel	0	72	0	1	word	0	-	0	1
+T	7	lavion\u001FdAir\u001FFrance\u001Fquil\u001Fa\u001Fpris\u001Fjusquà\u001Flaéroport\u001Fnétait\u001Fpas\u001FLHôtel	0	72	0	1	word	0	-	0	1
+E	7	0	72	0
+T	8	Die\u001FBundesrepublik\u001FDeutschland\u001Fist\u001Fein\u001FBundesstaat\u001Fin\u001FMitteleuropa\u001FFußgängerübergänge\u001Fsind\u001Fhäufig	0	99	1	1	word	0	-	0	1
+E	8	0	99	0
+T	9	El\u001Fniño\u001Fcomió\u001Fpequeñas\u001Fmanzanas\u001FDónde\u001Festá\u001Fla\u001Festación\u001FQué\u001Fdía	0	67	1	1	word	0	-	0	1
+E	9	0	67	0
+T	10	Съешь\u001Fже\u001Fещё\u001Fэтих\u001Fмягких\u001Fфранцузских\u001Fбулок\u001Fда\u001Fвыпей\u001Fчаю\u001FЁЛКА\u001Fёлка	0	67	1	1	word	0	-	0	1
+E	10	0	67	0
+T	11	Η\u001Fγρήγορη\u001Fκαφέ\u001Fαλεπού\u001Fπηδάει\u001Fπάνω\u001Fαπό\u001Fτον\u001Fτεμπέλη\u001Fσκύλο\u001FΟΔΟΣ\u001FΣίσυφος	0	69	1	1	word	0	-	0	1
+E	11	0	69	0
+T	12	Türkçe\u001Fİstanbul\u001Fılık\u001FISPARTA\u001FÜnlü\u001Fşarkıcı\u001FÇağrı	0	48	1	1	word	0	-	0	1
+E	12	0	48	0
+T	13	Svenska\u001Fåka\u001Fpå\u001Fsjön\u001FNorsk\u001Fblåbærsyltetøy\u001FDansk\u001Frødgrød\u001Fmed\u001Ffløde\u001FÍslenska\u001Fþú\u001Fðú	0	86	1	1	word	0	-	0	1
+E	13	0	86	0
+T	14	العربية\u001Fلغة\u001Fجميلة\u001Fوالكتابُ\u001Fمفيدٌ\u001F٠١٢٣٤٥٦٧٨٩	0	44	1	1	word	0	-	0	1
+E	14	0	44	0
+T	15	עברית\u001Fהיא\u001Fשפה\u001Fשמית\u001Fספר\u001Fתורה	0	30	1	1	word	0	-	0	1
+E	15	0	30	0
+T	16	فارسی\u001Fزبان\u001Fزیبایی\u001Fاست\u001Fو\u001Fمی\u001Fخواهم\u001Fکتاب\u001Fها\u001Fرا\u001Fبخوانم\u001F۱۲۳	0	54	1	1	word	0	-	0	1
+T	16	فارسی\u001Fزبان\u001Fزیبایی\u001Fاست\u001Fو\u001Fمی\u001Fخواهم\u001Fکتابها\u001Fرا\u001Fبخوانم\u001F۱۲۳	0	54	0	1	word	0	-	0	1
+T	16	فارسی\u001Fزبان\u001Fزیبایی\u001Fاست\u001Fو\u001Fمیخواهم\u001Fکتاب\u001Fها\u001Fرا\u001Fبخوانم\u001F۱۲۳	0	54	0	1	word	0	-	0	1
+T	16	فارسی\u001Fزبان\u001Fزیبایی\u001Fاست\u001Fو\u001Fمیخواهم\u001Fکتابها\u001Fرا\u001Fبخوانم\u001F۱۲۳	0	54	0	1	word	0	-	0	1
+E	16	0	54	0
+T	17	हिन्दी\u001Fभाषा\u001Fबहुत\u001Fसुंदर\u001Fहै\u001Fसंख्या\u001F१२३	0	37	1	1	word	0	-	0	1
+E	17	0	37	0
+T	18	বাংলা\u001Fভাষা\u001Fসুন্দর\u001F১২৩	0	21	1	1	word	0	-	0	1
+E	18	0	21	0
+T	19	ภาษาไทยไม่มีช่องว่างระหว่างคำ\u001Fแต่มีช่องว่างระหว่างประโยค\u001F๑๒๓	0	60	1	1	word	0	-	0	1
+E	19	0	60	0
+T	20	中华人民共和国成立于1949年\u001F我爱北京天安门	0	24	1	1	word	0	-	0	1
+T	20	中华人民共和国成立于1949年我爱北京天安门	0	24	0	1	word	0	-	0	1
+E	20	0	24	0
+T	21	日本語のテキストとカタカナとｶﾀｶﾅとひらがな\u001FＡＢＣ１２３と全角	0	33	1	1	word	0	-	0	1
+T	21	日本語のテキストとカタカナとｶﾀｶﾅとひらがなＡＢＣ１２３と全角	0	33	0	1	word	0	-	0	1
+E	21	0	33	0
+T	22	한국어\u001F텍스트입니다\u001F서울특별시\u001FＫＯＲＥＡ	0	22	1	1	word	0	-	0	1
+E	22	0	22	0
+T	23	Emoji\u001F👍\u001F🇺🇸\u001F👨\u001F👩\u001F👧\u001F🏽\u001F😀😀\u001F️\u001F1️⃣\u001Fand\u001F𝐀𝐁𝐂\u001Fmath\u001Fplus\u001F𠀀𠀁\u001Frare\u001Fideographs	0	81	1	1	word	0	-	0	1
+T	23	Emoji\u001F👍\u001F🇺🇸\u001F👨👩👧\u001F🏽\u001F😀😀\u001F️\u001F1️⃣\u001Fand\u001F𝐀𝐁𝐂\u001Fmath\u001Fplus\u001F𠀀𠀁\u001Frare\u001Fideographs	0	81	0	1	word	0	-	0	1
+E	23	0	81	0
+T	24	Visit\u001Fhttps\u001Flucene\u001Fapache\u001Forg\u001Fcore\u001For\u001Fmail\u001Fdev\u001Flucene\u001Fapache\u001Forg\u001Ftoday	0	74	1	1	word	0	-	0	1
+T	24	Visit\u001Fhttps\u001Flucene\u001Fapache\u001Forg\u001Fcore\u001For\u001Fmail\u001Fdevluceneapacheorg\u001Ftoday	0	74	0	1	word	0	-	0	1
+T	24	Visit\u001Fhttpsluceneapacheorgcore\u001For\u001Fmail\u001Fdev\u001Flucene\u001Fapache\u001Forg\u001Ftoday	0	74	0	1	word	0	-	0	1
+T	24	Visit\u001Fhttpsluceneapacheorgcore\u001For\u001Fmail\u001Fdevluceneapacheorg\u001Ftoday	0	74	0	1	word	0	-	0	1
+E	24	0	74	0
+T	25	See\u001Fwww\u001Fexample\u001Fcom\u001Fpath\u001Fq\u001Fx\u001Fy\u001Ffrag\u001Fand\u001Fhttp\u001Fa\u001Fuser\u001Fname\u001Ftag\u001Fsub\u001Fexample\u001Fco\u001Fuk\u001F19216801	0	107	1	1	word	0	-	0	1
+T	25	See\u001Fwww\u001Fexample\u001Fcom\u001Fpath\u001Fq\u001Fx\u001Fy\u001Ffrag\u001Fand\u001Fhttp\u001Fa\u001Fusernametagsubexamplecouk\u001F19216801	0	107	0	1	word	0	-	0	1
+T	25	See\u001Fwww\u001Fexample\u001Fcom\u001Fpath\u001Fq\u001Fx\u001Fy\u001Ffrag\u001Fand\u001Fhttp18080a\u001Fuser\u001Fname\u001Ftag\u001Fsub\u001Fexample\u001Fco\u001Fuk\u001F19216801	0	107	0	1	word	0	-	0	1
+T	25	See\u001Fwww\u001Fexample\u001Fcom\u001Fpath\u001Fq\u001Fx\u001Fy\u001Ffrag\u001Fand\u001Fhttp18080a\u001Fusernametagsubexamplecouk\u001F19216801	0	107	0	1	word	0	-	0	1
+T	25	See\u001Fwwwexamplecompathq1xyfrag\u001Fand\u001Fhttp\u001Fa\u001Fuser\u001Fname\u001Ftag\u001Fsub\u001Fexample\u001Fco\u001Fuk\u001F19216801	0	107	0	1	word	0	-	0	1
+T	25	See\u001Fwwwexamplecompathq1xyfrag\u001Fand\u001Fhttp\u001Fa\u001Fusernametagsubexamplecouk\u001F19216801	0	107	0	1	word	0	-	0	1
+T	25	See\u001Fwwwexamplecompathq1xyfrag\u001Fand\u001Fhttp18080a\u001Fuser\u001Fname\u001Ftag\u001Fsub\u001Fexample\u001Fco\u001Fuk\u001F19216801	0	107	0	1	word	0	-	0	1
+T	25	See\u001Fwwwexamplecompathq1xyfrag\u001Fand\u001Fhttp18080a\u001Fusernametagsubexamplecouk\u001F19216801	0	107	0	1	word	0	-	0	1
+E	25	0	107	0
+T	26	mailto\u001Fsomeone\u001Fexample\u001Forg\u001Fftp\u001Ffiles\u001Fexample\u001Fnet\u001Fpub\u001Ffile\u001Ftar\u001Fgz\u001Fexample\u001Fcom	0	79	1	1	word	0	-	0	1
+T	26	mailto\u001Fsomeone\u001Fexample\u001Forg\u001Fftp\u001Ffiles\u001Fexample\u001Fnet\u001Fpub\u001Ffile\u001Ftar\u001Fgz\u001Fexamplecom	0	79	0	1	word	0	-	0	1
+T	26	mailto\u001Fsomeone\u001Fexample\u001Forg\u001Fftpfilesexamplenetpubfiletargz\u001Fexample\u001Fcom	0	79	0	1	word	0	-	0	1
+T	26	mailto\u001Fsomeone\u001Fexample\u001Forg\u001Fftpfilesexamplenetpubfiletargz\u001Fexamplecom	0	79	0	1	word	0	-	0	1
+T	26	mailtosomeoneexampleorg\u001Fftp\u001Ffiles\u001Fexample\u001Fnet\u001Fpub\u001Ffile\u001Ftar\u001Fgz\u001Fexample\u001Fcom	0	79	0	1	word	0	-	0	1
+T	26	mailtosomeoneexampleorg\u001Fftp\u001Ffiles\u001Fexample\u001Fnet\u001Fpub\u001Ffile\u001Ftar\u001Fgz\u001Fexamplecom	0	79	0	1	word	0	-	0	1
+T	26	mailtosomeoneexampleorg\u001Fftpfilesexamplenetpubfiletargz\u001Fexample\u001Fcom	0	79	0	1	word	0	-	0	1
+T	26	mailtosomeoneexampleorg\u001Fftpfilesexamplenetpubfiletargz\u001Fexamplecom	0	79	0	1	word	0	-	0	1
+E	26	0	79	0
+T	27	p\u001FHello\u001Fb\u001Fworld\u001Fb\u001Famp\u001Ffriends\u001Flt\u001Ftag\u001Fgt\u001F169\u001Fx263A\u001Fnbsp\u001Fx\u001Feacute\u001Fp\u001Fa\u001Fcomment\u001Fbr	0	106	1	1	word	0	-	0	1
+T	27	p\u001FHello\u001Fb\u001Fworld\u001Fb\u001Famp\u001Ffriends\u001Flt\u001Ftag\u001Fgt\u001F169\u001Fx263A\u001Fnbspxeacutep\u001Fa\u001Fcomment\u001Fbr	0	106	0	1	word	0	-	0	1
+T	27	p\u001FHello\u001Fb\u001Fworld\u001Fb\u001Famp\u001Ffriends\u001Flttaggt\u001F169\u001Fx263A\u001Fnbsp\u001Fx\u001Feacute\u001Fp\u001Fa\u001Fcomment\u001Fbr	0	106	0	1	word	0	-	0	1
+T	27	p\u001FHello\u001Fb\u001Fworld\u001Fb\u001Famp\u001Ffriends\u001Flttaggt\u001F169\u001Fx263A\u001Fnbspxeacutep\u001Fa\u001Fcomment\u001Fbr	0	106	0	1	word	0	-	0	1
+T	27	p\u001FHello\u001Fbworldb\u001Famp\u001Ffriends\u001Flt\u001Ftag\u001Fgt\u001F169\u001Fx263A\u001Fnbsp\u001Fx\u001Feacute\u001Fp\u001Fa\u001Fcomment\u001Fbr	0	106	0	1	word	0	-	0	1
+T	27	p\u001FHello\u001Fbworldb\u001Famp\u001Ffriends\u001Flt\u001Ftag\u001Fgt\u001F169\u001Fx263A\u001Fnbspxeacutep\u001Fa\u001Fcomment\u001Fbr	0	106	0	1	word	0	-	0	1
+T	27	p\u001FHello\u001Fbworldb\u001Famp\u001Ffriends\u001Flttaggt\u001F169\u001Fx263A\u001Fnbsp\u001Fx\u001Feacute\u001Fp\u001Fa\u001Fcomment\u001Fbr	0	106	0	1	word	0	-	0	1
+T	27	p\u001FHello\u001Fbworldb\u001Famp\u001Ffriends\u001Flttaggt\u001F169\u001Fx263A\u001Fnbspxeacutep\u001Fa\u001Fcomment\u001Fbr	0	106	0	1	word	0	-	0	1
+T	27	pHello\u001Fb\u001Fworld\u001Fb\u001Famp\u001Ffriends\u001Flt\u001Ftag\u001Fgt\u001F169\u001Fx263A\u001Fnbsp\u001Fx\u001Feacute\u001Fp\u001Fa\u001Fcomment\u001Fbr	0	106	0	1	word	0	-	0	1
+T	27	pHello\u001Fb\u001Fworld\u001Fb\u001Famp\u001Ffriends\u001Flt\u001Ftag\u001Fgt\u001F169\u001Fx263A\u001Fnbspxeacutep\u001Fa\u001Fcomment\u001Fbr	0	106	0	1	word	0	-	0	1
+T	27	pHello\u001Fb\u001Fworld\u001Fb\u001Famp\u001Ffriends\u001Flttaggt\u001F169\u001Fx263A\u001Fnbsp\u001Fx\u001Feacute\u001Fp\u001Fa\u001Fcomment\u001Fbr	0	106	0	1	word	0	-	0	1
+T	27	pHello\u001Fb\u001Fworld\u001Fb\u001Famp\u001Ffriends\u001Flttaggt\u001F169\u001Fx263A\u001Fnbspxeacutep\u001Fa\u001Fcomment\u001Fbr	0	106	0	1	word	0	-	0	1
+T	27	pHello\u001Fbworldb\u001Famp\u001Ffriends\u001Flt\u001Ftag\u001Fgt\u001F169\u001Fx263A\u001Fnbsp\u001Fx\u001Feacute\u001Fp\u001Fa\u001Fcomment\u001Fbr	0	106	0	1	word	0	-	0	1
+T	27	pHello\u001Fbworldb\u001Famp\u001Ffriends\u001Flt\u001Ftag\u001Fgt\u001F169\u001Fx263A\u001Fnbspxeacutep\u001Fa\u001Fcomment\u001Fbr	0	106	0	1	word	0	-	0	1
+T	27	pHello\u001Fbworldb\u001Famp\u001Ffriends\u001Flttaggt\u001F169\u001Fx263A\u001Fnbsp\u001Fx\u001Feacute\u001Fp\u001Fa\u001Fcomment\u001Fbr	0	106	0	1	word	0	-	0	1
+T	27	pHello\u001Fbworldb\u001Famp\u001Ffriends\u001Flttaggt\u001F169\u001Fx263A\u001Fnbspxeacutep\u001Fa\u001Fcomment\u001Fbr	0	106	0	1	word	0	-	0	1
+E	27	0	106	0
+T	28	script\u001Ftype\u001Ftext\u001Fjavascript\u001Fvar\u001Fx\u001F\u001F1\u001F\u001F2scripta\u001Fhref\u001Fhttp\u001Fx\u001Forg\u001Fa\u001Flink\u001Fa\u001Fstyle\u001Fp\u001Fstyle\u001Fafter	0	112	1	1	word	0	-	0	1
+T	28	script\u001Ftype\u001Ftext\u001Fjavascript\u001Fvar\u001Fx\u001F\u001F1\u001F\u001F2scripta\u001Fhref\u001Fhttp\u001Fx\u001Forg\u001Fa\u001Flink\u001Fa\u001Fstylepstyleafter	0	112	0	1	word	0	-	0	1
+T	28	script\u001Ftype\u001Ftext\u001Fjavascript\u001Fvar\u001Fx\u001F\u001F1\u001F\u001F2scripta\u001Fhref\u001Fhttp\u001Fx\u001Forg\u001Fa\u001Flinka\u001Fstyle\u001Fp\u001Fstyle\u001Fafter	0	112	0	1	word	0	-	0	1
+T	28	script\u001Ftype\u001Ftext\u001Fjavascript\u001Fvar\u001Fx\u001F\u001F1\u001F\u001F2scripta\u001Fhref\u001Fhttp\u001Fx\u001Forg\u001Fa\u001Flinka\u001Fstylepstyleafter	0	112	0	1	word	0	-	0	1
+T	28	script\u001Ftype\u001Ftext\u001Fjavascript\u001Fvar\u001Fx\u001F\u001F1\u001F\u001F2scripta\u001Fhrefhttpxorga\u001Flink\u001Fa\u001Fstyle\u001Fp\u001Fstyle\u001Fafter	0	112	0	1	word	0	-	0	1
+T	28	script\u001Ftype\u001Ftext\u001Fjavascript\u001Fvar\u001Fx\u001F\u001F1\u001F\u001F2scripta\u001Fhrefhttpxorga\u001Flink\u001Fa\u001Fstylepstyleafter	0	112	0	1	word	0	-	0	1
+T	28	script\u001Ftype\u001Ftext\u001Fjavascript\u001Fvar\u001Fx\u001F\u001F1\u001F\u001F2scripta\u001Fhrefhttpxorga\u001Flinka\u001Fstyle\u001Fp\u001Fstyle\u001Fafter	0	112	0	1	word	0	-	0	1
+T	28	script\u001Ftype\u001Ftext\u001Fjavascript\u001Fvar\u001Fx\u001F\u001F1\u001F\u001F2scripta\u001Fhrefhttpxorga\u001Flinka\u001Fstylepstyleafter	0	112	0	1	word	0	-	0	1
+T	28	script\u001Ftype\u001Ftext\u001Fjavascript\u001Fvar\u001Fx\u001F\u001F1\u001F\u001Fscript\u001Fa\u001Fhref\u001Fhttp\u001Fx\u001Forg\u001Fa\u001Flink\u001Fa\u001Fstyle\u001Fp\u001Fstyle\u001Fafter	0	112	0	1	word	0	-	0	1
+T	28	script\u001Ftype\u001Ftext\u001Fjavascript\u001Fvar\u001Fx\u001F\u001F1\u001F\u001Fscript\u001Fa\u001Fhref\u001Fhttp\u001Fx\u001Forg\u001Fa\u001Flink\u001Fa\u001Fstylepstyleafter	0	112	0	1	word	0	-	0	1
+T	28	script\u001Ftype\u001Ftext\u001Fjavascript\u001Fvar\u001Fx\u001F\u001F1\u001F\u001Fscript\u001Fa\u001Fhref\u001Fhttp\u001Fx\u001Forg\u001Fa\u001Flinka\u001Fstyle\u001Fp\u001Fstyle\u001Fafter	0	112	0	1	word	0	-	0	1
+T	28	script\u001Ftype\u001Ftext\u001Fjavascript\u001Fvar\u001Fx\u001F\u001F1\u001F\u001Fscript\u001Fa\u001Fhref\u001Fhttp\u001Fx\u001Forg\u001Fa\u001Flinka\u001Fstylepstyleafter	0	112	0	1	word	0	-	0	1
+T	28	script\u001Ftype\u001Ftext\u001Fjavascript\u001Fvar\u001Fx\u001F\u001F1\u001F\u001Fscript\u001Fa\u001Fhrefhttpxorga\u001Flink\u001Fa\u001Fstyle\u001Fp\u001Fstyle\u001Fafter	0	112	0	1	word	0	-	0	1
+T	28	script\u001Ftype\u001Ftext\u001Fjavascript\u001Fvar\u001Fx\u001F\u001F1\u001F\u001Fscript\u001Fa\u001Fhrefhttpxorga\u001Flink\u001Fa\u001Fstylepstyleafter	0	112	0	1	word	0	-	0	1
+T	28	script\u001Ftype\u001Ftext\u001Fjavascript\u001Fvar\u001Fx\u001F\u001F1\u001F\u001Fscript\u001Fa\u001Fhrefhttpxorga\u001Flinka\u001Fstyle\u001Fp\u001Fstyle\u001Fafter	0	112	0	1	word	0	-	0	1
+T	28	script\u001Ftype\u001Ftext\u001Fjavascript\u001Fvar\u001Fx\u001F\u001F1\u001F\u001Fscript\u001Fa\u001Fhrefhttpxorga\u001Flinka\u001Fstylepstyleafter	0	112	0	1	word	0	-	0	1
+T	28	script\u001Ftypetextjavascriptvar\u001Fx\u001F\u001F1\u001F\u001F2scripta\u001Fhref\u001Fhttp\u001Fx\u001Forg\u001Fa\u001Flink\u001Fa\u001Fstyle\u001Fp\u001Fstyle\u001Fafter	0	112	0	1	word	0	-	0	1
+T	28	script\u001Ftypetextjavascriptvar\u001Fx\u001F\u001F1\u001F\u001F2scripta\u001Fhref\u001Fhttp\u001Fx\u001Forg\u001Fa\u001Flink\u001Fa\u001Fstylepstyleafter	0	112	0	1	word	0	-	0	1
+T	28	script\u001Ftypetextjavascriptvar\u001Fx\u001F\u001F1\u001F\u001F2scripta\u001Fhref\u001Fhttp\u001Fx\u001Forg\u001Fa\u001Flinka\u001Fstyle\u001Fp\u001Fstyle\u001Fafter	0	112	0	1	word	0	-	0	1
+T	28	script\u001Ftypetextjavascriptvar\u001Fx\u001F\u001F1\u001F\u001F2scripta\u001Fhref\u001Fhttp\u001Fx\u001Forg\u001Fa\u001Flinka\u001Fstylepstyleafter	0	112	0	1	word	0	-	0	1
+T	28	script\u001Ftypetextjavascriptvar\u001Fx\u001F\u001F1\u001F\u001F2scripta\u001Fhrefhttpxorga\u001Flink\u001Fa\u001Fstyle\u001Fp\u001Fstyle\u001Fafter	0	112	0	1	word	0	-	0	1
+T	28	script\u001Ftypetextjavascriptvar\u001Fx\u001F\u001F1\u001F\u001F2scripta\u001Fhrefhttpxorga\u001Flink\u001Fa\u001Fstylepstyleafter	0	112	0	1	word	0	-	0	1
+T	28	script\u001Ftypetextjavascriptvar\u001Fx\u001F\u001F1\u001F\u001F2scripta\u001Fhrefhttpxorga\u001Flinka\u001Fstyle\u001Fp\u001Fstyle\u001Fafter	0	112	0	1	word	0	-	0	1
+T	28	script\u001Ftypetextjavascriptvar\u001Fx\u001F\u001F1\u001F\u001F2scripta\u001Fhrefhttpxorga\u001Flinka\u001Fstylepstyleafter	0	112	0	1	word	0	-	0	1
+T	28	script\u001Ftypetextjavascriptvar\u001Fx\u001F\u001F1\u001F\u001Fscript\u001Fa\u001Fhref\u001Fhttp\u001Fx\u001Forg\u001Fa\u001Flink\u001Fa\u001Fstyle\u001Fp\u001Fstyle\u001Fafter	0	112	0	1	word	0	-	0	1
+T	28	script\u001Ftypetextjavascriptvar\u001Fx\u001F\u001F1\u001F\u001Fscript\u001Fa\u001Fhref\u001Fhttp\u001Fx\u001Forg\u001Fa\u001Flink\u001Fa\u001Fstylepstyleafter	0	112	0	1	word	0	-	0	1
+T	28	script\u001Ftypetextjavascriptvar\u001Fx\u001F\u001F1\u001F\u001Fscript\u001Fa\u001Fhref\u001Fhttp\u001Fx\u001Forg\u001Fa\u001Flinka\u001Fstyle\u001Fp\u001Fstyle\u001Fafter	0	112	0	1	word	0	-	0	1
+T	28	script\u001Ftypetextjavascriptvar\u001Fx\u001F\u001F1\u001F\u001Fscript\u001Fa\u001Fhref\u001Fhttp\u001Fx\u001Forg\u001Fa\u001Flinka\u001Fstylepstyleafter	0	112	0	1	word	0	-	0	1
+T	28	script\u001Ftypetextjavascriptvar\u001Fx\u001F\u001F1\u001F\u001Fscript\u001Fa\u001Fhrefhttpxorga\u001Flink\u001Fa\u001Fstyle\u001Fp\u001Fstyle\u001Fafter	0	112	0	1	word	0	-	0	1
+T	28	script\u001Ftypetextjavascriptvar\u001Fx\u001F\u001F1\u001F\u001Fscript\u001Fa\u001Fhrefhttpxorga\u001Flink\u001Fa\u001Fstylepstyleafter	0	112	0	1	word	0	-	0	1
+T	28	script\u001Ftypetextjavascriptvar\u001Fx\u001F\u001F1\u001F\u001Fscript\u001Fa\u001Fhrefhttpxorga\u001Flinka\u001Fstyle\u001Fp\u001Fstyle\u001Fafter	0	112	0	1	word	0	-	0	1
+T	28	script\u001Ftypetextjavascriptvar\u001Fx\u001F\u001F1\u001F\u001Fscript\u001Fa\u001Fhrefhttpxorga\u001Flinka\u001Fstylepstyleafter	0	112	0	1	word	0	-	0	1
+E	28	0	112	0
+T	29	div\u001Fclass\u001Fc\u001Fquot\u001Fquoted\u001Fquot\u001Fapos\u001Fsingle\u001Fapos\u001Funknown\u001FxZZ\u001FCDATA\u001Fraw\u001Fdata\u001F\u001Ftail\u001Fdiv	0	105	1	1	word	0	-	0	1
+T	29	div\u001Fclass\u001Fc\u001Fquot\u001Fquoted\u001Fquot\u001Fapos\u001Fsingle\u001Fapos\u001Funknown\u001FxZZ\u001FCDATA\u001Fraw\u001Fdata\u001F\u001Ftaildiv	0	105	0	1	word	0	-	0	1
+T	29	div\u001Fclass\u001Fc\u001Fquot\u001Fquoted\u001Fquot\u001Fapossingleapos\u001Funknown\u001FxZZ\u001FCDATA\u001Fraw\u001Fdata\u001F\u001Ftail\u001Fdiv	0	105	0	1	word	0	-	0	1
+T	29	div\u001Fclass\u001Fc\u001Fquot\u001Fquoted\u001Fquot\u001Fapossingleapos\u001Funknown\u001FxZZ\u001FCDATA\u001Fraw\u001Fdata\u001F\u001Ftaildiv	0	105	0	1	word	0	-	0	1
+T	29	div\u001Fclasscquotquotedquot\u001Fapos\u001Fsingle\u001Fapos\u001Funknown\u001FxZZ\u001FCDATA\u001Fraw\u001Fdata\u001F\u001Ftail\u001Fdiv	0	105	0	1	word	0	-	0	1
+T	29	div\u001Fclasscquotquotedquot\u001Fapos\u001Fsingle\u001Fapos\u001Funknown\u001FxZZ\u001FCDATA\u001Fraw\u001Fdata\u001F\u001Ftaildiv	0	105	0	1	word	0	-	0	1
+T	29	div\u001Fclasscquotquotedquot\u001Fapossingleapos\u001Funknown\u001FxZZ\u001FCDATA\u001Fraw\u001Fdata\u001F\u001Ftail\u001Fdiv	0	105	0	1	word	0	-	0	1
+T	29	div\u001Fclasscquotquotedquot\u001Fapossingleapos\u001Funknown\u001FxZZ\u001FCDATA\u001Fraw\u001Fdata\u001F\u001Ftaildiv	0	105	0	1	word	0	-	0	1
+E	29	0	105	0
+T	30	usr\u001Flocal\u001Fbin\u001Flucene\u001Fvar\u001Flog\u001Fsyslog\u001Frelative\u001Fpath\u001Fto\u001Ffile\u001Ftxt	0	66	1	1	word	0	-	0	1
+T	30	usr\u001Flocal\u001Fbin\u001Flucene\u001Fvar\u001Flog\u001Fsyslog\u001Frelativepathtofiletxt	0	66	0	1	word	0	-	0	1
+T	30	usr\u001Flocal\u001Fbin\u001Flucene\u001Fvarlogsyslog1\u001Frelative\u001Fpath\u001Fto\u001Ffile\u001Ftxt	0	66	0	1	word	0	-	0	1
+T	30	usr\u001Flocal\u001Fbin\u001Flucene\u001Fvarlogsyslog1\u001Frelativepathtofiletxt	0	66	0	1	word	0	-	0	1
+T	30	usrlocalbinlucene\u001Fvar\u001Flog\u001Fsyslog\u001Frelative\u001Fpath\u001Fto\u001Ffile\u001Ftxt	0	66	0	1	word	0	-	0	1
+T	30	usrlocalbinlucene\u001Fvar\u001Flog\u001Fsyslog\u001Frelativepathtofiletxt	0	66	0	1	word	0	-	0	1
+T	30	usrlocalbinlucene\u001Fvarlogsyslog1\u001Frelative\u001Fpath\u001Fto\u001Ffile\u001Ftxt	0	66	0	1	word	0	-	0	1
+T	30	usrlocalbinlucene\u001Fvarlogsyslog1\u001Frelativepathtofiletxt	0	66	0	1	word	0	-	0	1
+E	30	0	66	0
+T	31	C\u001FProgram\u001FFiles\u001FLucene\u001Findex\u001Fa\u001Fb\u001Fc	0	35	1	1	word	0	-	0	1
+T	31	C\u001FProgram\u001FFiles\u001FLucene\u001Findex\u001Fabc	0	35	0	1	word	0	-	0	1
+T	31	C\u001FProgram\u001FFilesLuceneindex\u001Fa\u001Fb\u001Fc	0	35	0	1	word	0	-	0	1
+T	31	C\u001FProgram\u001FFilesLuceneindex\u001Fabc	0	35	0	1	word	0	-	0	1
+T	31	CProgram\u001FFiles\u001FLucene\u001Findex\u001Fa\u001Fb\u001Fc	0	35	0	1	word	0	-	0	1
+T	31	CProgram\u001FFiles\u001FLucene\u001Findex\u001Fabc	0	35	0	1	word	0	-	0	1
+T	31	CProgram\u001FFilesLuceneindex\u001Fa\u001Fb\u001Fc	0	35	0	1	word	0	-	0	1
+T	31	CProgram\u001FFilesLuceneindex\u001Fabc	0	35	0	1	word	0	-	0	1
+E	31	0	35	0
+T	32	the\u001Fquick\u001Fbrown\u001Ffox\u001Fjumps3	0	37	1	1	word	0	-	0	1
+T	32	the\u001Fquick\u001Fbrown\u001Ffox\u001Fjumps	0	37	0	1	word	0	-	0	1
+T	32	the\u001Fquick\u001Fbrown05\u001Ffox\u001Fjumps3	0	37	0	1	word	0	-	0	1
+T	32	the\u001Fquick\u001Fbrown05\u001Ffox\u001Fjumps	0	37	0	1	word	0	-	0	1
+T	32	the\u001Fquick2\u001Fbrown\u001Ffox\u001Fjumps3	0	37	0	1	word	0	-	0	1
+T	32	the\u001Fquick2\u001Fbrown\u001Ffox\u001Fjumps	0	37	0	1	word	0	-	0	1
+T	32	the\u001Fquick2\u001Fbrown05\u001Ffox\u001Fjumps3	0	37	0	1	word	0	-	0	1
+T	32	the\u001Fquick2\u001Fbrown05\u001Ffox\u001Fjumps	0	37	0	1	word	0	-	0	1
+T	32	the15\u001Fquick\u001Fbrown\u001Ffox\u001Fjumps3	0	37	0	1	word	0	-	0	1
+T	32	the15\u001Fquick\u001Fbrown\u001Ffox\u001Fjumps	0	37	0	1	word	0	-	0	1
+T	32	the15\u001Fquick\u001Fbrown05\u001Ffox\u001Fjumps3	0	37	0	1	word	0	-	0	1
+T	32	the15\u001Fquick\u001Fbrown05\u001Ffox\u001Fjumps	0	37	0	1	word	0	-	0	1
+T	32	the15\u001Fquick2\u001Fbrown\u001Ffox\u001Fjumps3	0	37	0	1	word	0	-	0	1
+T	32	the15\u001Fquick2\u001Fbrown\u001Ffox\u001Fjumps	0	37	0	1	word	0	-	0	1
+T	32	the15\u001Fquick2\u001Fbrown05\u001Ffox\u001Fjumps3	0	37	0	1	word	0	-	0	1
+T	32	the15\u001Fquick2\u001Fbrown05\u001Ffox\u001Fjumps	0	37	0	1	word	0	-	0	1
+E	32	0	37	0
+T	33	apple\u001Fbanana\u001Fcherry\u001Fpear10	0	31	1	1	word	0	-	0	1
+T	33	apple\u001Fbanana\u001Fcherry\u001Fpear	0	31	0	1	word	0	-	0	1
+T	33	apple\u001Fbanana1\u001Fcherry\u001Fpear10	0	31	0	1	word	0	-	0	1
+T	33	apple\u001Fbanana1\u001Fcherry\u001Fpear	0	31	0	1	word	0	-	0	1
+T	33	apple3\u001Fbanana\u001Fcherry\u001Fpear10	0	31	0	1	word	0	-	0	1
+T	33	apple3\u001Fbanana\u001Fcherry\u001Fpear	0	31	0	1	word	0	-	0	1
+T	33	apple3\u001Fbanana1\u001Fcherry\u001Fpear10	0	31	0	1	word	0	-	0	1
+T	33	apple3\u001Fbanana1\u001Fcherry\u001Fpear	0	31	0	1	word	0	-	0	1
+E	33	0	31	0
+T	34	quick\u001Ffox\u001Fdog125	0	27	1	1	word	0	-	0	1
+T	34	quick\u001Ffox\u001Fdog	0	27	0	1	word	0	-	0	1
+T	34	quick\u001Ffox20\u001Fdog125	0	27	0	1	word	0	-	0	1
+T	34	quick\u001Ffox20\u001Fdog	0	27	0	1	word	0	-	0	1
+T	34	quick05\u001Ffox\u001Fdog125	0	27	0	1	word	0	-	0	1
+T	34	quick05\u001Ffox\u001Fdog	0	27	0	1	word	0	-	0	1
+T	34	quick05\u001Ffox20\u001Fdog125	0	27	0	1	word	0	-	0	1
+T	34	quick05\u001Ffox20\u001Fdog	0	27	0	1	word	0	-	0	1
+E	34	0	27	0
+T	35	token1\u001Fpayload\u001Fone\u001Ftwo\u001Fthree	0	28	1	1	word	0	-	0	1
+T	35	token1\u001Fpayload\u001Fonetwothree	0	28	0	1	word	0	-	0	1
+T	35	token1payload\u001Fone\u001Ftwo\u001Fthree	0	28	0	1	word	0	-	0	1
+T	35	token1payload\u001Fonetwothree	0	28	0	1	word	0	-	0	1
+E	35	0	28	0
+T	36	Tabs\u001Fand\u001Fmultiple\u001Fspaces\u001Fand\u001FNBSP\u001Fhere\u001Fand\u001Fideographic\u001Fspace\u001Fand\u001Fline\u001Fsep\u001Fand\u001Fzero\u001Fwidth\u001Fsoft\u001Fhyphen	0	105	1	1	word	0	-	0	1
+T	36	Tabs\u001Fand\u001Fmultiple\u001Fspaces\u001Fand\u001FNBSP\u001Fhere\u001Fand\u001Fideographic\u001Fspace\u001Fand\u001Fline\u001Fsep\u001Fand\u001Fzero\u001Fwidth\u001Fsofthyphen	0	105	0	1	word	0	-	0	1
+T	36	Tabs\u001Fand\u001Fmultiple\u001Fspaces\u001Fand\u001FNBSP\u001Fhere\u001Fand\u001Fideographic\u001Fspace\u001Fand\u001Fline\u001Fsep\u001Fand\u001Fzerowidth\u001Fsoft\u001Fhyphen	0	105	0	1	word	0	-	0	1
+T	36	Tabs\u001Fand\u001Fmultiple\u001Fspaces\u001Fand\u001FNBSP\u001Fhere\u001Fand\u001Fideographic\u001Fspace\u001Fand\u001Fline\u001Fsep\u001Fand\u001Fzerowidth\u001Fsofthyphen	0	105	0	1	word	0	-	0	1
+T	36	Tabs\u001Fand\u001Fmultiple\u001Fspaces\u001Fand\u001FNBSPhere\u001Fand\u001Fideographic\u001Fspace\u001Fand\u001Fline\u001Fsep\u001Fand\u001Fzero\u001Fwidth\u001Fsoft\u001Fhyphen	0	105	0	1	word	0	-	0	1
+T	36	Tabs\u001Fand\u001Fmultiple\u001Fspaces\u001Fand\u001FNBSPhere\u001Fand\u001Fideographic\u001Fspace\u001Fand\u001Fline\u001Fsep\u001Fand\u001Fzero\u001Fwidth\u001Fsofthyphen	0	105	0	1	word	0	-	0	1
+T	36	Tabs\u001Fand\u001Fmultiple\u001Fspaces\u001Fand\u001FNBSPhere\u001Fand\u001Fideographic\u001Fspace\u001Fand\u001Fline\u001Fsep\u001Fand\u001Fzerowidth\u001Fsoft\u001Fhyphen	0	105	0	1	word	0	-	0	1
+T	36	Tabs\u001Fand\u001Fmultiple\u001Fspaces\u001Fand\u001FNBSPhere\u001Fand\u001Fideographic\u001Fspace\u001Fand\u001Fline\u001Fsep\u001Fand\u001Fzerowidth\u001Fsofthyphen	0	105	0	1	word	0	-	0	1
+E	36	0	105	0
+T	37	ab	0	2	1	1	word	0	-	0	1
+E	37	0	2	0
+T	38	A	0	1	1	1	word	0	-	0	1
+E	38	0	1	0
+T	39	supercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilis\u001Fticexpialidocioussupercalifragilisticexpialidocious\u001Fend	0	310	1	1	word	0	-	0	1
+E	39	0	310	0
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc	0	42	1	1	word	0	-	0	1
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc\u001Fabc	0	42	0	1	word	0	-	0	1
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc\u001Fabc\u001Fa\u001Fb\u001Fc	0	42	0	1	word	0	-	0	1
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc\u001Fabc\u001Fabc	0	42	0	1	word	0	-	0	1
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc\u001Fabc\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc	0	42	0	1	word	0	-	0	1
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc\u001Fabc\u001Fa\u001Fb\u001Fc\u001Fabc	0	42	0	1	word	0	-	0	1
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc\u001Fabc\u001Fabc\u001Fa\u001Fb\u001Fc	0	42	0	1	word	0	-	0	1
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc\u001Fabc\u001Fabc\u001Fabc	0	42	0	1	word	0	-	0	1
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fa\u001Fb\u001Fc\u001Fabc\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc	0	42	0	1	word	0	-	0	1
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fa\u001Fb\u001Fc\u001Fabc\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc\u001Fabc	0	42	0	1	word	0	-	0	1
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fa\u001Fb\u001Fc\u001Fabc\u001Fa\u001Fb\u001Fc\u001Fabc\u001Fa\u001Fb\u001Fc	0	42	0	1	word	0	-	0	1
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fa\u001Fb\u001Fc\u001Fabc\u001Fa\u001Fb\u001Fc\u001Fabc\u001Fabc	0	42	0	1	word	0	-	0	1
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fa\u001Fb\u001Fc\u001Fabc\u001Fabc\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc	0	42	0	1	word	0	-	0	1
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fa\u001Fb\u001Fc\u001Fabc\u001Fabc\u001Fa\u001Fb\u001Fc\u001Fabc	0	42	0	1	word	0	-	0	1
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fa\u001Fb\u001Fc\u001Fabc\u001Fabc\u001Fabc\u001Fa\u001Fb\u001Fc	0	42	0	1	word	0	-	0	1
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fa\u001Fb\u001Fc\u001Fabc\u001Fabc\u001Fabc\u001Fabc	0	42	0	1	word	0	-	0	1
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fabc\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc	0	42	0	1	word	0	-	0	1
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fabc\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc\u001Fabc	0	42	0	1	word	0	-	0	1
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fabc\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc\u001Fabc\u001Fa\u001Fb\u001Fc	0	42	0	1	word	0	-	0	1
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fabc\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc\u001Fabc\u001Fabc	0	42	0	1	word	0	-	0	1
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fabc\u001Fa\u001Fb\u001Fc\u001Fabc\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc	0	42	0	1	word	0	-	0	1
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fabc\u001Fa\u001Fb\u001Fc\u001Fabc\u001Fa\u001Fb\u001Fc\u001Fabc	0	42	0	1	word	0	-	0	1
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fabc\u001Fa\u001Fb\u001Fc\u001Fabc\u001Fabc\u001Fa\u001Fb\u001Fc	0	42	0	1	word	0	-	0	1
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fabc\u001Fa\u001Fb\u001Fc\u001Fabc\u001Fabc\u001Fabc	0	42	0	1	word	0	-	0	1
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fabc\u001Fabc\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc	0	42	0	1	word	0	-	0	1
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fabc\u001Fabc\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc\u001Fabc	0	42	0	1	word	0	-	0	1
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fabc\u001Fabc\u001Fa\u001Fb\u001Fc\u001Fabc\u001Fa\u001Fb\u001Fc	0	42	0	1	word	0	-	0	1
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fabc\u001Fabc\u001Fa\u001Fb\u001Fc\u001Fabc\u001Fabc	0	42	0	1	word	0	-	0	1
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fabc\u001Fabc\u001Fabc\u001Fa\u001Fb\u001Fc\u001Fa\u001Fb\u001Fc	0	42	0	1	word	0	-	0	1
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fabc\u001Fabc\u001Fabc\u001Fa\u001Fb\u001Fc\u001Fabc	0	42	0	1	word	0	-	0	1
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fabc\u001Fabc\u001Fabc\u001Fabc\u001Fa\u001Fb\u001Fc	0	42	0	1	word	0	-	0	1
+T	40	x\u001Fy\u001Fz\u001Fxy\u001Fxyz\u001Fabc\u001Fabc\u001Fabc\u001Fabc\u001Fabc	0	42	0	1	word	0	-	0	1
+E	40	0	42	0
+T	41	foo\u001Fbar\u001Fbaz\u001FFooBarBaz\u001FFOObar\u001FfooBAR\u001Ffoo2bar\u001F2foo\u001Fbar2\u001Fellipsis\u001Fdashes	0	79	1	1	word	0	-	0	1
+T	41	foobarbaz\u001FFooBarBaz\u001FFOObar\u001FfooBAR\u001Ffoo2bar\u001F2foo\u001Fbar2\u001Fellipsis\u001Fdashes	0	79	0	1	word	0	-	0	1
+E	41	0	79	0
+T	42	The\u001FCEO\u001Fs\u001F1990sera\u001FIBM\u001Fcompatible\u001FPCs\u001Fran\u001FMS\u001FDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi7\u001FCPU\u001F\u001F400GHz	0	96	1	1	word	0	-	0	1
+T	42	The\u001FCEO\u001Fs\u001F1990sera\u001FIBM\u001Fcompatible\u001FPCs\u001Fran\u001FMS\u001FDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi74790K\u001FCPU\u001F\u001F400GHz	0	96	0	1	word	0	-	0	1
+T	42	The\u001FCEO\u001Fs\u001F1990sera\u001FIBM\u001Fcompatible\u001FPCs\u001Fran\u001FMSDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi7\u001FCPU\u001F\u001F400GHz	0	96	0	1	word	0	-	0	1
+T	42	The\u001FCEO\u001Fs\u001F1990sera\u001FIBM\u001Fcompatible\u001FPCs\u001Fran\u001FMSDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi74790K\u001FCPU\u001F\u001F400GHz	0	96	0	1	word	0	-	0	1
+T	42	The\u001FCEO\u001Fs\u001F1990sera\u001FIBMcompatible\u001FPCs\u001Fran\u001FMS\u001FDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi7\u001FCPU\u001F\u001F400GHz	0	96	0	1	word	0	-	0	1
+T	42	The\u001FCEO\u001Fs\u001F1990sera\u001FIBMcompatible\u001FPCs\u001Fran\u001FMS\u001FDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi74790K\u001FCPU\u001F\u001F400GHz	0	96	0	1	word	0	-	0	1
+T	42	The\u001FCEO\u001Fs\u001F1990sera\u001FIBMcompatible\u001FPCs\u001Fran\u001FMSDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi7\u001FCPU\u001F\u001F400GHz	0	96	0	1	word	0	-	0	1
+T	42	The\u001FCEO\u001Fs\u001F1990sera\u001FIBMcompatible\u001FPCs\u001Fran\u001FMSDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi74790K\u001FCPU\u001F\u001F400GHz	0	96	0	1	word	0	-	0	1
+T	42	The\u001FCEO\u001Fs\u001Fera\u001FIBM\u001Fcompatible\u001FPCs\u001Fran\u001FMS\u001FDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi7\u001FCPU\u001F\u001F400GHz	0	96	0	1	word	0	-	0	1
+T	42	The\u001FCEO\u001Fs\u001Fera\u001FIBM\u001Fcompatible\u001FPCs\u001Fran\u001FMS\u001FDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi74790K\u001FCPU\u001F\u001F400GHz	0	96	0	1	word	0	-	0	1
+T	42	The\u001FCEO\u001Fs\u001Fera\u001FIBM\u001Fcompatible\u001FPCs\u001Fran\u001FMSDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi7\u001FCPU\u001F\u001F400GHz	0	96	0	1	word	0	-	0	1
+T	42	The\u001FCEO\u001Fs\u001Fera\u001FIBM\u001Fcompatible\u001FPCs\u001Fran\u001FMSDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi74790K\u001FCPU\u001F\u001F400GHz	0	96	0	1	word	0	-	0	1
+T	42	The\u001FCEO\u001Fs\u001Fera\u001FIBMcompatible\u001FPCs\u001Fran\u001FMS\u001FDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi7\u001FCPU\u001F\u001F400GHz	0	96	0	1	word	0	-	0	1
+T	42	The\u001FCEO\u001Fs\u001Fera\u001FIBMcompatible\u001FPCs\u001Fran\u001FMS\u001FDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi74790K\u001FCPU\u001F\u001F400GHz	0	96	0	1	word	0	-	0	1
+T	42	The\u001FCEO\u001Fs\u001Fera\u001FIBMcompatible\u001FPCs\u001Fran\u001FMSDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi7\u001FCPU\u001F\u001F400GHz	0	96	0	1	word	0	-	0	1
+T	42	The\u001FCEO\u001Fs\u001Fera\u001FIBMcompatible\u001FPCs\u001Fran\u001FMSDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi74790K\u001FCPU\u001F\u001F400GHz	0	96	0	1	word	0	-	0	1
+T	42	The\u001FCEOs\u001F1990sera\u001FIBM\u001Fcompatible\u001FPCs\u001Fran\u001FMS\u001FDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi7\u001FCPU\u001F\u001F400GHz	0	96	0	1	word	0	-	0	1
+T	42	The\u001FCEOs\u001F1990sera\u001FIBM\u001Fcompatible\u001FPCs\u001Fran\u001FMS\u001FDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi74790K\u001FCPU\u001F\u001F400GHz	0	96	0	1	word	0	-	0	1
+T	42	The\u001FCEOs\u001F1990sera\u001FIBM\u001Fcompatible\u001FPCs\u001Fran\u001FMSDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi7\u001FCPU\u001F\u001F400GHz	0	96	0	1	word	0	-	0	1
+T	42	The\u001FCEOs\u001F1990sera\u001FIBM\u001Fcompatible\u001FPCs\u001Fran\u001FMSDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi74790K\u001FCPU\u001F\u001F400GHz	0	96	0	1	word	0	-	0	1
+T	42	The\u001FCEOs\u001F1990sera\u001FIBMcompatible\u001FPCs\u001Fran\u001FMS\u001FDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi7\u001FCPU\u001F\u001F400GHz	0	96	0	1	word	0	-	0	1
+T	42	The\u001FCEOs\u001F1990sera\u001FIBMcompatible\u001FPCs\u001Fran\u001FMS\u001FDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi74790K\u001FCPU\u001F\u001F400GHz	0	96	0	1	word	0	-	0	1
+T	42	The\u001FCEOs\u001F1990sera\u001FIBMcompatible\u001FPCs\u001Fran\u001FMSDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi7\u001FCPU\u001F\u001F400GHz	0	96	0	1	word	0	-	0	1
+T	42	The\u001FCEOs\u001F1990sera\u001FIBMcompatible\u001FPCs\u001Fran\u001FMSDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi74790K\u001FCPU\u001F\u001F400GHz	0	96	0	1	word	0	-	0	1
+T	42	The\u001FCEOs\u001Fera\u001FIBM\u001Fcompatible\u001FPCs\u001Fran\u001FMS\u001FDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi7\u001FCPU\u001F\u001F400GHz	0	96	0	1	word	0	-	0	1
+T	42	The\u001FCEOs\u001Fera\u001FIBM\u001Fcompatible\u001FPCs\u001Fran\u001FMS\u001FDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi74790K\u001FCPU\u001F\u001F400GHz	0	96	0	1	word	0	-	0	1
+T	42	The\u001FCEOs\u001Fera\u001FIBM\u001Fcompatible\u001FPCs\u001Fran\u001FMSDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi7\u001FCPU\u001F\u001F400GHz	0	96	0	1	word	0	-	0	1
+T	42	The\u001FCEOs\u001Fera\u001FIBM\u001Fcompatible\u001FPCs\u001Fran\u001FMSDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi74790K\u001FCPU\u001F\u001F400GHz	0	96	0	1	word	0	-	0	1
+T	42	The\u001FCEOs\u001Fera\u001FIBMcompatible\u001FPCs\u001Fran\u001FMS\u001FDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi7\u001FCPU\u001F\u001F400GHz	0	96	0	1	word	0	-	0	1
+T	42	The\u001FCEOs\u001Fera\u001FIBMcompatible\u001FPCs\u001Fran\u001FMS\u001FDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi74790K\u001FCPU\u001F\u001F400GHz	0	96	0	1	word	0	-	0	1
+T	42	The\u001FCEOs\u001Fera\u001FIBMcompatible\u001FPCs\u001Fran\u001FMSDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi7\u001FCPU\u001F\u001F400GHz	0	96	0	1	word	0	-	0	1
+T	42	The\u001FCEOs\u001Fera\u001FIBMcompatible\u001FPCs\u001Fran\u001FMSDOS\u001F622\u001Fthe\u001F5th\u001Fgen\u001FCore\u001Fi74790K\u001FCPU\u001F\u001F400GHz	0	96	0	1	word	0	-	0	1
+E	42	0	96	0
+T	43	running\u001Fjumping\u001Fhappily\u001Fhappiness\u001Fconditional\u001Frelational\u001Fsensibility\u001Fagreed\u001Ffeed\u001Fbled\u001Fsing	0	90	1	1	word	0	-	0	1
+E	43	0	90	0
+T	44	leading\u001Fand\u001Ftrailing\u001Fspaces	0	32	1	1	word	0	-	0	1
+E	44	0	32	0
+E	45	0	0	0
+T	46	ÀÁÂÃÄÅ\u001Fàáâãäå\u001FÇçÈÉÊË\u001Fèéêë\u001FÌÍÎÏ\u001Fìíîï\u001FÑñÒÓÔÕÖ\u001Fòóôõö\u001FÙÚÛÜ\u001Fùúûü\u001FÝýÿ\u001FŠšŽž\u001FŁł\u001FÐð\u001FÞþ\u001Fß\u001FŒœÆæØø	0	86	1	1	word	0	-	0	1
+E	46	0	86	0
+T	47	Smart\u001Fquotes\u001Fsingle\u001Fguillemets\u001Fsingle\u001Flow	0	84	1	1	word	0	-	0	1
+E	47	0	84	0
+T	48	abilities\u001Fagreed\u001Factivism\u001Fcapable\u001Fcried\u001Fdependence\u001Femergency\u001Ffabricate\u001Ffrequency\u001Fgeneralization\u001Fgovernment\u001Fhappiness\u001Fhesitancy\u001Fhoped\u001Fhopping\u001Fhorrible\u001Fironic\u001Fjumped\u001Fnationalize\u001Forganization\u001Fponies\u001Frationality\u001Frealize\u001Frelational\u001Fsensitivity\u001Fstopped\u001Ftraditionally\u001Fwalking\u001Fdried\u001Fstudies\u001Fclasses\u001Fbuses\u001Fheroes\u001Faxes	0	308	1	1	word	0	-	0	1
+E	48	0	308	0
+T	49	ーﾟ\u001Fヽﾟ\u001Fｰﾟ\u001Fヽﾞ\u001Fｳﾞ\u001Fﾊﾟ	0	17	1	1	word	0	-	0	1
+E	49	0	17	0
+T	50	ends\u001Fwith\u001Fa\u001Fnext\u001Fline	0	22	1	1	word	0	-	0	1
+E	50	0	22	0
+T	51	ends\u001Fwith\u001Fa\u001Fline\u001Fseparator	0	27	1	1	word	0	-	0	1
+E	51	0	27	0
+T	52	The\u001FCafé\u001Fcrossing\u001FΣΊΣΥΦΟΣ\u001Fstraße\u001FSTRASSE\u001FK\u001Fkelvin\u001FK\u001F12\u001Fand\u001Fthe\u001Fend\u001F😀x\u001F𝐀	0	75	1	1	word	0	-	0	1
+E	52	0	75	0
