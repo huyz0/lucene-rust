@@ -14,14 +14,23 @@
 //!   `ŉ`, Greek with ypogegrammeni) map by their simple mapping.
 //! - `suggest("")` answers nothing where Java throws
 //!   `StringIndexOutOfBoundsException`.
-//! - Only `TimeoutPolicy.NO_TIMEOUT`; no `SuggestibleEntryCache` (a
-//!   speed-for-memory option that changes no suggestion).
+//! - A timeout or cancellation latches instead of throwing (`timeout.rs`):
+//!   the suggestion set stops changing at the check that stopped it, so the
+//!   partial result is Java's. A hook's cancellation inside
+//!   `modifyChunksBetweenDashes` reports the outer word's suggestions (Java
+//!   reports the chunk's when the hook throws a bare
+//!   `SuggestionTimeoutException`).
+//! - No `SuggestibleEntryCache` (a speed-for-memory option that changes no
+//!   suggestion).
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use super::dictionary::{index_of_str, AFFIX_APPEND, AFFIX_FLAG, AFFIX_STRIP_ORD};
 use super::speller::Hunspell;
 use super::stemmer::Stemmer;
+use super::timeout::{
+    Canceler, CheckCanceled, Stop, SuggestionTimeout, TimeoutPolicy, SUGGEST_TIME_LIMIT,
+};
 use super::word_case::{is_upper, to_upper, WordCase};
 use super::word_form_generator::{EverythingPossible, FragmentChecker};
 use super::Dictionary;
@@ -95,14 +104,31 @@ fn clean_output(speller: &Hunspell<'_>, mut s: Vec<u16>) -> Vec<u16> {
 }
 
 /// An insertion-ordered set of suggestions (`LinkedHashSet<Suggestion>`).
-#[derive(Default)]
-pub(crate) struct SuggestionSet {
+/// Once the computation's [`Canceler`] has stopped it, the set no longer
+/// changes: it holds what Java's set held when its check threw.
+pub(crate) struct SuggestionSet<'c> {
     items: Vec<Suggestion>,
     seen: HashSet<Suggestion>,
+    cancel: Option<&'c Canceler<'c>>,
 }
 
-impl SuggestionSet {
+impl<'c> SuggestionSet<'c> {
+    fn new(cancel: Option<&'c Canceler<'c>>) -> Self {
+        SuggestionSet {
+            items: Vec::new(),
+            seen: HashSet::new(),
+            cancel,
+        }
+    }
+
+    fn frozen(&self) -> bool {
+        self.cancel.is_some_and(|c| c.stopped().is_some())
+    }
+
     fn add(&mut self, s: Suggestion) -> bool {
+        if self.frozen() {
+            return false;
+        }
         if self.seen.insert(s.clone()) {
             self.items.push(s);
             true
@@ -116,21 +142,47 @@ impl SuggestionSet {
     }
 
     fn clear(&mut self) {
-        self.items.clear();
-        self.seen.clear();
+        if !self.frozen() {
+            self.items.clear();
+            self.seen.clear();
+        }
     }
 
     fn take(&mut self) -> Vec<Suggestion> {
+        if self.frozen() {
+            return Vec::new();
+        }
         self.seen.clear();
         std::mem::take(&mut self.items)
     }
 }
 
 impl Hunspell<'_> {
-    /// `suggest(word)` under `TimeoutPolicy.NO_TIMEOUT`: `new
-    /// Suggester(dictionary)`'s suggestions.
-    pub fn suggest(&self, word: &str) -> Vec<String> {
-        Suggester::new(self.dictionary).suggest_no_timeout(word)
+    /// `suggest(word)`: `suggest(word, SUGGEST_TIME_LIMIT)` (250 ms).
+    pub fn suggest(&self, word: &str) -> Result<Vec<String>, SuggestionTimeout> {
+        self.suggest_with_time_limit(word, SUGGEST_TIME_LIMIT)
+    }
+
+    /// `suggest(word, timeLimitMs)`: under `NO_TIMEOUT` every suggestion;
+    /// otherwise those found within `time_limit` -- returned under
+    /// `RETURN_PARTIAL_RESULT`, a [`SuggestionTimeout`] carrying them under
+    /// `THROW_EXCEPTION`. A cancellation by the hook is a
+    /// [`SuggestionTimeout`] except under `RETURN_PARTIAL_RESULT`.
+    pub fn suggest_with_time_limit(
+        &self,
+        word: &str,
+        time_limit: std::time::Duration,
+    ) -> Result<Vec<String>, SuggestionTimeout> {
+        let suggester = Suggester::new(self.dictionary);
+        if self.policy == TimeoutPolicy::NoTimeout {
+            return suggester.suggest_canceled(word, self.check_canceled, None);
+        }
+        match suggester.suggest_canceled(word, self.check_canceled, Some(time_limit)) {
+            Err(e) if self.policy == TimeoutPolicy::ReturnPartialResult => {
+                Ok(e.into_partial_result())
+            }
+            r => r,
+        }
     }
 }
 
@@ -175,17 +227,66 @@ impl<'d> Suggester<'d> {
     /// `suggestNoTimeout(word, () -> {})`.
     pub fn suggest_no_timeout(&self, word: &str) -> Vec<String> {
         let units: Vec<u16> = word.encode_utf16().collect();
-        self.suggest_units(&units)
-            .iter()
-            .map(|s| String::from_utf16_lossy(s))
-            .collect()
+        let mut suggestions = SuggestionSet::new(None);
+        let early = self.suggest_units(&units, &mut suggestions, None);
+        to_strings(&early.unwrap_or_else(|| postprocess(&suggestions.items)))
     }
 
-    /// `Suggester.suggest` over UTF-16 units.
-    pub(crate) fn suggest_units(&self, word: &[u16]) -> Vec<Vec<u16>> {
+    /// `suggestWithTimeout(word, timeLimitMs, checkCanceled)`: the
+    /// suggestions found within `time_limit`, or a [`SuggestionTimeout`]
+    /// carrying them; `check_canceled` may stop it sooner.
+    pub fn suggest_with_timeout(
+        &self,
+        word: &str,
+        time_limit: std::time::Duration,
+        check_canceled: Option<CheckCanceled<'_>>,
+    ) -> Result<Vec<String>, SuggestionTimeout> {
+        self.suggest_canceled(word, check_canceled, Some(time_limit))
+    }
+
+    /// `suggestNoTimeout(word, checkCanceled)` (no `time_limit`) or
+    /// `suggestWithTimeout`.
+    pub(crate) fn suggest_canceled(
+        &self,
+        word: &str,
+        check_canceled: Option<CheckCanceled<'_>>,
+        time_limit: Option<std::time::Duration>,
+    ) -> Result<Vec<String>, SuggestionTimeout> {
+        let units: Vec<u16> = word.encode_utf16().collect();
+        let cancel = Canceler::new(check_canceled, time_limit);
+        let mut suggestions = SuggestionSet::new(Some(&cancel));
+        let early = self.suggest_units(&units, &mut suggestions, Some(&cancel));
+        let result = to_strings(&early.unwrap_or_else(|| postprocess(&suggestions.items)));
+        match cancel.stopped() {
+            None => Ok(result),
+            Some(Stop::Canceled) => Err(SuggestionTimeout::new("canceled".into(), result)),
+            Some(Stop::TimedOut) => Err(SuggestionTimeout::new(
+                format!(
+                    "Time limit of {}ms exceeded for {word}",
+                    time_limit.unwrap_or_default().as_millis()
+                ),
+                result,
+            )),
+        }
+    }
+
+    /// `Suggester.suggest` over UTF-16 units, into `suggestions`; `Some`
+    /// when the answer is not the set's (a `FORCEUCASE` title).
+    fn suggest_units<'c>(
+        &self,
+        word: &[u16],
+        suggestions: &mut SuggestionSet<'c>,
+        cancel: Option<&'c Canceler<'c>>,
+    ) -> Option<Vec<Vec<u16>>>
+    where
+        'd: 'c,
+    {
         let d = self.dictionary;
+        if cancel.is_some_and(Canceler::check) {
+            return None;
+        }
         if word.len() >= 100 || word.is_empty() {
-            return vec![];
+            return Some(vec![]);
         }
         let cleaned;
         let mut word = word;
@@ -194,24 +295,26 @@ impl<'d> Suggester<'d> {
             word = &cleaned;
         }
         if word.is_empty() {
-            return vec![];
+            return Some(vec![]);
         }
         let speller = Hunspell {
             dictionary: d,
             stemmer: Stemmer::new(d),
             suggestion_mode: true,
+            policy: TimeoutPolicy::NoTimeout,
+            check_canceled: None,
+            cancel,
         };
         let case = WordCase::case_of(word);
         if d.force_u_case != FLAG_UNSET && case == WordCase::Lower {
             let title = d.to_title_case(word);
-            if speller.spell_units(&title) {
-                return vec![title];
+            if speller.spell_units(&title) && !speller.canceled() {
+                return Some(vec![title]);
             }
         }
-        let mut suggestions = SuggestionSet::default();
         let has_good = ModifyingSuggester {
             speller: &speller,
-            result: &mut suggestions,
+            result: suggestions,
             misspelled: word,
             word_case: case,
             tried: HashSet::new(),
@@ -222,22 +325,27 @@ impl<'d> Suggester<'d> {
         if !has_good && d.max_ngram_suggestions > 0 {
             let lower = d.to_lower_case(word);
             let generated =
-                GeneratingSuggester { speller: &speller }.suggest(&lower, case, &suggestions);
+                GeneratingSuggester { speller: &speller }.suggest(&lower, case, suggestions);
             for raw in generated {
                 suggestions.add(Suggestion::new(raw, word, case, &speller));
             }
         }
         let dash = u16::from(b'-');
         if word.contains(&dash) && !suggestions.items.iter().any(|s| s.raw.contains(&dash)) {
-            for raw in self.modify_chunks_between_dashes(word, &speller) {
+            for raw in self.modify_chunks_between_dashes(word, &speller, cancel) {
                 suggestions.add(Suggestion::new(raw, word, case, &speller));
             }
         }
-        postprocess(&suggestions.items)
+        None
     }
 
     /// `Suggester.modifyChunksBetweenDashes`.
-    fn modify_chunks_between_dashes(&self, word: &[u16], speller: &Hunspell<'_>) -> Vec<Vec<u16>> {
+    fn modify_chunks_between_dashes<'c>(
+        &self,
+        word: &[u16],
+        speller: &Hunspell<'_>,
+        cancel: Option<&'c Canceler<'c>>,
+    ) -> Vec<Vec<u16>> {
         let mut result = Vec::new();
         let mut chunk_start = 0;
         while chunk_start < word.len() {
@@ -246,7 +354,11 @@ impl<'d> Suggester<'d> {
             if chunk_end > chunk_start {
                 let chunk = &word[chunk_start..chunk_end];
                 if !speller.spell_units(chunk) {
-                    for sug in self.suggest_units(chunk) {
+                    let mut inner = SuggestionSet::new(cancel);
+                    let sugs = self
+                        .suggest_units(chunk, &mut inner, cancel)
+                        .unwrap_or_else(|| postprocess(&inner.items));
+                    for sug in sugs {
                         let replaced =
                             [&word[..chunk_start], sug.as_slice(), &word[chunk_end..]].concat();
                         if speller.spell_units(&replaced) {
@@ -259,6 +371,10 @@ impl<'d> Suggester<'d> {
         }
         result
     }
+}
+
+fn to_strings(units: &[Vec<u16>]) -> Vec<String> {
+    units.iter().map(|s| String::from_utf16_lossy(s)).collect()
 }
 
 /// `Suggester.postprocess`: every suggestion's results, deduplicated.
@@ -280,7 +396,7 @@ const MAX_CHAR_DISTANCE: usize = 4;
 /// `ModifyingSuggester`.
 struct ModifyingSuggester<'a, 'd> {
     speller: &'a Hunspell<'d>,
-    result: &'a mut SuggestionSet,
+    result: &'a mut SuggestionSet<'d>,
     misspelled: &'a [u16],
     word_case: WordCase,
     tried: HashSet<Vec<u16>>,
@@ -801,7 +917,7 @@ struct GeneratingSuggester<'a, 'd> {
 }
 
 impl GeneratingSuggester<'_, '_> {
-    fn suggest(&self, word: &[u16], original: WordCase, prev: &SuggestionSet) -> Vec<Vec<u16>> {
+    fn suggest(&self, word: &[u16], original: WordCase, prev: &SuggestionSet<'_>) -> Vec<Vec<u16>> {
         let roots = self.find_similar_dictionary_entries(word, original);
         let expanded = self.expand_roots(word, &roots);
         let by_similarity = self.rank_by_similarity(word, &expanded);
@@ -839,6 +955,9 @@ impl GeneratingSuggester<'_, '_> {
                         return;
                     }
                 }
+            }
+            if self.speller.canceled() {
+                return;
             }
             // Lucene steps by `formStep()` over forms its flyweight entry has
             // already stripped of morphological ids: with custom morphological
@@ -1049,7 +1168,7 @@ impl GeneratingSuggester<'_, '_> {
     fn most_relevant(
         &self,
         by_similarity: &BTreeSet<Weighted<Vec<u16>>>,
-        prev: &SuggestionSet,
+        prev: &SuggestionSet<'_>,
     ) -> Vec<Vec<u16>> {
         let d = self.speller.dictionary;
         let mut result: Vec<Vec<u16>> = Vec::new();
