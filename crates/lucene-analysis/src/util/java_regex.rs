@@ -1157,6 +1157,8 @@ pub struct JavaMatcher {
     locs: CaptureLocations,
     /// The haystack a mid-pair replay writes its marker bytes into.
     scratch: Vec<u8>,
+    /// The last search's byte spans (reused).
+    spans: Vec<Option<(usize, usize)>>,
 }
 
 impl JavaMatcher {
@@ -1174,6 +1176,7 @@ impl JavaMatcher {
             done: false,
             groups: Vec::new(),
             scratch: Vec::new(),
+            spans: Vec::new(),
         };
         m.reset(text);
         m
@@ -1231,6 +1234,7 @@ impl JavaMatcher {
         self.pattern.inner.groups - 1
     }
 
+    #[inline]
     fn utf16(&self, b: usize) -> i32 {
         match self.utf16_at.get(b) {
             Some(&u) => u,
@@ -1240,6 +1244,7 @@ impl JavaMatcher {
 
     /// The byte where UTF-16 offset `u` falls, and whether it falls between
     /// the surrogates of the (supplementary) character starting there.
+    #[inline]
     fn locate(&self, u: i32) -> (usize, bool) {
         if self.utf16_at.is_empty() {
             return (u as usize, false);
@@ -1252,6 +1257,7 @@ impl JavaMatcher {
         }
     }
 
+    #[inline]
     fn text_to_hay(&self, b: usize) -> usize {
         match self.sentinel {
             Some(s) if b > s => b + 1,
@@ -1259,6 +1265,7 @@ impl JavaMatcher {
         }
     }
 
+    #[inline]
     fn hay_to_text(&self, h: usize) -> usize {
         match self.sentinel {
             Some(s) if h > s => h - 1,
@@ -1302,20 +1309,36 @@ impl JavaMatcher {
             (Some(hay), Some((re, _))) => (re, hay),
             _ => (&inner.plain, self.text.as_bytes()),
         };
-        let mut spans: Vec<Option<(usize, usize)>> = Vec::new();
         if inner.groups == 1 {
-            match re.find_at(hay, h) {
-                Some(m) => spans.push(Some((m.start(), m.end()))),
-                None => return false,
-            }
-        } else {
-            if re.captures_read_at(&mut self.locs, hay, h).is_none() {
+            // The match alone: no capture search, nothing to convert but two
+            // offsets.
+            let Some(m) = re.find_at(hay, h) else {
                 return false;
-            }
-            spans.extend((0..self.locs.len()).map(|g| self.locs.get(g)));
+            };
+            let (s, e) = (m.start(), m.end());
+            let span = (self.hay_utf16(s), self.hay_utf16(e));
+            self.groups.clear();
+            self.groups.push(span);
+            self.last = Some(span);
+            return true;
         }
+        // Reused, like `locs`: a search allocates nothing.
+        let mut spans = std::mem::take(&mut self.spans);
+        spans.clear();
+        if re.captures_read_at(&mut self.locs, hay, h).is_none() {
+            self.spans = spans;
+            return false;
+        }
+        spans.extend((0..self.locs.len()).map(|g| self.locs.get(g)));
         self.record(&spans, None);
+        self.spans = spans;
         true
+    }
+
+    /// The UTF-16 offset of haystack position `p`.
+    #[inline]
+    fn hay_utf16(&self, p: usize) -> i32 {
+        self.utf16(self.hay_to_text(p))
     }
 
     /// Converts haystack spans to UTF-16 groups; `mid` maps the replay's
@@ -1327,15 +1350,20 @@ impl JavaMatcher {
                 _ => m.utf16(m.hay_to_text(p)),
             }
         };
-        let groups: Vec<(i32, i32)> = spans
-            .iter()
-            .map(|s| s.map_or((-1, -1), |(a, b)| (conv(self, a), conv(self, b))))
-            .collect();
+        let mut groups = std::mem::take(&mut self.groups);
+        groups.clear();
+        groups.extend(
+            spans
+                .iter()
+                .map(|s| s.map_or((-1, -1), |(a, b)| (conv(self, a), conv(self, b)))),
+        );
         self.last = Some(groups[0]);
         self.groups = groups;
     }
 
     /// Java's attempt between the surrogates of the character at byte `b`.
+    #[cold]
+    #[inline(never)]
     fn find_mid(&mut self, b: usize) -> bool {
         let u = self.utf16(b) + 1;
         let inner = self.pattern.inner.clone();
@@ -1374,11 +1402,13 @@ impl JavaMatcher {
     }
 
     /// `start(group)` in UTF-16 units, `-1` if the group did not match.
+    #[inline]
     pub fn start(&self, group: usize) -> i32 {
         self.groups.get(group).map_or(-1, |g| g.0)
     }
 
     /// `end(group)` in UTF-16 units, `-1` if the group did not match.
+    #[inline]
     pub fn end(&self, group: usize) -> i32 {
         self.groups.get(group).map_or(-1, |g| g.1)
     }
@@ -1393,6 +1423,7 @@ impl JavaMatcher {
 
     /// The text between UTF-16 offsets `a..b`; half of a surrogate pair cut
     /// off by either end is U+FFFD.
+    #[inline]
     pub fn slice(&self, a: i32, b: i32) -> Cow<'_, str> {
         if a >= b {
             return Cow::Borrowed("");
