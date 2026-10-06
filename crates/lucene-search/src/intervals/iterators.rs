@@ -973,14 +973,14 @@ impl<K: ConjunctionKind> IntervalIterator for ConjunctionIntervals<'_, K> {
     }
 }
 
-fn conjunction<'a, K: ConjunctionKind + 'a>(
+fn conjunction_of<'a, K: ConjunctionKind + 'a>(
     subs: Vec<BoxIntervals<'a>>,
     kind: K,
-) -> BoxIntervals<'a> {
-    BoxIntervals::boxed(ConjunctionIntervals {
+) -> ConjunctionIntervals<'a, K> {
+    ConjunctionIntervals {
         state: ConjunctionState::new(subs),
         kind,
-    })
+    }
 }
 
 /// `BlockIntervalsSource.BlockIntervalIterator`.
@@ -1038,7 +1038,12 @@ impl ConjunctionKind for Block {
 
 /// `BlockIntervalsSource.combine`.
 pub(crate) fn block<'a>(subs: Vec<BoxIntervals<'a>>) -> BoxIntervals<'a> {
-    conjunction(subs, Block { start: -1, end: -1 })
+    BoxIntervals::boxed(block_of(subs))
+}
+
+/// [`block`]'s iterator, unboxed.
+fn block_of(subs: Vec<BoxIntervals<'_>>) -> ConjunctionIntervals<'_, Block> {
+    conjunction_of(subs, Block { start: -1, end: -1 })
 }
 
 /// `OrderedIntervalsSource.OrderedIntervalIterator`.
@@ -1137,7 +1142,15 @@ pub(crate) fn ordered<'a>(
     subs: Vec<BoxIntervals<'a>>,
     on_match: MatchCallback<'a>,
 ) -> BoxIntervals<'a> {
-    conjunction(
+    BoxIntervals::boxed(ordered_of(subs, on_match))
+}
+
+/// [`ordered`]'s iterator, unboxed.
+fn ordered_of<'a>(
+    subs: Vec<BoxIntervals<'a>>,
+    on_match: MatchCallback<'a>,
+) -> ConjunctionIntervals<'a, Ordered<'a>> {
+    conjunction_of(
         subs,
         Ordered {
             start: -1,
@@ -1250,8 +1263,16 @@ pub(crate) fn unordered<'a>(
     subs: Vec<BoxIntervals<'a>>,
     on_match: MatchCallback<'a>,
 ) -> BoxIntervals<'a> {
+    BoxIntervals::boxed(unordered_of(subs, on_match))
+}
+
+/// [`unordered`]'s iterator, unboxed.
+fn unordered_of<'a>(
+    subs: Vec<BoxIntervals<'a>>,
+    on_match: MatchCallback<'a>,
+) -> ConjunctionIntervals<'a, Unordered<'a>> {
     let n = subs.len();
-    conjunction(
+    conjunction_of(
         subs,
         Unordered {
             queue: IndexQueue::new(n),
@@ -1370,10 +1391,7 @@ fn filtering_of<'a>(
     a: BoxIntervals<'a>,
     b: BoxIntervals<'a>,
 ) -> ConjunctionIntervals<'a, Filtering> {
-    ConjunctionIntervals {
-        state: ConjunctionState::new(vec![a, b]),
-        kind: Filtering { kind, bpos: false },
-    }
+    conjunction_of(vec![a, b], Filtering { kind, bpos: false })
 }
 
 // ---------------------------------------------------------------------------
@@ -2019,40 +2037,10 @@ pub(crate) fn root_intervals<'a, K: IntervalsSink<'a>>(
     sink: K,
 ) -> Result<Option<K::Out>> {
     use IntervalsSource as S;
-    let conj = |subs: Vec<BoxIntervals<'a>>| ConjunctionState::new(subs);
     Ok(match source {
-        S::Block(subs) => all_of(subs, field, ctx)?.map(|s| {
-            sink.sink(ConjunctionIntervals {
-                state: conj(s),
-                kind: Block { start: -1, end: -1 },
-            })
-        }),
-        S::Ordered(subs) => all_of(subs, field, ctx)?.map(|s| {
-            sink.sink(ConjunctionIntervals {
-                state: conj(s),
-                kind: Ordered {
-                    start: -1,
-                    end: -1,
-                    i: 1,
-                    slop: 0,
-                    on_match: None,
-                },
-            })
-        }),
-        S::Unordered(subs) => all_of(subs, field, ctx)?.map(|s| {
-            let n = s.len();
-            sink.sink(ConjunctionIntervals {
-                state: conj(s),
-                kind: Unordered {
-                    queue: IndexQueue::new(n),
-                    start: -1,
-                    end: -1,
-                    slop: 0,
-                    queue_end: 0,
-                    on_match: None,
-                },
-            })
-        }),
+        S::Block(subs) => all_of(subs, field, ctx)?.map(|s| sink.sink(block_of(s))),
+        S::Ordered(subs) => all_of(subs, field, ctx)?.map(|s| sink.sink(ordered_of(s, None))),
+        S::Unordered(subs) => all_of(subs, field, ctx)?.map(|s| sink.sink(unordered_of(s, None))),
         S::Filtered { source, filter } => {
             intervals(source, field, ctx)?.map(|it| sink.sink(FilteredIntervals::new(it, *filter)))
         }

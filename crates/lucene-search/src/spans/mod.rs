@@ -1442,7 +1442,7 @@ impl SpanFilter for NotFilter<'_> {
 /// `SpanWeight.getSpans(context, requiredPostings)`: the query's spans over
 /// this segment, `None` where Java's is `null`. `payloads` is
 /// `requiredPostings` at `PAYLOADS` (a payload query's clauses read their
-/// terms' payloads).
+/// terms' payloads). [`root_spans`] with a sink that boxes.
 ///
 /// # Errors
 /// A term of a field indexed without positions; a near query of fewer than
@@ -1453,115 +1453,49 @@ pub(crate) fn spans_with<'a>(
     q: &SpanNode,
     payloads: bool,
 ) -> Result<Option<BoxSpans<'a>>> {
-    let sub = |ctx: &LeafContext<'a>, q: &SpanNode| spans_with(ctx, q, payloads);
-    Ok(match q {
-        SpanNode::Term { field, term } => {
-            term_spans(ctx, field, term, payloads)?.map(BoxSpans::Term)
-        }
-        SpanNode::Near {
-            clauses,
-            slop,
-            in_order,
-        } => match near_subs(ctx, q, clauses, payloads)? {
-            None => None,
-            Some(subs) if *in_order => Some(BoxSpans::boxed(NearSpansOrdered::new(*slop, subs))),
-            Some(subs) => Some(BoxSpans::boxed(NearSpansUnordered::new(*slop, subs))),
-        },
-        SpanNode::Or { clauses } => {
-            let mut subs = Vec::with_capacity(clauses.len());
-            for c in clauses {
-                if let Some(s) = sub(ctx, c)? {
-                    subs.push(s);
-                }
-            }
-            match subs.len() {
-                0 => None,
-                1 => subs.pop(),
-                _ => Some(BoxSpans::boxed(OrSpans::new(subs))),
-            }
-        }
-        SpanNode::First { inner, end } => sub(ctx, inner)?.map(|s| -> BoxSpans<'a> {
-            BoxSpans::boxed(FilterSpans::new(
-                s,
-                PositionRange {
-                    start: 0,
-                    end: *end,
-                },
-            ))
-        }),
-        SpanNode::PositionRange { inner, start, end } => {
-            sub(ctx, inner)?.map(|s| -> BoxSpans<'a> {
-                BoxSpans::boxed(FilterSpans::new(
-                    s,
-                    PositionRange {
-                        start: *start,
-                        end: *end,
-                    },
-                ))
-            })
-        }
-        SpanNode::Not {
-            include,
-            exclude,
-            pre,
-            post,
-        } => {
-            let Some(inc) = sub(ctx, include)? else {
-                return Ok(None);
-            };
-            let Some(exc) = sub(ctx, exclude)? else {
-                return Ok(Some(inc));
-            };
-            Some(BoxSpans::boxed(FilterSpans::new(
-                inc,
-                NotFilter {
-                    exclude: exc,
-                    pre: *pre,
-                    post: *post,
-                    last_approx_doc: -1,
-                    last_approx_result: false,
-                },
-            )))
-        }
-        SpanNode::Containing { big, little } | SpanNode::Within { big, little } => {
-            let Some(b) = sub(ctx, big)? else {
-                return Ok(None);
-            };
-            let Some(l) = sub(ctx, little)? else {
-                return Ok(None);
-            };
-            Some(BoxSpans::boxed(ContainSpans::new(
-                b,
-                l,
-                matches!(q, SpanNode::Containing { .. }),
-            )))
-        }
-        SpanNode::FieldMasking { inner, .. } => sub(ctx, inner)?,
-        // `requiredPostings.atLeast(PAYLOADS)` for both payload queries.
-        SpanNode::PayloadCheck(p) => {
-            spans_with(ctx, &p.inner, true)?.map(|s| payloads::check_spans(p, s))
-        }
-        // Inside another span query a payload score query's weight is its
-        // inner query's (`PayloadSpanWeight.getSpans`).
-        SpanNode::PayloadScore(p) => spans_with(ctx, &p.inner, true)?,
-        SpanNode::MultiTerm(_) => {
-            return Err(Error::IllegalArgument("Rewrite first!".into()));
-        }
-    })
+    root_spans(ctx, q, payloads, Boxing)
 }
 
 /// What [`root_spans`] hands a query's spans to: generic over the spans'
 /// type, so a scorer built from them is monomorphised for it.
-pub(crate) trait SpansSink<'a> {
+pub(crate) trait SpansSink<'a>: Sized {
     type Out;
     fn sink<S: Spans + 'a>(self, spans: S) -> Self::Out;
+
+    /// A term's spans: [`Self::sink`]'s unless the sink keeps terms apart
+    /// ([`BoxSpans::Term`]).
+    fn sink_term(self, spans: TermSpans<'a>) -> Self::Out {
+        self.sink(spans)
+    }
+
+    /// Spans already boxed (a disjunction, a payload check, a clause's):
+    /// [`Self::sink`]'s unless the sink would box them again.
+    fn sink_boxed(self, spans: BoxSpans<'a>) -> Self::Out {
+        self.sink(spans)
+    }
 }
 
-/// [`spans_with`], the spans of the common shapes -- a term, a first or
-/// position range, a not, a near, a containment -- handed to `sink` as
-/// their own types rather than boxed: a scorer over them then calls its
-/// spans without a virtual call per document and per span (the dispatch
-/// Java's JIT removes by inlining). Everything else goes boxed.
+/// [`spans_with`]'s sink: a term inline, everything else behind a box.
+struct Boxing;
+
+impl<'a> SpansSink<'a> for Boxing {
+    type Out = BoxSpans<'a>;
+    fn sink<S: Spans + 'a>(self, spans: S) -> BoxSpans<'a> {
+        BoxSpans::boxed(spans)
+    }
+    fn sink_term(self, spans: TermSpans<'a>) -> BoxSpans<'a> {
+        BoxSpans::Term(spans)
+    }
+    fn sink_boxed(self, spans: BoxSpans<'a>) -> BoxSpans<'a> {
+        spans
+    }
+}
+
+/// The query's spans handed to `sink`: a term, a first or position range, a
+/// not, a near or a containment as their own types rather than boxed, so a
+/// scorer over them calls its spans without a virtual call per document and
+/// per span (the dispatch Java's JIT removes by inlining). Their clauses,
+/// a disjunction and the payload queries go boxed ([`spans_with`]).
 pub(crate) fn root_spans<'a, K: SpansSink<'a>>(
     ctx: &LeafContext<'a>,
     q: &SpanNode,
@@ -1569,28 +1503,37 @@ pub(crate) fn root_spans<'a, K: SpansSink<'a>>(
     sink: K,
 ) -> Result<Option<K::Out>> {
     let sub = |q: &SpanNode| spans_with(ctx, q, payloads);
+    let range = |s, start, end| FilterSpans::new(s, PositionRange { start, end });
     Ok(match q {
         SpanNode::Term { field, term } => {
-            term_spans(ctx, field, term, payloads)?.map(|t| sink.sink(t))
+            term_spans(ctx, field, term, payloads)?.map(|t| sink.sink_term(t))
         }
-        SpanNode::First { inner, end } => sub(inner)?.map(|s| {
-            sink.sink(FilterSpans::new(
-                s,
-                PositionRange {
-                    start: 0,
-                    end: *end,
-                },
-            ))
-        }),
-        SpanNode::PositionRange { inner, start, end } => sub(inner)?.map(|s| {
-            sink.sink(FilterSpans::new(
-                s,
-                PositionRange {
-                    start: *start,
-                    end: *end,
-                },
-            ))
-        }),
+        SpanNode::Near {
+            clauses,
+            slop,
+            in_order,
+        } => match near_subs(ctx, q, clauses, payloads)? {
+            None => None,
+            Some(subs) if *in_order => Some(sink.sink(NearSpansOrdered::new(*slop, subs))),
+            Some(subs) => Some(sink.sink(NearSpansUnordered::new(*slop, subs))),
+        },
+        SpanNode::Or { clauses } => {
+            let mut subs = Vec::with_capacity(clauses.len());
+            for c in clauses {
+                if let Some(s) = sub(c)? {
+                    subs.push(s);
+                }
+            }
+            match subs.len() {
+                0 => None,
+                1 => subs.pop().map(|s| sink.sink_boxed(s)),
+                _ => Some(sink.sink_boxed(BoxSpans::boxed(OrSpans::new(subs)))),
+            }
+        }
+        SpanNode::First { inner, end } => sub(inner)?.map(|s| sink.sink(range(s, 0, *end))),
+        SpanNode::PositionRange { inner, start, end } => {
+            sub(inner)?.map(|s| sink.sink(range(s, *start, *end)))
+        }
         SpanNode::Not {
             include,
             exclude,
@@ -1601,7 +1544,7 @@ pub(crate) fn root_spans<'a, K: SpansSink<'a>>(
                 return Ok(None);
             };
             match sub(exclude)? {
-                None => Some(sink.sink(inc)),
+                None => Some(sink.sink_boxed(inc)),
                 Some(exc) => Some(sink.sink(FilterSpans::new(
                     inc,
                     NotFilter {
@@ -1614,15 +1557,6 @@ pub(crate) fn root_spans<'a, K: SpansSink<'a>>(
                 ))),
             }
         }
-        SpanNode::Near {
-            clauses,
-            slop,
-            in_order,
-        } => match near_subs(ctx, q, clauses, payloads)? {
-            None => None,
-            Some(subs) if *in_order => Some(sink.sink(NearSpansOrdered::new(*slop, subs))),
-            Some(subs) => Some(sink.sink(NearSpansUnordered::new(*slop, subs))),
-        },
         SpanNode::Containing { big, little } | SpanNode::Within { big, little } => {
             let Some(b) = sub(big)? else {
                 return Ok(None);
@@ -1636,7 +1570,17 @@ pub(crate) fn root_spans<'a, K: SpansSink<'a>>(
                 matches!(q, SpanNode::Containing { .. }),
             )))
         }
-        _ => spans_with(ctx, q, payloads)?.map(|s| sink.sink(s)),
+        SpanNode::FieldMasking { inner, .. } => sub(inner)?.map(|s| sink.sink_boxed(s)),
+        // `requiredPostings.atLeast(PAYLOADS)` for both payload queries.
+        SpanNode::PayloadCheck(p) => {
+            spans_with(ctx, &p.inner, true)?.map(|s| sink.sink_boxed(payloads::check_spans(p, s)))
+        }
+        // Inside another span query a payload score query's weight is its
+        // inner query's (`PayloadSpanWeight.getSpans`).
+        SpanNode::PayloadScore(p) => spans_with(ctx, &p.inner, true)?.map(|s| sink.sink_boxed(s)),
+        SpanNode::MultiTerm(_) => {
+            return Err(Error::IllegalArgument("Rewrite first!".into()));
+        }
     })
 }
 
