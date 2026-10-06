@@ -1057,6 +1057,12 @@ outright.
   `corpus/analysis-synonym.txt` (`<chain>.tsv`, `GenAnalysisCommon`'s rows,
   written by the shared `AnalysisRows.java`). Deterministic. Read by
   `crates/lucene-analysis/tests/analysis_synonym_fixtures.rs`.
+- `GenAnalysisClassic.java` — M11 T11.2: `ClassicTokenizer`/`ClassicFilter`/
+  `ClassicAnalyzer` and `WikipediaTokenizer` (all three output modes) over
+  `corpus/analysis-classic.txt` (`data/analysis_classic/<chain>.tsv`), and
+  four of them over 2,000 seeded joins of markup fragments (`fragments.txt`,
+  `frag_<chain>.tsv`). Deterministic. Read by
+  `crates/lucene-analysis/tests/analysis_classic_fixtures.rs`.
 - `GenDisiJumpTable.java` — the only Java-written `IndexedDISI` **block jump
   table** in this tree (`disi_jump_table_index/`). `IndexedDISI.writeBitSet`
   emits `jumpTableEntryCount = 0` below two logical 65 536-document blocks, and

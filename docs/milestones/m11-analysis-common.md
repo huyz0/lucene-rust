@@ -105,10 +105,14 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   `OpenStringBuilder`, `SegmentingTokenizerBase`, `StemmerUtil`,
   `CharArrayIterator`).
 - **T11.2** -- the JFlex scanners (`UAX29URLEmailTokenizerImpl`,
-  `HTMLStripCharFilter`) run a shared skeleton (`util/jflex.rs`) over the
+  `HTMLStripCharFilter`, `ClassicTokenizerImpl`, `WikipediaTokenizerImpl`)
+  run a shared skeleton (`util/jflex.rs`) over the
   tables of Lucene's compiled classes, read back by reflection
   (`tools/ExtractJFlexTables.java`) and stored zlib-compressed; the actions
-  are ported line for line.
+  are ported line for line. `ClassicFilter`, `ClassicAnalyzer` and the
+  three `WikipediaTokenizer` output modes match Lucene on
+  `corpus/analysis-classic.txt` and 2,000 seeded markup-fragment joins
+  (`GenAnalysisClassic.java`).
 - **Benchmark** -- `scripts/bench-micro.sh --bench analysis_common`
   (`AnalysisCommonMicro.java` / `micro_analysis_common.rs`, ns per token,
   2026-10-06, Rust/Java, after the M11 part 1 review fixes): ascii_folding

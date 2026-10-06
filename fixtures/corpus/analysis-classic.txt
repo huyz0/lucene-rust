@@ -1,0 +1,22 @@
+The I.B.M. and U.S.A. acronyms, AT&T and Procter&Gamble companies.
+O'Reilly's book isn't John's; rock'n'roll and l'été.
+Mail bob.smith@example.com or visit www.example.co.uk and lucene.apache.org.
+Numbers: 1.2.3, 10-20, 192.168.0.1, 3,000.50 and wi.fi. ends
+中文字符 日本語のテキスト 한국어 텍스트 mixed漢字text
+Ünïcödé façade naïve résumé Straße ÆØÅ
+tabs	and  spaces, punctuation!? (brackets) [square] {curly}
+a-b_c/d\e:f;g h~i^j
+''italic'' text and '''bold''' text and '''''bold italic''''' text
+== Heading == and === Sub heading === here
+[[Main Page]] and [[Category:Science]] and [[Help:Contents|the help]]
+[http://www.example.org Example site] and [https://x.org/a?b=c link two words]
+{{Citation needed|date=2026}} then text after the template
+[[Category:Physics|Sorting key]] trailing words
+Plain http://bare.example.com/path URL and mailto:someone@host.org
+''unbalanced italics and [[nested ''link'' text]] here
+'''bold [[Internal link]] inside bold''' end
+[[Image:Picture.jpg|thumb|A caption with words]]
+=== Sub ''italic'' heading === after
+[external-no-url] and [[]] and [[ ]] and ''''
+x ''''' y
+Ends with an open link [[Unterminated

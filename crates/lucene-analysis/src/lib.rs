@@ -59,6 +59,7 @@ pub mod boost;
 mod char_array_set;
 pub mod charfilter;
 pub mod cjk;
+pub mod classic;
 pub mod commongrams;
 pub mod core_analysis;
 pub mod email;
@@ -85,6 +86,7 @@ mod stopword_analyzer_base;
 pub mod synonym;
 pub mod token_stream;
 pub mod util;
+pub mod wikipedia;
 pub mod wordlist_loader;
 
 pub use analyzer::{

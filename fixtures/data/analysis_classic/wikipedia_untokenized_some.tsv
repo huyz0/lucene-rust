@@ -1,0 +1,170 @@
+T	0	The	0	3	1	1	<ALPHANUM>	0	-	0	1
+T	0	I.B.M.	4	10	1	1	<ACRONYM>	0	-	0	1
+T	0	and	11	14	1	1	<ALPHANUM>	0	-	0	1
+T	0	U.S.A.	15	21	1	1	<ACRONYM>	0	-	0	1
+T	0	acronyms	22	30	1	1	<ALPHANUM>	0	-	0	1
+T	0	AT&T	32	36	1	1	<COMPANY>	0	-	0	1
+T	0	and	37	40	1	1	<ALPHANUM>	0	-	0	1
+T	0	Procter&Gamble	41	55	1	1	<COMPANY>	0	-	0	1
+T	0	companies	56	65	1	1	<ALPHANUM>	0	-	0	1
+E	0	66	66	0
+T	1	O'Reilly's	0	10	1	1	<APOSTROPHE>	0	-	0	1
+T	1	book	11	15	1	1	<ALPHANUM>	0	-	0	1
+T	1	isn't	16	21	1	1	<APOSTROPHE>	0	-	0	1
+T	1	John's	22	28	1	1	<APOSTROPHE>	0	-	0	1
+T	1	rock'n'roll	30	41	1	1	<APOSTROPHE>	0	-	0	1
+T	1	and	42	45	1	1	<ALPHANUM>	0	-	0	1
+T	1	l'été	46	51	1	1	<APOSTROPHE>	0	-	0	1
+E	1	52	52	0
+T	2	Mail	0	4	1	1	<ALPHANUM>	0	-	0	1
+T	2	bob.smith@example.com	5	26	1	1	<EMAIL>	0	-	0	1
+T	2	or	27	29	1	1	<ALPHANUM>	0	-	0	1
+T	2	visit	30	35	1	1	<ALPHANUM>	0	-	0	1
+T	2	www.example.co.uk	36	53	1	1	<HOST>	0	-	0	1
+T	2	and	54	57	1	1	<ALPHANUM>	0	-	0	1
+T	2	lucene.apache.org.	58	76	1	1	<ACRONYM>	0	-	0	1
+E	2	76	76	0
+T	3	Numbers	0	7	1	1	<ALPHANUM>	0	-	0	1
+T	3	1.2.3	9	14	1	1	<NUM>	0	-	0	1
+T	3	10-20	16	21	1	1	<NUM>	0	-	0	1
+T	3	192.168.0.1	23	34	1	1	<NUM>	0	-	0	1
+T	3	3,000.50	36	44	1	1	<NUM>	0	-	0	1
+T	3	and	45	48	1	1	<ALPHANUM>	0	-	0	1
+T	3	wi.fi.	49	55	1	1	<ACRONYM>	0	-	0	1
+T	3	ends	56	60	1	1	<ALPHANUM>	0	-	0	1
+E	3	60	60	0
+T	4	中	0	1	1	1	<CJ>	0	-	0	1
+T	4	文	1	2	1	1	<CJ>	0	-	0	1
+T	4	字	2	3	1	1	<CJ>	0	-	0	1
+T	4	符	3	4	1	1	<CJ>	0	-	0	1
+T	4	日	5	6	1	1	<CJ>	0	-	0	1
+T	4	本	6	7	1	1	<CJ>	0	-	0	1
+T	4	語	7	8	1	1	<CJ>	0	-	0	1
+T	4	の	8	9	1	1	<CJ>	0	-	0	1
+T	4	テ	9	10	1	1	<CJ>	0	-	0	1
+T	4	キ	10	11	1	1	<CJ>	0	-	0	1
+T	4	ス	11	12	1	1	<CJ>	0	-	0	1
+T	4	ト	12	13	1	1	<CJ>	0	-	0	1
+T	4	한국어	14	17	1	1	<ALPHANUM>	0	-	0	1
+T	4	텍스트	18	21	1	1	<ALPHANUM>	0	-	0	1
+T	4	mixed	22	27	1	1	<ALPHANUM>	0	-	0	1
+T	4	漢	27	28	1	1	<CJ>	0	-	0	1
+T	4	字	28	29	1	1	<CJ>	0	-	0	1
+T	4	text	29	33	1	1	<ALPHANUM>	0	-	0	1
+E	4	33	33	0
+T	5	Ünïcödé	0	7	1	1	<ALPHANUM>	0	-	0	1
+T	5	façade	8	14	1	1	<ALPHANUM>	0	-	0	1
+T	5	naïve	15	20	1	1	<ALPHANUM>	0	-	0	1
+T	5	résumé	21	27	1	1	<ALPHANUM>	0	-	0	1
+T	5	Straße	28	34	1	1	<ALPHANUM>	0	-	0	1
+T	5	ÆØÅ	35	38	1	1	<ALPHANUM>	0	-	0	1
+E	5	38	38	0
+T	6	tabs	0	4	1	1	<ALPHANUM>	0	-	0	1
+T	6	and	5	8	1	1	<ALPHANUM>	0	-	0	1
+T	6	spaces	10	16	1	1	<ALPHANUM>	0	-	0	1
+T	6	punctuation	18	29	1	1	<ALPHANUM>	0	-	0	1
+T	6	brackets	33	41	1	1	<ALPHANUM>	0	-	0	1
+T	6	square	44	50	0	1	el	0	-	0	1
+T	6	curly	53	58	1	1	<ALPHANUM>	0	-	0	1
+E	6	59	59	0
+T	7	a	0	1	1	1	<ALPHANUM>	0	-	0	1
+T	7	b	2	3	1	1	<ALPHANUM>	0	-	0	1
+T	7	c	4	5	1	1	<ALPHANUM>	0	-	0	1
+T	7	d	6	7	1	1	<ALPHANUM>	0	-	0	1
+T	7	e	8	9	1	1	<ALPHANUM>	0	-	0	1
+T	7	f	10	11	1	1	<ALPHANUM>	0	-	0	1
+T	7	g	12	13	1	1	<ALPHANUM>	0	-	0	1
+T	7	h	14	15	1	1	<ALPHANUM>	0	-	0	1
+T	7	i	16	17	1	1	<ALPHANUM>	0	-	0	1
+T	7	j	18	19	1	1	<ALPHANUM>	0	-	0	1
+E	7	19	19	0
+T	8	italic	2	8	1	1	i	0	-	0	1
+T	8	text	11	15	1	1	<ALPHANUM>	0	-	0	1
+T	8	and	16	19	1	1	<ALPHANUM>	0	-	0	1
+T	8	bold	23	27	1	1	b	1	-	0	1
+T	8	text	31	35	1	1	<ALPHANUM>	0	-	0	1
+T	8	and	36	39	1	1	<ALPHANUM>	0	-	0	1
+T	8	bold	45	49	1	1	bi	0	-	0	1
+T	8	italic	50	56	1	1	bi	0	-	0	1
+T	8	text	62	66	1	1	<ALPHANUM>	0	-	0	1
+E	8	66	66	0
+T	9	Heading	3	10	1	1	h	1	-	0	1
+T	9	and	14	17	1	1	<ALPHANUM>	0	-	0	1
+T	9	Sub	22	25	1	1	sh	0	-	0	1
+T	9	heading	26	33	1	1	sh	0	-	0	1
+T	9	here	38	42	1	1	<ALPHANUM>	0	-	0	1
+E	9	42	42	0
+T	10	Main Page	2	11	1	1	il	1	-	0	1
+T	10	and	14	17	1	1	<ALPHANUM>	0	-	0	1
+T	10	Science	29	36	1	1	c	1	-	0	1
+T	10	and	39	42	1	1	<ALPHANUM>	0	-	0	1
+T	10	Help Contents the help	45	67	1	1	il	1	-	0	1
+E	10	69	69	0
+T	11	http://www.example.org	1	23	1	1	elu	0	-	0	1
+T	11	Example	24	31	0	1	el	0	-	0	1
+T	11	site	32	36	1	1	el	0	-	0	1
+T	11	and	38	41	1	1	<ALPHANUM>	0	-	0	1
+T	11	https://x.org/a?b=c	43	62	1	1	elu	0	-	0	1
+T	11	link	63	67	0	1	el	0	-	0	1
+T	11	two	68	71	1	1	el	0	-	0	1
+T	11	words	72	77	1	1	el	0	-	0	1
+E	11	78	78	0
+T	12	Citation	2	10	1	1	ci	0	-	0	1
+T	12	needed	11	17	1	1	ci	0	-	0	1
+T	12	date	18	22	1	1	ci	0	-	0	1
+T	12	2026	23	27	1	1	ci	0	-	0	1
+T	12	then	30	34	1	1	<ALPHANUM>	0	-	0	1
+T	12	text	35	39	1	1	<ALPHANUM>	0	-	0	1
+T	12	after	40	45	1	1	<ALPHANUM>	0	-	0	1
+T	12	the	46	49	1	1	<ALPHANUM>	0	-	0	1
+T	12	template	50	58	1	1	<ALPHANUM>	0	-	0	1
+E	12	58	58	0
+T	13	Physics Sorting key	11	30	1	1	c	1	-	0	1
+T	13	trailing	33	41	1	1	<ALPHANUM>	0	-	0	1
+T	13	words	42	47	1	1	<ALPHANUM>	0	-	0	1
+E	13	47	47	0
+T	14	Plain	0	5	1	1	<ALPHANUM>	0	-	0	1
+T	14	http	6	10	1	1	<ALPHANUM>	0	-	0	1
+T	14	bare.example.com	13	29	1	1	<HOST>	0	-	0	1
+T	14	path	30	34	1	1	<ALPHANUM>	0	-	0	1
+T	14	URL	35	38	1	1	<ALPHANUM>	0	-	0	1
+T	14	and	39	42	1	1	<ALPHANUM>	0	-	0	1
+T	14	mailto	43	49	1	1	<ALPHANUM>	0	-	0	1
+T	14	someone@host.org	50	66	1	1	<EMAIL>	0	-	0	1
+E	14	66	66	0
+T	15	unbalanced	2	12	1	1	i	0	-	0	1
+T	15	italics	13	20	1	1	i	0	-	0	1
+T	15	and	21	24	1	1	i	0	-	0	1
+T	15	nested   link   text	27	47	1	1	il	1	-	0	1
+T	15	here	50	54	1	1	<ALPHANUM>	0	-	0	1
+E	15	54	54	0
+T	16	bold	3	7	1	1	b	1	-	0	1
+T	16	Internal link	10	23	1	1	il	1	-	0	1
+T	16	inside	26	32	1	1	<ALPHANUM>	0	-	0	1
+T	16	bold	33	37	1	1	<ALPHANUM>	0	-	0	1
+T	16	end	41	44	1	1	b	1	-	0	1
+E	16	44	44	0
+T	17	Image Picture jpg thumb A caption with words	2	46	1	1	il	1	-	0	1
+E	17	48	48	0
+T	18	Sub	4	7	1	1	sh	0	-	0	1
+T	18	italic	10	16	1	1	<ALPHANUM>	0	-	0	1
+T	18	heading	19	26	1	1	i	0	-	0	1
+T	18	after	31	36	1	1	<ALPHANUM>	0	-	0	1
+E	18	36	36	0
+T	19	external	1	9	1	1	el	0	-	0	1
+T	19	no	10	12	1	1	el	0	-	0	1
+T	19	url	13	16	1	1	el	0	-	0	1
+T	19	and	18	21	1	1	<ALPHANUM>	0	-	0	1
+T	19	and	27	30	1	1	<ALPHANUM>	0	-	0	1
+T	19	and	37	40	1	1	<ALPHANUM>	0	-	0	1
+E	19	45	45	0
+T	20	x	0	1	1	1	<ALPHANUM>	0	-	0	1
+T	20	y	8	9	1	1	bi	0	-	0	1
+E	20	9	9	0
+T	21	Ends	0	4	1	1	<ALPHANUM>	0	-	0	1
+T	21	with	5	9	1	1	<ALPHANUM>	0	-	0	1
+T	21	an	10	12	1	1	<ALPHANUM>	0	-	0	1
+T	21	open	13	17	1	1	<ALPHANUM>	0	-	0	1
+T	21	link	18	22	1	1	<ALPHANUM>	0	-	0	1
+T	21	Unterminated	25	37	1	1	il	1	-	0	1
+E	21	37	37	0
