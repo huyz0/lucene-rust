@@ -133,3 +133,38 @@ fn no_stemmer_panics_on_random_strings() {
         }
     }
 }
+
+/// `fixtures/src/GenSnowballFuzz.java`: seeded random strings (any BMP
+/// character, letters of every script, supplementary characters, chains of
+/// among strings with emoji between) through Lucene's `SnowballFilter`; the
+/// port's stems are Lucene's, an unpaired surrogate a stemmer leaves being
+/// U+FFFD on both sides.
+#[test]
+fn random_strings_stem_as_in_lucene() {
+    let fuzz = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/data/snowball-fuzz/"
+    );
+    let mut words = 0;
+    for name in SnowballStemmer::names() {
+        let text = std::fs::read_to_string(format!("{fuzz}{name}.tsv"))
+            .unwrap_or_else(|e| panic!("{name}.tsv: {e}"));
+        let a = Analyzer::new(Chain(name));
+        let mut mismatches = Vec::new();
+        for line in text.lines() {
+            let (word, expected) = line.split_once('\t').expect("word\\tstem");
+            let got = stem(&a, word);
+            if got != expected {
+                mismatches.push(format!("{word:?} -> {got:?} (Lucene: {expected:?})"));
+            }
+            words += 1;
+        }
+        assert!(
+            mismatches.is_empty(),
+            "{name}: {} differ, first: {:?}",
+            mismatches.len(),
+            &mismatches[..mismatches.len().min(5)]
+        );
+    }
+    assert!(words >= 30 * 1900, "{words} words");
+}
