@@ -2579,13 +2579,21 @@ fn decode_vertices(c: &mut Cursor<'_>) -> Result<(Vec<f64>, Vec<f64>), FfiStatus
 #[no_mangle]
 pub extern "C" fn ffi_close_jvm_reader(handle: u64) -> i32 {
     guard(|| {
-        lock_recovering(jvm_readers())
-            .remove(handle)
-            .map(|_| ())
-            .ok_or_else(|| {
-                set_last_error("ffi_close_jvm_reader: unknown or already-closed handle");
-                FfiStatus::InvalidHandle
-            })
+        let mut readers = lock_recovering(jvm_readers());
+        readers.remove(handle).ok_or_else(|| {
+            set_last_error("ffi_close_jvm_reader: unknown or already-closed handle");
+            FfiStatus::InvalidHandle
+        })?;
+        // The nested queries' parent bit sets of segments no open reader
+        // holds any more go with them.
+        let live = readers
+            .values()
+            .flat_map(|h| h.reader.segment_readers())
+            .map(|r| r.segment_id())
+            .collect();
+        drop(readers);
+        crate::jvm_nodes::retain_parent_sets(&live);
+        Ok(())
     })
 }
 

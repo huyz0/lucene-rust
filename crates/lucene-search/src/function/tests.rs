@@ -1939,3 +1939,83 @@ mod batches {
         }
     }
 }
+
+/// The wrapped query's score as the value, handing the weight's boost to the
+/// wrapped query (`boosts_wrapped_query`), as OpenSearch's function score does.
+struct BoostsWrapped;
+
+impl crate::values_source::DoubleValuesSource for BoostsWrapped {
+    fn get_values<'c>(
+        &self,
+        ctx: &crate::values_source::ValuesContext<'c>,
+        leaf: usize,
+        scores: Option<crate::values_source::BoxDoubleValues<'c>>,
+    ) -> Result<crate::values_source::BoxDoubleValues<'c>> {
+        dvs::scores().get_values(ctx, leaf, scores)
+    }
+    fn needs_scores(&self) -> bool {
+        true
+    }
+    fn is_cacheable(&self, _: &crate::values_source::ValuesContext<'_>, _: usize) -> bool {
+        false
+    }
+    fn describe(&self) -> String {
+        "boosts_wrapped".into()
+    }
+    fn boosts_wrapped_query(&self) -> bool {
+        true
+    }
+}
+
+#[test]
+fn a_source_may_take_the_boost_onto_its_wrapped_query() {
+    let reader = index();
+    let opened = reader.open_segments().unwrap();
+    let segments = opened.as_open_segments();
+    let owned = reader.field_norms_by_field(&["body".to_string()]);
+    let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
+    let searcher = IndexSearcher::new(&segments, &norms).unwrap();
+    assert!(!dvs::scores().boosts_wrapped_query());
+    let boosted = |source: Arc<dyn crate::values_source::DoubleValuesSource>| {
+        let fsq = Clause::from(FunctionScoreQuery::new(
+            BooleanQuery {
+                must: vec![term("red")],
+                should: vec![term("blue")],
+                ..Default::default()
+            },
+            source,
+        ));
+        let q = must(Clause::Boost(Box::new(BoostQuery::new(fsq, 3.0))));
+        let hits = searcher.search(&q, 100).unwrap().score_docs;
+        let explained: Vec<f32> = hits
+            .iter()
+            .map(|h| searcher.explain(&q, h.doc).unwrap().value)
+            .collect();
+        (hits, explained)
+    };
+    let plain = searcher
+        .search(
+            &must(Clause::Boost(Box::new(BoostQuery::new(
+                Clause::Boolean(Box::new(BooleanQuery {
+                    must: vec![term("red")],
+                    should: vec![term("blue")],
+                    ..Default::default()
+                })),
+                3.0,
+            )))),
+            100,
+        )
+        .unwrap()
+        .score_docs;
+    // Lucene's: the value times the boost; the wrapped query's own: its boosted
+    // score. For the scores source both are the boosted wrapped score, bit for
+    // bit only where `(float) (3 * s)` equals the score of the boosted query.
+    let (lucene, _) = boosted(dvs::scores());
+    let (own, explained) = boosted(Arc::new(BoostsWrapped));
+    assert_eq!(own.len(), plain.len());
+    for ((a, b), e) in own.iter().zip(&plain).zip(&explained) {
+        assert_eq!((a.doc, a.score.to_bits()), (b.doc, b.score.to_bits()));
+        assert_eq!(e.to_bits(), a.score.to_bits());
+    }
+    assert_eq!(lucene.len(), own.len());
+}

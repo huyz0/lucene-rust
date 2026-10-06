@@ -61,7 +61,7 @@ def rows():
 
     add("function_score weight filter", fs([{"filter": {"term": {"tag": "alpha"}}, "weight": 3}, {"filter": {"term": {"tag": "beta"}}, "weight": 2}]), "native")
     add("function_score field_value_factor", fs([{"field_value_factor": {"field": "qty", "factor": 1.5, "modifier": "log1p", "missing": 1}}]), "native")
-    add("function_score fvf float square", fs([{"field_value_factor": {"field": "ratio", "modifier": "square"}}], boost_mode="sum"), "native")
+    add("function_score fvf float square", fs([{"field_value_factor": {"field": "ratio", "modifier": "square", "missing": 0.5}}], boost_mode="sum"), "native")
     add("function_score fvf long ln2p", fs([{"field_value_factor": {"field": "n", "modifier": "ln2p"}}], boost_mode="replace"), "native")
     add("function_score random seeded", fs([{"random_score": {"seed": 42, "field": "_seq_no"}}]), "native")
     add("function_score random keyword", fs([{"random_score": {"seed": 7, "field": "tag"}}], boost_mode="avg"), "native")
@@ -76,6 +76,10 @@ def rows():
     ], score_mode="sum", max_boost=3), "native")
     add("function_score avg", fs([{"weight": 2}, {"filter": {"term": {"tag": "delta"}}, "weight": 4}], score_mode="avg"), "native")
     add("function_score boosted", {"query": {"function_score": {"query": {"match": {"body": "gamma"}}, "weight": 2, "boost": 3}}}, "native")
+    add("function_score under a boosted bool", {"query": {"bool": {"boost": 2, "must": [{"function_score": {"query": {"match": {"body": "alpha"}}, "weight": 3, "boost_mode": "sum"}}],
+                                                                 "should": [{"match": {"title": "beta"}}]}}}, "native")
+    add("function_score replace under a boosted bool", {"query": {"bool": {"boost": 2, "must": [{"function_score": {"query": {"match": {"body": "alpha"}}, "weight": 3, "boost_mode": "replace"}}],
+                                                                         "should": [{"match": {"title": "beta"}}]}}}, "native")
     add("function_score in bool", {"query": {"bool": {"must": [{"match": {"title": "alpha"}}],
                                                       "should": [{"function_score": {"query": {"match": {"body": "beta"}}, "functions": [{"field_value_factor": {"field": "qty", "missing": 2}}]}}]}}}, "native")
     add("function_score min_score", fs([{"weight": 2}], min_score=1), "function_score_min_score")
@@ -84,9 +88,9 @@ def rows():
 
     # Rewritten before the query phase sees them: more_like_this to a boolean of
     # term queries, common to blended term queries.
-    add("more_like_this text", {"query": {"more_like_this": {"fields": ["body"], "like": "alpha beta gamma delta epsilon", "min_term_freq": 1, "min_doc_freq": 1}}}, "either")
-    add("more_like_this doc", {"query": {"more_like_this": {"fields": ["body", "title"], "like": [{"_id": "1"}], "min_term_freq": 1, "min_doc_freq": 1}}}, "either")
-    add("common", {"query": {"common": {"body": {"query": "alpha beta omega", "cutoff_frequency": 0.01}}}}, "either")
+    add("more_like_this text", {"query": {"more_like_this": {"fields": ["body"], "like": "alpha beta gamma delta epsilon", "min_term_freq": 1, "min_doc_freq": 1}}}, "native")
+    add("more_like_this doc", {"query": {"more_like_this": {"fields": ["body", "title"], "like": [{"_id": "1"}], "min_term_freq": 1, "min_doc_freq": 1}}}, "native")
+    add("common", {"query": {"common": {"body": {"query": "alpha beta omega", "cutoff_frequency": 0.01}}}}, "native")
     return q
 
 
@@ -105,7 +109,10 @@ def nested_rows():
     add("nested in bool", {"query": {"bool": {"must": [{"match": {"body": "alpha"}}],
                                                "should": [{"nested": {"path": "props", "query": {"term": {"props.k": "gamma"}}, "score_mode": "max"}}]}}}, "native")
     add("nested inner_hits", nested({"term": {"props.k": "delta"}}, "avg", inner_hits={"size": 2}), "native")
-    add("nested boosted", {"query": {"nested": {"path": "props", "query": {"range": {"props.i": {"gte": 0}}}, "score_mode": "avg", "boost": 2}}}, "native")
+    add("nested boosted", {"query": {"nested": {"path": "props", "query": {"range": {"props.v": {"gte": 0}}}, "score_mode": "avg", "boost": 2}}}, "native")
+    # A range on a 4-byte field (`integer`) is a points range the native side does not take, in a
+    # nested query as anywhere.
+    add("nested integer range", {"query": {"nested": {"path": "props", "query": {"range": {"props.i": {"gte": 0}}}, "score_mode": "avg"}}}, "points_width")
     add("nested function_score", nested({"function_score": {"query": {"term": {"props.k": "alpha"}}, "functions": [{"field_value_factor": {"field": "props.i", "missing": 1, "modifier": "square"}}]}}, "sum"), "native")
     return q
 
@@ -145,7 +152,7 @@ def join_rows():
     is a boolean of term queries."""
     q = []
     add = lambda name, body, expect: q.append((name, body, expect))
-    add("has_child", {"query": {"has_child": {"type": "answer", "query": {"match": {"body": "alpha"}}, "score_mode": "max"}}}, "fallback")
-    add("has_parent", {"query": {"has_parent": {"parent_type": "question", "query": {"match": {"body": "beta"}}, "score": True}}}, "fallback")
-    add("parent_id", {"query": {"parent_id": {"type": "answer", "id": "q3"}}}, "either")
+    add("has_child", {"query": {"has_child": {"type": "answer", "query": {"match": {"body": "alpha"}}, "score_mode": "max"}}}, "query_GlobalOrdinalsWithScoreQuery")
+    add("has_parent", {"query": {"has_parent": {"parent_type": "question", "query": {"match": {"body": "beta"}}, "score": True}}}, "query_GlobalOrdinalsWithScoreQuery")
+    add("parent_id", {"query": {"parent_id": {"type": "answer", "id": "q3"}}}, "native")
     return q

@@ -151,6 +151,29 @@ pub unsafe extern "C" fn ffi_jvm_reader_doc_freq(
     })
 }
 
+/// The nested queries' parent bit-set cache
+/// ([`crate::jvm_nodes::parent_cache_stats`]): its entries into `out[0]` and
+/// the bytes of its sets into `out[1]`, for the plugin's stats.
+///
+/// # Safety
+/// `out` must be valid for two `i64` writes.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_jvm_parent_cache_stats(out: *mut i64) -> i32 {
+    guard(|| {
+        if out.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        let (entries, bytes) = crate::jvm_nodes::parent_cache_stats();
+        let to = |v: usize| i64::try_from(v).unwrap_or(i64::MAX);
+        // SAFETY: caller contract (two slots).
+        unsafe {
+            *out = to(entries);
+            *out.add(1) = to(bytes);
+        }
+        Ok(())
+    })
+}
+
 /// Slots of [`ffi_jvm_reader_search_sorted_alloc`]'s `out_counts`.
 pub const SORTED_COUNTS: usize = 6;
 
@@ -1007,5 +1030,18 @@ mod tests {
         assert_ne!(rc, 0);
         assert!(p.is_null() && n == 0);
         assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+
+    #[test]
+    fn parent_cache_stats_report_and_refuse_a_null_out() {
+        let mut out = [-1i64; 2];
+        // SAFETY: two slots.
+        assert_eq!(unsafe { ffi_jvm_parent_cache_stats(out.as_mut_ptr()) }, 0);
+        assert!(out[0] >= 0 && out[1] >= 0);
+        // SAFETY: null is checked.
+        assert_eq!(
+            unsafe { ffi_jvm_parent_cache_stats(std::ptr::null_mut()) },
+            FfiStatus::NullPointer.code()
+        );
     }
 }

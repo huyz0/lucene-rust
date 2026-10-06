@@ -58,6 +58,9 @@ public final class RestStatsAction extends BaseRestHandler {
             }
             b.endObject();
             b.field("open_native_readers", readers.openCount());
+            long[] parents = NativeBridge.parentCacheStats();
+            b.field("nested_parent_sets", parents[0]);
+            b.field("nested_parent_set_bytes", parents[1]);
             // searchWith's own time per path (SearchStats.nativeTime/luceneTime).
             b.startObject("query_phase_nanos");
             b.field("native", stats.nativeNanos());
