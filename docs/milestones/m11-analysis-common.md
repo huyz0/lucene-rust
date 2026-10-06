@@ -88,10 +88,12 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   `CharTokenizer` family; `miscellaneous` but `DateRecognizerFilter` and the
   deprecated `WordDelimiterFilter`; `en` (KStem's dictionary generated from
   Lucene's sources); `ngram`, `shingle`, `pattern`, `path`, `charfilter`,
-  `commongrams`, `cjk`, `payloads`, `boost`, `minhash`, `email`. All 110
-  harness chains match Lucene token for token; `stems.words` (40,392 words
-  through KStem and Porter) and `urls.words` (3,000 URL/email fragment
-  joins) add word-level checks. Left in these packages: their factories
+  `commongrams`, `cjk`, `payloads`, `boost`, `minhash`, `email`. All 120
+  built harness chains match Lucene token for token (two more record
+  Lucene's tokens for patterns the port rejects); `stems.words` (40,392 words
+  through KStem and Porter), `urls.words` (3,000 URL/email fragment joins),
+  `regex.words` and `regex_ci.words` (`java.util.regex` pattern by pattern,
+  see `util/java_regex.rs`) add word-level checks. Left in these packages: their factories
   (T11.7) and `util`'s helpers for the language packages (`CSVUtil`,
   `OpenStringBuilder`, `SegmentingTokenizerBase`, `StemmerUtil`,
   `CharArrayIterator`).

@@ -56,6 +56,15 @@ fn corpus() -> Vec<String> {
 /// The chains the generator writes that the port does not build yet.
 const PENDING: &[&str] = &[];
 
+/// Chains whose `java.util.regex` pattern the port rejects (it would mean
+/// something else over the `regex` crate; see `util/java_regex.rs`): the
+/// fixture records Lucene's tokens, and the port must refuse the pattern
+/// with `IllegalArgument` rather than produce different ones.
+const REJECTED: &[(&str, &str)] = &[
+    ("keyword_pattern_replace_word_boundary", "\\bthe\\b"),
+    ("keyword_pattern_replace_multiline", "(?m)^"),
+];
+
 // ---------------------------------------------------------------- chains
 
 type Sink = Result<TokenStreamComponents, AnalysisError>;
@@ -96,6 +105,22 @@ fn chain_cf(
     Analyzer::new(Chain {
         components: Box::new(f),
         char_filters: Some(Box::new(cf)),
+    })
+}
+
+/// `tokenizer` then a `PatternReplaceFilter(pattern, replacement, all)`.
+fn replace_chain<T: TokenStream + 'static>(
+    tokenizer: fn() -> T,
+    pattern: &'static str,
+    replacement: &'static str,
+) -> Analyzer {
+    chain(move || {
+        comps(lucene_analysis::pattern::PatternReplaceFilter::new(
+            tokenizer(),
+            lucene_analysis::util::JavaPattern::compile(pattern)?,
+            Some(replacement),
+            true,
+        ))
     })
 }
 
@@ -519,6 +544,64 @@ fn build(name: &str) -> Option<Analyzer> {
             || comps(WhitespaceTokenizer::new()),
         ),
 
+        "keyword_pattern_replace_dot" => replace_chain(KeywordTokenizer::new, ".", "_"),
+        "keyword_pattern_replace_dollar" => {
+            replace_chain(KeywordTokenizer::new, "(\\S)\\s*$", "[$1]")
+        }
+        "keyword_pattern_replace_x_star" => replace_chain(KeywordTokenizer::new, "x*", "-"),
+        "pattern_replace_char_filter_x_star" => chain_cf(
+            |r| {
+                Box::new(PatternReplaceCharFilter::new(
+                    JavaPattern::compile("x*").unwrap(),
+                    "-",
+                    r,
+                ))
+            },
+            || comps(KeywordTokenizer::new()),
+        ),
+        "ws_pattern_replace_ascii_case" => replace_chain(
+            WhitespaceTokenizer::new,
+            "(?i)[a-e\u{e9}]|stra\u{df}e|k",
+            "#",
+        ),
+        "ws_pattern_replace_unicode_case" => replace_chain(
+            WhitespaceTokenizer::new,
+            "(?iu)[a-e\u{e9}]|stra\u{df}e|k|\u{3c3}",
+            "#",
+        ),
+        "ws_pattern_replace_posix" => replace_chain(
+            WhitespaceTokenizer::new,
+            "\\p{Punct}|\\p{Upper}|[[:alpha:]]",
+            "_",
+        ),
+        "pattern_tokenizer_h_v" => chain(|| {
+            comps(PatternTokenizer::new(
+                &JavaPattern::compile("[\\h\\v,]+")?,
+                -1,
+            )?)
+        }),
+        "pattern_tokenizer_categories" => chain(|| {
+            comps(PatternTokenizer::new(
+                &JavaPattern::compile("(\\p{L}+)|(\\p{Nd}+)")?,
+                0,
+            )?)
+        }),
+        "std_pattern_typing_classes" => chain(|| {
+            let rules = vec![
+                PatternTypingRule {
+                    pattern: JavaPattern::compile("^\\p{Lu}\\p{Ll}+$")?,
+                    flags: 1,
+                    type_template: "title".into(),
+                },
+                PatternTypingRule {
+                    pattern: JavaPattern::compile("(?iu)^\\w*(.)$")?,
+                    flags: 2,
+                    type_template: "end_$1".into(),
+                },
+            ];
+            comps(PatternTypingFilter::new(StandardTokenizer::new(), rules))
+        }),
+
         // ---- path
         "path_hierarchy" => chain(|| comps(PathHierarchyTokenizer::default())),
         "path_hierarchy_backslash_skip1" => {
@@ -879,7 +962,21 @@ fn every_fixture_is_built_or_pending() {
     for name in &names {
         let built = build(name).is_some();
         let pending = PENDING.contains(&name.as_str());
-        assert!(built != pending, "{name}: built={built} pending={pending}");
+        let rejected = REJECTED.iter().any(|(n, _)| n == name);
+        assert!(
+            u8::from(built) + u8::from(pending) + u8::from(rejected) == 1,
+            "{name}: built={built} pending={pending} rejected={rejected}"
+        );
+    }
+    for (name, pattern) in REJECTED {
+        assert!(
+            names.contains(*name),
+            "rejected chain {name} has no fixture"
+        );
+        match lucene_analysis::util::JavaPattern::compile(pattern) {
+            Err(AnalysisError::IllegalArgument(m)) => assert!(m.contains("unsupported"), "{m}"),
+            other => panic!("{name}: {pattern} was not rejected: {other:?}"),
+        }
     }
     for p in PENDING {
         assert!(names.contains(*p), "pending chain {p} has no fixture");
@@ -983,4 +1080,142 @@ fn uax29_url_email_matches_lucene_on_fragments() {
         n += 1;
     }
     assert_eq!(n, 3000);
+}
+
+/// The generator's `esc`, undone (`\\`, `\t`, `\n`, `\r`, `\uXXXX`; the
+/// inputs hold no lone surrogate).
+fn unesc(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('t') => out.push('\t'),
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('u') => {
+                let h: String = it.by_ref().take(4).collect();
+                out.push(char::from_u32(u32::from_str_radix(&h, 16).unwrap()).unwrap());
+            }
+            Some(o) => out.push(o),
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
+/// What the port does with one `regex.words` row, in the generator's form.
+fn regex_run(p: &lucene_analysis::util::JavaPattern, input: &str) -> String {
+    use lucene_analysis::util::java_regex::JavaMatcher;
+    let mut m = JavaMatcher::new(p, input);
+    let mut b = String::new();
+    while m.find() {
+        b.push_str(&format!("({},{}", m.start(0), m.end(0)));
+        for g in 1..=m.group_count() {
+            b.push_str(&format!(" {}:{}", m.start(g), m.end(g)));
+        }
+        b.push(')');
+    }
+    let rep = p.replace(input, "<$0>", true).unwrap();
+    format!("{b} rep={} m={}", esc(&rep), p.matches(input))
+}
+
+/// The patterns `regex.words` runs that Java compiles and the port rejects
+/// on purpose (see `util/java_regex.rs`'s module docs for why each).
+const REGEX_REJECTED: &[&str] = &[
+    "\\bfox",
+    "\\b",
+    "\\B",
+    "(?m)^a",
+    "(?m)a$",
+    "(?x) a b",
+    "(?U)\\w",
+    "(a|)*",
+    "(a*)+",
+    "\\p{IsLatin}",
+    "\\p{InGreek}",
+    "\\p{IsAlphabetic}",
+    "\\p{javaLowerCase}",
+    "(a)\\1",
+    "(?=a)",
+    "(?<=a)b",
+    "a++",
+    "(?>a)",
+    "\\Z",
+    "\\G",
+    "\\R",
+    "\\X",
+    "\\cA",
+    "\\0101",
+    "\\N{LATIN SMALL LETTER A}",
+    "(?d).",
+    "[a~~b]",
+    "[&&a]",
+    "[a&&]",
+    "[a&&&b]",
+    "\\b?",
+];
+
+/// `regex.words`: every pattern of the generator over every input --
+/// `find()` spans and groups, `replaceAll("<$0>")`, `matches()` -- or the
+/// exception Java throws compiling it.
+#[test]
+fn java_regex_matches_lucene_pattern_for_pattern() {
+    use lucene_analysis::util::JavaPattern;
+    let text = std::fs::read_to_string(format!("{}regex.words", dir())).unwrap();
+    let (mut compared, mut refused) = (0, BTreeSet::new());
+    for line in text.lines() {
+        let f: Vec<&str> = line.splitn(3, '\t').collect();
+        let (pattern, input, want) = (unesc(f[0]), unesc(f[1]), normalise_expected(f[2]));
+        match JavaPattern::compile(&pattern) {
+            Ok(p) => {
+                assert!(!want.starts_with("EXC"), "{pattern:?}: Java threw {want}");
+                assert!(
+                    !REGEX_REJECTED.contains(&pattern.as_str()),
+                    "{pattern:?} compiled"
+                );
+                assert_eq!(regex_run(&p, &input), want, "{pattern:?} on {input:?}");
+                compared += 1;
+            }
+            Err(AnalysisError::IllegalArgument(_)) if want.starts_with("EXC") => {}
+            Err(e) => {
+                assert!(
+                    REGEX_REJECTED.contains(&pattern.as_str()),
+                    "{pattern:?} rejected but Java gives {want}: {e:?}"
+                );
+                refused.insert(pattern);
+            }
+        }
+    }
+    assert!(compared > 3000, "{compared} rows compared");
+    assert_eq!(refused.len(), REGEX_REJECTED.len(), "{refused:?}");
+}
+
+/// `regex_ci.words`: which code points each case-insensitive form matches,
+/// over every code point with a simple case mapping.
+#[test]
+fn java_regex_case_folding_matches_lucene() {
+    use lucene_analysis::util::java_regex::JavaMatcher;
+    use lucene_analysis::util::JavaPattern;
+    let text = std::fs::read_to_string(format!("{}regex_ci.words", dir())).unwrap();
+    let mut lines = text.lines();
+    let inputs = [unesc(lines.next().unwrap()), unesc(lines.next().unwrap())];
+    let mut n = 0;
+    for line in lines {
+        let f: Vec<&str> = line.split('\t').collect();
+        let pattern = unesc(f[0]);
+        let input = &inputs[usize::from(f[1] == "2")];
+        let p = JavaPattern::compile(&pattern).unwrap();
+        let mut m = JavaMatcher::new(&p, input);
+        let mut got = Vec::new();
+        while m.find() {
+            got.push(m.start(0).to_string());
+        }
+        assert_eq!(got.join(","), f[2], "{pattern:?}");
+        n += 1;
+    }
+    assert!(n > 4000, "{n} forms");
 }

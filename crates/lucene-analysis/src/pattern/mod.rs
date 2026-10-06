@@ -9,8 +9,8 @@ use crate::attributes::{AttributeSource, State};
 use crate::charfilter::OffsetCorrections;
 use crate::reader::{read_to_string, CharFilter, CharReader};
 use crate::token_stream::{TokenFilter, TokenStream, Tokenizer, TokenizerInput};
-use crate::util::java_regex::{append_replacement, JavaMatcher, JavaPattern};
-use crate::{utf16_len, AnalysisError};
+use crate::util::java_regex::{JavaMatcher, JavaPattern};
+use crate::AnalysisError;
 
 fn illegal(e: impl std::fmt::Display) -> AnalysisError {
     AnalysisError::IllegalArgument(e.to_string())
@@ -25,8 +25,6 @@ pub struct PatternTokenizer {
     group: i32,
     /// `index`, in UTF-16 units (`i32::MAX` once exhausted).
     index: i32,
-    /// `index` as a byte offset into the text.
-    index_byte: usize,
     str_len: i32,
 }
 
@@ -46,13 +44,13 @@ impl PatternTokenizer {
             matcher,
             group,
             index: 0,
-            index_byte: 0,
             str_len: 0,
         })
     }
 
-    fn emit(&mut self, from: usize, to: usize, start: i32, end: i32) -> Result<(), AnalysisError> {
-        self.atts.set_term(&self.matcher.text()[from..to]);
+    /// The term `start..end` (UTF-16 units of the text) and its offsets.
+    fn emit(&mut self, start: i32, end: i32) -> Result<(), AnalysisError> {
+        self.atts.set_term(&self.matcher.slice(start, end));
         let (s, e) = (
             self.input.correct_offset(start),
             self.input.correct_offset(end),
@@ -84,34 +82,26 @@ impl TokenStream for PatternTokenizer {
                 if self.index == end_index {
                     continue;
                 }
-                let (bs, be) = self
-                    .matcher
-                    .group_bytes(g)
-                    .expect("a non-empty group matched");
-                self.emit(bs, be, self.index, end_index)?;
+                self.emit(self.index, end_index)?;
                 return Ok(true);
             }
             self.index = i32::MAX;
             return Ok(false);
         }
         while self.matcher.find() {
-            let (ms, me) = self.matcher.group_bytes(0).expect("group 0");
             let (start, end) = (self.matcher.start(0), self.matcher.end(0));
             if start - self.index > 0 {
-                self.emit(self.index_byte, ms, self.index, start)?;
+                self.emit(self.index, start)?;
                 self.index = end;
-                self.index_byte = me;
                 return Ok(true);
             }
             self.index = end;
-            self.index_byte = me;
         }
         if self.str_len - self.index == 0 {
             self.index = i32::MAX;
             return Ok(false);
         }
-        let len = self.matcher.text().len();
-        self.emit(self.index_byte, len, self.index, self.str_len)?;
+        self.emit(self.index, self.str_len)?;
         self.index = i32::MAX;
         Ok(true)
     }
@@ -127,10 +117,9 @@ impl TokenStream for PatternTokenizer {
     fn reset(&mut self) -> Result<(), AnalysisError> {
         self.input.reset();
         let text = read_to_string(self.input.reader()?)?;
-        self.str_len = utf16_len(&text) as i32;
         self.matcher.reset(&text);
+        self.str_len = self.matcher.len_utf16();
         self.index = 0;
-        self.index_byte = 0;
         Ok(())
     }
 
@@ -153,7 +142,7 @@ impl Tokenizer for PatternTokenizer {
 /// `org.apache.lucene.analysis.pattern.PatternReplaceFilter`.
 pub struct PatternReplaceFilter<I> {
     input: I,
-    pattern: JavaPattern,
+    matcher: JavaMatcher,
     replacement: String,
     all: bool,
 }
@@ -164,7 +153,7 @@ impl<I: TokenStream> PatternReplaceFilter<I> {
     pub fn new(input: I, pattern: JavaPattern, replacement: Option<&str>, all: bool) -> Self {
         PatternReplaceFilter {
             input,
-            pattern,
+            matcher: JavaMatcher::new(&pattern, ""),
             replacement: replacement.unwrap_or("").to_string(),
             all,
         }
@@ -179,10 +168,10 @@ impl<I: TokenStream> TokenFilter for PatternReplaceFilter<I> {
             return Ok(false);
         }
         let a = self.input.attributes_mut();
-        if self.pattern.regex().is_match(a.term()) {
-            let t = self
-                .pattern
-                .replace(a.term(), &self.replacement, self.all)?;
+        self.matcher.reset(a.term());
+        if self.matcher.find() {
+            // replaceAll/replaceFirst rewind this find.
+            let t = self.matcher.replace(&self.replacement, self.all)?;
             a.set_term(&t);
         }
         Ok(true)
@@ -255,11 +244,11 @@ impl<I: TokenStream> PatternCaptureGroupTokenFilter<I> {
         self.current_matcher != -1
     }
 
-    fn current_bytes(&self) -> (usize, usize) {
-        let m = self.current_matcher as usize;
-        self.matchers[m]
-            .group_bytes(self.current_group[m] as usize)
-            .expect("nextCapture picked a participating group")
+    /// The current capture's text.
+    fn current_text(&self) -> String {
+        let m = &self.matchers[self.current_matcher as usize];
+        let g = self.current_group[self.current_matcher as usize] as usize;
+        m.slice(m.start(g), m.end(g)).into_owned()
     }
 }
 
@@ -269,9 +258,8 @@ impl<I: TokenStream> TokenFilter for PatternCaptureGroupTokenFilter<I> {
     // Java: PatternCaptureGroupTokenFilter.incrementToken
     fn increment(&mut self) -> Result<bool, AnalysisError> {
         if self.current_matcher != -1 && self.next_capture() {
-            let (s, e) = self.current_bytes();
+            let term = self.current_text();
             let m = self.current_matcher as usize;
-            let term = self.matchers[m].text()[s..e].to_string();
             let a = self.input.attributes_mut();
             a.clear_attributes();
             a.restore_state(self.state.as_ref().expect("a token was read"));
@@ -284,19 +272,18 @@ impl<I: TokenStream> TokenFilter for PatternCaptureGroupTokenFilter<I> {
             return Ok(false);
         }
         let a = self.input.attributes();
-        let spare = a.term().to_string();
-        self.spare_len = utf16_len(&spare) as i32;
         self.state = Some(a.capture_state());
         for (m, g) in self.matchers.iter_mut().zip(self.current_group.iter_mut()) {
-            m.reset(&spare);
+            m.reset(a.term());
             *g = -1;
         }
+        self.spare_len = self.matchers.first().map_or(0, JavaMatcher::len_utf16);
         if self.preserve_original {
             self.current_matcher = 0;
         } else if self.next_capture() {
-            let (s, e) = self.current_bytes();
             // Java: setLength(end) when the capture starts at 0, else copy.
-            self.input.attributes_mut().set_term(&spare[s..e]);
+            let term = self.current_text();
+            self.input.attributes_mut().set_term(&term);
             let m = self.current_matcher as usize;
             self.current_group[m] += 1;
         }
@@ -327,12 +314,19 @@ pub struct PatternTypingRule {
 /// against the term) and the flags.
 pub struct PatternTypingFilter<I> {
     input: I,
-    rules: Vec<PatternTypingRule>,
+    rules: Vec<(PatternTypingRule, JavaMatcher)>,
 }
 
 impl<I: TokenStream> PatternTypingFilter<I> {
     /// `new PatternTypingFilter(TokenStream, PatternTypingRule...)`.
     pub fn new(input: I, rules: Vec<PatternTypingRule>) -> Self {
+        let rules = rules
+            .into_iter()
+            .map(|r| {
+                let m = JavaMatcher::new(&r.pattern, "");
+                (r, m)
+            })
+            .collect();
         PatternTypingFilter { input, rules }
     }
 }
@@ -345,10 +339,11 @@ impl<I: TokenStream> TokenFilter for PatternTypingFilter<I> {
             return Ok(false);
         }
         let a = self.input.attributes_mut();
-        for rule in &self.rules {
-            if rule.pattern.regex().is_match(a.term()) {
+        for (rule, matcher) in &mut self.rules {
+            matcher.reset(a.term());
+            if matcher.find() {
                 // Java: matcher.replaceFirst(typeTemplate) over the term.
-                let t = rule.pattern.replace(a.term(), &rule.type_template, false)?;
+                let t = matcher.replace(&rule.type_template, false)?;
                 a.set_token_type(t);
                 a.set_flags(rule.flags);
                 return Ok(true);
@@ -381,29 +376,23 @@ impl<R: CharReader> PatternReplaceCharFilter<R> {
         }
     }
 
-    // Java: PatternReplaceCharFilter.processPattern
-    fn process_pattern(&mut self, input: &str) -> Result<String, AnalysisError> {
-        let mut out = String::with_capacity(input.len());
-        let mut out_len = 0i32;
+    // Java: PatternReplaceCharFilter.processPattern. Every length here is
+    // in UTF-16 units, as Java's: the matcher reports them, and the output
+    // is built as units (a surrogate pair a match cuts keeps its halves).
+    fn process_pattern(&mut self, input: &str) -> Result<Vec<u16>, AnalysisError> {
+        let mut m = JavaMatcher::new(&self.pattern, input);
+        let mut out: Vec<u16> = Vec::with_capacity(input.len());
         let mut cumulative = 0i32;
         let mut last_match_end = 0i32;
-        let mut last_byte = 0usize;
-        for caps in self.pattern.regex().captures_iter(input) {
-            let m = caps.get(0).expect("group 0");
-            let start = utf16_len(&input[..m.start()]) as i32;
-            let end = start + utf16_len(m.as_str()) as i32;
+        while m.find() {
+            let (start, end) = (m.start(0), m.end(0));
             let group_size = end - start;
-            let skipped = &input[last_byte..m.start()];
             let skipped_size = start - last_match_end;
+            let length_before_replacement = out.len() as i32 + skipped_size;
+            m.slice_utf16_into(last_match_end, start, &mut out);
             last_match_end = end;
-            let length_before_replacement = out_len + skipped_size;
-            out.push_str(skipped);
-            let mut rep = String::new();
-            append_replacement(&mut rep, &caps, &self.replacement)?;
-            out.push_str(&rep);
-            let replacement_size = utf16_len(&rep) as i32;
-            out_len = length_before_replacement + replacement_size;
-            last_byte = m.end();
+            m.expand_replacement(&self.replacement, &mut out)?;
+            let replacement_size = out.len() as i32 - length_before_replacement;
             if group_size != replacement_size {
                 if replacement_size < group_size {
                     cumulative += group_size - replacement_size;
@@ -418,7 +407,7 @@ impl<R: CharReader> PatternReplaceCharFilter<R> {
                 }
             }
         }
-        out.push_str(&input[last_byte..]);
+        m.slice_utf16_into(last_match_end, m.len_utf16(), &mut out);
         Ok(out)
     }
 }
@@ -437,7 +426,7 @@ impl<R: CharReader> CharFilter for PatternReplaceCharFilter<R> {
         if self.transformed.is_none() {
             let text = read_to_string(&mut self.input)?;
             let out = self.process_pattern(&text)?;
-            self.transformed = Some((out.encode_utf16().collect(), 0));
+            self.transformed = Some((out, 0));
         }
         let (units, pos) = self.transformed.as_mut().expect("filled above");
         let n = buf.len().min(units.len() - *pos);
@@ -938,6 +927,53 @@ mod tests {
         let n = f.read(&mut buf).unwrap();
         assert_eq!(String::from_utf16(&buf[..n]).unwrap(), "z d");
         assert_eq!((f.correct_offset(1), f.correct_offset(2)), (3, 4));
+    }
+
+    /// Every match's UTF-16 offsets come from the matcher: rescanning the
+    /// text before each match made this quadratic (minutes for 200 000
+    /// non-ASCII characters and 100 000 matches).
+    #[test]
+    fn replace_char_filter_is_linear() {
+        let text = "é,".repeat(100_000);
+        let started = std::time::Instant::now();
+        let mut f = PatternReplaceCharFilter::new(p(","), "--", StrReader::new(&text));
+        let mut buf = vec![0u16; 400_000];
+        let n = f.read(&mut buf).unwrap();
+        assert_eq!(n, 300_000);
+        assert_eq!(f.correct_offset(299_999), 199_999);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    /// Java's empty-match rule: after a non-empty match an empty one may
+    /// follow at its end (`"abxd".replaceAll("x*", "-")` is `-a-b--d-`).
+    #[test]
+    fn empty_matches_follow_java() {
+        let mut f =
+            PatternReplaceFilter::new(Canned::parse("abxd:0:4:1:1|4|0"), p("x*"), Some("-"), true);
+        assert_eq!(render(&mut f), "-a-b--d-:0:4:1:1|4|0");
+        let mut f = PatternReplaceCharFilter::new(p("x*"), "-", StrReader::new("abxd"));
+        let mut buf = [0u16; 32];
+        let n = f.read(&mut buf).unwrap();
+        assert_eq!(String::from_utf16(&buf[..n]).unwrap(), "-a-b--d-");
+        // Between the surrogates of a pair the output keeps each half.
+        let mut f = PatternReplaceCharFilter::new(p("x*"), "-", StrReader::new("😀"));
+        let n = f.read(&mut buf).unwrap();
+        assert_eq!(buf[..n], [0x2D, 0xD83D, 0x2D, 0xDE00, 0x2D]);
+        let rules = vec![PatternTypingRule {
+            pattern: p("x*"),
+            flags: 1,
+            type_template: "<$0>".into(),
+        }];
+        let mut c = Canned::parse("x:0:1:1:1");
+        c.set_terms(&["axb"]);
+        let mut f = PatternTypingFilter::new(c, rules);
+        let mut out = Vec::new();
+        crate::token_stream::consume(&mut f, |a| out.push(a.token_type().to_string())).unwrap();
+        assert_eq!(out, vec!["<>axb"]);
     }
 
     #[test]

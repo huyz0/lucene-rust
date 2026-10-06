@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.CharArraySet;
@@ -307,6 +308,26 @@ public class GenAnalysisCommon {
         new PatternTypingFilter.PatternTypingRule(Pattern.compile("^([A-Z])"), 4, "capital_$1"))));
     c.put("pattern_replace_char_filter", () -> chain(r -> new PatternReplaceCharFilter(Pattern.compile("([a-z]+)-([a-z]+)"), "$2_$1", r),
         WhitespaceTokenizer::new, t -> t));
+    // java.util.regex semantics the port re-emits (see util/java_regex.rs): `.` and `$` with
+    // Java's line terminators, Java's empty-match rule (inside surrogate pairs too), ASCII-only
+    // and Unicode case folding, POSIX classes, \\h and \\v.
+    c.put("keyword_pattern_replace_dot", () -> chain(KeywordTokenizer::new, t -> new PatternReplaceFilter(t, Pattern.compile("."), "_", true)));
+    c.put("keyword_pattern_replace_dollar", () -> chain(KeywordTokenizer::new, t -> new PatternReplaceFilter(t, Pattern.compile("(\\S)\\s*$"), "[$1]", true)));
+    c.put("keyword_pattern_replace_x_star", () -> chain(KeywordTokenizer::new, t -> new PatternReplaceFilter(t, Pattern.compile("x*"), "-", true)));
+    c.put("pattern_replace_char_filter_x_star", () -> chain(r -> new PatternReplaceCharFilter(Pattern.compile("x*"), "-", r),
+        KeywordTokenizer::new, t -> t));
+    c.put("ws_pattern_replace_ascii_case", () -> chain(WhitespaceTokenizer::new, t -> new PatternReplaceFilter(t, Pattern.compile("(?i)[a-e\u00e9]|stra\u00dfe|k"), "#", true)));
+    c.put("ws_pattern_replace_unicode_case", () -> chain(WhitespaceTokenizer::new, t -> new PatternReplaceFilter(t, Pattern.compile("(?iu)[a-e\u00e9]|stra\u00dfe|k|\u03c3"), "#", true)));
+    c.put("ws_pattern_replace_posix", () -> chain(WhitespaceTokenizer::new, t -> new PatternReplaceFilter(t, Pattern.compile("\\p{Punct}|\\p{Upper}|[[:alpha:]]"), "_", true)));
+    c.put("pattern_tokenizer_h_v", () -> tok(() -> new PatternTokenizer(Pattern.compile("[\\h\\v,]+"), -1)));
+    c.put("pattern_tokenizer_categories", () -> tok(() -> new PatternTokenizer(Pattern.compile("(\\p{L}+)|(\\p{Nd}+)"), 0)));
+    c.put("std_pattern_typing_classes", () -> chain(StandardTokenizer::new, t -> new PatternTypingFilter(t,
+        new PatternTypingFilter.PatternTypingRule(Pattern.compile("^\\p{Lu}\\p{Ll}+$"), 1, "title"),
+        new PatternTypingFilter.PatternTypingRule(Pattern.compile("(?iu)^\\w*(.)$"), 2, "end_$1"))));
+    // Rejected by the port (Java's \\b counts a non-spacing mark after a letter as a word
+    // character; MULTILINE ^): the Rust harness expects IllegalArgument for these.
+    c.put("keyword_pattern_replace_word_boundary", () -> chain(KeywordTokenizer::new, t -> new PatternReplaceFilter(t, Pattern.compile("\\bthe\\b"), "THE", true)));
+    c.put("keyword_pattern_replace_multiline", () -> chain(KeywordTokenizer::new, t -> new PatternReplaceFilter(t, Pattern.compile("(?m)^"), ">", true)));
 
     // ---- path
     c.put("path_hierarchy", () -> tok(PathHierarchyTokenizer::new));
@@ -455,6 +476,153 @@ public class GenAnalysisCommon {
     "red", "ring", "bed", "ged", "med"
   };
 
+
+  /**
+   * Code points whose {@code java.lang.Character} properties (type, case mappings, digit value,
+   * whitespace, ...) differ between JDK 21 (Unicode 15.0) and JDK 25 (Unicode 16.0): pairs of
+   * inclusive bounds. The code-point fixtures leave them out, so they are byte-identical under
+   * either JDK; the port follows JDK 25 for them (see {@code java_character.rs}).
+   */
+  static final int[] JDK21_JDK25_DIFFER = {
+    0x19B, 0x19B, 0x264, 0x264, 0x363, 0x36F, 0x897, 0x897, 0x1B4E, 0x1B4F, 0x1B7F, 0x1B7F,
+    0x1C89, 0x1C8A, 0x1DD3, 0x1DE6, 0x2427, 0x2429, 0x2FFC, 0x2FFF, 0x31E4, 0x31E5, 0x31EF, 0x31EF,
+    0xA7CB, 0xA7CD, 0xA7DA, 0xA7DC, 0x105C0, 0x105F3, 0x10D40, 0x10D65, 0x10D69, 0x10D85,
+    0x10D8E, 0x10D8F, 0x10EC2, 0x10EC4, 0x10EFC, 0x10EFC, 0x11380, 0x11389, 0x1138B, 0x1138B,
+    0x1138E, 0x1138E, 0x11390, 0x113B5, 0x113B7, 0x113C0, 0x113C2, 0x113C2, 0x113C5, 0x113C5,
+    0x113C7, 0x113CA, 0x113CC, 0x113D5, 0x113D7, 0x113D8, 0x113E1, 0x113E2, 0x116D0, 0x116E3,
+    0x1171E, 0x1171E, 0x11BC0, 0x11BE1, 0x11BF0, 0x11BF9, 0x11F5A, 0x11F5A, 0x13460, 0x143FA,
+    0x16100, 0x16139, 0x16D40, 0x16D79, 0x18CFF, 0x18CFF, 0x1CC00, 0x1CCF9, 0x1CD00, 0x1CEB3,
+    0x1E5D0, 0x1E5FA, 0x1E5FF, 0x1E5FF, 0x1F8B2, 0x1F8BB, 0x1F8C0, 0x1F8C1, 0x1FA89, 0x1FA89,
+    0x1FA8F, 0x1FA8F, 0x1FABE, 0x1FABE, 0x1FAC6, 0x1FAC6, 0x1FADC, 0x1FADC, 0x1FADF, 0x1FADF,
+    0x1FAE9, 0x1FAE9, 0x1FBCB, 0x1FBEF, 0x2EBF0, 0x2EE5D
+  };
+
+  static boolean jdkDependent(int cp) {
+    for (int i = 0; i < JDK21_JDK25_DIFFER.length; i += 2) {
+      if (cp >= JDK21_JDK25_DIFFER[i] && cp <= JDK21_JDK25_DIFFER[i + 1]) return true;
+    }
+    return false;
+  }
+
+  /** java.util.regex constructs, each run over every input of {@link #REGEX_INPUTS}. */
+  static final String[] REGEX_PATTERNS = {
+    // classes
+    "\\w+", "\\d+", "\\s+", "\\W", "\\D+", "\\S+", "[\\W]", "[^\\W]", "[\\d\\s]+", "[]a]", "[^]a]",
+    "\\p{Alpha}+", "\\p{Upper}", "\\p{Lower}+", "\\p{Punct}", "\\p{Space}", "\\p{Digit}", "\\p{Alnum}+",
+    "\\p{Graph}+", "\\p{Print}+", "\\p{Blank}", "\\p{Cntrl}", "\\p{XDigit}+", "\\p{ASCII}+",
+    "\\p{L}+", "\\pL", "\\p{IsL}+", "\\p{Lu}", "\\p{IsLu}", "\\p{gc=Nd}", "\\p{general_category=Lu}",
+    "\\p{LC}", "\\p{IsLC}", "\\p{LD}+", "\\p{L1}+", "\\p{all}", "\\P{L}+", "\\p{N}", "\\p{P}", "\\p{S}",
+    "\\p{Z}", "\\p{M}", "\\p{C}", "\\p{Cs}", "\\p{Mn}", "\\p{So}",
+    "[\\p{L}&&\\p{Lu}]", "[\\p{L}&&[^\\p{Lu}]]", "[a-z&&[^aeiou]]", "[^a-c&&b-d]", "[a[bc]d]", "[^a[b]]",
+    "[[:alpha:]]", "[[:^alpha:]]", "[x[:digit:]]", "[a-c-e]", "[a-]", "[-a]",
+    "\\h", "\\H+", "\\v", "\\V+", "[\\v]", "[^\\h]", "\\e", "\\x{1F600}", "\\uD83D\\uDE00", "\\u00e9", "\\x41",
+    "\\Qa.b\\E", "[\\Q-]\\E]", "\\Q*", "\\<a\\>", "\\%\\@\\'\\\"\\#", "\\_",
+    ".", "(?s).", ".+", "(?s).+", "[^a]*",
+    // case
+    "(?i)a", "(?i)abc", "(?i)é", "(?iu)é", "(?i)[a-c]+", "(?iu)[a-c]+", "(?i)[é]", "(?iu)[é]",
+    "(?i)k", "(?iu)k", "(?iu)K", "(?i)[a-z]+", "(?iu)[a-z]+", "(?iu)[^k]", "(?i)[^a]", "(?iu)ß",
+    "(?iu)ßx", "(?iu)ẞ", "(?iu)[ß]", "(?iu)i", "(?iu)[i]", "(?iu)İ", "(?iu)ǅ",
+    "(?i)\\p{Lu}", "(?i)\\P{Lu}", "(?i)\\p{Upper}", "(?i)\\p{Lower}", "(?iu)\\w", "(?i:a)b", "a(?i)b|c",
+    "(?i)(?-i:a)", "(?i)(?u)k", "(?-i)a",
+    // anchors and $
+    "^", "$", "^a", "a$", "^$", "\\A", "\\z", "\\n$", "a$\\n", "\\s+$", "\\s*$", "$\\s", "(\\w+)$",
+    "[^a]$", "x*$", ".$", "(?s).$", "\\A|.", "\\A|(.)",
+    // empty matches and find()
+    "x*", "a*", "(a*)", "a*?", "(a)?", "(a|)?", "(?:a|)*", "((a)|b)*", "(a)|b", "(x)|(y)", "a{0}",
+    "(?:)", "|", "a|", "|a", "\\b?",
+    // repetition and groups
+    "a{2}", "a{1,}", "a{1,2}", "a{0,1}?", "a+?", "(?<word>\\w+)", "(?<ab1>x)", "(a(b)?)+", "(?:ab)+",
+    // rejected by the port (Java compiles them)
+    "\\bfox", "\\b", "\\B", "(?m)^a", "(?m)a$", "(?x) a b", "(?U)\\w", "(a|)*", "(a*)+", "\\p{IsLatin}",
+    "\\p{InGreek}", "\\p{IsAlphabetic}", "\\p{javaLowerCase}", "(a)\\1", "(?=a)", "(?<=a)b", "a++",
+    "(?>a)", "\\Z", "\\G", "\\R", "\\X", "\\cA", "\\0101", "\\N{LATIN SMALL LETTER A}", "(?d).",
+    "[a~~b]", "[&&a]", "[a&&]", "[a&&&b]", "\\p{gc=L}",
+    // rejected by Java
+    "(", "[a", "a{2,1}", "x{,3}", "\\y", "(?P<a>x)", "(?<a_b>x)", "\\u{e9}", "\\U000000e9", "[a--b]",
+    "\\p{Latin}", "\\p{Uppercase_Letter}", "\\p{ Lu }", "a{ 2 }", "*",
+  };
+
+  static final String[] REGEX_INPUTS = {
+    "", "a", "abxd", "aA", "Hello World", "foo-bar baz_qux", "x\n", "a\r\n", "a\r", "line1\nline2\n",
+    "a\u0085", "b ", "a \n", "café naïve", "é", "😀", "baa😀",
+    "a😀b😀\n", "ǅǄǆ ß ẞ İ ı K K k",
+    "١٢ 123", "\t \u000B 　 ", "[:alpha:]-^", "<a>&b", "MS-DOS 3.14", "aaa",
+    "xxxyyy", "a.b axb *", "\u001b%@'\"#_", "AbAB aBC",
+  };
+
+  /** One input's find() spans and groups, replaceAll("<$0>") and matches(); or the exception. */
+  static String regexRun(String pattern, String input) {
+    try {
+      Pattern p = Pattern.compile(pattern);
+      Matcher m = p.matcher(input);
+      StringBuilder b = new StringBuilder();
+      while (m.find()) {
+        b.append('(').append(m.start()).append(',').append(m.end());
+        for (int g = 1; g <= m.groupCount(); g++) b.append(' ').append(m.start(g)).append(':').append(m.end(g));
+        b.append(')');
+      }
+      b.append(" rep=").append(esc(p.matcher(input).replaceAll("<$0>")));
+      b.append(" m=").append(p.matcher(input).matches());
+      return b.toString();
+    } catch (Exception e) {
+      return "EXC " + e.getClass().getSimpleName();
+    }
+  }
+
+  static void writeRegexFixtures(Path out) throws Exception {
+    StringBuilder r = new StringBuilder();
+    for (String pattern : REGEX_PATTERNS) {
+      for (String input : REGEX_INPUTS) {
+        r.append(esc(pattern)).append('\t').append(esc(input)).append('\t').append(regexRun(pattern, input)).append('\n');
+      }
+    }
+    Files.writeString(out.resolve("regex.words"), r.toString(), StandardCharsets.UTF_8);
+
+    // Case-insensitivity: every code point with a simple case mapping (and a few without),
+    // matched by each literal and class form of a set of probes. Line 1 is the input, line 2
+    // the same input with U+E000 after each character (for the two-literal `Slice` form).
+    StringBuilder in = new StringBuilder();
+    StringBuilder in2 = new StringBuilder();
+    List<Integer> probes = new ArrayList<>();
+    for (int cp = 0; cp < 0x20000; cp++) {
+      if (jdkDependent(cp) || Character.getType(cp) == Character.SURROGATE) continue;
+      boolean cased = Character.toUpperCase(cp) != cp || Character.toLowerCase(cp) != cp;
+      boolean extra = cp == 0xDF || cp == 0x138 || cp == 0x149 || cp == 0x390 || cp == 0x3B0
+          || cp == 0x1FD3 || cp == 0x1FE3 || cp == 0x1F0 || cp == '1' || cp == '_';
+      if (!cased && !extra) continue;
+      in.appendCodePoint(cp);
+      in2.appendCodePoint(cp).append('');
+      if (cp < 0x250 || (cp >= 0x370 && cp < 0x530) || cp >= 0x1E00 && cp < 0x2200 || cp >= 0x10400 || extra) {
+        probes.add(cp);
+      }
+    }
+    StringBuilder ci = new StringBuilder();
+    ci.append(esc(in.toString())).append('\n').append(esc(in2.toString())).append('\n');
+    List<String[]> forms = new ArrayList<>();
+    for (int cp : probes) {
+      String x = "\\x{" + Integer.toHexString(cp) + "}";
+      forms.add(new String[] {"(?i)" + x, "1"});
+      forms.add(new String[] {"(?iu)" + x, "1"});
+      forms.add(new String[] {"(?i)[" + x + "]", "1"});
+      forms.add(new String[] {"(?iu)[" + x + "]", "1"});
+      forms.add(new String[] {"(?iu)[" + x + "-" + x + "]", "1"});
+      forms.add(new String[] {"(?iu)" + x + "\\x{e000}", "2"});
+    }
+    for (String p : new String[] {"(?i)[a-z]", "(?iu)[a-z]", "(?iu)[\\x{e0}-\\x{ff}]", "(?iu)[\\x{400}-\\x{42f}]",
+        "(?i)[A-Z]", "(?iu)[^a-z]", "(?i)\\p{Lu}", "(?i)\\p{Ll}", "(?i)\\p{Lt}", "(?iu)\\p{Lu}", "(?i)\\p{Upper}",
+        "(?i)\\p{Lower}", "(?iu)\\w", "\\p{Lu}", "\\p{Ll}", "\\p{Lt}", "(?iu)[\\x{1f00}-\\x{1fff}]"}) {
+      forms.add(new String[] {p, "1"});
+    }
+    String input1 = in.toString(), input2 = in2.toString();
+    for (String[] f : forms) {
+      Matcher m = Pattern.compile(f[0]).matcher(f[1].equals("1") ? input1 : input2);
+      StringBuilder pos = new StringBuilder();
+      while (m.find()) pos.append(pos.length() == 0 ? "" : ",").append(m.start());
+      ci.append(esc(f[0])).append('\t').append(f[1]).append('\t').append(pos).append('\n');
+    }
+    Files.writeString(out.resolve("regex_ci.words"), ci.toString(), StandardCharsets.UTF_8);
+  }
+
   public static void main(String[] args) throws Exception {
     Path out = Path.of(args[0]).resolve("analysis_common");
     Files.createDirectories(out);
@@ -522,6 +690,8 @@ public class GenAnalysisCommon {
       ut.close();
     }
     Files.writeString(out.resolve("urls.words"), urls.toString(), StandardCharsets.UTF_8);
+
+    writeRegexFixtures(out);
 
     for (Map.Entry<String, Supplier<Analyzer>> e : chains().entrySet()) {
       StringBuilder m = new StringBuilder();
