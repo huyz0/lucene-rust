@@ -413,7 +413,7 @@ impl SpanCollector for PayloadChecker {
 
 impl SpanFilter for PayloadChecker {
     /// The anonymous `FilterSpans.accept`: collect, then `match()`.
-    fn accept(&mut self, candidate: &mut BoxSpans<'_>) -> Result<AcceptStatus> {
+    fn accept<S: super::Spans>(&mut self, candidate: &mut S) -> Result<AcceptStatus> {
         self.reset();
         candidate.collect(self)?;
         if let Some(e) = self.error.take() {

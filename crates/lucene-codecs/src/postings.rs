@@ -6085,8 +6085,98 @@ impl<'a> PositionsCursor<'a> {
 
     /// `PostingsEnum.nextPosition()`: the current document's next position,
     /// ascending. Callable at most [`Self::freq`] times per document.
+    ///
+    /// The common step -- the document's positions already lined up, the
+    /// next one in the decoded block, no payloads -- is small enough to
+    /// inline into the caller's loop, where it cannot fail and so builds no
+    /// `Result` through memory; a document's first position, a refill and
+    /// payloads go through [`Self::next_position_slow`].
     #[inline]
     pub fn next_position(&mut self) -> Result<i32> {
+        match self.try_next_position() {
+            Some(p) => Ok(p),
+            None => self.next_position_slow(),
+        }
+    }
+
+    /// [`Self::next_position`]'s infallible step: `None` where it needs
+    /// [`Self::next_position_slow`] (a new document, an exhausted block, a
+    /// cursor reading payloads, or a document with no position left).
+    #[inline]
+    pub fn try_next_position(&mut self) -> Option<i32> {
+        if self.docs.doc_id != self.pos_doc && !self.try_start_doc() {
+            return None;
+        }
+        if self.doc_left == 0 || self.pay_r.is_some() || self.buf_upto >= self.block.len {
+            return None;
+        }
+        let delta = *self.block.pos_deltas.get(self.buf_upto)?;
+        // ARITH: `buf_upto < block.len <= BLOCK_SIZE` was just checked, and
+        // a position is `wrapping_add`ed exactly as Java's `int` sum wraps;
+        // `doc_left > 0` was just checked.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            self.position = self.position.wrapping_add(delta as i32);
+            self.buf_upto += 1;
+            self.doc_left -= 1;
+        }
+        Some(self.position)
+    }
+
+    /// [`Self::start_doc`]'s common case -- the document in the `.doc`
+    /// block `.pos` is already lined up with, its first position inside the
+    /// decoded positions block, no payloads -- without building a `Result`:
+    /// `false`, having changed nothing, where `start_doc` must run.
+    #[inline(never)]
+    fn try_start_doc(&mut self) -> bool {
+        let doc = self.docs.doc_id;
+        if doc < 0
+            || doc == NO_MORE_DOCS
+            || self.docs.pending.is_some()
+            || self.docs.block_gen != self.block_gen
+            || self.pay_r.is_some()
+        {
+            return false;
+        }
+        let block_pos = self.docs.block_pos;
+        let Some((&freq, between)) = self
+            .docs
+            .block_freqs
+            .get(self.pos_doc_upto..=block_pos)
+            .and_then(<[i32]>::split_last)
+        else {
+            return false;
+        };
+        let mut skip = self.pending.wrapping_add(self.doc_left);
+        for &f in between {
+            if f <= 0 {
+                return false;
+            }
+            skip = skip.wrapping_add(f as u64);
+        }
+        let Some(left) = self.block.len.checked_sub(self.buf_upto) else {
+            return false;
+        };
+        if freq <= 0 || skip > left as u64 {
+            return false;
+        }
+        // ARITH: `skip <= block.len - buf_upto` and `block_pos` indexes
+        // `block_freqs`, both just checked.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            self.buf_upto += skip as usize;
+            self.pos_doc_upto = block_pos + 1;
+        }
+        self.pending = 0;
+        self.doc_left = freq as u64;
+        self.position = 0;
+        self.pos_doc = doc;
+        true
+    }
+
+    /// [`Self::next_position`] in full.
+    #[inline(never)]
+    fn next_position_slow(&mut self) -> Result<i32> {
         if self.docs.doc_id != self.pos_doc {
             self.start_doc()?;
         }
