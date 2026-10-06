@@ -183,3 +183,7 @@ T	47	Smart	1	6	1	1	<ALPHANUM>	0	-	0	1
 T	47	quotes	7	13	1	1	<ALPHANUM>	0	-	0	1
 T	47	single	16	22	1	1	<ALPHANUM>	0	-	0	1
 E	47	22	22	0
+T	48	abilities	0	9	1	1	<ALPHANUM>	0	-	0	1
+T	48	agreed	10	16	1	1	<ALPHANUM>	0	-	0	1
+T	48	activism	17	25	1	1	<ALPHANUM>	0	-	0	1
+E	48	25	25	0
