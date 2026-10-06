@@ -33,7 +33,8 @@ import org.tartarus.snowball.SnowballStemmer;
  * org.tartarus.snowball.ext.*Stemmer} (read by reflection -- the suffixes, prefixes and exception
  * words the algorithm branches on) appended to and prefixed with random stems over the language's
  * alphabet (the characters of those strings), random stem + suffix chains (fixed seed), and the
- * lowercased words of {@code fixtures/corpus/analysis-common.txt}. A handful of words carry a
+ * lowercased words of {@code fixtures/corpus/snowball-seed.txt} (a frozen copy of the
+ * analysis-common corpus, so edits to that corpus do not change these fixtures). A handful of words carry a
  * character outside the Basic Multilingual Plane, where Java's UTF-16 stemmers and the port's
  * UTF-8 ones may disagree: they go to {@code supplementary.words} instead, as the record of what
  * Java does there.
@@ -92,7 +93,7 @@ public class GenSnowball {
     Files.createDirectories(out);
     String corpusDir = System.getenv().getOrDefault("FIXTURES_CORPUS", "fixtures/corpus");
     String corpus =
-        Files.readString(Path.of(corpusDir, "analysis-common.txt"), StandardCharsets.UTF_8);
+        Files.readString(Path.of(corpusDir, "snowball-seed.txt"), StandardCharsets.UTF_8);
     Set<String> corpusWords = new TreeSet<>();
     for (String w : corpus.toLowerCase(Locale.ROOT).split("[^\\p{L}\\p{M}\\p{Nd}'’]+")) {
       if (!w.isEmpty() && w.codePointCount(0, w.length()) == w.length()) corpusWords.add(w);

@@ -1,0 +1,53 @@
+The quick brown fox jumps over the lazy dog.
+the the The quick quick brown BROWN fox
+Running runs ran easily; the ponies' caresses were relational, conditional and generalizations of happiness.
+O'Neil's friend's dogs' toys -- John's and JAMES'S books aren't theirs.
+Wi-Fi PowerShot500 SD-500 foo_bar 42nd 1st-place AT&T e-mail j2se iPhone XMLHttpRequest ABCdef
+U.S.A. I.B.M. e.g. Dr. Smith's 3.14 1,000,000 0x1F 2026-10-06 12:30 -42 +7 1.5e10
+Crème brûlée à la café — naïve façade, Ærøskøbing, Straße, Ĳsselmeer, ﬁnancial ﬂow, Œuvre, Ångström
+l'avion d'Air France qu'il a pris jusqu'à l'aéroport n'était pas L'Hôtel
+Die Bundesrepublik Deutschland ist ein Bundesstaat in Mitteleuropa; Fußgängerübergänge sind häufig.
+El niño comió pequeñas manzanas; ¿Dónde está la estación? ¡Qué día!
+Съешь же ещё этих мягких французских булок, да выпей чаю. ЁЛКА ёлка
+Η γρήγορη καφέ αλεπού πηδάει πάνω από τον τεμπέλη σκύλο. ΟΔΟΣ Σίσυφος
+Türkçe İstanbul ılık ISPARTA; Ünlü şarkıcı Çağrı
+Svenska: åka på sjön, Norsk: blåbærsyltetøy, Dansk: rødgrød med fløde, Íslenska: þú ðú
+العربية لغة جميلة، والكتابُ مفيدٌ ٠١٢٣٤٥٦٧٨٩
+עברית היא שפה שמית; ספר "תורה"
+فارسی زبان زیبایی است و می‌خواهم کتاب‌ها را بخوانم ۱۲۳
+हिन्दी भाषा बहुत सुंदर है। संख्या १२३
+বাংলা ভাষা সুন্দর ১২৩
+ภาษาไทยไม่มีช่องว่างระหว่างคำ แต่มีช่องว่างระหว่างประโยค ๑๒๓
+中华人民共和国成立于1949年。我爱北京天安门！
+日本語のテキストとカタカナとｶﾀｶﾅとひらがな、ＡＢＣ１２３と全角
+한국어 텍스트입니다 서울특별시 ＫＯＲＥＡ
+Emoji: 👍 🇺🇸 👨‍👩‍👧 ✌🏽 😀😀 ❤️ 1️⃣ and 𝐀𝐁𝐂 math plus 𠀀𠀁 rare ideographs
+Visit https://lucene.apache.org/core/ or mail dev@lucene.apache.org today!
+See www.example.com/path?q=1&x=y#frag and http://[::1]:8080/a, user.name+tag@sub.example.co.uk, 192.168.0.1
+mailto:someone@example.org ftp://files.example.net/pub/file.tar.gz example.com.
+<p>Hello <b>world</b> &amp; friends &lt;tag&gt; &#169; &#x263A; &nbsp;x&eacute;</p><!-- a comment --><br/>
+<script type="text/javascript">var x = 1 < 2;</script><a href="http://x.org/">a link</a> <style>p{}</style>after
+<div class='c'>&quot;quoted&quot; &apos;single&apos; &unknown; &#xZZ; <![CDATA[ raw <data> ]]> tail</div>
+/usr/local/bin/lucene /var/log//syslog.1 relative/path/to/file.txt
+C:\Program Files\Lucene\index a\b\c
+the|1.5 quick|2 brown|0.5 fox jumps|3
+apple|3 banana|1 cherry pear|10
+quick|0.5 fox|2.0 dog|-1.25
+token1|payload one|two|three
+	Tabs	and   multiple   spaces and NBSP here and ideographic　space and line sep and zero​width soft­hyphen
+ab
+A
+supercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocious end
+x y z xy xyz a-b-c a.b.c a_b_c a/b/c a:b:c
+foo-bar-baz FooBarBaz FOObar fooBAR foo2bar 2foo bar2 ...ellipsis... --dashes--
+The CEO's 1990s-era IBM-compatible PCs ran MS-DOS 6.22; the 5th gen. Core i7-4790K CPU @ 4.00GHz
+running jumping happily happiness conditional relational sensibility agreed feed bled sing
+  leading and trailing spaces   
+
+ÀÁÂÃÄÅ àáâãäå ÇçÈÉÊË èéêë ÌÍÎÏ ìíîï ÑñÒÓÔÕÖ òóôõö ÙÚÛÜ ùúûü Ýýÿ ŠšŽž Łł Ðð Þþ ß ŒœÆæØø
+“Smart quotes” ‘single’ «guillemets» ‹single› „low“ ‐‑‒–—― … ‰ € £ ¥ © ® ™ ½ ¼ ² ³ ¹
+abilities agreed activism capable cried dependence emergency fabricate frequency generalization government happiness hesitancy hoped hopping horrible ironic jumped nationalize organization ponies rationality realize relational sensitivity stopped traditionally walking dried studies classes buses heroes axes
+ーﾟ ヽﾟ ｰﾟ ヽﾞ ｳﾞ ﾊﾟ
+ends with a next line
+ends with a line separator 
+The Café crossing ΣΊΣΥΦΟΣ straße STRASSE K kelvin K, 12 and the end: 😀x 𝐀

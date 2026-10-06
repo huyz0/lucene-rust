@@ -133,7 +133,7 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   position across a width-changing edit (Yiddish), or sorts a backward
   `among` table (Arabic, by its last byte); the script turns the backend's
   literals into UTF-16 arrays, re-sorts every table into UTF-16 order and
-  checks each against Lucene's. `GenSnowball.java` stems 82,571 synthetic
+  checks each against Lucene's. `GenSnowball.java` stems 84,933 synthetic
   words (built from each stemmer's own `Among` tables and grown by a traced
   stemmer for new decisions -- no Snowball vocabulary is redistributed)
   through Lucene's `SnowballFilter`: every stem equal. Bench `--bench

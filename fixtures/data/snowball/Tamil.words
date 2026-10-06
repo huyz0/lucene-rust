@@ -1532,6 +1532,7 @@ conditional
 core
 cpu
 cried
+crossing
 crème
 d'air
 dansk
@@ -1558,6 +1559,7 @@ ellipsis
 emergency
 emoji
 end
+ends
 era
 estación
 está
@@ -1623,6 +1625,8 @@ jumped
 jumping
 jumps
 jusqu'à
+k
+kelvin
 l'avion
 l'aéroport
 l'hôtel
@@ -1651,6 +1655,7 @@ nationalize
 naïve
 nbsp
 net
+next
 niño
 norsk
 o'neil's
@@ -1700,6 +1705,7 @@ see
 sensibility
 sensitivity
 sep
+separator
 sind
 sing
 single
@@ -1712,6 +1718,7 @@ someone
 space
 spaces
 stopped
+strasse
 straße
 studies
 style
@@ -1749,6 +1756,7 @@ walking
 were
 wi
 width
+with
 world
 www
 x
@@ -1848,6 +1856,9 @@ zero
 ภาษาไทยไม่มีช่องว่างระหว่างคำ
 แต่มีช่องว่างระหว่างประโยค
 ๑๒๓
+ーﾟ
+ヽﾞ
+ヽﾟ
 中华人民共和国成立于1949年
 我爱北京天安门
 日本語のテキストとカタカナとｶﾀｶﾅとひらがな
@@ -1859,6 +1870,9 @@ zero
 ️
 ａｂｃ１２３と全角
 ｋｏｒｅａ
+ｰﾟ
+ｳﾞ
+ﾊﾟ
 ொ
 ஂ
 ஃ
