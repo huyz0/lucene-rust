@@ -4,6 +4,7 @@
 pub mod char_tokenizer;
 mod elision_filter;
 pub mod java_regex;
+pub mod jflex;
 pub mod rolling_buffer;
 
 pub use char_tokenizer::{

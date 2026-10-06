@@ -54,13 +54,7 @@ fn corpus() -> Vec<String> {
 }
 
 /// The chains the generator writes that the port does not build yet.
-const PENDING: &[&str] = &[
-    "html_strip_standard",
-    "html_strip_keyword",
-    "html_strip_escaped_b",
-    "uax29_url_email_analyzer",
-    "uax29_url_email_tokenizer",
-];
+const PENDING: &[&str] = &[];
 
 // ---------------------------------------------------------------- chains
 
@@ -128,11 +122,14 @@ fn english() -> Arc<CharArraySet> {
 fn build(name: &str) -> Option<Analyzer> {
     use core_analysis::*;
     use lucene_analysis::boost::DelimitedBoostTokenFilter;
-    use lucene_analysis::charfilter::{MappingCharFilter, NormalizeCharMapBuilder};
+    use lucene_analysis::charfilter::{
+        HTMLStripCharFilter, MappingCharFilter, NormalizeCharMapBuilder,
+    };
     use lucene_analysis::cjk::{
         self, CJKAnalyzer, CJKBigramFilter, CJKWidthCharFilter, CJKWidthFilter,
     };
     use lucene_analysis::commongrams::{CommonGramsFilter, CommonGramsQueryFilter};
+    use lucene_analysis::email::{UAX29URLEmailAnalyzer, UAX29URLEmailTokenizer};
     use lucene_analysis::en::*;
     use lucene_analysis::minhash::MinHashFilter;
     use lucene_analysis::miscellaneous::{self as m, *};
@@ -666,6 +663,20 @@ fn build(name: &str) -> Option<Analyzer> {
                 StandardTokenizer::new(),
             )))
         }),
+        "html_strip_standard" => chain_cf(
+            |r| Box::new(HTMLStripCharFilter::new(r)),
+            || comps(StandardTokenizer::new()),
+        ),
+        "html_strip_keyword" => chain_cf(
+            |r| Box::new(HTMLStripCharFilter::new(r)),
+            || comps(KeywordTokenizer::new()),
+        ),
+        "html_strip_escaped_b" => chain_cf(
+            |r| Box::new(HTMLStripCharFilter::with_escaped_tags(r, ["b"])),
+            || comps(WhitespaceTokenizer::new()),
+        ),
+        "uax29_url_email_analyzer" => Analyzer::new(UAX29URLEmailAnalyzer::default()),
+        "uax29_url_email_tokenizer" => chain(|| comps(UAX29URLEmailTokenizer::new())),
         "std_kstem" => chain(|| {
             comps(KStemFilter::new(LowerCaseFilter::new(
                 StandardTokenizer::new(),
@@ -852,7 +863,7 @@ fn chains_match_lucene_token_for_token() {
         assert_eq!(actual.len(), expected.len(), "{name}: row count");
         checked += 1;
     }
-    assert!(checked >= 99, "only {checked} chains checked");
+    assert!(checked >= 104, "only {checked} chains checked");
 }
 
 #[test]
@@ -861,4 +872,66 @@ fn normalising_reads_only_lone_surrogate_escapes() {
     assert_eq!(normalise_expected("a\\u0001b"), "a\\u0001b");
     assert_eq!(normalise_expected("a\\\\uD83D"), "a\\\\uD83D");
     assert_eq!(normalise_expected("\\u"), "\\u");
+}
+
+/// `stems.words`: KStem and Porter over the generator's stem x suffix
+/// words, one keyword token each.
+#[test]
+fn kstem_and_porter_match_lucene_word_for_word() {
+    use lucene_analysis::en::{KStemFilter, PorterStemFilter};
+    let text = std::fs::read_to_string(format!("{}stems.words", dir())).unwrap();
+    let kstem = chain(|| comps(KStemFilter::new(KeywordTokenizer::new())));
+    let porter = chain(|| comps(PorterStemFilter::new(KeywordTokenizer::new())));
+    let single = |a: &Analyzer, w: &str| a.analyze(w).pop().map(|t| t.term).unwrap_or_default();
+    let mut n = 0;
+    for line in text.lines() {
+        let f: Vec<&str> = line.split('\t').collect();
+        assert_eq!(single(&kstem, f[0]), f[1], "kstem({})", f[0]);
+        assert_eq!(single(&porter, f[0]), f[2], "porter({})", f[0]);
+        n += 1;
+    }
+    assert!(n > 9000, "{n} words");
+}
+
+/// `urls.words`: `UAX29URLEmailTokenizer` over 3,000 random joins of URL-
+/// and email-shaped fragments.
+#[test]
+fn uax29_url_email_matches_lucene_on_fragments() {
+    use lucene_analysis::email::UAX29URLEmailTokenizer;
+    use lucene_analysis::reader::StrReader;
+    use lucene_analysis::token_stream::{consume, Tokenizer};
+    let text = std::fs::read_to_string(format!("{}urls.words", dir())).unwrap();
+    let unesc = |s: &str| {
+        s.replace("\\t", "\t")
+            .replace("\\\"", "\"")
+            .replace("\\\\", "\\")
+    };
+    let mut t = UAX29URLEmailTokenizer::new();
+    let mut n = 0;
+    for line in text.lines() {
+        let (input, expected) = line.split_once('\t').unwrap();
+        let input = unesc(input);
+        t.set_reader(Box::new(StrReader::new(input.as_str())))
+            .unwrap();
+        let mut got = String::new();
+        let end = consume(&mut t, |a| {
+            got.push_str(&format!(
+                "{} {} {} {} {}|",
+                esc(a.term()),
+                a.token_type(),
+                a.start_offset(),
+                a.end_offset(),
+                a.position_increment()
+            ))
+        })
+        .unwrap();
+        got.push_str(&format!(
+            "{} {}",
+            end.end_offset(),
+            end.position_increment()
+        ));
+        assert_eq!(got, expected, "{input:?}");
+        n += 1;
+    }
+    assert_eq!(n, 3000);
 }

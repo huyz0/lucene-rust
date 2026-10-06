@@ -389,12 +389,60 @@ public class GenAnalysisCommon {
     return b.toString();
   }
 
+  /** The one token a keyword chain makes of {@code text}. */
+  static String single(Analyzer a, String text) throws Exception {
+    try (TokenStream ts = a.tokenStream("f", text)) {
+      CharTermAttribute term = ts.addAttribute(CharTermAttribute.class);
+      ts.reset();
+      ts.incrementToken();
+      String s = term.toString();
+      ts.end();
+      return s;
+    }
+  }
+
   static String hex(BytesRef b) {
     if (b == null) return "-";
     StringBuilder s = new StringBuilder();
     for (int i = 0; i < b.length; i++) s.append(String.format("%02x", b.bytes[b.offset + i] & 0xff));
     return s.toString();
   }
+
+  /** Stems crossed with suffixes: every branch of KStem's (and Porter's) ending rules. */
+  static final String[] STEM_BASES = {
+    "abandon", "able", "accept", "act", "adapt", "admire", "agree", "allow", "analyze", "apply",
+    "argue", "art", "attend", "automate", "bake", "beauty", "begin", "believe", "break", "build",
+    "busy", "care", "carry", "cat", "celebrate", "certain", "chance", "child", "civil", "class",
+    "clean", "commune", "compete", "complete", "compute", "condition", "connect", "consider",
+    "control", "cook", "count", "create", "critic", "cry", "dance", "decide", "define", "deliver",
+    "depend", "describe", "design", "develop", "die", "differ", "direct", "dog", "dream", "dry",
+    "economy", "educate", "elect", "emerge", "employ", "energy", "enjoy", "equal", "excite",
+    "exist", "expect", "fail", "family", "fly", "form", "frequent", "friend", "general", "give",
+    "globe", "govern", "happy", "harm", "help", "hero", "history", "hope", "hop", "idea",
+    "identify", "imagine", "improve", "industry", "inform", "invent", "ironic", "judge", "kind",
+    "know", "lady", "lazy", "legal", "lie", "light", "logic", "love", "magic", "manage", "market",
+    "mass", "material", "medic", "member", "mobile", "modern", "move", "nation", "nature", "need",
+    "normal", "notice", "obey", "observe", "occur", "office", "operate", "organ", "organize",
+    "paint", "person", "physic", "plan", "play", "please", "poet", "polite", "pony", "possible",
+    "power", "practice", "prefer", "produce", "profess", "public", "quick", "radio", "rare",
+    "rational", "real", "receive", "refer", "relate", "rely", "rest", "rot", "run", "sad", "safe",
+    "sense", "sensible", "serve", "simple", "sing", "social", "special", "stop", "study",
+    "succeed", "sun", "swim", "system", "teach", "tender", "terror", "tradition", "true", "try",
+    "use", "value", "vary", "visit", "walk", "weak", "wonder", "write", "zeal", "access",
+    "acquire", "admit", "bed", "bubble", "commit", "consist", "curricul", "dig", "drum", "fancy",
+    "fit", "gamble", "infant", "medium", "museum", "music", "nuance", "permit", "red", "remedy",
+    "rhythm", "satisfy", "speed", "stun", "tan", "terrible", "unfold", "unhook", "unload",
+    "unseat", "usual", "vision"
+  };
+
+  static final String[] STEM_SUFFIXES = {
+    "", "s", "es", "ies", "'s", "ed", "ied", "d", "ing", "ning", "ting", "ity", "ality", "ivity",
+    "ility", "ness", "iness", "ion", "ation", "ication", "ization", "ition", "er", "ier", "or",
+    "izer", "ly", "ily", "ally", "ably", "al", "ial", "ical", "ive", "ative", "ize", "ise", "ment",
+    "able", "ible", "ism", "ic", "ancy", "ency", "ance", "ence", "ous", "ful", "less", "ned",
+    "ted", "ble", "nce", "ncy", "ically", "fully", "edness", "um", "ium", "ize", "izing", "izer", "ped", "ging", "ming", "ning", "ping",
+    "red", "ring", "bed", "ged", "med"
+  };
 
   public static void main(String[] args) throws Exception {
     Path out = Path.of(args[0]).resolve("analysis_common");
@@ -404,6 +452,65 @@ public class GenAnalysisCommon {
     // Split on '\n' only: the corpus holds U+2028 and U+0085 inside lines.
     List<String> lines = new ArrayList<>(Arrays.asList(corpus.split("\n", -1)));
     if (!lines.isEmpty() && lines.get(lines.size() - 1).isEmpty()) lines.remove(lines.size() - 1);
+
+    // KStem and Porter over the stem x suffix words: "word\tkstem\tporter".
+    StringBuilder stems = new StringBuilder();
+    try (Analyzer k = chain(KeywordTokenizer::new, t -> new KStemFilter(t));
+        Analyzer p = chain(KeywordTokenizer::new, t -> new PorterStemFilter(t))) {
+      // The listed bases, then every 80th KStem head word (read from the
+      // package-private KStemData classes by reflection).
+      List<String> bases = new ArrayList<>(Arrays.asList(STEM_BASES));
+      int n = 0;
+      for (int i = 1; i <= 8; i++) {
+        java.lang.reflect.Field f =
+            Class.forName("org.apache.lucene.analysis.en.KStemData" + i).getDeclaredField("data");
+        f.setAccessible(true);
+        for (String w : (String[]) f.get(null)) {
+          if (n++ % 80 == 0) bases.add(w);
+        }
+      }
+      for (String base : bases) {
+        for (String suffix : STEM_SUFFIXES) {
+          String w = base + suffix;
+          stems.append(w).append('\t').append(single(k, w)).append('\t').append(single(p, w)).append('\n');
+        }
+      }
+    }
+    Files.writeString(out.resolve("stems.words"), stems.toString(), StandardCharsets.UTF_8);
+
+    // UAX29URLEmailTokenizer over URL/email-shaped fragments joined at random
+    // (fixed seed): "text\tterm type start end posInc|...|endOffset posInc".
+    String[] frags = {
+      "http://", "https://", "HTTP://", "www.", "x", "example", ".com", ".co.uk", ".", "/", ":", "@",
+      "-", "_", "1", "42", "é", "😀", "中", "[", "]", "%20", "?q=1", "#f", "mailto:", "ftp://",
+      "file:///", "localhost", ":8080", "a.b", "user", "+tag", "'", "\"", "<", ">", "(", ")", ",",
+      " ", "  ", "xn--p1ai", "192.168.0.1", "::1", "&", "=", ";", "!", "~", "*", "$"
+    };
+    java.util.Random rnd = new java.util.Random(42);
+    StringBuilder urls = new StringBuilder();
+    org.apache.lucene.analysis.email.UAX29URLEmailTokenizer ut =
+        new org.apache.lucene.analysis.email.UAX29URLEmailTokenizer();
+    CharTermAttribute uTerm = ut.addAttribute(CharTermAttribute.class);
+    OffsetAttribute uOff = ut.addAttribute(OffsetAttribute.class);
+    TypeAttribute uType = ut.addAttribute(TypeAttribute.class);
+    PositionIncrementAttribute uInc = ut.addAttribute(PositionIncrementAttribute.class);
+    for (int i = 0; i < 3000; i++) {
+      StringBuilder text = new StringBuilder();
+      int n = 1 + rnd.nextInt(8);
+      for (int j = 0; j < n; j++) text.append(frags[rnd.nextInt(frags.length)]);
+      ut.setReader(new java.io.StringReader(text.toString()));
+      ut.reset();
+      urls.append(esc(text.toString())).append('\t');
+      while (ut.incrementToken()) {
+        urls.append(esc(uTerm.toString())).append(' ').append(uType.type()).append(' ')
+            .append(uOff.startOffset()).append(' ').append(uOff.endOffset()).append(' ')
+            .append(uInc.getPositionIncrement()).append('|');
+      }
+      ut.end();
+      urls.append(uOff.endOffset()).append(' ').append(uInc.getPositionIncrement()).append('\n');
+      ut.close();
+    }
+    Files.writeString(out.resolve("urls.words"), urls.toString(), StandardCharsets.UTF_8);
 
     for (Map.Entry<String, Supplier<Analyzer>> e : chains().entrySet()) {
       StringBuilder m = new StringBuilder();
