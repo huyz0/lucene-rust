@@ -222,6 +222,7 @@ pub(crate) struct TermSpans<'a> {
 }
 
 impl<'a> TermSpans<'a> {
+    #[inline]
     fn reset(&mut self) {
         if self.doc != NO_MORE_DOCS {
             self.freq = i32::try_from(self.postings.freq_at(self.doc)).unwrap_or(i32::MAX);
@@ -260,14 +261,17 @@ impl<'a> TermSpans<'a> {
 }
 
 impl Spans for TermSpans<'_> {
+    #[inline]
     fn doc_id(&self) -> i32 {
         self.doc
     }
+    #[inline]
     fn next_doc(&mut self) -> Result<i32> {
         self.doc = self.postings.next_doc(self.doc)?;
         self.reset();
         Ok(self.doc)
     }
+    #[inline]
     fn advance(&mut self, target: i32) -> Result<i32> {
         self.doc = self.postings.advance(target)?;
         self.reset();
@@ -285,6 +289,7 @@ impl Spans for TermSpans<'_> {
     fn two_phase(&self) -> bool {
         false
     }
+    #[inline]
     fn next_start_position(&mut self) -> Result<i32> {
         if self.count == self.freq {
             self.position = NO_MORE_POSITIONS;
@@ -318,12 +323,14 @@ impl Spans for TermSpans<'_> {
         self.count += 1;
         Ok(self.position)
     }
+    #[inline]
     fn start_position(&self) -> i32 {
         self.position
     }
     // SENTINEL: `-1` = "before the document's first span", `Spans`' own
     // contract (`startPosition`/`endPosition` before `nextStartPosition`);
     // callers compare it as a position, below every real one, as Java's do.
+    #[inline]
     fn end_position(&self) -> i32 {
         if self.position == -1 {
             -1
