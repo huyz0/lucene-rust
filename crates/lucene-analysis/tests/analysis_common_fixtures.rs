@@ -55,42 +55,7 @@ fn corpus() -> Vec<String> {
 
 /// The chains the generator writes that the port does not build yet.
 const PENDING: &[&str] = &[
-    "ws_wdgf_flatten",
-    "std_ascii_folding",
-    "ws_ascii_folding_preserve",
-    "ws_wdgf_default",
-    "ws_wdgf_catenate",
-    "ws_wdgf_offsets_off",
-    "std_length_2_5",
-    "std_codepoint_count_1_3",
-    "keyword_trim",
-    "std_truncate_4",
-    "std_truncate_cp_2",
-    "std_limit_count_3",
-    "std_limit_count_3_all",
-    "std_limit_offset_20",
-    "std_limit_position_4",
-    "ws_keyword_marker_porter",
-    "ws_pattern_keyword_porter",
-    "ws_keyword_repeat_porter_dedup",
-    "ws_stemmer_override_porter",
-    "std_elision",
-    "ws_capitalization",
-    "ws_capitalization_custom",
-    "ws_remove_duplicates",
-    "std_fingerprint",
-    "std_fingerprint_small",
     "std_concatenate_graph",
-    "ws_delimited_term_frequency",
-    "ws_protected_term",
-    "ws_conditional_lower",
-    "ws_keep_word",
-    "ws_hyphenated_words",
-    "std_type_as_synonym",
-    "ws_scandinavian_folding",
-    "ws_scandinavian_normalization",
-    "std_fix_broken_offsets",
-    "std_drop_if_flagged",
     "ngram_tokenizer_1_2",
     "ngram_tokenizer_2_3",
     "edge_ngram_tokenizer_1_3",
@@ -137,11 +102,7 @@ const PENDING: &[&str] = &[
     "ws_minhash_no_rotation",
     "uax29_url_email_analyzer",
     "uax29_url_email_tokenizer",
-    "english_analyzer",
-    "std_english_possessive",
-    "std_porter",
     "std_kstem",
-    "std_english_minimal",
 ];
 
 // ---------------------------------------------------------------- chains
@@ -180,6 +141,17 @@ fn comps(sink: impl TokenStream + 'static) -> Sink {
     Ok(TokenStreamComponents::new(sink))
 }
 
+fn set(ignore_case: bool, words: &[&str]) -> Arc<CharArraySet> {
+    Arc::new(CharArraySet::from_words(words, ignore_case))
+}
+
+/// The generator's `WDGF_DEFAULT`.
+const WDGF_DEFAULT: i32 = lucene_analysis::miscellaneous::GENERATE_WORD_PARTS
+    | lucene_analysis::miscellaneous::GENERATE_NUMBER_PARTS
+    | lucene_analysis::miscellaneous::SPLIT_ON_CASE_CHANGE
+    | lucene_analysis::miscellaneous::SPLIT_ON_NUMERICS
+    | lucene_analysis::miscellaneous::STEM_ENGLISH_POSSESSIVE;
+
 fn english() -> Arc<CharArraySet> {
     Arc::new(CharArraySet::from_words(ENGLISH_STOP_WORDS, false))
 }
@@ -187,6 +159,9 @@ fn english() -> Arc<CharArraySet> {
 /// The Rust twin of each generator chain, `None` while it is pending.
 fn build(name: &str) -> Option<Analyzer> {
     use core_analysis::*;
+    use lucene_analysis::en::*;
+    use lucene_analysis::miscellaneous::{self as m, *};
+    use lucene_analysis::util::{ElisionFilter, JavaPattern};
     Some(match name {
         // ---- core
         "standard_analyzer" => Analyzer::new(StandardAnalyzer::default()),
@@ -222,6 +197,237 @@ fn build(name: &str) -> Option<Analyzer> {
             ))
         }),
         "keyword_tokenizer" => chain(|| comps(KeywordTokenizer::new())),
+
+        // ---- miscellaneous
+        "ws_wdgf_flatten" => chain(|| {
+            comps(FlattenGraphFilter::new(WordDelimiterGraphFilter::new(
+                WhitespaceTokenizer::new(),
+                WDGF_DEFAULT | m::CATENATE_ALL | m::PRESERVE_ORIGINAL,
+                None,
+            )?))
+        }),
+        "std_ascii_folding" => chain(|| {
+            comps(AsciiFoldingTokenFilter::new(
+                StandardTokenizer::new(),
+                false,
+            ))
+        }),
+        "ws_ascii_folding_preserve" => chain(|| {
+            comps(AsciiFoldingTokenFilter::new(
+                WhitespaceTokenizer::new(),
+                true,
+            ))
+        }),
+        "ws_wdgf_default" => chain(|| {
+            comps(WordDelimiterGraphFilter::new(
+                WhitespaceTokenizer::new(),
+                WDGF_DEFAULT,
+                None,
+            )?)
+        }),
+        "ws_wdgf_catenate" => chain(|| {
+            comps(WordDelimiterGraphFilter::new(
+                WhitespaceTokenizer::new(),
+                WDGF_DEFAULT
+                    | m::CATENATE_WORDS
+                    | m::CATENATE_NUMBERS
+                    | m::CATENATE_ALL
+                    | m::PRESERVE_ORIGINAL,
+                Some(set(false, &["AT&T", "j2se"])),
+            )?)
+        }),
+        "ws_wdgf_offsets_off" => chain(|| {
+            let table: Arc<[u8]> = Arc::from(&m::DEFAULT_WORD_DELIM_TABLE[..]);
+            comps(WordDelimiterGraphFilter::with_table(
+                WhitespaceTokenizer::new(),
+                false,
+                table,
+                m::GENERATE_WORD_PARTS | m::CATENATE_WORDS,
+                None,
+            )?)
+        }),
+        "std_length_2_5" => chain(|| comps(LengthFilter::new(StandardTokenizer::new(), 2, 5)?)),
+        "std_codepoint_count_1_3" => {
+            chain(|| comps(CodepointCountFilter::new(StandardTokenizer::new(), 1, 3)?))
+        }
+        "keyword_trim" => chain(|| comps(TrimFilter::new(KeywordTokenizer::new()))),
+        "std_truncate_4" => chain(|| {
+            comps(TruncateTokenFilter::truncate_after_chars(
+                StandardTokenizer::new(),
+                4,
+            )?)
+        }),
+        "std_truncate_cp_2" => chain(|| {
+            comps(TruncateTokenFilter::truncate_after_code_points(
+                StandardTokenizer::new(),
+                2,
+            )?)
+        }),
+        "std_limit_count_3" => chain(|| {
+            comps(LimitTokenCountFilter::new(
+                StandardTokenizer::new(),
+                3,
+                false,
+            )?)
+        }),
+        "std_limit_count_3_all" => chain(|| {
+            comps(LimitTokenCountFilter::new(
+                StandardTokenizer::new(),
+                3,
+                true,
+            )?)
+        }),
+        "std_limit_offset_20" => chain(|| {
+            comps(LimitTokenOffsetFilter::new(
+                StandardTokenizer::new(),
+                20,
+                false,
+            )?)
+        }),
+        "std_limit_position_4" => chain(|| {
+            comps(LimitTokenPositionFilter::new(
+                StandardTokenizer::new(),
+                4,
+                false,
+            )?)
+        }),
+        "ws_keyword_marker_porter" => chain(|| {
+            comps(PorterStemFilter::new(SetKeywordMarkerFilter::new(
+                LowerCaseFilter::new(WhitespaceTokenizer::new()),
+                set(false, &["running", "happiness"]),
+            )))
+        }),
+        "ws_pattern_keyword_porter" => chain(|| {
+            comps(PorterStemFilter::new(
+                PatternKeywordMarkerFilter::with_pattern(
+                    LowerCaseFilter::new(WhitespaceTokenizer::new()),
+                    JavaPattern::compile("[a-z]+ing")?,
+                ),
+            ))
+        }),
+        "ws_keyword_repeat_porter_dedup" => chain(|| {
+            comps(RemoveDuplicatesTokenFilter::new(PorterStemFilter::new(
+                KeywordRepeatFilter::new(LowerCaseFilter::new(WhitespaceTokenizer::new())),
+            )))
+        }),
+        "ws_stemmer_override_porter" => chain(|| {
+            let mut b = StemmerOverrideBuilder::new(true);
+            b.add("running", "run!");
+            b.add("Happiness", "joy");
+            b.add("dogs", "dog");
+            comps(PorterStemFilter::new(StemmerOverrideFilter::new(
+                WhitespaceTokenizer::new(),
+                b.build(),
+            )))
+        }),
+        "std_elision" => chain(|| {
+            comps(ElisionFilter::new(
+                StandardTokenizer::new(),
+                set(
+                    true,
+                    &[
+                        "l", "m", "t", "qu", "n", "s", "j", "d", "c", "jusqu", "quoiqu", "lorsqu",
+                        "puisqu",
+                    ],
+                ),
+            ))
+        }),
+        "ws_capitalization" => {
+            chain(|| comps(CapitalizationFilter::new(WhitespaceTokenizer::new())))
+        }
+        "ws_capitalization_custom" => chain(|| {
+            comps(CapitalizationFilter::with_options(
+                WhitespaceTokenizer::new(),
+                false,
+                Some(set(true, &["the", "and"])),
+                true,
+                Some(vec!["mc".to_string()]),
+                2,
+                4,
+                6,
+            )?)
+        }),
+        "ws_remove_duplicates" => chain(|| {
+            comps(RemoveDuplicatesTokenFilter::new(LowerCaseFilter::new(
+                WhitespaceTokenizer::new(),
+            )))
+        }),
+        "std_fingerprint" => chain(|| {
+            comps(FingerprintFilter::new(
+                LowerCaseFilter::new(StandardTokenizer::new()),
+                1024,
+                ' ',
+            ))
+        }),
+        "std_fingerprint_small" => {
+            chain(|| comps(FingerprintFilter::new(StandardTokenizer::new(), 20, '_')))
+        }
+        "ws_delimited_term_frequency" => chain(|| {
+            comps(DelimitedTermFrequencyTokenFilter::new(
+                WhitespaceTokenizer::new(),
+            ))
+        }),
+        "ws_protected_term" => chain(|| {
+            comps(protected_term_filter(
+                set(false, &["BROWN", "The"]),
+                WhitespaceTokenizer::new(),
+                LowerCaseFilter::new,
+            ))
+        }),
+        "ws_conditional_lower" => chain(|| {
+            comps(ConditionalTokenFilter::new(
+                WhitespaceTokenizer::new(),
+                |a: &AttributeSource| a.term_utf16_len() > 3,
+                LowerCaseFilter::new,
+            ))
+        }),
+        "ws_keep_word" => chain(|| {
+            comps(KeepWordFilter::new(
+                WhitespaceTokenizer::new(),
+                set(true, &["the", "fox", "dog", "quick"]),
+            ))
+        }),
+        "ws_hyphenated_words" => {
+            chain(|| comps(HyphenatedWordsFilter::new(WhitespaceTokenizer::new())))
+        }
+        "std_type_as_synonym" => chain(|| {
+            comps(TypeAsSynonymFilter::new(
+                StandardTokenizer::new(),
+                Some("_type_"),
+                None,
+                !0,
+            ))
+        }),
+        "ws_scandinavian_folding" => {
+            chain(|| comps(ScandinavianFoldingFilter::new(WhitespaceTokenizer::new())))
+        }
+        "ws_scandinavian_normalization" => chain(|| {
+            comps(ScandinavianNormalizationFilter::new(
+                WhitespaceTokenizer::new(),
+            ))
+        }),
+        "std_fix_broken_offsets" => {
+            chain(|| comps(FixBrokenOffsetsFilter::new(StandardTokenizer::new())))
+        }
+        "std_drop_if_flagged" => {
+            chain(|| comps(DropIfFlaggedFilter::new(StandardTokenizer::new(), 1)))
+        }
+
+        // ---- en
+        "english_analyzer" => Analyzer::new(EnglishAnalyzer::default()),
+        "std_english_possessive" => {
+            chain(|| comps(EnglishPossessiveFilter::new(StandardTokenizer::new())))
+        }
+        "std_porter" => chain(|| {
+            comps(PorterStemFilter::new(LowerCaseFilter::new(
+                StandardTokenizer::new(),
+            )))
+        }),
+        "std_english_minimal" => chain(|| {
+            comps(EnglishMinimalStemFilter::new(LowerCaseFilter::new(
+                StandardTokenizer::new(),
+            )))
+        }),
         _ => return None,
     })
 }

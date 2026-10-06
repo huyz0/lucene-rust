@@ -84,13 +84,14 @@ a dependency the shipped library links is not under a licence listed here.
   - `native/<platform>/liblucene_ffi.so`.
 - **No third-party jar is bundled:** OpenSearch and Lucene are `compileOnly`,
   supplied by the node at run time (both Apache-2.0).
-- **The native library** statically links the workspace and these 21 crates
+- **The native library** statically links the workspace and these 26 crates
   (the resolved graph of normal and build dependencies at the time of the
   audit; `scripts/check-licences.py --all` prints the current one):
 
 | Crate | Version | Licence (declared) | Taken as |
 |---|---|---|---|
 | adler2 | 2.0.1 | 0BSD OR MIT OR Apache-2.0 | 0BSD |
+| aho-corasick | 1.1.5 | Unlicense OR MIT | Unlicense (via `regex`, M11) |
 | cfg-if | 1.0.5 | MIT OR Apache-2.0 | MIT |
 | crc32fast | 1.5.2 | MIT OR Apache-2.0 | MIT |
 | crossbeam-deque | 0.8.8 | MIT OR Apache-2.0 | MIT |
@@ -99,12 +100,16 @@ a dependency the shipped library links is not under a licence listed here.
 | either | 1.18.0 | MIT OR Apache-2.0 | MIT |
 | libc | 0.2.189 | MIT OR Apache-2.0 | MIT |
 | lz4_flex | 0.11.6 | MIT | MIT |
+| memchr | 2.8.3 | Unlicense OR MIT | Unlicense (via `regex`, M11) |
 | memmap2 | 0.9.11 | MIT OR Apache-2.0 | MIT |
 | miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 | MIT |
 | proc-macro2 | 1.0.107 | MIT OR Apache-2.0 | MIT (build time only) |
 | quote | 1.0.47 | MIT OR Apache-2.0 | MIT (build time only) |
 | rayon | 1.12.0 | MIT OR Apache-2.0 | MIT |
 | rayon-core | 1.13.0 | MIT OR Apache-2.0 | MIT |
+| regex | 1.13.1 | MIT OR Apache-2.0 | MIT (M11: `java.util.regex` for analysis-common's `pattern` package) |
+| regex-automata | 0.4.18 | MIT OR Apache-2.0 | MIT |
+| regex-syntax | 0.8.11 | MIT OR Apache-2.0 | MIT |
 | syn | 2.0.119 | MIT OR Apache-2.0 | MIT (build time only) |
 | thiserror | 1.0.69 | MIT OR Apache-2.0 | MIT |
 | thiserror-impl | 1.0.69 | MIT OR Apache-2.0 | MIT (build time only) |
@@ -120,7 +125,7 @@ The list M6's work order named has drifted since it was written:
 
 ## Tests, benchmarks and tooling
 
-- **Test and benchmark dependencies:** 81 more crates (102 in all). They never
+- **Test and benchmark dependencies:** 76 more crates (102 in all). They never
   reach the shipped library.
   - All are permissive: MIT, Apache-2.0, BSD-2-Clause, Unlicense, Zlib.
   - Two, `r-efi` 5 and 6, offer LGPL-2.1-or-later *as one alternative* beside

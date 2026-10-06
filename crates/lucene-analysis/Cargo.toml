@@ -7,6 +7,8 @@ license.workspace = true
 [dependencies]
 lucene-util = { path = "../lucene-util" }
 thiserror.workspace = true
+# java.util.regex for the pattern package (src/util/java_regex.rs).
+regex = "1"
 
 [dev-dependencies]
 # The corpus test inflates its text out of the Lucene jars (zip entries and a
