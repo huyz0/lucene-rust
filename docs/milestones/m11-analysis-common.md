@@ -111,10 +111,12 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   are ported line for line.
 - **Benchmark** -- `scripts/bench-micro.sh --bench analysis_common`
   (`AnalysisCommonMicro.java` / `micro_analysis_common.rs`, ns per token,
-  2026-10-06, Rust/Java): ascii_folding 1.85x, cjk 1.27x, english 1.48x,
-  html_strip 1.58x, kstem 1.31x, ngram_2_3 1.08~, pattern 0.90~, shingle
-  1.03~, simple 1.08~, uax29_url_email 0.99~, wdgf 1.27x, whitespace 1.33x
-  (`~`: inside the 1.13x noise floor). The first run had seven cases under
+  2026-10-06, Rust/Java, after the M11 part 1 review fixes): ascii_folding
+  1.76x, cjk 1.14x, english 1.42x, html_strip 1.81x, kstem 1.18x, ngram_2_3
+  0.93~, pattern 0.97~, shingle 0.92~, simple 1.17x, uax29_url_email 1.03~,
+  wdgf 1.16x, whitespace 1.27x (`~`: inside the 1.14x noise floor; the
+  pre-fix build interleaved in the same run read pattern 0.90~, shingle
+  1.07~, cjk 1.15x, html_strip 1.79x). The first run had seven cases under
   1.0x; callgrind put the cost in allocation: `AttributeSource`'s derived
   `clone_from` (every `restoreState` built a new value), a `String` per
   KStem dictionary probe and per Porter step, SipHash in `CharArraySet`,
