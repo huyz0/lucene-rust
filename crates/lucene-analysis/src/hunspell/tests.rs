@@ -164,3 +164,37 @@ fn stemmer_unique_stems() {
     let long = format!("{}s", "walk".repeat(17));
     assert!(Stemmer::new(&d).stem(&long).is_empty());
 }
+
+#[test]
+fn alias_counts_do_not_size_allocations() {
+    // Java allocates `new String[count]` up front; a hostile header must not
+    // make the port allocate 2e9 slots (or abort trying).
+    let aff = b"AF 2000000000\nAF AB\nAM 2000000000\nAM po:noun\nSFX A Y 1\nSFX A 0 s .\n";
+    let d = Dictionary::new(aff, &[b"1\nwalk/1\t1\n"], false).unwrap();
+    assert!(Hunspell::new(&d).spell("walks"));
+    assert_eq!(
+        d.lookup_entries("walk").unwrap()[0].to_string(),
+        "walk/AB po:noun"
+    );
+    // An alias number inside the announced count but past the lines given:
+    // Java's slot is `null` (a `NullPointerException` later); the port
+    // reports the bad alias number.
+    assert!(matches!(
+        Dictionary::new(aff, &[b"1\nwalk/2\n"], false),
+        Err(HunspellError::IllegalArgument(_))
+    ));
+    // More lines than announced: Java's `ArrayIndexOutOfBoundsException`.
+    for aff in [&b"AF 1\nAF A\nAF B\n"[..], b"AM 1\nAM a:b\nAM c:d\n"] {
+        assert!(matches!(
+            Dictionary::new(aff, &[b"0\n"], false),
+            Err(HunspellError::IndexOutOfBounds(_))
+        ));
+    }
+    // A negative count: Java's `NegativeArraySizeException`.
+    for aff in [&b"AF -1\n"[..], b"AM -1\n"] {
+        assert!(matches!(
+            Dictionary::new(aff, &[b"0\n"], false),
+            Err(HunspellError::NegativeArraySize(_))
+        ));
+    }
+}
