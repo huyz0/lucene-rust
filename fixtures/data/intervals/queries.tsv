@@ -616,6 +616,356 @@ body	phrase(apple,extend(bank,0,2),cat)	matches 7	none
 body	phrase(apple,extend(bank,0,2),cat)	matches 17	none
 body	phrase(apple,extend(bank,0,2),cat)	matches 33	none
 body	phrase(apple,extend(bank,0,2),cat)	matches 60	none
+body	phrase(or(apple,bank),cat)	source	BLOCK(or(apple,bank),cat)	2
+body	phrase(or(apple,bank),cat)	plain	hits	8 8:3f000000,9:3f000000,21:3f000000,39:3f000000,59:3f000000,70:3f000000,80:3f000000,81:3f000000,
+body	phrase(or(apple,bank),cat)	plain	explain 0	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),cat)	plain	explain 7	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),cat)	plain	explain 17	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),cat)	plain	explain 33	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),cat)	plain	explain 60	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),cat)	pivot	hits	8 8:3e924924,9:3e924924,21:3e924924,39:3e924924,59:3e924924,70:3e924924,80:3e924924,81:3e924924,
+body	phrase(or(apple,bank),cat)	pivot	explain 0	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),cat)	pivot	explain 7	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),cat)	pivot	explain 17	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),cat)	pivot	explain 33	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),cat)	pivot	explain 60	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),cat)	sigmoid	hits	8 8:3e9d89d9,9:3e9d89d9,21:3e9d89d9,39:3e9d89d9,59:3e9d89d9,70:3e9d89d9,80:3e9d89d9,81:3e9d89d9,
+body	phrase(or(apple,bank),cat)	sigmoid	explain 0	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),cat)	sigmoid	explain 7	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),cat)	sigmoid	explain 17	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),cat)	sigmoid	explain 33	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),cat)	sigmoid	explain 60	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),cat)	boost	hits	8 8:3fc00000,9:3fc00000,21:3fc00000,39:3fc00000,59:3fc00000,70:3fc00000,80:3fc00000,81:3fc00000,
+body	phrase(or(apple,bank),cat)	boost	explain 0	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),cat)	boost	explain 7	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),cat)	boost	explain 17	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),cat)	boost	explain 33	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),cat)	boost	explain 60	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),cat)	bool	hits	8 8:3f81f1e8,81:3f592196,70:3f56c95a,9:3f000000,21:3f000000,39:3f000000,59:3f000000,80:3f000000,
+body	phrase(or(apple,bank),cat)	bool	explain 0	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(or(apple,bank),cat))\n    0.0 = no matching intervals\n
+body	phrase(or(apple,bank),cat)	bool	explain 7	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(or(apple,bank),cat))\n    0.0 = no matching intervals\n
+body	phrase(or(apple,bank),cat)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(or(apple,bank),cat))\n    0.0 = no matching intervals\n
+body	phrase(or(apple,bank),cat)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(or(apple,bank),cat))\n    0.0 = no matching intervals\n
+body	phrase(or(apple,bank),cat)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(or(apple,bank),cat))\n    0.0 = no matching intervals\n
+body	phrase(or(apple,bank),cat)	matches 0	none
+body	phrase(or(apple,bank),cat)	matches 7	none
+body	phrase(or(apple,bank),cat)	matches 8	body|5:6:25:33[5:5:25:29 6:6:30:33]
+body	phrase(or(apple,bank),cat)	matches 9	body|17:18:79:88[17:17:79:84 18:18:85:88]
+body	phrase(or(apple,bank),cat)	matches 17	none
+body	phrase(or(apple,bank),cat)	matches 21	body|8:9:35:43[8:8:35:39 9:9:40:43]
+body	phrase(or(apple,bank),cat)	matches 33	none
+body	phrase(or(apple,bank),cat)	matches 39	body|16:17:75:83[16:16:75:79 17:17:80:83]
+body	phrase(or(apple,bank),cat)	matches 59	body|2:3:8:16[2:2:8:12 3:3:13:16]
+body	phrase(or(apple,bank),cat)	matches 60	none
+body	phrase(or(apple,bank),cat)	matches 70	body|20:21:98:107[20:20:98:103 21:21:104:107]
+body	phrase(or(apple,bank),cat)	matches 80	body|2:3:9:18[2:2:9:14 3:3:15:18]
+body	phrase(or(apple,bank),cat)	matches 81	body|6:7:28:37[6:6:28:33 7:7:34:37]
+body	phrase(apple,or(bank,cat,dog))	source	BLOCK(apple,or(bank,cat,dog))	2
+body	phrase(apple,or(bank,cat,dog))	plain	hits	14 0:3f000000,3:3f000000,7:3f000000,8:3f000000,9:3f000000,12:3f000000,33:3f000000,35:3f000000,39:3f000000,55:3f000000,68:3f000000,70:3f000000,80:3f000000,81:3f000000,
+body	phrase(apple,or(bank,cat,dog))	plain	explain 0	0.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  1.0 = w, weight of this function\n  1.0 = k, pivot feature value that would give a score contribution equal to w/2\n  1.0 = S, the sloppy frequency of the interval query body:BLOCK(apple,or(bank,cat,dog))\n
+body	phrase(apple,or(bank,cat,dog))	plain	explain 7	0.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  1.0 = w, weight of this function\n  1.0 = k, pivot feature value that would give a score contribution equal to w/2\n  1.0 = S, the sloppy frequency of the interval query body:BLOCK(apple,or(bank,cat,dog))\n
+body	phrase(apple,or(bank,cat,dog))	plain	explain 17	0.0 = no matching intervals\n
+body	phrase(apple,or(bank,cat,dog))	plain	explain 33	0.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  1.0 = w, weight of this function\n  1.0 = k, pivot feature value that would give a score contribution equal to w/2\n  1.0 = S, the sloppy frequency of the interval query body:BLOCK(apple,or(bank,cat,dog))\n
+body	phrase(apple,or(bank,cat,dog))	plain	explain 60	0.0 = no matching intervals\n
+body	phrase(apple,or(bank,cat,dog))	pivot	hits	14 0:3e924924,3:3e924924,7:3e924924,8:3e924924,9:3e924924,12:3e924924,33:3e924924,35:3e924924,39:3e924924,55:3e924924,68:3e924924,70:3e924924,80:3e924924,81:3e924924,
+body	phrase(apple,or(bank,cat,dog))	pivot	explain 0	0.28571427 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  1.0 = w, weight of this function\n  2.5 = k, pivot feature value that would give a score contribution equal to w/2\n  1.0 = S, the sloppy frequency of the interval query body:BLOCK(apple,or(bank,cat,dog))\n
+body	phrase(apple,or(bank,cat,dog))	pivot	explain 7	0.28571427 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  1.0 = w, weight of this function\n  2.5 = k, pivot feature value that would give a score contribution equal to w/2\n  1.0 = S, the sloppy frequency of the interval query body:BLOCK(apple,or(bank,cat,dog))\n
+body	phrase(apple,or(bank,cat,dog))	pivot	explain 17	0.0 = no matching intervals\n
+body	phrase(apple,or(bank,cat,dog))	pivot	explain 33	0.28571427 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  1.0 = w, weight of this function\n  2.5 = k, pivot feature value that would give a score contribution equal to w/2\n  1.0 = S, the sloppy frequency of the interval query body:BLOCK(apple,or(bank,cat,dog))\n
+body	phrase(apple,or(bank,cat,dog))	pivot	explain 60	0.0 = no matching intervals\n
+body	phrase(apple,or(bank,cat,dog))	sigmoid	hits	14 0:3e9d89d9,3:3e9d89d9,7:3e9d89d9,8:3e9d89d9,9:3e9d89d9,12:3e9d89d9,33:3e9d89d9,35:3e9d89d9,39:3e9d89d9,55:3e9d89d9,68:3e9d89d9,70:3e9d89d9,80:3e9d89d9,81:3e9d89d9,
+body	phrase(apple,or(bank,cat,dog))	sigmoid	explain 0	0.30769232 = Sigmoid function on interval frequency, computed as w * S^a / (S^a + k^a) from:\n  1.0 = w, weight of this function\n  1.5 = k, pivot feature value that would give a score contribution equal to w/2\n  2.0 = a, exponent, higher values make the function grow slower before k and faster after k\n  1.0 = S, the sloppy frequency of the interval query body:BLOCK(apple,or(bank,cat,dog))\n
+body	phrase(apple,or(bank,cat,dog))	sigmoid	explain 7	0.30769232 = Sigmoid function on interval frequency, computed as w * S^a / (S^a + k^a) from:\n  1.0 = w, weight of this function\n  1.5 = k, pivot feature value that would give a score contribution equal to w/2\n  2.0 = a, exponent, higher values make the function grow slower before k and faster after k\n  1.0 = S, the sloppy frequency of the interval query body:BLOCK(apple,or(bank,cat,dog))\n
+body	phrase(apple,or(bank,cat,dog))	sigmoid	explain 17	0.0 = no matching intervals\n
+body	phrase(apple,or(bank,cat,dog))	sigmoid	explain 33	0.30769232 = Sigmoid function on interval frequency, computed as w * S^a / (S^a + k^a) from:\n  1.0 = w, weight of this function\n  1.5 = k, pivot feature value that would give a score contribution equal to w/2\n  2.0 = a, exponent, higher values make the function grow slower before k and faster after k\n  1.0 = S, the sloppy frequency of the interval query body:BLOCK(apple,or(bank,cat,dog))\n
+body	phrase(apple,or(bank,cat,dog))	sigmoid	explain 60	0.0 = no matching intervals\n
+body	phrase(apple,or(bank,cat,dog))	boost	hits	14 0:3fc00000,3:3fc00000,7:3fc00000,8:3fc00000,9:3fc00000,12:3fc00000,33:3fc00000,35:3fc00000,39:3fc00000,55:3fc00000,68:3fc00000,70:3fc00000,80:3fc00000,81:3fc00000,
+body	phrase(apple,or(bank,cat,dog))	boost	explain 0	1.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  3.0 = w, weight of this function\n  1.0 = k, pivot feature value that would give a score contribution equal to w/2\n  1.0 = S, the sloppy frequency of the interval query body:BLOCK(apple,or(bank,cat,dog))\n
+body	phrase(apple,or(bank,cat,dog))	boost	explain 7	1.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  3.0 = w, weight of this function\n  1.0 = k, pivot feature value that would give a score contribution equal to w/2\n  1.0 = S, the sloppy frequency of the interval query body:BLOCK(apple,or(bank,cat,dog))\n
+body	phrase(apple,or(bank,cat,dog))	boost	explain 17	0.0 = no matching intervals\n
+body	phrase(apple,or(bank,cat,dog))	boost	explain 33	1.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  3.0 = w, weight of this function\n  1.0 = k, pivot feature value that would give a score contribution equal to w/2\n  1.0 = S, the sloppy frequency of the interval query body:BLOCK(apple,or(bank,cat,dog))\n
+body	phrase(apple,or(bank,cat,dog))	boost	explain 60	0.0 = no matching intervals\n
+body	phrase(apple,or(bank,cat,dog))	bool	hits	14 12:3f8f92de,8:3f81f1e8,35:3f5e38ec,81:3f592196,70:3f56c95a,55:3f548fe2,0:3f000000,3:3f000000,7:3f000000,9:3f000000,33:3f000000,39:3f000000,68:3f000000,80:3f000000,
+body	phrase(apple,or(bank,cat,dog))	bool	explain 0	0.5 = sum of:\n  0.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n    1.0 = w, weight of this function\n    1.0 = k, pivot feature value that would give a score contribution equal to w/2\n    1.0 = S, the sloppy frequency of the interval query body:BLOCK(apple,or(bank,cat,dog))\n
+body	phrase(apple,or(bank,cat,dog))	bool	explain 7	0.5 = sum of:\n  0.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n    1.0 = w, weight of this function\n    1.0 = k, pivot feature value that would give a score contribution equal to w/2\n    1.0 = S, the sloppy frequency of the interval query body:BLOCK(apple,or(bank,cat,dog))\n
+body	phrase(apple,or(bank,cat,dog))	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(apple,or(bank,cat,dog)))\n    0.0 = no matching intervals\n
+body	phrase(apple,or(bank,cat,dog))	bool	explain 33	0.5 = sum of:\n  0.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n    1.0 = w, weight of this function\n    1.0 = k, pivot feature value that would give a score contribution equal to w/2\n    1.0 = S, the sloppy frequency of the interval query body:BLOCK(apple,or(bank,cat,dog))\n
+body	phrase(apple,or(bank,cat,dog))	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(apple,or(bank,cat,dog)))\n    0.0 = no matching intervals\n
+body	phrase(apple,or(bank,cat,dog))	matches 0	body|6:7:27:37[6:6:27:32 7:7:33:37]
+body	phrase(apple,or(bank,cat,dog))	matches 3	body|5:6:26:36[5:5:26:31 6:6:32:36]
+body	phrase(apple,or(bank,cat,dog))	matches 7	body|3:4:14:23[3:3:14:19 4:4:20:23]
+body	phrase(apple,or(bank,cat,dog))	matches 8	body|2:3:11:20[2:2:11:16 3:3:17:20]
+body	phrase(apple,or(bank,cat,dog))	matches 9	body|17:18:79:88[17:17:79:84 18:18:85:88]
+body	phrase(apple,or(bank,cat,dog))	matches 12	body|18:19:87:96[18:18:87:92 19:19:93:96]
+body	phrase(apple,or(bank,cat,dog))	matches 17	none
+body	phrase(apple,or(bank,cat,dog))	matches 33	body|8:9:40:50[8:8:40:45 9:9:46:50]
+body	phrase(apple,or(bank,cat,dog))	matches 35	body|7:8:32:42[7:7:32:37 8:8:38:42]
+body	phrase(apple,or(bank,cat,dog))	matches 39	body|1:2:5:14[1:1:5:10 2:2:11:14]
+body	phrase(apple,or(bank,cat,dog))	matches 55	body|0:1:0:10[0:0:0:5 1:1:6:10]
+body	phrase(apple,or(bank,cat,dog))	matches 60	none
+body	phrase(apple,or(bank,cat,dog))	matches 68	body|3:4:12:21[3:3:12:17 4:4:18:21]
+body	phrase(apple,or(bank,cat,dog))	matches 70	body|20:21:98:107[20:20:98:103 21:21:104:107]
+body	phrase(apple,or(bank,cat,dog))	matches 80	body|2:3:9:18[2:2:9:14 3:3:15:18]
+body	phrase(apple,or(bank,cat,dog))	matches 81	body|6:7:28:37[6:6:28:33 7:7:34:37]
+body	ordered(or(apple,bank,cat),dog)	source	ORDERED(or(apple,bank,cat),dog)	2
+body	ordered(or(apple,bank,cat),dog)	plain	hits	28 39:3f19999a,1:3f000000,3:3f000000,7:3f000000,8:3f000000,12:3f000000,19:3f000000,68:3f000000,80:3f000000,47:3ee8ba2e,59:3ed2d2d4,17:3eaaaaaa,45:3eaaaaaa,55:3eaaaaaa,56:3e924924,11:3e800000,13:3e800000,53:3e800000,54:3e800000,67:3e800000,84:3e800000,2:3e4ccccc,62:3e4ccccc,88:3e4ccccc,21:3e124924,20:3dccccd0,91:3dccccd0,18:3d638e40,
+body	ordered(or(apple,bank,cat),dog)	plain	explain 0	0.0 = no matching intervals\n
+body	ordered(or(apple,bank,cat),dog)	plain	explain 7	0.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  1.0 = w, weight of this function\n  1.0 = k, pivot feature value that would give a score contribution equal to w/2\n  1.0 = S, the sloppy frequency of the interval query body:ORDERED(or(apple,bank,cat),dog)\n
+body	ordered(or(apple,bank,cat),dog)	plain	explain 17	0.3333333 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  1.0 = w, weight of this function\n  1.0 = k, pivot feature value that would give a score contribution equal to w/2\n  0.5 = S, the sloppy frequency of the interval query body:ORDERED(or(apple,bank,cat),dog)\n
+body	ordered(or(apple,bank,cat),dog)	plain	explain 33	0.0 = no matching intervals\n
+body	ordered(or(apple,bank,cat),dog)	plain	explain 60	0.0 = no matching intervals\n
+body	ordered(or(apple,bank,cat),dog)	pivot	hits	28 39:3ec00000,1:3e924924,3:3e924924,7:3e924924,8:3e924924,12:3e924924,19:3e924924,68:3e924924,80:3e924924,47:3e800002,59:3e600000,17:3e2aaaac,45:3e2aaaac,55:3e2aaaac,56:3e0d3dcc,11:3df0f0f0,13:3df0f0f0,53:3df0f0f0,54:3df0f0f0,67:3df0f0f0,84:3df0f0f0,2:3dba2e88,62:3dba2e88,88:3dba2e88,21:3d800000,20:3d2e4c40,91:3d2e4c40,18:3cbc5260,
+body	ordered(or(apple,bank,cat),dog)	pivot	explain 0	0.0 = no matching intervals\n
+body	ordered(or(apple,bank,cat),dog)	pivot	explain 7	0.28571427 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  1.0 = w, weight of this function\n  2.5 = k, pivot feature value that would give a score contribution equal to w/2\n  1.0 = S, the sloppy frequency of the interval query body:ORDERED(or(apple,bank,cat),dog)\n
+body	ordered(or(apple,bank,cat),dog)	pivot	explain 17	0.16666669 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  1.0 = w, weight of this function\n  2.5 = k, pivot feature value that would give a score contribution equal to w/2\n  0.5 = S, the sloppy frequency of the interval query body:ORDERED(or(apple,bank,cat),dog)\n
+body	ordered(or(apple,bank,cat),dog)	pivot	explain 33	0.0 = no matching intervals\n
+body	ordered(or(apple,bank,cat),dog)	pivot	explain 60	0.0 = no matching intervals\n
+body	ordered(or(apple,bank,cat),dog)	sigmoid	hits	28 39:3f000000,1:3e9d89d9,3:3e9d89d9,7:3e9d89d9,8:3e9d89d9,12:3e9d89d9,19:3e9d89d9,68:3e9d89d9,80:3e9d89d9,47:3e71826b,59:3e371fc4,17:3dcccccd,45:3dcccccd,55:3dcccccd,56:3d87f781,11:3d40c0c1,13:3d40c0c1,53:3d40c0c1,54:3d40c0c1,67:3d40c0c1,84:3d40c0c1,2:3cdd67c9,62:3cdd67c9,88:3cdd67c9,21:3c47ce0d,20:3bb2d0da,91:3bb2d0da,18:3ac9431f,
+body	ordered(or(apple,bank,cat),dog)	sigmoid	explain 0	0.0 = no matching intervals\n
+body	ordered(or(apple,bank,cat),dog)	sigmoid	explain 7	0.30769232 = Sigmoid function on interval frequency, computed as w * S^a / (S^a + k^a) from:\n  1.0 = w, weight of this function\n  1.5 = k, pivot feature value that would give a score contribution equal to w/2\n  2.0 = a, exponent, higher values make the function grow slower before k and faster after k\n  1.0 = S, the sloppy frequency of the interval query body:ORDERED(or(apple,bank,cat),dog)\n
+body	ordered(or(apple,bank,cat),dog)	sigmoid	explain 17	0.1 = Sigmoid function on interval frequency, computed as w * S^a / (S^a + k^a) from:\n  1.0 = w, weight of this function\n  1.5 = k, pivot feature value that would give a score contribution equal to w/2\n  2.0 = a, exponent, higher values make the function grow slower before k and faster after k\n  0.5 = S, the sloppy frequency of the interval query body:ORDERED(or(apple,bank,cat),dog)\n
+body	ordered(or(apple,bank,cat),dog)	sigmoid	explain 33	0.0 = no matching intervals\n
+body	ordered(or(apple,bank,cat),dog)	sigmoid	explain 60	0.0 = no matching intervals\n
+body	ordered(or(apple,bank,cat),dog)	boost	hits	28 39:3fe66667,1:3fc00000,3:3fc00000,7:3fc00000,8:3fc00000,12:3fc00000,19:3fc00000,68:3fc00000,80:3fc00000,47:3fae8ba2,59:3f9e1e1f,17:3f7fffff,45:3f7fffff,55:3f7fffff,56:3f5b6db6,11:3f400000,13:3f400000,53:3f400000,54:3f400000,67:3f400000,84:3f400000,2:3f199999,62:3f199999,88:3f199999,21:3edb6db6,20:3e99999c,91:3e99999c,18:3e2aaab0,
+body	ordered(or(apple,bank,cat),dog)	boost	explain 0	0.0 = no matching intervals\n
+body	ordered(or(apple,bank,cat),dog)	boost	explain 7	1.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  3.0 = w, weight of this function\n  1.0 = k, pivot feature value that would give a score contribution equal to w/2\n  1.0 = S, the sloppy frequency of the interval query body:ORDERED(or(apple,bank,cat),dog)\n
+body	ordered(or(apple,bank,cat),dog)	boost	explain 17	0.99999994 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  3.0 = w, weight of this function\n  1.0 = k, pivot feature value that would give a score contribution equal to w/2\n  0.5 = S, the sloppy frequency of the interval query body:ORDERED(or(apple,bank,cat),dog)\n
+body	ordered(or(apple,bank,cat),dog)	boost	explain 33	0.0 = no matching intervals\n
+body	ordered(or(apple,bank,cat),dog)	boost	explain 60	0.0 = no matching intervals\n
+body	ordered(or(apple,bank,cat),dog)	bool	hits	28 12:3f8f92de,8:3f81f1e8,1:3f7ea406,19:3f63ee2a,47:3f4b2671,88:3f3c5f28,55:3f29e537,20:3f1ffa66,53:3f1e38ec,62:3f1d9313,13:3f1b9b29,54:3f1b9b29,39:3f19999a,11:3f192196,2:3f0c54c9,3:3f000000,7:3f000000,68:3f000000,80:3f000000,91:3edc52f8,59:3ed2d2d4,17:3eaaaaaa,45:3eaaaaaa,56:3e924924,67:3e800000,84:3e800000,21:3e124924,18:3d638e40,
+body	ordered(or(apple,bank,cat),dog)	bool	explain 0	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(or(apple,bank,cat),dog))\n    0.0 = no matching intervals\n
+body	ordered(or(apple,bank,cat),dog)	bool	explain 7	0.5 = sum of:\n  0.5 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n    1.0 = w, weight of this function\n    1.0 = k, pivot feature value that would give a score contribution equal to w/2\n    1.0 = S, the sloppy frequency of the interval query body:ORDERED(or(apple,bank,cat),dog)\n
+body	ordered(or(apple,bank,cat),dog)	bool	explain 17	0.3333333 = sum of:\n  0.3333333 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n    1.0 = w, weight of this function\n    1.0 = k, pivot feature value that would give a score contribution equal to w/2\n    0.5 = S, the sloppy frequency of the interval query body:ORDERED(or(apple,bank,cat),dog)\n
+body	ordered(or(apple,bank,cat),dog)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(or(apple,bank,cat),dog))\n    0.0 = no matching intervals\n
+body	ordered(or(apple,bank,cat),dog)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(or(apple,bank,cat),dog))\n    0.0 = no matching intervals\n
+body	ordered(or(apple,bank,cat),dog)	matches 0	none
+body	ordered(or(apple,bank,cat),dog)	matches 1	body|14:15:66:73[14:14:66:69 15:15:70:73]
+body	ordered(or(apple,bank,cat),dog)	matches 2	body|2:6:8:32[2:2:8:13 6:6:29:32]
+body	ordered(or(apple,bank,cat),dog)	matches 3	body|6:7:32:40[6:6:32:36 7:7:37:40]
+body	ordered(or(apple,bank,cat),dog)	matches 7	body|3:4:14:23[3:3:14:19 4:4:20:23]
+body	ordered(or(apple,bank,cat),dog)	matches 8	body|2:3:11:20[2:2:11:16 3:3:17:20]
+body	ordered(or(apple,bank,cat),dog)	matches 11	body|8:11:36:53[8:8:36:41 11:11:50:53]
+body	ordered(or(apple,bank,cat),dog)	matches 12	body|18:19:87:96[18:18:87:92 19:19:93:96]
+body	ordered(or(apple,bank,cat),dog)	matches 13	body|12:15:56:75[12:12:56:61 15:15:72:75]
+body	ordered(or(apple,bank,cat),dog)	matches 17	body|7:9:35:47[7:7:35:38 9:9:44:47]
+body	ordered(or(apple,bank,cat),dog)	matches 18	body|0:17:0:82[0:0:0:5 17:17:79:82]
+body	ordered(or(apple,bank,cat),dog)	matches 19	body|4:5:16:24[4:4:16:20 5:5:21:24]
+body	ordered(or(apple,bank,cat),dog)	matches 20	body|11:20:49:93[11:11:49:53 20:20:90:93]
+body	ordered(or(apple,bank,cat),dog)	matches 21	body|0:6:0:30[0:0:0:3 6:6:27:30]
+body	ordered(or(apple,bank,cat),dog)	matches 33	none
+body	ordered(or(apple,bank,cat),dog)	matches 39	body|1:2:5:14[1:1:5:10 2:2:11:14],17:19:80:92[17:17:80:83 19:19:89:92]
+body	ordered(or(apple,bank,cat),dog)	matches 45	body|1:3:4:17[1:1:4:9 3:3:14:17]
+body	ordered(or(apple,bank,cat),dog)	matches 47	body|1:4:4:22[1:1:4:9 4:4:19:22],12:14:56:70[12:12:56:61 14:14:67:70]
+body	ordered(or(apple,bank,cat),dog)	matches 53	body|9:12:47:63[9:9:47:51 12:12:60:63]
+body	ordered(or(apple,bank,cat),dog)	matches 54	body|18:21:88:107[18:18:88:93 21:21:104:107]
+body	ordered(or(apple,bank,cat),dog)	matches 55	body|19:21:98:112[19:19:98:103 21:21:109:112]
+body	ordered(or(apple,bank,cat),dog)	matches 56	body|3:8:16:46[3:3:16:21 8:8:43:46],10:15:51:76[10:10:51:55 15:15:73:76]
+body	ordered(or(apple,bank,cat),dog)	matches 59	body|3:5:13:24[3:3:13:16 5:5:21:24],14:19:62:92[14:14:62:67 19:19:89:92]
+body	ordered(or(apple,bank,cat),dog)	matches 60	none
+body	ordered(or(apple,bank,cat),dog)	matches 62	body|3:7:15:40[3:3:15:20 7:7:37:40]
+body	ordered(or(apple,bank,cat),dog)	matches 67	body|5:8:23:38[5:5:23:26 8:8:35:38]
+body	ordered(or(apple,bank,cat),dog)	matches 68	body|3:4:12:21[3:3:12:17 4:4:18:21]
+body	ordered(or(apple,bank,cat),dog)	matches 80	body|3:4:15:22[3:3:15:18 4:4:19:22]
+body	ordered(or(apple,bank,cat),dog)	matches 84	body|2:5:9:30[2:2:9:14 5:5:27:30]
+body	ordered(or(apple,bank,cat),dog)	matches 88	body|1:5:4:24[1:1:4:7 5:5:21:24]
+body	ordered(or(apple,bank,cat),dog)	matches 91	body|3:12:14:65[3:3:14:18 12:12:62:65]
+body	phrase(or(fig,fish),apple)	source	BLOCK(or(fig,fish),apple)	2
+body	phrase(or(fig,fish),apple)	plain	hits	7 54:3f2aaaaa,88:3f2aaaaa,2:3f000000,35:3f000000,47:3f000000,61:3f000000,92:3f000000,
+body	phrase(or(fig,fish),apple)	plain	explain 0	0.0 = no matching intervals\n
+body	phrase(or(fig,fish),apple)	plain	explain 7	0.0 = no matching intervals\n
+body	phrase(or(fig,fish),apple)	plain	explain 17	0.0 = no matching intervals\n
+body	phrase(or(fig,fish),apple)	plain	explain 33	0.0 = no matching intervals\n
+body	phrase(or(fig,fish),apple)	plain	explain 60	0.0 = no matching intervals\n
+body	phrase(or(fig,fish),apple)	pivot	hits	7 54:3ee38e38,88:3ee38e38,2:3e924924,35:3e924924,47:3e924924,61:3e924924,92:3e924924,
+body	phrase(or(fig,fish),apple)	pivot	explain 0	0.0 = no matching intervals\n
+body	phrase(or(fig,fish),apple)	pivot	explain 7	0.0 = no matching intervals\n
+body	phrase(or(fig,fish),apple)	pivot	explain 17	0.0 = no matching intervals\n
+body	phrase(or(fig,fish),apple)	pivot	explain 33	0.0 = no matching intervals\n
+body	phrase(or(fig,fish),apple)	pivot	explain 60	0.0 = no matching intervals\n
+body	phrase(or(fig,fish),apple)	sigmoid	hits	7 54:3f23d70a,88:3f23d70a,2:3e9d89d9,35:3e9d89d9,47:3e9d89d9,61:3e9d89d9,92:3e9d89d9,
+body	phrase(or(fig,fish),apple)	sigmoid	explain 0	0.0 = no matching intervals\n
+body	phrase(or(fig,fish),apple)	sigmoid	explain 7	0.0 = no matching intervals\n
+body	phrase(or(fig,fish),apple)	sigmoid	explain 17	0.0 = no matching intervals\n
+body	phrase(or(fig,fish),apple)	sigmoid	explain 33	0.0 = no matching intervals\n
+body	phrase(or(fig,fish),apple)	sigmoid	explain 60	0.0 = no matching intervals\n
+body	phrase(or(fig,fish),apple)	boost	hits	7 54:3fffffff,88:3fffffff,2:3fc00000,35:3fc00000,47:3fc00000,61:3fc00000,92:3fc00000,
+body	phrase(or(fig,fish),apple)	boost	explain 0	0.0 = no matching intervals\n
+body	phrase(or(fig,fish),apple)	boost	explain 7	0.0 = no matching intervals\n
+body	phrase(or(fig,fish),apple)	boost	explain 17	0.0 = no matching intervals\n
+body	phrase(or(fig,fish),apple)	boost	explain 33	0.0 = no matching intervals\n
+body	phrase(or(fig,fish),apple)	boost	explain 60	0.0 = no matching intervals\n
+body	phrase(or(fig,fish),apple)	bool	hits	7 88:3f99eb50,92:3f90dfc7,54:3f8322ea,35:3f5e38ec,2:3f592196,47:3f56c95a,61:3f000000,
+body	phrase(or(fig,fish),apple)	bool	explain 0	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(or(fig,fish),apple))\n    0.0 = no matching intervals\n
+body	phrase(or(fig,fish),apple)	bool	explain 7	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(or(fig,fish),apple))\n    0.0 = no matching intervals\n
+body	phrase(or(fig,fish),apple)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(or(fig,fish),apple))\n    0.0 = no matching intervals\n
+body	phrase(or(fig,fish),apple)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(or(fig,fish),apple))\n    0.0 = no matching intervals\n
+body	phrase(or(fig,fish),apple)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(or(fig,fish),apple))\n    0.0 = no matching intervals\n
+body	phrase(or(fig,fish),apple)	matches 0	none
+body	phrase(or(fig,fish),apple)	matches 2	body|9:10:42:52[9:9:42:46 10:10:47:52]
+body	phrase(or(fig,fish),apple)	matches 7	none
+body	phrase(or(fig,fish),apple)	matches 17	none
+body	phrase(or(fig,fish),apple)	matches 33	none
+body	phrase(or(fig,fish),apple)	matches 35	body|10:11:49:58[10:10:49:52 11:11:53:58]
+body	phrase(or(fig,fish),apple)	matches 47	body|8:9:36:45[8:8:36:39 9:9:40:45]
+body	phrase(or(fig,fish),apple)	matches 54	body|11:12:54:63[11:11:54:57 12:12:58:63],17:18:84:93[17:17:84:87 18:18:88:93]
+body	phrase(or(fig,fish),apple)	matches 60	none
+body	phrase(or(fig,fish),apple)	matches 61	body|8:9:41:51[8:8:41:45 9:9:46:51]
+body	phrase(or(fig,fish),apple)	matches 88	body|8:9:33:42[8:8:33:36 9:9:37:42],10:11:43:52[10:10:43:46 11:11:47:52]
+body	phrase(or(fig,fish),apple)	matches 92	body|13:14:61:71[13:13:61:65 14:14:66:71]
+body	ordered(apple,or(eel,fig,fish),bank)	source	ORDERED(apple,or(eel,fig,fish),bank)	3
+body	ordered(apple,or(eel,fig,fish),bank)	plain	hits	11 91:3f000000,26:3ee8ba2e,56:3e969698,92:3e800000,53:3e4ccccc,39:3e2aaaac,47:3e2aaaac,81:3e000004,33:3de38e38,37:3de38e38,18:3d430c20,
+body	ordered(apple,or(eel,fig,fish),bank)	plain	explain 0	0.0 = no matching intervals\n
+body	ordered(apple,or(eel,fig,fish),bank)	plain	explain 7	0.0 = no matching intervals\n
+body	ordered(apple,or(eel,fig,fish),bank)	plain	explain 17	0.0 = no matching intervals\n
+body	ordered(apple,or(eel,fig,fish),bank)	plain	explain 33	0.111111104 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  1.0 = w, weight of this function\n  1.0 = k, pivot feature value that would give a score contribution equal to w/2\n  0.125 = S, the sloppy frequency of the interval query body:ORDERED(apple,or(eel,fig,fish),bank)\n
+body	ordered(apple,or(eel,fig,fish),bank)	plain	explain 60	0.0 = no matching intervals\n
+body	ordered(apple,or(eel,fig,fish),bank)	pivot	hits	11 91:3e924924,26:3e800002,56:3e124928,92:3df0f0f0,53:3dba2e88,39:3d97b428,47:3d97b428,81:3d5d67c0,33:3d430c30,37:3d430c30,18:3ca0a0a0,
+body	ordered(apple,or(eel,fig,fish),bank)	pivot	explain 0	0.0 = no matching intervals\n
+body	ordered(apple,or(eel,fig,fish),bank)	pivot	explain 7	0.0 = no matching intervals\n
+body	ordered(apple,or(eel,fig,fish),bank)	pivot	explain 17	0.0 = no matching intervals\n
+body	ordered(apple,or(eel,fig,fish),bank)	pivot	explain 33	0.047619045 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  1.0 = w, weight of this function\n  2.5 = k, pivot feature value that would give a score contribution equal to w/2\n  0.125 = S, the sloppy frequency of the interval query body:ORDERED(apple,or(eel,fig,fish),bank)\n
+body	ordered(apple,or(eel,fig,fish),bank)	pivot	explain 60	0.0 = no matching intervals\n
+body	ordered(apple,or(eel,fig,fish),bank)	sigmoid	hits	11 91:3e9d89d9,26:3e71826b,56:3d92b473,92:3d40c0c1,53:3cdd67c9,39:3c8f177a,47:3c8f177a,81:3c13459d,33:3be1fc78,37:3be1fc78,18:3a917953,
+body	ordered(apple,or(eel,fig,fish),bank)	sigmoid	explain 0	0.0 = no matching intervals\n
+body	ordered(apple,or(eel,fig,fish),bank)	sigmoid	explain 7	0.0 = no matching intervals\n
+body	ordered(apple,or(eel,fig,fish),bank)	sigmoid	explain 17	0.0 = no matching intervals\n
+body	ordered(apple,or(eel,fig,fish),bank)	sigmoid	explain 33	0.0068965517 = Sigmoid function on interval frequency, computed as w * S^a / (S^a + k^a) from:\n  1.0 = w, weight of this function\n  1.5 = k, pivot feature value that would give a score contribution equal to w/2\n  2.0 = a, exponent, higher values make the function grow slower before k and faster after k\n  0.125 = S, the sloppy frequency of the interval query body:ORDERED(apple,or(eel,fig,fish),bank)\n
+body	ordered(apple,or(eel,fig,fish),bank)	sigmoid	explain 60	0.0 = no matching intervals\n
+body	ordered(apple,or(eel,fig,fish),bank)	boost	hits	11 91:3fc00000,26:3fae8ba2,56:3f61e1e4,92:3f400000,53:3f199999,39:3f000001,47:3f000001,81:3ec00006,33:3eaaaaaa,37:3eaaaaaa,18:3e124918,
+body	ordered(apple,or(eel,fig,fish),bank)	boost	explain 0	0.0 = no matching intervals\n
+body	ordered(apple,or(eel,fig,fish),bank)	boost	explain 7	0.0 = no matching intervals\n
+body	ordered(apple,or(eel,fig,fish),bank)	boost	explain 17	0.0 = no matching intervals\n
+body	ordered(apple,or(eel,fig,fish),bank)	boost	explain 33	0.3333333 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  3.0 = w, weight of this function\n  1.0 = k, pivot feature value that would give a score contribution equal to w/2\n  0.125 = S, the sloppy frequency of the interval query body:ORDERED(apple,or(eel,fig,fish),bank)\n
+body	ordered(apple,or(eel,fig,fish),bank)	boost	explain 60	0.0 = no matching intervals\n
+body	ordered(apple,or(eel,fig,fish),bank)	bool	hits	11 92:3f61bf8e,91:3f548fe2,53:3f116c1f,47:3f017405,81:3ef2432e,26:3ee8ba2e,56:3e969698,39:3e2aaaac,33:3de38e38,37:3de38e38,18:3d430c20,
+body	ordered(apple,or(eel,fig,fish),bank)	bool	explain 0	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(apple,or(eel,fig,fish),bank))\n    0.0 = no matching intervals\n
+body	ordered(apple,or(eel,fig,fish),bank)	bool	explain 7	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(apple,or(eel,fig,fish),bank))\n    0.0 = no matching intervals\n
+body	ordered(apple,or(eel,fig,fish),bank)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(apple,or(eel,fig,fish),bank))\n    0.0 = no matching intervals\n
+body	ordered(apple,or(eel,fig,fish),bank)	bool	explain 33	0.111111104 = sum of:\n  0.111111104 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n    1.0 = w, weight of this function\n    1.0 = k, pivot feature value that would give a score contribution equal to w/2\n    0.125 = S, the sloppy frequency of the interval query body:ORDERED(apple,or(eel,fig,fish),bank)\n
+body	ordered(apple,or(eel,fig,fish),bank)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(apple,or(eel,fig,fish),bank))\n    0.0 = no matching intervals\n
+body	ordered(apple,or(eel,fig,fish),bank)	matches 0	none
+body	ordered(apple,or(eel,fig,fish),bank)	matches 7	none
+body	ordered(apple,or(eel,fig,fish),bank)	matches 17	none
+body	ordered(apple,or(eel,fig,fish),bank)	matches 18	body|0:21:0:101[0:0:0:5 2:2:10:14 21:21:97:101]
+body	ordered(apple,or(eel,fig,fish),bank)	matches 26	body|5:9:23:48[5:5:23:28 7:7:35:38 9:9:44:48],10:13:49:70[10:10:49:54 12:12:62:65 13:13:66:70]
+body	ordered(apple,or(eel,fig,fish),bank)	matches 33	body|0:9:0:50[0:0:0:5 1:1:6:9 9:9:46:50]
+body	ordered(apple,or(eel,fig,fish),bank)	matches 37	body|5:14:23:69[5:5:23:28 7:7:33:36 14:14:65:69]
+body	ordered(apple,or(eel,fig,fish),bank)	matches 39	body|10:16:46:79[10:10:46:51 11:11:52:55 16:16:75:79]
+body	ordered(apple,or(eel,fig,fish),bank)	matches 47	body|12:18:56:88[12:12:56:61 17:17:80:83 18:18:84:88]
+body	ordered(apple,or(eel,fig,fish),bank)	matches 53	body|4:9:21:51[4:4:21:26 5:5:27:31 9:9:47:51]
+body	ordered(apple,or(eel,fig,fish),bank)	matches 56	body|3:10:16:55[3:3:16:21 9:9:47:50 10:10:51:55],17:22:82:109[17:17:82:87 20:20:97:100 22:22:105:109]
+body	ordered(apple,or(eel,fig,fish),bank)	matches 60	none
+body	ordered(apple,or(eel,fig,fish),bank)	matches 81	body|2:10:8:50[2:2:8:13 4:4:19:23 10:10:46:50]
+body	ordered(apple,or(eel,fig,fish),bank)	matches 91	body|16:18:79:94[16:16:79:84 17:17:85:89 18:18:90:94]
+body	ordered(apple,or(eel,fig,fish),bank)	matches 92	body|8:12:36:60[8:8:36:41 10:10:46:49 12:12:56:60]
+body	ordered(or(apple,bank),zeta)	source	ORDERED(or(apple,bank),zeta)	2
+body	ordered(or(apple,bank),zeta)	plain	hits	0 
+body	ordered(or(apple,bank),zeta)	plain	explain 0	0.0 = no matching intervals\n
+body	ordered(or(apple,bank),zeta)	plain	explain 7	0.0 = no matching intervals\n
+body	ordered(or(apple,bank),zeta)	plain	explain 17	0.0 = no matching intervals\n
+body	ordered(or(apple,bank),zeta)	plain	explain 33	0.0 = no matching intervals\n
+body	ordered(or(apple,bank),zeta)	plain	explain 60	0.0 = no matching intervals\n
+body	ordered(or(apple,bank),zeta)	pivot	hits	0 
+body	ordered(or(apple,bank),zeta)	pivot	explain 0	0.0 = no matching intervals\n
+body	ordered(or(apple,bank),zeta)	pivot	explain 7	0.0 = no matching intervals\n
+body	ordered(or(apple,bank),zeta)	pivot	explain 17	0.0 = no matching intervals\n
+body	ordered(or(apple,bank),zeta)	pivot	explain 33	0.0 = no matching intervals\n
+body	ordered(or(apple,bank),zeta)	pivot	explain 60	0.0 = no matching intervals\n
+body	ordered(or(apple,bank),zeta)	sigmoid	hits	0 
+body	ordered(or(apple,bank),zeta)	sigmoid	explain 0	0.0 = no matching intervals\n
+body	ordered(or(apple,bank),zeta)	sigmoid	explain 7	0.0 = no matching intervals\n
+body	ordered(or(apple,bank),zeta)	sigmoid	explain 17	0.0 = no matching intervals\n
+body	ordered(or(apple,bank),zeta)	sigmoid	explain 33	0.0 = no matching intervals\n
+body	ordered(or(apple,bank),zeta)	sigmoid	explain 60	0.0 = no matching intervals\n
+body	ordered(or(apple,bank),zeta)	boost	hits	0 
+body	ordered(or(apple,bank),zeta)	boost	explain 0	0.0 = no matching intervals\n
+body	ordered(or(apple,bank),zeta)	boost	explain 7	0.0 = no matching intervals\n
+body	ordered(or(apple,bank),zeta)	boost	explain 17	0.0 = no matching intervals\n
+body	ordered(or(apple,bank),zeta)	boost	explain 33	0.0 = no matching intervals\n
+body	ordered(or(apple,bank),zeta)	boost	explain 60	0.0 = no matching intervals\n
+body	ordered(or(apple,bank),zeta)	bool	hits	0 
+body	ordered(or(apple,bank),zeta)	bool	explain 0	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(or(apple,bank),zeta))\n    0.0 = no matching intervals\n
+body	ordered(or(apple,bank),zeta)	bool	explain 7	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(or(apple,bank),zeta))\n    0.0 = no matching intervals\n
+body	ordered(or(apple,bank),zeta)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(or(apple,bank),zeta))\n    0.0 = no matching intervals\n
+body	ordered(or(apple,bank),zeta)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(or(apple,bank),zeta))\n    0.0 = no matching intervals\n
+body	ordered(or(apple,bank),zeta)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(or(apple,bank),zeta))\n    0.0 = no matching intervals\n
+body	ordered(or(apple,bank),zeta)	matches 0	none
+body	ordered(or(apple,bank),zeta)	matches 7	none
+body	ordered(or(apple,bank),zeta)	matches 17	none
+body	ordered(or(apple,bank),zeta)	matches 33	none
+body	ordered(or(apple,bank),zeta)	matches 60	none
+body	phrase(or(apple,bank),nosuch)	source	BLOCK(or(apple,bank),nosuch)	2
+body	phrase(or(apple,bank),nosuch)	plain	hits	0 
+body	phrase(or(apple,bank),nosuch)	plain	explain 0	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),nosuch)	plain	explain 7	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),nosuch)	plain	explain 17	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),nosuch)	plain	explain 33	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),nosuch)	plain	explain 60	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),nosuch)	pivot	hits	0 
+body	phrase(or(apple,bank),nosuch)	pivot	explain 0	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),nosuch)	pivot	explain 7	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),nosuch)	pivot	explain 17	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),nosuch)	pivot	explain 33	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),nosuch)	pivot	explain 60	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),nosuch)	sigmoid	hits	0 
+body	phrase(or(apple,bank),nosuch)	sigmoid	explain 0	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),nosuch)	sigmoid	explain 7	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),nosuch)	sigmoid	explain 17	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),nosuch)	sigmoid	explain 33	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),nosuch)	sigmoid	explain 60	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),nosuch)	boost	hits	0 
+body	phrase(or(apple,bank),nosuch)	boost	explain 0	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),nosuch)	boost	explain 7	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),nosuch)	boost	explain 17	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),nosuch)	boost	explain 33	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),nosuch)	boost	explain 60	0.0 = no matching intervals\n
+body	phrase(or(apple,bank),nosuch)	bool	hits	0 
+body	phrase(or(apple,bank),nosuch)	bool	explain 0	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(or(apple,bank),nosuch))\n    0.0 = no matching intervals\n
+body	phrase(or(apple,bank),nosuch)	bool	explain 7	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(or(apple,bank),nosuch))\n    0.0 = no matching intervals\n
+body	phrase(or(apple,bank),nosuch)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(or(apple,bank),nosuch))\n    0.0 = no matching intervals\n
+body	phrase(or(apple,bank),nosuch)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(or(apple,bank),nosuch))\n    0.0 = no matching intervals\n
+body	phrase(or(apple,bank),nosuch)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:BLOCK(or(apple,bank),nosuch))\n    0.0 = no matching intervals\n
+body	phrase(or(apple,bank),nosuch)	matches 0	none
+body	phrase(or(apple,bank),nosuch)	matches 7	none
+body	phrase(or(apple,bank),nosuch)	matches 17	none
+body	phrase(or(apple,bank),nosuch)	matches 33	none
+body	phrase(or(apple,bank),nosuch)	matches 60	none
+body	ordered(or(nosuch,zeta),apple)	source	ORDERED(or(nosuch,zeta),apple)	2
+body	ordered(or(nosuch,zeta),apple)	plain	hits	0 
+body	ordered(or(nosuch,zeta),apple)	plain	explain 0	0.0 = no matching intervals\n
+body	ordered(or(nosuch,zeta),apple)	plain	explain 7	0.0 = no matching intervals\n
+body	ordered(or(nosuch,zeta),apple)	plain	explain 17	0.0 = no matching intervals\n
+body	ordered(or(nosuch,zeta),apple)	plain	explain 33	0.0 = no matching intervals\n
+body	ordered(or(nosuch,zeta),apple)	plain	explain 60	0.0 = no matching intervals\n
+body	ordered(or(nosuch,zeta),apple)	pivot	hits	0 
+body	ordered(or(nosuch,zeta),apple)	pivot	explain 0	0.0 = no matching intervals\n
+body	ordered(or(nosuch,zeta),apple)	pivot	explain 7	0.0 = no matching intervals\n
+body	ordered(or(nosuch,zeta),apple)	pivot	explain 17	0.0 = no matching intervals\n
+body	ordered(or(nosuch,zeta),apple)	pivot	explain 33	0.0 = no matching intervals\n
+body	ordered(or(nosuch,zeta),apple)	pivot	explain 60	0.0 = no matching intervals\n
+body	ordered(or(nosuch,zeta),apple)	sigmoid	hits	0 
+body	ordered(or(nosuch,zeta),apple)	sigmoid	explain 0	0.0 = no matching intervals\n
+body	ordered(or(nosuch,zeta),apple)	sigmoid	explain 7	0.0 = no matching intervals\n
+body	ordered(or(nosuch,zeta),apple)	sigmoid	explain 17	0.0 = no matching intervals\n
+body	ordered(or(nosuch,zeta),apple)	sigmoid	explain 33	0.0 = no matching intervals\n
+body	ordered(or(nosuch,zeta),apple)	sigmoid	explain 60	0.0 = no matching intervals\n
+body	ordered(or(nosuch,zeta),apple)	boost	hits	0 
+body	ordered(or(nosuch,zeta),apple)	boost	explain 0	0.0 = no matching intervals\n
+body	ordered(or(nosuch,zeta),apple)	boost	explain 7	0.0 = no matching intervals\n
+body	ordered(or(nosuch,zeta),apple)	boost	explain 17	0.0 = no matching intervals\n
+body	ordered(or(nosuch,zeta),apple)	boost	explain 33	0.0 = no matching intervals\n
+body	ordered(or(nosuch,zeta),apple)	boost	explain 60	0.0 = no matching intervals\n
+body	ordered(or(nosuch,zeta),apple)	bool	hits	0 
+body	ordered(or(nosuch,zeta),apple)	bool	explain 0	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(or(nosuch,zeta),apple))\n    0.0 = no matching intervals\n
+body	ordered(or(nosuch,zeta),apple)	bool	explain 7	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(or(nosuch,zeta),apple))\n    0.0 = no matching intervals\n
+body	ordered(or(nosuch,zeta),apple)	bool	explain 17	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(or(nosuch,zeta),apple))\n    0.0 = no matching intervals\n
+body	ordered(or(nosuch,zeta),apple)	bool	explain 33	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(or(nosuch,zeta),apple))\n    0.0 = no matching intervals\n
+body	ordered(or(nosuch,zeta),apple)	bool	explain 60	0.0 = Failure to meet condition(s) of required/prohibited clause(s)\n  0.0 = no match on required clause (body:ORDERED(or(nosuch,zeta),apple))\n    0.0 = no matching intervals\n
+body	ordered(or(nosuch,zeta),apple)	matches 0	none
+body	ordered(or(nosuch,zeta),apple)	matches 7	none
+body	ordered(or(nosuch,zeta),apple)	matches 17	none
+body	ordered(or(nosuch,zeta),apple)	matches 33	none
+body	ordered(or(nosuch,zeta),apple)	matches 60	none
 body	or(apple,bank)	source	or(apple,bank)	1
 body	or(apple,bank)	plain	hits	63 35:3f5b6db7,47:3f5b6db7,56:3f5b6db7,2:3f555555,3:3f555555,12:3f555555,13:3f555555,33:3f555555,51:3f555555,54:3f555555,70:3f555555,91:3f555555,92:3f555555,20:3f4ccccd,26:3f4ccccd,32:3f4ccccd,53:3f4ccccd,55:3f4ccccd,59:3f4ccccd,61:3f4ccccd,62:3f4ccccd,80:3f4ccccd,84:3f4ccccd,85:3f4ccccd,0:3f400000,6:3f400000,8:3f400000,9:3f400000,10:3f400000,15:3f400000,18:3f400000,37:3f400000,39:3f400000,41:3f400000,45:3f400000,81:3f400000,1:3f2aaaaa,7:3f2aaaaa,11:3f2aaaaa,19:3f2aaaaa,21:3f2aaaaa,24:3f2aaaaa,28:3f2aaaaa,30:3f2aaaaa,46:3f2aaaaa,65:3f2aaaaa,68:3f2aaaaa,88:3f2aaaaa,94:3f2aaaaa,4:3f000000,22:3f000000,23:3f000000,40:3f000000,44:3f000000,52:3f000000,57:3f000000,58:3f000000,66:3f000000,73:3f000000,76:3f000000,79:3f000000,83:3f000000,87:3f000000,
 body	or(apple,bank)	plain	explain 0	0.75 = Saturation function on interval frequency, computed as w * S / (S + k) from:\n  1.0 = w, weight of this function\n  1.0 = k, pivot feature value that would give a score contribution equal to w/2\n  3.0 = S, the sloppy frequency of the interval query body:or(apple,bank)\n

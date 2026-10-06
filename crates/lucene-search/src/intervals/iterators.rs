@@ -2207,30 +2207,172 @@ pub(crate) fn root_intervals<'a, K: IntervalsSink<'a>>(
     sink: K,
 ) -> Result<Option<K::Out>> {
     use IntervalsSource as S;
+    use RootShape as R;
     Ok(match source {
         S::Block(subs) | S::Ordered(subs) => {
             let block = matches!(source, S::Block(_));
             match leaves_of(subs, field, ctx)? {
-                Some(Leaves::None) => None,
-                Some(Leaves::Terms(s)) if block => Some(sink.sink(block_of(s))),
-                Some(Leaves::Terms(s)) => Some(sink.sink(ordered_of(s, None))),
-                Some(Leaves::Mixed(s)) if block => Some(sink.sink(block_of(s))),
-                Some(Leaves::Mixed(s)) => Some(sink.sink(ordered_of(s, None))),
-                None if block => all_of(subs, field, ctx)?.map(|s| sink.sink(block_of(s))),
-                None => all_of(subs, field, ctx)?.map(|s| sink.sink(ordered_of(s, None))),
+                Leaves::Terms(s) => Some(conjunction(
+                    block,
+                    s,
+                    sink,
+                    [R::BlockTerms, R::OrderedTerms],
+                )),
+                Leaves::Mixed(s) => Some(conjunction(
+                    block,
+                    s,
+                    sink,
+                    [R::BlockLeafOr, R::OrderedLeafOr],
+                )),
+                Leaves::Boxed(s) => Some(conjunction(
+                    block,
+                    s,
+                    sink,
+                    [R::BlockBoxed, R::OrderedBoxed],
+                )),
+                Leaves::None(shape) => {
+                    count_shape(shape);
+                    None
+                }
             }
         }
-        S::Unordered(subs) => all_of(subs, field, ctx)?.map(|s| sink.sink(unordered_of(s, None))),
-        S::Filtered { source, filter } => {
-            intervals(source, field, ctx)?.map(|it| sink.sink(FilteredIntervals::new(it, *filter)))
+        S::Unordered(subs) => all_of(subs, |s| intervals(s, field, ctx))?.map(|s| {
+            count_shape(R::Unordered);
+            sink.sink(unordered_of(s, None))
+        }),
+        S::Filtered { source, filter } => intervals(source, field, ctx)?.map(|it| {
+            count_shape(R::Filtered);
+            sink.sink(FilteredIntervals::new(it, *filter))
+        }),
+        S::Containing { big, small } => pair(big, small, field, ctx)?.map(|(a, b)| {
+            count_shape(R::Containing);
+            sink.sink(filtering_of(FilteringKind::Containing, a, b))
+        }),
+        S::ContainedBy { small, big } => pair(small, big, field, ctx)?.map(|(a, b)| {
+            count_shape(R::ContainedBy);
+            sink.sink(filtering_of(FilteringKind::ContainedBy, a, b))
+        }),
+        S::Overlapping { source, reference } => {
+            pair(source, reference, field, ctx)?.map(|(a, b)| {
+                count_shape(R::Overlapping);
+                sink.sink(filtering_of(FilteringKind::Overlapping, a, b))
+            })
         }
-        S::Containing { big, small } => pair(big, small, field, ctx)?
-            .map(|(a, b)| sink.sink(filtering_of(FilteringKind::Containing, a, b))),
-        S::ContainedBy { small, big } => pair(small, big, field, ctx)?
-            .map(|(a, b)| sink.sink(filtering_of(FilteringKind::ContainedBy, a, b))),
-        S::Overlapping { source, reference } => pair(source, reference, field, ctx)?
-            .map(|(a, b)| sink.sink(filtering_of(FilteringKind::Overlapping, a, b))),
-        _ => intervals(source, field, ctx)?.map(|it| sink.sink(it)),
+        _ => intervals(source, field, ctx)?.map(|it| {
+            count_shape(R::Other);
+            sink.sink(it)
+        }),
+    })
+}
+
+/// [`root_intervals`]' block or ordered conjunction over `subs`, handed to
+/// `sink`; `shapes` names the two for [`root_shape_counts`].
+fn conjunction<'a, I: IntervalIterator + 'a, K: IntervalsSink<'a>>(
+    block: bool,
+    subs: Vec<I>,
+    sink: K,
+    shapes: [RootShape; 2],
+) -> K::Out {
+    if block {
+        count_shape(shapes[0]);
+        sink.sink(block_of(subs))
+    } else {
+        count_shape(shapes[1]);
+        sink.sink(ordered_of(subs, None))
+    }
+}
+
+/// Each construction [`root_intervals`] can take for a segment: the
+/// iterator type a scorer is monomorphised for, or why it has none. Counted
+/// per thread ([`root_shape_counts`]) so the intervals fixture test can
+/// require that Lucene's answers cover every one of them.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RootShape {
+    /// A block over terms only ([`Leaves::Terms`]).
+    BlockTerms,
+    /// An ordered conjunction over terms only.
+    OrderedTerms,
+    /// A block over terms and disjunctions of terms ([`Leaves::Mixed`]).
+    BlockLeafOr,
+    /// An ordered conjunction over terms and disjunctions of terms.
+    OrderedLeafOr,
+    /// A block over any other sources, boxed ([`Leaves::Boxed`]).
+    BlockBoxed,
+    /// An ordered conjunction over any other sources, boxed.
+    OrderedBoxed,
+    /// A block or ordered source over terms, one of them absent here.
+    NoTerms,
+    /// A block or ordered source over terms and disjunctions of terms, a
+    /// term or every term of a disjunction absent here.
+    NoLeafOr,
+    /// A block or ordered source over other sources, one with no iterator
+    /// here.
+    NoBoxed,
+    /// A [`LeafOr::Term`] made for a [`Leaves::Mixed`] conjunction.
+    LeafOrTerm,
+    /// A [`LeafOr::Or`] made for a [`Leaves::Mixed`] conjunction.
+    LeafOrOr,
+    /// An unordered conjunction.
+    Unordered,
+    /// A `maxgaps`/`maxwidth` filter.
+    Filtered,
+    /// `containing`.
+    Containing,
+    /// `containedBy`.
+    ContainedBy,
+    /// `overlapping`.
+    Overlapping,
+    /// Anything else, boxed ([`intervals`]).
+    Other,
+}
+
+impl RootShape {
+    /// Every shape, in declaration order.
+    pub const ALL: [RootShape; 17] = [
+        RootShape::BlockTerms,
+        RootShape::OrderedTerms,
+        RootShape::BlockLeafOr,
+        RootShape::OrderedLeafOr,
+        RootShape::BlockBoxed,
+        RootShape::OrderedBoxed,
+        RootShape::NoTerms,
+        RootShape::NoLeafOr,
+        RootShape::NoBoxed,
+        RootShape::LeafOrTerm,
+        RootShape::LeafOrOr,
+        RootShape::Unordered,
+        RootShape::Filtered,
+        RootShape::Containing,
+        RootShape::ContainedBy,
+        RootShape::Overlapping,
+        RootShape::Other,
+    ];
+}
+
+thread_local! {
+    static ROOT_SHAPES: [std::cell::Cell<usize>; RootShape::ALL.len()] =
+        const { [const { std::cell::Cell::new(0) }; RootShape::ALL.len()] };
+}
+
+#[inline]
+fn count_shape(shape: RootShape) {
+    ROOT_SHAPES.with(|c| {
+        let n = &c[shape as usize];
+        n.set(n.get().wrapping_add(1));
+    });
+}
+
+/// How many times this thread's [`root_intervals`] calls took each
+/// [`RootShape`], in [`RootShape::ALL`]'s order. Test support: the
+/// intervals fixture test's proof that every construction is exercised.
+#[doc(hidden)]
+pub fn root_shape_counts() -> Vec<(RootShape, usize)> {
+    ROOT_SHAPES.with(|c| {
+        RootShape::ALL
+            .iter()
+            .map(|&s| (s, c[s as usize].get()))
+            .collect()
     })
 }
 
@@ -2265,9 +2407,11 @@ pub(crate) fn intervals<'a>(
                 None => None,
             }
         }
-        S::Block(subs) => all_of(subs, field, ctx)?.map(block),
-        S::Ordered(subs) => all_of(subs, field, ctx)?.map(|s| ordered(s, None)),
-        S::Unordered(subs) => all_of(subs, field, ctx)?.map(|s| unordered(s, None)),
+        S::Block(subs) => all_of(subs, |s| intervals(s, field, ctx))?.map(block),
+        S::Ordered(subs) => all_of(subs, |s| intervals(s, field, ctx))?.map(|s| ordered(s, None)),
+        S::Unordered(subs) => {
+            all_of(subs, |s| intervals(s, field, ctx))?.map(|s| unordered(s, None))
+        }
         S::Disjunction { sources, .. } => {
             // Every source a term: the terms held as themselves, so the
             // disjunction's queues call them statically.
@@ -2425,68 +2569,69 @@ fn disjunction_terms(source: &IntervalsSource) -> Option<Vec<&[u8]>> {
 
 /// [`leaves_of`]' answer.
 enum Leaves<'a> {
-    /// A source has no iterator here (`all_of`'s `None`).
-    None,
+    /// A source has no iterator here (`all_of`'s `None`), and the shape
+    /// the conjunction would have had.
+    None(RootShape),
     /// Every source a term.
     Terms(Vec<TermIntervals<'a>>),
-    /// Terms and disjunctions of terms.
+    /// Terms and disjunctions of terms, at least one disjunction.
     Mixed(Vec<LeafOr<'a>>),
+    /// Any other sources.
+    Boxed(Vec<BoxIntervals<'a>>),
 }
 
-/// [`all_of`] when every source is a term or a disjunction of terms: their
-/// iterators unboxed, made in the same order with the same errors. `None`
-/// for any other sources.
+/// [`all_of`] for a block or ordered source: every source's iterator,
+/// unboxed when each is a term ([`Leaves::Terms`]) or a term or a
+/// disjunction of terms ([`Leaves::Mixed`]), boxed otherwise.
 fn leaves_of<'a>(
     sources: &[IntervalsSource],
     field: &str,
     ctx: &LeafContext<'a>,
-) -> Result<Option<Leaves<'a>>> {
+) -> Result<Leaves<'a>> {
     use IntervalsSource as S;
     let mut any_or = false;
     for s in sources {
         match s {
             S::Term(_) => {}
             _ if disjunction_terms(s).is_some() => any_or = true,
-            _ => return Ok(None),
+            _ => {
+                return Ok(all_of(sources, |s| intervals(s, field, ctx))?
+                    .map_or(Leaves::None(RootShape::NoBoxed), Leaves::Boxed));
+            }
         }
     }
     if !any_or {
-        let mut subs = Vec::with_capacity(sources.len());
-        for s in sources {
-            if let S::Term(term) = s {
-                match term_leaf(ctx, field, term)? {
-                    Some(it) => subs.push(it),
-                    None => return Ok(Some(Leaves::None)),
-                }
-            }
-        }
-        return Ok(Some(Leaves::Terms(subs)));
+        return Ok(all_of(sources, |s| match s {
+            S::Term(term) => term_leaf(ctx, field, term),
+            _ => Ok(None),
+        })?
+        .map_or(Leaves::None(RootShape::NoTerms), Leaves::Terms));
     }
-    let mut subs = Vec::with_capacity(sources.len());
-    for s in sources {
-        let leaf = match (s, disjunction_terms(s)) {
-            (S::Term(term), _) => term_leaf(ctx, field, term)?.map(LeafOr::Term),
-            (_, Some(terms)) => term_disjunction(&terms, field, ctx)?.map(LeafOr::Or),
+    Ok(all_of(sources, |s| {
+        Ok(match (s, disjunction_terms(s)) {
+            (S::Term(term), _) => term_leaf(ctx, field, term)?.map(|it| {
+                count_shape(RootShape::LeafOrTerm);
+                LeafOr::Term(it)
+            }),
+            (_, Some(terms)) => term_disjunction(&terms, field, ctx)?.map(|it| {
+                count_shape(RootShape::LeafOrOr);
+                LeafOr::Or(it)
+            }),
             _ => None,
-        };
-        match leaf {
-            Some(it) => subs.push(it),
-            None => return Ok(Some(Leaves::None)),
-        }
-    }
-    Ok(Some(Leaves::Mixed(subs)))
+        })
+    })?
+    .map_or(Leaves::None(RootShape::NoLeafOr), Leaves::Mixed))
 }
 
-/// `ConjunctionIntervalsSource.intervals`: every sub-source's iterator, or
-/// `None` when one has none.
-fn all_of<'a>(
+/// `ConjunctionIntervalsSource.intervals`: every sub-source's iterator,
+/// made by `each` in order, or `None` as soon as one has none.
+fn all_of<T>(
     sources: &[IntervalsSource],
-    field: &str,
-    ctx: &LeafContext<'a>,
-) -> Result<Option<Vec<BoxIntervals<'a>>>> {
+    mut each: impl FnMut(&IntervalsSource) -> Result<Option<T>>,
+) -> Result<Option<Vec<T>>> {
     let mut subs = Vec::with_capacity(sources.len());
     for s in sources {
-        match intervals(s, field, ctx)? {
+        match each(s)? {
             Some(it) => subs.push(it),
             None => return Ok(None),
         }
