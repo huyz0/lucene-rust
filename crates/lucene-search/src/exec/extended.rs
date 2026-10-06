@@ -348,6 +348,12 @@ pub(crate) fn index_or_doc_values<'a>(
 
 #[cfg(test)]
 thread_local! {
+    /// How many phrases [`eager_phrase`] resolved on this thread, for tests.
+    pub(crate) static EAGER_PHRASES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+thread_local! {
     /// Every side [`index_or_doc_values`] chose on this thread, for tests.
     pub(crate) static IODV_PLANS: std::cell::RefCell<Vec<crate::doc_value_query::IndexOrDocValuesPlan>> =
         const { std::cell::RefCell::new(Vec::new()) };
@@ -538,6 +544,8 @@ fn eager_phrase<'a>(
     // positions, the phrase's conjunction over those as its approximation:
     // only documents every position has are visited, and only their
     // positions decoded.
+    #[cfg(test)]
+    EAGER_PHRASES.with(|n| n.set(n.get() + 1));
     let mut sources: Vec<Vec<super::span::LeafPositions<'a>>> = Vec::with_capacity(slots.len());
     for alts in slots {
         let mut slot = Vec::with_capacity(alts.len());
@@ -2788,9 +2796,9 @@ mod tests {
     }
 
     /// A positional phrase over a real segment: a pulsed singleton term
-    /// (no `.doc` stream to walk) resolves the matches up front, a segment
-    /// opened without `.pos` cannot run it, and an absent field has no
-    /// term cursor.
+    /// (no `.doc` stream to walk) resolves the matches up front -- through
+    /// [`eager_phrase`], counted by [`EAGER_PHRASES`] -- a segment opened
+    /// without `.pos` cannot run it, and an absent field has no term cursor.
     #[test]
     fn positional_phrases_over_a_real_segment() {
         let dir = std::path::Path::new(concat!(
@@ -2803,6 +2811,7 @@ mod tests {
         let opened = reader.open_segments().unwrap();
         let segs = opened.as_open_segments();
         let mut eager = 0;
+        let eager_before = EAGER_PHRASES.with(std::cell::Cell::get);
         for seg in &segs {
             let ctx = LeafContext {
                 fields: seg.fields,
@@ -2851,6 +2860,10 @@ mod tests {
             ));
         }
         assert!(eager > 0, "zeta's document has neighbours");
+        assert!(
+            EAGER_PHRASES.with(std::cell::Cell::get) > eager_before,
+            "the pulsed singleton's phrases resolve up front"
+        );
     }
 
     /// The term-statistics queries over a segment without their field have
