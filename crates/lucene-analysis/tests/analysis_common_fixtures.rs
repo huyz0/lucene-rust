@@ -55,13 +55,11 @@ fn corpus() -> Vec<String> {
 
 /// The chains the generator writes that the port does not build yet.
 const PENDING: &[&str] = &[
-    "std_concatenate_graph",
     "html_strip_standard",
     "html_strip_keyword",
     "html_strip_escaped_b",
     "uax29_url_email_analyzer",
     "uax29_url_email_tokenizer",
-    "std_kstem",
 ];
 
 // ---------------------------------------------------------------- chains
@@ -668,6 +666,14 @@ fn build(name: &str) -> Option<Analyzer> {
                 StandardTokenizer::new(),
             )))
         }),
+        "std_kstem" => chain(|| {
+            comps(KStemFilter::new(LowerCaseFilter::new(
+                StandardTokenizer::new(),
+            )))
+        }),
+        "std_concatenate_graph" => {
+            chain(|| comps(ConcatenateGraphFilter::new(StandardTokenizer::new())))
+        }
         "std_english_minimal" => chain(|| {
             comps(EnglishMinimalStemFilter::new(LowerCaseFilter::new(
                 StandardTokenizer::new(),
@@ -846,7 +852,7 @@ fn chains_match_lucene_token_for_token() {
         assert_eq!(actual.len(), expected.len(), "{name}: row count");
         checked += 1;
     }
-    assert!(checked >= 97, "only {checked} chains checked");
+    assert!(checked >= 99, "only {checked} chains checked");
 }
 
 #[test]

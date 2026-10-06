@@ -4,6 +4,7 @@
 //! crate-root [`crate::AsciiFoldingFilter`] is the older `Vec<Token>` API
 //! over the same table).
 
+mod concatenate_graph;
 mod conditional;
 mod filtering;
 mod keyword;
@@ -12,6 +13,7 @@ mod stateful;
 mod term_filters;
 mod word_delimiter;
 
+pub use concatenate_graph::{ConcatenateGraphFilter, DEFAULT_MAX_GRAPH_EXPANSIONS, SEP_LABEL};
 pub use conditional::{
     protected_term_filter, ConditionalRoot, ConditionalTokenFilter, NotProtected, OneTimeWrapper,
     ProtectedTermFilter, ShouldFilter,

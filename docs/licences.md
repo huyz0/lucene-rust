@@ -16,6 +16,10 @@ a dependency the shipped library links is not under a licence listed here.
   - the Brics-derived `o.a.l.util.automaton` (BSD): `lucene-codecs`'
     `automaton` ports `Operations.determinize`, `UTF32ToUTF8` and
     `ByteRunAutomaton`.
+  - the University of Massachusetts' KStem stemmer and dictionary
+    (BSD-style): `lucene-analysis`' `en/kstem.rs` ports `KStemmer`, and
+    `en/kstem_data.rs` is its dictionary, generated from Lucene's sources
+    (M11).
   - Two others this port does *not* carry, and the reason:
     - the moman Levenshtein tables (MIT): `fuzzy` matches by dynamic
       programming instead;

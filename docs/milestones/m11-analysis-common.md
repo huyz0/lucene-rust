@@ -85,13 +85,13 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   `isWhitespace`, decimal digits) is generated from the Unicode Character
   Database 16.0.0, not the JDK (`docs/licences.md`).
 - **T11.6** packages done: `core` (with `FlattenGraphFilter`) and the
-  `CharTokenizer` family; `miscellaneous` but `ConcatenateGraphFilter`,
+  `CharTokenizer` family; `miscellaneous` but
   `ConcatenatingTokenStream`, `DateRecognizerFilter`, `EmptyTokenStream`,
   `LimitTokenCountAnalyzer`, `PerFieldAnalyzerWrapper` and the deprecated
-  `WordDelimiterFilter`; `en` but `KStemFilter`; `ngram`, `shingle` (but
+  `WordDelimiterFilter`; `en` (KStem's dictionary generated from Lucene's sources); `ngram`, `shingle` (but
   `ShingleAnalyzerWrapper`), `pattern`, `path`, `charfilter` (but
   `HTMLStripCharFilter`), `commongrams`, `cjk`, `payloads`, `boost`,
-  `minhash`. 97 of the harness's 104 chains match Lucene token for token. `java.util.regex` is the
+  `minhash`. 99 of the harness's 104 chains match Lucene token for token. `java.util.regex` is the
   `regex` crate behind a Java-syntax shim (`util/java_regex.rs`: ASCII
   `\d\w\s`, `$n` replacements; no backreferences or lookaround).
 - The parity ledger is within a few hundred bytes of its 400 KB budget, so

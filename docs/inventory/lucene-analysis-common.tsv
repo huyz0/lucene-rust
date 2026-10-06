@@ -130,17 +130,17 @@ analysis/en/EnglishMinimalStemFilterFactory	todo:M11	T11.7 factory/SPI: EnglishM
 analysis/en/EnglishMinimalStemmer	ported	crates/lucene-analysis/src/en/mod.rs::minimal_stem
 analysis/en/EnglishPossessiveFilter	ported	crates/lucene-analysis/src/en/mod.rs::EnglishPossessiveFilter
 analysis/en/EnglishPossessiveFilterFactory	todo:M11	T11.7 factory/SPI: EnglishPossessiveFilterFactory
-analysis/en/KStemData1	todo:M11	T11.6 en: KStemData1
-analysis/en/KStemData2	todo:M11	T11.6 en: KStemData2
-analysis/en/KStemData3	todo:M11	T11.6 en: KStemData3
-analysis/en/KStemData4	todo:M11	T11.6 en: KStemData4
-analysis/en/KStemData5	todo:M11	T11.6 en: KStemData5
-analysis/en/KStemData6	todo:M11	T11.6 en: KStemData6
-analysis/en/KStemData7	todo:M11	T11.6 en: KStemData7
-analysis/en/KStemData8	todo:M11	T11.6 en: KStemData8
-analysis/en/KStemFilter	todo:M11	T11.6 en: KStemFilter
+analysis/en/KStemData1	ported	crates/lucene-analysis/src/en/kstem_data.rs::HEAD_WORDS
+analysis/en/KStemData2	ported	crates/lucene-analysis/src/en/kstem_data.rs::HEAD_WORDS
+analysis/en/KStemData3	ported	crates/lucene-analysis/src/en/kstem_data.rs::HEAD_WORDS
+analysis/en/KStemData4	ported	crates/lucene-analysis/src/en/kstem_data.rs::HEAD_WORDS
+analysis/en/KStemData5	ported	crates/lucene-analysis/src/en/kstem_data.rs::HEAD_WORDS
+analysis/en/KStemData6	ported	crates/lucene-analysis/src/en/kstem_data.rs::HEAD_WORDS
+analysis/en/KStemData7	ported	crates/lucene-analysis/src/en/kstem_data.rs::HEAD_WORDS
+analysis/en/KStemData8	ported	crates/lucene-analysis/src/en/kstem_data.rs::HEAD_WORDS
+analysis/en/KStemFilter	ported	crates/lucene-analysis/src/en/kstem.rs::KStemFilter
 analysis/en/KStemFilterFactory	todo:M11	T11.7 factory/SPI: KStemFilterFactory
-analysis/en/KStemmer	todo:M11	T11.6 en: KStemmer
+analysis/en/KStemmer	ported	crates/lucene-analysis/src/en/kstem.rs::KStemmer
 analysis/en/PorterStemFilter	ported	crates/lucene-analysis/src/en/mod.rs::PorterStemFilter
 analysis/en/PorterStemFilterFactory	todo:M11	T11.7 factory/SPI: PorterStemFilterFactory
 analysis/en/PorterStemmer	ported	crates/lucene-analysis/src/lib.rs::porter
@@ -256,7 +256,7 @@ analysis/miscellaneous/CapitalizationFilter	ported	crates/lucene-analysis/src/mi
 analysis/miscellaneous/CapitalizationFilterFactory	todo:M11	T11.7 factory/SPI: CapitalizationFilterFactory
 analysis/miscellaneous/CodepointCountFilter	ported	crates/lucene-analysis/src/miscellaneous/filtering.rs::CodepointCountFilter
 analysis/miscellaneous/CodepointCountFilterFactory	todo:M11	T11.7 factory/SPI: CodepointCountFilterFactory
-analysis/miscellaneous/ConcatenateGraphFilter	todo:M11	T11.6 miscellaneous: ConcatenateGraphFilter
+analysis/miscellaneous/ConcatenateGraphFilter	ported	crates/lucene-analysis/src/miscellaneous/concatenate_graph.rs::ConcatenateGraphFilter
 analysis/miscellaneous/ConcatenateGraphFilterFactory	todo:M11	T11.7 factory/SPI: ConcatenateGraphFilterFactory
 analysis/miscellaneous/ConcatenatingTokenStream	todo:M11	T11.6 miscellaneous: ConcatenatingTokenStream
 analysis/miscellaneous/ConditionalTokenFilter	ported	crates/lucene-analysis/src/miscellaneous/conditional.rs::ConditionalTokenFilter
