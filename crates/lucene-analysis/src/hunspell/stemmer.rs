@@ -147,8 +147,20 @@ impl<'d> Stemmer<'d> {
                 })
                 .collect()
         };
-        let mut seen = std::collections::HashSet::new();
-        stems.into_iter().filter(|s| seen.insert(key(s))).collect()
+        // A word has a handful of stems: a linear scan beats hashing.
+        let mut seen: Vec<Vec<u32>> = Vec::with_capacity(stems.len());
+        stems
+            .into_iter()
+            .filter(|s| {
+                let k = key(s);
+                if seen.contains(&k) {
+                    false
+                } else {
+                    seen.push(k);
+                    true
+                }
+            })
+            .collect()
     }
 
     /// `analyze`: input cleaning, the word itself, then its case variants.
@@ -359,12 +371,13 @@ impl<'d> Stemmer<'d> {
         if morph_data_id <= 0 {
             return None;
         }
+        const ST: [u16; 3] = [b's' as u16, b't' as u16, b':' as u16];
+        const SPACE_ST: [u16; 4] = [b' ' as u16, b's' as u16, b't' as u16, b':' as u16];
         let data = &self.dictionary.morph_data[morph_data_id as usize];
-        let st: Vec<u16> = "st:".encode_utf16().collect();
-        let start = if data.starts_with(&st) {
+        let start = if data.starts_with(&ST) {
             0
         } else {
-            super::dictionary::index_of_str(data, &" st:".encode_utf16().collect::<Vec<_>>(), 0)?
+            super::dictionary::index_of_str(data, &SPACE_ST, 0)?
         };
         let next_space = super::dictionary::index_of(data, u16::from(b' '), start + 3);
         Some(data[start + 3..next_space.unwrap_or(data.len())].to_vec())
@@ -417,10 +430,10 @@ impl<'d> Stemmer<'d> {
                         applied.outer_suffix,
                         context,
                     ) {
-                        let Some(stripped) = self.strip_affix(word, i, prefix, true) else {
-                            continue;
-                        };
-                        if !self.apply_affix(&stripped, prefix, true, applied, context, processor) {
+                        let applied_ok = self.strip_affix(word, i, prefix, true, &mut |stripped| {
+                            self.apply_affix(stripped, prefix, true, applied, context, processor)
+                        });
+                        if applied_ok == Some(false) {
                             return false;
                         }
                     }
@@ -453,12 +466,13 @@ impl<'d> Stemmer<'d> {
                         applied.outer_suffix,
                         context,
                     ) {
-                        let Some(stripped) = self.strip_affix(word, length - i, suffix, false)
-                        else {
-                            continue;
-                        };
-                        if !self.apply_affix(&stripped, suffix, false, applied, context, processor)
-                        {
+                        let applied_ok =
+                            self.strip_affix(word, length - i, suffix, false, &mut |stripped| {
+                                self.apply_affix(
+                                    stripped, suffix, false, applied, context, processor,
+                                )
+                            });
+                        if applied_ok == Some(false) {
                             return false;
                         }
                     }
@@ -472,15 +486,17 @@ impl<'d> Stemmer<'d> {
         true
     }
 
-    /// `stripAffix`: the word with the affix removed and the strip restored,
-    /// or `None` when the condition fails or nothing would remain.
+    /// `stripAffix`: hands `then` the word with the affix removed and the
+    /// strip restored and returns its answer, or `None` when the condition
+    /// fails or nothing would remain.
     fn strip_affix(
         &self,
         word: &[u16],
         affix_len: usize,
         affix: i32,
         is_prefix: bool,
-    ) -> Option<Vec<u16>> {
+        then: &mut dyn FnMut(&[u16]) -> bool,
+    ) -> Option<bool> {
         let d = self.dictionary;
         let de_affixed_len = word.len() - affix_len;
         let strip_ord = usize::from(d.affix_data(affix, AFFIX_STRIP_ORD));
@@ -501,11 +517,22 @@ impl<'d> Stemmer<'d> {
                 }
             }
         }
-        Some(if is_prefix {
-            [strip, de_affixed].concat()
+        // The stripped word, on the stack when it fits (Java allocates a
+        // `char[]`; here that was a malloc per candidate).
+        let (first, second) = if is_prefix {
+            (strip, de_affixed)
         } else {
-            [de_affixed, strip].concat()
-        })
+            (de_affixed, strip)
+        };
+        let total = first.len() + second.len();
+        let mut inline = [0u16; 64];
+        if total <= inline.len() {
+            inline[..first.len()].copy_from_slice(first);
+            inline[first.len()..total].copy_from_slice(second);
+            Some(then(&inline[..total]))
+        } else {
+            Some(then(&[first, second].concat()))
+        }
     }
 
     /// `isAffixCompatible`.
