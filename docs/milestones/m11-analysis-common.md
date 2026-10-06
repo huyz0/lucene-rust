@@ -115,8 +115,8 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   scans back for its start, where `java.util.regex` walks `[ ,.]+` once.
 - `java.util.regex` is the `regex` crate behind a Java-syntax shim (`util/java_regex.rs`: ASCII
   `\d\w\s`, `$n` replacements; no backreferences or lookaround).
-- The parity ledger is within a few KB of its 400 KB budget, so
-  M11's rows are one per package (`docs/parity/analysis-common.md`) and the
+- The parity ledger's 400 KB budget is shared (the large area files were
+  compacted to current facts to make room for M11), so M11's rows are one per package (`docs/parity/analysis-common.md`) and the
   per-class status lives in the inventory.
 
 ## Acceptance criteria
