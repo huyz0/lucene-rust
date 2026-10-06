@@ -85,6 +85,15 @@ a dependency the shipped library links is not under a licence listed here.
   extracted from the JDK (GPL-2.0 with the Classpath Exception): Java's
   `Character.getType` is specified as the UCD's `General_Category`, and the
   generated tables equal JDK 25's code point for code point.
+- **Hunspell charset tables** (M11),
+  `crates/lucene-analysis/src/hunspell/charsets.rs`: the byte-to-character
+  mapping of seven single-byte charsets (ISO/IEC 8859-2, -7, -13, -15, KOI8-R
+  of RFC 1489, windows-1251, TIS 620) and the list of charset names the JDK
+  accepts. Each mapping is fixed by its standard; they are read off the JDK
+  by `crates/lucene-analysis/tools/GenHunspellCharsets.java` (written for
+  this project) only so that the port decodes exactly as Lucene does on the
+  JDK, including which bytes the JDK refuses. No JDK code is copied. Ships in
+  the native library.
 - **The analysis-common corpus** (M11), `fixtures/corpus/analysis-common.txt`
   (and its frozen copy `snowball-seed.txt`, which seeds `GenSnowball`),
   is written for this project (Apache-2.0); the few well-known pangrams in it

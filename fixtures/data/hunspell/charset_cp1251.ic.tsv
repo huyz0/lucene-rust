@@ -1,0 +1,67 @@
+W	къщ	1	къщ	къщ	къщ	къщ	AffixedWord[word=къщ, entry=къщ/A, prefixes=[], suffixes=[]]	къща|къщи|къщ	къща|къщи|къщ	0
+W	їжак	1	їжак	їжак	їжак	їжак	AffixedWord[word=їжак, entry=їжак/AN, prefixes=[], suffixes=[]]	їжака|їжаки|їжак	їжака|їжаки|їжак	0
+W	град	1	град	град	град	град	AffixedWord[word=град, entry=град/AB, prefixes=[], suffixes=[]]	града|гради|град	града|гради|град	0
+W	Київ	1	київ	київ	київ	київ	AffixedWord[word=Київ, entry=київ, prefixes=[], suffixes=[]]	київ	київ	0
+W	ябълк	1	ябълк	ябълк	ябълк	ябълк	AffixedWord[word=ябълк, entry=ябълк/B, prefixes=[], suffixes=[]]	ябълк	ябълк	0
+W	къщи	1	къщ	къщ	къщ	къщ	AffixedWord[word=къщи, entry=къщ/A, prefixes=[], suffixes=[A(id=0)]]	къщ|къща	къщ|къща	1
+W	къща	1	къщ	къщ	къщ	къщ	AffixedWord[word=къща, entry=къщ/A, prefixes=[], suffixes=[A(id=1)]]	къщ|къщи	къщ|къщи	1
+W	їжаки	1	їжак	їжак	їжак	їжак	AffixedWord[word=їжаки, entry=їжак/AN, prefixes=[], suffixes=[A(id=0)]]	їжак|їжака	їжак|їжака	1
+W	преїжак	1	їжак	їжак	їжак	їжак	AffixedWord[word=преїжак, entry=їжак/AN, prefixes=[N(id=5)], suffixes=[]]	преїжака|преїжаки|преїжак	преїжака|преїжаки|преїжак	1
+W	градът	1	град	град	град	град	AffixedWord[word=градът, entry=град/AB, prefixes=[], suffixes=[A(id=2)]]	градът	градът	1
+W	ябълка	0	ябълка	ябълка	ябълка			ябълк	ябълк	1
+W	КИЇВ	1	київ	київ	київ	київ	AffixedWord[word=КИЇВ, entry=київ, prefixes=[], suffixes=[]]	київ	київ	1
+W	кашта	0	кашта	кашта	кашта					1
+W	КЪЩ	1	къщ	къщ	къщ	къщ	AffixedWord[word=КЪЩ, entry=къщ/A, prefixes=[], suffixes=[]]	къща|къщи|къщ	къща|къщи|къщ	0
+W	Къщ	1	къщ	къщ	къщ	къщ	AffixedWord[word=Къщ, entry=къщ/A, prefixes=[], suffixes=[]]	къща|къщи|къщ	къща|къщи|къщ	0
+W	ЇЖАК	1	їжак	їжак	їжак	їжак	AffixedWord[word=ЇЖАК, entry=їжак/AN, prefixes=[], suffixes=[]]	їжака|їжаки|їжак	їжака|їжаки|їжак	1
+W	Їжак	1	їжак	їжак	їжак	їжак	AffixedWord[word=Їжак, entry=їжак/AN, prefixes=[], suffixes=[]]	їжака|їжаки|їжак	їжака|їжаки|їжак	1
+W	ГРАД	1	град	град	град	град	AffixedWord[word=ГРАД, entry=град/AB, prefixes=[], suffixes=[]]	града|гради|град	града|гради|град	1
+W	Град	1	град	град	град	град	AffixedWord[word=Град, entry=град/AB, prefixes=[], suffixes=[]]	града|гради|град	града|гради|град	0
+W	ЯБЪЛК	1	ябълк	ябълк	ябълк	ябълк	AffixedWord[word=ЯБЪЛК, entry=ябълк/B, prefixes=[], suffixes=[]]	ябълк	ябълк	1
+W	Ябълк	1	ябълк	ябълк	ябълк	ябълк	AffixedWord[word=Ябълк, entry=ябълк/B, prefixes=[], suffixes=[]]	ябълк	ябълк	1
+W	КЪЩИ	1	къщ	къщ	къщ	къщ	AffixedWord[word=КЪЩИ, entry=къщ/A, prefixes=[], suffixes=[A(id=0)]]	къщ|къща	къщ|къща	1
+W	Къщи	1	къщ	къщ	къщ	къщ	AffixedWord[word=Къщи, entry=къщ/A, prefixes=[], suffixes=[A(id=0)]]	къщ|къща	къщ|къща	1
+W	КЪЩА	1	къщ	къщ	къщ	къщ	AffixedWord[word=КЪЩА, entry=къщ/A, prefixes=[], suffixes=[A(id=1)]]	къщ|къщи	къщ|къщи	1
+W	Къща	1	къщ	къщ	къщ	къщ	AffixedWord[word=Къща, entry=къщ/A, prefixes=[], suffixes=[A(id=1)]]	къщ|къщи	къщ|къщи	1
+W	ЇЖАКИ	1	їжак	їжак	їжак	їжак	AffixedWord[word=ЇЖАКИ, entry=їжак/AN, prefixes=[], suffixes=[A(id=0)]]	їжак|їжака	їжак|їжака	1
+W	Їжаки	1	їжак	їжак	їжак	їжак	AffixedWord[word=Їжаки, entry=їжак/AN, prefixes=[], suffixes=[A(id=0)]]	їжак|їжака	їжак|їжака	1
+W	ПРЕЇЖАК	1	їжак	їжак	їжак	їжак	AffixedWord[word=ПРЕЇЖАК, entry=їжак/AN, prefixes=[N(id=5)], suffixes=[]]	преїжака|преїжаки|преїжак	преїжака|преїжаки|преїжак	1
+W	Преїжак	1	їжак	їжак	їжак	їжак	AffixedWord[word=Преїжак, entry=їжак/AN, prefixes=[N(id=5)], suffixes=[]]	преїжака|преїжаки|преїжак	преїжака|преїжаки|преїжак	1
+W	ГРАДЪТ	1	град	град	град	град	AffixedWord[word=ГРАДЪТ, entry=град/AB, prefixes=[], suffixes=[A(id=2)]]	градът	градът	1
+W	Градът	1	град	град	град	град	AffixedWord[word=Градът, entry=град/AB, prefixes=[], suffixes=[A(id=2)]]	градът	градът	1
+W	ЯБЪЛКА	0	ЯБЪЛКА	ЯБЪЛКА	ЯБЪЛКА			ябълк	ябълк	1
+W	Ябълка	0	Ябълка	Ябълка	Ябълка			ябълк	ябълк	1
+W	КАШТА	0	КАШТА	КАШТА	КАШТА					1
+W	Кашта	0	Кашта	Кашта	Кашта					1
+W	кщ	0	кщ	кщ	кщ			къщ	къщ	0
+W	ъкщ	0	ъкщ	ъкщ	ъкщ			къщ	къщ	0
+W	їжк	0	їжк	їжк	їжк			їжак	їжак	1
+W	жїак	0	жїак	жїак	жїак			їжак	їжак	1
+W	грд	0	грд	грд	грд			град	град	1
+W	ргад	0	ргад	ргад	ргад			град	град	1
+W	Кив	0	Кив	Кив	Кив			київ	київ	1
+W	иКїв	0	иКїв	иКїв	иКїв			київ	київ	1
+W	яблк	0	яблк	яблк	яблк			ябълк	ябълк	1
+W	бяълк	0	бяълк	бяълк	бяълк			ябълк	ябълк	1
+W	къи	0	къи	къи	къи			къщи	къщи	1
+W	ъкщи	0	ъкщи	ъкщи	ъкщи			къщи	къщи	0
+W	къа	0	къа	къа	къа			къща	къща	0
+W	ъкща	0	ъкща	ъкща	ъкща			къща	къща	0
+W	їжки	0	їжки	їжки	їжки			їжаки	їжаки	1
+W	жїаки	0	жїаки	жїаки	жїаки			їжаки	їжаки	1
+W	прежак	0	прежак	прежак	прежак			преїжак	преїжак	1
+W	рпеїжак	0	рпеїжак	рпеїжак	рпеїжак			преїжак|їжак	преїжак|їжак	1
+W	граът	0	граът	граът	граът			градът	градът	1
+W	ргадът	0	ргадът	ргадът	ргадът			градът	градът	1
+W	ябъка	0	ябъка	ябъка	ябъка			ябълкка	ябълкка	1
+W	бяълка	0	бяълка	бяълка	бяълка			ябълкка	ябълкка	1
+W	КИВ	0	КИВ	КИВ	КИВ			київ	київ	1
+W	ИКЇВ	0	ИКЇВ	ИКЇВ	ИКЇВ			київ	київ	1
+W	ката	0	ката	ката	ката					1
+W	акшта	0	акшта	акшта	акшта					1
+E	къщ	къщ/A	AffixedWord[word=къщ, entry=къщ/A, prefixes=[], suffixes=[]]|AffixedWord[word=къща, entry=къщ/A, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=къщи, entry=къщ/A, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=къщът, entry=къщ/A, prefixes=[], suffixes=[A(id=2)]]
+E	їжак	їжак/AN	AffixedWord[word=їжак, entry=їжак/AN, prefixes=[], suffixes=[]]|AffixedWord[word=їжака, entry=їжак/AN, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=преїжака, entry=їжак/AN, prefixes=[N(id=5)], suffixes=[A(id=1)]]|AffixedWord[word=їжаки, entry=їжак/AN, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=преїжаки, entry=їжак/AN, prefixes=[N(id=5)], suffixes=[A(id=0)]]|AffixedWord[word=їжакът, entry=їжак/AN, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=преїжакът, entry=їжак/AN, prefixes=[N(id=5)], suffixes=[A(id=2)]]|AffixedWord[word=преїжак, entry=їжак/AN, prefixes=[N(id=5)], suffixes=[]]
+E	град	град/AB	AffixedWord[word=град, entry=град/AB, prefixes=[], suffixes=[]]|AffixedWord[word=града, entry=град/AB, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=гради, entry=град/AB, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=градът, entry=град/AB, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=градка, entry=град/AB, prefixes=[], suffixes=[B(id=3)]]|AffixedWord[word=градки, entry=град/AB, prefixes=[], suffixes=[B(id=4)]]
+E	Київ	null	
+E	ябълк	ябълк/B	AffixedWord[word=ябълк, entry=ябълк/B, prefixes=[], suffixes=[]]|AffixedWord[word=ябълкка, entry=ябълк/B, prefixes=[], suffixes=[B(id=3)]]|AffixedWord[word=ябълкки, entry=ябълк/B, prefixes=[], suffixes=[B(id=4)]]
+G	AffixedWord[word=град, entry=град/AB, prefixes=[], suffixes=[]]|AffixedWord[word=града, entry=град/AB, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=гради, entry=град/AB, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=градът, entry=град/AB, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=градка, entry=град/AB, prefixes=[], suffixes=[B(id=3)]]|AffixedWord[word=градки, entry=град/AB, prefixes=[], suffixes=[B(id=4)]]|AffixedWord[word=къщ, entry=къщ/A, prefixes=[], suffixes=[]]|AffixedWord[word=къща, entry=къщ/A, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=къщи, entry=къщ/A, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=къщът, entry=къщ/A, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=київ, entry=київ, prefixes=[], suffixes=[]]|AffixedWord[word=їжак, entry=їжак/AN, prefixes=[], suffixes=[]]|AffixedWord[word=їжака, entry=їжак/AN, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=преїжака, entry=їжак/AN, prefixes=[N(id=5)], suffixes=[A(id=1)]]|AffixedWord[word=їжаки, entry=їжак/AN, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=преїжаки, entry=їжак/AN, prefixes=[N(id=5)], suffixes=[A(id=0)]]|AffixedWord[word=їжакът, entry=їжак/AN, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=преїжакът, entry=їжак/AN, prefixes=[N(id=5)], suffixes=[A(id=2)]]|AffixedWord[word=преїжак, entry=їжак/AN, prefixes=[N(id=5)], suffixes=[]]|AffixedWord[word=ябълк, entry=ябълк/B, prefixes=[], suffixes=[]]|AffixedWord[word=ябълкка, entry=ябълк/B, prefixes=[], suffixes=[B(id=3)]]|AffixedWord[word=ябълкки, entry=ябълк/B, prefixes=[], suffixes=[B(id=4)]]

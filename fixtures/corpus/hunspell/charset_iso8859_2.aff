@@ -1,0 +1,16 @@
+# lucene-rust's own test dictionary: SET ISO8859-2 (Polish words).
+SET ISO8859-2
+TRY aeiouy±êó³¿¼æñ¶
+
+SFX A Y 3
+SFX A 0 y .
+SFX A 0 ami .
+SFX A 0 ach .
+
+SFX B Y 2
+SFX B 0 ê .
+SFX B 0 ± .
+
+PFX N Y 1
+PFX N 0 nie .
+

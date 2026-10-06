@@ -1,0 +1,2 @@
+# lucene-rust's own test dictionary: a .dic byte TIS620 cannot map.
+SET TIS620-2533

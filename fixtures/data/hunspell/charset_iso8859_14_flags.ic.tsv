@@ -1,0 +1,33 @@
+W	cwns	1	cwn	cwn	cwn	cwn	AffixedWord[word=cwns, entry=cwn/é, prefixes=[], suffixes=[é(id=0)]]	cwn	cwn	1
+W	dyned	1	dyn	dyn	dyn	dyn	AffixedWord[word=dyned, entry=dyn, prefixes=[], suffixes=[�(id=1)]]	dyned	dyned	1
+W	b¡ds	1	b¡d	b¡d	b¡d	b¡d	AffixedWord[word=b¡ds, entry=b¡d/é, prefixes=[], suffixes=[é(id=0)]]	b¡d	b¡d	1
+W	b¡ded	1	b¡d	b¡d	b¡d	b¡d	AffixedWord[word=b¡ded, entry=b¡d/é, prefixes=[], suffixes=[�(id=1)]]	b¡ded	b¡ded	1
+W	cwn	1	cwn	cwn	cwn	cwn	AffixedWord[word=cwn, entry=cwn/é, prefixes=[], suffixes=[]]	cwn	cwn	0
+W	dyn	1	dyn	dyn	dyn	dyn	AffixedWord[word=dyn, entry=dyn, prefixes=[], suffixes=[]]	dyn	dyn	0
+W	b¡d	1	b¡d	b¡d	b¡d	b¡d	AffixedWord[word=b¡d, entry=b¡d/é, prefixes=[], suffixes=[]]	b¡d	b¡d	0
+W	CWNS	1	cwn	cwn	cwn	cwn	AffixedWord[word=CWNS, entry=cwn/é, prefixes=[], suffixes=[é(id=0)]]	cwn	cwn	1
+W	Cwns	1	cwn	cwn	cwn	cwn	AffixedWord[word=Cwns, entry=cwn/é, prefixes=[], suffixes=[é(id=0)]]	cwn	cwn	1
+W	DYNED	1	dyn	dyn	dyn	dyn	AffixedWord[word=DYNED, entry=dyn, prefixes=[], suffixes=[�(id=1)]]	dyned	dyned	1
+W	Dyned	1	dyn	dyn	dyn	dyn	AffixedWord[word=Dyned, entry=dyn, prefixes=[], suffixes=[�(id=1)]]	dyned	dyned	1
+W	B¡DS	1	b¡d	b¡d	b¡d	b¡d	AffixedWord[word=B¡DS, entry=b¡d/é, prefixes=[], suffixes=[é(id=0)]]	b¡d	b¡d	1
+W	B¡ds	1	b¡d	b¡d	b¡d	b¡d	AffixedWord[word=B¡ds, entry=b¡d/é, prefixes=[], suffixes=[é(id=0)]]	b¡d	b¡d	1
+W	B¡DED	1	b¡d	b¡d	b¡d	b¡d	AffixedWord[word=B¡DED, entry=b¡d/é, prefixes=[], suffixes=[�(id=1)]]	b¡ded	b¡ded	1
+W	B¡ded	1	b¡d	b¡d	b¡d	b¡d	AffixedWord[word=B¡ded, entry=b¡d/é, prefixes=[], suffixes=[�(id=1)]]	b¡ded	b¡ded	1
+W	CWN	1	cwn	cwn	cwn	cwn	AffixedWord[word=CWN, entry=cwn/é, prefixes=[], suffixes=[]]	cwn	cwn	1
+W	Cwn	1	cwn	cwn	cwn	cwn	AffixedWord[word=Cwn, entry=cwn/é, prefixes=[], suffixes=[]]	cwn	cwn	1
+W	DYN	1	dyn	dyn	dyn	dyn	AffixedWord[word=DYN, entry=dyn, prefixes=[], suffixes=[]]	dyn	dyn	1
+W	Dyn	1	dyn	dyn	dyn	dyn	AffixedWord[word=Dyn, entry=dyn, prefixes=[], suffixes=[]]	dyn	dyn	1
+W	B¡D	1	b¡d	b¡d	b¡d	b¡d	AffixedWord[word=B¡D, entry=b¡d/é, prefixes=[], suffixes=[]]	b¡d	b¡d	0
+W	B¡d	1	b¡d	b¡d	b¡d	b¡d	AffixedWord[word=B¡d, entry=b¡d/é, prefixes=[], suffixes=[]]	b¡d	b¡d	1
+W	cws	0	cws	cws	cws			cwns	cwns	1
+W	wcns	0	wcns	wcns	wcns			cwns	cwns	1
+W	dyed	0	dyed	dyed	dyed			dyned	dyned	1
+W	ydned	0	ydned	ydned	ydned			dyned	dyned	1
+W	b¡s	0	b¡s	b¡s	b¡s			b¡d	b¡d	1
+W	¡bds	0	¡bds	¡bds	¡bds			b¡ds	b¡ds	1
+W	b¡ed	0	b¡ed	b¡ed	b¡ed			b¡d	b¡d	1
+W	¡bded	0	¡bded	¡bded	¡bded			b¡ded	b¡ded	1
+E	cwn	cwn/é	AffixedWord[word=cwn, entry=cwn/é, prefixes=[], suffixes=[]]|AffixedWord[word=cwns, entry=cwn/é, prefixes=[], suffixes=[é(id=0)]]
+E	dyn	dyn	AffixedWord[word=dyn, entry=dyn, prefixes=[], suffixes=[]]
+E	b¡d	b¡d/é	AffixedWord[word=b¡d, entry=b¡d/é, prefixes=[], suffixes=[]]|AffixedWord[word=b¡ds, entry=b¡d/é, prefixes=[], suffixes=[é(id=0)]]
+G	AffixedWord[word=dyn, entry=dyn, prefixes=[], suffixes=[]]|AffixedWord[word=dyned, entry=dyn, prefixes=[], suffixes=[�(id=1)]]|AffixedWord[word=cwn, entry=cwn/é, prefixes=[], suffixes=[]]|AffixedWord[word=cwns, entry=cwn/é, prefixes=[], suffixes=[é(id=0)]]|AffixedWord[word=b¡d, entry=b¡d/é, prefixes=[], suffixes=[]]|AffixedWord[word=b¡ds, entry=b¡d/é, prefixes=[], suffixes=[é(id=0)]]|AffixedWord[word=b¡ded, entry=b¡d/é, prefixes=[], suffixes=[�(id=1)]]
