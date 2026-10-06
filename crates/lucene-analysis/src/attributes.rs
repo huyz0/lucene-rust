@@ -54,7 +54,7 @@ pub const DEFAULT_TYPE: &str = "word";
 /// Setters that Java validates (`setPositionIncrement`, `setPositionLength`,
 /// `setOffset`, `setTermFrequency`) return `Err(IllegalArgument)` where Java
 /// throws `IllegalArgumentException`, with Java's message.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct AttributeSource {
     /// `CharTermAttribute`.
     term: String,
@@ -88,6 +88,37 @@ pub struct AttributeSource {
 /// `AttributeSource.State`: a captured copy of every attribute, restored with
 /// [`AttributeSource::restore_state`].
 pub type State = AttributeSource;
+
+impl Clone for AttributeSource {
+    fn clone(&self) -> Self {
+        let mut a = AttributeSource::new();
+        a.clone_from(self);
+        a
+    }
+
+    /// Field by field, so [`AttributeSource::restore_state`] reuses this
+    /// source's term and payload buffers (a derived `clone_from` would
+    /// allocate a whole new value per call).
+    fn clone_from(&mut self, source: &Self) {
+        self.term.clone_from(&source.term);
+        if self.bytes_term.is_some() || source.bytes_term.is_some() {
+            self.bytes_term.clone_from(&source.bytes_term);
+        }
+        self.start_offset = source.start_offset;
+        self.end_offset = source.end_offset;
+        self.position_increment = source.position_increment;
+        self.position_length = source.position_length;
+        self.token_type.clone_from(&source.token_type);
+        self.flags = source.flags;
+        self.keyword = source.keyword;
+        if self.payload.is_some() || source.payload.is_some() {
+            self.payload.clone_from(&source.payload);
+        }
+        self.term_frequency = source.term_frequency;
+        self.sentence_index = source.sentence_index;
+        self.boost_bits = source.boost_bits;
+    }
+}
 
 impl Default for AttributeSource {
     fn default() -> Self {
@@ -176,18 +207,11 @@ impl AttributeSource {
     /// units; an unpaired surrogate becomes U+FFFD (see the module docs).
     pub fn set_term_utf16(&mut self, units: &[u16]) {
         self.term.clear();
-        // The common case, a short ASCII term: narrow it on the stack and
-        // copy it in one go rather than pushing one `char` at a time.
-        const ASCII_STACK: usize = 64;
-        if units.len() <= ASCII_STACK && units.iter().fold(0u16, |acc, &u| acc | u) < 0x80 {
-            let mut narrow = [0u8; ASCII_STACK];
-            for (d, &u) in narrow.iter_mut().zip(units) {
-                *d = u as u8;
-            }
-            if let Ok(ascii) = std::str::from_utf8(&narrow[..units.len()]) {
-                self.term.push_str(ascii);
-                return;
-            }
+        // The common case, an ASCII term: each unit is its own byte.
+        if units.iter().all(|&u| u < 0x80) {
+            self.term.reserve(units.len());
+            self.term.extend(units.iter().map(|&u| char::from(u as u8)));
+            return;
         }
         // At most 3 UTF-8 bytes per UTF-16 unit (a pair is 4 bytes for 2).
         self.term.reserve(units.len() * 3);

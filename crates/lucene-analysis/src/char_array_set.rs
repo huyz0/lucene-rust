@@ -18,13 +18,59 @@
 //! it) is already immutable, and `copy` is `Clone`.
 
 use std::collections::HashSet;
+use std::hash::{BuildHasherDefault, Hasher};
 
 use crate::simple_to_lowercase;
+
+/// The set's hash: a multiply-rotate over 8-byte words (FxHash's mix).
+/// Every probe is a token of the text being analyzed, so the hash is on the
+/// hot path; SipHash's flooding resistance buys nothing for a set whose
+/// keys are fixed when it is built.
+#[derive(Default)]
+pub(crate) struct WordHasher(u64);
+
+impl WordHasher {
+    #[inline]
+    fn mix(&mut self, word: u64) {
+        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+}
+
+impl Hasher for WordHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        let mut chunks = bytes.chunks_exact(8);
+        for c in &mut chunks {
+            let mut w = [0u8; 8];
+            w.copy_from_slice(c);
+            self.mix(u64::from_le_bytes(w));
+        }
+        let rest = chunks.remainder();
+        let mut w = [0u8; 8];
+        w[..rest.len()].copy_from_slice(rest);
+        self.mix(u64::from_le_bytes(w) ^ ((rest.len() as u64) << 56));
+    }
+
+    #[inline]
+    fn write_u8(&mut self, i: u8) {
+        self.mix(u64::from(i));
+    }
+
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// [`WordHasher`] as a `HashMap`/`HashSet` hasher.
+pub(crate) type WordHash = BuildHasherDefault<WordHasher>;
+
+type Words = HashSet<String, WordHash>;
 
 /// `CharArraySet`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CharArraySet {
-    words: HashSet<String>,
+    words: Words,
     ignore_case: bool,
 }
 
@@ -41,7 +87,7 @@ impl CharArraySet {
     /// `new CharArraySet(startSize, ignoreCase)`.
     pub fn new(ignore_case: bool) -> Self {
         CharArraySet {
-            words: HashSet::new(),
+            words: Words::default(),
             ignore_case,
         }
     }
@@ -49,7 +95,7 @@ impl CharArraySet {
     /// `new CharArraySet(startSize, ignoreCase)` with a capacity hint.
     pub fn with_capacity(start_size: usize, ignore_case: bool) -> Self {
         CharArraySet {
-            words: HashSet::with_capacity(start_size),
+            words: Words::with_capacity_and_hasher(start_size, Default::default()),
             ignore_case,
         }
     }
@@ -123,7 +169,7 @@ impl From<&HashSet<String>> for CharArraySet {
     /// A case-sensitive set of the same words.
     fn from(words: &HashSet<String>) -> Self {
         CharArraySet {
-            words: words.clone(),
+            words: words.iter().cloned().collect(),
             ignore_case: false,
         }
     }

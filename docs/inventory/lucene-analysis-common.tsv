@@ -258,7 +258,7 @@ analysis/miscellaneous/CodepointCountFilter	ported	crates/lucene-analysis/src/mi
 analysis/miscellaneous/CodepointCountFilterFactory	todo:M11	T11.7 factory/SPI: CodepointCountFilterFactory
 analysis/miscellaneous/ConcatenateGraphFilter	ported	crates/lucene-analysis/src/miscellaneous/concatenate_graph.rs::ConcatenateGraphFilter
 analysis/miscellaneous/ConcatenateGraphFilterFactory	todo:M11	T11.7 factory/SPI: ConcatenateGraphFilterFactory
-analysis/miscellaneous/ConcatenatingTokenStream	todo:M11	T11.6 miscellaneous: ConcatenatingTokenStream
+analysis/miscellaneous/ConcatenatingTokenStream	ported	crates/lucene-analysis/src/miscellaneous/wrappers.rs::ConcatenatingTokenStream
 analysis/miscellaneous/ConditionalTokenFilter	ported	crates/lucene-analysis/src/miscellaneous/conditional.rs::ConditionalTokenFilter
 analysis/miscellaneous/ConditionalTokenFilterFactory	todo:M11	T11.7 factory/SPI: ConditionalTokenFilterFactory
 analysis/miscellaneous/DateRecognizerFilter	todo:M11	T11.6 miscellaneous: DateRecognizerFilter
@@ -267,7 +267,7 @@ analysis/miscellaneous/DelimitedTermFrequencyTokenFilter	ported	crates/lucene-an
 analysis/miscellaneous/DelimitedTermFrequencyTokenFilterFactory	todo:M11	T11.7 factory/SPI: DelimitedTermFrequencyTokenFilterFactory
 analysis/miscellaneous/DropIfFlaggedFilter	ported	crates/lucene-analysis/src/miscellaneous/filtering.rs::DropIfFlaggedFilter
 analysis/miscellaneous/DropIfFlaggedFilterFactory	todo:M11	T11.7 factory/SPI: DropIfFlaggedFilterFactory
-analysis/miscellaneous/EmptyTokenStream	todo:M11	T11.6 miscellaneous: EmptyTokenStream
+analysis/miscellaneous/EmptyTokenStream	ported	crates/lucene-analysis/src/miscellaneous/wrappers.rs::EmptyTokenStream
 analysis/miscellaneous/FingerprintFilter	ported	crates/lucene-analysis/src/miscellaneous/stateful.rs::FingerprintFilter
 analysis/miscellaneous/FingerprintFilterFactory	todo:M11	T11.7 factory/SPI: FingerprintFilterFactory
 analysis/miscellaneous/FixBrokenOffsetsFilter	ported	crates/lucene-analysis/src/miscellaneous/stateful.rs::FixBrokenOffsetsFilter
@@ -282,7 +282,7 @@ analysis/miscellaneous/KeywordRepeatFilter	ported	crates/lucene-analysis/src/mis
 analysis/miscellaneous/KeywordRepeatFilterFactory	todo:M11	T11.7 factory/SPI: KeywordRepeatFilterFactory
 analysis/miscellaneous/LengthFilter	ported	crates/lucene-analysis/src/miscellaneous/filtering.rs::LengthFilter
 analysis/miscellaneous/LengthFilterFactory	todo:M11	T11.7 factory/SPI: LengthFilterFactory
-analysis/miscellaneous/LimitTokenCountAnalyzer	todo:M11	T11.6 miscellaneous: LimitTokenCountAnalyzer
+analysis/miscellaneous/LimitTokenCountAnalyzer	ported	crates/lucene-analysis/src/miscellaneous/wrappers.rs::LimitTokenCountAnalyzer
 analysis/miscellaneous/LimitTokenCountFilter	ported	crates/lucene-analysis/src/miscellaneous/limit.rs::LimitTokenCountFilter
 analysis/miscellaneous/LimitTokenCountFilterFactory	todo:M11	T11.7 factory/SPI: LimitTokenCountFilterFactory
 analysis/miscellaneous/LimitTokenOffsetFilter	ported	crates/lucene-analysis/src/miscellaneous/limit.rs::LimitTokenOffsetFilter
@@ -290,7 +290,7 @@ analysis/miscellaneous/LimitTokenOffsetFilterFactory	todo:M11	T11.7 factory/SPI:
 analysis/miscellaneous/LimitTokenPositionFilter	ported	crates/lucene-analysis/src/miscellaneous/limit.rs::LimitTokenPositionFilter
 analysis/miscellaneous/LimitTokenPositionFilterFactory	todo:M11	T11.7 factory/SPI: LimitTokenPositionFilterFactory
 analysis/miscellaneous/PatternKeywordMarkerFilter	ported	crates/lucene-analysis/src/miscellaneous/keyword.rs::PatternKeywordMarkerFilter
-analysis/miscellaneous/PerFieldAnalyzerWrapper	todo:M11	T11.6 miscellaneous: PerFieldAnalyzerWrapper
+analysis/miscellaneous/PerFieldAnalyzerWrapper	ported	crates/lucene-analysis/src/miscellaneous/wrappers.rs::PerFieldAnalyzerWrapper
 analysis/miscellaneous/ProtectedTermFilter	ported	crates/lucene-analysis/src/miscellaneous/conditional.rs::ProtectedTermFilter
 analysis/miscellaneous/ProtectedTermFilterFactory	todo:M11	T11.7 factory/SPI: ProtectedTermFilterFactory
 analysis/miscellaneous/RemoveDuplicatesTokenFilter	ported	crates/lucene-analysis/src/miscellaneous/keyword.rs::RemoveDuplicatesTokenFilter
@@ -403,7 +403,7 @@ analysis/ru/RussianLightStemFilterFactory	todo:M11	T11.7 factory/SPI: RussianLig
 analysis/ru/RussianLightStemmer	todo:M11	T11.6 per-language (ru): RussianLightStemmer
 analysis/shingle/FixedShingleFilter	ported	crates/lucene-analysis/src/shingle/mod.rs::FixedShingleFilter
 analysis/shingle/FixedShingleFilterFactory	todo:M11	T11.7 factory/SPI: FixedShingleFilterFactory
-analysis/shingle/ShingleAnalyzerWrapper	todo:M11	T11.6 shingle: ShingleAnalyzerWrapper
+analysis/shingle/ShingleAnalyzerWrapper	ported	crates/lucene-analysis/src/shingle/mod.rs::ShingleAnalyzerWrapper
 analysis/shingle/ShingleFilter	ported	crates/lucene-analysis/src/shingle/mod.rs::ShingleFilter
 analysis/shingle/ShingleFilterFactory	todo:M11	T11.7 factory/SPI: ShingleFilterFactory
 analysis/sinks/TeeSinkTokenFilter	todo:M11	T11.6 sinks: TeeSinkTokenFilter

@@ -1,0 +1,184 @@
+T	0	The	0	3	1	1	word	0	-	0	1
+T	0	quick	4	9	1	1	word	0	-	0	1
+T	0	brown	10	15	1	1	word	0	-	0	1
+E	0	15	15	0
+T	1	the	0	3	1	1	word	0	-	0	1
+T	1	the	4	7	1	1	word	0	-	0	1
+T	1	The	8	11	1	1	word	0	-	0	1
+E	1	11	11	0
+T	2	Running	0	7	1	1	word	0	-	0	1
+T	2	runs	8	12	1	1	word	0	-	0	1
+T	2	ran	13	16	1	1	word	0	-	0	1
+E	2	16	16	0
+T	3	O'Neil's	0	8	1	1	word	0	-	0	1
+T	3	friend's	9	17	1	1	word	0	-	0	1
+T	3	dogs'	18	23	1	1	word	0	-	0	1
+E	3	23	23	0
+T	4	Wi-Fi	0	5	1	1	word	0	-	0	1
+T	4	PowerShot500	6	18	1	1	word	0	-	0	1
+T	4	SD-500	19	25	1	1	word	0	-	0	1
+E	4	25	25	0
+T	5	U.S.A.	0	6	1	1	word	0	-	0	1
+T	5	I.B.M.	7	13	1	1	word	0	-	0	1
+T	5	e.g.	14	18	1	1	word	0	-	0	1
+E	5	18	18	0
+T	6	Crème	0	5	1	1	word	0	-	0	1
+T	6	brûlée	6	12	1	1	word	0	-	0	1
+T	6	à	13	14	1	1	word	0	-	0	1
+E	6	14	14	0
+T	7	l'avion	0	7	1	1	word	0	-	0	1
+T	7	d'Air	8	13	1	1	word	0	-	0	1
+T	7	France	14	20	1	1	word	0	-	0	1
+E	7	20	20	0
+T	8	Die	0	3	1	1	word	0	-	0	1
+T	8	Bundesrepublik	4	18	1	1	word	0	-	0	1
+T	8	Deutschland	19	30	1	1	word	0	-	0	1
+E	8	30	30	0
+T	9	El	0	2	1	1	word	0	-	0	1
+T	9	niño	3	7	1	1	word	0	-	0	1
+T	9	comió	8	13	1	1	word	0	-	0	1
+E	9	13	13	0
+T	10	Съешь	0	5	1	1	word	0	-	0	1
+T	10	же	6	8	1	1	word	0	-	0	1
+T	10	ещё	9	12	1	1	word	0	-	0	1
+E	10	12	12	0
+T	11	Η	0	1	1	1	word	0	-	0	1
+T	11	γρήγορη	2	9	1	1	word	0	-	0	1
+T	11	καφέ	10	14	1	1	word	0	-	0	1
+E	11	14	14	0
+T	12	Türkçe	0	6	1	1	word	0	-	0	1
+T	12	İstanbul	7	15	1	1	word	0	-	0	1
+T	12	ılık	16	20	1	1	word	0	-	0	1
+E	12	20	20	0
+T	13	Svenska:	0	8	1	1	word	0	-	0	1
+T	13	åka	9	12	1	1	word	0	-	0	1
+T	13	på	13	15	1	1	word	0	-	0	1
+E	13	15	15	0
+T	14	العربية	0	7	1	1	word	0	-	0	1
+T	14	لغة	8	11	1	1	word	0	-	0	1
+T	14	جميلة،	12	18	1	1	word	0	-	0	1
+E	14	18	18	0
+T	15	עברית	0	5	1	1	word	0	-	0	1
+T	15	היא	6	9	1	1	word	0	-	0	1
+T	15	שפה	10	13	1	1	word	0	-	0	1
+E	15	13	13	0
+T	16	فارسی	0	5	1	1	word	0	-	0	1
+T	16	زبان	6	10	1	1	word	0	-	0	1
+T	16	زیبایی	11	17	1	1	word	0	-	0	1
+E	16	17	17	0
+T	17	हिन्दी	0	6	1	1	word	0	-	0	1
+T	17	भाषा	7	11	1	1	word	0	-	0	1
+T	17	बहुत	12	16	1	1	word	0	-	0	1
+E	17	16	16	0
+T	18	বাংলা	0	5	1	1	word	0	-	0	1
+T	18	ভাষা	6	10	1	1	word	0	-	0	1
+T	18	সুন্দর	11	17	1	1	word	0	-	0	1
+E	18	17	17	0
+T	19	ภาษาไทยไม่มีช่องว่างระหว่างคำ	0	29	1	1	word	0	-	0	1
+T	19	แต่มีช่องว่างระหว่างประโยค	30	56	1	1	word	0	-	0	1
+T	19	๑๒๓	57	60	1	1	word	0	-	0	1
+E	19	60	60	0
+T	20	中华人民共和国成立于1949年。我爱北京天安门！	0	24	1	1	word	0	-	0	1
+E	20	24	24	0
+T	21	日本語のテキストとカタカナとｶﾀｶﾅとひらがな、ＡＢＣ１２３と全角	0	33	1	1	word	0	-	0	1
+E	21	33	33	0
+T	22	한국어	0	3	1	1	word	0	-	0	1
+T	22	텍스트입니다	4	10	1	1	word	0	-	0	1
+T	22	서울특별시	11	16	1	1	word	0	-	0	1
+E	22	16	16	0
+T	23	Emoji:	0	6	1	1	word	0	-	0	1
+T	23	👍	7	9	1	1	word	0	-	0	1
+T	23	🇺🇸	10	14	1	1	word	0	-	0	1
+E	23	14	14	0
+T	24	Visit	0	5	1	1	word	0	-	0	1
+T	24	https://lucene.apache.org/core/	6	37	1	1	word	0	-	0	1
+T	24	or	38	40	1	1	word	0	-	0	1
+E	24	40	40	0
+T	25	See	0	3	1	1	word	0	-	0	1
+T	25	www.example.com/path?q=1&x=y#frag	4	37	1	1	word	0	-	0	1
+T	25	and	38	41	1	1	word	0	-	0	1
+E	25	41	41	0
+T	26	mailto:someone@example.org	0	26	1	1	word	0	-	0	1
+T	26	ftp://files.example.net/pub/file.tar.gz	27	66	1	1	word	0	-	0	1
+T	26	example.com.	67	79	1	1	word	0	-	0	1
+E	26	79	79	0
+T	27	<p>Hello	0	8	1	1	word	0	-	0	1
+T	27	<b>world</b>	9	21	1	1	word	0	-	0	1
+T	27	&amp;	22	27	1	1	word	0	-	0	1
+E	27	27	27	0
+T	28	<script	0	7	1	1	word	0	-	0	1
+T	28	type="text/javascript">var	8	34	1	1	word	0	-	0	1
+T	28	x	35	36	1	1	word	0	-	0	1
+E	28	36	36	0
+T	29	<div	0	4	1	1	word	0	-	0	1
+T	29	class='c'>&quot;quoted&quot;	5	33	1	1	word	0	-	0	1
+T	29	&apos;single&apos;	34	52	1	1	word	0	-	0	1
+E	29	52	52	0
+T	30	/usr/local/bin/lucene	0	21	1	1	word	0	-	0	1
+T	30	/var/log//syslog.1	22	40	1	1	word	0	-	0	1
+T	30	relative/path/to/file.txt	41	66	1	1	word	0	-	0	1
+E	30	66	66	0
+T	31	C:\\Program	0	10	1	1	word	0	-	0	1
+T	31	Files\\Lucene\\index	11	29	1	1	word	0	-	0	1
+T	31	a\\b\\c	30	35	1	1	word	0	-	0	1
+E	31	35	35	0
+T	32	the|1.5	0	7	1	1	word	0	-	0	1
+T	32	quick|2	8	15	1	1	word	0	-	0	1
+T	32	brown|0.5	16	25	1	1	word	0	-	0	1
+E	32	25	25	0
+T	33	apple|3	0	7	1	1	word	0	-	0	1
+T	33	banana|1	8	16	1	1	word	0	-	0	1
+T	33	cherry	17	23	1	1	word	0	-	0	1
+E	33	23	23	0
+T	34	quick|0.5	0	9	1	1	word	0	-	0	1
+T	34	fox|2.0	10	17	1	1	word	0	-	0	1
+T	34	dog|-1.25	18	27	1	1	word	0	-	0	1
+E	34	27	27	0
+T	35	token1|payload	0	14	1	1	word	0	-	0	1
+T	35	one|two|three	15	28	1	1	word	0	-	0	1
+E	35	28	28	0
+T	36	Tabs	1	5	1	1	word	0	-	0	1
+T	36	and	6	9	1	1	word	0	-	0	1
+T	36	multiple	12	20	1	1	word	0	-	0	1
+E	36	20	20	0
+T	37	ab	0	2	1	1	word	0	-	0	1
+E	37	2	2	0
+T	38	A	0	1	1	1	word	0	-	0	1
+E	38	1	1	0
+T	39	supercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilis	0	255	1	1	word	0	-	0	1
+T	39	ticexpialidocioussupercalifragilisticexpialidocious	255	306	1	1	word	0	-	0	1
+T	39	end	307	310	1	1	word	0	-	0	1
+E	39	310	310	0
+T	40	x	0	1	1	1	word	0	-	0	1
+T	40	y	2	3	1	1	word	0	-	0	1
+T	40	z	4	5	1	1	word	0	-	0	1
+E	40	5	5	0
+T	41	foo-bar-baz	0	11	1	1	word	0	-	0	1
+T	41	FooBarBaz	12	21	1	1	word	0	-	0	1
+T	41	FOObar	22	28	1	1	word	0	-	0	1
+E	41	28	28	0
+T	42	The	0	3	1	1	word	0	-	0	1
+T	42	CEO's	4	9	1	1	word	0	-	0	1
+T	42	1990s-era	10	19	1	1	word	0	-	0	1
+E	42	19	19	0
+T	43	running	0	7	1	1	word	0	-	0	1
+T	43	jumping	8	15	1	1	word	0	-	0	1
+T	43	happily	16	23	1	1	word	0	-	0	1
+E	43	23	23	0
+T	44	leading	2	9	1	1	word	0	-	0	1
+T	44	and	10	13	1	1	word	0	-	0	1
+T	44	trailing	14	22	1	1	word	0	-	0	1
+E	44	22	22	0
+E	45	0	0	0
+T	46	ÀÁÂÃÄÅ	0	6	1	1	word	0	-	0	1
+T	46	àáâãäå	7	13	1	1	word	0	-	0	1
+T	46	ÇçÈÉÊË	14	20	1	1	word	0	-	0	1
+E	46	20	20	0
+T	47	“Smart	0	6	1	1	word	0	-	0	1
+T	47	quotes”	7	14	1	1	word	0	-	0	1
+T	47	‘single’	15	23	1	1	word	0	-	0	1
+E	47	23	23	0
+T	48	abilities	0	9	1	1	word	0	-	0	1
+T	48	agreed	10	16	1	1	word	0	-	0	1
+T	48	activism	17	25	1	1	word	0	-	0	1
+E	48	25	25	0

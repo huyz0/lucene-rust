@@ -8,7 +8,7 @@
 //! constructors (`WhitespaceTokenizer::new()`).
 
 use crate::attributes::AttributeSource;
-use crate::java_character::{self, code_point_at, push_utf16};
+use crate::java_character::{self, code_point_at};
 use crate::reader::CharReader;
 use crate::token_stream::{TokenStream, Tokenizer, TokenizerInput};
 use crate::AnalysisError;
@@ -158,7 +158,6 @@ pub struct CharTokenizer<P> {
     final_offset: i32,
     max_token_len: usize,
     io_buffer: CharacterBuffer,
-    term: Vec<u16>,
 }
 
 /// `org.apache.lucene.analysis.core.WhitespaceTokenizer`.
@@ -199,7 +198,6 @@ impl<P: TokenChar> CharTokenizer<P> {
             final_offset: 0,
             max_token_len: DEFAULT_MAX_WORD_LEN,
             io_buffer: CharacterBuffer::new(IO_BUFFER_SIZE),
-            term: Vec::new(),
         }
     }
 
@@ -247,7 +245,6 @@ impl<P: TokenChar> TokenStream for CharTokenizer<P> {
         let mut length = 0usize;
         let mut start = 0usize;
         let mut end = 0usize;
-        self.term.clear();
         loop {
             if self.buffer_index >= self.data_len {
                 self.offset += self.data_len;
@@ -278,7 +275,16 @@ impl<P: TokenChar> TokenStream for CharTokenizer<P> {
                     end = start;
                 }
                 end += char_count;
-                length += push_utf16(&mut self.term, c);
+                // Java appends to the term's char[]; the term here is UTF-8,
+                // so the code point is pushed whole and `length` counts its
+                // UTF-16 units. `code_point_at` pairs every surrogate it can
+                // (a trailing high surrogate is held back for the next
+                // fill), so a lone one is unpaired in Java's buffer too and
+                // becomes U+FFFD, as `set_term_utf16` maps it.
+                self.atts
+                    .term_mut()
+                    .push(char::from_u32(c).unwrap_or(char::REPLACEMENT_CHARACTER));
+                length += char_count;
                 if length >= self.max_token_len {
                     break;
                 }
@@ -286,7 +292,6 @@ impl<P: TokenChar> TokenStream for CharTokenizer<P> {
                 break;
             }
         }
-        self.atts.set_term_utf16(&self.term);
         let s = self.correct(start);
         self.final_offset = self.correct(end);
         self.atts.set_offset(s, self.final_offset)?;

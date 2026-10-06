@@ -24,12 +24,17 @@ use crate::{
 /// term.
 pub struct PorterStemFilter<I> {
     input: I,
+    /// The stemmer's working buffer, reused across tokens.
+    buf: Vec<char>,
 }
 
 impl<I: TokenStream> PorterStemFilter<I> {
     /// `new PorterStemFilter(TokenStream)`.
     pub fn new(input: I) -> Self {
-        PorterStemFilter { input }
+        PorterStemFilter {
+            input,
+            buf: Vec::new(),
+        }
     }
 }
 
@@ -42,9 +47,11 @@ impl<I: TokenStream> TokenFilter for PorterStemFilter<I> {
         }
         let a = self.input.attributes_mut();
         if !a.is_keyword() {
-            let stemmed = crate::porter::stem(a.term());
-            if stemmed != a.term() {
-                a.set_term(&stemmed);
+            crate::porter::stem_in_place(a.term(), &mut self.buf);
+            if !self.buf.iter().copied().eq(a.term().chars()) {
+                let t = a.term_mut();
+                t.clear();
+                t.extend(self.buf.iter());
             }
         }
         Ok(true)

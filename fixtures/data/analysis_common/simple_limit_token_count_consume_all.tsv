@@ -1,0 +1,143 @@
+T	0	the	0	3	1	1	word	0	-	0	1
+T	0	quick	4	9	1	1	word	0	-	0	1
+E	0	44	44	0
+T	1	the	0	3	1	1	word	0	-	0	1
+T	1	the	4	7	1	1	word	0	-	0	1
+E	1	39	39	0
+T	2	running	0	7	1	1	word	0	-	0	1
+T	2	runs	8	12	1	1	word	0	-	0	1
+E	2	108	108	0
+T	3	o	0	1	1	1	word	0	-	0	1
+T	3	neil	2	6	1	1	word	0	-	0	1
+E	3	71	71	0
+T	4	wi	0	2	1	1	word	0	-	0	1
+T	4	fi	3	5	1	1	word	0	-	0	1
+E	4	94	94	0
+T	5	u	0	1	1	1	word	0	-	0	1
+T	5	s	2	3	1	1	word	0	-	0	1
+E	5	81	81	0
+T	6	crème	0	5	1	1	word	0	-	0	1
+T	6	brûlée	6	12	1	1	word	0	-	0	1
+E	6	99	99	0
+T	7	l	0	1	1	1	word	0	-	0	1
+T	7	avion	2	7	1	1	word	0	-	0	1
+E	7	72	72	0
+T	8	die	0	3	1	1	word	0	-	0	1
+T	8	bundesrepublik	4	18	1	1	word	0	-	0	1
+E	8	99	99	0
+T	9	el	0	2	1	1	word	0	-	0	1
+T	9	niño	3	7	1	1	word	0	-	0	1
+E	9	67	67	0
+T	10	съешь	0	5	1	1	word	0	-	0	1
+T	10	же	6	8	1	1	word	0	-	0	1
+E	10	67	67	0
+T	11	η	0	1	1	1	word	0	-	0	1
+T	11	γρήγορη	2	9	1	1	word	0	-	0	1
+E	11	69	69	0
+T	12	türkçe	0	6	1	1	word	0	-	0	1
+T	12	istanbul	7	15	1	1	word	0	-	0	1
+E	12	48	48	0
+T	13	svenska	0	7	1	1	word	0	-	0	1
+T	13	åka	9	12	1	1	word	0	-	0	1
+E	13	86	86	0
+T	14	العربية	0	7	1	1	word	0	-	0	1
+T	14	لغة	8	11	1	1	word	0	-	0	1
+E	14	44	44	0
+T	15	עברית	0	5	1	1	word	0	-	0	1
+T	15	היא	6	9	1	1	word	0	-	0	1
+E	15	30	30	0
+T	16	فارسی	0	5	1	1	word	0	-	0	1
+T	16	زبان	6	10	1	1	word	0	-	0	1
+E	16	54	54	0
+T	17	ह	0	1	1	1	word	0	-	0	1
+T	17	न	2	3	1	1	word	0	-	0	1
+E	17	37	37	0
+T	18	ব	0	1	1	1	word	0	-	0	1
+T	18	ল	3	4	1	1	word	0	-	0	1
+E	18	21	21	0
+T	19	ภาษาไทยไม	0	9	1	1	word	0	-	0	1
+T	19	ม	10	11	1	1	word	0	-	0	1
+E	19	60	60	0
+T	20	中华人民共和国成立于	0	10	1	1	word	0	-	0	1
+T	20	年	14	15	1	1	word	0	-	0	1
+E	20	24	24	0
+T	21	日本語のテキストとカタカナとｶﾀｶﾅとひらがな	0	23	1	1	word	0	-	0	1
+T	21	ａｂｃ	24	27	1	1	word	0	-	0	1
+E	21	33	33	0
+T	22	한국어	0	3	1	1	word	0	-	0	1
+T	22	텍스트입니다	4	10	1	1	word	0	-	0	1
+E	22	22	22	0
+T	23	emoji	0	5	1	1	word	0	-	0	1
+T	23	and	40	43	1	1	word	0	-	0	1
+E	23	81	81	0
+T	24	visit	0	5	1	1	word	0	-	0	1
+T	24	https	6	11	1	1	word	0	-	0	1
+E	24	74	74	0
+T	25	see	0	3	1	1	word	0	-	0	1
+T	25	www	4	7	1	1	word	0	-	0	1
+E	25	107	107	0
+T	26	mailto	0	6	1	1	word	0	-	0	1
+T	26	someone	7	14	1	1	word	0	-	0	1
+E	26	79	79	0
+T	27	p	1	2	1	1	word	0	-	0	1
+T	27	hello	3	8	1	1	word	0	-	0	1
+E	27	106	106	0
+T	28	script	1	7	1	1	word	0	-	0	1
+T	28	type	8	12	1	1	word	0	-	0	1
+E	28	112	112	0
+T	29	div	1	4	1	1	word	0	-	0	1
+T	29	class	5	10	1	1	word	0	-	0	1
+E	29	105	105	0
+T	30	usr	1	4	1	1	word	0	-	0	1
+T	30	local	5	10	1	1	word	0	-	0	1
+E	30	66	66	0
+T	31	c	0	1	1	1	word	0	-	0	1
+T	31	program	3	10	1	1	word	0	-	0	1
+E	31	35	35	0
+T	32	the	0	3	1	1	word	0	-	0	1
+T	32	quick	8	13	1	1	word	0	-	0	1
+E	32	37	37	0
+T	33	apple	0	5	1	1	word	0	-	0	1
+T	33	banana	8	14	1	1	word	0	-	0	1
+E	33	31	31	0
+T	34	quick	0	5	1	1	word	0	-	0	1
+T	34	fox	10	13	1	1	word	0	-	0	1
+E	34	27	27	0
+T	35	token	0	5	1	1	word	0	-	0	1
+T	35	payload	7	14	1	1	word	0	-	0	1
+E	35	28	28	0
+T	36	tabs	1	5	1	1	word	0	-	0	1
+T	36	and	6	9	1	1	word	0	-	0	1
+E	36	105	105	0
+T	37	ab	0	2	1	1	word	0	-	0	1
+E	37	2	2	0
+T	38	a	0	1	1	1	word	0	-	0	1
+E	38	1	1	0
+T	39	supercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilis	0	255	1	1	word	0	-	0	1
+T	39	ticexpialidocioussupercalifragilisticexpialidocious	255	306	1	1	word	0	-	0	1
+E	39	310	310	0
+T	40	x	0	1	1	1	word	0	-	0	1
+T	40	y	2	3	1	1	word	0	-	0	1
+E	40	42	42	0
+T	41	foo	0	3	1	1	word	0	-	0	1
+T	41	bar	4	7	1	1	word	0	-	0	1
+E	41	79	79	0
+T	42	the	0	3	1	1	word	0	-	0	1
+T	42	ceo	4	7	1	1	word	0	-	0	1
+E	42	96	96	0
+T	43	running	0	7	1	1	word	0	-	0	1
+T	43	jumping	8	15	1	1	word	0	-	0	1
+E	43	90	90	0
+T	44	leading	2	9	1	1	word	0	-	0	1
+T	44	and	10	13	1	1	word	0	-	0	1
+E	44	32	32	0
+E	45	0	0	0
+T	46	àáâãäå	0	6	1	1	word	0	-	0	1
+T	46	àáâãäå	7	13	1	1	word	0	-	0	1
+E	46	86	86	0
+T	47	smart	1	6	1	1	word	0	-	0	1
+T	47	quotes	7	13	1	1	word	0	-	0	1
+E	47	84	84	0
+T	48	abilities	0	9	1	1	word	0	-	0	1
+T	48	agreed	10	16	1	1	word	0	-	0	1
+E	48	308	308	0

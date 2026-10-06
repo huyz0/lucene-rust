@@ -85,23 +85,37 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   `isWhitespace`, decimal digits) is generated from the Unicode Character
   Database 16.0.0, not the JDK (`docs/licences.md`).
 - **T11.6** packages done: `core` (with `FlattenGraphFilter`) and the
-  `CharTokenizer` family; `miscellaneous` but
-  `ConcatenatingTokenStream`, `DateRecognizerFilter`, `EmptyTokenStream`,
-  `LimitTokenCountAnalyzer`, `PerFieldAnalyzerWrapper` and the deprecated
-  `WordDelimiterFilter`; `en` (KStem's dictionary generated from Lucene's
-  sources); `ngram`, `shingle` (but `ShingleAnalyzerWrapper`), `pattern`,
-  `path`, `charfilter`, `commongrams`, `cjk`, `payloads`, `boost`,
-  `minhash`, `email`. All 104 harness chains match Lucene token for
-  token; `stems.words` (40,392 words through KStem and Porter) and
-  `urls.words` (3,000 URL/email fragment joins) add word-level checks.
+  `CharTokenizer` family; `miscellaneous` but `DateRecognizerFilter` and the
+  deprecated `WordDelimiterFilter`; `en` (KStem's dictionary generated from
+  Lucene's sources); `ngram`, `shingle`, `pattern`, `path`, `charfilter`,
+  `commongrams`, `cjk`, `payloads`, `boost`, `minhash`, `email`. All 110
+  harness chains match Lucene token for token; `stems.words` (40,392 words
+  through KStem and Porter) and `urls.words` (3,000 URL/email fragment
+  joins) add word-level checks. Left in these packages: their factories
+  (T11.7) and `util`'s helpers for the language packages (`CSVUtil`,
+  `OpenStringBuilder`, `SegmentingTokenizerBase`, `StemmerUtil`,
+  `CharArrayIterator`).
 - **T11.2** -- the JFlex scanners (`UAX29URLEmailTokenizerImpl`,
   `HTMLStripCharFilter`) run a shared skeleton (`util/jflex.rs`) over the
   tables of Lucene's compiled classes, read back by reflection
   (`tools/ExtractJFlexTables.java`) and stored zlib-compressed; the actions
   are ported line for line.
+- **Benchmark** -- `scripts/bench-micro.sh --bench analysis_common`
+  (`AnalysisCommonMicro.java` / `micro_analysis_common.rs`, ns per token,
+  2026-10-06, Rust/Java): ascii_folding 1.85x, cjk 1.27x, english 1.48x,
+  html_strip 1.58x, kstem 1.31x, ngram_2_3 1.08~, pattern 0.90~, shingle
+  1.03~, simple 1.08~, uax29_url_email 0.99~, wdgf 1.27x, whitespace 1.33x
+  (`~`: inside the 1.13x noise floor). The first run had seven cases under
+  1.0x; callgrind put the cost in allocation: `AttributeSource`'s derived
+  `clone_from` (every `restoreState` built a new value), a `String` per
+  KStem dictionary probe and per Porter step, SipHash in `CharArraySet`,
+  a UTF-16 round trip per `CharTokenizer` token, and a capture allocation
+  per regex match. `pattern` stays at ~0.9x: ~45% of its instructions are
+  the `regex` crate's lazy DFA, which finds a match's end forwards and then
+  scans back for its start, where `java.util.regex` walks `[ ,.]+` once.
 - `java.util.regex` is the `regex` crate behind a Java-syntax shim (`util/java_regex.rs`: ASCII
   `\d\w\s`, `$n` replacements; no backreferences or lookaround).
-- The parity ledger is within a few hundred bytes of its 400 KB budget, so
+- The parity ledger is within a few KB of its 400 KB budget, so
   M11's rows are one per package (`docs/parity/analysis-common.md`) and the
   per-class status lives in the inventory.
 

@@ -2703,19 +2703,26 @@ pub(crate) mod porter {
     ///   treats every character that is not `a/e/i/o/u/y` as a consonant --
     ///   so it stems them to `"Cat"` and `"café"`.
     pub(crate) fn stem(term: &str) -> String {
-        let mut w: Vec<char> = term.chars().collect();
-        if w.len() <= 2 {
-            return term.to_string();
-        }
-        step1a(&mut w);
-        step1b(&mut w);
-        step1c(&mut w);
-        step2(&mut w);
-        step3(&mut w);
-        step4(&mut w);
-        step5a(&mut w);
-        step5b(&mut w);
+        let mut w = Vec::new();
+        stem_in_place(term, &mut w);
         w.into_iter().collect()
+    }
+
+    /// [`stem`] into a reused buffer: `w` ends holding the stem's chars.
+    pub(crate) fn stem_in_place(term: &str, w: &mut Vec<char>) {
+        w.clear();
+        w.extend(term.chars());
+        if w.len() <= 2 {
+            return;
+        }
+        step1a(w);
+        step1b(w);
+        step1c(w);
+        step2(w);
+        step3(w);
+        step4(w);
+        step5a(w);
+        step5b(w);
     }
 
     /// Is `chars[i]` a consonant? Vowels are `a`/`e`/`i`/`o`/`u`; `y` is a
@@ -2829,15 +2836,14 @@ pub(crate) mod porter {
     /// Step 1a: `-sses`->`-ss`, `-ies`->`-i`, `-ss`->`-ss` (no-op), else
     /// trailing `-s`-> (delete). Unconditional on measure.
     fn step1a(w: &mut Vec<char>) {
-        let s: String = w.iter().collect();
-        if s.ends_with("sses") {
+        if ends(w, "sses").is_some() {
             w.truncate(w.len() - 2);
-        } else if s.ends_with("ies") {
+        } else if ends(w, "ies").is_some() {
             w.truncate(w.len() - 3);
             w.push('i');
-        } else if s.ends_with("ss") {
+        } else if ends(w, "ss").is_some() {
             // no-op: "ss" stays "ss".
-        } else if s.ends_with('s') {
+        } else if w.last() == Some(&'s') {
             w.truncate(w.len() - 1);
         }
     }
@@ -2845,18 +2851,17 @@ pub(crate) mod porter {
     /// Step 1b: `-eed`->`-ee` (if `m(stem) > 0`); `-ed`/`-ing` deleted only
     /// if the stem contains a vowel, then post-deletion cleanup.
     fn step1b(w: &mut Vec<char>) {
-        let s: String = w.iter().collect();
-        if s.ends_with("eed") {
+        if ends(w, "eed").is_some() {
             let stem_len = w.len() - 3;
             if measure(&w[..stem_len]) > 0 {
                 w.truncate(w.len() - 1);
             }
             return;
         }
-        let deleted = if s.ends_with("ed") && contains_vowel(&w[..w.len() - 2]) {
+        let deleted = if ends(w, "ed").is_some() && contains_vowel(&w[..w.len() - 2]) {
             w.truncate(w.len() - 2);
             true
-        } else if s.ends_with("ing") && contains_vowel(&w[..w.len() - 3]) {
+        } else if ends(w, "ing").is_some() && contains_vowel(&w[..w.len() - 3]) {
             w.truncate(w.len() - 3);
             true
         } else {
@@ -2865,8 +2870,7 @@ pub(crate) mod porter {
         if !deleted {
             return;
         }
-        let s2: String = w.iter().collect();
-        if s2.ends_with("at") || s2.ends_with("bl") || s2.ends_with("iz") {
+        if ends(w, "at").is_some() || ends(w, "bl").is_some() || ends(w, "iz").is_some() {
             w.push('e');
         } else if ends_double_consonant(w) && !matches!(w[w.len() - 1], 'l' | 's' | 'z') {
             w.pop();

@@ -52,8 +52,7 @@ impl PatternTokenizer {
     }
 
     fn emit(&mut self, from: usize, to: usize, start: i32, end: i32) -> Result<(), AnalysisError> {
-        let term = self.matcher.text()[from..to].to_string();
-        self.atts.set_term(&term);
+        self.atts.set_term(&self.matcher.text()[from..to]);
         let (s, e) = (
             self.input.correct_offset(start),
             self.input.correct_offset(end),

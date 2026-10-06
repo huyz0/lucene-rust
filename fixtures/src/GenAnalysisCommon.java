@@ -63,10 +63,12 @@ import org.apache.lucene.analysis.miscellaneous.HyphenatedWordsFilter;
 import org.apache.lucene.analysis.miscellaneous.KeepWordFilter;
 import org.apache.lucene.analysis.miscellaneous.KeywordRepeatFilter;
 import org.apache.lucene.analysis.miscellaneous.LengthFilter;
+import org.apache.lucene.analysis.miscellaneous.LimitTokenCountAnalyzer;
 import org.apache.lucene.analysis.miscellaneous.LimitTokenCountFilter;
 import org.apache.lucene.analysis.miscellaneous.LimitTokenOffsetFilter;
 import org.apache.lucene.analysis.miscellaneous.LimitTokenPositionFilter;
 import org.apache.lucene.analysis.miscellaneous.PatternKeywordMarkerFilter;
+import org.apache.lucene.analysis.miscellaneous.PerFieldAnalyzerWrapper;
 import org.apache.lucene.analysis.miscellaneous.ProtectedTermFilter;
 import org.apache.lucene.analysis.miscellaneous.RemoveDuplicatesTokenFilter;
 import org.apache.lucene.analysis.miscellaneous.ScandinavianFoldingFilter;
@@ -98,6 +100,7 @@ import org.apache.lucene.analysis.payloads.NumericPayloadTokenFilter;
 import org.apache.lucene.analysis.payloads.TokenOffsetPayloadTokenFilter;
 import org.apache.lucene.analysis.payloads.TypeAsPayloadTokenFilter;
 import org.apache.lucene.analysis.shingle.FixedShingleFilter;
+import org.apache.lucene.analysis.shingle.ShingleAnalyzerWrapper;
 import org.apache.lucene.analysis.shingle.ShingleFilter;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.analysis.standard.StandardTokenizer;
@@ -369,6 +372,14 @@ public class GenAnalysisCommon {
     c.put("std_porter", () -> chain(StandardTokenizer::new, t -> new PorterStemFilter(new LowerCaseFilter(t))));
     c.put("std_kstem", () -> chain(StandardTokenizer::new, t -> new KStemFilter(new LowerCaseFilter(t))));
     c.put("std_english_minimal", () -> chain(StandardTokenizer::new, t -> new EnglishMinimalStemFilter(new LowerCaseFilter(t))));
+
+    // ---- analyzer wrappers
+    c.put("ws_limit_token_count_analyzer", () -> new LimitTokenCountAnalyzer(new WhitespaceAnalyzer(), 3));
+    c.put("simple_limit_token_count_consume_all", () -> new LimitTokenCountAnalyzer(new SimpleAnalyzer(), 2, true));
+    c.put("per_field_wrapper_field", () -> new PerFieldAnalyzerWrapper(new WhitespaceAnalyzer(), Map.of("f", new SimpleAnalyzer())));
+    c.put("per_field_wrapper_default", () -> new PerFieldAnalyzerWrapper(new WhitespaceAnalyzer(), Map.of("g", new SimpleAnalyzer())));
+    c.put("shingle_analyzer_wrapper", () -> new ShingleAnalyzerWrapper(new StandardAnalyzer(), 3));
+    c.put("shingle_analyzer_wrapper_options", () -> new ShingleAnalyzerWrapper(new WhitespaceAnalyzer(), 2, 3, "_", false, true, "*"));
     return c;
   }
 
