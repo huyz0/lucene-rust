@@ -712,15 +712,16 @@ records the exact edit and the exact message for each.
 
 ## The analysis gates over third-party data (M11)
 
-Not in `scripts/gate.sh`: they download pinned inputs (and need a C compiler
-or a JDK). The Snowball ones are CI job `snowball vocabularies`; the Hunspell
-one is opt-in.
+Not in `scripts/gate.sh`: they download pinned inputs or need a C compiler or
+a JDK. The Snowball ones are CI job `snowball vocabularies`, the charset tables
+a step of `fixtures are Java-produced`; Lucene's dictionaries are opt-in.
 
 | gate | where | catches | seen to fail by | blind to |
 |---|---|---|---|---|
 | generated stemmers | `scripts/check-snowball-generated.sh` | a file under `lucene-analysis/src/snowball/algorithms` that is not byte for byte `tools/gen_snowball.sh`'s output over the Snowball sources at `34f3612e` (a hand edit, a generator change nobody re-ran); Snowball sources or Lucene's sources jar other than the pinned ones (SHA-256 over the source tree file by file, and of the jar); the compiler's Java backend no longer reproducing Lucene's stemmers | one space inserted into `english.rs`'s first `slice_from` (`189c189 < env.slice_from(&[89]); > env.slice_from(&[ 89]);`) | whether the generator's four rewrites are *right* (the fixtures and the vocabularies are); the runtime, `program.rs`, which is written by hand |
 | snowball vocabularies | `scripts/check-snowball-vocabulary.sh` -> `tests/snowball_vocabulary.rs` (skipped without `SNOWBALL_DATA`) | a stem of any of the 11.3 million snowball-data `f08c4d63` words that differs from its `output.txt` (where Lucene 10.5.0's own stemmers agree word for word); a moved data file (SHA-256 per file) | one Danish `output.txt` line changed (`Danish: 1 of 23830 differ, first ["adami -> adami (snowball-data: adamix)"]`) | words outside the vocabularies (the committed fixtures cover the synthetic ones); the filter around the stemmer (`SnowballFilter`, which the committed fixtures run) |
 | Lucene's Hunspell dictionaries | `scripts/check-hunspell-lucene-dictionaries.sh` -> `GenHunspell` + `tests/hunspell_fixtures.rs` (`HUNSPELL_CORPUS`/`HUNSPELL_DATA`, every file checked, every difference listed) | any column of `GenHunspell`'s output that differs on Lucene 10.5.0's own 97 test dictionaries (their `.good` and `.wrong` words); moved dictionaries (SHA-256 over the files) | `empty.tsv: fragment(everything) (Lucene: !ArithmeticException)` -- Java's n-gram checker over a dictionary with no roots divides by zero, the port's does not; now a listed difference | `.sug` expectations (Lucene's own tests compare suggestions to them; this compares the port to Lucene instead); dictionaries Lucene's tests load in other ways (several files, `ignoreCase` only) |
+| Hunspell charset tables | CI `fixtures are Java-produced`: `java crates/lucene-analysis/tools/GenHunspellCharsets.java \| diff - crates/lucene-analysis/src/hunspell/charsets.rs` | a hand edit of `charsets.rs`; a JDK (21 on CI) decoding one of the seven charsets, or naming charsets, otherwise than the one the file was generated on (21 and 25 agree) | ISO-8859-2's 0xA1 changed from U+0104 to U+0105 (`12c12 < ... 0x0104 ... > ... 0x0105 ...`) | whether the JDK's decoding is Lucene's (it is: Lucene decodes through it); charsets the port does not table |
 
 ## The OpenSearch plugin's gates (M2)
 
