@@ -37,7 +37,7 @@ static DICT: LazyLock<HashMap<&'static str, DictEntry, WordHash>> = LazyLock::ne
         let fresh = d.insert(k, e).is_none();
         assert!(fresh, "Warning: Entry [{k}] already in dictionary {which}");
     };
-    for &w in EXCEPTION_WORDS {
+    for &w in &EXCEPTION_WORDS {
         put(
             w,
             DictEntry {
@@ -47,7 +47,7 @@ static DICT: LazyLock<HashMap<&'static str, DictEntry, WordHash>> = LazyLock::ne
             1,
         );
     }
-    for &(w, root) in DIRECT_CONFLATIONS {
+    for &(w, root) in &DIRECT_CONFLATIONS {
         put(
             w,
             DictEntry {
@@ -57,7 +57,7 @@ static DICT: LazyLock<HashMap<&'static str, DictEntry, WordHash>> = LazyLock::ne
             2,
         );
     }
-    for &(w, root) in COUNTRY_NATIONALITY {
+    for &(w, root) in &COUNTRY_NATIONALITY {
         put(
             w,
             DictEntry {
@@ -71,13 +71,13 @@ static DICT: LazyLock<HashMap<&'static str, DictEntry, WordHash>> = LazyLock::ne
         exception: false,
         root: None,
     };
-    for &w in HEAD_WORDS {
+    for &w in &HEAD_WORDS {
         put(w, default, 4);
     }
-    for &w in SUPPLEMENT_DICT {
+    for &w in &SUPPLEMENT_DICT {
         put(w, default, 5);
     }
-    for &w in PROPER_NOUNS {
+    for &w in &PROPER_NOUNS {
         put(w, default, 6);
     }
     d

@@ -4,7 +4,7 @@
 // Massachusetts' (BSD-style licence, in LICENSE).
 
 /// `KStemmer.exceptionWords`.
-pub(super) static EXCEPTION_WORDS: &[&str] = &[
+pub(super) static EXCEPTION_WORDS: [&str; 41] = [
     "aide", "bathe", "caste", "cute", "dame", "dime", "doge", "done", "dune", "envelope", "gage",
     "grille", "grippe", "lobe", "mane", "mare", "nape", "node", "pane", "pate", "plane", "pope",
     "programme", "quite", "ripe", "rote", "rune", "sage", "severe", "shoppe", "sine", "slime",
@@ -12,7 +12,7 @@ pub(super) static EXCEPTION_WORDS: &[&str] = &[
 ];
 
 /// `KStemmer.directConflations`.
-pub(super) static DIRECT_CONFLATIONS: &[(&str, &str)] = &[
+pub(super) static DIRECT_CONFLATIONS: [(&str, &str); 40] = [
     ("aging", "age"),
     ("going", "go"),
     ("goes", "go"),
@@ -56,7 +56,7 @@ pub(super) static DIRECT_CONFLATIONS: &[(&str, &str)] = &[
 ];
 
 /// `KStemmer.countryNationality`.
-pub(super) static COUNTRY_NATIONALITY: &[(&str, &str)] = &[
+pub(super) static COUNTRY_NATIONALITY: [(&str, &str); 149] = [
     ("afghan", "afghanistan"),
     ("african", "africa"),
     ("albanian", "albania"),
@@ -209,7 +209,7 @@ pub(super) static COUNTRY_NATIONALITY: &[(&str, &str)] = &[
 ];
 
 /// `KStemData1.data` .. `KStemData8.data`, concatenated.
-pub(super) static HEAD_WORDS: &[&str] = &[
+pub(super) static HEAD_WORDS: [&str; 27495] = [
     "aback", "abacus", "abandon", "abandoned", "abase", "abash", "abate", "abattoir", "abbess",
     "abbey", "abbot", "abbreviate", "abbreviation", "abc", "abdicate", "abdomen", "abduct", "abed",
     "aberrant", "aberration", "abet", "abeyance", "abhor", "abhorrent", "abide", "abiding",
@@ -3749,14 +3749,14 @@ pub(super) static HEAD_WORDS: &[&str] = &[
 ];
 
 /// `KStemmer.supplementDict`.
-pub(super) static SUPPLEMENT_DICT: &[&str] = &[
+pub(super) static SUPPLEMENT_DICT: [&str; 16] = [
     "aids", "applicator", "capacitor", "digitize", "electromagnet", "ellipsoid", "exosphere",
     "extensible", "ferromagnet", "graphics", "hydromagnet", "polygraph", "toroid", "superconduct",
     "backscatter", "connectionism",
 ];
 
 /// `KStemmer.properNouns`.
-pub(super) static PROPER_NOUNS: &[&str] = &[
+pub(super) static PROPER_NOUNS: [&str; 253] = [
     "abrams", "achilles", "acropolis", "adams", "agnes", "aires", "alexander", "alexis", "alfred",
     "algiers", "alps", "amadeus", "ames", "amos", "andes", "angeles", "annapolis", "antilles",
     "aquarius", "archimedes", "arkansas", "asher", "ashly", "athens", "atkins", "atlantis", "avis",
