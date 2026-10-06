@@ -37,7 +37,10 @@ import org.tartarus.snowball.SnowballStemmer;
  * analysis-common corpus, so edits to that corpus do not change these fixtures). A handful of words carry a
  * character outside the Basic Multilingual Plane, where a stemmer counting code points rather than
  * UTF-16 units would disagree with Java: they go to {@code supplementary.words} instead, the record of what
- * Java does there.
+ * Java does there. Last come the words of {@code fixtures/corpus/snowball-targeted/<Language>.txt}
+ * where one exists: words this project wrote or generated from the stemmer's own among strings,
+ * each reaching a branch of the generated Rust stemmer nothing above reaches (chosen by
+ * coverage, see {@code fixtures/README.md}).
  *
  * <p>Output: {@code snowball/<Language>.words}, one line per word, {@code word\tstem}, or just
  * {@code word} when the stem is the word itself. Deterministic.
@@ -188,6 +191,18 @@ public class GenSnowball {
           sb.append(w);
           if (!s.equals(w)) sb.append('\t').append(s);
           sb.append('\n');
+        }
+        // Targeted words last, untraced, so the generated words above do not
+        // depend on them.
+        Path targeted = Path.of(corpusDir, "snowball-targeted", lang + ".txt");
+        if (Files.exists(targeted)) {
+          for (String w : Files.readAllLines(targeted, StandardCharsets.UTF_8)) {
+            if (w.isEmpty() || !words.add(w)) continue;
+            String s = stem(a, w);
+            sb.append(w);
+            if (!s.equals(w)) sb.append('\t').append(s);
+            sb.append('\n');
+          }
         }
         Files.writeString(out.resolve(lang + ".words"), sb.toString(), StandardCharsets.UTF_8);
         for (String w : SUPPLEMENTARY) {

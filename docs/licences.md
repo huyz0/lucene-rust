@@ -27,8 +27,12 @@ a dependency the shipped library links is not under a licence listed here.
     `tools/gen_snowball.sh`), and `snowball/program.rs` follows Snowball's
     runtime and Lucene's `SnowballProgram`. The test vocabulary
     (`fixtures/data/snowball/`) is synthetic, built by `GenSnowball.java`
-    from the stemmers' own suffix tables -- no Snowball test data is
-    redistributed.
+    from the stemmers' own suffix tables, plus `fixtures/corpus/snowball-targeted/`
+    (words this project wrote, or concatenations of those tables' strings)
+    -- no Snowball test data is redistributed. The Snowball project's own
+    vocabularies (`snowball-data`, partly CC BY-SA and GPL-3.0) are only
+    fetched, pinned by SHA-256, by `scripts/check-snowball-vocabulary.sh`
+    into a temporary directory.
   - the language packages' stop word lists and RSLP rule files
     (`lucene-analysis/src/lang/stopwords/`, vendored verbatim from the
     10.5.0 jar, headers kept): Jacques Savoy's (BSD) and Snowball's (BSD)
