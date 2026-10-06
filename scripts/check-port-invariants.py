@@ -873,6 +873,64 @@ def rule_table_fixed_len(files, problems, stats):
             )
 
 
+# --------------------------------------------------------------------------
+# Rule 12: an allocation is never sized from a count parsed out of text
+# --------------------------------------------------------------------------
+#
+# The M11 part 2 review found Hunspell's `AF`/`AM` parsers pre-sizing their
+# alias tables as `vec![Vec::new(); count.max(0) as usize]`, `count` straight
+# off the `.aff` header line: `AF 2000000000` asked for 48 GB and aborted the
+# process (Java's own `new String[count]` merely throws an `OutOfMemoryError`).
+# A count a text format announces is a promise about lines still to come, not
+# a size: reserve at most a small cap and grow as the lines arrive.
+#
+# The rule: outside tests, in any fn, an allocation size (`vec![_; n]`,
+# `with_capacity(n)`, `.resize(n, ..)`) must not mention a name the same fn
+# bound from a text parse (`parse_int(`, `parse_num(`, `.parse::<`, `.parse()`)
+# or from such a name, transitively, nor contain such a parse itself -- unless
+# the size expression caps it with `min(`, or an `// ALLOC:` comment within the
+# 6 lines above names the bound that makes it sound.
+
+PARSE_SOURCE = re.compile(
+    r"\bparse_(int|num)\s*\(|\.\s*parse\s*(::\s*<[^>]*>\s*)?\(\s*\)"
+)
+
+
+def rule_alloc_from_parse(files, problems, stats):
+    for rel, raw in files:
+        lines = blank_cfg_test(raw)
+        for fname, a, b in fn_spans(lines):
+            tainted = set()
+            for k in range(a, b + 1):
+                code = strip_comment(lines[k])
+                m = LET_BIND.match(code)
+                if m:
+                    rhs = m.group("rhs")
+                    j = k
+                    while not rhs.rstrip().endswith(";") and j < b and j - k < 8:
+                        j += 1
+                        rhs += " " + strip_comment(lines[j])
+                    words = set(re.findall(r"[a-z_]\w*", rhs))
+                    if PARSE_SOURCE.search(rhs) or words & tainted:
+                        tainted.add(m.group("name"))
+                for s in ALLOC_SINK.finditer(code):
+                    expr = next(g for g in s.groups() if g is not None)
+                    words = set(re.findall(r"[a-z_]\w*", expr))
+                    if not (PARSE_SOURCE.search(expr) or words & tainted):
+                        continue
+                    stats["alloc_parse_sites"] += 1
+                    if "min(" in expr or "ALLOC:" in leading_comment(lines, k):
+                        continue
+                    problems.append(
+                        f"{rel}:{k + 1}: `{fname}` sizes an allocation from a "
+                        f"count parsed out of its input (`{expr.strip()}`). A "
+                        f"hostile header announces any count it likes: reserve "
+                        f"at most a capped `min(..)` and grow as entries arrive, "
+                        f"or justify the bound in an `// ALLOC:` comment. "
+                        f"(docs/mechanical-gates.md#alloc-from-parse)"
+                    )
+
+
 RULES = (
     ("fixed-bitset-bound", rule_fixed_bitset_bound),
     ("sentinel-callers", rule_sentinel_callers),
@@ -885,6 +943,7 @@ RULES = (
     ("toplevel-whole-reader", rule_toplevel_whole_reader),
     ("occur-guard", rule_occur_guard),
     ("table-fixed-len", rule_table_fixed_len),
+    ("alloc-from-parse", rule_alloc_from_parse),
 )
 
 
@@ -910,6 +969,7 @@ def main(argv):
         "toplevel_sites": 0,
         "occur_guard_sites": 0,
         "slice_tables": 0,
+        "alloc_parse_sites": 0,
     }
     for name, rule in RULES:
         if only and name != only:
@@ -930,6 +990,7 @@ def main(argv):
         print(f"function TopLevel constructions     : {stats['toplevel_sites']}")
         print(f"must+must_not guards (name filter)  : {stats['occur_guard_sites']}")
         print(f"slice-typed analysis tables         : {stats['slice_tables']}")
+        print(f"allocations sized from a parse      : {stats['alloc_parse_sites']}")
 
     if problems:
         for p in problems:

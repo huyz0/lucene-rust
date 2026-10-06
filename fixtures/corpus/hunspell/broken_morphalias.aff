@@ -1,0 +1,4 @@
+# lucene-rust's own test dictionary: a morphological alias past the AM count.
+AM 2
+AM po:noun
+AM po:verb
