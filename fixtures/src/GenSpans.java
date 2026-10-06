@@ -30,7 +30,9 @@ import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexOptions;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.NoMergePolicy;
+import org.apache.lucene.index.ReaderUtil;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.queries.payloads.AveragePayloadFunction;
 import org.apache.lucene.queries.payloads.MaxPayloadFunction;
@@ -55,14 +57,18 @@ import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.BoostQuery;
 import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.Matches;
+import org.apache.lucene.search.MatchesIterator;
 import org.apache.lucene.search.MultiTermQuery;
 import org.apache.lucene.search.PrefixQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.RegexpQuery;
 import org.apache.lucene.search.ScoreDoc;
+import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.TermRangeQuery;
 import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.Weight;
 import org.apache.lucene.search.WildcardQuery;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
@@ -82,8 +88,9 @@ import org.apache.lucene.util.BytesRef;
  *
  * <p>For each query spec (the grammar is the Rust test's, {@code spans_fixtures.rs}): its {@code
  * toString}; then, for each variant (plain, boosted, the required clause or the filter of a boolean with an
- * optional term), every hit with its score bits and five documents' explanations. An exception is
- * recorded as its class name.
+ * optional term), every hit with its score bits and five documents' explanations; then the {@code
+ * Matches} of every hit and of the explained documents -- each span's positions and offsets, and its
+ * terms as sub-matches with their {@code TermQuery}. An exception is recorded as its class name.
  *
  * <p>Usage: {@code java GenSpans <fixtures-data-dir>}.
  */
@@ -450,6 +457,58 @@ public class GenSpans {
         out.append(e).append('\n');
       }
     }
+    // `Weight.matches` of the plain query's hits and the explained documents.
+    java.util.TreeSet<Integer> docs = new java.util.TreeSet<>();
+    for (int doc : EXPLAIN) docs.add(doc);
+    try {
+      for (ScoreDoc sd : searcher.search(s, 1000).scoreDocs) docs.add(sd.doc);
+    } catch (Exception e) {
+      // The plain variant's hits line above records it.
+    }
+    for (int doc : docs) {
+      String m;
+      try {
+        Weight w = searcher.createWeight(searcher.rewrite(s), ScoreMode.COMPLETE_NO_SCORES, 1);
+        List<LeafReaderContext> leaves = searcher.getIndexReader().leaves();
+        LeafReaderContext ctx = leaves.get(ReaderUtil.subIndex(doc, leaves));
+        m = render(w.matches(ctx, doc - ctx.docBase));
+      } catch (Exception ex) {
+        m = err(ex);
+      }
+      out.append(head).append("\tmatches ").append(doc).append('\t').append(m).append('\n');
+    }
+  }
+
+  /** Each field's matches: {@code start:end:startOffset:endOffset[sub ...]}, a sub with its term. */
+  static String render(Matches m) throws IOException {
+    if (m == null) return "none";
+    StringBuilder b = new StringBuilder();
+    for (String f : m) {
+      if (b.length() > 0) b.append(';');
+      b.append(f).append('|');
+      MatchesIterator it = m.getMatches(f);
+      boolean first = true;
+      while (it != null && it.next()) {
+        if (!first) b.append(',');
+        first = false;
+        b.append(it.startPosition()).append(':').append(it.endPosition()).append(':')
+            .append(it.startOffset()).append(':').append(it.endOffset());
+        MatchesIterator sub = it.getSubMatches();
+        if (sub != null) {
+          b.append('[');
+          boolean f2 = true;
+          while (sub.next()) {
+            if (!f2) b.append(' ');
+            f2 = false;
+            b.append(sub.startPosition()).append(':').append(sub.endPosition()).append(':')
+                .append(sub.startOffset()).append(':').append(sub.endOffset()).append('=')
+                .append(sub.getQuery());
+          }
+          b.append(']');
+        }
+      }
+    }
+    return b.toString();
   }
 
   static final String[] SPECS = {

@@ -27,8 +27,11 @@
 //! Like Java, matches ignore deletions: a deleted document still reports its
 //! matches.
 //!
+//! The span queries' (`SpanWeight.matches`, the payload queries' included)
+//! are [`crate::exec::spans`]'s.
+//!
 //! Not ported: the `matches` of `FuzzyQuery` (its rewrite is a reader-wide
-//! top-terms boolean), `MultiPhraseQuery` and span queries, which report
+//! top-terms boolean) and `MultiPhraseQuery`, which report
 //! [`crate::Error::IllegalArgument`]; `NamedQuery` has no [`Clause`] variant,
 //! so names are attached through [`named_matches`].
 //!
@@ -870,16 +873,32 @@ pub fn leaf_matches(
             crate::extended_query::ExtendedQuery::Interval(q) => {
                 crate::intervals::matches::interval_matches(seg, q, Arc::new(clause.clone()), doc)
             }
-            crate::extended_query::ExtendedQuery::Span(_) => Err(Error::IllegalArgument(
-                "Weight.matches is not ported for SpanQuery".into(),
-            )),
+            // `SpanWeight.matches`; a top-level `FieldMaskingSpanQuery`'s
+            // weight is its masked query's, which the iterators report.
+            crate::extended_query::ExtendedQuery::Span(q) => {
+                let weight = crate::spans::weight_query(q);
+                let query = if std::ptr::eq(weight, q) {
+                    Arc::new(clause.clone())
+                } else {
+                    Arc::new(Clause::from(weight.clone()))
+                };
+                exec::spans::span_matches(&leaf_context(seg), weight, query, doc)
+            }
             // `ToParentBlockJoinQuery` (`MATCH_WITH_NO_TERMS` where its
             // scorer matches) and everything else: `Weight`'s default.
             _ => default_matches(seg, clause, doc),
         },
-        Clause::Fuzzy(_) | Clause::MultiPhrase(_) | Clause::Span(_) => Err(Error::IllegalArgument(
-            format!("Weight.matches is not ported for {}", clause_name(clause)),
-        )),
+        // The core span queries are the same `SpanWeight`s.
+        Clause::Span(q) => exec::spans::span_matches(
+            &leaf_context(seg),
+            &crate::spans::SpanNode::from(q),
+            Arc::new(clause.clone()),
+            doc,
+        ),
+        Clause::Fuzzy(_) | Clause::MultiPhrase(_) => Err(Error::IllegalArgument(format!(
+            "Weight.matches is not ported for {}",
+            clause_name(clause)
+        ))),
         // `Weight.matches`'s default: every other clause (match-all, points
         // range, exists, ...) matches with no terms where its scorer does.
         #[allow(unreachable_patterns)]

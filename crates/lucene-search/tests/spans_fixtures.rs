@@ -10,8 +10,10 @@
 //! deletions, a stop word's position holes and a pulsed singleton term --
 //! each query's `toString`; under four variants (plain, boosted, a
 //! boolean's required clause, its filter) every hit's score bits and five
-//! documents' explanations. The file is rebuilt here line for line and compared with
-//! Lucene's.
+//! documents' explanations; then `Weight.matches` of the hits and the
+//! explained documents -- each span's positions and offsets, its terms as
+//! sub-matches with their `TermQuery`. The file is rebuilt here line for
+//! line and compared with Lucene's.
 //!
 //! One deliberate difference is checked rather than skipped: Java's
 //! `SpanPayloadCheckQuery.toString` throws on a `null` payload
@@ -27,6 +29,7 @@ use lucene_search::extended_query::{
     MultiTermQuery, MultiTermSource, RewriteMethod, TermRangeQuery,
 };
 use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
+use lucene_search::matches::{matches, BoxMatches};
 use lucene_search::query::{
     BooleanQuery, BoostQuery, Clause, PrefixQuery, RegexpQuery, TermQuery, WildcardQuery,
 };
@@ -268,6 +271,88 @@ fn run(searcher: &IndexSearcher<'_, '_>, spec: &str, out: &mut Vec<String>) {
             };
             out.push(format!("{spec}\t{v}\texplain {doc}\t{e}"));
         }
+    }
+    matches_lines(searcher, spec, &s, out);
+}
+
+/// `GenSpans.render`: each field's matches, a sub-match with its term.
+fn render(m: Option<BoxMatches>) -> Result<String> {
+    let Some(m) = m else {
+        return Ok("none".into());
+    };
+    let mut b = String::new();
+    for f in m.fields() {
+        if !b.is_empty() {
+            b.push(';');
+        }
+        b.push_str(&f);
+        b.push('|');
+        let mut it = m.get_matches(&f)?;
+        let mut first = true;
+        while let Some(i) = it.as_mut() {
+            if !i.next()? {
+                break;
+            }
+            if !first {
+                b.push(',');
+            }
+            first = false;
+            b.push_str(&format!(
+                "{}:{}:{}:{}",
+                i.start_position(),
+                i.end_position(),
+                i.start_offset(),
+                i.end_offset()
+            ));
+            if let Some(mut sub) = i.sub_matches()? {
+                b.push('[');
+                let mut f2 = true;
+                while sub.next()? {
+                    if !f2 {
+                        b.push(' ');
+                    }
+                    f2 = false;
+                    let Clause::Term(t) = sub.query() else {
+                        panic!("a span's sub-match is a term's");
+                    };
+                    b.push_str(&format!(
+                        "{}:{}:{}:{}={}:{}",
+                        sub.start_position(),
+                        sub.end_position(),
+                        sub.start_offset(),
+                        sub.end_offset(),
+                        t.field,
+                        String::from_utf8_lossy(&t.term)
+                    ));
+                }
+                b.push(']');
+            }
+        }
+    }
+    Ok(b)
+}
+
+/// `Weight.matches` of the plain query's hits and the explained documents,
+/// over the query `IndexSearcher.rewrite` gives.
+fn matches_lines(
+    searcher: &IndexSearcher<'_, '_>,
+    spec: &str,
+    s: &SpanNode,
+    out: &mut Vec<String>,
+) {
+    let mut docs: std::collections::BTreeSet<i32> = EXPLAIN.into_iter().collect();
+    if let Ok(td) = searcher.search(&variant("plain", s), 1000) {
+        docs.extend(td.score_docs.iter().map(|sd| sd.doc));
+    }
+    let rewritten = s.rewrite(searcher).map(Clause::from);
+    for doc in docs {
+        let m = rewritten.as_ref().map_err(err).and_then(|q| {
+            matches(searcher, q, doc)
+                .and_then(render)
+                .map_err(|e| err(&e))
+        });
+        let m = m.unwrap_or_else(|e| e);
+        out.push(format!("{spec}\tmatches {doc}\t{m}"));
     }
 }
 
