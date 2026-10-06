@@ -48,12 +48,12 @@ analysis/ckb/SoraniNormalizer	todo:M11	T11.6 per-language (ckb): SoraniNormalize
 analysis/ckb/SoraniStemFilter	todo:M11	T11.6 per-language (ckb): SoraniStemFilter
 analysis/ckb/SoraniStemFilterFactory	todo:M11	T11.7 factory/SPI: SoraniStemFilterFactory
 analysis/ckb/SoraniStemmer	todo:M11	T11.6 per-language (ckb): SoraniStemmer
-analysis/classic/ClassicAnalyzer	todo:M11	T11.2 JFlex tokenizer: ClassicAnalyzer
-analysis/classic/ClassicFilter	todo:M11	T11.2 JFlex tokenizer: ClassicFilter
+analysis/classic/ClassicAnalyzer	ported	crates/lucene-analysis/src/classic/mod.rs::ClassicAnalyzer
+analysis/classic/ClassicFilter	ported	crates/lucene-analysis/src/classic/mod.rs::ClassicFilter
 analysis/classic/ClassicFilterFactory	todo:M11	T11.7 factory/SPI: ClassicFilterFactory
-analysis/classic/ClassicTokenizer	todo:M11	T11.2 JFlex tokenizer: ClassicTokenizer
+analysis/classic/ClassicTokenizer	ported	crates/lucene-analysis/src/classic/mod.rs::ClassicTokenizer
 analysis/classic/ClassicTokenizerFactory	todo:M11	T11.7 factory/SPI: ClassicTokenizerFactory
-analysis/classic/ClassicTokenizerImpl	todo:M11	T11.2 JFlex tokenizer: ClassicTokenizerImpl
+analysis/classic/ClassicTokenizerImpl	ported	crates/lucene-analysis/src/classic/mod.rs::ClassicTokenizer
 analysis/commongrams/CommonGramsFilter	ported	crates/lucene-analysis/src/commongrams/mod.rs::CommonGramsFilter
 analysis/commongrams/CommonGramsFilterFactory	todo:M11	T11.7 factory/SPI: CommonGramsFilterFactory
 analysis/commongrams/CommonGramsQueryFilter	ported	crates/lucene-analysis/src/commongrams/mod.rs::CommonGramsQueryFilter
@@ -461,9 +461,9 @@ analysis/util/RollingCharBuffer	ported	crates/lucene-analysis/src/charfilter/mod
 analysis/util/SegmentingTokenizerBase	todo:M11	T11.6 util: SegmentingTokenizerBase
 analysis/util/StemmerUtil	todo:M11	T11.6 util: StemmerUtil
 analysis/util/UnicodeProps	ported	crates/lucene-analysis/src/java_character.rs::is_unicode_whitespace
-analysis/wikipedia/WikipediaTokenizer	todo:M11	T11.2 JFlex tokenizer: WikipediaTokenizer
+analysis/wikipedia/WikipediaTokenizer	ported	crates/lucene-analysis/src/wikipedia/mod.rs::WikipediaTokenizer
 analysis/wikipedia/WikipediaTokenizerFactory	todo:M11	T11.7 factory/SPI: WikipediaTokenizerFactory
-analysis/wikipedia/WikipediaTokenizerImpl	todo:M11	T11.2 JFlex tokenizer: WikipediaTokenizerImpl
+analysis/wikipedia/WikipediaTokenizerImpl	ported	crates/lucene-analysis/src/wikipedia/mod.rs::WikipediaTokenizer
 collation/CollationAttributeFactory	todo:M11	T11.7 factory/SPI: CollationAttributeFactory
 collation/CollationDocValuesField	todo:M11	T11.6 CollationDocValuesField: CollationDocValuesField
 collation/CollationKeyAnalyzer	todo:M11	T11.6 CollationKeyAnalyzer: CollationKeyAnalyzer

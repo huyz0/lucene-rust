@@ -12,8 +12,10 @@ import java.util.zip.DeflaterOutputStream;
  * crates/lucene-analysis/src/util/jflex.rs}: {@code email/tables.bin.z} from {@code
  * org.apache.lucene.analysis.email.UAX29URLEmailTokenizerImpl} and {@code
  * charfilter/html_strip_tables.bin.z} from {@code
- * org.apache.lucene.analysis.charfilter.HTMLStripCharFilter} (both under {@code
- * crates/lucene-analysis/src/}).
+ * org.apache.lucene.analysis.charfilter.HTMLStripCharFilter}, {@code classic/tables.bin.z} from
+ * {@code org.apache.lucene.analysis.classic.ClassicTokenizerImpl} and {@code
+ * wikipedia/tables.bin.z} from {@code org.apache.lucene.analysis.wikipedia.WikipediaTokenizerImpl}
+ * (all under {@code crates/lucene-analysis/src/}).
  *
  * <p>As {@code ExtractStandardTokenizerTables} does for {@code StandardTokenizerImpl}, the {@code
  * private static final int[]} tables are read back by reflection after the class's static
