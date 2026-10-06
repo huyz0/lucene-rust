@@ -89,6 +89,10 @@ a dependency the shipped library links is not under a licence listed here.
   (and its frozen copy `snowball-seed.txt`, which seeds `GenSnowball`),
   is written for this project (Apache-2.0); the few well-known pangrams in it
   are short phrases in common use. Test data only.
+- **The synonym fixtures' inputs** (M11), `fixtures/corpus/analysis-synonym.txt`,
+  `synonyms-solr.txt` and `synonyms-wordnet.txt`, are written for this project
+  (Apache-2.0); the WordNet file uses only WordNet's `wn_s.pl` line *format*,
+  none of its synsets. Test data only.
 
 ## What ships, and under what
 

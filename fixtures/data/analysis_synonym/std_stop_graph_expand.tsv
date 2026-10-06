@@ -1,0 +1,259 @@
+T	0	sofa	4	9	1	1	SYNONYM	0	-	0	1
+T	0	lounge	4	9	0	1	SYNONYM	0	-	0	1
+T	0	couch	4	9	0	1	<ALPHANUM>	0	-	0	1
+T	0	couch	18	22	1	1	SYNONYM	0	-	0	1
+T	0	lounge	18	22	0	1	SYNONYM	0	-	0	1
+T	0	sofa	18	22	0	1	<ALPHANUM>	0	-	0	1
+T	0	sat	23	26	1	1	<ALPHANUM>	0	-	0	1
+T	0	settee	34	40	3	1	<ALPHANUM>	0	-	0	1
+E	0	41	41	0
+T	1	watch	0	5	1	1	<ALPHANUM>	0	-	0	1
+T	1	tv	6	8	1	1	<ALPHANUM>	0	-	0	1
+T	1	television	16	26	3	1	<ALPHANUM>	0	-	0	1
+T	1	telly	34	39	3	1	<ALPHANUM>	0	-	0	1
+T	1	tonight	40	47	1	1	<ALPHANUM>	0	-	0	1
+E	1	48	48	0
+T	2	connect	0	7	1	1	<ALPHANUM>	0	-	0	1
+T	2	wi	11	13	2	1	<ALPHANUM>	0	-	0	1
+T	2	fi	14	16	1	1	<ALPHANUM>	0	-	0	1
+T	2	wifi	20	24	2	1	<ALPHANUM>	0	-	0	1
+T	2	wireless	28	36	2	1	<ALPHANUM>	0	-	0	1
+T	2	fidelity	37	45	1	1	<ALPHANUM>	0	-	0	1
+T	2	now	46	49	1	1	<ALPHANUM>	0	-	0	1
+E	2	50	50	0
+T	3	new	4	13	1	1	SYNONYM	0	-	0	1
+T	3	gotham	4	13	0	3	SYNONYM	0	-	0	1
+T	3	big	4	7	0	2	<ALPHANUM>	0	-	0	1
+T	3	york	4	13	1	2	SYNONYM	0	-	0	1
+T	3	apple	8	13	1	1	<ALPHANUM>	0	-	0	1
+T	3	big	17	25	1	1	SYNONYM	0	-	0	1
+T	3	gotham	17	25	0	3	SYNONYM	0	-	0	1
+T	3	new	17	20	0	2	<ALPHANUM>	0	-	0	1
+T	3	apple	17	25	1	2	SYNONYM	0	-	0	1
+T	3	york	21	25	1	1	<ALPHANUM>	0	-	0	1
+T	3	city	26	30	1	1	<ALPHANUM>	0	-	0	1
+T	3	also	32	36	1	1	<ALPHANUM>	0	-	0	1
+T	3	called	37	43	1	1	<ALPHANUM>	0	-	0	1
+T	3	nyc	44	47	1	1	<ALPHANUM>	0	-	0	1
+E	3	48	48	0
+T	4	my	0	2	1	1	<ALPHANUM>	0	-	0	1
+T	4	motor	3	6	1	1	SYNONYM	0	-	0	1
+T	4	automobile	3	6	0	2	SYNONYM	0	-	0	1
+T	4	car	3	6	0	2	<ALPHANUM>	0	-	0	1
+T	4	car	3	6	1	1	SYNONYM	0	-	0	1
+T	4	car	13	23	1	2	SYNONYM	0	-	0	1
+T	4	motor	13	23	0	1	SYNONYM	0	-	0	1
+T	4	automobile	13	23	0	2	<ALPHANUM>	0	-	0	1
+T	4	car	13	23	1	1	SYNONYM	0	-	0	1
+T	4	car	27	36	1	2	SYNONYM	0	-	0	1
+T	4	automobile	27	36	0	2	SYNONYM	0	-	0	1
+T	4	motor	27	32	0	1	<ALPHANUM>	0	-	0	1
+T	4	car	33	36	1	1	<ALPHANUM>	0	-	0	1
+T	4	vehicle	40	47	2	1	<ALPHANUM>	0	-	0	1
+E	4	48	48	0
+T	5	i	0	1	1	1	<ALPHANUM>	0	-	0	1
+T	5	bought	2	8	1	1	<ALPHANUM>	0	-	0	1
+T	5	i	12	13	2	1	<ALPHANUM>	0	-	0	1
+T	5	pod	14	17	1	1	<ALPHANUM>	0	-	0	1
+T	5	i	25	26	3	1	<ALPHANUM>	0	-	0	1
+T	5	pod	27	30	1	1	<ALPHANUM>	0	-	0	1
+T	5	ipod	38	42	3	1	<ALPHANUM>	0	-	0	1
+E	5	43	43	0
+T	6	what	0	4	1	1	<ALPHANUM>	0	-	0	1
+T	6	colour	5	11	1	1	<ALPHANUM>	0	-	0	1
+T	6	colour	19	25	3	1	<ALPHANUM>	0	-	0	1
+T	6	colouring	33	42	3	1	<ALPHANUM>	0	-	0	1
+E	6	43	43	0
+T	7	usa	4	7	2	1	<ALPHANUM>	0	-	0	1
+T	7	united	13	19	2	1	<ALPHANUM>	0	-	0	1
+T	7	states	20	26	1	1	<ALPHANUM>	0	-	0	1
+T	7	united	32	38	2	1	<ALPHANUM>	0	-	0	1
+T	7	states	39	45	1	1	<ALPHANUM>	0	-	0	1
+T	7	america	49	56	2	1	<ALPHANUM>	0	-	0	1
+E	7	57	57	0
+T	8	b	2	3	2	1	<ALPHANUM>	0	-	0	1
+T	8	b	11	12	3	1	<ALPHANUM>	0	-	0	1
+T	8	x	17	18	2	1	<ALPHANUM>	0	-	0	1
+T	8	y	20	21	1	1	<ALPHANUM>	0	-	0	1
+T	8	arrow	26	31	2	1	<ALPHANUM>	0	-	0	1
+E	8	31	31	0
+T	9	dog	4	7	2	1	<ALPHANUM>	0	-	0	1
+T	9	saw	8	11	1	1	<ALPHANUM>	0	-	0	1
+T	9	hound	14	19	2	1	<ALPHANUM>	0	-	0	1
+T	9	chase	20	25	1	1	<ALPHANUM>	0	-	0	1
+T	9	dog	30	33	2	1	<ALPHANUM>	0	-	0	1
+E	9	34	34	0
+T	10	die	0	3	1	1	<ALPHANUM>	0	-	0	1
+T	10	straße	4	10	1	1	<ALPHANUM>	0	-	0	1
+T	10	heißt	11	16	1	1	<ALPHANUM>	0	-	0	1
+T	10	strasse	17	24	1	1	<ALPHANUM>	0	-	0	1
+T	10	das	26	29	1	1	<ALPHANUM>	0	-	0	1
+T	10	café	30	34	1	1	<ALPHANUM>	0	-	0	1
+T	10	ist	35	38	1	1	<ALPHANUM>	0	-	0	1
+T	10	ein	39	42	1	1	<ALPHANUM>	0	-	0	1
+T	10	cafe	43	47	1	1	<ALPHANUM>	0	-	0	1
+E	10	48	48	0
+T	11	日	0	1	1	1	<IDEOGRAPHIC>	0	-	0	1
+T	11	本	1	2	1	1	<IDEOGRAPHIC>	0	-	0	1
+T	11	と	3	4	1	1	<HIRAGANA>	0	-	0	1
+T	11	に	5	6	1	1	<HIRAGANA>	0	-	0	1
+T	11	ほ	6	7	1	1	<HIRAGANA>	0	-	0	1
+T	11	ん	7	8	1	1	<HIRAGANA>	0	-	0	1
+T	11	は	9	10	1	1	<HIRAGANA>	0	-	0	1
+T	11	同	11	12	1	1	<IDEOGRAPHIC>	0	-	0	1
+T	11	じ	12	13	1	1	<HIRAGANA>	0	-	0	1
+T	11	で	14	15	1	1	<HIRAGANA>	0	-	0	1
+T	11	す	15	16	1	1	<HIRAGANA>	0	-	0	1
+E	11	16	16	0
+T	12	ünïcödé	0	7	1	1	<ALPHANUM>	0	-	0	1
+T	12	text	8	12	1	1	<ALPHANUM>	0	-	0	1
+T	12	unicode	17	24	2	1	<ALPHANUM>	0	-	0	1
+T	12	text	25	29	1	1	<ALPHANUM>	0	-	0	1
+T	12	ünïcödé	34	41	2	1	<ALPHANUM>	0	-	0	1
+E	12	42	42	0
+T	13	big	0	8	1	1	SYNONYM	0	-	0	1
+T	13	gotham	0	8	0	3	SYNONYM	0	-	0	1
+T	13	new	0	3	0	2	<ALPHANUM>	0	-	0	1
+T	13	apple	0	8	1	2	SYNONYM	0	-	0	1
+T	13	york	4	8	1	1	<ALPHANUM>	0	-	0	1
+T	13	new	12	15	2	1	<ALPHANUM>	0	-	0	1
+T	13	new	17	20	1	1	<ALPHANUM>	0	-	0	1
+T	13	shoes	21	26	1	1	<ALPHANUM>	0	-	0	1
+T	13	new	31	34	2	1	<ALPHANUM>	0	-	0	1
+E	13	35	35	0
+T	14	fast	4	9	1	1	SYNONYM	0	-	0	1
+T	14	speedy	4	9	0	1	SYNONYM	0	-	0	1
+T	14	quick	4	9	0	1	<ALPHANUM>	0	-	0	1
+T	14	brown	10	15	1	1	<ALPHANUM>	0	-	0	1
+T	14	fox	16	19	1	1	<ALPHANUM>	0	-	0	1
+T	14	jumps	20	25	1	1	<ALPHANUM>	0	-	0	1
+T	14	over	26	30	1	1	<ALPHANUM>	0	-	0	1
+T	14	lazy	35	39	2	1	<ALPHANUM>	0	-	0	1
+T	14	dog	40	43	1	1	<ALPHANUM>	0	-	0	1
+E	14	43	43	0
+T	15	fast	0	5	1	1	SYNONYM	0	-	0	1
+T	15	speedy	0	5	0	1	SYNONYM	0	-	0	1
+T	15	quick	0	5	0	1	<ALPHANUM>	0	-	0	1
+T	15	brown	6	11	1	1	<ALPHANUM>	0	-	0	1
+T	15	fox	12	15	1	1	<ALPHANUM>	0	-	0	1
+T	15	jumps	16	21	1	1	<ALPHANUM>	0	-	0	1
+T	15	fast	27	32	1	1	SYNONYM	0	-	0	1
+T	15	speedy	27	32	0	1	SYNONYM	0	-	0	1
+T	15	quick	27	32	0	1	<ALPHANUM>	0	-	0	1
+T	15	brown	33	38	1	1	<ALPHANUM>	0	-	0	1
+T	15	fox	39	42	1	1	<ALPHANUM>	0	-	0	1
+E	15	42	42	0
+T	16	scrofula	0	11	1	2	SYNONYM	0	-	0	1
+T	16	king's	0	6	0	1	<ALPHANUM>	0	-	0	1
+T	16	evil	7	11	1	1	<ALPHANUM>	0	-	0	1
+T	16	king's	15	23	1	1	SYNONYM	0	-	0	1
+T	16	scrofula	15	23	0	2	<ALPHANUM>	0	-	0	1
+T	16	evil	15	23	1	1	SYNONYM	0	-	0	1
+T	16	lonely	27	33	2	1	<ALPHANUM>	0	-	0	1
+T	16	word	34	38	1	1	<ALPHANUM>	0	-	0	1
+E	16	39	39	0
+T	17	sofa	0	5	1	1	SYNONYM	0	-	0	1
+T	17	lounge	0	5	0	1	SYNONYM	0	-	0	1
+T	17	couch	0	5	0	1	<ALPHANUM>	0	-	0	1
+T	17	couch	6	10	1	1	SYNONYM	0	-	0	1
+T	17	lounge	6	10	0	1	SYNONYM	0	-	0	1
+T	17	sofa	6	10	0	1	<ALPHANUM>	0	-	0	1
+T	17	couch	11	17	1	1	SYNONYM	0	-	0	1
+T	17	sofa	11	17	0	1	SYNONYM	0	-	0	1
+T	17	lounge	11	17	0	1	<ALPHANUM>	0	-	0	1
+T	17	motor	18	21	1	1	SYNONYM	0	-	0	1
+T	17	automobile	18	21	0	2	SYNONYM	0	-	0	1
+T	17	car	18	21	0	2	<ALPHANUM>	0	-	0	1
+T	17	car	18	21	1	1	SYNONYM	0	-	0	1
+T	17	car	22	32	1	2	SYNONYM	0	-	0	1
+T	17	motor	22	32	0	1	SYNONYM	0	-	0	1
+T	17	automobile	22	32	0	2	<ALPHANUM>	0	-	0	1
+T	17	car	22	32	1	1	SYNONYM	0	-	0	1
+E	17	32	32	0
+E	18	1	1	1
+T	19	sofa	0	5	1	1	SYNONYM	0	-	0	1
+T	19	lounge	0	5	0	1	SYNONYM	0	-	0	1
+T	19	couch	0	5	0	1	<ALPHANUM>	0	-	0	1
+E	19	5	5	0
+E	20	0	0	0
+T	21	couch	2	6	1	1	SYNONYM	0	-	0	1
+T	21	lounge	2	6	0	1	SYNONYM	0	-	0	1
+T	21	sofa	2	6	0	1	<ALPHANUM>	0	-	0	1
+T	21	sofa	9	14	1	1	SYNONYM	0	-	0	1
+T	21	lounge	9	14	0	1	SYNONYM	0	-	0	1
+T	21	couch	9	14	0	1	<ALPHANUM>	0	-	0	1
+T	21	tv	17	19	1	1	<ALPHANUM>	0	-	0	1
+E	21	21	21	0
+T	22	new	4	13	1	1	SYNONYM	0	-	0	1
+T	22	gotham	4	13	0	3	SYNONYM	0	-	0	1
+T	22	big	4	7	0	2	<ALPHANUM>	0	-	0	1
+T	22	york	4	13	1	2	SYNONYM	0	-	0	1
+T	22	apple	8	13	1	1	<ALPHANUM>	0	-	0	1
+T	22	new	14	23	1	1	SYNONYM	0	-	0	1
+T	22	gotham	14	23	0	3	SYNONYM	0	-	0	1
+T	22	big	14	17	0	2	<ALPHANUM>	0	-	0	1
+T	22	york	14	23	1	2	SYNONYM	0	-	0	1
+T	22	apple	18	23	1	1	<ALPHANUM>	0	-	0	1
+T	22	big	24	27	1	1	<ALPHANUM>	0	-	0	1
+T	22	big	28	36	1	1	SYNONYM	0	-	0	1
+T	22	gotham	28	36	0	3	SYNONYM	0	-	0	1
+T	22	new	28	31	0	2	<ALPHANUM>	0	-	0	1
+T	22	apple	28	36	1	2	SYNONYM	0	-	0	1
+T	22	york	32	36	1	1	<ALPHANUM>	0	-	0	1
+T	22	big	37	45	1	1	SYNONYM	0	-	0	1
+T	22	gotham	37	45	0	3	SYNONYM	0	-	0	1
+T	22	new	37	40	0	2	<ALPHANUM>	0	-	0	1
+T	22	apple	37	45	1	2	SYNONYM	0	-	0	1
+T	22	york	41	45	1	1	<ALPHANUM>	0	-	0	1
+T	22	city	46	50	1	1	<ALPHANUM>	0	-	0	1
+E	22	50	50	0
+T	23	wi	0	2	1	1	<ALPHANUM>	0	-	0	1
+T	23	fi	3	5	1	1	<ALPHANUM>	0	-	0	1
+T	23	wi	6	8	1	1	<ALPHANUM>	0	-	0	1
+T	23	fi	9	11	1	1	<ALPHANUM>	0	-	0	1
+T	23	wi	12	14	1	1	<ALPHANUM>	0	-	0	1
+E	23	14	14	0
+T	24	motor	0	3	1	1	SYNONYM	0	-	0	1
+T	24	automobile	0	3	0	2	SYNONYM	0	-	0	1
+T	24	car	0	3	0	2	<ALPHANUM>	0	-	0	1
+T	24	car	0	3	1	1	SYNONYM	0	-	0	1
+T	24	motor	4	7	1	1	SYNONYM	0	-	0	1
+T	24	automobile	4	7	0	2	SYNONYM	0	-	0	1
+T	24	car	4	7	0	2	<ALPHANUM>	0	-	0	1
+T	24	car	4	7	1	1	SYNONYM	0	-	0	1
+T	24	motor	8	11	1	1	SYNONYM	0	-	0	1
+T	24	automobile	8	11	0	2	SYNONYM	0	-	0	1
+T	24	car	8	11	0	2	<ALPHANUM>	0	-	0	1
+T	24	car	8	11	1	1	SYNONYM	0	-	0	1
+T	24	motor	12	15	1	1	SYNONYM	0	-	0	1
+T	24	automobile	12	15	0	2	SYNONYM	0	-	0	1
+T	24	car	12	15	0	2	<ALPHANUM>	0	-	0	1
+T	24	car	12	15	1	1	SYNONYM	0	-	0	1
+T	24	motor	16	19	1	1	SYNONYM	0	-	0	1
+T	24	automobile	16	19	0	2	SYNONYM	0	-	0	1
+T	24	car	16	19	0	2	<ALPHANUM>	0	-	0	1
+T	24	car	16	19	1	1	SYNONYM	0	-	0	1
+T	24	motor	20	23	1	1	SYNONYM	0	-	0	1
+T	24	automobile	20	23	0	2	SYNONYM	0	-	0	1
+T	24	car	20	23	0	2	<ALPHANUM>	0	-	0	1
+T	24	car	20	23	1	1	SYNONYM	0	-	0	1
+E	24	23	23	0
+T	25	quick	0	4	1	1	SYNONYM	0	-	0	1
+T	25	speedy	0	4	0	1	SYNONYM	0	-	0	1
+T	25	fast	0	4	0	1	<ALPHANUM>	0	-	0	1
+T	25	quick	5	11	1	1	SYNONYM	0	-	0	1
+T	25	fast	5	11	0	1	SYNONYM	0	-	0	1
+T	25	speedy	5	11	0	1	<ALPHANUM>	0	-	0	1
+T	25	fast	12	17	1	1	SYNONYM	0	-	0	1
+T	25	speedy	12	17	0	1	SYNONYM	0	-	0	1
+T	25	quick	12	17	0	1	<ALPHANUM>	0	-	0	1
+T	25	big	18	24	1	1	SYNONYM	0	-	0	1
+T	25	new	18	24	0	2	SYNONYM	0	-	0	1
+T	25	gotham	18	24	0	3	<ALPHANUM>	0	-	0	1
+T	25	apple	18	24	1	2	SYNONYM	0	-	0	1
+T	25	york	18	24	1	1	SYNONYM	0	-	0	1
+T	25	car	25	34	1	2	SYNONYM	0	-	0	1
+T	25	automobile	25	34	0	2	SYNONYM	0	-	0	1
+T	25	motor	25	30	0	1	<ALPHANUM>	0	-	0	1
+T	25	car	31	34	1	1	<ALPHANUM>	0	-	0	1
+E	25	34	34	0

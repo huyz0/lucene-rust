@@ -165,6 +165,16 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   per-node `HashMap` (now sorted child vectors), a `Vec` per stripped
   candidate (now a stack buffer), a `HashSet` for `uniqueStems`' handful of
   stems, and Unicode table lookups for ASCII case tests.
+- **T11.5** -- Synonyms (`src/synonym/`): `SynonymMap` and its builder,
+  `SolrSynonymParser`, `WordnetSynonymParser`, `SynonymGraphFilter` and the
+  deprecated `SynonymFilter`, state for state; the map's FST is a code-point
+  trie of decoded outputs (the filters only walk it). `GenAnalysisSynonym.java`
+  parses rule files written here (6 maps entry for entry; 68 rule texts x
+  options, bad ones included, map or exception equal) and runs 16 chains
+  (graph, legacy, flattened, stop-word holes, ignoreCase) over
+  `corpus/analysis-synonym.txt`: all equal. Left: `word2vec`, the factories.
+  Part 3's generators share `fixtures/src/AnalysisRows.java` /
+  `tests/support/mod.rs` and record in `docs/parity/analysis-lang.md`.
 - `java.util.regex` is the `regex` crate behind a Java-syntax shim (`util/java_regex.rs`: ASCII
   `\d\w\s`, `$n` replacements; no backreferences or lookaround).
 - The parity ledger's 400 KB budget is shared (the large area files were

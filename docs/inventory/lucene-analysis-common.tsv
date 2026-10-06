@@ -420,13 +420,13 @@ analysis/sv/SwedishLightStemmer	todo:M11	T11.6 per-language (sv): SwedishLightSt
 analysis/sv/SwedishMinimalStemFilter	todo:M11	T11.6 per-language (sv): SwedishMinimalStemFilter
 analysis/sv/SwedishMinimalStemFilterFactory	todo:M11	T11.7 factory/SPI: SwedishMinimalStemFilterFactory
 analysis/sv/SwedishMinimalStemmer	todo:M11	T11.6 per-language (sv): SwedishMinimalStemmer
-analysis/synonym/SolrSynonymParser	todo:M11	T11.5 synonyms: SolrSynonymParser
-analysis/synonym/SynonymFilter	partial	crates/lucene-analysis/src/lib.rs::SynonymFilter -- M11: T11.5 SynonymMap and the deprecated filter
+analysis/synonym/SolrSynonymParser	ported	crates/lucene-analysis/src/synonym/solr_synonym_parser.rs::SolrSynonymParser
+analysis/synonym/SynonymFilter	ported	crates/lucene-analysis/src/synonym/synonym_filter.rs::SynonymFilter
 analysis/synonym/SynonymFilterFactory	todo:M11	T11.7 factory/SPI: SynonymFilterFactory
-analysis/synonym/SynonymGraphFilter	partial	crates/lucene-analysis/src/lib.rs::SynonymFilter -- M11: T11.5 SynonymMap and graph output
+analysis/synonym/SynonymGraphFilter	ported	crates/lucene-analysis/src/synonym/synonym_graph_filter.rs::SynonymGraphFilter
 analysis/synonym/SynonymGraphFilterFactory	todo:M11	T11.7 factory/SPI: SynonymGraphFilterFactory
-analysis/synonym/SynonymMap	todo:M11	T11.5 synonyms: SynonymMap
-analysis/synonym/WordnetSynonymParser	todo:M11	T11.5 synonyms: WordnetSynonymParser
+analysis/synonym/SynonymMap	ported	crates/lucene-analysis/src/synonym/synonym_map.rs::SynonymMap
+analysis/synonym/WordnetSynonymParser	ported	crates/lucene-analysis/src/synonym/wordnet_synonym_parser.rs::WordnetSynonymParser
 analysis/synonym/word2vec/Dl4jModelReader	todo:M11	T11.5 synonyms: Dl4jModelReader
 analysis/synonym/word2vec/TermAndBoost	todo:M11	T11.5 synonyms: TermAndBoost
 analysis/synonym/word2vec/Word2VecModel	todo:M11	T11.5 synonyms: Word2VecModel

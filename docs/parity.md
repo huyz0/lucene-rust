@@ -62,6 +62,7 @@ Milestones (M1-M10, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | [grouping.md](parity/grouping.md) | `lucene-grouping` (M10 T10.4) | 11 |
 | [functions.md](parity/functions.md) | `lucene-queries` function queries (M10 T10.5) | 11 |
 | [queries.md](parity/queries.md) | `lucene-queries` intervals, payloads, more-like-this, common terms, spans (M10 T10.6) | 12 |
+| [analysis-lang.md](parity/analysis-lang.md) | `lucene-analysis-common` synonyms, classic, language packages (M11 part 3) | 1 |
 | [ffi.md](parity/ffi.md) | `lucene-ffi`: the general C ABI (handles, searches, writer) | 16 |
 | [plugin.md](parity/plugin.md) | `lucene-ffi`: the OpenSearch plugin boundary (JVM reader, FFM, query phase), M10 query shapes | 10 |
 | [plugin-geo.md](parity/plugin-geo.md) | OpenSearch plugin: geo queries and geo sorting (M9 T9.6) | 7 |
