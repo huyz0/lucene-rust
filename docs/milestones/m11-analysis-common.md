@@ -187,6 +187,15 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   `GenAnalysisLanguages.java`: every analyzer and four filter chains over
   `corpus/analysis-lang.txt` (45 chains), every analyzer's `normalize` (540 cases) and
   25,659 words through 53 stemmers and normalizers, all equal to Lucene.
+- **T11.6, the rest** -- `compound` (both decompounders, Liang hyphenation,
+  the FOP pattern format over a minimal XML reader; `GenAnalysisCompound.java`
+  over a toy grammar written here: points and 13 chains equal),
+  `ReverseStringFilter`, `TeeSinkTokenFilter`, `CSVUtil` (`GenAnalysisMisc.java`).
+  Deferred to M12 with reasons (`docs/parity/analysis-lang.md`): Thai (the
+  JDK's GPL dictionary), `SegmentingTokenizerBase`/`CharArrayIterator`,
+  collation, `morph`. Left in M11: `DateRecognizerFilter`, the deprecated
+  `WordDelimiterFilter`, `QueryAutoStopWordAnalyzer` (needs an index reader),
+  `CustomAnalyzer` and the factories (T11.7), `word2vec` synonyms.
 - `java.util.regex` is the `regex` crate behind a Java-syntax shim (`util/java_regex.rs`: ASCII
   `\d\w\s`, `$n` replacements; no backreferences or lookaround).
 - The parity ledger's 400 KB budget is shared (the large area files were

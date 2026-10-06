@@ -1073,6 +1073,16 @@ outright.
   (harvested once from Lucene's sources into the generator's `AFFIXES`; RSLP
   exception words as they are) on short bases. Deterministic. Read by
   `crates/lucene-analysis/tests/analysis_lang_fixtures.rs`.
+- `GenAnalysisCompound.java` — M11 T11.6: `corpus/hyphenation-test.xml` (a
+  toy hyphenation grammar written for this project) loaded into a
+  `HyphenationTree`: hyphenation points for words (`points.words`), and the
+  dictionary and hyphenation decompounders over `corpus/analysis-compound.txt`
+  (`data/analysis_compound/<chain>.tsv`). Deterministic. Read by
+  `crates/lucene-analysis/tests/analysis_compound_fixtures.rs`.
+- `GenAnalysisMisc.java` — M11 T11.6: `ReverseStringFilter` with each marker
+  over lines held in the generator (written to `lines.txt` with the rows) and
+  `CSVUtil` (`csv.words`). Read by
+  `crates/lucene-analysis/tests/analysis_misc_fixtures.rs`.
 - `GenDisiJumpTable.java` — the only Java-written `IndexedDISI` **block jump
   table** in this tree (`disi_jump_table_index/`). `IndexedDISI.writeBitSet`
   emits `jumpTableEntryCount = 0` below two logical 65 536-document blocks, and
