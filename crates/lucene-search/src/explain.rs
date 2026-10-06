@@ -199,12 +199,16 @@ pub(crate) fn with_leaf<R>(
             }
         }
     }
-    let leaf = LEAF.with(|l| l.replace(max_doc.map(|m| (m, doc_base))));
     let state = (reader.cloned(), similarity.and_then(|s| s.shared()));
-    let _restore = Restore {
-        leaf,
-        reader: Some(LEAF_READER.with(|r| r.replace(state))),
+    // The guard first, holding what it must put back: a swap that panics
+    // (the reader state borrowed by an enclosing `with_leaf_reader`) then
+    // still restores the half already swapped.
+    let mut restore = Restore {
+        leaf: LEAF.with(std::cell::Cell::get),
+        reader: None,
     };
+    LEAF.with(|l| l.set(max_doc.map(|m| (m, doc_base))));
+    restore.reader = Some(LEAF_READER.with(|r| r.replace(state)));
     f()
 }
 
@@ -2415,9 +2419,9 @@ mod tests {
         );
     }
 
-    /// The segment and boost an explanation runs under are restored when it
-    /// unwinds, so a panic caught at the FFI boundary leaves a pooled
-    /// thread's state as it found it.
+    /// The segment, boost and score mode an explanation runs under are
+    /// restored when it unwinds, so a panic caught at the FFI boundary leaves
+    /// a pooled thread's state as it found it.
     #[test]
     fn leaf_and_boost_are_restored_after_a_panic() {
         assert_eq!(leaf(), None);
@@ -2440,6 +2444,23 @@ mod tests {
             2.0
         );
         assert_eq!((leaf(), weight_boost()), (None, 1.0));
+        // The score mode.
+        let r = std::panic::catch_unwind(|| {
+            with_no_scores(|| {
+                assert!(no_scores());
+                panic!("explain failed");
+            })
+        });
+        assert!(r.is_err());
+        assert!(!no_scores());
+        // A segment swap that panics half way -- the reader state still
+        // borrowed by an enclosing `with_leaf_reader` -- puts back the half
+        // it had already swapped.
+        let r = std::panic::catch_unwind(|| {
+            with_leaf_reader(|_, _| with_leaf(Some(5), 1, None, None, || ()))
+        });
+        assert!(r.is_err());
+        assert_eq!(leaf(), None);
     }
 
     /// `DisjunctionMaxQuery.toString` wraps a boolean disjunct in
@@ -2460,9 +2481,10 @@ mod tests {
         );
     }
 
-    /// A top-level boolean whose first clause is a dis-max and whose last
-    /// is a sub-boolean keeps both clauses' own parentheses: Java's
-    /// `BooleanQuery.toString` adds no outer pair to strip.
+    /// Pins `describe_clause` (`BooleanQuery.toString`): a top-level boolean
+    /// whose first clause is a dis-max and whose last is a sub-boolean keeps
+    /// both clauses' own parentheses -- Java adds no outer pair to strip, so
+    /// a "strip the outer parentheses" shortcut must not fire here.
     #[test]
     fn describe_clause_keeps_a_boolean_edge_clauses_parentheses() {
         let t = |s: &str| Clause::Term(TermQuery::new("f", s));
