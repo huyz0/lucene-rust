@@ -654,6 +654,97 @@ public class GenAnalysisCommon {
     Files.writeString(out.resolve("concatenate.words"), b.toString(), StandardCharsets.UTF_8);
   }
 
+
+  /** The chains {@code codepoints.words} runs every code point through. */
+  static Map<String, Analyzer> codePointChains() {
+    Map<String, Analyzer> m = new LinkedHashMap<>();
+    m.put("fold", chain(KeywordTokenizer::new, t -> new ASCIIFoldingFilter(t, true)));
+    m.put("cjkw", chain(KeywordTokenizer::new, CJKWidthFilter::new));
+    m.put("cjkwcf", chain(CJKWidthCharFilter::new, KeywordTokenizer::new, t -> t));
+    m.put("lower", chain(KeywordTokenizer::new, LowerCaseFilter::new));
+    m.put("upper", chain(KeywordTokenizer::new, UpperCaseFilter::new));
+    m.put("digit", chain(KeywordTokenizer::new, DecimalDigitFilter::new));
+    m.put("scf", chain(KeywordTokenizer::new, ScandinavianFoldingFilter::new));
+    m.put("scn", chain(KeywordTokenizer::new, ScandinavianNormalizationFilter::new));
+    m.put("letter", tok(LetterTokenizer::new));
+    m.put("ws", tok(WhitespaceTokenizer::new));
+    m.put("wdgf", chain(KeywordTokenizer::new, t -> new WordDelimiterGraphFilter(t,
+        WordDelimiterGraphFilter.GENERATE_WORD_PARTS | WordDelimiterGraphFilter.GENERATE_NUMBER_PARTS
+            | WordDelimiterGraphFilter.SPLIT_ON_CASE_CHANGE | WordDelimiterGraphFilter.SPLIT_ON_NUMERICS
+            | WordDelimiterGraphFilter.STEM_ENGLISH_POSSESSIVE, null)));
+    return m;
+  }
+
+  /**
+   * One chain over {@code "a" + cp + "B"}: each token's UTF-16 units in hex (the code point's own
+   * units written {@code @}), {@code :start-end/posInc}, then {@code |endOffset}.
+   */
+  static String codePointRun(Analyzer a, int cp) {
+    String text = "a" + new String(Character.toChars(cp)) + "B";
+    char[] own = Character.toChars(cp);
+    StringBuilder sb = new StringBuilder();
+    try (TokenStream ts = a.tokenStream("f", text)) {
+      CharTermAttribute t = ts.addAttribute(CharTermAttribute.class);
+      OffsetAttribute o = ts.addAttribute(OffsetAttribute.class);
+      PositionIncrementAttribute p = ts.addAttribute(PositionIncrementAttribute.class);
+      ts.reset();
+      while (ts.incrementToken()) {
+        for (int i = 0; i < t.length(); i++) {
+          boolean mine = i + own.length <= t.length();
+          for (int k = 0; mine && k < own.length; k++) mine = t.charAt(i + k) == own[k];
+          if (mine) {
+            sb.append("@.");
+            i += own.length - 1;
+          } else {
+            sb.append(Integer.toHexString(t.charAt(i))).append('.');
+          }
+        }
+        sb.append(':').append(o.startOffset()).append('-').append(o.endOffset()).append('/')
+            .append(p.getPositionIncrement()).append(' ');
+      }
+      ts.end();
+      sb.append('|').append(o.endOffset());
+    } catch (Exception e) {
+      sb.append('X').append(e.getClass().getSimpleName());
+    }
+    return sb.toString();
+  }
+
+  /**
+   * {@code codepoints.words}: every code point (but surrogates and {@link #JDK21_JDK25_DIFFER})
+   * through each of {@link #codePointChains}, as runs of consecutive code points with the same
+   * result: "chain\tfirst\tlast\tresult" (hex bounds). The skipped ranges lead as "X\tfirst\tlast".
+   */
+  static void writeCodePointFixtures(Path out) throws Exception {
+    StringBuilder b = new StringBuilder();
+    for (int i = 0; i < JDK21_JDK25_DIFFER.length; i += 2) {
+      b.append("X\t").append(Integer.toHexString(JDK21_JDK25_DIFFER[i])).append('\t')
+          .append(Integer.toHexString(JDK21_JDK25_DIFFER[i + 1])).append('\n');
+    }
+    for (Map.Entry<String, Analyzer> e : codePointChains().entrySet()) {
+      int first = -1, last = -1;
+      String run = null;
+      for (int cp = 0; cp <= Character.MAX_CODE_POINT + 1; cp++) {
+        boolean skip = cp > Character.MAX_CODE_POINT || (cp >= 0xD800 && cp <= 0xDFFF) || jdkDependent(cp);
+        String r = skip ? null : codePointRun(e.getValue(), cp);
+        if (run != null && (r == null || !r.equals(run) || cp != last + 1)) {
+          b.append(e.getKey()).append('\t').append(Integer.toHexString(first)).append('\t')
+              .append(Integer.toHexString(last)).append('\t').append(run).append('\n');
+          run = null;
+        }
+        if (r != null) {
+          if (run == null) {
+            run = r;
+            first = cp;
+          }
+          last = cp;
+        }
+      }
+      e.getValue().close();
+    }
+    Files.writeString(out.resolve("codepoints.words"), b.toString(), StandardCharsets.UTF_8);
+  }
+
   public static void main(String[] args) throws Exception {
     Path out = Path.of(args[0]).resolve("analysis_common");
     Files.createDirectories(out);
@@ -724,6 +815,7 @@ public class GenAnalysisCommon {
 
     writeRegexFixtures(out);
     writeConcatenateFixtures(out);
+    writeCodePointFixtures(out);
 
     for (Map.Entry<String, Supplier<Analyzer>> e : chains().entrySet()) {
       StringBuilder m = new StringBuilder();
