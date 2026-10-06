@@ -9,7 +9,7 @@
 | **Effort** | XL |
 | **Depends on** | [M7](m7-core-complete.md) (`StandardTokenizer`, the attribute model) |
 | **Unblocks** | [M12](m12-language-analysis.md); a Rust engine that analyses in Rust |
-| **Status** | not started |
+| **Status** | in progress -- part 1 (see [Progress](#progress)) |
 
 ---
 
@@ -63,6 +63,16 @@ data, not hand-writing the output.
 - **T11.6** — The remaining filters, char filters and analyzers, package by
   package.
 - **T11.7** — Factories and the configuration syntax.
+
+## Progress
+
+Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
+
+- **T11.0** -- `docs/inventory/lucene-analysis-common.tsv` lists every class
+  of the 10.5.0 jar (498, the `org/tartarus/snowball` runtime included) with
+  its status; `scripts/check-port-inventory.py --module analysis-common
+  --require-jar` runs in `gate.sh` and CI. `--milestone M11 --summary` is the
+  live count of what M11 still owes.
 
 ## Acceptance criteria
 
