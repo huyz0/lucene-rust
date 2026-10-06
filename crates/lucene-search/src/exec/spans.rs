@@ -4,7 +4,7 @@
 //! query's [`crate::spans::Spans`] over the segment as a two-phase scorer,
 //! scored by the similarity over the sloppy frequency of each document's
 //! spans (`sum(1 / (1 + width))`), times the payload function's score
-//! where it is a payload score query.
+//! where it is a payload score query; and `SpanWeight.matches`.
 
 use std::sync::Arc;
 
@@ -422,6 +422,105 @@ fn advance_to(scorer: &mut SpanScorer<'_>, doc: i32) -> Result<bool> {
 mod tests {
     use super::*;
 
+    /// The matches iterators before their first and after their last match
+    /// report `-1`s, and a sub-match's query is its term's (the span
+    /// query's before the first).
+    #[test]
+    fn span_matches_iterators_outside_their_matches() {
+        use crate::matches::MatchesIterator;
+        let span_q = Arc::new(crate::query::Clause::from(SpanNode::term("f", "a")));
+        let term = Arc::new(crate::query::Clause::Term(crate::TermQuery::new("f", "a")));
+        let mut it = SpanMatchesIterator {
+            query: Arc::clone(&span_q),
+            spans: Arc::new(vec![SpanMatch {
+                start: 2,
+                end: 4,
+                terms: vec![
+                    TermMatch {
+                        query: Arc::clone(&term),
+                        position: 2,
+                        start_offset: 5,
+                        end_offset: 6,
+                    },
+                    TermMatch {
+                        query: Arc::clone(&term),
+                        position: 4,
+                        start_offset: 9,
+                        end_offset: 12,
+                    },
+                ],
+            }]),
+            at: 0,
+        };
+        let outside = |it: &SpanMatchesIterator| {
+            [
+                it.start_position(),
+                it.end_position(),
+                it.start_offset(),
+                it.end_offset(),
+            ]
+        };
+        assert_eq!(outside(&it), [-1; 4]);
+        assert!(it.next().unwrap());
+        assert_eq!(outside(&it), [2, 4, 5, 12]);
+        assert_eq!(it.query(), span_q.as_ref());
+        let mut sub = it.sub_matches().unwrap().unwrap();
+        assert_eq!(sub.query(), span_q.as_ref(), "before the first term");
+        assert_eq!(sub.start_position(), -1);
+        assert!(sub.next().unwrap());
+        assert_eq!((sub.start_position(), sub.end_offset()), (2, 6));
+        assert_eq!(sub.query(), term.as_ref());
+        assert!(sub.next().unwrap());
+        assert_eq!((sub.end_position(), sub.start_offset()), (4, 9));
+        assert!(!sub.next().unwrap());
+        assert!(!it.next().unwrap());
+        assert_eq!(outside(&it), [2, 4, 5, 12], "stays on the last");
+    }
+
+    /// No matches where the segment has no spans for the query, or the
+    /// document has none.
+    #[test]
+    fn span_matches_of_a_missing_term_or_document_are_none() {
+        let reader = reader();
+        let opened = reader.open_segments().unwrap();
+        let segs = opened.as_open_segments();
+        let seg = &segs[0];
+        let ctx = LeafContext {
+            fields: seg.fields,
+            doc_in: seg.doc_in,
+            pos_in: seg.pos_in,
+            pay_in: seg.pay_in,
+            live_docs: None,
+            points: None,
+            norms: None,
+            global: None,
+            max_doc: seg.max_doc,
+            cache: None,
+            reader: seg.reader,
+            similarity: None,
+        };
+        let q = Arc::new(crate::query::Clause::MatchNoDocs(Default::default()));
+        let missing = SpanNode::term("body", "nosuch");
+        assert!(span_matches(&ctx, &missing, Arc::clone(&q), 0)
+            .unwrap()
+            .is_none());
+        let empty_or = SpanNode::Or {
+            clauses: Vec::new(),
+        };
+        assert!(span_matches(&ctx, &empty_or, Arc::clone(&q), 0)
+            .unwrap()
+            .is_none());
+        let apple = SpanNode::term("body", "apple");
+        let found = (0..seg.max_doc.unwrap())
+            .filter(|&d| {
+                span_matches(&ctx, &apple, Arc::clone(&q), d)
+                    .unwrap()
+                    .is_some()
+            })
+            .count();
+        assert!(found > 0 && found < usize::try_from(seg.max_doc.unwrap()).unwrap());
+    }
+
     fn reader() -> crate::directory_reader::DirectoryReader {
         let dir = std::path::Path::new(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -512,4 +611,216 @@ mod tests {
                 .matched
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// SpanWeight.matches
+// ---------------------------------------------------------------------------
+
+/// `SpanWeight.matches`' `TermMatch`: one leaf occurrence a span collected.
+struct TermMatch {
+    query: Arc<crate::query::Clause>,
+    position: i32,
+    start_offset: i32,
+    end_offset: i32,
+}
+
+/// The anonymous `termCollector`: each leaf's term, position and offsets.
+#[derive(Default)]
+struct InnerTerms(Vec<TermMatch>);
+
+impl spans::SpanCollector for InnerTerms {
+    fn collect_leaf(&mut self, leaf: &mut spans::TermSpans<'_>, position: i32) -> Result<()> {
+        let (start_offset, end_offset) = leaf
+            .occurrence()?
+            .map_or((-1, -1), |o| (o.start_offset, o.end_offset));
+        let (field, term) = &leaf.term;
+        self.0.push(TermMatch {
+            query: Arc::new(crate::query::Clause::Term(crate::TermQuery::new(
+                field.clone(),
+                term.clone(),
+            ))),
+            position,
+            start_offset,
+            end_offset,
+        });
+        Ok(())
+    }
+    fn reset(&mut self) {
+        self.0.clear();
+    }
+}
+
+/// One span of the document: `[startPosition, endPosition - 1]` and its
+/// inner terms in position order (`collectInnerTerms`' stable sort).
+struct SpanMatch {
+    start: i32,
+    end: i32,
+    terms: Vec<TermMatch>,
+}
+
+/// `SpanWeight.matches`' iterator over the document's spans, read when the
+/// matches were asked for: the same sequence Java's lazy one walks.
+struct SpanMatchesIterator {
+    query: Arc<crate::query::Clause>,
+    spans: Arc<Vec<SpanMatch>>,
+    /// The next span: `next` makes the current one `at - 1`.
+    at: usize,
+}
+
+impl SpanMatchesIterator {
+    fn current(&self) -> Option<&SpanMatch> {
+        self.at.checked_sub(1).and_then(|i| self.spans.get(i))
+    }
+}
+
+impl crate::matches::MatchesIterator for SpanMatchesIterator {
+    fn next(&mut self) -> Result<bool> {
+        if self.at < self.spans.len() {
+            self.at += 1;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+    fn start_position(&self) -> i32 {
+        self.current().map_or(-1, |m| m.start)
+    }
+    fn end_position(&self) -> i32 {
+        self.current().map_or(-1, |m| m.end)
+    }
+    /// `innerTerms[0].startOffset`.
+    fn start_offset(&self) -> i32 {
+        self.current()
+            .and_then(|m| m.terms.first())
+            .map_or(-1, |t| t.start_offset)
+    }
+    /// `innerTerms[innerTermCount - 1].endOffset`.
+    fn end_offset(&self) -> i32 {
+        self.current()
+            .and_then(|m| m.terms.last())
+            .map_or(-1, |t| t.end_offset)
+    }
+    /// One match per inner term, each its own `TermQuery`'s.
+    fn sub_matches(&mut self) -> Result<Option<crate::matches::BoxMatchesIterator>> {
+        let terms = self.current().map_or_else(Vec::new, |m| {
+            m.terms
+                .iter()
+                .map(|t| {
+                    (
+                        Arc::clone(&t.query),
+                        [t.position, t.position, t.start_offset, t.end_offset],
+                    )
+                })
+                .collect()
+        });
+        Ok(Some(Box::new(TermMatchesIterator {
+            terms,
+            span_query: Arc::clone(&self.query),
+            at: 0,
+        })))
+    }
+    fn query(&self) -> &crate::query::Clause {
+        &self.query
+    }
+}
+
+/// `getSubMatches()`' iterator: the span's terms, each `[position,
+/// position]` with its offsets, `getQuery()` a `TermQuery` of its term.
+struct TermMatchesIterator {
+    terms: Vec<(Arc<crate::query::Clause>, [i32; 4])>,
+    span_query: Arc<crate::query::Clause>,
+    at: usize,
+}
+
+impl TermMatchesIterator {
+    fn span(&self) -> [i32; 4] {
+        self.at
+            .checked_sub(1)
+            .and_then(|i| self.terms.get(i))
+            .map_or([-1; 4], |t| t.1)
+    }
+}
+
+impl crate::matches::MatchesIterator for TermMatchesIterator {
+    fn next(&mut self) -> Result<bool> {
+        if self.at < self.terms.len() {
+            self.at += 1;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+    fn start_position(&self) -> i32 {
+        self.span()[0]
+    }
+    fn end_position(&self) -> i32 {
+        self.span()[1]
+    }
+    fn start_offset(&self) -> i32 {
+        self.span()[2]
+    }
+    fn end_offset(&self) -> i32 {
+        self.span()[3]
+    }
+    /// The current term's `TermQuery`; before the first, the span query's.
+    fn query(&self) -> &crate::query::Clause {
+        self.at
+            .checked_sub(1)
+            .and_then(|i| self.terms.get(i))
+            .map_or(self.span_query.as_ref(), |t| t.0.as_ref())
+    }
+}
+
+/// `SpanWeight.matches(context, doc)` (inherited by `PayloadScoreQuery`'s
+/// and `SpanPayloadCheckQuery`'s weights): `MatchesUtils.forField` over the
+/// weight's field, each span of `doc` (leaf-local) with its inner terms'
+/// offsets and, as sub-matches, the terms themselves. `query` is what the
+/// iterator's `getQuery()` reports: the weight's query (a top-level
+/// `FieldMaskingSpanQuery`'s weight is its masked query's).
+///
+/// Java's `spans.advance(doc)` confirms the document (a `Spans` moves to
+/// matching documents only); here the two-phase view's `matches()` does.
+/// The spans are walked when the matches are asked for rather than as the
+/// iterator moves: the same spans, in the same order.
+pub(crate) fn span_matches(
+    ctx: &LeafContext<'_>,
+    q: &SpanNode,
+    query: Arc<crate::query::Clause>,
+    doc: i32,
+) -> Result<Option<crate::matches::BoxMatches>> {
+    let Some(field) = q.field() else {
+        return Ok(None);
+    };
+    // `getSpans(context, Postings.OFFSETS)`: offsets are read per occurrence.
+    let Some(mut s) = spans::spans_with(ctx, q, false)? else {
+        return Ok(None);
+    };
+    if s.advance(doc)? != doc || !s.matches()? {
+        return Ok(None);
+    }
+    let mut found = Vec::new();
+    let mut collector = InnerTerms::default();
+    while s.next_start_position()? != spans::NO_MORE_POSITIONS {
+        collector.0.clear();
+        s.collect(&mut collector)?;
+        let mut terms = std::mem::take(&mut collector.0);
+        terms.sort_by_key(|t| t.position);
+        found.push(SpanMatch {
+            start: s.start_position(),
+            end: s.end_position().wrapping_sub(1),
+            terms,
+        });
+    }
+    let found = Arc::new(found);
+    crate::matches::for_field(
+        field,
+        Box::new(move || {
+            Ok(Some(Box::new(SpanMatchesIterator {
+                query: Arc::clone(&query),
+                spans: Arc::clone(&found),
+                at: 0,
+            }) as crate::matches::BoxMatchesIterator))
+        }),
+    )
 }

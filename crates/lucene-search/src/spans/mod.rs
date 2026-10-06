@@ -243,7 +243,7 @@ impl<'a> TermSpans<'a> {
     }
 
     /// The occurrence at the current position: its payload and offsets.
-    fn occurrence(&mut self) -> Result<Option<&Position>> {
+    pub(crate) fn occurrence(&mut self) -> Result<Option<&Position>> {
         if !self.occurrences_loaded {
             self.occurrences_loaded = true;
             self.postings.occurrences_at(
