@@ -8,9 +8,9 @@
 //! under each match operation; `PayloadScoreQuery` with each payload
 //! function, with and without the span score) over a four-segment index with
 //! deletions, a stop word's position holes and a pulsed singleton term --
-//! each query's `toString`; under three variants (plain, boosted, a
-//! boolean's required clause) every hit's score bits and five documents'
-//! explanations. The file is rebuilt here line for line and compared with
+//! each query's `toString`; under four variants (plain, boosted, a
+//! boolean's required clause, its filter) every hit's score bits and five
+//! documents' explanations. The file is rebuilt here line for line and compared with
 //! Lucene's.
 //!
 //! One deliberate difference is checked rather than skipped: Java's
@@ -206,7 +206,7 @@ fn clean(s: &str) -> String {
         .replace('\n', "\\n")
 }
 
-const VARIANTS: [&str; 3] = ["plain", "boost", "bool"];
+const VARIANTS: [&str; 4] = ["plain", "boost", "bool", "filter"];
 const EXPLAIN: [i32; 5] = [0, 7, 17, 33, 60];
 
 fn variant(v: &str, s: &SpanNode) -> BooleanQuery {
@@ -218,6 +218,11 @@ fn variant(v: &str, s: &SpanNode) -> BooleanQuery {
         )))),
         "bool" => BooleanQuery {
             must: vec![Clause::from(s.clone())],
+            should: vec![Clause::Term(TermQuery::new("body", "egg"))],
+            ..Default::default()
+        },
+        "filter" => BooleanQuery {
+            filter: vec![Clause::from(s.clone())],
             should: vec![Clause::Term(TermQuery::new("body", "egg"))],
             ..Default::default()
         },
@@ -327,5 +332,10 @@ fn spans_and_payload_queries_match_lucene() {
     }
     assert_eq!(want.len(), got.len(), "line counts");
     assert_eq!(bad, 0, "{bad} of {} lines differ", want.len());
-    assert!(diverged <= 10, "{diverged} null-payload lines");
+    // Every one of Java's `toString` exceptions, and nothing else, is that.
+    let thrown = want
+        .iter()
+        .filter(|l| l.ends_with("\t!NullPointerException"))
+        .count();
+    assert_eq!(diverged, thrown, "null-payload lines");
 }

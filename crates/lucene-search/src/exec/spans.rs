@@ -386,6 +386,31 @@ pub(crate) fn explain_span_node(
     })
 }
 
+/// `SpanWeight.explain` of a weight created without scores (a filter
+/// clause's, `COMPLETE_NO_SCORES`: no term statistics, so no similarity): a
+/// match is `"match q in doc without score"`. A payload score query's weight
+/// without scores is its inner query's.
+pub(crate) fn explain_span_unscored(
+    ctx: &LeafContext<'_>,
+    q: &SpanNode,
+    doc: i32,
+) -> Result<Explanation> {
+    let mut q = q;
+    while let SpanNode::PayloadScore(p) = q {
+        q = &p.inner;
+    }
+    let Some(mut scorer) = build_scorer(ctx, q, 1.0, Mode::NoScores)? else {
+        return Ok(Explanation::no_match("no matching term"));
+    };
+    if !advance_to(&mut scorer, doc)? {
+        return Ok(Explanation::no_match("no matching term"));
+    }
+    Ok(Explanation::match_(
+        0.0,
+        format!("match {} in {doc} without score", spans::weight_query(q)),
+    ))
+}
+
 /// `scorer.iterator().advance(doc) == doc` for a two-phase spans: the
 /// first confirmed document at or after `doc` is `doc`.
 fn advance_to(scorer: &mut SpanScorer<'_>, doc: i32) -> Result<bool> {

@@ -81,7 +81,7 @@ import org.apache.lucene.util.BytesRef;
  * single document (a pulsed singleton term); a few documents have no text at all.
  *
  * <p>For each query spec (the grammar is the Rust test's, {@code spans_fixtures.rs}): its {@code
- * toString}; then, for each variant (plain, boosted, the required clause of a boolean with an
+ * toString}; then, for each variant (plain, boosted, the required clause or the filter of a boolean with an
  * optional term), every hit with its score bits and five documents' explanations. An exception is
  * recorded as its class name.
  *
@@ -388,7 +388,7 @@ public class GenSpans {
 
   static final int[] EXPLAIN = {0, 7, 17, 33, 60};
 
-  static final String[] VARIANTS = {"plain", "boost", "bool"};
+  static final String[] VARIANTS = {"plain", "boost", "bool", "filter"};
 
   static Query variant(String v, SpanQuery s) {
     return switch (v) {
@@ -397,6 +397,11 @@ public class GenSpans {
       case "bool" ->
           new BooleanQuery.Builder()
               .add(s, BooleanClause.Occur.MUST)
+              .add(new TermQuery(new Term("body", "egg")), BooleanClause.Occur.SHOULD)
+              .build();
+      case "filter" ->
+          new BooleanQuery.Builder()
+              .add(s, BooleanClause.Occur.FILTER)
               .add(new TermQuery(new Term("body", "egg")), BooleanClause.Occur.SHOULD)
               .build();
       default -> throw new AssertionError(v);
@@ -491,5 +496,22 @@ public class GenSpans {
     "pscore(sum,false,t(pay,cat))", "pscore(max,false,near(2,false,t(pay,apple),t(pay,bank)))",
     "pscore(avg,true,or(t(pay,cat),t(pay,dog)))", "pscore(min,false,first(3,t(pay,bank)))",
     "pscore(sum,true,t(pay,nosuch))", "near(2,true,pscore(sum,true,t(pay,apple)),t(pay,bank))",
+    // nested: the filters, containments and payload checks inside other span queries
+    "near(3,true,containing(near(3,true,apple,cat),bank),dog)",
+    "first(8,within(near(5,false,apple,bank),or(cat,dog)))",
+    "not(within(near(4,false,apple,cat),bank),dog,0,0)",
+    "or(containing(near(4,true,apple,cat),bank),first(1,dog))",
+    "check(BYTE,EQ,containing(near(3,true,t(pay,apple),t(pay,cat)),t(pay,bank)),0|1|2)",
+    "or(check(BYTE,EQ,t(pay,cat),1),t(pay,dog))",
+    "near(1,false,not(apple,bank,0,0),range(0,5,cat))",
+    "mask(body,within(t(body2,bank),near(3,true,t(body2,apple),t(body2,cat))))",
+    // multi-term wrappers inside every wrapper
+    "first(3,prefix(body,ap))", "range(0,4,wildcard(body,ca?))",
+    "containing(near(4,true,prefix(body,ap),cat),bank)", "within(near(5,false,apple,cat),prefix(body,ba))",
+    "mask(body,prefix(body2,ap))", "check(BYTE,EQ,prefix(pay,ca),1)",
+    "pscore(sum,true,prefix(pay,ba))", "near(2,false,trange(body,a,c,false,true),dog)",
+    // the pulsed singleton's payloads; a missing clause; refusals
+    "check(BYTE,EQ,t(pay,zeta),1)", "pscore(max,true,t(pay,zeta))", "near(1,true,apple,nosuch)",
+    "near(1,true,t(nofield,a),t(nofield,b))", "near(0,true,apple)", "t(id,d1)",
   };
 }
