@@ -98,25 +98,42 @@ impl Clone for AttributeSource {
 
     /// Field by field, so [`AttributeSource::restore_state`] reuses this
     /// source's term and payload buffers (a derived `clone_from` would
-    /// allocate a whole new value per call).
+    /// allocate a whole new value per call). The destructuring names every
+    /// field, so a field added to the struct fails to compile here until it
+    /// is copied too.
     fn clone_from(&mut self, source: &Self) {
-        self.term.clone_from(&source.term);
-        if self.bytes_term.is_some() || source.bytes_term.is_some() {
-            self.bytes_term.clone_from(&source.bytes_term);
+        let AttributeSource {
+            term,
+            bytes_term,
+            start_offset,
+            end_offset,
+            position_increment,
+            position_length,
+            token_type,
+            flags,
+            keyword,
+            payload,
+            term_frequency,
+            sentence_index,
+            boost_bits,
+        } = source;
+        self.term.clone_from(term);
+        if self.bytes_term.is_some() || bytes_term.is_some() {
+            self.bytes_term.clone_from(bytes_term);
         }
-        self.start_offset = source.start_offset;
-        self.end_offset = source.end_offset;
-        self.position_increment = source.position_increment;
-        self.position_length = source.position_length;
-        self.token_type.clone_from(&source.token_type);
-        self.flags = source.flags;
-        self.keyword = source.keyword;
-        if self.payload.is_some() || source.payload.is_some() {
-            self.payload.clone_from(&source.payload);
+        self.start_offset = *start_offset;
+        self.end_offset = *end_offset;
+        self.position_increment = *position_increment;
+        self.position_length = *position_length;
+        self.token_type.clone_from(token_type);
+        self.flags = *flags;
+        self.keyword = *keyword;
+        if self.payload.is_some() || payload.is_some() {
+            self.payload.clone_from(payload);
         }
-        self.term_frequency = source.term_frequency;
-        self.sentence_index = source.sentence_index;
-        self.boost_bits = source.boost_bits;
+        self.term_frequency = *term_frequency;
+        self.sentence_index = *sentence_index;
+        self.boost_bits = *boost_bits;
     }
 }
 
