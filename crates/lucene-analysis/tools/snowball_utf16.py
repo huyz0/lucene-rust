@@ -21,8 +21,6 @@ units, as the Java backend sorts -- and renumbers every entry's
 `substring_i` to its entry's new index. Results and routines move with their
 entries.
 
-The tables are also re-sorted.
-
 With `--java FILE`, it then checks every rewritten table against the same
 table of Lucene's Java stemmer: same strings, `substring_i`, results and
 routines, in the same order.

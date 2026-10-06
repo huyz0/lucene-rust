@@ -12,7 +12,10 @@ Two failure modes have already been observed and cost real review time:
   * A ported source file has no row at all, so its status cannot be looked
     up.
 
-Both are mechanical and have no false positives.
+Both are mechanical and have no false positives. The same goes for a
+backticked `scripts/..` or `tools/..` path in a row's Status column (a
+generator or verifier the row cites as evidence): it must exist, `tools/`
+under the repository or a crate the row's Rust column names.
 
 The ledger also grew to 1.25 MB in one file, mostly dated history, before it
 was split, so the layout itself is checked too:
@@ -82,6 +85,10 @@ RUST_ITEMS = re.compile(
 # What an item name may look like once the `Type::method` and generic noise is
 # stripped: the last path segment is what has to exist in the file.
 ITEM_SPLIT = re.compile(r"[,\s]+")
+# A script or generator named in a row: `scripts/x.sh`, `tools/X.java`. The
+# M11 part 2 review found the Snowball rows naming `tools/snowball_utf16_tables.py`,
+# a file that never existed (the script is `snowball_utf16.py`).
+TOOL_PATH = re.compile(r"`((?:scripts|tools)/[A-Za-z0-9_./-]+\.(?:sh|py|java|rs))`")
 # A Java class reference: `pkg/Class` or `pkg/Class.method`, inside backticks.
 JAVA_REF = re.compile(r"`((?:[a-z0-9]+/)+[A-Z][A-Za-z0-9]*)")
 
@@ -172,6 +179,16 @@ def check_rows(name, text, errors, java_to_rows):
                         f"{name}:{lineno}: {path} does not define `{item}` "
                         f"(the row's Rust column names it)"
                     )
+
+        # `scripts/..` is the repository's; `tools/..` is the repository's or
+        # that of a crate the row's Rust column names (`crates/<crate>/tools/`).
+        row_crates = {p.split("/", 1)[0] for p in RUST_PATH.findall(rust_cell)}
+        for path in TOOL_PATH.findall(status):
+            bases = [ROOT]
+            if path.startswith("tools/"):
+                bases += [os.path.join(ROOT, "crates", c) for c in sorted(row_crates)]
+            if not any(os.path.exists(os.path.join(b, path)) for b in bases):
+                errors.append(f"{name}:{lineno}: tool or script does not exist: {path}")
 
         for ref in JAVA_REF.findall(java_cell):
             java_to_rows[ref].append((f"{name}:{lineno}", status))

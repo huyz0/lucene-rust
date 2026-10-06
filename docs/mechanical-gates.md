@@ -29,7 +29,7 @@ to describe a defect that got past it.
 | [`codec-suffix-literal`](#codec-suffix-literal) | `check-port-invariants.py` | a `LuceneNN_N` suffix spelled outside `per_field_codec_suffix` | a suffix assembled from pieces (`format!("{fmt}_{n}")`) |
 | [`blocktree-infallible`](#blocktree-infallible) | `check-port-invariants.py` | `seek_exact`/`seek_ceil`/`current` in a module that consumes `blocktree` | the same call on a receiver in a module that never names `blocktree` |
 | [`doc-values-per-doc`](#doc-values-per-doc) | `check-port-invariants.py` | a *new* per-document `doc_values::numeric_value`/`binary_value` call | a per-document call hidden behind a helper fn; the ten already on the burn-down list |
-| [`parity ::item`](#parity-item) | `check-parity.py` | a ledger row (`docs/parity/*.md`) naming a Rust item its own file does not define | prose outside a row's Rust column; an item that exists but no longer does what the row says |
+| [`parity ::item`](#parity-item) | `check-parity.py` | a ledger row (`docs/parity/*.md`) naming a Rust item its own file does not define, or a backticked `scripts/..`/`tools/..` path in its Status column that does not exist | other prose outside a row's Rust column; an item that exists but no longer does what the row says; a tool path written without backticks or outside `scripts/`/`tools/` |
 | [`parity-layout`](#parity-layout) | `check-parity.py` | an area file the index does not link; a relative link to a missing file; a stated row count that is wrong; a row over 2,000 characters, a file over 80 KB, a ledger over 400 KB; a `## ` heading in two files | history written *within* budget; a row filed in the wrong area; a stale fact; a link to a file that exists but no longer says what the link claims |
 | [`ledger-single-list`](#ledger-single-list) | `check-port-invariants.py` | an unticked `- [ ]` anywhere in `docs/sweep/m2/LEDGER.md` | whether a `- [x]` is *true*, or whether a `- [->]` names the right item |
 | [`block-guard`](#block-guard) | `check-port-invariants.py` | a `lucene-index` fn setting `pending_has_blocks`/`dwpt.has_blocks = true` with no earlier `check_block(` call in the same fn | a guard that is called but whose result is ignored, or that sits on a branch the flag's line does not follow; a block flag spelled any other way |
@@ -250,6 +250,16 @@ wrong when the check first ran.
 **Blind spots.** Textual, not resolved: a name that exists somewhere in the
 file satisfies it, and the check says nothing about whether the row's *prose*
 is still true. Identifiers named in the status column are not checked at all.
+
+The Status column's backticked `scripts/..` and `tools/..` paths (generators
+and verifiers cited as evidence) are checked too, since the M11 part 2 review
+found the Snowball rows citing `tools/snowball_utf16_tables.py`, which never
+existed: `scripts/` resolves against the repository, `tools/` against the
+repository or a crate the row's Rust column names (`crates/<crate>/tools/`).
+**Seen to fail** on that row: `docs/parity/analysis-common.md:18: tool or
+script does not exist: tools/snowball_utf16_tables.py`. Blind to a path
+outside those two directories, one not in backticks, or one that exists but
+no longer does what the row says.
 
 ## parity-layout
 

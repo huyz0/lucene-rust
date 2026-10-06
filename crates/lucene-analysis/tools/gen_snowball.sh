@@ -10,7 +10,7 @@
 # `src/test/org/apache/lucene/analysis/snowball/languages.txt`). Nothing in
 # algorithms/ is written by hand.
 #
-# Two mechanical rewrites of the backend's output:
+# Four mechanical rewrites of the backend's output:
 # - `use snowball::SnowballEnv;` / `use snowball::Among;` name the snowball
 #   crate's layout; here the runtime is `crate::snowball::program`.
 # - `if !env.slice_from(s) { return false; }` (and `slice_del`) become
