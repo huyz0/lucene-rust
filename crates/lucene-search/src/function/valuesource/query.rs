@@ -2,7 +2,7 @@
 //! matches, a default elsewhere.
 
 use crate::exec::{BoxScorer, LeafContext, Mode};
-use crate::explain::describe_query;
+use crate::explain::describe_clause;
 use crate::function::docvalues::{Float, FloatDocValues};
 use crate::function::{
     java_float, out_of_order, BoxValues, FunctionContext, MutableValue, ObjectVal, ValueLeaf,
@@ -66,7 +66,7 @@ impl ValueSource for QueryValueSource {
     fn description(&self) -> String {
         format!(
             "query({},def={})",
-            describe_query(&self.q),
+            describe_clause(&self.q),
             java_float(self.def_val)
         )
     }
@@ -150,7 +150,7 @@ impl FloatDocValues for QueryDocValues<'_> {
     fn to_string_doc(&mut self, doc: i32) -> Result<String> {
         Ok(format!(
             "query({},def={})={}",
-            describe_query(&self.q),
+            describe_clause(&self.q),
             java_float(self.def_val),
             java_float(self.float_val(doc)?)
         ))

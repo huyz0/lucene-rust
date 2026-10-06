@@ -115,9 +115,34 @@ thread_local! {
     static BOOST: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) };
 }
 
+thread_local! {
+    /// Whether the weights being explained were created without scores
+    /// (`ScoreMode.COMPLETE_NO_SCORES`): `BooleanWeight` creates its
+    /// `FILTER` and `MUST_NOT` clauses' weights so. Set by [`with_no_scores`].
+    static NO_SCORES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// The boost the clause being explained was weighted with.
 fn weight_boost() -> f32 {
     BOOST.with(std::cell::Cell::get)
+}
+
+/// Whether the clause being explained was weighted without scores.
+fn no_scores() -> bool {
+    NO_SCORES.with(std::cell::Cell::get)
+}
+
+/// Runs `f` explaining weights created without scores, restoring the
+/// previous mode on every exit, an unwind included.
+fn with_no_scores<R>(f: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            NO_SCORES.with(|n| n.set(self.0));
+        }
+    }
+    let _restore = Restore(NO_SCORES.with(|n| n.replace(true)));
+    f()
 }
 
 /// Runs `f` with `(max_doc, doc_base)` as the segment being explained,
@@ -129,13 +154,41 @@ pub(crate) fn with_leaf<R>(
     similarity: Option<&dyn crate::similarities::Similarity>,
     f: impl FnOnce() -> R,
 ) -> R {
-    let prev = LEAF.with(|l| l.replace(max_doc.map(|m| (m, doc_base))));
+    /// Restores the previous segment on every exit, an unwind included: a
+    /// panic caught at the FFI boundary must not leave a pooled JVM thread
+    /// explaining against a stale segment.
+    struct Restore {
+        leaf: Option<(i32, i32)>,
+        reader: Option<LeafState>,
+    }
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            LEAF.with(|l| l.set(self.leaf));
+            if let Some(state) = self.reader.take() {
+                LEAF_READER.with(|r| r.replace(state));
+            }
+        }
+    }
+    let leaf = LEAF.with(|l| l.replace(max_doc.map(|m| (m, doc_base))));
     let state = (reader.cloned(), similarity.and_then(|s| s.shared()));
-    let prev_reader = LEAF_READER.with(|r| r.replace(state));
-    let out = f();
-    LEAF.with(|l| l.set(prev));
-    LEAF_READER.with(|r| r.replace(prev_reader));
-    out
+    let _restore = Restore {
+        leaf,
+        reader: Some(LEAF_READER.with(|r| r.replace(state))),
+    };
+    f()
+}
+
+/// Runs `f` with `boost` as the boost the clauses it explains were weighted
+/// with, restoring the previous one on every exit, an unwind included.
+fn with_boost<R>(boost: f32, f: impl FnOnce() -> R) -> R {
+    struct Restore(f32);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            BOOST.with(|b| b.set(self.0));
+        }
+    }
+    let _restore = Restore(BOOST.with(|b| b.replace(boost)));
+    f()
 }
 
 /// Runs `f` with the reader of the segment being explained and the
@@ -367,25 +420,19 @@ pub(crate) fn describe_clause(clause: &Clause) -> String {
         // `BooleanQuery.toString`: a sub-boolean in parentheses, the whole in
         // parentheses only under a minimum-should-match.
         Clause::Boolean(q) => {
-            fn sub(c: &Clause) -> String {
-                match c {
-                    Clause::Boolean(_) => format!("({})", describe_clause(c)),
-                    _ => describe_clause(c),
-                }
-            }
             let mut parts = Vec::new();
             for c in &q.must {
-                parts.push(format!("+{}", sub(c)));
+                parts.push(format!("+{}", describe_sub_clause(c)));
             }
             // `Occur.FILTER.toString()` is `"#"`.
             for c in &q.filter {
-                parts.push(format!("#{}", sub(c)));
+                parts.push(format!("#{}", describe_sub_clause(c)));
             }
             for c in &q.should {
-                parts.push(sub(c));
+                parts.push(describe_sub_clause(c));
             }
             for c in &q.must_not {
-                parts.push(format!("-{}", sub(c)));
+                parts.push(format!("-{}", describe_sub_clause(c)));
             }
             if q.minimum_should_match == 0 {
                 parts.join(" ")
@@ -397,7 +444,7 @@ pub(crate) fn describe_clause(clause: &Clause) -> String {
             let body = q
                 .disjuncts
                 .iter()
-                .map(describe_clause)
+                .map(describe_sub_clause)
                 .collect::<Vec<_>>()
                 .join(" | ");
             let tie = if q.tie_breaker == 0.0 {
@@ -429,18 +476,13 @@ pub(crate) fn describe_clause(clause: &Clause) -> String {
     }
 }
 
-/// `Query.toString()` of a query at the top level: [`describe_clause`],
-/// except that a boolean prints its clauses without the parentheses a
-/// nested boolean gets (`BooleanQuery.toString` adds them only for a
-/// minimum-should-match).
-pub(crate) fn describe_query(clause: &Clause) -> String {
-    let s = describe_clause(clause);
-    match clause {
-        Clause::Boolean(b) if b.minimum_should_match == 0 => s
-            .strip_prefix('(')
-            .and_then(|s| s.strip_suffix(')'))
-            .map_or_else(|| s.clone(), str::to_string),
-        _ => s,
+/// A clause nested in a `BooleanQuery` or a `DisjunctionMaxQuery`: both
+/// Java `toString`s wrap a sub-boolean in parentheses ("wrap sub-bools in
+/// parens").
+fn describe_sub_clause(c: &Clause) -> String {
+    match c {
+        Clause::Boolean(_) => format!("({})", describe_clause(c)),
+        _ => describe_clause(c),
     }
 }
 
@@ -794,6 +836,26 @@ fn explain_term(
     let Some(&(_, freq)) = doc_freqs.iter().find(|&&(d, _)| d == doc) else {
         return Ok(Explanation::no_match("no matching term"));
     };
+    // A `TermWeight` without scores reads postings without frequencies
+    // (`freq()` is 1) and explains through its dummy `SimScorer` (score 0,
+    // `SimScorer.explain`'s default layout).
+    if no_scores() && with_leaf_reader(|_, sim| sim.is_none()) {
+        return Ok(Explanation::match_(
+            0.0,
+            format!(
+                "weight({} in {doc}) [BM25Similarity], result of:",
+                describe_clause(&Clause::Term(query.clone()))
+            ),
+        )
+        .with_details(vec![Explanation::match_(
+            0.0,
+            "score(freq=1.0), with freq of:",
+        )
+        .with_details(vec![Explanation::match_(
+            1.0,
+            "freq, occurrences of term within document",
+        )])]));
+    }
 
     // `TermWeight` takes `searcher.collectionStatistics`/`termStatistics`:
     // reader-wide when the caller gathered them.
@@ -1224,9 +1286,11 @@ fn explain_boolean(
                 );
                 crate::exec::spans::explain_span_unscored(&ctx, sq, doc)?
             }
-            _ => explain_clause_with_stats(
-                fields, doc_in, pos_in, pay_in, live_docs, points, unscored, doc, norms, global,
-            )?,
+            _ => with_no_scores(|| {
+                explain_clause_with_stats(
+                    fields, doc_in, pos_in, pay_in, live_docs, points, unscored, doc, norms, global,
+                )
+            })?,
         };
         if e.matched {
             match_count += 1;
@@ -1265,9 +1329,11 @@ fn explain_boolean(
         }
     }
     for clause in &query.must_not {
-        let e = explain_clause_with_stats(
-            fields, doc_in, pos_in, pay_in, live_docs, points, clause, doc, norms, global,
-        )?;
+        let e = with_no_scores(|| {
+            explain_clause_with_stats(
+                fields, doc_in, pos_in, pay_in, live_docs, points, clause, doc, norms, global,
+            )
+        })?;
         if e.matched {
             fail = true;
             details.push(
@@ -1504,13 +1570,11 @@ fn explain_boost(
     // clauses' weights with it): explained with the boost, not as a
     // product with it.
     if takes_boost(inner) && with_leaf_reader(|_, sim| sim.is_none()) {
-        let outer = weight_boost();
-        BOOST.with(|b| b.set(outer * boost));
-        let out = explain_clause_with_stats(
-            fields, doc_in, pos_in, pay_in, live_docs, points, inner, doc, norms, global,
-        );
-        BOOST.with(|b| b.set(outer));
-        return out;
+        return with_boost(weight_boost() * boost, || {
+            explain_clause_with_stats(
+                fields, doc_in, pos_in, pay_in, live_docs, points, inner, doc, norms, global,
+            )
+        });
     }
     // A function query's weight takes the boost itself.
     if let Some(e) = crate::exec::function::explain_boosted(
@@ -2248,6 +2312,81 @@ mod tests {
             ))),
             "spanNear([spanTerm(f:a), spanTerm(f:b)], 2, true)"
         );
+    }
+
+    /// The segment and boost an explanation runs under are restored when it
+    /// unwinds, so a panic caught at the FFI boundary leaves a pooled
+    /// thread's state as it found it.
+    #[test]
+    fn leaf_and_boost_are_restored_after_a_panic() {
+        assert_eq!(leaf(), None);
+        let r = std::panic::catch_unwind(|| {
+            with_leaf(Some(9), 4, None, None, || {
+                assert_eq!(leaf(), Some((9, 4)));
+                with_boost(3.0, || {
+                    assert_eq!(weight_boost(), 3.0);
+                    panic!("explain failed");
+                })
+            })
+        });
+        assert!(r.is_err());
+        assert_eq!(leaf(), None);
+        assert_eq!(weight_boost(), 1.0);
+        with_leaf_reader(|reader, sim| assert!(reader.is_none() && sim.is_none()));
+        // The normal exit restores them too.
+        assert_eq!(
+            with_leaf(Some(2), 0, None, None, || with_boost(2.0, weight_boost)),
+            2.0
+        );
+        assert_eq!((leaf(), weight_boost()), (None, 1.0));
+    }
+
+    /// `DisjunctionMaxQuery.toString` wraps a boolean disjunct in
+    /// parentheses, as `BooleanQuery.toString` wraps a sub-boolean.
+    #[test]
+    fn describe_clause_wraps_a_dis_max_boolean_disjunct() {
+        let t = |s: &str| Clause::Term(TermQuery::new("f", s));
+        let ab = Clause::Boolean(Box::new(BooleanQuery {
+            should: vec![t("a"), t("b")],
+            ..Default::default()
+        }));
+        assert_eq!(
+            describe_clause(&Clause::DisjunctionMax(Box::new(DisjunctionMaxQuery::new(
+                [ab, t("c")],
+                0.0,
+            )))),
+            "((f:a f:b) | f:c)"
+        );
+    }
+
+    /// A top-level boolean whose first clause is a dis-max and whose last
+    /// is a sub-boolean keeps both clauses' own parentheses: Java's
+    /// `BooleanQuery.toString` adds no outer pair to strip.
+    #[test]
+    fn describe_clause_keeps_a_boolean_edge_clauses_parentheses() {
+        let t = |s: &str| Clause::Term(TermQuery::new("f", s));
+        let b = |x: &str, y: &str| {
+            Clause::Boolean(Box::new(BooleanQuery {
+                should: vec![t(x), t(y)],
+                ..Default::default()
+            }))
+        };
+        let dm = Clause::DisjunctionMax(Box::new(DisjunctionMaxQuery::new([t("a"), t("b")], 0.0)));
+        let q = Clause::Boolean(Box::new(BooleanQuery {
+            should: vec![dm.clone(), b("c", "d")],
+            ..Default::default()
+        }));
+        assert_eq!(describe_clause(&q), "(f:a | f:b) (f:c f:d)");
+        let q = Clause::Boolean(Box::new(BooleanQuery {
+            should: vec![b("a", "b"), b("c", "d")],
+            ..Default::default()
+        }));
+        assert_eq!(describe_clause(&q), "(f:a f:b) (f:c f:d)");
+        let q = Clause::Boolean(Box::new(BooleanQuery {
+            should: vec![dm],
+            ..Default::default()
+        }));
+        assert_eq!(describe_clause(&q), "(f:a | f:b)");
     }
 
     #[test]

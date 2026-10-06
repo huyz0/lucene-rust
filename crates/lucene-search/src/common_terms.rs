@@ -150,6 +150,8 @@ impl CommonTermsQuery {
             for c in clauses {
                 match occur {
                     Occur::Must => b.must.push(c),
+                    // `lowFreq.add(q, FILTER)`: required, unscored.
+                    Occur::Filter => b.filter.push(c),
                     _ => b.should.push(c),
                 }
             }
@@ -263,5 +265,27 @@ mod tests {
             panic!()
         };
         assert_eq!(high.must.len(), 2, "only frequent terms become required");
+    }
+
+    /// `FILTER` groups are legal (Java rejects only `MUST_NOT`): each rare
+    /// term of a `FILTER` group is required but unscored.
+    #[test]
+    fn a_filter_group_keeps_its_terms_required() {
+        let mut q = CommonTermsQuery::new(Occur::Should, Occur::Filter, 0.25).unwrap();
+        for t in ["rare", "scarce", "common"] {
+            q.add("f", t);
+        }
+        let Clause::Boolean(b) = q.build_query(100, &[Some(5), Some(2), Some(26)]) else {
+            panic!()
+        };
+        let Clause::Boost(low) = &b.must[0] else {
+            panic!()
+        };
+        let Clause::Boolean(low) = low.inner.as_ref() else {
+            panic!()
+        };
+        assert_eq!(low.filter.len(), 2, "rare FILTER terms stay required");
+        assert!(low.should.is_empty() && low.must.is_empty());
+        assert_eq!(low.minimum_should_match, 0);
     }
 }

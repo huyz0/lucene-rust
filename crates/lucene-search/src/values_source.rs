@@ -703,7 +703,7 @@ impl DoubleValuesSource for QuerySource {
         false
     }
     fn describe(&self) -> String {
-        format!("score({})", crate::explain::describe_query(&self.2))
+        format!("score({})", crate::explain::describe_clause(&self.2))
     }
     /// `WeightDoubleValuesSource.explain`: the query's own explanation.
     fn explain(
