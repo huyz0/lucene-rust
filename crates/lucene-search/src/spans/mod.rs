@@ -217,9 +217,8 @@ pub(crate) struct TermSpans<'a> {
     /// Positions come one at a time off a lazy cursor (`nextPosition()`)...
     lazy: bool,
     /// ...with their payloads (`PostingsEnum.PAYLOADS`), the current one
-    /// kept here.
+    /// read off the cursor when asked for (`getPayload()`).
     stream: bool,
-    payload: Option<Vec<u8>>,
     cost: i64,
     positions_cost: f32,
 }
@@ -237,25 +236,12 @@ impl<'a> TermSpans<'a> {
     }
 
     /// [`Spans::next_start_position`] in full: the document's first
-    /// position, a refill, payloads streamed with the positions, or a pulsed
+    /// position, a refill, a cursor streaming payloads, or a pulsed
     /// singleton's decoded list.
     #[inline(never)]
     fn next_start_position_slow(&mut self) -> Result<i32> {
         if self.count == self.freq {
             self.position = NO_MORE_POSITIONS;
-            return Ok(self.position);
-        }
-        if self.stream {
-            let (position, payload) = self.postings.next_position_with_payload()?;
-            self.position = position;
-            match (&mut self.payload, payload) {
-                (Some(buf), Some(p)) => {
-                    buf.clear();
-                    buf.extend_from_slice(p);
-                }
-                (slot, p) => *slot = p.map(<[u8]>::to_vec),
-            }
-            self.count += 1;
             return Ok(self.position);
         }
         if self.lazy {
@@ -278,7 +264,7 @@ impl<'a> TermSpans<'a> {
     /// `None` where it has none.
     pub(crate) fn payload(&mut self) -> Result<Option<&[u8]>> {
         if self.stream {
-            return Ok(self.payload.as_deref());
+            return self.postings.payload();
         }
         let occ = self.occurrence()?;
         Ok(occ.and_then(|o| (!o.payload.is_empty()).then_some(o.payload.as_slice())))
@@ -334,7 +320,8 @@ impl Spans for TermSpans<'_> {
     /// block -- inline; the rest in [`TermSpans::next_start_position_slow`].
     #[inline]
     fn next_start_position(&mut self) -> Result<i32> {
-        if self.count != self.freq {
+        // A payload stream (`stream`) always takes the full path.
+        if !self.stream && self.count != self.freq {
             if let Some(position) = self.postings.try_next_position() {
                 self.position = position;
                 self.count += 1;
@@ -414,7 +401,6 @@ fn term_spans<'a>(
         occurrences_loaded: false,
         lazy,
         stream,
-        payload: None,
         cost: i64::from(stats.doc_freq),
         positions_cost,
     }))

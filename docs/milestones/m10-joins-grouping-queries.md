@@ -366,8 +366,7 @@ grouping. Each of them falls back to Lucene today.
 ## Stage-3 status (2026-10-06)
 
 Every M10 benchmark case at or above Lucene's speed, or inside the run's
-noise, but two `queries` cases (written up below the table). Ratios are Lucene's
-time over ours (`scripts/bench-micro.sh --bench <name>`, interleaved with
+noise. Ratios are Lucene's time over ours (`scripts/bench-micro.sh --bench <name>`, interleaved with
 the build before; `~` inside the run's noise floor):
 
 | Bench | Cases | Range | Lowest |
@@ -377,7 +376,7 @@ the build before; `~` inside the run's noise floor):
 | `grouping` (T10.4) | 9 | 1.05x-2.98x | blocks 1.05x-1.17x (two 7-rep runs of two builds each; floors 1.14x-1.30x) |
 | `function` (T10.5) | 10 | 1.39x-2.82x | `FunctionRangeQuery` as a filter 1.39x |
 | `aggs` (terms behind a filter) | 6 | 1.45x-3.11x | dense range on a keyword 1.45x; see below |
-| `queries` (T10.6) | 19 | 0.89x-1.68x | a phrase over a disjunction 0.89x, `SpanPositionRangeQuery` 0.90x; see below; eleven more inside the noise (0.93~-1.03~); `MoreLikeThisQuery` 1.68x |
+| `queries` (T10.6) | 19 | 1.01x-1.59x | `CommonTermsQuery` split 1.01~, `maxgaps(unordered)` 1.01~, `msm` 1.02~, seven inside the noise in all (1.01~-1.13~); a phrase over a disjunction 1.39x, `SpanPositionRangeQuery` 1.27x (were 0.89x, 0.90x; see below); `MoreLikeThisQuery` 1.59x |
 
 Lucene's side of the two term-filtered `cat` cases (a single-valued
 `SORTED_SET`) is bimodal: in some JVM runs (one of six, three of five in
@@ -420,19 +419,51 @@ dropped: boxing the `Result`'s error so it comes back in registers (the
 making a near spans or a disjunction an enum variant of its own cost
 5-18% (the larger dispatch defeats inlining).
 
-Two cases stay below the noise floor. A phrase over a disjunction (0.89x,
-`MICRO_CASE=iv_or_phrase`, perf): the disjunction's `nextInterval` 11%, the
-term iterators' 10%, the block conjunction's 9%, `.pos` positioning per
-document 9% and `nextPosition` 6%, `.doc` advancing 6%, and the
-disjunction's queues (`DisiQueue` advance, top list, down heap, the
-interval queue's add) 13% between them -- the disjunction is the one level
-still behind a virtual call, and holding it statically measured slower.
-`SpanPositionRangeQuery` over an ordered near (0.90x,
-`MICRO_CASE=sp_pos_range`): the near's `stretchToOrder` 14%, the term
-spans' `nextStartPosition` 13%, `.pos` positioning 10% and `nextPosition`
-8%, `.doc` advancing 8%, the near's `matches` 7%, the conjunction's
-`doNext` 5%: the same work per document as Lucene's `NearSpansOrdered`, the
-near behind one virtual call. Neither has a single cost left to remove.
+That left two cases below the noise floor: a phrase over a disjunction
+(0.89x, `MICRO_CASE=iv_or_phrase`) and `SpanPositionRangeQuery` over an
+ordered near (0.90x, `MICRO_CASE=sp_pos_range`). Their profiles (callgrind
+instruction counts, which this machine's +-15% wall-clock noise cannot
+hide) showed the `Result` plumbing still on the per-document path -- a
+document's first position went through four non-inlined layers (term
+iterator, `LeafPositions`, `PositionsCursor::next_position`, `start_doc`),
+each building a `Result` through memory, 20-30 instructions of frame per
+layer -- and the near's and the disjunction's terms still behind a
+`BoxSpans`/`BoxIntervals` match per call. Stage 3, second round:
+
+- `PositionsCursor::try_next_position`: the common step (document lined
+  up, next delta in the decoded block, no payloads) is an infallible,
+  inlined `Option`, and `try_start_doc` lines a document up inside the
+  decoded block without a `Result`; the full path runs only at block
+  edges, for payloads and on corrupt input. Term spans and term intervals
+  step through it inline.
+- Unboxed terms: an ordered near over terms is `NearSpansOrdered<TermSpans>`,
+  a first or position range holds that near or a term as itself
+  (`FilterSpans<S, F>`, `inner_spans`); a disjunction of terms (or a
+  multi-term expansion) is `DisjunctionIntervals<TermIntervals>`; a block or
+  ordered source over terms is `ConjunctionIntervals<_, TermIntervals>`, and
+  over terms and disjunctions of terms `ConjunctionIntervals<_, LeafOr>` --
+  the disjunction static too, without widening `BoxIntervals` (the variant
+  that measured 5-18% slower).
+- The disjunction: its two-sub `topList()` read off the heap, the interval
+  queue's comparator a generic closure (it was `&dyn Fn`), and its
+  `reset()` -- each sub read to its first interval and queued -- run on the
+  document's first `nextInterval()` instead of in `advance()`, so a
+  document the conjunction moves past never has its positions read (Java
+  resets eagerly; `current` is set to `EMPTY` at once, so every answer is
+  the same).
+- A payload stream's per-position payload is read off the cursor when
+  collected (`getPayload()`), not copied into a `Vec` per position (the
+  copy reallocated whenever a position had none).
+
+Instructions: `sp_pos_range` -22%, `iv_or_phrase` -26%, `sp_check` -6%,
+`PayloadScoreQuery` -11%; against Lucene `iv_or_phrase` 0.89x -> 1.39x,
+`sp_pos_range` 0.90x -> 1.27x, and every `queries` case at 1.01x or
+above (one 3-rep run each way, noise floor 1.13x). The neighbours did not
+move: `similarity`'s span cases and `m7_fixture`'s phrase, synonym and
+fuzzy cases within 5% of the build before (3 interleaved reps, inside this
+machine's noise), `span_near_unordered` to the instruction. Tried and
+dropped: an inlined `LazyDocsCursor::try_advance` for a term's `advance`
+(+1-2% instructions: the inlining grew the callers more than it saved).
 
 ## Acceptance criteria
 
@@ -457,7 +488,10 @@ e execution. Open: not run yet
       REST spec has no suite of its own for either: `nested` is exercised by
       `search.inner_hits` (in `YAML_SUITES`), `function_score` only by the
       `lang-painless` module's `script_score` suites, which fall back.
-- [ ] Each new query is no slower than Lucene on its benchmark.
+- [x] Each new query is no slower than Lucene on its benchmark. (Stage-3
+      status above: every case of `join`, `query_join`, `grouping`,
+      `function`, `aggs` and `queries` at or above 1.0, or inside its run's
+      noise.)
 
 ## Risks and unknowns
 

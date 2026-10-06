@@ -153,6 +153,78 @@ impl IntervalIterator for BoxIntervals<'_> {
     }
 }
 
+/// A block's or an ordered conjunction's sub-iterator when every source is
+/// a term or a disjunction of terms ([`root_intervals`]): both held as
+/// themselves, so the conjunction calls the disjunction statically too --
+/// the one level [`BoxIntervals`] would leave behind a virtual call.
+// Inline on purpose, as `BoxIntervals::Term`: no pointer to chase on the
+// hottest calls; a conjunction holds a few of these, never many.
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum LeafOr<'a> {
+    Term(TermIntervals<'a>),
+    Or(DisjunctionIntervals<TermIntervals<'a>>),
+}
+
+/// Forwards to the [`LeafOr`] variant, statically for both.
+macro_rules! leaf_or {
+    ($self:expr, $s:ident => $e:expr) => {
+        match $self {
+            LeafOr::Term($s) => $e,
+            LeafOr::Or($s) => $e,
+        }
+    };
+}
+
+// Every method forwarded, defaulted ones included: a default left in place
+// would run on this wrapper instead of the variant's own override.
+#[deny(clippy::missing_trait_methods)]
+impl IntervalIterator for LeafOr<'_> {
+    #[inline]
+    fn doc_id(&self) -> i32 {
+        leaf_or!(self, s => s.doc_id())
+    }
+    #[inline]
+    fn next_doc(&mut self) -> Result<i32> {
+        leaf_or!(self, s => s.next_doc())
+    }
+    #[inline]
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        leaf_or!(self, s => s.advance(target))
+    }
+    #[inline]
+    fn cost(&self) -> i64 {
+        leaf_or!(self, s => s.cost())
+    }
+    #[inline]
+    fn start(&self) -> i32 {
+        leaf_or!(self, s => s.start())
+    }
+    #[inline]
+    fn end(&self) -> i32 {
+        leaf_or!(self, s => s.end())
+    }
+    #[inline]
+    fn gaps(&self) -> i32 {
+        leaf_or!(self, s => s.gaps())
+    }
+    #[inline]
+    fn width(&self) -> i32 {
+        leaf_or!(self, s => s.width())
+    }
+    #[inline]
+    fn next_interval(&mut self) -> Result<i32> {
+        leaf_or!(self, s => s.next_interval())
+    }
+    #[inline]
+    fn match_cost(&self) -> f32 {
+        leaf_or!(self, s => s.match_cost())
+    }
+    #[inline]
+    fn sum_freq(&mut self, min_extent: i32) -> Result<f32> {
+        leaf_or!(self, s => s.sum_freq(min_extent))
+    }
+}
+
 /// `MinimizingConjunctionIntervalsSource.MatchCallback`: run each time a
 /// minimizing iterator settles on a match (the matches path caches its
 /// sub-matches there).
@@ -203,14 +275,23 @@ impl IndexQueue {
         self.heap[1..=self.size].iter().copied()
     }
 
+    #[inline]
     pub(crate) fn add(&mut self, e: usize, less: &impl Fn(usize, usize) -> bool) {
         let index = self.size.saturating_add(1);
         if index >= self.heap.len() {
-            self.heap.resize(index.saturating_add(1), 0);
+            self.grow(index);
         }
         self.heap[index] = e;
         self.size = index;
         self.up_heap(index, less);
+    }
+
+    /// Room for element `index`: never needed by a queue sized for its
+    /// elements, so kept out of [`Self::add`]'s inlined body.
+    #[cold]
+    #[inline(never)]
+    fn grow(&mut self, index: usize) {
+        self.heap.resize(index.saturating_add(1), 0);
     }
 
     /// `updateTop()`: the top changed in place; re-sift it and return the
@@ -220,6 +301,7 @@ impl IndexQueue {
         self.top()
     }
 
+    #[inline]
     pub(crate) fn pop(&mut self, less: &impl Fn(usize, usize) -> bool) -> Option<usize> {
         if self.size == 0 {
             return None;
@@ -347,6 +429,22 @@ impl DisiQueue {
         &self.list
     }
 
+    /// [`Self::top_list`] of a queue of one or two subs, in the same order:
+    /// the sub ahead of the top (the second one, when it is on the top's
+    /// document) and the top. `None` for an empty queue or a larger one.
+    #[inline]
+    pub(crate) fn top_pair(&self) -> Option<(Option<usize>, usize)> {
+        match self.size {
+            1 => Some((None, self.heap[0])),
+            2 => {
+                let (top, other) = (self.heap[0], self.heap[1]);
+                let same = self.docs[other] == self.docs[top];
+                Some((same.then_some(other), top))
+            }
+            _ => None,
+        }
+    }
+
     fn top_list_from(&mut self, mut list: usize, i: usize) -> usize {
         let w = self.heap[i];
         if self.docs[w] == self.docs[list] {
@@ -463,7 +561,7 @@ pub(crate) struct Conjunction {
 }
 
 impl Conjunction {
-    pub(crate) fn new(subs: &[BoxIntervals<'_>]) -> Self {
+    pub(crate) fn new<I: IntervalIterator>(subs: &[I]) -> Self {
         let mut order: Vec<usize> = (0..subs.len()).collect();
         order.sort_by_key(|&i| subs[i].cost());
         Conjunction {
@@ -473,25 +571,25 @@ impl Conjunction {
         }
     }
 
-    pub(crate) fn doc_id(&self, subs: &[BoxIntervals<'_>]) -> i32 {
+    pub(crate) fn doc_id<I: IntervalIterator>(&self, subs: &[I]) -> i32 {
         subs[self.lead1].doc_id()
     }
 
-    pub(crate) fn cost(&self, subs: &[BoxIntervals<'_>]) -> i64 {
+    pub(crate) fn cost<I: IntervalIterator>(&self, subs: &[I]) -> i64 {
         subs[self.lead1].cost()
     }
 
-    pub(crate) fn next_doc(&self, subs: &mut [BoxIntervals<'_>]) -> Result<i32> {
+    pub(crate) fn next_doc<I: IntervalIterator>(&self, subs: &mut [I]) -> Result<i32> {
         let doc = subs[self.lead1].next_doc()?;
         self.do_next(subs, doc)
     }
 
-    pub(crate) fn advance(&self, subs: &mut [BoxIntervals<'_>], target: i32) -> Result<i32> {
+    pub(crate) fn advance<I: IntervalIterator>(&self, subs: &mut [I], target: i32) -> Result<i32> {
         let doc = subs[self.lead1].advance(target)?;
         self.do_next(subs, doc)
     }
 
-    fn do_next(&self, subs: &mut [BoxIntervals<'_>], mut doc: i32) -> Result<i32> {
+    fn do_next<I: IntervalIterator>(&self, subs: &mut [I], mut doc: i32) -> Result<i32> {
         'advance_head: loop {
             let next2 = subs[self.lead2].advance(doc)?;
             if next2 != doc {
@@ -515,7 +613,7 @@ impl Conjunction {
 }
 
 /// `ConjunctionIntervalIterator`'s `matchCost`: the sub-iterators' summed.
-fn summed_match_cost(subs: &[BoxIntervals<'_>]) -> f32 {
+fn summed_match_cost<I: IntervalIterator>(subs: &[I]) -> f32 {
     subs.iter().fold(0.0f32, |acc, s| acc + s.match_cost())
 }
 
@@ -798,6 +896,14 @@ pub(crate) struct DisjunctionIntervals<I> {
     queue: IndexQueue,
     current: Current,
     match_cost: f32,
+    /// Whether the document's `reset()` -- each sub on it read to its first
+    /// interval and queued -- is still to run. Java runs it in `nextDoc()`
+    /// and `advance()`; it runs here on the document's first
+    /// `nextInterval()` instead, so a document a conjunction moves past
+    /// never has its positions read. Nothing else reads the queue or the
+    /// subs' intervals, and `current` is set to `EMPTY` at once, so every
+    /// answer is the same.
+    pending_reset: bool,
 }
 
 /// The interval queue's `lessThan`: by end, then the wider first.
@@ -828,11 +934,23 @@ impl<I: IntervalIterator> DisjunctionIntervals<I> {
             queue: IndexQueue::new(n),
             current: Current::Empty,
             match_cost,
+            pending_reset: false,
         }
     }
 
     fn reset(&mut self) -> Result<()> {
         self.queue.clear();
+        // Two subs or fewer: `topList()`'s answer read straight off the
+        // heap -- the top, preceded by the other sub when it is on the same
+        // document -- rather than built as a list.
+        if let Some((first, top)) = self.disi.top_pair() {
+            for w in first.into_iter().chain(Some(top)) {
+                self.subs[w].next_interval()?;
+                self.queue.add(w, &end_then_wider(&self.subs));
+            }
+            self.current = Current::Empty;
+            return Ok(());
+        }
         for &w in self.disi.top_list() {
             self.subs[w].next_interval()?;
             self.queue.add(w, &end_then_wider(&self.subs));
@@ -857,12 +975,14 @@ impl<I: IntervalIterator> IntervalIterator for DisjunctionIntervals<I> {
     }
     fn next_doc(&mut self) -> Result<i32> {
         let doc = self.disi.next_doc(&mut self.subs)?;
-        self.reset()?;
+        self.current = Current::Empty;
+        self.pending_reset = true;
         Ok(doc)
     }
     fn advance(&mut self, target: i32) -> Result<i32> {
         let doc = self.disi.advance(&mut self.subs, target)?;
-        self.reset()?;
+        self.current = Current::Empty;
+        self.pending_reset = true;
         Ok(doc)
     }
     fn cost(&self) -> i64 {
@@ -896,6 +1016,10 @@ impl<I: IntervalIterator> IntervalIterator for DisjunctionIntervals<I> {
         }
     }
     fn next_interval(&mut self) -> Result<i32> {
+        if self.pending_reset {
+            self.pending_reset = false;
+            self.reset()?;
+        }
         if matches!(self.current, Current::Empty | Current::Exhausted) {
             if let Some(top) = self.queue.top() {
                 self.current = Current::Sub(top);
@@ -938,14 +1062,14 @@ impl<I: IntervalIterator> IntervalIterator for DisjunctionIntervals<I> {
 // ---------------------------------------------------------------------------
 
 /// `ConjunctionIntervalIterator`'s state, shared by every conjunction.
-struct ConjunctionState<'a> {
-    subs: Vec<BoxIntervals<'a>>,
+struct ConjunctionState<I> {
+    subs: Vec<I>,
     approx: Conjunction,
     match_cost: f32,
 }
 
-impl<'a> ConjunctionState<'a> {
-    fn new(subs: Vec<BoxIntervals<'a>>) -> Self {
+impl<I: IntervalIterator> ConjunctionState<I> {
+    fn new(subs: Vec<I>) -> Self {
         let approx = Conjunction::new(&subs);
         let match_cost = summed_match_cost(&subs);
         ConjunctionState {
@@ -959,26 +1083,26 @@ impl<'a> ConjunctionState<'a> {
 /// The per-class half of a `ConjunctionIntervalIterator`.
 trait ConjunctionKind {
     /// `reset()`, called on each new document (not on `NO_MORE_DOCS`).
-    fn reset(&mut self, subs: &mut [BoxIntervals<'_>]) -> Result<()>;
-    fn start(&self, subs: &[BoxIntervals<'_>]) -> i32;
-    fn end(&self, subs: &[BoxIntervals<'_>]) -> i32;
-    fn gaps(&self, subs: &[BoxIntervals<'_>]) -> i32;
-    fn width(&self, subs: &[BoxIntervals<'_>]) -> i32 {
+    fn reset<I: IntervalIterator>(&mut self, subs: &mut [I]) -> Result<()>;
+    fn start<I: IntervalIterator>(&self, subs: &[I]) -> i32;
+    fn end<I: IntervalIterator>(&self, subs: &[I]) -> i32;
+    fn gaps<I: IntervalIterator>(&self, subs: &[I]) -> i32;
+    fn width<I: IntervalIterator>(&self, subs: &[I]) -> i32 {
         self.end(subs)
             .wrapping_sub(self.start(subs))
             .wrapping_add(1)
     }
-    fn next_interval(&mut self, subs: &mut [BoxIntervals<'_>]) -> Result<i32>;
+    fn next_interval<I: IntervalIterator>(&mut self, subs: &mut [I]) -> Result<i32>;
 }
 
 /// A `ConjunctionIntervalIterator` subclass: the shared state and the
 /// class's own.
-pub(crate) struct ConjunctionIntervals<'a, K> {
-    state: ConjunctionState<'a>,
+pub(crate) struct ConjunctionIntervals<K, I> {
+    state: ConjunctionState<I>,
     kind: K,
 }
 
-impl<K: ConjunctionKind> IntervalIterator for ConjunctionIntervals<'_, K> {
+impl<K: ConjunctionKind, I: IntervalIterator> IntervalIterator for ConjunctionIntervals<K, I> {
     fn doc_id(&self) -> i32 {
         self.state.approx.doc_id(&self.state.subs)
     }
@@ -1019,10 +1143,10 @@ impl<K: ConjunctionKind> IntervalIterator for ConjunctionIntervals<'_, K> {
     }
 }
 
-fn conjunction_of<'a, K: ConjunctionKind + 'a>(
-    subs: Vec<BoxIntervals<'a>>,
+fn conjunction_of<K: ConjunctionKind, I: IntervalIterator>(
+    subs: Vec<I>,
     kind: K,
-) -> ConjunctionIntervals<'a, K> {
+) -> ConjunctionIntervals<K, I> {
     ConjunctionIntervals {
         state: ConjunctionState::new(subs),
         kind,
@@ -1036,21 +1160,21 @@ struct Block {
 }
 
 impl ConjunctionKind for Block {
-    fn reset(&mut self, _subs: &mut [BoxIntervals<'_>]) -> Result<()> {
+    fn reset<I: IntervalIterator>(&mut self, _subs: &mut [I]) -> Result<()> {
         self.start = -1;
         self.end = -1;
         Ok(())
     }
-    fn start(&self, _subs: &[BoxIntervals<'_>]) -> i32 {
+    fn start<I: IntervalIterator>(&self, _subs: &[I]) -> i32 {
         self.start
     }
-    fn end(&self, _subs: &[BoxIntervals<'_>]) -> i32 {
+    fn end<I: IntervalIterator>(&self, _subs: &[I]) -> i32 {
         self.end
     }
-    fn gaps(&self, _subs: &[BoxIntervals<'_>]) -> i32 {
+    fn gaps<I: IntervalIterator>(&self, _subs: &[I]) -> i32 {
         0
     }
-    fn next_interval(&mut self, subs: &mut [BoxIntervals<'_>]) -> Result<i32> {
+    fn next_interval<I: IntervalIterator>(&mut self, subs: &mut [I]) -> Result<i32> {
         if subs[0].next_interval()? == NO_MORE_INTERVALS {
             self.start = NO_MORE_INTERVALS;
             self.end = NO_MORE_INTERVALS;
@@ -1087,8 +1211,8 @@ pub(crate) fn block<'a>(subs: Vec<BoxIntervals<'a>>) -> BoxIntervals<'a> {
     BoxIntervals::boxed(block_of(subs))
 }
 
-/// [`block`]'s iterator, unboxed.
-fn block_of(subs: Vec<BoxIntervals<'_>>) -> ConjunctionIntervals<'_, Block> {
+/// [`block`]'s iterator, unboxed, over any sub-iterators.
+fn block_of<I: IntervalIterator>(subs: Vec<I>) -> ConjunctionIntervals<Block, I> {
     conjunction_of(subs, Block { start: -1, end: -1 })
 }
 
@@ -1102,7 +1226,7 @@ struct Ordered<'a> {
 }
 
 impl ConjunctionKind for Ordered<'_> {
-    fn reset(&mut self, subs: &mut [BoxIntervals<'_>]) -> Result<()> {
+    fn reset<I: IntervalIterator>(&mut self, subs: &mut [I]) -> Result<()> {
         subs[0].next_interval()?;
         self.i = 1;
         self.start = -1;
@@ -1110,16 +1234,16 @@ impl ConjunctionKind for Ordered<'_> {
         self.slop = -1;
         Ok(())
     }
-    fn start(&self, _subs: &[BoxIntervals<'_>]) -> i32 {
+    fn start<I: IntervalIterator>(&self, _subs: &[I]) -> i32 {
         self.start
     }
-    fn end(&self, _subs: &[BoxIntervals<'_>]) -> i32 {
+    fn end<I: IntervalIterator>(&self, _subs: &[I]) -> i32 {
         self.end
     }
-    fn gaps(&self, _subs: &[BoxIntervals<'_>]) -> i32 {
+    fn gaps<I: IntervalIterator>(&self, _subs: &[I]) -> i32 {
         self.slop
     }
-    fn next_interval(&mut self, subs: &mut [BoxIntervals<'_>]) -> Result<i32> {
+    fn next_interval<I: IntervalIterator>(&mut self, subs: &mut [I]) -> Result<i32> {
         self.start = NO_MORE_INTERVALS;
         self.end = NO_MORE_INTERVALS;
         self.slop = NO_MORE_INTERVALS;
@@ -1191,11 +1315,11 @@ pub(crate) fn ordered<'a>(
     BoxIntervals::boxed(ordered_of(subs, on_match))
 }
 
-/// [`ordered`]'s iterator, unboxed.
-fn ordered_of<'a>(
-    subs: Vec<BoxIntervals<'a>>,
+/// [`ordered`]'s iterator, unboxed, over any sub-iterators.
+fn ordered_of<'a, I: IntervalIterator>(
+    subs: Vec<I>,
     on_match: MatchCallback<'a>,
-) -> ConjunctionIntervals<'a, Ordered<'a>> {
+) -> ConjunctionIntervals<Ordered<'a>, I> {
     conjunction_of(
         subs,
         Ordered {
@@ -1227,7 +1351,7 @@ impl Unordered<'_> {
 }
 
 impl ConjunctionKind for Unordered<'_> {
-    fn reset(&mut self, subs: &mut [BoxIntervals<'_>]) -> Result<()> {
+    fn reset<I: IntervalIterator>(&mut self, subs: &mut [I]) -> Result<()> {
         self.queue_end = -1;
         self.start = -1;
         self.end = -1;
@@ -1242,16 +1366,16 @@ impl ConjunctionKind for Unordered<'_> {
         }
         Ok(())
     }
-    fn start(&self, _subs: &[BoxIntervals<'_>]) -> i32 {
+    fn start<I: IntervalIterator>(&self, _subs: &[I]) -> i32 {
         self.start
     }
-    fn end(&self, _subs: &[BoxIntervals<'_>]) -> i32 {
+    fn end<I: IntervalIterator>(&self, _subs: &[I]) -> i32 {
         self.end
     }
-    fn gaps(&self, _subs: &[BoxIntervals<'_>]) -> i32 {
+    fn gaps<I: IntervalIterator>(&self, _subs: &[I]) -> i32 {
         self.slop
     }
-    fn next_interval(&mut self, subs: &mut [BoxIntervals<'_>]) -> Result<i32> {
+    fn next_interval<I: IntervalIterator>(&mut self, subs: &mut [I]) -> Result<i32> {
         let n = subs.len();
         // First, find a matching interval.
         while self.queue.size() == n
@@ -1316,7 +1440,7 @@ pub(crate) fn unordered<'a>(
 fn unordered_of<'a>(
     subs: Vec<BoxIntervals<'a>>,
     on_match: MatchCallback<'a>,
-) -> ConjunctionIntervals<'a, Unordered<'a>> {
+) -> ConjunctionIntervals<Unordered<'a>, BoxIntervals<'a>> {
     let n = subs.len();
     conjunction_of(
         subs,
@@ -1349,28 +1473,28 @@ struct Filtering {
 }
 
 impl ConjunctionKind for Filtering {
-    fn reset(&mut self, subs: &mut [BoxIntervals<'_>]) -> Result<()> {
+    fn reset<I: IntervalIterator>(&mut self, subs: &mut [I]) -> Result<()> {
         self.bpos = subs[1].next_interval()? != NO_MORE_INTERVALS;
         Ok(())
     }
-    fn start(&self, subs: &[BoxIntervals<'_>]) -> i32 {
+    fn start<I: IntervalIterator>(&self, subs: &[I]) -> i32 {
         if self.bpos {
             subs[0].start()
         } else {
             NO_MORE_INTERVALS
         }
     }
-    fn end(&self, subs: &[BoxIntervals<'_>]) -> i32 {
+    fn end<I: IntervalIterator>(&self, subs: &[I]) -> i32 {
         if self.bpos {
             subs[0].end()
         } else {
             NO_MORE_INTERVALS
         }
     }
-    fn gaps(&self, subs: &[BoxIntervals<'_>]) -> i32 {
+    fn gaps<I: IntervalIterator>(&self, subs: &[I]) -> i32 {
         subs[0].gaps()
     }
-    fn next_interval(&mut self, subs: &mut [BoxIntervals<'_>]) -> Result<i32> {
+    fn next_interval<I: IntervalIterator>(&mut self, subs: &mut [I]) -> Result<i32> {
         if !self.bpos {
             return Ok(NO_MORE_INTERVALS);
         }
@@ -1436,7 +1560,7 @@ fn filtering_of<'a>(
     kind: FilteringKind,
     a: BoxIntervals<'a>,
     b: BoxIntervals<'a>,
-) -> ConjunctionIntervals<'a, Filtering> {
+) -> ConjunctionIntervals<Filtering, BoxIntervals<'a>> {
     conjunction_of(vec![a, b], Filtering { kind, bpos: false })
 }
 
@@ -2084,8 +2208,18 @@ pub(crate) fn root_intervals<'a, K: IntervalsSink<'a>>(
 ) -> Result<Option<K::Out>> {
     use IntervalsSource as S;
     Ok(match source {
-        S::Block(subs) => all_of(subs, field, ctx)?.map(|s| sink.sink(block_of(s))),
-        S::Ordered(subs) => all_of(subs, field, ctx)?.map(|s| sink.sink(ordered_of(s, None))),
+        S::Block(subs) | S::Ordered(subs) => {
+            let block = matches!(source, S::Block(_));
+            match leaves_of(subs, field, ctx)? {
+                Some(Leaves::None) => None,
+                Some(Leaves::Terms(s)) if block => Some(sink.sink(block_of(s))),
+                Some(Leaves::Terms(s)) => Some(sink.sink(ordered_of(s, None))),
+                Some(Leaves::Mixed(s)) if block => Some(sink.sink(block_of(s))),
+                Some(Leaves::Mixed(s)) => Some(sink.sink(ordered_of(s, None))),
+                None if block => all_of(subs, field, ctx)?.map(|s| sink.sink(block_of(s))),
+                None => all_of(subs, field, ctx)?.map(|s| sink.sink(ordered_of(s, None))),
+            }
+        }
         S::Unordered(subs) => all_of(subs, field, ctx)?.map(|s| sink.sink(unordered_of(s, None))),
         S::Filtered { source, filter } => {
             intervals(source, field, ctx)?.map(|it| sink.sink(FilteredIntervals::new(it, *filter)))
@@ -2137,22 +2271,8 @@ pub(crate) fn intervals<'a>(
         S::Disjunction { sources, .. } => {
             // Every source a term: the terms held as themselves, so the
             // disjunction's queues call them statically.
-            let terms: Option<Vec<&[u8]>> = sources
-                .iter()
-                .map(|s| match s {
-                    S::Term(term) => Some(term.as_slice()),
-                    _ => None,
-                })
-                .collect();
-            if let Some(terms) = terms {
-                let mut subs = Vec::with_capacity(terms.len());
-                for term in terms {
-                    if let Some(it) = term_leaf(ctx, field, term)? {
-                        subs.push(it);
-                    }
-                }
-                return Ok((!subs.is_empty())
-                    .then(|| BoxIntervals::boxed(DisjunctionIntervals::new(subs))));
+            if let Some(terms) = disjunction_terms(source) {
+                return Ok(term_disjunction(&terms, field, ctx)?.map(BoxIntervals::boxed));
             }
             let mut subs = Vec::with_capacity(sources.len());
             for s in sources {
@@ -2270,6 +2390,91 @@ pub(crate) fn intervals<'a>(
             }
         }
     })
+}
+
+/// `DisjunctionIntervalsSource.intervals` over terms only: the terms
+/// present in this segment as themselves, `None` when none is.
+fn term_disjunction<'a>(
+    terms: &[&[u8]],
+    field: &str,
+    ctx: &LeafContext<'a>,
+) -> Result<Option<DisjunctionIntervals<TermIntervals<'a>>>> {
+    let mut subs = Vec::with_capacity(terms.len());
+    for term in terms {
+        if let Some(it) = term_leaf(ctx, field, term)? {
+            subs.push(it);
+        }
+    }
+    Ok((!subs.is_empty()).then(|| DisjunctionIntervals::new(subs)))
+}
+
+/// A disjunction's sources when every one is a term: their terms, in
+/// order. `None` for any other source.
+fn disjunction_terms(source: &IntervalsSource) -> Option<Vec<&[u8]>> {
+    match source {
+        IntervalsSource::Disjunction { sources, .. } => sources
+            .iter()
+            .map(|s| match s {
+                IntervalsSource::Term(term) => Some(term.as_slice()),
+                _ => None,
+            })
+            .collect(),
+        _ => None,
+    }
+}
+
+/// [`leaves_of`]' answer.
+enum Leaves<'a> {
+    /// A source has no iterator here (`all_of`'s `None`).
+    None,
+    /// Every source a term.
+    Terms(Vec<TermIntervals<'a>>),
+    /// Terms and disjunctions of terms.
+    Mixed(Vec<LeafOr<'a>>),
+}
+
+/// [`all_of`] when every source is a term or a disjunction of terms: their
+/// iterators unboxed, made in the same order with the same errors. `None`
+/// for any other sources.
+fn leaves_of<'a>(
+    sources: &[IntervalsSource],
+    field: &str,
+    ctx: &LeafContext<'a>,
+) -> Result<Option<Leaves<'a>>> {
+    use IntervalsSource as S;
+    let mut any_or = false;
+    for s in sources {
+        match s {
+            S::Term(_) => {}
+            _ if disjunction_terms(s).is_some() => any_or = true,
+            _ => return Ok(None),
+        }
+    }
+    if !any_or {
+        let mut subs = Vec::with_capacity(sources.len());
+        for s in sources {
+            if let S::Term(term) = s {
+                match term_leaf(ctx, field, term)? {
+                    Some(it) => subs.push(it),
+                    None => return Ok(Some(Leaves::None)),
+                }
+            }
+        }
+        return Ok(Some(Leaves::Terms(subs)));
+    }
+    let mut subs = Vec::with_capacity(sources.len());
+    for s in sources {
+        let leaf = match (s, disjunction_terms(s)) {
+            (S::Term(term), _) => term_leaf(ctx, field, term)?.map(LeafOr::Term),
+            (_, Some(terms)) => term_disjunction(&terms, field, ctx)?.map(LeafOr::Or),
+            _ => None,
+        };
+        match leaf {
+            Some(it) => subs.push(it),
+            None => return Ok(Some(Leaves::None)),
+        }
+    }
+    Ok(Some(Leaves::Mixed(subs)))
 }
 
 /// `ConjunctionIntervalsSource.intervals`: every sub-source's iterator, or
