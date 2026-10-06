@@ -1,0 +1,33 @@
+# Solr-format synonym rules written for lucene-rust's synonym fixtures.
+# Equivalences: expanded or collapsed to the first phrase by the parser's `expand`.
+couch, sofa, settee
+tv, television, telly
+wi fi, wifi, wireless fidelity
+big apple, new york city, nyc
+car, automobile, motor car
+
+# Explicit mappings ignore `expand` and drop the original.
+i-pod, i pod => ipod
+colour => color
+usa, united states, united states of america => america, usa
+# Merged with an earlier rule's left side.
+car => vehicle
+couch => couch potato, lounge
+
+# Escapes: a comma and an arrow inside a phrase.
+a\,b => comma\,pair
+x\=>y, arrow
+# Duplicates (dedup keeps one).
+dog, hound, dog
+dog => canine
+dog => canine
+# Non-ASCII.
+straße, strasse
+café, cafe
+日本, にほん
+Ünïcödé, unicode
+# Longest match vs a prefix rule.
+new => fresh
+new york => gotham
+the quick brown => fast
+quick brown fox jumps => leaps
