@@ -712,11 +712,59 @@ impl std::fmt::Display for DictEntry {
 /// The state `readAffixFile` builds before the dictionary is complete.
 struct Builder {
     d: Dictionary,
-    aliases: Option<Vec<Vec<u16>>>,
+    aliases: Option<Aliases>,
     alias_count: usize,
-    morph_aliases: Option<Vec<Vec<u16>>>,
+    morph_aliases: Option<Aliases>,
     morph_alias_count: usize,
     decoder: Charset,
+}
+
+/// `Dictionary.aliases`/`morphAliases`: Java's `new String[count]`, filled
+/// line by line. The announced count is a bound, not a size: the port
+/// reserves at most [`MAX_ALIAS_RESERVE`] slots, so a hostile `AF 2000000000`
+/// costs nothing until that many lines exist.
+struct Aliases {
+    /// The header's count (`array.length`).
+    declared: usize,
+    /// The lines read so far.
+    values: Vec<Vec<u16>>,
+}
+
+/// The most alias slots reserved before their lines are read.
+const MAX_ALIAS_RESERVE: usize = 1024;
+
+impl Aliases {
+    /// `new String[count]`: Java's `NegativeArraySizeException` for a
+    /// negative count.
+    fn new(count: i32) -> Result<Aliases, HunspellError> {
+        let declared = usize::try_from(count)
+            .map_err(|_| HunspellError::NegativeArraySize(count.to_string()))?;
+        Ok(Aliases {
+            declared,
+            values: Vec::with_capacity(declared.min(MAX_ALIAS_RESERVE)),
+        })
+    }
+
+    /// `array[count++] = value`: Java's `ArrayIndexOutOfBoundsException`
+    /// past the announced count.
+    fn push(&mut self, value: Vec<u16>) -> Result<(), HunspellError> {
+        if self.values.len() >= self.declared {
+            return Err(HunspellError::IndexOutOfBounds(format!(
+                "Index {} out of bounds for length {}",
+                self.values.len(),
+                self.declared
+            )));
+        }
+        self.values.push(value);
+        Ok(())
+    }
+
+    /// `array[id - 1]`, `None` outside the lines read (Java: out of the
+    /// array, or a `null` slot inside it).
+    fn get(&self, id: i32) -> Option<&Vec<u16>> {
+        let i = usize::try_from(id.checked_sub(1)?).ok()?;
+        self.values.get(i)
+    }
 }
 
 impl Dictionary {
@@ -1397,33 +1445,30 @@ impl Builder {
         match &mut self.aliases {
             None => {
                 let count = parse_int(args.get(1).copied().unwrap_or(&[]))?;
-                self.aliases = Some(vec![Vec::new(); count.max(0) as usize]);
+                self.aliases = Some(Aliases::new(count)?);
             }
             Some(aliases) => {
+                // an alias can map to no flags
                 let value = if args.len() == 1 {
                     Vec::new()
                 } else {
                     args[1].to_vec()
                 };
-                if self.alias_count >= aliases.len() {
-                    return Err(HunspellError::IndexOutOfBounds(format!(
-                        "Index {} out of bounds for length {}",
-                        self.alias_count,
-                        aliases.len()
-                    )));
-                }
-                aliases[self.alias_count] = value;
+                aliases.push(value)?;
                 self.alias_count += 1;
             }
         }
         Ok(())
     }
 
-    /// `getAliasValue`.
+    /// `getAliasValue`. An id inside the announced count but past the lines
+    /// read is Java's `null` slot (a `NullPointerException` later); the port
+    /// reports it as a bad alias number.
     fn alias_value(&self, id: i32) -> Result<Vec<u16>, HunspellError> {
-        id.checked_sub(1)
-            .and_then(|i| usize::try_from(i).ok())
-            .and_then(|i| self.aliases.as_ref()?.get(i).cloned())
+        self.aliases
+            .as_ref()
+            .and_then(|a| a.get(id))
+            .cloned()
             .ok_or_else(|| HunspellError::IllegalArgument(format!("Bad flag alias number:{id}")))
     }
 
@@ -1432,17 +1477,10 @@ impl Builder {
         match &mut self.morph_aliases {
             None => {
                 let count = parse_int(line.get(3..).unwrap_or(&[]))?;
-                self.morph_aliases = Some(vec![Vec::new(); count.max(0) as usize]);
+                self.morph_aliases = Some(Aliases::new(count)?);
             }
             Some(aliases) => {
-                if self.morph_alias_count >= aliases.len() {
-                    return Err(HunspellError::IndexOutOfBounds(format!(
-                        "Index {} out of bounds for length {}",
-                        self.morph_alias_count,
-                        aliases.len()
-                    )));
-                }
-                aliases[self.morph_alias_count] = line[2..].to_vec();
+                aliases.push(line[2..].to_vec())?; // leave the space
                 self.morph_alias_count += 1;
             }
         }
@@ -1623,7 +1661,7 @@ impl Builder {
                 if let Some(start) = index_of(&line, MORPH_SEPARATOR, 0) {
                     let data = line[start + 1..].to_vec();
                     self.d.has_custom_morph_data = self
-                        .split_morph_data(&data)
+                        .split_morph_data(&data)?
                         .iter()
                         .any(|s| !s.starts_with(&u("ph:")));
                 }
@@ -1666,22 +1704,29 @@ impl Builder {
         }
     }
 
-    /// `splitMorphData`.
-    fn split_morph_data(&self, data: &[u16]) -> Vec<Vec<u16>> {
+    /// `splitMorphData`. A numeric alias outside the announced `AM` count
+    /// is Java's `ArrayIndexOutOfBoundsException`; one inside it but past the
+    /// lines given (Java's `null` slot, a `NullPointerException`) is reported
+    /// the same way.
+    fn split_morph_data(&self, data: &[u16]) -> Result<Vec<Vec<u16>>, HunspellError> {
         let mut data = data.to_vec();
-        if self.morph_alias_count > 0 {
+        if let Some(aliases) = self
+            .morph_aliases
+            .as_ref()
+            .filter(|_| self.morph_alias_count > 0)
+        {
             if let Ok(alias) = parse_int(java_trim(&data)) {
-                if let Some(v) = alias
-                    .checked_sub(1)
-                    .and_then(|i| usize::try_from(i).ok())
-                    .and_then(|i| self.morph_aliases.as_ref()?.get(i))
-                {
-                    data = v.clone();
-                }
+                data = aliases.get(alias).cloned().ok_or_else(|| {
+                    HunspellError::IndexOutOfBounds(format!(
+                        "Index {} out of bounds for length {}",
+                        alias.wrapping_sub(1),
+                        aliases.declared
+                    ))
+                })?;
             }
         }
         if java_is_blank(&data) {
-            return vec![];
+            return Ok(vec![]);
         }
         let mut result = Vec::new();
         let mut start = 0;
@@ -1697,7 +1742,7 @@ impl Builder {
                 start = i + 1;
             }
         }
-        result
+        Ok(result)
     }
 
     /// `readSortedDictionaries`.
@@ -1734,7 +1779,7 @@ impl Builder {
             }
             let mut morph_id = 0;
             if end + 1 < line.len() {
-                let mut fields = self.read_morph_fields(&entry, &line[end + 1..]);
+                let mut fields = self.read_morph_fields(&entry, &line[end + 1..])?;
                 if !fields.is_empty() {
                     fields.sort();
                     let joined = fields.join(&u16::from(b' '));
@@ -1761,16 +1806,20 @@ impl Builder {
 
     /// `readMorphFields`: `ph:` fields become `REP` entries, the rest are
     /// returned.
-    fn read_morph_fields(&mut self, word: &[u16], unparsed: &[u16]) -> Vec<Vec<u16>> {
+    fn read_morph_fields(
+        &mut self,
+        word: &[u16],
+        unparsed: &[u16],
+    ) -> Result<Vec<Vec<u16>>, HunspellError> {
         let mut fields = Vec::new();
-        for datum in self.split_morph_data(unparsed) {
+        for datum in self.split_morph_data(unparsed)? {
             if datum.starts_with(&u("ph:")) {
                 self.add_phonetic_rep_entries(word, &datum[3..]);
             } else {
                 fields.push(datum);
             }
         }
-        fields
+        Ok(fields)
     }
 
     /// `addPhoneticRepEntries`.

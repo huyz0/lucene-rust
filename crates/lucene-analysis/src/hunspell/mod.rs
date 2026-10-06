@@ -41,7 +41,8 @@ pub(crate) const HIDDEN_FLAG: u16 = 65511;
 
 /// Why a dictionary could not be loaded (Java's `ParseException`,
 /// `IllegalArgumentException`, `IllegalStateException`,
-/// `NumberFormatException`, `UnsupportedOperationException`).
+/// `NumberFormatException`, `ArrayIndexOutOfBoundsException`,
+/// `NegativeArraySizeException`, `UnsupportedOperationException`).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum HunspellError {
     /// `java.text.ParseException`, with its error offset (the line number).
@@ -65,6 +66,9 @@ pub enum HunspellError {
     /// announced, a flag directive without a flag).
     #[error("index out of bounds: {0}")]
     IndexOutOfBounds(String),
+    /// `NegativeArraySizeException` (a negative `AF`/`AM` count).
+    #[error("negative array size: {0}")]
+    NegativeArraySize(String),
     /// `UnsupportedOperationException`, or a feature this port does not
     /// support (a charset other than UTF-8/ISO8859-1/ISO8859-14).
     #[error("unsupported: {0}")]

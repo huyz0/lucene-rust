@@ -36,13 +36,15 @@ to describe a defect that got past it.
 | [`alloc-from-doc`](#alloc-from-doc) | `check-port-invariants.py` | an allocation size (`vec![_; n]`, `with_capacity(n)`, `.resize(n, ..)`, `FixedBitSet::new(n)`) mentioning a name its fn bound from a doc list's `.last()`/`.first()`/`.max()`, with no `max_doc` in the size and no `// ALLOC:` proof | a doc id reaching the size through a struct field, a parameter or another fn; a source not spelled on a `*doc*` name (`ids.last()`); a `max_doc` in the size that does not actually bound it |
 | [`occur-guard`](#occur-guard) | `check-port-invariants.py` | one condition testing `R.must.is_empty()` and `R.must_not.is_empty()` on a receiver `R` without naming `R.filter` | a guard split across statements or helper fns; a test on `should`/`filter` alone that forgets an occur; a `filter` named but treated wrongly |
 | [`table-fixed-len`](#table-fixed-len) | `check-port-invariants.py` | a non-test `static`/`const` in `lucene-analysis` typed as a slice literal (`&[T] = &[`) | a fixed-length type whose `N` was itself copied from the short transcription; a table built at runtime (`vec!`, `LazyLock`); a dropped or reordered entry in a table nothing indexes by position; every other crate |
+| [`alloc-from-parse`](#alloc-from-parse) | `check-port-invariants.py` | an allocation size (`vec![_; n]`, `with_capacity(n)`, `.resize(n, ..)`) mentioning a name its fn bound from a text parse (`parse_int(`, `parse_num(`, `.parse()`) or containing one, with no `min(` in the size and no `// ALLOC:` proof | a count reaching the size through a struct field, a parameter or another fn; a count decoded from bytes (`read_vint`) rather than parsed from text; a `min(` that does not actually cap it; a loop that pushes once per announced entry without reading one |
 | [rustdoc links](#rustdoc) | `cargo doc` | a `[`link`]` that resolves to nothing | a symbol named in *plain backticks*, which is most of them |
 | [coverage objects](#coverage-objects) | `scripts/coverage.sh` | lucene-ffi's never-loaded cdylib standing in for the executed copy of a `#[no_mangle]` function in the line report | the same first-copy-wins rule between two *executed* copies; a file whose lines split between a crate's unit-test and integration-test builds, which the summary under-reports |
 
 Between them these six rules cover **the indexing row** of the
 arithmetic gate's table (`FixedBitSet` only) and **the two hand-checked rules**
-at the end of that document. Apart from `alloc-from-doc`'s one shape (a size
-taken from a decoded document id) they do not cover slicing or allocation
+at the end of that document. Apart from `alloc-from-doc`'s and
+`alloc-from-parse`'s shapes (a size taken from a decoded document id, or from
+a count parsed out of a text header) they do not cover slicing or allocation
 sizing: that is still a hand audit, still step 2 of the three-part module audit, and
 still where c27 found four aborts and a release-mode infinite loop.
 
@@ -523,6 +525,30 @@ from the short transcription rather than derived (only list tables do this,
 and every one was counted against the Java source or resource when the rule
 landed); a table built at runtime; a dropped or reordered entry in a list
 nothing indexes by position (a stop list); other crates.
+
+## alloc-from-parse
+
+`check-port-invariants.py --only=alloc-from-parse`. The M11 part 2 review
+found Hunspell's `AF` and `AM` parsers (`hunspell/dictionary.rs`) pre-sizing
+their alias tables as `vec![Vec::new(); count.max(0) as usize]` with `count`
+read off the `.aff` header: `AF 2000000000` asked for 48 GB and aborted the
+process (Java's `new String[count]` throws `OutOfMemoryError`, which no caller
+catches either). A count a text format announces is a promise about lines
+still to come: the port reserves at most 1,024 slots (`Aliases::new`) and
+grows as the lines arrive, refusing a line past the count as Java does. The
+rule: outside tests, in any fn, an allocation size must not mention a name
+bound (directly or through other `let`s of the same fn) from `parse_int(`,
+`parse_num(`, `.parse::<..>()` or `.parse()`, nor contain such a call, unless
+the size names `min(` or an `// ALLOC:` comment within the six lines above
+states the bound. **Seen to fail** on the unfixed parsers:
+`crates/lucene-analysis/src/hunspell/dictionary.rs:1400: `parse_alias` sizes
+an allocation from a count parsed out of its input (`count.max(0) as
+usize`)` and the same at line 1435 for `parse_morph_alias`. Blind to: a count
+that reaches the size through a struct field, a parameter or another fn
+(`Aliases::new(count)` is checked only because it caps with `min(`); counts
+decoded from binary (`read_vint`, which the arithmetic gate and
+`alloc-from-doc` cover in part); a `min(` against a bound that is itself too
+large; a loop that pushes once per announced entry without consuming input.
 
 ## write-path verifiers of the geo modules (M9)
 
