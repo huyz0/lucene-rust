@@ -1,0 +1,3000 @@
+=http://a.b/::1😀	http://a.b/::1 <URL> 1 15 1|😀 <EMOJI> 15 17 1|17 0
+https://xn--p1ai1a.b192.168.0.1~	https://xn--p1ai1a.b192.168.0.1 <URL> 0 31 1|32 0
+1www.192.168.0.1	1www <ALPHANUM> 0 4 1|192.168.0.1 <URL> 5 16 1|16 0
+'>:8080#f"HTTP://中	8080 <NUM> 3 7 1|f <ALPHANUM> 8 9 1|HTTP <ALPHANUM> 10 14 1|中 <IDEOGRAPHIC> 17 18 1|18 0
+)[42:8080	42 <NUM> 2 4 1|8080 <NUM> 5 9 1|9 0
+,.xn--p1ai	xn <ALPHANUM> 2 4 1|p1ai <ALPHANUM> 6 10 1|10 0
+192.168.0.1::1https://	192.168.0.1 <URL> 0 11 1|1https <ALPHANUM> 13 19 1|22 0
+#f+taga.b	f <ALPHANUM> 1 2 1|taga.b <ALPHANUM> 3 9 1|9 0
+1	1 <NUM> 0 1 1|1 0
+:8080	8080 <NUM> 1 5 1|5 0
+_::1?q=1.example+tag#f	1 <NUM> 3 4 1|q <ALPHANUM> 5 6 1|1 <NUM> 7 8 1|example <ALPHANUM> 9 16 1|tag <ALPHANUM> 17 20 1|f <ALPHANUM> 21 22 1|22 0
+<https://192.168.0.1.com;xn--p1ai]	https://192.168.0.1.com <URL> 1 24 1|xn <ALPHANUM> 25 27 1|p1ai <ALPHANUM> 29 33 1|34 0
+,HTTP://	HTTP <ALPHANUM> 1 5 1|8 0
+:8080http://www.*xn--p1ai_)	8080http <ALPHANUM> 1 9 1|www <ALPHANUM> 12 15 1|xn <ALPHANUM> 17 19 1|p1ai_ <ALPHANUM> 21 26 1|27 0
+xn--p1ai!?q=1,	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|q <ALPHANUM> 10 11 1|1 <NUM> 12 13 1|14 0
+mailto:?q=1example#f::1%20中192.168.0.1	mailto <ALPHANUM> 0 6 1|q <ALPHANUM> 8 9 1|1example <ALPHANUM> 10 18 1|f <ALPHANUM> 19 20 1|1 <NUM> 22 23 1|20 <NUM> 24 26 1|中 <IDEOGRAPHIC> 26 27 1|192.168.0.1 <URL> 27 38 1|38 0
+:8080.com/.com	8080.com/.com <URL> 1 14 1|14 0
+$(www.	www <ALPHANUM> 2 5 1|6 0
+$*=+tag	tag <ALPHANUM> 4 7 1|7 0
+?q=1]https:///&:	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|https <ALPHANUM> 5 10 1|16 0
+,[=	3 0
+~"	2 0
+;@"userlocalhost	userlocalhost <ALPHANUM> 3 16 1|16 0
+:>mailto:+tag42[_.co.uk	mailto <ALPHANUM> 2 8 1|tag42 <ALPHANUM> 10 15 1|co.uk <URL> 18 23 1|23 0
+.co.ukémailto:@mailto:#f	co.ukémailto <ALPHANUM> 1 13 1|mailto <ALPHANUM> 15 21 1|f <ALPHANUM> 23 24 1|24 0
+é]	é <ALPHANUM> 0 1 1|2 0
+  file:///'$-example?q=1	file:/// <URL> 2 10 1|example <ALPHANUM> 13 20 1|q <ALPHANUM> 21 22 1|1 <NUM> 23 24 1|24 0
+::1$,	1 <NUM> 2 3 1|5 0
+?q=1::1	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|1 <NUM> 6 7 1|7 0
+$&user.co.uk192.168.0.1!	user.co.uk192.168.0.1 <ALPHANUM> 2 23 1|24 0
+?q=1/😀	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|😀 <EMOJI> 5 7 1|7 0
+😀é.	😀 <EMOJI> 0 2 1|é <ALPHANUM> 2 3 1|4 0
+"mailto:::1.com(192.168.0.1:8080.co.uk	mailto <ALPHANUM> 1 7 1|1.com <URL> 10 15 1|192.168.0.1:8080 <URL> 16 32 1|co.uk <URL> 33 38 1|38 0
+_!ftp://	ftp <ALPHANUM> 2 5 1|8 0
+xn--p1ai	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|8 0
+%20-%20xn--p1ailocalhost#f	20 <NUM> 1 3 1|20xn <ALPHANUM> 5 9 1|p1ailocalhost <ALPHANUM> 11 24 1|f <ALPHANUM> 25 26 1|26 0
+.com@a.b@:8080( >	com <ALPHANUM> 1 4 1|a.b <ALPHANUM> 5 8 1|8080 <NUM> 10 14 1|17 0
+]]:%20_*>~	20_ <NUM> 4 7 1|10 0
+example	example <ALPHANUM> 0 7 1|7 0
+_::1>	1 <NUM> 3 4 1|5 0
+!)$😀	😀 <EMOJI> 3 5 1|5 0
+a.b	a.b <ALPHANUM> 0 3 1|3 0
+1::1;.co.uk?q=1	1 <NUM> 0 1 1|1 <NUM> 3 4 1|co.uk?q=1 <URL> 6 15 1|15 0
+_x 192.168.0.1	_x <ALPHANUM> 0 2 1|192.168.0.1 <URL> 3 14 1|14 0
+:8080(	8080 <NUM> 1 5 1|6 0
+localhostmailto:-example<http://www.?q=1	localhostmailto <ALPHANUM> 0 15 1|example <ALPHANUM> 17 24 1|http://www <URL> 25 35 1|q <ALPHANUM> 37 38 1|1 <NUM> 39 40 1|40 0
+~?q=1userhttp://$.com%20http://	q <ALPHANUM> 2 3 1|1userhttp <ALPHANUM> 4 13 1|com <ALPHANUM> 18 21 1|20http <ALPHANUM> 22 28 1|31 0
+http://-)$www.http://	http <ALPHANUM> 0 4 1|www.http <ALPHANUM> 10 18 1|21 0
+:	1 0
+]>/192.168.0.1xn--p1ai	192.168.0.1xn <ALPHANUM> 3 16 1|p1ai <ALPHANUM> 18 22 1|22 0
+http://_,%20localhost  	http <ALPHANUM> 0 4 1|20localhost <ALPHANUM> 10 21 1|23 0
+*<]~http://ftp://~	http://ftp <URL> 4 14 1|18 0
+file:///192.168.0.1😀(".co.uk,	file:///192.168.0.1 <URL> 0 19 1|😀 <EMOJI> 19 21 1|co.uk <URL> 24 29 1|30 0
+,http://::1]:8080	http <ALPHANUM> 1 5 1|1 <NUM> 10 11 1|8080 <NUM> 13 17 1|17 0
+:8080 42=%20	8080 <NUM> 1 5 1|42 <NUM> 6 8 1|20 <NUM> 10 12 1|12 0
+https://[HTTP://]	https <ALPHANUM> 0 5 1|HTTP <ALPHANUM> 9 13 1|17 0
+:8080>xn--p1ai>[	8080 <NUM> 1 5 1|xn <ALPHANUM> 6 8 1|p1ai <ALPHANUM> 10 14 1|16 0
+42>	42 <NUM> 0 2 1|3 0
+<localhost+tag1 @#f	localhost <ALPHANUM> 1 10 1|tag1 <ALPHANUM> 11 15 1|f <ALPHANUM> 18 19 1|19 0
+192.168.0.1@..[	192.168.0.1 <URL> 0 11 1|15 0
+#fftp://https://éfile:///	fftp <ALPHANUM> 1 5 1|https <ALPHANUM> 8 13 1|éfile <ALPHANUM> 16 21 1|25 0
+-http://http://).*	http://http <URL> 1 12 1|18 0
+www.!(ftp://www.	www <ALPHANUM> 0 3 1|ftp <ALPHANUM> 6 9 1|www <ALPHANUM> 12 15 1|16 0
+.com::1+tag	com <ALPHANUM> 1 4 1|1 <NUM> 6 7 1|tag <ALPHANUM> 8 11 1|11 0
+:8080[!$user_	8080 <NUM> 1 5 1|user_ <ALPHANUM> 8 13 1|13 0
+192.168.0.1example192.168.0.1'a.b	192.168.0.1example192.168.0.1 <ALPHANUM> 0 29 1|a.b <ALPHANUM> 30 33 1|33 0
+mailto:;userxn--p1ai<ftp://HTTP://	mailto <ALPHANUM> 0 6 1|userxn <ALPHANUM> 8 14 1|p1ai <ALPHANUM> 16 20 1|ftp <ALPHANUM> 21 24 1|HTTP <ALPHANUM> 27 31 1|34 0
+*(>192.168.0.1*http://😀	192.168.0.1 <URL> 3 14 1|http <ALPHANUM> 15 19 1|😀 <EMOJI> 22 24 1|24 0
+x#fuser,:8080	x <ALPHANUM> 0 1 1|fuser <ALPHANUM> 2 7 1|8080 <NUM> 9 13 1|13 0
+a.b:' ]	a.b <ALPHANUM> 0 3 1|7 0
+é	é <ALPHANUM> 0 1 1|1 0
++tag<,:8080	tag <ALPHANUM> 1 4 1|8080 <NUM> 7 11 1|11 0
+::1file:///中https://.co.uk~	1file <ALPHANUM> 2 7 1|中 <IDEOGRAPHIC> 11 12 1|https <ALPHANUM> 12 17 1|co.uk <URL> 21 26 1|27 0
+www.é/-'	www.é <ALPHANUM> 0 5 1|8 0
+$)	2 0
+xn--p1ai"'é	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|é <ALPHANUM> 10 11 1|11 0
+%20localhost~	20localhost <ALPHANUM> 1 12 1|13 0
+<):8080+tag.com!xn--p1ai	8080 <NUM> 3 7 1|tag.com <URL> 8 15 1|xn <ALPHANUM> 16 18 1|p1ai <ALPHANUM> 20 24 1|24 0
+xn--p1ai xn--p1ai/$	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|xn <ALPHANUM> 9 11 1|p1ai <ALPHANUM> 13 17 1|19 0
+=xn--p1aihttps://	xn <ALPHANUM> 1 3 1|p1aihttps <ALPHANUM> 5 14 1|17 0
+42 mailto:https://]&	42 <NUM> 0 2 1|mailto:https <ALPHANUM> 3 15 1|20 0
+)é+tag::1"user%20	é <ALPHANUM> 1 2 1|tag <ALPHANUM> 3 6 1|1 <NUM> 8 9 1|user <ALPHANUM> 10 14 1|20 <NUM> 15 17 1|17 0
+localhost	localhost <ALPHANUM> 0 9 1|9 0
+42]	42 <NUM> 0 2 1|3 0
+%20'	20 <NUM> 1 3 1|4 0
+é	é <ALPHANUM> 0 1 1|1 0
+.user( %20é'	user <ALPHANUM> 1 5 1|20é <ALPHANUM> 8 11 1|12 0
+localhost😀localhost 😀-	localhost <ALPHANUM> 0 9 1|😀 <EMOJI> 9 11 1|localhost <ALPHANUM> 11 20 1|😀 <EMOJI> 21 23 1|24 0
+  user!.co.uk    +tag  	user <ALPHANUM> 2 6 1|co.uk <URL> 8 13 1|tag <ALPHANUM> 18 21 1|23 0
+_http://!	_http <ALPHANUM> 0 5 1|9 0
+ftp://	ftp <ALPHANUM> 0 3 1|6 0
+a.bmailto:(mailto:';]	a.bmailto <ALPHANUM> 0 9 1|mailto <ALPHANUM> 11 17 1|21 0
+::1?q=1https://	1 <NUM> 2 3 1|q <ALPHANUM> 4 5 1|1https <ALPHANUM> 6 12 1|15 0
+?q=1:mailto:ftp://=?q=1	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|mailto:ftp <ALPHANUM> 5 15 1|q <ALPHANUM> 20 21 1|1 <NUM> 22 23 1|23 0
+~192.168.0.1a.b1	192.168.0.1a.b1 <ALPHANUM> 1 16 1|16 0
+=mailto:"中::1	mailto <ALPHANUM> 1 7 1|中 <IDEOGRAPHIC> 9 10 1|1 <NUM> 12 13 1|13 0
+x>	x <ALPHANUM> 0 1 1|2 0
+.com<"*:*!	com <ALPHANUM> 1 4 1|10 0
+/中é. ''=	中 <IDEOGRAPHIC> 1 2 1|é <ALPHANUM> 2 3 1|8 0
+.,😀:8080;	😀 <EMOJI> 2 4 1|8080 <NUM> 5 9 1|10 0
+~http://.co.ukftp://_'	http <ALPHANUM> 1 5 1|co.ukftp <ALPHANUM> 9 17 1|22 0
+-mailto:a.b%20http://	mailto:a.b <ALPHANUM> 1 11 1|20http <ALPHANUM> 12 18 1|21 0
+!@+tag] 	tag <ALPHANUM> 3 6 1|8 0
++tag=$~file:///xn--p1ai.-	tag <ALPHANUM> 1 4 1|file:///xn--p1ai.- <URL> 7 25 1|25 0
+.co.uk;	co.uk <URL> 1 6 1|7 0
+:8080@a.b	8080 <NUM> 1 5 1|a.b <ALPHANUM> 6 9 1|9 0
+.$http://#fmailto::8080	http <ALPHANUM> 2 6 1|fmailto <ALPHANUM> 10 17 1|8080 <NUM> 19 23 1|23 0
+ file:///:8080]userwww.$~	file:///:8080 <URL> 1 14 1|userwww <ALPHANUM> 15 22 1|25 0
+#f&$?q=1%20	f <ALPHANUM> 1 2 1|q <ALPHANUM> 5 6 1|1 <NUM> 7 8 1|20 <NUM> 9 11 1|11 0
+:+tag	tag <ALPHANUM> 2 5 1|5 0
+<<%20  ftp://😀&中	20 <NUM> 3 5 1|ftp <ALPHANUM> 7 10 1|😀 <EMOJI> 13 15 1|中 <IDEOGRAPHIC> 16 17 1|17 0
+😀(https://-.co.ukuser><	😀 <EMOJI> 0 2 1|https <ALPHANUM> 3 8 1|co.ukuser <ALPHANUM> 13 22 1|24 0
+$www.$.	www <ALPHANUM> 1 4 1|7 0
+ftp://$x'mailto:~;.co.uk	ftp <ALPHANUM> 0 3 1|x'mailto <ALPHANUM> 7 15 1|co.uk <URL> 19 24 1|24 0
+'..1中?q=1:8080	1 <NUM> 3 4 1|中 <IDEOGRAPHIC> 4 5 1|q <ALPHANUM> 6 7 1|1 <NUM> 8 9 1|8080 <NUM> 10 14 1|14 0
+)x<a.b😀& ::1	x <ALPHANUM> 1 2 1|a.b <ALPHANUM> 3 6 1|😀 <EMOJI> 6 8 1|1 <NUM> 12 13 1|13 0
+_?q=1.xn--p1ai,*	q <ALPHANUM> 2 3 1|1.xn--p1ai <URL> 4 14 1|16 0
+.co.ukfile:///	co.ukfile <ALPHANUM> 1 10 1|14 0
+  [x192.168.0.1;	x192.168.0.1 <ALPHANUM> 3 15 1|16 0
+https://;)+tag:8080	https <ALPHANUM> 0 5 1|tag <ALPHANUM> 11 14 1|8080 <NUM> 15 19 1|19 0
+中::1192.168.0.1	中 <IDEOGRAPHIC> 0 1 1|1192.168.0.1 <NUM> 3 15 1|15 0
+  /#ffile:///www..	ffile <ALPHANUM> 4 9 1|www <ALPHANUM> 13 16 1|18 0
+ftp://~::8080x42-?q=1	ftp <ALPHANUM> 0 3 1|8080x42 <ALPHANUM> 9 16 1|q <ALPHANUM> 18 19 1|1 <NUM> 20 21 1|21 0
+,&(mailto:192.168.0.142	mailto <ALPHANUM> 3 9 1|192.168.0.142 <NUM> 10 23 1|23 0
+@	1 0
+'x	x <ALPHANUM> 1 2 1|2 0
+:<	2 0
+/[	2 0
+mailto:[#f:	mailto <ALPHANUM> 0 6 1|f <ALPHANUM> 9 10 1|11 0
+HTTP://.co.uk192.168.0.1:8080#f,😀	HTTP <ALPHANUM> 0 4 1|co.uk192.168.0.1 <ALPHANUM> 8 24 1|8080 <NUM> 25 29 1|f <ALPHANUM> 30 31 1|😀 <EMOJI> 32 34 1|34 0
+%20[	20 <NUM> 1 3 1|4 0
+&ftp://)	ftp <ALPHANUM> 1 4 1|8 0
+/	1 0
+a.b<[_	a.b <ALPHANUM> 0 3 1|6 0
+www.xn--p1ai[	www.xn--p1ai <URL> 0 12 1|13 0
+_1ftp://.com.com	_1ftp <ALPHANUM> 0 5 1|com.com <URL> 9 16 1|16 0
+][	2 0
+!$::1https://	1https <ALPHANUM> 4 10 1|13 0
+~.co.uk/-+tag~	co.uk/- <URL> 2 9 1|tag <ALPHANUM> 10 13 1|14 0
+* ,/example$	example <ALPHANUM> 4 11 1|12 0
+$	1 0
+]"=	3 0
+_]1)192.168.0.1~中	1 <NUM> 2 3 1|192.168.0.1 <URL> 4 15 1|中 <IDEOGRAPHIC> 16 17 1|17 0
+(é.co.uk.co.uk.example%20'	é.co.uk.co.uk.example <ALPHANUM> 1 22 1|20 <NUM> 23 25 1|26 0
+%20=	20 <NUM> 1 3 1|4 0
+mailto:/	mailto <ALPHANUM> 0 6 1|8 0
+-?q=1file:///!#fexample.@	q <ALPHANUM> 2 3 1|1file <ALPHANUM> 4 9 1|fexample <ALPHANUM> 15 23 1|25 0
+:]+tag[?q=1	tag <ALPHANUM> 3 6 1|q <ALPHANUM> 8 9 1|1 <NUM> 10 11 1|11 0
++tag  https://:  😀	tag <ALPHANUM> 1 4 1|https <ALPHANUM> 6 11 1|😀 <EMOJI> 17 19 1|19 0
+$/:8080&142	8080 <NUM> 3 7 1|142 <NUM> 8 11 1|11 0
+#fHTTP://+tag1	fHTTP <ALPHANUM> 1 6 1|tag1 <ALPHANUM> 10 14 1|14 0
+>;&)é中192.168.0.1	é <ALPHANUM> 4 5 1|中 <IDEOGRAPHIC> 5 6 1|192.168.0.1 <URL> 6 17 1|17 0
+/	1 0
+::1  ~192.168.0.1:8080	1 <NUM> 2 3 1|192.168.0.1:8080 <URL> 6 22 1|22 0
+.comftp://]192.168.0.1;www.::1	comftp <ALPHANUM> 1 7 1|192.168.0.1 <URL> 11 22 1|www <ALPHANUM> 23 26 1|1 <NUM> 29 30 1|30 0
+ !& 	4 0
+mailto: ~	mailto <ALPHANUM> 0 6 1|9 0
+>:;_]!mailto:é	mailto:é <ALPHANUM> 6 14 1|14 0
+<HTTP://x	HTTP://x <URL> 1 9 1|9 0
+[;.comé	comé <ALPHANUM> 3 7 1|7 0
+:.comhttp://😀localhost?q=1'	comhttp <ALPHANUM> 2 9 1|😀 <EMOJI> 12 14 1|localhost <ALPHANUM> 14 23 1|q <ALPHANUM> 24 25 1|1 <NUM> 26 27 1|28 0
+中'!_"*	中 <IDEOGRAPHIC> 0 1 1|6 0
+userxn--p1ai	userxn <ALPHANUM> 0 6 1|p1ai <ALPHANUM> 8 12 1|12 0
+]?q=1HTTP://example:8080	q <ALPHANUM> 2 3 1|1HTTP <ALPHANUM> 4 9 1|example <ALPHANUM> 12 19 1|8080 <NUM> 20 24 1|24 0
+  (user:,	user <ALPHANUM> 3 7 1|9 0
+'x-a.b中'xn--p1ai	x <ALPHANUM> 1 2 1|a.b <ALPHANUM> 3 6 1|中 <IDEOGRAPHIC> 6 7 1|xn <ALPHANUM> 8 10 1|p1ai <ALPHANUM> 12 16 1|16 0
+:;	2 0
+:  	3 0
+http:// .com=)HTTP://x中	http <ALPHANUM> 0 4 1|com <ALPHANUM> 9 12 1|HTTP://x <URL> 14 22 1|中 <IDEOGRAPHIC> 22 23 1|23 0
+www.-	www <ALPHANUM> 0 3 1|5 0
+😀file:///!	😀 <EMOJI> 0 2 1|file:/// <URL> 2 10 1|11 0
+#f	f <ALPHANUM> 1 2 1|2 0
+.co.ukmailto:	co.ukmailto <ALPHANUM> 1 12 1|13 0
+1~192.168.0.1a.b)192.168.0.1#f	1 <NUM> 0 1 1|192.168.0.1a.b <ALPHANUM> 2 16 1|192.168.0.1#f <URL> 17 30 1|30 0
+  x~	x <ALPHANUM> 2 3 1|4 0
+http://]ftp://192.168.0.1/	http <ALPHANUM> 0 4 1|ftp://192.168.0.1/ <URL> 8 26 1|26 0
+userexample<@ftp://&www.	userexample <ALPHANUM> 0 11 1|ftp <ALPHANUM> 13 16 1|www <ALPHANUM> 20 23 1|24 0
+ @(中😀=?q=1#f	中 <IDEOGRAPHIC> 3 4 1|😀 <EMOJI> 4 6 1|q <ALPHANUM> 8 9 1|1 <NUM> 10 11 1|f <ALPHANUM> 12 13 1|13 0
+file:///xhttp://HTTP://user	file:///xhttp://HTTP://user <URL> 0 27 1|27 0
+.https://userfile:///+tag	https://userfile <URL> 1 17 1|tag <ALPHANUM> 22 25 1|25 0
+中'/mailto:$mailto:&	中 <IDEOGRAPHIC> 0 1 1|mailto <ALPHANUM> 3 9 1|mailto <ALPHANUM> 11 17 1|19 0
+192.168.0.1中;)~!	192.168.0.1 <NUM> 0 11 1|中 <IDEOGRAPHIC> 11 12 1|16 0
+&%20/;~192.168.0.1)	20 <NUM> 2 4 1|192.168.0.1 <URL> 7 18 1|19 0
+>~~.com 😀	com <ALPHANUM> 4 7 1|😀 <EMOJI> 8 10 1|10 0
+xn--p1ai-!	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|10 0
+usermailto:	usermailto <ALPHANUM> 0 10 1|11 0
+(  .	4 0
+42#fftp:// #f?q=1::1	42 <NUM> 0 2 1|fftp <ALPHANUM> 3 7 1|f <ALPHANUM> 12 13 1|q <ALPHANUM> 14 15 1|1 <NUM> 16 17 1|1 <NUM> 19 20 1|20 0
+::1!42a.b	1 <NUM> 2 3 1|42a.b <ALPHANUM> 4 9 1|9 0
+>&+tag::1~xn--p1ai	tag <ALPHANUM> 3 6 1|1 <NUM> 8 9 1|xn <ALPHANUM> 10 12 1|p1ai <ALPHANUM> 14 18 1|18 0
+@!_xn--p1ai>-*	_xn <ALPHANUM> 2 5 1|p1ai <ALPHANUM> 7 11 1|14 0
+=::1xn--p1ai	1xn <ALPHANUM> 3 6 1|p1ai <ALPHANUM> 8 12 1|12 0
+42[1xn--p1aihttp://?q=1,	42 <NUM> 0 2 1|1xn <ALPHANUM> 3 6 1|p1aihttp <ALPHANUM> 8 16 1|q <ALPHANUM> 20 21 1|1 <NUM> 22 23 1|24 0
+192.168.0.1file:///	192.168.0.1file <ALPHANUM> 0 15 1|19 0
+=*  .	5 0
+*!$:examplehttps://  42	examplehttps <ALPHANUM> 4 16 1|42 <NUM> 21 23 1|23 0
+>😀_http://localhost	😀 <EMOJI> 1 3 1|_http <ALPHANUM> 3 8 1|localhost <ALPHANUM> 11 20 1|20 0
+=éa.b-	éa.b <ALPHANUM> 1 5 1|6 0
+-mailto:#f-+tag	mailto <ALPHANUM> 1 7 1|f <ALPHANUM> 9 10 1|tag <ALPHANUM> 12 15 1|15 0
+/!	2 0
+x,$ éfile:///=	x <ALPHANUM> 0 1 1|éfile <ALPHANUM> 4 9 1|14 0
+x+tag.com'😀<::1<	x <ALPHANUM> 0 1 1|tag.com <URL> 2 9 1|😀 <EMOJI> 10 12 1|1 <NUM> 15 16 1|17 0
+:8080.com	8080.com <URL> 1 9 1|9 0
+#f	f <ALPHANUM> 1 2 1|2 0
+/ftp://.co.uk😀example1-#f	ftp <ALPHANUM> 1 4 1|co.uk <URL> 8 13 1|😀 <EMOJI> 13 15 1|example1 <ALPHANUM> 15 23 1|f <ALPHANUM> 25 26 1|26 0
+>42[file:///	42 <NUM> 1 3 1|file:/// <URL> 4 12 1|12 0
+"<~!.é[	é <ALPHANUM> 5 6 1|7 0
+=example (x:8080%20>	example <ALPHANUM> 1 8 1|x <ALPHANUM> 10 11 1|8080 <NUM> 12 16 1|20 <NUM> 17 19 1|20 0
+-!;a.b#f/é	a.b <ALPHANUM> 3 6 1|f <ALPHANUM> 7 8 1|é <ALPHANUM> 9 10 1|10 0
+-':~~#f+tag	f <ALPHANUM> 6 7 1|tag <ALPHANUM> 8 11 1|11 0
+www..com)[	www <ALPHANUM> 0 3 1|com <ALPHANUM> 5 8 1|10 0
+mailto:.com~;'é.com?q=1	mailto <ALPHANUM> 0 6 1|com <ALPHANUM> 8 11 1|é.com <ALPHANUM> 14 19 1|q <ALPHANUM> 20 21 1|1 <NUM> 22 23 1|23 0
+(&xn--p1ai	xn <ALPHANUM> 2 4 1|p1ai <ALPHANUM> 6 10 1|10 0
+example::1	example <ALPHANUM> 0 7 1|1 <NUM> 9 10 1|10 0
+www.:42a.buser	www <ALPHANUM> 0 3 1|42a.buser <ALPHANUM> 5 14 1|14 0
+)	1 0
+.co.ukhttp://1(.	co.ukhttp <ALPHANUM> 1 10 1|1 <NUM> 13 14 1|16 0
+!&	2 0
+_	1 0
+.co.uk#f)>xn--p1ai::1	co.uk#f) <URL> 1 9 1|xn <ALPHANUM> 10 12 1|p1ai <ALPHANUM> 14 18 1|1 <NUM> 20 21 1|21 0
+xn--p1ai#f,	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|f <ALPHANUM> 9 10 1|11 0
+mailto:	mailto <ALPHANUM> 0 6 1|7 0
+.com;:<.:192.168.0.1	com <ALPHANUM> 1 4 1|192.168.0.1 <URL> 9 20 1|20 0
+192.168.0.1mailto:_	192.168.0.1mailto <ALPHANUM> 0 17 1|19 0
+http://http://!./	http://http <URL> 0 11 1|17 0
+http://"	http <ALPHANUM> 0 4 1|8 0
+42,	42 <NUM> 0 2 1|3 0
+'user	user <ALPHANUM> 1 5 1|5 0
+ftp://xn--p1aix192.168.0.1.=192.168.0.1	ftp <ALPHANUM> 0 3 1|xn <ALPHANUM> 6 8 1|p1aix192.168.0.1 <ALPHANUM> 10 26 1|192.168.0.1 <URL> 28 39 1|39 0
+>.192.168.0.1file:///&	192.168.0.1file <ALPHANUM> 2 17 1|22 0
+-.co.uk	co.uk <URL> 2 7 1|7 0
+42	42 <NUM> 0 2 1|2 0
+.com*(;1	com <ALPHANUM> 1 4 1|1 <NUM> 7 8 1|8 0
+.co.uk  www..com(.https://	co.uk <URL> 1 6 1|www <ALPHANUM> 8 11 1|com <ALPHANUM> 13 16 1|https <ALPHANUM> 18 23 1|26 0
+&]HTTP://:8080 ::1.'	HTTP <ALPHANUM> 2 6 1|8080 <NUM> 10 14 1|1 <NUM> 17 18 1|20 0
+&>'	3 0
+.co.uklocalhost[::1xn--p1ai:8080	co.uklocalhost <ALPHANUM> 1 15 1|1xn <ALPHANUM> 18 21 1|p1ai <ALPHANUM> 23 27 1|8080 <NUM> 28 32 1|32 0
+x_example	x_example <ALPHANUM> 0 9 1|9 0
+::1é'1.co.uk	1é <ALPHANUM> 2 4 1|1.co.uk <URL> 5 12 1|12 0
+[	1 0
+"x	x <ALPHANUM> 1 2 1|2 0
+;%20]HTTP://x	20 <NUM> 2 4 1|HTTP://x <URL> 5 13 1|13 0
+  www.	www <ALPHANUM> 2 5 1|6 0
+42+tag192.168.0.1+tag中www..comwww.	42 <NUM> 0 2 1|tag192.168.0.1 <ALPHANUM> 3 17 1|tag <ALPHANUM> 18 21 1|中 <IDEOGRAPHIC> 21 22 1|www <ALPHANUM> 22 25 1|comwww <ALPHANUM> 27 33 1|34 0
+>www.mailto:&(http://*	www.mailto <ALPHANUM> 1 11 1|http <ALPHANUM> 14 18 1|22 0
+$1 	1 <NUM> 1 2 1|3 0
+user.co.uk.comhttps://::1www.	user.co.uk.comhttps <ALPHANUM> 0 19 1|1www <ALPHANUM> 24 28 1|29 0
+中mailto:%20/	中 <IDEOGRAPHIC> 0 1 1|mailto <ALPHANUM> 1 7 1|20 <NUM> 9 11 1|12 0
+file:///&[<	file:///& <URL> 0 9 1|11 0
+HTTP://192.168.0.1  <<	HTTP://192.168.0.1 <URL> 0 18 1|22 0
+HTTP://ftp://>'HTTP://$,	HTTP://ftp <URL> 0 10 1|HTTP <ALPHANUM> 15 19 1|24 0
+42	42 <NUM> 0 2 1|2 0
+:x)	x <ALPHANUM> 1 2 1|3 0
+中.com	中 <IDEOGRAPHIC> 0 1 1|com <ALPHANUM> 2 5 1|5 0
+1$::	1 <NUM> 0 1 1|4 0
+user~)1.co.uk192.168.0.1ftp://	user <ALPHANUM> 0 4 1|1.co <URL> 6 10 1|uk192.168.0.1ftp <ALPHANUM> 11 27 1|30 0
+.HTTP://.com/!?q=1😀 	HTTP <ALPHANUM> 1 5 1|com <ALPHANUM> 9 12 1|q <ALPHANUM> 15 16 1|1 <NUM> 17 18 1|😀 <EMOJI> 18 20 1|21 0
+[HTTP://?q=1:::1(::1'	HTTP <ALPHANUM> 1 5 1|q <ALPHANUM> 9 10 1|1 <NUM> 11 12 1|1 <NUM> 15 16 1|1 <NUM> 19 20 1|21 0
+42~中  HTTP://[	42 <NUM> 0 2 1|中 <IDEOGRAPHIC> 3 4 1|HTTP <ALPHANUM> 6 10 1|14 0
+.co.uk)#f)~	co.uk <URL> 1 6 1|f <ALPHANUM> 8 9 1|11 0
+ftp://www.😀[ ?q=1.com	ftp <ALPHANUM> 0 3 1|www <ALPHANUM> 6 9 1|😀 <EMOJI> 10 12 1|q <ALPHANUM> 15 16 1|1.com <URL> 17 22 1|22 0
+xn--p1ai)>; a.b.com 	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|a.b.com <URL> 12 19 1|20 0
+,.co.uk~#fhttps://	co.uk <URL> 2 7 1|fhttps <ALPHANUM> 9 15 1|18 0
+www.;-user:	www <ALPHANUM> 0 3 1|user <ALPHANUM> 6 10 1|11 0
+HTTP://!file:///42:xn--p1ai	HTTP <ALPHANUM> 0 4 1|file:///42:xn--p1ai <URL> 8 27 1|27 0
+.co.uk(	co.uk <URL> 1 6 1|7 0
+:8080 1!,www.https://	8080 <NUM> 1 5 1|1 <NUM> 6 7 1|www.https <ALPHANUM> 9 18 1|21 0
+:8080https://]?q=1~(	8080https <ALPHANUM> 1 10 1|q <ALPHANUM> 15 16 1|1 <NUM> 17 18 1|20 0
+.co.uk1.com&(?q=1	co.uk1.com <URL> 1 11 1|q <ALPHANUM> 14 15 1|1 <NUM> 16 17 1|17 0
+:8080a.b"user! .	8080a.b <ALPHANUM> 1 8 1|user <ALPHANUM> 9 13 1|16 0
+xhttps://('.co.uk=.com192.168.0.1	xhttps <ALPHANUM> 0 6 1|co.uk <URL> 12 17 1|com192.168.0.1 <ALPHANUM> 19 33 1|33 0
+é<.com"'ftp://	é <ALPHANUM> 0 1 1|com <ALPHANUM> 3 6 1|ftp <ALPHANUM> 8 11 1|14 0
+$http://file:///<#f:*	http://file <URL> 1 12 1|f <ALPHANUM> 18 19 1|21 0
+:https://	https <ALPHANUM> 1 6 1|9 0
+)exampleuserhttp://file:///HTTP://	exampleuserhttp <ALPHANUM> 1 16 1|file:///HTTP:// <URL> 19 34 1|34 0
+http://:	http <ALPHANUM> 0 4 1|8 0
+-😀.x<;~	😀 <EMOJI> 1 3 1|x <ALPHANUM> 4 5 1|8 0
+:8080!*:<42:&	8080 <NUM> 1 5 1|42 <NUM> 9 11 1|13 0
+.example[<*%20ftp://~	example <ALPHANUM> 1 8 1|20ftp <ALPHANUM> 12 17 1|21 0
+192.168.0.1	192.168.0.1 <URL> 0 11 1|11 0
+中a.bé~-example	中 <IDEOGRAPHIC> 0 1 1|a.bé <ALPHANUM> 1 5 1|example <ALPHANUM> 7 14 1|14 0
+中	中 <IDEOGRAPHIC> 0 1 1|1 0
+<	1 0
+::11file:///::1	11file <ALPHANUM> 2 8 1|1 <NUM> 14 15 1|15 0
+é	é <ALPHANUM> 0 1 1|1 0
+.com[	com <ALPHANUM> 1 4 1|5 0
+*?q=1.com_-	q <ALPHANUM> 2 3 1|1 <NUM> 4 5 1|com_ <ALPHANUM> 6 10 1|11 0
+?q=1https://	q <ALPHANUM> 1 2 1|1https <ALPHANUM> 3 9 1|12 0
+xn--p1aimailto:  	xn <ALPHANUM> 0 2 1|p1aimailto <ALPHANUM> 4 14 1|17 0
+_$userlocalhostfile:///ftp://"	userlocalhostfile <ALPHANUM> 2 19 1|ftp <ALPHANUM> 23 26 1|30 0
+[<file:///" 42	file:/// <URL> 2 10 1|42 <NUM> 12 14 1|14 0
+localhost><192.168.0.1xn--p1ai	localhost <ALPHANUM> 0 9 1|192.168.0.1xn <ALPHANUM> 11 24 1|p1ai <ALPHANUM> 26 30 1|30 0
+::1https://.co.uk>42'www.;	1https <ALPHANUM> 2 8 1|co.uk <URL> 12 17 1|42 <NUM> 18 20 1|www <ALPHANUM> 21 24 1|26 0
+example中+tag:8080mailto:	example <ALPHANUM> 0 7 1|中 <IDEOGRAPHIC> 7 8 1|tag <ALPHANUM> 9 12 1|8080mailto <ALPHANUM> 13 23 1|24 0
+;  xHTTP://::1http://&	xHTTP <ALPHANUM> 3 8 1|1http <ALPHANUM> 13 18 1|22 0
+42https://file:///.com-@'user	42https <ALPHANUM> 0 7 1|file:///.com-@ <URL> 10 24 1|user <ALPHANUM> 25 29 1|29 0
+:'192.168.0.1=:>中=	192.168.0.1 <URL> 2 13 1|中 <IDEOGRAPHIC> 16 17 1|18 0
+HTTP://	HTTP <ALPHANUM> 0 4 1|7 0
+ https://#f中	https <ALPHANUM> 1 6 1|f <ALPHANUM> 10 11 1|中 <IDEOGRAPHIC> 11 12 1|12 0
+'	1 0
+)	1 0
+a.bxn--p1ai	a.bxn <ALPHANUM> 0 5 1|p1ai <ALPHANUM> 7 11 1|11 0
+*]é42file:/// +tag	é42file <ALPHANUM> 2 9 1|tag <ALPHANUM> 15 18 1|18 0
+https://192.168.0.1.comx!.co.uk<	https://192.168.0.1.comx <URL> 0 24 1|co.uk <URL> 26 31 1|32 0
+::1/example/]	1 <NUM> 2 3 1|example <ALPHANUM> 4 11 1|13 0
+localhost  😀421mailto:	localhost <ALPHANUM> 0 9 1|😀 <EMOJI> 11 13 1|421mailto <ALPHANUM> 13 22 1|23 0
+<+tag)+tag-	tag <ALPHANUM> 2 5 1|tag <ALPHANUM> 7 10 1|11 0
+中>	中 <IDEOGRAPHIC> 0 1 1|2 0
+.com1#f;	com1 <ALPHANUM> 1 5 1|f <ALPHANUM> 6 7 1|8 0
+::1localhost[.com.localhostHTTP://]	1localhost <ALPHANUM> 2 12 1|com.localhostHTTP <ALPHANUM> 14 31 1|35 0
+&42= <192.168.0.1	42 <NUM> 1 3 1|192.168.0.1 <URL> 6 17 1|17 0
+,)HTTP://😀	HTTP <ALPHANUM> 2 6 1|😀 <EMOJI> 9 11 1|11 0
+.com	com <ALPHANUM> 1 4 1|4 0
+file:///*x1中	file:/// <URL> 0 8 1|x1 <ALPHANUM> 9 11 1|中 <IDEOGRAPHIC> 11 12 1|12 0
+<.~	3 0
+https://+tag  ?q=1?q=1	https <ALPHANUM> 0 5 1|tag <ALPHANUM> 9 12 1|q <ALPHANUM> 15 16 1|1 <NUM> 17 18 1|q <ALPHANUM> 19 20 1|1 <NUM> 21 22 1|22 0
+.😀;HTTP://https://ftp://	😀 <EMOJI> 1 3 1|HTTP://https <URL> 4 16 1|ftp <ALPHANUM> 19 22 1|25 0
+1x+tagéwww.&mailto:	1x <ALPHANUM> 0 2 1|tagéwww <ALPHANUM> 3 10 1|mailto <ALPHANUM> 12 18 1|19 0
+#fwww.#f%20#f	fwww <ALPHANUM> 1 5 1|f <ALPHANUM> 7 8 1|20 <NUM> 9 11 1|f <ALPHANUM> 12 13 1|13 0
+ftp://	ftp <ALPHANUM> 0 3 1|6 0
+xn--p1ai1,😀?q=1	xn <ALPHANUM> 0 2 1|p1ai1 <ALPHANUM> 4 9 1|😀 <EMOJI> 10 12 1|q <ALPHANUM> 13 14 1|1 <NUM> 15 16 1|16 0
+?q=1file:///	q <ALPHANUM> 1 2 1|1file <ALPHANUM> 3 8 1|12 0
+/mailto:a.b@?q=1	mailto:a.b <ALPHANUM> 1 11 1|q <ALPHANUM> 13 14 1|1 <NUM> 15 16 1|16 0
+example,xn--p1aimailto:;%20	example <ALPHANUM> 0 7 1|xn <ALPHANUM> 8 10 1|p1aimailto <ALPHANUM> 12 22 1|20 <NUM> 25 27 1|27 0
+mailto:	mailto <ALPHANUM> 0 6 1|7 0
+www.	www <ALPHANUM> 0 3 1|4 0
+:8080?q=1]/:8080	8080 <NUM> 1 5 1|q <ALPHANUM> 6 7 1|1 <NUM> 8 9 1|8080 <NUM> 12 16 1|16 0
+  x"	x <ALPHANUM> 2 3 1|4 0
+)	1 0
+__;	3 0
+.com%20.com)file:///:8080"http://	com <ALPHANUM> 1 4 1|20.com <URL> 5 11 1|file:///:8080 <URL> 12 25 1|http <ALPHANUM> 26 30 1|33 0
+__'?q=142	q <ALPHANUM> 4 5 1|142 <NUM> 6 9 1|9 0
+  .%20;localhost	20 <NUM> 4 6 1|localhost <ALPHANUM> 7 16 1|16 0
+192.168.0.1www. (	192.168.0.1www <ALPHANUM> 0 14 1|17 0
+:*/.com-	com <ALPHANUM> 4 7 1|8 0
+[example)	example <ALPHANUM> 1 8 1|9 0
+._xn--p1ai	_xn <ALPHANUM> 1 4 1|p1ai <ALPHANUM> 6 10 1|10 0
+[$"] xn--p1ai"	xn <ALPHANUM> 5 7 1|p1ai <ALPHANUM> 9 13 1|14 0
+www.exampleftp://file:///)file:///<	www.exampleftp <ALPHANUM> 0 14 1|file:/// <URL> 17 25 1|file:/// <URL> 26 34 1|35 0
+.com@xn--p1ai&localhost?q=1	com <ALPHANUM> 1 4 1|xn <ALPHANUM> 5 7 1|p1ai <ALPHANUM> 9 13 1|localhost <ALPHANUM> 14 23 1|q <ALPHANUM> 24 25 1|1 <NUM> 26 27 1|27 0
+(1	1 <NUM> 1 2 1|2 0
+中😀.co.uk:,www.	中 <IDEOGRAPHIC> 0 1 1|😀 <EMOJI> 1 3 1|co.uk <URL> 4 9 1|www <ALPHANUM> 11 14 1|15 0
+ftp:// #f:$	ftp <ALPHANUM> 0 3 1|f <ALPHANUM> 8 9 1|11 0
+"	1 0
+a.bhttps://file:///😀]-	a.bhttps <ALPHANUM> 0 8 1|file:/// <URL> 11 19 1|😀 <EMOJI> 19 21 1|23 0
+(  http://"._$_	http <ALPHANUM> 3 7 1|15 0
+)<https://(!::1	https <ALPHANUM> 2 7 1|1 <NUM> 14 15 1|15 0
+<éftp://_	éftp <ALPHANUM> 1 5 1|9 0
+192.168.0.1😀a.b%20~42https://[	192.168.0.1 <URL> 0 11 1|😀 <EMOJI> 11 13 1|a.b <ALPHANUM> 13 16 1|20 <NUM> 17 19 1|42https <ALPHANUM> 20 27 1|31 0
+&/	2 0
+.,	2 0
+www.ftp://:;	www.ftp <ALPHANUM> 0 7 1|12 0
+,+tagexample localhost>localhost[	tagexample <ALPHANUM> 2 12 1|localhost <ALPHANUM> 13 22 1|localhost <ALPHANUM> 23 32 1|33 0
+localhost[)::1;!https://.com	localhost <ALPHANUM> 0 9 1|1 <NUM> 13 14 1|https <ALPHANUM> 16 21 1|com <ALPHANUM> 25 28 1|28 0
+,%20$file:///;	20 <NUM> 2 4 1|file:/// <URL> 5 13 1|14 0
+www.;HTTP://42"'	www <ALPHANUM> 0 3 1|HTTP://42 <URL> 5 14 1|16 0
+-1";'xn--p1ai	1 <NUM> 1 2 1|xn <ALPHANUM> 5 7 1|p1ai <ALPHANUM> 9 13 1|13 0
+%20&	20 <NUM> 1 3 1|4 0
+ftp://~localhost_	ftp <ALPHANUM> 0 3 1|localhost_ <ALPHANUM> 7 17 1|17 0
+exampleftp://  xn--p1aié	exampleftp <ALPHANUM> 0 10 1|xn <ALPHANUM> 15 17 1|p1aié <ALPHANUM> 19 24 1|24 0
+>	1 0
+#fwww.user,	fwww.user <ALPHANUM> 1 10 1|11 0
++tag!https://mailto:😀	tag <ALPHANUM> 1 4 1|https://mailto <URL> 5 19 1|😀 <EMOJI> 20 22 1|22 0
+;;@ =	5 0
+192.168.0.1	192.168.0.1 <URL> 0 11 1|11 0
+-~.com.https://	com.https <ALPHANUM> 3 12 1|15 0
+example中=www.https://].co.uk中	example <ALPHANUM> 0 7 1|中 <IDEOGRAPHIC> 7 8 1|www.https <ALPHANUM> 9 18 1|co.uk <ALPHANUM> 23 28 1|中 <IDEOGRAPHIC> 28 29 1|29 0
+;a.b-localhost:8080">	a.b <ALPHANUM> 1 4 1|localhost <ALPHANUM> 5 14 1|8080 <NUM> 15 19 1|21 0
+[	1 0
+&::1?q=1?q=142421😀	1 <NUM> 3 4 1|q <ALPHANUM> 5 6 1|1 <NUM> 7 8 1|q <ALPHANUM> 9 10 1|142421 <NUM> 11 17 1|😀 <EMOJI> 17 19 1|19 0
+ftp://ftp://	ftp <ALPHANUM> 0 3 1|ftp <ALPHANUM> 6 9 1|12 0
+ 中ftp://".co.uk~	中 <IDEOGRAPHIC> 1 2 1|ftp <ALPHANUM> 2 5 1|co.uk <URL> 10 15 1|16 0
+&HTTP://%20mailto:xn--p1ai192.168.0.1"	HTTP <ALPHANUM> 1 5 1|20mailto:xn <ALPHANUM> 9 20 1|p1ai192.168.0.1 <ALPHANUM> 22 37 1|38 0
+).mailto:.com>	mailto <ALPHANUM> 2 8 1|com <ALPHANUM> 10 13 1|14 0
+?q=1user  ([=[	q <ALPHANUM> 1 2 1|1user <ALPHANUM> 3 8 1|14 0
+!&http://,	http <ALPHANUM> 2 6 1|10 0
+1(	1 <NUM> 0 1 1|2 0
+  ftp://http://	ftp <ALPHANUM> 2 5 1|http <ALPHANUM> 8 12 1|15 0
+<@:é%20=	é <ALPHANUM> 3 4 1|20 <NUM> 5 7 1|8 0
+=%20example	20example <ALPHANUM> 2 11 1|11 0
+.com>+tag.co.uk	com <ALPHANUM> 1 4 1|tag.co.uk <URL> 6 15 1|15 0
+::1%20(xn--p1ai~1ftp://192.168.0.1	1 <NUM> 2 3 1|20 <NUM> 4 6 1|xn <ALPHANUM> 7 9 1|p1ai <ALPHANUM> 11 15 1|1ftp <ALPHANUM> 16 20 1|192.168.0.1 <URL> 23 34 1|34 0
+!	1 0
+42中/'	42 <NUM> 0 2 1|中 <IDEOGRAPHIC> 2 3 1|5 0
+*"userexample  file:///:	userexample <ALPHANUM> 2 13 1|file:///: <URL> 15 24 1|24 0
+xn--p1ai'$'	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|11 0
+1HTTP://	1HTTP <ALPHANUM> 0 5 1|8 0
+<userx%2042	userx <ALPHANUM> 1 6 1|2042 <NUM> 7 11 1|11 0
+<'www.~http://	www <ALPHANUM> 2 5 1|http <ALPHANUM> 7 11 1|14 0
+user	user <ALPHANUM> 0 4 1|4 0
+=(!]/[	6 0
+"é	é <ALPHANUM> 1 2 1|2 0
+a.b?q=1file:///#f@~:!	a.b <ALPHANUM> 0 3 1|q <ALPHANUM> 4 5 1|1file <ALPHANUM> 6 11 1|f <ALPHANUM> 16 17 1|21 0
+www.é192.168.0.1$%20:8080	www.é192.168.0.1 <ALPHANUM> 0 16 1|20 <NUM> 18 20 1|8080 <NUM> 21 25 1|25 0
+:8080<*:	8080 <NUM> 1 5 1|8 0
+>x	x <ALPHANUM> 1 2 1|2 0
+中  =	中 <IDEOGRAPHIC> 0 1 1|4 0
+((/192.168.0.1(	192.168.0.1 <URL> 3 14 1|15 0
+192.168.0.1	192.168.0.1 <URL> 0 11 1|11 0
+( HTTP://,ftp://.co.uk	HTTP <ALPHANUM> 2 6 1|ftp <ALPHANUM> 10 13 1|co.uk <URL> 17 22 1|22 0
+)$examplewww.=1user中	examplewww <ALPHANUM> 2 12 1|1user <ALPHANUM> 14 19 1|中 <IDEOGRAPHIC> 19 20 1|20 0
++tagx/::1	tagx <ALPHANUM> 1 5 1|1 <NUM> 8 9 1|9 0
+https://1&<_xlocalhostx	https://1 <URL> 0 9 1|_xlocalhostx <ALPHANUM> 11 23 1|23 0
+&ftp://mailto:+tag'é.	ftp <ALPHANUM> 1 4 1|mailto <ALPHANUM> 7 13 1|tag'é <ALPHANUM> 15 20 1|21 0
+#f<]::1é	f <ALPHANUM> 1 2 1|1é <ALPHANUM> 6 8 1|8 0
+HTTP://1.com	HTTP://1.com <URL> 0 12 1|12 0
+!-1[	1 <NUM> 2 3 1|4 0
+?q=1:8080www.)	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|8080www <ALPHANUM> 5 12 1|14 0
+ 	1 0
+%20:8080"x/	20 <NUM> 1 3 1|8080 <NUM> 4 8 1|x <ALPHANUM> 9 10 1|11 0
+192.168.0.1/#f(,~	192.168.0.1/#f(,~ <URL> 0 17 1|17 0
+;;xn--p1ai%20x.comhttp://_	xn <ALPHANUM> 2 4 1|p1ai <ALPHANUM> 6 10 1|20x.comhttp <ALPHANUM> 11 22 1|26 0
+[$<-HTTP://xn--p1ai	HTTP://xn--p1ai <URL> 4 19 1|19 0
+/a.b	a.b <ALPHANUM> 1 4 1|4 0
+]<.<	4 0
+-example<[	example <ALPHANUM> 1 8 1|10 0
+;%20-(	20 <NUM> 2 4 1|6 0
+a.b,xn--p1ai"*	a.b <ALPHANUM> 0 3 1|xn <ALPHANUM> 4 6 1|p1ai <ALPHANUM> 8 12 1|14 0
+localhost	localhost <ALPHANUM> 0 9 1|9 0
+user	user <ALPHANUM> 0 4 1|4 0
+:	1 0
+<user中@x中.co.uk.com	user <ALPHANUM> 1 5 1|中 <IDEOGRAPHIC> 5 6 1|x <ALPHANUM> 7 8 1|中 <IDEOGRAPHIC> 8 9 1|co.uk.com <URL> 10 19 1|19 0
+<.com😀<mailto:%20<	com <ALPHANUM> 2 5 1|😀 <EMOJI> 5 7 1|mailto <ALPHANUM> 8 14 1|20 <NUM> 16 18 1|19 0
+http://42"	http://42 <URL> 0 9 1|10 0
+?q=1_&[https://].~	q <ALPHANUM> 1 2 1|1_ <NUM> 3 5 1|https <ALPHANUM> 7 12 1|18 0
+192.168.0.1(1$'!)https://	192.168.0.1 <URL> 0 11 1|1 <NUM> 12 13 1|https <ALPHANUM> 17 22 1|25 0
+192.168.0.1?q=1+tag  -*	192.168.0.1?q=1+tag <URL> 0 19 1|23 0
+;/192.168.0.1":8080=localhost#f	192.168.0.1 <URL> 2 13 1|8080 <NUM> 15 19 1|localhost <ALPHANUM> 20 29 1|f <ALPHANUM> 30 31 1|31 0
+*>a.b42	a.b42 <ALPHANUM> 2 7 1|7 0
+<":8080	8080 <NUM> 3 7 1|7 0
+a.b192.168.0.1mailto:.,localhost	a.b192.168.0.1mailto <ALPHANUM> 0 20 1|localhost <ALPHANUM> 23 32 1|32 0
+example42+tag	example42 <ALPHANUM> 0 9 1|tag <ALPHANUM> 10 13 1|13 0
+.co.uk<	co.uk <URL> 1 6 1|7 0
+<😀#f(  😀.com	😀 <EMOJI> 1 3 1|f <ALPHANUM> 4 5 1|😀 <EMOJI> 8 10 1|com <ALPHANUM> 11 14 1|14 0
+,'.1,	1 <NUM> 3 4 1|5 0
+.com[@[HTTP://x[	com <ALPHANUM> 1 4 1|HTTP://x <URL> 7 15 1|16 0
+xé[:中'	xé <ALPHANUM> 0 2 1|中 <IDEOGRAPHIC> 4 5 1|6 0
+%20http://@.co.ukexample	20http <ALPHANUM> 1 7 1|co.ukexample <ALPHANUM> 12 24 1|24 0
+https:// .	https <ALPHANUM> 0 5 1|10 0
+  	2 0
+www.xn--p1ai?q=1[.:&	www.xn--p1ai?q=1 <URL> 0 16 1|20 0
+[😀>	😀 <EMOJI> 1 3 1|4 0
+.	1 0
+  .com,@file:///	com <ALPHANUM> 3 6 1|file:/// <URL> 8 16 1|16 0
+=é+tag.=@.	é <ALPHANUM> 1 2 1|tag <ALPHANUM> 3 6 1|10 0
+192.168.0.1.coma.b$file:///>>	192.168.0.1 <URL> 0 11 1|coma.b <ALPHANUM> 12 18 1|file:/// <URL> 19 27 1|29 0
+userHTTP://192.168.0.1	userHTTP <ALPHANUM> 0 8 1|192.168.0.1 <URL> 11 22 1|22 0
+>	1 0
+?q=1,/	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|6 0
+?q=1https://1localhost_localhost	q <ALPHANUM> 1 2 1|1https <ALPHANUM> 3 9 1|1localhost_localhost <ALPHANUM> 12 32 1|32 0
+192.168.0.1	192.168.0.1 <URL> 0 11 1|11 0
+www.*!	www <ALPHANUM> 0 3 1|6 0
+ftp://::1example,@xn--p1ai	ftp <ALPHANUM> 0 3 1|1example <ALPHANUM> 8 16 1|xn <ALPHANUM> 18 20 1|p1ai <ALPHANUM> 22 26 1|26 0
+xmailto:?q=1.com	xmailto <ALPHANUM> 0 7 1|q <ALPHANUM> 9 10 1|1.com <URL> 11 16 1|16 0
+ 	1 0
+;192.168.0.1é)	192.168.0.1é <ALPHANUM> 1 13 1|14 0
+xn--p1ai&😀localhost;  é	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|😀 <EMOJI> 9 11 1|localhost <ALPHANUM> 11 20 1|é <ALPHANUM> 23 24 1|24 0
+*	1 0
+=[;192.168.0.1]	192.168.0.1 <URL> 3 14 1|15 0
+.co.uké😀localhost!'	co.uké <ALPHANUM> 1 7 1|😀 <EMOJI> 7 9 1|localhost <ALPHANUM> 9 18 1|20 0
+.com&:,é	com <ALPHANUM> 1 4 1|é <ALPHANUM> 7 8 1|8 0
+'	1 0
+.,ftp://	ftp <ALPHANUM> 2 5 1|8 0
+user~!&>https://=	user <ALPHANUM> 0 4 1|https <ALPHANUM> 8 13 1|17 0
+*@@%20	20 <NUM> 4 6 1|6 0
+?q=1ftp://localhost.)	q <ALPHANUM> 1 2 1|1ftp <ALPHANUM> 3 7 1|localhost <ALPHANUM> 10 19 1|21 0
+:8080	8080 <NUM> 1 5 1|5 0
+localhost/]http://	localhost <ALPHANUM> 0 9 1|http <ALPHANUM> 11 15 1|18 0
+.HTTP://	HTTP <ALPHANUM> 1 5 1|8 0
+user<.com=_:&%20	user <ALPHANUM> 0 4 1|com <ALPHANUM> 6 9 1|20 <NUM> 14 16 1|16 0
+42192.168.0.1@"?q=1_file:///😀	42192.168.0.1 <NUM> 0 13 1|q <ALPHANUM> 16 17 1|1_file <ALPHANUM> 18 24 1|😀 <EMOJI> 28 30 1|30 0
+]	1 0
+_/1!	1 <NUM> 2 3 1|4 0
+(*<1	1 <NUM> 3 4 1|4 0
+https://  exampleuser~_	https <ALPHANUM> 0 5 1|exampleuser <ALPHANUM> 10 21 1|23 0
+https://<+tag	https <ALPHANUM> 0 5 1|tag <ALPHANUM> 10 13 1|13 0
+"#f,	f <ALPHANUM> 2 3 1|4 0
+examplefile:///::1xn--p1ai😀	examplefile <ALPHANUM> 0 11 1|1xn <ALPHANUM> 17 20 1|p1ai <ALPHANUM> 22 26 1|😀 <EMOJI> 26 28 1|28 0
+中:_	中 <IDEOGRAPHIC> 0 1 1|3 0
+192.168.0.1[	192.168.0.1 <URL> 0 11 1|12 0
+😀	😀 <EMOJI> 0 2 1|2 0
+,https://1?q=1[	https://1?q=1 <URL> 1 14 1|15 0
+:ftp://[]user42(	ftp <ALPHANUM> 1 4 1|user42 <ALPHANUM> 9 15 1|16 0
+éftp://>	éftp <ALPHANUM> 0 4 1|8 0
+[$)@&	5 0
+http:///'	http <ALPHANUM> 0 4 1|9 0
+:8080+tag::1example	8080 <NUM> 1 5 1|tag <ALPHANUM> 6 9 1|1example <ALPHANUM> 11 19 1|19 0
+-_https://	_https <ALPHANUM> 1 7 1|10 0
+ ftp://a.b;~.com(	ftp <ALPHANUM> 1 4 1|a.b <ALPHANUM> 7 10 1|com <ALPHANUM> 13 16 1|17 0
+localhost)?q=1192.168.0.1@file:////	localhost <ALPHANUM> 0 9 1|q <ALPHANUM> 11 12 1|1192.168.0.1 <NUM> 13 25 1|file://// <URL> 26 35 1|35 0
+::1')]@;é	1 <NUM> 2 3 1|é <ALPHANUM> 8 9 1|9 0
+"?q=1x	q <ALPHANUM> 2 3 1|1x <ALPHANUM> 4 6 1|6 0
+😀	😀 <EMOJI> 0 2 1|2 0
+#f>(::1#flocalhost&	f <ALPHANUM> 1 2 1|1 <NUM> 6 7 1|flocalhost <ALPHANUM> 8 18 1|19 0
+userxn--p1ai@%20é	userxn <ALPHANUM> 0 6 1|p1ai <ALPHANUM> 8 12 1|20é <ALPHANUM> 14 17 1|17 0
+;,	2 0
++tag1192.168.0.1"]	tag1192.168.0.1 <ALPHANUM> 1 16 1|18 0
+->	2 0
+  HTTP://[::1	HTTP <ALPHANUM> 2 6 1|1 <NUM> 12 13 1|13 0
+中	中 <IDEOGRAPHIC> 0 1 1|1 0
+user~?q=142,..com	user <ALPHANUM> 0 4 1|q <ALPHANUM> 6 7 1|142 <NUM> 8 11 1|com <ALPHANUM> 14 17 1|17 0
+:?q=1#f*localhost.com	q <ALPHANUM> 2 3 1|1 <NUM> 4 5 1|f <ALPHANUM> 6 7 1|localhost.com <URL> 8 21 1|21 0
+http://=!*	http <ALPHANUM> 0 4 1|10 0
+.user192.168.0.1>@_http://	user192.168.0.1 <ALPHANUM> 1 16 1|_http <ALPHANUM> 18 23 1|26 0
+xn--p1aixn--p1ai>[.comé	xn <ALPHANUM> 0 2 1|p1aixn <ALPHANUM> 4 10 1|p1ai <ALPHANUM> 12 16 1|comé <ALPHANUM> 19 23 1|23 0
+.$_192.168.0.1https://42	_192.168.0.1https <ALPHANUM> 2 19 1|42 <NUM> 22 24 1|24 0
+example(.mailto:ftp://HTTP://#fhttp://	example <ALPHANUM> 0 7 1|mailto:ftp <ALPHANUM> 9 19 1|HTTP <ALPHANUM> 22 26 1|fhttp <ALPHANUM> 30 35 1|38 0
+(-<	3 0
+!.)&localhostlocalhost::1	localhostlocalhost <ALPHANUM> 4 22 1|1 <NUM> 24 25 1|25 0
+@user&~42" #f	user <ALPHANUM> 1 5 1|42 <NUM> 7 9 1|f <ALPHANUM> 12 13 1|13 0
+:userftp://<mailto:!	userftp <ALPHANUM> 1 8 1|mailto <ALPHANUM> 12 18 1|20 0
+-中ftp://*-:	中 <IDEOGRAPHIC> 1 2 1|ftp <ALPHANUM> 2 5 1|11 0
+😀>example:file:///HTTP://."	😀 <EMOJI> 0 2 1|example:file <ALPHANUM> 3 15 1|HTTP <ALPHANUM> 19 23 1|28 0
+www.exampleftp://HTTP://42HTTP://😀	www.exampleftp <ALPHANUM> 0 14 1|HTTP://42HTTP <URL> 17 30 1|😀 <EMOJI> 33 35 1|35 0
+192.168.0.1)*😀	192.168.0.1 <URL> 0 11 1|😀 <EMOJI> 13 15 1|15 0
+42	42 <NUM> 0 2 1|2 0
+&] =	4 0
+  '@	4 0
+;#fuser	fuser <ALPHANUM> 2 7 1|7 0
+%20localhost  1	20localhost <ALPHANUM> 1 12 1|1 <NUM> 14 15 1|15 0
+*	1 0
+example,&*..	example <ALPHANUM> 0 7 1|12 0
+&:8080*	8080 <NUM> 2 6 1|7 0
+mailto:.comé	mailto <ALPHANUM> 0 6 1|comé <ALPHANUM> 8 12 1|12 0
+"(.:8080<xn--p1ai&	8080 <NUM> 4 8 1|xn <ALPHANUM> 9 11 1|p1ai <ALPHANUM> 13 17 1|18 0
+http://::1.;xn--p1ai	http <ALPHANUM> 0 4 1|1 <NUM> 9 10 1|xn <ALPHANUM> 12 14 1|p1ai <ALPHANUM> 16 20 1|20 0
+1::1_.https://)	1 <NUM> 0 1 1|1_ <NUM> 3 5 1|https <ALPHANUM> 6 11 1|15 0
+http://$  é),www.	http <ALPHANUM> 0 4 1|é <ALPHANUM> 10 11 1|www <ALPHANUM> 13 16 1|17 0
+https://-éuser/[-192.168.0.1	https <ALPHANUM> 0 5 1|éuser <ALPHANUM> 9 14 1|192.168.0.1 <URL> 17 28 1|28 0
+;#f@::1/	f <ALPHANUM> 2 3 1|1 <NUM> 6 7 1|8 0
+?q=1,	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|5 0
+42https://😀é	42https <ALPHANUM> 0 7 1|😀 <EMOJI> 10 12 1|é <ALPHANUM> 12 13 1|13 0
+user x[--1-	user <ALPHANUM> 0 4 1|x <ALPHANUM> 5 6 1|1 <NUM> 9 10 1|11 0
++tag;]@a.b)😀	tag <ALPHANUM> 1 4 1|a.b <ALPHANUM> 7 10 1|😀 <EMOJI> 11 13 1|13 0
+.comx+taghttps://	comx <ALPHANUM> 1 5 1|taghttps <ALPHANUM> 6 14 1|17 0
+/	1 0
+😀,HTTP://www.	😀 <EMOJI> 0 2 1|HTTP://www <URL> 3 13 1|14 0
+a.b😀+tag::1www.https://~[	a.b <ALPHANUM> 0 3 1|😀 <EMOJI> 3 5 1|tag <ALPHANUM> 6 9 1|1www.https <ALPHANUM> 11 21 1|26 0
+::1www.	1www <ALPHANUM> 2 6 1|7 0
+~.com192.168.0.1$	com192.168.0.1 <ALPHANUM> 2 16 1|17 0
+file:///]file:///file:///	file:/// <URL> 0 8 1|file:///file:/// <URL> 9 25 1|25 0
+42a.b]:8080	42a.b <ALPHANUM> 0 5 1|8080 <NUM> 7 11 1|11 0
+;,	2 0
+$[,mailto:$	mailto <ALPHANUM> 3 9 1|11 0
+%20&	20 <NUM> 1 3 1|4 0
+@.file:///#fxwww.	file:///#fxwww. <URL> 2 17 1|17 0
+ élocalhost,	élocalhost <ALPHANUM> 1 11 1|12 0
+xn--p1ai=-	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|10 0
++tagwww.+taghttps://~	tagwww <ALPHANUM> 1 7 1|taghttps <ALPHANUM> 9 17 1|21 0
+.co.ukftp://&http://中>	co.ukftp <ALPHANUM> 1 9 1|http <ALPHANUM> 13 17 1|中 <IDEOGRAPHIC> 20 21 1|22 0
+)]->*~,]	8 0
+https://::1	https <ALPHANUM> 0 5 1|1 <NUM> 10 11 1|11 0
+localhost:8080$ ~/	localhost <ALPHANUM> 0 9 1|8080 <NUM> 10 14 1|18 0
+中	中 <IDEOGRAPHIC> 0 1 1|1 0
+@xhttps://	xhttps <ALPHANUM> 1 7 1|10 0
+localhosthttp://_:HTTP://	localhosthttp <ALPHANUM> 0 13 1|HTTP <ALPHANUM> 18 22 1|25 0
+;@  	4 0
++tag	tag <ALPHANUM> 1 4 1|4 0
+<	1 0
+"$)	3 0
+~<	2 0
+xn--p1ai:<	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|10 0
+@<example~.+tag#f=	example <ALPHANUM> 2 9 1|tag <ALPHANUM> 12 15 1|f <ALPHANUM> 16 17 1|18 0
+=file:///ftp://localhostmailto:)	file:///ftp://localhostmailto: <URL> 1 31 1|32 0
+)@	2 0
+~42	42 <NUM> 1 3 1|3 0
+_中	中 <IDEOGRAPHIC> 1 2 1|2 0
+,	1 0
+mailto:%20www.	mailto <ALPHANUM> 0 6 1|20www <ALPHANUM> 8 13 1|14 0
+192.168.0.1.comxn--p1ai192.168.0.1.com]mailto:	192.168.0.1.comxn--p1ai192.168.0.1.com <URL> 0 38 1|mailto <ALPHANUM> 39 45 1|46 0
+file:///	file:/// <URL> 0 8 1|8 0
+HTTP://localhost-~192.168.0.11;	HTTP://localhost <URL> 0 16 1|192.168.0.11 <URL> 18 30 1|31 0
+,	1 0
+user42&	user42 <ALPHANUM> 0 6 1|7 0
+x.xn--p1ai42.]!::1	x.xn <ALPHANUM> 0 4 1|p1ai42 <ALPHANUM> 6 12 1|1 <NUM> 17 18 1|18 0
+/a.b)( 😀	a.b <ALPHANUM> 1 4 1|😀 <EMOJI> 7 9 1|9 0
+   😀.com*]www.	😀 <EMOJI> 3 5 1|com <ALPHANUM> 6 9 1|www <ALPHANUM> 11 14 1|15 0
+HTTP://?q=1"(a.b<;	HTTP <ALPHANUM> 0 4 1|q <ALPHANUM> 8 9 1|1 <NUM> 10 11 1|a.b <ALPHANUM> 13 16 1|18 0
+:8080-HTTP://http://-)	8080 <NUM> 1 5 1|HTTP://http <URL> 6 17 1|22 0
+[	1 0
+<	1 0
+  ->>	5 0
+;::1😀xn--p1ai	1 <NUM> 3 4 1|😀 <EMOJI> 4 6 1|xn <ALPHANUM> 6 8 1|p1ai <ALPHANUM> 10 14 1|14 0
+@')user,[	user <ALPHANUM> 3 7 1|9 0
+é	é <ALPHANUM> 0 1 1|1 0
+&<	2 0
+a.b  a.b	a.b <ALPHANUM> 0 3 1|a.b <ALPHANUM> 5 8 1|8 0
+]é.co.uk	é.co.uk <ALPHANUM> 1 8 1|8 0
+x.co.ukuserexample::1www.,http://	x.co.ukuserexample <ALPHANUM> 0 18 1|1www <ALPHANUM> 20 24 1|http <ALPHANUM> 26 30 1|33 0
+file:///::1  user	file:///::1 <URL> 0 11 1|user <ALPHANUM> 13 17 1|17 0
+😀	😀 <EMOJI> 0 2 1|2 0
+.co.uk	co.uk <URL> 1 6 1|6 0
+file:///?q=1	file:///?q=1 <URL> 0 12 1|12 0
+localhostfile:///:	localhostfile <ALPHANUM> 0 13 1|18 0
+,=*)192.168.0.1x	192.168.0.1x <ALPHANUM> 4 16 1|16 0
+1.localhost::_.co.uk	1 <NUM> 0 1 1|localhost <ALPHANUM> 2 11 1|co.uk <URL> 15 20 1|20 0
+-#f  .com中192.168.0.1file:///	f <ALPHANUM> 2 3 1|com <ALPHANUM> 6 9 1|中 <IDEOGRAPHIC> 9 10 1|192.168.0.1file <ALPHANUM> 10 25 1|29 0
+xn--p1ai	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|8 0
+:'[www.http://(:~	www.http <ALPHANUM> 3 11 1|17 0
+'<192.168.0.1,:8080.	192.168.0.1 <URL> 2 13 1|8080 <NUM> 15 19 1|20 0
+'@-"'	5 0
+#f~#f	f <ALPHANUM> 1 2 1|f <ALPHANUM> 4 5 1|5 0
+[#f"localhostHTTP://ftp://,	f <ALPHANUM> 2 3 1|localhostHTTP <ALPHANUM> 4 17 1|ftp <ALPHANUM> 20 23 1|27 0
+ *'=.	5 0
+https://+tagmailto:"https://%20?q=1<	https <ALPHANUM> 0 5 1|tagmailto <ALPHANUM> 9 18 1|https <ALPHANUM> 20 25 1|20 <NUM> 29 31 1|q <ALPHANUM> 32 33 1|1 <NUM> 34 35 1|36 0
+example😀mailto:(,%20	example <ALPHANUM> 0 7 1|😀 <EMOJI> 7 9 1|mailto <ALPHANUM> 9 15 1|20 <NUM> 19 21 1|21 0
+https://:8080;42.co.uk*.	https <ALPHANUM> 0 5 1|8080;42 <NUM> 9 16 1|co.uk <URL> 17 22 1|24 0
+.co.uk	co.uk <URL> 1 6 1|6 0
+éé*@42	éé <ALPHANUM> 0 2 1|42 <NUM> 4 6 1|6 0
+%20	20 <NUM> 1 3 1|3 0
+<::1	1 <NUM> 3 4 1|4 0
+]xn--p1ai	xn <ALPHANUM> 1 3 1|p1ai <ALPHANUM> 5 9 1|9 0
+  HTTP://?q=1:8080?q=1';>	HTTP <ALPHANUM> 2 6 1|q <ALPHANUM> 10 11 1|1 <NUM> 12 13 1|8080 <NUM> 14 18 1|q <ALPHANUM> 19 20 1|1 <NUM> 21 22 1|25 0
+,file:///*é]_  	file:/// <URL> 1 9 1|é <ALPHANUM> 10 11 1|15 0
+ file:///'ftp://	file:/// <URL> 1 9 1|ftp <ALPHANUM> 10 13 1|16 0
+.com'$):8080~ 	com <ALPHANUM> 1 4 1|8080 <NUM> 8 12 1|14 0
+=!+tagftp://42	tagftp <ALPHANUM> 3 9 1|42 <NUM> 12 14 1|14 0
+_	1 0
+ 	1 0
+]>!(1ftp://https://#f	1ftp <ALPHANUM> 4 8 1|https <ALPHANUM> 11 16 1|f <ALPHANUM> 20 21 1|21 0
+😀@	😀 <EMOJI> 0 2 1|3 0
+http://[~&localhost	http <ALPHANUM> 0 4 1|localhost <ALPHANUM> 10 19 1|19 0
+mailto:>a.b;	mailto <ALPHANUM> 0 6 1|a.b <ALPHANUM> 8 11 1|12 0
+:"[$HTTP:///HTTP://	HTTP <ALPHANUM> 4 8 1|HTTP <ALPHANUM> 12 16 1|19 0
+"+tag	tag <ALPHANUM> 2 5 1|5 0
+file:///localhost]'	file:///localhost <URL> 0 17 1|19 0
+é_a.b$$	é_a.b <ALPHANUM> 0 5 1|7 0
+xn--p1ai?q=1.  $!1	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|q <ALPHANUM> 9 10 1|1 <NUM> 11 12 1|1 <NUM> 17 18 1|18 0
+https://=#fwww.http://	https <ALPHANUM> 0 5 1|fwww.http <ALPHANUM> 10 19 1|22 0
+<a.b&%20HTTP://.com 	a.b <ALPHANUM> 1 4 1|20HTTP <ALPHANUM> 6 12 1|com <ALPHANUM> 16 19 1|20 0
+.co.uk@:  )	co.uk <URL> 1 6 1|11 0
+?q=1x=	q <ALPHANUM> 1 2 1|1x <ALPHANUM> 3 5 1|6 0
+  	2 0
+*+tag%20中42😀	tag <ALPHANUM> 2 5 1|20 <NUM> 6 8 1|中 <IDEOGRAPHIC> 8 9 1|42 <NUM> 9 11 1|😀 <EMOJI> 11 13 1|13 0
+xhttps://:8080	xhttps <ALPHANUM> 0 6 1|8080 <NUM> 10 14 1|14 0
+😀examplewww.~=ftp://mailto:	😀 <EMOJI> 0 2 1|examplewww <ALPHANUM> 2 12 1|ftp <ALPHANUM> 15 18 1|mailto <ALPHANUM> 21 27 1|28 0
+中https://HTTP://	中 <IDEOGRAPHIC> 0 1 1|https://HTTP <URL> 1 13 1|16 0
+😀http://[+tag#fmailto:x@	😀 <EMOJI> 0 2 1|http <ALPHANUM> 2 6 1|tag <ALPHANUM> 11 14 1|fmailto:x <ALPHANUM> 15 24 1|25 0
+@?q=1"::1?q=1	q <ALPHANUM> 2 3 1|1 <NUM> 4 5 1|1 <NUM> 8 9 1|q <ALPHANUM> 10 11 1|1 <NUM> 12 13 1|13 0
+)	1 0
+#f!ftp://>	f <ALPHANUM> 1 2 1|ftp <ALPHANUM> 3 6 1|10 0
+$HTTP://localhost(file:///@localhost1	HTTP://localhost <URL> 1 17 1|file:///@localhost1 <URL> 18 37 1|37 0
+www.file:///,http://中]examplewww.	www.file <ALPHANUM> 0 8 1|http <ALPHANUM> 13 17 1|中 <IDEOGRAPHIC> 20 21 1|examplewww <ALPHANUM> 22 32 1|33 0
+xmailto:	xmailto <ALPHANUM> 0 7 1|8 0
+=>&<*[,*	8 0
+x$HTTP://(www.xn--p1ai	x <ALPHANUM> 0 1 1|HTTP <ALPHANUM> 2 6 1|www.xn--p1ai <URL> 10 22 1|22 0
+xn--p1ai:8080xlocalhosté	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|8080xlocalhosté <ALPHANUM> 9 24 1|24 0
+.	1 0
+42<user192.168.0.1ftp:///	42 <NUM> 0 2 1|user192.168.0.1ftp <ALPHANUM> 3 21 1|25 0
+localhost=mailto:)?q=11	localhost <ALPHANUM> 0 9 1|mailto <ALPHANUM> 10 16 1|q <ALPHANUM> 19 20 1|11 <NUM> 21 23 1|23 0
+&user?q=142é,https://	user <ALPHANUM> 1 5 1|q <ALPHANUM> 6 7 1|142é <ALPHANUM> 8 12 1|https <ALPHANUM> 13 18 1|21 0
+&.co.ukuserHTTP://1xn--p1aimailto:	co.ukuserHTTP <ALPHANUM> 2 15 1|1xn <ALPHANUM> 18 21 1|p1aimailto <ALPHANUM> 23 33 1|34 0
+x/<	x <ALPHANUM> 0 1 1|3 0
+-file:/// $+tag:8080	file:/// <URL> 1 9 1|tag <ALPHANUM> 12 15 1|8080 <NUM> 16 20 1|20 0
+42中	42 <NUM> 0 2 1|中 <IDEOGRAPHIC> 2 3 1|3 0
+.com?q=1)  .www. 	com <ALPHANUM> 1 4 1|q <ALPHANUM> 5 6 1|1 <NUM> 7 8 1|www <ALPHANUM> 12 15 1|17 0
+mailto:?q=1-x	mailto <ALPHANUM> 0 6 1|q <ALPHANUM> 8 9 1|1 <NUM> 10 11 1|x <ALPHANUM> 12 13 1|13 0
+localhostfile:///!'a.b	localhostfile <ALPHANUM> 0 13 1|a.b <ALPHANUM> 19 22 1|22 0
+.:(;](mailto:	mailto <ALPHANUM> 6 12 1|13 0
+example:8080"42$éuser	example <ALPHANUM> 0 7 1|8080 <NUM> 8 12 1|42 <NUM> 13 15 1|éuser <ALPHANUM> 16 21 1|21 0
+ftp://	ftp <ALPHANUM> 0 3 1|6 0
+www.;https://é42:	www <ALPHANUM> 0 3 1|https <ALPHANUM> 5 10 1|é42 <ALPHANUM> 13 16 1|17 0
+.x	x <ALPHANUM> 1 2 1|2 0
+.mailto:	mailto <ALPHANUM> 1 7 1|8 0
+"$.co.ukfile:///'	co.ukfile <ALPHANUM> 3 12 1|17 0
+localhost/,[1?q=1&$	localhost <ALPHANUM> 0 9 1|1 <NUM> 12 13 1|q <ALPHANUM> 14 15 1|1 <NUM> 16 17 1|19 0
+:  localhost中])(  	localhost <ALPHANUM> 3 12 1|中 <IDEOGRAPHIC> 12 13 1|18 0
+192.168.0.1~élocalhosté%20	192.168.0.1 <URL> 0 11 1|élocalhosté <ALPHANUM> 12 23 1|20 <NUM> 24 26 1|26 0
+<	1 0
+😀	😀 <EMOJI> 0 2 1|2 0
+localhostfile:///;$HTTP://http://#fHTTP://	localhostfile <ALPHANUM> 0 13 1|HTTP://http <URL> 19 30 1|fHTTP <ALPHANUM> 34 39 1|42 0
+=https://中  	https <ALPHANUM> 1 6 1|中 <IDEOGRAPHIC> 9 10 1|12 0
+:&!http://	http <ALPHANUM> 3 7 1|10 0
+😀:,""::1	😀 <EMOJI> 0 2 1|1 <NUM> 8 9 1|9 0
+192.168.0.1	192.168.0.1 <URL> 0 11 1|11 0
+.'! +tag	tag <ALPHANUM> 5 8 1|8 0
+'exampleftp:// $www.	exampleftp <ALPHANUM> 1 11 1|www <ALPHANUM> 16 19 1|20 0
+42a.b[	42a.b <ALPHANUM> 0 5 1|6 0
+"42:,a.ba.b@	42 <NUM> 1 3 1|a.ba.b <ALPHANUM> 5 11 1|12 0
+https://4242-[example;	https://4242 <URL> 0 12 1|example <ALPHANUM> 14 21 1|22 0
+%20.<.com	20 <NUM> 1 3 1|com <ALPHANUM> 6 9 1|9 0
+42localhost&example>	42localhost <ALPHANUM> 0 11 1|example <ALPHANUM> 12 19 1|20 0
+example  <	example <ALPHANUM> 0 7 1|10 0
+xn--p1ai	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|8 0
+-https://]/%20>	https <ALPHANUM> 1 6 1|20 <NUM> 12 14 1|15 0
+ftp://	ftp <ALPHANUM> 0 3 1|6 0
+"file:/// 	file:/// <URL> 1 9 1|10 0
+http://=%20	http <ALPHANUM> 0 4 1|20 <NUM> 9 11 1|11 0
+'.com"<[[:=	com <ALPHANUM> 2 5 1|11 0
+  "localhosthttp://42	localhosthttp <ALPHANUM> 3 16 1|42 <NUM> 19 21 1|21 0
+xn--p1ai"..co.uk[+tag,	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|co.uk <URL> 11 16 1|tag <ALPHANUM> 18 21 1|22 0
+&.com42/.com<	com42 <ALPHANUM> 2 7 1|com <ALPHANUM> 9 12 1|13 0
+%20*)/file:///%20.	20 <NUM> 1 3 1|file:///%20. <URL> 6 18 1|18 0
+192.168.0.1!	192.168.0.1 <URL> 0 11 1|12 0
+&中	中 <IDEOGRAPHIC> 1 2 1|2 0
+.)/é$	é <ALPHANUM> 3 4 1|5 0
+192.168.0.1=	192.168.0.1 <URL> 0 11 1|12 0
+:8080]/$	8080 <NUM> 1 5 1|8 0
+localhost	localhost <ALPHANUM> 0 9 1|9 0
+"ftp://	ftp <ALPHANUM> 1 4 1|7 0
+;.com"  user😀(;	com <ALPHANUM> 2 5 1|user <ALPHANUM> 8 12 1|😀 <EMOJI> 12 14 1|16 0
+:mailto:éexample	mailto:éexample <ALPHANUM> 1 16 1|16 0
+42=	42 <NUM> 0 2 1|3 0
+,	1 0
+中~a.b"~%20https://	中 <IDEOGRAPHIC> 0 1 1|a.b <ALPHANUM> 2 5 1|20https <ALPHANUM> 8 15 1|18 0
+éxn--p1ai	éxn <ALPHANUM> 0 3 1|p1ai <ALPHANUM> 5 9 1|9 0
+#fftp://->example192.168.0.1localhost	fftp <ALPHANUM> 1 5 1|example192.168.0.1localhost <ALPHANUM> 10 37 1|37 0
+) 	2 0
+ftp://?q=142*xn--p1ai:8080)	ftp <ALPHANUM> 0 3 1|q <ALPHANUM> 7 8 1|142 <NUM> 9 12 1|xn <ALPHANUM> 13 15 1|p1ai <ALPHANUM> 17 21 1|8080 <NUM> 22 26 1|27 0
+"	1 0
+!HTTP://example	HTTP://example <URL> 1 15 1|15 0
+é!!)	é <ALPHANUM> 0 1 1|4 0
+@';ftp://	ftp <ALPHANUM> 3 6 1|9 0
+a.b@#fhttp://	a.b <ALPHANUM> 0 3 1|fhttp <ALPHANUM> 5 10 1|13 0
+HTTP://,https://192.168.0.1*	HTTP <ALPHANUM> 0 4 1|https://192.168.0.1 <URL> 8 27 1|28 0
+:8080=]:8080a.b:8080	8080 <NUM> 1 5 1|8080a.b <ALPHANUM> 8 15 1|8080 <NUM> 16 20 1|20 0
+'	1 0
+#f😀 42&192.168.0.1=?q=1	f <ALPHANUM> 1 2 1|😀 <EMOJI> 2 4 1|42 <NUM> 5 7 1|192.168.0.1 <URL> 8 19 1|q <ALPHANUM> 21 22 1|1 <NUM> 23 24 1|24 0
+*)xn--p1ai ?q=1@	xn <ALPHANUM> 2 4 1|p1ai <ALPHANUM> 6 10 1|q <ALPHANUM> 12 13 1|1 <NUM> 14 15 1|16 0
+xn--p1ai-https://	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|https <ALPHANUM> 9 14 1|17 0
+.com😀😀$?q=1:&42	com <ALPHANUM> 1 4 1|😀 <EMOJI> 4 6 1|😀 <EMOJI> 6 8 1|q <ALPHANUM> 10 11 1|1 <NUM> 12 13 1|42 <NUM> 15 17 1|17 0
+http://1	http://1 <URL> 0 8 1|8 0
+  #f_!😀#f*	f_ <ALPHANUM> 3 5 1|😀 <EMOJI> 6 8 1|f <ALPHANUM> 9 10 1|11 0
+192.168.0.1a.b	192.168.0.1a.b <ALPHANUM> 0 14 1|14 0
+http://_*&#f/HTTP://	http <ALPHANUM> 0 4 1|f <ALPHANUM> 11 12 1|HTTP <ALPHANUM> 13 17 1|20 0
+é,,?q=1  xn--p1ai	é <ALPHANUM> 0 1 1|q <ALPHANUM> 4 5 1|1 <NUM> 6 7 1|xn <ALPHANUM> 9 11 1|p1ai <ALPHANUM> 13 17 1|17 0
+中$😀::1.	中 <IDEOGRAPHIC> 0 1 1|😀 <EMOJI> 2 4 1|1 <NUM> 6 7 1|8 0
+~!:	3 0
+中www.@.co.uk,😀	中 <IDEOGRAPHIC> 0 1 1|www <ALPHANUM> 1 4 1|co.uk <URL> 7 12 1|😀 <EMOJI> 13 15 1|15 0
+example	example <ALPHANUM> 0 7 1|7 0
+HTTP://?q=1xn--p1ai&é>😀😀	HTTP <ALPHANUM> 0 4 1|q <ALPHANUM> 8 9 1|1xn <ALPHANUM> 10 13 1|p1ai <ALPHANUM> 15 19 1|é <ALPHANUM> 20 21 1|😀 <EMOJI> 22 24 1|😀 <EMOJI> 24 26 1|26 0
+192.168.0.1  ,localhost 	192.168.0.1 <URL> 0 11 1|localhost <ALPHANUM> 14 23 1|24 0
+,"	2 0
+,?q=1~	q <ALPHANUM> 2 3 1|1 <NUM> 4 5 1|6 0
+[+taga.bexample~~&	taga.bexample <ALPHANUM> 2 15 1|18 0
+file:///,"http://example	file:/// <URL> 0 8 1|http://example <URL> 10 24 1|24 0
+HTTP://	HTTP <ALPHANUM> 0 4 1|7 0
+]	1 0
+a.b!*xn--p1ai)	a.b <ALPHANUM> 0 3 1|xn <ALPHANUM> 5 7 1|p1ai <ALPHANUM> 9 13 1|14 0
+&[$http://	http <ALPHANUM> 3 7 1|10 0
+file:///#f_192.168.0.1+tag😀<	file:///#f_192.168.0.1+tag <URL> 0 26 1|😀 <EMOJI> 26 28 1|29 0
+)?q=1>-.co.uk[	q <ALPHANUM> 2 3 1|1 <NUM> 4 5 1|co.uk <URL> 8 13 1|14 0
+xx?q=1	xx <ALPHANUM> 0 2 1|q <ALPHANUM> 3 4 1|1 <NUM> 5 6 1|6 0
+42.co.uklocalhostwww.."'	42.co <URL> 0 5 1|uklocalhostwww <ALPHANUM> 6 20 1|24 0
+,	1 0
+&	1 0
+localhost$	localhost <ALPHANUM> 0 9 1|10 0
+a.b/$	a.b <ALPHANUM> 0 3 1|5 0
+user;:8080	user <ALPHANUM> 0 4 1|8080 <NUM> 6 10 1|10 0
++tag::1<_	tag <ALPHANUM> 1 4 1|1 <NUM> 6 7 1|9 0
+HTTP://?q=1@1	HTTP <ALPHANUM> 0 4 1|q <ALPHANUM> 8 9 1|1 <NUM> 10 11 1|1 <NUM> 12 13 1|13 0
+[192.168.0.1%20@_	192.168.0.1 <URL> 1 12 1|20 <NUM> 13 15 1|17 0
+https://file:///_.	https://file <URL> 0 12 1|18 0
+localhost'中(	localhost <ALPHANUM> 0 9 1|中 <IDEOGRAPHIC> 10 11 1|12 0
+localhostlocalhost~x::1-	localhostlocalhost <ALPHANUM> 0 18 1|x <ALPHANUM> 19 20 1|1 <NUM> 22 23 1|24 0
+~42😀	42 <NUM> 1 3 1|😀 <EMOJI> 3 5 1|5 0
+1	1 <NUM> 0 1 1|1 0
+42	42 <NUM> 0 2 1|2 0
+::111 xexample~	111 <NUM> 2 5 1|xexample <ALPHANUM> 6 14 1|15 0
+_ftp://>:8080[x*	_ftp <ALPHANUM> 0 4 1|8080 <NUM> 9 13 1|x <ALPHANUM> 14 15 1|16 0
++tag	tag <ALPHANUM> 1 4 1|4 0
+,)#f:&x	f <ALPHANUM> 3 4 1|x <ALPHANUM> 6 7 1|7 0
+192.168.0.1.co.uk ']?q=1	192.168.0.1.co.uk <URL> 0 17 1|q <ALPHANUM> 21 22 1|1 <NUM> 23 24 1|24 0
+xn--p1aihttp:///[user$42	xn <ALPHANUM> 0 2 1|p1aihttp <ALPHANUM> 4 12 1|user <ALPHANUM> 17 21 1|42 <NUM> 22 24 1|24 0
+:https://  [userhttp:// *	https <ALPHANUM> 1 6 1|userhttp <ALPHANUM> 12 20 1|25 0
+user+tag 中	user <ALPHANUM> 0 4 1|tag <ALPHANUM> 5 8 1|中 <IDEOGRAPHIC> 9 10 1|10 0
+_localhost%20_é?q=1localhost	_localhost <ALPHANUM> 0 10 1|20_é <ALPHANUM> 11 15 1|q <ALPHANUM> 16 17 1|1localhost <ALPHANUM> 18 28 1|28 0
+[.co.ukexample	co.ukexample <ALPHANUM> 2 14 1|14 0
+%20.com	20.com <URL> 1 7 1|7 0
+example#f<	example <ALPHANUM> 0 7 1|f <ALPHANUM> 8 9 1|10 0
+https://!https://:*!	https <ALPHANUM> 0 5 1|https <ALPHANUM> 9 14 1|20 0
+example[?q=1*(www..co.ukwww.	example <ALPHANUM> 0 7 1|q <ALPHANUM> 9 10 1|1 <NUM> 11 12 1|www <ALPHANUM> 14 17 1|co.ukwww <ALPHANUM> 19 27 1|28 0
++tag😀user	tag <ALPHANUM> 1 4 1|😀 <EMOJI> 4 6 1|user <ALPHANUM> 6 10 1|10 0
+.a.bwww.#f:.com.com!	a.bwww <ALPHANUM> 1 7 1|f <ALPHANUM> 9 10 1|com.com <URL> 12 19 1|20 0
+@	1 0
+.com,	com <ALPHANUM> 1 4 1|5 0
+ftp://éhttp://<&examplewww.	ftp <ALPHANUM> 0 3 1|éhttp <ALPHANUM> 6 11 1|examplewww <ALPHANUM> 16 26 1|27 0
+é	é <ALPHANUM> 0 1 1|1 0
+xn--p1ai	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|8 0
+.co.uk#f.xn--p1ai中 	co.uk#f.xn--p1ai <URL> 1 17 1|中 <IDEOGRAPHIC> 17 18 1|19 0
+.co.uk	co.uk <URL> 1 6 1|6 0
+@中ftp://;#f,	中 <IDEOGRAPHIC> 1 2 1|ftp <ALPHANUM> 2 5 1|f <ALPHANUM> 10 11 1|12 0
+42@	42 <NUM> 0 2 1|3 0
+é ?q=1]	é <ALPHANUM> 0 1 1|q <ALPHANUM> 3 4 1|1 <NUM> 5 6 1|7 0
+//  192.168.0.1,user	192.168.0.1 <URL> 4 15 1|user <ALPHANUM> 16 20 1|20 0
+mailto:%20[http://'42#f	mailto <ALPHANUM> 0 6 1|20 <NUM> 8 10 1|http <ALPHANUM> 11 15 1|42 <NUM> 19 21 1|f <ALPHANUM> 22 23 1|23 0
+'+tag.co.uk+tag	tag.co.uk <URL> 2 11 1|tag <ALPHANUM> 12 15 1|15 0
+;".com	com <ALPHANUM> 3 6 1|6 0
+!%20  #f:8080	20 <NUM> 2 4 1|f <ALPHANUM> 7 8 1|8080 <NUM> 9 13 1|13 0
+.co.ukx!-*localhost	co.ukx <ALPHANUM> 1 7 1|localhost <ALPHANUM> 10 19 1|19 0
+https://-user42x::1	https <ALPHANUM> 0 5 1|user42x <ALPHANUM> 9 16 1|1 <NUM> 18 19 1|19 0
+><;mailto:::1	mailto <ALPHANUM> 3 9 1|1 <NUM> 12 13 1|13 0
+x😀;::1	x <ALPHANUM> 0 1 1|😀 <EMOJI> 1 3 1|1 <NUM> 6 7 1|7 0
+::1'localhost😀+tag.co.ukxn--p1ai)	1 <NUM> 2 3 1|localhost <ALPHANUM> 4 13 1|😀 <EMOJI> 13 15 1|tag.co.ukxn <ALPHANUM> 16 27 1|p1ai <ALPHANUM> 29 33 1|34 0
+:www.mailto:=😀	www.mailto <ALPHANUM> 1 11 1|😀 <EMOJI> 13 15 1|15 0
+?q=1HTTP://)*>ftp://www.	q <ALPHANUM> 1 2 1|1HTTP <ALPHANUM> 3 8 1|ftp <ALPHANUM> 14 17 1|www <ALPHANUM> 20 23 1|24 0
+localhostfile:////(	localhostfile <ALPHANUM> 0 13 1|19 0
+&?q=1&;:8080_::1  	q <ALPHANUM> 2 3 1|1 <NUM> 4 5 1|8080_ <NUM> 8 13 1|1 <NUM> 15 16 1|18 0
+ (中#fftp://!a.b1	中 <IDEOGRAPHIC> 2 3 1|fftp <ALPHANUM> 4 8 1|a.b1 <ALPHANUM> 12 16 1|16 0
+中:8080_~ftp://	中 <IDEOGRAPHIC> 0 1 1|8080_ <NUM> 2 7 1|ftp <ALPHANUM> 8 11 1|14 0
+a.b1-	a.b1 <ALPHANUM> 0 4 1|5 0
++tag.co.uk<>1)	tag.co.uk <URL> 1 10 1|1 <NUM> 12 13 1|14 0
+<*"&.com#f	com <ALPHANUM> 5 8 1|f <ALPHANUM> 9 10 1|10 0
+localhost>www.	localhost <ALPHANUM> 0 9 1|www <ALPHANUM> 10 13 1|14 0
+_	1 0
+example-<.%20HTTP://example😀	example <ALPHANUM> 0 7 1|20HTTP <ALPHANUM> 11 17 1|example <ALPHANUM> 20 27 1|😀 <EMOJI> 27 29 1|29 0
+&_::1.co.uk	1.co.uk <URL> 4 11 1|11 0
+((.	3 0
+😀&	😀 <EMOJI> 0 2 1|3 0
+"x	x <ALPHANUM> 1 2 1|2 0
+,	1 0
+='	2 0
+HTTP://file:///userhttp://$.]	HTTP://file <URL> 0 11 1|userhttp <ALPHANUM> 15 23 1|29 0
+]::1"#f_'	1 <NUM> 3 4 1|f_ <ALPHANUM> 6 8 1|9 0
+[(;,mailto:	mailto <ALPHANUM> 4 10 1|11 0
+:8080user#f.com	8080user <ALPHANUM> 1 9 1|f.com <URL> 10 15 1|15 0
+*'	2 0
+xn--p1ai,%20	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|20 <NUM> 10 12 1|12 0
+$https://mailto:	https://mailto <URL> 1 15 1|16 0
+localhost😀#f&	localhost <ALPHANUM> 0 9 1|😀 <EMOJI> 9 11 1|f <ALPHANUM> 12 13 1|14 0
+中~!ftp://#fhttps://http://.com	中 <IDEOGRAPHIC> 0 1 1|ftp <ALPHANUM> 3 6 1|fhttps <ALPHANUM> 10 16 1|http <ALPHANUM> 19 23 1|com <ALPHANUM> 27 30 1|30 0
+.<$https:///😀user	https <ALPHANUM> 3 8 1|😀 <EMOJI> 12 14 1|user <ALPHANUM> 14 18 1|18 0
+:42file:///	42file <ALPHANUM> 1 7 1|11 0
+.com>ftp://$😀www.	com <ALPHANUM> 1 4 1|ftp <ALPHANUM> 5 8 1|😀 <EMOJI> 12 14 1|www <ALPHANUM> 14 17 1|18 0
+'http://?q=1localhosthttp://.]	http <ALPHANUM> 1 5 1|q <ALPHANUM> 9 10 1|1localhosthttp <ALPHANUM> 11 25 1|30 0
+):http://:.co.uk	http <ALPHANUM> 2 6 1|co.uk <URL> 11 16 1|16 0
+中localhost$[file:///>a.b=	中 <IDEOGRAPHIC> 0 1 1|localhost <ALPHANUM> 1 10 1|file:/// <URL> 12 20 1|a.b <ALPHANUM> 21 24 1|25 0
+.com%20~localhost$)<	com <ALPHANUM> 1 4 1|20 <NUM> 5 7 1|localhost <ALPHANUM> 8 17 1|20 0
+/*42+tag😀	42 <NUM> 2 4 1|tag <ALPHANUM> 5 8 1|😀 <EMOJI> 8 10 1|10 0
+>a.b.<_file:///'	a.b <ALPHANUM> 1 4 1|_file <ALPHANUM> 6 11 1|16 0
+?q=1中#fxn--p1ai[a.b:>	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|中 <IDEOGRAPHIC> 4 5 1|fxn <ALPHANUM> 6 9 1|p1ai <ALPHANUM> 11 15 1|a.b <ALPHANUM> 16 19 1|21 0
+#f	f <ALPHANUM> 1 2 1|2 0
+:~:xn--p1ai192.168.0.1&?q=1!	xn <ALPHANUM> 3 5 1|p1ai192.168.0.1 <ALPHANUM> 7 22 1|q <ALPHANUM> 24 25 1|1 <NUM> 26 27 1|28 0
+::1xn--p1aiuser: +taguser	1xn <ALPHANUM> 2 5 1|p1aiuser <ALPHANUM> 7 15 1|taguser <ALPHANUM> 18 25 1|25 0
+(#fx@-	fx <ALPHANUM> 2 4 1|6 0
+.com	com <ALPHANUM> 1 4 1|4 0
+HTTP://<	HTTP <ALPHANUM> 0 4 1|8 0
+.é:8080>HTTP://file:///a.b	é <ALPHANUM> 1 2 1|8080 <NUM> 3 7 1|HTTP://file <URL> 8 19 1|a.b <ALPHANUM> 23 26 1|26 0
+1.http://    ;	1 <NUM> 0 1 1|http <ALPHANUM> 2 6 1|14 0
+(	1 0
+::1!1www.<@.中	1 <NUM> 2 3 1|1www <ALPHANUM> 4 8 1|中 <IDEOGRAPHIC> 12 13 1|13 0
+=?q=1192.168.0.1$中😀	q <ALPHANUM> 2 3 1|1192.168.0.1 <NUM> 4 16 1|中 <IDEOGRAPHIC> 17 18 1|😀 <EMOJI> 18 20 1|20 0
+.com	com <ALPHANUM> 1 4 1|4 0
+http://~]  example	http <ALPHANUM> 0 4 1|example <ALPHANUM> 11 18 1|18 0
+.co.uk.com:'%20HTTP://=www.	co.uk.com <URL> 1 10 1|20HTTP <ALPHANUM> 13 19 1|www <ALPHANUM> 23 26 1|27 0
+  42	42 <NUM> 2 4 1|4 0
+exampleé%20<user;!	exampleé <ALPHANUM> 0 8 1|20 <NUM> 9 11 1|user <ALPHANUM> 12 16 1|18 0
+(a.b	a.b <ALPHANUM> 1 4 1|4 0
+[&é!	é <ALPHANUM> 2 3 1|4 0
+.co.uk )example >	co.uk <URL> 1 6 1|example <ALPHANUM> 8 15 1|17 0
+%20中*[example>.com	20 <NUM> 1 3 1|中 <IDEOGRAPHIC> 3 4 1|example <ALPHANUM> 6 13 1|com <ALPHANUM> 15 18 1|18 0
+.com)examplemailto::8080~	com <ALPHANUM> 1 4 1|examplemailto <ALPHANUM> 5 18 1|8080 <NUM> 20 24 1|25 0
+#f'%20-/.	f <ALPHANUM> 1 2 1|20 <NUM> 4 6 1|9 0
+  ~+tag@[[>!	tag <ALPHANUM> 4 7 1|12 0
+::1[example>@"<	1 <NUM> 2 3 1|example <ALPHANUM> 4 11 1|15 0
+[ftp:// localhost	ftp <ALPHANUM> 1 4 1|localhost <ALPHANUM> 8 17 1|17 0
+[😀HTTP://:8080"	😀 <EMOJI> 1 3 1|HTTP <ALPHANUM> 3 7 1|8080 <NUM> 11 15 1|16 0
+>	1 0
+::1.com~example))	1.com <URL> 2 7 1|example <ALPHANUM> 8 15 1|17 0
+HTTP://	HTTP <ALPHANUM> 0 4 1|7 0
+file:///''?q=1+tag)😀	file:/// <URL> 0 8 1|q <ALPHANUM> 11 12 1|1 <NUM> 13 14 1|tag <ALPHANUM> 15 18 1|😀 <EMOJI> 19 21 1|21 0
+_'=@😀	😀 <EMOJI> 4 6 1|6 0
+192.168.0.1;+tag	192.168.0.1 <URL> 0 11 1|tag <ALPHANUM> 13 16 1|16 0
+$中file:///-"/file:///	中 <IDEOGRAPHIC> 1 2 1|file:///- <URL> 2 11 1|file:/// <URL> 13 21 1|21 0
+=mailto:	mailto <ALPHANUM> 1 7 1|8 0
+example?q=1:8080	example <ALPHANUM> 0 7 1|q <ALPHANUM> 8 9 1|1 <NUM> 10 11 1|8080 <NUM> 12 16 1|16 0
+$&中mailto:	中 <IDEOGRAPHIC> 2 3 1|mailto <ALPHANUM> 3 9 1|10 0
+.'.comhttp://&.comx+tag	comhttp <ALPHANUM> 3 10 1|comx <ALPHANUM> 15 19 1|tag <ALPHANUM> 20 23 1|23 0
+www.-!	www <ALPHANUM> 0 3 1|6 0
+useré	useré <ALPHANUM> 0 5 1|5 0
+<	1 0
+~😀'	😀 <EMOJI> 1 3 1|4 0
+ftp://@file:///&	ftp <ALPHANUM> 0 3 1|file:///& <URL> 7 16 1|16 0
+/a.b;:8080@user中*	a.b <ALPHANUM> 1 4 1|8080 <NUM> 6 10 1|user <ALPHANUM> 11 15 1|中 <IDEOGRAPHIC> 15 16 1|17 0
+?q=1~file:///a.b192.168.0.1user	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|file:///a.b192.168.0.1user <URL> 5 31 1|31 0
+localhost*[(*file:///😀	localhost <ALPHANUM> 0 9 1|file:/// <URL> 13 21 1|😀 <EMOJI> 21 23 1|23 0
+file:///	file:/// <URL> 0 8 1|8 0
+@&&  ,=	7 0
+>user%20	user <ALPHANUM> 1 5 1|20 <NUM> 6 8 1|8 0
+https://~	https <ALPHANUM> 0 5 1|9 0
+::1mailto:192.168.0.1(😀%20ftp://.co.uk	1mailto <ALPHANUM> 2 9 1|192.168.0.1 <URL> 10 21 1|😀 <EMOJI> 22 24 1|20ftp <ALPHANUM> 25 30 1|co.uk <URL> 34 39 1|39 0
+é42""examplexn--p1aix	é42 <ALPHANUM> 0 3 1|examplexn <ALPHANUM> 5 14 1|p1aix <ALPHANUM> 16 21 1|21 0
+]中	中 <IDEOGRAPHIC> 1 2 1|2 0
+mailto:/--	mailto <ALPHANUM> 0 6 1|10 0
+https://xn--p1ai+taghttp://:8080]https://-	https://xn--p1ai <URL> 0 16 1|taghttp <ALPHANUM> 17 24 1|8080 <NUM> 28 32 1|https <ALPHANUM> 33 38 1|42 0
+mailto:$	mailto <ALPHANUM> 0 6 1|8 0
+;http://a.b	http://a.b <URL> 1 11 1|11 0
+<mailto:/-	mailto <ALPHANUM> 1 7 1|10 0
+中!::1HTTP://	中 <IDEOGRAPHIC> 0 1 1|1HTTP <ALPHANUM> 4 9 1|12 0
+-a.b!.co.uk	a.b <ALPHANUM> 1 4 1|co.uk <URL> 6 11 1|11 0
+&localhost.'	localhost <ALPHANUM> 1 10 1|12 0
+!é>=a.b1.com	é <ALPHANUM> 1 2 1|a.b1.com <URL> 4 12 1|12 0
+é-x@  /)	é <ALPHANUM> 0 1 1|x <ALPHANUM> 2 3 1|8 0
+!)https://?q=1[]example	https <ALPHANUM> 2 7 1|q <ALPHANUM> 11 12 1|1 <NUM> 13 14 1|example <ALPHANUM> 16 23 1|23 0
+é=xn--p1ailocalhost)';	é <ALPHANUM> 0 1 1|xn <ALPHANUM> 2 4 1|p1ailocalhost <ALPHANUM> 6 19 1|22 0
+@	1 0
+@:8080>example	8080 <NUM> 2 6 1|example <ALPHANUM> 7 14 1|14 0
+user~ :8080émailto:	user <ALPHANUM> 0 4 1|8080émailto <ALPHANUM> 7 18 1|19 0
+=~>	3 0
+.com)example;mailto:	com <ALPHANUM> 1 4 1|example <ALPHANUM> 5 12 1|mailto <ALPHANUM> 13 19 1|20 0
+42::1)%20a.b;	42 <NUM> 0 2 1|1 <NUM> 4 5 1|20a.b <ALPHANUM> 7 12 1|13 0
+!http://>é-.com	http <ALPHANUM> 1 5 1|é <ALPHANUM> 9 10 1|com <ALPHANUM> 12 15 1|15 0
+-é~.<:ftp://[	é <ALPHANUM> 1 2 1|ftp <ALPHANUM> 6 9 1|13 0
+<::1!	1 <NUM> 3 4 1|5 0
+localhost:/""=:8080example	localhost <ALPHANUM> 0 9 1|8080example <ALPHANUM> 15 26 1|26 0
+?q=1user'example;%20-	q <ALPHANUM> 1 2 1|1user'example <ALPHANUM> 3 16 1|20 <NUM> 18 20 1|21 0
+#f_42&&.co.uk	f_42 <ALPHANUM> 1 5 1|co.uk <URL> 8 13 1|13 0
+.!_%20https://	20https <ALPHANUM> 4 11 1|14 0
+)www./localhostmailto:@	www <ALPHANUM> 1 4 1|localhostmailto <ALPHANUM> 6 21 1|23 0
+:8080https://42	8080https <ALPHANUM> 1 10 1|42 <NUM> 13 15 1|15 0
+%20'?q=1.com	20 <NUM> 1 3 1|q <ALPHANUM> 5 6 1|1.com <URL> 7 12 1|12 0
+.co.uk	co.uk <URL> 1 6 1|6 0
+ftp://]<+tag	ftp <ALPHANUM> 0 3 1|tag <ALPHANUM> 9 12 1|12 0
+1~x192.168.0.1%20	1 <NUM> 0 1 1|x192.168.0.1 <ALPHANUM> 2 14 1|20 <NUM> 15 17 1|17 0
+é;	é <ALPHANUM> 0 1 1|2 0
+xn--p1ai(ftp://?q=1*$::1::1	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|ftp <ALPHANUM> 9 12 1|q <ALPHANUM> 16 17 1|1 <NUM> 18 19 1|1 <NUM> 23 24 1|1 <NUM> 26 27 1|27 0
+xn--p1aiexamplewww.HTTP://a.b (ftp://	xn <ALPHANUM> 0 2 1|p1aiexamplewww.HTTP <ALPHANUM> 4 23 1|a.b <ALPHANUM> 26 29 1|ftp <ALPHANUM> 31 34 1|37 0
+:8080[&	8080 <NUM> 1 5 1|7 0
+@	1 0
+:<(	3 0
+#f_	f_ <ALPHANUM> 1 3 1|3 0
+x%2042	x <ALPHANUM> 0 1 1|2042 <NUM> 2 6 1|6 0
+"	1 0
+:8080:	8080 <NUM> 1 5 1|6 0
+4242<.com)::1	4242 <NUM> 0 4 1|com <ALPHANUM> 6 9 1|1 <NUM> 12 13 1|13 0
+-::1😀	1 <NUM> 3 4 1|😀 <EMOJI> 4 6 1|6 0
+http://  ::1+tagwww.&:8080	http <ALPHANUM> 0 4 1|1 <NUM> 11 12 1|tagwww <ALPHANUM> 13 19 1|8080 <NUM> 22 26 1|26 0
+1 	1 <NUM> 0 1 1|2 0
+))https://  'ftp://$example	https <ALPHANUM> 2 7 1|ftp <ALPHANUM> 13 16 1|example <ALPHANUM> 20 27 1|27 0
+-  ~😀	😀 <EMOJI> 4 6 1|6 0
+;''中=	中 <IDEOGRAPHIC> 3 4 1|5 0
+  	2 0
+/!	2 0
+'a.b%20*:8080example~]	a.b <ALPHANUM> 1 4 1|20 <NUM> 5 7 1|8080example <ALPHANUM> 9 20 1|22 0
+[:;'	4 0
++tag	tag <ALPHANUM> 1 4 1|4 0
+/é#f	é <ALPHANUM> 1 2 1|f <ALPHANUM> 3 4 1|4 0
+  ftp://::1::1>=	ftp <ALPHANUM> 2 5 1|1 <NUM> 10 11 1|1 <NUM> 13 14 1|16 0
+*ftp:// a.b)www.	ftp <ALPHANUM> 1 4 1|a.b <ALPHANUM> 8 11 1|www <ALPHANUM> 12 15 1|16 0
+-42HTTP://.co.ukfile:///	42HTTP <ALPHANUM> 1 7 1|co.ukfile <ALPHANUM> 11 20 1|24 0
+ xn--p1ai中:8080":192.168.0.1	xn <ALPHANUM> 1 3 1|p1ai <ALPHANUM> 5 9 1|中 <IDEOGRAPHIC> 9 10 1|8080 <NUM> 11 15 1|192.168.0.1 <URL> 17 28 1|28 0
+;[::142&	142 <NUM> 4 7 1|8 0
+example	example <ALPHANUM> 0 7 1|7 0
+www.	www <ALPHANUM> 0 3 1|4 0
+42😀,	42 <NUM> 0 2 1|😀 <EMOJI> 2 4 1|5 0
+'😀.中#ffile:///::1.	😀 <EMOJI> 1 3 1|中 <IDEOGRAPHIC> 4 5 1|ffile <ALPHANUM> 6 11 1|1 <NUM> 17 18 1|19 0
+42	42 <NUM> 0 2 1|2 0
+(file:///#f[HTTP://:,	file:///#f <URL> 1 11 1|HTTP <ALPHANUM> 12 16 1|21 0
+  .com%20	com <ALPHANUM> 3 6 1|20 <NUM> 7 9 1|9 0
+#f	f <ALPHANUM> 1 2 1|2 0
+HTTP://'$=!'中file:///	HTTP <ALPHANUM> 0 4 1|中 <IDEOGRAPHIC> 12 13 1|file:/// <URL> 13 21 1|21 0
+%20mailto:?q=1	20mailto <ALPHANUM> 1 9 1|q <ALPHANUM> 11 12 1|1 <NUM> 13 14 1|14 0
+.com::1	com <ALPHANUM> 1 4 1|1 <NUM> 6 7 1|7 0
+:user+tagx!	user <ALPHANUM> 1 5 1|tagx <ALPHANUM> 6 10 1|11 0
+":8080$_&HTTP://	8080 <NUM> 2 6 1|HTTP <ALPHANUM> 9 13 1|16 0
+42https://www.*file:///>/😀	42https <ALPHANUM> 0 7 1|www <ALPHANUM> 10 13 1|file:/// <URL> 15 23 1|😀 <EMOJI> 25 27 1|27 0
+/"-&	4 0
+,.co.uk]-	co.uk <URL> 2 7 1|9 0
+?q=1	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|4 0
+http://.co.uk 	http <ALPHANUM> 0 4 1|co.uk <URL> 8 13 1|14 0
+*1&	1 <NUM> 1 2 1|3 0
+ftp://:!	ftp <ALPHANUM> 0 3 1|8 0
+.éHTTP://	éHTTP <ALPHANUM> 1 6 1|9 0
+%20(~(www.::1]1	20 <NUM> 1 3 1|www <ALPHANUM> 6 9 1|1 <NUM> 12 13 1|1 <NUM> 14 15 1|15 0
++tag>-1	tag <ALPHANUM> 1 4 1|1 <NUM> 6 7 1|7 0
+:::1😀*http://>;	1 <NUM> 3 4 1|😀 <EMOJI> 4 6 1|http <ALPHANUM> 7 11 1|16 0
+1	1 <NUM> 0 1 1|1 0
+$#fexamplehttp://	fexamplehttp <ALPHANUM> 2 14 1|17 0
+@$x	x <ALPHANUM> 2 3 1|3 0
+xn--p1ai.co.uk].	xn--p1ai.co.uk <URL> 0 14 1|16 0
+file:///	file:/// <URL> 0 8 1|8 0
+https://	https <ALPHANUM> 0 5 1|8 0
+";)中1:www.!	中 <IDEOGRAPHIC> 3 4 1|1 <NUM> 4 5 1|www <ALPHANUM> 6 9 1|11 0
+1xn--p1ai_::1	1xn <ALPHANUM> 0 3 1|p1ai_ <ALPHANUM> 5 10 1|1 <NUM> 12 13 1|13 0
+http://~<::1*<%20192.168.0.1	http <ALPHANUM> 0 4 1|1 <NUM> 11 12 1|20192.168.0.1 <NUM> 15 28 1|28 0
+=éa.b::1;	éa.b <ALPHANUM> 1 5 1|1 <NUM> 7 8 1|9 0
+xn--p1ai mailto:.1	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|mailto <ALPHANUM> 9 15 1|1 <NUM> 17 18 1|18 0
+mailto:'😀example:8080(  @	mailto <ALPHANUM> 0 6 1|😀 <EMOJI> 8 10 1|example <ALPHANUM> 10 17 1|8080 <NUM> 18 22 1|26 0
+:	1 0
+xn--p1aiexample) :'?q=1HTTP://	xn <ALPHANUM> 0 2 1|p1aiexample <ALPHANUM> 4 15 1|q <ALPHANUM> 20 21 1|1HTTP <ALPHANUM> 22 27 1|30 0
+x[éHTTP://' ftp://	x <ALPHANUM> 0 1 1|éHTTP <ALPHANUM> 2 7 1|ftp <ALPHANUM> 12 15 1|18 0
+@>中<,HTTP://],	中 <IDEOGRAPHIC> 2 3 1|HTTP <ALPHANUM> 5 9 1|14 0
+localhostexample42)]192.168.0.1  	localhostexample42 <ALPHANUM> 0 18 1|192.168.0.1 <URL> 20 31 1|33 0
+~é-a.b中	é <ALPHANUM> 1 2 1|a.b <ALPHANUM> 3 6 1|中 <IDEOGRAPHIC> 6 7 1|7 0
+é42?q=1@/é	é42 <ALPHANUM> 0 3 1|q <ALPHANUM> 4 5 1|1 <NUM> 6 7 1|é <ALPHANUM> 9 10 1|10 0
++tag]:~~%20$ 	tag <ALPHANUM> 1 4 1|20 <NUM> 9 11 1|13 0
+é.)!xHTTP://.com[	é <ALPHANUM> 0 1 1|xHTTP <ALPHANUM> 4 9 1|com <ALPHANUM> 13 16 1|17 0
+localhost;file:///https://&xn--p1ai	localhost <ALPHANUM> 0 9 1|file:///https://&xn--p1ai <URL> 10 35 1|35 0
+http://HTTP:///	http://HTTP <URL> 0 11 1|15 0
+)	1 0
+][%20	20 <NUM> 3 5 1|5 0
+(#flocalhostxn--p1ai:8080example	flocalhostxn <ALPHANUM> 2 14 1|p1ai <ALPHANUM> 16 20 1|8080example <ALPHANUM> 21 32 1|32 0
+!example:80801:8080-"	example <ALPHANUM> 1 8 1|80801 <NUM> 9 14 1|8080 <NUM> 15 19 1|21 0
+/中)	中 <IDEOGRAPHIC> 1 2 1|3 0
+https://.	https <ALPHANUM> 0 5 1|9 0
+;!/ftp://%20localhost=localhost	ftp <ALPHANUM> 3 6 1|20localhost <ALPHANUM> 10 21 1|localhost <ALPHANUM> 22 31 1|31 0
+1>[x()>	1 <NUM> 0 1 1|x <ALPHANUM> 3 4 1|7 0
+%20~xn--p1aié x	20 <NUM> 1 3 1|xn <ALPHANUM> 4 6 1|p1aié <ALPHANUM> 8 13 1|x <ALPHANUM> 14 15 1|15 0
+www.-&?q=1]=	www <ALPHANUM> 0 3 1|q <ALPHANUM> 7 8 1|1 <NUM> 9 10 1|12 0
+?q=1-,example<😀www.	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|example <ALPHANUM> 6 13 1|😀 <EMOJI> 14 16 1|www <ALPHANUM> 16 19 1|20 0
+_'_"file:///42:8080>	file:///42:8080 <URL> 4 19 1|20 0
+::1_中	1_ <NUM> 2 4 1|中 <IDEOGRAPHIC> 4 5 1|5 0
+"42ftp://ftp://=#f%20'	42ftp <ALPHANUM> 1 6 1|ftp <ALPHANUM> 9 12 1|f <ALPHANUM> 17 18 1|20 <NUM> 19 21 1|22 0
+42ftp:// 	42ftp <ALPHANUM> 0 5 1|9 0
+ ,HTTP://-user	HTTP <ALPHANUM> 2 6 1|user <ALPHANUM> 10 14 1|14 0
+:#f*.HTTP://	f <ALPHANUM> 2 3 1|HTTP <ALPHANUM> 5 9 1|12 0
+_!=192.168.0.1	192.168.0.1 <URL> 3 14 1|14 0
+  (é中xn--p1aié	é <ALPHANUM> 3 4 1|中 <IDEOGRAPHIC> 4 5 1|xn <ALPHANUM> 5 7 1|p1aié <ALPHANUM> 9 14 1|14 0
+=&(file:///file:///::1mailto::	file:///file:///::1mailto:: <URL> 3 30 1|30 0
+https://:	https <ALPHANUM> 0 5 1|9 0
+中.com=http://HTTP://"/user	中 <IDEOGRAPHIC> 0 1 1|com <ALPHANUM> 2 5 1|http://HTTP <URL> 6 17 1|user <ALPHANUM> 22 26 1|26 0
+!"::1:8080;	1 <NUM> 4 5 1|8080 <NUM> 6 10 1|11 0
+!example192.168.0.1https://	example192.168.0.1https <ALPHANUM> 1 24 1|27 0
+ 	1 0
+  	2 0
+ :https://*é@(	https <ALPHANUM> 2 7 1|é <ALPHANUM> 11 12 1|14 0
+ftp://=:';file:///x(	ftp <ALPHANUM> 0 3 1|file:///x <URL> 10 19 1|20 0
+..com[<~~	com <ALPHANUM> 2 5 1|9 0
+=!#f@	f <ALPHANUM> 3 4 1|5 0
+https://::1	https <ALPHANUM> 0 5 1|1 <NUM> 10 11 1|11 0
+https://	https <ALPHANUM> 0 5 1|8 0
+#fé$42ftp://mailto:]+tag	fé <ALPHANUM> 1 3 1|42ftp <ALPHANUM> 4 9 1|mailto <ALPHANUM> 12 18 1|tag <ALPHANUM> 21 24 1|24 0
+HTTP://:*.co.uk[.http://::1	HTTP <ALPHANUM> 0 4 1|co.uk <URL> 10 15 1|http <ALPHANUM> 17 21 1|1 <NUM> 26 27 1|27 0
+]>	2 0
+1[+taguser	1 <NUM> 0 1 1|taguser <ALPHANUM> 3 10 1|10 0
+%20mailto:[42	20mailto <ALPHANUM> 1 9 1|42 <NUM> 11 13 1|13 0
+=.com_中42>https://	com_ <ALPHANUM> 2 6 1|中 <IDEOGRAPHIC> 6 7 1|42 <NUM> 7 9 1|https <ALPHANUM> 10 15 1|18 0
+ 中'1	中 <IDEOGRAPHIC> 1 2 1|1 <NUM> 3 4 1|4 0
+;:8080	8080 <NUM> 2 6 1|6 0
+http://'/	http <ALPHANUM> 0 4 1|9 0
+;42	42 <NUM> 1 3 1|3 0
+]/	2 0
+:8080example	8080example <ALPHANUM> 1 12 1|12 0
+/xn--p1ai=	xn <ALPHANUM> 1 3 1|p1ai <ALPHANUM> 5 9 1|10 0
+192.168.0.1.com	192.168.0.1.com <URL> 0 15 1|15 0
+*	1 0
+"user.ftp:// 中	user.ftp <ALPHANUM> 1 9 1|中 <IDEOGRAPHIC> 13 14 1|14 0
+HTTP://ftp://:8080192.168.0.1.1https://	HTTP://ftp <URL> 0 10 1|8080192.168.0.1.1https <ALPHANUM> 14 36 1|39 0
+.;192.168.0.11	192.168.0.11 <NUM> 2 14 1|14 0
+~élocalhost	élocalhost <ALPHANUM> 1 11 1|11 0
+-192.168.0.1192.168.0.1>	192.168.0.1192.168.0.1 <NUM> 1 23 1|24 0
+http://	http <ALPHANUM> 0 4 1|7 0
+_")	3 0
+'!(#fmailto:	fmailto <ALPHANUM> 4 11 1|12 0
+:8080HTTP://.co.uk:8080+tag%20>	8080HTTP <ALPHANUM> 1 9 1|co.uk:8080 <URL> 13 23 1|tag <ALPHANUM> 24 27 1|20 <NUM> 28 30 1|31 0
+.	1 0
+中xn--p1ai[:8080?q=1	中 <IDEOGRAPHIC> 0 1 1|xn <ALPHANUM> 1 3 1|p1ai <ALPHANUM> 5 9 1|8080 <NUM> 11 15 1|q <ALPHANUM> 16 17 1|1 <NUM> 18 19 1|19 0
+a.b42-$:8080	a.b42 <ALPHANUM> 0 5 1|8080 <NUM> 8 12 1|12 0
+.com).com((	com <ALPHANUM> 1 4 1|com <ALPHANUM> 6 9 1|11 0
+@;=	3 0
+user&	user <ALPHANUM> 0 4 1|5 0
+xn--p1ai,@~mailto::8080	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|mailto <ALPHANUM> 11 17 1|8080 <NUM> 19 23 1|23 0
+&#f中	f <ALPHANUM> 2 3 1|中 <IDEOGRAPHIC> 3 4 1|4 0
+~	1 0
+::1]	1 <NUM> 2 3 1|4 0
+::11example	11example <ALPHANUM> 2 11 1|11 0
+%20[	20 <NUM> 1 3 1|4 0
+HTTP://*,,ftp://	HTTP <ALPHANUM> 0 4 1|ftp <ALPHANUM> 10 13 1|16 0
+:8080$']>	8080 <NUM> 1 5 1|9 0
+file:///."HTTP://]www.www.	file:///. <URL> 0 9 1|HTTP <ALPHANUM> 10 14 1|www.www <ALPHANUM> 18 25 1|26 0
+*!:8080x	8080x <ALPHANUM> 3 8 1|8 0
+,	1 0
+localhost&exampleuser::1	localhost <ALPHANUM> 0 9 1|exampleuser <ALPHANUM> 10 21 1|1 <NUM> 23 24 1|24 0
+~?q=1ftp://	q <ALPHANUM> 2 3 1|1ftp <ALPHANUM> 4 8 1|11 0
+file:///$:(	file:/// <URL> 0 8 1|11 0
+exampleuser.com	exampleuser.com <URL> 0 15 1|15 0
+-.co.uk  a.b	co.uk <URL> 2 7 1|a.b <ALPHANUM> 9 12 1|12 0
+,	1 0
+file:///$)<	file:/// <URL> 0 8 1|11 0
+$ https://example'www.	https://example <URL> 2 17 1|www <ALPHANUM> 18 21 1|22 0
+[%20é	20é <ALPHANUM> 2 5 1|5 0
+/-(	3 0
+x(	x <ALPHANUM> 0 1 1|2 0
+&😀%20	😀 <EMOJI> 1 3 1|20 <NUM> 4 6 1|6 0
+é	é <ALPHANUM> 0 1 1|1 0
+x:+tagftp://mailto:	x <ALPHANUM> 0 1 1|tagftp <ALPHANUM> 3 9 1|mailto <ALPHANUM> 12 18 1|19 0
+] /é 	é <ALPHANUM> 3 4 1|5 0
+_>):😀?q=1	😀 <EMOJI> 4 6 1|q <ALPHANUM> 7 8 1|1 <NUM> 9 10 1|10 0
+)](142	142 <NUM> 3 6 1|6 0
+<.co.uk	co.uk <URL> 2 7 1|7 0
+%20@&	20 <NUM> 1 3 1|5 0
+localhostfile:///	localhostfile <ALPHANUM> 0 13 1|17 0
+="[	3 0
+*http://x	http://x <URL> 1 9 1|9 0
+!+tag:	tag <ALPHANUM> 2 5 1|6 0
+-]<!=;www.:	www <ALPHANUM> 6 9 1|11 0
+examplexn--p1ai1[!	examplexn <ALPHANUM> 0 9 1|p1ai1 <ALPHANUM> 11 16 1|18 0
+file:///;😀!example1_~	file:/// <URL> 0 8 1|😀 <EMOJI> 9 11 1|example1_ <ALPHANUM> 12 21 1|22 0
+.co.uk-(.com&>	co.uk <ALPHANUM> 1 6 1|com <ALPHANUM> 9 12 1|14 0
+a.b::1example   file:///	a.b <ALPHANUM> 0 3 1|1example <ALPHANUM> 5 13 1|file:/// <URL> 16 24 1|24 0
+!https://(	https <ALPHANUM> 1 6 1|10 0
+a.b~	a.b <ALPHANUM> 0 3 1|4 0
+userhttp://::1example中	userhttp <ALPHANUM> 0 8 1|1example <ALPHANUM> 13 21 1|中 <IDEOGRAPHIC> 21 22 1|22 0
+:8080#f,@ftp://	8080 <NUM> 1 5 1|f <ALPHANUM> 6 7 1|ftp <ALPHANUM> 9 12 1|15 0
+192.168.0.1mailto:42+tag_HTTP://	192.168.0.1mailto <ALPHANUM> 0 17 1|42 <NUM> 18 20 1|tag_HTTP <ALPHANUM> 21 29 1|32 0
+https://$	https <ALPHANUM> 0 5 1|9 0
+  ftp://http://_+tagHTTP://a.b'	ftp <ALPHANUM> 2 5 1|http <ALPHANUM> 8 12 1|tagHTTP <ALPHANUM> 17 24 1|a.b <ALPHANUM> 27 30 1|31 0
+$".co.uké	co.uké <ALPHANUM> 3 9 1|9 0
+@- mailto:file:///	mailto:file <ALPHANUM> 3 14 1|18 0
+..co.ukhttps://:8080  	co.ukhttps <ALPHANUM> 2 12 1|8080 <NUM> 16 20 1|22 0
+é__example  www.>%20	é__example <ALPHANUM> 0 10 1|www <ALPHANUM> 12 15 1|20 <NUM> 18 20 1|20 0
+#f	f <ALPHANUM> 1 2 1|2 0
+&(@1<"	1 <NUM> 3 4 1|6 0
+?q=1	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|4 0
+>	1 0
+https://	https <ALPHANUM> 0 5 1|8 0
+,[ftp://	ftp <ALPHANUM> 2 5 1|8 0
+-https://xn--p1ai.$a.b	https://xn--p1ai <URL> 1 17 1|a.b <ALPHANUM> 19 22 1|22 0
+:%20*:8080 +tag	20 <NUM> 2 4 1|8080 <NUM> 6 10 1|tag <ALPHANUM> 12 15 1|15 0
+mailto:x42 -	mailto:x42 <ALPHANUM> 0 10 1|12 0
+.co.uk]user.	co.uk <URL> 1 6 1|user <ALPHANUM> 7 11 1|12 0
+,"/	3 0
+.co.ukuser"?q=1?q=1 #f?q=1	co.ukuser <ALPHANUM> 1 10 1|q <ALPHANUM> 12 13 1|1 <NUM> 14 15 1|q <ALPHANUM> 16 17 1|1 <NUM> 18 19 1|f <ALPHANUM> 21 22 1|q <ALPHANUM> 23 24 1|1 <NUM> 25 26 1|26 0
+useruser_http://"user"HTTP://	useruser_http <ALPHANUM> 0 13 1|user <ALPHANUM> 17 21 1|HTTP <ALPHANUM> 22 26 1|29 0
+[]:mailto:1:'>	mailto <ALPHANUM> 3 9 1|1 <NUM> 10 11 1|14 0
+éHTTP://:=file:///::1	éHTTP <ALPHANUM> 0 5 1|file:///::1 <URL> 10 21 1|21 0
+localhostwww.example192.168.0.1mailto:'	localhostwww.example192.168.0.1mailto <ALPHANUM> 0 37 1|39 0
+中;user.co.uk~_	中 <IDEOGRAPHIC> 0 1 1|user.co.uk <URL> 2 12 1|14 0
+,<:8080	8080 <NUM> 3 7 1|7 0
+$42a.b&  <	42a.b <ALPHANUM> 1 6 1|10 0
+.co.uk	co.uk <URL> 1 6 1|6 0
+%20😀192.168.0.1.com) HTTP://	20 <NUM> 1 3 1|😀 <EMOJI> 3 5 1|192.168.0.1.com <URL> 5 20 1|HTTP <ALPHANUM> 22 26 1|29 0
++tag😀😀"1:file:///😀	tag <ALPHANUM> 1 4 1|😀 <EMOJI> 4 6 1|😀 <EMOJI> 6 8 1|1 <NUM> 9 10 1|file:/// <URL> 11 19 1|😀 <EMOJI> 19 21 1|21 0
+]1  -	1 <NUM> 1 2 1|5 0
+&$http://]	http <ALPHANUM> 2 6 1|10 0
+[xn--p1ai]*~?q=1%20	xn <ALPHANUM> 1 3 1|p1ai <ALPHANUM> 5 9 1|q <ALPHANUM> 13 14 1|1 <NUM> 15 16 1|20 <NUM> 17 19 1|19 0
+@.com	com <ALPHANUM> 2 5 1|5 0
+mailto:]=~😀xn--p1ai42	mailto <ALPHANUM> 0 6 1|😀 <EMOJI> 10 12 1|xn <ALPHANUM> 12 14 1|p1ai42 <ALPHANUM> 16 22 1|22 0
+>	1 0
+HTTP://a.b=	HTTP://a.b <URL> 0 10 1|11 0
+42file:///example$42	42file <ALPHANUM> 0 6 1|example <ALPHANUM> 10 17 1|42 <NUM> 18 20 1|20 0
+http://_www.  x"	http <ALPHANUM> 0 4 1|_www <ALPHANUM> 7 11 1|x <ALPHANUM> 14 15 1|16 0
+中	中 <IDEOGRAPHIC> 0 1 1|1 0
+中HTTP://.co.uk($<	中 <IDEOGRAPHIC> 0 1 1|HTTP <ALPHANUM> 1 5 1|co.uk <URL> 9 14 1|17 0
+_HTTP://	_HTTP <ALPHANUM> 0 5 1|8 0
+&.	2 0
+-mailto:example?q=1	mailto:example <ALPHANUM> 1 15 1|q <ALPHANUM> 16 17 1|1 <NUM> 18 19 1|19 0
+http://(.com::1	http <ALPHANUM> 0 4 1|com <ALPHANUM> 9 12 1|1 <NUM> 14 15 1|15 0
+:8080.co.uka.bftp://$:[	8080.co <URL> 1 8 1|uka.bftp <ALPHANUM> 9 17 1|23 0
+/localhost#f	localhost <ALPHANUM> 1 10 1|f <ALPHANUM> 11 12 1|12 0
+.co.uk	co.uk <URL> 1 6 1|6 0
+!	1 0
+é!"	é <ALPHANUM> 0 1 1|3 0
+examplex?q=1😀mailto:42	examplex <ALPHANUM> 0 8 1|q <ALPHANUM> 9 10 1|1 <NUM> 11 12 1|😀 <EMOJI> 12 14 1|mailto <ALPHANUM> 14 20 1|42 <NUM> 21 23 1|23 0
+xxéhttp://	xxéhttp <ALPHANUM> 0 7 1|10 0
+'*  )xn--p1ai',中	xn <ALPHANUM> 5 7 1|p1ai <ALPHANUM> 9 13 1|中 <IDEOGRAPHIC> 15 16 1|16 0
+a.b<)https://!中<.com	a.b <ALPHANUM> 0 3 1|https <ALPHANUM> 5 10 1|中 <IDEOGRAPHIC> 14 15 1|com <ALPHANUM> 17 20 1|20 0
+,user"	user <ALPHANUM> 1 5 1|6 0
+'#f'1example)example-	f <ALPHANUM> 2 3 1|1example <ALPHANUM> 4 12 1|example <ALPHANUM> 13 20 1|21 0
+(http://	http <ALPHANUM> 1 5 1|8 0
++tag42	tag42 <ALPHANUM> 1 6 1|6 0
+xn--p1ai'#flocalhost(+tag=42	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|flocalhost <ALPHANUM> 10 20 1|tag <ALPHANUM> 22 25 1|42 <NUM> 26 28 1|28 0
+  !$example(xn--p1ai	example <ALPHANUM> 4 11 1|xn <ALPHANUM> 12 14 1|p1ai <ALPHANUM> 16 20 1|20 0
+ftp://中	ftp <ALPHANUM> 0 3 1|中 <IDEOGRAPHIC> 6 7 1|7 0
+_file:///-	_file <ALPHANUM> 0 5 1|10 0
+_-$	3 0
+<😀[!	😀 <EMOJI> 1 3 1|5 0
+https://http://@(www.	https://http <URL> 0 12 1|www <ALPHANUM> 17 20 1|21 0
+"é.com. file:///ftp://	é.com <ALPHANUM> 1 6 1|file:///ftp:// <URL> 8 22 1|22 0
+HTTP://~xwww..com中%20	HTTP <ALPHANUM> 0 4 1|xwww <ALPHANUM> 8 12 1|com <ALPHANUM> 14 17 1|中 <IDEOGRAPHIC> 17 18 1|20 <NUM> 19 21 1|21 0
+@%20::1	20 <NUM> 2 4 1|1 <NUM> 6 7 1|7 0
+:8080userftp://.comhttp://	8080userftp <ALPHANUM> 1 12 1|comhttp <ALPHANUM> 16 23 1|26 0
+x	x <ALPHANUM> 0 1 1|1 0
+mailto:@42https://ftp://1	mailto <ALPHANUM> 0 6 1|42https <ALPHANUM> 8 15 1|ftp <ALPHANUM> 18 21 1|1 <NUM> 24 25 1|25 0
+::1:mailto:;	1 <NUM> 2 3 1|mailto <ALPHANUM> 4 10 1|12 0
+https://'&<;xn--p1ai#f	https <ALPHANUM> 0 5 1|xn <ALPHANUM> 12 14 1|p1ai <ALPHANUM> 16 20 1|f <ALPHANUM> 21 22 1|22 0
+&;@https://中+tagexampleftp://	https <ALPHANUM> 3 8 1|中 <IDEOGRAPHIC> 11 12 1|tagexampleftp <ALPHANUM> 13 26 1|29 0
+file:///	file:/// <URL> 0 8 1|8 0
+localhost	localhost <ALPHANUM> 0 9 1|9 0
+:8080>]http://=?q=1	8080 <NUM> 1 5 1|http <ALPHANUM> 7 11 1|q <ALPHANUM> 16 17 1|1 <NUM> 18 19 1|19 0
+$%20éxn--p1ai;:8080	20éxn <ALPHANUM> 2 7 1|p1ai <ALPHANUM> 9 13 1|8080 <NUM> 15 19 1|19 0
+😀	😀 <EMOJI> 0 2 1|2 0
+$*%20x#f	20x <ALPHANUM> 3 6 1|f <ALPHANUM> 7 8 1|8 0
+.comexample42/42]	comexample42 <ALPHANUM> 1 13 1|42 <NUM> 14 16 1|17 0
+.co.uk.~@ HTTP://	co.uk. <URL> 1 7 1|HTTP <ALPHANUM> 10 14 1|17 0
+;é42:"www.	é42 <ALPHANUM> 1 4 1|www <ALPHANUM> 6 9 1|10 0
+]中#fwww.<:é&	中 <IDEOGRAPHIC> 1 2 1|fwww <ALPHANUM> 3 7 1|é <ALPHANUM> 10 11 1|12 0
+]	1 0
+:8080mailto:https://)=-	8080mailto:https <ALPHANUM> 1 17 1|23 0
+localhost .co.ukftp://HTTP://-&localhost	localhost <ALPHANUM> 0 9 1|co.ukftp <ALPHANUM> 11 19 1|HTTP <ALPHANUM> 22 26 1|localhost <ALPHANUM> 31 40 1|40 0
+=;	2 0
+~.comé?q=1%20	comé <ALPHANUM> 2 6 1|q <ALPHANUM> 7 8 1|1 <NUM> 9 10 1|20 <NUM> 11 13 1|13 0
+.(::1#f!localhost	1 <NUM> 4 5 1|f <ALPHANUM> 6 7 1|localhost <ALPHANUM> 8 17 1|17 0
+😀..co.ukhttp://192.168.0.1 &	😀 <EMOJI> 0 2 1|co.ukhttp <ALPHANUM> 4 13 1|192.168.0.1 <URL> 16 27 1|29 0
+:8080+tag	8080 <NUM> 1 5 1|tag <ALPHANUM> 6 9 1|9 0
+localhost-42	localhost <ALPHANUM> 0 9 1|42 <NUM> 10 12 1|12 0
+😀	😀 <EMOJI> 0 2 1|2 0
+:::1,.co.uk	1 <NUM> 3 4 1|co.uk <URL> 6 11 1|11 0
+xn--p1ai-42	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|42 <NUM> 9 11 1|11 0
+mailto:&!ftp://:	mailto <ALPHANUM> 0 6 1|ftp <ALPHANUM> 9 12 1|16 0
+42https://( localhost 	42https <ALPHANUM> 0 7 1|localhost <ALPHANUM> 12 21 1|22 0
+userhttps://=localhost	userhttps <ALPHANUM> 0 9 1|localhost <ALPHANUM> 13 22 1|22 0
+HTTP://_1'*	HTTP <ALPHANUM> 0 4 1|_1 <NUM> 7 9 1|11 0
+;  +tagx~=@>	tagx <ALPHANUM> 4 8 1|12 0
+,$example	example <ALPHANUM> 2 9 1|9 0
+-::1=]   	1 <NUM> 3 4 1|9 0
+?q=1  (https://	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|https <ALPHANUM> 7 12 1|15 0
+/::1é+tag	1é <ALPHANUM> 3 5 1|tag <ALPHANUM> 6 9 1|9 0
+=?q=1#f[	q <ALPHANUM> 2 3 1|1 <NUM> 4 5 1|f <ALPHANUM> 6 7 1|8 0
+:?q=1	q <ALPHANUM> 2 3 1|1 <NUM> 4 5 1|5 0
+?q=1😀x:8080.co.ukwww.xhttp://	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|😀 <EMOJI> 4 6 1|x <ALPHANUM> 6 7 1|8080.co <URL> 8 15 1|ukwww.xhttp <ALPHANUM> 16 27 1|30 0
+"https://,	https <ALPHANUM> 1 6 1|10 0
+HTTP://[#f	HTTP <ALPHANUM> 0 4 1|f <ALPHANUM> 9 10 1|10 0
+file:///)www.	file:/// <URL> 0 8 1|www <ALPHANUM> 9 12 1|13 0
+=/mailto::+tag>])	mailto <ALPHANUM> 2 8 1|tag <ALPHANUM> 11 14 1|17 0
+.  	3 0
+)www.';:user	www <ALPHANUM> 1 4 1|user <ALPHANUM> 8 12 1|12 0
+",:example	example <ALPHANUM> 3 10 1|10 0
+::1éHTTP://1#f  	1éHTTP <ALPHANUM> 2 8 1|1 <NUM> 11 12 1|f <ALPHANUM> 13 14 1|16 0
++tagx&-+tag?q=1:8080(	tagx <ALPHANUM> 1 5 1|tag <ALPHANUM> 8 11 1|q <ALPHANUM> 12 13 1|1 <NUM> 14 15 1|8080 <NUM> 16 20 1|21 0
+😀#f_::1file:///file:///!file:///	😀 <EMOJI> 0 2 1|f_ <ALPHANUM> 3 5 1|1file <ALPHANUM> 7 12 1|file:/// <URL> 16 24 1|file:/// <URL> 25 33 1|33 0
+>ftp://_ 	ftp <ALPHANUM> 1 4 1|9 0
++tag)x[x  	tag <ALPHANUM> 1 4 1|x <ALPHANUM> 5 6 1|x <ALPHANUM> 7 8 1|10 0
+[	1 0
+ @~.%20	20 <NUM> 5 7 1|7 0
+<xn--p1ai file:///'~	xn <ALPHANUM> 1 3 1|p1ai <ALPHANUM> 5 9 1|file:/// <URL> 10 18 1|20 0
+$>,;&>中	中 <IDEOGRAPHIC> 6 7 1|7 0
+[@www.mailto:::1	www.mailto <ALPHANUM> 2 12 1|1 <NUM> 15 16 1|16 0
+[.com:+tag.;	com <ALPHANUM> 2 5 1|tag <ALPHANUM> 7 10 1|12 0
+1[.co.ukhttp://""	1 <NUM> 0 1 1|co.ukhttp <ALPHANUM> 3 12 1|17 0
+%20%20='中	20 <NUM> 1 3 1|20 <NUM> 4 6 1|中 <IDEOGRAPHIC> 8 9 1|9 0
+xxn--p1ai/ 😀192.168.0.1	xxn <ALPHANUM> 0 3 1|p1ai <ALPHANUM> 5 9 1|😀 <EMOJI> 11 13 1|192.168.0.1 <URL> 13 24 1|24 0
+[mailto:	mailto <ALPHANUM> 1 7 1|8 0
+,192.168.0.1xn--p1ai'https://	192.168.0.1xn <ALPHANUM> 1 14 1|p1ai'https <ALPHANUM> 16 26 1|29 0
+.co.uké':.co.uké	co.uké <ALPHANUM> 1 7 1|co.uké <ALPHANUM> 10 16 1|16 0
+] 	2 0
+::1	1 <NUM> 2 3 1|3 0
+/中>中localhostxexample]	中 <IDEOGRAPHIC> 1 2 1|中 <IDEOGRAPHIC> 3 4 1|localhostxexample <ALPHANUM> 4 21 1|22 0
+192.168.0.1	192.168.0.1 <URL> 0 11 1|11 0
+:8080mailto:examplex<	8080mailto:examplex <ALPHANUM> 1 20 1|21 0
+[,!	3 0
+.com"localhostx_;user.co.uk	com <ALPHANUM> 1 4 1|localhostx_ <ALPHANUM> 5 16 1|user.co.uk <URL> 17 27 1|27 0
+?q=1.com,:8080/😀,example	q <ALPHANUM> 1 2 1|1.com <URL> 3 8 1|8080 <NUM> 10 14 1|😀 <EMOJI> 15 17 1|example <ALPHANUM> 18 25 1|25 0
+; ::1,	1 <NUM> 4 5 1|6 0
+=HTTP://file:///][	HTTP://file <URL> 1 12 1|18 0
+http://]a.b	http <ALPHANUM> 0 4 1|a.b <ALPHANUM> 8 11 1|11 0
+=  (	4 0
+;~xn--p1ai&http://::1	xn <ALPHANUM> 2 4 1|p1ai <ALPHANUM> 6 10 1|http <ALPHANUM> 11 15 1|1 <NUM> 20 21 1|21 0
+<	1 0
++tagmailto:http:///😀xn--p1aia.b]	tagmailto:http <ALPHANUM> 1 15 1|😀 <EMOJI> 19 21 1|xn <ALPHANUM> 21 23 1|p1aia.b <ALPHANUM> 25 32 1|33 0
+42 -user>	42 <NUM> 0 2 1|user <ALPHANUM> 4 8 1|9 0
+::1*&https://	1 <NUM> 2 3 1|https <ALPHANUM> 5 10 1|13 0
+xn--p1ai]%20https://#f>	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|20https <ALPHANUM> 10 17 1|f <ALPHANUM> 21 22 1|23 0
+_;	2 0
+'=+taga.b;mailto:	taga.b <ALPHANUM> 3 9 1|mailto <ALPHANUM> 10 16 1|17 0
+@user	user <ALPHANUM> 1 5 1|5 0
+;xn--p1ai*)1:!	xn <ALPHANUM> 1 3 1|p1ai <ALPHANUM> 5 9 1|1 <NUM> 11 12 1|14 0
+é+tag'	é <ALPHANUM> 0 1 1|tag <ALPHANUM> 2 5 1|6 0
+é.!	é <ALPHANUM> 0 1 1|3 0
+#f/::1%20mailto:file:///<	f <ALPHANUM> 1 2 1|1 <NUM> 5 6 1|20mailto:file <ALPHANUM> 7 20 1|25 0
+example	example <ALPHANUM> 0 7 1|7 0
+ftp://!	ftp <ALPHANUM> 0 3 1|7 0
+user)	user <ALPHANUM> 0 4 1|5 0
+https://~/[,:8080_	https <ALPHANUM> 0 5 1|8080_ <NUM> 13 18 1|18 0
+éhttps://::1*1.comexample	éhttps <ALPHANUM> 0 6 1|1 <NUM> 11 12 1|1 <NUM> 13 14 1|comexample <ALPHANUM> 15 25 1|25 0
+@	1 0
+www.(%20	www <ALPHANUM> 0 3 1|20 <NUM> 6 8 1|8 0
+xn--p1aimailto:www.!examplehttp://<	xn <ALPHANUM> 0 2 1|p1aimailto:www <ALPHANUM> 4 18 1|examplehttp <ALPHANUM> 20 31 1|35 0
+,-_+tag	tag <ALPHANUM> 4 7 1|7 0
+xn--p1ai.co.uk-	xn--p1ai.co <URL> 0 11 1|uk <ALPHANUM> 12 14 1|15 0
++taghttp://+tag:8080[(+taghttp://	taghttp <ALPHANUM> 1 8 1|tag <ALPHANUM> 12 15 1|8080 <NUM> 16 20 1|taghttp <ALPHANUM> 23 30 1|33 0
+42  #f,	42 <NUM> 0 2 1|f <ALPHANUM> 5 6 1|7 0
+(".com]:8080	com <ALPHANUM> 3 6 1|8080 <NUM> 8 12 1|12 0
+ file:///)http://中;(=	file:/// <URL> 1 9 1|http <ALPHANUM> 10 14 1|中 <IDEOGRAPHIC> 17 18 1|21 0
+&example+taguser	example <ALPHANUM> 1 8 1|taguser <ALPHANUM> 9 16 1|16 0
+[mailto:+tag4242_localhostftp://	mailto <ALPHANUM> 1 7 1|tag4242_localhostftp <ALPHANUM> 9 29 1|32 0
+éxn--p1ailocalhost)😀https://x	éxn <ALPHANUM> 0 3 1|p1ailocalhost <ALPHANUM> 5 18 1|😀 <EMOJI> 19 21 1|https://x <URL> 21 30 1|30 0
+=,	2 0
+192.168.0.1'  .😀	192.168.0.1 <URL> 0 11 1|😀 <EMOJI> 15 17 1|17 0
+.co.uk~::1192.168.0.1	co.uk <URL> 1 6 1|1192.168.0.1 <NUM> 9 21 1|21 0
+😀?q=1192.168.0.1	😀 <EMOJI> 0 2 1|q <ALPHANUM> 3 4 1|1192.168.0.1 <NUM> 5 17 1|17 0
+?q=1?q=142	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|q <ALPHANUM> 5 6 1|142 <NUM> 7 10 1|10 0
+?q=1(www.?q=1>42::1	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|www <ALPHANUM> 5 8 1|q <ALPHANUM> 10 11 1|1 <NUM> 12 13 1|42 <NUM> 14 16 1|1 <NUM> 18 19 1|19 0
+éftp://	éftp <ALPHANUM> 0 4 1|7 0
+/-@file:///.example/	file:///.example/ <URL> 3 20 1|20 0
+,file:///<	file:/// <URL> 1 9 1|10 0
+%20.coma.b)	20 <NUM> 1 3 1|coma.b <ALPHANUM> 4 10 1|11 0
+<.com&?q=1	com <ALPHANUM> 2 5 1|q <ALPHANUM> 7 8 1|1 <NUM> 9 10 1|10 0
+<&a.b	a.b <ALPHANUM> 2 5 1|5 0
+)/http://😀192.168.0.1é.co.uk	http <ALPHANUM> 2 6 1|😀 <EMOJI> 9 11 1|192.168.0.1é.co.uk <ALPHANUM> 11 29 1|29 0
+HTTP://$é:	HTTP <ALPHANUM> 0 4 1|é <ALPHANUM> 8 9 1|10 0
+  :8080:www.<😀	8080 <NUM> 3 7 1|www <ALPHANUM> 8 11 1|😀 <EMOJI> 13 15 1|15 0
+:8080;中%20xn--p1aix&	8080 <NUM> 1 5 1|中 <IDEOGRAPHIC> 6 7 1|20xn <ALPHANUM> 8 12 1|p1aix <ALPHANUM> 14 19 1|20 0
+:8080~::1$~	8080 <NUM> 1 5 1|1 <NUM> 8 9 1|11 0
+www.1	www <ALPHANUM> 0 3 1|1 <NUM> 4 5 1|5 0
+#f	f <ALPHANUM> 1 2 1|2 0
+_".	3 0
+]=(<😀"/	😀 <EMOJI> 4 6 1|8 0
+é😀  	é <ALPHANUM> 0 1 1|😀 <EMOJI> 1 3 1|5 0
+">:8080	8080 <NUM> 3 7 1|7 0
+:8080.co.uk:8080HTTP://	8080.co.uk:8080 <URL> 1 16 1|HTTP <ALPHANUM> 16 20 1|23 0
+ftp://example	ftp <ALPHANUM> 0 3 1|example <ALPHANUM> 6 13 1|13 0
+ftp://_:8080]	ftp <ALPHANUM> 0 3 1|8080 <NUM> 8 12 1|13 0
+)http://a.b	http://a.b <URL> 1 11 1|11 0
+>!mailto:	mailto <ALPHANUM> 2 8 1|9 0
+.co.ukhttp://![:8080-中	co.ukhttp <ALPHANUM> 1 10 1|8080 <NUM> 16 20 1|中 <IDEOGRAPHIC> 21 22 1|22 0
+[	1 0
+$-@?q=1x(/😀	q <ALPHANUM> 4 5 1|1x <ALPHANUM> 6 8 1|😀 <EMOJI> 10 12 1|12 0
+!%20	20 <NUM> 2 4 1|4 0
+%20!	20 <NUM> 1 3 1|4 0
+/	1 0
+xa.b  ,	xa.b <ALPHANUM> 0 4 1|7 0
+#f	f <ALPHANUM> 1 2 1|2 0
+a.b😀x42user?q=1file:///localhost	a.b <ALPHANUM> 0 3 1|😀 <EMOJI> 3 5 1|x42user <ALPHANUM> 5 12 1|q <ALPHANUM> 13 14 1|1file <ALPHANUM> 15 20 1|localhost <ALPHANUM> 24 33 1|33 0
+.co.ukxn--p1ai:808042xn--p1ai!&	co.ukxn <ALPHANUM> 1 8 1|p1ai <ALPHANUM> 10 14 1|808042xn <ALPHANUM> 15 23 1|p1ai <ALPHANUM> 25 29 1|31 0
+,https://>%20&)	https <ALPHANUM> 1 6 1|20 <NUM> 11 13 1|15 0
+<+tag[,.coma.b	tag <ALPHANUM> 2 5 1|coma.b <ALPHANUM> 8 14 1|14 0
+;https://-mailto:~	https <ALPHANUM> 1 6 1|mailto <ALPHANUM> 10 16 1|18 0
+!HTTP://ftp://xn--p1aiftp://  _	HTTP://ftp <URL> 1 11 1|xn <ALPHANUM> 14 16 1|p1aiftp <ALPHANUM> 18 25 1|31 0
+www.<.co.uk	www <ALPHANUM> 0 3 1|co.uk <URL> 6 11 1|11 0
+xn--p1ai~é	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|é <ALPHANUM> 9 10 1|10 0
+examplewww.é42<HTTP://	examplewww.é42 <ALPHANUM> 0 14 1|HTTP <ALPHANUM> 15 19 1|22 0
+xn--p1ai<<<	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|11 0
+example192.168.0.1mailto:	example192.168.0.1mailto <ALPHANUM> 0 24 1|25 0
+ .com?q=1x:a.b(_	com <ALPHANUM> 2 5 1|q <ALPHANUM> 6 7 1|1x:a.b <ALPHANUM> 8 14 1|16 0
+[example>example	example <ALPHANUM> 1 8 1|example <ALPHANUM> 9 16 1|16 0
+)-www.é.-::1192.168.0.1	www.é <ALPHANUM> 2 7 1|1192.168.0.1 <NUM> 11 23 1|23 0
+*file:///:	file:///: <URL> 1 10 1|10 0
+localhost	localhost <ALPHANUM> 0 9 1|9 0
+.?q=1%20xn--p1ai	q <ALPHANUM> 2 3 1|1 <NUM> 4 5 1|20xn <ALPHANUM> 6 10 1|p1ai <ALPHANUM> 12 16 1|16 0
+.co.uk]<)xn--p1ai  	co.uk <URL> 1 6 1|xn <ALPHANUM> 9 11 1|p1ai <ALPHANUM> 13 17 1|19 0
+http://&*	http <ALPHANUM> 0 4 1|9 0
+-	1 0
+192.168.0.1#f'x#f>+tag	192.168.0.1#f'x <URL> 0 15 1|f <ALPHANUM> 16 17 1|tag <ALPHANUM> 19 22 1|22 0
+;;  "'	6 0
+localhostfile:///$😀192.168.0.1;	localhostfile <ALPHANUM> 0 13 1|😀 <EMOJI> 18 20 1|192.168.0.1 <URL> 20 31 1|32 0
+#f	f <ALPHANUM> 1 2 1|2 0
+&	1 0
+>._~)	5 0
++tag]  中1>localhost	tag <ALPHANUM> 1 4 1|中 <IDEOGRAPHIC> 7 8 1|1 <NUM> 8 9 1|localhost <ALPHANUM> 10 19 1|19 0
+*'xmailto:HTTP://(:8080	xmailto:HTTP <ALPHANUM> 2 14 1|8080 <NUM> 19 23 1|23 0
+mailto:example😀&localhost%20中	mailto:example <ALPHANUM> 0 14 1|😀 <EMOJI> 14 16 1|localhost <ALPHANUM> 17 26 1|20 <NUM> 27 29 1|中 <IDEOGRAPHIC> 29 30 1|30 0
+:)中192.168.0.1  (www.42	中 <IDEOGRAPHIC> 2 3 1|192.168.0.1 <URL> 3 14 1|www <ALPHANUM> 17 20 1|42 <NUM> 21 23 1|23 0
+";+tag.co.uk_	tag.co.uk_ <ALPHANUM> 3 13 1|13 0
+192.168.0.1&~[_.	192.168.0.1 <URL> 0 11 1|16 0
+=  	3 0
+.co.uk/a.b	co.uk/a.b <URL> 1 10 1|10 0
+~&!:8080file:///<*a.b	8080file <ALPHANUM> 4 12 1|a.b <ALPHANUM> 18 21 1|21 0
+~ftp://file:///	ftp <ALPHANUM> 1 4 1|file:/// <URL> 7 15 1|15 0
+mailto:HTTP://中user?q=1])	mailto:HTTP <ALPHANUM> 0 11 1|中 <IDEOGRAPHIC> 14 15 1|user <ALPHANUM> 15 19 1|q <ALPHANUM> 20 21 1|1 <NUM> 22 23 1|25 0
+ HTTP://example1localhostexample	HTTP://example1localhostexample <URL> 1 32 1|32 0
+www.:.co.uk_@+tag)?q=1	www <ALPHANUM> 0 3 1|co.uk_ <ALPHANUM> 6 12 1|tag <ALPHANUM> 14 17 1|q <ALPHANUM> 19 20 1|1 <NUM> 21 22 1|22 0
+@]http://1localhostexample$	http://1localhostexample <URL> 2 26 1|27 0
+localhostxn--p1ai!.,'HTTP://-	localhostxn <ALPHANUM> 0 11 1|p1ai <ALPHANUM> 13 17 1|HTTP <ALPHANUM> 21 25 1|29 0
+::1a.b192.168.0.1(::1	1a.b192.168.0.1 <ALPHANUM> 2 17 1|1 <NUM> 20 21 1|21 0
+@	1 0
+;www./'é/😀www.	www <ALPHANUM> 1 4 1|é <ALPHANUM> 7 8 1|😀 <EMOJI> 9 11 1|www <ALPHANUM> 11 14 1|15 0
+?q=1	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|4 0
+%20@'😀HTTP://	20 <NUM> 1 3 1|😀 <EMOJI> 5 7 1|HTTP <ALPHANUM> 7 11 1|14 0
+.co.uk)?q=1example<	co.uk <URL> 1 6 1|q <ALPHANUM> 8 9 1|1example <ALPHANUM> 10 18 1|19 0
+ 192.168.0.1,?q=1:=<é	192.168.0.1 <URL> 1 12 1|q <ALPHANUM> 14 15 1|1 <NUM> 16 17 1|é <ALPHANUM> 20 21 1|21 0
+-x	x <ALPHANUM> 1 2 1|2 0
+"#f.co.uk..co.uk	f.co.uk. <URL> 2 10 1|co.uk <URL> 11 16 1|16 0
+@>->	4 0
+!é:8080.www.	é <ALPHANUM> 1 2 1|8080 <NUM> 3 7 1|www <ALPHANUM> 8 11 1|12 0
+-www.http://	www.http <ALPHANUM> 1 9 1|12 0
+~.-	3 0
+/	1 0
+#fx.commailto:]www.=xn--p1ai	fx.commailto <ALPHANUM> 1 13 1|www <ALPHANUM> 15 18 1|xn <ALPHANUM> 20 22 1|p1ai <ALPHANUM> 24 28 1|28 0
+;;example42!  +tag  	example42 <ALPHANUM> 2 11 1|tag <ALPHANUM> 15 18 1|20 0
+::1_-;https://a.b& 	1_ <NUM> 2 4 1|https://a.b <URL> 6 17 1|19 0
+@	1 0
+:8080'ftp://HTTP://	8080 <NUM> 1 5 1|ftp <ALPHANUM> 6 9 1|HTTP <ALPHANUM> 12 16 1|19 0
+ 192.168.0.1["mailto:=localhost	192.168.0.1 <URL> 1 12 1|mailto <ALPHANUM> 14 20 1|localhost <ALPHANUM> 22 31 1|31 0
+&.comfile:///mailto:www.	comfile <ALPHANUM> 2 9 1|mailto:www <ALPHANUM> 13 23 1|24 0
+中中www.42@	中 <IDEOGRAPHIC> 0 1 1|中 <IDEOGRAPHIC> 1 2 1|www <ALPHANUM> 2 5 1|42 <NUM> 6 8 1|9 0
+<a.bexample	a.bexample <ALPHANUM> 1 11 1|11 0
+,%20https://mailto:/'	20https <ALPHANUM> 2 9 1|mailto <ALPHANUM> 12 18 1|21 0
+1%20?q=1192.168.0.1😀42a.b	1 <NUM> 0 1 1|20 <NUM> 2 4 1|q <ALPHANUM> 5 6 1|1192.168.0.1 <NUM> 7 19 1|😀 <EMOJI> 19 21 1|42a.b <ALPHANUM> 21 26 1|26 0
+!	1 0
+@-user	user <ALPHANUM> 2 6 1|6 0
+,	1 0
+example1file:///192.168.0.1http://.com.co.uk.com	example1file <ALPHANUM> 0 12 1|192.168.0.1http <ALPHANUM> 16 31 1|com.co.uk.com <URL> 35 48 1|48 0
+éftp://::11	éftp <ALPHANUM> 0 4 1|11 <NUM> 9 11 1|11 0
+  	2 0
+mailto:www.www.	mailto:www.www <ALPHANUM> 0 14 1|15 0
+><	2 0
+_~-!<  mailto:user	mailto:user <ALPHANUM> 7 18 1|18 0
+:]é*#f中	é <ALPHANUM> 2 3 1|f <ALPHANUM> 5 6 1|中 <IDEOGRAPHIC> 6 7 1|7 0
+é	é <ALPHANUM> 0 1 1|1 0
+,:.co.uk192.168.0.1mailto:	co.uk192.168.0.1mailto <ALPHANUM> 3 25 1|26 0
+localhost:;ftp://#flocalhost	localhost <ALPHANUM> 0 9 1|ftp <ALPHANUM> 11 14 1|flocalhost <ALPHANUM> 18 28 1|28 0
+192.168.0.1:8080	192.168.0.1:8080 <URL> 0 16 1|16 0
+localhost192.168.0.1https://HTTP://😀HTTP://	localhost192.168.0.1https <ALPHANUM> 0 25 1|HTTP <ALPHANUM> 28 32 1|😀 <EMOJI> 35 37 1|HTTP <ALPHANUM> 37 41 1|44 0
+ftp://中!  -	ftp <ALPHANUM> 0 3 1|中 <IDEOGRAPHIC> 6 7 1|11 0
+"example	example <ALPHANUM> 1 8 1|8 0
+(mailto:	mailto <ALPHANUM> 1 7 1|8 0
+.xn--p1aié_?q=1xn--p1ai	xn <ALPHANUM> 1 3 1|p1aié_ <ALPHANUM> 5 11 1|q <ALPHANUM> 12 13 1|1xn <ALPHANUM> 14 17 1|p1ai <ALPHANUM> 19 23 1|23 0
+;	1 0
+=.co.uk.com::1[	co.uk.com <URL> 2 11 1|1 <NUM> 13 14 1|15 0
+ %20+tag	20 <NUM> 2 4 1|tag <ALPHANUM> 5 8 1|8 0
+,#flocalhost-,[192.168.0.1	flocalhost <ALPHANUM> 2 12 1|192.168.0.1 <URL> 15 26 1|26 0
+_?q=1	q <ALPHANUM> 2 3 1|1 <NUM> 4 5 1|5 0
+-::1user😀1!a.b~	1user <ALPHANUM> 3 8 1|😀 <EMOJI> 8 10 1|1 <NUM> 10 11 1|a.b <ALPHANUM> 12 15 1|16 0
+$)localhost  	localhost <ALPHANUM> 2 11 1|13 0
+/1"ftp://file:///)	1 <NUM> 1 2 1|ftp <ALPHANUM> 3 6 1|file:/// <URL> 9 17 1|18 0
+*	1 0
+%20	20 <NUM> 1 3 1|3 0
+=	1 0
+[	1 0
+:8080:  'file:///&	8080 <NUM> 1 5 1|file:///& <URL> 9 18 1|18 0
+ftp://,"::1https://@#fmailto:	ftp <ALPHANUM> 0 3 1|1https <ALPHANUM> 10 16 1|fmailto <ALPHANUM> 21 28 1|29 0
+  	2 0
+=HTTP://	HTTP <ALPHANUM> 1 5 1|8 0
+exampleexample1a.b]	exampleexample1a.b <ALPHANUM> 0 18 1|19 0
+;a.b@/'file:///	a.b <ALPHANUM> 1 4 1|file:/// <URL> 7 15 1|15 0
+>@	2 0
+http://&	http <ALPHANUM> 0 4 1|8 0
+1.co.uk😀	1.co.uk <URL> 0 7 1|😀 <EMOJI> 7 9 1|9 0
+_ a.b!	a.b <ALPHANUM> 2 5 1|6 0
++tag%20::1(https://(	tag <ALPHANUM> 1 4 1|20 <NUM> 5 7 1|1 <NUM> 9 10 1|https <ALPHANUM> 11 16 1|20 0
+中	中 <IDEOGRAPHIC> 0 1 1|1 0
+[😀x$*中https://http://	😀 <EMOJI> 1 3 1|x <ALPHANUM> 3 4 1|中 <IDEOGRAPHIC> 6 7 1|https://http <URL> 7 19 1|22 0
+*	1 0
+.com	com <ALPHANUM> 1 4 1|4 0
+?q=1https://!	q <ALPHANUM> 1 2 1|1https <ALPHANUM> 3 9 1|13 0
+&>éxn--p1aihttp://1::1	éxn <ALPHANUM> 2 5 1|p1aihttp <ALPHANUM> 7 15 1|1 <NUM> 18 19 1|1 <NUM> 21 22 1|22 0
+>a.b  	a.b <ALPHANUM> 1 4 1|6 0
+https://,.co.uk;"#f1	https <ALPHANUM> 0 5 1|co.uk <URL> 10 15 1|f1 <ALPHANUM> 18 20 1|20 0
+)-?q=142中~https://www.	q <ALPHANUM> 3 4 1|142 <NUM> 5 8 1|中 <IDEOGRAPHIC> 8 9 1|https://www <URL> 10 21 1|22 0
+  ::1HTTP://<192.168.0.1example#f1	1HTTP <ALPHANUM> 4 9 1|192.168.0.1example <ALPHANUM> 13 31 1|f1 <ALPHANUM> 32 34 1|34 0
+user=http://	user <ALPHANUM> 0 4 1|http <ALPHANUM> 5 9 1|12 0
+::1/(	1 <NUM> 2 3 1|5 0
+https://	https <ALPHANUM> 0 5 1|8 0
+)xn--p1ai	xn <ALPHANUM> 1 3 1|p1ai <ALPHANUM> 5 9 1|9 0
+a.bwww..a.b.&	a.bwww <ALPHANUM> 0 6 1|a.b <ALPHANUM> 8 11 1|13 0
+/]	2 0
+42$,example!	42 <NUM> 0 2 1|example <ALPHANUM> 4 11 1|12 0
+file:////<	file://// <URL> 0 9 1|10 0
+https://xn--p1ai  '😀__	https://xn--p1ai <URL> 0 16 1|😀 <EMOJI> 19 21 1|23 0
+.com	com <ALPHANUM> 1 4 1|4 0
+#fhttps://	fhttps <ALPHANUM> 1 7 1|10 0
+!localhost#f	localhost <ALPHANUM> 1 10 1|f <ALPHANUM> 11 12 1|12 0
+-:8080~>localhost"&	8080 <NUM> 2 6 1|localhost <ALPHANUM> 8 17 1|19 0
+/192.168.0.1  1	192.168.0.1 <URL> 1 12 1|1 <NUM> 14 15 1|15 0
+?q=1:8080file:///-;;:8080xn--p1ai	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|8080file <ALPHANUM> 5 13 1|8080xn <ALPHANUM> 21 27 1|p1ai <ALPHANUM> 29 33 1|33 0
+file:///https://[😀~	file:///https:// <URL> 0 16 1|😀 <EMOJI> 17 19 1|20 0
+[#f#f	f <ALPHANUM> 2 3 1|f <ALPHANUM> 4 5 1|5 0
+].co.uk😀x[	co.uk <URL> 2 7 1|😀 <EMOJI> 7 9 1|x <ALPHANUM> 9 10 1|11 0
+ftp://localhost'@#f	ftp <ALPHANUM> 0 3 1|localhost <ALPHANUM> 6 15 1|f <ALPHANUM> 18 19 1|19 0
+ 	1 0
+mailto:http://-www.x 	mailto:http <ALPHANUM> 0 11 1|www.x <ALPHANUM> 15 20 1|21 0
+>xn--p1aiuser&!"	xn <ALPHANUM> 1 3 1|p1aiuser <ALPHANUM> 5 13 1|16 0
+中😀(example	中 <IDEOGRAPHIC> 0 1 1|😀 <EMOJI> 1 3 1|example <ALPHANUM> 4 11 1|11 0
+<]   <ftp://中.com	ftp <ALPHANUM> 6 9 1|中 <IDEOGRAPHIC> 12 13 1|com <ALPHANUM> 14 17 1|17 0
+example<:'.	example <ALPHANUM> 0 7 1|11 0
+::1%20www..co.uk-	1 <NUM> 2 3 1|20www <ALPHANUM> 4 9 1|co.uk <ALPHANUM> 11 16 1|17 0
+;::1example😀.co.uk/ *	1example <ALPHANUM> 3 11 1|😀 <EMOJI> 11 13 1|co.uk/ <URL> 14 20 1|22 0
+x192.168.0.1.'	x192.168.0.1 <ALPHANUM> 0 12 1|14 0
+>ftp://":8080localhost+tag42	ftp <ALPHANUM> 1 4 1|8080localhost <ALPHANUM> 9 22 1|tag42 <ALPHANUM> 23 28 1|28 0
+x中  	x <ALPHANUM> 0 1 1|中 <IDEOGRAPHIC> 1 2 1|4 0
+x_http:///#f	x_http <ALPHANUM> 0 6 1|f <ALPHANUM> 11 12 1|12 0
+-!!&	4 0
+*https://	https <ALPHANUM> 1 6 1|9 0
+:.com_exampleexample	com_exampleexample <ALPHANUM> 2 20 1|20 0
+=	1 0
+#f	f <ALPHANUM> 1 2 1|2 0
+  ::1-,	1 <NUM> 4 5 1|7 0
+é  '	é <ALPHANUM> 0 1 1|4 0
+_:/-  192.168.0.1	192.168.0.1 <URL> 6 17 1|17 0
+::1?q=1é42www.<	1 <NUM> 2 3 1|q <ALPHANUM> 4 5 1|1é42www <ALPHANUM> 6 13 1|15 0
+"/#f:8080user	f <ALPHANUM> 3 4 1|8080user <ALPHANUM> 5 13 1|13 0
+:8080	8080 <NUM> 1 5 1|5 0
+xn--p1ai?q=1	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|q <ALPHANUM> 9 10 1|1 <NUM> 11 12 1|12 0
+mailto:(localhost+tag😀ftp://HTTP://	mailto <ALPHANUM> 0 6 1|localhost <ALPHANUM> 8 17 1|tag <ALPHANUM> 18 21 1|😀 <EMOJI> 21 23 1|ftp <ALPHANUM> 23 26 1|HTTP <ALPHANUM> 29 33 1|36 0
+user	user <ALPHANUM> 0 4 1|4 0
+).co.uk%20 /42::1	co.uk <URL> 2 7 1|20 <NUM> 8 10 1|42 <NUM> 12 14 1|1 <NUM> 16 17 1|17 0
+>:8080_,	8080_ <NUM> 2 7 1|8 0
+192.168.0.1:example	192.168.0.1 <URL> 0 11 1|example <ALPHANUM> 12 19 1|19 0
+ <	2 0
+ftp://	ftp <ALPHANUM> 0 3 1|6 0
+_=	2 0
+!http://)mailto:=)	http <ALPHANUM> 1 5 1|mailto <ALPHANUM> 9 15 1|18 0
+  	2 0
+file:///_x'	file:///_x <URL> 0 10 1|11 0
+localhost  mailto:	localhost <ALPHANUM> 0 9 1|mailto <ALPHANUM> 11 17 1|18 0
+#f	f <ALPHANUM> 1 2 1|2 0
+😀https://a.bxn--p1ai*	😀 <EMOJI> 0 2 1|https://a.bxn--p1ai <URL> 2 21 1|22 0
+?q=1@  ftp://	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|ftp <ALPHANUM> 7 10 1|13 0
++tagxn--p1aixn--p1aix!42(	tagxn <ALPHANUM> 1 6 1|p1aixn <ALPHANUM> 8 14 1|p1aix <ALPHANUM> 16 21 1|42 <NUM> 22 24 1|25 0
+42https://=:>*	42https <ALPHANUM> 0 7 1|14 0
+<https://192.168.0.1	https://192.168.0.1 <URL> 1 20 1|20 0
+>42	42 <NUM> 1 3 1|3 0
+__xn--p1ailocalhost']	__xn <ALPHANUM> 0 4 1|p1ailocalhost <ALPHANUM> 6 19 1|21 0
+)*  'é中':	é <ALPHANUM> 5 6 1|中 <IDEOGRAPHIC> 6 7 1|9 0
+https://+tag😀	https <ALPHANUM> 0 5 1|tag <ALPHANUM> 9 12 1|😀 <EMOJI> 12 14 1|14 0
+  a.bexample	a.bexample <ALPHANUM> 2 12 1|12 0
+ 42http://&$"1ftp://	42http <ALPHANUM> 1 7 1|1ftp <ALPHANUM> 13 17 1|20 0
+<$(	3 0
+192.168.0.1 mailto:.user$	192.168.0.1 <URL> 0 11 1|mailto <ALPHANUM> 12 18 1|user <ALPHANUM> 20 24 1|25 0
+!&::1	1 <NUM> 4 5 1|5 0
+https://!examplelocalhosté	https <ALPHANUM> 0 5 1|examplelocalhosté <ALPHANUM> 9 26 1|26 0
+中~/&	中 <IDEOGRAPHIC> 0 1 1|4 0
+user., é=ftp://	user <ALPHANUM> 0 4 1|é <ALPHANUM> 7 8 1|ftp <ALPHANUM> 9 12 1|15 0
+'?q=1www.HTTP://'	q <ALPHANUM> 2 3 1|1www.HTTP <ALPHANUM> 4 13 1|17 0
+.-mailto:>	mailto <ALPHANUM> 2 8 1|10 0
+http://xn--p1ai.com[.com	http://xn--p1ai.com <URL> 0 19 1|com <ALPHANUM> 21 24 1|24 0
+>:xn--p1ai:8080  ]	xn <ALPHANUM> 2 4 1|p1ai <ALPHANUM> 6 10 1|8080 <NUM> 11 15 1|18 0
+x中	x <ALPHANUM> 0 1 1|中 <IDEOGRAPHIC> 1 2 1|2 0
+😀https://:,	😀 <EMOJI> 0 2 1|https <ALPHANUM> 2 7 1|12 0
+~HTTP://!,xn--p1ai[	HTTP <ALPHANUM> 1 5 1|xn <ALPHANUM> 10 12 1|p1ai <ALPHANUM> 14 18 1|19 0
+xn--p1ai~[a.bhttp://_(	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|a.bhttp <ALPHANUM> 10 17 1|22 0
+#f	f <ALPHANUM> 1 2 1|2 0
+.comé	comé <ALPHANUM> 1 5 1|5 0
+https://%20::1x	https <ALPHANUM> 0 5 1|20 <NUM> 9 11 1|1x <ALPHANUM> 13 15 1|15 0
+%20😀?q=1_中	20 <NUM> 1 3 1|😀 <EMOJI> 3 5 1|q <ALPHANUM> 6 7 1|1_ <NUM> 8 10 1|中 <IDEOGRAPHIC> 10 11 1|11 0
+%20+tagHTTP://?q=1#f	20 <NUM> 1 3 1|tagHTTP <ALPHANUM> 4 11 1|q <ALPHANUM> 15 16 1|1 <NUM> 17 18 1|f <ALPHANUM> 19 20 1|20 0
+_mailto:%20	_mailto <ALPHANUM> 0 7 1|20 <NUM> 9 11 1|11 0
+=]'@192.168.0.1>:_	192.168.0.1 <URL> 4 15 1|18 0
+中[&<example!	中 <IDEOGRAPHIC> 0 1 1|example <ALPHANUM> 4 11 1|12 0
+-user*1(:-.com	user <ALPHANUM> 1 5 1|1 <NUM> 6 7 1|com <ALPHANUM> 11 14 1|14 0
+'_42xn--p1ai	_42xn <ALPHANUM> 1 6 1|p1ai <ALPHANUM> 8 12 1|12 0
+userlocalhost ftp://#f:'	userlocalhost <ALPHANUM> 0 13 1|ftp <ALPHANUM> 14 17 1|f <ALPHANUM> 21 22 1|24 0
+"=>*'<HTTP://	HTTP <ALPHANUM> 6 10 1|13 0
+:(mailto:http://	mailto:http <ALPHANUM> 2 13 1|16 0
+::1HTTP://	1HTTP <ALPHANUM> 2 7 1|10 0
+[;mailto:  *#f/	mailto <ALPHANUM> 2 8 1|f <ALPHANUM> 13 14 1|15 0
+%20:8080@'	20 <NUM> 1 3 1|8080 <NUM> 4 8 1|10 0
+$é 	é <ALPHANUM> 1 2 1|3 0
+.comftp://+tagmailto:中=localhost.	comftp <ALPHANUM> 1 7 1|tagmailto <ALPHANUM> 11 20 1|中 <IDEOGRAPHIC> 21 22 1|localhost <ALPHANUM> 23 32 1|33 0
+[	1 0
+>a.b'::1xn--p1ai	a.b <ALPHANUM> 1 4 1|1xn <ALPHANUM> 7 10 1|p1ai <ALPHANUM> 12 16 1|16 0
++tag~é	tag <ALPHANUM> 1 4 1|é <ALPHANUM> 5 6 1|6 0
+;$<a.b中::1)	a.b <ALPHANUM> 3 6 1|中 <IDEOGRAPHIC> 6 7 1|1 <NUM> 9 10 1|11 0
+https://]HTTP://mailto:&	https <ALPHANUM> 0 5 1|HTTP://mailto <URL> 9 22 1|24 0
+  x	x <ALPHANUM> 2 3 1|3 0
+>"$	3 0
+www.😀.com%20localhost_	www <ALPHANUM> 0 3 1|😀 <EMOJI> 4 6 1|com <ALPHANUM> 7 10 1|20localhost_ <ALPHANUM> 11 23 1|23 0
+-192.168.0.1::1www.]localhosté 	192.168.0.1 <URL> 1 12 1|1www <ALPHANUM> 14 18 1|localhosté <ALPHANUM> 20 30 1|31 0
+#f/https://	f <ALPHANUM> 1 2 1|https <ALPHANUM> 3 8 1|11 0
+"https://中>:;中(	https <ALPHANUM> 1 6 1|中 <IDEOGRAPHIC> 9 10 1|中 <IDEOGRAPHIC> 13 14 1|15 0
+#f192.168.0.1>localhost	f192.168.0.1 <ALPHANUM> 1 13 1|localhost <ALPHANUM> 14 23 1|23 0
+xn--p1ai~(ftp://localhost	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|ftp <ALPHANUM> 10 13 1|localhost <ALPHANUM> 16 25 1|25 0
+file:///)http://?q=1example;www.	file:/// <URL> 0 8 1|http <ALPHANUM> 9 13 1|q <ALPHANUM> 17 18 1|1example <ALPHANUM> 19 27 1|www <ALPHANUM> 28 31 1|32 0
+'http://!😀~xn--p1ai][	http <ALPHANUM> 1 5 1|😀 <EMOJI> 9 11 1|xn <ALPHANUM> 12 14 1|p1ai <ALPHANUM> 16 20 1|22 0
+(~https://a.b	https://a.b <URL> 2 13 1|13 0
+  +tag%20]<	tag <ALPHANUM> 3 6 1|20 <NUM> 7 9 1|11 0
+ftp://&;	ftp <ALPHANUM> 0 3 1|8 0
++tag[::1mailto:	tag <ALPHANUM> 1 4 1|1mailto <ALPHANUM> 7 14 1|15 0
+:é]é192.168.0.1ftp://=	é <ALPHANUM> 1 2 1|é192.168.0.1ftp <ALPHANUM> 3 18 1|22 0
+.co.uk#f	co.uk#f <URL> 1 8 1|8 0
+192.168.0.1.co.ukxn--p1ai%20xn--p1aifile:///	192.168.0.1.co <URL> 0 14 1|ukxn <ALPHANUM> 15 19 1|p1ai <ALPHANUM> 21 25 1|20xn <ALPHANUM> 26 30 1|p1aifile <ALPHANUM> 32 40 1|44 0
+ 	1 0
+[	1 0
+.com.co.uk((https://ftp://&	com.co.uk <URL> 1 10 1|https://ftp <URL> 12 23 1|27 0
+x);?q=1<<@	x <ALPHANUM> 0 1 1|q <ALPHANUM> 4 5 1|1 <NUM> 6 7 1|10 0
+HTTP://中?q=1 http://::1😀	HTTP <ALPHANUM> 0 4 1|中 <IDEOGRAPHIC> 7 8 1|q <ALPHANUM> 9 10 1|1 <NUM> 11 12 1|http <ALPHANUM> 13 17 1|1 <NUM> 22 23 1|😀 <EMOJI> 23 25 1|25 0
+example中_https://,	example <ALPHANUM> 0 7 1|中 <IDEOGRAPHIC> 7 8 1|_https <ALPHANUM> 8 14 1|18 0
+@!!	3 0
+file:///_http://_1:[	file:///_http://_1: <URL> 0 19 1|20 0
+%20)+tag	20 <NUM> 1 3 1|tag <ALPHANUM> 5 8 1|8 0
+@  +tag	tag <ALPHANUM> 4 7 1|7 0
+exampleé	exampleé <ALPHANUM> 0 8 1|8 0
+😀$中	😀 <EMOJI> 0 2 1|中 <IDEOGRAPHIC> 3 4 1|4 0
+HTTP://xn--p1ai>'www.	HTTP://xn--p1ai <URL> 0 15 1|www <ALPHANUM> 17 20 1|21 0
+  $192.168.0.1&?q=1?q=1	192.168.0.1 <URL> 3 14 1|q <ALPHANUM> 16 17 1|1 <NUM> 18 19 1|q <ALPHANUM> 20 21 1|1 <NUM> 22 23 1|23 0
+@%20	20 <NUM> 2 4 1|4 0
+>=:8080	8080 <NUM> 3 7 1|7 0
+www."	www <ALPHANUM> 0 3 1|5 0
+].com.com]::1	com.com <URL> 2 9 1|1 <NUM> 12 13 1|13 0
+é.comwww.::1+tag	é.comwww <ALPHANUM> 0 8 1|1 <NUM> 11 12 1|tag <ALPHANUM> 13 16 1|16 0
+-http://#f @.com,a.b	http <ALPHANUM> 1 5 1|f <ALPHANUM> 9 10 1|com <ALPHANUM> 13 16 1|a.b <ALPHANUM> 17 20 1|20 0
+"	1 0
+!_a.bx@.	_a.bx <ALPHANUM> 1 6 1|8 0
+?q=1😀http://><=[	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|😀 <EMOJI> 4 6 1|http <ALPHANUM> 6 10 1|17 0
+$localhost')1$localhost	localhost <ALPHANUM> 1 10 1|1 <NUM> 12 13 1|localhost <ALPHANUM> 14 23 1|23 0
+<😀?q=1:.co.uklocalhost /	😀 <EMOJI> 1 3 1|q <ALPHANUM> 4 5 1|1 <NUM> 6 7 1|co.uklocalhost <ALPHANUM> 9 23 1|25 0
+[file:///!@	file:/// <URL> 1 9 1|11 0
+.com   1#f)localhost/	com <ALPHANUM> 1 4 1|1 <NUM> 7 8 1|f <ALPHANUM> 9 10 1|localhost <ALPHANUM> 11 20 1|21 0
+=&(	3 0
+@)@#f.co.uk!>	f.co.uk <URL> 4 11 1|13 0
+?q=1192.168.0.1_ ,http://	q <ALPHANUM> 1 2 1|1192.168.0.1_ <NUM> 3 16 1|http <ALPHANUM> 18 22 1|25 0
+ftp://  user_	ftp <ALPHANUM> 0 3 1|user_ <ALPHANUM> 8 13 1|13 0
+192.168.0.1>42	192.168.0.1 <URL> 0 11 1|42 <NUM> 12 14 1|14 0
+https://(!<1	https <ALPHANUM> 0 5 1|1 <NUM> 11 12 1|12 0
+::1/:8080.co.uk.	1 <NUM> 2 3 1|8080.co.uk <URL> 5 15 1|16 0
+%20?q=1,	20 <NUM> 1 3 1|q <ALPHANUM> 4 5 1|1 <NUM> 6 7 1|8 0
++tag+tagmailto:1@]<#f	tag <ALPHANUM> 1 4 1|tagmailto <ALPHANUM> 5 14 1|1 <NUM> 15 16 1|f <ALPHANUM> 20 21 1|21 0
+HTTP://-["file:///	HTTP <ALPHANUM> 0 4 1|file:/// <URL> 10 18 1|18 0
+HTTP://.HTTP://	HTTP <ALPHANUM> 0 4 1|HTTP <ALPHANUM> 8 12 1|15 0
+https://é	https <ALPHANUM> 0 5 1|é <ALPHANUM> 8 9 1|9 0
+useruser.com	useruser.com <URL> 0 12 1|12 0
+xn--p1ai(	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|9 0
+localhostwww.  $ 中	localhostwww <ALPHANUM> 0 12 1|中 <IDEOGRAPHIC> 17 18 1|18 0
+.co.uk	co.uk <URL> 1 6 1|6 0
+1	1 <NUM> 0 1 1|1 0
+  [https://a.b	https://a.b <URL> 3 14 1|14 0
+.co.uk"	co.uk <URL> 1 6 1|7 0
+%20"*😀~/+tag	20 <NUM> 1 3 1|😀 <EMOJI> 5 7 1|tag <ALPHANUM> 10 13 1|13 0
+a.bmailto:192.168.0.1  ::1&mailto:[	a.bmailto <ALPHANUM> 0 9 1|192.168.0.1 <URL> 10 21 1|1 <NUM> 25 26 1|mailto <ALPHANUM> 27 33 1|35 0
+  	2 0
+é  localhost	é <ALPHANUM> 0 1 1|localhost <ALPHANUM> 3 12 1|12 0
++tagftp://HTTP://:8080xn--p1ai/	tagftp <ALPHANUM> 1 7 1|HTTP <ALPHANUM> 10 14 1|8080xn <ALPHANUM> 18 24 1|p1ai <ALPHANUM> 26 30 1|31 0
+www.HTTP://user	www.HTTP <ALPHANUM> 0 8 1|user <ALPHANUM> 11 15 1|15 0
+>	1 0
+1localhost-xn--p1ai@:8080.co.uk_	1localhost <ALPHANUM> 0 10 1|xn <ALPHANUM> 11 13 1|p1ai <ALPHANUM> 15 19 1|8080.co <URL> 21 28 1|uk_ <ALPHANUM> 29 32 1|32 0
+[file:///	file:/// <URL> 1 9 1|9 0
+  	2 0
+&$	2 0
+  	2 0
+file:///https://,é42/..com	file:///https:// <URL> 0 16 1|é42 <ALPHANUM> 17 20 1|com <ALPHANUM> 23 26 1|26 0
+localhost&中::1::1;:	localhost <ALPHANUM> 0 9 1|中 <IDEOGRAPHIC> 10 11 1|1 <NUM> 13 14 1|1 <NUM> 16 17 1|19 0
+ 	1 0
+😀	😀 <EMOJI> 0 2 1|2 0
+https://HTTP://[:	https://HTTP <URL> 0 12 1|17 0
+=	1 0
+!ftp://_]example>😀.co.uk	ftp <ALPHANUM> 1 4 1|example <ALPHANUM> 9 16 1|😀 <EMOJI> 17 19 1|co.uk <URL> 20 25 1|25 0
+=/www.'//	www <ALPHANUM> 2 5 1|9 0
+:?q=1  $@	q <ALPHANUM> 2 3 1|1 <NUM> 4 5 1|9 0
+user%20xn--p1ai-&a.b::1www.	user <ALPHANUM> 0 4 1|20xn <ALPHANUM> 5 9 1|p1ai <ALPHANUM> 11 15 1|a.b <ALPHANUM> 17 20 1|1www <ALPHANUM> 22 26 1|27 0
+_%20	20 <NUM> 2 4 1|4 0
+;(	2 0
+😀(	😀 <EMOJI> 0 2 1|3 0
+example	example <ALPHANUM> 0 7 1|7 0
+1#ffile:///HTTP://_	1 <NUM> 0 1 1|ffile <ALPHANUM> 2 7 1|HTTP <ALPHANUM> 11 15 1|19 0
+ftp://	ftp <ALPHANUM> 0 3 1|6 0
+?q=142	q <ALPHANUM> 1 2 1|142 <NUM> 3 6 1|6 0
+!	1 0
+.co.uk.co.uk"	co.uk.co.uk <URL> 1 12 1|13 0
+-http://中.~!::1	http <ALPHANUM> 1 5 1|中 <IDEOGRAPHIC> 8 9 1|1 <NUM> 14 15 1|15 0
+HTTP://-)	HTTP <ALPHANUM> 0 4 1|9 0
+'mailto:]http://user_mailto:	mailto <ALPHANUM> 1 7 1|http://user <URL> 9 20 1|_mailto <ALPHANUM> 20 27 1|28 0
+#f~/localhost	f <ALPHANUM> 1 2 1|localhost <ALPHANUM> 4 13 1|13 0
+~@file:///1.co.uklocalhost	file:///1.co.uklocalhost <URL> 2 26 1|26 0
+>xn--p1ai=	xn <ALPHANUM> 1 3 1|p1ai <ALPHANUM> 5 9 1|10 0
+(www.example%20	www.example <ALPHANUM> 1 12 1|20 <NUM> 13 15 1|15 0
+ ;"	3 0
+xfile:///é,+tag	xfile <ALPHANUM> 0 5 1|é <ALPHANUM> 9 10 1|tag <ALPHANUM> 12 15 1|15 0
+:8080.co.uk42😀?q=1 ?q=1	8080.co <URL> 1 8 1|uk42 <ALPHANUM> 9 13 1|😀 <EMOJI> 13 15 1|q <ALPHANUM> 16 17 1|1 <NUM> 18 19 1|q <ALPHANUM> 21 22 1|1 <NUM> 23 24 1|24 0
+42http://	42http <ALPHANUM> 0 6 1|9 0
+.com*example	com <ALPHANUM> 1 4 1|example <ALPHANUM> 5 12 1|12 0
+:mailto:中	mailto <ALPHANUM> 1 7 1|中 <IDEOGRAPHIC> 8 9 1|9 0
+?q=1mailto:]https://	q <ALPHANUM> 1 2 1|1mailto <ALPHANUM> 3 10 1|https <ALPHANUM> 12 17 1|20 0
+192.168.0.1http://	192.168.0.1http <ALPHANUM> 0 15 1|18 0
+*xn--p1aiexample)#f	xn <ALPHANUM> 1 3 1|p1aiexample <ALPHANUM> 5 16 1|f <ALPHANUM> 18 19 1|19 0
+localhost?q=1	localhost <ALPHANUM> 0 9 1|q <ALPHANUM> 10 11 1|1 <NUM> 12 13 1|13 0
+ !,'!	5 0
+&%20:/:_&@	20 <NUM> 2 4 1|10 0
+https://x	https://x <URL> 0 9 1|9 0
+.	1 0
+:8080mailto:	8080mailto <ALPHANUM> 1 11 1|12 0
+$localhost42+tagexamplelocalhost=www.	localhost42 <ALPHANUM> 1 12 1|tagexamplelocalhost <ALPHANUM> 13 32 1|www <ALPHANUM> 33 36 1|37 0
+localhost, 	localhost <ALPHANUM> 0 9 1|11 0
+:).com#f~;-<	com <ALPHANUM> 3 6 1|f <ALPHANUM> 7 8 1|12 0
+mailto:user,::1]::1	mailto:user <ALPHANUM> 0 11 1|1 <NUM> 14 15 1|1 <NUM> 18 19 1|19 0
+ftp://;ftp://é	ftp <ALPHANUM> 0 3 1|ftp <ALPHANUM> 7 10 1|é <ALPHANUM> 13 14 1|14 0
+-中	中 <IDEOGRAPHIC> 1 2 1|2 0
+.com::1_*+tag&www.é	com <ALPHANUM> 1 4 1|1_ <NUM> 6 8 1|tag <ALPHANUM> 10 13 1|www.é <ALPHANUM> 14 19 1|19 0
+*]xn--p1ai[	xn <ALPHANUM> 2 4 1|p1ai <ALPHANUM> 6 10 1|11 0
+mailto:	mailto <ALPHANUM> 0 6 1|7 0
+é	é <ALPHANUM> 0 1 1|1 0
+/%20'x[-(	20 <NUM> 2 4 1|x <ALPHANUM> 5 6 1|9 0
+http://1file:///42"	http://1file <URL> 0 12 1|42 <NUM> 16 18 1|19 0
+HTTP://.com.co.uk*;	HTTP <ALPHANUM> 0 4 1|com.co.uk <URL> 8 17 1|19 0
+localhostftp://1file:///  ,	localhostftp <ALPHANUM> 0 12 1|1file <ALPHANUM> 15 20 1|27 0
+42@file:///	42 <NUM> 0 2 1|file:/// <URL> 3 11 1|11 0
+HTTP://?q=1'$]xn--p1aia.b	HTTP <ALPHANUM> 0 4 1|q <ALPHANUM> 8 9 1|1 <NUM> 10 11 1|xn <ALPHANUM> 14 16 1|p1aia.b <ALPHANUM> 18 25 1|25 0
+:<~	3 0
+,::1 a.ba.b#f	1 <NUM> 3 4 1|a.ba.b <ALPHANUM> 5 11 1|f <ALPHANUM> 12 13 1|13 0
++tag(mailto:http://%20x~	tag <ALPHANUM> 1 4 1|mailto:http <ALPHANUM> 5 16 1|20x <ALPHANUM> 20 23 1|24 0
++tag	tag <ALPHANUM> 1 4 1|4 0
+."=www.*(	www <ALPHANUM> 3 6 1|9 0
+42file:///中,userHTTP://&http://	42file <ALPHANUM> 0 6 1|中 <IDEOGRAPHIC> 10 11 1|userHTTP <ALPHANUM> 12 20 1|http <ALPHANUM> 24 28 1|31 0
+%20)user,(%20xn--p1ai@	20 <NUM> 1 3 1|user <ALPHANUM> 4 8 1|20xn <ALPHANUM> 11 15 1|p1ai <ALPHANUM> 17 21 1|22 0
+user%20mailto:https://(%20[	user <ALPHANUM> 0 4 1|20mailto:https <ALPHANUM> 5 19 1|20 <NUM> 24 26 1|27 0
+xn--p1ai:8080.com*  file:///	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|8080.com <URL> 9 17 1|file:/// <URL> 20 28 1|28 0
+examplefile:////<'<]ftp://	examplefile <ALPHANUM> 0 11 1|ftp <ALPHANUM> 20 23 1|26 0
+[中=xn--p1ai''	中 <IDEOGRAPHIC> 1 2 1|xn <ALPHANUM> 3 5 1|p1ai <ALPHANUM> 7 11 1|13 0
+.com<www.中	com <ALPHANUM> 1 4 1|www <ALPHANUM> 5 8 1|中 <IDEOGRAPHIC> 9 10 1|10 0
+'http://  @[~x	http <ALPHANUM> 1 5 1|x <ALPHANUM> 13 14 1|14 0
+192.168.0.1>	192.168.0.1 <URL> 0 11 1|12 0
+ ;"	3 0
+)www.(	www <ALPHANUM> 1 4 1|6 0
+<+tagexample[(user::1$	tagexample <ALPHANUM> 2 12 1|user <ALPHANUM> 14 18 1|1 <NUM> 20 21 1|22 0
+_x  [%20;"[	_x <ALPHANUM> 0 2 1|20 <NUM> 6 8 1|11 0
+.$é#ffile:///	é <ALPHANUM> 2 3 1|ffile <ALPHANUM> 4 9 1|13 0
+user]+tag-42@	user <ALPHANUM> 0 4 1|tag <ALPHANUM> 6 9 1|42 <NUM> 10 12 1|13 0
+HTTP://$/ user	HTTP <ALPHANUM> 0 4 1|user <ALPHANUM> 10 14 1|14 0
+(中https://)	中 <IDEOGRAPHIC> 1 2 1|https <ALPHANUM> 2 7 1|11 0
+:8080*😀ftp://	8080 <NUM> 1 5 1|😀 <EMOJI> 6 8 1|ftp <ALPHANUM> 8 11 1|14 0
+/>😀mailto:$中	😀 <EMOJI> 2 4 1|mailto <ALPHANUM> 4 10 1|中 <IDEOGRAPHIC> 12 13 1|13 0
+@'	2 0
+😀	😀 <EMOJI> 0 2 1|2 0
+http://_example-@xn--p1ai]	http://_example-@xn--p1ai <URL> 0 25 1|26 0
+)*,:,localhost]	localhost <ALPHANUM> 5 14 1|15 0
+😀::1-mailto:_中[	😀 <EMOJI> 0 2 1|1 <NUM> 4 5 1|mailto <ALPHANUM> 6 12 1|中 <IDEOGRAPHIC> 14 15 1|16 0
+_	1 0
+,![http://.co.uk	http <ALPHANUM> 3 7 1|co.uk <URL> 11 16 1|16 0
+中:8080	中 <IDEOGRAPHIC> 0 1 1|8080 <NUM> 2 6 1|6 0
+@localhosté=!($!	localhosté <ALPHANUM> 1 11 1|16 0
+a.b!xn--p1ai	a.b <ALPHANUM> 0 3 1|xn <ALPHANUM> 4 6 1|p1ai <ALPHANUM> 8 12 1|12 0
+;www.[	www <ALPHANUM> 1 4 1|6 0
+::1?q=1example#f'&	1 <NUM> 2 3 1|q <ALPHANUM> 4 5 1|1example <ALPHANUM> 6 14 1|f <ALPHANUM> 15 16 1|18 0
+]:8080*_192.168.0.1	8080 <NUM> 2 6 1|_192.168.0.1 <NUM> 7 19 1|19 0
+mailto:example.com中)HTTP://é	mailto:example.com <ALPHANUM> 0 18 1|中 <IDEOGRAPHIC> 18 19 1|HTTP <ALPHANUM> 20 24 1|é <ALPHANUM> 27 28 1|28 0
+]<中%20	中 <IDEOGRAPHIC> 2 3 1|20 <NUM> 4 6 1|6 0
+;xn--p1ai-é:	xn <ALPHANUM> 1 3 1|p1ai <ALPHANUM> 5 9 1|é <ALPHANUM> 10 11 1|12 0
+.co.uk中http://*+tag!www.www.	co.uk <ALPHANUM> 1 6 1|中 <IDEOGRAPHIC> 6 7 1|http <ALPHANUM> 7 11 1|tag <ALPHANUM> 16 19 1|www.www <ALPHANUM> 20 27 1|28 0
+/  -.co.uk	co.uk <URL> 5 10 1|10 0
+<;%20é~>file:////	20é <ALPHANUM> 3 6 1|file://// <URL> 8 17 1|17 0
++tagwww.file:///#f	tagwww.file <ALPHANUM> 1 12 1|f <ALPHANUM> 17 18 1|18 0
+192.168.0.1~=.com	192.168.0.1 <URL> 0 11 1|com <ALPHANUM> 14 17 1|17 0
+#f	f <ALPHANUM> 1 2 1|2 0
+!HTTP://😀mailto:xn--p1ai	HTTP <ALPHANUM> 1 5 1|😀 <EMOJI> 8 10 1|mailto:xn <ALPHANUM> 10 19 1|p1ai <ALPHANUM> 21 25 1|25 0
+x中;<]xn--p1ai"$	x <ALPHANUM> 0 1 1|中 <IDEOGRAPHIC> 1 2 1|xn <ALPHANUM> 5 7 1|p1ai <ALPHANUM> 9 13 1|15 0
+é	é <ALPHANUM> 0 1 1|1 0
+HTTP://- 1;	HTTP <ALPHANUM> 0 4 1|1 <NUM> 9 10 1|11 0
+192.168.0.1$('www.http://1/	192.168.0.1 <URL> 0 11 1|www.http <ALPHANUM> 14 22 1|1 <NUM> 25 26 1|27 0
+@mailto:ftp://HTTP://	mailto:ftp <ALPHANUM> 1 11 1|HTTP <ALPHANUM> 14 18 1|21 0
++tagwww.	tagwww <ALPHANUM> 1 7 1|8 0
+::1]<	1 <NUM> 2 3 1|5 0
+*www.www.	www.www <ALPHANUM> 1 8 1|9 0
+!?q=1&#fé	q <ALPHANUM> 2 3 1|1 <NUM> 4 5 1|fé <ALPHANUM> 7 9 1|9 0
+=file:///xn--p1ai)	file:///xn--p1ai <URL> 1 17 1|18 0
+$:?q=1&;'!	q <ALPHANUM> 3 4 1|1 <NUM> 5 6 1|10 0
+&.co.ukxx	co.ukxx <ALPHANUM> 2 9 1|9 0
+http:///~	http <ALPHANUM> 0 4 1|9 0
+a.b)	a.b <ALPHANUM> 0 3 1|4 0
+*	1 0
+userx%20"	userx <ALPHANUM> 0 5 1|20 <NUM> 6 8 1|9 0
+::1#fwww.-42".	1 <NUM> 2 3 1|fwww <ALPHANUM> 4 8 1|42 <NUM> 10 12 1|14 0
+:8080?q=1	8080 <NUM> 1 5 1|q <ALPHANUM> 6 7 1|1 <NUM> 8 9 1|9 0
+:?q=1!~localhost(	q <ALPHANUM> 2 3 1|1 <NUM> 4 5 1|localhost <ALPHANUM> 7 16 1|17 0
+)	1 0
+ 	1 0
+.&=))	5 0
+x192.168.0.1x::1	x192.168.0.1x <ALPHANUM> 0 13 1|1 <NUM> 15 16 1|16 0
+mailto:user?q=1	mailto:user <ALPHANUM> 0 11 1|q <ALPHANUM> 12 13 1|1 <NUM> 14 15 1|15 0
+.:8080a.bhttps://%20%20	8080a.bhttps <ALPHANUM> 2 14 1|20 <NUM> 18 20 1|20 <NUM> 21 23 1|23 0
+":	2 0
+-http://%20	http <ALPHANUM> 1 5 1|20 <NUM> 9 11 1|11 0
+www.	www <ALPHANUM> 0 3 1|4 0
+?q=1"https://	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|https <ALPHANUM> 5 10 1|13 0
+-:1http:// (*xn--p1ai	1http <ALPHANUM> 2 7 1|xn <ALPHANUM> 13 15 1|p1ai <ALPHANUM> 17 21 1|21 0
+]%20;/https://	20 <NUM> 2 4 1|https <ALPHANUM> 6 11 1|14 0
+_<	2 0
+~#f/=www.#f	f <ALPHANUM> 2 3 1|www <ALPHANUM> 5 8 1|f <ALPHANUM> 10 11 1|11 0
+example:file:///"]?q=1	example:file <ALPHANUM> 0 12 1|q <ALPHANUM> 19 20 1|1 <NUM> 21 22 1|22 0
+中::1 file:///@	中 <IDEOGRAPHIC> 0 1 1|1 <NUM> 3 4 1|file:///@ <URL> 5 14 1|14 0
+😀mailto:localhostuser.co.ukhttp://file:///	😀 <EMOJI> 0 2 1|mailto:localhostuser.co.ukhttp <ALPHANUM> 2 32 1|file:/// <URL> 35 43 1|43 0
+.com:<localhosthttp://::1www.	com <ALPHANUM> 1 4 1|localhosthttp <ALPHANUM> 6 19 1|1www <ALPHANUM> 24 28 1|29 0
+?q=1usermailto:	q <ALPHANUM> 1 2 1|1usermailto <ALPHANUM> 3 14 1|15 0
+:.&.co.uk	co.uk <URL> 4 9 1|9 0
+localhost/mailto:exampleHTTP://::1.com~	localhost <ALPHANUM> 0 9 1|mailto:exampleHTTP <ALPHANUM> 10 28 1|1.com <URL> 33 38 1|39 0
+@@+tag%20example.com  !	tag <ALPHANUM> 3 6 1|20example.com <URL> 7 20 1|23 0
+:8080#fwww.file:///1https:// 	8080 <NUM> 1 5 1|fwww.file <ALPHANUM> 6 15 1|1https <ALPHANUM> 19 25 1|29 0
+?q=142'!example.com'HTTP://	q <ALPHANUM> 1 2 1|142 <NUM> 3 6 1|example.com'HTTP <ALPHANUM> 8 24 1|27 0
+中=?q=1']	中 <IDEOGRAPHIC> 0 1 1|q <ALPHANUM> 3 4 1|1 <NUM> 5 6 1|8 0
+!HTTP://.co.uk.comexample_	HTTP <ALPHANUM> 1 5 1|co.uk.comexample_ <ALPHANUM> 9 26 1|26 0
+ftp:///	ftp <ALPHANUM> 0 3 1|7 0
+?q=1.co.ukHTTP://@..com	q <ALPHANUM> 1 2 1|1.co <URL> 3 7 1|ukHTTP <ALPHANUM> 8 14 1|com <ALPHANUM> 20 23 1|23 0
+'+tag&é	tag <ALPHANUM> 2 5 1|é <ALPHANUM> 6 7 1|7 0
+@-::1	1 <NUM> 4 5 1|5 0
+::1😀.co.uk :8080#f	1 <NUM> 2 3 1|😀 <EMOJI> 3 5 1|co.uk <URL> 6 11 1|8080 <NUM> 13 17 1|f <ALPHANUM> 18 19 1|19 0
+=<http://	http <ALPHANUM> 2 6 1|9 0
+xfile:///~$=	xfile <ALPHANUM> 0 5 1|12 0
+%20%20<file:///',mailto:.	20 <NUM> 1 3 1|20 <NUM> 4 6 1|file:/// <URL> 7 15 1|mailto <ALPHANUM> 17 23 1|25 0
+?q=1<😀:8080	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|😀 <EMOJI> 5 7 1|8080 <NUM> 8 12 1|12 0
+😀	😀 <EMOJI> 0 2 1|2 0
+中@#f#fwww.example$user	中 <IDEOGRAPHIC> 0 1 1|f <ALPHANUM> 3 4 1|fwww.example <ALPHANUM> 5 17 1|user <ALPHANUM> 18 22 1|22 0
+1&	1 <NUM> 0 1 1|2 0
+_localhost #f	_localhost <ALPHANUM> 0 10 1|f <ALPHANUM> 12 13 1|13 0
+/?q=1!	q <ALPHANUM> 2 3 1|1 <NUM> 4 5 1|6 0
+xa.bwww.#f  "	xa.bwww <ALPHANUM> 0 7 1|f <ALPHANUM> 9 10 1|13 0
+"ftp://%20&	ftp <ALPHANUM> 1 4 1|20 <NUM> 8 10 1|11 0
+[	1 0
+www.:www./?q=1localhostexample	www <ALPHANUM> 0 3 1|www <ALPHANUM> 5 8 1|q <ALPHANUM> 11 12 1|1localhostexample <ALPHANUM> 13 30 1|30 0
+42HTTP://?q=1"😀	42HTTP <ALPHANUM> 0 6 1|q <ALPHANUM> 10 11 1|1 <NUM> 12 13 1|😀 <EMOJI> 14 16 1|16 0
+  HTTP://https://a.b']https://~	HTTP://https <URL> 2 14 1|a.b <ALPHANUM> 17 20 1|https <ALPHANUM> 22 27 1|31 0
+>]examplehttp://"::1	examplehttp <ALPHANUM> 2 13 1|1 <NUM> 19 20 1|20 0
+  42&>localhost42	42 <NUM> 2 4 1|localhost42 <ALPHANUM> 6 17 1|17 0
+file:///42HTTP://192.168.0.1/ #ffile:///	file:///42HTTP://192.168.0.1/ <URL> 0 29 1|ffile <ALPHANUM> 31 36 1|40 0
+中HTTP://example[.co.uk)+tag-	中 <IDEOGRAPHIC> 0 1 1|HTTP://example <URL> 1 15 1|co.uk <URL> 17 22 1|tag <ALPHANUM> 24 27 1|28 0
+%20/xn--p1ai$)$42	20 <NUM> 1 3 1|xn <ALPHANUM> 4 6 1|p1ai <ALPHANUM> 8 12 1|42 <NUM> 15 17 1|17 0
+#fmailto:	fmailto <ALPHANUM> 1 8 1|9 0
+(😀:8080	😀 <EMOJI> 1 3 1|8080 <NUM> 4 8 1|8 0
+  ==	4 0
+HTTP://+tag:]	HTTP <ALPHANUM> 0 4 1|tag <ALPHANUM> 8 11 1|13 0
+,www.!(file:///file:///$	www <ALPHANUM> 1 4 1|file:///file:/// <URL> 7 23 1|24 0
+)	1 0
+?q=1localhost	q <ALPHANUM> 1 2 1|1localhost <ALPHANUM> 3 13 1|13 0
+https://	https <ALPHANUM> 0 5 1|8 0
+:8080x-中:8080)a.b!	8080x <ALPHANUM> 1 6 1|中 <IDEOGRAPHIC> 7 8 1|8080 <NUM> 9 13 1|a.b <ALPHANUM> 14 17 1|18 0
+%20中x	20 <NUM> 1 3 1|中 <IDEOGRAPHIC> 3 4 1|x <ALPHANUM> 4 5 1|5 0
+ )ftp://mailto:user::1	ftp <ALPHANUM> 2 5 1|mailto:user <ALPHANUM> 8 19 1|1 <NUM> 21 22 1|22 0
+user[((mailto:x	user <ALPHANUM> 0 4 1|mailto:x <ALPHANUM> 7 15 1|15 0
+ 	1 0
+http://:8080!😀)	http <ALPHANUM> 0 4 1|8080 <NUM> 8 12 1|😀 <EMOJI> 13 15 1|16 0
+mailto:)'_	mailto <ALPHANUM> 0 6 1|10 0
+$:HTTP://@]"	HTTP <ALPHANUM> 2 6 1|12 0
++tagéhttps://;https://.com($	tagéhttps <ALPHANUM> 1 10 1|https <ALPHANUM> 14 19 1|com <ALPHANUM> 23 26 1|28 0
+~	1 0
++taguser.1[	taguser <ALPHANUM> 1 8 1|1 <NUM> 9 10 1|11 0
+?q=1_::1>	q <ALPHANUM> 1 2 1|1_ <NUM> 3 5 1|1 <NUM> 7 8 1|9 0
+file:///=%20@)	file:///=%20@ <URL> 0 13 1|14 0
+/	1 0
+1localhost_:';/"	1localhost_ <ALPHANUM> 0 11 1|16 0
+,	1 0
+file:///😀ftp://%20	file:/// <URL> 0 8 1|😀 <EMOJI> 8 10 1|ftp <ALPHANUM> 10 13 1|20 <NUM> 17 19 1|19 0
+,<@~	4 0
+42	42 <NUM> 0 2 1|2 0
+.www.?q=111)www.	www <ALPHANUM> 1 4 1|q <ALPHANUM> 6 7 1|111 <NUM> 8 11 1|www <ALPHANUM> 12 15 1|16 0
+1www..com😀中	1www <ALPHANUM> 0 4 1|com <ALPHANUM> 6 9 1|😀 <EMOJI> 9 11 1|中 <IDEOGRAPHIC> 11 12 1|12 0
+>_localhost;[::1'	_localhost <ALPHANUM> 1 11 1|1 <NUM> 15 16 1|17 0
+<!])]?q=1]	q <ALPHANUM> 6 7 1|1 <NUM> 8 9 1|10 0
+_:  .'	6 0
+~>user+tagéwww.	user <ALPHANUM> 2 6 1|tagéwww <ALPHANUM> 7 14 1|15 0
+[,ftp://example~中localhost中	ftp <ALPHANUM> 2 5 1|example <ALPHANUM> 8 15 1|中 <IDEOGRAPHIC> 16 17 1|localhost <ALPHANUM> 17 26 1|中 <IDEOGRAPHIC> 26 27 1|27 0
+421>https://	421 <NUM> 0 3 1|https <ALPHANUM> 4 9 1|12 0
+(中<<=	中 <IDEOGRAPHIC> 1 2 1|5 0
+>)	2 0
+)https://HTTP://	https://HTTP <URL> 1 13 1|16 0
+a.b	a.b <ALPHANUM> 0 3 1|3 0
+::1+tag	1 <NUM> 2 3 1|tag <ALPHANUM> 4 7 1|7 0
+  192.168.0.1%20xn--p1ai$:8080-	192.168.0.1 <URL> 2 13 1|20xn <ALPHANUM> 14 18 1|p1ai <ALPHANUM> 20 24 1|8080 <NUM> 26 30 1|31 0
+  .com$https://,中user	com <ALPHANUM> 3 6 1|https <ALPHANUM> 7 12 1|中 <IDEOGRAPHIC> 16 17 1|user <ALPHANUM> 17 21 1|21 0
+  ;中http://:~!	中 <IDEOGRAPHIC> 3 4 1|http <ALPHANUM> 4 8 1|14 0
+user</ localhost;	user <ALPHANUM> 0 4 1|localhost <ALPHANUM> 7 16 1|17 0
+!!mailto:ftp://~	mailto:ftp <ALPHANUM> 2 12 1|16 0
+"http://www./< 	http://www <URL> 1 11 1|15 0
+é@	é <ALPHANUM> 0 1 1|2 0
+a.b-	a.b <ALPHANUM> 0 3 1|4 0
+xn--p1ai+tagwww.élocalhost[	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|tagwww.élocalhost <ALPHANUM> 9 26 1|27 0
+1www.  	1www <ALPHANUM> 0 4 1|7 0
++tag~a.b%20x.co.uk1@	tag <ALPHANUM> 1 4 1|a.b <ALPHANUM> 5 8 1|20x.co.uk1 <ALPHANUM> 9 19 1|20 0
+>>  	4 0
+>?q=1!localhost+tag	q <ALPHANUM> 2 3 1|1 <NUM> 4 5 1|localhost <ALPHANUM> 6 15 1|tag <ALPHANUM> 16 19 1|19 0
+(/~<user	user <ALPHANUM> 4 8 1|8 0
+😀*😀	😀 <EMOJI> 0 2 1|😀 <EMOJI> 3 5 1|5 0
+<42;	42 <NUM> 1 3 1|4 0
+  	2 0
+;mailto:~#f:	mailto <ALPHANUM> 1 7 1|f <ALPHANUM> 10 11 1|12 0
+http://#f&):8080	http <ALPHANUM> 0 4 1|f <ALPHANUM> 8 9 1|8080 <NUM> 12 16 1|16 0
+file:///~  .com[_	file:///~ <URL> 0 9 1|com <ALPHANUM> 12 15 1|17 0
+-.@[	4 0
+HTTP://éHTTP://localhost192.168.0.1.=%20	HTTP <ALPHANUM> 0 4 1|éHTTP <ALPHANUM> 7 12 1|localhost192.168.0.1 <ALPHANUM> 15 35 1|20 <NUM> 38 40 1|40 0
+42=_*&$>中	42 <NUM> 0 2 1|中 <IDEOGRAPHIC> 8 9 1|9 0
+#f1a.b:8080www.	f1a.b <ALPHANUM> 1 6 1|8080www <ALPHANUM> 7 14 1|15 0
+(.co.uk_	co.uk_ <ALPHANUM> 2 8 1|8 0
+:@,(:8080,&	8080 <NUM> 5 9 1|11 0
+::1(	1 <NUM> 2 3 1|4 0
+>https://	https <ALPHANUM> 1 6 1|9 0
+xn--p1ai-[@xn--p1aihttp://éx	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|xn <ALPHANUM> 11 13 1|p1aihttp <ALPHANUM> 15 23 1|éx <ALPHANUM> 26 28 1|28 0
+ftp://localhosthttps://HTTP://	ftp <ALPHANUM> 0 3 1|localhosthttps <ALPHANUM> 6 20 1|HTTP <ALPHANUM> 23 27 1|30 0
+(😀  $:>>	😀 <EMOJI> 1 3 1|9 0
+"$]42	42 <NUM> 3 5 1|5 0
+localhost1+tagfile:///$~	localhost1 <ALPHANUM> 0 10 1|tagfile <ALPHANUM> 11 18 1|24 0
+$192.168.0.1.comuser[	192.168.0.1 <URL> 1 12 1|comuser <ALPHANUM> 13 20 1|21 0
+é	é <ALPHANUM> 0 1 1|1 0
+<"+tag::1_	tag <ALPHANUM> 3 6 1|1_ <NUM> 8 10 1|10 0
+~.= example=example😀	example <ALPHANUM> 4 11 1|example <ALPHANUM> 12 19 1|😀 <EMOJI> 19 21 1|21 0
+  ~:8080www."xlocalhost	8080www <ALPHANUM> 4 11 1|xlocalhost <ALPHANUM> 13 23 1|23 0
+localhost.co.uk*?q=1	localhost.co.uk <URL> 0 15 1|q <ALPHANUM> 17 18 1|1 <NUM> 19 20 1|20 0
+!xn--p1aia.b	xn <ALPHANUM> 1 3 1|p1aia.b <ALPHANUM> 5 12 1|12 0
+*@中	中 <IDEOGRAPHIC> 2 3 1|3 0
+(user%201	user <ALPHANUM> 1 5 1|201 <NUM> 6 9 1|9 0
+a.b1https://	a.b1https <ALPHANUM> 0 9 1|12 0
+];http://->  =	http <ALPHANUM> 2 6 1|14 0
+x	x <ALPHANUM> 0 1 1|1 0
+[https://192.168.0.1	https://192.168.0.1 <URL> 1 20 1|20 0
+>%20.coma.b$>'file:///	20 <NUM> 2 4 1|coma.b <ALPHANUM> 5 11 1|file:/// <URL> 14 22 1|22 0
+#f]a.b+tag_:+tag	f <ALPHANUM> 1 2 1|a.b <ALPHANUM> 3 6 1|tag_ <ALPHANUM> 7 11 1|tag <ALPHANUM> 13 16 1|16 0
+xn--p1ai42>.co.ukftp://:userx	xn <ALPHANUM> 0 2 1|p1ai42 <ALPHANUM> 4 10 1|co.ukftp <ALPHANUM> 12 20 1|userx <ALPHANUM> 24 29 1|29 0
+192.168.0.1	192.168.0.1 <URL> 0 11 1|11 0
+www.xn--p1aifile:///?q=1/~:	www.xn <ALPHANUM> 0 6 1|p1aifile <ALPHANUM> 8 16 1|q <ALPHANUM> 21 22 1|1 <NUM> 23 24 1|27 0
+?q=1	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|4 0
+localhosthttps://]localhost	localhosthttps <ALPHANUM> 0 14 1|localhost <ALPHANUM> 18 27 1|27 0
+:808042/)::1localhost	808042 <NUM> 1 7 1|1localhost <ALPHANUM> 11 21 1|21 0
+ 	1 0
+@(é'	é <ALPHANUM> 2 3 1|4 0
+(~-) 😀HTTP://a.b	😀 <EMOJI> 5 7 1|HTTP://a.b <URL> 7 17 1|17 0
+:..co.uk-%20+tag	co.uk <ALPHANUM> 3 8 1|20 <NUM> 10 12 1|tag <ALPHANUM> 13 16 1|16 0
+.co.uk#f/	co.uk#f/ <URL> 1 9 1|9 0
+"[é.[=/ftp://	é <ALPHANUM> 2 3 1|ftp <ALPHANUM> 7 10 1|13 0
++tagxlocalhost	tagxlocalhost <ALPHANUM> 1 14 1|14 0
+xn--p1ai😀=1	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|😀 <EMOJI> 8 10 1|1 <NUM> 11 12 1|12 0
+x;user..com'::1	x <ALPHANUM> 0 1 1|user <ALPHANUM> 2 6 1|com <ALPHANUM> 8 11 1|1 <NUM> 14 15 1|15 0
+42+tag'192.168.0.1*	42 <NUM> 0 2 1|tag <ALPHANUM> 3 6 1|192.168.0.1 <URL> 7 18 1|19 0
+::1=-::11	1 <NUM> 2 3 1|11 <NUM> 7 9 1|9 0
+(example+tag/émailto:	example <ALPHANUM> 1 8 1|tag <ALPHANUM> 9 12 1|émailto <ALPHANUM> 13 20 1|21 0
+/HTTP://.co.uk	HTTP <ALPHANUM> 1 5 1|co.uk <URL> 9 14 1|14 0
+;	1 0
+):example*file:///]	example <ALPHANUM> 2 9 1|file:/// <URL> 10 18 1|19 0
+:8080;!user	8080 <NUM> 1 5 1|user <ALPHANUM> 7 11 1|11 0
+http://_:8080::1$file:///	http <ALPHANUM> 0 4 1|8080 <NUM> 9 13 1|1 <NUM> 15 16 1|file:/// <URL> 17 25 1|25 0
+@www..com_/usera.buser	www <ALPHANUM> 1 4 1|com_ <ALPHANUM> 6 10 1|usera.buser <ALPHANUM> 11 22 1|22 0
+_=./.	5 0
+.comhttp://<:  ftp://%20!	comhttp <ALPHANUM> 1 8 1|ftp <ALPHANUM> 15 18 1|20 <NUM> 22 24 1|25 0
+   :xn--p1ai]example192.168.0.1&	xn <ALPHANUM> 4 6 1|p1ai <ALPHANUM> 8 12 1|example192.168.0.1 <ALPHANUM> 13 31 1|32 0
+@localhost	localhost <ALPHANUM> 1 10 1|10 0
+😀é  localhostftp:///xn--p1ai	😀 <EMOJI> 0 2 1|é <ALPHANUM> 2 3 1|localhostftp <ALPHANUM> 5 17 1|xn <ALPHANUM> 21 23 1|p1ai <ALPHANUM> 25 29 1|29 0
+$localhosté,="	localhosté <ALPHANUM> 1 11 1|14 0
+[*xn--p1aimailto:http://)	xn <ALPHANUM> 2 4 1|p1aimailto:http <ALPHANUM> 6 21 1|25 0
+<HTTP:///%20ftp://a.b~	HTTP <ALPHANUM> 1 5 1|20ftp <ALPHANUM> 10 15 1|a.b <ALPHANUM> 18 21 1|22 0
+localhost'x1/example	localhost'x1 <ALPHANUM> 0 12 1|example <ALPHANUM> 13 20 1|20 0
+localhostHTTP://,x(]	localhostHTTP <ALPHANUM> 0 13 1|x <ALPHANUM> 17 18 1|20 0
+;::1+tag;,	1 <NUM> 3 4 1|tag <ALPHANUM> 5 8 1|10 0
+HTTP://@42-	HTTP://@42 <URL> 0 10 1|11 0
+-HTTP://*"www..co.uk	HTTP <ALPHANUM> 1 5 1|www <ALPHANUM> 10 13 1|co.uk <URL> 15 20 1|20 0
+http://#f192.168.0.1	http <ALPHANUM> 0 4 1|f192.168.0.1 <ALPHANUM> 8 20 1|20 0
+-=]	3 0
+%20:_example1(	20 <NUM> 1 3 1|_example1 <ALPHANUM> 4 13 1|14 0
+mailto:%20/];<http://	mailto <ALPHANUM> 0 6 1|20 <NUM> 8 10 1|http <ALPHANUM> 14 18 1|21 0
+:.com(	com <ALPHANUM> 2 5 1|6 0
+>	1 0
+é)#f	é <ALPHANUM> 0 1 1|f <ALPHANUM> 3 4 1|4 0
+😀<HTTP://;)example😀	😀 <EMOJI> 0 2 1|HTTP <ALPHANUM> 3 7 1|example <ALPHANUM> 12 19 1|😀 <EMOJI> 19 21 1|21 0
+$1	1 <NUM> 1 2 1|2 0
+<;)mailto:😀https://mailto:	mailto <ALPHANUM> 3 9 1|😀 <EMOJI> 10 12 1|https://mailto <URL> 12 26 1|27 0
+./	2 0
+user-  !<,~.co.uk	user <ALPHANUM> 0 4 1|co.uk <URL> 12 17 1|17 0
+42	42 <NUM> 0 2 1|2 0
+#f-é42localhost<"😀	f <ALPHANUM> 1 2 1|é42localhost <ALPHANUM> 3 15 1|😀 <EMOJI> 17 19 1|19 0
++tagxn--p1ai!$:8080-	tagxn <ALPHANUM> 1 6 1|p1ai <ALPHANUM> 8 12 1|8080 <NUM> 15 19 1|20 0
+<mailto:::1]  %20;	mailto <ALPHANUM> 1 7 1|1 <NUM> 10 11 1|20 <NUM> 15 17 1|18 0
+<%20xhttp://:8080	20xhttp <ALPHANUM> 2 9 1|8080 <NUM> 13 17 1|17 0
+😀+tag#f!?q=1%20	😀 <EMOJI> 0 2 1|tag <ALPHANUM> 3 6 1|f <ALPHANUM> 7 8 1|q <ALPHANUM> 10 11 1|1 <NUM> 12 13 1|20 <NUM> 14 16 1|16 0
+::1+tag@+tag192.168.0.1é	1 <NUM> 2 3 1|tag <ALPHANUM> 4 7 1|tag192.168.0.1é <ALPHANUM> 9 24 1|24 0
+1user.comhttp://	1user.comhttp <ALPHANUM> 0 13 1|16 0
+.>:xn--p1ai.comx	xn <ALPHANUM> 3 5 1|p1ai.comx <ALPHANUM> 7 16 1|16 0
+' 	2 0
+é[	é <ALPHANUM> 0 1 1|2 0
+1?q=1@!$!	1 <NUM> 0 1 1|q <ALPHANUM> 2 3 1|1 <NUM> 4 5 1|9 0
+,http://	http <ALPHANUM> 1 5 1|8 0
+中192.168.0.1*a.b"#f*	中 <IDEOGRAPHIC> 0 1 1|192.168.0.1 <URL> 1 12 1|a.b <ALPHANUM> 13 16 1|f <ALPHANUM> 18 19 1|20 0
+<file:///HTTP://example	file:///HTTP://example <URL> 1 23 1|23 0
+%20é:8080"	20é <ALPHANUM> 1 4 1|8080 <NUM> 5 9 1|10 0
+file:///!http://,	file:/// <URL> 0 8 1|http <ALPHANUM> 9 13 1|17 0
+,"	2 0
+ +tag::1www.&éexample?q=1	tag <ALPHANUM> 2 5 1|1www <ALPHANUM> 7 11 1|éexample <ALPHANUM> 13 21 1|q <ALPHANUM> 22 23 1|1 <NUM> 24 25 1|25 0
+.	1 0
+*中::1#f#f(	中 <IDEOGRAPHIC> 1 2 1|1 <NUM> 4 5 1|f <ALPHANUM> 6 7 1|f <ALPHANUM> 8 9 1|10 0
+?q=1=	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|5 0
+.co.ukexample~mailto:中	co.ukexample <ALPHANUM> 1 13 1|mailto <ALPHANUM> 14 20 1|中 <IDEOGRAPHIC> 21 22 1|22 0
+::1]*,	1 <NUM> 2 3 1|6 0
+)	1 0
+mailto:~?q=1::1:	mailto <ALPHANUM> 0 6 1|q <ALPHANUM> 9 10 1|1 <NUM> 11 12 1|1 <NUM> 14 15 1|16 0
+<	1 0
+=+tag&	tag <ALPHANUM> 2 5 1|6 0
+192.168.0.1'localhost"'[é	192.168.0.1 <URL> 0 11 1|localhost <ALPHANUM> 12 21 1|é <ALPHANUM> 24 25 1|25 0
+www.éexample'	www.éexample <ALPHANUM> 0 12 1|13 0
+#fxn--p1ai	fxn <ALPHANUM> 1 4 1|p1ai <ALPHANUM> 6 10 1|10 0
+( localhost$	localhost <ALPHANUM> 2 11 1|12 0
+😀@(*.com[	😀 <EMOJI> 0 2 1|com <ALPHANUM> 6 9 1|10 0
+中mailto:😀	中 <IDEOGRAPHIC> 0 1 1|mailto <ALPHANUM> 1 7 1|😀 <EMOJI> 8 10 1|10 0
+ftp://	ftp <ALPHANUM> 0 3 1|6 0
+]$_)=,é	é <ALPHANUM> 6 7 1|7 0
+;x/;;~_[	x <ALPHANUM> 1 2 1|8 0
+file:///)	file:/// <URL> 0 8 1|9 0
+https:// ]$::1www.~	https <ALPHANUM> 0 5 1|1www <ALPHANUM> 13 17 1|19 0
+*/  #fé"	fé <ALPHANUM> 5 7 1|8 0
+.com,	com <ALPHANUM> 1 4 1|5 0
+:	1 0
+file:///😀	file:/// <URL> 0 8 1|😀 <EMOJI> 8 10 1|10 0
+>]	2 0
+example-	example <ALPHANUM> 0 7 1|8 0
+  _HTTP://	_HTTP <ALPHANUM> 2 7 1|10 0
+examplea.b::1?q=1.中42	examplea.b <ALPHANUM> 0 10 1|1 <NUM> 12 13 1|q <ALPHANUM> 14 15 1|1 <NUM> 16 17 1|中 <IDEOGRAPHIC> 18 19 1|42 <NUM> 19 21 1|21 0
+?q=1::1 192.168.0.1:a.bmailto:	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|1 <NUM> 6 7 1|192.168.0.1 <URL> 8 19 1|a.bmailto <ALPHANUM> 20 29 1|30 0
+https://ftp://HTTP://))	https://ftp <URL> 0 11 1|HTTP <ALPHANUM> 14 18 1|23 0
+-localhost	localhost <ALPHANUM> 1 10 1|10 0
+.:8080=.142<::1	8080 <NUM> 2 6 1|142 <NUM> 8 11 1|1 <NUM> 14 15 1|15 0
+$>=  	5 0
+😀http://HTTP://mailto:~	😀 <EMOJI> 0 2 1|http://HTTP <URL> 2 13 1|mailto <ALPHANUM> 16 22 1|24 0
+"xn--p1ai)&  .com*中	xn <ALPHANUM> 1 3 1|p1ai <ALPHANUM> 5 9 1|com <ALPHANUM> 14 17 1|中 <IDEOGRAPHIC> 18 19 1|19 0
+https://ftp://example file:///	https://ftp <URL> 0 11 1|example <ALPHANUM> 14 21 1|file:/// <URL> 22 30 1|30 0
+-%20(?q=1&].co.uk	20 <NUM> 2 4 1|q <ALPHANUM> 6 7 1|1 <NUM> 8 9 1|co.uk <URL> 12 17 1|17 0
+192.168.0.1:< ]http://	192.168.0.1 <URL> 0 11 1|http <ALPHANUM> 15 19 1|22 0
+HTTP://+tagmailto:>	HTTP <ALPHANUM> 0 4 1|tagmailto <ALPHANUM> 8 17 1|19 0
+'	1 0
+;?q=1	q <ALPHANUM> 2 3 1|1 <NUM> 4 5 1|5 0
+:	1 0
+!::1<~_é:8080	1 <NUM> 3 4 1|_é <ALPHANUM> 6 8 1|8080 <NUM> 9 13 1|13 0
+http://::1a.b.ftp://  	http <ALPHANUM> 0 4 1|1a.b.ftp <ALPHANUM> 9 17 1|22 0
+$='=a.b	a.b <ALPHANUM> 4 7 1|7 0
+(]:www.file:///	www.file <ALPHANUM> 3 11 1|15 0
+mailto::8080]http://#fftp://é.co.uk	mailto <ALPHANUM> 0 6 1|8080 <NUM> 8 12 1|http <ALPHANUM> 13 17 1|fftp <ALPHANUM> 21 25 1|é.co.uk <ALPHANUM> 28 35 1|35 0
+&xé	xé <ALPHANUM> 1 3 1|3 0
+$192.168.0.1user	192.168.0.1user <ALPHANUM> 1 16 1|16 0
+@  www.-	www <ALPHANUM> 3 6 1|8 0
+xn--p1ai%20<.ftp://file:///	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|20 <NUM> 9 11 1|ftp <ALPHANUM> 13 16 1|file:/// <URL> 19 27 1|27 0
+a.b:example1.	a.b:example1 <ALPHANUM> 0 12 1|13 0
+;	1 0
+www.?q=1_".co.uk.co.ukftp://(	www <ALPHANUM> 0 3 1|q <ALPHANUM> 5 6 1|1_ <NUM> 7 9 1|co.uk.co.ukftp <ALPHANUM> 11 25 1|29 0
+ www.].co.uk	www <ALPHANUM> 1 4 1|co.uk <URL> 7 12 1|12 0
+(@-.co.uk	co.uk <URL> 4 9 1|9 0
+www.42.co.ukx	www.42.co <URL> 0 9 1|ukx <ALPHANUM> 10 13 1|13 0
+HTTP://(	HTTP <ALPHANUM> 0 4 1|8 0
+xexample::1 https://ftp://~	xexample <ALPHANUM> 0 8 1|1 <NUM> 10 11 1|https://ftp <URL> 12 23 1|27 0
+?q=1-192.168.0.1	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|192.168.0.1 <URL> 5 16 1|16 0
+$file:///#f..42	file:///#f..42 <URL> 1 15 1|15 0
+>user@*@mailto:>]	user <ALPHANUM> 1 5 1|mailto <ALPHANUM> 8 14 1|17 0
+,中:8080	中 <IDEOGRAPHIC> 1 2 1|8080 <NUM> 3 7 1|7 0
+.co.uk	co.uk <URL> 1 6 1|6 0
+[x/:8080HTTP://*192.168.0.1%20	x <ALPHANUM> 1 2 1|8080HTTP <ALPHANUM> 4 12 1|192.168.0.1 <URL> 16 27 1|20 <NUM> 28 30 1|30 0
+xn--p1ai,'&	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|11 0
+  &	3 0
+$	1 0
+($;.+tag.:8080	tag <ALPHANUM> 5 8 1|8080 <NUM> 10 14 1|14 0
+mailto:ftp://~=@	mailto:ftp <ALPHANUM> 0 10 1|16 0
+~192.168.0.1é;<ftp://	192.168.0.1é <ALPHANUM> 1 13 1|ftp <ALPHANUM> 15 18 1|21 0
+file:///".com1a.b	file:/// <URL> 0 8 1|com1a.b <ALPHANUM> 10 17 1|17 0
+1::1HTTP://,[file:///.com	1 <NUM> 0 1 1|1HTTP <ALPHANUM> 3 8 1|file:///.com <URL> 13 25 1|25 0
+/192.168.0.1😀 ftp://_	192.168.0.1 <URL> 1 12 1|😀 <EMOJI> 12 14 1|ftp <ALPHANUM> 15 18 1|22 0
+192.168.0.1/	192.168.0.1/ <URL> 0 12 1|12 0
+ftp://-	ftp <ALPHANUM> 0 3 1|7 0
+1!.co.uk@*https://mailto:	1 <NUM> 0 1 1|co.uk <URL> 3 8 1|https://mailto <URL> 10 24 1|25 0
+@https://@	https <ALPHANUM> 1 6 1|10 0
+  	2 0
+192.168.0.1  '_!+tag<	192.168.0.1 <URL> 0 11 1|tag <ALPHANUM> 17 20 1|21 0
+_	1 0
+@, HTTP://$	HTTP <ALPHANUM> 3 7 1|11 0
+:,+tagxn--p1ai_!é	tagxn <ALPHANUM> 3 8 1|p1ai_ <ALPHANUM> 10 15 1|é <ALPHANUM> 16 17 1|17 0
+1:,example;	1 <NUM> 0 1 1|example <ALPHANUM> 3 10 1|11 0
+@42http://file:///	42http <ALPHANUM> 1 7 1|file:/// <URL> 10 18 1|18 0
+42ftp://%20.com	42ftp <ALPHANUM> 0 5 1|20.com <URL> 9 15 1|15 0
+[;.co.uk>example:www.	co.uk <URL> 3 8 1|example:www <ALPHANUM> 9 20 1|21 0
+(xn--p1ai1ftp://	xn <ALPHANUM> 1 3 1|p1ai1ftp <ALPHANUM> 5 13 1|16 0
+;a.b  .co.uk +taguser::1	a.b <ALPHANUM> 1 4 1|co.uk <URL> 7 12 1|taguser <ALPHANUM> 14 21 1|1 <NUM> 23 24 1|24 0
+https://"+tag@HTTP://	https <ALPHANUM> 0 5 1|tag <ALPHANUM> 10 13 1|HTTP <ALPHANUM> 14 18 1|21 0
+&mailto:;/	mailto <ALPHANUM> 1 7 1|10 0
+.coma.b	coma.b <ALPHANUM> 1 7 1|7 0
+x192.168.0.1	x192.168.0.1 <ALPHANUM> 0 12 1|12 0
+https://:8080xn--p1ai$,	https <ALPHANUM> 0 5 1|8080xn <ALPHANUM> 9 15 1|p1ai <ALPHANUM> 17 21 1|23 0
+localhostx;<>%20:8080	localhostx <ALPHANUM> 0 10 1|20 <NUM> 14 16 1|8080 <NUM> 17 21 1|21 0
+192.168.0.1!x	192.168.0.1 <URL> 0 11 1|x <ALPHANUM> 12 13 1|13 0
+/file:///#f1a.bmailto:	file:///#f1a.bmailto: <URL> 1 22 1|22 0
+,user	user <ALPHANUM> 1 5 1|5 0
+192.168.0.1&_é	192.168.0.1 <URL> 0 11 1|_é <ALPHANUM> 12 14 1|14 0
+localhostwww.42@http://(mailto:	localhostwww <ALPHANUM> 0 12 1|42 <NUM> 13 15 1|http <ALPHANUM> 16 20 1|mailto <ALPHANUM> 24 30 1|31 0
+localhostftp://x[	localhostftp <ALPHANUM> 0 12 1|x <ALPHANUM> 15 16 1|17 0
+HTTP://	HTTP <ALPHANUM> 0 4 1|7 0
+192.168.0.1	192.168.0.1 <URL> 0 11 1|11 0
+1	1 <NUM> 0 1 1|1 0
+=a.b	a.b <ALPHANUM> 1 4 1|4 0
+localhost?q=1 .co.uk*	localhost <ALPHANUM> 0 9 1|q <ALPHANUM> 10 11 1|1 <NUM> 12 13 1|co.uk <URL> 15 20 1|21 0
+http://	http <ALPHANUM> 0 4 1|7 0
+42mailto:."&>&::1	42mailto <ALPHANUM> 0 8 1|1 <NUM> 16 17 1|17 0
+https://?q=1ftp://éHTTP://.co.uk_	https <ALPHANUM> 0 5 1|q <ALPHANUM> 9 10 1|1ftp <ALPHANUM> 11 15 1|éHTTP <ALPHANUM> 18 23 1|co.uk_ <ALPHANUM> 27 33 1|33 0
+[#f	f <ALPHANUM> 2 3 1|3 0
+:8080.+tag-$	8080 <NUM> 1 5 1|tag <ALPHANUM> 7 10 1|12 0
+ftp://userfile:///mailto:file:///	ftp <ALPHANUM> 0 3 1|userfile <ALPHANUM> 6 14 1|mailto:file <ALPHANUM> 18 29 1|33 0
+,]%20'!+tag::1	20 <NUM> 3 5 1|tag <ALPHANUM> 8 11 1|1 <NUM> 13 14 1|14 0
+localhost192.168.0.1	localhost192.168.0.1 <ALPHANUM> 0 20 1|20 0
+mailto:;1_	mailto <ALPHANUM> 0 6 1|1_ <NUM> 8 10 1|10 0
+:中%20;user]	中 <IDEOGRAPHIC> 1 2 1|20 <NUM> 3 5 1|user <ALPHANUM> 6 10 1|11 0
+file:///1  	file:///1 <URL> 0 9 1|11 0
+=>é;	é <ALPHANUM> 2 3 1|4 0
+;$file:///(;	file:/// <URL> 2 10 1|12 0
+http://xxn--p1ai😀192.168.0.1	http://xxn--p1ai <URL> 0 16 1|😀 <EMOJI> 16 18 1|192.168.0.1 <URL> 18 29 1|29 0
+,a.b#f/!@:-	a.b <ALPHANUM> 1 4 1|f <ALPHANUM> 5 6 1|11 0
+$user,192.168.0.1_%20.com+tag	user <ALPHANUM> 1 5 1|192.168.0.1_ <NUM> 6 18 1|20.com <URL> 19 25 1|tag <ALPHANUM> 26 29 1|29 0
+>ftp://a.b192.168.0.1é	ftp <ALPHANUM> 1 4 1|a.b192.168.0.1é <ALPHANUM> 7 22 1|22 0
+192.168.0.1	192.168.0.1 <URL> 0 11 1|11 0
+mailto:中HTTP://	mailto <ALPHANUM> 0 6 1|中 <IDEOGRAPHIC> 7 8 1|HTTP <ALPHANUM> 8 12 1|15 0
+,https://	https <ALPHANUM> 1 6 1|9 0
+examplex$::1	examplex <ALPHANUM> 0 8 1|1 <NUM> 11 12 1|12 0
+mailto:    ,	mailto <ALPHANUM> 0 6 1|12 0
+%20	20 <NUM> 1 3 1|3 0
+!/ftp://>~mailto:	ftp <ALPHANUM> 2 5 1|mailto <ALPHANUM> 10 16 1|17 0
+mailto:a.b	mailto:a.b <ALPHANUM> 0 10 1|10 0
+_.localhost.com[www._	localhost.com <URL> 2 15 1|www <ALPHANUM> 16 19 1|21 0
+42http://中_user"	42http <ALPHANUM> 0 6 1|中 <IDEOGRAPHIC> 9 10 1|_user <ALPHANUM> 10 15 1|16 0
+>HTTP://.co.uk;[中1(	HTTP <ALPHANUM> 1 5 1|co.uk <URL> 9 14 1|中 <IDEOGRAPHIC> 16 17 1|1 <NUM> 17 18 1|19 0
+)(_xa.b  -	_xa.b <ALPHANUM> 2 7 1|10 0
+1.www.xn--p1ai	1.www.xn--p1ai <URL> 0 14 1|14 0
+.&mailto:/.co.uk	mailto <ALPHANUM> 2 8 1|co.uk <URL> 11 16 1|16 0
+_::1	1 <NUM> 3 4 1|4 0
+*@example	example <ALPHANUM> 2 9 1|9 0
+ftp://	ftp <ALPHANUM> 0 3 1|6 0
+http://<😀file:///a.b:%20	http <ALPHANUM> 0 4 1|😀 <EMOJI> 8 10 1|file:///a.b:%20 <URL> 10 25 1|25 0
+]HTTP://*@;"	HTTP <ALPHANUM> 1 5 1|12 0
+>localhosthttp://<😀*	localhosthttp <ALPHANUM> 1 14 1|😀 <EMOJI> 18 20 1|21 0
++taghttps://https://😀	taghttps <ALPHANUM> 1 9 1|https <ALPHANUM> 12 17 1|😀 <EMOJI> 20 22 1|22 0
+ xn--p1aia.b[$'192.168.0.1	xn <ALPHANUM> 1 3 1|p1aia.b <ALPHANUM> 5 12 1|192.168.0.1 <URL> 15 26 1|26 0
+?q=1xn--p1ai,localhostftp://',-	q <ALPHANUM> 1 2 1|1xn <ALPHANUM> 3 6 1|p1ai <ALPHANUM> 8 12 1|localhostftp <ALPHANUM> 13 25 1|31 0
+&:8080HTTP://example	8080HTTP <ALPHANUM> 2 10 1|example <ALPHANUM> 13 20 1|20 0
+]	1 0
+localhost-x::1é	localhost <ALPHANUM> 0 9 1|x <ALPHANUM> 10 11 1|1é <ALPHANUM> 13 15 1|15 0
+HTTP://mailto:	HTTP://mailto <URL> 0 13 1|14 0
+?q=1	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|4 0
+=.com"xn--p1ai1)=@	com <ALPHANUM> 2 5 1|xn <ALPHANUM> 6 8 1|p1ai1 <ALPHANUM> 10 15 1|18 0
+?q=1	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|4 0
+-];	3 0
+,example~	example <ALPHANUM> 1 8 1|9 0
+192.168.0.1)>*/42	192.168.0.1 <URL> 0 11 1|42 <NUM> 15 17 1|17 0
+-.co.uk  😀	co.uk <URL> 2 7 1|😀 <EMOJI> 9 11 1|11 0
+xn--p1ai'#f中https://=	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|f <ALPHANUM> 10 11 1|中 <IDEOGRAPHIC> 11 12 1|https <ALPHANUM> 12 17 1|21 0
+#f.(localhost:	f <ALPHANUM> 1 2 1|localhost <ALPHANUM> 4 13 1|14 0
+,;+tag1%20xn--p1ai']	tag1 <ALPHANUM> 3 7 1|20xn <ALPHANUM> 8 12 1|p1ai <ALPHANUM> 14 18 1|20 0
+42 ?q=1- HTTP://#f	42 <NUM> 0 2 1|q <ALPHANUM> 4 5 1|1 <NUM> 6 7 1|HTTP <ALPHANUM> 9 13 1|f <ALPHANUM> 17 18 1|18 0
+'~localhost"	localhost <ALPHANUM> 2 11 1|12 0
+:*+tag	tag <ALPHANUM> 3 6 1|6 0
+user&'-[>user	user <ALPHANUM> 0 4 1|user <ALPHANUM> 9 13 1|13 0
+;"ftp://HTTP://:file:///+tag	ftp <ALPHANUM> 2 5 1|HTTP <ALPHANUM> 8 12 1|file:/// <URL> 16 24 1|tag <ALPHANUM> 25 28 1|28 0
+);1)	1 <NUM> 2 3 1|4 0
+<example192.168.0.1	example192.168.0.1 <ALPHANUM> 1 19 1|19 0
+,?q=1;example(https://	q <ALPHANUM> 2 3 1|1 <NUM> 4 5 1|example <ALPHANUM> 6 13 1|https <ALPHANUM> 14 19 1|22 0
+😀#f (:/http://[	😀 <EMOJI> 0 2 1|f <ALPHANUM> 3 4 1|http <ALPHANUM> 8 12 1|16 0
+~	1 0
+xn--p1aiexample	xn <ALPHANUM> 0 2 1|p1aiexample <ALPHANUM> 4 15 1|15 0
+~!(.com中file:///	com <ALPHANUM> 4 7 1|中 <IDEOGRAPHIC> 7 8 1|file:/// <URL> 8 16 1|16 0
+42:80801!'~	42 <NUM> 0 2 1|80801 <NUM> 3 8 1|11 0
+.co.uk	co.uk <URL> 1 6 1|6 0
+ :8080~/~www.	8080 <NUM> 2 6 1|www <ALPHANUM> 9 12 1|13 0
+_ user  !	user <ALPHANUM> 2 6 1|9 0
+https://+tag#fhttp://?q=1]	https <ALPHANUM> 0 5 1|tag <ALPHANUM> 9 12 1|fhttp <ALPHANUM> 13 18 1|q <ALPHANUM> 22 23 1|1 <NUM> 24 25 1|26 0
+a.b(	a.b <ALPHANUM> 0 3 1|4 0
+a.b< xn--p1ai~www.	a.b <ALPHANUM> 0 3 1|xn <ALPHANUM> 5 7 1|p1ai <ALPHANUM> 9 13 1|www <ALPHANUM> 14 17 1|18 0
+~ 😀xn--p1ai@	😀 <EMOJI> 2 4 1|xn <ALPHANUM> 4 6 1|p1ai <ALPHANUM> 8 12 1|13 0
+!%20*192.168.0.1@	20 <NUM> 2 4 1|192.168.0.1 <URL> 5 16 1|17 0
+'ftp://$?q=1example=<	ftp <ALPHANUM> 1 4 1|q <ALPHANUM> 9 10 1|1example <ALPHANUM> 11 19 1|21 0
+é"	é <ALPHANUM> 0 1 1|2 0
+[1xn--p1ai😀	1xn <ALPHANUM> 1 4 1|p1ai <ALPHANUM> 6 10 1|😀 <EMOJI> 10 12 1|12 0
+1.com::1!中%20)192.168.0.1	1.com <URL> 0 5 1|1 <NUM> 7 8 1|中 <IDEOGRAPHIC> 9 10 1|20 <NUM> 11 13 1|192.168.0.1 <URL> 14 25 1|25 0
+"$user::1é1<	user <ALPHANUM> 2 6 1|1é1 <ALPHANUM> 8 11 1|12 0
+>localhost :www..com	localhost <ALPHANUM> 1 10 1|www <ALPHANUM> 12 15 1|com <ALPHANUM> 17 20 1|20 0
+::1_中=	1_ <NUM> 2 4 1|中 <IDEOGRAPHIC> 4 5 1|6 0
+.com$!#f1!	com <ALPHANUM> 1 4 1|f1 <ALPHANUM> 7 9 1|10 0
+  localhost	localhost <ALPHANUM> 2 11 1|11 0
+中localhostwww.(中_	中 <IDEOGRAPHIC> 0 1 1|localhostwww <ALPHANUM> 1 13 1|中 <IDEOGRAPHIC> 15 16 1|17 0
+_(,a.b;%20	a.b <ALPHANUM> 3 6 1|20 <NUM> 8 10 1|10 0
+é	é <ALPHANUM> 0 1 1|1 0
+é$	é <ALPHANUM> 0 1 1|2 0
+<,	2 0
+user#fftp://  192.168.0.1	user <ALPHANUM> 0 4 1|fftp <ALPHANUM> 5 9 1|192.168.0.1 <URL> 14 25 1|25 0
+xftp://	xftp <ALPHANUM> 0 4 1|7 0
++tag	tag <ALPHANUM> 1 4 1|4 0
+#f192.168.0.1+tag%20.com.$	f192.168.0.1 <ALPHANUM> 1 13 1|tag <ALPHANUM> 14 17 1|20.com. <URL> 18 25 1|26 0
+example*é(	example <ALPHANUM> 0 7 1|é <ALPHANUM> 8 9 1|10 0
+&	1 0
+>'1file:///#f	1file <ALPHANUM> 2 7 1|f <ALPHANUM> 12 13 1|13 0
+:'-http://	http <ALPHANUM> 3 7 1|10 0
+@.::1@example==?q=1	1 <NUM> 4 5 1|example <ALPHANUM> 6 13 1|q <ALPHANUM> 16 17 1|1 <NUM> 18 19 1|19 0
+,a.b.co.uk:8080[ 	a.b.co.uk:8080 <URL> 1 15 1|17 0
+www.	www <ALPHANUM> 0 3 1|4 0
+-:8080)x	8080 <NUM> 2 6 1|x <ALPHANUM> 7 8 1|8 0
+1中]*192.168.0.1,	1 <NUM> 0 1 1|中 <IDEOGRAPHIC> 1 2 1|192.168.0.1 <URL> 4 15 1|16 0
+192.168.0.1$!*	192.168.0.1 <URL> 0 11 1|14 0
+[>=http://:8080192.168.0.1	http <ALPHANUM> 3 7 1|8080192.168.0.1 <NUM> 11 26 1|26 0
+@*exampleHTTP://192.168.0.1'	exampleHTTP <ALPHANUM> 2 13 1|192.168.0.1 <URL> 16 27 1|28 0
+file:///?q=1,x  userwww.	file:///?q=1 <URL> 0 12 1|x <ALPHANUM> 13 14 1|userwww <ALPHANUM> 16 23 1|24 0
+~)www.	www <ALPHANUM> 2 5 1|6 0
+'[#f192.168.0.1localhostx,	f192.168.0.1localhostx <ALPHANUM> 3 25 1|26 0
+:www.@&	www <ALPHANUM> 1 4 1|7 0
+;?q=1HTTP://+tag192.168.0.1	q <ALPHANUM> 2 3 1|1HTTP <ALPHANUM> 4 9 1|tag192.168.0.1 <ALPHANUM> 13 27 1|27 0
+.ftp://HTTP://+tag]https://1mailto:	ftp <ALPHANUM> 1 4 1|HTTP <ALPHANUM> 7 11 1|tag <ALPHANUM> 15 18 1|https://1mailto <URL> 19 34 1|35 0
+ ftp://~	ftp <ALPHANUM> 1 4 1|8 0
+&	1 0
+user	user <ALPHANUM> 0 4 1|4 0
+1=<~example	1 <NUM> 0 1 1|example <ALPHANUM> 4 11 1|11 0
+[@&www.x192.168.0.1]www.	www.x192.168.0.1 <ALPHANUM> 3 19 1|www <ALPHANUM> 20 23 1|24 0
+@localhost#f-~😀example😀	localhost <ALPHANUM> 1 10 1|f <ALPHANUM> 11 12 1|😀 <EMOJI> 14 16 1|example <ALPHANUM> 16 23 1|😀 <EMOJI> 23 25 1|25 0
+(a.b:8080.<'	a.b <ALPHANUM> 1 4 1|8080 <NUM> 5 9 1|12 0
+,é"	é <ALPHANUM> 1 2 1|3 0
+$example#f!*	example <ALPHANUM> 1 8 1|f <ALPHANUM> 9 10 1|12 0
+@.co.uk  =	co.uk <URL> 2 7 1|10 0
+  _file:///example<#f@.com	_file <ALPHANUM> 2 7 1|example <ALPHANUM> 11 18 1|f <ALPHANUM> 20 21 1|com <ALPHANUM> 23 26 1|26 0
+user(	user <ALPHANUM> 0 4 1|5 0
+:8080192.168.0.1https://)a.b	8080192.168.0.1https <ALPHANUM> 1 21 1|a.b <ALPHANUM> 25 28 1|28 0
+"+tag	tag <ALPHANUM> 2 5 1|5 0
+~www.中$.  ::1	www <ALPHANUM> 1 4 1|中 <IDEOGRAPHIC> 5 6 1|1 <NUM> 12 13 1|13 0
+?q=142_ 	q <ALPHANUM> 1 2 1|142_ <NUM> 3 7 1|8 0
+xn--p1ai::1."	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|1 <NUM> 10 11 1|13 0
+%20#f=http://</]	20 <NUM> 1 3 1|f <ALPHANUM> 4 5 1|http <ALPHANUM> 6 10 1|16 0
+  ::1";~::1*	1 <NUM> 4 5 1|1 <NUM> 10 11 1|12 0
+]x~	x <ALPHANUM> 1 2 1|3 0
+userfile:///,::1' 	userfile <ALPHANUM> 0 8 1|1 <NUM> 15 16 1|18 0
+192.168.0.1	192.168.0.1 <URL> 0 11 1|11 0
+42.co.uk".]	42.co.uk <URL> 0 8 1|11 0
+%20localhost	20localhost <ALPHANUM> 1 12 1|12 0
+<!xn--p1ai,http://  	xn <ALPHANUM> 2 4 1|p1ai <ALPHANUM> 6 10 1|http <ALPHANUM> 11 15 1|20 0
+www.,xn--p1ai:éwww.	www <ALPHANUM> 0 3 1|xn <ALPHANUM> 5 7 1|p1ai:éwww <ALPHANUM> 9 18 1|19 0
+:%20+tag,%20#f	20 <NUM> 2 4 1|tag <ALPHANUM> 5 8 1|20 <NUM> 10 12 1|f <ALPHANUM> 13 14 1|14 0
+<]http://localhost.co.uk>::1,	http://localhost.co.uk <URL> 2 24 1|1 <NUM> 27 28 1|29 0
+https://http://(,	https://http <URL> 0 12 1|17 0
+$"-_	4 0
+  (>/	5 0
+#f[(user)~	f <ALPHANUM> 1 2 1|user <ALPHANUM> 4 8 1|10 0
+.(	2 0
+%20#f%20=[:192.168.0.1(	20 <NUM> 1 3 1|f <ALPHANUM> 4 5 1|20 <NUM> 6 8 1|192.168.0.1 <URL> 11 22 1|23 0
+:8080192.168.0.1é=😀[	8080192.168.0.1é <ALPHANUM> 1 17 1|😀 <EMOJI> 18 20 1|21 0
+.[user	user <ALPHANUM> 2 6 1|6 0
+?q=1192.168.0.1#f	q <ALPHANUM> 1 2 1|1192.168.0.1 <NUM> 3 15 1|f <ALPHANUM> 16 17 1|17 0
+~[::1(<userhttp://	1 <NUM> 4 5 1|userhttp <ALPHANUM> 7 15 1|18 0
+#f#f	f <ALPHANUM> 1 2 1|f <ALPHANUM> 3 4 1|4 0
+HTTP://  ;)"localhost$&	HTTP <ALPHANUM> 0 4 1|localhost <ALPHANUM> 12 21 1|23 0
+"user:8080  ;'	user <ALPHANUM> 1 5 1|8080 <NUM> 6 10 1|14 0
+>-www."www.file:////	www <ALPHANUM> 2 5 1|www.file <ALPHANUM> 7 15 1|20 0
+example$:?q=1::1::1	example <ALPHANUM> 0 7 1|q <ALPHANUM> 10 11 1|1 <NUM> 12 13 1|1 <NUM> 15 16 1|1 <NUM> 18 19 1|19 0
+(.co.uk	co.uk <URL> 2 7 1|7 0
+.comlocalhost*192.168.0.1.co.uk$'	comlocalhost <ALPHANUM> 1 13 1|192.168.0.1.co.uk <URL> 14 31 1|33 0
+!http://*	http <ALPHANUM> 1 5 1|9 0
+https://.co.uk%20-[mailto:["	https <ALPHANUM> 0 5 1|co.uk <URL> 9 14 1|20 <NUM> 15 17 1|mailto <ALPHANUM> 19 25 1|28 0
+,	1 0
+a.b ,,#f,	a.b <ALPHANUM> 0 3 1|f <ALPHANUM> 7 8 1|9 0
+]user	user <ALPHANUM> 1 5 1|5 0
+élocalhostxn--p1ai,	élocalhostxn <ALPHANUM> 0 12 1|p1ai <ALPHANUM> 14 18 1|19 0
+$xn--p1ai:8080file:///_! x	xn <ALPHANUM> 1 3 1|p1ai <ALPHANUM> 5 9 1|8080file <ALPHANUM> 10 18 1|x <ALPHANUM> 25 26 1|26 0
+?q=1@.co.uk-mailto:)file:///:8080	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|co.uk <ALPHANUM> 6 11 1|mailto <ALPHANUM> 12 18 1|file:///:8080 <URL> 20 33 1|33 0
+.co.uk;xfile:///HTTP://	co.uk <URL> 1 6 1|xfile <ALPHANUM> 7 12 1|HTTP <ALPHANUM> 16 20 1|23 0
+%20	20 <NUM> 1 3 1|3 0
+xn--p1ai,>#fxn--p1aiuser.	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|fxn <ALPHANUM> 11 14 1|p1aiuser <ALPHANUM> 16 24 1|25 0
+a.b中_http://42)1	a.b <ALPHANUM> 0 3 1|中 <IDEOGRAPHIC> 3 4 1|_http <ALPHANUM> 4 9 1|42 <NUM> 12 14 1|1 <NUM> 15 16 1|16 0
+xn--p1ai,>+tag42a.bhttp://mailto:	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|tag42a.bhttp <ALPHANUM> 11 23 1|mailto <ALPHANUM> 26 32 1|33 0
+,]ftp://=www.	ftp <ALPHANUM> 2 5 1|www <ALPHANUM> 9 12 1|13 0
+http://file:/// ..comhttp://~é	http://file <URL> 0 11 1|comhttp <ALPHANUM> 18 25 1|é <ALPHANUM> 29 30 1|30 0
+%20[%20	20 <NUM> 1 3 1|20 <NUM> 5 7 1|7 0
+http://x	http://x <URL> 0 8 1|8 0
+http://a.b&	http://a.b <URL> 0 10 1|11 0
+192.168.0.1http://	192.168.0.1http <ALPHANUM> 0 15 1|18 0
+mailto:😀(ftp://xn--p1aiuseruser	mailto <ALPHANUM> 0 6 1|😀 <EMOJI> 7 9 1|ftp <ALPHANUM> 10 13 1|xn <ALPHANUM> 16 18 1|p1aiuseruser <ALPHANUM> 20 32 1|32 0
+  https:// localhost中https://.com)	https <ALPHANUM> 2 7 1|localhost <ALPHANUM> 11 20 1|中 <IDEOGRAPHIC> 20 21 1|https <ALPHANUM> 21 26 1|com <ALPHANUM> 30 33 1|34 0
+@[é_https://.	é_https <ALPHANUM> 2 9 1|13 0
+-/>.co.uk	co.uk <URL> 4 9 1|9 0
++tag(:	tag <ALPHANUM> 1 4 1|6 0
++tagmailto:file:///user[$file:///	tagmailto:file <ALPHANUM> 1 15 1|user <ALPHANUM> 19 23 1|file:/// <URL> 25 33 1|33 0
+xn--p1aiftp://,1-	xn <ALPHANUM> 0 2 1|p1aiftp <ALPHANUM> 4 11 1|1 <NUM> 15 16 1|17 0
+.com:	com <ALPHANUM> 1 4 1|5 0
+HTTP://  42exampleexampleftp://	HTTP <ALPHANUM> 0 4 1|42exampleexampleftp <ALPHANUM> 9 28 1|31 0
+a.b&	a.b <ALPHANUM> 0 3 1|4 0
+.com	com <ALPHANUM> 1 4 1|4 0
+/?q=1@@.co.uk	q <ALPHANUM> 2 3 1|1 <NUM> 4 5 1|co.uk <URL> 8 13 1|13 0
+[(<&$+tag@$	tag <ALPHANUM> 6 9 1|11 0
+https://;a.b@"*	https <ALPHANUM> 0 5 1|a.b <ALPHANUM> 9 12 1|15 0
+-mailto:$https://")ftp://😀	mailto <ALPHANUM> 1 7 1|https <ALPHANUM> 9 14 1|ftp <ALPHANUM> 19 22 1|😀 <EMOJI> 25 27 1|27 0
+.co.uk;	co.uk <URL> 1 6 1|7 0
+$@::1	1 <NUM> 4 5 1|5 0
+http://  	http <ALPHANUM> 0 4 1|9 0
+a.bfile:///	a.bfile <ALPHANUM> 0 7 1|11 0
++tag	tag <ALPHANUM> 1 4 1|4 0
+<$>	3 0
+x[.co.uk>?q=1:8080=;	x <ALPHANUM> 0 1 1|co.uk <URL> 3 8 1|q <ALPHANUM> 10 11 1|1 <NUM> 12 13 1|8080 <NUM> 14 18 1|20 0
+_xn--p1ai:8080	_xn <ALPHANUM> 0 3 1|p1ai <ALPHANUM> 5 9 1|8080 <NUM> 10 14 1|14 0
+@::1.com	1.com <URL> 3 8 1|8 0
+::1	1 <NUM> 2 3 1|3 0
+ x:/é*%20	x <ALPHANUM> 1 2 1|é <ALPHANUM> 4 5 1|20 <NUM> 7 9 1|9 0
+,http:// 	http <ALPHANUM> 1 5 1|9 0
+localhosthttp://%20]example	localhosthttp <ALPHANUM> 0 13 1|20 <NUM> 17 19 1|example <ALPHANUM> 20 27 1|27 0
+.	1 0
+localhost_!x1	localhost_ <ALPHANUM> 0 10 1|x1 <ALPHANUM> 11 13 1|13 0
+https:// HTTP://x#fhttps://.co.uk?q=1	https <ALPHANUM> 0 5 1|HTTP://x#fhttps://.co.uk?q=1 <URL> 9 37 1|37 0
+HTTP://]localhostx😀,	HTTP <ALPHANUM> 0 4 1|localhostx <ALPHANUM> 8 18 1|😀 <EMOJI> 18 20 1|21 0
+.co.ukHTTP://xn--p1aiuser+tag	co.ukHTTP <ALPHANUM> 1 10 1|xn <ALPHANUM> 13 15 1|p1aiuser <ALPHANUM> 17 25 1|tag <ALPHANUM> 26 29 1|29 0
+[*@*.co.uk,	co.uk <URL> 5 10 1|11 0
+)=😀 a.bftp://~[	😀 <EMOJI> 2 4 1|a.bftp <ALPHANUM> 5 11 1|16 0
+_ftp://mailto:%20%20	_ftp <ALPHANUM> 0 4 1|mailto <ALPHANUM> 7 13 1|20 <NUM> 15 17 1|20 <NUM> 18 20 1|20 0
+www.localhost?q=1	www.localhost <ALPHANUM> 0 13 1|q <ALPHANUM> 14 15 1|1 <NUM> 16 17 1|17 0
+  www._HTTP://(:	www <ALPHANUM> 2 5 1|_HTTP <ALPHANUM> 6 11 1|16 0
+>)<*	4 0
+x?q=1ftp://+tag42	x <ALPHANUM> 0 1 1|q <ALPHANUM> 2 3 1|1ftp <ALPHANUM> 4 8 1|tag42 <ALPHANUM> 12 17 1|17 0
+(user))	user <ALPHANUM> 1 5 1|7 0
+file:///(	file:/// <URL> 0 8 1|9 0
+😀https://	😀 <EMOJI> 0 2 1|https <ALPHANUM> 2 7 1|10 0
+é&x a.b:8080	é <ALPHANUM> 0 1 1|x <ALPHANUM> 2 3 1|a.b <ALPHANUM> 4 7 1|8080 <NUM> 8 12 1|12 0
+:xn--p1aiexamplelocalhost	xn <ALPHANUM> 1 3 1|p1aiexamplelocalhost <ALPHANUM> 5 25 1|25 0
+www.a.blocalhost)42a.b)中	www.a.blocalhost <ALPHANUM> 0 16 1|42a.b <ALPHANUM> 17 22 1|中 <IDEOGRAPHIC> 23 24 1|24 0
+;::1.co.uka.b:8080>,	1.co <URL> 3 7 1|uka.b <ALPHANUM> 8 13 1|8080 <NUM> 14 18 1|20 0
+1&  ftp://!xn--p1ai(	1 <NUM> 0 1 1|ftp <ALPHANUM> 4 7 1|xn <ALPHANUM> 11 13 1|p1ai <ALPHANUM> 15 19 1|20 0
+www.<?q=1http://'	www <ALPHANUM> 0 3 1|q <ALPHANUM> 6 7 1|1http <ALPHANUM> 8 13 1|17 0
+~'-?q=1😀]-~	q <ALPHANUM> 4 5 1|1 <NUM> 6 7 1|😀 <EMOJI> 7 9 1|12 0
+,@?q=1%20	q <ALPHANUM> 3 4 1|1 <NUM> 5 6 1|20 <NUM> 7 9 1|9 0
+:/x/ftp://42'	x <ALPHANUM> 2 3 1|ftp <ALPHANUM> 4 7 1|42 <NUM> 10 12 1|13 0
+*  *http://::1"~::1	http <ALPHANUM> 4 8 1|1 <NUM> 13 14 1|1 <NUM> 18 19 1|19 0
+(#f$ftp://:http://%20.	f <ALPHANUM> 2 3 1|ftp <ALPHANUM> 4 7 1|http <ALPHANUM> 11 15 1|20 <NUM> 19 21 1|22 0
+* 	2 0
+?q=1>?q=1	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|q <ALPHANUM> 6 7 1|1 <NUM> 8 9 1|9 0
+[ftp://xlocalhost"😀=	ftp <ALPHANUM> 1 4 1|xlocalhost <ALPHANUM> 7 17 1|😀 <EMOJI> 18 20 1|21 0
+(www.*x192.168.0.1 	www <ALPHANUM> 1 4 1|x192.168.0.1 <ALPHANUM> 6 18 1|19 0
+.ftp://;.co.uk<x	ftp <ALPHANUM> 1 4 1|co.uk <URL> 9 14 1|x <ALPHANUM> 15 16 1|16 0
+.com	com <ALPHANUM> 1 4 1|4 0
+=[=	3 0
+http://[::1http://,file:///	http <ALPHANUM> 0 4 1|1http <ALPHANUM> 10 15 1|file:/// <URL> 19 27 1|27 0
+):8080?q=1x;user42	8080 <NUM> 2 6 1|q <ALPHANUM> 7 8 1|1x <ALPHANUM> 9 11 1|user42 <ALPHANUM> 12 18 1|18 0
+_:~::1	1 <NUM> 5 6 1|6 0
+https://)	https <ALPHANUM> 0 5 1|9 0
+<>]user+tag,*	user <ALPHANUM> 3 7 1|tag <ALPHANUM> 8 11 1|13 0
+#f	f <ALPHANUM> 1 2 1|2 0
+:	1 0
+<中=  [(	中 <IDEOGRAPHIC> 1 2 1|7 0
+file:///(>;_	file:/// <URL> 0 8 1|12 0
+:192.168.0.1~www.%20:) 	192.168.0.1 <URL> 1 12 1|www <ALPHANUM> 13 16 1|20 <NUM> 18 20 1|23 0
+,x中	x <ALPHANUM> 1 2 1|中 <IDEOGRAPHIC> 2 3 1|3 0
+1:@42http://	1 <NUM> 0 1 1|42http <ALPHANUM> 3 9 1|12 0
+.mailto:-a.ba.b+tagexample	mailto <ALPHANUM> 1 7 1|a.ba.b <ALPHANUM> 9 15 1|tagexample <ALPHANUM> 16 26 1|26 0
+[中]	中 <IDEOGRAPHIC> 1 2 1|3 0
+example::1)	example <ALPHANUM> 0 7 1|1 <NUM> 9 10 1|11 0
+example).com	example <ALPHANUM> 0 7 1|com <ALPHANUM> 9 12 1|12 0
+mailto:file:///:>)	mailto:file <ALPHANUM> 0 11 1|18 0
+  1?q=142( 	1 <NUM> 2 3 1|q <ALPHANUM> 4 5 1|142 <NUM> 6 9 1|11 0
+::1@.com?q=1example*192.168.0.1	1 <NUM> 2 3 1|com <ALPHANUM> 5 8 1|q <ALPHANUM> 9 10 1|1example <ALPHANUM> 11 19 1|192.168.0.1 <URL> 20 31 1|31 0
+&:)	3 0
+.com;ftp://é/).co.uk	com <ALPHANUM> 1 4 1|ftp <ALPHANUM> 5 8 1|é <ALPHANUM> 11 12 1|co.uk <URL> 15 20 1|20 0
+42	42 <NUM> 0 2 1|2 0
+_~#f-@file:///中	f <ALPHANUM> 3 4 1|file:/// <URL> 6 14 1|中 <IDEOGRAPHIC> 14 15 1|15 0
+é!ftp://[ftp://[&x	é <ALPHANUM> 0 1 1|ftp <ALPHANUM> 2 5 1|ftp <ALPHANUM> 9 12 1|x <ALPHANUM> 17 18 1|18 0
+/file:///<:	file:/// <URL> 1 9 1|11 0
+'1:?q=1x&	1 <NUM> 1 2 1|q <ALPHANUM> 4 5 1|1x <ALPHANUM> 6 8 1|9 0
+example+tag,ftp://example#f	example <ALPHANUM> 0 7 1|tag <ALPHANUM> 8 11 1|ftp <ALPHANUM> 12 15 1|example <ALPHANUM> 18 25 1|f <ALPHANUM> 26 27 1|27 0
+.:ftp:// 中?q=1	ftp <ALPHANUM> 2 5 1|中 <IDEOGRAPHIC> 9 10 1|q <ALPHANUM> 11 12 1|1 <NUM> 13 14 1|14 0
+=-(中'ftp://	中 <IDEOGRAPHIC> 3 4 1|ftp <ALPHANUM> 5 8 1|11 0
+*?q=1😀?q=1[$	q <ALPHANUM> 2 3 1|1 <NUM> 4 5 1|😀 <EMOJI> 5 7 1|q <ALPHANUM> 8 9 1|1 <NUM> 10 11 1|13 0
+].co.uk>(1mailto:/	co.uk <URL> 2 7 1|1mailto <ALPHANUM> 9 16 1|18 0
+https://-+tag)	https <ALPHANUM> 0 5 1|tag <ALPHANUM> 10 13 1|14 0
+<中(42+tag-é	中 <IDEOGRAPHIC> 1 2 1|42 <NUM> 3 5 1|tag <ALPHANUM> 6 9 1|é <ALPHANUM> 10 11 1|11 0
+"#f<1.co.uk$	f <ALPHANUM> 2 3 1|1.co.uk <URL> 4 11 1|12 0
+HTTP://]	HTTP <ALPHANUM> 0 4 1|8 0
+$42192.168.0.1192.168.0.1 	42192.168.0.1192.168.0.1 <NUM> 1 25 1|26 0
+😀:,192.168.0.1 	😀 <EMOJI> 0 2 1|192.168.0.1 <URL> 4 15 1|16 0
+中mailto:"~42example#f+tag	中 <IDEOGRAPHIC> 0 1 1|mailto <ALPHANUM> 1 7 1|42example <ALPHANUM> 10 19 1|f <ALPHANUM> 20 21 1|tag <ALPHANUM> 22 25 1|25 0
+userx 	userx <ALPHANUM> 0 5 1|6 0
+exampleftp://	exampleftp <ALPHANUM> 0 10 1|13 0
+$_~<192.168.0.1	192.168.0.1 <URL> 4 15 1|15 0
+>x?q=1*http://]http://*	x <ALPHANUM> 1 2 1|q <ALPHANUM> 3 4 1|1 <NUM> 5 6 1|http <ALPHANUM> 7 11 1|http <ALPHANUM> 15 19 1|23 0
+é'a.bé%20a.b_	é'a.bé <ALPHANUM> 0 6 1|20a.b_ <ALPHANUM> 7 13 1|13 0
+https://https://192.168.0.1?q=1	https://https <URL> 0 13 1|192.168.0.1?q=1 <URL> 16 31 1|31 0
+!_	2 0
+42@HTTP://mailto:*	42 <NUM> 0 2 1|HTTP://mailto <URL> 3 16 1|18 0
+<_;/):/]	8 0
+?q=1	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|4 0
+examplewww.	examplewww <ALPHANUM> 0 10 1|11 0
+<]localhost /'a.b	localhost <ALPHANUM> 2 11 1|a.b <ALPHANUM> 14 17 1|17 0
+中éuser@	中 <IDEOGRAPHIC> 0 1 1|éuser <ALPHANUM> 1 6 1|7 0
+-.http://mailto:xn--p1ai	http://mailto <URL> 2 15 1|xn <ALPHANUM> 16 18 1|p1ai <ALPHANUM> 20 24 1|24 0
+192.168.0.1HTTP://:8080[http://42	192.168.0.1HTTP <ALPHANUM> 0 15 1|8080 <NUM> 19 23 1|http://42 <URL> 24 33 1|33 0
+HTTP://+tag?q=1a.b-<	HTTP <ALPHANUM> 0 4 1|tag <ALPHANUM> 8 11 1|q <ALPHANUM> 12 13 1|1a.b <ALPHANUM> 14 18 1|20 0
+?q=1:;/:8080http://HTTP:// 	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|8080http <ALPHANUM> 8 16 1|HTTP <ALPHANUM> 19 23 1|27 0
+@localhostuserftp://é😀"é	localhostuserftp <ALPHANUM> 1 17 1|é <ALPHANUM> 20 21 1|😀 <EMOJI> 21 23 1|é <ALPHANUM> 24 25 1|25 0
+&ftp://;-localhost#f	ftp <ALPHANUM> 1 4 1|localhost <ALPHANUM> 9 18 1|f <ALPHANUM> 19 20 1|20 0
+http://:8080~HTTP:// 	http <ALPHANUM> 0 4 1|8080 <NUM> 8 12 1|HTTP <ALPHANUM> 13 17 1|21 0
+user-"192.168.0.1	user <ALPHANUM> 0 4 1|192.168.0.1 <URL> 6 17 1|17 0
+192.168.0.1$	192.168.0.1 <URL> 0 11 1|12 0
+HTTP://!]a.b::1xn--p1aimailto:]	HTTP <ALPHANUM> 0 4 1|a.b <ALPHANUM> 9 12 1|1xn <ALPHANUM> 14 17 1|p1aimailto <ALPHANUM> 19 29 1|31 0
+www.ftp://	www.ftp <ALPHANUM> 0 7 1|10 0
+HTTP://	HTTP <ALPHANUM> 0 4 1|7 0
+;[user@	user <ALPHANUM> 2 6 1|7 0
+localhost[https://ftp://_	localhost <ALPHANUM> 0 9 1|https://ftp <URL> 10 21 1|25 0
+.&中😀]	中 <IDEOGRAPHIC> 2 3 1|😀 <EMOJI> 3 5 1|6 0
+$192.168.0.1=~😀	192.168.0.1 <URL> 1 12 1|😀 <EMOJI> 14 16 1|16 0
+file:///localhost	file:///localhost <URL> 0 17 1|17 0
+@.	2 0
+1/file:///x!	1 <NUM> 0 1 1|file:///x <URL> 2 11 1|12 0
+=.,:~user:	user <ALPHANUM> 5 9 1|10 0
+http://localhost:~@HTTP:// -	http://localhost:~@HTTP <URL> 0 23 1|28 0
+192.168.0.1 :http://_	192.168.0.1 <URL> 0 11 1|http <ALPHANUM> 13 17 1|21 0
+::1~user.com	1 <NUM> 2 3 1|user.com <URL> 4 12 1|12 0
+< xn--p1aiuser  .com中	xn <ALPHANUM> 2 4 1|p1aiuser <ALPHANUM> 6 14 1|com <ALPHANUM> 17 20 1|中 <IDEOGRAPHIC> 20 21 1|21 0
++tag  >mailto:(.com	tag <ALPHANUM> 1 4 1|mailto <ALPHANUM> 7 13 1|com <ALPHANUM> 16 19 1|19 0
+:8080192.168.0.1-	8080192.168.0.1 <NUM> 1 16 1|17 0
+https://::1#f[:8080	https <ALPHANUM> 0 5 1|1 <NUM> 10 11 1|f <ALPHANUM> 12 13 1|8080 <NUM> 15 19 1|19 0
+www.	www <ALPHANUM> 0 3 1|4 0
+mailto:<	mailto <ALPHANUM> 0 6 1|8 0
+example$https://	example <ALPHANUM> 0 7 1|https <ALPHANUM> 8 13 1|16 0
+1+tag#fé=	1 <NUM> 0 1 1|tag <ALPHANUM> 2 5 1|fé <ALPHANUM> 6 8 1|9 0
+x	x <ALPHANUM> 0 1 1|1 0
+';#fé-1HTTP://1	fé <ALPHANUM> 3 5 1|1HTTP <ALPHANUM> 6 11 1|1 <NUM> 14 15 1|15 0
+a.b192.168.0.1~	a.b192.168.0.1 <ALPHANUM> 0 14 1|15 0
+/::1*;	1 <NUM> 3 4 1|6 0
+]!;a.b  	a.b <ALPHANUM> 3 6 1|8 0
+é.co.uk😀?q=1::1!	é.co.uk <ALPHANUM> 0 7 1|😀 <EMOJI> 7 9 1|q <ALPHANUM> 10 11 1|1 <NUM> 12 13 1|1 <NUM> 15 16 1|17 0
+,::1é!userxn--p1ai[<	1é <ALPHANUM> 3 5 1|userxn <ALPHANUM> 6 12 1|p1ai <ALPHANUM> 14 18 1|20 0
+''_.	4 0
+é=*http://	é <ALPHANUM> 0 1 1|http <ALPHANUM> 3 7 1|10 0
+mailto:(localhost)	mailto <ALPHANUM> 0 6 1|localhost <ALPHANUM> 8 17 1|18 0
+'!localhost(ftp://[%20	localhost <ALPHANUM> 2 11 1|ftp <ALPHANUM> 12 15 1|20 <NUM> 20 22 1|22 0
+  ;?q=1	q <ALPHANUM> 4 5 1|1 <NUM> 6 7 1|7 0
+é中):8080 192.168.0.11#f	é <ALPHANUM> 0 1 1|中 <IDEOGRAPHIC> 1 2 1|8080 <NUM> 4 8 1|192.168.0.11#f <URL> 9 23 1|23 0
+$$!.42ftp://::1:	42ftp <ALPHANUM> 4 9 1|1 <NUM> 14 15 1|16 0
+1	1 <NUM> 0 1 1|1 0
+ftp://~::1#f=中	ftp <ALPHANUM> 0 3 1|1 <NUM> 9 10 1|f <ALPHANUM> 11 12 1|中 <IDEOGRAPHIC> 13 14 1|14 0
+::1exampleftp://)$a.b	1exampleftp <ALPHANUM> 2 13 1|a.b <ALPHANUM> 18 21 1|21 0
+&	1 0
+"http://file:///>#f-,😀	http://file <URL> 1 12 1|f <ALPHANUM> 18 19 1|😀 <EMOJI> 21 23 1|23 0
+]42é,	42é <ALPHANUM> 1 4 1|5 0
+'ftp://*	ftp <ALPHANUM> 1 4 1|8 0
+<中a.b-file:///	中 <IDEOGRAPHIC> 1 2 1|a.b <ALPHANUM> 2 5 1|file:/// <URL> 6 14 1|14 0
+ 😀	😀 <EMOJI> 1 3 1|3 0
+- 	2 0
+HTTP://1ftp://;	HTTP://1ftp <URL> 0 11 1|15 0
+_中=(@]	中 <IDEOGRAPHIC> 1 2 1|6 0
+192.168.0.1:a.b**>*.co.uk	192.168.0.1 <URL> 0 11 1|a.b <ALPHANUM> 12 15 1|co.uk <URL> 20 25 1|25 0
+$:808042192.168.0.1HTTP://42	808042192.168.0.1HTTP <ALPHANUM> 2 23 1|42 <NUM> 26 28 1|28 0
+é::1'	é <ALPHANUM> 0 1 1|1 <NUM> 3 4 1|5 0
+#fmailto:[.com	fmailto <ALPHANUM> 1 8 1|com <ALPHANUM> 11 14 1|14 0
+http://user(mailto::8080HTTP://	http://user <URL> 0 11 1|mailto <ALPHANUM> 12 18 1|8080HTTP <ALPHANUM> 20 28 1|31 0
+example:8080!中中example=	example <ALPHANUM> 0 7 1|8080 <NUM> 8 12 1|中 <IDEOGRAPHIC> 13 14 1|中 <IDEOGRAPHIC> 14 15 1|example <ALPHANUM> 15 22 1|23 0
+ftp://;>a.b?q=1@/	ftp <ALPHANUM> 0 3 1|a.b <ALPHANUM> 8 11 1|q <ALPHANUM> 12 13 1|1 <NUM> 14 15 1|17 0
+"@	2 0
+.com$!<	com <ALPHANUM> 1 4 1|7 0
+.co.ukwww.	co.ukwww <ALPHANUM> 1 9 1|10 0
+.co.uk#fexamplexn--p1ai:8080%20HTTP://	co.uk#fexamplexn--p1ai:8080%20HTTP:// <URL> 1 38 1|38 0
+~!user	user <ALPHANUM> 2 6 1|6 0
+.	1 0
+#f	f <ALPHANUM> 1 2 1|2 0
+  file:///*#f!😀	file:/// <URL> 2 10 1|f <ALPHANUM> 12 13 1|😀 <EMOJI> 14 16 1|16 0
+/ .#f	f <ALPHANUM> 4 5 1|5 0
+%20"HTTP://@~	20 <NUM> 1 3 1|HTTP <ALPHANUM> 4 8 1|13 0
+😀?q=1~	😀 <EMOJI> 0 2 1|q <ALPHANUM> 3 4 1|1 <NUM> 5 6 1|7 0
+localhost.co.ukHTTP://中(	localhost.co.ukHTTP <ALPHANUM> 0 19 1|中 <IDEOGRAPHIC> 22 23 1|24 0
++tag~localhost$中	tag <ALPHANUM> 1 4 1|localhost <ALPHANUM> 5 14 1|中 <IDEOGRAPHIC> 15 16 1|16 0
+.co.uk&%20😀:8080	co.uk <URL> 1 6 1|20 <NUM> 8 10 1|😀 <EMOJI> 10 12 1|8080 <NUM> 13 17 1|17 0
+1	1 <NUM> 0 1 1|1 0
+@192.168.0.1+tag	192.168.0.1 <URL> 1 12 1|tag <ALPHANUM> 13 16 1|16 0
+HTTP:// ,]:8080+tagHTTP://	HTTP <ALPHANUM> 0 4 1|8080 <NUM> 11 15 1|tagHTTP <ALPHANUM> 16 23 1|26 0
+中'中$www.[	中 <IDEOGRAPHIC> 0 1 1|中 <IDEOGRAPHIC> 2 3 1|www <ALPHANUM> 4 7 1|9 0
+user😀https://ftp://	user <ALPHANUM> 0 4 1|😀 <EMOJI> 4 6 1|https://ftp <URL> 6 17 1|20 0
+![-'	4 0
+.'-;a.b192.168.0.1	a.b192.168.0.1 <ALPHANUM> 4 18 1|18 0
+.%20.com+tag.co.uk;~x	20.com <URL> 2 8 1|tag.co.uk <URL> 9 18 1|x <ALPHANUM> 20 21 1|21 0
+1$)#f@.com1user	1 <NUM> 0 1 1|f <ALPHANUM> 4 5 1|com1user <ALPHANUM> 7 15 1|15 0
+1x<"<x><	1x <ALPHANUM> 0 2 1|x <ALPHANUM> 5 6 1|8 0
+"[HTTP://xn--p1ai*	HTTP://xn--p1ai <URL> 2 17 1|18 0
+[!:8080%20~".com	8080 <NUM> 3 7 1|20 <NUM> 8 10 1|com <ALPHANUM> 13 16 1|16 0
+user"	user <ALPHANUM> 0 4 1|5 0
+:192.168.0.1"](	192.168.0.1 <URL> 1 12 1|15 0
+*#f42::1	f42 <ALPHANUM> 2 5 1|1 <NUM> 7 8 1|8 0
+/ftp://example	ftp <ALPHANUM> 1 4 1|example <ALPHANUM> 7 14 1|14 0
+.co.ukwww.$:8080--	co.ukwww <ALPHANUM> 1 9 1|8080 <NUM> 12 16 1|18 0
+::1:8080);https://HTTP://]	1 <NUM> 2 3 1|8080 <NUM> 4 8 1|https://HTTP <URL> 10 22 1|26 0
+192.168.0.1)(user:	192.168.0.1 <URL> 0 11 1|user <ALPHANUM> 13 17 1|18 0
+.co.uk]'	co.uk <URL> 1 6 1|8 0
+userlocalhost/:  mailto:*  	userlocalhost <ALPHANUM> 0 13 1|mailto <ALPHANUM> 17 23 1|27 0
+:http://+tag%20]	http <ALPHANUM> 1 5 1|tag <ALPHANUM> 9 12 1|20 <NUM> 13 15 1|16 0
+<",$	4 0
+;<192.168.0.1#fHTTP://&>	192.168.0.1#fHTTP://& <URL> 2 23 1|24 0
+[[<"(:::1xn--p1ai	1xn <ALPHANUM> 8 11 1|p1ai <ALPHANUM> 13 17 1|17 0
+:8080a.b&	8080a.b <ALPHANUM> 1 8 1|9 0
+!#f"	f <ALPHANUM> 2 3 1|4 0
+;<www.-😀	www <ALPHANUM> 2 5 1|😀 <EMOJI> 7 9 1|9 0
+file:///localhost	file:///localhost <URL> 0 17 1|17 0
+?q=1~HTTP://?q=1  ftp:// _	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|HTTP <ALPHANUM> 5 9 1|q <ALPHANUM> 13 14 1|1 <NUM> 15 16 1|ftp <ALPHANUM> 18 21 1|26 0
+😀xa.buser_	😀 <EMOJI> 0 2 1|xa.buser_ <ALPHANUM> 2 11 1|11 0
+::808011]	808011 <NUM> 2 8 1|9 0
+.co.ukftp://	co.ukftp <ALPHANUM> 1 9 1|12 0
+  -HTTP://));*	HTTP <ALPHANUM> 3 7 1|14 0
+"mailto:  ;www.42.com~	mailto <ALPHANUM> 1 7 1|www.42.com <URL> 11 21 1|22 0
+@::1?q=1ftp://user	1 <NUM> 3 4 1|q <ALPHANUM> 5 6 1|1ftp <ALPHANUM> 7 11 1|user <ALPHANUM> 14 18 1|18 0
+.co.uk])	co.uk <URL> 1 6 1|8 0
+/$	2 0
+https://	https <ALPHANUM> 0 5 1|8 0
+142)	142 <NUM> 0 3 1|4 0
+=http://x	http://x <URL> 1 9 1|9 0
+)	1 0
+user	user <ALPHANUM> 0 4 1|4 0
+-	1 0
+::1$	1 <NUM> 2 3 1|4 0
+]4242 192.168.0.1www.ftp://mailto:	4242 <NUM> 1 5 1|192.168.0.1www.ftp <ALPHANUM> 6 24 1|mailto <ALPHANUM> 27 33 1|34 0
+~	1 0
+)@xn--p1ai	xn <ALPHANUM> 2 4 1|p1ai <ALPHANUM> 6 10 1|10 0
+  www._:8080	www <ALPHANUM> 2 5 1|8080 <NUM> 8 12 1|12 0
+;mailto:$;192.168.0.1	mailto <ALPHANUM> 1 7 1|192.168.0.1 <URL> 10 21 1|21 0
+example~]"中file:///	example <ALPHANUM> 0 7 1|中 <IDEOGRAPHIC> 10 11 1|file:/// <URL> 11 19 1|19 0
+中xftp://"	中 <IDEOGRAPHIC> 0 1 1|xftp <ALPHANUM> 1 5 1|9 0
+http://$?q=1?q=1	http <ALPHANUM> 0 4 1|q <ALPHANUM> 9 10 1|1 <NUM> 11 12 1|q <ALPHANUM> 13 14 1|1 <NUM> 15 16 1|16 0
+42'(😀中?q=1	42 <NUM> 0 2 1|😀 <EMOJI> 4 6 1|中 <IDEOGRAPHIC> 6 7 1|q <ALPHANUM> 8 9 1|1 <NUM> 10 11 1|11 0
+ftp://HTTP://localhost中xn--p1ai;.	ftp <ALPHANUM> 0 3 1|HTTP://localhost <URL> 6 22 1|中 <IDEOGRAPHIC> 22 23 1|xn <ALPHANUM> 23 25 1|p1ai <ALPHANUM> 27 31 1|33 0
+userfile:///'	userfile <ALPHANUM> 0 8 1|13 0
++tag:-.co.uk#f%20	tag <ALPHANUM> 1 4 1|co.uk#f%20 <URL> 7 17 1|17 0
+192.168.0.1	192.168.0.1 <URL> 0 11 1|11 0
+file:///:8080😀x	file:///:8080 <URL> 0 13 1|😀 <EMOJI> 13 15 1|x <ALPHANUM> 15 16 1|16 0
+     @https://	https <ALPHANUM> 6 11 1|14 0
+https://1(https://	https://1 <URL> 0 9 1|https <ALPHANUM> 10 15 1|18 0
+42%20xn--p1ai.-	42 <NUM> 0 2 1|20xn <ALPHANUM> 3 7 1|p1ai <ALPHANUM> 9 13 1|15 0
+"_xn--p1aihttp://	_xn <ALPHANUM> 1 4 1|p1aihttp <ALPHANUM> 6 14 1|17 0
+localhost	localhost <ALPHANUM> 0 9 1|9 0
+😀"https://>"xn--p1ai~https://	😀 <EMOJI> 0 2 1|https <ALPHANUM> 3 8 1|xn <ALPHANUM> 13 15 1|p1ai <ALPHANUM> 17 21 1|https <ALPHANUM> 22 27 1|30 0
+éHTTP://!)  	éHTTP <ALPHANUM> 0 5 1|12 0
+#f>mailto:>#f	f <ALPHANUM> 1 2 1|mailto <ALPHANUM> 3 9 1|f <ALPHANUM> 12 13 1|13 0
+"?q=1	q <ALPHANUM> 2 3 1|1 <NUM> 4 5 1|5 0
+/localhost*mailto:=HTTP://	localhost <ALPHANUM> 1 10 1|mailto <ALPHANUM> 11 17 1|HTTP <ALPHANUM> 19 23 1|26 0
+::1	1 <NUM> 2 3 1|3 0
+file:///-file:////www.example	file:///-file:////www.example <URL> 0 29 1|29 0
+é._HTTP://	é <ALPHANUM> 0 1 1|_HTTP <ALPHANUM> 2 7 1|10 0
+ :8080'xn--p1ai=.com[	8080 <NUM> 2 6 1|xn <ALPHANUM> 7 9 1|p1ai <ALPHANUM> 11 15 1|com <ALPHANUM> 17 20 1|21 0
+x [.com$42	x <ALPHANUM> 0 1 1|com <ALPHANUM> 4 7 1|42 <NUM> 8 10 1|10 0
+HTTP://	HTTP <ALPHANUM> 0 4 1|7 0
+("	2 0
+😀~😀	😀 <EMOJI> 0 2 1|😀 <EMOJI> 3 5 1|5 0
+HTTP://	HTTP <ALPHANUM> 0 4 1|7 0
+.co.uk&ftp://!file:///_	co.uk <URL> 1 6 1|ftp <ALPHANUM> 7 10 1|file:///_ <URL> 14 23 1|23 0
+"	1 0
+/;?q=1.co.ukexample?q=1.co.uk%20	q <ALPHANUM> 3 4 1|1.co <URL> 5 9 1|ukexample <ALPHANUM> 10 19 1|q <ALPHANUM> 20 21 1|1.co.uk <URL> 22 29 1|20 <NUM> 30 32 1|32 0
+ftp://.>:8080+tagxn--p1ai	ftp <ALPHANUM> 0 3 1|8080 <NUM> 9 13 1|tagxn <ALPHANUM> 14 19 1|p1ai <ALPHANUM> 21 25 1|25 0
+]"!42&	42 <NUM> 3 5 1|6 0
+$[=?q=1	q <ALPHANUM> 4 5 1|1 <NUM> 6 7 1|7 0
+é	é <ALPHANUM> 0 1 1|1 0
+1a.b42	1a.b42 <ALPHANUM> 0 6 1|6 0
+.com@192.168.0.1?q=1	com <ALPHANUM> 1 4 1|192.168.0.1?q=1 <URL> 5 20 1|20 0
+,  user😀%20=	user <ALPHANUM> 3 7 1|😀 <EMOJI> 7 9 1|20 <NUM> 10 12 1|13 0
+[http:///&a.b~	http <ALPHANUM> 1 5 1|a.b <ALPHANUM> 10 13 1|14 0
+*www.]!.co.uk	www <ALPHANUM> 1 4 1|co.uk <URL> 8 13 1|13 0
+>,exampleHTTP://	exampleHTTP <ALPHANUM> 2 13 1|16 0
+~a.b<~	a.b <ALPHANUM> 1 4 1|6 0
+中  www.mailto:	中 <IDEOGRAPHIC> 0 1 1|www.mailto <ALPHANUM> 3 13 1|14 0
+"  ]>*.co.uk	co.uk <URL> 7 12 1|12 0
+[	1 0
+*+taghttps://	taghttps <ALPHANUM> 2 10 1|13 0
+['http://'😀中	http <ALPHANUM> 2 6 1|😀 <EMOJI> 10 12 1|中 <IDEOGRAPHIC> 12 13 1|13 0
+<:;)*xn--p1aia.b.	xn <ALPHANUM> 5 7 1|p1aia.b <ALPHANUM> 9 16 1|17 0
+:https://	https <ALPHANUM> 1 6 1|9 0
+::1(é::1&xn--p1ai	1 <NUM> 2 3 1|é <ALPHANUM> 4 5 1|1 <NUM> 7 8 1|xn <ALPHANUM> 9 11 1|p1ai <ALPHANUM> 13 17 1|17 0
+xn--p1aiHTTP://~ftp://#f&xexample	xn <ALPHANUM> 0 2 1|p1aiHTTP <ALPHANUM> 4 12 1|ftp <ALPHANUM> 16 19 1|f <ALPHANUM> 23 24 1|xexample <ALPHANUM> 25 33 1|33 0
+$42<ftp://example-	42 <NUM> 1 3 1|ftp <ALPHANUM> 4 7 1|example <ALPHANUM> 10 17 1|18 0
+/	1 0
+*中" "	中 <IDEOGRAPHIC> 1 2 1|5 0
+:	1 0
+userHTTP://=xn--p1ai/	userHTTP <ALPHANUM> 0 8 1|xn <ALPHANUM> 12 14 1|p1ai <ALPHANUM> 16 20 1|21 0
+=.com	com <ALPHANUM> 2 5 1|5 0
+/#f	f <ALPHANUM> 2 3 1|3 0
+    @	5 0
+HTTP://x!*usermailto:1	HTTP://x <URL> 0 8 1|usermailto <ALPHANUM> 10 20 1|1 <NUM> 21 22 1|22 0
+,xn--p1aiHTTP://	xn <ALPHANUM> 1 3 1|p1aiHTTP <ALPHANUM> 5 13 1|16 0
+&xn--p1ai&;"-	xn <ALPHANUM> 1 3 1|p1ai <ALPHANUM> 5 9 1|13 0
+*  =example	example <ALPHANUM> 4 11 1|11 0
+http://user_#f*	http://user <URL> 0 11 1|f <ALPHANUM> 13 14 1|15 0
+@*	2 0
+1.%20中a.bhttp://	1 <NUM> 0 1 1|20 <NUM> 3 5 1|中 <IDEOGRAPHIC> 5 6 1|a.bhttp <ALPHANUM> 6 13 1|16 0
+).com https:///-/	com <ALPHANUM> 2 5 1|https <ALPHANUM> 6 11 1|17 0
+😀	😀 <EMOJI> 0 2 1|2 0
+=https://']localhostxn--p1ai(:8080	https <ALPHANUM> 1 6 1|localhostxn <ALPHANUM> 11 22 1|p1ai <ALPHANUM> 24 28 1|8080 <NUM> 30 34 1|34 0
+$localhost~HTTP://;:user"	localhost <ALPHANUM> 1 10 1|HTTP <ALPHANUM> 11 15 1|user <ALPHANUM> 20 24 1|25 0
+<>file:///#f[	file:///#f <URL> 2 12 1|13 0
+émailto:+tag.co.uk.HTTP://x	émailto <ALPHANUM> 0 7 1|tag.co.uk.HTTP <ALPHANUM> 9 23 1|x <ALPHANUM> 26 27 1|27 0
+)$%20	20 <NUM> 3 5 1|5 0
+example]_-[=	example <ALPHANUM> 0 7 1|12 0
+>HTTP://'!%20	HTTP <ALPHANUM> 1 5 1|20 <NUM> 11 13 1|13 0
+" mailto:192.168.0.1192.168.0.1	mailto <ALPHANUM> 2 8 1|192.168.0.1192.168.0.1 <NUM> 9 31 1|31 0
+a.b#flocalhost$	a.b <ALPHANUM> 0 3 1|flocalhost <ALPHANUM> 4 14 1|15 0
+)::1::1?q=1.co.uk	1 <NUM> 3 4 1|1 <NUM> 6 7 1|q <ALPHANUM> 8 9 1|1.co.uk <URL> 10 17 1|17 0
+*)42-.co.uk	42 <NUM> 2 4 1|co.uk <URL> 6 11 1|11 0
+%20.co.ukexample::1-+tag192.168.0.11	20.co <URL> 1 6 1|ukexample <ALPHANUM> 7 16 1|1 <NUM> 18 19 1|tag192.168.0.11 <ALPHANUM> 21 36 1|36 0
+@)	2 0
+localhost_$file:///?q=1'#f#f	localhost_ <ALPHANUM> 0 10 1|file:///?q=1 <URL> 11 23 1|f <ALPHANUM> 25 26 1|f <ALPHANUM> 27 28 1|28 0
+:8080-	8080 <NUM> 1 5 1|6 0
+HTTP://'@	HTTP <ALPHANUM> 0 4 1|9 0
+&:.xa.bhttps://::1mailto:	xa.bhttps <ALPHANUM> 3 12 1|1mailto <ALPHANUM> 17 24 1|25 0
+192.168.0.1  .co.uk(:8080=	192.168.0.1 <URL> 0 11 1|co.uk <URL> 14 19 1|8080 <NUM> 21 25 1|26 0
+file:///	file:/// <URL> 0 8 1|8 0
+.1:.😀].co.uk.com	1 <NUM> 1 2 1|😀 <EMOJI> 4 6 1|co.uk.com <URL> 8 17 1|17 0
+$https://user	https://user <URL> 1 13 1|13 0
+%20).com:1*	20 <NUM> 1 3 1|com <ALPHANUM> 5 8 1|1 <NUM> 9 10 1|11 0
+'.co.uk/ftp:///mailto:	co.uk/ftp:///mailto: <URL> 2 22 1|22 0
+/mailto:],http://	mailto <ALPHANUM> 1 7 1|http <ALPHANUM> 10 14 1|17 0
+https://$é	https <ALPHANUM> 0 5 1|é <ALPHANUM> 9 10 1|10 0
+;:8080http://$"	8080http <ALPHANUM> 2 10 1|15 0
+http://$	http <ALPHANUM> 0 4 1|8 0
+/:8080<example&@	8080 <NUM> 2 6 1|example <ALPHANUM> 7 14 1|16 0
+~#fhttps://"😀#f	fhttps <ALPHANUM> 2 8 1|😀 <EMOJI> 12 14 1|f <ALPHANUM> 15 16 1|16 0
+;user !+tagxlocalhost>	user <ALPHANUM> 1 5 1|tagxlocalhost <ALPHANUM> 8 21 1|22 0
+HTTP://http://'.x	HTTP://http <URL> 0 11 1|x <ALPHANUM> 16 17 1|17 0
+'	1 0
+)+tag	tag <ALPHANUM> 2 5 1|5 0
+]ééxn--p1ai)]1user	ééxn <ALPHANUM> 1 5 1|p1ai <ALPHANUM> 7 11 1|1user <ALPHANUM> 13 18 1|18 0
+]ftp://file:///!,	ftp <ALPHANUM> 1 4 1|file:/// <URL> 7 15 1|17 0
+~$	2 0
+localhost[]HTTP://中,	localhost <ALPHANUM> 0 9 1|HTTP <ALPHANUM> 11 15 1|中 <IDEOGRAPHIC> 18 19 1|20 0
+https://42www.	https://42www <URL> 0 13 1|14 0
+::1example>>	1example <ALPHANUM> 2 10 1|12 0
+example	example <ALPHANUM> 0 7 1|7 0
+$examplelocalhost	examplelocalhost <ALPHANUM> 1 17 1|17 0
+a.b::1)&  :8080/_	a.b <ALPHANUM> 0 3 1|1 <NUM> 5 6 1|8080 <NUM> 11 15 1|17 0
+中)example	中 <IDEOGRAPHIC> 0 1 1|example <ALPHANUM> 2 9 1|9 0
+_https://[user	_https <ALPHANUM> 0 6 1|user <ALPHANUM> 10 14 1|14 0
+example~!😀	example <ALPHANUM> 0 7 1|😀 <EMOJI> 9 11 1|11 0
++tag&	tag <ALPHANUM> 1 4 1|5 0
+example  "HTTP://www.	example <ALPHANUM> 0 7 1|HTTP://www <URL> 10 20 1|21 0
+=)ftp://]:$/	ftp <ALPHANUM> 2 5 1|12 0
++taglocalhost].commailto:a.b	taglocalhost <ALPHANUM> 1 13 1|commailto:a.b <ALPHANUM> 15 28 1|28 0
+:8080]é*[.co.uk	8080 <NUM> 1 5 1|é <ALPHANUM> 6 7 1|co.uk <URL> 10 15 1|15 0
+>?q=1	q <ALPHANUM> 2 3 1|1 <NUM> 4 5 1|5 0
+)1.comexample	1 <NUM> 1 2 1|comexample <ALPHANUM> 3 13 1|13 0
+(userhttp://&.	userhttp <ALPHANUM> 1 9 1|14 0
+'mailto:é/._ 	mailto:é <ALPHANUM> 1 9 1|13 0
+%20😀+tag192.168.0.1*exampleftp://	20 <NUM> 1 3 1|😀 <EMOJI> 3 5 1|tag192.168.0.1 <ALPHANUM> 6 20 1|exampleftp <ALPHANUM> 21 31 1|34 0
+localhost1#f'.=42@	localhost1 <ALPHANUM> 0 10 1|f <ALPHANUM> 11 12 1|42 <NUM> 15 17 1|18 0
+<**中localhostftp://,*	中 <IDEOGRAPHIC> 3 4 1|localhostftp <ALPHANUM> 4 16 1|21 0
+x	x <ALPHANUM> 0 1 1|1 0
+https://::1HTTP://@(&user	https <ALPHANUM> 0 5 1|1HTTP <ALPHANUM> 10 15 1|user <ALPHANUM> 21 25 1|25 0
+x	x <ALPHANUM> 0 1 1|1 0
+.	1 0
+%20	20 <NUM> 1 3 1|3 0
+xn--p1ai<user= 	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|user <ALPHANUM> 9 13 1|15 0
+];localhostHTTP://(@$a.b	localhostHTTP <ALPHANUM> 2 15 1|a.b <ALPHANUM> 21 24 1|24 0
+1!file:///http://,	1 <NUM> 0 1 1|file:///http:// <URL> 2 17 1|18 0
+$	1 0
+mailto:x	mailto:x <ALPHANUM> 0 8 1|8 0
+.$(1-!user	1 <NUM> 3 4 1|user <ALPHANUM> 6 10 1|10 0
+)http://&@192.168.0.1>HTTP://	http://&@192.168.0.1 <URL> 1 21 1|HTTP <ALPHANUM> 22 26 1|29 0
+"($1	1 <NUM> 3 4 1|4 0
+examplemailto:/@	examplemailto <ALPHANUM> 0 13 1|16 0
+::1:<localhost	1 <NUM> 2 3 1|localhost <ALPHANUM> 5 14 1|14 0
+.>http://!https://	http <ALPHANUM> 2 6 1|https <ALPHANUM> 10 15 1|18 0
+42	42 <NUM> 0 2 1|2 0
+;'1%20$	1 <NUM> 2 3 1|20 <NUM> 4 6 1|7 0
+,$	2 0
+xn--p1ai>mailto:,x	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|mailto <ALPHANUM> 9 15 1|x <ALPHANUM> 17 18 1|18 0
+é)	é <ALPHANUM> 0 1 1|2 0
+HTTP://	HTTP <ALPHANUM> 0 4 1|7 0
+$	1 0
+ftp://#f;42?q=1	ftp <ALPHANUM> 0 3 1|f <ALPHANUM> 7 8 1|42 <NUM> 9 11 1|q <ALPHANUM> 12 13 1|1 <NUM> 14 15 1|15 0
+_	1 0
+.~xn--p1ai#fmailto:	xn <ALPHANUM> 2 4 1|p1ai <ALPHANUM> 6 10 1|fmailto <ALPHANUM> 11 18 1|19 0
+ .co.uk=file:///	co.uk <URL> 2 7 1|file:/// <URL> 8 16 1|16 0
+ftp://@	ftp <ALPHANUM> 0 3 1|7 0
+ ?q=1(https://HTTP://"	q <ALPHANUM> 2 3 1|1 <NUM> 4 5 1|https://HTTP <URL> 6 18 1|22 0
+:8080	8080 <NUM> 1 5 1|5 0
+1+tag	1 <NUM> 0 1 1|tag <ALPHANUM> 2 5 1|5 0
+$.com  	com <ALPHANUM> 2 5 1|7 0
+a.b$	a.b <ALPHANUM> 0 3 1|4 0
+ ~.com&" [	com <ALPHANUM> 3 6 1|10 0
+xn--p1aiwww.<éftp:///	xn <ALPHANUM> 0 2 1|p1aiwww <ALPHANUM> 4 11 1|éftp <ALPHANUM> 13 17 1|21 0
+/&	2 0
+www.	www <ALPHANUM> 0 3 1|4 0
+>>,	3 0
+xn--p1aiHTTP://#f:8080localhost"!	xn <ALPHANUM> 0 2 1|p1aiHTTP <ALPHANUM> 4 12 1|f <ALPHANUM> 16 17 1|8080localhost <ALPHANUM> 18 31 1|33 0
+x.com!	x.com <URL> 0 5 1|6 0
+?q=142😀	q <ALPHANUM> 1 2 1|142 <NUM> 3 6 1|😀 <EMOJI> 6 8 1|8 0
+=/$<example	example <ALPHANUM> 4 11 1|11 0
+~	1 0
+localhost!example	localhost <ALPHANUM> 0 9 1|example <ALPHANUM> 10 17 1|17 0
+::1	1 <NUM> 2 3 1|3 0
+(ftp://a.b	ftp <ALPHANUM> 1 4 1|a.b <ALPHANUM> 7 10 1|10 0
+:,<#f1a.b$"	f1a.b <ALPHANUM> 4 9 1|11 0
+😀"192.168.0.1_	😀 <EMOJI> 0 2 1|192.168.0.1_ <NUM> 3 15 1|15 0
+!	1 0
+localhost.comxn--p1aiexample"	localhost.comxn <ALPHANUM> 0 15 1|p1aiexample <ALPHANUM> 17 28 1|29 0
+http://www.!-_+tag%20file:///	http://www <URL> 0 10 1|tag <ALPHANUM> 15 18 1|20file <ALPHANUM> 19 25 1|29 0
+42192.168.0.1<%20"http://a.b	42192.168.0.1 <NUM> 0 13 1|20 <NUM> 15 17 1|http://a.b <URL> 18 28 1|28 0
+*.com#f"	com <ALPHANUM> 2 5 1|f <ALPHANUM> 6 7 1|8 0
+<[a.bxn--p1ai~[	a.bxn <ALPHANUM> 2 7 1|p1ai <ALPHANUM> 9 13 1|15 0
+éhttp://.com😀+taga.b?q=1'	éhttp <ALPHANUM> 0 5 1|com <ALPHANUM> 9 12 1|😀 <EMOJI> 12 14 1|taga.b <ALPHANUM> 15 21 1|q <ALPHANUM> 22 23 1|1 <NUM> 24 25 1|26 0
+file:///:https://'HTTP://>😀	file:///:https:// <URL> 0 17 1|HTTP <ALPHANUM> 18 22 1|😀 <EMOJI> 26 28 1|28 0
+(192.168.0.1	192.168.0.1 <URL> 1 12 1|12 0
+~	1 0
+.co.uk  é	co.uk <URL> 1 6 1|é <ALPHANUM> 8 9 1|9 0
+"::1é	1é <ALPHANUM> 3 5 1|5 0
+(@ftp://'192.168.0.1+tag%20	ftp <ALPHANUM> 2 5 1|192.168.0.1 <URL> 9 20 1|tag <ALPHANUM> 21 24 1|20 <NUM> 25 27 1|27 0
+,.é	é <ALPHANUM> 2 3 1|3 0
+HTTP://,>(https://	HTTP <ALPHANUM> 0 4 1|https <ALPHANUM> 10 15 1|18 0
+.com"[~	com <ALPHANUM> 1 4 1|7 0
+x<!  $::14242	x <ALPHANUM> 0 1 1|14242 <NUM> 8 13 1|13 0
+.	1 0
+www.;http://[https://	www <ALPHANUM> 0 3 1|http <ALPHANUM> 5 9 1|https <ALPHANUM> 13 18 1|21 0
+//#f	f <ALPHANUM> 3 4 1|4 0
+.co.ukx-mailto::!1@	co.ukx <ALPHANUM> 1 7 1|mailto <ALPHANUM> 8 14 1|1 <NUM> 17 18 1|19 0
+_::1	1 <NUM> 3 4 1|4 0
+😀http://mailto:~	😀 <EMOJI> 0 2 1|http://mailto <URL> 2 15 1|17 0
+mailto:	mailto <ALPHANUM> 0 6 1|7 0
+-a.b"<	a.b <ALPHANUM> 1 4 1|6 0
+(,.www.%20www.+tag:	www <ALPHANUM> 3 6 1|20www <ALPHANUM> 8 13 1|tag <ALPHANUM> 15 18 1|19 0
+::1/xn--p1ai:8080/x	1 <NUM> 2 3 1|xn <ALPHANUM> 4 6 1|p1ai <ALPHANUM> 8 12 1|8080 <NUM> 13 17 1|x <ALPHANUM> 18 19 1|19 0
+,192.168.0.1+tag	192.168.0.1 <URL> 1 12 1|tag <ALPHANUM> 13 16 1|16 0
+"<192.168.0.1!(HTTP://	192.168.0.1 <URL> 2 13 1|HTTP <ALPHANUM> 15 19 1|22 0
+192.168.0.1>-	192.168.0.1 <URL> 0 11 1|13 0
+.	1 0
+😀"	😀 <EMOJI> 0 2 1|3 0
+%20	20 <NUM> 1 3 1|3 0
+).com_😀:8080x'[	com_ <ALPHANUM> 2 6 1|😀 <EMOJI> 6 8 1|8080x <ALPHANUM> 9 14 1|16 0
+42  éa.b[file:///:8080https://	42 <NUM> 0 2 1|éa.b <ALPHANUM> 4 8 1|file:///:8080https:// <URL> 9 30 1|30 0
+-	1 0
+.com&:8080x/>localhost	com <ALPHANUM> 1 4 1|8080x <ALPHANUM> 6 11 1|localhost <ALPHANUM> 13 22 1|22 0
+,user>mailto:	user <ALPHANUM> 1 5 1|mailto <ALPHANUM> 6 12 1|13 0
+*) 42'	42 <NUM> 3 5 1|6 0
+::1@http://:8080$example	1 <NUM> 2 3 1|http <ALPHANUM> 4 8 1|8080 <NUM> 12 16 1|example <ALPHANUM> 17 24 1|24 0
+examplehttp://]😀	examplehttp <ALPHANUM> 0 11 1|😀 <EMOJI> 15 17 1|17 0
+'#fexample#f*:8080https://	fexample <ALPHANUM> 2 10 1|f <ALPHANUM> 11 12 1|8080https <ALPHANUM> 14 23 1|26 0
+*localhost192.168.0.1?q=1[]42  	localhost192.168.0.1 <ALPHANUM> 1 21 1|q <ALPHANUM> 22 23 1|1 <NUM> 24 25 1|42 <NUM> 27 29 1|31 0
+😀]:8080@.$1	😀 <EMOJI> 0 2 1|8080 <NUM> 4 8 1|1 <NUM> 11 12 1|12 0
+#f)&.  192.168.0.1xn--p1ai	f <ALPHANUM> 1 2 1|192.168.0.1xn <ALPHANUM> 7 20 1|p1ai <ALPHANUM> 22 26 1|26 0
+<	1 0
+😀=)&(][	😀 <EMOJI> 0 2 1|8 0
+?q=1 .comhttp://?q=1.1	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|comhttp <ALPHANUM> 6 13 1|q <ALPHANUM> 17 18 1|1.1 <NUM> 19 22 1|22 0
+)	1 0
+>xn--p1ai<~/'--	xn <ALPHANUM> 1 3 1|p1ai <ALPHANUM> 5 9 1|15 0
+user	user <ALPHANUM> 0 4 1|4 0
+;	1 0
+1	1 <NUM> 0 1 1|1 0
+useré中:8080?q=1;:~	useré <ALPHANUM> 0 5 1|中 <IDEOGRAPHIC> 5 6 1|8080 <NUM> 7 11 1|q <ALPHANUM> 12 13 1|1 <NUM> 14 15 1|18 0
+.com	com <ALPHANUM> 1 4 1|4 0
+&=*(]localhost	localhost <ALPHANUM> 5 14 1|14 0
+file:///_.com::1@-&	file:///_.com::1@-& <URL> 0 19 1|19 0
+[example1  .,HTTP://_	example1 <ALPHANUM> 1 9 1|HTTP <ALPHANUM> 13 17 1|21 0
+www.	www <ALPHANUM> 0 3 1|4 0
+:42::1	42 <NUM> 1 3 1|1 <NUM> 5 6 1|6 0
+HTTP://.co.uk@mailto:a.bmailto:	HTTP://.co.uk@mailto <URL> 0 20 1|a.bmailto <ALPHANUM> 21 30 1|31 0
+/!-).examplexn--p1aimailto:	examplexn <ALPHANUM> 5 14 1|p1aimailto <ALPHANUM> 16 26 1|27 0
+1.com😀/😀~	1.com <URL> 0 5 1|😀 <EMOJI> 5 7 1|😀 <EMOJI> 8 10 1|11 0
+)42中https://$:8080中*	42 <NUM> 1 3 1|中 <IDEOGRAPHIC> 3 4 1|https <ALPHANUM> 4 9 1|8080 <NUM> 14 18 1|中 <IDEOGRAPHIC> 18 19 1|20 0
+:émailto:	émailto <ALPHANUM> 1 8 1|9 0
+(:8080192.168.0.1$	8080192.168.0.1 <NUM> 2 17 1|18 0
+exampleHTTP://~www.	exampleHTTP <ALPHANUM> 0 11 1|www <ALPHANUM> 15 18 1|19 0
+example.comhttp://?q=1-.co.uk)	example.comhttp <ALPHANUM> 0 15 1|q <ALPHANUM> 19 20 1|1 <NUM> 21 22 1|co.uk <URL> 24 29 1|30 0
+http://x":8080https://	http://x <URL> 0 8 1|8080https <ALPHANUM> 10 19 1|22 0
+.	1 0
++tag~HTTP://+tag@	tag <ALPHANUM> 1 4 1|HTTP <ALPHANUM> 5 9 1|tag <ALPHANUM> 13 16 1|17 0
+userhttp:// _>	userhttp <ALPHANUM> 0 8 1|14 0
++tag_	tag_ <ALPHANUM> 1 5 1|5 0
+:~[>	4 0
+localhostwww..com*www.]	localhostwww <ALPHANUM> 0 12 1|com <ALPHANUM> 14 17 1|www <ALPHANUM> 18 21 1|23 0
+ ;#f.com,	f.com <URL> 3 8 1|9 0
+,-user:'	user <ALPHANUM> 2 6 1|8 0
+.HTTP://&http://%20	HTTP <ALPHANUM> 1 5 1|http <ALPHANUM> 9 13 1|20 <NUM> 17 19 1|19 0
+ _	2 0
+  ,_]xn--p1ai!*=	xn <ALPHANUM> 5 7 1|p1ai <ALPHANUM> 9 13 1|16 0
+/www..co.uk  	www <ALPHANUM> 1 4 1|co.uk <URL> 6 11 1|13 0
+$,ftp://	ftp <ALPHANUM> 2 5 1|8 0
+:中a.blocalhost	中 <IDEOGRAPHIC> 1 2 1|a.blocalhost <ALPHANUM> 2 14 1|14 0
+=xlocalhost>[	xlocalhost <ALPHANUM> 1 11 1|13 0
+;	1 0
+;).+tag>	tag <ALPHANUM> 4 7 1|8 0
+example 中😀	example <ALPHANUM> 0 7 1|中 <IDEOGRAPHIC> 8 9 1|😀 <EMOJI> 9 11 1|11 0
+~,	2 0
+(<	2 0
+www.[~http://usera.buser	www <ALPHANUM> 0 3 1|http://usera.buser <URL> 6 24 1|24 0
+=user 	user <ALPHANUM> 1 5 1|6 0
+:_	2 0
+x)1#f  @	x <ALPHANUM> 0 1 1|1 <NUM> 2 3 1|f <ALPHANUM> 4 5 1|8 0
+~.;	3 0
+%20::1😀ftp://  	20 <NUM> 1 3 1|1 <NUM> 5 6 1|😀 <EMOJI> 6 8 1|ftp <ALPHANUM> 8 11 1|16 0
+  +taglocalhost:中::1	taglocalhost <ALPHANUM> 3 15 1|中 <IDEOGRAPHIC> 16 17 1|1 <NUM> 19 20 1|20 0
+localhost~#f/]42😀	localhost <ALPHANUM> 0 9 1|f <ALPHANUM> 11 12 1|42 <NUM> 14 16 1|😀 <EMOJI> 16 18 1|18 0
+a.b:user	a.b:user <ALPHANUM> 0 8 1|8 0
+!xn--p1aiuser/https://42-.co.uk	xn <ALPHANUM> 1 3 1|p1aiuser <ALPHANUM> 5 13 1|https://42 <URL> 14 24 1|co.uk <URL> 26 31 1|31 0
+)~::1	1 <NUM> 4 5 1|5 0
+HTTP://	HTTP <ALPHANUM> 0 4 1|7 0
+**x:<	x <ALPHANUM> 2 3 1|5 0
+%20;HTTP://https://xn--p1ai.com	20 <NUM> 1 3 1|HTTP://https <URL> 4 16 1|xn--p1ai.com <URL> 19 31 1|31 0
+file:///&	file:///& <URL> 0 9 1|9 0
+x/ *=	x <ALPHANUM> 0 1 1|5 0
+%20😀&>1https://""	20 <NUM> 1 3 1|😀 <EMOJI> 3 5 1|1https <ALPHANUM> 7 13 1|18 0
+?q=1;	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|5 0
+ftp://~:#f	ftp <ALPHANUM> 0 3 1|f <ALPHANUM> 9 10 1|10 0
+$mailto:	mailto <ALPHANUM> 1 7 1|8 0
+.#f]#fHTTP://<mailto:	f <ALPHANUM> 2 3 1|fHTTP <ALPHANUM> 5 10 1|mailto <ALPHANUM> 14 20 1|21 0
+*)HTTP://:8080	HTTP <ALPHANUM> 2 6 1|8080 <NUM> 10 14 1|14 0
+mailto:192.168.0.1https://.comxn--p1ai.https://	mailto <ALPHANUM> 0 6 1|192.168.0.1https <ALPHANUM> 7 23 1|comxn <ALPHANUM> 27 32 1|p1ai.https <ALPHANUM> 34 44 1|47 0
+.http://:+tag_*é 	http <ALPHANUM> 1 5 1|tag_ <ALPHANUM> 10 14 1|é <ALPHANUM> 15 16 1|17 0
+%20useré::1	20useré <ALPHANUM> 1 8 1|1 <NUM> 10 11 1|11 0
+/1#f1~	1 <NUM> 1 2 1|f1 <ALPHANUM> 3 5 1|6 0
+~).	3 0
+1	1 <NUM> 0 1 1|1 0
+user.com><1<(.com	user.com <URL> 0 8 1|1 <NUM> 10 11 1|com <ALPHANUM> 14 17 1|17 0
+x<😀a.b	x <ALPHANUM> 0 1 1|😀 <EMOJI> 2 4 1|a.b <ALPHANUM> 4 7 1|7 0
+%20	20 <NUM> 1 3 1|3 0
+  .co.uk<$]::1file:///	co.uk <URL> 3 8 1|1file <ALPHANUM> 13 18 1|22 0
+@42,>	42 <NUM> 1 3 1|5 0
+xn--p1ai/example:8080	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|example <ALPHANUM> 9 16 1|8080 <NUM> 17 21 1|21 0
+HTTP://_;mailto:(?q=1http://-	HTTP <ALPHANUM> 0 4 1|mailto <ALPHANUM> 9 15 1|q <ALPHANUM> 18 19 1|1http <ALPHANUM> 20 25 1|29 0
+@]#f_HTTP://x;	f_HTTP <ALPHANUM> 3 9 1|x <ALPHANUM> 12 13 1|14 0
+42'(	42 <NUM> 0 2 1|4 0
+.co.uk [>"'/	co.uk <URL> 1 6 1|12 0
+1#f	1 <NUM> 0 1 1|f <ALPHANUM> 2 3 1|3 0
+x(  	x <ALPHANUM> 0 1 1|4 0
+192.168.0.1..com	192.168.0.1 <URL> 0 11 1|com <ALPHANUM> 13 16 1|16 0
+[userxlocalhost1é	userxlocalhost1é <ALPHANUM> 1 17 1|17 0
+#f."a.b	f <ALPHANUM> 1 2 1|a.b <ALPHANUM> 4 7 1|7 0
+192.168.0.1localhost/42::1	192.168.0.1localhost <ALPHANUM> 0 20 1|42 <NUM> 21 23 1|1 <NUM> 25 26 1|26 0
+-[examplea.b)	examplea.b <ALPHANUM> 2 12 1|13 0
+(>)https://ftp://	https://ftp <URL> 3 14 1|17 0
+@.com#f	com <ALPHANUM> 2 5 1|f <ALPHANUM> 6 7 1|7 0
+192.168.0.1http://	192.168.0.1http <ALPHANUM> 0 15 1|18 0
+$(	2 0
+= 	2 0
+localhostmailto:=42[www.	localhostmailto <ALPHANUM> 0 15 1|42 <NUM> 17 19 1|www <ALPHANUM> 20 23 1|24 0
+=userlocalhost.com	userlocalhost.com <URL> 1 18 1|18 0
+  !.co.uk;>@	co.uk <URL> 4 9 1|12 0
+HTTP://(x:8080~	HTTP <ALPHANUM> 0 4 1|x <ALPHANUM> 8 9 1|8080 <NUM> 10 14 1|15 0
+https://*.,:8080%20	https <ALPHANUM> 0 5 1|8080 <NUM> 12 16 1|20 <NUM> 17 19 1|19 0
+x;.ftp://localhostx1file:///	x <ALPHANUM> 0 1 1|ftp <ALPHANUM> 3 6 1|localhostx1file <ALPHANUM> 9 24 1|28 0
+!(:8080	8080 <NUM> 3 7 1|7 0
+_xn--p1ai.	_xn <ALPHANUM> 0 3 1|p1ai <ALPHANUM> 5 9 1|10 0
+😀/1192.168.0.1?q=1😀<	😀 <EMOJI> 0 2 1|1192.168.0.1 <NUM> 3 15 1|q <ALPHANUM> 16 17 1|1 <NUM> 18 19 1|😀 <EMOJI> 19 21 1|22 0
+)😀:42&ftp://	😀 <EMOJI> 1 3 1|42 <NUM> 4 6 1|ftp <ALPHANUM> 7 10 1|13 0
+localhost	localhost <ALPHANUM> 0 9 1|9 0
+#f中	f <ALPHANUM> 1 2 1|中 <IDEOGRAPHIC> 2 3 1|3 0
+>mailto:!	mailto <ALPHANUM> 1 7 1|9 0
+#f	f <ALPHANUM> 1 2 1|2 0
+&/é~!xn--p1ai/]	é <ALPHANUM> 2 3 1|xn <ALPHANUM> 5 7 1|p1ai <ALPHANUM> 9 13 1|15 0
+_https://	_https <ALPHANUM> 0 6 1|9 0
+mailto:	mailto <ALPHANUM> 0 6 1|7 0
+)-<	3 0
+[éuser&😀#f!/	éuser <ALPHANUM> 1 6 1|😀 <EMOJI> 7 9 1|f <ALPHANUM> 10 11 1|13 0
+http://中x:8080	http <ALPHANUM> 0 4 1|中 <IDEOGRAPHIC> 7 8 1|x <ALPHANUM> 8 9 1|8080 <NUM> 10 14 1|14 0
+é 	é <ALPHANUM> 0 1 1|2 0
+(&)) ?q=1	q <ALPHANUM> 6 7 1|1 <NUM> 8 9 1|9 0
+;192.168.0.1-.	192.168.0.1 <NUM> 1 12 1|14 0
+éx.co.uk&1;	éx.co.uk <ALPHANUM> 0 8 1|1 <NUM> 9 10 1|11 0
+ !  localhostx.com/user	localhostx.com/user <URL> 4 23 1|23 0
+é_42	é_42 <ALPHANUM> 0 4 1|4 0
+".com?q=1)">xn--p1ai	com <ALPHANUM> 2 5 1|q <ALPHANUM> 6 7 1|1 <NUM> 8 9 1|xn <ALPHANUM> 12 14 1|p1ai <ALPHANUM> 16 20 1|20 0
+x(file:///%20	x <ALPHANUM> 0 1 1|file:///%20 <URL> 2 13 1|13 0
+,	1 0
+?q=1.	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|5 0
+[  ;%20<]	20 <NUM> 5 7 1|9 0
+<~xn--p1ai:?q=1192.168.0.1::1	xn <ALPHANUM> 2 4 1|p1ai <ALPHANUM> 6 10 1|q <ALPHANUM> 12 13 1|1192.168.0.1 <NUM> 14 26 1|1 <NUM> 28 29 1|29 0
+x	x <ALPHANUM> 0 1 1|1 0
+😀localhost:	😀 <EMOJI> 0 2 1|localhost <ALPHANUM> 2 11 1|12 0
+a.bxx.co.uk&.+tag	a.bxx.co.uk <URL> 0 11 1|tag <ALPHANUM> 14 17 1|17 0
+xn--p1ailocalhost!&.co.uk😀localhostfile:///	xn <ALPHANUM> 0 2 1|p1ailocalhost <ALPHANUM> 4 17 1|co.uk <URL> 20 25 1|😀 <EMOJI> 25 27 1|localhostfile <ALPHANUM> 27 40 1|44 0
+%20exampleé,example(example	20exampleé <ALPHANUM> 1 11 1|example <ALPHANUM> 12 19 1|example <ALPHANUM> 20 27 1|27 0
+(xn--p1ai.com.com  192.168.0.1  mailto:	xn--p1ai.com.com <URL> 1 17 1|192.168.0.1 <URL> 19 30 1|mailto <ALPHANUM> 32 38 1|39 0
+example	example <ALPHANUM> 0 7 1|7 0
+https://xn--p1ai]*/	https://xn--p1ai <URL> 0 16 1|19 0
+example'*	example <ALPHANUM> 0 7 1|9 0
+#f$file:///example1	f <ALPHANUM> 1 2 1|file:///example1 <URL> 3 19 1|19 0
+1.é#f>example(ftp://	1 <NUM> 0 1 1|é <ALPHANUM> 2 3 1|f <ALPHANUM> 4 5 1|example <ALPHANUM> 6 13 1|ftp <ALPHANUM> 14 17 1|20 0
+?q=1+tag_#f]"'localhost	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|tag_ <ALPHANUM> 5 9 1|f <ALPHANUM> 10 11 1|localhost <ALPHANUM> 14 23 1|23 0
+(_](	4 0
++tagftp://[example	tagftp <ALPHANUM> 1 7 1|example <ALPHANUM> 11 18 1|18 0
+"mailto:(file:///_	mailto <ALPHANUM> 1 7 1|file:///_ <URL> 9 18 1|18 0
+(192.168.0.1😀example#f	192.168.0.1 <URL> 1 12 1|😀 <EMOJI> 12 14 1|example <ALPHANUM> 14 21 1|f <ALPHANUM> 22 23 1|23 0
+http://éwww.	http <ALPHANUM> 0 4 1|éwww <ALPHANUM> 7 11 1|12 0
+$	1 0
+:'https://	https <ALPHANUM> 2 7 1|10 0
+*]:@www.xn--p1ai	www.xn--p1ai <URL> 4 16 1|16 0
+#fftp://examplex:8080'~;	fftp <ALPHANUM> 1 5 1|examplex <ALPHANUM> 8 16 1|8080 <NUM> 17 21 1|24 0
+&$.]:8080::1	8080 <NUM> 5 9 1|1 <NUM> 11 12 1|12 0
+:$[www.192.168.0.1	www <ALPHANUM> 3 6 1|192.168.0.1 <URL> 7 18 1|18 0
+42localhost:xn--p1ai@ .com	42localhost:xn <ALPHANUM> 0 14 1|p1ai <ALPHANUM> 16 20 1|com <ALPHANUM> 23 26 1|26 0
+file:///é!?q=1	file:/// <URL> 0 8 1|é <ALPHANUM> 8 9 1|q <ALPHANUM> 11 12 1|1 <NUM> 13 14 1|14 0
+&@::1 *]	1 <NUM> 4 5 1|8 0
+$localhost	localhost <ALPHANUM> 1 10 1|10 0
+x:-;	x <ALPHANUM> 0 1 1|4 0
+'	1 0
+>'!"/mailto:	mailto <ALPHANUM> 5 11 1|12 0
+192.168.0.1@42,	192.168.0.1 <URL> 0 11 1|42 <NUM> 12 14 1|15 0
+:~HTTP://ftp://1:8080 HTTP://	HTTP://ftp <URL> 2 12 1|1 <NUM> 15 16 1|8080 <NUM> 17 21 1|HTTP <ALPHANUM> 22 26 1|29 0
++tag~-localhost'	tag <ALPHANUM> 1 4 1|localhost <ALPHANUM> 6 15 1|16 0
+localhost	localhost <ALPHANUM> 0 9 1|9 0
+$)(.commailto:https://;:8080	commailto:https <ALPHANUM> 4 19 1|8080 <NUM> 24 28 1|28 0
+%20	20 <NUM> 1 3 1|3 0
+:8080.😀file:///$_:	8080 <NUM> 1 5 1|😀 <EMOJI> 6 8 1|file:/// <URL> 8 16 1|19 0
+]	1 0
+www.example$>	www.example <ALPHANUM> 0 11 1|13 0
+!xwww.	xwww <ALPHANUM> 1 5 1|6 0
+'~example	example <ALPHANUM> 2 9 1|9 0
+&	1 0
+?q=1?q=1/]) 	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|q <ALPHANUM> 5 6 1|1 <NUM> 7 8 1|12 0
+😀?q=1localhost?q=1a.b	😀 <EMOJI> 0 2 1|q <ALPHANUM> 3 4 1|1localhost <ALPHANUM> 5 15 1|q <ALPHANUM> 16 17 1|1a.b <ALPHANUM> 18 22 1|22 0
+example	example <ALPHANUM> 0 7 1|7 0
+192.168.0.1<<:@mailto:*	192.168.0.1 <URL> 0 11 1|mailto <ALPHANUM> 15 21 1|23 0
+*_localhost   example])	_localhost <ALPHANUM> 1 11 1|example <ALPHANUM> 14 21 1|23 0
+_	1 0
+ftp://x😀@=*x	ftp <ALPHANUM> 0 3 1|x <ALPHANUM> 6 7 1|😀 <EMOJI> 7 9 1|x <ALPHANUM> 12 13 1|13 0
+localhostuserfile:///localhost*HTTP://	localhostuserfile <ALPHANUM> 0 17 1|localhost <ALPHANUM> 21 30 1|HTTP <ALPHANUM> 31 35 1|38 0
++tag+tag'~+tagwww.	tag <ALPHANUM> 1 4 1|tag <ALPHANUM> 5 8 1|tagwww <ALPHANUM> 11 17 1|18 0
+ .<-!'.co.uk	co.uk <URL> 7 12 1|12 0
+]xfile:///.com>	xfile <ALPHANUM> 1 6 1|com <ALPHANUM> 11 14 1|15 0
+mailto:mailto:localhost/.user~file:///	mailto:mailto:localhost <ALPHANUM> 0 23 1|user <ALPHANUM> 25 29 1|file:/// <URL> 30 38 1|38 0
+1#f  *42	1 <NUM> 0 1 1|f <ALPHANUM> 2 3 1|42 <NUM> 6 8 1|8 0
+['.co.uk$	co.uk <URL> 3 8 1|9 0
+.'localhost+tagexample/	localhost <ALPHANUM> 2 11 1|tagexample <ALPHANUM> 12 22 1|23 0
+x192.168.0.1example1	x192.168.0.1example1 <ALPHANUM> 0 20 1|20 0
+.-192.168.0.1;www.	192.168.0.1 <URL> 2 13 1|www <ALPHANUM> 14 17 1|18 0
+file:///example::1é;file:///	file:///example::1 <URL> 0 18 1|é <ALPHANUM> 18 19 1|file:/// <URL> 20 28 1|28 0
+中examplewww.ftp://x<localhostftp://	中 <IDEOGRAPHIC> 0 1 1|examplewww.ftp <ALPHANUM> 1 15 1|x <ALPHANUM> 18 19 1|localhostftp <ALPHANUM> 20 32 1|35 0
+[	1 0
+192.168.0.1'a.b*'>.co.ukxn--p1ai	192.168.0.1 <URL> 0 11 1|a.b <ALPHANUM> 12 15 1|co.ukxn <ALPHANUM> 19 26 1|p1ai <ALPHANUM> 28 32 1|32 0
+ftp://!x<.com	ftp <ALPHANUM> 0 3 1|x <ALPHANUM> 7 8 1|com <ALPHANUM> 10 13 1|13 0
+$"42é	42é <ALPHANUM> 2 5 1|5 0
+ftp://.com~é192.168.0.1	ftp <ALPHANUM> 0 3 1|com <ALPHANUM> 7 10 1|é192.168.0.1 <ALPHANUM> 11 23 1|23 0
+HTTP://file:///%20() 	HTTP://file <URL> 0 11 1|20 <NUM> 16 18 1|21 0
+[@-	3 0
+!]) +tag&!	tag <ALPHANUM> 5 8 1|10 0
+'/#f*	f <ALPHANUM> 3 4 1|5 0
+-&=	3 0
+@42*	42 <NUM> 1 3 1|4 0
+/<).com	com <ALPHANUM> 4 7 1|7 0
+.+taghttp://	taghttp <ALPHANUM> 2 9 1|12 0
+@http://*(.	http <ALPHANUM> 1 5 1|11 0
+1.%20example	1 <NUM> 0 1 1|20example <ALPHANUM> 3 12 1|12 0
+: file:///xn--p1aimailto:	file:///xn--p1aimailto: <URL> 2 25 1|25 0
++taghttp://&:=&ftp://,	taghttp <ALPHANUM> 1 8 1|ftp <ALPHANUM> 15 18 1|22 0
+=<*:8080x>	8080x <ALPHANUM> 4 9 1|10 0
+:_?q=1	q <ALPHANUM> 3 4 1|1 <NUM> 5 6 1|6 0
+'éé	éé <ALPHANUM> 1 3 1|3 0
+  ;!.co.uk	co.uk <URL> 5 10 1|10 0
+localhost?q=1user.co.uk	localhost <ALPHANUM> 0 9 1|q <ALPHANUM> 10 11 1|1user.co.uk <URL> 12 23 1|23 0
+[?q=1_;:8080::1	q <ALPHANUM> 2 3 1|1_ <NUM> 4 6 1|8080 <NUM> 8 12 1|1 <NUM> 14 15 1|15 0
+(&.co.uk#f!192.168.0.1_)	co.uk#f!192.168.0.1_) <URL> 3 24 1|24 0
+:8080:8080.%20'😀	8080 <NUM> 1 5 1|8080 <NUM> 6 10 1|20 <NUM> 12 14 1|😀 <EMOJI> 15 17 1|17 0
+a.b*_*user-é+tag	a.b <ALPHANUM> 0 3 1|user <ALPHANUM> 6 10 1|é <ALPHANUM> 11 12 1|tag <ALPHANUM> 13 16 1|16 0
+192.168.0.1mailto:www.:8080	192.168.0.1mailto:www <ALPHANUM> 0 21 1|8080 <NUM> 23 27 1|27 0
+  中]@	中 <IDEOGRAPHIC> 2 3 1|5 0
+@user/ &é'?q=1	user <ALPHANUM> 1 5 1|é <ALPHANUM> 8 9 1|q <ALPHANUM> 11 12 1|1 <NUM> 13 14 1|14 0
+<%20*".:8080	20 <NUM> 2 4 1|8080 <NUM> 8 12 1|12 0
+"	1 0
+:%20,,	20 <NUM> 2 4 1|6 0
+HTTP://	HTTP <ALPHANUM> 0 4 1|7 0
+42#f)	42 <NUM> 0 2 1|f <ALPHANUM> 3 4 1|5 0
+😀xn--p1ai"example+tagftp://-	😀 <EMOJI> 0 2 1|xn <ALPHANUM> 2 4 1|p1ai <ALPHANUM> 6 10 1|example <ALPHANUM> 11 18 1|tagftp <ALPHANUM> 19 25 1|29 0
+'localhost&>42.com	localhost <ALPHANUM> 1 10 1|42.com <URL> 12 18 1|18 0
+www.mailto:😀é-	www.mailto <ALPHANUM> 0 10 1|😀 <EMOJI> 11 13 1|é <ALPHANUM> 13 14 1|15 0
+>:8080x	8080x <ALPHANUM> 2 7 1|7 0
+%20	20 <NUM> 1 3 1|3 0
+)>中."	中 <IDEOGRAPHIC> 2 3 1|5 0
+ftp://中	ftp <ALPHANUM> 0 3 1|中 <IDEOGRAPHIC> 6 7 1|7 0
+file:///é.co.uk$?q=1-.]	file:/// <URL> 0 8 1|é.co.uk <ALPHANUM> 8 15 1|q <ALPHANUM> 17 18 1|1 <NUM> 19 20 1|23 0
+ftp://+tag1~:8080	ftp <ALPHANUM> 0 3 1|tag1 <ALPHANUM> 7 11 1|8080 <NUM> 13 17 1|17 0
+'中~😀 https://	中 <IDEOGRAPHIC> 1 2 1|😀 <EMOJI> 3 5 1|https <ALPHANUM> 6 11 1|14 0
+!	1 0
+,HTTP://	HTTP <ALPHANUM> 1 5 1|8 0
+/.comwww.中HTTP://%20	comwww <ALPHANUM> 2 8 1|中 <IDEOGRAPHIC> 9 10 1|HTTP <ALPHANUM> 10 14 1|20 <NUM> 18 20 1|20 0
+@	1 0
+"$example)	example <ALPHANUM> 2 9 1|10 0
+&😀www.*_	😀 <EMOJI> 1 3 1|www <ALPHANUM> 3 6 1|9 0
+.co.uk.co.uk>	co.uk.co.uk <URL> 1 12 1|13 0
+mailto: (#f😀	mailto <ALPHANUM> 0 6 1|f <ALPHANUM> 10 11 1|😀 <EMOJI> 11 13 1|13 0
+example	example <ALPHANUM> 0 7 1|7 0
+xn--p1ai"https://😀example	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|https <ALPHANUM> 9 14 1|😀 <EMOJI> 17 19 1|example <ALPHANUM> 19 26 1|26 0
+http:///file:///	http <ALPHANUM> 0 4 1|file:/// <URL> 8 16 1|16 0
+1<中https://:8080<:	1 <NUM> 0 1 1|中 <IDEOGRAPHIC> 2 3 1|https <ALPHANUM> 3 8 1|8080 <NUM> 12 16 1|18 0
++tag(	tag <ALPHANUM> 1 4 1|5 0
+😀	😀 <EMOJI> 0 2 1|2 0
+?q=1ftp://	q <ALPHANUM> 1 2 1|1ftp <ALPHANUM> 3 7 1|10 0
+mailto::a.b.com	mailto <ALPHANUM> 0 6 1|a.b.com <URL> 8 15 1|15 0
+.	1 0
+:80801,xn--p1aiftp://&éa.b	80801 <NUM> 1 6 1|xn <ALPHANUM> 7 9 1|p1aiftp <ALPHANUM> 11 18 1|éa.b <ALPHANUM> 22 26 1|26 0
+&xn--p1ai-/ *.comuser	xn <ALPHANUM> 1 3 1|p1ai <ALPHANUM> 5 9 1|comuser <ALPHANUM> 14 21 1|21 0
+<!* 192.168.0.1	192.168.0.1 <URL> 4 15 1|15 0
+/~localhost=%20localhost	localhost <ALPHANUM> 2 11 1|20localhost <ALPHANUM> 13 24 1|24 0
+ftp://https://	ftp <ALPHANUM> 0 3 1|https <ALPHANUM> 6 11 1|14 0
+http://~~_😀&1	http <ALPHANUM> 0 4 1|😀 <EMOJI> 10 12 1|1 <NUM> 13 14 1|14 0
+>	1 0
+"'[	3 0
+user@.com*http://	user <ALPHANUM> 0 4 1|com <ALPHANUM> 6 9 1|http <ALPHANUM> 10 14 1|17 0
+https://192.168.0.1"<=	https://192.168.0.1 <URL> 0 19 1|22 0
+example::1>,.com_	example <ALPHANUM> 0 7 1|1 <NUM> 9 10 1|com_ <ALPHANUM> 13 17 1|17 0
+"file:/// :8080([	file:/// <URL> 1 9 1|8080 <NUM> 11 15 1|17 0
+192.168.0.1é	192.168.0.1é <ALPHANUM> 0 12 1|12 0
+/,  http://	http <ALPHANUM> 4 8 1|11 0
+user:a.b*xn--p1aixx	user:a.b <ALPHANUM> 0 8 1|xn <ALPHANUM> 9 11 1|p1aixx <ALPHANUM> 13 19 1|19 0
+mailto:/	mailto <ALPHANUM> 0 6 1|8 0
+)	1 0
+%20/..com中*中?q=1	20 <NUM> 1 3 1|com <ALPHANUM> 6 9 1|中 <IDEOGRAPHIC> 9 10 1|中 <IDEOGRAPHIC> 11 12 1|q <ALPHANUM> 13 14 1|1 <NUM> 15 16 1|16 0
+:;localhost;1+tag中,	localhost <ALPHANUM> 2 11 1|1 <NUM> 12 13 1|tag <ALPHANUM> 14 17 1|中 <IDEOGRAPHIC> 17 18 1|19 0
+*">	3 0
+'_中<'.com,	中 <IDEOGRAPHIC> 2 3 1|com <ALPHANUM> 6 9 1|10 0
+HTTP://file:///	HTTP://file <URL> 0 11 1|15 0
+!<https://(https://#f	https <ALPHANUM> 2 7 1|https <ALPHANUM> 11 16 1|f <ALPHANUM> 20 21 1|21 0
+"$42	42 <NUM> 2 4 1|4 0
+file:///=!;]+tag	file:///= <URL> 0 9 1|tag <ALPHANUM> 13 16 1|16 0
+):8080=="	8080 <NUM> 2 6 1|9 0
+http://]$$[	http <ALPHANUM> 0 4 1|11 0
+/+tag'	tag <ALPHANUM> 2 5 1|6 0
+=&www.http://-_,	www.http <ALPHANUM> 2 10 1|16 0
+HTTP://1	HTTP://1 <URL> 0 8 1|8 0
+ 	1 0
+x;-@*-.co.uk	x <ALPHANUM> 0 1 1|co.uk <URL> 7 12 1|12 0
+file:///user	file:///user <URL> 0 12 1|12 0
+<xn--p1ai$.com <>@	xn <ALPHANUM> 1 3 1|p1ai <ALPHANUM> 5 9 1|com <ALPHANUM> 11 14 1|18 0
+(::1$x'	1 <NUM> 3 4 1|x <ALPHANUM> 5 6 1|7 0
+xn--p1ai$!.co.uk	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|co.uk <URL> 11 16 1|16 0
+,	1 0
+https://x	https://x <URL> 0 9 1|9 0
+:~&www.(@*https://	www <ALPHANUM> 3 6 1|https <ALPHANUM> 10 15 1|18 0
+=HTTP://1[@.(>	HTTP://1 <URL> 1 9 1|14 0
+a.buser+tag%20a.b:8080	a.buser <ALPHANUM> 0 7 1|tag <ALPHANUM> 8 11 1|20a.b <ALPHANUM> 12 17 1|8080 <NUM> 18 22 1|22 0
+1!*1user	1 <NUM> 0 1 1|1user <ALPHANUM> 3 8 1|8 0
+xuser%201	xuser <ALPHANUM> 0 5 1|201 <NUM> 6 9 1|9 0
+mailto:@_1file:///%20	mailto <ALPHANUM> 0 6 1|_1file <ALPHANUM> 8 14 1|20 <NUM> 19 21 1|21 0
+1$:8080:www.mailto:	1 <NUM> 0 1 1|8080 <NUM> 3 7 1|www.mailto <ALPHANUM> 8 18 1|19 0
+(::1x42#f] 	1x42 <ALPHANUM> 3 7 1|f <ALPHANUM> 8 9 1|11 0
+-  www.!	www <ALPHANUM> 3 6 1|8 0
+>#f	f <ALPHANUM> 2 3 1|3 0
+-*localhost,  	localhost <ALPHANUM> 2 11 1|14 0
+  xn--p1ai-	xn <ALPHANUM> 2 4 1|p1ai <ALPHANUM> 6 10 1|11 0
+!:]	3 0
+mailto:%20."%20HTTP://	mailto <ALPHANUM> 0 6 1|20 <NUM> 8 10 1|20HTTP <ALPHANUM> 13 19 1|22 0
+] +tag<&xn--p1aié	tag <ALPHANUM> 3 6 1|xn <ALPHANUM> 8 10 1|p1aié <ALPHANUM> 12 17 1|17 0
+https://.,_,HTTP://@.	https <ALPHANUM> 0 5 1|HTTP <ALPHANUM> 12 16 1|21 0
+xn--p1ai	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|8 0
+::1:8080-1[<	1 <NUM> 2 3 1|8080 <NUM> 4 8 1|1 <NUM> 9 10 1|12 0
+localhost>-;_	localhost <ALPHANUM> 0 9 1|13 0
+中_localhost	中 <IDEOGRAPHIC> 0 1 1|_localhost <ALPHANUM> 1 11 1|11 0
+xn--p1ai"mailto:192.168.0.1	xn <ALPHANUM> 0 2 1|p1ai <ALPHANUM> 4 8 1|mailto <ALPHANUM> 9 15 1|192.168.0.1 <URL> 16 27 1|27 0
+:8080ftp:///	8080ftp <ALPHANUM> 1 8 1|12 0
+;😀;>	😀 <EMOJI> 1 3 1|5 0
+;-;ftp://;userhttp://	ftp <ALPHANUM> 3 6 1|userhttp <ALPHANUM> 10 18 1|21 0
+]xé::1	xé <ALPHANUM> 1 3 1|1 <NUM> 5 6 1|6 0
+x  HTTP://	x <ALPHANUM> 0 1 1|HTTP <ALPHANUM> 3 7 1|10 0
+192.168.0.1&😀	192.168.0.1 <URL> 0 11 1|😀 <EMOJI> 12 14 1|14 0
+HTTP://https://[localhost?q=1[	HTTP://https <URL> 0 12 1|localhost <ALPHANUM> 16 25 1|q <ALPHANUM> 26 27 1|1 <NUM> 28 29 1|30 0
+;😀::1	😀 <EMOJI> 1 3 1|1 <NUM> 5 6 1|6 0
+>https://https://.co.uk	https://https <URL> 1 14 1|co.uk <URL> 18 23 1|23 0
+/.com,%20;::1*)	com <ALPHANUM> 2 5 1|20 <NUM> 7 9 1|1 <NUM> 12 13 1|15 0
+]1.)x*.co.uk42	1 <NUM> 1 2 1|x <ALPHANUM> 4 5 1|co.uk42 <ALPHANUM> 7 14 1|14 0
+1x;!x.co.uk[	1x <ALPHANUM> 0 2 1|x.co.uk <URL> 4 11 1|12 0
+'$https://]  file:///中@	https <ALPHANUM> 2 7 1|file:/// <URL> 13 21 1|中 <IDEOGRAPHIC> 21 22 1|23 0
+>	1 0
+ ftp://)中file:///	ftp <ALPHANUM> 1 4 1|中 <IDEOGRAPHIC> 8 9 1|file:/// <URL> 9 17 1|17 0
+1	1 <NUM> 0 1 1|1 0
+-😀:é.com192.168.0.1😀a.b	😀 <EMOJI> 1 3 1|é.com192.168.0.1 <ALPHANUM> 4 20 1|😀 <EMOJI> 20 22 1|a.b <ALPHANUM> 22 25 1|25 0
+,>é	é <ALPHANUM> 2 3 1|3 0
+1#f&%20	1 <NUM> 0 1 1|f <ALPHANUM> 2 3 1|20 <NUM> 5 7 1|7 0
+😀http://xHTTP://	😀 <EMOJI> 0 2 1|http://xHTTP <URL> 2 14 1|17 0
+=中@	中 <IDEOGRAPHIC> 1 2 1|3 0
+::1中	1 <NUM> 2 3 1|中 <IDEOGRAPHIC> 3 4 1|4 0
+.com&)&http://]user	com <ALPHANUM> 1 4 1|http <ALPHANUM> 7 11 1|user <ALPHANUM> 15 19 1|19 0
+?q=1+tag%20example	q <ALPHANUM> 1 2 1|1 <NUM> 3 4 1|tag <ALPHANUM> 5 8 1|20example <ALPHANUM> 9 18 1|18 0

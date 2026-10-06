@@ -61,6 +61,7 @@ pub mod charfilter;
 pub mod cjk;
 pub mod commongrams;
 pub mod core_analysis;
+pub mod email;
 pub mod en;
 pub mod graph_finite_strings;
 mod graph_token_filter;

@@ -9,8 +9,7 @@ lucene-util = { path = "../lucene-util" }
 thiserror.workspace = true
 # java.util.regex for the pattern package (src/util/java_regex.rs).
 regex = "1"
+# Inflates the JFlex scanner tables (src/util/jflex.rs).
+miniz_oxide.workspace = true
 
 [dev-dependencies]
-# The corpus test inflates its text out of the Lucene jars (zip entries and a
-# gzip member) with the same crate lucene-codecs decodes DEFLATE with.
-miniz_oxide.workspace = true

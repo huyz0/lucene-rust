@@ -88,11 +88,18 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   `CharTokenizer` family; `miscellaneous` but
   `ConcatenatingTokenStream`, `DateRecognizerFilter`, `EmptyTokenStream`,
   `LimitTokenCountAnalyzer`, `PerFieldAnalyzerWrapper` and the deprecated
-  `WordDelimiterFilter`; `en` (KStem's dictionary generated from Lucene's sources); `ngram`, `shingle` (but
-  `ShingleAnalyzerWrapper`), `pattern`, `path`, `charfilter` (but
-  `HTMLStripCharFilter`), `commongrams`, `cjk`, `payloads`, `boost`,
-  `minhash`. 99 of the harness's 104 chains match Lucene token for token. `java.util.regex` is the
-  `regex` crate behind a Java-syntax shim (`util/java_regex.rs`: ASCII
+  `WordDelimiterFilter`; `en` (KStem's dictionary generated from Lucene's
+  sources); `ngram`, `shingle` (but `ShingleAnalyzerWrapper`), `pattern`,
+  `path`, `charfilter`, `commongrams`, `cjk`, `payloads`, `boost`,
+  `minhash`, `email`. All 104 harness chains match Lucene token for
+  token; `stems.words` (40,392 words through KStem and Porter) and
+  `urls.words` (3,000 URL/email fragment joins) add word-level checks.
+- **T11.2** -- the JFlex scanners (`UAX29URLEmailTokenizerImpl`,
+  `HTMLStripCharFilter`) run a shared skeleton (`util/jflex.rs`) over the
+  tables of Lucene's compiled classes, read back by reflection
+  (`tools/ExtractJFlexTables.java`) and stored zlib-compressed; the actions
+  are ported line for line.
+- `java.util.regex` is the `regex` crate behind a Java-syntax shim (`util/java_regex.rs`: ASCII
   `\d\w\s`, `$n` replacements; no backreferences or lookaround).
 - The parity ledger is within a few hundred bytes of its 400 KB budget, so
   M11's rows are one per package (`docs/parity/analysis-common.md`) and the

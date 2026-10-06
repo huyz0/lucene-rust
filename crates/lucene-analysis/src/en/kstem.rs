@@ -1113,6 +1113,23 @@ mod tests {
     }
 
     #[test]
+    fn internals() {
+        let mut s = KStemmer::default();
+        assert!(!s.double_c(0));
+        // wordInDict returns the cached match.
+        s.matched_entry = Some(DictEntry {
+            exception: false,
+            root: Some("x"),
+        });
+        assert_eq!(s.word_in_dict().and_then(|e| e.root), Some("x"));
+        let mut b = OpenStringBuilder::new();
+        for _ in 0..40 {
+            b.unsafe_write(u16::from(b'a'));
+        }
+        assert_eq!(b.len, 40);
+    }
+
+    #[test]
     fn open_string_builder_keeps_stale_chars() {
         let mut b = OpenStringBuilder::new();
         b.append("abcdef");

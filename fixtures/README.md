@@ -1016,7 +1016,10 @@ outright.
   cases), recording every token's term, offsets, increment, length, type,
   flags, payload, keyword flag and term frequency, then `end()`'s state or
   the exception a line throws (the row format is in the generator's
-  javadoc). Deterministic. Consumed by
+  javadoc). It also writes `stems.words` (KStem and Porter over stem x
+  suffix words and a sample of KStem's own dictionary) and `urls.words`
+  (`UAX29URLEmailTokenizer` over 3,000 seeded joins of URL/email fragments).
+  Deterministic. Consumed by
   `crates/lucene-analysis/tests/analysis_common_fixtures.rs`, which lists the
   chains the port does not build yet (`PENDING`) and fails on any other gap.
 - `GenDisiJumpTable.java` — the only Java-written `IndexedDISI` **block jump

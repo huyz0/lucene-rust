@@ -1,8 +1,12 @@
 //! `org.apache.lucene.analysis.charfilter`: `BaseCharFilter`'s offset
-//! corrections, `NormalizeCharMap` and `MappingCharFilter` (and
+//! corrections, `NormalizeCharMap`, `MappingCharFilter`, `HTMLStripCharFilter` (and
 //! `analysis/util/RollingCharBuffer`, which it reads through).
 
 use std::collections::{BTreeMap, VecDeque};
+
+mod html_strip;
+
+pub use html_strip::HTMLStripCharFilter;
 
 use crate::reader::{CharFilter, CharReader};
 use crate::AnalysisError;
