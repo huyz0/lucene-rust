@@ -478,7 +478,7 @@ fn searched_rewritten_and_explained() {
     let e = searcher.explain(&scored, doc).unwrap();
     assert_eq!(e.value, td.score_docs[0].score);
     assert!(
-        e.description.ends_with("[Similarity], result of:"),
+        e.description.ends_with("[ClassicSimilarity], result of:"),
         "{}",
         e.description
     );

@@ -420,7 +420,7 @@ pub(crate) fn explain_span_node(
     };
     // Another similarity's own breakdown is not ported: its top node only.
     let (name, detail) = match ctx.similarity {
-        Some(s) if !s.is_default_bm25() => ("Similarity", None),
+        Some(s) if !s.is_default_bm25() => (s.simple_name(), None),
         _ => (
             "BM25Similarity",
             Some(bm25_explanation(value, freq, norm, boost, &inputs)),

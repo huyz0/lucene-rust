@@ -163,6 +163,13 @@ pub trait Similarity: NormSimilarity {
     fn shared(&self) -> Option<Arc<dyn Similarity>> {
         None
     }
+
+    /// `getClass().getSimpleName()`, which a weight's explanation prints
+    /// (`weight(q in doc) [BM25Similarity], result of:`). A similarity this
+    /// port does not know the Java class of is `Similarity`.
+    fn simple_name(&self) -> &str {
+        "Similarity"
+    }
 }
 
 /// `TFIDFSimilarity`'s `tf` and `idf`, which the function queries' `tf()`
@@ -286,6 +293,10 @@ impl NormSimilarity for Bm25Similarity {
 }
 
 impl Similarity for Bm25Similarity {
+    fn simple_name(&self) -> &str {
+        "BM25Similarity"
+    }
+
     fn scorer(
         &self,
         _field: &str,
@@ -368,6 +379,10 @@ impl NormSimilarity for ClassicSimilarity {
 }
 
 impl Similarity for ClassicSimilarity {
+    fn simple_name(&self) -> &str {
+        "ClassicSimilarity"
+    }
+
     fn scorer(
         &self,
         _field: &str,
@@ -429,6 +444,10 @@ impl SimScorer for ConstantSimScorer {
 impl NormSimilarity for BooleanSimilarity {}
 
 impl Similarity for BooleanSimilarity {
+    fn simple_name(&self) -> &str {
+        "BooleanSimilarity"
+    }
+
     fn scorer(
         &self,
         _field: &str,
@@ -475,6 +494,10 @@ impl NormSimilarity for RawTfSimilarity {
 }
 
 impl Similarity for RawTfSimilarity {
+    fn simple_name(&self) -> &str {
+        "RawTFSimilarity"
+    }
+
     fn scorer(
         &self,
         _field: &str,
@@ -1090,6 +1113,20 @@ pub enum AxiomaticVariant {
     F3Log,
 }
 
+impl AxiomaticVariant {
+    /// The Java subclass's simple name (`AxiomaticF1EXP`, ...).
+    pub fn simple_name(self) -> &'static str {
+        match self {
+            AxiomaticVariant::F1Exp => "AxiomaticF1EXP",
+            AxiomaticVariant::F1Log => "AxiomaticF1LOG",
+            AxiomaticVariant::F2Exp => "AxiomaticF2EXP",
+            AxiomaticVariant::F2Log => "AxiomaticF2LOG",
+            AxiomaticVariant::F3Exp => "AxiomaticF3EXP",
+            AxiomaticVariant::F3Log => "AxiomaticF3LOG",
+        }
+    }
+}
+
 /// `Axiomatic` and its subclasses.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AxiomaticSimilarity {
@@ -1173,7 +1210,7 @@ impl BaseModel for AxiomaticSimilarity {
 }
 
 macro_rules! base_similarity {
-    ($($t:ty),*) => {$(
+    ($($t:ty => $name:expr),*) => {$(
         impl NormSimilarity for $t {
             fn discount_overlaps(&self) -> bool {
                 self.discount_overlaps
@@ -1190,19 +1227,44 @@ macro_rules! base_similarity {
             ) -> Arc<dyn SimScorer> {
                 base_scorer(self, boost, collection, terms)
             }
+
+            fn simple_name(&self) -> &str {
+                $name
+            }
         }
     )*};
 }
 
 base_similarity!(
-    DfrSimilarity,
-    IbSimilarity,
-    DfiSimilarity,
-    LmDirichletSimilarity,
-    LmJelinekMercerSimilarity,
-    IndriDirichletSimilarity,
-    AxiomaticSimilarity
+    DfrSimilarity => "DFRSimilarity",
+    IbSimilarity => "IBSimilarity",
+    DfiSimilarity => "DFISimilarity",
+    LmDirichletSimilarity => "LMDirichletSimilarity",
+    LmJelinekMercerSimilarity => "LMJelinekMercerSimilarity",
+    IndriDirichletSimilarity => "IndriDirichletSimilarity"
 );
+
+impl NormSimilarity for AxiomaticSimilarity {
+    fn discount_overlaps(&self) -> bool {
+        self.discount_overlaps
+    }
+}
+
+impl Similarity for AxiomaticSimilarity {
+    fn scorer(
+        &self,
+        _field: &str,
+        boost: f32,
+        collection: &CollectionStatistics,
+        terms: &[TermStatistics],
+    ) -> Arc<dyn SimScorer> {
+        base_scorer(self, boost, collection, terms)
+    }
+
+    fn simple_name(&self) -> &str {
+        self.variant.simple_name()
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Composition
@@ -1232,6 +1294,10 @@ impl NormSimilarity for MultiSimilarity {
 }
 
 impl Similarity for MultiSimilarity {
+    fn simple_name(&self) -> &str {
+        "MultiSimilarity"
+    }
+
     fn scorer(
         &self,
         field: &str,
@@ -1283,6 +1349,12 @@ impl NormSimilarity for PerFieldSimilarity {
 }
 
 impl Similarity for PerFieldSimilarity {
+    /// Java's `PerFieldSimilarityWrapper` is abstract, so the name printed is
+    /// its subclass's; this port's concrete form names the wrapper.
+    fn simple_name(&self) -> &str {
+        "PerFieldSimilarityWrapper"
+    }
+
     fn scorer(
         &self,
         field: &str,
@@ -1316,6 +1388,71 @@ mod tests {
 
     fn term() -> TermStatistics {
         TermStatistics::new(10, 40).unwrap()
+    }
+
+    /// Each similarity reports its Java class's simple name, which an
+    /// explanation prints.
+    #[test]
+    fn simple_names_are_the_java_classes() {
+        use AxiomaticVariant::*;
+        let none = Normalization::None;
+        let mut sims: Vec<(Arc<dyn Similarity>, &str)> = vec![
+            (Arc::new(Bm25Similarity::default()), "BM25Similarity"),
+            (Arc::new(ClassicSimilarity::default()), "ClassicSimilarity"),
+            (Arc::new(BooleanSimilarity), "BooleanSimilarity"),
+            (Arc::new(RawTfSimilarity::default()), "RawTFSimilarity"),
+            (
+                Arc::new(DfrSimilarity::new(BasicModel::G, AfterEffect::B, none).unwrap()),
+                "DFRSimilarity",
+            ),
+            (
+                Arc::new(IbSimilarity::new(Distribution::LL, Lambda::DF, none).unwrap()),
+                "IBSimilarity",
+            ),
+            (
+                Arc::new(DfiSimilarity::new(Independence::Saturated)),
+                "DFISimilarity",
+            ),
+            (
+                Arc::new(LmDirichletSimilarity::default()),
+                "LMDirichletSimilarity",
+            ),
+            (
+                Arc::new(
+                    LmJelinekMercerSimilarity::new(CollectionModel::Default, true, 0.5).unwrap(),
+                ),
+                "LMJelinekMercerSimilarity",
+            ),
+            (
+                Arc::new(IndriDirichletSimilarity::default()),
+                "IndriDirichletSimilarity",
+            ),
+        ];
+        for (v, name) in [
+            (F1Exp, "AxiomaticF1EXP"),
+            (F1Log, "AxiomaticF1LOG"),
+            (F2Exp, "AxiomaticF2EXP"),
+            (F2Log, "AxiomaticF2LOG"),
+            (F3Exp, "AxiomaticF3EXP"),
+            (F3Log, "AxiomaticF3LOG"),
+        ] {
+            sims.push((
+                Arc::new(AxiomaticSimilarity::new(v, true, 0.25, 1, 0.35).unwrap()),
+                name,
+            ));
+        }
+        let bm25: Arc<dyn Similarity> = Arc::new(Bm25Similarity::default());
+        sims.push((
+            Arc::new(MultiSimilarity::new(vec![Arc::clone(&bm25)]).unwrap()),
+            "MultiSimilarity",
+        ));
+        sims.push((
+            Arc::new(PerFieldSimilarity::new(bm25)),
+            "PerFieldSimilarityWrapper",
+        ));
+        for (sim, name) in &sims {
+            assert_eq!(sim.simple_name(), *name);
+        }
     }
 
     /// The constructors refuse what Java's refuse, with Java's messages.

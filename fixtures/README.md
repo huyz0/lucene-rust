@@ -1235,7 +1235,7 @@ outright.
   every fifth position), a big-endian `int` (`ipay`), a `float` (`fpay`) and a
   short UTF-8 string (`spay`), none on every sixth; `queries.tsv`: 95 span and
   payload queries -- `toString`, then plain, boosted and as a boolean's
-  required clause or filter, hits with score bits and five explanations, or
+  required, filter or prohibited clause, hits with score bits and five explanations, or
   Lucene's exception.
 
 - `GenMoreLikeThis.java` (M10 T10.6) → `mlt/`, for `lucene-search`'s
@@ -1247,7 +1247,9 @@ outright.
   clauses and hits for six documents, `like(field, texts)`, `like(Map)`) and
   `MoreLikeThisQuery` (rewrite, hits, explanations); `common.tsv`:
   `CommonTermsQuery` over twelve term sets (`toString`, hits with score bits,
-  four explanations), or Lucene's exception.
+  four explanations); eight boosted booleans of term, phrase and nested
+  boolean clauses under every occur, two under `ClassicSimilarity` (hits,
+  four explanations); or Lucene's exception.
 
 - `GenGeo3dPoints.java` (M9 T9.4) → `geo3d_points/`, for `lucene-search`'s
   `geo3d_points_fixtures.rs`: `index/`, four segments (3 × 1500 documents

@@ -8,9 +8,9 @@
 //! under each match operation; `PayloadScoreQuery` with each payload
 //! function, with and without the span score) over a four-segment index with
 //! deletions, a stop word's position holes and a pulsed singleton term --
-//! each query's `toString`; under four variants (plain, boosted, a
-//! boolean's required clause, its filter) every hit's score bits and five
-//! documents' explanations; then `Weight.matches` of the hits and the
+//! each query's `toString`; under five variants (plain, boosted, a
+//! boolean's required clause, its filter, its prohibited clause) every hit's
+//! score bits and five documents' explanations; then `Weight.matches` of the hits and the
 //! explained documents -- each span's positions and offsets, its terms as
 //! sub-matches with their `TermQuery`. The file is rebuilt here line for
 //! line and compared with Lucene's.
@@ -209,7 +209,7 @@ fn clean(s: &str) -> String {
         .replace('\n', "\\n")
 }
 
-const VARIANTS: [&str; 4] = ["plain", "boost", "bool", "filter"];
+const VARIANTS: [&str; 5] = ["plain", "boost", "bool", "filter", "mustnot"];
 const EXPLAIN: [i32; 5] = [0, 7, 17, 33, 60];
 
 fn variant(v: &str, s: &SpanNode) -> BooleanQuery {
@@ -227,6 +227,11 @@ fn variant(v: &str, s: &SpanNode) -> BooleanQuery {
         "filter" => BooleanQuery {
             filter: vec![Clause::from(s.clone())],
             should: vec![Clause::Term(TermQuery::new("body", "egg"))],
+            ..Default::default()
+        },
+        "mustnot" => BooleanQuery {
+            should: vec![Clause::Term(TermQuery::new("body", "egg"))],
+            must_not: vec![Clause::from(s.clone())],
             ..Default::default()
         },
         _ => panic!("{v}"),

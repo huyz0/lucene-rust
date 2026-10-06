@@ -5101,6 +5101,72 @@ fn multi_phrase_hits<C: ScoringCollector>(
         return Ok(());
     }
 
+    // The matches ascend, so one norms cursor covers the whole scan.
+    let mut norms_cursor = norms.map(|n| n.cursor());
+    multi_phrase_freqs(
+        field_terms,
+        doc_in,
+        pos_in,
+        pay_in,
+        live_docs,
+        query,
+        |doc_id, freq| {
+            let norm_inverse = match norms_cursor.as_mut() {
+                Some(nc) => nc.norm_inverse(doc_id)?,
+                None => similarity::UNNORMED_NORM_INVERSE,
+            };
+            collector.collect(doc_id, similarity::do_score(idf_sum, freq, norm_inverse));
+            Ok(())
+        },
+    )
+}
+
+/// `doc`'s frequency for a `MultiPhraseQuery` of two or more positions
+/// (`PhraseMatcher`'s, what its weight's `SimScorer` reads), `None` when the
+/// phrase does not match it: what an explanation without scores prints.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn multi_phrase_freq(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    pos_in: Option<&PosInput<'_>>,
+    pay_in: Option<&PayInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &query::MultiPhraseQuery,
+    doc: i32,
+) -> Result<Option<f32>> {
+    let Some(field_terms) = fields.field(&query.field) else {
+        return Ok(None);
+    };
+    let mut found = None;
+    multi_phrase_freqs(
+        field_terms,
+        doc_in,
+        pos_in,
+        pay_in,
+        live_docs,
+        query,
+        |doc_id, freq| {
+            if doc_id == doc {
+                found = Some(freq);
+            }
+            Ok(())
+        },
+    )?;
+    Ok(found)
+}
+
+/// Every live document a `MultiPhraseQuery` of two or more positions
+/// matches, ascending, with its phrase frequency: the matching half of
+/// [`multi_phrase_hits`].
+fn multi_phrase_freqs(
+    field_terms: &blocktree::FieldTerms,
+    doc_in: Option<&DocInput<'_>>,
+    pos_in: Option<&PosInput<'_>>,
+    pay_in: Option<&PayInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &query::MultiPhraseQuery,
+    mut on_match: impl FnMut(i32, f32) -> Result<()>,
+) -> Result<()> {
     let Some(pos_in) = pos_in else {
         return Err(Error::MissingPosInput);
     };
@@ -5152,8 +5218,6 @@ fn multi_phrase_hits<C: ScoringCollector>(
     let repeats = sloppy_phrase::PhraseRepeats::for_multi_phrase(&query.term_arrays);
 
     let mut slot_positions: Vec<&[i32]> = Vec::with_capacity(slot_count);
-    // `candidates` ascends, so one cursor covers the whole scan.
-    let mut norms_cursor = norms.map(|n| n.cursor());
     for (k, &doc_id) in candidates.iter().enumerate() {
         slot_positions.clear();
         for t in 0..per_slot_positions.len() {
@@ -5169,11 +5233,7 @@ fn multi_phrase_hits<C: ScoringCollector>(
         if freq == 0.0 {
             continue;
         }
-        let norm_inverse = match norms_cursor.as_mut() {
-            Some(nc) => nc.norm_inverse(doc_id)?,
-            None => similarity::UNNORMED_NORM_INVERSE,
-        };
-        collector.collect(doc_id, similarity::do_score(idf_sum, freq, norm_inverse));
+        on_match(doc_id, freq)?;
     }
     Ok(())
 }
