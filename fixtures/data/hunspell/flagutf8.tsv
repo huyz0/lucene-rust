@@ -1,0 +1,85 @@
+W	cats	1	cat	cat	cat	cat	AffixedWord[word=cats, entry=cat/Äж po:noun, prefixes=[], suffixes=[Ä(id=0)]]	cat	cat	1
+W	jumped	1	jump	jump	jump	jump	AffixedWord[word=jumped, entry=jump/ж鳥 po:verb, prefixes=[], suffixes=[鳥(id=1)]]	jumped	jumped	1
+W	unjump	1	jump	jump	jump	jump	AffixedWord[word=unjump, entry=jump/ж鳥 po:verb, prefixes=[ж(id=3)], suffixes=[]]	unjump	unjump	1
+W	jumping	0	jumping	jumping	jumping			jump	jump	1
+W	katz	0	katz	katz	katz			cat	cat	1
+W	houseboat	1	houseboat	houseboat	houseboat			house boat|house	house boat|house	1
+W	catboat	1	catboat	catboat	catboat			catboat|cat boat|boat	catboat|cat boat|boat	1
+W	boathouse	1	boathouse	boathouse	boathouse			boathouse|boat house|house	boathouse|boat house|house	1
+W	λόγοςs	1	λόγος	λόγος	λόγος	λόγος	AffixedWord[word=λόγοςs, entry=λόγος/Ä is:sg po:noun, prefixes=[], suffixes=[Ä(id=0)]]	λόγος	λόγος	1
+W	dos	1	do	do	do	do	AffixedWord[word=dos, entry=do/Ä, prefixes=[], suffixes=[Ä(id=0)]]	do	do	1
+W	housed	1	house	house	house	house	AffixedWord[word=housed, entry=house/Äж鳥 is:sg po:noun, prefixes=[], suffixes=[鳥(id=2)]]	houses|house	houses|house	0
+W	houses	1	house	house	house	house	AffixedWord[word=houses, entry=house/Äж鳥 is:sg po:noun, prefixes=[], suffixes=[Ä(id=0)]]	houses|housed|house	houses|housed|house	1
+W	cat	1	cat	cat	cat	cat	AffixedWord[word=cat, entry=cat/Äж po:noun, prefixes=[], suffixes=[]]	cat	cat	0
+W	jump	1	jump	jump	jump	jump	AffixedWord[word=jump, entry=jump/ж鳥 po:verb, prefixes=[], suffixes=[]]	jump	jump	0
+W	do	1	do	do	do	do	AffixedWord[word=do, entry=do/Ä, prefixes=[], suffixes=[]]	do	do	0
+W	λόγος	1	λόγος	λόγος	λόγος	λόγος	AffixedWord[word=λόγος, entry=λόγος/Ä is:sg po:noun, prefixes=[], suffixes=[]]	λόγος	λόγος	0
+W	house	1	house	house	house	house	AffixedWord[word=house, entry=house/Äж鳥 is:sg po:noun, prefixes=[], suffixes=[]]	house	house	0
+W	boat	1	boat	boat	boat	boat	AffixedWord[word=boat, entry=boat/Äж, prefixes=[], suffixes=[]]	boat	boat	0
+W	CATS	1	cat	cat	cat	cat	AffixedWord[word=CATS, entry=cat/Äж po:noun, prefixes=[], suffixes=[Ä(id=0)]]	CATS|CAT	CATS|CAT	1
+W	Cats	1	cat	cat	cat	cat	AffixedWord[word=Cats, entry=cat/Äж po:noun, prefixes=[], suffixes=[Ä(id=0)]]	Cat	Cat	1
+W	JUMPED	1	jump	jump	jump	jump	AffixedWord[word=JUMPED, entry=jump/ж鳥 po:verb, prefixes=[], suffixes=[鳥(id=1)]]	JUMPED	JUMPED	1
+W	Jumped	1	jump	jump	jump	jump	AffixedWord[word=Jumped, entry=jump/ж鳥 po:verb, prefixes=[], suffixes=[鳥(id=1)]]	Jumped	Jumped	1
+W	UNJUMP	1	jump	jump	jump	jump	AffixedWord[word=UNJUMP, entry=jump/ж鳥 po:verb, prefixes=[ж(id=3)], suffixes=[]]	UNJUMP	UNJUMP	1
+W	Unjump	1	jump	jump	jump	jump	AffixedWord[word=Unjump, entry=jump/ж鳥 po:verb, prefixes=[ж(id=3)], suffixes=[]]	Unjump	Unjump	1
+W	JUMPING	0	JUMPING	JUMPING	JUMPING			JUMP	JUMP	1
+W	Jumping	0	Jumping	Jumping	Jumping			Jump	Jump	1
+W	KATZ	0	KATZ	KATZ	KATZ			CAT	CAT	1
+W	Katz	0	Katz	Katz	Katz			Cat	Cat	1
+W	HOUSEBOAT	1	HOUSEBOAT	HOUSEBOAT	HOUSEBOAT			HOUSEBOAT|HOUSE BOAT|HOUSE	HOUSEBOAT|HOUSE BOAT|HOUSE	1
+W	Houseboat	1	Houseboat	Houseboat	Houseboat			House boat|House	House boat|House	1
+W	CATBOAT	1	CATBOAT	CATBOAT	CATBOAT			CATBOAT|CAT BOAT|BOAT	CATBOAT|CAT BOAT|BOAT	1
+W	Catboat	1	Catboat	Catboat	Catboat			Catboat|Cat boat|Boat	Catboat|Cat boat|Boat	1
+W	BOATHOUSE	1	BOATHOUSE	BOATHOUSE	BOATHOUSE			BOATHOUSE|BOAT HOUSE|HOUSE	BOATHOUSE|BOAT HOUSE|HOUSE	1
+W	Boathouse	1	Boathouse	Boathouse	Boathouse			Boathouse|Boat house|House	Boathouse|Boat house|House	1
+W	ΛΌΓΟΣS	0	ΛΌΓΟΣS	ΛΌΓΟΣS	ΛΌΓΟΣS			λόγοςs	λόγοςs	1
+W	Λόγοςs	1	λόγος	λόγος	λόγος	λόγος	AffixedWord[word=Λόγοςs, entry=λόγος/Ä is:sg po:noun, prefixes=[], suffixes=[Ä(id=0)]]	Λόγος	Λόγος	1
+W	DOS	1	do	do	do	do	AffixedWord[word=DOS, entry=do/Ä, prefixes=[], suffixes=[Ä(id=0)]]	DOS|DO	DOS|DO	1
+W	Dos	1	do	do	do	do	AffixedWord[word=Dos, entry=do/Ä, prefixes=[], suffixes=[Ä(id=0)]]	Do	Do	1
+W	HOUSED	1	house	house	house	house	AffixedWord[word=HOUSED, entry=house/Äж鳥 is:sg po:noun, prefixes=[], suffixes=[鳥(id=2)]]	HOUSED|HOUSES|HOUSE	HOUSED|HOUSES|HOUSE	1
+W	Housed	1	house	house	house	house	AffixedWord[word=Housed, entry=house/Äж鳥 is:sg po:noun, prefixes=[], suffixes=[鳥(id=2)]]	Houses|House	Houses|House	1
+W	HOUSES	1	house	house	house	house	AffixedWord[word=HOUSES, entry=house/Äж鳥 is:sg po:noun, prefixes=[], suffixes=[Ä(id=0)]]	HOUSES|HOUSED|HOUSE	HOUSES|HOUSED|HOUSE	1
+W	Houses	1	house	house	house	house	AffixedWord[word=Houses, entry=house/Äж鳥 is:sg po:noun, prefixes=[], suffixes=[Ä(id=0)]]	Houses|Housed|House	Houses|Housed|House	1
+W	CAT	1	cat	cat	cat	cat	AffixedWord[word=CAT, entry=cat/Äж po:noun, prefixes=[], suffixes=[]]	CAT	CAT	0
+W	Cat	1	cat	cat	cat	cat	AffixedWord[word=Cat, entry=cat/Äж po:noun, prefixes=[], suffixes=[]]	Cat	Cat	0
+W	JUMP	1	jump	jump	jump	jump	AffixedWord[word=JUMP, entry=jump/ж鳥 po:verb, prefixes=[], suffixes=[]]	JUMP	JUMP	1
+W	Jump	1	jump	jump	jump	jump	AffixedWord[word=Jump, entry=jump/ж鳥 po:verb, prefixes=[], suffixes=[]]	Jump	Jump	1
+W	DO	1	do	do	do	do	AffixedWord[word=DO, entry=do/Ä, prefixes=[], suffixes=[]]	DO	DO	0
+W	Do	1	do	do	do	do	AffixedWord[word=Do, entry=do/Ä, prefixes=[], suffixes=[]]	Do	Do	0
+W	ΛΌΓΟΣ	0	ΛΌΓΟΣ	ΛΌΓΟΣ	ΛΌΓΟΣ			λόγος	λόγος	1
+W	Λόγος	1	λόγος	λόγος	λόγος	λόγος	AffixedWord[word=Λόγος, entry=λόγος/Ä is:sg po:noun, prefixes=[], suffixes=[]]	Λόγος	Λόγος	1
+W	HOUSE	1	house	house	house	house	AffixedWord[word=HOUSE, entry=house/Äж鳥 is:sg po:noun, prefixes=[], suffixes=[]]	HOUSE	HOUSE	1
+W	House	1	house	house	house	house	AffixedWord[word=House, entry=house/Äж鳥 is:sg po:noun, prefixes=[], suffixes=[]]	House	House	1
+W	BOAT	1	boat	boat	boat	boat	AffixedWord[word=BOAT, entry=boat/Äж, prefixes=[], suffixes=[]]	BOAT	BOAT	1
+W	Boat	1	boat	boat	boat	boat	AffixedWord[word=Boat, entry=boat/Äж, prefixes=[], suffixes=[]]	Boat	Boat	1
+W	cas	0	cas	cas	cas			cats	cats	1
+W	acts	0	acts	acts	acts			cats	cats	1
+W	jumed	0	jumed	jumed	jumed			jumped	jumped	1
+W	ujmped	0	ujmped	ujmped	ujmped			jumped	jumped	1
+W	unjmp	0	unjmp	unjmp	unjmp			unjump	unjump	1
+W	nujump	0	nujump	nujump	nujump			unjump|jump	unjump|jump	1
+W	juming	0	juming	juming	juming			jump	jump	1
+W	ujmping	0	ujmping	ujmping	ujmping					1
+W	kaz	0	kaz	kaz	kaz					1
+W	aktz	0	aktz	aktz	aktz					1
+W	housboat	0	housboat	housboat	housboat			house	house	1
+W	ohuseboat	0	ohuseboat	ohuseboat	ohuseboat			houseboat	houseboat	1
+W	catoat	0	catoat	catoat	catoat			cat	cat	1
+W	actboat	0	actboat	actboat	actboat			catboat|boat	catboat|boat	1
+W	boatouse	0	boatouse	boatouse	boatouse			boat	boat	1
+W	obathouse	0	obathouse	obathouse	obathouse			boathouse|house	boathouse|house	1
+W	λόγςs	0	λόγςs	λόγςs	λόγςs			λόγοςs	λόγοςs	1
+W	όλγοςs	0	όλγοςs	όλγοςs	όλγοςs			λόγοςs|λόγος	λόγοςs|λόγος	1
+W	ds	0	ds	ds	ds			dos	dos	0
+W	ods	0	ods	ods	ods			dos	dos	1
+W	houed	0	houed	houed	houed			housed	housed	1
+W	ohused	0	ohused	ohused	ohused			housed|house	housed|house	1
+W	houes	0	houes	houes	houes			house	house	1
+W	ohuses	0	ohuses	ohuses	ohuses			houses|house	houses|house	1
+E	cat	cat/Äж po:noun	AffixedWord[word=cat, entry=cat/Äж, prefixes=[], suffixes=[]]|AffixedWord[word=cats, entry=cat/Äж, prefixes=[], suffixes=[Ä(id=0)]]|AffixedWord[word=uncats, entry=cat/Äж, prefixes=[ж(id=3)], suffixes=[Ä(id=0)]]|AffixedWord[word=uncat, entry=cat/Äж, prefixes=[ж(id=3)], suffixes=[]]
+E	jump	jump/ж鳥 po:verb	AffixedWord[word=jump, entry=jump/ж鳥, prefixes=[], suffixes=[]]|AffixedWord[word=unjump, entry=jump/ж鳥, prefixes=[ж(id=3)], suffixes=[]]|AffixedWord[word=jumped, entry=jump/ж鳥, prefixes=[], suffixes=[鳥(id=1)]]|AffixedWord[word=unjumped, entry=jump/ж鳥, prefixes=[ж(id=3)], suffixes=[鳥(id=1)]]
+E	do	do/Ä	AffixedWord[word=do, entry=do/Ä, prefixes=[], suffixes=[]]|AffixedWord[word=dos, entry=do/Ä, prefixes=[], suffixes=[Ä(id=0)]]
+E	λόγος	λόγος/Ä is:sg po:noun	AffixedWord[word=λόγος, entry=λόγος/Ä, prefixes=[], suffixes=[]]|AffixedWord[word=λόγοςs, entry=λόγος/Ä, prefixes=[], suffixes=[Ä(id=0)]]
+E	house	house/Äж鳥 is:sg po:noun	AffixedWord[word=house, entry=house/Äж鳥, prefixes=[], suffixes=[]]|AffixedWord[word=houses, entry=house/Äж鳥, prefixes=[], suffixes=[Ä(id=0)]]|AffixedWord[word=unhouses, entry=house/Äж鳥, prefixes=[ж(id=3)], suffixes=[Ä(id=0)]]|AffixedWord[word=unhouse, entry=house/Äж鳥, prefixes=[ж(id=3)], suffixes=[]]|AffixedWord[word=housed, entry=house/Äж鳥, prefixes=[], suffixes=[鳥(id=2)]]|AffixedWord[word=unhoused, entry=house/Äж鳥, prefixes=[ж(id=3)], suffixes=[鳥(id=2)]]
+E	boat	boat/Äж	AffixedWord[word=boat, entry=boat/Äж, prefixes=[], suffixes=[]]|AffixedWord[word=boats, entry=boat/Äж, prefixes=[], suffixes=[Ä(id=0)]]|AffixedWord[word=unboats, entry=boat/Äж, prefixes=[ж(id=3)], suffixes=[Ä(id=0)]]|AffixedWord[word=unboat, entry=boat/Äж, prefixes=[ж(id=3)], suffixes=[]]
+G	AffixedWord[word=jump, entry=jump/ж鳥, prefixes=[], suffixes=[]]|AffixedWord[word=unjump, entry=jump/ж鳥, prefixes=[ж(id=3)], suffixes=[]]|AffixedWord[word=jumped, entry=jump/ж鳥, prefixes=[], suffixes=[鳥(id=1)]]|AffixedWord[word=unjumped, entry=jump/ж鳥, prefixes=[ж(id=3)], suffixes=[鳥(id=1)]]|AffixedWord[word=cat, entry=cat/Äж, prefixes=[], suffixes=[]]|AffixedWord[word=cats, entry=cat/Äж, prefixes=[], suffixes=[Ä(id=0)]]|AffixedWord[word=uncats, entry=cat/Äж, prefixes=[ж(id=3)], suffixes=[Ä(id=0)]]|AffixedWord[word=uncat, entry=cat/Äж, prefixes=[ж(id=3)], suffixes=[]]|AffixedWord[word=λόγος, entry=λόγος/Ä, prefixes=[], suffixes=[]]|AffixedWord[word=λόγοςs, entry=λόγος/Ä, prefixes=[], suffixes=[Ä(id=0)]]|AffixedWord[word=do, entry=do/Ä, prefixes=[], suffixes=[]]|AffixedWord[word=dos, entry=do/Ä, prefixes=[], suffixes=[Ä(id=0)]]|AffixedWord[word=house, entry=house/Äж鳥, prefixes=[], suffixes=[]]|AffixedWord[word=houses, entry=house/Äж鳥, prefixes=[], suffixes=[Ä(id=0)]]|AffixedWord[word=unhouses, entry=house/Äж鳥, prefixes=[ж(id=3)], suffixes=[Ä(id=0)]]|AffixedWord[word=unhouse, entry=house/Äж鳥, prefixes=[ж(id=3)], suffixes=[]]|AffixedWord[word=housed, entry=house/Äж鳥, prefixes=[], suffixes=[鳥(id=2)]]|AffixedWord[word=unhoused, entry=house/Äж鳥, prefixes=[ж(id=3)], suffixes=[鳥(id=2)]]|AffixedWord[word=boat, entry=boat/Äж, prefixes=[], suffixes=[]]|AffixedWord[word=boats, entry=boat/Äж, prefixes=[], suffixes=[Ä(id=0)]]|AffixedWord[word=unboats, entry=boat/Äж, prefixes=[ж(id=3)], suffixes=[Ä(id=0)]]|AffixedWord[word=unboat, entry=boat/Äж, prefixes=[ж(id=3)], suffixes=[]]
