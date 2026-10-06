@@ -407,7 +407,7 @@ analysis/shingle/ShingleAnalyzerWrapper	ported	crates/lucene-analysis/src/shingl
 analysis/shingle/ShingleFilter	ported	crates/lucene-analysis/src/shingle/mod.rs::ShingleFilter
 analysis/shingle/ShingleFilterFactory	todo:M11	T11.7 factory/SPI: ShingleFilterFactory
 analysis/sinks/TeeSinkTokenFilter	todo:M11	T11.6 sinks: TeeSinkTokenFilter
-analysis/snowball/SnowballFilter	partial	crates/lucene-analysis/src/lib.rs::SnowballEnglishStemFilter -- M11: T11.3 every other Snowball language
+analysis/snowball/SnowballFilter	ported	crates/lucene-analysis/src/snowball/mod.rs::SnowballFilter -- M11 T11.3
 analysis/snowball/SnowballPorterFilterFactory	todo:M11	T11.7 factory/SPI: SnowballPorterFilterFactory
 analysis/sr/SerbianAnalyzer	todo:M11	T11.6 per-language (sr): SerbianAnalyzer
 analysis/sr/SerbianNormalizationFilter	todo:M11	T11.6 per-language (sr): SerbianNormalizationFilter
@@ -468,36 +468,36 @@ collation/CollationAttributeFactory	todo:M11	T11.7 factory/SPI: CollationAttribu
 collation/CollationDocValuesField	todo:M11	T11.6 CollationDocValuesField: CollationDocValuesField
 collation/CollationKeyAnalyzer	todo:M11	T11.6 CollationKeyAnalyzer: CollationKeyAnalyzer
 collation/tokenattributes/CollatedTermAttributeImpl	todo:M11	T11.6 tokenattributes: CollatedTermAttributeImpl
-org/tartarus/snowball/Among	todo:M11	T11.3 Snowball runtime/stemmer: Among
-org/tartarus/snowball/SnowballProgram	todo:M11	T11.3 Snowball runtime/stemmer: SnowballProgram
-org/tartarus/snowball/SnowballStemmer	todo:M11	T11.3 Snowball runtime/stemmer: SnowballStemmer
-org/tartarus/snowball/ext/ArabicStemmer	todo:M11	T11.3 Snowball runtime/stemmer: ArabicStemmer
-org/tartarus/snowball/ext/ArmenianStemmer	todo:M11	T11.3 Snowball runtime/stemmer: ArmenianStemmer
-org/tartarus/snowball/ext/BasqueStemmer	todo:M11	T11.3 Snowball runtime/stemmer: BasqueStemmer
-org/tartarus/snowball/ext/CatalanStemmer	todo:M11	T11.3 Snowball runtime/stemmer: CatalanStemmer
-org/tartarus/snowball/ext/DanishStemmer	todo:M11	T11.3 Snowball runtime/stemmer: DanishStemmer
-org/tartarus/snowball/ext/DutchStemmer	todo:M11	T11.3 Snowball runtime/stemmer: DutchStemmer
-org/tartarus/snowball/ext/EnglishStemmer	partial	crates/lucene-analysis/src/lib.rs::snowball_english -- M11: T11.3 the generated stemmer over the Snowball runtime
-org/tartarus/snowball/ext/EstonianStemmer	todo:M11	T11.3 Snowball runtime/stemmer: EstonianStemmer
-org/tartarus/snowball/ext/FinnishStemmer	todo:M11	T11.3 Snowball runtime/stemmer: FinnishStemmer
-org/tartarus/snowball/ext/FrenchStemmer	todo:M11	T11.3 Snowball runtime/stemmer: FrenchStemmer
-org/tartarus/snowball/ext/GermanStemmer	todo:M11	T11.3 Snowball runtime/stemmer: GermanStemmer
-org/tartarus/snowball/ext/GreekStemmer	todo:M11	T11.3 Snowball runtime/stemmer: GreekStemmer
-org/tartarus/snowball/ext/HindiStemmer	todo:M11	T11.3 Snowball runtime/stemmer: HindiStemmer
-org/tartarus/snowball/ext/HungarianStemmer	todo:M11	T11.3 Snowball runtime/stemmer: HungarianStemmer
-org/tartarus/snowball/ext/IndonesianStemmer	todo:M11	T11.3 Snowball runtime/stemmer: IndonesianStemmer
-org/tartarus/snowball/ext/IrishStemmer	todo:M11	T11.3 Snowball runtime/stemmer: IrishStemmer
-org/tartarus/snowball/ext/ItalianStemmer	todo:M11	T11.3 Snowball runtime/stemmer: ItalianStemmer
-org/tartarus/snowball/ext/LithuanianStemmer	todo:M11	T11.3 Snowball runtime/stemmer: LithuanianStemmer
-org/tartarus/snowball/ext/NepaliStemmer	todo:M11	T11.3 Snowball runtime/stemmer: NepaliStemmer
-org/tartarus/snowball/ext/NorwegianStemmer	todo:M11	T11.3 Snowball runtime/stemmer: NorwegianStemmer
-org/tartarus/snowball/ext/PorterStemmer	todo:M11	T11.3 Snowball runtime/stemmer: PorterStemmer
-org/tartarus/snowball/ext/PortugueseStemmer	todo:M11	T11.3 Snowball runtime/stemmer: PortugueseStemmer
-org/tartarus/snowball/ext/RomanianStemmer	todo:M11	T11.3 Snowball runtime/stemmer: RomanianStemmer
-org/tartarus/snowball/ext/RussianStemmer	todo:M11	T11.3 Snowball runtime/stemmer: RussianStemmer
-org/tartarus/snowball/ext/SerbianStemmer	todo:M11	T11.3 Snowball runtime/stemmer: SerbianStemmer
-org/tartarus/snowball/ext/SpanishStemmer	todo:M11	T11.3 Snowball runtime/stemmer: SpanishStemmer
-org/tartarus/snowball/ext/SwedishStemmer	todo:M11	T11.3 Snowball runtime/stemmer: SwedishStemmer
-org/tartarus/snowball/ext/TamilStemmer	todo:M11	T11.3 Snowball runtime/stemmer: TamilStemmer
-org/tartarus/snowball/ext/TurkishStemmer	todo:M11	T11.3 Snowball runtime/stemmer: TurkishStemmer
-org/tartarus/snowball/ext/YiddishStemmer	todo:M11	T11.3 Snowball runtime/stemmer: YiddishStemmer
+org/tartarus/snowball/Among	ported	crates/lucene-analysis/src/snowball/program.rs::Among -- M11 T11.3
+org/tartarus/snowball/SnowballProgram	ported	crates/lucene-analysis/src/snowball/program.rs::SnowballEnv -- M11 T11.3
+org/tartarus/snowball/SnowballStemmer	ported	crates/lucene-analysis/src/snowball/mod.rs::SnowballStemmer -- M11 T11.3
+org/tartarus/snowball/ext/ArabicStemmer	ported	crates/lucene-analysis/src/snowball/algorithms/arabic.rs::stem -- M11 T11.3, generated by the Snowball compiler (tools/gen_snowball.sh)
+org/tartarus/snowball/ext/ArmenianStemmer	ported	crates/lucene-analysis/src/snowball/algorithms/armenian.rs::stem -- M11 T11.3, generated by the Snowball compiler (tools/gen_snowball.sh)
+org/tartarus/snowball/ext/BasqueStemmer	ported	crates/lucene-analysis/src/snowball/algorithms/basque.rs::stem -- M11 T11.3, generated by the Snowball compiler (tools/gen_snowball.sh)
+org/tartarus/snowball/ext/CatalanStemmer	ported	crates/lucene-analysis/src/snowball/algorithms/catalan.rs::stem -- M11 T11.3, generated by the Snowball compiler (tools/gen_snowball.sh)
+org/tartarus/snowball/ext/DanishStemmer	ported	crates/lucene-analysis/src/snowball/algorithms/danish.rs::stem -- M11 T11.3, generated by the Snowball compiler (tools/gen_snowball.sh)
+org/tartarus/snowball/ext/DutchStemmer	ported	crates/lucene-analysis/src/snowball/algorithms/dutch.rs::stem -- M11 T11.3, generated by the Snowball compiler (tools/gen_snowball.sh)
+org/tartarus/snowball/ext/EnglishStemmer	ported	crates/lucene-analysis/src/snowball/algorithms/english.rs::stem -- M11 T11.3, generated by the Snowball compiler (tools/gen_snowball.sh)
+org/tartarus/snowball/ext/EstonianStemmer	ported	crates/lucene-analysis/src/snowball/algorithms/estonian.rs::stem -- M11 T11.3, generated by the Snowball compiler (tools/gen_snowball.sh)
+org/tartarus/snowball/ext/FinnishStemmer	ported	crates/lucene-analysis/src/snowball/algorithms/finnish.rs::stem -- M11 T11.3, generated by the Snowball compiler (tools/gen_snowball.sh)
+org/tartarus/snowball/ext/FrenchStemmer	ported	crates/lucene-analysis/src/snowball/algorithms/french.rs::stem -- M11 T11.3, generated by the Snowball compiler (tools/gen_snowball.sh)
+org/tartarus/snowball/ext/GermanStemmer	ported	crates/lucene-analysis/src/snowball/algorithms/german.rs::stem -- M11 T11.3, generated by the Snowball compiler (tools/gen_snowball.sh)
+org/tartarus/snowball/ext/GreekStemmer	ported	crates/lucene-analysis/src/snowball/algorithms/greek.rs::stem -- M11 T11.3, generated by the Snowball compiler (tools/gen_snowball.sh)
+org/tartarus/snowball/ext/HindiStemmer	ported	crates/lucene-analysis/src/snowball/algorithms/hindi.rs::stem -- M11 T11.3, generated by the Snowball compiler (tools/gen_snowball.sh)
+org/tartarus/snowball/ext/HungarianStemmer	ported	crates/lucene-analysis/src/snowball/algorithms/hungarian.rs::stem -- M11 T11.3, generated by the Snowball compiler (tools/gen_snowball.sh)
+org/tartarus/snowball/ext/IndonesianStemmer	ported	crates/lucene-analysis/src/snowball/algorithms/indonesian.rs::stem -- M11 T11.3, generated by the Snowball compiler (tools/gen_snowball.sh)
+org/tartarus/snowball/ext/IrishStemmer	ported	crates/lucene-analysis/src/snowball/algorithms/irish.rs::stem -- M11 T11.3, generated by the Snowball compiler (tools/gen_snowball.sh)
+org/tartarus/snowball/ext/ItalianStemmer	ported	crates/lucene-analysis/src/snowball/algorithms/italian.rs::stem -- M11 T11.3, generated by the Snowball compiler (tools/gen_snowball.sh)
+org/tartarus/snowball/ext/LithuanianStemmer	ported	crates/lucene-analysis/src/snowball/algorithms/lithuanian.rs::stem -- M11 T11.3, generated by the Snowball compiler (tools/gen_snowball.sh)
+org/tartarus/snowball/ext/NepaliStemmer	ported	crates/lucene-analysis/src/snowball/algorithms/nepali.rs::stem -- M11 T11.3, generated by the Snowball compiler (tools/gen_snowball.sh)
+org/tartarus/snowball/ext/NorwegianStemmer	ported	crates/lucene-analysis/src/snowball/algorithms/norwegian.rs::stem -- M11 T11.3, generated by the Snowball compiler (tools/gen_snowball.sh)
+org/tartarus/snowball/ext/PorterStemmer	ported	crates/lucene-analysis/src/snowball/algorithms/porter.rs::stem -- M11 T11.3, generated by the Snowball compiler (tools/gen_snowball.sh)
+org/tartarus/snowball/ext/PortugueseStemmer	ported	crates/lucene-analysis/src/snowball/algorithms/portuguese.rs::stem -- M11 T11.3, generated by the Snowball compiler (tools/gen_snowball.sh)
+org/tartarus/snowball/ext/RomanianStemmer	ported	crates/lucene-analysis/src/snowball/algorithms/romanian.rs::stem -- M11 T11.3, generated by the Snowball compiler (tools/gen_snowball.sh)
+org/tartarus/snowball/ext/RussianStemmer	ported	crates/lucene-analysis/src/snowball/algorithms/russian.rs::stem -- M11 T11.3, generated by the Snowball compiler (tools/gen_snowball.sh)
+org/tartarus/snowball/ext/SerbianStemmer	ported	crates/lucene-analysis/src/snowball/algorithms/serbian.rs::stem -- M11 T11.3, generated by the Snowball compiler (tools/gen_snowball.sh)
+org/tartarus/snowball/ext/SpanishStemmer	ported	crates/lucene-analysis/src/snowball/algorithms/spanish.rs::stem -- M11 T11.3, generated by the Snowball compiler (tools/gen_snowball.sh)
+org/tartarus/snowball/ext/SwedishStemmer	ported	crates/lucene-analysis/src/snowball/algorithms/swedish.rs::stem -- M11 T11.3, generated by the Snowball compiler (tools/gen_snowball.sh)
+org/tartarus/snowball/ext/TamilStemmer	ported	crates/lucene-analysis/src/snowball/algorithms/tamil.rs::stem -- M11 T11.3, generated by the Snowball compiler (tools/gen_snowball.sh)
+org/tartarus/snowball/ext/TurkishStemmer	ported	crates/lucene-analysis/src/snowball/algorithms/turkish.rs::stem -- M11 T11.3, generated by the Snowball compiler (tools/gen_snowball.sh)
+org/tartarus/snowball/ext/YiddishStemmer	ported	crates/lucene-analysis/src/snowball/algorithms/yiddish.rs::stem -- M11 T11.3, generated by the Snowball compiler (tools/gen_snowball.sh)
