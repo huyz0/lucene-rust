@@ -19,6 +19,13 @@ extractor.
 ten ranges, unchanged since Unicode 6.3); it is exactly Lucene 10.5.0's
 `UnicodeProps.WHITESPACE`, which Lucene generates from the same file.
 
+Simple case mappings are not generated here: `unicodedata2` exposes none.
+Analysis case-maps through `lucene_util::automaton::java_to_lower_case`/
+`java_to_upper_case`, a table extracted from JDK 25.0.4's
+`Character.toUpperCase`/`toLowerCase` (the same Unicode 16.0);
+`java_character.rs`'s `case_mappings_and_categories_agree` checks the two
+tables are one Unicode version.
+
 Usage:
 
     pip install --target /tmp/ucd unicodedata2==16.0.0

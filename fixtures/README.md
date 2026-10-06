@@ -1025,7 +1025,10 @@ outright.
   ~1,800 probes matches, over every code point with a simple case mapping;
   code points whose properties differ between JDK 21 and JDK 25 are left
   out, so the output is the same under both) and `concatenate.words`
-  (`ConcatenateGraphFilter`'s indexed bytes for separators above ASCII).
+  (`ConcatenateGraphFilter`'s indexed bytes for separators above ASCII)
+  and `codepoints.words` (every code point, as `a<cp>B`, through 11
+  `Character`-dependent chains, run-length encoded; the same JDK 21/25
+  exclusions).
   Deterministic. Consumed by
   `crates/lucene-analysis/tests/analysis_common_fixtures.rs`, which lists the
   chains the port does not build yet (`PENDING`) and fails on any other gap.

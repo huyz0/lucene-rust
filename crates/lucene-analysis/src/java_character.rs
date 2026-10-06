@@ -14,9 +14,14 @@
 //! `Character.getType` is specified as that same `General_Category`, and the
 //! tables were checked identical to JDK 25's code point for code point.
 //!
-//! The analysis-common corpus holds no character whose category differs
-//! between Unicode 15.0 (JDK 21, CI's fixture JDK) and 16.0, so its fixtures
-//! agree under either.
+//! [`to_upper_case`]/[`to_lower_case`] read `lucene-util`'s table of JDK
+//! 25's simple case mappings, the same Unicode 16.0; every case map in this
+//! crate goes through them, never through `char`'s (the toolchain's Unicode
+//! version). JDK 25 is the target because it is what OpenSearch 3.8.0
+//! bundles. CI's fixture JDK is 21 (Unicode 15.0): the analysis-common
+//! corpus holds no character whose properties differ between the two, and
+//! `codepoints.words` (every code point) leaves those out, so the fixtures
+//! agree under either; `tests/code_point_fixtures.rs` pins them to JDK 25.
 
 use crate::java_character_tables::{
     DECIMAL_DIGIT_ZEROS, GENERAL_CATEGORY_RUNS, UNICODE_WHITESPACE,
@@ -236,6 +241,18 @@ pub fn push_utf16(out: &mut Vec<u16>, cp: u32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The case table (JDK 25) and the category table (UCD 16.0) are the
+    /// same Unicode version: no code point has a case mapping and no
+    /// category.
+    #[test]
+    fn case_mappings_and_categories_agree() {
+        for cp in 0..=0x10_FFFF {
+            if to_lower_case(cp) != cp || to_upper_case(cp) != cp {
+                assert_ne!(get_type(cp), UNASSIGNED, "{cp:#x}");
+            }
+        }
+    }
 
     #[test]
     fn categories_match_java() {

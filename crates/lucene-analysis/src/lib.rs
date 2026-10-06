@@ -276,41 +276,29 @@ pub struct LowerCaseFilter<I = Box<dyn TokenStream>> {
 /// That method is
 /// `Character.toChars(Character.toLowerCase(codePointAt(...)))` written
 /// **back into the same buffer at the same index**, so it is the *simple*,
-/// strictly 1:1 Unicode case mapping -- not the full mapping with its
-/// expansions and context rules. Rust's `str::to_lowercase` is the full
-/// mapping, and the two disagree on real text:
+/// strictly 1:1 case mapping -- not the full mapping with its expansions and
+/// context rules (`İ` lowercases to `i`, not `i` + U+0307; `"ΟΔΟΣ"` to
+/// `"οδοσ"`, no final sigma).
 ///
-/// - `U+0130` LATIN CAPITAL LETTER I WITH DOT ABOVE (`İ`): Java's simple
-///   mapping gives one character, `i`; Rust's full mapping gives two,
-///   `i` + `U+0307` COMBINING DOT ABOVE.
-/// - Greek final sigma: `"ΟΔΟΣ"` lowercases to `"οδοσ"` in Java, because
-///   `Character.toLowerCase` has no notion of word position; Rust's
-///   `str::to_lowercase` applies the final-sigma rule and produces
-///   `"οδος"`.
-///
-/// `char::to_lowercase` in Rust is per-character (so no final-sigma context)
-/// but still the full mapping, and the only unconditional full lowercase
-/// mapping in Unicode that expands to more than one character is `U+0130`'s.
-/// So: take the single-character result where there is one, special-case
-/// `İ`, and otherwise leave the character alone -- which is what
-/// `Character.toLowerCase` does for a codepoint with no simple mapping.
+/// The mapping is [`java_character::to_lower_case`]: JDK 25's
+/// `Character.toLowerCase` (Unicode 16.0), the JDK OpenSearch 3.8.0 bundles,
+/// read from the same table `lucene-util`'s `CaseFolding` uses. Rust's
+/// `char::to_lowercase` follows the toolchain's Unicode version (17.0 on
+/// Rust 1.97) and lowercased 28 code points Unicode 16 leaves unassigned.
 pub(crate) fn simple_to_lowercase(c: char) -> char {
+    if c.is_ascii() {
+        return c.to_ascii_lowercase();
+    }
     if is_caseless_block(c) {
         return c;
     }
-    let mut it = c.to_lowercase();
-    match (it.next(), it.next()) {
-        (Some(lower), None) => lower,
-        // `Character.toLowerCase('İ') == 'i'`.
-        _ if c == '\u{0130}' => 'i',
-        _ => c,
-    }
+    char::from_u32(java_character::to_lower_case(u32::from(c))).unwrap_or(c)
 }
 
 /// Blocks with no case mappings at all (Thai/Lao, CJK punctuation through
 /// the unified ideographs, Hangul syllables, emoji and the supplementary
-/// ideographic planes): `to_lowercase` is a table search Rust would do only
-/// to return the character itself. `caseless_blocks_have_no_lowercase`
+/// ideographic planes): the table search would only return the character
+/// itself. `caseless_blocks_have_no_lowercase`
 /// checks every code point in them.
 #[inline]
 fn is_caseless_block(c: char) -> bool {
@@ -3038,6 +3026,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn lowercase_is_jdk_25s_not_the_toolchains() {
+        // Unicode 17 letters (U+A7CE, U+16EA0): unassigned for JDK 25.
+        for c in ['\u{A7CE}', '\u{A7D2}', '\u{16EA0}'] {
+            assert_eq!(simple_to_lowercase(c), c, "{c:?}");
+        }
+        // Unicode 16 pairs JDK 21 lacks.
+        assert_eq!(simple_to_lowercase('\u{A7CB}'), '\u{264}');
+        assert_eq!(simple_to_lowercase('\u{A7DC}'), '\u{19B}');
+        assert_eq!(simple_to_lowercase('\u{130}'), 'i');
+        assert_eq!(simple_to_lowercase('Σ'), 'σ');
+        assert_eq!(simple_to_lowercase('Q'), 'q');
+    }
+
+    #[test]
     fn caseless_blocks_have_no_lowercase() {
         for cp in (0x0E00..=0x0EFF)
             .chain(0x3000..=0x9FFF)
@@ -3047,8 +3049,7 @@ mod tests {
         {
             if let Some(c) = char::from_u32(cp) {
                 assert!(is_caseless_block(c));
-                let mut it = c.to_lowercase();
-                assert_eq!((it.next(), it.next()), (Some(c), None), "{cp:#x}");
+                assert_eq!(java_character::to_lower_case(cp), cp, "{cp:#x}");
             }
         }
         assert!(!is_caseless_block('A'));
