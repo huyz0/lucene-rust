@@ -1,9 +1,15 @@
 //! `org.apache.lucene.analysis.en`: the streaming `PorterStemFilter`,
 //! `EnglishPossessiveFilter`, `EnglishMinimalStemFilter` and
-//! `EnglishAnalyzer`. The Porter algorithm itself is the crate's `porter`
+//! `EnglishAnalyzer`, `KStemFilter` (`kstem.rs`). The Porter algorithm itself is the crate's `porter`
 //! module (`PorterStemmer`), shared with the older `Vec<Token>` API.
 
 use std::sync::Arc;
+
+mod kstem;
+#[rustfmt::skip]
+mod kstem_data;
+
+pub use kstem::{KStemFilter, KStemmer};
 
 use crate::analyzer::{AnalyzerDefinition, TokenStreamComponents};
 use crate::miscellaneous::SetKeywordMarkerFilter;
