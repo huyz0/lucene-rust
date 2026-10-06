@@ -2952,6 +2952,32 @@ mod tests {
         assert!(phrase_freq_at(&positions, &[0, 1], &none, 1, &mut scratch, &mut shifted) > 0.0);
     }
 
+    /// More slots than fit on the stack, and a rebased position past
+    /// `i32::MAX`, which saturates rather than wraps.
+    #[test]
+    fn explicit_offsets_over_many_slots_and_at_the_int_limit() {
+        let mut scratch = sloppy_phrase::SloppyScratch::default();
+        let mut shifted = Vec::new();
+        // Ten terms at consecutive positions 10..20, offsets 0..10 with a
+        // hole after the fifth: the phrase matches once, with the hole.
+        let positions: Vec<Vec<i32>> = (0..10).map(|i| vec![10 + i + i32::from(i >= 5)]).collect();
+        let offsets: Vec<i32> = (0..10).map(|i| i + i32::from(i >= 5)).collect();
+        let none = sloppy_phrase::PhraseRepeats::none(10);
+        assert_eq!(
+            phrase_freq_at(&positions, &offsets, &none, 0, &mut scratch, &mut shifted),
+            1.0
+        );
+        // Slot 1 at offset 0 moves up by one: from `i32::MAX` it saturates
+        // and no longer lines up with slot 0.
+        let edge = vec![vec![i32::MAX], vec![i32::MAX]];
+        let none2 = sloppy_phrase::PhraseRepeats::none(2);
+        assert_eq!(
+            phrase_freq_at(&edge, &[0, 0], &none2, 0, &mut scratch, &mut shifted),
+            0.0
+        );
+        assert_eq!(shifted[1], [i32::MAX]);
+    }
+
     #[test]
     fn log_odds_rewrite_drops_match_no_docs_and_renormalises() {
         let t = |s: &str| Clause::Term(TermQuery::new("f", s));
