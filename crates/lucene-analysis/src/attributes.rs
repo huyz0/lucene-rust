@@ -81,6 +81,8 @@ pub struct AttributeSource {
     term_frequency: i32,
     /// `SentenceAttribute`.
     sentence_index: i32,
+    /// `search.BoostAttribute`, as `f32` bits (so the struct stays `Eq`).
+    boost_bits: u32,
 }
 
 /// `AttributeSource.State`: a captured copy of every attribute, restored with
@@ -109,6 +111,7 @@ impl AttributeSource {
             payload: None,
             term_frequency: 1,
             sentence_index: 0,
+            boost_bits: 1.0f32.to_bits(),
         }
     }
 
@@ -129,6 +132,7 @@ impl AttributeSource {
         self.payload = None;
         self.term_frequency = 1;
         self.sentence_index = 0;
+        self.boost_bits = 1.0f32.to_bits();
     }
 
     /// `AttributeSource.endAttributes()`: every attribute's `end()`, which is
@@ -371,6 +375,17 @@ impl AttributeSource {
     /// `SentenceAttribute.setSentenceIndex`.
     pub fn set_sentence_index(&mut self, index: i32) {
         self.sentence_index = index;
+    }
+
+    /// `BoostAttribute.getBoost()` (`org.apache.lucene.search`, which
+    /// `DelimitedBoostTokenFilter` sets); `1.0` when cleared.
+    pub fn boost(&self) -> f32 {
+        f32::from_bits(self.boost_bits)
+    }
+
+    /// `BoostAttribute.setBoost(float)`.
+    pub fn set_boost(&mut self, boost: f32) {
+        self.boost_bits = boost.to_bits();
     }
 }
 

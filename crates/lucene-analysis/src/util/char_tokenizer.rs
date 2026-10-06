@@ -94,7 +94,21 @@ impl CharacterBuffer {
     /// is full or the reader is exhausted, holding back a trailing high
     /// surrogate for the next fill. Returns whether the buffer was filled.
     pub(crate) fn fill(&mut self, reader: &mut dyn CharReader) -> Result<bool, AnalysisError> {
-        let num_chars = self.buffer.len();
+        let n = self.buffer.len();
+        self.fill_n(reader, n)
+    }
+
+    /// `CharacterUtils.fill(CharacterBuffer, Reader, int numChars)`: as
+    /// [`Self::fill`], reading at most `num_chars` units.
+    pub(crate) fn fill_n(
+        &mut self,
+        reader: &mut dyn CharReader,
+        num_chars: usize,
+    ) -> Result<bool, AnalysisError> {
+        assert!(
+            (2..=self.buffer.len()).contains(&num_chars),
+            "numChars must be >= 2 and <= the buffer size"
+        );
         let offset = if self.last_trailing_high_surrogate != 0 {
             self.buffer[0] = self.last_trailing_high_surrogate;
             self.last_trailing_high_surrogate = 0;
