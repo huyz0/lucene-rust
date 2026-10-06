@@ -465,6 +465,13 @@ public class GenIntervals {
     {"body", "phrase(apple,apple)"}, {"body", "phrase(or(apple,phrase(ape,bank)),cat)"},
     {"body", "phrase(ornr(apple,phrase(ape,bank)),cat)"},
     {"body", "phrase(phrase(apple,bank),cat)"}, {"body", "phrase(apple,extend(bank,0,2),cat)"},
+    // blocks and ordered over terms and disjunctions of terms: the disjunction's terms rare
+    // (fig, fish, eel), or a rare term beside it (zeta, in one document), so the conjunction
+    // moves past documents the disjunction sits on; then a term or every disjunct absent
+    {"body", "phrase(or(apple,bank),cat)"}, {"body", "phrase(apple,or(bank,cat,dog))"},
+    {"body", "ordered(or(apple,bank,cat),dog)"}, {"body", "phrase(or(fig,fish),apple)"},
+    {"body", "ordered(apple,or(eel,fig,fish),bank)"}, {"body", "ordered(or(apple,bank),zeta)"},
+    {"body", "phrase(or(apple,bank),nosuch)"}, {"body", "ordered(or(nosuch,zeta),apple)"},
     // disjunctions
     {"body", "or(apple,bank)"}, {"body", "or(apple,phrase(bank,cat))"},
     {"body", "or(apple,apple,or(bank,apple))"}, {"body", "or(nosuch,zeta)"},
