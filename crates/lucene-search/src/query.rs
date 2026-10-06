@@ -1020,6 +1020,16 @@ impl BooleanQuery {
         Self::default()
     }
 
+    /// `BooleanQuery.isPureDisjunction()`: `clauses.size() ==
+    /// getClauses(SHOULD).size() && minimumNumberShouldMatch <= 1` -- every
+    /// clause is `SHOULD`, so no `MUST`, `FILTER` *or* `MUST_NOT` one.
+    pub(crate) fn is_pure_disjunction(&self) -> bool {
+        self.must.is_empty()
+            && self.filter.is_empty()
+            && self.must_not.is_empty()
+            && self.minimum_should_match <= 1
+    }
+
     /// `BooleanQuery.rewrite()`-equivalent: a pure, semantics-preserving
     /// simplification pass, **opt-in** -- consumes `self` and returns the
     /// simplified [`Clause`] tree, but is never called by
@@ -1248,20 +1258,20 @@ impl BooleanQuery {
 
         // Rule 6: flatten a nested *pure disjunction* out of `should`.
         // `BooleanQuery.rewrite()`: "Flatten nested disjunctions, this is
-        // important for block-max WAND to perform well". Java's
-        // `isPureDisjunction()` is `every clause is SHOULD &&
-        // minimumNumberShouldMatch <= 1`, and the outer query must itself have
+        // important for block-max WAND to perform well". The inner query must
+        // be [`BooleanQuery::is_pure_disjunction`] -- every clause `SHOULD`,
+        // so a `FILTER` one, which flattening would silently drop, keeps the
+        // nesting -- and the outer query must itself have
         // `minimumNumberShouldMatch <= 1` or the count would change meaning.
+        //
+        // An inner query with no clauses at all is a pure disjunction to Java
+        // too, but cannot reach this arm: rules 1/2 rewrote it to
+        // `MatchNoDocs`, and rule 5 dropped that from `should`.
         if minimum_should_match <= 1 {
             let mut flattened: Vec<Clause> = Vec::with_capacity(should.len());
             for clause in should {
                 match clause {
-                    Clause::Boolean(inner)
-                        if inner.must.is_empty()
-                            && inner.must_not.is_empty()
-                            && !inner.should.is_empty()
-                            && inner.minimum_should_match <= 1 =>
-                    {
+                    Clause::Boolean(inner) if inner.is_pure_disjunction() => {
                         flattened.extend(inner.should);
                     }
                     other => flattened.push(other),
@@ -2557,9 +2567,11 @@ mod tests {
 
     #[test]
     fn rewrite_does_not_flatten_a_nested_disjunction_that_is_not_pure() {
-        // The three ways `isPureDisjunction()` fails, each of which must leave
-        // the nesting alone: the inner query has a `must`, has a `must_not`,
-        // or carries a `minimumNumberShouldMatch > 1`.
+        // The four ways `isPureDisjunction()` (`clauses.size() ==
+        // getClauses(SHOULD).size() && minimumNumberShouldMatch <= 1`) fails,
+        // each of which must leave the nesting alone: the inner query has a
+        // `must`, a `must_not` or a `filter`, or carries a
+        // `minimumNumberShouldMatch > 1`.
         let impure = [
             BooleanQuery::new()
                 .with_should([TermQuery::new("body", "cat")])
@@ -2576,6 +2588,14 @@ mod tests {
                     TermQuery::new("body", "bird"),
                 ])
                 .with_minimum_should_match(2),
+            // `[(body:cat #body:dog), body:fish]`: flattening this one would
+            // silently drop the `#body:dog` restriction from `body:cat`.
+            BooleanQuery::new()
+                .with_should([
+                    TermQuery::new("body", "cat"),
+                    TermQuery::new("body", "bird"),
+                ])
+                .with_filter([TermQuery::new("body", "dog")]),
         ];
         for inner in impure {
             // The inner query is still *recursively rewritten* (rule 3) -- the

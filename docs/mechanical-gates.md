@@ -34,6 +34,7 @@ to describe a defect that got past it.
 | [`ledger-single-list`](#ledger-single-list) | `check-port-invariants.py` | an unticked `- [ ]` anywhere in `docs/sweep/m2/LEDGER.md` | whether a `- [x]` is *true*, or whether a `- [->]` names the right item |
 | [`block-guard`](#block-guard) | `check-port-invariants.py` | a `lucene-index` fn setting `pending_has_blocks`/`dwpt.has_blocks = true` with no earlier `check_block(` call in the same fn | a guard that is called but whose result is ignored, or that sits on a branch the flag's line does not follow; a block flag spelled any other way |
 | [`alloc-from-doc`](#alloc-from-doc) | `check-port-invariants.py` | an allocation size (`vec![_; n]`, `with_capacity(n)`, `.resize(n, ..)`, `FixedBitSet::new(n)`) mentioning a name its fn bound from a doc list's `.last()`/`.first()`/`.max()`, with no `max_doc` in the size and no `// ALLOC:` proof | a doc id reaching the size through a struct field, a parameter or another fn; a source not spelled on a `*doc*` name (`ids.last()`); a `max_doc` in the size that does not actually bound it |
+| [`occur-guard`](#occur-guard) | `check-port-invariants.py` | one condition testing `R.must.is_empty()` and `R.must_not.is_empty()` on a receiver `R` without naming `R.filter` | a guard split across statements or helper fns; a test on `should`/`filter` alone that forgets an occur; a `filter` named but treated wrongly |
 | [rustdoc links](#rustdoc) | `cargo doc` | a `[`link`]` that resolves to nothing | a symbol named in *plain backticks*, which is most of them |
 | [coverage objects](#coverage-objects) | `scripts/coverage.sh` | lucene-ffi's never-loaded cdylib standing in for the executed copy of a `#[no_mangle]` function in the line report | the same first-copy-wins rule between two *executed* copies; a file whose lines split between a crate's unit-test and integration-test builds, which the summary under-reports |
 
@@ -457,6 +458,29 @@ entry point that hands its leaves a `GlobalStats` prepared for a different
 query (the leaf then errors, it does not read wrong statistics); and a
 function query reached through a path that builds leaf contexts without a
 statistics pass -- that is a runtime error, not a gate failure.
+
+## occur-guard
+
+`check-port-invariants.py --only=occur-guard`. The M10 T10.6 review found
+`BooleanQuery::rewrite`'s rule 6 flattening a nested disjunction out of
+`should` on `inner.must.is_empty() && inner.must_not.is_empty()`. Java's
+`isPureDisjunction()` is "every clause is `SHOULD`": the guard named three of
+the four occurs, so `[(body:a #body:b), body:c]` flattened to `[body:a,
+body:c]` and dropped `#body:b`. `FILTER` arrived in this port after the other
+three, and a guard written before it compiles unchanged after it. The fix is
+`BooleanQuery::is_pure_disjunction`, Java's predicate by name. The rule:
+outside tests, a condition -- the code between two of `{`, `}`, `;`, `=>` --
+that tests `R.must.is_empty()` and `R.must_not.is_empty()` on one receiver
+`R` (`inner.`, `self.`, or none for locals) also names `R.filter`. Five such
+conditions exist today, all naming it. **Seen to fail** on the unfixed guard:
+`crates/lucene-search/src/query.rs:1275: a guard tests `inner.must` and
+`inner.must_not` but not `inner.filter``, and on `is_pure_disjunction` with
+its `filter` line deleted. Blind to: a guard whose tests are split across
+statements, `let`s or helper fns; one testing `should` or `filter` without
+`must` and `must_not` (a three-occur test of another shape); `len()` or
+iterator tests instead of `is_empty()`; and a `filter` that is named but
+handled wrongly -- the rule proves the fourth occur was *thought about*, not
+that the answer is right.
 
 ## write-path verifiers of the geo modules (M9)
 
