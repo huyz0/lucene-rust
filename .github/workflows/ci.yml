@@ -210,6 +210,32 @@ jobs:
         run: ./scripts/gen-bwc-fixtures.sh --check
 
   # ---------------------------------------------------------------------------
+  # The Snowball stemmers over the Snowball project's own test vocabularies
+  # (16 million words, never committed: some are CC BY-SA or GPL), fetched at
+  # a pinned snowball-data commit and checked file by file against SHA-256.
+  # ---------------------------------------------------------------------------
+  snowball:
+    name: snowball vocabularies
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-x64-${{ hashFiles('**/Cargo.toml', 'rust-toolchain.toml') }}
+          restore-keys: cargo-x64-
+      - name: Every stemmer reproduces snowball-data's output.txt
+        run: ./scripts/check-snowball-vocabulary.sh
+      # The generated stemmers are exactly gen_snowball.sh's output over the
+      # pinned Snowball sources (no hand edits, no generator change left
+      # un-run), the Java backend first checked equal to Lucene's stemmers.
+      - name: The generated stemmers match their generator
+        run: ./scripts/check-snowball-generated.sh
+
+  # ---------------------------------------------------------------------------
   # Reverse direction: Rust writes real Lucene bytes, Lucene reads them back.
   # The only automated evidence that this port's write path is spec-correct
   # rather than merely self-consistent.

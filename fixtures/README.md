@@ -1038,7 +1038,13 @@ outright.
   words of `corpus/snowball-seed.txt` (a frozen copy of the analysis-common
   corpus, so editing that corpus leaves these files alone; output is
   identical on JDK 21 and 25) (`data/snowball/<Language>.words`); read by
-  `crates/lucene-analysis/tests/snowball_fixtures.rs`.
+  `crates/lucene-analysis/tests/snowball_fixtures.rs`. Appended last, untraced:
+  `corpus/snowball-targeted/<Language>.txt`, words chosen by line coverage of
+  the generated Rust stemmer (an instrumented build stemming candidates --
+  this project's own words, and concatenations of the stemmer's among strings
+  -- keeping each that covers a line nothing kept so far does), so that every
+  stemmer file reaches the per-file bar without the Snowball project's
+  vocabularies (those run opt-in: `scripts/check-snowball-vocabulary.sh`).
 - `GenHunspell.java` — M11 T11.4: Lucene's Hunspell over this project's own
   dictionaries (`corpus/hunspell/<name>.aff`/`.dic`/`.words`, each named for
   the features it exercises; `broken_*` are ones Lucene refuses; `charset_*`
