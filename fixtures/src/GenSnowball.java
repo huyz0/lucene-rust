@@ -35,8 +35,8 @@ import org.tartarus.snowball.SnowballStemmer;
  * alphabet (the characters of those strings), random stem + suffix chains (fixed seed), and the
  * lowercased words of {@code fixtures/corpus/snowball-seed.txt} (a frozen copy of the
  * analysis-common corpus, so edits to that corpus do not change these fixtures). A handful of words carry a
- * character outside the Basic Multilingual Plane, where Java's UTF-16 stemmers and the port's
- * UTF-8 ones may disagree: they go to {@code supplementary.words} instead, as the record of what
+ * character outside the Basic Multilingual Plane, where a stemmer counting code points rather than
+ * UTF-16 units would disagree with Java: they go to {@code supplementary.words} instead, the record of what
  * Java does there.
  *
  * <p>Output: {@code snowball/<Language>.words}, one line per word, {@code word\tstem}, or just
